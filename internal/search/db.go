@@ -37,10 +37,13 @@ func (in *dBSearch) SearchAnswer(req model.SearchRequest) (answer [][]string, er
 	if err1 != nil {
 		sortOptionsStr = []byte("[]")
 	}
-	// 生成hash值
-	Hash := strutil.Md5(util.FormatString(req.Question) + string(sortOptionsStr) + strconv.Itoa(req.Type) + strconv.Itoa(req.Plat))
+	// 生成hash值 - 兼容新旧两种格式
+	newHash := strutil.Md5(util.FormatString(req.Question) + string(sortOptionsStr) + strconv.Itoa(req.Type) + strconv.Itoa(req.Plat))
+	oldHash := strutil.Md5(req.Question + string(sortOptionsStr) + strconv.Itoa(req.Type) + strconv.Itoa(req.Plat))
+
 	tiku := dao.Tiku
-	tx := tiku.Where(tiku.Hash.Eq(Hash))
+	// 使用 OR 条件同时匹配新旧两种 hash
+	tx := tiku.Where(tiku.Hash.In(newHash, oldHash))
 
 	// 如果提供了courseName，则也匹配courseName
 	if req.CourseName != "" {
