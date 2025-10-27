@@ -6,6 +6,7 @@ import (
 	"github.com/gookit/goutil/strutil"
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"github.com/itihey/tikuAdapter/pkg/model"
+	"github.com/itihey/tikuAdapter/pkg/util"
 	"log"
 	"sort"
 	"strconv"
@@ -32,11 +33,12 @@ func (in *dBSearch) SearchAnswer(req model.SearchRequest) (answer [][]string, er
 	copy(sortOptions, req.Options)
 	sort.Strings(sortOptions)
 	sortOptionsStr, err1 := json.Marshal(sortOptions)
+
 	if err1 != nil {
 		sortOptionsStr = []byte("[]")
 	}
 	// 生成hash值
-	Hash := strutil.Md5(req.Question + string(sortOptionsStr) + strconv.Itoa(req.Type) + strconv.Itoa(req.Plat))
+	Hash := strutil.Md5(util.FormatString(req.Question) + string(sortOptionsStr) + strconv.Itoa(req.Type) + strconv.Itoa(req.Plat))
 	tiku := dao.Tiku
 	tx := tiku.Where(tiku.Hash.Eq(Hash))
 
