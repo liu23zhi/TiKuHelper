@@ -859,7 +859,7 @@ func resolveSearchRequestContextWithDB(db *gorm.DB, authorization string, client
 		resolved.AccessTokenID = authCtx.AccessToken.ID
 		if authCtx.User.Balance < 0 {
 			if !hasExplicitSearchProviderOverride(query) {
-				return resolved, fmt.Errorf("%w: 当前余额不足，默认账号已停用，请传入渠道参数后重试", service.ErrInvalidAccessTokenAuthorization)
+				return resolved, fmt.Errorf("%w: 当前余额不足，系统题库已禁用，请传入渠道参数后重试", service.ErrInvalidAccessTokenAuthorization)
 			}
 		} else {
 			allowDefaultAccount = true
