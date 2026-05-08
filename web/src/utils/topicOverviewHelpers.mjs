@@ -49,7 +49,7 @@ export function buildQuestionCourseNameCandidates(keyword = '', options = []) {
       continue;
     }
     seen.add(lowerValue);
-    items.push({ value });
+    items.push({ label: value, value });
   }
   return items;
 }

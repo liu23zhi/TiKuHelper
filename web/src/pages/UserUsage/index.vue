@@ -71,7 +71,7 @@
         <div class="page-title-wrap">
           <div>
             <div class="page-title">消费账单</div>
-            <div class="page-subtitle">聚焦题目、消费金额、答案来源、访问令牌与请求时间，便于快速回看最近使用情况。</div>
+            <div class="page-subtitle">聚焦题目、消费金额、访问令牌与请求时间，便于快速回看最近使用情况。</div>
           </div>
         </div>
       </template>
@@ -88,9 +88,6 @@
       >
         <template #questionText="{ record }">
           <span class="multiline-cell">{{ buildPersonalUsageQuestionText(record) }}</span>
-        </template>
-        <template #answerSourceLabel="{ record }">
-          <span class="multiline-cell">{{ buildPersonalUsageAnswerSourceText(record) }}</span>
         </template>
         <template #amount="{ record }">
           <span>¥ {{ formatAmount(record.amount) }}</span>
@@ -126,7 +123,6 @@ import {
   sortPaymentMethodsForDisplay,
 } from '@/utils/paymentMethodHelpers.mjs'
 import {
-  buildPersonalUsageAnswerSourceText,
   buildPersonalUsageBillingRecordParams,
   buildPersonalUsageQuestionText,
 } from '@/utils/userPortalHelpers.mjs'
@@ -192,7 +188,6 @@ export default defineComponent({
       paymentMethodSummary,
       currentUserBalance,
       pageRefreshing,
-      buildPersonalUsageAnswerSourceText,
       buildPersonalUsageQuestionText,
       columns: [
         {
@@ -217,15 +212,6 @@ export default defineComponent({
           width: 120,
           slots: {
             customRender: 'amount',
-          },
-        },
-        {
-          title: '答案来源',
-          dataIndex: 'answerSourceLabel',
-          key: 'answerSourceLabel',
-          width: 180,
-          slots: {
-            customRender: 'answerSourceLabel',
           },
         },
         {

@@ -30,13 +30,22 @@ test('buildQuestionCourseNameCandidates prefers matching existing names without 
     { label: 'AB', value: 'AB' },
     { label: '数学', value: '数学' },
   ]), [
-    { value: 'AB' },
-    { value: 'A1' },
+    { label: 'AB', value: 'AB' },
+    { label: 'A1', value: 'A1' },
   ]);
 
   assert.deepEqual(buildQuestionCourseNameCandidates('   ', [
     { label: 'AB', value: 'AB' },
   ]), []);
+});
+
+test('buildQuestionCourseNameCandidates keeps AutoComplete-compatible label-value options', () => {
+  assert.deepEqual(buildQuestionCourseNameCandidates('高', [
+    { label: '高等数学', value: '高等数学' },
+    { label: '线性代数', value: '线性代数' },
+  ]), [
+    { label: '高等数学', value: '高等数学' },
+  ]);
 });
 
 test('buildQuestionBulkActionIds keeps unique positive integer ids in order', () => {

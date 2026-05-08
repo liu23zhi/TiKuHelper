@@ -13,6 +13,7 @@ import {
   Input,
   InputNumber,
   Select,
+  AutoComplete,
   Checkbox,
   Switch,
   Layout,
@@ -47,6 +48,7 @@ app.use(Input)
 app.use(InputNumber)
 app.use(Tag)
 app.use(Select)
+app.use(AutoComplete)
 app.use(Pagination)
 app.use(Checkbox)
 app.use(Switch)

@@ -131,10 +131,12 @@
           </a-form-item>
           <a-form-item label="课程名称">
             <a-auto-complete
-              v-model:value="bulkCourseName"
+              :value="bulkCourseName"
               :options="bulkCourseCandidates"
               placeholder="请输入新的课程名称"
               style="width: 100%"
+              @update:value="(value) => bulkCourseName = value"
+              @search="(value) => bulkCourseName = value"
             />
             <div class="bulk-course-hint">支持自由输入；若已存在相近课程名，会在下方显示候选项供快速填充。</div>
           </a-form-item>
