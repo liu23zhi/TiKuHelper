@@ -1,0 +1,349 @@
+package search
+
+import (
+	"encoding/base64"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/itihey/tikuAdapter/pkg/model"
+)
+
+type openAIRequestMessagePayload struct {
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}
+
+type openAIImagePartPayload struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	ImageURL *struct {
+		URL string `json:"url"`
+	} `json:"image_url,omitempty"`
+}
+
+func decodeUserContentParts(t *testing.T, messages []openAIRequestMessagePayload) []openAIImagePartPayload {
+	t.Helper()
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(messages))
+	}
+	if messages[1].Role != "user" {
+		t.Fatalf("expected second message role user, got %s", messages[1].Role)
+	}
+	var parts []openAIImagePartPayload
+	if err := json.Unmarshal(messages[1].Content, &parts); err != nil {
+		t.Fatalf("decode user content parts: %v", err)
+	}
+	return parts
+}
+
+func TestChatGptClientSearchAnswerUsesSystemPromptAndFixedSamplingParams(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Model       string                        `json:"model"`
+			Stream      bool                          `json:"stream"`
+			Temperature float64                       `json:"temperature"`
+			TopP        float64                       `json:"top_p"`
+			Messages    []openAIRequestMessagePayload `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		if payload.Temperature != 0 {
+			t.Fatalf("expected temperature=0, got %v", payload.Temperature)
+		}
+		if payload.TopP != 0 {
+			t.Fatalf("expected top_p=0, got %v", payload.TopP)
+		}
+		if len(payload.Messages) != 2 {
+			t.Fatalf("expected 2 messages, got %d", len(payload.Messages))
+		}
+		if payload.Messages[0].Role != "system" {
+			t.Fatalf("expected first message role system, got %s", payload.Messages[0].Role)
+		}
+		var systemPrompt string
+		if err := json.Unmarshal(payload.Messages[0].Content, &systemPrompt); err != nil {
+			t.Fatalf("decode system prompt: %v", err)
+		}
+		if systemPrompt != "系统规则 Prompt" {
+			t.Fatalf("unexpected system prompt: %q", systemPrompt)
+		}
+		parts := decodeUserContentParts(t, payload.Messages)
+		if len(parts) != 1 {
+			t.Fatalf("expected one user content part, got %d", len(parts))
+		}
+		if parts[0].Type != "text" {
+			t.Fatalf("expected text content part, got %s", parts[0].Type)
+		}
+		if !strings.Contains(parts[0].Text, "题目：2+2=?") {
+			t.Fatalf("expected user prompt to include question, got %q", parts[0].Text)
+		}
+		if !strings.Contains(parts[0].Text, "A. 3") || !strings.Contains(parts[0].Text, "B. 4") {
+			t.Fatalf("expected user prompt to include options, got %q", parts[0].Text)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[\\\"B\\\"]}\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	client := &ChatGptClient{
+		Enable:      true,
+		APIKey:      "sk-test",
+		BaseURL:     server.URL + "/v1",
+		Model:       "gpt-4o-mini",
+		Prompt:      "系统规则 Prompt",
+		Temperature: 0.8,
+		TopP:        0.9,
+	}
+
+	answer, err := client.SearchAnswer(model.SearchRequest{Question: "2+2=?", Options: []string{"3", "4"}})
+	if err != nil {
+		t.Fatalf("search answer: %v", err)
+	}
+
+	if !reflect.DeepEqual(answer, [][]string{{"4"}}) {
+		t.Fatalf("unexpected answer: %v", answer)
+	}
+}
+
+func TestChatGptClientSearchAnswerAttachesDownloadedImagesToUserMessage(t *testing.T) {
+	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("png-image-bytes"))
+	}))
+	defer imageServer.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Messages []openAIRequestMessagePayload `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		parts := decodeUserContentParts(t, payload.Messages)
+		if len(parts) != 2 {
+			t.Fatalf("expected text plus one image part, got %d", len(parts))
+		}
+		if parts[0].Type != "text" {
+			t.Fatalf("expected first part to be text, got %s", parts[0].Type)
+		}
+		if !strings.Contains(parts[0].Text, "题目：识别图片") {
+			t.Fatalf("expected text part to include question, got %q", parts[0].Text)
+		}
+		if parts[1].Type != "image_url" || parts[1].ImageURL == nil {
+			t.Fatalf("expected second part to be image_url, got %+v", parts[1])
+		}
+		expectedURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("png-image-bytes"))
+		if parts[1].ImageURL.URL != expectedURL {
+			t.Fatalf("expected downloaded image data url %q, got %q", expectedURL, parts[1].ImageURL.URL)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[\\\"A\\\"]}\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	client := &ChatGptClient{
+		Enable:  true,
+		APIKey:  "sk-test",
+		BaseURL: server.URL + "/v1",
+		Model:   "gpt-4o-mini",
+	}
+
+	answer, err := client.SearchAnswer(model.SearchRequest{
+		Question: "识别图片 " + imageServer.URL + "/question.png",
+		Options:  []string{"A", "B"},
+	})
+	if err != nil {
+		t.Fatalf("search answer: %v", err)
+	}
+	if !reflect.DeepEqual(answer, [][]string{{"A"}}) {
+		t.Fatalf("unexpected answer: %v", answer)
+	}
+}
+
+func TestChatGptClientSearchAnswerContinuesWhenSomeImagesFailToDownload(t *testing.T) {
+	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/ok.png":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte("ok-image"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer imageServer.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Messages []openAIRequestMessagePayload `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		parts := decodeUserContentParts(t, payload.Messages)
+		if len(parts) != 2 {
+			t.Fatalf("expected one text part plus only the successfully downloaded image, got %d", len(parts))
+		}
+		if parts[1].ImageURL == nil {
+			t.Fatalf("expected successful image part, got %+v", parts[1])
+		}
+		unexpectedFailedURL := "data:text/plain;base64," + base64.StdEncoding.EncodeToString([]byte("404 page not found\n"))
+		if parts[1].ImageURL.URL == unexpectedFailedURL {
+			t.Fatalf("expected failed image to be skipped, got %q", parts[1].ImageURL.URL)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[\\\"B\\\"]}\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	client := &ChatGptClient{
+		Enable:  true,
+		APIKey:  "sk-test",
+		BaseURL: server.URL + "/v1",
+		Model:   "gpt-4o-mini",
+	}
+
+	answer, err := client.SearchAnswer(model.SearchRequest{
+		Question: strings.Join([]string{
+			"题目含成功图片", imageServer.URL + "/ok.png",
+			"以及失败图片", imageServer.URL + "/missing.png",
+		}, " "),
+		Options: []string{"A", "B"},
+	})
+	if err != nil {
+		t.Fatalf("search answer: %v", err)
+	}
+	if !reflect.DeepEqual(answer, [][]string{{"B"}}) {
+		t.Fatalf("unexpected answer: %v", answer)
+	}
+}
+
+func TestChatGptClientSearchAnswerAggregatesStreamContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected request path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-test" {
+			t.Fatalf("unexpected authorization header: %s", got)
+		}
+
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		if payload["model"] != "gpt-4o-mini" {
+			t.Fatalf("unexpected model payload: %v", payload["model"])
+		}
+		if payload["stream"] != true {
+			t.Fatalf("expected stream=true, got %v", payload["stream"])
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[\\\"第一段\\\"\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\",\\\"第二段\\\"]}\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	client := &ChatGptClient{
+		Enable:  true,
+		APIKey:  "sk-test",
+		BaseURL: server.URL + "/v1",
+		Model:   "gpt-4o-mini",
+	}
+
+	answer, err := client.SearchAnswer(model.SearchRequest{Question: "题目", Options: []string{"A", "B"}})
+	if err != nil {
+		t.Fatalf("search answer: %v", err)
+	}
+
+	expected := [][]string{{"第一段", "第二段"}}
+	if !reflect.DeepEqual(answer, expected) {
+		t.Fatalf("expected answer %v, got %v", expected, answer)
+	}
+}
+
+func TestChatGptClientSearchAnswerWithUsageCapturesStreamUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[\\\"B\\\"]}\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	client := &ChatGptClient{
+		Enable:  true,
+		APIKey:  "sk-test",
+		BaseURL: server.URL + "/v1",
+		Model:   "gpt-4o-mini",
+	}
+
+	answer, usage, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?", Options: []string{"3", "4"}})
+	if err != nil {
+		t.Fatalf("search answer with usage: %v", err)
+	}
+
+	expectedAnswer := [][]string{{"4"}}
+	if !reflect.DeepEqual(answer, expectedAnswer) {
+		t.Fatalf("expected answer %v, got %v", expectedAnswer, answer)
+	}
+	if usage.InputTokens != 11 || usage.OutputTokens != 7 || usage.TotalTokens != 18 {
+		t.Fatalf("unexpected usage: %+v", usage)
+	}
+}
+
+func TestChatGptClientSearchAnswerDebugReturnsRequestAndRawResponse(t *testing.T) {
+	var capturedRequestBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request body: %v", err)
+		}
+		capturedRequestBody = string(body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[\\\"hello\\\"]}\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	client := &ChatGptClient{
+		Enable:  true,
+		APIKey:  "sk-test",
+		BaseURL: server.URL + "/v1",
+		Model:   "gpt-4o-mini",
+		Prompt:  "调试 Prompt",
+	}
+
+	answer, debug, err := client.SearchAnswerDebug(model.SearchRequest{Question: "hello"})
+	if err != nil {
+		t.Fatalf("search answer debug: %v", err)
+	}
+
+	if !reflect.DeepEqual(answer, [][]string{{"hello"}}) {
+		t.Fatalf("unexpected debug answer: %v", answer)
+	}
+	if !strings.Contains(debug.RequestBody, "gpt-4o-mini") || !strings.Contains(debug.RequestBody, "hello") {
+		t.Fatalf("expected request body to include model and hello, got %s", debug.RequestBody)
+	}
+	if debug.RequestBody != capturedRequestBody {
+		t.Fatalf("expected debug request body to match sent payload, got %s vs %s", debug.RequestBody, capturedRequestBody)
+	}
+	if !strings.Contains(debug.RawResponse, "prompt_tokens") || !strings.Contains(debug.RawResponse, "[DONE]") {
+		t.Fatalf("expected raw response to keep stream body, got %s", debug.RawResponse)
+	}
+	if debug.Usage.TotalTokens != 4 {
+		t.Fatalf("expected usage total tokens 4, got %+v", debug.Usage)
+	}
+}
