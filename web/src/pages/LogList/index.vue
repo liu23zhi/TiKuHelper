@@ -59,20 +59,32 @@
         <template #username="{ record }">
           <span>{{ record.username || `用户 #${record.userId || '-'}` }}</span>
         </template>
-        <template #description="{ record }">
-          <div class="log-description-cell">
-            <div v-if="buildLogDetailSections(record).length" class="log-detail-sections">
-              <div
-                v-for="section in buildLogDetailSections(record)"
-                :key="`${record.id}-${section.key}`"
-                class="log-detail-section"
-              >
-                <div class="log-detail-label">{{ section.label }}</div>
-                <pre class="log-detail-content">{{ section.value }}</pre>
-              </div>
-            </div>
-            <div v-else class="log-description-text">{{ record.description || '-' }}</div>
-          </div>
+        <template #summary="{ record }">
+          <span>{{ buildStructuredFields(record).summary }}</span>
+        </template>
+        <template #requestId="{ record }">
+          <span>{{ buildStructuredFields(record).requestId }}</span>
+        </template>
+        <template #mode="{ record }">
+          <span>{{ buildStructuredFields(record).mode }}</span>
+        </template>
+        <template #requestSource="{ record }">
+          <span>{{ buildStructuredFields(record).requestSource }}</span>
+        </template>
+        <template #answerCount="{ record }">
+          <span>{{ buildStructuredFields(record).answerCount }}</span>
+        </template>
+        <template #hitProvider="{ record }">
+          <span>{{ buildStructuredFields(record).hitProvider }}</span>
+        </template>
+        <template #billingProvider="{ record }">
+          <span>{{ buildStructuredFields(record).billingProvider }}</span>
+        </template>
+        <template #requestSnapshot="{ record }">
+          <span class="log-snapshot-text">{{ buildStructuredFields(record).requestSnapshot }}</span>
+        </template>
+        <template #responseSnapshot="{ record }">
+          <span class="log-snapshot-text">{{ buildStructuredFields(record).responseSnapshot }}</span>
         </template>
         <template #clientIp="{ record }">
           <span>{{ record.clientIp || '-' }}</span>
@@ -95,9 +107,9 @@ import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser';
 import {
   buildLogActionColor,
   buildLogActionLabel,
-  buildLogDetailSections,
   buildLogModuleLabel,
   buildLogQidLabel,
+  buildLogStructuredFields,
 } from '@/utils/logListHelpers.mjs';
 const dataSource = ref([])
 const tabLoading = ref(true)
@@ -194,13 +206,85 @@ export default defineComponent({
           width: 140,
         },
         {
-          title: '说明 / 快照',
-          dataIndex: 'description',
-          key: 'description',
+          title: '说明',
+          dataIndex: 'summary',
+          key: 'summary',
           slots: {
-            customRender: 'description',
+            customRender: 'summary',
           },
-          width: 780,
+          width: 220,
+        },
+        {
+          title: '请求 ID',
+          dataIndex: 'requestId',
+          key: 'requestId',
+          slots: {
+            customRender: 'requestId',
+          },
+          width: 220,
+        },
+        {
+          title: '模式',
+          dataIndex: 'mode',
+          key: 'mode',
+          slots: {
+            customRender: 'mode',
+          },
+          width: 110,
+        },
+        {
+          title: '请求来源',
+          dataIndex: 'requestSource',
+          key: 'requestSource',
+          slots: {
+            customRender: 'requestSource',
+          },
+          width: 180,
+        },
+        {
+          title: '答案数',
+          dataIndex: 'answerCount',
+          key: 'answerCount',
+          slots: {
+            customRender: 'answerCount',
+          },
+          width: 100,
+        },
+        {
+          title: '命中渠道',
+          dataIndex: 'hitProvider',
+          key: 'hitProvider',
+          slots: {
+            customRender: 'hitProvider',
+          },
+          width: 140,
+        },
+        {
+          title: '计费渠道',
+          dataIndex: 'billingProvider',
+          key: 'billingProvider',
+          slots: {
+            customRender: 'billingProvider',
+          },
+          width: 140,
+        },
+        {
+          title: '原始请求',
+          dataIndex: 'requestSnapshot',
+          key: 'requestSnapshot',
+          slots: {
+            customRender: 'requestSnapshot',
+          },
+          width: 260,
+        },
+        {
+          title: '原始响应',
+          dataIndex: 'responseSnapshot',
+          key: 'responseSnapshot',
+          slots: {
+            customRender: 'responseSnapshot',
+          },
+          width: 260,
         },
       ],
     };
@@ -218,8 +302,8 @@ export default defineComponent({
     buildActionColor(value) {
       return buildLogActionColor(value)
     },
-    buildLogDetailSections(record) {
-      return buildLogDetailSections(record)
+    buildStructuredFields(record) {
+      return buildLogStructuredFields(record)
     },
     buildLogQidLabel(value) {
       return buildLogQidLabel(value)
@@ -299,42 +383,11 @@ export default defineComponent({
   margin-top: 4px;
 }
 
-.log-description-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.log-description-text {
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.log-detail-sections {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.log-detail-section {
-  padding: 12px;
-  border-radius: 12px;
-  background: #fafafa;
-  border: 1px solid #f0f0f0;
-}
-
-.log-detail-label {
-  margin-bottom: 8px;
-  font-size: 12px;
-  color: #8c8c8c;
-}
-
-.log-detail-content {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 12px;
-  line-height: 1.6;
-  font-family: Consolas, Monaco, 'Courier New', monospace;
+.log-snapshot-text {
+  display: inline-block;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 </style>

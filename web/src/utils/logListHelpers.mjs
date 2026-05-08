@@ -28,6 +28,25 @@ export function buildLogActionColor(value) {
   return 'default';
 }
 
+export function buildLogStructuredFields(record = {}) {
+  const description = String(record?.description || '').trim();
+  const request = String(record?.oldAnswer || '').trim();
+  const response = String(record?.newAnswer || '').trim();
+  const parsedDescription = parseSearchLogDescriptionMap(description);
+
+  return {
+    summary: parsedDescription.summary || description || '-',
+    requestId: parsedDescription.requestId || '-',
+    mode: parsedDescription.mode || '-',
+    requestSource: parsedDescription.use || '-',
+    answerCount: parsedDescription.answers || '-',
+    hitProvider: parsedDescription.hitProvider || '-',
+    billingProvider: parsedDescription.billingProvider || '-',
+    requestSnapshot: request || '-',
+    responseSnapshot: response || '-',
+  };
+}
+
 export function buildLogDetailSections(record = {}) {
   const sections = [];
   const description = String(record?.description || '').trim();
@@ -64,11 +83,7 @@ export function buildLogQidLabel(value) {
 }
 
 function parseSearchLogDescription(description) {
-  const text = String(description || '').trim();
-  if (!text.startsWith('搜索完成')) {
-    return [];
-  }
-
+  const fieldMap = parseSearchLogDescriptionMap(description);
   const fields = [
     ['requestId', '请求 ID'],
     ['mode', '模式'],
@@ -81,13 +96,29 @@ function parseSearchLogDescription(description) {
   ];
 
   return fields.map(([key, label]) => {
-    let value = extractDescriptionField(text, key) || '-';
+    let value = fieldMap[key] || '-';
     if (key === 'anonymous') {
       if (value === 'true') value = '是';
       if (value === 'false') value = '否';
     }
     return { key, label, value };
   }).filter((section) => section.value !== '-' || section.key === 'use');
+}
+
+function parseSearchLogDescriptionMap(description) {
+  const text = String(description || '').trim();
+  if (!text.startsWith('搜索完成')) {
+    return {};
+  }
+
+  const fields = ['requestId', 'mode', 'use', 'answers', 'hitProvider', 'billingProvider', 'localQuestionId', 'anonymous'];
+  return fields.reduce((acc, key) => {
+    const value = extractDescriptionField(text, key);
+    if (value) {
+      acc[key] = value;
+    }
+    return acc;
+  }, { summary: '搜索完成' });
 }
 
 function extractDescriptionField(description, key) {

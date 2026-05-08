@@ -7,6 +7,7 @@ import {
   buildLogDetailSections,
   buildLogModuleLabel,
   buildLogQidLabel,
+  buildLogStructuredFields,
 } from './logListHelpers.mjs';
 
 test('buildLogModuleLabel supports search module wording', () => {
@@ -143,12 +144,39 @@ test('buildLogDetailSections keeps non-search descriptions as plain text snapsho
   ]);
 });
 
-test('buildLogQidLabel shows local question wording', () => {
-  assert.equal(buildLogQidLabel(7), '7');
-  assert.equal(buildLogQidLabel(0), '-');
-  assert.equal(buildLogQidLabel(null), '-');
+test('buildLogStructuredFields splits search description and snapshots into single-line columns', () => {
+  assert.deepEqual(buildLogStructuredFields({
+    description: '搜索完成 requestId=952e69ad-71aa-419b-8ccc-9599574d81ff mode=normal use= answers=4 hitProvider=icodef billingProvider=icodef localQuestionId=321 anonymous=true',
+    oldAnswer: 'method=POST body={"question":"测试"}',
+    newAnswer: '{"answer":["A"]}',
+  }), {
+    summary: '搜索完成',
+    requestId: '952e69ad-71aa-419b-8ccc-9599574d81ff',
+    mode: 'normal',
+    requestSource: '-',
+    answerCount: '4',
+    hitProvider: 'icodef',
+    billingProvider: 'icodef',
+    requestSnapshot: 'method=POST body={"question":"测试"}',
+    responseSnapshot: '{"answer":["A"]}',
+  });
 });
 
-test('buildLogDetailSections omits empty request and response blocks', () => {
-  assert.deepEqual(buildLogDetailSections({ oldAnswer: '   ', newAnswer: '' }), []);
+test('buildLogStructuredFields keeps non-search logs on summary and snapshot columns', () => {
+  assert.deepEqual(buildLogStructuredFields({
+    description: '用户登录成功',
+    oldAnswer: 'before',
+    newAnswer: 'after',
+  }), {
+    summary: '用户登录成功',
+    requestId: '-',
+    mode: '-',
+    requestSource: '-',
+    answerCount: '-',
+    hitProvider: '-',
+    billingProvider: '-',
+    requestSnapshot: 'before',
+    responseSnapshot: 'after',
+  });
 });
+
