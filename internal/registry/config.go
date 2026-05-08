@@ -9,6 +9,7 @@ import (
 )
 
 var defaultConfig = []byte(`
+jwtSecret: tiku-adapter-dev-secret
 limit:
   enable: false # 是否开启
   duration: 3  # 时间窗口为3秒

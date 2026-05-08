@@ -5,7 +5,7 @@ COPY ./web .
 RUN npm install && npm run build
 
 
-FROM golang:1.21 AS builder2
+FROM golang:1.24 AS builder2
 ENV GO111MODULE=on \
     CGO_ENABLED=0 \
     GOOS=linux

@@ -1,39 +1,111 @@
 <template>
-  <a-card style="width: 100%">
-    <a-table
-      bordered
-      :data-source="dataSource"
-      :columns="columns"
-      :loading="tabLoading"
-      :pagination="pagination"
-      @change="handleTableChange"
-    >
-      <template #createTime="{ text }">
-        {{ formatDate(text) }}
-      </template>
-      <template #action="{ record }">
-        <a-tag v-if="record.action == 0" color="green">
-          新增
-        </a-tag>
-        <a-tag v-else-if="record.action == 1" color="blue">
-          更新
-        </a-tag>
-        <a-tag v-else-if="record.action == 2" color="red">
-          删除
-        </a-tag>
-        <a-tag v-else-if="record.action == 3" color="green">
-          查询
-        </a-tag>
-      </template>
-    </a-table>
-  </a-card>
+  <div class="log-page">
+    <a-card :bordered="false" class="filter-card">
+      <a-form layout="inline" class="filter-form">
+        <a-form-item label="模块">
+          <a-select
+            v-model:value="filters.module"
+            allow-clear
+            placeholder="全部模块"
+            style="width: 180px"
+            :options="moduleOptions"
+            @change="onFilterChange"
+          />
+        </a-form-item>
+        <a-form-item label="操作类型">
+          <a-select
+            v-model:value="filters.action"
+            allow-clear
+            placeholder="全部操作"
+            style="width: 180px"
+            :options="actionOptions"
+            @change="onFilterChange"
+          />
+        </a-form-item>
+        <a-form-item>
+          <a-space>
+            <a-button type="primary" @click="handleLogList">刷新</a-button>
+            <a-button @click="resetFilters">重置筛选</a-button>
+          </a-space>
+        </a-form-item>
+      </a-form>
+      <a-alert
+        type="info"
+        show-icon
+        class="page-alert"
+        :message="isAdmin ? '当前显示全站审计日志，可按模块与操作类型筛选。搜题日志会拆分展示请求来源、请求 ID、命中渠道、计费渠道以及原始请求 / 响应快照。' : '当前仅显示你自己的操作日志，可按模块与操作类型筛选。搜题日志会拆分展示请求来源、请求 ID、命中渠道、计费渠道以及原始请求 / 响应快照。'"
+      />
+    </a-card>
+
+    <a-card :bordered="false" class="table-card">
+      <a-table
+        bordered
+        :data-source="dataSource"
+        :columns="columns"
+        :loading="tabLoading"
+        :pagination="pagination"
+        row-key="id"
+        :scroll="{ x: 1560 }"
+        @change="handleTableChange"
+      >
+        <template #module="{ record }">
+          <a-tag color="blue">{{ buildModuleLabel(record.module) }}</a-tag>
+        </template>
+        <template #action="{ record }">
+          <a-tag :color="buildActionColor(record.action)">
+            {{ buildActionLabel(record.action, record.module) }}
+          </a-tag>
+        </template>
+        <template #username="{ record }">
+          <span>{{ record.username || `用户 #${record.userId || '-'}` }}</span>
+        </template>
+        <template #description="{ record }">
+          <div class="log-description-cell">
+            <div v-if="buildLogDetailSections(record).length" class="log-detail-sections">
+              <div
+                v-for="section in buildLogDetailSections(record)"
+                :key="`${record.id}-${section.key}`"
+                class="log-detail-section"
+              >
+                <div class="log-detail-label">{{ section.label }}</div>
+                <pre class="log-detail-content">{{ section.value }}</pre>
+              </div>
+            </div>
+            <div v-else class="log-description-text">{{ record.description || '-' }}</div>
+          </div>
+        </template>
+        <template #clientIp="{ record }">
+          <span>{{ record.clientIp || '-' }}</span>
+        </template>
+        <template #qid="{ record }">
+          <span>{{ buildLogQidLabel(record.qid) }}</span>
+        </template>
+        <template #createTime="{ text, record }">
+          {{ formatDate(text || record.createTime) }}
+        </template>
+      </a-table>
+    </a-card>
+  </div>
 </template>
 
 <script>
 import { getLogList } from '@/api/TikuComponentApi';
 import { defineComponent, ref, reactive } from 'vue';
+import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser';
+import {
+  buildLogActionColor,
+  buildLogActionLabel,
+  buildLogDetailSections,
+  buildLogModuleLabel,
+  buildLogQidLabel,
+} from '@/utils/logListHelpers.mjs';
 const dataSource = ref([])
 const tabLoading = ref(true)
+const currentUser = ref(getStoredCurrentUser())
+const filters = reactive({
+  module: undefined,
+  action: undefined,
+})
 const pagination = reactive({
   current: 1,
   pageSize: 10,
@@ -45,40 +117,45 @@ const pagination = reactive({
 })
 
 export default defineComponent({
-  name: 'UserList',
+  name: 'LogList',
   setup() {
     return {
       dataSource,
       tabLoading,
       pagination,
+      filters,
+      isAdmin: isAdminUser(currentUser.value),
+      moduleOptions: [
+        { label: '认证', value: 'auth' },
+        { label: '题目', value: 'question' },
+        { label: '搜题', value: 'search' },
+        { label: '系统', value: 'system' },
+      ],
+      actionOptions: [
+        { label: '新增', value: 0 },
+        { label: '更新', value: 1 },
+        { label: '删除', value: 2 },
+        { label: '查询 / 搜题', value: 3 },
+        { label: '登录', value: 10 },
+      ],
       columns: [
         {
-          title: 'qid',
-          dataIndex: 'qid',
-          key: 'qid',
-        },
-        {
-          title: '修改时间',
-          dataIndex: 'create_time',
-          key: 'create_time',
+          title: '时间',
+          dataIndex: 'createTime',
+          key: 'createTime',
           slots: {
             customRender: 'createTime',
           },
+          width: 180,
         },
         {
-          title: '改前答案',
-          dataIndex: 'old_answer',
-          key: 'old_answer',
-        },
-        {
-          title: '新答案',
-          dataIndex: 'new_answer',
-          key: 'new_answer',
-        },
-        {
-          title: '修改人',
-          dataIndex: 'user_id',
-          key: 'user_id',
+          title: '模块',
+          dataIndex: 'module',
+          key: 'module',
+          slots: {
+            customRender: 'module',
+          },
+          width: 120,
         },
         {
           title: '操作',
@@ -87,6 +164,43 @@ export default defineComponent({
           slots: {
             customRender: 'action',
           },
+          width: 120,
+        },
+        {
+          title: '用户',
+          dataIndex: 'username',
+          key: 'username',
+          slots: {
+            customRender: 'username',
+          },
+          width: 160,
+        },
+        {
+          title: '来源 IP',
+          dataIndex: 'clientIp',
+          key: 'clientIp',
+          slots: {
+            customRender: 'clientIp',
+          },
+          width: 160,
+        },
+        {
+          title: '本地题库 ID',
+          dataIndex: 'qid',
+          key: 'qid',
+          slots: {
+            customRender: 'qid',
+          },
+          width: 140,
+        },
+        {
+          title: '说明 / 快照',
+          dataIndex: 'description',
+          key: 'description',
+          slots: {
+            customRender: 'description',
+          },
+          width: 780,
         },
       ],
     };
@@ -95,20 +209,48 @@ export default defineComponent({
     this.handleLogList()
   },
   methods: {
+    buildModuleLabel(value) {
+      return buildLogModuleLabel(value)
+    },
+    buildActionLabel(value, module) {
+      return buildLogActionLabel(value, module)
+    },
+    buildActionColor(value) {
+      return buildLogActionColor(value)
+    },
+    buildLogDetailSections(record) {
+      return buildLogDetailSections(record)
+    },
+    buildLogQidLabel(value) {
+      return buildLogQidLabel(value)
+    },
     handleLogList() {
       tabLoading.value = true
       getLogList({
         page: pagination.current,
-        pageSize: pagination.pageSize
+        pageSize: pagination.pageSize,
+        module: filters.module || undefined,
+        action: filters.action === undefined ? undefined : filters.action,
       }).then(res => {
         if (res?.status == 200) {
           dataSource.value = res?.data?.data || []
           pagination.total = res?.data?.total || 0
           pagination.current = res?.data?.page || 1
           pagination.pageSize = res?.data?.pageSize || 10
-          tabLoading.value = false
         }
+      }).finally(() => {
+        tabLoading.value = false
       })
+    },
+    onFilterChange() {
+      pagination.current = 1
+      this.handleLogList()
+    },
+    resetFilters() {
+      filters.module = undefined
+      filters.action = undefined
+      pagination.current = 1
+      this.handleLogList()
     },
     handleTableChange(paginationData) {
       pagination.current = paginationData.current
@@ -134,4 +276,65 @@ export default defineComponent({
 
 </script>
 
-<style scoped></style>
+<style scoped>
+.log-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.filter-card,
+.table-card {
+  border-radius: 20px;
+}
+
+.filter-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 0;
+  margin-bottom: 12px;
+}
+
+.page-alert {
+  margin-top: 4px;
+}
+
+.log-description-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.log-description-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-detail-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.log-detail-section {
+  padding: 12px;
+  border-radius: 12px;
+  background: #fafafa;
+  border: 1px solid #f0f0f0;
+}
+
+.log-detail-label {
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: #8c8c8c;
+}
+
+.log-detail-content {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.6;
+  font-family: Consolas, Monaco, 'Courier New', monospace;
+}
+</style>

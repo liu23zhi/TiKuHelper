@@ -6,3 +6,4 @@
 /web/dist
 /web/.gitignore
 /cmd/adapter-service/dist/
+/run/data

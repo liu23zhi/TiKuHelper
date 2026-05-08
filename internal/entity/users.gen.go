@@ -4,16 +4,25 @@
 
 package entity
 
+import "time"
+
 const TableNameUser = "users"
 
 // User mapped from table <users>
 type User struct {
-	ID       int32  `gorm:"primaryKey;autoIncrement" json:"id"`
-	Username string `gorm:"column:username;type:varchar(255)" json:"username"`
-	Password string `gorm:"column:password;type:varchar(255)" json:"password"`
-	Perms    string `gorm:"column:perms;type:varchar(255)" json:"perms"`
-	ParentID int32  `gorm:"column:parent_id;type:int(11)" json:"parent_id"`
-	Nickname string `gorm:"column:nickname;type:varchar(255)" json:"nickname"`
+	ID             int32      `gorm:"primaryKey;autoIncrement" json:"id"`
+	Username       string     `gorm:"column:username;type:varchar(255)" json:"username"`
+	Password       string     `gorm:"column:password;type:varchar(255)" json:"password"`
+	Perms          string     `gorm:"column:perms;type:varchar(255)" json:"perms"`
+	ParentID       int32      `gorm:"column:parent_id;type:int(11)" json:"parent_id"`
+	Nickname       string     `gorm:"column:nickname;type:varchar(255)" json:"nickname"`
+	Role           string     `gorm:"column:role;type:varchar(32);not null;default:user" json:"role"`
+	Status         string     `gorm:"column:status;type:varchar(32);not null;default:enabled" json:"status"`
+	Balance        float64    `gorm:"column:balance;type:decimal(18,2);not null;default:0" json:"balance"`
+	RegisterSource string     `gorm:"column:register_source;type:varchar(32);not null;default:legacy" json:"registerSource"`
+	CreatedAt      time.Time  `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
+	LastLoginAt    *time.Time `gorm:"column:last_login_at" json:"lastLoginAt"`
+	LastLoginIP    string     `gorm:"column:last_login_ip;type:varchar(64)" json:"lastLoginIp"`
 }
 
 // TableName User's table name

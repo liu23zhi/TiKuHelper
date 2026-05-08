@@ -9,6 +9,7 @@ import (
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -32,6 +33,109 @@ type SearchValue struct {
 
 	Type int32 `json:"type" form:"type"`
 	Plat int32 `json:"plat" form:"plat"`
+}
+
+func normalizeQuestionSourceName(sourceName string) string {
+	trimmed := strings.TrimSpace(sourceName)
+	if trimmed == "" {
+		return "人工导入"
+	}
+	return trimmed
+}
+
+type importQuestionsRequest struct {
+	DryRun    bool           `json:"dryRun"`
+	Overwrite bool           `json:"overwrite"`
+	Items     []*entity.Tiku `json:"items"`
+}
+
+type importQuestionsResponse struct {
+	ExistingIDs []int32 `json:"existingIds"`
+	Created     int     `json:"created"`
+	Updated     int     `json:"updated"`
+	Skipped     int     `json:"skipped"`
+}
+
+func importQuestionsWithOverwrite(items []*entity.Tiku, overwrite bool, dryRun bool) (importQuestionsResponse, error) {
+	result := importQuestionsResponse{
+		ExistingIDs: make([]int32, 0),
+	}
+
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+
+		item.SourceName = normalizeQuestionSourceName(item.SourceName)
+		middleware.FillHash(item)
+
+		existing := false
+		if item.ID > 0 {
+			count, err := dao.Tiku.Where(dao.Tiku.ID.Eq(item.ID)).Count()
+			if err != nil {
+				return result, err
+			}
+			if count > 0 {
+				existing = true
+				result.ExistingIDs = append(result.ExistingIDs, item.ID)
+			}
+		}
+
+		if dryRun {
+			continue
+		}
+
+		if existing {
+			if !overwrite {
+				result.Skipped++
+				continue
+			}
+
+			if err := dao.Tiku.UnderlyingDB().Model(&entity.Tiku{}).Where("id = ?", item.ID).Updates(map[string]interface{}{
+				"question":    item.Question,
+				"type":        item.Type,
+				"options":     item.Options,
+				"answer":      item.Answer,
+				"plat":        item.Plat,
+				"hash":        item.Hash,
+				"course_name": item.CourseName,
+				"extra":       item.Extra,
+				"source_name": item.SourceName,
+			}).Error; err != nil {
+				return result, err
+			}
+			result.Updated++
+			continue
+		}
+
+		if err := dao.Tiku.Create(item); err != nil {
+			return result, err
+		}
+		result.Created++
+	}
+
+	return result, nil
+}
+
+// ImportQuestions 通过 JSON 导入题库
+func ImportQuestions(c *gin.Context) {
+	var req importQuestionsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "参数错误",
+		})
+		return
+	}
+
+	result, err := importQuestionsWithOverwrite(req.Items, req.Overwrite, req.DryRun)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"message": "服务器错误",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
 }
 
 // GetQuestions 获取题库
@@ -74,6 +178,14 @@ func GetQuestions(c *gin.Context) {
 
 	if searchValue.CourseName != "" {
 		tx.Where(dao.Tiku.CourseName.Eq(searchValue.CourseName))
+	}
+
+	if searchValue.Source != 0 {
+		if searchValue.Source == 1 {
+			tx.Where(dao.Tiku.SourceName.Eq("人工导入"))
+		} else if searchValue.Source == 2 {
+			tx.Where(dao.Tiku.SourceName.Neq("人工导入"))
+		}
 	}
 
 	if searchValue.Plat != -1 {
@@ -192,6 +304,7 @@ func CreateQuestion(c *gin.Context) {
 	var count = 0
 	for _, tiku := range tikus {
 		t := tiku
+		t.SourceName = normalizeQuestionSourceName(t.SourceName)
 		middleware.FillHash(t)
 		err := dao.Tiku.Create(t)
 		if err == nil {

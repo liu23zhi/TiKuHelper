@@ -11,6 +11,18 @@ export default {
 </script>
 
 <style>
+html,
+body {
+  min-height: 100%;
+}
+
+body.swal2-shown,
+body.swal2-height-auto {
+  height: auto !important;
+  padding-right: 0 !important;
+  overflow-y: auto !important;
+}
+
 #app {
   font-family: Avenir, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;

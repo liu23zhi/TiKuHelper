@@ -17,6 +17,7 @@ type Tiku struct {
 	Hash       string `gorm:"column:hash;type:char(32);not null;uniqueIndex:hash_course_idx,priority:1;comment:整个实体的hash,防止重复" json:"hash"` // 整个实体的hash,防止重复
 	CourseName string `gorm:"column:course_name;type:varchar(255);uniqueIndex:hash_course_idx,priority:2;comment:课程名称" json:"course_name"`  // 课程名称
 	Extra      string `gorm:"column:extra;type:text;comment:扩展字段,多用于tag" json:"extra"`                                                      // 扩展字段,多用于tag
+	SourceName string `gorm:"column:source_name;type:varchar(255);comment:数据来源" json:"source_name"`
 }
 
 // TableName Tiku's table name

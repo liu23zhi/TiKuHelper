@@ -1,6 +1,8 @@
 import axios from 'axios';
 import { getCookies, removeCookies } from './cookies'
+import { clearStoredCurrentUser } from './currentUser'
 import { message } from 'ant-design-vue';
+import { buildAuthFailureHandling, buildResponsePayload } from './requestHelpers.mjs'
 
 // 创建axios实例
 const service = axios.create({
@@ -30,21 +32,21 @@ const responseInterceptor = (response) => {
     case 200:
       break;
     case 401:
-    case 403:
-      // 清除 token 并跳转到登录页
-      removeCookies('token')
-      message.error('当前登陆过期，请重新登陆。')
-      window.location.href = '/login'
+    case 403: {
+      const handling = buildAuthFailureHandling(response)
+      message.error(handling.userMessage)
+      if (handling.shouldLogout) {
+        removeCookies('token')
+        clearStoredCurrentUser()
+        window.location.href = '/login'
+      }
       break;
+    }
     default:
       console.log(response.data.message); // 将 msg 展示给用户
       break;
   }
-  return {
-    data: response.data,
-    status: response.status,
-    message: response.data.message
-  };
+  return buildResponsePayload(response);
 };
 const errorInterceptor = (error) => {
   // 给出网络错误提示或者各种请求失败的

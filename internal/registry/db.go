@@ -32,6 +32,22 @@ func CloseDB() error {
 	return nil
 }
 
+func ensureAccountDomainDefaults(db *gorm.DB) {
+	updates := []string{
+		"UPDATE users SET role = 'admin' WHERE id = 1 AND (role IS NULL OR role = '')",
+		"UPDATE users SET role = 'user' WHERE id <> 1 AND (role IS NULL OR role = '')",
+		"UPDATE users SET status = 'enabled' WHERE status IS NULL OR status = ''",
+		"UPDATE users SET register_source = 'system' WHERE id = 1 AND (register_source IS NULL OR register_source = '')",
+		"UPDATE users SET register_source = 'legacy' WHERE id <> 1 AND (register_source IS NULL OR register_source = '')",
+		"UPDATE users SET balance = 0 WHERE balance IS NULL",
+	}
+	for _, statement := range updates {
+		if err := db.Exec(statement).Error; err != nil {
+			logger.FatalLog(fmt.Errorf("initialize account-domain defaults fail: %w", err))
+		}
+	}
+}
+
 // RegisterDB 注册数据库
 func RegisterDB(config configs.Config) *gorm.DB {
 	once.Do(func() {
@@ -82,13 +98,43 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
 	}
 
+	err = db.AutoMigrate(&entity.SearchAccountConfig{})
+	if err != nil {
+		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
+	}
+
+	err = db.AutoMigrate(&entity.AISearchConfig{})
+	if err != nil {
+		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
+	}
+
+	err = db.AutoMigrate(
+		&entity.AccessToken{},
+		&entity.SystemSetting{},
+		&entity.PriceRule{},
+		&entity.PaymentMethod{},
+		&entity.RechargeOrder{},
+		&entity.BillingRecord{},
+		&entity.AIModelArchitecture{},
+	)
+	if err != nil {
+		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
+	}
+
+	ensureAccountDomainDefaults(db)
+
 	// 首先需要注册一个默认用户
 	user := entity.User{
-		ID:       1,
-		Username: "admin",
-		Password: "123456",
-		Nickname: "管理员",
+		ID:             1,
+		Username:       "admin",
+		Password:       "123456",
+		Nickname:       "管理员",
+		Role:           "admin",
+		Status:         "enabled",
+		Balance:        0,
+		RegisterSource: "system",
 	}
 	_ = dao.User.Create(&user)
+	ensureAccountDomainDefaults(db)
 	return db
 }

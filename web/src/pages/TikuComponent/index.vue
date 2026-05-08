@@ -51,9 +51,21 @@
       <div style="padding-top: 24px; text-align: center;">
         <a-card :bordered="false" style="width: 100%; text-align: start;" :bodyStyle="style">
           <template #extra>
+            <a-button type="primary" @click="triggerJsonImport" style="margin-right: 12px;">
+              JSON 导入
+            </a-button>
             <a-button type="primary" @click="navigateToImport" style="margin-right: 12px;">
               <DownloadOutlined/>
               智能导入
+            </a-button>
+            <a-button @click="handleExportSelected" style="margin-right: 12px;">
+              导出选中
+            </a-button>
+            <a-button @click="openBulkCourseModal" style="margin-right: 12px;">
+              批量编辑课程名
+            </a-button>
+            <a-button danger @click="handleDeleteSelected" style="margin-right: 12px;">
+              批量删除
             </a-button>
             <a-button type="primary" @click="showModal({
               type: 0,
@@ -66,23 +78,27 @@
             </a-button>
           </template>
           <a-table :columns="columns" :data-source="data" :pagination="false" :row-key="record => record.id"
-                   :loading="tabLoading" :scroll="{ x: '2000px' }">
+                   :loading="tabLoading" :scroll="{ x: 'max-content' }" :row-selection="rowSelection">
             <template #type="{ record }">
               <a-tag :color="record.type === 0 ? 'green' : record.type === 1 ? 'cyan' : 'orange'">
                 {{ quesType[record.type] }}
               </a-tag>
             </template>
+            <template #question="{ record }">
+              <div class="multiline-cell">{{ record.question || '-' }}</div>
+            </template>
             <template #answer="{ record }">
-              <div>
+              <div class="multiline-cell answer-cell">
                 <a-tag v-for="(value, index) in (record.answer ? JSON.parse(record.answer) : [])" color="blue"
                        :key="index">{{ record.source === 2 ? index : value }}
                 </a-tag>
               </div>
             </template>
 
-            <template #plat="{ record }">
+
+            <template #sourceName="{ record }">
               <span>
-                {{getPlatStr(record.plat)}}
+                {{ getSourceNameText(record.source_name) }}
               </span>
             </template>
 
@@ -101,6 +117,36 @@
         </a-card>
 
       </div>
+      <a-modal
+        :visible="bulkCourseVisible"
+        title="批量编辑课程名称"
+        ok-text="保存"
+        cancel-text="取消"
+        @ok="handleBulkCourseSubmit"
+        @cancel="closeBulkCourseModal"
+      >
+        <a-form>
+          <a-form-item label="已选题目">
+            <span>{{ selectedRowKeys.length }} 条</span>
+          </a-form-item>
+          <a-form-item label="课程名称">
+            <a-auto-complete
+              v-model:value="bulkCourseName"
+              :options="bulkCourseCandidates"
+              placeholder="请输入新的课程名称"
+              style="width: 100%"
+            />
+            <div class="bulk-course-hint">支持自由输入；若已存在相近课程名，会在下方显示候选项供快速填充。</div>
+          </a-form-item>
+        </a-form>
+      </a-modal>
+      <input
+        ref="jsonImportInput"
+        type="file"
+        accept="application/json,.json"
+        style="display: none"
+        @change="handleJsonImportChange"
+      />
       <a-modal :visible="visible" title="详情内容" @ok="confirm" @cancel="visible = false" v-if="visible">
         <a-form :model="formData">
           <a-form-item label="类型">
@@ -150,8 +196,9 @@
 </template>
 
 <script>
-import {defineComponent, ref} from 'vue';
+import {computed, defineComponent, ref} from 'vue';
 import {useRouter} from 'vue-router';
+import Swal from 'sweetalert2'
 import {
   getPlat,
   getCourses,
@@ -159,6 +206,7 @@ import {
   updateQuestions,
   delQuestions,
   createQuestions,
+  importQuestions,
 } from '@/api/TikuComponentApi'
 import {
   FormOutlined,
@@ -170,6 +218,17 @@ import OptionBox from '../../components/OptionBox/index.vue'
 import AnswerBox from '../../components/AnswerBox/index.vue'
 import {questionType} from "@/utils/uitls";
 import {message} from "ant-design-vue";
+import {
+  buildQuestionBulkActionIds,
+  buildQuestionBulkCourseUpdatePayload,
+  buildQuestionCourseNameCandidates,
+  buildQuestionExportPayload,
+  buildQuestionImportDryRunPayload,
+  buildQuestionImportExecutePayload,
+  buildQuestionImportSummary,
+  buildQuestionSourceLabel,
+  parseQuestionImportText,
+} from '@/utils/topicOverviewHelpers.mjs';
 
 const style = {
   padding: "0 0 24px"
@@ -201,25 +260,29 @@ const columns = [
   },
   {
     title: '问题',
-    width: 700,
+    width: 520,
     dataIndex: 'question',
     key: 'question',
+    slots: {
+      customRender: 'question',
+    },
   },
   {
     title: '答案',
     dataIndex: 'answer',
     key: 'answer',
+    width: 340,
     slots: {
       customRender: 'answer',
     },
   },
   {
-    title: '平台',
-    dataIndex: 'plat',
-    key: 'plat',
-    width: 100,
+    title: '数据来源',
+    dataIndex: 'source_name',
+    key: 'source_name',
+    width: 160,
     slots: {
-      customRender: 'plat',
+      customRender: 'sourceName',
     },
   },
   {
@@ -257,6 +320,10 @@ const visible = ref(false)
 const action = ref(2) // 1是编辑 2是添加
 const searchValue = ref({})
 const quesType = ref(questionType)
+const selectedRowKeys = ref([])
+const jsonImportInput = ref(null)
+const bulkCourseVisible = ref(false)
+const bulkCourseName = ref('')
 export default defineComponent({
   name: 'TikuComponent',
   setup() {
@@ -264,6 +331,20 @@ export default defineComponent({
     const navigateToImport = () => {
       router.push('/adapter/import');
     };
+    const selectedQuestions = computed(() => {
+      const selectedIds = buildQuestionBulkActionIds(selectedRowKeys.value)
+      if (!selectedIds.length) {
+        return []
+      }
+      return (data.value || []).filter(item => selectedIds.includes(Number(item?.id || 0)))
+    })
+    const bulkCourseCandidates = computed(() => buildQuestionCourseNameCandidates(bulkCourseName.value, courses.value))
+    const rowSelection = computed(() => ({
+      selectedRowKeys: selectedRowKeys.value,
+      onChange: (keys) => {
+        selectedRowKeys.value = buildQuestionBulkActionIds(keys)
+      },
+    }))
     return {
       tabLoading,
       typeList,
@@ -281,10 +362,17 @@ export default defineComponent({
       formData,
       style,
       searchValue,
+      selectedRowKeys,
+      selectedQuestions,
+      rowSelection,
+      bulkCourseVisible,
+      bulkCourseName,
+      bulkCourseCandidates,
+      jsonImportInput,
       labelCol: {span: 8},
       wrapperCol: {span: 14},
       navigateToImport,
-      fileList
+      fileList,
     }
   },
   components: {
@@ -396,6 +484,7 @@ export default defineComponent({
         data.value = res?.data?.items
         tabLoading.value = false
         this.page.total = res?.data?.total
+        selectedRowKeys.value = []
       })
 
     },
@@ -436,6 +525,164 @@ export default defineComponent({
         res.status == 200 ? message.success(`删除成功`) : message.error(`删除失败`)
       })
       visible.value = false
+      selectedRowKeys.value = selectedRowKeys.value.filter(item => Number(item) !== Number(id))
+      await this.fetchData()
+    },
+
+    getSourceNameText(sourceName) {
+      return buildQuestionSourceLabel(sourceName)
+    },
+
+    triggerJsonImport() {
+      const input = this.$refs.jsonImportInput
+      if (input) {
+        input.click()
+      }
+    },
+
+    async handleJsonImportChange(event) {
+      const input = event?.target
+      const file = input?.files?.[0]
+      if (!file) {
+        return
+      }
+
+      try {
+        const content = await file.text()
+        const items = parseQuestionImportText(content)
+        if (!items.length) {
+          message.warning('JSON 文件中没有可导入的题目')
+          return
+        }
+
+        const dryRunResponse = await importQuestions(buildQuestionImportDryRunPayload(items))
+        if (dryRunResponse?.status !== 200) {
+          message.error(dryRunResponse?.message || '导入预检失败')
+          return
+        }
+
+        const dryRunResult = dryRunResponse?.data || {}
+        let overwrite = false
+
+        if (Array.isArray(dryRunResult.existingIds) && dryRunResult.existingIds.length) {
+          const confirmResult = await Swal.fire({
+            icon: 'warning',
+            title: '检测到重复题目',
+            text: buildQuestionImportSummary(dryRunResult),
+            showDenyButton: true,
+            showCancelButton: true,
+            confirmButtonText: '是，直接覆盖',
+            denyButtonText: '否，只导入不存在的数据',
+            cancelButtonText: '取消',
+            heightAuto: false,
+            scrollbarPadding: false,
+          })
+
+          if (confirmResult.isDismissed) {
+            return
+          }
+          overwrite = Boolean(confirmResult.isConfirmed)
+        }
+
+        const executeResponse = await importQuestions(buildQuestionImportExecutePayload(items, overwrite))
+        if (executeResponse?.status !== 200) {
+          message.error(executeResponse?.message || '导入失败')
+          return
+        }
+
+        const executeResult = executeResponse?.data || {}
+        const summary = `导入完成：新增 ${Number(executeResult.created || 0)} 条，覆盖 ${Number(executeResult.updated || 0)} 条，跳过 ${Number(executeResult.skipped || 0)} 条。`
+        await Swal.fire({
+          icon: 'success',
+          title: 'JSON 导入成功',
+          text: summary,
+          confirmButtonText: '我知道了',
+          heightAuto: false,
+          scrollbarPadding: false,
+        })
+        await this.fetchData()
+      } catch (error) {
+        message.error(error?.message || 'JSON 导入失败')
+      } finally {
+        if (input) {
+          input.value = ''
+        }
+      }
+    },
+
+    openBulkCourseModal() {
+      if (!this.selectedRowKeys.length) {
+        message.warning('请先选择需要批量修改的题目')
+        return
+      }
+      this.bulkCourseName = ''
+      this.bulkCourseVisible = true
+    },
+
+    closeBulkCourseModal() {
+      this.bulkCourseVisible = false
+      this.bulkCourseName = ''
+    },
+
+    async handleBulkCourseSubmit() {
+      let payload
+      try {
+        payload = buildQuestionBulkCourseUpdatePayload(this.selectedRowKeys, this.bulkCourseName)
+      } catch (error) {
+        message.warning(error?.message || '请输入课程名称')
+        return
+      }
+
+      for (const item of this.selectedQuestions) {
+        const response = await updateQuestions({
+          ...item,
+          course_name: payload.courseName,
+        })
+        if (response?.status !== 200) {
+          message.error(`题目 ${item.id} 更新课程名称失败`)
+          return
+        }
+      }
+
+      message.success(`成功更新 ${payload.ids.length} 条题目的课程名称`)
+      this.closeBulkCourseModal()
+      await this.fetchData()
+    },
+
+    handleExportSelected() {
+      const rows = this.selectedQuestions
+      if (!rows.length) {
+        message.warning('请先选择需要导出的题目')
+        return
+      }
+      const payload = buildQuestionExportPayload(rows)
+      const blob = new Blob([payload.content], { type: 'application/json;charset=utf-8' })
+      const objectUrl = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = objectUrl
+      link.download = payload.filename
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.URL.revokeObjectURL(objectUrl)
+      message.success(`已导出 ${rows.length} 条题目`)
+    },
+
+    async handleDeleteSelected() {
+      const ids = buildQuestionBulkActionIds(this.selectedRowKeys)
+      if (!ids.length) {
+        message.warning('请先选择需要删除的题目')
+        return
+      }
+      for (const id of ids) {
+        const res = await delQuestions({ id })
+        if (res?.status !== 200) {
+          message.error(`题目 ${id} 删除失败`)
+          return
+        }
+      }
+      message.success(`成功删除 ${ids.length} 条题目`)
+      selectedRowKeys.value = []
       await this.fetchData()
     },
 
@@ -488,7 +735,22 @@ header {
   margin-bottom: 0;
 }
 
-.margin_top {
-  margin-top: 5%
+.bulk-course-hint {
+  margin-top: 6px;
+  color: #8c8c8c;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.multiline-cell {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
+}
+
+.answer-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 </style>

@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+
 	"github.com/elastic/go-elasticsearch/v8"
-	"github.com/itihey/tikuAdapter/internal/dao"
-	"github.com/itihey/tikuAdapter/pkg/logger"
-	"strconv"
 )
 
 // Elasticsearch Elasticsearch接口
@@ -133,19 +131,4 @@ func (e *elasticSearch) Delete(index string, id string) error {
 	}
 
 	return nil
-}
-
-// SyncElasticsearch 同步Elasticsearch
-func SyncElasticsearch() {
-	find, err := dao.Tiku.Find()
-	if err != nil {
-		return
-	}
-	for _, v := range find {
-		err := defaultElasticSearch.Create("tiku", strconv.Itoa(int(v.ID)), v)
-		if err != nil {
-			logger.SysError(err.Error())
-			return
-		}
-	}
 }

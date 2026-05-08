@@ -1,0 +1,164 @@
+package controller
+
+import (
+	"errors"
+	"net/http"
+	"strconv"
+
+	"github.com/gin-gonic/gin"
+	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/registry/manager"
+	"github.com/itihey/tikuAdapter/internal/service"
+)
+
+var listAccessTokens = func(user entity.User) ([]entity.AccessToken, error) {
+	return service.ListAccessTokensWithDB(manager.GetManager().GetDB(), user)
+}
+
+var createAccessToken = func(user entity.User, input service.CreateAccessTokenInput) (service.CreatedAccessToken, error) {
+	return service.CreateAccessTokenWithDB(manager.GetManager().GetDB(), user, input)
+}
+
+var updateAccessToken = func(user entity.User, tokenID int32, input service.UpdateAccessTokenInput) (entity.AccessToken, error) {
+	return service.UpdateAccessTokenWithDB(manager.GetManager().GetDB(), user, tokenID, input)
+}
+
+var deleteAccessToken = func(user entity.User, tokenID int32) error {
+	return service.DeleteAccessTokenWithDB(manager.GetManager().GetDB(), user, tokenID)
+}
+
+func AccessTokenList(c *gin.Context) {
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+
+	tokens, err := listAccessTokens(operator)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"message": "获取访问令牌失败",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, tokens)
+}
+
+func CreateAccessToken(c *gin.Context) {
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+
+	var input service.CreateAccessTokenInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "参数错误",
+		})
+		return
+	}
+
+	created, err := createAccessToken(operator, input)
+	if err != nil {
+		writeAccessTokenError(c, err, "创建访问令牌失败")
+		return
+	}
+
+	c.JSON(http.StatusOK, created)
+}
+
+func UpdateAccessToken(c *gin.Context) {
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+
+	tokenID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "参数错误",
+		})
+		return
+	}
+
+	var input service.UpdateAccessTokenInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "参数错误",
+		})
+		return
+	}
+
+	updated, err := updateAccessToken(operator, int32(tokenID), input)
+	if err != nil {
+		writeAccessTokenError(c, err, "更新访问令牌失败")
+		return
+	}
+
+	c.JSON(http.StatusOK, updated)
+}
+
+func DeleteAccessToken(c *gin.Context) {
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+
+	tokenID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "参数错误",
+		})
+		return
+	}
+
+	if err := deleteAccessToken(operator, int32(tokenID)); err != nil {
+		writeAccessTokenError(c, err, "删除访问令牌失败")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "ok",
+	})
+}
+
+func currentOperator(c *gin.Context) (entity.User, bool) {
+	value, exists := c.Get("user")
+	if !exists || value == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"message": "请重新登录",
+		})
+		return entity.User{}, false
+	}
+
+	user, ok := value.(*entity.User)
+	if !ok || user == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"message": "请重新登录",
+		})
+		return entity.User{}, false
+	}
+
+	return *user, true
+}
+
+func writeAccessTokenError(c *gin.Context, err error, fallback string) {
+	status := http.StatusInternalServerError
+	message := fallback
+
+	switch {
+	case errors.Is(err, service.ErrAccessTokenNameRequired):
+		status = http.StatusBadRequest
+		message = err.Error()
+	case errors.Is(err, service.ErrAccessTokenNotFound):
+		status = http.StatusNotFound
+		message = err.Error()
+	case errors.Is(err, service.ErrAccessTokenForbidden):
+		status = http.StatusForbidden
+		message = err.Error()
+	}
+
+	c.JSON(status, gin.H{
+		"message": message,
+	})
+}

@@ -12,6 +12,7 @@ type Config struct {
 	Elasticsearch     elasticsearch.Config `yaml:"elasticsearch"`
 	RecordEmptyAnswer bool                 `yaml:"recordEmptyAnswer"`
 	Mysql             string               `yaml:"mysql"`
+	JWTSecret         string               `yaml:"jwtSecret"`
 	Database          DatabaseConfig       `yaml:"database"`
 	OSS               OSSConfig            `yaml:"oss"`
 	Plat              []PlatConfig         `yaml:"plat"`

@@ -7,6 +7,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/ratelimit"
+	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 )
 
@@ -39,6 +40,9 @@ func GetManager() *Manager {
 func CreateManager() (*Manager, error) {
 	config := registry.Config()
 	logger.SetupGinLog()
+	if err := util.ConfigureJWT(config.JWTSecret); err != nil {
+		return nil, err
+	}
 	db := registry.RegisterDB(config)
 
 	defaultManager = &Manager{

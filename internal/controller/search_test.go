@@ -1,0 +1,1815 @@
+package controller
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/glebarez/sqlite"
+	"github.com/gin-gonic/gin"
+	"github.com/go-resty/resty/v2"
+	"github.com/itihey/tikuAdapter/internal/dao"
+	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/middleware"
+	searchpkg "github.com/itihey/tikuAdapter/internal/search"
+	"github.com/itihey/tikuAdapter/internal/service"
+	"github.com/itihey/tikuAdapter/pkg/model"
+	"gorm.io/gorm"
+)
+
+func newSearchControllerTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+
+	db, err := gorm.Open(sqlite.Open(fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open test db: %v", err)
+	}
+
+	if err := db.AutoMigrate(&entity.SearchAccountConfig{}, &entity.AISearchConfig{}, &entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}, &entity.Log{}, &entity.Tiku{}); err != nil {
+		t.Fatalf("migrate test db: %v", err)
+	}
+
+	dao.SetDefault(db)
+	return db
+}
+
+func seedControllerUser(t *testing.T, db *gorm.DB, id int32, username string, role string) entity.User {
+	t.Helper()
+
+	user := entity.User{
+		ID:             id,
+		Username:       username,
+		Password:       "123456",
+		Role:           role,
+		Status:         "enabled",
+		Balance:        0,
+		RegisterSource: "public",
+	}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	return user
+}
+
+func seedControllerTokenForUser(t *testing.T, db *gorm.DB, user entity.User, plainToken string, totalAmountUsed float64) entity.AccessToken {
+	t.Helper()
+
+	hash := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(plainToken))))
+	token := entity.AccessToken{
+		UserID:          user.ID,
+		Name:            "token-" + plainToken,
+		TokenHash:       hex.EncodeToString(hash[:]),
+		TokenPrefix:     plainToken,
+		TokenValue:      plainToken,
+		Status:          "enabled",
+		TotalAmountUsed: totalAmountUsed,
+	}
+	if err := db.Create(&token).Error; err != nil {
+		t.Fatalf("create access token: %v", err)
+	}
+	return token
+}
+
+func seedControllerDefaultSearchProviderConfig(t *testing.T, db *gorm.DB, provider string, flatPrice float64) entity.SearchAccountConfig {
+	t.Helper()
+
+	config := entity.SearchAccountConfig{
+		Provider:   provider,
+		TokenKey:   provider + "Token",
+		TokenValue: "default-" + provider,
+		Enabled:    true,
+		FlatPrice:  flatPrice,
+	}
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatalf("create search account config: %v", err)
+	}
+	return config
+}
+
+func seedControllerAccessToken(t *testing.T, db *gorm.DB, plainToken string) entity.AccessToken {
+	t.Helper()
+
+	user := seedControllerUser(t, db, 0, "user-"+plainToken, "user")
+	return seedControllerTokenForUser(t, db, user, plainToken, 0)
+}
+
+func ensureControllerTikuSourceColumn(t *testing.T, db *gorm.DB) {
+	t.Helper()
+
+	if err := db.Exec("ALTER TABLE tiku ADD COLUMN source_name TEXT").Error; err != nil {
+		if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			t.Fatalf("add tiku source_name column: %v", err)
+		}
+	}
+}
+
+func seedControllerLocalTiku(t *testing.T, db *gorm.DB, question string, options []string, answers []string, courseName string, extra string, sourceName string) entity.Tiku {
+	t.Helper()
+
+	optionPayload, err := json.Marshal(options)
+	if err != nil {
+		t.Fatalf("marshal tiku options: %v", err)
+	}
+	answerPayload, err := json.Marshal(answers)
+	if err != nil {
+		t.Fatalf("marshal tiku answers: %v", err)
+	}
+
+	tiku := entity.Tiku{
+		Question:   question,
+		Type:       0,
+		Options:    string(optionPayload),
+		Answer:     string(answerPayload),
+		Plat:       0,
+		CourseName: courseName,
+		Extra:      extra,
+	}
+	middleware.FillHash(&tiku)
+	if err := db.Create(&tiku).Error; err != nil {
+		t.Fatalf("create local tiku: %v", err)
+	}
+	if sourceName != "" {
+		if err := db.Exec("UPDATE tiku SET source_name = ? WHERE id = ?", sourceName, tiku.ID).Error; err != nil {
+			t.Fatalf("update local tiku source_name: %v", err)
+		}
+	}
+	return tiku
+}
+
+type stubSearchClient struct {
+	enable bool
+	answer [][]string
+	err    error
+}
+
+func (s *stubSearchClient) getHTTPClient() *resty.Client {
+	return nil
+}
+
+func (s *stubSearchClient) SearchAnswer(req model.SearchRequest) ([][]string, error) {
+	if !s.enable {
+		return [][]string{}, nil
+	}
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.answer, nil
+}
+
+func withStubSearchDependencies(
+	t *testing.T,
+	local func(model.SearchRequest) ([][]string, error),
+	resolver func(string, string, url.Values) (resolvedSearchRequestContext, error),
+	remoteBuilder func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error),
+	aiSearcher func(resolvedSearchRequestContext, model.SearchRequest) ([][]string, bool, error),
+	run func(),
+) {
+	t.Helper()
+
+	originalDBSearch := defaultDBSearchProvider
+	originalResolver := resolveSearchRequestContext
+	originalClientBuilder := buildSearchClients
+	originalClientBindingBuilder := buildSearchClientBindings
+	originalAISearcher := searchAIAnswer
+
+	defaultDBSearchProvider = func() func(model.SearchRequest) ([][]string, error) {
+		return local
+	}
+	resolveSearchRequestContext = resolver
+	buildSearchClients = remoteBuilder
+	buildSearchClientBindings = func(resolved resolvedSearchRequestContext, useQuery string) []searchClientBinding {
+		clients := remoteBuilder(resolved, useQuery)
+		bindings := make([]searchClientBinding, 0, len(clients))
+		for idx := range clients {
+			provider := fmt.Sprintf("stub-%d", idx)
+			if useQuery != "" {
+				provider = strings.TrimSpace(strings.Split(useQuery, ",")[0])
+			}
+			bindings = append(bindings, searchClientBinding{
+				Provider: provider,
+				Search:   clients[idx],
+			})
+		}
+		return bindings
+	}
+	if aiSearcher != nil {
+		searchAIAnswer = aiSearcher
+	}
+	defer func() {
+		defaultDBSearchProvider = originalDBSearch
+		resolveSearchRequestContext = originalResolver
+		buildSearchClients = originalClientBuilder
+		buildSearchClientBindings = originalClientBindingBuilder
+		searchAIAnswer = originalAISearcher
+	}()
+
+	run()
+}
+
+func TestSearchReturnsUnauthorizedDetailAndRequestSnapshot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	originalResolver := resolveSearchRequestContext
+	defer func() {
+		resolveSearchRequestContext = originalResolver
+	}()
+	resolveSearchRequestContext = func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+		return resolvedSearchRequestContext{}, fmt.Errorf("%w: Authorization 必须使用 Basic 方案", service.ErrInvalidAccessTokenAuthorization)
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	rawBody := `{"question":"题目","options":["A","B"]}`
+	request := httptest.NewRequest(http.MethodPost, "/adapter-service/search", bytes.NewReader([]byte(rawBody)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Origin", "https://mooc1.chaoxing.com")
+	request.Header.Set("Authorization", "Bearer debug-secret-token-123456")
+	ctx.Request = request
+
+	Search(ctx)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+
+	var got struct {
+		ErrCode int    `json:"errCode"`
+		Message string `json:"message"`
+		Detail  string `json:"detail"`
+		Request struct {
+			Method        string `json:"method"`
+			Path          string `json:"path"`
+			Origin        string `json:"origin"`
+			ContentType   string `json:"contentType"`
+			Authorization string `json:"authorization"`
+			Body          string `json:"body"`
+		} `json:"request"`
+	}
+
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v, body=%s", err, recorder.Body.String())
+	}
+
+	if got.ErrCode != http.StatusUnauthorized {
+		t.Fatalf("expected errCode %d, got %d", http.StatusUnauthorized, got.ErrCode)
+	}
+	if got.Message != "访问令牌鉴权失败" {
+		t.Fatalf("expected message %q, got %q", "访问令牌鉴权失败", got.Message)
+	}
+	if !strings.Contains(got.Detail, "Authorization") || !strings.Contains(got.Detail, "Basic") {
+		t.Fatalf("expected detail to mention Basic authorization, got %q", got.Detail)
+	}
+	if got.Request.Method != http.MethodPost {
+		t.Fatalf("expected method POST, got %q", got.Request.Method)
+	}
+	if got.Request.Path != "/adapter-service/search" {
+		t.Fatalf("expected path /adapter-service/search, got %q", got.Request.Path)
+	}
+	if got.Request.Origin != "https://mooc1.chaoxing.com" {
+		t.Fatalf("expected origin %q, got %q", "https://mooc1.chaoxing.com", got.Request.Origin)
+	}
+	if got.Request.ContentType != "application/json" {
+		t.Fatalf("expected content type application/json, got %q", got.Request.ContentType)
+	}
+	if got.Request.Body != rawBody {
+		t.Fatalf("expected raw body %q, got %q", rawBody, got.Request.Body)
+	}
+	if got.Request.Authorization == "Bearer debug-secret-token-123456" {
+		t.Fatalf("authorization should be masked, got %q", got.Request.Authorization)
+	}
+	if !strings.Contains(got.Request.Authorization, "Bearer") {
+		t.Fatalf("expected masked authorization to retain scheme, got %q", got.Request.Authorization)
+	}
+}
+
+func TestMaskAuthorizationHeaderKeepsSchemeAndMasksSecret(t *testing.T) {
+	got := maskAuthorizationHeader("Bearer debug-secret-token-123456")
+	if got == "Bearer debug-secret-token-123456" {
+		t.Fatalf("authorization should be masked, got %q", got)
+	}
+	if !strings.Contains(got, "Bearer") {
+		t.Fatalf("expected scheme to be retained, got %q", got)
+	}
+	if !strings.Contains(got, "...") {
+		t.Fatalf("expected masked ellipsis, got %q", got)
+	}
+}
+
+func TestExtractUnauthorizedDetailRemovesSentinelPrefix(t *testing.T) {
+	err := fmt.Errorf("%w: Authorization 必须使用 Basic 方案", service.ErrInvalidAccessTokenAuthorization)
+	got := extractUnauthorizedDetail(err)
+	if got != "Authorization 必须使用 Basic 方案" {
+		t.Fatalf("unexpected detail: %q", got)
+	}
+}
+
+func TestSanitizeSearchUnauthorizedBodyTruncatesLongBody(t *testing.T) {
+	raw := strings.Repeat("a", maxSearchUnauthorizedBodyLength+10)
+	got := sanitizeSearchUnauthorizedBody(raw)
+
+	if !strings.Contains(got, "...(truncated)") {
+		t.Fatalf("expected truncated marker, got %q", got)
+	}
+}
+
+func TestSanitizeSearchUnauthorizedBodyKeepsShortBody(t *testing.T) {
+	raw := `{"query":"测试题目"}`
+	got := sanitizeSearchUnauthorizedBody(raw)
+
+	if got != raw {
+		t.Fatalf("expected body unchanged, got %q", got)
+	}
+}
+
+func TestSearchReportsCompletedNormalDefaultBillingContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	original := searchBillingReporter
+	defer func() {
+		searchBillingReporter = original
+	}()
+
+	var reported searchBillingContext
+	searchBillingReporter = func(ctx searchBillingContext) {
+		reported = ctx
+	}
+
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode:                 searchModeNormal,
+				UsedDefaultSearchProviders: []string{"icodef"},
+				UserID:                     12,
+				AccessTokenID:              34,
+				RequestID:                  "req-handler-normal",
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return []func(model.SearchRequest) ([][]string, error){(&stubSearchClient{enable: true, answer: [][]string{{"答案A"}}}).SearchAnswer}
+		},
+		nil,
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request.Header.Set("Content-Type", "application/json")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+		})
+
+	if !reported.UsedDefaultAccount {
+		t.Fatal("expected reported normal search billing context to preserve default account usage")
+	}
+	if !reported.Billable {
+		t.Fatal("expected reported normal search billing context with answers to be billable")
+	}
+	if reported.UserID != 12 || reported.AccessTokenID != 34 || reported.RequestID != "req-handler-normal" {
+		t.Fatalf("expected reported normal billing context identity to be preserved, got %+v", reported)
+	}
+}
+
+func TestSearchReportsDowngradedAIDefaultBillingContextWithoutUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	original := searchBillingReporter
+	defer func() {
+		searchBillingReporter = original
+	}()
+
+	var reported searchBillingContext
+	searchBillingReporter = func(ctx searchBillingContext) {
+		reported = ctx
+	}
+
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode:    searchModeAI,
+				UsedDefaultAI: true,
+				UserID:        56,
+				AccessTokenID: 78,
+				RequestID:     "req-handler-ai",
+				AIConfig: service.AISearchRequestConfig{
+					BaseURL: "https://default.example.com/v1",
+					APIKey:  "default-key",
+					Model:   "default-model",
+				},
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return []func(model.SearchRequest) ([][]string, error){(&stubSearchClient{enable: true, answer: [][]string{{"答案A"}}}).SearchAnswer}
+		},
+		func(resolvedSearchRequestContext, model.SearchRequest) ([][]string, bool, error) {
+			return [][]string{{"答案A"}}, false, nil
+		},
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=ai&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request.Header.Set("Content-Type", "application/json")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+		})
+
+	if !reported.UsedDefaultAccount {
+		t.Fatal("expected reported ai search billing context to preserve default account usage")
+	}
+	if reported.Billable {
+		t.Fatal("expected reported ai search billing context without usage not to be billable")
+	}
+	if reported.UserID != 56 || reported.AccessTokenID != 78 || reported.RequestID != "req-handler-ai" {
+		t.Fatalf("expected reported ai billing context identity to be preserved, got %+v", reported)
+	}
+}
+
+func TestSearchReportsCompletedAIDefaultBillingContextWithUsage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	original := searchBillingReporter
+	defer func() {
+		searchBillingReporter = original
+	}()
+
+	var reported searchBillingContext
+	searchBillingReporter = func(ctx searchBillingContext) {
+		reported = ctx
+	}
+
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode:    searchModeAI,
+				UsedDefaultAI: true,
+				UserID:        90,
+				AccessTokenID: 91,
+				RequestID:     "req-handler-ai-usage",
+				AIConfig: service.AISearchRequestConfig{
+					BaseURL: "https://default.example.com/v1",
+					APIKey:  "default-key",
+					Model:   "default-model",
+				},
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return nil
+		},
+		func(resolvedSearchRequestContext, model.SearchRequest) ([][]string, bool, error) {
+			return [][]string{{"AI答案"}}, true, nil
+		},
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=ai&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request.Header.Set("Content-Type", "application/json")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+		})
+
+	if !reported.UsedDefaultAccount {
+		t.Fatal("expected reported ai search billing context to preserve default account usage")
+	}
+	if !reported.Billable {
+		t.Fatal("expected reported ai search billing context with usage to be billable")
+	}
+	if reported.UserID != 90 || reported.AccessTokenID != 91 || reported.RequestID != "req-handler-ai-usage" {
+		t.Fatalf("expected reported ai billing context identity to be preserved, got %+v", reported)
+	}
+}
+
+func TestSearchPersistsBillingRecordAndAccessTokenUsageForDefaultProvider(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 201, "search-billing-user", "user")
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10.5).Error; err != nil {
+		t.Fatalf("seed user balance: %v", err)
+	}
+	token := seedControllerTokenForUser(t, db, user, "search-billing-token", 1.25)
+	seedControllerDefaultSearchProviderConfig(t, db, "icodef", 2.5)
+
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode:                 searchModeNormal,
+				UsedDefaultSearch:          true,
+				UsedDefaultSearchProviders: []string{"icodef"},
+				UserID:                     user.ID,
+				AccessTokenID:              token.ID,
+				RequestID:                  "req-search-billing-normal",
+				AccessTokenCtx: &service.AccessTokenAuthContext{
+					User:        user,
+					AccessToken: token,
+				},
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return []func(model.SearchRequest) ([][]string, error){(&stubSearchClient{enable: true, answer: [][]string{{"答案A"}}}).SearchAnswer}
+		},
+		nil,
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request.Header.Set("Content-Type", "application/json")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+		})
+
+	var records []entity.BillingRecord
+	if err := db.Order("id asc").Find(&records).Error; err != nil {
+		t.Fatalf("load billing records: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected 1 billing record, got %d", len(records))
+	}
+	if records[0].UserID != user.ID || records[0].AccessTokenID != token.ID {
+		t.Fatalf("expected billing identity user=%d token=%d, got %+v", user.ID, token.ID, records[0])
+	}
+	if records[0].Type != "normal_search" {
+		t.Fatalf("expected billing type normal_search, got %q", records[0].Type)
+	}
+	if !records[0].UsedDefaultAccount {
+		t.Fatalf("expected billing record to mark default account usage, got %+v", records[0])
+	}
+	if records[0].Provider != "icodef" {
+		t.Fatalf("expected billing provider icodef, got %q", records[0].Provider)
+	}
+	if records[0].Amount != 2.5 {
+		t.Fatalf("expected billing amount 2.5, got %v", records[0].Amount)
+	}
+	if records[0].RequestID != "req-search-billing-normal" {
+		t.Fatalf("expected billing request id req-search-billing-normal, got %q", records[0].RequestID)
+	}
+	if records[0].BalanceBefore != 10.5 || records[0].BalanceAfter != 8 {
+		t.Fatalf("expected billing balance 10.5 -> 8.0, got %+v", records[0])
+	}
+
+	var stored entity.AccessToken
+	if err := db.Where("id = ?", token.ID).First(&stored).Error; err != nil {
+		t.Fatalf("load access token: %v", err)
+	}
+	if stored.TotalAmountUsed != 3.75 {
+		t.Fatalf("expected total amount used 3.75, got %v", stored.TotalAmountUsed)
+	}
+
+	var storedUser entity.User
+	if err := db.Where("id = ?", user.ID).First(&storedUser).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	if storedUser.Balance != 8 {
+		t.Fatalf("expected user balance 8.0, got %v", storedUser.Balance)
+	}
+}
+
+func TestSearchPersistsBillingRecordAndAccessTokenUsageForLocalSearch(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 204, "search-local-billing-user", "user")
+	token := seedControllerTokenForUser(t, db, user, "search-local-billing-token", 0.4)
+	seedControllerDefaultSearchProviderConfig(t, db, "local", 0.6)
+
+	withStubSearchDependencies(t,
+		func(model.SearchRequest) ([][]string, error) {
+			return [][]string{{"本地答案"}}, nil
+		},
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode:    searchModeNormal,
+				UserID:        user.ID,
+				AccessTokenID: token.ID,
+				RequestID:     "req-search-billing-local",
+				AccessTokenCtx: &service.AccessTokenAuthContext{
+					User:        user,
+					AccessToken: token,
+				},
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return nil
+		},
+		nil,
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=local&noRecord=1", bytes.NewReader([]byte(`{"question":"本地题目","options":["A","B"]}`)))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Authorization", "Basic search-local-billing-token")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+		})
+
+	var records []entity.BillingRecord
+	if err := db.Order("id asc").Find(&records).Error; err != nil {
+		t.Fatalf("load billing records: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected 1 billing record for local search, got %d", len(records))
+	}
+	if records[0].Provider != "local" {
+		t.Fatalf("expected local billing provider, got %+v", records[0])
+	}
+	if records[0].Amount != 0.6 {
+		t.Fatalf("expected local billing amount 0.6, got %v", records[0].Amount)
+	}
+	if records[0].RequestID != "req-search-billing-local" {
+		t.Fatalf("expected local billing request id req-search-billing-local, got %q", records[0].RequestID)
+	}
+
+	var stored entity.AccessToken
+	if err := db.Where("id = ?", token.ID).First(&stored).Error; err != nil {
+		t.Fatalf("load access token: %v", err)
+	}
+	if stored.TotalAmountUsed != 1 {
+		t.Fatalf("expected local total amount used 1.0, got %v", stored.TotalAmountUsed)
+	}
+}
+
+func TestSearchPersistsCachedSourceNameInLocalBillingSnapshot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	ensureControllerTikuSourceColumn(t, db)
+	user := seedControllerUser(t, db, 214, "search-local-source-user", "user")
+	token := seedControllerTokenForUser(t, db, user, "search-local-source-token", 0)
+	seedControllerDefaultSearchProviderConfig(t, db, "local", 0.6)
+	seedControllerLocalTiku(t, db, "本地缓存题目", []string{"A", "B"}, []string{"缓存答案"}, "", "", "万能题库")
+
+	withStubSearchDependencies(t,
+		searchpkg.GetDBSearch().SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode:    searchModeNormal,
+				UserID:        user.ID,
+				AccessTokenID: token.ID,
+				RequestID:     "req-search-local-source",
+				AccessTokenCtx: &service.AccessTokenAuthContext{
+					User:        user,
+					AccessToken: token,
+				},
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return nil
+		},
+		nil,
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=local&noRecord=1", bytes.NewReader([]byte(`{"question":"本地缓存题目","options":["A","B"]}`)))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Authorization", "Basic search-local-source-token")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+		})
+
+	var record entity.BillingRecord
+	if err := db.Where("request_id = ?", "req-search-local-source").First(&record).Error; err != nil {
+		t.Fatalf("load local source billing record: %v", err)
+	}
+	if !strings.Contains(record.UnitPriceSnapshot, "sourceName=万能题库") {
+		t.Fatalf("expected local billing snapshot to contain source name, got %+v", record)
+	}
+}
+
+func TestSearchPersistsQuestionTextForPersonalUsageRecords(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 216, "search-question-text-user", "user")
+	token := seedControllerTokenForUser(t, db, user, "search-question-text-token", 0)
+	seedControllerDefaultSearchProviderConfig(t, db, "icodef", 1.25)
+
+	questionText := "这是 带空格 的题目"
+
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode:                 searchModeNormal,
+				UsedDefaultSearch:          true,
+				UsedDefaultSearchProviders: []string{"icodef"},
+				UserID:                     user.ID,
+				AccessTokenID:              token.ID,
+				RequestID:                  "req-search-question-text",
+				AccessTokenCtx: &service.AccessTokenAuthContext{
+					User:        user,
+					AccessToken: token,
+				},
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return []func(model.SearchRequest) ([][]string, error){
+				(&stubSearchClient{enable: true, answer: [][]string{{"答案A"}}}).SearchAnswer,
+			}
+		},
+		nil,
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?noRecord=1", bytes.NewReader([]byte(`{"question":"这是 带空格 的题目","options":["A","B"]}`)))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Authorization", "Basic search-question-text-token")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+		})
+
+	result, err := service.ListBillingRecordsWithDB(db, user, 1, 10)
+	if err != nil {
+		t.Fatalf("list billing records with question text: %v", err)
+	}
+	if len(result.Data) != 1 {
+		t.Fatalf("expected one billing record, got %+v", result.Data)
+	}
+	if result.Data[0].QuestionText != questionText {
+		t.Fatalf("expected question text %q, got %q", questionText, result.Data[0].QuestionText)
+	}
+}
+
+func TestSearchWritesLocalQuestionIDIntoAuditLog(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	localQuestion := seedControllerLocalTiku(t, db, "本地日志题目", []string{"A", "B"}, []string{"本地答案"}, "", "", "万能题库")
+	user := seedControllerUser(t, db, 215, "search-local-log-user", "user")
+	token := seedControllerTokenForUser(t, db, user, "search-local-log-token", 0)
+	seedControllerDefaultSearchProviderConfig(t, db, "local", 0.6)
+
+	withStubSearchDependencies(t,
+		searchpkg.GetDBSearch().SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode:    searchModeNormal,
+				UserID:        user.ID,
+				AccessTokenID: token.ID,
+				RequestID:     "req-search-local-log",
+				AccessTokenCtx: &service.AccessTokenAuthContext{
+					User:        user,
+					AccessToken: token,
+				},
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return nil
+		},
+		nil,
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=local&noRecord=1", bytes.NewReader([]byte(`{"question":"本地日志题目","options":["A","B"]}`)))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Authorization", "Basic search-local-log-token")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+		})
+
+	var entry entity.Log
+	if err := db.Where("module = ?", "search").Where("user_id = ?", user.ID).First(&entry).Error; err != nil {
+		t.Fatalf("load local search audit log: %v", err)
+	}
+	if entry.Qid != localQuestion.ID {
+		t.Fatalf("expected audit log qid %d, got %+v", localQuestion.ID, entry)
+	}
+	if !strings.Contains(entry.Description, fmt.Sprintf("localQuestionId=%d", localQuestion.ID)) {
+		t.Fatalf("expected description to contain local question id, got %+v", entry)
+	}
+}
+
+func TestSearchPersistsBillingForAdminAccessToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	admin := seedControllerUser(t, db, 202, "search-billing-admin", "admin")
+	if err := db.Model(&entity.User{}).Where("id = ?", admin.ID).Update("balance", 6.5).Error; err != nil {
+		t.Fatalf("seed admin balance: %v", err)
+	}
+	token := seedControllerTokenForUser(t, db, admin, "search-admin-token", 0.5)
+	seedControllerDefaultSearchProviderConfig(t, db, "icodef", 1.88)
+
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode:                 searchModeNormal,
+				UsedDefaultSearch:          true,
+				UsedDefaultSearchProviders: []string{"icodef"},
+				UserID:                     admin.ID,
+				AccessTokenID:              token.ID,
+				RequestID:                  "req-search-billing-admin",
+				AccessTokenCtx: &service.AccessTokenAuthContext{
+					User:        admin,
+					AccessToken: token,
+				},
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return []func(model.SearchRequest) ([][]string, error){(&stubSearchClient{enable: true, answer: [][]string{{"答案A"}}}).SearchAnswer}
+		},
+		nil,
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request.Header.Set("Content-Type", "application/json")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+		})
+
+	var count int64
+	if err := db.Model(&entity.BillingRecord{}).Where("user_id = ? AND access_token_id = ?", admin.ID, token.ID).Count(&count).Error; err != nil {
+		t.Fatalf("count billing records: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 admin billing record, got %d", count)
+	}
+
+	var stored entity.AccessToken
+	if err := db.Where("id = ?", token.ID).First(&stored).Error; err != nil {
+		t.Fatalf("load access token: %v", err)
+	}
+	if stored.TotalAmountUsed != 2.38 {
+		t.Fatalf("expected admin total amount used 2.38, got %v", stored.TotalAmountUsed)
+	}
+
+	var storedAdmin entity.User
+	if err := db.Where("id = ?", admin.ID).First(&storedAdmin).Error; err != nil {
+		t.Fatalf("load admin user: %v", err)
+	}
+	if storedAdmin.Balance != 4.62 {
+		t.Fatalf("expected admin balance 4.62, got %v", storedAdmin.Balance)
+	}
+
+	var record entity.BillingRecord
+	if err := db.Where("user_id = ? AND access_token_id = ?", admin.ID, token.ID).First(&record).Error; err != nil {
+		t.Fatalf("load admin billing record: %v", err)
+	}
+	if record.BalanceBefore != 6.5 || record.BalanceAfter != 4.62 {
+		t.Fatalf("expected admin billing balance 6.5 -> 4.62, got %+v", record)
+	}
+}
+
+func TestSearchWritesAuditLogForAuthenticatedSearch(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 203, "search-log-user", "user")
+	token := seedControllerTokenForUser(t, db, user, "search-log-token", 0)
+
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode:    searchModeNormal,
+				UserID:        user.ID,
+				AccessTokenID: token.ID,
+				RequestID:     "req-search-audit-log",
+				AccessTokenCtx: &service.AccessTokenAuthContext{
+					User:        user,
+					AccessToken: token,
+				},
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return []func(model.SearchRequest) ([][]string, error){(&stubSearchClient{enable: true, answer: [][]string{{"答案A"}}}).SearchAnswer}
+		},
+		nil,
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=wanneng&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request.Header.Set("Content-Type", "application/json")
+			request.RemoteAddr = "10.20.30.40:12345"
+			request.Header.Set("X-Forwarded-For", "10.20.30.40")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+		})
+
+	var entry entity.Log
+	if err := db.Where("module = ?", "search").Where("user_id = ?", user.ID).First(&entry).Error; err != nil {
+		t.Fatalf("load search audit log: %v", err)
+	}
+	if entry.Action != logActionSearch {
+		t.Fatalf("expected search action %d, got %+v", logActionSearch, entry)
+	}
+	if entry.ClientIP != "10.20.30.40" {
+		t.Fatalf("expected client ip 10.20.30.40, got %+v", entry)
+	}
+	if !strings.Contains(entry.Description, "req-search-audit-log") {
+		t.Fatalf("expected description to contain request id, got %+v", entry)
+	}
+	if !strings.Contains(entry.Description, "搜索") {
+		t.Fatalf("expected description to mention search, got %+v", entry)
+	}
+}
+
+func TestSearchRejectsAnonymousLocalSearch(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	newSearchControllerTestDB(t)
+
+	withStubSearchDependencies(t,
+		func(model.SearchRequest) ([][]string, error) {
+			return [][]string{{"本地答案"}}, nil
+		},
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode: searchModeNormal,
+				RequestID:  "req-anonymous-local",
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return nil
+		},
+		nil,
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=local&noRecord=1", bytes.NewReader([]byte(`{"question":"本地匿名题目","options":["A","B"]}`)))
+			request.Header.Set("Content-Type", "application/json")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("expected status 401, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+
+			var got struct {
+				Detail string `json:"detail"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+				t.Fatalf("unmarshal unauthorized response: %v, body=%s", err, recorder.Body.String())
+			}
+			if !strings.Contains(got.Detail, "匿名") || !strings.Contains(got.Detail, "本地题库") {
+				t.Fatalf("expected unauthorized detail to mention anonymous local restriction, got %q", got.Detail)
+			}
+		})
+}
+
+func TestSearchAllowsAnonymousRemoteSearchWithoutBillingAndWritesFullAuditLog(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	rawBody := `{"question":"匿名远程题目","options":["A","B"]}`
+
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode: searchModeNormal,
+				RequestID:  "req-anonymous-remote",
+			}, nil
+		},
+		func(resolved resolvedSearchRequestContext, useQuery string) []func(model.SearchRequest) ([][]string, error) {
+			if useQuery != "wanneng" {
+				t.Fatalf("expected explicit provider wanneng, got %q", useQuery)
+			}
+			return []func(model.SearchRequest) ([][]string, error){
+				(&stubSearchClient{enable: true, answer: [][]string{{"远程答案"}}}).SearchAnswer,
+			}
+		},
+		nil,
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=wanneng&wannengToken=plain-third-party-token&noRecord=1", bytes.NewReader([]byte(rawBody)))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("User-Agent", "anonymous-test-client/1.0")
+			request.RemoteAddr = "198.51.100.25:34567"
+			request.Header.Set("X-Forwarded-For", "198.51.100.25")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+		})
+
+	var billingCount int64
+	if err := db.Model(&entity.BillingRecord{}).Count(&billingCount).Error; err != nil {
+		t.Fatalf("count billing records: %v", err)
+	}
+	if billingCount != 0 {
+		t.Fatalf("expected anonymous remote search not to create billing records, got %d", billingCount)
+	}
+
+	var entry entity.Log
+	if err := db.Where("module = ?", "search").First(&entry).Error; err != nil {
+		t.Fatalf("load anonymous search audit log: %v", err)
+	}
+	if entry.Action != logActionSearch {
+		t.Fatalf("expected search action %d, got %+v", logActionSearch, entry)
+	}
+	if entry.UserID != 0 {
+		t.Fatalf("expected anonymous search log user id 0, got %+v", entry)
+	}
+	if entry.Username != "anonymous" {
+		t.Fatalf("expected anonymous search username snapshot, got %+v", entry)
+	}
+	if !strings.Contains(entry.Description, "requestId=req-anonymous-remote") {
+		t.Fatalf("expected description to contain request id, got %+v", entry)
+	}
+	if !strings.Contains(entry.Description, "hitProvider=wanneng") {
+		t.Fatalf("expected description to contain actual hit provider, got %+v", entry)
+	}
+	if !strings.Contains(entry.OldAnswer, "wannengToken=plain-third-party-token") {
+		t.Fatalf("expected raw request log to keep explicit provider token without masking, got %+v", entry)
+	}
+	if !strings.Contains(entry.OldAnswer, rawBody) {
+		t.Fatalf("expected raw request log to contain request body, got %+v", entry)
+	}
+	if !strings.Contains(entry.NewAnswer, "远程答案") {
+		t.Fatalf("expected response snapshot to contain answer content, got %+v", entry)
+	}
+}
+
+func TestSearchWritesActualHitProviderIntoAuditLogAndBillsExplicitProviderSearch(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 205, "search-hit-provider-user", "user")
+	token := seedControllerTokenForUser(t, db, user, "search-hit-provider-token", 0.2)
+	seedControllerDefaultSearchProviderConfig(t, db, "wanneng", 1.6)
+
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode:    searchModeNormal,
+				Tokens:        map[string]string{"wanneng": "request-provider-token"},
+				UserID:        user.ID,
+				AccessTokenID: token.ID,
+				RequestID:     "req-hit-provider-log",
+				AccessTokenCtx: &service.AccessTokenAuthContext{
+					User:        user,
+					AccessToken: token,
+				},
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return []func(model.SearchRequest) ([][]string, error){
+				(&stubSearchClient{enable: true, answer: [][]string{{"显式渠道答案"}}}).SearchAnswer,
+			}
+		},
+		nil,
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=wanneng&wannengToken=request-provider-token&noRecord=1", bytes.NewReader([]byte(`{"question":"显式渠道题目","options":["A","B"]}`)))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Authorization", "Basic search-hit-provider-token")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+		})
+
+	var record entity.BillingRecord
+	if err := db.Where("user_id = ?", user.ID).First(&record).Error; err != nil {
+		t.Fatalf("load explicit provider billing record: %v", err)
+	}
+	if record.Provider != "wanneng" {
+		t.Fatalf("expected billing provider wanneng, got %+v", record)
+	}
+	if record.Amount != 1.6 {
+		t.Fatalf("expected billing amount 1.6, got %+v", record)
+	}
+	if record.UsedDefaultAccount {
+		t.Fatalf("expected explicit provider billing record not to mark default account usage, got %+v", record)
+	}
+	if !strings.Contains(record.UnitPriceSnapshot, "provider=wanneng") {
+		t.Fatalf("expected billing snapshot to contain explicit provider, got %+v", record)
+	}
+
+	var storedToken entity.AccessToken
+	if err := db.Where("id = ?", token.ID).First(&storedToken).Error; err != nil {
+		t.Fatalf("load explicit provider access token: %v", err)
+	}
+	if storedToken.TotalAmountUsed != 1.8 {
+		t.Fatalf("expected explicit provider total amount used 1.8, got %v", storedToken.TotalAmountUsed)
+	}
+
+	var entry entity.Log
+	if err := db.Where("module = ?", "search").Where("user_id = ?", user.ID).First(&entry).Error; err != nil {
+		t.Fatalf("load explicit provider audit log: %v", err)
+	}
+	if !strings.Contains(entry.Description, "hitProvider=wanneng") {
+		t.Fatalf("expected description to contain actual hit provider, got %+v", entry)
+	}
+	if !strings.Contains(entry.Description, "billingProvider=wanneng") {
+		t.Fatalf("expected description to contain billing provider, got %+v", entry)
+	}
+}
+
+func TestResolveSearchRequestContextWithDBAcceptsBearerAuthorizationCaseInsensitiveTokenValue(t *testing.T) {
+	db := newSearchControllerTestDB(t)
+	token := seedControllerAccessToken(t, db, "tk_9c347abcdef88d82c")
+
+	resolved, err := resolveSearchRequestContextWithDB(db, "Bearer TK_9C347ABCDEF88D82C", "203.0.113.10", url.Values{})
+	if err != nil {
+		t.Fatalf("expected bearer authorization with different token case to resolve, got %v", err)
+	}
+	if resolved.AccessTokenCtx == nil {
+		t.Fatal("expected access token context for normalized bearer authorization")
+	}
+	if resolved.AccessTokenCtx.AccessToken.ID != token.ID {
+		t.Fatalf("expected resolved token id %d, got %d", token.ID, resolved.AccessTokenCtx.AccessToken.ID)
+	}
+}
+
+func TestResolveSearchRequestContextWithDBRejectsInvalidAuthorization(t *testing.T) {
+	db := newSearchControllerTestDB(t)
+	seedControllerAccessToken(t, db, "valid-token")
+
+	_, err := resolveSearchRequestContextWithDB(db, "Basic invalid-token", "", url.Values{})
+	if !errors.Is(err, service.ErrInvalidAccessTokenAuthorization) {
+		t.Fatalf("expected invalid access token error, got %v", err)
+	}
+}
+
+func TestResolveSearchRequestContextWithDBSkipsDefaultAccountsWithoutAuthorization(t *testing.T) {
+	db := newSearchControllerTestDB(t)
+
+	if _, err := service.UpdateSearchAccountConfigWithDB(db, "icodef", service.UpdateSearchAccountConfigInput{
+		TokenValue: "default-search-token",
+		Enabled:    true,
+	}); err != nil {
+		t.Fatalf("seed search config: %v", err)
+	}
+	if _, err := service.UpdateAISearchConfigWithDB(db, service.UpdateAISearchConfigInput{
+		Enabled: true,
+		BaseURL: "https://default.example.com/v1",
+		APIKey:  "default-key",
+		Model:   "default-model",
+	}); err != nil {
+		t.Fatalf("seed ai config: %v", err)
+	}
+
+	resolved, err := resolveSearchRequestContextWithDB(db, "", "", url.Values{})
+	if err != nil {
+		t.Fatalf("resolve search context: %v", err)
+	}
+
+	if resolved.Tokens["icodef"] != "" {
+		t.Fatalf("expected anonymous request not to use default search token, got %s", resolved.Tokens["icodef"])
+	}
+	if resolved.AIConfig.BaseURL != "" || resolved.AIConfig.APIKey != "" || resolved.AIConfig.Model != "" {
+		t.Fatalf("expected anonymous request not to use default ai config, got %+v", resolved.AIConfig)
+	}
+	if resolved.AccessTokenCtx != nil {
+		t.Fatalf("expected anonymous request not to have access token context, got %+v", resolved.AccessTokenCtx)
+	}
+	if resolved.UsedDefaultSearch {
+		t.Fatal("expected anonymous request not to mark default search usage")
+	}
+	if resolved.UsedDefaultAI {
+		t.Fatal("expected anonymous request not to mark default ai usage")
+	}
+	if len(resolved.UsedDefaultSearchProviders) != 0 {
+		t.Fatalf("expected anonymous request not to have default search providers, got %+v", resolved.UsedDefaultSearchProviders)
+	}
+	if resolved.RequestID == "" {
+		t.Fatal("expected anonymous request to have request id")
+	}
+	if resolved.SearchMode != searchModeNormal {
+		t.Fatalf("expected anonymous request search mode %s, got %s", searchModeNormal, resolved.SearchMode)
+	}
+	if resolved.UserID != 0 {
+		t.Fatalf("expected anonymous request user id 0, got %d", resolved.UserID)
+	}
+	if resolved.AccessTokenID != 0 {
+		t.Fatalf("expected anonymous request access token id 0, got %d", resolved.AccessTokenID)
+	}
+}
+
+func TestResolveSearchRequestContextWithDBRejectsDefaultAccountsWhenUserBalanceIsNegative(t *testing.T) {
+	db := newSearchControllerTestDB(t)
+	token := seedControllerAccessToken(t, db, "negative-balance-token")
+	if err := db.Model(&entity.User{}).Where("id = ?", token.UserID).Update("balance", -3).Error; err != nil {
+		t.Fatalf("seed negative balance: %v", err)
+	}
+
+	if _, err := service.UpdateSearchAccountConfigWithDB(db, "icodef", service.UpdateSearchAccountConfigInput{
+		TokenValue: "default-search-token",
+		Enabled:    true,
+	}); err != nil {
+		t.Fatalf("seed search config: %v", err)
+	}
+	if _, err := service.UpdateAISearchConfigWithDB(db, service.UpdateAISearchConfigInput{
+		Enabled: true,
+		BaseURL: "https://default.example.com/v1",
+		APIKey:  "default-key",
+		Model:   "default-model",
+	}); err != nil {
+		t.Fatalf("seed ai config: %v", err)
+	}
+
+	_, err := resolveSearchRequestContextWithDB(db, "Basic negative-balance-token", "198.51.100.24", url.Values{})
+	if err == nil {
+		t.Fatal("expected negative-balance authenticated request without explicit provider params to fail")
+	}
+	if !errors.Is(err, service.ErrInvalidAccessTokenAuthorization) {
+		t.Fatalf("expected ErrInvalidAccessTokenAuthorization, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "余额") {
+		t.Fatalf("expected negative-balance error to mention balance, got %q", err.Error())
+	}
+}
+
+func TestResolveSearchRequestContextWithDBAllowsExplicitProviderParamsWhenUserBalanceIsNegative(t *testing.T) {
+	db := newSearchControllerTestDB(t)
+	token := seedControllerAccessToken(t, db, "negative-explicit-provider-token")
+	if err := db.Model(&entity.User{}).Where("id = ?", token.UserID).Update("balance", -3).Error; err != nil {
+		t.Fatalf("seed negative balance: %v", err)
+	}
+
+	if _, err := service.UpdateSearchAccountConfigWithDB(db, "icodef", service.UpdateSearchAccountConfigInput{
+		TokenValue: "default-search-token",
+		Enabled:    true,
+	}); err != nil {
+		t.Fatalf("seed search config: %v", err)
+	}
+	if _, err := service.UpdateAISearchConfigWithDB(db, service.UpdateAISearchConfigInput{
+		Enabled: true,
+		BaseURL: "https://default.example.com/v1",
+		APIKey:  "default-key",
+		Model:   "default-model",
+	}); err != nil {
+		t.Fatalf("seed ai config: %v", err)
+	}
+
+	resolved, err := resolveSearchRequestContextWithDB(db, "Basic negative-explicit-provider-token", "198.51.100.24", url.Values{
+		"use":          []string{"wanneng,ai"},
+		"wannengToken": []string{"request-provider-token"},
+		"url":          []string{"https://override.example.com/v1"},
+		"key":          []string{"override-key"},
+		"model":        []string{"override-model"},
+	})
+	if err != nil {
+		t.Fatalf("resolve search context: %v", err)
+	}
+
+	if resolved.Tokens["wanneng"] != "request-provider-token" {
+		t.Fatalf("expected explicit provider token to be preserved, got %q", resolved.Tokens["wanneng"])
+	}
+	if resolved.Tokens["icodef"] != "" {
+		t.Fatalf("expected negative-balance request not to inject default search token, got %q", resolved.Tokens["icodef"])
+	}
+	if resolved.AIConfig.BaseURL != "https://override.example.com/v1" || resolved.AIConfig.APIKey != "override-key" || resolved.AIConfig.Model != "override-model" {
+		t.Fatalf("expected explicit ai config to be preserved, got %+v", resolved.AIConfig)
+	}
+	if resolved.UsedDefaultSearch {
+		t.Fatal("expected negative-balance request with explicit provider params not to mark default search usage")
+	}
+	if resolved.UsedDefaultAI {
+		t.Fatal("expected negative-balance request with explicit ai params not to mark default ai usage")
+	}
+	if len(resolved.UsedDefaultSearchProviders) != 0 {
+		t.Fatalf("expected no default search providers for negative-balance request, got %+v", resolved.UsedDefaultSearchProviders)
+	}
+}
+
+func TestSearchRejectsNegativeBalanceUserWithoutExplicitProviderParams(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	token := seedControllerAccessToken(t, db, "negative-balance-search-token")
+	if err := db.Model(&entity.User{}).Where("id = ?", token.UserID).Update("balance", -3).Error; err != nil {
+		t.Fatalf("seed negative balance: %v", err)
+	}
+
+	if _, err := service.UpdateSearchAccountConfigWithDB(db, "icodef", service.UpdateSearchAccountConfigInput{
+		TokenValue: "default-search-token",
+		Enabled:    true,
+	}); err != nil {
+		t.Fatalf("seed search config: %v", err)
+	}
+
+	originalResolver := resolveSearchRequestContext
+	originalClientBindings := buildSearchClientBindings
+	defer func() {
+		resolveSearchRequestContext = originalResolver
+		buildSearchClientBindings = originalClientBindings
+	}()
+	resolveSearchRequestContext = func(authorization string, clientIP string, query url.Values) (resolvedSearchRequestContext, error) {
+		return resolveSearchRequestContextWithDB(db, authorization, clientIP, query)
+	}
+	buildSearchClientBindings = func(resolved resolvedSearchRequestContext, useQuery string) []searchClientBinding {
+		return nil
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Basic negative-balance-search-token")
+	ctx.Request = request
+
+	Search(ctx)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+
+	var got struct {
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal unauthorized response: %v, body=%s", err, recorder.Body.String())
+	}
+	if !strings.Contains(got.Detail, "余额") {
+		t.Fatalf("expected negative-balance unauthorized detail to mention balance, got %q", got.Detail)
+	}
+}
+
+func TestResolveSearchRequestContextWithDBAllowsDefaultAccountsWithValidAuthorization(t *testing.T) {
+	db := newSearchControllerTestDB(t)
+	token := seedControllerAccessToken(t, db, "valid-token")
+
+	if _, err := service.UpdateSearchAccountConfigWithDB(db, "icodef", service.UpdateSearchAccountConfigInput{
+		TokenValue: "default-search-token",
+		Enabled:    true,
+	}); err != nil {
+		t.Fatalf("seed search config: %v", err)
+	}
+	if _, err := service.UpdateAISearchConfigWithDB(db, service.UpdateAISearchConfigInput{
+		Enabled: true,
+		BaseURL: "https://default.example.com/v1",
+		APIKey:  "default-key",
+		Model:   "default-model",
+	}); err != nil {
+		t.Fatalf("seed ai config: %v", err)
+	}
+
+	resolved, err := resolveSearchRequestContextWithDB(db, "Basic valid-token", "198.51.100.24", url.Values{})
+	if err != nil {
+		t.Fatalf("resolve search context: %v", err)
+	}
+
+	if resolved.Tokens["icodef"] != "default-search-token" {
+		t.Fatalf("expected default search token, got %s", resolved.Tokens["icodef"])
+	}
+	if resolved.AIConfig.BaseURL != "https://default.example.com/v1" || resolved.AIConfig.APIKey != "default-key" || resolved.AIConfig.Model != "default-model" {
+		t.Fatalf("expected default ai config, got %+v", resolved.AIConfig)
+	}
+	if resolved.AccessTokenCtx == nil {
+		t.Fatal("expected access token context for authenticated request")
+	}
+	if resolved.AccessTokenCtx.AccessToken.ID != token.ID {
+		t.Fatalf("expected access token id %d, got %d", token.ID, resolved.AccessTokenCtx.AccessToken.ID)
+	}
+	if !resolved.UsedDefaultSearch {
+		t.Fatal("expected authenticated request to mark default search usage")
+	}
+	if !resolved.UsedDefaultAI {
+		t.Fatal("expected authenticated request to mark default ai usage")
+	}
+	if len(resolved.UsedDefaultSearchProviders) != 1 || resolved.UsedDefaultSearchProviders[0] != "icodef" {
+		t.Fatalf("expected default search providers [icodef], got %+v", resolved.UsedDefaultSearchProviders)
+	}
+	if resolved.RequestID == "" {
+		t.Fatal("expected authenticated request to have request id")
+	}
+	if resolved.SearchMode != searchModeNormal {
+		t.Fatalf("expected authenticated request search mode %s, got %s", searchModeNormal, resolved.SearchMode)
+	}
+	if resolved.UserID != token.UserID {
+		t.Fatalf("expected authenticated request user id %d, got %d", token.UserID, resolved.UserID)
+	}
+	if resolved.AccessTokenID != token.ID {
+		t.Fatalf("expected authenticated request access token id %d, got %d", token.ID, resolved.AccessTokenID)
+	}
+}
+
+func TestResolveSearchRequestContextWithDBUpdatesAccessTokenUsageMetadata(t *testing.T) {
+	db := newSearchControllerTestDB(t)
+	token := seedControllerAccessToken(t, db, "usage-token")
+	before := time.Now().Add(-time.Second)
+
+	resolved, err := resolveSearchRequestContextWithDB(db, "Basic usage-token", "203.0.113.9", url.Values{})
+	if err != nil {
+		t.Fatalf("resolve search context: %v", err)
+	}
+	if resolved.AccessTokenCtx == nil {
+		t.Fatal("expected access token context for authenticated request")
+	}
+
+	var stored entity.AccessToken
+	if err := db.Where("id = ?", token.ID).First(&stored).Error; err != nil {
+		t.Fatalf("load access token: %v", err)
+	}
+	if stored.LastUsedAt == nil {
+		t.Fatal("expected last used at to be updated")
+	}
+	if stored.LastUsedAt.Before(before) {
+		t.Fatalf("expected last used at after %v, got %v", before, stored.LastUsedAt)
+	}
+	if stored.LastUsedIP != "203.0.113.9" {
+		t.Fatalf("expected last used ip 203.0.113.9, got %s", stored.LastUsedIP)
+	}
+}
+
+func TestResolveSearchRequestContextWithDBMarksAISearchMode(t *testing.T) {
+	db := newSearchControllerTestDB(t)
+	resolved, err := resolveSearchRequestContextWithDB(db, "", "", url.Values{"use": []string{"ai"}})
+	if err != nil {
+		t.Fatalf("resolve search context: %v", err)
+	}
+	if resolved.SearchMode != searchModeAI {
+		t.Fatalf("expected ai search mode %s, got %s", searchModeAI, resolved.SearchMode)
+	}
+	if resolved.RequestID == "" {
+		t.Fatal("expected ai search mode request to have request id")
+	}
+}
+
+func TestShouldUseAISearchRequiresExplicitAIProvider(t *testing.T) {
+	config := service.AISearchRequestConfig{
+		BaseURL: "https://default.example.com/v1",
+		APIKey:  "default-key",
+		Model:   "default-model",
+	}
+
+	if shouldUseAISearch("", config) {
+		t.Fatal("expected empty use query not to enable ai search")
+	}
+	if shouldUseAISearch("icodef", config) {
+		t.Fatal("expected non-ai use query not to enable ai search")
+	}
+	if !shouldUseAISearch("ai", config) {
+		t.Fatal("expected explicit ai use query to enable ai search")
+	}
+}
+
+func TestDidUseDefaultNormalSearchProviderOnlyWhenEnabledProviderMatches(t *testing.T) {
+	if didUseDefaultNormalSearchProvider("lemon", []string{"icodef"}) {
+		t.Fatal("expected non-matching default provider not to count as executed")
+	}
+	if !didUseDefaultNormalSearchProvider("icodef", []string{"icodef"}) {
+		t.Fatal("expected matching default provider to count as executed")
+	}
+	if !didUseDefaultNormalSearchProvider("", []string{"icodef"}) {
+		t.Fatal("expected empty use query to include enabled default providers")
+	}
+}
+
+func TestBuildSearchBillingContextMarksAuthenticatedNormalDefaultExecutionBillable(t *testing.T) {
+	ctx := buildSearchBillingContext(resolvedSearchRequestContext{
+		SearchMode:                 searchModeNormal,
+		UsedDefaultSearchProviders: []string{"icodef"},
+		UserID:                     12,
+		AccessTokenID:              34,
+		RequestID:                  "req-normal",
+	}, "icodef", false, false)
+
+	if !ctx.UsedDefaultAccount {
+		t.Fatal("expected normal request to mark used default account")
+	}
+	if !ctx.Billable {
+		t.Fatal("expected authenticated normal default execution to be billable")
+	}
+	if ctx.UserID != 12 || ctx.AccessTokenID != 34 || ctx.RequestID != "req-normal" {
+		t.Fatalf("expected billing context identity to be preserved, got %+v", ctx)
+	}
+}
+
+func TestBuildSearchBillingContextSkipsNormalBillingWhenDefaultProviderDidNotExecute(t *testing.T) {
+	ctx := buildSearchBillingContext(resolvedSearchRequestContext{
+		SearchMode:                 searchModeNormal,
+		UsedDefaultSearchProviders: []string{"icodef"},
+		UserID:                     12,
+		AccessTokenID:              34,
+		RequestID:                  "req-normal-skip",
+	}, "lemon", false, false)
+
+	if ctx.UsedDefaultAccount {
+		t.Fatal("expected unmatched normal provider not to mark used default account")
+	}
+	if ctx.Billable {
+		t.Fatal("expected unmatched normal provider not to be billable")
+	}
+}
+
+func TestBuildSearchBillingContextMarksAuthenticatedAIDefaultExecutionBillable(t *testing.T) {
+	ctx := buildSearchBillingContext(resolvedSearchRequestContext{
+		SearchMode:    searchModeAI,
+		UsedDefaultAI: true,
+		UserID:        56,
+		AccessTokenID: 78,
+		RequestID:     "req-ai",
+	}, "ai", true, false)
+
+	if !ctx.UsedDefaultAccount {
+		t.Fatal("expected ai request to mark used default account")
+	}
+	if !ctx.Billable {
+		t.Fatal("expected authenticated ai default execution to be billable")
+	}
+}
+
+func TestBuildSearchBillingContextSkipsAIBillingWithoutDefaultAI(t *testing.T) {
+	ctx := buildSearchBillingContext(resolvedSearchRequestContext{
+		SearchMode:    searchModeAI,
+		UsedDefaultAI: false,
+		UserID:        56,
+		AccessTokenID: 78,
+		RequestID:     "req-ai-explicit",
+	}, "ai", true, false)
+
+	if ctx.UsedDefaultAccount {
+		t.Fatal("expected explicit ai config not to mark used default account")
+	}
+	if ctx.Billable {
+		t.Fatal("expected explicit ai config not to be billable")
+	}
+}
+
+func TestBuildSearchBillingContextSkipsAnonymousRequests(t *testing.T) {
+	ctx := buildSearchBillingContext(resolvedSearchRequestContext{
+		SearchMode:                 searchModeNormal,
+		UsedDefaultSearchProviders: []string{"icodef"},
+		RequestID:                  "req-anon",
+	}, "icodef", false, false)
+
+	if ctx.UsedDefaultAccount {
+		t.Fatal("expected anonymous request not to mark used default account")
+	}
+	if ctx.Billable {
+		t.Fatal("expected anonymous request not to be billable")
+	}
+}
+
+func TestShouldBillCompletedSearchForNormalModeWithAnswers(t *testing.T) {
+	ctx := searchBillingContext{
+		SearchMode: searchModeNormal,
+		Billable:   true,
+	}
+
+	if !shouldBillCompletedSearch(ctx, [][]string{{"答案A"}}, false) {
+		t.Fatal("expected normal mode with answers to be billable after execution")
+	}
+}
+
+func TestShouldBillCompletedSearchSkipsNormalModeWithoutAnswers(t *testing.T) {
+	ctx := searchBillingContext{
+		SearchMode: searchModeNormal,
+		Billable:   true,
+	}
+
+	if shouldBillCompletedSearch(ctx, nil, false) {
+		t.Fatal("expected normal mode without answers not to be billable after execution")
+	}
+}
+
+func TestShouldBillCompletedSearchForAIModeWithAnswersAndUsage(t *testing.T) {
+	ctx := searchBillingContext{
+		SearchMode: searchModeAI,
+		Billable:   true,
+	}
+
+	if !shouldBillCompletedSearch(ctx, [][]string{{"答案A"}}, true) {
+		t.Fatal("expected ai mode with answers and usage to be billable after execution")
+	}
+}
+
+func TestShouldBillCompletedSearchSkipsAIModeWithoutUsage(t *testing.T) {
+	ctx := searchBillingContext{
+		SearchMode: searchModeAI,
+		Billable:   true,
+	}
+
+	if shouldBillCompletedSearch(ctx, [][]string{{"答案A"}}, false) {
+		t.Fatal("expected ai mode without usage not to be billable after execution")
+	}
+}
+
+func TestShouldBillCompletedSearchSkipsNonBillableRequestContext(t *testing.T) {
+	ctx := searchBillingContext{
+		SearchMode: searchModeNormal,
+		Billable:   false,
+	}
+
+	if shouldBillCompletedSearch(ctx, [][]string{{"答案A"}}, false) {
+		t.Fatal("expected non-billable request context to remain non-billable after execution")
+	}
+}
+
+func TestFinalizeSearchBillingContextPreservesEligibleNormalBilling(t *testing.T) {
+	ctx := searchBillingContext{
+		UserID:             12,
+		AccessTokenID:      34,
+		RequestID:          "req-final-normal",
+		SearchMode:         searchModeNormal,
+		UsedDefaultAccount: true,
+		Billable:           true,
+	}
+
+	finalized := finalizeSearchBillingContext(ctx, [][]string{{"答案A"}}, false)
+
+	if !finalized.Billable {
+		t.Fatal("expected eligible normal billing context to remain billable")
+	}
+	if !finalized.UsedDefaultAccount {
+		t.Fatal("expected finalized context to preserve default account usage fact")
+	}
+	if finalized.UserID != 12 || finalized.AccessTokenID != 34 || finalized.RequestID != "req-final-normal" {
+		t.Fatalf("expected finalized billing context identity to be preserved, got %+v", finalized)
+	}
+}
+
+func TestFinalizeSearchBillingContextDowngradesAIBillingWithoutUsage(t *testing.T) {
+	ctx := searchBillingContext{
+		UserID:             56,
+		AccessTokenID:      78,
+		RequestID:          "req-final-ai",
+		SearchMode:         searchModeAI,
+		UsedDefaultAccount: true,
+		Billable:           true,
+	}
+
+	finalized := finalizeSearchBillingContext(ctx, [][]string{{"答案A"}}, false)
+
+	if finalized.Billable {
+		t.Fatal("expected ai billing context without usage to be downgraded after execution")
+	}
+	if !finalized.UsedDefaultAccount {
+		t.Fatal("expected finalized ai context to preserve default account usage fact")
+	}
+	if finalized.UserID != 56 || finalized.AccessTokenID != 78 || finalized.RequestID != "req-final-ai" {
+		t.Fatalf("expected finalized ai billing context identity to be preserved, got %+v", finalized)
+	}
+}
+
+func TestFinalizeSearchBillingContextKeepsNonBillableContextFalse(t *testing.T) {
+	ctx := searchBillingContext{
+		UserID:             90,
+		AccessTokenID:      12,
+		RequestID:          "req-final-skip",
+		SearchMode:         searchModeNormal,
+		UsedDefaultAccount: false,
+		Billable:           false,
+	}
+
+	finalized := finalizeSearchBillingContext(ctx, [][]string{{"答案A"}}, false)
+
+	if finalized.Billable {
+		t.Fatal("expected finalized non-billable context to remain false")
+	}
+	if finalized.UserID != 90 || finalized.AccessTokenID != 12 || finalized.RequestID != "req-final-skip" {
+		t.Fatalf("expected finalized non-billable context identity to be preserved, got %+v", finalized)
+	}
+}
+
+func TestBuildCompletedSearchBillingContextMarksNormalDefaultExecutionWithAnswersBillable(t *testing.T) {
+	ctx := buildCompletedSearchBillingContext(resolvedSearchRequestContext{
+		SearchMode:                 searchModeNormal,
+		UsedDefaultSearchProviders: []string{"icodef"},
+		UserID:                     12,
+		AccessTokenID:              34,
+		RequestID:                  "req-complete-normal",
+	}, "icodef", false, [][]string{{"答案A"}}, false, false)
+
+	if !ctx.UsedDefaultAccount {
+		t.Fatal("expected completed normal billing context to record default account usage")
+	}
+	if !ctx.Billable {
+		t.Fatal("expected completed normal billing context with answers to be billable")
+	}
+	if ctx.UserID != 12 || ctx.AccessTokenID != 34 || ctx.RequestID != "req-complete-normal" {
+		t.Fatalf("expected completed normal billing context identity to be preserved, got %+v", ctx)
+	}
+}
+
+func TestBuildCompletedSearchBillingContextDowngradesAIDefaultExecutionWithoutUsage(t *testing.T) {
+	ctx := buildCompletedSearchBillingContext(resolvedSearchRequestContext{
+		SearchMode:    searchModeAI,
+		UsedDefaultAI: true,
+		UserID:        56,
+		AccessTokenID: 78,
+		RequestID:     "req-complete-ai",
+	}, "ai", true, [][]string{{"答案A"}}, false, false)
+
+	if !ctx.UsedDefaultAccount {
+		t.Fatal("expected completed ai billing context to preserve default account usage")
+	}
+	if ctx.Billable {
+		t.Fatal("expected completed ai billing context without usage not to be billable")
+	}
+	if ctx.UserID != 56 || ctx.AccessTokenID != 78 || ctx.RequestID != "req-complete-ai" {
+		t.Fatalf("expected completed ai billing context identity to be preserved, got %+v", ctx)
+	}
+}
+
+func TestReportCompletedSearchBillingPublishesFinalizedContext(t *testing.T) {
+	original := searchBillingReporter
+	defer func() {
+		searchBillingReporter = original
+	}()
+
+	var reported searchBillingContext
+	searchBillingReporter = func(ctx searchBillingContext) {
+		reported = ctx
+	}
+
+	reportCompletedSearchBilling(resolvedSearchRequestContext{
+		SearchMode:                 searchModeNormal,
+		UsedDefaultSearchProviders: []string{"icodef"},
+		UserID:                     12,
+		AccessTokenID:              34,
+		RequestID:                  "req-report-normal",
+	}, "icodef", false, [][]string{{"答案A"}}, false, false)
+
+	if !reported.UsedDefaultAccount {
+		t.Fatal("expected reported billing context to preserve default account usage")
+	}
+	if !reported.Billable {
+		t.Fatal("expected reported billing context to be billable for eligible normal search")
+	}
+	if reported.UserID != 12 || reported.AccessTokenID != 34 || reported.RequestID != "req-report-normal" {
+		t.Fatalf("expected reported billing context identity to be preserved, got %+v", reported)
+	}
+}
+
+func TestReportCompletedSearchBillingPublishesDowngradedAIBillingContext(t *testing.T) {
+	original := searchBillingReporter
+	defer func() {
+		searchBillingReporter = original
+	}()
+
+	var reported searchBillingContext
+	searchBillingReporter = func(ctx searchBillingContext) {
+		reported = ctx
+	}
+
+	reportCompletedSearchBilling(resolvedSearchRequestContext{
+		SearchMode:    searchModeAI,
+		UsedDefaultAI: true,
+		UserID:        56,
+		AccessTokenID: 78,
+		RequestID:     "req-report-ai",
+	}, "ai", true, [][]string{{"答案A"}}, false, false)
+
+	if !reported.UsedDefaultAccount {
+		t.Fatal("expected reported ai billing context to preserve default account usage")
+	}
+	if reported.Billable {
+		t.Fatal("expected reported ai billing context without usage not to be billable")
+	}
+	if reported.UserID != 56 || reported.AccessTokenID != 78 || reported.RequestID != "req-report-ai" {
+		t.Fatalf("expected reported ai billing context identity to be preserved, got %+v", reported)
+	}
+}
+

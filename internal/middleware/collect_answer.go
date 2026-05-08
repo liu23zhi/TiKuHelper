@@ -6,9 +6,11 @@ import (
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
+	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/model"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 // FillHash 填充题库的hash值
@@ -35,7 +37,7 @@ func FillHash(t *entity.Tiku) {
 }
 
 // CollectAnswer 收集没有搜索到的答案
-func CollectAnswer(resp model.SearchResponse, courseName, extra string) {
+func CollectAnswer(resp model.SearchResponse, courseName, extra, provider string) {
 	sort.Strings(resp.Options) // 将选项排序
 	opts, err := json.Marshal(resp.Options)
 	if err != nil {
@@ -49,8 +51,13 @@ func CollectAnswer(resp model.SearchResponse, courseName, extra string) {
 		marshal, _ := json.Marshal(resp.Answer.BestAnswer)
 		ans = string(marshal)
 	}
+	sourceName := strings.TrimSpace(service.ResolveSearchAccountProviderLabel(provider))
+	recordEmptyAnswer := false
+	if mgr := manager.GetManager(); mgr != nil {
+		recordEmptyAnswer = mgr.GetConfig().RecordEmptyAnswer
+	}
 	// 记录空答案或者有答案才会被记录
-	if manager.GetManager().GetConfig().RecordEmptyAnswer || ans != "[]" {
+	if recordEmptyAnswer || ans != "[]" {
 		t := entity.Tiku{
 			CourseName: courseName,
 			Extra:      extra,
@@ -59,6 +66,7 @@ func CollectAnswer(resp model.SearchResponse, courseName, extra string) {
 			Answer:     ans,
 			Options:    string(opts),
 			Plat:       int32(resp.Plat),
+			SourceName: sourceName,
 		}
 		FillHash(&t)
 		err := dao.Tiku.Create(&t)
@@ -76,6 +84,10 @@ func CollectAnswer(resp model.SearchResponse, courseName, extra string) {
 
 				if tk.CourseName == "" {
 					dao.Tiku.Where(dao.Tiku.ID.Eq(tk.ID)).Update(dao.Tiku.CourseName, courseName)
+				}
+
+				if strings.TrimSpace(tk.SourceName) == "" && sourceName != "" {
+					dao.Tiku.Where(dao.Tiku.ID.Eq(tk.ID)).Update(dao.Tiku.SourceName, sourceName)
 				}
 			}
 		}

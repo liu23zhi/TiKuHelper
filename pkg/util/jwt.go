@@ -1,20 +1,34 @@
 package util
 
 import (
-	"crypto/rand"
 	"errors"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/itihey/tikuAdapter/pkg/logger"
+	"os"
 	"strconv"
+	"strings"
 )
+
+const defaultJWTSecret = "tiku-adapter-dev-secret"
 
 var jwtKey []byte
 
 func init() {
-	jwtKey = make([]byte, 32) // 生成32字节（256位）的密钥
-	if _, err := rand.Read(jwtKey); err != nil {
+	if err := ConfigureJWT(""); err != nil {
 		panic(err)
 	}
+}
+
+func ConfigureJWT(secret string) error {
+	resolved := strings.TrimSpace(secret)
+	if resolved == "" {
+		resolved = strings.TrimSpace(os.Getenv("JWT_SECRET"))
+	}
+	if resolved == "" {
+		resolved = defaultJWTSecret
+	}
+	jwtKey = []byte(resolved)
+	return nil
 }
 
 // GenerateJwt 生成一个jwt

@@ -11,13 +11,15 @@ import Header from '../components/PageHeader'
 import Footer from '../components/PageFoot'
 import { useRouter } from 'vue-router';
 import { getCookies } from '../utils/cookies'
+import { getStoredCurrentUser, resolveHomePath } from '../utils/currentUser'
 export default {
   name: 'LoginLayout',
   setup(){
     const router = useRouter()
     const token = getCookies('token')
+    const currentUser = getStoredCurrentUser()
     if(token){
-      router.push('/adapter/component')
+      router.push(resolveHomePath(currentUser))
     }
   },
   components:{
