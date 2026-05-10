@@ -232,6 +232,7 @@ func Search(c *gin.Context) {
 	hasAIUsage := false
 	usedLocalSearch := false
 	auditHitProvider := ""
+	logSearchRoutingDecision(c, query, resolved, aiEnabled)
 	if strings.Contains(useQuery, "local") { // 使用本地题库的话
 		localAnswer, err = defaultDBSearchProvider()(req)
 		if err != nil {
@@ -255,6 +256,18 @@ func Search(c *gin.Context) {
 			}
 		} else {
 			clientBindings := buildSearchClientBindings(resolved, useQuery)
+			if aiEnabled {
+				clientBindings = append(clientBindings, searchClientBinding{
+					Provider: searchModeAI,
+					Search: func(req model.SearchRequest) ([][]string, error) {
+						answers, aiUsage, err := searchAIAnswer(resolved, req)
+						if err == nil && len(answers) > 0 {
+							hasAIUsage = aiUsage
+						}
+						return answers, err
+					},
+				})
+			}
 
 			var wg sync.WaitGroup
 			var mu sync.Mutex
@@ -267,6 +280,9 @@ func Search(c *gin.Context) {
 					if err == nil && len(res) > 0 {
 						mu.Lock()
 						defer mu.Unlock()
+						if strings.TrimSpace(binding.Provider) == searchModeAI {
+							hasAIUsage = true
+						}
 						if auditHitProvider == "" {
 							auditHitProvider = strings.TrimSpace(binding.Provider)
 						}
@@ -289,10 +305,62 @@ func Search(c *gin.Context) {
 }
 
 func shouldUseAISearch(useQuery string, config service.AISearchRequestConfig) bool {
-	if !strings.Contains(useQuery, "ai") {
-		return false
-	}
 	return service.IsAISearchConfigUsable(config)
+}
+
+func logSearchRoutingDecision(c *gin.Context, query url.Values, resolved resolvedSearchRequestContext, aiEnabled bool) {
+	useQuery := strings.TrimSpace(query.Get("use"))
+	parts := []string{
+		"搜题路由判定",
+		fmt.Sprintf("requestId=%s", strings.TrimSpace(resolved.RequestID)),
+		fmt.Sprintf("path=%s", c.Request.URL.Path),
+		fmt.Sprintf("useQuery=%s", useQuery),
+		fmt.Sprintf("resolvedMode=%s", strings.TrimSpace(resolved.SearchMode)),
+		fmt.Sprintf("aiConfigUsable=%t", service.IsAISearchConfigUsable(resolved.AIConfig)),
+		fmt.Sprintf("aiEnabled=%t", aiEnabled),
+		fmt.Sprintf("hasAuthorization=%t", strings.TrimSpace(c.GetHeader("Authorization")) != ""),
+		fmt.Sprintf("accessTokenID=%d", resolved.AccessTokenID),
+	}
+	if resolved.SearchMode == searchModeAI && !aiEnabled {
+		parts = append(parts, fmt.Sprintf("aiDisabledReason=%s", explainAISearchDisabledReason(resolved.AIConfig)))
+	}
+	if resolved.SearchMode != searchModeAI {
+		parts = append(parts, fmt.Sprintf("normalModeReason=%s", explainNormalSearchReason(query, aiEnabled)))
+	}
+	logger.SysLog(strings.Join(parts, " "))
+}
+
+func explainAISearchDisabledReason(config service.AISearchRequestConfig) string {
+	if !service.IsAISearchConfigUsable(config) {
+		missing := make([]string, 0, 3)
+		if strings.TrimSpace(config.BaseURL) == "" {
+			missing = append(missing, "url")
+		}
+		if strings.TrimSpace(config.APIKey) == "" {
+			missing = append(missing, "key")
+		}
+		if strings.TrimSpace(config.Model) == "" {
+			missing = append(missing, "model")
+		}
+		if len(missing) > 0 {
+			return "missing_ai_config_" + strings.Join(missing, ",")
+		}
+		return "ai_config_unusable"
+	}
+	return "unknown"
+}
+
+func explainNormalSearchReason(query url.Values, aiEnabled bool) string {
+	if strings.TrimSpace(query.Get("use")) != "" {
+		if aiEnabled {
+			return "explicit_provider_mix_with_ai"
+		}
+		return "explicit_provider_only"
+	}
+	if aiEnabled {
+		return "default_provider_mix_with_ai"
+	}
+	return "missing_ai_config"
 }
 
 func readAndRestoreRequestBody(c *gin.Context) string {
@@ -802,8 +870,15 @@ func writeCompletedSearchAuditLog(resolved resolvedSearchRequestContext, useQuer
 	)
 }
 
+func hasExplicitAIMode(query url.Values) bool {
+	if strings.Contains(strings.TrimSpace(query.Get("use")), "ai") {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(query.Get("mode")), searchModeAI)
+}
+
 func detectSearchMode(query url.Values) string {
-	if strings.Contains(query.Get("use"), "ai") {
+	if hasExplicitAIMode(query) {
 		return searchModeAI
 	}
 	return searchModeNormal

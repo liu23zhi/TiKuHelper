@@ -1476,22 +1476,92 @@ func TestResolveSearchRequestContextWithDBMarksAISearchMode(t *testing.T) {
 	}
 }
 
-func TestShouldUseAISearchRequiresExplicitAIProvider(t *testing.T) {
+func TestShouldUseAISearchRequiresUsableConfigAndAllowsDefaultSearchMix(t *testing.T) {
 	config := service.AISearchRequestConfig{
 		BaseURL: "https://default.example.com/v1",
 		APIKey:  "default-key",
 		Model:   "default-model",
 	}
 
-	if shouldUseAISearch("", config) {
-		t.Fatal("expected empty use query not to enable ai search")
+	if !shouldUseAISearch("", config) {
+		t.Fatal("expected empty use query to enable ai search when config is usable")
 	}
-	if shouldUseAISearch("icodef", config) {
-		t.Fatal("expected non-ai use query not to enable ai search")
+	if !shouldUseAISearch("icodef", config) {
+		t.Fatal("expected normal provider use query to keep ai search enabled for mixed search")
 	}
 	if !shouldUseAISearch("ai", config) {
 		t.Fatal("expected explicit ai use query to enable ai search")
 	}
+	if shouldUseAISearch("", service.AISearchRequestConfig{}) {
+		t.Fatal("expected unusable ai config not to enable ai search")
+	}
+}
+
+func TestSearchUsesAIFlowDuringDefaultSearchWhenConfigUsable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	aiCalls := 0
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode: searchModeNormal,
+				RequestID:  "req-handler-default-mixed",
+				AIConfig: service.AISearchRequestConfig{
+					BaseURL: "https://default.example.com/v1",
+					APIKey:  "default-key",
+					Model:   "default-model",
+				},
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return []func(model.SearchRequest) ([][]string, error){(&stubSearchClient{enable: true, answer: [][]string{{"普通答案"}}}).SearchAnswer}
+		},
+		func(resolved resolvedSearchRequestContext, req model.SearchRequest) ([][]string, bool, error) {
+			aiCalls++
+			return [][]string{{"AI答案"}}, true, nil
+		},
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request.Header.Set("Content-Type", "application/json")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+
+			var resp model.SearchResponse
+			if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("unmarshal response: %v", err)
+			}
+			flat := make([]string, 0)
+			for _, group := range resp.Answer.AllAnswer {
+				flat = append(flat, group...)
+			}
+			if !containsString(flat, "AI答案") {
+				t.Fatalf("expected ai raw answer to be included during default search, got %+v", resp.Answer)
+			}
+			if !containsString(flat, "普通答案") {
+				t.Fatalf("expected normal provider raw answer to be included during default search, got %+v", resp.Answer)
+			}
+		})
+
+	if aiCalls != 1 {
+		t.Fatalf("expected ai flow to execute once during default mixed search, got %d", aiCalls)
+	}
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestDidUseDefaultNormalSearchProviderOnlyWhenEnabledProviderMatches(t *testing.T) {
