@@ -292,7 +292,7 @@ func shouldUseAISearch(useQuery string, config service.AISearchRequestConfig) bo
 	if !strings.Contains(useQuery, "ai") {
 		return false
 	}
-	return config.BaseURL != "" && config.APIKey != "" && config.Model != ""
+	return service.IsAISearchConfigUsable(config)
 }
 
 func readAndRestoreRequestBody(c *gin.Context) string {

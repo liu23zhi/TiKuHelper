@@ -182,6 +182,10 @@ func BuildAISearchRequestConfigWithDB(db *gorm.DB, query url.Values, allowDefaul
 	return resolved, nil
 }
 
+func IsAISearchConfigUsable(config AISearchRequestConfig) bool {
+	return strings.TrimSpace(config.BaseURL) != "" && strings.TrimSpace(config.APIKey) != "" && strings.TrimSpace(config.Model) != ""
+}
+
 func ListAISearchModelsWithDB(db *gorm.DB, query url.Values) ([]string, error) {
 	resolved, err := BuildAISearchRequestConfigWithDB(db, query, true)
 	if err != nil {

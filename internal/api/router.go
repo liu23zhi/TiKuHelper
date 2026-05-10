@@ -24,6 +24,7 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/plat", controller.Plat)
 
 	apiRouter.POST("/search", controller.Search)
+	apiRouter.POST("/ai-fallback", controller.AIFallback)
 	apiRouter.POST("/parser", controller.Parser)
 
 	apiRouter.GET("/courses", controller.Auth, controller.Courses)
