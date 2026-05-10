@@ -3,11 +3,13 @@ package service
 import (
 	stderrs "errors"
 	"net/url"
+	"strconv"
 	"strings"
 
 	internalsearch "github.com/itihey/tikuAdapter/internal/search"
 	pkgerrors "github.com/itihey/tikuAdapter/pkg/errors"
 	"github.com/itihey/tikuAdapter/pkg/model"
+	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 )
 
@@ -97,6 +99,11 @@ func SearchAIFallbackWithDB(db *gorm.DB, req model.SearchRequest) AIFallbackResu
 		return buildAIFallbackErrorResult(AIFallbackErrorCodeNoAnswer, "未找到可用答案")
 	}
 
+	normalizedAnswers = normalizeAIFallbackAnswersForRequest(normalizedAnswers, req)
+	if len(normalizedAnswers) == 0 {
+		return buildAIFallbackErrorResult(AIFallbackErrorCodeNoAnswer, "未找到可用答案")
+	}
+
 	return AIFallbackResult{
 		Success: true,
 		Result: &AIFallbackAnswer{
@@ -142,6 +149,115 @@ func collectUsableAIFallbackAnswers(answerGroups [][]string) ([]string, AIFallba
 		return nil, AIFallbackErrorCodeUnsafeToAnswer
 	}
 	return nil, AIFallbackErrorCodeNoAnswer
+}
+
+func normalizeAIFallbackAnswersForRequest(answers []string, req model.SearchRequest) []string {
+	if len(answers) == 0 {
+		return nil
+	}
+
+	normalizedOptions := util.FormatOptions(req.Options, req.Type)
+	if len(normalizedOptions) == 0 {
+		result := make([]string, 0, len(answers))
+		seen := make(map[string]struct{})
+		for _, answer := range answers {
+			normalized := strings.TrimSpace(answer)
+			if normalized == "" {
+				continue
+			}
+			if _, exists := seen[normalized]; exists {
+				continue
+			}
+			seen[normalized] = struct{}{}
+			result = append(result, normalized)
+		}
+		return result
+	}
+
+	answerGroups := make([][]string, 0, len(answers))
+	for _, answer := range answers {
+		mapped := mapAIFallbackAnswerToOptions(strings.TrimSpace(answer), normalizedOptions)
+		if len(mapped) == 0 {
+			continue
+		}
+		answerGroups = append(answerGroups, mapped)
+	}
+	if len(answerGroups) == 0 {
+		return nil
+	}
+
+	response := util.FillAnswerResponse(answerGroups, &model.SearchRequest{
+		Question: req.Question,
+		Options:  normalizedOptions,
+		Type:     req.Type,
+	})
+	return response.Answer.BestAnswer
+}
+
+func mapAIFallbackAnswerToOptions(answer string, options []string) []string {
+	if answer == "" || len(options) == 0 {
+		return nil
+	}
+
+	normalized := util.FormatString(answer)
+	if normalized == "" {
+		return nil
+	}
+
+	if exact := matchAIFallbackOption(normalized, options); exact != "" {
+		return []string{exact}
+	}
+
+	if len(normalized) == 1 {
+		if index, err := strconv.Atoi(normalized); err == nil {
+			idx := index - 1
+			if idx >= 0 && idx < len(options) {
+				return []string{options[idx]}
+			}
+		}
+		if normalized[0] >= 'A' && normalized[0] <= 'Z' {
+			idx := int(normalized[0] - 'A')
+			if idx >= 0 && idx < len(options) {
+				return []string{options[idx]}
+			}
+		}
+		if normalized[0] >= 'a' && normalized[0] <= 'z' {
+			idx := int(normalized[0] - 'a')
+			if idx >= 0 && idx < len(options) {
+				return []string{options[idx]}
+			}
+		}
+	}
+
+	parts := strings.FieldsFunc(normalized, func(r rune) bool {
+		return r == '#' || r == ',' || r == '，' || r == ';' || r == '；' || r == '|' || r == '/' || r == '、' || r == ' '
+	})
+	if len(parts) > 1 {
+		result := make([]string, 0, len(parts))
+		seen := make(map[string]struct{})
+		for _, part := range parts {
+			mapped := mapAIFallbackAnswerToOptions(part, options)
+			for _, item := range mapped {
+				if _, exists := seen[item]; exists {
+					continue
+				}
+				seen[item] = struct{}{}
+				result = append(result, item)
+			}
+		}
+		return result
+	}
+
+	return nil
+}
+
+func matchAIFallbackOption(answer string, options []string) string {
+	for _, option := range options {
+		if util.FormatString(option) == answer {
+			return option
+		}
+	}
+	return ""
 }
 
 func isUncertainAIFallbackAnswer(answer string) bool {

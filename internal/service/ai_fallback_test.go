@@ -91,8 +91,8 @@ func TestSearchAIFallbackWithDBKeepsUsableAnswerFromMixedOutput(t *testing.T) {
 	if !result.Success {
 		t.Fatalf("expected success result, got %+v", result)
 	}
-	if result.Result == nil || result.Result.Answer != "B" {
-		t.Fatalf("expected cleaned answer B, got %+v", result.Result)
+	if result.Result == nil || result.Result.Answer != "2" {
+		t.Fatalf("expected cleaned answer 2, got %+v", result.Result)
 	}
 }
 
@@ -142,7 +142,7 @@ func TestSearchAIFallbackWithDBReturnsUpstreamErrorWhenAISearchFails(t *testing.
 	}
 }
 
-func TestSearchAIFallbackWithDBReturnsSuccessWhenAIRespondsWithAnswer(t *testing.T) {
+func TestSearchAIFallbackWithDBMapsChoiceLetterToRealOptionText(t *testing.T) {
 	db := newSearchAccountConfigTestDB(t)
 	_, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{Enabled: true, BaseURL: "https://ai.example.com/v1", APIKey: "sk-test", Model: "gpt-4o-mini"})
 	if err != nil {
@@ -152,7 +152,7 @@ func TestSearchAIFallbackWithDBReturnsSuccessWhenAIRespondsWithAnswer(t *testing
 	original := runAIFallbackSearchWithUsage
 	defer func() { runAIFallbackSearchWithUsage = original }()
 	runAIFallbackSearchWithUsage = func(client *internalsearch.ChatGptClient, req model.SearchRequest) ([][]string, internalsearch.AISearchUsage, error) {
-		return [][]string{{"B"}}, internalsearch.AISearchUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}, nil
+		return [][]string{{"B"}}, internalsearch.AISearchUsage{}, nil
 	}
 
 	result := SearchAIFallbackWithDB(db, model.SearchRequest{Question: "1+1=?", Options: []string{"1", "2"}, Type: 0})
@@ -160,13 +160,34 @@ func TestSearchAIFallbackWithDBReturnsSuccessWhenAIRespondsWithAnswer(t *testing
 	if !result.Success {
 		t.Fatalf("expected success result, got %+v", result)
 	}
-	if result.Result == nil {
-		t.Fatal("expected success result payload")
-	}
-	if result.Result.Answer != "B" {
-		t.Fatalf("expected answer B, got %q", result.Result.Answer)
+	if result.Result == nil || result.Result.Answer != "2" {
+		t.Fatalf("expected mapped answer 2, got %+v", result.Result)
 	}
 }
+
+func TestSearchAIFallbackWithDBRejectsChoiceAnswerOutsideProvidedOptions(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	_, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{Enabled: true, BaseURL: "https://ai.example.com/v1", APIKey: "sk-test", Model: "gpt-4o-mini"})
+	if err != nil {
+		t.Fatalf("seed ai config: %v", err)
+	}
+
+	original := runAIFallbackSearchWithUsage
+	defer func() { runAIFallbackSearchWithUsage = original }()
+	runAIFallbackSearchWithUsage = func(client *internalsearch.ChatGptClient, req model.SearchRequest) ([][]string, internalsearch.AISearchUsage, error) {
+		return [][]string{{"火龙果"}}, internalsearch.AISearchUsage{}, nil
+	}
+
+	result := SearchAIFallbackWithDB(db, model.SearchRequest{Question: "选择苹果", Options: []string{"苹果", "香蕉"}, Type: 0})
+
+	if result.Success {
+		t.Fatalf("expected no answer result, got %+v", result)
+	}
+	if result.Error == nil || result.Error.Code != AIFallbackErrorCodeNoAnswer {
+		t.Fatalf("expected NO_ANSWER, got %+v", result.Error)
+	}
+}
+
 
 func TestSearchAIFallbackWithDBMapsErrTargetNoAnswerToNoAnswerCode(t *testing.T) {
 	db := newSearchAccountConfigTestDB(t)
