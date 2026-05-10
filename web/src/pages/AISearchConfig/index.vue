@@ -39,13 +39,13 @@
           <a-textarea
             v-model:value="formState.manualModelsText"
             :auto-size="{ minRows: 4, maxRows: 8 }"
-            placeholder="每行一个模型名，例如\ngpt-4o-mini\ndeepseek-chat"
+            placeholder="支持英文逗号、中文逗号或换行分隔，例如\ngpt-5.4,gpt-5.4-mini,gpt-5.3-codex"
           />
           <a-button class="fetch-btn" @click="handleFetchModels" :loading="fetchingModels">
             获取远程模型列表
           </a-button>
         </div>
-        <div class="hint">支持手动维护；点击按钮会把远程模型合并到当前模型列表，并自动去重。</div>
+        <div class="hint">此处用于批量补充模型架构；当前页面真正的模型列表以“模型架构表”的 modelName 为准。</div>
         <a-space wrap class="model-tags">
           <a-tag
             v-for="item in modelOptions"
@@ -240,33 +240,17 @@ import {
   deleteAIModelArchitecture,
 } from '@/api/TikuComponentApi';
 import {
+  buildArchitectureModelOptions,
+  buildArchitectureModelText,
+  buildAISearchConfigSavePayload,
+  buildMissingArchitecturePayloads,
+} from '@/utils/aiModelArchitectureHelpers.mjs';
+import {
   buildAISearchTestForm,
   buildAISearchTestPayload,
   buildAISearchTestResult,
   hasAISearchTestResult,
 } from '@/utils/aiSearchConfigHelpers.mjs';
-
-function splitModels(text) {
-  return String(text || '')
-    .split(/\r?\n|,|，/)
-    .map(item => item.trim())
-    .filter(Boolean)
-}
-
-function mergeModels(...groups) {
-  const values = new Set()
-  const items = []
-  groups.forEach(group => {
-    splitModels(Array.isArray(group) ? group.join('\n') : group).forEach(item => {
-      if (values.has(item)) {
-        return
-      }
-      values.add(item)
-      items.push(item)
-    })
-  })
-  return items
-}
 
 function trimBaseUrl(url) {
   return String(url || '').trim().replace(/\/+$/, '')
@@ -331,10 +315,7 @@ export default defineComponent({
     })
 
     const modelOptions = computed(() => {
-      return splitModels(formState.manualModelsText).map(item => ({
-        label: item,
-        value: item,
-      }))
+      return buildArchitectureModelOptions(architectureRows.value)
     })
 
     const architectureColumns = [
@@ -349,6 +330,10 @@ export default defineComponent({
       { title: '操作', dataIndex: 'action', key: 'action', fixed: 'right', width: 120, slots: { customRender: 'action' } },
     ]
 
+    const syncModelTextFromArchitectures = () => {
+      formState.manualModelsText = buildArchitectureModelText(architectureRows.value)
+    }
+
     const loadConfig = () => {
       tabLoading.value = true
       getAISearchConfig().then(res => {
@@ -358,7 +343,6 @@ export default defineComponent({
           formState.baseUrl = data.baseUrl || ''
           formState.apiKey = data.apiKey || ''
           formState.model = data.model || ''
-          formState.manualModelsText = Array.isArray(data.manualModels) ? data.manualModels.join('\n') : ''
           formState.prompt = data.prompt || ''
           formState.remark = data.remark || ''
           formState.temperature = data.temperature ?? 0
@@ -380,6 +364,7 @@ export default defineComponent({
       return getAIModelArchitectures().then(res => {
         if (res?.status === 200) {
           architectureRows.value = Array.isArray(res?.data) ? res.data : []
+          syncModelTextFromArchitectures()
         } else {
           message.error(res?.message || '获取模型架构失败')
         }
@@ -432,6 +417,7 @@ export default defineComponent({
       loadConfig,
       loadAIModelArchitectures,
       resetArchitectureForm,
+      syncModelTextFromArchitectures,
     }
   },
   methods: {
@@ -441,6 +427,20 @@ export default defineComponent({
     },
     selectModel(model) {
       this.formState.model = model
+    },
+    syncMissingArchitectures(modelSource) {
+      const missingPayloads = buildMissingArchitecturePayloads(this.architectureRows, modelSource)
+      if (!missingPayloads.length) {
+        return Promise.resolve(0)
+      }
+
+      return Promise.all(missingPayloads.map(payload => createAIModelArchitecture(payload))).then(results => {
+        const failed = results.find(item => item?.status !== 200)
+        if (failed) {
+          throw new Error(failed?.message || '同步模型架构失败')
+        }
+        return this.loadAIModelArchitectures().then(() => missingPayloads.length)
+      })
     },
     handleFetchModels() {
       const params = {}
@@ -455,49 +455,41 @@ export default defineComponent({
 
       this.fetchingModels = true
       getAISearchModels(params).then(res => {
-        if (res?.status === 200) {
-          const remoteModels = Array.isArray(res?.data?.models) ? res.data.models : []
-          const mergedModels = mergeModels(this.formState.manualModelsText, remoteModels)
-          const addedCount = Math.max(0, mergedModels.length - splitModels(this.formState.manualModelsText).length)
-          this.formState.manualModelsText = mergedModels.join('\n')
-          if (addedCount > 0) {
-            message.success(`已更新模型列表，新增 ${addedCount} 个模型`)
-          } else {
-            message.success('模型列表已刷新，暂无新增模型')
-          }
-        } else {
-          message.error(res?.message || '获取 AI 模型列表失败')
+        if (res?.status !== 200) {
+          throw new Error(res?.message || '获取 AI 模型列表失败')
         }
-      }).catch(() => {
-        message.error('获取 AI 模型列表失败')
+
+        const remoteModels = Array.isArray(res?.data?.models) ? res.data.models : []
+        return this.syncMissingArchitectures([
+          this.formState.manualModelsText,
+          ...remoteModels,
+        ])
+      }).then(addedCount => {
+        if (addedCount > 0) {
+          message.success(`已同步模型架构，新增 ${addedCount} 个模型`)
+        } else {
+          message.success('模型架构已刷新，暂无新增模型')
+        }
+      }).catch(error => {
+        message.error(error?.message || '获取 AI 模型列表失败')
       }).finally(() => {
         this.fetchingModels = false
       })
     },
     submitSave(baseUrl) {
-      const payload = {
-        enabled: !!this.formState.enabled,
-        baseUrl,
-        apiKey: this.formState.apiKey || '',
-        model: this.formState.model || '',
-        manualModels: splitModels(this.formState.manualModelsText),
-        prompt: this.formState.prompt || '',
-        remark: this.formState.remark || '',
-        temperature: 0,
-        topP: 0,
-        inputTokenPrice: Number(this.formState.inputTokenPrice || 0),
-        outputTokenPrice: Number(this.formState.outputTokenPrice || 0),
-      }
       this.saving = true
-      updateAISearchConfig(payload).then(res => {
+      this.syncMissingArchitectures(this.formState.manualModelsText).then(() => {
+        const payload = buildAISearchConfigSavePayload(this.formState, baseUrl, this.architectureRows)
+        return updateAISearchConfig(payload)
+      }).then(res => {
         if (res?.status === 200) {
           message.success('保存成功')
           this.loadConfig()
-        } else {
-          message.error(res?.message || '保存失败')
+          return
         }
-      }).catch(() => {
-        message.error('保存失败')
+        throw new Error(res?.message || '保存失败')
+      }).catch(error => {
+        message.error(error?.message || '保存失败')
       }).finally(() => {
         this.saving = false
       })
