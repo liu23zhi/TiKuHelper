@@ -42,6 +42,7 @@ type ResolvedSearchTokens struct {
 	Tokens               map[string]string `json:"tokens"`
 	UsedDefaultAccount   bool              `json:"usedDefaultAccount"`
 	UsedDefaultProviders []string          `json:"usedDefaultProviders"`
+	EnabledProviders     []string          `json:"enabledProviders"`
 }
 
 type AccessTokenAuthContext struct {
@@ -179,15 +180,17 @@ func BuildSearchTokensWithDB(db *gorm.DB, query url.Values, allowDefaultAccount 
 		configMap[config.Provider] = config
 	}
 
-	if !allowDefaultAccount {
-		return resolved, nil
-	}
-
 	for _, meta := range supportedSearchAccountProviders {
+		config, ok := configMap[meta.Provider]
+		if ok && config.Enabled {
+			resolved.EnabledProviders = append(resolved.EnabledProviders, meta.Provider)
+		}
+		if !allowDefaultAccount {
+			continue
+		}
 		if resolved.Tokens[meta.Provider] != "" {
 			continue
 		}
-		config, ok := configMap[meta.Provider]
 		if !ok {
 			continue
 		}
@@ -284,6 +287,14 @@ func getSearchAccountProviderMeta(provider string) (SearchAccountProviderMeta, b
 		}
 	}
 	return SearchAccountProviderMeta{}, false
+}
+
+func SearchAccountProviderRequiresToken(provider string) bool {
+	meta, ok := getSearchAccountProviderMeta(strings.TrimSpace(provider))
+	if !ok {
+		return false
+	}
+	return strings.TrimSpace(meta.TokenKey) != ""
 }
 
 func ResolveSearchAccountProviderLabel(provider string) string {

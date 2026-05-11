@@ -68,6 +68,7 @@ type searchAuditMetadata struct {
 
 type resolvedSearchRequestContext struct {
 	Tokens                     map[string]string
+	EnabledSearchProviders     []string
 	AIConfig                   service.AISearchRequestConfig
 	AccessTokenCtx             *service.AccessTokenAuthContext
 	UsedDefaultSearch          bool
@@ -103,20 +104,40 @@ type searchClientBinding struct {
 	Search   func(model.SearchRequest) ([][]string, error)
 }
 
+func isNormalSearchProviderEnabledBySystem(resolved resolvedSearchRequestContext, provider string) bool {
+	trimmedProvider := strings.TrimSpace(provider)
+	if trimmedProvider == "" {
+		return false
+	}
+	for _, enabledProvider := range resolved.EnabledSearchProviders {
+		if strings.TrimSpace(enabledProvider) == trimmedProvider {
+			return true
+		}
+	}
+	return false
+}
+
 func shouldEnableNormalSearchProvider(resolved resolvedSearchRequestContext, useQuery string, provider string) bool {
 	trimmedProvider := strings.TrimSpace(provider)
 	if trimmedProvider == "" {
 		return false
 	}
 	if strings.TrimSpace(useQuery) != "" {
-		return strings.Contains(useQuery, trimmedProvider)
-	}
-	for _, allowedProvider := range resolved.UsedDefaultSearchProviders {
-		if strings.TrimSpace(allowedProvider) == trimmedProvider {
-			return true
+		if !strings.Contains(useQuery, trimmedProvider) {
+			return false
 		}
+		if trimmedProvider == searchBillingProviderLocal {
+			return isNormalSearchProviderEnabledBySystem(resolved, trimmedProvider)
+		}
+		if service.SearchAccountProviderRequiresToken(trimmedProvider) {
+			return strings.TrimSpace(resolved.Tokens[trimmedProvider]) != ""
+		}
+		return isNormalSearchProviderEnabledBySystem(resolved, trimmedProvider)
 	}
-	return false
+	if trimmedProvider == searchBillingProviderLocal {
+		return false
+	}
+	return isNormalSearchProviderEnabledBySystem(resolved, trimmedProvider)
 }
 
 var buildSearchClientBindings = func(resolved resolvedSearchRequestContext, useQuery string) []searchClientBinding {
@@ -244,6 +265,10 @@ func Search(c *gin.Context) {
 	}
 	if strings.Contains(useQuery, searchBillingProviderLocal) && resolveResult.AccessTokenID == 0 {
 		writeSearchUnauthorized(c, fmt.Errorf("%w: 匿名请求不能使用本地题库，请提供有效访问令牌", service.ErrInvalidAccessTokenAuthorization), rawBody)
+		return
+	}
+	if strings.Contains(useQuery, searchBillingProviderLocal) && !shouldEnableNormalSearchProvider(resolveResult, useQuery, searchBillingProviderLocal) {
+		writeSearchUnauthorized(c, fmt.Errorf("%w: 本地题库未启用，请先在默认账号配置中启用后再调用", service.ErrInvalidAccessTokenAuthorization), rawBody)
 		return
 	}
 
@@ -1060,6 +1085,7 @@ func resolveSearchRequestContextWithDB(db *gorm.DB, authorization string, client
 		return resolved, err
 	}
 	resolved.Tokens = resolvedTokens.Tokens
+	resolved.EnabledSearchProviders = resolvedTokens.EnabledProviders
 	resolved.UsedDefaultSearch = resolvedTokens.UsedDefaultAccount
 	resolved.UsedDefaultSearchProviders = resolvedTokens.UsedDefaultProviders
 

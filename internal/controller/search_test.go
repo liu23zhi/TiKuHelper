@@ -999,6 +999,51 @@ func TestSearchRejectsAnonymousLocalSearch(t *testing.T) {
 		})
 }
 
+func TestSearchRejectsDisabledLocalSearchEvenForAuthenticatedRequests(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	token := seedControllerAccessToken(t, db, "disabled-local-token")
+
+	originalResolver := resolveSearchRequestContext
+	originalClientBindings := buildSearchClientBindings
+	defer func() {
+		resolveSearchRequestContext = originalResolver
+		buildSearchClientBindings = originalClientBindings
+	}()
+	resolveSearchRequestContext = func(authorization string, clientIP string, query url.Values) (resolvedSearchRequestContext, error) {
+		return resolveSearchRequestContextWithDB(db, authorization, clientIP, query)
+	}
+	buildSearchClientBindings = func(resolvedSearchRequestContext, string) []searchClientBinding {
+		return nil
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=local&noRecord=1", bytes.NewReader([]byte(`{"question":"本地禁用题目","options":["A","B"]}`)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Basic disabled-local-token")
+	ctx.Request = request
+
+	Search(ctx)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+
+	var got struct {
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal unauthorized response: %v, body=%s", err, recorder.Body.String())
+	}
+	if !strings.Contains(got.Detail, "本地题库") || !strings.Contains(got.Detail, "未启用") {
+		t.Fatalf("expected unauthorized detail to mention disabled local provider, got %q", got.Detail)
+	}
+	if token.ID == 0 {
+		t.Fatal("expected seeded access token to exist")
+	}
+}
+
 func TestSearchAllowsAnonymousRemoteSearchWithoutBillingAndWritesFullAuditLog(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newSearchControllerTestDB(t)
@@ -1386,6 +1431,12 @@ func TestResolveSearchRequestContextWithDBAllowsDefaultAccountsWithValidAuthoriz
 	}); err != nil {
 		t.Fatalf("seed search config: %v", err)
 	}
+	if _, err := service.UpdateSearchAccountConfigWithDB(db, "local", service.UpdateSearchAccountConfigInput{
+		Enabled:   true,
+		FlatPrice: 0.6,
+	}); err != nil {
+		t.Fatalf("seed local config: %v", err)
+	}
 	if _, err := service.UpdateAISearchConfigWithDB(db, service.UpdateAISearchConfigInput{
 		Enabled: true,
 		BaseURL: "https://default.example.com/v1",
@@ -1420,6 +1471,9 @@ func TestResolveSearchRequestContextWithDBAllowsDefaultAccountsWithValidAuthoriz
 	}
 	if len(resolved.UsedDefaultSearchProviders) != 1 || resolved.UsedDefaultSearchProviders[0] != "icodef" {
 		t.Fatalf("expected default search providers [icodef], got %+v", resolved.UsedDefaultSearchProviders)
+	}
+	if !containsString(resolved.EnabledSearchProviders, "icodef") || !containsString(resolved.EnabledSearchProviders, "local") {
+		t.Fatalf("expected enabled search providers to include icodef and local, got %+v", resolved.EnabledSearchProviders)
 	}
 	if resolved.RequestID == "" {
 		t.Fatal("expected authenticated request to have request id")
@@ -1508,6 +1562,7 @@ func TestSearchUsesAIFlowDuringDefaultSearchWhenConfigUsable(t *testing.T) {
 			return resolvedSearchRequestContext{
 				SearchMode:                 searchModeNormal,
 				RequestID:                  "req-handler-default-mixed",
+				EnabledSearchProviders:     []string{"stub-0"},
 				UsedDefaultSearchProviders: []string{"stub-0"},
 				AIConfig: service.AISearchRequestConfig{
 					BaseURL: "https://default.example.com/v1",
@@ -1867,29 +1922,92 @@ func containsString(items []string, target string) bool {
 	return false
 }
 
-func TestShouldEnableNormalSearchProviderUsesResolvedDefaultProvidersWhenUseQueryEmpty(t *testing.T) {
+func TestShouldEnableNormalSearchProviderUsesSystemEnabledProvidersWhenUseQueryEmpty(t *testing.T) {
 	resolved := resolvedSearchRequestContext{
+		EnabledSearchProviders:     []string{"wanneng", "icodef"},
 		UsedDefaultSearchProviders: []string{"wanneng"},
+		Tokens: map[string]string{
+			"wanneng": "default-wanneng-token",
+			"icodef":  "default-icodef-token",
+		},
 	}
 
-	if shouldEnableNormalSearchProvider(resolved, "", "icodef") {
-		t.Fatal("expected provider outside resolved default list to stay disabled")
-	}
 	if !shouldEnableNormalSearchProvider(resolved, "", "wanneng") {
-		t.Fatal("expected provider inside resolved default list to be enabled")
+		t.Fatal("expected empty use query to enable enabled wanneng provider")
+	}
+	if !shouldEnableNormalSearchProvider(resolved, "", "icodef") {
+		t.Fatal("expected empty use query to enable enabled icodef provider")
+	}
+	if shouldEnableNormalSearchProvider(resolved, "", "local") {
+		t.Fatal("expected local provider to stay disabled when use query is empty")
 	}
 }
 
-func TestShouldEnableNormalSearchProviderHonorsExplicitUseQuery(t *testing.T) {
+func TestShouldEnableNormalSearchProviderRejectsExplicitCredentialProviderWithoutResolvedCredential(t *testing.T) {
 	resolved := resolvedSearchRequestContext{
+		EnabledSearchProviders:     []string{"icodef", "wanneng"},
 		UsedDefaultSearchProviders: []string{"wanneng"},
+		Tokens: map[string]string{
+			"wanneng": "default-wanneng-token",
+		},
 	}
 
-	if !shouldEnableNormalSearchProvider(resolved, "icodef", "icodef") {
-		t.Fatal("expected explicit use query to enable matching provider")
+	if shouldEnableNormalSearchProvider(resolved, "icodef", "icodef") {
+		t.Fatal("expected explicit credential-based provider without resolved credential to stay disabled")
 	}
 	if shouldEnableNormalSearchProvider(resolved, "icodef", "wanneng") {
 		t.Fatal("expected explicit use query to disable non-matching provider")
+	}
+}
+
+func TestShouldEnableNormalSearchProviderAllowsExplicitCredentialProviderWithResolvedCredential(t *testing.T) {
+	resolved := resolvedSearchRequestContext{
+		EnabledSearchProviders: []string{"icodef"},
+		Tokens: map[string]string{
+			"icodef": "request-token",
+		},
+	}
+
+	if !shouldEnableNormalSearchProvider(resolved, "icodef", "icodef") {
+		t.Fatal("expected explicit credential-based provider with resolved credential to be enabled")
+	}
+}
+
+func TestShouldEnableNormalSearchProviderRejectsExplicitDisabledCredentialProviderWithoutRequestCredential(t *testing.T) {
+	resolved := resolvedSearchRequestContext{
+		EnabledSearchProviders: []string{"icodef"},
+		Tokens: map[string]string{
+			"icodef": "default-icodef-token",
+		},
+	}
+
+	if shouldEnableNormalSearchProvider(resolved, "enncy", "enncy") {
+		t.Fatal("expected disabled credential-based provider without request credential to stay disabled")
+	}
+}
+
+func TestShouldEnableNormalSearchProviderAllowsExplicitCredentialProviderWithRequestCredentialEvenWhenSystemDisabled(t *testing.T) {
+	resolved := resolvedSearchRequestContext{
+		Tokens: map[string]string{
+			"enncy": "request-enncy-token",
+		},
+	}
+
+	if !shouldEnableNormalSearchProvider(resolved, "enncy", "enncy") {
+		t.Fatal("expected explicit credential-based provider with request credential to be enabled even when system default is disabled")
+	}
+}
+
+func TestShouldEnableNormalSearchProviderRequiresSystemEnablementForLocal(t *testing.T) {
+	if shouldEnableNormalSearchProvider(resolvedSearchRequestContext{}, "local", "local") {
+		t.Fatal("expected local provider to stay disabled when system config does not enable it")
+	}
+
+	resolved := resolvedSearchRequestContext{
+		EnabledSearchProviders: []string{"local"},
+	}
+	if !shouldEnableNormalSearchProvider(resolved, "local", "local") {
+		t.Fatal("expected local provider to be enabled after system config enables it")
 	}
 }
 

@@ -262,6 +262,57 @@ func TestBuildSearchTokensWithDBRejectsDefaultFallbackForAnonymousRequests(t *te
 	}
 }
 
+func TestBuildSearchTokensWithDBDoesNotInjectDisabledProviderDefaultForExplicitUse(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+
+	_, err := UpdateSearchAccountConfigWithDB(db, "icodef", UpdateSearchAccountConfigInput{
+		TokenValue: "system-icodef-token",
+		Enabled:    false,
+	})
+	if err != nil {
+		t.Fatalf("seed disabled icodef config: %v", err)
+	}
+	_, err = UpdateSearchAccountConfigWithDB(db, "wanneng", UpdateSearchAccountConfigInput{
+		TokenValue: "system-wanneng-token",
+		Enabled:    true,
+	})
+	if err != nil {
+		t.Fatalf("seed enabled wanneng config: %v", err)
+	}
+
+	resolved, err := BuildSearchTokensWithDB(db, url.Values{
+		"use": []string{"icodef"},
+	}, true)
+	if err != nil {
+		t.Fatalf("build tokens: %v", err)
+	}
+
+	if resolved.Tokens["icodef"] != "" {
+		t.Fatalf("expected disabled icodef default not to be injected, got %q", resolved.Tokens["icodef"])
+	}
+	if resolved.Tokens["wanneng"] != "system-wanneng-token" {
+		t.Fatalf("expected other enabled default token to remain injectable under current rules, got %q", resolved.Tokens["wanneng"])
+	}
+	if len(resolved.UsedDefaultProviders) != 1 || resolved.UsedDefaultProviders[0] != "wanneng" {
+		t.Fatalf("expected only wanneng default usage to be recorded, got %v", resolved.UsedDefaultProviders)
+	}
+}
+
+func TestSearchAccountProviderRequiresTokenUsesProviderMetadata(t *testing.T) {
+	if !SearchAccountProviderRequiresToken("icodef") {
+		t.Fatal("expected icodef to require token based on provider metadata")
+	}
+	if !SearchAccountProviderRequiresToken("enncy") {
+		t.Fatal("expected enncy to require token based on provider metadata")
+	}
+	if SearchAccountProviderRequiresToken("local") {
+		t.Fatal("expected local not to require token based on provider metadata")
+	}
+	if SearchAccountProviderRequiresToken("ai") {
+		t.Fatal("expected ai not to be treated as normal search token provider")
+	}
+}
+
 func TestBuildSearchTokensWithDBKeepsExplicitRequestTokensWithoutMarkingDefaultUsage(t *testing.T) {
 	db := newSearchAccountConfigTestDB(t)
 
