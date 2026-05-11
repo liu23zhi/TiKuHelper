@@ -103,32 +103,48 @@ type searchClientBinding struct {
 	Search   func(model.SearchRequest) ([][]string, error)
 }
 
+func shouldEnableNormalSearchProvider(resolved resolvedSearchRequestContext, useQuery string, provider string) bool {
+	trimmedProvider := strings.TrimSpace(provider)
+	if trimmedProvider == "" {
+		return false
+	}
+	if strings.TrimSpace(useQuery) != "" {
+		return strings.Contains(useQuery, trimmedProvider)
+	}
+	for _, allowedProvider := range resolved.UsedDefaultSearchProviders {
+		if strings.TrimSpace(allowedProvider) == trimmedProvider {
+			return true
+		}
+	}
+	return false
+}
+
 var buildSearchClientBindings = func(resolved resolvedSearchRequestContext, useQuery string) []searchClientBinding {
 	clients := []searchClientBinding{
 		{
 			Provider: "buguake",
 			Search: (&search.BuguakeClient{
-				Enable: strings.Contains(useQuery, "buguake") || useQuery == "",
+				Enable: shouldEnableNormalSearchProvider(resolved, useQuery, "buguake"),
 			}).SearchAnswer,
 		},
 		{
 			Provider: "icodef",
 			Search: (&search.IcodefClient{
 				Token:  resolved.Tokens["icodef"],
-				Enable: strings.Contains(useQuery, "icodef") || useQuery == "",
+				Enable: shouldEnableNormalSearchProvider(resolved, useQuery, "icodef"),
 			}).SearchAnswer,
 		},
 		{
 			Provider: "wanneng",
 			Search: (&search.WannengClient{
 				Token:  resolved.Tokens["wanneng"],
-				Enable: strings.Contains(useQuery, "wanneng") || useQuery == "",
+				Enable: shouldEnableNormalSearchProvider(resolved, useQuery, "wanneng"),
 			}).SearchAnswer,
 		},
 		{
 			Provider: "tikuhai",
 			Search: (&search.TikuhaiClient{
-				Enable: strings.Contains(useQuery, "tikuhai") || useQuery == "",
+				Enable: shouldEnableNormalSearchProvider(resolved, useQuery, "tikuhai"),
 				Token:  resolved.Tokens["tikuhai"],
 			}).SearchAnswer,
 		},
@@ -136,20 +152,20 @@ var buildSearchClientBindings = func(resolved resolvedSearchRequestContext, useQ
 			Provider: "enncy",
 			Search: (&search.EnncyClient{
 				Token:  resolved.Tokens["enncy"],
-				Enable: strings.Contains(useQuery, "enncy"),
+				Enable: shouldEnableNormalSearchProvider(resolved, useQuery, "enncy"),
 			}).SearchAnswer,
 		},
 		{
 			Provider: "aidian",
 			Search: (&search.AidianClient{
-				Enable: strings.Contains(useQuery, "aidian"),
+				Enable: shouldEnableNormalSearchProvider(resolved, useQuery, "aidian"),
 				YToken: resolved.Tokens["aidian"],
 			}).SearchAnswer,
 		},
 		{
 			Provider: "lemon",
 			Search: (&search.LemonClient{
-				Enable: strings.Contains(useQuery, "lemon"),
+				Enable: shouldEnableNormalSearchProvider(resolved, useQuery, "lemon"),
 				Token:  resolved.Tokens["lemon"],
 			}).SearchAnswer,
 		},
@@ -285,6 +301,11 @@ func Search(c *gin.Context) {
 			var mu sync.Mutex
 
 			for i := range clientBindings {
+				binding := clientBindings[i]
+				provider := strings.TrimSpace(binding.Provider)
+				if provider != searchModeAI && !shouldEnableNormalSearchProvider(resolved, useQuery, provider) {
+					continue
+				}
 				wg.Add(1)
 				go func(binding searchClientBinding) {
 					defer wg.Done()

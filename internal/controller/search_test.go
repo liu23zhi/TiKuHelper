@@ -1506,8 +1506,9 @@ func TestSearchUsesAIFlowDuringDefaultSearchWhenConfigUsable(t *testing.T) {
 		(&stubSearchClient{}).SearchAnswer,
 		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
 			return resolvedSearchRequestContext{
-				SearchMode: searchModeNormal,
-				RequestID:  "req-handler-default-mixed",
+				SearchMode:                 searchModeNormal,
+				RequestID:                  "req-handler-default-mixed",
+				UsedDefaultSearchProviders: []string{"stub-0"},
 				AIConfig: service.AISearchRequestConfig{
 					BaseURL: "https://default.example.com/v1",
 					APIKey:  "default-key",
@@ -1864,6 +1865,32 @@ func containsString(items []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func TestShouldEnableNormalSearchProviderUsesResolvedDefaultProvidersWhenUseQueryEmpty(t *testing.T) {
+	resolved := resolvedSearchRequestContext{
+		UsedDefaultSearchProviders: []string{"wanneng"},
+	}
+
+	if shouldEnableNormalSearchProvider(resolved, "", "icodef") {
+		t.Fatal("expected provider outside resolved default list to stay disabled")
+	}
+	if !shouldEnableNormalSearchProvider(resolved, "", "wanneng") {
+		t.Fatal("expected provider inside resolved default list to be enabled")
+	}
+}
+
+func TestShouldEnableNormalSearchProviderHonorsExplicitUseQuery(t *testing.T) {
+	resolved := resolvedSearchRequestContext{
+		UsedDefaultSearchProviders: []string{"wanneng"},
+	}
+
+	if !shouldEnableNormalSearchProvider(resolved, "icodef", "icodef") {
+		t.Fatal("expected explicit use query to enable matching provider")
+	}
+	if shouldEnableNormalSearchProvider(resolved, "icodef", "wanneng") {
+		t.Fatal("expected explicit use query to disable non-matching provider")
+	}
 }
 
 func TestDidUseDefaultNormalSearchProviderOnlyWhenEnabledProviderMatches(t *testing.T) {
