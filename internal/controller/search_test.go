@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1552,6 +1553,307 @@ func TestSearchUsesAIFlowDuringDefaultSearchWhenConfigUsable(t *testing.T) {
 
 	if aiCalls != 1 {
 		t.Fatalf("expected ai flow to execute once during default mixed search, got %d", aiCalls)
+	}
+}
+
+func TestSearchPreservesChaoxingCompletionStyleTextAnswerFromAI(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode: searchModeNormal,
+				RequestID:  "req-type2-ai-text",
+				AIConfig: service.AISearchRequestConfig{
+					BaseURL: "https://default.example.com/v1",
+					APIKey:  "default-key",
+					Model:   "default-model",
+				},
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return nil
+		},
+		func(resolved resolvedSearchRequestContext, req model.SearchRequest) ([][]string, bool, error) {
+			if req.Type != 2 {
+				t.Fatalf("expected completion/line style request type 2, got %d", req.Type)
+			}
+			if len(req.Options) != 0 {
+				t.Fatalf("expected no objective options for completion style request, got %v", req.Options)
+			}
+			return [][]string{{"左侧术语对应右侧案例"}}, true, nil
+		},
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?noRecord=1", bytes.NewReader([]byte(`{"question":"请完成连线","type":2}`)))
+			request.Header.Set("Content-Type", "application/json")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+
+			var resp model.SearchResponse
+			if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("unmarshal response: %v", err)
+			}
+			if got := resp.Answer.AnswerText; got != "左侧术语对应右侧案例" {
+				t.Fatalf("expected completion style answer text to be preserved, got %q", got)
+			}
+			if !containsString(resp.Answer.BestAnswer, "左侧术语对应右侧案例") {
+				t.Fatalf("expected best answer to preserve ai text answer, got %+v", resp.Answer)
+			}
+			if len(resp.Answer.AnswerKey) != 0 {
+				t.Fatalf("expected no objective answer keys for completion style ai answer, got %+v", resp.Answer)
+			}
+		})
+}
+
+func TestSearchPreservesChaoxingReaderStyleTextAnswerFromAIWithOptions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode: searchModeNormal,
+				RequestID:  "req-type4-ai-text",
+				AIConfig: service.AISearchRequestConfig{
+					BaseURL: "https://default.example.com/v1",
+					APIKey:  "default-key",
+					Model:   "default-model",
+				},
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return nil
+		},
+		func(resolved resolvedSearchRequestContext, req model.SearchRequest) ([][]string, bool, error) {
+			if req.Type != 4 {
+				t.Fatalf("expected reader/unknown style request type 4, got %d", req.Type)
+			}
+			return [][]string{{"先分析材料，再给出结论"}}, true, nil
+		},
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?noRecord=1", bytes.NewReader([]byte(`{"question":"请阅读材料后作答","type":4,"options":["材料一","材料二"]}`)))
+			request.Header.Set("Content-Type", "application/json")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+
+			var resp model.SearchResponse
+			if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("unmarshal response: %v", err)
+			}
+			if got := resp.Answer.AnswerText; got != "先分析材料，再给出结论" {
+				t.Fatalf("expected reader style answer text to be preserved, got %q", got)
+			}
+			if !containsString(resp.Answer.BestAnswer, "先分析材料，再给出结论") {
+				t.Fatalf("expected best answer to preserve reader style ai text answer, got %+v", resp.Answer)
+			}
+			if len(resp.Answer.AnswerKey) != 0 {
+				t.Fatalf("expected no objective answer keys for reader style ai answer, got %+v", resp.Answer)
+			}
+		})
+}
+
+func TestSearchLogsTypeAwareAIRequestAndResponseSummaries(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	originalWriter := gin.DefaultWriter
+	originalErrorWriter := gin.DefaultErrorWriter
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	gin.DefaultWriter = &stdout
+	gin.DefaultErrorWriter = &stderr
+	defer func() {
+		gin.DefaultWriter = originalWriter
+		gin.DefaultErrorWriter = originalErrorWriter
+	}()
+
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode: searchModeNormal,
+				RequestID:  "req-log-type2-ai",
+				AIConfig: service.AISearchRequestConfig{
+					BaseURL: "https://default.example.com/v1",
+					APIKey:  "default-key",
+					Model:   "default-model",
+				},
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return nil
+		},
+		func(resolved resolvedSearchRequestContext, req model.SearchRequest) ([][]string, bool, error) {
+			return [][]string{{"左侧术语对应右侧案例"}}, true, nil
+		},
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?noRecord=1", bytes.NewReader([]byte(`{"question":"请完成连线","type":2}`)))
+			request.Header.Set("Content-Type", "application/json")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+		})
+
+	logs := stdout.String()
+	if strings.Contains(stderr.String(), "渠道搜题失败") {
+		t.Fatalf("expected no channel search failures, got stderr=%s", stderr.String())
+	}
+	checks := []string{
+		"搜题路由判定 requestId=req-log-type2-ai",
+		"normalModeReason=default_provider_mix_with_ai",
+		"搜题请求摘要 requestId=req-log-type2-ai type=2 typeLabel=填空题/连线题",
+		"渠道搜题命中 requestId=req-log-type2-ai provider=ai",
+		"搜题响应摘要 requestId=req-log-type2-ai hitProvider=ai usedLocal=false aiEnabled=true type=2 typeLabel=填空题/连线题",
+		"answerText=左侧术语对应右侧案例",
+	}
+	for _, check := range checks {
+		if !strings.Contains(logs, check) {
+			t.Fatalf("expected logs %q to contain %q", logs, check)
+		}
+	}
+}
+
+func TestSearchSupportsChaoxingCompressedQuestionTypesEndToEnd(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name                  string
+		requestBody           string
+		expectedType          int
+		expectedInboundQuestion string
+		expectedResponseQuestion string
+		expectedInboundOptions []string
+		expectedResponseOptions []string
+		expectedAnswerText    string
+		expectedBestAnswer    []string
+	}{
+		{
+			name:                   "completion maps into type 2 text workflow",
+			requestBody:            `{"qid":"work-1","plat":-1,"question":"  请完成连线。 ","options":["A. 左侧术语","B. 右侧案例"],"type":2,"courseName":"创新方法学","extra":"来自 chaoxing_plus OCR"}`,
+			expectedType:           2,
+			expectedInboundQuestion: "  请完成连线。 ",
+			expectedResponseQuestion: "请完成连线.",
+			expectedInboundOptions: []string{"A. 左侧术语", "B. 右侧案例"},
+			expectedResponseOptions: []string{"左侧术语", "右侧案例"},
+			expectedAnswerText:     "左侧术语对应右侧案例",
+			expectedBestAnswer:     []string{"左侧术语对应右侧案例"},
+		},
+		{
+			name:                   "reader and unknown map into type 4 text workflow",
+			requestBody:            `{"qid":"work-2","plat":-1,"question":"请阅读材料后作答","options":["材料一","材料二"],"type":4,"courseName":"大学语文","extra":"调用侧原始类型 reader"}`,
+			expectedType:           4,
+			expectedInboundQuestion: "请阅读材料后作答",
+			expectedResponseQuestion: "请阅读材料后作答",
+			expectedInboundOptions: []string{"材料一", "材料二"},
+			expectedResponseOptions: []string{"材料一", "材料二"},
+			expectedAnswerText:     "先分析材料，再给出结论",
+			expectedBestAnswer:     []string{"先分析材料，再给出结论"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withStubSearchDependencies(t,
+				(&stubSearchClient{}).SearchAnswer,
+				func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+					return resolvedSearchRequestContext{
+						SearchMode: searchModeNormal,
+						RequestID:  "req-chaoxing-e2e",
+						AIConfig: service.AISearchRequestConfig{
+							BaseURL: "https://default.example.com/v1",
+							APIKey:  "default-key",
+							Model:   "default-model",
+						},
+					}, nil
+				},
+				func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+					return nil
+				},
+				func(resolved resolvedSearchRequestContext, req model.SearchRequest) ([][]string, bool, error) {
+					if req.Type != tt.expectedType {
+						t.Fatalf("expected type %d, got %d", tt.expectedType, req.Type)
+					}
+					if req.Question != tt.expectedInboundQuestion {
+						t.Fatalf("expected inbound question %q, got %q", tt.expectedInboundQuestion, req.Question)
+					}
+					if strings.TrimSpace(req.CourseName) == "" {
+						t.Fatal("expected courseName to be passed through")
+					}
+					if strings.TrimSpace(req.Extra) == "" {
+						t.Fatal("expected extra to be passed through")
+					}
+					if len(req.Options) != len(tt.expectedInboundOptions) {
+						t.Fatalf("expected inbound options %v, got %v", tt.expectedInboundOptions, req.Options)
+					}
+					for i := range tt.expectedInboundOptions {
+						if req.Options[i] != tt.expectedInboundOptions[i] {
+							t.Fatalf("expected inbound option %d to be %q, got %q", i, tt.expectedInboundOptions[i], req.Options[i])
+						}
+					}
+					return [][]string{tt.expectedBestAnswer}, true, nil
+				},
+				func() {
+					recorder := httptest.NewRecorder()
+					ctx, _ := gin.CreateTestContext(recorder)
+					request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?noRecord=1", bytes.NewReader([]byte(tt.requestBody)))
+					request.Header.Set("Content-Type", "application/json")
+					ctx.Request = request
+
+					Search(ctx)
+
+					if recorder.Code != http.StatusOK {
+						t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+					}
+
+					var resp model.SearchResponse
+					if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+						t.Fatalf("unmarshal response: %v", err)
+					}
+					if resp.Type != tt.expectedType {
+						t.Fatalf("expected response type %d, got %d", tt.expectedType, resp.Type)
+					}
+					if resp.Question != tt.expectedResponseQuestion {
+						t.Fatalf("expected response question %q, got %q", tt.expectedResponseQuestion, resp.Question)
+					}
+					if len(resp.Options) != len(tt.expectedResponseOptions) {
+						t.Fatalf("expected response options %v, got %v", tt.expectedResponseOptions, resp.Options)
+					}
+					for i := range tt.expectedResponseOptions {
+						if resp.Options[i] != tt.expectedResponseOptions[i] {
+							t.Fatalf("expected response option %d to be %q, got %q", i, tt.expectedResponseOptions[i], resp.Options[i])
+						}
+					}
+					if resp.Answer.AnswerText != tt.expectedAnswerText {
+						t.Fatalf("expected answer text %q, got %q", tt.expectedAnswerText, resp.Answer.AnswerText)
+					}
+					if !reflect.DeepEqual(resp.Answer.BestAnswer, tt.expectedBestAnswer) {
+						t.Fatalf("expected best answer %v, got %v", tt.expectedBestAnswer, resp.Answer.BestAnswer)
+					}
+					if len(resp.Answer.AnswerKey) != 0 || len(resp.Answer.AnswerIndex) != 0 {
+						t.Fatalf("expected no objective answer mapping for text workflow, got %+v", resp.Answer)
+					}
+				})
+		})
 	}
 }
 

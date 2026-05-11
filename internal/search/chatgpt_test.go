@@ -347,3 +347,51 @@ func TestChatGptClientSearchAnswerDebugReturnsRequestAndRawResponse(t *testing.T
 		t.Fatalf("expected usage total tokens 4, got %+v", debug.Usage)
 	}
 }
+
+func TestBuildAISearchPromptIncludesQuestionTypeContext(t *testing.T) {
+	prompt := buildAISearchPrompt(model.SearchRequest{
+		Question: "请指出下列案例属于何种类比创新方法?",
+		Type:     2,
+	})
+
+	if !strings.Contains(prompt, "题型：填空题/连线题") {
+		t.Fatalf("expected prompt to include question type context, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "题目：请指出下列案例属于何种类比创新方法?") {
+		t.Fatalf("expected prompt to include question text, got %q", prompt)
+	}
+}
+
+func TestBuildAISearchPromptNormalizesChaoxingStyleOptionPrefixes(t *testing.T) {
+	prompt := buildAISearchPrompt(model.SearchRequest{
+		Question:   "  请完成连线。 ",
+		Type:       2,
+		Options:    []string{"A. 左侧术语", "B. 右侧案例"},
+		CourseName: "创新方法学",
+		Extra:      "来自 chaoxing_plus OCR",
+	})
+
+	checks := []string{
+		"题型：填空题/连线题",
+		"题型补充说明：该题型在调用侧同时承载填空题、连线题、匹配题；如果题目要求建立对应关系，请按每组对应关系依次返回 answers 数组。",
+		"题目：请完成连线。",
+		"课程：创新方法学",
+		"补充信息：来自 chaoxing_plus OCR",
+		"A. 左侧术语",
+		"B. 右侧案例",
+	}
+	for _, check := range checks {
+		if !strings.Contains(prompt, check) {
+			t.Fatalf("expected prompt %q to contain %q", prompt, check)
+		}
+	}
+	unexpected := []string{
+		"A. A. 左侧术语",
+		"B. B. 右侧案例",
+	}
+	for _, check := range unexpected {
+		if strings.Contains(prompt, check) {
+			t.Fatalf("expected prompt %q not to contain duplicated option prefix %q", prompt, check)
+		}
+	}
+}

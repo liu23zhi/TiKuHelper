@@ -40,10 +40,13 @@ func FillAnswerResponse(answers [][]string, req *model.SearchRequest) model.Sear
 		ans := answers[0][randomIndex]
 		resp.Answer.AllAnswer = [][]string{{ans}}
 		resp.Answer.BestAnswer = []string{ans}
+		fillAnswer(&resp.Answer, req)
 		return resp
 	}
 
 	if req.Options == nil || len(req.Options) == 0 { // 用户没有传选项，那么只能返回出现次数最多的答案。
+		resp.Answer.BestAnswer = SearchRightAnswer(normalizedAnswers)
+	} else if !isObjectiveQuestionType(resp.Type) {
 		resp.Answer.BestAnswer = SearchRightAnswer(normalizedAnswers)
 	} else {
 		var filterAnswer [][]string
@@ -78,6 +81,10 @@ func FillAnswerResponse(answers [][]string, req *model.SearchRequest) model.Sear
 	}
 	fillAnswer(&resp.Answer, req)
 	return resp
+}
+
+func isObjectiveQuestionType(questionType int) bool {
+	return questionType == 0 || questionType == 1 || questionType == 3
 }
 
 func fillAnswer(a *model.Answer, req *model.SearchRequest) {

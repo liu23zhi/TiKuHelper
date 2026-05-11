@@ -185,7 +185,13 @@ var searchAIAnswer = func(resolved resolvedSearchRequestContext, req model.Searc
 		Temperature: resolved.AIConfig.Temperature,
 		TopP:        resolved.AIConfig.TopP,
 	}
+	logger.SysLog(fmt.Sprintf("AI搜题开始 requestId=%s %s", strings.TrimSpace(resolved.RequestID), buildSearchRequestDebugSummary(req)))
 	answer, usage, err := client.SearchAnswerWithUsage(req)
+	if err != nil {
+		logger.SysError(fmt.Sprintf("AI搜题失败 requestId=%s usage=%s answers=%s error=%s", strings.TrimSpace(resolved.RequestID), buildAISearchUsageDebugSummary(usage), buildSearchAnswerGroupsDebugSummary(answer), err.Error()))
+		return answer, usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.TotalTokens > 0, err
+	}
+	logger.SysLog(fmt.Sprintf("AI搜题完成 requestId=%s usage=%s answers=%s", strings.TrimSpace(resolved.RequestID), buildAISearchUsageDebugSummary(usage), buildSearchAnswerGroupsDebugSummary(answer)))
 	return answer, usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.TotalTokens > 0, err
 }
 
@@ -233,11 +239,13 @@ func Search(c *gin.Context) {
 	usedLocalSearch := false
 	auditHitProvider := ""
 	logSearchRoutingDecision(c, query, resolved, aiEnabled)
+	logger.SysLog(fmt.Sprintf("搜题请求摘要 requestId=%s %s", strings.TrimSpace(resolved.RequestID), buildSearchRequestDebugSummary(req)))
 	if strings.Contains(useQuery, "local") { // 使用本地题库的话
 		localAnswer, err = defaultDBSearchProvider()(req)
 		if err != nil {
-			logger.SysError(fmt.Sprintf("查询本地答案出错：%s", err.Error()))
+			logger.SysError(fmt.Sprintf("查询本地答案出错：%s requestId=%s", err.Error(), strings.TrimSpace(resolved.RequestID)))
 		}
+		logger.SysLog(fmt.Sprintf("本地搜题结果 requestId=%s answers=%s error=%t", strings.TrimSpace(resolved.RequestID), buildSearchAnswerGroupsDebugSummary(localAnswer), err != nil))
 		if len(localAnswer) > 0 {
 			usedLocalSearch = true
 			auditHitProvider = searchBillingProviderLocal
@@ -249,7 +257,11 @@ func Search(c *gin.Context) {
 	if len(result) == 0 {
 		if resolved.SearchMode == searchModeAI {
 			aiResult, aiUsage, aiErr := searchAIAnswer(resolved, req)
-			if aiErr == nil && len(aiResult) > 0 {
+			if aiErr != nil {
+				logger.SysError(fmt.Sprintf("AI独占搜题失败 requestId=%s error=%s", strings.TrimSpace(resolved.RequestID), aiErr.Error()))
+			} else if len(aiResult) == 0 {
+				logger.SysLog(fmt.Sprintf("AI独占搜题无结果 requestId=%s", strings.TrimSpace(resolved.RequestID)))
+			} else {
 				result = append(result, aiResult...)
 				hasAIUsage = aiUsage
 				auditHitProvider = searchModeAI
@@ -277,23 +289,32 @@ func Search(c *gin.Context) {
 				go func(binding searchClientBinding) {
 					defer wg.Done()
 					res, err := binding.Search(req)
-					if err == nil && len(res) > 0 {
-						mu.Lock()
-						defer mu.Unlock()
-						if strings.TrimSpace(binding.Provider) == searchModeAI {
-							hasAIUsage = true
-						}
-						if auditHitProvider == "" {
-							auditHitProvider = strings.TrimSpace(binding.Provider)
-						}
-						result = append(result, res...)
+					provider := strings.TrimSpace(binding.Provider)
+					if err != nil {
+						logger.SysError(fmt.Sprintf("渠道搜题失败 requestId=%s provider=%s error=%s", strings.TrimSpace(resolved.RequestID), provider, err.Error()))
+						return
 					}
+					if len(res) == 0 {
+						logger.SysLog(fmt.Sprintf("渠道搜题无结果 requestId=%s provider=%s", strings.TrimSpace(resolved.RequestID), provider))
+						return
+					}
+					logger.SysLog(fmt.Sprintf("渠道搜题命中 requestId=%s provider=%s answers=%s", strings.TrimSpace(resolved.RequestID), provider, buildSearchAnswerGroupsDebugSummary(res)))
+					mu.Lock()
+					defer mu.Unlock()
+					if provider == searchModeAI {
+						hasAIUsage = true
+					}
+					if auditHitProvider == "" {
+						auditHitProvider = provider
+					}
+					result = append(result, res...)
 				}(clientBindings[i])
 			}
 			wg.Wait()
 		}
 	}
 	resp := util.FillAnswerResponse(result, &req)
+	logger.SysLog(fmt.Sprintf("搜题响应摘要 requestId=%s hitProvider=%s usedLocal=%t aiEnabled=%t %s", strings.TrimSpace(resolved.RequestID), strings.TrimSpace(auditHitProvider), usedLocalSearch, aiEnabled, buildSearchResponseDebugSummary(resp)))
 	audit := buildSearchAuditMetadata(c, resolved, query, rawBody, useQuery, result, usedLocalSearch, aiEnabled, auditHitProvider, req, resp)
 	reportCompletedSearchBilling(resolved, useQuery, aiEnabled, result, hasAIUsage, usedLocalSearch)
 	persistCompletedSearchBilling(resolved, useQuery, aiEnabled, req, result, hasAIUsage, usedLocalSearch, c.ClientIP(), audit)
@@ -361,6 +382,78 @@ func explainNormalSearchReason(query url.Values, aiEnabled bool) string {
 		return "default_provider_mix_with_ai"
 	}
 	return "missing_ai_config"
+}
+
+func resolveSearchQuestionTypeLabel(questionType int) string {
+	switch questionType {
+	case 0:
+		return "单选题"
+	case 1:
+		return "多选题"
+	case 2:
+		return "填空题/连线题"
+	case 3:
+		return "判断题"
+	case 4:
+		return "简答题/阅读理解题"
+	case -4:
+		return "大作业"
+	case 15:
+		return "阅读理解"
+	default:
+		return fmt.Sprintf("其他题型(%d)", questionType)
+	}
+}
+
+func buildSearchRequestDebugSummary(req model.SearchRequest) string {
+	return strings.Join([]string{
+		fmt.Sprintf("type=%d", req.Type),
+		fmt.Sprintf("typeLabel=%s", resolveSearchQuestionTypeLabel(req.Type)),
+		fmt.Sprintf("options=%d", len(req.Options)),
+		fmt.Sprintf("hasCourseName=%t", strings.TrimSpace(req.CourseName) != ""),
+		fmt.Sprintf("hasExtra=%t", strings.TrimSpace(req.Extra) != ""),
+		fmt.Sprintf("question=%s", truncateForDebug(strings.TrimSpace(req.Question), 120)),
+	}, " ")
+}
+
+func buildSearchAnswerGroupsDebugSummary(answers [][]string) string {
+	flattened := make([]string, 0)
+	for _, group := range answers {
+		for _, item := range group {
+			trimmed := strings.TrimSpace(item)
+			if trimmed == "" {
+				continue
+			}
+			flattened = append(flattened, trimmed)
+		}
+	}
+	preview := ""
+	if len(flattened) > 0 {
+		preview = truncateForDebug(strings.Join(flattened, " | "), 160)
+	}
+	return strings.Join([]string{
+		fmt.Sprintf("groups=%d", len(answers)),
+		fmt.Sprintf("items=%d", len(flattened)),
+		fmt.Sprintf("preview=%s", preview),
+	}, " ")
+}
+
+func buildAISearchUsageDebugSummary(usage search.AISearchUsage) string {
+	return strings.Join([]string{
+		fmt.Sprintf("inputTokens=%d", usage.InputTokens),
+		fmt.Sprintf("outputTokens=%d", usage.OutputTokens),
+		fmt.Sprintf("totalTokens=%d", usage.TotalTokens),
+	}, " ")
+}
+
+func buildSearchResponseDebugSummary(resp model.SearchResponse) string {
+	return strings.Join([]string{
+		fmt.Sprintf("type=%d", resp.Type),
+		fmt.Sprintf("typeLabel=%s", resolveSearchQuestionTypeLabel(resp.Type)),
+		fmt.Sprintf("bestAnswerCount=%d", len(resp.Answer.BestAnswer)),
+		fmt.Sprintf("allAnswerGroups=%d", len(resp.Answer.AllAnswer)),
+		fmt.Sprintf("answerText=%s", truncateForDebug(strings.TrimSpace(resp.Answer.AnswerText), 160)),
+	}, " ")
 }
 
 func readAndRestoreRequestBody(c *gin.Context) string {

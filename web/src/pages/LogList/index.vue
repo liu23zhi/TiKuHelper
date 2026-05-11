@@ -81,10 +81,36 @@
           <span>{{ buildStructuredFields(record).billingProvider }}</span>
         </template>
         <template #requestSnapshot="{ record }">
-          <span class="log-snapshot-text">{{ buildStructuredFields(record).requestSnapshot }}</span>
+          <div class="log-snapshot-cell">
+            <span :class="['log-snapshot-text', { 'log-snapshot-text--expanded': isSnapshotExpanded(record.id, 'requestSnapshot') }]">
+              {{ buildStructuredFields(record).requestSnapshot }}
+            </span>
+            <a-button
+              v-if="shouldShowSnapshotExpand(buildStructuredFields(record).requestSnapshot)"
+              type="link"
+              size="small"
+              class="log-snapshot-toggle"
+              @click="toggleSnapshotExpanded(record.id, 'requestSnapshot')"
+            >
+              {{ isSnapshotExpanded(record.id, 'requestSnapshot') ? '收起' : '展开' }}
+            </a-button>
+          </div>
         </template>
         <template #responseSnapshot="{ record }">
-          <span class="log-snapshot-text">{{ buildStructuredFields(record).responseSnapshot }}</span>
+          <div class="log-snapshot-cell">
+            <span :class="['log-snapshot-text', { 'log-snapshot-text--expanded': isSnapshotExpanded(record.id, 'responseSnapshot') }]">
+              {{ buildStructuredFields(record).responseSnapshot }}
+            </span>
+            <a-button
+              v-if="shouldShowSnapshotExpand(buildStructuredFields(record).responseSnapshot)"
+              type="link"
+              size="small"
+              class="log-snapshot-toggle"
+              @click="toggleSnapshotExpanded(record.id, 'responseSnapshot')"
+            >
+              {{ isSnapshotExpanded(record.id, 'responseSnapshot') ? '收起' : '展开' }}
+            </a-button>
+          </div>
         </template>
         <template #clientIp="{ record }">
           <span>{{ record.clientIp || '-' }}</span>
@@ -127,6 +153,7 @@ const pagination = reactive({
   showTotal: (total) => `共 ${total} 条`,
   pageSizeOptions: ['10', '20', '50', '100']
 })
+const expandedSnapshots = reactive({})
 
 export default defineComponent({
   name: 'LogList',
@@ -136,6 +163,7 @@ export default defineComponent({
       tabLoading,
       pagination,
       filters,
+      expandedSnapshots,
       isAdmin: isAdminUser(currentUser.value),
       moduleOptions: [
         { label: '认证', value: 'auth' },
@@ -305,6 +333,20 @@ export default defineComponent({
     buildStructuredFields(record) {
       return buildLogStructuredFields(record)
     },
+    buildSnapshotExpandKey(recordId, field) {
+      return `${recordId || 'unknown'}:${field}`
+    },
+    shouldShowSnapshotExpand(value) {
+      const text = String(value || '').trim()
+      return text !== '' && text !== '-' && text.length > 48
+    },
+    isSnapshotExpanded(recordId, field) {
+      return !!this.expandedSnapshots[this.buildSnapshotExpandKey(recordId, field)]
+    },
+    toggleSnapshotExpanded(recordId, field) {
+      const key = this.buildSnapshotExpandKey(recordId, field)
+      this.expandedSnapshots[key] = !this.expandedSnapshots[key]
+    },
     buildLogQidLabel(value) {
       return buildLogQidLabel(value)
     },
@@ -383,11 +425,33 @@ export default defineComponent({
   margin-top: 4px;
 }
 
+.log-snapshot-cell {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+}
+
 .log-snapshot-text {
   display: inline-block;
-  max-width: 100%;
+  flex: 1;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.log-snapshot-text--expanded {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  word-break: break-all;
+}
+
+.log-snapshot-toggle {
+  flex: none;
+  padding-inline: 0;
+  height: auto;
+  line-height: 1.4;
 }
 </style>

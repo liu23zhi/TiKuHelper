@@ -16,6 +16,7 @@ import (
 	"github.com/go-resty/resty/v2"
 	"github.com/itihey/tikuAdapter/pkg/errors"
 	"github.com/itihey/tikuAdapter/pkg/model"
+	"github.com/itihey/tikuAdapter/pkg/util"
 )
 
 // ChatGptClient AI 搜题客户端
@@ -197,15 +198,52 @@ func (in *ChatGptClient) SearchAnswerWithUsage(req model.SearchRequest) (answer 
 func buildAISearchPrompt(req model.SearchRequest) string {
 	var builder strings.Builder
 	builder.WriteString("请根据系统规则返回答案 JSON。")
+	builder.WriteString("\n题型：")
+	builder.WriteString(resolveAISearchQuestionTypeLabel(req.Type))
 	builder.WriteString("\n题目：")
 	builder.WriteString(strings.TrimSpace(req.Question))
+	if req.Type == 2 {
+		builder.WriteString("\n题型补充说明：该题型在调用侧同时承载填空题、连线题、匹配题；如果题目要求建立对应关系，请按每组对应关系依次返回 answers 数组。")
+	}
+	if req.Type == 4 {
+		builder.WriteString("\n题型补充说明：该题型在调用侧可能是简答题，也可能是阅读理解或其他文本作答题；请直接返回最终文本答案。")
+	}
+	if strings.TrimSpace(req.CourseName) != "" {
+		builder.WriteString("\n课程：")
+		builder.WriteString(strings.TrimSpace(req.CourseName))
+	}
+	if strings.TrimSpace(req.Extra) != "" {
+		builder.WriteString("\n补充信息：")
+		builder.WriteString(strings.TrimSpace(req.Extra))
+	}
 	if len(req.Options) > 0 {
 		builder.WriteString("\n选项：")
-		for idx, option := range req.Options {
+		for idx, option := range util.FormatOptions(req.Options, req.Type) {
 			builder.WriteString(fmt.Sprintf("\n%c. %s", 'A'+idx, strings.TrimSpace(option)))
 		}
 	}
 	return builder.String()
+}
+
+func resolveAISearchQuestionTypeLabel(questionType int) string {
+	switch questionType {
+	case 0:
+		return "单选题"
+	case 1:
+		return "多选题"
+	case 2:
+		return "填空题/连线题"
+	case 3:
+		return "判断题"
+	case 4:
+		return "简答题/阅读理解题"
+	case -4:
+		return "大作业"
+	case 15:
+		return "阅读理解"
+	default:
+		return fmt.Sprintf("其他题型(%d)", questionType)
+	}
 }
 
 func buildAISearchPromptParts(req model.SearchRequest, httpClient *http.Client) []openAIContentPart {
