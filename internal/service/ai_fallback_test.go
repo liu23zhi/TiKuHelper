@@ -4,9 +4,10 @@ import (
 	stderrs "errors"
 	"testing"
 
+	"github.com/itihey/tikuAdapter/internal/entity"
 	internalsearch "github.com/itihey/tikuAdapter/internal/search"
-	"github.com/itihey/tikuAdapter/pkg/model"
 	pkgerrors "github.com/itihey/tikuAdapter/pkg/errors"
+	"github.com/itihey/tikuAdapter/pkg/model"
 )
 
 func TestIsAISearchConfigUsableRequiresBaseURLAPIKeyAndModel(t *testing.T) {
@@ -209,5 +210,73 @@ func TestSearchAIFallbackWithDBMapsErrTargetNoAnswerToNoAnswerCode(t *testing.T)
 	}
 	if result.Error == nil || result.Error.Code != AIFallbackErrorCodeNoAnswer {
 		t.Fatalf("expected NO_ANSWER, got %+v", result.Error)
+	}
+}
+
+func TestSearchAIFallbackWithDBIgnoresLocalQuestionCacheRecords(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	if err := db.AutoMigrate(&entity.Tiku{}); err != nil {
+		t.Fatalf("migrate tiku table: %v", err)
+	}
+	_, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{Enabled: true, BaseURL: "https://ai.example.com/v1", APIKey: "sk-test", Model: "gpt-4o-mini"})
+	if err != nil {
+		t.Fatalf("seed ai config: %v", err)
+	}
+	if err := db.Create(&entity.Tiku{
+		Question:   "1+1=?",
+		Type:       0,
+		Options:    `["1","2"]`,
+		Answer:     `["1"]`,
+		Plat:       -1,
+		Hash:       "preseeded-ai-fallback-cache-hit",
+		CourseName: "",
+		Extra:      "",
+		SourceName: "缓存旧答案",
+	}).Error; err != nil {
+		t.Fatalf("seed local question cache: %v", err)
+	}
+
+	original := runAIFallbackSearchWithUsage
+	defer func() { runAIFallbackSearchWithUsage = original }()
+	runAIFallbackSearchWithUsage = func(client *internalsearch.ChatGptClient, req model.SearchRequest) ([][]string, internalsearch.AISearchUsage, error) {
+		return [][]string{{"B"}}, internalsearch.AISearchUsage{}, nil
+	}
+
+	result := SearchAIFallbackWithDB(db, model.SearchRequest{Question: "1+1=?", Options: []string{"1", "2"}, Type: 0})
+	if !result.Success {
+		t.Fatalf("expected success result, got %+v", result)
+	}
+	if result.Result == nil || result.Result.Answer != "2" {
+		t.Fatalf("expected ai fallback answer 2 instead of local cached answer, got %+v", result.Result)
+	}
+}
+
+func TestSearchAIFallbackWithDBDoesNotWriteQuestionCacheRecords(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	if err := db.AutoMigrate(&entity.Tiku{}); err != nil {
+		t.Fatalf("migrate tiku table: %v", err)
+	}
+	_, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{Enabled: true, BaseURL: "https://ai.example.com/v1", APIKey: "sk-test", Model: "gpt-4o-mini"})
+	if err != nil {
+		t.Fatalf("seed ai config: %v", err)
+	}
+
+	original := runAIFallbackSearchWithUsage
+	defer func() { runAIFallbackSearchWithUsage = original }()
+	runAIFallbackSearchWithUsage = func(client *internalsearch.ChatGptClient, req model.SearchRequest) ([][]string, internalsearch.AISearchUsage, error) {
+		return [][]string{{"B"}}, internalsearch.AISearchUsage{}, nil
+	}
+
+	result := SearchAIFallbackWithDB(db, model.SearchRequest{Question: "1+1=?", Options: []string{"1", "2"}, Type: 0})
+	if !result.Success {
+		t.Fatalf("expected success result, got %+v", result)
+	}
+
+	var count int64
+	if err := db.Model(&entity.Tiku{}).Count(&count).Error; err != nil {
+		t.Fatalf("count tiku records: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected ai fallback to skip local question cache writes, got %d records", count)
 	}
 }
