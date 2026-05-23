@@ -24,6 +24,22 @@ export function getPublicRegisterStatus() {
   })
 }
 
+export function sendPublicSMSCode(data) {
+  return request({
+    url: `/adapter-service/public/sms-code`,
+    method: 'post',
+    data
+  })
+}
+
+export function loginBySMS(data) {
+  return request({
+    url: `/adapter-service/user/login/sms`,
+    method: 'post',
+    data
+  })
+}
+
 
 export function getPlat() {
   return request({

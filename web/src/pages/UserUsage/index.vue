@@ -33,18 +33,12 @@
         </div>
       </template>
       <template #extra>
-        <a-space>
-          <a-button @click="handleRefreshAll" :loading="pageRefreshing">刷新</a-button>
-          <a-button type="primary" @click="handleOpenRechargeDialog" :loading="rechargeSubmitting">充值</a-button>
-        </a-space>
+        <a-button @click="handleRefreshAll" :loading="pageRefreshing">刷新</a-button>
       </template>
 
       <a-row :gutter="16" class="recharge-summary-row">
         <a-col :xs="24" :sm="12">
           <a-statistic title="当前账户余额" prefix="¥" :value="currentUserBalance" :precision="2" />
-        </a-col>
-        <a-col :xs="24" :sm="12">
-          <a-statistic title="可用支付方式" :value="paymentMethodSummary.availableCount" />
         </a-col>
       </a-row>
 
@@ -53,6 +47,7 @@
         show-icon
         class="page-alert"
         message="这里只展示当前账号自己的账单记录。充值创建订单后会跳转至收银台，支付结果以异步通知为准；如余额已变化，可点击刷新同步最新余额。"
+        style="display: none"
       />
 
       <a-form layout="vertical" class="recharge-form">
@@ -63,6 +58,25 @@
             size="large"
           />
         </a-form-item>
+
+        <a-form-item label="快捷金额">
+          <div class="recharge-quick-amounts">
+            <a-button
+              v-for="amount in rechargeQuickAmounts"
+              :key="amount"
+              class="recharge-quick-amount"
+              @click="applyRechargeQuickAmount(amount)"
+            >
+              {{ amount }}
+            </a-button>
+          </div>
+        </a-form-item>
+
+        <div class="recharge-actions">
+          <a-button type="primary" @click="handleOpenRechargeDialog" :loading="rechargeSubmitting">
+            充值
+          </a-button>
+        </div>
       </a-form>
     </a-card>
 
@@ -134,6 +148,7 @@ const tableLoading = ref(false)
 const paymentMethodLoading = ref(false)
 const rechargeSubmitting = ref(false)
 const rechargeAmount = ref('10')
+const rechargeQuickAmounts = [10, 20, 50, 100, 200, 500]
 const currentUser = ref(getStoredCurrentUser())
 const pagination = reactive({
   current: 1,
@@ -164,10 +179,6 @@ export default defineComponent({
       })
     })
 
-    const paymentMethodSummary = computed(() => ({
-      availableCount: Array.isArray(paymentMethods.value) ? paymentMethods.value.filter((item) => item?.enabled).length : 0,
-    }))
-
     const currentUserBalance = computed(() => {
       const balance = Number(currentUser.value?.balance || 0)
       return Number.isFinite(balance) ? balance : 0
@@ -183,9 +194,9 @@ export default defineComponent({
       paymentMethodLoading,
       rechargeSubmitting,
       rechargeAmount,
+      rechargeQuickAmounts,
       pagination,
       summary,
-      paymentMethodSummary,
       currentUserBalance,
       pageRefreshing,
       buildPersonalUsageQuestionText,
@@ -303,6 +314,9 @@ export default defineComponent({
         return value
       }
       return date.toLocaleString()
+    },
+    applyRechargeQuickAmount(amount) {
+      rechargeAmount.value = String(amount)
     },
     async handleOpenRechargeDialog() {
       const options = buildRechargePaymentMethodOptions(paymentMethods.value)
@@ -433,8 +447,24 @@ export default defineComponent({
   margin-bottom: 16px;
 }
 
-.recharge-form {
+ .recharge-form {
   max-width: 420px;
+}
+
+.recharge-quick-amounts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.recharge-quick-amount {
+  height: 42px;
+  border-radius: 12px;
+}
+
+.recharge-actions {
+  display: flex;
+  justify-content: flex-start;
 }
 
 .multiline-cell {

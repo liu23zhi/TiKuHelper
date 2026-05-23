@@ -17,33 +17,59 @@
           </div>
         </div>
 
+        <a-radio-group v-model:value="loginMode" button-style="solid" class="login-mode-switch">
+          <a-radio-button value="password">账号密码登录</a-radio-button>
+          <a-radio-button v-if="publicAuthSettings.smsLoginEnabled" value="sms">短信验证码登录</a-radio-button>
+        </a-radio-group>
+
         <a-form
           layout="vertical"
-          :model="loginForm"
+          :model="loginMode === 'sms' ? smsLoginForm : loginForm"
           @finish="handleLogin"
           @finishFailed="handleFinishFailed"
           class="form"
         >
-          <a-form-item name="username" label="用户名" :rules="[{ required: true, message: '请输入用户名' }]">
+          <a-form-item v-if="loginMode === 'password'" name="username" label="用户名" :rules="[{ required: true, message: '请输入用户名' }]">
             <a-input v-model:value="loginForm.username" placeholder="请输入用户名" size="large">
               <template #prefix>
                 <UserOutlined style="color: rgba(0, 0, 0, 0.25)" />
               </template>
             </a-input>
           </a-form-item>
-          <a-form-item name="password" label="密码" :rules="[{ required: true, message: '请输入密码' }]">
+          <a-form-item v-if="loginMode === 'password'" name="password" label="密码" :rules="[{ required: true, message: '请输入密码' }]">
             <a-input-password v-model:value="loginForm.password" placeholder="请输入密码" size="large">
               <template #prefix>
                 <LockOutlined style="color: rgba(0, 0, 0, 0.25)" />
               </template>
             </a-input-password>
           </a-form-item>
+
+          <template v-else>
+            <a-form-item name="phone" label="手机号" :rules="[{ required: true, message: '请输入手机号' }]">
+              <a-input v-model:value="smsLoginForm.phone" placeholder="请输入绑定手机号" size="large">
+                <template #prefix>
+                  <MobileOutlined style="color: rgba(0, 0, 0, 0.25)" />
+                </template>
+              </a-input>
+            </a-form-item>
+            <a-form-item name="smsCode" label="验证码" :rules="[{ required: true, message: '请输入验证码' }]">
+              <div class="sms-code-row">
+                <a-input v-model:value="smsLoginForm.smsCode" placeholder="请输入验证码" size="large">
+                  <template #prefix>
+                    <SafetyCertificateOutlined style="color: rgba(0, 0, 0, 0.25)" />
+                  </template>
+                </a-input>
+                <a-button :loading="sendingLoginCode" @click="sendLoginCode">发送验证码</a-button>
+              </div>
+            </a-form-item>
+          </template>
+
           <a-form-item>
             <a-button
               type="primary"
               html-type="submit"
               :loading="submitting"
-              :disabled="!loginForm.username || !loginForm.password"
+              :disabled="loginMode === 'sms' ? !smsLoginForm.phone || !smsLoginForm.smsCode : !loginForm.username || !loginForm.password"
               class="submit-button"
               block
             >
@@ -62,10 +88,11 @@
 </template>
 
 <script>
-import { defineComponent, reactive, ref } from 'vue';
-import { UserOutlined, LockOutlined } from '@ant-design/icons-vue';
+import { defineComponent, onMounted, reactive, ref } from 'vue';
+import { UserOutlined, LockOutlined, MobileOutlined, SafetyCertificateOutlined } from '@ant-design/icons-vue';
 import Swal from 'sweetalert2'
-import { login, getCurrentUser, getPublicRegisterStatus } from '../../api/TikuComponentApi.js'
+import { login, loginBySMS, getCurrentUser, getPublicRegisterStatus, sendPublicSMSCode } from '../../api/TikuComponentApi.js'
+import { buildPublicSMSCodePayload, buildSMSLoginPayload } from '../../utils/phoneAuthHelpers.mjs'
 import { setCookies } from '../../utils/cookies.js'
 import { setStoredCurrentUser, resolveHomePath } from '../../utils/currentUser.js'
 import { message } from 'ant-design-vue';
@@ -88,39 +115,95 @@ export default defineComponent({
     const router = useRouter()
     const route = useRoute()
     const submitting = ref(false)
+    const sendingLoginCode = ref(false)
+    const loginMode = ref('password')
+    const publicAuthSettings = ref({ registerEnabled: false, smsLoginEnabled: false })
     const loginForm = reactive({
       username: String(route.query.username || ''),
       password: '',
     })
+    const smsLoginForm = reactive({
+      phone: '',
+      smsCode: '',
+    })
+
+    const loadPublicAuthSettings = () => {
+      return getPublicRegisterStatus().then((res) => {
+        if (res?.status === 200) {
+          publicAuthSettings.value = {
+            registerEnabled: !!res?.data?.registerEnabled,
+            smsLoginEnabled: !!res?.data?.smsLoginEnabled,
+          }
+          if (!publicAuthSettings.value.smsLoginEnabled && loginMode.value === 'sms') {
+            loginMode.value = 'password'
+          }
+        }
+        return res
+      })
+    }
+
+    const finishLogin = (jwt) => {
+      setCookies('token', jwt)
+      return getCurrentUser().then((userRes) => {
+        if (userRes?.status === 200) {
+          setStoredCurrentUser(userRes.data)
+          message.success('登录成功')
+          router.push(resolveHomePath(userRes.data))
+          return
+        }
+        throw new Error(userRes?.message || '获取当前用户失败')
+      })
+    }
 
     const handleLogin = () => {
       submitting.value = true
-      login(loginForm).then((res) => {
+      let requester
+      try {
+        requester = loginMode.value === 'sms'
+          ? loginBySMS(buildSMSLoginPayload(smsLoginForm))
+          : login(loginForm)
+      } catch (error) {
+        submitting.value = false
+        message.error(error?.message || '登录失败')
+        return
+      }
+
+      requester.then((res) => {
         if (res?.status === 200) {
-          setCookies('token', res?.data?.jwt)
-          return getCurrentUser().then((userRes) => {
-            if (userRes?.status === 200) {
-              setStoredCurrentUser(userRes.data)
-              message.success('登录成功')
-              router.push(resolveHomePath(userRes.data))
-              return
-            }
-            throw new Error(userRes?.message || '获取当前用户失败')
-          })
+          return finishLogin(res?.data?.jwt)
         }
         message.error(res?.message || '登录失败')
         return null
       }).catch((error) => {
         console.log(error)
-        message.error('登录失败')
+        message.error(error?.message || '登录失败')
       }).finally(() => {
         submitting.value = false
       })
     }
 
+    const sendLoginCode = () => {
+      sendingLoginCode.value = true
+      sendPublicSMSCode(buildPublicSMSCodePayload(smsLoginForm, 'login')).then((res) => {
+        if (res?.status === 200) {
+          message.success(res?.message || '发送成功，请注意查收')
+        } else {
+          message.error(res?.message || '发送失败')
+        }
+      }).catch((error) => {
+        message.error(error?.message || '发送失败')
+      }).finally(() => {
+        sendingLoginCode.value = false
+      })
+    }
+
     const goToRegister = () => {
-      getPublicRegisterStatus().then((res) => {
-        if (res?.status === 200 && res?.data?.registerEnabled) {
+      if (publicAuthSettings.value.registerEnabled) {
+        router.push('/register')
+        return
+      }
+      loadPublicAuthSettings().then((res) => {
+        if (res?.status === 200 && publicAuthSettings.value.registerEnabled) {
           router.push('/register')
           return
         }
@@ -134,10 +217,19 @@ export default defineComponent({
       console.log(errors)
     }
 
+    onMounted(() => {
+      loadPublicAuthSettings()
+    })
+
     return {
       submitting,
+      sendingLoginCode,
+      loginMode,
+      publicAuthSettings,
       loginForm,
+      smsLoginForm,
       handleLogin,
+      sendLoginCode,
       goToRegister,
       handleFinishFailed,
     }
@@ -145,6 +237,8 @@ export default defineComponent({
   components: {
     UserOutlined,
     LockOutlined,
+    MobileOutlined,
+    SafetyCertificateOutlined,
   },
 })
 </script>
@@ -233,6 +327,20 @@ export default defineComponent({
 
 .form {
   margin-top: 8px;
+}
+
+.login-mode-switch {
+  width: 100%;
+  margin-bottom: 16px;
+}
+
+.sms-code-row {
+  display: flex;
+  gap: 8px;
+}
+
+.sms-code-row :deep(.ant-input-affix-wrapper) {
+  flex: 1;
 }
 
 .submit-button,

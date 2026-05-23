@@ -45,7 +45,29 @@ test('buildRechargePaymentMethodOptions only returns enabled methods', () => {
   ]);
 });
 
-test('normalizePaymentMethodForm trims values and coerces types', () => {
+test('normalizePaymentMethodForm preserves backend epayType naming and trims fields', () => {
+  const result = normalizePaymentMethodForm({
+    id: '9',
+    name: '  易支付支付宝  ',
+    iconSvg: '  <svg />  ',
+    epayType: '  alipay  ',
+    enabled: 1,
+    sort: '12',
+    remark: '  推荐  ',
+  });
+
+  assert.deepEqual(result, {
+    id: 9,
+    name: '易支付支付宝',
+    iconSvg: '<svg />',
+    epayType: 'alipay',
+    enabled: true,
+    sort: 12,
+    remark: '推荐',
+  });
+});
+
+test('normalizePaymentMethodForm also accepts legacy camel-cased frontend field names', () => {
   const result = normalizePaymentMethodForm({
     id: '7',
     name: '  支付宝  ',
@@ -59,8 +81,8 @@ test('normalizePaymentMethodForm trims values and coerces types', () => {
   assert.deepEqual(result, {
     id: 7,
     name: '支付宝',
-    iconSVG: '<svg />',
-    ePayType: 'alipay',
+    iconSvg: '<svg />',
+    epayType: 'alipay',
     enabled: false,
     sort: 8,
     remark: '常用渠道',

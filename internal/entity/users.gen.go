@@ -20,6 +20,8 @@ type User struct {
 	Status         string     `gorm:"column:status;type:varchar(32);not null;default:enabled" json:"status"`
 	Balance        float64    `gorm:"column:balance;type:decimal(18,2);not null;default:0" json:"balance"`
 	RegisterSource string     `gorm:"column:register_source;type:varchar(32);not null;default:legacy" json:"registerSource"`
+	Phone          *string    `gorm:"column:phone;type:varchar(32);uniqueIndex" json:"phone"`
+	PhoneBoundAt   *time.Time `gorm:"column:phone_bound_at" json:"phoneBoundAt"`
 	CreatedAt      time.Time  `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
 	LastLoginAt    *time.Time `gorm:"column:last_login_at" json:"lastLoginAt"`
 	LastLoginIP    string     `gorm:"column:last_login_ip;type:varchar(64)" json:"lastLoginIp"`

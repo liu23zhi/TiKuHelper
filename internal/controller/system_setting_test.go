@@ -84,16 +84,19 @@ func TestSystemSettingDetailReturnsServerErrorWhenLoadFails(t *testing.T) {
 	}
 }
 
-func TestPublicRegisterStatusReturnsCurrentFlag(t *testing.T) {
+func TestPublicRegisterStatusReturnsCurrentFlags(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	original := loadPublicRegisterEnabled
+	original := loadPublicAuthSettings
 	defer func() {
-		loadPublicRegisterEnabled = original
+		loadPublicAuthSettings = original
 	}()
 
-	loadPublicRegisterEnabled = func() (bool, error) {
-		return true, nil
+	loadPublicAuthSettings = func() (service.PublicAuthSettings, error) {
+		return service.PublicAuthSettings{
+			RegisterEnabled: true,
+			SMSLoginEnabled: true,
+		}, nil
 	}
 
 	recorder := httptest.NewRecorder()
@@ -108,25 +111,26 @@ func TestPublicRegisterStatusReturnsCurrentFlag(t *testing.T) {
 
 	var response struct {
 		RegisterEnabled bool `json:"registerEnabled"`
+		SMSLoginEnabled bool `json:"smsLoginEnabled"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if !response.RegisterEnabled {
-		t.Fatal("expected register enabled true")
+	if !response.RegisterEnabled || !response.SMSLoginEnabled {
+		t.Fatalf("expected both public auth flags true, got %+v", response)
 	}
 }
 
 func TestPublicRegisterStatusReturnsServerErrorWhenLoadFails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	original := loadPublicRegisterEnabled
+	original := loadPublicAuthSettings
 	defer func() {
-		loadPublicRegisterEnabled = original
+		loadPublicAuthSettings = original
 	}()
 
-	loadPublicRegisterEnabled = func() (bool, error) {
-		return false, errors.New("boom")
+	loadPublicAuthSettings = func() (service.PublicAuthSettings, error) {
+		return service.PublicAuthSettings{}, errors.New("boom")
 	}
 
 	recorder := httptest.NewRecorder()

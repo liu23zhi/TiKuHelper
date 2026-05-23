@@ -35,7 +35,9 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.DELETE("/questions/:id", controller.Auth, controller.DeleteQuestion)
 
 	apiRouter.GET("/user/login", controller.UserLogin)                    // 登录接口
+	apiRouter.POST("/user/login/sms", controller.UserSMSLogin)          // 短信登录接口
 	apiRouter.POST("/user/register", controller.UserRegister)            // 公开注册接口
+	apiRouter.POST("/public/sms-code", controller.SendPublicSMSCode)     // 公开短信验证码接口
 	apiRouter.GET("/public/register-status", controller.PublicRegisterStatus)
 	apiRouter.GET("/user/info", controller.Auth, controller.UserInfo)     // 当前登录用户
 	apiRouter.GET("/user", controller.Auth, controller.UserList)                         // 自己创建的用户列表

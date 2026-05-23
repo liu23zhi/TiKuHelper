@@ -16,11 +16,8 @@ body {
   min-height: 100%;
 }
 
-body.swal2-shown,
 body.swal2-height-auto {
   height: auto !important;
-  padding-right: 0 !important;
-  overflow-y: auto !important;
 }
 
 #app {

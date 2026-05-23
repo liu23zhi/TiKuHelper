@@ -4,7 +4,7 @@ function trimText(value) {
 
 export function buildAuthFailureHandling(response) {
   const detail = trimText(response?.data?.detail);
-  if (detail.includes('余额不足') && detail.includes('默认账号已停用')) {
+  if (detail.includes('余额不足') && (detail.includes('默认账号已停用') || detail.includes('系统题库已禁用'))) {
     return {
       shouldLogout: false,
       userMessage: detail,

@@ -86,14 +86,14 @@ func TestUpdateSystemSettingDetailWithDBPersistsNormalizedValues(t *testing.T) {
 	db := newSystemSettingTestDB(t)
 
 	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
-		RegisterEnabled:         true,
-		EPayVersion:             "v1",
-		EPayGatewayURL:          " https://pay.example.com/submit.php ",
-		EPayPartnerID:           " 10001 ",
-		EPayPlatformPublicKey:   " platform-public-key ",
-		EPayMerchantPrivateKey:  " merchant-private-key ",
-		EPayNotifyURL:           " https://example.com/notify ",
-		EPayReturnURL:           " https://example.com/return ",
+		RegisterEnabled:        true,
+		EPayVersion:            "v1",
+		EPayGatewayURL:         " https://pay.example.com/submit.php ",
+		EPayPartnerID:          " 10001 ",
+		EPayPlatformPublicKey:  " platform-public-key ",
+		EPayMerchantPrivateKey: " merchant-private-key ",
+		EPayNotifyURL:          " https://example.com/notify ",
+		EPayReturnURL:          " https://example.com/return ",
 	})
 	if err != nil {
 		t.Fatalf("update system setting detail: %v", err)
@@ -156,5 +156,71 @@ func TestUpdateSystemSettingDetailWithDBPersistsNormalizedValues(t *testing.T) {
 		if setting.Value != want {
 			t.Fatalf("expected %s=%s, got %s", key, want, setting.Value)
 		}
+	}
+}
+
+func TestGetPublicAuthSettingsWithDBDefaults(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+
+	settings, err := GetPublicAuthSettingsWithDB(db)
+	if err != nil {
+		t.Fatalf("get public auth settings: %v", err)
+	}
+	if settings.RegisterEnabled {
+		t.Fatal("expected register enabled default false")
+	}
+	if settings.SMSLoginEnabled {
+		t.Fatal("expected sms login enabled default false")
+	}
+}
+
+func TestUpdateSystemSettingDetailWithDBPersistsSMSFields(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+
+	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
+		RegisterEnabled:        true,
+		EPayVersion:            "v2",
+		EPayGatewayURL:         "https://pay.example.com/submit.php",
+		EPayPartnerID:          "10001",
+		EPayPlatformPublicKey:  "platform-public-key",
+		EPayMerchantPrivateKey: "merchant-private-key",
+		EPayNotifyURL:          "https://example.com/notify",
+		EPayReturnURL:          "https://example.com/return",
+		SMSProvider:            " smsbao ",
+		SMSBaoUsername:         " demo-user ",
+		SMSBaoSecret:           " demo-secret ",
+		SMSCodeSignName:        " 题库助手 ",
+		SMSCodeTemplate:        " 【{sign}】验证码 {code} ",
+		SMSLoginEnabled:        true,
+	})
+	if err != nil {
+		t.Fatalf("update system setting detail: %v", err)
+	}
+
+	if updated.SMSProvider != "smsbao" {
+		t.Fatalf("expected sms provider smsbao, got %s", updated.SMSProvider)
+	}
+	if updated.SMSBaoUsername != "demo-user" {
+		t.Fatalf("expected smsbao username demo-user, got %s", updated.SMSBaoUsername)
+	}
+	if updated.SMSBaoSecret != "demo-secret" {
+		t.Fatalf("expected smsbao secret demo-secret, got %s", updated.SMSBaoSecret)
+	}
+	if updated.SMSCodeSignName != "题库助手" {
+		t.Fatalf("expected sign name 题库助手, got %s", updated.SMSCodeSignName)
+	}
+	if updated.SMSCodeTemplate != "【{sign}】验证码 {code}" {
+		t.Fatalf("expected sms template preserved, got %s", updated.SMSCodeTemplate)
+	}
+	if !updated.SMSLoginEnabled {
+		t.Fatal("expected sms login enabled true")
+	}
+
+	publicSettings, err := GetPublicAuthSettingsWithDB(db)
+	if err != nil {
+		t.Fatalf("reload public auth settings: %v", err)
+	}
+	if !publicSettings.RegisterEnabled || !publicSettings.SMSLoginEnabled {
+		t.Fatalf("unexpected public auth settings: %+v", publicSettings)
 	}
 }

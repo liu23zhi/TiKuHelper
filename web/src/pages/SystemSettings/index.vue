@@ -12,7 +12,7 @@
         type="info"
         show-icon
         class="page-alert"
-        message="这里维护易支付基础参数、站点回调地址与公开注册开关。支付方式列表已经并入当前页下方统一维护，修改后会立即影响后续注册与充值链路。"
+        message="这里维护易支付基础参数、站点回调地址、短信验证码配置与公开注册开关。支付方式列表已经并入当前页下方统一维护，修改后会立即影响后续注册、登录与充值链路。"
       />
 
       <a-form :label-col="labelCol" :wrapper-col="wrapperCol">
@@ -61,6 +61,33 @@
           <a-input :value="derivedReturnUrl" readonly placeholder="将根据网站 Base 地址自动补全" />
           <div class="hint">固定补全为 /adapter/recharge/result，并作为 return_url 参与易支付下单。</div>
         </a-form-item>
+
+        <a-divider orientation="left">短信验证码配置</a-divider>
+        <a-form-item label="短信提供方">
+          <a-input v-model:value="formState.smsProvider" disabled />
+          <div class="hint">首期固定使用短信宝，后续如有需要再扩展多供应商。</div>
+        </a-form-item>
+
+        <a-form-item label="短信宝用户名">
+          <a-input v-model:value="formState.smsbaoUsername" placeholder="请输入短信宝用户名" />
+        </a-form-item>
+
+        <a-form-item label="短信宝密钥">
+          <a-input-password v-model:value="formState.smsbaoSecret" placeholder="请输入密码 MD5 或 ApiKey" />
+        </a-form-item>
+
+        <a-form-item label="短信签名">
+          <a-input v-model:value="formState.smsCodeSignName" placeholder="例如 题库助手" />
+        </a-form-item>
+
+        <a-form-item label="验证码模板">
+          <a-textarea v-model:value="formState.smsCodeTemplate" :rows="3" placeholder="例如 【{sign}】您的验证码是{code}，5分钟内有效。" />
+          <div class="hint">请保留 {sign} 和 {code} 占位符，系统会在发送前替换。</div>
+        </a-form-item>
+
+        <a-form-item label="开启短信登录">
+          <a-switch v-model:checked="formState.smsLoginEnabled" />
+        </a-form-item>
       </a-form>
     </a-card>
 
@@ -103,7 +130,7 @@
           </div>
         </template>
         <template #ePayType="{ record }">
-          <a-tag color="blue">{{ record.ePayType || '-' }}</a-tag>
+          <a-tag color="blue">{{ record.epayType || '-' }}</a-tag>
         </template>
         <template #enabled="{ record }">
           <a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" />
@@ -243,6 +270,12 @@ export default defineComponent({
       siteBaseUrl: '',
       epayNotifyUrl: '',
       epayReturnUrl: '',
+      smsProvider: 'smsbao',
+      smsbaoUsername: '',
+      smsbaoSecret: '',
+      smsCodeSignName: '',
+      smsCodeTemplate: '',
+      smsLoginEnabled: false,
     })
     const paymentMethodFormState = ref({
       id: undefined,
@@ -268,6 +301,12 @@ export default defineComponent({
       formState.siteBaseUrl = inferSiteBaseURL(data)
       formState.epayNotifyUrl = data.epayNotifyUrl || ''
       formState.epayReturnUrl = data.epayReturnUrl || ''
+      formState.smsProvider = data.smsProvider || 'smsbao'
+      formState.smsbaoUsername = data.smsbaoUsername || ''
+      formState.smsbaoSecret = data.smsbaoSecret || ''
+      formState.smsCodeSignName = data.smsCodeSignName || ''
+      formState.smsCodeTemplate = data.smsCodeTemplate || ''
+      formState.smsLoginEnabled = !!data.smsLoginEnabled
     }
 
     const loadSettings = () => {
@@ -353,8 +392,8 @@ export default defineComponent({
         },
         {
           title: '易支付通道',
-          dataIndex: 'ePayType',
-          key: 'ePayType',
+          dataIndex: 'epayType',
+          key: 'epayType',
           slots: {
             customRender: 'ePayType',
           },
@@ -415,6 +454,12 @@ export default defineComponent({
         epayMerchantPrivateKey: normalizeString(this.formState.epayMerchantPrivateKey),
         epayNotifyUrl: notifyUrl,
         epayReturnUrl: returnUrl,
+        smsProvider: normalizeString(this.formState.smsProvider || 'smsbao'),
+        smsbaoUsername: normalizeString(this.formState.smsbaoUsername),
+        smsbaoSecret: normalizeString(this.formState.smsbaoSecret),
+        smsCodeSignName: normalizeString(this.formState.smsCodeSignName),
+        smsCodeTemplate: normalizeString(this.formState.smsCodeTemplate),
+        smsLoginEnabled: !!this.formState.smsLoginEnabled,
       }
 
       this.saving = true
@@ -445,7 +490,7 @@ export default defineComponent({
         id: record.id,
         name: record.name || '',
         iconSVG: record.iconSvg || '',
-        ePayType: record.ePayType || '',
+        ePayType: record.epayType || '',
         enabled: !!record.enabled,
         sort: Number(record.sort || 0),
         remark: record.remark || '',
@@ -458,7 +503,7 @@ export default defineComponent({
         message.warning('请输入支付方式名称')
         return
       }
-      if (!payload.ePayType) {
+      if (!payload.epayType) {
         message.warning('请输入易支付通道值')
         return
       }

@@ -349,6 +349,7 @@ func TestSearchReportsCompletedNormalDefaultBillingContext(t *testing.T) {
 			return resolvedSearchRequestContext{
 				SearchMode:                 searchModeNormal,
 				UsedDefaultSearchProviders: []string{"icodef"},
+				Tokens:                     map[string]string{"icodef": "default-icodef"},
 				UserID:                     12,
 				AccessTokenID:              34,
 				RequestID:                  "req-handler-normal",
@@ -518,6 +519,7 @@ func TestSearchPersistsBillingRecordAndAccessTokenUsageForDefaultProvider(t *tes
 				SearchMode:                 searchModeNormal,
 				UsedDefaultSearch:          true,
 				UsedDefaultSearchProviders: []string{"icodef"},
+				Tokens:                     map[string]string{"icodef": "default-icodef"},
 				UserID:                     user.ID,
 				AccessTokenID:              token.ID,
 				RequestID:                  "req-search-billing-normal",
@@ -604,10 +606,11 @@ func TestSearchPersistsBillingRecordAndAccessTokenUsageForLocalSearch(t *testing
 		},
 		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
 			return resolvedSearchRequestContext{
-				SearchMode:    searchModeNormal,
-				UserID:        user.ID,
-				AccessTokenID: token.ID,
-				RequestID:     "req-search-billing-local",
+				SearchMode:              searchModeNormal,
+				EnabledSearchProviders:  []string{"local"},
+				UserID:                  user.ID,
+				AccessTokenID:           token.ID,
+				RequestID:               "req-search-billing-local",
 				AccessTokenCtx: &service.AccessTokenAuthContext{
 					User:        user,
 					AccessToken: token,
@@ -672,10 +675,11 @@ func TestSearchPersistsCachedSourceNameInLocalBillingSnapshot(t *testing.T) {
 		searchpkg.GetDBSearch().SearchAnswer,
 		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
 			return resolvedSearchRequestContext{
-				SearchMode:    searchModeNormal,
-				UserID:        user.ID,
-				AccessTokenID: token.ID,
-				RequestID:     "req-search-local-source",
+				SearchMode:              searchModeNormal,
+				EnabledSearchProviders:  []string{"local"},
+				UserID:                  user.ID,
+				AccessTokenID:           token.ID,
+				RequestID:               "req-search-local-source",
 				AccessTokenCtx: &service.AccessTokenAuthContext{
 					User:        user,
 					AccessToken: token,
@@ -726,6 +730,8 @@ func TestSearchPersistsQuestionTextForPersonalUsageRecords(t *testing.T) {
 				SearchMode:                 searchModeNormal,
 				UsedDefaultSearch:          true,
 				UsedDefaultSearchProviders: []string{"icodef"},
+				EnabledSearchProviders:     []string{"icodef"},
+				Tokens:                     map[string]string{"icodef": "default-icodef"},
 				UserID:                     user.ID,
 				AccessTokenID:              token.ID,
 				RequestID:                  "req-search-question-text",
@@ -744,7 +750,7 @@ func TestSearchPersistsQuestionTextForPersonalUsageRecords(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?noRecord=1", bytes.NewReader([]byte(`{"question":"这是 带空格 的题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"这是 带空格 的题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("Authorization", "Basic search-question-text-token")
 			ctx.Request = request
@@ -780,10 +786,11 @@ func TestSearchWritesLocalQuestionIDIntoAuditLog(t *testing.T) {
 		searchpkg.GetDBSearch().SearchAnswer,
 		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
 			return resolvedSearchRequestContext{
-				SearchMode:    searchModeNormal,
-				UserID:        user.ID,
-				AccessTokenID: token.ID,
-				RequestID:     "req-search-local-log",
+				SearchMode:              searchModeNormal,
+				EnabledSearchProviders: []string{"local"},
+				UserID:                  user.ID,
+				AccessTokenID:           token.ID,
+				RequestID:               "req-search-local-log",
 				AccessTokenCtx: &service.AccessTokenAuthContext{
 					User:        user,
 					AccessToken: token,
@@ -838,6 +845,7 @@ func TestSearchPersistsBillingForAdminAccessToken(t *testing.T) {
 				SearchMode:                 searchModeNormal,
 				UsedDefaultSearch:          true,
 				UsedDefaultSearchProviders: []string{"icodef"},
+				Tokens:                     map[string]string{"icodef": "default-icodef"},
 				UserID:                     admin.ID,
 				AccessTokenID:              token.ID,
 				RequestID:                  "req-search-billing-admin",
@@ -1055,6 +1063,7 @@ func TestSearchAllowsAnonymousRemoteSearchWithoutBillingAndWritesFullAuditLog(t 
 			return resolvedSearchRequestContext{
 				SearchMode: searchModeNormal,
 				RequestID:  "req-anonymous-remote",
+				Tokens:     map[string]string{"wanneng": "plain-third-party-token"},
 			}, nil
 		},
 		func(resolved resolvedSearchRequestContext, useQuery string) []func(model.SearchRequest) ([][]string, error) {

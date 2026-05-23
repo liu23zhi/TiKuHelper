@@ -43,7 +43,7 @@
         type="info"
         show-icon
         class="page-alert"
-        message="当前页面展示的是平台全部用户。管理员可以创建用户，并直接编辑角色、状态、昵称与密码。"
+        message="当前页面展示的是平台全部用户。管理员可以创建用户，并直接编辑角色、状态、昵称、手机号绑定与密码。"
       />
 
       <a-table
@@ -67,8 +67,14 @@
         <template #balance="{ record }">
           <span>¥ {{ formatBalance(record.balance) }}</span>
         </template>
+        <template #phone="{ record }">
+          <span>{{ record.phone || '-' }}</span>
+        </template>
         <template #registerSource="{ record }">
           <a-tag>{{ registerSourceText(record.registerSource) }}</a-tag>
+        </template>
+        <template #phoneBoundAt="{ record }">
+          <span>{{ formatDateTime(record.phoneBoundAt) }}</span>
         </template>
         <template #createdAt="{ record }">
           <span>{{ formatDateTime(record.createdAt) }}</span>
@@ -132,6 +138,14 @@
           <a-input v-model:value="formState.balance" placeholder="留空表示不调整余额" />
           <div class="form-hint">可选择增加、减少或覆盖；留空则仅更新基础信息。</div>
         </a-form-item>
+        <a-form-item v-if="isEditing" label="手机号">
+          <a-input v-model:value="formState.phone" placeholder="留空表示清空手机号绑定" />
+          <div class="form-hint">输入新手机号可直接绑定；留空则清空当前绑定。</div>
+        </a-form-item>
+        <a-form-item v-if="isEditing" label="重指派同号">
+          <a-switch v-model:checked="formState.forceReassignPhone" />
+          <div class="form-hint">若该手机号已绑定其他用户，开启后会把旧绑定转移到当前用户。</div>
+        </a-form-item>
         <a-form-item label="创建来源">
           <a-input :value="registerSourceText(formState.registerSource)" disabled />
         </a-form-item>
@@ -162,9 +176,9 @@
 
 <script>
 import { getUserList, delUser, addUser, updateUser, resetUserPassword } from '@/api/TikuComponentApi';
-import { buildRegisterSourceLabel, buildResetPasswordPayload, buildUserBalanceUpdatePayload } from '@/utils/userPortalHelpers.mjs';
+import { buildAdminCreateUserPayload, buildRegisterSourceLabel, buildResetPasswordPayload, buildUserBalanceUpdatePayload } from '@/utils/userPortalHelpers.mjs';
 import { message } from 'ant-design-vue';
-import { computed, defineComponent, ref, toRaw } from 'vue';
+import { computed, defineComponent, ref } from 'vue';
 
 const dataSource = ref([])
 const visible = ref(false)
@@ -183,6 +197,9 @@ const formState = ref({
   balance: '',
   balanceMode: 'override',
   registerSource: 'admin',
+  phone: '',
+  phoneBoundAt: '',
+  forceReassignPhone: false,
 })
 const resetPasswordForm = ref({
   id: undefined,
@@ -295,6 +312,24 @@ export default defineComponent({
           width: 120,
         },
         {
+          title: '手机号',
+          dataIndex: 'phone',
+          key: 'phone',
+          slots: {
+            customRender: 'phone',
+          },
+          width: 150,
+        },
+        {
+          title: '绑定时间',
+          dataIndex: 'phoneBoundAt',
+          key: 'phoneBoundAt',
+          slots: {
+            customRender: 'phoneBoundAt',
+          },
+          width: 180,
+        },
+        {
           title: '注册来源',
           dataIndex: 'registerSource',
           key: 'registerSource',
@@ -394,6 +429,9 @@ export default defineComponent({
         balance: record.balance ?? '',
         balanceMode: 'override',
         registerSource: record.registerSource || 'admin',
+        phone: record.phone || '',
+        phoneBoundAt: record.phoneBoundAt || '',
+        forceReassignPhone: false,
       }
       visible.value = true
     },
@@ -432,18 +470,12 @@ export default defineComponent({
       })
     },
     onSubmit() {
-      const payload = {
-        ...toRaw(formState).value,
-        nickname: String(formState.value.nickname || '').trim(),
-        role: String(formState.value.role || 'user').trim(),
-        status: String(formState.value.status || 'enabled').trim(),
-      }
-
+      let createPayload = null
       if (!isEditing.value) {
-        payload.username = String(formState.value.username || '').trim()
-        payload.password = String(formState.value.password || '').trim()
-        if (!payload.username || !payload.password) {
-          message.warning('请输入用户名和密码')
+        try {
+          createPayload = buildAdminCreateUserPayload(formState.value)
+        } catch (error) {
+          message.warning(error?.message || '请完善新增用户必填项')
           return
         }
       }
@@ -461,7 +493,7 @@ export default defineComponent({
       submitLoading.value = true
       const submitter = isEditing.value
         ? updateUser(editPayload)
-        : addUser(payload)
+        : addUser(createPayload)
 
       submitter.then(res => {
         if (res?.status === 200) {
@@ -517,6 +549,9 @@ export default defineComponent({
         balance: '',
         balanceMode: 'override',
         registerSource: 'admin',
+        phone: '',
+        phoneBoundAt: '',
+        forceReassignPhone: false,
       };
       isEditing.value = false
     },

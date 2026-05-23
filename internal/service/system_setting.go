@@ -18,33 +18,58 @@ const EPayPlatformPublicKeySettingKey = "epay_platform_public_key"
 const EPayMerchantPrivateKeySettingKey = "epay_merchant_private_key"
 const EPayNotifyURLSettingKey = "epay_notify_url"
 const EPayReturnURLSettingKey = "epay_return_url"
+const SMSProviderSettingKey = "sms_provider"
+const SMSBaoUsernameSettingKey = "smsbao_username"
+const SMSBaoSecretSettingKey = "smsbao_secret"
+const SMSCodeSignNameSettingKey = "sms_code_sign_name"
+const SMSCodeTemplateSettingKey = "sms_code_template"
+const SMSLoginEnabledSettingKey = "sms_login_enabled"
 
 const DefaultPaymentProvider = "epay"
 const DefaultPaymentMethod = "alipay"
 const DefaultEPayVersion = "v2"
+const DefaultSMSProvider = "smsbao"
+const DefaultSMSCodeTemplate = "【{sign}】您的验证码是{code}，5分钟内有效。"
 
 const paymentMethodWXPay = "wxpay"
 
 type SystemSettingDetail struct {
-	RegisterEnabled         bool   `json:"registerEnabled"`
-	EPayVersion             string `json:"epayVersion"`
-	EPayGatewayURL          string `json:"epayGatewayUrl"`
-	EPayPartnerID           string `json:"epayPartnerId"`
-	EPayPlatformPublicKey   string `json:"epayPlatformPublicKey"`
-	EPayMerchantPrivateKey  string `json:"epayMerchantPrivateKey"`
-	EPayNotifyURL           string `json:"epayNotifyUrl"`
-	EPayReturnURL           string `json:"epayReturnUrl"`
+	RegisterEnabled        bool   `json:"registerEnabled"`
+	EPayVersion            string `json:"epayVersion"`
+	EPayGatewayURL         string `json:"epayGatewayUrl"`
+	EPayPartnerID          string `json:"epayPartnerId"`
+	EPayPlatformPublicKey  string `json:"epayPlatformPublicKey"`
+	EPayMerchantPrivateKey string `json:"epayMerchantPrivateKey"`
+	EPayNotifyURL          string `json:"epayNotifyUrl"`
+	EPayReturnURL          string `json:"epayReturnUrl"`
+	SMSProvider            string `json:"smsProvider"`
+	SMSBaoUsername         string `json:"smsbaoUsername"`
+	SMSBaoSecret           string `json:"smsbaoSecret"`
+	SMSCodeSignName        string `json:"smsCodeSignName"`
+	SMSCodeTemplate        string `json:"smsCodeTemplate"`
+	SMSLoginEnabled        bool   `json:"smsLoginEnabled"`
 }
 
 type UpdateSystemSettingInput struct {
-	RegisterEnabled         bool   `json:"registerEnabled"`
-	EPayVersion             string `json:"epayVersion"`
-	EPayGatewayURL          string `json:"epayGatewayUrl"`
-	EPayPartnerID           string `json:"epayPartnerId"`
-	EPayPlatformPublicKey   string `json:"epayPlatformPublicKey"`
-	EPayMerchantPrivateKey  string `json:"epayMerchantPrivateKey"`
-	EPayNotifyURL           string `json:"epayNotifyUrl"`
-	EPayReturnURL           string `json:"epayReturnUrl"`
+	RegisterEnabled        bool   `json:"registerEnabled"`
+	EPayVersion            string `json:"epayVersion"`
+	EPayGatewayURL         string `json:"epayGatewayUrl"`
+	EPayPartnerID          string `json:"epayPartnerId"`
+	EPayPlatformPublicKey  string `json:"epayPlatformPublicKey"`
+	EPayMerchantPrivateKey string `json:"epayMerchantPrivateKey"`
+	EPayNotifyURL          string `json:"epayNotifyUrl"`
+	EPayReturnURL          string `json:"epayReturnUrl"`
+	SMSProvider            string `json:"smsProvider"`
+	SMSBaoUsername         string `json:"smsbaoUsername"`
+	SMSBaoSecret           string `json:"smsbaoSecret"`
+	SMSCodeSignName        string `json:"smsCodeSignName"`
+	SMSCodeTemplate        string `json:"smsCodeTemplate"`
+	SMSLoginEnabled        bool   `json:"smsLoginEnabled"`
+}
+
+type PublicAuthSettings struct {
+	RegisterEnabled bool `json:"registerEnabled"`
+	SMSLoginEnabled bool `json:"smsLoginEnabled"`
 }
 
 func GetRegisterEnabledWithDB(db *gorm.DB) (bool, error) {
@@ -81,6 +106,17 @@ func SetRegisterEnabledWithDB(db *gorm.DB, enabled bool) (bool, error) {
 	return enabled, nil
 }
 
+func GetPublicAuthSettingsWithDB(db *gorm.DB) (PublicAuthSettings, error) {
+	registerEnabled, err := GetRegisterEnabledWithDB(db)
+	if err != nil {
+		return PublicAuthSettings{}, err
+	}
+	return PublicAuthSettings{
+		RegisterEnabled: registerEnabled,
+		SMSLoginEnabled: strings.EqualFold(strings.TrimSpace(getSystemSettingStringWithDefault(db, SMSLoginEnabledSettingKey, "false")), "true"),
+	}, nil
+}
+
 func GetSystemSettingDetailWithDB(db *gorm.DB) (SystemSettingDetail, error) {
 	registerEnabled, err := GetRegisterEnabledWithDB(db)
 	if err != nil {
@@ -96,6 +132,12 @@ func GetSystemSettingDetailWithDB(db *gorm.DB) (SystemSettingDetail, error) {
 		EPayMerchantPrivateKey: getSystemSettingStringWithDefault(db, EPayMerchantPrivateKeySettingKey, ""),
 		EPayNotifyURL:          getSystemSettingStringWithDefault(db, EPayNotifyURLSettingKey, ""),
 		EPayReturnURL:          getSystemSettingStringWithDefault(db, EPayReturnURLSettingKey, ""),
+		SMSProvider:            getSystemSettingStringWithDefault(db, SMSProviderSettingKey, DefaultSMSProvider),
+		SMSBaoUsername:         getSystemSettingStringWithDefault(db, SMSBaoUsernameSettingKey, ""),
+		SMSBaoSecret:           getSystemSettingStringWithDefault(db, SMSBaoSecretSettingKey, ""),
+		SMSCodeSignName:        getSystemSettingStringWithDefault(db, SMSCodeSignNameSettingKey, ""),
+		SMSCodeTemplate:        getSystemSettingStringWithDefault(db, SMSCodeTemplateSettingKey, DefaultSMSCodeTemplate),
+		SMSLoginEnabled:        strings.EqualFold(strings.TrimSpace(getSystemSettingStringWithDefault(db, SMSLoginEnabledSettingKey, "false")), "true"),
 	}
 	return detail, nil
 }
@@ -114,6 +156,12 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		EPayMerchantPrivateKey: strings.TrimSpace(input.EPayMerchantPrivateKey),
 		EPayNotifyURL:          strings.TrimSpace(input.EPayNotifyURL),
 		EPayReturnURL:          strings.TrimSpace(input.EPayReturnURL),
+		SMSProvider:            strings.TrimSpace(input.SMSProvider),
+		SMSBaoUsername:         strings.TrimSpace(input.SMSBaoUsername),
+		SMSBaoSecret:           strings.TrimSpace(input.SMSBaoSecret),
+		SMSCodeSignName:        strings.TrimSpace(input.SMSCodeSignName),
+		SMSCodeTemplate:        strings.TrimSpace(input.SMSCodeTemplate),
+		SMSLoginEnabled:        input.SMSLoginEnabled,
 	}
 
 	settings := []struct {
@@ -129,6 +177,12 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		{EPayMerchantPrivateKeySettingKey, normalized.EPayMerchantPrivateKey, "易支付商户私钥"},
 		{EPayNotifyURLSettingKey, normalized.EPayNotifyURL, "易支付异步通知地址"},
 		{EPayReturnURLSettingKey, normalized.EPayReturnURL, "易支付同步跳转地址"},
+		{SMSProviderSettingKey, normalized.SMSProvider, "短信提供方"},
+		{SMSBaoUsernameSettingKey, normalized.SMSBaoUsername, "短信宝用户名"},
+		{SMSBaoSecretSettingKey, normalized.SMSBaoSecret, "短信宝密钥"},
+		{SMSCodeSignNameSettingKey, normalized.SMSCodeSignName, "短信签名"},
+		{SMSCodeTemplateSettingKey, normalized.SMSCodeTemplate, "短信验证码模板"},
+		{SMSLoginEnabledSettingKey, map[bool]string{true: "true", false: "false"}[normalized.SMSLoginEnabled], "是否开启短信验证码登录"},
 	}
 	for _, item := range settings {
 		if err := saveSystemSettingValue(db, item.key, item.value, item.remark); err != nil {

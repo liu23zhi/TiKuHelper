@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as userPortalHelpers from './userPortalHelpers.mjs';
 
 import {
   buildPortalMenuKeys,
@@ -65,12 +66,38 @@ test('buildPersonalUsageAnswerSourceText prefers answer source label before prov
   assert.equal(buildPersonalUsageAnswerSourceText({}), '-');
 });
 
+test('buildResetPasswordPayload requires non-empty password', () => {
+  assert.deepEqual(buildResetPasswordPayload('  New12345!  '), { password: 'New12345!' });
+  assert.throws(() => buildResetPasswordPayload(''), /请输入新密码/);
+});
+
+test('buildAdminCreateUserPayload trims fields and keeps admin-created defaults', () => {
+  assert.equal(typeof userPortalHelpers.buildAdminCreateUserPayload, 'function');
+  assert.deepEqual(userPortalHelpers.buildAdminCreateUserPayload({
+    username: '  new-user  ',
+    password: '  Abc12345!  ',
+    nickname: '  测试用户  ',
+    role: ' admin ',
+    status: ' disabled ',
+    registerSource: '  ',
+  }), {
+    username: 'new-user',
+    password: 'Abc12345!',
+    nickname: '测试用户',
+    role: 'admin',
+    status: 'disabled',
+    registerSource: 'admin',
+  });
+});
+
 test('buildUserBalanceUpdatePayload trims fields and keeps edit mode data', () => {
   assert.deepEqual(buildUserBalanceUpdatePayload({
     id: 9,
     nickname: '  管理员修改  ',
     role: ' admin ',
     status: ' disabled ',
+    phone: ' 13800000000 ',
+    forceReassignPhone: true,
     balance: ' 12.50 ',
     balanceMode: 'increase',
   }), {
@@ -78,17 +105,21 @@ test('buildUserBalanceUpdatePayload trims fields and keeps edit mode data', () =
     nickname: '管理员修改',
     role: 'admin',
     status: 'disabled',
+    phone: '13800000000',
+    forceReassignPhone: true,
     balance: 12.5,
     balanceMode: 'increase',
   });
 });
 
-test('buildUserBalanceUpdatePayload omits balance when empty', () => {
+test('buildUserBalanceUpdatePayload omits balance when empty but keeps phone clearing payload', () => {
   assert.deepEqual(buildUserBalanceUpdatePayload({
     id: 10,
     nickname: 'test',
     role: 'user',
     status: 'enabled',
+    phone: '   ',
+    forceReassignPhone: false,
     balance: '   ',
     balanceMode: 'override',
   }), {
@@ -96,6 +127,8 @@ test('buildUserBalanceUpdatePayload omits balance when empty', () => {
     nickname: 'test',
     role: 'user',
     status: 'enabled',
+    phone: '',
+    forceReassignPhone: false,
   });
 });
 

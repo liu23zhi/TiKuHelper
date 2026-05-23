@@ -50,6 +50,23 @@ export function buildResetPasswordPayload(passwordValue) {
   return { password }
 }
 
+export function buildAdminCreateUserPayload(formValue) {
+  const username = String(formValue?.username || '').trim()
+  const password = String(formValue?.password || '').trim()
+  if (!username || !password) {
+    throw new Error('请完善新增用户必填项')
+  }
+
+  return {
+    username,
+    password,
+    nickname: String(formValue?.nickname || '').trim(),
+    role: String(formValue?.role || 'user').trim() || 'user',
+    status: String(formValue?.status || 'enabled').trim() || 'enabled',
+    registerSource: String(formValue?.registerSource || '').trim() || 'admin',
+  }
+}
+
 export function buildPersonalUsageBillingRecordParams(page, pageSize) {
   const normalizedPage = Number(page || 1)
   const normalizedPageSize = Number(pageSize || 10)
@@ -104,6 +121,8 @@ export function buildUserBalanceUpdatePayload(formValue) {
     nickname: String(formValue?.nickname || '').trim(),
     role: String(formValue?.role || 'user').trim(),
     status: String(formValue?.status || 'enabled').trim(),
+    phone: String(formValue?.phone || '').trim(),
+    forceReassignPhone: !!formValue?.forceReassignPhone,
   }
 
   const rawBalance = String(formValue?.balance ?? '').trim()

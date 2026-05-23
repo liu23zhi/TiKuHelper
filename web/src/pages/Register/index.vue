@@ -45,12 +45,29 @@
               </template>
             </a-input>
           </a-form-item>
+          <a-form-item name="phone" label="手机号" :rules="[{ required: true, message: '请输入手机号' }]">
+            <a-input v-model:value="registerForm.phone" placeholder="请输入手机号" size="large">
+              <template #prefix>
+                <MobileOutlined style="color: rgba(0, 0, 0, 0.25)" />
+              </template>
+            </a-input>
+          </a-form-item>
+          <a-form-item name="smsCode" label="验证码" :rules="[{ required: true, message: '请输入验证码' }]">
+            <div class="sms-code-row">
+              <a-input v-model:value="registerForm.smsCode" placeholder="请输入验证码" size="large">
+                <template #prefix>
+                  <SafetyCertificateOutlined style="color: rgba(0, 0, 0, 0.25)" />
+                </template>
+              </a-input>
+              <a-button :loading="sendingCode" @click="sendRegisterCode">发送验证码</a-button>
+            </div>
+          </a-form-item>
           <a-form-item>
             <a-button
               type="primary"
               html-type="submit"
               :loading="submitting"
-              :disabled="!registerForm.username || !registerForm.password"
+              :disabled="!registerForm.username || !registerForm.password || !registerForm.phone || !registerForm.smsCode"
               class="submit-button"
               block
             >
@@ -79,8 +96,9 @@
 
 <script>
 import { defineComponent, reactive, ref } from 'vue';
-import { UserOutlined, LockOutlined, IdcardOutlined } from '@ant-design/icons-vue';
-import { registerUser } from '../../api/TikuComponentApi.js'
+import { UserOutlined, LockOutlined, IdcardOutlined, MobileOutlined, SafetyCertificateOutlined } from '@ant-design/icons-vue';
+import { registerUser, sendPublicSMSCode } from '../../api/TikuComponentApi.js'
+import { buildPublicRegisterPayload, buildPublicSMSCodePayload } from '../../utils/phoneAuthHelpers.mjs'
 import { message } from 'ant-design-vue';
 import { useRouter } from 'vue-router';
 
@@ -89,30 +107,55 @@ export default defineComponent({
   setup() {
     const router = useRouter()
     const submitting = ref(false)
+    const sendingCode = ref(false)
     const registerDisabledNotice = ref('')
     const registerForm = reactive({
       username: '',
       password: '',
       nickname: '',
+      phone: '',
+      smsCode: '',
     })
 
     const resetRegisterForm = () => {
       registerForm.username = ''
       registerForm.password = ''
       registerForm.nickname = ''
+      registerForm.phone = ''
+      registerForm.smsCode = ''
+    }
+
+    const sendRegisterCode = () => {
+      sendingCode.value = true
+      sendPublicSMSCode(buildPublicSMSCodePayload(registerForm, 'register')).then((res) => {
+        if (res?.status === 200) {
+          message.success(res?.message || '发送成功，请注意查收')
+        } else {
+          message.error(res?.message || '发送失败')
+        }
+      }).catch((error) => {
+        message.error(error?.message || '发送失败')
+      }).finally(() => {
+        sendingCode.value = false
+      })
     }
 
     const handleRegister = () => {
       registerDisabledNotice.value = ''
       submitting.value = true
-      registerUser({
-        username: registerForm.username,
-        password: registerForm.password,
-        nickname: registerForm.nickname,
-      }).then((res) => {
+      let payload
+      try {
+        payload = buildPublicRegisterPayload(registerForm)
+      } catch (error) {
+        submitting.value = false
+        message.error(error?.message || '注册失败')
+        return
+      }
+
+      registerUser(payload).then((res) => {
         if (res?.status === 200) {
           message.success('注册成功，请使用新账号登录')
-          const username = registerForm.username
+          const username = registerForm.username.trim()
           resetRegisterForm()
           router.push({ path: '/login', query: { username } })
         } else {
@@ -121,8 +164,8 @@ export default defineComponent({
           }
           message.error(res?.message || '注册失败')
         }
-      }).catch(() => {
-        message.error('注册失败')
+      }).catch((error) => {
+        message.error(error?.message || '注册失败')
       }).finally(() => {
         submitting.value = false
       })
@@ -138,9 +181,11 @@ export default defineComponent({
 
     return {
       submitting,
+      sendingCode,
       registerDisabledNotice,
       registerForm,
       handleRegister,
+      sendRegisterCode,
       goToLogin,
       handleFinishFailed,
     }
@@ -149,6 +194,8 @@ export default defineComponent({
     UserOutlined,
     LockOutlined,
     IdcardOutlined,
+    MobileOutlined,
+    SafetyCertificateOutlined,
   },
 })
 </script>
@@ -242,6 +289,15 @@ export default defineComponent({
 
 .form {
   margin-top: 8px;
+}
+
+.sms-code-row {
+  display: flex;
+  gap: 8px;
+}
+
+.sms-code-row :deep(.ant-input-affix-wrapper) {
+  flex: 1;
 }
 
 .submit-button,

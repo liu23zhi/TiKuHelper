@@ -8,6 +8,7 @@ import (
 	l "gorm.io/gorm/logger"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -46,6 +47,120 @@ func ensureAccountDomainDefaults(db *gorm.DB) {
 			logger.FatalLog(fmt.Errorf("initialize account-domain defaults fail: %w", err))
 		}
 	}
+}
+
+func ensureUserPhoneBindingSchema(db *gorm.DB) error {
+	if db == nil {
+		return nil
+	}
+	return ensureUserPhoneBindingSchemaForDriver(db, db.Dialector.Name())
+}
+
+func ensureUserPhoneBindingSchemaForDriver(db *gorm.DB, driverName string) error {
+	if db == nil {
+		return nil
+	}
+	if !db.Migrator().HasTable(entity.TableNameUser) {
+		return nil
+	}
+
+	normalizedDriver := strings.TrimSpace(strings.ToLower(driverName))
+	if normalizedDriver == "" {
+		normalizedDriver = strings.TrimSpace(strings.ToLower(db.Dialector.Name()))
+	}
+
+	if normalizedDriver == "sqlite" {
+		if !db.Migrator().HasColumn(entity.TableNameUser, "phone") {
+			if err := db.Exec("ALTER TABLE users ADD COLUMN phone varchar(32)").Error; err != nil {
+				return err
+			}
+		}
+		if !db.Migrator().HasColumn(entity.TableNameUser, "phone_bound_at") {
+			if err := db.Exec("ALTER TABLE users ADD COLUMN phone_bound_at datetime").Error; err != nil {
+				return err
+			}
+		}
+		if !db.Migrator().HasIndex(entity.TableNameUser, "idx_users_phone") {
+			if err := db.Exec("CREATE UNIQUE INDEX idx_users_phone ON users(phone)").Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if !db.Migrator().HasColumn(entity.TableNameUser, "phone") {
+		if err := db.Migrator().AddColumn(&entity.User{}, "Phone"); err != nil {
+			return err
+		}
+	}
+	if !db.Migrator().HasColumn(entity.TableNameUser, "phone_bound_at") {
+		if err := db.Migrator().AddColumn(&entity.User{}, "PhoneBoundAt"); err != nil {
+			return err
+		}
+	}
+	if !db.Migrator().HasIndex(entity.TableNameUser, "idx_users_phone") {
+		if err := db.Migrator().CreateIndex(&entity.User{}, "Phone"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureSMSVerificationSchema(db *gorm.DB) error {
+	if db == nil {
+		return nil
+	}
+	return ensureSMSVerificationSchemaForDriver(db, db.Dialector.Name())
+}
+
+func ensureSMSVerificationSchemaForDriver(db *gorm.DB, driverName string) error {
+	if db == nil {
+		return nil
+	}
+	if !db.Migrator().HasTable(entity.TableNameSMSVerificationCode) {
+		return nil
+	}
+
+	normalizedDriver := strings.TrimSpace(strings.ToLower(driverName))
+	if normalizedDriver == "" {
+		normalizedDriver = strings.TrimSpace(strings.ToLower(db.Dialector.Name()))
+	}
+
+	if normalizedDriver == "sqlite" {
+		if !db.Migrator().HasColumn(entity.TableNameSMSVerificationCode, "scene") {
+			legacyTableName := entity.TableNameSMSVerificationCode + "__legacy_scene"
+			statements := []string{
+				"ALTER TABLE sms_verification_codes RENAME TO sms_verification_codes__legacy_scene",
+				"CREATE TABLE sms_verification_codes (`id` integer PRIMARY KEY AUTOINCREMENT,`phone` varchar(32) NOT NULL,`scene` varchar(32) NOT NULL DEFAULT '',`code_hash` char(64) NOT NULL,`status` varchar(32) NOT NULL,`expires_at` datetime NOT NULL,`consumed_at` datetime,`request_ip` varchar(64),`created_at` datetime,`updated_at` datetime)",
+				"INSERT INTO sms_verification_codes (`id`,`phone`,`scene`,`code_hash`,`status`,`expires_at`,`consumed_at`,`request_ip`,`created_at`,`updated_at`) SELECT `id`,`phone`,'' AS `scene`,`code_hash`,`status`,`expires_at`,`consumed_at`,`request_ip`,`created_at`,`updated_at` FROM sms_verification_codes__legacy_scene",
+				"DROP TABLE sms_verification_codes__legacy_scene",
+			}
+			for _, statement := range statements {
+				if err := db.Exec(statement).Error; err != nil {
+					_ = db.Exec("ALTER TABLE " + legacyTableName + " RENAME TO " + entity.TableNameSMSVerificationCode).Error
+					return err
+				}
+			}
+		}
+		if !db.Migrator().HasIndex(entity.TableNameSMSVerificationCode, "idx_sms_verification_codes_scene") {
+			if err := db.Exec("CREATE INDEX idx_sms_verification_codes_scene ON sms_verification_codes(scene)").Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if !db.Migrator().HasColumn(entity.TableNameSMSVerificationCode, "scene") {
+		if err := db.Migrator().AddColumn(&entity.SMSVerificationCode{}, "Scene"); err != nil {
+			return err
+		}
+	}
+	if !db.Migrator().HasIndex(entity.TableNameSMSVerificationCode, "idx_sms_verification_codes_scene") {
+		if err := db.Migrator().CreateIndex(&entity.SMSVerificationCode{}, "Scene"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // RegisterDB 注册数据库
@@ -88,6 +203,10 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
 	}
 
+	if err := ensureUserPhoneBindingSchema(db); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare user phone binding schema fail: %w", err))
+	}
+
 	err = db.AutoMigrate(&entity.User{})
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
@@ -108,6 +227,10 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
 	}
 
+	if err := ensureSMSVerificationSchema(db); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare sms verification schema fail: %w", err))
+	}
+
 	err = db.AutoMigrate(
 		&entity.AccessToken{},
 		&entity.SystemSetting{},
@@ -116,6 +239,7 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		&entity.RechargeOrder{},
 		&entity.BillingRecord{},
 		&entity.AIModelArchitecture{},
+		&entity.SMSVerificationCode{},
 	)
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
