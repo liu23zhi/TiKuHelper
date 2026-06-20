@@ -94,8 +94,13 @@ func TestPublicRegisterStatusReturnsCurrentFlags(t *testing.T) {
 
 	loadPublicAuthSettings = func() (service.PublicAuthSettings, error) {
 		return service.PublicAuthSettings{
-			RegisterEnabled: true,
-			SMSLoginEnabled: true,
+			RegisterEnabled:          true,
+			SMSLoginEnabled:          true,
+			WechatLoginEnabled:       true,
+			AlternativeLoginEnabled:  true,
+			CaptchaProvider:          "remote",
+			CaptchaAPIBaseURL:        "https://captcha.example.com",
+			CaptchaType:              "RANDOM",
 		}, nil
 	}
 
@@ -110,14 +115,28 @@ func TestPublicRegisterStatusReturnsCurrentFlags(t *testing.T) {
 	}
 
 	var response struct {
-		RegisterEnabled bool `json:"registerEnabled"`
-		SMSLoginEnabled bool `json:"smsLoginEnabled"`
+		RegisterEnabled         bool   `json:"registerEnabled"`
+		SMSLoginEnabled         bool   `json:"smsLoginEnabled"`
+		WechatLoginEnabled      bool   `json:"wechatLoginEnabled"`
+		AlternativeLoginEnabled bool   `json:"alternativeLoginEnabled"`
+		CaptchaProvider         string `json:"captchaProvider"`
+		CaptchaAPIBaseURL       string `json:"captchaApiBaseUrl"`
+		CaptchaType             string `json:"captchaType"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if !response.RegisterEnabled || !response.SMSLoginEnabled {
+	if !response.RegisterEnabled || !response.SMSLoginEnabled || !response.WechatLoginEnabled || !response.AlternativeLoginEnabled {
 		t.Fatalf("expected both public auth flags true, got %+v", response)
+	}
+	if response.CaptchaProvider != "remote" {
+		t.Fatalf("expected remote captcha provider, got %s", response.CaptchaProvider)
+	}
+	if response.CaptchaAPIBaseURL != "https://captcha.example.com" {
+		t.Fatalf("expected captcha API base url, got %s", response.CaptchaAPIBaseURL)
+	}
+	if response.CaptchaType != "RANDOM" {
+		t.Fatalf("expected captcha type RANDOM, got %s", response.CaptchaType)
 	}
 }
 

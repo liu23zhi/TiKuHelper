@@ -48,11 +48,10 @@
           <a-form-item name="phone" label="手机号" :rules="[{ required: true, message: '请输入手机号' }]">
             <a-input
               v-model:value="registerForm.phone"
-              addonBefore="+86"
-              placeholder="请输入手机号"
+              placeholder="请输入手机号，国际号码请带 + 区号"
               size="large"
-              inputmode="numeric"
-              :maxlength="11"
+              inputmode="tel"
+              :maxlength="20"
               @input="registerForm.phone = normalizePhoneInput(registerForm.phone)"
             >
               <template #prefix>
@@ -112,16 +111,14 @@
 <script>
 import { defineComponent, reactive, ref } from 'vue';
 import { UserOutlined, LockOutlined, IdcardOutlined, MobileOutlined, SafetyCertificateOutlined } from '@ant-design/icons-vue';
-import { registerUser, sendPublicSMSCode, createCaptchaChallenge, verifyCaptchaChallenge } from '../../api/TikuComponentApi.js'
+import { registerUser, sendPublicSMSCode, createCaptchaChallenge, verifyCaptchaChallenge, verifyRemoteCaptcha, getPublicRegisterStatus } from '../../api/TikuComponentApi.js'
 import { buildPublicRegisterPayload, buildPublicSMSCodePayload } from '../../utils/phoneAuthHelpers.mjs'
 import {
-  buildCaptchaChallengePayload,
-  buildCaptchaVerifyPayload,
   ensurePhoneBeforeSMSCaptcha,
   normalizePhoneInput,
   normalizeSMSCodeInput,
 } from '../../utils/captchaHelpers.mjs'
-import { openCaptchaDialog } from '../../utils/captchaDialog.mjs'
+import { ensureAuthCaptchaToken } from '../../utils/captchaDialog.mjs'
 import { message } from 'ant-design-vue';
 import { useRouter } from 'vue-router';
 
@@ -135,6 +132,15 @@ export default defineComponent({
     const submitting = ref(false)
     const sendingCode = ref(false)
     const registerDisabledNotice = ref('')
+    const publicAuthSettings = ref({
+      registerEnabled: false,
+      smsLoginEnabled: false,
+      wechatLoginEnabled: false,
+      alternativeLoginEnabled: false,
+      captchaProvider: 'remote',
+      captchaApiBaseUrl: 'https://captcha.api.zelly.cn',
+      captchaType: 'RANDOM',
+    })
     const registerForm = reactive({
       username: '',
       password: '',
@@ -144,41 +150,30 @@ export default defineComponent({
       captchaToken: '',
     })
 
-    const ensureCaptchaToken = async (scene, targetForm) => {
-      const requestCaptchaChallenge = async () => {
-        const challengeRes = await createCaptchaChallenge(buildCaptchaChallengePayload(scene))
-        if (challengeRes?.status !== 200) {
-          throw new Error(challengeRes?.message || '获取图形验证码失败')
+    const ensureCaptchaToken = (scene, targetForm) => ensureAuthCaptchaToken({
+      scene,
+      targetForm,
+      publicSettings: publicAuthSettings.value,
+      createCaptchaChallenge,
+      verifyCaptchaChallenge,
+      verifyRemoteCaptcha,
+    })
+
+    const loadPublicAuthSettings = () => {
+      return getPublicRegisterStatus().then((res) => {
+        if (res?.status === 200) {
+          publicAuthSettings.value = {
+            registerEnabled: !!res?.data?.registerEnabled,
+            smsLoginEnabled: !!res?.data?.smsLoginEnabled,
+            wechatLoginEnabled: !!res?.data?.wechatLoginEnabled,
+            alternativeLoginEnabled: !!res?.data?.alternativeLoginEnabled,
+            captchaProvider: res?.data?.captchaProvider || 'remote',
+            captchaApiBaseUrl: res?.data?.captchaApiBaseUrl || 'https://captcha.api.zelly.cn',
+            captchaType: res?.data?.captchaType || 'RANDOM',
+          }
         }
-        return challengeRes
-      }
-
-      let challengeRes = await requestCaptchaChallenge()
-      const refreshCaptchaChallenge = async () => {
-        const refreshedChallenge = await requestCaptchaChallenge()
-        challengeRes = refreshedChallenge
-        return refreshedChallenge.data.imageData
-      }
-
-      const captchaCode = await openCaptchaDialog({
-        imageData: challengeRes.data.imageData,
-        refreshCaptchaChallenge,
+        return res
       })
-
-      if (!captchaCode) {
-        throw new Error('请先完成人机验证')
-      }
-
-      const verifyRes = await verifyCaptchaChallenge(buildCaptchaVerifyPayload({
-        challengeId: challengeRes.data.challengeId,
-        scene,
-        captchaCode,
-      }))
-      if (verifyRes?.status !== 200) {
-        throw new Error(verifyRes?.message || '图形验证码校验失败')
-      }
-      targetForm.captchaToken = verifyRes?.data?.captchaToken || ''
-      return targetForm.captchaToken
     }
 
     const resetRegisterForm = () => {
@@ -254,10 +249,13 @@ export default defineComponent({
       console.log(errors)
     }
 
+    loadPublicAuthSettings()
+
     return {
       submitting,
       sendingCode,
       registerDisabledNotice,
+      publicAuthSettings,
       registerForm,
       normalizePhoneInput,
       normalizeSMSCodeInput,

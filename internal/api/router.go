@@ -39,8 +39,13 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.POST("/user/register", controller.UserRegister)  // 公开注册接口
 	apiRouter.POST("/public/captcha/challenge", controller.CreateCaptchaChallenge)
 	apiRouter.POST("/public/captcha/verify", controller.VerifyCaptchaChallenge)
+	apiRouter.POST("/public/captcha/remote-token", controller.VerifyRemoteCaptcha)
 	apiRouter.POST("/public/sms-code", controller.SendPublicSMSCode) // 公开短信验证码接口
 	apiRouter.GET("/public/register-status", controller.PublicRegisterStatus)
+	apiRouter.POST("/public/wechat-login/qrcode", controller.CreateWechatLoginQRCode)
+	apiRouter.GET("/public/wechat-login/status", controller.CheckWechatLoginStatus)
+	apiRouter.POST("/public/wechat-login/bind", controller.BindWechatLogin)
+	apiRouter.GET("/public/wechat/user", controller.LegacyWechatUserByCode)
 	apiRouter.GET("/user/info", controller.Auth, controller.UserInfo)                        // 当前登录用户
 	apiRouter.GET("/user", controller.Auth, controller.UserList)                             // 自己创建的用户列表
 	apiRouter.POST("/user", controller.Auth, controller.CreateUser)                          // 创建用户

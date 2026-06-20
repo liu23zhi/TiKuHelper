@@ -22,6 +22,8 @@ type User struct {
 	RegisterSource string     `gorm:"column:register_source;type:varchar(32);not null;default:legacy" json:"registerSource"`
 	Phone          *string    `gorm:"column:phone;type:varchar(32);uniqueIndex" json:"phone"`
 	PhoneBoundAt   *time.Time `gorm:"column:phone_bound_at" json:"phoneBoundAt"`
+	WechatID       *string    `gorm:"column:wechat_id;type:varchar(128);uniqueIndex" json:"wechatId"`
+	WechatBoundAt  *time.Time `gorm:"column:wechat_bound_at" json:"wechatBoundAt"`
 	CreatedAt      time.Time  `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
 	LastLoginAt    *time.Time `gorm:"column:last_login_at" json:"lastLoginAt"`
 	LastLoginIP    string     `gorm:"column:last_login_ip;type:varchar(64)" json:"lastLoginIp"`

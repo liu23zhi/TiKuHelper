@@ -1,6 +1,8 @@
 package service
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,16 +16,24 @@ type SMSProvider interface {
 }
 
 type SMSBaoProvider struct {
-	Endpoint string
-	Username string
-	Secret   string
-	Client   *http.Client
+	Endpoint              string
+	DomesticEndpoint      string
+	InternationalEndpoint string
+	Username              string
+	Secret                string
+	CredentialType        string
+	RegionMode            string
+	Client                *http.Client
 }
 
 func (p SMSBaoProvider) SendSMS(phone string, content string) error {
-	endpoint := strings.TrimSpace(p.Endpoint)
-	if endpoint == "" {
-		endpoint = "https://api.smsbao.com/sms"
+	normalizedPhone, phoneRegion, err := NormalizePhone(phone)
+	if err != nil {
+		return err
+	}
+	endpoint, err := p.endpointForPhoneRegion(phoneRegion)
+	if err != nil {
+		return err
 	}
 	client := p.Client
 	if client == nil {
@@ -31,8 +41,8 @@ func (p SMSBaoProvider) SendSMS(phone string, content string) error {
 	}
 	query := url.Values{}
 	query.Set("u", p.Username)
-	query.Set("p", p.Secret)
-	query.Set("m", phone)
+	query.Set("p", p.credentialValue())
+	query.Set("m", normalizedPhone)
 	query.Set("c", content)
 
 	resp, err := client.Get(endpoint + "?" + query.Encode())
@@ -60,10 +70,49 @@ func (p SMSBaoProvider) SendSMS(phone string, content string) error {
 	return fmt.Errorf("%s", errorText)
 }
 
+func (p SMSBaoProvider) endpointForPhoneRegion(phoneRegion string) (string, error) {
+	regionMode := normalizeSMSBaoRegionMode(p.RegionMode)
+	if regionMode == "domestic" && phoneRegion != PhoneRegionMainland {
+		return "", fmt.Errorf("当前短信配置仅允许发送国内手机号")
+	}
+	if regionMode == "international" && phoneRegion != PhoneRegionInternational {
+		return "", fmt.Errorf("当前短信配置仅允许发送国际手机号")
+	}
+
+	if phoneRegion == PhoneRegionInternational {
+		endpoint := strings.TrimSpace(p.InternationalEndpoint)
+		if endpoint == "" {
+			endpoint = "https://api.smsbao.com/wsms"
+		}
+		return endpoint, nil
+	}
+
+	endpoint := strings.TrimSpace(p.DomesticEndpoint)
+	if endpoint == "" {
+		endpoint = strings.TrimSpace(p.Endpoint)
+	}
+	if endpoint == "" {
+		endpoint = "https://api.smsbao.com/sms"
+	}
+	return endpoint, nil
+}
+
+func (p SMSBaoProvider) credentialValue() string {
+	secret := strings.TrimSpace(p.Secret)
+	if normalizeSMSBaoCredentialType(p.CredentialType) != "password" {
+		return secret
+	}
+	sum := md5.Sum([]byte(secret))
+	return hex.EncodeToString(sum[:])
+}
+
 func newSMSProviderFromSettings(settings SystemSettingDetail) SMSProvider {
 	return SMSBaoProvider{
-		Endpoint: "https://api.smsbao.com/sms",
-		Username: settings.SMSBaoUsername,
-		Secret:   settings.SMSBaoSecret,
+		DomesticEndpoint:      "https://api.smsbao.com/sms",
+		InternationalEndpoint: "https://api.smsbao.com/wsms",
+		Username:              settings.SMSBaoUsername,
+		Secret:                settings.SMSBaoSecret,
+		CredentialType:        settings.SMSBaoCredentialType,
+		RegionMode:            settings.SMSBaoRegionMode,
 	}
 }

@@ -246,7 +246,7 @@ func UserRegister(c *gin.Context) {
 		})
 		return
 	}
-	phone, err := service.NormalizeMainlandPhone(rawPhone)
+	phone, _, err := service.NormalizePhone(rawPhone)
 	if err != nil {
 		c.JSON(400, gin.H{"message": err.Error()})
 		return
@@ -331,7 +331,7 @@ func UserSMSLogin(c *gin.Context) {
 		c.JSON(400, gin.H{"message": "参数错误"})
 		return
 	}
-	phone, err := service.NormalizeMainlandPhone(payload.Phone)
+	phone, _, err := service.NormalizePhone(payload.Phone)
 	if err != nil {
 		c.JSON(400, gin.H{"message": err.Error()})
 		return

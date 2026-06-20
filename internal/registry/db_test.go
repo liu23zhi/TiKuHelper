@@ -229,6 +229,9 @@ func TestEnsureUserPhoneBindingSchemaUsesGenericMigratorPathForMySQLCompatibleDr
 	if err := ensureUserPhoneBindingSchemaForDriver(legacyDB, "mysql"); err != nil {
 		t.Fatalf("prepare mysql-compatible users phone binding schema: %v", err)
 	}
+	if err := ensureUserWechatBindingSchemaForDriver(legacyDB, "mysql"); err != nil {
+		t.Fatalf("prepare mysql-compatible users wechat binding schema: %v", err)
+	}
 	if err := legacyDB.AutoMigrate(&entity.User{}); err != nil {
 		t.Fatalf("migrate current user schema after mysql-compatible preparation: %v", err)
 	}
@@ -241,6 +244,15 @@ func TestEnsureUserPhoneBindingSchemaUsesGenericMigratorPathForMySQLCompatibleDr
 	}
 	if !legacyDB.Migrator().HasIndex("users", "idx_users_phone") {
 		t.Fatal("expected users phone unique index after generic migrator preparation")
+	}
+	if !legacyDB.Migrator().HasColumn("users", "wechat_id") {
+		t.Fatal("expected users.wechat_id column after generic migrator preparation")
+	}
+	if !legacyDB.Migrator().HasColumn("users", "wechat_bound_at") {
+		t.Fatal("expected users.wechat_bound_at column after generic migrator preparation")
+	}
+	if !legacyDB.Migrator().HasIndex("users", "idx_users_wechat_id") {
+		t.Fatal("expected users wechat unique index after generic migrator preparation")
 	}
 }
 

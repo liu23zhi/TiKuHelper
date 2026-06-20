@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -16,6 +17,15 @@ import (
 	"gorm.io/gorm"
 	"sync"
 )
+
+type userWechatBindingSchema struct {
+	WechatID      *string    `gorm:"column:wechat_id;type:varchar(128)"`
+	WechatBoundAt *time.Time `gorm:"column:wechat_bound_at"`
+}
+
+func (*userWechatBindingSchema) TableName() string {
+	return entity.TableNameUser
+}
 
 var db *gorm.DB
 var once sync.Once
@@ -53,7 +63,10 @@ func ensureUserPhoneBindingSchema(db *gorm.DB) error {
 	if db == nil {
 		return nil
 	}
-	return ensureUserPhoneBindingSchemaForDriver(db, db.Dialector.Name())
+	if err := ensureUserPhoneBindingSchemaForDriver(db, db.Dialector.Name()); err != nil {
+		return err
+	}
+	return ensureUserWechatBindingSchemaForDriver(db, db.Dialector.Name())
 }
 
 func ensureUserPhoneBindingSchemaForDriver(db *gorm.DB, driverName string) error {
@@ -100,6 +113,56 @@ func ensureUserPhoneBindingSchemaForDriver(db *gorm.DB, driverName string) error
 	}
 	if !db.Migrator().HasIndex(entity.TableNameUser, "idx_users_phone") {
 		if err := db.Migrator().CreateIndex(&entity.User{}, "Phone"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureUserWechatBindingSchemaForDriver(db *gorm.DB, driverName string) error {
+	if db == nil {
+		return nil
+	}
+	if !db.Migrator().HasTable(entity.TableNameUser) {
+		return nil
+	}
+
+	normalizedDriver := strings.TrimSpace(strings.ToLower(driverName))
+	if normalizedDriver == "" {
+		normalizedDriver = strings.TrimSpace(strings.ToLower(db.Dialector.Name()))
+	}
+
+	if normalizedDriver == "sqlite" {
+		if !db.Migrator().HasColumn(entity.TableNameUser, "wechat_id") {
+			if err := db.Exec("ALTER TABLE users ADD COLUMN wechat_id varchar(128)").Error; err != nil {
+				return err
+			}
+		}
+		if !db.Migrator().HasColumn(entity.TableNameUser, "wechat_bound_at") {
+			if err := db.Exec("ALTER TABLE users ADD COLUMN wechat_bound_at datetime").Error; err != nil {
+				return err
+			}
+		}
+		if !db.Migrator().HasIndex(entity.TableNameUser, "idx_users_wechat_id") {
+			if err := db.Exec("CREATE UNIQUE INDEX idx_users_wechat_id ON users(wechat_id)").Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	if !db.Migrator().HasColumn(entity.TableNameUser, "wechat_id") {
+		if err := db.Migrator().AddColumn(&userWechatBindingSchema{}, "WechatID"); err != nil {
+			return err
+		}
+	}
+	if !db.Migrator().HasColumn(entity.TableNameUser, "wechat_bound_at") {
+		if err := db.Migrator().AddColumn(&userWechatBindingSchema{}, "WechatBoundAt"); err != nil {
+			return err
+		}
+	}
+	if !db.Migrator().HasIndex(entity.TableNameUser, "idx_users_wechat_id") {
+		if err := db.Migrator().CreateIndex(&entity.User{}, "WechatID"); err != nil {
 			return err
 		}
 	}

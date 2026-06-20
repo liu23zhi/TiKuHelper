@@ -57,7 +57,7 @@ func smsVerificationDB(db *gorm.DB) *gorm.DB {
 }
 
 func SendSMSCodeWithDB(db *gorm.DB, input SendSMSCodeInput) error {
-	phone, err := NormalizeMainlandPhone(input.Phone)
+	phone, _, err := NormalizePhone(input.Phone)
 	if err != nil {
 		return err
 	}
@@ -106,7 +106,7 @@ func SendSMSCodeWithDB(db *gorm.DB, input SendSMSCodeInput) error {
 }
 
 func VerifySMSCodeWithDB(db *gorm.DB, rawPhone string, scene string, smsCode string) error {
-	phone, err := NormalizeMainlandPhone(rawPhone)
+	phone, _, err := NormalizePhone(rawPhone)
 	if err != nil {
 		return err
 	}

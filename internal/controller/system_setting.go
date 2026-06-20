@@ -41,10 +41,7 @@ func PublicRegisterStatus(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"registerEnabled": settings.RegisterEnabled,
-		"smsLoginEnabled": settings.SMSLoginEnabled,
-	})
+	c.JSON(http.StatusOK, settings)
 }
 
 func UpdateSystemSetting(c *gin.Context) {

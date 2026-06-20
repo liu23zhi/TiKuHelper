@@ -1,0 +1,227 @@
+package service
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"image"
+	"image/color"
+	"image/png"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/glebarez/sqlite"
+	"github.com/itihey/tikuAdapter/internal/entity"
+	"gorm.io/gorm"
+)
+
+func newWechatLoginTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+
+	dsn := fmt.Sprintf("file:wechat-login-%s?mode=memory&cache=shared", t.Name())
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open test db: %v", err)
+	}
+	if err := db.AutoMigrate(&entity.User{}); err != nil {
+		t.Fatalf("migrate test db: %v", err)
+	}
+	return db
+}
+
+func tinyPNGBytes(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	img.Set(0, 0, color.RGBA{R: 20, G: 120, B: 80, A: 255})
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestCreateWechatLoginQRCodeWithDBDownloadsQRCodeAndSendsBearerToken(t *testing.T) {
+	db := newWechatLoginTestDB(t)
+	qrBytes := tinyPNGBytes(t)
+	var authHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/wechat/create_login_qrcode":
+			authHeader = r.Header.Get("Authorization")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"data": map[string]any{
+					"scene_id":       "login_scene_1",
+					"qrcode_url":     "http://" + r.Host + "/qr.png",
+					"login_token":    "login-token-1",
+					"expire_seconds": 600,
+				},
+			})
+		case "/qr.png":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(qrBytes)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	result, err := CreateWechatLoginQRCodeWithDB(db, WechatLoginClient{
+		BaseURL: server.URL,
+		Token:   "bearer-token",
+		Client:  server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("create qrcode: %v", err)
+	}
+	if authHeader != "Bearer bearer-token" {
+		t.Fatalf("expected bearer token header, got %s", authHeader)
+	}
+	if result.LoginToken != "login-token-1" || result.SceneID != "login_scene_1" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if !strings.HasPrefix(result.QRCodeImageData, "data:image/png;base64,") {
+		t.Fatalf("expected qrcode image data, got %s", result.QRCodeImageData)
+	}
+	if result.ExpireSeconds != 600 {
+		t.Fatalf("expected expire seconds 600, got %d", result.ExpireSeconds)
+	}
+}
+
+func TestCheckWechatLoginStatusWithDBReturnsJWTForBoundUser(t *testing.T) {
+	db := newWechatLoginTestDB(t)
+	wechatID := "openid-bound"
+	if err := db.Create(&entity.User{
+		ID:             10,
+		Username:       "bound-user",
+		Password:       "Abc12345!",
+		Role:           "user",
+		Status:         "enabled",
+		RegisterSource: "public",
+		WechatID:       &wechatID,
+	}).Error; err != nil {
+		t.Fatalf("create bound user: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/wechat/login_status" || r.URL.Query().Get("login_token") != "login-token-1" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"data": map[string]any{
+				"status": "success",
+				"wechat_user": map[string]any{
+					"openid": wechatID,
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	result, err := CheckWechatLoginStatusWithDB(db, WechatLoginStatusInput{
+		Client:     WechatLoginClient{BaseURL: server.URL, Token: "token", Client: server.Client()},
+		LoginToken: "login-token-1",
+		RequestIP:  "127.0.0.1",
+	})
+	if err != nil {
+		t.Fatalf("check status: %v", err)
+	}
+	if result.Status != WechatLoginStatusSuccess {
+		t.Fatalf("expected success status, got %+v", result)
+	}
+	if strings.TrimSpace(result.JWT) == "" {
+		t.Fatal("expected jwt")
+	}
+
+	var stored entity.User
+	if err := db.Where("id = ?", 10).First(&stored).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	if stored.LastLoginAt == nil || stored.LastLoginIP != "127.0.0.1" {
+		t.Fatalf("expected login metadata, got %+v", stored)
+	}
+}
+
+func TestCheckWechatLoginStatusWithDBReturnsBindTokenForUnboundUser(t *testing.T) {
+	db := newWechatLoginTestDB(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"data": map[string]any{
+				"status": "success",
+				"wechat_user": map[string]any{
+					"openid": "openid-new",
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	result, err := CheckWechatLoginStatusWithDB(db, WechatLoginStatusInput{
+		Client:     WechatLoginClient{BaseURL: server.URL, Token: "token", Client: server.Client()},
+		LoginToken: "login-token-2",
+		RequestIP:  "127.0.0.1",
+	})
+	if err != nil {
+		t.Fatalf("check status: %v", err)
+	}
+	if result.Status != WechatLoginStatusNeedBind {
+		t.Fatalf("expected need_bind status, got %+v", result)
+	}
+	if strings.TrimSpace(result.BindToken) == "" {
+		t.Fatal("expected bind token")
+	}
+}
+
+func TestBindWechatLoginWithDBBindsExistingAccountAndConsumesToken(t *testing.T) {
+	db := newWechatLoginTestDB(t)
+	if err := db.Create(&entity.User{
+		ID:             20,
+		Username:       "existing",
+		Password:       "Abc12345!",
+		Role:           "user",
+		Status:         "enabled",
+		RegisterSource: "public",
+	}).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	store := NewWechatBindTokenStore()
+	bindToken := store.Create("openid-bind", time.Now().Add(5*time.Minute))
+
+	result, err := BindWechatLoginWithDB(db, WechatBindInput{
+		Store:     store,
+		BindToken: bindToken,
+		Username:  "existing",
+		Password:  "Abc12345!",
+		RequestIP: "127.0.0.2",
+	})
+	if err != nil {
+		t.Fatalf("bind wechat: %v", err)
+	}
+	if strings.TrimSpace(result.JWT) == "" {
+		t.Fatal("expected jwt")
+	}
+
+	var stored entity.User
+	if err := db.Where("id = ?", 20).First(&stored).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	if stored.WechatID == nil || *stored.WechatID != "openid-bind" {
+		t.Fatalf("expected wechat id bound, got %+v", stored.WechatID)
+	}
+	if stored.WechatBoundAt == nil {
+		t.Fatal("expected wechat bound at")
+	}
+	if _, err := BindWechatLoginWithDB(db, WechatBindInput{
+		Store:     store,
+		BindToken: bindToken,
+		Username:  "existing",
+		Password:  "Abc12345!",
+	}); err == nil {
+		t.Fatal("expected consumed bind token reuse to fail")
+	}
+}

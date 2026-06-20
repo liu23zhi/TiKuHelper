@@ -6,6 +6,7 @@ import { getPublicRegisterStatus } from '../api/TikuComponentApi'
 import AdapterLoginLayout from '../layout/LoginLayout.vue';
 import AdapterLoginPage from '../pages/Login/index.vue'
 import AdapterRegisterPage from '../pages/Register/index.vue'
+import WechatBind from '../pages/WechatBind/index.vue'
 
 import TikuAdapterLayout from '../layout/TikuAdapterLayout.vue';
 import TikuComponent from '../pages/TikuComponent/index.vue';
@@ -35,6 +36,11 @@ const routes = [
         path: 'register',
         name: 'adapterregister',
         component: AdapterRegisterPage
+      },
+      {
+        path: 'wechat-bind',
+        name: 'wechat-bind',
+        component: WechatBind
       }
     ]
   },

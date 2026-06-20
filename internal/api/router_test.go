@@ -38,6 +38,31 @@ func TestSetAPIRouterRegistersQuestionImportRoute(t *testing.T) {
 	t.Fatal("expected question import route to be registered")
 }
 
+func TestSetAPIRouterRegistersWechatLoginRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	SetAPIRouter(router)
+
+	expected := map[string]bool{
+		"POST /adapter-service/public/wechat-login/qrcode": false,
+		"GET /adapter-service/public/wechat-login/status":  false,
+		"POST /adapter-service/public/wechat-login/bind":   false,
+		"GET /adapter-service/public/wechat/user":          false,
+	}
+	for _, route := range router.Routes() {
+		key := route.Method + " " + route.Path
+		if _, ok := expected[key]; ok {
+			expected[key] = true
+		}
+	}
+	for key, found := range expected {
+		if !found {
+			t.Fatalf("expected wechat login route %s to be registered", key)
+		}
+	}
+}
+
 func TestSetAPIRouterDoesNotRegisterAIModelMappingRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

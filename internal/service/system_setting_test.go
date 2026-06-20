@@ -224,3 +224,92 @@ func TestUpdateSystemSettingDetailWithDBPersistsSMSFields(t *testing.T) {
 		t.Fatalf("unexpected public auth settings: %+v", publicSettings)
 	}
 }
+
+func TestUpdateSystemSettingDetailWithDBPersistsWechatCaptchaAndSMSBaoFields(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+
+	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
+		RegisterEnabled:      true,
+		SMSLoginEnabled:      false,
+		WechatLoginEnabled:   true,
+		WechatAPIBaseURL:     " https://wechat.example.com ",
+		WechatAPIBearerToken: " token-1 ",
+		CaptchaProvider:      " remote ",
+		CaptchaAPIBaseURL:    " https://captcha.api.zelly.cn/ ",
+		CaptchaType:          " slider ",
+		SMSBaoCredentialType: " password ",
+		SMSBaoRegionMode:     " international ",
+	})
+	if err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+
+	if !updated.WechatLoginEnabled {
+		t.Fatal("expected wechat login enabled")
+	}
+	if updated.WechatAPIBaseURL != "https://wechat.example.com" {
+		t.Fatalf("unexpected wechat api base url %s", updated.WechatAPIBaseURL)
+	}
+	if updated.WechatAPIBearerToken != "token-1" {
+		t.Fatalf("unexpected wechat bearer token %s", updated.WechatAPIBearerToken)
+	}
+	if updated.CaptchaProvider != "remote" {
+		t.Fatalf("unexpected captcha provider %s", updated.CaptchaProvider)
+	}
+	if updated.CaptchaAPIBaseURL != "https://captcha.api.zelly.cn" {
+		t.Fatalf("unexpected captcha api base url %s", updated.CaptchaAPIBaseURL)
+	}
+	if updated.CaptchaType != "SLIDER" {
+		t.Fatalf("unexpected captcha type %s", updated.CaptchaType)
+	}
+	if updated.SMSBaoCredentialType != "password" {
+		t.Fatalf("unexpected smsbao credential type %s", updated.SMSBaoCredentialType)
+	}
+	if updated.SMSBaoRegionMode != "international" {
+		t.Fatalf("unexpected smsbao region mode %s", updated.SMSBaoRegionMode)
+	}
+}
+
+func TestGetPublicAuthSettingsWithDBIncludesAlternativeLoginAndCaptcha(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+
+	_, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
+		RegisterEnabled:      false,
+		SMSLoginEnabled:      false,
+		WechatLoginEnabled:   true,
+		WechatAPIBaseURL:     "https://wechat.example.com",
+		WechatAPIBearerToken: "token-1",
+		CaptchaProvider:      "local",
+		CaptchaAPIBaseURL:    "https://captcha.example.com",
+		CaptchaType:          "rotate",
+	})
+	if err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	settings, err := GetPublicAuthSettingsWithDB(db)
+	if err != nil {
+		t.Fatalf("get public auth settings: %v", err)
+	}
+	if settings.RegisterEnabled {
+		t.Fatal("expected register disabled")
+	}
+	if settings.SMSLoginEnabled {
+		t.Fatal("expected sms login disabled")
+	}
+	if !settings.WechatLoginEnabled {
+		t.Fatal("expected wechat login enabled")
+	}
+	if !settings.AlternativeLoginEnabled {
+		t.Fatal("expected alternative login enabled when wechat login is enabled")
+	}
+	if settings.CaptchaProvider != "local" {
+		t.Fatalf("unexpected captcha provider %s", settings.CaptchaProvider)
+	}
+	if settings.CaptchaAPIBaseURL != "https://captcha.example.com" {
+		t.Fatalf("unexpected captcha api base url %s", settings.CaptchaAPIBaseURL)
+	}
+	if settings.CaptchaType != "ROTATE" {
+		t.Fatalf("unexpected captcha type %s", settings.CaptchaType)
+	}
+}

@@ -1,6 +1,8 @@
 package service
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -73,6 +75,74 @@ func TestSMSBaoProviderMapsSuccessAndKnownErrors(t *testing.T) {
 	provider.Client = errorServer.Client()
 	if err := provider.SendSMS("13800000000", "【题库助手】验证码 123456"); err == nil {
 		t.Fatal("expected balance-insufficient code to fail")
+	}
+}
+
+func TestSMSBaoProviderSelectsInternationalEndpointAndHashesPasswordCredential(t *testing.T) {
+	var domesticCalled bool
+	var capturedPhone string
+	var capturedPassword string
+	internationalServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPhone = r.URL.Query().Get("m")
+		capturedPassword = r.URL.Query().Get("p")
+		_, _ = w.Write([]byte("0"))
+	}))
+	defer internationalServer.Close()
+	domesticServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		domesticCalled = true
+		_, _ = w.Write([]byte("0"))
+	}))
+	defer domesticServer.Close()
+
+	provider := SMSBaoProvider{
+		DomesticEndpoint:      domesticServer.URL,
+		InternationalEndpoint: internationalServer.URL,
+		Username:              "demo-user",
+		Secret:                "plain-password",
+		CredentialType:        "password",
+		RegionMode:            "auto",
+		Client:                internationalServer.Client(),
+	}
+	if err := provider.SendSMS("+14155552671", "验证码 123456"); err != nil {
+		t.Fatalf("send international sms: %v", err)
+	}
+
+	sum := md5.Sum([]byte("plain-password"))
+	if domesticCalled {
+		t.Fatal("expected international endpoint only")
+	}
+	if capturedPhone != "+14155552671" {
+		t.Fatalf("expected international phone with plus preserved, got %s", capturedPhone)
+	}
+	if capturedPassword != hex.EncodeToString(sum[:]) {
+		t.Fatalf("expected md5 password credential, got %s", capturedPassword)
+	}
+}
+
+func TestSMSBaoProviderUsesApiKeyVerbatimAndRejectsRegionMismatch(t *testing.T) {
+	var capturedPassword string
+	domesticServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPassword = r.URL.Query().Get("p")
+		_, _ = w.Write([]byte("0"))
+	}))
+	defer domesticServer.Close()
+
+	provider := SMSBaoProvider{
+		DomesticEndpoint: domesticServer.URL,
+		Username:         "demo-user",
+		Secret:           "api-key-secret",
+		CredentialType:   "apikey",
+		RegionMode:       "domestic",
+		Client:           domesticServer.Client(),
+	}
+	if err := provider.SendSMS("13800000000", "验证码 123456"); err != nil {
+		t.Fatalf("send domestic sms: %v", err)
+	}
+	if capturedPassword != "api-key-secret" {
+		t.Fatalf("expected api key credential verbatim, got %s", capturedPassword)
+	}
+	if err := provider.SendSMS("+14155552671", "验证码 123456"); err == nil {
+		t.Fatal("expected domestic mode to reject international phone")
 	}
 }
 

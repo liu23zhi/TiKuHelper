@@ -2,6 +2,8 @@ package service
 
 import (
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -125,5 +127,49 @@ func TestConsumeCaptchaTokenWithDBConsumesOnceAndEnforcesScene(t *testing.T) {
 	}
 	if err := ConsumeCaptchaTokenWithDB(db, token.Token, CaptchaSceneRegisterSubmit, "127.0.0.1"); err == nil {
 		t.Fatal("expected token scene mismatch to fail")
+	}
+}
+
+func TestVerifyRemoteCaptchaWithDBCreatesActiveToken(t *testing.T) {
+	db := newCaptchaTestDB(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/check2" || r.URL.Query().Get("id") != "captcha-1" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":200,"success":true}`))
+	}))
+	defer server.Close()
+
+	token, err := VerifyRemoteCaptchaWithDB(db, RemoteCaptchaVerifyInput{
+		Scene:      CaptchaSceneLoginPassword,
+		CaptchaID:  "captcha-1",
+		RequestIP:  "127.0.0.1",
+		APIBaseURL: server.URL,
+		Client:     server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("verify remote captcha: %v", err)
+	}
+	if strings.TrimSpace(token.Token) == "" || token.Scene != CaptchaSceneLoginPassword {
+		t.Fatalf("unexpected token: %+v", token)
+	}
+}
+
+func TestVerifyRemoteCaptchaWithDBRejectsFailedRemoteCheck(t *testing.T) {
+	db := newCaptchaTestDB(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"code":400,"success":false}`))
+	}))
+	defer server.Close()
+
+	if _, err := VerifyRemoteCaptchaWithDB(db, RemoteCaptchaVerifyInput{
+		Scene:      CaptchaSceneLoginPassword,
+		CaptchaID:  "captcha-1",
+		RequestIP:  "127.0.0.1",
+		APIBaseURL: server.URL,
+		Client:     server.Client(),
+	}); err == nil {
+		t.Fatal("expected failed remote check to fail")
 	}
 }

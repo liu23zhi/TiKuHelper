@@ -13,18 +13,20 @@ test('Register page requests captcha before sms sending and register submit', as
 
   assert.match(content, /createCaptchaChallenge/)
   assert.match(content, /verifyCaptchaChallenge/)
+  assert.match(content, /verifyRemoteCaptcha/)
+  assert.match(content, /ensureAuthCaptchaToken/)
   assert.match(content, /CaptchaSceneSMSSendRegister/)
   assert.match(content, /CaptchaSceneRegisterSubmit/)
   assert.match(content, /captchaToken/)
 })
 
-test('Register page shows fixed +86 prefix and constrains phone and sms code length', async () => {
+test('Register page accepts domestic or international phone input and constrains sms code length', async () => {
   const content = await readFile(registerPagePath, 'utf8')
 
-  assert.match(content, /addonBefore="\+86"/)
-  assert.match(content, /:maxlength="11"/)
+  assert.doesNotMatch(content, /addonBefore="\+86"/)
+  assert.match(content, /:maxlength="20"/)
   assert.match(content, /:maxlength="6"/)
-  assert.match(content, /inputmode="numeric"/)
+  assert.match(content, /inputmode="tel"/)
   assert.match(content, /normalizePhoneInput/)
   assert.match(content, /normalizeSMSCodeInput/)
 })

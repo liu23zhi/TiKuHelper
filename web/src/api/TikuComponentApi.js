@@ -48,6 +48,37 @@ export function verifyCaptchaChallenge(data) {
   })
 }
 
+export function verifyRemoteCaptcha(data) {
+  return request({
+    url: `/adapter-service/public/captcha/remote-token`,
+    method: 'post',
+    data
+  })
+}
+
+export function createWechatLoginQRCode() {
+  return request({
+    url: `/adapter-service/public/wechat-login/qrcode`,
+    method: 'post'
+  })
+}
+
+export function getWechatLoginStatus(params) {
+  return request({
+    url: `/adapter-service/public/wechat-login/status`,
+    method: 'get',
+    params
+  })
+}
+
+export function bindWechatLogin(data) {
+  return request({
+    url: `/adapter-service/public/wechat-login/bind`,
+    method: 'post',
+    data
+  })
+}
+
 export function loginBySMS(data) {
   return request({
     url: `/adapter-service/user/login/sms`,

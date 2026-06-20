@@ -12,15 +12,64 @@
         type="info"
         show-icon
         class="page-alert"
-        message="这里维护易支付基础参数、站点回调地址、短信验证码配置与公开注册开关。支付方式列表已经并入当前页下方统一维护，修改后会立即影响后续注册、登录与充值链路。"
+        message="这里维护公开认证、微信登录、验证码、短信宝、支付回调和支付方式。修改后会立即影响后续注册、登录与充值链路。"
       />
 
       <a-form :label-col="labelCol" :wrapper-col="wrapperCol">
+        <a-divider orientation="left">公开认证</a-divider>
         <a-form-item label="允许公开注册">
           <a-switch v-model:checked="formState.registerEnabled" />
           <div class="hint">关闭后，注册页会直接阻止进入；管理员在后台创建用户不受影响。</div>
         </a-form-item>
 
+        <a-form-item label="开启短信登录">
+          <a-switch v-model:checked="formState.smsLoginEnabled" />
+        </a-form-item>
+
+        <a-form-item label="开启微信登录">
+          <a-switch v-model:checked="formState.wechatLoginEnabled" />
+        </a-form-item>
+
+        <a-form-item label="非密码登录">
+          <a-tag :color="alternativeLoginEnabled ? 'green' : 'default'">
+            {{ alternativeLoginEnabled ? '已启用' : '已关闭' }}
+          </a-tag>
+          <div class="hint">由短信验证码登录或微信扫码登录自动决定；两个都关闭时自动关闭。</div>
+        </a-form-item>
+
+        <a-divider orientation="left">微信登录</a-divider>
+        <a-form-item label="微信 API 地址">
+          <a-input v-model:value="formState.wechatApiBaseUrl" placeholder="例如 https://wechat.example.com" />
+        </a-form-item>
+
+        <a-form-item label="Bearer Token">
+          <a-input-password v-model:value="formState.wechatApiBearerToken" placeholder="请输入微信登录服务 Bearer Token" />
+        </a-form-item>
+
+        <a-divider orientation="left">验证码</a-divider>
+        <a-form-item label="验证码提供方">
+          <a-select v-model:value="formState.captchaProvider">
+            <a-select-option value="remote">远程 TAC 验证码</a-select-option>
+            <a-select-option value="local">站内图片验证码</a-select-option>
+          </a-select>
+          <div class="hint">远程验证码不可用时，登录和注册页面会自动回退到站内图片验证码。</div>
+        </a-form-item>
+
+        <a-form-item label="远程服务地址">
+          <a-input v-model:value="formState.captchaApiBaseUrl" placeholder="https://captcha.api.zelly.cn" />
+        </a-form-item>
+
+        <a-form-item label="验证码类型">
+          <a-select v-model:value="formState.captchaType">
+            <a-select-option value="RANDOM">随机</a-select-option>
+            <a-select-option value="SLIDER">滑块</a-select-option>
+            <a-select-option value="ROTATE">旋转</a-select-option>
+            <a-select-option value="CONCAT">滑动还原</a-select-option>
+            <a-select-option value="WORD_IMAGE_CLICK">点选</a-select-option>
+          </a-select>
+        </a-form-item>
+
+        <a-divider orientation="left">支付回调</a-divider>
         <a-form-item label="接口版本">
           <a-input value="v2" disabled />
           <div class="hint">当前仅兼容易支付 v2；支付方式请在本页下方维护。</div>
@@ -73,7 +122,22 @@
         </a-form-item>
 
         <a-form-item label="短信宝密钥">
-          <a-input-password v-model:value="formState.smsbaoSecret" placeholder="请输入密码 MD5 或 ApiKey" />
+          <a-input-password v-model:value="formState.smsbaoSecret" placeholder="请输入密码或 ApiKey" />
+        </a-form-item>
+
+        <a-form-item label="凭证类型">
+          <a-select v-model:value="formState.smsbaoCredentialType">
+            <a-select-option value="apikey">ApiKey，原样发送</a-select-option>
+            <a-select-option value="password">登录密码，发送前 MD5</a-select-option>
+          </a-select>
+        </a-form-item>
+
+        <a-form-item label="发送区域">
+          <a-select v-model:value="formState.smsbaoRegionMode">
+            <a-select-option value="auto">自动识别</a-select-option>
+            <a-select-option value="domestic">仅国内</a-select-option>
+            <a-select-option value="international">仅国际</a-select-option>
+          </a-select>
         </a-form-item>
 
         <a-form-item label="短信签名">
@@ -85,9 +149,6 @@
           <div class="hint">请保留 {sign} 和 {code} 占位符，系统会在发送前替换。</div>
         </a-form-item>
 
-        <a-form-item label="开启短信登录">
-          <a-switch v-model:checked="formState.smsLoginEnabled" />
-        </a-form-item>
       </a-form>
     </a-card>
 
@@ -276,6 +337,14 @@ export default defineComponent({
       smsCodeSignName: '',
       smsCodeTemplate: '',
       smsLoginEnabled: false,
+      wechatLoginEnabled: false,
+      wechatApiBaseUrl: '',
+      wechatApiBearerToken: '',
+      captchaProvider: 'remote',
+      captchaApiBaseUrl: 'https://captcha.api.zelly.cn',
+      captchaType: 'RANDOM',
+      smsbaoCredentialType: 'apikey',
+      smsbaoRegionMode: 'auto',
     })
     const paymentMethodFormState = ref({
       id: undefined,
@@ -289,6 +358,7 @@ export default defineComponent({
 
     const derivedNotifyUrl = computed(() => buildAbsoluteURL(formState.siteBaseUrl, notifyPath))
     const derivedReturnUrl = computed(() => buildAbsoluteURL(formState.siteBaseUrl, returnPath))
+    const alternativeLoginEnabled = computed(() => !!formState.smsLoginEnabled || !!formState.wechatLoginEnabled)
     const paymentMethodModalTitle = computed(() => (paymentMethodEditing.value ? '编辑支付方式' : '新增支付方式'))
 
     const applyDetail = (data = {}) => {
@@ -307,6 +377,14 @@ export default defineComponent({
       formState.smsCodeSignName = data.smsCodeSignName || ''
       formState.smsCodeTemplate = data.smsCodeTemplate || ''
       formState.smsLoginEnabled = !!data.smsLoginEnabled
+      formState.wechatLoginEnabled = !!data.wechatLoginEnabled
+      formState.wechatApiBaseUrl = data.wechatApiBaseUrl || ''
+      formState.wechatApiBearerToken = data.wechatApiBearerToken || ''
+      formState.captchaProvider = data.captchaProvider || 'remote'
+      formState.captchaApiBaseUrl = data.captchaApiBaseUrl || 'https://captcha.api.zelly.cn'
+      formState.captchaType = data.captchaType || 'RANDOM'
+      formState.smsbaoCredentialType = data.smsbaoCredentialType || 'apikey'
+      formState.smsbaoRegionMode = data.smsbaoRegionMode || 'auto'
     }
 
     const loadSettings = () => {
@@ -370,6 +448,7 @@ export default defineComponent({
       paymentMethodFormState,
       derivedNotifyUrl,
       derivedReturnUrl,
+      alternativeLoginEnabled,
       paymentMethodModalTitle,
       loadSettings,
       loadPaymentMethods,
@@ -460,6 +539,14 @@ export default defineComponent({
         smsCodeSignName: normalizeString(this.formState.smsCodeSignName),
         smsCodeTemplate: normalizeString(this.formState.smsCodeTemplate),
         smsLoginEnabled: !!this.formState.smsLoginEnabled,
+        wechatLoginEnabled: !!this.formState.wechatLoginEnabled,
+        wechatApiBaseUrl: normalizeString(this.formState.wechatApiBaseUrl),
+        wechatApiBearerToken: normalizeString(this.formState.wechatApiBearerToken),
+        captchaProvider: normalizeString(this.formState.captchaProvider || 'remote'),
+        captchaApiBaseUrl: normalizeString(this.formState.captchaApiBaseUrl || 'https://captcha.api.zelly.cn'),
+        captchaType: normalizeString(this.formState.captchaType || 'RANDOM'),
+        smsbaoCredentialType: normalizeString(this.formState.smsbaoCredentialType || 'apikey'),
+        smsbaoRegionMode: normalizeString(this.formState.smsbaoRegionMode || 'auto'),
       }
 
       this.saving = true

@@ -43,6 +43,33 @@ func TestNormalizeMainlandPhoneRejectsInvalidValues(t *testing.T) {
 	}
 }
 
+func TestNormalizePhoneAcceptsMainlandAndInternationalNumbers(t *testing.T) {
+	mainland, region, err := NormalizePhone(" 138-0000-0000 ")
+	if err != nil {
+		t.Fatalf("normalize mainland phone: %v", err)
+	}
+	if mainland != "13800000000" || region != PhoneRegionMainland {
+		t.Fatalf("unexpected mainland phone=%s region=%s", mainland, region)
+	}
+
+	international, region, err := NormalizePhone("+1 415-555-2671")
+	if err != nil {
+		t.Fatalf("normalize international phone: %v", err)
+	}
+	if international != "+14155552671" || region != PhoneRegionInternational {
+		t.Fatalf("unexpected international phone=%s region=%s", international, region)
+	}
+}
+
+func TestMaskPhoneSupportsInternationalNumbers(t *testing.T) {
+	if masked := MaskPhone("13800000000"); masked != "138****0000" {
+		t.Fatalf("unexpected mainland masked phone %s", masked)
+	}
+	if masked := MaskPhone("+14155552671"); masked != "+141****2671" {
+		t.Fatalf("unexpected international masked phone %s", masked)
+	}
+}
+
 func TestUpdateUserPhoneWithDBAssignsAndClearsPhone(t *testing.T) {
 	db := newPhoneBindingTestDB(t)
 	user := entity.User{ID: 1, Username: "target", Password: "123456", Role: "user", Status: "enabled", RegisterSource: "admin"}

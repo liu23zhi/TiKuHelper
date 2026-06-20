@@ -6,11 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
 	"image/png"
+	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -49,6 +52,14 @@ type CaptchaTokenResult struct {
 	Token     string    `json:"captchaToken"`
 	Scene     string    `json:"scene"`
 	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+type RemoteCaptchaVerifyInput struct {
+	Scene      string
+	CaptchaID  string
+	RequestIP  string
+	APIBaseURL string
+	Client     *http.Client
 }
 
 var captchaNow = time.Now
@@ -209,6 +220,68 @@ func VerifyCaptchaChallengeWithDB(db *gorm.DB, challengeID string, scene string,
 		ExpiresAt:   now.Add(captchaTTL),
 	}
 	if err := tokenDB.Create(&token).Error; err != nil {
+		return CaptchaTokenResult{}, err
+	}
+	return CaptchaTokenResult{Token: tokenValue, Scene: token.Scene, ExpiresAt: token.ExpiresAt}, nil
+}
+
+func VerifyRemoteCaptchaWithDB(db *gorm.DB, input RemoteCaptchaVerifyInput) (CaptchaTokenResult, error) {
+	scene := strings.TrimSpace(input.Scene)
+	if !isSupportedCaptchaScene(scene) {
+		return CaptchaTokenResult{}, fmt.Errorf("人机验证场景不正确")
+	}
+	captchaID := strings.TrimSpace(input.CaptchaID)
+	if captchaID == "" {
+		return CaptchaTokenResult{}, fmt.Errorf("远程验证码 ID 不能为空")
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(input.APIBaseURL), "/")
+	if baseURL == "" {
+		baseURL = DefaultCaptchaAPIBaseURL
+	}
+	parsed, err := url.Parse(baseURL + "/check2")
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return CaptchaTokenResult{}, fmt.Errorf("远程验证码服务地址不正确")
+	}
+	query := parsed.Query()
+	query.Set("id", captchaID)
+	parsed.RawQuery = query.Encode()
+
+	client := input.Client
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+	resp, err := client.Get(parsed.String())
+	if err != nil {
+		return CaptchaTokenResult{}, fmt.Errorf("远程验证码校验失败")
+	}
+	defer resp.Body.Close()
+	var payload struct {
+		Code    int    `json:"code"`
+		Success bool   `json:"success"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return CaptchaTokenResult{}, fmt.Errorf("远程验证码响应解析失败")
+	}
+	if !payload.Success && payload.Code != 200 {
+		message := strings.TrimSpace(payload.Message)
+		if message == "" {
+			message = "远程验证码校验失败"
+		}
+		return CaptchaTokenResult{}, fmt.Errorf("%s", message)
+	}
+
+	now := captchaNow()
+	tokenValue := randomHex(24)
+	token := entity.CaptchaToken{
+		Token:       tokenValue,
+		Scene:       scene,
+		ChallengeID: "remote:" + captchaID,
+		RequestIP:   strings.TrimSpace(input.RequestIP),
+		Status:      CaptchaTokenStatusActive,
+		ExpiresAt:   now.Add(captchaTTL),
+	}
+	if err := captchaTokenDB(db).Create(&token).Error; err != nil {
 		return CaptchaTokenResult{}, err
 	}
 	return CaptchaTokenResult{Token: tokenValue, Scene: token.Scene, ExpiresAt: token.ExpiresAt}, nil

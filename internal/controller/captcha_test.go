@@ -58,3 +58,37 @@ func TestVerifyCaptchaChallengeReturnsCaptchaToken(t *testing.T) {
 		t.Fatalf("expected 200, got %d", recorder.Code)
 	}
 }
+
+func TestVerifyRemoteCaptchaReturnsCaptchaToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	original := verifyRemoteCaptchaWithDB
+	originalSettings := loadCaptchaSettings
+	defer func() {
+		verifyRemoteCaptchaWithDB = original
+		loadCaptchaSettings = originalSettings
+	}()
+	loadCaptchaSettings = func() (service.SystemSettingDetail, error) {
+		return service.SystemSettingDetail{CaptchaAPIBaseURL: "https://captcha.example.com"}, nil
+	}
+	verifyRemoteCaptchaWithDB = func(input service.RemoteCaptchaVerifyInput) (service.CaptchaTokenResult, error) {
+		if input.Scene != service.CaptchaSceneLoginPassword || input.CaptchaID != "captcha-1" {
+			t.Fatalf("unexpected input: %+v", input)
+		}
+		return service.CaptchaTokenResult{Token: "token-1", Scene: input.Scene}, nil
+	}
+
+	payload, _ := json.Marshal(map[string]string{
+		"scene":     "login_password",
+		"captchaId": "captcha-1",
+	})
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/public/captcha/remote-token", bytes.NewBuffer(payload))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	VerifyRemoteCaptcha(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+}

@@ -4,7 +4,9 @@ import assert from 'node:assert/strict'
 import {
   buildCaptchaChallengePayload,
   buildCaptchaVerifyPayload,
+  buildRemoteCaptchaConfig,
   ensurePhoneBeforeSMSCaptcha,
+  normalizeCaptchaType,
   normalizeSMSCodeInput,
   normalizePhoneInput,
   shouldRetryWithCaptcha,
@@ -29,9 +31,10 @@ test('ensurePhoneBeforeSMSCaptcha requires phone before captcha challenge', () =
   assert.throws(() => ensurePhoneBeforeSMSCaptcha('   '), /请输入手机号/)
 })
 
-test('normalizePhoneInput keeps only digits and caps at 11 characters', () => {
+test('normalizePhoneInput keeps digits and a leading plus for international numbers', () => {
   assert.equal(normalizePhoneInput(' 138-0000-0000abc '), '13800000000')
-  assert.equal(normalizePhoneInput('+86 13800000000123'), '86138000000')
+  assert.equal(normalizePhoneInput('+1 415-555-2671abc'), '+14155552671')
+  assert.equal(normalizePhoneInput('++1 415 555'), '+1415555')
 })
 
 test('normalizeSMSCodeInput keeps only digits and caps at 6 characters', () => {
@@ -43,4 +46,14 @@ test('shouldRetryWithCaptcha only treats captcha failures as retryable challenge
   assert.equal(shouldRetryWithCaptcha('请先完成人机验证'), true)
   assert.equal(shouldRetryWithCaptcha('人机验证已过期，请重新验证'), true)
   assert.equal(shouldRetryWithCaptcha('当前登陆过期，请重新登陆。'), false)
+})
+
+test('remote captcha helpers normalize type and build TAC urls', () => {
+  assert.equal(normalizeCaptchaType('slider'), 'SLIDER')
+  assert.equal(normalizeCaptchaType('unknown'), 'RANDOM')
+  assert.deepEqual(buildRemoteCaptchaConfig('https://captcha.api.zelly.cn/', 'SLIDER'), {
+    loaderUrl: 'https://captcha.api.zelly.cn/loader.js',
+    requestCaptchaDataUrl: 'https://captcha.api.zelly.cn/gen?type=SLIDER',
+    validCaptchaUrl: 'https://captcha.api.zelly.cn/check',
+  })
 })

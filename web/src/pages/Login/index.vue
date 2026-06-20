@@ -20,11 +20,12 @@
         <a-radio-group v-model:value="loginMode" button-style="solid" class="login-mode-switch">
           <a-radio-button value="password">账号密码登录</a-radio-button>
           <a-radio-button v-if="publicAuthSettings.smsLoginEnabled" value="sms">短信验证码登录</a-radio-button>
+          <a-radio-button v-if="publicAuthSettings.wechatLoginEnabled" value="wechat">微信扫码登录</a-radio-button>
         </a-radio-group>
 
         <a-form
           layout="vertical"
-          :model="loginMode === 'sms' ? smsLoginForm : loginForm"
+          :model="activeLoginForm"
           @finish="handleLogin"
           @finishFailed="handleFinishFailed"
           class="form"
@@ -44,15 +45,14 @@
             </a-input-password>
           </a-form-item>
 
-          <template v-else>
+          <template v-if="loginMode === 'sms'">
             <a-form-item name="phone" label="手机号" :rules="[{ required: true, message: '请输入手机号' }]">
               <a-input
                 v-model:value="smsLoginForm.phone"
-                addonBefore="+86"
-                placeholder="请输入绑定手机号"
+                placeholder="请输入绑定手机号，国际号码请带 + 区号"
                 size="large"
-                inputmode="numeric"
-                :maxlength="11"
+                inputmode="tel"
+                :maxlength="20"
                 @input="smsLoginForm.phone = normalizePhoneInput(smsLoginForm.phone)"
               >
                 <template #prefix>
@@ -79,7 +79,19 @@
             </a-form-item>
           </template>
 
-          <a-form-item>
+          <template v-if="loginMode === 'wechat'">
+            <div class="wechat-login-panel">
+              <div class="wechat-qrcode-frame">
+                <a-spin v-if="wechatQrLoading" />
+                <img v-else-if="wechatQrCodeImageData" :src="wechatQrCodeImageData" alt="微信登录二维码" />
+                <div v-else class="wechat-qrcode-empty">点击下方按钮获取二维码</div>
+              </div>
+              <div class="wechat-status">{{ wechatLoginStatusText }}</div>
+              <a-button block :loading="wechatQrLoading" @click="startWechatLogin">刷新二维码</a-button>
+            </div>
+          </template>
+
+          <a-form-item v-if="loginMode !== 'wechat'">
             <a-button
               type="primary"
               html-type="submit"
@@ -103,7 +115,7 @@
 </template>
 
 <script>
-import { defineComponent, onMounted, reactive, ref } from 'vue';
+import { computed, defineComponent, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { UserOutlined, LockOutlined, MobileOutlined, SafetyCertificateOutlined } from '@ant-design/icons-vue';
 import Swal from 'sweetalert2'
 import {
@@ -113,17 +125,18 @@ import {
   getPublicRegisterStatus,
   sendPublicSMSCode,
   createCaptchaChallenge,
+  createWechatLoginQRCode,
+  getWechatLoginStatus,
   verifyCaptchaChallenge,
+  verifyRemoteCaptcha,
 } from '../../api/TikuComponentApi.js'
 import { buildPublicSMSCodePayload, buildSMSLoginPayload } from '../../utils/phoneAuthHelpers.mjs'
 import {
-  buildCaptchaChallengePayload,
-  buildCaptchaVerifyPayload,
   ensurePhoneBeforeSMSCaptcha,
   normalizePhoneInput,
   normalizeSMSCodeInput,
 } from '../../utils/captchaHelpers.mjs'
-import { openCaptchaDialog } from '../../utils/captchaDialog.mjs'
+import { ensureAuthCaptchaToken } from '../../utils/captchaDialog.mjs'
 import { setCookies } from '../../utils/cookies.js'
 import { setStoredCurrentUser, resolveHomePath } from '../../utils/currentUser.js'
 import { message } from 'ant-design-vue';
@@ -151,8 +164,21 @@ export default defineComponent({
     const route = useRoute()
     const submitting = ref(false)
     const sendingLoginCode = ref(false)
+    const wechatQrLoading = ref(false)
+    const wechatQrCodeImageData = ref('')
+    const wechatLoginToken = ref('')
+    const wechatLoginStatusText = ref('请使用微信扫码登录')
+    const wechatPollTimer = ref(null)
     const loginMode = ref('password')
-    const publicAuthSettings = ref({ registerEnabled: false, smsLoginEnabled: false })
+    const publicAuthSettings = ref({
+      registerEnabled: false,
+      smsLoginEnabled: false,
+      wechatLoginEnabled: false,
+      alternativeLoginEnabled: false,
+      captchaProvider: 'remote',
+      captchaApiBaseUrl: 'https://captcha.api.zelly.cn',
+      captchaType: 'RANDOM',
+    })
     const loginForm = reactive({
       username: String(route.query.username || ''),
       password: '',
@@ -163,43 +189,21 @@ export default defineComponent({
       smsCode: '',
       captchaToken: '',
     })
-
-    const ensureCaptchaToken = async (scene, targetForm) => {
-      const requestCaptchaChallenge = async () => {
-        const challengeRes = await createCaptchaChallenge(buildCaptchaChallengePayload(scene))
-        if (challengeRes?.status !== 200) {
-          throw new Error(challengeRes?.message || '获取图形验证码失败')
-        }
-        return challengeRes
+    const activeLoginForm = computed(() => {
+      if (loginMode.value === 'sms') {
+        return smsLoginForm
       }
+      return loginForm
+    })
 
-      let challengeRes = await requestCaptchaChallenge()
-      const refreshCaptchaChallenge = async () => {
-        const refreshedChallenge = await requestCaptchaChallenge()
-        challengeRes = refreshedChallenge
-        return refreshedChallenge.data.imageData
-      }
-
-      const captchaCode = await openCaptchaDialog({
-        imageData: challengeRes.data.imageData,
-        refreshCaptchaChallenge,
-      })
-
-      if (!captchaCode) {
-        throw new Error('请先完成人机验证')
-      }
-
-      const verifyRes = await verifyCaptchaChallenge(buildCaptchaVerifyPayload({
-        challengeId: challengeRes.data.challengeId,
-        scene,
-        captchaCode,
-      }))
-      if (verifyRes?.status !== 200) {
-        throw new Error(verifyRes?.message || '图形验证码校验失败')
-      }
-      targetForm.captchaToken = verifyRes?.data?.captchaToken || ''
-      return targetForm.captchaToken
-    }
+    const ensureCaptchaToken = (scene, targetForm) => ensureAuthCaptchaToken({
+      scene,
+      targetForm,
+      publicSettings: publicAuthSettings.value,
+      createCaptchaChallenge,
+      verifyCaptchaChallenge,
+      verifyRemoteCaptcha,
+    })
 
     const loadPublicAuthSettings = () => {
       return getPublicRegisterStatus().then((res) => {
@@ -207,8 +211,16 @@ export default defineComponent({
           publicAuthSettings.value = {
             registerEnabled: !!res?.data?.registerEnabled,
             smsLoginEnabled: !!res?.data?.smsLoginEnabled,
+            wechatLoginEnabled: !!res?.data?.wechatLoginEnabled,
+            alternativeLoginEnabled: !!res?.data?.alternativeLoginEnabled,
+            captchaProvider: res?.data?.captchaProvider || 'remote',
+            captchaApiBaseUrl: res?.data?.captchaApiBaseUrl || 'https://captcha.api.zelly.cn',
+            captchaType: res?.data?.captchaType || 'RANDOM',
           }
           if (!publicAuthSettings.value.smsLoginEnabled && loginMode.value === 'sms') {
+            loginMode.value = 'password'
+          }
+          if (!publicAuthSettings.value.wechatLoginEnabled && loginMode.value === 'wechat') {
             loginMode.value = 'password'
           }
         }
@@ -230,6 +242,10 @@ export default defineComponent({
     }
 
     const handleLogin = async () => {
+      if (loginMode.value === 'wechat') {
+        await startWechatLogin()
+        return
+      }
       submitting.value = true
       try {
         if (loginMode.value === 'sms') {
@@ -266,6 +282,64 @@ export default defineComponent({
       }).finally(() => {
         submitting.value = false
       })
+    }
+
+    const stopWechatPolling = () => {
+      if (wechatPollTimer.value) {
+        clearInterval(wechatPollTimer.value)
+        wechatPollTimer.value = null
+      }
+    }
+
+    const pollWechatLoginStatus = async () => {
+      if (!wechatLoginToken.value) {
+        return
+      }
+      const res = await getWechatLoginStatus({ loginToken: wechatLoginToken.value })
+      if (res?.status !== 200) {
+        wechatLoginStatusText.value = res?.message || '二维码已过期，请刷新'
+        stopWechatPolling()
+        return
+      }
+      const status = res?.data?.status
+      if (status === 'success') {
+        stopWechatPolling()
+        wechatLoginStatusText.value = '扫码成功，正在登录'
+        await finishLogin(res?.data?.jwt)
+        return
+      }
+      if (status === 'need_bind') {
+        stopWechatPolling()
+        router.push({ path: '/wechat-bind', query: { bindToken: res?.data?.bindToken || '' } })
+        return
+      }
+      wechatLoginStatusText.value = '等待扫码确认'
+    }
+
+    const startWechatLogin = async () => {
+      stopWechatPolling()
+      wechatQrLoading.value = true
+      wechatLoginStatusText.value = '正在创建二维码'
+      try {
+        const res = await createWechatLoginQRCode()
+        if (res?.status !== 200) {
+          throw new Error(res?.message || '二维码创建失败，请稍后重试')
+        }
+        wechatQrCodeImageData.value = res?.data?.qrcodeImageData || ''
+        wechatLoginToken.value = res?.data?.loginToken || ''
+        if (!wechatQrCodeImageData.value || !wechatLoginToken.value) {
+          throw new Error('二维码创建失败，请稍后重试')
+        }
+        wechatLoginStatusText.value = '请使用微信扫码确认登录'
+        wechatPollTimer.value = setInterval(() => {
+          void pollWechatLoginStatus()
+        }, 2000)
+      } catch (error) {
+        wechatLoginStatusText.value = error?.message || '二维码创建失败，请稍后重试'
+        message.error(wechatLoginStatusText.value)
+      } finally {
+        wechatQrLoading.value = false
+      }
     }
 
     const sendLoginCode = async () => {
@@ -310,16 +384,25 @@ export default defineComponent({
       loadPublicAuthSettings()
     })
 
+    onBeforeUnmount(() => {
+      stopWechatPolling()
+    })
+
     return {
       submitting,
       sendingLoginCode,
+      wechatQrLoading,
+      wechatQrCodeImageData,
+      wechatLoginStatusText,
       loginMode,
       publicAuthSettings,
+      activeLoginForm,
       loginForm,
       smsLoginForm,
       normalizePhoneInput,
       normalizeSMSCodeInput,
       handleLogin,
+      startWechatLogin,
       sendLoginCode,
       goToRegister,
       handleFinishFailed,
@@ -432,6 +515,39 @@ export default defineComponent({
 
 .sms-code-row :deep(.ant-input-affix-wrapper) {
   flex: 1;
+}
+
+.wechat-login-panel {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 24px;
+}
+
+.wechat-qrcode-frame {
+  width: 220px;
+  height: 220px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  background: #f8fafc;
+  overflow: hidden;
+}
+
+.wechat-qrcode-frame img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.wechat-qrcode-empty,
+.wechat-status {
+  text-align: center;
+  color: #6b7280;
+  font-size: 13px;
+  line-height: 1.7;
 }
 
 .submit-button,
