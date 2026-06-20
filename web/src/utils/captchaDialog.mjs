@@ -74,6 +74,13 @@ class RemoteCaptchaUnavailableError extends Error {
   }
 }
 
+class UserCancelledCaptchaError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'UserCancelledCaptchaError'
+  }
+}
+
 function loadRemoteCaptchaSDK(loaderUrl) {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
     return Promise.reject(new RemoteCaptchaUnavailableError('当前环境无法加载远程验证码'))
@@ -111,6 +118,28 @@ function extractRemoteCaptchaId(res) {
   return String(data.id || data.captchaId || data.captcha_id || '').trim()
 }
 
+function createRemoteCaptchaMount() {
+  const mount = document.createElement('div')
+  const mountId = `remote-captcha-box-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  mount.id = mountId
+  mount.style.position = 'fixed'
+  mount.style.inset = '0'
+  mount.style.zIndex = '10020'
+  mount.style.display = 'flex'
+  mount.style.alignItems = 'center'
+  mount.style.justifyContent = 'center'
+  mount.style.background = 'rgba(15, 23, 42, 0.45)'
+  mount.style.padding = '24px'
+  document.body.appendChild(mount)
+  return { mount, mountId }
+}
+
+function removeRemoteCaptchaMount(mount) {
+  if (mount && mount.parentNode) {
+    mount.parentNode.removeChild(mount)
+  }
+}
+
 export async function openRemoteCaptchaDialog({
   baseUrl,
   captchaType,
@@ -121,67 +150,58 @@ export async function openRemoteCaptchaDialog({
   return new Promise((resolve, reject) => {
     let settled = false
     let tacInstance = null
-    Swal.fire({
-      title: '请完成人机验证',
-      html: '<div id="remote-captcha-box" style="min-height:320px;"></div>',
-      showConfirmButton: false,
-      showCancelButton: true,
-      cancelButtonText: '取消',
-      heightAuto: false,
-      scrollbarPadding: false,
-      didOpen: () => {
-        window.initTAC(remoteConfig.tacPath, {
-          requestCaptchaDataUrl: remoteConfig.requestCaptchaDataUrl,
-          validCaptchaUrl: remoteConfig.validCaptchaUrl,
-          bindEl: '#remote-captcha-box',
-          validSuccess: (res, c, tac) => {
-            tacInstance = tac
-            const captchaId = extractRemoteCaptchaId(res)
-            if (!captchaId) {
-              if (!settled) {
-                settled = true
-                reject(new Error('远程验证码结果无效'))
-              }
-              Swal.close()
-              return
-            }
-            if (!settled) {
-              settled = true
-              resolve(captchaId)
-            }
-            if (tac && typeof tac.destroyWindow === 'function') {
-              tac.destroyWindow()
-            }
-            Swal.close()
-          },
-          validFail: (res, c, tac) => {
-            tacInstance = tac
-            if (tac && typeof tac.reloadCaptcha === 'function') {
-              tac.reloadCaptcha()
-            }
-          },
-        }, {
-          logoUrl: null,
-        }).then((tac) => {
-          tacInstance = tac
-          tac.init()
-        }).catch((error) => {
-          if (!settled) {
-            settled = true
-            reject(new RemoteCaptchaUnavailableError(error?.message || '远程验证码初始化失败'))
-          }
-          Swal.close()
-        })
-      },
-      willClose: () => {
-        if (tacInstance && typeof tacInstance.destroyWindow === 'function') {
-          tacInstance.destroyWindow()
+    const { mount, mountId } = createRemoteCaptchaMount()
+
+    const settle = (callback) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      if (tacInstance && typeof tacInstance.destroyWindow === 'function') {
+        tacInstance.destroyWindow()
+      }
+      removeRemoteCaptchaMount(mount)
+      callback()
+    }
+
+    mount.addEventListener('click', (event) => {
+      if (event.target === mount) {
+        settle(() => reject(new UserCancelledCaptchaError('请先完成人机验证')))
+      }
+    })
+
+    window.initTAC(remoteConfig.tacPath, {
+      requestCaptchaDataUrl: remoteConfig.requestCaptchaDataUrl,
+      validCaptchaUrl: remoteConfig.validCaptchaUrl,
+      bindEl: `#${mountId}`,
+      validSuccess: (res, c, tac) => {
+        tacInstance = tac
+        const captchaId = extractRemoteCaptchaId(res)
+        if (!captchaId) {
+          settle(() => reject(new Error('远程验证码结果无效')))
+          return
         }
-        if (!settled) {
-          settled = true
-          reject(new Error('请先完成人机验证'))
+        settle(() => resolve(captchaId))
+      },
+      validFail: (res, c, tac) => {
+        tacInstance = tac
+        if (tac && typeof tac.reloadCaptcha === 'function') {
+          tac.reloadCaptcha()
         }
       },
+      btnCloseFun: (el, tac) => {
+        tacInstance = tac
+        settle(() => reject(new UserCancelledCaptchaError('请先完成人机验证')))
+      },
+    }, {
+      logoUrl: null,
+    }).then((tac) => {
+      tacInstance = tac
+      tac.init()
+    }).catch((error) => {
+      settle(() => {
+        reject(new RemoteCaptchaUnavailableError(error?.message || '远程验证码初始化失败'))
+      })
     })
   })
 }

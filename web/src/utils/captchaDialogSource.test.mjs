@@ -38,3 +38,26 @@ test('remote captcha token exchange failure does not fall back to local captcha'
   assert.match(content, /throw error/)
   assert.doesNotMatch(content, /catch \(_\)/)
 })
+
+test('remote captcha user cancellation does not fall back to local captcha', async () => {
+  const content = await readFile(captchaDialogPath, 'utf8')
+
+  assert.match(content, /UserCancelledCaptchaError/)
+  assert.match(content, /btnCloseFun/)
+  assert.match(content, /new UserCancelledCaptchaError\('请先完成人机验证'\)/)
+  assert.doesNotMatch(content, /error instanceof RemoteCaptchaUnavailableError \|\| error instanceof UserCancelledCaptchaError/)
+})
+
+test('remote captcha uses TAC as the only modal instead of nesting it in SweetAlert', async () => {
+  const content = await readFile(captchaDialogPath, 'utf8')
+  const remoteDialogStart = content.indexOf('export async function openRemoteCaptchaDialog')
+  const localTokenStart = content.indexOf('async function ensureLocalCaptchaToken')
+  const remoteDialogSource = content.slice(remoteDialogStart, localTokenStart)
+
+  assert.match(remoteDialogSource, /createRemoteCaptchaMount/)
+  assert.match(remoteDialogSource, /removeRemoteCaptchaMount/)
+  assert.match(remoteDialogSource, /bindEl: `#\$\{mountId\}`/)
+  assert.match(remoteDialogSource, /btnCloseFun:/)
+  assert.doesNotMatch(remoteDialogSource, /Swal\.fire/)
+  assert.doesNotMatch(remoteDialogSource, /showCancelButton/)
+})
