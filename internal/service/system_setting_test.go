@@ -236,7 +236,8 @@ func TestUpdateSystemSettingDetailWithDBPersistsWechatCaptchaAndSMSBaoFields(t *
 		WechatAPIBearerToken: " token-1 ",
 		CaptchaProvider:      " remote ",
 		CaptchaAPIBaseURL:    " https://captcha.api.zelly.cn/ ",
-		CaptchaType:          " slider ",
+		CaptchaAPIKey:        " captcha-secret ",
+		CaptchaType:          " 滑块验证码 ",
 		SMSBaoCredentialType: " password ",
 		SMSBaoRegionMode:     " international ",
 	})
@@ -258,6 +259,9 @@ func TestUpdateSystemSettingDetailWithDBPersistsWechatCaptchaAndSMSBaoFields(t *
 	}
 	if updated.CaptchaAPIBaseURL != "https://captcha.api.zelly.cn" {
 		t.Fatalf("unexpected captcha api base url %s", updated.CaptchaAPIBaseURL)
+	}
+	if updated.CaptchaAPIKey != "captcha-secret" {
+		t.Fatalf("unexpected captcha api key %s", updated.CaptchaAPIKey)
 	}
 	if updated.CaptchaType != "SLIDER" {
 		t.Fatalf("unexpected captcha type %s", updated.CaptchaType)

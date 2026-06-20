@@ -22,3 +22,19 @@ test('captcha dialog helper defines polished layout and refresh affordances', as
   assert.match(content, /captchaRefreshTrigger\.addEventListener\('click'/)
   assert.match(content, /refreshCaptchaChallenge/)
 })
+
+test('remote captcha dialog passes TAC asset path to captcha-local loader', async () => {
+  const content = await readFile(captchaDialogPath, 'utf8')
+
+  assert.match(content, /tacPath/)
+  assert.match(content, /window\.initTAC\(\s*remoteConfig\.tacPath,/)
+})
+
+test('remote captcha token exchange failure does not fall back to local captcha', async () => {
+  const content = await readFile(captchaDialogPath, 'utf8')
+
+  assert.match(content, /RemoteCaptchaUnavailableError/)
+  assert.match(content, /instanceof RemoteCaptchaUnavailableError/)
+  assert.match(content, /throw error/)
+  assert.doesNotMatch(content, /catch \(_\)/)
+})

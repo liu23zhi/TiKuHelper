@@ -29,6 +29,7 @@ const WechatAPIBaseURLSettingKey = "wechat_api_base_url"
 const WechatAPIBearerTokenSettingKey = "wechat_api_bearer_token"
 const CaptchaProviderSettingKey = "captcha_provider"
 const CaptchaAPIBaseURLSettingKey = "captcha_api_base_url"
+const CaptchaAPIKeySettingKey = "captcha_api_key"
 const CaptchaTypeSettingKey = "captcha_type"
 const SMSBaoCredentialTypeSettingKey = "smsbao_credential_type"
 const SMSBaoRegionModeSettingKey = "smsbao_region_mode"
@@ -40,6 +41,7 @@ const DefaultSMSProvider = "smsbao"
 const DefaultSMSCodeTemplate = "【{sign}】您的验证码是{code}，5分钟内有效。"
 const DefaultCaptchaProvider = "remote"
 const DefaultCaptchaAPIBaseURL = "https://captcha.api.zelly.cn"
+const DefaultCaptchaAPIKey = "***REMOVED***"
 const DefaultCaptchaType = "RANDOM"
 const DefaultSMSBaoCredentialType = "apikey"
 const DefaultSMSBaoRegionMode = "auto"
@@ -67,6 +69,7 @@ type SystemSettingDetail struct {
 	WechatAPIBearerToken    string `json:"wechatApiBearerToken"`
 	CaptchaProvider         string `json:"captchaProvider"`
 	CaptchaAPIBaseURL       string `json:"captchaApiBaseUrl"`
+	CaptchaAPIKey           string `json:"captchaApiKey"`
 	CaptchaType             string `json:"captchaType"`
 	SMSBaoCredentialType    string `json:"smsbaoCredentialType"`
 	SMSBaoRegionMode        string `json:"smsbaoRegionMode"`
@@ -92,6 +95,7 @@ type UpdateSystemSettingInput struct {
 	WechatAPIBearerToken   string `json:"wechatApiBearerToken"`
 	CaptchaProvider        string `json:"captchaProvider"`
 	CaptchaAPIBaseURL      string `json:"captchaApiBaseUrl"`
+	CaptchaAPIKey          string `json:"captchaApiKey"`
 	CaptchaType            string `json:"captchaType"`
 	SMSBaoCredentialType   string `json:"smsbaoCredentialType"`
 	SMSBaoRegionMode       string `json:"smsbaoRegionMode"`
@@ -191,6 +195,7 @@ func GetSystemSettingDetailWithDB(db *gorm.DB) (SystemSettingDetail, error) {
 		WechatAPIBearerToken:    strings.TrimSpace(getSystemSettingStringWithDefault(db, WechatAPIBearerTokenSettingKey, "")),
 		CaptchaProvider:         normalizeCaptchaProvider(getSystemSettingStringWithDefault(db, CaptchaProviderSettingKey, DefaultCaptchaProvider)),
 		CaptchaAPIBaseURL:       trimTrailingSlash(getSystemSettingStringWithDefault(db, CaptchaAPIBaseURLSettingKey, DefaultCaptchaAPIBaseURL)),
+		CaptchaAPIKey:           strings.TrimSpace(getSystemSettingStringWithDefault(db, CaptchaAPIKeySettingKey, DefaultCaptchaAPIKey)),
 		CaptchaType:             normalizeCaptchaType(getSystemSettingStringWithDefault(db, CaptchaTypeSettingKey, DefaultCaptchaType)),
 		SMSBaoCredentialType:    normalizeSMSBaoCredentialType(getSystemSettingStringWithDefault(db, SMSBaoCredentialTypeSettingKey, DefaultSMSBaoCredentialType)),
 		SMSBaoRegionMode:        normalizeSMSBaoRegionMode(getSystemSettingStringWithDefault(db, SMSBaoRegionModeSettingKey, DefaultSMSBaoRegionMode)),
@@ -223,6 +228,7 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		WechatAPIBearerToken:   strings.TrimSpace(input.WechatAPIBearerToken),
 		CaptchaProvider:        normalizeCaptchaProvider(input.CaptchaProvider),
 		CaptchaAPIBaseURL:      trimTrailingSlash(defaultString(input.CaptchaAPIBaseURL, DefaultCaptchaAPIBaseURL)),
+		CaptchaAPIKey:          strings.TrimSpace(defaultString(input.CaptchaAPIKey, DefaultCaptchaAPIKey)),
 		CaptchaType:            normalizeCaptchaType(input.CaptchaType),
 		SMSBaoCredentialType:   normalizeSMSBaoCredentialType(input.SMSBaoCredentialType),
 		SMSBaoRegionMode:       normalizeSMSBaoRegionMode(input.SMSBaoRegionMode),
@@ -253,6 +259,7 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		{WechatAPIBearerTokenSettingKey, normalized.WechatAPIBearerToken, "微信登录服务 Bearer Token"},
 		{CaptchaProviderSettingKey, normalized.CaptchaProvider, "验证码提供方"},
 		{CaptchaAPIBaseURLSettingKey, normalized.CaptchaAPIBaseURL, "远程验证码服务地址"},
+		{CaptchaAPIKeySettingKey, normalized.CaptchaAPIKey, "远程验证码 X-Captcha-Key"},
 		{CaptchaTypeSettingKey, normalized.CaptchaType, "验证码类型"},
 		{SMSBaoCredentialTypeSettingKey, normalized.SMSBaoCredentialType, "短信宝凭证类型"},
 		{SMSBaoRegionModeSettingKey, normalized.SMSBaoRegionMode, "短信宝发送区域模式"},
@@ -336,6 +343,19 @@ func normalizeCaptchaProvider(value string) string {
 }
 
 func normalizeCaptchaType(value string) string {
+	trimmed := strings.TrimSpace(value)
+	switch trimmed {
+	case "随机":
+		return "RANDOM"
+	case "滑块", "滑块验证", "滑块验证码":
+		return "SLIDER"
+	case "旋转", "旋转验证", "旋转验证码":
+		return "ROTATE"
+	case "滑动还原", "滑动还原验证码":
+		return "CONCAT"
+	case "文字点选", "点选", "点选验证码", "文字点选验证码":
+		return "WORD_IMAGE_CLICK"
+	}
 	normalized := strings.ToUpper(strings.TrimSpace(value))
 	switch normalized {
 	case "RANDOM", "SLIDER", "ROTATE", "CONCAT", "WORD_IMAGE_CLICK":

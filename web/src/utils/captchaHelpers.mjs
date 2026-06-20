@@ -53,9 +53,25 @@ export function shouldRetryWithCaptcha(message) {
 
 export function normalizeCaptchaType(value) {
   const normalized = trimText(value).toUpperCase()
-  return ['RANDOM', 'SLIDER', 'ROTATE', 'CONCAT', 'WORD_IMAGE_CLICK'].includes(normalized)
-    ? normalized
-    : 'RANDOM'
+  const aliases = {
+    随机: 'RANDOM',
+    滑块: 'SLIDER',
+    滑块验证: 'SLIDER',
+    滑块验证码: 'SLIDER',
+    旋转: 'ROTATE',
+    旋转验证: 'ROTATE',
+    旋转验证码: 'ROTATE',
+    滑动还原: 'CONCAT',
+    滑动还原验证码: 'CONCAT',
+    文字点选: 'WORD_IMAGE_CLICK',
+    点选: 'WORD_IMAGE_CLICK',
+    点选验证码: 'WORD_IMAGE_CLICK',
+    文字点选验证码: 'WORD_IMAGE_CLICK',
+  }
+  if (aliases[trimText(value)]) {
+    return aliases[trimText(value)]
+  }
+  return ['RANDOM', 'SLIDER', 'ROTATE', 'CONCAT', 'WORD_IMAGE_CLICK'].includes(normalized) ? normalized : 'RANDOM'
 }
 
 export function buildRemoteCaptchaConfig(baseUrl, captchaType) {
@@ -63,7 +79,8 @@ export function buildRemoteCaptchaConfig(baseUrl, captchaType) {
   const normalizedType = normalizeCaptchaType(captchaType)
   return {
     loaderUrl: `${normalizedBaseUrl}/loader.js`,
-    requestCaptchaDataUrl: `${normalizedBaseUrl}/gen?type=${encodeURIComponent(normalizedType)}`,
-    validCaptchaUrl: `${normalizedBaseUrl}/check`,
+    tacPath: `${normalizedBaseUrl}/tac`,
+    requestCaptchaDataUrl: `/adapter-service/public/captcha/remote-gen?type=${encodeURIComponent(normalizedType)}`,
+    validCaptchaUrl: '/adapter-service/public/captcha/remote-check',
   }
 }

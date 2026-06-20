@@ -67,9 +67,16 @@ export async function openCaptchaDialog({
 
 let remoteCaptchaLoaderPromise = null
 
+class RemoteCaptchaUnavailableError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'RemoteCaptchaUnavailableError'
+  }
+}
+
 function loadRemoteCaptchaSDK(loaderUrl) {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
-    return Promise.reject(new Error('当前环境无法加载远程验证码'))
+    return Promise.reject(new RemoteCaptchaUnavailableError('当前环境无法加载远程验证码'))
   }
   if (window.initTAC) {
     return Promise.resolve()
@@ -86,10 +93,10 @@ function loadRemoteCaptchaSDK(loaderUrl) {
         resolve()
         return
       }
-      reject(new Error('远程验证码 SDK 加载失败'))
+      reject(new RemoteCaptchaUnavailableError('远程验证码 SDK 加载失败'))
     }
     script.onerror = () => {
-      reject(new Error('远程验证码 SDK 加载失败'))
+      reject(new RemoteCaptchaUnavailableError('远程验证码 SDK 加载失败'))
     }
     document.head.appendChild(script)
   }).catch((error) => {
@@ -123,7 +130,7 @@ export async function openRemoteCaptchaDialog({
       heightAuto: false,
       scrollbarPadding: false,
       didOpen: () => {
-        window.initTAC({
+        window.initTAC(remoteConfig.tacPath, {
           requestCaptchaDataUrl: remoteConfig.requestCaptchaDataUrl,
           validCaptchaUrl: remoteConfig.validCaptchaUrl,
           bindEl: '#remote-captcha-box',
@@ -161,7 +168,7 @@ export async function openRemoteCaptchaDialog({
         }).catch((error) => {
           if (!settled) {
             settled = true
-            reject(error)
+            reject(new RemoteCaptchaUnavailableError(error?.message || '远程验证码初始化失败'))
           }
           Swal.close()
         })
@@ -247,13 +254,16 @@ export async function ensureAuthCaptchaToken({
         throw new Error('远程验证码结果无效')
       }
       return targetForm.captchaToken
-    } catch (_) {
-      return ensureLocalCaptchaToken({
-        scene,
-        targetForm,
-        createCaptchaChallenge,
-        verifyCaptchaChallenge,
-      })
+    } catch (error) {
+      if (error instanceof RemoteCaptchaUnavailableError) {
+        return ensureLocalCaptchaToken({
+          scene,
+          targetForm,
+          createCaptchaChallenge,
+          verifyCaptchaChallenge,
+        })
+      }
+      throw error
     }
   }
 

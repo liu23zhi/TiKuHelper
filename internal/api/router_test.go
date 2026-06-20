@@ -63,6 +63,30 @@ func TestSetAPIRouterRegistersWechatLoginRoutes(t *testing.T) {
 	}
 }
 
+func TestSetAPIRouterRegistersRemoteCaptchaProxyRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	SetAPIRouter(router)
+
+	expected := map[string]bool{
+		"POST /adapter-service/public/captcha/remote-gen":   false,
+		"GET /adapter-service/public/captcha/remote-gen":    false,
+		"POST /adapter-service/public/captcha/remote-check": false,
+	}
+	for _, route := range router.Routes() {
+		key := route.Method + " " + route.Path
+		if _, ok := expected[key]; ok {
+			expected[key] = true
+		}
+	}
+	for key, found := range expected {
+		if !found {
+			t.Fatalf("expected remote captcha proxy route %s to be registered", key)
+		}
+	}
+}
+
 func TestSetAPIRouterDoesNotRegisterAIModelMappingRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

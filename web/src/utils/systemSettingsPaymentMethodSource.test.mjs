@@ -25,6 +25,7 @@ test('SystemSettings exposes wechat captcha and smsbao credential settings', asy
   assert.match(content, /formState\.wechatApiBearerToken/);
   assert.match(content, /formState\.captchaProvider/);
   assert.match(content, /formState\.captchaApiBaseUrl/);
+  assert.match(content, /formState\.captchaApiKey/);
   assert.match(content, /formState\.captchaType/);
   assert.match(content, /formState\.smsbaoCredentialType/);
   assert.match(content, /formState\.smsbaoRegionMode/);

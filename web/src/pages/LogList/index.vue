@@ -170,6 +170,7 @@ export default defineComponent({
         { label: '题目', value: 'question' },
         { label: '搜题', value: 'search' },
         { label: '系统', value: 'system' },
+        { label: '验证码', value: 'captcha' },
       ],
       actionOptions: [
         { label: '新增', value: 0 },
@@ -177,6 +178,9 @@ export default defineComponent({
         { label: '删除', value: 2 },
         { label: '查询 / 搜题', value: 3 },
         { label: '登录', value: 10 },
+        { label: '远程验证码生成', value: 20 },
+        { label: '远程验证码校验', value: 21 },
+        { label: '远程验证码二验', value: 22 },
       ],
       columns: [
         {

@@ -59,6 +59,10 @@
           <a-input v-model:value="formState.captchaApiBaseUrl" placeholder="https://captcha.api.zelly.cn" />
         </a-form-item>
 
+        <a-form-item label="远程服务 Key">
+          <a-input-password v-model:value="formState.captchaApiKey" placeholder="请输入 X-Captcha-Key" />
+        </a-form-item>
+
         <a-form-item label="验证码类型">
           <a-select v-model:value="formState.captchaType">
             <a-select-option value="RANDOM">随机</a-select-option>
@@ -342,6 +346,7 @@ export default defineComponent({
       wechatApiBearerToken: '',
       captchaProvider: 'remote',
       captchaApiBaseUrl: 'https://captcha.api.zelly.cn',
+      captchaApiKey: '',
       captchaType: 'RANDOM',
       smsbaoCredentialType: 'apikey',
       smsbaoRegionMode: 'auto',
@@ -382,6 +387,7 @@ export default defineComponent({
       formState.wechatApiBearerToken = data.wechatApiBearerToken || ''
       formState.captchaProvider = data.captchaProvider || 'remote'
       formState.captchaApiBaseUrl = data.captchaApiBaseUrl || 'https://captcha.api.zelly.cn'
+      formState.captchaApiKey = data.captchaApiKey || ''
       formState.captchaType = data.captchaType || 'RANDOM'
       formState.smsbaoCredentialType = data.smsbaoCredentialType || 'apikey'
       formState.smsbaoRegionMode = data.smsbaoRegionMode || 'auto'
@@ -544,6 +550,7 @@ export default defineComponent({
         wechatApiBearerToken: normalizeString(this.formState.wechatApiBearerToken),
         captchaProvider: normalizeString(this.formState.captchaProvider || 'remote'),
         captchaApiBaseUrl: normalizeString(this.formState.captchaApiBaseUrl || 'https://captcha.api.zelly.cn'),
+        captchaApiKey: normalizeString(this.formState.captchaApiKey),
         captchaType: normalizeString(this.formState.captchaType || 'RANDOM'),
         smsbaoCredentialType: normalizeString(this.formState.smsbaoCredentialType || 'apikey'),
         smsbaoRegionMode: normalizeString(this.formState.smsbaoRegionMode || 'auto'),

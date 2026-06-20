@@ -39,6 +39,8 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.POST("/user/register", controller.UserRegister)  // 公开注册接口
 	apiRouter.POST("/public/captcha/challenge", controller.CreateCaptchaChallenge)
 	apiRouter.POST("/public/captcha/verify", controller.VerifyCaptchaChallenge)
+	apiRouter.Any("/public/captcha/remote-gen", controller.ProxyRemoteCaptchaGenerate)
+	apiRouter.POST("/public/captcha/remote-check", controller.ProxyRemoteCaptchaCheck)
 	apiRouter.POST("/public/captcha/remote-token", controller.VerifyRemoteCaptcha)
 	apiRouter.POST("/public/sms-code", controller.SendPublicSMSCode) // 公开短信验证码接口
 	apiRouter.GET("/public/register-status", controller.PublicRegisterStatus)

@@ -13,6 +13,7 @@ import {
 test('buildLogModuleLabel supports search module wording', () => {
   assert.equal(buildLogModuleLabel('search'), '搜题');
   assert.equal(buildLogModuleLabel('auth'), '认证');
+  assert.equal(buildLogModuleLabel('captcha'), '验证码');
   assert.equal(buildLogModuleLabel('unknown'), 'unknown');
 });
 
@@ -20,11 +21,17 @@ test('buildLogActionLabel renders search action specially for search module', ()
   assert.equal(buildLogActionLabel(3, 'search'), '搜题');
   assert.equal(buildLogActionLabel(3, 'question'), '查询');
   assert.equal(buildLogActionLabel(10, 'auth'), '登录');
+  assert.equal(buildLogActionLabel(20, 'captcha'), '远程生成');
+  assert.equal(buildLogActionLabel(21, 'captcha'), '远程校验');
+  assert.equal(buildLogActionLabel(22, 'captcha'), '远程二验');
 });
 
 test('buildLogActionColor keeps search action purple and login gold', () => {
   assert.equal(buildLogActionColor(3), 'purple');
   assert.equal(buildLogActionColor(10), 'gold');
+  assert.equal(buildLogActionColor(20), 'cyan');
+  assert.equal(buildLogActionColor(21), 'geekblue');
+  assert.equal(buildLogActionColor(22), 'volcano');
 });
 
 test('buildLogDetailSections exposes structured search summary with raw request and response blocks', () => {
@@ -180,3 +187,89 @@ test('buildLogStructuredFields keeps non-search logs on summary and snapshot col
   });
 });
 
+test('buildLogDetailSections exposes structured captcha remote status fields', () => {
+  assert.deepEqual(buildLogDetailSections({
+    description: '远程验证码校验 step=remote_check result=failed status=403 remoteCode=403 captchaId=captcha-1 durationMs=25 hasKey=true',
+    oldAnswer: 'method=POST path=/check body={"id":"captcha-1"}',
+    newAnswer: '{"code":403,"message":"bad track"}',
+  }), [
+    {
+      key: 'step',
+      label: '远程步骤',
+      value: 'remote_check',
+    },
+    {
+      key: 'result',
+      label: '结果',
+      value: '失败',
+    },
+    {
+      key: 'status',
+      label: 'HTTP 状态',
+      value: '403',
+    },
+    {
+      key: 'remoteCode',
+      label: '远程返回码',
+      value: '403',
+    },
+    {
+      key: 'remoteValid',
+      label: '远程有效',
+      value: '-',
+    },
+    {
+      key: 'scene',
+      label: '场景',
+      value: '-',
+    },
+    {
+      key: 'captchaId',
+      label: '验证码 ID',
+      value: 'captcha-1',
+    },
+    {
+      key: 'type',
+      label: '验证码类型',
+      value: '-',
+    },
+    {
+      key: 'durationMs',
+      label: '耗时(ms)',
+      value: '25',
+    },
+    {
+      key: 'hasKey',
+      label: '已配置密钥',
+      value: '是',
+    },
+    {
+      key: 'request',
+      label: '原始请求',
+      value: 'method=POST path=/check body={"id":"captcha-1"}',
+    },
+    {
+      key: 'response',
+      label: '原始响应',
+      value: '{"code":403,"message":"bad track"}',
+    },
+  ]);
+});
+
+test('buildLogStructuredFields summarizes captcha logs for table columns', () => {
+  assert.deepEqual(buildLogStructuredFields({
+    description: '远程验证码二验 step=remote_check2 result=success status=200 remoteValid=true scene=login_sms captchaId=captcha-2 durationMs=13 hasKey=false',
+    oldAnswer: 'method=GET path=/check2 id=captcha-2',
+    newAnswer: 'true',
+  }), {
+    summary: '远程验证码二验成功',
+    requestId: 'captcha-2',
+    mode: 'remote_check2',
+    requestSource: 'login_sms',
+    answerCount: '200',
+    hitProvider: 'true',
+    billingProvider: '13ms',
+    requestSnapshot: 'method=GET path=/check2 id=captcha-2',
+    responseSnapshot: 'true',
+  });
+});

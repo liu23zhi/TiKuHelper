@@ -50,10 +50,13 @@ test('shouldRetryWithCaptcha only treats captcha failures as retryable challenge
 
 test('remote captcha helpers normalize type and build TAC urls', () => {
   assert.equal(normalizeCaptchaType('slider'), 'SLIDER')
+  assert.equal(normalizeCaptchaType('滑块验证码'), 'SLIDER')
+  assert.equal(normalizeCaptchaType('点选验证码'), 'WORD_IMAGE_CLICK')
   assert.equal(normalizeCaptchaType('unknown'), 'RANDOM')
   assert.deepEqual(buildRemoteCaptchaConfig('https://captcha.api.zelly.cn/', 'SLIDER'), {
     loaderUrl: 'https://captcha.api.zelly.cn/loader.js',
-    requestCaptchaDataUrl: 'https://captcha.api.zelly.cn/gen?type=SLIDER',
-    validCaptchaUrl: 'https://captcha.api.zelly.cn/check',
+    tacPath: 'https://captcha.api.zelly.cn/tac',
+    requestCaptchaDataUrl: '/adapter-service/public/captcha/remote-gen?type=SLIDER',
+    validCaptchaUrl: '/adapter-service/public/captcha/remote-check',
   })
 })

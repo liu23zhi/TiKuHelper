@@ -4,6 +4,7 @@ export function buildLogModuleLabel(value) {
   if (normalized === 'question') return '题目';
   if (normalized === 'system') return '系统';
   if (normalized === 'search') return '搜题';
+  if (normalized === 'captcha') return '验证码';
   return value || '-';
 }
 
@@ -15,6 +16,9 @@ export function buildLogActionLabel(value, module) {
   if (normalized === 2) return '删除';
   if (normalized === 3) return normalizedModule === 'search' ? '搜题' : '查询';
   if (normalized === 10) return '登录';
+  if (normalizedModule === 'captcha' && normalized === 20) return '远程生成';
+  if (normalizedModule === 'captcha' && normalized === 21) return '远程校验';
+  if (normalizedModule === 'captcha' && normalized === 22) return '远程二验';
   return value ?? '-';
 }
 
@@ -25,6 +29,9 @@ export function buildLogActionColor(value) {
   if (normalized === 2) return 'red';
   if (normalized === 3) return 'purple';
   if (normalized === 10) return 'gold';
+  if (normalized === 20) return 'cyan';
+  if (normalized === 21) return 'geekblue';
+  if (normalized === 22) return 'volcano';
   return 'default';
 }
 
@@ -33,6 +40,21 @@ export function buildLogStructuredFields(record = {}) {
   const request = String(record?.oldAnswer || '').trim();
   const response = String(record?.newAnswer || '').trim();
   const parsedDescription = parseSearchLogDescriptionMap(description);
+  const parsedCaptchaDescription = parseCaptchaLogDescriptionMap(description);
+
+  if (parsedCaptchaDescription.summary) {
+    return {
+      summary: parsedCaptchaDescription.summary,
+      requestId: parsedCaptchaDescription.captchaId || '-',
+      mode: parsedCaptchaDescription.step || '-',
+      requestSource: parsedCaptchaDescription.scene || parsedCaptchaDescription.type || '-',
+      answerCount: parsedCaptchaDescription.status || '-',
+      hitProvider: parsedCaptchaDescription.remoteValid || parsedCaptchaDescription.result || '-',
+      billingProvider: parsedCaptchaDescription.durationMs ? `${parsedCaptchaDescription.durationMs}ms` : '-',
+      requestSnapshot: request || '-',
+      responseSnapshot: response || '-',
+    };
+  }
 
   return {
     summary: parsedDescription.summary || description || '-',
@@ -54,8 +76,12 @@ export function buildLogDetailSections(record = {}) {
   const response = String(record?.newAnswer || '').trim();
 
   if (description) {
-    const parsedSections = parseSearchLogDescription(description);
-    sections.push(...parsedSections);
+    const parsedSections = parseCaptchaLogDescription(description);
+    if (parsedSections.length > 0) {
+      sections.push(...parsedSections);
+    } else {
+      sections.push(...parseSearchLogDescription(description));
+    }
   }
 
   if (request) {
@@ -119,6 +145,66 @@ function parseSearchLogDescriptionMap(description) {
     }
     return acc;
   }, { summary: '搜索完成' });
+}
+
+function parseCaptchaLogDescription(description) {
+  const fieldMap = parseCaptchaLogDescriptionMap(description);
+  if (!fieldMap.summary) {
+    return [];
+  }
+
+  const fields = [
+    ['step', '远程步骤'],
+    ['result', '结果'],
+    ['status', 'HTTP 状态'],
+    ['remoteCode', '远程返回码'],
+    ['remoteValid', '远程有效'],
+    ['scene', '场景'],
+    ['captchaId', '验证码 ID'],
+    ['type', '验证码类型'],
+    ['durationMs', '耗时(ms)'],
+    ['hasKey', '已配置密钥'],
+  ];
+
+  return fields.map(([key, label]) => {
+    let value = fieldMap[key] || '-';
+    if (key === 'result') {
+      if (value === 'success') value = '成功';
+      if (value === 'failed') value = '失败';
+    }
+    if (key === 'remoteValid' || key === 'hasKey') {
+      if (value === 'true') value = '是';
+      if (value === 'false') value = '否';
+    }
+    return { key, label, value };
+  });
+}
+
+function parseCaptchaLogDescriptionMap(description) {
+  const text = String(description || '').trim();
+  if (!text.startsWith('远程验证码')) {
+    return {};
+  }
+
+  const fields = ['step', 'result', 'status', 'remoteCode', 'remoteValid', 'scene', 'captchaId', 'type', 'durationMs', 'hasKey'];
+  const parsed = fields.reduce((acc, key) => {
+    const value = extractDescriptionField(text, key);
+    if (value) {
+      acc[key] = value;
+    }
+    return acc;
+  }, {});
+
+  if (!parsed.step && !parsed.result) {
+    return {};
+  }
+
+  const resultText = parsed.result === 'success' ? '成功' : (parsed.result === 'failed' ? '失败' : '');
+  const summaryBase = text.split(/\s+/)[0] || '远程验证码';
+  return {
+    summary: `${summaryBase}${resultText}`,
+    ...parsed,
+  };
 }
 
 function extractDescriptionField(description, key) {
