@@ -19,6 +19,16 @@ test('buildAuthFailureHandling keeps session for negative-balance default-accoun
   });
 });
 
+test('buildAuthFailureHandling keeps session for captcha failures', () => {
+  assert.deepEqual(buildAuthFailureHandling({
+    status: 400,
+    data: { message: '请先完成人机验证' },
+  }), {
+    shouldLogout: false,
+    userMessage: '请先完成人机验证',
+  });
+});
+
 test('buildAuthFailureHandling logs out for expired login responses', () => {
   assert.deepEqual(buildAuthFailureHandling({
     status: 401,

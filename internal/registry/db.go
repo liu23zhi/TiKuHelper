@@ -240,6 +240,8 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		&entity.BillingRecord{},
 		&entity.AIModelArchitecture{},
 		&entity.SMSVerificationCode{},
+		&entity.CaptchaChallenge{},
+		&entity.CaptchaToken{},
 	)
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))

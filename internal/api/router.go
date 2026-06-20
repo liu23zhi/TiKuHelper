@@ -34,17 +34,19 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.PUT("/questions/:id", controller.Auth, controller.UpdateQuestions)
 	apiRouter.DELETE("/questions/:id", controller.Auth, controller.DeleteQuestion)
 
-	apiRouter.GET("/user/login", controller.UserLogin)                    // 登录接口
-	apiRouter.POST("/user/login/sms", controller.UserSMSLogin)          // 短信登录接口
-	apiRouter.POST("/user/register", controller.UserRegister)            // 公开注册接口
-	apiRouter.POST("/public/sms-code", controller.SendPublicSMSCode)     // 公开短信验证码接口
+	apiRouter.GET("/user/login", controller.UserLogin)         // 登录接口
+	apiRouter.POST("/user/login/sms", controller.UserSMSLogin) // 短信登录接口
+	apiRouter.POST("/user/register", controller.UserRegister)  // 公开注册接口
+	apiRouter.POST("/public/captcha/challenge", controller.CreateCaptchaChallenge)
+	apiRouter.POST("/public/captcha/verify", controller.VerifyCaptchaChallenge)
+	apiRouter.POST("/public/sms-code", controller.SendPublicSMSCode) // 公开短信验证码接口
 	apiRouter.GET("/public/register-status", controller.PublicRegisterStatus)
-	apiRouter.GET("/user/info", controller.Auth, controller.UserInfo)     // 当前登录用户
-	apiRouter.GET("/user", controller.Auth, controller.UserList)                         // 自己创建的用户列表
-	apiRouter.POST("/user", controller.Auth, controller.CreateUser)                      // 创建用户
-	apiRouter.PUT("/user/:id", controller.Auth, controller.UpdateUser)                   // 更新用户
+	apiRouter.GET("/user/info", controller.Auth, controller.UserInfo)                        // 当前登录用户
+	apiRouter.GET("/user", controller.Auth, controller.UserList)                             // 自己创建的用户列表
+	apiRouter.POST("/user", controller.Auth, controller.CreateUser)                          // 创建用户
+	apiRouter.PUT("/user/:id", controller.Auth, controller.UpdateUser)                       // 更新用户
 	apiRouter.PUT("/user/:id/reset-password", controller.Auth, controller.ResetUserPassword) // 重置密码
-	apiRouter.DELETE("/user/:id", controller.Auth, controller.DeleteUser)                // 删除用户
+	apiRouter.DELETE("/user/:id", controller.Auth, controller.DeleteUser)                    // 删除用户
 
 	apiRouter.GET("/logs", controller.Auth, controller.LogList) // 日志列表
 	apiRouter.GET("/billing-records", controller.Auth, controller.BillingRecordList)

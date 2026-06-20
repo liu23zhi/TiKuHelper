@@ -46,7 +46,15 @@
 
           <template v-else>
             <a-form-item name="phone" label="手机号" :rules="[{ required: true, message: '请输入手机号' }]">
-              <a-input v-model:value="smsLoginForm.phone" placeholder="请输入绑定手机号" size="large">
+              <a-input
+                v-model:value="smsLoginForm.phone"
+                addonBefore="+86"
+                placeholder="请输入绑定手机号"
+                size="large"
+                inputmode="numeric"
+                :maxlength="11"
+                @input="smsLoginForm.phone = normalizePhoneInput(smsLoginForm.phone)"
+              >
                 <template #prefix>
                   <MobileOutlined style="color: rgba(0, 0, 0, 0.25)" />
                 </template>
@@ -54,7 +62,14 @@
             </a-form-item>
             <a-form-item name="smsCode" label="验证码" :rules="[{ required: true, message: '请输入验证码' }]">
               <div class="sms-code-row">
-                <a-input v-model:value="smsLoginForm.smsCode" placeholder="请输入验证码" size="large">
+                <a-input
+                  v-model:value="smsLoginForm.smsCode"
+                  placeholder="请输入验证码"
+                  size="large"
+                  inputmode="numeric"
+                  :maxlength="6"
+                  @input="smsLoginForm.smsCode = normalizeSMSCodeInput(smsLoginForm.smsCode)"
+                >
                   <template #prefix>
                     <SafetyCertificateOutlined style="color: rgba(0, 0, 0, 0.25)" />
                   </template>
@@ -91,12 +106,32 @@
 import { defineComponent, onMounted, reactive, ref } from 'vue';
 import { UserOutlined, LockOutlined, MobileOutlined, SafetyCertificateOutlined } from '@ant-design/icons-vue';
 import Swal from 'sweetalert2'
-import { login, loginBySMS, getCurrentUser, getPublicRegisterStatus, sendPublicSMSCode } from '../../api/TikuComponentApi.js'
+import {
+  login,
+  loginBySMS,
+  getCurrentUser,
+  getPublicRegisterStatus,
+  sendPublicSMSCode,
+  createCaptchaChallenge,
+  verifyCaptchaChallenge,
+} from '../../api/TikuComponentApi.js'
 import { buildPublicSMSCodePayload, buildSMSLoginPayload } from '../../utils/phoneAuthHelpers.mjs'
+import {
+  buildCaptchaChallengePayload,
+  buildCaptchaVerifyPayload,
+  ensurePhoneBeforeSMSCaptcha,
+  normalizePhoneInput,
+  normalizeSMSCodeInput,
+} from '../../utils/captchaHelpers.mjs'
+import { openCaptchaDialog } from '../../utils/captchaDialog.mjs'
 import { setCookies } from '../../utils/cookies.js'
 import { setStoredCurrentUser, resolveHomePath } from '../../utils/currentUser.js'
 import { message } from 'ant-design-vue';
 import { useRoute, useRouter } from 'vue-router';
+
+const CaptchaSceneLoginPassword = 'login_password'
+const CaptchaSceneLoginSMS = 'login_sms'
+const CaptchaSceneSMSSendLogin = 'sms_send_login'
 
 function showRegisterDisabledAlert() {
   return Swal.fire({
@@ -121,11 +156,50 @@ export default defineComponent({
     const loginForm = reactive({
       username: String(route.query.username || ''),
       password: '',
+      captchaToken: '',
     })
     const smsLoginForm = reactive({
       phone: '',
       smsCode: '',
+      captchaToken: '',
     })
+
+    const ensureCaptchaToken = async (scene, targetForm) => {
+      const requestCaptchaChallenge = async () => {
+        const challengeRes = await createCaptchaChallenge(buildCaptchaChallengePayload(scene))
+        if (challengeRes?.status !== 200) {
+          throw new Error(challengeRes?.message || '获取图形验证码失败')
+        }
+        return challengeRes
+      }
+
+      let challengeRes = await requestCaptchaChallenge()
+      const refreshCaptchaChallenge = async () => {
+        const refreshedChallenge = await requestCaptchaChallenge()
+        challengeRes = refreshedChallenge
+        return refreshedChallenge.data.imageData
+      }
+
+      const captchaCode = await openCaptchaDialog({
+        imageData: challengeRes.data.imageData,
+        refreshCaptchaChallenge,
+      })
+
+      if (!captchaCode) {
+        throw new Error('请先完成人机验证')
+      }
+
+      const verifyRes = await verifyCaptchaChallenge(buildCaptchaVerifyPayload({
+        challengeId: challengeRes.data.challengeId,
+        scene,
+        captchaCode,
+      }))
+      if (verifyRes?.status !== 200) {
+        throw new Error(verifyRes?.message || '图形验证码校验失败')
+      }
+      targetForm.captchaToken = verifyRes?.data?.captchaToken || ''
+      return targetForm.captchaToken
+    }
 
     const loadPublicAuthSettings = () => {
       return getPublicRegisterStatus().then((res) => {
@@ -155,8 +229,20 @@ export default defineComponent({
       })
     }
 
-    const handleLogin = () => {
+    const handleLogin = async () => {
       submitting.value = true
+      try {
+        if (loginMode.value === 'sms') {
+          await ensureCaptchaToken(CaptchaSceneLoginSMS, smsLoginForm)
+        } else {
+          await ensureCaptchaToken(CaptchaSceneLoginPassword, loginForm)
+        }
+      } catch (error) {
+        submitting.value = false
+        message.error(error?.message || '请先完成人机验证')
+        return
+      }
+
       let requester
       try {
         requester = loginMode.value === 'sms'
@@ -182,19 +268,22 @@ export default defineComponent({
       })
     }
 
-    const sendLoginCode = () => {
+    const sendLoginCode = async () => {
       sendingLoginCode.value = true
-      sendPublicSMSCode(buildPublicSMSCodePayload(smsLoginForm, 'login')).then((res) => {
+      try {
+        smsLoginForm.phone = ensurePhoneBeforeSMSCaptcha(smsLoginForm.phone)
+        await ensureCaptchaToken(CaptchaSceneSMSSendLogin, smsLoginForm)
+        const res = await sendPublicSMSCode(buildPublicSMSCodePayload(smsLoginForm, 'login'))
         if (res?.status === 200) {
           message.success(res?.message || '发送成功，请注意查收')
         } else {
           message.error(res?.message || '发送失败')
         }
-      }).catch((error) => {
+      } catch (error) {
         message.error(error?.message || '发送失败')
-      }).finally(() => {
+      } finally {
         sendingLoginCode.value = false
-      })
+      }
     }
 
     const goToRegister = () => {
@@ -228,6 +317,8 @@ export default defineComponent({
       publicAuthSettings,
       loginForm,
       smsLoginForm,
+      normalizePhoneInput,
+      normalizeSMSCodeInput,
       handleLogin,
       sendLoginCode,
       goToRegister,

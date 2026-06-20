@@ -22,6 +22,10 @@ var verifySMSCodeWithDB = func(phone string, scene string, smsCode string) error
 	return service.VerifySMSCodeWithDB(dao.User.UnderlyingDB(), phone, scene, smsCode)
 }
 
+var consumeCaptchaTokenWithDB = func(token string, scene string, requestIP string) error {
+	return service.ConsumeCaptchaTokenWithDB(dao.User.UnderlyingDB(), token, scene, requestIP)
+}
+
 func isUserEnabled(user *entity.User) bool {
 	status := strings.TrimSpace(user.Status)
 	return status == "" || strings.EqualFold(status, "enabled")
@@ -139,6 +143,14 @@ func UserInfo(c *gin.Context) {
 
 // UserLogin 用户登录
 func UserLogin(c *gin.Context) {
+	captchaToken := strings.TrimSpace(c.Query("captchaToken"))
+	if err := consumeCaptchaTokenWithDB(captchaToken, service.CaptchaSceneLoginPassword, strings.TrimSpace(c.ClientIP())); err != nil {
+		c.JSON(400, gin.H{
+			"message": err.Error(),
+		})
+		return
+	}
+
 	us := dao.User
 	user, err := us.Where(us.Username.Eq(c.Query("username")), us.Password.Eq(c.Query("password"))).First()
 	if err != nil {
@@ -198,11 +210,12 @@ func UserRegister(c *gin.Context) {
 	}
 
 	var payload struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-		Nickname string `json:"nickname"`
-		Phone    string `json:"phone"`
-		SMSCode  string `json:"smsCode"`
+		Username     string `json:"username"`
+		Password     string `json:"password"`
+		Nickname     string `json:"nickname"`
+		Phone        string `json:"phone"`
+		SMSCode      string `json:"smsCode"`
+		CaptchaToken string `json:"captchaToken"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		c.JSON(400, gin.H{
@@ -235,6 +248,10 @@ func UserRegister(c *gin.Context) {
 	}
 	phone, err := service.NormalizeMainlandPhone(rawPhone)
 	if err != nil {
+		c.JSON(400, gin.H{"message": err.Error()})
+		return
+	}
+	if err := consumeCaptchaTokenWithDB(strings.TrimSpace(payload.CaptchaToken), service.CaptchaSceneRegisterSubmit, strings.TrimSpace(c.ClientIP())); err != nil {
 		c.JSON(400, gin.H{"message": err.Error()})
 		return
 	}
@@ -277,11 +294,20 @@ func UserRegister(c *gin.Context) {
 
 func SendPublicSMSCode(c *gin.Context) {
 	var payload struct {
-		Phone string `json:"phone"`
-		Scene string `json:"scene"`
+		Phone        string `json:"phone"`
+		Scene        string `json:"scene"`
+		CaptchaToken string `json:"captchaToken"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		c.JSON(400, gin.H{"message": "参数错误"})
+		return
+	}
+	captchaScene := service.CaptchaSceneSMSSendRegister
+	if strings.TrimSpace(payload.Scene) == service.SMSSceneLogin {
+		captchaScene = service.CaptchaSceneSMSSendLogin
+	}
+	if err := consumeCaptchaTokenWithDB(strings.TrimSpace(payload.CaptchaToken), captchaScene, strings.TrimSpace(c.ClientIP())); err != nil {
+		c.JSON(400, gin.H{"message": err.Error()})
 		return
 	}
 	if err := sendPublicSMSCodeWithDB(service.SendSMSCodeInput{
@@ -297,8 +323,9 @@ func SendPublicSMSCode(c *gin.Context) {
 
 func UserSMSLogin(c *gin.Context) {
 	var payload struct {
-		Phone   string `json:"phone"`
-		SMSCode string `json:"smsCode"`
+		Phone        string `json:"phone"`
+		SMSCode      string `json:"smsCode"`
+		CaptchaToken string `json:"captchaToken"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		c.JSON(400, gin.H{"message": "参数错误"})
@@ -306,6 +333,10 @@ func UserSMSLogin(c *gin.Context) {
 	}
 	phone, err := service.NormalizeMainlandPhone(payload.Phone)
 	if err != nil {
+		c.JSON(400, gin.H{"message": err.Error()})
+		return
+	}
+	if err := consumeCaptchaTokenWithDB(strings.TrimSpace(payload.CaptchaToken), service.CaptchaSceneLoginSMS, strings.TrimSpace(c.ClientIP())); err != nil {
 		c.JSON(400, gin.H{"message": err.Error()})
 		return
 	}

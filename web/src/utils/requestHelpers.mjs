@@ -10,6 +10,20 @@ export function buildAuthFailureHandling(response) {
       userMessage: detail,
     };
   }
+  if (detail.includes('人机验证') || detail.includes('图形验证码')) {
+    return {
+      shouldLogout: false,
+      userMessage: detail,
+    };
+  }
+
+  const message = trimText(response?.data?.message);
+  if (message.includes('人机验证') || message.includes('图形验证码')) {
+    return {
+      shouldLogout: false,
+      userMessage: message,
+    };
+  }
 
   return {
     shouldLogout: true,

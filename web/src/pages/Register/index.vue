@@ -46,7 +46,15 @@
             </a-input>
           </a-form-item>
           <a-form-item name="phone" label="手机号" :rules="[{ required: true, message: '请输入手机号' }]">
-            <a-input v-model:value="registerForm.phone" placeholder="请输入手机号" size="large">
+            <a-input
+              v-model:value="registerForm.phone"
+              addonBefore="+86"
+              placeholder="请输入手机号"
+              size="large"
+              inputmode="numeric"
+              :maxlength="11"
+              @input="registerForm.phone = normalizePhoneInput(registerForm.phone)"
+            >
               <template #prefix>
                 <MobileOutlined style="color: rgba(0, 0, 0, 0.25)" />
               </template>
@@ -54,7 +62,14 @@
           </a-form-item>
           <a-form-item name="smsCode" label="验证码" :rules="[{ required: true, message: '请输入验证码' }]">
             <div class="sms-code-row">
-              <a-input v-model:value="registerForm.smsCode" placeholder="请输入验证码" size="large">
+              <a-input
+                v-model:value="registerForm.smsCode"
+                placeholder="请输入验证码"
+                size="large"
+                inputmode="numeric"
+                :maxlength="6"
+                @input="registerForm.smsCode = normalizeSMSCodeInput(registerForm.smsCode)"
+              >
                 <template #prefix>
                   <SafetyCertificateOutlined style="color: rgba(0, 0, 0, 0.25)" />
                 </template>
@@ -97,10 +112,21 @@
 <script>
 import { defineComponent, reactive, ref } from 'vue';
 import { UserOutlined, LockOutlined, IdcardOutlined, MobileOutlined, SafetyCertificateOutlined } from '@ant-design/icons-vue';
-import { registerUser, sendPublicSMSCode } from '../../api/TikuComponentApi.js'
+import { registerUser, sendPublicSMSCode, createCaptchaChallenge, verifyCaptchaChallenge } from '../../api/TikuComponentApi.js'
 import { buildPublicRegisterPayload, buildPublicSMSCodePayload } from '../../utils/phoneAuthHelpers.mjs'
+import {
+  buildCaptchaChallengePayload,
+  buildCaptchaVerifyPayload,
+  ensurePhoneBeforeSMSCaptcha,
+  normalizePhoneInput,
+  normalizeSMSCodeInput,
+} from '../../utils/captchaHelpers.mjs'
+import { openCaptchaDialog } from '../../utils/captchaDialog.mjs'
 import { message } from 'ant-design-vue';
 import { useRouter } from 'vue-router';
+
+const CaptchaSceneSMSSendRegister = 'sms_send_register'
+const CaptchaSceneRegisterSubmit = 'register_submit'
 
 export default defineComponent({
   name: 'AdapterRegister',
@@ -115,7 +141,45 @@ export default defineComponent({
       nickname: '',
       phone: '',
       smsCode: '',
+      captchaToken: '',
     })
+
+    const ensureCaptchaToken = async (scene, targetForm) => {
+      const requestCaptchaChallenge = async () => {
+        const challengeRes = await createCaptchaChallenge(buildCaptchaChallengePayload(scene))
+        if (challengeRes?.status !== 200) {
+          throw new Error(challengeRes?.message || '获取图形验证码失败')
+        }
+        return challengeRes
+      }
+
+      let challengeRes = await requestCaptchaChallenge()
+      const refreshCaptchaChallenge = async () => {
+        const refreshedChallenge = await requestCaptchaChallenge()
+        challengeRes = refreshedChallenge
+        return refreshedChallenge.data.imageData
+      }
+
+      const captchaCode = await openCaptchaDialog({
+        imageData: challengeRes.data.imageData,
+        refreshCaptchaChallenge,
+      })
+
+      if (!captchaCode) {
+        throw new Error('请先完成人机验证')
+      }
+
+      const verifyRes = await verifyCaptchaChallenge(buildCaptchaVerifyPayload({
+        challengeId: challengeRes.data.challengeId,
+        scene,
+        captchaCode,
+      }))
+      if (verifyRes?.status !== 200) {
+        throw new Error(verifyRes?.message || '图形验证码校验失败')
+      }
+      targetForm.captchaToken = verifyRes?.data?.captchaToken || ''
+      return targetForm.captchaToken
+    }
 
     const resetRegisterForm = () => {
       registerForm.username = ''
@@ -125,24 +189,35 @@ export default defineComponent({
       registerForm.smsCode = ''
     }
 
-    const sendRegisterCode = () => {
+    const sendRegisterCode = async () => {
       sendingCode.value = true
-      sendPublicSMSCode(buildPublicSMSCodePayload(registerForm, 'register')).then((res) => {
+      try {
+        registerForm.phone = ensurePhoneBeforeSMSCaptcha(registerForm.phone)
+        await ensureCaptchaToken(CaptchaSceneSMSSendRegister, registerForm)
+        const res = await sendPublicSMSCode(buildPublicSMSCodePayload(registerForm, 'register'))
         if (res?.status === 200) {
           message.success(res?.message || '发送成功，请注意查收')
         } else {
           message.error(res?.message || '发送失败')
         }
-      }).catch((error) => {
+      } catch (error) {
         message.error(error?.message || '发送失败')
-      }).finally(() => {
+      } finally {
         sendingCode.value = false
-      })
+      }
     }
 
-    const handleRegister = () => {
+    const handleRegister = async () => {
       registerDisabledNotice.value = ''
       submitting.value = true
+      try {
+        await ensureCaptchaToken(CaptchaSceneRegisterSubmit, registerForm)
+      } catch (error) {
+        submitting.value = false
+        message.error(error?.message || '请先完成人机验证')
+        return
+      }
+
       let payload
       try {
         payload = buildPublicRegisterPayload(registerForm)
@@ -184,6 +259,8 @@ export default defineComponent({
       sendingCode,
       registerDisabledNotice,
       registerForm,
+      normalizePhoneInput,
+      normalizeSMSCodeInput,
       handleRegister,
       sendRegisterCode,
       goToLogin,

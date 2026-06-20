@@ -12,11 +12,13 @@ require (
 	github.com/glebarez/sqlite v1.10.0
 	github.com/go-resty/resty/v2 v2.10.0
 	github.com/golang-jwt/jwt/v5 v5.2.1
+	github.com/google/uuid v1.3.0
 	github.com/gookit/goutil v0.6.14
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/spf13/viper v1.17.0
 	github.com/tidwall/gjson v1.17.0
 	github.com/xuri/excelize/v2 v2.8.0
+	golang.org/x/image v0.11.0
 	golang.org/x/time v0.5.0
 	gorm.io/driver/mysql v1.5.2
 	gorm.io/gen v0.3.23
@@ -47,7 +49,6 @@ require (
 	github.com/go-sql-driver/mysql v1.7.0 // indirect
 	github.com/goccy/go-json v0.10.2 // indirect
 	github.com/google/pprof v0.0.0-20231101202521-4ca4178f5c7a // indirect
-	github.com/google/uuid v1.3.0 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect
 	github.com/jaytaylor/html2text v0.0.0-20200412013138-3577fbdbcff7 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect

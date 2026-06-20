@@ -32,6 +32,22 @@ export function sendPublicSMSCode(data) {
   })
 }
 
+export function createCaptchaChallenge(data) {
+  return request({
+    url: `/adapter-service/public/captcha/challenge`,
+    method: 'post',
+    data
+  })
+}
+
+export function verifyCaptchaChallenge(data) {
+  return request({
+    url: `/adapter-service/public/captcha/verify`,
+    method: 'post',
+    data
+  })
+}
+
 export function loginBySMS(data) {
   return request({
     url: `/adapter-service/user/login/sms`,

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/glebarez/sqlite"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/service"
@@ -50,9 +50,15 @@ func TestUserLoginRejectsDisabledUser(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
+	originalConsume := consumeCaptchaTokenWithDB
+	defer func() { consumeCaptchaTokenWithDB = originalConsume }()
+	consumeCaptchaTokenWithDB = func(token string, scene string, requestIP string) error {
+		return nil
+	}
+
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodGet, "/adapter-service/user/login?username=disabled&password=123456", nil)
+	request := httptest.NewRequest(http.MethodGet, "/adapter-service/user/login?username=disabled&password=123456&captchaToken=token-1", nil)
 	ctx.Request = request
 
 	UserLogin(ctx)
@@ -79,9 +85,15 @@ func TestUserLoginStoresLastLoginMetadata(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
+	originalConsume := consumeCaptchaTokenWithDB
+	defer func() { consumeCaptchaTokenWithDB = originalConsume }()
+	consumeCaptchaTokenWithDB = func(token string, scene string, requestIP string) error {
+		return nil
+	}
+
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodGet, "/adapter-service/user/login?username=login-user&password=123456", nil)
+	request := httptest.NewRequest(http.MethodGet, "/adapter-service/user/login?username=login-user&password=123456&captchaToken=token-1", nil)
 	request.RemoteAddr = "10.20.30.40:12345"
 	request.Header.Set("X-Forwarded-For", "10.20.30.40")
 	ctx.Request = request
@@ -147,7 +159,7 @@ func TestUserRegisterRequiresRegisterEnabled(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	payload := []byte(`{"username":"new-user","password":"123456","nickname":"新用户"}`)
+	payload := []byte(`{"username":"new-user","password":"123456","nickname":"新用户","captchaToken":"token-1"}`)
 	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
@@ -169,9 +181,15 @@ func TestUserRegisterRejectsWeakPassword(t *testing.T) {
 		t.Fatalf("seed system setting: %v", err)
 	}
 
+	originalConsume := consumeCaptchaTokenWithDB
+	defer func() { consumeCaptchaTokenWithDB = originalConsume }()
+	consumeCaptchaTokenWithDB = func(token string, scene string, requestIP string) error {
+		return nil
+	}
+
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	payload := []byte(`{"username":"weak-user","password":"12345678","nickname":"弱密码","phone":"13800000000","smsCode":"123456"}`)
+	payload := []byte(`{"username":"weak-user","password":"12345678","nickname":"弱密码","phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`)
 	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
@@ -201,6 +219,14 @@ func TestUserRegisterCreatesPublicUserWithDefaults(t *testing.T) {
 		t.Fatalf("seed system setting: %v", err)
 	}
 
+	originalConsume := consumeCaptchaTokenWithDB
+	defer func() {
+		consumeCaptchaTokenWithDB = originalConsume
+	}()
+	consumeCaptchaTokenWithDB = func(token string, scene string, requestIP string) error {
+		return nil
+	}
+
 	original := verifySMSCodeWithDB
 	defer func() {
 		verifySMSCodeWithDB = original
@@ -211,7 +237,7 @@ func TestUserRegisterCreatesPublicUserWithDefaults(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	payload := []byte(`{"username":"new-user","password":"Abc12345!","nickname":"新用户","phone":"13800000000","smsCode":"123456"}`)
+	payload := []byte(`{"username":"new-user","password":"Abc12345!","nickname":"新用户","phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`)
 	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
@@ -248,6 +274,37 @@ func TestUserRegisterCreatesPublicUserWithDefaults(t *testing.T) {
 	}
 	if stored.Phone == nil || *stored.Phone != "13800000000" || stored.PhoneBoundAt == nil {
 		t.Fatalf("expected stored phone binding, got %+v", stored)
+	}
+}
+
+func TestUserLoginRequiresCaptchaToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	_ = newUserControllerTestDB(t)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/user/login?username=admin&password=123456", nil)
+
+	UserLogin(ctx)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 without captcha token, got %d", recorder.Code)
+	}
+}
+
+func TestSendPublicSMSCodeRequiresCaptchaToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	_ = newUserControllerTestDB(t)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/public/sms-code", bytes.NewBufferString(`{"phone":"13800000000","scene":"login"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	SendPublicSMSCode(ctx)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 without captcha token, got %d", recorder.Code)
 	}
 }
 
@@ -844,6 +901,12 @@ func TestSendPublicSMSCodeDelegatesToService(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	_ = newUserControllerTestDB(t)
 
+	originalConsume := consumeCaptchaTokenWithDB
+	defer func() { consumeCaptchaTokenWithDB = originalConsume }()
+	consumeCaptchaTokenWithDB = func(token string, scene string, requestIP string) error {
+		return nil
+	}
+
 	original := sendPublicSMSCodeWithDB
 	defer func() {
 		sendPublicSMSCodeWithDB = original
@@ -857,7 +920,7 @@ func TestSendPublicSMSCodeDelegatesToService(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/public/sms-code", bytes.NewBufferString(`{"phone":"13800000000","scene":"login"}`))
+	request := httptest.NewRequest(http.MethodPost, "/adapter-service/public/sms-code", bytes.NewBufferString(`{"phone":"13800000000","scene":"login","captchaToken":"token-1"}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.RemoteAddr = "10.20.30.40:12345"
 	request.Header.Set("X-Forwarded-For", "10.20.30.40")
@@ -881,6 +944,12 @@ func TestUserSMSLoginSucceedsAndStoresLoginMetadata(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
+	originalConsume := consumeCaptchaTokenWithDB
+	defer func() { consumeCaptchaTokenWithDB = originalConsume }()
+	consumeCaptchaTokenWithDB = func(token string, scene string, requestIP string) error {
+		return nil
+	}
+
 	original := verifySMSCodeWithDB
 	defer func() {
 		verifySMSCodeWithDB = original
@@ -893,7 +962,7 @@ func TestUserSMSLoginSucceedsAndStoresLoginMetadata(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/login/sms", bytes.NewBufferString(`{"phone":"13800000000","smsCode":"123456"}`))
+	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/login/sms", bytes.NewBufferString(`{"phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.RemoteAddr = "10.0.0.1:12345"
 	request.Header.Set("X-Forwarded-For", "10.0.0.1")
@@ -947,6 +1016,12 @@ func TestUserRegisterCreatesPublicUserWithBoundPhone(t *testing.T) {
 		t.Fatalf("seed system setting: %v", err)
 	}
 
+	originalConsume := consumeCaptchaTokenWithDB
+	defer func() { consumeCaptchaTokenWithDB = originalConsume }()
+	consumeCaptchaTokenWithDB = func(token string, scene string, requestIP string) error {
+		return nil
+	}
+
 	original := verifySMSCodeWithDB
 	defer func() {
 		verifySMSCodeWithDB = original
@@ -959,7 +1034,7 @@ func TestUserRegisterCreatesPublicUserWithBoundPhone(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	payload := []byte(`{"username":"phone-user","password":"Abc12345!","nickname":"新用户","phone":"13800000000","smsCode":"123456"}`)
+	payload := []byte(`{"username":"phone-user","password":"Abc12345!","nickname":"新用户","phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`)
 	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
