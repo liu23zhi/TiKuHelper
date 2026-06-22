@@ -21,6 +21,14 @@ test('SystemSettings exposes wechat captcha and smsbao credential settings', asy
   const content = await readFile(systemSettingsPagePath, 'utf8');
 
   assert.match(content, /formState\.wechatLoginEnabled/);
+  assert.match(content, /formState\.wechatScanLoginEnabled/);
+  assert.match(content, /formState\.wechatCodeLoginEnabled/);
+  assert.match(content, /formState\.wechatDefaultLoginMode/);
+  assert.match(content, /formState\.wechatCodeStaticQrcodeUrl/);
+  assert.match(content, /微信扫描/);
+  assert.match(content, /微信验证码/);
+  assert.match(content, /默认微信方式/);
+  assert.match(content, /验证码二维码/);
   assert.match(content, /formState\.wechatApiBaseUrl/);
   assert.match(content, /formState\.wechatApiBearerToken/);
   assert.match(content, /formState\.captchaProvider/);
@@ -29,5 +37,12 @@ test('SystemSettings exposes wechat captcha and smsbao credential settings', asy
   assert.match(content, /formState\.captchaType/);
   assert.match(content, /formState\.smsbaoCredentialType/);
   assert.match(content, /formState\.smsbaoRegionMode/);
-  assert.match(content, /alternativeLoginEnabled/);
+});
+
+test('SystemSettings removes the non-password login derived status block', async () => {
+  const content = await readFile(systemSettingsPagePath, 'utf8');
+
+  assert.doesNotMatch(content, /非密码登录/);
+  assert.doesNotMatch(content, /由短信验证码登录或微信扫码登录自动决定/);
+  assert.doesNotMatch(content, /alternativeLoginEnabled/);
 });

@@ -212,7 +212,7 @@ var buildSearchClients = func(resolved resolvedSearchRequestContext, useQuery st
 	return clients
 }
 
-var searchAIAnswer = func(resolved resolvedSearchRequestContext, req model.SearchRequest) ([][]string, bool, error) {
+var searchAIAnswer = func(resolved resolvedSearchRequestContext, req model.SearchRequest) ([][]string, search.AISearchUsage, error) {
 	client := &search.ChatGptClient{
 		Enable:      shouldUseAISearch("ai", resolved.AIConfig),
 		BaseURL:     resolved.AIConfig.BaseURL,
@@ -226,10 +226,10 @@ var searchAIAnswer = func(resolved resolvedSearchRequestContext, req model.Searc
 	answer, usage, err := client.SearchAnswerWithUsage(req)
 	if err != nil {
 		logger.SysError(fmt.Sprintf("AI搜题失败 requestId=%s usage=%s answers=%s error=%s", strings.TrimSpace(resolved.RequestID), buildAISearchUsageDebugSummary(usage), buildSearchAnswerGroupsDebugSummary(answer), err.Error()))
-		return answer, usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.TotalTokens > 0, err
+		return answer, usage, err
 	}
 	logger.SysLog(fmt.Sprintf("AI搜题完成 requestId=%s usage=%s answers=%s", strings.TrimSpace(resolved.RequestID), buildAISearchUsageDebugSummary(usage), buildSearchAnswerGroupsDebugSummary(answer)))
-	return answer, usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.TotalTokens > 0, err
+	return answer, usage, err
 }
 
 // Search 搜题接口
@@ -276,7 +276,7 @@ func Search(c *gin.Context) {
 	var localAnswer [][]string // 本地答案
 	resolved := resolveResult
 	aiEnabled := shouldUseAISearch(useQuery, resolved.AIConfig)
-	hasAIUsage := false
+	aiUsage := search.AISearchUsage{}
 	usedLocalSearch := false
 	auditHitProvider := ""
 	logSearchRoutingDecision(c, query, resolved, aiEnabled)
@@ -297,14 +297,14 @@ func Search(c *gin.Context) {
 	// 再查询第三方
 	if len(result) == 0 {
 		if resolved.SearchMode == searchModeAI {
-			aiResult, aiUsage, aiErr := searchAIAnswer(resolved, req)
+			aiResult, usage, aiErr := searchAIAnswer(resolved, req)
 			if aiErr != nil {
 				logger.SysError(fmt.Sprintf("AI独占搜题失败 requestId=%s error=%s", strings.TrimSpace(resolved.RequestID), aiErr.Error()))
 			} else if len(aiResult) == 0 {
 				logger.SysLog(fmt.Sprintf("AI独占搜题无结果 requestId=%s", strings.TrimSpace(resolved.RequestID)))
 			} else {
 				result = append(result, aiResult...)
-				hasAIUsage = aiUsage
+				aiUsage = usage
 				auditHitProvider = searchModeAI
 			}
 		} else {
@@ -313,9 +313,9 @@ func Search(c *gin.Context) {
 				clientBindings = append(clientBindings, searchClientBinding{
 					Provider: searchModeAI,
 					Search: func(req model.SearchRequest) ([][]string, error) {
-						answers, aiUsage, err := searchAIAnswer(resolved, req)
+						answers, usage, err := searchAIAnswer(resolved, req)
 						if err == nil && len(answers) > 0 {
-							hasAIUsage = aiUsage
+							aiUsage = usage
 						}
 						return answers, err
 					},
@@ -348,7 +348,9 @@ func Search(c *gin.Context) {
 					mu.Lock()
 					defer mu.Unlock()
 					if provider == searchModeAI {
-						hasAIUsage = true
+						if !hasAISearchUsage(aiUsage) {
+							aiUsage = search.AISearchUsage{TotalTokens: 1}
+						}
 					}
 					if auditHitProvider == "" {
 						auditHitProvider = provider
@@ -362,8 +364,8 @@ func Search(c *gin.Context) {
 	resp := util.FillAnswerResponse(result, &req)
 	logger.SysLog(fmt.Sprintf("搜题响应摘要 requestId=%s hitProvider=%s usedLocal=%t aiEnabled=%t %s", strings.TrimSpace(resolved.RequestID), strings.TrimSpace(auditHitProvider), usedLocalSearch, aiEnabled, buildSearchResponseDebugSummary(resp)))
 	audit := buildSearchAuditMetadata(c, resolved, query, rawBody, useQuery, result, usedLocalSearch, aiEnabled, auditHitProvider, req, resp)
-	reportCompletedSearchBilling(resolved, useQuery, aiEnabled, result, hasAIUsage, usedLocalSearch)
-	persistCompletedSearchBilling(resolved, useQuery, aiEnabled, req, result, hasAIUsage, usedLocalSearch, c.ClientIP(), audit)
+	reportCompletedSearchBilling(resolved, useQuery, aiEnabled, result, hasAISearchUsage(aiUsage), usedLocalSearch)
+	persistCompletedSearchBilling(resolved, useQuery, aiEnabled, req, result, aiUsage, usedLocalSearch, c.ClientIP(), audit)
 
 	if len(localAnswer) == 0 && c.Query("noRecord") == "" { // 只有本地题库没有答案或者明确标志不要记录
 		middleware.CollectAnswer(resp, req.CourseName, req.Extra, audit.HitProvider)
@@ -490,6 +492,10 @@ func buildAISearchUsageDebugSummary(usage search.AISearchUsage) string {
 		fmt.Sprintf("outputTokens=%d", usage.OutputTokens),
 		fmt.Sprintf("totalTokens=%d", usage.TotalTokens),
 	}, " ")
+}
+
+func hasAISearchUsage(usage search.AISearchUsage) bool {
+	return usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.TotalTokens > 0
 }
 
 func buildSearchResponseDebugSummary(resp model.SearchResponse) string {
@@ -766,8 +772,8 @@ func reportCompletedSearchBilling(resolved resolvedSearchRequestContext, useQuer
 	searchBillingReporter(buildCompletedSearchBillingContext(resolved, useQuery, aiEnabled, result, hasAIUsage, usedLocalSearch))
 }
 
-func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQuery string, aiEnabled bool, req model.SearchRequest, result [][]string, hasAIUsage bool, usedLocalSearch bool, clientIP string, audit searchAuditMetadata) {
-	ctx := buildCompletedSearchBillingContext(resolved, useQuery, aiEnabled, result, hasAIUsage, usedLocalSearch)
+func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQuery string, aiEnabled bool, req model.SearchRequest, result [][]string, aiUsage search.AISearchUsage, usedLocalSearch bool, clientIP string, audit searchAuditMetadata) {
+	ctx := buildCompletedSearchBillingContext(resolved, useQuery, aiEnabled, result, hasAISearchUsage(aiUsage), usedLocalSearch)
 	if !ctx.Billable {
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "", clientIP, audit)
 		return
@@ -780,7 +786,7 @@ func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQue
 		return
 	}
 
-	billingProvider, billingAmount, snapshot, err := resolveCompletedSearchBillingCharge(db, resolved, useQuery, req, usedLocalSearch)
+	billingProvider, billingAmount, snapshot, err := resolveCompletedSearchBillingCharge(db, resolved, useQuery, req, aiUsage, usedLocalSearch)
 	if err != nil {
 		logger.SysError(fmt.Sprintf("搜索计费落账失败：%s requestId=%s", err.Error(), resolved.RequestID))
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_charge_resolve_failed", clientIP, audit)
@@ -817,7 +823,14 @@ func resolveSearchPersistenceDB() *gorm.DB {
 	return fallback.Session(&gorm.Session{NewDB: true})
 }
 
-func resolveCompletedSearchBillingCharge(db *gorm.DB, resolved resolvedSearchRequestContext, useQuery string, req model.SearchRequest, usedLocalSearch bool) (string, float64, string, error) {
+func resolveCompletedSearchBillingCharge(db *gorm.DB, resolved resolvedSearchRequestContext, useQuery string, req model.SearchRequest, aiUsage search.AISearchUsage, usedLocalSearch bool) (string, float64, string, error) {
+	if resolved.SearchMode == searchModeAI {
+		amount, snapshot, err := resolveCompletedAIBillingCharge(db, resolved, aiUsage)
+		if err != nil {
+			return "", 0, "", err
+		}
+		return searchModeAI, amount, snapshot, nil
+	}
 	if resolved.SearchMode != searchModeNormal {
 		return "", 0, "", nil
 	}
@@ -834,6 +847,41 @@ func resolveCompletedSearchBillingCharge(db *gorm.DB, resolved resolvedSearchReq
 
 	amount := roundCurrencyAmount(config.FlatPrice)
 	return provider, amount, buildCompletedSearchBillingSnapshot(db, provider, amount, req, usedLocalSearch), nil
+}
+
+func resolveCompletedAIBillingCharge(db *gorm.DB, resolved resolvedSearchRequestContext, usage search.AISearchUsage) (float64, string, error) {
+	price, err := service.ResolveAIModelPriceWithDB(db, resolved.AIConfig.Model)
+	if err != nil {
+		return 0, "", err
+	}
+	inputUnits := float64(usage.InputTokens) / 1000
+	outputUnits := float64(usage.OutputTokens) / 1000
+	if usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.TotalTokens > 0 {
+		inputUnits = float64(usage.TotalTokens) / 1000
+	}
+	baseAmount := inputUnits + outputUnits
+	multiplier := price.BillingMultiplier
+	if multiplier <= 0 {
+		multiplier = 1
+	}
+	amount := roundCurrencyAmount(baseAmount * multiplier)
+	return amount, buildCompletedAIBillingSnapshot(resolved, usage, price, baseAmount, amount), nil
+}
+
+func buildCompletedAIBillingSnapshot(resolved resolvedSearchRequestContext, usage search.AISearchUsage, price service.ResolvedAIModelPrice, baseAmount float64, amount float64) string {
+	return strings.Join([]string{
+		"provider=ai",
+		fmt.Sprintf("model=%s", strings.TrimSpace(resolved.AIConfig.Model)),
+		fmt.Sprintf("billingMultiplier=%.4f", price.BillingMultiplier),
+		fmt.Sprintf("exchangeRate=%.4f", price.ExchangeRate),
+		fmt.Sprintf("globalBillingMultiplier=%.4f", price.GlobalBillingMultiplier),
+		fmt.Sprintf("modelBillingMultiplier=%.4f", price.ModelBillingMultiplier),
+		fmt.Sprintf("inputTokens=%d", usage.InputTokens),
+		fmt.Sprintf("outputTokens=%d", usage.OutputTokens),
+		fmt.Sprintf("totalTokens=%d", usage.TotalTokens),
+		fmt.Sprintf("baseAmount=%.2f", roundCurrencyAmount(baseAmount)),
+		fmt.Sprintf("amount=%.2f", amount),
+	}, " ")
 }
 
 func buildCompletedSearchBillingSnapshot(db *gorm.DB, provider string, amount float64, req model.SearchRequest, usedLocalSearch bool) string {

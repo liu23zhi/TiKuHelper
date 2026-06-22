@@ -6,6 +6,11 @@ import {
   buildPortalMenuKeys,
   buildRegisterSourceLabel,
   buildResetPasswordPayload,
+  buildBillingRecordAmountText,
+  buildBillingRecordReferenceText,
+  buildBillingRecordSourceText,
+  buildBillingRecordSubjectText,
+  buildBillingRecordTypeText,
   buildPersonalUsageBillingRecordParams,
   buildPersonalUsageQuestionText,
   buildPersonalUsageAnswerSourceText,
@@ -31,6 +36,7 @@ test('buildPortalMenuKeys includes personal usage for admin users', () => {
     'user-usage',
     'userlist',
     'loglist',
+    'recharge-orders',
     'billing-records',
     'search-account-config',
     'ai-search-config',
@@ -40,6 +46,7 @@ test('buildPortalMenuKeys includes personal usage for admin users', () => {
   assert.deepEqual(buildPortalMenuKeys({ role: 'user' }), [
     'user-usage',
     'access-tokens',
+    'recharge-orders',
     'billing-records',
   ]);
 });
@@ -64,6 +71,39 @@ test('buildPersonalUsageAnswerSourceText prefers answer source label before prov
   assert.equal(buildPersonalUsageAnswerSourceText({ providerLabel: 'Icodef 题库' }), 'Icodef 题库');
   assert.equal(buildPersonalUsageAnswerSourceText({ provider: 'icodef' }), 'icodef');
   assert.equal(buildPersonalUsageAnswerSourceText({}), '-');
+});
+
+test('billing record helpers render recharge and search ledger rows', () => {
+  const recharge = {
+    type: 'recharge',
+    typeLabel: '充值入账',
+    direction: 'income',
+    subject: '账户充值',
+    detail: '账户充值',
+    providerLabel: 'epay',
+    referenceNo: 'rcg_user_20260621002829_100_ABC12345',
+    amount: 1,
+  };
+  assert.equal(buildBillingRecordTypeText(recharge), '充值入账');
+  assert.equal(buildBillingRecordSubjectText(recharge), '账户充值');
+  assert.equal(buildBillingRecordSourceText(recharge), '账户充值');
+  assert.equal(buildBillingRecordReferenceText(recharge), 'rcg_user_20260621002829_100_ABC12345');
+  assert.equal(buildBillingRecordAmountText(recharge), '+¥ 1.00');
+
+  const search = {
+    type: 'normal_search',
+    typeLabel: '题目消费',
+    direction: 'expense',
+    questionText: '搜索题目',
+    answerSourceLabel: 'Icodef 题库',
+    referenceNo: 'req-search',
+    amount: 1.25,
+  };
+  assert.equal(buildBillingRecordTypeText(search), '题目消费');
+  assert.equal(buildBillingRecordSubjectText(search), '搜索题目');
+  assert.equal(buildBillingRecordSourceText(search), 'Icodef 题库');
+  assert.equal(buildBillingRecordReferenceText(search), 'req-search');
+  assert.equal(buildBillingRecordAmountText(search), '-¥ 1.25');
 });
 
 test('buildResetPasswordPayload requires non-empty password', () => {

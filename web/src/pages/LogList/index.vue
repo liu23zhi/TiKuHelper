@@ -62,6 +62,9 @@
         <template #summary="{ record }">
           <span>{{ buildStructuredFields(record).summary }}</span>
         </template>
+        <template #detail="{ record }">
+          <span>{{ buildRowDetail(record) }}</span>
+        </template>
         <template #requestId="{ record }">
           <span>{{ buildStructuredFields(record).requestId }}</span>
         </template>
@@ -135,6 +138,7 @@ import {
   buildLogActionLabel,
   buildLogModuleLabel,
   buildLogQidLabel,
+  buildLogRowDetail,
   buildLogStructuredFields,
 } from '@/utils/logListHelpers.mjs';
 const dataSource = ref([])
@@ -247,6 +251,15 @@ export default defineComponent({
           width: 220,
         },
         {
+          title: '详情',
+          dataIndex: 'detail',
+          key: 'detail',
+          slots: {
+            customRender: 'detail',
+          },
+          width: 320,
+        },
+        {
           title: '请求 ID',
           dataIndex: 'requestId',
           key: 'requestId',
@@ -336,6 +349,9 @@ export default defineComponent({
     },
     buildStructuredFields(record) {
       return buildLogStructuredFields(record)
+    },
+    buildRowDetail(record) {
+      return buildLogRowDetail(record)
     },
     buildSnapshotExpandKey(recordId, field) {
       return `${recordId || 'unknown'}:${field}`

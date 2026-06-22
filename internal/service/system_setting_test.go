@@ -229,17 +229,21 @@ func TestUpdateSystemSettingDetailWithDBPersistsWechatCaptchaAndSMSBaoFields(t *
 	db := newSystemSettingTestDB(t)
 
 	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
-		RegisterEnabled:      true,
-		SMSLoginEnabled:      false,
-		WechatLoginEnabled:   true,
-		WechatAPIBaseURL:     " https://wechat.example.com ",
-		WechatAPIBearerToken: " token-1 ",
-		CaptchaProvider:      " remote ",
-		CaptchaAPIBaseURL:    " https://captcha.api.zelly.cn/ ",
-		CaptchaAPIKey:        " captcha-secret ",
-		CaptchaType:          " 滑块验证码 ",
-		SMSBaoCredentialType: " password ",
-		SMSBaoRegionMode:     " international ",
+		RegisterEnabled:           true,
+		SMSLoginEnabled:           false,
+		WechatLoginEnabled:        true,
+		WechatScanLoginEnabled:    true,
+		WechatCodeLoginEnabled:    true,
+		WechatDefaultLoginMode:    " code ",
+		WechatCodeStaticQRCodeURL: " https://wechat.example.com/static-qrcode.png ",
+		WechatAPIBaseURL:          " https://wechat.example.com ",
+		WechatAPIBearerToken:      " token-1 ",
+		CaptchaProvider:           " remote ",
+		CaptchaAPIBaseURL:         " https://captcha.api.zelly.cn/ ",
+		CaptchaAPIKey:             " captcha-secret ",
+		CaptchaType:               " 滑块验证码 ",
+		SMSBaoCredentialType:      " password ",
+		SMSBaoRegionMode:          " international ",
 	})
 	if err != nil {
 		t.Fatalf("update settings: %v", err)
@@ -247,6 +251,15 @@ func TestUpdateSystemSettingDetailWithDBPersistsWechatCaptchaAndSMSBaoFields(t *
 
 	if !updated.WechatLoginEnabled {
 		t.Fatal("expected wechat login enabled")
+	}
+	if !updated.WechatScanLoginEnabled || !updated.WechatCodeLoginEnabled {
+		t.Fatalf("expected both wechat login modes enabled, got %+v", updated)
+	}
+	if updated.WechatDefaultLoginMode != "code" {
+		t.Fatalf("expected default wechat login mode code, got %s", updated.WechatDefaultLoginMode)
+	}
+	if updated.WechatCodeStaticQRCodeURL != "https://wechat.example.com/static-qrcode.png" {
+		t.Fatalf("unexpected static wechat qrcode url %s", updated.WechatCodeStaticQRCodeURL)
 	}
 	if updated.WechatAPIBaseURL != "https://wechat.example.com" {
 		t.Fatalf("unexpected wechat api base url %s", updated.WechatAPIBaseURL)
@@ -274,18 +287,62 @@ func TestUpdateSystemSettingDetailWithDBPersistsWechatCaptchaAndSMSBaoFields(t *
 	}
 }
 
+func TestUpdateSystemSettingDetailWithDBDisablesWechatLoginWhenAllWechatModesDisabled(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+
+	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
+		WechatLoginEnabled:     true,
+		WechatAPIBaseURL:       "https://wechat.example.com",
+		WechatAPIBearerToken:   "token-1",
+		WechatDefaultLoginMode: "scan",
+	})
+	if err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+
+	if updated.WechatLoginEnabled || updated.WechatScanLoginEnabled || updated.WechatCodeLoginEnabled {
+		t.Fatalf("expected wechat login disabled when both modes disabled, got %+v", updated)
+	}
+}
+
+func TestUpdateSystemSettingDetailWithDBFallsBackDefaultWechatModeToEnabledMode(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+
+	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
+		WechatLoginEnabled:     true,
+		WechatCodeLoginEnabled: true,
+		WechatDefaultLoginMode: "scan",
+		WechatAPIBaseURL:       "https://wechat.example.com",
+		WechatAPIBearerToken:   "token-1",
+	})
+	if err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+
+	if !updated.WechatLoginEnabled || updated.WechatScanLoginEnabled || !updated.WechatCodeLoginEnabled {
+		t.Fatalf("unexpected wechat mode flags: %+v", updated)
+	}
+	if updated.WechatDefaultLoginMode != "code" {
+		t.Fatalf("expected default wechat mode fallback to code, got %s", updated.WechatDefaultLoginMode)
+	}
+}
+
 func TestGetPublicAuthSettingsWithDBIncludesAlternativeLoginAndCaptcha(t *testing.T) {
 	db := newSystemSettingTestDB(t)
 
 	_, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
-		RegisterEnabled:      false,
-		SMSLoginEnabled:      false,
-		WechatLoginEnabled:   true,
-		WechatAPIBaseURL:     "https://wechat.example.com",
-		WechatAPIBearerToken: "token-1",
-		CaptchaProvider:      "local",
-		CaptchaAPIBaseURL:    "https://captcha.example.com",
-		CaptchaType:          "rotate",
+		RegisterEnabled:           false,
+		SMSLoginEnabled:           false,
+		WechatLoginEnabled:        true,
+		WechatScanLoginEnabled:    true,
+		WechatCodeLoginEnabled:    true,
+		WechatDefaultLoginMode:    "code",
+		WechatCodeStaticQRCodeURL: "https://wechat.example.com/static-qrcode.png",
+		WechatAPIBaseURL:          "https://wechat.example.com",
+		WechatAPIBearerToken:      "token-1",
+		CaptchaProvider:           "local",
+		CaptchaAPIBaseURL:         "https://captcha.example.com",
+		CaptchaType:               "rotate",
 	})
 	if err != nil {
 		t.Fatalf("seed settings: %v", err)
@@ -306,6 +363,15 @@ func TestGetPublicAuthSettingsWithDBIncludesAlternativeLoginAndCaptcha(t *testin
 	}
 	if !settings.AlternativeLoginEnabled {
 		t.Fatal("expected alternative login enabled when wechat login is enabled")
+	}
+	if !settings.WechatScanLoginEnabled || !settings.WechatCodeLoginEnabled {
+		t.Fatalf("expected both public wechat modes enabled, got %+v", settings)
+	}
+	if settings.WechatDefaultLoginMode != "code" {
+		t.Fatalf("expected public default wechat mode code, got %s", settings.WechatDefaultLoginMode)
+	}
+	if settings.WechatCodeStaticQRCodeURL != "https://wechat.example.com/static-qrcode.png" {
+		t.Fatalf("unexpected public static qrcode url %s", settings.WechatCodeStaticQRCodeURL)
 	}
 	if settings.CaptchaProvider != "local" {
 		t.Fatalf("unexpected captcha provider %s", settings.CaptchaProvider)

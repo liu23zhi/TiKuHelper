@@ -11,6 +11,13 @@ import (
 
 type BillingRecordListItem struct {
 	ID                int32     `json:"id"`
+	Type              string    `json:"type"`
+	TypeLabel         string    `json:"typeLabel"`
+	Direction         string    `json:"direction"`
+	DirectionLabel    string    `json:"directionLabel"`
+	Subject           string    `json:"subject"`
+	Detail            string    `json:"detail"`
+	ReferenceNo       string    `json:"referenceNo"`
 	Provider          string    `json:"provider"`
 	ProviderLabel     string    `json:"providerLabel"`
 	AnswerSourceLabel string    `json:"answerSourceLabel"`
@@ -19,6 +26,8 @@ type BillingRecordListItem struct {
 	AccessTokenName   string    `json:"accessTokenName"`
 	CreatedAt         time.Time `json:"createdAt"`
 	UnitPriceSnapshot string    `json:"-"`
+	RequestID         string    `json:"-"`
+	Remark            string    `json:"-"`
 }
 
 type BillingRecordListResult struct {
@@ -54,6 +63,68 @@ func buildBillingAnswerSourceLabel(provider string, providerLabel string, snapsh
 	}
 
 	return strings.TrimSpace(provider)
+}
+
+func normalizeBillingRecordType(value string) string {
+	normalized := strings.TrimSpace(value)
+	if normalized == "" {
+		return "normal_search"
+	}
+	return normalized
+}
+
+func buildBillingRecordTypeLabel(recordType string) string {
+	switch strings.TrimSpace(recordType) {
+	case rechargeBillingRecordType:
+		return "充值入账"
+	case "normal_search":
+		return "题目消费"
+	default:
+		return strings.TrimSpace(recordType)
+	}
+}
+
+func buildBillingRecordDirection(recordType string) string {
+	if strings.TrimSpace(recordType) == rechargeBillingRecordType {
+		return "income"
+	}
+	return "expense"
+}
+
+func buildBillingRecordDirectionLabel(direction string) string {
+	if strings.TrimSpace(direction) == "income" {
+		return "收入"
+	}
+	return "支出"
+}
+
+func buildBillingRecordSubject(record BillingRecordListItem) string {
+	if record.Type == rechargeBillingRecordType {
+		if remark := strings.TrimSpace(record.Remark); remark != "" {
+			return remark
+		}
+		return "账户充值"
+	}
+	if question := strings.TrimSpace(record.QuestionText); question != "" {
+		return question
+	}
+	if source := strings.TrimSpace(record.AnswerSourceLabel); source != "" {
+		return source
+	}
+	return "-"
+}
+
+func buildBillingRecordDetail(record BillingRecordListItem) string {
+	if record.Type == rechargeBillingRecordType {
+		if remark := strings.TrimSpace(record.Remark); remark != "" {
+			return remark
+		}
+		return "账户充值"
+	}
+	if source := strings.TrimSpace(record.AnswerSourceLabel); source != "" {
+		return source
+	}
+	return "-"
 }
 
 func extractBillingSnapshotField(snapshot string, key string) string {
@@ -93,8 +164,8 @@ func ListBillingRecordsWithDB(db *gorm.DB, operator entity.User, page int, pageS
 	var records []BillingRecordListItem
 	offset := (page - 1) * pageSize
 	if err := baseQuery.
-		Select("billing_records.id, billing_records.provider, billing_records.amount, billing_records.created_at, billing_records.unit_price_snapshot, access_tokens.name AS access_token_name").
-		Joins("LEFT JOIN "+entity.TableNameAccessToken+" AS access_tokens ON access_tokens.id = billing_records.access_token_id").
+		Select("billing_records.id, billing_records.type, billing_records.provider, billing_records.amount, billing_records.created_at, billing_records.unit_price_snapshot, billing_records.request_id, billing_records.remark, access_tokens.name AS access_token_name").
+		Joins("LEFT JOIN " + entity.TableNameAccessToken + " AS access_tokens ON access_tokens.id = billing_records.access_token_id").
 		Order("billing_records.id desc").
 		Limit(pageSize).
 		Offset(offset).
@@ -103,14 +174,24 @@ func ListBillingRecordsWithDB(db *gorm.DB, operator entity.User, page int, pageS
 	}
 
 	for i := range records {
+		records[i].Type = normalizeBillingRecordType(records[i].Type)
+		records[i].TypeLabel = buildBillingRecordTypeLabel(records[i].Type)
+		records[i].Direction = buildBillingRecordDirection(records[i].Type)
+		records[i].DirectionLabel = buildBillingRecordDirectionLabel(records[i].Direction)
+		records[i].ReferenceNo = strings.TrimSpace(records[i].RequestID)
 		if meta, ok := getSearchAccountProviderMeta(records[i].Provider); ok {
 			records[i].ProviderLabel = meta.ProviderLabel
 		}
 		if cachedLabel := buildCachedLocalProviderLabel(records[i].Provider, records[i].UnitPriceSnapshot); cachedLabel != "" {
 			records[i].ProviderLabel = cachedLabel
 		}
+		if strings.TrimSpace(records[i].ProviderLabel) == "" {
+			records[i].ProviderLabel = strings.TrimSpace(records[i].Provider)
+		}
 		records[i].AnswerSourceLabel = buildBillingAnswerSourceLabel(records[i].Provider, records[i].ProviderLabel, records[i].UnitPriceSnapshot)
 		records[i].QuestionText = extractBillingSnapshotField(records[i].UnitPriceSnapshot, "question")
+		records[i].Subject = buildBillingRecordSubject(records[i])
+		records[i].Detail = buildBillingRecordDetail(records[i])
 	}
 
 	return BillingRecordListResult{

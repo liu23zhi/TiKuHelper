@@ -21,6 +21,10 @@ var checkWechatLoginStatusWithDB = func(input service.WechatLoginStatusInput) (s
 	return service.CheckWechatLoginStatusWithDB(dao.User.UnderlyingDB(), input)
 }
 
+var loginWechatByCodeWithDB = func(input service.WechatCodeLoginInput) (service.WechatLoginStatusResult, error) {
+	return service.LoginWechatByCodeWithDB(dao.User.UnderlyingDB(), input)
+}
+
 var bindWechatLoginWithDB = func(input service.WechatBindInput) (service.WechatBindResult, error) {
 	return service.BindWechatLoginWithDB(dao.User.UnderlyingDB(), input)
 }
@@ -38,7 +42,7 @@ func buildWechatLoginClientFromSettings(settings service.SystemSettingDetail) se
 
 func CreateWechatLoginQRCode(c *gin.Context) {
 	settings, err := loadWechatLoginSettings()
-	if err != nil || !settings.WechatLoginEnabled || strings.TrimSpace(settings.WechatAPIBaseURL) == "" || strings.TrimSpace(settings.WechatAPIBearerToken) == "" {
+	if err != nil || !settings.WechatLoginEnabled || !settings.WechatScanLoginEnabled || strings.TrimSpace(settings.WechatAPIBaseURL) == "" || strings.TrimSpace(settings.WechatAPIBearerToken) == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "微信登录未开启或配置未完成"})
 		return
 	}
@@ -52,7 +56,7 @@ func CreateWechatLoginQRCode(c *gin.Context) {
 
 func CheckWechatLoginStatus(c *gin.Context) {
 	settings, err := loadWechatLoginSettings()
-	if err != nil || !settings.WechatLoginEnabled || strings.TrimSpace(settings.WechatAPIBaseURL) == "" || strings.TrimSpace(settings.WechatAPIBearerToken) == "" {
+	if err != nil || !settings.WechatLoginEnabled || !settings.WechatScanLoginEnabled || strings.TrimSpace(settings.WechatAPIBaseURL) == "" || strings.TrimSpace(settings.WechatAPIBearerToken) == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "微信登录未开启或配置未完成"})
 		return
 	}
@@ -60,6 +64,31 @@ func CheckWechatLoginStatus(c *gin.Context) {
 		Client:     buildWechatLoginClientFromSettings(settings),
 		LoginToken: strings.TrimSpace(c.Query("loginToken")),
 		RequestIP:  strings.TrimSpace(c.ClientIP()),
+	})
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func LoginWechatByCode(c *gin.Context) {
+	var payload struct {
+		Code string `json:"code"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
+		return
+	}
+	settings, err := loadWechatLoginSettings()
+	if err != nil || !settings.WechatLoginEnabled || !settings.WechatCodeLoginEnabled || strings.TrimSpace(settings.WechatAPIBaseURL) == "" || strings.TrimSpace(settings.WechatAPIBearerToken) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "微信登录未开启或配置未完成"})
+		return
+	}
+	result, err := loginWechatByCodeWithDB(service.WechatCodeLoginInput{
+		Client:    buildWechatLoginClientFromSettings(settings),
+		Code:      strings.TrimSpace(payload.Code),
+		RequestIP: strings.TrimSpace(c.ClientIP()),
 	})
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})

@@ -46,6 +46,7 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/public/register-status", controller.PublicRegisterStatus)
 	apiRouter.POST("/public/wechat-login/qrcode", controller.CreateWechatLoginQRCode)
 	apiRouter.GET("/public/wechat-login/status", controller.CheckWechatLoginStatus)
+	apiRouter.POST("/public/wechat-login/code", controller.LoginWechatByCode)
 	apiRouter.POST("/public/wechat-login/bind", controller.BindWechatLogin)
 	apiRouter.GET("/public/wechat/user", controller.LegacyWechatUserByCode)
 	apiRouter.GET("/user/info", controller.Auth, controller.UserInfo)                        // 当前登录用户
@@ -57,8 +58,9 @@ func SetAPIRouter(router *gin.Engine) {
 
 	apiRouter.GET("/logs", controller.Auth, controller.LogList) // 日志列表
 	apiRouter.GET("/billing-records", controller.Auth, controller.BillingRecordList)
+	apiRouter.GET("/recharge-orders", controller.Auth, controller.RechargeOrderList)
 	apiRouter.POST("/recharge-orders", controller.Auth, controller.CreateRechargeOrder)
-	apiRouter.POST("/payment/notify", controller.RechargePaymentNotify)
+	apiRouter.Any("/payment/notify", controller.RechargePaymentNotify)
 	apiRouter.GET("/access-tokens", controller.Auth, controller.AccessTokenList)
 	apiRouter.POST("/access-tokens", controller.Auth, controller.CreateAccessToken)
 	apiRouter.PUT("/access-tokens/:id", controller.Auth, controller.UpdateAccessToken)

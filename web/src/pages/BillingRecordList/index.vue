@@ -51,16 +51,22 @@
         :pagination="pagination"
         @change="handleTableChange"
         row-key="id"
-        :scroll="{ x: 980 }"
+        :scroll="{ x: 1180 }"
       >
-        <template #questionText="{ record }">
-          <span class="multiline-cell">{{ buildPersonalUsageQuestionText(record) }}</span>
+        <template #typeLabel="{ record }">
+          <a-tag :color="record.direction === 'income' ? 'green' : 'blue'">{{ buildBillingRecordTypeText(record) }}</a-tag>
         </template>
-        <template #answerSourceLabel="{ record }">
-          <span class="multiline-cell">{{ buildPersonalUsageAnswerSourceText(record) }}</span>
+        <template #subject="{ record }">
+          <span class="multiline-cell">{{ buildBillingRecordSubjectText(record) }}</span>
+        </template>
+        <template #source="{ record }">
+          <span class="multiline-cell">{{ buildBillingRecordSourceText(record) }}</span>
         </template>
         <template #amount="{ record }">
-          <span>¥ {{ formatAmount(record.amount) }}</span>
+          <span :class="record.direction === 'income' ? 'amount-income' : 'amount-expense'">{{ buildBillingRecordAmountText(record) }}</span>
+        </template>
+        <template #referenceNo="{ record }">
+          <span class="reference-cell">{{ buildBillingRecordReferenceText(record) }}</span>
         </template>
         <template #accessTokenName="{ record }">
           <span>{{ record.accessTokenName || '-' }}</span>
@@ -82,8 +88,11 @@ import { message } from 'ant-design-vue'
 import { getBillingRecords } from '@/api/TikuComponentApi'
 import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser'
 import {
-  buildPersonalUsageAnswerSourceText,
-  buildPersonalUsageQuestionText,
+  buildBillingRecordAmountText,
+  buildBillingRecordReferenceText,
+  buildBillingRecordSourceText,
+  buildBillingRecordSubjectText,
+  buildBillingRecordTypeText,
 } from '@/utils/userPortalHelpers.mjs'
 
 const dataSource = ref([])
@@ -114,7 +123,7 @@ export default defineComponent({
         if (answerSourceKey) {
           answerSources.add(answerSourceKey)
         }
-        if (Number.isFinite(amount)) {
+        if (Number.isFinite(amount) && item?.direction !== 'income') {
           acc.totalAmount += amount
         }
         acc.providerCount = answerSources.size
@@ -130,13 +139,13 @@ export default defineComponent({
     const pageTitle = computed(() => (isAdmin.value ? '账单明细' : '我的账单'))
     const pageSubtitle = computed(() => (
       isAdmin.value
-        ? '查看平台内全部账单记录，聚焦题目、消费金额、答案来源、访问令牌与请求时间。'
-        : '查看当前账号名下的账单记录，聚焦题目、消费金额、答案来源、访问令牌与请求时间。'
+        ? '查看平台内全部账单流水，包含题目消费、充值入账、来源渠道、关联单号与请求时间。'
+        : '查看当前账号名下的账单流水，包含题目消费、充值入账、来源渠道、关联单号与请求时间。'
     ))
     const alertMessage = computed(() => (
       isAdmin.value
         ? '管理员可查看全部账单。'
-        : '这里只展示当前账号自己的账单记录，便于快速查看每次消费对应的题目、答案来源、令牌与时间。'
+        : '这里只展示当前账号自己的账单流水，便于快速查看每次消费或充值对应的来源、单号与时间。'
     ))
 
     return {
@@ -147,8 +156,11 @@ export default defineComponent({
       pageTitle,
       pageSubtitle,
       alertMessage,
-      buildPersonalUsageAnswerSourceText,
-      buildPersonalUsageQuestionText,
+      buildBillingRecordAmountText,
+      buildBillingRecordReferenceText,
+      buildBillingRecordSourceText,
+      buildBillingRecordSubjectText,
+      buildBillingRecordTypeText,
       columns: [
         {
           title: '账单 ID',
@@ -157,30 +169,48 @@ export default defineComponent({
           width: 90,
         },
         {
-          title: '题目',
-          dataIndex: 'questionText',
-          key: 'questionText',
-          width: 320,
+          title: '类型',
+          dataIndex: 'typeLabel',
+          key: 'typeLabel',
+          width: 120,
           slots: {
-            customRender: 'questionText',
+            customRender: 'typeLabel',
           },
         },
         {
-          title: '消费金额',
+          title: '项目',
+          dataIndex: 'subject',
+          key: 'subject',
+          width: 280,
+          slots: {
+            customRender: 'subject',
+          },
+        },
+        {
+          title: '金额',
           dataIndex: 'amount',
           key: 'amount',
-          width: 120,
+          width: 130,
           slots: {
             customRender: 'amount',
           },
         },
         {
-          title: '答案来源',
-          dataIndex: 'answerSourceLabel',
-          key: 'answerSourceLabel',
-          width: 200,
+          title: '来源/渠道',
+          dataIndex: 'source',
+          key: 'source',
+          width: 180,
           slots: {
-            customRender: 'answerSourceLabel',
+            customRender: 'source',
+          },
+        },
+        {
+          title: '关联单号',
+          dataIndex: 'referenceNo',
+          key: 'referenceNo',
+          width: 240,
+          slots: {
+            customRender: 'referenceNo',
           },
         },
         {
@@ -295,5 +325,21 @@ export default defineComponent({
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.6;
+}
+
+.reference-cell {
+  display: inline-block;
+  max-width: 220px;
+  word-break: break-all;
+}
+
+.amount-income {
+  color: #16a34a;
+  font-weight: 600;
+}
+
+.amount-expense {
+  color: #dc2626;
+  font-weight: 600;
 }
 </style>

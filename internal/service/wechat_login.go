@@ -46,6 +46,13 @@ type WechatLoginStatusInput struct {
 	RequestIP  string
 }
 
+type WechatCodeLoginInput struct {
+	Client    WechatLoginClient
+	Store     *WechatBindTokenStore
+	Code      string
+	RequestIP string
+}
+
 type WechatLoginStatusResult struct {
 	Status    string `json:"status"`
 	JWT       string `json:"jwt,omitempty"`
@@ -227,12 +234,31 @@ func CheckWechatLoginStatusWithDB(db *gorm.DB, input WechatLoginStatusInput) (We
 		return WechatLoginStatusResult{}, fmt.Errorf("微信用户 ID 为空")
 	}
 
+	return resolveWechatLoginResultByID(db, input.Store, wechatID, input.RequestIP)
+}
+
+func LoginWechatByCodeWithDB(db *gorm.DB, input WechatCodeLoginInput) (WechatLoginStatusResult, error) {
+	wechatID, err := FetchWechatUserIDByCode(input.Client, input.Code)
+	if err != nil {
+		return WechatLoginStatusResult{}, err
+	}
+	if strings.TrimSpace(wechatID) == "" {
+		return WechatLoginStatusResult{}, fmt.Errorf("微信验证码无效")
+	}
+	return resolveWechatLoginResultByID(db, input.Store, wechatID, input.RequestIP)
+}
+
+func resolveWechatLoginResultByID(db *gorm.DB, store *WechatBindTokenStore, wechatID string, requestIP string) (WechatLoginStatusResult, error) {
+	wechatID = strings.TrimSpace(wechatID)
+	if wechatID == "" {
+		return WechatLoginStatusResult{}, fmt.Errorf("微信用户 ID 为空")
+	}
 	var user entity.User
 	if err := db.Where("wechat_id = ?", wechatID).First(&user).Error; err == nil {
 		if !isServiceUserEnabled(&user) {
 			return WechatLoginStatusResult{}, fmt.Errorf("用户已被禁用")
 		}
-		jwt, err := issueWechatJWTWithDB(db, &user, input.RequestIP)
+		jwt, err := issueWechatJWTWithDB(db, &user, requestIP)
 		if err != nil {
 			return WechatLoginStatusResult{}, err
 		}
@@ -241,7 +267,6 @@ func CheckWechatLoginStatusWithDB(db *gorm.DB, input WechatLoginStatusInput) (We
 		return WechatLoginStatusResult{}, err
 	}
 
-	store := input.Store
 	if store == nil {
 		store = defaultWechatBindTokenStore
 	}

@@ -25,6 +25,10 @@ const SMSCodeSignNameSettingKey = "sms_code_sign_name"
 const SMSCodeTemplateSettingKey = "sms_code_template"
 const SMSLoginEnabledSettingKey = "sms_login_enabled"
 const WechatLoginEnabledSettingKey = "wechat_login_enabled"
+const WechatScanLoginEnabledSettingKey = "wechat_scan_login_enabled"
+const WechatCodeLoginEnabledSettingKey = "wechat_code_login_enabled"
+const WechatDefaultLoginModeSettingKey = "wechat_default_login_mode"
+const WechatCodeStaticQRCodeURLSettingKey = "wechat_code_static_qrcode_url"
 const WechatAPIBaseURLSettingKey = "wechat_api_base_url"
 const WechatAPIBearerTokenSettingKey = "wechat_api_bearer_token"
 const CaptchaProviderSettingKey = "captcha_provider"
@@ -45,70 +49,85 @@ const DefaultCaptchaAPIKey = "***REMOVED***"
 const DefaultCaptchaType = "RANDOM"
 const DefaultSMSBaoCredentialType = "apikey"
 const DefaultSMSBaoRegionMode = "auto"
+const DefaultWechatLoginMode = "scan"
 
 const paymentMethodWXPay = "wxpay"
+const wechatLoginModeScan = "scan"
+const wechatLoginModeCode = "code"
 
 type SystemSettingDetail struct {
-	RegisterEnabled         bool   `json:"registerEnabled"`
-	AlternativeLoginEnabled bool   `json:"alternativeLoginEnabled"`
-	EPayVersion             string `json:"epayVersion"`
-	EPayGatewayURL          string `json:"epayGatewayUrl"`
-	EPayPartnerID           string `json:"epayPartnerId"`
-	EPayPlatformPublicKey   string `json:"epayPlatformPublicKey"`
-	EPayMerchantPrivateKey  string `json:"epayMerchantPrivateKey"`
-	EPayNotifyURL           string `json:"epayNotifyUrl"`
-	EPayReturnURL           string `json:"epayReturnUrl"`
-	SMSProvider             string `json:"smsProvider"`
-	SMSBaoUsername          string `json:"smsbaoUsername"`
-	SMSBaoSecret            string `json:"smsbaoSecret"`
-	SMSCodeSignName         string `json:"smsCodeSignName"`
-	SMSCodeTemplate         string `json:"smsCodeTemplate"`
-	SMSLoginEnabled         bool   `json:"smsLoginEnabled"`
-	WechatLoginEnabled      bool   `json:"wechatLoginEnabled"`
-	WechatAPIBaseURL        string `json:"wechatApiBaseUrl"`
-	WechatAPIBearerToken    string `json:"wechatApiBearerToken"`
-	CaptchaProvider         string `json:"captchaProvider"`
-	CaptchaAPIBaseURL       string `json:"captchaApiBaseUrl"`
-	CaptchaAPIKey           string `json:"captchaApiKey"`
-	CaptchaType             string `json:"captchaType"`
-	SMSBaoCredentialType    string `json:"smsbaoCredentialType"`
-	SMSBaoRegionMode        string `json:"smsbaoRegionMode"`
+	RegisterEnabled           bool   `json:"registerEnabled"`
+	AlternativeLoginEnabled   bool   `json:"alternativeLoginEnabled"`
+	EPayVersion               string `json:"epayVersion"`
+	EPayGatewayURL            string `json:"epayGatewayUrl"`
+	EPayPartnerID             string `json:"epayPartnerId"`
+	EPayPlatformPublicKey     string `json:"epayPlatformPublicKey"`
+	EPayMerchantPrivateKey    string `json:"epayMerchantPrivateKey"`
+	EPayNotifyURL             string `json:"epayNotifyUrl"`
+	EPayReturnURL             string `json:"epayReturnUrl"`
+	SMSProvider               string `json:"smsProvider"`
+	SMSBaoUsername            string `json:"smsbaoUsername"`
+	SMSBaoSecret              string `json:"smsbaoSecret"`
+	SMSCodeSignName           string `json:"smsCodeSignName"`
+	SMSCodeTemplate           string `json:"smsCodeTemplate"`
+	SMSLoginEnabled           bool   `json:"smsLoginEnabled"`
+	WechatLoginEnabled        bool   `json:"wechatLoginEnabled"`
+	WechatScanLoginEnabled    bool   `json:"wechatScanLoginEnabled"`
+	WechatCodeLoginEnabled    bool   `json:"wechatCodeLoginEnabled"`
+	WechatDefaultLoginMode    string `json:"wechatDefaultLoginMode"`
+	WechatCodeStaticQRCodeURL string `json:"wechatCodeStaticQrcodeUrl"`
+	WechatAPIBaseURL          string `json:"wechatApiBaseUrl"`
+	WechatAPIBearerToken      string `json:"wechatApiBearerToken"`
+	CaptchaProvider           string `json:"captchaProvider"`
+	CaptchaAPIBaseURL         string `json:"captchaApiBaseUrl"`
+	CaptchaAPIKey             string `json:"captchaApiKey"`
+	CaptchaType               string `json:"captchaType"`
+	SMSBaoCredentialType      string `json:"smsbaoCredentialType"`
+	SMSBaoRegionMode          string `json:"smsbaoRegionMode"`
 }
 
 type UpdateSystemSettingInput struct {
-	RegisterEnabled        bool   `json:"registerEnabled"`
-	EPayVersion            string `json:"epayVersion"`
-	EPayGatewayURL         string `json:"epayGatewayUrl"`
-	EPayPartnerID          string `json:"epayPartnerId"`
-	EPayPlatformPublicKey  string `json:"epayPlatformPublicKey"`
-	EPayMerchantPrivateKey string `json:"epayMerchantPrivateKey"`
-	EPayNotifyURL          string `json:"epayNotifyUrl"`
-	EPayReturnURL          string `json:"epayReturnUrl"`
-	SMSProvider            string `json:"smsProvider"`
-	SMSBaoUsername         string `json:"smsbaoUsername"`
-	SMSBaoSecret           string `json:"smsbaoSecret"`
-	SMSCodeSignName        string `json:"smsCodeSignName"`
-	SMSCodeTemplate        string `json:"smsCodeTemplate"`
-	SMSLoginEnabled        bool   `json:"smsLoginEnabled"`
-	WechatLoginEnabled     bool   `json:"wechatLoginEnabled"`
-	WechatAPIBaseURL       string `json:"wechatApiBaseUrl"`
-	WechatAPIBearerToken   string `json:"wechatApiBearerToken"`
-	CaptchaProvider        string `json:"captchaProvider"`
-	CaptchaAPIBaseURL      string `json:"captchaApiBaseUrl"`
-	CaptchaAPIKey          string `json:"captchaApiKey"`
-	CaptchaType            string `json:"captchaType"`
-	SMSBaoCredentialType   string `json:"smsbaoCredentialType"`
-	SMSBaoRegionMode       string `json:"smsbaoRegionMode"`
+	RegisterEnabled           bool   `json:"registerEnabled"`
+	EPayVersion               string `json:"epayVersion"`
+	EPayGatewayURL            string `json:"epayGatewayUrl"`
+	EPayPartnerID             string `json:"epayPartnerId"`
+	EPayPlatformPublicKey     string `json:"epayPlatformPublicKey"`
+	EPayMerchantPrivateKey    string `json:"epayMerchantPrivateKey"`
+	EPayNotifyURL             string `json:"epayNotifyUrl"`
+	EPayReturnURL             string `json:"epayReturnUrl"`
+	SMSProvider               string `json:"smsProvider"`
+	SMSBaoUsername            string `json:"smsbaoUsername"`
+	SMSBaoSecret              string `json:"smsbaoSecret"`
+	SMSCodeSignName           string `json:"smsCodeSignName"`
+	SMSCodeTemplate           string `json:"smsCodeTemplate"`
+	SMSLoginEnabled           bool   `json:"smsLoginEnabled"`
+	WechatLoginEnabled        bool   `json:"wechatLoginEnabled"`
+	WechatScanLoginEnabled    bool   `json:"wechatScanLoginEnabled"`
+	WechatCodeLoginEnabled    bool   `json:"wechatCodeLoginEnabled"`
+	WechatDefaultLoginMode    string `json:"wechatDefaultLoginMode"`
+	WechatCodeStaticQRCodeURL string `json:"wechatCodeStaticQrcodeUrl"`
+	WechatAPIBaseURL          string `json:"wechatApiBaseUrl"`
+	WechatAPIBearerToken      string `json:"wechatApiBearerToken"`
+	CaptchaProvider           string `json:"captchaProvider"`
+	CaptchaAPIBaseURL         string `json:"captchaApiBaseUrl"`
+	CaptchaAPIKey             string `json:"captchaApiKey"`
+	CaptchaType               string `json:"captchaType"`
+	SMSBaoCredentialType      string `json:"smsbaoCredentialType"`
+	SMSBaoRegionMode          string `json:"smsbaoRegionMode"`
 }
 
 type PublicAuthSettings struct {
-	RegisterEnabled         bool   `json:"registerEnabled"`
-	SMSLoginEnabled         bool   `json:"smsLoginEnabled"`
-	WechatLoginEnabled      bool   `json:"wechatLoginEnabled"`
-	AlternativeLoginEnabled bool   `json:"alternativeLoginEnabled"`
-	CaptchaProvider         string `json:"captchaProvider"`
-	CaptchaAPIBaseURL       string `json:"captchaApiBaseUrl"`
-	CaptchaType             string `json:"captchaType"`
+	RegisterEnabled           bool   `json:"registerEnabled"`
+	SMSLoginEnabled           bool   `json:"smsLoginEnabled"`
+	WechatLoginEnabled        bool   `json:"wechatLoginEnabled"`
+	WechatScanLoginEnabled    bool   `json:"wechatScanLoginEnabled"`
+	WechatCodeLoginEnabled    bool   `json:"wechatCodeLoginEnabled"`
+	WechatDefaultLoginMode    string `json:"wechatDefaultLoginMode"`
+	WechatCodeStaticQRCodeURL string `json:"wechatCodeStaticQrcodeUrl"`
+	AlternativeLoginEnabled   bool   `json:"alternativeLoginEnabled"`
+	CaptchaProvider           string `json:"captchaProvider"`
+	CaptchaAPIBaseURL         string `json:"captchaApiBaseUrl"`
+	CaptchaType               string `json:"captchaType"`
 }
 
 func GetRegisterEnabledWithDB(db *gorm.DB) (bool, error) {
@@ -151,18 +170,26 @@ func GetPublicAuthSettingsWithDB(db *gorm.DB) (PublicAuthSettings, error) {
 		return PublicAuthSettings{}, err
 	}
 	smsLoginEnabled := strings.EqualFold(strings.TrimSpace(getSystemSettingStringWithDefault(db, SMSLoginEnabledSettingKey, "false")), "true")
-	wechatLoginEnabled := strings.EqualFold(strings.TrimSpace(getSystemSettingStringWithDefault(db, WechatLoginEnabledSettingKey, "false")), "true")
 	wechatAPIBaseURL := trimTrailingSlash(getSystemSettingStringWithDefault(db, WechatAPIBaseURLSettingKey, ""))
 	wechatAPIBearerToken := strings.TrimSpace(getSystemSettingStringWithDefault(db, WechatAPIBearerTokenSettingKey, ""))
-	publicWechatLoginEnabled := wechatLoginEnabled && wechatAPIBaseURL != "" && wechatAPIBearerToken != ""
+	wechatSettings := getNormalizedWechatLoginSettingsWithDB(db)
+	wechatConfigReady := wechatSettings.WechatLoginEnabled && wechatAPIBaseURL != "" && wechatAPIBearerToken != ""
+	publicWechatScanLoginEnabled := wechatConfigReady && wechatSettings.WechatScanLoginEnabled
+	publicWechatCodeLoginEnabled := wechatConfigReady && wechatSettings.WechatCodeLoginEnabled && wechatSettings.WechatCodeStaticQRCodeURL != ""
+	publicWechatLoginEnabled := publicWechatScanLoginEnabled || publicWechatCodeLoginEnabled
+	publicWechatDefaultLoginMode := normalizeEnabledWechatLoginMode(wechatSettings.WechatDefaultLoginMode, publicWechatScanLoginEnabled, publicWechatCodeLoginEnabled)
 	return PublicAuthSettings{
-		RegisterEnabled:         registerEnabled,
-		SMSLoginEnabled:         smsLoginEnabled,
-		WechatLoginEnabled:      publicWechatLoginEnabled,
-		AlternativeLoginEnabled: smsLoginEnabled || publicWechatLoginEnabled,
-		CaptchaProvider:         normalizeCaptchaProvider(getSystemSettingStringWithDefault(db, CaptchaProviderSettingKey, DefaultCaptchaProvider)),
-		CaptchaAPIBaseURL:       trimTrailingSlash(getSystemSettingStringWithDefault(db, CaptchaAPIBaseURLSettingKey, DefaultCaptchaAPIBaseURL)),
-		CaptchaType:             normalizeCaptchaType(getSystemSettingStringWithDefault(db, CaptchaTypeSettingKey, DefaultCaptchaType)),
+		RegisterEnabled:           registerEnabled,
+		SMSLoginEnabled:           smsLoginEnabled,
+		WechatLoginEnabled:        publicWechatLoginEnabled,
+		WechatScanLoginEnabled:    publicWechatScanLoginEnabled,
+		WechatCodeLoginEnabled:    publicWechatCodeLoginEnabled,
+		WechatDefaultLoginMode:    publicWechatDefaultLoginMode,
+		WechatCodeStaticQRCodeURL: wechatSettings.WechatCodeStaticQRCodeURL,
+		AlternativeLoginEnabled:   smsLoginEnabled || publicWechatLoginEnabled,
+		CaptchaProvider:           normalizeCaptchaProvider(getSystemSettingStringWithDefault(db, CaptchaProviderSettingKey, DefaultCaptchaProvider)),
+		CaptchaAPIBaseURL:         trimTrailingSlash(getSystemSettingStringWithDefault(db, CaptchaAPIBaseURLSettingKey, DefaultCaptchaAPIBaseURL)),
+		CaptchaType:               normalizeCaptchaType(getSystemSettingStringWithDefault(db, CaptchaTypeSettingKey, DefaultCaptchaType)),
 	}, nil
 }
 
@@ -173,32 +200,36 @@ func GetSystemSettingDetailWithDB(db *gorm.DB) (SystemSettingDetail, error) {
 	}
 
 	smsLoginEnabled := strings.EqualFold(strings.TrimSpace(getSystemSettingStringWithDefault(db, SMSLoginEnabledSettingKey, "false")), "true")
-	wechatLoginEnabled := strings.EqualFold(strings.TrimSpace(getSystemSettingStringWithDefault(db, WechatLoginEnabledSettingKey, "false")), "true")
+	wechatSettings := getNormalizedWechatLoginSettingsWithDB(db)
 	detail := SystemSettingDetail{
-		RegisterEnabled:         registerEnabled,
-		AlternativeLoginEnabled: smsLoginEnabled || wechatLoginEnabled,
-		EPayVersion:             DefaultEPayVersion,
-		EPayGatewayURL:          getSystemSettingStringWithDefault(db, EPayGatewayURLSettingKey, ""),
-		EPayPartnerID:           getSystemSettingStringWithDefault(db, EPayPartnerIDSettingKey, ""),
-		EPayPlatformPublicKey:   getSystemSettingStringWithDefault(db, EPayPlatformPublicKeySettingKey, ""),
-		EPayMerchantPrivateKey:  getSystemSettingStringWithDefault(db, EPayMerchantPrivateKeySettingKey, ""),
-		EPayNotifyURL:           getSystemSettingStringWithDefault(db, EPayNotifyURLSettingKey, ""),
-		EPayReturnURL:           getSystemSettingStringWithDefault(db, EPayReturnURLSettingKey, ""),
-		SMSProvider:             getSystemSettingStringWithDefault(db, SMSProviderSettingKey, DefaultSMSProvider),
-		SMSBaoUsername:          getSystemSettingStringWithDefault(db, SMSBaoUsernameSettingKey, ""),
-		SMSBaoSecret:            getSystemSettingStringWithDefault(db, SMSBaoSecretSettingKey, ""),
-		SMSCodeSignName:         getSystemSettingStringWithDefault(db, SMSCodeSignNameSettingKey, ""),
-		SMSCodeTemplate:         getSystemSettingStringWithDefault(db, SMSCodeTemplateSettingKey, DefaultSMSCodeTemplate),
-		SMSLoginEnabled:         smsLoginEnabled,
-		WechatLoginEnabled:      wechatLoginEnabled,
-		WechatAPIBaseURL:        trimTrailingSlash(getSystemSettingStringWithDefault(db, WechatAPIBaseURLSettingKey, "")),
-		WechatAPIBearerToken:    strings.TrimSpace(getSystemSettingStringWithDefault(db, WechatAPIBearerTokenSettingKey, "")),
-		CaptchaProvider:         normalizeCaptchaProvider(getSystemSettingStringWithDefault(db, CaptchaProviderSettingKey, DefaultCaptchaProvider)),
-		CaptchaAPIBaseURL:       trimTrailingSlash(getSystemSettingStringWithDefault(db, CaptchaAPIBaseURLSettingKey, DefaultCaptchaAPIBaseURL)),
-		CaptchaAPIKey:           strings.TrimSpace(getSystemSettingStringWithDefault(db, CaptchaAPIKeySettingKey, DefaultCaptchaAPIKey)),
-		CaptchaType:             normalizeCaptchaType(getSystemSettingStringWithDefault(db, CaptchaTypeSettingKey, DefaultCaptchaType)),
-		SMSBaoCredentialType:    normalizeSMSBaoCredentialType(getSystemSettingStringWithDefault(db, SMSBaoCredentialTypeSettingKey, DefaultSMSBaoCredentialType)),
-		SMSBaoRegionMode:        normalizeSMSBaoRegionMode(getSystemSettingStringWithDefault(db, SMSBaoRegionModeSettingKey, DefaultSMSBaoRegionMode)),
+		RegisterEnabled:           registerEnabled,
+		AlternativeLoginEnabled:   smsLoginEnabled || wechatSettings.WechatLoginEnabled,
+		EPayVersion:               DefaultEPayVersion,
+		EPayGatewayURL:            getSystemSettingStringWithDefault(db, EPayGatewayURLSettingKey, ""),
+		EPayPartnerID:             getSystemSettingStringWithDefault(db, EPayPartnerIDSettingKey, ""),
+		EPayPlatformPublicKey:     getSystemSettingStringWithDefault(db, EPayPlatformPublicKeySettingKey, ""),
+		EPayMerchantPrivateKey:    getSystemSettingStringWithDefault(db, EPayMerchantPrivateKeySettingKey, ""),
+		EPayNotifyURL:             getSystemSettingStringWithDefault(db, EPayNotifyURLSettingKey, ""),
+		EPayReturnURL:             getSystemSettingStringWithDefault(db, EPayReturnURLSettingKey, ""),
+		SMSProvider:               getSystemSettingStringWithDefault(db, SMSProviderSettingKey, DefaultSMSProvider),
+		SMSBaoUsername:            getSystemSettingStringWithDefault(db, SMSBaoUsernameSettingKey, ""),
+		SMSBaoSecret:              getSystemSettingStringWithDefault(db, SMSBaoSecretSettingKey, ""),
+		SMSCodeSignName:           getSystemSettingStringWithDefault(db, SMSCodeSignNameSettingKey, ""),
+		SMSCodeTemplate:           getSystemSettingStringWithDefault(db, SMSCodeTemplateSettingKey, DefaultSMSCodeTemplate),
+		SMSLoginEnabled:           smsLoginEnabled,
+		WechatLoginEnabled:        wechatSettings.WechatLoginEnabled,
+		WechatScanLoginEnabled:    wechatSettings.WechatScanLoginEnabled,
+		WechatCodeLoginEnabled:    wechatSettings.WechatCodeLoginEnabled,
+		WechatDefaultLoginMode:    wechatSettings.WechatDefaultLoginMode,
+		WechatCodeStaticQRCodeURL: wechatSettings.WechatCodeStaticQRCodeURL,
+		WechatAPIBaseURL:          trimTrailingSlash(getSystemSettingStringWithDefault(db, WechatAPIBaseURLSettingKey, "")),
+		WechatAPIBearerToken:      strings.TrimSpace(getSystemSettingStringWithDefault(db, WechatAPIBearerTokenSettingKey, "")),
+		CaptchaProvider:           normalizeCaptchaProvider(getSystemSettingStringWithDefault(db, CaptchaProviderSettingKey, DefaultCaptchaProvider)),
+		CaptchaAPIBaseURL:         trimTrailingSlash(getSystemSettingStringWithDefault(db, CaptchaAPIBaseURLSettingKey, DefaultCaptchaAPIBaseURL)),
+		CaptchaAPIKey:             strings.TrimSpace(getSystemSettingStringWithDefault(db, CaptchaAPIKeySettingKey, DefaultCaptchaAPIKey)),
+		CaptchaType:               normalizeCaptchaType(getSystemSettingStringWithDefault(db, CaptchaTypeSettingKey, DefaultCaptchaType)),
+		SMSBaoCredentialType:      normalizeSMSBaoCredentialType(getSystemSettingStringWithDefault(db, SMSBaoCredentialTypeSettingKey, DefaultSMSBaoCredentialType)),
+		SMSBaoRegionMode:          normalizeSMSBaoRegionMode(getSystemSettingStringWithDefault(db, SMSBaoRegionModeSettingKey, DefaultSMSBaoRegionMode)),
 	}
 	return detail, nil
 }
@@ -208,30 +239,41 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		return SystemSettingDetail{}, err
 	}
 
+	normalizedWechatLoginEnabled := input.WechatLoginEnabled && (input.WechatScanLoginEnabled || input.WechatCodeLoginEnabled)
+	normalizedWechatScanLoginEnabled := normalizedWechatLoginEnabled && input.WechatScanLoginEnabled
+	normalizedWechatCodeLoginEnabled := normalizedWechatLoginEnabled && input.WechatCodeLoginEnabled
+	normalizedWechatDefaultLoginMode := normalizeEnabledWechatLoginMode(input.WechatDefaultLoginMode, normalizedWechatScanLoginEnabled, normalizedWechatCodeLoginEnabled)
+	if normalizedWechatDefaultLoginMode == "" {
+		normalizedWechatDefaultLoginMode = DefaultWechatLoginMode
+	}
 	normalized := SystemSettingDetail{
-		RegisterEnabled:        input.RegisterEnabled,
-		EPayVersion:            normalizeEPayVersion(input.EPayVersion),
-		EPayGatewayURL:         strings.TrimSpace(input.EPayGatewayURL),
-		EPayPartnerID:          strings.TrimSpace(input.EPayPartnerID),
-		EPayPlatformPublicKey:  strings.TrimSpace(input.EPayPlatformPublicKey),
-		EPayMerchantPrivateKey: strings.TrimSpace(input.EPayMerchantPrivateKey),
-		EPayNotifyURL:          strings.TrimSpace(input.EPayNotifyURL),
-		EPayReturnURL:          strings.TrimSpace(input.EPayReturnURL),
-		SMSProvider:            strings.TrimSpace(input.SMSProvider),
-		SMSBaoUsername:         strings.TrimSpace(input.SMSBaoUsername),
-		SMSBaoSecret:           strings.TrimSpace(input.SMSBaoSecret),
-		SMSCodeSignName:        strings.TrimSpace(input.SMSCodeSignName),
-		SMSCodeTemplate:        strings.TrimSpace(input.SMSCodeTemplate),
-		SMSLoginEnabled:        input.SMSLoginEnabled,
-		WechatLoginEnabled:     input.WechatLoginEnabled,
-		WechatAPIBaseURL:       trimTrailingSlash(input.WechatAPIBaseURL),
-		WechatAPIBearerToken:   strings.TrimSpace(input.WechatAPIBearerToken),
-		CaptchaProvider:        normalizeCaptchaProvider(input.CaptchaProvider),
-		CaptchaAPIBaseURL:      trimTrailingSlash(defaultString(input.CaptchaAPIBaseURL, DefaultCaptchaAPIBaseURL)),
-		CaptchaAPIKey:          strings.TrimSpace(defaultString(input.CaptchaAPIKey, DefaultCaptchaAPIKey)),
-		CaptchaType:            normalizeCaptchaType(input.CaptchaType),
-		SMSBaoCredentialType:   normalizeSMSBaoCredentialType(input.SMSBaoCredentialType),
-		SMSBaoRegionMode:       normalizeSMSBaoRegionMode(input.SMSBaoRegionMode),
+		RegisterEnabled:           input.RegisterEnabled,
+		EPayVersion:               normalizeEPayVersion(input.EPayVersion),
+		EPayGatewayURL:            strings.TrimSpace(input.EPayGatewayURL),
+		EPayPartnerID:             strings.TrimSpace(input.EPayPartnerID),
+		EPayPlatformPublicKey:     strings.TrimSpace(input.EPayPlatformPublicKey),
+		EPayMerchantPrivateKey:    strings.TrimSpace(input.EPayMerchantPrivateKey),
+		EPayNotifyURL:             strings.TrimSpace(input.EPayNotifyURL),
+		EPayReturnURL:             strings.TrimSpace(input.EPayReturnURL),
+		SMSProvider:               strings.TrimSpace(input.SMSProvider),
+		SMSBaoUsername:            strings.TrimSpace(input.SMSBaoUsername),
+		SMSBaoSecret:              strings.TrimSpace(input.SMSBaoSecret),
+		SMSCodeSignName:           strings.TrimSpace(input.SMSCodeSignName),
+		SMSCodeTemplate:           strings.TrimSpace(input.SMSCodeTemplate),
+		SMSLoginEnabled:           input.SMSLoginEnabled,
+		WechatLoginEnabled:        normalizedWechatLoginEnabled,
+		WechatScanLoginEnabled:    normalizedWechatScanLoginEnabled,
+		WechatCodeLoginEnabled:    normalizedWechatCodeLoginEnabled,
+		WechatDefaultLoginMode:    normalizedWechatDefaultLoginMode,
+		WechatCodeStaticQRCodeURL: strings.TrimSpace(input.WechatCodeStaticQRCodeURL),
+		WechatAPIBaseURL:          trimTrailingSlash(input.WechatAPIBaseURL),
+		WechatAPIBearerToken:      strings.TrimSpace(input.WechatAPIBearerToken),
+		CaptchaProvider:           normalizeCaptchaProvider(input.CaptchaProvider),
+		CaptchaAPIBaseURL:         trimTrailingSlash(defaultString(input.CaptchaAPIBaseURL, DefaultCaptchaAPIBaseURL)),
+		CaptchaAPIKey:             strings.TrimSpace(defaultString(input.CaptchaAPIKey, DefaultCaptchaAPIKey)),
+		CaptchaType:               normalizeCaptchaType(input.CaptchaType),
+		SMSBaoCredentialType:      normalizeSMSBaoCredentialType(input.SMSBaoCredentialType),
+		SMSBaoRegionMode:          normalizeSMSBaoRegionMode(input.SMSBaoRegionMode),
 	}
 	normalized.AlternativeLoginEnabled = normalized.SMSLoginEnabled || normalized.WechatLoginEnabled
 
@@ -254,7 +296,11 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		{SMSCodeSignNameSettingKey, normalized.SMSCodeSignName, "短信签名"},
 		{SMSCodeTemplateSettingKey, normalized.SMSCodeTemplate, "短信验证码模板"},
 		{SMSLoginEnabledSettingKey, map[bool]string{true: "true", false: "false"}[normalized.SMSLoginEnabled], "是否开启短信验证码登录"},
-		{WechatLoginEnabledSettingKey, map[bool]string{true: "true", false: "false"}[normalized.WechatLoginEnabled], "是否开启微信扫码登录"},
+		{WechatLoginEnabledSettingKey, map[bool]string{true: "true", false: "false"}[normalized.WechatLoginEnabled], "是否开启微信登录"},
+		{WechatScanLoginEnabledSettingKey, map[bool]string{true: "true", false: "false"}[normalized.WechatScanLoginEnabled], "是否开启微信扫描登录"},
+		{WechatCodeLoginEnabledSettingKey, map[bool]string{true: "true", false: "false"}[normalized.WechatCodeLoginEnabled], "是否开启微信验证码登录"},
+		{WechatDefaultLoginModeSettingKey, normalized.WechatDefaultLoginMode, "默认微信登录方式"},
+		{WechatCodeStaticQRCodeURLSettingKey, normalized.WechatCodeStaticQRCodeURL, "微信验证码登录静态二维码"},
 		{WechatAPIBaseURLSettingKey, normalized.WechatAPIBaseURL, "微信登录服务地址"},
 		{WechatAPIBearerTokenSettingKey, normalized.WechatAPIBearerToken, "微信登录服务 Bearer Token"},
 		{CaptchaProviderSettingKey, normalized.CaptchaProvider, "验证码提供方"},
@@ -385,6 +431,67 @@ func normalizeSMSBaoRegionMode(value string) string {
 
 func normalizeEPayVersion(value string) string {
 	return DefaultEPayVersion
+}
+
+func getNormalizedWechatLoginSettingsWithDB(db *gorm.DB) SystemSettingDetail {
+	wechatLoginEnabled := strings.EqualFold(strings.TrimSpace(getSystemSettingStringWithDefault(db, WechatLoginEnabledSettingKey, "false")), "true")
+	legacyScanDefault := "false"
+	if wechatLoginEnabled {
+		legacyScanDefault = "true"
+	}
+	wechatScanLoginEnabled := strings.EqualFold(strings.TrimSpace(getSystemSettingStringWithDefault(db, WechatScanLoginEnabledSettingKey, legacyScanDefault)), "true")
+	wechatCodeLoginEnabled := strings.EqualFold(strings.TrimSpace(getSystemSettingStringWithDefault(db, WechatCodeLoginEnabledSettingKey, "false")), "true")
+	if !wechatScanLoginEnabled && !wechatCodeLoginEnabled {
+		wechatLoginEnabled = false
+	}
+	if !wechatLoginEnabled {
+		wechatScanLoginEnabled = false
+		wechatCodeLoginEnabled = false
+	}
+	defaultMode := normalizeEnabledWechatLoginMode(
+		getSystemSettingStringWithDefault(db, WechatDefaultLoginModeSettingKey, DefaultWechatLoginMode),
+		wechatScanLoginEnabled,
+		wechatCodeLoginEnabled,
+	)
+	if defaultMode == "" {
+		defaultMode = DefaultWechatLoginMode
+	}
+	return SystemSettingDetail{
+		WechatLoginEnabled:        wechatLoginEnabled,
+		WechatScanLoginEnabled:    wechatScanLoginEnabled,
+		WechatCodeLoginEnabled:    wechatCodeLoginEnabled,
+		WechatDefaultLoginMode:    defaultMode,
+		WechatCodeStaticQRCodeURL: strings.TrimSpace(getSystemSettingStringWithDefault(db, WechatCodeStaticQRCodeURLSettingKey, "")),
+	}
+}
+
+func normalizeWechatLoginMode(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case "", wechatLoginModeScan, "qrcode", "qr", "scan_qr":
+		return wechatLoginModeScan
+	case wechatLoginModeCode, "captcha", "verification_code":
+		return wechatLoginModeCode
+	default:
+		return DefaultWechatLoginMode
+	}
+}
+
+func normalizeEnabledWechatLoginMode(value string, scanEnabled bool, codeEnabled bool) string {
+	normalized := normalizeWechatLoginMode(value)
+	if normalized == wechatLoginModeCode && codeEnabled {
+		return wechatLoginModeCode
+	}
+	if normalized == wechatLoginModeScan && scanEnabled {
+		return wechatLoginModeScan
+	}
+	if scanEnabled {
+		return wechatLoginModeScan
+	}
+	if codeEnabled {
+		return wechatLoginModeCode
+	}
+	return ""
 }
 
 func getSystemSettingByKey(db *gorm.DB, key string) (entity.SystemSetting, bool, error) {

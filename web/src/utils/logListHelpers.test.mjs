@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   buildLogActionColor,
@@ -7,8 +10,13 @@ import {
   buildLogDetailSections,
   buildLogModuleLabel,
   buildLogQidLabel,
+  buildLogRowDetail,
   buildLogStructuredFields,
 } from './logListHelpers.mjs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const logListPagePath = path.join(__dirname, '..', 'pages', 'LogList', 'index.vue');
 
 test('buildLogModuleLabel supports search module wording', () => {
   assert.equal(buildLogModuleLabel('search'), '搜题');
@@ -272,4 +280,27 @@ test('buildLogStructuredFields summarizes captcha logs for table columns', () =>
     requestSnapshot: 'method=GET path=/check2 id=captcha-2',
     responseSnapshot: 'true',
   });
+});
+
+test('buildLogRowDetail exposes compact remote captcha diagnostics for visible table column', () => {
+  assert.equal(buildLogRowDetail({
+    description: '远程验证码二验 step=remote_check2 result=success status=200 remoteValid=true scene=login_sms captchaId=captcha-2 durationMs=13 hasKey=false',
+    oldAnswer: 'method=GET path=/check2 query=id%3Dcaptcha-2 hasKey=false',
+    newAnswer: 'true',
+  }), 'HTTP 200 / 有效：是 / 场景：login_sms / ID：captcha-2 / 耗时：13ms');
+
+  assert.equal(buildLogRowDetail({
+    description: '远程验证码校验 step=remote_check result=failed remoteCode=403 captchaId=captcha-3 hasKey=true',
+    newAnswer: '{"code":403,"message":"bad track"}',
+  }), '远程码：403 / ID：captcha-3 / 响应：{"code":403,"message":"bad track"}');
+});
+
+test('LogList page renders visible detail column for structured diagnostics', async () => {
+  const content = await readFile(logListPagePath, 'utf8');
+
+  assert.match(content, /<template #detail="\{ record \}">/);
+  assert.match(content, /buildRowDetail\(record\)/);
+  assert.match(content, /buildLogRowDetail/);
+  assert.match(content, /title: '详情'/);
+  assert.match(content, /customRender: 'detail'/);
 });

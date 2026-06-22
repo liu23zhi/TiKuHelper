@@ -109,8 +109,8 @@
       <template #title>
         <div class="page-title-wrap">
           <div>
-            <div class="page-title">消费账单</div>
-            <div class="page-subtitle">聚焦题目、消费金额、访问令牌与请求时间，便于快速回看最近使用情况。</div>
+            <div class="page-title">账单流水</div>
+            <div class="page-subtitle">展示题目消费与充值入账，便于快速回看最近的金额变动、来源渠道与关联单号。</div>
           </div>
         </div>
       </template>
@@ -123,13 +123,22 @@
         :pagination="pagination"
         @change="handleTableChange"
         row-key="id"
-        :scroll="{ x: 1030 }"
+        :scroll="{ x: 1180 }"
       >
-        <template #questionText="{ record }">
-          <span class="multiline-cell">{{ buildPersonalUsageQuestionText(record) }}</span>
+        <template #typeLabel="{ record }">
+          <a-tag :color="record.direction === 'income' ? 'green' : 'blue'">{{ buildBillingRecordTypeText(record) }}</a-tag>
+        </template>
+        <template #subject="{ record }">
+          <span class="multiline-cell">{{ buildBillingRecordSubjectText(record) }}</span>
         </template>
         <template #amount="{ record }">
-          <span>¥ {{ formatAmount(record.amount) }}</span>
+          <span :class="record.direction === 'income' ? 'amount-income' : 'amount-expense'">{{ buildBillingRecordAmountText(record) }}</span>
+        </template>
+        <template #source="{ record }">
+          <span class="multiline-cell">{{ buildBillingRecordSourceText(record) }}</span>
+        </template>
+        <template #referenceNo="{ record }">
+          <span class="reference-cell">{{ buildBillingRecordReferenceText(record) }}</span>
         </template>
         <template #accessTokenName="{ record }">
           <span>{{ record.accessTokenName || '-' }}</span>
@@ -142,12 +151,42 @@
         </template>
       </a-table>
     </a-card>
+
+    <a-modal
+      v-model:visible="paymentResultVisible"
+      title="扫码支付"
+      :footer="null"
+      width="420px"
+      centered
+      @cancel="closePaymentResult"
+    >
+      <div class="payment-result">
+        <img
+          v-if="paymentQRCodeDataUrl"
+          :src="paymentQRCodeDataUrl"
+          alt="支付二维码"
+          class="payment-qrcode-image"
+        />
+        <div v-else class="payment-qrcode-empty">正在生成支付二维码</div>
+        <div class="payment-result-title">请使用对应支付 App 扫码完成充值</div>
+        <div class="payment-result-meta">
+          支付完成后余额会通过异步通知更新，可稍后刷新查看。
+        </div>
+        <div class="payment-result-actions">
+          <a-button v-if="paymentJumpUrl" type="primary" block @click="openPaymentJumpFallback">
+            打开支付链接
+          </a-button>
+          <a-button block @click="handleRefreshAll">刷新余额与记录</a-button>
+        </div>
+      </div>
+    </a-modal>
   </div>
 </template>
 
 <script>
 import { computed, defineComponent, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
+import QRCode from 'qrcode'
 import {
   createRechargeOrder,
   getBillingRecords,
@@ -160,7 +199,11 @@ import {
 } from '@/utils/paymentMethodHelpers.mjs'
 import {
   buildPersonalUsageBillingRecordParams,
-  buildPersonalUsageQuestionText,
+  buildBillingRecordAmountText,
+  buildBillingRecordReferenceText,
+  buildBillingRecordSourceText,
+  buildBillingRecordSubjectText,
+  buildBillingRecordTypeText,
 } from '@/utils/userPortalHelpers.mjs'
 import { getStoredCurrentUser, setStoredCurrentUser } from '@/utils/currentUser'
 
@@ -171,6 +214,9 @@ const paymentMethodLoading = ref(false)
 const rechargeSubmitting = ref(false)
 const rechargeAmount = ref('10')
 const selectedPaymentMethodId = ref(null)
+const paymentResultVisible = ref(false)
+const paymentQRCodeDataUrl = ref('')
+const paymentJumpUrl = ref('')
 const rechargeQuickAmounts = [10, 20, 50, 100, 200, 500]
 const currentUser = ref(getStoredCurrentUser())
 const pagination = reactive({
@@ -191,7 +237,7 @@ export default defineComponent({
       return rows.reduce((acc, item) => {
         const amount = Number(item?.amount || 0)
         acc.currentPageCount += 1
-        if (Number.isFinite(amount)) {
+        if (Number.isFinite(amount) && item?.direction !== 'income') {
           acc.totalAmount += amount
         }
         return acc
@@ -218,12 +264,19 @@ export default defineComponent({
       rechargeSubmitting,
       rechargeAmount,
       selectedPaymentMethodId,
+      paymentResultVisible,
+      paymentQRCodeDataUrl,
+      paymentJumpUrl,
       rechargeQuickAmounts,
       pagination,
       summary,
       currentUserBalance,
       pageRefreshing,
-      buildPersonalUsageQuestionText,
+      buildBillingRecordAmountText,
+      buildBillingRecordReferenceText,
+      buildBillingRecordSourceText,
+      buildBillingRecordSubjectText,
+      buildBillingRecordTypeText,
       fallbackPaymentIcon() {
         return '<span class="payment-method-icon--placeholder">支</span>'
       },
@@ -235,21 +288,48 @@ export default defineComponent({
           width: 90,
         },
         {
-          title: '题目',
-          dataIndex: 'questionText',
-          key: 'questionText',
-          width: 280,
+          title: '类型',
+          dataIndex: 'typeLabel',
+          key: 'typeLabel',
+          width: 120,
           slots: {
-            customRender: 'questionText',
+            customRender: 'typeLabel',
           },
         },
         {
-          title: '消费金额',
+          title: '项目',
+          dataIndex: 'subject',
+          key: 'subject',
+          width: 260,
+          slots: {
+            customRender: 'subject',
+          },
+        },
+        {
+          title: '金额',
           dataIndex: 'amount',
           key: 'amount',
-          width: 120,
+          width: 130,
           slots: {
             customRender: 'amount',
+          },
+        },
+        {
+          title: '来源/渠道',
+          dataIndex: 'source',
+          key: 'source',
+          width: 160,
+          slots: {
+            customRender: 'source',
+          },
+        },
+        {
+          title: '关联单号',
+          dataIndex: 'referenceNo',
+          key: 'referenceNo',
+          width: 220,
+          slots: {
+            customRender: 'referenceNo',
           },
         },
         {
@@ -334,10 +414,6 @@ export default defineComponent({
       pagination.pageSize = paginationData.pageSize
       this.handleLoadBillingRecords()
     },
-    formatAmount(value) {
-      const amount = Number(value || 0)
-      return Number.isFinite(amount) ? amount.toFixed(2) : '0.00'
-    },
     formatDateTime(value) {
       if (!value) {
         return '-'
@@ -354,6 +430,34 @@ export default defineComponent({
     selectPaymentMethod(id) {
       selectedPaymentMethodId.value = Number(id || 0)
     },
+    closePaymentResult() {
+      paymentResultVisible.value = false
+    },
+    openPaymentJumpFallback() {
+      if (!paymentJumpUrl.value) {
+        return
+      }
+      window.open(paymentJumpUrl.value, '_blank', 'noopener,noreferrer')
+    },
+    async showPaymentResult(data) {
+      paymentQRCodeDataUrl.value = ''
+      paymentJumpUrl.value = data?.payUrl || ''
+      if (data?.payType === 'qrcode' && data?.qrcodeContent) {
+        paymentQRCodeDataUrl.value = await QRCode.toDataURL(data.qrcodeContent, {
+          margin: 1,
+          width: 256,
+          errorCorrectionLevel: 'M',
+        })
+        paymentResultVisible.value = true
+        return
+      }
+      if (data?.payUrl || data?.payInfo) {
+        paymentJumpUrl.value = data.payUrl || data.payInfo
+        paymentResultVisible.value = true
+        return
+      }
+      throw new Error('支付平台未返回可用支付参数')
+    },
     async handleCreateRechargeOrder() {
       if (!selectedPaymentMethodId.value) {
         message.warning('请选择支付方式')
@@ -369,15 +473,15 @@ export default defineComponent({
 
       rechargeSubmitting.value = true
       createRechargeOrder(payload).then((res) => {
-        if (res?.status === 200 && res?.data?.payUrl) {
-          message.success('充值订单创建成功，正在跳转支付页面')
-          window.open(res.data.payUrl, '_blank', 'noopener,noreferrer')
-          this.handleRefreshCurrentUser()
-          return
+        if (res?.status === 200) {
+          return this.showPaymentResult(res.data).then(() => {
+            message.success('充值订单创建成功')
+            this.handleRefreshCurrentUser()
+          })
         }
         message.error(res?.message || '创建充值订单失败')
       }).catch((error) => {
-        message.error(error?.response?.data?.message || '创建充值订单失败')
+        message.error(error?.response?.data?.message || error?.message || '创建充值订单失败')
       }).finally(() => {
         rechargeSubmitting.value = false
       })
@@ -552,5 +656,81 @@ export default defineComponent({
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.6;
+}
+
+.reference-cell {
+  display: inline-block;
+  max-width: 220px;
+  word-break: break-all;
+}
+
+.amount-income {
+  color: #16a34a;
+  font-weight: 600;
+}
+
+.amount-expense {
+  color: #dc2626;
+  font-weight: 600;
+}
+
+.payment-result {
+  display: grid;
+  gap: 14px;
+  justify-items: center;
+  text-align: center;
+}
+
+.payment-qrcode-image {
+  width: min(256px, 74vw);
+  height: min(256px, 74vw);
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 10px;
+  background: #fff;
+}
+
+.payment-qrcode-empty {
+  width: min(256px, 74vw);
+  min-height: min(256px, 74vw);
+  display: grid;
+  place-items: center;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+  color: #64748b;
+  background: #f8fafc;
+}
+
+.payment-result-title {
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.payment-result-meta {
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.payment-result-actions {
+  width: min(260px, 100%);
+  display: grid;
+  gap: 10px;
+}
+
+@media (max-width: 640px) {
+  .summary-card,
+  .page-card {
+    border-radius: 8px;
+  }
+
+  .recharge-quick-amounts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .balance-value {
+    font-size: 30px;
+  }
 }
 </style>

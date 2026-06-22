@@ -177,6 +177,104 @@ func TestCheckWechatLoginStatusWithDBReturnsBindTokenForUnboundUser(t *testing.T
 	}
 }
 
+func TestLoginWechatByCodeWithDBReturnsJWTForBoundUser(t *testing.T) {
+	db := newWechatLoginTestDB(t)
+	wechatID := "openid-code-bound"
+	if err := db.Create(&entity.User{
+		ID:             30,
+		Username:       "wechat-code-user",
+		Password:       "Abc12345!",
+		Role:           "user",
+		Status:         "enabled",
+		RegisterSource: "public",
+		WechatID:       &wechatID,
+	}).Error; err != nil {
+		t.Fatalf("create bound user: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/wechat/user" || r.URL.Query().Get("code") != "104014" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"data":    wechatID,
+		})
+	}))
+	defer server.Close()
+
+	result, err := LoginWechatByCodeWithDB(db, WechatCodeLoginInput{
+		Client:    WechatLoginClient{BaseURL: server.URL, Token: "token", Client: server.Client()},
+		Code:      "104014",
+		RequestIP: "127.0.0.3",
+	})
+	if err != nil {
+		t.Fatalf("login by code: %v", err)
+	}
+	if result.Status != WechatLoginStatusSuccess || strings.TrimSpace(result.JWT) == "" {
+		t.Fatalf("expected success jwt result, got %+v", result)
+	}
+
+	var stored entity.User
+	if err := db.Where("id = ?", 30).First(&stored).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	if stored.LastLoginAt == nil || stored.LastLoginIP != "127.0.0.3" {
+		t.Fatalf("expected login metadata, got %+v", stored)
+	}
+}
+
+func TestLoginWechatByCodeWithDBReturnsBindTokenForUnboundUser(t *testing.T) {
+	db := newWechatLoginTestDB(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"data":    "openid-code-new",
+		})
+	}))
+	defer server.Close()
+
+	store := NewWechatBindTokenStore()
+	result, err := LoginWechatByCodeWithDB(db, WechatCodeLoginInput{
+		Client:    WechatLoginClient{BaseURL: server.URL, Token: "token", Client: server.Client()},
+		Store:     store,
+		Code:      "104014",
+		RequestIP: "127.0.0.3",
+	})
+	if err != nil {
+		t.Fatalf("login by code: %v", err)
+	}
+	if result.Status != WechatLoginStatusNeedBind || strings.TrimSpace(result.BindToken) == "" {
+		t.Fatalf("expected need_bind bind token, got %+v", result)
+	}
+	wechatID, err := store.Resolve(result.BindToken, time.Now())
+	if err != nil {
+		t.Fatalf("resolve bind token: %v", err)
+	}
+	if wechatID != "openid-code-new" {
+		t.Fatalf("expected bind token to resolve openid-code-new, got %s", wechatID)
+	}
+}
+
+func TestLoginWechatByCodeWithDBRejectsEmptyWechatID(t *testing.T) {
+	db := newWechatLoginTestDB(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"data":    "",
+		})
+	}))
+	defer server.Close()
+
+	_, err := LoginWechatByCodeWithDB(db, WechatCodeLoginInput{
+		Client: WechatLoginClient{BaseURL: server.URL, Token: "token", Client: server.Client()},
+		Code:   "bad-code",
+	})
+	if err == nil || !strings.Contains(err.Error(), "微信验证码无效") {
+		t.Fatalf("expected invalid code error, got %v", err)
+	}
+}
+
 func TestBindWechatLoginWithDBBindsExistingAccountAndConsumesToken(t *testing.T) {
 	db := newWechatLoginTestDB(t)
 	if err := db.Create(&entity.User{

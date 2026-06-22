@@ -69,6 +69,55 @@ export function buildLogStructuredFields(record = {}) {
   };
 }
 
+export function buildLogRowDetail(record = {}) {
+  const description = String(record?.description || '').trim();
+  const request = String(record?.oldAnswer || '').trim();
+  const response = String(record?.newAnswer || '').trim();
+  const captchaFields = parseCaptchaLogDescriptionMap(description);
+
+  if (captchaFields.summary) {
+    const parts = [];
+    if (captchaFields.status) {
+      parts.push(`HTTP ${captchaFields.status}`);
+    }
+    if (captchaFields.remoteCode) {
+      parts.push(`远程码：${captchaFields.remoteCode}`);
+    }
+    if (captchaFields.remoteValid) {
+      parts.push(`有效：${formatBooleanText(captchaFields.remoteValid)}`);
+    }
+    if (captchaFields.scene) {
+      parts.push(`场景：${captchaFields.scene}`);
+    }
+    if (captchaFields.type) {
+      parts.push(`类型：${captchaFields.type}`);
+    }
+    if (captchaFields.captchaId) {
+      parts.push(`ID：${captchaFields.captchaId}`);
+    }
+    if (captchaFields.durationMs) {
+      parts.push(`耗时：${captchaFields.durationMs}ms`);
+    }
+    if (captchaFields.result === 'failed' && response) {
+      parts.push(`响应：${truncateInlineText(response, 96)}`);
+    }
+    if (parts.length > 0) {
+      return parts.join(' / ');
+    }
+    if (response) {
+      return `响应：${truncateInlineText(response, 96)}`;
+    }
+    if (request) {
+      return `请求：${truncateInlineText(request, 96)}`;
+    }
+  }
+
+  if (request || response) {
+    return truncateInlineText(response || request, 120);
+  }
+  return '-';
+}
+
 export function buildLogDetailSections(record = {}) {
   const sections = [];
   const description = String(record?.description || '').trim();
@@ -106,6 +155,23 @@ export function buildLogDetailSections(record = {}) {
 export function buildLogQidLabel(value) {
   const normalized = Number(value);
   return Number.isFinite(normalized) && normalized > 0 ? String(normalized) : '-';
+}
+
+function formatBooleanText(value) {
+  if (value === 'true') return '是';
+  if (value === 'false') return '否';
+  return value || '-';
+}
+
+function truncateInlineText(value, limit) {
+  const text = String(value || '').trim();
+  if (!text) {
+    return '-';
+  }
+  if (text.length <= limit) {
+    return text;
+  }
+  return `${text.slice(0, Math.max(0, limit - 3))}...`;
 }
 
 function parseSearchLogDescription(description) {

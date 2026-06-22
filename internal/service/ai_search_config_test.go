@@ -21,12 +21,12 @@ func TestUpdateAISearchConfigWithDBPersistsTokenPricing(t *testing.T) {
 	db := newSearchAccountConfigTestDB(t)
 
 	view, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{
-		Enabled:           true,
-		BaseURL:           "https://api.openai.com/v1",
-		APIKey:            "sk-test",
-		Model:             "gpt-4o-mini",
-		InputTokenPrice:   0.12345678,
-		OutputTokenPrice:  0.87654321,
+		Enabled:          true,
+		BaseURL:          "https://api.openai.com/v1",
+		APIKey:           "sk-test",
+		Model:            "gpt-4o-mini",
+		InputTokenPrice:  0.12345678,
+		OutputTokenPrice: 0.87654321,
 	})
 	if err != nil {
 		t.Fatalf("update ai config: %v", err)
@@ -196,6 +196,41 @@ func TestUpdateAISearchConfigWithDBNormalizesAndPersistsValues(t *testing.T) {
 
 	if saved.ManualModels != `["gpt-4o","deepseek-chat"]` {
 		t.Fatalf("expected saved manual models json, got %s", saved.ManualModels)
+	}
+}
+
+func TestUpdateAISearchConfigWithDBPersistsExchangeRateAndGlobalMultiplier(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+
+	view, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{
+		Enabled:                    true,
+		BaseURL:                    "https://api.openai.com/v1",
+		APIKey:                     "sk-test",
+		Model:                      "gpt-4o-mini",
+		ExchangeRate:               7.2,
+		UseGlobalBillingMultiplier: boolPtr(false),
+		GlobalBillingMultiplier:    1.5,
+	})
+	if err != nil {
+		t.Fatalf("update ai config: %v", err)
+	}
+
+	if view.ExchangeRate != 7.2 {
+		t.Fatalf("expected exchange rate 7.2, got %+v", view)
+	}
+	if view.UseGlobalBillingMultiplier {
+		t.Fatalf("expected global multiplier disabled, got %+v", view)
+	}
+	if view.GlobalBillingMultiplier != 1.5 {
+		t.Fatalf("expected global multiplier 1.5, got %+v", view)
+	}
+
+	loaded, err := GetAISearchConfigWithDB(db)
+	if err != nil {
+		t.Fatalf("load ai config: %v", err)
+	}
+	if loaded.ExchangeRate != 7.2 || loaded.UseGlobalBillingMultiplier || loaded.GlobalBillingMultiplier != 1.5 {
+		t.Fatalf("unexpected loaded billing config: %+v", loaded)
 	}
 }
 

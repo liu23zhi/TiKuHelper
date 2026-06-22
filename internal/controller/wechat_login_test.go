@@ -21,9 +21,10 @@ func TestCreateWechatLoginQRCodeControllerReturnsQRCodePayload(t *testing.T) {
 	}()
 	loadWechatLoginSettings = func() (service.SystemSettingDetail, error) {
 		return service.SystemSettingDetail{
-			WechatLoginEnabled:   true,
-			WechatAPIBaseURL:     "https://wechat.example.com",
-			WechatAPIBearerToken: "token",
+			WechatLoginEnabled:     true,
+			WechatScanLoginEnabled: true,
+			WechatAPIBaseURL:       "https://wechat.example.com",
+			WechatAPIBearerToken:   "token",
 		}, nil
 	}
 	createWechatLoginQRCodeWithDB = func(client service.WechatLoginClient) (service.WechatQRCodeResult, error) {
@@ -62,9 +63,10 @@ func TestCheckWechatLoginStatusControllerReturnsNeedBind(t *testing.T) {
 	}()
 	loadWechatLoginSettings = func() (service.SystemSettingDetail, error) {
 		return service.SystemSettingDetail{
-			WechatLoginEnabled:   true,
-			WechatAPIBaseURL:     "https://wechat.example.com",
-			WechatAPIBearerToken: "token",
+			WechatLoginEnabled:     true,
+			WechatScanLoginEnabled: true,
+			WechatAPIBaseURL:       "https://wechat.example.com",
+			WechatAPIBearerToken:   "token",
 		}, nil
 	}
 	checkWechatLoginStatusWithDB = func(input service.WechatLoginStatusInput) (service.WechatLoginStatusResult, error) {
@@ -84,6 +86,47 @@ func TestCheckWechatLoginStatusControllerReturnsNeedBind(t *testing.T) {
 		t.Fatalf("expected 200, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
 	if body := recorder.Body.String(); !strings.Contains(body, "need_bind") || !strings.Contains(body, "bind-token-1") {
+		t.Fatalf("unexpected body %s", body)
+	}
+}
+
+func TestLoginWechatByCodeControllerReturnsNeedBind(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	originalSettings := loadWechatLoginSettings
+	originalLoginByCode := loginWechatByCodeWithDB
+	defer func() {
+		loadWechatLoginSettings = originalSettings
+		loginWechatByCodeWithDB = originalLoginByCode
+	}()
+	loadWechatLoginSettings = func() (service.SystemSettingDetail, error) {
+		return service.SystemSettingDetail{
+			WechatLoginEnabled:     true,
+			WechatCodeLoginEnabled: true,
+			WechatAPIBaseURL:       "https://wechat.example.com",
+			WechatAPIBearerToken:   "token",
+		}, nil
+	}
+	loginWechatByCodeWithDB = func(input service.WechatCodeLoginInput) (service.WechatLoginStatusResult, error) {
+		if input.Code != "104014" {
+			t.Fatalf("unexpected wechat code %s", input.Code)
+		}
+		if input.Client.BaseURL != "https://wechat.example.com" || input.Client.Token != "token" {
+			t.Fatalf("unexpected client: %+v", input.Client)
+		}
+		return service.WechatLoginStatusResult{Status: service.WechatLoginStatusNeedBind, BindToken: "bind-token-code"}, nil
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/public/wechat-login/code", bytes.NewBufferString(`{"code":"104014"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	LoginWechatByCode(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	if body := recorder.Body.String(); !strings.Contains(body, "need_bind") || !strings.Contains(body, "bind-token-code") {
 		t.Fatalf("unexpected body %s", body)
 	}
 }

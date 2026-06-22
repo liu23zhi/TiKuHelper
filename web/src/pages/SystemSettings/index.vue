@@ -28,22 +28,36 @@
 
         <a-form-item label="开启微信登录">
           <a-switch v-model:checked="formState.wechatLoginEnabled" />
-        </a-form-item>
-
-        <a-form-item label="非密码登录">
-          <a-tag :color="alternativeLoginEnabled ? 'green' : 'default'">
-            {{ alternativeLoginEnabled ? '已启用' : '已关闭' }}
-          </a-tag>
-          <div class="hint">由短信验证码登录或微信扫码登录自动决定；两个都关闭时自动关闭。</div>
+          <div class="hint">总开关会随微信扫描或微信验证码方式自动生效；两个方式都关闭时会自动关闭。</div>
         </a-form-item>
 
         <a-divider orientation="left">微信登录</a-divider>
+        <a-form-item label="微信扫描">
+          <a-switch v-model:checked="formState.wechatScanLoginEnabled" />
+        </a-form-item>
+
+        <a-form-item label="微信验证码">
+          <a-switch v-model:checked="formState.wechatCodeLoginEnabled" />
+        </a-form-item>
+
+        <a-form-item label="默认微信方式">
+          <a-select v-model:value="formState.wechatDefaultLoginMode">
+            <a-select-option value="scan" :disabled="!formState.wechatScanLoginEnabled">微信扫描</a-select-option>
+            <a-select-option value="code" :disabled="!formState.wechatCodeLoginEnabled">微信验证码</a-select-option>
+          </a-select>
+        </a-form-item>
+
         <a-form-item label="微信 API 地址">
           <a-input v-model:value="formState.wechatApiBaseUrl" placeholder="例如 https://wechat.example.com" />
         </a-form-item>
 
         <a-form-item label="Bearer Token">
           <a-input-password v-model:value="formState.wechatApiBearerToken" placeholder="请输入微信登录服务 Bearer Token" />
+        </a-form-item>
+
+        <a-form-item label="验证码二维码">
+          <a-input v-model:value="formState.wechatCodeStaticQrcodeUrl" placeholder="请输入微信验证码模式下展示的静态二维码图片地址" />
+          <div class="hint">微信验证码模式会在登录页展示该二维码，用户扫码关注后发送“验证码”获取登录码。</div>
         </a-form-item>
 
         <a-divider orientation="left">验证码</a-divider>
@@ -258,7 +272,7 @@
 </template>
 
 <script>
-import { computed, defineComponent, onMounted, reactive, ref } from 'vue';
+import { computed, defineComponent, onMounted, reactive, ref, watch } from 'vue';
 import { message } from 'ant-design-vue';
 import {
   createPaymentMethod,
@@ -342,6 +356,10 @@ export default defineComponent({
       smsCodeTemplate: '',
       smsLoginEnabled: false,
       wechatLoginEnabled: false,
+      wechatScanLoginEnabled: false,
+      wechatCodeLoginEnabled: false,
+      wechatDefaultLoginMode: 'scan',
+      wechatCodeStaticQrcodeUrl: '',
       wechatApiBaseUrl: '',
       wechatApiBearerToken: '',
       captchaProvider: 'remote',
@@ -363,7 +381,6 @@ export default defineComponent({
 
     const derivedNotifyUrl = computed(() => buildAbsoluteURL(formState.siteBaseUrl, notifyPath))
     const derivedReturnUrl = computed(() => buildAbsoluteURL(formState.siteBaseUrl, returnPath))
-    const alternativeLoginEnabled = computed(() => !!formState.smsLoginEnabled || !!formState.wechatLoginEnabled)
     const paymentMethodModalTitle = computed(() => (paymentMethodEditing.value ? '编辑支付方式' : '新增支付方式'))
 
     const applyDetail = (data = {}) => {
@@ -383,6 +400,10 @@ export default defineComponent({
       formState.smsCodeTemplate = data.smsCodeTemplate || ''
       formState.smsLoginEnabled = !!data.smsLoginEnabled
       formState.wechatLoginEnabled = !!data.wechatLoginEnabled
+      formState.wechatScanLoginEnabled = !!data.wechatScanLoginEnabled
+      formState.wechatCodeLoginEnabled = !!data.wechatCodeLoginEnabled
+      formState.wechatDefaultLoginMode = data.wechatDefaultLoginMode || (formState.wechatScanLoginEnabled ? 'scan' : 'code')
+      formState.wechatCodeStaticQrcodeUrl = data.wechatCodeStaticQrcodeUrl || ''
       formState.wechatApiBaseUrl = data.wechatApiBaseUrl || ''
       formState.wechatApiBearerToken = data.wechatApiBearerToken || ''
       formState.captchaProvider = data.captchaProvider || 'remote'
@@ -433,6 +454,24 @@ export default defineComponent({
       message.success('已从浏览器地址栏获取站点地址')
     }
 
+    watch(
+      () => [formState.wechatScanLoginEnabled, formState.wechatCodeLoginEnabled],
+      ([scanEnabled, codeEnabled]) => {
+        if (!scanEnabled && !codeEnabled) {
+          formState.wechatLoginEnabled = false
+          return
+        }
+        if (!formState.wechatLoginEnabled) {
+          formState.wechatLoginEnabled = true
+        }
+        if (formState.wechatDefaultLoginMode === 'code' && !codeEnabled) {
+          formState.wechatDefaultLoginMode = scanEnabled ? 'scan' : 'code'
+        } else if (formState.wechatDefaultLoginMode !== 'code' && !scanEnabled && codeEnabled) {
+          formState.wechatDefaultLoginMode = 'code'
+        }
+      }
+    )
+
     onMounted(() => {
       loadSettings()
       loadPaymentMethods()
@@ -454,7 +493,6 @@ export default defineComponent({
       paymentMethodFormState,
       derivedNotifyUrl,
       derivedReturnUrl,
-      alternativeLoginEnabled,
       paymentMethodModalTitle,
       loadSettings,
       loadPaymentMethods,
@@ -530,6 +568,16 @@ export default defineComponent({
       const siteBaseUrl = trimTrailingSlash(this.formState.siteBaseUrl)
       const notifyUrl = buildAbsoluteURL(siteBaseUrl, notifyPath)
       const returnUrl = buildAbsoluteURL(siteBaseUrl, returnPath)
+      const wechatScanLoginEnabled = !!this.formState.wechatScanLoginEnabled
+      const wechatCodeLoginEnabled = !!this.formState.wechatCodeLoginEnabled
+      const wechatLoginEnabled = !!this.formState.wechatLoginEnabled && (wechatScanLoginEnabled || wechatCodeLoginEnabled)
+      let wechatDefaultLoginMode = normalizeString(this.formState.wechatDefaultLoginMode || 'scan')
+      if (wechatDefaultLoginMode === 'code' && !wechatCodeLoginEnabled) {
+        wechatDefaultLoginMode = wechatScanLoginEnabled ? 'scan' : 'code'
+      }
+      if (wechatDefaultLoginMode !== 'code' && !wechatScanLoginEnabled && wechatCodeLoginEnabled) {
+        wechatDefaultLoginMode = 'code'
+      }
       const payload = {
         registerEnabled: !!this.formState.registerEnabled,
         epayVersion: 'v2',
@@ -545,7 +593,11 @@ export default defineComponent({
         smsCodeSignName: normalizeString(this.formState.smsCodeSignName),
         smsCodeTemplate: normalizeString(this.formState.smsCodeTemplate),
         smsLoginEnabled: !!this.formState.smsLoginEnabled,
-        wechatLoginEnabled: !!this.formState.wechatLoginEnabled,
+        wechatLoginEnabled,
+        wechatScanLoginEnabled,
+        wechatCodeLoginEnabled,
+        wechatDefaultLoginMode,
+        wechatCodeStaticQrcodeUrl: normalizeString(this.formState.wechatCodeStaticQrcodeUrl),
         wechatApiBaseUrl: normalizeString(this.formState.wechatApiBaseUrl),
         wechatApiBearerToken: normalizeString(this.formState.wechatApiBearerToken),
         captchaProvider: normalizeString(this.formState.captchaProvider || 'remote'),

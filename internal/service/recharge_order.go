@@ -1,19 +1,25 @@
 package service
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"io"
 	"math"
+	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -38,17 +44,19 @@ const rechargeOrderSignType = "RSA"
 type CreateRechargeOrderInput struct {
 	Amount          float64 `json:"amount"`
 	PaymentMethodID int32   `json:"paymentMethodId"`
+	ClientIP        string  `json:"-"`
+	Device          string  `json:"-"`
 }
 
 type RechargePaymentConfig struct {
-	PaymentProvider     string
-	PaymentMethod       string
-	GatewayURL          string
-	PartnerID           string
-	PlatformPublicKey   string
-	MerchantPrivateKey  string
-	NotifyURL           string
-	ReturnURL           string
+	PaymentProvider    string
+	PaymentMethod      string
+	GatewayURL         string
+	PartnerID          string
+	PlatformPublicKey  string
+	MerchantPrivateKey string
+	NotifyURL          string
+	ReturnURL          string
 }
 
 type RechargePayRequest struct {
@@ -56,36 +64,163 @@ type RechargePayRequest struct {
 	Name       string
 	Money      string
 	Type       string
+	ClientIP   string
+	Device     string
 }
 
 type CreateRechargeOrderResult struct {
-	Order  entity.RechargeOrder `json:"order"`
-	PayURL string               `json:"payUrl"`
+	Order             entity.RechargeOrder `json:"order"`
+	PayURL            string               `json:"payUrl,omitempty"`
+	PayType           string               `json:"payType"`
+	PayInfo           string               `json:"payInfo"`
+	QRCodeContent     string               `json:"qrcodeContent,omitempty"`
+	ThirdPartyOrderNo string               `json:"thirdPartyOrderNo,omitempty"`
 }
 
-var buildRechargePayURL = func(config RechargePaymentConfig, request RechargePayRequest) (string, error) {
+type RechargePaymentResult struct {
+	PayURL            string `json:"payUrl,omitempty"`
+	PayType           string `json:"payType"`
+	PayInfo           string `json:"payInfo"`
+	QRCodeContent     string `json:"qrcodeContent,omitempty"`
+	ThirdPartyOrderNo string `json:"thirdPartyOrderNo,omitempty"`
+}
+
+type RechargeOrderListItem struct {
+	ID                        int32      `json:"id"`
+	UserID                    int32      `json:"userId"`
+	Username                  string     `json:"username"`
+	OrderNo                   string     `json:"orderNo"`
+	PaymentProvider           string     `json:"paymentProvider"`
+	PaymentMethodNameSnapshot string     `json:"paymentMethodNameSnapshot"`
+	Amount                    float64    `json:"amount"`
+	Status                    string     `json:"status"`
+	ThirdPartyOrderNo         string     `json:"thirdPartyOrderNo"`
+	PaidAt                    *time.Time `json:"paidAt"`
+	CreatedAt                 time.Time  `json:"createdAt"`
+	UpdatedAt                 time.Time  `json:"updatedAt"`
+}
+
+type RechargeOrderListResult struct {
+	Data     []RechargeOrderListItem `json:"data"`
+	Total    int64                   `json:"total"`
+	Page     int                     `json:"page"`
+	PageSize int                     `json:"pageSize"`
+}
+
+var rechargeHTTPClient = &http.Client{Timeout: 15 * time.Second}
+
+var createRechargePaymentRequest = func(config RechargePaymentConfig, request RechargePayRequest) (RechargePaymentResult, error) {
 	params := url.Values{}
 	params.Set("pid", strings.TrimSpace(config.PartnerID))
+	params.Set("method", "web")
+	params.Set("device", normalizeRechargeDevice(request.Device))
 	params.Set("type", strings.TrimSpace(request.Type))
 	params.Set("notify_url", strings.TrimSpace(config.NotifyURL))
 	params.Set("return_url", strings.TrimSpace(config.ReturnURL))
 	params.Set("out_trade_no", strings.TrimSpace(request.OutTradeNo))
 	params.Set("name", strings.TrimSpace(request.Name))
 	params.Set("money", strings.TrimSpace(request.Money))
+	params.Set("client_ip", normalizeRechargeClientIP(request.ClientIP))
 	params.Set("timestamp", strconv.FormatInt(time.Now().Unix(), 10))
 
 	signature, err := signRechargeValues(params, config.MerchantPrivateKey)
 	if err != nil {
-		return "", err
+		return RechargePaymentResult{}, err
 	}
 	params.Set("sign", signature)
 	params.Set("sign_type", rechargeOrderSignType)
 
 	gatewayURL := strings.TrimRight(strings.TrimSpace(config.GatewayURL), "/")
 	if gatewayURL == "" {
-		return "", ErrRechargePaymentConfigIncomplete
+		return RechargePaymentResult{}, ErrRechargePaymentConfigIncomplete
 	}
-	return gatewayURL + "/api/pay/submit?" + params.Encode(), nil
+
+	httpReq, err := http.NewRequest(http.MethodPost, gatewayURL+"/api/pay/create", bytes.NewBufferString(params.Encode()))
+	if err != nil {
+		return RechargePaymentResult{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := rechargeHTTPClient.Do(httpReq)
+	if err != nil {
+		return RechargePaymentResult{}, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return RechargePaymentResult{}, err
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return RechargePaymentResult{}, errors.New("支付下单接口响应异常")
+	}
+
+	var payload struct {
+		Code      int    `json:"code"`
+		Msg       string `json:"msg"`
+		TradeNo   string `json:"trade_no"`
+		PayType   string `json:"pay_type"`
+		PayInfo   string `json:"pay_info"`
+		Timestamp string `json:"timestamp"`
+		Sign      string `json:"sign"`
+		SignType  string `json:"sign_type"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return RechargePaymentResult{}, err
+	}
+	if payload.Code != 0 {
+		message := strings.TrimSpace(payload.Msg)
+		if message == "" {
+			message = "支付下单失败"
+		}
+		return RechargePaymentResult{}, errors.New(message)
+	}
+
+	payType := strings.ToLower(strings.TrimSpace(payload.PayType))
+	payInfo := strings.TrimSpace(payload.PayInfo)
+	result := RechargePaymentResult{
+		PayType:           payType,
+		PayInfo:           payInfo,
+		ThirdPartyOrderNo: strings.TrimSpace(payload.TradeNo),
+	}
+	switch payType {
+	case "qrcode":
+		result.QRCodeContent = payInfo
+	case "jump", "urlscheme":
+		result.PayURL = payInfo
+	}
+	return result, nil
+}
+
+func ListRechargeOrdersWithDB(db *gorm.DB, operator entity.User, page int, pageSize int) (RechargeOrderListResult, error) {
+	baseQuery := db.Table(entity.TableNameRechargeOrder + " AS recharge_orders")
+	if !isAdminUser(operator) {
+		baseQuery = baseQuery.Where("recharge_orders.user_id = ?", operator.ID)
+	}
+
+	var total int64
+	if err := baseQuery.Count(&total).Error; err != nil {
+		return RechargeOrderListResult{}, err
+	}
+
+	var records []RechargeOrderListItem
+	offset := (page - 1) * pageSize
+	if err := baseQuery.
+		Select("recharge_orders.id, recharge_orders.user_id, users.username, recharge_orders.order_no, recharge_orders.payment_provider, recharge_orders.payment_method_name_snapshot, recharge_orders.amount, recharge_orders.status, recharge_orders.third_party_order_no, recharge_orders.paid_at, recharge_orders.created_at, recharge_orders.updated_at").
+		Joins("LEFT JOIN " + entity.TableNameUser + " AS users ON users.id = recharge_orders.user_id").
+		Order("recharge_orders.id desc").
+		Limit(pageSize).
+		Offset(offset).
+		Find(&records).Error; err != nil {
+		return RechargeOrderListResult{}, err
+	}
+
+	return RechargeOrderListResult{
+		Data:     records,
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+	}, nil
 }
 
 func CreateRechargeOrderWithDB(db *gorm.DB, user entity.User, input CreateRechargeOrderInput) (CreateRechargeOrderResult, error) {
@@ -111,13 +246,13 @@ func CreateRechargeOrderWithDB(db *gorm.DB, user entity.User, input CreateRechar
 	}
 
 	config := RechargePaymentConfig{
-		PaymentProvider:     DefaultPaymentProvider,
-		GatewayURL:          strings.TrimSpace(settings.EPayGatewayURL),
-		PartnerID:           strings.TrimSpace(settings.EPayPartnerID),
-		PlatformPublicKey:   strings.TrimSpace(settings.EPayPlatformPublicKey),
-		MerchantPrivateKey:  strings.TrimSpace(settings.EPayMerchantPrivateKey),
-		NotifyURL:           strings.TrimSpace(settings.EPayNotifyURL),
-		ReturnURL:           strings.TrimSpace(settings.EPayReturnURL),
+		PaymentProvider:    DefaultPaymentProvider,
+		GatewayURL:         strings.TrimSpace(settings.EPayGatewayURL),
+		PartnerID:          strings.TrimSpace(settings.EPayPartnerID),
+		PlatformPublicKey:  strings.TrimSpace(settings.EPayPlatformPublicKey),
+		MerchantPrivateKey: strings.TrimSpace(settings.EPayMerchantPrivateKey),
+		NotifyURL:          strings.TrimSpace(settings.EPayNotifyURL),
+		ReturnURL:          strings.TrimSpace(settings.EPayReturnURL),
 	}
 	if !isRechargePaymentConfigComplete(config) {
 		return CreateRechargeOrderResult{}, ErrRechargePaymentConfigIncomplete
@@ -125,21 +260,26 @@ func CreateRechargeOrderWithDB(db *gorm.DB, user entity.User, input CreateRechar
 
 	order := entity.RechargeOrder{
 		UserID:                    user.ID,
-		OrderNo:                   generateRechargeOrderNo(),
+		OrderNo:                   generateRechargeOrderNo(user, amount),
 		PaymentProvider:           DefaultPaymentProvider,
 		PaymentMethodNameSnapshot: strings.TrimSpace(paymentMethod.Name),
 		Amount:                    amount,
 		Status:                    rechargeOrderStatusPending,
 	}
 
-	payURL, err := buildRechargePayURL(config, RechargePayRequest{
+	paymentResult, err := createRechargePaymentRequest(config, RechargePayRequest{
 		OutTradeNo: order.OrderNo,
 		Name:       rechargeOrderName,
 		Money:      formatRechargeAmount(amount),
 		Type:       strings.TrimSpace(paymentMethod.EPayType),
+		ClientIP:   input.ClientIP,
+		Device:     input.Device,
 	})
 	if err != nil {
 		return CreateRechargeOrderResult{}, err
+	}
+	if strings.TrimSpace(paymentResult.ThirdPartyOrderNo) != "" {
+		order.ThirdPartyOrderNo = strings.TrimSpace(paymentResult.ThirdPartyOrderNo)
 	}
 
 	if err := db.Create(&order).Error; err != nil {
@@ -147,8 +287,12 @@ func CreateRechargeOrderWithDB(db *gorm.DB, user entity.User, input CreateRechar
 	}
 
 	return CreateRechargeOrderResult{
-		Order:  order,
-		PayURL: payURL,
+		Order:             order,
+		PayURL:            paymentResult.PayURL,
+		PayType:           paymentResult.PayType,
+		PayInfo:           paymentResult.PayInfo,
+		QRCodeContent:     paymentResult.QRCodeContent,
+		ThirdPartyOrderNo: paymentResult.ThirdPartyOrderNo,
 	}, nil
 }
 
@@ -265,8 +409,55 @@ func isRechargePaymentConfigComplete(config RechargePaymentConfig) bool {
 		strings.TrimSpace(config.ReturnURL) != ""
 }
 
-func generateRechargeOrderNo() string {
-	return "rcg_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+func normalizeRechargeClientIP(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "127.0.0.1"
+	}
+	return trimmed
+}
+
+func normalizeRechargeDevice(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case "mobile", "qq", "wechat", "alipay", "douyin":
+		return normalized
+	default:
+		return "pc"
+	}
+}
+
+func generateRechargeOrderNo(user entity.User, amount float64) string {
+	return buildRechargeOrderNo(user, amount, time.Now(), strings.ReplaceAll(uuid.NewString(), "-", "")[:8])
+}
+
+func buildRechargeOrderNo(user entity.User, amount float64, now time.Time, suffix string) string {
+	username := normalizeRechargeOrderUsername(user.Username)
+	if username == "" {
+		username = "user" + strconv.FormatInt(int64(user.ID), 10)
+	}
+	if len(username) > 18 {
+		username = username[:18]
+	}
+	amountCents := int64(math.Round(normalizeRechargeAmount(amount) * 100))
+	normalizedSuffix := normalizeRechargeOrderUsername(suffix)
+	if len(normalizedSuffix) > 8 {
+		normalizedSuffix = normalizedSuffix[:8]
+	}
+	if normalizedSuffix == "" {
+		normalizedSuffix = "00000000"
+	}
+	return "rcg_" + username + "_" + now.Format("20060102150405") + "_" + strconv.FormatInt(amountCents, 10) + "_" + normalizedSuffix
+}
+
+func normalizeRechargeOrderUsername(value string) string {
+	var builder strings.Builder
+	for _, r := range strings.TrimSpace(value) {
+		if r <= unicode.MaxASCII && ((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+			builder.WriteRune(r)
+		}
+	}
+	return builder.String()
 }
 
 func normalizeRechargeAmount(amount float64) float64 {
@@ -279,19 +470,9 @@ func formatRechargeAmount(amount float64) string {
 
 func signRechargeValues(values url.Values, privateKey string) (string, error) {
 	signContent := buildRechargeSignContent(values)
-	privateDER, err := base64.StdEncoding.DecodeString(strings.TrimSpace(privateKey))
+	rsaKey, err := parseRechargePrivateKey(privateKey)
 	if err != nil {
 		return "", err
-	}
-
-	parsedKey, err := x509.ParsePKCS8PrivateKey(privateDER)
-	if err != nil {
-		return "", err
-	}
-
-	rsaKey, ok := parsedKey.(*rsa.PrivateKey)
-	if !ok {
-		return "", errors.New("invalid rsa private key")
 	}
 
 	hash := sha256.Sum256([]byte(signContent))
@@ -312,21 +493,77 @@ func verifyRechargeValuesSignature(values url.Values, publicKey string) bool {
 		return false
 	}
 
-	publicDER, err := base64.StdEncoding.DecodeString(strings.TrimSpace(publicKey))
+	rsaKey, err := parseRechargePublicKey(publicKey)
 	if err != nil {
-		return false
-	}
-	parsedKey, err := x509.ParsePKIXPublicKey(publicDER)
-	if err != nil {
-		return false
-	}
-	rsaKey, ok := parsedKey.(*rsa.PublicKey)
-	if !ok {
 		return false
 	}
 
 	hash := sha256.Sum256([]byte(buildRechargeSignContent(values)))
 	return rsa.VerifyPKCS1v15(rsaKey, crypto.SHA256, hash[:], signature) == nil
+}
+
+func parseRechargePrivateKey(value string) (*rsa.PrivateKey, error) {
+	keyText := strings.TrimSpace(value)
+	if keyText == "" {
+		return nil, errors.New("empty rsa private key")
+	}
+	if block, _ := pem.Decode([]byte(keyText)); block != nil {
+		if key, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
+			if rsaKey, ok := key.(*rsa.PrivateKey); ok {
+				return rsaKey, nil
+			}
+		}
+		if rsaKey, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+			return rsaKey, nil
+		}
+		return nil, errors.New("invalid rsa private key")
+	}
+
+	privateDER, err := base64.StdEncoding.DecodeString(keyText)
+	if err != nil {
+		return nil, err
+	}
+	if key, err := x509.ParsePKCS8PrivateKey(privateDER); err == nil {
+		if rsaKey, ok := key.(*rsa.PrivateKey); ok {
+			return rsaKey, nil
+		}
+	}
+	if rsaKey, err := x509.ParsePKCS1PrivateKey(privateDER); err == nil {
+		return rsaKey, nil
+	}
+	return nil, errors.New("invalid rsa private key")
+}
+
+func parseRechargePublicKey(value string) (*rsa.PublicKey, error) {
+	keyText := strings.TrimSpace(value)
+	if keyText == "" {
+		return nil, errors.New("empty rsa public key")
+	}
+	if block, _ := pem.Decode([]byte(keyText)); block != nil {
+		if key, err := x509.ParsePKIXPublicKey(block.Bytes); err == nil {
+			if rsaKey, ok := key.(*rsa.PublicKey); ok {
+				return rsaKey, nil
+			}
+		}
+		if rsaKey, err := x509.ParsePKCS1PublicKey(block.Bytes); err == nil {
+			return rsaKey, nil
+		}
+		return nil, errors.New("invalid rsa public key")
+	}
+
+	publicDER, err := base64.StdEncoding.DecodeString(keyText)
+	if err != nil {
+		return nil, err
+	}
+	if key, err := x509.ParsePKIXPublicKey(publicDER); err == nil {
+		if rsaKey, ok := key.(*rsa.PublicKey); ok {
+			return rsaKey, nil
+		}
+	}
+	if rsaKey, err := x509.ParsePKCS1PublicKey(publicDER); err == nil {
+		return rsaKey, nil
+	}
+	return nil, errors.New("invalid rsa public key")
 }
 
 func parseRechargeAmount(value string) float64 {

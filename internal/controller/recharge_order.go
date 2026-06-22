@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -15,8 +17,38 @@ var createRechargeOrder = func(user entity.User, input service.CreateRechargeOrd
 	return service.CreateRechargeOrderWithDB(manager.GetManager().GetDB(), user, input)
 }
 
+var listRechargeOrders = func(user entity.User, page int, pageSize int) (service.RechargeOrderListResult, error) {
+	return service.ListRechargeOrdersWithDB(manager.GetManager().GetDB(), user, page, pageSize)
+}
+
 var handleRechargePaymentNotify = func(values url.Values) (bool, error) {
 	return service.HandleRechargePaymentNotifyWithDB(manager.GetManager().GetDB(), values)
+}
+
+func RechargeOrderList(c *gin.Context) {
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "10"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 10
+	}
+
+	result, err := listRechargeOrders(operator, page, pageSize)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"message": "获取充值记录失败",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
 }
 
 func CreateRechargeOrder(c *gin.Context) {
@@ -30,6 +62,8 @@ func CreateRechargeOrder(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
 		return
 	}
+	input.ClientIP = c.ClientIP()
+	input.Device = detectRechargeDevice(c.GetHeader("User-Agent"))
 
 	created, err := createRechargeOrder(operator, input)
 	if err != nil {
@@ -71,4 +105,22 @@ func writeRechargeOrderError(c *gin.Context, err error, fallback string) {
 	}
 
 	c.JSON(status, gin.H{"message": message})
+}
+
+func detectRechargeDevice(userAgent string) string {
+	ua := strings.ToLower(strings.TrimSpace(userAgent))
+	switch {
+	case strings.Contains(ua, "micromessenger"):
+		return "wechat"
+	case strings.Contains(ua, "alipayclient"):
+		return "alipay"
+	case strings.Contains(ua, "qq/") || strings.Contains(ua, "mqqbrowser"):
+		return "qq"
+	case strings.Contains(ua, "aweme") || strings.Contains(ua, "douyin"):
+		return "douyin"
+	case strings.Contains(ua, "mobile") || strings.Contains(ua, "android") || strings.Contains(ua, "iphone") || strings.Contains(ua, "ipad"):
+		return "mobile"
+	default:
+		return "pc"
+	}
 }

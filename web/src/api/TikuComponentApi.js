@@ -71,6 +71,14 @@ export function getWechatLoginStatus(params) {
   })
 }
 
+export function loginWechatByCode(data) {
+  return request({
+    url: `/adapter-service/public/wechat-login/code`,
+    method: 'post',
+    data
+  })
+}
+
 export function bindWechatLogin(data) {
   return request({
     url: `/adapter-service/public/wechat-login/bind`,
@@ -213,6 +221,14 @@ export function createRechargeOrder(data) {
     url: `/adapter-service/recharge-orders`,
     method: 'post',
     data
+  })
+}
+
+export function getRechargeOrders(params) {
+  return request({
+    url: `/adapter-service/recharge-orders`,
+    method: 'get',
+    params
   })
 }
 
