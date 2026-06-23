@@ -112,7 +112,7 @@ func effectiveAISearchPrompt(prompt string) string {
 
 // getHTTPClient 获取HTTP客户端
 func (in *ChatGptClient) getHTTPClient() *resty.Client {
-	return resty.New().SetTimeout(30 * time.Second)
+	return resty.New().SetTimeout(180 * time.Second)
 }
 
 // SearchAnswer 使用 OpenAI 兼容流式接口聚合答案
