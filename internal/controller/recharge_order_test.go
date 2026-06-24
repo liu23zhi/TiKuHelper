@@ -226,6 +226,35 @@ func TestCreateRechargeOrderReturnsNotFoundForUnknownPaymentMethod(t *testing.T)
 	}
 }
 
+func TestCreateRechargeOrderReturnsBadRequestForPaymentCreateFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	original := createRechargeOrder
+	defer func() {
+		createRechargeOrder = original
+	}()
+
+	createRechargeOrder = func(user entity.User, input service.CreateRechargeOrderInput) (service.CreateRechargeOrderResult, error) {
+		return service.CreateRechargeOrderResult{}, service.ErrRechargePaymentCreateFailed
+	}
+
+	payload := []byte(`{"amount":20,"paymentMethodId":1}`)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/recharge-orders", bytes.NewReader(payload))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("user", &entity.User{ID: 2, Role: "user", Status: "enabled"})
+
+	CreateRechargeOrder(ctx)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte(service.ErrRechargePaymentCreateFailed.Error())) {
+		t.Fatalf("expected payment create failure message, got %s", recorder.Body.String())
+	}
+}
+
 func TestRechargePaymentNotifyReturnsSuccessText(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

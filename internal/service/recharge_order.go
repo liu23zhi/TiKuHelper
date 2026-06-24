@@ -33,6 +33,7 @@ var ErrRechargePaymentMethodNotFound = errors.New("支付方式不存在")
 var ErrRechargePaymentMethodDisabled = errors.New("支付方式未启用")
 var ErrRechargeNotifyInvalidSignature = errors.New("充值回调签名校验失败")
 var ErrRechargeNotifyAmountMismatch = errors.New("充值回调金额不匹配")
+var ErrRechargePaymentCreateFailed = errors.New("支付下单失败")
 
 const rechargeOrderStatusPending = "pending"
 const rechargeOrderStatusPaid = "paid"
@@ -85,6 +86,22 @@ type RechargePaymentResult struct {
 	ThirdPartyOrderNo string `json:"thirdPartyOrderNo,omitempty"`
 }
 
+type rechargePaymentCreateError struct {
+	message string
+}
+
+func (err rechargePaymentCreateError) Error() string {
+	message := strings.TrimSpace(err.message)
+	if message == "" || message == ErrRechargePaymentCreateFailed.Error() {
+		return ErrRechargePaymentCreateFailed.Error()
+	}
+	return ErrRechargePaymentCreateFailed.Error() + "：" + message
+}
+
+func (err rechargePaymentCreateError) Unwrap() error {
+	return ErrRechargePaymentCreateFailed
+}
+
 type RechargeOrderListItem struct {
 	ID                        int32      `json:"id"`
 	UserID                    int32      `json:"userId"`
@@ -120,7 +137,7 @@ var createRechargePaymentRequest = func(config RechargePaymentConfig, request Re
 	params.Set("out_trade_no", strings.TrimSpace(request.OutTradeNo))
 	params.Set("name", strings.TrimSpace(request.Name))
 	params.Set("money", strings.TrimSpace(request.Money))
-	params.Set("client_ip", normalizeRechargeClientIP(request.ClientIP))
+	params.Set("clientip", normalizeRechargeClientIP(request.ClientIP))
 	params.Set("timestamp", strconv.FormatInt(time.Now().Unix(), 10))
 
 	signature, err := signRechargeValues(params, config.MerchantPrivateKey)
@@ -135,24 +152,25 @@ var createRechargePaymentRequest = func(config RechargePaymentConfig, request Re
 		return RechargePaymentResult{}, ErrRechargePaymentConfigIncomplete
 	}
 
-	httpReq, err := http.NewRequest(http.MethodPost, gatewayURL+"/api/pay/create", bytes.NewBufferString(params.Encode()))
+	apiURL := gatewayURL + "/api/pay/create"
+	httpReq, err := http.NewRequest(http.MethodPost, apiURL, bytes.NewBufferString(params.Encode()))
 	if err != nil {
-		return RechargePaymentResult{}, err
+		return RechargePaymentResult{}, wrapRechargePaymentCreateError("支付网关地址无效")
 	}
 	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := rechargeHTTPClient.Do(httpReq)
 	if err != nil {
-		return RechargePaymentResult{}, err
+		return RechargePaymentResult{}, wrapRechargePaymentCreateError("支付下单接口请求失败：" + err.Error())
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return RechargePaymentResult{}, err
+		return RechargePaymentResult{}, wrapRechargePaymentCreateError("读取支付下单响应失败")
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return RechargePaymentResult{}, errors.New("支付下单接口响应异常")
+		return RechargePaymentResult{}, wrapRechargePaymentCreateError("支付下单接口响应异常（HTTP " + strconv.Itoa(resp.StatusCode) + "）")
 	}
 
 	var payload struct {
@@ -161,23 +179,47 @@ var createRechargePaymentRequest = func(config RechargePaymentConfig, request Re
 		TradeNo   string `json:"trade_no"`
 		PayType   string `json:"pay_type"`
 		PayInfo   string `json:"pay_info"`
+		PayURL    string `json:"payurl"`
+		URL       string `json:"url"`
+		QRCode    string `json:"qrcode"`
 		Timestamp string `json:"timestamp"`
 		Sign      string `json:"sign"`
 		SignType  string `json:"sign_type"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return RechargePaymentResult{}, err
+		finalURL := ""
+		if resp.Request != nil && resp.Request.URL != nil {
+			finalURL = strings.TrimSpace(resp.Request.URL.String())
+		}
+		if finalURL != "" && finalURL != apiURL {
+			return RechargePaymentResult{
+				PayURL:  finalURL,
+				PayType: "jump",
+				PayInfo: finalURL,
+			}, nil
+		}
+		return RechargePaymentResult{}, wrapRechargePaymentCreateError("支付下单接口响应格式异常")
 	}
 	if payload.Code != 0 {
 		message := strings.TrimSpace(payload.Msg)
 		if message == "" {
 			message = "支付下单失败"
 		}
-		return RechargePaymentResult{}, errors.New(message)
+		return RechargePaymentResult{}, wrapRechargePaymentCreateError(message)
 	}
 
 	payType := strings.ToLower(strings.TrimSpace(payload.PayType))
-	payInfo := strings.TrimSpace(payload.PayInfo)
+	payInfo := firstNonEmptyRechargePaymentValue(payload.PayInfo, payload.PayURL, payload.URL, payload.QRCode)
+	if payInfo == "" {
+		return RechargePaymentResult{}, wrapRechargePaymentCreateError("易支付API响应异常，缺少支付信息")
+	}
+	if payType == "" {
+		if strings.TrimSpace(payload.PayURL) != "" || strings.TrimSpace(payload.URL) != "" {
+			payType = "jump"
+		} else {
+			payType = "qrcode"
+		}
+	}
 	result := RechargePaymentResult{
 		PayType:           payType,
 		PayInfo:           payInfo,
@@ -190,6 +232,15 @@ var createRechargePaymentRequest = func(config RechargePaymentConfig, request Re
 		result.PayURL = payInfo
 	}
 	return result, nil
+}
+
+func firstNonEmptyRechargePaymentValue(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func ListRechargeOrdersWithDB(db *gorm.DB, operator entity.User, page int, pageSize int) (RechargeOrderListResult, error) {
@@ -596,4 +647,12 @@ func buildRechargeSignContent(values url.Values) string {
 		parts = append(parts, key+"="+values.Get(key))
 	}
 	return strings.Join(parts, "&")
+}
+
+func wrapRechargePaymentCreateError(message string) error {
+	normalized := strings.TrimSpace(message)
+	if normalized == "" {
+		normalized = ErrRechargePaymentCreateFailed.Error()
+	}
+	return rechargePaymentCreateError{message: normalized}
 }

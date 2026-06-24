@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -278,12 +279,15 @@ func TestCreateRechargePaymentRequestPostsUnifiedOrderAndReturnsQRCode(t *testin
 			"out_trade_no": "rcg_123",
 			"name":         "账户充值",
 			"money":        "12.34",
-			"client_ip":    "203.0.113.9",
+			"clientip":     "203.0.113.9",
 			"sign_type":    rechargeOrderSignType,
 		} {
 			if got := r.PostForm.Get(key); got != expected {
 				t.Fatalf("expected %s=%q, got %q in %+v", key, expected, got, r.PostForm)
 			}
+		}
+		if got := r.PostForm.Get("client_ip"); got != "" {
+			t.Fatalf("expected legacy client_ip param to be omitted, got %q in %+v", got, r.PostForm)
 		}
 		if strings.TrimSpace(r.PostForm.Get("timestamp")) == "" || strings.TrimSpace(r.PostForm.Get("sign")) == "" {
 			t.Fatalf("expected timestamp and sign, got %+v", r.PostForm)
@@ -328,6 +332,82 @@ func TestCreateRechargePaymentRequestPostsUnifiedOrderAndReturnsQRCode(t *testin
 	}
 	if captured.Get("sign") == "" {
 		t.Fatal("expected request to be signed")
+	}
+}
+
+func TestCreateRechargePaymentRequestReturnsPaymentCreateErrorWithGatewayMessage(t *testing.T) {
+	publicKey, privateKey, _ := generateRechargeRSAKeys(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 1,
+			"msg":  "clientip不能为空",
+		})
+	}))
+	defer server.Close()
+
+	_, err := createRechargePaymentRequest(RechargePaymentConfig{
+		GatewayURL:         server.URL,
+		PartnerID:          "10001",
+		PlatformPublicKey:  publicKey,
+		MerchantPrivateKey: privateKey,
+		NotifyURL:          "https://app.example.com/notify",
+		ReturnURL:          "https://app.example.com/return",
+		PaymentMethod:      "alipay",
+		PaymentProvider:    "epay",
+	}, RechargePayRequest{
+		OutTradeNo: "rcg_123",
+		Name:       "账户充值",
+		Money:      "12.34",
+		Type:       "alipay",
+		ClientIP:   "203.0.113.9",
+		Device:     "pc",
+	})
+	if !errors.Is(err, ErrRechargePaymentCreateFailed) {
+		t.Fatalf("expected ErrRechargePaymentCreateFailed, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "clientip不能为空") {
+		t.Fatalf("expected gateway message in error, got %q", err.Error())
+	}
+}
+
+func TestCreateRechargePaymentRequestAcceptsLegacyPayURLFields(t *testing.T) {
+	publicKey, privateKey, _ := generateRechargeRSAKeys(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code":     0,
+			"trade_no": "trade_20260622001",
+			"payurl":   "https://pay.example.com/cashier/123",
+		})
+	}))
+	defer server.Close()
+
+	result, err := createRechargePaymentRequest(RechargePaymentConfig{
+		GatewayURL:         server.URL,
+		PartnerID:          "10001",
+		PlatformPublicKey:  publicKey,
+		MerchantPrivateKey: privateKey,
+		NotifyURL:          "https://app.example.com/notify",
+		ReturnURL:          "https://app.example.com/return",
+		PaymentMethod:      "alipay",
+		PaymentProvider:    "epay",
+	}, RechargePayRequest{
+		OutTradeNo: "rcg_123",
+		Name:       "账户充值",
+		Money:      "12.34",
+		Type:       "alipay",
+		ClientIP:   "203.0.113.9",
+		Device:     "pc",
+	})
+	if err != nil {
+		t.Fatalf("create recharge payment request: %v", err)
+	}
+	if result.PayType != "jump" || result.PayURL != "https://pay.example.com/cashier/123" || result.PayInfo != result.PayURL {
+		t.Fatalf("unexpected legacy pay url result: %+v", result)
+	}
+	if result.ThirdPartyOrderNo != "trade_20260622001" {
+		t.Fatalf("expected third party order no, got %q", result.ThirdPartyOrderNo)
 	}
 }
 
