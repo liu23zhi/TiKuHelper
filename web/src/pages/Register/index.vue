@@ -45,12 +45,43 @@
               </template>
             </a-input>
           </a-form-item>
+          <a-form-item name="phone" label="手机号" :rules="[{ required: true, message: '请输入手机号' }]">
+            <a-input
+              v-model:value="registerForm.phone"
+              placeholder="请输入手机号，国际号码请带 + 区号"
+              size="large"
+              inputmode="tel"
+              :maxlength="20"
+              @input="registerForm.phone = normalizePhoneInput(registerForm.phone)"
+            >
+              <template #prefix>
+                <MobileOutlined style="color: rgba(0, 0, 0, 0.25)" />
+              </template>
+            </a-input>
+          </a-form-item>
+          <a-form-item name="smsCode" label="验证码" :rules="[{ required: true, message: '请输入验证码' }]">
+            <div class="sms-code-row">
+              <a-input
+                v-model:value="registerForm.smsCode"
+                placeholder="请输入验证码"
+                size="large"
+                inputmode="numeric"
+                :maxlength="6"
+                @input="registerForm.smsCode = normalizeSMSCodeInput(registerForm.smsCode)"
+              >
+                <template #prefix>
+                  <SafetyCertificateOutlined style="color: rgba(0, 0, 0, 0.25)" />
+                </template>
+              </a-input>
+              <a-button :loading="sendingCode" @click="sendRegisterCode">发送验证码</a-button>
+            </div>
+          </a-form-item>
           <a-form-item>
             <a-button
               type="primary"
               html-type="submit"
               :loading="submitting"
-              :disabled="!registerForm.username || !registerForm.password"
+              :disabled="!registerForm.username || !registerForm.password || !registerForm.phone || !registerForm.smsCode"
               class="submit-button"
               block
             >
@@ -79,40 +110,122 @@
 
 <script>
 import { defineComponent, reactive, ref } from 'vue';
-import { UserOutlined, LockOutlined, IdcardOutlined } from '@ant-design/icons-vue';
-import { registerUser } from '../../api/TikuComponentApi.js'
+import { UserOutlined, LockOutlined, IdcardOutlined, MobileOutlined, SafetyCertificateOutlined } from '@ant-design/icons-vue';
+import { registerUser, sendPublicSMSCode, createCaptchaChallenge, verifyCaptchaChallenge, verifyRemoteCaptcha, getPublicRegisterStatus } from '../../api/TikuComponentApi.js'
+import { buildPublicRegisterPayload, buildPublicSMSCodePayload } from '../../utils/phoneAuthHelpers.mjs'
+import {
+  ensurePhoneBeforeSMSCaptcha,
+  normalizePhoneInput,
+  normalizeSMSCodeInput,
+} from '../../utils/captchaHelpers.mjs'
+import { ensureAuthCaptchaToken } from '../../utils/captchaDialog.mjs'
 import { message } from 'ant-design-vue';
 import { useRouter } from 'vue-router';
+
+const CaptchaSceneSMSSendRegister = 'sms_send_register'
+const CaptchaSceneRegisterSubmit = 'register_submit'
 
 export default defineComponent({
   name: 'AdapterRegister',
   setup() {
     const router = useRouter()
     const submitting = ref(false)
+    const sendingCode = ref(false)
     const registerDisabledNotice = ref('')
+    const publicAuthSettings = ref({
+      registerEnabled: false,
+      smsLoginEnabled: false,
+      wechatLoginEnabled: false,
+      alternativeLoginEnabled: false,
+      captchaProvider: 'remote',
+      captchaApiBaseUrl: 'https://captcha.api.zelly.cn',
+      captchaType: 'RANDOM',
+    })
     const registerForm = reactive({
       username: '',
       password: '',
       nickname: '',
+      phone: '',
+      smsCode: '',
+      captchaToken: '',
     })
+
+    const ensureCaptchaToken = (scene, targetForm) => ensureAuthCaptchaToken({
+      scene,
+      targetForm,
+      publicSettings: publicAuthSettings.value,
+      createCaptchaChallenge,
+      verifyCaptchaChallenge,
+      verifyRemoteCaptcha,
+    })
+
+    const loadPublicAuthSettings = () => {
+      return getPublicRegisterStatus().then((res) => {
+        if (res?.status === 200) {
+          publicAuthSettings.value = {
+            registerEnabled: !!res?.data?.registerEnabled,
+            smsLoginEnabled: !!res?.data?.smsLoginEnabled,
+            wechatLoginEnabled: !!res?.data?.wechatLoginEnabled,
+            alternativeLoginEnabled: !!res?.data?.alternativeLoginEnabled,
+            captchaProvider: res?.data?.captchaProvider || 'remote',
+            captchaApiBaseUrl: res?.data?.captchaApiBaseUrl || 'https://captcha.api.zelly.cn',
+            captchaType: res?.data?.captchaType || 'RANDOM',
+          }
+        }
+        return res
+      })
+    }
 
     const resetRegisterForm = () => {
       registerForm.username = ''
       registerForm.password = ''
       registerForm.nickname = ''
+      registerForm.phone = ''
+      registerForm.smsCode = ''
     }
 
-    const handleRegister = () => {
+    const sendRegisterCode = async () => {
+      sendingCode.value = true
+      try {
+        registerForm.phone = ensurePhoneBeforeSMSCaptcha(registerForm.phone)
+        await ensureCaptchaToken(CaptchaSceneSMSSendRegister, registerForm)
+        const res = await sendPublicSMSCode(buildPublicSMSCodePayload(registerForm, 'register'))
+        if (res?.status === 200) {
+          message.success(res?.message || '发送成功，请注意查收')
+        } else {
+          message.error(res?.message || '发送失败')
+        }
+      } catch (error) {
+        message.error(error?.message || '发送失败')
+      } finally {
+        sendingCode.value = false
+      }
+    }
+
+    const handleRegister = async () => {
       registerDisabledNotice.value = ''
       submitting.value = true
-      registerUser({
-        username: registerForm.username,
-        password: registerForm.password,
-        nickname: registerForm.nickname,
-      }).then((res) => {
+      try {
+        await ensureCaptchaToken(CaptchaSceneRegisterSubmit, registerForm)
+      } catch (error) {
+        submitting.value = false
+        message.error(error?.message || '请先完成人机验证')
+        return
+      }
+
+      let payload
+      try {
+        payload = buildPublicRegisterPayload(registerForm)
+      } catch (error) {
+        submitting.value = false
+        message.error(error?.message || '注册失败')
+        return
+      }
+
+      registerUser(payload).then((res) => {
         if (res?.status === 200) {
           message.success('注册成功，请使用新账号登录')
-          const username = registerForm.username
+          const username = registerForm.username.trim()
           resetRegisterForm()
           router.push({ path: '/login', query: { username } })
         } else {
@@ -121,8 +234,8 @@ export default defineComponent({
           }
           message.error(res?.message || '注册失败')
         }
-      }).catch(() => {
-        message.error('注册失败')
+      }).catch((error) => {
+        message.error(error?.message || '注册失败')
       }).finally(() => {
         submitting.value = false
       })
@@ -136,11 +249,18 @@ export default defineComponent({
       console.log(errors)
     }
 
+    loadPublicAuthSettings()
+
     return {
       submitting,
+      sendingCode,
       registerDisabledNotice,
+      publicAuthSettings,
       registerForm,
+      normalizePhoneInput,
+      normalizeSMSCodeInput,
       handleRegister,
+      sendRegisterCode,
       goToLogin,
       handleFinishFailed,
     }
@@ -149,6 +269,8 @@ export default defineComponent({
     UserOutlined,
     LockOutlined,
     IdcardOutlined,
+    MobileOutlined,
+    SafetyCertificateOutlined,
   },
 })
 </script>
@@ -242,6 +364,15 @@ export default defineComponent({
 
 .form {
   margin-top: 8px;
+}
+
+.sms-code-row {
+  display: flex;
+  gap: 8px;
+}
+
+.sms-code-row :deep(.ant-input-affix-wrapper) {
+  flex: 1;
 }
 
 .submit-button,

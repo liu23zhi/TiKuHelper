@@ -14,31 +14,37 @@ import (
 )
 
 type AISearchConfigView struct {
-	Enabled          bool     `json:"enabled"`
-	BaseURL          string   `json:"baseUrl"`
-	APIKey           string   `json:"apiKey"`
-	Model            string   `json:"model"`
-	ManualModels     []string `json:"manualModels"`
-	Prompt           string   `json:"prompt"`
-	Remark           string   `json:"remark"`
-	Temperature      float64  `json:"temperature"`
-	TopP             float64  `json:"topP"`
-	InputTokenPrice  float64  `json:"inputTokenPrice"`
-	OutputTokenPrice float64  `json:"outputTokenPrice"`
+	Enabled                    bool     `json:"enabled"`
+	BaseURL                    string   `json:"baseUrl"`
+	APIKey                     string   `json:"apiKey"`
+	Model                      string   `json:"model"`
+	ManualModels               []string `json:"manualModels"`
+	Prompt                     string   `json:"prompt"`
+	Remark                     string   `json:"remark"`
+	Temperature                float64  `json:"temperature"`
+	TopP                       float64  `json:"topP"`
+	InputTokenPrice            float64  `json:"inputTokenPrice"`
+	OutputTokenPrice           float64  `json:"outputTokenPrice"`
+	ExchangeRate               float64  `json:"exchangeRate"`
+	UseGlobalBillingMultiplier bool     `json:"useGlobalBillingMultiplier"`
+	GlobalBillingMultiplier    float64  `json:"globalBillingMultiplier"`
 }
 
 type UpdateAISearchConfigInput struct {
-	Enabled          bool     `json:"enabled"`
-	BaseURL          string   `json:"baseUrl"`
-	APIKey           string   `json:"apiKey"`
-	Model            string   `json:"model"`
-	ManualModels     []string `json:"manualModels"`
-	Prompt           string   `json:"prompt"`
-	Remark           string   `json:"remark"`
-	Temperature      float64  `json:"temperature"`
-	TopP             float64  `json:"topP"`
-	InputTokenPrice  float64  `json:"inputTokenPrice"`
-	OutputTokenPrice float64  `json:"outputTokenPrice"`
+	Enabled                    bool     `json:"enabled"`
+	BaseURL                    string   `json:"baseUrl"`
+	APIKey                     string   `json:"apiKey"`
+	Model                      string   `json:"model"`
+	ManualModels               []string `json:"manualModels"`
+	Prompt                     string   `json:"prompt"`
+	Remark                     string   `json:"remark"`
+	Temperature                float64  `json:"temperature"`
+	TopP                       float64  `json:"topP"`
+	InputTokenPrice            float64  `json:"inputTokenPrice"`
+	OutputTokenPrice           float64  `json:"outputTokenPrice"`
+	ExchangeRate               float64  `json:"exchangeRate"`
+	UseGlobalBillingMultiplier *bool    `json:"useGlobalBillingMultiplier"`
+	GlobalBillingMultiplier    float64  `json:"globalBillingMultiplier"`
 }
 
 type AISearchRequestConfig struct {
@@ -88,11 +94,14 @@ func GetAISearchConfigWithDB(db *gorm.DB) (AISearchConfigView, error) {
 	}
 	if !exists {
 		return AISearchConfigView{
-			Prompt:           defaultAISearchPrompt(),
-			Temperature:      0,
-			TopP:             0,
-			InputTokenPrice:  0,
-			OutputTokenPrice: 0,
+			Prompt:                     defaultAISearchPrompt(),
+			Temperature:                0,
+			TopP:                       0,
+			InputTokenPrice:            0,
+			OutputTokenPrice:           0,
+			ExchangeRate:               1,
+			UseGlobalBillingMultiplier: true,
+			GlobalBillingMultiplier:    1,
 		}, nil
 	}
 	return buildAISearchConfigView(config)
@@ -124,10 +133,31 @@ func UpdateAISearchConfigWithDB(db *gorm.DB, input UpdateAISearchConfigInput) (A
 	config.TopP = 0
 	config.InputTokenPrice = input.InputTokenPrice
 	config.OutputTokenPrice = input.OutputTokenPrice
+	config.ExchangeRate = normalizeAISearchPositiveMultiplier(input.ExchangeRate)
+	useGlobalBillingMultiplier := true
+	if input.UseGlobalBillingMultiplier != nil {
+		useGlobalBillingMultiplier = *input.UseGlobalBillingMultiplier
+	}
+	config.UseGlobalBillingMultiplier = useGlobalBillingMultiplier
+	config.GlobalBillingMultiplier = normalizeAISearchPositiveMultiplier(input.GlobalBillingMultiplier)
 
 	if err := db.Save(&config).Error; err != nil {
 		return AISearchConfigView{}, err
 	}
+	if err := db.Model(&entity.AISearchConfig{}).
+		Where("provider = ?", aiSearchAccountProvider).
+		UpdateColumn("use_global_billing_multiplier", useGlobalBillingMultiplier).Error; err != nil {
+		return AISearchConfigView{}, err
+	}
+	if err := db.Model(&entity.AISearchConfig{}).
+		Where("provider = ?", aiSearchAccountProvider).
+		Updates(map[string]interface{}{
+			"exchange_rate":             config.ExchangeRate,
+			"global_billing_multiplier": config.GlobalBillingMultiplier,
+		}).Error; err != nil {
+		return AISearchConfigView{}, err
+	}
+	config.UseGlobalBillingMultiplier = useGlobalBillingMultiplier
 
 	return buildAISearchConfigView(config)
 }
@@ -224,18 +254,28 @@ func buildAISearchConfigView(config entity.AISearchConfig) (AISearchConfigView, 
 	}
 
 	return AISearchConfigView{
-		Enabled:          config.Enabled,
-		BaseURL:          config.BaseURL,
-		APIKey:           config.APIKey,
-		Model:            config.Model,
-		ManualModels:     manualModels,
-		Prompt:           effectiveAISearchPrompt(config.Prompt),
-		Remark:           config.Remark,
-		Temperature:      0,
-		TopP:             0,
-		InputTokenPrice:  config.InputTokenPrice,
-		OutputTokenPrice: config.OutputTokenPrice,
+		Enabled:                    config.Enabled,
+		BaseURL:                    config.BaseURL,
+		APIKey:                     config.APIKey,
+		Model:                      config.Model,
+		ManualModels:               manualModels,
+		Prompt:                     effectiveAISearchPrompt(config.Prompt),
+		Remark:                     config.Remark,
+		Temperature:                0,
+		TopP:                       0,
+		InputTokenPrice:            config.InputTokenPrice,
+		OutputTokenPrice:           config.OutputTokenPrice,
+		ExchangeRate:               normalizeAISearchPositiveMultiplier(config.ExchangeRate),
+		UseGlobalBillingMultiplier: config.UseGlobalBillingMultiplier,
+		GlobalBillingMultiplier:    normalizeAISearchPositiveMultiplier(config.GlobalBillingMultiplier),
 	}, nil
+}
+
+func normalizeAISearchPositiveMultiplier(value float64) float64 {
+	if value > 0 {
+		return value
+	}
+	return 1
 }
 
 func normalizeAISearchBaseURL(raw string) string {

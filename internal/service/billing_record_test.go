@@ -114,6 +114,49 @@ func TestListBillingRecordsWithDBScopesByRole(t *testing.T) {
 	}
 }
 
+func TestListBillingRecordsWithDBShapesRechargeRecordsAsLedgerRows(t *testing.T) {
+	db := newBillingRecordTestDB(t)
+	owner := seedBillingRecordUser(t, db, 2, "user")
+
+	searchRecord := seedBillingRecord(t, db, owner.ID, "req-search", 1.25)
+	rechargeRecord := entity.BillingRecord{
+		UserID:         owner.ID,
+		Type:           "recharge",
+		Provider:       "epay",
+		Amount:         10,
+		RequestID:      "rcg_user_20260621002829_1000_ABC12345",
+		RelatedOrderID: 28,
+		Remark:         "账户充值",
+	}
+	if err := db.Create(&rechargeRecord).Error; err != nil {
+		t.Fatalf("create recharge billing record: %v", err)
+	}
+
+	result, err := ListBillingRecordsWithDB(db, owner, 1, 10)
+	if err != nil {
+		t.Fatalf("list owner billing records: %v", err)
+	}
+	if result.Total != 2 || len(result.Data) != 2 {
+		t.Fatalf("expected owner list to include search and recharge rows, got %+v", result)
+	}
+	rechargeRow := result.Data[0]
+	if rechargeRow.ID != rechargeRecord.ID {
+		t.Fatalf("expected newest recharge row first, got %+v", result.Data)
+	}
+	if rechargeRow.Type != "recharge" || rechargeRow.TypeLabel != "充值入账" || rechargeRow.Direction != "income" {
+		t.Fatalf("unexpected recharge row classification: %+v", rechargeRow)
+	}
+	if rechargeRow.Subject != "账户充值" || rechargeRow.Detail != "账户充值" || rechargeRow.ReferenceNo != "rcg_user_20260621002829_1000_ABC12345" {
+		t.Fatalf("unexpected recharge row display fields: %+v", rechargeRow)
+	}
+	if rechargeRow.ProviderLabel != "epay" || rechargeRow.AnswerSourceLabel != "epay" {
+		t.Fatalf("expected recharge source/channel to remain epay, got %+v", rechargeRow)
+	}
+	if result.Data[1].ID != searchRecord.ID || result.Data[1].Direction != "expense" || result.Data[1].Subject == "" {
+		t.Fatalf("expected search row to remain visible as expense, got %+v", result.Data[1])
+	}
+}
+
 func TestListBillingRecordsWithDBAppliesPagination(t *testing.T) {
 	db := newBillingRecordTestDB(t)
 	owner := seedBillingRecordUser(t, db, 2, "user")

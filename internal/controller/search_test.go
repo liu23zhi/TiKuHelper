@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/glebarez/sqlite"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/go-resty/resty/v2"
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -27,6 +27,10 @@ import (
 	"gorm.io/gorm"
 )
 
+func testBoolPtr(value bool) *bool {
+	return &value
+}
+
 func newSearchControllerTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 
@@ -35,7 +39,7 @@ func newSearchControllerTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open test db: %v", err)
 	}
 
-	if err := db.AutoMigrate(&entity.SearchAccountConfig{}, &entity.AISearchConfig{}, &entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}, &entity.Log{}, &entity.Tiku{}); err != nil {
+	if err := db.AutoMigrate(&entity.SearchAccountConfig{}, &entity.AISearchConfig{}, &entity.AIModelArchitecture{}, &entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}, &entity.Log{}, &entity.Tiku{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 
@@ -94,6 +98,22 @@ func seedControllerDefaultSearchProviderConfig(t *testing.T, db *gorm.DB, provid
 		t.Fatalf("create search account config: %v", err)
 	}
 	return config
+}
+
+func seedControllerAIModelArchitecture(t *testing.T, db *gorm.DB, modelName string, multiplier float64) entity.AIModelArchitecture {
+	t.Helper()
+
+	architecture := entity.AIModelArchitecture{
+		Name:              modelName,
+		ModelName:         modelName,
+		BillingMultiplier: multiplier,
+		Enabled:           true,
+		Sort:              10,
+	}
+	if err := db.Create(&architecture).Error; err != nil {
+		t.Fatalf("create ai model architecture: %v", err)
+	}
+	return architecture
 }
 
 func seedControllerAccessToken(t *testing.T, db *gorm.DB, plainToken string) entity.AccessToken {
@@ -171,7 +191,7 @@ func withStubSearchDependencies(
 	local func(model.SearchRequest) ([][]string, error),
 	resolver func(string, string, url.Values) (resolvedSearchRequestContext, error),
 	remoteBuilder func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error),
-	aiSearcher func(resolvedSearchRequestContext, model.SearchRequest) ([][]string, bool, error),
+	aiSearcher func(resolvedSearchRequestContext, model.SearchRequest) ([][]string, searchpkg.AISearchUsage, error),
 	run func(),
 ) {
 	t.Helper()
@@ -349,6 +369,7 @@ func TestSearchReportsCompletedNormalDefaultBillingContext(t *testing.T) {
 			return resolvedSearchRequestContext{
 				SearchMode:                 searchModeNormal,
 				UsedDefaultSearchProviders: []string{"icodef"},
+				Tokens:                     map[string]string{"icodef": "default-icodef"},
 				UserID:                     12,
 				AccessTokenID:              34,
 				RequestID:                  "req-handler-normal",
@@ -414,8 +435,8 @@ func TestSearchReportsDowngradedAIDefaultBillingContextWithoutUsage(t *testing.T
 		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
 			return []func(model.SearchRequest) ([][]string, error){(&stubSearchClient{enable: true, answer: [][]string{{"答案A"}}}).SearchAnswer}
 		},
-		func(resolvedSearchRequestContext, model.SearchRequest) ([][]string, bool, error) {
-			return [][]string{{"答案A"}}, false, nil
+		func(resolvedSearchRequestContext, model.SearchRequest) ([][]string, searchpkg.AISearchUsage, error) {
+			return [][]string{{"答案A"}}, searchpkg.AISearchUsage{}, nil
 		},
 		func() {
 			recorder := httptest.NewRecorder()
@@ -473,8 +494,8 @@ func TestSearchReportsCompletedAIDefaultBillingContextWithUsage(t *testing.T) {
 		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
 			return nil
 		},
-		func(resolvedSearchRequestContext, model.SearchRequest) ([][]string, bool, error) {
-			return [][]string{{"AI答案"}}, true, nil
+		func(resolvedSearchRequestContext, model.SearchRequest) ([][]string, searchpkg.AISearchUsage, error) {
+			return [][]string{{"AI答案"}}, searchpkg.AISearchUsage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2}, nil
 		},
 		func() {
 			recorder := httptest.NewRecorder()
@@ -518,6 +539,7 @@ func TestSearchPersistsBillingRecordAndAccessTokenUsageForDefaultProvider(t *tes
 				SearchMode:                 searchModeNormal,
 				UsedDefaultSearch:          true,
 				UsedDefaultSearchProviders: []string{"icodef"},
+				Tokens:                     map[string]string{"icodef": "default-icodef"},
 				UserID:                     user.ID,
 				AccessTokenID:              token.ID,
 				RequestID:                  "req-search-billing-normal",
@@ -604,10 +626,11 @@ func TestSearchPersistsBillingRecordAndAccessTokenUsageForLocalSearch(t *testing
 		},
 		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
 			return resolvedSearchRequestContext{
-				SearchMode:    searchModeNormal,
-				UserID:        user.ID,
-				AccessTokenID: token.ID,
-				RequestID:     "req-search-billing-local",
+				SearchMode:             searchModeNormal,
+				EnabledSearchProviders: []string{"local"},
+				UserID:                 user.ID,
+				AccessTokenID:          token.ID,
+				RequestID:              "req-search-billing-local",
 				AccessTokenCtx: &service.AccessTokenAuthContext{
 					User:        user,
 					AccessToken: token,
@@ -659,6 +682,86 @@ func TestSearchPersistsBillingRecordAndAccessTokenUsageForLocalSearch(t *testing
 	}
 }
 
+func TestSearchPersistsAIBillingWithModelMultiplier(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 212, "search-ai-billing-user", "user")
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10.0).Error; err != nil {
+		t.Fatalf("seed user balance: %v", err)
+	}
+	if _, err := service.UpdateAISearchConfigWithDB(db, service.UpdateAISearchConfigInput{
+		UseGlobalBillingMultiplier: testBoolPtr(false),
+	}); err != nil {
+		t.Fatalf("seed ai billing config: %v", err)
+	}
+	token := seedControllerTokenForUser(t, db, user, "search-ai-billing-token", 0.25)
+	seedControllerAIModelArchitecture(t, db, "gpt-billing", 2.5)
+
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode:    searchModeAI,
+				UsedDefaultAI: true,
+				UserID:        user.ID,
+				AccessTokenID: token.ID,
+				RequestID:     "req-search-billing-ai",
+				AIConfig: service.AISearchRequestConfig{
+					BaseURL: "https://default.example.com/v1",
+					APIKey:  "default-key",
+					Model:   "gpt-billing",
+				},
+				AccessTokenCtx: &service.AccessTokenAuthContext{
+					User:        user,
+					AccessToken: token,
+				},
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return nil
+		},
+		func(resolvedSearchRequestContext, model.SearchRequest) ([][]string, searchpkg.AISearchUsage, error) {
+			return [][]string{{"AI答案"}}, searchpkg.AISearchUsage{InputTokens: 1000, OutputTokens: 500, TotalTokens: 1500}, nil
+		},
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=ai&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request.Header.Set("Content-Type", "application/json")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+		})
+
+	var record entity.BillingRecord
+	if err := db.Where("user_id = ? AND access_token_id = ?", user.ID, token.ID).First(&record).Error; err != nil {
+		t.Fatalf("load ai billing record: %v", err)
+	}
+	if record.Provider != searchModeAI || record.Amount != 3.75 {
+		t.Fatalf("expected ai billing amount 3.75, got %+v", record)
+	}
+	if record.BalanceBefore != 10 || record.BalanceAfter != 6.25 {
+		t.Fatalf("expected ai billing balance 10 -> 6.25, got %+v", record)
+	}
+	for _, part := range []string{"provider=ai", "model=gpt-billing", "billingMultiplier=2.5000", "exchangeRate=1.0000", "globalBillingMultiplier=1.0000", "modelBillingMultiplier=2.5000", "inputTokens=1000", "outputTokens=500", "baseAmount=1.50"} {
+		if !strings.Contains(record.UnitPriceSnapshot, part) {
+			t.Fatalf("expected ai billing snapshot to contain %q, got %q", part, record.UnitPriceSnapshot)
+		}
+	}
+
+	var stored entity.AccessToken
+	if err := db.Where("id = ?", token.ID).First(&stored).Error; err != nil {
+		t.Fatalf("load access token: %v", err)
+	}
+	if stored.TotalAmountUsed != 4.0 {
+		t.Fatalf("expected total amount used 4.0, got %v", stored.TotalAmountUsed)
+	}
+}
+
 func TestSearchPersistsCachedSourceNameInLocalBillingSnapshot(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newSearchControllerTestDB(t)
@@ -672,10 +775,11 @@ func TestSearchPersistsCachedSourceNameInLocalBillingSnapshot(t *testing.T) {
 		searchpkg.GetDBSearch().SearchAnswer,
 		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
 			return resolvedSearchRequestContext{
-				SearchMode:    searchModeNormal,
-				UserID:        user.ID,
-				AccessTokenID: token.ID,
-				RequestID:     "req-search-local-source",
+				SearchMode:             searchModeNormal,
+				EnabledSearchProviders: []string{"local"},
+				UserID:                 user.ID,
+				AccessTokenID:          token.ID,
+				RequestID:              "req-search-local-source",
 				AccessTokenCtx: &service.AccessTokenAuthContext{
 					User:        user,
 					AccessToken: token,
@@ -726,6 +830,8 @@ func TestSearchPersistsQuestionTextForPersonalUsageRecords(t *testing.T) {
 				SearchMode:                 searchModeNormal,
 				UsedDefaultSearch:          true,
 				UsedDefaultSearchProviders: []string{"icodef"},
+				EnabledSearchProviders:     []string{"icodef"},
+				Tokens:                     map[string]string{"icodef": "default-icodef"},
 				UserID:                     user.ID,
 				AccessTokenID:              token.ID,
 				RequestID:                  "req-search-question-text",
@@ -744,7 +850,7 @@ func TestSearchPersistsQuestionTextForPersonalUsageRecords(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?noRecord=1", bytes.NewReader([]byte(`{"question":"这是 带空格 的题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"这是 带空格 的题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("Authorization", "Basic search-question-text-token")
 			ctx.Request = request
@@ -780,10 +886,11 @@ func TestSearchWritesLocalQuestionIDIntoAuditLog(t *testing.T) {
 		searchpkg.GetDBSearch().SearchAnswer,
 		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
 			return resolvedSearchRequestContext{
-				SearchMode:    searchModeNormal,
-				UserID:        user.ID,
-				AccessTokenID: token.ID,
-				RequestID:     "req-search-local-log",
+				SearchMode:             searchModeNormal,
+				EnabledSearchProviders: []string{"local"},
+				UserID:                 user.ID,
+				AccessTokenID:          token.ID,
+				RequestID:              "req-search-local-log",
 				AccessTokenCtx: &service.AccessTokenAuthContext{
 					User:        user,
 					AccessToken: token,
@@ -838,6 +945,7 @@ func TestSearchPersistsBillingForAdminAccessToken(t *testing.T) {
 				SearchMode:                 searchModeNormal,
 				UsedDefaultSearch:          true,
 				UsedDefaultSearchProviders: []string{"icodef"},
+				Tokens:                     map[string]string{"icodef": "default-icodef"},
 				UserID:                     admin.ID,
 				AccessTokenID:              token.ID,
 				RequestID:                  "req-search-billing-admin",
@@ -1055,6 +1163,7 @@ func TestSearchAllowsAnonymousRemoteSearchWithoutBillingAndWritesFullAuditLog(t 
 			return resolvedSearchRequestContext{
 				SearchMode: searchModeNormal,
 				RequestID:  "req-anonymous-remote",
+				Tokens:     map[string]string{"wanneng": "plain-third-party-token"},
 			}, nil
 		},
 		func(resolved resolvedSearchRequestContext, useQuery string) []func(model.SearchRequest) ([][]string, error) {
@@ -1574,9 +1683,9 @@ func TestSearchUsesAIFlowDuringDefaultSearchWhenConfigUsable(t *testing.T) {
 		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
 			return []func(model.SearchRequest) ([][]string, error){(&stubSearchClient{enable: true, answer: [][]string{{"普通答案"}}}).SearchAnswer}
 		},
-		func(resolved resolvedSearchRequestContext, req model.SearchRequest) ([][]string, bool, error) {
+		func(resolved resolvedSearchRequestContext, req model.SearchRequest) ([][]string, searchpkg.AISearchUsage, error) {
 			aiCalls++
-			return [][]string{{"AI答案"}}, true, nil
+			return [][]string{{"AI答案"}}, searchpkg.AISearchUsage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2}, nil
 		},
 		func() {
 			recorder := httptest.NewRecorder()
@@ -1631,14 +1740,14 @@ func TestSearchPreservesChaoxingCompletionStyleTextAnswerFromAI(t *testing.T) {
 		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
 			return nil
 		},
-		func(resolved resolvedSearchRequestContext, req model.SearchRequest) ([][]string, bool, error) {
+		func(resolved resolvedSearchRequestContext, req model.SearchRequest) ([][]string, searchpkg.AISearchUsage, error) {
 			if req.Type != 2 {
 				t.Fatalf("expected completion/line style request type 2, got %d", req.Type)
 			}
 			if len(req.Options) != 0 {
 				t.Fatalf("expected no objective options for completion style request, got %v", req.Options)
 			}
-			return [][]string{{"左侧术语对应右侧案例"}}, true, nil
+			return [][]string{{"左侧术语对应右侧案例"}}, searchpkg.AISearchUsage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2}, nil
 		},
 		func() {
 			recorder := httptest.NewRecorder()
@@ -1688,11 +1797,11 @@ func TestSearchPreservesChaoxingReaderStyleTextAnswerFromAIWithOptions(t *testin
 		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
 			return nil
 		},
-		func(resolved resolvedSearchRequestContext, req model.SearchRequest) ([][]string, bool, error) {
+		func(resolved resolvedSearchRequestContext, req model.SearchRequest) ([][]string, searchpkg.AISearchUsage, error) {
 			if req.Type != 4 {
 				t.Fatalf("expected reader/unknown style request type 4, got %d", req.Type)
 			}
-			return [][]string{{"先分析材料，再给出结论"}}, true, nil
+			return [][]string{{"先分析材料，再给出结论"}}, searchpkg.AISearchUsage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2}, nil
 		},
 		func() {
 			recorder := httptest.NewRecorder()
@@ -1753,8 +1862,8 @@ func TestSearchLogsTypeAwareAIRequestAndResponseSummaries(t *testing.T) {
 		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
 			return nil
 		},
-		func(resolved resolvedSearchRequestContext, req model.SearchRequest) ([][]string, bool, error) {
-			return [][]string{{"左侧术语对应右侧案例"}}, true, nil
+		func(resolved resolvedSearchRequestContext, req model.SearchRequest) ([][]string, searchpkg.AISearchUsage, error) {
+			return [][]string{{"左侧术语对应右侧案例"}}, searchpkg.AISearchUsage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2}, nil
 		},
 		func() {
 			recorder := httptest.NewRecorder()
@@ -1793,37 +1902,37 @@ func TestSearchSupportsChaoxingCompressedQuestionTypesEndToEnd(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
-		name                  string
-		requestBody           string
-		expectedType          int
-		expectedInboundQuestion string
+		name                     string
+		requestBody              string
+		expectedType             int
+		expectedInboundQuestion  string
 		expectedResponseQuestion string
-		expectedInboundOptions []string
-		expectedResponseOptions []string
-		expectedAnswerText    string
-		expectedBestAnswer    []string
+		expectedInboundOptions   []string
+		expectedResponseOptions  []string
+		expectedAnswerText       string
+		expectedBestAnswer       []string
 	}{
 		{
-			name:                   "completion maps into type 2 text workflow",
-			requestBody:            `{"qid":"work-1","plat":-1,"question":"  请完成连线。 ","options":["A. 左侧术语","B. 右侧案例"],"type":2,"courseName":"创新方法学","extra":"来自 chaoxing_plus OCR"}`,
-			expectedType:           2,
-			expectedInboundQuestion: "  请完成连线。 ",
+			name:                     "completion maps into type 2 text workflow",
+			requestBody:              `{"qid":"work-1","plat":-1,"question":"  请完成连线。 ","options":["A. 左侧术语","B. 右侧案例"],"type":2,"courseName":"创新方法学","extra":"来自 chaoxing_plus OCR"}`,
+			expectedType:             2,
+			expectedInboundQuestion:  "  请完成连线。 ",
 			expectedResponseQuestion: "请完成连线.",
-			expectedInboundOptions: []string{"A. 左侧术语", "B. 右侧案例"},
-			expectedResponseOptions: []string{"左侧术语", "右侧案例"},
-			expectedAnswerText:     "左侧术语对应右侧案例",
-			expectedBestAnswer:     []string{"左侧术语对应右侧案例"},
+			expectedInboundOptions:   []string{"A. 左侧术语", "B. 右侧案例"},
+			expectedResponseOptions:  []string{"左侧术语", "右侧案例"},
+			expectedAnswerText:       "左侧术语对应右侧案例",
+			expectedBestAnswer:       []string{"左侧术语对应右侧案例"},
 		},
 		{
-			name:                   "reader and unknown map into type 4 text workflow",
-			requestBody:            `{"qid":"work-2","plat":-1,"question":"请阅读材料后作答","options":["材料一","材料二"],"type":4,"courseName":"大学语文","extra":"调用侧原始类型 reader"}`,
-			expectedType:           4,
-			expectedInboundQuestion: "请阅读材料后作答",
+			name:                     "reader and unknown map into type 4 text workflow",
+			requestBody:              `{"qid":"work-2","plat":-1,"question":"请阅读材料后作答","options":["材料一","材料二"],"type":4,"courseName":"大学语文","extra":"调用侧原始类型 reader"}`,
+			expectedType:             4,
+			expectedInboundQuestion:  "请阅读材料后作答",
 			expectedResponseQuestion: "请阅读材料后作答",
-			expectedInboundOptions: []string{"材料一", "材料二"},
-			expectedResponseOptions: []string{"材料一", "材料二"},
-			expectedAnswerText:     "先分析材料，再给出结论",
-			expectedBestAnswer:     []string{"先分析材料，再给出结论"},
+			expectedInboundOptions:   []string{"材料一", "材料二"},
+			expectedResponseOptions:  []string{"材料一", "材料二"},
+			expectedAnswerText:       "先分析材料，再给出结论",
+			expectedBestAnswer:       []string{"先分析材料，再给出结论"},
 		},
 	}
 
@@ -1845,7 +1954,7 @@ func TestSearchSupportsChaoxingCompressedQuestionTypesEndToEnd(t *testing.T) {
 				func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
 					return nil
 				},
-				func(resolved resolvedSearchRequestContext, req model.SearchRequest) ([][]string, bool, error) {
+				func(resolved resolvedSearchRequestContext, req model.SearchRequest) ([][]string, searchpkg.AISearchUsage, error) {
 					if req.Type != tt.expectedType {
 						t.Fatalf("expected type %d, got %d", tt.expectedType, req.Type)
 					}
@@ -1866,7 +1975,7 @@ func TestSearchSupportsChaoxingCompressedQuestionTypesEndToEnd(t *testing.T) {
 							t.Fatalf("expected inbound option %d to be %q, got %q", i, tt.expectedInboundOptions[i], req.Options[i])
 						}
 					}
-					return [][]string{tt.expectedBestAnswer}, true, nil
+					return [][]string{tt.expectedBestAnswer}, searchpkg.AISearchUsage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2}, nil
 				},
 				func() {
 					recorder := httptest.NewRecorder()
@@ -2329,4 +2438,3 @@ func TestReportCompletedSearchBillingPublishesDowngradedAIBillingContext(t *test
 		t.Fatalf("expected reported ai billing context identity to be preserved, got %+v", reported)
 	}
 }
-

@@ -38,6 +38,94 @@ func TestSetAPIRouterRegistersQuestionImportRoute(t *testing.T) {
 	t.Fatal("expected question import route to be registered")
 }
 
+func TestSetAPIRouterRegistersWechatLoginRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	SetAPIRouter(router)
+
+	expected := map[string]bool{
+		"POST /adapter-service/public/wechat-login/qrcode": false,
+		"GET /adapter-service/public/wechat-login/status":  false,
+		"POST /adapter-service/public/wechat-login/code":   false,
+		"POST /adapter-service/public/wechat-login/bind":   false,
+		"GET /adapter-service/public/wechat/user":          false,
+	}
+	for _, route := range router.Routes() {
+		key := route.Method + " " + route.Path
+		if _, ok := expected[key]; ok {
+			expected[key] = true
+		}
+	}
+	for key, found := range expected {
+		if !found {
+			t.Fatalf("expected wechat login route %s to be registered", key)
+		}
+	}
+}
+
+func TestSetAPIRouterRegistersRemoteCaptchaProxyRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	SetAPIRouter(router)
+
+	expected := map[string]bool{
+		"POST /adapter-service/public/captcha/remote-gen":   false,
+		"GET /adapter-service/public/captcha/remote-gen":    false,
+		"POST /adapter-service/public/captcha/remote-check": false,
+	}
+	for _, route := range router.Routes() {
+		key := route.Method + " " + route.Path
+		if _, ok := expected[key]; ok {
+			expected[key] = true
+		}
+	}
+	for key, found := range expected {
+		if !found {
+			t.Fatalf("expected remote captcha proxy route %s to be registered", key)
+		}
+	}
+}
+
+func TestSetAPIRouterRegistersRechargeOrderListRoute(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	SetAPIRouter(router)
+
+	for _, route := range router.Routes() {
+		if route.Method == "GET" && route.Path == "/adapter-service/recharge-orders" {
+			return
+		}
+	}
+
+	t.Fatal("expected recharge order list route to be registered")
+}
+
+func TestSetAPIRouterRegistersPaymentNotifyForPostAndGet(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	SetAPIRouter(router)
+
+	expected := map[string]bool{
+		"POST /adapter-service/payment/notify": false,
+		"GET /adapter-service/payment/notify":  false,
+	}
+	for _, route := range router.Routes() {
+		key := route.Method + " " + route.Path
+		if _, ok := expected[key]; ok {
+			expected[key] = true
+		}
+	}
+	for key, found := range expected {
+		if !found {
+			t.Fatalf("expected payment notify route %s to be registered", key)
+		}
+	}
+}
+
 func TestSetAPIRouterDoesNotRegisterAIModelMappingRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

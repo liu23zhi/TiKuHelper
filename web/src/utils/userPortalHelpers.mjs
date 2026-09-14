@@ -12,6 +12,7 @@ export function buildPortalMenuKeys(user) {
         'user-usage',
         'userlist',
         'loglist',
+        'recharge-orders',
         'billing-records',
         'search-account-config',
         'ai-search-config',
@@ -21,6 +22,7 @@ export function buildPortalMenuKeys(user) {
     : [
         'user-usage',
         'access-tokens',
+        'recharge-orders',
         'billing-records',
       ]
 }
@@ -50,6 +52,23 @@ export function buildResetPasswordPayload(passwordValue) {
   return { password }
 }
 
+export function buildAdminCreateUserPayload(formValue) {
+  const username = String(formValue?.username || '').trim()
+  const password = String(formValue?.password || '').trim()
+  if (!username || !password) {
+    throw new Error('请完善新增用户必填项')
+  }
+
+  return {
+    username,
+    password,
+    nickname: String(formValue?.nickname || '').trim(),
+    role: String(formValue?.role || 'user').trim() || 'user',
+    status: String(formValue?.status || 'enabled').trim() || 'enabled',
+    registerSource: String(formValue?.registerSource || '').trim() || 'admin',
+  }
+}
+
 export function buildPersonalUsageBillingRecordParams(page, pageSize) {
   const normalizedPage = Number(page || 1)
   const normalizedPageSize = Number(pageSize || 10)
@@ -61,6 +80,11 @@ export function buildPersonalUsageBillingRecordParams(page, pageSize) {
 }
 
 export function buildPersonalUsageQuestionText(record) {
+  const subject = String(record?.subject || '').trim()
+  if (subject) {
+    return subject
+  }
+
   const questionText = String(record?.questionText || '').trim()
   if (questionText) {
     return questionText
@@ -80,6 +104,11 @@ export function buildPersonalUsageQuestionText(record) {
 }
 
 export function buildPersonalUsageAnswerSourceText(record) {
+  const detail = String(record?.detail || '').trim()
+  if (detail) {
+    return detail
+  }
+
   const answerSourceLabel = String(record?.answerSourceLabel || '').trim()
   if (answerSourceLabel) {
     return answerSourceLabel
@@ -98,12 +127,59 @@ export function buildPersonalUsageAnswerSourceText(record) {
   return '-'
 }
 
+export function buildBillingRecordTypeText(record) {
+  const typeLabel = String(record?.typeLabel || '').trim()
+  if (typeLabel) {
+    return typeLabel
+  }
+  const type = String(record?.type || '').trim()
+  if (type === 'recharge') {
+    return '充值入账'
+  }
+  return type || '题目消费'
+}
+
+export function buildBillingRecordSubjectText(record) {
+  return buildPersonalUsageQuestionText(record)
+}
+
+export function buildBillingRecordSourceText(record) {
+  return buildPersonalUsageAnswerSourceText(record)
+}
+
+export function buildBillingRecordReferenceText(record) {
+  const referenceNo = String(record?.referenceNo || '').trim()
+  if (referenceNo) {
+    return referenceNo
+  }
+  const requestId = String(record?.requestId || '').trim()
+  if (requestId) {
+    return requestId
+  }
+  return '-'
+}
+
+export function buildBillingRecordAmountText(record) {
+  const amount = Number(record?.amount || 0)
+  const formatted = Number.isFinite(amount) ? amount.toFixed(2) : '0.00'
+  const direction = String(record?.direction || '').trim()
+  if (direction === 'income') {
+    return `+¥ ${formatted}`
+  }
+  if (direction === 'expense') {
+    return `-¥ ${formatted}`
+  }
+  return `¥ ${formatted}`
+}
+
 export function buildUserBalanceUpdatePayload(formValue) {
   const payload = {
     id: formValue?.id,
     nickname: String(formValue?.nickname || '').trim(),
     role: String(formValue?.role || 'user').trim(),
     status: String(formValue?.status || 'enabled').trim(),
+    phone: String(formValue?.phone || '').trim(),
+    forceReassignPhone: !!formValue?.forceReassignPhone,
   }
 
   const rawBalance = String(formValue?.balance ?? '').trim()

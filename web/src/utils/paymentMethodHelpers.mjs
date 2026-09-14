@@ -23,7 +23,7 @@ export function buildRechargePaymentMethodOptions(rows = []) {
     .map((item) => ({
       label: String(item?.name || '').trim(),
       value: Number(item?.id || 0),
-      iconSVG: String(item?.iconSVG || '').trim(),
+      iconSVG: String(item?.iconSvg ?? item?.iconSVG ?? '').trim(),
       remark: String(item?.remark || '').trim(),
       sort: Number(item?.sort || 0),
     }))
@@ -34,8 +34,8 @@ export function normalizePaymentMethodForm(form = {}) {
   return {
     id: form.id === undefined || form.id === null || form.id === '' ? undefined : Number(form.id),
     name: String(form.name || '').trim(),
-    iconSVG: String(form.iconSVG || '').trim(),
-    ePayType: String(form.ePayType || '').trim(),
+    iconSvg: String(form.iconSvg ?? form.iconSVG ?? '').trim(),
+    epayType: String(form.epayType ?? form.ePayType ?? '').trim(),
     enabled: !!form.enabled,
     sort: Number(form.sort || 0),
     remark: String(form.remark || '').trim(),

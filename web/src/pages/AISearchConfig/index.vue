@@ -45,7 +45,7 @@
             获取远程模型列表
           </a-button>
         </div>
-        <div class="hint">此处用于批量补充模型架构；当前页面真正的模型列表以“模型架构表”的 modelName 为准。</div>
+        <div class="hint">保存时会以此处内容作为模型列表，并自动为缺失模型补充默认架构。</div>
         <a-space wrap class="model-tags">
           <a-tag
             v-for="item in modelOptions"
@@ -58,6 +58,21 @@
           </a-tag>
           <span v-if="modelOptions.length === 0" class="hint">暂无模型列表，请先手动填写或获取远程模型。</span>
         </a-space>
+      </a-form-item>
+
+      <a-form-item label="汇率">
+        <a-input-number v-model:value="formState.exchangeRate" :min="0" :precision="6" :step="0.01" style="width: 100%" />
+        <div class="hint">模型价格按美元口径返回，实际计费会先乘以这里的汇率；默认 1。</div>
+      </a-form-item>
+
+      <a-form-item label="启用全局倍率">
+        <a-switch v-model:checked="formState.useGlobalBillingMultiplier" />
+        <div class="hint">开启后所有模型都使用同一个全局倍率，不再读取模型架构表里的单模型倍率。</div>
+      </a-form-item>
+
+      <a-form-item label="全局倍率">
+        <a-input-number v-model:value="formState.globalBillingMultiplier" :min="0" :precision="4" :step="0.1" style="width: 100%" />
+        <div class="hint">最终 AI 扣费倍率 = 汇率 × 全局倍率；关闭全局倍率时为 汇率 × 单模型倍率。</div>
       </a-form-item>
 
       <a-form-item label="Prompt 设置">
@@ -85,13 +100,13 @@
       </a-form-item>
     </a-form>
 
-    <div class="pricing-grid">
+    <div class="pricing-grid" v-if="!formState.useGlobalBillingMultiplier">
       <a-card :bordered="false" class="sub-card">
         <template #title>
           <div class="sub-card-title-wrap">
             <div>
-              <div class="sub-card-title">模型架构表</div>
-              <div class="sub-card-subtitle">每条记录直接绑定模型名，并维护输入 / 输出单价、启停状态与排序。</div>
+              <div class="sub-card-title">单模型倍率配置</div>
+              <div class="sub-card-subtitle">关闭全局倍率后才会使用这里的模型倍率、启停状态与排序。</div>
             </div>
           </div>
         </template>
@@ -102,30 +117,31 @@
           </a-space>
         </template>
 
-        <a-table
-          bordered
-          row-key="id"
-          :data-source="architectureRows"
-          :columns="architectureColumns"
-          :loading="architectureLoading"
-          :pagination="false"
-          :scroll="{ x: 'max-content' }"
-        >
-          <template #enabled="{ record }">
-            <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag>
-          </template>
-          <template #inputTokenPrice="{ record }">{{ formatPrice(record.inputTokenPrice) }}</template>
-          <template #outputTokenPrice="{ record }">{{ formatPrice(record.outputTokenPrice) }}</template>
-          <template #remark="{ record }">{{ record.remark || '-' }}</template>
-          <template #action="{ record }">
-            <a-space size="small">
-              <a-button type="link" style="padding: 0" @click="openArchitectureModal(record)">编辑</a-button>
-              <a-popconfirm title="确定删除该模型架构吗？" ok-text="确定" cancel-text="取消" @confirm="handleDeleteArchitecture(record)">
-                <a-button type="link" danger style="padding: 0">删除</a-button>
-              </a-popconfirm>
-            </a-space>
-          </template>
-        </a-table>
+        <div class="architecture-table-wrap">
+          <a-table
+            bordered
+            row-key="id"
+            :data-source="architectureRows"
+            :columns="architectureColumns"
+            :loading="architectureLoading"
+            :pagination="false"
+            :scroll="{ x: 980 }"
+          >
+            <template #enabled="{ record }">
+              <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag>
+            </template>
+            <template #billingMultiplier="{ record }">{{ formatMultiplier(record.billingMultiplier, record) }}</template>
+            <template #remark="{ record }">{{ record.remark || '-' }}</template>
+            <template #action="{ record }">
+              <a-space size="small">
+                <a-button type="link" style="padding: 0" @click="openArchitectureModal(record)">编辑</a-button>
+                <a-popconfirm title="确定删除该模型架构吗？" ok-text="确定" cancel-text="取消" @confirm="handleDeleteArchitecture(record)">
+                  <a-button type="link" danger style="padding: 0">删除</a-button>
+                </a-popconfirm>
+              </a-space>
+            </template>
+          </a-table>
+        </div>
       </a-card>
     </div>
 
@@ -206,11 +222,9 @@
         <a-form-item label="模型名称">
           <a-input v-model:value="architectureForm.modelName" placeholder="例如 gpt-4o" />
         </a-form-item>
-        <a-form-item label="输入单价">
-          <a-input-number v-model:value="architectureForm.inputTokenPrice" :min="0" :precision="8" :step="0.0001" style="width: 100%" />
-        </a-form-item>
-        <a-form-item label="输出单价">
-          <a-input-number v-model:value="architectureForm.outputTokenPrice" :min="0" :precision="8" :step="0.0001" style="width: 100%" />
+        <a-form-item label="计费倍率">
+          <a-input-number v-model:value="architectureForm.billingMultiplier" :min="0" :precision="4" :step="0.1" style="width: 100%" :disabled="formState.useGlobalBillingMultiplier" />
+          <div class="hint">关闭全局倍率后生效；实际扣费 = AI token 基础用量 × 汇率 × 当前模型倍率。</div>
         </a-form-item>
         <a-form-item label="启用">
           <a-switch v-model:checked="architectureForm.enabled" />
@@ -240,10 +254,11 @@ import {
   deleteAIModelArchitecture,
 } from '@/api/TikuComponentApi';
 import {
-  buildArchitectureModelOptions,
-  buildArchitectureModelText,
+  buildModelNameOptions,
+  buildModelNameText,
   buildAISearchConfigSavePayload,
   buildMissingArchitecturePayloads,
+  filterRemoteModelNames,
 } from '@/utils/aiModelArchitectureHelpers.mjs';
 import {
   buildAISearchTestForm,
@@ -297,8 +312,9 @@ export default defineComponent({
       remark: '',
       temperature: 0,
       topP: 0,
-      inputTokenPrice: 0,
-      outputTokenPrice: 0,
+      exchangeRate: 1,
+      useGlobalBillingMultiplier: true,
+      globalBillingMultiplier: 1,
     })
 
     const architectureRows = ref([])
@@ -307,32 +323,26 @@ export default defineComponent({
       id: null,
       name: '',
       modelName: '',
-      inputTokenPrice: 0,
-      outputTokenPrice: 0,
+      billingMultiplier: 1,
       enabled: true,
       sort: 0,
       remark: '',
     })
 
     const modelOptions = computed(() => {
-      return buildArchitectureModelOptions(architectureRows.value)
+      return buildModelNameOptions(formState.manualModelsText)
     })
 
     const architectureColumns = [
       { title: 'ID', dataIndex: 'id', key: 'id', width: 80 },
       { title: '架构名称', dataIndex: 'name', key: 'name', width: 180 },
       { title: '模型名称', dataIndex: 'modelName', key: 'modelName', width: 180 },
-      { title: '输入单价', dataIndex: 'inputTokenPrice', key: 'inputTokenPrice', width: 140, slots: { customRender: 'inputTokenPrice' } },
-      { title: '输出单价', dataIndex: 'outputTokenPrice', key: 'outputTokenPrice', width: 140, slots: { customRender: 'outputTokenPrice' } },
+      { title: '计费倍率', dataIndex: 'billingMultiplier', key: 'billingMultiplier', width: 140, slots: { customRender: 'billingMultiplier' } },
       { title: '状态', dataIndex: 'enabled', key: 'enabled', width: 100, slots: { customRender: 'enabled' } },
       { title: '排序', dataIndex: 'sort', key: 'sort', width: 100 },
       { title: '备注', dataIndex: 'remark', key: 'remark', width: 200, slots: { customRender: 'remark' } },
       { title: '操作', dataIndex: 'action', key: 'action', fixed: 'right', width: 120, slots: { customRender: 'action' } },
     ]
-
-    const syncModelTextFromArchitectures = () => {
-      formState.manualModelsText = buildArchitectureModelText(architectureRows.value)
-    }
 
     const loadConfig = () => {
       tabLoading.value = true
@@ -343,12 +353,14 @@ export default defineComponent({
           formState.baseUrl = data.baseUrl || ''
           formState.apiKey = data.apiKey || ''
           formState.model = data.model || ''
+          formState.manualModelsText = buildModelNameText(data.manualModels || [])
           formState.prompt = data.prompt || ''
           formState.remark = data.remark || ''
           formState.temperature = data.temperature ?? 0
           formState.topP = data.topP ?? 0
-          formState.inputTokenPrice = Number(data.inputTokenPrice || 0)
-          formState.outputTokenPrice = Number(data.outputTokenPrice || 0)
+          formState.exchangeRate = Number(data.exchangeRate || 1)
+          formState.useGlobalBillingMultiplier = data.useGlobalBillingMultiplier !== false
+          formState.globalBillingMultiplier = Number(data.globalBillingMultiplier || 1)
         } else {
           message.error(res?.message || '获取 AI 搜索配置失败')
         }
@@ -364,7 +376,6 @@ export default defineComponent({
       return getAIModelArchitectures().then(res => {
         if (res?.status === 200) {
           architectureRows.value = Array.isArray(res?.data) ? res.data : []
-          syncModelTextFromArchitectures()
         } else {
           message.error(res?.message || '获取模型架构失败')
         }
@@ -384,8 +395,7 @@ export default defineComponent({
       architectureForm.id = null
       architectureForm.name = ''
       architectureForm.modelName = ''
-      architectureForm.inputTokenPrice = 0
-      architectureForm.outputTokenPrice = 0
+      architectureForm.billingMultiplier = 1
       architectureForm.enabled = true
       architectureForm.sort = 0
       architectureForm.remark = ''
@@ -417,7 +427,6 @@ export default defineComponent({
       loadConfig,
       loadAIModelArchitectures,
       resetArchitectureForm,
-      syncModelTextFromArchitectures,
     }
   },
   methods: {
@@ -460,10 +469,9 @@ export default defineComponent({
         }
 
         const remoteModels = Array.isArray(res?.data?.models) ? res.data.models : []
-        return this.syncMissingArchitectures([
-          this.formState.manualModelsText,
-          ...remoteModels,
-        ])
+        const filteredRemoteModels = filterRemoteModelNames(remoteModels)
+        this.formState.manualModelsText = buildModelNameText(filteredRemoteModels)
+        return this.syncMissingArchitectures(this.formState.manualModelsText)
       }).then(addedCount => {
         if (addedCount > 0) {
           message.success(`已同步模型架构，新增 ${addedCount} 个模型`)
@@ -479,7 +487,7 @@ export default defineComponent({
     submitSave(baseUrl) {
       this.saving = true
       this.syncMissingArchitectures(this.formState.manualModelsText).then(() => {
-        const payload = buildAISearchConfigSavePayload(this.formState, baseUrl, this.architectureRows)
+        const payload = buildAISearchConfigSavePayload(this.formState, baseUrl)
         return updateAISearchConfig(payload)
       }).then(res => {
         if (res?.status === 200) {
@@ -558,8 +566,7 @@ export default defineComponent({
         this.architectureForm.id = record.id
         this.architectureForm.name = record.name || ''
         this.architectureForm.modelName = record.modelName || ''
-        this.architectureForm.inputTokenPrice = Number(record.inputTokenPrice || 0)
-        this.architectureForm.outputTokenPrice = Number(record.outputTokenPrice || 0)
+        this.architectureForm.billingMultiplier = Number(record.billingMultiplier || record.inputTokenPrice || record.outputTokenPrice || 1)
         this.architectureForm.enabled = !!record.enabled
         this.architectureForm.sort = Number(record.sort || 0)
         this.architectureForm.remark = record.remark || ''
@@ -577,8 +584,7 @@ export default defineComponent({
         id: this.architectureForm.id,
         name: this.architectureForm.name,
         modelName: this.architectureForm.modelName,
-        inputTokenPrice: Number(this.architectureForm.inputTokenPrice || 0),
-        outputTokenPrice: Number(this.architectureForm.outputTokenPrice || 0),
+        billingMultiplier: Number(this.architectureForm.billingMultiplier || 1),
         enabled: !!this.architectureForm.enabled,
         sort: Number(this.architectureForm.sort || 0),
         remark: this.architectureForm.remark || '',
@@ -611,9 +617,9 @@ export default defineComponent({
         message.error('删除失败')
       })
     },
-    formatPrice(value) {
-      const amount = Number(value || 0)
-      return Number.isFinite(amount) ? amount.toFixed(8) : '0.00000000'
+    formatMultiplier(value, record) {
+      const multiplier = Number(value || record?.inputTokenPrice || record?.outputTokenPrice || 1)
+      return Number.isFinite(multiplier) && multiplier > 0 ? `${multiplier.toFixed(4)} 倍` : '1.0000 倍'
     },
   }
 })
@@ -718,5 +724,29 @@ export default defineComponent({
   margin-top: 6px;
   color: #6b7280;
   font-size: 13px;
+}
+
+.architecture-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+@media (max-width: 768px) {
+  .page-card,
+  .sub-card {
+    border-radius: 8px;
+  }
+
+  .model-editor {
+    display: grid;
+  }
+
+  .fetch-btn {
+    width: 100%;
+  }
+
+  .sub-card-title {
+    font-size: 16px;
+  }
 }
 </style>

@@ -75,13 +75,13 @@ func TestCreateAIModelArchitectureReturnsCreatedItemForAdmin(t *testing.T) {
 		if input.Name != "GPT-4o" || input.ModelName != "gpt-4o" || input.Enabled != true || input.Remark != "常用" || input.Sort != 2 {
 			t.Fatalf("unexpected input: %+v", input)
 		}
-		if input.InputTokenPrice != 0.05 || input.OutputTokenPrice != 0.15 {
-			t.Fatalf("unexpected price input: %+v", input)
+		if input.BillingMultiplier != 2.5 {
+			t.Fatalf("unexpected multiplier input: %+v", input)
 		}
-		return entity.AIModelArchitecture{ID: 11, Name: input.Name, ModelName: input.ModelName, Enabled: input.Enabled, Sort: input.Sort}, nil
+		return entity.AIModelArchitecture{ID: 11, Name: input.Name, ModelName: input.ModelName, BillingMultiplier: input.BillingMultiplier, Enabled: input.Enabled, Sort: input.Sort}, nil
 	}
 
-	payload := []byte(`{"name":"GPT-4o","modelName":"gpt-4o","inputTokenPrice":0.05,"outputTokenPrice":0.15,"enabled":true,"sort":2,"remark":"常用"}`)
+	payload := []byte(`{"name":"GPT-4o","modelName":"gpt-4o","billingMultiplier":2.5,"enabled":true,"sort":2,"remark":"常用"}`)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-model-architectures", bytes.NewReader(payload))
@@ -98,7 +98,7 @@ func TestCreateAIModelArchitectureReturnsCreatedItemForAdmin(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &architecture); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if architecture.ID != 11 || architecture.ModelName != "gpt-4o" {
+	if architecture.ID != 11 || architecture.ModelName != "gpt-4o" || architecture.BillingMultiplier != 2.5 {
 		t.Fatalf("unexpected created architecture: %+v", architecture)
 	}
 }

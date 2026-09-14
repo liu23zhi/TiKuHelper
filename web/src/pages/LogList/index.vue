@@ -62,6 +62,9 @@
         <template #summary="{ record }">
           <span>{{ buildStructuredFields(record).summary }}</span>
         </template>
+        <template #detail="{ record }">
+          <span>{{ buildRowDetail(record) }}</span>
+        </template>
         <template #requestId="{ record }">
           <span>{{ buildStructuredFields(record).requestId }}</span>
         </template>
@@ -135,6 +138,7 @@ import {
   buildLogActionLabel,
   buildLogModuleLabel,
   buildLogQidLabel,
+  buildLogRowDetail,
   buildLogStructuredFields,
 } from '@/utils/logListHelpers.mjs';
 const dataSource = ref([])
@@ -170,6 +174,7 @@ export default defineComponent({
         { label: '题目', value: 'question' },
         { label: '搜题', value: 'search' },
         { label: '系统', value: 'system' },
+        { label: '验证码', value: 'captcha' },
       ],
       actionOptions: [
         { label: '新增', value: 0 },
@@ -177,6 +182,9 @@ export default defineComponent({
         { label: '删除', value: 2 },
         { label: '查询 / 搜题', value: 3 },
         { label: '登录', value: 10 },
+        { label: '远程验证码生成', value: 20 },
+        { label: '远程验证码校验', value: 21 },
+        { label: '远程验证码二验', value: 22 },
       ],
       columns: [
         {
@@ -241,6 +249,15 @@ export default defineComponent({
             customRender: 'summary',
           },
           width: 220,
+        },
+        {
+          title: '详情',
+          dataIndex: 'detail',
+          key: 'detail',
+          slots: {
+            customRender: 'detail',
+          },
+          width: 320,
         },
         {
           title: '请求 ID',
@@ -332,6 +349,9 @@ export default defineComponent({
     },
     buildStructuredFields(record) {
       return buildLogStructuredFields(record)
+    },
+    buildRowDetail(record) {
+      return buildLogRowDetail(record)
     },
     buildSnapshotExpandKey(recordId, field) {
       return `${recordId || 'unknown'}:${field}`

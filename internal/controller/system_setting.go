@@ -12,8 +12,8 @@ var loadSystemSettingDetail = func() (service.SystemSettingDetail, error) {
 	return service.GetSystemSettingDetailWithDB(manager.GetManager().GetDB())
 }
 
-var loadPublicRegisterEnabled = func() (bool, error) {
-	return service.GetRegisterEnabledWithDB(manager.GetManager().GetDB())
+var loadPublicAuthSettings = func() (service.PublicAuthSettings, error) {
+	return service.GetPublicAuthSettingsWithDB(manager.GetManager().GetDB())
 }
 
 var updateSystemSettingDetail = func(input service.UpdateSystemSettingInput) (service.SystemSettingDetail, error) {
@@ -33,7 +33,7 @@ func SystemSettingDetail(c *gin.Context) {
 }
 
 func PublicRegisterStatus(c *gin.Context) {
-	enabled, err := loadPublicRegisterEnabled()
+	settings, err := loadPublicAuthSettings()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"message": "获取注册状态失败",
@@ -41,9 +41,7 @@ func PublicRegisterStatus(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"registerEnabled": enabled,
-	})
+	c.JSON(http.StatusOK, settings)
 }
 
 func UpdateSystemSetting(c *gin.Context) {

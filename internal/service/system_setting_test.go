@@ -86,14 +86,14 @@ func TestUpdateSystemSettingDetailWithDBPersistsNormalizedValues(t *testing.T) {
 	db := newSystemSettingTestDB(t)
 
 	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
-		RegisterEnabled:         true,
-		EPayVersion:             "v1",
-		EPayGatewayURL:          " https://pay.example.com/submit.php ",
-		EPayPartnerID:           " 10001 ",
-		EPayPlatformPublicKey:   " platform-public-key ",
-		EPayMerchantPrivateKey:  " merchant-private-key ",
-		EPayNotifyURL:           " https://example.com/notify ",
-		EPayReturnURL:           " https://example.com/return ",
+		RegisterEnabled:        true,
+		EPayVersion:            "v1",
+		EPayGatewayURL:         " https://pay.example.com/submit.php ",
+		EPayPartnerID:          " 10001 ",
+		EPayPlatformPublicKey:  " platform-public-key ",
+		EPayMerchantPrivateKey: " merchant-private-key ",
+		EPayNotifyURL:          " https://example.com/notify ",
+		EPayReturnURL:          " https://example.com/return ",
 	})
 	if err != nil {
 		t.Fatalf("update system setting detail: %v", err)
@@ -156,5 +156,230 @@ func TestUpdateSystemSettingDetailWithDBPersistsNormalizedValues(t *testing.T) {
 		if setting.Value != want {
 			t.Fatalf("expected %s=%s, got %s", key, want, setting.Value)
 		}
+	}
+}
+
+func TestGetPublicAuthSettingsWithDBDefaults(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+
+	settings, err := GetPublicAuthSettingsWithDB(db)
+	if err != nil {
+		t.Fatalf("get public auth settings: %v", err)
+	}
+	if settings.RegisterEnabled {
+		t.Fatal("expected register enabled default false")
+	}
+	if settings.SMSLoginEnabled {
+		t.Fatal("expected sms login enabled default false")
+	}
+}
+
+func TestUpdateSystemSettingDetailWithDBPersistsSMSFields(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+
+	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
+		RegisterEnabled:        true,
+		EPayVersion:            "v2",
+		EPayGatewayURL:         "https://pay.example.com/submit.php",
+		EPayPartnerID:          "10001",
+		EPayPlatformPublicKey:  "platform-public-key",
+		EPayMerchantPrivateKey: "merchant-private-key",
+		EPayNotifyURL:          "https://example.com/notify",
+		EPayReturnURL:          "https://example.com/return",
+		SMSProvider:            " smsbao ",
+		SMSBaoUsername:         " demo-user ",
+		SMSBaoSecret:           " demo-secret ",
+		SMSCodeSignName:        " 题库助手 ",
+		SMSCodeTemplate:        " 【{sign}】验证码 {code} ",
+		SMSLoginEnabled:        true,
+	})
+	if err != nil {
+		t.Fatalf("update system setting detail: %v", err)
+	}
+
+	if updated.SMSProvider != "smsbao" {
+		t.Fatalf("expected sms provider smsbao, got %s", updated.SMSProvider)
+	}
+	if updated.SMSBaoUsername != "demo-user" {
+		t.Fatalf("expected smsbao username demo-user, got %s", updated.SMSBaoUsername)
+	}
+	if updated.SMSBaoSecret != "demo-secret" {
+		t.Fatalf("expected smsbao secret demo-secret, got %s", updated.SMSBaoSecret)
+	}
+	if updated.SMSCodeSignName != "题库助手" {
+		t.Fatalf("expected sign name 题库助手, got %s", updated.SMSCodeSignName)
+	}
+	if updated.SMSCodeTemplate != "【{sign}】验证码 {code}" {
+		t.Fatalf("expected sms template preserved, got %s", updated.SMSCodeTemplate)
+	}
+	if !updated.SMSLoginEnabled {
+		t.Fatal("expected sms login enabled true")
+	}
+
+	publicSettings, err := GetPublicAuthSettingsWithDB(db)
+	if err != nil {
+		t.Fatalf("reload public auth settings: %v", err)
+	}
+	if !publicSettings.RegisterEnabled || !publicSettings.SMSLoginEnabled {
+		t.Fatalf("unexpected public auth settings: %+v", publicSettings)
+	}
+}
+
+func TestUpdateSystemSettingDetailWithDBPersistsWechatCaptchaAndSMSBaoFields(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+
+	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
+		RegisterEnabled:           true,
+		SMSLoginEnabled:           false,
+		WechatLoginEnabled:        true,
+		WechatScanLoginEnabled:    true,
+		WechatCodeLoginEnabled:    true,
+		WechatDefaultLoginMode:    " code ",
+		WechatCodeStaticQRCodeURL: " https://wechat.example.com/static-qrcode.png ",
+		WechatAPIBaseURL:          " https://wechat.example.com ",
+		WechatAPIBearerToken:      " token-1 ",
+		CaptchaProvider:           " remote ",
+		CaptchaAPIBaseURL:         " https://captcha.api.zelly.cn/ ",
+		CaptchaAPIKey:             " captcha-secret ",
+		CaptchaType:               " 滑块验证码 ",
+		SMSBaoCredentialType:      " password ",
+		SMSBaoRegionMode:          " international ",
+	})
+	if err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+
+	if !updated.WechatLoginEnabled {
+		t.Fatal("expected wechat login enabled")
+	}
+	if !updated.WechatScanLoginEnabled || !updated.WechatCodeLoginEnabled {
+		t.Fatalf("expected both wechat login modes enabled, got %+v", updated)
+	}
+	if updated.WechatDefaultLoginMode != "code" {
+		t.Fatalf("expected default wechat login mode code, got %s", updated.WechatDefaultLoginMode)
+	}
+	if updated.WechatCodeStaticQRCodeURL != "https://wechat.example.com/static-qrcode.png" {
+		t.Fatalf("unexpected static wechat qrcode url %s", updated.WechatCodeStaticQRCodeURL)
+	}
+	if updated.WechatAPIBaseURL != "https://wechat.example.com" {
+		t.Fatalf("unexpected wechat api base url %s", updated.WechatAPIBaseURL)
+	}
+	if updated.WechatAPIBearerToken != "token-1" {
+		t.Fatalf("unexpected wechat bearer token %s", updated.WechatAPIBearerToken)
+	}
+	if updated.CaptchaProvider != "remote" {
+		t.Fatalf("unexpected captcha provider %s", updated.CaptchaProvider)
+	}
+	if updated.CaptchaAPIBaseURL != "https://captcha.api.zelly.cn" {
+		t.Fatalf("unexpected captcha api base url %s", updated.CaptchaAPIBaseURL)
+	}
+	if updated.CaptchaAPIKey != "captcha-secret" {
+		t.Fatalf("unexpected captcha api key %s", updated.CaptchaAPIKey)
+	}
+	if updated.CaptchaType != "SLIDER" {
+		t.Fatalf("unexpected captcha type %s", updated.CaptchaType)
+	}
+	if updated.SMSBaoCredentialType != "password" {
+		t.Fatalf("unexpected smsbao credential type %s", updated.SMSBaoCredentialType)
+	}
+	if updated.SMSBaoRegionMode != "international" {
+		t.Fatalf("unexpected smsbao region mode %s", updated.SMSBaoRegionMode)
+	}
+}
+
+func TestUpdateSystemSettingDetailWithDBDisablesWechatLoginWhenAllWechatModesDisabled(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+
+	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
+		WechatLoginEnabled:     true,
+		WechatAPIBaseURL:       "https://wechat.example.com",
+		WechatAPIBearerToken:   "token-1",
+		WechatDefaultLoginMode: "scan",
+	})
+	if err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+
+	if updated.WechatLoginEnabled || updated.WechatScanLoginEnabled || updated.WechatCodeLoginEnabled {
+		t.Fatalf("expected wechat login disabled when both modes disabled, got %+v", updated)
+	}
+}
+
+func TestUpdateSystemSettingDetailWithDBFallsBackDefaultWechatModeToEnabledMode(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+
+	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
+		WechatLoginEnabled:     true,
+		WechatCodeLoginEnabled: true,
+		WechatDefaultLoginMode: "scan",
+		WechatAPIBaseURL:       "https://wechat.example.com",
+		WechatAPIBearerToken:   "token-1",
+	})
+	if err != nil {
+		t.Fatalf("update settings: %v", err)
+	}
+
+	if !updated.WechatLoginEnabled || updated.WechatScanLoginEnabled || !updated.WechatCodeLoginEnabled {
+		t.Fatalf("unexpected wechat mode flags: %+v", updated)
+	}
+	if updated.WechatDefaultLoginMode != "code" {
+		t.Fatalf("expected default wechat mode fallback to code, got %s", updated.WechatDefaultLoginMode)
+	}
+}
+
+func TestGetPublicAuthSettingsWithDBIncludesAlternativeLoginAndCaptcha(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+
+	_, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
+		RegisterEnabled:           false,
+		SMSLoginEnabled:           false,
+		WechatLoginEnabled:        true,
+		WechatScanLoginEnabled:    true,
+		WechatCodeLoginEnabled:    true,
+		WechatDefaultLoginMode:    "code",
+		WechatCodeStaticQRCodeURL: "https://wechat.example.com/static-qrcode.png",
+		WechatAPIBaseURL:          "https://wechat.example.com",
+		WechatAPIBearerToken:      "token-1",
+		CaptchaProvider:           "local",
+		CaptchaAPIBaseURL:         "https://captcha.example.com",
+		CaptchaType:               "rotate",
+	})
+	if err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	settings, err := GetPublicAuthSettingsWithDB(db)
+	if err != nil {
+		t.Fatalf("get public auth settings: %v", err)
+	}
+	if settings.RegisterEnabled {
+		t.Fatal("expected register disabled")
+	}
+	if settings.SMSLoginEnabled {
+		t.Fatal("expected sms login disabled")
+	}
+	if !settings.WechatLoginEnabled {
+		t.Fatal("expected wechat login enabled")
+	}
+	if !settings.AlternativeLoginEnabled {
+		t.Fatal("expected alternative login enabled when wechat login is enabled")
+	}
+	if !settings.WechatScanLoginEnabled || !settings.WechatCodeLoginEnabled {
+		t.Fatalf("expected both public wechat modes enabled, got %+v", settings)
+	}
+	if settings.WechatDefaultLoginMode != "code" {
+		t.Fatalf("expected public default wechat mode code, got %s", settings.WechatDefaultLoginMode)
+	}
+	if settings.WechatCodeStaticQRCodeURL != "https://wechat.example.com/static-qrcode.png" {
+		t.Fatalf("unexpected public static qrcode url %s", settings.WechatCodeStaticQRCodeURL)
+	}
+	if settings.CaptchaProvider != "local" {
+		t.Fatalf("unexpected captcha provider %s", settings.CaptchaProvider)
+	}
+	if settings.CaptchaAPIBaseURL != "https://captcha.example.com" {
+		t.Fatalf("unexpected captcha api base url %s", settings.CaptchaAPIBaseURL)
+	}
+	if settings.CaptchaType != "ROTATE" {
+		t.Fatalf("unexpected captcha type %s", settings.CaptchaType)
 	}
 }

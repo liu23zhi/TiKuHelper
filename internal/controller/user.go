@@ -14,6 +14,18 @@ import (
 	"github.com/itihey/tikuAdapter/pkg/util"
 )
 
+var sendPublicSMSCodeWithDB = func(input service.SendSMSCodeInput) error {
+	return service.SendSMSCodeWithDB(dao.User.UnderlyingDB(), input)
+}
+
+var verifySMSCodeWithDB = func(phone string, scene string, smsCode string) error {
+	return service.VerifySMSCodeWithDB(dao.User.UnderlyingDB(), phone, scene, smsCode)
+}
+
+var consumeCaptchaTokenWithDB = func(token string, scene string, requestIP string) error {
+	return service.ConsumeCaptchaTokenWithDB(dao.User.UnderlyingDB(), token, scene, requestIP)
+}
+
 func isUserEnabled(user *entity.User) bool {
 	status := strings.TrimSpace(user.Status)
 	return status == "" || strings.EqualFold(status, "enabled")
@@ -131,6 +143,14 @@ func UserInfo(c *gin.Context) {
 
 // UserLogin 用户登录
 func UserLogin(c *gin.Context) {
+	captchaToken := strings.TrimSpace(c.Query("captchaToken"))
+	if err := consumeCaptchaTokenWithDB(captchaToken, service.CaptchaSceneLoginPassword, strings.TrimSpace(c.ClientIP())); err != nil {
+		c.JSON(400, gin.H{
+			"message": err.Error(),
+		})
+		return
+	}
+
 	us := dao.User
 	user, err := us.Where(us.Username.Eq(c.Query("username")), us.Password.Eq(c.Query("password"))).First()
 	if err != nil {
@@ -189,44 +209,79 @@ func UserRegister(c *gin.Context) {
 		return
 	}
 
-	var user entity.User
-	if err := c.ShouldBindJSON(&user); err != nil {
+	var payload struct {
+		Username     string `json:"username"`
+		Password     string `json:"password"`
+		Nickname     string `json:"nickname"`
+		Phone        string `json:"phone"`
+		SMSCode      string `json:"smsCode"`
+		CaptchaToken string `json:"captchaToken"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil {
 		c.JSON(400, gin.H{
 			"message": "参数错误",
 		})
 		return
 	}
-	user.Username = strings.TrimSpace(user.Username)
-	user.Password = strings.TrimSpace(user.Password)
-	user.Nickname = strings.TrimSpace(user.Nickname)
-	if user.Username == "" || user.Password == "" {
+	username := strings.TrimSpace(payload.Username)
+	password := strings.TrimSpace(payload.Password)
+	nickname := strings.TrimSpace(payload.Nickname)
+	rawPhone := strings.TrimSpace(payload.Phone)
+	smsCode := strings.TrimSpace(payload.SMSCode)
+	if username == "" || password == "" {
 		c.JSON(400, gin.H{
 			"message": "用户名和密码不能为空",
 		})
 		return
 	}
-	if err := validatePasswordComplexity(user.Password); err != nil {
+	if rawPhone == "" || smsCode == "" {
+		c.JSON(400, gin.H{
+			"message": "手机号和验证码不能为空",
+		})
+		return
+	}
+	if err := validatePasswordComplexity(password); err != nil {
 		c.JSON(400, gin.H{
 			"message": err.Error(),
 		})
 		return
 	}
+	phone, _, err := service.NormalizePhone(rawPhone)
+	if err != nil {
+		c.JSON(400, gin.H{"message": err.Error()})
+		return
+	}
+	if err := consumeCaptchaTokenWithDB(strings.TrimSpace(payload.CaptchaToken), service.CaptchaSceneRegisterSubmit, strings.TrimSpace(c.ClientIP())); err != nil {
+		c.JSON(400, gin.H{"message": err.Error()})
+		return
+	}
 
 	// 检测用户名是否被使用
-	_, err = dao.User.Where(dao.User.Username.Eq(user.Username)).First()
+	_, err = dao.User.Where(dao.User.Username.Eq(username)).First()
 	if err == nil {
 		c.JSON(400, gin.H{
 			"message": "用户名已经被使用",
 		})
 		return
 	}
-
-	user.Role = "user"
-	user.Status = "enabled"
-	user.Balance = 0
-	user.RegisterSource = "public"
-	user.ParentID = 0
-	user.Perms = ""
+	if err := verifySMSCodeWithDB(phone, service.SMSSceneRegister, smsCode); err != nil {
+		c.JSON(400, gin.H{"message": err.Error()})
+		return
+	}
+	now := time.Now()
+	user := entity.User{
+		Username:       username,
+		Password:       password,
+		Nickname:       nickname,
+		Role:           "user",
+		Status:         "enabled",
+		Balance:        0,
+		RegisterSource: "public",
+		ParentID:       0,
+		Perms:          "",
+		Phone:          &phone,
+		PhoneBoundAt:   &now,
+	}
 
 	if err := dao.User.Create(&user); err != nil {
 		c.JSON(400, gin.H{
@@ -235,6 +290,87 @@ func UserRegister(c *gin.Context) {
 		return
 	}
 	c.JSON(200, user)
+}
+
+func SendPublicSMSCode(c *gin.Context) {
+	var payload struct {
+		Phone        string `json:"phone"`
+		Scene        string `json:"scene"`
+		CaptchaToken string `json:"captchaToken"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(400, gin.H{"message": "参数错误"})
+		return
+	}
+	captchaScene := service.CaptchaSceneSMSSendRegister
+	if strings.TrimSpace(payload.Scene) == service.SMSSceneLogin {
+		captchaScene = service.CaptchaSceneSMSSendLogin
+	}
+	if err := consumeCaptchaTokenWithDB(strings.TrimSpace(payload.CaptchaToken), captchaScene, strings.TrimSpace(c.ClientIP())); err != nil {
+		c.JSON(400, gin.H{"message": err.Error()})
+		return
+	}
+	if err := sendPublicSMSCodeWithDB(service.SendSMSCodeInput{
+		Phone:     strings.TrimSpace(payload.Phone),
+		Scene:     strings.TrimSpace(payload.Scene),
+		RequestIP: strings.TrimSpace(c.ClientIP()),
+	}); err != nil {
+		c.JSON(400, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"message": "发送成功，请注意查收"})
+}
+
+func UserSMSLogin(c *gin.Context) {
+	var payload struct {
+		Phone        string `json:"phone"`
+		SMSCode      string `json:"smsCode"`
+		CaptchaToken string `json:"captchaToken"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(400, gin.H{"message": "参数错误"})
+		return
+	}
+	phone, _, err := service.NormalizePhone(payload.Phone)
+	if err != nil {
+		c.JSON(400, gin.H{"message": err.Error()})
+		return
+	}
+	if err := consumeCaptchaTokenWithDB(strings.TrimSpace(payload.CaptchaToken), service.CaptchaSceneLoginSMS, strings.TrimSpace(c.ClientIP())); err != nil {
+		c.JSON(400, gin.H{"message": err.Error()})
+		return
+	}
+	var user entity.User
+	if err := dao.User.UnderlyingDB().Where("phone = ?", phone).First(&user).Error; err != nil {
+		c.JSON(400, gin.H{"message": "该手机号未绑定账号，请先注册"})
+		return
+	}
+	if !isUserEnabled(&user) {
+		c.JSON(400, gin.H{"message": "用户已被禁用"})
+		return
+	}
+	if err := verifySMSCodeWithDB(phone, service.SMSSceneLogin, payload.SMSCode); err != nil {
+		c.JSON(400, gin.H{"message": err.Error()})
+		return
+	}
+	jwt := util.GenerateJwt(user.ID)
+	if jwt == "" {
+		c.JSON(400, gin.H{"message": "jwt生成失败"})
+		return
+	}
+	clientIP := strings.TrimSpace(c.ClientIP())
+	now := time.Now()
+	if err := dao.User.UnderlyingDB().Model(&entity.User{}).Where("id = ?", user.ID).Updates(map[string]any{
+		"last_login_at": now,
+		"last_login_ip": clientIP,
+	}).Error; err != nil {
+		c.JSON(400, gin.H{"message": "登录信息更新失败"})
+		return
+	}
+	user.LastLoginAt = &now
+	user.LastLoginIP = clientIP
+	writeAuditLog(&user, "auth", logActionLogin, "用户短信登录成功", clientIP, 0, "", "")
+	c.JSON(200, gin.H{"message": "user login", "jwt": jwt})
 }
 
 // UserList 用户列表
@@ -348,11 +484,13 @@ func UpdateUser(c *gin.Context) {
 	}
 
 	var payload struct {
-		Nickname    string   `json:"nickname"`
-		Role        string   `json:"role"`
-		Status      string   `json:"status"`
-		Balance     *float64 `json:"balance"`
-		BalanceMode string   `json:"balanceMode"`
+		Nickname           string   `json:"nickname"`
+		Role               string   `json:"role"`
+		Status             string   `json:"status"`
+		Balance            *float64 `json:"balance"`
+		BalanceMode        string   `json:"balanceMode"`
+		Phone              string   `json:"phone"`
+		ForceReassignPhone bool     `json:"forceReassignPhone"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		c.JSON(400, gin.H{
@@ -373,6 +511,13 @@ func UpdateUser(c *gin.Context) {
 			return
 		}
 		target.Balance = updatedBalance
+	}
+	if updatedUser, err := service.UpdateUserPhoneWithDB(dao.User.UnderlyingDB(), target.ID, payload.Phone, payload.ForceReassignPhone); err != nil {
+		c.JSON(400, gin.H{"message": err.Error()})
+		return
+	} else {
+		target.Phone = updatedUser.Phone
+		target.PhoneBoundAt = updatedUser.PhoneBoundAt
 	}
 
 	if err := dao.User.Save(target); err != nil {

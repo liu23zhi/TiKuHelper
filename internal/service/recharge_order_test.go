@@ -7,10 +7,16 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -121,101 +127,321 @@ func buildRechargeSignContentForTest(values url.Values) string {
 	return strings.Join(parts, "&")
 }
 
-func TestBuildRechargePayURLSignsRequiredParams(t *testing.T) {
-	publicKey, privateKey, verifyKey := generateRechargeRSAKeys(t)
+func TestListRechargeOrdersWithDBScopesUsersAndIncludesUsername(t *testing.T) {
+	db := newRechargeOrderTestDB(t)
+	member := seedRechargeOrderUser(t, db, 21, "user")
+	other := seedRechargeOrderUser(t, db, 22, "other")
+	admin := seedRechargeOrderUser(t, db, 23, "admin")
+	now := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	paidAt := now.Add(time.Minute)
+	orders := []entity.RechargeOrder{
+		{
+			UserID:                    member.ID,
+			OrderNo:                   "rcg_user_pending",
+			PaymentProvider:           DefaultPaymentProvider,
+			PaymentMethodNameSnapshot: "微信支付",
+			Amount:                    12.5,
+			Status:                    rechargeOrderStatusPending,
+			CreatedAt:                 now,
+		},
+		{
+			UserID:                    other.ID,
+			OrderNo:                   "rcg_other_paid",
+			PaymentProvider:           DefaultPaymentProvider,
+			PaymentMethodNameSnapshot: "支付宝",
+			Amount:                    20,
+			Status:                    rechargeOrderStatusPaid,
+			ThirdPartyOrderNo:         "trade-other",
+			PaidAt:                    &paidAt,
+			CreatedAt:                 now.Add(2 * time.Minute),
+		},
+	}
+	for _, order := range orders {
+		if err := db.Create(&order).Error; err != nil {
+			t.Fatalf("create recharge order: %v", err)
+		}
+	}
 
-	payURL, err := buildRechargePayURL(RechargePaymentConfig{
-		GatewayURL:          "https://pay.example.com",
-		PartnerID:           "10001",
-		PlatformPublicKey:   publicKey,
-		MerchantPrivateKey:  privateKey,
-		NotifyURL:           "https://app.example.com/notify",
-		ReturnURL:           "https://app.example.com/return",
-		PaymentMethod:       "alipay",
-		PaymentProvider:     "epay",
-	}, RechargePayRequest{
-		OutTradeNo: "rcg_123",
-		Name:       "账户充值",
-		Money:      "12.34",
-		Type:       "alipay",
-	})
+	memberResult, err := ListRechargeOrdersWithDB(db, member, 1, 10)
 	if err != nil {
-		t.Fatalf("build recharge pay url: %v", err)
+		t.Fatalf("list member recharge orders: %v", err)
+	}
+	if memberResult.Total != 1 || len(memberResult.Data) != 1 {
+		t.Fatalf("expected member to see 1 order, got %+v", memberResult)
+	}
+	if memberResult.Data[0].OrderNo != "rcg_user_pending" || memberResult.Data[0].Username != member.Username {
+		t.Fatalf("unexpected member order row: %+v", memberResult.Data[0])
 	}
 
-	parsed, err := url.Parse(payURL)
+	adminResult, err := ListRechargeOrdersWithDB(db, admin, 1, 10)
 	if err != nil {
-		t.Fatalf("parse pay url: %v", err)
+		t.Fatalf("list admin recharge orders: %v", err)
 	}
-	if parsed.Scheme != "https" || parsed.Host != "pay.example.com" || parsed.Path != "/api/pay/submit" {
-		t.Fatalf("unexpected pay url: %s", payURL)
+	if adminResult.Total != 2 || len(adminResult.Data) != 2 {
+		t.Fatalf("expected admin to see 2 orders, got %+v", adminResult)
+	}
+	if adminResult.Data[0].OrderNo != "rcg_other_paid" || adminResult.Data[0].Username != other.Username {
+		t.Fatalf("expected newest other order first with username, got %+v", adminResult.Data[0])
+	}
+	if adminResult.Data[0].PaidAt == nil || adminResult.Data[0].ThirdPartyOrderNo != "trade-other" {
+		t.Fatalf("expected paid metadata in admin row, got %+v", adminResult.Data[0])
+	}
+}
+
+func TestSignRechargeValuesSignsUnifiedOrderParams(t *testing.T) {
+	_, privateKey, verifyKey := generateRechargeRSAKeys(t)
+
+	values := url.Values{}
+	values.Set("pid", "10001")
+	values.Set("method", "web")
+	values.Set("device", "pc")
+	values.Set("type", "alipay")
+	values.Set("notify_url", "https://app.example.com/notify")
+	values.Set("return_url", "https://app.example.com/return")
+	values.Set("out_trade_no", "rcg_123")
+	values.Set("name", "账户充值")
+	values.Set("money", "12.34")
+	values.Set("client_ip", "127.0.0.1")
+	values.Set("timestamp", "1781970000")
+
+	signatureText, err := signRechargeValues(values, privateKey)
+	if err != nil {
+		t.Fatalf("sign recharge values: %v", err)
 	}
 
-	query := parsed.Query()
-	if query.Get("pid") != "10001" {
-		t.Fatalf("expected pid 10001, got %q", query.Get("pid"))
-	}
-	if query.Get("type") != "alipay" {
-		t.Fatalf("expected type alipay, got %q", query.Get("type"))
-	}
-	if query.Get("notify_url") != "https://app.example.com/notify" {
-		t.Fatalf("unexpected notify url: %q", query.Get("notify_url"))
-	}
-	if query.Get("return_url") != "https://app.example.com/return" {
-		t.Fatalf("unexpected return url: %q", query.Get("return_url"))
-	}
-	if query.Get("out_trade_no") != "rcg_123" {
-		t.Fatalf("unexpected out trade no: %q", query.Get("out_trade_no"))
-	}
-	if query.Get("money") != "12.34" {
-		t.Fatalf("unexpected money: %q", query.Get("money"))
-	}
-	if query.Get("sign_type") != "RSA" {
-		t.Fatalf("expected RSA sign type, got %q", query.Get("sign_type"))
-	}
-	if strings.TrimSpace(query.Get("sign")) == "" {
-		t.Fatalf("expected sign to be present")
-	}
-	if strings.TrimSpace(query.Get("timestamp")) == "" {
-		t.Fatalf("expected timestamp to be present")
-	}
-
-	signature, err := base64.StdEncoding.DecodeString(query.Get("sign"))
+	signature, err := base64.StdEncoding.DecodeString(signatureText)
 	if err != nil {
 		t.Fatalf("decode sign: %v", err)
 	}
-	hash := sha256.Sum256([]byte(buildRechargeSignContentForTest(query)))
+	hash := sha256.Sum256([]byte(buildRechargeSignContentForTest(values)))
 	if err := rsa.VerifyPKCS1v15(verifyKey, crypto.SHA256, hash[:], signature); err != nil {
 		t.Fatalf("verify sign: %v", err)
 	}
 }
 
-func TestCreateRechargeOrderWithDBCreatesPendingOrderAndReturnsPayURL(t *testing.T) {
+func TestRechargeSignatureSupportsShujiePEMKeys(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate rsa key: %v", err)
+	}
+	privatePEM := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)}))
+	publicDER, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal public key: %v", err)
+	}
+	publicPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: publicDER}))
+
+	values := url.Values{}
+	values.Set("pid", "10001")
+	values.Set("method", "web")
+	values.Set("device", "pc")
+	values.Set("type", "alipay")
+	values.Set("out_trade_no", "rcg_pem")
+	values.Set("name", "账户充值")
+	values.Set("money", "1.00")
+	values.Set("client_ip", "127.0.0.1")
+
+	signature, err := signRechargeValues(values, privatePEM)
+	if err != nil {
+		t.Fatalf("sign values with PEM private key: %v", err)
+	}
+	values.Set("sign", signature)
+	values.Set("sign_type", rechargeOrderSignType)
+	if !verifyRechargeValuesSignature(values, publicPEM) {
+		t.Fatal("expected PEM public key to verify signature")
+	}
+}
+
+func TestCreateRechargePaymentRequestPostsUnifiedOrderAndReturnsQRCode(t *testing.T) {
+	publicKey, privateKey, _ := generateRechargeRSAKeys(t)
+	var captured url.Values
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/pay/create" {
+			t.Fatalf("expected unified order path, got %s", r.URL.Path)
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("expected POST, got %s", r.Method)
+		}
+		if contentType := r.Header.Get("Content-Type"); !strings.Contains(contentType, "application/x-www-form-urlencoded") {
+			t.Fatalf("expected form content type, got %q", contentType)
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		captured = r.PostForm
+		for key, expected := range map[string]string{
+			"pid":          "10001",
+			"method":       "web",
+			"device":       "pc",
+			"type":         "wxpay",
+			"notify_url":   "https://app.example.com/notify",
+			"return_url":   "https://app.example.com/return",
+			"out_trade_no": "rcg_123",
+			"name":         "账户充值",
+			"money":        "12.34",
+			"clientip":     "203.0.113.9",
+			"sign_type":    rechargeOrderSignType,
+		} {
+			if got := r.PostForm.Get(key); got != expected {
+				t.Fatalf("expected %s=%q, got %q in %+v", key, expected, got, r.PostForm)
+			}
+		}
+		if got := r.PostForm.Get("client_ip"); got != "" {
+			t.Fatalf("expected legacy client_ip param to be omitted, got %q in %+v", got, r.PostForm)
+		}
+		if strings.TrimSpace(r.PostForm.Get("timestamp")) == "" || strings.TrimSpace(r.PostForm.Get("sign")) == "" {
+			t.Fatalf("expected timestamp and sign, got %+v", r.PostForm)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code":      0,
+			"trade_no":  "trade_20260620001",
+			"pay_type":  "qrcode",
+			"pay_info":  "weixin://wxpay/bizpayurl?pr=04IPMKM",
+			"timestamp": "1781970000",
+		})
+	}))
+	defer server.Close()
+
+	result, err := createRechargePaymentRequest(RechargePaymentConfig{
+		GatewayURL:         server.URL,
+		PartnerID:          "10001",
+		PlatformPublicKey:  publicKey,
+		MerchantPrivateKey: privateKey,
+		NotifyURL:          "https://app.example.com/notify",
+		ReturnURL:          "https://app.example.com/return",
+		PaymentMethod:      "wxpay",
+		PaymentProvider:    "epay",
+	}, RechargePayRequest{
+		OutTradeNo: "rcg_123",
+		Name:       "账户充值",
+		Money:      "12.34",
+		Type:       "wxpay",
+		ClientIP:   "203.0.113.9",
+		Device:     "pc",
+	})
+	if err != nil {
+		t.Fatalf("create recharge payment request: %v", err)
+	}
+	if result.PayType != "qrcode" || result.PayInfo != "weixin://wxpay/bizpayurl?pr=04IPMKM" || result.QRCodeContent != result.PayInfo {
+		t.Fatalf("unexpected qrcode result: %+v", result)
+	}
+	if result.ThirdPartyOrderNo != "trade_20260620001" {
+		t.Fatalf("expected third party order no, got %q", result.ThirdPartyOrderNo)
+	}
+	if captured.Get("sign") == "" {
+		t.Fatal("expected request to be signed")
+	}
+}
+
+func TestCreateRechargePaymentRequestReturnsPaymentCreateErrorWithGatewayMessage(t *testing.T) {
+	publicKey, privateKey, _ := generateRechargeRSAKeys(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 1,
+			"msg":  "clientip不能为空",
+		})
+	}))
+	defer server.Close()
+
+	_, err := createRechargePaymentRequest(RechargePaymentConfig{
+		GatewayURL:         server.URL,
+		PartnerID:          "10001",
+		PlatformPublicKey:  publicKey,
+		MerchantPrivateKey: privateKey,
+		NotifyURL:          "https://app.example.com/notify",
+		ReturnURL:          "https://app.example.com/return",
+		PaymentMethod:      "alipay",
+		PaymentProvider:    "epay",
+	}, RechargePayRequest{
+		OutTradeNo: "rcg_123",
+		Name:       "账户充值",
+		Money:      "12.34",
+		Type:       "alipay",
+		ClientIP:   "203.0.113.9",
+		Device:     "pc",
+	})
+	if !errors.Is(err, ErrRechargePaymentCreateFailed) {
+		t.Fatalf("expected ErrRechargePaymentCreateFailed, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "clientip不能为空") {
+		t.Fatalf("expected gateway message in error, got %q", err.Error())
+	}
+}
+
+func TestCreateRechargePaymentRequestAcceptsLegacyPayURLFields(t *testing.T) {
+	publicKey, privateKey, _ := generateRechargeRSAKeys(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code":     0,
+			"trade_no": "trade_20260622001",
+			"payurl":   "https://pay.example.com/cashier/123",
+		})
+	}))
+	defer server.Close()
+
+	result, err := createRechargePaymentRequest(RechargePaymentConfig{
+		GatewayURL:         server.URL,
+		PartnerID:          "10001",
+		PlatformPublicKey:  publicKey,
+		MerchantPrivateKey: privateKey,
+		NotifyURL:          "https://app.example.com/notify",
+		ReturnURL:          "https://app.example.com/return",
+		PaymentMethod:      "alipay",
+		PaymentProvider:    "epay",
+	}, RechargePayRequest{
+		OutTradeNo: "rcg_123",
+		Name:       "账户充值",
+		Money:      "12.34",
+		Type:       "alipay",
+		ClientIP:   "203.0.113.9",
+		Device:     "pc",
+	})
+	if err != nil {
+		t.Fatalf("create recharge payment request: %v", err)
+	}
+	if result.PayType != "jump" || result.PayURL != "https://pay.example.com/cashier/123" || result.PayInfo != result.PayURL {
+		t.Fatalf("unexpected legacy pay url result: %+v", result)
+	}
+	if result.ThirdPartyOrderNo != "trade_20260622001" {
+		t.Fatalf("expected third party order no, got %q", result.ThirdPartyOrderNo)
+	}
+}
+
+func TestCreateRechargeOrderWithDBCreatesPendingOrderAndReturnsQRCodePayment(t *testing.T) {
 	db := newRechargeOrderTestDB(t)
 	user := seedRechargeOrderUser(t, db, 2, "user")
 	method := seedRechargePaymentMethod(t, db, entity.PaymentMethod{Name: "微信支付", EPayType: "wxpay", Enabled: true, Sort: 20})
 	publicKey, privateKey, _ := generateRechargeRSAKeys(t)
 	seedRechargePaymentSettings(t, db, publicKey, privateKey)
 
-	original := buildRechargePayURL
+	original := createRechargePaymentRequest
 	defer func() {
-		buildRechargePayURL = original
+		createRechargePaymentRequest = original
 	}()
 
 	var capturedConfig RechargePaymentConfig
 	var capturedRequest RechargePayRequest
-	buildRechargePayURL = func(config RechargePaymentConfig, request RechargePayRequest) (string, error) {
+	createRechargePaymentRequest = func(config RechargePaymentConfig, request RechargePayRequest) (RechargePaymentResult, error) {
 		capturedConfig = config
 		capturedRequest = request
-		return "https://pay.example.com/api/pay/submit?mock=1", nil
+		return RechargePaymentResult{
+			PayType:           "qrcode",
+			PayInfo:           "weixin://wxpay/bizpayurl?pr=04IPMKM",
+			QRCodeContent:     "weixin://wxpay/bizpayurl?pr=04IPMKM",
+			ThirdPartyOrderNo: "trade_20260620002",
+		}, nil
 	}
 
-	created, err := CreateRechargeOrderWithDB(db, user, CreateRechargeOrderInput{Amount: 12.345, PaymentMethodID: method.ID})
+	created, err := CreateRechargeOrderWithDB(db, user, CreateRechargeOrderInput{Amount: 12.345, PaymentMethodID: method.ID, ClientIP: "198.51.100.8", Device: "mobile"})
 	if err != nil {
 		t.Fatalf("create recharge order: %v", err)
 	}
-	if created.PayURL != "https://pay.example.com/api/pay/submit?mock=1" {
-		t.Fatalf("unexpected pay url: %q", created.PayURL)
+	if created.PayType != "qrcode" || created.QRCodeContent != "weixin://wxpay/bizpayurl?pr=04IPMKM" {
+		t.Fatalf("unexpected payment result: %+v", created)
 	}
 	if created.Order.UserID != user.ID {
 		t.Fatalf("expected order user %d, got %d", user.ID, created.Order.UserID)
@@ -232,8 +458,8 @@ func TestCreateRechargeOrderWithDBCreatesPendingOrderAndReturnsPayURL(t *testing
 	if created.Order.Amount != 12.35 {
 		t.Fatalf("expected rounded amount 12.35, got %v", created.Order.Amount)
 	}
-	if !strings.HasPrefix(created.Order.OrderNo, "rcg_") {
-		t.Fatalf("expected generated order no, got %q", created.Order.OrderNo)
+	if !strings.HasPrefix(created.Order.OrderNo, "rcg_rechargeuseruser_") || !strings.Contains(created.Order.OrderNo, "_1235_") {
+		t.Fatalf("expected generated order no to include username and amount, got %q", created.Order.OrderNo)
 	}
 
 	if capturedConfig.PartnerID != "10001" {
@@ -241,6 +467,9 @@ func TestCreateRechargeOrderWithDBCreatesPendingOrderAndReturnsPayURL(t *testing
 	}
 	if capturedRequest.Type != "wxpay" {
 		t.Fatalf("expected wxpay type, got %q", capturedRequest.Type)
+	}
+	if capturedRequest.ClientIP != "198.51.100.8" || capturedRequest.Device != "mobile" {
+		t.Fatalf("expected client ip/device to be forwarded, got %+v", capturedRequest)
 	}
 	if capturedRequest.Money != "12.35" {
 		t.Fatalf("expected money 12.35, got %q", capturedRequest.Money)
@@ -261,6 +490,27 @@ func TestCreateRechargeOrderWithDBCreatesPendingOrderAndReturnsPayURL(t *testing
 	}
 	if persisted.PaymentMethodNameSnapshot != "微信支付" {
 		t.Fatalf("expected persisted payment method snapshot 微信支付, got %q", persisted.PaymentMethodNameSnapshot)
+	}
+	if persisted.ThirdPartyOrderNo != "trade_20260620002" {
+		t.Fatalf("expected third party order no persisted, got %q", persisted.ThirdPartyOrderNo)
+	}
+}
+
+func TestBuildRechargeOrderNoIncludesSafeUsernameTimeAndAmount(t *testing.T) {
+	now := time.Date(2026, 6, 21, 9, 8, 7, 0, time.UTC)
+	orderNo := buildRechargeOrderNo(entity.User{ID: 42, Username: " Alice_测试-007 "}, 12.345, now, "ABC12345")
+
+	if orderNo != "rcg_Alice007_20260621090807_1235_ABC12345" {
+		t.Fatalf("unexpected order no %q", orderNo)
+	}
+}
+
+func TestBuildRechargeOrderNoFallsBackToUserIDWhenUsernameHasNoSafeCharacters(t *testing.T) {
+	now := time.Date(2026, 6, 21, 9, 8, 7, 0, time.UTC)
+	orderNo := buildRechargeOrderNo(entity.User{ID: 42, Username: "测试用户"}, 1, now, "ABC12345")
+
+	if orderNo != "rcg_user42_20260621090807_100_ABC12345" {
+		t.Fatalf("unexpected order no %q", orderNo)
 	}
 }
 

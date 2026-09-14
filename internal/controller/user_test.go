@@ -11,10 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/glebarez/sqlite"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 )
@@ -28,7 +29,7 @@ func newUserControllerTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open test db: %v", err)
 	}
 
-	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}); err != nil {
+	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.Log{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 
@@ -49,9 +50,15 @@ func TestUserLoginRejectsDisabledUser(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
+	originalConsume := consumeCaptchaTokenWithDB
+	defer func() { consumeCaptchaTokenWithDB = originalConsume }()
+	consumeCaptchaTokenWithDB = func(token string, scene string, requestIP string) error {
+		return nil
+	}
+
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodGet, "/adapter-service/user/login?username=disabled&password=123456", nil)
+	request := httptest.NewRequest(http.MethodGet, "/adapter-service/user/login?username=disabled&password=123456&captchaToken=token-1", nil)
 	ctx.Request = request
 
 	UserLogin(ctx)
@@ -78,9 +85,15 @@ func TestUserLoginStoresLastLoginMetadata(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
+	originalConsume := consumeCaptchaTokenWithDB
+	defer func() { consumeCaptchaTokenWithDB = originalConsume }()
+	consumeCaptchaTokenWithDB = func(token string, scene string, requestIP string) error {
+		return nil
+	}
+
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodGet, "/adapter-service/user/login?username=login-user&password=123456", nil)
+	request := httptest.NewRequest(http.MethodGet, "/adapter-service/user/login?username=login-user&password=123456&captchaToken=token-1", nil)
 	request.RemoteAddr = "10.20.30.40:12345"
 	request.Header.Set("X-Forwarded-For", "10.20.30.40")
 	ctx.Request = request
@@ -146,7 +159,7 @@ func TestUserRegisterRequiresRegisterEnabled(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	payload := []byte(`{"username":"new-user","password":"123456","nickname":"新用户"}`)
+	payload := []byte(`{"username":"new-user","password":"123456","nickname":"新用户","captchaToken":"token-1"}`)
 	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
@@ -168,9 +181,15 @@ func TestUserRegisterRejectsWeakPassword(t *testing.T) {
 		t.Fatalf("seed system setting: %v", err)
 	}
 
+	originalConsume := consumeCaptchaTokenWithDB
+	defer func() { consumeCaptchaTokenWithDB = originalConsume }()
+	consumeCaptchaTokenWithDB = func(token string, scene string, requestIP string) error {
+		return nil
+	}
+
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	payload := []byte(`{"username":"weak-user","password":"12345678","nickname":"弱密码"}`)
+	payload := []byte(`{"username":"weak-user","password":"12345678","nickname":"弱密码","phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`)
 	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
@@ -200,9 +219,25 @@ func TestUserRegisterCreatesPublicUserWithDefaults(t *testing.T) {
 		t.Fatalf("seed system setting: %v", err)
 	}
 
+	originalConsume := consumeCaptchaTokenWithDB
+	defer func() {
+		consumeCaptchaTokenWithDB = originalConsume
+	}()
+	consumeCaptchaTokenWithDB = func(token string, scene string, requestIP string) error {
+		return nil
+	}
+
+	original := verifySMSCodeWithDB
+	defer func() {
+		verifySMSCodeWithDB = original
+	}()
+	verifySMSCodeWithDB = func(phone string, scene string, smsCode string) error {
+		return nil
+	}
+
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	payload := []byte(`{"username":"new-user","password":"Abc12345!","nickname":"新用户"}`)
+	payload := []byte(`{"username":"new-user","password":"Abc12345!","nickname":"新用户","phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`)
 	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
@@ -226,6 +261,9 @@ func TestUserRegisterCreatesPublicUserWithDefaults(t *testing.T) {
 	if response.RegisterSource != "public" {
 		t.Fatalf("expected register source public, got %s", response.RegisterSource)
 	}
+	if response.Phone == nil || *response.Phone != "13800000000" {
+		t.Fatalf("expected response phone 13800000000, got %+v", response.Phone)
+	}
 
 	stored, err := dao.User.Where(dao.User.Username.Eq("new-user")).First()
 	if err != nil {
@@ -233,6 +271,40 @@ func TestUserRegisterCreatesPublicUserWithDefaults(t *testing.T) {
 	}
 	if stored.Role != "user" || stored.Status != "enabled" || stored.RegisterSource != "public" {
 		t.Fatalf("unexpected stored user: %+v", stored)
+	}
+	if stored.Phone == nil || *stored.Phone != "13800000000" || stored.PhoneBoundAt == nil {
+		t.Fatalf("expected stored phone binding, got %+v", stored)
+	}
+}
+
+func TestUserLoginRequiresCaptchaToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	_ = newUserControllerTestDB(t)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/user/login?username=admin&password=123456", nil)
+
+	UserLogin(ctx)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 without captcha token, got %d", recorder.Code)
+	}
+}
+
+func TestSendPublicSMSCodeRequiresCaptchaToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	_ = newUserControllerTestDB(t)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/public/sms-code", bytes.NewBufferString(`{"phone":"13800000000","scene":"login"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	SendPublicSMSCode(ctx)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 without captcha token, got %d", recorder.Code)
 	}
 }
 
@@ -822,5 +894,216 @@ func TestDeleteUserAdminCanDeleteAnyUser(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("expected target user deleted, got count %d", count)
+	}
+}
+
+func TestSendPublicSMSCodeDelegatesToService(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	_ = newUserControllerTestDB(t)
+
+	originalConsume := consumeCaptchaTokenWithDB
+	defer func() { consumeCaptchaTokenWithDB = originalConsume }()
+	consumeCaptchaTokenWithDB = func(token string, scene string, requestIP string) error {
+		return nil
+	}
+
+	original := sendPublicSMSCodeWithDB
+	defer func() {
+		sendPublicSMSCodeWithDB = original
+	}()
+
+	var captured service.SendSMSCodeInput
+	sendPublicSMSCodeWithDB = func(input service.SendSMSCodeInput) error {
+		captured = input
+		return nil
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	request := httptest.NewRequest(http.MethodPost, "/adapter-service/public/sms-code", bytes.NewBufferString(`{"phone":"13800000000","scene":"login","captchaToken":"token-1"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.RemoteAddr = "10.20.30.40:12345"
+	request.Header.Set("X-Forwarded-For", "10.20.30.40")
+	ctx.Request = request
+
+	SendPublicSMSCode(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	if captured.Phone != "13800000000" || captured.Scene != service.SMSSceneLogin || captured.RequestIP != "10.20.30.40" {
+		t.Fatalf("unexpected captured input: %+v", captured)
+	}
+}
+
+func TestUserSMSLoginSucceedsAndStoresLoginMetadata(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	phone := "13800000000"
+	if err := db.Create(&entity.User{ID: 101, Username: "sms-user", Password: "123456", Role: "user", Status: "enabled", RegisterSource: "public", Phone: &phone}).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	originalConsume := consumeCaptchaTokenWithDB
+	defer func() { consumeCaptchaTokenWithDB = originalConsume }()
+	consumeCaptchaTokenWithDB = func(token string, scene string, requestIP string) error {
+		return nil
+	}
+
+	original := verifySMSCodeWithDB
+	defer func() {
+		verifySMSCodeWithDB = original
+	}()
+	received := ""
+	verifySMSCodeWithDB = func(phone string, scene string, smsCode string) error {
+		received = phone + ":" + scene + ":" + smsCode
+		return nil
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/login/sms", bytes.NewBufferString(`{"phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.RemoteAddr = "10.0.0.1:12345"
+	request.Header.Set("X-Forwarded-For", "10.0.0.1")
+	ctx.Request = request
+
+	UserSMSLogin(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	if received != "13800000000:login:123456" {
+		t.Fatalf("unexpected verify input %s", received)
+	}
+
+	var lastLoginAt sql.NullTime
+	var lastLoginIP sql.NullString
+	row := db.Raw(`SELECT last_login_at, last_login_ip FROM users WHERE id = ?`, 101).Row()
+	if err := row.Scan(&lastLoginAt, &lastLoginIP); err != nil {
+		t.Fatalf("scan login metadata: %v", err)
+	}
+	if !lastLoginAt.Valid || strings.TrimSpace(lastLoginIP.String) != "10.0.0.1" {
+		t.Fatalf("unexpected login metadata: valid=%v ip=%q", lastLoginAt.Valid, lastLoginIP.String)
+	}
+}
+
+func TestUserRegisterRequiresPhoneAndSMSCode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	if err := db.Create(&entity.SystemSetting{Key: service.RegisterEnabledSettingKey, Value: "true"}).Error; err != nil {
+		t.Fatalf("seed system setting: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	payload := []byte(`{"username":"new-user","password":"Abc12345!","nickname":"新用户"}`)
+	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	ctx.Request = request
+
+	UserRegister(ctx)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestUserRegisterCreatesPublicUserWithBoundPhone(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	if err := db.Create(&entity.SystemSetting{Key: service.RegisterEnabledSettingKey, Value: "true"}).Error; err != nil {
+		t.Fatalf("seed system setting: %v", err)
+	}
+
+	originalConsume := consumeCaptchaTokenWithDB
+	defer func() { consumeCaptchaTokenWithDB = originalConsume }()
+	consumeCaptchaTokenWithDB = func(token string, scene string, requestIP string) error {
+		return nil
+	}
+
+	original := verifySMSCodeWithDB
+	defer func() {
+		verifySMSCodeWithDB = original
+	}()
+	received := ""
+	verifySMSCodeWithDB = func(phone string, scene string, smsCode string) error {
+		received = phone + ":" + scene + ":" + smsCode
+		return nil
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	payload := []byte(`{"username":"phone-user","password":"Abc12345!","nickname":"新用户","phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`)
+	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	ctx.Request = request
+
+	UserRegister(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	if received != "13800000000:register:123456" {
+		t.Fatalf("unexpected verify input %s", received)
+	}
+
+	stored, err := dao.User.Where(dao.User.Username.Eq("phone-user")).First()
+	if err != nil {
+		t.Fatalf("load created user: %v", err)
+	}
+	if stored.Phone == nil || *stored.Phone != "13800000000" {
+		t.Fatalf("expected stored phone 13800000000, got %+v", stored.Phone)
+	}
+	if stored.PhoneBoundAt == nil {
+		t.Fatal("expected phone bound time to be written")
+	}
+}
+
+func TestUpdateUserForceReassignsPhone(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	admin := &entity.User{ID: 201, Username: "admin-phone", Password: "123456", Role: "admin", Status: "enabled", RegisterSource: "admin"}
+	ownerPhone := "13800000000"
+	owner := &entity.User{ID: 202, Username: "owner-phone", Password: "123456", Role: "user", Status: "enabled", RegisterSource: "public", Phone: &ownerPhone}
+	target := &entity.User{ID: 203, Username: "target-phone", Password: "123456", Role: "user", Status: "enabled", RegisterSource: "admin"}
+	if err := db.Create(admin).Error; err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	if err := db.Create(owner).Error; err != nil {
+		t.Fatalf("create owner: %v", err)
+	}
+	if err := db.Create(target).Error; err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	payload := []byte(`{"nickname":"目标用户","role":"user","status":"enabled","phone":"13800000000","forceReassignPhone":true}`)
+	request := httptest.NewRequest(http.MethodPut, "/adapter-service/user/203", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	ctx.Request = request
+	ctx.Params = gin.Params{{Key: "id", Value: "203"}}
+	ctx.Set("user", admin)
+
+	UpdateUser(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+
+	storedOwner, err := dao.User.Where(dao.User.ID.Eq(202)).First()
+	if err != nil {
+		t.Fatalf("load owner: %v", err)
+	}
+	storedTarget, err := dao.User.Where(dao.User.ID.Eq(203)).First()
+	if err != nil {
+		t.Fatalf("load target: %v", err)
+	}
+	if storedOwner.Phone != nil {
+		t.Fatalf("expected owner phone cleared, got %+v", storedOwner.Phone)
+	}
+	if storedTarget.Phone == nil || *storedTarget.Phone != "13800000000" {
+		t.Fatalf("expected target phone reassigned, got %+v", storedTarget.Phone)
 	}
 }

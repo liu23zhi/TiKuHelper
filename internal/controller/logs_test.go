@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/glebarez/sqlite"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"gorm.io/gorm"
@@ -47,9 +47,15 @@ func TestUserLoginWritesAuditLog(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
+	originalConsume := consumeCaptchaTokenWithDB
+	defer func() { consumeCaptchaTokenWithDB = originalConsume }()
+	consumeCaptchaTokenWithDB = func(token string, scene string, requestIP string) error {
+		return nil
+	}
+
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodGet, "/adapter-service/user/login?username=audit-login-user&password=123456", nil)
+	request := httptest.NewRequest(http.MethodGet, "/adapter-service/user/login?username=audit-login-user&password=123456&captchaToken=token-1", nil)
 	request.RemoteAddr = "10.20.30.40:12345"
 	request.Header.Set("X-Forwarded-For", "10.20.30.40")
 	ctx.Request = request

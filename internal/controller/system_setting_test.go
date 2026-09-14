@@ -84,16 +84,28 @@ func TestSystemSettingDetailReturnsServerErrorWhenLoadFails(t *testing.T) {
 	}
 }
 
-func TestPublicRegisterStatusReturnsCurrentFlag(t *testing.T) {
+func TestPublicRegisterStatusReturnsCurrentFlags(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	original := loadPublicRegisterEnabled
+	original := loadPublicAuthSettings
 	defer func() {
-		loadPublicRegisterEnabled = original
+		loadPublicAuthSettings = original
 	}()
 
-	loadPublicRegisterEnabled = func() (bool, error) {
-		return true, nil
+	loadPublicAuthSettings = func() (service.PublicAuthSettings, error) {
+		return service.PublicAuthSettings{
+			RegisterEnabled:           true,
+			SMSLoginEnabled:           true,
+			WechatLoginEnabled:        true,
+			WechatScanLoginEnabled:    true,
+			WechatCodeLoginEnabled:    true,
+			WechatDefaultLoginMode:    "code",
+			WechatCodeStaticQRCodeURL: "https://wechat.example.com/static-qrcode.png",
+			AlternativeLoginEnabled:   true,
+			CaptchaProvider:           "remote",
+			CaptchaAPIBaseURL:         "https://captcha.example.com",
+			CaptchaType:               "RANDOM",
+		}, nil
 	}
 
 	recorder := httptest.NewRecorder()
@@ -107,26 +119,54 @@ func TestPublicRegisterStatusReturnsCurrentFlag(t *testing.T) {
 	}
 
 	var response struct {
-		RegisterEnabled bool `json:"registerEnabled"`
+		RegisterEnabled           bool   `json:"registerEnabled"`
+		SMSLoginEnabled           bool   `json:"smsLoginEnabled"`
+		WechatLoginEnabled        bool   `json:"wechatLoginEnabled"`
+		WechatScanLoginEnabled    bool   `json:"wechatScanLoginEnabled"`
+		WechatCodeLoginEnabled    bool   `json:"wechatCodeLoginEnabled"`
+		WechatDefaultLoginMode    string `json:"wechatDefaultLoginMode"`
+		WechatCodeStaticQRCodeURL string `json:"wechatCodeStaticQrcodeUrl"`
+		AlternativeLoginEnabled   bool   `json:"alternativeLoginEnabled"`
+		CaptchaProvider           string `json:"captchaProvider"`
+		CaptchaAPIBaseURL         string `json:"captchaApiBaseUrl"`
+		CaptchaType               string `json:"captchaType"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if !response.RegisterEnabled {
-		t.Fatal("expected register enabled true")
+	if !response.RegisterEnabled || !response.SMSLoginEnabled || !response.WechatLoginEnabled || !response.AlternativeLoginEnabled {
+		t.Fatalf("expected both public auth flags true, got %+v", response)
+	}
+	if !response.WechatScanLoginEnabled || !response.WechatCodeLoginEnabled {
+		t.Fatalf("expected both wechat mode flags true, got %+v", response)
+	}
+	if response.WechatDefaultLoginMode != "code" {
+		t.Fatalf("expected default wechat mode code, got %s", response.WechatDefaultLoginMode)
+	}
+	if response.WechatCodeStaticQRCodeURL != "https://wechat.example.com/static-qrcode.png" {
+		t.Fatalf("unexpected static qrcode url %s", response.WechatCodeStaticQRCodeURL)
+	}
+	if response.CaptchaProvider != "remote" {
+		t.Fatalf("expected remote captcha provider, got %s", response.CaptchaProvider)
+	}
+	if response.CaptchaAPIBaseURL != "https://captcha.example.com" {
+		t.Fatalf("expected captcha API base url, got %s", response.CaptchaAPIBaseURL)
+	}
+	if response.CaptchaType != "RANDOM" {
+		t.Fatalf("expected captcha type RANDOM, got %s", response.CaptchaType)
 	}
 }
 
 func TestPublicRegisterStatusReturnsServerErrorWhenLoadFails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	original := loadPublicRegisterEnabled
+	original := loadPublicAuthSettings
 	defer func() {
-		loadPublicRegisterEnabled = original
+		loadPublicAuthSettings = original
 	}()
 
-	loadPublicRegisterEnabled = func() (bool, error) {
-		return false, errors.New("boom")
+	loadPublicAuthSettings = func() (service.PublicAuthSettings, error) {
+		return service.PublicAuthSettings{}, errors.New("boom")
 	}
 
 	recorder := httptest.NewRecorder()

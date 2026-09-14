@@ -1,0 +1,14 @@
+services:
+  tiku-adapter:
+    # image: tiku-adapter
+    build: 
+      context: .
+      dockerfile: Dockerfile
+      target: tiku-adapter
+    container_name: tiku-adapter
+    restart: unless-stopped
+    ports:
+      - "8060:8060"
+    volumes:
+      - ./data:/app/data
+      - ./config.yaml:/app/config.yaml:ro

@@ -43,6 +43,7 @@ const ADMIN_MENU_ITEMS = [
   { key: 'user-usage', label: '个人使用', icon: CreditCardOutlined },
   { key: 'userlist', label: '用户管理', icon: TeamOutlined },
   { key: 'loglist', label: '日志列表', icon: FileTextOutlined },
+  { key: 'recharge-orders', label: '充值记录', icon: CreditCardOutlined },
   { key: 'billing-records', label: '账单明细', icon: AccountBookOutlined },
   { key: 'search-account-config', label: '默认账号配置', icon: SettingOutlined },
   { key: 'ai-search-config', label: 'AI 搜索配置', icon: RobotOutlined },
@@ -53,6 +54,7 @@ const ADMIN_MENU_ITEMS = [
 const USER_MENU_ITEMS = [
   { key: 'user-usage', label: '个人使用', icon: CreditCardOutlined },
   { key: 'access-tokens', label: '令牌管理', icon: SafetyCertificateOutlined },
+  { key: 'recharge-orders', label: '充值记录', icon: CreditCardOutlined },
   { key: 'billing-records', label: '我的账单', icon: AccountBookOutlined },
 ]
 

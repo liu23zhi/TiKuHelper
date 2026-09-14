@@ -6,6 +6,7 @@ import { getPublicRegisterStatus } from '../api/TikuComponentApi'
 import AdapterLoginLayout from '../layout/LoginLayout.vue';
 import AdapterLoginPage from '../pages/Login/index.vue'
 import AdapterRegisterPage from '../pages/Register/index.vue'
+import WechatBind from '../pages/WechatBind/index.vue'
 
 import TikuAdapterLayout from '../layout/TikuAdapterLayout.vue';
 import TikuComponent from '../pages/TikuComponent/index.vue';
@@ -18,6 +19,7 @@ import AISearchConfig from '../pages/AISearchConfig/index.vue'
 import SystemSettings from '../pages/SystemSettings/index.vue'
 import AccessTokenManagement from '../pages/AccessTokenManagement/index.vue'
 import BillingRecordList from '../pages/BillingRecordList/index.vue'
+import RechargeOrderList from '../pages/RechargeOrderList/index.vue'
 import RechargeResult from '../pages/RechargeResult/index.vue'
 const routes = [
   {
@@ -35,8 +37,18 @@ const routes = [
         path: 'register',
         name: 'adapterregister',
         component: AdapterRegisterPage
+      },
+      {
+        path: 'wechat-bind',
+        name: 'wechat-bind',
+        component: WechatBind
       }
     ]
+  },
+  {
+    path: '/adapter/recharge/result',
+    name: 'recharge-result',
+    component: RechargeResult,
   },
   {
     path: '/adapter',
@@ -89,14 +101,14 @@ const routes = [
         component: AccessTokenManagement,
       },
       {
+        path: 'recharge-orders',
+        name: 'recharge-orders',
+        component: RechargeOrderList,
+      },
+      {
         path: 'billing-records',
         name: 'billing-records',
         component: BillingRecordList,
-      },
-      {
-        path: 'recharge/result',
-        name: 'recharge-result',
-        component: RechargeResult,
       }
     ]
   }
@@ -112,6 +124,9 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   'ai-search-config',
   'system-settings',
 ])
+const PUBLIC_ADAPTER_ROUTE_NAMES = new Set([
+  'recharge-result',
+])
 
 const router = createRouter({
   history: createWebHistory(),
@@ -119,6 +134,11 @@ const router = createRouter({
 });
 
 router.beforeEach((to, from, next) => {
+  if (PUBLIC_ADAPTER_ROUTE_NAMES.has(String(to.name || ''))) {
+    next()
+    return
+  }
+
   if (to.path === '/register') {
     getPublicRegisterStatus().then((res) => {
       if (res?.status === 200 && res?.data?.registerEnabled) {

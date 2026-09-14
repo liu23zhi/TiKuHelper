@@ -9,9 +9,18 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/itihey/tikuAdapter/pkg/model"
 )
+
+func TestChatGptClientUsesLongTimeoutForAISearch(t *testing.T) {
+	client := (&ChatGptClient{}).getHTTPClient()
+
+	if client.GetClient().Timeout < 180*time.Second {
+		t.Fatalf("expected AI search timeout to allow slow model responses, got %s", client.GetClient().Timeout)
+	}
+}
 
 type openAIRequestMessagePayload struct {
 	Role    string          `json:"role"`

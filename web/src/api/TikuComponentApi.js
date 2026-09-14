@@ -24,6 +24,77 @@ export function getPublicRegisterStatus() {
   })
 }
 
+export function sendPublicSMSCode(data) {
+  return request({
+    url: `/adapter-service/public/sms-code`,
+    method: 'post',
+    data
+  })
+}
+
+export function createCaptchaChallenge(data) {
+  return request({
+    url: `/adapter-service/public/captcha/challenge`,
+    method: 'post',
+    data
+  })
+}
+
+export function verifyCaptchaChallenge(data) {
+  return request({
+    url: `/adapter-service/public/captcha/verify`,
+    method: 'post',
+    data
+  })
+}
+
+export function verifyRemoteCaptcha(data) {
+  return request({
+    url: `/adapter-service/public/captcha/remote-token`,
+    method: 'post',
+    data
+  })
+}
+
+export function createWechatLoginQRCode() {
+  return request({
+    url: `/adapter-service/public/wechat-login/qrcode`,
+    method: 'post'
+  })
+}
+
+export function getWechatLoginStatus(params) {
+  return request({
+    url: `/adapter-service/public/wechat-login/status`,
+    method: 'get',
+    params
+  })
+}
+
+export function loginWechatByCode(data) {
+  return request({
+    url: `/adapter-service/public/wechat-login/code`,
+    method: 'post',
+    data
+  })
+}
+
+export function bindWechatLogin(data) {
+  return request({
+    url: `/adapter-service/public/wechat-login/bind`,
+    method: 'post',
+    data
+  })
+}
+
+export function loginBySMS(data) {
+  return request({
+    url: `/adapter-service/user/login/sms`,
+    method: 'post',
+    data
+  })
+}
+
 
 export function getPlat() {
   return request({
@@ -150,6 +221,14 @@ export function createRechargeOrder(data) {
     url: `/adapter-service/recharge-orders`,
     method: 'post',
     data
+  })
+}
+
+export function getRechargeOrders(params) {
+  return request({
+    url: `/adapter-service/recharge-orders`,
+    method: 'get',
+    params
   })
 }
 

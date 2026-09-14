@@ -1,6 +1,9 @@
 services:
   tiku-adapter:
-    image: tiku-adapter
+    # image: tiku-adapter
+    build: 
+      context: ..
+      dockerfile: Dockerfile
     container_name: tiku-adapter
     restart: unless-stopped
     ports:
