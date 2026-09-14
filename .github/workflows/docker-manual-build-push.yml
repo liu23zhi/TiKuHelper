@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 env:
-  IMAGE_NAME: tikuAdapter-personal
+  IMAGE_NAME: tikuadapter-personal
   REGISTRY: docker.io
   REGISTRY_PREFIX: docker.io/${{ secrets.DOCKER_USERNAME }}
   DOCKER_FILE_PATH: Dockerfile
