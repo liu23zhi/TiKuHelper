@@ -166,6 +166,29 @@ func TestSetAPIRouterDoesNotRegisterAIModelMappingRoutes(t *testing.T) {
 	}
 }
 
+func TestSetAPIRouterRegistersAIFallbackTaskRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	SetAPIRouter(router)
+
+	expected := map[string]bool{
+		"POST /adapter-service/ai-fallback/tasks": false,
+		"GET /adapter-service/ai-fallback/status": false,
+	}
+	for _, route := range router.Routes() {
+		key := route.Method + " " + route.Path
+		if _, ok := expected[key]; ok {
+			expected[key] = true
+		}
+	}
+	for route, found := range expected {
+		if !found {
+			t.Fatalf("expected route %s to be registered", route)
+		}
+	}
+}
+
 func TestSetAPIRouterHandlesSearchPreflightWithCORSHeaders(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

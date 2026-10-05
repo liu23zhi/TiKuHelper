@@ -236,6 +236,9 @@ func TestListBillingRecordsWithDBMergesSearchChargesByRequestID(t *testing.T) {
 	if merged.QuestionText != "混合搜索题目" {
 		t.Fatalf("expected question text from normal charge, got %q", merged.QuestionText)
 	}
+	if merged.Subject != "搜索答案，题目：混合搜索题目" {
+		t.Fatalf("expected merged subject to identify a search answer and question, got %q", merged.Subject)
+	}
 	if merged.ProviderLabel != "Icodef 题库、AI 搜索" {
 		t.Fatalf("expected merged provider label, got %q", merged.ProviderLabel)
 	}

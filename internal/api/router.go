@@ -25,6 +25,8 @@ func SetAPIRouter(router *gin.Engine) {
 
 	apiRouter.POST("/search", controller.Search)
 	apiRouter.POST("/ai-fallback", controller.AuthOrAccessToken, controller.AIFallback)
+	apiRouter.POST("/ai-fallback/tasks", controller.AuthOrAccessToken, controller.CreateAIFallbackTask)
+	apiRouter.GET("/ai-fallback/status", controller.AuthOrAccessToken, controller.GetAIFallbackTaskStatus)
 	apiRouter.POST("/parser", controller.Auth, middleware.RequireAdmin, controller.Parser)
 
 	apiRouter.GET("/courses", controller.Auth, middleware.RequireAdmin, controller.Courses)
