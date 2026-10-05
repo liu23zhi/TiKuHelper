@@ -15,6 +15,7 @@ const normalSearchBillingRecordType = "normal_search"
 type BillingRecordListItem struct {
 	ID                int32     `json:"id"`
 	UserID            int32     `json:"-"`
+	Username          string    `json:"username"`
 	Type              string    `json:"type"`
 	TypeLabel         string    `json:"typeLabel"`
 	Direction         string    `json:"direction"`
@@ -226,8 +227,9 @@ func loadBillingSearchGroups(db *gorm.DB, records []BillingRecordListItem) (map[
 	var groupRecords []BillingRecordListItem
 	if err := db.
 		Table(entity.TableNameBillingRecord+" AS billing_records").
-		Select("billing_records.id, billing_records.user_id, billing_records.type, billing_records.provider, billing_records.amount, billing_records.created_at, billing_records.unit_price_snapshot, billing_records.request_id, billing_records.remark, access_tokens.name AS access_token_name").
+		Select("billing_records.id, billing_records.user_id, COALESCE(billing_users.username, '') AS username, billing_records.type, billing_records.provider, billing_records.amount, billing_records.created_at, billing_records.unit_price_snapshot, billing_records.request_id, billing_records.remark, access_tokens.name AS access_token_name").
 		Joins("LEFT JOIN "+entity.TableNameAccessToken+" AS access_tokens ON access_tokens.id = billing_records.access_token_id").
+		Joins("LEFT JOIN "+entity.TableNameUser+" AS billing_users ON billing_users.id = billing_records.user_id").
 		Where("billing_records.type = ?", normalSearchBillingRecordType).
 		Where("billing_records.request_id IN ?", requestIDs).
 		Where("billing_records.user_id IN ?", userIDs).
@@ -304,8 +306,9 @@ func ListBillingRecordsWithDB(db *gorm.DB, operator entity.User, page int, pageS
 	var records []BillingRecordListItem
 	offset := (page - 1) * pageSize
 	if err := baseQuery.
-		Select("billing_records.id, billing_records.user_id, billing_records.type, billing_records.provider, billing_records.amount, billing_records.created_at, billing_records.unit_price_snapshot, billing_records.request_id, billing_records.remark, access_tokens.name AS access_token_name").
+		Select("billing_records.id, billing_records.user_id, COALESCE(billing_users.username, '') AS username, billing_records.type, billing_records.provider, billing_records.amount, billing_records.created_at, billing_records.unit_price_snapshot, billing_records.request_id, billing_records.remark, access_tokens.name AS access_token_name").
 		Joins("LEFT JOIN " + entity.TableNameAccessToken + " AS access_tokens ON access_tokens.id = billing_records.access_token_id").
+		Joins("LEFT JOIN " + entity.TableNameUser + " AS billing_users ON billing_users.id = billing_records.user_id").
 		Order("billing_records.id desc").
 		Limit(pageSize).
 		Offset(offset).

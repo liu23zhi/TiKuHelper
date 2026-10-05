@@ -51,8 +51,11 @@
         :pagination="pagination"
         @change="handleTableChange"
         row-key="id"
-        :scroll="{ x: 1180 }"
+        :scroll="{ x: 1340 }"
       >
+        <template #username="{ record }">
+          <span>{{ record.username || '-' }}</span>
+        </template>
         <template #typeLabel="{ record }">
           <a-tag :color="record.direction === 'income' ? 'green' : 'blue'">{{ buildBillingRecordTypeText(record) }}</a-tag>
         </template>
@@ -147,21 +150,8 @@ export default defineComponent({
         ? '管理员可查看全部账单。'
         : '这里只展示当前账号自己的账单流水，便于快速查看每次消费或充值对应的来源、单号与时间。'
     ))
-
-    return {
-      dataSource,
-      tableLoading,
-      pagination,
-      summary,
-      pageTitle,
-      pageSubtitle,
-      alertMessage,
-      buildBillingRecordAmountText,
-      buildBillingRecordReferenceText,
-      buildBillingRecordSourceText,
-      buildBillingRecordSubjectText,
-      buildBillingRecordTypeText,
-      columns: [
+    const columns = computed(() => {
+      const baseColumns = [
         {
           title: '账单 ID',
           dataIndex: 'id',
@@ -231,7 +221,41 @@ export default defineComponent({
             customRender: 'createdAt',
           },
         },
-      ],
+      ]
+
+      if (!isAdmin.value) {
+        return baseColumns
+      }
+
+      return [
+        baseColumns[0],
+        {
+          title: '用户名',
+          dataIndex: 'username',
+          key: 'username',
+          width: 160,
+          slots: {
+            customRender: 'username',
+          },
+        },
+        ...baseColumns.slice(1),
+      ]
+    })
+
+    return {
+      dataSource,
+      tableLoading,
+      pagination,
+      summary,
+      pageTitle,
+      pageSubtitle,
+      alertMessage,
+      columns,
+      buildBillingRecordAmountText,
+      buildBillingRecordReferenceText,
+      buildBillingRecordSourceText,
+      buildBillingRecordSubjectText,
+      buildBillingRecordTypeText,
     }
   },
   mounted() {

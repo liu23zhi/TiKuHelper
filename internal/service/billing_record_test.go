@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -111,6 +112,32 @@ func TestListBillingRecordsWithDBScopesByRole(t *testing.T) {
 	}
 	if adminResult.Data[0].ID != otherRecord.ID || adminResult.Data[1].ID != ownerRecord.ID {
 		t.Fatalf("expected admin records ordered desc by id, got %+v", adminResult.Data)
+	}
+}
+
+func TestListBillingRecordsWithDBIncludesUsername(t *testing.T) {
+	db := newBillingRecordTestDB(t)
+	owner := seedBillingRecordUser(t, db, 2, "user")
+	seedBillingRecord(t, db, owner.ID, "req-username", 1.25)
+
+	result, err := ListBillingRecordsWithDB(db, owner, 1, 10)
+	if err != nil {
+		t.Fatalf("list billing records: %v", err)
+	}
+	if len(result.Data) != 1 {
+		t.Fatalf("expected one billing record, got %+v", result.Data)
+	}
+
+	payload, err := json.Marshal(result.Data[0])
+	if err != nil {
+		t.Fatalf("marshal billing record: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("unmarshal billing record: %v", err)
+	}
+	if decoded["username"] != owner.Username {
+		t.Fatalf("expected username %q, got %#v", owner.Username, decoded["username"])
 	}
 }
 

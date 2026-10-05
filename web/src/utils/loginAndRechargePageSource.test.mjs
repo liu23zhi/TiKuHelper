@@ -162,3 +162,19 @@ test('Billing pages render mixed ledger fields instead of search-only columns', 
     assert.doesNotMatch(content, /title: '消费金额'/);
   }
 });
+
+test('Billing record list renders the billing owner username', async () => {
+  const content = await readFile(path.join(__dirname, '..', 'pages', 'BillingRecordList', 'index.vue'), 'utf8');
+
+  assert.match(content, /#username="\{ record \}"/);
+  assert.match(content, /record\.username/);
+  assert.match(content, /title: '用户名'/);
+  assert.match(content, /if \(!isAdmin\.value\) \{\s+return baseColumns/);
+});
+
+test('Personal billing flow does not render the owner username column', async () => {
+  const content = await readFile(userUsagePagePath, 'utf8');
+
+  assert.doesNotMatch(content, /#username="\{ record \}"/);
+  assert.doesNotMatch(content, /title: '用户名'/);
+});
