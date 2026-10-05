@@ -827,25 +827,45 @@ func TestSearchPersistsAIBillingDuringDefaultMixedSearch(t *testing.T) {
 	if err := db.Where("user_id = ? AND access_token_id = ?", user.ID, token.ID).Find(&records).Error; err != nil {
 		t.Fatalf("load mixed ai billing records: %v", err)
 	}
-	if len(records) != 1 {
-		t.Fatalf("expected one mixed ai billing record, got %+v", records)
+	if len(records) != 2 {
+		t.Fatalf("expected separate normal and ai billing records, got %+v", records)
 	}
-	if records[0].Provider != searchModeAI || records[0].Amount != 3.75 {
-		t.Fatalf("expected mixed search to bill ai token usage 3.75, got %+v", records[0])
+	recordsByProvider := make(map[string]entity.BillingRecord, len(records))
+	for _, record := range records {
+		recordsByProvider[record.Provider] = record
 	}
-	if records[0].BalanceBefore != 10 || records[0].BalanceAfter != 6.25 {
-		t.Fatalf("expected mixed ai billing balance 10 -> 6.25, got %+v", records[0])
+	normalRecord, ok := recordsByProvider["icodef"]
+	if !ok {
+		t.Fatalf("expected separate normal billing record, got %+v", records)
 	}
-	if records[0].ModelName != "gpt-mixed-billing" ||
-		records[0].InputTokens != 1000 ||
-		records[0].OutputTokens != 500 ||
-		records[0].TotalTokens != 1500 {
-		t.Fatalf("expected mixed ai billing token metadata, got %+v", records[0])
+	if normalRecord.Amount != 1 || normalRecord.BalanceBefore != 10 || normalRecord.BalanceAfter != 9 {
+		t.Fatalf("expected separate normal billing balance 10 -> 9, got %+v", normalRecord)
+	}
+	aiRecord, ok := recordsByProvider[searchModeAI]
+	if !ok {
+		t.Fatalf("expected separate ai billing record, got %+v", records)
+	}
+	if aiRecord.Amount != 3.75 || aiRecord.BalanceBefore != 9 || aiRecord.BalanceAfter != 5.25 {
+		t.Fatalf("expected separate ai billing balance 9 -> 5.25, got %+v", aiRecord)
+	}
+	if aiRecord.ModelName != "gpt-mixed-billing" ||
+		aiRecord.InputTokens != 1000 ||
+		aiRecord.OutputTokens != 500 ||
+		aiRecord.TotalTokens != 1500 {
+		t.Fatalf("expected mixed ai billing token metadata, got %+v", aiRecord)
 	}
 	for _, part := range []string{"provider=ai", "model=gpt-mixed-billing", "inputTokens=1000", "outputTokens=500"} {
-		if !strings.Contains(records[0].UnitPriceSnapshot, part) {
-			t.Fatalf("expected mixed ai snapshot to contain %q, got %q", part, records[0].UnitPriceSnapshot)
+		if !strings.Contains(aiRecord.UnitPriceSnapshot, part) {
+			t.Fatalf("expected mixed ai snapshot to contain %q, got %q", part, aiRecord.UnitPriceSnapshot)
 		}
+	}
+
+	var storedToken entity.AccessToken
+	if err := db.Where("id = ?", token.ID).First(&storedToken).Error; err != nil {
+		t.Fatalf("load mixed billing access token: %v", err)
+	}
+	if storedToken.TotalAmountUsed != 4.75 {
+		t.Fatalf("expected mixed billing total amount used 4.75, got %v", storedToken.TotalAmountUsed)
 	}
 }
 

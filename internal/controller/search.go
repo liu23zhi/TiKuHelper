@@ -818,24 +818,25 @@ func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQue
 		return
 	}
 
-	charge, err := resolveCompletedSearchBillingCharge(db, resolved, useQuery, req, aiUsage, usedLocalSearch)
+	charges, err := resolveCompletedSearchBillingCharges(db, resolved, useQuery, req, aiUsage, usedLocalSearch)
 	if err != nil {
 		logger.SysError(fmt.Sprintf("搜索计费落账失败：%s requestId=%s", err.Error(), resolved.RequestID))
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_charge_resolve_failed", clientIP, audit)
 		return
 	}
-	if charge.Amount <= 0 {
+	totalAmount := completedSearchBillingAmount(charges)
+	if totalAmount <= 0 {
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_zero_amount", clientIP, audit)
 		return
 	}
 
-	if err := persistSearchBillingRecordWithDB(db, ctx, charge); err != nil {
+	if err := persistSearchBillingRecordsWithDB(db, ctx, charges); err != nil {
 		logger.SysError(fmt.Sprintf("搜索计费落账失败：%s requestId=%s", err.Error(), resolved.RequestID))
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_persist_failed", clientIP, audit)
 		return
 	}
 
-	writeCompletedSearchAuditLog(resolved, useQuery, result, charge.Provider, clientIP, audit)
+	writeCompletedSearchAuditLog(resolved, useQuery, result, completedSearchBillingProviderLabel(charges), clientIP, audit)
 }
 
 func resolveSearchPersistenceDB() *gorm.DB {
@@ -855,38 +856,59 @@ func resolveSearchPersistenceDB() *gorm.DB {
 	return fallback.Session(&gorm.Session{NewDB: true})
 }
 
-func resolveCompletedSearchBillingCharge(db *gorm.DB, resolved resolvedSearchRequestContext, useQuery string, req model.SearchRequest, aiUsage search.AISearchUsage, usedLocalSearch bool) (searchBillingCharge, error) {
-	// Default search can execute AI while SearchMode remains "normal".
-	// When default AI produced usage, token billing takes precedence over a flat provider charge.
-	if (resolved.UsedDefaultAI && hasAISearchUsage(aiUsage)) || resolved.SearchMode == searchModeAI {
+func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRequestContext, useQuery string, req model.SearchRequest, aiUsage search.AISearchUsage, usedLocalSearch bool) ([]searchBillingCharge, error) {
+	charges := make([]searchBillingCharge, 0, 2)
+
+	if resolved.SearchMode == searchModeNormal {
+		provider := resolveCompletedSearchBillingProvider(useQuery, resolved.UsedDefaultSearchProviders, usedLocalSearch)
+		if provider != "" {
+			var config entity.SearchAccountConfig
+			if err := db.Where("provider = ?", provider).First(&config).Error; err != nil {
+				return nil, err
+			}
+
+			amount := roundCurrencyAmount(config.FlatPrice)
+			if amount > 0 {
+				charges = append(charges, searchBillingCharge{
+					Provider: provider,
+					Amount:   amount,
+					Snapshot: buildCompletedSearchBillingSnapshot(db, provider, amount, req, usedLocalSearch),
+				})
+			}
+		}
+	}
+
+	// Default search can execute AI while SearchMode remains "normal". AI usage is
+	// billed as a separate record so it never replaces the normal provider charge.
+	if resolved.UsedDefaultAI && hasAISearchUsage(aiUsage) {
 		charge, err := resolveCompletedAIBillingCharge(db, resolved, aiUsage)
 		if err != nil {
-			return searchBillingCharge{}, err
+			return nil, err
 		}
-		if charge.Amount > 0 || resolved.SearchMode == searchModeAI {
-			return charge, nil
+		if charge.Amount > 0 {
+			charges = append(charges, charge)
 		}
 	}
-	if resolved.SearchMode != searchModeNormal {
-		return searchBillingCharge{}, nil
-	}
 
-	provider := resolveCompletedSearchBillingProvider(useQuery, resolved.UsedDefaultSearchProviders, usedLocalSearch)
-	if provider == "" {
-		return searchBillingCharge{}, nil
-	}
+	return charges, nil
+}
 
-	var config entity.SearchAccountConfig
-	if err := db.Where("provider = ?", provider).First(&config).Error; err != nil {
-		return searchBillingCharge{}, err
+func completedSearchBillingAmount(charges []searchBillingCharge) float64 {
+	total := float64(0)
+	for _, charge := range charges {
+		total += charge.Amount
 	}
+	return roundCurrencyAmount(total)
+}
 
-	amount := roundCurrencyAmount(config.FlatPrice)
-	return searchBillingCharge{
-		Provider: provider,
-		Amount:   amount,
-		Snapshot: buildCompletedSearchBillingSnapshot(db, provider, amount, req, usedLocalSearch),
-	}, nil
+func completedSearchBillingProviderLabel(charges []searchBillingCharge) string {
+	providers := make([]string, 0, len(charges))
+	for _, charge := range charges {
+		if provider := strings.TrimSpace(charge.Provider); provider != "" {
+			providers = append(providers, provider)
+		}
+	}
+	return strings.Join(providers, ",")
 }
 
 func resolveCompletedAIBillingCharge(db *gorm.DB, resolved resolvedSearchRequestContext, usage search.AISearchUsage) (searchBillingCharge, error) {
@@ -1032,7 +1054,7 @@ func roundCurrencyAmount(amount float64) float64 {
 	return math.Round(amount*100) / 100
 }
 
-func persistSearchBillingRecordWithDB(db *gorm.DB, ctx searchBillingContext, charge searchBillingCharge) error {
+func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, charges []searchBillingCharge) error {
 	return db.Transaction(func(tx *gorm.DB) error {
 		var accessToken entity.AccessToken
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", ctx.AccessTokenID).First(&accessToken).Error; err != nil {
@@ -1044,30 +1066,38 @@ func persistSearchBillingRecordWithDB(db *gorm.DB, ctx searchBillingContext, cha
 			return err
 		}
 
-		balanceBefore := roundCurrencyAmount(user.Balance)
-		balanceAfter := roundCurrencyAmount(balanceBefore - charge.Amount)
-		billingRecord := entity.BillingRecord{
-			UserID:             ctx.UserID,
-			AccessTokenID:      ctx.AccessTokenID,
-			Type:               searchBillingRecordTypeNormal,
-			UsedDefaultAccount: ctx.UsedDefaultAccount,
-			Provider:           charge.Provider,
-			ModelName:          charge.ModelName,
-			InputTokens:        charge.InputTokens,
-			OutputTokens:       charge.OutputTokens,
-			TotalTokens:        charge.TotalTokens,
-			Amount:             charge.Amount,
-			BalanceBefore:      balanceBefore,
-			BalanceAfter:       balanceAfter,
-			RequestID:          ctx.RequestID,
-			UnitPriceSnapshot:  charge.Snapshot,
-			Remark:             "搜索答题消耗",
-		}
-		if err := tx.Create(&billingRecord).Error; err != nil {
-			return err
+		balanceAfter := roundCurrencyAmount(user.Balance)
+		totalCharged := float64(0)
+		for _, charge := range charges {
+			if charge.Amount <= 0 {
+				continue
+			}
+			balanceBefore := balanceAfter
+			balanceAfter = roundCurrencyAmount(balanceBefore - charge.Amount)
+			billingRecord := entity.BillingRecord{
+				UserID:             ctx.UserID,
+				AccessTokenID:      ctx.AccessTokenID,
+				Type:               searchBillingRecordTypeNormal,
+				UsedDefaultAccount: ctx.UsedDefaultAccount,
+				Provider:           charge.Provider,
+				ModelName:          charge.ModelName,
+				InputTokens:        charge.InputTokens,
+				OutputTokens:       charge.OutputTokens,
+				TotalTokens:        charge.TotalTokens,
+				Amount:             charge.Amount,
+				BalanceBefore:      balanceBefore,
+				BalanceAfter:       balanceAfter,
+				RequestID:          ctx.RequestID,
+				UnitPriceSnapshot:  charge.Snapshot,
+				Remark:             "搜索答题消耗",
+			}
+			if err := tx.Create(&billingRecord).Error; err != nil {
+				return err
+			}
+			totalCharged += charge.Amount
 		}
 
-		totalAmountUsedAfter := roundCurrencyAmount(accessToken.TotalAmountUsed + charge.Amount)
+		totalAmountUsedAfter := roundCurrencyAmount(accessToken.TotalAmountUsed + totalCharged)
 		if err := tx.Model(&accessToken).Where("id = ?", accessToken.ID).Update("total_amount_used", totalAmountUsedAfter).Error; err != nil {
 			return err
 		}
