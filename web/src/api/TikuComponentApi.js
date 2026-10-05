@@ -164,6 +164,37 @@ export function getCurrentUser() {
   })
 }
 
+export function sendUserPhoneChangeSMSCode(data) {
+  return request({
+    url: `/adapter-service/user/phone/sms-code`,
+    method: 'post',
+    data
+  })
+}
+
+export function updateCurrentUserPhone(data) {
+  return request({
+    url: `/adapter-service/user/phone`,
+    method: 'put',
+    data
+  })
+}
+
+export function bindCurrentUserWechat(data) {
+  return request({
+    url: `/adapter-service/user/wechat/bind`,
+    method: 'post',
+    data
+  })
+}
+
+export function unbindCurrentUserWechat() {
+  return request({
+    url: `/adapter-service/user/wechat`,
+    method: 'delete'
+  })
+}
+
 // 获取用户列表
 export function getUserList() {
   return request({

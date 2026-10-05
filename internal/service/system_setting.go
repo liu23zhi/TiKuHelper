@@ -9,6 +9,7 @@ import (
 )
 
 const RegisterEnabledSettingKey = "register_enabled"
+const SiteNameSettingKey = "site_name"
 const PaymentProviderSettingKey = "payment_provider"
 const PaymentMethodSettingKey = "payment_method"
 const EPayVersionSettingKey = "epay_version"
@@ -41,6 +42,7 @@ const SMSBaoRegionModeSettingKey = "smsbao_region_mode"
 const DefaultPaymentProvider = "epay"
 const DefaultPaymentMethod = "alipay"
 const DefaultEPayVersion = "v2"
+const DefaultSiteName = "题库"
 const DefaultSMSProvider = "smsbao"
 const DefaultSMSCodeTemplate = "【{sign}】您的验证码是{code}，5分钟内有效。"
 const DefaultCaptchaProvider = "remote"
@@ -57,6 +59,7 @@ const wechatLoginModeCode = "code"
 
 type SystemSettingDetail struct {
 	RegisterEnabled           bool   `json:"registerEnabled"`
+	SiteName                  string `json:"siteName"`
 	AlternativeLoginEnabled   bool   `json:"alternativeLoginEnabled"`
 	EPayVersion               string `json:"epayVersion"`
 	EPayGatewayURL            string `json:"epayGatewayUrl"`
@@ -88,6 +91,7 @@ type SystemSettingDetail struct {
 
 type UpdateSystemSettingInput struct {
 	RegisterEnabled           bool   `json:"registerEnabled"`
+	SiteName                  string `json:"siteName"`
 	EPayVersion               string `json:"epayVersion"`
 	EPayGatewayURL            string `json:"epayGatewayUrl"`
 	EPayPartnerID             string `json:"epayPartnerId"`
@@ -118,6 +122,7 @@ type UpdateSystemSettingInput struct {
 
 type PublicAuthSettings struct {
 	RegisterEnabled           bool   `json:"registerEnabled"`
+	SiteName                  string `json:"siteName"`
 	SMSLoginEnabled           bool   `json:"smsLoginEnabled"`
 	WechatLoginEnabled        bool   `json:"wechatLoginEnabled"`
 	WechatScanLoginEnabled    bool   `json:"wechatScanLoginEnabled"`
@@ -180,6 +185,7 @@ func GetPublicAuthSettingsWithDB(db *gorm.DB) (PublicAuthSettings, error) {
 	publicWechatDefaultLoginMode := normalizeEnabledWechatLoginMode(wechatSettings.WechatDefaultLoginMode, publicWechatScanLoginEnabled, publicWechatCodeLoginEnabled)
 	return PublicAuthSettings{
 		RegisterEnabled:           registerEnabled,
+		SiteName:                  normalizeSiteName(getSystemSettingStringWithDefault(db, SiteNameSettingKey, DefaultSiteName)),
 		SMSLoginEnabled:           smsLoginEnabled,
 		WechatLoginEnabled:        publicWechatLoginEnabled,
 		WechatScanLoginEnabled:    publicWechatScanLoginEnabled,
@@ -203,6 +209,7 @@ func GetSystemSettingDetailWithDB(db *gorm.DB) (SystemSettingDetail, error) {
 	wechatSettings := getNormalizedWechatLoginSettingsWithDB(db)
 	detail := SystemSettingDetail{
 		RegisterEnabled:           registerEnabled,
+		SiteName:                  normalizeSiteName(getSystemSettingStringWithDefault(db, SiteNameSettingKey, DefaultSiteName)),
 		AlternativeLoginEnabled:   smsLoginEnabled || wechatSettings.WechatLoginEnabled,
 		EPayVersion:               DefaultEPayVersion,
 		EPayGatewayURL:            getSystemSettingStringWithDefault(db, EPayGatewayURLSettingKey, ""),
@@ -248,6 +255,7 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 	}
 	normalized := SystemSettingDetail{
 		RegisterEnabled:           input.RegisterEnabled,
+		SiteName:                  normalizeSiteName(input.SiteName),
 		EPayVersion:               normalizeEPayVersion(input.EPayVersion),
 		EPayGatewayURL:            strings.TrimSpace(input.EPayGatewayURL),
 		EPayPartnerID:             strings.TrimSpace(input.EPayPartnerID),
@@ -282,6 +290,7 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		value  string
 		remark string
 	}{
+		{SiteNameSettingKey, normalized.SiteName, "网站名称"},
 		{PaymentProviderSettingKey, normalizePaymentProvider(DefaultPaymentProvider), "支付提供方"},
 		{EPayVersionSettingKey, normalized.EPayVersion, "易支付接口版本"},
 		{EPayGatewayURLSettingKey, normalized.EPayGatewayURL, "易支付网关地址"},
@@ -368,6 +377,14 @@ func defaultString(value string, fallback string) string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
 		return fallback
+	}
+	return trimmed
+}
+
+func normalizeSiteName(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return DefaultSiteName
 	}
 	return trimmed
 }

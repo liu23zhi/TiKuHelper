@@ -145,3 +145,37 @@ func TestUpdateUserPhoneWithDBReassignsPhoneWhenForced(t *testing.T) {
 		t.Fatalf("expected old owner phone to be cleared, got %+v", reloadedOwner)
 	}
 }
+
+func TestUpdateUserPhoneWithVerificationConsumesNewPhoneCode(t *testing.T) {
+	db := newPhoneBindingTestDB(t)
+	if err := db.AutoMigrate(&entity.SMSVerificationCode{}); err != nil {
+		t.Fatalf("migrate sms verification table: %v", err)
+	}
+	user := entity.User{ID: 8, Username: "phone-change", Password: "123456", Role: "user", Status: "enabled", RegisterSource: "public"}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := db.Create(&entity.SMSVerificationCode{
+		Phone:     "13900000000",
+		Scene:     SMSSceneChangePhone,
+		CodeHash:  hashSMSCode("123456"),
+		Status:    SMSCodeStatusPending,
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+	}).Error; err != nil {
+		t.Fatalf("seed sms code: %v", err)
+	}
+
+	updated, err := UpdateUserPhoneWithVerificationWithDB(db, 8, "13900000000", "123456")
+	if err != nil {
+		t.Fatalf("update phone with verification: %v", err)
+	}
+	if updated.Phone == nil || *updated.Phone != "13900000000" {
+		t.Fatalf("expected new phone, got %+v", updated.Phone)
+	}
+	if updated.PhoneBoundAt == nil {
+		t.Fatal("expected phone bound time")
+	}
+	if err := VerifySMSCodeWithDB(db, "13900000000", SMSSceneChangePhone, "123456"); err == nil {
+		t.Fatal("expected verification code to be consumed once")
+	}
+}

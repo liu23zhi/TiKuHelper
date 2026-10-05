@@ -1146,3 +1146,129 @@ func TestUpdateUserForceReassignsPhone(t *testing.T) {
 		t.Fatalf("expected target phone reassigned, got %+v", storedTarget.Phone)
 	}
 }
+
+func TestSendUserPhoneChangeSMSCodeUsesAuthenticatedUser(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	_ = newUserControllerTestDB(t)
+
+	originalConsume := consumeCaptchaTokenWithDB
+	originalSend := sendUserPhoneChangeSMSCodeWithDB
+	defer func() {
+		consumeCaptchaTokenWithDB = originalConsume
+		sendUserPhoneChangeSMSCodeWithDB = originalSend
+	}()
+
+	var sent service.SendSMSCodeInput
+	consumeCaptchaTokenWithDB = func(token string, scene string, requestIP string) error {
+		if token != "captcha-token" || scene != service.CaptchaSceneSMSSendChangePhone {
+			t.Fatalf("unexpected captcha consume token=%s scene=%s", token, scene)
+		}
+		return nil
+	}
+	sendUserPhoneChangeSMSCodeWithDB = func(input service.SendSMSCodeInput) error {
+		sent = input
+		return nil
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Set("user", &entity.User{ID: 301, Username: "profile-user", Status: "enabled"})
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/phone/sms-code", bytes.NewBufferString(`{"phone":"13900000000","captchaToken":"captcha-token"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	SendUserPhoneChangeSMSCode(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	if sent.Phone != "13900000000" || sent.Scene != service.SMSSceneChangePhone || sent.TargetUserID != 301 {
+		t.Fatalf("unexpected sms input %+v", sent)
+	}
+}
+
+func TestUpdateCurrentUserPhoneUsesAuthenticatedUser(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	_ = newUserControllerTestDB(t)
+
+	original := updateUserPhoneWithVerificationWithDB
+	defer func() { updateUserPhoneWithVerificationWithDB = original }()
+	var receivedUserID int32
+	var receivedPhone string
+	var receivedCode string
+	updateUserPhoneWithVerificationWithDB = func(userID int32, phone string, smsCode string) (entity.User, error) {
+		receivedUserID = userID
+		receivedPhone = phone
+		receivedCode = smsCode
+		return entity.User{ID: userID, Username: "profile-user", Phone: &phone}, nil
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Set("user", &entity.User{ID: 302, Username: "profile-user", Status: "enabled"})
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/user/phone", bytes.NewBufferString(`{"phone":"13900000000","smsCode":"123456"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	UpdateCurrentUserPhone(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	if receivedUserID != 302 || receivedPhone != "13900000000" || receivedCode != "123456" {
+		t.Fatalf("unexpected update input user=%d phone=%s code=%s", receivedUserID, receivedPhone, receivedCode)
+	}
+}
+
+func TestBindAndUnbindCurrentUserWechatUseAuthenticatedUser(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	_ = newUserControllerTestDB(t)
+
+	originalBind := bindCurrentUserWechatWithDB
+	originalUnbind := unbindCurrentUserWechatWithDB
+	defer func() {
+		bindCurrentUserWechatWithDB = originalBind
+		unbindCurrentUserWechatWithDB = originalUnbind
+	}()
+
+	var boundUserID int32
+	var bindToken string
+	bindCurrentUserWechatWithDB = func(token string, userID int32) (entity.User, error) {
+		bindToken = token
+		boundUserID = userID
+		wechatID := "openid-profile"
+		return entity.User{ID: userID, Username: "profile-user", WechatID: &wechatID}, nil
+	}
+	var unboundUserID int32
+	unbindCurrentUserWechatWithDB = func(userID int32) (entity.User, error) {
+		unboundUserID = userID
+		return entity.User{ID: userID, Username: "profile-user"}, nil
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Set("user", &entity.User{ID: 303, Username: "profile-user", Status: "enabled"})
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/wechat/bind", bytes.NewBufferString(`{"bindToken":"bind-token"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	BindCurrentUserWechat(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected bind status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	if boundUserID != 303 || bindToken != "bind-token" {
+		t.Fatalf("unexpected bind input user=%d token=%s", boundUserID, bindToken)
+	}
+
+	recorder = httptest.NewRecorder()
+	ctx, _ = gin.CreateTestContext(recorder)
+	ctx.Set("user", &entity.User{ID: 303, Username: "profile-user", Status: "enabled"})
+	ctx.Request = httptest.NewRequest(http.MethodDelete, "/adapter-service/user/wechat", nil)
+
+	UnbindCurrentUserWechat(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected unbind status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	if unboundUserID != 303 {
+		t.Fatalf("unexpected unbind user %d", unboundUserID)
+	}
+}

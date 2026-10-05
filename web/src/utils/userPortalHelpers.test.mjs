@@ -31,6 +31,7 @@ test('buildRegisterSourceLabel maps system registrations to initialization wordi
 
 test('buildPortalMenuKeys includes personal usage for admin users', () => {
   assert.deepEqual(buildPortalMenuKeys({ role: 'admin' }), [
+    'profile',
     'component',
     'import',
     'user-usage',
@@ -44,6 +45,7 @@ test('buildPortalMenuKeys includes personal usage for admin users', () => {
     'access-tokens',
   ]);
   assert.deepEqual(buildPortalMenuKeys({ role: 'user' }), [
+    'profile',
     'user-usage',
     'access-tokens',
     'recharge-orders',

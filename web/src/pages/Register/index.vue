@@ -73,7 +73,13 @@
                   <SafetyCertificateOutlined style="color: rgba(0, 0, 0, 0.25)" />
                 </template>
               </a-input>
-              <a-button :loading="sendingCode" @click="sendRegisterCode">发送验证码</a-button>
+              <a-button
+                :loading="sendingCode"
+                :disabled="sendingCode || smsCooldownActive"
+                @click="sendRegisterCode"
+              >
+                {{ smsCooldownText }}
+              </a-button>
             </div>
           </a-form-item>
           <a-form-item>
@@ -119,6 +125,8 @@ import {
   normalizeSMSCodeInput,
 } from '../../utils/captchaHelpers.mjs'
 import { ensureAuthCaptchaToken } from '../../utils/captchaDialog.mjs'
+import { useSmsCooldown } from '../../utils/smsCooldown.js'
+import { applySiteName } from '../../utils/siteName.js'
 import { message } from 'ant-design-vue';
 import { useRouter } from 'vue-router';
 
@@ -131,8 +139,10 @@ export default defineComponent({
     const router = useRouter()
     const submitting = ref(false)
     const sendingCode = ref(false)
+    const smsCooldown = useSmsCooldown()
     const registerDisabledNotice = ref('')
     const publicAuthSettings = ref({
+      siteName: '题库',
       registerEnabled: false,
       smsLoginEnabled: false,
       wechatLoginEnabled: false,
@@ -163,6 +173,7 @@ export default defineComponent({
       return getPublicRegisterStatus().then((res) => {
         if (res?.status === 200) {
           publicAuthSettings.value = {
+            siteName: res?.data?.siteName || '题库',
             registerEnabled: !!res?.data?.registerEnabled,
             smsLoginEnabled: !!res?.data?.smsLoginEnabled,
             wechatLoginEnabled: !!res?.data?.wechatLoginEnabled,
@@ -171,6 +182,7 @@ export default defineComponent({
             captchaApiBaseUrl: res?.data?.captchaApiBaseUrl || 'https://captcha.api.zelly.cn',
             captchaType: res?.data?.captchaType || 'RANDOM',
           }
+          applySiteName(publicAuthSettings.value.siteName)
         }
         return res
       })
@@ -192,6 +204,7 @@ export default defineComponent({
         const res = await sendPublicSMSCode(buildPublicSMSCodePayload(registerForm, 'register'))
         if (res?.status === 200) {
           message.success(res?.message || '发送成功，请注意查收')
+          smsCooldown.start()
         } else {
           message.error(res?.message || '发送失败')
         }
@@ -254,6 +267,9 @@ export default defineComponent({
     return {
       submitting,
       sendingCode,
+      smsCooldownText: smsCooldown.buttonText,
+      smsCooldownActive: smsCooldown.active,
+      startSmsCooldown: smsCooldown.start,
       registerDisabledNotice,
       publicAuthSettings,
       registerForm,

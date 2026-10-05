@@ -50,7 +50,11 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.POST("/public/wechat-login/code", controller.LoginWechatByCode)
 	apiRouter.POST("/public/wechat-login/bind", controller.BindWechatLogin)
 	apiRouter.GET("/public/wechat/user", controller.LegacyWechatUserByCode)
-	apiRouter.GET("/user/info", controller.Auth, controller.UserInfo)                        // 当前登录用户
+	apiRouter.GET("/user/info", controller.Auth, controller.UserInfo) // 当前登录用户
+	apiRouter.POST("/user/phone/sms-code", controller.Auth, controller.SendUserPhoneChangeSMSCode)
+	apiRouter.PUT("/user/phone", controller.Auth, controller.UpdateCurrentUserPhone)
+	apiRouter.POST("/user/wechat/bind", controller.Auth, controller.BindCurrentUserWechat)
+	apiRouter.DELETE("/user/wechat", controller.Auth, controller.UnbindCurrentUserWechat)
 	apiRouter.GET("/user", controller.Auth, controller.UserList)                             // 自己创建的用户列表
 	apiRouter.POST("/user", controller.Auth, controller.CreateUser)                          // 创建用户
 	apiRouter.PUT("/user/:id", controller.Auth, controller.UpdateUser)                       // 更新用户

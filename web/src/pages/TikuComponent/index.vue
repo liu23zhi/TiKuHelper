@@ -255,12 +255,6 @@ const columns = [
     },
   },
   {
-    title: '课程名称',
-    width: 170,
-    dataIndex: 'course_name',
-    key: 'course_name',
-  },
-  {
     title: '问题',
     width: 520,
     dataIndex: 'question',

@@ -177,6 +177,76 @@ func TestSendSMSCodeWithDBRejectsUnboundLoginPhone(t *testing.T) {
 	}
 }
 
+func TestSendSMSCodeWithDBAllowsChangePhoneForCurrentUser(t *testing.T) {
+	db := newSMSVerificationTestDB(t)
+	seedSMSSettings(t, db)
+	currentPhone := "13800000000"
+	if err := db.Create(&entity.User{
+		ID:             77,
+		Username:       "phone-owner",
+		Password:       "123456",
+		Role:           "user",
+		Status:         "enabled",
+		RegisterSource: "public",
+		Phone:          &currentPhone,
+	}).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	smsSender = func(settings SystemSettingDetail) SMSProvider {
+		return stubSMSProvider(func(phone string, content string) error { return nil })
+	}
+	defer func() { smsSender = newSMSProviderFromSettings }()
+
+	if err := SendSMSCodeWithDB(db, SendSMSCodeInput{
+		Phone:        "13900000000",
+		Scene:        SMSSceneChangePhone,
+		RequestIP:    "127.0.0.1",
+		TargetUserID: 77,
+	}); err != nil {
+		t.Fatalf("send change-phone code: %v", err)
+	}
+
+	var count int64
+	if err := db.Model(&entity.SMSVerificationCode{}).Where("phone = ? AND scene = ?", "13900000000", SMSSceneChangePhone).Count(&count).Error; err != nil {
+		t.Fatalf("count sms codes: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected one change-phone code, got %d", count)
+	}
+}
+
+func TestSendSMSCodeWithDBRejectsChangePhoneOwnedByAnotherUser(t *testing.T) {
+	db := newSMSVerificationTestDB(t)
+	seedSMSSettings(t, db)
+	occupiedPhone := "13900000000"
+	if err := db.Create(&entity.User{
+		ID:             78,
+		Username:       "phone-owner-other",
+		Password:       "123456",
+		Role:           "user",
+		Status:         "enabled",
+		RegisterSource: "public",
+		Phone:          &occupiedPhone,
+	}).Error; err != nil {
+		t.Fatalf("create occupied user: %v", err)
+	}
+
+	smsSender = func(settings SystemSettingDetail) SMSProvider {
+		return stubSMSProvider(func(phone string, content string) error { return nil })
+	}
+	defer func() { smsSender = newSMSProviderFromSettings }()
+
+	if err := SendSMSCodeWithDB(db, SendSMSCodeInput{
+		Phone:        occupiedPhone,
+		Scene:        SMSSceneChangePhone,
+		RequestIP:    "127.0.0.1",
+		TargetUserID: 77,
+	}); err == nil {
+		t.Fatal("expected occupied change-phone number to fail")
+	}
+}
+
 func TestSendSMSCodeWithDBUsesSMSVerificationTableEvenWithUserScopedDB(t *testing.T) {
 	db := newSMSVerificationTestDB(t)
 	seedSMSSettings(t, db)

@@ -24,6 +24,7 @@
 import { defineComponent, computed, ref, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import {
+  UserOutlined,
   PieChartOutlined,
   DownloadOutlined,
   TeamOutlined,
@@ -38,6 +39,7 @@ import {
 import { isAdminUser } from '../../utils/currentUser';
 
 const ADMIN_MENU_ITEMS = [
+  { key: 'profile', label: '个人中心', icon: UserOutlined },
   { key: 'component', label: '题库总览', icon: PieChartOutlined },
   { key: 'import', label: '智能导入', icon: DownloadOutlined },
   { key: 'user-usage', label: '个人使用', icon: CreditCardOutlined },
@@ -52,6 +54,7 @@ const ADMIN_MENU_ITEMS = [
 ]
 
 const USER_MENU_ITEMS = [
+  { key: 'profile', label: '个人中心', icon: UserOutlined },
   { key: 'user-usage', label: '个人使用', icon: CreditCardOutlined },
   { key: 'access-tokens', label: '令牌管理', icon: SafetyCertificateOutlined },
   { key: 'recharge-orders', label: '充值记录', icon: CreditCardOutlined },

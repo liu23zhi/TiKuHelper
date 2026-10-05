@@ -3,7 +3,7 @@
     <div class="auth-card auth-card--single">
       <div class="hero">
         <div class="hero-badge">Tiku Adapter</div>
-        <h1>题库管理平台</h1>
+        <h1>{{ publicAuthSettings.siteName }}</h1>
         <p>
           搜题聚合题库平台，集成AI搜索，提供更准确的答案。
         </p>
@@ -74,7 +74,13 @@
                     <SafetyCertificateOutlined style="color: rgba(0, 0, 0, 0.25)" />
                   </template>
                 </a-input>
-                <a-button :loading="sendingLoginCode" @click="sendLoginCode">发送验证码</a-button>
+                <a-button
+                  :loading="sendingLoginCode"
+                  :disabled="sendingLoginCode || smsCooldownActive"
+                  @click="sendLoginCode"
+                >
+                  {{ smsCooldownText }}
+                </a-button>
               </div>
             </a-form-item>
           </template>
@@ -183,6 +189,8 @@ import {
 } from '../../utils/captchaHelpers.mjs'
 import { ensureAuthCaptchaToken } from '../../utils/captchaDialog.mjs'
 import { setStoredCurrentUser, resolveHomePath } from '../../utils/currentUser.js'
+import { useSmsCooldown } from '../../utils/smsCooldown.js'
+import { applySiteName } from '../../utils/siteName.js'
 import { message } from 'ant-design-vue';
 import { useRoute, useRouter } from 'vue-router';
 
@@ -208,6 +216,7 @@ export default defineComponent({
     const route = useRoute()
     const submitting = ref(false)
     const sendingLoginCode = ref(false)
+    const smsCooldown = useSmsCooldown()
     const wechatQrLoading = ref(false)
     const wechatQrCodeImageData = ref('')
     const wechatLoginToken = ref('')
@@ -217,6 +226,7 @@ export default defineComponent({
     const wechatCodeSubmitting = ref(false)
     const loginMode = ref('password')
     const publicAuthSettings = ref({
+      siteName: '题库',
       registerEnabled: false,
       smsLoginEnabled: false,
       wechatLoginEnabled: false,
@@ -285,6 +295,7 @@ export default defineComponent({
       return getPublicRegisterStatus().then((res) => {
         if (res?.status === 200) {
           publicAuthSettings.value = {
+            siteName: res?.data?.siteName || '题库',
             registerEnabled: !!res?.data?.registerEnabled,
             smsLoginEnabled: !!res?.data?.smsLoginEnabled,
             wechatLoginEnabled: !!res?.data?.wechatLoginEnabled,
@@ -297,6 +308,7 @@ export default defineComponent({
             captchaApiBaseUrl: res?.data?.captchaApiBaseUrl || 'https://captcha.api.zelly.cn',
             captchaType: res?.data?.captchaType || 'RANDOM',
           }
+          applySiteName(publicAuthSettings.value.siteName)
           wechatLoginSubMode.value = chooseWechatLoginSubMode(publicAuthSettings.value)
           if (!publicAuthSettings.value.smsLoginEnabled && loginMode.value === 'sms') {
             loginMode.value = 'password'
@@ -495,6 +507,7 @@ export default defineComponent({
         const res = await sendPublicSMSCode(buildPublicSMSCodePayload(smsLoginForm, 'login'))
         if (res?.status === 200) {
           message.success(res?.message || '发送成功，请注意查收')
+          smsCooldown.start()
         } else {
           message.error(res?.message || '发送失败')
         }
@@ -542,6 +555,9 @@ export default defineComponent({
     return {
       submitting,
       sendingLoginCode,
+      smsCooldownText: smsCooldown.buttonText,
+      smsCooldownActive: smsCooldown.active,
+      startSmsCooldown: smsCooldown.start,
       wechatQrLoading,
       wechatQrCodeImageData,
       wechatLoginStatusText,

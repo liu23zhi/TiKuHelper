@@ -7,6 +7,7 @@ export function resolveAdapterHomePath(user) {
 export function buildPortalMenuKeys(user) {
   return String(user?.role || '').trim().toLowerCase() === 'admin'
     ? [
+        'profile',
         'component',
         'import',
         'user-usage',
@@ -20,6 +21,7 @@ export function buildPortalMenuKeys(user) {
         'access-tokens',
       ]
     : [
+        'profile',
         'user-usage',
         'access-tokens',
         'recharge-orders',

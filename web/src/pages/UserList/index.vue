@@ -70,11 +70,19 @@
         <template #phone="{ record }">
           <span>{{ record.phone || '-' }}</span>
         </template>
+        <template #wechat="{ record }">
+          <a-tag :color="record.wechatId ? 'green' : 'default'">
+            {{ record.wechatId ? '已绑定' : '未绑定' }}
+          </a-tag>
+        </template>
         <template #registerSource="{ record }">
           <a-tag>{{ registerSourceText(record.registerSource) }}</a-tag>
         </template>
         <template #phoneBoundAt="{ record }">
           <span>{{ formatDateTime(record.phoneBoundAt) }}</span>
+        </template>
+        <template #wechatBoundAt="{ record }">
+          <span>{{ formatDateTime(record.wechatBoundAt) }}</span>
         </template>
         <template #createdAt="{ record }">
           <span>{{ formatDateTime(record.createdAt) }}</span>
@@ -321,11 +329,29 @@ export default defineComponent({
           width: 150,
         },
         {
+          title: '微信绑定',
+          dataIndex: 'wechatId',
+          key: 'wechat',
+          slots: {
+            customRender: 'wechat',
+          },
+          width: 120,
+        },
+        {
           title: '绑定时间',
           dataIndex: 'phoneBoundAt',
           key: 'phoneBoundAt',
           slots: {
             customRender: 'phoneBoundAt',
+          },
+          width: 180,
+        },
+        {
+          title: '微信绑定时间',
+          dataIndex: 'wechatBoundAt',
+          key: 'wechatBoundAt',
+          slots: {
+            customRender: 'wechatBoundAt',
           },
           width: 180,
         },

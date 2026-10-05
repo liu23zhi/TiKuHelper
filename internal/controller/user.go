@@ -22,6 +22,22 @@ var sendPublicSMSCodeWithDB = func(input service.SendSMSCodeInput) error {
 	return service.SendSMSCodeWithDB(dao.User.UnderlyingDB(), input)
 }
 
+var sendUserPhoneChangeSMSCodeWithDB = func(input service.SendSMSCodeInput) error {
+	return service.SendSMSCodeWithDB(dao.User.UnderlyingDB(), input)
+}
+
+var updateUserPhoneWithVerificationWithDB = func(userID int32, phone string, smsCode string) (entity.User, error) {
+	return service.UpdateUserPhoneWithVerificationWithDB(dao.User.UnderlyingDB(), userID, phone, smsCode)
+}
+
+var bindCurrentUserWechatWithDB = func(bindToken string, userID int32) (entity.User, error) {
+	return service.BindWechatToUserWithDB(dao.User.UnderlyingDB(), nil, bindToken, userID)
+}
+
+var unbindCurrentUserWechatWithDB = func(userID int32) (entity.User, error) {
+	return service.UnbindWechatFromUserWithDB(dao.User.UnderlyingDB(), userID)
+}
+
 var verifySMSCodeWithDB = func(phone string, scene string, smsCode string) error {
 	return service.VerifySMSCodeWithDB(dao.User.UnderlyingDB(), phone, scene, smsCode)
 }
@@ -367,6 +383,119 @@ func SendPublicSMSCode(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"message": "发送成功，请注意查收"})
+}
+
+func SendUserPhoneChangeSMSCode(c *gin.Context) {
+	operator, ok := c.Get("user")
+	if !ok || operator == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "请重新登录"})
+		return
+	}
+	currentUser, ok := operator.(*entity.User)
+	if !ok || currentUser == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "请重新登录"})
+		return
+	}
+
+	var payload struct {
+		Phone        string `json:"phone"`
+		CaptchaToken string `json:"captchaToken"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
+		return
+	}
+	if err := consumeCaptchaTokenWithDB(strings.TrimSpace(payload.CaptchaToken), service.CaptchaSceneSMSSendChangePhone, strings.TrimSpace(c.ClientIP())); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	if err := sendUserPhoneChangeSMSCodeWithDB(service.SendSMSCodeInput{
+		Phone:        strings.TrimSpace(payload.Phone),
+		Scene:        service.SMSSceneChangePhone,
+		RequestIP:    strings.TrimSpace(c.ClientIP()),
+		TargetUserID: currentUser.ID,
+	}); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "发送成功，请注意查收"})
+}
+
+func UpdateCurrentUserPhone(c *gin.Context) {
+	operator, ok := c.Get("user")
+	if !ok || operator == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "请重新登录"})
+		return
+	}
+	currentUser, ok := operator.(*entity.User)
+	if !ok || currentUser == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "请重新登录"})
+		return
+	}
+
+	var payload struct {
+		Phone   string `json:"phone"`
+		SMSCode string `json:"smsCode"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
+		return
+	}
+	if strings.TrimSpace(payload.Phone) == "" || strings.TrimSpace(payload.SMSCode) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "手机号和验证码不能为空"})
+		return
+	}
+	updated, err := updateUserPhoneWithVerificationWithDB(currentUser.ID, strings.TrimSpace(payload.Phone), strings.TrimSpace(payload.SMSCode))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, updated)
+}
+
+func BindCurrentUserWechat(c *gin.Context) {
+	operator, ok := c.Get("user")
+	if !ok || operator == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "请重新登录"})
+		return
+	}
+	currentUser, ok := operator.(*entity.User)
+	if !ok || currentUser == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "请重新登录"})
+		return
+	}
+	var payload struct {
+		BindToken string `json:"bindToken"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
+		return
+	}
+	updated, err := bindCurrentUserWechatWithDB(strings.TrimSpace(payload.BindToken), currentUser.ID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, updated)
+}
+
+func UnbindCurrentUserWechat(c *gin.Context) {
+	operator, ok := c.Get("user")
+	if !ok || operator == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "请重新登录"})
+		return
+	}
+	currentUser, ok := operator.(*entity.User)
+	if !ok || currentUser == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "请重新登录"})
+		return
+	}
+	updated, err := unbindCurrentUserWechatWithDB(currentUser.ID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, updated)
 }
 
 func UserSMSLogin(c *gin.Context) {

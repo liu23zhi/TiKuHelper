@@ -6,6 +6,7 @@ import AdapterLoginLayout from '../layout/LoginLayout.vue';
 import AdapterLoginPage from '../pages/Login/index.vue'
 import AdapterRegisterPage from '../pages/Register/index.vue'
 import WechatBind from '../pages/WechatBind/index.vue'
+import Profile from '../pages/Profile/index.vue'
 
 import TikuAdapterLayout from '../layout/TikuAdapterLayout.vue';
 import TikuComponent from '../pages/TikuComponent/index.vue';
@@ -54,6 +55,11 @@ const routes = [
     name: 'adapterlayout',
     component: TikuAdapterLayout,
     children: [
+      {
+        path: 'profile',
+        name: 'profile',
+        component: Profile,
+      },
       {
         path: 'component',
         name: 'component',

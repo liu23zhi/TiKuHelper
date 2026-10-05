@@ -332,6 +332,64 @@ func BindWechatLoginWithDB(db *gorm.DB, input WechatBindInput) (WechatBindResult
 	return WechatBindResult{JWT: jwt}, nil
 }
 
+func BindWechatToUserWithDB(db *gorm.DB, store *WechatBindTokenStore, bindToken string, userID int32) (entity.User, error) {
+	if store == nil {
+		store = defaultWechatBindTokenStore
+	}
+	now := time.Now()
+	wechatID, err := store.Resolve(bindToken, now)
+	if err != nil {
+		return entity.User{}, err
+	}
+
+	var user entity.User
+	if err := db.Where("id = ?", userID).First(&user).Error; err != nil {
+		return entity.User{}, err
+	}
+	if !isServiceUserEnabled(&user) {
+		return entity.User{}, fmt.Errorf("用户已被禁用")
+	}
+	if user.WechatID != nil && strings.TrimSpace(*user.WechatID) != "" {
+		return entity.User{}, fmt.Errorf("当前账号已绑定微信，请先解绑")
+	}
+
+	var occupied entity.User
+	if err := db.Where("wechat_id = ? AND id <> ?", wechatID, userID).First(&occupied).Error; err == nil {
+		return entity.User{}, fmt.Errorf("该微信已绑定其他账号")
+	} else if err != gorm.ErrRecordNotFound {
+		return entity.User{}, err
+	}
+
+	if err := db.Model(&entity.User{}).Where("id = ?", userID).Updates(map[string]any{
+		"wechat_id":       wechatID,
+		"wechat_bound_at": now,
+	}).Error; err != nil {
+		return entity.User{}, err
+	}
+	if _, err := store.Consume(bindToken, now); err != nil {
+		return entity.User{}, err
+	}
+	user.WechatID = &wechatID
+	user.WechatBoundAt = &now
+	return user, nil
+}
+
+func UnbindWechatFromUserWithDB(db *gorm.DB, userID int32) (entity.User, error) {
+	var user entity.User
+	if err := db.Where("id = ?", userID).First(&user).Error; err != nil {
+		return entity.User{}, err
+	}
+	if err := db.Model(&entity.User{}).Where("id = ?", userID).Updates(map[string]any{
+		"wechat_id":       nil,
+		"wechat_bound_at": nil,
+	}).Error; err != nil {
+		return entity.User{}, err
+	}
+	user.WechatID = nil
+	user.WechatBoundAt = nil
+	return user, nil
+}
+
 func FetchWechatUserIDByCode(client WechatLoginClient, code string) (string, error) {
 	httpClient := resolveWechatHTTPClient(client)
 	apiURL, err := joinWechatURL(client.BaseURL, "/api/wechat/user")

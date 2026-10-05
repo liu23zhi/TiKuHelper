@@ -323,3 +323,56 @@ func TestBindWechatLoginWithDBBindsExistingAccountAndConsumesToken(t *testing.T)
 		t.Fatal("expected consumed bind token reuse to fail")
 	}
 }
+
+func TestBindWechatToUserWithDBBindsCurrentUserAndConsumesToken(t *testing.T) {
+	db := newWechatLoginTestDB(t)
+	if err := db.Create(&entity.User{
+		ID:             41,
+		Username:       "profile-user",
+		Password:       "Abc12345!",
+		Role:           "user",
+		Status:         "enabled",
+		RegisterSource: "public",
+	}).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	store := NewWechatBindTokenStore()
+	bindToken := store.Create("openid-profile", time.Now().Add(5*time.Minute))
+
+	updated, err := BindWechatToUserWithDB(db, store, bindToken, 41)
+	if err != nil {
+		t.Fatalf("bind wechat to current user: %v", err)
+	}
+	if updated.WechatID == nil || *updated.WechatID != "openid-profile" || updated.WechatBoundAt == nil {
+		t.Fatalf("expected current user wechat binding, got %+v", updated)
+	}
+	if _, err := BindWechatToUserWithDB(db, store, bindToken, 41); err == nil {
+		t.Fatal("expected consumed bind token reuse to fail")
+	}
+}
+
+func TestUnbindWechatFromUserWithDBClearsBinding(t *testing.T) {
+	db := newWechatLoginTestDB(t)
+	wechatID := "openid-unbind"
+	now := time.Now()
+	if err := db.Create(&entity.User{
+		ID:             42,
+		Username:       "unbind-user",
+		Password:       "Abc12345!",
+		Role:           "user",
+		Status:         "enabled",
+		RegisterSource: "public",
+		WechatID:       &wechatID,
+		WechatBoundAt:  &now,
+	}).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	updated, err := UnbindWechatFromUserWithDB(db, 42)
+	if err != nil {
+		t.Fatalf("unbind wechat: %v", err)
+	}
+	if updated.WechatID != nil || updated.WechatBoundAt != nil {
+		t.Fatalf("expected cleared wechat binding, got %+v", updated)
+	}
+}

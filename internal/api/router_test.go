@@ -64,6 +64,31 @@ func TestSetAPIRouterRegistersWechatLoginRoutes(t *testing.T) {
 	}
 }
 
+func TestSetAPIRouterRegistersCurrentUserBindingRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	SetAPIRouter(router)
+
+	expected := map[string]bool{
+		"POST /adapter-service/user/phone/sms-code": false,
+		"PUT /adapter-service/user/phone":           false,
+		"POST /adapter-service/user/wechat/bind":    false,
+		"DELETE /adapter-service/user/wechat":       false,
+	}
+	for _, route := range router.Routes() {
+		key := route.Method + " " + route.Path
+		if _, ok := expected[key]; ok {
+			expected[key] = true
+		}
+	}
+	for key, found := range expected {
+		if !found {
+			t.Fatalf("expected current-user binding route %s to be registered", key)
+		}
+	}
+}
+
 func TestSetAPIRouterRegistersRemoteCaptchaProxyRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

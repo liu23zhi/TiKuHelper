@@ -80,6 +80,31 @@ func TestGetSystemSettingDetailWithDBDefaults(t *testing.T) {
 	if detail.EPayVersion != DefaultEPayVersion {
 		t.Fatalf("expected default epay version %s, got %s", DefaultEPayVersion, detail.EPayVersion)
 	}
+	if detail.SiteName != DefaultSiteName {
+		t.Fatalf("expected default site name %s, got %s", DefaultSiteName, detail.SiteName)
+	}
+}
+
+func TestUpdateSystemSettingDetailWithDBPersistsSiteName(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+
+	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
+		SiteName: "  我的题库  ",
+	})
+	if err != nil {
+		t.Fatalf("update site name: %v", err)
+	}
+	if updated.SiteName != "我的题库" {
+		t.Fatalf("expected trimmed site name, got %q", updated.SiteName)
+	}
+
+	publicSettings, err := GetPublicAuthSettingsWithDB(db)
+	if err != nil {
+		t.Fatalf("load public settings: %v", err)
+	}
+	if publicSettings.SiteName != "我的题库" {
+		t.Fatalf("expected public site name, got %q", publicSettings.SiteName)
+	}
 }
 
 func TestUpdateSystemSettingDetailWithDBPersistsNormalizedValues(t *testing.T) {

@@ -14,6 +14,7 @@ import (
 
 const SMSSceneRegister = "register"
 const SMSSceneLogin = "login"
+const SMSSceneChangePhone = "change_phone"
 const SMSCodeStatusPending = "pending"
 const SMSCodeStatusUsed = "used"
 const SMSCodeStatusExpired = "expired"
@@ -29,9 +30,10 @@ var generateSMSCode = func() string {
 }
 
 type SendSMSCodeInput struct {
-	Phone     string `json:"phone"`
-	Scene     string `json:"scene"`
-	RequestIP string `json:"requestIp"`
+	Phone        string `json:"phone"`
+	Scene        string `json:"scene"`
+	RequestIP    string `json:"requestIp"`
+	TargetUserID int32  `json:"targetUserId"`
 }
 
 func hashSMSCode(code string) string {
@@ -75,7 +77,7 @@ func SendSMSCodeWithDB(db *gorm.DB, input SendSMSCodeInput) error {
 		return fmt.Errorf("未开放注册")
 	}
 
-	if err := ensureSMSSceneAllowed(db, phone, input.Scene); err != nil {
+	if err := ensureSMSSceneAllowed(db, phone, input.Scene, input.TargetUserID); err != nil {
 		return err
 	}
 	if err := ensureSMSCooldown(db, phone, input.Scene); err != nil {
@@ -131,7 +133,7 @@ func VerifySMSCodeWithDB(db *gorm.DB, rawPhone string, scene string, smsCode str
 	}).Error
 }
 
-func ensureSMSSceneAllowed(db *gorm.DB, phone string, scene string) error {
+func ensureSMSSceneAllowed(db *gorm.DB, phone string, scene string, targetUserID int32) error {
 	switch strings.TrimSpace(scene) {
 	case SMSSceneRegister:
 		var count int64
@@ -149,6 +151,20 @@ func ensureSMSSceneAllowed(db *gorm.DB, phone string, scene string) error {
 		}
 		if !strings.EqualFold(strings.TrimSpace(user.Status), "enabled") {
 			return fmt.Errorf("用户已被禁用")
+		}
+		return nil
+	case SMSSceneChangePhone:
+		if targetUserID <= 0 {
+			return fmt.Errorf("换绑手机号用户无效")
+		}
+		var occupied int64
+		if err := db.Model(&entity.User{}).
+			Where("phone = ? AND id <> ?", phone, targetUserID).
+			Count(&occupied).Error; err != nil {
+			return err
+		}
+		if occupied > 0 {
+			return fmt.Errorf("该手机号已被绑定")
 		}
 		return nil
 	default:

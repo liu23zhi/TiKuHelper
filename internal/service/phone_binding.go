@@ -94,3 +94,32 @@ func UpdateUserPhoneWithDB(db *gorm.DB, targetUserID int32, rawPhone string, for
 	})
 	return updated, err
 }
+
+func UpdateUserPhoneWithVerificationWithDB(db *gorm.DB, targetUserID int32, rawPhone string, smsCode string) (entity.User, error) {
+	phone, _, err := NormalizePhone(rawPhone)
+	if err != nil {
+		return entity.User{}, err
+	}
+
+	var current entity.User
+	if err := db.Where("id = ?", targetUserID).First(&current).Error; err != nil {
+		return entity.User{}, err
+	}
+	if current.Phone != nil && *current.Phone == phone {
+		return entity.User{}, fmt.Errorf("新手机号不能与当前手机号相同")
+	}
+
+	var occupied int64
+	if err := db.Model(&entity.User{}).
+		Where("phone = ? AND id <> ?", phone, targetUserID).
+		Count(&occupied).Error; err != nil {
+		return entity.User{}, err
+	}
+	if occupied > 0 {
+		return entity.User{}, fmt.Errorf("该手机号已被绑定")
+	}
+	if err := VerifySMSCodeWithDB(db, phone, SMSSceneChangePhone, smsCode); err != nil {
+		return entity.User{}, err
+	}
+	return UpdateUserPhoneWithDB(db, targetUserID, phone, false)
+}

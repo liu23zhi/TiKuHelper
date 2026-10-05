@@ -16,6 +16,12 @@
       />
 
       <a-form :label-col="labelCol" :wrapper-col="wrapperCol">
+        <a-divider orientation="left">站点信息</a-divider>
+        <a-form-item label="网站名称">
+          <a-input v-model:value="formState.siteName" placeholder="例如 题库" />
+          <div class="hint">用于浏览器标题、页头品牌和登录页名称，留空时恢复为“题库”。</div>
+        </a-form-item>
+
         <a-divider orientation="left">公开认证</a-divider>
         <a-form-item label="允许公开注册">
           <a-switch v-model:checked="formState.registerEnabled" />
@@ -340,6 +346,7 @@ export default defineComponent({
     const paymentMethodEditing = ref(false)
     const paymentMethods = ref([])
     const formState = reactive({
+      siteName: '题库',
       registerEnabled: false,
       epayVersion: 'v2',
       epayGatewayUrl: '',
@@ -384,6 +391,7 @@ export default defineComponent({
     const paymentMethodModalTitle = computed(() => (paymentMethodEditing.value ? '编辑支付方式' : '新增支付方式'))
 
     const applyDetail = (data = {}) => {
+      formState.siteName = data.siteName || '题库'
       formState.registerEnabled = !!data.registerEnabled
       formState.epayVersion = 'v2'
       formState.epayGatewayUrl = data.epayGatewayUrl || ''
@@ -579,6 +587,7 @@ export default defineComponent({
         wechatDefaultLoginMode = 'code'
       }
       const payload = {
+        siteName: normalizeString(this.formState.siteName || '题库'),
         registerEnabled: !!this.formState.registerEnabled,
         epayVersion: 'v2',
         epayGatewayUrl: normalizeString(this.formState.epayGatewayUrl),

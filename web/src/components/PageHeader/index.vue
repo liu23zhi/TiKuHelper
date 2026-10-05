@@ -2,7 +2,7 @@
   <header class="page-header">
     <div class="brand">
       <ReadOutlined />
-      <span class="brand-text">题库管理平台</span>
+      <span class="brand-text">{{ siteName }}</span>
     </div>
     <div v-if="hasLogout" class="actions">
       <a-tooltip placement="bottom">
@@ -27,6 +27,7 @@ import { clearStoredCurrentUser } from '../../utils/currentUser.js'
 import { logout } from '../../api/TikuComponentApi.js'
 import { useRouter } from 'vue-router';
 import { defineComponent } from 'vue';
+import { siteName } from '../../utils/siteName.js'
 
 export default defineComponent({
   name: 'PageHeader',
@@ -42,6 +43,7 @@ export default defineComponent({
       router.push('/login');
     };
     return {
+      siteName,
       navigateToImport
     }
   },

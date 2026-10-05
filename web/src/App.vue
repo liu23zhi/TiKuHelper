@@ -5,8 +5,23 @@
 </template>
 
 <script>
+import { onMounted } from 'vue'
+import { getPublicRegisterStatus } from './api/TikuComponentApi'
+import { applySiteName } from './utils/siteName'
+
 export default {
   name: 'App',
+  setup() {
+    onMounted(() => {
+      getPublicRegisterStatus().then((res) => {
+        if (res?.status === 200) {
+          applySiteName(res?.data?.siteName)
+        }
+      }).catch(() => {
+        applySiteName()
+      })
+    })
+  },
 }
 </script>
 

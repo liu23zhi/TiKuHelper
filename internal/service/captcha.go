@@ -27,11 +27,12 @@ import (
 )
 
 const (
-	CaptchaSceneLoginPassword   = "login_password"
-	CaptchaSceneLoginSMS        = "login_sms"
-	CaptchaSceneRegisterSubmit  = "register_submit"
-	CaptchaSceneSMSSendLogin    = "sms_send_login"
-	CaptchaSceneSMSSendRegister = "sms_send_register"
+	CaptchaSceneLoginPassword      = "login_password"
+	CaptchaSceneLoginSMS           = "login_sms"
+	CaptchaSceneRegisterSubmit     = "register_submit"
+	CaptchaSceneSMSSendLogin       = "sms_send_login"
+	CaptchaSceneSMSSendRegister    = "sms_send_register"
+	CaptchaSceneSMSSendChangePhone = "sms_send_change_phone"
 
 	CaptchaChallengeStatusPending  = "pending"
 	CaptchaChallengeStatusVerified = "verified"
@@ -306,7 +307,7 @@ func hashCaptchaValue(value string) string {
 
 func isSupportedCaptchaScene(scene string) bool {
 	switch strings.TrimSpace(scene) {
-	case CaptchaSceneLoginPassword, CaptchaSceneLoginSMS, CaptchaSceneRegisterSubmit, CaptchaSceneSMSSendLogin, CaptchaSceneSMSSendRegister:
+	case CaptchaSceneLoginPassword, CaptchaSceneLoginSMS, CaptchaSceneRegisterSubmit, CaptchaSceneSMSSendLogin, CaptchaSceneSMSSendRegister, CaptchaSceneSMSSendChangePhone:
 		return true
 	default:
 		return false
