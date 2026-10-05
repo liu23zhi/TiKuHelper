@@ -762,6 +762,160 @@ func TestSearchPersistsAIBillingWithModelMultiplier(t *testing.T) {
 	}
 }
 
+func TestSearchPersistsAIBillingDuringDefaultMixedSearch(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 215, "search-ai-mixed-billing-user", "user")
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10.0).Error; err != nil {
+		t.Fatalf("seed user balance: %v", err)
+	}
+	if _, err := service.UpdateAISearchConfigWithDB(db, service.UpdateAISearchConfigInput{
+		UseGlobalBillingMultiplier: testBoolPtr(false),
+	}); err != nil {
+		t.Fatalf("seed ai billing config: %v", err)
+	}
+	token := seedControllerTokenForUser(t, db, user, "search-ai-mixed-billing-token", 0)
+	seedControllerAIModelArchitecture(t, db, "gpt-mixed-billing", 2.5)
+	seedControllerDefaultSearchProviderConfig(t, db, "icodef", 1.0)
+
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode:                 searchModeNormal,
+				UsedDefaultSearch:          true,
+				UsedDefaultSearchProviders: []string{"icodef"},
+				UsedDefaultAI:              true,
+				EnabledSearchProviders:     []string{"icodef"},
+				UserID:                     user.ID,
+				AccessTokenID:              token.ID,
+				RequestID:                  "req-search-ai-mixed-billing",
+				AIConfig: service.AISearchRequestConfig{
+					BaseURL: "https://default.example.com/v1",
+					APIKey:  "default-key",
+					Model:   "gpt-mixed-billing",
+				},
+				AccessTokenCtx: &service.AccessTokenAuthContext{
+					User:        user,
+					AccessToken: token,
+				},
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return []func(model.SearchRequest) ([][]string, error){
+				(&stubSearchClient{enable: true, answer: [][]string{{"普通答案"}}}).SearchAnswer,
+			}
+		},
+		func(resolvedSearchRequestContext, model.SearchRequest) ([][]string, searchpkg.AISearchUsage, error) {
+			return [][]string{{"AI答案"}}, searchpkg.AISearchUsage{InputTokens: 1000, OutputTokens: 500, TotalTokens: 1500}, nil
+		},
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request.Header.Set("Content-Type", "application/json")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+		})
+
+	var records []entity.BillingRecord
+	if err := db.Where("user_id = ? AND access_token_id = ?", user.ID, token.ID).Find(&records).Error; err != nil {
+		t.Fatalf("load mixed ai billing records: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected one mixed ai billing record, got %+v", records)
+	}
+	if records[0].Provider != searchModeAI || records[0].Amount != 3.75 {
+		t.Fatalf("expected mixed search to bill ai token usage 3.75, got %+v", records[0])
+	}
+	if records[0].BalanceBefore != 10 || records[0].BalanceAfter != 6.25 {
+		t.Fatalf("expected mixed ai billing balance 10 -> 6.25, got %+v", records[0])
+	}
+	if records[0].ModelName != "gpt-mixed-billing" ||
+		records[0].InputTokens != 1000 ||
+		records[0].OutputTokens != 500 ||
+		records[0].TotalTokens != 1500 {
+		t.Fatalf("expected mixed ai billing token metadata, got %+v", records[0])
+	}
+	for _, part := range []string{"provider=ai", "model=gpt-mixed-billing", "inputTokens=1000", "outputTokens=500"} {
+		if !strings.Contains(records[0].UnitPriceSnapshot, part) {
+			t.Fatalf("expected mixed ai snapshot to contain %q, got %q", part, records[0].UnitPriceSnapshot)
+		}
+	}
+}
+
+func TestSearchPersistsAIBillingDuringDefaultAIThatRunsInNormalMode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 216, "search-ai-only-billing-user", "user")
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10.0).Error; err != nil {
+		t.Fatalf("seed user balance: %v", err)
+	}
+	if _, err := service.UpdateAISearchConfigWithDB(db, service.UpdateAISearchConfigInput{
+		UseGlobalBillingMultiplier: testBoolPtr(false),
+	}); err != nil {
+		t.Fatalf("seed ai billing config: %v", err)
+	}
+	token := seedControllerTokenForUser(t, db, user, "search-ai-only-billing-token", 0)
+	seedControllerAIModelArchitecture(t, db, "gpt-ai-only-billing", 2.5)
+
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode:    searchModeNormal,
+				UsedDefaultAI: true,
+				UserID:        user.ID,
+				AccessTokenID: token.ID,
+				RequestID:     "req-search-ai-only-billing",
+				AIConfig: service.AISearchRequestConfig{
+					BaseURL: "https://default.example.com/v1",
+					APIKey:  "default-key",
+					Model:   "gpt-ai-only-billing",
+				},
+				AccessTokenCtx: &service.AccessTokenAuthContext{
+					User:        user,
+					AccessToken: token,
+				},
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return nil
+		},
+		func(resolvedSearchRequestContext, model.SearchRequest) ([][]string, searchpkg.AISearchUsage, error) {
+			return [][]string{{"AI答案"}}, searchpkg.AISearchUsage{InputTokens: 1000, OutputTokens: 500, TotalTokens: 1500}, nil
+		},
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request.Header.Set("Content-Type", "application/json")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+		})
+
+	var record entity.BillingRecord
+	if err := db.Where("user_id = ? AND access_token_id = ?", user.ID, token.ID).First(&record).Error; err != nil {
+		t.Fatalf("load ai-only billing record: %v", err)
+	}
+	if record.Provider != searchModeAI || record.Amount != 3.75 {
+		t.Fatalf("expected ai-only default search to bill ai token usage 3.75, got %+v", record)
+	}
+	if record.BalanceBefore != 10 || record.BalanceAfter != 6.25 {
+		t.Fatalf("expected ai-only billing balance 10 -> 6.25, got %+v", record)
+	}
+}
+
 func TestSearchPersistsCachedSourceNameInLocalBillingSnapshot(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newSearchControllerTestDB(t)
