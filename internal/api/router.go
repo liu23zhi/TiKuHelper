@@ -47,6 +47,7 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/public/register-status", controller.PublicRegisterStatus)
 	apiRouter.POST("/public/wechat-login/qrcode", controller.CreateWechatLoginQRCode)
 	apiRouter.GET("/public/wechat-login/status", controller.CheckWechatLoginStatus)
+	apiRouter.GET("/public/wechat-login/ws", controller.WechatLoginWebSocket)
 	apiRouter.POST("/public/wechat-login/code", controller.LoginWechatByCode)
 	apiRouter.POST("/public/wechat-login/bind", controller.BindWechatLogin)
 	apiRouter.GET("/public/wechat/user", controller.LegacyWechatUserByCode)

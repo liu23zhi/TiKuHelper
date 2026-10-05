@@ -3,8 +3,10 @@ package controller
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"github.com/itihey/tikuAdapter/internal/service"
 )
@@ -21,6 +23,10 @@ var checkWechatLoginStatusWithDB = func(input service.WechatLoginStatusInput) (s
 	return service.CheckWechatLoginStatusWithDB(dao.User.UnderlyingDB(), input)
 }
 
+var probeWechatScanStatusWithDB = func(input service.WechatScanProbeInput) (service.WechatScanProbeResult, error) {
+	return service.ProbeWechatScanStatusWithDB(dao.User.UnderlyingDB(), input)
+}
+
 var loginWechatByCodeWithDB = func(input service.WechatCodeLoginInput) (service.WechatLoginStatusResult, error) {
 	return service.LoginWechatByCodeWithDB(dao.User.UnderlyingDB(), input)
 }
@@ -31,6 +37,19 @@ var bindWechatLoginWithDB = func(input service.WechatBindInput) (service.WechatB
 
 var fetchWechatUserIDByCode = func(client service.WechatLoginClient, code string) (string, error) {
 	return service.FetchWechatUserIDByCode(client, code)
+}
+
+var wechatWebSocketUpgrader = websocket.Upgrader{
+	CheckOrigin: func(*http.Request) bool {
+		return true
+	},
+}
+
+type wechatSocketMessage struct {
+	Type             string `json:"type"`
+	Status           string `json:"status,omitempty"`
+	RemainingSeconds int64  `json:"remainingSeconds,omitempty"`
+	Timestamp        int64  `json:"timestamp,omitempty"`
 }
 
 func buildWechatLoginClientFromSettings(settings service.SystemSettingDetail) service.WechatLoginClient {
@@ -73,6 +92,141 @@ func CheckWechatLoginStatus(c *gin.Context) {
 		setAuthCookie(c, result.JWT)
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+func WechatLoginWebSocket(c *gin.Context) {
+	settings, err := loadWechatLoginSettings()
+	if err != nil || !settings.WechatLoginEnabled || !settings.WechatScanLoginEnabled || strings.TrimSpace(settings.WechatAPIBaseURL) == "" || strings.TrimSpace(settings.WechatAPIBearerToken) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "微信登录未开启或配置未完成"})
+		return
+	}
+	loginToken := strings.TrimSpace(c.Query("loginToken"))
+	session, err := service.DefaultWechatLoginSessionStore.Resolve(loginToken, time.Now())
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	conn, err := wechatWebSocketUpgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	runWechatLoginWebSocket(
+		conn,
+		session.ExpiresAt,
+		buildWechatLoginClientFromSettings(settings),
+		loginToken,
+	)
+}
+
+func runWechatLoginWebSocket(conn *websocket.Conn, expiresAt time.Time, client service.WechatLoginClient, loginToken string) {
+	conn.SetReadLimit(1024)
+	_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	})
+
+	inbound := make(chan wechatSocketMessage, 8)
+	outbound := make(chan wechatSocketMessage, 8)
+	readClosed := make(chan struct{})
+	go func() {
+		defer close(readClosed)
+		for {
+			var message wechatSocketMessage
+			if err := conn.ReadJSON(&message); err != nil {
+				return
+			}
+			_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+			select {
+			case inbound <- message:
+			case <-readClosed:
+				return
+			}
+		}
+	}()
+
+	statusTicker := time.NewTicker(2 * time.Second)
+	heartbeatTicker := time.NewTicker(25 * time.Second)
+	expiryTimer := time.NewTimer(time.Until(expiresAt))
+	defer statusTicker.Stop()
+	defer heartbeatTicker.Stop()
+	defer expiryTimer.Stop()
+
+	lastStatus := ""
+	sendStatus := func(status string) bool {
+		status = strings.TrimSpace(status)
+		if status == "" || status == lastStatus {
+			return true
+		}
+		remaining := int64(time.Until(expiresAt).Seconds())
+		if remaining < 0 {
+			remaining = 0
+		}
+		select {
+		case outbound <- wechatSocketMessage{
+			Type:             "status",
+			Status:           status,
+			RemainingSeconds: remaining,
+		}:
+			lastStatus = status
+			return true
+		case <-readClosed:
+			return false
+		}
+	}
+
+	probeAndSend := func() bool {
+		result, err := probeWechatScanStatusWithDB(service.WechatScanProbeInput{
+			Client:     client,
+			LoginToken: loginToken,
+		})
+		if err != nil {
+			return true
+		}
+		if !sendStatus(result.Status) {
+			return false
+		}
+		return result.Status != service.WechatLoginStatusSuccess &&
+			result.Status != service.WechatLoginStatusNeedBind
+	}
+
+	sendStatus(service.WechatLoginStatusPending)
+	if !probeAndSend() {
+		return
+	}
+
+	for {
+		select {
+		case message := <-inbound:
+			if message.Type != "ping" {
+				continue
+			}
+			select {
+			case outbound <- wechatSocketMessage{Type: "pong", Timestamp: message.Timestamp}:
+			case <-readClosed:
+				return
+			}
+		case message := <-outbound:
+			_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			if err := conn.WriteJSON(message); err != nil {
+				return
+			}
+		case <-heartbeatTicker.C:
+			if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
+				return
+			}
+		case <-statusTicker.C:
+			if !probeAndSend() {
+				return
+			}
+		case <-expiryTimer.C:
+			_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			_ = conn.WriteJSON(wechatSocketMessage{Type: "status", Status: service.WechatLoginStatusExpired})
+			return
+		case <-readClosed:
+			return
+		}
+	}
 }
 
 func LoginWechatByCode(c *gin.Context) {

@@ -47,6 +47,7 @@ func TestSetAPIRouterRegistersWechatLoginRoutes(t *testing.T) {
 	expected := map[string]bool{
 		"POST /adapter-service/public/wechat-login/qrcode": false,
 		"GET /adapter-service/public/wechat-login/status":  false,
+		"GET /adapter-service/public/wechat-login/ws":      false,
 		"POST /adapter-service/public/wechat-login/code":   false,
 		"POST /adapter-service/public/wechat-login/bind":   false,
 		"GET /adapter-service/public/wechat/user":          false,
