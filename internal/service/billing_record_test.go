@@ -179,6 +179,74 @@ func TestListBillingRecordsWithDBAppliesPagination(t *testing.T) {
 	}
 }
 
+func TestListBillingRecordsWithDBMergesSearchChargesByRequestID(t *testing.T) {
+	db := newBillingRecordTestDB(t)
+	owner := seedBillingRecordUser(t, db, 2, "user")
+	token := seedBillingAccessToken(t, db, owner.ID, "混合搜索令牌")
+
+	normalRecord := entity.BillingRecord{
+		UserID:             owner.ID,
+		AccessTokenID:      token.ID,
+		Type:               "normal_search",
+		UsedDefaultAccount: true,
+		Provider:           "icodef",
+		Amount:             1.25,
+		RequestID:          "req-mixed-search",
+		UnitPriceSnapshot:  "provider=icodef flatPrice=1.25 question=%E6%B7%B7%E5%90%88%E6%90%9C%E7%B4%A2%E9%A2%98%E7%9B%AE",
+		Remark:             "搜索答题消耗",
+	}
+	if err := db.Create(&normalRecord).Error; err != nil {
+		t.Fatalf("create normal search billing record: %v", err)
+	}
+
+	aiRecord := entity.BillingRecord{
+		UserID:             owner.ID,
+		AccessTokenID:      token.ID,
+		Type:               "normal_search",
+		UsedDefaultAccount: true,
+		Provider:           "ai",
+		ModelName:          "gpt-test",
+		InputTokens:        100,
+		OutputTokens:       50,
+		TotalTokens:        150,
+		Amount:             0.75,
+		RequestID:          "req-mixed-search",
+		UnitPriceSnapshot:  "provider=ai model=gpt-test totalTokens=150 amount=0.75",
+		Remark:             "搜索答题消耗",
+	}
+	if err := db.Create(&aiRecord).Error; err != nil {
+		t.Fatalf("create ai search billing record: %v", err)
+	}
+
+	result, err := ListBillingRecordsWithDB(db, owner, 1, 10)
+	if err != nil {
+		t.Fatalf("list merged billing records: %v", err)
+	}
+	if result.Total != 1 || len(result.Data) != 1 {
+		t.Fatalf("expected mixed search charges to merge into one row, got %+v", result)
+	}
+
+	merged := result.Data[0]
+	if merged.ID != aiRecord.ID {
+		t.Fatalf("expected latest search charge id %d to represent merged row, got %d", aiRecord.ID, merged.ID)
+	}
+	if merged.Amount != 2 {
+		t.Fatalf("expected merged amount 2.00, got %.8f", merged.Amount)
+	}
+	if merged.QuestionText != "混合搜索题目" {
+		t.Fatalf("expected question text from normal charge, got %q", merged.QuestionText)
+	}
+	if merged.ProviderLabel != "Icodef 题库、AI 搜索" {
+		t.Fatalf("expected merged provider label, got %q", merged.ProviderLabel)
+	}
+	if merged.AnswerSourceLabel != "Icodef 题库、AI 搜索" {
+		t.Fatalf("expected merged answer source label, got %q", merged.AnswerSourceLabel)
+	}
+	if merged.ReferenceNo != "req-mixed-search" || merged.AccessTokenName != "混合搜索令牌" {
+		t.Fatalf("expected merged identity fields to be preserved, got %+v", merged)
+	}
+}
+
 func TestListBillingRecordsWithDBIncludesProviderLabelAndAccessTokenName(t *testing.T) {
 	db := newBillingRecordTestDB(t)
 	owner := seedBillingRecordUser(t, db, 2, "user")
