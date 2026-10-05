@@ -310,10 +310,6 @@ func RegisterDB(config configs.Config) *gorm.DB {
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
 	}
-	if err := db.Exec("UPDATE access_tokens SET token_value = '' WHERE token_value <> ''").Error; err != nil {
-		logger.FatalLog(fmt.Errorf("scrub legacy access token values fail: %w", err))
-	}
-
 	ensureAccountDomainDefaults(db)
 
 	// 首先需要注册一个默认用户

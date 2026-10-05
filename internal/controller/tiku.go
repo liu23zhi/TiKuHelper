@@ -150,11 +150,13 @@ func GetQuestions(c *gin.Context) {
 	}
 	user, _ := c.Get("user")
 	if searchValue.PageSize > 10 {
+		currentUser := user.(*entity.User)
 		r, _ := json.Marshal(searchValue)
 		l := entity.Log{
 			Qid:        0,
 			Action:     3,
-			UserID:     user.(*entity.User).ID,
+			UserID:     currentUser.ID,
+			Username:   currentUser.Username,
 			CreateTime: time.Now(),
 			OldAnswer:  string(r),
 		}
@@ -247,10 +249,12 @@ func UpdateQuestions(c *gin.Context) {
 	}
 	if updates.RowsAffected == 1 {
 		user, _ := c.Get("user")
+		currentUser := user.(*entity.User)
 		l := entity.Log{
 			Qid:        oldTiku.ID,
 			Action:     1,
-			UserID:     user.(*entity.User).ID,
+			UserID:     currentUser.ID,
+			Username:   currentUser.Username,
 			CreateTime: time.Now(),
 			OldAnswer:  oldTiku.Answer,
 			NewAnswer:  tiku.Answer,
@@ -276,10 +280,12 @@ func DeleteQuestion(c *gin.Context) {
 	oldTiku, err := dao.Tiku.Where(dao.Tiku.ID.Eq(int32(id))).First()
 	marshal, _ := json.Marshal(oldTiku)
 	user, _ := c.Get("user")
+	currentUser := user.(*entity.User)
 	l := entity.Log{
 		Qid:        oldTiku.ID,
 		Action:     2,
-		UserID:     user.(*entity.User).ID,
+		UserID:     currentUser.ID,
+		Username:   currentUser.Username,
 		CreateTime: time.Now(),
 		OldAnswer:  string(marshal),
 	}
@@ -310,10 +316,12 @@ func CreateQuestion(c *gin.Context) {
 		if err == nil {
 			marshal, _ := json.Marshal(t)
 			user, _ := c.Get("user")
+			currentUser := user.(*entity.User)
 			l := entity.Log{
 				Qid:        t.ID,
 				Action:     0,
-				UserID:     user.(*entity.User).ID,
+				UserID:     currentUser.ID,
+				Username:   currentUser.Username,
 				CreateTime: time.Now(),
 				OldAnswer:  string(marshal),
 			}

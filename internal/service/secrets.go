@@ -51,18 +51,3 @@ func RedactAISearchConfigView(view AISearchConfigView) AISearchConfigView {
 	view.APIKey = maskSecret(view.APIKey)
 	return view
 }
-
-// RedactSearchAccountConfigView removes write-only secret values from API responses.
-func RedactSearchAccountConfigView(view SearchAccountConfigView) SearchAccountConfigView {
-	view.TokenValue = maskSecret(view.TokenValue)
-	return view
-}
-
-// RedactSearchAccountConfigViews redacts a collection of search account views.
-func RedactSearchAccountConfigViews(views []SearchAccountConfigView) []SearchAccountConfigView {
-	redacted := make([]SearchAccountConfigView, len(views))
-	for index, view := range views {
-		redacted[index] = RedactSearchAccountConfigView(view)
-	}
-	return redacted
-}

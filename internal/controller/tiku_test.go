@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/glebarez/sqlite"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/middleware"
@@ -110,6 +110,36 @@ func TestCreateQuestionDefaultsSourceNameToManualImport(t *testing.T) {
 	}
 	if strings.TrimSpace(sourceName.String) != "人工导入" {
 		t.Fatalf("expected source_name 人工导入, got %q", sourceName.String)
+	}
+}
+
+func TestGetQuestionsAuditLogStoresUsername(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newTikuControllerTestDB(t)
+	user := seedTikuControllerUser(t, db, 1, "topic-admin")
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(
+		http.MethodPost,
+		"/adapter-service/questions/search",
+		bytes.NewReader([]byte(`{"pageNo":0,"pageSize":11}`)),
+	)
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("user", &user)
+
+	GetQuestions(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+
+	var entry entity.Log
+	if err := db.Where("user_id = ? AND action = ?", user.ID, logActionSearch).First(&entry).Error; err != nil {
+		t.Fatalf("load question query log: %v", err)
+	}
+	if entry.Username != "topic-admin" {
+		t.Fatalf("expected username topic-admin, got %q", entry.Username)
 	}
 }
 

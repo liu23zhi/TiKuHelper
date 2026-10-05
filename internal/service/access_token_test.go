@@ -42,7 +42,7 @@ func seedAccessTokenOwner(t *testing.T, db *gorm.DB, id int32, role string) enti
 	return user
 }
 
-func TestCreateAccessTokenWithDBReturnsPlainTokenStoresOnlyHash(t *testing.T) {
+func TestCreateAccessTokenWithDBStoresPlainTokenForDisplay(t *testing.T) {
 	db := newAccessTokenTestDB(t)
 	owner := seedAccessTokenOwner(t, db, 1, "user")
 
@@ -94,12 +94,12 @@ func TestCreateAccessTokenWithDBReturnsPlainTokenStoresOnlyHash(t *testing.T) {
 	if err := db.Table(entity.TableNameAccessToken).Select("token_value").Where("id = ?", created.AccessToken.ID).Scan(&storedDisplayValue).Error; err != nil {
 		t.Fatalf("load stored token display value: %v", err)
 	}
-	if storedDisplayValue.TokenValue != "" {
-		t.Fatalf("expected stored token display value to be empty, got %s", storedDisplayValue.TokenValue)
+	if storedDisplayValue.TokenValue != created.Token {
+		t.Fatalf("expected stored token display value %s, got %s", created.Token, storedDisplayValue.TokenValue)
 	}
 }
 
-func TestListAccessTokensWithDBScopesByRoleWithoutReturningPlainToken(t *testing.T) {
+func TestListAccessTokensWithDBScopesByRoleAndReturnsStoredTokenValue(t *testing.T) {
 	db := newAccessTokenTestDB(t)
 	admin := seedAccessTokenOwner(t, db, 1, "admin")
 	owner := seedAccessTokenOwner(t, db, 2, "user")
@@ -125,8 +125,8 @@ func TestListAccessTokensWithDBScopesByRoleWithoutReturningPlainToken(t *testing
 	if err != nil {
 		t.Fatalf("marshal owner token payload: %v", err)
 	}
-	if strings.Contains(string(ownerPayload), ownerToken.Token) || strings.Contains(string(ownerPayload), "tokenValue") {
-		t.Fatalf("expected owner token payload to omit plain token value, got %s", string(ownerPayload))
+	if !strings.Contains(string(ownerPayload), ownerToken.Token) || !strings.Contains(string(ownerPayload), "tokenValue") {
+		t.Fatalf("expected owner token payload to include stored token value, got %s", string(ownerPayload))
 	}
 
 	adminList, err := ListAccessTokensWithDB(db, admin)

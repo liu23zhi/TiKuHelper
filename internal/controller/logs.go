@@ -93,6 +93,7 @@ func LogList(c *gin.Context) {
 		})
 		return
 	}
+	resolveLogUsernames(find)
 
 	c.JSON(200, gin.H{
 		"data":     find,
@@ -100,4 +101,39 @@ func LogList(c *gin.Context) {
 		"page":     page,
 		"pageSize": pageSize,
 	})
+}
+
+func resolveLogUsernames(logs []*entity.Log) {
+	userIDs := make([]int32, 0, len(logs))
+	seen := make(map[int32]struct{}, len(logs))
+	for _, entry := range logs {
+		if entry == nil || entry.UserID <= 0 || strings.TrimSpace(entry.Username) != "" {
+			continue
+		}
+		if _, exists := seen[entry.UserID]; exists {
+			continue
+		}
+		seen[entry.UserID] = struct{}{}
+		userIDs = append(userIDs, entry.UserID)
+	}
+	if len(userIDs) == 0 {
+		return
+	}
+
+	var users []entity.User
+	if err := dao.User.UnderlyingDB().Where("id IN ?", userIDs).Find(&users).Error; err != nil {
+		return
+	}
+	usernameByID := make(map[int32]string, len(users))
+	for _, user := range users {
+		usernameByID[user.ID] = strings.TrimSpace(user.Username)
+	}
+	for _, entry := range logs {
+		if entry == nil || strings.TrimSpace(entry.Username) != "" {
+			continue
+		}
+		if username := usernameByID[entry.UserID]; username != "" {
+			entry.Username = username
+		}
+	}
 }

@@ -170,6 +170,53 @@ func TestLogListAdminSeesAllAuditLogsWithMetadata(t *testing.T) {
 	t.Fatal("expected auth module log in response")
 }
 
+func TestLogListResolvesUsernameForLegacyRows(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newLogControllerTestDB(t)
+	admin := &entity.User{ID: 311, Username: "admin-legacy-log", Password: "123456", Role: "admin", Status: "enabled", RegisterSource: "admin"}
+	member := &entity.User{ID: 312, Username: "legacy-member", Password: "123456", Role: "user", Status: "enabled", RegisterSource: "public"}
+	if err := db.Create(admin).Error; err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	if err := db.Create(member).Error; err != nil {
+		t.Fatalf("create member: %v", err)
+	}
+	if err := db.Create(&entity.Log{
+		UserID:      member.ID,
+		Username:    "",
+		Module:      "question",
+		Action:      3,
+		Description: "查询题目",
+		ClientIP:    "127.0.0.10",
+		CreateTime:  time.Date(2026, 10, 5, 16, 0, 0, 0, time.UTC),
+	}).Error; err != nil {
+		t.Fatalf("seed legacy log: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/logs?page=1&pageSize=10", nil)
+	ctx.Set("user", admin)
+
+	LogList(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode log list response: %v", err)
+	}
+	if len(response.Data) != 1 {
+		t.Fatalf("expected one legacy log, got %d", len(response.Data))
+	}
+	if response.Data[0]["username"] != "legacy-member" {
+		t.Fatalf("expected username legacy-member, got %#v", response.Data[0]["username"])
+	}
+}
+
 func TestLogListAdminCanFilterByModuleAndAction(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newLogControllerTestDB(t)

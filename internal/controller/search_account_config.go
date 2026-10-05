@@ -21,7 +21,7 @@ func SearchAccountConfigList(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, service.RedactSearchAccountConfigViews(configs))
+	c.JSON(http.StatusOK, configs)
 }
 
 func UpdateSearchAccountConfig(c *gin.Context) {
@@ -48,5 +48,5 @@ func UpdateSearchAccountConfig(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, service.RedactSearchAccountConfigView(config))
+	c.JSON(http.StatusOK, config)
 }
