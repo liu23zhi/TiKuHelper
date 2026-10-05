@@ -57,6 +57,7 @@ test('Profile page auto-loads scan QR and uses realtime status lifecycle', async
   assert.match(content, /createWechatQrStatusController/)
   assert.match(content, /void startWechatBind\(\)/)
   assert.match(content, /onRemaining/)
+  assert.match(content, /purpose: 'bind'/)
   assert.match(content, /实时连接/)
   assert.match(content, /轮询中/)
   assert.match(content, /二维码已过期/)

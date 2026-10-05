@@ -416,7 +416,10 @@ export default defineComponent({
       try {
         let resolved = payload || {}
         if (resolved.status === 'need_bind' && !resolved.bindToken) {
-          const res = await getWechatLoginStatus({ loginToken: wechatLoginToken.value })
+          const res = await getWechatLoginStatus({
+            loginToken: wechatLoginToken.value,
+            purpose: 'bind',
+          })
           if (res?.status !== 200) {
             wechatStatusText.value = res?.message || '微信绑定状态查询失败'
             return
@@ -448,7 +451,10 @@ export default defineComponent({
     }
 
     const wechatStatusController = createWechatQrStatusController({
-      checkStatus: () => getWechatLoginStatus({ loginToken: wechatLoginToken.value }),
+      checkStatus: () => getWechatLoginStatus({
+        loginToken: wechatLoginToken.value,
+        purpose: 'bind',
+      }),
       onTransport: (transport) => {
         wechatTransportText.value = transport === 'websocket' ? '实时连接' : '轮询中'
       },

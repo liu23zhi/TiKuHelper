@@ -92,6 +92,40 @@ func TestCheckWechatLoginStatusControllerReturnsNeedBind(t *testing.T) {
 	}
 }
 
+func TestCheckWechatLoginStatusControllerBindPurposeDoesNotSetAuthCookie(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	originalSettings := loadWechatLoginSettings
+	originalCheck := checkWechatLoginStatusWithDB
+	defer func() {
+		loadWechatLoginSettings = originalSettings
+		checkWechatLoginStatusWithDB = originalCheck
+	}()
+	loadWechatLoginSettings = func() (service.SystemSettingDetail, error) {
+		return service.SystemSettingDetail{
+			WechatLoginEnabled:     true,
+			WechatScanLoginEnabled: true,
+			WechatAPIBaseURL:       "https://wechat.example.com",
+			WechatAPIBearerToken:   "token",
+		}, nil
+	}
+	checkWechatLoginStatusWithDB = func(service.WechatLoginStatusInput) (service.WechatLoginStatusResult, error) {
+		return service.WechatLoginStatusResult{Status: service.WechatLoginStatusSuccess, JWT: "jwt-other-user"}, nil
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/public/wechat-login/status?loginToken=login-token-1&purpose=bind", nil)
+
+	CheckWechatLoginStatus(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	if cookie := recorder.Header().Get("Set-Cookie"); strings.Contains(cookie, authCookieName) {
+		t.Fatalf("binding status must not set auth cookie, got %q", cookie)
+	}
+}
+
 func TestLoginWechatByCodeControllerReturnsNeedBind(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	originalSettings := loadWechatLoginSettings

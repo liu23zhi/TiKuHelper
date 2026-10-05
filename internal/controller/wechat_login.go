@@ -88,7 +88,7 @@ func CheckWechatLoginStatus(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
-	if strings.TrimSpace(result.JWT) != "" {
+	if strings.TrimSpace(result.JWT) != "" && !strings.EqualFold(strings.TrimSpace(c.Query("purpose")), "bind") {
 		setAuthCookie(c, result.JWT)
 	}
 	c.JSON(http.StatusOK, result)
