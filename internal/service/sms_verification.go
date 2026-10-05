@@ -73,6 +73,9 @@ func SendSMSCodeWithDB(db *gorm.DB, input SendSMSCodeInput) error {
 	if strings.TrimSpace(input.Scene) == SMSSceneLogin && !settings.SMSLoginEnabled {
 		return fmt.Errorf("短信验证码登录未开启")
 	}
+	if strings.TrimSpace(input.Scene) == SMSSceneChangePhone && !settings.SMSLoginEnabled {
+		return fmt.Errorf("手机号功能未启用")
+	}
 	if strings.TrimSpace(input.Scene) == SMSSceneRegister && !settings.RegisterEnabled {
 		return fmt.Errorf("未开放注册")
 	}

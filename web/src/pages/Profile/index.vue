@@ -76,7 +76,13 @@
                 </div>
               </div>
             </div>
-            <a-form layout="vertical" :model="phoneForm" @finish="submitPhoneChange">
+            <a-alert
+              v-if="!publicAuthSettings.smsLoginEnabled"
+              type="warning"
+              show-icon
+              message="管理员尚未启用手机号，当前无法更换手机号。"
+            />
+            <a-form v-else layout="vertical" :model="phoneForm" @finish="submitPhoneChange">
               <a-form-item label="新手机号" required>
                 <a-input
                   v-model:value="phoneForm.phone"
@@ -146,7 +152,7 @@
           v-if="!publicAuthSettings.wechatScanLoginEnabled"
           type="warning"
           show-icon
-          message="管理员尚未开启微信扫码能力，当前无法绑定。"
+          message="管理员尚未开启微信，当前无法绑定。"
         />
         <template v-else>
           <div class="wechat-qrcode-frame">
@@ -211,6 +217,7 @@ export default defineComponent({
       captchaProvider: 'remote',
       captchaApiBaseUrl: 'https://captcha.api.zelly.cn',
       captchaType: 'RANDOM',
+      smsLoginEnabled: false,
       wechatScanLoginEnabled: false,
     })
     const smsCooldown = useSmsCooldown()
@@ -249,6 +256,7 @@ export default defineComponent({
             captchaProvider: res?.data?.captchaProvider || 'remote',
             captchaApiBaseUrl: res?.data?.captchaApiBaseUrl || 'https://captcha.api.zelly.cn',
             captchaType: res?.data?.captchaType || 'RANDOM',
+            smsLoginEnabled: !!res?.data?.smsLoginEnabled,
             wechatScanLoginEnabled: !!res?.data?.wechatScanLoginEnabled,
           }
         }

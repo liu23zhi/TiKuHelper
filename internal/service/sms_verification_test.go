@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -244,6 +245,29 @@ func TestSendSMSCodeWithDBRejectsChangePhoneOwnedByAnotherUser(t *testing.T) {
 		TargetUserID: 77,
 	}); err == nil {
 		t.Fatal("expected occupied change-phone number to fail")
+	}
+}
+
+func TestSendSMSCodeWithDBRejectsChangePhoneWhenPhoneFeatureDisabled(t *testing.T) {
+	db := newSMSVerificationTestDB(t)
+	_, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
+		SMSProvider:     "smsbao",
+		SMSBaoUsername:  "demo-user",
+		SMSBaoSecret:    "demo-secret",
+		SMSLoginEnabled: false,
+	})
+	if err != nil {
+		t.Fatalf("seed disabled phone settings: %v", err)
+	}
+
+	err = SendSMSCodeWithDB(db, SendSMSCodeInput{
+		Phone:        "13900000000",
+		Scene:        SMSSceneChangePhone,
+		RequestIP:    "127.0.0.1",
+		TargetUserID: 77,
+	})
+	if err == nil || !strings.Contains(err.Error(), "手机号功能未启用") {
+		t.Fatalf("expected disabled phone feature error, got %v", err)
 	}
 }
 
