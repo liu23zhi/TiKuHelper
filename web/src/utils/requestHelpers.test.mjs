@@ -11,11 +11,11 @@ test('buildAuthFailureHandling keeps session for negative-balance default-accoun
     status: 401,
     data: {
       message: '访问令牌鉴权失败',
-      detail: '当前余额不足，系统题库已禁用，请传入渠道参数后重试',
+      detail: '当前余额不足，系统题库已禁用，请充值后再使用',
     },
   }), {
     shouldLogout: false,
-    userMessage: '当前余额不足，系统题库已禁用，请传入渠道参数后重试',
+    userMessage: '当前余额不足，系统题库已禁用，请充值后再使用',
   });
 });
 
@@ -47,14 +47,14 @@ test('buildResponsePayload prefers backend detail when present', () => {
     status: 401,
     data: {
       message: '访问令牌鉴权失败',
-      detail: '当前余额不足，系统题库已禁用，请传入渠道参数后重试',
+      detail: '当前余额不足，系统题库已禁用，请充值后再使用',
     },
   }), {
     data: {
       message: '访问令牌鉴权失败',
-      detail: '当前余额不足，系统题库已禁用，请传入渠道参数后重试',
+      detail: '当前余额不足，系统题库已禁用，请充值后再使用',
     },
     status: 401,
-    message: '当前余额不足，系统题库已禁用，请传入渠道参数后重试',
+    message: '当前余额不足，系统题库已禁用，请充值后再使用',
   });
 });

@@ -120,6 +120,9 @@ func seedControllerAccessToken(t *testing.T, db *gorm.DB, plainToken string) ent
 	t.Helper()
 
 	user := seedControllerUser(t, db, 0, "user-"+plainToken, "user")
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 100).Error; err != nil {
+		t.Fatalf("seed access token user balance: %v", err)
+	}
 	return seedControllerTokenForUser(t, db, user, plainToken, 0)
 }
 
@@ -620,6 +623,9 @@ func TestSearchPersistsBillingRecordAndAccessTokenUsageForLocalSearch(t *testing
 	gin.SetMode(gin.TestMode)
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 204, "search-local-billing-user", "user")
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10).Error; err != nil {
+		t.Fatalf("seed user balance: %v", err)
+	}
 	token := seedControllerTokenForUser(t, db, user, "search-local-billing-token", 0.4)
 	seedControllerDefaultSearchProviderConfig(t, db, "local", 0.6)
 
@@ -939,11 +945,133 @@ func TestSearchPersistsAIBillingDuringDefaultAIThatRunsInNormalMode(t *testing.T
 	}
 }
 
+func TestPersistSearchBillingRecordsWithDBRejectsInsufficientBalance(t *testing.T) {
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 217, "search-insufficient-balance-user", "user")
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 1).Error; err != nil {
+		t.Fatalf("seed user balance: %v", err)
+	}
+	token := seedControllerTokenForUser(t, db, user, "search-insufficient-balance-token", 0)
+
+	err := persistSearchBillingRecordsWithDB(db, searchBillingContext{
+		UserID:        user.ID,
+		AccessTokenID: token.ID,
+		RequestID:     "req-search-insufficient-balance",
+	}, []searchBillingCharge{
+		{Provider: "icodef", Amount: 1},
+		{Provider: searchModeAI, Amount: 1.25},
+	})
+	if err == nil {
+		t.Fatal("expected insufficient balance to reject billing persistence")
+	}
+
+	var billingCount int64
+	if err := db.Model(&entity.BillingRecord{}).Where("request_id = ?", "req-search-insufficient-balance").Count(&billingCount).Error; err != nil {
+		t.Fatalf("count billing records: %v", err)
+	}
+	if billingCount != 0 {
+		t.Fatalf("expected no partial billing records, got %d", billingCount)
+	}
+
+	var storedUser entity.User
+	if err := db.Where("id = ?", user.ID).First(&storedUser).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	if storedUser.Balance != 1 {
+		t.Fatalf("expected balance to remain 1, got %v", storedUser.Balance)
+	}
+
+	var storedToken entity.AccessToken
+	if err := db.Where("id = ?", token.ID).First(&storedToken).Error; err != nil {
+		t.Fatalf("load access token: %v", err)
+	}
+	if storedToken.TotalAmountUsed != 0 {
+		t.Fatalf("expected token usage to remain 0, got %v", storedToken.TotalAmountUsed)
+	}
+}
+
+func TestSearchRejectsInsufficientBalanceAfterFinalBillingCheck(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 218, "search-final-balance-user", "user")
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 1).Error; err != nil {
+		t.Fatalf("seed user balance: %v", err)
+	}
+	token := seedControllerTokenForUser(t, db, user, "search-final-balance-token", 0)
+	seedControllerDefaultSearchProviderConfig(t, db, "icodef", 2)
+
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode:                 searchModeNormal,
+				UsedDefaultSearch:          true,
+				UsedDefaultSearchProviders: []string{"icodef"},
+				Tokens:                     map[string]string{"icodef": "default-icodef"},
+				UserID:                     user.ID,
+				AccessTokenID:              token.ID,
+				RequestID:                  "req-search-final-balance",
+				AccessTokenCtx: &service.AccessTokenAuthContext{
+					User:        user,
+					AccessToken: token,
+				},
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return []func(model.SearchRequest) ([][]string, error){
+				(&stubSearchClient{enable: true, answer: [][]string{{"答案A"}}}).SearchAnswer,
+			}
+		},
+		nil,
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request.Header.Set("Content-Type", "application/json")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("expected status 401, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+
+			var got struct {
+				Detail string `json:"detail"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+				t.Fatalf("unmarshal unauthorized response: %v, body=%s", err, recorder.Body.String())
+			}
+			if got.Detail != "当前余额不足，系统题库已禁用，请充值后再使用" {
+				t.Fatalf("unexpected insufficient-balance detail: %q", got.Detail)
+			}
+		})
+
+	var billingCount int64
+	if err := db.Model(&entity.BillingRecord{}).Where("request_id = ?", "req-search-final-balance").Count(&billingCount).Error; err != nil {
+		t.Fatalf("count billing records: %v", err)
+	}
+	if billingCount != 0 {
+		t.Fatalf("expected insufficient final billing to create no records, got %d", billingCount)
+	}
+
+	var storedUser entity.User
+	if err := db.Where("id = ?", user.ID).First(&storedUser).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	if storedUser.Balance != 1 {
+		t.Fatalf("expected balance to remain 1, got %v", storedUser.Balance)
+	}
+}
+
 func TestSearchPersistsCachedSourceNameInLocalBillingSnapshot(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newSearchControllerTestDB(t)
 	ensureControllerTikuSourceColumn(t, db)
 	user := seedControllerUser(t, db, 214, "search-local-source-user", "user")
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10).Error; err != nil {
+		t.Fatalf("seed user balance: %v", err)
+	}
 	token := seedControllerTokenForUser(t, db, user, "search-local-source-token", 0)
 	seedControllerDefaultSearchProviderConfig(t, db, "local", 0.6)
 	seedControllerLocalTiku(t, db, "本地缓存题目", []string{"A", "B"}, []string{"缓存答案"}, "", "", "万能题库")
@@ -995,6 +1123,9 @@ func TestSearchPersistsQuestionTextForPersonalUsageRecords(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 216, "search-question-text-user", "user")
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10).Error; err != nil {
+		t.Fatalf("seed user balance: %v", err)
+	}
 	token := seedControllerTokenForUser(t, db, user, "search-question-text-token", 0)
 	seedControllerDefaultSearchProviderConfig(t, db, "icodef", 1.25)
 
@@ -1056,6 +1187,9 @@ func TestSearchWritesLocalQuestionIDIntoAuditLog(t *testing.T) {
 	db := newSearchControllerTestDB(t)
 	localQuestion := seedControllerLocalTiku(t, db, "本地日志题目", []string{"A", "B"}, []string{"本地答案"}, "", "", "万能题库")
 	user := seedControllerUser(t, db, 215, "search-local-log-user", "user")
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10).Error; err != nil {
+		t.Fatalf("seed user balance: %v", err)
+	}
 	token := seedControllerTokenForUser(t, db, user, "search-local-log-token", 0)
 	seedControllerDefaultSearchProviderConfig(t, db, "local", 0.6)
 
@@ -1411,6 +1545,9 @@ func TestSearchWritesActualHitProviderIntoAuditLogAndBillsExplicitProviderSearch
 	gin.SetMode(gin.TestMode)
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 205, "search-hit-provider-user", "user")
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10).Error; err != nil {
+		t.Fatalf("seed user balance: %v", err)
+	}
 	token := seedControllerTokenForUser(t, db, user, "search-hit-provider-token", 0.2)
 	seedControllerDefaultSearchProviderConfig(t, db, "wanneng", 1.6)
 
@@ -1597,8 +1734,34 @@ func TestResolveSearchRequestContextWithDBRejectsDefaultAccountsWhenUserBalanceI
 	if !errors.Is(err, service.ErrInvalidAccessTokenAuthorization) {
 		t.Fatalf("expected ErrInvalidAccessTokenAuthorization, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "余额") {
+	if !strings.Contains(err.Error(), "当前余额不足，系统题库已禁用，请充值后再使用") {
 		t.Fatalf("expected negative-balance error to mention balance, got %q", err.Error())
+	}
+}
+
+func TestResolveSearchRequestContextWithDBRejectsUserWithZeroBalance(t *testing.T) {
+	db := newSearchControllerTestDB(t)
+	token := seedControllerAccessToken(t, db, "zero-balance-token")
+	if err := db.Model(&entity.User{}).Where("id = ?", token.UserID).Update("balance", 0).Error; err != nil {
+		t.Fatalf("seed zero balance: %v", err)
+	}
+
+	if _, err := service.UpdateSearchAccountConfigWithDB(db, "icodef", service.UpdateSearchAccountConfigInput{
+		TokenValue: "default-search-token",
+		Enabled:    true,
+	}); err != nil {
+		t.Fatalf("seed search config: %v", err)
+	}
+
+	_, err := resolveSearchRequestContextWithDB(db, "Basic zero-balance-token", "198.51.100.24", url.Values{})
+	if err == nil {
+		t.Fatal("expected zero-balance authenticated request to fail")
+	}
+	if !errors.Is(err, service.ErrInvalidAccessTokenAuthorization) {
+		t.Fatalf("expected ErrInvalidAccessTokenAuthorization, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "当前余额不足，系统题库已禁用，请充值后再使用") {
+		t.Fatalf("expected zero-balance error to mention balance, got %q", err.Error())
 	}
 }
 
@@ -1634,25 +1797,52 @@ func TestResolveSearchRequestContextWithDBAllowsExplicitProviderParamsWhenUserBa
 	if err != nil {
 		t.Fatalf("resolve search context: %v", err)
 	}
-
 	if resolved.Tokens["wanneng"] != "request-provider-token" {
 		t.Fatalf("expected explicit provider token to be preserved, got %q", resolved.Tokens["wanneng"])
-	}
-	if resolved.Tokens["icodef"] != "" {
-		t.Fatalf("expected negative-balance request not to inject default search token, got %q", resolved.Tokens["icodef"])
 	}
 	if resolved.AIConfig.BaseURL != "https://override.example.com/v1" || resolved.AIConfig.APIKey != "override-key" || resolved.AIConfig.Model != "override-model" {
 		t.Fatalf("expected explicit ai config to be preserved, got %+v", resolved.AIConfig)
 	}
-	if resolved.UsedDefaultSearch {
-		t.Fatal("expected negative-balance request with explicit provider params not to mark default search usage")
+	if resolved.UsedDefaultSearch || resolved.UsedDefaultAI || len(resolved.UsedDefaultSearchProviders) != 0 {
+		t.Fatalf("expected negative-balance override not to use default accounts, got %+v", resolved)
 	}
-	if resolved.UsedDefaultAI {
-		t.Fatal("expected negative-balance request with explicit ai params not to mark default ai usage")
+}
+
+func TestSearchAllowsNegativeBalanceUserWithExplicitProviderParams(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 219, "search-negative-explicit-user", "user")
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", -3).Error; err != nil {
+		t.Fatalf("seed negative balance: %v", err)
 	}
-	if len(resolved.UsedDefaultSearchProviders) != 0 {
-		t.Fatalf("expected no default search providers for negative-balance request, got %+v", resolved.UsedDefaultSearchProviders)
-	}
+	_ = seedControllerTokenForUser(t, db, user, "search-negative-explicit-token", 0)
+	seedControllerDefaultSearchProviderConfig(t, db, "wanneng", 1.6)
+
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(authorization string, clientIP string, query url.Values) (resolvedSearchRequestContext, error) {
+			return resolveSearchRequestContextWithDB(db, authorization, clientIP, query)
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return []func(model.SearchRequest) ([][]string, error){
+				(&stubSearchClient{enable: true, answer: [][]string{{"显式渠道答案"}}}).SearchAnswer,
+			}
+		},
+		nil,
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=wanneng&wannengToken=request-provider-token&noRecord=1", bytes.NewReader([]byte(`{"question":"显式渠道题目","options":["A","B"]}`)))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Authorization", "Basic "+"search-negative-explicit-token")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+		})
 }
 
 func TestSearchRejectsNegativeBalanceUserWithoutExplicitProviderParams(t *testing.T) {
@@ -1702,7 +1892,7 @@ func TestSearchRejectsNegativeBalanceUserWithoutExplicitProviderParams(t *testin
 	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
 		t.Fatalf("unmarshal unauthorized response: %v, body=%s", err, recorder.Body.String())
 	}
-	if !strings.Contains(got.Detail, "余额") {
+	if got.Detail != "当前余额不足，系统题库已禁用，请充值后再使用" {
 		t.Fatalf("expected negative-balance unauthorized detail to mention balance, got %q", got.Detail)
 	}
 }

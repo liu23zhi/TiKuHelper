@@ -5,16 +5,20 @@ import {
   buildAccessTokenBalanceAlert,
 } from './accessTokenManagementHelpers.mjs';
 
-test('buildAccessTokenBalanceAlert shows negative-balance default-account suspension warning', () => {
+test('buildAccessTokenBalanceAlert shows zero and negative balance suspension warning', () => {
   assert.deepEqual(buildAccessTokenBalanceAlert({ balance: -3 }), {
     type: 'warning',
     message: '当前余额不足',
-    description: '当前余额已小于 0，系统默认账号已停用。继续调用 /adapter-service/search 时，请在请求中显式传入渠道参数或 AI 参数，否则请求会直接失败。',
+    description: '当前余额不足，系统题库已禁用。仍可在请求中显式传入渠道参数或 AI 参数。',
+  });
+  assert.deepEqual(buildAccessTokenBalanceAlert({ balance: 0 }), {
+    type: 'warning',
+    message: '当前余额不足',
+    description: '当前余额已不足，搜索服务已暂停。请先充值后再调用 /adapter-service/search。',
   });
 });
 
-test('buildAccessTokenBalanceAlert returns null for non-negative balances', () => {
-  assert.equal(buildAccessTokenBalanceAlert({ balance: 0 }), null);
+test('buildAccessTokenBalanceAlert returns null for positive and invalid balances', () => {
   assert.equal(buildAccessTokenBalanceAlert({ balance: 12.5 }), null);
   assert.equal(buildAccessTokenBalanceAlert(null), null);
 });
