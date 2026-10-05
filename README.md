@@ -53,6 +53,19 @@ $env:TRUSTED_PROXIES = "10.0.0.10,172.18.0.0/16"
 
 为空时程序信任所有代理转发头；设置后仅信任列表中的代理地址。由于信任所有代理会使客户端能够伪造 `X-Forwarded-For`，生产环境仍建议明确配置该变量。
 
+### `CORS_ALLOWED_ORIGINS`
+
+可选，用于允许浏览器页面向题库服务发起跨域请求，多个来源以英文逗号分隔。
+
+```powershell
+$env:CORS_ALLOWED_ORIGINS = "https://*.chaoxing.com"
+```
+
+- 未设置或留空时，默认允许所有跨域来源。
+- 设置后，仅允许命中白名单的来源；未命中白名单的跨域预检会返回 `403`。
+- 通配符仅允许匹配子域名，不会匹配裸域名或其他后缀。
+- 超星学习助手推荐显式设置为 `https://*.chaoxing.com`，避免生产环境开放所有来源。
+
 ## Docker 示例
 
 ```powershell
@@ -61,6 +74,7 @@ docker run -d `
   -e JWT_SECRET="<至少32字节的随机密钥>" `
   -e TIKU_ADMIN_PASSWORD="<首次初始化管理员密码，留空则使用 123456>" `
   -e TRUSTED_PROXIES="10.0.0.10,172.18.0.0/16" `
+  -e CORS_ALLOWED_ORIGINS="https://*.chaoxing.com" `
   -p 8060:8060 `
   -v ./data:/app/data `
   -v ./config.yaml:/app/config.yaml:ro `

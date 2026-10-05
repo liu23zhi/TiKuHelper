@@ -27,6 +27,7 @@ docker run -d \
   --name tiku-adapter \
   -e JWT_SECRET="<至少32字节的随机密钥>" \
   -e TIKU_ADMIN_PASSWORD="<首次初始化管理员密码>" \
+  -e CORS_ALLOWED_ORIGINS="https://*.chaoxing.com" \
   -p 8060:8060 \
   -v ./data:/app/data \
   tiku-adapter
@@ -46,11 +47,14 @@ docker run -d \
   --name tiku-adapter \
   -e JWT_SECRET="<至少32字节的随机密钥>" \
   -e TIKU_ADMIN_PASSWORD="<首次初始化管理员密码>" \
+  -e CORS_ALLOWED_ORIGINS="https://*.chaoxing.com" \
   -p 8060:8060 \
   -v ./data:/app/data \
   -v ./config.yaml:/app/config.yaml \
   tiku-adapter
 ```
+
+`CORS_ALLOWED_ORIGINS` 未设置时默认允许所有跨域来源；Compose 默认显式放行 `https://*.chaoxing.com`。
 
 ### 目录结构说明
 

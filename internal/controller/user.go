@@ -168,6 +168,24 @@ func Auth(c *gin.Context) {
 		return
 	}
 	c.Set("user", user)
+	c.Next()
+}
+
+// AuthOrAccessToken accepts the access tokens used by browser integrations, while
+// preserving the existing login-JWT behavior for other protected endpoints.
+func AuthOrAccessToken(c *gin.Context) {
+	authorization := strings.TrimSpace(c.Request.Header.Get("Authorization"))
+	if authorization != "" {
+		authCtx, err := service.ResolveAccessTokenFromBasicAuth(dao.User.UnderlyingDB(), authorization)
+		if err == nil {
+			user := authCtx.User
+			c.Set("user", &user)
+			c.Next()
+			return
+		}
+	}
+
+	Auth(c)
 }
 
 // UserInfo 获取用户信息
