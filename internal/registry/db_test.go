@@ -11,6 +11,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/configs"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 )
 
@@ -153,6 +154,32 @@ func TestRegisterDBAddsUserAccountColumnsAndSeedsAdminDefaults(t *testing.T) {
 	}
 	if !registerSource.Valid || registerSource.String != "system" {
 		t.Fatalf("expected seeded admin register_source=system, got %+v", registerSource)
+	}
+}
+
+func TestRegisterDBUsesDefaultAdminPasswordWhenEnvironmentIsEmpty(t *testing.T) {
+	t.Setenv("TIKU_ADMIN_PASSWORD", "")
+	openRegistryTestDB(t)
+
+	var admin entity.User
+	if err := db.Where("id = ?", 1).First(&admin).Error; err != nil {
+		t.Fatalf("load default admin: %v", err)
+	}
+	if matched, _ := util.VerifyPassword(admin.Password, "123456"); !matched {
+		t.Fatalf("expected default admin password 123456, got %q", admin.Password)
+	}
+}
+
+func TestRegisterDBUsesConfiguredAdminPasswordOnBootstrap(t *testing.T) {
+	t.Setenv("TIKU_ADMIN_PASSWORD", "Admin123!")
+	openRegistryTestDB(t)
+
+	var admin entity.User
+	if err := db.Where("id = ?", 1).First(&admin).Error; err != nil {
+		t.Fatalf("load configured admin: %v", err)
+	}
+	if matched, _ := util.VerifyPassword(admin.Password, "Admin123!"); !matched {
+		t.Fatalf("expected configured admin password, got %q", admin.Password)
 	}
 }
 

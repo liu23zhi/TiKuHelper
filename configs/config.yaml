@@ -1,11 +1,11 @@
-# 必须通过 JWT_SECRET 环境变量提供至少 32 字节随机密钥。
+# JWT_SECRET 环境变量优先；未配置时复用/生成数据库中的签名密钥。
 # 跨域浏览器调用可通过 CORS_ALLOWED_ORIGINS 配置逗号分隔的白名单。
 # 反向代理部署可通过 TRUSTED_PROXIES 配置可信代理网段。
 limit:
   enable: true
   duration: 60 # 时间窗口为60秒
   requests: 120 # 每个来源IP在窗口内最多120个请求
-jwtSecret: "" # 必填，至少32字节；推荐通过 JWT_SECRET 环境变量注入
+jwtSecret: "" # 可选，至少32字节；JWT_SECRET 环境变量优先
 mysql: ""
 database:
   path: "" # SQLite数据库文件路径，留空默认为 tiku.db（向后兼容），Docker部署建议设置为 data/tiku.db

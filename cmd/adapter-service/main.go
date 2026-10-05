@@ -33,14 +33,7 @@ func main() {
 	}(mg)
 
 	server := gin.Default()
-	trustedProxies := []string(nil)
-	if configured := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES")); configured != "" {
-		for _, item := range strings.Split(configured, ",") {
-			if trimmed := strings.TrimSpace(item); trimmed != "" {
-				trustedProxies = append(trustedProxies, trimmed)
-			}
-		}
-	}
+	trustedProxies := resolveTrustedProxies(os.Getenv("TRUSTED_PROXIES"))
 	if err := server.SetTrustedProxies(trustedProxies); err != nil {
 		logger.FatalLog(err)
 	}
@@ -60,4 +53,17 @@ func main() {
 	if err != nil {
 		logger.FatalLog(err)
 	}
+}
+
+func resolveTrustedProxies(configured string) []string {
+	if strings.TrimSpace(configured) == "" {
+		return []string{"0.0.0.0/0", "::/0"}
+	}
+	trustedProxies := make([]string, 0)
+	for _, item := range strings.Split(configured, ",") {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			trustedProxies = append(trustedProxies, trimmed)
+		}
+	}
+	return trustedProxies
 }

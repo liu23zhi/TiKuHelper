@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/glebarez/sqlite"
-	"github.com/google/uuid"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/util"
@@ -320,24 +319,19 @@ func RegisterDB(config configs.Config) *gorm.DB {
 	// 首先需要注册一个默认用户
 	bootstrapPassword := strings.TrimSpace(os.Getenv("TIKU_ADMIN_PASSWORD"))
 	if bootstrapPassword == "" {
-		bootstrapPassword = "A1!" + strings.ReplaceAll(uuid.NewString(), "-", "")
-		logger.SysLog(fmt.Sprintf("未设置 TIKU_ADMIN_PASSWORD，首次初始化管理员密码为 %s；请立即登录修改密码", bootstrapPassword))
+		bootstrapPassword = "123456"
+		logger.SysLog("未设置 TIKU_ADMIN_PASSWORD，管理员初始化密码使用 123456；请登录后立即修改密码")
 	}
 	hashedBootstrapPassword, err := util.HashPassword(bootstrapPassword)
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("hash bootstrap admin password fail: %w", err))
 	}
 	var existingAdmin entity.User
-	if err := db.Where("id = ?", 1).First(&existingAdmin).Error; err == nil && existingAdmin.Password == "123456" {
-		rotatedPassword := "A1!" + strings.ReplaceAll(uuid.NewString(), "-", "")
-		rotatedHash, hashErr := util.HashPassword(rotatedPassword)
-		if hashErr != nil {
-			logger.FatalLog(fmt.Errorf("rotate legacy admin password fail: %w", hashErr))
+	if err := db.Where("id = ?", 1).First(&existingAdmin).Error; err == nil &&
+		(existingAdmin.Password == "" || existingAdmin.Password == "123456") {
+		if updateErr := db.Model(&entity.User{}).Where("id = ?", 1).Update("password", hashedBootstrapPassword).Error; updateErr != nil {
+			logger.FatalLog(fmt.Errorf("migrate legacy admin password fail: %w", updateErr))
 		}
-		if updateErr := db.Model(&entity.User{}).Where("id = ?", 1).Update("password", rotatedHash).Error; updateErr != nil {
-			logger.FatalLog(fmt.Errorf("rotate legacy admin password fail: %w", updateErr))
-		}
-		logger.SysLog(fmt.Sprintf("检测到默认管理员密码，已轮换为随机密码 %s；请立即登录修改密码", rotatedPassword))
 	}
 	user := entity.User{
 		ID:             1,

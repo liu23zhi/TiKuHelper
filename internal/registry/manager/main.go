@@ -40,10 +40,14 @@ func GetManager() *Manager {
 func CreateManager() (*Manager, error) {
 	config := registry.Config()
 	logger.SetupGinLog()
-	if err := util.ConfigureJWT(config.JWTSecret); err != nil {
+	db := registry.RegisterDB(config)
+	jwtSecret, err := registry.ResolveJWTSecretForDB(db, config.JWTSecret)
+	if err != nil {
 		return nil, err
 	}
-	db := registry.RegisterDB(config)
+	if err := util.ConfigureJWT(jwtSecret); err != nil {
+		return nil, err
+	}
 
 	defaultManager = &Manager{
 		db:        db,

@@ -66,3 +66,13 @@ func TestConfigureJWTRejectsMissingOrWeakSecrets(t *testing.T) {
 		t.Fatal("expected known development secret to be rejected")
 	}
 }
+
+func TestGenerateJWTSecretProducesValidSecret(t *testing.T) {
+	secret, err := GenerateJWTSecret()
+	if err != nil {
+		t.Fatalf("generate jwt secret: %v", err)
+	}
+	if err := ValidateJWTSecret(secret); err != nil {
+		t.Fatalf("generated jwt secret should be valid: %v", err)
+	}
+}

@@ -37,6 +37,16 @@ func ConfigureJWT(secret string) error {
 	if resolved == "" {
 		resolved = strings.TrimSpace(os.Getenv("JWT_SECRET"))
 	}
+	if err := ValidateJWTSecret(resolved); err != nil {
+		return err
+	}
+	jwtKey = []byte(resolved)
+	return nil
+}
+
+// ValidateJWTSecret validates a JWT signing secret.
+func ValidateJWTSecret(secret string) error {
+	resolved := strings.TrimSpace(secret)
 	if resolved == "" {
 		return errors.New("JWT_SECRET is required")
 	}
@@ -46,8 +56,16 @@ func ConfigureJWT(secret string) error {
 	if len([]byte(resolved)) < minJWTSecret {
 		return errors.New("JWT_SECRET must be at least 32 bytes")
 	}
-	jwtKey = []byte(resolved)
 	return nil
+}
+
+// GenerateJWTSecret creates a cryptographically random signing secret.
+func GenerateJWTSecret() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
 // GenerateJwt 生成一个jwt
