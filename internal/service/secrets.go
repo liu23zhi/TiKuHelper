@@ -45,9 +45,3 @@ func RedactSystemSettingDetail(detail SystemSettingDetail) SystemSettingDetail {
 	detail.CaptchaAPIKey = maskSecret(detail.CaptchaAPIKey)
 	return detail
 }
-
-// RedactAISearchConfigView removes write-only secret values from API responses.
-func RedactAISearchConfigView(view AISearchConfigView) AISearchConfigView {
-	view.APIKey = maskSecret(view.APIKey)
-	return view
-}

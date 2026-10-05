@@ -25,7 +25,7 @@
             <a-button type="primary" ghost class="config-ai-button" @click="goToAIConfig">前往 AI 搜索配置页</a-button>
           </template>
           <template v-else-if="record.tokenKey">
-            <a-input v-model:value="record.tokenValue" placeholder="请输入默认 Token" />
+            <a-input-password v-model:value="record.tokenValue" placeholder="请输入默认 Token" />
           </template>
         </div>
       </template>

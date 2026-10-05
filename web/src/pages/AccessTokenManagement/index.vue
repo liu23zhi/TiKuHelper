@@ -62,11 +62,15 @@
         :loading="tableLoading"
         :pagination="false"
         row-key="id"
-        :scroll="{ x: 1180 }"
+        :scroll="{ x: 'max-content' }"
       >
         <template #tokenValue="{ record }">
           <div class="token-value-cell">
-            <a-typography-paragraph copyable class="token-value-text">
+            <a-typography-paragraph
+              copyable
+              class="token-value-text"
+              :class="{ 'token-value-text--visible': isTokenVisible(record.id) }"
+            >
               <code>{{ displayTokenValue(record) }}</code>
             </a-typography-paragraph>
             <a-button class="token-copy-button" shape="round" size="small" @click="copyTokenValue(record)">
@@ -244,7 +248,6 @@ export default defineComponent({
           slots: {
             customRender: 'tokenValue',
           },
-          width: 420,
         },
         {
           title: '状态',
@@ -553,6 +556,12 @@ export default defineComponent({
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.token-value-text--visible {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
 }
 
 .token-copy-button,

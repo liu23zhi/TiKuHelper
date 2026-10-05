@@ -62,7 +62,7 @@ func AISearchConfigDetail(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, service.RedactAISearchConfigView(config))
+	c.JSON(http.StatusOK, config)
 }
 
 func AISearchModels(c *gin.Context) {
@@ -138,5 +138,5 @@ func UpdateAISearchConfig(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, service.RedactAISearchConfigView(config))
+	c.JSON(http.StatusOK, config)
 }

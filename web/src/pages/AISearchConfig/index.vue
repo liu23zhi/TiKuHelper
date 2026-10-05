@@ -26,7 +26,7 @@
       </a-form-item>
 
       <a-form-item label="API Key">
-        <a-input v-model:value="formState.apiKey" placeholder="请输入 API Key" />
+        <a-input-password v-model:value="formState.apiKey" placeholder="请输入 API Key" />
       </a-form-item>
 
       <a-form-item label="默认模型">

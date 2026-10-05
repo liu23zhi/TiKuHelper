@@ -16,4 +16,8 @@ test('AccessTokenManagement page restores copy and show-all controls', async () 
   assert.match(content, /toggleTokenVisibility\(record\.id\)/);
   assert.match(content, /displayTokenValue\(record\)/);
   assert.match(content, /visibleTokenIds/);
+  assert.match(content, /token-value-text--visible/);
+  assert.match(content, /white-space:\s*normal/);
+  assert.match(content, /:scroll="\{ x: 'max-content' \}"/);
+  assert.doesNotMatch(content, /width: 560/);
 });
