@@ -51,6 +51,17 @@ test('Profile route and menu are available to both admins and regular users', as
   assert.match(menuContent, /label: '个人中心'/)
 })
 
+test('Profile page auto-loads scan QR and uses realtime status lifecycle', async () => {
+  const content = await readSource(path.join('pages', 'Profile', 'index.vue'))
+
+  assert.match(content, /createWechatQrStatusController/)
+  assert.match(content, /void startWechatBind\(\)/)
+  assert.match(content, /onRemaining/)
+  assert.match(content, /实时连接/)
+  assert.match(content, /轮询中/)
+  assert.match(content, /二维码已过期/)
+})
+
 test('User management displays wechat binding state and binding time', async () => {
   const content = await readSource(path.join('pages', 'UserList', 'index.vue'))
 

@@ -104,7 +104,11 @@
                   <img v-else-if="wechatQrCodeImageData" :src="wechatQrCodeImageData" alt="微信登录二维码" />
                   <div v-else class="wechat-qrcode-empty">点击下方按钮获取二维码</div>
                 </div>
-                <div class="wechat-status">{{ wechatLoginStatusText }}</div>
+                <div class="wechat-status">
+                  {{ wechatLoginStatusText }}
+                  <span v-if="wechatRemainingSeconds !== null">，剩余 {{ wechatRemainingSeconds }} 秒</span>
+                  <span v-if="wechatTransportText">，{{ wechatTransportText }}</span>
+                </div>
                 <a-button block :loading="wechatQrLoading" @click="startWechatLogin">刷新二维码</a-button>
               </template>
 
@@ -191,6 +195,7 @@ import { ensureAuthCaptchaToken } from '../../utils/captchaDialog.mjs'
 import { setStoredCurrentUser, resolveHomePath } from '../../utils/currentUser.js'
 import { useSmsCooldown } from '../../utils/smsCooldown.js'
 import { applySiteName } from '../../utils/siteName.js'
+import { createWechatQrStatusController } from '../../utils/wechatQrStatus.mjs'
 import { message } from 'ant-design-vue';
 import { useRoute, useRouter } from 'vue-router';
 
@@ -221,7 +226,8 @@ export default defineComponent({
     const wechatQrCodeImageData = ref('')
     const wechatLoginToken = ref('')
     const wechatLoginStatusText = ref('请使用微信扫码登录')
-    const wechatPollTimer = ref(null)
+    const wechatRemainingSeconds = ref(null)
+    const wechatTransportText = ref('')
     const wechatLoginSubMode = ref('scan')
     const wechatCodeSubmitting = ref(false)
     const loginMode = ref('password')
@@ -376,19 +382,6 @@ export default defineComponent({
       })
     }
 
-    const stopWechatPolling = () => {
-      if (wechatPollTimer.value) {
-        clearInterval(wechatPollTimer.value)
-        wechatPollTimer.value = null
-      }
-    }
-
-    const resetWechatScanState = () => {
-      stopWechatPolling()
-      wechatQrCodeImageData.value = ''
-      wechatLoginToken.value = ''
-    }
-
     const handleWechatLoginResult = async (res) => {
       const status = res?.data?.status
       if (status === 'success') {
@@ -402,36 +395,62 @@ export default defineComponent({
       return false
     }
 
-    const pollWechatLoginStatus = async () => {
-      if (!wechatLoginToken.value) {
+    const resolveWechatLoginStatus = async (payload = {}) => {
+      if (payload?.status === 'success' && payload?.jwt) {
+        await handleWechatLoginResult({ data: payload })
+        return
+      }
+      if (payload?.status === 'need_bind' && payload?.bindToken) {
+        await handleWechatLoginResult({ data: payload })
         return
       }
       const res = await getWechatLoginStatus({ loginToken: wechatLoginToken.value })
       if (res?.status !== 200) {
-        wechatLoginStatusText.value = res?.message || '二维码已过期，请刷新'
-        stopWechatPolling()
+        wechatLoginStatusText.value = res?.message || '微信登录状态查询失败'
         return
       }
-      const status = res?.data?.status
-      if (status === 'success') {
-        stopWechatPolling()
-        wechatLoginStatusText.value = '扫码成功，正在登录'
-        await handleWechatLoginResult(res)
-        return
-      }
-      if (status === 'need_bind') {
-        stopWechatPolling()
-        await handleWechatLoginResult(res)
-        return
-      }
-      wechatLoginStatusText.value = '等待扫码确认'
+      await handleWechatLoginResult(res)
+    }
+
+    const wechatStatusController = createWechatQrStatusController({
+      checkStatus: () => getWechatLoginStatus({ loginToken: wechatLoginToken.value }),
+      onTransport: (transport) => {
+        wechatTransportText.value = transport === 'websocket' ? '实时连接' : '轮询中'
+      },
+      onRemaining: (seconds) => {
+        wechatRemainingSeconds.value = seconds
+      },
+      onExpired: () => {
+        wechatLoginStatusText.value = '二维码已过期，请刷新'
+      },
+      onStatus: async (status, payload) => {
+        if (status === 'pending') {
+          wechatLoginStatusText.value = '请使用微信扫码确认登录'
+          return
+        }
+        if (status === 'scanned') {
+          wechatLoginStatusText.value = '已扫描，请在微信中确认'
+          return
+        }
+        if (status === 'success' || status === 'need_bind') {
+          await resolveWechatLoginStatus(payload)
+        }
+      },
+    })
+
+    const resetWechatScanState = () => {
+      wechatStatusController.stop()
+      wechatQrCodeImageData.value = ''
+      wechatLoginToken.value = ''
+      wechatRemainingSeconds.value = null
+      wechatTransportText.value = ''
     }
 
     const startWechatLogin = async () => {
       if (wechatLoginSubMode.value !== 'scan' || !publicAuthSettings.value.wechatScanLoginEnabled) {
         return
       }
-      stopWechatPolling()
+      wechatStatusController.stop()
       wechatQrLoading.value = true
       wechatLoginStatusText.value = '正在创建二维码'
       try {
@@ -445,9 +464,11 @@ export default defineComponent({
           throw new Error('二维码创建失败，请稍后重试')
         }
         wechatLoginStatusText.value = '请使用微信扫码确认登录'
-        wechatPollTimer.value = setInterval(() => {
-          void pollWechatLoginStatus()
-        }, 2000)
+        wechatStatusController.start({
+          loginToken: wechatLoginToken.value,
+          expireSeconds: res?.data?.expireSeconds,
+          expiresAtUnix: res?.data?.expiresAtUnix,
+        })
       } catch (error) {
         wechatLoginStatusText.value = error?.message || '二维码创建失败，请稍后重试'
         message.error(wechatLoginStatusText.value)
@@ -549,7 +570,7 @@ export default defineComponent({
     })
 
     onBeforeUnmount(() => {
-      stopWechatPolling()
+      wechatStatusController.stop()
     })
 
     return {
@@ -561,6 +582,8 @@ export default defineComponent({
       wechatQrLoading,
       wechatQrCodeImageData,
       wechatLoginStatusText,
+      wechatRemainingSeconds,
+      wechatTransportText,
       wechatLoginSubMode,
       wechatCodeSubmitting,
       loginMode,

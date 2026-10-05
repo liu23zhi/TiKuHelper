@@ -51,6 +51,18 @@ test('Login page supports wechat scan and code login modes from public settings'
   assert.match(content, /submitWechatCodeLogin/);
 });
 
+test('Login page uses automatic websocket-first QR lifecycle with fallback', async () => {
+  const content = await readFile(loginPagePath, 'utf8');
+
+  assert.match(content, /createWechatQrStatusController/);
+  assert.match(content, /startWechatLogin/);
+  assert.match(content, /onRemaining/);
+  assert.match(content, /实时连接/);
+  assert.match(content, /轮询中/);
+  assert.match(content, /二维码已过期/);
+  assert.doesNotMatch(content, /setInterval\(\(\) => \{\s*void pollWechatLoginStatus/);
+});
+
 test('Wechat bind page reads bindToken and submits existing account credentials', async () => {
   const content = await readFile(wechatBindPagePath, 'utf8');
 
