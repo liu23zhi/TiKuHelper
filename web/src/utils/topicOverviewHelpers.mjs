@@ -106,3 +106,9 @@ export function buildQuestionImportSummary(result = {}) {
   const created = Number(result?.created || 0);
   return `共准备导入 ${created} 条题目，未发现 ID 冲突。`;
 }
+
+export function buildQuestionSelectionSummary(selectedCount = 0, totalCount = 0) {
+  const normalizedSelected = Math.max(0, Number(selectedCount) || 0);
+  const normalizedTotal = Math.max(0, Number(totalCount) || 0);
+  return `已选择 ${normalizedSelected} 项，共 ${normalizedTotal} 项`;
+}

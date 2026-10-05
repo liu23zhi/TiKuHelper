@@ -77,6 +77,51 @@
               添加
             </a-button>
           </template>
+          <a-alert
+            v-if="page.total"
+            type="info"
+            show-icon
+            class="selection-alert"
+          >
+            <template #message>
+              <div class="selection-alert-content">
+                <span>{{ selectionSummary }}</span>
+                <a-button
+                  type="link"
+                  size="small"
+                  :disabled="allCurrentPageSelected"
+                  @click="handleSelectCurrentPage"
+                >
+                  全选本页
+                </a-button>
+                <a-button
+                  type="link"
+                  size="small"
+                  :disabled="!hasCurrentPageSelection"
+                  @click="handleClearCurrentPage"
+                >
+                  取消本页选择
+                </a-button>
+                <a-button
+                  type="link"
+                  size="small"
+                  :loading="selectAllLoading"
+                  :disabled="allRowsSelected || selectAllLoading"
+                  @click="handleSelectAll"
+                >
+                  全选所有页
+                </a-button>
+                <a-button
+                  type="link"
+                  size="small"
+                  :disabled="!selectedRowKeys.length"
+                  @click="handleClearSelection"
+                >
+                  取消全部选择
+                </a-button>
+              </div>
+            </template>
+          </a-alert>
           <a-table :columns="columns" :data-source="data" :pagination="false" :row-key="record => record.id"
                    :loading="tabLoading" :scroll="{ x: 'max-content' }" :row-selection="rowSelection">
             <template #type="{ record }">
@@ -228,6 +273,7 @@ import {
   buildQuestionImportDryRunPayload,
   buildQuestionImportExecutePayload,
   buildQuestionImportSummary,
+  buildQuestionSelectionSummary,
   buildQuestionSourceLabel,
   parseQuestionImportText,
 } from '@/utils/topicOverviewHelpers.mjs';
@@ -320,6 +366,23 @@ const selectedRowKeys = ref([])
 const jsonImportInput = ref(null)
 const bulkCourseVisible = ref(false)
 const bulkCourseName = ref('')
+const selectAllLoading = ref(false)
+const questionCache = new Map()
+
+const rememberQuestionRows = (items = []) => {
+  for (const item of items || []) {
+    const id = Number(item?.id || 0)
+    if (id > 0) {
+      questionCache.set(id, item)
+    }
+  }
+}
+
+const resetSelectionState = () => {
+  selectedRowKeys.value = []
+  questionCache.clear()
+}
+
 export default defineComponent({
   name: 'TikuComponent',
   setup() {
@@ -327,16 +390,98 @@ export default defineComponent({
     const navigateToImport = () => {
       router.push('/adapter/import');
     };
+    const buildQuestionQuery = (pageNo, pageSize) => ({
+      courseName: courseValue.value ? courseValue.value : "",
+      plat: !isNaN(parseInt(platValue.value)) ? parseInt(platValue.value) : -1,
+      type: !isNaN(parseInt(typeValue.value)) ? parseInt(typeValue.value) : -1,
+      pageSize,
+      pageNo,
+      question: searchValue.value.question || '',
+      source: parseInt(searchValue.value.source) || 0,
+      extra: searchValue.value.extra || '',
+      onlyShowEmptyAnswer: searchValue.value.onlyShowEmptyAnswer || false
+    })
+    const loadAllFilteredQuestions = async () => {
+      const batchSize = 100
+      const first = await getQuestions(buildQuestionQuery(0, batchSize))
+      if (first?.status !== 200) {
+        throw new Error(first?.message || '获取全部题目失败')
+      }
+      const total = Number(first?.data?.total || 0)
+      const items = Array.isArray(first?.data?.items) ? [...first.data.items] : []
+      const totalPages = Math.ceil(total / batchSize)
+      for (let pageNo = 1; pageNo < totalPages; pageNo += 1) {
+        const response = await getQuestions(buildQuestionQuery(pageNo, batchSize))
+        if (response?.status !== 200) {
+          throw new Error(response?.message || '获取全部题目失败')
+        }
+        if (Array.isArray(response?.data?.items)) {
+          items.push(...response.data.items)
+        }
+      }
+      return items.slice(0, total)
+    }
     const selectedQuestions = computed(() => {
       const selectedIds = buildQuestionBulkActionIds(selectedRowKeys.value)
       if (!selectedIds.length) {
         return []
       }
-      return (data.value || []).filter(item => selectedIds.includes(Number(item?.id || 0)))
+      return selectedIds.map(id => questionCache.get(id)).filter(Boolean)
     })
     const bulkCourseCandidates = computed(() => buildQuestionCourseNameCandidates(bulkCourseName.value, courses.value))
+    const currentPageIds = computed(() => buildQuestionBulkActionIds(
+      (data.value || []).map(item => item?.id),
+    ))
+    const allCurrentPageSelected = computed(() => (
+      currentPageIds.value.length > 0
+      && currentPageIds.value.every(id => selectedRowKeys.value.includes(id))
+    ))
+    const hasCurrentPageSelection = computed(() => (
+      currentPageIds.value.some(id => selectedRowKeys.value.includes(id))
+    ))
+    const allRowsSelected = computed(() => {
+      const total = Number(page.value.total || 0)
+      return total > 0 && selectedRowKeys.value.length === total
+    })
+    const selectionSummary = computed(() => buildQuestionSelectionSummary(
+      selectedRowKeys.value.length,
+      page.value.total || 0,
+    ))
+    const handleSelectCurrentPage = () => {
+      rememberQuestionRows(data.value)
+      selectedRowKeys.value = buildQuestionBulkActionIds([
+        ...selectedRowKeys.value,
+        ...currentPageIds.value,
+      ])
+    }
+    const handleClearCurrentPage = () => {
+      const currentPageIdSet = new Set(currentPageIds.value)
+      selectedRowKeys.value = selectedRowKeys.value.filter(id => !currentPageIdSet.has(id))
+    }
+    const handleSelectAll = async () => {
+      if (allRowsSelected.value || selectAllLoading.value) {
+        return
+      }
+      selectAllLoading.value = true
+      try {
+        const rows = await loadAllFilteredQuestions()
+        rememberQuestionRows(rows)
+        selectedRowKeys.value = buildQuestionBulkActionIds(rows.map(item => item?.id))
+        if (!rows.length) {
+          resetSelectionState()
+        }
+      } catch (error) {
+        message.error(error?.message || '全选失败')
+      } finally {
+        selectAllLoading.value = false
+      }
+    }
+    const handleClearSelection = () => {
+      resetSelectionState()
+    }
     const rowSelection = computed(() => ({
       selectedRowKeys: selectedRowKeys.value,
+      preserveSelectedRowKeys: true,
       onChange: (keys) => {
         selectedRowKeys.value = buildQuestionBulkActionIds(keys)
       },
@@ -361,6 +506,15 @@ export default defineComponent({
       selectedRowKeys,
       selectedQuestions,
       rowSelection,
+      selectionSummary,
+      allRowsSelected,
+      allCurrentPageSelected,
+      hasCurrentPageSelection,
+      selectAllLoading,
+      handleSelectCurrentPage,
+      handleClearCurrentPage,
+      handleSelectAll,
+      handleClearSelection,
       bulkCourseVisible,
       bulkCourseName,
       bulkCourseCandidates,
@@ -395,11 +549,13 @@ export default defineComponent({
       }
       // Reset page number when platform changes and fetch data
       this.page.pageNo = 1
+      resetSelectionState()
       await this.fetchData()
     },
     async onFilterChange() {
       // Reset page number when any filter changes and fetch data
       this.page.pageNo = 1
+      resetSelectionState()
       await this.fetchData()
     },
     handleChange(info) {
@@ -477,16 +633,17 @@ export default defineComponent({
         extra: searchValue.value.extra || '',
         onlyShowEmptyAnswer: searchValue.value.onlyShowEmptyAnswer || false
       }).then(res => {
-        data.value = res?.data?.items
+        data.value = Array.isArray(res?.data?.items) ? res.data.items : []
+        rememberQuestionRows(data.value)
         tabLoading.value = false
         this.page.total = res?.data?.total
-        selectedRowKeys.value = []
       })
 
     },
     onSearch() {
       // Reset page number when search filters change
       this.page.pageNo = 1
+      resetSelectionState()
       this.fetchData()
     },
     onShowSizeChange(current, pageSize) {
@@ -642,6 +799,7 @@ export default defineComponent({
 
       message.success(`成功更新 ${payload.ids.length} 条题目的课程名称`)
       this.closeBulkCourseModal()
+      resetSelectionState()
       await this.fetchData()
     },
 
@@ -678,7 +836,7 @@ export default defineComponent({
         }
       }
       message.success(`成功删除 ${ids.length} 条题目`)
-      selectedRowKeys.value = []
+      resetSelectionState()
       await this.fetchData()
     },
 
@@ -736,6 +894,17 @@ header {
   color: #8c8c8c;
   font-size: 12px;
   line-height: 1.6;
+}
+
+.selection-alert {
+  margin: 12px 0;
+}
+
+.selection-alert-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .multiline-cell {

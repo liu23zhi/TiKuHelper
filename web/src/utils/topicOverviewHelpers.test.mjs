@@ -9,9 +9,17 @@ import {
   buildQuestionImportDryRunPayload,
   buildQuestionImportExecutePayload,
   buildQuestionImportSummary,
+  buildQuestionSelectionSummary,
   buildQuestionSourceLabel,
   parseQuestionImportText,
 } from './topicOverviewHelpers.mjs';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const topicOverviewPagePath = path.join(__dirname, '..', 'pages', 'TikuComponent', 'index.vue');
 
 test('buildQuestionBulkCourseUpdatePayload trims course name and keeps selected ids', () => {
   assert.deepEqual(buildQuestionBulkCourseUpdatePayload([3, '7', 7], '  高等数学  '), {
@@ -117,4 +125,27 @@ test('buildQuestionImportSummary describes dry-run collisions clearly', () => {
     buildQuestionImportSummary({ existingIds: [], created: 3, updated: 0, skipped: 0 }),
     '共准备导入 3 条题目，未发现 ID 冲突。'
   );
+});
+
+test('buildQuestionSelectionSummary renders selected and visible totals', () => {
+  assert.equal(buildQuestionSelectionSummary(0, 10), '已选择 0 项，共 10 项');
+  assert.equal(buildQuestionSelectionSummary(3, 10), '已选择 3 项，共 10 项');
+});
+
+test('Topic overview exposes select-all and clear-selection controls', async () => {
+  const content = await readFile(topicOverviewPagePath, 'utf8');
+
+  assert.match(content, /buildQuestionSelectionSummary/);
+  assert.match(content, /class="selection-alert"/);
+  assert.match(content, /handleSelectAll/);
+  assert.match(content, /handleSelectCurrentPage/);
+  assert.match(content, /handleClearCurrentPage/);
+  assert.match(content, /handleClearSelection/);
+  assert.match(content, /loadAllFilteredQuestions/);
+  assert.match(content, /preserveSelectedRowKeys:\s*true/);
+  assert.match(content, /page\.total/);
+  assert.match(content, /全选本页/);
+  assert.match(content, /取消本页选择/);
+  assert.match(content, /全选所有页/);
+  assert.match(content, /取消全部选择/);
 });
