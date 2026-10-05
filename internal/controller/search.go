@@ -288,10 +288,21 @@ func Search(c *gin.Context) {
 	aiEnabled := shouldUseAISearch(useQuery, resolved.AIConfig)
 	aiUsage := search.AISearchUsage{}
 	usedLocalSearch := false
+	usedSearchResultCache := false
 	auditHitProvider := ""
+	cacheEligible := canUseSearchResultCache(resolved, useQuery)
+	cacheKey := ""
+	if cacheEligible {
+		cacheKey = buildSearchResultCacheKey(resolved.AccessTokenID, req)
+		if cached, ok := defaultSearchResultCache.get(cacheKey); ok {
+			result = cached
+			usedSearchResultCache = true
+			auditHitProvider = searchResultCacheProvider
+		}
+	}
 	logSearchRoutingDecision(c, query, resolved, aiEnabled)
 	logger.SysLog(fmt.Sprintf("搜题请求摘要 requestId=%s %s", strings.TrimSpace(resolved.RequestID), buildSearchRequestDebugSummary(req)))
-	if strings.Contains(useQuery, "local") { // 使用本地题库的话
+	if !usedSearchResultCache && strings.Contains(useQuery, "local") { // 使用本地题库的话
 		localAnswer, err = defaultDBSearchProvider()(req)
 		if err != nil {
 			logger.SysError(fmt.Sprintf("查询本地答案出错：%s requestId=%s", err.Error(), strings.TrimSpace(resolved.RequestID)))
@@ -305,7 +316,7 @@ func Search(c *gin.Context) {
 	}
 
 	// 再查询第三方
-	if len(result) == 0 {
+	if !usedSearchResultCache && len(result) == 0 {
 		if resolved.SearchMode == searchModeAI {
 			aiResult, usage, aiErr := searchAIAnswer(resolved, req)
 			if aiErr != nil {
@@ -371,13 +382,20 @@ func Search(c *gin.Context) {
 			wg.Wait()
 		}
 	}
+	if cacheEligible && !usedSearchResultCache {
+		defaultSearchResultCache.put(cacheKey, result)
+	}
 	resp := util.FillAnswerResponse(result, &req)
-	logger.SysLog(fmt.Sprintf("搜题响应摘要 requestId=%s hitProvider=%s usedLocal=%t aiEnabled=%t %s", strings.TrimSpace(resolved.RequestID), strings.TrimSpace(auditHitProvider), usedLocalSearch, aiEnabled, buildSearchResponseDebugSummary(resp)))
+	logger.SysLog(fmt.Sprintf("搜题响应摘要 requestId=%s hitProvider=%s usedLocal=%t usedCache=%t aiEnabled=%t %s", strings.TrimSpace(resolved.RequestID), strings.TrimSpace(auditHitProvider), usedLocalSearch, usedSearchResultCache, aiEnabled, buildSearchResponseDebugSummary(resp)))
 	audit := buildSearchAuditMetadata(c, resolved, query, rawBody, useQuery, result, usedLocalSearch, aiEnabled, auditHitProvider, req, resp)
-	reportCompletedSearchBilling(resolved, useQuery, aiEnabled, result, hasAISearchUsage(aiUsage), usedLocalSearch)
-	persistCompletedSearchBilling(resolved, useQuery, aiEnabled, req, result, aiUsage, usedLocalSearch, c.ClientIP(), audit)
+	if usedSearchResultCache {
+		writeCompletedSearchAuditLog(resolved, useQuery, result, "", c.ClientIP(), audit)
+	} else {
+		reportCompletedSearchBilling(resolved, useQuery, aiEnabled, result, hasAISearchUsage(aiUsage), usedLocalSearch)
+		persistCompletedSearchBilling(resolved, useQuery, aiEnabled, req, result, aiUsage, usedLocalSearch, c.ClientIP(), audit)
+	}
 
-	if len(localAnswer) == 0 && c.Query("noRecord") == "" { // 只有本地题库没有答案或者明确标志不要记录
+	if !usedSearchResultCache && len(localAnswer) == 0 && c.Query("noRecord") == "" { // 只有非缓存结果且本地题库没有答案时才记录
 		middleware.CollectAnswer(resp, req.CourseName, req.Extra, audit.HitProvider)
 	}
 	c.JSON(http.StatusOK, resp)

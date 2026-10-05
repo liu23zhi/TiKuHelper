@@ -201,10 +201,12 @@ func withStubSearchDependencies(
 	originalClientBuilder := buildSearchClients
 	originalClientBindingBuilder := buildSearchClientBindings
 	originalAISearcher := searchAIAnswer
+	originalSearchResultCache := defaultSearchResultCache
 
 	defaultDBSearchProvider = func() func(model.SearchRequest) ([][]string, error) {
 		return local
 	}
+	defaultSearchResultCache = newSearchResultCache(defaultSearchResultCacheTTL, time.Now)
 	resolveSearchRequestContext = resolver
 	buildSearchClients = remoteBuilder
 	buildSearchClientBindings = func(resolved resolvedSearchRequestContext, useQuery string) []searchClientBinding {
@@ -231,6 +233,7 @@ func withStubSearchDependencies(
 		buildSearchClients = originalClientBuilder
 		buildSearchClientBindings = originalClientBindingBuilder
 		searchAIAnswer = originalAISearcher
+		defaultSearchResultCache = originalSearchResultCache
 	}()
 
 	run()
@@ -2062,7 +2065,7 @@ func TestSearchLogsTypeAwareAIRequestAndResponseSummaries(t *testing.T) {
 		"normalModeReason=default_provider_mix_with_ai",
 		"搜题请求摘要 requestId=req-log-type2-ai type=2 typeLabel=填空题/连线题",
 		"渠道搜题命中 requestId=req-log-type2-ai provider=ai",
-		"搜题响应摘要 requestId=req-log-type2-ai hitProvider=ai usedLocal=false aiEnabled=true type=2 typeLabel=填空题/连线题",
+		"搜题响应摘要 requestId=req-log-type2-ai hitProvider=ai usedLocal=false usedCache=false aiEnabled=true type=2 typeLabel=填空题/连线题",
 		"answerText=左侧术语对应右侧案例",
 	}
 	for _, check := range checks {
