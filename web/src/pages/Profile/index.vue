@@ -590,11 +590,8 @@ export default defineComponent({
     const statusText = (value) => String(value || '').toLowerCase() === 'disabled' ? '已禁用' : '正常'
     const normalizeWechatCodeInput = (value) => String(value || '').replace(/\D/g, '').slice(0, 12)
 
-    onMounted(async () => {
-      await Promise.all([loadProfile(), loadPublicSettings()])
-      if (wechatBindSubMode.value === 'scan' && publicAuthSettings.value.wechatScanLoginEnabled) {
-        void startWechatBind()
-      }
+    onMounted(() => {
+      void Promise.all([loadProfile(), loadPublicSettings()])
     })
 
     onBeforeUnmount(() => {
