@@ -258,6 +258,14 @@ func appendUniqueBillingLabel(labels []string, label string) []string {
 	return append(labels, trimmed)
 }
 
+func buildMergedSearchBillingSubject(questionText string) string {
+	question := strings.TrimSpace(questionText)
+	if question == "" {
+		return "搜索答案"
+	}
+	return "搜索答案，题目：" + question
+}
+
 func mergeBillingSearchGroup(representative BillingRecordListItem, charges []BillingRecordListItem) BillingRecordListItem {
 	if len(charges) <= 1 {
 		return representative
@@ -280,7 +288,7 @@ func mergeBillingSearchGroup(representative BillingRecordListItem, charges []Bil
 	representative.QuestionText = questionText
 	representative.ProviderLabel = strings.Join(providerLabels, "、")
 	representative.AnswerSourceLabel = strings.Join(answerSourceLabels, "、")
-	representative.Subject = buildBillingRecordSubject(representative)
+	representative.Subject = buildMergedSearchBillingSubject(questionText)
 	representative.Detail = buildBillingRecordDetail(representative)
 	return representative
 }
