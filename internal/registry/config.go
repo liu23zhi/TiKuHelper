@@ -9,11 +9,11 @@ import (
 )
 
 var defaultConfig = []byte(`
-jwtSecret: tiku-adapter-dev-secret
+jwtSecret: ""
 limit:
-  enable: false # 是否开启
-  duration: 3  # 时间窗口为3秒
-  requests: 1  # 允许用户在3秒内通过1个请求
+  enable: true
+  duration: 60
+  requests: 120
 `)
 
 // Config get config instance

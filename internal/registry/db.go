@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/glebarez/sqlite"
+	"github.com/google/uuid"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/pkg/logger"
+	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 	"sync"
 )
@@ -309,14 +311,38 @@ func RegisterDB(config configs.Config) *gorm.DB {
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
 	}
+	if err := db.Exec("UPDATE access_tokens SET token_value = '' WHERE token_value <> ''").Error; err != nil {
+		logger.FatalLog(fmt.Errorf("scrub legacy access token values fail: %w", err))
+	}
 
 	ensureAccountDomainDefaults(db)
 
 	// 首先需要注册一个默认用户
+	bootstrapPassword := strings.TrimSpace(os.Getenv("TIKU_ADMIN_PASSWORD"))
+	if bootstrapPassword == "" {
+		bootstrapPassword = "A1!" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		logger.SysLog(fmt.Sprintf("未设置 TIKU_ADMIN_PASSWORD，首次初始化管理员密码为 %s；请立即登录修改密码", bootstrapPassword))
+	}
+	hashedBootstrapPassword, err := util.HashPassword(bootstrapPassword)
+	if err != nil {
+		logger.FatalLog(fmt.Errorf("hash bootstrap admin password fail: %w", err))
+	}
+	var existingAdmin entity.User
+	if err := db.Where("id = ?", 1).First(&existingAdmin).Error; err == nil && existingAdmin.Password == "123456" {
+		rotatedPassword := "A1!" + strings.ReplaceAll(uuid.NewString(), "-", "")
+		rotatedHash, hashErr := util.HashPassword(rotatedPassword)
+		if hashErr != nil {
+			logger.FatalLog(fmt.Errorf("rotate legacy admin password fail: %w", hashErr))
+		}
+		if updateErr := db.Model(&entity.User{}).Where("id = ?", 1).Update("password", rotatedHash).Error; updateErr != nil {
+			logger.FatalLog(fmt.Errorf("rotate legacy admin password fail: %w", updateErr))
+		}
+		logger.SysLog(fmt.Sprintf("检测到默认管理员密码，已轮换为随机密码 %s；请立即登录修改密码", rotatedPassword))
+	}
 	user := entity.User{
 		ID:             1,
 		Username:       "admin",
-		Password:       "123456",
+		Password:       hashedBootstrapPassword,
 		Nickname:       "管理员",
 		Role:           "admin",
 		Status:         "enabled",

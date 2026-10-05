@@ -45,7 +45,7 @@ const DefaultSMSProvider = "smsbao"
 const DefaultSMSCodeTemplate = "【{sign}】您的验证码是{code}，5分钟内有效。"
 const DefaultCaptchaProvider = "remote"
 const DefaultCaptchaAPIBaseURL = "https://captcha.api.zelly.cn"
-const DefaultCaptchaAPIKey = "***REMOVED***"
+const DefaultCaptchaAPIKey = ""
 const DefaultCaptchaType = "RANDOM"
 const DefaultSMSBaoCredentialType = "apikey"
 const DefaultSMSBaoRegionMode = "auto"
@@ -252,12 +252,12 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		EPayGatewayURL:            strings.TrimSpace(input.EPayGatewayURL),
 		EPayPartnerID:             strings.TrimSpace(input.EPayPartnerID),
 		EPayPlatformPublicKey:     strings.TrimSpace(input.EPayPlatformPublicKey),
-		EPayMerchantPrivateKey:    strings.TrimSpace(input.EPayMerchantPrivateKey),
+		EPayMerchantPrivateKey:    mergeStoredSecretInput(db, EPayMerchantPrivateKeySettingKey, input.EPayMerchantPrivateKey),
 		EPayNotifyURL:             strings.TrimSpace(input.EPayNotifyURL),
 		EPayReturnURL:             strings.TrimSpace(input.EPayReturnURL),
 		SMSProvider:               strings.TrimSpace(input.SMSProvider),
 		SMSBaoUsername:            strings.TrimSpace(input.SMSBaoUsername),
-		SMSBaoSecret:              strings.TrimSpace(input.SMSBaoSecret),
+		SMSBaoSecret:              mergeStoredSecretInput(db, SMSBaoSecretSettingKey, input.SMSBaoSecret),
 		SMSCodeSignName:           strings.TrimSpace(input.SMSCodeSignName),
 		SMSCodeTemplate:           strings.TrimSpace(input.SMSCodeTemplate),
 		SMSLoginEnabled:           input.SMSLoginEnabled,
@@ -267,10 +267,10 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		WechatDefaultLoginMode:    normalizedWechatDefaultLoginMode,
 		WechatCodeStaticQRCodeURL: strings.TrimSpace(input.WechatCodeStaticQRCodeURL),
 		WechatAPIBaseURL:          trimTrailingSlash(input.WechatAPIBaseURL),
-		WechatAPIBearerToken:      strings.TrimSpace(input.WechatAPIBearerToken),
+		WechatAPIBearerToken:      mergeStoredSecretInput(db, WechatAPIBearerTokenSettingKey, input.WechatAPIBearerToken),
 		CaptchaProvider:           normalizeCaptchaProvider(input.CaptchaProvider),
 		CaptchaAPIBaseURL:         trimTrailingSlash(defaultString(input.CaptchaAPIBaseURL, DefaultCaptchaAPIBaseURL)),
-		CaptchaAPIKey:             strings.TrimSpace(defaultString(input.CaptchaAPIKey, DefaultCaptchaAPIKey)),
+		CaptchaAPIKey:             mergeStoredSecretInput(db, CaptchaAPIKeySettingKey, input.CaptchaAPIKey),
 		CaptchaType:               normalizeCaptchaType(input.CaptchaType),
 		SMSBaoCredentialType:      normalizeSMSBaoCredentialType(input.SMSBaoCredentialType),
 		SMSBaoRegionMode:          normalizeSMSBaoRegionMode(input.SMSBaoRegionMode),

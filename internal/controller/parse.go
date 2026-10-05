@@ -13,6 +13,9 @@ import (
 
 // Parser 解析文件接口 支持解析docx和xlsx
 func Parser(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
 	file, err := c.FormFile("file")
 	if err != nil {
 		c.JSON(http.StatusBadRequest, global.ErrorParam)
@@ -31,6 +34,10 @@ func Parser(c *gin.Context) {
 		}
 	}(uploadedFile)
 	contentType := file.Header.Get("Content-Type")
+	if file.Size > maxUploadBytes || !uploadContentTypeAllowed(contentType) {
+		c.JSON(http.StatusBadRequest, global.ErrorParseFile)
+		return
+	}
 	if contentType == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" {
 		f, err := excelize.OpenReader(uploadedFile)
 		if err != nil {

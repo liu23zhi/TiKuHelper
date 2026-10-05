@@ -137,10 +137,13 @@ func UpdateSearchAccountConfigWithDB(db *gorm.DB, provider string, input UpdateS
 	}
 
 	config.TokenKey = meta.TokenKey
-	config.TokenValue = input.TokenValue
 	config.Enabled = input.Enabled
 	config.Remark = input.Remark
 	config.FlatPrice = input.FlatPrice
+	if config.Provider == "" {
+		config.Provider = provider
+	}
+	config.TokenValue = mergeSecretInput(input.TokenValue, config.TokenValue)
 
 	if err := db.Save(&config).Error; err != nil {
 		return SearchAccountConfigView{}, err

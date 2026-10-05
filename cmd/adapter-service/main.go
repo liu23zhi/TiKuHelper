@@ -2,6 +2,11 @@ package main
 
 import (
 	"embed"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/api"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
@@ -28,10 +33,30 @@ func main() {
 	}(mg)
 
 	server := gin.Default()
+	trustedProxies := []string(nil)
+	if configured := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES")); configured != "" {
+		for _, item := range strings.Split(configured, ",") {
+			if trimmed := strings.TrimSpace(item); trimmed != "" {
+				trustedProxies = append(trustedProxies, trimmed)
+			}
+		}
+	}
+	if err := server.SetTrustedProxies(trustedProxies); err != nil {
+		logger.FatalLog(err)
+	}
 	api.SetAPIRouter(server)
 	api.SetWebRouter(buildFS, indexPage, server)
 	timer.StartTimer(mg.GetDB(), mg.GetEs(), mg.GetConfig().Elasticsearch.Addresses)
-	err = server.Run("0.0.0.0:8060")
+	httpServer := &http.Server{
+		Addr:              "0.0.0.0:8060",
+		Handler:           server,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      210 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+	err = httpServer.ListenAndServe()
 	if err != nil {
 		logger.FatalLog(err)
 	}

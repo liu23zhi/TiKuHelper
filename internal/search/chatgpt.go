@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -44,11 +45,11 @@ type AISearchDebugResult struct {
 }
 
 type openAIChatCompletionRequest struct {
-	Model         string              `json:"model"`
-	Stream        bool                `json:"stream"`
-	Temperature   float64             `json:"temperature"`
-	TopP          float64             `json:"top_p"`
-	Messages      []openAIChatMessage `json:"messages"`
+	Model         string               `json:"model"`
+	Stream        bool                 `json:"stream"`
+	Temperature   float64              `json:"temperature"`
+	TopP          float64              `json:"top_p"`
+	Messages      []openAIChatMessage  `json:"messages"`
 	StreamOptions *openAIStreamOptions `json:"stream_options,omitempty"`
 }
 
@@ -112,7 +113,7 @@ func effectiveAISearchPrompt(prompt string) string {
 
 // getHTTPClient 获取HTTP客户端
 func (in *ChatGptClient) getHTTPClient() *resty.Client {
-	return resty.New().SetTimeout(180 * time.Second)
+	return resty.NewWithClient(util.NewSafeHTTPClient(180 * time.Second))
 }
 
 // SearchAnswer 使用 OpenAI 兼容流式接口聚合答案
@@ -296,6 +297,10 @@ func downloadAISearchImageAsDataURL(httpClient *http.Client, imageURL string) (s
 	if httpClient == nil {
 		return "", false
 	}
+	parsed, err := url.Parse(strings.TrimSpace(imageURL))
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return "", false
+	}
 	resp, err := httpClient.Get(imageURL)
 	if err != nil {
 		return "", false
@@ -308,7 +313,7 @@ func downloadAISearchImageAsDataURL(httpClient *http.Client, imageURL string) (s
 	if contentType == "" || !strings.HasPrefix(strings.ToLower(contentType), "image/") {
 		return "", false
 	}
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
 	if err != nil || len(body) == 0 {
 		return "", false
 	}
@@ -366,7 +371,7 @@ func (in *ChatGptClient) requestStreamAnswerDetailed(endpoint string, systemProm
 	}
 	defer resp.Body.Close()
 
-	rawBody, err := io.ReadAll(resp.Body)
+	rawBody, err := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
 	if err != nil {
 		return "", AISearchUsage{}, resp.StatusCode, requestBody, "", errors.ErrTargetServerError
 	}

@@ -8,6 +8,10 @@ services:
     restart: unless-stopped
     ports:
       - "8060:8060"
+    environment:
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set to at least 32 random bytes}"
+      TIKU_ADMIN_PASSWORD: "${TIKU_ADMIN_PASSWORD:-}"
+      TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"
     volumes:
       - ./data:/app/data
       - ./config.yaml:/app/config.yaml:ro

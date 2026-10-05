@@ -456,6 +456,22 @@ func TestBuildAISearchRequestConfigWithDBRejectsDefaultFallbackForAnonymousReque
 	}
 }
 
+func TestBuildAISearchRequestConfigWithDBIgnoresExplicitQueryForAnonymousRequests(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+
+	resolved, err := BuildAISearchRequestConfigWithDB(db, url.Values{
+		"url":   []string{"http://127.0.0.1:8080"},
+		"key":   []string{"request-key"},
+		"model": []string{"request-model"},
+	}, false, false)
+	if err != nil {
+		t.Fatalf("build request config: %v", err)
+	}
+	if resolved.Config.BaseURL != "" || resolved.Config.APIKey != "" || resolved.Config.Model != "" {
+		t.Fatalf("expected anonymous explicit AI config to be ignored, got %+v", resolved.Config)
+	}
+}
+
 func TestBuildAISearchRequestConfigWithDBSkipsDisabledDefault(t *testing.T) {
 	db := newSearchAccountConfigTestDB(t)
 

@@ -51,6 +51,9 @@ var runAISearchDebug = func(input aiSearchTestInput) ([][]string, internalsearch
 }
 
 func AISearchConfigDetail(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
 	config, err := service.GetAISearchConfigWithDB(manager.GetManager().GetDB())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -59,10 +62,13 @@ func AISearchConfigDetail(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, config)
+	c.JSON(http.StatusOK, service.RedactAISearchConfigView(config))
 }
 
 func AISearchModels(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
 	models, err := service.ListAISearchModelsWithDB(manager.GetManager().GetDB(), c.Request.URL.Query())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -113,6 +119,9 @@ func TestAISearchConfig(c *gin.Context) {
 }
 
 func UpdateAISearchConfig(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
 	var input service.UpdateAISearchConfigInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -129,5 +138,5 @@ func UpdateAISearchConfig(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, config)
+	c.JSON(http.StatusOK, service.RedactAISearchConfigView(config))
 }

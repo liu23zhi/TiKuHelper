@@ -58,7 +58,8 @@ func TestUserLoginRejectsDisabledUser(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodGet, "/adapter-service/user/login?username=disabled&password=123456&captchaToken=token-1", nil)
+	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/login", bytes.NewBufferString(`{"username":"disabled","password":"123456","captchaToken":"token-1"}`))
+	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 
 	UserLogin(ctx)
@@ -93,7 +94,8 @@ func TestUserLoginStoresLastLoginMetadata(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodGet, "/adapter-service/user/login?username=login-user&password=123456&captchaToken=token-1", nil)
+	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/login", bytes.NewBufferString(`{"username":"login-user","password":"123456","captchaToken":"token-1"}`))
+	request.Header.Set("Content-Type", "application/json")
 	request.RemoteAddr = "10.20.30.40:12345"
 	request.Header.Set("X-Forwarded-For", "10.20.30.40")
 	ctx.Request = request
@@ -132,7 +134,7 @@ func TestAuthRejectsDisabledUser(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 
-	token := util.GenerateJwt(88)
+	token := util.GenerateJwtForUser(88, "123456")
 	if token == "" {
 		t.Fatal("expected jwt token")
 	}
@@ -150,6 +152,42 @@ func TestAuthRejectsDisabledUser(t *testing.T) {
 	}
 	if body := recorder.Body.String(); !bytes.Contains([]byte(body), []byte("用户已被禁用")) {
 		t.Fatalf("expected disabled auth message, got %s", body)
+	}
+}
+
+func TestAuthRejectsTokenAfterPasswordChange(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	if err := db.Create(&entity.User{
+		ID:             89,
+		Username:       "password-version-user",
+		Password:       "Old12345!",
+		Status:         "enabled",
+		Role:           "user",
+		RegisterSource: "public",
+	}).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	token := util.GenerateJwtForUser(89, "Old12345!")
+	newPassword, err := util.HashPassword("New12345!")
+	if err != nil {
+		t.Fatalf("hash new password: %v", err)
+	}
+	if err := db.Model(&entity.User{}).Where("id = ?", 89).Update("password", newPassword).Error; err != nil {
+		t.Fatalf("update password: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	request := httptest.NewRequest(http.MethodGet, "/adapter-service/user/info", nil)
+	request.Header.Set("Authorization", token)
+	ctx.Request = request
+
+	Auth(ctx)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401 after password change, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -283,7 +321,8 @@ func TestUserLoginRequiresCaptchaToken(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/user/login?username=admin&password=123456", nil)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/login", bytes.NewBufferString(`{"username":"admin","password":"123456"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
 
 	UserLogin(ctx)
 
@@ -821,8 +860,8 @@ func TestResetUserPasswordAdminCanResetPassword(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load target user: %v", err)
 	}
-	if stored.Password != "New12345!" {
-		t.Fatalf("expected password updated, got %s", stored.Password)
+	if matched, _ := util.VerifyPassword(stored.Password, "New12345!"); !matched {
+		t.Fatalf("expected password updated to a valid hash, got %s", stored.Password)
 	}
 }
 

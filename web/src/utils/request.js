@@ -1,5 +1,4 @@
 import axios from 'axios';
-import { getCookies, removeCookies } from './cookies'
 import { clearStoredCurrentUser } from './currentUser'
 import { message } from 'ant-design-vue';
 import { buildAuthFailureHandling, buildResponsePayload } from './requestHelpers.mjs'
@@ -8,6 +7,7 @@ import { buildAuthFailureHandling, buildResponsePayload } from './requestHelpers
 const service = axios.create({
   baseURL: "/",
   timeout: 60 * 1000,
+  withCredentials: true,
   validateStatus: function (status) {
     return status >= 200 && status <= 500
   }
@@ -15,10 +15,6 @@ const service = axios.create({
 // request拦截器
 service.interceptors.request.use(
   (config) => {
-    const token = getCookies('token')
-    if (token) {
-      config.headers['Authorization'] = token; // 让每个请求携带自定义token 请根据实际情况自行修改
-    }
     return config;
   },
   (error) => {
@@ -36,7 +32,6 @@ const responseInterceptor = (response) => {
       const handling = buildAuthFailureHandling(response)
       message.error(handling.userMessage)
       if (handling.shouldLogout) {
-        removeCookies('token')
         clearStoredCurrentUser()
         window.location.href = '/login'
       }

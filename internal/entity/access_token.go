@@ -10,7 +10,7 @@ type AccessToken struct {
 	Name            string     `gorm:"column:name;type:varchar(128);not null" json:"name"`
 	TokenHash       string     `gorm:"column:token_hash;type:char(64);uniqueIndex;not null" json:"tokenHash"`
 	TokenPrefix     string     `gorm:"column:token_prefix;type:varchar(32);not null" json:"tokenPrefix"`
-	TokenValue      string     `gorm:"column:token_value;type:varchar(255);not null;default:''" json:"tokenValue"`
+	TokenValue      string     `gorm:"column:token_value;type:varchar(255);not null;default:''" json:"-"`
 	Status          string     `gorm:"column:status;type:varchar(32);not null;default:enabled" json:"status"`
 	TotalQuotaLimit float64    `gorm:"column:total_quota_limit;type:decimal(18,2)" json:"totalQuotaLimit"`
 	TotalAmountUsed float64    `gorm:"column:total_amount_used;type:decimal(18,2);not null;default:0" json:"totalAmountUsed"`

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/util"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/basicfont"
 	"golang.org/x/image/math/fixed"
@@ -457,7 +458,7 @@ func VerifyRemoteCaptchaWithDB(db *gorm.DB, input RemoteCaptchaVerifyInput) (Cap
 	}
 	client := input.Client
 	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
+		client = util.NewSafeHTTPClient(10 * time.Second)
 	}
 	req, err := newRemoteCaptchaRequest(http.MethodGet, input.APIBaseURL, "/check2", map[string]string{"id": captchaID}, nil, input.APIKey)
 	if err != nil {
@@ -470,7 +471,7 @@ func VerifyRemoteCaptchaWithDB(db *gorm.DB, input RemoteCaptchaVerifyInput) (Cap
 		return CaptchaTokenResult{}, fmt.Errorf("远程验证码校验失败")
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
 	if err != nil {
 		writeSecondCheckLog("failed", resp.StatusCode, "", "", "localError=远程验证码响应解析失败")
 		return CaptchaTokenResult{}, fmt.Errorf("远程验证码响应解析失败")
@@ -517,7 +518,7 @@ func VerifyRemoteCaptchaWithDB(db *gorm.DB, input RemoteCaptchaVerifyInput) (Cap
 func FetchRemoteCaptchaWithDB(input RemoteCaptchaProxyInput) ([]byte, string, error) {
 	client := input.Client
 	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
+		client = util.NewSafeHTTPClient(10 * time.Second)
 	}
 	captchaType := normalizeCaptchaType(input.CaptchaType)
 	startedAt := captchaNow()
@@ -561,7 +562,7 @@ func FetchRemoteCaptchaWithDB(input RemoteCaptchaProxyInput) ([]byte, string, er
 func CheckRemoteCaptchaWithDB(input RemoteCaptchaProxyInput) ([]byte, string, error) {
 	client := input.Client
 	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
+		client = util.NewSafeHTTPClient(10 * time.Second)
 	}
 	startedAt := captchaNow()
 	requestCaptchaID := extractRemoteCaptchaIDFromBody(input.Body)
@@ -654,7 +655,7 @@ func doRemoteCaptchaProxyRequest(client *http.Client, req *http.Request) ([]byte
 		return nil, "", 0, fmt.Errorf("远程验证码请求失败")
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4*1024*1024))
 	if err != nil {
 		return nil, "", resp.StatusCode, fmt.Errorf("远程验证码响应解析失败")
 	}

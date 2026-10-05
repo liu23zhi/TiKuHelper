@@ -12,30 +12,31 @@ import (
 
 // SetAPIRouter 设置API路由
 func SetAPIRouter(router *gin.Engine) {
-	router.Use(middleware.CORS)
+	router.Use(middleware.CORS, middleware.SecurityHeaders)
 
-	router.Any("/sqp/*path", controller.Proxy)
+	router.Any("/sqp/*path", middleware.BodyLimit(16<<20), controller.Proxy)
 
 	apiRouter := router.Group("/adapter-service")
 
-	apiRouter.Use(middleware.GlobalAPIRateLimit) // 全局限流
+	apiRouter.Use(middleware.GlobalAPIRateLimit, middleware.BodyLimit(16<<20)) // 全局限流
 
-	apiRouter.POST("/upload", controller.UploadFile)
+	apiRouter.POST("/upload", controller.Auth, middleware.RequireAdmin, controller.UploadFile)
 	apiRouter.GET("/plat", controller.Plat)
 
 	apiRouter.POST("/search", controller.Search)
-	apiRouter.POST("/ai-fallback", controller.AIFallback)
-	apiRouter.POST("/parser", controller.Parser)
+	apiRouter.POST("/ai-fallback", controller.Auth, controller.AIFallback)
+	apiRouter.POST("/parser", controller.Auth, middleware.RequireAdmin, controller.Parser)
 
-	apiRouter.GET("/courses", controller.Auth, controller.Courses)
-	apiRouter.POST("/questions/search", controller.Auth, controller.GetQuestions)
-	apiRouter.POST("/questions", controller.Auth, controller.CreateQuestion)
-	apiRouter.POST("/questions/import", controller.Auth, controller.ImportQuestions)
-	apiRouter.PUT("/questions/:id", controller.Auth, controller.UpdateQuestions)
-	apiRouter.DELETE("/questions/:id", controller.Auth, controller.DeleteQuestion)
+	apiRouter.GET("/courses", controller.Auth, middleware.RequireAdmin, controller.Courses)
+	apiRouter.POST("/questions/search", controller.Auth, middleware.RequireAdmin, controller.GetQuestions)
+	apiRouter.POST("/questions", controller.Auth, middleware.RequireAdmin, controller.CreateQuestion)
+	apiRouter.POST("/questions/import", controller.Auth, middleware.RequireAdmin, controller.ImportQuestions)
+	apiRouter.PUT("/questions/:id", controller.Auth, middleware.RequireAdmin, controller.UpdateQuestions)
+	apiRouter.DELETE("/questions/:id", controller.Auth, middleware.RequireAdmin, controller.DeleteQuestion)
 
-	apiRouter.GET("/user/login", controller.UserLogin)         // 登录接口
+	apiRouter.POST("/user/login", controller.UserLogin)        // 登录接口
 	apiRouter.POST("/user/login/sms", controller.UserSMSLogin) // 短信登录接口
+	apiRouter.POST("/user/logout", controller.UserLogout)      // 清理浏览器会话
 	apiRouter.POST("/user/register", controller.UserRegister)  // 公开注册接口
 	apiRouter.POST("/public/captcha/challenge", controller.CreateCaptchaChallenge)
 	apiRouter.POST("/public/captcha/verify", controller.VerifyCaptchaChallenge)
@@ -69,18 +70,18 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.POST("/payment-methods", controller.Auth, controller.CreatePaymentMethod)
 	apiRouter.PUT("/payment-methods/:id", controller.Auth, controller.UpdatePaymentMethod)
 	apiRouter.DELETE("/payment-methods/:id", controller.Auth, controller.DeletePaymentMethod)
-	apiRouter.GET("/search-account-configs", controller.Auth, controller.SearchAccountConfigList)
-	apiRouter.PUT("/search-account-configs/:provider", controller.Auth, controller.UpdateSearchAccountConfig)
-	apiRouter.GET("/ai-search-config", controller.Auth, controller.AISearchConfigDetail)
-	apiRouter.GET("/ai-search-config/models", controller.Auth, controller.AISearchModels)
+	apiRouter.GET("/search-account-configs", controller.Auth, middleware.RequireAdmin, controller.SearchAccountConfigList)
+	apiRouter.PUT("/search-account-configs/:provider", controller.Auth, middleware.RequireAdmin, controller.UpdateSearchAccountConfig)
+	apiRouter.GET("/ai-search-config", controller.Auth, middleware.RequireAdmin, controller.AISearchConfigDetail)
+	apiRouter.GET("/ai-search-config/models", controller.Auth, middleware.RequireAdmin, controller.AISearchModels)
 	apiRouter.POST("/ai-search-config/test", controller.Auth, controller.TestAISearchConfig)
-	apiRouter.PUT("/ai-search-config", controller.Auth, controller.UpdateAISearchConfig)
+	apiRouter.PUT("/ai-search-config", controller.Auth, middleware.RequireAdmin, controller.UpdateAISearchConfig)
 	apiRouter.GET("/ai-model-architectures", controller.Auth, controller.AIModelArchitectureList)
 	apiRouter.POST("/ai-model-architectures", controller.Auth, controller.CreateAIModelArchitecture)
 	apiRouter.PUT("/ai-model-architectures/:id", controller.Auth, controller.UpdateAIModelArchitecture)
 	apiRouter.DELETE("/ai-model-architectures/:id", controller.Auth, controller.DeleteAIModelArchitecture)
-	apiRouter.GET("/system-settings", controller.Auth, controller.SystemSettingDetail)
-	apiRouter.PUT("/system-settings", controller.Auth, controller.UpdateSystemSetting)
+	apiRouter.GET("/system-settings", controller.Auth, middleware.RequireAdmin, controller.SystemSettingDetail)
+	apiRouter.PUT("/system-settings", controller.Auth, middleware.RequireAdmin, controller.UpdateSystemSetting)
 
 }
 

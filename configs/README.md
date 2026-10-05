@@ -3,13 +3,22 @@
 完整参数详见本目录的`config.yaml` 文件。
 
 ### 限流配置
-您可以对您的搜题接口针对IP进行限流，防止恶意请求。默认是关闭的状态。
+您可以对您的搜题接口针对IP进行限流，防止恶意请求。默认已开启。
 ```yaml
 limit:
-  enable: false # 是否开启
-  duration: 3  # 时间窗口为3秒
-  requests: 1  # 允许用户在3秒内通过1个请求
+  enable: true
+  duration: 60 # 时间窗口为60秒
+  requests: 120 # 每个来源IP在窗口内最多120个请求
 ```
+
+### JWT 配置
+`JWT_SECRET` 为必填环境变量，至少32字节，用于签发带过期时间的登录令牌。
+
+```bash
+export JWT_SECRET="使用密码管理器生成的至少32字节随机值"
+```
+
+反向代理部署时可设置 `TRUSTED_PROXIES`（逗号分隔的代理 IP/CIDR）以正确识别客户端地址；跨域部署可通过 `CORS_ALLOWED_ORIGINS` 设置逗号分隔的来源白名单。
 
 ### 数据库配置
 您可以对您的数据库配置，默认使用sqlite3，您可以指定mysql为您的数据库。

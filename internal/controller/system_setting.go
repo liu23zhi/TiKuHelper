@@ -21,6 +21,9 @@ var updateSystemSettingDetail = func(input service.UpdateSystemSettingInput) (se
 }
 
 func SystemSettingDetail(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
 	detail, err := loadSystemSettingDetail()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -29,7 +32,7 @@ func SystemSettingDetail(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, detail)
+	c.JSON(http.StatusOK, service.RedactSystemSettingDetail(detail))
 }
 
 func PublicRegisterStatus(c *gin.Context) {
@@ -45,6 +48,9 @@ func PublicRegisterStatus(c *gin.Context) {
 }
 
 func UpdateSystemSetting(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
 	var input service.UpdateSystemSettingInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -61,5 +67,5 @@ func UpdateSystemSetting(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, detail)
+	c.JSON(http.StatusOK, service.RedactSystemSettingDetail(detail))
 }

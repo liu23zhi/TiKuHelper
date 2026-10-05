@@ -23,8 +23,8 @@ import {
   ReadOutlined,
   LogoutOutlined
 } from '@ant-design/icons-vue';
-import { removeCookies } from '../../utils/cookies.js'
 import { clearStoredCurrentUser } from '../../utils/currentUser.js'
+import { logout } from '../../api/TikuComponentApi.js'
 import { useRouter } from 'vue-router';
 import { defineComponent } from 'vue';
 
@@ -51,9 +51,10 @@ export default defineComponent({
   },
   methods: {
     logoutOut() {
-      removeCookies('token')
-      clearStoredCurrentUser()
-      this.navigateToImport()
+      logout().finally(() => {
+        clearStoredCurrentUser()
+        this.navigateToImport()
+      })
     }
   }
 

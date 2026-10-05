@@ -3,7 +3,7 @@ package util
 import "testing"
 
 func TestConfigureJWTUsesExplicitSecret(t *testing.T) {
-	if err := ConfigureJWT("fixed-secret"); err != nil {
+	if err := ConfigureJWT("fixed-secret-0123456789abcdef-0123456789"); err != nil {
 		t.Fatalf("configure jwt: %v", err)
 	}
 
@@ -28,7 +28,7 @@ func TestConfigureJWTUsesExplicitSecret(t *testing.T) {
 }
 
 func TestConfigureJWTFallsBackToEnvironmentSecret(t *testing.T) {
-	t.Setenv("JWT_SECRET", "env-secret")
+	t.Setenv("JWT_SECRET", "env-secret-0123456789abcdef-0123456789")
 
 	if err := ConfigureJWT(""); err != nil {
 		t.Fatalf("configure jwt from env: %v", err)
@@ -51,5 +51,18 @@ func TestConfigureJWTFallsBackToEnvironmentSecret(t *testing.T) {
 
 	if subject != "7" {
 		t.Fatalf("expected subject 7, got %s", subject)
+	}
+}
+
+func TestConfigureJWTRejectsMissingOrWeakSecrets(t *testing.T) {
+	t.Setenv("JWT_SECRET", "")
+	if err := ConfigureJWT(""); err == nil {
+		t.Fatal("expected missing secret to be rejected")
+	}
+	if err := ConfigureJWT("short"); err == nil {
+		t.Fatal("expected short secret to be rejected")
+	}
+	if err := ConfigureJWT("tiku-adapter-dev-secret"); err == nil {
+		t.Fatal("expected known development secret to be rejected")
 	}
 }

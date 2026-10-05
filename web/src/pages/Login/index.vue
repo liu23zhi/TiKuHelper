@@ -182,7 +182,6 @@ import {
   normalizeSMSCodeInput,
 } from '../../utils/captchaHelpers.mjs'
 import { ensureAuthCaptchaToken } from '../../utils/captchaDialog.mjs'
-import { setCookies } from '../../utils/cookies.js'
 import { setStoredCurrentUser, resolveHomePath } from '../../utils/currentUser.js'
 import { message } from 'ant-design-vue';
 import { useRoute, useRouter } from 'vue-router';
@@ -310,8 +309,7 @@ export default defineComponent({
       })
     }
 
-    const finishLogin = (jwt) => {
-      setCookies('token', jwt)
+    const finishLogin = () => {
       return getCurrentUser().then((userRes) => {
         if (userRes?.status === 200) {
           setStoredCurrentUser(userRes.data)

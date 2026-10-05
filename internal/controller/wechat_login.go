@@ -69,6 +69,9 @@ func CheckWechatLoginStatus(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
+	if strings.TrimSpace(result.JWT) != "" {
+		setAuthCookie(c, result.JWT)
+	}
 	c.JSON(http.StatusOK, result)
 }
 
@@ -94,6 +97,9 @@ func LoginWechatByCode(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
+	if strings.TrimSpace(result.JWT) != "" {
+		setAuthCookie(c, result.JWT)
+	}
 	c.JSON(http.StatusOK, result)
 }
 
@@ -116,6 +122,9 @@ func BindWechatLogin(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
+	}
+	if strings.TrimSpace(result.JWT) != "" {
+		setAuthCookie(c, result.JWT)
 	}
 	c.JSON(http.StatusOK, result)
 }

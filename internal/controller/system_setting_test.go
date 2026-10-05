@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/service"
 )
 
@@ -36,6 +37,7 @@ func TestSystemSettingDetailReturnsCurrentSettings(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/system-settings", nil)
+	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 
 	SystemSettingDetail(ctx)
 
@@ -55,6 +57,9 @@ func TestSystemSettingDetailReturnsCurrentSettings(t *testing.T) {
 	}
 	if detail.EPayPlatformPublicKey != "platform-public-key" {
 		t.Fatalf("expected platform public key, got %s", detail.EPayPlatformPublicKey)
+	}
+	if detail.EPayMerchantPrivateKey != service.SecretMask {
+		t.Fatalf("expected merchant private key to be redacted, got %q", detail.EPayMerchantPrivateKey)
 	}
 	if detail.EPayNotifyURL != "https://app.example.com/adapter-service/payment/notify" {
 		t.Fatalf("expected notify url, got %s", detail.EPayNotifyURL)
@@ -76,6 +81,7 @@ func TestSystemSettingDetailReturnsServerErrorWhenLoadFails(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/system-settings", nil)
+	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 
 	SystemSettingDetail(ctx)
 
@@ -187,6 +193,7 @@ func TestUpdateSystemSettingRejectsInvalidPayload(t *testing.T) {
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/system-settings", bytes.NewBufferString("not-json"))
 	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 
 	UpdateSystemSetting(ctx)
 
@@ -223,6 +230,7 @@ func TestUpdateSystemSettingPersistsAndReturnsDetail(t *testing.T) {
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/system-settings", bytes.NewReader(payload))
 	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 
 	UpdateSystemSetting(ctx)
 
@@ -252,5 +260,12 @@ func TestUpdateSystemSettingPersistsAndReturnsDetail(t *testing.T) {
 	}
 	if received.EPayReturnURL != " https://app.example.com/adapter/recharge/result " {
 		t.Fatalf("expected raw return url preserved, got %q", received.EPayReturnURL)
+	}
+	var response service.SystemSettingDetail
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.EPayMerchantPrivateKey != service.SecretMask {
+		t.Fatalf("expected response secret to be redacted, got %q", response.EPayMerchantPrivateKey)
 	}
 }

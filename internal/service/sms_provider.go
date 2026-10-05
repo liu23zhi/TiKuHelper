@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/itihey/tikuAdapter/pkg/util"
 )
 
 type SMSProvider interface {
@@ -37,7 +39,7 @@ func (p SMSBaoProvider) SendSMS(phone string, content string) error {
 	}
 	client := p.Client
 	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
+		client = util.NewSafeHTTPClient(10 * time.Second)
 	}
 	query := url.Values{}
 	query.Set("u", p.Username)
@@ -50,7 +52,7 @@ func (p SMSBaoProvider) SendSMS(phone string, content string) error {
 		return fmt.Errorf("短信发送失败")
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	code := strings.TrimSpace(string(body))
 	if code == "0" {
 		return nil

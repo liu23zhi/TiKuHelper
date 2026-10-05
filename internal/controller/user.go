@@ -2,17 +2,21 @@ package controller
 
 import (
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/util"
 )
+
+const authCookieName = "tiku_token"
 
 var sendPublicSMSCodeWithDB = func(input service.SendSMSCodeInput) error {
 	return service.SendSMSCodeWithDB(dao.User.UnderlyingDB(), input)
@@ -97,7 +101,14 @@ func validatePasswordComplexity(password string) error {
 
 // Auth 鉴权
 func Auth(c *gin.Context) {
-	claims, err := util.ParseJwtWithClaims(c.Request.Header.Get("Authorization"))
+	tokenValue := strings.TrimSpace(c.Request.Header.Get("Authorization"))
+	if tokenValue == "" {
+		cookieValue, err := c.Cookie(authCookieName)
+		if err == nil {
+			tokenValue = strings.TrimSpace(cookieValue)
+		}
+	}
+	claims, err := util.ParseJwtWithClaims(tokenValue)
 
 	if err != nil {
 		logger.SysLog(err.Error())
@@ -116,7 +127,11 @@ func Auth(c *gin.Context) {
 		return
 	}
 
-	userID, _ := strconv.Atoi(subject)
+	userID, err := strconv.Atoi(subject)
+	if err != nil || userID <= 0 {
+		c.AbortWithStatusJSON(401, gin.H{"message": "请重新登录"})
+		return
+	}
 
 	user, err := dao.User.Where(dao.User.ID.Eq(int32(userID))).First()
 	if err != nil {
@@ -132,6 +147,10 @@ func Auth(c *gin.Context) {
 		})
 		return
 	}
+	if !tokenCredentialVersionMatches(claims, user.Password) {
+		c.AbortWithStatusJSON(401, gin.H{"message": "请重新登录"})
+		return
+	}
 	c.Set("user", user)
 }
 
@@ -143,7 +162,17 @@ func UserInfo(c *gin.Context) {
 
 // UserLogin 用户登录
 func UserLogin(c *gin.Context) {
-	captchaToken := strings.TrimSpace(c.Query("captchaToken"))
+	var payload struct {
+		Username     string `json:"username"`
+		Password     string `json:"password"`
+		CaptchaToken string `json:"captchaToken"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
+		return
+	}
+
+	captchaToken := strings.TrimSpace(payload.CaptchaToken)
 	if err := consumeCaptchaTokenWithDB(captchaToken, service.CaptchaSceneLoginPassword, strings.TrimSpace(c.ClientIP())); err != nil {
 		c.JSON(400, gin.H{
 			"message": err.Error(),
@@ -152,8 +181,15 @@ func UserLogin(c *gin.Context) {
 	}
 
 	us := dao.User
-	user, err := us.Where(us.Username.Eq(c.Query("username")), us.Password.Eq(c.Query("password"))).First()
+	user, err := us.Where(us.Username.Eq(strings.TrimSpace(payload.Username))).First()
 	if err != nil {
+		c.JSON(400, gin.H{
+			"message": "用户名或密码错误",
+		})
+		return
+	}
+	passwordMatches, needsUpgrade := util.VerifyPassword(user.Password, payload.Password)
+	if !passwordMatches {
 		c.JSON(400, gin.H{
 			"message": "用户名或密码错误",
 		})
@@ -165,13 +201,19 @@ func UserLogin(c *gin.Context) {
 		})
 		return
 	}
-	jwt := util.GenerateJwt(user.ID)
+	jwt := util.GenerateJwtForUser(user.ID, user.Password)
 
 	if jwt == "" {
 		c.JSON(400, gin.H{
 			"message": "jwt生成失败",
 		})
 	} else {
+		if needsUpgrade {
+			if hashedPassword, hashErr := util.HashPassword(payload.Password); hashErr == nil {
+				_ = dao.User.UnderlyingDB().Model(&entity.User{}).Where("id = ?", user.ID).Update("password", hashedPassword).Error
+				user.Password = hashedPassword
+			}
+		}
 		now := time.Now()
 		clientIP := strings.TrimSpace(c.ClientIP())
 		if err := dao.User.UnderlyingDB().Model(&entity.User{}).Where("id = ?", user.ID).Updates(map[string]any{
@@ -186,6 +228,7 @@ func UserLogin(c *gin.Context) {
 		user.LastLoginAt = &now
 		user.LastLoginIP = clientIP
 		writeAuditLog(user, "auth", logActionLogin, "用户登录成功", clientIP, 0, "", "")
+		setAuthCookie(c, jwt)
 		c.JSON(200, gin.H{
 			"message": "user login",
 			"jwt":     jwt,
@@ -269,9 +312,14 @@ func UserRegister(c *gin.Context) {
 		return
 	}
 	now := time.Now()
+	hashedPassword, err := util.HashPassword(password)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "注册失败"})
+		return
+	}
 	user := entity.User{
 		Username:       username,
-		Password:       password,
+		Password:       hashedPassword,
 		Nickname:       nickname,
 		Role:           "user",
 		Status:         "enabled",
@@ -353,7 +401,7 @@ func UserSMSLogin(c *gin.Context) {
 		c.JSON(400, gin.H{"message": err.Error()})
 		return
 	}
-	jwt := util.GenerateJwt(user.ID)
+	jwt := util.GenerateJwtForUser(user.ID, user.Password)
 	if jwt == "" {
 		c.JSON(400, gin.H{"message": "jwt生成失败"})
 		return
@@ -370,7 +418,13 @@ func UserSMSLogin(c *gin.Context) {
 	user.LastLoginAt = &now
 	user.LastLoginIP = clientIP
 	writeAuditLog(&user, "auth", logActionLogin, "用户短信登录成功", clientIP, 0, "", "")
+	setAuthCookie(c, jwt)
 	c.JSON(200, gin.H{"message": "user login", "jwt": jwt})
+}
+
+func UserLogout(c *gin.Context) {
+	clearAuthCookie(c)
+	c.JSON(http.StatusOK, gin.H{"message": "已退出登录"})
 }
 
 // UserList 用户列表
@@ -405,9 +459,18 @@ func CreateUser(c *gin.Context) {
 		return
 	}
 
-	var user entity.User
-
-	err := c.ShouldBindJSON(&user)
+	var payload struct {
+		Username       string  `json:"username"`
+		Password       string  `json:"password"`
+		Nickname       string  `json:"nickname"`
+		Role           string  `json:"role"`
+		Status         string  `json:"status"`
+		Balance        float64 `json:"balance"`
+		RegisterSource string  `json:"registerSource"`
+		Phone          *string `json:"phone"`
+		Perms          string  `json:"perms"`
+	}
+	err := c.ShouldBindJSON(&payload)
 	if err != nil {
 		c.JSON(400, gin.H{
 			"message": "参数错误",
@@ -415,6 +478,17 @@ func CreateUser(c *gin.Context) {
 		return
 	}
 
+	user := entity.User{
+		Username:       payload.Username,
+		Password:       payload.Password,
+		Nickname:       payload.Nickname,
+		Role:           payload.Role,
+		Status:         payload.Status,
+		Balance:        payload.Balance,
+		RegisterSource: payload.RegisterSource,
+		Phone:          payload.Phone,
+		Perms:          payload.Perms,
+	}
 	user.Username = strings.TrimSpace(user.Username)
 	user.Password = strings.TrimSpace(user.Password)
 	user.Nickname = strings.TrimSpace(user.Nickname)
@@ -446,6 +520,12 @@ func CreateUser(c *gin.Context) {
 	if strings.TrimSpace(user.RegisterSource) == "" {
 		user.RegisterSource = "admin"
 	}
+	hashedPassword, err := util.HashPassword(user.Password)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "创建用户失败"})
+		return
+	}
+	user.Password = hashedPassword
 
 	err = dao.User.Create(&user)
 	if err != nil {
@@ -574,7 +654,12 @@ func ResetUserPassword(c *gin.Context) {
 		return
 	}
 
-	target.Password = password
+	hashedPassword, err := util.HashPassword(password)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "重置密码失败"})
+		return
+	}
+	target.Password = hashedPassword
 	if err := dao.User.Save(target); err != nil {
 		c.JSON(400, gin.H{
 			"message": "重置密码失败",
@@ -618,4 +703,47 @@ func DeleteUser(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"message": "删除用户成功",
 	})
+}
+
+func setAuthCookie(c *gin.Context, token string) {
+	if c == nil || strings.TrimSpace(token) == "" {
+		return
+	}
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(
+		authCookieName,
+		token,
+		int(util.JWTTTL.Seconds()),
+		"/",
+		"",
+		requestIsHTTPS(c),
+		true,
+	)
+}
+
+func clearAuthCookie(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(authCookieName, "", -1, "/", "", requestIsHTTPS(c), true)
+}
+
+func requestIsHTTPS(c *gin.Context) bool {
+	if c == nil || c.Request == nil {
+		return false
+	}
+	if c.Request.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(c.GetHeader("X-Forwarded-Proto")), "https")
+}
+
+func tokenCredentialVersionMatches(claims jwt.Claims, passwordHash string) bool {
+	mapClaims, ok := claims.(jwt.MapClaims)
+	if !ok {
+		return false
+	}
+	version, _ := mapClaims["ver"].(string)
+	return strings.TrimSpace(version) != "" && version == util.CredentialVersion(passwordHash)
 }

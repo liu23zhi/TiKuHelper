@@ -162,7 +162,7 @@ func CreateWechatLoginQRCodeWithDB(db *gorm.DB, client WechatLoginClient) (Wecha
 		} `json:"data"`
 		Message string `json:"message"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 2*1024*1024)).Decode(&payload); err != nil {
 		return WechatQRCodeResult{}, fmt.Errorf("微信二维码响应解析失败")
 	}
 	if !payload.Success || strings.TrimSpace(payload.Data.LoginToken) == "" || strings.TrimSpace(payload.Data.QRCodeURL) == "" {
@@ -220,7 +220,7 @@ func CheckWechatLoginStatusWithDB(db *gorm.DB, input WechatLoginStatusInput) (We
 		} `json:"data"`
 		Message string `json:"message"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 2*1024*1024)).Decode(&payload); err != nil {
 		return WechatLoginStatusResult{}, fmt.Errorf("微信登录状态响应解析失败")
 	}
 	if !payload.Success {
@@ -286,12 +286,24 @@ func BindWechatLoginWithDB(db *gorm.DB, input WechatBindInput) (WechatBindResult
 	}
 
 	var user entity.User
-	err = db.Where("username = ? AND password = ?", strings.TrimSpace(input.Username), strings.TrimSpace(input.Password)).First(&user).Error
+	err = db.Where("username = ?", strings.TrimSpace(input.Username)).First(&user).Error
 	if err != nil {
+		return WechatBindResult{}, fmt.Errorf("用户名或密码错误")
+	}
+	passwordMatches, needsUpgrade := util.VerifyPassword(user.Password, strings.TrimSpace(input.Password))
+	if !passwordMatches {
 		return WechatBindResult{}, fmt.Errorf("用户名或密码错误")
 	}
 	if !isServiceUserEnabled(&user) {
 		return WechatBindResult{}, fmt.Errorf("用户已被禁用")
+	}
+	if needsUpgrade {
+		if hashedPassword, hashErr := util.HashPassword(strings.TrimSpace(input.Password)); hashErr == nil {
+			if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("password", hashedPassword).Error; err != nil {
+				return WechatBindResult{}, err
+			}
+			user.Password = hashedPassword
+		}
 	}
 
 	var occupied entity.User
@@ -348,7 +360,7 @@ func FetchWechatUserIDByCode(client WechatLoginClient, code string) (string, err
 		Data    string `json:"data"`
 		Message string `json:"message"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 2*1024*1024)).Decode(&payload); err != nil {
 		return "", fmt.Errorf("微信用户响应解析失败")
 	}
 	if !payload.Success {
@@ -361,7 +373,7 @@ func resolveWechatHTTPClient(client WechatLoginClient) *http.Client {
 	if client.Client != nil {
 		return client.Client
 	}
-	return &http.Client{Timeout: 10 * time.Second}
+	return util.NewSafeHTTPClient(10 * time.Second)
 }
 
 func applyWechatBearer(req *http.Request, token string) {
@@ -377,7 +389,7 @@ func joinWechatURL(baseURL string, path string) (string, error) {
 		return "", fmt.Errorf("微信登录配置未完成")
 	}
 	parsed, err := url.Parse(trimmedBase)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 		return "", fmt.Errorf("微信登录配置未完成")
 	}
 	return trimmedBase + path, nil
@@ -408,7 +420,7 @@ func downloadWechatQRCodeImage(client *http.Client, imageURL string) (string, er
 }
 
 func issueWechatJWTWithDB(db *gorm.DB, user *entity.User, requestIP string) (string, error) {
-	jwt := util.GenerateJwt(user.ID)
+	jwt := util.GenerateJwtForUser(user.ID, user.Password)
 	if jwt == "" {
 		return "", fmt.Errorf("jwt生成失败")
 	}

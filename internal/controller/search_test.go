@@ -1219,8 +1219,8 @@ func TestSearchAllowsAnonymousRemoteSearchWithoutBillingAndWritesFullAuditLog(t 
 	if !strings.Contains(entry.Description, "hitProvider=wanneng") {
 		t.Fatalf("expected description to contain actual hit provider, got %+v", entry)
 	}
-	if !strings.Contains(entry.OldAnswer, "wannengToken=plain-third-party-token") {
-		t.Fatalf("expected raw request log to keep explicit provider token without masking, got %+v", entry)
+	if strings.Contains(entry.OldAnswer, "plain-third-party-token") || !strings.Contains(entry.OldAnswer, "wannengToken=plai...oken") {
+		t.Fatalf("expected raw request log to mask explicit provider token, got %+v", entry)
 	}
 	if !strings.Contains(entry.OldAnswer, rawBody) {
 		t.Fatalf("expected raw request log to contain request body, got %+v", entry)

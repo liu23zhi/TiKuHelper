@@ -646,7 +646,7 @@ func buildSearchAuditRawRequest(c *gin.Context, query url.Values, rawBody string
 	parts := []string{
 		fmt.Sprintf("method=%s", strings.TrimSpace(c.Request.Method)),
 		fmt.Sprintf("path=%s", c.Request.URL.Path),
-		fmt.Sprintf("query=%s", query.Encode()),
+		fmt.Sprintf("query=%s", sanitizeSearchQueryForLog(query)),
 		fmt.Sprintf("contentType=%s", c.ContentType()),
 		fmt.Sprintf("origin=%s", c.GetHeader("Origin")),
 		fmt.Sprintf("userAgent=%s", c.GetHeader("User-Agent")),
@@ -655,6 +655,26 @@ func buildSearchAuditRawRequest(c *gin.Context, query url.Values, rawBody string
 		fmt.Sprintf("body=%s", rawBody),
 	}
 	return strings.Join(parts, " ")
+}
+
+func sanitizeSearchQueryForLog(query url.Values) string {
+	if len(query) == 0 {
+		return ""
+	}
+	sanitized := make(url.Values, len(query))
+	for key, values := range query {
+		lowerKey := strings.ToLower(strings.TrimSpace(key))
+		if strings.Contains(lowerKey, "token") ||
+			strings.Contains(lowerKey, "key") ||
+			strings.Contains(lowerKey, "secret") ||
+			strings.Contains(lowerKey, "password") ||
+			strings.Contains(lowerKey, "authorization") {
+			sanitized[key] = []string{maskSecret(strings.Join(values, ","))}
+			continue
+		}
+		sanitized[key] = append([]string(nil), values...)
+	}
+	return sanitized.Encode()
 }
 
 func resolveExplicitNormalSearchProvider(useQuery string) string {
@@ -1137,7 +1157,7 @@ func resolveSearchRequestContextWithDB(db *gorm.DB, authorization string, client
 	resolved.UsedDefaultSearch = resolvedTokens.UsedDefaultAccount
 	resolved.UsedDefaultSearchProviders = resolvedTokens.UsedDefaultProviders
 
-	resolvedAI, err := service.BuildAISearchRequestConfigWithDB(db, query, allowDefaultAccount)
+	resolvedAI, err := service.BuildAISearchRequestConfigWithDB(db, query, allowDefaultAccount, strings.TrimSpace(authorization) != "")
 	if err != nil {
 		return resolved, err
 	}

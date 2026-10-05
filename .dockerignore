@@ -1,0 +1,17 @@
+.git
+.history
+.agents
+.claude
+.codex
+.github
+web/node_modules
+web/dist
+run/data
+test
+docs
+*.db
+.env
+.env.*
+config.yaml
+run/config.yaml
+reamed.md

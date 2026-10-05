@@ -4,8 +4,15 @@ import request from '../utils/request'
 export function login(params) {
   return request({
     url: `/adapter-service/user/login`,
-    method: 'get',
-    params
+    method: 'post',
+    data: params
+  });
+}
+
+export function logout() {
+  return request({
+    url: `/adapter-service/user/logout`,
+    method: 'post'
   });
 }
 

@@ -10,6 +10,9 @@ import (
 )
 
 func SearchAccountConfigList(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
 	configs, err := service.ListSearchAccountConfigsWithDB(manager.GetManager().GetDB())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -18,10 +21,13 @@ func SearchAccountConfigList(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, configs)
+	c.JSON(http.StatusOK, service.RedactSearchAccountConfigViews(configs))
 }
 
 func UpdateSearchAccountConfig(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
 	var input service.UpdateSearchAccountConfigInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -42,5 +48,5 @@ func UpdateSearchAccountConfig(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, config)
+	c.JSON(http.StatusOK, service.RedactSearchAccountConfigView(config))
 }

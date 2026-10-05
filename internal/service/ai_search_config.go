@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 )
 
@@ -124,7 +125,7 @@ func UpdateAISearchConfigWithDB(db *gorm.DB, input UpdateAISearchConfigInput) (A
 
 	config.Enabled = input.Enabled
 	config.BaseURL = normalizeAISearchBaseURL(input.BaseURL)
-	config.APIKey = strings.TrimSpace(input.APIKey)
+	config.APIKey = mergeSecretInput(input.APIKey, config.APIKey)
 	config.Model = strings.TrimSpace(input.Model)
 	config.ManualModels = manualModelsJSON
 	config.Prompt = strings.TrimSpace(input.Prompt)
@@ -162,16 +163,22 @@ func UpdateAISearchConfigWithDB(db *gorm.DB, input UpdateAISearchConfigInput) (A
 	return buildAISearchConfigView(config)
 }
 
-func BuildAISearchRequestConfigWithDB(db *gorm.DB, query url.Values, allowDefaultAccount bool) (ResolvedAISearchConfig, error) {
+func BuildAISearchRequestConfigWithDB(db *gorm.DB, query url.Values, allowDefaultAccount bool, explicitConfigAllowed ...bool) (ResolvedAISearchConfig, error) {
 	resolved := ResolvedAISearchConfig{
 		Config: AISearchRequestConfig{
-			BaseURL:     normalizeAISearchBaseURL(query.Get("url")),
-			APIKey:      strings.TrimSpace(query.Get("key")),
-			Model:       strings.TrimSpace(query.Get("model")),
 			Prompt:      defaultAISearchPrompt(),
 			Temperature: 0,
 			TopP:        0,
 		},
+	}
+	allowExplicitConfig := allowDefaultAccount
+	if len(explicitConfigAllowed) > 0 {
+		allowExplicitConfig = explicitConfigAllowed[0]
+	}
+	if allowExplicitConfig {
+		resolved.Config.BaseURL = normalizeAISearchBaseURL(query.Get("url"))
+		resolved.Config.APIKey = normalizeAISearchSecretInput(query.Get("key"))
+		resolved.Config.Model = strings.TrimSpace(query.Get("model"))
 	}
 
 	defaultConfig, exists, err := getAISearchConfigRecord(db)
@@ -210,6 +217,14 @@ func BuildAISearchRequestConfigWithDB(db *gorm.DB, query url.Values, allowDefaul
 	resolved.UsedDefaultAccount = usedDefault
 
 	return resolved, nil
+}
+
+func normalizeAISearchSecretInput(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == SecretMask {
+		return ""
+	}
+	return trimmed
 }
 
 func IsAISearchConfigUsable(config AISearchRequestConfig) bool {
@@ -361,7 +376,7 @@ func requestRemoteAISearchModels(endpoint string, apiKey string) ([]string, int,
 		httpReq.Header.Set("Authorization", "Bearer "+strings.TrimSpace(apiKey))
 	}
 
-	httpClient := &http.Client{Timeout: 15 * time.Second}
+	httpClient := util.NewSafeHTTPClient(15 * time.Second)
 	resp, err := httpClient.Do(httpReq)
 	if err != nil {
 		return nil, 0, err
@@ -375,7 +390,7 @@ func requestRemoteAISearchModels(endpoint string, apiKey string) ([]string, int,
 		return nil, resp.StatusCode, errors.New("remote ai models request failed")
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
 	if err != nil {
 		return nil, resp.StatusCode, err
 	}

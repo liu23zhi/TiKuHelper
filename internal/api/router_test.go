@@ -146,8 +146,8 @@ func TestSetAPIRouterHandlesSearchPreflightWithCORSHeaders(t *testing.T) {
 	SetAPIRouter(router)
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodOptions, "/adapter-service/search", nil)
-	request.Header.Set("Origin", "https://mooc1.chaoxing.com")
+	request := httptest.NewRequest(http.MethodOptions, "http://adapter.example.com/adapter-service/search", nil)
+	request.Header.Set("Origin", "http://adapter.example.com")
 	request.Header.Set("Access-Control-Request-Method", http.MethodPost)
 	request.Header.Set("Access-Control-Request-Headers", "content-type,authorization")
 
@@ -156,7 +156,7 @@ func TestSetAPIRouterHandlesSearchPreflightWithCORSHeaders(t *testing.T) {
 	if recorder.Code != http.StatusNoContent {
 		t.Fatalf("expected status 204 for preflight, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
-	if recorder.Header().Get("Access-Control-Allow-Origin") != "https://mooc1.chaoxing.com" {
+	if recorder.Header().Get("Access-Control-Allow-Origin") != "http://adapter.example.com" {
 		t.Fatalf("expected allow-origin header to echo request origin, got %q", recorder.Header().Get("Access-Control-Allow-Origin"))
 	}
 	if recorder.Header().Get("Access-Control-Allow-Methods") == "" {
@@ -164,5 +164,26 @@ func TestSetAPIRouterHandlesSearchPreflightWithCORSHeaders(t *testing.T) {
 	}
 	if recorder.Header().Get("Access-Control-Allow-Headers") == "" {
 		t.Fatal("expected allow-headers header on preflight response")
+	}
+}
+
+func TestSetAPIRouterRejectsUnlistedCrossOriginPreflight(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	SetAPIRouter(router)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodOptions, "http://adapter.example.com/adapter-service/search", nil)
+	request.Header.Set("Origin", "https://attacker.example.com")
+	request.Header.Set("Access-Control-Request-Method", http.MethodPost)
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("expected status 403 for unlisted origin, got %d", recorder.Code)
+	}
+	if recorder.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("expected no allow-origin header, got %q", recorder.Header().Get("Access-Control-Allow-Origin"))
 	}
 }

@@ -43,7 +43,7 @@
         type="info"
         show-icon
         class="page-alert"
-        message="访问令牌用于 /adapter-service/search 的 Authorization: Basic xxxx 认证。令牌默认隐藏中间部分；如需核对完整值，可点击右侧按钮直接查看，也可直接复制。"
+        message="访问令牌用于 /adapter-service/search 的 Authorization: Basic xxxx 认证。完整令牌只在创建时显示一次，请立即妥善保存。"
       />
 
       <a-alert
@@ -66,15 +66,9 @@
       >
         <template #tokenValue="{ record }">
           <div class="token-value-cell">
-            <a-typography-paragraph copyable class="token-value-text">
-              <code>{{ displayTokenValue(record) }}</code>
+            <a-typography-paragraph class="token-value-text">
+              <code>{{ record.tokenPrefix || '-' }}...</code>
             </a-typography-paragraph>
-            <a-button class="token-copy-button" shape="round" size="small" @click="copyTokenValue(record)">
-              复制
-            </a-button>
-            <a-button class="token-toggle-button" shape="round" size="small" @click="toggleTokenVisibility(record.id)">
-              {{ isTokenVisible(record.id) ? '隐藏中间部分' : '显示全部' }}
-            </a-button>
           </div>
         </template>
         <template #status="{ record }">
@@ -151,6 +145,7 @@
 <script>
 import { computed, defineComponent, ref } from 'vue';
 import { message } from 'ant-design-vue';
+import Swal from 'sweetalert2';
 import {
   getAccessTokens,
   createAccessToken,
@@ -165,7 +160,6 @@ const tableLoading = ref(true)
 const visible = ref(false)
 const submitLoading = ref(false)
 const isEditing = ref(false)
-const visibleTokenIds = ref([])
 const formState = ref({
   id: undefined,
   name: '',
@@ -220,7 +214,6 @@ export default defineComponent({
       visible,
       submitLoading,
       isEditing,
-      visibleTokenIds,
       formState,
       summary,
       modalTitle,
@@ -333,45 +326,6 @@ export default defineComponent({
       }
       return `¥ ${amount.toFixed(2)}`
     },
-    isTokenVisible(tokenId) {
-      return visibleTokenIds.value.includes(tokenId)
-    },
-    toggleTokenVisibility(tokenId) {
-      if (this.isTokenVisible(tokenId)) {
-        visibleTokenIds.value = visibleTokenIds.value.filter(id => id !== tokenId)
-        return
-      }
-      visibleTokenIds.value = [...visibleTokenIds.value, tokenId]
-    },
-    displayTokenValue(record) {
-      const rawValue = String(record?.tokenValue || '').trim()
-      if (!rawValue) {
-        return '-'
-      }
-      if (this.isTokenVisible(record?.id)) {
-        return rawValue
-      }
-      if (rawValue.length <= 14) {
-        return rawValue
-      }
-      return `${rawValue.slice(0, 8)}******${rawValue.slice(-6)}`
-    },
-    copyTokenValue(record) {
-      const rawValue = String(record?.tokenValue || '').trim()
-      if (!rawValue) {
-        message.warning('当前令牌为空，无法复制')
-        return
-      }
-      if (navigator?.clipboard?.writeText) {
-        navigator.clipboard.writeText(rawValue).then(() => {
-          message.success('访问令牌已复制')
-        }).catch(() => {
-          message.error('复制访问令牌失败')
-        })
-        return
-      }
-      message.warning('当前浏览器不支持直接复制，请手动复制')
-    },
     formatDateTime(value) {
       if (!value) {
         return '-'
@@ -441,6 +395,17 @@ export default defineComponent({
             message.success('更新令牌成功')
           } else {
             message.success('创建令牌成功')
+            const plainToken = String(res?.data?.token || '').trim()
+            if (plainToken) {
+              Swal.fire({
+                icon: 'info',
+                title: '请立即保存访问令牌',
+                text: plainToken,
+                confirmButtonText: '我已保存',
+                heightAuto: false,
+                scrollbarPadding: false,
+              })
+            }
           }
           this.handleLoad()
           visible.value = false

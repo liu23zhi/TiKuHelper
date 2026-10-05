@@ -1,11 +1,11 @@
-FROM node:18 AS builder1
+FROM node:22-alpine AS builder1
 
 WORKDIR /build
 COPY ./web .
-RUN npm install && npm run build
+RUN npm ci && npm run build
 
 
-FROM golang:1.24 AS builder2
+FROM golang:1.26.6 AS builder2
 ENV GO111MODULE=on \
     CGO_ENABLED=0 \
     GOOS=linux
@@ -17,7 +17,7 @@ COPY . .
 COPY --from=builder1 /build/dist ./cmd/adapter-service/dist
 RUN go build -ldflags "-s -w -extldflags '-static'" -o tiku-adapter ./cmd/adapter-service
 
-FROM alpine
+FROM alpine:3.22
 
 RUN apk update \
     && apk upgrade \

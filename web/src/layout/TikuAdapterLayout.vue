@@ -17,16 +17,14 @@ import { computed } from 'vue'
 import Header from '../components/PageHeader'
 import SiderMenu from '../components/SiderMenu'
 import { useRouter } from 'vue-router';
-import { getCookies } from '../utils/cookies'
 import { getStoredCurrentUser, isAdminUser, resolveHomePath } from '../utils/currentUser'
 
 export default {
   name: 'AdapterLayout',
   setup() {
     const router = useRouter()
-    const token = getCookies('token')
     const currentUser = computed(() => getStoredCurrentUser())
-    if (!token) {
+    if (!currentUser.value) {
       router.push('/login')
       return {
         currentUser,

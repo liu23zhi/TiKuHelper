@@ -48,6 +48,9 @@ func ListAccessTokensWithDB(db *gorm.DB, operator entity.User) ([]entity.AccessT
 	if err := query.Find(&tokens).Error; err != nil {
 		return nil, err
 	}
+	for index := range tokens {
+		tokens[index].TokenValue = ""
+	}
 	return tokens, nil
 }
 
@@ -69,7 +72,6 @@ func CreateAccessTokenWithDB(db *gorm.DB, operator entity.User, input CreateAcce
 		Name:            name,
 		TokenHash:       tokenHash,
 		TokenPrefix:     tokenPrefix,
-		TokenValue:      plainToken,
 		Status:          accessTokenStatusEnabled,
 		TotalQuotaLimit: normalizeQuotaLimit(input.TotalQuotaLimit),
 		TotalAmountUsed: 0,
@@ -126,6 +128,7 @@ func loadAccessibleAccessToken(db *gorm.DB, operator entity.User, tokenID int32)
 	if accessToken.UserID != operator.ID && !isAdminUser(operator) {
 		return entity.AccessToken{}, ErrAccessTokenForbidden
 	}
+	accessToken.TokenValue = ""
 	return accessToken, nil
 }
 

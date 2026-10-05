@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -55,7 +56,8 @@ func TestUserLoginWritesAuditLog(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodGet, "/adapter-service/user/login?username=audit-login-user&password=123456&captchaToken=token-1", nil)
+	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/login", bytes.NewBufferString(`{"username":"audit-login-user","password":"123456","captchaToken":"token-1"}`))
+	request.Header.Set("Content-Type", "application/json")
 	request.RemoteAddr = "10.20.30.40:12345"
 	request.Header.Set("X-Forwarded-For", "10.20.30.40")
 	ctx.Request = request

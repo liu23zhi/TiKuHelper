@@ -1,5 +1,4 @@
 import { createRouter, createWebHistory } from 'vue-router';
-import { getCookies } from '../utils/cookies'
 import { getStoredCurrentUser, isAdminUser, resolveHomePath } from '../utils/currentUser'
 import { getPublicRegisterStatus } from '../api/TikuComponentApi'
 
@@ -157,13 +156,12 @@ router.beforeEach((to, from, next) => {
     return
   }
 
-  const token = getCookies('token')
-  if (!token) {
+  const currentUser = getStoredCurrentUser()
+  if (!currentUser) {
     next('/login')
     return
   }
 
-  const currentUser = getStoredCurrentUser()
   if (ADMIN_ONLY_ROUTE_NAMES.has(String(to.name || '')) && !isAdminUser(currentUser)) {
     next(resolveHomePath(currentUser))
     return

@@ -74,7 +74,6 @@ import { UserOutlined, LockOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import { useRoute, useRouter } from 'vue-router'
 import { bindWechatLogin, getCurrentUser } from '../../api/TikuComponentApi.js'
-import { setCookies } from '../../utils/cookies.js'
 import { resolveHomePath, setStoredCurrentUser } from '../../utils/currentUser.js'
 
 export default defineComponent({
@@ -89,8 +88,7 @@ export default defineComponent({
       password: '',
     })
 
-    const finishLogin = (jwt) => {
-      setCookies('token', jwt)
+    const finishLogin = () => {
       return getCurrentUser().then((userRes) => {
         if (userRes?.status === 200) {
           setStoredCurrentUser(userRes.data)
