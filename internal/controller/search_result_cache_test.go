@@ -225,6 +225,48 @@ func TestSearchCacheHitSkipsBillingReporter(t *testing.T) {
 		})
 }
 
+func TestSearchSkipCacheBypassesCachedResultAndRefreshesCache(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstreamCalls := 0
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode:    searchModeNormal,
+				Tokens:        map[string]string{"icodef": "test-token"},
+				AccessTokenID: 101,
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return []func(model.SearchRequest) ([][]string, error){
+				func(model.SearchRequest) ([][]string, error) {
+					upstreamCalls++
+					if upstreamCalls == 1 {
+						return [][]string{{"旧答案"}}, nil
+					}
+					return [][]string{{"新答案"}}, nil
+				},
+			}
+		},
+		nil,
+		func() {
+			first := performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","type":2}`, "Basic token-a")
+			refreshed := performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","type":2,"skipCache":true}`, "Basic token-a")
+			cachedAfterRefresh := performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","type":2}`, "Basic token-a")
+
+			if first.Answer.AnswerText != "旧答案" {
+				t.Fatalf("expected first response to use old answer, got %q", first.Answer.AnswerText)
+			}
+			if refreshed.Answer.AnswerText != "新答案" || cachedAfterRefresh.Answer.AnswerText != "新答案" {
+				t.Fatalf("expected skipCache response and later cache hit to use new answer, got refreshed=%q later=%q", refreshed.Answer.AnswerText, cachedAfterRefresh.Answer.AnswerText)
+			}
+			if upstreamCalls != 2 {
+				t.Fatalf("expected skipCache request to refresh cache with one new upstream call, got %d calls", upstreamCalls)
+			}
+		})
+}
+
 func performSearchRequest(t *testing.T, target string, body string, authorization string) model.SearchResponse {
 	t.Helper()
 

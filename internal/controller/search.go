@@ -294,10 +294,12 @@ func Search(c *gin.Context) {
 	cacheKey := ""
 	if cacheEligible {
 		cacheKey = buildSearchResultCacheKey(resolved.AccessTokenID, req)
-		if cached, ok := defaultSearchResultCache.get(cacheKey); ok {
-			result = cached
-			usedSearchResultCache = true
-			auditHitProvider = searchResultCacheProvider
+		if !shouldBypassSearchResultCache(req) {
+			if cached, ok := defaultSearchResultCache.get(cacheKey); ok {
+				result = cached
+				usedSearchResultCache = true
+				auditHitProvider = searchResultCacheProvider
+			}
 		}
 	}
 	logSearchRoutingDecision(c, query, resolved, aiEnabled)

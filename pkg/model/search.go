@@ -2,11 +2,12 @@ package model
 
 // SearchRequest 搜题的请求体
 type SearchRequest struct {
-	QID      string   `json:"qid"`
-	Plat     int      `json:"plat"`
-	Question string   `json:"question"`
-	Options  []string `json:"options"`
-	Type     int      `json:"type"`
+	QID       string   `json:"qid"`
+	Plat      int      `json:"plat"`
+	Question  string   `json:"question"`
+	Options   []string `json:"options"`
+	Type      int      `json:"type"`
+	SkipCache *bool    `json:"skipCache,omitempty"`
 
 	CourseName string `json:"courseName"`
 

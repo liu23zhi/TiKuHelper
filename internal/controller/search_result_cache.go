@@ -64,6 +64,10 @@ func buildSearchResultCacheKey(accessTokenID int32, req model.SearchRequest) str
 	return string(payload)
 }
 
+func shouldBypassSearchResultCache(req model.SearchRequest) bool {
+	return req.SkipCache != nil && *req.SkipCache
+}
+
 func (s *searchResultCache) get(key string) ([][]string, bool) {
 	now := s.now()
 
