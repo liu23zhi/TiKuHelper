@@ -71,10 +71,11 @@ func TestSetAPIRouterRegistersCurrentUserBindingRoutes(t *testing.T) {
 	SetAPIRouter(router)
 
 	expected := map[string]bool{
-		"POST /adapter-service/user/phone/sms-code": false,
-		"PUT /adapter-service/user/phone":           false,
-		"POST /adapter-service/user/wechat/bind":    false,
-		"DELETE /adapter-service/user/wechat":       false,
+		"POST /adapter-service/user/phone/sms-code":   false,
+		"PUT /adapter-service/user/phone":             false,
+		"POST /adapter-service/user/wechat/bind":      false,
+		"POST /adapter-service/user/wechat/bind-code": false,
+		"DELETE /adapter-service/user/wechat":         false,
 	}
 	for _, route := range router.Routes() {
 		key := route.Method + " " + route.Path

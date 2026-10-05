@@ -34,6 +34,10 @@ var bindCurrentUserWechatWithDB = func(bindToken string, userID int32) (entity.U
 	return service.BindWechatToUserWithDB(dao.User.UnderlyingDB(), nil, bindToken, userID)
 }
 
+var bindCurrentUserWechatByCodeWithDB = func(input service.WechatCodeBindInput) (entity.User, error) {
+	return service.BindWechatCodeToUserWithDB(dao.User.UnderlyingDB(), input.Client, input.Code, input.UserID)
+}
+
 var unbindCurrentUserWechatWithDB = func(userID int32) (entity.User, error) {
 	return service.UnbindWechatFromUserWithDB(dao.User.UnderlyingDB(), userID)
 }
@@ -490,6 +494,41 @@ func BindCurrentUserWechat(c *gin.Context) {
 		return
 	}
 	updated, err := bindCurrentUserWechatWithDB(strings.TrimSpace(payload.BindToken), currentUser.ID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, updated)
+}
+
+func BindCurrentUserWechatByCode(c *gin.Context) {
+	operator, ok := c.Get("user")
+	if !ok || operator == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "请重新登录"})
+		return
+	}
+	currentUser, ok := operator.(*entity.User)
+	if !ok || currentUser == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "请重新登录"})
+		return
+	}
+	var payload struct {
+		Code string `json:"code"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil || strings.TrimSpace(payload.Code) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
+		return
+	}
+	settings, err := loadWechatLoginSettings()
+	if err != nil || !settings.WechatLoginEnabled || !settings.WechatCodeLoginEnabled || strings.TrimSpace(settings.WechatAPIBaseURL) == "" || strings.TrimSpace(settings.WechatAPIBearerToken) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "微信登录未开启或配置未完成"})
+		return
+	}
+	updated, err := bindCurrentUserWechatByCodeWithDB(service.WechatCodeBindInput{
+		Client: buildWechatLoginClientFromSettings(settings),
+		Code:   strings.TrimSpace(payload.Code),
+		UserID: currentUser.ID,
+	})
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return

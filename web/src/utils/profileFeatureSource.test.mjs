@@ -14,6 +14,7 @@ async function readSource(relativePath) {
 
 test('Profile page displays account status, phone change, and wechat bind/unbind flows', async () => {
   const content = await readSource(path.join('pages', 'Profile', 'index.vue'))
+  const apiContent = await readSource(path.join('api', 'TikuComponentApi.js'))
 
   assert.match(content, /name: 'UserProfile'/)
   assert.match(content, /个人中心/)
@@ -22,10 +23,22 @@ test('Profile page displays account status, phone change, and wechat bind/unbind
   assert.match(content, /管理员尚未开启微信，当前无法绑定。/)
   assert.match(content, /phoneBoundAt/)
   assert.match(content, /wechatBoundAt/)
+  assert.match(content, /微信ID：\{\{ currentUser\.wechatId \}\}/)
+  assert.match(content, /wechat-binding-id--empty">未绑定/)
   assert.match(content, /sendUserPhoneChangeSMSCode/)
   assert.match(content, /updateCurrentUserPhone/)
   assert.match(content, /bindCurrentUserWechat/)
+  assert.match(content, /bindCurrentUserWechatByCode/)
   assert.match(content, /unbindCurrentUserWechat/)
+  assert.match(content, /wechatBindSubMode/)
+  assert.match(content, /wechatScanLoginEnabled/)
+  assert.match(content, /wechatCodeLoginEnabled/)
+  assert.match(content, /wechatCodeStaticQrcodeUrl/)
+  assert.match(content, /value="scan"/)
+  assert.match(content, /value="code"/)
+  assert.match(content, /submitWechatCodeBind/)
+  assert.match(apiContent, /export function bindCurrentUserWechatByCode/)
+  assert.match(apiContent, /url: `\/adapter-service\/user\/wechat\/bind-code`/)
 })
 
 test('Profile route and menu are available to both admins and regular users', async () => {

@@ -188,6 +188,14 @@ export function bindCurrentUserWechat(data) {
   })
 }
 
+export function bindCurrentUserWechatByCode(data) {
+  return request({
+    url: `/adapter-service/user/wechat/bind-code`,
+    method: 'post',
+    data
+  })
+}
+
 export function unbindCurrentUserWechat() {
   return request({
     url: `/adapter-service/user/wechat`,

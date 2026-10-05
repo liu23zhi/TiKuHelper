@@ -351,6 +351,44 @@ func TestBindWechatToUserWithDBBindsCurrentUserAndConsumesToken(t *testing.T) {
 	}
 }
 
+func TestBindWechatCodeToUserWithDBBindsCurrentUser(t *testing.T) {
+	db := newWechatLoginTestDB(t)
+	if err := db.Create(&entity.User{
+		ID:             43,
+		Username:       "profile-code-user",
+		Password:       "Abc12345!",
+		Role:           "user",
+		Status:         "enabled",
+		RegisterSource: "public",
+	}).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/wechat/user" || r.URL.Query().Get("code") != "104015" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"data":    "openid-profile-code",
+		})
+	}))
+	defer server.Close()
+
+	updated, err := BindWechatCodeToUserWithDB(
+		db,
+		WechatLoginClient{BaseURL: server.URL, Token: "token", Client: server.Client()},
+		"104015",
+		43,
+	)
+	if err != nil {
+		t.Fatalf("bind wechat by code to current user: %v", err)
+	}
+	if updated.WechatID == nil || *updated.WechatID != "openid-profile-code" || updated.WechatBoundAt == nil {
+		t.Fatalf("expected current user wechat binding, got %+v", updated)
+	}
+}
+
 func TestUnbindWechatFromUserWithDBClearsBinding(t *testing.T) {
 	db := newWechatLoginTestDB(t)
 	wechatID := "openid-unbind"

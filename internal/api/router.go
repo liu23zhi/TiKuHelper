@@ -54,6 +54,7 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.POST("/user/phone/sms-code", controller.Auth, controller.SendUserPhoneChangeSMSCode)
 	apiRouter.PUT("/user/phone", controller.Auth, controller.UpdateCurrentUserPhone)
 	apiRouter.POST("/user/wechat/bind", controller.Auth, controller.BindCurrentUserWechat)
+	apiRouter.POST("/user/wechat/bind-code", controller.Auth, controller.BindCurrentUserWechatByCode)
 	apiRouter.DELETE("/user/wechat", controller.Auth, controller.UnbindCurrentUserWechat)
 	apiRouter.GET("/user", controller.Auth, controller.UserList)                             // 自己创建的用户列表
 	apiRouter.POST("/user", controller.Auth, controller.CreateUser)                          // 创建用户

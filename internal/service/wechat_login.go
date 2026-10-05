@@ -53,6 +53,12 @@ type WechatCodeLoginInput struct {
 	RequestIP string
 }
 
+type WechatCodeBindInput struct {
+	Client WechatLoginClient
+	Code   string
+	UserID int32
+}
+
 type WechatLoginStatusResult struct {
 	Status    string `json:"status"`
 	JWT       string `json:"jwt,omitempty"`
@@ -342,6 +348,32 @@ func BindWechatToUserWithDB(db *gorm.DB, store *WechatBindTokenStore, bindToken 
 		return entity.User{}, err
 	}
 
+	user, err := bindWechatIDToUserWithDB(db, wechatID, userID, now)
+	if err != nil {
+		return entity.User{}, err
+	}
+	if _, err := store.Consume(bindToken, now); err != nil {
+		return entity.User{}, err
+	}
+	return user, nil
+}
+
+func BindWechatCodeToUserWithDB(db *gorm.DB, client WechatLoginClient, code string, userID int32) (entity.User, error) {
+	trimmedCode := strings.TrimSpace(code)
+	if trimmedCode == "" {
+		return entity.User{}, fmt.Errorf("微信验证码不能为空")
+	}
+	wechatID, err := FetchWechatUserIDByCode(client, trimmedCode)
+	if err != nil {
+		return entity.User{}, err
+	}
+	if strings.TrimSpace(wechatID) == "" {
+		return entity.User{}, fmt.Errorf("微信验证码无效")
+	}
+	return bindWechatIDToUserWithDB(db, wechatID, userID, time.Now())
+}
+
+func bindWechatIDToUserWithDB(db *gorm.DB, wechatID string, userID int32, now time.Time) (entity.User, error) {
 	var user entity.User
 	if err := db.Where("id = ?", userID).First(&user).Error; err != nil {
 		return entity.User{}, err
@@ -364,9 +396,6 @@ func BindWechatToUserWithDB(db *gorm.DB, store *WechatBindTokenStore, bindToken 
 		"wechat_id":       wechatID,
 		"wechat_bound_at": now,
 	}).Error; err != nil {
-		return entity.User{}, err
-	}
-	if _, err := store.Consume(bindToken, now); err != nil {
 		return entity.User{}, err
 	}
 	user.WechatID = &wechatID

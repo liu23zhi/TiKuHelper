@@ -1272,3 +1272,47 @@ func TestBindAndUnbindCurrentUserWechatUseAuthenticatedUser(t *testing.T) {
 		t.Fatalf("unexpected unbind user %d", unboundUserID)
 	}
 }
+
+func TestBindCurrentUserWechatByCodeUsesAuthenticatedUser(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	originalSettings := loadWechatLoginSettings
+	originalBind := bindCurrentUserWechatByCodeWithDB
+	defer func() {
+		loadWechatLoginSettings = originalSettings
+		bindCurrentUserWechatByCodeWithDB = originalBind
+	}()
+
+	loadWechatLoginSettings = func() (service.SystemSettingDetail, error) {
+		return service.SystemSettingDetail{
+			WechatLoginEnabled:     true,
+			WechatCodeLoginEnabled: true,
+			WechatAPIBaseURL:       "https://wechat.example.com",
+			WechatAPIBearerToken:   "token",
+		}, nil
+	}
+	var receivedInput service.WechatCodeBindInput
+	bindCurrentUserWechatByCodeWithDB = func(input service.WechatCodeBindInput) (entity.User, error) {
+		receivedInput = input
+		wechatID := "openid-profile-code"
+		return entity.User{ID: input.UserID, Username: "profile-user", WechatID: &wechatID}, nil
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Set("user", &entity.User{ID: 304, Username: "profile-user", Status: "enabled"})
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/wechat/bind-code", bytes.NewBufferString(`{"code":"104016"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	BindCurrentUserWechatByCode(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected bind status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	if receivedInput.UserID != 304 || receivedInput.Code != "104016" {
+		t.Fatalf("unexpected bind input user=%d code=%s", receivedInput.UserID, receivedInput.Code)
+	}
+	if receivedInput.Client.BaseURL != "https://wechat.example.com" || receivedInput.Client.Token != "token" {
+		t.Fatalf("unexpected client: %+v", receivedInput.Client)
+	}
+}
