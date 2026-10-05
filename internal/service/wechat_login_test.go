@@ -242,6 +242,56 @@ func TestCheckWechatLoginStatusWithDBReturnsBindTokenForUnboundUser(t *testing.T
 	}
 }
 
+func TestProbeWechatScanStatusDoesNotIssueJWTOrBindToken(t *testing.T) {
+	db := newWechatLoginTestDB(t)
+	wechatID := "openid-probe"
+	if err := db.Create(&entity.User{
+		ID:       70,
+		Username: "probe-user",
+		Password: "Abc12345!",
+		Status:   "enabled",
+		WechatID: &wechatID,
+	}).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	before := time.Now()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"data": map[string]any{
+				"status": "success",
+				"wechat_user": map[string]any{
+					"openid": wechatID,
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	result, err := ProbeWechatScanStatusWithDB(db, WechatScanProbeInput{
+		Client: WechatLoginClient{
+			BaseURL: server.URL,
+			Token:   "token",
+			Client:  server.Client(),
+		},
+		LoginToken: "probe-token",
+	})
+	if err != nil {
+		t.Fatalf("probe status: %v", err)
+	}
+	if result.Status != WechatLoginStatusSuccess {
+		t.Fatalf("expected success, got %+v", result)
+	}
+
+	var stored entity.User
+	if err := db.Where("id = ?", 70).First(&stored).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	if stored.LastLoginAt != nil && stored.LastLoginAt.After(before) {
+		t.Fatal("probe must not update login metadata")
+	}
+}
+
 func TestLoginWechatByCodeWithDBReturnsJWTForBoundUser(t *testing.T) {
 	db := newWechatLoginTestDB(t)
 	wechatID := "openid-code-bound"

@@ -20,8 +20,10 @@ import (
 
 const (
 	WechatLoginStatusPending  = "pending"
+	WechatLoginStatusScanned  = "scanned"
 	WechatLoginStatusSuccess  = "success"
 	WechatLoginStatusNeedBind = "need_bind"
+	WechatLoginStatusExpired  = "expired"
 
 	wechatBindTokenTTL = 5 * time.Minute
 	maxWechatQRCodeTTL = 180 * time.Second
@@ -60,6 +62,21 @@ type WechatCodeBindInput struct {
 	Client WechatLoginClient
 	Code   string
 	UserID int32
+}
+
+type WechatScanProbeInput struct {
+	Client     WechatLoginClient
+	LoginToken string
+}
+
+type WechatScanProbeResult struct {
+	Status string
+}
+
+type wechatUpstreamStatus struct {
+	Status   string
+	WechatID string
+	Message  string
 }
 
 type WechatLoginStatusResult struct {
@@ -260,28 +277,71 @@ func CheckWechatLoginStatusWithDB(db *gorm.DB, input WechatLoginStatusInput) (We
 	if _, err := sessionStore.Resolve(input.LoginToken, time.Now()); err != nil {
 		return WechatLoginStatusResult{}, err
 	}
-	httpClient := resolveWechatHTTPClient(input.Client)
-	apiURL, err := joinWechatURL(input.Client.BaseURL, "/api/wechat/login_status")
+	upstream, err := fetchWechatUpstreamStatus(input.Client, input.LoginToken)
 	if err != nil {
 		return WechatLoginStatusResult{}, err
+	}
+	switch upstream.Status {
+	case WechatLoginStatusPending:
+		return WechatLoginStatusResult{Status: WechatLoginStatusPending, Message: upstream.Message}, nil
+	case WechatLoginStatusScanned:
+		return WechatLoginStatusResult{Status: WechatLoginStatusScanned}, nil
+	case WechatLoginStatusSuccess:
+		return resolveWechatLoginResultByID(db, input.Store, upstream.WechatID, input.RequestIP)
+	default:
+		return WechatLoginStatusResult{Status: WechatLoginStatusPending}, nil
+	}
+}
+
+func ProbeWechatScanStatusWithDB(db *gorm.DB, input WechatScanProbeInput) (WechatScanProbeResult, error) {
+	upstream, err := fetchWechatUpstreamStatus(input.Client, input.LoginToken)
+	if err != nil {
+		return WechatScanProbeResult{}, err
+	}
+	if upstream.Status == WechatLoginStatusPending || upstream.Status == WechatLoginStatusScanned {
+		return WechatScanProbeResult{Status: upstream.Status}, nil
+	}
+	if upstream.Status != WechatLoginStatusSuccess {
+		return WechatScanProbeResult{Status: WechatLoginStatusPending}, nil
+	}
+
+	var user entity.User
+	err = db.Where("wechat_id = ?", upstream.WechatID).First(&user).Error
+	if err == nil {
+		if !isServiceUserEnabled(&user) {
+			return WechatScanProbeResult{}, fmt.Errorf("用户已被禁用")
+		}
+		return WechatScanProbeResult{Status: WechatLoginStatusSuccess}, nil
+	}
+	if err != gorm.ErrRecordNotFound {
+		return WechatScanProbeResult{}, err
+	}
+	return WechatScanProbeResult{Status: WechatLoginStatusNeedBind}, nil
+}
+
+func fetchWechatUpstreamStatus(client WechatLoginClient, loginToken string) (wechatUpstreamStatus, error) {
+	httpClient := resolveWechatHTTPClient(client)
+	apiURL, err := joinWechatURL(client.BaseURL, "/api/wechat/login_status")
+	if err != nil {
+		return wechatUpstreamStatus{}, err
 	}
 	parsed, err := url.Parse(apiURL)
 	if err != nil {
-		return WechatLoginStatusResult{}, err
+		return wechatUpstreamStatus{}, err
 	}
 	query := parsed.Query()
-	query.Set("login_token", strings.TrimSpace(input.LoginToken))
+	query.Set("login_token", strings.TrimSpace(loginToken))
 	parsed.RawQuery = query.Encode()
 
 	req, err := http.NewRequest(http.MethodGet, parsed.String(), nil)
 	if err != nil {
-		return WechatLoginStatusResult{}, err
+		return wechatUpstreamStatus{}, err
 	}
-	applyWechatBearer(req, input.Client.Token)
+	applyWechatBearer(req, client.Token)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return WechatLoginStatusResult{}, fmt.Errorf("微信登录状态查询失败")
+		return wechatUpstreamStatus{}, fmt.Errorf("微信登录状态查询失败")
 	}
 	defer resp.Body.Close()
 	var payload struct {
@@ -295,20 +355,32 @@ func CheckWechatLoginStatusWithDB(db *gorm.DB, input WechatLoginStatusInput) (We
 		Message string `json:"message"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 2*1024*1024)).Decode(&payload); err != nil {
-		return WechatLoginStatusResult{}, fmt.Errorf("微信登录状态响应解析失败")
+		return wechatUpstreamStatus{}, fmt.Errorf("微信登录状态响应解析失败")
 	}
 	if !payload.Success {
-		return WechatLoginStatusResult{Status: WechatLoginStatusPending, Message: strings.TrimSpace(payload.Message)}, nil
+		return wechatUpstreamStatus{Status: WechatLoginStatusPending, Message: strings.TrimSpace(payload.Message)}, nil
 	}
-	if strings.TrimSpace(payload.Data.Status) != WechatLoginStatusSuccess {
-		return WechatLoginStatusResult{Status: WechatLoginStatusPending}, nil
-	}
+	status := normalizeWechatUpstreamStatus(payload.Data.Status)
 	wechatID := strings.TrimSpace(payload.Data.WechatUser.OpenID)
-	if wechatID == "" {
-		return WechatLoginStatusResult{}, fmt.Errorf("微信用户 ID 为空")
+	if status == WechatLoginStatusSuccess && wechatID == "" {
+		return wechatUpstreamStatus{}, fmt.Errorf("微信用户 ID 为空")
 	}
+	return wechatUpstreamStatus{
+		Status:   status,
+		WechatID: wechatID,
+		Message:  strings.TrimSpace(payload.Message),
+	}, nil
+}
 
-	return resolveWechatLoginResultByID(db, input.Store, wechatID, input.RequestIP)
+func normalizeWechatUpstreamStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case WechatLoginStatusSuccess, "completed", "authorized":
+		return WechatLoginStatusSuccess
+	case WechatLoginStatusScanned, "scan_success", "waiting_confirm", "confirmed":
+		return WechatLoginStatusScanned
+	default:
+		return WechatLoginStatusPending
+	}
 }
 
 func LoginWechatByCodeWithDB(db *gorm.DB, input WechatCodeLoginInput) (WechatLoginStatusResult, error) {
