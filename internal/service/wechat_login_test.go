@@ -86,8 +86,67 @@ func TestCreateWechatLoginQRCodeWithDBDownloadsQRCodeAndSendsBearerToken(t *test
 	if !strings.HasPrefix(result.QRCodeImageData, "data:image/png;base64,") {
 		t.Fatalf("expected qrcode image data, got %s", result.QRCodeImageData)
 	}
-	if result.ExpireSeconds != 600 {
-		t.Fatalf("expected expire seconds 600, got %d", result.ExpireSeconds)
+	if result.ExpireSeconds != 180 {
+		t.Fatalf("expected expire seconds 180, got %d", result.ExpireSeconds)
+	}
+}
+
+func TestCreateWechatLoginQRCodeCapsTTLAt180SecondsAndStoresSession(t *testing.T) {
+	db := newWechatLoginTestDB(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/wechat/create_login_qrcode":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"data": map[string]any{
+					"scene_id":       "scene-ttl",
+					"qrcode_url":     "http://" + r.Host + "/qr.png",
+					"login_token":    "login-token-ttl",
+					"expire_seconds": 600,
+				},
+			})
+		case "/qr.png":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(tinyPNGBytes(t))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	store := NewWechatLoginSessionStore()
+	result, err := CreateWechatLoginQRCodeWithStore(db, WechatLoginClient{
+		BaseURL: server.URL,
+		Token:   "token",
+		Client:  server.Client(),
+	}, store)
+	if err != nil {
+		t.Fatalf("create qrcode: %v", err)
+	}
+	if result.ExpireSeconds != 180 {
+		t.Fatalf("expected 180 seconds, got %d", result.ExpireSeconds)
+	}
+	if result.ExpiresAtUnix <= time.Now().UnixMilli() {
+		t.Fatalf("expected future expiry, got %d", result.ExpiresAtUnix)
+	}
+	if _, err := store.Resolve(result.LoginToken, time.Now()); err != nil {
+		t.Fatalf("expected stored qr session: %v", err)
+	}
+}
+
+func TestCheckWechatLoginStatusRejectsExpiredQRSession(t *testing.T) {
+	db := newWechatLoginTestDB(t)
+	store := NewWechatLoginSessionStore()
+	store.Create("expired-token", time.Now().Add(-time.Minute), time.Now().Add(-time.Second))
+
+	_, err := CheckWechatLoginStatusWithDB(db, WechatLoginStatusInput{
+		Client:       WechatLoginClient{BaseURL: "https://wechat.example.com", Token: "token"},
+		SessionStore: store,
+		LoginToken:   "expired-token",
+		RequestIP:    "127.0.0.1",
+	})
+	if err == nil || !strings.Contains(err.Error(), "二维码已过期") {
+		t.Fatalf("expected expired qr error, got %v", err)
 	}
 }
 
@@ -122,10 +181,13 @@ func TestCheckWechatLoginStatusWithDBReturnsJWTForBoundUser(t *testing.T) {
 	}))
 	defer server.Close()
 
+	sessionStore := NewWechatLoginSessionStore()
+	sessionStore.Create("login-token-1", time.Now(), time.Now().Add(time.Minute))
 	result, err := CheckWechatLoginStatusWithDB(db, WechatLoginStatusInput{
-		Client:     WechatLoginClient{BaseURL: server.URL, Token: "token", Client: server.Client()},
-		LoginToken: "login-token-1",
-		RequestIP:  "127.0.0.1",
+		Client:       WechatLoginClient{BaseURL: server.URL, Token: "token", Client: server.Client()},
+		SessionStore: sessionStore,
+		LoginToken:   "login-token-1",
+		RequestIP:    "127.0.0.1",
 	})
 	if err != nil {
 		t.Fatalf("check status: %v", err)
@@ -161,10 +223,13 @@ func TestCheckWechatLoginStatusWithDBReturnsBindTokenForUnboundUser(t *testing.T
 	}))
 	defer server.Close()
 
+	sessionStore := NewWechatLoginSessionStore()
+	sessionStore.Create("login-token-2", time.Now(), time.Now().Add(time.Minute))
 	result, err := CheckWechatLoginStatusWithDB(db, WechatLoginStatusInput{
-		Client:     WechatLoginClient{BaseURL: server.URL, Token: "token", Client: server.Client()},
-		LoginToken: "login-token-2",
-		RequestIP:  "127.0.0.1",
+		Client:       WechatLoginClient{BaseURL: server.URL, Token: "token", Client: server.Client()},
+		SessionStore: sessionStore,
+		LoginToken:   "login-token-2",
+		RequestIP:    "127.0.0.1",
 	})
 	if err != nil {
 		t.Fatalf("check status: %v", err)

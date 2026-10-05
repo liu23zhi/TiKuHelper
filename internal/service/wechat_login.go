@@ -24,6 +24,7 @@ const (
 	WechatLoginStatusNeedBind = "need_bind"
 
 	wechatBindTokenTTL = 5 * time.Minute
+	maxWechatQRCodeTTL = 180 * time.Second
 )
 
 type WechatLoginClient struct {
@@ -37,13 +38,15 @@ type WechatQRCodeResult struct {
 	LoginToken      string `json:"loginToken"`
 	QRCodeImageData string `json:"qrcodeImageData"`
 	ExpireSeconds   int    `json:"expireSeconds"`
+	ExpiresAtUnix   int64  `json:"expiresAtUnix"`
 }
 
 type WechatLoginStatusInput struct {
-	Client     WechatLoginClient
-	Store      *WechatBindTokenStore
-	LoginToken string
-	RequestIP  string
+	Client       WechatLoginClient
+	Store        *WechatBindTokenStore
+	SessionStore *WechatLoginSessionStore
+	LoginToken   string
+	RequestIP    string
 }
 
 type WechatCodeLoginInput struct {
@@ -83,6 +86,16 @@ type WechatBindTokenStore struct {
 	tokens map[string]wechatBindTokenEntry
 }
 
+type WechatLoginSession struct {
+	CreatedAt time.Time
+	ExpiresAt time.Time
+}
+
+type WechatLoginSessionStore struct {
+	mu       sync.Mutex
+	sessions map[string]WechatLoginSession
+}
+
 type wechatBindTokenEntry struct {
 	WechatID   string
 	ExpiresAt  time.Time
@@ -90,6 +103,45 @@ type wechatBindTokenEntry struct {
 }
 
 var defaultWechatBindTokenStore = NewWechatBindTokenStore()
+var DefaultWechatLoginSessionStore = NewWechatLoginSessionStore()
+
+func NewWechatLoginSessionStore() *WechatLoginSessionStore {
+	return &WechatLoginSessionStore{sessions: map[string]WechatLoginSession{}}
+}
+
+func (s *WechatLoginSessionStore) Create(loginToken string, now time.Time, expiresAt time.Time) {
+	if s == nil {
+		s = DefaultWechatLoginSessionStore
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sessions[strings.TrimSpace(loginToken)] = WechatLoginSession{
+		CreatedAt: now,
+		ExpiresAt: expiresAt,
+	}
+}
+
+func (s *WechatLoginSessionStore) Resolve(loginToken string, now time.Time) (WechatLoginSession, error) {
+	if s == nil {
+		s = DefaultWechatLoginSessionStore
+	}
+	token := strings.TrimSpace(loginToken)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, ok := s.sessions[token]
+	if !ok || token == "" || !now.Before(session.ExpiresAt) {
+		return WechatLoginSession{}, fmt.Errorf("微信二维码已过期，请刷新")
+	}
+	return session, nil
+}
+
+func normalizeWechatQRCodeTTL(expireSeconds int) time.Duration {
+	ttl := time.Duration(expireSeconds) * time.Second
+	if ttl <= 0 || ttl > maxWechatQRCodeTTL {
+		return maxWechatQRCodeTTL
+	}
+	return ttl
+}
 
 func NewWechatBindTokenStore() *WechatBindTokenStore {
 	return &WechatBindTokenStore{tokens: map[string]wechatBindTokenEntry{}}
@@ -141,6 +193,10 @@ func (s *WechatBindTokenStore) Resolve(token string, now time.Time) (string, err
 }
 
 func CreateWechatLoginQRCodeWithDB(db *gorm.DB, client WechatLoginClient) (WechatQRCodeResult, error) {
+	return CreateWechatLoginQRCodeWithStore(db, client, nil)
+}
+
+func CreateWechatLoginQRCodeWithStore(db *gorm.DB, client WechatLoginClient, store *WechatLoginSessionStore) (WechatQRCodeResult, error) {
 	_ = db
 	httpClient := resolveWechatHTTPClient(client)
 	apiURL, err := joinWechatURL(client.BaseURL, "/api/wechat/create_login_qrcode")
@@ -179,19 +235,31 @@ func CreateWechatLoginQRCodeWithDB(db *gorm.DB, client WechatLoginClient) (Wecha
 	if err != nil {
 		return WechatQRCodeResult{}, err
 	}
-	expireSeconds := payload.Data.ExpireSeconds
-	if expireSeconds <= 0 {
-		expireSeconds = 180
+	now := time.Now()
+	ttl := normalizeWechatQRCodeTTL(payload.Data.ExpireSeconds)
+	expiresAt := now.Add(ttl)
+	loginToken := strings.TrimSpace(payload.Data.LoginToken)
+	if store == nil {
+		store = DefaultWechatLoginSessionStore
 	}
+	store.Create(loginToken, now, expiresAt)
 	return WechatQRCodeResult{
 		SceneID:         strings.TrimSpace(payload.Data.SceneID),
-		LoginToken:      strings.TrimSpace(payload.Data.LoginToken),
+		LoginToken:      loginToken,
 		QRCodeImageData: imageData,
-		ExpireSeconds:   expireSeconds,
+		ExpireSeconds:   int(ttl.Seconds()),
+		ExpiresAtUnix:   expiresAt.UnixMilli(),
 	}, nil
 }
 
 func CheckWechatLoginStatusWithDB(db *gorm.DB, input WechatLoginStatusInput) (WechatLoginStatusResult, error) {
+	sessionStore := input.SessionStore
+	if sessionStore == nil {
+		sessionStore = DefaultWechatLoginSessionStore
+	}
+	if _, err := sessionStore.Resolve(input.LoginToken, time.Now()); err != nil {
+		return WechatLoginStatusResult{}, err
+	}
 	httpClient := resolveWechatHTTPClient(input.Client)
 	apiURL, err := joinWechatURL(input.Client.BaseURL, "/api/wechat/login_status")
 	if err != nil {
