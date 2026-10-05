@@ -192,31 +192,8 @@ func TestSetAPIRouterHandlesSearchPreflightWithCORSHeaders(t *testing.T) {
 	}
 }
 
-func TestSetAPIRouterRejectsUnlistedCrossOriginPreflight(t *testing.T) {
+func TestSetAPIRouterAllowsAnyCrossOriginPreflight(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	t.Setenv("CORS_ALLOWED_ORIGINS", "https://allowed.example.com")
-
-	router := gin.New()
-	SetAPIRouter(router)
-
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodOptions, "http://adapter.example.com/adapter-service/search", nil)
-	request.Header.Set("Origin", "https://attacker.example.com")
-	request.Header.Set("Access-Control-Request-Method", http.MethodPost)
-
-	router.ServeHTTP(recorder, request)
-
-	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("expected status 403 for unlisted origin, got %d", recorder.Code)
-	}
-	if recorder.Header().Get("Access-Control-Allow-Origin") != "" {
-		t.Fatalf("expected no allow-origin header, got %q", recorder.Header().Get("Access-Control-Allow-Origin"))
-	}
-}
-
-func TestSetAPIRouterAllowsAnyOriginWhenCORSAllowlistIsUnset(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	t.Setenv("CORS_ALLOWED_ORIGINS", "")
 
 	router := gin.New()
 	SetAPIRouter(router)
@@ -230,51 +207,9 @@ func TestSetAPIRouterAllowsAnyOriginWhenCORSAllowlistIsUnset(t *testing.T) {
 	router.ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusNoContent {
-		t.Fatalf("expected status 204 when CORS allowlist is unset, got %d with body %s", recorder.Code, recorder.Body.String())
+		t.Fatalf("expected status 204 for arbitrary origin, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
 	if recorder.Header().Get("Access-Control-Allow-Origin") != "https://any-origin.example.com" {
 		t.Fatalf("expected allow-origin header to echo request origin, got %q", recorder.Header().Get("Access-Control-Allow-Origin"))
-	}
-}
-
-func TestSetAPIRouterAcceptsWildcardCORSPatternForChaoxing(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	t.Setenv("CORS_ALLOWED_ORIGINS", "https://*.chaoxing.com")
-
-	router := gin.New()
-	SetAPIRouter(router)
-
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodOptions, "https://adapter.example.com/adapter-service/search", nil)
-	request.Header.Set("Origin", "https://mooc1.chaoxing.com")
-	request.Header.Set("Access-Control-Request-Method", http.MethodPost)
-	request.Header.Set("Access-Control-Request-Headers", "content-type,authorization")
-
-	router.ServeHTTP(recorder, request)
-
-	if recorder.Code != http.StatusNoContent {
-		t.Fatalf("expected status 204 for wildcard preflight, got %d with body %s", recorder.Code, recorder.Body.String())
-	}
-	if recorder.Header().Get("Access-Control-Allow-Origin") != "https://mooc1.chaoxing.com" {
-		t.Fatalf("expected allow-origin header to echo request origin, got %q", recorder.Header().Get("Access-Control-Allow-Origin"))
-	}
-}
-
-func TestSetAPIRouterRejectsWildcardLookalikeOrigin(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	t.Setenv("CORS_ALLOWED_ORIGINS", "https://*.chaoxing.com")
-
-	router := gin.New()
-	SetAPIRouter(router)
-
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodOptions, "https://adapter.example.com/adapter-service/search", nil)
-	request.Header.Set("Origin", "https://chaoxing.com.attacker.example")
-	request.Header.Set("Access-Control-Request-Method", http.MethodPost)
-
-	router.ServeHTTP(recorder, request)
-
-	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("expected status 403 for lookalike origin, got %d", recorder.Code)
 	}
 }

@@ -18,7 +18,7 @@ limit:
 export JWT_SECRET="使用密码管理器生成的至少32字节随机值"
 ```
 
-`TRUSTED_PROXIES` 为空时信任所有代理转发头，设置后仅信任逗号分隔的代理 IP/CIDR；跨域部署可通过 `CORS_ALLOWED_ORIGINS` 设置逗号分隔的来源白名单，未设置时默认允许所有来源。接入超星学习助手时推荐设置为 `https://*.chaoxing.com`，其中通配符只匹配对应域名的子域名。
+`TRUSTED_PROXIES` 为空时信任所有代理转发头，设置后仅信任逗号分隔的代理 IP/CIDR。
 
 ### 数据库配置
 您可以对您的数据库配置，默认使用sqlite3，您可以指定mysql为您的数据库。
