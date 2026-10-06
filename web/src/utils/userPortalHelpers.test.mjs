@@ -124,11 +124,19 @@ test('billing record fee helpers render per-provider and total charges', () => {
   assert.deepEqual(buildBillingRecordFeeDetails(record), record.feeDetails);
 
   const html = buildBillingRecordFeeDetailHtml(record);
+  assert.match(html, /class="billing-fee-detail"/);
+  assert.match(html, /class="billing-fee-card billing-fee-card--question"/);
+  assert.match(html, /class="billing-fee-card billing-fee-card--cost"/);
+  assert.match(html, /class="billing-fee-section-title"/);
+  assert.match(html, />题目</);
+  assert.match(html, />费用详情</);
   assert.match(html, /搜索答案，题目：混合题目/);
   assert.match(html, /Icodef 题库/);
   assert.match(html, /-¥ 1\.25/);
   assert.match(html, /AI 搜索/);
   assert.match(html, /-¥ 0\.75/);
+  assert.match(html, /class="billing-fee-item"/);
+  assert.match(html, /class="billing-fee-total"/);
   assert.match(html, /合计/);
   assert.match(html, /-¥ 2\.00/);
 });

@@ -303,12 +303,15 @@ export default defineComponent({
     },
     handleShowFeeDetail(record) {
       Swal.fire({
-        title: '费用详情',
+        title: '账单详情',
         html: buildBillingRecordFeeDetailHtml(record),
-        width: 520,
+        width: 560,
         confirmButtonText: '关闭',
         heightAuto: false,
         scrollbarPadding: false,
+        customClass: {
+          popup: 'billing-fee-popup',
+        },
       })
     },
     formatAmount(value) {
@@ -388,6 +391,97 @@ export default defineComponent({
 
 .amount-expense {
   color: #dc2626;
+  font-weight: 600;
+}
+
+:global(.billing-fee-popup) {
+  border-radius: 22px;
+}
+
+:global(.billing-fee-detail) {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  text-align: left;
+}
+
+:global(.billing-fee-card) {
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: 0 10px 28px rgb(15 23 42 / 8%);
+}
+
+:global(.billing-fee-card--question) {
+  background: linear-gradient(135deg, #f8fafc, #eef2ff);
+}
+
+:global(.billing-fee-card--cost) {
+  background: #fff;
+}
+
+:global(.billing-fee-section-title) {
+  margin-bottom: 10px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+:global(.billing-fee-question) {
+  color: #0f172a;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+:global(.billing-fee-list) {
+  display: grid;
+  gap: 10px;
+}
+
+:global(.billing-fee-item) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 12px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+:global(.billing-fee-provider) {
+  color: #334155;
+}
+
+:global(.billing-fee-amount) {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+:global(.billing-fee-amount--income) {
+  color: #16a34a;
+}
+
+:global(.billing-fee-amount--expense) {
+  color: #dc2626;
+}
+
+:global(.billing-fee-total) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid #bfdbfe;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #eff6ff, #f8fafc);
+  color: #1f2937;
+  font-size: 16px;
   font-weight: 600;
 }
 </style>

@@ -201,9 +201,11 @@ export function buildBillingRecordFeeDetailHtml(record) {
   const direction = String(record?.direction || '').trim()
   const subject = buildBillingRecordSubjectText(record)
   const rows = details.map((item) => `
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:24px;padding:10px 0;border-bottom:1px solid #e5e7eb;">
-      <span style="color:#334155;">${escapeHtmlText(item.providerLabel)}</span>
-      <strong style="white-space:nowrap;color:${direction === 'income' ? '#16a34a' : '#dc2626'};">${escapeHtmlText(buildBillingRecordAmountText({ amount: item.amount, direction }))}</strong>
+    <div class="billing-fee-item">
+      <span class="billing-fee-provider">${escapeHtmlText(item.providerLabel)}</span>
+      <strong class="billing-fee-amount billing-fee-amount--${direction === 'income' ? 'income' : 'expense'}">
+        ${escapeHtmlText(buildBillingRecordAmountText({ amount: item.amount, direction }))}
+      </strong>
     </div>
   `).join('')
   const totalAmount = Number(record?.amount || 0)
@@ -213,13 +215,21 @@ export function buildBillingRecordFeeDetailHtml(record) {
   })
 
   return `
-    <div style="text-align:left;">
-      <div style="margin-bottom:12px;color:#475569;line-height:1.6;">${escapeHtmlText(subject)}</div>
-      ${rows}
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:24px;padding-top:14px;font-size:16px;">
-        <span style="font-weight:600;color:#1f2937;">合计</span>
-        <strong style="white-space:nowrap;color:${direction === 'income' ? '#16a34a' : '#dc2626'};">${escapeHtmlText(totalText)}</strong>
-      </div>
+    <div class="billing-fee-detail">
+      <section class="billing-fee-card billing-fee-card--question">
+        <div class="billing-fee-section-title">题目</div>
+        <div class="billing-fee-question">${escapeHtmlText(subject)}</div>
+      </section>
+      <section class="billing-fee-card billing-fee-card--cost">
+        <div class="billing-fee-section-title">费用详情</div>
+        <div class="billing-fee-list">${rows}</div>
+        <div class="billing-fee-total">
+          <span>合计</span>
+          <strong class="billing-fee-amount billing-fee-amount--${direction === 'income' ? 'income' : 'expense'}">
+            ${escapeHtmlText(totalText)}
+          </strong>
+        </div>
+      </section>
     </div>
   `
 }

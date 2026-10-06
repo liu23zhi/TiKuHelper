@@ -180,6 +180,9 @@ test('Billing record list opens a SweetAlert fee breakdown with provider costs',
   assert.match(content, /Swal\.fire/);
   assert.match(content, /buildBillingRecordFeeDetailHtml/);
   assert.match(content, /handleShowFeeDetail/);
+  assert.match(content, /billing-fee-card/);
+  assert.match(content, /billing-fee-item/);
+  assert.match(content, /billing-fee-total/);
 });
 
 test('Personal billing flow does not render the owner username column', async () => {
