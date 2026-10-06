@@ -401,15 +401,102 @@ export default defineComponent({
         message.warning('当前令牌为空，无法复制')
         return
       }
-      if (navigator?.clipboard?.writeText) {
-        navigator.clipboard.writeText(rawValue).then(() => {
+      this.copyTokenText(rawValue).then((copied) => {
+        if (copied) {
           message.success('访问令牌已复制')
-        }).catch(() => {
-          message.error('复制访问令牌失败')
-        })
-        return
+          return
+        }
+        message.error('复制访问令牌失败，请手动复制')
+      })
+    },
+    async copyTokenText(rawValue) {
+      const value = String(rawValue || '').trim()
+      if (!value) {
+        return false
       }
-      message.warning('当前浏览器不支持直接复制，请手动复制')
+      if (navigator?.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(value)
+          return true
+        } catch (error) {
+          // Fall through to the legacy copy path for non-secure or restricted contexts.
+        }
+      }
+
+      const textarea = document.createElement('textarea')
+      textarea.value = value
+      textarea.setAttribute('readonly', '')
+      textarea.style.position = 'fixed'
+      textarea.style.top = '-9999px'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      textarea.setSelectionRange(0, value.length)
+
+      try {
+        return document.execCommand('copy')
+      } catch (error) {
+        return false
+      } finally {
+        document.body.removeChild(textarea)
+      }
+    },
+    showCreatedTokenDialog(plainToken) {
+      return Swal.fire({
+        icon: 'success',
+        title: '令牌创建成功',
+        html: `
+          <div class="token-created-dialog">
+            <div class="token-created-dialog__notice">
+              <span class="token-created-dialog__notice-mark">!</span>
+              <span>请妥善保存访问令牌，避免泄露。</span>
+            </div>
+            <div class="token-created-dialog__field">
+              <div class="token-created-dialog__label">访问令牌</div>
+              <code class="token-created-dialog__value" data-token-value></code>
+            </div>
+          </div>
+        `,
+        showDenyButton: true,
+        confirmButtonText: '我已保存',
+        denyButtonText: '复制令牌',
+        reverseButtons: true,
+        buttonsStyling: false,
+        allowOutsideClick: false,
+        focusConfirm: false,
+        heightAuto: false,
+        scrollbarPadding: false,
+        customClass: {
+          popup: 'token-created-popup',
+          title: 'token-created-popup__title',
+          htmlContainer: 'token-created-popup__content',
+          actions: 'token-created-popup__actions',
+          confirmButton: 'token-created-popup__confirm',
+          denyButton: 'token-created-popup__copy',
+        },
+        didOpen: () => {
+          const tokenElement = Swal.getHtmlContainer()?.querySelector('[data-token-value]')
+          if (tokenElement) {
+            tokenElement.textContent = plainToken
+          }
+        },
+        preDeny: async () => {
+          const copied = await this.copyTokenText(plainToken)
+          const denyButton = Swal.getDenyButton()
+          if (copied) {
+            if (denyButton) {
+              denyButton.textContent = '已复制'
+            }
+            Swal.showValidationMessage('已复制到剪贴板，请妥善保存')
+          } else {
+            if (denyButton) {
+              denyButton.textContent = '重新复制'
+            }
+            Swal.showValidationMessage('复制失败，请选中令牌后手动复制')
+          }
+          return false
+        },
+      })
     },
     formatDateTime(value) {
       if (!value) {
@@ -489,14 +576,7 @@ export default defineComponent({
             message.success('创建令牌成功')
             const plainToken = String(res?.data?.token || '').trim()
             if (plainToken) {
-              Swal.fire({
-                icon: 'info',
-                title: '请立即保存访问令牌',
-                text: plainToken,
-                confirmButtonText: '我已保存',
-                heightAuto: false,
-                scrollbarPadding: false,
-              })
+              this.showCreatedTokenDialog(plainToken)
             }
           }
           this.handleLoad()
@@ -610,5 +690,157 @@ export default defineComponent({
 .token-toggle-button {
   flex: 0 0 auto;
   border-radius: 999px;
+}
+</style>
+
+<style>
+.token-created-popup {
+  width: min(34rem, calc(100vw - 2rem));
+  padding: 28px 28px 24px;
+  border-radius: 24px;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.2);
+}
+
+.token-created-popup__title {
+  color: #172033;
+  font-size: 23px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.token-created-popup__content {
+  margin-top: 16px;
+}
+
+.token-created-dialog {
+  color: #334155;
+  text-align: left;
+}
+
+.token-created-dialog__notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid #fde68a;
+  border-radius: 14px;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.token-created-dialog__notice-mark {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: #f59e0b;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.token-created-dialog__field {
+  padding: 14px;
+  border: 1px solid #dbe4ee;
+  border-radius: 16px;
+  background: #f8fafc;
+}
+
+.token-created-dialog__label {
+  margin-bottom: 8px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.token-created-dialog__value {
+  display: block;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 14px;
+  line-height: 1.7;
+  text-align: left;
+  word-break: break-all;
+  user-select: all;
+}
+
+.token-created-popup__actions {
+  width: 100%;
+  gap: 10px;
+  margin-top: 20px;
+}
+
+.token-created-popup__copy,
+.token-created-popup__confirm {
+  min-width: 126px;
+  height: 42px;
+  padding: 0 20px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+  transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.token-created-popup__copy {
+  border: 1px solid #1677ff;
+  background: #1677ff;
+  color: #ffffff;
+  box-shadow: 0 8px 20px rgba(22, 119, 255, 0.24);
+}
+
+.token-created-popup__copy:hover {
+  border-color: #0958d9;
+  background: #0958d9;
+  box-shadow: 0 10px 24px rgba(22, 119, 255, 0.3);
+  transform: translateY(-1px);
+}
+
+.token-created-popup__confirm {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #475569;
+}
+
+.token-created-popup__confirm:hover {
+  border-color: #94a3b8;
+  background: #f8fafc;
+  color: #1e293b;
+}
+
+.token-created-popup__copy:focus-visible,
+.token-created-popup__confirm:focus-visible {
+  outline: 3px solid rgba(22, 119, 255, 0.2);
+  outline-offset: 2px;
+}
+
+@media (max-width: 575px) {
+  .token-created-popup {
+    width: calc(100vw - 24px);
+    padding: 24px 18px 18px;
+    border-radius: 20px;
+  }
+
+  .token-created-popup__actions {
+    flex-wrap: nowrap;
+  }
+
+  .token-created-popup__copy,
+  .token-created-popup__confirm {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 0 12px;
+  }
 }
 </style>
