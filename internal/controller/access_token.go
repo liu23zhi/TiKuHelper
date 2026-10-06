@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -11,7 +12,10 @@ import (
 	"github.com/itihey/tikuAdapter/internal/service"
 )
 
-var listAccessTokens = func(user entity.User) ([]entity.AccessToken, error) {
+var listAccessTokens = func(user entity.User, includeAll bool) ([]service.AccessTokenListItem, error) {
+	if includeAll {
+		return service.ListAllAccessTokensWithDB(manager.GetManager().GetDB(), user)
+	}
 	return service.ListAccessTokensWithDB(manager.GetManager().GetDB(), user)
 }
 
@@ -33,7 +37,8 @@ func AccessTokenList(c *gin.Context) {
 		return
 	}
 
-	tokens, err := listAccessTokens(operator)
+	includeAll := strings.EqualFold(strings.TrimSpace(c.Query("scope")), "all") && isAdminUser(&operator)
+	tokens, err := listAccessTokens(operator, includeAll)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"message": "获取访问令牌失败",

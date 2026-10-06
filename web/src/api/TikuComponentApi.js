@@ -360,10 +360,11 @@ export function deleteAIModelArchitecture(data) {
   })
 }
 
-export function getAccessTokens() {
+export function getAccessTokens(params = {}) {
   return request({
     url: `/adapter-service/access-tokens`,
-    method: 'get'
+    method: 'get',
+    params
   })
 }
 

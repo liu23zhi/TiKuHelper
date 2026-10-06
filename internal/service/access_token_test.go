@@ -99,12 +99,16 @@ func TestCreateAccessTokenWithDBStoresPlainTokenForDisplay(t *testing.T) {
 	}
 }
 
-func TestListAccessTokensWithDBScopesByRoleAndReturnsStoredTokenValue(t *testing.T) {
+func TestListAccessTokensWithDBAlwaysScopesToOperatorAndReturnsStoredTokenValue(t *testing.T) {
 	db := newAccessTokenTestDB(t)
 	admin := seedAccessTokenOwner(t, db, 1, "admin")
 	owner := seedAccessTokenOwner(t, db, 2, "user")
 	other := seedAccessTokenOwner(t, db, 3, "user")
 
+	adminToken, err := CreateAccessTokenWithDB(db, admin, CreateAccessTokenInput{Name: "admin-token"})
+	if err != nil {
+		t.Fatalf("create admin token: %v", err)
+	}
 	ownerToken, err := CreateAccessTokenWithDB(db, owner, CreateAccessTokenInput{Name: "owner-token"})
 	if err != nil {
 		t.Fatalf("create owner token: %v", err)
@@ -133,11 +137,51 @@ func TestListAccessTokensWithDBScopesByRoleAndReturnsStoredTokenValue(t *testing
 	if err != nil {
 		t.Fatalf("list admin tokens: %v", err)
 	}
-	if len(adminList) != 2 {
-		t.Fatalf("expected admin to see all tokens, got %d", len(adminList))
+	if len(adminList) != 1 || adminList[0].ID != adminToken.AccessToken.ID {
+		t.Fatalf("expected admin to see only own token by default, got %+v", adminList)
 	}
-	if adminList[0].ID == 0 || adminList[1].ID == 0 || (adminList[0].ID != ownerToken.AccessToken.ID && adminList[1].ID != ownerToken.AccessToken.ID) || (adminList[0].ID != otherToken.AccessToken.ID && adminList[1].ID != otherToken.AccessToken.ID) {
-		t.Fatalf("expected admin list to contain both tokens, got %+v", adminList)
+	if adminList[0].ID == ownerToken.AccessToken.ID || adminList[0].ID == otherToken.AccessToken.ID {
+		t.Fatalf("expected admin default list not to include other users' tokens, got %+v", adminList)
+	}
+}
+
+func TestListAllAccessTokensWithDBRequiresAdminAndReturnsUsername(t *testing.T) {
+	db := newAccessTokenTestDB(t)
+	admin := seedAccessTokenOwner(t, db, 1, "admin")
+	owner := seedAccessTokenOwner(t, db, 2, "user")
+	other := seedAccessTokenOwner(t, db, 3, "user")
+
+	if _, err := CreateAccessTokenWithDB(db, admin, CreateAccessTokenInput{Name: "admin-token"}); err != nil {
+		t.Fatalf("create admin token: %v", err)
+	}
+	if _, err := CreateAccessTokenWithDB(db, owner, CreateAccessTokenInput{Name: "owner-token"}); err != nil {
+		t.Fatalf("create owner token: %v", err)
+	}
+	if _, err := CreateAccessTokenWithDB(db, other, CreateAccessTokenInput{Name: "other-token"}); err != nil {
+		t.Fatalf("create other token: %v", err)
+	}
+
+	userList, err := ListAllAccessTokensWithDB(db, owner)
+	if err != nil {
+		t.Fatalf("list all tokens as user: %v", err)
+	}
+	if len(userList) != 1 || userList[0].Name != "owner-token" {
+		t.Fatalf("expected non-admin all-scope request to remain scoped to self, got %+v", userList)
+	}
+
+	adminList, err := ListAllAccessTokensWithDB(db, admin)
+	if err != nil {
+		t.Fatalf("list all tokens as admin: %v", err)
+	}
+	if len(adminList) != 3 {
+		t.Fatalf("expected admin all-scope request to return every token, got %+v", adminList)
+	}
+	usernames := make(map[string]string, len(adminList))
+	for _, token := range adminList {
+		usernames[token.Name] = token.Username
+	}
+	if usernames["admin-token"] != admin.Username || usernames["owner-token"] != owner.Username || usernames["other-token"] != other.Username {
+		t.Fatalf("expected all-scope tokens to include owner usernames, got %+v", usernames)
 	}
 }
 

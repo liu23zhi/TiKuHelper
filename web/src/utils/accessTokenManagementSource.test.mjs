@@ -21,3 +21,14 @@ test('AccessTokenManagement page restores copy and show-all controls', async () 
   assert.match(content, /:scroll="\{ x: 'max-content' \}"/);
   assert.doesNotMatch(content, /width: 560/);
 });
+
+test('AccessTokenManagement page restricts the all-token view to admins and adds usernames', async () => {
+  const content = await readFile(pagePath, 'utf8');
+
+  assert.match(content, /显示全部令牌/);
+  assert.match(content, /只看我的令牌/);
+  assert.match(content, /v-if="isAdmin"/);
+  assert.match(content, /showAllTokens/);
+  assert.match(content, /buildAccessTokenListParams\(showAllTokens\.value\)/);
+  assert.match(content, /title: '用户名'/);
+});

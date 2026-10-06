@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   buildAccessTokenBalanceAlert,
+  buildAccessTokenListParams,
 } from './accessTokenManagementHelpers.mjs';
 
 test('buildAccessTokenBalanceAlert shows zero and negative balance suspension warning', () => {
@@ -21,4 +22,9 @@ test('buildAccessTokenBalanceAlert shows zero and negative balance suspension wa
 test('buildAccessTokenBalanceAlert returns null for positive and invalid balances', () => {
   assert.equal(buildAccessTokenBalanceAlert({ balance: 12.5 }), null);
   assert.equal(buildAccessTokenBalanceAlert(null), null);
+});
+
+test('buildAccessTokenListParams requests all users only when enabled', () => {
+  assert.deepEqual(buildAccessTokenListParams(false), {});
+  assert.deepEqual(buildAccessTokenListParams(true), { scope: 'all' });
 });

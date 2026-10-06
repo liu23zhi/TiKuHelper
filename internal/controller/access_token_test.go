@@ -20,11 +20,16 @@ func TestAccessTokenListReturnsScopedTokens(t *testing.T) {
 		listAccessTokens = original
 	}()
 
-	listAccessTokens = func(user entity.User) ([]entity.AccessToken, error) {
+	listAccessTokens = func(user entity.User, includeAll bool) ([]service.AccessTokenListItem, error) {
 		if user.ID != 7 {
 			t.Fatalf("expected user id 7, got %d", user.ID)
 		}
-		return []entity.AccessToken{{ID: 1, UserID: 7, Name: "token-a", Status: "enabled"}}, nil
+		if includeAll {
+			t.Fatal("expected regular token list request to stay scoped to self")
+		}
+		return []service.AccessTokenListItem{{
+			AccessToken: entity.AccessToken{ID: 1, UserID: 7, Name: "token-a", Status: "enabled"},
+		}}, nil
 	}
 
 	recorder := httptest.NewRecorder()
@@ -44,6 +49,79 @@ func TestAccessTokenListReturnsScopedTokens(t *testing.T) {
 	}
 	if len(tokens) != 1 || tokens[0].Name != "token-a" {
 		t.Fatalf("unexpected tokens: %+v", tokens)
+	}
+}
+
+func TestAccessTokenListAllowsAdminAllScopeWithUsernames(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	original := listAccessTokens
+	defer func() {
+		listAccessTokens = original
+	}()
+
+	listAccessTokens = func(user entity.User, includeAll bool) ([]service.AccessTokenListItem, error) {
+		if user.ID != 1 || user.Role != "admin" {
+			t.Fatalf("expected admin operator, got %+v", user)
+		}
+		if !includeAll {
+			t.Fatal("expected admin all-scope request to enable all tokens")
+		}
+		return []service.AccessTokenListItem{{
+			AccessToken: entity.AccessToken{ID: 2, UserID: 9, Name: "owner-token", Status: "enabled"},
+			Username:    "owner-user",
+		}}, nil
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/access-tokens?scope=all", nil)
+	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
+
+	AccessTokenList(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+
+	var tokens []service.AccessTokenListItem
+	if err := json.Unmarshal(recorder.Body.Bytes(), &tokens); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(tokens) != 1 || tokens[0].Username != "owner-user" {
+		t.Fatalf("expected all-scope response to include username, got %+v", tokens)
+	}
+}
+
+func TestAccessTokenListIgnoresAllScopeForNonAdmin(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	original := listAccessTokens
+	defer func() {
+		listAccessTokens = original
+	}()
+
+	listAccessTokens = func(user entity.User, includeAll bool) ([]service.AccessTokenListItem, error) {
+		if user.ID != 7 || user.Role != "user" {
+			t.Fatalf("expected regular operator, got %+v", user)
+		}
+		if includeAll {
+			t.Fatal("expected non-admin all-scope request to be ignored")
+		}
+		return []service.AccessTokenListItem{{
+			AccessToken: entity.AccessToken{ID: 1, UserID: 7, Name: "token-a", Status: "enabled"},
+		}}, nil
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/access-tokens?scope=all", nil)
+	ctx.Set("user", &entity.User{ID: 7, Role: "user", Status: "enabled"})
+
+	AccessTokenList(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
 }
 

@@ -34,6 +34,13 @@
       </template>
       <template #extra>
         <a-space>
+          <a-button
+            v-if="isAdmin"
+            :type="showAllTokens ? 'primary' : 'default'"
+            @click="toggleAllTokens"
+          >
+            {{ showAllTokens ? '只看我的令牌' : '显示全部令牌' }}
+          </a-button>
           <a-button @click="handleLoad" :loading="tableLoading">刷新</a-button>
           <a-button type="primary" @click="openCreateModal">新增令牌</a-button>
         </a-space>
@@ -64,6 +71,9 @@
         row-key="id"
         :scroll="{ x: 'max-content' }"
       >
+        <template #username="{ record }">
+          <span>{{ record.username || '-' }}</span>
+        </template>
         <template #tokenValue="{ record }">
           <div class="token-value-cell">
             <a-typography-paragraph
@@ -162,8 +172,11 @@ import {
   updateAccessToken,
   deleteAccessToken,
 } from '@/api/TikuComponentApi';
-import { getStoredCurrentUser } from '@/utils/currentUser';
-import { buildAccessTokenBalanceAlert } from '@/utils/accessTokenManagementHelpers.mjs';
+import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser';
+import {
+  buildAccessTokenBalanceAlert,
+  buildAccessTokenListParams,
+} from '@/utils/accessTokenManagementHelpers.mjs';
 
 const dataSource = ref([])
 const tableLoading = ref(true)
@@ -171,6 +184,7 @@ const visible = ref(false)
 const submitLoading = ref(false)
 const isEditing = ref(false)
 const visibleTokenIds = ref([])
+const showAllTokens = ref(false)
 const formState = ref({
   id: undefined,
   name: '',
@@ -215,7 +229,105 @@ export default defineComponent({
 
     const modalTitle = computed(() => isEditing.value ? '编辑令牌' : '新增令牌')
     const currentUser = computed(() => getStoredCurrentUser())
+    const isAdmin = computed(() => isAdminUser(currentUser.value))
     const balanceAlert = computed(() => buildAccessTokenBalanceAlert(currentUser.value))
+    const baseColumns = [
+      {
+        title: '令牌名称',
+        dataIndex: 'name',
+        key: 'name',
+        width: 180,
+      },
+      {
+        title: '访问令牌',
+        dataIndex: 'tokenValue',
+        key: 'tokenValue',
+        slots: {
+          customRender: 'tokenValue',
+        },
+      },
+      {
+        title: '状态',
+        dataIndex: 'status',
+        key: 'status',
+        slots: {
+          customRender: 'status',
+        },
+        width: 120,
+      },
+      {
+        title: '累计额度上限',
+        dataIndex: 'totalQuotaLimit',
+        key: 'totalQuotaLimit',
+        slots: {
+          customRender: 'totalQuotaLimit',
+        },
+        width: 150,
+      },
+      {
+        title: '累计已消费',
+        dataIndex: 'totalAmountUsed',
+        key: 'totalAmountUsed',
+        slots: {
+          customRender: 'totalAmountUsed',
+        },
+        width: 140,
+      },
+      {
+        title: '最近使用时间',
+        dataIndex: 'lastUsedAt',
+        key: 'lastUsedAt',
+        slots: {
+          customRender: 'lastUsedAt',
+        },
+        width: 180,
+      },
+      {
+        title: '最近使用 IP',
+        dataIndex: 'lastUsedIp',
+        key: 'lastUsedIp',
+        slots: {
+          customRender: 'lastUsedIp',
+        },
+        width: 150,
+      },
+      {
+        title: '备注',
+        dataIndex: 'remark',
+        key: 'remark',
+        slots: {
+          customRender: 'remark',
+        },
+        width: 200,
+      },
+      {
+        title: '操作',
+        dataIndex: 'operation',
+        key: 'operation',
+        fixed: 'right',
+        slots: {
+          customRender: 'operation',
+        },
+        width: 120,
+      },
+    ]
+    const columns = computed(() => {
+      if (!showAllTokens.value) {
+        return baseColumns
+      }
+      return [
+        {
+          title: '用户名',
+          dataIndex: 'username',
+          key: 'username',
+          slots: {
+            customRender: 'username',
+          },
+          width: 160,
+        },
+        ...baseColumns,
+      ]
+    })
 
     return {
       labelCol: { style: { width: '110px' } },
@@ -226,94 +338,17 @@ export default defineComponent({
       submitLoading,
       isEditing,
       visibleTokenIds,
+      showAllTokens,
       formState,
       summary,
       modalTitle,
+      isAdmin,
       balanceAlert,
       statusOptions: [
         { label: '启用', value: 'enabled' },
         { label: '禁用', value: 'disabled' },
       ],
-      columns: [
-        {
-          title: '令牌名称',
-          dataIndex: 'name',
-          key: 'name',
-          width: 180,
-        },
-        {
-          title: '访问令牌',
-          dataIndex: 'tokenValue',
-          key: 'tokenValue',
-          slots: {
-            customRender: 'tokenValue',
-          },
-        },
-        {
-          title: '状态',
-          dataIndex: 'status',
-          key: 'status',
-          slots: {
-            customRender: 'status',
-          },
-          width: 120,
-        },
-        {
-          title: '累计额度上限',
-          dataIndex: 'totalQuotaLimit',
-          key: 'totalQuotaLimit',
-          slots: {
-            customRender: 'totalQuotaLimit',
-          },
-          width: 150,
-        },
-        {
-          title: '累计已消费',
-          dataIndex: 'totalAmountUsed',
-          key: 'totalAmountUsed',
-          slots: {
-            customRender: 'totalAmountUsed',
-          },
-          width: 140,
-        },
-        {
-          title: '最近使用时间',
-          dataIndex: 'lastUsedAt',
-          key: 'lastUsedAt',
-          slots: {
-            customRender: 'lastUsedAt',
-          },
-          width: 180,
-        },
-        {
-          title: '最近使用 IP',
-          dataIndex: 'lastUsedIp',
-          key: 'lastUsedIp',
-          slots: {
-            customRender: 'lastUsedIp',
-          },
-          width: 150,
-        },
-        {
-          title: '备注',
-          dataIndex: 'remark',
-          key: 'remark',
-          slots: {
-            customRender: 'remark',
-          },
-          width: 200,
-        },
-        {
-          title: '操作',
-          dataIndex: 'operation',
-          key: 'operation',
-          fixed: 'right',
-          slots: {
-            customRender: 'operation',
-          },
-          width: 120,
-        },
-      ],
+      columns,
     }
   },
   mounted() {
@@ -388,7 +423,7 @@ export default defineComponent({
     },
     handleLoad() {
       tableLoading.value = true
-      getAccessTokens().then(res => {
+      getAccessTokens(buildAccessTokenListParams(showAllTokens.value)).then(res => {
         if (res?.status === 200) {
           dataSource.value = Array.isArray(res?.data) ? res.data : []
         } else {
@@ -399,6 +434,13 @@ export default defineComponent({
       }).finally(() => {
         tableLoading.value = false
       })
+    },
+    toggleAllTokens() {
+      if (!this.isAdmin) {
+        return
+      }
+      showAllTokens.value = !showAllTokens.value
+      this.handleLoad()
     },
     openCreateModal() {
       this.resetFormState()

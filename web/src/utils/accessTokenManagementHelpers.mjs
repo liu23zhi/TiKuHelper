@@ -14,3 +14,7 @@ export function buildAccessTokenBalanceAlert(user) {
     description,
   };
 }
+
+export function buildAccessTokenListParams(showAllTokens) {
+  return showAllTokens ? { scope: 'all' } : {};
+}

@@ -38,14 +38,35 @@ type CreatedAccessToken struct {
 	Token       string             `json:"token"`
 }
 
-func ListAccessTokensWithDB(db *gorm.DB, operator entity.User) ([]entity.AccessToken, error) {
-	query := db.Model(&entity.AccessToken{}).Order("id desc")
+type AccessTokenListItem struct {
+	entity.AccessToken
+	Username string `json:"username,omitempty"`
+}
+
+func ListAccessTokensWithDB(db *gorm.DB, operator entity.User) ([]AccessTokenListItem, error) {
+	query := db.Table(entity.TableNameAccessToken+" AS access_tokens").
+		Where("access_tokens.user_id = ?", operator.ID).
+		Order("access_tokens.id desc")
+
+	var tokens []AccessTokenListItem
+	if err := query.Find(&tokens).Error; err != nil {
+		return nil, err
+	}
+	return tokens, nil
+}
+
+func ListAllAccessTokensWithDB(db *gorm.DB, operator entity.User) ([]AccessTokenListItem, error) {
 	if !isAdminUser(operator) {
-		query = query.Where("user_id = ?", operator.ID)
+		return ListAccessTokensWithDB(db, operator)
 	}
 
-	var tokens []entity.AccessToken
-	if err := query.Find(&tokens).Error; err != nil {
+	var tokens []AccessTokenListItem
+	if err := db.
+		Table(entity.TableNameAccessToken + " AS access_tokens").
+		Select("access_tokens.*, users.username AS username").
+		Joins("LEFT JOIN " + entity.TableNameUser + " AS users ON users.id = access_tokens.user_id").
+		Order("access_tokens.id desc").
+		Find(&tokens).Error; err != nil {
 		return nil, err
 	}
 	return tokens, nil
