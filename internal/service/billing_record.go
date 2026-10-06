@@ -12,27 +12,34 @@ import (
 
 const normalSearchBillingRecordType = "normal_search"
 
+type BillingRecordFeeDetail struct {
+	Provider      string  `json:"provider"`
+	ProviderLabel string  `json:"providerLabel"`
+	Amount        float64 `json:"amount"`
+}
+
 type BillingRecordListItem struct {
-	ID                int32     `json:"id"`
-	UserID            int32     `json:"-"`
-	Username          string    `json:"username"`
-	Type              string    `json:"type"`
-	TypeLabel         string    `json:"typeLabel"`
-	Direction         string    `json:"direction"`
-	DirectionLabel    string    `json:"directionLabel"`
-	Subject           string    `json:"subject"`
-	Detail            string    `json:"detail"`
-	ReferenceNo       string    `json:"referenceNo"`
-	Provider          string    `json:"provider"`
-	ProviderLabel     string    `json:"providerLabel"`
-	AnswerSourceLabel string    `json:"answerSourceLabel"`
-	QuestionText      string    `json:"questionText"`
-	Amount            float64   `json:"amount"`
-	AccessTokenName   string    `json:"accessTokenName"`
-	CreatedAt         time.Time `json:"createdAt"`
-	UnitPriceSnapshot string    `json:"-"`
-	RequestID         string    `json:"-"`
-	Remark            string    `json:"-"`
+	ID                int32                    `json:"id"`
+	UserID            int32                    `json:"-"`
+	Username          string                   `json:"username"`
+	Type              string                   `json:"type"`
+	TypeLabel         string                   `json:"typeLabel"`
+	Direction         string                   `json:"direction"`
+	DirectionLabel    string                   `json:"directionLabel"`
+	Subject           string                   `json:"subject"`
+	Detail            string                   `json:"detail"`
+	ReferenceNo       string                   `json:"referenceNo"`
+	Provider          string                   `json:"provider"`
+	ProviderLabel     string                   `json:"providerLabel"`
+	AnswerSourceLabel string                   `json:"answerSourceLabel"`
+	QuestionText      string                   `json:"questionText"`
+	Amount            float64                  `json:"amount"`
+	FeeDetails        []BillingRecordFeeDetail `gorm:"-" json:"feeDetails"`
+	AccessTokenName   string                   `json:"accessTokenName"`
+	CreatedAt         time.Time                `json:"createdAt"`
+	UnitPriceSnapshot string                   `json:"-"`
+	RequestID         string                   `json:"-"`
+	Remark            string                   `json:"-"`
 }
 
 type billingSearchGroupKey struct {
@@ -199,6 +206,11 @@ func decorateBillingRecord(record BillingRecordListItem) BillingRecordListItem {
 	record.QuestionText = extractBillingSnapshotField(record.UnitPriceSnapshot, "question")
 	record.Subject = buildBillingRecordSubject(record)
 	record.Detail = buildBillingRecordDetail(record)
+	record.FeeDetails = []BillingRecordFeeDetail{{
+		Provider:      strings.TrimSpace(record.Provider),
+		ProviderLabel: strings.TrimSpace(record.ProviderLabel),
+		Amount:        record.Amount,
+	}}
 	return record
 }
 
@@ -277,6 +289,7 @@ func mergeBillingSearchGroup(representative BillingRecordListItem, charges []Bil
 	questionText := strings.TrimSpace(representative.QuestionText)
 	providerLabels := make([]string, 0, len(charges))
 	answerSourceLabels := make([]string, 0, len(charges))
+	feeDetails := make([]BillingRecordFeeDetail, 0, len(charges))
 	for _, charge := range charges {
 		totalAmount += charge.Amount
 		if questionText == "" {
@@ -284,12 +297,16 @@ func mergeBillingSearchGroup(representative BillingRecordListItem, charges []Bil
 		}
 		providerLabels = appendUniqueBillingLabel(providerLabels, charge.ProviderLabel)
 		answerSourceLabels = appendUniqueBillingLabel(answerSourceLabels, charge.AnswerSourceLabel)
+		feeDetails = append(feeDetails, charge.FeeDetails...)
 	}
 
 	representative.Amount = math.Round(totalAmount*100) / 100
 	representative.QuestionText = questionText
 	representative.ProviderLabel = strings.Join(providerLabels, "、")
 	representative.AnswerSourceLabel = strings.Join(answerSourceLabels, "、")
+	if len(feeDetails) > 0 {
+		representative.FeeDetails = feeDetails
+	}
 	representative.Subject = buildMergedSearchBillingSubject(questionText)
 	representative.Detail = buildBillingRecordDetail(representative)
 	return representative

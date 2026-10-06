@@ -51,7 +51,7 @@
         :pagination="pagination"
         @change="handleTableChange"
         row-key="id"
-        :scroll="{ x: 1340 }"
+        :scroll="{ x: 1460 }"
       >
         <template #username="{ record }">
           <span>{{ record.username || '-' }}</span>
@@ -77,6 +77,9 @@
         <template #createdAt="{ record }">
           <span>{{ formatDateTime(record.createdAt) }}</span>
         </template>
+        <template #feeDetail="{ record }">
+          <a-button type="link" style="padding: 0" @click="handleShowFeeDetail(record)">显示详情</a-button>
+        </template>
         <template #emptyText>
           <a-empty description="当前还没有账单记录。" />
         </template>
@@ -88,10 +91,12 @@
 <script>
 import { computed, defineComponent, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
+import Swal from 'sweetalert2'
 import { getBillingRecords } from '@/api/TikuComponentApi'
 import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser'
 import {
   buildBillingRecordAmountText,
+  buildBillingRecordFeeDetailHtml,
   buildBillingRecordReferenceText,
   buildBillingRecordSourceText,
   buildBillingRecordSubjectText,
@@ -221,6 +226,15 @@ export default defineComponent({
             customRender: 'createdAt',
           },
         },
+        {
+          title: '操作',
+          dataIndex: 'feeDetail',
+          key: 'feeDetail',
+          width: 120,
+          slots: {
+            customRender: 'feeDetail',
+          },
+        },
       ]
 
       if (!isAdmin.value) {
@@ -286,6 +300,16 @@ export default defineComponent({
       pagination.current = paginationData.current
       pagination.pageSize = paginationData.pageSize
       this.handleLoad()
+    },
+    handleShowFeeDetail(record) {
+      Swal.fire({
+        title: '费用详情',
+        html: buildBillingRecordFeeDetailHtml(record),
+        width: 520,
+        confirmButtonText: '关闭',
+        heightAuto: false,
+        scrollbarPadding: false,
+      })
     },
     formatAmount(value) {
       const amount = Number(value || 0)

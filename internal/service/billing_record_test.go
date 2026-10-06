@@ -260,6 +260,15 @@ func TestListBillingRecordsWithDBMergesSearchChargesByRequestID(t *testing.T) {
 	if merged.Amount != 2 {
 		t.Fatalf("expected merged amount 2.00, got %.8f", merged.Amount)
 	}
+	if len(merged.FeeDetails) != 2 {
+		t.Fatalf("expected two fee details, got %+v", merged.FeeDetails)
+	}
+	if merged.FeeDetails[0].ProviderLabel != "Icodef 题库" || merged.FeeDetails[0].Amount != 1.25 {
+		t.Fatalf("unexpected normal fee detail: %+v", merged.FeeDetails[0])
+	}
+	if merged.FeeDetails[1].ProviderLabel != "AI 搜索" || merged.FeeDetails[1].Amount != 0.75 {
+		t.Fatalf("unexpected ai fee detail: %+v", merged.FeeDetails[1])
+	}
 	if merged.QuestionText != "混合搜索题目" {
 		t.Fatalf("expected question text from normal charge, got %q", merged.QuestionText)
 	}

@@ -174,6 +174,56 @@ export function buildBillingRecordAmountText(record) {
   return `¥ ${formatted}`
 }
 
+export function buildBillingRecordFeeDetails(record) {
+  const feeDetails = Array.isArray(record?.feeDetails) ? record.feeDetails : []
+  const normalized = feeDetails
+    .map((item) => ({
+      provider: String(item?.provider || '').trim(),
+      providerLabel: String(item?.providerLabel || item?.provider || '').trim() || '-',
+      amount: Number(item?.amount || 0),
+    }))
+    .filter((item) => Number.isFinite(item.amount))
+
+  if (normalized.length > 0) {
+    return normalized
+  }
+
+  const fallbackAmount = Number(record?.amount || 0)
+  return [{
+    provider: String(record?.provider || '').trim(),
+    providerLabel: String(record?.providerLabel || record?.answerSourceLabel || record?.provider || '').trim() || '-',
+    amount: Number.isFinite(fallbackAmount) ? fallbackAmount : 0,
+  }]
+}
+
+export function buildBillingRecordFeeDetailHtml(record) {
+  const details = buildBillingRecordFeeDetails(record)
+  const direction = String(record?.direction || '').trim()
+  const subject = buildBillingRecordSubjectText(record)
+  const rows = details.map((item) => `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:24px;padding:10px 0;border-bottom:1px solid #e5e7eb;">
+      <span style="color:#334155;">${escapeHtmlText(item.providerLabel)}</span>
+      <strong style="white-space:nowrap;color:${direction === 'income' ? '#16a34a' : '#dc2626'};">${escapeHtmlText(buildBillingRecordAmountText({ amount: item.amount, direction }))}</strong>
+    </div>
+  `).join('')
+  const totalAmount = Number(record?.amount || 0)
+  const totalText = buildBillingRecordAmountText({
+    amount: Number.isFinite(totalAmount) ? totalAmount : 0,
+    direction,
+  })
+
+  return `
+    <div style="text-align:left;">
+      <div style="margin-bottom:12px;color:#475569;line-height:1.6;">${escapeHtmlText(subject)}</div>
+      ${rows}
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:24px;padding-top:14px;font-size:16px;">
+        <span style="font-weight:600;color:#1f2937;">合计</span>
+        <strong style="white-space:nowrap;color:${direction === 'income' ? '#16a34a' : '#dc2626'};">${escapeHtmlText(totalText)}</strong>
+      </div>
+    </div>
+  `
+}
+
 export function buildUserBalanceUpdatePayload(formValue) {
   const payload = {
     id: formValue?.id,
@@ -197,4 +247,17 @@ export function buildUserBalanceUpdatePayload(formValue) {
   payload.balance = balance
   payload.balanceMode = String(formValue?.balanceMode || 'override').trim() || 'override'
   return payload
+}
+
+function escapeHtmlText(value) {
+  return String(value || '').replace(/[&<>"']/g, (character) => {
+    const entities = {
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    }
+    return entities[character]
+  })
 }

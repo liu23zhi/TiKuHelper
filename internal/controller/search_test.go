@@ -962,6 +962,14 @@ func TestSearchPersistsAIBillingDuringDefaultAIThatRunsInNormalMode(t *testing.T
 	if billingList.Data[0].ProviderLabel != "AI 搜索" || billingList.Data[0].Amount != 3.75 {
 		t.Fatalf("expected ai-only billing row to expose AI provider and amount, got %+v", billingList.Data[0])
 	}
+	if len(billingList.Data[0].FeeDetails) != 1 ||
+		billingList.Data[0].FeeDetails[0].ProviderLabel != "AI 搜索" ||
+		billingList.Data[0].FeeDetails[0].Amount != 3.75 {
+		t.Fatalf("expected ai-only billing row fee details, got %+v", billingList.Data[0].FeeDetails)
+	}
+	if billingList.Data[0].QuestionText != "题目" || billingList.Data[0].Subject != "题目" {
+		t.Fatalf("expected ai-only billing row to preserve the question, got %+v", billingList.Data[0])
+	}
 }
 
 func TestPersistSearchBillingRecordsWithDBAllowsBillingToCreateNegativeBalance(t *testing.T) {

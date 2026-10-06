@@ -901,7 +901,7 @@ func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRe
 	// Default search can execute AI while SearchMode remains "normal". AI usage is
 	// billed as a separate record so it never replaces the normal provider charge.
 	if resolved.UsedDefaultAI && hasAISearchUsage(aiUsage) {
-		charge, err := resolveCompletedAIBillingCharge(db, resolved, aiUsage)
+		charge, err := resolveCompletedAIBillingCharge(db, resolved, req, aiUsage)
 		if err != nil {
 			return nil, err
 		}
@@ -931,7 +931,7 @@ func completedSearchBillingProviderLabel(charges []searchBillingCharge) string {
 	return strings.Join(providers, ",")
 }
 
-func resolveCompletedAIBillingCharge(db *gorm.DB, resolved resolvedSearchRequestContext, usage search.AISearchUsage) (searchBillingCharge, error) {
+func resolveCompletedAIBillingCharge(db *gorm.DB, resolved resolvedSearchRequestContext, req model.SearchRequest, usage search.AISearchUsage) (searchBillingCharge, error) {
 	price, err := service.ResolveAIModelPriceWithDB(db, resolved.AIConfig.Model)
 	if err != nil {
 		return searchBillingCharge{}, err
@@ -954,7 +954,7 @@ func resolveCompletedAIBillingCharge(db *gorm.DB, resolved resolvedSearchRequest
 	return searchBillingCharge{
 		Provider:     searchModeAI,
 		Amount:       amount,
-		Snapshot:     buildCompletedAIBillingSnapshot(resolved, usage, price, baseAmount, amount),
+		Snapshot:     buildCompletedAIBillingSnapshot(resolved, req, usage, price, baseAmount, amount),
 		ModelName:    strings.TrimSpace(resolved.AIConfig.Model),
 		InputTokens:  usage.InputTokens,
 		OutputTokens: usage.OutputTokens,
@@ -962,8 +962,8 @@ func resolveCompletedAIBillingCharge(db *gorm.DB, resolved resolvedSearchRequest
 	}, nil
 }
 
-func buildCompletedAIBillingSnapshot(resolved resolvedSearchRequestContext, usage search.AISearchUsage, price service.ResolvedAIModelPrice, baseAmount float64, amount float64) string {
-	return strings.Join([]string{
+func buildCompletedAIBillingSnapshot(resolved resolvedSearchRequestContext, req model.SearchRequest, usage search.AISearchUsage, price service.ResolvedAIModelPrice, baseAmount float64, amount float64) string {
+	parts := []string{
 		"provider=ai",
 		fmt.Sprintf("model=%s", strings.TrimSpace(resolved.AIConfig.Model)),
 		fmt.Sprintf("billingMultiplier=%.4f", price.BillingMultiplier),
@@ -975,7 +975,11 @@ func buildCompletedAIBillingSnapshot(resolved resolvedSearchRequestContext, usag
 		fmt.Sprintf("totalTokens=%d", usage.TotalTokens),
 		fmt.Sprintf("baseAmount=%.2f", roundCurrencyAmount(baseAmount)),
 		fmt.Sprintf("amount=%.2f", amount),
-	}, " ")
+	}
+	if questionText := strings.TrimSpace(req.Question); questionText != "" {
+		parts = append(parts, fmt.Sprintf("question=%s", url.QueryEscape(questionText)))
+	}
+	return strings.Join(parts, " ")
 }
 
 func buildCompletedSearchBillingSnapshot(db *gorm.DB, provider string, amount float64, req model.SearchRequest, usedLocalSearch bool) string {

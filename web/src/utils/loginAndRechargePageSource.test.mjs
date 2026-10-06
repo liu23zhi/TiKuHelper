@@ -172,6 +172,16 @@ test('Billing record list renders the billing owner username', async () => {
   assert.match(content, /if \(!isAdmin\.value\) \{\s+return baseColumns/);
 });
 
+test('Billing record list opens a SweetAlert fee breakdown with provider costs', async () => {
+  const content = await readFile(path.join(__dirname, '..', 'pages', 'BillingRecordList', 'index.vue'), 'utf8');
+
+  assert.match(content, /import Swal from 'sweetalert2'/);
+  assert.match(content, /显示详情/);
+  assert.match(content, /Swal\.fire/);
+  assert.match(content, /buildBillingRecordFeeDetailHtml/);
+  assert.match(content, /handleShowFeeDetail/);
+});
+
 test('Personal billing flow does not render the owner username column', async () => {
   const content = await readFile(userUsagePagePath, 'utf8');
 
