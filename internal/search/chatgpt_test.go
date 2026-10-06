@@ -237,6 +237,108 @@ func TestChatGptClientSearchAnswerContinuesWhenSomeImagesFailToDownload(t *testi
 	}
 }
 
+func TestChatGptClientSearchAnswerAttachesHTMLURLAsNamedFileContent(t *testing.T) {
+	htmlServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write([]byte("<!doctype html><html><body><p>resolved formula</p></body></html>"))
+	}))
+	defer htmlServer.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Messages []openAIRequestMessagePayload `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		parts := decodeUserContentParts(t, payload.Messages)
+		if len(parts) != 2 {
+			t.Fatalf("expected text prompt plus html attachment, got %d parts", len(parts))
+		}
+		if parts[1].Type != "text" {
+			t.Fatalf("expected html attachment to be sent as text content, got %s", parts[1].Type)
+		}
+		for _, expected := range []string{
+			`<attached_file filename="5462425.html" content_type="text/html">`,
+			"<!doctype html><html><body><p>resolved formula</p></body></html>",
+			"</attached_file>",
+		} {
+			if !strings.Contains(parts[1].Text, expected) {
+				t.Fatalf("expected html attachment to contain %q, got %q", expected, parts[1].Text)
+			}
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[\\\"B\\\"]}\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	client := &ChatGptClient{
+		Enable:  true,
+		APIKey:  "sk-test",
+		BaseURL: server.URL + "/v1",
+		Model:   "gpt-4o-mini",
+	}
+
+	answer, err := client.SearchAnswer(model.SearchRequest{
+		Question: "逻辑函数 " + htmlServer.URL + "/ananas/latex/p/5462425,应____",
+	})
+	if err != nil {
+		t.Fatalf("search answer: %v", err)
+	}
+	if !reflect.DeepEqual(answer, [][]string{{"B"}}) {
+		t.Fatalf("unexpected answer: %v", answer)
+	}
+}
+
+func TestChatGptClientSearchAnswerUsesImageContentTypeAfterOctetStreamHeader(t *testing.T) {
+	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Add("Content-Type", "application/octet-stream")
+		w.Header().Add("Content-Type", "image/jpeg;charset=UTF-8")
+		_, _ = w.Write([]byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 'J', 'F', 'I', 'F'})
+	}))
+	defer imageServer.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Messages []openAIRequestMessagePayload `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		parts := decodeUserContentParts(t, payload.Messages)
+		if len(parts) != 2 || parts[1].Type != "image_url" || parts[1].ImageURL == nil {
+			t.Fatalf("expected image attachment, got %+v", parts)
+		}
+		if !strings.HasPrefix(parts[1].ImageURL.URL, "data:image/jpeg;base64,") {
+			t.Fatalf("expected jpeg data url, got %q", parts[1].ImageURL.URL)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[\\\"A\\\"]}\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	client := &ChatGptClient{
+		Enable:  true,
+		APIKey:  "sk-test",
+		BaseURL: server.URL + "/v1",
+		Model:   "gpt-4o-mini",
+	}
+
+	answer, err := client.SearchAnswer(model.SearchRequest{
+		Question: "识别图片 " + imageServer.URL + "/formula.jpg",
+	})
+	if err != nil {
+		t.Fatalf("search answer: %v", err)
+	}
+	if !reflect.DeepEqual(answer, [][]string{{"A"}}) {
+		t.Fatalf("unexpected answer: %v", answer)
+	}
+}
+
 func TestChatGptClientSearchAnswerAggregatesStreamContent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {

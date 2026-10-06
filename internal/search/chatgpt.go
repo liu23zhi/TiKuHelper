@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"regexp"
 	"strings"
 	"time"
@@ -89,7 +90,9 @@ type aiSearchAnswerPayload struct {
 	Answers []string `json:"answers"`
 }
 
-var aiSearchImageURLPattern = regexp.MustCompile(`https?://[^\s,，]+`)
+var aiSearchURLPattern = regexp.MustCompile(`https?://[^\s,，]+`)
+
+const maxAISearchAttachmentBytes = 8 * 1024 * 1024
 
 func defaultAISearchPrompt() string {
 	return strings.TrimSpace(`
@@ -255,26 +258,21 @@ func buildAISearchPromptParts(req model.SearchRequest, httpClient *http.Client) 
 	if httpClient == nil {
 		return parts
 	}
-	for _, imageURL := range extractAISearchImageURLs(req) {
-		dataURL, ok := downloadAISearchImageAsDataURL(httpClient, imageURL)
+	for _, attachmentURL := range extractAISearchURLs(req) {
+		part, ok := downloadAISearchAttachmentPart(httpClient, attachmentURL)
 		if !ok {
 			continue
 		}
-		parts = append(parts, openAIContentPart{
-			Type: "image_url",
-			ImageURL: &openAIImageURLPart{
-				URL: dataURL,
-			},
-		})
+		parts = append(parts, part)
 	}
 	return parts
 }
 
-func extractAISearchImageURLs(req model.SearchRequest) []string {
+func extractAISearchURLs(req model.SearchRequest) []string {
 	seen := make(map[string]struct{})
 	urls := make([]string, 0)
 	appendMatches := func(value string) {
-		for _, match := range aiSearchImageURLPattern.FindAllString(value, -1) {
+		for _, match := range aiSearchURLPattern.FindAllString(value, -1) {
 			trimmed := strings.TrimSpace(strings.TrimRight(match, ".;:!?)]}，。；：！？》」』、"))
 			if trimmed == "" {
 				continue
@@ -293,34 +291,110 @@ func extractAISearchImageURLs(req model.SearchRequest) []string {
 	return urls
 }
 
-func downloadAISearchImageAsDataURL(httpClient *http.Client, imageURL string) (string, bool) {
+func downloadAISearchAttachmentPart(httpClient *http.Client, attachmentURL string) (openAIContentPart, bool) {
 	if httpClient == nil {
-		return "", false
+		return openAIContentPart{}, false
 	}
-	parsed, err := url.Parse(strings.TrimSpace(imageURL))
+	parsed, err := url.Parse(strings.TrimSpace(attachmentURL))
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return "", false
+		return openAIContentPart{}, false
 	}
-	resp, err := httpClient.Get(imageURL)
+	resp, err := httpClient.Get(attachmentURL)
 	if err != nil {
-		return "", false
+		return openAIContentPart{}, false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return "", false
+		return openAIContentPart{}, false
 	}
-	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
-	if contentType == "" || !strings.HasPrefix(strings.ToLower(contentType), "image/") {
-		return "", false
+	if resp.ContentLength > maxAISearchAttachmentBytes {
+		return openAIContentPart{}, false
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAISearchAttachmentBytes+1))
 	if err != nil || len(body) == 0 {
-		return "", false
+		return openAIContentPart{}, false
 	}
+	if len(body) > maxAISearchAttachmentBytes {
+		return openAIContentPart{}, false
+	}
+
+	contentType := resolveAISearchAttachmentContentType(resp.Header.Values("Content-Type"), body)
+	switch {
+	case strings.HasPrefix(contentType, "image/"):
+		return openAIContentPart{
+			Type: "image_url",
+			ImageURL: &openAIImageURLPart{
+				URL: "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(body),
+			},
+		}, true
+	case contentType == "text/html":
+		return openAIContentPart{
+			Type: "text",
+			Text: buildAISearchHTMLAttachment(parsed, body),
+		}, true
+	default:
+		return openAIContentPart{}, false
+	}
+}
+
+func resolveAISearchAttachmentContentType(headerValues []string, body []byte) string {
+	for _, headerValue := range headerValues {
+		contentType := normalizeAISearchContentType(headerValue)
+		if strings.HasPrefix(contentType, "image/") || contentType == "text/html" {
+			return contentType
+		}
+	}
+
+	detected := normalizeAISearchContentType(http.DetectContentType(body))
+	if strings.HasPrefix(detected, "image/") || detected == "text/html" || looksLikeHTML(body) {
+		if detected == "text/plain" && looksLikeHTML(body) {
+			return "text/html"
+		}
+		return detected
+	}
+	return ""
+}
+
+func normalizeAISearchContentType(value string) string {
+	contentType := strings.ToLower(strings.TrimSpace(value))
 	if idx := strings.Index(contentType, ";"); idx >= 0 {
 		contentType = strings.TrimSpace(contentType[:idx])
 	}
-	return "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(body), true
+	switch contentType {
+	case "application/xhtml+xml":
+		return "text/html"
+	default:
+		return contentType
+	}
+}
+
+func looksLikeHTML(body []byte) bool {
+	prefix := strings.ToLower(strings.TrimSpace(string(body)))
+	if len(prefix) > 512 {
+		prefix = prefix[:512]
+	}
+	return strings.HasPrefix(prefix, "<!doctype html") ||
+		strings.HasPrefix(prefix, "<html") ||
+		strings.HasPrefix(prefix, "<?xml") && strings.Contains(prefix, "<html")
+}
+
+func buildAISearchHTMLAttachment(parsedURL *url.URL, body []byte) string {
+	filename := "attachment.html"
+	if parsedURL != nil {
+		filename = path.Base(strings.TrimSpace(parsedURL.Path))
+		if filename == "." || filename == "/" || filename == "" {
+			filename = "attachment"
+		}
+		if path.Ext(filename) == "" {
+			filename += ".html"
+		}
+	}
+	filename = strings.NewReplacer("\"", "", "\r", "", "\n", "").Replace(filename)
+	return fmt.Sprintf(
+		"<attached_file filename=\"%s\" content_type=\"text/html\">\n%s\n</attached_file>",
+		filename,
+		string(body),
+	)
 }
 
 func buildAIChatCompletionEndpoints(baseURL string) []string {
