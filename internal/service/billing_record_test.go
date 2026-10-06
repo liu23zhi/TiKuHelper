@@ -348,6 +348,9 @@ func TestListBillingRecordsWithDBIncludesQuestionTextFromSnapshot(t *testing.T) 
 	if result.Data[0].QuestionText != "这是账单题目" {
 		t.Fatalf("expected question text 这是账单题目, got %q", result.Data[0].QuestionText)
 	}
+	if result.Data[0].Subject != "搜索答案，题目：这是账单题目" {
+		t.Fatalf("expected single search subject to align with merged search format, got %q", result.Data[0].Subject)
+	}
 }
 
 func TestListBillingRecordsWithDBUsesCachedSourceLabelForLocalSearch(t *testing.T) {

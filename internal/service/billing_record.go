@@ -123,7 +123,7 @@ func buildBillingRecordSubject(record BillingRecordListItem) string {
 		return "账户充值"
 	}
 	if question := strings.TrimSpace(record.QuestionText); question != "" {
-		return question
+		return buildSearchBillingSubject(question)
 	}
 	if source := strings.TrimSpace(record.AnswerSourceLabel); source != "" {
 		return source
@@ -272,7 +272,7 @@ func appendUniqueBillingLabel(labels []string, label string) []string {
 	return append(labels, trimmed)
 }
 
-func buildMergedSearchBillingSubject(questionText string) string {
+func buildSearchBillingSubject(questionText string) string {
 	question := strings.TrimSpace(questionText)
 	if question == "" {
 		return "搜索答案"
@@ -307,7 +307,7 @@ func mergeBillingSearchGroup(representative BillingRecordListItem, charges []Bil
 	if len(feeDetails) > 0 {
 		representative.FeeDetails = feeDetails
 	}
-	representative.Subject = buildMergedSearchBillingSubject(questionText)
+	representative.Subject = buildSearchBillingSubject(questionText)
 	representative.Detail = buildBillingRecordDetail(representative)
 	return representative
 }

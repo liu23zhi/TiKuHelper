@@ -967,7 +967,7 @@ func TestSearchPersistsAIBillingDuringDefaultAIThatRunsInNormalMode(t *testing.T
 		billingList.Data[0].FeeDetails[0].Amount != 3.75 {
 		t.Fatalf("expected ai-only billing row fee details, got %+v", billingList.Data[0].FeeDetails)
 	}
-	if billingList.Data[0].QuestionText != "题目" || billingList.Data[0].Subject != "题目" {
+	if billingList.Data[0].QuestionText != "题目" || billingList.Data[0].Subject != "搜索答案，题目：题目" {
 		t.Fatalf("expected ai-only billing row to preserve the question, got %+v", billingList.Data[0])
 	}
 }
