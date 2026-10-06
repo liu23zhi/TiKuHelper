@@ -40,6 +40,8 @@ const (
 	maxSearchUnauthorizedBodyLength = 4096
 )
 
+var errAccessTokenQuotaExceeded = errors.New("访问令牌累计额度不足")
+
 type searchUnauthorizedRequestSnapshot struct {
 	Method        string `json:"method"`
 	Path          string `json:"path"`
@@ -302,6 +304,12 @@ func Search(c *gin.Context) {
 			}
 		}
 	}
+	if !usedSearchResultCache {
+		if err := ensureSearchQuotaAvailable(resolved, useQuery, aiEnabled); err != nil {
+			writeSearchUnauthorized(c, fmt.Errorf("%w: 当前访问令牌累计额度不足，请调整令牌额度后重试", service.ErrInvalidAccessTokenAuthorization), rawBody)
+			return
+		}
+	}
 	logSearchRoutingDecision(c, query, resolved, aiEnabled)
 	logger.SysLog(fmt.Sprintf("搜题请求摘要 requestId=%s %s", strings.TrimSpace(resolved.RequestID), buildSearchRequestDebugSummary(req)))
 	if !usedSearchResultCache && strings.Contains(useQuery, "local") { // 使用本地题库的话
@@ -384,9 +392,6 @@ func Search(c *gin.Context) {
 			wg.Wait()
 		}
 	}
-	if cacheEligible && !usedSearchResultCache {
-		defaultSearchResultCache.put(cacheKey, result)
-	}
 	resp := util.FillAnswerResponse(result, &req)
 	logger.SysLog(fmt.Sprintf("搜题响应摘要 requestId=%s hitProvider=%s usedLocal=%t usedCache=%t aiEnabled=%t %s", strings.TrimSpace(resolved.RequestID), strings.TrimSpace(auditHitProvider), usedLocalSearch, usedSearchResultCache, aiEnabled, buildSearchResponseDebugSummary(resp)))
 	audit := buildSearchAuditMetadata(c, resolved, query, rawBody, useQuery, result, usedLocalSearch, aiEnabled, auditHitProvider, req, resp)
@@ -394,7 +399,13 @@ func Search(c *gin.Context) {
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "", c.ClientIP(), audit)
 	} else {
 		reportCompletedSearchBilling(resolved, useQuery, aiEnabled, result, hasAISearchUsage(aiUsage), usedLocalSearch)
-		persistCompletedSearchBilling(resolved, useQuery, aiEnabled, req, result, aiUsage, usedLocalSearch, c.ClientIP(), audit)
+		if err := persistCompletedSearchBilling(resolved, useQuery, aiEnabled, req, result, aiUsage, usedLocalSearch, c.ClientIP(), audit); err != nil {
+			writeSearchUnauthorized(c, fmt.Errorf("%w: 当前访问令牌累计额度不足，请调整令牌额度后重试", service.ErrInvalidAccessTokenAuthorization), rawBody)
+			return
+		}
+		if cacheEligible {
+			defaultSearchResultCache.put(cacheKey, result)
+		}
 	}
 
 	if !usedSearchResultCache && len(localAnswer) == 0 && c.Query("noRecord") == "" { // 只有非缓存结果且本地题库没有答案时才记录
@@ -824,39 +835,76 @@ func reportCompletedSearchBilling(resolved resolvedSearchRequestContext, useQuer
 	searchBillingReporter(buildCompletedSearchBillingContext(resolved, useQuery, aiEnabled, result, hasAIUsage, usedLocalSearch))
 }
 
-func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQuery string, aiEnabled bool, req model.SearchRequest, result [][]string, aiUsage search.AISearchUsage, usedLocalSearch bool, clientIP string, audit searchAuditMetadata) {
+func ensureSearchQuotaAvailable(resolved resolvedSearchRequestContext, useQuery string, aiEnabled bool) error {
+	if resolved.AccessTokenCtx == nil || resolved.AccessTokenID == 0 {
+		return nil
+	}
+
+	accessToken := resolved.AccessTokenCtx.AccessToken
+	if !accessTokenQuotaExhausted(accessToken) {
+		return nil
+	}
+
+	potentialLocalSearch := strings.Contains(useQuery, searchBillingProviderLocal)
+	if !buildSearchBillingContext(resolved, useQuery, aiEnabled, potentialLocalSearch).Billable {
+		return nil
+	}
+	return errAccessTokenQuotaExceeded
+}
+
+func accessTokenQuotaExhausted(accessToken entity.AccessToken) bool {
+	if accessToken.TotalQuotaLimit <= 0 {
+		return false
+	}
+	return roundCurrencyAmount(accessToken.TotalAmountUsed) >= roundCurrencyAmount(accessToken.TotalQuotaLimit)
+}
+
+func accessTokenQuotaWouldExceed(accessToken entity.AccessToken, amount float64) bool {
+	if accessToken.TotalQuotaLimit <= 0 || amount <= 0 {
+		return false
+	}
+	return roundCurrencyAmount(accessToken.TotalAmountUsed+amount) > roundCurrencyAmount(accessToken.TotalQuotaLimit)
+}
+
+func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQuery string, aiEnabled bool, req model.SearchRequest, result [][]string, aiUsage search.AISearchUsage, usedLocalSearch bool, clientIP string, audit searchAuditMetadata) error {
 	ctx := buildCompletedSearchBillingContext(resolved, useQuery, aiEnabled, result, hasAISearchUsage(aiUsage), usedLocalSearch)
 	if !ctx.Billable {
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "", clientIP, audit)
-		return
+		return nil
 	}
 
 	db := resolveSearchPersistenceDB()
 	if db == nil {
 		logger.SysError(fmt.Sprintf("搜索计费落账失败：数据库不可用 requestId=%s", resolved.RequestID))
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_db_unavailable", clientIP, audit)
-		return
+		return nil
 	}
 
 	charges, err := resolveCompletedSearchBillingCharges(db, resolved, useQuery, req, aiUsage, usedLocalSearch)
 	if err != nil {
 		logger.SysError(fmt.Sprintf("搜索计费落账失败：%s requestId=%s", err.Error(), resolved.RequestID))
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_charge_resolve_failed", clientIP, audit)
-		return
+		return nil
 	}
 	totalAmount := completedSearchBillingAmount(charges)
 	if totalAmount <= 0 {
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_zero_amount", clientIP, audit)
-		return
+		return nil
 	}
 
 	if err := persistSearchBillingRecordsWithDB(db, ctx, charges); err != nil {
+		if errors.Is(err, errAccessTokenQuotaExceeded) {
+			logger.SysLog(fmt.Sprintf("搜索计费拒绝：访问令牌累计额度不足 requestId=%s", resolved.RequestID))
+			writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_quota_exceeded", clientIP, audit)
+			return err
+		}
 		logger.SysError(fmt.Sprintf("搜索计费落账失败：%s requestId=%s", err.Error(), resolved.RequestID))
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_persist_failed", clientIP, audit)
-		return
+		return nil
 	}
 
 	writeCompletedSearchAuditLog(resolved, useQuery, result, completedSearchBillingProviderLabel(charges), clientIP, audit)
+	return nil
 }
 
 func resolveSearchPersistenceDB() *gorm.DB {
@@ -1093,6 +1141,9 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 		totalCharged := completedSearchBillingAmount(charges)
 		if totalCharged <= 0 {
 			return nil
+		}
+		if accessTokenQuotaWouldExceed(accessToken, totalCharged) {
+			return errAccessTokenQuotaExceeded
 		}
 
 		balanceAfter := roundCurrencyAmount(user.Balance)

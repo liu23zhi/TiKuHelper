@@ -1081,6 +1081,160 @@ func TestSearchAllowsBillingToCreateNegativeBalance(t *testing.T) {
 	}
 }
 
+func TestSearchRejectsAccessTokenAfterQuotaAlreadyExhausted(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 220, "search-exhausted-quota-user", "user")
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10).Error; err != nil {
+		t.Fatalf("seed user balance: %v", err)
+	}
+	token := seedControllerTokenForUser(t, db, user, "search-exhausted-quota-token", 5)
+	if err := db.Model(&entity.AccessToken{}).Where("id = ?", token.ID).Update("total_quota_limit", 5).Error; err != nil {
+		t.Fatalf("seed access token quota: %v", err)
+	}
+	seedControllerDefaultSearchProviderConfig(t, db, "icodef", 1)
+
+	upstreamCalls := 0
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(authorization string, clientIP string, query url.Values) (resolvedSearchRequestContext, error) {
+			return resolveSearchRequestContextWithDB(db, authorization, clientIP, query)
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return []func(model.SearchRequest) ([][]string, error){
+				func(model.SearchRequest) ([][]string, error) {
+					upstreamCalls++
+					return [][]string{{"额度不足时不应返回的答案"}}, nil
+				},
+			}
+		},
+		nil,
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"额度已耗尽题目","options":["A","B"]}`)))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Authorization", "Basic search-exhausted-quota-token")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("expected status 401, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+			var got struct {
+				Detail string `json:"detail"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+				t.Fatalf("unmarshal unauthorized response: %v, body=%s", err, recorder.Body.String())
+			}
+			if !strings.Contains(got.Detail, "累计额度不足") {
+				t.Fatalf("expected quota error detail, got %q", got.Detail)
+			}
+		})
+
+	if upstreamCalls != 0 {
+		t.Fatalf("expected exhausted quota to reject before upstream calls, got %d calls", upstreamCalls)
+	}
+
+	var billingCount int64
+	if err := db.Model(&entity.BillingRecord{}).Where("access_token_id = ?", token.ID).Count(&billingCount).Error; err != nil {
+		t.Fatalf("count billing records: %v", err)
+	}
+	if billingCount != 0 {
+		t.Fatalf("expected no billing records for exhausted quota, got %d", billingCount)
+	}
+}
+
+func TestSearchRejectsBillingThatWouldExceedAccessTokenQuotaWithoutCaching(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 221, "search-quota-boundary-user", "user")
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10).Error; err != nil {
+		t.Fatalf("seed user balance: %v", err)
+	}
+	token := seedControllerTokenForUser(t, db, user, "search-quota-boundary-token", 4.5)
+	if err := db.Model(&entity.AccessToken{}).Where("id = ?", token.ID).Update("total_quota_limit", 5).Error; err != nil {
+		t.Fatalf("seed access token quota: %v", err)
+	}
+	seedControllerDefaultSearchProviderConfig(t, db, "icodef", 1)
+
+	upstreamCalls := 0
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(authorization string, clientIP string, query url.Values) (resolvedSearchRequestContext, error) {
+			return resolveSearchRequestContextWithDB(db, authorization, clientIP, query)
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return []func(model.SearchRequest) ([][]string, error){
+				func(model.SearchRequest) ([][]string, error) {
+					upstreamCalls++
+					return [][]string{{"超出额度时不应记账的答案"}}, nil
+				},
+			}
+		},
+		nil,
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"额度边界题目","options":["A","B"]}`)))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Authorization", "Basic search-quota-boundary-token")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("expected status 401, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+			var got struct {
+				Detail string `json:"detail"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+				t.Fatalf("unmarshal unauthorized response: %v, body=%s", err, recorder.Body.String())
+			}
+			if !strings.Contains(got.Detail, "累计额度不足") {
+				t.Fatalf("expected quota error detail, got %q", got.Detail)
+			}
+
+			cacheKey := buildSearchResultCacheKey(token.ID, model.SearchRequest{
+				Question: "额度边界题目",
+				Options:  []string{"A", "B"},
+			})
+			if _, ok := defaultSearchResultCache.get(cacheKey); ok {
+				t.Fatal("expected quota-rejected result not to be cached")
+			}
+		})
+
+	if upstreamCalls != 1 {
+		t.Fatalf("expected one upstream call for quota-boundary request, got %d calls", upstreamCalls)
+	}
+
+	var billingCount int64
+	if err := db.Model(&entity.BillingRecord{}).Where("access_token_id = ?", token.ID).Count(&billingCount).Error; err != nil {
+		t.Fatalf("count billing records: %v", err)
+	}
+	if billingCount != 0 {
+		t.Fatalf("expected no billing records for quota-boundary request, got %d", billingCount)
+	}
+
+	var storedUser entity.User
+	if err := db.Where("id = ?", user.ID).First(&storedUser).Error; err != nil {
+		t.Fatalf("load quota-boundary user: %v", err)
+	}
+	if storedUser.Balance != 10 {
+		t.Fatalf("expected balance to stay 10 after quota rejection, got %v", storedUser.Balance)
+	}
+
+	var storedToken entity.AccessToken
+	if err := db.Where("id = ?", token.ID).First(&storedToken).Error; err != nil {
+		t.Fatalf("load quota-boundary token: %v", err)
+	}
+	if storedToken.TotalAmountUsed != 4.5 {
+		t.Fatalf("expected token usage to stay 4.5 after quota rejection, got %v", storedToken.TotalAmountUsed)
+	}
+}
+
 func TestSearchPersistsCachedSourceNameInLocalBillingSnapshot(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newSearchControllerTestDB(t)
