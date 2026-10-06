@@ -40,8 +40,6 @@ const (
 	maxSearchUnauthorizedBodyLength = 4096
 )
 
-var errInsufficientSearchBalance = errors.New("搜索余额不足")
-
 type searchUnauthorizedRequestSnapshot struct {
 	Method        string `json:"method"`
 	Path          string `json:"path"`
@@ -69,28 +67,26 @@ type searchAuditMetadata struct {
 }
 
 type resolvedSearchRequestContext struct {
-	Tokens                       map[string]string
-	EnabledSearchProviders       []string
-	AIConfig                     service.AISearchRequestConfig
-	AccessTokenCtx               *service.AccessTokenAuthContext
-	UsedDefaultSearch            bool
-	UsedDefaultSearchProviders   []string
-	UsedDefaultAI                bool
-	UserID                       int32
-	AccessTokenID                int32
-	RequestID                    string
-	SearchMode                   string
-	AllowNegativeBalanceOverride bool
+	Tokens                     map[string]string
+	EnabledSearchProviders     []string
+	AIConfig                   service.AISearchRequestConfig
+	AccessTokenCtx             *service.AccessTokenAuthContext
+	UsedDefaultSearch          bool
+	UsedDefaultSearchProviders []string
+	UsedDefaultAI              bool
+	UserID                     int32
+	AccessTokenID              int32
+	RequestID                  string
+	SearchMode                 string
 }
 
 type searchBillingContext struct {
-	UserID                       int32
-	AccessTokenID                int32
-	RequestID                    string
-	SearchMode                   string
-	UsedDefaultAccount           bool
-	Billable                     bool
-	AllowNegativeBalanceOverride bool
+	UserID             int32
+	AccessTokenID      int32
+	RequestID          string
+	SearchMode         string
+	UsedDefaultAccount bool
+	Billable           bool
 }
 
 type searchBillingCharge struct {
@@ -398,10 +394,7 @@ func Search(c *gin.Context) {
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "", c.ClientIP(), audit)
 	} else {
 		reportCompletedSearchBilling(resolved, useQuery, aiEnabled, result, hasAISearchUsage(aiUsage), usedLocalSearch)
-		if err := persistCompletedSearchBilling(resolved, useQuery, aiEnabled, req, result, aiUsage, usedLocalSearch, c.ClientIP(), audit); err != nil {
-			writeSearchUnauthorized(c, fmt.Errorf("%w: 当前余额不足，系统题库已禁用，请充值后再使用", service.ErrInvalidAccessTokenAuthorization), rawBody)
-			return
-		}
+		persistCompletedSearchBilling(resolved, useQuery, aiEnabled, req, result, aiUsage, usedLocalSearch, c.ClientIP(), audit)
 	}
 
 	if !usedSearchResultCache && len(localAnswer) == 0 && c.Query("noRecord") == "" { // 只有非缓存结果且本地题库没有答案时才记录
@@ -778,11 +771,10 @@ func didUseDefaultNormalSearchProvider(useQuery string, defaultProviders []strin
 
 func buildSearchBillingContext(resolved resolvedSearchRequestContext, useQuery string, aiEnabled bool, usedLocalSearch bool) searchBillingContext {
 	ctx := searchBillingContext{
-		UserID:                       resolved.UserID,
-		AccessTokenID:                resolved.AccessTokenID,
-		RequestID:                    resolved.RequestID,
-		SearchMode:                   resolved.SearchMode,
-		AllowNegativeBalanceOverride: resolved.AllowNegativeBalanceOverride,
+		UserID:        resolved.UserID,
+		AccessTokenID: resolved.AccessTokenID,
+		RequestID:     resolved.RequestID,
+		SearchMode:    resolved.SearchMode,
 	}
 	usedDefaultAI := aiEnabled && resolved.UsedDefaultAI
 
@@ -832,43 +824,39 @@ func reportCompletedSearchBilling(resolved resolvedSearchRequestContext, useQuer
 	searchBillingReporter(buildCompletedSearchBillingContext(resolved, useQuery, aiEnabled, result, hasAIUsage, usedLocalSearch))
 }
 
-func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQuery string, aiEnabled bool, req model.SearchRequest, result [][]string, aiUsage search.AISearchUsage, usedLocalSearch bool, clientIP string, audit searchAuditMetadata) error {
+func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQuery string, aiEnabled bool, req model.SearchRequest, result [][]string, aiUsage search.AISearchUsage, usedLocalSearch bool, clientIP string, audit searchAuditMetadata) {
 	ctx := buildCompletedSearchBillingContext(resolved, useQuery, aiEnabled, result, hasAISearchUsage(aiUsage), usedLocalSearch)
 	if !ctx.Billable {
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "", clientIP, audit)
-		return nil
+		return
 	}
 
 	db := resolveSearchPersistenceDB()
 	if db == nil {
 		logger.SysError(fmt.Sprintf("搜索计费落账失败：数据库不可用 requestId=%s", resolved.RequestID))
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_db_unavailable", clientIP, audit)
-		return nil
+		return
 	}
 
 	charges, err := resolveCompletedSearchBillingCharges(db, resolved, useQuery, req, aiUsage, usedLocalSearch)
 	if err != nil {
 		logger.SysError(fmt.Sprintf("搜索计费落账失败：%s requestId=%s", err.Error(), resolved.RequestID))
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_charge_resolve_failed", clientIP, audit)
-		return nil
+		return
 	}
 	totalAmount := completedSearchBillingAmount(charges)
 	if totalAmount <= 0 {
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_zero_amount", clientIP, audit)
-		return nil
+		return
 	}
 
 	if err := persistSearchBillingRecordsWithDB(db, ctx, charges); err != nil {
 		logger.SysError(fmt.Sprintf("搜索计费落账失败：%s requestId=%s", err.Error(), resolved.RequestID))
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_persist_failed", clientIP, audit)
-		if errors.Is(err, errInsufficientSearchBalance) {
-			return err
-		}
-		return nil
+		return
 	}
 
 	writeCompletedSearchAuditLog(resolved, useQuery, result, completedSearchBillingProviderLabel(charges), clientIP, audit)
-	return nil
 }
 
 func resolveSearchPersistenceDB() *gorm.DB {
@@ -1104,10 +1092,6 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 		}
 
 		balanceAfter := roundCurrencyAmount(user.Balance)
-		if !ctx.AllowNegativeBalanceOverride && balanceAfter < totalCharged {
-			return errInsufficientSearchBalance
-		}
-
 		for _, charge := range charges {
 			if charge.Amount <= 0 {
 				continue
@@ -1245,9 +1229,7 @@ func resolveSearchRequestContextWithDB(db *gorm.DB, authorization string, client
 		resolved.UserID = authCtx.User.ID
 		resolved.AccessTokenID = authCtx.AccessToken.ID
 		if authCtx.User.Balance <= 0 {
-			if authCtx.User.Balance < 0 && hasExplicitSearchProviderOverride(query) {
-				resolved.AllowNegativeBalanceOverride = true
-			} else {
+			if authCtx.User.Balance >= 0 || !hasExplicitSearchProviderOverride(query) {
 				return resolved, fmt.Errorf("%w: 当前余额不足，系统题库已禁用，请充值后再使用", service.ErrInvalidAccessTokenAuthorization)
 			}
 		} else {

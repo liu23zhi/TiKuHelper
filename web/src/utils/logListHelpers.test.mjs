@@ -9,7 +9,6 @@ import {
   buildLogActionLabel,
   buildLogDetailSections,
   buildLogModuleLabel,
-  buildLogQidLabel,
   buildLogRowDetail,
   buildLogStructuredFields,
 } from './logListHelpers.mjs';
@@ -76,7 +75,7 @@ test('buildLogDetailSections exposes structured search summary with raw request 
     {
       key: 'billingProvider',
       label: '计费渠道',
-      value: 'icodef',
+      value: 'Icodef 题库',
     },
     {
       key: 'localQuestionId',
@@ -134,7 +133,7 @@ test('buildLogDetailSections keeps anonymous false and explicit request source i
     {
       key: 'billingProvider',
       label: '计费渠道',
-      value: 'local',
+      value: '本地题库',
     },
     {
       key: 'anonymous',
@@ -171,10 +170,24 @@ test('buildLogStructuredFields splits search description and snapshots into sing
     requestSource: '-',
     answerCount: '4',
     hitProvider: 'icodef',
-    billingProvider: 'icodef',
+    billingProvider: 'Icodef 题库',
     requestSnapshot: 'method=POST body={"question":"测试"}',
     responseSnapshot: '{"answer":["A"]}',
   });
+});
+
+test('buildLogStructuredFields maps billing provider codes to Chinese labels', () => {
+  assert.equal(buildLogStructuredFields({
+    description: '搜索完成 requestId=req-ai mode=normal use= answers=1 hitProvider=ai billingProvider=ai',
+  }).billingProvider, 'AI 搜索');
+
+  assert.equal(buildLogStructuredFields({
+    description: '搜索完成 requestId=req-mixed mode=normal use=icodef answers=1 hitProvider=ai billingProvider=icodef,ai',
+  }).billingProvider, 'Icodef 题库、AI 搜索');
+
+  assert.equal(buildLogStructuredFields({
+    description: '搜索完成 requestId=req-failed mode=normal use= answers=1 hitProvider=ai billingProvider=billing_persist_failed',
+  }).billingProvider, '计费落账失败');
 });
 
 test('buildLogStructuredFields keeps non-search logs on summary and snapshot columns', () => {

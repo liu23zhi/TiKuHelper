@@ -63,7 +63,7 @@ export function buildLogStructuredFields(record = {}) {
     requestSource: parsedDescription.use || '-',
     answerCount: parsedDescription.answers || '-',
     hitProvider: parsedDescription.hitProvider || '-',
-    billingProvider: parsedDescription.billingProvider || '-',
+    billingProvider: buildBillingProviderLabel(parsedDescription.billingProvider),
     requestSnapshot: request || '-',
     responseSnapshot: response || '-',
   };
@@ -193,8 +193,40 @@ function parseSearchLogDescription(description) {
       if (value === 'true') value = '是';
       if (value === 'false') value = '否';
     }
+    if (key === 'billingProvider') {
+      value = buildBillingProviderLabel(value);
+    }
     return { key, label, value };
   }).filter((section) => section.value !== '-' || section.key === 'use');
+}
+
+function buildBillingProviderLabel(value) {
+  const raw = String(value || '').trim();
+  if (!raw || raw === '-') {
+    return '-';
+  }
+
+  const labelMap = {
+    ai: 'AI 搜索',
+    local: '本地题库',
+    icodef: 'Icodef 题库',
+    wanneng: '万能题库',
+    tikuhai: '题库海',
+    enncy: 'Enncy 言溪题库',
+    aidian: '爱点题库',
+    lemon: '柠檬题库',
+    billing_persist_failed: '计费落账失败',
+    billing_db_unavailable: '计费数据库不可用',
+    billing_charge_resolve_failed: '计费计算失败',
+    billing_zero_amount: '零金额未计费',
+  };
+
+  return raw
+    .split(',')
+    .map((part) => String(part || '').trim())
+    .filter(Boolean)
+    .map((part) => labelMap[part.toLowerCase()] || part)
+    .join('、');
 }
 
 function parseSearchLogDescriptionMap(description) {
