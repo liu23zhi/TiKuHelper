@@ -134,6 +134,17 @@ test('buildSearchAccountDefaultParameterHint explains local provider access toke
   );
 });
 
+test('buildSearchAccountDefaultParameterHint does not expose the default token value', () => {
+  assert.equal(
+    buildSearchAccountDefaultParameterHint({
+      provider: 'icodef',
+      tokenKey: 'icodefToken',
+      tokenValue: 'secret-token-value',
+    }),
+    '参数名：icodefToken'
+  );
+});
+
 test('buildSearchAccountUnitPriceHint keeps AI guidance in the unit price column', () => {
   assert.equal(
     buildSearchAccountUnitPriceHint({
@@ -161,7 +172,7 @@ test('buildSearchAccountConfigSummary keeps backward-compatible merged text for 
       tokenValue: 'abc123',
       flatPrice: 0.125,
     }),
-    '参数名：token｜默认 Token：abc123｜单次价格：¥ 0.12500000'
+    '参数名：token｜单次价格：¥ 0.12500000'
   );
 });
 

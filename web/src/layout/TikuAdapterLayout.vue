@@ -2,8 +2,12 @@
   <div class="layout-shell">
     <Header :hasLogout="true" />
     <main class="layout-main">
-      <aside class="layout-sider">
-        <SiderMenu :currentUser="currentUser" />
+      <aside class="layout-sider" :class="{ 'layout-sider--collapsed': siderCollapsed }">
+        <SiderMenu
+          :currentUser="currentUser"
+          :collapsed="siderCollapsed"
+          @toggle="toggleSider"
+        />
       </aside>
       <section class="layout-content">
         <router-view></router-view>
@@ -13,7 +17,7 @@
 </template>
 
 <script>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import Header from '../components/PageHeader'
 import SiderMenu from '../components/SiderMenu'
 import { useRouter } from 'vue-router';
@@ -23,11 +27,17 @@ export default {
   name: 'AdapterLayout',
   setup() {
     const router = useRouter()
+    const siderCollapsed = ref(false)
     const currentUser = computed(() => getStoredCurrentUser())
+    const toggleSider = () => {
+      siderCollapsed.value = !siderCollapsed.value
+    }
     if (!currentUser.value) {
       router.push('/login')
       return {
         currentUser,
+        siderCollapsed,
+        toggleSider,
       }
     }
 
@@ -49,6 +59,8 @@ export default {
 
     return {
       currentUser,
+      siderCollapsed,
+      toggleSider,
     }
   },
   components: {
@@ -76,6 +88,11 @@ export default {
   background: #ffffff;
   border-right: 1px solid #eef2f7;
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
+  transition: width 0.2s ease;
+}
+
+.layout-sider--collapsed {
+  width: 80px;
 }
 
 .layout-content {
@@ -95,6 +112,11 @@ export default {
     width: 100%;
     border-right: none;
     border-bottom: 1px solid #eef2f7;
+    transition: none;
+  }
+
+  .layout-sider.layout-sider--collapsed {
+    width: 100%;
   }
 
   .layout-content {

@@ -57,8 +57,7 @@ export function buildSearchAccountDefaultParameterHint(record = {}) {
     return '当前题库无需默认参数。';
   }
 
-  const tokenValue = String(record.tokenValue || '').trim() || '-';
-  return `参数名：${tokenKey}｜默认 Token：${tokenValue}`;
+  return `参数名：${tokenKey}`;
 }
 
 export function buildSearchAccountUnitPriceHint(record = {}) {
