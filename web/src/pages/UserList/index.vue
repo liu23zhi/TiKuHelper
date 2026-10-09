@@ -53,7 +53,7 @@
         :loading="tabLoading"
         :pagination="false"
         row-key="id"
-        :scroll="{ x: 1480 }"
+        :scroll="{ x: 1560 }"
       >
         <template #nickname="{ record }">
           <span>{{ record.nickname || '-' }}</span>
@@ -277,6 +277,12 @@ export default defineComponent({
         { label: '减少', value: 'decrease' },
       ],
       columns: [
+        {
+          title: 'ID',
+          dataIndex: 'id',
+          key: 'id',
+          width: 80,
+        },
         {
           title: '用户名',
           dataIndex: 'username',

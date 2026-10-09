@@ -751,6 +751,26 @@ func resolveSearchAuditHitProvider(useQuery string, defaultProviders []string, u
 
 func writeSearchUnauthorized(c *gin.Context, err error, rawBody string) {
 	resp := buildSearchUnauthorizedResponse(c, err, rawBody)
+	auditUser := resolveSearchUnauthorizedAuditUser(c.GetHeader("Authorization"))
+	requestSnapshot, _ := json.Marshal(resp.Request)
+	responseSnapshot, _ := json.Marshal(resp)
+	writeAuditLog(
+		auditUser,
+		searchAuditModule,
+		logActionSearch,
+		truncateForDebug(fmt.Sprintf(
+			"搜索失败 detail=%s method=%s path=%s clientIp=%s authorization=%s",
+			resp.Detail,
+			resp.Request.Method,
+			resp.Request.Path,
+			resp.Request.ClientIP,
+			resp.Request.Authorization,
+		), 240),
+		resp.Request.ClientIP,
+		0,
+		string(requestSnapshot),
+		string(responseSnapshot),
+	)
 	logger.SysError(fmt.Sprintf(
 		"搜索接口鉴权失败 detail=%s method=%s path=%s origin=%s contentType=%s clientIp=%s authorization=%s body=%s",
 		resp.Detail,
@@ -763,6 +783,21 @@ func writeSearchUnauthorized(c *gin.Context, err error, rawBody string) {
 		resp.Request.Body,
 	))
 	c.JSON(http.StatusUnauthorized, resp)
+}
+
+func resolveSearchUnauthorizedAuditUser(authorization string) *entity.User {
+	if strings.TrimSpace(authorization) == "" {
+		return nil
+	}
+	db := resolveSearchPersistenceDB()
+	if db == nil {
+		return nil
+	}
+	authCtx, err := service.ResolveAccessTokenFromBasicAuth(db, authorization)
+	if err != nil {
+		return nil
+	}
+	return &authCtx.User
 }
 
 func didUseDefaultNormalSearchProvider(useQuery string, defaultProviders []string) bool {
@@ -1129,8 +1164,10 @@ func roundCurrencyAmount(amount float64) float64 {
 func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, charges []searchBillingCharge) error {
 	return db.Transaction(func(tx *gorm.DB) error {
 		var accessToken entity.AccessToken
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", ctx.AccessTokenID).First(&accessToken).Error; err != nil {
-			return err
+		if ctx.AccessTokenID > 0 {
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", ctx.AccessTokenID).First(&accessToken).Error; err != nil {
+				return err
+			}
 		}
 
 		var user entity.User
@@ -1142,8 +1179,10 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 		if totalCharged <= 0 {
 			return nil
 		}
-		if accessTokenQuotaWouldExceed(accessToken, totalCharged) {
-			return errAccessTokenQuotaExceeded
+		if ctx.AccessTokenID > 0 {
+			if accessTokenQuotaWouldExceed(accessToken, totalCharged) {
+				return errAccessTokenQuotaExceeded
+			}
 		}
 
 		balanceAfter := roundCurrencyAmount(user.Balance)
@@ -1175,9 +1214,11 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 			}
 		}
 
-		totalAmountUsedAfter := roundCurrencyAmount(accessToken.TotalAmountUsed + totalCharged)
-		if err := tx.Model(&accessToken).Where("id = ?", accessToken.ID).Update("total_amount_used", totalAmountUsedAfter).Error; err != nil {
-			return err
+		if ctx.AccessTokenID > 0 {
+			totalAmountUsedAfter := roundCurrencyAmount(accessToken.TotalAmountUsed + totalCharged)
+			if err := tx.Model(&accessToken).Where("id = ?", accessToken.ID).Update("total_amount_used", totalAmountUsedAfter).Error; err != nil {
+				return err
+			}
 		}
 
 		return tx.Model(&user).Where("id = ?", user.ID).Update("balance", balanceAfter).Error

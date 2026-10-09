@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/service"
+	"github.com/itihey/tikuAdapter/pkg/model"
 )
 
 const (
@@ -67,7 +68,7 @@ func newAIFallbackTaskStore(ttl time.Duration, now func() time.Time) *aiFallback
 
 var defaultAIFallbackTaskStore = newAIFallbackTaskStore(aiFallbackTaskDefaultTTL, time.Now)
 
-func (s *aiFallbackTaskStore) create(userID int32, run func() service.AIFallbackResult) string {
+func (s *aiFallbackTaskStore) create(userID int32, run func(taskID string) service.AIFallbackResult) string {
 	taskID := uuid.NewString()
 	now := s.now()
 
@@ -83,7 +84,9 @@ func (s *aiFallbackTaskStore) create(userID int32, run func() service.AIFallback
 	s.mu.Unlock()
 
 	go func() {
-		s.complete(taskID, runAIFallbackTaskSafely(run))
+		s.complete(taskID, runAIFallbackTaskSafely(func() service.AIFallbackResult {
+			return run(taskID)
+		}))
 	}()
 
 	return taskID
@@ -150,17 +153,60 @@ func runAIFallbackTaskSafely(run func() service.AIFallbackResult) (result servic
 func CreateAIFallbackTask(c *gin.Context) {
 	var input aiFallbackInput
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusOK, service.BuildAIFallbackInvalidInputResult("参数错误"))
+		result := service.BuildAIFallbackInvalidInputResult("参数错误")
+		writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), uuid.NewString(), "", "input", "async", model.SearchRequest{}, result)
+		c.JSON(http.StatusOK, result)
 		return
 	}
 	if strings.TrimSpace(input.Question) == "" {
-		c.JSON(http.StatusOK, service.BuildAIFallbackInvalidInputResult("题目不能为空"))
+		result := service.BuildAIFallbackInvalidInputResult("题目不能为空")
+		writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), uuid.NewString(), "", "input", "async", model.SearchRequest{
+			Type:    input.Type,
+			Options: input.Options,
+		}, result)
+		c.JSON(http.StatusOK, result)
+		return
+	}
+	billingCtx, err := resolveAIFallbackBillingContext(c)
+	if err != nil {
+		result := service.BuildAIFallbackInsufficientBalanceResult(err.Error())
+		writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), uuid.NewString(), "", "billing_precheck", "async", model.SearchRequest{
+			Question: strings.TrimSpace(input.Question),
+			Type:     input.Type,
+			Options:  input.Options,
+		}, result)
+		c.JSON(http.StatusOK, result)
 		return
 	}
 
 	userID := currentAIFallbackUserID(c)
-	taskID := defaultAIFallbackTaskStore.create(userID, func() service.AIFallbackResult {
-		return runAIFallbackService(input.Question, input.Type, input.Options)
+	requestID := uuid.NewString()
+	auditIdentity := newAIFallbackAuditIdentity(c)
+	req := model.SearchRequest{
+		Question: strings.TrimSpace(input.Question),
+		Type:     input.Type,
+		Options:  input.Options,
+	}
+	taskID := defaultAIFallbackTaskStore.create(userID, func(taskID string) service.AIFallbackResult {
+		db := resolveSearchPersistenceDB()
+		currentBillingCtx, err := loadAIFallbackBillingContextWithDB(db, billingCtx.UserID, billingCtx.AccessTokenID)
+		if err != nil {
+			result := service.BuildAIFallbackInsufficientBalanceResult(err.Error())
+			writeAIFallbackAuditLog(auditIdentity, requestID, taskID, "billing_precheck", "async", req, result)
+			return result
+		}
+		result := runAIFallbackService(input.Question, input.Type, input.Options)
+		if !result.Success {
+			writeAIFallbackAuditLog(auditIdentity, requestID, taskID, "result", "async", req, result)
+			return result
+		}
+		if err := persistAIFallbackBilling(currentBillingCtx, requestID, req, result); err != nil {
+			failure := buildAIFallbackBillingFailureResult(err)
+			writeAIFallbackAuditLog(auditIdentity, requestID, taskID, "billing", "async", req, failure)
+			return failure
+		}
+		writeAIFallbackAuditLog(auditIdentity, requestID, taskID, "result", "async", req, result)
+		return result
 	})
 
 	c.JSON(http.StatusAccepted, aiFallbackTaskResponse{

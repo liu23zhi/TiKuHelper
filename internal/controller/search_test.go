@@ -318,6 +318,47 @@ func TestSearchReturnsUnauthorizedDetailAndRequestSnapshot(t *testing.T) {
 	}
 }
 
+func TestSearchUnauthorizedWritesAuditLogWithResolvedUser(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 310, "unauthorized-search-log-user", "user")
+	token := seedControllerTokenForUser(t, db, user, "unauthorized-search-log-token", 0)
+
+	originalResolver := resolveSearchRequestContext
+	defer func() { resolveSearchRequestContext = originalResolver }()
+	resolveSearchRequestContext = func(authorization string, clientIP string, query url.Values) (resolvedSearchRequestContext, error) {
+		return resolveSearchRequestContextWithDB(db, authorization, clientIP, query)
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?noRecord=1", bytes.NewReader([]byte(`{"question":"余额拒绝日志题目","options":["A","B"]}`)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+token.TokenValue)
+	ctx.Request = request
+
+	Search(ctx)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	var entry entity.Log
+	if err := db.Where("module = ? AND user_id = ?", "search", user.ID).Order("id DESC").First(&entry).Error; err != nil {
+		t.Fatalf("load search failure audit log: %v", err)
+	}
+	for _, check := range []string{"搜索失败", "当前余额不足", "method=POST", "path=/adapter-service/search"} {
+		if !strings.Contains(entry.Description, check) {
+			t.Fatalf("expected log description %q to contain %q", entry.Description, check)
+		}
+	}
+	if strings.TrimSpace(entry.OldAnswer) == "" || strings.TrimSpace(entry.NewAnswer) == "" {
+		t.Fatalf("expected request and response snapshots, got %+v", entry)
+	}
+	if strings.Contains(entry.OldAnswer, token.TokenValue) || strings.Contains(entry.NewAnswer, token.TokenValue) {
+		t.Fatalf("expected audit snapshots to mask the access token")
+	}
+}
+
 func TestMaskAuthorizationHeaderKeepsSchemeAndMasksSecret(t *testing.T) {
 	got := maskAuthorizationHeader("Bearer debug-secret-token-123456")
 	if got == "Bearer debug-secret-token-123456" {

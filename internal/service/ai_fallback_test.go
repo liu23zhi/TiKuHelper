@@ -84,7 +84,11 @@ func TestSearchAIFallbackWithDBKeepsUsableAnswerFromMixedOutput(t *testing.T) {
 	original := runAIFallbackSearchWithUsage
 	defer func() { runAIFallbackSearchWithUsage = original }()
 	runAIFallbackSearchWithUsage = func(client *internalsearch.ChatGptClient, req model.SearchRequest) ([][]string, internalsearch.AISearchUsage, error) {
-		return [][]string{{" ", "不确定", "B"}}, internalsearch.AISearchUsage{}, nil
+		return [][]string{{" ", "不确定", "B"}}, internalsearch.AISearchUsage{
+			InputTokens:  1000,
+			OutputTokens: 500,
+			TotalTokens:  1500,
+		}, nil
 	}
 
 	result := SearchAIFallbackWithDB(db, model.SearchRequest{Question: "1+1=?", Options: []string{"1", "2"}, Type: 0})
@@ -94,6 +98,12 @@ func TestSearchAIFallbackWithDBKeepsUsableAnswerFromMixedOutput(t *testing.T) {
 	}
 	if result.Result == nil || result.Result.Answer != "2" {
 		t.Fatalf("expected cleaned answer 2, got %+v", result.Result)
+	}
+	if result.Model != "gpt-4o-mini" {
+		t.Fatalf("expected fallback model to be preserved, got %q", result.Model)
+	}
+	if result.Usage.InputTokens != 1000 || result.Usage.OutputTokens != 500 || result.Usage.TotalTokens != 1500 {
+		t.Fatalf("expected fallback usage to be preserved, got %+v", result.Usage)
 	}
 }
 
@@ -188,7 +198,6 @@ func TestSearchAIFallbackWithDBRejectsChoiceAnswerOutsideProvidedOptions(t *test
 		t.Fatalf("expected NO_ANSWER, got %+v", result.Error)
 	}
 }
-
 
 func TestSearchAIFallbackWithDBMapsErrTargetNoAnswerToNoAnswerCode(t *testing.T) {
 	db := newSearchAccountConfigTestDB(t)

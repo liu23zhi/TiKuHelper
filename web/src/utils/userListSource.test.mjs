@@ -15,3 +15,9 @@ test('UserList create-user modal explains the password rule and uses the dedicat
   assert.match(content, /buildAdminCreateUserPayload/);
   assert.doesNotMatch(content, /message\.warning\('请输入用户名和密码'\)/);
 });
+
+test('UserList table exposes the user id column first', async () => {
+  const content = await readFile(userListPagePath, 'utf8');
+
+  assert.match(content, /title: 'ID',\s+dataIndex: 'id',\s+key: 'id',/);
+});

@@ -6,11 +6,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	searchpkg "github.com/itihey/tikuAdapter/internal/search"
 	"github.com/itihey/tikuAdapter/internal/service"
 )
 
@@ -18,7 +20,7 @@ func TestAIFallbackTaskStoreRunsTaskAndScopesResultToOwner(t *testing.T) {
 	release := make(chan struct{})
 	store := newAIFallbackTaskStore(time.Minute, time.Now)
 
-	taskID := store.create(7, func() service.AIFallbackResult {
+	taskID := store.create(7, func(string) service.AIFallbackResult {
 		<-release
 		return service.AIFallbackResult{
 			Success: true,
@@ -60,7 +62,7 @@ func TestAIFallbackTaskStoreExpiresTasks(t *testing.T) {
 		return now
 	})
 
-	taskID := store.create(7, func() service.AIFallbackResult {
+	taskID := store.create(7, func(string) service.AIFallbackResult {
 		<-release
 		return service.BuildAIFallbackUnavailableResult()
 	})
@@ -75,6 +77,11 @@ func TestAIFallbackTaskStoreExpiresTasks(t *testing.T) {
 
 func TestCreateAIFallbackTaskReturnsRunningTaskAndStatusCanComplete(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 7, "ai-task-running-user", "user")
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10).Error; err != nil {
+		t.Fatalf("seed user balance: %v", err)
+	}
 	originalStore := defaultAIFallbackTaskStore
 	originalRun := runAIFallbackService
 	defer func() {
@@ -95,7 +102,7 @@ func TestCreateAIFallbackTaskReturnsRunningTaskAndStatusCanComplete(t *testing.T
 
 	createRecorder := httptest.NewRecorder()
 	createContext, _ := gin.CreateTestContext(createRecorder)
-	createContext.Set("user", &entity.User{ID: 7})
+	createContext.Set("user", &user)
 	createContext.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback/tasks", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
 	createContext.Request.Header.Set("Content-Type", "application/json")
 
@@ -131,7 +138,7 @@ func TestGetAIFallbackTaskStatusRejectsOtherUser(t *testing.T) {
 	}()
 
 	defaultAIFallbackTaskStore = newAIFallbackTaskStore(time.Minute, time.Now)
-	taskID := defaultAIFallbackTaskStore.create(7, func() service.AIFallbackResult {
+	taskID := defaultAIFallbackTaskStore.create(7, func(string) service.AIFallbackResult {
 		return service.BuildAIFallbackUnavailableResult()
 	})
 
@@ -144,6 +151,268 @@ func TestGetAIFallbackTaskStatusRejectsOtherUser(t *testing.T) {
 
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("expected status 403, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestCreateAIFallbackTaskRejectsZeroBalanceBeforeQueueing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 303, "zero-balance-ai-task-user", "user")
+	token := seedControllerTokenForUser(t, db, user, "zero-balance-ai-task-token", 0)
+
+	originalStore := defaultAIFallbackTaskStore
+	originalRun := runAIFallbackService
+	defer func() {
+		defaultAIFallbackTaskStore = originalStore
+		runAIFallbackService = originalRun
+	}()
+	defaultAIFallbackTaskStore = newAIFallbackTaskStore(time.Minute, time.Now)
+	aiCalls := 0
+	runAIFallbackService = func(question string, questionType int, options []string) service.AIFallbackResult {
+		aiCalls++
+		return service.AIFallbackResult{
+			Success: true,
+			Result: &service.AIFallbackAnswer{
+				Question: question,
+				Answer:   "2",
+			},
+		}
+	}
+
+	router := gin.New()
+	router.POST("/adapter-service/ai-fallback/tasks", AuthOrAccessToken, CreateAIFallbackTask)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback/tasks", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+token.TokenValue)
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	var got aiFallbackTaskResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if got.Success {
+		t.Fatalf("expected zero-balance task creation to fail, got %+v", got)
+	}
+	if got.Error == nil || got.Error.Code != service.AIFallbackErrorCodeInsufficientBalance {
+		t.Fatalf("expected INSUFFICIENT_BALANCE, got %+v", got.Error)
+	}
+	if aiCalls != 0 {
+		t.Fatalf("expected no AI call for zero balance, got %d", aiCalls)
+	}
+	var entry entity.Log
+	if err := db.Where("module = ? AND action = ?", "ai_fallback", 11).Order("id DESC").First(&entry).Error; err != nil {
+		t.Fatalf("load AI fallback precheck log: %v", err)
+	}
+	for _, check := range []string{"status=failed", "stage=billing_precheck", "mode=async", "code=INSUFFICIENT_BALANCE"} {
+		if !strings.Contains(entry.Description, check) {
+			t.Fatalf("expected log description %q to contain %q", entry.Description, check)
+		}
+	}
+}
+
+func TestCreateAIFallbackTaskBillsSuccessfulAIUsageOnce(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 304, "billed-ai-task-user", "user")
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10).Error; err != nil {
+		t.Fatalf("seed user balance: %v", err)
+	}
+	token := seedControllerTokenForUser(t, db, user, "billed-ai-task-token", 0)
+	seedControllerAIModelArchitecture(t, db, "fallback-billing-model", 2.5)
+
+	originalStore := defaultAIFallbackTaskStore
+	originalRun := runAIFallbackService
+	defer func() {
+		defaultAIFallbackTaskStore = originalStore
+		runAIFallbackService = originalRun
+	}()
+	defaultAIFallbackTaskStore = newAIFallbackTaskStore(time.Minute, time.Now)
+	runAIFallbackService = func(question string, questionType int, options []string) service.AIFallbackResult {
+		return service.AIFallbackResult{
+			Success: true,
+			Result: &service.AIFallbackAnswer{
+				Question: question,
+				Answer:   "2",
+			},
+			Model: "fallback-billing-model",
+			Usage: searchpkg.AISearchUsage{
+				InputTokens:  1000,
+				OutputTokens: 500,
+				TotalTokens:  1500,
+			},
+		}
+	}
+
+	router := gin.New()
+	router.POST("/adapter-service/ai-fallback/tasks", AuthOrAccessToken, CreateAIFallbackTask)
+	router.GET("/adapter-service/ai-fallback/status", AuthOrAccessToken, GetAIFallbackTaskStatus)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback/tasks", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+token.TokenValue)
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("expected status 202, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	var created aiFallbackTaskResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &created); err != nil {
+		t.Fatalf("unmarshal create response: %v", err)
+	}
+	if created.TaskID == "" {
+		t.Fatalf("expected task id, got %+v", created)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		statusRecorder := httptest.NewRecorder()
+		statusRequest := httptest.NewRequest(http.MethodGet, "/adapter-service/ai-fallback/status?taskId="+created.TaskID, nil)
+		statusRequest.Header.Set("Authorization", "Bearer "+token.TokenValue)
+		router.ServeHTTP(statusRecorder, statusRequest)
+		if statusRecorder.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d with body %s", statusRecorder.Code, statusRecorder.Body.String())
+		}
+		var status aiFallbackTaskResponse
+		if err := json.Unmarshal(statusRecorder.Body.Bytes(), &status); err != nil {
+			t.Fatalf("unmarshal status response: %v", err)
+		}
+		if status.Status == aiFallbackTaskStatusSucceeded {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("task did not complete: %+v", status)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	var records []entity.BillingRecord
+	if err := db.Where("user_id = ? AND access_token_id = ?", user.ID, token.ID).Find(&records).Error; err != nil {
+		t.Fatalf("load billing records: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected exactly one billing record, got %+v", records)
+	}
+	record := records[0]
+	if record.Provider != searchModeAI || record.ModelName != "fallback-billing-model" {
+		t.Fatalf("unexpected billing provider/model: %+v", record)
+	}
+	if record.Amount != 3.75 || record.TotalTokens != 1500 {
+		t.Fatalf("unexpected billing amount/tokens: %+v", record)
+	}
+	if record.BalanceBefore != 10 || record.BalanceAfter != 6.25 {
+		t.Fatalf("unexpected billing balance: %+v", record)
+	}
+
+	var storedUser entity.User
+	if err := db.Where("id = ?", user.ID).First(&storedUser).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	if storedUser.Balance != 6.25 {
+		t.Fatalf("expected user balance 6.25, got %v", storedUser.Balance)
+	}
+	var storedToken entity.AccessToken
+	if err := db.Where("id = ?", token.ID).First(&storedToken).Error; err != nil {
+		t.Fatalf("load token: %v", err)
+	}
+	if storedToken.TotalAmountUsed != 3.75 {
+		t.Fatalf("expected token usage 3.75, got %v", storedToken.TotalAmountUsed)
+	}
+
+	statusAgain := httptest.NewRecorder()
+	statusAgainRequest := httptest.NewRequest(http.MethodGet, "/adapter-service/ai-fallback/status?taskId="+created.TaskID, nil)
+	statusAgainRequest.Header.Set("Authorization", "Bearer "+token.TokenValue)
+	router.ServeHTTP(statusAgain, statusAgainRequest)
+	if statusAgain.Code != http.StatusOK {
+		t.Fatalf("expected repeated status 200, got %d", statusAgain.Code)
+	}
+	var count int64
+	if err := db.Model(&entity.BillingRecord{}).Where("user_id = ? AND access_token_id = ?", user.ID, token.ID).Count(&count).Error; err != nil {
+		t.Fatalf("count billing records: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected repeated status polling not to double bill, got %d records", count)
+	}
+	var entry entity.Log
+	if err := db.Where("module = ? AND action = ?", "ai_fallback", 11).Order("id DESC").First(&entry).Error; err != nil {
+		t.Fatalf("load AI fallback task success log: %v", err)
+	}
+	for _, check := range []string{"status=success", "billingProvider=ai", "taskId=" + created.TaskID} {
+		if !strings.Contains(entry.Description, check) {
+			t.Fatalf("expected log description %q to contain %q", entry.Description, check)
+		}
+	}
+}
+
+func TestCreateAIFallbackTaskWritesFailureAuditLog(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 308, "failed-ai-task-user", "user")
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10).Error; err != nil {
+		t.Fatalf("seed user balance: %v", err)
+	}
+	token := seedControllerTokenForUser(t, db, user, "failed-ai-task-token", 0)
+
+	originalStore := defaultAIFallbackTaskStore
+	originalRun := runAIFallbackService
+	defer func() {
+		defaultAIFallbackTaskStore = originalStore
+		runAIFallbackService = originalRun
+	}()
+	defaultAIFallbackTaskStore = newAIFallbackTaskStore(time.Minute, time.Now)
+	runAIFallbackService = func(question string, questionType int, options []string) service.AIFallbackResult {
+		return service.BuildAIFallbackUnavailableResult()
+	}
+
+	router := gin.New()
+	router.POST("/adapter-service/ai-fallback/tasks", AuthOrAccessToken, CreateAIFallbackTask)
+	router.GET("/adapter-service/ai-fallback/status", AuthOrAccessToken, GetAIFallbackTaskStatus)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback/tasks", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+token.TokenValue)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("expected status 202, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	var created aiFallbackTaskResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &created); err != nil {
+		t.Fatalf("unmarshal create response: %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		statusRecorder := httptest.NewRecorder()
+		statusRequest := httptest.NewRequest(http.MethodGet, "/adapter-service/ai-fallback/status?taskId="+created.TaskID, nil)
+		statusRequest.Header.Set("Authorization", "Bearer "+token.TokenValue)
+		router.ServeHTTP(statusRecorder, statusRequest)
+		var status aiFallbackTaskResponse
+		if err := json.Unmarshal(statusRecorder.Body.Bytes(), &status); err != nil {
+			t.Fatalf("unmarshal status response: %v", err)
+		}
+		if status.Status == aiFallbackTaskStatusFailed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("task did not fail: %+v", status)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	var entry entity.Log
+	if err := db.Where("module = ? AND action = ?", "ai_fallback", 11).Order("id DESC").First(&entry).Error; err != nil {
+		t.Fatalf("load AI fallback task failure log: %v", err)
+	}
+	for _, check := range []string{"status=failed", "stage=result", "code=AI_UNAVAILABLE", "taskId=" + created.TaskID} {
+		if !strings.Contains(entry.Description, check) {
+			t.Fatalf("expected log description %q to contain %q", entry.Description, check)
+		}
 	}
 }
 

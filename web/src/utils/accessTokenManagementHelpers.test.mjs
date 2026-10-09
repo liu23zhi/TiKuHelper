@@ -15,7 +15,7 @@ test('buildAccessTokenBalanceAlert shows zero and negative balance suspension wa
   assert.deepEqual(buildAccessTokenBalanceAlert({ balance: 0 }), {
     type: 'warning',
     message: '当前余额不足',
-    description: '当前余额已不足，搜索服务已暂停。请先充值后再调用 /adapter-service/search。',
+    description: '当前余额已不足，搜索服务已暂停。请先充值后再调用。',
   });
 });
 

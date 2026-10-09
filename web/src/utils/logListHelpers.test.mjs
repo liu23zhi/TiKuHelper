@@ -19,6 +19,7 @@ const logListPagePath = path.join(__dirname, '..', 'pages', 'LogList', 'index.vu
 
 test('buildLogModuleLabel supports search module wording', () => {
   assert.equal(buildLogModuleLabel('search'), '搜题');
+  assert.equal(buildLogModuleLabel('ai_fallback'), 'AI 兜底');
   assert.equal(buildLogModuleLabel('auth'), '认证');
   assert.equal(buildLogModuleLabel('captcha'), '验证码');
   assert.equal(buildLogModuleLabel('unknown'), 'unknown');
@@ -26,6 +27,7 @@ test('buildLogModuleLabel supports search module wording', () => {
 
 test('buildLogActionLabel renders search action specially for search module', () => {
   assert.equal(buildLogActionLabel(3, 'search'), '搜题');
+  assert.equal(buildLogActionLabel(11, 'ai_fallback'), 'AI 兜底');
   assert.equal(buildLogActionLabel(3, 'question'), '查询');
   assert.equal(buildLogActionLabel(10, 'auth'), '登录');
   assert.equal(buildLogActionLabel(20, 'captcha'), '远程生成');
@@ -206,6 +208,30 @@ test('buildLogStructuredFields keeps non-search logs on summary and snapshot col
     requestSnapshot: 'before',
     responseSnapshot: 'after',
   });
+});
+
+test('buildLogStructuredFields parses AI fallback failures for list columns', () => {
+  assert.deepEqual(buildLogStructuredFields({
+    description: 'AI兜底失败 status=failed stage=billing_precheck mode=async requestId=req-ai-fallback taskId=task-1 code=INSUFFICIENT_BALANCE message=当前余额不足',
+    oldAnswer: '{"question":"1+1=?","type":0,"options":["1","2"]}',
+    newAnswer: '{"success":false,"error":{"code":"INSUFFICIENT_BALANCE","message":"当前余额不足"}}',
+  }), {
+    summary: 'AI兜底失败',
+    requestId: 'req-ai-fallback',
+    mode: 'async',
+    requestSource: 'billing_precheck',
+    answerCount: '-',
+    hitProvider: 'INSUFFICIENT_BALANCE',
+    billingProvider: '-',
+    requestSnapshot: '{"question":"1+1=?","type":0,"options":["1","2"]}',
+    responseSnapshot: '{"success":false,"error":{"code":"INSUFFICIENT_BALANCE","message":"当前余额不足"}}',
+  });
+});
+
+test('buildLogStructuredFields summarizes failed search logs', () => {
+  assert.equal(buildLogStructuredFields({
+    description: '搜索失败 detail=当前余额不足，系统题库已禁用，请充值后再使用 method=POST path=/adapter-service/search clientIp=192.0.2.1 authorization=Bearer tok...1234',
+  }).summary, '搜索失败');
 });
 
 test('buildLogDetailSections exposes structured captcha remote status fields', () => {

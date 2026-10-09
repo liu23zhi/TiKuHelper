@@ -11,11 +11,12 @@ import (
 )
 
 const (
-	logActionCreate = 0
-	logActionUpdate = 1
-	logActionDelete = 2
-	logActionSearch = 3
-	logActionLogin  = 10
+	logActionCreate     = 0
+	logActionUpdate     = 1
+	logActionDelete     = 2
+	logActionSearch     = 3
+	logActionLogin      = 10
+	logActionAIFallback = 11
 )
 
 func writeAuditLog(user *entity.User, module string, action int32, description string, clientIP string, qid int32, oldAnswer string, newAnswer string) {

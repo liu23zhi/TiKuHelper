@@ -4,6 +4,7 @@ export function buildLogModuleLabel(value) {
   if (normalized === 'question') return '题目';
   if (normalized === 'system') return '系统';
   if (normalized === 'search') return '搜题';
+  if (normalized === 'ai_fallback') return 'AI 兜底';
   if (normalized === 'captcha') return '验证码';
   return value || '-';
 }
@@ -16,6 +17,7 @@ export function buildLogActionLabel(value, module) {
   if (normalized === 2) return '删除';
   if (normalized === 3) return normalizedModule === 'search' ? '搜题' : '查询';
   if (normalized === 10) return '登录';
+  if (normalizedModule === 'ai_fallback' && normalized === 11) return 'AI 兜底';
   if (normalizedModule === 'captcha' && normalized === 20) return '远程生成';
   if (normalizedModule === 'captcha' && normalized === 21) return '远程校验';
   if (normalizedModule === 'captcha' && normalized === 22) return '远程二验';
@@ -29,6 +31,7 @@ export function buildLogActionColor(value) {
   if (normalized === 2) return 'red';
   if (normalized === 3) return 'purple';
   if (normalized === 10) return 'gold';
+  if (normalized === 11) return 'orange';
   if (normalized === 20) return 'cyan';
   if (normalized === 21) return 'geekblue';
   if (normalized === 22) return 'volcano';
@@ -41,6 +44,21 @@ export function buildLogStructuredFields(record = {}) {
   const response = String(record?.newAnswer || '').trim();
   const parsedDescription = parseSearchLogDescriptionMap(description);
   const parsedCaptchaDescription = parseCaptchaLogDescriptionMap(description);
+  const parsedAIFallbackDescription = parseAIFallbackLogDescriptionMap(description);
+
+  if (parsedAIFallbackDescription.summary) {
+    return {
+      summary: parsedAIFallbackDescription.summary,
+      requestId: parsedAIFallbackDescription.requestId || parsedAIFallbackDescription.taskId || '-',
+      mode: parsedAIFallbackDescription.mode || '-',
+      requestSource: parsedAIFallbackDescription.stage || '-',
+      answerCount: parsedAIFallbackDescription.answers || '-',
+      hitProvider: parsedAIFallbackDescription.code || parsedAIFallbackDescription.hitProvider || '-',
+      billingProvider: buildBillingProviderLabel(parsedAIFallbackDescription.billingProvider),
+      requestSnapshot: request || '-',
+      responseSnapshot: response || '-',
+    };
+  }
 
   if (parsedCaptchaDescription.summary) {
     return {
@@ -231,7 +249,8 @@ function buildBillingProviderLabel(value) {
 
 function parseSearchLogDescriptionMap(description) {
   const text = String(description || '').trim();
-  if (!text.startsWith('搜索完成')) {
+  const summary = text.split(/\s+/)[0] || '';
+  if (summary !== '搜索完成' && summary !== '搜索失败') {
     return {};
   }
 
@@ -242,7 +261,23 @@ function parseSearchLogDescriptionMap(description) {
       acc[key] = value;
     }
     return acc;
-  }, { summary: '搜索完成' });
+  }, { summary });
+}
+
+function parseAIFallbackLogDescriptionMap(description) {
+  const text = String(description || '').trim();
+  if (!text.startsWith('AI兜底')) {
+    return {};
+  }
+
+  const fields = ['status', 'stage', 'mode', 'requestId', 'taskId', 'code', 'message', 'answers', 'hitProvider', 'billingProvider'];
+  return fields.reduce((acc, key) => {
+    const value = extractDescriptionField(text, key);
+    if (value) {
+      acc[key] = value;
+    }
+    return acc;
+  }, { summary: text.split(/\s+/)[0] || 'AI兜底' });
 }
 
 function parseCaptchaLogDescription(description) {

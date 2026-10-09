@@ -184,6 +184,7 @@ func AuthOrAccessToken(c *gin.Context) {
 		if err == nil {
 			user := authCtx.User
 			c.Set("user", &user)
+			c.Set("access_token", &authCtx.AccessToken)
 			c.Next()
 			return
 		}

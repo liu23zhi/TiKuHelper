@@ -16,17 +16,20 @@ import (
 type AIFallbackErrorCode string
 
 const (
-	AIFallbackErrorCodeAIUnavailable  AIFallbackErrorCode = "AI_UNAVAILABLE"
-	AIFallbackErrorCodeNoAnswer       AIFallbackErrorCode = "NO_ANSWER"
-	AIFallbackErrorCodeUpstreamError  AIFallbackErrorCode = "UPSTREAM_ERROR"
-	AIFallbackErrorCodeInvalidInput   AIFallbackErrorCode = "INVALID_INPUT"
-	AIFallbackErrorCodeUnsafeToAnswer AIFallbackErrorCode = "UNSAFE_TO_ANSWER"
+	AIFallbackErrorCodeAIUnavailable       AIFallbackErrorCode = "AI_UNAVAILABLE"
+	AIFallbackErrorCodeNoAnswer            AIFallbackErrorCode = "NO_ANSWER"
+	AIFallbackErrorCodeUpstreamError       AIFallbackErrorCode = "UPSTREAM_ERROR"
+	AIFallbackErrorCodeInvalidInput        AIFallbackErrorCode = "INVALID_INPUT"
+	AIFallbackErrorCodeUnsafeToAnswer      AIFallbackErrorCode = "UNSAFE_TO_ANSWER"
+	AIFallbackErrorCodeInsufficientBalance AIFallbackErrorCode = "INSUFFICIENT_BALANCE"
 )
 
 type AIFallbackResult struct {
-	Success bool             `json:"success"`
-	Result  *AIFallbackAnswer `json:"result,omitempty"`
-	Error   *AIFallbackError  `json:"error,omitempty"`
+	Success bool                         `json:"success"`
+	Result  *AIFallbackAnswer            `json:"result,omitempty"`
+	Error   *AIFallbackError             `json:"error,omitempty"`
+	Usage   internalsearch.AISearchUsage `json:"-"`
+	Model   string                       `json:"-"`
 }
 
 type AIFallbackAnswer struct {
@@ -55,6 +58,10 @@ func BuildAIFallbackInvalidInputResult(message string) AIFallbackResult {
 	return buildAIFallbackErrorResult(AIFallbackErrorCodeInvalidInput, msg)
 }
 
+func BuildAIFallbackInsufficientBalanceResult(message string) AIFallbackResult {
+	return buildAIFallbackErrorResult(AIFallbackErrorCodeInsufficientBalance, message)
+}
+
 func SearchAIFallbackWithDB(db *gorm.DB, req model.SearchRequest) AIFallbackResult {
 	question := strings.TrimSpace(req.Question)
 	if question == "" {
@@ -79,7 +86,7 @@ func SearchAIFallbackWithDB(db *gorm.DB, req model.SearchRequest) AIFallbackResu
 		TopP:        0,
 	}
 
-	answers, _, searchErr := runAIFallbackSearchWithUsage(client, model.SearchRequest{
+	answers, usage, searchErr := runAIFallbackSearchWithUsage(client, model.SearchRequest{
 		Question: question,
 		Options:  req.Options,
 		Type:     req.Type,
@@ -110,6 +117,8 @@ func SearchAIFallbackWithDB(db *gorm.DB, req model.SearchRequest) AIFallbackResu
 			Question: question,
 			Answer:   strings.Join(normalizedAnswers, "#"),
 		},
+		Usage: usage,
+		Model: resolved.Config.Model,
 	}
 }
 
