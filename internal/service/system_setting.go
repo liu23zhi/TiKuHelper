@@ -2,6 +2,8 @@ package service
 
 import (
 	"errors"
+	"math"
+	"strconv"
 	"strings"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -9,6 +11,7 @@ import (
 )
 
 const RegisterEnabledSettingKey = "register_enabled"
+const NewUserBonusAmountSettingKey = "new_user_bonus_amount"
 const SiteNameSettingKey = "site_name"
 const PaymentProviderSettingKey = "payment_provider"
 const PaymentMethodSettingKey = "payment_method"
@@ -43,6 +46,7 @@ const DefaultPaymentProvider = "epay"
 const DefaultPaymentMethod = "alipay"
 const DefaultEPayVersion = "v2"
 const DefaultSiteName = "题库"
+const DefaultNewUserBonusAmount = float64(0)
 const DefaultSMSProvider = "smsbao"
 const DefaultSMSCodeTemplate = "【{sign}】您的验证码是{code}，5分钟内有效。"
 const DefaultCaptchaProvider = "remote"
@@ -58,67 +62,71 @@ const wechatLoginModeScan = "scan"
 const wechatLoginModeCode = "code"
 
 type SystemSettingDetail struct {
-	RegisterEnabled           bool   `json:"registerEnabled"`
-	SiteName                  string `json:"siteName"`
-	AlternativeLoginEnabled   bool   `json:"alternativeLoginEnabled"`
-	EPayVersion               string `json:"epayVersion"`
-	EPayGatewayURL            string `json:"epayGatewayUrl"`
-	EPayPartnerID             string `json:"epayPartnerId"`
-	EPayPlatformPublicKey     string `json:"epayPlatformPublicKey"`
-	EPayMerchantPrivateKey    string `json:"epayMerchantPrivateKey"`
-	EPayNotifyURL             string `json:"epayNotifyUrl"`
-	EPayReturnURL             string `json:"epayReturnUrl"`
-	SMSProvider               string `json:"smsProvider"`
-	SMSBaoUsername            string `json:"smsbaoUsername"`
-	SMSBaoSecret              string `json:"smsbaoSecret"`
-	SMSCodeSignName           string `json:"smsCodeSignName"`
-	SMSCodeTemplate           string `json:"smsCodeTemplate"`
-	SMSLoginEnabled           bool   `json:"smsLoginEnabled"`
-	WechatLoginEnabled        bool   `json:"wechatLoginEnabled"`
-	WechatScanLoginEnabled    bool   `json:"wechatScanLoginEnabled"`
-	WechatCodeLoginEnabled    bool   `json:"wechatCodeLoginEnabled"`
-	WechatDefaultLoginMode    string `json:"wechatDefaultLoginMode"`
-	WechatCodeStaticQRCodeURL string `json:"wechatCodeStaticQrcodeUrl"`
-	WechatAPIBaseURL          string `json:"wechatApiBaseUrl"`
-	WechatAPIBearerToken      string `json:"wechatApiBearerToken"`
-	CaptchaProvider           string `json:"captchaProvider"`
-	CaptchaAPIBaseURL         string `json:"captchaApiBaseUrl"`
-	CaptchaAPIKey             string `json:"captchaApiKey"`
-	CaptchaType               string `json:"captchaType"`
-	SMSBaoCredentialType      string `json:"smsbaoCredentialType"`
-	SMSBaoRegionMode          string `json:"smsbaoRegionMode"`
+	RegisterEnabled           bool    `json:"registerEnabled"`
+	NewUserBonusAmount        float64 `json:"newUserBonusAmount"`
+	SiteName                  string  `json:"siteName"`
+	AlternativeLoginEnabled   bool    `json:"alternativeLoginEnabled"`
+	EPayVersion               string  `json:"epayVersion"`
+	EPayGatewayURL            string  `json:"epayGatewayUrl"`
+	EPayPartnerID             string  `json:"epayPartnerId"`
+	EPayPlatformPublicKey     string  `json:"epayPlatformPublicKey"`
+	EPayMerchantPrivateKey    string  `json:"epayMerchantPrivateKey"`
+	EPayNotifyURL             string  `json:"epayNotifyUrl"`
+	EPayReturnURL             string  `json:"epayReturnUrl"`
+	SMSProvider               string  `json:"smsProvider"`
+	SMSBaoUsername            string  `json:"smsbaoUsername"`
+	SMSBaoSecret              string  `json:"smsbaoSecret"`
+	SMSCodeSignName           string  `json:"smsCodeSignName"`
+	SMSCodeTemplate           string  `json:"smsCodeTemplate"`
+	SMSLoginEnabled           bool    `json:"smsLoginEnabled"`
+	WechatLoginEnabled        bool    `json:"wechatLoginEnabled"`
+	WechatScanLoginEnabled    bool    `json:"wechatScanLoginEnabled"`
+	WechatCodeLoginEnabled    bool    `json:"wechatCodeLoginEnabled"`
+	WechatDefaultLoginMode    string  `json:"wechatDefaultLoginMode"`
+	WechatCodeStaticQRCodeURL string  `json:"wechatCodeStaticQrcodeUrl"`
+	WechatAPIBaseURL          string  `json:"wechatApiBaseUrl"`
+	WechatAPIBearerToken      string  `json:"wechatApiBearerToken"`
+	CaptchaProvider           string  `json:"captchaProvider"`
+	CaptchaAPIBaseURL         string  `json:"captchaApiBaseUrl"`
+	CaptchaAPIKey             string  `json:"captchaApiKey"`
+	CaptchaType               string  `json:"captchaType"`
+	SMSBaoCredentialType      string  `json:"smsbaoCredentialType"`
+	SMSBaoRegionMode          string  `json:"smsbaoRegionMode"`
 }
 
 type UpdateSystemSettingInput struct {
-	RegisterEnabled           bool   `json:"registerEnabled"`
-	SiteName                  string `json:"siteName"`
-	EPayVersion               string `json:"epayVersion"`
-	EPayGatewayURL            string `json:"epayGatewayUrl"`
-	EPayPartnerID             string `json:"epayPartnerId"`
-	EPayPlatformPublicKey     string `json:"epayPlatformPublicKey"`
-	EPayMerchantPrivateKey    string `json:"epayMerchantPrivateKey"`
-	EPayNotifyURL             string `json:"epayNotifyUrl"`
-	EPayReturnURL             string `json:"epayReturnUrl"`
-	SMSProvider               string `json:"smsProvider"`
-	SMSBaoUsername            string `json:"smsbaoUsername"`
-	SMSBaoSecret              string `json:"smsbaoSecret"`
-	SMSCodeSignName           string `json:"smsCodeSignName"`
-	SMSCodeTemplate           string `json:"smsCodeTemplate"`
-	SMSLoginEnabled           bool   `json:"smsLoginEnabled"`
-	WechatLoginEnabled        bool   `json:"wechatLoginEnabled"`
-	WechatScanLoginEnabled    bool   `json:"wechatScanLoginEnabled"`
-	WechatCodeLoginEnabled    bool   `json:"wechatCodeLoginEnabled"`
-	WechatDefaultLoginMode    string `json:"wechatDefaultLoginMode"`
-	WechatCodeStaticQRCodeURL string `json:"wechatCodeStaticQrcodeUrl"`
-	WechatAPIBaseURL          string `json:"wechatApiBaseUrl"`
-	WechatAPIBearerToken      string `json:"wechatApiBearerToken"`
-	CaptchaProvider           string `json:"captchaProvider"`
-	CaptchaAPIBaseURL         string `json:"captchaApiBaseUrl"`
-	CaptchaAPIKey             string `json:"captchaApiKey"`
-	CaptchaType               string `json:"captchaType"`
-	SMSBaoCredentialType      string `json:"smsbaoCredentialType"`
-	SMSBaoRegionMode          string `json:"smsbaoRegionMode"`
+	RegisterEnabled           bool    `json:"registerEnabled"`
+	NewUserBonusAmount        float64 `json:"newUserBonusAmount"`
+	SiteName                  string  `json:"siteName"`
+	EPayVersion               string  `json:"epayVersion"`
+	EPayGatewayURL            string  `json:"epayGatewayUrl"`
+	EPayPartnerID             string  `json:"epayPartnerId"`
+	EPayPlatformPublicKey     string  `json:"epayPlatformPublicKey"`
+	EPayMerchantPrivateKey    string  `json:"epayMerchantPrivateKey"`
+	EPayNotifyURL             string  `json:"epayNotifyUrl"`
+	EPayReturnURL             string  `json:"epayReturnUrl"`
+	SMSProvider               string  `json:"smsProvider"`
+	SMSBaoUsername            string  `json:"smsbaoUsername"`
+	SMSBaoSecret              string  `json:"smsbaoSecret"`
+	SMSCodeSignName           string  `json:"smsCodeSignName"`
+	SMSCodeTemplate           string  `json:"smsCodeTemplate"`
+	SMSLoginEnabled           bool    `json:"smsLoginEnabled"`
+	WechatLoginEnabled        bool    `json:"wechatLoginEnabled"`
+	WechatScanLoginEnabled    bool    `json:"wechatScanLoginEnabled"`
+	WechatCodeLoginEnabled    bool    `json:"wechatCodeLoginEnabled"`
+	WechatDefaultLoginMode    string  `json:"wechatDefaultLoginMode"`
+	WechatCodeStaticQRCodeURL string  `json:"wechatCodeStaticQrcodeUrl"`
+	WechatAPIBaseURL          string  `json:"wechatApiBaseUrl"`
+	WechatAPIBearerToken      string  `json:"wechatApiBearerToken"`
+	CaptchaProvider           string  `json:"captchaProvider"`
+	CaptchaAPIBaseURL         string  `json:"captchaApiBaseUrl"`
+	CaptchaAPIKey             string  `json:"captchaApiKey"`
+	CaptchaType               string  `json:"captchaType"`
+	SMSBaoCredentialType      string  `json:"smsbaoCredentialType"`
+	SMSBaoRegionMode          string  `json:"smsbaoRegionMode"`
 }
+
+var ErrInvalidNewUserBonusAmount = errors.New("新用户赠送金额不能为负数")
 
 type PublicAuthSettings struct {
 	RegisterEnabled           bool   `json:"registerEnabled"`
@@ -169,6 +177,26 @@ func SetRegisterEnabledWithDB(db *gorm.DB, enabled bool) (bool, error) {
 	return enabled, nil
 }
 
+func GetNewUserBonusAmountWithDB(db *gorm.DB) (float64, error) {
+	raw := strings.TrimSpace(getSystemSettingStringWithDefault(db, NewUserBonusAmountSettingKey, "0"))
+	amount, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return DefaultNewUserBonusAmount, nil
+	}
+	normalized, err := normalizeNewUserBonusAmount(amount)
+	if err != nil {
+		return DefaultNewUserBonusAmount, nil
+	}
+	return normalized, nil
+}
+
+func normalizeNewUserBonusAmount(amount float64) (float64, error) {
+	if math.IsNaN(amount) || math.IsInf(amount, 0) || amount < 0 {
+		return 0, ErrInvalidNewUserBonusAmount
+	}
+	return math.Round(amount*100) / 100, nil
+}
+
 func GetPublicAuthSettingsWithDB(db *gorm.DB) (PublicAuthSettings, error) {
 	registerEnabled, err := GetRegisterEnabledWithDB(db)
 	if err != nil {
@@ -209,6 +237,7 @@ func GetSystemSettingDetailWithDB(db *gorm.DB) (SystemSettingDetail, error) {
 	wechatSettings := getNormalizedWechatLoginSettingsWithDB(db)
 	detail := SystemSettingDetail{
 		RegisterEnabled:           registerEnabled,
+		NewUserBonusAmount:        DefaultNewUserBonusAmount,
 		SiteName:                  normalizeSiteName(getSystemSettingStringWithDefault(db, SiteNameSettingKey, DefaultSiteName)),
 		AlternativeLoginEnabled:   smsLoginEnabled || wechatSettings.WechatLoginEnabled,
 		EPayVersion:               DefaultEPayVersion,
@@ -238,11 +267,20 @@ func GetSystemSettingDetailWithDB(db *gorm.DB) (SystemSettingDetail, error) {
 		SMSBaoCredentialType:      normalizeSMSBaoCredentialType(getSystemSettingStringWithDefault(db, SMSBaoCredentialTypeSettingKey, DefaultSMSBaoCredentialType)),
 		SMSBaoRegionMode:          normalizeSMSBaoRegionMode(getSystemSettingStringWithDefault(db, SMSBaoRegionModeSettingKey, DefaultSMSBaoRegionMode)),
 	}
+	bonusAmount, err := GetNewUserBonusAmountWithDB(db)
+	if err != nil {
+		return SystemSettingDetail{}, err
+	}
+	detail.NewUserBonusAmount = bonusAmount
 	return detail, nil
 }
 
 func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput) (SystemSettingDetail, error) {
 	if _, err := SetRegisterEnabledWithDB(db, input.RegisterEnabled); err != nil {
+		return SystemSettingDetail{}, err
+	}
+	bonusAmount, err := normalizeNewUserBonusAmount(input.NewUserBonusAmount)
+	if err != nil {
 		return SystemSettingDetail{}, err
 	}
 
@@ -255,6 +293,7 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 	}
 	normalized := SystemSettingDetail{
 		RegisterEnabled:           input.RegisterEnabled,
+		NewUserBonusAmount:        bonusAmount,
 		SiteName:                  normalizeSiteName(input.SiteName),
 		EPayVersion:               normalizeEPayVersion(input.EPayVersion),
 		EPayGatewayURL:            strings.TrimSpace(input.EPayGatewayURL),
@@ -291,6 +330,7 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		remark string
 	}{
 		{SiteNameSettingKey, normalized.SiteName, "网站名称"},
+		{NewUserBonusAmountSettingKey, strconv.FormatFloat(normalized.NewUserBonusAmount, 'f', 2, 64), "新用户默认赠送金额"},
 		{PaymentProviderSettingKey, normalizePaymentProvider(DefaultPaymentProvider), "支付提供方"},
 		{EPayVersionSettingKey, normalized.EPayVersion, "易支付接口版本"},
 		{EPayGatewayURLSettingKey, normalized.EPayGatewayURL, "易支付网关地址"},

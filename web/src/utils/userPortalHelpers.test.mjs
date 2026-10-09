@@ -168,6 +168,8 @@ test('buildAdminCreateUserPayload trims fields and keeps admin-created defaults'
     role: ' admin ',
     status: ' disabled ',
     registerSource: '  ',
+    giftEnabled: true,
+    giftAmount: ' 6.50 ',
   }), {
     username: 'new-user',
     password: 'Abc12345!',
@@ -175,6 +177,8 @@ test('buildAdminCreateUserPayload trims fields and keeps admin-created defaults'
     role: 'admin',
     status: 'disabled',
     registerSource: 'admin',
+    giftEnabled: true,
+    giftAmount: 6.5,
   });
 });
 
@@ -186,6 +190,8 @@ test('buildUserBalanceUpdatePayload trims fields and keeps edit mode data', () =
     status: ' disabled ',
     phone: ' 13800000000 ',
     forceReassignPhone: true,
+    wechatId: ' openid-edit ',
+    forceReassignWechat: true,
     balance: ' 12.50 ',
     balanceMode: 'increase',
   }), {
@@ -195,6 +201,8 @@ test('buildUserBalanceUpdatePayload trims fields and keeps edit mode data', () =
     status: 'disabled',
     phone: '13800000000',
     forceReassignPhone: true,
+    wechatId: 'openid-edit',
+    forceReassignWechat: true,
     balance: 12.5,
     balanceMode: 'increase',
   });
@@ -208,6 +216,8 @@ test('buildUserBalanceUpdatePayload omits balance when empty but keeps phone cle
     status: 'enabled',
     phone: '   ',
     forceReassignPhone: false,
+    wechatId: '   ',
+    forceReassignWechat: false,
     balance: '   ',
     balanceMode: 'override',
   }), {
@@ -217,6 +227,8 @@ test('buildUserBalanceUpdatePayload omits balance when empty but keeps phone cle
     status: 'enabled',
     phone: '',
     forceReassignPhone: false,
+    wechatId: '',
+    forceReassignWechat: false,
   });
 });
 

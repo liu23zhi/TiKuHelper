@@ -21,3 +21,31 @@ test('UserList table exposes the user id column first', async () => {
 
   assert.match(content, /title: 'ID',\s+dataIndex: 'id',\s+key: 'id',/);
 });
+
+test('UserList edit modal exposes wechat binding and force reassign controls', async () => {
+  const content = await readFile(userListPagePath, 'utf8');
+
+  assert.match(content, /label="微信 ID"[\s\S]*v-model:value="formState\.wechatId"/);
+  assert.match(content, /label="重指派微信"[\s\S]*v-model:checked="formState\.forceReassignWechat"/);
+  assert.match(content, /wechatId: record\.wechatId \|\| ''/);
+});
+
+test('UserList edit modal can resolve wechat id by scan or verification code', async () => {
+  const content = await readFile(userListPagePath, 'utf8');
+
+  assert.match(content, /扫码获取 ID/);
+  assert.match(content, /验证码获取 ID/);
+  assert.match(content, /startWechatScan/);
+  assert.match(content, /resolveAdminWechatIDByScan/);
+  assert.match(content, /resolveAdminWechatIDByCode/);
+  assert.match(content, /formState\.value\.wechatId = .*wechatId/);
+});
+
+test('UserList create modal exposes editable new-user bonus controls', async () => {
+  const content = await readFile(userListPagePath, 'utf8');
+
+  assert.match(content, /label="启用赠送"[\s\S]*v-model:checked="formState\.giftEnabled"/);
+  assert.match(content, /v-if="!isEditing && formState\.giftEnabled"[\s\S]*v-model:value="formState\.giftAmount"/);
+  assert.match(content, /giftEnabled: true/);
+  assert.match(content, /formState\.value\.giftAmount = systemNewUserBonusAmount\.value/);
+});

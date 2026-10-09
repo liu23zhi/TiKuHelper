@@ -43,7 +43,7 @@
         type="info"
         show-icon
         class="page-alert"
-        message="当前页面展示的是平台全部用户。管理员可以创建用户，并直接编辑角色、状态、昵称、手机号绑定与密码。"
+        message="当前页面展示的是平台全部用户。管理员可以创建用户，并直接编辑角色、状态、昵称、手机号与微信绑定。"
       />
 
       <a-table
@@ -154,6 +154,46 @@
           <a-switch v-model:checked="formState.forceReassignPhone" />
           <div class="form-hint">若该手机号已绑定其他用户，开启后会把旧绑定转移到当前用户。</div>
         </a-form-item>
+        <a-form-item v-if="isEditing" label="微信 ID">
+          <a-input v-model:value="formState.wechatId" placeholder="留空表示清空微信绑定" />
+          <a-space wrap class="wechat-id-actions">
+            <a-button size="small" :loading="wechatScanLoading" @click="startWechatScan">扫码获取 ID</a-button>
+            <a-button size="small" @click="toggleWechatCodeInput">验证码获取 ID</a-button>
+          </a-space>
+          <div v-if="wechatScanVisible" class="wechat-id-panel">
+            <a-spin v-if="wechatScanLoading" />
+            <img v-else-if="wechatScanQrCodeImageData" :src="wechatScanQrCodeImageData" alt="微信换绑二维码" class="wechat-id-qrcode" />
+            <div class="form-hint">{{ wechatScanStatusText }}</div>
+          </div>
+          <div v-if="wechatCodeVisible" class="wechat-id-panel">
+            <a-space>
+              <a-input
+                v-model:value="wechatCode"
+                placeholder="请输入用户提供的微信验证码"
+                @input="wechatCode = normalizeWechatCodeInput(wechatCode)"
+              />
+              <a-button :loading="wechatCodeLoading" @click="resolveWechatIDByCode">获取 ID</a-button>
+            </a-space>
+          </div>
+          <div class="form-hint">可手动填写微信 OpenID，也可扫码或使用验证码自动获取；留空保存会清空绑定。</div>
+        </a-form-item>
+        <a-form-item v-if="isEditing" label="重指派微信">
+          <a-switch v-model:checked="formState.forceReassignWechat" />
+          <div class="form-hint">若该微信已绑定其他用户，开启后会把旧绑定转移到当前用户。</div>
+        </a-form-item>
+        <a-form-item v-if="!isEditing" label="启用赠送">
+          <a-switch v-model:checked="formState.giftEnabled" />
+          <div class="form-hint">默认开启；关闭后，本次创建的新用户不会获得赠送金额。</div>
+        </a-form-item>
+        <a-form-item v-if="!isEditing && formState.giftEnabled" label="赠送金额">
+          <a-input-number
+            v-model:value="formState.giftAmount"
+            :min="0"
+            :precision="2"
+            style="width: 220px"
+          />
+          <div class="form-hint">默认使用系统管理中的新用户赠送金额，可按本次创建单独修改。</div>
+        </a-form-item>
         <a-form-item label="创建来源">
           <a-input :value="registerSourceText(formState.registerSource)" disabled />
         </a-form-item>
@@ -183,7 +223,17 @@
 </template>
 
 <script>
-import { getUserList, delUser, addUser, updateUser, resetUserPassword } from '@/api/TikuComponentApi';
+import {
+  getUserList,
+  delUser,
+  addUser,
+  updateUser,
+  resetUserPassword,
+  createWechatLoginQRCode,
+  resolveAdminWechatIDByScan,
+  resolveAdminWechatIDByCode,
+  getSystemSettings,
+} from '@/api/TikuComponentApi';
 import { buildAdminCreateUserPayload, buildRegisterSourceLabel, buildResetPasswordPayload, buildUserBalanceUpdatePayload } from '@/utils/userPortalHelpers.mjs';
 import { message } from 'ant-design-vue';
 import { computed, defineComponent, ref } from 'vue';
@@ -194,6 +244,16 @@ const submitLoading = ref(false)
 const isEditing = ref(false)
 const resetPasswordVisible = ref(false)
 const resetPasswordLoading = ref(false)
+const wechatScanVisible = ref(false)
+const wechatScanLoading = ref(false)
+const wechatScanQrCodeImageData = ref('')
+const wechatScanLoginToken = ref('')
+const wechatScanStatusText = ref('')
+const wechatCodeVisible = ref(false)
+const wechatCode = ref('')
+const wechatCodeLoading = ref(false)
+const systemNewUserBonusAmount = ref(0)
+let wechatScanTimer = null
 const formState = ref({
   id: undefined,
   username: '',
@@ -208,6 +268,11 @@ const formState = ref({
   phone: '',
   phoneBoundAt: '',
   forceReassignPhone: false,
+  wechatId: '',
+  wechatBoundAt: '',
+  forceReassignWechat: false,
+  giftEnabled: true,
+  giftAmount: '',
 })
 const resetPasswordForm = ref({
   id: undefined,
@@ -215,6 +280,25 @@ const resetPasswordForm = ref({
   password: '',
 })
 const tabLoading = ref(true)
+
+function stopWechatScanTimer() {
+  if (wechatScanTimer !== null) {
+    clearInterval(wechatScanTimer)
+    wechatScanTimer = null
+  }
+}
+
+function resetWechatResolveState() {
+  stopWechatScanTimer()
+  wechatScanVisible.value = false
+  wechatScanLoading.value = false
+  wechatScanQrCodeImageData.value = ''
+  wechatScanLoginToken.value = ''
+  wechatScanStatusText.value = ''
+  wechatCodeVisible.value = false
+  wechatCode.value = ''
+  wechatCodeLoading.value = false
+}
 
 export default defineComponent({
   name: 'UserList',
@@ -260,6 +344,15 @@ export default defineComponent({
       tabLoading,
       submitLoading,
       resetPasswordLoading,
+      wechatScanVisible,
+      wechatScanLoading,
+      wechatScanQrCodeImageData,
+      wechatScanLoginToken,
+      wechatScanStatusText,
+      wechatCodeVisible,
+      wechatCode,
+      wechatCodeLoading,
+  systemNewUserBonusAmount,
       summary,
       isEditing,
       modalTitle,
@@ -412,6 +505,10 @@ export default defineComponent({
   },
   mounted() {
     this.handleUserList()
+    this.loadNewUserBonusDefault()
+  },
+  beforeUnmount() {
+    stopWechatScanTimer()
   },
   methods: {
     formatBalance(value) {
@@ -443,12 +540,116 @@ export default defineComponent({
     registerSourceText(value) {
       return buildRegisterSourceLabel(value)
     },
+    normalizeWechatCodeInput(value) {
+      return String(value || '').replace(/\D/g, '').slice(0, 12)
+    },
+    toggleWechatCodeInput() {
+      wechatCodeVisible.value = !wechatCodeVisible.value
+      if (!wechatCodeVisible.value) {
+        wechatCode.value = ''
+      }
+    },
+    stopWechatScan() {
+      stopWechatScanTimer()
+      wechatScanLoading.value = false
+    },
+    async startWechatScan() {
+      this.stopWechatScan()
+      resetWechatResolveState()
+      wechatScanVisible.value = true
+      wechatScanLoading.value = true
+      wechatScanStatusText.value = '正在创建二维码'
+      try {
+        const res = await createWechatLoginQRCode()
+        if (res?.status !== 200) {
+          throw new Error(res?.message || '二维码创建失败')
+        }
+        wechatScanQrCodeImageData.value = res?.data?.qrcodeImageData || ''
+        wechatScanLoginToken.value = res?.data?.loginToken || ''
+        if (!wechatScanQrCodeImageData.value || !wechatScanLoginToken.value) {
+          throw new Error('二维码创建失败')
+        }
+        wechatScanStatusText.value = '请使用需要绑定的微信扫码'
+        wechatScanTimer = setInterval(() => {
+          this.pollWechatScanID()
+        }, 2500)
+        this.pollWechatScanID()
+      } catch (error) {
+        wechatScanStatusText.value = error?.message || '二维码创建失败'
+        message.error(wechatScanStatusText.value)
+      } finally {
+        wechatScanLoading.value = false
+      }
+    },
+    async pollWechatScanID() {
+      if (!wechatScanLoginToken.value) {
+        return
+      }
+      try {
+        const res = await resolveAdminWechatIDByScan({ loginToken: wechatScanLoginToken.value })
+        if (res?.status !== 200) {
+          wechatScanStatusText.value = res?.message || '扫码状态查询失败'
+          return
+        }
+        const status = String(res?.data?.status || '').trim().toLowerCase()
+        if (status === 'pending') {
+          wechatScanStatusText.value = '等待微信扫码'
+          return
+        }
+        if (status === 'scanned') {
+          wechatScanStatusText.value = '已扫码，请确认'
+          return
+        }
+        if (status === 'success' && res?.data?.wechatId) {
+          formState.value.wechatId = String(res.data.wechatId || '').trim()
+          wechatScanStatusText.value = '已获取微信 ID，请保存用户'
+          message.success('微信 ID 已填入')
+          this.stopWechatScan()
+          wechatScanVisible.value = false
+          return
+        }
+        if (status === 'expired') {
+          wechatScanStatusText.value = '二维码已过期，请重新获取'
+          this.stopWechatScan()
+        }
+      } catch (error) {
+        wechatScanStatusText.value = error?.message || '扫码状态查询失败'
+      }
+    },
+    async resolveWechatIDByCode() {
+      if (!wechatCode.value) {
+        message.warning('请输入微信验证码')
+        return
+      }
+      wechatCodeLoading.value = true
+      try {
+        const res = await resolveAdminWechatIDByCode({ code: wechatCode.value })
+        if (res?.status !== 200) {
+          message.error(res?.message || '获取微信 ID 失败')
+          return
+        }
+        formState.value.wechatId = String(res?.data?.wechatId || '').trim()
+        if (!formState.value.wechatId) {
+          message.error('未获取到微信 ID')
+          return
+        }
+        wechatCodeVisible.value = false
+        wechatCode.value = ''
+        message.success('微信 ID 已填入')
+      } catch (error) {
+        message.error(error?.message || '获取微信 ID 失败')
+      } finally {
+        wechatCodeLoading.value = false
+      }
+    },
     openCreateModal() {
       this.resetFormState()
+      formState.value.giftAmount = systemNewUserBonusAmount.value
       isEditing.value = false
       visible.value = true
     },
     openEditModal(record) {
+      resetWechatResolveState()
       isEditing.value = true
       formState.value = {
         id: record.id,
@@ -464,6 +665,9 @@ export default defineComponent({
         phone: record.phone || '',
         phoneBoundAt: record.phoneBoundAt || '',
         forceReassignPhone: false,
+        wechatId: record.wechatId || '',
+        wechatBoundAt: record.wechatBoundAt || '',
+        forceReassignWechat: false,
       }
       visible.value = true
     },
@@ -584,7 +788,13 @@ export default defineComponent({
         phone: '',
         phoneBoundAt: '',
         forceReassignPhone: false,
+        wechatId: '',
+        wechatBoundAt: '',
+        forceReassignWechat: false,
+        giftEnabled: true,
+        giftAmount: '',
       };
+      resetWechatResolveState()
       isEditing.value = false
     },
     resetResetPasswordForm() {
@@ -593,6 +803,13 @@ export default defineComponent({
         username: '',
         password: '',
       }
+    },
+    loadNewUserBonusDefault() {
+      getSystemSettings().then((res) => {
+        if (res?.status === 200) {
+          systemNewUserBonusAmount.value = Number(res?.data?.newUserBonusAmount || 0)
+        }
+      }).catch(() => {})
     },
   }
 });
@@ -636,6 +853,26 @@ export default defineComponent({
 
 .page-alert {
   margin-bottom: 16px;
+}
+
+.wechat-id-actions {
+  margin-top: 8px;
+}
+
+.wechat-id-panel {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #f9fafb;
+}
+
+.wechat-id-qrcode {
+  display: block;
+  width: 220px;
+  max-width: 100%;
+  margin: 0 auto 8px;
+  border-radius: 10px;
 }
 
 .form-hint {

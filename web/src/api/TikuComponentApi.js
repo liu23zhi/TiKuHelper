@@ -196,6 +196,22 @@ export function bindCurrentUserWechatByCode(data) {
   })
 }
 
+export function resolveAdminWechatIDByScan(params) {
+  return request({
+    url: `/adapter-service/user/wechat/scan-id`,
+    method: 'get',
+    params
+  })
+}
+
+export function resolveAdminWechatIDByCode(data) {
+  return request({
+    url: `/adapter-service/user/wechat/code-id`,
+    method: 'post',
+    data
+  })
+}
+
 export function unbindCurrentUserWechat() {
   return request({
     url: `/adapter-service/user/wechat`,

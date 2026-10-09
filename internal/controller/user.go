@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -370,7 +371,16 @@ func UserRegister(c *gin.Context) {
 		PhoneBoundAt:   &now,
 	}
 
-	if err := dao.User.Create(&user); err != nil {
+	bonusAmount, err := service.GetNewUserBonusAmountWithDB(dao.User.UnderlyingDB())
+	if err != nil {
+		c.JSON(400, gin.H{"message": "新用户赠送配置读取失败"})
+		return
+	}
+	if err := service.CreateUserWithNewUserBonusWithDB(dao.User.UnderlyingDB(), &user, service.NewUserBonusOptions{
+		Enabled: true,
+		Amount:  bonusAmount,
+		Source:  service.RegistrationBonusSourcePublicRegister,
+	}); err != nil {
 		c.JSON(400, gin.H{
 			"message": "注册失败",
 		})
@@ -647,15 +657,17 @@ func CreateUser(c *gin.Context) {
 	}
 
 	var payload struct {
-		Username       string  `json:"username"`
-		Password       string  `json:"password"`
-		Nickname       string  `json:"nickname"`
-		Role           string  `json:"role"`
-		Status         string  `json:"status"`
-		Balance        float64 `json:"balance"`
-		RegisterSource string  `json:"registerSource"`
-		Phone          *string `json:"phone"`
-		Perms          string  `json:"perms"`
+		Username       string   `json:"username"`
+		Password       string   `json:"password"`
+		Nickname       string   `json:"nickname"`
+		Role           string   `json:"role"`
+		Status         string   `json:"status"`
+		Balance        float64  `json:"balance"`
+		RegisterSource string   `json:"registerSource"`
+		Phone          *string  `json:"phone"`
+		Perms          string   `json:"perms"`
+		GiftEnabled    *bool    `json:"giftEnabled"`
+		GiftAmount     *float64 `json:"giftAmount"`
 	}
 	err := c.ShouldBindJSON(&payload)
 	if err != nil {
@@ -714,8 +726,29 @@ func CreateUser(c *gin.Context) {
 	}
 	user.Password = hashedPassword
 
-	err = dao.User.Create(&user)
+	defaultBonusAmount, err := service.GetNewUserBonusAmountWithDB(dao.User.UnderlyingDB())
 	if err != nil {
+		c.JSON(400, gin.H{"message": "新用户赠送配置读取失败"})
+		return
+	}
+	giftEnabled := true
+	if payload.GiftEnabled != nil {
+		giftEnabled = *payload.GiftEnabled
+	}
+	giftAmount := defaultBonusAmount
+	if payload.GiftAmount != nil {
+		giftAmount = *payload.GiftAmount
+	}
+	err = service.CreateUserWithNewUserBonusWithDB(dao.User.UnderlyingDB(), &user, service.NewUserBonusOptions{
+		Enabled: giftEnabled,
+		Amount:  giftAmount,
+		Source:  service.RegistrationBonusSourceAdminCreate,
+	})
+	if err != nil {
+		if errors.Is(err, service.ErrInvalidNewUserBonusAmount) {
+			c.JSON(400, gin.H{"message": err.Error()})
+			return
+		}
 		c.JSON(400, gin.H{
 			"message": "创建用户失败",
 		})
@@ -751,13 +784,15 @@ func UpdateUser(c *gin.Context) {
 	}
 
 	var payload struct {
-		Nickname           string   `json:"nickname"`
-		Role               string   `json:"role"`
-		Status             string   `json:"status"`
-		Balance            *float64 `json:"balance"`
-		BalanceMode        string   `json:"balanceMode"`
-		Phone              string   `json:"phone"`
-		ForceReassignPhone bool     `json:"forceReassignPhone"`
+		Nickname            string   `json:"nickname"`
+		Role                string   `json:"role"`
+		Status              string   `json:"status"`
+		Balance             *float64 `json:"balance"`
+		BalanceMode         string   `json:"balanceMode"`
+		Phone               string   `json:"phone"`
+		ForceReassignPhone  bool     `json:"forceReassignPhone"`
+		WechatID            string   `json:"wechatId"`
+		ForceReassignWechat bool     `json:"forceReassignWechat"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		c.JSON(400, gin.H{
@@ -785,6 +820,13 @@ func UpdateUser(c *gin.Context) {
 	} else {
 		target.Phone = updatedUser.Phone
 		target.PhoneBoundAt = updatedUser.PhoneBoundAt
+	}
+	if updatedUser, err := service.UpdateUserWechatBindingWithDB(dao.User.UnderlyingDB(), target.ID, payload.WechatID, payload.ForceReassignWechat); err != nil {
+		c.JSON(400, gin.H{"message": err.Error()})
+		return
+	} else {
+		target.WechatID = updatedUser.WechatID
+		target.WechatBoundAt = updatedUser.WechatBoundAt
 	}
 
 	if err := dao.User.Save(target); err != nil {

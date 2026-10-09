@@ -11,6 +11,7 @@ import (
 )
 
 const normalSearchBillingRecordType = "normal_search"
+const registrationBonusBillingRecordType = "registration_bonus"
 
 type BillingRecordFeeDetail struct {
 	Provider      string  `json:"provider"`
@@ -94,6 +95,8 @@ func buildBillingRecordTypeLabel(recordType string) string {
 	switch strings.TrimSpace(recordType) {
 	case rechargeBillingRecordType:
 		return "充值入账"
+	case registrationBonusBillingRecordType:
+		return "新用户赠送"
 	case normalSearchBillingRecordType:
 		return "题目消费"
 	default:
@@ -102,7 +105,8 @@ func buildBillingRecordTypeLabel(recordType string) string {
 }
 
 func buildBillingRecordDirection(recordType string) string {
-	if strings.TrimSpace(recordType) == rechargeBillingRecordType {
+	if strings.TrimSpace(recordType) == rechargeBillingRecordType ||
+		strings.TrimSpace(recordType) == registrationBonusBillingRecordType {
 		return "income"
 	}
 	return "expense"
@@ -122,6 +126,12 @@ func buildBillingRecordSubject(record BillingRecordListItem) string {
 		}
 		return "账户充值"
 	}
+	if record.Type == registrationBonusBillingRecordType {
+		if remark := strings.TrimSpace(record.Remark); remark != "" {
+			return remark
+		}
+		return "新用户赠送"
+	}
 	if question := strings.TrimSpace(record.QuestionText); question != "" {
 		return buildSearchBillingSubject(question)
 	}
@@ -137,6 +147,12 @@ func buildBillingRecordDetail(record BillingRecordListItem) string {
 			return remark
 		}
 		return "账户充值"
+	}
+	if record.Type == registrationBonusBillingRecordType {
+		if remark := strings.TrimSpace(record.Remark); remark != "" {
+			return remark
+		}
+		return "新用户赠送"
 	}
 	if source := strings.TrimSpace(record.AnswerSourceLabel); source != "" {
 		return source
@@ -195,6 +211,9 @@ func decorateBillingRecord(record BillingRecordListItem) BillingRecordListItem {
 	record.ReferenceNo = strings.TrimSpace(record.RequestID)
 	if meta, ok := getSearchAccountProviderMeta(record.Provider); ok {
 		record.ProviderLabel = meta.ProviderLabel
+	}
+	if strings.TrimSpace(record.Provider) == "system" {
+		record.ProviderLabel = "系统赠送"
 	}
 	if cachedLabel := buildCachedLocalProviderLabel(record.Provider, record.UnitPriceSnapshot); cachedLabel != "" {
 		record.ProviderLabel = cachedLabel

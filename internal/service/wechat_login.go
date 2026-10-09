@@ -73,6 +73,12 @@ type WechatScanProbeResult struct {
 	Status string
 }
 
+type WechatScanIDResult struct {
+	Status   string `json:"status"`
+	WechatID string `json:"wechatId,omitempty"`
+	Message  string `json:"message,omitempty"`
+}
+
 type wechatUpstreamStatus struct {
 	Status   string
 	WechatID string
@@ -317,6 +323,25 @@ func ProbeWechatScanStatusWithDB(db *gorm.DB, input WechatScanProbeInput) (Wecha
 		return WechatScanProbeResult{}, err
 	}
 	return WechatScanProbeResult{Status: WechatLoginStatusNeedBind}, nil
+}
+
+func ResolveWechatScanID(client WechatLoginClient, loginToken string) (WechatScanIDResult, error) {
+	trimmedToken := strings.TrimSpace(loginToken)
+	if trimmedToken == "" {
+		return WechatScanIDResult{}, fmt.Errorf("微信登录令牌不能为空")
+	}
+	upstream, err := fetchWechatUpstreamStatus(client, trimmedToken)
+	if err != nil {
+		return WechatScanIDResult{}, err
+	}
+	if upstream.Status == WechatLoginStatusSuccess && strings.TrimSpace(upstream.WechatID) == "" {
+		return WechatScanIDResult{}, fmt.Errorf("微信用户 ID 为空")
+	}
+	return WechatScanIDResult{
+		Status:   upstream.Status,
+		WechatID: strings.TrimSpace(upstream.WechatID),
+		Message:  upstream.Message,
+	}, nil
 }
 
 func fetchWechatUpstreamStatus(client WechatLoginClient, loginToken string) (wechatUpstreamStatus, error) {

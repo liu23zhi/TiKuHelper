@@ -107,6 +107,28 @@ func TestUpdateSystemSettingDetailWithDBPersistsSiteName(t *testing.T) {
 	}
 }
 
+func TestUpdateSystemSettingDetailWithDBPersistsNewUserBonusAmount(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+
+	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
+		NewUserBonusAmount: 12.345,
+	})
+	if err != nil {
+		t.Fatalf("update system settings: %v", err)
+	}
+	if updated.NewUserBonusAmount != 12.35 {
+		t.Fatalf("expected rounded bonus amount 12.35, got %v", updated.NewUserBonusAmount)
+	}
+
+	setting, exists, err := getSystemSettingByKey(db, NewUserBonusAmountSettingKey)
+	if err != nil {
+		t.Fatalf("load bonus setting: %v", err)
+	}
+	if !exists || setting.Value != "12.35" {
+		t.Fatalf("expected persisted bonus amount 12.35, got exists=%t setting=%+v", exists, setting)
+	}
+}
+
 func TestUpdateSystemSettingDetailWithDBPersistsNormalizedValues(t *testing.T) {
 	db := newSystemSettingTestDB(t)
 

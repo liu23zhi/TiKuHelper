@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/itihey/tikuAdapter/internal/dao"
+	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/service"
 )
 
@@ -37,6 +38,10 @@ var bindWechatLoginWithDB = func(input service.WechatBindInput) (service.WechatB
 
 var fetchWechatUserIDByCode = func(client service.WechatLoginClient, code string) (string, error) {
 	return service.FetchWechatUserIDByCode(client, code)
+}
+
+var resolveAdminWechatScanID = func(client service.WechatLoginClient, loginToken string) (service.WechatScanIDResult, error) {
+	return service.ResolveWechatScanID(client, loginToken)
 }
 
 var wechatWebSocketUpgrader = websocket.Upgrader{
@@ -255,6 +260,59 @@ func LoginWechatByCode(c *gin.Context) {
 		setAuthCookie(c, result.JWT)
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+func ResolveAdminWechatIDByScan(c *gin.Context) {
+	operator, _ := c.Get("user")
+	currentUser, _ := operator.(*entity.User)
+	if !isAdminUser(currentUser) {
+		c.JSON(http.StatusForbidden, gin.H{"message": "无权限获取微信 ID"})
+		return
+	}
+	settings, err := loadWechatLoginSettings()
+	if err != nil || !settings.WechatLoginEnabled || !settings.WechatScanLoginEnabled || strings.TrimSpace(settings.WechatAPIBaseURL) == "" || strings.TrimSpace(settings.WechatAPIBearerToken) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "微信扫码登录未开启或配置未完成"})
+		return
+	}
+	result, err := resolveAdminWechatScanID(
+		buildWechatLoginClientFromSettings(settings),
+		strings.TrimSpace(c.Query("loginToken")),
+	)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func ResolveAdminWechatIDByCode(c *gin.Context) {
+	operator, _ := c.Get("user")
+	currentUser, _ := operator.(*entity.User)
+	if !isAdminUser(currentUser) {
+		c.JSON(http.StatusForbidden, gin.H{"message": "无权限获取微信 ID"})
+		return
+	}
+	var payload struct {
+		Code string `json:"code"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
+		return
+	}
+	settings, err := loadWechatLoginSettings()
+	if err != nil || !settings.WechatLoginEnabled || !settings.WechatCodeLoginEnabled || strings.TrimSpace(settings.WechatAPIBaseURL) == "" || strings.TrimSpace(settings.WechatAPIBearerToken) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "微信验证码登录未开启或配置未完成"})
+		return
+	}
+	wechatID, err := fetchWechatUserIDByCode(
+		buildWechatLoginClientFromSettings(settings),
+		strings.TrimSpace(payload.Code),
+	)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"wechatId": strings.TrimSpace(wechatID)})
 }
 
 func BindWechatLogin(c *gin.Context) {

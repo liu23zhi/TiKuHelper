@@ -61,7 +61,7 @@ export function buildAdminCreateUserPayload(formValue) {
     throw new Error('请完善新增用户必填项')
   }
 
-  return {
+  const payload = {
     username,
     password,
     nickname: String(formValue?.nickname || '').trim(),
@@ -69,6 +69,18 @@ export function buildAdminCreateUserPayload(formValue) {
     status: String(formValue?.status || 'enabled').trim() || 'enabled',
     registerSource: String(formValue?.registerSource || '').trim() || 'admin',
   }
+
+  const giftEnabled = formValue?.giftEnabled !== false
+  payload.giftEnabled = giftEnabled
+  if (giftEnabled) {
+    const rawGiftAmount = String(formValue?.giftAmount ?? '').trim()
+    const giftAmount = rawGiftAmount === '' ? 0 : Number(rawGiftAmount)
+    if (!Number.isFinite(giftAmount) || giftAmount < 0) {
+      throw new Error('请输入有效的赠送金额')
+    }
+    payload.giftAmount = giftAmount
+  }
+  return payload
 }
 
 export function buildPersonalUsageBillingRecordParams(page, pageSize) {
@@ -242,6 +254,8 @@ export function buildUserBalanceUpdatePayload(formValue) {
     status: String(formValue?.status || 'enabled').trim(),
     phone: String(formValue?.phone || '').trim(),
     forceReassignPhone: !!formValue?.forceReassignPhone,
+    wechatId: String(formValue?.wechatId || '').trim(),
+    forceReassignWechat: !!formValue?.forceReassignWechat,
   }
 
   const rawBalance = String(formValue?.balance ?? '').trim()

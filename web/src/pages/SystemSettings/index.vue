@@ -28,6 +28,17 @@
           <div class="hint">关闭后，注册页会直接阻止进入；管理员在后台创建用户不受影响。</div>
         </a-form-item>
 
+        <a-divider orientation="left">新用户赠送</a-divider>
+        <a-form-item label="新用户赠送金额">
+          <a-input-number
+            v-model:value="formState.newUserBonusAmount"
+            :min="0"
+            :precision="2"
+            style="width: 220px"
+          />
+          <div class="hint">新用户注册或后台创建成功后自动计入余额；后台创建时可单独调整或关闭。</div>
+        </a-form-item>
+
         <a-form-item label="开启短信登录">
           <a-switch v-model:checked="formState.smsLoginEnabled" />
         </a-form-item>
@@ -300,6 +311,11 @@ function normalizeString(value) {
   return String(value || '').trim()
 }
 
+function normalizeBonusAmount(value) {
+  const amount = Number(value || 0)
+  return Number.isFinite(amount) && amount >= 0 ? Math.round(amount * 100) / 100 : 0
+}
+
 function trimTrailingSlash(value) {
   return normalizeString(value).replace(/\/+$/, '')
 }
@@ -348,6 +364,7 @@ export default defineComponent({
     const formState = reactive({
       siteName: '题库',
       registerEnabled: false,
+      newUserBonusAmount: 0,
       epayVersion: 'v2',
       epayGatewayUrl: '',
       epayPartnerId: '',
@@ -393,6 +410,7 @@ export default defineComponent({
     const applyDetail = (data = {}) => {
       formState.siteName = data.siteName || '题库'
       formState.registerEnabled = !!data.registerEnabled
+      formState.newUserBonusAmount = Number(data.newUserBonusAmount || 0)
       formState.epayVersion = 'v2'
       formState.epayGatewayUrl = data.epayGatewayUrl || ''
       formState.epayPartnerId = data.epayPartnerId || ''
@@ -589,6 +607,7 @@ export default defineComponent({
       const payload = {
         siteName: normalizeString(this.formState.siteName || '题库'),
         registerEnabled: !!this.formState.registerEnabled,
+        newUserBonusAmount: normalizeBonusAmount(this.formState.newUserBonusAmount),
         epayVersion: 'v2',
         epayGatewayUrl: normalizeString(this.formState.epayGatewayUrl),
         epayPartnerId: normalizeString(this.formState.epayPartnerId),

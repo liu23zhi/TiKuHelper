@@ -39,6 +39,15 @@ test('SystemSettings exposes wechat captcha and smsbao credential settings', asy
   assert.match(content, /formState\.smsbaoRegionMode/);
 });
 
+test('SystemSettings exposes the default new-user bonus amount', async () => {
+  const content = await readFile(systemSettingsPagePath, 'utf8');
+
+  assert.match(content, /formState\.newUserBonusAmount/);
+  assert.match(content, /新用户赠送金额/);
+  assert.match(content, /新用户注册或后台创建成功后自动计入余额/);
+  assert.match(content, /newUserBonusAmount: normalizeBonusAmount\(this\.formState\.newUserBonusAmount\)/);
+});
+
 test('SystemSettings removes the non-password login derived status block', async () => {
   const content = await readFile(systemSettingsPagePath, 'utf8');
 

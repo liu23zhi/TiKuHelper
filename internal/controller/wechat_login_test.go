@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/service"
 )
 
@@ -163,6 +164,83 @@ func TestLoginWechatByCodeControllerReturnsNeedBind(t *testing.T) {
 		t.Fatalf("expected 200, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
 	if body := recorder.Body.String(); !strings.Contains(body, "need_bind") || !strings.Contains(body, "bind-token-code") {
+		t.Fatalf("unexpected body %s", body)
+	}
+}
+
+func TestResolveAdminWechatIDByScanReturnsWechatID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	originalSettings := loadWechatLoginSettings
+	originalResolve := resolveAdminWechatScanID
+	defer func() {
+		loadWechatLoginSettings = originalSettings
+		resolveAdminWechatScanID = originalResolve
+	}()
+	loadWechatLoginSettings = func() (service.SystemSettingDetail, error) {
+		return service.SystemSettingDetail{
+			WechatLoginEnabled:     true,
+			WechatScanLoginEnabled: true,
+			WechatAPIBaseURL:       "https://wechat.example.com",
+			WechatAPIBearerToken:   "token",
+		}, nil
+	}
+	resolveAdminWechatScanID = func(client service.WechatLoginClient, loginToken string) (service.WechatScanIDResult, error) {
+		if client.BaseURL != "https://wechat.example.com" || client.Token != "token" || loginToken != "login-token-1" {
+			t.Fatalf("unexpected scan input client=%+v loginToken=%s", client, loginToken)
+		}
+		return service.WechatScanIDResult{Status: service.WechatLoginStatusSuccess, WechatID: "openid-scan"}, nil
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/user/wechat/scan-id?loginToken=login-token-1", nil)
+
+	ResolveAdminWechatIDByScan(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	if body := recorder.Body.String(); !strings.Contains(body, "openid-scan") || strings.Contains(body, "jwt") {
+		t.Fatalf("unexpected body %s", body)
+	}
+}
+
+func TestResolveAdminWechatIDByCodeReturnsWechatID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	originalSettings := loadWechatLoginSettings
+	originalFetch := fetchWechatUserIDByCode
+	defer func() {
+		loadWechatLoginSettings = originalSettings
+		fetchWechatUserIDByCode = originalFetch
+	}()
+	loadWechatLoginSettings = func() (service.SystemSettingDetail, error) {
+		return service.SystemSettingDetail{
+			WechatLoginEnabled:     true,
+			WechatCodeLoginEnabled: true,
+			WechatAPIBaseURL:       "https://wechat.example.com",
+			WechatAPIBearerToken:   "token",
+		}, nil
+	}
+	fetchWechatUserIDByCode = func(client service.WechatLoginClient, code string) (string, error) {
+		if client.BaseURL != "https://wechat.example.com" || client.Token != "token" || code != "104014" {
+			t.Fatalf("unexpected code input client=%+v code=%s", client, code)
+		}
+		return "openid-code", nil
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/wechat/code-id", bytes.NewBufferString(`{"code":"104014"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	ResolveAdminWechatIDByCode(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	if body := recorder.Body.String(); !strings.Contains(body, "openid-code") || strings.Contains(body, "jwt") {
 		t.Fatalf("unexpected body %s", body)
 	}
 }

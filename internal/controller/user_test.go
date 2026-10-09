@@ -29,7 +29,7 @@ func newUserControllerTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open test db: %v", err)
 	}
 
-	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.Log{}); err != nil {
+	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.Log{}, &entity.BillingRecord{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 
@@ -315,6 +315,57 @@ func TestUserRegisterCreatesPublicUserWithDefaults(t *testing.T) {
 	}
 }
 
+func TestUserRegisterAppliesNewUserBonusAndWritesBillingDetail(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	if err := db.Create(&entity.SystemSetting{Key: service.RegisterEnabledSettingKey, Value: "true"}).Error; err != nil {
+		t.Fatalf("seed register setting: %v", err)
+	}
+	if err := db.Create(&entity.SystemSetting{Key: service.NewUserBonusAmountSettingKey, Value: "12.50"}).Error; err != nil {
+		t.Fatalf("seed bonus setting: %v", err)
+	}
+
+	originalConsume := consumeCaptchaTokenWithDB
+	originalVerify := verifySMSCodeWithDB
+	defer func() {
+		consumeCaptchaTokenWithDB = originalConsume
+		verifySMSCodeWithDB = originalVerify
+	}()
+	consumeCaptchaTokenWithDB = func(string, string, string) error { return nil }
+	verifySMSCodeWithDB = func(string, string, string) error { return nil }
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	payload := []byte(`{"username":"bonus-user","password":"Abc12345!","nickname":"赠送用户","phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`)
+	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	ctx.Request = request
+
+	UserRegister(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	stored, err := dao.User.Where(dao.User.Username.Eq("bonus-user")).First()
+	if err != nil {
+		t.Fatalf("load bonus user: %v", err)
+	}
+	if stored.Balance != 12.5 {
+		t.Fatalf("expected public registration bonus balance 12.5, got %v", stored.Balance)
+	}
+
+	var record entity.BillingRecord
+	if err := db.Where("user_id = ? AND type = ?", stored.ID, "registration_bonus").First(&record).Error; err != nil {
+		t.Fatalf("load registration bonus billing: %v", err)
+	}
+	if record.Amount != 12.5 || record.BalanceBefore != 0 || record.BalanceAfter != 12.5 {
+		t.Fatalf("unexpected bonus billing record: %+v", record)
+	}
+	if record.Remark != "新用户赠送" {
+		t.Fatalf("expected bonus remark, got %+v", record)
+	}
+}
+
 func TestUserLoginRequiresCaptchaToken(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	_ = newUserControllerTestDB(t)
@@ -428,6 +479,157 @@ func TestUpdateUserAddsBalanceAmount(t *testing.T) {
 	}
 	if stored.Balance != 13.25 {
 		t.Fatalf("expected balance to increase to 13.25, got %v", stored.Balance)
+	}
+}
+
+func TestUpdateUserBindsWechatID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	admin := &entity.User{ID: 76, Username: "admin-wechat-bind", Password: "123456", Role: "admin", Status: "enabled", RegisterSource: "admin"}
+	target := &entity.User{ID: 77, Username: "target-wechat-bind", Password: "123456", ParentID: 76, Role: "user", Status: "enabled", RegisterSource: "admin"}
+	if err := db.Create(admin).Error; err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	if err := db.Create(target).Error; err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	payload := []byte(`{"nickname":"","role":"user","status":"enabled","phone":"","wechatId":"openid-admin-bind"}`)
+	request := httptest.NewRequest(http.MethodPut, "/adapter-service/user/77", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	ctx.Request = request
+	ctx.Params = gin.Params{{Key: "id", Value: "77"}}
+	ctx.Set("user", admin)
+
+	UpdateUser(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	stored, err := dao.User.Where(dao.User.ID.Eq(77)).First()
+	if err != nil {
+		t.Fatalf("load target user: %v", err)
+	}
+	if stored.WechatID == nil || *stored.WechatID != "openid-admin-bind" {
+		t.Fatalf("expected wechat id to be bound, got %+v", stored.WechatID)
+	}
+	if stored.WechatBoundAt == nil {
+		t.Fatal("expected wechat bound time to be written")
+	}
+}
+
+func TestUpdateUserClearsWechatBinding(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	wechatID := "openid-clear"
+	boundAt := time.Now()
+	admin := &entity.User{ID: 78, Username: "admin-wechat-clear", Password: "123456", Role: "admin", Status: "enabled", RegisterSource: "admin"}
+	target := &entity.User{ID: 79, Username: "target-wechat-clear", Password: "123456", ParentID: 78, Role: "user", Status: "enabled", RegisterSource: "admin", WechatID: &wechatID, WechatBoundAt: &boundAt}
+	if err := db.Create(admin).Error; err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	if err := db.Create(target).Error; err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	payload := []byte(`{"nickname":"","role":"user","status":"enabled","phone":"","wechatId":"   "}`)
+	request := httptest.NewRequest(http.MethodPut, "/adapter-service/user/79", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	ctx.Request = request
+	ctx.Params = gin.Params{{Key: "id", Value: "79"}}
+	ctx.Set("user", admin)
+
+	UpdateUser(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	stored, err := dao.User.Where(dao.User.ID.Eq(79)).First()
+	if err != nil {
+		t.Fatalf("load target user: %v", err)
+	}
+	if stored.WechatID != nil || stored.WechatBoundAt != nil {
+		t.Fatalf("expected wechat binding to be cleared, got id=%+v boundAt=%+v", stored.WechatID, stored.WechatBoundAt)
+	}
+}
+
+func TestUpdateUserRejectsOccupiedWechatWithoutForce(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	wechatID := "openid-occupied"
+	admin := &entity.User{ID: 80, Username: "admin-wechat-occupied", Password: "123456", Role: "admin", Status: "enabled", RegisterSource: "admin"}
+	owner := &entity.User{ID: 81, Username: "wechat-owner", Password: "123456", ParentID: 80, Role: "user", Status: "enabled", RegisterSource: "admin", WechatID: &wechatID}
+	target := &entity.User{ID: 82, Username: "wechat-target", Password: "123456", ParentID: 80, Role: "user", Status: "enabled", RegisterSource: "admin"}
+	for _, user := range []*entity.User{admin, owner, target} {
+		if err := db.Create(user).Error; err != nil {
+			t.Fatalf("create user %s: %v", user.Username, err)
+		}
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	payload := []byte(`{"nickname":"","role":"user","status":"enabled","phone":"","wechatId":"openid-occupied"}`)
+	request := httptest.NewRequest(http.MethodPut, "/adapter-service/user/82", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	ctx.Request = request
+	ctx.Params = gin.Params{{Key: "id", Value: "82"}}
+	ctx.Set("user", admin)
+
+	UpdateUser(ctx)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "该微信已绑定其他账号") {
+		t.Fatalf("expected occupied wechat error, got %s", recorder.Body.String())
+	}
+}
+
+func TestUpdateUserForceReassignsWechatBinding(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	wechatID := "openid-reassign"
+	boundAt := time.Now()
+	admin := &entity.User{ID: 83, Username: "admin-wechat-reassign", Password: "123456", Role: "admin", Status: "enabled", RegisterSource: "admin"}
+	owner := &entity.User{ID: 84, Username: "wechat-old-owner", Password: "123456", ParentID: 83, Role: "user", Status: "enabled", RegisterSource: "admin", WechatID: &wechatID, WechatBoundAt: &boundAt}
+	target := &entity.User{ID: 85, Username: "wechat-new-owner", Password: "123456", ParentID: 83, Role: "user", Status: "enabled", RegisterSource: "admin"}
+	for _, user := range []*entity.User{admin, owner, target} {
+		if err := db.Create(user).Error; err != nil {
+			t.Fatalf("create user %s: %v", user.Username, err)
+		}
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	payload := []byte(`{"nickname":"","role":"user","status":"enabled","phone":"","wechatId":"openid-reassign","forceReassignWechat":true}`)
+	request := httptest.NewRequest(http.MethodPut, "/adapter-service/user/85", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	ctx.Request = request
+	ctx.Params = gin.Params{{Key: "id", Value: "85"}}
+	ctx.Set("user", admin)
+
+	UpdateUser(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	stored, err := dao.User.Where(dao.User.ID.Eq(85)).First()
+	if err != nil {
+		t.Fatalf("load target user: %v", err)
+	}
+	if stored.WechatID == nil || *stored.WechatID != "openid-reassign" {
+		t.Fatalf("expected reassigned wechat id, got %+v", stored.WechatID)
+	}
+	reloadedOwner, err := dao.User.Where(dao.User.ID.Eq(84)).First()
+	if err != nil {
+		t.Fatalf("load old owner: %v", err)
+	}
+	if reloadedOwner.WechatID != nil || reloadedOwner.WechatBoundAt != nil {
+		t.Fatalf("expected old owner wechat binding cleared, got id=%+v boundAt=%+v", reloadedOwner.WechatID, reloadedOwner.WechatBoundAt)
 	}
 }
 
@@ -712,6 +914,83 @@ func TestCreateUserAcceptsStrongPassword(t *testing.T) {
 	}
 	if stored.Role != "user" || stored.Status != "enabled" {
 		t.Fatalf("unexpected stored user: %+v", stored)
+	}
+}
+
+func TestCreateUserAppliesEditableNewUserBonus(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	admin := &entity.User{ID: 86, Username: "admin-bonus-create", Password: "123456", Role: "admin", Status: "enabled", RegisterSource: "admin"}
+	if err := db.Create(admin).Error; err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	payload := []byte(`{"username":"created-bonus-user","password":"Abc12345!","nickname":"赠送账号","role":"user","status":"enabled","giftEnabled":true,"giftAmount":8.75}`)
+	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	ctx.Request = request
+	ctx.Set("user", admin)
+
+	CreateUser(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	stored, err := dao.User.Where(dao.User.Username.Eq("created-bonus-user")).First()
+	if err != nil {
+		t.Fatalf("load created bonus user: %v", err)
+	}
+	if stored.Balance != 8.75 {
+		t.Fatalf("expected editable bonus balance 8.75, got %v", stored.Balance)
+	}
+	var record entity.BillingRecord
+	if err := db.Where("user_id = ? AND type = ?", stored.ID, "registration_bonus").First(&record).Error; err != nil {
+		t.Fatalf("load admin-created bonus billing: %v", err)
+	}
+	if record.Amount != 8.75 || record.BalanceAfter != 8.75 {
+		t.Fatalf("unexpected admin-created bonus billing: %+v", record)
+	}
+}
+
+func TestCreateUserCanDisableNewUserBonus(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	if err := db.Create(&entity.SystemSetting{Key: service.NewUserBonusAmountSettingKey, Value: "10"}).Error; err != nil {
+		t.Fatalf("seed bonus setting: %v", err)
+	}
+	admin := &entity.User{ID: 87, Username: "admin-bonus-off", Password: "123456", Role: "admin", Status: "enabled", RegisterSource: "admin"}
+	if err := db.Create(admin).Error; err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	payload := []byte(`{"username":"created-no-bonus-user","password":"Abc12345!","nickname":"不赠送账号","role":"user","status":"enabled","giftEnabled":false,"giftAmount":-99}`)
+	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	ctx.Request = request
+	ctx.Set("user", admin)
+
+	CreateUser(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	stored, err := dao.User.Where(dao.User.Username.Eq("created-no-bonus-user")).First()
+	if err != nil {
+		t.Fatalf("load disabled-bonus user: %v", err)
+	}
+	if stored.Balance != 0 {
+		t.Fatalf("expected disabled bonus balance 0, got %v", stored.Balance)
+	}
+	var count int64
+	if err := db.Model(&entity.BillingRecord{}).Where("user_id = ? AND type = ?", stored.ID, "registration_bonus").Count(&count).Error; err != nil {
+		t.Fatalf("count disabled bonus billing: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected no disabled bonus billing, got %d", count)
 	}
 }
 
