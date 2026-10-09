@@ -38,6 +38,25 @@ export function buildLogActionColor(value) {
   return 'default';
 }
 
+export function buildLogStatusLabel(record = {}) {
+  const status = resolveLogStatus(record);
+  if (status === 'success' || status === 'succeeded') return '成功';
+  if (status === 'failed' || status === 'error') return '失败';
+  if (status === 'running' || status === 'processing') return '处理中';
+  if (status === 'pending' || status === 'queued' || status === 'created') return '等待中';
+  if (status === 'timeout') return '超时';
+  return buildLogActionLabel(record?.action, record?.module);
+}
+
+export function buildLogStatusColor(record = {}) {
+  const status = resolveLogStatus(record);
+  if (status === 'success' || status === 'succeeded') return 'green';
+  if (status === 'failed' || status === 'error' || status === 'timeout') return 'red';
+  if (status === 'running' || status === 'processing') return 'blue';
+  if (status === 'pending' || status === 'queued' || status === 'created') return 'gold';
+  return buildLogActionColor(record?.action);
+}
+
 export function buildLogStructuredFields(record = {}) {
   const description = String(record?.description || '').trim();
   const request = String(record?.oldAnswer || '').trim();
@@ -85,6 +104,24 @@ export function buildLogStructuredFields(record = {}) {
     requestSnapshot: request || '-',
     responseSnapshot: response || '-',
   };
+}
+
+function resolveLogStatus(record = {}) {
+  const description = String(record?.description || '').trim();
+  const aiFallbackFields = parseAIFallbackLogDescriptionMap(description);
+  if (aiFallbackFields.status) {
+    return String(aiFallbackFields.status).trim().toLowerCase();
+  }
+
+  const searchSummary = description.split(/\s+/)[0] || '';
+  if (searchSummary === '搜索完成') return 'success';
+  if (searchSummary === '搜索失败') return 'failed';
+
+  const captchaFields = parseCaptchaLogDescriptionMap(description);
+  if (captchaFields.result) {
+    return String(captchaFields.result).trim().toLowerCase();
+  }
+  return '';
 }
 
 export function buildLogRowDetail(record = {}) {

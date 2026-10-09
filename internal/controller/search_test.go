@@ -660,6 +660,80 @@ func TestSearchPersistsBillingRecordAndAccessTokenUsageForDefaultProvider(t *tes
 	}
 }
 
+func TestSearchPersistsZeroAmountBillingRecordForFreeDefaultProvider(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 311, "zero-price-billing-user", "user")
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10).Error; err != nil {
+		t.Fatalf("seed user balance: %v", err)
+	}
+	token := seedControllerTokenForUser(t, db, user, "zero-price-billing-token", 0)
+	seedControllerDefaultSearchProviderConfig(t, db, "icodef", 0)
+
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode:                 searchModeNormal,
+				UsedDefaultSearch:          true,
+				UsedDefaultSearchProviders: []string{"icodef"},
+				Tokens:                     map[string]string{"icodef": "default-icodef"},
+				UserID:                     user.ID,
+				AccessTokenID:              token.ID,
+				RequestID:                  "req-search-zero-price",
+				AccessTokenCtx: &service.AccessTokenAuthContext{
+					User:        user,
+					AccessToken: token,
+				},
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return []func(model.SearchRequest) ([][]string, error){(&stubSearchClient{enable: true, answer: [][]string{{"免费渠道答案"}}}).SearchAnswer}
+		},
+		nil,
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"免费渠道题目","options":["A","B"]}`)))
+			request.Header.Set("Content-Type", "application/json")
+			ctx.Request = request
+
+			Search(ctx)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+		})
+
+	var records []entity.BillingRecord
+	if err := db.Order("id asc").Find(&records).Error; err != nil {
+		t.Fatalf("load billing records: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected zero-price provider to create one billing detail row, got %+v", records)
+	}
+	if records[0].Provider != "icodef" || records[0].Amount != 0 {
+		t.Fatalf("unexpected zero-price billing record: %+v", records[0])
+	}
+	if records[0].BalanceBefore != 10 || records[0].BalanceAfter != 10 {
+		t.Fatalf("expected zero-price billing not to change balance, got %+v", records[0])
+	}
+	if records[0].RequestID != "req-search-zero-price" {
+		t.Fatalf("expected request id to be recorded, got %+v", records[0])
+	}
+
+	var entry entity.Log
+	if err := db.Where("module = ? AND user_id = ?", "search", user.ID).Order("id DESC").First(&entry).Error; err != nil {
+		t.Fatalf("load search billing audit log: %v", err)
+	}
+	if strings.Contains(entry.Description, "billingProvider=billing_zero_amount") {
+		t.Fatalf("expected zero-price provider to be recorded as a provider charge, got %q", entry.Description)
+	}
+	if !strings.Contains(entry.Description, "billingProvider=icodef") {
+		t.Fatalf("expected billing provider icodef in audit log, got %q", entry.Description)
+	}
+}
+
 func TestSearchPersistsBillingRecordAndAccessTokenUsageForLocalSearch(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newSearchControllerTestDB(t)

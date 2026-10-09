@@ -51,9 +51,9 @@
         <template #module="{ record }">
           <a-tag color="blue">{{ buildModuleLabel(record.module) }}</a-tag>
         </template>
-        <template #action="{ record }">
-          <a-tag :color="buildActionColor(record.action)">
-            {{ buildActionLabel(record.action, record.module) }}
+        <template #status="{ record }">
+          <a-tag :color="buildStatusColor(record)">
+            {{ buildStatusLabel(record) }}
           </a-tag>
         </template>
         <template #username="{ record }">
@@ -134,11 +134,11 @@ import { getLogList } from '@/api/TikuComponentApi';
 import { defineComponent, ref, reactive } from 'vue';
 import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser';
 import {
-  buildLogActionColor,
-  buildLogActionLabel,
   buildLogModuleLabel,
   buildLogQidLabel,
   buildLogRowDetail,
+  buildLogStatusColor,
+  buildLogStatusLabel,
   buildLogStructuredFields,
 } from '@/utils/logListHelpers.mjs';
 const dataSource = ref([])
@@ -208,11 +208,11 @@ export default defineComponent({
           width: 120,
         },
         {
-          title: '操作',
-          dataIndex: 'action',
-          key: 'action',
+          title: '状态',
+          dataIndex: 'status',
+          key: 'status',
           slots: {
-            customRender: 'action',
+            customRender: 'status',
           },
           width: 120,
         },
@@ -343,11 +343,11 @@ export default defineComponent({
     buildModuleLabel(value) {
       return buildLogModuleLabel(value)
     },
-    buildActionLabel(value, module) {
-      return buildLogActionLabel(value, module)
+    buildStatusLabel(record) {
+      return buildLogStatusLabel(record)
     },
-    buildActionColor(value) {
-      return buildLogActionColor(value)
+    buildStatusColor(record) {
+      return buildLogStatusColor(record)
     },
     buildStructuredFields(record) {
       return buildLogStructuredFields(record)

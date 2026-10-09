@@ -921,8 +921,7 @@ func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQue
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_charge_resolve_failed", clientIP, audit)
 		return nil
 	}
-	totalAmount := completedSearchBillingAmount(charges)
-	if totalAmount <= 0 {
+	if len(charges) == 0 {
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_zero_amount", clientIP, audit)
 		return nil
 	}
@@ -971,13 +970,11 @@ func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRe
 			}
 
 			amount := roundCurrencyAmount(config.FlatPrice)
-			if amount > 0 {
-				charges = append(charges, searchBillingCharge{
-					Provider: provider,
-					Amount:   amount,
-					Snapshot: buildCompletedSearchBillingSnapshot(db, provider, amount, req, usedLocalSearch),
-				})
-			}
+			charges = append(charges, searchBillingCharge{
+				Provider: provider,
+				Amount:   amount,
+				Snapshot: buildCompletedSearchBillingSnapshot(db, provider, amount, req, usedLocalSearch),
+			})
 		}
 	}
 
@@ -988,9 +985,7 @@ func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRe
 		if err != nil {
 			return nil, err
 		}
-		if charge.Amount > 0 {
-			charges = append(charges, charge)
-		}
+		charges = append(charges, charge)
 	}
 
 	return charges, nil
@@ -1176,7 +1171,7 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 		}
 
 		totalCharged := completedSearchBillingAmount(charges)
-		if totalCharged <= 0 {
+		if len(charges) == 0 {
 			return nil
 		}
 		if ctx.AccessTokenID > 0 {
@@ -1187,9 +1182,6 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 
 		balanceAfter := roundCurrencyAmount(user.Balance)
 		for _, charge := range charges {
-			if charge.Amount <= 0 {
-				continue
-			}
 			balanceBefore := balanceAfter
 			balanceAfter = roundCurrencyAmount(balanceBefore - charge.Amount)
 			billingRecord := entity.BillingRecord{

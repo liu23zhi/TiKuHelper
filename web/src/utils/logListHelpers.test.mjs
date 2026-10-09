@@ -10,6 +10,7 @@ import {
   buildLogDetailSections,
   buildLogModuleLabel,
   buildLogRowDetail,
+  buildLogStatusLabel,
   buildLogStructuredFields,
 } from './logListHelpers.mjs';
 
@@ -41,6 +42,25 @@ test('buildLogActionColor keeps search action purple and login gold', () => {
   assert.equal(buildLogActionColor(20), 'cyan');
   assert.equal(buildLogActionColor(21), 'geekblue');
   assert.equal(buildLogActionColor(22), 'volcano');
+});
+
+test('buildLogStatusLabel renders success and failure states for AI fallback and search logs', () => {
+  assert.equal(buildLogStatusLabel({
+    module: 'ai_fallback',
+    description: 'AI兜底完成 status=success stage=result mode=async requestId=req-1',
+  }), '成功');
+  assert.equal(buildLogStatusLabel({
+    module: 'ai_fallback',
+    description: 'AI兜底失败 status=failed stage=result mode=async requestId=req-2 code=NO_ANSWER',
+  }), '失败');
+  assert.equal(buildLogStatusLabel({
+    module: 'search',
+    description: '搜索完成 requestId=req-3 mode=normal answers=1',
+  }), '成功');
+  assert.equal(buildLogStatusLabel({
+    module: 'search',
+    description: '搜索失败 detail=当前余额不足 method=POST path=/adapter-service/search',
+  }), '失败');
 });
 
 test('buildLogDetailSections exposes structured search summary with raw request and response blocks', () => {
@@ -342,4 +362,13 @@ test('LogList page renders visible detail column for structured diagnostics', as
   assert.match(content, /buildLogRowDetail/);
   assert.match(content, /title: '详情'/);
   assert.match(content, /customRender: 'detail'/);
+});
+
+test('LogList page renders derived status instead of the raw action column', async () => {
+  const content = await readFile(logListPagePath, 'utf8');
+
+  assert.match(content, /title: '状态'/);
+  assert.match(content, /<template #status="\{ record \}">/);
+  assert.match(content, /buildStatusLabel\(record\)/);
+  assert.doesNotMatch(content, /title: '操作'/);
 });
