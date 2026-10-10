@@ -94,12 +94,25 @@ export function buildSearchAccountConfigSavePayloads(rows = []) {
     .filter((item) => item.provider);
 }
 
+/** 充值金额允许的小数位数：支付渠道只支持「分」。 */
+export const RECHARGE_DECIMALS = 2
+
+function hasMoreDecimalsThan(amount, decimals) {
+  const scale = 10 ** decimals
+  // 1e-9 容差，避免浮点表示误差把合法的 12.34 判成超精度。
+  return Math.abs(amount * scale - Math.round(amount * scale)) > 1e-9
+}
+
 export function buildRechargeOrderPayload(amountValue, paymentMethodId) {
   const amount = Number(String(amountValue || '').trim());
   const methodId = Number(paymentMethodId || 0);
 
   if (!Number.isFinite(amount) || amount <= 0) {
     throw new Error('充值金额必须大于 0');
+  }
+  // 第三方支付渠道只支持「分」，充值金额限制为 2 位小数（余额仍是 6 位精度）。
+  if (hasMoreDecimalsThan(amount, RECHARGE_DECIMALS)) {
+    throw new Error('充值金额最多支持两位小数');
   }
   if (!Number.isInteger(methodId) || methodId <= 0) {
     throw new Error('请选择有效的支付方式');

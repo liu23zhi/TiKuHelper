@@ -3,7 +3,7 @@
     <a-row :gutter="16" class="summary-row">
       <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
-          <a-statistic title="当前余额" prefix="¥" :value="currentUserBalance" :precision="2" />
+          <a-statistic title="当前余额" prefix="¥" :value="currentUserBalance" :precision="6" />
         </a-card>
       </a-col>
       <a-col :xs="24" :sm="12" :lg="6">
@@ -18,7 +18,7 @@
       </a-col>
       <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
-          <a-statistic title="累计消费金额" prefix="¥" :value="summary.totalAmount" :precision="2" />
+          <a-statistic title="累计消费金额" prefix="¥" :value="summary.totalAmount" :precision="6" />
         </a-card>
       </a-col>
     </a-row>
@@ -40,18 +40,23 @@
         <a-col :xs="24" :lg="10">
           <div class="balance-panel">
             <div class="balance-label">当前账户余额</div>
-            <div class="balance-value">¥ {{ currentUserBalance.toFixed(2) }}</div>
+            <div class="balance-value">¥ {{ formatMoneyValue(currentUserBalance) }}</div>
             <div class="balance-meta">点击右上角刷新可同步最新余额</div>
           </div>
         </a-col>
         <a-col :xs="24" :lg="14">
           <a-form layout="vertical" class="recharge-form">
             <a-form-item label="充值金额">
-              <a-input
+              <a-input-number
                 v-model:value="rechargeAmount"
+                :min="0.01"
+                :precision="2"
+                :step="1"
                 placeholder="请输入充值金额，例如 10 或 25.50"
                 size="large"
+                style="width: 100%"
               />
+              <div class="hint">充值金额最多两位小数（支付渠道仅支持「分」）。</div>
             </a-form-item>
 
             <a-form-item label="快捷金额">
@@ -206,13 +211,14 @@ import {
   buildBillingRecordTypeText,
 } from '@/utils/userPortalHelpers.mjs'
 import { getStoredCurrentUser, setStoredCurrentUser } from '@/utils/currentUser'
+import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
 
 const dataSource = ref([])
 const paymentMethods = ref([])
 const tableLoading = ref(false)
 const paymentMethodLoading = ref(false)
 const rechargeSubmitting = ref(false)
-const rechargeAmount = ref('10')
+const rechargeAmount = ref(10)
 const selectedPaymentMethodId = ref(null)
 const paymentResultVisible = ref(false)
 const paymentQRCodeDataUrl = ref('')
@@ -272,6 +278,7 @@ export default defineComponent({
       summary,
       currentUserBalance,
       pageRefreshing,
+      formatMoneyValue,
       buildBillingRecordAmountText,
       buildBillingRecordReferenceText,
       buildBillingRecordSourceText,
@@ -425,7 +432,8 @@ export default defineComponent({
       return date.toLocaleString()
     },
     applyRechargeQuickAmount(amount) {
-      rechargeAmount.value = String(amount)
+      // 快捷金额是数字，保持与 a-input-number 的取值类型一致。
+      rechargeAmount.value = Number(amount)
     },
     selectPaymentMethod(id) {
       selectedPaymentMethodId.value = Number(id || 0)

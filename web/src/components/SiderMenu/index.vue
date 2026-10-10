@@ -25,12 +25,15 @@
     <a-button
       type="text"
       class="collapse-button"
+      :class="{ 'is-collapsed': collapsed }"
       :aria-expanded="!collapsed"
       aria-controls="portal-navigation"
       :aria-label="collapsed ? '展开侧边栏' : '折叠侧边栏'"
+      :title="collapsed ? '展开侧边栏' : '折叠侧边栏'"
       @click="$emit('toggle')"
     >
-      {{ collapsed ? '展开侧边栏' : '折叠侧边栏' }}
+      <component :is="collapsed ? MenuUnfoldOutlined : MenuFoldOutlined" class="collapse-button-icon" />
+      <span v-if="!collapsed" class="collapse-button-label">折叠侧边栏</span>
     </a-button>
   </div>
 </template>
@@ -49,6 +52,8 @@ import {
   SafetyCertificateOutlined,
   AccountBookOutlined,
   CreditCardOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
 } from '@ant-design/icons-vue';
 import { isAdminUser } from '../../utils/currentUser';
 
@@ -120,6 +125,8 @@ export default defineComponent({
       visibleMenuItems,
       isAdmin,
       handleSelect,
+      MenuFoldOutlined,
+      MenuUnfoldOutlined,
     };
   },
 });
@@ -158,6 +165,10 @@ export default defineComponent({
 }
 
 .collapse-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   width: 100%;
   min-height: 36px;
   height: auto;
@@ -169,10 +180,28 @@ export default defineComponent({
   white-space: normal;
 }
 
+/* 折叠后侧边栏很窄，只留居中图标，避免文字挤压换行。 */
+.collapse-button.is-collapsed {
+  padding: 8px 0;
+}
+
+.collapse-button-icon {
+  font-size: 16px;
+}
+
+.collapse-button-label {
+  min-width: 0;
+}
+
 .collapse-button:hover,
 .collapse-button:focus {
   color: #195ca3;
   background: #eff6ff;
+}
+
+/* 图标跟随按钮主色，与菜单项保持一致。 */
+.collapse-button :deep(.anticon) {
+  color: inherit;
 }
 
 .menu {

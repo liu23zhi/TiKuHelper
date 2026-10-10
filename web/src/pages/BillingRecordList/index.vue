@@ -13,7 +13,7 @@
       </a-col>
       <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
-          <a-statistic title="累计消费金额" prefix="¥" :value="summary.totalAmount" :precision="2" />
+          <a-statistic title="累计消费金额" prefix="¥" :value="summary.totalAmount" :precision="6" />
         </a-card>
       </a-col>
       <a-col :xs="24" :sm="12" :lg="6">
@@ -94,6 +94,7 @@ import { message } from 'ant-design-vue'
 import Swal from 'sweetalert2'
 import { getBillingRecords } from '@/api/TikuComponentApi'
 import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser'
+import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
 import {
   buildBillingRecordAmountText,
   buildBillingRecordFeeDetailHtml,
@@ -315,8 +316,7 @@ export default defineComponent({
       })
     },
     formatAmount(value) {
-      const amount = Number(value || 0)
-      return Number.isFinite(amount) ? amount.toFixed(2) : '0.00'
+      return formatMoneyValue(value || 0)
     },
     formatDateTime(value) {
       if (!value) {

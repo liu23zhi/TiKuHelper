@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/url"
 	"sort"
@@ -902,14 +901,14 @@ func accessTokenQuotaExhausted(accessToken entity.AccessToken) bool {
 	if accessToken.TotalQuotaLimit <= 0 {
 		return false
 	}
-	return roundCurrencyAmount(accessToken.TotalAmountUsed) >= roundCurrencyAmount(accessToken.TotalQuotaLimit)
+	return util.RoundMoney(accessToken.TotalAmountUsed) >= util.RoundMoney(accessToken.TotalQuotaLimit)
 }
 
 func accessTokenQuotaWouldExceed(accessToken entity.AccessToken, amount float64) bool {
 	if accessToken.TotalQuotaLimit <= 0 || amount <= 0 {
 		return false
 	}
-	return roundCurrencyAmount(accessToken.TotalAmountUsed+amount) > roundCurrencyAmount(accessToken.TotalQuotaLimit)
+	return util.RoundMoney(accessToken.TotalAmountUsed+amount) > util.RoundMoney(accessToken.TotalQuotaLimit)
 }
 
 func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQuery string, aiEnabled bool, req model.SearchRequest, result [][]string, aiUsage search.AISearchUsage, usedLocalSearch bool, clientIP string, audit searchAuditMetadata) (error, string) {
@@ -984,7 +983,7 @@ func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRe
 				return nil, warning, err
 			}
 
-			amount := roundCurrencyAmount(config.FlatPrice)
+			amount := util.RoundMoney(config.FlatPrice)
 			charges = append(charges, searchBillingCharge{
 				Provider: provider,
 				Amount:   amount,
@@ -1023,7 +1022,7 @@ func completedSearchBillingAmount(charges []searchBillingCharge) float64 {
 	for _, charge := range charges {
 		total += charge.Amount
 	}
-	return roundCurrencyAmount(total)
+	return util.RoundMoney(total)
 }
 
 func completedSearchBillingProviderLabel(charges []searchBillingCharge) string {
@@ -1133,7 +1132,7 @@ func calculateAIModelPriceTableAmount(price service.ResolvedAIModelTokenPrice, u
 	if baseAmount < 0 {
 		baseAmount = 0
 	}
-	return baseAmount, roundCurrencyAmount(baseAmount)
+	return baseAmount, util.RoundMoney(baseAmount)
 }
 
 func buildAIModelPriceTableBillingSnapshot(resolved resolvedSearchRequestContext, req model.SearchRequest, usage search.AISearchUsage, price service.ResolvedAIModelTokenPrice, baseAmount float64, amount float64) string {
@@ -1265,10 +1264,6 @@ func resolveCompletedSearchBillingProvider(useQuery string, defaultProviders []s
 	return ""
 }
 
-func roundCurrencyAmount(amount float64) float64 {
-	return math.Round(amount*100) / 100
-}
-
 func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, charges []searchBillingCharge) error {
 	return db.Transaction(func(tx *gorm.DB) error {
 		var accessToken entity.AccessToken
@@ -1293,10 +1288,14 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 			}
 		}
 
-		balanceAfter := roundCurrencyAmount(user.Balance)
+		// 余额扣的是精确消耗额，只在每个记录边界取整：
+		// 若先按入账金额取整再相减，被丢弃的 1e-7 级差额无法靠再次取整挽回，
+		// 会让账单里的余额变化与实际消耗对不上。
+		exactBalance := user.Balance
 		for _, charge := range charges {
-			balanceBefore := balanceAfter
-			balanceAfter = roundCurrencyAmount(balanceBefore - charge.Amount)
+			balanceBefore := util.RoundMoney(exactBalance)
+			exactBalance -= charge.Amount
+			balanceAfter := util.RoundMoney(exactBalance)
 			billingRecord := entity.BillingRecord{
 				UserID:             ctx.UserID,
 				AccessTokenID:      ctx.AccessTokenID,
@@ -1321,13 +1320,13 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 		}
 
 		if ctx.AccessTokenID > 0 {
-			totalAmountUsedAfter := roundCurrencyAmount(accessToken.TotalAmountUsed + totalCharged)
+			totalAmountUsedAfter := util.RoundMoney(accessToken.TotalAmountUsed + totalCharged)
 			if err := tx.Model(&accessToken).Where("id = ?", accessToken.ID).Update("total_amount_used", totalAmountUsedAfter).Error; err != nil {
 				return err
 			}
 		}
 
-		return tx.Model(&user).Where("id = ?", user.ID).Update("balance", balanceAfter).Error
+		return tx.Model(&user).Where("id = ?", user.ID).Update("balance", util.RoundMoney(exactBalance)).Error
 	})
 }
 

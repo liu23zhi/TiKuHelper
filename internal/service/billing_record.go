@@ -1,12 +1,12 @@
 package service
 
 import (
-	"math"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 )
 
@@ -319,7 +319,7 @@ func mergeBillingSearchGroup(representative BillingRecordListItem, charges []Bil
 		feeDetails = append(feeDetails, charge.FeeDetails...)
 	}
 
-	representative.Amount = math.Round(totalAmount*100) / 100
+	representative.Amount = util.RoundMoney(totalAmount)
 	representative.QuestionText = questionText
 	representative.ProviderLabel = strings.Join(providerLabels, "、")
 	representative.AnswerSourceLabel = strings.Join(answerSourceLabels, "、")

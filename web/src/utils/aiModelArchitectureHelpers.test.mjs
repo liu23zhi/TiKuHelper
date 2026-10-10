@@ -193,7 +193,10 @@ test('AISearchConfig page bills from the model price table and has no multiplier
   assert.match(content, /输入（￥\/M）/);
   assert.match(content, /缓存输入（￥\/M）/);
   assert.match(content, /输出（￥\/M）/);
-  assert.match(content, /return `￥\$\{amount\.toFixed\(6\)/);
+  // 金额格式化复用统一的 6 位精度模块，不再各页手写 toFixed。
+  assert.match(content, /import \{ formatMoneyCny \} from '@\/utils\/moneyFormat\.mjs'/);
+  assert.match(content, /return formatMoneyCny\(amount\)/);
+  assert.doesNotMatch(content, /toFixed\(/);
 
   assert.match(content, /architecture-table-wrap/);
   assert.match(content, /@media \(max-width: 768px\)/);

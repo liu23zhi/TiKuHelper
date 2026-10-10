@@ -8,6 +8,7 @@ import (
 	l "gorm.io/gorm/logger"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -227,6 +228,115 @@ func ensureSMSVerificationSchemaForDriver(db *gorm.DB, driverName string) error 
 	return nil
 }
 
+// moneyColumn 描述一个需要按 6 位小数存储的金额列。
+type moneyColumn struct {
+	Table  string
+	Column string
+}
+
+// ensureMoneyPrecisionSchema 把历史 decimal(18,2) 金额列扩宽到 decimal(18,6)。
+//
+// 背景：余额与账务金额改为 6 位小数后，单次 AI 调用可能只有 0.000062 元，
+// 若列本身仍是 2 位精度（MySQL 的 DECIMAL 会真实截断），这些扣费会被抹成 0。
+// SQLite 只有 NUMERIC 亲和性、不做定标截断，且 AutoMigrate 会顺带改写建表语句，
+// 因此这里只对真正会截断的驱动做显式迁移。
+func ensureMoneyPrecisionSchema(db *gorm.DB) error {
+	if db == nil {
+		return nil
+	}
+
+	normalizedDriver := strings.TrimSpace(strings.ToLower(db.Dialector.Name()))
+	if normalizedDriver == "sqlite" || normalizedDriver == "" {
+		return nil
+	}
+
+	columns := []moneyColumn{
+		{Table: entity.TableNameUser, Column: "Balance"},
+		{Table: entity.TableNameBillingRecord, Column: "BalanceBefore"},
+		{Table: entity.TableNameBillingRecord, Column: "BalanceAfter"},
+		{Table: entity.TableNameAccessToken, Column: "TotalQuotaLimit"},
+		{Table: entity.TableNameAccessToken, Column: "TotalAmountUsed"},
+		{Table: entity.TableNameRechargeOrder, Column: "Amount"},
+	}
+
+	for _, item := range columns {
+		narrow, err := moneyColumnNeedsWidening(db, item)
+		if err != nil {
+			return err
+		}
+		if !narrow {
+			continue
+		}
+		if err := alterMoneyColumn(db, item); err != nil {
+			return err
+		}
+		logger.SysLog(fmt.Sprintf("已将 %s.%s 的金额精度扩展到 6 位小数", item.Table, item.Column))
+	}
+	return nil
+}
+
+// moneyColumnNeedsWidening 只在列的小数位不足 6 位时才返回 true，
+// 避免每次启动都对大表做一次 MODIFY COLUMN。
+func moneyColumnNeedsWidening(db *gorm.DB, item moneyColumn) (bool, error) {
+	if !db.Migrator().HasTable(item.Table) || !db.Migrator().HasColumn(item.Table, item.Column) {
+		return false, nil
+	}
+
+	columnTypes, err := db.Migrator().ColumnTypes(item.Table)
+	if err != nil {
+		return false, err
+	}
+	for _, columnType := range columnTypes {
+		if !strings.EqualFold(columnType.Name(), item.Column) {
+			continue
+		}
+		scale, ok := parseDecimalScale(columnType.DatabaseTypeName())
+		if !ok {
+			// 不是 decimal(x,y) 形态（例如 SQLite 报 "decimal"），交给 AutoMigrate 处理。
+			return false, nil
+		}
+		return scale < util.MoneyPrecision, nil
+	}
+	return false, nil
+}
+
+// parseDecimalScale 从 "decimal(18,2)" 这类类型名里取出小数位数。
+func parseDecimalScale(databaseType string) (int, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(databaseType))
+	open := strings.Index(normalized, "(")
+	closeIdx := strings.Index(normalized, ")")
+	if !strings.HasPrefix(normalized, "decimal") || open < 0 || closeIdx < open {
+		return 0, false
+	}
+
+	parts := strings.Split(normalized[open+1:closeIdx], ",")
+	if len(parts) != 2 {
+		return 0, false
+	}
+	scale, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err != nil {
+		return 0, false
+	}
+	return scale, true
+}
+
+func alterMoneyColumn(db *gorm.DB, item moneyColumn) error {
+	var model any
+	switch item.Table {
+	case entity.TableNameUser:
+		model = &entity.User{}
+	case entity.TableNameBillingRecord:
+		model = &entity.BillingRecord{}
+	case entity.TableNameAccessToken:
+		model = &entity.AccessToken{}
+	case entity.TableNameRechargeOrder:
+		model = &entity.RechargeOrder{}
+	default:
+		return nil
+	}
+	return db.Migrator().AlterColumn(model, item.Column)
+}
+
 // RegisterDB 注册数据库
 func RegisterDB(config configs.Config) *gorm.DB {
 	once.Do(func() {
@@ -310,6 +420,10 @@ func RegisterDB(config configs.Config) *gorm.DB {
 	)
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
+	}
+
+	if err := ensureMoneyPrecisionSchema(db); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare money precision schema fail: %w", err))
 	}
 	ensureAccountDomainDefaults(db)
 

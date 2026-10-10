@@ -95,6 +95,7 @@ func writeRechargeOrderError(c *gin.Context, err error, fallback string) {
 
 	switch {
 	case errors.Is(err, service.ErrRechargeAmountInvalid),
+		errors.Is(err, service.ErrRechargeAmountPrecision),
 		errors.Is(err, service.ErrRechargePaymentMethodDisabled),
 		errors.Is(err, service.ErrRechargePaymentConfigIncomplete),
 		errors.Is(err, service.ErrRechargePaymentCreateFailed):

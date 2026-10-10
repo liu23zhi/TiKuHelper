@@ -18,7 +18,7 @@
       </a-col>
       <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
-          <a-statistic title="累计已消费" prefix="¥" :value="summary.totalAmountUsed" :precision="2" />
+          <a-statistic title="累计已消费" prefix="¥" :value="summary.totalAmountUsed" :precision="6" />
         </a-card>
       </a-col>
     </a-row>
@@ -148,11 +148,11 @@
           <a-input-number
             v-model:value="formState.totalQuotaLimit"
             :min="0"
-            :precision="2"
+            :precision="6"
             style="width: 100%"
             placeholder="0 表示不单独限制"
           />
-          <div class="hint">设置为 0 或留空时，表示不单独限制该令牌，消费直接受用户余额约束。</div>
+          <div class="hint">设置为 0 或留空时，表示不单独限制该令牌，消费直接受用户余额约束。金额最多支持 6 位小数。</div>
         </a-form-item>
         <a-form-item label="备注">
           <a-textarea v-model:value="formState.remark" :rows="4" placeholder="可选，例如调用来源、用途说明等" />
@@ -177,6 +177,7 @@ import {
   buildAccessTokenBalanceAlert,
   buildAccessTokenListParams,
 } from '@/utils/accessTokenManagementHelpers.mjs';
+import { formatMoneyValue, formatMoneyYuanWithSpace } from '@/utils/moneyFormat.mjs';
 
 const dataSource = ref([])
 const tableLoading = ref(true)
@@ -356,8 +357,7 @@ export default defineComponent({
   },
   methods: {
     formatAmount(value) {
-      const amount = Number(value || 0)
-      return Number.isFinite(amount) ? amount.toFixed(2) : '0.00'
+      return formatMoneyValue(value || 0)
     },
     statusText(value) {
       return String(value || '').toLowerCase() === 'disabled' ? '禁用' : '启用'
@@ -370,7 +370,7 @@ export default defineComponent({
       if (!Number.isFinite(amount) || amount <= 0) {
         return '未限制'
       }
-      return `¥ ${amount.toFixed(2)}`
+      return formatMoneyYuanWithSpace(amount)
     },
     isTokenVisible(tokenId) {
       return visibleTokenIds.value.includes(tokenId)

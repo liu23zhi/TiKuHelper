@@ -1,3 +1,5 @@
+import { formatMoneyValue } from './moneyFormat.mjs'
+
 export function resolveAdapterHomePath(user) {
   return String(user?.role || '').trim().toLowerCase() === 'admin'
     ? '/adapter/component'
@@ -175,7 +177,8 @@ export function buildBillingRecordReferenceText(record) {
 
 export function buildBillingRecordAmountText(record) {
   const amount = Number(record?.amount || 0)
-  const formatted = Number.isFinite(amount) ? amount.toFixed(2) : '0.00'
+  // 金额统一最多 6 位小数，保证小额 AI 扣费（如 0.000062）不会被显示成 0。
+  const formatted = formatMoneyValue(Number.isFinite(amount) ? amount : 0)
   const direction = String(record?.direction || '').trim()
   if (direction === 'income') {
     return `+¥ ${formatted}`

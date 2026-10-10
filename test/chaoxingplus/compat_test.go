@@ -487,7 +487,10 @@ func buildAIFallbackBody(t *testing.T, question string, questionType int, option
 // GPT-5.6 Sol 单价为 输入 4 / 缓存 0.4 / 输出 20（元每百万 token）：
 //
 //	(2000-512)/1e6*4 + 512/1e6*0.4 + 300/1e6*20
-//	= 0.005952 + 0.0002048 + 0.006 = 0.0121568 → 四舍五入入账 0.01
+//	= 0.005952 + 0.0002048 + 0.006 = 0.0121568
+//
+// 金额统一保留 6 位小数，因此入账 0.012157（而不是被抹成 0.01），
+// 余额随之从 50 变成 49.987843。
 func assertBilled(t *testing.T, harness *compatHarness, promptTokens int, completionTokens int, cachedTokens int) {
 	t.Helper()
 
@@ -500,8 +503,8 @@ func assertBilled(t *testing.T, harness *compatHarness, promptTokens int, comple
 	if err := db.Where("id = ?", harness.user.ID).First(&user).Error; err != nil {
 		t.Fatalf("load billed user: %v", err)
 	}
-	if user.Balance != 49.99 {
-		t.Fatalf("expected balance 50 -> 49.99 after price-table billing, got %v", user.Balance)
+	if user.Balance != 49.987843 {
+		t.Fatalf("expected balance 50 -> 49.987843 after price-table billing, got %v", user.Balance)
 	}
 
 	var record entity.BillingRecord
@@ -515,8 +518,8 @@ func assertBilled(t *testing.T, harness *compatHarness, promptTokens int, comple
 	if record.InputTokens != int64(promptTokens) || record.CachedInputTokens != int64(cachedTokens) || record.OutputTokens != int64(completionTokens) {
 		t.Fatalf("unexpected token accounting: %+v", record)
 	}
-	if record.Amount != 0.01 {
-		t.Fatalf("expected price-table amount 0.01, got %v (snapshot %q)", record.Amount, record.UnitPriceSnapshot)
+	if record.Amount != 0.012157 {
+		t.Fatalf("expected price-table amount 0.012157, got %v (snapshot %q)", record.Amount, record.UnitPriceSnapshot)
 	}
 	for _, part := range []string{"pricing=model_price_table", "inputPrice=4.0000", "cachedPrice=0.4000", "outputPrice=20.0000"} {
 		if !strings.Contains(record.UnitPriceSnapshot, part) {

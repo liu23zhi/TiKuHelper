@@ -33,10 +33,10 @@
           <a-input-number
             v-model:value="formState.newUserBonusAmount"
             :min="0"
-            :precision="2"
+            :precision="6"
             style="width: 220px"
           />
-          <div class="hint">新用户注册或后台创建成功后自动计入余额；后台创建时可单独调整或关闭。</div>
+          <div class="hint">新用户注册或后台创建成功后自动计入余额；后台创建时可单独调整或关闭。金额最多支持 6 位小数。</div>
         </a-form-item>
 
         <a-form-item label="开启短信登录">
@@ -313,7 +313,8 @@ function normalizeString(value) {
 
 function normalizeBonusAmount(value) {
   const amount = Number(value || 0)
-  return Number.isFinite(amount) && amount >= 0 ? Math.round(amount * 100) / 100 : 0
+  // 与后端保持一致：金额最多 6 位小数。
+  return Number.isFinite(amount) && amount >= 0 ? Math.round(amount * 1e6) / 1e6 : 0
 }
 
 function trimTrailingSlash(value) {

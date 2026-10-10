@@ -183,7 +183,8 @@ export default defineComponent({
       this.handleLoad()
     },
     formatAmount(value) {
-      const amount = Number(value || 0)
+      // 充值金额固定 2 位小数（支付渠道只支持「分」），与余额的 6 位精度区分开。
+      const amount = Number(value)
       return Number.isFinite(amount) ? amount.toFixed(2) : '0.00'
     },
     formatDateTime(value) {

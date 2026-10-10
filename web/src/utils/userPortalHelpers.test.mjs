@@ -92,7 +92,8 @@ test('billing record helpers render recharge and search ledger rows', () => {
   assert.equal(buildBillingRecordSubjectText(recharge), '账户充值');
   assert.equal(buildBillingRecordSourceText(recharge), '账户充值');
   assert.equal(buildBillingRecordReferenceText(recharge), 'rcg_user_20260621002829_100_ABC12345');
-  assert.equal(buildBillingRecordAmountText(recharge), '+¥ 1.00');
+  // 金额最多 6 位小数并去掉末尾多余的 0，因此整数金额显示为 '+¥ 1'。
+  assert.equal(buildBillingRecordAmountText(recharge), '+¥ 1');
 
   const search = {
     type: 'normal_search',
@@ -138,7 +139,8 @@ test('billing record fee helpers render per-provider and total charges', () => {
   assert.match(html, /class="billing-fee-item"/);
   assert.match(html, /class="billing-fee-total"/);
   assert.match(html, /合计/);
-  assert.match(html, /-¥ 2\.00/);
+  // 合计 2 元按去尾零规则显示为 -¥ 2。
+  assert.match(html, /-¥ 2(?!\.)/);
 });
 
 test('billing record fee helpers fall back to the row provider for legacy records', () => {

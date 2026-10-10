@@ -18,7 +18,7 @@ type User struct {
 	Nickname       string     `gorm:"column:nickname;type:varchar(255)" json:"nickname"`
 	Role           string     `gorm:"column:role;type:varchar(32);not null;default:user" json:"role"`
 	Status         string     `gorm:"column:status;type:varchar(32);not null;default:enabled" json:"status"`
-	Balance        float64    `gorm:"column:balance;type:decimal(18,2);not null;default:0" json:"balance"`
+	Balance        float64    `gorm:"column:balance;type:decimal(18,6);not null;default:0" json:"balance"`
 	RegisterSource string     `gorm:"column:register_source;type:varchar(32);not null;default:legacy" json:"registerSource"`
 	Phone          *string    `gorm:"column:phone;type:varchar(32);uniqueIndex" json:"phone"`
 	PhoneBoundAt   *time.Time `gorm:"column:phone_bound_at" json:"phoneBoundAt"`

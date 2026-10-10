@@ -244,6 +244,7 @@ import {
   normalizeSMSCodeInput,
 } from '@/utils/captchaHelpers.mjs'
 import { buildRegisterSourceLabel } from '@/utils/userPortalHelpers.mjs'
+import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
 import { setStoredCurrentUser } from '@/utils/currentUser.js'
 import { useSmsCooldown } from '@/utils/smsCooldown.js'
 import { createWechatQrStatusController } from '@/utils/wechatQrStatus.mjs'
@@ -581,10 +582,7 @@ export default defineComponent({
       return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
     }
 
-    const formatBalance = (value) => {
-      const amount = Number(value || 0)
-      return Number.isFinite(amount) ? amount.toFixed(2) : '0.00'
-    }
+    const formatBalance = (value) => formatMoneyValue(value || 0)
 
     const roleText = (value) => String(value || '').toLowerCase() === 'admin' ? '管理员' : '普通用户'
     const statusText = (value) => String(value || '').toLowerCase() === 'disabled' ? '已禁用' : '正常'

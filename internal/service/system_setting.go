@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 )
 
@@ -194,7 +195,7 @@ func normalizeNewUserBonusAmount(amount float64) (float64, error) {
 	if math.IsNaN(amount) || math.IsInf(amount, 0) || amount < 0 {
 		return 0, ErrInvalidNewUserBonusAmount
 	}
-	return math.Round(amount*100) / 100, nil
+	return util.RoundMoney(amount), nil
 }
 
 func GetPublicAuthSettingsWithDB(db *gorm.DB) (PublicAuthSettings, error) {

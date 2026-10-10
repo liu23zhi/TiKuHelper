@@ -23,11 +23,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
 var ErrRechargeAmountInvalid = errors.New("充值金额不合法")
+var ErrRechargeAmountPrecision = errors.New("充值金额最多支持两位小数")
 var ErrRechargePaymentConfigIncomplete = errors.New("支付配置不完整")
 var ErrRechargePaymentMethodNotFound = errors.New("支付方式不存在")
 var ErrRechargePaymentMethodDisabled = errors.New("支付方式未启用")
@@ -275,10 +277,11 @@ func ListRechargeOrdersWithDB(db *gorm.DB, operator entity.User, page int, pageS
 }
 
 func CreateRechargeOrderWithDB(db *gorm.DB, user entity.User, input CreateRechargeOrderInput) (CreateRechargeOrderResult, error) {
-	amount := normalizeRechargeAmount(input.Amount)
-	if amount <= 0 {
-		return CreateRechargeOrderResult{}, ErrRechargeAmountInvalid
+	// 充值金额只接受 2 位小数，避免把无法收款的多余精度写进订单。
+	if err := validateRechargeAmount(input.Amount); err != nil {
+		return CreateRechargeOrderResult{}, err
 	}
+	amount := normalizeRechargeAmount(input.Amount)
 
 	paymentMethod, err := loadPaymentMethodByID(db, input.PaymentMethodID)
 	if err != nil {
@@ -408,8 +411,9 @@ func HandleRechargePaymentNotifyWithDB(db *gorm.DB, values url.Values) (bool, er
 			return err
 		}
 
-		balanceBefore := normalizeRechargeAmount(user.Balance)
-		balanceAfter := normalizeRechargeAmount(balanceBefore + order.Amount)
+		// 余额是 6 位精度，这里必须用钱包口径，不能用充值口径（2 位）。
+		balanceBefore := normalizeWalletAmount(user.Balance)
+		balanceAfter := normalizeWalletAmount(balanceBefore + order.Amount)
 		now := time.Now()
 
 		if err := tx.Model(&entity.RechargeOrder{}).Where("id = ?", order.ID).Updates(map[string]any{
@@ -511,8 +515,26 @@ func normalizeRechargeOrderUsername(value string) string {
 	return builder.String()
 }
 
+// normalizeRechargeAmount 只用于充值单金额：第三方支付渠道只支持「分」，
+// 因此充值金额限制为 2 位小数（超精度由校验拒绝，见 validateRechargeAmount）。
 func normalizeRechargeAmount(amount float64) float64 {
-	return math.Round(amount*100) / 100
+	return util.RoundMoneyToDecimals(amount, util.RechargePrecision)
+}
+
+// normalizeWalletAmount 用于余额与账单金额：保持与余额一致的 6 位精度。
+// 绝不能复用 normalizeRechargeAmount，否则会把余额的小数位截断成 2 位。
+func normalizeWalletAmount(amount float64) float64 {
+	return util.RoundMoney(amount)
+}
+
+func validateRechargeAmount(amount float64) error {
+	if amount <= 0 {
+		return ErrRechargeAmountInvalid
+	}
+	if util.HasMoreDecimalsThan(amount, util.RechargePrecision) {
+		return ErrRechargeAmountPrecision
+	}
+	return nil
 }
 
 func formatRechargeAmount(amount float64) string {

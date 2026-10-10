@@ -2,9 +2,9 @@ package service
 
 import (
 	"fmt"
-	"math"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 )
 
@@ -40,8 +40,8 @@ func CreateUserWithNewUserBonusWithDB(db *gorm.DB, user *entity.User, options Ne
 			return nil
 		}
 
-		balanceBefore := math.Round(user.Balance*100) / 100
-		balanceAfter := math.Round((balanceBefore+bonusAmount)*100) / 100
+		balanceBefore := util.RoundMoney(user.Balance)
+		balanceAfter := util.RoundMoney(balanceBefore + bonusAmount)
 		if err := tx.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", balanceAfter).Error; err != nil {
 			return err
 		}

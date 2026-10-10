@@ -18,7 +18,7 @@
       </a-col>
       <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
-          <a-statistic title="累计余额" prefix="¥" :value="summary.totalBalance" :precision="2" />
+          <a-statistic title="累计余额" prefix="¥" :value="summary.totalBalance" :precision="6" />
         </a-card>
       </a-col>
     </a-row>
@@ -189,10 +189,10 @@
           <a-input-number
             v-model:value="formState.giftAmount"
             :min="0"
-            :precision="2"
+            :precision="6"
             style="width: 220px"
           />
-          <div class="form-hint">默认使用系统管理中的新用户赠送金额，可按本次创建单独修改。</div>
+          <div class="form-hint">默认使用系统管理中的新用户赠送金额，可按本次创建单独修改。金额最多支持 6 位小数。</div>
         </a-form-item>
         <a-form-item label="创建来源">
           <a-input :value="registerSourceText(formState.registerSource)" disabled />
@@ -235,6 +235,7 @@ import {
   getSystemSettings,
 } from '@/api/TikuComponentApi';
 import { buildAdminCreateUserPayload, buildRegisterSourceLabel, buildResetPasswordPayload, buildUserBalanceUpdatePayload } from '@/utils/userPortalHelpers.mjs';
+import { formatMoneyValue } from '@/utils/moneyFormat.mjs';
 import { message } from 'ant-design-vue';
 import { computed, defineComponent, ref } from 'vue';
 
@@ -512,8 +513,7 @@ export default defineComponent({
   },
   methods: {
     formatBalance(value) {
-      const amount = Number(value || 0)
-      return Number.isFinite(amount) ? amount.toFixed(2) : '0.00'
+      return formatMoneyValue(value || 0)
     },
     formatDateTime(value) {
       if (!value) {

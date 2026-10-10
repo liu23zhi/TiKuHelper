@@ -436,7 +436,7 @@ func TestCreateRechargeOrderWithDBCreatesPendingOrderAndReturnsQRCodePayment(t *
 		}, nil
 	}
 
-	created, err := CreateRechargeOrderWithDB(db, user, CreateRechargeOrderInput{Amount: 12.345, PaymentMethodID: method.ID, ClientIP: "198.51.100.8", Device: "mobile"})
+	created, err := CreateRechargeOrderWithDB(db, user, CreateRechargeOrderInput{Amount: 12.34, PaymentMethodID: method.ID, ClientIP: "198.51.100.8", Device: "mobile"})
 	if err != nil {
 		t.Fatalf("create recharge order: %v", err)
 	}
@@ -455,10 +455,11 @@ func TestCreateRechargeOrderWithDBCreatesPendingOrderAndReturnsQRCodePayment(t *
 	if created.Order.PaymentMethodNameSnapshot != "微信支付" {
 		t.Fatalf("expected payment method snapshot 微信支付, got %q", created.Order.PaymentMethodNameSnapshot)
 	}
-	if created.Order.Amount != 12.35 {
-		t.Fatalf("expected rounded amount 12.35, got %v", created.Order.Amount)
+	// 充值金额限制为 2 位小数，12.34 原样保留。
+	if created.Order.Amount != 12.34 {
+		t.Fatalf("expected amount 12.34, got %v", created.Order.Amount)
 	}
-	if !strings.HasPrefix(created.Order.OrderNo, "rcg_rechargeuseruser_") || !strings.Contains(created.Order.OrderNo, "_1235_") {
+	if !strings.HasPrefix(created.Order.OrderNo, "rcg_rechargeuseruser_") || !strings.Contains(created.Order.OrderNo, "_1234_") {
 		t.Fatalf("expected generated order no to include username and amount, got %q", created.Order.OrderNo)
 	}
 
@@ -471,8 +472,8 @@ func TestCreateRechargeOrderWithDBCreatesPendingOrderAndReturnsQRCodePayment(t *
 	if capturedRequest.ClientIP != "198.51.100.8" || capturedRequest.Device != "mobile" {
 		t.Fatalf("expected client ip/device to be forwarded, got %+v", capturedRequest)
 	}
-	if capturedRequest.Money != "12.35" {
-		t.Fatalf("expected money 12.35, got %q", capturedRequest.Money)
+	if capturedRequest.Money != "12.34" {
+		t.Fatalf("expected money 12.34, got %q", capturedRequest.Money)
 	}
 	if capturedRequest.OutTradeNo != created.Order.OrderNo {
 		t.Fatalf("expected request order no %q, got %q", created.Order.OrderNo, capturedRequest.OutTradeNo)
@@ -485,7 +486,7 @@ func TestCreateRechargeOrderWithDBCreatesPendingOrderAndReturnsQRCodePayment(t *
 	if err := db.Where("id = ?", created.Order.ID).First(&persisted).Error; err != nil {
 		t.Fatalf("load persisted order: %v", err)
 	}
-	if persisted.OrderNo != created.Order.OrderNo || persisted.Amount != 12.35 || persisted.Status != rechargeOrderStatusPending {
+	if persisted.OrderNo != created.Order.OrderNo || persisted.Amount != 12.34 || persisted.Status != rechargeOrderStatusPending {
 		t.Fatalf("unexpected persisted order: %+v", persisted)
 	}
 	if persisted.PaymentMethodNameSnapshot != "微信支付" {
@@ -529,6 +530,69 @@ func TestCreateRechargeOrderWithDBRejectsInvalidAmount(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("expected no recharge order, got %d", count)
+	}
+}
+
+// 充值金额只允许 2 位小数：支付渠道只支持「分」，多余精度必须被拒绝而不是静默四舍五入。
+func TestCreateRechargeOrderWithDBRejectsMoreThanTwoDecimals(t *testing.T) {
+	db := newRechargeOrderTestDB(t)
+	user := seedRechargeOrderUser(t, db, 4, "user")
+	method := seedRechargePaymentMethod(t, db, entity.PaymentMethod{Name: "微信支付", EPayType: "wxpay", Enabled: true, Sort: 20})
+
+	for _, amount := range []float64{12.345, 0.001, 99.999} {
+		if _, err := CreateRechargeOrderWithDB(db, user, CreateRechargeOrderInput{Amount: amount, PaymentMethodID: method.ID}); err != ErrRechargeAmountPrecision {
+			t.Fatalf("expected ErrRechargeAmountPrecision for %v, got %v", amount, err)
+		}
+	}
+
+	var count int64
+	if err := db.Model(&entity.RechargeOrder{}).Count(&count).Error; err != nil {
+		t.Fatalf("count orders: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected no recharge order for over-precision amounts, got %d", count)
+	}
+}
+
+// 两位小数以内（含整数）必须正常通过，不受精度校验影响。
+func TestRechargeAmountAcceptsUpToTwoDecimals(t *testing.T) {
+	for _, testCase := range []struct {
+		amount float64
+		valid  bool
+	}{
+		{amount: 10, valid: true},
+		{amount: 25.5, valid: true},
+		{amount: 25.05, valid: true},
+		{amount: 0.01, valid: true},
+		{amount: 199.99, valid: true},
+		{amount: 0, valid: false},
+		{amount: -5, valid: false},
+		{amount: 10.001, valid: false},
+		{amount: 10.005, valid: false},
+	} {
+		err := validateRechargeAmount(testCase.amount)
+		if testCase.valid && err != nil {
+			t.Fatalf("expected %v to be a valid recharge amount, got %v", testCase.amount, err)
+		}
+		if !testCase.valid && err == nil {
+			t.Fatalf("expected %v to be rejected", testCase.amount)
+		}
+	}
+}
+
+// 钱包口径必须保持 6 位精度，绝不能被充值口径（2 位）截断。
+func TestRechargeNormalizationKeepsWalletAtSixDecimals(t *testing.T) {
+	if got := normalizeRechargeAmount(12.345); got != 12.35 {
+		t.Fatalf("expected recharge amount to round to 2 decimals (12.35), got %v", got)
+	}
+	if got := normalizeWalletAmount(49.987843); got != 49.987843 {
+		t.Fatalf("expected wallet amount to keep 6 decimals, got %v", got)
+	}
+	if got := normalizeWalletAmount(12.345); got != 12.345 {
+		t.Fatalf("expected wallet amount to keep 6 decimals, got %v", got)
+	}
+	if got := normalizeWalletAmount(0.000062); got != 0.000062 {
+		t.Fatalf("expected tiny wallet amount to survive, got %v", got)
 	}
 }
 

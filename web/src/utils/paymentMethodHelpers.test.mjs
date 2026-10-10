@@ -99,6 +99,22 @@ test('buildRechargeOrderPayload validates amount and payment method selection', 
   assert.throws(() => buildRechargeOrderPayload('12.3', 0), /支付方式/);
 });
 
+test('recharge amount only accepts up to two decimals', () => {
+  // 支付渠道只支持「分」，两位小数以内必须通过。
+  for (const amount of ['10', '25.5', '25.05', '0.01', '199.99']) {
+    assert.doesNotThrow(() => buildRechargeOrderPayload(amount, 1), `expected ${amount} to be accepted`);
+  }
+
+  // 超过两位小数必须被拒绝，而不是静默四舍五入。
+  for (const amount of ['12.345', '0.001', '99.999']) {
+    assert.throws(
+      () => buildRechargeOrderPayload(amount, 1),
+      /两位小数/,
+      `expected ${amount} to be rejected`,
+    );
+  }
+});
+
 test('buildPaymentMethodSwalHtml renders icon, label and id marker', () => {
   const html = buildPaymentMethodSwalHtml([
     {

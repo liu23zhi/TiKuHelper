@@ -375,6 +375,7 @@ import {
   buildAISearchTestResult,
   hasAISearchTestResult,
 } from '@/utils/aiSearchConfigHelpers.mjs';
+import { formatMoneyCny } from '@/utils/moneyFormat.mjs';
 
 function trimBaseUrl(url) {
   return String(url || '').trim().replace(/\/+$/, '')
@@ -792,10 +793,10 @@ export default defineComponent({
     formatPriceAmount(value) {
       const amount = Number(value)
       if (!Number.isFinite(amount)) {
-        return '￥0.000000'
+        return '￥0'
       }
-      // 价格表统一使用人民币符号，保留有效小数位，避免 GPT-5.3-Codex 的 0.175 被截成 0.18。
-      return `￥${amount.toFixed(6).replace(/0+$/, '').replace(/\.$/, '.0')}`
+      // 价格表统一使用人民币符号，并按统一的 6 位精度去尾零展示。
+      return formatMoneyCny(amount)
     },
     openPriceModal(record) {
       if (record) {
