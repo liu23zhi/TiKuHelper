@@ -30,6 +30,14 @@ type AIFallbackResult struct {
 	Error   *AIFallbackError             `json:"error,omitempty"`
 	Usage   internalsearch.AISearchUsage `json:"-"`
 	Model   string                       `json:"-"`
+
+	// UnpricedModel 表示本次回答所用模型没有配置价格（按 0 计费）。
+	// 调用方据此提示管理员去价格表补价，但答案本身照常返回，不阻断流程。
+	UnpricedModel bool `json:"-"`
+
+	// Warnings 是面向调用方的非阻断提示，例如「AI 正在使用未配置价格的模型」。
+	// 正常响应不会带该字段，避免影响既有客户端。
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 type AIFallbackAnswer struct {

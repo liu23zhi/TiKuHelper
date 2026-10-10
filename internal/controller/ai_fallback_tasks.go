@@ -50,6 +50,9 @@ type aiFallbackTaskResponse struct {
 	StatusURL string                    `json:"statusUrl,omitempty"`
 	Result    *service.AIFallbackAnswer `json:"result,omitempty"`
 	Error     *service.AIFallbackError  `json:"error,omitempty"`
+
+	// Warnings 透传「模型未配置价格」这类非阻断提示。
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 func newAIFallbackTaskStore(ttl time.Duration, now func() time.Time) *aiFallbackTaskStore {
@@ -203,10 +206,14 @@ func CreateAIFallbackTask(c *gin.Context) {
 			writeAIFallbackAuditLog(auditIdentity, requestID, taskID, "result", "async", req, result)
 			return result
 		}
-		if err := persistAIFallbackBilling(currentBillingCtx, requestID, req, result); err != nil {
+		warning, err := persistAIFallbackBillingWithWarning(currentBillingCtx, requestID, req, result)
+		if err != nil {
 			failure := buildAIFallbackBillingFailureResult(err)
 			writeAIFallbackAuditLog(auditIdentity, requestID, taskID, "billing", "async", req, failure)
 			return failure
+		}
+		if strings.TrimSpace(warning) != "" {
+			result.Warnings = append(result.Warnings, warning)
 		}
 		writeAIFallbackAuditLog(auditIdentity, requestID, taskID, "result", "async", req, result)
 		return result
@@ -252,6 +259,7 @@ func buildAIFallbackTaskResponse(task aiFallbackTask) aiFallbackTaskResponse {
 	if task.Status != aiFallbackTaskStatusRunning {
 		response.Result = task.Result.Result
 		response.Error = task.Result.Error
+		response.Warnings = task.Result.Warnings
 	}
 	return response
 }

@@ -53,6 +53,19 @@ type ResolvedAISearchConfig struct {
 	UsedDefaultAccount bool                  `json:"usedDefaultAccount"`
 }
 
+// AISearchModelPricingStatus 描述当前 AI 配置所用模型的定价情况。
+// 未配置价格的模型会按 0 计费，因此需要显式提示管理员去模型价格表补价。
+type AISearchModelPricingStatus struct {
+	// ConfiguredModel 是当前生效的默认模型名。
+	ConfiguredModel string `json:"configuredModel"`
+	// ConfiguredModelPriced 表示 ConfiguredModel 是否已在价格表中配置。
+	ConfiguredModelPriced bool `json:"configuredModelPriced"`
+	// UnpricedModels 是所有已配置但缺少价格的模型。
+	UnpricedModels []string `json:"unpricedModels"`
+	// HasUnpricedModel 便于前端直接判断是否需要展示提示。
+	HasUnpricedModel bool `json:"hasUnpricedModel"`
+}
+
 type openAIModelsResponse struct {
 	Data []struct {
 		ID string `json:"id"`
@@ -71,6 +84,57 @@ func effectiveAISearchPrompt(prompt string) string {
 		return defaultAISearchPrompt()
 	}
 	return trimmed
+}
+
+// InspectAISearchModelPricingWithDB 检查「默认模型 + 模型列表」里哪些模型没有配置价格。
+// 结果用于管理页提示，以及调用方在账单里看到 0 元时的排查依据。
+func InspectAISearchModelPricingWithDB(db *gorm.DB) (AISearchModelPricingStatus, error) {
+	status := AISearchModelPricingStatus{UnpricedModels: []string{}}
+
+	config, exists, err := getAISearchConfigRecord(db)
+	if err != nil {
+		return status, err
+	}
+	if !exists {
+		return status, nil
+	}
+
+	configuredModel := strings.TrimSpace(config.Model)
+	status.ConfiguredModel = configuredModel
+
+	candidates := make([]string, 0, 8)
+	if configuredModel != "" {
+		candidates = append(candidates, configuredModel)
+	}
+	manualModels, err := unmarshalAISearchManualModels(config.ManualModels)
+	if err != nil {
+		return status, err
+	}
+	candidates = append(candidates, manualModels...)
+	candidates = normalizeAISearchManualModels(candidates)
+
+	seen := make(map[string]struct{}, len(candidates))
+	for _, modelName := range candidates {
+		_, found, resolveErr := ResolveAIModelTokenPriceWithDB(db, modelName)
+		if resolveErr != nil {
+			return status, resolveErr
+		}
+		if found {
+			if modelName == configuredModel {
+				status.ConfiguredModelPriced = true
+			}
+			continue
+		}
+		key := strings.ToLower(modelName)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		status.UnpricedModels = append(status.UnpricedModels, modelName)
+	}
+
+	status.HasUnpricedModel = len(status.UnpricedModels) > 0
+	return status, nil
 }
 
 func GetAISearchConfigWithDB(db *gorm.DB) (AISearchConfigView, error) {

@@ -103,3 +103,69 @@ export function buildAISearchConfigSavePayload(formState, baseUrl) {
     topP: 0,
   };
 }
+
+function normalizePricingKey(value) {
+  return trimText(value)
+    .toLowerCase()
+    .replace(/[\s\u3000\-_（）()*]/g, '');
+}
+
+function buildPricedModelKeys(priceRows) {
+  const keys = new Set();
+  (Array.isArray(priceRows) ? priceRows : []).forEach(row => {
+    // 只有启用状态的模型价格才会真正参与计费。
+    if (row?.status && String(row.status).toLowerCase() !== 'enabled') {
+      return;
+    }
+    const modelKey = normalizePricingKey(row?.modelName);
+    if (modelKey) {
+      keys.add(modelKey);
+    }
+    const displayKey = normalizePricingKey(row?.displayName);
+    if (displayKey) {
+      keys.add(displayKey);
+    }
+  });
+  return keys;
+}
+
+export function isModelPriced(modelName, priceRows) {
+  const key = normalizePricingKey(modelName);
+  return Boolean(key) && buildPricedModelKeys(priceRows).has(key);
+}
+
+/**
+ * 汇总 AI 设置页需要提示的「缺价格」情况。
+ * - unresolvedModels：模型列表里没有价格的模型（含当前默认模型）
+ * - configuredModel：当前默认模型名
+ * - configuredModelPriced：当前默认模型是否已配置价格
+ * - hasUnpricedModel：是否需要展示提示
+ */
+export function buildAIModelPricingGaps(formState, priceRows) {
+  const configuredModel = trimText(formState?.model);
+  const pricedKeys = buildPricedModelKeys(priceRows);
+
+  const unresolvedModels = [];
+  const seen = new Set();
+  buildModelNameValues(formState?.manualModelsText ?? formState?.manualModels).forEach(modelName => {
+    const key = normalizePricingKey(modelName);
+    if (!key || pricedKeys.has(key) || seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    unresolvedModels.push(modelName);
+  });
+
+  const configuredKey = normalizePricingKey(configuredModel);
+  const configuredModelPriced = Boolean(configuredKey) && pricedKeys.has(configuredKey);
+  if (configuredKey && !configuredModelPriced && !seen.has(configuredKey)) {
+    unresolvedModels.unshift(configuredModel);
+  }
+
+  return {
+    configuredModel,
+    configuredModelPriced,
+    unresolvedModels,
+    hasUnpricedModel: unresolvedModels.length > 0,
+  };
+}

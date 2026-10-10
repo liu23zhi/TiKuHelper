@@ -84,6 +84,7 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.PUT("/search-account-configs/:provider", controller.Auth, middleware.RequireAdmin, controller.UpdateSearchAccountConfig)
 	apiRouter.GET("/ai-search-config", controller.Auth, middleware.RequireAdmin, controller.AISearchConfigDetail)
 	apiRouter.GET("/ai-search-config/models", controller.Auth, middleware.RequireAdmin, controller.AISearchModels)
+	apiRouter.GET("/ai-search-config/pricing-status", controller.Auth, middleware.RequireAdmin, controller.AISearchConfigPricingStatus)
 	apiRouter.POST("/ai-search-config/test", controller.Auth, controller.TestAISearchConfig)
 	apiRouter.PUT("/ai-search-config", controller.Auth, middleware.RequireAdmin, controller.UpdateAISearchConfig)
 	apiRouter.GET("/ai-model-architectures", controller.Auth, controller.AIModelArchitectureList)

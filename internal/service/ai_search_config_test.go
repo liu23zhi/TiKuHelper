@@ -143,6 +143,79 @@ func TestDefaultAISearchPromptReusesSearchLayerCopy(t *testing.T) {
 	}
 }
 
+func TestInspectAISearchModelPricingWithDBReportsUnpricedModels(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	if err := EnsureDefaultAIModelPricesWithDB(db); err != nil {
+		t.Fatalf("seed default prices: %v", err)
+	}
+
+	if _, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{
+		Enabled:      true,
+		BaseURL:      "https://api.example.com/v1",
+		APIKey:       "sk-test",
+		Model:        "GPT-5.5",
+		ManualModels: []string{"GPT-5.5", "GPT-6 Luna", "my-private-model"},
+	}); err != nil {
+		t.Fatalf("seed ai config: %v", err)
+	}
+
+	status, err := InspectAISearchModelPricingWithDB(db)
+	if err != nil {
+		t.Fatalf("inspect pricing: %v", err)
+	}
+	if status.ConfiguredModel != "GPT-5.5" {
+		t.Fatalf("expected configured model GPT-5.5, got %q", status.ConfiguredModel)
+	}
+	if !status.ConfiguredModelPriced {
+		t.Fatalf("expected GPT-5.5 to be priced, got %+v", status)
+	}
+	if !status.HasUnpricedModel {
+		t.Fatalf("expected unpriced models to be reported, got %+v", status)
+	}
+	if len(status.UnpricedModels) != 1 || status.UnpricedModels[0] != "my-private-model" {
+		t.Fatalf("expected only my-private-model to be unpriced, got %+v", status.UnpricedModels)
+	}
+}
+
+func TestInspectAISearchModelPricingWithDBFlagsUnpricedConfiguredModel(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	if err := EnsureDefaultAIModelPricesWithDB(db); err != nil {
+		t.Fatalf("seed default prices: %v", err)
+	}
+
+	if _, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{
+		Enabled: true,
+		BaseURL: "https://api.example.com/v1",
+		APIKey:  "sk-test",
+		Model:   "gpt-model-without-price",
+	}); err != nil {
+		t.Fatalf("seed ai config: %v", err)
+	}
+
+	status, err := InspectAISearchModelPricingWithDB(db)
+	if err != nil {
+		t.Fatalf("inspect pricing: %v", err)
+	}
+	if status.ConfiguredModelPriced {
+		t.Fatalf("expected configured model to be reported as unpriced, got %+v", status)
+	}
+	if !status.HasUnpricedModel || len(status.UnpricedModels) != 1 || status.UnpricedModels[0] != "gpt-model-without-price" {
+		t.Fatalf("unexpected unpriced list: %+v", status)
+	}
+}
+
+func TestInspectAISearchModelPricingWithDBWithoutConfigIsEmpty(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+
+	status, err := InspectAISearchModelPricingWithDB(db)
+	if err != nil {
+		t.Fatalf("inspect pricing: %v", err)
+	}
+	if status.HasUnpricedModel || status.ConfiguredModelPriced || len(status.UnpricedModels) != 0 {
+		t.Fatalf("expected empty status without config, got %+v", status)
+	}
+}
+
 func TestBuildAISearchRequestConfigWithDBReturnsEffectivePromptAndFixedSamplingParams(t *testing.T) {
 	db := newSearchAccountConfigTestDB(t)
 

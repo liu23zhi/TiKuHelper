@@ -21,6 +21,10 @@ type SearchResponse struct {
 	Options  []string `json:"options"`
 	Type     int      `json:"type"`
 	Answer   Answer   `json:"answer"` // 最相似，最可能的答案->即moreAnswer中出现最多的答案
+
+	// Warnings 是面向调用方的非阻断提示，例如「AI 正在使用未配置价格的模型」。
+	// 只在确有需要提醒的情况出现，正常响应不会带该字段，避免影响既有客户端。
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // Answer 答案 该实体只会增加而不会减少

@@ -383,6 +383,13 @@ export function getAIModelPrices() {
   })
 }
 
+export function getAISearchConfigPricingStatus() {
+  return request({
+    url: `/adapter-service/ai-search-config/pricing-status`,
+    method: 'get'
+  })
+}
+
 export function createAIModelPrice(data) {
   return request({
     url: `/adapter-service/ai-model-prices`,

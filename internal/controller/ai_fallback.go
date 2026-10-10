@@ -75,11 +75,15 @@ func AIFallback(c *gin.Context) {
 		c.JSON(http.StatusOK, result)
 		return
 	}
-	if err := persistAIFallbackBilling(billingCtx, requestID, req, result); err != nil {
+	warning, err := persistAIFallbackBillingWithWarning(billingCtx, requestID, req, result)
+	if err != nil {
 		failure := buildAIFallbackBillingFailureResult(err)
 		writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), requestID, "", "billing", "sync", req, failure)
 		c.JSON(http.StatusOK, failure)
 		return
+	}
+	if strings.TrimSpace(warning) != "" {
+		result.Warnings = append(result.Warnings, warning)
 	}
 	writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), requestID, "", "result", "sync", req, result)
 	c.JSON(http.StatusOK, result)
@@ -243,12 +247,19 @@ func loadAIFallbackBillingContextWithDB(db *gorm.DB, userID int32, accessTokenID
 }
 
 func persistAIFallbackBilling(billingCtx searchBillingContext, requestID string, req model.SearchRequest, result service.AIFallbackResult) error {
+	_, err := persistAIFallbackBillingWithWarning(billingCtx, requestID, req, result)
+	return err
+}
+
+// persistAIFallbackBillingWithWarning 落账 AI 兜底计费，并回报「模型未配置价格」的情况。
+// 未定价时按 0 计费，不阻断答案返回，只把提示交给调用方。
+func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, requestID string, req model.SearchRequest, result service.AIFallbackResult) (string, error) {
 	if !result.Success || !hasAISearchUsage(result.Usage) {
-		return nil
+		return "", nil
 	}
 	db := resolveSearchPersistenceDB()
 	if db == nil {
-		return errors.New("AI 兜底计费失败，请稍后重试")
+		return "", errors.New("AI 兜底计费失败，请稍后重试")
 	}
 
 	billingCtx.RequestID = strings.TrimSpace(requestID)
@@ -258,14 +269,19 @@ func persistAIFallbackBilling(billingCtx searchBillingContext, requestID string,
 			Model: strings.TrimSpace(result.Model),
 		},
 	}
-	charge, err := resolveCompletedAIBillingCharge(db, resolved, req, result.Usage)
+	resolvedCharge, err := resolveCompletedAIBillingCharge(db, resolved, req, result.Usage)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if charge.Amount <= 0 {
-		return nil
+
+	warning := ""
+	if resolvedCharge.UnpricedModel {
+		warning = buildUnpricedAIModelWarning(resolvedCharge.Charge.ModelName)
 	}
-	return persistSearchBillingRecordsWithDB(db, billingCtx, []searchBillingCharge{charge})
+	if resolvedCharge.Charge.Amount <= 0 {
+		return warning, nil
+	}
+	return warning, persistSearchBillingRecordsWithDB(db, billingCtx, []searchBillingCharge{resolvedCharge.Charge})
 }
 
 func buildAIFallbackBillingFailureResult(err error) service.AIFallbackResult {

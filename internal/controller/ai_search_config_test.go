@@ -64,10 +64,10 @@ func TestAISearchConfigTestReturnsDebugPayloadForAdmin(t *testing.T) {
 	}
 
 	var response struct {
-		Answers     []string                      `json:"answers"`
-		Endpoint    string                        `json:"endpoint"`
-		RequestBody string                        `json:"requestBody"`
-		RawResponse string                        `json:"rawResponse"`
+		Answers     []string                     `json:"answers"`
+		Endpoint    string                       `json:"endpoint"`
+		RequestBody string                       `json:"requestBody"`
+		RawResponse string                       `json:"rawResponse"`
 		Usage       internalsearch.AISearchUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {

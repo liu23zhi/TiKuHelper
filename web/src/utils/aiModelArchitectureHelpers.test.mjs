@@ -14,6 +14,8 @@ import {
   buildArchitectureModelText,
   buildMissingArchitecturePayloads,
   buildAISearchConfigSavePayload,
+  buildAIModelPricingGaps,
+  isModelPriced,
 } from './aiModelArchitectureHelpers.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -188,4 +190,96 @@ test('AISearchConfig page bills from the model price table and has no multiplier
   assert.match(content, /@media \(max-width: 768px\)/);
   assert.doesNotMatch(content, /syncModelTextFromArchitectures/);
   assert.doesNotMatch(content, /每条记录直接绑定模型名，并维护计费倍率、启停状态与排序/);
+});
+
+const pricedRows = [
+  { modelName: 'GPT-5.5', displayName: 'GPT-5.5', status: 'enabled' },
+  { modelName: 'GPT-6 Luna', displayName: 'GPT-6 Luna', status: 'enabled' },
+  { modelName: 'Daybreak Red', displayName: 'Daybreak Red', status: 'disabled' },
+];
+
+test('isModelPriced matches names case and separator insensitively', () => {
+  assert.equal(isModelPriced('GPT-5.5', pricedRows), true);
+  assert.equal(isModelPriced('gpt-5.5', pricedRows), true);
+  assert.equal(isModelPriced('  GPT 5.5 ', pricedRows), true);
+  assert.equal(isModelPriced('GPT-6 Luna', pricedRows), true);
+  assert.equal(isModelPriced('GPT-6Luna', pricedRows), true);
+  assert.equal(isModelPriced('unknown-model', pricedRows), false);
+  assert.equal(isModelPriced('', pricedRows), false);
+  assert.equal(isModelPriced('GPT-5.5', undefined), false);
+});
+
+test('isModelPriced ignores disabled prices because they do not participate in billing', () => {
+  assert.equal(isModelPriced('Daybreak Red', pricedRows), false);
+});
+
+test('buildAIModelPricingGaps reports the configured model when it has no price', () => {
+  const gaps = buildAIModelPricingGaps(
+    { model: 'my-private-model', manualModelsText: 'GPT-5.5\nmy-private-model' },
+    pricedRows,
+  );
+
+  assert.equal(gaps.configuredModel, 'my-private-model');
+  assert.equal(gaps.configuredModelPriced, false);
+  assert.equal(gaps.hasUnpricedModel, true);
+  assert.deepEqual(gaps.unresolvedModels, ['my-private-model']);
+});
+
+test('buildAIModelPricingGaps lists both configured and extra unpriced models', () => {
+  const gaps = buildAIModelPricingGaps(
+    { model: 'unpriced-default', manualModelsText: 'GPT-5.5\nunpriced-default\nunpriced-extra' },
+    pricedRows,
+  );
+
+  assert.equal(gaps.configuredModelPriced, false);
+  assert.deepEqual(gaps.unresolvedModels, ['unpriced-default', 'unpriced-extra']);
+});
+
+test('buildAIModelPricingGaps warns about unpriced manual models even when the default is priced', () => {
+  const gaps = buildAIModelPricingGaps(
+    { model: 'GPT-5.5', manualModelsText: 'GPT-5.5\nGPT-6 Luna\nmy-private-model' },
+    pricedRows,
+  );
+
+  assert.equal(gaps.configuredModelPriced, true);
+  assert.equal(gaps.hasUnpricedModel, true);
+  assert.deepEqual(gaps.unresolvedModels, ['my-private-model']);
+});
+
+test('buildAIModelPricingGaps reports nothing when everything is priced', () => {
+  const gaps = buildAIModelPricingGaps({ model: 'GPT-5.5', manualModelsText: 'GPT-5.5,GPT-6 Luna' }, pricedRows);
+
+  assert.equal(gaps.configuredModelPriced, true);
+  assert.equal(gaps.hasUnpricedModel, false);
+  assert.deepEqual(gaps.unresolvedModels, []);
+});
+
+test('buildAIModelPricingGaps handles an empty configuration', () => {
+  const gaps = buildAIModelPricingGaps({}, []);
+
+  assert.equal(gaps.configuredModel, '');
+  assert.equal(gaps.configuredModelPriced, false);
+  assert.equal(gaps.hasUnpricedModel, false);
+  assert.deepEqual(gaps.unresolvedModels, []);
+});
+
+test('AISearchConfig page surfaces unpriced-model hints', async () => {
+  const content = await readFile(aiSearchConfigPagePath, 'utf8');
+
+  assert.match(content, /buildAIModelPricingGaps/);
+  assert.match(content, /pricingGaps/);
+  assert.match(content, /当前默认模型还没有配置价格/);
+  assert.match(content, /模型列表中有模型还没有配置价格/);
+  assert.match(content, /openPriceModalForConfiguredModel/);
+  assert.match(content, /去设置价格/);
+  assert.match(content, /未定价/);
+  assert.match(content, /hint-warning/);
+});
+
+test('TikuComponentApi exposes the AI pricing-status endpoint', async () => {
+  const apiPath = path.join(__dirname, '..', 'api', 'TikuComponentApi.js');
+  const content = await readFile(apiPath, 'utf8');
+
+  assert.match(content, /export function getAISearchConfigPricingStatus\(\)/);
+  assert.match(content, /\/adapter-service\/ai-search-config\/pricing-status/);
 });

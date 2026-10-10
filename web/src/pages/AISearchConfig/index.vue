@@ -15,6 +15,30 @@
       message="AI 搜索只在 use=ai 的请求模式下生效。显式传入 url、key、model 时优先使用请求参数；只有带有效 Basic 认证且未显式提供时，才会回退到这里的系统默认配置。"
     />
 
+    <a-alert
+      v-if="pricingGaps.configuredModel && !pricingGaps.configuredModelPriced"
+      type="warning"
+      show-icon
+      class="page-alert"
+      message="当前默认模型还没有配置价格"
+      :description="`模型「${pricingGaps.configuredModel}」不在模型价格表中，调用时会按 0 元计费（不扣费），账单中会记录为未定价。请在下方「模型价格表」中新增该模型，并填写输入 / 缓存输入 / 输出单价。`"
+    >
+      <template #action>
+        <a-button size="small" type="primary" ghost @click="openPriceModalForConfiguredModel">
+          去设置价格
+        </a-button>
+      </template>
+    </a-alert>
+
+    <a-alert
+      v-else-if="pricingGaps.unresolvedModels.length"
+      type="warning"
+      show-icon
+      class="page-alert"
+      message="模型列表中有模型还没有配置价格"
+      :description="`以下模型缺少价格，命中时会按 0 元计费：${pricingGaps.unresolvedModels.join('、')}。请在下方「模型价格表」中补充单价。`"
+    />
+
     <a-form :label-col="labelCol" :wrapper-col="wrapperCol">
       <a-form-item label="是否启用">
         <a-switch v-model:checked="formState.enabled" />
@@ -32,6 +56,10 @@
       <a-form-item label="默认模型">
         <a-input v-model:value="formState.model" placeholder="可手动输入模型名" />
         <div class="hint">也可以点击下方模型列表快速填入。</div>
+        <div v-if="pricingGaps.configuredModel && !pricingGaps.configuredModelPriced" class="hint hint-warning">
+          该模型尚未配置价格，调用会按 0 元计费。
+          <a @click="openPriceModalForConfiguredModel">去设置价格</a>
+        </div>
       </a-form-item>
 
       <a-form-item label="模型列表">
@@ -46,15 +74,16 @@
           </a-button>
         </div>
         <div class="hint">保存时会以此处内容作为模型列表，并自动为缺失模型补充默认架构。</div>
+        <div class="hint">标签上带「未定价」的模型需要先在下方「模型价格表」中补价，否则会按 0 元计费。</div>
         <a-space wrap class="model-tags">
           <a-tag
             v-for="item in modelOptions"
             :key="item.value"
-            color="blue"
+            :color="isModelPriced(item.value, priceRows) ? 'blue' : 'orange'"
             style="cursor: pointer"
             @click="selectModel(item.value)"
           >
-            {{ item.label }}
+            {{ item.label }}<span v-if="!isModelPriced(item.value, priceRows)">（未定价）</span>
           </a-tag>
           <span v-if="modelOptions.length === 0" class="hint">暂无模型列表，请先手动填写或获取远程模型。</span>
         </a-space>
@@ -336,6 +365,8 @@ import {
   buildModelNameText,
   buildAISearchConfigSavePayload,
   buildMissingArchitecturePayloads,
+  buildAIModelPricingGaps,
+  isModelPriced,
   filterRemoteModelNames,
 } from '@/utils/aiModelArchitectureHelpers.mjs';
 import {
@@ -423,6 +454,9 @@ export default defineComponent({
     const modelOptions = computed(() => {
       return buildModelNameOptions(formState.manualModelsText)
     })
+
+    // 哪些已配置的模型还没有价格：用于页面提示，避免命中后按 0 元计费却无人察觉。
+    const pricingGaps = computed(() => buildAIModelPricingGaps(formState, priceRows.value))
 
     const architectureColumns = [
       { title: 'ID', dataIndex: 'id', key: 'id', width: 80 },
@@ -558,6 +592,8 @@ export default defineComponent({
       priceModalVisible,
       priceForm,
       hasAISearchTestResult,
+      pricingGaps,
+      isModelPriced,
       loadConfig,
       loadAIModelArchitectures,
       loadAIModelPrices,
@@ -777,6 +813,14 @@ export default defineComponent({
       }
       this.priceModalVisible = true
     },
+    // 从「默认模型未配置价格」提示直接跳到新增价格，并预填模型名。
+    openPriceModalForConfiguredModel() {
+      const modelName = String(this.pricingGaps?.configuredModel || this.formState.model || '').trim()
+      this.resetPriceForm()
+      this.priceForm.modelName = modelName
+      this.priceForm.displayName = modelName
+      this.priceModalVisible = true
+    },
     closePriceModal() {
       this.priceModalVisible = false
       this.resetPriceForm()
@@ -860,6 +904,10 @@ export default defineComponent({
   color: #8c8c8c;
   font-size: 12px;
   line-height: 1.6;
+}
+
+.hint-warning {
+  color: #d46b08;
 }
 
 .hint-block {

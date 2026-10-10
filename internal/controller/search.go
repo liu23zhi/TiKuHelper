@@ -403,9 +403,15 @@ func Search(c *gin.Context) {
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "", c.ClientIP(), audit)
 	} else {
 		reportCompletedSearchBilling(resolved, useQuery, aiEnabled, result, hasAISearchUsage(aiUsage), usedLocalSearch)
-		if err := persistCompletedSearchBilling(resolved, useQuery, aiEnabled, req, result, aiUsage, usedLocalSearch, c.ClientIP(), audit); err != nil {
+		billingErr, warning := persistCompletedSearchBilling(resolved, useQuery, aiEnabled, req, result, aiUsage, usedLocalSearch, c.ClientIP(), audit)
+		if billingErr != nil {
 			writeSearchUnauthorized(c, fmt.Errorf("%w: 当前访问令牌累计额度不足，请调整令牌额度后重试", service.ErrInvalidAccessTokenAuthorization), rawBody)
 			return
+		}
+		// AI 用到了未配置价格的模型时给出非阻断提示，答案照常返回。
+		if strings.TrimSpace(warning) != "" {
+			resp.Warnings = append(resp.Warnings, warning)
+			logger.SysLog(fmt.Sprintf("搜题计费提示 requestId=%s warning=%s", strings.TrimSpace(resolved.RequestID), warning))
 		}
 		if cacheEligible {
 			defaultSearchResultCache.put(cacheKey, result)
@@ -906,44 +912,44 @@ func accessTokenQuotaWouldExceed(accessToken entity.AccessToken, amount float64)
 	return roundCurrencyAmount(accessToken.TotalAmountUsed+amount) > roundCurrencyAmount(accessToken.TotalQuotaLimit)
 }
 
-func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQuery string, aiEnabled bool, req model.SearchRequest, result [][]string, aiUsage search.AISearchUsage, usedLocalSearch bool, clientIP string, audit searchAuditMetadata) error {
+func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQuery string, aiEnabled bool, req model.SearchRequest, result [][]string, aiUsage search.AISearchUsage, usedLocalSearch bool, clientIP string, audit searchAuditMetadata) (error, string) {
 	ctx := buildCompletedSearchBillingContext(resolved, useQuery, aiEnabled, result, hasAISearchUsage(aiUsage), usedLocalSearch)
 	if !ctx.Billable {
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "", clientIP, audit)
-		return nil
+		return nil, ""
 	}
 
 	db := resolveSearchPersistenceDB()
 	if db == nil {
 		logger.SysError(fmt.Sprintf("搜索计费落账失败：数据库不可用 requestId=%s", resolved.RequestID))
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_db_unavailable", clientIP, audit)
-		return nil
+		return nil, ""
 	}
 
-	charges, err := resolveCompletedSearchBillingCharges(db, resolved, useQuery, req, aiUsage, usedLocalSearch)
+	charges, warning, err := resolveCompletedSearchBillingCharges(db, resolved, useQuery, req, aiUsage, usedLocalSearch)
 	if err != nil {
 		logger.SysError(fmt.Sprintf("搜索计费落账失败：%s requestId=%s", err.Error(), resolved.RequestID))
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_charge_resolve_failed", clientIP, audit)
-		return nil
+		return nil, warning
 	}
 	if len(charges) == 0 {
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_zero_amount", clientIP, audit)
-		return nil
+		return nil, warning
 	}
 
 	if err := persistSearchBillingRecordsWithDB(db, ctx, charges); err != nil {
 		if errors.Is(err, errAccessTokenQuotaExceeded) {
 			logger.SysLog(fmt.Sprintf("搜索计费拒绝：访问令牌累计额度不足 requestId=%s", resolved.RequestID))
 			writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_quota_exceeded", clientIP, audit)
-			return err
+			return err, warning
 		}
 		logger.SysError(fmt.Sprintf("搜索计费落账失败：%s requestId=%s", err.Error(), resolved.RequestID))
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_persist_failed", clientIP, audit)
-		return nil
+		return nil, warning
 	}
 
 	writeCompletedSearchAuditLog(resolved, useQuery, result, completedSearchBillingProviderLabel(charges), clientIP, audit)
-	return nil
+	return nil, warning
 }
 
 func resolveSearchPersistenceDB() *gorm.DB {
@@ -963,15 +969,19 @@ func resolveSearchPersistenceDB() *gorm.DB {
 	return fallback.Session(&gorm.Session{NewDB: true})
 }
 
-func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRequestContext, useQuery string, req model.SearchRequest, aiUsage search.AISearchUsage, usedLocalSearch bool) ([]searchBillingCharge, error) {
+// resolveCompletedSearchBillingCharges 汇总本次搜索的所有计费项。
+// 第二个返回值是面向调用方的非阻断提示（目前只有「AI 模型未配置价格」），
+// 不影响答案返回，只提醒管理员去价格表补价。
+func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRequestContext, useQuery string, req model.SearchRequest, aiUsage search.AISearchUsage, usedLocalSearch bool) ([]searchBillingCharge, string, error) {
 	charges := make([]searchBillingCharge, 0, 2)
+	warning := ""
 
 	if resolved.SearchMode == searchModeNormal {
 		provider := resolveCompletedSearchBillingProvider(useQuery, resolved.UsedDefaultSearchProviders, usedLocalSearch)
 		if provider != "" {
 			var config entity.SearchAccountConfig
 			if err := db.Where("provider = ?", provider).First(&config).Error; err != nil {
-				return nil, err
+				return nil, warning, err
 			}
 
 			amount := roundCurrencyAmount(config.FlatPrice)
@@ -986,14 +996,26 @@ func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRe
 	// Default search can execute AI while SearchMode remains "normal". AI usage is
 	// billed as a separate record so it never replaces the normal provider charge.
 	if resolved.UsedDefaultAI && hasAISearchUsage(aiUsage) {
-		charge, err := resolveCompletedAIBillingCharge(db, resolved, req, aiUsage)
+		resolvedCharge, err := resolveCompletedAIBillingCharge(db, resolved, req, aiUsage)
 		if err != nil {
-			return nil, err
+			return nil, warning, err
 		}
-		charges = append(charges, charge)
+		if resolvedCharge.UnpricedModel {
+			warning = buildUnpricedAIModelWarning(resolvedCharge.Charge.ModelName)
+		}
+		charges = append(charges, resolvedCharge.Charge)
 	}
 
-	return charges, nil
+	return charges, warning, nil
+}
+
+// buildUnpricedAIModelWarning 生成给调用方看的未定价提示。
+func buildUnpricedAIModelWarning(modelName string) string {
+	trimmed := strings.TrimSpace(modelName)
+	if trimmed == "" {
+		trimmed = "当前模型"
+	}
+	return fmt.Sprintf("AI 模型「%s」尚未配置价格，本次调用按 0 元计费；请管理员在「AI 搜索配置 → 模型价格表」中为该模型补充输入/缓存输入/输出单价。", trimmed)
 }
 
 func completedSearchBillingAmount(charges []searchBillingCharge) float64 {
@@ -1021,12 +1043,18 @@ func completedSearchBillingProviderLabel(charges []searchBillingCharge) string {
 // 计费时先按 usage 拆分出未命中缓存的输入 token 与命中缓存的输入 token，再分别计价。
 // 价格表是唯一计费依据：模型不在价格表中时金额为 0，并在快照里记录未定价原因，
 // 便于管理员补齐价格，而不是回退到已废弃的倍率算法。
-func resolveCompletedAIBillingCharge(db *gorm.DB, resolved resolvedSearchRequestContext, req model.SearchRequest, usage search.AISearchUsage) (searchBillingCharge, error) {
+// resolvedAIBillingCharge 包装 AI 计费结果，并额外标记该模型是否缺少价格配置。
+type resolvedAIBillingCharge struct {
+	Charge        searchBillingCharge
+	UnpricedModel bool
+}
+
+func resolveCompletedAIBillingCharge(db *gorm.DB, resolved resolvedSearchRequestContext, req model.SearchRequest, usage search.AISearchUsage) (resolvedAIBillingCharge, error) {
 	modelName := strings.TrimSpace(resolved.AIConfig.Model)
 
 	price, matched, err := service.ResolveAIModelTokenPriceWithDB(db, modelName)
 	if err != nil {
-		return searchBillingCharge{}, err
+		return resolvedAIBillingCharge{}, err
 	}
 
 	var baseAmount, amount float64
@@ -1042,15 +1070,18 @@ func resolveCompletedAIBillingCharge(db *gorm.DB, resolved resolvedSearchRequest
 	if totalTokens == 0 {
 		totalTokens = usage.InputTokens + usage.OutputTokens
 	}
-	return searchBillingCharge{
-		Provider:          searchModeAI,
-		Amount:            amount,
-		Snapshot:          snapshot,
-		ModelName:         modelName,
-		InputTokens:       usage.InputTokens,
-		CachedInputTokens: usage.CachedInputTokens,
-		OutputTokens:      usage.OutputTokens,
-		TotalTokens:       totalTokens,
+	return resolvedAIBillingCharge{
+		UnpricedModel: !matched,
+		Charge: searchBillingCharge{
+			Provider:          searchModeAI,
+			Amount:            amount,
+			Snapshot:          snapshot,
+			ModelName:         modelName,
+			InputTokens:       usage.InputTokens,
+			CachedInputTokens: usage.CachedInputTokens,
+			OutputTokens:      usage.OutputTokens,
+			TotalTokens:       totalTokens,
+		},
 	}, nil
 }
 

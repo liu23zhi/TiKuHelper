@@ -119,6 +119,24 @@ func TestAISearchConfig(c *gin.Context) {
 	})
 }
 
+// AISearchConfigPricingStatus 返回当前 AI 配置里哪些模型还没有价格，
+// 供管理页提示管理员去「模型价格表」补价。
+func AISearchConfigPricingStatus(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
+
+	status, err := service.InspectAISearchModelPricingWithDB(manager.GetManager().GetDB())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"message": "获取模型定价状态失败",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, status)
+}
+
 func UpdateAISearchConfig(c *gin.Context) {
 	if !requireAdmin(c) {
 		return
