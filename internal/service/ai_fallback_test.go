@@ -2,6 +2,7 @@ package service
 
 import (
 	stderrs "errors"
+	"reflect"
 	"testing"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -9,6 +10,22 @@ import (
 	pkgerrors "github.com/itihey/tikuAdapter/pkg/errors"
 	"github.com/itihey/tikuAdapter/pkg/model"
 )
+
+func TestNormalizeAIFallbackAnswersForRequestPreservesRepeatedFillAnswers(t *testing.T) {
+	got := normalizeAIFallbackAnswersForRequest([]string{"北京", "北京"}, model.SearchRequest{
+		Type: 2,
+	})
+	if !reflect.DeepEqual(got, []string{"北京", "北京"}) {
+		t.Fatalf("expected repeated fill answers to stay in order, got %v", got)
+	}
+
+	got = normalizeAIFallbackAnswersForRequest([]string{"北京", "北京"}, model.SearchRequest{
+		Type: 0,
+	})
+	if !reflect.DeepEqual(got, []string{"北京"}) {
+		t.Fatalf("expected non-fill answers to remain deduplicated, got %v", got)
+	}
+}
 
 func TestIsAISearchConfigUsableRequiresBaseURLAPIKeyAndModel(t *testing.T) {
 	if IsAISearchConfigUsable(AISearchRequestConfig{}) {

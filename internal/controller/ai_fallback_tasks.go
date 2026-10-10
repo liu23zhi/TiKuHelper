@@ -128,6 +128,9 @@ func (s *aiFallbackTaskStore) complete(taskID string, result service.AIFallbackR
 
 func (s *aiFallbackTaskStore) cleanupExpiredLocked(now time.Time) {
 	for taskID, task := range s.tasks {
+		if task.Status == aiFallbackTaskStatusRunning {
+			continue
+		}
 		if now.Sub(task.UpdatedAt) >= s.ttl {
 			delete(s.tasks, taskID)
 		}

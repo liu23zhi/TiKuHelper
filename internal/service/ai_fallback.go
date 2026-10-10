@@ -169,15 +169,18 @@ func normalizeAIFallbackAnswersForRequest(answers []string, req model.SearchRequ
 	if len(normalizedOptions) == 0 {
 		result := make([]string, 0, len(answers))
 		seen := make(map[string]struct{})
+		preserveRepeatedAnswers := req.Type == 2
 		for _, answer := range answers {
 			normalized := strings.TrimSpace(answer)
 			if normalized == "" {
 				continue
 			}
-			if _, exists := seen[normalized]; exists {
-				continue
+			if !preserveRepeatedAnswers {
+				if _, exists := seen[normalized]; exists {
+					continue
+				}
+				seen[normalized] = struct{}{}
 			}
-			seen[normalized] = struct{}{}
 			result = append(result, normalized)
 		}
 		return result

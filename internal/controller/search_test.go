@@ -39,7 +39,7 @@ func newSearchControllerTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open test db: %v", err)
 	}
 
-	if err := db.AutoMigrate(&entity.SearchAccountConfig{}, &entity.AISearchConfig{}, &entity.AIModelArchitecture{}, &entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}, &entity.Log{}, &entity.Tiku{}); err != nil {
+	if err := db.AutoMigrate(&entity.SearchAccountConfig{}, &entity.AISearchConfig{}, &entity.AIModelArchitecture{}, &entity.AIModelPrice{}, &entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}, &entity.Log{}, &entity.Tiku{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 
@@ -100,15 +100,14 @@ func seedControllerDefaultSearchProviderConfig(t *testing.T, db *gorm.DB, provid
 	return config
 }
 
-func seedControllerAIModelArchitecture(t *testing.T, db *gorm.DB, modelName string, multiplier float64) entity.AIModelArchitecture {
+func seedControllerAIModelArchitecture(t *testing.T, db *gorm.DB, modelName string) entity.AIModelArchitecture {
 	t.Helper()
 
 	architecture := entity.AIModelArchitecture{
-		Name:              modelName,
-		ModelName:         modelName,
-		BillingMultiplier: multiplier,
-		Enabled:           true,
-		Sort:              10,
+		Name:      modelName,
+		ModelName: modelName,
+		Enabled:   true,
+		Sort:      10,
 	}
 	if err := db.Create(&architecture).Error; err != nil {
 		t.Fatalf("create ai model architecture: %v", err)
@@ -806,20 +805,16 @@ func TestSearchPersistsBillingRecordAndAccessTokenUsageForLocalSearch(t *testing
 	}
 }
 
-func TestSearchPersistsAIBillingWithModelMultiplier(t *testing.T) {
+// AI 计费只以模型价格表为准：模型未配置价格时金额为 0，并写入未定价标记。
+func TestSearchRecordsZeroAmountForModelMissingFromPriceTable(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 212, "search-ai-billing-user", "user")
 	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10.0).Error; err != nil {
 		t.Fatalf("seed user balance: %v", err)
 	}
-	if _, err := service.UpdateAISearchConfigWithDB(db, service.UpdateAISearchConfigInput{
-		UseGlobalBillingMultiplier: testBoolPtr(false),
-	}); err != nil {
-		t.Fatalf("seed ai billing config: %v", err)
-	}
 	token := seedControllerTokenForUser(t, db, user, "search-ai-billing-token", 0.25)
-	seedControllerAIModelArchitecture(t, db, "gpt-billing", 2.5)
+	seedControllerAIModelArchitecture(t, db, "gpt-billing")
 
 	withStubSearchDependencies(t,
 		(&stubSearchClient{}).SearchAnswer,
@@ -865,24 +860,35 @@ func TestSearchPersistsAIBillingWithModelMultiplier(t *testing.T) {
 	if err := db.Where("user_id = ? AND access_token_id = ?", user.ID, token.ID).First(&record).Error; err != nil {
 		t.Fatalf("load ai billing record: %v", err)
 	}
-	if record.Provider != searchModeAI || record.Amount != 3.75 {
-		t.Fatalf("expected ai billing amount 3.75, got %+v", record)
+	if record.Provider != searchModeAI || record.Amount != 0 {
+		t.Fatalf("expected zero-amount ai billing record, got %+v", record)
 	}
-	if record.BalanceBefore != 10 || record.BalanceAfter != 6.25 {
-		t.Fatalf("expected ai billing balance 10 -> 6.25, got %+v", record)
+	if record.BalanceBefore != 10 || record.BalanceAfter != 10 {
+		t.Fatalf("expected zero-amount billing to keep balance at 10, got %+v", record)
 	}
-	for _, part := range []string{"provider=ai", "model=gpt-billing", "billingMultiplier=2.5000", "exchangeRate=1.0000", "globalBillingMultiplier=1.0000", "modelBillingMultiplier=2.5000", "inputTokens=1000", "outputTokens=500", "baseAmount=1.50"} {
+	for _, part := range []string{
+		"provider=ai",
+		"model=gpt-billing",
+		"pricing=unpriced_model",
+		"inputTokens=1000",
+		"outputTokens=500",
+		"amount=0.00",
+	} {
 		if !strings.Contains(record.UnitPriceSnapshot, part) {
 			t.Fatalf("expected ai billing snapshot to contain %q, got %q", part, record.UnitPriceSnapshot)
 		}
+	}
+	// 旧的倍率计费字段不允许再出现在新账单快照里。
+	if strings.Contains(record.UnitPriceSnapshot, "billingMultiplier") {
+		t.Fatalf("expected multiplier billing to be gone, got %q", record.UnitPriceSnapshot)
 	}
 
 	var stored entity.AccessToken
 	if err := db.Where("id = ?", token.ID).First(&stored).Error; err != nil {
 		t.Fatalf("load access token: %v", err)
 	}
-	if stored.TotalAmountUsed != 4.0 {
-		t.Fatalf("expected total amount used 4.0, got %v", stored.TotalAmountUsed)
+	if stored.TotalAmountUsed != 0.25 {
+		t.Fatalf("expected total amount used to stay 0.25, got %v", stored.TotalAmountUsed)
 	}
 }
 
@@ -893,13 +899,9 @@ func TestSearchPersistsAIBillingDuringDefaultMixedSearch(t *testing.T) {
 	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10.0).Error; err != nil {
 		t.Fatalf("seed user balance: %v", err)
 	}
-	if _, err := service.UpdateAISearchConfigWithDB(db, service.UpdateAISearchConfigInput{
-		UseGlobalBillingMultiplier: testBoolPtr(false),
-	}); err != nil {
-		t.Fatalf("seed ai billing config: %v", err)
-	}
 	token := seedControllerTokenForUser(t, db, user, "search-ai-mixed-billing-token", 0)
-	seedControllerAIModelArchitecture(t, db, "gpt-mixed-billing", 2.5)
+	// GPT-6 Luna：输入 0.10 / 缓存 0.01 / 输出 0.50（元 / 百万 token）。
+	seedControllerAIModelPrice(t, db, "GPT-6 Luna", 0.10, 0.01, 0.50)
 	seedControllerDefaultSearchProviderConfig(t, db, "icodef", 1.0)
 
 	withStubSearchDependencies(t,
@@ -917,7 +919,7 @@ func TestSearchPersistsAIBillingDuringDefaultMixedSearch(t *testing.T) {
 				AIConfig: service.AISearchRequestConfig{
 					BaseURL: "https://default.example.com/v1",
 					APIKey:  "default-key",
-					Model:   "gpt-mixed-billing",
+					Model:   "GPT-6 Luna",
 				},
 				AccessTokenCtx: &service.AccessTokenAuthContext{
 					User:        user,
@@ -931,7 +933,7 @@ func TestSearchPersistsAIBillingDuringDefaultMixedSearch(t *testing.T) {
 			}
 		},
 		func(resolvedSearchRequestContext, model.SearchRequest) ([][]string, searchpkg.AISearchUsage, error) {
-			return [][]string{{"AI答案"}}, searchpkg.AISearchUsage{InputTokens: 1000, OutputTokens: 500, TotalTokens: 1500}, nil
+			return [][]string{{"AI答案"}}, searchpkg.AISearchUsage{InputTokens: 1000000, OutputTokens: 500000, TotalTokens: 1500000}, nil
 		},
 		func() {
 			recorder := httptest.NewRecorder()
@@ -969,16 +971,17 @@ func TestSearchPersistsAIBillingDuringDefaultMixedSearch(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected separate ai billing record, got %+v", records)
 	}
-	if aiRecord.Amount != 3.75 || aiRecord.BalanceBefore != 9 || aiRecord.BalanceAfter != 5.25 {
-		t.Fatalf("expected separate ai billing balance 9 -> 5.25, got %+v", aiRecord)
+	// 1M 输入 × 0.10 + 0.5M 输出 × 0.50 = 0.10 + 0.25 = 0.35
+	if aiRecord.Amount != 0.35 || aiRecord.BalanceBefore != 9 || aiRecord.BalanceAfter != 8.65 {
+		t.Fatalf("expected separate ai billing balance 9 -> 8.65, got %+v", aiRecord)
 	}
-	if aiRecord.ModelName != "gpt-mixed-billing" ||
-		aiRecord.InputTokens != 1000 ||
-		aiRecord.OutputTokens != 500 ||
-		aiRecord.TotalTokens != 1500 {
+	if aiRecord.ModelName != "GPT-6 Luna" ||
+		aiRecord.InputTokens != 1000000 ||
+		aiRecord.OutputTokens != 500000 ||
+		aiRecord.TotalTokens != 1500000 {
 		t.Fatalf("expected mixed ai billing token metadata, got %+v", aiRecord)
 	}
-	for _, part := range []string{"provider=ai", "model=gpt-mixed-billing", "inputTokens=1000", "outputTokens=500"} {
+	for _, part := range []string{"provider=ai", "model=GPT-6 Luna", "pricing=model_price_table", "inputTokens=1000000", "outputTokens=500000"} {
 		if !strings.Contains(aiRecord.UnitPriceSnapshot, part) {
 			t.Fatalf("expected mixed ai snapshot to contain %q, got %q", part, aiRecord.UnitPriceSnapshot)
 		}
@@ -988,8 +991,8 @@ func TestSearchPersistsAIBillingDuringDefaultMixedSearch(t *testing.T) {
 	if err := db.Where("id = ?", token.ID).First(&storedToken).Error; err != nil {
 		t.Fatalf("load mixed billing access token: %v", err)
 	}
-	if storedToken.TotalAmountUsed != 4.75 {
-		t.Fatalf("expected mixed billing total amount used 4.75, got %v", storedToken.TotalAmountUsed)
+	if storedToken.TotalAmountUsed != 1.35 {
+		t.Fatalf("expected mixed billing total amount used 1.35, got %v", storedToken.TotalAmountUsed)
 	}
 }
 
@@ -1000,13 +1003,9 @@ func TestSearchPersistsAIBillingDuringDefaultAIThatRunsInNormalMode(t *testing.T
 	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 0.5).Error; err != nil {
 		t.Fatalf("seed user balance: %v", err)
 	}
-	if _, err := service.UpdateAISearchConfigWithDB(db, service.UpdateAISearchConfigInput{
-		UseGlobalBillingMultiplier: testBoolPtr(false),
-	}); err != nil {
-		t.Fatalf("seed ai billing config: %v", err)
-	}
 	token := seedControllerTokenForUser(t, db, user, "search-ai-only-billing-token", 0)
-	seedControllerAIModelArchitecture(t, db, "gpt-ai-only-billing", 2.5)
+	// 用高价模型让 AI 扣费明显大于余额，覆盖「允许扣成负余额」的场景。
+	seedControllerAIModelPrice(t, db, "GPT-6 Astra Law *", 12.50, 1.25, 62.50)
 
 	withStubSearchDependencies(t,
 		(&stubSearchClient{}).SearchAnswer,
@@ -1020,7 +1019,7 @@ func TestSearchPersistsAIBillingDuringDefaultAIThatRunsInNormalMode(t *testing.T
 				AIConfig: service.AISearchRequestConfig{
 					BaseURL: "https://default.example.com/v1",
 					APIKey:  "default-key",
-					Model:   "gpt-ai-only-billing",
+					Model:   "GPT-6 Astra Law *",
 				},
 				AccessTokenCtx: &service.AccessTokenAuthContext{
 					User:        user,
@@ -1032,7 +1031,7 @@ func TestSearchPersistsAIBillingDuringDefaultAIThatRunsInNormalMode(t *testing.T
 			return nil
 		},
 		func(resolvedSearchRequestContext, model.SearchRequest) ([][]string, searchpkg.AISearchUsage, error) {
-			return [][]string{{"AI答案"}}, searchpkg.AISearchUsage{InputTokens: 1000, OutputTokens: 500, TotalTokens: 1500}, nil
+			return [][]string{{"AI答案"}}, searchpkg.AISearchUsage{InputTokens: 1000000, OutputTokens: 500000, TotalTokens: 1500000}, nil
 		},
 		func() {
 			recorder := httptest.NewRecorder()
@@ -1052,19 +1051,19 @@ func TestSearchPersistsAIBillingDuringDefaultAIThatRunsInNormalMode(t *testing.T
 	if err := db.Where("user_id = ? AND access_token_id = ?", user.ID, token.ID).First(&record).Error; err != nil {
 		t.Fatalf("load ai-only billing record: %v", err)
 	}
-	if record.Provider != searchModeAI || record.Amount != 3.75 {
-		t.Fatalf("expected ai-only default search to bill ai token usage 3.75, got %+v", record)
+	if record.Provider != searchModeAI || record.Amount != 43.75 {
+		t.Fatalf("expected ai-only default search to bill ai token usage 43.75, got %+v", record)
 	}
-	if record.BalanceBefore != 0.5 || record.BalanceAfter != -3.25 {
-		t.Fatalf("expected ai-only billing balance 0.5 -> -3.25, got %+v", record)
+	if record.BalanceBefore != 0.5 || record.BalanceAfter != -43.25 {
+		t.Fatalf("expected ai-only billing balance 0.5 -> -43.25, got %+v", record)
 	}
 
 	var storedUser entity.User
 	if err := db.Where("id = ?", user.ID).First(&storedUser).Error; err != nil {
 		t.Fatalf("load ai-only billing user: %v", err)
 	}
-	if storedUser.Balance != -3.25 {
-		t.Fatalf("expected user balance -3.25 after ai billing, got %v", storedUser.Balance)
+	if storedUser.Balance != -43.25 {
+		t.Fatalf("expected user balance -43.25 after ai billing, got %v", storedUser.Balance)
 	}
 
 	billingList, err := service.ListBillingRecordsWithDB(db, user, 1, 10)
@@ -1074,12 +1073,12 @@ func TestSearchPersistsAIBillingDuringDefaultAIThatRunsInNormalMode(t *testing.T
 	if billingList.Total != 1 || len(billingList.Data) != 1 {
 		t.Fatalf("expected one ai-only billing row, got %+v", billingList)
 	}
-	if billingList.Data[0].ProviderLabel != "AI 搜索" || billingList.Data[0].Amount != 3.75 {
+	if billingList.Data[0].ProviderLabel != "AI 搜索" || billingList.Data[0].Amount != 43.75 {
 		t.Fatalf("expected ai-only billing row to expose AI provider and amount, got %+v", billingList.Data[0])
 	}
 	if len(billingList.Data[0].FeeDetails) != 1 ||
 		billingList.Data[0].FeeDetails[0].ProviderLabel != "AI 搜索" ||
-		billingList.Data[0].FeeDetails[0].Amount != 3.75 {
+		billingList.Data[0].FeeDetails[0].Amount != 43.75 {
 		t.Fatalf("expected ai-only billing row fee details, got %+v", billingList.Data[0].FeeDetails)
 	}
 	if billingList.Data[0].QuestionText != "题目" || billingList.Data[0].Subject != "搜索答案，题目：题目" {

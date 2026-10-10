@@ -4,9 +4,7 @@ import (
 	"github.com/antlabs/strsim"
 	"github.com/gookit/goutil/arrutil"
 	"github.com/itihey/tikuAdapter/pkg/model"
-	"math/rand"
 	"strings"
-	"time"
 )
 
 var sep = "**=====^_^======^_^======**" // 用于分割答案的分隔符
@@ -33,13 +31,10 @@ func FillAnswerResponse(answers [][]string, req *model.SearchRequest) model.Sear
 		},
 	}
 
-	// 简答题一般只需要随机返回一个即可
-	if (req.Type == 4 || req.Type == -4) && len(answers) > 0 {
-		rand.Seed(time.Now().UnixNano())
-		randomIndex := rand.Intn(len(answers[0]))
-		ans := answers[0][randomIndex]
-		resp.Answer.AllAnswer = [][]string{{ans}}
-		resp.Answer.BestAnswer = []string{ans}
+	// 文本题的一个答案组可能包含多个小问，必须保留整组答案和原始文本。
+	// 只有一个答案组时没有聚合歧义，直接返回该组，避免格式化过程改写正文。
+	if (req.Type == 4 || req.Type == -4) && len(answers) == 1 {
+		resp.Answer.BestAnswer = append([]string(nil), answers[0]...)
 		fillAnswer(&resp.Answer, req)
 		return resp
 	}

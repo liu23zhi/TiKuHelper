@@ -376,6 +376,43 @@ export function deleteAIModelArchitecture(data) {
   })
 }
 
+export function getAIModelPrices() {
+  return request({
+    url: `/adapter-service/ai-model-prices`,
+    method: 'get'
+  })
+}
+
+export function createAIModelPrice(data) {
+  return request({
+    url: `/adapter-service/ai-model-prices`,
+    method: 'post',
+    data
+  })
+}
+
+export function updateAIModelPrice(data) {
+  return request({
+    url: `/adapter-service/ai-model-prices/${data.id}`,
+    method: 'put',
+    data
+  })
+}
+
+export function deleteAIModelPrice(data) {
+  return request({
+    url: `/adapter-service/ai-model-prices/${data.id}`,
+    method: 'delete'
+  })
+}
+
+export function resetAIModelPrices() {
+  return request({
+    url: `/adapter-service/ai-model-prices/reset`,
+    method: 'post'
+  })
+}
+
 export function getAccessTokens(params = {}) {
   return request({
     url: `/adapter-service/access-tokens`,
@@ -434,7 +471,8 @@ export function testAISearchConfig(data) {
   return request({
     url: `/adapter-service/ai-search-config/test`,
     method: 'post',
-    data
+    data,
+    timeout: 0
   })
 }
 

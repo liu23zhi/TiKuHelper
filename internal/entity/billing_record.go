@@ -13,6 +13,7 @@ type BillingRecord struct {
 	Provider           string    `gorm:"column:provider;type:varchar(64)" json:"provider"`
 	ModelName          string    `gorm:"column:model_name;type:varchar(128)" json:"modelName"`
 	InputTokens        int64     `gorm:"column:input_tokens;type:bigint;not null;default:0" json:"inputTokens"`
+	CachedInputTokens  int64     `gorm:"column:cached_input_tokens;type:bigint;not null;default:0" json:"cachedInputTokens"`
 	OutputTokens       int64     `gorm:"column:output_tokens;type:bigint;not null;default:0" json:"outputTokens"`
 	TotalTokens        int64     `gorm:"column:total_tokens;type:bigint;not null;default:0" json:"totalTokens"`
 	UnitPriceSnapshot  string    `gorm:"column:unit_price_snapshot;type:text" json:"unitPriceSnapshot"`

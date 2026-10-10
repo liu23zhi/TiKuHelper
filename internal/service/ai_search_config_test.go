@@ -11,43 +11,38 @@ import (
 	"testing"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
+	internalsearch "github.com/itihey/tikuAdapter/internal/search"
 )
 
 func expectedAISearchDefaultPrompt() string {
 	return defaultAISearchPrompt()
 }
 
-func TestUpdateAISearchConfigWithDBPersistsTokenPricing(t *testing.T) {
+// AI 搜索配置只负责模型/提示词等运行参数，不再承载任何计费字段。
+func TestUpdateAISearchConfigWithDBIgnoresLegacyBillingFields(t *testing.T) {
 	db := newSearchAccountConfigTestDB(t)
 
 	view, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{
-		Enabled:          true,
-		BaseURL:          "https://api.openai.com/v1",
-		APIKey:           "sk-test",
-		Model:            "gpt-4o-mini",
-		InputTokenPrice:  0.12345678,
-		OutputTokenPrice: 0.87654321,
+		Enabled: true,
+		BaseURL: "https://api.openai.com/v1",
+		APIKey:  "sk-test",
+		Model:   "gpt-4o-mini",
 	})
 	if err != nil {
 		t.Fatalf("update ai config: %v", err)
 	}
 
-	if view.InputTokenPrice != 0.12345678 {
-		t.Fatalf("expected input token price 0.12345678, got %v", view.InputTokenPrice)
-	}
-	if view.OutputTokenPrice != 0.87654321 {
-		t.Fatalf("expected output token price 0.87654321, got %v", view.OutputTokenPrice)
+	if view.Model != "gpt-4o-mini" || !view.Enabled {
+		t.Fatalf("unexpected config view: %+v", view)
 	}
 
+	// 历史列即使保留，也必须保持默认值，不能因为保存配置而被写入。
 	var saved entity.AISearchConfig
 	if err := db.Where("provider = ?", aiSearchAccountProvider).First(&saved).Error; err != nil {
 		t.Fatalf("load ai config: %v", err)
 	}
-	if saved.InputTokenPrice != 0.12345678 {
-		t.Fatalf("expected saved input token price 0.12345678, got %v", saved.InputTokenPrice)
-	}
-	if saved.OutputTokenPrice != 0.87654321 {
-		t.Fatalf("expected saved output token price 0.87654321, got %v", saved.OutputTokenPrice)
+	if saved.InputTokenPrice != 0 || saved.OutputTokenPrice != 0 {
+		t.Fatalf("expected legacy token prices to stay untouched, got %+v", saved)
 	}
 }
 
@@ -128,6 +123,26 @@ func TestGetAISearchConfigWithDBReturnsDefaultPromptAndFixedSamplingParams(t *te
 	}
 }
 
+func TestDefaultAISearchPromptCoversAllSupportedQuestionTypes(t *testing.T) {
+	prompt := defaultAISearchPrompt()
+	for _, expected := range []string{
+		"判断题：只返回 1 个判断结果",
+		"填空题：按题干中空的出现顺序",
+		"简答题、问答题、阅读理解、大作业：必须回答全部小问",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("expected default prompt %q to contain %q", prompt, expected)
+		}
+	}
+}
+
+func TestDefaultAISearchPromptReusesSearchLayerCopy(t *testing.T) {
+	// 只有一份提示词副本，避免配置页展示的内容与真正发给模型的提示词漂移。
+	if got, want := defaultAISearchPrompt(), internalsearch.DefaultAISearchPrompt(); got != want {
+		t.Fatalf("expected service default prompt to reuse search layer prompt")
+	}
+}
+
 func TestBuildAISearchRequestConfigWithDBReturnsEffectivePromptAndFixedSamplingParams(t *testing.T) {
 	db := newSearchAccountConfigTestDB(t)
 
@@ -199,38 +214,33 @@ func TestUpdateAISearchConfigWithDBNormalizesAndPersistsValues(t *testing.T) {
 	}
 }
 
-func TestUpdateAISearchConfigWithDBPersistsExchangeRateAndGlobalMultiplier(t *testing.T) {
+// 汇率与全局倍率已彻底废弃：保存配置不再写入，读取也不再暴露。
+func TestAISearchConfigNoLongerExposesExchangeRateOrMultiplier(t *testing.T) {
 	db := newSearchAccountConfigTestDB(t)
 
-	view, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{
-		Enabled:                    true,
-		BaseURL:                    "https://api.openai.com/v1",
-		APIKey:                     "sk-test",
-		Model:                      "gpt-4o-mini",
-		ExchangeRate:               7.2,
-		UseGlobalBillingMultiplier: boolPtr(false),
-		GlobalBillingMultiplier:    1.5,
-	})
-	if err != nil {
+	if _, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{
+		Enabled: true,
+		BaseURL: "https://api.openai.com/v1",
+		APIKey:  "sk-test",
+		Model:   "gpt-4o-mini",
+	}); err != nil {
 		t.Fatalf("update ai config: %v", err)
-	}
-
-	if view.ExchangeRate != 7.2 {
-		t.Fatalf("expected exchange rate 7.2, got %+v", view)
-	}
-	if view.UseGlobalBillingMultiplier {
-		t.Fatalf("expected global multiplier disabled, got %+v", view)
-	}
-	if view.GlobalBillingMultiplier != 1.5 {
-		t.Fatalf("expected global multiplier 1.5, got %+v", view)
 	}
 
 	loaded, err := GetAISearchConfigWithDB(db)
 	if err != nil {
 		t.Fatalf("load ai config: %v", err)
 	}
-	if loaded.ExchangeRate != 7.2 || loaded.UseGlobalBillingMultiplier || loaded.GlobalBillingMultiplier != 1.5 {
-		t.Fatalf("unexpected loaded billing config: %+v", loaded)
+	if loaded.Model != "gpt-4o-mini" {
+		t.Fatalf("unexpected loaded config: %+v", loaded)
+	}
+
+	var saved entity.AISearchConfig
+	if err := db.Where("provider = ?", aiSearchAccountProvider).First(&saved).Error; err != nil {
+		t.Fatalf("load ai config row: %v", err)
+	}
+	if saved.ExchangeRate != 1 || saved.GlobalBillingMultiplier != 1 || !saved.UseGlobalBillingMultiplier {
+		t.Fatalf("expected legacy billing columns to keep defaults, got %+v", saved)
 	}
 }
 

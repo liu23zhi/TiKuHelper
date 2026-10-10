@@ -60,21 +60,6 @@
         </a-space>
       </a-form-item>
 
-      <a-form-item label="汇率">
-        <a-input-number v-model:value="formState.exchangeRate" :min="0" :precision="6" :step="0.01" style="width: 100%" />
-        <div class="hint">模型价格按美元口径返回，实际计费会先乘以这里的汇率；默认 1。</div>
-      </a-form-item>
-
-      <a-form-item label="启用全局倍率">
-        <a-switch v-model:checked="formState.useGlobalBillingMultiplier" />
-        <div class="hint">开启后所有模型都使用同一个全局倍率，不再读取模型架构表里的单模型倍率。</div>
-      </a-form-item>
-
-      <a-form-item label="全局倍率">
-        <a-input-number v-model:value="formState.globalBillingMultiplier" :min="0" :precision="4" :step="0.1" style="width: 100%" />
-        <div class="hint">最终 AI 扣费倍率 = 汇率 × 全局倍率；关闭全局倍率时为 汇率 × 单模型倍率。</div>
-      </a-form-item>
-
       <a-form-item label="Prompt 设置">
         <a-textarea
           v-model:value="formState.prompt"
@@ -100,20 +85,73 @@
       </a-form-item>
     </a-form>
 
-    <div class="pricing-grid" v-if="!formState.useGlobalBillingMultiplier">
+    <div class="pricing-grid">
       <a-card :bordered="false" class="sub-card">
         <template #title>
           <div class="sub-card-title-wrap">
             <div>
-              <div class="sub-card-title">单模型倍率配置</div>
-              <div class="sub-card-subtitle">关闭全局倍率后才会使用这里的模型倍率、启停状态与排序。</div>
+              <div class="sub-card-title">模型价格表</div>
+              <div class="sub-card-subtitle">单价单位为 元 / 百万 token（人民币，无汇率换算）。实际扣费 =（输入 − 缓存输入）× 输入价 + 缓存输入 × 缓存价 + 输出 × 输出价。</div>
+            </div>
+          </div>
+        </template>
+        <template #extra>
+          <a-space>
+            <a-popconfirm title="确定恢复内置默认价格表吗？自定义价格会被清空。" ok-text="确定" cancel-text="取消" @confirm="handleResetModelPrices">
+              <a-button :loading="priceResetting">恢复默认</a-button>
+            </a-popconfirm>
+            <a-button @click="loadAIModelPrices" :loading="priceLoading">刷新</a-button>
+            <a-button type="primary" @click="openPriceModal()">新增模型价格</a-button>
+          </a-space>
+        </template>
+
+        <div class="architecture-table-wrap">
+          <a-table
+            bordered
+            row-key="id"
+            :data-source="priceRows"
+            :columns="priceColumns"
+            :loading="priceLoading"
+            :pagination="{ pageSize: 8, size: 'small' }"
+            :scroll="{ x: 1180 }"
+          >
+            <template #inputPrice="{ record }">{{ formatPriceAmount(record.inputPrice) }}</template>
+            <template #cachedPrice="{ record }">{{ formatPriceAmount(record.cachedPrice) }}</template>
+            <template #outputPrice="{ record }">{{ formatPriceAmount(record.outputPrice) }}</template>
+            <template #status="{ record }">
+              <a-tag :color="record.status === 'enabled' ? 'green' : 'default'">
+                {{ record.status === 'enabled' ? '启用' : '停用' }}
+              </a-tag>
+            </template>
+            <template #priceRemark="{ record }">
+              <span>{{ record.remark || '-' }}</span>
+              <a-tag v-if="record.isUserModified" color="orange" style="margin-left: 6px">已改</a-tag>
+            </template>
+            <template #priceAction="{ record }">
+              <a-space size="small">
+                <a-button type="link" style="padding: 0" @click="openPriceModal(record)">编辑</a-button>
+                <a-popconfirm title="确定删除该模型价格吗？" ok-text="确定" cancel-text="取消" @confirm="handleDeleteModelPrice(record)">
+                  <a-button type="link" danger style="padding: 0">删除</a-button>
+                </a-popconfirm>
+              </a-space>
+            </template>
+          </a-table>
+        </div>
+      </a-card>
+
+      <a-card :bordered="false" class="sub-card">
+        <template #title>
+          <div class="sub-card-title-wrap">
+            <div>
+              <div class="sub-card-title">模型绑定</div>
+              <div class="sub-card-subtitle">只维护「模型名称 → 上游模型名」的对应关系，不参与计费；计费一律以模型价格表为准。</div>
             </div>
           </div>
         </template>
         <template #extra>
           <a-space>
             <a-button @click="loadAIModelArchitectures" :loading="architectureLoading">刷新</a-button>
-            <a-button type="primary" @click="openArchitectureModal()">新增架构</a-button>
+            <a-button type="primary" @click="openArchitectureModal()">新增绑定</a-button>
           </a-space>
         </template>
 
@@ -124,18 +162,17 @@
             :data-source="architectureRows"
             :columns="architectureColumns"
             :loading="architectureLoading"
-            :pagination="false"
-            :scroll="{ x: 980 }"
+            :pagination="{ pageSize: 8, size: 'small' }"
+            :scroll="{ x: 820 }"
           >
             <template #enabled="{ record }">
               <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag>
             </template>
-            <template #billingMultiplier="{ record }">{{ formatMultiplier(record.billingMultiplier, record) }}</template>
             <template #remark="{ record }">{{ record.remark || '-' }}</template>
             <template #action="{ record }">
               <a-space size="small">
                 <a-button type="link" style="padding: 0" @click="openArchitectureModal(record)">编辑</a-button>
-                <a-popconfirm title="确定删除该模型架构吗？" ok-text="确定" cancel-text="取消" @confirm="handleDeleteArchitecture(record)">
+                <a-popconfirm title="确定删除该模型绑定吗？" ok-text="确定" cancel-text="取消" @confirm="handleDeleteArchitecture(record)">
                   <a-button type="link" danger style="padding: 0">删除</a-button>
                 </a-popconfirm>
               </a-space>
@@ -144,6 +181,46 @@
         </div>
       </a-card>
     </div>
+
+    <a-modal
+      v-model:visible="priceModalVisible"
+      :title="priceForm.id ? '编辑模型价格' : '新增模型价格'"
+      ok-text="确定"
+      cancel-text="取消"
+      :confirm-loading="priceSaving"
+      @ok="handleSaveModelPrice"
+      @cancel="closePriceModal"
+    >
+      <a-form :label-col="modalLabelCol" :wrapper-col="modalWrapperCol">
+        <a-form-item label="模型名称" required>
+          <a-input v-model:value="priceForm.modelName" placeholder="需与 AI 搜索配置中的模型名一致，例如 GPT-5.6 Sol" />
+        </a-form-item>
+        <a-form-item label="显示名称">
+          <a-input v-model:value="priceForm.displayName" placeholder="留空时与模型名称相同" />
+        </a-form-item>
+        <a-form-item label="输入单价">
+          <a-input-number v-model:value="priceForm.inputPrice" :min="0" :precision="6" :step="0.01" style="width: 100%" />
+          <div class="hint">元 / 百万 token，未命中缓存的输入部分按此计价。</div>
+        </a-form-item>
+        <a-form-item label="缓存输入单价">
+          <a-input-number v-model:value="priceForm.cachedPrice" :min="0" :precision="6" :step="0.01" style="width: 100%" />
+          <div class="hint">元 / 百万 token，上游返回的 cached_tokens 按此计价。</div>
+        </a-form-item>
+        <a-form-item label="输出单价">
+          <a-input-number v-model:value="priceForm.outputPrice" :min="0" :precision="6" :step="0.01" style="width: 100%" />
+          <div class="hint">元 / 百万 token。</div>
+        </a-form-item>
+        <a-form-item label="状态">
+          <a-switch v-model:checked="priceForm.enabled" checked-children="启用" un-checked-children="停用" />
+        </a-form-item>
+        <a-form-item label="排序">
+          <a-input-number v-model:value="priceForm.sort" :min="0" :step="1" style="width: 100%" />
+        </a-form-item>
+        <a-form-item label="备注">
+          <a-input v-model:value="priceForm.remark" placeholder="备注" />
+        </a-form-item>
+      </a-form>
+    </a-modal>
 
     <a-modal
       v-model:visible="testModalVisible"
@@ -208,7 +285,7 @@
 
     <a-modal
       v-model:visible="architectureModalVisible"
-      :title="architectureForm.id ? '编辑模型架构' : '新增模型架构'"
+      :title="architectureForm.id ? '编辑模型绑定' : '新增模型绑定'"
       ok-text="确定"
       cancel-text="取消"
       :confirm-loading="architectureSaving"
@@ -217,14 +294,10 @@
     >
       <a-form :label-col="modalLabelCol" :wrapper-col="modalWrapperCol">
         <a-form-item label="架构名称" required>
-          <a-input v-model:value="architectureForm.name" placeholder="例如 GPT-4o" />
+          <a-input v-model:value="architectureForm.name" placeholder="例如 GPT-5.6 Sol" />
         </a-form-item>
         <a-form-item label="模型名称">
-          <a-input v-model:value="architectureForm.modelName" placeholder="例如 gpt-4o" />
-        </a-form-item>
-        <a-form-item label="计费倍率">
-          <a-input-number v-model:value="architectureForm.billingMultiplier" :min="0" :precision="4" :step="0.1" style="width: 100%" :disabled="formState.useGlobalBillingMultiplier" />
-          <div class="hint">关闭全局倍率后生效；实际扣费 = AI token 基础用量 × 汇率 × 当前模型倍率。</div>
+          <a-input v-model:value="architectureForm.modelName" placeholder="例如 gpt-5.6-sol" />
         </a-form-item>
         <a-form-item label="启用">
           <a-switch v-model:checked="architectureForm.enabled" />
@@ -252,6 +325,11 @@ import {
   createAIModelArchitecture,
   updateAIModelArchitecture,
   deleteAIModelArchitecture,
+  getAIModelPrices,
+  createAIModelPrice,
+  updateAIModelPrice,
+  deleteAIModelPrice,
+  resetAIModelPrices,
 } from '@/api/TikuComponentApi';
 import {
   buildModelNameOptions,
@@ -312,9 +390,6 @@ export default defineComponent({
       remark: '',
       temperature: 0,
       topP: 0,
-      exchangeRate: 1,
-      useGlobalBillingMultiplier: true,
-      globalBillingMultiplier: 1,
     })
 
     const architectureRows = ref([])
@@ -323,7 +398,23 @@ export default defineComponent({
       id: null,
       name: '',
       modelName: '',
-      billingMultiplier: 1,
+      enabled: true,
+      sort: 0,
+      remark: '',
+    })
+
+    const priceRows = ref([])
+    const priceLoading = ref(false)
+    const priceSaving = ref(false)
+    const priceResetting = ref(false)
+    const priceModalVisible = ref(false)
+    const priceForm = reactive({
+      id: null,
+      modelName: '',
+      displayName: '',
+      inputPrice: 0,
+      cachedPrice: 0,
+      outputPrice: 0,
       enabled: true,
       sort: 0,
       remark: '',
@@ -335,13 +426,25 @@ export default defineComponent({
 
     const architectureColumns = [
       { title: 'ID', dataIndex: 'id', key: 'id', width: 80 },
-      { title: '架构名称', dataIndex: 'name', key: 'name', width: 180 },
-      { title: '模型名称', dataIndex: 'modelName', key: 'modelName', width: 180 },
-      { title: '计费倍率', dataIndex: 'billingMultiplier', key: 'billingMultiplier', width: 140, slots: { customRender: 'billingMultiplier' } },
+      { title: '架构名称', dataIndex: 'name', key: 'name', width: 200 },
+      { title: '模型名称', dataIndex: 'modelName', key: 'modelName', width: 220 },
       { title: '状态', dataIndex: 'enabled', key: 'enabled', width: 100, slots: { customRender: 'enabled' } },
       { title: '排序', dataIndex: 'sort', key: 'sort', width: 100 },
       { title: '备注', dataIndex: 'remark', key: 'remark', width: 200, slots: { customRender: 'remark' } },
       { title: '操作', dataIndex: 'action', key: 'action', fixed: 'right', width: 120, slots: { customRender: 'action' } },
+    ]
+
+    const priceColumns = [
+      { title: 'ID', dataIndex: 'id', key: 'id', width: 70 },
+      { title: '模型名称', dataIndex: 'modelName', key: 'modelName', width: 220 },
+      { title: '显示名称', dataIndex: 'displayName', key: 'displayName', width: 200 },
+      { title: '输入 ($/M)', dataIndex: 'inputPrice', key: 'inputPrice', width: 120, slots: { customRender: 'inputPrice' } },
+      { title: '缓存输入 ($/M)', dataIndex: 'cachedPrice', key: 'cachedPrice', width: 130, slots: { customRender: 'cachedPrice' } },
+      { title: '输出 ($/M)', dataIndex: 'outputPrice', key: 'outputPrice', width: 120, slots: { customRender: 'outputPrice' } },
+      { title: '状态', dataIndex: 'status', key: 'status', width: 90, slots: { customRender: 'status' } },
+      { title: '排序', dataIndex: 'sort', key: 'sort', width: 80 },
+      { title: '备注', dataIndex: 'remark', key: 'remark', width: 180, slots: { customRender: 'priceRemark' } },
+      { title: '操作', dataIndex: 'action', key: 'action', fixed: 'right', width: 120, slots: { customRender: 'priceAction' } },
     ]
 
     const loadConfig = () => {
@@ -358,9 +461,6 @@ export default defineComponent({
           formState.remark = data.remark || ''
           formState.temperature = data.temperature ?? 0
           formState.topP = data.topP ?? 0
-          formState.exchangeRate = Number(data.exchangeRate || 1)
-          formState.useGlobalBillingMultiplier = data.useGlobalBillingMultiplier !== false
-          formState.globalBillingMultiplier = Number(data.globalBillingMultiplier || 1)
         } else {
           message.error(res?.message || '获取 AI 搜索配置失败')
         }
@@ -386,16 +486,43 @@ export default defineComponent({
       })
     }
 
+    const loadAIModelPrices = () => {
+      priceLoading.value = true
+      return getAIModelPrices().then(res => {
+        if (res?.status === 200) {
+          priceRows.value = Array.isArray(res?.data) ? res.data : []
+        } else {
+          message.error(res?.message || '获取模型价格表失败')
+        }
+      }).catch(() => {
+        message.error('获取模型价格表失败')
+      }).finally(() => {
+        priceLoading.value = false
+      })
+    }
+
     onMounted(() => {
       loadConfig()
       loadAIModelArchitectures()
+      loadAIModelPrices()
     })
+
+    const resetPriceForm = () => {
+      priceForm.id = null
+      priceForm.modelName = ''
+      priceForm.displayName = ''
+      priceForm.inputPrice = 0
+      priceForm.cachedPrice = 0
+      priceForm.outputPrice = 0
+      priceForm.enabled = true
+      priceForm.sort = 0
+      priceForm.remark = ''
+    }
 
     const resetArchitectureForm = () => {
       architectureForm.id = null
       architectureForm.name = ''
       architectureForm.modelName = ''
-      architectureForm.billingMultiplier = 1
       architectureForm.enabled = true
       architectureForm.sort = 0
       architectureForm.remark = ''
@@ -423,16 +550,26 @@ export default defineComponent({
       architectureColumns,
       architectureModalVisible,
       architectureForm,
+      priceRows,
+      priceColumns,
+      priceLoading,
+      priceSaving,
+      priceResetting,
+      priceModalVisible,
+      priceForm,
       hasAISearchTestResult,
       loadConfig,
       loadAIModelArchitectures,
+      loadAIModelPrices,
       resetArchitectureForm,
+      resetPriceForm,
     }
   },
   methods: {
     handleLoad() {
       this.loadConfig()
       this.loadAIModelArchitectures()
+      this.loadAIModelPrices()
     },
     selectModel(model) {
       this.formState.model = model
@@ -566,7 +703,6 @@ export default defineComponent({
         this.architectureForm.id = record.id
         this.architectureForm.name = record.name || ''
         this.architectureForm.modelName = record.modelName || ''
-        this.architectureForm.billingMultiplier = Number(record.billingMultiplier || record.inputTokenPrice || record.outputTokenPrice || 1)
         this.architectureForm.enabled = !!record.enabled
         this.architectureForm.sort = Number(record.sort || 0)
         this.architectureForm.remark = record.remark || ''
@@ -580,11 +716,11 @@ export default defineComponent({
       this.resetArchitectureForm()
     },
     handleSaveArchitecture() {
+      // 模型绑定不再包含任何计费字段。
       const payload = {
         id: this.architectureForm.id,
         name: this.architectureForm.name,
         modelName: this.architectureForm.modelName,
-        billingMultiplier: Number(this.architectureForm.billingMultiplier || 1),
         enabled: !!this.architectureForm.enabled,
         sort: Number(this.architectureForm.sort || 0),
         remark: this.architectureForm.remark || '',
@@ -617,9 +753,94 @@ export default defineComponent({
         message.error('删除失败')
       })
     },
-    formatMultiplier(value, record) {
-      const multiplier = Number(value || record?.inputTokenPrice || record?.outputTokenPrice || 1)
-      return Number.isFinite(multiplier) && multiplier > 0 ? `${multiplier.toFixed(4)} 倍` : '1.0000 倍'
+    formatPriceAmount(value) {
+      const amount = Number(value)
+      if (!Number.isFinite(amount)) {
+        return '$0.000000'
+      }
+      // 保留有效小数位，避免 GPT-5.3-Codex 的 0.175 被截成 0.18。
+      return `$${amount.toFixed(6).replace(/0+$/, '').replace(/\.$/, '.0')}`
+    },
+    openPriceModal(record) {
+      if (record) {
+        this.priceForm.id = record.id
+        this.priceForm.modelName = record.modelName || ''
+        this.priceForm.displayName = record.displayName || ''
+        this.priceForm.inputPrice = Number(record.inputPrice || 0)
+        this.priceForm.cachedPrice = Number(record.cachedPrice || 0)
+        this.priceForm.outputPrice = Number(record.outputPrice || 0)
+        this.priceForm.enabled = record.status !== 'disabled'
+        this.priceForm.sort = Number(record.sort || 0)
+        this.priceForm.remark = record.remark || ''
+      } else {
+        this.resetPriceForm()
+      }
+      this.priceModalVisible = true
+    },
+    closePriceModal() {
+      this.priceModalVisible = false
+      this.resetPriceForm()
+    },
+    handleSaveModelPrice() {
+      const modelName = String(this.priceForm.modelName || '').trim()
+      if (!modelName) {
+        message.warning('请填写模型名称')
+        return
+      }
+
+      const payload = {
+        id: this.priceForm.id,
+        modelName,
+        displayName: String(this.priceForm.displayName || '').trim(),
+        inputPrice: Number(this.priceForm.inputPrice || 0),
+        cachedPrice: Number(this.priceForm.cachedPrice || 0),
+        outputPrice: Number(this.priceForm.outputPrice || 0),
+        status: this.priceForm.enabled ? 'enabled' : 'disabled',
+        sort: Number(this.priceForm.sort || 0),
+        remark: this.priceForm.remark || '',
+      }
+      this.priceSaving = true
+      const action = payload.id ? updateAIModelPrice(payload) : createAIModelPrice(payload)
+      action.then(res => {
+        if (res?.status === 200) {
+          message.success('保存成功')
+          this.closePriceModal()
+          this.loadAIModelPrices()
+          return
+        }
+        message.error(res?.message || '保存失败')
+      }).catch(() => {
+        message.error('保存失败')
+      }).finally(() => {
+        this.priceSaving = false
+      })
+    },
+    handleDeleteModelPrice(record) {
+      deleteAIModelPrice({ id: record.id }).then(res => {
+        if (res?.status === 200) {
+          message.success('删除成功')
+          this.loadAIModelPrices()
+          return
+        }
+        message.error(res?.message || '删除失败')
+      }).catch(() => {
+        message.error('删除失败')
+      })
+    },
+    handleResetModelPrices() {
+      this.priceResetting = true
+      resetAIModelPrices().then(res => {
+        if (res?.status === 200) {
+          message.success('已恢复内置默认价格表')
+          this.loadAIModelPrices()
+          return
+        }
+        message.error(res?.message || '恢复默认失败')
+      }).catch(() => {
+        message.error('恢复默认失败')
+      }).finally(() => {
+        this.priceResetting = false
+      })
     },
   }
 })

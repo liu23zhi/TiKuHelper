@@ -101,7 +101,6 @@ test('buildMissingArchitecturePayloads only returns rows missing from existing a
       {
         name: 'gpt-5.3-codex',
         modelName: 'gpt-5.3-codex',
-        billingMultiplier: 1,
         enabled: true,
         sort: 0,
         remark: '',
@@ -109,7 +108,6 @@ test('buildMissingArchitecturePayloads only returns rows missing from existing a
       {
         name: 'deepseek-chat',
         modelName: 'deepseek-chat',
-        billingMultiplier: 1,
         enabled: true,
         sort: 0,
         remark: '',
@@ -128,9 +126,6 @@ test('buildAISearchConfigSavePayload persists editable model list instead of arc
         prompt: ' 系统 Prompt ',
         remark: ' 备注 ',
         manualModelsText: 'manual-only,gpt-5.4\nmanual-only',
-        exchangeRate: '7.2',
-        useGlobalBillingMultiplier: true,
-        globalBillingMultiplier: '1.5',
       },
       'https://api.example.com/v1',
       [
@@ -148,37 +143,49 @@ test('buildAISearchConfigSavePayload persists editable model list instead of arc
       remark: ' 备注 ',
       temperature: 0,
       topP: 0,
-      exchangeRate: 7.2,
-      useGlobalBillingMultiplier: true,
-      globalBillingMultiplier: 1.5,
     },
   );
 });
 
-test('AISearchConfig page uses model billing multiplier instead of separate token prices', async () => {
+test('buildAISearchConfigSavePayload stops sending any billing fields', () => {
+  const payload = buildAISearchConfigSavePayload({ enabled: true }, 'https://api.example.com/v1');
+
+  for (const field of ['exchangeRate', 'useGlobalBillingMultiplier', 'globalBillingMultiplier', 'inputTokenPrice', 'outputTokenPrice']) {
+    assert.ok(!(field in payload), `expected save payload not to contain ${field}`);
+  }
+});
+
+test('AISearchConfig page bills from the model price table and has no multiplier UI', async () => {
   const content = await readFile(aiSearchConfigPagePath, 'utf8');
 
   assert.match(content, /buildModelNameOptions\(formState\.manualModelsText\)/);
   assert.match(content, /formState\.manualModelsText = buildModelNameText\(data\.manualModels/);
   assert.match(content, /filterRemoteModelNames\(remoteModels\)/);
   assert.match(content, /formState\.manualModelsText = buildModelNameText\(filteredRemoteModels\)/);
-  assert.match(content, /label="汇率"/);
-  assert.match(content, /formState\.exchangeRate/);
-  assert.match(content, /label="全局倍率"/);
-  assert.match(content, /formState\.useGlobalBillingMultiplier/);
-  assert.match(content, /formState\.globalBillingMultiplier/);
-  assert.match(content, /:disabled="formState\.useGlobalBillingMultiplier"/);
-  assert.match(content, /<div class="pricing-grid" v-if="!formState\.useGlobalBillingMultiplier">/);
-  assert.match(content, /单模型倍率配置/);
-  assert.match(content, /关闭全局倍率后才会使用这里的模型倍率/);
-  assert.doesNotMatch(content, /buildModelNameText\(\[\s*this\.formState\.manualModelsText,\s*\.\.\.remoteModels,\s*\]\)/s);
-  assert.match(content, /计费倍率/);
-  assert.match(content, /billingMultiplier/);
-  assert.match(content, /formatMultiplier/);
+
+  // 价格表是唯一计费入口。
+  assert.match(content, /模型价格表/);
+  assert.match(content, /priceRows/);
+  assert.match(content, /priceColumns/);
+  assert.match(content, /loadAIModelPrices/);
+  assert.match(content, /handleSaveModelPrice/);
+  assert.match(content, /handleDeleteModelPrice/);
+  assert.match(content, /handleResetModelPrices/);
+  assert.match(content, /缓存输入/);
+
+  // 倍率与汇率相关 UI 必须彻底消失。
+  assert.doesNotMatch(content, /formState\.exchangeRate/);
+  assert.doesNotMatch(content, /formState\.globalBillingMultiplier/);
+  assert.doesNotMatch(content, /formState\.useGlobalBillingMultiplier/);
+  assert.doesNotMatch(content, /billingMultiplier/);
+  assert.doesNotMatch(content, /formatMultiplier/);
+  assert.doesNotMatch(content, /单模型倍率/);
+  assert.doesNotMatch(content, /全局倍率/);
+  assert.doesNotMatch(content, /label="汇率"/);
+  assert.doesNotMatch(content, /美元/);
+
   assert.match(content, /architecture-table-wrap/);
   assert.match(content, /@media \(max-width: 768px\)/);
   assert.doesNotMatch(content, /syncModelTextFromArchitectures/);
   assert.doesNotMatch(content, /每条记录直接绑定模型名，并维护计费倍率、启停状态与排序/);
-  assert.doesNotMatch(content, /输入单价/);
-  assert.doesNotMatch(content, /输出单价/);
 });

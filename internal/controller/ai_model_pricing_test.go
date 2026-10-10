@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -75,12 +76,10 @@ func TestCreateAIModelArchitectureReturnsCreatedItemForAdmin(t *testing.T) {
 		if input.Name != "GPT-4o" || input.ModelName != "gpt-4o" || input.Enabled != true || input.Remark != "常用" || input.Sort != 2 {
 			t.Fatalf("unexpected input: %+v", input)
 		}
-		if input.BillingMultiplier != 2.5 {
-			t.Fatalf("unexpected multiplier input: %+v", input)
-		}
-		return entity.AIModelArchitecture{ID: 11, Name: input.Name, ModelName: input.ModelName, BillingMultiplier: input.BillingMultiplier, Enabled: input.Enabled, Sort: input.Sort}, nil
+		return entity.AIModelArchitecture{ID: 11, Name: input.Name, ModelName: input.ModelName, Enabled: input.Enabled, Sort: input.Sort}, nil
 	}
 
+	// 旧的计费倍率字段即使仍被前端传来，也必须被忽略：架构表不再参与计费。
 	payload := []byte(`{"name":"GPT-4o","modelName":"gpt-4o","billingMultiplier":2.5,"enabled":true,"sort":2,"remark":"常用"}`)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -98,8 +97,11 @@ func TestCreateAIModelArchitectureReturnsCreatedItemForAdmin(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &architecture); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if architecture.ID != 11 || architecture.ModelName != "gpt-4o" || architecture.BillingMultiplier != 2.5 {
+	if architecture.ID != 11 || architecture.ModelName != "gpt-4o" {
 		t.Fatalf("unexpected created architecture: %+v", architecture)
+	}
+	if strings.Contains(recorder.Body.String(), "billingMultiplier") {
+		t.Fatalf("expected billing multiplier to be gone from response, got %s", recorder.Body.String())
 	}
 }
 

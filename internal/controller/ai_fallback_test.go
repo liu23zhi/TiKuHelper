@@ -305,7 +305,8 @@ func TestAIFallbackBillsSuccessfulAIUsage(t *testing.T) {
 		t.Fatalf("seed user balance: %v", err)
 	}
 	token := seedControllerTokenForUser(t, db, user, "billed-ai-fallback-token", 0)
-	seedControllerAIModelArchitecture(t, db, "sync-fallback-billing-model", 2.5)
+	// GPT-6 Luna：输入 0.10 / 缓存 0.01 / 输出 0.50（元 / 百万 token）。
+	seedControllerAIModelPrice(t, db, "sync-fallback-billing-model", 0.10, 0.01, 0.50)
 
 	original := runAIFallbackService
 	defer func() { runAIFallbackService = original }()
@@ -318,9 +319,9 @@ func TestAIFallbackBillsSuccessfulAIUsage(t *testing.T) {
 			},
 			Model: "sync-fallback-billing-model",
 			Usage: searchpkg.AISearchUsage{
-				InputTokens:  1000,
-				OutputTokens: 500,
-				TotalTokens:  1500,
+				InputTokens:  1000000,
+				OutputTokens: 500000,
+				TotalTokens:  1500000,
 			},
 		}
 	}
@@ -352,10 +353,10 @@ func TestAIFallbackBillsSuccessfulAIUsage(t *testing.T) {
 	if record.Provider != searchModeAI || record.ModelName != "sync-fallback-billing-model" {
 		t.Fatalf("unexpected billing provider/model: %+v", record)
 	}
-	if record.Amount != 3.75 || record.TotalTokens != 1500 {
+	if record.Amount != 0.35 || record.TotalTokens != 1500000 {
 		t.Fatalf("unexpected billing amount/tokens: %+v", record)
 	}
-	if record.BalanceBefore != 10 || record.BalanceAfter != 6.25 {
+	if record.BalanceBefore != 10 || record.BalanceAfter != 9.65 {
 		t.Fatalf("unexpected billing balance: %+v", record)
 	}
 	var entry entity.Log

@@ -303,6 +303,7 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		&entity.RechargeOrder{},
 		&entity.BillingRecord{},
 		&entity.AIModelArchitecture{},
+		&entity.AIModelPrice{},
 		&entity.SMSVerificationCode{},
 		&entity.CaptchaChallenge{},
 		&entity.CaptchaToken{},

@@ -92,13 +92,14 @@ type searchBillingContext struct {
 }
 
 type searchBillingCharge struct {
-	Provider     string
-	Amount       float64
-	Snapshot     string
-	ModelName    string
-	InputTokens  int64
-	OutputTokens int64
-	TotalTokens  int64
+	Provider          string
+	Amount            float64
+	Snapshot          string
+	ModelName         string
+	InputTokens       int64
+	CachedInputTokens int64
+	OutputTokens      int64
+	TotalTokens       int64
 }
 
 var searchBillingReporter = func(ctx searchBillingContext) {}
@@ -288,6 +289,9 @@ func Search(c *gin.Context) {
 	var localAnswer [][]string // 本地答案
 	resolved := resolveResult
 	aiEnabled := shouldUseAISearch(useQuery, resolved.AIConfig)
+	if aiEnabled {
+		clearAIResponseWriteDeadline(c)
+	}
 	aiUsage := search.AISearchUsage{}
 	usedLocalSearch := false
 	usedSearchResultCache := false
@@ -530,6 +534,7 @@ func buildSearchAnswerGroupsDebugSummary(answers [][]string) string {
 func buildAISearchUsageDebugSummary(usage search.AISearchUsage) string {
 	return strings.Join([]string{
 		fmt.Sprintf("inputTokens=%d", usage.InputTokens),
+		fmt.Sprintf("cachedInputTokens=%d", usage.CachedInputTokens),
 		fmt.Sprintf("outputTokens=%d", usage.OutputTokens),
 		fmt.Sprintf("totalTokens=%d", usage.TotalTokens),
 	}, " ")
@@ -1009,49 +1014,126 @@ func completedSearchBillingProviderLabel(charges []searchBillingCharge) string {
 	return strings.Join(providers, ",")
 }
 
+// resolveCompletedAIBillingCharge 按模型价格表计算 AI 计费。
+//
+// 单价口径：模型价格表里的输入 / 缓存输入 / 输出单价均为「元 / 百万 token」，
+// 与用户余额同币种，因此不再需要美元汇率换算。
+// 计费时先按 usage 拆分出未命中缓存的输入 token 与命中缓存的输入 token，再分别计价。
+// 价格表是唯一计费依据：模型不在价格表中时金额为 0，并在快照里记录未定价原因，
+// 便于管理员补齐价格，而不是回退到已废弃的倍率算法。
 func resolveCompletedAIBillingCharge(db *gorm.DB, resolved resolvedSearchRequestContext, req model.SearchRequest, usage search.AISearchUsage) (searchBillingCharge, error) {
-	price, err := service.ResolveAIModelPriceWithDB(db, resolved.AIConfig.Model)
+	modelName := strings.TrimSpace(resolved.AIConfig.Model)
+
+	price, matched, err := service.ResolveAIModelTokenPriceWithDB(db, modelName)
 	if err != nil {
 		return searchBillingCharge{}, err
 	}
-	inputUnits := float64(usage.InputTokens) / 1000
-	outputUnits := float64(usage.OutputTokens) / 1000
-	if usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.TotalTokens > 0 {
-		inputUnits = float64(usage.TotalTokens) / 1000
+
+	var baseAmount, amount float64
+	snapshot := ""
+	if matched {
+		baseAmount, amount = calculateAIModelPriceTableAmount(price, usage)
+		snapshot = buildAIModelPriceTableBillingSnapshot(resolved, req, usage, price, baseAmount, amount)
+	} else {
+		snapshot = buildUnpricedAIModelBillingSnapshot(resolved, req, usage)
 	}
-	baseAmount := inputUnits + outputUnits
-	multiplier := price.BillingMultiplier
-	if multiplier <= 0 {
-		multiplier = 1
-	}
-	amount := roundCurrencyAmount(baseAmount * multiplier)
+
 	totalTokens := usage.TotalTokens
 	if totalTokens == 0 {
 		totalTokens = usage.InputTokens + usage.OutputTokens
 	}
 	return searchBillingCharge{
-		Provider:     searchModeAI,
-		Amount:       amount,
-		Snapshot:     buildCompletedAIBillingSnapshot(resolved, req, usage, price, baseAmount, amount),
-		ModelName:    strings.TrimSpace(resolved.AIConfig.Model),
-		InputTokens:  usage.InputTokens,
-		OutputTokens: usage.OutputTokens,
-		TotalTokens:  totalTokens,
+		Provider:          searchModeAI,
+		Amount:            amount,
+		Snapshot:          snapshot,
+		ModelName:         modelName,
+		InputTokens:       usage.InputTokens,
+		CachedInputTokens: usage.CachedInputTokens,
+		OutputTokens:      usage.OutputTokens,
+		TotalTokens:       totalTokens,
 	}, nil
 }
 
-func buildCompletedAIBillingSnapshot(resolved resolvedSearchRequestContext, req model.SearchRequest, usage search.AISearchUsage, price service.ResolvedAIModelPrice, baseAmount float64, amount float64) string {
+// buildUnpricedAIModelBillingSnapshot 记录「模型未配置价格」的零金额账单快照。
+// 保留 token 用量是为了让管理员能据此判断该怎么补价格，而不是丢失这次调用记录。
+func buildUnpricedAIModelBillingSnapshot(resolved resolvedSearchRequestContext, req model.SearchRequest, usage search.AISearchUsage) string {
 	parts := []string{
 		"provider=ai",
 		fmt.Sprintf("model=%s", strings.TrimSpace(resolved.AIConfig.Model)),
-		fmt.Sprintf("billingMultiplier=%.4f", price.BillingMultiplier),
-		fmt.Sprintf("exchangeRate=%.4f", price.ExchangeRate),
-		fmt.Sprintf("globalBillingMultiplier=%.4f", price.GlobalBillingMultiplier),
-		fmt.Sprintf("modelBillingMultiplier=%.4f", price.ModelBillingMultiplier),
+		"pricing=unpriced_model",
+		"pricingNote=模型未在模型价格表中配置，本次按 0 计费，请在「模型价格表」中补充单价",
 		fmt.Sprintf("inputTokens=%d", usage.InputTokens),
+		fmt.Sprintf("cachedInputTokens=%d", usage.CachedInputTokens),
 		fmt.Sprintf("outputTokens=%d", usage.OutputTokens),
 		fmt.Sprintf("totalTokens=%d", usage.TotalTokens),
-		fmt.Sprintf("baseAmount=%.2f", roundCurrencyAmount(baseAmount)),
+		"baseAmount=0.000000",
+		"amount=0.00",
+	}
+	if questionText := strings.TrimSpace(req.Question); questionText != "" {
+		parts = append(parts, fmt.Sprintf("question=%s", url.QueryEscape(questionText)))
+	}
+	return strings.Join(parts, " ")
+}
+
+// calculateAIModelPriceTableAmount 按「输入 / 缓存输入 / 输出」三段单价计算金额。
+// 返回的 baseAmount 是未取整的精确值，amount 是入账金额（保留两位小数）。
+func calculateAIModelPriceTableAmount(price service.ResolvedAIModelTokenPrice, usage search.AISearchUsage) (float64, float64) {
+	const tokensPerPriceUnit = 1000000.0
+
+	cachedTokens := usage.CachedInputTokens
+	if cachedTokens < 0 {
+		cachedTokens = 0
+	}
+	if cachedTokens > usage.InputTokens {
+		cachedTokens = usage.InputTokens
+	}
+	freshInputTokens := usage.InputTokens - cachedTokens
+	if freshInputTokens < 0 {
+		freshInputTokens = 0
+	}
+	outputTokens := usage.OutputTokens
+	if outputTokens < 0 {
+		outputTokens = 0
+	}
+
+	baseAmount := float64(freshInputTokens)/tokensPerPriceUnit*price.InputUnitPrice +
+		float64(cachedTokens)/tokensPerPriceUnit*price.CachedUnitPrice +
+		float64(outputTokens)/tokensPerPriceUnit*price.OutputUnitPrice
+	if baseAmount < 0 {
+		baseAmount = 0
+	}
+	return baseAmount, roundCurrencyAmount(baseAmount)
+}
+
+func buildAIModelPriceTableBillingSnapshot(resolved resolvedSearchRequestContext, req model.SearchRequest, usage search.AISearchUsage, price service.ResolvedAIModelTokenPrice, baseAmount float64, amount float64) string {
+	cachedTokens := usage.CachedInputTokens
+	if cachedTokens > usage.InputTokens {
+		cachedTokens = usage.InputTokens
+	}
+	if cachedTokens < 0 {
+		cachedTokens = 0
+	}
+	freshInputTokens := usage.InputTokens - cachedTokens
+	if freshInputTokens < 0 {
+		freshInputTokens = 0
+	}
+
+	parts := []string{
+		"provider=ai",
+		fmt.Sprintf("model=%s", strings.TrimSpace(resolved.AIConfig.Model)),
+		"pricing=model_price_table",
+		fmt.Sprintf("priceId=%d", price.PriceID),
+		fmt.Sprintf("inputPrice=%.4f", price.InputPrice),
+		fmt.Sprintf("cachedPrice=%.4f", price.CachedPrice),
+		fmt.Sprintf("outputPrice=%.4f", price.OutputPrice),
+		fmt.Sprintf("inputUnitPrice=%.8f", price.InputUnitPrice),
+		fmt.Sprintf("cachedUnitPrice=%.8f", price.CachedUnitPrice),
+		fmt.Sprintf("outputUnitPrice=%.8f", price.OutputUnitPrice),
+		fmt.Sprintf("inputTokens=%d", freshInputTokens),
+		fmt.Sprintf("cachedInputTokens=%d", cachedTokens),
+		fmt.Sprintf("outputTokens=%d", usage.OutputTokens),
+		fmt.Sprintf("totalTokens=%d", usage.TotalTokens),
+		fmt.Sprintf("baseAmount=%.6f", baseAmount),
 		fmt.Sprintf("amount=%.2f", amount),
 	}
 	if questionText := strings.TrimSpace(req.Question); questionText != "" {
@@ -1192,6 +1274,7 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 				Provider:           charge.Provider,
 				ModelName:          charge.ModelName,
 				InputTokens:        charge.InputTokens,
+				CachedInputTokens:  charge.CachedInputTokens,
 				OutputTokens:       charge.OutputTokens,
 				TotalTokens:        charge.TotalTokens,
 				Amount:             charge.Amount,

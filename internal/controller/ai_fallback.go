@@ -50,6 +50,7 @@ func AIFallback(c *gin.Context) {
 		c.JSON(http.StatusOK, result)
 		return
 	}
+	clearAIResponseWriteDeadline(c)
 	billingCtx, err := resolveAIFallbackBillingContext(c)
 	if err != nil {
 		result := service.BuildAIFallbackInsufficientBalanceResult(err.Error())
@@ -133,6 +134,7 @@ func writeAIFallbackAuditLog(identity aiFallbackAuditIdentity, requestID string,
 			"billingProvider=ai",
 			fmt.Sprintf("model=%s", strings.TrimSpace(result.Model)),
 			fmt.Sprintf("inputTokens=%d", result.Usage.InputTokens),
+			fmt.Sprintf("cachedInputTokens=%d", result.Usage.CachedInputTokens),
 			fmt.Sprintf("outputTokens=%d", result.Usage.OutputTokens),
 			fmt.Sprintf("totalTokens=%d", result.Usage.TotalTokens),
 		)

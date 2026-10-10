@@ -3,6 +3,7 @@ package search
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,8 +18,113 @@ import (
 func TestChatGptClientUsesLongTimeoutForAISearch(t *testing.T) {
 	client := (&ChatGptClient{}).getHTTPClient()
 
-	if client.GetClient().Timeout < 180*time.Second {
-		t.Fatalf("expected AI search timeout to allow slow model responses, got %s", client.GetClient().Timeout)
+	if client.GetClient().Timeout != 0 {
+		t.Fatalf("expected AI search client to have no timeout, got %s", client.GetClient().Timeout)
+	}
+	transport, ok := client.GetClient().Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected AI search client to use http.Transport, got %T", client.GetClient().Transport)
+	}
+	if transport.ResponseHeaderTimeout != aiSearchFirstTokenTimeout {
+		t.Fatalf("expected AI search response header timeout %s, got %s", aiSearchFirstTokenTimeout, transport.ResponseHeaderTimeout)
+	}
+
+	attachmentClient := (&ChatGptClient{}).getAttachmentHTTPClient()
+	if attachmentClient.GetClient().Timeout != aiSearchAttachmentTimeout {
+		t.Fatalf("expected image download client timeout %s, got %s", aiSearchAttachmentTimeout, attachmentClient.GetClient().Timeout)
+	}
+	attachmentTransport, ok := attachmentClient.GetClient().Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected image download client to use http.Transport, got %T", attachmentClient.GetClient().Transport)
+	}
+	if attachmentTransport.ResponseHeaderTimeout != aiSearchAttachmentTimeout {
+		t.Fatalf("expected image download response header timeout %s, got %s", aiSearchAttachmentTimeout, attachmentTransport.ResponseHeaderTimeout)
+	}
+}
+
+func TestBuildAISearchPromptPartsAddsImageReferencesAfterAttachments(t *testing.T) {
+	imageServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Referer(); got != "https://mooc1.chaoxing.com/" {
+			t.Fatalf("expected Chaoxing referer, got %q", got)
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("png-image-bytes"))
+	}))
+	defer imageServer.Close()
+
+	firstURL := imageServer.URL + "/equation.png"
+	secondURL := imageServer.URL + "/input.png"
+	parts := buildAISearchPromptParts(model.SearchRequest{
+		Question: "差分方程 " + firstURL + "，其中:" + secondURL + "为输入",
+	}, imageServer.Client())
+
+	if len(parts) != 4 {
+		t.Fatalf("expected text, two images, and image reference text, got %d parts", len(parts))
+	}
+	if parts[1].Type != "image_url" || parts[2].Type != "image_url" {
+		t.Fatalf("expected image parts before reference text, got %+v", parts)
+	}
+	if parts[3].Type != "text" {
+		t.Fatalf("expected final image reference text part, got %s", parts[3].Type)
+	}
+	for _, expected := range []string{
+		"图一为：" + firstURL,
+		"图二为：" + secondURL,
+	} {
+		if !strings.Contains(parts[3].Text, expected) {
+			t.Fatalf("expected final reference text %q to contain %q", parts[3].Text, expected)
+		}
+	}
+}
+
+func TestReadOpenAIStreamContentWaitsForFirstTokenOnlyWithinDeadline(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		_, _ = writer.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n"))
+		_ = writer.Close()
+	}()
+
+	started := time.Now()
+	content, _, _, err := readOpenAIStreamContentWithFirstTokenTimeout(reader, 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("expected stream to receive its first token, got %v", err)
+	}
+	if content != "first" {
+		t.Fatalf("expected aggregated content, got %q", content)
+	}
+	if time.Since(started) < 50*time.Millisecond {
+		t.Fatalf("expected reader to wait for first token")
+	}
+}
+
+func TestReadOpenAIStreamContentReturnsFirstTokenTimeout(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer reader.Close()
+	defer writer.Close()
+
+	started := time.Now()
+	_, _, _, err := readOpenAIStreamContentWithFirstTokenTimeout(reader, 20*time.Millisecond)
+	if !errors.Is(err, errAISearchFirstTokenTimeout) {
+		t.Fatalf("expected first-token timeout, got %v", err)
+	}
+	if time.Since(started) < 20*time.Millisecond {
+		t.Fatalf("expected timeout to wait for configured deadline")
+	}
+}
+
+func TestParseAISearchAnswersPreservesRepeatedFillAnswers(t *testing.T) {
+	content := `{"answers":["北京","北京"]}`
+
+	fillAnswers := parseAISearchAnswers(content, nil, 2)
+	if !reflect.DeepEqual(fillAnswers, []string{"北京", "北京"}) {
+		t.Fatalf("expected repeated fill answers to stay in order, got %v", fillAnswers)
+	}
+
+	choiceAnswers := parseAISearchAnswers(content, nil, 0)
+	if !reflect.DeepEqual(choiceAnswers, []string{"北京"}) {
+		t.Fatalf("expected objective answers to remain deduplicated, got %v", choiceAnswers)
 	}
 }
 
@@ -136,8 +242,8 @@ func TestChatGptClientSearchAnswerAttachesDownloadedImagesToUserMessage(t *testi
 			t.Fatalf("decode payload: %v", err)
 		}
 		parts := decodeUserContentParts(t, payload.Messages)
-		if len(parts) != 2 {
-			t.Fatalf("expected text plus one image part, got %d", len(parts))
+		if len(parts) != 3 {
+			t.Fatalf("expected text, one image, and image references, got %d", len(parts))
 		}
 		if parts[0].Type != "text" {
 			t.Fatalf("expected first part to be text, got %s", parts[0].Type)
@@ -198,8 +304,8 @@ func TestChatGptClientSearchAnswerContinuesWhenSomeImagesFailToDownload(t *testi
 			t.Fatalf("decode payload: %v", err)
 		}
 		parts := decodeUserContentParts(t, payload.Messages)
-		if len(parts) != 2 {
-			t.Fatalf("expected one text part plus only the successfully downloaded image, got %d", len(parts))
+		if len(parts) != 3 {
+			t.Fatalf("expected text, successful image, and image references, got %d", len(parts))
 		}
 		if parts[1].ImageURL == nil {
 			t.Fatalf("expected successful image part, got %+v", parts[1])
@@ -252,8 +358,8 @@ func TestChatGptClientSearchAnswerAttachesHTMLURLAsNamedFileContent(t *testing.T
 			t.Fatalf("decode payload: %v", err)
 		}
 		parts := decodeUserContentParts(t, payload.Messages)
-		if len(parts) != 2 {
-			t.Fatalf("expected text prompt plus html attachment, got %d parts", len(parts))
+		if len(parts) != 3 {
+			t.Fatalf("expected text prompt, html attachment, and image references, got %d parts", len(parts))
 		}
 		if parts[1].Type != "text" {
 			t.Fatalf("expected html attachment to be sent as text content, got %s", parts[1].Type)
@@ -308,7 +414,7 @@ func TestChatGptClientSearchAnswerUsesImageContentTypeAfterOctetStreamHeader(t *
 			t.Fatalf("decode payload: %v", err)
 		}
 		parts := decodeUserContentParts(t, payload.Messages)
-		if len(parts) != 2 || parts[1].Type != "image_url" || parts[1].ImageURL == nil {
+		if len(parts) != 3 || parts[1].Type != "image_url" || parts[1].ImageURL == nil {
 			t.Fatalf("expected image attachment, got %+v", parts)
 		}
 		if !strings.HasPrefix(parts[1].ImageURL.URL, "data:image/jpeg;base64,") {
@@ -470,6 +576,121 @@ func TestBuildAISearchPromptIncludesQuestionTypeContext(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "题目：请指出下列案例属于何种类比创新方法?") {
 		t.Fatalf("expected prompt to include question text, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "如果题目包含多个小问，请按原编号完整回答每一问") {
+		t.Fatalf("expected prompt to require complete multipart answers, got %q", prompt)
+	}
+}
+
+func TestDefaultAISearchPromptCoversObjectiveAndTextQuestionTypes(t *testing.T) {
+	prompt := DefaultAISearchPrompt()
+	for _, expected := range []string{
+		"判断题：只返回 1 个判断结果",
+		"填空题：按题干中空的出现顺序",
+		"简答题、问答题、阅读理解、大作业：必须回答全部小问",
+		"保留必要的推导、公式、依据和结论",
+		"图X为",
+		"只有在题目、选项和图片全部缺失、完全无法判断题意时",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("expected default prompt %q to contain %q", prompt, expected)
+		}
+	}
+}
+
+func TestDefaultAISearchPromptKeepsStudentPersonaAndForbidsUncertainAnswers(t *testing.T) {
+	prompt := DefaultAISearchPrompt()
+	for _, expected := range []string{
+		"【作答身份】",
+		"第一人称作答",
+		"绝对不要用“不知道”“不确定”“无法确定”",
+		"遇到“你能不能……”“你是否愿意……”这类表态题或自我要求题",
+		"直接给出正面、具体、可执行的承诺",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("expected default prompt %q to contain %q", prompt, expected)
+		}
+	}
+}
+
+func TestDefaultAISearchPromptIsSingleSourceSharedWithServiceLayer(t *testing.T) {
+	// service 层与 search 层必须使用同一份提示词，否则配置页显示的内容会与实际生效的不一致。
+	if got := DefaultAISearchPrompt(); got == "" || !strings.Contains(got, "【分题型规则】") {
+		t.Fatalf("expected exported default prompt to be complete, got %q", got)
+	}
+}
+
+// 回归：离散 LSI 系统差分方程题（图片以透明底 PNG 给出）曾经稳定返回「不确定」。
+// 用户提示必须带上图号对应关系、小问编号要求和禁止推脱的约束。
+func TestBuildAISearchPromptKeepsFormulaImageQuestionAnswerable(t *testing.T) {
+	const (
+		equationURL = "https://p.ananas.chaoxing.com/star3/origin/3969438ce57a85e4d3fa8d3faaa0bc87.png"
+		inputURL    = "https://p.ananas.chaoxing.com/star3/origin/05baca4bfd6fad9af6de874c8e2f809e.png"
+		outputURL   = "https://p.ananas.chaoxing.com/star3/origin/3ac3d0da42cf634dedc24d1dafcb70d7.png"
+		systemURL   = "https://p.ananas.chaoxing.com/star3/origin/52d1f17e764fcc69058249fe46ba52f2.png"
+	)
+
+	question := "已知离散 LSI 系统的差分方程: " + equationURL +
+		" 其中:" + inputURL + "为输入," + outputURL + "为输出 " +
+		"1)求系统函数" + systemURL + ",指出系统的零极点; 2)若该系统是因果稳定的,指出系统的收敛域; 3)求该因果稳定系统的单位冲激响应"
+
+	parts := buildAISearchPromptParts(model.SearchRequest{Question: question, Type: 4}, nil)
+	if len(parts) != 2 {
+		t.Fatalf("expected user text plus image reference text, got %d parts", len(parts))
+	}
+
+	userText := parts[0].Text
+	if !strings.Contains(userText, "题型：问答题/简答题/阅读理解题") {
+		t.Fatalf("expected text question type label, got %q", userText)
+	}
+	for _, check := range []string{
+		"1)求系统函数",
+		"3)求该因果稳定系统的单位冲激响应",
+		"按原编号完整回答每一问",
+		"不要返回“不确定”“不知道”或“无法确定”",
+	} {
+		if !strings.Contains(userText, check) {
+			t.Fatalf("expected user prompt %q to contain %q", userText, check)
+		}
+	}
+
+	// 四张公式图必须按出现顺序编号，模型才能把「图一为…图三为输出」对应到题干。
+	referenceText := parts[1].Text
+	if !strings.Contains(referenceText, "图片按出现顺序编号") {
+		t.Fatalf("expected image numbering hint, got %q", referenceText)
+	}
+	for _, check := range []string{
+		"图一为：" + equationURL,
+		"图二为：" + inputURL,
+		"图三为：" + outputURL,
+		"图四为：" + systemURL,
+	} {
+		if !strings.Contains(referenceText, check) {
+			t.Fatalf("expected image reference %q to contain %q", referenceText, check)
+		}
+	}
+}
+
+// 回归：大作业/阅读理解/填空/判断等题型都要有明确的作答引导。
+func TestBuildAISearchPromptCoversEverySupportedQuestionType(t *testing.T) {
+	cases := []struct {
+		questionType int
+		expected     string
+	}{
+		{0, "题型：单选题"},
+		{1, "题型：多选题"},
+		{2, "该题型在调用侧同时承载填空题、连线题、匹配题"},
+		{3, "题型：判断题"},
+		{4, "请直接返回覆盖全部小问的最终文本答案"},
+		{-4, "这是大作业或综合作答题"},
+		{15, "这是阅读理解题"},
+	}
+
+	for _, testCase := range cases {
+		prompt := buildAISearchPrompt(model.SearchRequest{Question: "题目", Type: testCase.questionType})
+		if !strings.Contains(prompt, testCase.expected) {
+			t.Fatalf("expected type %d prompt %q to contain %q", testCase.questionType, prompt, testCase.expected)
+		}
 	}
 }
 

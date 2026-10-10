@@ -98,6 +98,7 @@ func TestAISearchConfig(c *gin.Context) {
 		return
 	}
 
+	clearAIResponseWriteDeadline(c)
 	answers, debug, err := runAISearchDebug(input)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "AI 搜索测试失败"})

@@ -13,11 +13,6 @@ function modelSourceToText(modelSource) {
   return Array.isArray(modelSource) ? modelSource.join('\n') : modelSource;
 }
 
-function normalizePositiveNumber(value) {
-  const amount = Number(value);
-  return Number.isFinite(amount) && amount > 0 ? amount : 1;
-}
-
 export function buildModelNameValues(modelSource) {
   const seen = new Set();
   const values = [];
@@ -85,13 +80,13 @@ export function buildMissingArchitecturePayloads(rows, modelSource) {
     .map(modelName => ({
       name: modelName,
       modelName,
-      billingMultiplier: 1,
       enabled: true,
       sort: 0,
       remark: '',
     }));
 }
 
+// 模型单价已迁移到模型价格表，保存 AI 搜索配置时不再提交任何计费字段。
 export function buildAISearchConfigSavePayload(formState, baseUrl) {
   const hasEditableModelText = Object.prototype.hasOwnProperty.call(formState || {}, 'manualModelsText');
   const manualModelSource = hasEditableModelText ? formState?.manualModelsText : formState?.manualModels;
@@ -106,8 +101,5 @@ export function buildAISearchConfigSavePayload(formState, baseUrl) {
     remark: formState?.remark || '',
     temperature: 0,
     topP: 0,
-    exchangeRate: normalizePositiveNumber(formState?.exchangeRate),
-    useGlobalBillingMultiplier: formState?.useGlobalBillingMultiplier !== false,
-    globalBillingMultiplier: normalizePositiveNumber(formState?.globalBillingMultiplier),
   };
 }

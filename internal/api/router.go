@@ -90,6 +90,12 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.POST("/ai-model-architectures", controller.Auth, controller.CreateAIModelArchitecture)
 	apiRouter.PUT("/ai-model-architectures/:id", controller.Auth, controller.UpdateAIModelArchitecture)
 	apiRouter.DELETE("/ai-model-architectures/:id", controller.Auth, controller.DeleteAIModelArchitecture)
+	apiRouter.GET("/ai-model-prices", controller.Auth, controller.AIModelPriceList)
+	apiRouter.POST("/ai-model-prices", controller.Auth, middleware.RequireAdmin, controller.CreateAIModelPrice)
+	// 静态路径必须注册在 :id 之前，避免 gin 路由冲突。
+	apiRouter.POST("/ai-model-prices/reset", controller.Auth, middleware.RequireAdmin, controller.ResetAIModelPriceDefaults)
+	apiRouter.PUT("/ai-model-prices/:id", controller.Auth, middleware.RequireAdmin, controller.UpdateAIModelPrice)
+	apiRouter.DELETE("/ai-model-prices/:id", controller.Auth, middleware.RequireAdmin, controller.DeleteAIModelPrice)
 	apiRouter.GET("/system-settings", controller.Auth, middleware.RequireAdmin, controller.SystemSettingDetail)
 	apiRouter.PUT("/system-settings", controller.Auth, middleware.RequireAdmin, controller.UpdateSystemSetting)
 

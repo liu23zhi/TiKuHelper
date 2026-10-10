@@ -3,15 +3,23 @@ package search
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	_ "image/gif"
+	_ "image/jpeg"
+	"image/png"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"path"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -33,9 +41,10 @@ type ChatGptClient struct {
 }
 
 type AISearchUsage struct {
-	InputTokens  int64
-	OutputTokens int64
-	TotalTokens  int64
+	InputTokens       int64
+	CachedInputTokens int64
+	OutputTokens      int64
+	TotalTokens       int64
 }
 
 type AISearchDebugResult struct {
@@ -79,44 +88,141 @@ type openAIStreamChunk struct {
 			Content string `json:"content"`
 		} `json:"delta"`
 	} `json:"choices"`
-	Usage *struct {
-		PromptTokens     int64 `json:"prompt_tokens"`
-		CompletionTokens int64 `json:"completion_tokens"`
-		TotalTokens      int64 `json:"total_tokens"`
-	} `json:"usage,omitempty"`
+	Usage *openAIStreamUsage `json:"usage,omitempty"`
+}
+
+type openAIStreamUsage struct {
+	PromptTokens        int64 `json:"prompt_tokens"`
+	CompletionTokens    int64 `json:"completion_tokens"`
+	TotalTokens         int64 `json:"total_tokens"`
+	PromptTokensDetails *struct {
+		CachedTokens int64 `json:"cached_tokens"`
+	} `json:"prompt_tokens_details,omitempty"`
 }
 
 type aiSearchAnswerPayload struct {
 	Answers []string `json:"answers"`
 }
 
-var aiSearchURLPattern = regexp.MustCompile(`https?://[^\s,，]+`)
+var aiSearchURLPattern = regexp.MustCompile(`https?://[A-Za-z0-9][A-Za-z0-9._~:/?@!$&'()*+,;=%-]*`)
 
 const maxAISearchAttachmentBytes = 8 * 1024 * 1024
+const aiSearchAttachmentTimeout = 60 * time.Second
+const aiSearchFirstTokenTimeout = 5 * time.Minute
 
-func defaultAISearchPrompt() string {
+// 题库公式截图常见尺寸只有 40x22 左右，直接提交给模型时上下标几乎不可辨认，这里统一放大。
+const (
+	aiSearchImageMagnifyBelowWidth  = 320
+	aiSearchImageMagnifyBelowHeight = 160
+	aiSearchImageTargetWidth        = 1000
+	aiSearchImageTargetHeight       = 500
+	aiSearchImageMaxScale           = 8
+)
+
+// 多人同时搜题时的并发控制：
+//   - aiSearchMaxConcurrentRequests 限制同时在跑的上游 AI 请求数，避免打爆上游额度或连接池；
+//   - aiSearchMaxConcurrentAttachments 限制单个请求内的图片并发下载数；
+//   - aiSearchRetryMaxAttempts / aiSearchRetryBaseDelay 处理上游 429、5xx 和网络抖动。
+const (
+	aiSearchMaxConcurrentRequests    = 8
+	aiSearchMaxConcurrentAttachments = 4
+	aiSearchRetryMaxAttempts         = 3
+	aiSearchRetryBaseDelay           = 400 * time.Millisecond
+	aiSearchRetryMaxDelay            = 5 * time.Second
+	aiSearchRetryBudget              = 2 * time.Minute
+)
+
+var aiSearchRequestSemaphore = newAISearchSemaphore(aiSearchMaxConcurrentRequests)
+
+// newAISearchSemaphore 创建一个带缓冲通道实现的计数信号量。
+func newAISearchSemaphore(limit int) chan struct{} {
+	if limit <= 0 {
+		limit = 1
+	}
+	return make(chan struct{}, limit)
+}
+
+func acquireAISearchSlot(ctx context.Context, semaphore chan struct{}) error {
+	if semaphore == nil {
+		return nil
+	}
+	select {
+	case semaphore <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func releaseAISearchSlot(semaphore chan struct{}) {
+	if semaphore == nil {
+		return
+	}
+	select {
+	case <-semaphore:
+	default:
+	}
+}
+
+var errAISearchFirstTokenTimeout = fmt.Errorf("AI 首字等待超时")
+
+// DefaultAISearchPrompt 返回内置的系统提示词。
+// 这是所有题型（单选、多选、填空、判断、简答、阅读理解、大作业）共用的唯一副本。
+func DefaultAISearchPrompt() string {
 	return strings.TrimSpace(`
-你是一个用于题库检索结果补充的答题助手。
+你是一个用于题库检索结果补充的答题助手，你的作答会被直接交给正在用题库搜题的学生。
 请只返回 JSON，不要输出 markdown、代码块或额外解释。
 输出格式固定为：{"answers":["答案1","答案2"]}。
-单选题或判断题只返回 1 个最可能答案，优先返回与选项完全一致的文本；判断题请返回“正确”或“错误”。
-多选题按最终答案顺序返回多个答案文本；填空题按每空一个答案返回。
-如果信息不足，请返回：{"answers":["不确定"]}。
-保持答案稳定、简洁，并兼容题库系统后续处理。
+
+【作答身份】
+- 以答题者本人的第一人称作答，语气像一名认真、踏实的学生，而不是旁观者或AI助手。
+- 绝对不要用“不知道”“不确定”“无法确定”“建议你自己思考”“请咨询老师”等推脱式回答。
+- 只要题干提供了信息，就必须给出一个明确、可直接提交的答案，不要反问用户，不要要求补充信息。
+- 遇到“你能不能……”“你是否愿意……”这类表态题或自我要求题，直接给出正面、具体、可执行的承诺（例如说明打算怎么做、用什么方式记录、多久复盘一次），不要回答“不知道”。
+- 涉及价值观、行为规范、学习计划类题目时，用真诚、具体、可落地的表述，不要空喊口号，也不要过度夸张。
+
+【通用要求】
+- 先读全题干、选项和图片，再作答；题干中的编号、小问、括号说明都必须覆盖。
+- 计算题、证明题、信号与系统、电路、数学等题目必须写出推理过程与最终结果：写出所用公式或变换、关键中间步骤，最后给出结论。
+- 答案中出现的公式用纯文本表示，例如 H(z)=(1+(1/3)z^-1)/(1-(3/4)z^-1+(1/8)z^-2)、y(n)=...；不要使用 LaTeX 的 \( \) 或 $ $ 包裹。
+- 保持答案稳定、简洁，并兼容题库系统后续处理。
+
+【分题型规则】
+- 单选题：只返回 1 个最可能答案，优先返回与某个选项完全一致的文本。
+- 多选题：按最终答案顺序返回多个答案文本，不要遗漏应选项。
+- 判断题：只返回 1 个判断结果；有选项时优先返回与选项完全一致的文本，没有选项时只返回“正确”或“错误”。
+- 填空题：按题干中空的出现顺序，每个空返回一个答案；不要合并、跳过或调换空的顺序。
+- 连线题、匹配题：按每组对应关系依次返回。
+- 简答题、问答题、阅读理解、大作业：必须回答全部小问；按题目原编号组织答案，保留必要的推导、公式、依据和结论。可以把完整作答放在一个 answers 元素中，也可以按小问拆分多个元素，但不得只回答其中一问。
+
+【图片题】
+- 题目里的图片通常是公式或图表的截图，请把它当作题干的一部分来读，不要因为看到 URL 或空白就放弃作答。
+- 图片按出现顺序编号，用户提示末尾的“图X为”给出了每张图对应的链接；结合图号与题干文字理解题意。
+- 如果图片确实是空白、损坏或与题目无关，也要基于题干文字、课程信息和学科常识给出最可能的答案，仍然不要返回“不确定”。
+- 只有在题目、选项和图片全部缺失、完全无法判断题意时，才返回：{"answers":["不确定"]}。
 	`)
 }
 
 func effectiveAISearchPrompt(prompt string) string {
 	trimmed := strings.TrimSpace(prompt)
 	if trimmed == "" {
-		return defaultAISearchPrompt()
+		return DefaultAISearchPrompt()
 	}
 	return trimmed
 }
 
-// getHTTPClient 获取HTTP客户端
+// getHTTPClient returns an HTTP client without a response deadline for the AI stream.
 func (in *ChatGptClient) getHTTPClient() *resty.Client {
-	return resty.NewWithClient(util.NewSafeHTTPClient(180 * time.Second))
+	client := util.NewSafeHTTPClient(0)
+	if transport, ok := client.Transport.(*http.Transport); ok {
+		transport.ResponseHeaderTimeout = aiSearchFirstTokenTimeout
+	}
+	return resty.NewWithClient(client)
+}
+
+// getAttachmentHTTPClient keeps image downloads bounded independently of AI generation.
+func (in *ChatGptClient) getAttachmentHTTPClient() *resty.Client {
+	return resty.NewWithClient(util.NewSafeHTTPClient(aiSearchAttachmentTimeout))
 }
 
 // SearchAnswer 使用 OpenAI 兼容流式接口聚合答案
@@ -139,7 +245,7 @@ func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]
 	}
 
 	systemPrompt := effectiveAISearchPrompt(in.Prompt)
-	userPromptParts := buildAISearchPromptParts(req, in.getHTTPClient().GetClient())
+	userPromptParts := buildAISearchPromptParts(req, in.getAttachmentHTTPClient().GetClient())
 	endpoints := buildAIChatCompletionEndpoints(baseURL)
 	for _, endpoint := range endpoints {
 		content, usage, statusCode, requestBody, rawResponse, callErr := in.requestStreamAnswerDetailed(endpoint, systemPrompt, userPromptParts)
@@ -150,13 +256,13 @@ func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]
 			Usage:       usage,
 		}
 		if callErr == nil {
-			parsedAnswers := parseAISearchAnswers(content, req.Options)
-			if len(parsedAnswers) == 0 {
-				return nil, debug, errors.ErrTargetNoAnswer
+			parsedAnswers := parseAISearchAnswers(content, req.Options, req.Type)
+			if len(parsedAnswers) > 0 {
+				return [][]string{parsedAnswers}, debug, nil
 			}
-			return [][]string{parsedAnswers}, debug, nil
+			continue
 		}
-		if statusCode == http.StatusNotFound {
+		if isAISearchEndpointFallbackStatus(statusCode) {
 			continue
 		}
 		return nil, debug, callErr
@@ -179,18 +285,20 @@ func (in *ChatGptClient) SearchAnswerWithUsage(req model.SearchRequest) (answer 
 	}
 
 	systemPrompt := effectiveAISearchPrompt(in.Prompt)
-	userPromptParts := buildAISearchPromptParts(req, in.getHTTPClient().GetClient())
+	userPromptParts := buildAISearchPromptParts(req, in.getAttachmentHTTPClient().GetClient())
 	endpoints := buildAIChatCompletionEndpoints(baseURL)
 	for _, endpoint := range endpoints {
 		content, streamUsage, statusCode, callErr := in.requestStreamAnswer(endpoint, systemPrompt, userPromptParts)
 		if callErr == nil {
-			parsedAnswers := parseAISearchAnswers(content, req.Options)
-			if len(parsedAnswers) == 0 {
-				return nil, AISearchUsage{}, errors.ErrTargetNoAnswer
+			parsedAnswers := parseAISearchAnswers(content, req.Options, req.Type)
+			if len(parsedAnswers) > 0 {
+				return [][]string{parsedAnswers}, streamUsage, nil
 			}
-			return [][]string{parsedAnswers}, streamUsage, nil
+			// 上游只回了「不确定」这类无效答案：换一个端点重试往往能拿到有效答案，
+			// 而不是直接把失败透传给用户。
+			continue
 		}
-		if statusCode == http.StatusNotFound {
+		if isAISearchEndpointFallbackStatus(statusCode) {
 			continue
 		}
 		return nil, AISearchUsage{}, callErr
@@ -206,11 +314,15 @@ func buildAISearchPrompt(req model.SearchRequest) string {
 	builder.WriteString(resolveAISearchQuestionTypeLabel(req.Type))
 	builder.WriteString("\n题目：")
 	builder.WriteString(strings.TrimSpace(req.Question))
-	if req.Type == 2 {
+	switch req.Type {
+	case 2:
 		builder.WriteString("\n题型补充说明：该题型在调用侧同时承载填空题、连线题、匹配题；如果题目要求建立对应关系，请按每组对应关系依次返回 answers 数组。")
-	}
-	if req.Type == 4 {
-		builder.WriteString("\n题型补充说明：该题型在调用侧可能是简答题，也可能是阅读理解或其他文本作答题；请直接返回最终文本答案。")
+	case -4:
+		builder.WriteString("\n题型补充说明：这是大作业或综合作答题，请给出可以整篇提交的完整作答，包含必要的推导、步骤与结论。")
+	case 15:
+		builder.WriteString("\n题型补充说明：这是阅读理解题，请先读懂材料再逐问作答，每问都要给出明确结论。")
+	case 4:
+		builder.WriteString("\n题型补充说明：该题型在调用侧可能是简答题，也可能是阅读理解或其他文本作答题；请直接返回覆盖全部小问的最终文本答案。")
 	}
 	if strings.TrimSpace(req.CourseName) != "" {
 		builder.WriteString("\n课程：")
@@ -226,6 +338,8 @@ func buildAISearchPrompt(req model.SearchRequest) string {
 			builder.WriteString(fmt.Sprintf("\n%c. %s", 'A'+idx, strings.TrimSpace(option)))
 		}
 	}
+	builder.WriteString("\n作答要求：如果题目包含多个小问，请按原编号完整回答每一问，不要只回答其中一问或随机选择一个小问。")
+	builder.WriteString("\n作答要求：不要返回“不确定”“不知道”或“无法确定”；请综合题干、选项、图片、课程与学科常识给出最可能的完整答案。")
 	return builder.String()
 }
 
@@ -240,9 +354,9 @@ func resolveAISearchQuestionTypeLabel(questionType int) string {
 	case 3:
 		return "判断题"
 	case 4:
-		return "简答题/阅读理解题"
+		return "问答题/简答题/阅读理解题"
 	case -4:
-		return "大作业"
+		return "问答题/大作业"
 	case 15:
 		return "阅读理解"
 	default:
@@ -255,17 +369,71 @@ func buildAISearchPromptParts(req model.SearchRequest, httpClient *http.Client) 
 		Type: "text",
 		Text: buildAISearchPrompt(req),
 	}}
-	if httpClient == nil {
-		return parts
-	}
-	for _, attachmentURL := range extractAISearchURLs(req) {
-		part, ok := downloadAISearchAttachmentPart(httpClient, attachmentURL)
-		if !ok {
-			continue
+	attachmentURLs := extractAISearchURLs(req)
+	parts = append(parts, downloadAISearchAttachmentParts(httpClient, attachmentURLs)...)
+	if len(attachmentURLs) > 0 {
+		var references strings.Builder
+		references.WriteString("图片对应关系（图片按出现顺序编号，请结合图号理解题目）：")
+		for index, attachmentURL := range attachmentURLs {
+			fmt.Fprintf(&references, "\n图%s为：%s", formatAISearchImageIndex(index+1), attachmentURL)
 		}
-		parts = append(parts, part)
+		parts = append(parts, openAIContentPart{Type: "text", Text: references.String()})
 	}
 	return parts
+}
+
+// downloadAISearchAttachmentParts 并发下载题目配图，同时保持原有顺序，
+// 避免多张公式图串行下载把单次搜题的耗时叠加到几十秒。
+func downloadAISearchAttachmentParts(httpClient *http.Client, attachmentURLs []string) []openAIContentPart {
+	if httpClient == nil || len(attachmentURLs) == 0 {
+		return nil
+	}
+
+	type attachmentResult struct {
+		index int
+		part  openAIContentPart
+		ok    bool
+	}
+
+	semaphore := make(chan struct{}, aiSearchMaxConcurrentAttachments)
+	results := make(chan attachmentResult, len(attachmentURLs))
+	var wg sync.WaitGroup
+
+	for index, attachmentURL := range attachmentURLs {
+		wg.Add(1)
+		go func(index int, attachmentURL string) {
+			defer wg.Done()
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			part, ok := downloadAISearchAttachmentPart(httpClient, attachmentURL)
+			results <- attachmentResult{index: index, part: part, ok: ok}
+		}(index, attachmentURL)
+	}
+
+	wg.Wait()
+	close(results)
+
+	ordered := make([]attachmentResult, len(attachmentURLs))
+	for result := range results {
+		ordered[result.index] = result
+	}
+
+	parts := make([]openAIContentPart, 0, len(attachmentURLs))
+	for _, result := range ordered {
+		if !result.ok {
+			continue
+		}
+		parts = append(parts, result.part)
+	}
+	return parts
+}
+
+func formatAISearchImageIndex(index int) string {
+	if index >= 1 && index <= 10 {
+		return []string{"一", "二", "三", "四", "五", "六", "七", "八", "九", "十"}[index-1]
+	}
+	return fmt.Sprintf("%d", index)
 }
 
 func extractAISearchURLs(req model.SearchRequest) []string {
@@ -273,7 +441,7 @@ func extractAISearchURLs(req model.SearchRequest) []string {
 	urls := make([]string, 0)
 	appendMatches := func(value string) {
 		for _, match := range aiSearchURLPattern.FindAllString(value, -1) {
-			trimmed := strings.TrimSpace(strings.TrimRight(match, ".;:!?)]}，。；：！？》」』、"))
+			trimmed := strings.TrimSpace(strings.TrimRight(match, ".,;:!?)]}，。；：！？》」』、"))
 			if trimmed == "" {
 				continue
 			}
@@ -299,7 +467,13 @@ func downloadAISearchAttachmentPart(httpClient *http.Client, attachmentURL strin
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return openAIContentPart{}, false
 	}
-	resp, err := httpClient.Get(attachmentURL)
+	httpReq, err := http.NewRequest(http.MethodGet, attachmentURL, nil)
+	if err != nil {
+		return openAIContentPart{}, false
+	}
+	httpReq.Header.Set("Referer", "https://mooc1.chaoxing.com/")
+	httpReq.Header.Set("User-Agent", "Mozilla/5.0")
+	resp, err := httpClient.Do(httpReq)
 	if err != nil {
 		return openAIContentPart{}, false
 	}
@@ -321,10 +495,11 @@ func downloadAISearchAttachmentPart(httpClient *http.Client, attachmentURL strin
 	contentType := resolveAISearchAttachmentContentType(resp.Header.Values("Content-Type"), body)
 	switch {
 	case strings.HasPrefix(contentType, "image/"):
+		preparedBody, preparedContentType := prepareAISearchImageAttachment(body, contentType)
 		return openAIContentPart{
 			Type: "image_url",
 			ImageURL: &openAIImageURLPart{
-				URL: "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(body),
+				URL: "data:" + preparedContentType + ";base64," + base64.StdEncoding.EncodeToString(preparedBody),
 			},
 		}, true
 	case contentType == "text/html":
@@ -335,6 +510,116 @@ func downloadAISearchAttachmentPart(httpClient *http.Client, attachmentURL strin
 	default:
 		return openAIContentPart{}, false
 	}
+}
+
+// prepareAISearchImageAttachment 规范化题目配图后再提交给多模态模型。
+//
+// 题库（例如超星）返回的公式截图通常是「透明背景 + 黑色字形」的小图。
+// 这类图片一旦被上游按黑底解码，就会变成「黑字黑底」的全黑图，
+// 模型只能看到一张空图，于是统一回答“不确定”——这正是公式题答不出来的根因。
+// 因此这里统一把透明像素合成到白底，并适度放大过小的公式图。
+func prepareAISearchImageAttachment(body []byte, contentType string) ([]byte, string) {
+	decoded, format, err := image.Decode(bytes.NewReader(body))
+	if err != nil {
+		return body, contentType
+	}
+
+	prepared := flattenAISearchImageOntoWhite(decoded)
+	if prepared == nil {
+		return body, contentType
+	}
+	prepared = upscaleAISearchImage(prepared)
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, prepared); err != nil {
+		return body, contentType
+	}
+	if buf.Len() == 0 || buf.Len() > maxAISearchAttachmentBytes {
+		return body, contentType
+	}
+	// 统一输出 PNG：无损、保留字形的锐利边缘，避免 JPEG 压缩糊掉下标和分数。
+	_ = format
+	return buf.Bytes(), "image/png"
+}
+
+// flattenAISearchImageOntoWhite 把带透明通道的图片合成到纯白背景上。
+func flattenAISearchImageOntoWhite(src image.Image) image.Image {
+	if src == nil {
+		return nil
+	}
+
+	bounds := src.Bounds()
+	if bounds.Dx() <= 0 || bounds.Dy() <= 0 {
+		return nil
+	}
+
+	dst := image.NewRGBA(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
+	// 对每个目标像素合成：out = src*a + white*(1-a)
+	for y := 0; y < bounds.Dy(); y++ {
+		for x := 0; x < bounds.Dx(); x++ {
+			r, g, b, a := src.At(bounds.Min.X+x, bounds.Min.Y+y).RGBA()
+			if a == 0xFFFF {
+				dst.SetRGBA(x, y, color.RGBA{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(b >> 8), A: 0xFF})
+				continue
+			}
+			// RGBA() 返回的是 alpha 预乘值，先还原再合成。
+			unpremultipliedR, unpremultipliedG, unpremultipliedB := unpremultiplyRGBA(r, g, b, a)
+			alpha := float64(a) / 65535
+			blendedR := uint8(math.Round(float64(unpremultipliedR)*alpha + 255*(1-alpha)))
+			blendedG := uint8(math.Round(float64(unpremultipliedG)*alpha + 255*(1-alpha)))
+			blendedB := uint8(math.Round(float64(unpremultipliedB)*alpha + 255*(1-alpha)))
+			dst.SetRGBA(x, y, color.RGBA{R: blendedR, G: blendedG, B: blendedB, A: 0xFF})
+		}
+	}
+	return dst
+}
+
+func unpremultiplyRGBA(r uint32, g uint32, b uint32, a uint32) (uint32, uint32, uint32) {
+	if a == 0 {
+		return 0, 0, 0
+	}
+	if a == 0xFFFF {
+		return r, g, b
+	}
+	return r * 0xFFFF / a, g * 0xFFFF / a, b * 0xFFFF / a
+}
+
+// upscaleAISearchImage 放大过小的公式图，提升模型对小字号上下标的识别率。
+// 只放大、不缩小；整数倍最近邻插值可保持笔画边缘锐利。
+func upscaleAISearchImage(src image.Image) image.Image {
+	if src == nil {
+		return nil
+	}
+
+	bounds := src.Bounds()
+	width := bounds.Dx()
+	height := bounds.Dy()
+	if width <= 0 || height <= 0 {
+		return src
+	}
+	if width >= aiSearchImageMagnifyBelowWidth || height >= aiSearchImageMagnifyBelowHeight {
+		return src
+	}
+
+	scale := 1
+	for scale < aiSearchImageMaxScale {
+		next := scale + 1
+		if width*next > aiSearchImageTargetWidth || height*next > aiSearchImageTargetHeight {
+			break
+		}
+		scale = next
+	}
+	if scale <= 1 {
+		return src
+	}
+
+	dst := image.NewRGBA(image.Rect(0, 0, width*scale, height*scale))
+	for y := 0; y < dst.Bounds().Dy(); y++ {
+		for x := 0; x < dst.Bounds().Dx(); x++ {
+			dst.Set(x, y, src.At(bounds.Min.X+x/scale, bounds.Min.Y+y/scale))
+		}
+	}
+	return dst
 }
 
 func resolveAISearchAttachmentContentType(headerValues []string, body []byte) string {
@@ -432,48 +717,163 @@ func (in *ChatGptClient) requestStreamAnswerDetailed(endpoint string, systemProm
 	}
 
 	requestBody := string(payload)
-	httpReq, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+	requestStartedAt := time.Now()
+
+	var (
+		lastUsage       AISearchUsage
+		lastStatusCode  int
+		lastRawResponse string
+		lastErr         error = errors.ErrTargetServerError
+	)
+
+	for attempt := 0; attempt < aiSearchRetryMaxAttempts; attempt++ {
+		if attempt > 0 {
+			if !sleepAISearchRetryBackoff(attempt, time.Since(requestStartedAt)) {
+				break
+			}
+		}
+
+		content, usage, statusCode, rawResponse, retryable, callErr := in.executeAISearchStreamRequest(endpoint, payload, requestBody, requestStartedAt)
+		lastUsage = usage
+		lastStatusCode = statusCode
+		lastRawResponse = rawResponse
+		lastErr = callErr
+		if callErr == nil || !retryable {
+			return content, lastUsage, lastStatusCode, requestBody, lastRawResponse, callErr
+		}
+	}
+
+	return "", lastUsage, lastStatusCode, requestBody, lastRawResponse, lastErr
+}
+
+// executeAISearchStreamRequest 在全局并发配额内执行单次上游请求。
+// retryable 表示该失败是否值得退避重试（限流、网关错误、网络抖动）。
+func (in *ChatGptClient) executeAISearchStreamRequest(endpoint string, payload []byte, requestBody string, requestStartedAt time.Time) (string, AISearchUsage, int, string, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), aiSearchFirstTokenTimeout)
+	defer cancel()
+
+	if err := acquireAISearchSlot(ctx, aiSearchRequestSemaphore); err != nil {
+		return "", AISearchUsage{}, 0, "", false, errors.ErrTargetServerError
+	}
+	defer releaseAISearchSlot(aiSearchRequestSemaphore)
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return "", AISearchUsage{}, 0, requestBody, "", errors.ErrTargetServerError
+		return "", AISearchUsage{}, 0, "", false, errors.ErrTargetServerError
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+strings.TrimSpace(in.APIKey))
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := in.getHTTPClient().GetClient().Do(httpReq)
 	if err != nil {
-		return "", AISearchUsage{}, 0, requestBody, "", errors.ErrTargetServerError
+		// 连接失败、超时、被重置通常都是瞬时故障，交给上层退避重试。
+		return "", AISearchUsage{}, 0, "", true, errors.ErrTargetServerError
 	}
 	defer resp.Body.Close()
 
-	rawBody, err := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
-	if err != nil {
-		return "", AISearchUsage{}, resp.StatusCode, requestBody, "", errors.ErrTargetServerError
-	}
-	rawResponse := string(rawBody)
-
 	if resp.StatusCode == http.StatusNotFound {
-		return "", AISearchUsage{}, resp.StatusCode, requestBody, rawResponse, errors.ErrTargetNoAnswer
+		rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
+		return "", AISearchUsage{}, resp.StatusCode, string(rawBody), false, errors.ErrTargetNoAnswer
 	}
 	if resp.StatusCode >= http.StatusBadRequest {
-		return "", AISearchUsage{}, resp.StatusCode, requestBody, rawResponse, errors.ErrTargetServerError
+		rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
+		rawResponse := string(rawBody)
+		if isAISearchRetryableStatus(resp.StatusCode) {
+			return "", AISearchUsage{}, resp.StatusCode, rawResponse, true, errors.ErrTargetServerError
+		}
+		return "", AISearchUsage{}, resp.StatusCode, rawResponse, false, errors.ErrTargetServerError
 	}
 
-	content, usage, err := readOpenAIStreamContent(strings.NewReader(rawResponse))
+	firstTokenTimeout := aiSearchFirstTokenTimeout - time.Since(requestStartedAt)
+	if firstTokenTimeout <= 0 {
+		return "", AISearchUsage{}, resp.StatusCode, "", false, errors.ErrTargetServerError
+	}
+	content, usage, rawResponse, err := readOpenAIStreamContentWithFirstTokenTimeout(resp.Body, firstTokenTimeout)
 	if err != nil {
-		return "", AISearchUsage{}, resp.StatusCode, requestBody, rawResponse, errors.ErrTargetServerError
+		return "", usage, resp.StatusCode, rawResponse, false, errors.ErrTargetServerError
 	}
 	content = strings.TrimSpace(content)
 	if content == "" {
-		return "", usage, resp.StatusCode, requestBody, rawResponse, errors.ErrTargetNoAnswer
+		// 流里没有任何内容，可能是上游被中断：值得重试一次。
+		return "", usage, resp.StatusCode, rawResponse, true, errors.ErrTargetNoAnswer
 	}
-	return content, usage, resp.StatusCode, requestBody, rawResponse, nil
+	return content, usage, resp.StatusCode, rawResponse, false, nil
+}
+
+// isAISearchRetryableStatus 判断上游状态码是否值得退避重试。
+func isAISearchRetryableStatus(statusCode int) bool {
+	switch statusCode {
+	case http.StatusRequestTimeout, http.StatusTooManyRequests,
+		http.StatusInternalServerError, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+// isAISearchEndpointFallbackStatus 判断是否应该换成备用端点再试一次。
+func isAISearchEndpointFallbackStatus(statusCode int) bool {
+	return statusCode == http.StatusNotFound || isAISearchRetryableStatus(statusCode)
+}
+
+// sleepAISearchRetryBackoff 指数退避，并受总重试预算约束。
+// 返回 false 表示预算已经用尽，不应继续重试。
+func sleepAISearchRetryBackoff(attempt int, elapsed time.Duration) bool {
+	delay := time.Duration(float64(aiSearchRetryBaseDelay) * math.Pow(2, float64(attempt-1)))
+	if delay > aiSearchRetryMaxDelay {
+		delay = aiSearchRetryMaxDelay
+	}
+	if elapsed+delay > aiSearchRetryBudget {
+		return false
+	}
+	time.Sleep(delay)
+	return true
 }
 
 func readOpenAIStreamContent(body io.Reader) (string, AISearchUsage, error) {
+	content, usage, _, err := readOpenAIStreamContentWithRaw(body, nil)
+	return content, usage, err
+}
+
+type openAIStreamReadResult struct {
+	content string
+	usage   AISearchUsage
+	raw     string
+	err     error
+}
+
+func readOpenAIStreamContentWithFirstTokenTimeout(body io.ReadCloser, timeout time.Duration) (string, AISearchUsage, string, error) {
+	firstToken := make(chan struct{}, 1)
+	result := make(chan openAIStreamReadResult, 1)
+	go func() {
+		content, usage, raw, err := readOpenAIStreamContentWithRaw(body, firstToken)
+		result <- openAIStreamReadResult{content: content, usage: usage, raw: raw, err: err}
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case readResult := <-result:
+		return readResult.content, readResult.usage, readResult.raw, readResult.err
+	case <-firstToken:
+		readResult := <-result
+		return readResult.content, readResult.usage, readResult.raw, readResult.err
+	case <-timer.C:
+		_ = body.Close()
+		readResult := <-result
+		return readResult.content, readResult.usage, readResult.raw, errAISearchFirstTokenTimeout
+	}
+}
+
+func readOpenAIStreamContentWithRaw(body io.Reader, firstToken chan<- struct{}) (string, AISearchUsage, string, error) {
 	scanner := bufio.NewScanner(body)
 	var builder strings.Builder
+	var raw strings.Builder
 	var usage AISearchUsage
 	for scanner.Scan() {
+		raw.WriteString(scanner.Text())
+		raw.WriteByte('\n')
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || !strings.HasPrefix(line, "data:") {
 			continue
@@ -485,26 +885,59 @@ func readOpenAIStreamContent(body io.Reader) (string, AISearchUsage, error) {
 
 		var chunk openAIStreamChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			return "", AISearchUsage{}, err
+			return "", AISearchUsage{}, raw.String(), err
 		}
 		for _, choice := range chunk.Choices {
+			if choice.Delta.Content != "" && firstToken != nil {
+				select {
+				case firstToken <- struct{}{}:
+				default:
+				}
+			}
 			builder.WriteString(choice.Delta.Content)
 		}
 		if chunk.Usage != nil {
-			usage = AISearchUsage{
-				InputTokens:  chunk.Usage.PromptTokens,
-				OutputTokens: chunk.Usage.CompletionTokens,
-				TotalTokens:  chunk.Usage.TotalTokens,
-			}
+			usage = buildAISearchUsageFromStream(chunk.Usage)
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return "", AISearchUsage{}, err
+		return "", AISearchUsage{}, raw.String(), err
 	}
-	return builder.String(), usage, nil
+	return builder.String(), usage, raw.String(), nil
 }
 
-func parseAISearchAnswers(content string, options []string) []string {
+func buildAISearchUsageFromStream(streamUsage *openAIStreamUsage) AISearchUsage {
+	if streamUsage == nil {
+		return AISearchUsage{}
+	}
+
+	usage := AISearchUsage{
+		InputTokens:  streamUsage.PromptTokens,
+		OutputTokens: streamUsage.CompletionTokens,
+		TotalTokens:  streamUsage.TotalTokens,
+	}
+	if streamUsage.PromptTokensDetails != nil {
+		usage.CachedInputTokens = normalizeAISearchCachedTokens(streamUsage.PromptTokensDetails.CachedTokens, streamUsage.PromptTokens)
+	}
+	if usage.TotalTokens == 0 {
+		usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+	}
+	return usage
+}
+
+// normalizeAISearchCachedTokens 保证缓存 token 数量不超过总输入 token 数量，
+// 避免上游返回异常数据时把缓存价格用出负成本。
+func normalizeAISearchCachedTokens(cachedTokens int64, promptTokens int64) int64 {
+	if cachedTokens <= 0 {
+		return 0
+	}
+	if promptTokens > 0 && cachedTokens > promptTokens {
+		return promptTokens
+	}
+	return cachedTokens
+}
+
+func parseAISearchAnswers(content string, options []string, questionType int) []string {
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
 		return nil
@@ -512,29 +945,32 @@ func parseAISearchAnswers(content string, options []string) []string {
 
 	var payload aiSearchAnswerPayload
 	if err := json.Unmarshal([]byte(trimmed), &payload); err == nil {
-		return normalizeAISearchAnswers(payload.Answers, options)
+		return normalizeAISearchAnswers(payload.Answers, options, questionType)
 	}
 
 	var jsonArray []string
 	if err := json.Unmarshal([]byte(trimmed), &jsonArray); err == nil {
-		return normalizeAISearchAnswers(jsonArray, options)
+		return normalizeAISearchAnswers(jsonArray, options, questionType)
 	}
 
-	return normalizeAISearchAnswers([]string{trimmed}, options)
+	return normalizeAISearchAnswers([]string{trimmed}, options, questionType)
 }
 
-func normalizeAISearchAnswers(rawAnswers []string, options []string) []string {
+func normalizeAISearchAnswers(rawAnswers []string, options []string, questionType int) []string {
 	seen := make(map[string]struct{}, len(rawAnswers))
 	answers := make([]string, 0, len(rawAnswers))
+	preserveRepeatedAnswers := questionType == 2
 	for _, rawAnswer := range rawAnswers {
 		resolved := resolveAISearchAnswer(rawAnswer, options)
 		if resolved == "" {
 			continue
 		}
-		if _, ok := seen[resolved]; ok {
-			continue
+		if !preserveRepeatedAnswers {
+			if _, ok := seen[resolved]; ok {
+				continue
+			}
+			seen[resolved] = struct{}{}
 		}
-		seen[resolved] = struct{}{}
 		answers = append(answers, resolved)
 	}
 	return answers

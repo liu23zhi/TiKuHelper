@@ -7,6 +7,7 @@ import { dirname, resolve } from 'node:path';
 const testDir = dirname(fileURLToPath(import.meta.url));
 const controllerPath = resolve(testDir, '../../../internal/controller/search_account_config.go');
 const aiControllerPath = resolve(testDir, '../../../internal/controller/ai_search_config.go');
+const componentApiPath = resolve(testDir, '../api/TikuComponentApi.js');
 const searchAccountPagePath = resolve(testDir, '../pages/SearchAccountConfig/index.vue');
 const aiSearchPagePath = resolve(testDir, '../pages/AISearchConfig/index.vue');
 
@@ -37,4 +38,12 @@ test('AISearchConfig API returns raw apiKey for the reveal control', async () =>
 
   assert.match(content, /c\.JSON\(http\.StatusOK, config\)/);
   assert.doesNotMatch(content, /RedactAISearchConfigView/);
+});
+
+test('AISearchConfig test request does not impose the global client timeout', async () => {
+  const content = await readFile(componentApiPath, 'utf8');
+  const functionSource = content.match(/export function testAISearchConfig\([\s\S]*?(?=export function updateAISearchConfig)/);
+
+  assert.ok(functionSource, 'testAISearchConfig API function should exist');
+  assert.match(functionSource[0], /timeout:\s*0/);
 });

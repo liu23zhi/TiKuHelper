@@ -13,6 +13,17 @@ import (
 // NewSafeHTTPClient creates a client that blocks loopback, private, link-local,
 // multicast, and unspecified destinations unless TIKU_ALLOW_PRIVATE_OUTBOUND=true.
 func NewSafeHTTPClient(timeout time.Duration) *http.Client {
+	responseHeaderTimeout := 30 * time.Second
+	tlsHandshakeTimeout := 10 * time.Second
+	if timeout <= 0 {
+		responseHeaderTimeout = 0
+		tlsHandshakeTimeout = 0
+	} else {
+		responseHeaderTimeout = timeout
+		if timeout < tlsHandshakeTimeout {
+			tlsHandshakeTimeout = timeout
+		}
+	}
 	dialer := &net.Dialer{
 		Timeout:   timeout,
 		KeepAlive: 30 * time.Second,
@@ -43,8 +54,8 @@ func NewSafeHTTPClient(timeout time.Duration) *http.Client {
 			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          100,
 			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 30 * time.Second,
+			TLSHandshakeTimeout:   tlsHandshakeTimeout,
+			ResponseHeaderTimeout: responseHeaderTimeout,
 		},
 	}
 }

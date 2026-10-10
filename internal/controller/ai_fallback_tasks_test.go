@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,27 @@ import (
 	searchpkg "github.com/itihey/tikuAdapter/internal/search"
 	"github.com/itihey/tikuAdapter/internal/service"
 )
+
+type lockedAIFallbackTestClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func newLockedAIFallbackTestClock(now time.Time) *lockedAIFallbackTestClock {
+	return &lockedAIFallbackTestClock{now: now}
+}
+
+func (c *lockedAIFallbackTestClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *lockedAIFallbackTestClock) Advance(duration time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(duration)
+	c.mu.Unlock()
+}
 
 func TestAIFallbackTaskStoreRunsTaskAndScopesResultToOwner(t *testing.T) {
 	release := make(chan struct{})
@@ -56,23 +78,61 @@ func TestAIFallbackTaskStoreRunsTaskAndScopesResultToOwner(t *testing.T) {
 }
 
 func TestAIFallbackTaskStoreExpiresTasks(t *testing.T) {
-	now := time.Now()
+	clock := newLockedAIFallbackTestClock(time.Now())
 	release := make(chan struct{})
-	store := newAIFallbackTaskStore(time.Minute, func() time.Time {
-		return now
-	})
+	store := newAIFallbackTaskStore(time.Minute, clock.Now)
 
 	taskID := store.create(7, func(string) service.AIFallbackResult {
 		<-release
 		return service.BuildAIFallbackUnavailableResult()
 	})
-	now = now.Add(2 * time.Minute)
+	clock.Advance(2 * time.Minute)
+
+	running, err := store.get(taskID, 7)
+	if err != nil {
+		t.Fatalf("expected running task to remain visible after TTL: %v", err)
+	}
+	if running.Status != aiFallbackTaskStatusRunning {
+		t.Fatalf("expected running status, got %q", running.Status)
+	}
+
+	close(release)
+	eventuallyAIFallbackTaskStatus(t, store, taskID, 7, aiFallbackTaskStatusFailed)
+	clock.Advance(2 * time.Minute)
 
 	if _, err := store.get(taskID, 7); !errors.Is(err, errAIFallbackTaskNotFound) {
 		t.Fatalf("expected expired task to be missing, got %v", err)
 	}
+}
 
-	close(release)
+func TestAIFallbackTaskStoreKeepsRunningTaskWhileConcurrentOwnerTaskCompletes(t *testing.T) {
+	clock := newLockedAIFallbackTestClock(time.Now())
+	store := newAIFallbackTaskStore(time.Minute, clock.Now)
+	firstStarted := make(chan struct{})
+	firstRelease := make(chan struct{})
+	firstID := store.create(7, func(string) service.AIFallbackResult {
+		close(firstStarted)
+		<-firstRelease
+		return service.AIFallbackResult{Success: true}
+	})
+	<-firstStarted
+
+	clock.Advance(2 * time.Minute)
+	secondID := store.create(8, func(string) service.AIFallbackResult {
+		return service.AIFallbackResult{Success: true}
+	})
+	eventuallyAIFallbackTaskStatus(t, store, secondID, 8, aiFallbackTaskStatusSucceeded)
+
+	first, err := store.get(firstID, 7)
+	if err != nil {
+		t.Fatalf("expected running task to remain visible while AI call is pending: %v", err)
+	}
+	if first.Status != aiFallbackTaskStatusRunning {
+		t.Fatalf("expected first task to remain running, got %q", first.Status)
+	}
+
+	close(firstRelease)
+	eventuallyAIFallbackTaskStatus(t, store, firstID, 7, aiFallbackTaskStatusSucceeded)
 }
 
 func TestCreateAIFallbackTaskReturnsRunningTaskAndStatusCanComplete(t *testing.T) {
@@ -223,7 +283,8 @@ func TestCreateAIFallbackTaskBillsSuccessfulAIUsageOnce(t *testing.T) {
 		t.Fatalf("seed user balance: %v", err)
 	}
 	token := seedControllerTokenForUser(t, db, user, "billed-ai-task-token", 0)
-	seedControllerAIModelArchitecture(t, db, "fallback-billing-model", 2.5)
+	// 1000 输入 × 0.10 + 500 输出 × 0.50（元 / 百万 token）= 0.0001 + 0.00025 → 0.00
+	seedControllerAIModelPrice(t, db, "fallback-billing-model", 0.10, 0.01, 0.50)
 
 	originalStore := defaultAIFallbackTaskStore
 	originalRun := runAIFallbackService
@@ -241,9 +302,9 @@ func TestCreateAIFallbackTaskBillsSuccessfulAIUsageOnce(t *testing.T) {
 			},
 			Model: "fallback-billing-model",
 			Usage: searchpkg.AISearchUsage{
-				InputTokens:  1000,
-				OutputTokens: 500,
-				TotalTokens:  1500,
+				InputTokens:  1000000,
+				OutputTokens: 500000,
+				TotalTokens:  1500000,
 			},
 		}
 	}
@@ -302,10 +363,10 @@ func TestCreateAIFallbackTaskBillsSuccessfulAIUsageOnce(t *testing.T) {
 	if record.Provider != searchModeAI || record.ModelName != "fallback-billing-model" {
 		t.Fatalf("unexpected billing provider/model: %+v", record)
 	}
-	if record.Amount != 3.75 || record.TotalTokens != 1500 {
+	if record.Amount != 0.35 || record.TotalTokens != 1500000 {
 		t.Fatalf("unexpected billing amount/tokens: %+v", record)
 	}
-	if record.BalanceBefore != 10 || record.BalanceAfter != 6.25 {
+	if record.BalanceBefore != 10 || record.BalanceAfter != 9.65 {
 		t.Fatalf("unexpected billing balance: %+v", record)
 	}
 
@@ -313,15 +374,15 @@ func TestCreateAIFallbackTaskBillsSuccessfulAIUsageOnce(t *testing.T) {
 	if err := db.Where("id = ?", user.ID).First(&storedUser).Error; err != nil {
 		t.Fatalf("load user: %v", err)
 	}
-	if storedUser.Balance != 6.25 {
-		t.Fatalf("expected user balance 6.25, got %v", storedUser.Balance)
+	if storedUser.Balance != 9.65 {
+		t.Fatalf("expected user balance 9.65, got %v", storedUser.Balance)
 	}
 	var storedToken entity.AccessToken
 	if err := db.Where("id = ?", token.ID).First(&storedToken).Error; err != nil {
 		t.Fatalf("load token: %v", err)
 	}
-	if storedToken.TotalAmountUsed != 3.75 {
-		t.Fatalf("expected token usage 3.75, got %v", storedToken.TotalAmountUsed)
+	if storedToken.TotalAmountUsed != 0.35 {
+		t.Fatalf("expected token usage 0.35, got %v", storedToken.TotalAmountUsed)
 	}
 
 	statusAgain := httptest.NewRecorder()

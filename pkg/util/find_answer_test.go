@@ -44,3 +44,21 @@ func TestFillAnswerResponsePreservesAnswerTextForReaderStyleTypes(t *testing.T) 
 		t.Fatalf("expected no answer key for reader style text answers, got %v", resp.Answer.AnswerKey)
 	}
 }
+
+func TestFillAnswerResponsePreservesAllTextAnswersForMultiPartQuestions(t *testing.T) {
+	answers := [][]string{{"第一问答案", "第二问答案"}}
+	resp := FillAnswerResponse(answers, &model.SearchRequest{
+		Question: "请分别回答以下两个小问",
+		Type:     4,
+	})
+
+	if !reflect.DeepEqual(resp.Answer.BestAnswer, answers[0]) {
+		t.Fatalf("expected all text answers %v, got %v", answers[0], resp.Answer.BestAnswer)
+	}
+	if !reflect.DeepEqual(resp.Answer.AllAnswer, answers) {
+		t.Fatalf("expected all answer groups %v, got %v", answers, resp.Answer.AllAnswer)
+	}
+	if resp.Answer.AnswerText != "第一问答案#第二问答案" {
+		t.Fatalf("expected ordered multipart answer text, got %q", resp.Answer.AnswerText)
+	}
+}
