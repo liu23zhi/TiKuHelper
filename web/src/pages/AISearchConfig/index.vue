@@ -142,7 +142,7 @@
             :columns="priceColumns"
             :loading="priceLoading"
             :pagination="{ pageSize: 8, size: 'small' }"
-            :scroll="{ x: 1180 }"
+            :scroll="{ x: 'max-content' }"
           >
             <template #inputPrice="{ record }">{{ formatPriceAmount(record.inputPrice) }}</template>
             <template #cachedPrice="{ record }">{{ formatPriceAmount(record.cachedPrice) }}</template>
@@ -192,7 +192,7 @@
             :columns="architectureColumns"
             :loading="architectureLoading"
             :pagination="{ pageSize: 8, size: 'small' }"
-            :scroll="{ x: 820 }"
+            :scroll="{ x: 'max-content' }"
           >
             <template #enabled="{ record }">
               <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag>
@@ -459,26 +459,26 @@ export default defineComponent({
     const pricingGaps = computed(() => buildAIModelPricingGaps(formState, priceRows.value))
 
     const architectureColumns = [
-      { title: 'ID', dataIndex: 'id', key: 'id', width: 80 },
-      { title: '架构名称', dataIndex: 'name', key: 'name', width: 200 },
-      { title: '模型名称', dataIndex: 'modelName', key: 'modelName', width: 220 },
-      { title: '状态', dataIndex: 'enabled', key: 'enabled', width: 100, slots: { customRender: 'enabled' } },
-      { title: '排序', dataIndex: 'sort', key: 'sort', width: 100 },
-      { title: '备注', dataIndex: 'remark', key: 'remark', width: 200, slots: { customRender: 'remark' } },
-      { title: '操作', dataIndex: 'action', key: 'action', fixed: 'right', width: 120, slots: { customRender: 'action' } },
+      { title: 'ID', dataIndex: 'id', key: 'id', width: 60 },
+      { title: '架构名称', dataIndex: 'name', key: 'name', ellipsis: true },
+      { title: '模型名称', dataIndex: 'modelName', key: 'modelName', width: 200, ellipsis: true },
+      { title: '状态', dataIndex: 'enabled', key: 'enabled', width: 80, slots: { customRender: 'enabled' } },
+      { title: '排序', dataIndex: 'sort', key: 'sort', width: 70, align: 'right' },
+      { title: '备注', dataIndex: 'remark', key: 'remark', width: 150, ellipsis: true, slots: { customRender: 'remark' } },
+      { title: '操作', dataIndex: 'action', key: 'action', fixed: 'right', width: 110, slots: { customRender: 'action' } },
     ]
 
     const priceColumns = [
-      { title: 'ID', dataIndex: 'id', key: 'id', width: 70 },
-      { title: '模型名称', dataIndex: 'modelName', key: 'modelName', width: 220 },
-      { title: '显示名称', dataIndex: 'displayName', key: 'displayName', width: 200 },
-      { title: '输入 ($/M)', dataIndex: 'inputPrice', key: 'inputPrice', width: 120, slots: { customRender: 'inputPrice' } },
-      { title: '缓存输入 ($/M)', dataIndex: 'cachedPrice', key: 'cachedPrice', width: 130, slots: { customRender: 'cachedPrice' } },
-      { title: '输出 ($/M)', dataIndex: 'outputPrice', key: 'outputPrice', width: 120, slots: { customRender: 'outputPrice' } },
-      { title: '状态', dataIndex: 'status', key: 'status', width: 90, slots: { customRender: 'status' } },
-      { title: '排序', dataIndex: 'sort', key: 'sort', width: 80 },
-      { title: '备注', dataIndex: 'remark', key: 'remark', width: 180, slots: { customRender: 'priceRemark' } },
-      { title: '操作', dataIndex: 'action', key: 'action', fixed: 'right', width: 120, slots: { customRender: 'priceAction' } },
+      { title: 'ID', dataIndex: 'id', key: 'id', width: 60 },
+      { title: '模型名称', dataIndex: 'modelName', key: 'modelName', ellipsis: true },
+      { title: '显示名称', dataIndex: 'displayName', key: 'displayName', width: 170, ellipsis: true },
+      { title: '输入（￥/M）', dataIndex: 'inputPrice', key: 'inputPrice', width: 110, align: 'right', slots: { customRender: 'inputPrice' } },
+      { title: '缓存输入（￥/M）', dataIndex: 'cachedPrice', key: 'cachedPrice', width: 130, align: 'right', slots: { customRender: 'cachedPrice' } },
+      { title: '输出（￥/M）', dataIndex: 'outputPrice', key: 'outputPrice', width: 110, align: 'right', slots: { customRender: 'outputPrice' } },
+      { title: '状态', dataIndex: 'status', key: 'status', width: 80, slots: { customRender: 'status' } },
+      { title: '排序', dataIndex: 'sort', key: 'sort', width: 70, align: 'right' },
+      { title: '备注', dataIndex: 'remark', key: 'remark', width: 150, ellipsis: true, slots: { customRender: 'priceRemark' } },
+      { title: '操作', dataIndex: 'action', key: 'action', fixed: 'right', width: 110, slots: { customRender: 'priceAction' } },
     ]
 
     const loadConfig = () => {
@@ -792,10 +792,10 @@ export default defineComponent({
     formatPriceAmount(value) {
       const amount = Number(value)
       if (!Number.isFinite(amount)) {
-        return '$0.000000'
+        return '￥0.000000'
       }
-      // 保留有效小数位，避免 GPT-5.3-Codex 的 0.175 被截成 0.18。
-      return `$${amount.toFixed(6).replace(/0+$/, '').replace(/\.$/, '.0')}`
+      // 价格表统一使用人民币符号，保留有效小数位，避免 GPT-5.3-Codex 的 0.175 被截成 0.18。
+      return `￥${amount.toFixed(6).replace(/0+$/, '').replace(/\.$/, '.0')}`
     },
     openPriceModal(record) {
       if (record) {
@@ -893,6 +893,9 @@ export default defineComponent({
 <style scoped>
 .page-card {
   border-radius: 20px;
+  /* 表格列较宽时，卡片本身不能被内容顶宽，否则会横向溢出整个页面。 */
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .page-alert {
@@ -972,15 +975,25 @@ export default defineComponent({
   grid-template-columns: 1fr;
   gap: 16px;
   margin-top: 16px;
+  /* grid/flex 子项默认 min-width:auto，会被宽表格顶破容器，必须显式归零。 */
+  min-width: 0;
 }
 
 .sub-card {
   border-radius: 20px;
+  min-width: 0;
+}
+
+/* ant-design 卡片内容区同样是 flex 子项，需要允许收缩。 */
+.sub-card :deep(.ant-card-body),
+.sub-card :deep(.ant-card-head) {
+  min-width: 0;
 }
 
 .sub-card-title-wrap {
   display: flex;
   align-items: center;
+  min-width: 0;
 }
 
 .sub-card-title {
@@ -997,6 +1010,8 @@ export default defineComponent({
 
 .architecture-table-wrap {
   width: 100%;
+  max-width: 100%;
+  min-width: 0;
   overflow-x: auto;
 }
 

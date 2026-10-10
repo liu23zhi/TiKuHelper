@@ -184,7 +184,16 @@ test('AISearchConfig page bills from the model price table and has no multiplier
   assert.doesNotMatch(content, /单模型倍率/);
   assert.doesNotMatch(content, /全局倍率/);
   assert.doesNotMatch(content, /label="汇率"/);
+
+  // 价格表必须用人民币符号，不能出现美元计价（列头 $/M 或 $数字；模板字面量里的 $ 不算）。
   assert.doesNotMatch(content, /美元/);
+  assert.doesNotMatch(content, /\$\/M/, '价格表列头不应出现美元符号');
+  assert.doesNotMatch(content, /\$\d/, '价格展示不应出现美元符号');
+  assert.doesNotMatch(content, /return '\$/, '价格格式化不应返回美元符号');
+  assert.match(content, /输入（￥\/M）/);
+  assert.match(content, /缓存输入（￥\/M）/);
+  assert.match(content, /输出（￥\/M）/);
+  assert.match(content, /return `￥\$\{amount\.toFixed\(6\)/);
 
   assert.match(content, /architecture-table-wrap/);
   assert.match(content, /@media \(max-width: 768px\)/);
