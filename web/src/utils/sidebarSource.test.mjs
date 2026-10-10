@@ -18,6 +18,7 @@ test('sidebar provides an accessible collapse toggle wired to the layout', async
   assert.match(layout, /@toggle="toggleSider"/);
   assert.match(menu, /aria-expanded/);
   assert.match(menu, /aria-controls="portal-navigation"/);
-  assert.match(menu, /MenuFoldOutlined/);
-  assert.match(menu, /MenuUnfoldOutlined/);
+  assert.match(menu, /折叠侧边栏/);
+  assert.match(menu, /展开侧边栏/);
+  assert.match(menu, /margin-top:\s*auto/);
 });

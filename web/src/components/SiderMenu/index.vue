@@ -1,25 +1,10 @@
 <template>
   <div class="sider-menu-wrap" :class="{ 'is-collapsed': collapsed }">
-    <div class="menu-toolbar">
-      <div v-if="!collapsed" class="menu-heading">
-        <div class="menu-title">{{ isAdmin ? '管理导航' : '用户导航' }}</div>
-        <div class="menu-subtitle">
-          {{ isAdmin ? '围绕搜题、AI 配置、账单与账户管理的后台入口' : '查看个人使用记录、充值入口、访问令牌与账单明细' }}
-        </div>
+    <div class="menu-heading">
+      <div v-if="!collapsed" class="menu-title">{{ isAdmin ? '管理导航' : '用户导航' }}</div>
+      <div v-if="!collapsed" class="menu-subtitle">
+        {{ isAdmin ? '管理题库、AI 搜索、用户和账单' : '管理个人记录、充值、令牌和账单' }}
       </div>
-      <a-tooltip placement="right">
-        <template #title>{{ collapsed ? '展开侧边栏' : '折叠侧边栏' }}</template>
-        <a-button
-          type="text"
-          class="collapse-button"
-          :aria-expanded="!collapsed"
-          aria-controls="portal-navigation"
-          :aria-label="collapsed ? '展开侧边栏' : '折叠侧边栏'"
-          @click="$emit('toggle')"
-        >
-          <component :is="collapsed ? MenuUnfoldOutlined : MenuFoldOutlined" />
-        </a-button>
-      </a-tooltip>
     </div>
     <a-menu
       id="portal-navigation"
@@ -37,6 +22,16 @@
         <span>{{ item.label }}</span>
       </a-menu-item>
     </a-menu>
+    <a-button
+      type="text"
+      class="collapse-button"
+      :aria-expanded="!collapsed"
+      aria-controls="portal-navigation"
+      :aria-label="collapsed ? '展开侧边栏' : '折叠侧边栏'"
+      @click="$emit('toggle')"
+    >
+      {{ collapsed ? '展开侧边栏' : '折叠侧边栏' }}
+    </a-button>
   </div>
 </template>
 <script>
@@ -54,8 +49,6 @@ import {
   SafetyCertificateOutlined,
   AccountBookOutlined,
   CreditCardOutlined,
-  MenuFoldOutlined,
-  MenuUnfoldOutlined,
 } from '@ant-design/icons-vue';
 import { isAdminUser } from '../../utils/currentUser';
 
@@ -126,8 +119,6 @@ export default defineComponent({
       selectedKeys,
       visibleMenuItems,
       isAdmin,
-      MenuFoldOutlined,
-      MenuUnfoldOutlined,
       handleSelect,
     };
   },
@@ -136,25 +127,16 @@ export default defineComponent({
 
 <style scoped>
 .sider-menu-wrap {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 64px);
+  box-sizing: border-box;
   padding: 18px 14px 14px;
 }
 
 .sider-menu-wrap.is-collapsed {
   padding-left: 0;
   padding-right: 0;
-}
-
-.menu-toolbar {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 8px;
-  min-height: 36px;
-  margin-bottom: 14px;
-}
-
-.sider-menu-wrap.is-collapsed .menu-toolbar {
-  justify-content: center;
 }
 
 .menu-heading {
@@ -176,12 +158,15 @@ export default defineComponent({
 }
 
 .collapse-button {
-  flex: 0 0 36px;
-  width: 36px;
-  height: 36px;
-  padding: 0;
+  width: 100%;
+  min-height: 36px;
+  height: auto;
+  margin-top: auto;
+  padding: 8px 4px;
   color: #4b5563;
   border-radius: 8px;
+  line-height: 1.4;
+  white-space: normal;
 }
 
 .collapse-button:hover,
