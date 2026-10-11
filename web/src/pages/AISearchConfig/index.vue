@@ -134,7 +134,7 @@
           </a-space>
         </template>
 
-        <div class="architecture-table-wrap">
+        <div class="price-table-wrap">
           <a-table
             bordered
             row-key="id"
@@ -174,47 +174,6 @@
         </div>
       </a-card>
 
-      <a-card :bordered="false" class="sub-card">
-        <template #title>
-          <div class="sub-card-title-wrap">
-            <div>
-              <div class="sub-card-title">模型绑定</div>
-              <div class="sub-card-subtitle">只维护「模型名称 → 上游模型名」的对应关系，不参与计费；计费一律以模型价格表为准。</div>
-            </div>
-          </div>
-        </template>
-        <template #extra>
-          <a-space>
-            <a-button @click="loadAIModelArchitectures" :loading="architectureLoading">刷新</a-button>
-            <a-button type="primary" @click="openArchitectureModal()">新增绑定</a-button>
-          </a-space>
-        </template>
-
-        <div class="architecture-table-wrap">
-          <a-table
-            bordered
-            row-key="id"
-            :data-source="architectureRows"
-            :columns="architectureColumns"
-            :loading="architectureLoading"
-            :pagination="{ pageSize: 8, size: 'small' }"
-            :scroll="{ x: 'max-content' }"
-          >
-            <template #enabled="{ record }">
-              <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag>
-            </template>
-            <template #remark="{ record }">{{ record.remark || '-' }}</template>
-            <template #action="{ record }">
-              <a-space size="small">
-                <a-button type="link" style="padding: 0" @click="openArchitectureModal(record)">编辑</a-button>
-                <a-popconfirm title="确定删除该模型绑定吗？" ok-text="确定" cancel-text="取消" @confirm="handleDeleteArchitecture(record)">
-                  <a-button type="link" danger style="padding: 0">删除</a-button>
-                </a-popconfirm>
-              </a-space>
-            </template>
-          </a-table>
-        </div>
-      </a-card>
     </div>
 
     <a-modal
@@ -252,9 +211,6 @@
         <a-form-item label="倍率">
           <a-input-number v-model:value="priceForm.multiplier" :min="0.0001" :precision="4" :step="0.1" style="width: 100%" />
           <div class="hint">最终扣费 =（输入 + 缓存输入 + 缓存写入 + 输出 各项金额）× 倍率；默认 1，不改单价即可整体加价或打折。</div>
-        </a-form-item>
-        <a-form-item label="状态">
-          <a-switch v-model:checked="priceForm.enabled" checked-children="启用" un-checked-children="停用" />
         </a-form-item>
         <a-form-item label="备注">
           <a-input v-model:value="priceForm.remark" placeholder="备注" />
@@ -322,34 +278,6 @@
         </div>
       </div>
     </a-modal>
-
-    <a-modal
-      v-model:visible="architectureModalVisible"
-      :title="architectureForm.id ? '编辑模型绑定' : '新增模型绑定'"
-      ok-text="确定"
-      cancel-text="取消"
-      :confirm-loading="architectureSaving"
-      @ok="handleSaveArchitecture"
-      @cancel="closeArchitectureModal"
-    >
-      <a-form :label-col="modalLabelCol" :wrapper-col="modalWrapperCol">
-        <a-form-item label="架构名称" required>
-          <a-input v-model:value="architectureForm.name" placeholder="例如 GPT-5.6 Sol" />
-        </a-form-item>
-        <a-form-item label="模型名称">
-          <a-input v-model:value="architectureForm.modelName" placeholder="例如 gpt-5.6-sol" />
-        </a-form-item>
-        <a-form-item label="启用">
-          <a-switch v-model:checked="architectureForm.enabled" />
-        </a-form-item>
-        <a-form-item label="排序">
-          <a-input-number v-model:value="architectureForm.sort" :min="0" :step="1" style="width: 100%" />
-        </a-form-item>
-        <a-form-item label="备注">
-          <a-input v-model:value="architectureForm.remark" placeholder="备注" />
-        </a-form-item>
-      </a-form>
-    </a-modal>
   </a-card>
 </template>
 
@@ -361,10 +289,6 @@ import {
   getAISearchModels,
   testAISearchConfig,
   updateAISearchConfig,
-  getAIModelArchitectures,
-  createAIModelArchitecture,
-  updateAIModelArchitecture,
-  deleteAIModelArchitecture,
   getAIModelPrices,
   createAIModelPrice,
   updateAIModelPrice,
@@ -375,11 +299,10 @@ import {
   buildModelNameOptions,
   buildModelNameText,
   buildAISearchConfigSavePayload,
-  buildMissingArchitecturePayloads,
   buildAIModelPricingGaps,
   isModelPriced,
   filterRemoteModelNames,
-} from '@/utils/aiModelArchitectureHelpers.mjs';
+} from '@/utils/aiSearchModelHelpers.mjs';
 import {
   buildAISearchTestForm,
   buildAISearchTestPayload,
@@ -406,8 +329,6 @@ export default defineComponent({
     const tabLoading = ref(true)
     const saving = ref(false)
     const fetchingModels = ref(false)
-    const architectureLoading = ref(false)
-    const architectureSaving = ref(false)
     const testModalVisible = ref(false)
     const testSubmitting = ref(false)
     const testForm = reactive({
@@ -435,17 +356,6 @@ export default defineComponent({
       topP: 0,
     })
 
-    const architectureRows = ref([])
-    const architectureModalVisible = ref(false)
-    const architectureForm = reactive({
-      id: null,
-      name: '',
-      modelName: '',
-      enabled: true,
-      sort: 0,
-      remark: '',
-    })
-
     const priceRows = ref([])
     const priceLoading = ref(false)
     const priceSaving = ref(false)
@@ -460,7 +370,6 @@ export default defineComponent({
       cacheWritePrice: 0,
       outputPrice: 0,
       multiplier: 1,
-      enabled: true,
       remark: '',
     })
 
@@ -471,26 +380,15 @@ export default defineComponent({
     // 哪些已配置的模型还没有价格：用于页面提示，避免命中后按 0 元计费却无人察觉。
     const pricingGaps = computed(() => buildAIModelPricingGaps(formState, priceRows.value))
 
-    const architectureColumns = [
-      { title: 'ID', dataIndex: 'id', key: 'id', width: 60 },
-      { title: '架构名称', dataIndex: 'name', key: 'name', ellipsis: true },
-      { title: '模型名称', dataIndex: 'modelName', key: 'modelName', width: 200, ellipsis: true },
-      { title: '状态', dataIndex: 'enabled', key: 'enabled', width: 80, slots: { customRender: 'enabled' } },
-      { title: '排序', dataIndex: 'sort', key: 'sort', width: 70, align: 'right' },
-      { title: '备注', dataIndex: 'remark', key: 'remark', width: 150, ellipsis: true, slots: { customRender: 'remark' } },
-      { title: '操作', dataIndex: 'action', key: 'action', fixed: 'right', width: 110, slots: { customRender: 'action' } },
-    ]
-
     const priceColumns = [
       { title: 'ID', dataIndex: 'id', key: 'id', width: 60 },
-      { title: '模型名称', dataIndex: 'modelName', key: 'modelName', ellipsis: true },
-      { title: '显示名称', dataIndex: 'displayName', key: 'displayName', width: 150, ellipsis: true },
+      { title: '模型 ID', dataIndex: 'modelName', key: 'modelName', width: 190, ellipsis: true },
+      { title: '显示名称', dataIndex: 'displayName', key: 'displayName', width: 165, ellipsis: true },
       { title: '输入（￥/M）', dataIndex: 'inputPrice', key: 'inputPrice', width: 105, align: 'right', slots: { customRender: 'inputPrice' } },
       { title: '缓存输入（￥/M）', dataIndex: 'cachedPrice', key: 'cachedPrice', width: 120, align: 'right', slots: { customRender: 'cachedPrice' } },
       { title: '缓存写入（￥/M）', dataIndex: 'cacheWritePrice', key: 'cacheWritePrice', width: 125, align: 'right', slots: { customRender: 'cacheWritePrice' } },
       { title: '输出（￥/M）', dataIndex: 'outputPrice', key: 'outputPrice', width: 105, align: 'right', slots: { customRender: 'outputPrice' } },
       { title: '倍率', dataIndex: 'multiplier', key: 'multiplier', width: 85, align: 'right', slots: { customRender: 'multiplier' } },
-      { title: '状态', dataIndex: 'status', key: 'status', width: 80, slots: { customRender: 'status' } },
       { title: '备注', dataIndex: 'remark', key: 'remark', width: 140, ellipsis: true, slots: { customRender: 'priceRemark' } },
       { title: '操作', dataIndex: 'action', key: 'action', fixed: 'right', width: 110, slots: { customRender: 'priceAction' } },
     ]
@@ -519,21 +417,6 @@ export default defineComponent({
       })
     }
 
-    const loadAIModelArchitectures = () => {
-      architectureLoading.value = true
-      return getAIModelArchitectures().then(res => {
-        if (res?.status === 200) {
-          architectureRows.value = Array.isArray(res?.data) ? res.data : []
-        } else {
-          message.error(res?.message || '获取模型架构失败')
-        }
-      }).catch(() => {
-        message.error('获取模型架构失败')
-      }).finally(() => {
-        architectureLoading.value = false
-      })
-    }
-
     const loadAIModelPrices = () => {
       priceLoading.value = true
       return getAIModelPrices().then(res => {
@@ -551,7 +434,6 @@ export default defineComponent({
 
     onMounted(() => {
       loadConfig()
-      loadAIModelArchitectures()
       loadAIModelPrices()
     })
 
@@ -564,17 +446,7 @@ export default defineComponent({
       priceForm.cacheWritePrice = 0
       priceForm.outputPrice = 0
       priceForm.multiplier = 1
-      priceForm.enabled = true
       priceForm.remark = ''
-    }
-
-    const resetArchitectureForm = () => {
-      architectureForm.id = null
-      architectureForm.name = ''
-      architectureForm.modelName = ''
-      architectureForm.enabled = true
-      architectureForm.sort = 0
-      architectureForm.remark = ''
     }
 
     return {
@@ -585,8 +457,6 @@ export default defineComponent({
       tabLoading,
       saving,
       fetchingModels,
-      architectureLoading,
-      architectureSaving,
       testModalVisible,
       testSubmitting,
       testForm,
@@ -595,10 +465,6 @@ export default defineComponent({
       fixedTopPText,
       formState,
       modelOptions,
-      architectureRows,
-      architectureColumns,
-      architectureModalVisible,
-      architectureForm,
       priceRows,
       priceColumns,
       priceLoading,
@@ -610,34 +476,17 @@ export default defineComponent({
       pricingGaps,
       isModelPriced,
       loadConfig,
-      loadAIModelArchitectures,
       loadAIModelPrices,
-      resetArchitectureForm,
       resetPriceForm,
     }
   },
   methods: {
     handleLoad() {
       this.loadConfig()
-      this.loadAIModelArchitectures()
       this.loadAIModelPrices()
     },
     selectModel(model) {
       this.formState.model = model
-    },
-    syncMissingArchitectures(modelSource) {
-      const missingPayloads = buildMissingArchitecturePayloads(this.architectureRows, modelSource)
-      if (!missingPayloads.length) {
-        return Promise.resolve(0)
-      }
-
-      return Promise.all(missingPayloads.map(payload => createAIModelArchitecture(payload))).then(results => {
-        const failed = results.find(item => item?.status !== 200)
-        if (failed) {
-          throw new Error(failed?.message || '同步模型架构失败')
-        }
-        return this.loadAIModelArchitectures().then(() => missingPayloads.length)
-      })
     },
     handleFetchModels() {
       const params = {}
@@ -659,13 +508,7 @@ export default defineComponent({
         const remoteModels = Array.isArray(res?.data?.models) ? res.data.models : []
         const filteredRemoteModels = filterRemoteModelNames(remoteModels)
         this.formState.manualModelsText = buildModelNameText(filteredRemoteModels)
-        return this.syncMissingArchitectures(this.formState.manualModelsText)
-      }).then(addedCount => {
-        if (addedCount > 0) {
-          message.success(`已同步模型架构，新增 ${addedCount} 个模型`)
-        } else {
-          message.success('模型架构已刷新，暂无新增模型')
-        }
+        message.success(`已获取 ${filteredRemoteModels.length} 个模型，保存后生效`)
       }).catch(error => {
         message.error(error?.message || '获取 AI 模型列表失败')
       }).finally(() => {
@@ -674,10 +517,8 @@ export default defineComponent({
     },
     submitSave(baseUrl) {
       this.saving = true
-      this.syncMissingArchitectures(this.formState.manualModelsText).then(() => {
-        const payload = buildAISearchConfigSavePayload(this.formState, baseUrl)
-        return updateAISearchConfig(payload)
-      }).then(res => {
+      const payload = buildAISearchConfigSavePayload(this.formState, baseUrl)
+      updateAISearchConfig(payload).then(res => {
         if (res?.status === 200) {
           message.success('保存成功')
           this.loadConfig()
@@ -749,61 +590,6 @@ export default defineComponent({
         this.testSubmitting = false
       })
     },
-    openArchitectureModal(record) {
-      if (record) {
-        this.architectureForm.id = record.id
-        this.architectureForm.name = record.name || ''
-        this.architectureForm.modelName = record.modelName || ''
-        this.architectureForm.enabled = !!record.enabled
-        this.architectureForm.sort = Number(record.sort || 0)
-        this.architectureForm.remark = record.remark || ''
-      } else {
-        this.resetArchitectureForm()
-      }
-      this.architectureModalVisible = true
-    },
-    closeArchitectureModal() {
-      this.architectureModalVisible = false
-      this.resetArchitectureForm()
-    },
-    handleSaveArchitecture() {
-      // 模型绑定不再包含任何计费字段。
-      const payload = {
-        id: this.architectureForm.id,
-        name: this.architectureForm.name,
-        modelName: this.architectureForm.modelName,
-        enabled: !!this.architectureForm.enabled,
-        sort: Number(this.architectureForm.sort || 0),
-        remark: this.architectureForm.remark || '',
-      }
-      this.architectureSaving = true
-      const action = payload.id ? updateAIModelArchitecture(payload) : createAIModelArchitecture(payload)
-      action.then(res => {
-        if (res?.status === 200) {
-          message.success('保存成功')
-          this.closeArchitectureModal()
-          this.loadAIModelArchitectures()
-          return
-        }
-        message.error(res?.message || '保存失败')
-      }).catch(() => {
-        message.error('保存失败')
-      }).finally(() => {
-        this.architectureSaving = false
-      })
-    },
-    handleDeleteArchitecture(record) {
-      deleteAIModelArchitecture({ id: record.id }).then(res => {
-        if (res?.status === 200) {
-          message.success('删除成功')
-          this.loadAIModelArchitectures()
-          return
-        }
-        message.error(res?.message || '删除失败')
-      }).catch(() => {
-        message.error('删除失败')
-      })
-    },
     formatPriceAmount(value) {
       const amount = Number(value)
       if (!Number.isFinite(amount)) {
@@ -830,7 +616,6 @@ export default defineComponent({
         this.priceForm.cacheWritePrice = Number(record.cacheWritePrice || 0)
         this.priceForm.outputPrice = Number(record.outputPrice || 0)
         this.priceForm.multiplier = Number(record.multiplier || 1)
-        this.priceForm.enabled = record.status !== 'disabled'
         this.priceForm.remark = record.remark || ''
       } else {
         this.resetPriceForm()
@@ -865,7 +650,6 @@ export default defineComponent({
         cacheWritePrice: Number(this.priceForm.cacheWritePrice || 0),
         outputPrice: Number(this.priceForm.outputPrice || 0),
         multiplier: Number(this.priceForm.multiplier || 1),
-        status: this.priceForm.enabled ? 'enabled' : 'disabled',
         remark: this.priceForm.remark || '',
       }
       this.priceSaving = true
@@ -1039,7 +823,7 @@ export default defineComponent({
   font-size: 13px;
 }
 
-.architecture-table-wrap {
+.price-table-wrap {
   width: 100%;
   max-width: 100%;
   min-width: 0;

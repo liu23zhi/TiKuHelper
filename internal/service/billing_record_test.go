@@ -8,6 +8,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"gorm.io/gorm"
+	"net/url"
 )
 
 func newBillingRecordTestDB(t *testing.T) *gorm.DB {
@@ -86,7 +87,7 @@ func TestListBillingRecordsWithDBScopesByRole(t *testing.T) {
 	ownerRecord := seedBillingRecord(t, db, owner.ID, "req-owner", 1.25)
 	otherRecord := seedBillingRecord(t, db, other.ID, "req-other", 2.5)
 
-	ownerResult, err := ListBillingRecordsWithDB(db, owner, 1, 10)
+	ownerResult, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{}, 1, 10)
 	if err != nil {
 		t.Fatalf("list owner billing records: %v", err)
 	}
@@ -100,7 +101,7 @@ func TestListBillingRecordsWithDBScopesByRole(t *testing.T) {
 		t.Fatalf("expected owner pagination 1/10, got %d/%d", ownerResult.Page, ownerResult.PageSize)
 	}
 
-	adminResult, err := ListBillingRecordsWithDB(db, admin, 1, 10)
+	adminResult, err := ListBillingRecordsWithDB(db, admin, BillingRecordListQuery{}, 1, 10)
 	if err != nil {
 		t.Fatalf("list admin billing records: %v", err)
 	}
@@ -120,7 +121,7 @@ func TestListBillingRecordsWithDBIncludesUsername(t *testing.T) {
 	owner := seedBillingRecordUser(t, db, 2, "user")
 	seedBillingRecord(t, db, owner.ID, "req-username", 1.25)
 
-	result, err := ListBillingRecordsWithDB(db, owner, 1, 10)
+	result, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{}, 1, 10)
 	if err != nil {
 		t.Fatalf("list billing records: %v", err)
 	}
@@ -159,7 +160,7 @@ func TestListBillingRecordsWithDBShapesRechargeRecordsAsLedgerRows(t *testing.T)
 		t.Fatalf("create recharge billing record: %v", err)
 	}
 
-	result, err := ListBillingRecordsWithDB(db, owner, 1, 10)
+	result, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{}, 1, 10)
 	if err != nil {
 		t.Fatalf("list owner billing records: %v", err)
 	}
@@ -191,7 +192,7 @@ func TestListBillingRecordsWithDBAppliesPagination(t *testing.T) {
 	older := seedBillingRecord(t, db, owner.ID, "req-older", 1)
 	_ = seedBillingRecord(t, db, owner.ID, "req-newer", 2)
 
-	result, err := ListBillingRecordsWithDB(db, owner, 2, 1)
+	result, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{}, 2, 1)
 	if err != nil {
 		t.Fatalf("list paginated billing records: %v", err)
 	}
@@ -245,7 +246,7 @@ func TestListBillingRecordsWithDBMergesSearchChargesByRequestID(t *testing.T) {
 		t.Fatalf("create ai search billing record: %v", err)
 	}
 
-	result, err := ListBillingRecordsWithDB(db, owner, 1, 10)
+	result, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{}, 1, 10)
 	if err != nil {
 		t.Fatalf("list merged billing records: %v", err)
 	}
@@ -304,7 +305,7 @@ func TestListBillingRecordsWithDBIncludesProviderLabelAndAccessTokenName(t *test
 		t.Fatalf("create billing record with token: %v", err)
 	}
 
-	result, err := ListBillingRecordsWithDB(db, owner, 1, 10)
+	result, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{}, 1, 10)
 	if err != nil {
 		t.Fatalf("list billing records with labels: %v", err)
 	}
@@ -338,7 +339,7 @@ func TestListBillingRecordsWithDBIncludesQuestionTextFromSnapshot(t *testing.T) 
 		t.Fatalf("create billing record with question snapshot: %v", err)
 	}
 
-	result, err := ListBillingRecordsWithDB(db, owner, 1, 10)
+	result, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{}, 1, 10)
 	if err != nil {
 		t.Fatalf("list billing records with question text: %v", err)
 	}
@@ -350,6 +351,199 @@ func TestListBillingRecordsWithDBIncludesQuestionTextFromSnapshot(t *testing.T) 
 	}
 	if result.Data[0].Subject != "搜索答案，题目：这是账单题目" {
 		t.Fatalf("expected single search subject to align with merged search format, got %q", result.Data[0].Subject)
+	}
+}
+
+func TestListBillingRecordsWithDBSearchesByQuestionText(t *testing.T) {
+	db := newBillingRecordTestDB(t)
+	owner := seedBillingRecordUser(t, db, 2, "user")
+
+	records := []entity.BillingRecord{
+		{UserID: owner.ID, Type: "normal_search", Provider: "icodef", Amount: 1, RequestID: "req-newton", QuestionText: "牛顿第二定律的表达式"},
+		{UserID: owner.ID, Type: "normal_search", Provider: "icodef", Amount: 1, RequestID: "req-photosynthesis", QuestionText: "光合作用的产物"},
+	}
+	for i := range records {
+		if err := db.Create(&records[i]).Error; err != nil {
+			t.Fatalf("create billing record: %v", err)
+		}
+	}
+
+	result, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{Keyword: "牛顿"}, 1, 10)
+	if err != nil {
+		t.Fatalf("search billing records by question: %v", err)
+	}
+	if result.Total != 1 || len(result.Data) != 1 {
+		t.Fatalf("expected exactly one match, got total=%d rows=%d", result.Total, len(result.Data))
+	}
+	if result.Data[0].QuestionText != "牛顿第二定律的表达式" {
+		t.Fatalf("unexpected matched record: %+v", result.Data[0])
+	}
+}
+
+// 历史账单没有 question_text 时，仍要能按题目命中（回退到快照解析）。
+func TestListBillingRecordsWithDBSearchesQuestionTextFallsBackToSnapshot(t *testing.T) {
+	db := newBillingRecordTestDB(t)
+	owner := seedBillingRecordUser(t, db, 2, "user")
+
+	record := entity.BillingRecord{
+		UserID:            owner.ID,
+		Type:              "normal_search",
+		Provider:          "icodef",
+		Amount:            1,
+		RequestID:         "req-legacy-question",
+		UnitPriceSnapshot: "provider=icodef question=" + url.QueryEscape("历史上的题目内容"),
+	}
+	if err := db.Create(&record).Error; err != nil {
+		t.Fatalf("create legacy billing record: %v", err)
+	}
+
+	// 直接按关键词搜不到（列里没有内容），但装饰阶段会从快照回填。
+	result, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{}, 1, 10)
+	if err != nil {
+		t.Fatalf("list billing records: %v", err)
+	}
+	if len(result.Data) != 1 {
+		t.Fatalf("expected one record, got %+v", result.Data)
+	}
+	if result.Data[0].QuestionText != "历史上的题目内容" {
+		t.Fatalf("expected question text from snapshot fallback, got %q", result.Data[0].QuestionText)
+	}
+
+	// 回溯填充写入新列后，关键词搜索即可命中。
+	if err := db.Model(&entity.BillingRecord{}).Where("id = ?", record.ID).Update("question_text", "历史上的题目内容").Error; err != nil {
+		t.Fatalf("backfill question text: %v", err)
+	}
+	result, err = ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{Keyword: "历史"}, 1, 10)
+	if err != nil {
+		t.Fatalf("search after backfill: %v", err)
+	}
+	if result.Total != 1 {
+		t.Fatalf("expected the backfilled row to be searchable, got total=%d", result.Total)
+	}
+}
+
+func TestListBillingRecordsWithDBSearchesUsernameProviderAndRequestID(t *testing.T) {
+	db := newBillingRecordTestDB(t)
+	owner := seedBillingRecordUser(t, db, 2, "searchable-owner")
+	token := seedBillingAccessToken(t, db, owner.ID, "我的令牌")
+
+	records := []entity.BillingRecord{
+		{UserID: owner.ID, AccessTokenID: token.ID, Type: "normal_search", Provider: "icodef", ModelName: "gpt-6-astra", Amount: 1, RequestID: "req-aaa-111", QuestionText: "题目一"},
+		{UserID: owner.ID, Type: "normal_search", Provider: "zhihuishu", ModelName: "gpt-6-luna", Amount: 1, RequestID: "req-bbb-222", QuestionText: "题目二"},
+	}
+	for i := range records {
+		if err := db.Create(&records[i]).Error; err != nil {
+			t.Fatalf("create billing record: %v", err)
+		}
+	}
+
+	// 两条记录属于同一个 owner，因此按用户名搜索命中 2 条；其余条件各命中 1 条。
+	cases := []struct {
+		name     string
+		keyword  string
+		wantRows int64
+	}{
+		{name: "username", keyword: "searchable-owner", wantRows: 2},
+		{name: "provider", keyword: "zhihuishu", wantRows: 1},
+		{name: "model id", keyword: "gpt-6-astra", wantRows: 1},
+		{name: "request id fragment", keyword: "bbb", wantRows: 1},
+		{name: "access token name", keyword: "我的令牌", wantRows: 1},
+		{name: "no match", keyword: "完全不存在", wantRows: 0},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			result, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{Keyword: testCase.keyword}, 1, 10)
+			if err != nil {
+				t.Fatalf("search billing records: %v", err)
+			}
+			if result.Total != testCase.wantRows {
+				t.Fatalf("expected %d match(es) for %q, got total=%d rows=%d", testCase.wantRows, testCase.keyword, result.Total, len(result.Data))
+			}
+			if int64(len(result.Data)) != result.Total {
+				t.Fatalf("expected returned rows to match total, got total=%d rows=%d", result.Total, len(result.Data))
+			}
+		})
+	}
+}
+
+func TestListBillingRecordsWithDBFiltersByType(t *testing.T) {
+	db := newBillingRecordTestDB(t)
+	owner := seedBillingRecordUser(t, db, 2, "user")
+
+	records := []entity.BillingRecord{
+		{UserID: owner.ID, Type: "normal_search", Provider: "icodef", Amount: 1, RequestID: "req-type-search"},
+		{UserID: owner.ID, Type: "recharge", Provider: "epay", Amount: 50},
+		{UserID: owner.ID, Type: "registration_bonus", Amount: 5},
+	}
+	for i := range records {
+		if err := db.Create(&records[i]).Error; err != nil {
+			t.Fatalf("create billing record: %v", err)
+		}
+	}
+
+	result, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{Type: "recharge"}, 1, 10)
+	if err != nil {
+		t.Fatalf("filter billing records by type: %v", err)
+	}
+	if result.Total != 1 || len(result.Data) != 1 {
+		t.Fatalf("expected one recharge row, got total=%d rows=%d", result.Total, len(result.Data))
+	}
+	if result.Data[0].Type != "recharge" {
+		t.Fatalf("unexpected row type: %q", result.Data[0].Type)
+	}
+
+	// 类型与关键词可以叠加。
+	result, err = ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{Type: "normal_search", Keyword: "req-type-search"}, 1, 10)
+	if err != nil {
+		t.Fatalf("filter billing records by type and keyword: %v", err)
+	}
+	if result.Total != 1 {
+		t.Fatalf("expected combined filter to return 1 row, got %d", result.Total)
+	}
+
+	// total 必须与筛选口径一致：不带筛选时应看到全部 3 条。
+	all, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{}, 1, 10)
+	if err != nil {
+		t.Fatalf("list all billing records: %v", err)
+	}
+	if all.Total != 3 {
+		t.Fatalf("expected 3 rows without filters, got %d", all.Total)
+	}
+}
+
+// 关键词里的 LIKE 通配符必须按字面量处理。
+func TestListBillingRecordsWithDBKeywordTreatsLikeWildcardsLiterally(t *testing.T) {
+	db := newBillingRecordTestDB(t)
+	owner := seedBillingRecordUser(t, db, 2, "user")
+
+	records := []entity.BillingRecord{
+		{UserID: owner.ID, Type: "normal_search", Provider: "icodef", Amount: 1, RequestID: "req-plain", QuestionText: "普通题目"},
+		{UserID: owner.ID, Type: "normal_search", Provider: "icodef", Amount: 1, RequestID: "req-under_score", QuestionText: "含_下划线题目"},
+	}
+	for i := range records {
+		if err := db.Create(&records[i]).Error; err != nil {
+			t.Fatalf("create billing record: %v", err)
+		}
+	}
+
+	result, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{Keyword: "%"}, 1, 10)
+	if err != nil {
+		t.Fatalf("search with percent keyword: %v", err)
+	}
+	if result.Total != 0 {
+		t.Fatalf("expected %% to match nothing, got %d", result.Total)
+	}
+
+	result, err = ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{Keyword: "_"}, 1, 10)
+	if err != nil {
+		t.Fatalf("search with underscore keyword: %v", err)
+	}
+	if result.Total != 1 {
+		t.Fatalf("expected only the underscore record, got %d", result.Total)
+	}
+	if result.Data[0].QuestionText != "含_下划线题目" {
+		t.Fatalf("unexpected matched row: %+v", result.Data[0])
 	}
 }
 
@@ -370,7 +564,7 @@ func TestListBillingRecordsWithDBUsesCachedSourceLabelForLocalSearch(t *testing.
 		t.Fatalf("create cached local billing record: %v", err)
 	}
 
-	result, err := ListBillingRecordsWithDB(db, owner, 1, 10)
+	result, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{}, 1, 10)
 	if err != nil {
 		t.Fatalf("list cached local billing records: %v", err)
 	}
@@ -402,7 +596,7 @@ func TestListBillingRecordsWithDBUsesProviderLabelAsAnswerSourceForRemoteSearch(
 		t.Fatalf("create remote billing record: %v", err)
 	}
 
-	result, err := ListBillingRecordsWithDB(db, owner, 1, 10)
+	result, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{}, 1, 10)
 	if err != nil {
 		t.Fatalf("list remote billing records: %v", err)
 	}

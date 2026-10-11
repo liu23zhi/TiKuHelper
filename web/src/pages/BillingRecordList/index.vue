@@ -43,6 +43,35 @@
         :message="alertMessage"
       />
 
+      <a-form layout="inline" class="filter-form">
+        <a-form-item label="关键词">
+          <a-input-search
+            v-model:value="keywordInput"
+            placeholder="题目 / 请求 ID / 用户 / 渠道"
+            allow-clear
+            style="width: 260px"
+            @search="applyKeyword"
+            @press-enter="applyKeyword"
+          />
+        </a-form-item>
+        <a-form-item label="类型">
+          <a-select
+            v-model:value="filters.type"
+            allow-clear
+            placeholder="全部类型"
+            style="width: 160px"
+            :options="typeOptions"
+            @change="onFilterChange"
+          />
+        </a-form-item>
+        <a-form-item>
+          <a-space>
+            <a-button @click="resetFilters">重置筛选</a-button>
+            <a-tag v-if="activeFilterCount > 0" color="blue">已启用 {{ activeFilterCount }} 个筛选条件</a-tag>
+          </a-space>
+        </a-form-item>
+      </a-form>
+
       <a-table
         bordered
         :data-source="dataSource"
@@ -95,6 +124,7 @@ import Swal from 'sweetalert2'
 import { getBillingRecords } from '@/api/TikuComponentApi'
 import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser'
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
+import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@/utils/listSearchHelpers.mjs'
 import {
   buildBillingRecordAmountText,
   buildBillingRecordFeeDetailHtml,
@@ -106,6 +136,12 @@ import {
 
 const dataSource = ref([])
 const tableLoading = ref(false)
+// 已生效的筛选条件；keywordInput 只是输入框的即时值。
+const filters = reactive({
+  keyword: '',
+  type: undefined,
+})
+const keywordInput = ref('')
 const pagination = reactive({
   current: 1,
   pageSize: 10,
@@ -121,6 +157,7 @@ export default defineComponent({
   setup() {
     const currentUser = computed(() => getStoredCurrentUser())
     const isAdmin = computed(() => isAdminUser(currentUser.value))
+    const activeFilterCount = computed(() => countActiveFilters({ keyword: filters.keyword, type: filters.type }))
 
     const summary = computed(() => {
       const rows = Array.isArray(dataSource.value) ? dataSource.value : []
@@ -262,6 +299,14 @@ export default defineComponent({
       tableLoading,
       pagination,
       summary,
+      filters,
+      keywordInput,
+      activeFilterCount,
+      typeOptions: [
+        { label: '题目消费', value: 'normal_search' },
+        { label: '充值入账', value: 'recharge' },
+        { label: '新用户赠送', value: 'registration_bonus' },
+      ],
       pageTitle,
       pageSubtitle,
       alertMessage,
@@ -277,12 +322,30 @@ export default defineComponent({
     this.handleLoad()
   },
   methods: {
+    // 点「搜索」或回车时才把输入框内容变成生效的筛选条件。
+    applyKeyword() {
+      filters.keyword = normalizeSearchKeyword(keywordInput.value)
+      keywordInput.value = filters.keyword
+      pagination.current = 1
+      this.handleLoad()
+    },
+    onFilterChange() {
+      pagination.current = 1
+      this.handleLoad()
+    },
+    resetFilters() {
+      filters.keyword = ''
+      keywordInput.value = ''
+      filters.type = undefined
+      pagination.current = 1
+      this.handleLoad()
+    },
     handleLoad() {
       tableLoading.value = true
-      getBillingRecords({
-        page: pagination.current,
-        pageSize: pagination.pageSize,
-      }).then((res) => {
+      getBillingRecords(buildSearchParams({
+        keyword: filters.keyword,
+        type: filters.type,
+      }, pagination.current, pagination.pageSize)).then((res) => {
         if (res?.status === 200) {
           dataSource.value = Array.isArray(res?.data?.data) ? res.data.data : []
           pagination.total = Number(res?.data?.total || 0)
@@ -337,6 +400,13 @@ export default defineComponent({
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.filter-form {
+  margin: 12px 0 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 0;
 }
 
 .summary-row {

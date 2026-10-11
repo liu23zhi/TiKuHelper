@@ -11,8 +11,8 @@ import (
 	"github.com/itihey/tikuAdapter/internal/service"
 )
 
-var listAIModelPrices = func(includeDisabled bool) ([]entity.AIModelPrice, error) {
-	return service.ListAIModelPricesWithDB(manager.GetManager().GetDB(), includeDisabled)
+var listAIModelPrices = func() ([]entity.AIModelPrice, error) {
+	return service.ListAIModelPricesWithDB(manager.GetManager().GetDB())
 }
 
 var createAIModelPrice = func(input service.CreateAIModelPriceInput) (entity.AIModelPrice, error) {
@@ -31,14 +31,13 @@ var resetAIModelPrices = func() error {
 	return service.ResetAIModelPricesWithDB(manager.GetManager().GetDB())
 }
 
-// AIModelPriceList 返回模型价格表。管理员可以看到停用项，普通用户只能看到启用项。
+// AIModelPriceList 返回模型价格表。价格表没有状态概念，所有行都会返回。
 func AIModelPriceList(c *gin.Context) {
-	operator, ok := currentOperator(c)
-	if !ok {
+	if _, ok := currentOperator(c); !ok {
 		return
 	}
 
-	items, err := listAIModelPrices(isAdminUser(&operator))
+	items, err := listAIModelPrices()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "获取模型价格表失败"})
 		return

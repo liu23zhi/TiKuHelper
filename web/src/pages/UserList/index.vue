@@ -3,22 +3,22 @@
     <a-row :gutter="16" class="summary-row">
       <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
-          <a-statistic title="用户总数" :value="summary.total" />
+          <a-statistic title="用户总数（筛选结果）" :value="summary.total" />
         </a-card>
       </a-col>
       <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
-          <a-statistic title="管理员" :value="summary.adminCount" />
+          <a-statistic title="当前页管理员" :value="summary.adminCount" />
         </a-card>
       </a-col>
       <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
-          <a-statistic title="启用账号" :value="summary.enabledCount" />
+          <a-statistic title="当前页启用账号" :value="summary.enabledCount" />
         </a-card>
       </a-col>
       <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
-          <a-statistic title="累计余额" prefix="¥" :value="summary.totalBalance" :precision="6" />
+          <a-statistic title="当前页余额合计" prefix="¥" :value="summary.totalBalance" :precision="6" />
         </a-card>
       </a-col>
     </a-row>
@@ -46,14 +46,54 @@
         message="当前页面展示的是平台全部用户。管理员可以创建用户，并直接编辑角色、状态、昵称、手机号与微信绑定。"
       />
 
+      <a-form layout="inline" class="filter-form">
+        <a-form-item label="关键词">
+          <a-input-search
+            v-model:value="keywordInput"
+            placeholder="用户名 / 昵称 / 手机号 / 微信"
+            allow-clear
+            style="width: 260px"
+            @search="applyKeyword"
+            @press-enter="applyKeyword"
+          />
+        </a-form-item>
+        <a-form-item label="角色">
+          <a-select
+            v-model:value="filters.role"
+            allow-clear
+            placeholder="全部角色"
+            style="width: 140px"
+            :options="roleOptions"
+            @change="onFilterChange"
+          />
+        </a-form-item>
+        <a-form-item label="状态">
+          <a-select
+            v-model:value="filters.status"
+            allow-clear
+            placeholder="全部状态"
+            style="width: 140px"
+            :options="statusOptions"
+            @change="onFilterChange"
+          />
+        </a-form-item>
+        <a-form-item>
+          <a-space>
+            <a-button @click="resetFilters">重置筛选</a-button>
+            <a-tag v-if="activeFilterCount > 0" color="blue">已启用 {{ activeFilterCount }} 个筛选条件</a-tag>
+          </a-space>
+        </a-form-item>
+      </a-form>
+
       <a-table
         bordered
         :data-source="dataSource"
         :columns="columns"
         :loading="tabLoading"
-        :pagination="false"
+        :pagination="pagination"
         row-key="id"
         :scroll="{ x: 1560 }"
+        @change="handleTableChange"
       >
         <template #nickname="{ record }">
           <span>{{ record.nickname || '-' }}</span>
@@ -236,10 +276,27 @@ import {
 } from '@/api/TikuComponentApi';
 import { buildAdminCreateUserPayload, buildRegisterSourceLabel, buildResetPasswordPayload, buildUserBalanceUpdatePayload } from '@/utils/userPortalHelpers.mjs';
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs';
+import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@/utils/listSearchHelpers.mjs';
 import { message } from 'ant-design-vue';
-import { computed, defineComponent, ref } from 'vue';
+import { computed, defineComponent, reactive, ref } from 'vue';
 
 const dataSource = ref([])
+// 已生效的筛选条件；keywordInput 只是输入框的即时值。
+const filters = reactive({
+  keyword: '',
+  role: undefined,
+  status: undefined,
+})
+const keywordInput = ref('')
+const pagination = reactive({
+  current: 1,
+  pageSize: 10,
+  total: 0,
+  showSizeChanger: true,
+  showQuickJumper: true,
+  showTotal: (total) => `共 ${total} 条`,
+  pageSizeOptions: ['10', '20', '50', '100'],
+})
 const visible = ref(false)
 const submitLoading = ref(false)
 const isEditing = ref(false)
@@ -304,13 +361,15 @@ function resetWechatResolveState() {
 export default defineComponent({
   name: 'UserList',
   setup() {
+    // 用户列表改为服务端分页后，这里的统计只覆盖「当前页」，
+    // 因此标题里明确标注范围，避免被误读成全站合计。
     const summary = computed(() => {
       const rows = Array.isArray(dataSource.value) ? dataSource.value : []
       return rows.reduce((acc, item) => {
         const role = String(item?.role || '').toLowerCase()
         const status = String(item?.status || '').toLowerCase()
         const balance = Number(item?.balance || 0)
-        acc.total += 1
+        acc.currentPageCount += 1
         if (role === 'admin') {
           acc.adminCount += 1
         }
@@ -324,7 +383,9 @@ export default defineComponent({
         }
         return acc
       }, {
-        total: 0,
+        // 用户总数来自服务端的筛选结果总数，不受分页影响。
+        total: Number(pagination.total || 0),
+        currentPageCount: 0,
         adminCount: 0,
         enabledCount: 0,
         disabledCount: 0,
@@ -343,6 +404,10 @@ export default defineComponent({
       resetPasswordVisible,
       dataSource,
       tabLoading,
+      pagination,
+      filters,
+      keywordInput,
+      activeFilterCount: computed(() => countActiveFilters({ keyword: filters.keyword, role: filters.role, status: filters.status })),
       submitLoading,
       resetPasswordLoading,
       wechatScanVisible,
@@ -679,11 +744,44 @@ export default defineComponent({
       }
       resetPasswordVisible.value = true
     },
+    // 点「搜索」或回车时才把输入框内容变成生效的筛选条件。
+    applyKeyword() {
+      filters.keyword = normalizeSearchKeyword(keywordInput.value)
+      keywordInput.value = filters.keyword
+      pagination.current = 1
+      this.handleUserList()
+    },
+    onFilterChange() {
+      pagination.current = 1
+      this.handleUserList()
+    },
+    resetFilters() {
+      filters.keyword = ''
+      keywordInput.value = ''
+      filters.role = undefined
+      filters.status = undefined
+      pagination.current = 1
+      this.handleUserList()
+    },
+    handleTableChange(paginationData) {
+      pagination.current = paginationData.current
+      pagination.pageSize = paginationData.pageSize
+      this.handleUserList()
+    },
     handleUserList() {
       tabLoading.value = true
-      getUserList().then(res => {
+      getUserList(buildSearchParams({
+        keyword: filters.keyword,
+        role: filters.role,
+        status: filters.status,
+      }, pagination.current, pagination.pageSize)).then(res => {
         if (res?.status === 200) {
-          dataSource.value = Array.isArray(res?.data) ? res.data : []
+          // 接口现在返回 { data, total, page, pageSize }。
+          const payload = res?.data || {}
+          dataSource.value = Array.isArray(payload.data) ? payload.data : []
+          pagination.total = Number(payload.total || 0)
+          pagination.current = Number(payload.page || 1)
+          pagination.pageSize = Number(payload.pageSize || 10)
         } else {
           message.error(res?.message || '获取用户列表失败')
         }
@@ -820,6 +918,13 @@ export default defineComponent({
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.filter-form {
+  margin: 12px 0 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 0;
 }
 
 .summary-row {

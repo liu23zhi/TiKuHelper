@@ -18,6 +18,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
+	"net/url"
 )
 
 func newUserControllerTestDB(t *testing.T) *gorm.DB {
@@ -734,12 +735,12 @@ func TestUserListAdminSeesAllUsers(t *testing.T) {
 		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
 
-	var users []entity.User
-	if err := json.Unmarshal(recorder.Body.Bytes(), &users); err != nil {
-		t.Fatalf("decode users: %v", err)
+	payload := decodeUserListResponse(t, recorder)
+	if len(payload.Data) != 3 {
+		t.Fatalf("expected admin to see all 3 users, got %d", len(payload.Data))
 	}
-	if len(users) != 3 {
-		t.Fatalf("expected admin to see all 3 users, got %d", len(users))
+	if payload.Total != 3 || payload.Page != 1 || payload.PageSize != 10 {
+		t.Fatalf("unexpected pagination payload: %+v", payload)
 	}
 }
 
@@ -765,10 +766,8 @@ func TestUserListIncludesCreatedAndLastLoginMetadata(t *testing.T) {
 		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
 
-	var users []map[string]any
-	if err := json.Unmarshal(recorder.Body.Bytes(), &users); err != nil {
-		t.Fatalf("decode user list: %v", err)
-	}
+	payload := decodeUserListResponse(t, recorder)
+	users := payload.Data
 
 	for _, item := range users {
 		if item["username"] != "listed-user" {
@@ -787,6 +786,218 @@ func TestUserListIncludesCreatedAndLastLoginMetadata(t *testing.T) {
 	}
 
 	t.Fatal("expected listed-user to appear in response")
+}
+
+// userListPayload 描述 /user 的分页响应体。
+type userListPayload struct {
+	Data     []map[string]any `json:"data"`
+	Total    int64            `json:"total"`
+	Page     int              `json:"page"`
+	PageSize int              `json:"pageSize"`
+}
+
+func decodeUserListResponse(t *testing.T, recorder *httptest.ResponseRecorder) userListPayload {
+	t.Helper()
+
+	var payload userListPayload
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode user list: %v", err)
+	}
+	return payload
+}
+
+// newUserListTestContext 构造一个带 admin 操作者的查询上下文。
+func newUserListTestContext(admin *entity.User, query string) (*gin.Context, *httptest.ResponseRecorder) {
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Set("user", admin)
+	if query == "" {
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/user", nil)
+	} else {
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/user?"+query, nil)
+	}
+	return ctx, recorder
+}
+
+func TestUserListSearchesByKeywordAcrossProfileFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	admin := &entity.User{ID: 300, Username: "list-admin", Password: "123456", Role: "admin", Status: "enabled"}
+	if err := db.Create(admin).Error; err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	phone := "13800001111"
+	wechatID := "wx-bob-001"
+	seeded := []entity.User{
+		{ID: 301, Username: "alice-wang", Password: "123456", Nickname: "王小美", Role: "user", Status: "enabled", Phone: &phone},
+		{ID: 302, Username: "bob-li", Password: "123456", Nickname: "李小明", Role: "user", Status: "enabled", WechatID: &wechatID},
+		{ID: 303, Username: "carol-zhao", Password: "123456", Nickname: "赵大力", Role: "admin", Status: "disabled"},
+	}
+	for i := range seeded {
+		if err := db.Create(&seeded[i]).Error; err != nil {
+			t.Fatalf("create seeded user: %v", err)
+		}
+	}
+
+	cases := []struct {
+		name     string
+		query    string
+		expected []int32
+	}{
+		{name: "username", query: "keyword=alice", expected: []int32{301}},
+		{name: "nickname", query: "keyword=" + url.QueryEscape("李小明"), expected: []int32{302}},
+		{name: "phone", query: "keyword=13800001111", expected: []int32{301}},
+		{name: "wechat", query: "keyword=wx-bob", expected: []int32{302}},
+		{name: "case insensitive", query: "keyword=CAROL", expected: []int32{303}},
+		{name: "no match", query: "keyword=nobody", expected: nil},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx, recorder := newUserListTestContext(admin, testCase.query)
+			UserList(ctx)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+			payload := decodeUserListResponse(t, recorder)
+			if int64(len(payload.Data)) != payload.Total {
+				t.Fatalf("expected total to match returned rows, got %d vs %d", payload.Total, len(payload.Data))
+			}
+			if len(payload.Data) != len(testCase.expected) {
+				t.Fatalf("expected %d rows for %q, got %d (%+v)", len(testCase.expected), testCase.query, len(payload.Data), payload.Data)
+			}
+			for index, wantID := range testCase.expected {
+				if got := int32(payload.Data[index]["id"].(float64)); got != wantID {
+					t.Fatalf("expected user %d at index %d, got %d", wantID, index, got)
+				}
+			}
+		})
+	}
+}
+
+func TestUserListFiltersByRoleAndStatus(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	admin := &entity.User{ID: 310, Username: "filter-admin", Password: "123456", Role: "admin", Status: "enabled"}
+	if err := db.Create(admin).Error; err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	seeded := []entity.User{
+		{ID: 311, Username: "enabled-admin", Password: "123456", Role: "admin", Status: "enabled"},
+		{ID: 312, Username: "disabled-admin", Password: "123456", Role: "admin", Status: "disabled"},
+		{ID: 313, Username: "enabled-user", Password: "123456", Role: "user", Status: "enabled"},
+	}
+	for i := range seeded {
+		if err := db.Create(&seeded[i]).Error; err != nil {
+			t.Fatalf("create seeded user: %v", err)
+		}
+	}
+
+	ctx, recorder := newUserListTestContext(admin, "role=admin")
+	UserList(ctx)
+	payload := decodeUserListResponse(t, recorder)
+	// 310 / 311 是 admin，312 虽也是 admin 但状态为 disabled。
+	if payload.Total != 3 {
+		t.Fatalf("expected 3 admins, got %d", payload.Total)
+	}
+
+	ctx, recorder = newUserListTestContext(admin, "role=admin&status=disabled")
+	UserList(ctx)
+	payload = decodeUserListResponse(t, recorder)
+	if payload.Total != 1 {
+		t.Fatalf("expected 1 disabled admin, got %d", payload.Total)
+	}
+	if got := payload.Data[0]["username"]; got != "disabled-admin" {
+		t.Fatalf("unexpected filtered user: %v", got)
+	}
+
+	// 角色与状态可以叠加关键词。
+	ctx, recorder = newUserListTestContext(admin, "role=user&keyword=enabled")
+	UserList(ctx)
+	payload = decodeUserListResponse(t, recorder)
+	if payload.Total != 1 || payload.Data[0]["username"] != "enabled-user" {
+		t.Fatalf("expected combined filter to keep only enabled-user, got %+v", payload.Data)
+	}
+}
+
+func TestUserListPaginates(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	admin := &entity.User{ID: 320, Username: "page-admin", Password: "123456", Role: "admin", Status: "enabled"}
+	if err := db.Create(admin).Error; err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	for i := 0; i < 14; i++ {
+		user := entity.User{
+			ID:       int32(321 + i),
+			Username: fmt.Sprintf("paged-user-%02d", i),
+			Password: "123456",
+			Role:     "user",
+			Status:   "enabled",
+		}
+		if err := db.Create(&user).Error; err != nil {
+			t.Fatalf("create paged user: %v", err)
+		}
+	}
+
+	ctx, recorder := newUserListTestContext(admin, "page=1&pageSize=10")
+	UserList(ctx)
+	firstPage := decodeUserListResponse(t, recorder)
+	if firstPage.Total != 15 {
+		t.Fatalf("expected total 15 (admin + 14 users), got %d", firstPage.Total)
+	}
+	if len(firstPage.Data) != 10 || firstPage.Page != 1 || firstPage.PageSize != 10 {
+		t.Fatalf("unexpected first page: total=%d rows=%d page=%d size=%d", firstPage.Total, len(firstPage.Data), firstPage.Page, firstPage.PageSize)
+	}
+
+	ctx, recorder = newUserListTestContext(admin, "page=2&pageSize=10")
+	UserList(ctx)
+	secondPage := decodeUserListResponse(t, recorder)
+	if len(secondPage.Data) != 5 {
+		t.Fatalf("expected 5 rows on second page, got %d", len(secondPage.Data))
+	}
+	if secondPage.Total != 15 {
+		t.Fatalf("expected total to stay 15 on page 2, got %d", secondPage.Total)
+	}
+	if firstPage.Data[0]["username"] == secondPage.Data[0]["username"] {
+		t.Fatal("expected the two pages to contain different users")
+	}
+}
+
+// 关键词里的 LIKE 通配符必须按字面量处理，不能变成「匹配全部」。
+func TestUserListKeywordTreatsLikeWildcardsLiterally(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	admin := &entity.User{ID: 330, Username: "wild-admin", Password: "123456", Role: "admin", Status: "enabled"}
+	if err := db.Create(admin).Error; err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	seeded := []entity.User{
+		{ID: 331, Username: "plain-user", Password: "123456", Role: "user", Status: "enabled"},
+		{ID: 332, Username: "under_score", Password: "123456", Role: "user", Status: "enabled"},
+	}
+	for i := range seeded {
+		if err := db.Create(&seeded[i]).Error; err != nil {
+			t.Fatalf("create seeded user: %v", err)
+		}
+	}
+
+	// "%" 不应匹配任何用户名。
+	ctx, recorder := newUserListTestContext(admin, "keyword="+url.QueryEscape("%"))
+	UserList(ctx)
+	payload := decodeUserListResponse(t, recorder)
+	if payload.Total != 0 {
+		t.Fatalf("expected %% to match nothing, got %d rows", payload.Total)
+	}
+
+	// "_" 是字面量下划线，应只命中 under_score。
+	ctx, recorder = newUserListTestContext(admin, "keyword="+url.QueryEscape("_"))
+	UserList(ctx)
+	payload = decodeUserListResponse(t, recorder)
+	if payload.Total != 1 || payload.Data[0]["username"] != "under_score" {
+		t.Fatalf("expected only under_score, got %+v", payload.Data)
+	}
 }
 
 func TestUserListRejectsNonAdminOperator(t *testing.T) {

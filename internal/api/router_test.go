@@ -153,15 +153,22 @@ func TestSetAPIRouterRegistersPaymentNotifyForPostAndGet(t *testing.T) {
 	}
 }
 
-func TestSetAPIRouterDoesNotRegisterAIModelMappingRoutes(t *testing.T) {
+// 模型绑定与旧的模型映射路由都必须保持移除状态。
+func TestSetAPIRouterDoesNotRegisterRemovedModelBindingRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	router := gin.New()
 	SetAPIRouter(router)
 
+	removed := map[string]bool{
+		"/adapter-service/ai-model-mappings":          false,
+		"/adapter-service/ai-model-mappings/:id":      false,
+		"/adapter-service/ai-model-architectures":     false,
+		"/adapter-service/ai-model-architectures/:id": false,
+	}
 	for _, route := range router.Routes() {
-		if route.Path == "/adapter-service/ai-model-mappings" || route.Path == "/adapter-service/ai-model-mappings/:id" {
-			t.Fatalf("expected AI model mapping routes to be removed, but found %s %s", route.Method, route.Path)
+		if _, tracked := removed[route.Path]; tracked {
+			t.Fatalf("expected route %s to be removed, but found %s", route.Path, route.Method)
 		}
 	}
 }

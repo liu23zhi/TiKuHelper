@@ -21,7 +21,7 @@ func TestBillingRecordListReturnsScopedRecords(t *testing.T) {
 		listBillingRecords = original
 	}()
 
-	listBillingRecords = func(user entity.User, page int, pageSize int) (service.BillingRecordListResult, error) {
+	listBillingRecords = func(user entity.User, query service.BillingRecordListQuery, page int, pageSize int) (service.BillingRecordListResult, error) {
 		if user.ID != 7 {
 			t.Fatalf("expected user id 7, got %d", user.ID)
 		}
@@ -29,7 +29,7 @@ func TestBillingRecordListReturnsScopedRecords(t *testing.T) {
 			t.Fatalf("expected pagination 2/5, got %d/%d", page, pageSize)
 		}
 		return service.BillingRecordListResult{
-			Data: []service.BillingRecordListItem{{ID: 1, Provider: "icodef", ProviderLabel: "Icodef 题库", Amount: 1.25, AccessTokenName: "默认令牌", CreatedAt: time.Unix(0, 0)}},
+			Data:     []service.BillingRecordListItem{{ID: 1, Provider: "icodef", ProviderLabel: "Icodef 题库", Amount: 1.25, AccessTokenName: "默认令牌", CreatedAt: time.Unix(0, 0)}},
 			Total:    1,
 			Page:     page,
 			PageSize: pageSize,
@@ -70,7 +70,7 @@ func TestBillingRecordListNormalizesInvalidPagination(t *testing.T) {
 		listBillingRecords = original
 	}()
 
-	listBillingRecords = func(user entity.User, page int, pageSize int) (service.BillingRecordListResult, error) {
+	listBillingRecords = func(user entity.User, query service.BillingRecordListQuery, page int, pageSize int) (service.BillingRecordListResult, error) {
 		if page != 1 || pageSize != 10 {
 			t.Fatalf("expected normalized pagination 1/10, got %d/%d", page, pageSize)
 		}
@@ -97,7 +97,7 @@ func TestBillingRecordListForcesOwnScopeForUsagePage(t *testing.T) {
 		listBillingRecords = original
 	}()
 
-	listBillingRecords = func(user entity.User, page int, pageSize int) (service.BillingRecordListResult, error) {
+	listBillingRecords = func(user entity.User, query service.BillingRecordListQuery, page int, pageSize int) (service.BillingRecordListResult, error) {
 		if user.Role == "admin" {
 			return service.BillingRecordListResult{
 				Data: []service.BillingRecordListItem{
@@ -110,7 +110,7 @@ func TestBillingRecordListForcesOwnScopeForUsagePage(t *testing.T) {
 			}, nil
 		}
 		return service.BillingRecordListResult{
-			Data: []service.BillingRecordListItem{{ID: 101, Provider: "icodef"}},
+			Data:     []service.BillingRecordListItem{{ID: 101, Provider: "icodef"}},
 			Total:    1,
 			Page:     page,
 			PageSize: pageSize,
@@ -148,7 +148,7 @@ func TestBillingRecordListReturnsServerErrorOnFailure(t *testing.T) {
 		listBillingRecords = original
 	}()
 
-	listBillingRecords = func(user entity.User, page int, pageSize int) (service.BillingRecordListResult, error) {
+	listBillingRecords = func(user entity.User, query service.BillingRecordListQuery, page int, pageSize int) (service.BillingRecordListResult, error) {
 		return service.BillingRecordListResult{}, errors.New("boom")
 	}
 

@@ -87,10 +87,8 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/ai-search-config/pricing-status", controller.Auth, middleware.RequireAdmin, controller.AISearchConfigPricingStatus)
 	apiRouter.POST("/ai-search-config/test", controller.Auth, controller.TestAISearchConfig)
 	apiRouter.PUT("/ai-search-config", controller.Auth, middleware.RequireAdmin, controller.UpdateAISearchConfig)
-	apiRouter.GET("/ai-model-architectures", controller.Auth, controller.AIModelArchitectureList)
-	apiRouter.POST("/ai-model-architectures", controller.Auth, controller.CreateAIModelArchitecture)
-	apiRouter.PUT("/ai-model-architectures/:id", controller.Auth, controller.UpdateAIModelArchitecture)
-	apiRouter.DELETE("/ai-model-architectures/:id", controller.Auth, controller.DeleteAIModelArchitecture)
+	// 模型绑定（ai-model-architectures）已移除：模型列表由 AI 搜索配置维护，
+	// 计费由模型价格表按「模型 ID / 显示名称」匹配。
 	apiRouter.GET("/ai-model-prices", controller.Auth, controller.AIModelPriceList)
 	apiRouter.POST("/ai-model-prices", controller.Auth, middleware.RequireAdmin, controller.CreateAIModelPrice)
 	// 静态路径必须注册在 :id 之前，避免 gin 路由冲突。

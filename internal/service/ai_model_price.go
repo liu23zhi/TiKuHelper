@@ -15,21 +15,25 @@ import (
 )
 
 const (
-	AIModelPriceStatusEnabled  = "enabled"
-	AIModelPriceStatusDisabled = "disabled"
+	// AIModelPriceStatusEnabled 是价格行唯一的状态值。
+	// 价格表不再有「停用」概念，保留该列只为兼容历史库结构。
+	AIModelPriceStatusEnabled = "enabled"
 
-	// aimodelPriceSeededSettingKey 记录内置默认价格已经写入过，
-	// 避免管理员删掉某个默认模型后，下一次请求又被自动补回来。
+	// aimodelPriceSeededSettingKey 记录上次同步时的默认表指纹，
+	// 用于在默认表未变化时跳过逐行同步。
 	aimodelPriceSeededSettingKey = "ai_model_price_defaults_seeded"
-	aimodelPriceSeededValue      = "1"
 )
 
 var aimodelPriceSeeded sync.Map
 
-var ErrAIModelPriceNameRequired = errors.New("模型名称不能为空")
+var ErrAIModelPriceNameRequired = errors.New("模型 ID 不能为空")
 var ErrAIModelPriceNotFound = errors.New("模型价格不存在")
 
 // defaultAIModelPrices 是内置的默认模型价格表。
+//
+// ModelName 是**模型 ID**（发送给上游的 model 字段，例如 gpt-6-astra），
+// DisplayName 是可读名称（例如 GPT-6 Astra）。价格匹配同时接受两者，
+// 因此默认模型填 ID 或填可读名都能命中同一行。
 //
 // 单价单位：人民币（元）/ 百万 token。数值沿用约定的报价表，美元数值按 1:1 视为人民币；
 // 如上游按美元报价，请按当期汇率折算后在此维护。
@@ -40,66 +44,66 @@ var ErrAIModelPriceNotFound = errors.New("模型价格不存在")
 // CacheWritePrice 为「缓存写入」单价；文档中为「-」的模型填 0。
 var defaultAIModelPrices = []entity.AIModelPrice{
 	// 旗舰模型
-	{ModelName: "GPT-6 Astra", InputPrice: 10.00, CachedPrice: 1.00, CacheWritePrice: 12.50, OutputPrice: 50.00},
-	{ModelName: "GPT-6.1 Sol", InputPrice: 2.00, CachedPrice: 0.10, CacheWritePrice: 2.50, OutputPrice: 10.00},
-	{ModelName: "GPT-6 Sol", InputPrice: 2.00, CachedPrice: 0.20, CacheWritePrice: 2.50, OutputPrice: 10.00},
-	{ModelName: "GPT-6 Luna", InputPrice: 0.10, CachedPrice: 0.01, CacheWritePrice: 0.125, OutputPrice: 0.50},
-	{ModelName: "GPT-5.6 Sol", InputPrice: 4.00, CachedPrice: 0.40, CacheWritePrice: 5.00, OutputPrice: 20.00},
-	{ModelName: "GPT-5.6 Terra", InputPrice: 2.00, CachedPrice: 0.20, CacheWritePrice: 2.50, OutputPrice: 12.00},
-	{ModelName: "GPT-5.6 Luna", InputPrice: 0.20, CachedPrice: 0.02, CacheWritePrice: 0.25, OutputPrice: 1.20},
-	{ModelName: "GPT-5.5", InputPrice: 5.00, CachedPrice: 0.50, OutputPrice: 30.00},
-	{ModelName: "GPT-5.5 Pro", InputPrice: 30.00, OutputPrice: 180.00},
-	{ModelName: "GPT-5.4", InputPrice: 2.50, CachedPrice: 0.25, OutputPrice: 15.00},
-	{ModelName: "GPT-5.4 Mini", InputPrice: 0.75, CachedPrice: 0.075, OutputPrice: 4.50},
-	{ModelName: "GPT-5.4 Nano", InputPrice: 0.20, CachedPrice: 0.02, OutputPrice: 1.25},
-	{ModelName: "GPT-5.4 Pro", InputPrice: 30.00, OutputPrice: 180.00},
-	{ModelName: "GPT-5.2", InputPrice: 1.75, CachedPrice: 0.175, OutputPrice: 14.00},
-	{ModelName: "GPT-5.2 Pro", InputPrice: 21.00, OutputPrice: 168.00},
-	{ModelName: "GPT-5.1", InputPrice: 1.25, CachedPrice: 0.125, OutputPrice: 10.00},
-	{ModelName: "GPT-5", InputPrice: 1.25, CachedPrice: 0.125, OutputPrice: 10.00},
-	{ModelName: "GPT-5 Mini", InputPrice: 0.25, CachedPrice: 0.025, OutputPrice: 2.00},
-	{ModelName: "GPT-5 Nano", InputPrice: 0.05, CachedPrice: 0.005, OutputPrice: 0.40},
-	{ModelName: "GPT-5 Pro", InputPrice: 15.00, OutputPrice: 120.00},
+	{ModelName: "gpt-6-astra", DisplayName: "GPT-6 Astra", InputPrice: 10.00, CachedPrice: 1.00, CacheWritePrice: 12.50, OutputPrice: 50.00},
+	{ModelName: "gpt-6.1-sol", DisplayName: "GPT-6.1 Sol", InputPrice: 2.00, CachedPrice: 0.10, CacheWritePrice: 2.50, OutputPrice: 10.00},
+	{ModelName: "gpt-6-sol", DisplayName: "GPT-6 Sol", InputPrice: 2.00, CachedPrice: 0.20, CacheWritePrice: 2.50, OutputPrice: 10.00},
+	{ModelName: "gpt-6-luna", DisplayName: "GPT-6 Luna", InputPrice: 0.10, CachedPrice: 0.01, CacheWritePrice: 0.125, OutputPrice: 0.50},
+	{ModelName: "gpt-5.6-sol", DisplayName: "GPT-5.6 Sol", InputPrice: 4.00, CachedPrice: 0.40, CacheWritePrice: 5.00, OutputPrice: 20.00},
+	{ModelName: "gpt-5.6-terra", DisplayName: "GPT-5.6 Terra", InputPrice: 2.00, CachedPrice: 0.20, CacheWritePrice: 2.50, OutputPrice: 12.00},
+	{ModelName: "gpt-5.6-luna", DisplayName: "GPT-5.6 Luna", InputPrice: 0.20, CachedPrice: 0.02, CacheWritePrice: 0.25, OutputPrice: 1.20},
+	{ModelName: "gpt-5.5", DisplayName: "GPT-5.5", InputPrice: 5.00, CachedPrice: 0.50, OutputPrice: 30.00},
+	{ModelName: "gpt-5.5-pro", DisplayName: "GPT-5.5 Pro", InputPrice: 30.00, OutputPrice: 180.00},
+	{ModelName: "gpt-5.4", DisplayName: "GPT-5.4", InputPrice: 2.50, CachedPrice: 0.25, OutputPrice: 15.00},
+	{ModelName: "gpt-5.4-mini", DisplayName: "GPT-5.4 Mini", InputPrice: 0.75, CachedPrice: 0.075, OutputPrice: 4.50},
+	{ModelName: "gpt-5.4-nano", DisplayName: "GPT-5.4 Nano", InputPrice: 0.20, CachedPrice: 0.02, OutputPrice: 1.25},
+	{ModelName: "gpt-5.4-pro", DisplayName: "GPT-5.4 Pro", InputPrice: 30.00, OutputPrice: 180.00},
+	{ModelName: "gpt-5.2", DisplayName: "GPT-5.2", InputPrice: 1.75, CachedPrice: 0.175, OutputPrice: 14.00},
+	{ModelName: "gpt-5.2-pro", DisplayName: "GPT-5.2 Pro", InputPrice: 21.00, OutputPrice: 168.00},
+	{ModelName: "gpt-5.1", DisplayName: "GPT-5.1", InputPrice: 1.25, CachedPrice: 0.125, OutputPrice: 10.00},
+	{ModelName: "gpt-5", DisplayName: "GPT-5", InputPrice: 1.25, CachedPrice: 0.125, OutputPrice: 10.00},
+	{ModelName: "gpt-5-mini", DisplayName: "GPT-5 Mini", InputPrice: 0.25, CachedPrice: 0.025, OutputPrice: 2.00},
+	{ModelName: "gpt-5-nano", DisplayName: "GPT-5 Nano", InputPrice: 0.05, CachedPrice: 0.005, OutputPrice: 0.40},
+	{ModelName: "gpt-5-pro", DisplayName: "GPT-5 Pro", InputPrice: 15.00, OutputPrice: 120.00},
 	// 通用模型
-	{ModelName: "GPT-4.1", InputPrice: 2.00, CachedPrice: 0.50, OutputPrice: 8.00},
-	{ModelName: "GPT-4.1 Mini", InputPrice: 0.40, CachedPrice: 0.10, OutputPrice: 1.60},
-	{ModelName: "GPT-4.1 Nano", InputPrice: 0.10, CachedPrice: 0.025, OutputPrice: 0.40},
-	{ModelName: "GPT-4o", InputPrice: 2.50, CachedPrice: 1.25, OutputPrice: 10.00},
-	{ModelName: "GPT-4o 2024-05-13", InputPrice: 5.00, OutputPrice: 15.00},
-	{ModelName: "GPT-4o Mini", InputPrice: 0.15, CachedPrice: 0.075, OutputPrice: 0.60},
-	{ModelName: "GPT-4 Turbo 2024-04-09", InputPrice: 10.00, OutputPrice: 30.00},
-	{ModelName: "GPT-4 0613", InputPrice: 30.00, OutputPrice: 60.00},
-	{ModelName: "GPT-3.5 Turbo", InputPrice: 0.50, OutputPrice: 1.50},
-	{ModelName: "GPT-3.5 Turbo 0125", InputPrice: 0.50, OutputPrice: 1.50},
-	{ModelName: "GPT-3.5 Turbo 1106", InputPrice: 1.00, OutputPrice: 2.00},
-	{ModelName: "GPT-3.5 Turbo Instruct", InputPrice: 1.50, OutputPrice: 2.00},
-	{ModelName: "Davinci-002", InputPrice: 2.00, OutputPrice: 2.00},
-	{ModelName: "Babbage-002", InputPrice: 0.40, OutputPrice: 0.40},
+	{ModelName: "gpt-4.1", DisplayName: "GPT-4.1", InputPrice: 2.00, CachedPrice: 0.50, OutputPrice: 8.00},
+	{ModelName: "gpt-4.1-mini", DisplayName: "GPT-4.1 Mini", InputPrice: 0.40, CachedPrice: 0.10, OutputPrice: 1.60},
+	{ModelName: "gpt-4.1-nano", DisplayName: "GPT-4.1 Nano", InputPrice: 0.10, CachedPrice: 0.025, OutputPrice: 0.40},
+	{ModelName: "gpt-4o", DisplayName: "GPT-4o", InputPrice: 2.50, CachedPrice: 1.25, OutputPrice: 10.00},
+	{ModelName: "gpt-4o-2024-05-13", DisplayName: "GPT-4o 2024-05-13", InputPrice: 5.00, OutputPrice: 15.00},
+	{ModelName: "gpt-4o-mini", DisplayName: "GPT-4o Mini", InputPrice: 0.15, CachedPrice: 0.075, OutputPrice: 0.60},
+	{ModelName: "gpt-4-turbo-2024-04-09", DisplayName: "GPT-4 Turbo 2024-04-09", InputPrice: 10.00, OutputPrice: 30.00},
+	{ModelName: "gpt-4-0613", DisplayName: "GPT-4 0613", InputPrice: 30.00, OutputPrice: 60.00},
+	{ModelName: "gpt-3.5-turbo", DisplayName: "GPT-3.5 Turbo", InputPrice: 0.50, OutputPrice: 1.50},
+	{ModelName: "gpt-3.5-turbo-0125", DisplayName: "GPT-3.5 Turbo 0125", InputPrice: 0.50, OutputPrice: 1.50},
+	{ModelName: "gpt-3.5-turbo-1106", DisplayName: "GPT-3.5 Turbo 1106", InputPrice: 1.00, OutputPrice: 2.00},
+	{ModelName: "gpt-3.5-turbo-instruct", DisplayName: "GPT-3.5 Turbo Instruct", InputPrice: 1.50, OutputPrice: 2.00},
+	{ModelName: "davinci-002", DisplayName: "Davinci-002", InputPrice: 2.00, OutputPrice: 2.00},
+	{ModelName: "babbage-002", DisplayName: "Babbage-002", InputPrice: 0.40, OutputPrice: 0.40},
 	// 推理模型
-	{ModelName: "o1", InputPrice: 15.00, CachedPrice: 7.50, OutputPrice: 60.00},
-	{ModelName: "o1 Pro", InputPrice: 150.00, OutputPrice: 600.00},
-	{ModelName: "o3", InputPrice: 2.00, CachedPrice: 0.50, OutputPrice: 8.00},
-	{ModelName: "o3 Pro", InputPrice: 20.00, OutputPrice: 80.00},
-	{ModelName: "o3 Mini", InputPrice: 1.10, CachedPrice: 0.55, OutputPrice: 4.40},
-	{ModelName: "o4 Mini", InputPrice: 1.10, CachedPrice: 0.275, OutputPrice: 4.40},
+	{ModelName: "o1", DisplayName: "o1", InputPrice: 15.00, CachedPrice: 7.50, OutputPrice: 60.00},
+	{ModelName: "o1-pro", DisplayName: "o1 Pro", InputPrice: 150.00, OutputPrice: 600.00},
+	{ModelName: "o3", DisplayName: "o3", InputPrice: 2.00, CachedPrice: 0.50, OutputPrice: 8.00},
+	{ModelName: "o3-pro", DisplayName: "o3 Pro", InputPrice: 20.00, OutputPrice: 80.00},
+	{ModelName: "o3-mini", DisplayName: "o3 Mini", InputPrice: 1.10, CachedPrice: 0.55, OutputPrice: 4.40},
+	{ModelName: "o4-mini", DisplayName: "o4 Mini", InputPrice: 1.10, CachedPrice: 0.275, OutputPrice: 4.40},
 	// Cyber（Daybreak）模型
-	{ModelName: "GPT-5.6 Cyber", InputPrice: 12.50, CachedPrice: 1.25, CacheWritePrice: 15.625, OutputPrice: 75.00},
-	{ModelName: "GPT-5.5 Cyber", InputPrice: 12.50, CachedPrice: 1.25, OutputPrice: 75.00},
+	{ModelName: "gpt-5.6-cyber", DisplayName: "GPT-5.6 Cyber", InputPrice: 12.50, CachedPrice: 1.25, CacheWritePrice: 15.625, OutputPrice: 75.00},
+	{ModelName: "gpt-5.5-cyber", DisplayName: "GPT-5.5 Cyber", InputPrice: 12.50, CachedPrice: 1.25, OutputPrice: 75.00},
 	// 生命科学（Rosalind）模型
-	{ModelName: "GPT-Rosalind-Research", InputPrice: 5.00, CachedPrice: 0.50, OutputPrice: 25.00},
-	{ModelName: "GPT-Rosalind-Discovery", InputPrice: 5.00, CachedPrice: 0.50, OutputPrice: 25.00},
+	{ModelName: "gpt-rosalind-research", DisplayName: "GPT-Rosalind-Research", InputPrice: 5.00, CachedPrice: 0.50, OutputPrice: 25.00},
+	{ModelName: "gpt-rosalind-discovery", DisplayName: "GPT-Rosalind-Discovery", InputPrice: 5.00, CachedPrice: 0.50, OutputPrice: 25.00},
 	// 专用模型
-	{ModelName: "GPT-5.3-Codex", InputPrice: 1.75, CachedPrice: 0.175, OutputPrice: 14.00},
-	{ModelName: "Chat-Latest", InputPrice: 5.00, CachedPrice: 0.50, OutputPrice: 30.00},
-	{ModelName: "GPT-5 Search API", InputPrice: 1.25, CachedPrice: 0.125, OutputPrice: 10.00},
-	{ModelName: "Text-Embedding-3-Small", InputPrice: 0.02},
-	{ModelName: "Text-Embedding-3-Large", InputPrice: 0.13},
-	{ModelName: "Text-Embedding-Ada-002", InputPrice: 0.10},
-	{ModelName: "Omni-Moderation-Latest"},
-	// 兼容既有部署的别名行（与对应主模型同价）
-	{ModelName: "Daybreak Blue（GPT-5.6 Sol）", InputPrice: 4.00, CachedPrice: 0.40, CacheWritePrice: 5.00, OutputPrice: 20.00},
-	{ModelName: "Daybreak Red", InputPrice: 12.50, CachedPrice: 1.25, CacheWritePrice: 15.625, OutputPrice: 75.00},
-	{ModelName: "GPT-6 Astra Law *", InputPrice: 12.50, CachedPrice: 1.25, CacheWritePrice: 15.625, OutputPrice: 62.50},
+	{ModelName: "gpt-5.3-codex", DisplayName: "GPT-5.3-Codex", InputPrice: 1.75, CachedPrice: 0.175, OutputPrice: 14.00},
+	{ModelName: "chat-latest", DisplayName: "Chat-Latest", InputPrice: 5.00, CachedPrice: 0.50, OutputPrice: 30.00},
+	{ModelName: "gpt-5-search-api", DisplayName: "GPT-5 Search API", InputPrice: 1.25, CachedPrice: 0.125, OutputPrice: 10.00},
+	{ModelName: "text-embedding-3-small", DisplayName: "Text-Embedding-3-Small", InputPrice: 0.02},
+	{ModelName: "text-embedding-3-large", DisplayName: "Text-Embedding-3-Large", InputPrice: 0.13},
+	{ModelName: "text-embedding-ada-002", DisplayName: "Text-Embedding-Ada-002", InputPrice: 0.10},
+	{ModelName: "omni-moderation-latest", DisplayName: "Omni-Moderation-Latest"},
+	// 别名行（与对应主模型同价）
+	{ModelName: "daybreak-blue", DisplayName: "Daybreak Blue（GPT-5.6 Sol）", InputPrice: 4.00, CachedPrice: 0.40, CacheWritePrice: 5.00, OutputPrice: 20.00},
+	{ModelName: "daybreak-red", DisplayName: "Daybreak Red", InputPrice: 12.50, CachedPrice: 1.25, CacheWritePrice: 15.625, OutputPrice: 75.00},
+	{ModelName: "gpt-6-astra-law", DisplayName: "GPT-6 Astra Law *", InputPrice: 12.50, CachedPrice: 1.25, CacheWritePrice: 15.625, OutputPrice: 62.50},
 }
 
 type CreateAIModelPriceInput struct {
@@ -149,18 +153,15 @@ type ResolvedAIModelTokenPrice struct {
 
 // ListAIModelPricesWithDB 返回模型价格表，并在首次访问时写入内置默认价格，
 // 这样升级后不会出现「价格表为空 → AI 全部免费」的计费漏洞。
-func ListAIModelPricesWithDB(db *gorm.DB, includeDisabled bool) ([]entity.AIModelPrice, error) {
+//
+// 价格表不再有「状态」概念：所有行都参与计费，因此不再接受 includeDisabled 参数。
+func ListAIModelPricesWithDB(db *gorm.DB) ([]entity.AIModelPrice, error) {
 	if err := EnsureDefaultAIModelPricesWithDB(db); err != nil {
 		return nil, err
 	}
 
-	query := db.Model(&entity.AIModelPrice{}).Order("sort asc, id asc")
-	if !includeDisabled {
-		query = query.Where("status = ?", AIModelPriceStatusEnabled)
-	}
-
 	var items []entity.AIModelPrice
-	if err := query.Find(&items).Error; err != nil {
+	if err := db.Model(&entity.AIModelPrice{}).Order("sort asc, id asc").Find(&items).Error; err != nil {
 		return nil, err
 	}
 	return items, nil
@@ -208,80 +209,111 @@ func EnsureDefaultAIModelPricesWithDB(db *gorm.DB) error {
 }
 
 func syncDefaultAIModelPrices(db *gorm.DB) error {
-	// 先筛出需要补入的模型；若这一步就发现缺表，直接安全退出。
-	if err := insertMissingDefaultAIModelPrices(db); err != nil {
-		return err
-	}
-	// 再同步内置模型的单价（跳过管理员改过的行）。
-	return updateUntouchedDefaultAIModelPrices(db)
-}
-
-func insertMissingDefaultAIModelPrices(db *gorm.DB) error {
 	for index, seed := range defaultAIModelPrices {
-		var existing entity.AIModelPrice
-		err := db.Where("model_name = ?", seed.ModelName).First(&existing).Error
-		if err == nil {
-			continue
-		}
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
-			if isAIModelPriceTableMissingError(err) {
-				return nil
-			}
+		if err := syncOneDefaultAIModelPrice(db, seed, (index+1)*10); err != nil {
 			return err
 		}
+	}
+	return nil
+}
 
+// findExistingAIModelPriceForSeed 为一条默认价格找它对应的既有行。
+//
+// 先按模型 ID 匹配；未命中再按显示名称匹配（命中时第二个 bool 为 true）。
+// 这样内置表从「可读名」改成「上游模型 ID」时，旧行会被原地认领并重命名，
+// 而不是插入一条重复的新行。
+//
+// 注意：匹配是大小写不敏感的，所以模型 ID 分支也可能命中旧的可读名行
+// （"GPT-5.5" 与 "gpt-5.5"）。调用方必须比较两者的实际值来判断是否需要重命名，
+// 不能只看命中了哪个分支。
+func findExistingAIModelPriceForSeed(db *gorm.DB, seed entity.AIModelPrice) (entity.AIModelPrice, bool, bool, error) {
+	var existing entity.AIModelPrice
+	err := db.Where("LOWER(model_name) = LOWER(?)", seed.ModelName).First(&existing).Error
+	if err == nil {
+		return existing, true, false, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return entity.AIModelPrice{}, false, false, err
+	}
+
+	displayName := strings.TrimSpace(seed.DisplayName)
+	if displayName == "" {
+		return entity.AIModelPrice{}, false, false, nil
+	}
+	err = db.Where("LOWER(display_name) = LOWER(?)", displayName).Order("id asc").First(&existing).Error
+	if err == nil {
+		return existing, true, true, nil
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return entity.AIModelPrice{}, false, false, nil
+	}
+	return entity.AIModelPrice{}, false, false, err
+}
+
+func syncOneDefaultAIModelPrice(db *gorm.DB, seed entity.AIModelPrice, seedSort int) error {
+	existing, found, _, err := findExistingAIModelPriceForSeed(db, seed)
+	if err != nil {
+		if isAIModelPriceTableMissingError(err) {
+			return nil
+		}
+		return err
+	}
+
+	if !found {
 		item := seed
-		item.DisplayName = seed.ModelName
 		item.Status = AIModelPriceStatusEnabled
 		item.Multiplier = normalizeAIModelPriceMultiplier(seed.Multiplier)
-		item.Sort = (index + 1) * 10
+		item.Sort = seedSort
 		item.IsSeed = true
 		if createErr := db.Create(&item).Error; createErr != nil {
 			// 并发初始化时可能被其他请求抢先插入，唯一索引冲突可以安全忽略。
 			if isAIModelPriceUniqueConflictError(createErr) {
-				continue
+				return nil
 			}
 			if isAIModelPriceTableMissingError(createErr) {
 				return nil
 			}
 			return createErr
 		}
+		return nil
 	}
-	return nil
-}
 
-func updateUntouchedDefaultAIModelPrices(db *gorm.DB) error {
-	for index, seed := range defaultAIModelPrices {
-		var existing entity.AIModelPrice
-		err := db.Where("model_name = ?", seed.ModelName).First(&existing).Error
-		if err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) || isAIModelPriceTableMissingError(err) {
-				continue
-			}
-			return err
-		}
-		// 管理员改过的价格保持不动。
-		if existing.IsUserModified {
-			continue
-		}
+	updates := map[string]any{}
+	// 旧行把可读名当作模型 ID，这里原地迁移为上游模型 ID，避免出现重复行。
+	// 使用精确比较：strings.EqualFold 会把 "GPT-5.5" 与 "gpt-5.5" 视为相等
+	// （Unicode 简单折叠里 '.' 与 '-' 等价），那样就漏掉了旧行需要改名的判断。
+	if strings.TrimSpace(existing.ModelName) != seed.ModelName {
+		updates["model_name"] = seed.ModelName
+	}
+	// 显示名只在「仍为空」或「仍是旧的默认值（等于旧模型 ID）」时补齐，
+	// 不覆盖管理员自定义的显示名。
+	trimmedDisplay := strings.TrimSpace(existing.DisplayName)
+	if !existing.IsUserModified &&
+		trimmedDisplay != seed.DisplayName &&
+		(trimmedDisplay == "" || trimmedDisplay == strings.TrimSpace(existing.ModelName)) {
+		updates["display_name"] = seed.DisplayName
+	}
 
-		updates := map[string]any{
-			"input_price":       seed.InputPrice,
-			"cached_price":      seed.CachedPrice,
-			"cache_write_price": seed.CacheWritePrice,
-			"output_price":      seed.OutputPrice,
-			"multiplier":        normalizeAIModelPriceMultiplier(seed.Multiplier),
-		}
-		// 排序只在仍是默认值时跟随默认表，避免覆盖管理员通过导入产生的顺序。
+	// 管理员改过的价格保持不动（但仍然接受改名与默认排序）。
+	if !existing.IsUserModified {
+		updates["input_price"] = seed.InputPrice
+		updates["cached_price"] = seed.CachedPrice
+		updates["cache_write_price"] = seed.CacheWritePrice
+		updates["output_price"] = seed.OutputPrice
+		updates["multiplier"] = normalizeAIModelPriceMultiplier(seed.Multiplier)
 		if existing.Sort == 0 || existing.IsSeed {
-			updates["sort"] = (index + 1) * 10
+			updates["sort"] = seedSort
 		}
-		if err := db.Model(&entity.AIModelPrice{}).Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
-			if isAIModelPriceTableMissingError(err) {
-				return nil
-			}
-			return err
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+
+	if err := db.Model(&entity.AIModelPrice{}).Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
+		if isAIModelPriceTableMissingError(err) || isAIModelPriceUniqueConflictError(err) {
+			return nil
 		}
+		return err
 	}
 	return nil
 }
@@ -500,8 +532,8 @@ func findAIModelPriceByModelName(db *gorm.DB, modelName string) (*entity.AIModel
 		args      []interface{}
 		matchedBy string
 	}{
-		{"LOWER(model_name) = LOWER(?) AND status = ?", []interface{}{modelName, AIModelPriceStatusEnabled}, "model_name"},
-		{"LOWER(display_name) = LOWER(?) AND status = ?", []interface{}{modelName, AIModelPriceStatusEnabled}, "display_name"},
+		{"LOWER(model_name) = LOWER(?)", []interface{}{modelName}, "model_name"},
+		{"LOWER(display_name) = LOWER(?)", []interface{}{modelName}, "display_name"},
 	}
 
 	for _, candidate := range candidates {
@@ -525,7 +557,7 @@ func findAIModelPriceByModelName(db *gorm.DB, modelName string) (*entity.AIModel
 	}
 
 	var items []entity.AIModelPrice
-	if err := db.Where("status = ?", AIModelPriceStatusEnabled).Order("sort asc, id asc").Find(&items).Error; err != nil {
+	if err := db.Order("sort asc, id asc").Find(&items).Error; err != nil {
 		if isAIModelPriceTableMissingError(err) {
 			return nil, "", nil
 		}
@@ -557,14 +589,6 @@ func normalizeAIModelPriceInput(input entity.AIModelPrice) (entity.AIModelPrice,
 		return entity.AIModelPrice{}, ErrAIModelPriceNameRequired
 	}
 
-	normalizedStatus := strings.ToLower(strings.TrimSpace(input.Status))
-	switch normalizedStatus {
-	case AIModelPriceStatusDisabled:
-		normalizedStatus = AIModelPriceStatusDisabled
-	default:
-		normalizedStatus = AIModelPriceStatusEnabled
-	}
-
 	sortOrder := input.Sort
 	if sortOrder < 0 {
 		sortOrder = 0
@@ -578,9 +602,10 @@ func normalizeAIModelPriceInput(input entity.AIModelPrice) (entity.AIModelPrice,
 		CacheWritePrice: normalizeAIModelPriceAmount(input.CacheWritePrice),
 		OutputPrice:     normalizeAIModelPriceAmount(input.OutputPrice),
 		Multiplier:      normalizeAIModelPriceMultiplier(input.Multiplier),
-		Status:          normalizedStatus,
-		Sort:            sortOrder,
-		Remark:          strings.TrimSpace(input.Remark),
+		// 价格表不再有状态概念，写入时固定为启用，避免出现静默不计费的行。
+		Status: AIModelPriceStatusEnabled,
+		Sort:   sortOrder,
+		Remark: strings.TrimSpace(input.Remark),
 	}, nil
 }
 

@@ -2,12 +2,22 @@
   <div class="log-page">
     <a-card :bordered="false" class="filter-card">
       <a-form layout="inline" class="filter-form">
+        <a-form-item label="关键词">
+          <a-input-search
+            v-model:value="keywordInput"
+            placeholder="说明 / 用户名 / IP"
+            allow-clear
+            style="width: 240px"
+            @search="applyKeyword"
+            @press-enter="applyKeyword"
+          />
+        </a-form-item>
         <a-form-item label="模块">
           <a-select
             v-model:value="filters.module"
             allow-clear
             placeholder="全部模块"
-            style="width: 180px"
+            style="width: 160px"
             :options="moduleOptions"
             @change="onFilterChange"
           />
@@ -17,7 +27,7 @@
             v-model:value="filters.action"
             allow-clear
             placeholder="全部操作"
-            style="width: 180px"
+            style="width: 160px"
             :options="actionOptions"
             @change="onFilterChange"
           />
@@ -26,6 +36,7 @@
           <a-space>
             <a-button type="primary" @click="handleLogList">刷新</a-button>
             <a-button @click="resetFilters">重置筛选</a-button>
+            <a-tag v-if="activeFilterCount > 0" color="blue">已启用 {{ activeFilterCount }} 个筛选条件</a-tag>
           </a-space>
         </a-form-item>
       </a-form>
@@ -33,7 +44,7 @@
         type="info"
         show-icon
         class="page-alert"
-        :message="isAdmin ? '当前显示全站审计日志，可按模块与操作类型筛选。搜题日志会拆分展示请求来源、请求 ID、命中渠道、计费渠道以及原始请求 / 响应快照。' : '当前仅显示你自己的操作日志，可按模块与操作类型筛选。搜题日志会拆分展示请求来源、请求 ID、命中渠道、计费渠道以及原始请求 / 响应快照。'"
+        :message="isAdmin ? '当前显示全站审计日志，可按关键词（说明 / 用户名 / 客户端 IP）、模块与操作类型筛选。搜题日志会拆分展示请求来源、请求 ID、命中渠道、计费渠道以及原始请求 / 响应快照。' : '当前仅显示你自己的操作日志，可按关键词（说明 / 用户名 / 客户端 IP）、模块与操作类型筛选。搜题日志会拆分展示请求来源、请求 ID、命中渠道、计费渠道以及原始请求 / 响应快照。'"
       />
     </a-card>
 
@@ -131,8 +142,9 @@
 
 <script>
 import { getLogList } from '@/api/TikuComponentApi';
-import { defineComponent, ref, reactive } from 'vue';
+import { defineComponent, ref, reactive, computed } from 'vue';
 import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser';
+import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@/utils/listSearchHelpers.mjs';
 import {
   buildLogModuleLabel,
   buildLogQidLabel,
@@ -145,9 +157,12 @@ const dataSource = ref([])
 const tabLoading = ref(true)
 const currentUser = ref(getStoredCurrentUser())
 const filters = reactive({
+  keyword: '',
   module: undefined,
   action: undefined,
 })
+// 关键词输入框的即时值：只有点「搜索」或回车才生效，避免每敲一个字就请求一次。
+const keywordInput = ref('')
 const pagination = reactive({
   current: 1,
   pageSize: 10,
@@ -167,6 +182,8 @@ export default defineComponent({
       tabLoading,
       pagination,
       filters,
+      keywordInput,
+      activeFilterCount: computed(() => countActiveFilters({ keyword: filters.keyword, module: filters.module, action: filters.action })),
       expandedSnapshots,
       isAdmin: isAdminUser(currentUser.value),
       moduleOptions: [
@@ -372,14 +389,20 @@ export default defineComponent({
     buildLogQidLabel(value) {
       return buildLogQidLabel(value)
     },
+    // 点「搜索」或回车时才把输入框内容变成生效的筛选条件。
+    applyKeyword() {
+      filters.keyword = normalizeSearchKeyword(keywordInput.value)
+      keywordInput.value = filters.keyword
+      pagination.current = 1
+      this.handleLogList()
+    },
     handleLogList() {
       tabLoading.value = true
-      getLogList({
-        page: pagination.current,
-        pageSize: pagination.pageSize,
-        module: filters.module || undefined,
+      getLogList(buildSearchParams({
+        keyword: filters.keyword,
+        module: filters.module,
         action: filters.action === undefined ? undefined : filters.action,
-      }).then(res => {
+      }, pagination.current, pagination.pageSize)).then(res => {
         if (res?.status == 200) {
           dataSource.value = res?.data?.data || []
           pagination.total = res?.data?.total || 0
@@ -395,6 +418,8 @@ export default defineComponent({
       this.handleLogList()
     },
     resetFilters() {
+      filters.keyword = ''
+      keywordInput.value = ''
       filters.module = undefined
       filters.action = undefined
       pagination.current = 1

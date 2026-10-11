@@ -14,6 +14,7 @@ import (
 
 	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
@@ -226,6 +227,106 @@ func ensureSMSVerificationSchemaForDriver(db *gorm.DB, driverName string) error 
 		}
 	}
 	return nil
+}
+
+// billingQuestionTextBackfilledKey 记录历史账单的题目回溯只跑过一次。
+const billingQuestionTextBackfilledKey = "billing_question_text_backfilled"
+
+// billingQuestionTextBackfillBatchSize 控制回溯时的批大小，避免一次性把整表读进内存。
+const billingQuestionTextBackfillBatchSize = 500
+
+// ensureBillingQuestionTextSchema 为账单表补上 question_text 列，
+// 并把历史账单里 URL 编码在 unit_price_snapshot 中的题目解码后回填一次。
+//
+// 用 system_settings 标记保证只跑一次；中途失败不会写标记，下次启动会继续。
+func ensureBillingQuestionTextSchema(db *gorm.DB) error {
+	if db == nil {
+		return nil
+	}
+	if !db.Migrator().HasTable(entity.TableNameBillingRecord) {
+		return nil
+	}
+
+	if !db.Migrator().HasColumn(&entity.BillingRecord{}, "question_text") {
+		if err := db.Migrator().AddColumn(&entity.BillingRecord{}, "QuestionText"); err != nil {
+			return err
+		}
+	}
+
+	if billingQuestionTextBackfillDone(db) {
+		return nil
+	}
+
+	if err := backfillBillingQuestionText(db); err != nil {
+		return err
+	}
+	return markBillingQuestionTextBackfilled(db)
+}
+
+func billingQuestionTextBackfillDone(db *gorm.DB) bool {
+	if !db.Migrator().HasTable(entity.TableNameSystemSetting) {
+		return false
+	}
+	var setting entity.SystemSetting
+	if err := db.Where("key = ?", billingQuestionTextBackfilledKey).First(&setting).Error; err != nil {
+		return false
+	}
+	return strings.TrimSpace(setting.Value) == "1"
+}
+
+func markBillingQuestionTextBackfilled(db *gorm.DB) error {
+	_ = db.Where("key = ?", billingQuestionTextBackfilledKey).Delete(&entity.SystemSetting{}).Error
+	return db.Create(&entity.SystemSetting{
+		Key:   billingQuestionTextBackfilledKey,
+		Value: "1",
+	}).Error
+}
+
+// backfillBillingQuestionText 分批把历史账单的题目从快照里解出来写进新列。
+func backfillBillingQuestionText(db *gorm.DB) error {
+	for {
+		var rows []entity.BillingRecord
+		err := db.
+			Select("id, unit_price_snapshot, question_text").
+			Where("(question_text IS NULL OR question_text = '') AND unit_price_snapshot LIKE ?", "%question=%").
+			Order("id asc").
+			Limit(billingQuestionTextBackfillBatchSize).
+			Find(&rows).Error
+		if err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "no such table") {
+				return nil
+			}
+			return err
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+
+		updated := 0
+		for _, row := range rows {
+			question := service.ExtractBillingSnapshotField(row.UnitPriceSnapshot, "question")
+			if question == "" {
+				continue
+			}
+			if len(question) > 512 {
+				question = string([]rune(question)[:512])
+			}
+			if updateErr := db.Model(&entity.BillingRecord{}).
+				Where("id = ?", row.ID).
+				Update("question_text", question).Error; updateErr != nil {
+				return updateErr
+			}
+			updated++
+		}
+
+		if updated == 0 {
+			// 本批都没有可解析的题目：直接结束，避免死循环。
+			return nil
+		}
+		if len(rows) < billingQuestionTextBackfillBatchSize {
+			return nil
+		}
+	}
 }
 
 // ensureAIModelPriceSchema 为历史价格表补上新增列。
@@ -446,7 +547,7 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		&entity.PaymentMethod{},
 		&entity.RechargeOrder{},
 		&entity.BillingRecord{},
-		&entity.AIModelArchitecture{},
+		// ai_model_architectures（模型绑定）已移除：旧库中的表保留但不再由 AutoMigrate 管理。
 		&entity.AIModelPrice{},
 		&entity.SMSVerificationCode{},
 		&entity.CaptchaChallenge{},
@@ -462,6 +563,10 @@ func RegisterDB(config configs.Config) *gorm.DB {
 
 	if err := ensureAIModelPriceSchema(db); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare ai model price schema fail: %w", err))
+	}
+
+	if err := ensureBillingQuestionTextSchema(db); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare billing question text schema fail: %w", err))
 	}
 	ensureAccountDomainDefaults(db)
 

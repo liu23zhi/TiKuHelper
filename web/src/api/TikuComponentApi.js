@@ -219,11 +219,12 @@ export function unbindCurrentUserWechat() {
   })
 }
 
-// 获取用户列表
-export function getUserList() {
+// 获取用户列表（支持关键词 / 角色 / 状态筛选与分页）
+export function getUserList(params) {
   return request({
     url: `/adapter-service/user`,
-    method: 'get'
+    method: 'get',
+    params
   })
 }
 // 删除用户
@@ -343,36 +344,6 @@ export function getAISearchConfig() {
   return request({
     url: `/adapter-service/ai-search-config`,
     method: 'get'
-  })
-}
-
-export function getAIModelArchitectures() {
-  return request({
-    url: `/adapter-service/ai-model-architectures`,
-    method: 'get'
-  })
-}
-
-export function createAIModelArchitecture(data) {
-  return request({
-    url: `/adapter-service/ai-model-architectures`,
-    method: 'post',
-    data
-  })
-}
-
-export function updateAIModelArchitecture(data) {
-  return request({
-    url: `/adapter-service/ai-model-architectures/${data.id}`,
-    method: 'put',
-    data
-  })
-}
-
-export function deleteAIModelArchitecture(data) {
-  return request({
-    url: `/adapter-service/ai-model-architectures/${data.id}`,
-    method: 'delete'
   })
 }
 

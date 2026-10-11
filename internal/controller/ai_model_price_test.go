@@ -13,38 +13,42 @@ import (
 	"github.com/itihey/tikuAdapter/internal/service"
 )
 
-func TestAIModelPriceListAllowsNonAdminButHidesDisabled(t *testing.T) {
+// 价格表没有状态概念，普通用户与管理员拿到的是同一份全量表。
+func TestAIModelPriceListReturnsAllRowsRegardlessOfRole(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	original := listAIModelPrices
 	defer func() { listAIModelPrices = original }()
 
-	var capturedIncludeDisabled bool
-	listAIModelPrices = func(includeDisabled bool) ([]entity.AIModelPrice, error) {
-		capturedIncludeDisabled = includeDisabled
-		return []entity.AIModelPrice{{ID: 1, ModelName: "GPT-5.5", InputPrice: 5, CachedPrice: 0.5, OutputPrice: 30, Status: "enabled"}}, nil
+	calls := 0
+	listAIModelPrices = func() ([]entity.AIModelPrice, error) {
+		calls++
+		return []entity.AIModelPrice{{ID: 1, ModelName: "gpt-5.5", DisplayName: "GPT-5.5", InputPrice: 5, CachedPrice: 0.5, OutputPrice: 30, Status: "enabled"}}, nil
 	}
 
-	recorder := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/ai-model-prices", nil)
-	ctx.Set("user", &entity.User{ID: 8, Role: "user", Status: "enabled"})
+	for _, role := range []string{"user", "admin"} {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/ai-model-prices", nil)
+		ctx.Set("user", &entity.User{ID: 8, Role: role, Status: "enabled"})
 
-	AIModelPriceList(ctx)
+		AIModelPriceList(ctx)
 
-	if capturedIncludeDisabled {
-		t.Fatal("expected non-admin request to hide disabled prices")
-	}
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("expected status 200 for %s, got %d with body %s", role, recorder.Code, recorder.Body.String())
+		}
+
+		var items []entity.AIModelPrice
+		if err := json.Unmarshal(recorder.Body.Bytes(), &items); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if len(items) != 1 || items[0].ModelName != "gpt-5.5" || items[0].OutputPrice != 30 {
+			t.Fatalf("unexpected model prices for %s: %+v", role, items)
+		}
 	}
 
-	var items []entity.AIModelPrice
-	if err := json.Unmarshal(recorder.Body.Bytes(), &items); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if len(items) != 1 || items[0].ModelName != "GPT-5.5" || items[0].OutputPrice != 30 {
-		t.Fatalf("unexpected model prices: %+v", items)
+	if calls != 2 {
+		t.Fatalf("expected the price table to be listed once per request, got %d", calls)
 	}
 }
 
@@ -54,7 +58,7 @@ func TestAIModelPriceListReturnsEmptyArrayInsteadOfNull(t *testing.T) {
 	original := listAIModelPrices
 	defer func() { listAIModelPrices = original }()
 
-	listAIModelPrices = func(bool) ([]entity.AIModelPrice, error) { return nil, nil }
+	listAIModelPrices = func() ([]entity.AIModelPrice, error) { return nil, nil }
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -73,7 +77,7 @@ func TestCreateAIModelPriceRejectsNonAdmin(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-model-prices", bytes.NewBufferString(`{"modelName":"GPT-5.5"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-model-prices", bytes.NewBufferString(`{"modelName":"gpt-5.5"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("user", &entity.User{ID: 8, Role: "user", Status: "enabled"})
 
@@ -91,7 +95,7 @@ func TestCreateAIModelPriceReturnsCreatedItemForAdmin(t *testing.T) {
 	defer func() { createAIModelPrice = original }()
 
 	createAIModelPrice = func(input service.CreateAIModelPriceInput) (entity.AIModelPrice, error) {
-		if input.ModelName != "Daybreak Red" || input.OutputPrice != 75 {
+		if input.ModelName != "daybreak-red" || input.OutputPrice != 75 {
 			t.Fatalf("unexpected input: %+v", input)
 		}
 		return entity.AIModelPrice{ID: 9, ModelName: input.ModelName, OutputPrice: input.OutputPrice, Status: "enabled"}, nil
@@ -99,7 +103,7 @@ func TestCreateAIModelPriceReturnsCreatedItemForAdmin(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-model-prices", bytes.NewBufferString(`{"modelName":"Daybreak Red","outputPrice":75}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-model-prices", bytes.NewBufferString(`{"modelName":"daybreak-red","outputPrice":75}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 
@@ -113,7 +117,7 @@ func TestCreateAIModelPriceReturnsCreatedItemForAdmin(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &created); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if created.ID != 9 || created.ModelName != "Daybreak Red" {
+	if created.ID != 9 || created.ModelName != "daybreak-red" {
 		t.Fatalf("unexpected created price: %+v", created)
 	}
 }
@@ -234,7 +238,7 @@ func TestAIModelPriceListReturnsServerErrorWhenLoadFails(t *testing.T) {
 	original := listAIModelPrices
 	defer func() { listAIModelPrices = original }()
 
-	listAIModelPrices = func(bool) ([]entity.AIModelPrice, error) {
+	listAIModelPrices = func() ([]entity.AIModelPrice, error) {
 		return nil, errors.New("boom")
 	}
 

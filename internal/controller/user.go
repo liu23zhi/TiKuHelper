@@ -15,6 +15,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/util"
+	"gorm.io/gorm"
 )
 
 const authCookieName = "tiku_token"
@@ -625,6 +626,9 @@ func UserLogout(c *gin.Context) {
 }
 
 // UserList 用户列表
+//
+// 支持关键词搜索（用户名 / 昵称 / 手机号 / 微信 ID / 用户 ID）、角色与状态筛选，
+// 并返回分页结果 {data, total, page, pageSize}。
 func UserList(c *gin.Context) {
 	operator, _ := c.Get(`user`)
 	currentUser := operator.(*entity.User)
@@ -635,14 +639,65 @@ func UserList(c *gin.Context) {
 		return
 	}
 
-	users, err := dao.User.Find()
-	if err != nil {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "10"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 10
+	}
+
+	query := buildUserListQuery(dao.User.UnderlyingDB().Model(&entity.User{}), c.Query("keyword"), c.Query("role"), c.Query("status"))
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
 		c.JSON(400, gin.H{
 			"message": "获取用户列表失败",
 		})
 		return
 	}
-	c.JSON(200, users)
+
+	var users []entity.User
+	offset := (page - 1) * pageSize
+	if err := query.Order("id asc").Limit(pageSize).Offset(offset).Find(&users).Error; err != nil {
+		c.JSON(400, gin.H{
+			"message": "获取用户列表失败",
+		})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"data":     users,
+		"total":    total,
+		"page":     page,
+		"pageSize": pageSize,
+	})
+}
+
+// buildUserListQuery 组装用户列表的筛选条件。
+// 抽成独立函数便于单测覆盖关键词转义与筛选组合。
+func buildUserListQuery(query *gorm.DB, keyword string, role string, status string) *gorm.DB {
+	if trimmedRole := strings.TrimSpace(role); trimmedRole != "" {
+		query = query.Where("role = ?", trimmedRole)
+	}
+	if trimmedStatus := strings.TrimSpace(status); trimmedStatus != "" {
+		query = query.Where("status = ?", trimmedStatus)
+	}
+
+	pattern := util.BuildLikePattern(keyword)
+	if pattern == "" {
+		return query
+	}
+
+	// ESCAPE '\' 让用户输入的 % 与 _ 按字面量匹配。
+	condition := `(
+		LOWER(COALESCE(username, '')) LIKE LOWER(?) ESCAPE '\'
+		OR LOWER(COALESCE(nickname, '')) LIKE LOWER(?) ESCAPE '\'
+		OR LOWER(COALESCE(phone, '')) LIKE LOWER(?) ESCAPE '\'
+		OR LOWER(COALESCE(wechat_id, '')) LIKE LOWER(?) ESCAPE '\'
+	)`
+	return query.Where(condition, pattern, pattern, pattern, pattern)
 }
 
 // CreateUser 创建用户

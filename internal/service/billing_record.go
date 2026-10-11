@@ -60,7 +60,7 @@ func buildCachedLocalProviderLabel(provider string, snapshot string) string {
 		return ""
 	}
 
-	sourceName := extractBillingSnapshotField(snapshot, "sourceName")
+	sourceName := ExtractBillingSnapshotField(snapshot, "sourceName")
 	if sourceName == "" || sourceName == "人工导入" {
 		return ""
 	}
@@ -160,7 +160,8 @@ func buildBillingRecordDetail(record BillingRecordListItem) string {
 	return "-"
 }
 
-func extractBillingSnapshotField(snapshot string, key string) string {
+// ExtractBillingSnapshotField 从账单的 unit_price_snapshot 里取出某个字段的值（已 URL 解码）。
+func ExtractBillingSnapshotField(snapshot string, key string) string {
 	trimmedKey := strings.TrimSpace(key)
 	if trimmedKey == "" {
 		return ""
@@ -183,8 +184,14 @@ func extractBillingSnapshotField(snapshot string, key string) string {
 	return strings.TrimSpace(value)
 }
 
+// buildBillingRecordDisplayQuery 构造账单展示用的基础查询。
+//
+// JOIN 必须在这里完成：关键词筛选会用到 access_tokens.name 与 billing_users.username，
+// 若只在取数据时才 JOIN，Count 就会因为缺列而报错（或得出与数据不一致的 total）。
 func buildBillingRecordDisplayQuery(db *gorm.DB, operator entity.User) *gorm.DB {
-	baseQuery := db.Table(entity.TableNameBillingRecord + " AS billing_records")
+	baseQuery := db.Table(entity.TableNameBillingRecord + " AS billing_records").
+		Joins("LEFT JOIN " + entity.TableNameAccessToken + " AS access_tokens ON access_tokens.id = billing_records.access_token_id").
+		Joins("LEFT JOIN " + entity.TableNameUser + " AS billing_users ON billing_users.id = billing_records.user_id")
 	baseQuery = baseQuery.Where(`
 		NOT EXISTS (
 			SELECT 1
@@ -222,7 +229,10 @@ func decorateBillingRecord(record BillingRecordListItem) BillingRecordListItem {
 		record.ProviderLabel = strings.TrimSpace(record.Provider)
 	}
 	record.AnswerSourceLabel = buildBillingAnswerSourceLabel(record.Provider, record.ProviderLabel, record.UnitPriceSnapshot)
-	record.QuestionText = extractBillingSnapshotField(record.UnitPriceSnapshot, "question")
+	// 优先用持久化的 question_text；旧行或新写入前为空时回退到快照解析。
+	if questionText := strings.TrimSpace(record.QuestionText); questionText == "" {
+		record.QuestionText = ExtractBillingSnapshotField(record.UnitPriceSnapshot, "question")
+	}
 	record.Subject = buildBillingRecordSubject(record)
 	record.Detail = buildBillingRecordDetail(record)
 	record.FeeDetails = []BillingRecordFeeDetail{{
@@ -331,8 +341,21 @@ func mergeBillingSearchGroup(representative BillingRecordListItem, charges []Bil
 	return representative
 }
 
-func ListBillingRecordsWithDB(db *gorm.DB, operator entity.User, page int, pageSize int) (BillingRecordListResult, error) {
-	baseQuery := buildBillingRecordDisplayQuery(db, operator)
+// BillingRecordListQuery 是账单列表的筛选条件。
+type BillingRecordListQuery struct {
+	// Keyword 同时匹配题目、用户名、渠道、模型、请求 ID、令牌名与备注。
+	Keyword string
+	// Type 精确匹配账单类型（题目消费 / 充值入账 / 新用户赠送）。
+	Type string
+}
+
+// ListBillingRecordsWithDB 返回账单列表。
+//
+// 分页与筛选都在数据库侧完成：先 JOIN 出展示需要的用户 / 令牌列，
+// 再把全部筛选条件应用到同一个 query 上，最后分别 Count 与 Find，
+// 避免出现「total 与当前页数据口径不一致」。
+func ListBillingRecordsWithDB(db *gorm.DB, operator entity.User, query BillingRecordListQuery, page int, pageSize int) (BillingRecordListResult, error) {
+	baseQuery := applyBillingRecordFilters(buildBillingRecordDisplayQuery(db, operator), query)
 
 	var total int64
 	if err := baseQuery.Count(&total).Error; err != nil {
@@ -342,9 +365,7 @@ func ListBillingRecordsWithDB(db *gorm.DB, operator entity.User, page int, pageS
 	var records []BillingRecordListItem
 	offset := (page - 1) * pageSize
 	if err := baseQuery.
-		Select("billing_records.id, billing_records.user_id, COALESCE(billing_users.username, '') AS username, billing_records.type, billing_records.provider, billing_records.amount, billing_records.created_at, billing_records.unit_price_snapshot, billing_records.request_id, billing_records.remark, access_tokens.name AS access_token_name").
-		Joins("LEFT JOIN " + entity.TableNameAccessToken + " AS access_tokens ON access_tokens.id = billing_records.access_token_id").
-		Joins("LEFT JOIN " + entity.TableNameUser + " AS billing_users ON billing_users.id = billing_records.user_id").
+		Select("billing_records.id, billing_records.user_id, COALESCE(billing_users.username, '') AS username, billing_records.type, billing_records.provider, billing_records.model_name, billing_records.amount, billing_records.created_at, billing_records.unit_price_snapshot, billing_records.question_text, billing_records.request_id, billing_records.remark, access_tokens.name AS access_token_name").
 		Order("billing_records.id desc").
 		Limit(pageSize).
 		Offset(offset).
@@ -372,4 +393,28 @@ func ListBillingRecordsWithDB(db *gorm.DB, operator entity.User, page int, pageS
 		Page:     page,
 		PageSize: pageSize,
 	}, nil
+}
+
+// applyBillingRecordFilters 把关键词与类型筛选应用到账单查询上。
+func applyBillingRecordFilters(query *gorm.DB, filter BillingRecordListQuery) *gorm.DB {
+	if recordType := strings.TrimSpace(filter.Type); recordType != "" {
+		query = query.Where("billing_records.type = ?", recordType)
+	}
+
+	pattern := util.BuildLikePattern(filter.Keyword)
+	if pattern == "" {
+		return query
+	}
+
+	// 用 ESCAPE '\' 配合转义后的模式，用户输入的 % 与 _ 按字面量处理。
+	condition := `(
+		LOWER(COALESCE(billing_users.username, '')) LIKE LOWER(?) ESCAPE '\'
+		OR LOWER(COALESCE(billing_records.provider, '')) LIKE LOWER(?) ESCAPE '\'
+		OR LOWER(COALESCE(billing_records.model_name, '')) LIKE LOWER(?) ESCAPE '\'
+		OR LOWER(COALESCE(billing_records.question_text, '')) LIKE LOWER(?) ESCAPE '\'
+		OR LOWER(COALESCE(billing_records.request_id, '')) LIKE LOWER(?) ESCAPE '\'
+		OR LOWER(COALESCE(billing_records.remark, '')) LIKE LOWER(?) ESCAPE '\'
+		OR LOWER(COALESCE(access_tokens.name, '')) LIKE LOWER(?) ESCAPE '\'
+	)`
+	return query.Where(condition, pattern, pattern, pattern, pattern, pattern, pattern, pattern)
 }

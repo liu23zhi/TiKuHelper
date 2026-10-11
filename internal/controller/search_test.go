@@ -39,7 +39,7 @@ func newSearchControllerTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open test db: %v", err)
 	}
 
-	if err := db.AutoMigrate(&entity.SearchAccountConfig{}, &entity.AISearchConfig{}, &entity.AIModelArchitecture{}, &entity.AIModelPrice{}, &entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}, &entity.Log{}, &entity.Tiku{}); err != nil {
+	if err := db.AutoMigrate(&entity.SearchAccountConfig{}, &entity.AISearchConfig{}, &entity.AIModelPrice{}, &entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}, &entity.Log{}, &entity.Tiku{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 
@@ -98,21 +98,6 @@ func seedControllerDefaultSearchProviderConfig(t *testing.T, db *gorm.DB, provid
 		t.Fatalf("create search account config: %v", err)
 	}
 	return config
-}
-
-func seedControllerAIModelArchitecture(t *testing.T, db *gorm.DB, modelName string) entity.AIModelArchitecture {
-	t.Helper()
-
-	architecture := entity.AIModelArchitecture{
-		Name:      modelName,
-		ModelName: modelName,
-		Enabled:   true,
-		Sort:      10,
-	}
-	if err := db.Create(&architecture).Error; err != nil {
-		t.Fatalf("create ai model architecture: %v", err)
-	}
-	return architecture
 }
 
 func seedControllerAccessToken(t *testing.T, db *gorm.DB, plainToken string) entity.AccessToken {
@@ -814,7 +799,6 @@ func TestSearchRecordsZeroAmountForModelMissingFromPriceTable(t *testing.T) {
 		t.Fatalf("seed user balance: %v", err)
 	}
 	token := seedControllerTokenForUser(t, db, user, "search-ai-billing-token", 0.25)
-	seedControllerAIModelArchitecture(t, db, "gpt-billing")
 
 	withStubSearchDependencies(t,
 		(&stubSearchClient{}).SearchAnswer,
@@ -1066,7 +1050,7 @@ func TestSearchPersistsAIBillingDuringDefaultAIThatRunsInNormalMode(t *testing.T
 		t.Fatalf("expected user balance -43.25 after ai billing, got %v", storedUser.Balance)
 	}
 
-	billingList, err := service.ListBillingRecordsWithDB(db, user, 1, 10)
+	billingList, err := service.ListBillingRecordsWithDB(db, user, service.BillingRecordListQuery{}, 1, 10)
 	if err != nil {
 		t.Fatalf("list ai-only billing records: %v", err)
 	}
@@ -1455,7 +1439,7 @@ func TestSearchPersistsQuestionTextForPersonalUsageRecords(t *testing.T) {
 			}
 		})
 
-	result, err := service.ListBillingRecordsWithDB(db, user, 1, 10)
+	result, err := service.ListBillingRecordsWithDB(db, user, service.BillingRecordListQuery{}, 1, 10)
 	if err != nil {
 		t.Fatalf("list billing records with question text: %v", err)
 	}

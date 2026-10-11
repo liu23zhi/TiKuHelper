@@ -46,46 +46,6 @@ export function filterRemoteModelNames(modelSource) {
   });
 }
 
-export function buildArchitectureModelOptions(rows) {
-  const seen = new Set();
-  const options = [];
-
-  (Array.isArray(rows) ? rows : []).forEach(row => {
-    const modelName = trimText(row?.modelName);
-    if (!modelName || seen.has(modelName)) {
-      return;
-    }
-    seen.add(modelName);
-    options.push({
-      label: modelName,
-      value: modelName,
-    });
-  });
-
-  return options;
-}
-
-export function buildArchitectureModelValues(rows) {
-  return buildArchitectureModelOptions(rows).map(item => item.value);
-}
-
-export function buildArchitectureModelText(rows) {
-  return buildArchitectureModelValues(rows).join('\n');
-}
-
-export function buildMissingArchitecturePayloads(rows, modelSource) {
-  const existing = new Set(buildArchitectureModelValues(rows));
-  return buildModelNameValues(modelSource)
-    .filter(modelName => !existing.has(modelName))
-    .map(modelName => ({
-      name: modelName,
-      modelName,
-      enabled: true,
-      sort: 0,
-      remark: '',
-    }));
-}
-
 // 模型单价已迁移到模型价格表，保存 AI 搜索配置时不再提交任何计费字段。
 export function buildAISearchConfigSavePayload(formState, baseUrl) {
   const hasEditableModelText = Object.prototype.hasOwnProperty.call(formState || {}, 'manualModelsText');
@@ -113,10 +73,8 @@ function normalizePricingKey(value) {
 function buildPricedModelKeys(priceRows) {
   const keys = new Set();
   (Array.isArray(priceRows) ? priceRows : []).forEach(row => {
-    // 只有启用状态的模型价格才会真正参与计费。
-    if (row?.status && String(row.status).toLowerCase() !== 'enabled') {
-      return;
-    }
+    // 价格表没有状态概念：每一行都参与计费。
+    // 模型 ID 与显示名称都可以作为绑定名，因此两个键都要登记。
     const modelKey = normalizePricingKey(row?.modelName);
     if (modelKey) {
       keys.add(modelKey);

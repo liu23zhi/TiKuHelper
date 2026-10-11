@@ -8,6 +8,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/util"
+	"gorm.io/gorm"
 )
 
 const (
@@ -47,6 +49,9 @@ func writeAuditLog(user *entity.User, module string, action int32, description s
 }
 
 // LogList - 日志列表
+//
+// 支持按关键词搜索（说明 / 用户名 / 客户端 IP / 写入者）以及模块、操作类型筛选。
+// 非管理员只能看到自己的日志。
 func LogList(c *gin.Context) {
 	user, _ := c.Get("user")
 	currentUser := user.(*entity.User)
@@ -62,20 +67,9 @@ func LogList(c *gin.Context) {
 	offset := (page - 1) * pageSize
 	module := strings.TrimSpace(c.Query("module"))
 	actionValue := strings.TrimSpace(c.Query("action"))
+	keyword := util.NormalizeSearchKeyword(c.Query("keyword"))
 
-	query := dao.Log.UnderlyingDB().Model(&entity.Log{})
-	if !isAdminUser(currentUser) {
-		query = query.Where("user_id = ?", currentUser.ID)
-	}
-	if module != "" {
-		query = query.Where("module = ?", module)
-	}
-	if actionValue != "" {
-		action, parseErr := strconv.Atoi(actionValue)
-		if parseErr == nil {
-			query = query.Where("action = ?", action)
-		}
-	}
+	query := buildLogListQuery(dao.Log.UnderlyingDB().Model(&entity.Log{}), currentUser, module, actionValue, keyword)
 
 	var (
 		total int64
@@ -102,6 +96,35 @@ func LogList(c *gin.Context) {
 		"page":     page,
 		"pageSize": pageSize,
 	})
+}
+
+// buildLogListQuery 组装日志查询条件：先按权限收窄，再叠加筛选。
+// 抽成独立函数便于单测覆盖关键词转义与筛选组合。
+func buildLogListQuery(query *gorm.DB, currentUser *entity.User, module string, actionValue string, keyword string) *gorm.DB {
+	if !isAdminUser(currentUser) {
+		query = query.Where("user_id = ?", currentUser.ID)
+	}
+	if strings.TrimSpace(module) != "" {
+		query = query.Where("module = ?", module)
+	}
+	if actionValue != "" {
+		if action, parseErr := strconv.Atoi(actionValue); parseErr == nil {
+			query = query.Where("action = ?", action)
+		}
+	}
+
+	pattern := util.BuildLikePattern(keyword)
+	if pattern == "" {
+		return query
+	}
+	// ESCAPE '\' 让用户输入的 % 与 _ 按字面量匹配，而不是变成通配符。
+	condition := `(
+		LOWER(COALESCE(description, '')) LIKE LOWER(?) ESCAPE '\'
+		OR LOWER(COALESCE(username, '')) LIKE LOWER(?) ESCAPE '\'
+		OR LOWER(COALESCE(client_ip, '')) LIKE LOWER(?) ESCAPE '\'
+		OR LOWER(COALESCE(module, '')) LIKE LOWER(?) ESCAPE '\'
+	)`
+	return query.Where(condition, pattern, pattern, pattern, pattern)
 }
 
 func resolveLogUsernames(logs []*entity.Log) {

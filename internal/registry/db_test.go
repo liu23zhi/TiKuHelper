@@ -13,6 +13,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
+	"net/url"
 )
 
 type legacyUserWithoutPhone struct {
@@ -413,5 +414,98 @@ func TestRegisterDBMigratesLegacyUsersTableWithNullablePhoneBindingColumns(t *te
 	}
 	if got.Phone.Valid {
 		t.Fatalf("expected migrated phone to remain NULL, got %+v", got.Phone)
+	}
+}
+
+// legacyBillingRecordWithoutQuestionText 模拟没有 question_text 列的历史账单表。
+type legacyBillingRecordWithoutQuestionText struct {
+	ID                int32     `gorm:"primaryKey;autoIncrement"`
+	UserID            int32     `gorm:"column:user_id;type:int(11);not null"`
+	Type              string    `gorm:"column:type;type:varchar(32);not null"`
+	Provider          string    `gorm:"column:provider;type:varchar(64)"`
+	Amount            float64   `gorm:"column:amount;type:decimal(18,8);not null;default:0"`
+	UnitPriceSnapshot string    `gorm:"column:unit_price_snapshot;type:text"`
+	RequestID         string    `gorm:"column:request_id;type:varchar(64)"`
+	CreatedAt         time.Time `gorm:"column:created_at;autoCreateTime"`
+}
+
+func (*legacyBillingRecordWithoutQuestionText) TableName() string {
+	return entity.TableNameBillingRecord
+}
+
+func TestEnsureBillingQuestionTextSchemaBackfillsFromSnapshotOnce(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:billing-question-backfill?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+
+	if err := db.AutoMigrate(&legacyBillingRecordWithoutQuestionText{}, &entity.SystemSetting{}); err != nil {
+		t.Fatalf("migrate legacy billing table: %v", err)
+	}
+	if db.Migrator().HasColumn(entity.TableNameBillingRecord, "question_text") {
+		t.Fatal("expected legacy billing table to start without question_text column")
+	}
+
+	// 历史行：题目以 URL 编码形式埋在快照里。
+	legacy := legacyBillingRecordWithoutQuestionText{
+		UserID:            1,
+		Type:              "normal_search",
+		Provider:          "icodef",
+		Amount:            1.25,
+		UnitPriceSnapshot: "provider=icodef question=" + url.QueryEscape("历史账单的题目"),
+		RequestID:         "req-legacy",
+	}
+	if err := db.Create(&legacy).Error; err != nil {
+		t.Fatalf("seed legacy billing record: %v", err)
+	}
+	// 不带 question= 的行不应该被写入内容。
+	withoutQuestion := legacyBillingRecordWithoutQuestionText{
+		UserID:            1,
+		Type:              "recharge",
+		Provider:          "epay",
+		Amount:            50,
+		UnitPriceSnapshot: "provider=epay flatPrice=50.00",
+		RequestID:         "req-recharge",
+	}
+	if err := db.Create(&withoutQuestion).Error; err != nil {
+		t.Fatalf("seed legacy recharge record: %v", err)
+	}
+
+	if err := ensureBillingQuestionTextSchema(db); err != nil {
+		t.Fatalf("prepare billing question text schema: %v", err)
+	}
+
+	if !db.Migrator().HasColumn(entity.TableNameBillingRecord, "question_text") {
+		t.Fatal("expected question_text column after preparation")
+	}
+
+	var questionText sql.NullString
+	if err := db.Raw("SELECT question_text FROM billing_records WHERE id = ?", legacy.ID).Scan(&questionText).Error; err != nil {
+		t.Fatalf("load backfilled record: %v", err)
+	}
+	if !questionText.Valid || questionText.String != "历史账单的题目" {
+		t.Fatalf("expected backfilled question text 历史账单的题目, got %+v", questionText)
+	}
+
+	var rechargeText sql.NullString
+	if err := db.Raw("SELECT question_text FROM billing_records WHERE id = ?", withoutQuestion.ID).Scan(&rechargeText).Error; err != nil {
+		t.Fatalf("load recharge record: %v", err)
+	}
+	if rechargeText.Valid && rechargeText.String != "" {
+		t.Fatalf("expected recharge record to stay empty, got %+v", rechargeText)
+	}
+
+	// 回溯只跑一次：把已填内容改掉后再次调用不应被覆盖。
+	if err := db.Exec("UPDATE billing_records SET question_text = ? WHERE id = ?", "手工修改", legacy.ID).Error; err != nil {
+		t.Fatalf("override question text: %v", err)
+	}
+	if err := ensureBillingQuestionTextSchema(db); err != nil {
+		t.Fatalf("second preparation: %v", err)
+	}
+	if err := db.Raw("SELECT question_text FROM billing_records WHERE id = ?", legacy.ID).Scan(&questionText).Error; err != nil {
+		t.Fatalf("reload record: %v", err)
+	}
+	if questionText.String != "手工修改" {
+		t.Fatalf("expected the one-shot backfill to not run again, got %q", questionText.String)
 	}
 }

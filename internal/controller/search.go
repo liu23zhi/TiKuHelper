@@ -1324,7 +1324,10 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 				BalanceAfter:       balanceAfter,
 				RequestID:          ctx.RequestID,
 				UnitPriceSnapshot:  charge.Snapshot,
-				Remark:             "搜索答题消耗",
+				// 题目原文单独落一列，供账单列表按关键词搜索。
+				// 快照里已经是 URL 编码的 question=，这里解码后存明文。
+				QuestionText: service.ExtractBillingSnapshotField(charge.Snapshot, "question"),
+				Remark:       "搜索答题消耗",
 			}
 			if err := tx.Create(&billingRecord).Error; err != nil {
 				return err

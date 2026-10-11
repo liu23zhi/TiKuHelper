@@ -9,14 +9,10 @@ import {
   filterRemoteModelNames,
   buildModelNameOptions,
   buildModelNameText,
-  buildArchitectureModelOptions,
-  buildArchitectureModelValues,
-  buildArchitectureModelText,
-  buildMissingArchitecturePayloads,
   buildAISearchConfigSavePayload,
   buildAIModelPricingGaps,
   isModelPriced,
-} from './aiModelArchitectureHelpers.mjs';
+} from './aiSearchModelHelpers.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,34 +27,9 @@ test('splitModelNames handles commas newlines and trimming', () => {
   assert.deepEqual(splitModelNames(' , ， \n '), []);
 });
 
-test('buildArchitectureModelOptions derives unique model names from architecture rows', () => {
-  assert.deepEqual(
-    buildArchitectureModelOptions([
-      { modelName: ' gpt-5.4 ' },
-      { modelName: 'gpt-5.4-mini' },
-      { modelName: 'gpt-5.4' },
-      { modelName: '' },
-      {},
-      { modelName: 'deepseek-chat' },
-    ]),
-    [
-      { label: 'gpt-5.4', value: 'gpt-5.4' },
-      { label: 'gpt-5.4-mini', value: 'gpt-5.4-mini' },
-      { label: 'deepseek-chat', value: 'deepseek-chat' },
-    ],
-  );
-});
 
-test('buildArchitectureModelValues and buildArchitectureModelText mirror architecture order', () => {
-  const rows = [
-    { modelName: 'gpt-5.4' },
-    { modelName: 'gpt-5.4-mini' },
-    { modelName: 'gpt-5.3-codex' },
-  ];
 
-  assert.deepEqual(buildArchitectureModelValues(rows), ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex']);
-  assert.equal(buildArchitectureModelText(rows), 'gpt-5.4\ngpt-5.4-mini\ngpt-5.3-codex');
-});
+
 
 test('buildModelNameOptions and buildModelNameText derive unique names from editable model text', () => {
   assert.deepEqual(
@@ -90,35 +61,9 @@ test('filterRemoteModelNames removes compact OpenAI and image-series remote mode
   );
 });
 
-test('buildMissingArchitecturePayloads only returns rows missing from existing architectures', () => {
-  assert.deepEqual(
-    buildMissingArchitecturePayloads(
-      [
-        { modelName: 'gpt-5.4' },
-        { modelName: 'gpt-5.4-mini' },
-      ],
-      'gpt-5.4,gpt-5.4-mini,gpt-5.3-codex\ndeepseek-chat',
-    ),
-    [
-      {
-        name: 'gpt-5.3-codex',
-        modelName: 'gpt-5.3-codex',
-        enabled: true,
-        sort: 0,
-        remark: '',
-      },
-      {
-        name: 'deepseek-chat',
-        modelName: 'deepseek-chat',
-        enabled: true,
-        sort: 0,
-        remark: '',
-      },
-    ],
-  );
-});
 
-test('buildAISearchConfigSavePayload persists editable model list instead of architecture rows', () => {
+
+test('buildAISearchConfigSavePayload persists the editable model list', () => {
   assert.deepEqual(
     buildAISearchConfigSavePayload(
       {
@@ -130,10 +75,6 @@ test('buildAISearchConfigSavePayload persists editable model list instead of arc
         manualModelsText: 'manual-only,gpt-5.4\nmanual-only',
       },
       'https://api.example.com/v1',
-      [
-        { modelName: 'stale-from-architecture' },
-        { modelName: 'gpt-5.4-mini' },
-      ],
     ),
     {
       enabled: true,
@@ -194,7 +135,7 @@ test('AISearchConfig page bills from the model price table', async () => {
   assert.match(content, /multiplier: Number\(this\.priceForm\.multiplier \|\| 1\)/);
   assert.match(content, /formatMultiplier/);
 
-  // 价格表的排序列已移除（模型绑定表的排序保留，因此只针对 dataIndex: 'sort' 所在段判断）。
+  // 价格表的排序列已移除。
   const priceColumnsBlock = content.slice(
     content.indexOf('const priceColumns = ['),
     content.indexOf('const loadConfig'),
@@ -203,6 +144,14 @@ test('AISearchConfig page bills from the model price table', async () => {
   assert.doesNotMatch(priceColumnsBlock, /sort/, '价格表不应再有排序列');
   assert.match(priceColumnsBlock, /dataIndex: 'multiplier'/);
   assert.match(priceColumnsBlock, /dataIndex: 'cacheWritePrice'/);
+  // 状态列与状态开关都已移除，价格行全部参与计费。
+  assert.doesNotMatch(priceColumnsBlock, /status/, '价格表不应再有状态列');
+  assert.doesNotMatch(content, /priceForm\.enabled/);
+  assert.doesNotMatch(content, /label="状态"/);
+
+  // 模型 ID 与显示名称分别成列。
+  assert.match(priceColumnsBlock, /title: '模型 ID'/);
+  assert.match(priceColumnsBlock, /title: '显示名称'/);
 
   // 价格表必须用人民币符号，不能出现美元计价（列头 $/M 或 $数字；模板字面量里的 $ 不算）。
   assert.doesNotMatch(content, /美元/);
@@ -217,31 +166,36 @@ test('AISearchConfig page bills from the model price table', async () => {
   assert.match(content, /return formatMoneyCny\(amount\)/);
   assert.doesNotMatch(content, /toFixed\(/);
 
-  assert.match(content, /architecture-table-wrap/);
+  // 模型绑定已彻底移除：卡片、弹窗、接口与同步逻辑都不应残留。
+  assert.doesNotMatch(content, /模型绑定/);
+  assert.doesNotMatch(content, /architecture/i);
+  assert.doesNotMatch(content, /Architecture/);
+  assert.match(content, /price-table-wrap/);
   assert.match(content, /@media \(max-width: 768px\)/);
-  assert.doesNotMatch(content, /syncModelTextFromArchitectures/);
-  assert.doesNotMatch(content, /每条记录直接绑定模型名，并维护计费倍率、启停状态与排序/);
 });
 
 const pricedRows = [
-  { modelName: 'GPT-5.5', displayName: 'GPT-5.5', status: 'enabled' },
-  { modelName: 'GPT-6 Luna', displayName: 'GPT-6 Luna', status: 'enabled' },
-  { modelName: 'Daybreak Red', displayName: 'Daybreak Red', status: 'disabled' },
+  { modelName: 'gpt-5.5', displayName: 'GPT-5.5' },
+  { modelName: 'gpt-6-luna', displayName: 'GPT-6 Luna' },
+  { modelName: 'daybreak-red', displayName: 'Daybreak Red' },
 ];
 
-test('isModelPriced matches names case and separator insensitively', () => {
-  assert.equal(isModelPriced('GPT-5.5', pricedRows), true);
+test('isModelPriced matches model ID and display name, ignoring case and separators', () => {
+  // 模型 ID 与显示名称都能命中同一行。
   assert.equal(isModelPriced('gpt-5.5', pricedRows), true);
+  assert.equal(isModelPriced('GPT-5.5', pricedRows), true);
   assert.equal(isModelPriced('  GPT 5.5 ', pricedRows), true);
+  assert.equal(isModelPriced('gpt-6-luna', pricedRows), true);
   assert.equal(isModelPriced('GPT-6 Luna', pricedRows), true);
   assert.equal(isModelPriced('GPT-6Luna', pricedRows), true);
   assert.equal(isModelPriced('unknown-model', pricedRows), false);
   assert.equal(isModelPriced('', pricedRows), false);
-  assert.equal(isModelPriced('GPT-5.5', undefined), false);
+  assert.equal(isModelPriced('gpt-5.5', undefined), false);
 });
 
-test('isModelPriced ignores disabled prices because they do not participate in billing', () => {
-  assert.equal(isModelPriced('Daybreak Red', pricedRows), false);
+test('isModelPriced treats every price row as billable regardless of a status field', () => {
+  // 价格表不再有状态：即便历史数据里带着 status，也不影响是否计费。
+  assert.equal(isModelPriced('Daybreak Red', [{ modelName: 'daybreak-red', displayName: 'Daybreak Red', status: 'disabled' }]), true);
 });
 
 test('buildAIModelPricingGaps reports the configured model when it has no price', () => {

@@ -9,10 +9,11 @@ import (
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
+	"github.com/itihey/tikuAdapter/pkg/util"
 )
 
-var listBillingRecords = func(user entity.User, page int, pageSize int) (service.BillingRecordListResult, error) {
-	return service.ListBillingRecordsWithDB(manager.GetManager().GetDB(), user, page, pageSize)
+var listBillingRecords = func(user entity.User, query service.BillingRecordListQuery, page int, pageSize int) (service.BillingRecordListResult, error) {
+	return service.ListBillingRecordsWithDB(manager.GetManager().GetDB(), user, query, page, pageSize)
 }
 
 func BillingRecordList(c *gin.Context) {
@@ -34,7 +35,12 @@ func BillingRecordList(c *gin.Context) {
 		operator.Role = "user"
 	}
 
-	result, err := listBillingRecords(operator, page, pageSize)
+	filter := service.BillingRecordListQuery{
+		Keyword: util.NormalizeSearchKeyword(c.Query("keyword")),
+		Type:    strings.TrimSpace(c.Query("type")),
+	}
+
+	result, err := listBillingRecords(operator, filter, page, pageSize)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"message": "获取账单列表失败",
