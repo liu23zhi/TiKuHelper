@@ -34,7 +34,6 @@ func TestCollectAnswerStoresResolvedSourceName(t *testing.T) {
 	db := newCollectAnswerTestDB(t)
 
 	CollectAnswer(model.SearchResponse{
-		Plat:     1,
 		Question: "第三方命中题目",
 		Options:  []string{"A"},
 		Type:     4,

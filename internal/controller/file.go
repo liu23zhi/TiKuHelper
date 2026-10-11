@@ -11,15 +11,6 @@ import (
 	"net/http"
 )
 
-// Plat -
-func Plat(c *gin.Context) {
-	if manager.GetManager().GetConfig().Plat == nil {
-		c.JSON(http.StatusOK, []string{})
-	} else {
-		c.JSON(http.StatusOK, manager.GetManager().GetConfig().Plat)
-	}
-}
-
 // UploadFile -
 func UploadFile(c *gin.Context) {
 	if !requireAdmin(c) {

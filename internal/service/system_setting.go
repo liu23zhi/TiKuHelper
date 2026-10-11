@@ -43,6 +43,12 @@ const CaptchaTypeSettingKey = "captcha_type"
 const SMSBaoCredentialTypeSettingKey = "smsbao_credential_type"
 const SMSBaoRegionModeSettingKey = "smsbao_region_mode"
 
+// UAPIAPIKeySettingKey 是 UApiPro（uapis.cn）的 API 密钥。
+//
+// 用于查询手机号 / IP 归属地（用户管理、日志列表的归属地展示）。
+// 与其它密钥一样：只从数据库读取，不硬编码、不拼进 URL、响应里脱敏。
+const UAPIAPIKeySettingKey = "uapi_api_key"
+
 const DefaultPaymentProvider = "epay"
 const DefaultPaymentMethod = "alipay"
 const DefaultEPayVersion = "v2"
@@ -93,6 +99,8 @@ type SystemSettingDetail struct {
 	CaptchaType               string  `json:"captchaType"`
 	SMSBaoCredentialType      string  `json:"smsbaoCredentialType"`
 	SMSBaoRegionMode          string  `json:"smsbaoRegionMode"`
+	// UAPIAPIKey 是 UApiPro 的 API 密钥；读接口里会被脱敏为 ********。
+	UAPIAPIKey string `json:"uapiApiKey"`
 }
 
 type UpdateSystemSettingInput struct {
@@ -125,6 +133,8 @@ type UpdateSystemSettingInput struct {
 	CaptchaType               string  `json:"captchaType"`
 	SMSBaoCredentialType      string  `json:"smsbaoCredentialType"`
 	SMSBaoRegionMode          string  `json:"smsbaoRegionMode"`
+	// UAPIAPIKey 传 ********（或留空）表示保留已存密钥，传 __CLEAR__ 表示清空。
+	UAPIAPIKey string `json:"uapiApiKey"`
 }
 
 var ErrInvalidNewUserBonusAmount = errors.New("新用户赠送金额不能为负数")
@@ -267,6 +277,7 @@ func GetSystemSettingDetailWithDB(db *gorm.DB) (SystemSettingDetail, error) {
 		CaptchaType:               normalizeCaptchaType(getSystemSettingStringWithDefault(db, CaptchaTypeSettingKey, DefaultCaptchaType)),
 		SMSBaoCredentialType:      normalizeSMSBaoCredentialType(getSystemSettingStringWithDefault(db, SMSBaoCredentialTypeSettingKey, DefaultSMSBaoCredentialType)),
 		SMSBaoRegionMode:          normalizeSMSBaoRegionMode(getSystemSettingStringWithDefault(db, SMSBaoRegionModeSettingKey, DefaultSMSBaoRegionMode)),
+		UAPIAPIKey:                strings.TrimSpace(getSystemSettingStringWithDefault(db, UAPIAPIKeySettingKey, "")),
 	}
 	bonusAmount, err := GetNewUserBonusAmountWithDB(db)
 	if err != nil {
@@ -322,6 +333,10 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		CaptchaType:               normalizeCaptchaType(input.CaptchaType),
 		SMSBaoCredentialType:      normalizeSMSBaoCredentialType(input.SMSBaoCredentialType),
 		SMSBaoRegionMode:          normalizeSMSBaoRegionMode(input.SMSBaoRegionMode),
+		// UApiPro 密钥不脱敏：系统设置页本身只有管理员能打开（与「默认账号配置」
+		// 的 token 处理一致），明文存取、由前端密码框隐藏显示。
+		// 直接 TrimSpace 而不是 mergeStoredSecretInput —— 留空即清空，语义直观。
+		UAPIAPIKey: strings.TrimSpace(input.UAPIAPIKey),
 	}
 	normalized.AlternativeLoginEnabled = normalized.SMSLoginEnabled || normalized.WechatLoginEnabled
 
@@ -359,6 +374,7 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		{CaptchaTypeSettingKey, normalized.CaptchaType, "验证码类型"},
 		{SMSBaoCredentialTypeSettingKey, normalized.SMSBaoCredentialType, "短信宝凭证类型"},
 		{SMSBaoRegionModeSettingKey, normalized.SMSBaoRegionMode, "短信宝发送区域模式"},
+		{UAPIAPIKeySettingKey, normalized.UAPIAPIKey, "UApiPro API 密钥"},
 	}
 	for _, item := range settings {
 		if err := saveSystemSettingValue(db, item.key, item.value, item.remark); err != nil {

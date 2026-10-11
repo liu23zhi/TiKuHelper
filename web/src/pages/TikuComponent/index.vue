@@ -2,13 +2,6 @@
   <a-card>
     <a-row>
       <a-col :span="5">
-        <a-form-item label="平台" :label-col="labelCol" :wrapper-col="wrapperCol">
-          <a-select v-model:value="platValue" show-search placeholder="请选择" :options="platType"
-                    @change="selectChange">
-          </a-select>
-        </a-form-item>
-      </a-col>
-      <a-col :span="5">
         <a-form-item label="课程" :label-col="labelCol" :wrapper-col="wrapperCol">
           <a-select v-model:value="courseValue" show-search placeholder="请选择" :options="courses"
                     @change="onFilterChange">
@@ -247,7 +240,6 @@ import {computed, defineComponent, ref} from 'vue';
 import {useRouter} from 'vue-router';
 import Swal from 'sweetalert2'
 import {
-  getPlat,
   getCourses,
   getQuestions,
   updateQuestions,
@@ -352,10 +344,8 @@ const page = ref({
 
 const typeValue = ref(null)
 const typeList = ref([])
-const platType = ref([])
 const courses = ref([])
 const courseValue = ref(null)
-const platValue = ref(null)
 const formData = ref({})
 const answer = ref([])
 const visible = ref(false)
@@ -392,7 +382,6 @@ export default defineComponent({
     };
     const buildQuestionQuery = (pageNo, pageSize) => ({
       courseName: courseValue.value ? courseValue.value : "",
-      plat: !isNaN(parseInt(platValue.value)) ? parseInt(platValue.value) : -1,
       type: !isNaN(parseInt(typeValue.value)) ? parseInt(typeValue.value) : -1,
       pageSize,
       pageNo,
@@ -491,9 +480,7 @@ export default defineComponent({
       typeList,
       typeValue,
       courses,
-      platType,
       courseValue,
-      platValue,
       answer,
       page,
       data,
@@ -536,22 +523,9 @@ export default defineComponent({
   mounted() {
     this.getType()
     this.getCourses()
-    this.getPlat()
     this.fetchData()
   },
   methods: {
-    async selectChange(info) {
-      const list = await getCourses({plat: info})
-      if (list?.data && list?.data.length) {
-        await this.getCourses(list?.data)
-      } else {
-        courses.value = []
-      }
-      // Reset page number when platform changes and fetch data
-      this.page.pageNo = 1
-      resetSelectionState()
-      await this.fetchData()
-    },
     async onFilterChange() {
       // Reset page number when any filter changes and fetch data
       this.page.pageNo = 1
@@ -601,30 +575,11 @@ export default defineComponent({
       }
     },
 
-     getPlatStr(plat){
-      for (let valueElement of platType.value) {
-        if (plat === valueElement.value){
-          return valueElement.label
-        }
-      }
-    },
-    async getPlat() {
-      const list = await getPlat()
-      if (list?.data && list?.data.length) {
-        platType.value = list?.data.map(i => {
-          return {
-            value: parseInt(i.Value),
-            label: i.Label,
-          }
-        })
-      }
-    },
     async fetchData() {
       fileList.value = []
       tabLoading.value = true
       getQuestions({
         courseName: courseValue.value ? courseValue.value : "",
-        plat: !isNaN(parseInt(platValue.value)) ? parseInt(platValue.value) : -1,
         type: !isNaN(parseInt(typeValue.value)) ? parseInt(typeValue.value) : -1,
         pageSize: page.value.pageSize,
         pageNo: page.value.pageNo - 1,

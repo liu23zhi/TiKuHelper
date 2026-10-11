@@ -32,7 +32,6 @@ type SearchValue struct {
 	CourseName          string `json:"courseName" form:"courseName"`
 
 	Type int32 `json:"type" form:"type"`
-	Plat int32 `json:"plat" form:"plat"`
 }
 
 func normalizeQuestionSourceName(sourceName string) string {
@@ -96,7 +95,6 @@ func importQuestionsWithOverwrite(items []*entity.Tiku, overwrite bool, dryRun b
 				"type":        item.Type,
 				"options":     item.Options,
 				"answer":      item.Answer,
-				"plat":        item.Plat,
 				"hash":        item.Hash,
 				"course_name": item.CourseName,
 				"extra":       item.Extra,
@@ -137,7 +135,7 @@ func ImportQuestions(c *gin.Context) {
 
 	// 题库内容变了，缓存的搜题结果可能已过时（dryRun 不写库，无需失效）。
 	if !req.DryRun && (result.Created > 0 || result.Updated > 0) {
-		invalidateSearchResultCache("import_questions")
+		invalidateSearchResultCaches("import_questions")
 	}
 
 	c.JSON(http.StatusOK, result)
@@ -193,10 +191,6 @@ func GetQuestions(c *gin.Context) {
 		} else if searchValue.Source == 2 {
 			tx.Where(dao.Tiku.SourceName.Neq("人工导入"))
 		}
-	}
-
-	if searchValue.Plat != -1 {
-		tx.Where(dao.Tiku.Plat.Eq(searchValue.Plat))
 	}
 
 	if searchValue.Type != -1 {
@@ -266,7 +260,7 @@ func UpdateQuestions(c *gin.Context) {
 		}
 		dao.Log.Create(&l)
 		// 人工修正了题目答案，缓存的旧答案必须立即作废。
-		invalidateSearchResultCache("update_question")
+		invalidateSearchResultCaches("update_question")
 	}
 	c.JSON(200, gin.H{
 		"data": updates,
@@ -300,7 +294,7 @@ func DeleteQuestion(c *gin.Context) {
 
 	dao.Tiku.Where(dao.Tiku.ID.Eq(int32(id))).Delete()
 	// 题目被删除，之前基于它建立的搜题结果缓存必须作废。
-	invalidateSearchResultCache("delete_question")
+	invalidateSearchResultCaches("delete_question")
 	c.JSON(200, gin.H{
 		"message": "删除成功",
 	})
@@ -343,25 +337,19 @@ func CreateQuestion(c *gin.Context) {
 	}
 	// 新增了题目，缓存的搜题结果可能已过时。
 	if count > 0 {
-		invalidateSearchResultCache("create_question")
+		invalidateSearchResultCaches("create_question")
 	}
 	c.JSON(200, gin.H{
 		"message": "成功创建" + strconv.Itoa(count) + "条数据",
 	})
 }
 
-// Courses 获取这个平台的所有课程名称
+// Courses 获取所有课程名称
 func Courses(c *gin.Context) {
+	// plat 已从题库模型移除（历史取值恒为 -1，无区分度），
+	// 因此这里不再按平台过滤；为兼容旧前端仍接受该参数但忽略其值。
 	tx := dao.Tiku.Select(dao.Tiku.CourseName)
 
-	if c.Query("plat") != "" {
-		i, err := strconv.Atoi(c.Query("plat"))
-		if err != nil {
-			c.String(400, "平台类型有错误")
-			return
-		}
-		tx.Where(dao.Tiku.Plat.Eq(int32(i)))
-	}
 	find, err := tx.Group(dao.Tiku.CourseName).Find()
 	if err != nil {
 		return

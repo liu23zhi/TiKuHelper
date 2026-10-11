@@ -2,18 +2,22 @@ package middleware
 
 import (
 	"encoding/json"
-	"github.com/gookit/goutil/strutil"
+	"sort"
+	"strings"
+
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/model"
-	"sort"
-	"strconv"
-	"strings"
+	"github.com/itihey/tikuAdapter/pkg/util"
 )
 
-// FillHash 填充题库的hash值
+// FillHash 填充题库的hash值。
+//
+// 公式集中在 pkg/util.BuildTikuHash：题面、排序后的选项、题型三者决定题目身份。
+// 注意写入必须与查询用**同一个**公式，否则新入库的题目查不出来
+// （历史实现写入用未格式化题面、查询用格式化题面，两者对不上）。
 func FillHash(t *entity.Tiku) {
 	if t.Answer == "" {
 		t.Answer = "[]"
@@ -22,18 +26,12 @@ func FillHash(t *entity.Tiku) {
 	}
 
 	options := make([]string, 0)
-	err := json.Unmarshal([]byte(t.Options), &options)
-	if err != nil {
+	if err := json.Unmarshal([]byte(t.Options), &options); err != nil {
 		t.Options = "[]" // 如果解析失败，就设置为空数组
-	}
-	sort.Strings(options) // 将选项排序
-
-	sortOptionsStr, err := json.Marshal(options)
-	if err != nil {
-		sortOptionsStr = []byte("[]")
+		options = options[:0]
 	}
 
-	t.Hash = strutil.Md5(t.Question + string(sortOptionsStr) + strconv.Itoa(int(t.Type)) + strconv.Itoa(int(t.Plat)))
+	t.Hash = util.BuildTikuHash(t.Question, options, int(t.Type))
 }
 
 // CollectAnswer 收集没有搜索到的答案
@@ -65,7 +63,6 @@ func CollectAnswer(resp model.SearchResponse, courseName, extra, provider string
 			Question:   resp.Question,
 			Answer:     ans,
 			Options:    string(opts),
-			Plat:       int32(resp.Plat),
 			SourceName: sourceName,
 		}
 		FillHash(&t)

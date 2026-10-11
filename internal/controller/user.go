@@ -370,6 +370,8 @@ func UserRegister(c *gin.Context) {
 		Perms:          "",
 		Phone:          &phone,
 		PhoneBoundAt:   &now,
+		// 记录注册来源 IP，便于在用户管理里核验账号来源。
+		RegisterIP: strings.TrimSpace(c.ClientIP()),
 	}
 
 	bonusAmount, err := service.GetNewUserBonusAmountWithDB(dao.User.UnderlyingDB())
@@ -740,6 +742,9 @@ func CreateUser(c *gin.Context) {
 		RegisterSource: payload.RegisterSource,
 		Phone:          payload.Phone,
 		Perms:          payload.Perms,
+		// 后台建号记录的是**管理员当时的 IP**；这与「账号来源」语义一致：
+		// 该账号确实是在这个地址被创建的。
+		RegisterIP: strings.TrimSpace(c.ClientIP()),
 	}
 	user.Username = strings.TrimSpace(user.Username)
 	user.Password = strings.TrimSpace(user.Password)

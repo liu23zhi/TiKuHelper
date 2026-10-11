@@ -27,6 +27,8 @@ type User struct {
 	CreatedAt      time.Time  `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
 	LastLoginAt    *time.Time `gorm:"column:last_login_at" json:"lastLoginAt"`
 	LastLoginIP    string     `gorm:"column:last_login_ip;type:varchar(64)" json:"lastLoginIp"`
+	// RegisterIP 是账号创建时的来源 IP（父/子账号由管理员创建时记录管理员当时的 IP）。
+	RegisterIP string `gorm:"column:register_ip;type:varchar(64)" json:"registerIp"`
 }
 
 // TableName User's table name

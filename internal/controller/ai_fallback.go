@@ -12,6 +12,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/model"
 	"gorm.io/gorm"
 )
@@ -22,6 +23,9 @@ type aiFallbackInput struct {
 	Question string   `json:"question"`
 	Type     int      `json:"type"`
 	Options  []string `json:"options"`
+	// SkipCache 为显式 true 时跳过读取兜底缓存；缺省与 false 都正常使用缓存。
+	// 与搜题的 skipCache 语义保持一致。
+	SkipCache *bool `json:"skipCache,omitempty"`
 }
 
 var runAIFallbackService = func(question string, questionType int, options []string) service.AIFallbackResult {
@@ -64,12 +68,25 @@ func AIFallback(c *gin.Context) {
 	}
 
 	requestID := uuid.NewString()
-	result := runAIFallbackService(input.Question, input.Type, input.Options)
 	req := model.SearchRequest{
-		Question: strings.TrimSpace(input.Question),
-		Type:     input.Type,
-		Options:  input.Options,
+		Question:  strings.TrimSpace(input.Question),
+		Type:      input.Type,
+		Options:   input.Options,
+		SkipCache: input.SkipCache,
 	}
+
+	// 缓存命中：与搜题一致 —— 不再调用 AI、不再计费。
+	// 只有显式 skipCache:true 才跳过读取；跳过读仍会把新结果写回（刷新语义）。
+	if !shouldBypassFallbackResultCache(req) {
+		if cached, ok := loadCachedAIFallbackResult(billingCtx.UserID, req); ok {
+			logger.SysLog(fmt.Sprintf("AI 兜底缓存命中 requestId=%s", requestID))
+			writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), requestID, "", "result", "sync", req, cached)
+			c.JSON(http.StatusOK, cached)
+			return
+		}
+	}
+
+	result := runAIFallbackService(input.Question, input.Type, input.Options)
 	if !result.Success {
 		writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), requestID, "", "result", "sync", req, result)
 		c.JSON(http.StatusOK, result)
@@ -85,6 +102,7 @@ func AIFallback(c *gin.Context) {
 	if strings.TrimSpace(warning) != "" {
 		result.Warnings = append(result.Warnings, warning)
 	}
+	storeCachedAIFallbackResult(billingCtx.UserID, req, result)
 	writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), requestID, "", "result", "sync", req, result)
 	c.JSON(http.StatusOK, result)
 }

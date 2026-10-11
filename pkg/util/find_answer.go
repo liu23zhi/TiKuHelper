@@ -22,7 +22,6 @@ func FillAnswerResponse(answers [][]string, req *model.SearchRequest) model.Sear
 		Question: req.Question,
 		Options:  req.Options,
 		Type:     req.Type,
-		Plat:     req.Plat,
 		Answer: model.Answer{
 			AllAnswer:   answers, // 保留原始答案用于展示
 			AnswerIndex: []int{},

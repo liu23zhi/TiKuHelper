@@ -137,7 +137,6 @@ func seedControllerLocalTiku(t *testing.T, db *gorm.DB, question string, options
 		Type:       0,
 		Options:    string(optionPayload),
 		Answer:     string(answerPayload),
-		Plat:       0,
 		CourseName: courseName,
 		Extra:      extra,
 	}
@@ -188,12 +187,14 @@ func withStubSearchDependencies(
 	originalClientBuilder := buildSearchClients
 	originalClientBindingBuilder := buildSearchClientBindings
 	originalAISearcher := searchAIAnswer
-	originalSearchResultCache := defaultSearchResultCache
 
 	defaultDBSearchProvider = func() func(model.SearchRequest) ([][]string, error) {
 		return local
 	}
-	defaultSearchResultCache = newSearchResultCache(defaultSearchResultCacheTTL, time.Now)
+	// 就地清空而不是替换实例：缓存实例被多处并发引用，
+	// 中途替换会让「读到的实例」与「持锁的实例」不一致，留下永不释放的锁。
+	searchResultCache.clear()
+	fallbackResultCache.clear()
 	resolveSearchRequestContext = resolver
 	buildSearchClients = remoteBuilder
 	buildSearchClientBindings = func(resolved resolvedSearchRequestContext, useQuery string) []searchClientBinding {
@@ -220,7 +221,9 @@ func withStubSearchDependencies(
 		buildSearchClients = originalClientBuilder
 		buildSearchClientBindings = originalClientBindingBuilder
 		searchAIAnswer = originalAISearcher
-		defaultSearchResultCache = originalSearchResultCache
+		// 清空而不是还原实例：实例必须始终是同一个（见上方注释）。
+		searchResultCache.clear()
+		fallbackResultCache.clear()
 	}()
 
 	run()
@@ -1295,11 +1298,11 @@ func TestSearchRejectsBillingThatWouldExceedAccessTokenQuotaWithoutCaching(t *te
 				t.Fatalf("expected quota error detail, got %q", got.Detail)
 			}
 
-			cacheKey, cacheEpoch := buildSearchResultCacheKey(token.ID, model.SearchRequest{
+			cacheKey, cacheEpoch := buildSearchAnswerCacheKeyForTest(searchResultCache, token.ID, model.SearchRequest{
 				Question: "额度边界题目",
 				Options:  []string{"A", "B"},
 			})
-			if _, ok := defaultSearchResultCache.get(cacheKey, cacheEpoch); ok {
+			if _, ok := searchResultCache.get(cacheKey, cacheEpoch); ok {
 				t.Fatal("expected quota-rejected result not to be cached")
 			}
 		})

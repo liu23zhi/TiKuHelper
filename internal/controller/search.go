@@ -8,14 +8,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/gookit/goutil/strutil"
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/middleware"
@@ -300,13 +298,20 @@ func Search(c *gin.Context) {
 	// 记录本次结果所属的缓存代次：若期间缓存被失效，写入时会被丢弃。
 	var cacheEpoch uint64
 	if cacheEligible {
-		cacheKey, cacheEpoch = buildSearchResultCacheKey(resolved.UserID, req)
-		if !shouldBypassSearchResultCache(req) {
-			if cached, ok := defaultSearchResultCache.get(cacheKey, cacheEpoch); ok {
-				result = cached
-				usedSearchResultCache = true
-				auditHitProvider = searchResultCacheProvider
+		key, epoch, ok := buildSearchResultCacheKey(resolved, req, useQuery)
+		if ok {
+			cacheKey, cacheEpoch = key, epoch
+			// 只有显式 skipCache:true 才跳过读取；跳过读仍会把新结果写回（刷新语义）。
+			if !shouldBypassSearchResultCache(req) {
+				if cached, found := searchResultCache.get(cacheKey, cacheEpoch); found {
+					result = cloneSearchAnswers(cached.answers)
+					usedSearchResultCache = true
+					auditHitProvider = searchResultCacheProvider
+				}
 			}
+		} else {
+			// 键序列化失败时放弃缓存，但不影响正常搜题。
+			cacheEligible = false
 		}
 	}
 
@@ -444,7 +449,7 @@ func Search(c *gin.Context) {
 			logger.SysLog(fmt.Sprintf("搜题计费提示 requestId=%s warning=%s", strings.TrimSpace(resolved.RequestID), warning))
 		}
 		if cacheEligible {
-			defaultSearchResultCache.put(cacheKey, result, cacheEpoch)
+			searchResultCache.put(cacheKey, searchAnswerPayload{answers: cloneSearchAnswers(result)}, cacheEpoch, searchAnswerPayloadUsable)
 		}
 	}
 
@@ -1244,19 +1249,12 @@ func resolveLocalSearchMatchRows(db *gorm.DB, req model.SearchRequest) []localSe
 		return nil
 	}
 
-	sortOptions := make([]string, len(req.Options))
-	copy(sortOptions, req.Options)
-	sort.Strings(sortOptions)
-	optionPayload, err := json.Marshal(sortOptions)
-	if err != nil {
-		optionPayload = []byte("[]")
-	}
-
-	newHash := strutil.Md5(util.FormatString(req.Question) + string(optionPayload) + fmt.Sprintf("%d%d", req.Type, req.Plat))
-	oldHash := strutil.Md5(req.Question + string(optionPayload) + fmt.Sprintf("%d%d", req.Type, req.Plat))
+	// hash 公式集中在 pkg/util.BuildTikuHashCandidates：返回「当前公式 + 旧 plat 公式 +
+	// 更早的未格式化题面变体」，保证公式切换与灰度共存期间已有题库不会失联。
+	hashCandidates := util.BuildTikuHashCandidates(req.Question, req.Options, req.Type)
 
 	rows := make([]localSearchMatchRow, 0)
-	query := db.Table(entity.TableNameTiku).Select("id, source_name").Where("hash IN ?", []string{newHash, oldHash})
+	query := db.Table(entity.TableNameTiku).Select("id, source_name").Where("hash IN ?", hashCandidates)
 	if strings.TrimSpace(req.CourseName) != "" {
 		query = query.Where("course_name = ?", strings.TrimSpace(req.CourseName))
 	}

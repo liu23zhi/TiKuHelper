@@ -559,6 +559,11 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
 	}
 
+	// register_ip 必须在 users 表存在之后补列；回填依赖 logs 表，失败只记日志。
+	if err := ensureUserRegisterIPSchema(db); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare user register ip schema fail: %w", err))
+	}
+
 	err = db.AutoMigrate(&entity.Log{})
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
@@ -590,6 +595,8 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		&entity.SMSVerificationCode{},
 		&entity.CaptchaChallenge{},
 		&entity.CaptchaToken{},
+		// 归属地查询结果的持久化缓存（节省按积分计费的 UAPI 调用）。
+		&entity.LocationCache{},
 	)
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
@@ -606,6 +613,17 @@ func RegisterDB(config configs.Config) *gorm.DB {
 	if err := ensureBillingQuestionTextSchema(db); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare billing question text schema fail: %w", err))
 	}
+
+	// 题库 hash 迁移与 plat 列删除。两者都依赖 system_settings 表，
+	// 因此必须放在上面的 AutoMigrate（含 SystemSetting）之后。
+	// 失败只记日志、不阻断启动，标记未写入会在下次启动重试。
+	if err := ensureTikuHashWithoutPlatSchema(db); err != nil {
+		logger.SysLog(fmt.Sprintf("题库 hash 迁移失败（不影响启动）：%v", err))
+	}
+	if err := ensureTikuPlatColumnDropped(db); err != nil {
+		logger.SysLog(fmt.Sprintf("tiku.plat 列删除失败（不影响启动）：%v", err))
+	}
+
 	ensureAccountDomainDefaults(db)
 
 	// 首先需要注册一个默认用户

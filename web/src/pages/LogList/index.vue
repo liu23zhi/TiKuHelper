@@ -127,7 +127,7 @@
           </div>
         </template>
         <template #clientIp="{ record }">
-          <span>{{ record.clientIp || '-' }}</span>
+          <span>{{ formatValueWithLocation(record.clientIp, ipLocations[normalizeLocationKey(record.clientIp)]) || '-' }}</span>
         </template>
         <template #qid="{ record }">
           <span>{{ buildLogQidLabel(record.qid) }}</span>
@@ -141,10 +141,15 @@
 </template>
 
 <script>
-import { getLogList } from '@/api/TikuComponentApi';
+import { getLogList, getIpLocations } from '@/api/TikuComponentApi';
 import { defineComponent, ref, reactive, computed } from 'vue';
 import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser';
 import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@/utils/listSearchHelpers.mjs';
+import {
+  collectLocationKeys,
+  extractLocationAddresses,
+  formatValueWithLocation as formatValueWithLocationBase,
+} from '@/utils/locationHelpers.mjs';
 import {
   buildLogModuleLabel,
   buildLogQidLabel,
@@ -156,6 +161,37 @@ import {
 const dataSource = ref([])
 const tabLoading = ref(true)
 const currentUser = ref(getStoredCurrentUser())
+
+// 归属地映射：key 为归一化后的 IP，value 为展示文本。
+// 渲染时按行取值，无需改写 dataSource 的行对象。
+const ipLocations = reactive({})
+
+// 与后端返回的 map 键保持一致（后端统一小写）。
+function normalizeLocationKey(value) {
+  return value === null || value === undefined ? '' : String(value).trim().toLowerCase()
+}
+
+function formatValueWithLocation(rawValue, address) {
+  return formatValueWithLocationBase(rawValue, address)
+}
+
+// enrichClientIps 批量拉取本页来源 IP 的归属地。
+//
+// 失败静默：归属地只是展示增强，未配置密钥或上游异常时对应列退化为只显示原始 IP。
+function enrichClientIps(rows) {
+  const ips = collectLocationKeys(rows, 'clientIp')
+  if (!ips.length) {
+    return
+  }
+  getIpLocations({ ips: ips.join(',') })
+    .then((res) => {
+      const addresses = extractLocationAddresses(res)
+      Object.keys(addresses).forEach((key) => {
+        ipLocations[normalizeLocationKey(key)] = addresses[key]
+      })
+    })
+    .catch(() => {})
+}
 const filters = reactive({
   keyword: '',
   module: undefined,
@@ -179,6 +215,10 @@ export default defineComponent({
   setup() {
     return {
       dataSource,
+      // 归属地展示：映射 + 取值/格式化函数（模板按行取值）。
+      ipLocations,
+      normalizeLocationKey,
+      formatValueWithLocation,
       tabLoading,
       pagination,
       filters,
@@ -408,6 +448,8 @@ export default defineComponent({
           pagination.total = res?.data?.total || 0
           pagination.current = res?.data?.page || 1
           pagination.pageSize = res?.data?.pageSize || 10
+          // 来源 IP 归属地单独批量拉取（失败静默）。
+          enrichClientIps(dataSource.value)
         }
       }).finally(() => {
         tabLoading.value = false

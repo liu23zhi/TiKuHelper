@@ -2,14 +2,12 @@ package search
 
 import (
 	"encoding/json"
+	"log"
+
 	"github.com/go-resty/resty/v2"
-	"github.com/gookit/goutil/strutil"
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"github.com/itihey/tikuAdapter/pkg/model"
 	"github.com/itihey/tikuAdapter/pkg/util"
-	"log"
-	"sort"
-	"strconv"
 )
 
 // DB mysql 或者sqlite3
@@ -28,22 +26,14 @@ func (in *dBSearch) getHTTPClient() *resty.Client {
 // SearchAnswer 搜索答案
 func (in *dBSearch) SearchAnswer(req model.SearchRequest) (answer [][]string, err error) {
 	answer = make([][]string, 0)
-	// 将用户传递来的选项进行排序
-	sortOptions := make([]string, len(req.Options))
-	copy(sortOptions, req.Options)
-	sort.Strings(sortOptions)
-	sortOptionsStr, err1 := json.Marshal(sortOptions)
 
-	if err1 != nil {
-		sortOptionsStr = []byte("[]")
-	}
-	// 生成hash值 - 兼容新旧两种格式
-	newHash := strutil.Md5(util.FormatString(req.Question) + string(sortOptionsStr) + strconv.Itoa(req.Type) + strconv.Itoa(req.Plat))
-	oldHash := strutil.Md5(req.Question + string(sortOptionsStr) + strconv.Itoa(req.Type) + strconv.Itoa(req.Plat))
+	// hash 公式集中在 pkg/util.BuildTikuHashCandidates：
+	// 返回「当前公式 + 旧 plat 公式 + 更早的未格式化题面变体」，
+	// 保证公式切换与灰度共存期间已有题库不会失联。
+	hashCandidates := util.BuildTikuHashCandidates(req.Question, req.Options, req.Type)
 
 	tiku := dao.Tiku
-	// 使用 OR 条件同时匹配新旧两种 hash
-	tx := tiku.Where(tiku.Hash.In(newHash, oldHash))
+	tx := tiku.Where(tiku.Hash.In(hashCandidates...))
 
 	// 如果提供了courseName，则也匹配courseName
 	if req.CourseName != "" {

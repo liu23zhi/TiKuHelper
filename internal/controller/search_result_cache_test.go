@@ -9,8 +9,10 @@ import (
 	"testing"
 	"time"
 
+	"errors"
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/pkg/model"
+	"strings"
 )
 
 func TestSearchReusesCachedResultForIdenticalQuestionAndOptions(t *testing.T) {
@@ -212,7 +214,7 @@ func TestInvalidateSearchResultCacheDropsAllCachedAnswers(t *testing.T) {
 
 			// 答案被修正 + 缓存失效。
 			answer = "新答案"
-			invalidateSearchResultCache("test")
+			invalidateSearchResultCaches("test")
 
 			refreshed := performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题"}`, "Basic token-a")
 			if refreshed.Answer.AnswerText != "新答案" {
@@ -224,24 +226,40 @@ func TestInvalidateSearchResultCacheDropsAllCachedAnswers(t *testing.T) {
 		})
 }
 
+// buildSearchAnswerCacheKeyForTest 为指定缓存实例构造搜题缓存键，并返回当前代次。
+// 便于用独立实例单测缓存原语，不污染全局缓存。
+func buildSearchAnswerCacheKeyForTest(cache *resultCache[searchAnswerPayload], userID int32, req model.SearchRequest) (string, uint64) {
+	epoch := cache.currentEpoch()
+	key, _ := marshalCacheKey(searchResultCacheKey{
+		Epoch:        epoch,
+		UserID:       userID,
+		Question:     strings.TrimSpace(req.Question),
+		Options:      req.Options,
+		Type:         req.Type,
+		Use:          "",
+		SourceDigest: "",
+	})
+	return key, epoch
+}
+
 // 失效后，进行中的旧请求不能把陈旧结果写回缓存。
 func TestSearchResultCacheRejectsWriteFromStaleEpoch(t *testing.T) {
-	cache := newSearchResultCache(time.Minute, time.Now)
+	cache := newResultCache[searchAnswerPayload](time.Minute, time.Now)
 
-	key, epoch := buildSearchResultCacheKeyFor(cache, 101, model.SearchRequest{Question: "同一道题"})
+	key, epoch := buildSearchAnswerCacheKeyForTest(cache, 101, model.SearchRequest{Question: "同一道题"})
 	cache.invalidate()
 
 	// 模拟「旧代次请求晚到」：写入必须被丢弃。
-	cache.put(key, [][]string{{"陈旧答案"}}, epoch)
+	cache.put(key, searchAnswerPayload{answers: [][]string{{"陈旧答案"}}}, epoch, searchAnswerPayloadUsable)
 	if _, ok := cache.get(key, epoch); ok {
 		t.Fatal("expected the stale write to be rejected")
 	}
 
 	// 新代次的写入正常生效。
-	newKey, newEpoch := buildSearchResultCacheKeyFor(cache, 101, model.SearchRequest{Question: "同一道题"})
-	cache.put(newKey, [][]string{{"新答案"}}, newEpoch)
+	newKey, newEpoch := buildSearchAnswerCacheKeyForTest(cache, 101, model.SearchRequest{Question: "同一道题"})
+	cache.put(newKey, searchAnswerPayload{answers: [][]string{{"新答案"}}}, newEpoch, searchAnswerPayloadUsable)
 	got, ok := cache.get(newKey, newEpoch)
-	if !ok || len(got) != 1 || got[0][0] != "新答案" {
+	if !ok || len(got.answers) != 1 || got.answers[0][0] != "新答案" {
 		t.Fatalf("expected the new answer to be cached, got %v ok=%t", got, ok)
 	}
 }
@@ -249,10 +267,10 @@ func TestSearchResultCacheRejectsWriteFromStaleEpoch(t *testing.T) {
 // 失效必须立刻生效，而不是等 TTL 到期。
 func TestSearchResultCacheTTLStillAppliesAfterInvalidation(t *testing.T) {
 	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
-	cache := newSearchResultCache(time.Minute, func() time.Time { return now })
+	cache := newResultCache[searchAnswerPayload](time.Minute, func() time.Time { return now })
 
-	key, epoch := buildSearchResultCacheKeyFor(cache, 101, model.SearchRequest{Question: "q"})
-	cache.put(key, [][]string{{"答案"}}, epoch)
+	key, epoch := buildSearchAnswerCacheKeyForTest(cache, 101, model.SearchRequest{Question: "q"})
+	cache.put(key, searchAnswerPayload{answers: [][]string{{"答案"}}}, epoch, searchAnswerPayloadUsable)
 	if _, ok := cache.get(key, epoch); !ok {
 		t.Fatal("expected a fresh entry to be readable")
 	}
@@ -262,6 +280,60 @@ func TestSearchResultCacheTTLStillAppliesAfterInvalidation(t *testing.T) {
 	if _, ok := cache.get(key, epoch); ok {
 		t.Fatal("expected the entry to expire after the TTL")
 	}
+}
+
+// 回归：失败的搜题结果绝不能入缓存。
+//
+// 缓存必须拒绝「不可用结果」，否则一次上游抖动产生的空答案会被固化整个 TTL，
+// 用户在此期间怎么重试都只能拿到空答案（且不会重新调用上游）。
+func TestSearchDoesNotCacheFailedResult(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	resetSearchFlights()
+	defer resetSearchFlights()
+
+	upstreamCalls := 0
+	shouldFail := true
+
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode: searchModeNormal,
+				Tokens:     map[string]string{"icodef": "test-token"},
+				UserID:     201,
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return []func(model.SearchRequest) ([][]string, error){
+				func(model.SearchRequest) ([][]string, error) {
+					upstreamCalls++
+					if shouldFail {
+						return nil, errors.New("上游失败")
+					}
+					return [][]string{{"恢复后的答案"}}, nil
+				},
+			}
+		},
+		nil,
+		func() {
+			performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
+			if upstreamCalls != 1 {
+				t.Fatalf("expected the first call to reach upstream, got %d", upstreamCalls)
+			}
+			if size := searchResultCache.size(); size != 0 {
+				t.Fatalf("expected the failed result not to be cached, got %d entries", size)
+			}
+
+			// 上游恢复后，第二次必须**真的重新调用上游**并拿到答案。
+			shouldFail = false
+			recovered := performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
+			if upstreamCalls != 2 {
+				t.Fatalf("expected the retry to call upstream again, got %d calls", upstreamCalls)
+			}
+			if recovered.Answer.AnswerText == "" {
+				t.Fatal("expected a recovered answer after the upstream failure")
+			}
+		})
 }
 
 func TestSearchDoesNotReuseCachedResultForDifferentQuestionsOrOptions(t *testing.T) {
@@ -348,12 +420,12 @@ func TestSearchResultCacheExpiresAfterTTL(t *testing.T) {
 		},
 		nil,
 		func() {
-			defaultSearchResultCache.now = func() time.Time {
+			searchResultCache.now = func() time.Time {
 				return now
 			}
 
 			performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
-			now = now.Add(defaultSearchResultCacheTTL)
+			now = now.Add(defaultResultCacheTTL)
 			performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
 
 			if upstreamCalls != 2 {

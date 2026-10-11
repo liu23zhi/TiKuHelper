@@ -3,13 +3,13 @@ package search
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
+	"time"
+
 	"github.com/go-resty/resty/v2"
 	"github.com/itihey/tikuAdapter/pkg/errors"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/model"
-	"strconv"
-	"strings"
-	"time"
 )
 
 type result struct {
@@ -59,9 +59,9 @@ func (in *WannengClient) SearchAnswer(req model.SearchRequest) (answer [][]strin
 	if in.Token != "" && len(in.Token) == 10 {
 		url = "http://lyck6.cn/scriptService/api/autoAnswer/" + in.Token
 	}
+	// plat 已从 SearchRequest 移除（历史取值恒为 -1），因此不再向上游发送该头。
 	resp, err := in.getHTTPClient().R().
 		SetBody(req).
-		SetHeader("plat", strconv.Itoa(req.Plat)).
 		Post(url)
 	if err != nil || resp.StatusCode() != 200 {
 		return nil, errors.ErrTargetServerError

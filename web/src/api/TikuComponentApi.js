@@ -103,16 +103,36 @@ export function loginBySMS(data) {
 }
 
 
-export function getPlat() {
-  return request({
-    url: `/adapter-service/plat`,
-    method: 'get',
-  })
-}
-
 export function getCourses(params) {
   return request({
     url: `/adapter-service/courses`,
+    method: 'get',
+    params
+  })
+}
+
+/**
+ * 批量查询手机号归属地（管理员）。
+ *
+ * 密钥保存在服务端设置里，由后端携带，前端不接触密钥。
+ * 返回 `{ data: { "<phone>": { address, province, city, sp, areaCode } } }`。
+ */
+export function getPhoneLocations(params) {
+  return request({
+    url: `/adapter-service/uapi/phoneinfo`,
+    method: 'get',
+    params
+  })
+}
+
+/**
+ * 批量查询 IP 归属地（管理员）。
+ *
+ * 返回 `{ data: { "<ip>": { address, region, isp, llc, asn } } }`。
+ */
+export function getIpLocations(params) {
+  return request({
+    url: `/adapter-service/uapi/ipinfo`,
     method: 'get',
     params
   })

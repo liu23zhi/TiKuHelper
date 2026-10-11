@@ -17,6 +17,7 @@ import (
 
 func TestAIFallbackReturnsInvalidInputWhenQuestionMissing(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	fallbackResultCache.clear()
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -43,6 +44,7 @@ func TestAIFallbackReturnsInvalidInputWhenQuestionMissing(t *testing.T) {
 
 func TestAIFallbackReturnsInvalidInputWhenJSONMalformed(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	fallbackResultCache.clear()
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -69,6 +71,7 @@ func TestAIFallbackReturnsInvalidInputWhenJSONMalformed(t *testing.T) {
 
 func TestAIFallbackReturnsAIUnavailableWhenServiceUnavailable(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	fallbackResultCache.clear()
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 305, "ai-unavailable-user", "user")
 	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10).Error; err != nil {
@@ -107,6 +110,7 @@ func TestAIFallbackReturnsAIUnavailableWhenServiceUnavailable(t *testing.T) {
 
 func TestAIFallbackAcceptsAccessTokenAuthorization(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	fallbackResultCache.clear()
 	db := newSearchControllerTestDB(t)
 	token := seedControllerAccessToken(t, db, "bearer-ai-fallback-token")
 
@@ -145,6 +149,7 @@ func TestAIFallbackAcceptsAccessTokenAuthorization(t *testing.T) {
 
 func TestAIFallbackAcceptsLoginJWTAndContinuesHandlerChain(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	fallbackResultCache.clear()
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 0, "jwt-ai-fallback-user", "user")
 	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10).Error; err != nil {
@@ -184,6 +189,7 @@ func TestAIFallbackAcceptsLoginJWTAndContinuesHandlerChain(t *testing.T) {
 
 func TestAIFallbackRejectsZeroBalanceBeforeCallingAI(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	fallbackResultCache.clear()
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 301, "zero-balance-ai-fallback-user", "user")
 	token := seedControllerTokenForUser(t, db, user, "zero-balance-ai-fallback-token", 0)
@@ -246,6 +252,7 @@ func TestAIFallbackRejectsZeroBalanceBeforeCallingAI(t *testing.T) {
 
 func TestAIFallbackRejectsExhaustedTokenQuotaBeforeCallingAI(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	fallbackResultCache.clear()
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 302, "quota-exhausted-ai-fallback-user", "user")
 	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10).Error; err != nil {
@@ -299,6 +306,7 @@ func TestAIFallbackRejectsExhaustedTokenQuotaBeforeCallingAI(t *testing.T) {
 
 func TestAIFallbackBillsSuccessfulAIUsage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	fallbackResultCache.clear()
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 306, "billed-ai-fallback-user", "user")
 	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10).Error; err != nil {
@@ -372,6 +380,7 @@ func TestAIFallbackBillsSuccessfulAIUsage(t *testing.T) {
 
 func TestAIFallbackWritesFailureAuditLogWhenAIUnavailable(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	fallbackResultCache.clear()
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 307, "failed-ai-fallback-user", "user")
 	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10).Error; err != nil {
@@ -410,6 +419,7 @@ func TestAIFallbackWritesFailureAuditLogWhenAIUnavailable(t *testing.T) {
 
 func TestAIFallbackWritesFailureAuditLogForInvalidInput(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	fallbackResultCache.clear()
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 309, "invalid-input-ai-fallback-user", "user")
 	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10).Error; err != nil {

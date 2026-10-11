@@ -423,7 +423,6 @@ func TestSearchAIFallbackWithDBIgnoresLocalQuestionCacheRecords(t *testing.T) {
 		Type:       0,
 		Options:    `["1","2"]`,
 		Answer:     `["1"]`,
-		Plat:       -1,
 		Hash:       "preseeded-ai-fallback-cache-hit",
 		CourseName: "",
 		Extra:      "",

@@ -108,7 +108,7 @@
           <span>¥ {{ formatBalance(record.balance) }}</span>
         </template>
         <template #phone="{ record }">
-          <span>{{ record.phone || '-' }}</span>
+          <span>{{ formatValueWithLocation(record.phone, phoneLocations[normalizeLocationKey(record.phone)]) || '-' }}</span>
         </template>
         <template #wechat="{ record }">
           <a-tag :color="record.wechatId ? 'green' : 'default'">
@@ -131,7 +131,10 @@
           <span>{{ formatDateTime(record.lastLoginAt) }}</span>
         </template>
         <template #lastLoginIp="{ record }">
-          <span>{{ record.lastLoginIp || '-' }}</span>
+          <span>{{ formatValueWithLocation(record.lastLoginIp, ipLocations[normalizeLocationKey(record.lastLoginIp)]) || '-' }}</span>
+        </template>
+        <template #registerIp="{ record }">
+          <span>{{ formatValueWithLocation(record.registerIp, ipLocations[normalizeLocationKey(record.registerIp)]) || '-' }}</span>
         </template>
         <template #operation="{ record }">
           <a-space size="small" wrap>
@@ -273,14 +276,70 @@ import {
   resolveAdminWechatIDByScan,
   resolveAdminWechatIDByCode,
   getSystemSettings,
+  getPhoneLocations,
+  getIpLocations,
 } from '@/api/TikuComponentApi';
 import { buildAdminCreateUserPayload, buildRegisterSourceLabel, buildResetPasswordPayload, buildUserBalanceUpdatePayload } from '@/utils/userPortalHelpers.mjs';
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs';
 import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@/utils/listSearchHelpers.mjs';
+import {
+  collectLocationKeys,
+  extractLocationAddresses,
+  formatValueWithLocation as formatValueWithLocationBase,
+} from '@/utils/locationHelpers.mjs';
 import { message } from 'ant-design-vue';
 import { computed, defineComponent, reactive, ref } from 'vue';
 
 const dataSource = ref([])
+
+// 归属地映射：key 为归一化后的手机号 / IP，value 为展示文本。
+// 列表渲染时按行取值，因此**不需要**改写 dataSource 里的行对象。
+const phoneLocations = reactive({})
+const ipLocations = reactive({})
+
+// 后端返回的 map 键是归一化后的值（手机号去空白、IP 小写），前端取值前做同样处理。
+// 与 locationHelpers 的纯函数分开导出，便于单测只测纯逻辑。
+function normalizeLocationKey(value) {
+  return value === null || value === undefined ? '' : String(value).trim().toLowerCase()
+}
+
+function formatValueWithLocation(rawValue, address) {
+  return formatValueWithLocationBase(rawValue, address)
+}
+
+// 把归属地结果写进响应式映射；重复查询同一批 key 直接覆盖，无需清理。
+function mergeLocations(target, addresses) {
+  Object.keys(addresses).forEach((key) => {
+    target[normalizeLocationKey(key)] = addresses[key]
+  })
+}
+
+// enrichLocations 拉取本页手机号 / IP 的归属地。
+//
+// 失败必须静默：归属地只是展示增强，未配置密钥或上游异常时
+// 对应列退化为只显示原始值，不能打扰正在管理用户的流程。
+async function enrichColumns(rows) {
+  const phones = collectLocationKeys(rows, 'phone')
+  const ips = collectLocationKeys(rows, 'lastLoginIp').concat(collectLocationKeys(rows, 'registerIp'))
+
+  const tasks = []
+  if (phones.length) {
+    tasks.push(
+      getPhoneLocations({ phones: phones.join(',') })
+        .then((res) => mergeLocations(phoneLocations, extractLocationAddresses(res)))
+        .catch(() => {}),
+    )
+  }
+  if (ips.length) {
+    const uniqueIps = Array.from(new Set(ips))
+    tasks.push(
+      getIpLocations({ ips: uniqueIps.join(',') })
+        .then((res) => mergeLocations(ipLocations, extractLocationAddresses(res)))
+        .catch(() => {}),
+    )
+  }
+  await Promise.all(tasks)
+}
 // 已生效的筛选条件；keywordInput 只是输入框的即时值。
 const filters = reactive({
   keyword: '',
@@ -403,6 +462,11 @@ export default defineComponent({
       visible,
       resetPasswordVisible,
       dataSource,
+      // 归属地展示：映射 + 取值/格式化函数（模板按行取值，不改写行对象）。
+      phoneLocations,
+      ipLocations,
+      normalizeLocationKey,
+      formatValueWithLocation,
       tabLoading,
       pagination,
       filters,
@@ -553,6 +617,15 @@ export default defineComponent({
           key: 'lastLoginIp',
           slots: {
             customRender: 'lastLoginIp',
+          },
+          width: 160,
+        },
+        {
+          title: '注册 IP',
+          dataIndex: 'registerIp',
+          key: 'registerIp',
+          slots: {
+            customRender: 'registerIp',
           },
           width: 160,
         },
@@ -782,6 +855,8 @@ export default defineComponent({
           pagination.total = Number(payload.total || 0)
           pagination.current = Number(payload.page || 1)
           pagination.pageSize = Number(payload.pageSize || 10)
+          // 归属地单独批量拉取（失败静默）：列表接口本身不依赖它。
+          enrichColumns(dataSource.value)
         } else {
           message.error(res?.message || '获取用户列表失败')
         }

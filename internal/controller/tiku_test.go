@@ -74,7 +74,6 @@ func seedTikuControllerQuestion(t *testing.T, db *gorm.DB, id int32, question st
 		Type:     0,
 		Options:  string(payloadOptions),
 		Answer:   string(payloadAnswer),
-		Plat:     1,
 	}
 	middleware.FillHash(&row)
 	if err := db.Create(&row).Error; err != nil {
@@ -86,18 +85,17 @@ func seedTikuControllerQuestion(t *testing.T, db *gorm.DB, id int32, question st
 }
 
 // cacheEntryCount 返回全局搜题结果缓存里的条目数（测试辅助）。
+// 直接复用 size()：它自己会加读锁，这里**不要**再包一层锁，否则同 goroutine 自死锁。
 func cacheEntryCount() int {
-	defaultSearchResultCache.mu.Lock()
-	defer defaultSearchResultCache.mu.Unlock()
-	return len(defaultSearchResultCache.entries)
+	return searchResultCache.size()
 }
 
 // seedSearchResultCacheEntry 直接塞一条缓存，模拟「已经缓存过某个问题的答案」。
 func seedSearchResultCacheEntry(t *testing.T, question string) {
 	t.Helper()
 
-	key, epoch := buildSearchResultCacheKey(101, model.SearchRequest{Question: question})
-	defaultSearchResultCache.put(key, [][]string{{"旧答案"}}, epoch)
+	key, epoch := buildSearchAnswerCacheKeyForTest(searchResultCache, 101, model.SearchRequest{Question: question})
+	searchResultCache.put(key, searchAnswerPayload{answers: [][]string{{"旧答案"}}}, epoch, searchAnswerPayloadUsable)
 	if cacheEntryCount() == 0 {
 		t.Fatal("expected the seed to write a cache entry")
 	}
@@ -113,7 +111,7 @@ func TestUpdateQuestionInvalidatesSearchResultCache(t *testing.T) {
 	user := seedTikuControllerUser(t, db, 1, "admin")
 	seedTikuControllerQuestion(t, db, 11, "待修正题目", "人工导入")
 	seedSearchResultCacheEntry(t, "待修正题目")
-	defer invalidateSearchResultCache("")
+	defer invalidateSearchResultCaches("")
 
 	payload := []byte(`{"question":"待修正题目","type":0,"options":"[\"A\",\"B\"]","answer":"[\"新答案\"]","plat":1}`)
 	recorder := httptest.NewRecorder()
@@ -143,7 +141,7 @@ func TestDeleteQuestionInvalidatesSearchResultCache(t *testing.T) {
 	user := seedTikuControllerUser(t, db, 1, "admin")
 	seedTikuControllerQuestion(t, db, 12, "待删除题目", "人工导入")
 	seedSearchResultCacheEntry(t, "待删除题目")
-	defer invalidateSearchResultCache("")
+	defer invalidateSearchResultCaches("")
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -168,7 +166,7 @@ func TestCreateQuestionInvalidatesSearchResultCache(t *testing.T) {
 	ensureTikuControllerSourceColumn(t, db)
 	user := seedTikuControllerUser(t, db, 1, "admin")
 	seedSearchResultCacheEntry(t, "已有缓存题目")
-	defer invalidateSearchResultCache("")
+	defer invalidateSearchResultCaches("")
 
 	payload := []byte(`[{"question":"新导入题目","type":0,"options":"[\"A\",\"B\"]","answer":"[\"答案\"]","plat":1}]`)
 	recorder := httptest.NewRecorder()
@@ -194,7 +192,7 @@ func TestImportQuestionsDryRunKeepsSearchResultCache(t *testing.T) {
 	db := newTikuControllerTestDB(t)
 	ensureTikuControllerSourceColumn(t, db)
 	seedSearchResultCacheEntry(t, "已有缓存题目")
-	defer invalidateSearchResultCache("")
+	defer invalidateSearchResultCaches("")
 
 	payload := []byte(`{"dryRun":true,"items":[{"question":"预演题目","type":0,"options":"[\"A\",\"B\"]","answer":"[\"答案\"]","plat":1}]}`)
 	recorder := httptest.NewRecorder()

@@ -191,9 +191,10 @@ func CreateAIFallbackTask(c *gin.Context) {
 	requestID := uuid.NewString()
 	auditIdentity := newAIFallbackAuditIdentity(c)
 	req := model.SearchRequest{
-		Question: strings.TrimSpace(input.Question),
-		Type:     input.Type,
-		Options:  input.Options,
+		Question:  strings.TrimSpace(input.Question),
+		Type:      input.Type,
+		Options:   input.Options,
+		SkipCache: input.SkipCache,
 	}
 	taskID := defaultAIFallbackTaskStore.create(userID, func(taskID string) service.AIFallbackResult {
 		db := resolveSearchPersistenceDB()
@@ -202,6 +203,16 @@ func CreateAIFallbackTask(c *gin.Context) {
 			result := service.BuildAIFallbackInsufficientBalanceResult(err.Error())
 			writeAIFallbackAuditLog(auditIdentity, requestID, taskID, "billing_precheck", "async", req, result)
 			return result
+		}
+
+		// 缓存命中：与搜题一致 —— 不再调用 AI、不再计费。
+		// 只有显式 skipCache:true 才跳过读取；跳过读仍会把新结果写回（刷新语义）。
+		if !shouldBypassFallbackResultCache(req) {
+			if cached, ok := loadCachedAIFallbackResult(billingCtx.UserID, req); ok {
+				logger.SysLog(fmt.Sprintf("AI 兜底缓存命中 taskId=%s requestId=%s", taskID, requestID))
+				writeAIFallbackAuditLog(auditIdentity, requestID, taskID, "result", "async", req, cached)
+				return cached
+			}
 		}
 
 		// 并发合并：兜底同样是「一次上游调用 = 一次计费」，缓存写入又在上游返回之后，
@@ -245,6 +256,7 @@ func CreateAIFallbackTask(c *gin.Context) {
 		if strings.TrimSpace(warning) != "" {
 			result.Warnings = append(result.Warnings, warning)
 		}
+		storeCachedAIFallbackResult(billingCtx.UserID, req, result)
 		if isLeader {
 			finishFallbackFlight(flightKey, leader, &result)
 		}

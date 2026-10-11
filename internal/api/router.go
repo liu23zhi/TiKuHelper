@@ -21,7 +21,11 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.Use(middleware.GlobalAPIRateLimit, middleware.BodyLimit(16<<20)) // 全局限流
 
 	apiRouter.POST("/upload", controller.Auth, middleware.RequireAdmin, controller.UploadFile)
-	apiRouter.GET("/plat", controller.Plat)
+
+	// UApiPro 归属地查询（管理员专用）：用户管理 / 日志列表的归属地展示。
+	// 密钥从系统设置读取，不下发到前端，也不出现在 URL 里。
+	apiRouter.GET("/uapi/phoneinfo", controller.Auth, middleware.RequireAdmin, controller.UAPIPhoneInfo)
+	apiRouter.GET("/uapi/ipinfo", controller.Auth, middleware.RequireAdmin, controller.UAPIIPInfo)
 
 	apiRouter.POST("/search", controller.Search)
 	apiRouter.POST("/ai-fallback", controller.AuthOrAccessToken, controller.AIFallback)

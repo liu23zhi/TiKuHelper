@@ -1,9 +1,12 @@
 package model
 
 // SearchRequest 搜题的请求体
+//
+// 注意：不再有 plat 字段。它历史取值恒为 -1、没有任何区分度，已彻底移除。
+// 旧客户端若仍发送 "plat": -1，会被 JSON 解码**静默忽略**（本项目未启用
+// DisallowUnknownFields），不会报错。
 type SearchRequest struct {
 	QID       string   `json:"qid"`
-	Plat      int      `json:"plat"`
 	Question  string   `json:"question"`
 	Options   []string `json:"options"`
 	Type      int      `json:"type"`
@@ -16,7 +19,6 @@ type SearchRequest struct {
 
 // SearchResponse 搜题响应体
 type SearchResponse struct {
-	Plat     int      `json:"plat"`
 	Question string   `json:"question"`
 	Options  []string `json:"options"`
 	Type     int      `json:"type"`

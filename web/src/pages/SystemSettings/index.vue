@@ -104,6 +104,13 @@
           </a-select>
         </a-form-item>
 
+        <a-divider orientation="left">归属地查询</a-divider>
+        <a-form-item label="UApiPro API 密钥">
+          <a-input-password v-model:value="formState.uapiApiKey" placeholder="请输入 UApiPro API 密钥（以 uapi- 开头）" />
+          <div class="hint">
+            用于「用户管理」「日志列表」展示手机号 / IP 归属地。留空表示不查询归属地（对应列只显示原始值）。
+          </div>
+        </a-form-item>
         <a-divider orientation="left">支付回调</a-divider>
         <a-form-item label="接口版本">
           <a-input value="v2" disabled />
@@ -393,6 +400,7 @@ export default defineComponent({
       captchaType: 'RANDOM',
       smsbaoCredentialType: 'apikey',
       smsbaoRegionMode: 'auto',
+      uapiApiKey: '',
     })
     const paymentMethodFormState = ref({
       id: undefined,
@@ -439,6 +447,8 @@ export default defineComponent({
       formState.captchaType = data.captchaType || 'RANDOM'
       formState.smsbaoCredentialType = data.smsbaoCredentialType || 'apikey'
       formState.smsbaoRegionMode = data.smsbaoRegionMode || 'auto'
+      // 明文回填（系统设置页仅管理员可见），密码框负责隐藏显示。
+      formState.uapiApiKey = data.uapiApiKey || ''
     }
 
     const loadSettings = () => {
@@ -635,6 +645,8 @@ export default defineComponent({
         captchaType: normalizeString(this.formState.captchaType || 'RANDOM'),
         smsbaoCredentialType: normalizeString(this.formState.smsbaoCredentialType || 'apikey'),
         smsbaoRegionMode: normalizeString(this.formState.smsbaoRegionMode || 'auto'),
+        // 明文提交；留空即为清空密钥（不做脱敏占位符的特殊处理）。
+        uapiApiKey: normalizeString(this.formState.uapiApiKey),
       }
 
       this.saving = true

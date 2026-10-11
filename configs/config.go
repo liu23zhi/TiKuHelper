@@ -15,7 +15,6 @@ type Config struct {
 	JWTSecret         string               `yaml:"jwtSecret"`
 	Database          DatabaseConfig       `yaml:"database"`
 	OSS               OSSConfig            `yaml:"oss"`
-	Plat              []PlatConfig         `yaml:"plat"`
 }
 
 // DatabaseConfig 数据库配置
@@ -36,10 +35,4 @@ type OSSConfig struct {
 	AccessKeyID     string `yaml:"accessKeyID"`
 	AccessKeySecret string `yaml:"accessKeySecret"`
 	BucketName      string `yaml:"bucketName"`
-}
-
-// PlatConfig 自定义的平台类型
-type PlatConfig struct {
-	Label string `yaml:"label"`
-	Value string `yaml:"value"`
 }
