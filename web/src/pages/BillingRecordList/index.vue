@@ -3,7 +3,7 @@
     <a-row :gutter="16" class="summary-row">
       <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
-          <a-statistic title="账单总数" :value="summary.total" />
+          <a-statistic title="账单总数（筛选结果）" :value="summary.total" />
         </a-card>
       </a-col>
       <a-col :xs="24" :sm="12" :lg="6">
@@ -13,12 +13,24 @@
       </a-col>
       <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
-          <a-statistic title="累计消费金额" prefix="¥" :value="summary.totalAmount" :precision="6" />
+          <a-statistic
+            :title="hasActiveFilters ? '累计消费金额（当前筛选，全部页）' : '累计消费金额（全部页）'"
+            prefix="¥"
+            :value="summary.totalAmount"
+            :precision="6"
+          />
+          <div class="summary-hint">不包含充值入账与新用户赠送</div>
         </a-card>
       </a-col>
       <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
-          <a-statistic title="答案来源数" :value="summary.providerCount" />
+          <a-statistic
+            title="当前页累计消费金额"
+            prefix="¥"
+            :value="summary.currentPageAmount"
+            :precision="6"
+          />
+          <div class="summary-hint">仅统计第 {{ pagination.current }} 页 {{ summary.currentPageCount }} 条</div>
         </a-card>
       </a-col>
     </a-row>
@@ -136,6 +148,11 @@ import {
 
 const dataSource = ref([])
 const tableLoading = ref(false)
+// 服务端返回的金额统计：totalAmount 覆盖全部筛选结果，currentPageAmount 仅当前页。
+const amountSummary = reactive({
+  totalAmount: 0,
+  currentPageAmount: 0,
+})
 // 已生效的筛选条件；keywordInput 只是输入框的即时值。
 const filters = reactive({
   keyword: '',
@@ -163,24 +180,28 @@ export default defineComponent({
       const rows = Array.isArray(dataSource.value) ? dataSource.value : []
       const answerSources = new Set()
       return rows.reduce((acc, item) => {
-        const amount = Number(item?.amount || 0)
         const answerSourceKey = String(item?.answerSourceLabel || item?.providerLabel || item?.provider || '').trim()
         acc.currentPageCount += 1
         if (answerSourceKey) {
           answerSources.add(answerSourceKey)
-        }
-        if (Number.isFinite(amount) && item?.direction !== 'income') {
-          acc.totalAmount += amount
         }
         acc.providerCount = answerSources.size
         return acc
       }, {
         total: Number(pagination.total || 0),
         currentPageCount: 0,
-        totalAmount: 0,
+        // 金额一律用服务端口径：它能覆盖所有页，且已按请求去重、剔除充值等收入项。
+        totalAmount: Number(amountSummary.totalAmount || 0),
+        currentPageAmount: Number(amountSummary.currentPageAmount || 0),
         providerCount: 0,
       })
     })
+
+    // 当前是否处于筛选状态：筛选会改变「累计消费金额」的口径，需要在界面上说明。
+    const hasActiveFilters = computed(() => countActiveFilters({
+      keyword: filters.keyword,
+      type: filters.type,
+    }) > 0)
 
     const pageTitle = computed(() => (isAdmin.value ? '账单明细' : '我的账单'))
     const pageSubtitle = computed(() => (
@@ -302,6 +323,7 @@ export default defineComponent({
       filters,
       keywordInput,
       activeFilterCount,
+      hasActiveFilters,
       typeOptions: [
         { label: '题目消费', value: 'normal_search' },
         { label: '充值入账', value: 'recharge' },
@@ -351,6 +373,9 @@ export default defineComponent({
           pagination.total = Number(res?.data?.total || 0)
           pagination.current = Number(res?.data?.page || 1)
           pagination.pageSize = Number(res?.data?.pageSize || 10)
+          // 金额统计由服务端给出：覆盖全部筛选结果，而非仅当前页。
+          amountSummary.totalAmount = Number(res?.data?.summary?.totalAmount || 0)
+          amountSummary.currentPageAmount = Number(res?.data?.summary?.currentPageAmount || 0)
         } else {
           message.error(res?.message || '获取账单列表失败')
         }
@@ -400,6 +425,12 @@ export default defineComponent({
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.summary-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
 }
 
 .filter-form {

@@ -11,14 +11,15 @@ import (
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
+	"github.com/itihey/tikuAdapter/pkg/util"
 )
 
 var createRechargeOrder = func(user entity.User, input service.CreateRechargeOrderInput) (service.CreateRechargeOrderResult, error) {
 	return service.CreateRechargeOrderWithDB(manager.GetManager().GetDB(), user, input)
 }
 
-var listRechargeOrders = func(user entity.User, page int, pageSize int) (service.RechargeOrderListResult, error) {
-	return service.ListRechargeOrdersWithDB(manager.GetManager().GetDB(), user, page, pageSize)
+var listRechargeOrders = func(user entity.User, query service.RechargeOrderListQuery, page int, pageSize int) (service.RechargeOrderListResult, error) {
+	return service.ListRechargeOrdersWithDB(manager.GetManager().GetDB(), user, query, page, pageSize)
 }
 
 var handleRechargePaymentNotify = func(values url.Values) (bool, error) {
@@ -40,7 +41,13 @@ func RechargeOrderList(c *gin.Context) {
 		pageSize = 10
 	}
 
-	result, err := listRechargeOrders(operator, page, pageSize)
+	filter := service.RechargeOrderListQuery{
+		Keyword:         util.NormalizeSearchKeyword(c.Query("keyword")),
+		Status:          strings.TrimSpace(c.Query("status")),
+		PaymentProvider: strings.TrimSpace(c.Query("paymentProvider")),
+	}
+
+	result, err := listRechargeOrders(operator, filter, page, pageSize)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"message": "获取充值记录失败",

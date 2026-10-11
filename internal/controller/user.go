@@ -685,19 +685,17 @@ func buildUserListQuery(query *gorm.DB, keyword string, role string, status stri
 		query = query.Where("status = ?", trimmedStatus)
 	}
 
-	pattern := util.BuildLikePattern(keyword)
-	if pattern == "" {
+	// 关键词按「纯子串」匹配（不使用 LIKE 通配符），见 util.BuildInstrCondition。
+	condition, args := util.BuildInstrCondition(keyword,
+		"COALESCE(username, '')",
+		"COALESCE(nickname, '')",
+		"COALESCE(phone, '')",
+		"COALESCE(wechat_id, '')",
+	)
+	if condition == "" {
 		return query
 	}
-
-	// ESCAPE '\' 让用户输入的 % 与 _ 按字面量匹配。
-	condition := `(
-		LOWER(COALESCE(username, '')) LIKE LOWER(?) ESCAPE '\'
-		OR LOWER(COALESCE(nickname, '')) LIKE LOWER(?) ESCAPE '\'
-		OR LOWER(COALESCE(phone, '')) LIKE LOWER(?) ESCAPE '\'
-		OR LOWER(COALESCE(wechat_id, '')) LIKE LOWER(?) ESCAPE '\'
-	)`
-	return query.Where(condition, pattern, pattern, pattern, pattern)
+	return query.Where(condition, args...)
 }
 
 // CreateUser 创建用户

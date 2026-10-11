@@ -113,18 +113,17 @@ func buildLogListQuery(query *gorm.DB, currentUser *entity.User, module string, 
 		}
 	}
 
-	pattern := util.BuildLikePattern(keyword)
-	if pattern == "" {
+	// 关键词按「纯子串」匹配（不使用 LIKE 通配符），见 util.BuildInstrCondition。
+	condition, args := util.BuildInstrCondition(keyword,
+		"COALESCE(description, '')",
+		"COALESCE(username, '')",
+		"COALESCE(client_ip, '')",
+		"COALESCE(module, '')",
+	)
+	if condition == "" {
 		return query
 	}
-	// ESCAPE '\' 让用户输入的 % 与 _ 按字面量匹配，而不是变成通配符。
-	condition := `(
-		LOWER(COALESCE(description, '')) LIKE LOWER(?) ESCAPE '\'
-		OR LOWER(COALESCE(username, '')) LIKE LOWER(?) ESCAPE '\'
-		OR LOWER(COALESCE(client_ip, '')) LIKE LOWER(?) ESCAPE '\'
-		OR LOWER(COALESCE(module, '')) LIKE LOWER(?) ESCAPE '\'
-	)`
-	return query.Where(condition, pattern, pattern, pattern, pattern)
+	return query.Where(condition, args...)
 }
 
 func resolveLogUsernames(logs []*entity.Log) {

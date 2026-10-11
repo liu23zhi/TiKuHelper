@@ -24,7 +24,7 @@ func TestRechargeOrderListReturnsScopedRecords(t *testing.T) {
 	}()
 
 	paidAt := time.Date(2026, 6, 20, 13, 0, 0, 0, time.UTC)
-	listRechargeOrders = func(user entity.User, page int, pageSize int) (service.RechargeOrderListResult, error) {
+	listRechargeOrders = func(user entity.User, query service.RechargeOrderListQuery, page int, pageSize int) (service.RechargeOrderListResult, error) {
 		if user.ID != 31 || user.Role != "user" {
 			t.Fatalf("unexpected user: %+v", user)
 		}
@@ -81,7 +81,7 @@ func TestRechargeOrderListNormalizesInvalidPagination(t *testing.T) {
 		listRechargeOrders = original
 	}()
 
-	listRechargeOrders = func(user entity.User, page int, pageSize int) (service.RechargeOrderListResult, error) {
+	listRechargeOrders = func(user entity.User, query service.RechargeOrderListQuery, page int, pageSize int) (service.RechargeOrderListResult, error) {
 		if page != 1 || pageSize != 10 {
 			t.Fatalf("expected normalized pagination 1/10, got %d/%d", page, pageSize)
 		}
@@ -108,7 +108,7 @@ func TestRechargeOrderListReturnsServerErrorOnFailure(t *testing.T) {
 		listRechargeOrders = original
 	}()
 
-	listRechargeOrders = func(user entity.User, page int, pageSize int) (service.RechargeOrderListResult, error) {
+	listRechargeOrders = func(user entity.User, query service.RechargeOrderListQuery, page int, pageSize int) (service.RechargeOrderListResult, error) {
 		return service.RechargeOrderListResult{}, errors.New("boom")
 	}
 

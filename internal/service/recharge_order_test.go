@@ -162,7 +162,7 @@ func TestListRechargeOrdersWithDBScopesUsersAndIncludesUsername(t *testing.T) {
 		}
 	}
 
-	memberResult, err := ListRechargeOrdersWithDB(db, member, 1, 10)
+	memberResult, err := ListRechargeOrdersWithDB(db, member, RechargeOrderListQuery{}, 1, 10)
 	if err != nil {
 		t.Fatalf("list member recharge orders: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestListRechargeOrdersWithDBScopesUsersAndIncludesUsername(t *testing.T) {
 		t.Fatalf("unexpected member order row: %+v", memberResult.Data[0])
 	}
 
-	adminResult, err := ListRechargeOrdersWithDB(db, admin, 1, 10)
+	adminResult, err := ListRechargeOrdersWithDB(db, admin, RechargeOrderListQuery{}, 1, 10)
 	if err != nil {
 		t.Fatalf("list admin recharge orders: %v", err)
 	}
@@ -185,6 +185,171 @@ func TestListRechargeOrdersWithDBScopesUsersAndIncludesUsername(t *testing.T) {
 	}
 	if adminResult.Data[0].PaidAt == nil || adminResult.Data[0].ThirdPartyOrderNo != "trade-other" {
 		t.Fatalf("expected paid metadata in admin row, got %+v", adminResult.Data[0])
+	}
+}
+
+func TestListRechargeOrdersWithDBSearchesByKeyword(t *testing.T) {
+	db := newRechargeOrderTestDB(t)
+	member := seedRechargeOrderUser(t, db, 7, "user")
+	other := seedRechargeOrderUser(t, db, 8, "user")
+	now := time.Date(2026, 6, 21, 10, 0, 0, 0, time.UTC)
+	paidAt := now.Add(time.Minute)
+
+	orders := []entity.RechargeOrder{
+		{
+			UserID: member.ID, OrderNo: "rcg_alpha_111", PaymentProvider: DefaultPaymentProvider,
+			PaymentMethodNameSnapshot: "支付宝", Amount: 10, Status: rechargeOrderStatusPending, CreatedAt: now,
+		},
+		{
+			UserID: member.ID, OrderNo: "rcg_beta_222", PaymentProvider: DefaultPaymentProvider,
+			PaymentMethodNameSnapshot: "微信支付", Amount: 20, Status: rechargeOrderStatusPaid,
+			ThirdPartyOrderNo: "trade-zzz-999", PaidAt: &paidAt, CreatedAt: now.Add(time.Minute),
+		},
+		{
+			UserID: other.ID, OrderNo: "rcg_gamma_333", PaymentProvider: DefaultPaymentProvider,
+			PaymentMethodNameSnapshot: "银行卡", Amount: 30, Status: rechargeOrderStatusPaid,
+			ThirdPartyOrderNo: "trade-yyy", PaidAt: &paidAt, CreatedAt: now.Add(2 * time.Minute),
+		},
+	}
+	for _, order := range orders {
+		if err := db.Create(&order).Error; err != nil {
+			t.Fatalf("create recharge order: %v", err)
+		}
+	}
+
+	// 注意：seedRechargeOrderUser 按角色生成用户名（"recharge-user-user"），
+	// member 与 other 同名，因此按用户名搜索会命中两人的订单。
+	cases := []struct {
+		name      string
+		keyword   string
+		wantTotal int64
+	}{
+		{name: "order no fragment", keyword: "alpha", wantTotal: 1},
+		{name: "third party order no", keyword: "trade-zzz", wantTotal: 1},
+		{name: "username matches both owners", keyword: "recharge-user-user", wantTotal: 2},
+		{name: "payment method", keyword: "微信", wantTotal: 1},
+		{name: "provider", keyword: DefaultPaymentProvider, wantTotal: 2},
+		{name: "empty keyword keeps everything", keyword: "   ", wantTotal: 2},
+		{name: "no match", keyword: "不存在的订单", wantTotal: 0},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			result, err := ListRechargeOrdersWithDB(db, member, RechargeOrderListQuery{Keyword: testCase.keyword}, 1, 10)
+			if err != nil {
+				t.Fatalf("list recharge orders: %v", err)
+			}
+			if result.Total != testCase.wantTotal {
+				t.Fatalf("expected %d rows for %q, got total=%d rows=%d", testCase.wantTotal, testCase.keyword, result.Total, len(result.Data))
+			}
+			if int64(len(result.Data)) != result.Total {
+				t.Fatalf("expected returned rows to match total, got total=%d rows=%d", result.Total, len(result.Data))
+			}
+		})
+	}
+}
+
+func TestListRechargeOrdersWithDBFiltersByStatusAndProvider(t *testing.T) {
+	db := newRechargeOrderTestDB(t)
+	member := seedRechargeOrderUser(t, db, 9, "user")
+	now := time.Date(2026, 6, 21, 10, 0, 0, 0, time.UTC)
+	paidAt := now.Add(time.Minute)
+
+	orders := []entity.RechargeOrder{
+		{UserID: member.ID, OrderNo: "rcg_p1", PaymentProvider: DefaultPaymentProvider, Amount: 10, Status: rechargeOrderStatusPending, CreatedAt: now},
+		{UserID: member.ID, OrderNo: "rcg_p2", PaymentProvider: DefaultPaymentProvider, Amount: 20, Status: rechargeOrderStatusPaid, PaidAt: &paidAt, CreatedAt: now.Add(time.Minute)},
+		{UserID: member.ID, OrderNo: "rcg_p3", PaymentProvider: "legacy-gateway", Amount: 30, Status: rechargeOrderStatusPaid, PaidAt: &paidAt, CreatedAt: now.Add(2 * time.Minute)},
+	}
+	for _, order := range orders {
+		if err := db.Create(&order).Error; err != nil {
+			t.Fatalf("create recharge order: %v", err)
+		}
+	}
+
+	paid, err := ListRechargeOrdersWithDB(db, member, RechargeOrderListQuery{Status: rechargeOrderStatusPaid}, 1, 10)
+	if err != nil {
+		t.Fatalf("filter by status: %v", err)
+	}
+	if paid.Total != 2 {
+		t.Fatalf("expected 2 paid orders, got %d", paid.Total)
+	}
+
+	provider, err := ListRechargeOrdersWithDB(db, member, RechargeOrderListQuery{PaymentProvider: "legacy-gateway"}, 1, 10)
+	if err != nil {
+		t.Fatalf("filter by provider: %v", err)
+	}
+	if provider.Total != 1 || provider.Data[0].OrderNo != "rcg_p3" {
+		t.Fatalf("expected only the legacy-gateway order, got %+v", provider.Data)
+	}
+
+	// 状态与关键词可以叠加。
+	combined, err := ListRechargeOrdersWithDB(db, member, RechargeOrderListQuery{
+		Status:  rechargeOrderStatusPaid,
+		Keyword: "rcg_p2",
+	}, 1, 10)
+	if err != nil {
+		t.Fatalf("combined filter: %v", err)
+	}
+	if combined.Total != 1 || combined.Data[0].OrderNo != "rcg_p2" {
+		t.Fatalf("expected combined filter to keep only rcg_p2, got %+v", combined.Data)
+	}
+
+	// 不带筛选应看到全部 3 条。
+	all, err := ListRechargeOrdersWithDB(db, member, RechargeOrderListQuery{}, 1, 10)
+	if err != nil {
+		t.Fatalf("list all: %v", err)
+	}
+	if all.Total != 3 {
+		t.Fatalf("expected 3 orders without filters, got %d", all.Total)
+	}
+}
+
+// 关键词里的 % 与 _ 必须按「字面量」处理，而不是 LIKE 通配符。
+//
+// 注意样本选择：两个订单号都含下划线（前缀就是 rcg_），
+// 因此 "_" 应命中两条；若 _ 被当成通配符，则会命中所有记录 ——
+// 用「含百分号的记录」来区分这两种行为。
+func TestListRechargeOrdersWithDBKeywordTreatsWildcardsLiterally(t *testing.T) {
+	db := newRechargeOrderTestDB(t)
+	member := seedRechargeOrderUser(t, db, 11, "user")
+	now := time.Date(2026, 6, 21, 10, 0, 0, 0, time.UTC)
+
+	orders := []entity.RechargeOrder{
+		{UserID: member.ID, OrderNo: "rcg_plain", PaymentProvider: DefaultPaymentProvider, Amount: 10, Status: rechargeOrderStatusPending, CreatedAt: now},
+		{UserID: member.ID, OrderNo: "rcg_under_score", PaymentProvider: DefaultPaymentProvider, Amount: 20, Status: rechargeOrderStatusPending, CreatedAt: now.Add(time.Minute)},
+		{UserID: member.ID, OrderNo: "rcg_pct%value", PaymentProvider: DefaultPaymentProvider, Amount: 30, Status: rechargeOrderStatusPending, CreatedAt: now.Add(2 * time.Minute)},
+	}
+	for _, order := range orders {
+		if err := db.Create(&order).Error; err != nil {
+			t.Fatalf("create recharge order: %v", err)
+		}
+	}
+
+	// "%" 只应命中真的含百分号的那条，而不是全部 3 条。
+	percent, err := ListRechargeOrdersWithDB(db, member, RechargeOrderListQuery{Keyword: "%"}, 1, 10)
+	if err != nil {
+		t.Fatalf("search with percent: %v", err)
+	}
+	if percent.Total != 1 || percent.Data[0].OrderNo != "rcg_pct%value" {
+		t.Fatalf("expected only the percent order, got total=%d %+v", percent.Total, percent.Data)
+	}
+
+	// "_" 是字面量下划线，3 条订单号都含下划线。
+	underscore, err := ListRechargeOrdersWithDB(db, member, RechargeOrderListQuery{Keyword: "_"}, 1, 10)
+	if err != nil {
+		t.Fatalf("search with underscore: %v", err)
+	}
+	if underscore.Total != 3 {
+		t.Fatalf("expected all 3 order numbers to contain a literal underscore, got %d", underscore.Total)
+	}
+
+	// 更精确的子串仍能定位到具体订单。
+	precise, err := ListRechargeOrdersWithDB(db, member, RechargeOrderListQuery{Keyword: "under_score"}, 1, 10)
+	if err != nil {
+		t.Fatalf("search with precise substring: %v", err)
+	}
+	if precise.Total != 1 || precise.Data[0].OrderNo != "rcg_under_score" {
+		t.Fatalf("expected only rcg_under_score, got %+v", precise.Data)
 	}
 }
 

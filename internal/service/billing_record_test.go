@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"fmt"
 	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"gorm.io/gorm"
@@ -544,6 +545,88 @@ func TestListBillingRecordsWithDBKeywordTreatsLikeWildcardsLiterally(t *testing.
 	}
 	if result.Data[0].QuestionText != "含_下划线题目" {
 		t.Fatalf("unexpected matched row: %+v", result.Data[0])
+	}
+}
+
+// 「累计消费金额」必须覆盖全部筛选结果，而不是只统计当前页；
+// 且同一笔请求的多渠道明细只算一次（与列表展示口径一致）。
+func TestListBillingRecordsWithDBSummaryCoversAllPagesWithoutDoubleCounting(t *testing.T) {
+	db := newBillingRecordTestDB(t)
+	owner := seedBillingRecordUser(t, db, 2, "user")
+
+	// 同一笔请求命中两个渠道：两条记录合计 2.00，但只能计一次 2.00。
+	merged := []entity.BillingRecord{
+		{UserID: owner.ID, Type: "normal_search", Provider: "icodef", Amount: 1.25, RequestID: "req-merged"},
+		{UserID: owner.ID, Type: "normal_search", Provider: "ai", Amount: 0.75, RequestID: "req-merged"},
+	}
+	for i := range merged {
+		if err := db.Create(&merged[i]).Error; err != nil {
+			t.Fatalf("create merged record: %v", err)
+		}
+	}
+
+	// 另外 25 条独立请求，每条 1 元，用于跨页统计。
+	for i := 0; i < 25; i++ {
+		record := entity.BillingRecord{
+			UserID:    owner.ID,
+			Type:      "normal_search",
+			Provider:  "icodef",
+			Amount:    1,
+			RequestID: fmt.Sprintf("req-single-%02d", i),
+		}
+		if err := db.Create(&record).Error; err != nil {
+			t.Fatalf("create single record: %v", err)
+		}
+	}
+
+	// 充值入账属于收入，不计入消费金额。
+	if err := db.Create(&entity.BillingRecord{
+		UserID: owner.ID, Type: "recharge", Provider: "epay", Amount: 100,
+	}).Error; err != nil {
+		t.Fatalf("create recharge record: %v", err)
+	}
+
+	firstPage, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{}, 1, 10)
+	if err != nil {
+		t.Fatalf("list first page: %v", err)
+	}
+
+	// 全部页合计：合并请求 2.00 + 25 条独立请求 25.00 = 27.00（充值 100 不计）。
+	if firstPage.Summary.TotalAmount != 27 {
+		t.Fatalf("expected all-page total 27, got %v", firstPage.Summary.TotalAmount)
+	}
+	if firstPage.Summary.CurrentPageAmount <= 0 {
+		t.Fatalf("expected a positive current page amount, got %v", firstPage.Summary.CurrentPageAmount)
+	}
+	if firstPage.Summary.CurrentPageAmount > firstPage.Summary.TotalAmount {
+		t.Fatalf("current page amount %v must not exceed the all-page total %v",
+			firstPage.Summary.CurrentPageAmount, firstPage.Summary.TotalAmount)
+	}
+
+	// 第二页的「累计」必须保持不变，只有「当前页」变化。
+	secondPage, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{}, 2, 10)
+	if err != nil {
+		t.Fatalf("list second page: %v", err)
+	}
+	if secondPage.Summary.TotalAmount != firstPage.Summary.TotalAmount {
+		t.Fatalf("expected the all-page total to be page independent, got %v then %v",
+			firstPage.Summary.TotalAmount, secondPage.Summary.TotalAmount)
+	}
+	if secondPage.Summary.CurrentPageAmount == firstPage.Summary.CurrentPageAmount {
+		t.Fatalf("expected different current page amounts on page 2, both %v", secondPage.Summary.CurrentPageAmount)
+	}
+
+	// 筛选后「累计」应随筛选结果收窄。
+	filtered, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{Keyword: "req-single"}, 1, 10)
+	if err != nil {
+		t.Fatalf("list filtered: %v", err)
+	}
+	if filtered.Summary.TotalAmount != 25 {
+		t.Fatalf("expected filtered total 25, got %v", filtered.Summary.TotalAmount)
+	}
+	if filtered.Summary.TotalAmount >= firstPage.Summary.TotalAmount {
+		t.Fatalf("expected the filtered total to be smaller, got %v vs %v",
+			filtered.Summary.TotalAmount, firstPage.Summary.TotalAmount)
 	}
 }
 

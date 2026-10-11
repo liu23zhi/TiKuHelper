@@ -48,11 +48,23 @@ type billingSearchGroupKey struct {
 	RequestID string
 }
 
+// BillingRecordSummary 是账单列表的金额统计。
+//
+// 口径说明：
+//   - 只统计「支出」（题目消费），充值入账与新用户赠送属于收入，不计入消费金额；
+//   - 与列表一样按 (user_id, request_id) 去重，避免一次搜题的多个渠道被重复累加；
+//   - TotalAmount 覆盖**全部符合筛选条件**的账单，CurrentPageAmount 只覆盖当前页。
+type BillingRecordSummary struct {
+	TotalAmount       float64 `json:"totalAmount"`
+	CurrentPageAmount float64 `json:"currentPageAmount"`
+}
+
 type BillingRecordListResult struct {
 	Data     []BillingRecordListItem `json:"data"`
 	Total    int64                   `json:"total"`
 	Page     int                     `json:"page"`
 	PageSize int                     `json:"pageSize"`
+	Summary  BillingRecordSummary    `json:"summary"`
 }
 
 func buildCachedLocalProviderLabel(provider string, snapshot string) string {
@@ -354,6 +366,10 @@ type BillingRecordListQuery struct {
 // 分页与筛选都在数据库侧完成：先 JOIN 出展示需要的用户 / 令牌列，
 // 再把全部筛选条件应用到同一个 query 上，最后分别 Count 与 Find，
 // 避免出现「total 与当前页数据口径不一致」。
+//
+// 金额统计（Summary）覆盖**全部筛选结果**，不随分页变化；同时给出当前页小计。
+// 一次搜题命中多个渠道会写成多条 normal_search，同一 request_id 视为**一笔消费**，
+// 其金额为组内明细之和，避免重复累加，也避免只算最新一条而漏掉其他渠道。
 func ListBillingRecordsWithDB(db *gorm.DB, operator entity.User, query BillingRecordListQuery, page int, pageSize int) (BillingRecordListResult, error) {
 	baseQuery := applyBillingRecordFilters(buildBillingRecordDisplayQuery(db, operator), query)
 
@@ -362,29 +378,51 @@ func ListBillingRecordsWithDB(db *gorm.DB, operator entity.User, query BillingRe
 		return BillingRecordListResult{}, err
 	}
 
-	var records []BillingRecordListItem
-	offset := (page - 1) * pageSize
-	if err := baseQuery.
-		Select("billing_records.id, billing_records.user_id, COALESCE(billing_users.username, '') AS username, billing_records.type, billing_records.provider, billing_records.model_name, billing_records.amount, billing_records.created_at, billing_records.unit_price_snapshot, billing_records.question_text, billing_records.request_id, billing_records.remark, access_tokens.name AS access_token_name").
-		Order("billing_records.id desc").
-		Limit(pageSize).
-		Offset(offset).
-		Find(&records).Error; err != nil {
-		return BillingRecordListResult{}, err
-	}
-
-	searchGroups, err := loadBillingSearchGroups(db, records)
+	// 取出全部筛选结果：既要算跨页总额，也要按 id desc 排序后切出当前页，
+	// 保证「列表分页」与「统计口径」用的是同一份数据。
+	allRows, err := findAllBillingRecordAmountRows(baseQuery)
 	if err != nil {
 		return BillingRecordListResult{}, err
 	}
 
+	// 每笔请求的真实消费总额（同一 request_id 的多个渠道相加）。
+	requestExpenses, err := loadBillingRequestExpenseTotals(db, operator)
+	if err != nil {
+		return BillingRecordListResult{}, err
+	}
+
+	for i := range allRows {
+		allRows[i] = decorateBillingRecord(allRows[i])
+		// 列表里的代表行金额改成整笔请求的合计，避免「只显示最新渠道金额」造成误读，
+		// 也让「累计消费金额」与逐行金额相加的结果一致。
+		if key, grouped := billingRecordExpenseKey(allRows[i]); grouped {
+			if total, ok := requestExpenses[key]; ok {
+				allRows[i].Amount = total
+			}
+		}
+	}
+
+	offset := (page - 1) * pageSize
+	pageRows := sliceBillingRecordAmountRows(allRows, offset, pageSize)
+
+	records := make([]BillingRecordListItem, 0, len(pageRows))
+	records = append(records, pageRows...)
+
+	// 当前页的代表行还需要兄弟明细，才能展示渠道构成与费用明细。
+	searchGroups, err := loadBillingSearchGroups(db, records)
+	if err != nil {
+		return BillingRecordListResult{}, err
+	}
 	for i := range records {
-		records[i] = decorateBillingRecord(records[i])
 		if normalizeBillingRecordType(records[i].Type) != normalSearchBillingRecordType || strings.TrimSpace(records[i].RequestID) == "" {
 			continue
 		}
 		key := billingSearchGroupKey{UserID: records[i].UserID, RequestID: strings.TrimSpace(records[i].RequestID)}
 		records[i] = mergeBillingSearchGroup(records[i], searchGroups[key])
+		// mergeBillingSearchGroup 会依据明细重算金额，这里保持与整笔合计一致。
+		if total, ok := requestExpenses[key]; ok {
+			records[i].Amount = total
+		}
 	}
 
 	return BillingRecordListResult{
@@ -392,7 +430,101 @@ func ListBillingRecordsWithDB(db *gorm.DB, operator entity.User, query BillingRe
 		Total:    total,
 		Page:     page,
 		PageSize: pageSize,
+		Summary: BillingRecordSummary{
+			TotalAmount:       sumBillingExpenseAmount(allRows),
+			CurrentPageAmount: sumBillingExpenseAmount(pageRows),
+		},
 	}, nil
+}
+
+// billingRecordExpenseKey 返回用于「按请求聚合消费金额」的键；非搜题消费返回 grouped=false。
+func billingRecordExpenseKey(row BillingRecordListItem) (billingSearchGroupKey, bool) {
+	if normalizeBillingRecordType(row.Type) != normalSearchBillingRecordType {
+		return billingSearchGroupKey{}, false
+	}
+	if strings.TrimSpace(row.RequestID) == "" {
+		return billingSearchGroupKey{}, false
+	}
+	return billingSearchGroupKey{UserID: row.UserID, RequestID: strings.TrimSpace(row.RequestID)}, true
+}
+
+// loadBillingRequestExpenseTotals 按 (user_id, request_id) 汇总每笔请求的消费总额。
+//
+// 必须绕开 buildBillingRecordDisplayQuery 里的 NOT EXISTS 去重：
+// 那个过滤只保留每个请求最新的一条明细，用它求和会把同一笔请求的其他渠道漏掉
+// （例如 icodef 1.25 + ai 0.75 只会算成 1.25）。
+// 这里直接按用户范围聚合原始明细，得到真实花费。
+func loadBillingRequestExpenseTotals(db *gorm.DB, operator entity.User) (map[billingSearchGroupKey]float64, error) {
+	query := db.Table(entity.TableNameBillingRecord+" AS billing_records").
+		Select("billing_records.user_id, billing_records.request_id, COALESCE(SUM(billing_records.amount), 0) AS total_amount").
+		Where("billing_records.type = ?", normalSearchBillingRecordType).
+		Where("COALESCE(billing_records.request_id, '') <> ''").
+		Where("COALESCE(billing_records.provider, '') <> ?", "system").
+		Group("billing_records.user_id, billing_records.request_id")
+	if !isAdminUser(operator) {
+		query = query.Where("billing_records.user_id = ?", operator.ID)
+	}
+
+	var rows []struct {
+		UserID      int32   `gorm:"column:user_id"`
+		RequestID   string  `gorm:"column:request_id"`
+		TotalAmount float64 `gorm:"column:total_amount"`
+	}
+	if err := query.Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+
+	totals := make(map[billingSearchGroupKey]float64, len(rows))
+	for _, row := range rows {
+		totals[billingSearchGroupKey{UserID: row.UserID, RequestID: strings.TrimSpace(row.RequestID)}] = util.RoundMoney(row.TotalAmount)
+	}
+	return totals, nil
+}
+
+// findAllBillingRecordAmountRows 取出符合筛选条件的全部账单。
+//
+// 这里不复用分页查询，是因为「全部累计消费」必须覆盖所有页。
+// 返回的行会走与列表完全相同的装饰逻辑（渠道标签、题目、用户名等），
+// 因此必须 Select 齐这些展示依赖列，否则会退化成「总数对了但字段是空的」：
+//   - username / access_token_name 供列表展示；
+//   - unit_price_snapshot 供题目快照回退与「（缓存）」渠道标签。
+func findAllBillingRecordAmountRows(baseQuery *gorm.DB) ([]BillingRecordListItem, error) {
+	var rows []BillingRecordListItem
+	if err := baseQuery.
+		Select("billing_records.id, billing_records.user_id, COALESCE(billing_users.username, '') AS username, billing_records.type, billing_records.provider, billing_records.model_name, billing_records.amount, billing_records.created_at, billing_records.unit_price_snapshot, billing_records.question_text, billing_records.request_id, billing_records.remark, access_tokens.name AS access_token_name").
+		Order("billing_records.id desc").
+		Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func sliceBillingRecordAmountRows(rows []BillingRecordListItem, offset int, pageSize int) []BillingRecordListItem {
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(rows) || pageSize <= 0 {
+		return nil
+	}
+	end := offset + pageSize
+	if end > len(rows) {
+		end = len(rows)
+	}
+	return rows[offset:end]
+}
+
+// sumBillingExpenseAmount 累加「支出」金额；充值入账与新用户赠送属于收入，不计入消费。
+func sumBillingExpenseAmount(rows []BillingRecordListItem) float64 {
+	total := 0.0
+	for _, row := range rows {
+		if row.Direction == "income" {
+			continue
+		}
+		if amount := row.Amount; amount > 0 {
+			total += amount
+		}
+	}
+	return util.RoundMoney(total)
 }
 
 // applyBillingRecordFilters 把关键词与类型筛选应用到账单查询上。
@@ -401,20 +533,18 @@ func applyBillingRecordFilters(query *gorm.DB, filter BillingRecordListQuery) *g
 		query = query.Where("billing_records.type = ?", recordType)
 	}
 
-	pattern := util.BuildLikePattern(filter.Keyword)
-	if pattern == "" {
+	// 关键词按「纯子串」匹配（不使用 LIKE 通配符），见 util.BuildInstrCondition。
+	condition, args := util.BuildInstrCondition(filter.Keyword,
+		"COALESCE(billing_users.username, '')",
+		"COALESCE(billing_records.provider, '')",
+		"COALESCE(billing_records.model_name, '')",
+		"COALESCE(billing_records.question_text, '')",
+		"COALESCE(billing_records.request_id, '')",
+		"COALESCE(billing_records.remark, '')",
+		"COALESCE(access_tokens.name, '')",
+	)
+	if condition == "" {
 		return query
 	}
-
-	// 用 ESCAPE '\' 配合转义后的模式，用户输入的 % 与 _ 按字面量处理。
-	condition := `(
-		LOWER(COALESCE(billing_users.username, '')) LIKE LOWER(?) ESCAPE '\'
-		OR LOWER(COALESCE(billing_records.provider, '')) LIKE LOWER(?) ESCAPE '\'
-		OR LOWER(COALESCE(billing_records.model_name, '')) LIKE LOWER(?) ESCAPE '\'
-		OR LOWER(COALESCE(billing_records.question_text, '')) LIKE LOWER(?) ESCAPE '\'
-		OR LOWER(COALESCE(billing_records.request_id, '')) LIKE LOWER(?) ESCAPE '\'
-		OR LOWER(COALESCE(billing_records.remark, '')) LIKE LOWER(?) ESCAPE '\'
-		OR LOWER(COALESCE(access_tokens.name, '')) LIKE LOWER(?) ESCAPE '\'
-	)`
-	return query.Where(condition, pattern, pattern, pattern, pattern, pattern, pattern, pattern)
+	return query.Where(condition, args...)
 }

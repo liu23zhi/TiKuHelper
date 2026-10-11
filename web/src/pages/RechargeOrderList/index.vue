@@ -22,6 +22,45 @@
         :message="isAdmin ? '管理员可查看全部充值记录，包含用户、订单号、支付方式、金额和支付状态。' : '普通用户只能查看自己的充值记录，支付结果以异步通知入账为准。'"
       />
 
+      <a-form layout="inline" class="filter-form">
+        <a-form-item label="关键词">
+          <a-input-search
+            v-model:value="keywordInput"
+            placeholder="订单号 / 第三方单号 / 用户 / 支付方式"
+            allow-clear
+            style="width: 280px"
+            @search="applyKeyword"
+            @press-enter="applyKeyword"
+          />
+        </a-form-item>
+        <a-form-item label="状态">
+          <a-select
+            v-model:value="filters.status"
+            allow-clear
+            placeholder="全部状态"
+            style="width: 150px"
+            :options="statusOptions"
+            @change="onFilterChange"
+          />
+        </a-form-item>
+        <a-form-item label="支付渠道">
+          <a-input
+            v-model:value="filters.paymentProvider"
+            placeholder="例如 epay"
+            allow-clear
+            style="width: 160px"
+            @press-enter="onFilterChange"
+            @blur="onFilterChange"
+          />
+        </a-form-item>
+        <a-form-item>
+          <a-space>
+            <a-button @click="resetFilters">重置筛选</a-button>
+            <a-tag v-if="activeFilterCount > 0" color="blue">已启用 {{ activeFilterCount }} 个筛选条件</a-tag>
+          </a-space>
+        </a-form-item>
+      </a-form>
+
       <a-table
         bordered
         :data-source="dataSource"
@@ -62,9 +101,17 @@ import { computed, defineComponent, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { getRechargeOrders } from '@/api/TikuComponentApi'
 import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser'
+import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@/utils/listSearchHelpers.mjs'
 
 const dataSource = ref([])
 const tableLoading = ref(false)
+// 已生效的筛选条件；keywordInput 只是输入框的即时值。
+const filters = reactive({
+  keyword: '',
+  status: undefined,
+  paymentProvider: '',
+})
+const keywordInput = ref('')
 const pagination = reactive({
   current: 1,
   pageSize: 10,
@@ -86,6 +133,17 @@ export default defineComponent({
       tableLoading,
       pagination,
       isAdmin,
+      filters,
+      keywordInput,
+      activeFilterCount: computed(() => countActiveFilters({
+        keyword: filters.keyword,
+        status: filters.status,
+        paymentProvider: filters.paymentProvider,
+      })),
+      statusOptions: [
+        { label: '待支付', value: 'pending' },
+        { label: '已支付', value: 'paid' },
+      ],
       columns: [
         {
           title: '订单号',
@@ -157,12 +215,32 @@ export default defineComponent({
     this.handleLoad()
   },
   methods: {
+    // 点「搜索」或回车时才把输入框内容变成生效的筛选条件。
+    applyKeyword() {
+      filters.keyword = normalizeSearchKeyword(keywordInput.value)
+      keywordInput.value = filters.keyword
+      pagination.current = 1
+      this.handleLoad()
+    },
+    onFilterChange() {
+      pagination.current = 1
+      this.handleLoad()
+    },
+    resetFilters() {
+      filters.keyword = ''
+      keywordInput.value = ''
+      filters.status = undefined
+      filters.paymentProvider = ''
+      pagination.current = 1
+      this.handleLoad()
+    },
     handleLoad() {
       tableLoading.value = true
-      getRechargeOrders({
-        page: pagination.current,
-        pageSize: pagination.pageSize,
-      }).then((res) => {
+      getRechargeOrders(buildSearchParams({
+        keyword: filters.keyword,
+        status: filters.status,
+        paymentProvider: filters.paymentProvider,
+      }, pagination.current, pagination.pageSize)).then((res) => {
         if (res?.status === 200) {
           dataSource.value = Array.isArray(res?.data?.data) ? res.data.data : []
           pagination.total = Number(res?.data?.total || 0)
@@ -220,6 +298,13 @@ export default defineComponent({
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.filter-form {
+  margin: 12px 0 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 0;
 }
 
 .page-card {

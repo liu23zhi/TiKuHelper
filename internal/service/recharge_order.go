@@ -245,11 +245,18 @@ func firstNonEmptyRechargePaymentValue(values ...string) string {
 	return ""
 }
 
-func ListRechargeOrdersWithDB(db *gorm.DB, operator entity.User, page int, pageSize int) (RechargeOrderListResult, error) {
-	baseQuery := db.Table(entity.TableNameRechargeOrder + " AS recharge_orders")
-	if !isAdminUser(operator) {
-		baseQuery = baseQuery.Where("recharge_orders.user_id = ?", operator.ID)
-	}
+// RechargeOrderListQuery 是充值记录的筛选条件。
+type RechargeOrderListQuery struct {
+	// Keyword 同时匹配订单号、第三方订单号、用户名、支付方式与支付渠道。
+	Keyword string
+	// Status 精确匹配订单状态（pending / paid）。
+	Status string
+	// PaymentProvider 精确匹配支付渠道。
+	PaymentProvider string
+}
+
+func ListRechargeOrdersWithDB(db *gorm.DB, operator entity.User, query RechargeOrderListQuery, page int, pageSize int) (RechargeOrderListResult, error) {
+	baseQuery := applyRechargeOrderFilters(buildRechargeOrderListQuery(db, operator), query)
 
 	var total int64
 	if err := baseQuery.Count(&total).Error; err != nil {
@@ -260,7 +267,6 @@ func ListRechargeOrdersWithDB(db *gorm.DB, operator entity.User, page int, pageS
 	offset := (page - 1) * pageSize
 	if err := baseQuery.
 		Select("recharge_orders.id, recharge_orders.user_id, users.username, recharge_orders.order_no, recharge_orders.payment_provider, recharge_orders.payment_method_name_snapshot, recharge_orders.amount, recharge_orders.status, recharge_orders.third_party_order_no, recharge_orders.paid_at, recharge_orders.created_at, recharge_orders.updated_at").
-		Joins("LEFT JOIN " + entity.TableNameUser + " AS users ON users.id = recharge_orders.user_id").
 		Order("recharge_orders.id desc").
 		Limit(pageSize).
 		Offset(offset).
@@ -274,6 +280,42 @@ func ListRechargeOrdersWithDB(db *gorm.DB, operator entity.User, page int, pageS
 		Page:     page,
 		PageSize: pageSize,
 	}, nil
+}
+
+// buildRechargeOrderListQuery 构造充值记录的基础查询。
+//
+// JOIN 必须在这里完成：关键词筛选会用到 users.username，
+// 若只在取数据时才 JOIN，Count 会因为缺列而报错（或算出与数据不一致的 total）。
+func buildRechargeOrderListQuery(db *gorm.DB, operator entity.User) *gorm.DB {
+	baseQuery := db.Table(entity.TableNameRechargeOrder + " AS recharge_orders").
+		Joins("LEFT JOIN " + entity.TableNameUser + " AS users ON users.id = recharge_orders.user_id")
+	if !isAdminUser(operator) {
+		baseQuery = baseQuery.Where("recharge_orders.user_id = ?", operator.ID)
+	}
+	return baseQuery
+}
+
+// applyRechargeOrderFilters 把关键词、状态与支付渠道筛选应用到充值记录查询上。
+func applyRechargeOrderFilters(query *gorm.DB, filter RechargeOrderListQuery) *gorm.DB {
+	if status := strings.TrimSpace(filter.Status); status != "" {
+		query = query.Where("recharge_orders.status = ?", status)
+	}
+	if provider := strings.TrimSpace(filter.PaymentProvider); provider != "" {
+		query = query.Where("recharge_orders.payment_provider = ?", provider)
+	}
+
+	// 关键词按「纯子串」匹配（不使用 LIKE 通配符），见 util.BuildInstrCondition。
+	condition, args := util.BuildInstrCondition(filter.Keyword,
+		"COALESCE(recharge_orders.order_no, '')",
+		"COALESCE(recharge_orders.third_party_order_no, '')",
+		"COALESCE(users.username, '')",
+		"COALESCE(recharge_orders.payment_method_name_snapshot, '')",
+		"COALESCE(recharge_orders.payment_provider, '')",
+	)
+	if condition == "" {
+		return query
+	}
+	return query.Where(condition, args...)
 }
 
 func CreateRechargeOrderWithDB(db *gorm.DB, user entity.User, input CreateRechargeOrderInput) (CreateRechargeOrderResult, error) {
