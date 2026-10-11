@@ -211,13 +211,9 @@ func CreateAIFallbackTask(c *gin.Context) {
 		isLeader, borrowed, leader := beginFallbackFlight(flightKey)
 		if !isLeader && borrowed != nil {
 			// 搭车：复用他人结果，**不重复计费**（费用已由发起者结算）。
-			result := service.AIFallbackResult{
-				Success:  borrowed.Success,
-				Result:   borrowed.Result,
-				Usage:    borrowed.Usage,
-				Model:    borrowed.Model,
-				Warnings: borrowed.Warnings,
-			}
+			// 整份拷贝而不是逐字段复制：AIFallbackResult 后续新增字段时
+			// 逐字段写法会静默漏掉（例如 UnpricedModel 就曾被漏掉）。
+			result := *borrowed
 			logger.SysLog(fmt.Sprintf("AI 兜底并发合并命中 taskId=%s requestId=%s 复用进行中的相同请求", taskID, requestID))
 			writeAIFallbackAuditLog(auditIdentity, requestID, taskID, "result", "async", req, result)
 			return result
