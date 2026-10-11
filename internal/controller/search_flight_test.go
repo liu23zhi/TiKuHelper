@@ -18,9 +18,7 @@ import (
 
 // resetSearchFlights 清空进行中的并发合并登记，避免测试之间互相影响。
 func resetSearchFlights() {
-	defaultSearchFlights.mu.Lock()
-	defer defaultSearchFlights.mu.Unlock()
-	defaultSearchFlights.calls = make(map[string]*searchFlightCall)
+	searchFlights.reset()
 }
 
 // searchOnce 发起一次搜题请求并返回响应（可在 goroutine 中安全使用）。
@@ -250,9 +248,7 @@ func waitForFlightRegistration(t *testing.T, want int) {
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		defaultSearchFlights.mu.Lock()
-		count := len(defaultSearchFlights.calls)
-		defaultSearchFlights.mu.Unlock()
+		count := searchFlights.inFlight()
 		if count >= want {
 			// 登记完成后，再给搭车者一点时间去命中同一个 key。
 			time.Sleep(30 * time.Millisecond)
@@ -301,9 +297,7 @@ func TestSearchFlightReleasedWhenLeaderFails(t *testing.T) {
 			// 第一次：上游失败，不应留下永不释放的 in-flight 登记。
 			searchOnce("/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
 
-			defaultSearchFlights.mu.Lock()
-			pending := len(defaultSearchFlights.calls)
-			defaultSearchFlights.mu.Unlock()
+			pending := searchFlights.inFlight()
 			if pending != 0 {
 				t.Fatalf("expected the flight to be released after a failed leader, still %d pending", pending)
 			}

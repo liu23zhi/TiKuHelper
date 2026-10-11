@@ -8,10 +8,12 @@ import (
 	"sync"
 	"time"
 
+	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/service"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/model"
 )
 
@@ -201,19 +203,54 @@ func CreateAIFallbackTask(c *gin.Context) {
 			writeAIFallbackAuditLog(auditIdentity, requestID, taskID, "billing_precheck", "async", req, result)
 			return result
 		}
+
+		// 并发合并：兜底同样是「一次上游调用 = 一次计费」，缓存写入又在上游返回之后，
+		// 因此并发提交完全相同题目的请求会各自调用一次 AI 并各自扣费。
+		// 只有「用户 + 题目 + 类型 + 选项」完全一致才合并。
+		flightKey := buildFallbackFlightKey(billingCtx.UserID, req)
+		isLeader, borrowed, leader := beginFallbackFlight(flightKey)
+		if !isLeader && borrowed != nil {
+			// 搭车：复用他人结果，**不重复计费**（费用已由发起者结算）。
+			result := service.AIFallbackResult{
+				Success:  borrowed.Success,
+				Result:   borrowed.Result,
+				Usage:    borrowed.Usage,
+				Model:    borrowed.Model,
+				Warnings: borrowed.Warnings,
+			}
+			logger.SysLog(fmt.Sprintf("AI 兜底并发合并命中 taskId=%s requestId=%s 复用进行中的相同请求", taskID, requestID))
+			writeAIFallbackAuditLog(auditIdentity, requestID, taskID, "result", "async", req, result)
+			return result
+		}
+		if isLeader {
+			// 兜底释放：任何提前 return 都要唤醒搭车者，避免它们白等到超时。
+			defer func() {
+				finishFallbackFlight(flightKey, leader, nil)
+			}()
+		}
+
 		result := runAIFallbackService(input.Question, input.Type, input.Options)
 		if !result.Success {
+			if isLeader {
+				finishFallbackFlight(flightKey, leader, &result)
+			}
 			writeAIFallbackAuditLog(auditIdentity, requestID, taskID, "result", "async", req, result)
 			return result
 		}
 		warning, err := persistAIFallbackBillingWithWarning(currentBillingCtx, requestID, req, result)
 		if err != nil {
 			failure := buildAIFallbackBillingFailureResult(err)
+			if isLeader {
+				finishFallbackFlight(flightKey, leader, &failure)
+			}
 			writeAIFallbackAuditLog(auditIdentity, requestID, taskID, "billing", "async", req, failure)
 			return failure
 		}
 		if strings.TrimSpace(warning) != "" {
 			result.Warnings = append(result.Warnings, warning)
+		}
+		if isLeader {
+			finishFallbackFlight(flightKey, leader, &result)
 		}
 		writeAIFallbackAuditLog(auditIdentity, requestID, taskID, "result", "async", req, result)
 		return result

@@ -2,12 +2,11 @@ package controller
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
 
-	"fmt"
-	"github.com/itihey/tikuAdapter/internal/middleware"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/model"
 )
@@ -199,10 +198,4 @@ func cloneSearchAnswers(answers [][]string) [][]string {
 		cloned[i] = append([]string(nil), answers[i]...)
 	}
 	return cloned
-}
-
-// 在 init 中把缓存失效能力注入 middleware，
-// 让题库写入（答案回填）也能作废搜题结果缓存，同时避免循环依赖。
-func init() {
-	middleware.InvalidateSearchResultCache = invalidateSearchResultCache
 }

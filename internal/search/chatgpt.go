@@ -981,7 +981,9 @@ func parseAISearchAnswers(content string, options []string, questionType int) []
 func normalizeAISearchAnswers(rawAnswers []string, options []string, questionType int) []string {
 	seen := make(map[string]struct{}, len(rawAnswers))
 	answers := make([]string, 0, len(rawAnswers))
-	preserveRepeatedAnswers := questionType == 2
+	// 非客观题（填空题/连线题/简答题/阅读理解）必须保留重复答案：
+	// 多个空或多个连线点可能是同一个答案文本，去重会让答案数与空数对不上。
+	preserveRepeatedAnswers := util.AllowsRepeatedAnswers(questionType)
 	for _, rawAnswer := range rawAnswers {
 		resolved := resolveAISearchAnswer(rawAnswer, options)
 		if resolved == "" {

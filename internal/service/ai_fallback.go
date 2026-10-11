@@ -170,10 +170,9 @@ func collectUsableAIFallbackAnswers(answerGroups [][]string) ([]string, AIFallba
 
 // isObjectiveAIFallbackQuestionType 判断是否为「客观题」（答案必须是给定选项之一）。
 //
-// 与 pkg/util.FillAnswerResponse 的判定保持一致：只有单选(0)、多选(1)、判断(3)
-// 才需要把答案强制映射到选项上。
+// 直接复用 pkg/util 的判定，避免两处各写一份 type 判断而彼此漂移。
 func isObjectiveAIFallbackQuestionType(questionType int) bool {
-	return questionType == 0 || questionType == 1 || questionType == 3
+	return util.IsObjectiveQuestionType(questionType)
 }
 
 // isUsableFreeTextAIFallbackAnswer 判断「映射不到选项」的答案能否作为自由文本采用。
@@ -219,7 +218,7 @@ func normalizeAIFallbackAnswersForRequest(answers []string, req model.SearchRequ
 	}
 
 	if len(normalizedOptions) == 0 {
-		return dedupeAIFallbackAnswers(answers, req.Type == 2)
+		return dedupeAIFallbackAnswers(answers, util.AllowsRepeatedAnswers(req.Type))
 	}
 
 	answerGroups := make([][]string, 0, len(answers))
@@ -249,7 +248,9 @@ func normalizeAIFallbackAnswersForRequest(answers []string, req model.SearchRequ
 func normalizeFreeTextAIFallbackAnswers(answers []string, options []string, questionType int) []string {
 	result := make([]string, 0, len(answers))
 	seen := make(map[string]struct{})
-	preserveRepeatedAnswers := questionType == 2
+	// 非客观题（填空题/连线题/简答题/阅读理解）保留重复答案，理由是多个空/多组连线
+	// 可能指向同一文本；去重会让答案数与空数对不上。
+	preserveRepeatedAnswers := util.AllowsRepeatedAnswers(questionType)
 
 	for _, answer := range answers {
 		trimmed := strings.TrimSpace(answer)

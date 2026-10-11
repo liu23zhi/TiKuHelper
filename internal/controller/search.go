@@ -316,20 +316,20 @@ func Search(c *gin.Context) {
 	//
 	// 只在缓存未命中且未显式跳过缓存时合并，条件与缓存复用完全一致
 	// （key 含用户、题目、选项、代次，任一不同都不会搭车）。
-	var flightCall *searchFlightCall
+	var flightCall *flightCall[searchFlightPayload]
 	flightKey := ""
 	if cacheEligible && !usedSearchResultCache && !shouldBypassSearchResultCache(req) {
 		flightKey = cacheKey
-		leader, shared := defaultSearchFlights.begin(flightKey)
-		if leader != nil {
+		isLeader, borrowed, leader := beginSearchFlight(flightKey)
+		if isLeader {
 			flightCall = leader
 			// 兜底释放：无论从哪条路径提前 return，都必须唤醒搭车者，
 			// 否则它们会一直等到超时才自行重试。
 			// finish 内部用 once 保证幂等，重复调用安全。
 			defer func() {
-				defaultSearchFlights.finish(flightKey, flightCall, nil)
+				finishSearchFlight(flightKey, flightCall, nil)
 			}()
-		} else if borrowed, ok := defaultSearchFlights.wait(flightKey, shared, defaultSearchFlightWaitTimeout); ok {
+		} else if borrowed != nil {
 			// 复用并发请求的结果：与命中缓存等价，不做上游调用、不计费。
 			result = borrowed
 			usedSearchResultCache = true
@@ -455,7 +455,7 @@ func Search(c *gin.Context) {
 	// 广播给搭车者，并释放 key。
 	// 必须在写响应之前完成，避免搭车者等到响应写完后才被唤醒而无谓地多等一个 RTT。
 	if flightCall != nil {
-		defaultSearchFlights.finish(flightKey, flightCall, result)
+		finishSearchFlight(flightKey, flightCall, result)
 	}
 	c.JSON(http.StatusOK, resp)
 }

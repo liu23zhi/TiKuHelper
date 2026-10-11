@@ -82,6 +82,26 @@ func isObjectiveQuestionType(questionType int) bool {
 	return questionType == 0 || questionType == 1 || questionType == 3
 }
 
+// IsObjectiveQuestionType 暴露客观题判定，供 AI 解析与兜底链路复用，
+// 避免各处各写一份 type 判断而彼此漂移。
+//
+// 题型语义（见 controller 的题型标签）：0 单选、1 多选、2 填空题/连线题、
+// 3 判断、4 简答题/阅读理解、-4 阅读理解。
+func IsObjectiveQuestionType(questionType int) bool {
+	return isObjectiveQuestionType(questionType)
+}
+
+// AllowsRepeatedAnswers 判断该题型的答案是否允许重复。
+//
+// 填空题 / 连线题 / 简答题 / 阅读理解（2、4、-4）是**非客观题**：
+// 多个空、多组连线、多个要点可能都是同一个答案文本，重复必须原样保留，
+// 否则空格数与答案数对不上，前端按序填答就会错位。
+//
+// 客观题（单选 / 多选 / 判断）的答案来自选项集合，重复没有意义，可以去重。
+func AllowsRepeatedAnswers(questionType int) bool {
+	return !isObjectiveQuestionType(questionType)
+}
+
 func fillAnswer(a *model.Answer, req *model.SearchRequest) {
 	if len(a.BestAnswer) == 0 {
 		a.BestAnswer = make([]string, 0)

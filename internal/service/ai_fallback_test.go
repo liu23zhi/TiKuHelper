@@ -27,6 +27,48 @@ func TestNormalizeAIFallbackAnswersForRequestPreservesRepeatedFillAnswers(t *tes
 	}
 }
 
+// 回归：所有非客观题都必须保留重复答案，不只有 type 2。
+//
+// 历史实现用 `questionType == 2` 判断，type 4 / -4 的重复答案被错误去重，
+// 会让答案数与空数对不上，前端按序填答就会错位。
+func TestNormalizeAIFallbackAnswersForRequestPreservesRepeatedAnswersForAllNonObjectiveTypes(t *testing.T) {
+	nonObjectiveTypes := []struct {
+		name         string
+		questionType int
+	}{
+		{name: "填空题/连线题", questionType: 2},
+		{name: "简答题/阅读理解", questionType: 4},
+		{name: "阅读理解", questionType: -4},
+	}
+
+	for _, testCase := range nonObjectiveTypes {
+		t.Run(testCase.name, func(t *testing.T) {
+			// 无选项路径
+			got := normalizeAIFallbackAnswersForRequest([]string{"春天", "春天"}, model.SearchRequest{Type: testCase.questionType})
+			if !reflect.DeepEqual(got, []string{"春天", "春天"}) {
+				t.Fatalf("expected repeated answers preserved without options, got %v", got)
+			}
+
+			// 有选项但答案映射不到选项（线上 options 被编辑器脚本污染的情形）
+			got = normalizeAIFallbackAnswersForRequest([]string{"春天", "春天"}, model.SearchRequest{
+				Type:    testCase.questionType,
+				Options: []string{"段落格式字体字号", `var wordNum = "";`},
+			})
+			if !reflect.DeepEqual(got, []string{"春天", "春天"}) {
+				t.Fatalf("expected repeated answers preserved with unmappable options, got %v", got)
+			}
+		})
+	}
+
+	// 客观题仍然去重。
+	for _, questionType := range []int{0, 1, 3} {
+		got := normalizeAIFallbackAnswersForRequest([]string{"北京", "北京"}, model.SearchRequest{Type: questionType})
+		if !reflect.DeepEqual(got, []string{"北京"}) {
+			t.Fatalf("expected objective type %d to deduplicate, got %v", questionType, got)
+		}
+	}
+}
+
 func TestIsAISearchConfigUsableRequiresBaseURLAPIKeyAndModel(t *testing.T) {
 	if IsAISearchConfigUsable(AISearchRequestConfig{}) {
 		t.Fatal("expected empty config to be unusable")

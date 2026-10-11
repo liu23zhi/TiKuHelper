@@ -13,19 +13,6 @@ import (
 	"strings"
 )
 
-// InvalidateSearchResultCache 由 controller 在 init 中注入，
-// 用于在题库发生写入后让搜题结果缓存失效。
-//
-// 用回调而不是直接引用，避免 middleware → controller 的循环依赖。
-var InvalidateSearchResultCache = func(reason string) {}
-
-func invalidateSearchResultCache(reason string) {
-	if InvalidateSearchResultCache == nil {
-		return
-	}
-	InvalidateSearchResultCache(reason)
-}
-
 // FillHash 填充题库的hash值
 func FillHash(t *entity.Tiku) {
 	if t.Answer == "" {
