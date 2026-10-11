@@ -11,6 +11,7 @@ import (
 
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/model"
+	"github.com/itihey/tikuAdapter/pkg/util"
 )
 
 // searchAnswerPayload 是搜题缓存的值：来自各渠道的**原始未格式化**答案。
@@ -121,15 +122,22 @@ func digestString(value string) string {
 // buildSearchResultCacheKey 构造搜题缓存键，并返回当前代次。
 //
 // 键由哈希摘要表示（见 hashCacheKey）：题面与选项可能很长，直接当 map key 会膨胀。
+//
+// **题面与选项入键前都会归一化**（见 normalizeCacheKeyText）：这是线上实测的必要修复。
+// 客户端每次抓取页面得到的标点并不稳定（`. `↔`。`、`,`↔`，`、行尾多余标点），
+// 未归一化时「同一个问题」会因为一个标点差异算出不同的键，缓存**永远不命中**，
+// 用户在一分钟内重问同一道题会被反复计费。
+//
+// 归一化**只作用于键**：发给上游的题目、写回响应的题目、落库的审计日志
+// 全部保持原始值不变 —— 归一化只是用来判断「这是不是同一个问题」。
 func buildSearchResultCacheKey(resolved resolvedSearchRequestContext, req model.SearchRequest, useQuery string) (string, uint64, bool) {
 	epoch := searchResultCache.currentEpoch()
 
 	key, ok := marshalCacheKey(searchResultCacheKey{
-		Epoch:  epoch,
-		UserID: resolved.UserID,
-		// 题面统一 TrimSpace：仅首尾空白不同不应视为不同的题。
-		Question:     strings.TrimSpace(req.Question),
-		Options:      req.Options,
+		Epoch:        epoch,
+		UserID:       resolved.UserID,
+		Question:     normalizeCacheKeyText(req.Question),
+		Options:      normalizeCacheKeyOptions(req.Options),
 		Type:         req.Type,
 		Use:          normalizeSearchUseKey(useQuery),
 		SourceDigest: buildSearchSourceDigest(resolved, useQuery),
@@ -138,6 +146,34 @@ func buildSearchResultCacheKey(resolved resolvedSearchRequestContext, req model.
 		return "", epoch, false
 	}
 	return key, epoch, true
+}
+
+// normalizeCacheKeyText 把文本归一化到「无语义差异」的形式，仅用于缓存键。
+//
+// 复用 util.FormatString：全角转半角、中文引号/句号转英文、去尾部标点、TrimSpace。
+// 这样 `机器人。` 与 `机器人.`、`内容，相同` 与 `内容,相同` 会算出同一个键。
+//
+// 刻意**不**去掉文本中间的标点：`A,B` 与 `AB` 是不同内容，不能混为一谈。
+func normalizeCacheKeyText(value string) string {
+	return util.FormatString(value)
+}
+
+// normalizeCacheKeyOptions 对选项列表逐项归一化，**保持原顺序**。
+//
+// 顺序必须保留：选项顺序本身就是题目的一部分（`A.1 B.2` 与 `A.2 B.1` 不同）。
+// 这里只消除标点/空白层面的抖动，不做排序、不去重。
+func normalizeCacheKeyOptions(options []string) []string {
+	if len(options) == 0 {
+		// 返回 nil 而不是空切片，保证 `nil` 与 `[]` 序列化一致，
+		// 避免同一个请求因两种「空选项」表示算出不同的键。
+		return nil
+	}
+
+	normalized := make([]string, len(options))
+	for i, option := range options {
+		normalized[i] = normalizeCacheKeyText(option)
+	}
+	return normalized
 }
 
 // canUseSearchResultCache 判断本次搜题请求能否参与缓存。

@@ -268,3 +268,172 @@ func TestSkipCacheFalseStillUsesCache(t *testing.T) {
 		t.Fatalf("expected skipCache=false to still use the cache, got %d upstream calls", upstream)
 	}
 }
+
+// ---- 缓存键归一化：线上实测的「同题不同标点」必须同键 ----
+//
+// 背景（线上事故）：同一用户 64 秒内对同一道填空题请求 3 次，被计费 3 次
+// （billing_records id 830/831/832，共 17134 tokens）。
+// 三次的**题面完全相同**，差异只在选项里的标点：
+//   830: `…机器人.我课后…相关内容,及时复习…巩固所学知识`
+//   832: `…机器人。我课后…相关内容，及时复习…巩固所学知识。`
+// 归一化前这两份算出不同的键，缓存必然不命中，于是每次都真调上游、每次计费。
+
+func cacheKeyForTest(t *testing.T, question string, options []string, questionType int) string {
+	t.Helper()
+	key, _, ok := buildSearchResultCacheKey(
+		resolvedSearchRequestContext{UserID: 1},
+		model.SearchRequest{Question: question, Options: options, Type: questionType},
+		"",
+	)
+	if !ok {
+		t.Fatal("expected the cache key to be constructible")
+	}
+	return key
+}
+
+// 选项标点不同（`.` vs `。`、`,` vs `，`、行尾多余标点）必须归一为同一个键。
+func TestSearchCacheKeyIgnoresOptionPunctuationDrift(t *testing.T) {
+	const question = "请简单列举常见的科技发明。课后是否可以好好的学习相关内容？"
+	halfWidth := []string{
+		"我列举的常见科技发明有电话、电视、电脑和机器人.我课后可以认真学习相关内容,及时复习",
+		"}else if ((max > 0 && count > max) || (min > 0 && min > count)) {",
+	}
+	fullWidth := []string{
+		"我列举的常见科技发明有电话、电视、电脑和机器人。我课后可以认真学习相关内容，及时复习。",
+		"}else if ((max > 0 && count > max) || (min > 0 && min > count)) {",
+	}
+
+	if got, want := cacheKeyForTest(t, question, fullWidth, 2), cacheKeyForTest(t, question, halfWidth, 2); got != want {
+		t.Fatalf("expected punctuation-only option drift to share a cache key, got %s vs %s", got[:16], want[:16])
+	}
+}
+
+// 题面标点不同同样必须归一为同一个键。
+func TestSearchCacheKeyIgnoresQuestionPunctuationDrift(t *testing.T) {
+	options := []string{"同一份选项"}
+	full := cacheKeyForTest(t, "请简单列举常见的科技发明。课后是否可以好好的学习相关内容？", options, 2)
+	half := cacheKeyForTest(t, "请简单列举常见的科技发明.课后是否可以好好的学习相关内容", options, 2)
+
+	if full != half {
+		t.Fatalf("expected punctuation-only question drift to share a cache key, got %s vs %s", full[:16], half[:16])
+	}
+}
+
+// 选项首尾空白不同必须归一为同一个键。
+func TestSearchCacheKeyIgnoresOptionWhitespace(t *testing.T) {
+	const question = "题干"
+	padded := cacheKeyForTest(t, question, []string{"  选项  "}, 2)
+	trimmed := cacheKeyForTest(t, question, []string{"选项"}, 2)
+
+	if padded != trimmed {
+		t.Fatalf("expected surrounding whitespace to be ignored, got %s vs %s", padded[:16], trimmed[:16])
+	}
+}
+
+// 归一化绝不能让**真正不同**的题共用缓存。
+func TestSearchCacheKeyStillDistinguishesRealDifferences(t *testing.T) {
+	const question = "题干"
+	base := cacheKeyForTest(t, question, []string{"选项一", "选项二"}, 2)
+
+	others := map[string]string{
+		"不同题面":     cacheKeyForTest(t, "另一道完全不同的题目", []string{"选项一", "选项二"}, 2),
+		"不同选项内容":   cacheKeyForTest(t, question, []string{"选项一", "完全不同的选项"}, 2),
+		"选项顺序不同":   cacheKeyForTest(t, question, []string{"选项二", "选项一"}, 2),
+		"选项数量不同":   cacheKeyForTest(t, question, []string{"选项一"}, 2),
+		"不同题型":     cacheKeyForTest(t, question, []string{"选项一", "选项二"}, 0),
+		"选项中间标点不同": cacheKeyForTest(t, question, []string{"选项一", "选项,二"}, 2),
+	}
+	for name, key := range others {
+		if key == base {
+			t.Fatalf("expected %s to produce a different cache key", name)
+		}
+	}
+}
+
+// 归一化只作用于缓存键：发给上游与写回响应的题目必须是原始值。
+func TestCacheKeyNormalizationDoesNotMutateRequest(t *testing.T) {
+	original := model.SearchRequest{
+		Question: "题目。带全角标点？",
+		Options:  []string{"选项。带标点，", "  第二项  "},
+		Type:     2,
+	}
+	snapshotQuestion := original.Question
+	snapshotOptions := append([]string(nil), original.Options...)
+
+	_, _, ok := buildSearchResultCacheKey(resolvedSearchRequestContext{UserID: 1}, original, "")
+	if !ok {
+		t.Fatal("expected the cache key to be constructible")
+	}
+
+	if original.Question != snapshotQuestion {
+		t.Fatalf("request question was mutated: %q", original.Question)
+	}
+	if len(original.Options) != len(snapshotOptions) {
+		t.Fatalf("request options length changed: %v", original.Options)
+	}
+	for i := range snapshotOptions {
+		if original.Options[i] != snapshotOptions[i] {
+			t.Fatalf("request option %d was mutated: %q", i, original.Options[i])
+		}
+	}
+}
+
+// nil 与空切片选项必须算出同一个键（两种「无选项」表示不应分裂缓存）。
+func TestSearchCacheKeyTreatsNilAndEmptyOptionsAlike(t *testing.T) {
+	const question = "题干"
+	nilOptions := cacheKeyForTest(t, question, nil, 0)
+	emptyOptions := cacheKeyForTest(t, question, []string{}, 0)
+
+	if nilOptions != emptyOptions {
+		t.Fatalf("expected nil and empty options to share a cache key, got %s vs %s", nilOptions[:16], emptyOptions[:16])
+	}
+}
+
+// ---- 线上事故的端到端回归 ----
+//
+// 用真实 body 形态重现：同一道填空题、选项仅标点不同，在 64 秒内请求 3 次。
+// 修复前 3 次全部未命中缓存、全部真调上游（线上 billing_records 830/831/832
+// 各计费一次，共 17134 tokens）；修复后只应调用上游 **1** 次。
+func TestSearchReusesCacheAcrossPunctuationDriftEndToEnd(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	upstream := 0
+	withStubSearchDependencies(t,
+		func(model.SearchRequest) ([][]string, error) {
+			upstream++
+			return [][]string{{"答案"}}, nil
+		},
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode:             searchModeNormal,
+				UserID:                 1,
+				AccessTokenID:          101,
+				Tokens:                 map[string]string{"icodef": "test-token"},
+				EnabledSearchProviders: []string{"icodef"},
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return []func(model.SearchRequest) ([][]string, error){
+				func(model.SearchRequest) ([][]string, error) {
+					upstream++
+					return [][]string{{"答案"}}, nil
+				},
+			}
+		},
+		nil,
+		func() {
+			// 与线上一致：题面相同；选项[0] 半角/全角标点不同，选项[1] 为编辑器残留 JS。
+			question := "请简单列举常见的科技发明。课后是否可以好好的学习相关内容？"
+			halfWidth := `{"question":"` + question + `","options":["我列举的常见科技发明有电话、电视和机器人.我课后可以认真学习相关内容,及时复习","}else if ((max > 0 && count > max) || (min > 0 && min > count)) {"],"type":2}`
+			fullWidth := `{"question":"` + question + `","options":["我列举的常见科技发明有电话、电视和机器人。我课后可以认真学习相关内容，及时复习。","}else if ((max > 0 && count > max) || (min > 0 && min > count)) {"],"type":2}`
+
+			target := "/adapter-service/search?use=icodef&noRecord=1&recordEmptyAnswer=1"
+			performSearchRequest(t, target, halfWidth, "Basic token-a")
+			performSearchRequest(t, target, fullWidth, "Basic token-a")
+			performSearchRequest(t, target, halfWidth, "Basic token-a")
+		})
+
+	if upstream != 1 {
+		t.Fatalf("expected exactly 1 upstream call across 3 punctuation-variant requests, got %d", upstream)
+	}
+}
