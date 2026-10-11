@@ -52,11 +52,14 @@
                 :min="0.01"
                 :precision="2"
                 :step="1"
+                :parser="parseRechargeAmountInput"
+                :formatter="formatRechargeAmountInput"
                 placeholder="请输入充值金额，例如 10 或 25.50"
                 size="large"
                 style="width: 100%"
+                @keydown="handleRechargeAmountKeydown"
               />
-              <div class="hint">充值金额最多两位小数（支付渠道仅支持「分」）。</div>
+              <div class="hint">充值金额最多两位小数（支付渠道仅支持「分」），输入框会直接拦住多余的位数。</div>
             </a-form-item>
 
             <a-form-item label="快捷金额">
@@ -200,6 +203,8 @@ import {
 } from '@/api/TikuComponentApi'
 import {
   buildRechargeOrderPayload,
+  sanitizeRechargeAmountInput,
+  shouldBlockRechargeAmountKey,
   sortPaymentMethodsForDisplay,
 } from '@/utils/paymentMethodHelpers.mjs'
 import {
@@ -261,6 +266,15 @@ export default defineComponent({
 
     const pageRefreshing = computed(() => tableLoading.value || paymentMethodLoading.value)
 
+    // 充值金额输入约束：输入阶段就挡住超出 2 位的金额。
+    const parseRechargeAmountInput = (value) => sanitizeRechargeAmountInput(value)
+    const formatRechargeAmountInput = (value) => sanitizeRechargeAmountInput(value)
+    const handleRechargeAmountKeydown = (event) => {
+      if (shouldBlockRechargeAmountKey(event?.target?.value, event?.key)) {
+        event.preventDefault()
+      }
+    }
+
     return {
       currentUser,
       dataSource,
@@ -269,6 +283,9 @@ export default defineComponent({
       paymentMethodLoading,
       rechargeSubmitting,
       rechargeAmount,
+      parseRechargeAmountInput,
+      formatRechargeAmountInput,
+      handleRechargeAmountKeydown,
       selectedPaymentMethodId,
       paymentResultVisible,
       paymentQRCodeDataUrl,

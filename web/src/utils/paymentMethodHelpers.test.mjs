@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 
 import {
   buildRechargeOrderPayload,
+  sanitizeRechargeAmountInput,
+  shouldBlockRechargeAmountKey,
   buildRechargePaymentMethodOptions,
   buildPaymentMethodSwalHtml,
   buildSearchAccountConfigSummary,
@@ -111,6 +113,61 @@ test('recharge amount only accepts up to two decimals', () => {
       () => buildRechargeOrderPayload(amount, 1),
       /两位小数/,
       `expected ${amount} to be rejected`,
+    );
+  }
+});
+
+test('sanitizeRechargeAmountInput strips characters and caps decimals while typing', () => {
+  // 超出的位数在输入阶段就被丢掉，用户敲不进第三位。
+  assert.equal(sanitizeRechargeAmountInput('12.345'), '12.34');
+  assert.equal(sanitizeRechargeAmountInput('12.3'), '12.3');
+  assert.equal(sanitizeRechargeAmountInput('12'), '12');
+  assert.equal(sanitizeRechargeAmountInput('199.999'), '199.99');
+
+  // 非法字符与非数字前缀被清除。
+  assert.equal(sanitizeRechargeAmountInput('abc'), '');
+  assert.equal(sanitizeRechargeAmountInput('-12.5'), '12.5');
+  assert.equal(sanitizeRechargeAmountInput('1e5'), '15');
+  assert.equal(sanitizeRechargeAmountInput('12.3.4'), '12.34');
+  assert.equal(sanitizeRechargeAmountInput('¥ 25.50'), '25.50');
+  assert.equal(sanitizeRechargeAmountInput(' 1 2 . 5 '), '12.5');
+
+  // 中间态必须保留，否则光标与后续输入会跳。
+  assert.equal(sanitizeRechargeAmountInput(''), '');
+  assert.equal(sanitizeRechargeAmountInput(null), '');
+  assert.equal(sanitizeRechargeAmountInput('.'), '.');
+  assert.equal(sanitizeRechargeAmountInput('12.'), '12.');
+
+  // 支持自定义位数。
+  assert.equal(sanitizeRechargeAmountInput('12.3456', 3), '12.345');
+  assert.equal(sanitizeRechargeAmountInput('12.34', 0), '12');
+});
+
+test('shouldBlockRechargeAmountKey blocks the third decimal digit and a second dot', () => {
+  // 已有两位小数时，数字键被拦截。
+  assert.equal(shouldBlockRechargeAmountKey('12.34', '5'), true);
+  assert.equal(shouldBlockRechargeAmountKey('12.3', '5'), false);
+  assert.equal(shouldBlockRechargeAmountKey('12', '5'), false);
+  assert.equal(shouldBlockRechargeAmountKey('12.', '5'), false);
+
+  // 只允许一个小数点。
+  assert.equal(shouldBlockRechargeAmountKey('12', '.'), false);
+  assert.equal(shouldBlockRechargeAmountKey('12.', '.'), true);
+  assert.equal(shouldBlockRechargeAmountKey('12.3', '.'), true);
+
+  // 控制键与退格不能被拦截，否则用户无法编辑。
+  for (const key of ['Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'Tab', 'Enter', 'Home', 'End']) {
+    assert.equal(shouldBlockRechargeAmountKey('12.34', key), false, `${key} should not be blocked`);
+  }
+});
+
+test('sanitized recharge input stays accepted by the payload builder', () => {
+  // 输入框产出的值必须始终能通过提交校验，两端规则不会互相矛盾。
+  for (const raw of ['12.345', '0.999', '99.999', '1.005', '25.50']) {
+    const sanitized = sanitizeRechargeAmountInput(raw);
+    assert.doesNotThrow(
+      () => buildRechargeOrderPayload(sanitized, 1),
+      `expected sanitized ${raw} -> ${sanitized} to pass validation`,
     );
   }
 });

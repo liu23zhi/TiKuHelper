@@ -103,6 +103,65 @@ function hasMoreDecimalsThan(amount, decimals) {
   return Math.abs(amount * scale - Math.round(amount * scale)) > 1e-9
 }
 
+/**
+ * 把充值输入框的原始文本整理成合法金额（供 a-input-number 的 parser 使用）。
+ *
+ * 目的是在「输入过程中」就挡住非法内容，而不是等失焦才收拢：
+ * - 只保留数字与一个小数点（去掉字母、负号、多个小数点、空格等）；
+ * - 小数部分最多保留 decimals 位，多敲的位直接丢弃；
+ * - 保留用户正在输入的中间态（"" / "." / "12."），否则光标与输入会跳。
+ */
+export function sanitizeRechargeAmountInput(rawValue, decimals = RECHARGE_DECIMALS) {
+  const maxDecimals = Number.isInteger(decimals) && decimals >= 0 ? decimals : RECHARGE_DECIMALS
+  const digitsAndDots = String(rawValue ?? '').replace(/[^\d.]/g, '')
+  if (!digitsAndDots) {
+    return ''
+  }
+
+  const firstDotIndex = digitsAndDots.indexOf('.')
+  if (firstDotIndex < 0) {
+    return digitsAndDots
+  }
+
+  const integerPart = digitsAndDots.slice(0, firstDotIndex)
+  // 第二个及之后的小数点直接丢弃。
+  const decimalPart = digitsAndDots.slice(firstDotIndex + 1).replace(/\./g, '')
+  if (maxDecimals === 0) {
+    return integerPart
+  }
+
+  const cappedDecimals = decimalPart.slice(0, maxDecimals)
+  // 保留 "12." 这种中间态，用户才能继续输入小数。
+  return `${integerPart}.${cappedDecimals}`
+}
+
+/** 充值输入框的展示格式化：不做千分位，避免光标位置跳动。 */
+export function formatRechargeAmountInput(rawValue, decimals = RECHARGE_DECIMALS) {
+  return sanitizeRechargeAmountInput(rawValue, decimals)
+}
+
+/**
+ * 判断某个按键是否会让金额超出 decimals 位小数，用于在 keydown 阶段直接拦截。
+ * 只有在「已经存在小数点且小数位已达上限」时，才阻止继续输入数字或小数点。
+ */
+export function shouldBlockRechargeAmountKey(currentValue, key, decimals = RECHARGE_DECIMALS) {
+  const maxDecimals = Number.isInteger(decimals) && decimals >= 0 ? decimals : RECHARGE_DECIMALS
+  const text = String(currentValue ?? '')
+
+  if (key === '.') {
+    return text.includes('.')
+  }
+  if (!/^\d$/.test(String(key ?? ''))) {
+    return false
+  }
+
+  const dotIndex = text.indexOf('.')
+  if (dotIndex < 0) {
+    return false
+  }
+  return text.length - dotIndex - 1 >= maxDecimals
+}
+
 export function buildRechargeOrderPayload(amountValue, paymentMethodId) {
   const amount = Number(String(amountValue || '').trim());
   const methodId = Number(paymentMethodId || 0);
