@@ -2,7 +2,7 @@
   <div class="auth-shell">
     <div class="auth-card auth-card--single">
       <div class="hero">
-        <div class="hero-badge">Tiku Adapter</div>
+        <!-- <div class="hero-badge">Tiku Adapter</div> -->
         <h1>{{ publicAuthSettings.siteName }}</h1>
         <p>
           搜题聚合题库平台，集成AI搜索，提供更准确的答案。
