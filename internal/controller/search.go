@@ -86,6 +86,9 @@ type searchBillingContext struct {
 	SearchMode         string
 	UsedDefaultAccount bool
 	Billable           bool
+	// ClientIP 随账单一起落库，供账单明细展示来源 IP 归属地。
+	// logs 表没有 request_id，事后无法关联，只能在这里带上。
+	ClientIP string
 }
 
 type searchBillingCharge struct {
@@ -1362,6 +1365,7 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 				// 题目原文单独落一列，供账单列表按关键词搜索。
 				// 快照里已经是 URL 编码的 question=，这里解码后存明文。
 				QuestionText: service.ExtractBillingSnapshotField(charge.Snapshot, "question"),
+				ClientIP:     strings.TrimSpace(ctx.ClientIP),
 				Remark:       "搜索答题消耗",
 			}
 			if err := tx.Create(&billingRecord).Error; err != nil {

@@ -38,9 +38,13 @@ type BillingRecordListItem struct {
 	FeeDetails        []BillingRecordFeeDetail `gorm:"-" json:"feeDetails"`
 	AccessTokenName   string                   `json:"accessTokenName"`
 	CreatedAt         time.Time                `json:"createdAt"`
-	UnitPriceSnapshot string                   `json:"-"`
-	RequestID         string                   `json:"-"`
-	Remark            string                   `json:"-"`
+	// ClientIP 是这笔账单的来源 IP，前端据此展示归属地（形如 `1.2.3.4 （广东深圳）`）。
+	//
+	// 历史行（加列之前落账的）为空，前端降级为只显示 `-`。
+	ClientIP          string `json:"clientIp"`
+	UnitPriceSnapshot string `json:"-"`
+	RequestID         string `json:"-"`
+	Remark            string `json:"-"`
 }
 
 type billingSearchGroupKey struct {
@@ -291,7 +295,7 @@ func loadBillingSearchGroups(db *gorm.DB, records []BillingRecordListItem) (map[
 	var groupRecords []BillingRecordListItem
 	if err := db.
 		Table(entity.TableNameBillingRecord+" AS billing_records").
-		Select("billing_records.id, billing_records.user_id, COALESCE(billing_users.username, '') AS username, billing_records.type, billing_records.provider, billing_records.amount, billing_records.created_at, billing_records.unit_price_snapshot, billing_records.request_id, billing_records.remark, access_tokens.name AS access_token_name").
+		Select("billing_records.id, billing_records.user_id, COALESCE(billing_users.username, '') AS username, billing_records.type, billing_records.provider, billing_records.amount, billing_records.created_at, billing_records.client_ip, billing_records.unit_price_snapshot, billing_records.request_id, billing_records.remark, access_tokens.name AS access_token_name").
 		Joins("LEFT JOIN "+entity.TableNameAccessToken+" AS access_tokens ON access_tokens.id = billing_records.access_token_id").
 		Joins("LEFT JOIN "+entity.TableNameUser+" AS billing_users ON billing_users.id = billing_records.user_id").
 		Where("billing_records.type = ?", normalSearchBillingRecordType).
@@ -505,7 +509,7 @@ func loadBillingRequestExpenseTotals(query *gorm.DB) (map[billingSearchGroupKey]
 func findAllBillingRecordAmountRows(baseQuery *gorm.DB) ([]BillingRecordListItem, error) {
 	var rows []BillingRecordListItem
 	if err := baseQuery.
-		Select("billing_records.id, billing_records.user_id, COALESCE(billing_users.username, '') AS username, billing_records.type, billing_records.provider, billing_records.model_name, billing_records.amount, billing_records.created_at, billing_records.unit_price_snapshot, billing_records.question_text, billing_records.request_id, billing_records.remark, access_tokens.name AS access_token_name").
+		Select("billing_records.id, billing_records.user_id, COALESCE(billing_users.username, '') AS username, billing_records.type, billing_records.provider, billing_records.model_name, billing_records.amount, billing_records.created_at, billing_records.client_ip, billing_records.unit_price_snapshot, billing_records.question_text, billing_records.request_id, billing_records.remark, access_tokens.name AS access_token_name").
 		Order("billing_records.id desc").
 		Find(&rows).Error; err != nil {
 		return nil, err

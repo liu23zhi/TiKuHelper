@@ -118,6 +118,9 @@
         <template #createdAt="{ record }">
           <span>{{ formatDateTime(record.createdAt) }}</span>
         </template>
+        <template #clientIp="{ record }">
+          <span>{{ formatValueWithLocation(record.clientIp, ipLocations[normalizeLocationKey(record.clientIp)]) || '-' }}</span>
+        </template>
         <template #feeDetail="{ record }">
           <a-button type="link" style="padding: 0" @click="handleShowFeeDetail(record)">显示详情</a-button>
         </template>
@@ -133,10 +136,15 @@
 import { computed, defineComponent, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import Swal from 'sweetalert2'
-import { getBillingRecords } from '@/api/TikuComponentApi'
+import { getBillingRecords, getIpLocations } from '@/api/TikuComponentApi'
 import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser'
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
 import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@/utils/listSearchHelpers.mjs'
+import {
+  collectLocationKeys,
+  extractLocationAddresses,
+  formatValueWithLocation as formatValueWithLocationBase,
+} from '@/utils/locationHelpers.mjs'
 import {
   buildBillingRecordAmountText,
   buildBillingRecordFeeDetailHtml,
@@ -148,6 +156,38 @@ import {
 
 const dataSource = ref([])
 const tableLoading = ref(false)
+
+// 归属地映射：key 为归一化后的 IP，value 为展示文本。
+// 页面加载时按当前页的 clientIp 批量查询并落库（服务端持久化，之后翻页零消耗）。
+const ipLocations = reactive({})
+
+// 与后端返回的 map 键保持一致（后端统一小写）。
+function normalizeLocationKey(value) {
+  return value === null || value === undefined ? '' : String(value).trim().toLowerCase()
+}
+
+function formatValueWithLocation(rawValue, address) {
+  return formatValueWithLocationBase(rawValue, address)
+}
+
+// enrichClientIps 批量拉取本页来源 IP 的归属地。
+//
+// 失败静默：归属地只是展示增强，未配置密钥或上游异常时对应列退化为只显示原始 IP。
+function enrichClientIps(rows) {
+  const ips = collectLocationKeys(rows, 'clientIp')
+  if (!ips.length) {
+    return
+  }
+  getIpLocations({ ips: ips.join(',') })
+    .then((res) => {
+      const addresses = extractLocationAddresses(res)
+      Object.keys(addresses).forEach((key) => {
+        ipLocations[normalizeLocationKey(key)] = addresses[key]
+      })
+    })
+    .catch(() => {})
+}
+
 // 服务端返回的金额统计：totalAmount 覆盖全部筛选结果，currentPageAmount 仅当前页。
 const amountSummary = reactive({
   totalAmount: 0,
@@ -286,6 +326,15 @@ export default defineComponent({
           },
         },
         {
+          title: '来源 IP',
+          dataIndex: 'clientIp',
+          key: 'clientIp',
+          width: 200,
+          slots: {
+            customRender: 'clientIp',
+          },
+        },
+        {
           title: '操作',
           dataIndex: 'feeDetail',
           key: 'feeDetail',
@@ -317,6 +366,10 @@ export default defineComponent({
 
     return {
       dataSource,
+      // 归属地展示：映射 + 取值/格式化函数（模板按行取值）。
+      ipLocations,
+      normalizeLocationKey,
+      formatValueWithLocation,
       tableLoading,
       pagination,
       summary,
@@ -376,6 +429,8 @@ export default defineComponent({
           // 金额统计由服务端给出：覆盖全部筛选结果，而非仅当前页。
           amountSummary.totalAmount = Number(res?.data?.summary?.totalAmount || 0)
           amountSummary.currentPageAmount = Number(res?.data?.summary?.currentPageAmount || 0)
+          // 来源 IP 归属地：按当前页批量查询并落库（失败静默）。
+          enrichClientIps(dataSource.value)
         } else {
           message.error(res?.message || '获取账单列表失败')
         }

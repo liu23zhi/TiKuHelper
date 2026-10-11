@@ -614,6 +614,11 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		logger.FatalLog(fmt.Errorf("prepare billing question text schema fail: %w", err))
 	}
 
+	// 账单来源 IP（供账单明细展示归属地）。历史行无法回溯，只建列。
+	if err := ensureBillingClientIPSchema(db); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare billing client ip schema fail: %w", err))
+	}
+
 	// 题库 hash 迁移与 plat 列删除。两者都依赖 system_settings 表，
 	// 因此必须放在上面的 AutoMigrate（含 SystemSetting）之后。
 	// 失败只记日志、不阻断启动，标记未写入会在下次启动重试。
