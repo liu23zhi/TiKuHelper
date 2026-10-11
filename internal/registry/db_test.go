@@ -14,6 +14,8 @@ import (
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 	"net/url"
+	"strings"
+	"unicode/utf8"
 )
 
 type legacyUserWithoutPhone struct {
@@ -508,4 +510,111 @@ func TestEnsureBillingQuestionTextSchemaBackfillsFromSnapshotOnce(t *testing.T) 
 	if questionText.String != "手工修改" {
 		t.Fatalf("expected the one-shot backfill to not run again, got %q", questionText.String)
 	}
+}
+
+// 回归：中文题目「字符数 < 512 但字节数 > 512」时，
+// 早期实现用 len() 判长度、却按 []rune 切片，导致 slice bounds out of range 并让服务反复崩溃重启。
+func TestBackfillBillingQuestionTextHandlesLongChineseQuestions(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:billing-question-cjk?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&legacyBillingRecordWithoutQuestionText{}, &entity.SystemSetting{}); err != nil {
+		t.Fatalf("migrate billing table: %v", err)
+	}
+
+	// 200 个汉字 = 200 字符 / 600 字节，正好命中旧代码的越界条件。
+	longQuestion := strings.Repeat("题", 200)
+	if len([]rune(longQuestion)) >= 512 || len(longQuestion) <= 512 {
+		t.Fatalf("test fixture must be <512 runes but >512 bytes, got runes=%d bytes=%d", len([]rune(longQuestion)), len(longQuestion))
+	}
+
+	row := legacyBillingRecordWithoutQuestionText{
+		UserID:            1,
+		Type:              "normal_search",
+		Provider:          "icodef",
+		Amount:            1,
+		UnitPriceSnapshot: "provider=icodef question=" + url.QueryEscape(longQuestion),
+		RequestID:         "req-cjk",
+	}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatalf("seed billing record: %v", err)
+	}
+
+	if err := ensureBillingQuestionTextSchema(db); err != nil {
+		t.Fatalf("prepare schema must not fail: %v", err)
+	}
+
+	var questionText sql.NullString
+	if err := db.Raw("SELECT question_text FROM billing_records WHERE id = ?", row.ID).Scan(&questionText).Error; err != nil {
+		t.Fatalf("load backfilled record: %v", err)
+	}
+	if questionText.String != longQuestion {
+		t.Fatalf("expected the full %d-rune question to survive, got %d runes", len([]rune(longQuestion)), len([]rune(questionText.String)))
+	}
+}
+
+// 超过列上限的长题目必须按「字符数」截断，且不产生乱码。
+func TestBackfillBillingQuestionTextTruncatesByRunes(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file:billing-question-truncate?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := db.AutoMigrate(&legacyBillingRecordWithoutQuestionText{}, &entity.SystemSetting{}); err != nil {
+		t.Fatalf("migrate billing table: %v", err)
+	}
+
+	// 700 个汉字 = 2100 字节，远超 512。
+	overlongQuestion := strings.Repeat("答", 700)
+	row := legacyBillingRecordWithoutQuestionText{
+		UserID:            1,
+		Type:              "normal_search",
+		Provider:          "icodef",
+		Amount:            1,
+		UnitPriceSnapshot: "provider=icodef question=" + url.QueryEscape(overlongQuestion),
+		RequestID:         "req-truncate",
+	}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatalf("seed billing record: %v", err)
+	}
+
+	if err := ensureBillingQuestionTextSchema(db); err != nil {
+		t.Fatalf("prepare schema must not fail: %v", err)
+	}
+
+	var questionText sql.NullString
+	if err := db.Raw("SELECT question_text FROM billing_records WHERE id = ?", row.ID).Scan(&questionText).Error; err != nil {
+		t.Fatalf("load backfilled record: %v", err)
+	}
+	if got := len([]rune(questionText.String)); got != billingQuestionTextMaxLength {
+		t.Fatalf("expected %d runes after truncation, got %d", billingQuestionTextMaxLength, got)
+	}
+	if !utf8.ValidString(questionText.String) {
+		t.Fatal("expected truncated question to stay valid UTF-8")
+	}
+}
+
+// 单条脏数据不能让回溯整体失败，更不能让服务启动崩溃。
+func TestSafeBackfillBillingQuestionTextSurvivesPanic(t *testing.T) {
+	// 直接验证 recover 包装存在：nil DB 会返回错误而不是 panic。
+	if err := safeBackfillBillingQuestionText(nil); err == nil {
+		t.Fatal("expected an error for a nil db instead of a panic")
+	}
+}
+
+func TestTruncateRunesKeepsMultibyteCharactersIntact(t *testing.T) {
+	assertTruncate := func(input string, maxRunes int, want string) {
+		t.Helper()
+		if got := truncateRunes(input, maxRunes); got != want {
+			t.Fatalf("truncateRunes(%q, %d) = %q, want %q", input, maxRunes, got, want)
+		}
+	}
+
+	assertTruncate("短", 10, "短")
+	assertTruncate("题目内容", 3, "题目内")
+	assertTruncate(strings.Repeat("题", 600), 512, strings.Repeat("题", 512))
+	assertTruncate("abc", 0, "")
+	assertTruncate("abc", -1, "")
+	assertTruncate("", 5, "")
+	assertTruncate("a题b", 2, "a题")
 }

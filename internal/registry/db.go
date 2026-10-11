@@ -235,10 +235,17 @@ const billingQuestionTextBackfilledKey = "billing_question_text_backfilled"
 // billingQuestionTextBackfillBatchSize 控制回溯时的批大小，避免一次性把整表读进内存。
 const billingQuestionTextBackfillBatchSize = 500
 
+// billingQuestionTextMaxLength 是 question_text 列允许的最大字符数。
+// 注意是「字符数」：varchar(512) 在 MySQL 下按字符计数。
+const billingQuestionTextMaxLength = 512
+
 // ensureBillingQuestionTextSchema 为账单表补上 question_text 列，
 // 并把历史账单里 URL 编码在 unit_price_snapshot 中的题目解码后回填一次。
 //
 // 用 system_settings 标记保证只跑一次；中途失败不会写标记，下次启动会继续。
+//
+// 建列失败会返回错误（结构性故障必须让人看到）；但**回溯失败只记录日志**：
+// 题目回填只是搜索增强，不能因为它让整个服务起不来。
 func ensureBillingQuestionTextSchema(db *gorm.DB) error {
 	if db == nil {
 		return nil
@@ -257,10 +264,25 @@ func ensureBillingQuestionTextSchema(db *gorm.DB) error {
 		return nil
 	}
 
-	if err := backfillBillingQuestionText(db); err != nil {
-		return err
+	if err := safeBackfillBillingQuestionText(db); err != nil {
+		logger.SysLog(fmt.Sprintf("账单题目回溯失败（不影响启动，将保留在下次启动重试）：%v", err))
+		return nil
 	}
-	return markBillingQuestionTextBackfilled(db)
+	if err := markBillingQuestionTextBackfilled(db); err != nil {
+		logger.SysLog(fmt.Sprintf("写入账单题目回溯标记失败（下次启动会重新回溯）：%v", err))
+	}
+	return nil
+}
+
+// safeBackfillBillingQuestionText 在回溯外面兜一层 recover。
+// 历史快照格式不可控，任何一条脏数据都不应该让服务反复崩溃重启。
+func safeBackfillBillingQuestionText(db *gorm.DB) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("panic: %v", recovered)
+		}
+	}()
+	return backfillBillingQuestionText(db)
 }
 
 func billingQuestionTextBackfillDone(db *gorm.DB) bool {
@@ -284,6 +306,10 @@ func markBillingQuestionTextBackfilled(db *gorm.DB) error {
 
 // backfillBillingQuestionText 分批把历史账单的题目从快照里解出来写进新列。
 func backfillBillingQuestionText(db *gorm.DB) error {
+	if db == nil {
+		return fmt.Errorf("账单题目回溯：数据库未初始化")
+	}
+
 	for {
 		var rows []entity.BillingRecord
 		err := db.
@@ -308,9 +334,9 @@ func backfillBillingQuestionText(db *gorm.DB) error {
 			if question == "" {
 				continue
 			}
-			if len(question) > 512 {
-				question = string([]rune(question)[:512])
-			}
+			// 必须按「字符数」而不是字节数截断：
+			// question 多为中文，len() 是字节长度，直接切 []rune 会越界 panic。
+			question = truncateRunes(question, billingQuestionTextMaxLength)
 			if updateErr := db.Model(&entity.BillingRecord{}).
 				Where("id = ?", row.ID).
 				Update("question_text", question).Error; updateErr != nil {
@@ -320,13 +346,25 @@ func backfillBillingQuestionText(db *gorm.DB) error {
 		}
 
 		if updated == 0 {
-			// 本批都没有可解析的题目：直接结束，避免死循环。
+			// 本批没有任何可解析的题目：直接结束，避免死循环。
 			return nil
 		}
 		if len(rows) < billingQuestionTextBackfillBatchSize {
 			return nil
 		}
 	}
+}
+
+// truncateRunes 按字符数截断字符串，返回值不会破坏多字节字符。
+func truncateRunes(value string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= maxRunes {
+		return value
+	}
+	return string(runes[:maxRunes])
 }
 
 // ensureAIModelPriceSchema 为历史价格表补上新增列。

@@ -8,18 +8,17 @@ const SearchKeywordMaxLength = 100
 
 // NormalizeSearchKeyword 归一化列表搜索关键词：去首尾空白并截断到上限。
 // 空关键词表示不参与过滤，调用方应据此跳过该条件。
+//
+// 按「字符数」截断：关键词多为中文，用 len() 得到的是字节数，
+// 混用会把字符切成半个、产生乱码。
 func NormalizeSearchKeyword(value string) string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
 		return ""
 	}
-	if len(trimmed) > SearchKeywordMaxLength*4 {
-		// 先按字节粗筛，避免把多字节字符截断成半个字。
-		trimmed = trimmed[:SearchKeywordMaxLength*4]
-	}
 	runes := []rune(trimmed)
 	if len(runes) > SearchKeywordMaxLength {
-		trimmed = string(runes[:SearchKeywordMaxLength])
+		return string(runes[:SearchKeywordMaxLength])
 	}
 	return trimmed
 }
