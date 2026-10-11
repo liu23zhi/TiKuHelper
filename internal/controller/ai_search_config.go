@@ -157,5 +157,8 @@ func UpdateAISearchConfig(c *gin.Context) {
 		return
 	}
 
+	// 模型 / Prompt / 地址变了，之前缓存的答案可能由旧配置产生，必须作废。
+	invalidateSearchResultCache("update_ai_search_config")
+
 	c.JSON(http.StatusOK, config)
 }

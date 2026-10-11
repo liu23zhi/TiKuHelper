@@ -297,16 +297,47 @@ func Search(c *gin.Context) {
 	auditHitProvider := ""
 	cacheEligible := canUseSearchResultCache(resolved, useQuery)
 	cacheKey := ""
+	// 记录本次结果所属的缓存代次：若期间缓存被失效，写入时会被丢弃。
+	var cacheEpoch uint64
 	if cacheEligible {
-		cacheKey = buildSearchResultCacheKey(resolved.AccessTokenID, req)
+		cacheKey, cacheEpoch = buildSearchResultCacheKey(resolved.UserID, req)
 		if !shouldBypassSearchResultCache(req) {
-			if cached, ok := defaultSearchResultCache.get(cacheKey); ok {
+			if cached, ok := defaultSearchResultCache.get(cacheKey, cacheEpoch); ok {
 				result = cached
 				usedSearchResultCache = true
 				auditHitProvider = searchResultCacheProvider
 			}
 		}
 	}
+
+	// 并发合并：缓存写入发生在上游返回之后，所以「完全相同的并发请求」
+	// 会同时读到空缓存、各自打一次上游、各自计一次费。
+	// 这里让同 key 的并发请求只执行一次：搭车者复用结果且不计费。
+	//
+	// 只在缓存未命中且未显式跳过缓存时合并，条件与缓存复用完全一致
+	// （key 含用户、题目、选项、代次，任一不同都不会搭车）。
+	var flightCall *searchFlightCall
+	flightKey := ""
+	if cacheEligible && !usedSearchResultCache && !shouldBypassSearchResultCache(req) {
+		flightKey = cacheKey
+		leader, shared := defaultSearchFlights.begin(flightKey)
+		if leader != nil {
+			flightCall = leader
+			// 兜底释放：无论从哪条路径提前 return，都必须唤醒搭车者，
+			// 否则它们会一直等到超时才自行重试。
+			// finish 内部用 once 保证幂等，重复调用安全。
+			defer func() {
+				defaultSearchFlights.finish(flightKey, flightCall, nil)
+			}()
+		} else if borrowed, ok := defaultSearchFlights.wait(flightKey, shared, defaultSearchFlightWaitTimeout); ok {
+			// 复用并发请求的结果：与命中缓存等价，不做上游调用、不计费。
+			result = borrowed
+			usedSearchResultCache = true
+			auditHitProvider = searchResultCacheProvider
+			logger.SysLog(fmt.Sprintf("搜题并发合并命中 requestId=%s 复用进行中的相同请求结果", strings.TrimSpace(resolved.RequestID)))
+		}
+	}
+
 	if !usedSearchResultCache {
 		if err := ensureSearchQuotaAvailable(resolved, useQuery, aiEnabled); err != nil {
 			writeSearchUnauthorized(c, fmt.Errorf("%w: 当前访问令牌累计额度不足，请调整令牌额度后重试", service.ErrInvalidAccessTokenAuthorization), rawBody)
@@ -413,12 +444,18 @@ func Search(c *gin.Context) {
 			logger.SysLog(fmt.Sprintf("搜题计费提示 requestId=%s warning=%s", strings.TrimSpace(resolved.RequestID), warning))
 		}
 		if cacheEligible {
-			defaultSearchResultCache.put(cacheKey, result)
+			defaultSearchResultCache.put(cacheKey, result, cacheEpoch)
 		}
 	}
 
 	if !usedSearchResultCache && len(localAnswer) == 0 && c.Query("noRecord") == "" { // 只有非缓存结果且本地题库没有答案时才记录
 		middleware.CollectAnswer(resp, req.CourseName, req.Extra, audit.HitProvider)
+	}
+
+	// 广播给搭车者，并释放 key。
+	// 必须在写响应之前完成，避免搭车者等到响应写完后才被唤醒而无谓地多等一个 RTT。
+	if flightCall != nil {
+		defaultSearchFlights.finish(flightKey, flightCall, result)
 	}
 	c.JSON(http.StatusOK, resp)
 }

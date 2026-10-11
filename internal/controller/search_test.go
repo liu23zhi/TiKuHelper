@@ -1295,11 +1295,11 @@ func TestSearchRejectsBillingThatWouldExceedAccessTokenQuotaWithoutCaching(t *te
 				t.Fatalf("expected quota error detail, got %q", got.Detail)
 			}
 
-			cacheKey := buildSearchResultCacheKey(token.ID, model.SearchRequest{
+			cacheKey, cacheEpoch := buildSearchResultCacheKey(token.ID, model.SearchRequest{
 				Question: "额度边界题目",
 				Options:  []string{"A", "B"},
 			})
-			if _, ok := defaultSearchResultCache.get(cacheKey); ok {
+			if _, ok := defaultSearchResultCache.get(cacheKey, cacheEpoch); ok {
 				t.Fatal("expected quota-rejected result not to be cached")
 			}
 		})

@@ -135,6 +135,11 @@ func ImportQuestions(c *gin.Context) {
 		return
 	}
 
+	// 题库内容变了，缓存的搜题结果可能已过时（dryRun 不写库，无需失效）。
+	if !req.DryRun && (result.Created > 0 || result.Updated > 0) {
+		invalidateSearchResultCache("import_questions")
+	}
+
 	c.JSON(http.StatusOK, result)
 }
 
@@ -260,6 +265,8 @@ func UpdateQuestions(c *gin.Context) {
 			NewAnswer:  tiku.Answer,
 		}
 		dao.Log.Create(&l)
+		// 人工修正了题目答案，缓存的旧答案必须立即作废。
+		invalidateSearchResultCache("update_question")
 	}
 	c.JSON(200, gin.H{
 		"data": updates,
@@ -292,6 +299,8 @@ func DeleteQuestion(c *gin.Context) {
 	dao.Log.Create(&l)
 
 	dao.Tiku.Where(dao.Tiku.ID.Eq(int32(id))).Delete()
+	// 题目被删除，之前基于它建立的搜题结果缓存必须作废。
+	invalidateSearchResultCache("delete_question")
 	c.JSON(200, gin.H{
 		"message": "删除成功",
 	})
@@ -331,6 +340,10 @@ func CreateQuestion(c *gin.Context) {
 			}
 			count++
 		}
+	}
+	// 新增了题目，缓存的搜题结果可能已过时。
+	if count > 0 {
+		invalidateSearchResultCache("create_question")
 	}
 	c.JSON(200, gin.H{
 		"message": "成功创建" + strconv.Itoa(count) + "条数据",

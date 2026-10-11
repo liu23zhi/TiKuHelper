@@ -13,6 +13,19 @@ import (
 	"strings"
 )
 
+// InvalidateSearchResultCache 由 controller 在 init 中注入，
+// 用于在题库发生写入后让搜题结果缓存失效。
+//
+// 用回调而不是直接引用，避免 middleware → controller 的循环依赖。
+var InvalidateSearchResultCache = func(reason string) {}
+
+func invalidateSearchResultCache(reason string) {
+	if InvalidateSearchResultCache == nil {
+		return
+	}
+	InvalidateSearchResultCache(reason)
+}
+
 // FillHash 填充题库的hash值
 func FillHash(t *entity.Tiku) {
 	if t.Answer == "" {
@@ -70,26 +83,35 @@ func CollectAnswer(resp model.SearchResponse, courseName, extra, provider string
 		}
 		FillHash(&t)
 		err := dao.Tiku.Create(&t)
-		if err != nil {
-			// 已经收录过，但是可能答案为空的情况，那么就需要去更新答案
-			tk, errNotFind := dao.Tiku.Where(dao.Tiku.Hash.Eq(t.Hash)).First()
-			if errNotFind != nil {
-				if tk.Answer == "[]" {
-					dao.Tiku.Where(dao.Tiku.ID.Eq(tk.ID)).Update(dao.Tiku.Answer, ans)
-				}
+		if err == nil {
+			// 注意：这里刻意不失效搜题结果缓存。
+			// 本函数是每次搜题后自动触发的（高频），若在此清缓存，
+			// 会把刚刚 populate 的结果立刻作废，等于关闭缓存。
+			// 且本地题库走的是不被缓存的 local 通道（canUseSearchResultCache 已排除），
+			// 因此这里的新增不会让缓存中的第三方答案变陈旧。
+			return
+		}
 
-				if tk.Extra == "" {
-					dao.Tiku.Where(dao.Tiku.ID.Eq(tk.ID)).Update(dao.Tiku.Extra, extra)
-				}
+		// 已经收录过：补全之前缺失的字段。
+		//
+		// 必须只在「查询成功」时继续（历史实现写成 errNotFind != nil，
+		// 条件写反导致永远拿不到已有记录、答案回填从未生效）。
+		tk, findErr := dao.Tiku.Where(dao.Tiku.Hash.Eq(t.Hash)).First()
+		if findErr != nil || tk == nil {
+			return
+		}
 
-				if tk.CourseName == "" {
-					dao.Tiku.Where(dao.Tiku.ID.Eq(tk.ID)).Update(dao.Tiku.CourseName, courseName)
-				}
-
-				if strings.TrimSpace(tk.SourceName) == "" && sourceName != "" {
-					dao.Tiku.Where(dao.Tiku.ID.Eq(tk.ID)).Update(dao.Tiku.SourceName, sourceName)
-				}
-			}
+		if tk.Answer == "[]" {
+			_, _ = dao.Tiku.Where(dao.Tiku.ID.Eq(tk.ID)).Update(dao.Tiku.Answer, ans)
+		}
+		if tk.Extra == "" && extra != "" {
+			_, _ = dao.Tiku.Where(dao.Tiku.ID.Eq(tk.ID)).Update(dao.Tiku.Extra, extra)
+		}
+		if tk.CourseName == "" && courseName != "" {
+			_, _ = dao.Tiku.Where(dao.Tiku.ID.Eq(tk.ID)).Update(dao.Tiku.CourseName, courseName)
+		}
+		if strings.TrimSpace(tk.SourceName) == "" && sourceName != "" {
+			_, _ = dao.Tiku.Where(dao.Tiku.ID.Eq(tk.ID)).Update(dao.Tiku.SourceName, sourceName)
 		}
 	}
 }
