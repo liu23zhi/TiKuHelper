@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -58,8 +59,9 @@ func TestSystemSettingDetailReturnsCurrentSettings(t *testing.T) {
 	if detail.EPayPlatformPublicKey != "platform-public-key" {
 		t.Fatalf("expected platform public key, got %s", detail.EPayPlatformPublicKey)
 	}
-	if detail.EPayMerchantPrivateKey != service.SecretMask {
-		t.Fatalf("expected merchant private key to be redacted, got %q", detail.EPayMerchantPrivateKey)
+	// 系统设置只对管理员开放，响应返回明文，便于管理员核对已配置的值。
+	if detail.EPayMerchantPrivateKey != "merchant-private-key" {
+		t.Fatalf("expected merchant private key in plain text, got %q", detail.EPayMerchantPrivateKey)
 	}
 	if detail.EPayNotifyURL != "https://app.example.com/adapter-service/payment/notify" {
 		t.Fatalf("expected notify url, got %s", detail.EPayNotifyURL)
@@ -265,7 +267,8 @@ func TestUpdateSystemSettingPersistsAndReturnsDetail(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if response.EPayMerchantPrivateKey != service.SecretMask {
-		t.Fatalf("expected response secret to be redacted, got %q", response.EPayMerchantPrivateKey)
+	// 响应不再脱敏：回显明文（此处 service 是 stub，原样回显入参）。
+	if strings.TrimSpace(response.EPayMerchantPrivateKey) != "merchant-private-key" {
+		t.Fatalf("expected response secret in plain text, got %q", response.EPayMerchantPrivateKey)
 	}
 }

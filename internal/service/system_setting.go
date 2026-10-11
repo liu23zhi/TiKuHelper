@@ -99,7 +99,7 @@ type SystemSettingDetail struct {
 	CaptchaType               string  `json:"captchaType"`
 	SMSBaoCredentialType      string  `json:"smsbaoCredentialType"`
 	SMSBaoRegionMode          string  `json:"smsbaoRegionMode"`
-	// UAPIAPIKey 是 UApiPro 的 API 密钥；读接口里会被脱敏为 ********。
+	// UAPIAPIKey 是 UApiPro 的 API 密钥；与其它密钥一样**明文**返回。
 	UAPIAPIKey string `json:"uapiApiKey"`
 }
 
@@ -133,7 +133,8 @@ type UpdateSystemSettingInput struct {
 	CaptchaType               string  `json:"captchaType"`
 	SMSBaoCredentialType      string  `json:"smsbaoCredentialType"`
 	SMSBaoRegionMode          string  `json:"smsbaoRegionMode"`
-	// UAPIAPIKey 传 ********（或留空）表示保留已存密钥，传 __CLEAR__ 表示清空。
+	// UAPIAPIKey 是 UApiPro 的 API 密钥；与其它密钥一样**明文**返回。
+	// 写入语义与其它密钥一致：空值或 ******** 表示保持原值，__CLEAR__ 表示清空。
 	UAPIAPIKey string `json:"uapiApiKey"`
 }
 

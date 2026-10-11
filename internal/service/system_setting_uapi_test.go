@@ -34,29 +34,66 @@ func TestUAPIAPIKeyRoundTripsInPlainText(t *testing.T) {
 	}
 }
 
-// RedactSystemSettingDetail 必须**放过** UApiPro 密钥，同时仍然脱敏其它密钥。
-func TestRedactSystemSettingDetailKeepsUAPIAPIKey(t *testing.T) {
-	const apiKey = "uapi-abcdef0123456789"
-
-	redacted := RedactSystemSettingDetail(SystemSettingDetail{
-		UAPIAPIKey:             apiKey,
+// 系统设置接口不脱敏任何密钥：全部明文返回。
+//
+// 背景：系统设置页只有管理员能打开（与「默认账号配置」的 token 一致），
+// 返回 `********` 只会让管理员无法核对已配置的值。前端用密码框隐藏显示。
+func TestRedactSystemSettingDetailReturnsAllSecretsInPlainText(t *testing.T) {
+	detail := SystemSettingDetail{
+		UAPIAPIKey:             "uapi-abcdef0123456789",
 		CaptchaAPIKey:          "captcha-secret",
 		SMSBaoSecret:           "smsbao-secret",
 		WechatAPIBearerToken:   "wechat-secret",
 		EPayMerchantPrivateKey: "epay-secret",
-	})
+	}
 
-	if redacted.UAPIAPIKey != apiKey {
-		t.Fatalf("expected the UApiPro key to stay in plain text, got %q", redacted.UAPIAPIKey)
+	redacted := RedactSystemSettingDetail(detail)
+
+	if redacted != detail {
+		t.Fatalf("expected no field to be redacted, got %+v", redacted)
 	}
 	for name, got := range map[string]string{
+		"uapiApiKey":             redacted.UAPIAPIKey,
 		"captchaApiKey":          redacted.CaptchaAPIKey,
 		"smsbaoSecret":           redacted.SMSBaoSecret,
 		"wechatApiBearerToken":   redacted.WechatAPIBearerToken,
 		"epayMerchantPrivateKey": redacted.EPayMerchantPrivateKey,
 	} {
-		if got != SecretMask {
-			t.Fatalf("expected %s to stay masked, got %q", name, got)
+		if got == SecretMask {
+			t.Fatalf("expected %s to be plain text, but it is masked", name)
+		}
+	}
+}
+
+// 回归：商户私钥与短信宝密钥必须明文返回（曾长期被脱敏成 ********）。
+func TestSystemSettingSecretsAreNotMaskedAfterRoundTrip(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+
+	if _, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
+		EPayMerchantPrivateKey: "epay-private-key",
+		SMSBaoSecret:           "smsbao-secret",
+		CaptchaAPIKey:          "captcha-key",
+		WechatAPIBearerToken:   "wechat-token",
+		UAPIAPIKey:             "uapi-key",
+	}); err != nil {
+		t.Fatalf("save secrets: %v", err)
+	}
+
+	loaded, err := GetSystemSettingDetailWithDB(db)
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	response := RedactSystemSettingDetail(loaded)
+
+	for name, pair := range map[string][2]string{
+		"epayMerchantPrivateKey": {response.EPayMerchantPrivateKey, "epay-private-key"},
+		"smsbaoSecret":           {response.SMSBaoSecret, "smsbao-secret"},
+		"captchaApiKey":          {response.CaptchaAPIKey, "captcha-key"},
+		"wechatApiBearerToken":   {response.WechatAPIBearerToken, "wechat-token"},
+		"uapiApiKey":             {response.UAPIAPIKey, "uapi-key"},
+	} {
+		if pair[0] != pair[1] {
+			t.Fatalf("expected %s to round-trip as plain text %q, got %q", name, pair[1], pair[0])
 		}
 	}
 }
