@@ -34,6 +34,12 @@ type Client struct {
 	phoneInfoURL string
 	ipInfoURL    string
 	http         *resty.Client
+	// maxRetries 本客户端单次业务请求允许的内部重试次数（不含首次）。
+	//
+	// 默认 maxRetries，即共 4 次尝试。上层若自己负责重试编排（例如按
+	// 「连续失败 3 次就整批放弃」控制上游压力），应当通过 SetMaxRetries(0)
+	// 关掉内部重试，否则重试次数会**相乘**（3 × 4 = 12 次）。
+	maxRetries int
 	// sleep 退避等待实现，测试注入后可跳过真实等待
 	sleep func(ctx context.Context, d time.Duration) error
 }
@@ -45,8 +51,20 @@ func NewClient(apiKey string) *Client {
 		timeout:      defaultTimeout,
 		phoneInfoURL: DefaultPhoneInfoURL,
 		ipInfoURL:    DefaultIPInfoURL,
+		maxRetries:   maxRetries,
 	}
 	c.http = resty.New().SetTimeout(c.timeout)
+	return c
+}
+
+// SetMaxRetries 覆盖内部重试次数（不含首次请求）。
+//
+// 传 0 表示**不做内部重试**：适合上层自己编排重试的场景，避免重试次数相乘。
+func (c *Client) SetMaxRetries(retries int) *Client {
+	if c == nil || retries < 0 {
+		return c
+	}
+	c.maxRetries = retries
 	return c
 }
 
@@ -194,7 +212,7 @@ func (c *Client) get(ctx context.Context, url string, query map[string]string) (
 				return nil, fmt.Errorf("%w: %w", ErrNetwork, ctxErr)
 			}
 			timeout := isTimeoutError(err)
-			if timeout && attempt < maxRetries {
+			if timeout && attempt < c.maxRetries {
 				if waitErr := c.wait(ctx, retryBackoff(attempt, 0, nil)); waitErr != nil {
 					return nil, fmt.Errorf("%w: %w", ErrNetwork, waitErr)
 				}
@@ -209,7 +227,7 @@ func (c *Client) get(ctx context.Context, url string, query map[string]string) (
 		if resp == nil {
 			return nil, fmt.Errorf("%w: 上游返回空响应", ErrNetwork)
 		}
-		if resp.IsSuccess() || !retryableStatus(resp.StatusCode()) || attempt >= maxRetries {
+		if resp.IsSuccess() || !retryableStatus(resp.StatusCode()) || attempt >= c.maxRetries {
 			return resp, nil
 		}
 		if waitErr := c.wait(ctx, retryBackoff(attempt, resp.StatusCode(), resp.Header())); waitErr != nil {

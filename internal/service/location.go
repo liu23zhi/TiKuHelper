@@ -3,10 +3,10 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -26,9 +26,99 @@ const (
 	ipLocationTTL = 7 * 24 * time.Hour
 	// locationLookupTimeout 单次归属地查询的上游超时上限。
 	locationLookupTimeout = 10 * time.Second
-	// locationQueryConcurrency 单次批量查询的最大并发数，避免瞬时打满上游速率限制。
-	locationQueryConcurrency = 6
+	// locationLookupMaxAttempts 单个归属地查询的最大尝试次数。
+	//
+	// 3 次是为了扛住偶发网络抖动；同时它是「密钥配错」的判定阈值 ——
+	// 连续 3 次全失败就认为不是抖动，而是配置问题。
+	locationLookupMaxAttempts = 3
 )
+
+// 接口地址在包级变量里，便于测试用 httptest 替换。
+// 生产环境保持 uapi 包的默认完整地址（含 /api/v1/）。
+var (
+	locationPhoneInfoURL = uapi.DefaultPhoneInfoURL
+	locationIPInfoURL    = uapi.DefaultIPInfoURL
+)
+
+// newLocationClient 构造归属地客户端并应用可覆盖的接口地址。
+//
+// **关掉客户端内部重试**（SetMaxRetries(0)）：重试统一由 lookupLocationsWithRetry 编排。
+// 两边都重试会相乘 —— 3（本层）× 4（客户端）= 12 次请求，既违背「连续 3 次失败就放弃」
+// 的意图，也会在最坏情况下把一个号码打成十几次上游调用。
+func newLocationClient(apiKey string) *uapi.Client {
+	return uapi.NewClient(apiKey).
+		SetPhoneInfoURL(locationPhoneInfoURL).
+		SetIPInfoURL(locationIPInfoURL).
+		SetMaxRetries(0)
+}
+
+// lookupLocationsWithRetry 顺序查询一组 key，并在判定「密钥/权限/配额」问题时**整批放弃**。
+//
+// 为什么需要这个保护：密钥配错（或积分耗尽）时，上游对**每一个** key 都返回鉴权失败。
+// 一页 100 个手机号就是 100 次注定失败的请求，既刷满无意义的失败日志，
+// 也把管理页拖到几十秒。用户诉求：**连续 3 次都错误就放弃，包括后面的数据**。
+//
+// 两个正交的判断，刻意分开：
+//
+//  1. **每个 key 最多尝试 locationLookupMaxAttempts 次**（扛偶发网络抖动）；
+//     3 次都失败才算「这个 key 彻底失败」。
+//  2. 某 key 彻底失败后，若错误属于 abort 类（401/402/403/429 ——
+//     对同一密钥的所有请求都会复现）→ **立即整批放弃**，后面的数据一次都不查。
+//     若只是单条数据问题（404 该号码无记录、5xx 抖动）→ 只跳过这一条继续查，
+//     不让一个查不到的号码让整页白干。
+//
+// onSuccess 只在确实拿到归属地时回调，避免把空结果写进持久化缓存。
+func lookupLocationsWithRetry(
+	keys []string,
+	kind string,
+	lookup func(key string) locationFlightResult,
+	onSuccess func(key string, result locationFlightResult),
+) {
+	for _, key := range keys {
+		var result locationFlightResult
+		succeeded := false
+
+		for attempt := 1; attempt <= locationLookupMaxAttempts; attempt++ {
+			result = lookup(key)
+			if result.ok {
+				succeeded = true
+				break
+			}
+		}
+
+		if succeeded {
+			onSuccess(key, result)
+			continue
+		}
+
+		if result.abort {
+			logger.SysLog(fmt.Sprintf(
+				"归属地查询连续 %d 次失败且属于密钥/配额类错误，放弃本批剩余的 %s 查询（请检查系统设置中的 UApiPro API 密钥与积分）",
+				locationLookupMaxAttempts, kind))
+			return
+		}
+	}
+}
+
+// isLocationAbortError 判断失败是否属于「换 key 才能解决」的类别。
+//
+// 这类错误对同一密钥的所有请求都会复现，继续查后面的数据纯属浪费：
+//   - 401 鉴权失败：密钥错误或过期；
+//   - 402 积分/配额不足：充值前查什么都会失败；
+//   - 403 请求被拒绝：密钥无权访问该接口；
+//   - 429 触发限流：再打只会更糟。
+//
+// 其余（404 该号码无记录、5xx 上游抖动、网络超时）都只是单条数据或瞬时问题，
+// 交给「每个 key 重试 N 次」处理即可，不该直接放弃整页。
+func isLocationAbortError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, uapi.ErrUnauthorized) ||
+		errors.Is(err, uapi.ErrInsufficientCredits) ||
+		errors.Is(err, uapi.ErrForbidden) ||
+		errors.Is(err, uapi.ErrRateLimited)
+}
 
 // locationLookupGroup 合并「同一 key 的并发归属地查询」，见 location_flight.go。
 var locationLookupGroup = newLocationFlightGroup()
@@ -278,7 +368,7 @@ func LookupPhoneLocationsWithDB(db *gorm.DB, phones []string, options LocationQu
 		return result
 	}
 
-	rows := queryPhoneLocations(uapi.NewClient(apiKey), missing)
+	rows := queryPhoneLocations(newLocationClient(apiKey), missing)
 
 	// ③ 落库并并入结果。
 	storeLocationCacheRows(db, rows)
@@ -312,7 +402,7 @@ func LookupIPLocationsWithDB(db *gorm.DB, ips []string, options LocationQueryOpt
 		return result
 	}
 
-	rows := queryIPLocations(uapi.NewClient(apiKey), missing, strings.TrimSpace(options.Source))
+	rows := queryIPLocations(newLocationClient(apiKey), missing, strings.TrimSpace(options.Source))
 
 	storeLocationCacheRows(db, rows)
 	for _, row := range rows {
@@ -415,94 +505,77 @@ func missingIPKeys(keys []string, cached map[string]entity.LocationCache) []stri
 	return missing
 }
 
-// queryPhoneLocations 并发查询手机号归属地，返回可落库的行。
+// queryPhoneLocations 顺序查询手机号归属地，返回可落库的行。
 //
-// 并发而不是串行：一页 20 个号码串行按 10s 超时最坏要等 200s。
-// 每个 key 都经过 locationLookupGroup 合并，重复 key 只真正调用一次。
+// **为什么从并发改成顺序**：并发时无法表达「放弃后面的数据」——
+// 一批 goroutine 早已同时发出，想把它们收回来做不到。而顺序执行可以在
+// 判定「密钥无效」的瞬间真正停下来，不再对剩余号码白打上游。
+//
+// 代价是有密钥时一页 20 个号码要串行等待；但每个成功结果都会落库
+// （手机号 30 天 TTL），实际只有第一次翻页慢，后续全是缓存命中。
+//
+// 失败策略见 lookupLocationsWithRetry：同一项最多重试 3 次，仍失败则整批放弃。
 func queryPhoneLocations(client *uapi.Client, phones []string) []entity.LocationCache {
-	rows := make([]entity.LocationCache, len(phones))
-	var wg sync.WaitGroup
+	rows := make([]entity.LocationCache, 0, len(phones))
 
-	for i, phone := range phones {
-		wg.Add(1)
-		go func(index int, lookupPhone string) {
-			defer wg.Done()
+	lookupLocationsWithRetry(phones, entity.LocationKindPhone, func(lookupPhone string) locationFlightResult {
+		return locationLookupGroup.do(entity.LocationKindPhone+"|"+lookupPhone, func() locationFlightResult {
+			ctx, cancel := context.WithTimeout(context.Background(), locationLookupTimeout)
+			defer cancel()
 
-			result := locationLookupGroup.do(entity.LocationKindPhone+"|"+lookupPhone, func() locationFlightResult {
-				ctx, cancel := context.WithTimeout(context.Background(), locationLookupTimeout)
-				defer cancel()
-
-				info, err := client.GetPhoneInfo(ctx, lookupPhone)
-				if err != nil {
-					logger.SysLog(fmt.Sprintf("查询手机号归属地失败 phone=%s error=%v", maskPhoneForLog(lookupPhone), err))
-					return locationFlightResult{}
-				}
-				address := FormatPhoneLocationAddress(info.Province, info.City, info.SP)
-				if address == "" {
-					return locationFlightResult{}
-				}
-				return locationFlightResult{address: address, rawJSON: info.RawJSON, ok: true}
-			})
-			if !result.ok {
-				return
+			info, err := client.GetPhoneInfo(ctx, lookupPhone)
+			if err != nil {
+				logger.SysLog(fmt.Sprintf("查询手机号归属地失败 phone=%s error=%v", maskPhoneForLog(lookupPhone), err))
+				return locationFlightResult{abort: isLocationAbortError(err)}
 			}
-			rows[index] = entity.LocationCache{
-				Kind:      entity.LocationKindPhone,
-				LookupKey: locationCacheLookupKey(lookupPhone),
-				Address:   result.address,
-				RawJSON:   result.rawJSON,
+			address := FormatPhoneLocationAddress(info.Province, info.City, info.SP)
+			if address == "" {
+				return locationFlightResult{}
 			}
-		}(i, phone)
-	}
-	wg.Wait()
+			return locationFlightResult{address: address, rawJSON: info.RawJSON, ok: true}
+		})
+	}, func(lookupPhone string, result locationFlightResult) {
+		rows = append(rows, entity.LocationCache{
+			Kind:      entity.LocationKindPhone,
+			LookupKey: locationCacheLookupKey(lookupPhone),
+			Address:   result.address,
+			RawJSON:   result.rawJSON,
+		})
+	})
 
-	return compactLocationRows(rows)
+	return rows
 }
 
-// queryIPLocations 并发查询 IP 归属地，返回可落库的行。
+// queryIPLocations 顺序查询 IP 归属地，返回可落库的行。失败策略同手机号。
 func queryIPLocations(client *uapi.Client, ips []string, source string) []entity.LocationCache {
-	rows := make([]entity.LocationCache, len(ips))
-	var wg sync.WaitGroup
-	semaphore := make(chan struct{}, locationQueryConcurrency)
+	rows := make([]entity.LocationCache, 0, len(ips))
 
-	for i, candidate := range ips {
-		wg.Add(1)
-		go func(index int, lookupIP string) {
-			defer wg.Done()
+	lookupLocationsWithRetry(ips, entity.LocationKindIP, func(lookupIP string) locationFlightResult {
+		return locationLookupGroup.do(entity.LocationKindIP+"|"+lookupIP, func() locationFlightResult {
+			ctx, cancel := context.WithTimeout(context.Background(), locationLookupTimeout)
+			defer cancel()
 
-			// 限制并发，避免瞬时打满上游速率限制（429 会浪费一次往返）。
-			semaphore <- struct{}{}
-			defer func() { <-semaphore }()
-
-			result := locationLookupGroup.do(entity.LocationKindIP+"|"+lookupIP, func() locationFlightResult {
-				ctx, cancel := context.WithTimeout(context.Background(), locationLookupTimeout)
-				defer cancel()
-
-				info, err := client.GetIPInfo(ctx, lookupIP, source)
-				if err != nil {
-					logger.SysLog(fmt.Sprintf("查询 IP 归属地失败 ip=%s error=%v", lookupIP, err))
-					return locationFlightResult{}
-				}
-				address := strings.TrimSpace(info.Region)
-				if address == "" {
-					return locationFlightResult{}
-				}
-				return locationFlightResult{address: address, rawJSON: info.RawJSON, ok: true}
-			})
-			if !result.ok {
-				return
+			info, err := client.GetIPInfo(ctx, lookupIP, source)
+			if err != nil {
+				logger.SysLog(fmt.Sprintf("查询 IP 归属地失败 ip=%s error=%v", lookupIP, err))
+				return locationFlightResult{abort: isLocationAbortError(err)}
 			}
-			rows[index] = entity.LocationCache{
-				Kind:      entity.LocationKindIP,
-				LookupKey: locationCacheLookupKey(lookupIP),
-				Address:   result.address,
-				RawJSON:   result.rawJSON,
+			address := strings.TrimSpace(info.Region)
+			if address == "" {
+				return locationFlightResult{}
 			}
-		}(i, candidate)
-	}
-	wg.Wait()
+			return locationFlightResult{address: address, rawJSON: info.RawJSON, ok: true}
+		})
+	}, func(lookupIP string, result locationFlightResult) {
+		rows = append(rows, entity.LocationCache{
+			Kind:      entity.LocationKindIP,
+			LookupKey: locationCacheLookupKey(lookupIP),
+			Address:   result.address,
+			RawJSON:   result.rawJSON,
+		})
+	})
 
-	return compactLocationRows(rows)
+	return rows
 }
 
 // compactLocationRows 去掉未填充的占位行。

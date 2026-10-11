@@ -10,6 +10,10 @@ type locationFlightResult struct {
 	address string
 	rawJSON string
 	ok      bool
+	// abort 表示这次失败属于「密钥/权限/配额」类问题 —— 它对**同一个密钥的所有**
+	// 请求都会失败，因此没有理由再查后面的数据。与「这个号码查不到」（404）区分开：
+	// 后者只是单条数据的问题，不该让整页放弃。
+	abort bool
 }
 
 // locationFlightGroup 合并「同一 key 的并发归属地查询」。

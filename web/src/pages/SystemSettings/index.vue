@@ -74,7 +74,7 @@
 
         <a-form-item label="验证码二维码">
           <a-input v-model:value="formState.wechatCodeStaticQrcodeUrl" placeholder="请输入微信验证码模式下展示的静态二维码图片地址" />
-          <div class="hint">微信验证码模式会在登录页展示该二维码，用户扫码关注后发送“验证码”获取登录码。</div>
+          <!-- <div class="hint">微信验证码模式会在登录页展示该二维码，用户扫码关注后发送“验证码”获取登录码。</div> -->
         </a-form-item>
 
         <a-divider orientation="left">验证码</a-divider>
@@ -86,15 +86,15 @@
           <div class="hint">远程验证码不可用时，登录和注册页面会自动回退到站内图片验证码。</div>
         </a-form-item>
 
-        <a-form-item label="远程服务地址">
+        <a-form-item label="远程服务地址" v-if="useRemoteCaptcha">
           <a-input v-model:value="formState.captchaApiBaseUrl" placeholder="https://captcha.api.zelly.cn" />
         </a-form-item>
 
-        <a-form-item label="远程服务 Key">
+        <a-form-item label="远程服务 Key" v-if="useRemoteCaptcha">
           <a-input-password v-model:value="formState.captchaApiKey" placeholder="请输入 X-Captcha-Key" />
         </a-form-item>
 
-        <a-form-item label="验证码类型">
+        <a-form-item label="验证码类型" v-if="useRemoteCaptcha">
           <a-select v-model:value="formState.captchaType">
             <a-select-option value="RANDOM">随机</a-select-option>
             <a-select-option value="SLIDER">滑块</a-select-option>
@@ -156,7 +156,7 @@
         <a-divider orientation="left">短信验证码配置</a-divider>
         <a-form-item label="短信提供方">
           <a-input v-model:value="formState.smsProvider" disabled />
-          <div class="hint">首期固定使用短信宝，后续如有需要再扩展多供应商。</div>
+          <!-- <div class="hint">首期固定使用短信宝，后续如有需要再扩展多供应商。</div> -->
         </a-form-item>
 
         <a-form-item label="短信宝用户名">
@@ -519,6 +519,8 @@ export default defineComponent({
       wrapperCol: { span: 14 },
       paymentMethodLabelCol: { style: { width: '110px' } },
       paymentMethodWrapperCol: { span: 17 },
+      // 选「站内图片验证码」时，远程服务地址 / Key / 验证码类型都无意义，直接隐藏。
+      useRemoteCaptcha: computed(() => formState.captchaProvider !== 'local'),
       tabLoading,
       saving,
       paymentMethodLoading,
