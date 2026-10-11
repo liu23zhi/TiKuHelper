@@ -196,15 +196,25 @@ func ExtractBillingSnapshotField(snapshot string, key string) string {
 	return strings.TrimSpace(value)
 }
 
-// buildBillingRecordDisplayQuery 构造账单展示用的基础查询。
+// buildBillingRecordScopeQuery 构造账单查询的公共范围：JOIN + 操作者权限。
 //
 // JOIN 必须在这里完成：关键词筛选会用到 access_tokens.name 与 billing_users.username，
 // 若只在取数据时才 JOIN，Count 就会因为缺列而报错（或得出与数据不一致的 total）。
-func buildBillingRecordDisplayQuery(db *gorm.DB, operator entity.User) *gorm.DB {
-	baseQuery := db.Table(entity.TableNameBillingRecord + " AS billing_records").
+func buildBillingRecordScopeQuery(db *gorm.DB, operator entity.User) *gorm.DB {
+	query := db.Table(entity.TableNameBillingRecord + " AS billing_records").
 		Joins("LEFT JOIN " + entity.TableNameAccessToken + " AS access_tokens ON access_tokens.id = billing_records.access_token_id").
 		Joins("LEFT JOIN " + entity.TableNameUser + " AS billing_users ON billing_users.id = billing_records.user_id")
-	baseQuery = baseQuery.Where(`
+	if !isAdminUser(operator) {
+		query = query.Where("billing_records.user_id = ?", operator.ID)
+	}
+	return query
+}
+
+// applyBillingRecordSearchDedup 保留每个 request_id 最新的一条明细。
+//
+// 一次搜题命中多个渠道会写成多条 normal_search，列表只展示最新的一条（代表整笔）。
+func applyBillingRecordSearchDedup(query *gorm.DB) *gorm.DB {
+	return query.Where(`
 		NOT EXISTS (
 			SELECT 1
 			FROM billing_records AS newer_records
@@ -216,10 +226,11 @@ func buildBillingRecordDisplayQuery(db *gorm.DB, operator entity.User) *gorm.DB 
 				AND newer_records.id > billing_records.id
 		)
 	`, normalSearchBillingRecordType, normalSearchBillingRecordType)
-	if !isAdminUser(operator) {
-		baseQuery = baseQuery.Where("billing_records.user_id = ?", operator.ID)
-	}
-	return baseQuery
+}
+
+// buildBillingRecordDisplayQuery 构造账单展示用的基础查询（含同请求去重）。
+func buildBillingRecordDisplayQuery(db *gorm.DB, operator entity.User) *gorm.DB {
+	return applyBillingRecordSearchDedup(buildBillingRecordScopeQuery(db, operator))
 }
 
 func decorateBillingRecord(record BillingRecordListItem) BillingRecordListItem {
@@ -385,8 +396,12 @@ func ListBillingRecordsWithDB(db *gorm.DB, operator entity.User, query BillingRe
 		return BillingRecordListResult{}, err
 	}
 
-	// 每笔请求的真实消费总额（同一 request_id 的多个渠道相加）。
-	requestExpenses, err := loadBillingRequestExpenseTotals(db, operator)
+	// 每笔请求的真实消费总额：同一 request_id 的多个渠道相加。
+	// 必须同样带上筛选条件（否则「累计」不会跟随搜索收窄），
+	// 但不能带展示层的同请求去重（否则会漏掉其他渠道的金额）。
+	requestExpenses, err := loadBillingRequestExpenseTotals(
+		applyBillingRecordFilters(buildBillingRecordScopeQuery(db, operator), query),
+	)
 	if err != nil {
 		return BillingRecordListResult{}, err
 	}
@@ -450,20 +465,19 @@ func billingRecordExpenseKey(row BillingRecordListItem) (billingSearchGroupKey, 
 
 // loadBillingRequestExpenseTotals 按 (user_id, request_id) 汇总每笔请求的消费总额。
 //
-// 必须绕开 buildBillingRecordDisplayQuery 里的 NOT EXISTS 去重：
-// 那个过滤只保留每个请求最新的一条明细，用它求和会把同一笔请求的其他渠道漏掉
+// 入参 query 必须已经带上「操作者范围 + 全部筛选条件」，但**不能带展示层的同请求去重**：
+// 那个 NOT EXISTS 只保留每个请求最新的一条明细，用它求和会漏掉同一笔请求的其他渠道
 // （例如 icodef 1.25 + ai 0.75 只会算成 1.25）。
-// 这里直接按用户范围聚合原始明细，得到真实花费。
-func loadBillingRequestExpenseTotals(db *gorm.DB, operator entity.User) (map[billingSearchGroupKey]float64, error) {
-	query := db.Table(entity.TableNameBillingRecord+" AS billing_records").
+//
+// 只按「类型」筛出题目消费：充值入账与新用户赠送分别是 recharge / registration_bonus。
+// 不能改用 provider 过滤 —— 新用户赠送的 provider 正是 "system"（界面标签「系统赠送」），
+// 用 provider <> 'system' 会把它误排除，导致「逐行金额相加」与「累计」对不上。
+func loadBillingRequestExpenseTotals(query *gorm.DB) (map[billingSearchGroupKey]float64, error) {
+	query = query.
 		Select("billing_records.user_id, billing_records.request_id, COALESCE(SUM(billing_records.amount), 0) AS total_amount").
 		Where("billing_records.type = ?", normalSearchBillingRecordType).
 		Where("COALESCE(billing_records.request_id, '') <> ''").
-		Where("COALESCE(billing_records.provider, '') <> ?", "system").
 		Group("billing_records.user_id, billing_records.request_id")
-	if !isAdminUser(operator) {
-		query = query.Where("billing_records.user_id = ?", operator.ID)
-	}
 
 	var rows []struct {
 		UserID      int32   `gorm:"column:user_id"`

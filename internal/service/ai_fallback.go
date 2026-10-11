@@ -168,30 +168,58 @@ func collectUsableAIFallbackAnswers(answerGroups [][]string) ([]string, AIFallba
 	return nil, AIFallbackErrorCodeNoAnswer
 }
 
+// isObjectiveAIFallbackQuestionType 判断是否为「客观题」（答案必须是给定选项之一）。
+//
+// 与 pkg/util.FillAnswerResponse 的判定保持一致：只有单选(0)、多选(1)、判断(3)
+// 才需要把答案强制映射到选项上。
+func isObjectiveAIFallbackQuestionType(questionType int) bool {
+	return questionType == 0 || questionType == 1 || questionType == 3
+}
+
+// isUsableFreeTextAIFallbackAnswer 判断「映射不到选项」的答案能否作为自由文本采用。
+//
+// 填空题 / 简答题 / 阅读理解（type 2/4/-4）的答案本来就是自由文本，
+// 上游平台又常把编辑器脚本一起塞进 options（实测 55 条里绝大多数是 JS 代码），
+// 因此不能用「必须命中选项」来判定有效性 —— 否则一次正常的 AI 回答会被判成未找到答案。
+//
+// 只有「看起来就是在指代选项」的答案（单个字母 / 纯数字）才丢弃，
+// 因为这类答案映射失败说明选项标号对不上，采用它会把错误标号当成答案。
+func isUsableFreeTextAIFallbackAnswer(answer string) bool {
+	normalized := util.FormatString(answer)
+	if normalized == "" {
+		return false
+	}
+
+	runes := []rune(normalized)
+	if len(runes) == 1 {
+		if runes[0] >= 'A' && runes[0] <= 'Z' {
+			return false
+		}
+		if runes[0] >= 'a' && runes[0] <= 'z' {
+			return false
+		}
+	}
+
+	if _, err := strconv.Atoi(normalized); err == nil {
+		return false
+	}
+	return true
+}
+
 func normalizeAIFallbackAnswersForRequest(answers []string, req model.SearchRequest) []string {
 	if len(answers) == 0 {
 		return nil
 	}
 
 	normalizedOptions := util.FormatOptions(req.Options, req.Type)
+
+	// 非客观题：答案允许是自由文本，映射不到选项不应该判为失败。
+	if !isObjectiveAIFallbackQuestionType(req.Type) {
+		return normalizeFreeTextAIFallbackAnswers(answers, normalizedOptions, req.Type)
+	}
+
 	if len(normalizedOptions) == 0 {
-		result := make([]string, 0, len(answers))
-		seen := make(map[string]struct{})
-		preserveRepeatedAnswers := req.Type == 2
-		for _, answer := range answers {
-			normalized := strings.TrimSpace(answer)
-			if normalized == "" {
-				continue
-			}
-			if !preserveRepeatedAnswers {
-				if _, exists := seen[normalized]; exists {
-					continue
-				}
-				seen[normalized] = struct{}{}
-			}
-			result = append(result, normalized)
-		}
-		return result
+		return dedupeAIFallbackAnswers(answers, req.Type == 2)
 	}
 
 	answerGroups := make([][]string, 0, len(answers))
@@ -212,6 +240,78 @@ func normalizeAIFallbackAnswersForRequest(answers []string, req model.SearchRequ
 		Type:     req.Type,
 	})
 	return response.Answer.BestAnswer
+}
+
+// normalizeFreeTextAIFallbackAnswers 处理非客观题答案。
+//
+// 若 AI 返回的是选项标号/原文（例如「A」或某个选项文本），仍优先映射成规范选项；
+// 否则保留原始文本，只在完全无法映射且该答案本身就是自由文本时采用。
+func normalizeFreeTextAIFallbackAnswers(answers []string, options []string, questionType int) []string {
+	result := make([]string, 0, len(answers))
+	seen := make(map[string]struct{})
+	preserveRepeatedAnswers := questionType == 2
+
+	for _, answer := range answers {
+		trimmed := strings.TrimSpace(answer)
+		if trimmed == "" {
+			continue
+		}
+
+		if len(options) > 0 {
+			// 能映射到选项就映射，保证与选项格式一致（例如返回 "B" 转成选项文本）。
+			if mapped := mapAIFallbackAnswerToOptions(trimmed, options); len(mapped) > 0 {
+				for _, item := range mapped {
+					if !preserveRepeatedAnswers {
+						if _, exists := seen[item]; exists {
+							continue
+						}
+						seen[item] = struct{}{}
+					}
+					result = append(result, item)
+				}
+				continue
+			}
+		}
+
+		if !isUsableFreeTextAIFallbackAnswer(trimmed) {
+			continue
+		}
+		if !preserveRepeatedAnswers {
+			if _, exists := seen[trimmed]; exists {
+				continue
+			}
+			seen[trimmed] = struct{}{}
+		}
+		result = append(result, trimmed)
+	}
+
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+// dedupeAIFallbackAnswers 在无选项场景下去重（填空题允许重复答案）。
+func dedupeAIFallbackAnswers(answers []string, preserveRepeatedAnswers bool) []string {
+	result := make([]string, 0, len(answers))
+	seen := make(map[string]struct{})
+	for _, answer := range answers {
+		normalized := strings.TrimSpace(answer)
+		if normalized == "" {
+			continue
+		}
+		if !preserveRepeatedAnswers {
+			if _, exists := seen[normalized]; exists {
+				continue
+			}
+			seen[normalized] = struct{}{}
+		}
+		result = append(result, normalized)
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 func mapAIFallbackAnswerToOptions(answer string, options []string) []string {

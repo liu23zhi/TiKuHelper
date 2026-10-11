@@ -630,6 +630,124 @@ func TestListBillingRecordsWithDBSummaryCoversAllPagesWithoutDoubleCounting(t *t
 	}
 }
 
+// 回归：新用户赠送账单的 provider 是 "system"（界面标签「系统赠送」），
+// 早期实现用 `provider <> 'system'` 过滤，会把它从「每笔请求消费总额」里误排除，
+// 造成「逐行金额相加」与「累计消费金额」对不上。
+func TestListBillingRecordsWithDBSummaryIgnoresSystemProviderBonusRows(t *testing.T) {
+	db := newBillingRecordTestDB(t)
+	owner := seedBillingRecordUser(t, db, 2, "user")
+
+	// 真实数据形态：赠送行 provider=system、type=registration_bonus、request_id 非空。
+	if err := db.Create(&entity.BillingRecord{
+		UserID:    owner.ID,
+		Type:      "registration_bonus",
+		Provider:  "system",
+		Amount:    50,
+		RequestID: fmt.Sprintf("registration_bonus_%d", owner.ID),
+		Remark:    "新用户赠送",
+	}).Error; err != nil {
+		t.Fatalf("create bonus record: %v", err)
+	}
+	// 充值行也是收入。
+	if err := db.Create(&entity.BillingRecord{
+		UserID: owner.ID, Type: "recharge", Provider: "epay", Amount: 100,
+	}).Error; err != nil {
+		t.Fatalf("create recharge record: %v", err)
+	}
+	// 一笔真实消费。
+	if err := db.Create(&entity.BillingRecord{
+		UserID: owner.ID, Type: "normal_search", Provider: "icodef", Amount: 1.5, RequestID: "req-real",
+	}).Error; err != nil {
+		t.Fatalf("create search record: %v", err)
+	}
+
+	result, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{}, 1, 10)
+	if err != nil {
+		t.Fatalf("list billing records: %v", err)
+	}
+
+	// 只有题目消费计入：1.5；赠送 50 与充值 100 都不算。
+	if result.Summary.TotalAmount != 1.5 {
+		t.Fatalf("expected only the 1.5 search charge, got %v", result.Summary.TotalAmount)
+	}
+	if result.Summary.CurrentPageAmount != 1.5 {
+		t.Fatalf("expected current page amount 1.5, got %v", result.Summary.CurrentPageAmount)
+	}
+
+	// 逐行金额相加必须等于「累计」：收入行按方向排除，消费行纳入。
+	pageSum := 0.0
+	for _, row := range result.Data {
+		if row.Direction == "expense" && row.Amount > 0 {
+			pageSum += row.Amount
+		}
+	}
+	if pageSum != result.Summary.CurrentPageAmount {
+		t.Fatalf("expected row amounts to sum to the page total: rows=%v summary=%v", pageSum, result.Summary.CurrentPageAmount)
+	}
+}
+
+// 回归：关键词筛选必须同时作用于「逐行金额」与「累计消费金额」。
+//
+// 早期实现里，每笔请求的消费总额来自不带筛选条件的全量聚合，
+// 于是按关键词筛掉某个渠道后，代表行的金额仍会变回整笔合计，
+// 造成「列表只显示 1 行、金额却是整笔」的口径不一致。
+func TestListBillingRecordsWithDBSummaryFollowsKeywordFilter(t *testing.T) {
+	db := newBillingRecordTestDB(t)
+	owner := seedBillingRecordUser(t, db, 2, "user")
+
+	// 同一笔请求命中两个渠道：icodef 100 + ai 0.5
+	merged := []entity.BillingRecord{
+		{UserID: owner.ID, Type: "normal_search", Provider: "icodef", Amount: 100, RequestID: "req-merged"},
+		{UserID: owner.ID, Type: "normal_search", Provider: "ai", Amount: 0.5, RequestID: "req-merged"},
+	}
+	for i := range merged {
+		if err := db.Create(&merged[i]).Error; err != nil {
+			t.Fatalf("create merged record: %v", err)
+		}
+	}
+	// 另一笔独立请求，用于验证筛选确实会收窄结果。
+	if err := db.Create(&entity.BillingRecord{
+		UserID: owner.ID, Type: "normal_search", Provider: "zhihuishu", Amount: 7, RequestID: "req-other",
+	}).Error; err != nil {
+		t.Fatalf("create other record: %v", err)
+	}
+
+	all, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{}, 1, 10)
+	if err != nil {
+		t.Fatalf("list all: %v", err)
+	}
+	// 全量：合并请求 100.5 + 独立请求 7 = 107.5
+	if all.Summary.TotalAmount != 107.5 {
+		t.Fatalf("expected all-page total 107.5, got %v", all.Summary.TotalAmount)
+	}
+
+	// 按关键词只筛出 ai 渠道：该请求在筛选结果里只剩 0.5，独立请求被排除。
+	filtered, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{Keyword: "ai"}, 1, 10)
+	if err != nil {
+		t.Fatalf("list filtered: %v", err)
+	}
+	if filtered.Summary.TotalAmount != 0.5 {
+		t.Fatalf("expected filtered total 0.5 (only the ai channel), got %v", filtered.Summary.TotalAmount)
+	}
+	if filtered.Summary.TotalAmount == all.Summary.TotalAmount {
+		t.Fatal("expected the filter to narrow the all-page total")
+	}
+
+	// 逐行金额相加必须等于当前页小计。
+	pageSum := 0.0
+	for _, row := range filtered.Data {
+		if row.Direction == "expense" && row.Amount > 0 {
+			pageSum += row.Amount
+		}
+	}
+	if pageSum != filtered.Summary.CurrentPageAmount {
+		t.Fatalf("expected row amounts to sum to the page total: rows=%v summary=%v", pageSum, filtered.Summary.CurrentPageAmount)
+	}
+	if pageSum != filtered.Summary.TotalAmount {
+		t.Fatalf("expected the single-page filtered total to equal the page sum: %v vs %v", pageSum, filtered.Summary.TotalAmount)
+	}
+}
+
 func TestListBillingRecordsWithDBUsesCachedSourceLabelForLocalSearch(t *testing.T) {
 	db := newBillingRecordTestDB(t)
 	owner := seedBillingRecordUser(t, db, 2, "user")
