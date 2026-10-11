@@ -157,7 +157,7 @@ test('buildAISearchConfigSavePayload stops sending any billing fields', () => {
   }
 });
 
-test('AISearchConfig page bills from the model price table and has no multiplier UI', async () => {
+test('AISearchConfig page bills from the model price table', async () => {
   const content = await readFile(aiSearchConfigPagePath, 'utf8');
 
   assert.match(content, /buildModelNameOptions\(formState\.manualModelsText\)/);
@@ -174,16 +174,35 @@ test('AISearchConfig page bills from the model price table and has no multiplier
   assert.match(content, /handleDeleteModelPrice/);
   assert.match(content, /handleResetModelPrices/);
   assert.match(content, /缓存输入/);
+  // 新增的缓存写入单价列。
+  assert.match(content, /缓存写入（￥\/M）/);
+  assert.match(content, /cacheWritePrice/);
 
-  // 倍率与汇率相关 UI 必须彻底消失。
+  // 旧的「架构倍率 / 全局倍率 / 汇率」体系必须彻底消失。
   assert.doesNotMatch(content, /formState\.exchangeRate/);
   assert.doesNotMatch(content, /formState\.globalBillingMultiplier/);
   assert.doesNotMatch(content, /formState\.useGlobalBillingMultiplier/);
   assert.doesNotMatch(content, /billingMultiplier/);
-  assert.doesNotMatch(content, /formatMultiplier/);
   assert.doesNotMatch(content, /单模型倍率/);
   assert.doesNotMatch(content, /全局倍率/);
   assert.doesNotMatch(content, /label="汇率"/);
+
+  // 新的「模型价格表倍率」列：默认 1，可编辑。
+  assert.match(content, /title: '倍率'/);
+  assert.match(content, /dataIndex: 'multiplier'/);
+  assert.match(content, /priceForm\.multiplier = 1/);
+  assert.match(content, /multiplier: Number\(this\.priceForm\.multiplier \|\| 1\)/);
+  assert.match(content, /formatMultiplier/);
+
+  // 价格表的排序列已移除（模型绑定表的排序保留，因此只针对 dataIndex: 'sort' 所在段判断）。
+  const priceColumnsBlock = content.slice(
+    content.indexOf('const priceColumns = ['),
+    content.indexOf('const loadConfig'),
+  );
+  assert.ok(priceColumnsBlock, 'expected priceColumns block to exist');
+  assert.doesNotMatch(priceColumnsBlock, /sort/, '价格表不应再有排序列');
+  assert.match(priceColumnsBlock, /dataIndex: 'multiplier'/);
+  assert.match(priceColumnsBlock, /dataIndex: 'cacheWritePrice'/);
 
   // 价格表必须用人民币符号，不能出现美元计价（列头 $/M 或 $数字；模板字面量里的 $ 不算）。
   assert.doesNotMatch(content, /美元/);
@@ -194,7 +213,7 @@ test('AISearchConfig page bills from the model price table and has no multiplier
   assert.match(content, /缓存输入（￥\/M）/);
   assert.match(content, /输出（￥\/M）/);
   // 金额格式化复用统一的 6 位精度模块，不再各页手写 toFixed。
-  assert.match(content, /import \{ formatMoneyCny \} from '@\/utils\/moneyFormat\.mjs'/);
+  assert.match(content, /import \{ formatMoneyCny, formatMoneyValue \} from '@\/utils\/moneyFormat\.mjs'/);
   assert.match(content, /return formatMoneyCny\(amount\)/);
   assert.doesNotMatch(content, /toFixed\(/);
 

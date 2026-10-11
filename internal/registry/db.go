@@ -228,6 +228,40 @@ func ensureSMSVerificationSchemaForDriver(db *gorm.DB, driverName string) error 
 	return nil
 }
 
+// ensureAIModelPriceSchema 为历史价格表补上新增列。
+// GORM 的 AutoMigrate 会处理新列，但旧库上先手动兜底可以避免
+// 「列缺失 → 查询报错 → 计费整体失败」；已存在时是空操作。
+func ensureAIModelPriceSchema(db *gorm.DB) error {
+	if db == nil {
+		return nil
+	}
+	if !db.Migrator().HasTable(entity.TableNameAIModelPrice) {
+		return nil
+	}
+
+	columns := []struct {
+		field string
+		name  string
+	}{
+		{field: "CacheWritePrice", name: "cache_write_price"},
+		{field: "Multiplier", name: "multiplier"},
+	}
+
+	for _, column := range columns {
+		if db.Migrator().HasColumn(entity.TableNameAIModelPrice, column.name) {
+			continue
+		}
+		if err := db.Migrator().AddColumn(&entity.AIModelPrice{}, column.field); err != nil {
+			return err
+		}
+	}
+
+	// 历史行补默认倍率 1，避免出现 0 倍率导致"命中价格却按 0 计费"。
+	return db.Model(&entity.AIModelPrice{}).
+		Where("multiplier IS NULL OR multiplier <= 0").
+		Update("multiplier", 1).Error
+}
+
 // moneyColumn 描述一个需要按 6 位小数存储的金额列。
 type moneyColumn struct {
 	Table  string
@@ -424,6 +458,10 @@ func RegisterDB(config configs.Config) *gorm.DB {
 
 	if err := ensureMoneyPrecisionSchema(db); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare money precision schema fail: %w", err))
+	}
+
+	if err := ensureAIModelPriceSchema(db); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare ai model price schema fail: %w", err))
 	}
 	ensureAccountDomainDefaults(db)
 

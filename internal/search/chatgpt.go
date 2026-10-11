@@ -43,6 +43,7 @@ type ChatGptClient struct {
 type AISearchUsage struct {
 	InputTokens       int64
 	CachedInputTokens int64
+	CacheWriteTokens  int64
 	OutputTokens      int64
 	TotalTokens       int64
 }
@@ -98,6 +99,10 @@ type openAIStreamUsage struct {
 	PromptTokensDetails *struct {
 		CachedTokens int64 `json:"cached_tokens"`
 	} `json:"prompt_tokens_details,omitempty"`
+	CacheCreation *struct {
+		Ephemeral5mInputTokens int64 `json:"ephemeral_5m_input_tokens"`
+		Ephemeral1hInputTokens int64 `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation,omitempty"`
 }
 
 type aiSearchAnswerPayload struct {
@@ -919,6 +924,12 @@ func buildAISearchUsageFromStream(streamUsage *openAIStreamUsage) AISearchUsage 
 	if streamUsage.PromptTokensDetails != nil {
 		usage.CachedInputTokens = normalizeAISearchCachedTokens(streamUsage.PromptTokensDetails.CachedTokens, streamUsage.PromptTokens)
 	}
+	if streamUsage.CacheCreation != nil {
+		usage.CacheWriteTokens = normalizeAISearchCacheWriteTokens(
+			streamUsage.CacheCreation.Ephemeral5mInputTokens+streamUsage.CacheCreation.Ephemeral1hInputTokens,
+			streamUsage.PromptTokens,
+		)
+	}
 	if usage.TotalTokens == 0 {
 		usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 	}
@@ -935,6 +946,17 @@ func normalizeAISearchCachedTokens(cachedTokens int64, promptTokens int64) int64
 		return promptTokens
 	}
 	return cachedTokens
+}
+
+// normalizeAISearchCacheWriteTokens 同样把缓存写入 token 收敛到输入总量以内。
+func normalizeAISearchCacheWriteTokens(cacheWriteTokens int64, promptTokens int64) int64 {
+	if cacheWriteTokens <= 0 {
+		return 0
+	}
+	if promptTokens > 0 && cacheWriteTokens > promptTokens {
+		return promptTokens
+	}
+	return cacheWriteTokens
 }
 
 func parseAISearchAnswers(content string, options []string, questionType int) []string {

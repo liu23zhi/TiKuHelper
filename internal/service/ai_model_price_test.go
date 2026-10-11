@@ -25,25 +25,78 @@ func newAIModelPriceTestDB(t *testing.T) *gorm.DB {
 }
 
 func TestDefaultAIModelPricesMatchAgreedPriceTable(t *testing.T) {
-	if got := len(defaultAIModelPrices); got != 14 {
-		t.Fatalf("expected 14 default model prices, got %d", got)
+	// 全量默认表：Standard 短上下文档位 + 兼容别名行。
+	if got := len(defaultAIModelPrices); got != 54 {
+		t.Fatalf("expected 54 default model prices, got %d", got)
 	}
 
-	expected := map[string][3]float64{
-		"GPT-6 Astra":                {10.00, 1.00, 50.00},
-		"GPT-6.1 Sol":                {2.00, 0.10, 10.00},
-		"GPT-6 Sol":                  {2.00, 0.20, 10.00},
-		"GPT-6 Luna":                 {0.10, 0.01, 0.50},
-		"GPT-5.6 Sol":                {4.00, 0.40, 20.00},
-		"GPT-5.6 Terra":              {2.00, 0.20, 12.00},
-		"GPT-5.6 Luna":               {0.20, 0.02, 1.20},
-		"GPT-Rosalind-Research":      {5.00, 0.50, 25.00},
-		"GPT-5.5":                    {5.00, 0.50, 30.00},
-		"Daybreak Blue（GPT-5.6 Sol）": {4.00, 0.40, 20.00},
-		"Daybreak Red":               {12.50, 1.25, 75.00},
-		"GPT-5.3-Codex":              {1.75, 0.175, 14.00},
-		"GPT-5.2":                    {1.75, 0.175, 14.00},
-		"GPT-6 Astra Law *":          {12.50, 1.25, 62.50},
+	// 抽样式核对各价位段与带缓存写入价的模型（Input / Cached / CacheWrite / Output）。
+	expected := map[string][4]float64{
+		// 旗舰
+		"GPT-6 Astra":   {10.00, 1.00, 12.50, 50.00},
+		"GPT-6.1 Sol":   {2.00, 0.10, 2.50, 10.00},
+		"GPT-6 Sol":     {2.00, 0.20, 2.50, 10.00},
+		"GPT-6 Luna":    {0.10, 0.01, 0.125, 0.50},
+		"GPT-5.6 Sol":   {4.00, 0.40, 5.00, 20.00},
+		"GPT-5.6 Terra": {2.00, 0.20, 2.50, 12.00},
+		"GPT-5.6 Luna":  {0.20, 0.02, 0.25, 1.20},
+		"GPT-5.5":       {5.00, 0.50, 0, 30.00},
+		"GPT-5.5 Pro":   {30.00, 0, 0, 180.00},
+		"GPT-5.4":       {2.50, 0.25, 0, 15.00},
+		"GPT-5.4 Mini":  {0.75, 0.075, 0, 4.50},
+		"GPT-5.4 Nano":  {0.20, 0.02, 0, 1.25},
+		"GPT-5.4 Pro":   {30.00, 0, 0, 180.00},
+		"GPT-5.2":       {1.75, 0.175, 0, 14.00},
+		"GPT-5.2 Pro":   {21.00, 0, 0, 168.00},
+		"GPT-5.1":       {1.25, 0.125, 0, 10.00},
+		"GPT-5":         {1.25, 0.125, 0, 10.00},
+		"GPT-5 Mini":    {0.25, 0.025, 0, 2.00},
+		"GPT-5 Nano":    {0.05, 0.005, 0, 0.40},
+		"GPT-5 Pro":     {15.00, 0, 0, 120.00},
+		// 通用
+		"GPT-4.1":                {2.00, 0.50, 0, 8.00},
+		"GPT-4.1 Mini":           {0.40, 0.10, 0, 1.60},
+		"GPT-4.1 Nano":           {0.10, 0.025, 0, 0.40},
+		"GPT-4o":                 {2.50, 1.25, 0, 10.00},
+		"GPT-4o 2024-05-13":      {5.00, 0, 0, 15.00},
+		"GPT-4o Mini":            {0.15, 0.075, 0, 0.60},
+		"GPT-4 Turbo 2024-04-09": {10.00, 0, 0, 30.00},
+		"GPT-4 0613":             {30.00, 0, 0, 60.00},
+		"GPT-3.5 Turbo":          {0.50, 0, 0, 1.50},
+		"GPT-3.5 Turbo 0125":     {0.50, 0, 0, 1.50},
+		"GPT-3.5 Turbo 1106":     {1.00, 0, 0, 2.00},
+		"GPT-3.5 Turbo Instruct": {1.50, 0, 0, 2.00},
+		"Davinci-002":            {2.00, 0, 0, 2.00},
+		"Babbage-002":            {0.40, 0, 0, 0.40},
+		// 推理
+		"o1":      {15.00, 7.50, 0, 60.00},
+		"o1 Pro":  {150.00, 0, 0, 600.00},
+		"o3":      {2.00, 0.50, 0, 8.00},
+		"o3 Pro":  {20.00, 0, 0, 80.00},
+		"o3 Mini": {1.10, 0.55, 0, 4.40},
+		"o4 Mini": {1.10, 0.275, 0, 4.40},
+		// Cyber
+		"GPT-5.6 Cyber": {12.50, 1.25, 15.625, 75.00},
+		"GPT-5.5 Cyber": {12.50, 1.25, 0, 75.00},
+		// 生命科学
+		"GPT-Rosalind-Research":  {5.00, 0.50, 0, 25.00},
+		"GPT-Rosalind-Discovery": {5.00, 0.50, 0, 25.00},
+		// 专用
+		"GPT-5.3-Codex":          {1.75, 0.175, 0, 14.00},
+		"Chat-Latest":            {5.00, 0.50, 0, 30.00},
+		"GPT-5 Search API":       {1.25, 0.125, 0, 10.00},
+		"Text-Embedding-3-Small": {0.02, 0, 0, 0},
+		"Text-Embedding-3-Large": {0.13, 0, 0, 0},
+		"Text-Embedding-Ada-002": {0.10, 0, 0, 0},
+		"Omni-Moderation-Latest": {0, 0, 0, 0},
+		// 兼容别名
+		"Daybreak Blue（GPT-5.6 Sol）": {4.00, 0.40, 5.00, 20.00},
+		"Daybreak Red":               {12.50, 1.25, 15.625, 75.00},
+		"GPT-6 Astra Law *":          {12.50, 1.25, 15.625, 62.50},
+	}
+
+	if len(expected) != len(defaultAIModelPrices) {
+		t.Fatalf("expected map covers %d models but defaults have %d", len(expected), len(defaultAIModelPrices))
 	}
 
 	for _, item := range defaultAIModelPrices {
@@ -51,9 +104,43 @@ func TestDefaultAIModelPricesMatchAgreedPriceTable(t *testing.T) {
 		if !ok {
 			t.Fatalf("unexpected seeded model %q", item.ModelName)
 		}
-		if item.InputPrice != want[0] || item.CachedPrice != want[1] || item.OutputPrice != want[2] {
-			t.Fatalf("unexpected price for %q: got %v/%v/%v want %v/%v/%v",
-				item.ModelName, item.InputPrice, item.CachedPrice, item.OutputPrice, want[0], want[1], want[2])
+		if item.InputPrice != want[0] || item.CachedPrice != want[1] ||
+			item.CacheWritePrice != want[2] || item.OutputPrice != want[3] {
+			t.Fatalf("unexpected price for %q: got in=%v cached=%v cacheWrite=%v out=%v want %v/%v/%v/%v",
+				item.ModelName, item.InputPrice, item.CachedPrice, item.CacheWritePrice, item.OutputPrice,
+				want[0], want[1], want[2], want[3])
+		}
+	}
+}
+
+// 倍率默认必须是 1（倍率为 0 会让命中价格却按 0 计费）。
+func TestDefaultAIModelPricesLeaveMultiplierAtOne(t *testing.T) {
+	for _, item := range defaultAIModelPrices {
+		if item.Multiplier != 0 {
+			t.Fatalf("expected default table to omit multiplier for %q, got %v", item.ModelName, item.Multiplier)
+		}
+	}
+
+	db := newAIModelPriceTestDB(t)
+	if err := EnsureDefaultAIModelPricesWithDB(db); err != nil {
+		t.Fatalf("seed defaults: %v", err)
+	}
+
+	var zeroMultiplier int64
+	if err := db.Model(&entity.AIModelPrice{}).Where("multiplier <= 0").Count(&zeroMultiplier).Error; err != nil {
+		t.Fatalf("count zero multipliers: %v", err)
+	}
+	if zeroMultiplier != 0 {
+		t.Fatalf("expected every seeded row to carry a positive multiplier, got %d zero/negative rows", zeroMultiplier)
+	}
+
+	items, err := ListAIModelPricesWithDB(db, false)
+	if err != nil {
+		t.Fatalf("list prices: %v", err)
+	}
+	for _, item := range items {
+		if item.Multiplier != 1 {
+			t.Fatalf("expected multiplier 1 for %q, got %v", item.ModelName, item.Multiplier)
 		}
 	}
 }
@@ -72,8 +159,8 @@ func TestEnsureDefaultAIModelPricesWithDBSeedsOnceAndKeepsAdminEdits(t *testing.
 	if err := db.Model(&entity.AIModelPrice{}).Count(&count).Error; err != nil {
 		t.Fatalf("count prices: %v", err)
 	}
-	if count != 14 {
-		t.Fatalf("expected 14 rows after idempotent seeding, got %d", count)
+	if count != int64(len(defaultAIModelPrices)) {
+		t.Fatalf("expected %d rows after idempotent seeding, got %d", len(defaultAIModelPrices), count)
 	}
 
 	var existing entity.AIModelPrice
@@ -252,8 +339,8 @@ func TestResetAIModelPricesWithDBRestoresDefaults(t *testing.T) {
 	if err := db.Model(&entity.AIModelPrice{}).Count(&count).Error; err != nil {
 		t.Fatalf("count prices: %v", err)
 	}
-	if count != 14 {
-		t.Fatalf("expected reset to restore 14 defaults, got %d", count)
+	if count != int64(len(defaultAIModelPrices)) {
+		t.Fatalf("expected reset to restore %d defaults, got %d", len(defaultAIModelPrices), count)
 	}
 	if _, found, err := ResolveAIModelTokenPriceWithDB(db, "Custom-Model"); err != nil {
 		t.Fatalf("resolve custom model: %v", err)
@@ -307,7 +394,7 @@ func TestEnsureDefaultAIModelPricesWithDBCreatesTableWhenMissing(t *testing.T) {
 	if err := db.Model(&entity.AIModelPrice{}).Count(&count).Error; err != nil {
 		t.Fatalf("count prices: %v", err)
 	}
-	if count != 14 {
-		t.Fatalf("expected 14 seeded rows after auto-create, got %d", count)
+	if count != int64(len(defaultAIModelPrices)) {
+		t.Fatalf("expected %d seeded rows after auto-create, got %d", len(defaultAIModelPrices), count)
 	}
 }

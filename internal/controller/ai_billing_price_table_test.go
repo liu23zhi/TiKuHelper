@@ -18,9 +18,96 @@ func aiModelPriceTableTestPrice(input float64, cached float64, output float64) s
 		InputPrice:      input,
 		CachedPrice:     cached,
 		OutputPrice:     output,
+		Multiplier:      1,
 		InputUnitPrice:  input,
 		CachedUnitPrice: cached,
 		OutputUnitPrice: output,
+	}
+}
+
+// 倍率在 ResolvedAIModelTokenPrice 的 UnitPrice 里已经乘算过，计费直接使用 UnitPrice。
+func TestCalculateAIModelPriceTableAmountUsesMultipliedUnitPrices(t *testing.T) {
+	// 单价 5/0.5/30，倍率 2 → 生效单价 10/1/60。
+	price := service.ResolvedAIModelTokenPrice{
+		ModelName:       "GPT-5.5",
+		PriceID:         3,
+		InputPrice:      5,
+		CachedPrice:     0.5,
+		OutputPrice:     30,
+		Multiplier:      2,
+		InputUnitPrice:  10,
+		CachedUnitPrice: 1,
+		OutputUnitPrice: 60,
+	}
+
+	baseAmount, amount := calculateAIModelPriceTableAmount(price, searchpkg.AISearchUsage{
+		InputTokens:  1000000,
+		OutputTokens: 1000000,
+	})
+	// 1M × 10 + 1M × 60 = 70
+	if baseAmount != 70 || amount != 70 {
+		t.Fatalf("expected doubled cost 70, got base=%v amount=%v", baseAmount, amount)
+	}
+}
+
+// 缓存写入按第四段单价计费。
+func TestCalculateAIModelPriceTableAmountBillsCacheWrites(t *testing.T) {
+	price := service.ResolvedAIModelTokenPrice{
+		ModelName:           "GPT-6 Astra",
+		PriceID:             1,
+		InputPrice:          10,
+		CachedPrice:         1,
+		CacheWritePrice:     12.5,
+		OutputPrice:         50,
+		Multiplier:          1,
+		InputUnitPrice:      10,
+		CachedUnitPrice:     1,
+		CacheWriteUnitPrice: 12.5,
+		OutputUnitPrice:     50,
+	}
+
+	baseAmount, amount := calculateAIModelPriceTableAmount(price, searchpkg.AISearchUsage{
+		InputTokens:       1000000,
+		CachedInputTokens: 200000,
+		CacheWriteTokens:  100000,
+		OutputTokens:      100000,
+	})
+	// 未命中缓存输入 800k × 10 = 8；缓存输入 200k × 1 = 0.2；
+	// 缓存写入 100k × 12.5 = 1.25；输出 100k × 50 = 5 → 合计 14.45
+	if baseAmount != 14.45 {
+		t.Fatalf("expected base amount 14.45, got %v", baseAmount)
+	}
+	if amount != 14.45 {
+		t.Fatalf("expected amount 14.45, got %v", amount)
+	}
+
+	// 缓存写入为 0 时不应影响金额。
+	_, withoutWrites := calculateAIModelPriceTableAmount(price, searchpkg.AISearchUsage{
+		InputTokens:       1000000,
+		CachedInputTokens: 200000,
+		OutputTokens:      100000,
+	})
+	if withoutWrites != 13.2 {
+		t.Fatalf("expected 13.2 without cache writes, got %v", withoutWrites)
+	}
+}
+
+func TestCalculateAIModelPriceTableAmountClampsNegativeCacheWrites(t *testing.T) {
+	price := service.ResolvedAIModelTokenPrice{
+		InputUnitPrice:      10,
+		CachedUnitPrice:     1,
+		CacheWriteUnitPrice: 12.5,
+		OutputUnitPrice:     50,
+		Multiplier:          1,
+	}
+
+	_, amount := calculateAIModelPriceTableAmount(price, searchpkg.AISearchUsage{
+		InputTokens:      1000000,
+		CacheWriteTokens: -5000,
+		OutputTokens:     0,
+	})
+	if amount != 10 {
+		t.Fatalf("expected negative cache writes to be clamped, got %v", amount)
 	}
 }
 

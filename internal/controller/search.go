@@ -1097,7 +1097,7 @@ func buildUnpricedAIModelBillingSnapshot(resolved resolvedSearchRequestContext, 
 		fmt.Sprintf("outputTokens=%d", usage.OutputTokens),
 		fmt.Sprintf("totalTokens=%d", usage.TotalTokens),
 		"baseAmount=0.000000",
-		"amount=0.00",
+		"amount=0.000000",
 	}
 	if questionText := strings.TrimSpace(req.Question); questionText != "" {
 		parts = append(parts, fmt.Sprintf("question=%s", url.QueryEscape(questionText)))
@@ -1105,8 +1105,9 @@ func buildUnpricedAIModelBillingSnapshot(resolved resolvedSearchRequestContext, 
 	return strings.Join(parts, " ")
 }
 
-// calculateAIModelPriceTableAmount 按「输入 / 缓存输入 / 输出」三段单价计算金额。
-// 返回的 baseAmount 是未取整的精确值，amount 是入账金额（保留两位小数）。
+// calculateAIModelPriceTableAmount 按「输入 / 缓存输入 / 缓存写入 / 输出」四段单价计算金额。
+// 传入的 UnitPrice 已经是「单价 × 倍率」，这里不再重复乘倍率。
+// 返回的 baseAmount 是未取整的精确值，amount 是按金额精度入账的金额。
 func calculateAIModelPriceTableAmount(price service.ResolvedAIModelTokenPrice, usage search.AISearchUsage) (float64, float64) {
 	const tokensPerPriceUnit = 1000000.0
 
@@ -1121,6 +1122,12 @@ func calculateAIModelPriceTableAmount(price service.ResolvedAIModelTokenPrice, u
 	if freshInputTokens < 0 {
 		freshInputTokens = 0
 	}
+
+	cacheWriteTokens := usage.CacheWriteTokens
+	if cacheWriteTokens < 0 {
+		cacheWriteTokens = 0
+	}
+
 	outputTokens := usage.OutputTokens
 	if outputTokens < 0 {
 		outputTokens = 0
@@ -1128,6 +1135,7 @@ func calculateAIModelPriceTableAmount(price service.ResolvedAIModelTokenPrice, u
 
 	baseAmount := float64(freshInputTokens)/tokensPerPriceUnit*price.InputUnitPrice +
 		float64(cachedTokens)/tokensPerPriceUnit*price.CachedUnitPrice +
+		float64(cacheWriteTokens)/tokensPerPriceUnit*price.CacheWriteUnitPrice +
 		float64(outputTokens)/tokensPerPriceUnit*price.OutputUnitPrice
 	if baseAmount < 0 {
 		baseAmount = 0
@@ -1153,18 +1161,22 @@ func buildAIModelPriceTableBillingSnapshot(resolved resolvedSearchRequestContext
 		fmt.Sprintf("model=%s", strings.TrimSpace(resolved.AIConfig.Model)),
 		"pricing=model_price_table",
 		fmt.Sprintf("priceId=%d", price.PriceID),
+		fmt.Sprintf("multiplier=%.4f", price.Multiplier),
 		fmt.Sprintf("inputPrice=%.4f", price.InputPrice),
 		fmt.Sprintf("cachedPrice=%.4f", price.CachedPrice),
+		fmt.Sprintf("cacheWritePrice=%.4f", price.CacheWritePrice),
 		fmt.Sprintf("outputPrice=%.4f", price.OutputPrice),
 		fmt.Sprintf("inputUnitPrice=%.8f", price.InputUnitPrice),
 		fmt.Sprintf("cachedUnitPrice=%.8f", price.CachedUnitPrice),
+		fmt.Sprintf("cacheWriteUnitPrice=%.8f", price.CacheWriteUnitPrice),
 		fmt.Sprintf("outputUnitPrice=%.8f", price.OutputUnitPrice),
 		fmt.Sprintf("inputTokens=%d", freshInputTokens),
 		fmt.Sprintf("cachedInputTokens=%d", cachedTokens),
+		fmt.Sprintf("cacheWriteTokens=%d", usage.CacheWriteTokens),
 		fmt.Sprintf("outputTokens=%d", usage.OutputTokens),
 		fmt.Sprintf("totalTokens=%d", usage.TotalTokens),
 		fmt.Sprintf("baseAmount=%.6f", baseAmount),
-		fmt.Sprintf("amount=%.2f", amount),
+		fmt.Sprintf("amount=%.6f", amount),
 	}
 	if questionText := strings.TrimSpace(req.Question); questionText != "" {
 		parts = append(parts, fmt.Sprintf("question=%s", url.QueryEscape(questionText)))

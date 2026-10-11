@@ -59,7 +59,7 @@
                 style="width: 100%"
                 @keydown="handleRechargeAmountKeydown"
               />
-              <div class="hint">充值金额最多两位小数（支付渠道仅支持「分」），输入框会直接拦住多余的位数。</div>
+              <div class="hint">充值金额最多两位小数（支付渠道仅支持「分」）。</div>
             </a-form-item>
 
             <a-form-item label="快捷金额">

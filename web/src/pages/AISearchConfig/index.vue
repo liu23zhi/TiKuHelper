@@ -146,7 +146,13 @@
           >
             <template #inputPrice="{ record }">{{ formatPriceAmount(record.inputPrice) }}</template>
             <template #cachedPrice="{ record }">{{ formatPriceAmount(record.cachedPrice) }}</template>
+            <template #cacheWritePrice="{ record }">{{ formatPriceAmount(record.cacheWritePrice) }}</template>
             <template #outputPrice="{ record }">{{ formatPriceAmount(record.outputPrice) }}</template>
+            <template #multiplier="{ record }">
+              <span :class="{ 'multiplier-cell--custom': Number(record.multiplier || 1) !== 1 }">
+                ×{{ formatMultiplier(record.multiplier) }}
+              </span>
+            </template>
             <template #status="{ record }">
               <a-tag :color="record.status === 'enabled' ? 'green' : 'default'">
                 {{ record.status === 'enabled' ? '启用' : '停用' }}
@@ -235,15 +241,20 @@
           <a-input-number v-model:value="priceForm.cachedPrice" :min="0" :precision="6" :step="0.01" style="width: 100%" />
           <div class="hint">元 / 百万 token，上游返回的 cached_tokens 按此计价。</div>
         </a-form-item>
+        <a-form-item label="缓存写入单价">
+          <a-input-number v-model:value="priceForm.cacheWritePrice" :min="0" :precision="6" :step="0.01" style="width: 100%" />
+          <div class="hint">元 / 百万 token，缓存写入（cache writes）部分按此计价；上游不提供该价格时填 0。</div>
+        </a-form-item>
         <a-form-item label="输出单价">
           <a-input-number v-model:value="priceForm.outputPrice" :min="0" :precision="6" :step="0.01" style="width: 100%" />
           <div class="hint">元 / 百万 token。</div>
         </a-form-item>
+        <a-form-item label="倍率">
+          <a-input-number v-model:value="priceForm.multiplier" :min="0.0001" :precision="4" :step="0.1" style="width: 100%" />
+          <div class="hint">最终扣费 =（输入 + 缓存输入 + 缓存写入 + 输出 各项金额）× 倍率；默认 1，不改单价即可整体加价或打折。</div>
+        </a-form-item>
         <a-form-item label="状态">
           <a-switch v-model:checked="priceForm.enabled" checked-children="启用" un-checked-children="停用" />
-        </a-form-item>
-        <a-form-item label="排序">
-          <a-input-number v-model:value="priceForm.sort" :min="0" :step="1" style="width: 100%" />
         </a-form-item>
         <a-form-item label="备注">
           <a-input v-model:value="priceForm.remark" placeholder="备注" />
@@ -375,7 +386,7 @@ import {
   buildAISearchTestResult,
   hasAISearchTestResult,
 } from '@/utils/aiSearchConfigHelpers.mjs';
-import { formatMoneyCny } from '@/utils/moneyFormat.mjs';
+import { formatMoneyCny, formatMoneyValue } from '@/utils/moneyFormat.mjs';
 
 function trimBaseUrl(url) {
   return String(url || '').trim().replace(/\/+$/, '')
@@ -446,9 +457,10 @@ export default defineComponent({
       displayName: '',
       inputPrice: 0,
       cachedPrice: 0,
+      cacheWritePrice: 0,
       outputPrice: 0,
+      multiplier: 1,
       enabled: true,
-      sort: 0,
       remark: '',
     })
 
@@ -472,13 +484,14 @@ export default defineComponent({
     const priceColumns = [
       { title: 'ID', dataIndex: 'id', key: 'id', width: 60 },
       { title: '模型名称', dataIndex: 'modelName', key: 'modelName', ellipsis: true },
-      { title: '显示名称', dataIndex: 'displayName', key: 'displayName', width: 170, ellipsis: true },
-      { title: '输入（￥/M）', dataIndex: 'inputPrice', key: 'inputPrice', width: 110, align: 'right', slots: { customRender: 'inputPrice' } },
-      { title: '缓存输入（￥/M）', dataIndex: 'cachedPrice', key: 'cachedPrice', width: 130, align: 'right', slots: { customRender: 'cachedPrice' } },
-      { title: '输出（￥/M）', dataIndex: 'outputPrice', key: 'outputPrice', width: 110, align: 'right', slots: { customRender: 'outputPrice' } },
+      { title: '显示名称', dataIndex: 'displayName', key: 'displayName', width: 150, ellipsis: true },
+      { title: '输入（￥/M）', dataIndex: 'inputPrice', key: 'inputPrice', width: 105, align: 'right', slots: { customRender: 'inputPrice' } },
+      { title: '缓存输入（￥/M）', dataIndex: 'cachedPrice', key: 'cachedPrice', width: 120, align: 'right', slots: { customRender: 'cachedPrice' } },
+      { title: '缓存写入（￥/M）', dataIndex: 'cacheWritePrice', key: 'cacheWritePrice', width: 125, align: 'right', slots: { customRender: 'cacheWritePrice' } },
+      { title: '输出（￥/M）', dataIndex: 'outputPrice', key: 'outputPrice', width: 105, align: 'right', slots: { customRender: 'outputPrice' } },
+      { title: '倍率', dataIndex: 'multiplier', key: 'multiplier', width: 85, align: 'right', slots: { customRender: 'multiplier' } },
       { title: '状态', dataIndex: 'status', key: 'status', width: 80, slots: { customRender: 'status' } },
-      { title: '排序', dataIndex: 'sort', key: 'sort', width: 70, align: 'right' },
-      { title: '备注', dataIndex: 'remark', key: 'remark', width: 150, ellipsis: true, slots: { customRender: 'priceRemark' } },
+      { title: '备注', dataIndex: 'remark', key: 'remark', width: 140, ellipsis: true, slots: { customRender: 'priceRemark' } },
       { title: '操作', dataIndex: 'action', key: 'action', fixed: 'right', width: 110, slots: { customRender: 'priceAction' } },
     ]
 
@@ -548,9 +561,10 @@ export default defineComponent({
       priceForm.displayName = ''
       priceForm.inputPrice = 0
       priceForm.cachedPrice = 0
+      priceForm.cacheWritePrice = 0
       priceForm.outputPrice = 0
+      priceForm.multiplier = 1
       priceForm.enabled = true
-      priceForm.sort = 0
       priceForm.remark = ''
     }
 
@@ -798,6 +812,14 @@ export default defineComponent({
       // 价格表统一使用人民币符号，并按统一的 6 位精度去尾零展示。
       return formatMoneyCny(amount)
     },
+    formatMultiplier(value) {
+      const multiplier = Number(value)
+      if (!Number.isFinite(multiplier) || multiplier <= 0) {
+        return '1'
+      }
+      // 最多 4 位小数并去掉尾零，1 显示为 1 而不是 1.0000。
+      return formatMoneyValue(multiplier)
+    },
     openPriceModal(record) {
       if (record) {
         this.priceForm.id = record.id
@@ -805,9 +827,10 @@ export default defineComponent({
         this.priceForm.displayName = record.displayName || ''
         this.priceForm.inputPrice = Number(record.inputPrice || 0)
         this.priceForm.cachedPrice = Number(record.cachedPrice || 0)
+        this.priceForm.cacheWritePrice = Number(record.cacheWritePrice || 0)
         this.priceForm.outputPrice = Number(record.outputPrice || 0)
+        this.priceForm.multiplier = Number(record.multiplier || 1)
         this.priceForm.enabled = record.status !== 'disabled'
-        this.priceForm.sort = Number(record.sort || 0)
         this.priceForm.remark = record.remark || ''
       } else {
         this.resetPriceForm()
@@ -839,9 +862,10 @@ export default defineComponent({
         displayName: String(this.priceForm.displayName || '').trim(),
         inputPrice: Number(this.priceForm.inputPrice || 0),
         cachedPrice: Number(this.priceForm.cachedPrice || 0),
+        cacheWritePrice: Number(this.priceForm.cacheWritePrice || 0),
         outputPrice: Number(this.priceForm.outputPrice || 0),
+        multiplier: Number(this.priceForm.multiplier || 1),
         status: this.priceForm.enabled ? 'enabled' : 'disabled',
-        sort: Number(this.priceForm.sort || 0),
         remark: this.priceForm.remark || '',
       }
       this.priceSaving = true
@@ -912,6 +936,12 @@ export default defineComponent({
 
 .hint-warning {
   color: #d46b08;
+}
+
+/* 非默认倍率用醒目标色，方便一眼看出哪些模型被加价/打折。 */
+.multiplier-cell--custom {
+  color: #d46b08;
+  font-weight: 600;
 }
 
 .hint-block {
