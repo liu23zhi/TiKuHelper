@@ -66,6 +66,8 @@ func UpdateSystemSetting(c *gin.Context) {
 		})
 		return
 	}
+	// UAPI 密钥控制 AI 联网搜索能力；设置变化后不能继续复用旧的无搜索答案。
+	invalidateSearchResultCaches("update_system_settings")
 
 	c.JSON(http.StatusOK, service.RedactSystemSettingDetail(detail))
 }

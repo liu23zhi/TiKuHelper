@@ -234,6 +234,7 @@ var searchAIAnswer = func(resolved resolvedSearchRequestContext, req model.Searc
 		Prompt:      resolved.AIConfig.Prompt,
 		Temperature: resolved.AIConfig.Temperature,
 		TopP:        resolved.AIConfig.TopP,
+		SearchTool:  service.BuildUAPISearchToolWithDB(manager.GetManager().GetDB()),
 	}
 	logger.SysLog(fmt.Sprintf("AI搜题开始 requestId=%s %s", strings.TrimSpace(resolved.RequestID), buildSearchRequestDebugSummary(req)))
 	answer, usage, err := client.SearchAnswerWithUsage(req)

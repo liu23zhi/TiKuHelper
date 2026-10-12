@@ -29,11 +29,13 @@ const (
 // 密钥由调用方通过 NewClient 注入，仅用于 Authorization 请求头，
 // 不硬编码、不写入 URL、不落盘。
 type Client struct {
-	apiKey       string
-	timeout      time.Duration
-	phoneInfoURL string
-	ipInfoURL    string
-	http         *resty.Client
+	apiKey             string
+	timeout            time.Duration
+	phoneInfoURL       string
+	ipInfoURL          string
+	searchEnginesURL   string
+	searchAggregateURL string
+	http               *resty.Client
 	// maxRetries 本客户端单次业务请求允许的内部重试次数（不含首次）。
 	//
 	// 默认 maxRetries，即共 4 次尝试。上层若自己负责重试编排（例如按
@@ -47,11 +49,13 @@ type Client struct {
 // NewClient 创建 uapi 客户端，apiKey 为 uapis.cn 签发的密钥（uapi- 开头）
 func NewClient(apiKey string) *Client {
 	c := &Client{
-		apiKey:       strings.TrimSpace(apiKey),
-		timeout:      defaultTimeout,
-		phoneInfoURL: DefaultPhoneInfoURL,
-		ipInfoURL:    DefaultIPInfoURL,
-		maxRetries:   maxRetries,
+		apiKey:             strings.TrimSpace(apiKey),
+		timeout:            defaultTimeout,
+		phoneInfoURL:       DefaultPhoneInfoURL,
+		ipInfoURL:          DefaultIPInfoURL,
+		searchEnginesURL:   DefaultSearchEnginesURL,
+		searchAggregateURL: DefaultSearchAggregateURL,
+		maxRetries:         maxRetries,
 	}
 	c.http = resty.New().SetTimeout(c.timeout)
 	return c
@@ -197,24 +201,32 @@ func checkResponse(resp *resty.Response) error {
 // 仅在 408/429/5xx 与网络超时时重试，最多 maxRetries 次，退避 500ms → 1s → 2s；
 // 429 优先按 Retry-After 等待。返回的响应必然非 nil，非 2xx 由调用方转换。
 func (c *Client) get(ctx context.Context, url string, query map[string]string) (*resty.Response, error) {
+	return c.request(ctx, http.MethodGet, url, query, nil)
+}
+
+// request 统一 GET / POST 的鉴权、网络错误分类和有界重试。
+func (c *Client) request(ctx context.Context, method string, url string, query map[string]string, body interface{}) (*resty.Response, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	for attempt := 0; ; attempt++ {
-		resp, err := c.http.R().
+		request := c.http.R().
 			SetContext(ctx).
 			SetHeader("Authorization", "Bearer "+c.apiKey).
-			SetQueryParams(query).
-			Get(url)
+			SetQueryParams(query)
+		if body != nil {
+			request.SetHeader("Content-Type", "application/json").SetBody(body)
+		}
+		resp, err := request.Execute(method, url)
 		if err != nil {
 			// 调用方上下文已结束：不再重试，直接返回其错误
 			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, fmt.Errorf("%w: %w", ErrNetwork, ctxErr)
+				return nil, contextRequestError(ctxErr)
 			}
 			timeout := isTimeoutError(err)
 			if timeout && attempt < c.maxRetries {
 				if waitErr := c.wait(ctx, retryBackoff(attempt, 0, nil)); waitErr != nil {
-					return nil, fmt.Errorf("%w: %w", ErrNetwork, waitErr)
+					return nil, contextRequestError(waitErr)
 				}
 				continue
 			}
@@ -231,9 +243,16 @@ func (c *Client) get(ctx context.Context, url string, query map[string]string) (
 			return resp, nil
 		}
 		if waitErr := c.wait(ctx, retryBackoff(attempt, resp.StatusCode(), resp.Header())); waitErr != nil {
-			return nil, fmt.Errorf("%w: %w", ErrNetwork, waitErr)
+			return nil, contextRequestError(waitErr)
 		}
 	}
+}
+
+func contextRequestError(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %w: %w", ErrNetwork, ErrTimeout, err)
+	}
+	return fmt.Errorf("%w: %w", ErrNetwork, err)
 }
 
 // wait 退避等待，期间响应上下文取消

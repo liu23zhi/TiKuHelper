@@ -4,6 +4,7 @@
       <a-space>
         <a-button @click="handleLoad" :loading="tabLoading">刷新</a-button>
         <a-button @click="handleOpenTestDialog">测试</a-button>
+        <a-button @click="loadSearchEngineInfo" :loading="searchEngineLoading">查看联网搜索能力</a-button>
         <a-button type="primary" @click="handleSave" :loading="saving">保存</a-button>
       </a-space>
     </template>
@@ -37,6 +38,15 @@
       class="page-alert"
       message="模型列表中有模型还没有配置价格"
       :description="`以下模型缺少价格，命中时会按 0 元计费：${pricingGaps.unresolvedModels.join('、')}。请在下方「模型价格表」中补充单价。`"
+    />
+
+    <a-alert
+      v-if="searchEngineInfo"
+      type="info"
+      show-icon
+      class="page-alert"
+      :message="`联网搜索：${searchEngineInfo.engine?.display_name || searchEngineInfo.engine?.name || '未命名引擎'}`"
+      :description="`状态：${searchEngineInfo.engine?.available ? '可用' : '不可用'}；支持 ${searchEngineInfo.supported_parameters?.join('、') || '文档默认参数'}；结果上限 ${searchEngineInfo.limits?.max ?? '-'}。`"
     />
 
     <a-form :label-col="labelCol" :wrapper-col="wrapperCol">
@@ -290,6 +300,7 @@ import {
   testAISearchConfig,
   updateAISearchConfig,
   getAIModelPrices,
+  getUAPISearchEngines,
   createAIModelPrice,
   updateAIModelPrice,
   deleteAIModelPrice,
@@ -329,6 +340,8 @@ export default defineComponent({
     const tabLoading = ref(true)
     const saving = ref(false)
     const fetchingModels = ref(false)
+    const searchEngineLoading = ref(false)
+    const searchEngineInfo = ref(null)
     const testModalVisible = ref(false)
     const testSubmitting = ref(false)
     const testForm = reactive({
@@ -432,6 +445,21 @@ export default defineComponent({
       })
     }
 
+    const loadSearchEngineInfo = () => {
+      searchEngineLoading.value = true
+      return getUAPISearchEngines().then(res => {
+        if (res?.status === 200) {
+          searchEngineInfo.value = res?.data || null
+          return
+        }
+        message.error(res?.message || '获取联网搜索能力失败')
+      }).catch(() => {
+        message.error('获取联网搜索能力失败，请先在系统设置中配置 UApiPro 密钥')
+      }).finally(() => {
+        searchEngineLoading.value = false
+      })
+    }
+
     onMounted(() => {
       loadConfig()
       loadAIModelPrices()
@@ -457,6 +485,8 @@ export default defineComponent({
       tabLoading,
       saving,
       fetchingModels,
+      searchEngineLoading,
+      searchEngineInfo,
       testModalVisible,
       testSubmitting,
       testForm,
@@ -477,6 +507,7 @@ export default defineComponent({
       isModelPriced,
       loadConfig,
       loadAIModelPrices,
+      loadSearchEngineInfo,
       resetPriceForm,
     }
   },

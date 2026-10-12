@@ -138,6 +138,22 @@ export function getIpLocations(params) {
   })
 }
 
+export function getUAPISearchEngines() {
+  return request({
+    url: `/adapter-service/uapi/search/engines`,
+    method: 'get'
+  })
+}
+
+export function searchUAPIAggregate(data) {
+  return request({
+    url: `/adapter-service/uapi/search/aggregate`,
+    method: 'post',
+    data,
+    timeout: 65000
+  })
+}
+
 export function getQuestions(data) {
   return request({
     url: `/adapter-service/questions/search`,

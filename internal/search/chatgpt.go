@@ -38,6 +38,7 @@ type ChatGptClient struct {
 	Prompt      string
 	Temperature float64
 	TopP        float64
+	SearchTool  AISearchTool
 }
 
 type AISearchUsage struct {
@@ -62,6 +63,9 @@ type openAIChatCompletionRequest struct {
 	TopP          float64              `json:"top_p"`
 	Messages      []openAIChatMessage  `json:"messages"`
 	StreamOptions *openAIStreamOptions `json:"stream_options,omitempty"`
+	Tools         []openAITool         `json:"tools,omitempty"`
+	ToolChoice    interface{}          `json:"tool_choice,omitempty"`
+	MaxTokens     int                  `json:"max_tokens,omitempty"`
 }
 
 type openAIStreamOptions struct {
@@ -69,8 +73,10 @@ type openAIStreamOptions struct {
 }
 
 type openAIChatMessage struct {
-	Role    string      `json:"role"`
-	Content interface{} `json:"content"`
+	Role       string           `json:"role"`
+	Content    interface{}      `json:"content"`
+	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
 }
 
 type openAIContentPart struct {
@@ -86,8 +92,10 @@ type openAIImageURLPart struct {
 type openAIStreamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content string `json:"content"`
+			Content   string                `json:"content"`
+			ToolCalls []openAIToolCallDelta `json:"tool_calls,omitempty"`
 		} `json:"delta"`
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage *openAIStreamUsage `json:"usage,omitempty"`
 }
@@ -243,6 +251,9 @@ func (in *ChatGptClient) SearchAnswer(req model.SearchRequest) (answer [][]strin
 }
 
 func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]string, debug AISearchDebugResult, err error) {
+	if in.SearchTool != nil {
+		return in.searchAnswerWithTools(context.Background(), req)
+	}
 	answer = make([][]string, 0)
 	if !in.Enable {
 		return answer, debug, nil
@@ -283,6 +294,10 @@ func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]
 }
 
 func (in *ChatGptClient) SearchAnswerWithUsage(req model.SearchRequest) (answer [][]string, usage AISearchUsage, err error) {
+	if in.SearchTool != nil {
+		answer, debug, toolErr := in.searchAnswerWithTools(context.Background(), req)
+		return answer, debug.Usage, toolErr
+	}
 	answer = make([][]string, 0)
 	if !in.Enable {
 		return answer, usage, nil

@@ -43,6 +43,7 @@ var runAISearchDebug = func(input aiSearchTestInput) ([][]string, internalsearch
 		Prompt:      strings.TrimSpace(input.Prompt),
 		Temperature: 0,
 		TopP:        0,
+		SearchTool:  service.BuildUAPISearchToolWithDB(manager.GetManager().GetDB()),
 	}
 	if strings.TrimSpace(client.Prompt) == "" {
 		client.Prompt = resolved.Config.Prompt

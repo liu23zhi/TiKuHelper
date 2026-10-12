@@ -268,3 +268,14 @@ test('TikuComponentApi exposes the AI pricing-status endpoint', async () => {
   assert.match(content, /export function getAISearchConfigPricingStatus\(\)/);
   assert.match(content, /\/adapter-service\/ai-search-config\/pricing-status/);
 });
+
+test('AI search config exposes the UAPI search engine capability endpoint', async () => {
+  const apiPath = path.join(__dirname, '..', 'api', 'TikuComponentApi.js');
+  const pageContent = await readFile(aiSearchConfigPagePath, 'utf8');
+  const apiContent = await readFile(apiPath, 'utf8');
+
+  assert.match(apiContent, /export function getUAPISearchEngines\(\)/);
+  assert.match(apiContent, /\/adapter-service\/uapi\/search\/engines/);
+  assert.match(pageContent, /getUAPISearchEngines/);
+  assert.match(pageContent, /查看联网搜索能力/);
+});

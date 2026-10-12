@@ -11,9 +11,25 @@ import (
 
 	"github.com/itihey/tikuAdapter/internal/entity"
 	internalsearch "github.com/itihey/tikuAdapter/internal/search"
+	"github.com/itihey/tikuAdapter/internal/uapi"
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 )
+
+const aiSearchUAPIToolTimeout = 30 * time.Second
+
+// BuildUAPISearchToolWithDB constructs the optional web-search tool for AI.
+// The UAPI key stays server-side; invalid or missing keys disable the tool
+// rather than turning a normal AI answer into an avoidable configuration error.
+func BuildUAPISearchToolWithDB(db *gorm.DB) internalsearch.AISearchTool {
+	key := strings.TrimSpace(GetUAPIAPIKeyWithDB(db))
+	if !strings.HasPrefix(key, "uapi-") || len(key) <= len("uapi-") {
+		return nil
+	}
+	return uapi.NewClient(key).
+		SetTimeout(aiSearchUAPIToolTimeout).
+		SetMaxRetries(0)
+}
 
 type AISearchConfigView struct {
 	Enabled      bool     `json:"enabled"`

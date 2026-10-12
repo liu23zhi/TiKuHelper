@@ -92,6 +92,7 @@ func SearchAIFallbackWithDB(db *gorm.DB, req model.SearchRequest) AIFallbackResu
 		Prompt:      resolved.Config.Prompt,
 		Temperature: 0,
 		TopP:        0,
+		SearchTool:  BuildUAPISearchToolWithDB(db),
 	}
 
 	answers, usage, searchErr := runAIFallbackSearchWithUsage(client, model.SearchRequest{

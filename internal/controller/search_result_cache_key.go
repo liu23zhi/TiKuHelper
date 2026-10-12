@@ -5,10 +5,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/itihey/tikuAdapter/internal/registry/manager"
+	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/model"
 	"github.com/itihey/tikuAdapter/pkg/util"
@@ -45,6 +48,7 @@ type searchResultCacheKey struct {
 	Type         int      `json:"type"`
 	Use          string   `json:"use"`
 	SourceDigest string   `json:"sourceDigest"`
+	UAPISearch   bool     `json:"uapiSearch"`
 }
 
 // normalizeSearchUseKey 归一化 use 查询参数。
@@ -86,6 +90,7 @@ func normalizeSearchUseKey(useQuery string) string {
 func buildSearchSourceDigest(resolved resolvedSearchRequestContext, useQuery string) string {
 	parts := []string{
 		"use=" + normalizeSearchUseKey(useQuery),
+		"uapiSearch=" + strconv.FormatBool(uapiSearchToolEnabled()),
 	}
 
 	// 实际会启用的渠道集合（排序保证稳定）。
@@ -107,6 +112,15 @@ func buildSearchSourceDigest(resolved resolvedSearchRequestContext, useQuery str
 
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x1f")))
 	return hex.EncodeToString(sum[:16])
+}
+
+func uapiSearchToolEnabled() bool {
+	currentManager := manager.GetManager()
+	if currentManager == nil {
+		return false
+	}
+	key := strings.TrimSpace(service.GetUAPIAPIKeyWithDB(currentManager.GetDB()))
+	return strings.HasPrefix(key, "uapi-") && len(key) > len("uapi-")
 }
 
 // digestString 对可能很长的文本（如自定义 Prompt）取短摘要。
@@ -141,6 +155,7 @@ func buildSearchResultCacheKey(resolved resolvedSearchRequestContext, req model.
 		Type:         req.Type,
 		Use:          normalizeSearchUseKey(useQuery),
 		SourceDigest: buildSearchSourceDigest(resolved, useQuery),
+		UAPISearch:   uapiSearchToolEnabled(),
 	})
 	if !ok {
 		return "", epoch, false

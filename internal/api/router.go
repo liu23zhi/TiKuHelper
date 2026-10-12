@@ -26,6 +26,8 @@ func SetAPIRouter(router *gin.Engine) {
 	// 密钥从系统设置读取，不下发到前端，也不出现在 URL 里。
 	apiRouter.GET("/uapi/phoneinfo", controller.Auth, middleware.RequireAdmin, controller.UAPIPhoneInfo)
 	apiRouter.GET("/uapi/ipinfo", controller.Auth, middleware.RequireAdmin, controller.UAPIIPInfo)
+	apiRouter.GET("/uapi/search/engines", controller.Auth, middleware.RequireAdmin, controller.UAPISearchEngines)
+	apiRouter.POST("/uapi/search/aggregate", controller.Auth, middleware.RequireAdmin, controller.UAPISearchAggregate)
 
 	apiRouter.POST("/search", controller.Search)
 	apiRouter.POST("/ai-fallback", controller.AuthOrAccessToken, controller.AIFallback)
