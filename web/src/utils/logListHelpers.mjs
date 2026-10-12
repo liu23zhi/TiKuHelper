@@ -42,6 +42,9 @@ export function buildLogStatusLabel(record = {}) {
   const status = resolveLogStatus(record);
   if (status === 'success' || status === 'succeeded') return '成功';
   if (status === 'failed' || status === 'error') return '失败';
+  if (status === 'partial_failure') return '部分失败';
+  if (status === 'no_answer') return '无答案';
+  if (status === 'unavailable') return '未配置';
   if (status === 'running' || status === 'processing') return '处理中';
   if (status === 'pending' || status === 'queued' || status === 'created') return '等待中';
   if (status === 'timeout') return '超时';
@@ -52,6 +55,8 @@ export function buildLogStatusColor(record = {}) {
   const status = resolveLogStatus(record);
   if (status === 'success' || status === 'succeeded') return 'green';
   if (status === 'failed' || status === 'error' || status === 'timeout') return 'red';
+  if (status === 'partial_failure') return 'orange';
+  if (status === 'no_answer' || status === 'unavailable') return 'default';
   if (status === 'running' || status === 'processing') return 'blue';
   if (status === 'pending' || status === 'queued' || status === 'created') return 'gold';
   return buildLogActionColor(record?.action);
@@ -107,6 +112,12 @@ export function buildLogStructuredFields(record = {}) {
 }
 
 function resolveLogStatus(record = {}) {
+  if (record.module === 'search' || record.module === 'ai_fallback') {
+    const snapshot = parseLogSnapshot(record.newAnswer);
+    if (typeof snapshot.status === 'string' && snapshot.status.trim()) {
+      return snapshot.status.trim().toLowerCase();
+    }
+  }
   const description = String(record?.description || '').trim();
   const aiFallbackFields = parseAIFallbackLogDescriptionMap(description);
   if (aiFallbackFields.status) {
@@ -129,6 +140,26 @@ export function buildLogRowDetail(record = {}) {
   const request = String(record?.oldAnswer || '').trim();
   const response = String(record?.newAnswer || '').trim();
   const captchaFields = parseCaptchaLogDescriptionMap(description);
+
+  if (record.module === 'search' || record.module === 'ai_fallback') {
+    const snapshot = parseLogSnapshot(response);
+    if (typeof snapshot.failureDetail === 'string' && snapshot.failureDetail.trim()) {
+      return truncateInlineText(snapshot.failureDetail, 120);
+    }
+    if (Array.isArray(snapshot.failures)) {
+      const failures = snapshot.failures.filter((failure) => typeof failure?.error === 'string' && failure.error.trim());
+      if (failures.length) {
+        return truncateInlineText(failures.map((failure) => {
+          const provider = typeof failure.provider === 'string' ? failure.provider : '-';
+          const code = typeof failure.code === 'string' && failure.code ? ` [${failure.code}]` : '';
+          return `${provider}${code}：${failure.error}`;
+        }).join(' / '), 120);
+      }
+    }
+    if (typeof snapshot.error?.message === 'string' && snapshot.error.message.trim()) {
+      return truncateInlineText(snapshot.error.message, 120);
+    }
+  }
 
   if (captchaFields.summary) {
     const parts = [];
@@ -171,6 +202,15 @@ export function buildLogRowDetail(record = {}) {
     return truncateInlineText(response || request, 120);
   }
   return '-';
+}
+
+function parseLogSnapshot(value) {
+  try {
+    const parsed = JSON.parse(String(value || ''));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
 export function buildLogDetailSections(record = {}) {
@@ -287,7 +327,7 @@ function buildBillingProviderLabel(value) {
 function parseSearchLogDescriptionMap(description) {
   const text = String(description || '').trim();
   const summary = text.split(/\s+/)[0] || '';
-  if (summary !== '搜索完成' && summary !== '搜索失败') {
+  if (!/^(搜索完成|搜索失败|搜索未执行)(?:，|$)/.test(summary)) {
     return {};
   }
 

@@ -1,8 +1,10 @@
 package service
 
 import (
+	"encoding/json"
 	stderrs "errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -327,7 +329,7 @@ func TestSearchAIFallbackWithDBReturnsUpstreamErrorWhenAISearchFails(t *testing.
 	original := runAIFallbackSearchWithUsage
 	defer func() { runAIFallbackSearchWithUsage = original }()
 	runAIFallbackSearchWithUsage = func(client *internalsearch.ChatGptClient, req model.SearchRequest) ([][]string, internalsearch.AISearchUsage, error) {
-		return nil, internalsearch.AISearchUsage{}, stderrs.New("upstream timeout")
+		return nil, internalsearch.AISearchUsage{}, stderrs.New("upstream timeout Authorization: Bearer sk-test")
 	}
 
 	result := SearchAIFallbackWithDB(db, model.SearchRequest{Question: "1+1=?", Options: []string{"1", "2"}, Type: 0})
@@ -337,6 +339,16 @@ func TestSearchAIFallbackWithDBReturnsUpstreamErrorWhenAISearchFails(t *testing.
 	}
 	if result.Error == nil || result.Error.Code != AIFallbackErrorCodeUpstreamError {
 		t.Fatalf("expected UPSTREAM_ERROR, got %+v", result.Error)
+	}
+	if !strings.Contains(result.FailureDetail, "upstream timeout") || strings.Contains(result.FailureDetail, "sk-test") {
+		t.Fatalf("expected preserved and redacted failure detail, got %q", result.FailureDetail)
+	}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "upstream timeout") || strings.Contains(string(raw), "failureDetail") {
+		t.Fatalf("internal upstream details leaked into public result: %s", raw)
 	}
 }
 

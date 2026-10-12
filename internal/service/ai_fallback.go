@@ -8,6 +8,7 @@ import (
 
 	internalsearch "github.com/itihey/tikuAdapter/internal/search"
 	pkgerrors "github.com/itihey/tikuAdapter/pkg/errors"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/model"
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
@@ -30,6 +31,8 @@ type AIFallbackResult struct {
 	Error   *AIFallbackError             `json:"error,omitempty"`
 	Usage   internalsearch.AISearchUsage `json:"-"`
 	Model   string                       `json:"-"`
+	// FailureDetail is retained for private audit snapshots, never the public API.
+	FailureDetail string `json:"-"`
 
 	// UnpricedModel 表示本次回答所用模型没有配置价格（按 0 计费）。
 	// 调用方据此提示管理员去价格表补价，但答案本身照常返回，不阻断流程。
@@ -78,7 +81,9 @@ func SearchAIFallbackWithDB(db *gorm.DB, req model.SearchRequest) AIFallbackResu
 
 	resolved, err := BuildAISearchRequestConfigWithDB(db, url.Values{}, true)
 	if err != nil {
-		return buildAIFallbackErrorResult(AIFallbackErrorCodeUpstreamError, "AI 配置加载失败")
+		result := buildAIFallbackErrorResult(AIFallbackErrorCodeUpstreamError, "AI 配置加载失败")
+		result.FailureDetail = logger.RedactSecrets(err.Error())
+		return result
 	}
 	if !IsAISearchConfigUsable(resolved.Config) {
 		return BuildAIFallbackUnavailableResult()
@@ -104,7 +109,9 @@ func SearchAIFallbackWithDB(db *gorm.DB, req model.SearchRequest) AIFallbackResu
 		if stderrs.Is(searchErr, pkgerrors.ErrTargetNoAnswer) {
 			return buildAIFallbackErrorResult(AIFallbackErrorCodeNoAnswer, "未找到可用答案")
 		}
-		return buildAIFallbackErrorResult(AIFallbackErrorCodeUpstreamError, "AI 上游请求失败")
+		result := buildAIFallbackErrorResult(AIFallbackErrorCodeUpstreamError, "AI 上游请求失败")
+		result.FailureDetail = logger.RedactSecrets(searchErr.Error(), resolved.Config.APIKey)
+		return result
 	}
 
 	normalizedAnswers, resultCode := collectUsableAIFallbackAnswers(answers)

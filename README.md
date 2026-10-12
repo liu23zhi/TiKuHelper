@@ -6,6 +6,24 @@
 http://localhost:8060
 ```
 
+## 日志
+
+启动时自动在工作目录的 `logs/` 中创建 UTF-8 TXT 日志，同时保留控制台输出：
+
+- `Tiku.txt`：全部日志。
+- `Tiku-warning.txt`：warning、error、fatal/panic。
+- `Tiku-error.txt`：error、fatal/panic。
+
+每份文件独立按 10 MiB 自动分割，单条日志不拆断。当前文件不带数字；归档从
+`Tiku01.txt`、`Tiku02.txt` 开始递增，`01` 是最老文件，重启后继续编号。
+warning/error 归档同样命名为 `Tiku-warning01.txt` / `Tiku-error01.txt`。
+归档不自动删除，请按磁盘容量自行保留。可用 `-log-dir <目录>` 覆盖默认目录。
+同一目录只供一个服务进程写入；多实例请使用独立目录。
+
+AI/题库请求失败同时写入管理端“日志列表”，保存请求 ID、失败渠道及完整错误快照；
+部分渠道失败与无答案单独显示，不改变既有计费和缓存规则。密钥不会写入诊断日志，
+数据库日志不展开 SQL 参数。Docker 部署建议挂载 `./logs:/app/logs`。
+
 ## 环境变量
 
 ### `JWT_SECRET`
@@ -63,6 +81,7 @@ docker run -d `
   -e TRUSTED_PROXIES="10.0.0.10,172.18.0.0/16" `
   -p 8060:8060 `
   -v ./data:/app/data `
+  -v ./logs:/app/logs `
   -v ./config.yaml:/app/config.yaml:ro `
   tiku-adapter
 ```

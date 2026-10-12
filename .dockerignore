@@ -15,3 +15,5 @@ docs
 config.yaml
 run/config.yaml
 reamed.md
+/logs/
+/run/logs/

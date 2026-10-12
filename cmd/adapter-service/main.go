@@ -1,10 +1,16 @@
 package main
 
 import (
+	"context"
 	"embed"
+	"errors"
+	"flag"
 	"net/http"
 	"os"
+	"os/signal"
+	"runtime/debug"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -21,6 +27,15 @@ var buildFS embed.FS
 var indexPage []byte
 
 func main() {
+	flag.Parse()
+	defer func() {
+		if value := recover(); value != nil {
+			logger.PanicLog(value, string(debug.Stack()))
+			_ = logger.Close()
+			panic(value)
+		}
+		_ = logger.Close()
+	}()
 	mg, err := manager.CreateManager()
 	if err != nil {
 		logger.FatalLog(err)
@@ -49,10 +64,32 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
+	shutdownContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	shutdownDone := shutdownHTTPServerOnCancel(shutdownContext, httpServer)
+	logger.SysLog("Tiku 服务启动 address=" + httpServer.Addr)
 	err = httpServer.ListenAndServe()
-	if err != nil {
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.FatalLog(err)
 	}
+	stop()
+	<-shutdownDone
+	logger.SysLog("Tiku 服务已停止")
+}
+
+func shutdownHTTPServerOnCancel(shutdownContext context.Context, httpServer *http.Server) <-chan struct{} {
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+		<-shutdownContext.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(ctx); err != nil {
+			logger.SysError("HTTP 服务关闭失败：" + err.Error())
+			_ = httpServer.Close()
+		}
+	}()
+	return shutdownDone
 }
 
 func resolveTrustedProxies(configured string) []string {

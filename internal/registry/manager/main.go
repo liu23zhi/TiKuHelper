@@ -38,8 +38,10 @@ func GetManager() *Manager {
 
 // CreateManager create manager
 func CreateManager() (*Manager, error) {
+	if err := logger.SetupGinLog(); err != nil {
+		logger.SysError("文件日志初始化失败，继续输出控制台：" + err.Error())
+	}
 	config := registry.Config()
-	logger.SetupGinLog()
 	db := registry.RegisterDB(config)
 	jwtSecret, err := registry.ResolveJWTSecretForDB(db, config.JWTSecret)
 	if err != nil {

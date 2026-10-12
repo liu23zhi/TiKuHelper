@@ -1647,6 +1647,60 @@ func TestSearchWritesAuditLogForAuthenticatedSearch(t *testing.T) {
 	}
 }
 
+func TestSearchWritesFailureAuditLogForProviderError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 204, "search-failure-user", "user")
+	token := seedControllerTokenForUser(t, db, user, "search-failure-token", 0)
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10).Error; err != nil {
+		t.Fatalf("seed balance: %v", err)
+	}
+
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode:     searchModeNormal,
+				UserID:         user.ID,
+				AccessTokenID:  token.ID,
+				RequestID:      "req-search-failure",
+				Tokens:         map[string]string{"wanneng": "configured"},
+				AccessTokenCtx: &service.AccessTokenAuthContext{User: user, AccessToken: token},
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return []func(model.SearchRequest) ([][]string, error){
+				func(model.SearchRequest) ([][]string, error) {
+					return nil, errors.New("AI 接口连接超时")
+				},
+			}
+		},
+		nil,
+		func() {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=wanneng&noRecord=1", bytes.NewReader([]byte(`{"question":"失败题目","options":["A","B"]}`)))
+			request.Header.Set("Content-Type", "application/json")
+			request.RemoteAddr = "10.20.30.41:12345"
+			ctx.Request = request
+
+			Search(ctx)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+		})
+
+	var entry entity.Log
+	if err := db.Where("module = ?", searchAuditModule).Where("user_id = ?", user.ID).Order("id DESC").First(&entry).Error; err != nil {
+		t.Fatalf("load failure audit log: %v", err)
+	}
+	for _, expected := range []string{"搜索失败", "requestId=req-search-failure", "provider=wanneng", "AI 接口连接超时"} {
+		if !strings.Contains(entry.Description, expected) {
+			t.Fatalf("failure description %q does not contain %q", entry.Description, expected)
+		}
+	}
+}
+
 func TestSearchRejectsAnonymousLocalSearch(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	newSearchControllerTestDB(t)

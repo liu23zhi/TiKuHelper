@@ -28,6 +28,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/spf13/viper"
 )
 
@@ -68,6 +69,7 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	compatWorkDir = workDir
+	*logger.LogDir = filepath.Join(workDir, "logs")
 
 	code := m.Run()
 
@@ -75,6 +77,7 @@ func TestMain(m *testing.M) {
 	if compatManager != nil {
 		_ = compatManager.CloseManager()
 	}
+	_ = logger.Close()
 	_ = os.RemoveAll(workDir)
 	os.Exit(code)
 }

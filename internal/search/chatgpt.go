@@ -90,6 +90,7 @@ type openAIImageURLPart struct {
 }
 
 type openAIStreamChunk struct {
+	Error   json.RawMessage `json:"error,omitempty"`
 	Choices []struct {
 		Delta struct {
 			Content   string                `json:"content"`
@@ -269,6 +270,7 @@ func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]
 	systemPrompt := effectiveAISearchPrompt(in.Prompt)
 	userPromptParts := buildAISearchPromptParts(req, in.getAttachmentHTTPClient().GetClient())
 	endpoints := buildAIChatCompletionEndpoints(baseURL)
+	var lastRequestErr error
 	for _, endpoint := range endpoints {
 		content, usage, statusCode, requestBody, rawResponse, callErr := in.requestStreamAnswerDetailed(endpoint, systemPrompt, userPromptParts)
 		debug = AISearchDebugResult{
@@ -278,6 +280,7 @@ func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]
 			Usage:       usage,
 		}
 		if callErr == nil {
+			lastRequestErr = nil
 			parsedAnswers := parseAISearchAnswers(content, req.Options, req.Type)
 			if len(parsedAnswers) > 0 {
 				return [][]string{parsedAnswers}, debug, nil
@@ -285,9 +288,13 @@ func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]
 			continue
 		}
 		if isAISearchEndpointFallbackStatus(statusCode) {
+			lastRequestErr = callErr
 			continue
 		}
 		return nil, debug, callErr
+	}
+	if lastRequestErr != nil {
+		return nil, debug, lastRequestErr
 	}
 
 	return nil, debug, errors.ErrTargetNoAnswer
@@ -313,9 +320,11 @@ func (in *ChatGptClient) SearchAnswerWithUsage(req model.SearchRequest) (answer 
 	systemPrompt := effectiveAISearchPrompt(in.Prompt)
 	userPromptParts := buildAISearchPromptParts(req, in.getAttachmentHTTPClient().GetClient())
 	endpoints := buildAIChatCompletionEndpoints(baseURL)
+	var lastRequestErr error
 	for _, endpoint := range endpoints {
 		content, streamUsage, statusCode, callErr := in.requestStreamAnswer(endpoint, systemPrompt, userPromptParts)
 		if callErr == nil {
+			lastRequestErr = nil
 			parsedAnswers := parseAISearchAnswers(content, req.Options, req.Type)
 			if len(parsedAnswers) > 0 {
 				return [][]string{parsedAnswers}, streamUsage, nil
@@ -325,9 +334,13 @@ func (in *ChatGptClient) SearchAnswerWithUsage(req model.SearchRequest) (answer 
 			continue
 		}
 		if isAISearchEndpointFallbackStatus(statusCode) {
+			lastRequestErr = callErr
 			continue
 		}
 		return nil, AISearchUsage{}, callErr
+	}
+	if lastRequestErr != nil {
+		return nil, AISearchUsage{}, lastRequestErr
 	}
 
 	return nil, AISearchUsage{}, errors.ErrTargetNoAnswer
@@ -785,13 +798,13 @@ func (in *ChatGptClient) executeAISearchStreamRequest(endpoint string, payload [
 	defer cancel()
 
 	if err := acquireAISearchSlot(ctx, aiSearchRequestSemaphore); err != nil {
-		return "", AISearchUsage{}, 0, "", false, errors.ErrTargetServerError
+		return "", AISearchUsage{}, 0, "", false, in.upstreamError("queue", 0, "", err)
 	}
 	defer releaseAISearchSlot(aiSearchRequestSemaphore)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return "", AISearchUsage{}, 0, "", false, errors.ErrTargetServerError
+		return "", AISearchUsage{}, 0, "", false, in.upstreamError("request", 0, "", err)
 	}
 	httpReq.Header.Set("Authorization", "Bearer "+strings.TrimSpace(in.APIKey))
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -799,30 +812,23 @@ func (in *ChatGptClient) executeAISearchStreamRequest(endpoint string, payload [
 	resp, err := in.getHTTPClient().GetClient().Do(httpReq)
 	if err != nil {
 		// 连接失败、超时、被重置通常都是瞬时故障，交给上层退避重试。
-		return "", AISearchUsage{}, 0, "", true, errors.ErrTargetServerError
+		return "", AISearchUsage{}, 0, "", true, in.upstreamError("network", 0, "", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusNotFound {
-		rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
-		return "", AISearchUsage{}, resp.StatusCode, string(rawBody), false, errors.ErrTargetNoAnswer
-	}
-	if resp.StatusCode >= http.StatusBadRequest {
-		rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		rawBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
 		rawResponse := string(rawBody)
-		if isAISearchRetryableStatus(resp.StatusCode) {
-			return "", AISearchUsage{}, resp.StatusCode, rawResponse, true, errors.ErrTargetServerError
-		}
-		return "", AISearchUsage{}, resp.StatusCode, rawResponse, false, errors.ErrTargetServerError
+		return "", AISearchUsage{}, resp.StatusCode, rawResponse, isAISearchRetryableStatus(resp.StatusCode), in.upstreamError("http", resp.StatusCode, rawResponse, readErr)
 	}
 
 	firstTokenTimeout := aiSearchFirstTokenTimeout - time.Since(requestStartedAt)
 	if firstTokenTimeout <= 0 {
-		return "", AISearchUsage{}, resp.StatusCode, "", false, errors.ErrTargetServerError
+		return "", AISearchUsage{}, resp.StatusCode, "", false, in.upstreamError("first_token", resp.StatusCode, "", errAISearchFirstTokenTimeout)
 	}
 	content, usage, rawResponse, err := readOpenAIStreamContentWithFirstTokenTimeout(resp.Body, firstTokenTimeout)
 	if err != nil {
-		return "", usage, resp.StatusCode, rawResponse, false, errors.ErrTargetServerError
+		return "", usage, resp.StatusCode, rawResponse, false, in.upstreamError("stream", resp.StatusCode, rawResponse, err)
 	}
 	content = strings.TrimSpace(content)
 	if content == "" {
@@ -918,6 +924,9 @@ func readOpenAIStreamContentWithRaw(body io.Reader, firstToken chan<- struct{}) 
 		var chunk openAIStreamChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			return "", AISearchUsage{}, raw.String(), err
+		}
+		if len(chunk.Error) > 0 && string(chunk.Error) != "null" {
+			return "", usage, raw.String(), fmt.Errorf("AI upstream error event: %s", chunk.Error)
 		}
 		for _, choice := range chunk.Choices {
 			if choice.Delta.Content != "" && firstToken != nil {

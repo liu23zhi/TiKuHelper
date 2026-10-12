@@ -144,17 +144,18 @@ func (s *aiFallbackTaskStore) cleanupExpiredLocked(now time.Time) {
 
 func runAIFallbackTaskSafely(run func() service.AIFallbackResult) (result service.AIFallbackResult) {
 	defer func() {
-		if recover() != nil {
-			result = service.AIFallbackResult{
-				Success: false,
-				Error: &service.AIFallbackError{
-					Code:    service.AIFallbackErrorCodeUpstreamError,
-					Message: "AI 兜底任务执行失败",
-				},
-			}
+		if recovered := recover(); recovered != nil {
+			result = buildAIFallbackPanicResult(recovered)
 		}
 	}()
 	return run()
+}
+
+func buildAIFallbackPanicResult(recovered any) service.AIFallbackResult {
+	return service.AIFallbackResult{
+		Error:         &service.AIFallbackError{Code: service.AIFallbackErrorCodeUpstreamError, Message: "AI 兜底任务执行失败"},
+		FailureDetail: "panic: " + logger.RedactSecrets(fmt.Sprint(recovered)),
+	}
 }
 
 // CreateAIFallbackTask queues an AI fallback request and returns its task ID.
@@ -196,12 +197,26 @@ func CreateAIFallbackTask(c *gin.Context) {
 		Options:   input.Options,
 		SkipCache: input.SkipCache,
 	}
-	taskID := defaultAIFallbackTaskStore.create(userID, func(taskID string) service.AIFallbackResult {
+	taskID := defaultAIFallbackTaskStore.create(userID, func(taskID string) (result service.AIFallbackResult) {
+		audited := false
+		auditResult := func(stage string, outcome service.AIFallbackResult) {
+			if audited {
+				return
+			}
+			audited = true
+			writeAIFallbackAuditLog(auditIdentity, requestID, taskID, stage, "async", req, outcome)
+		}
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				result = buildAIFallbackPanicResult(recovered)
+				auditResult("panic", result)
+			}
+		}()
 		db := resolveSearchPersistenceDB()
 		currentBillingCtx, err := loadAIFallbackBillingContextWithDB(db, billingCtx.UserID, billingCtx.AccessTokenID)
 		if err != nil {
 			result := service.BuildAIFallbackInsufficientBalanceResult(err.Error())
-			writeAIFallbackAuditLog(auditIdentity, requestID, taskID, "billing_precheck", "async", req, result)
+			auditResult("billing_precheck", result)
 			return result
 		}
 
@@ -210,7 +225,7 @@ func CreateAIFallbackTask(c *gin.Context) {
 		if !shouldBypassFallbackResultCache(req) {
 			if cached, ok := loadCachedAIFallbackResult(billingCtx.UserID, req); ok {
 				logger.SysLog(fmt.Sprintf("AI 兜底缓存命中 taskId=%s requestId=%s", taskID, requestID))
-				writeAIFallbackAuditLog(auditIdentity, requestID, taskID, "result", "async", req, cached)
+				auditResult("result", cached)
 				return cached
 			}
 		}
@@ -226,7 +241,7 @@ func CreateAIFallbackTask(c *gin.Context) {
 			// 逐字段写法会静默漏掉（例如 UnpricedModel 就曾被漏掉）。
 			result := *borrowed
 			logger.SysLog(fmt.Sprintf("AI 兜底并发合并命中 taskId=%s requestId=%s 复用进行中的相同请求", taskID, requestID))
-			writeAIFallbackAuditLog(auditIdentity, requestID, taskID, "result", "async", req, result)
+			auditResult("result", result)
 			return result
 		}
 		if isLeader {
@@ -236,12 +251,12 @@ func CreateAIFallbackTask(c *gin.Context) {
 			}()
 		}
 
-		result := runAIFallbackService(input.Question, input.Type, input.Options)
+		result = runAIFallbackService(input.Question, input.Type, input.Options)
 		if !result.Success {
 			if isLeader {
 				finishFallbackFlight(flightKey, leader, &result)
 			}
-			writeAIFallbackAuditLog(auditIdentity, requestID, taskID, "result", "async", req, result)
+			auditResult("result", result)
 			return result
 		}
 		warning, err := persistAIFallbackBillingWithWarning(currentBillingCtx, requestID, req, result)
@@ -250,7 +265,7 @@ func CreateAIFallbackTask(c *gin.Context) {
 			if isLeader {
 				finishFallbackFlight(flightKey, leader, &failure)
 			}
-			writeAIFallbackAuditLog(auditIdentity, requestID, taskID, "billing", "async", req, failure)
+			auditResult("billing", failure)
 			return failure
 		}
 		if strings.TrimSpace(warning) != "" {
@@ -260,7 +275,7 @@ func CreateAIFallbackTask(c *gin.Context) {
 		if isLeader {
 			finishFallbackFlight(flightKey, leader, &result)
 		}
-		writeAIFallbackAuditLog(auditIdentity, requestID, taskID, "result", "async", req, result)
+		auditResult("result", result)
 		return result
 	})
 

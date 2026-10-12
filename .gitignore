@@ -8,6 +8,8 @@
 /cmd/adapter-service/dist/
 /转发题库.py
 /run/data
+/logs/
+/run/logs/
 /.history
 adapter-service.exe
 /.history

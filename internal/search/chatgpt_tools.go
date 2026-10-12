@@ -266,33 +266,36 @@ func boundAISearchToolRequest(req model.SearchRequest) model.SearchRequest {
 
 func (in *ChatGptClient) requestAIToolRound(ctx context.Context, endpoint string, payload []byte) (aiToolStreamResult, int, error) {
 	if err := acquireAISearchSlot(ctx, aiSearchRequestSemaphore); err != nil {
-		return aiToolStreamResult{}, 0, err
+		return aiToolStreamResult{}, 0, in.upstreamError("tool_queue", 0, "", err)
 	}
 	defer releaseAISearchSlot(aiSearchRequestSemaphore)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
-		return aiToolStreamResult{}, 0, err
+		return aiToolStreamResult{}, 0, in.upstreamError("tool_request", 0, "", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(in.APIKey))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := in.getHTTPClient().GetClient().Do(req)
 	if err != nil {
-		return aiToolStreamResult{}, 0, err
+		return aiToolStreamResult{}, 0, in.upstreamError("tool_network", 0, "", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-		return aiToolStreamResult{Raw: string(raw)}, resp.StatusCode, fmt.Errorf("AI工具调用HTTP %d", resp.StatusCode)
+		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+		return aiToolStreamResult{Raw: string(raw)}, resp.StatusCode, in.upstreamError("tool_http", resp.StatusCode, string(raw), readErr)
 	}
 	result, err := readAIToolStream(resp.Body)
+	if err != nil {
+		return result, resp.StatusCode, in.upstreamError("tool_stream", resp.StatusCode, result.Raw, err)
+	}
 	return result, resp.StatusCode, err
 }
 
-func readAIToolStream(body io.Reader) (aiToolStreamResult, error) {
-	result := aiToolStreamResult{}
+func readAIToolStream(body io.Reader) (result aiToolStreamResult, err error) {
 	scanner := bufio.NewScanner(io.LimitReader(body, aiToolMaxStreamBytes+1))
 	scanner.Buffer(make([]byte, 4096), 256*1024)
 	var content, raw strings.Builder
+	defer func() { result.Raw = raw.String() }()
 	calls := make(map[int]*openAIToolCall)
 	done := false
 	for scanner.Scan() {
@@ -314,6 +317,9 @@ func readAIToolStream(body io.Reader) (aiToolStreamResult, error) {
 		var chunk openAIStreamChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			return result, err
+		}
+		if len(chunk.Error) > 0 && string(chunk.Error) != "null" {
+			return result, fmt.Errorf("AI upstream error event: %s", chunk.Error)
 		}
 		if chunk.Usage != nil {
 			result.Usage = buildAISearchUsageFromStream(chunk.Usage)

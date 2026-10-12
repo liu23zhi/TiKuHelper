@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 )
@@ -31,7 +33,7 @@ func writeAuditLog(user *entity.User, module string, action int32, description s
 		Username:    "anonymous",
 		Module:      strings.TrimSpace(module),
 		Action:      action,
-		Description: strings.TrimSpace(description),
+		Description: truncateAuditDescription(strings.TrimSpace(description)),
 		ClientIP:    strings.TrimSpace(clientIP),
 		Qid:         qid,
 		OldAnswer:   oldAnswer,
@@ -45,7 +47,18 @@ func writeAuditLog(user *entity.User, module string, action int32, description s
 	if entry.Username == "" {
 		entry.Username = "anonymous"
 	}
-	_ = dao.Log.Create(&entry)
+	if err := dao.Log.Create(&entry); err != nil {
+		logger.SysError(fmt.Sprintf("审计日志写入失败 module=%s action=%d userId=%d error=%s", entry.Module, entry.Action, entry.UserID, logger.RedactSecrets(err.Error())))
+	}
+}
+
+func truncateAuditDescription(value string) string {
+	const limit = 240
+	runes := []rune(value)
+	if len(runes) > limit {
+		return string(runes[:limit-3]) + "..."
+	}
+	return value
 }
 
 // LogList - 日志列表

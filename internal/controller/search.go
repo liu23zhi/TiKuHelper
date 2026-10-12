@@ -59,6 +59,8 @@ type searchUnauthorizedResponse struct {
 
 type searchAuditMetadata struct {
 	HitProvider     string
+	Status          string
+	Failures        []searchProviderFailure
 	RawRequest      string
 	RawResponse     string
 	Anonymous       bool
@@ -289,6 +291,7 @@ func Search(c *gin.Context) {
 	var result [][]string      // 最后所有的答案的二维数组
 	var localAnswer [][]string // 本地答案
 	resolved := resolveResult
+	failureCollector := &searchFailureCollector{}
 	aiEnabled := shouldUseAISearch(useQuery, resolved.AIConfig)
 	if aiEnabled {
 		clearAIResponseWriteDeadline(c)
@@ -356,9 +359,10 @@ func Search(c *gin.Context) {
 	logSearchRoutingDecision(c, query, resolved, aiEnabled)
 	logger.SysLog(fmt.Sprintf("搜题请求摘要 requestId=%s %s", strings.TrimSpace(resolved.RequestID), buildSearchRequestDebugSummary(req)))
 	if !usedSearchResultCache && strings.Contains(useQuery, "local") { // 使用本地题库的话
+		failureCollector.beginAttempt()
 		localAnswer, err = defaultDBSearchProvider()(req)
 		if err != nil {
-			logger.SysError(fmt.Sprintf("查询本地答案出错：%s requestId=%s", err.Error(), strings.TrimSpace(resolved.RequestID)))
+			failureCollector.record(resolved, searchBillingProviderLocal, err)
 		}
 		logger.SysLog(fmt.Sprintf("本地搜题结果 requestId=%s answers=%s error=%t", strings.TrimSpace(resolved.RequestID), buildSearchAnswerGroupsDebugSummary(localAnswer), err != nil))
 		if len(localAnswer) > 0 {
@@ -371,9 +375,10 @@ func Search(c *gin.Context) {
 	// 再查询第三方
 	if !usedSearchResultCache && len(result) == 0 {
 		if resolved.SearchMode == searchModeAI {
+			failureCollector.beginAttempt()
 			aiResult, usage, aiErr := searchAIAnswer(resolved, req)
 			if aiErr != nil {
-				logger.SysError(fmt.Sprintf("AI独占搜题失败 requestId=%s error=%s", strings.TrimSpace(resolved.RequestID), aiErr.Error()))
+				failureCollector.record(resolved, searchModeAI, aiErr)
 			} else if len(aiResult) == 0 {
 				logger.SysLog(fmt.Sprintf("AI独占搜题无结果 requestId=%s", strings.TrimSpace(resolved.RequestID)))
 			} else {
@@ -406,12 +411,13 @@ func Search(c *gin.Context) {
 					continue
 				}
 				wg.Add(1)
+				failureCollector.beginAttempt()
 				go func(binding searchClientBinding) {
 					defer wg.Done()
 					res, err := binding.Search(req)
 					provider := strings.TrimSpace(binding.Provider)
 					if err != nil {
-						logger.SysError(fmt.Sprintf("渠道搜题失败 requestId=%s provider=%s error=%s", strings.TrimSpace(resolved.RequestID), provider, err.Error()))
+						failureCollector.record(resolved, provider, err)
 						return
 					}
 					if len(res) == 0 {
@@ -438,6 +444,11 @@ func Search(c *gin.Context) {
 	resp := util.FillAnswerResponse(result, &req)
 	logger.SysLog(fmt.Sprintf("搜题响应摘要 requestId=%s hitProvider=%s usedLocal=%t usedCache=%t aiEnabled=%t %s", strings.TrimSpace(resolved.RequestID), strings.TrimSpace(auditHitProvider), usedLocalSearch, usedSearchResultCache, aiEnabled, buildSearchResponseDebugSummary(resp)))
 	audit := buildSearchAuditMetadata(c, resolved, query, rawBody, useQuery, result, usedLocalSearch, aiEnabled, auditHitProvider, req, resp)
+	status, failures := failureCollector.snapshot(len(result) > 0, resolved.SearchMode == searchModeAI && !aiEnabled)
+	audit = addSearchFailuresToAudit(audit, status, failures, resp)
+	if len(failures) > 0 {
+		logger.SysError(fmt.Sprintf("%s requestId=%s userId=%d type=%d question=%s %s", searchAuditSummary(status), resolved.RequestID, resolved.UserID, req.Type, truncateForDebug(req.Question, 120), searchFailureSummary(failures)))
+	}
 	if usedSearchResultCache {
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "", c.ClientIP(), audit)
 	} else {
@@ -1392,7 +1403,7 @@ func writeCompletedSearchAuditLog(resolved resolvedSearchRequestContext, useQuer
 	}
 
 	descriptionParts := []string{
-		"搜索完成",
+		searchAuditSummary(audit.Status),
 		fmt.Sprintf("requestId=%s", resolved.RequestID),
 		fmt.Sprintf("mode=%s", strings.TrimSpace(resolved.SearchMode)),
 		fmt.Sprintf("use=%s", strings.TrimSpace(useQuery)),
@@ -1410,11 +1421,14 @@ func writeCompletedSearchAuditLog(resolved resolvedSearchRequestContext, useQuer
 	if audit.Anonymous {
 		descriptionParts = append(descriptionParts, "anonymous=true")
 	}
+	if len(audit.Failures) > 0 {
+		descriptionParts = append(descriptionParts, searchFailureSummary(audit.Failures))
+	}
 	writeAuditLog(
 		user,
 		searchAuditModule,
 		logActionSearch,
-		strings.Join(descriptionParts, " "),
+		truncateAuditDescription(strings.Join(descriptionParts, " ")),
 		strings.TrimSpace(clientIP),
 		audit.LocalQuestionID,
 		audit.RawRequest,

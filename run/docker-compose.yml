@@ -14,4 +14,5 @@ services:
       TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"
     volumes:
       - ./data:/app/data
+      - ./logs:/app/logs
       - ./config.yaml:/app/config.yaml:ro

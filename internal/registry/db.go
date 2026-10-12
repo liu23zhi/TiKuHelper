@@ -5,7 +5,6 @@ import (
 	"github.com/itihey/tikuAdapter/configs"
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"gorm.io/driver/mysql"
-	l "gorm.io/gorm/logger"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -538,7 +537,7 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		}
 		db, err = gorm.Open(conn, &gorm.Config{
 			PrepareStmt: true,
-			Logger:      l.Default.LogMode(l.Info),
+			Logger:      newDatabaseLogger(),
 		})
 		if err != nil {
 			logger.FatalLog(fmt.Errorf("open db fail: %w", err))

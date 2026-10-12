@@ -86,7 +86,15 @@ func AIFallback(c *gin.Context) {
 		}
 	}
 
-	result := runAIFallbackService(input.Question, input.Type, input.Options)
+	result := func() service.AIFallbackResult {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), requestID, "", "panic", "sync", req, buildAIFallbackPanicResult(recovered))
+				panic(recovered)
+			}
+		}()
+		return runAIFallbackService(input.Question, input.Type, input.Options)
+	}()
 	if !result.Success {
 		writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), requestID, "", "result", "sync", req, result)
 		c.JSON(http.StatusOK, result)
@@ -163,15 +171,27 @@ func writeAIFallbackAuditLog(identity aiFallbackAuditIdentity, requestID string,
 	}
 
 	user := &entity.User{ID: identity.UserID, Username: strings.TrimSpace(identity.Username)}
+	if !result.Success {
+		failureParts := append([]string(nil), descriptionParts...)
+		failureParts = append(failureParts, fmt.Sprintf("userId=%d", identity.UserID), fmt.Sprintf("type=%d", req.Type), fmt.Sprintf("question=%s", truncateForDebug(req.Question, 120)))
+		if result.FailureDetail != "" {
+			failureParts = append(failureParts, "error="+logger.RedactSecrets(result.FailureDetail))
+		}
+		if result.Error == nil || result.Error.Code == service.AIFallbackErrorCodeUpstreamError {
+			logger.SysError(strings.Join(failureParts, " "))
+		} else {
+			logger.SysWarn(strings.Join(failureParts, " "))
+		}
+	}
 	writeAuditLog(
 		user,
 		aiFallbackAuditModule,
 		logActionAIFallback,
-		truncateForDebug(strings.Join(descriptionParts, " "), 240),
+		truncateAuditDescription(strings.Join(descriptionParts, " ")),
 		identity.ClientIP,
 		0,
 		buildAIFallbackAuditSnapshot(req),
-		buildAIFallbackAuditSnapshot(result),
+		buildAIFallbackResultAuditSnapshot(result),
 	)
 }
 
@@ -188,6 +208,13 @@ func buildAIFallbackAuditSnapshot(value any) string {
 		return ""
 	}
 	return string(raw)
+}
+
+func buildAIFallbackResultAuditSnapshot(result service.AIFallbackResult) string {
+	return buildAIFallbackAuditSnapshot(struct {
+		service.AIFallbackResult
+		FailureDetail string `json:"failureDetail,omitempty"`
+	}{AIFallbackResult: result, FailureDetail: logger.RedactSecrets(result.FailureDetail)})
 }
 
 func resolveAIFallbackBillingContext(c *gin.Context) (searchBillingContext, error) {

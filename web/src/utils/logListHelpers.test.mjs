@@ -11,12 +11,37 @@ import {
   buildLogModuleLabel,
   buildLogRowDetail,
   buildLogStatusLabel,
+  buildLogStatusColor,
   buildLogStructuredFields,
 } from './logListHelpers.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const logListPagePath = path.join(__dirname, '..', 'pages', 'LogList', 'index.vue');
+
+test('search failures show provider causes and distinguish partial failure and no answer', () => {
+  const record = {
+    module: 'search',
+    description: '搜索失败 requestId=req-1 mode=ai answers=0 status=failed',
+    newAnswer: JSON.stringify({ status: 'failed', failures: [{ provider: 'ai', code: 'UPSTREAM_ERROR', error: 'HTTP 401: invalid api key' }] }),
+  };
+  assert.equal(buildLogStatusLabel(record), '失败');
+  assert.equal(buildLogRowDetail(record), 'ai [UPSTREAM_ERROR]：HTTP 401: invalid api key');
+  assert.equal(buildLogStatusLabel({ ...record, description: '搜索完成', newAnswer: JSON.stringify({ status: 'partial_failure' }) }), '部分失败');
+  assert.equal(buildLogStatusColor({ ...record, newAnswer: JSON.stringify({ status: 'partial_failure' }) }), 'orange');
+  assert.equal(buildLogStatusLabel({ ...record, newAnswer: JSON.stringify({ status: 'no_answer' }) }), '无答案');
+  assert.equal(buildLogStatusLabel({ ...record, newAnswer: JSON.stringify({ status: 'unavailable' }) }), '未配置');
+});
+
+test('AI fallback details prefer diagnostic detail without losing the response snapshot', () => {
+  const record = {
+    module: 'ai_fallback',
+    description: 'AI兜底失败 status=failed code=UPSTREAM_ERROR',
+    newAnswer: JSON.stringify({ success: false, error: { code: 'UPSTREAM_ERROR', message: 'AI 上游请求失败' }, failureDetail: 'HTTP 429: rate limited' }),
+  };
+  assert.equal(buildLogRowDetail(record), 'HTTP 429: rate limited');
+  assert.equal(buildLogStructuredFields(record).responseSnapshot, record.newAnswer);
+});
 
 test('buildLogModuleLabel supports search module wording', () => {
   assert.equal(buildLogModuleLabel('search'), '搜题');
@@ -371,4 +396,17 @@ test('LogList page renders derived status instead of the raw action column', asy
   assert.match(content, /<template #status="\{ record \}">/);
   assert.match(content, /buildStatusLabel\(record\)/);
   assert.doesNotMatch(content, /title: '操作'/);
+});
+
+test('search outcome summaries retain structured request fields', () => {
+  for (const summary of ['搜索完成，部分渠道失败', '搜索完成，未找到答案', '搜索未执行，服务未配置或未启用']) {
+    const fields = buildLogStructuredFields({
+      description: `${summary} requestId=request-1 mode=normal use=ai answers=0 hitProvider=- billingProvider=-`,
+    });
+    assert.equal(fields.summary, summary);
+    assert.equal(fields.requestId, 'request-1');
+    assert.equal(fields.mode, 'normal');
+    assert.equal(fields.requestSource, 'ai');
+    assert.equal(fields.answerCount, '0');
+  }
 });
