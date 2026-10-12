@@ -188,6 +188,12 @@ func DefaultAISearchPrompt() string {
 
 【通用要求】
 - 先读全题干、选项和图片，再作答；题干中的编号、小问、括号说明都必须覆盖。
+- **一定要给出真正回答了问题的内容**，而不是把题干里的材料换个说法复述一遍。
+  如果题干本身包含一段材料、草稿或示例文本，请把它当作线索去回答"问题"，
+  不要把那段材料当成答案原样抄回来。
+- 若发现"题目"读起来像是一段答案、草稿或考生已填的内容（例如整段第一人称陈述），
+  说明取到的文本可能有偏差：请据此推断**真正被问的是什么**并作答；
+  确实无法推断时，给出与这段内容最匹配的完整、可直接提交的作答，但必须比原文本更完整、更具体。
 - 计算题、证明题、信号与系统、电路、数学等题目必须写出推理过程与最终结果：写出所用公式或变换、关键中间步骤，最后给出结论。
 - 答案中出现的公式用纯文本表示，例如 H(z)=(1+(1/3)z^-1)/(1-(3/4)z^-1+(1/8)z^-2)、y(n)=...；不要使用 LaTeX 的 \( \) 或 $ $ 包裹。
 - 保持答案稳定、简洁，并兼容题库系统后续处理。
@@ -338,9 +344,15 @@ func buildAISearchPrompt(req model.SearchRequest) string {
 		builder.WriteString(strings.TrimSpace(req.Extra))
 	}
 	if len(req.Options) > 0 {
-		builder.WriteString("\n选项：")
-		for idx, option := range util.FormatOptions(req.Options, req.Type) {
-			builder.WriteString(fmt.Sprintf("\n%c. %s", 'A'+idx, strings.TrimSpace(option)))
+		// 先净化再入 prompt：抓页面带进来的编辑器脚本与工具栏文字会挤掉真实选项、
+		// 让模型分心甚至放弃作答（实测线上出现「模型把考生草稿当题干照抄」）。
+		// 净化是保守的：不确定就保留原文，且绝不允许把选项清空。
+		options := util.SanitizeOptionsForAI(req.Options)
+		if len(options) > 0 {
+			builder.WriteString("\n选项：")
+			for idx, option := range util.FormatOptions(options, req.Type) {
+				builder.WriteString(fmt.Sprintf("\n%c. %s", 'A'+idx, strings.TrimSpace(option)))
+			}
 		}
 	}
 	builder.WriteString("\n作答要求：如果题目包含多个小问，请按原编号完整回答每一问，不要只回答其中一问或随机选择一个小问。")

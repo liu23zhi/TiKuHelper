@@ -150,30 +150,16 @@ func buildSearchResultCacheKey(resolved resolvedSearchRequestContext, req model.
 
 // normalizeCacheKeyText 把文本归一化到「无语义差异」的形式，仅用于缓存键。
 //
-// 复用 util.FormatString：全角转半角、中文引号/句号转英文、去尾部标点、TrimSpace。
-// 这样 `机器人。` 与 `机器人.`、`内容，相同` 与 `内容,相同` 会算出同一个键。
-//
-// 刻意**不**去掉文本中间的标点：`A,B` 与 `AB` 是不同内容，不能混为一谈。
+// 实现集中在 pkg/util（见 util.NormalizeCacheKeyText）：题库 hash 的候选构造
+// 用的是**同一套**归一化，两处必须一致，否则「缓存能命中但题库匹配不到」
+// 这类不一致会非常难排查。
 func normalizeCacheKeyText(value string) string {
-	return util.FormatString(value)
+	return util.NormalizeCacheKeyText(value)
 }
 
 // normalizeCacheKeyOptions 对选项列表逐项归一化，**保持原顺序**。
-//
-// 顺序必须保留：选项顺序本身就是题目的一部分（`A.1 B.2` 与 `A.2 B.1` 不同）。
-// 这里只消除标点/空白层面的抖动，不做排序、不去重。
 func normalizeCacheKeyOptions(options []string) []string {
-	if len(options) == 0 {
-		// 返回 nil 而不是空切片，保证 `nil` 与 `[]` 序列化一致，
-		// 避免同一个请求因两种「空选项」表示算出不同的键。
-		return nil
-	}
-
-	normalized := make([]string, len(options))
-	for i, option := range options {
-		normalized[i] = normalizeCacheKeyText(option)
-	}
-	return normalized
+	return util.NormalizeCacheKeyOptions(options)
 }
 
 // canUseSearchResultCache 判断本次搜题请求能否参与缓存。

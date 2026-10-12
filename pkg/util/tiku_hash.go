@@ -67,19 +67,40 @@ func BuildLegacyTikuHashRawQuestion(question string, options []string, questionT
 
 // BuildTikuHashCandidates 返回查询本地题库时应该匹配的全部 hash。
 //
-// 之所以要多个候选：hash 公式变更后，库里的行可能来自
-//   ① 新公式（当前写入）
-//   ② 旧公式（含 plat=-1，等待启动迁移回填）
-//   ③ 更早的「未格式化题面」变体
-// 三者都要能命中，否则公式切换会导致已有题库短期内失联。
+// 之所以要多个候选，是因为「同一个问题」在库里的写法可能不同：
+//  1. 当前公式（格式化题面 + 原样选项）
+//  2. 旧公式（含 plat=-1，等待启动迁移回填）
+//  3. 更早的「未格式化题面」变体
+//  4. **选项文本抖动**的变体（标点全角/半角、行尾多余标点、首尾空白）
+//
+// 第 4 类来自线上实测：抓页面得到的选项标点不稳定，若把它当成「不同的题」，
+// 就会出现「库里明明有答案却匹配不到 → 转去调 AI → 答案不准还照常计费」。
+//
+// 选项与题面都参与排序/归一化，因此**顺序不同也不影响**命中。
 func BuildTikuHashCandidates(question string, options []string, questionType int) []string {
-	current := BuildTikuHash(question, options, questionType)
-	legacy := BuildLegacyTikuHash(question, options, questionType)
-	legacyRaw := BuildLegacyTikuHashRawQuestion(question, options, questionType)
+	normalizedOptions := NormalizeCacheKeyOptions(options)
+	normalizedQuestion := NormalizeCacheKeyText(question)
 
-	seen := make(map[string]struct{}, 3)
-	candidates := make([]string, 0, 3)
-	for _, hash := range []string{current, legacy, legacyRaw} {
+	raw := []string{
+		// 当前公式（含旧 plat 变体 + 未格式化题面变体）
+		BuildTikuHash(question, options, questionType),
+		BuildLegacyTikuHash(question, options, questionType),
+		BuildLegacyTikuHashRawQuestion(question, options, questionType),
+	}
+
+	// 选项被归一化后才相等的变体。当 options 本身已归一化时这些会与上面重合，
+	// 由下面的去重收敛，不产生额外查询成本。
+	normalized := []string{
+		BuildTikuHash(question, normalizedOptions, questionType),
+		BuildLegacyTikuHash(question, normalizedOptions, questionType),
+		BuildLegacyTikuHashRawQuestion(question, normalizedOptions, questionType),
+		// 题面也归一化的组合：覆盖「历史行用归一化题面写入」的情况。
+		BuildTikuHash(normalizedQuestion, normalizedOptions, questionType),
+	}
+
+	seen := make(map[string]struct{}, len(raw)+len(normalized))
+	candidates := make([]string, 0, len(raw)+len(normalized))
+	for _, hash := range append(raw, normalized...) {
 		if _, exists := seen[hash]; exists {
 			continue
 		}
