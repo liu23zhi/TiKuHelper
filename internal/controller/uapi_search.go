@@ -23,7 +23,11 @@ func UAPISearchEngines(c *gin.Context) {
 	if !requireAdmin(c) {
 		return
 	}
-	client := newUAPISearchClient(service.GetUAPIAPIKeyWithDB(resolveSearchPersistenceDB()))
+	key := service.GetUAPIAPIKeyWithDB(resolveSearchPersistenceDB())
+	if !requireUAPISearchToken(c, key) {
+		return
+	}
+	client := newUAPISearchClient(key)
 	ctx, cancel := context.WithTimeout(c.Request.Context(), uapiSearchControllerTimeout)
 	defer cancel()
 	result, err := client.GetSearchEngines(ctx)
@@ -44,7 +48,11 @@ func UAPISearchAggregate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": "INVALID_REQUEST", "message": "请求参数格式错误"})
 		return
 	}
-	client := newUAPISearchClient(service.GetUAPIAPIKeyWithDB(resolveSearchPersistenceDB())).SetMaxRetries(1)
+	key := service.GetUAPIAPIKeyWithDB(resolveSearchPersistenceDB())
+	if !requireUAPISearchToken(c, key) {
+		return
+	}
+	client := newUAPISearchClient(key).SetMaxRetries(1)
 	ctx, cancel := context.WithTimeout(c.Request.Context(), uapiSearchControllerTimeout)
 	defer cancel()
 	result, err := client.SearchAggregate(ctx, request)
@@ -53,6 +61,17 @@ func UAPISearchAggregate(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+func requireUAPISearchToken(c *gin.Context, key string) bool {
+	if strings.TrimSpace(key) != "" {
+		return true
+	}
+	c.JSON(http.StatusBadRequest, gin.H{
+		"code":    "UAPI_TOKEN_MISSING",
+		"message": "UApiPro 令牌为空，请先在系统设置中配置",
+	})
+	return false
 }
 
 func writeUAPISearchError(c *gin.Context, err error) {
@@ -64,6 +83,11 @@ func writeUAPISearchError(c *gin.Context, err error) {
 		status = apiErr.HTTPStatus
 		code = strings.TrimSpace(apiErr.Code)
 		message = apiErr.Message
+		if status == http.StatusUnauthorized || status == http.StatusForbidden {
+			status = http.StatusBadGateway
+			code = "UPSTREAM_AUTH_ERROR"
+			message = "UApiPro 令牌鉴权失败，请检查系统设置"
+		}
 		if code == "" {
 			code = "UPSTREAM_ERROR"
 		}
@@ -73,7 +97,7 @@ func writeUAPISearchError(c *gin.Context, err error) {
 	} else if errors.Is(err, uapi.ErrInvalidArgument) {
 		status, code, message = http.StatusBadRequest, "INVALID_REQUEST", err.Error()
 	} else if errors.Is(err, uapi.ErrUnauthorized) {
-		status, code, message = http.StatusUnauthorized, "UNAUTHORIZED", "无效的访问令牌"
+		status, code, message = http.StatusBadGateway, "UPSTREAM_AUTH_ERROR", "UApiPro 令牌鉴权失败，请检查系统设置"
 	} else if errors.Is(err, uapi.ErrTimeout) {
 		status, code, message = http.StatusGatewayTimeout, "TIMEOUT", "搜索服务请求超时"
 	} else if errors.Is(err, uapi.ErrNetwork) {

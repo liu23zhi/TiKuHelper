@@ -82,6 +82,27 @@ func TestUAPISearchControllerUsesConfiguredKey(t *testing.T) {
 	}
 }
 
+func TestUAPISearchControllersReportMissingTokenWithoutCallingUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	newUAPISearchTestDB(t, "")
+	called := false
+	oldFactory := newUAPISearchClient
+	newUAPISearchClient = func(key string) *uapi.Client {
+		called = true
+		return uapi.NewClient(key)
+	}
+	t.Cleanup(func() { newUAPISearchClient = oldFactory })
+
+	recorder := performUAPISearchRequest(t, http.MethodGet, "/adapter-service/uapi/search/engines", "", "admin", UAPISearchEngines)
+	if recorder.Code != http.StatusBadRequest || called {
+		t.Fatalf("缺少 UApiPro 令牌应在本地返回 400 且不外呼，status=%d called=%t body=%s", recorder.Code, called, recorder.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil || body["code"] != "UAPI_TOKEN_MISSING" || !strings.Contains(body["message"], "令牌为空") {
+		t.Fatalf("缺少令牌错误响应 = %s", recorder.Body.String())
+	}
+}
+
 func TestUAPISearchAggregateControllerReturnsSuccessfulPayload(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	newUAPISearchTestDB(t, "uapi-test-key")
@@ -112,5 +133,19 @@ func TestUAPISearchErrorResponseShape(t *testing.T) {
 	var body map[string]string
 	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil || body["code"] != "INVALID_REQUEST" || body["message"] == "" {
 		t.Fatalf("错误响应 = %s", recorder.Body.String())
+	}
+}
+
+func TestUAPISearchErrorDoesNotReuseSessionUnauthorizedStatus(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	writeUAPISearchError(ctx, &uapi.APIError{
+		HTTPStatus: http.StatusUnauthorized,
+		Code:       "UNAUTHORIZED",
+		Message:    "无效的访问令牌",
+	})
+	var body map[string]string
+	if recorder.Code != http.StatusBadGateway || json.Unmarshal(recorder.Body.Bytes(), &body) != nil || body["code"] != "UPSTREAM_AUTH_ERROR" {
+		t.Fatalf("上游鉴权失败不应返回会话 401，status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
