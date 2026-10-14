@@ -63,6 +63,7 @@ export function buildAISearchConfigSavePayload(formState, baseUrl) {
     topP: 0,
     maxAISearchModelCalls: Number(formState?.maxAISearchModelCalls || 4),
     maxAISearches: Number(formState?.maxAISearches || 3),
+    searchPricePerCall: Number(formState?.searchPricePerCall || 0),
   };
 }
 

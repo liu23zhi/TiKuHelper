@@ -143,6 +143,23 @@ test('billing record fee helpers render per-provider and total charges', () => {
   assert.match(html, /-¥ 2(?!\.)/);
 });
 
+test('billing record fee details expose per-search query and render it as escaped text', () => {
+  const record = {
+    direction: 'expense',
+    amount: 0.04,
+    feeDetails: [{
+      provider: 'ai_search',
+      providerLabel: '联网搜索',
+      amount: 0.02,
+      detail: '搜索词：<加法验算>；状态：success；结果：2',
+    }],
+  };
+
+  assert.equal(buildBillingRecordFeeDetails(record)[0].detail, '搜索词：<加法验算>；状态：success；结果：2');
+  const html = buildBillingRecordFeeDetailHtml(record);
+  assert.match(html, /搜索词：&lt;加法验算&gt;；状态：success；结果：2/);
+});
+
 test('billing record fee helpers fall back to the row provider for legacy records', () => {
   assert.deepEqual(buildBillingRecordFeeDetails({
     providerLabel: 'AI 搜索',

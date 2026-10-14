@@ -278,11 +278,12 @@ func TestSkipCacheFalseStillUsesCache(t *testing.T) {
 //   832: `…机器人。我课后…相关内容，及时复习…巩固所学知识。`
 // 归一化前这两份算出不同的键，缓存必然不命中，于是每次都真调上游、每次计费。
 
-func cacheKeyForTest(t *testing.T, question string, options []string, questionType int) string {
+func cacheKeyForTest(t *testing.T, question string, options []string, questionType int, deepThinking ...bool) string {
 	t.Helper()
+	deep := len(deepThinking) > 0 && deepThinking[0]
 	key, _, ok := buildSearchResultCacheKey(
 		resolvedSearchRequestContext{UserID: 1},
-		model.SearchRequest{Question: question, Options: options, Type: questionType},
+		model.SearchRequest{Question: question, Options: options, Type: questionType, DeepThinking: deep},
 		"",
 	)
 	if !ok {
@@ -337,6 +338,7 @@ func TestSearchCacheKeyStillDistinguishesRealDifferences(t *testing.T) {
 
 	others := map[string]string{
 		"不同题面":     cacheKeyForTest(t, "另一道完全不同的题目", []string{"选项一", "选项二"}, 2),
+		"不同深度思考模式": cacheKeyForTest(t, question, []string{"选项一", "选项二"}, 2, true),
 		"不同选项内容":   cacheKeyForTest(t, question, []string{"选项一", "完全不同的选项"}, 2),
 		"选项顺序不同":   cacheKeyForTest(t, question, []string{"选项二", "选项一"}, 2),
 		"选项数量不同":   cacheKeyForTest(t, question, []string{"选项一"}, 2),

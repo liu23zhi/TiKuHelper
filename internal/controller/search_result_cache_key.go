@@ -46,6 +46,7 @@ type searchResultCacheKey struct {
 	Question     string   `json:"question"`
 	Options      []string `json:"options"`
 	Type         int      `json:"type"`
+	DeepThinking bool     `json:"deepThinking"`
 	Use          string   `json:"use"`
 	SourceDigest string   `json:"sourceDigest"`
 	UAPISearch   bool     `json:"uapiSearch"`
@@ -153,6 +154,7 @@ func buildSearchResultCacheKey(resolved resolvedSearchRequestContext, req model.
 		Question:     normalizeCacheKeyText(req.Question),
 		Options:      normalizeCacheKeyOptions(req.Options),
 		Type:         req.Type,
+		DeepThinking: req.DeepThinking,
 		Use:          normalizeSearchUseKey(useQuery),
 		SourceDigest: buildSearchSourceDigest(resolved, useQuery),
 		UAPISearch:   uapiSearchToolEnabled(),

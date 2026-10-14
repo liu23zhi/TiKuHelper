@@ -6,11 +6,13 @@ package model
 // 旧客户端若仍发送 "plat": -1，会被 JSON 解码**静默忽略**（本项目未启用
 // DisallowUnknownFields），不会报错。
 type SearchRequest struct {
-	QID       string   `json:"qid"`
-	Question  string   `json:"question"`
-	Options   []string `json:"options"`
-	Type      int      `json:"type"`
-	SkipCache *bool    `json:"skipCache,omitempty"`
+	QID          string   `json:"qid"`
+	Question     string   `json:"question"`
+	Options      []string `json:"options"`
+	Type         int      `json:"type"`
+	SkipCache    *bool    `json:"skipCache,omitempty"`
+	DeepThinking bool     `json:"deepThinking,omitempty"`
+	RequestID    string   `json:"-"`
 
 	CourseName string `json:"courseName"`
 

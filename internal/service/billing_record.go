@@ -17,6 +17,7 @@ type BillingRecordFeeDetail struct {
 	Provider      string  `json:"provider"`
 	ProviderLabel string  `json:"providerLabel"`
 	Amount        float64 `json:"amount"`
+	Detail        string  `json:"detail,omitempty"`
 }
 
 type BillingRecordListItem struct {
@@ -246,6 +247,9 @@ func decorateBillingRecord(record BillingRecordListItem) BillingRecordListItem {
 	if meta, ok := getSearchAccountProviderMeta(record.Provider); ok {
 		record.ProviderLabel = meta.ProviderLabel
 	}
+	if strings.TrimSpace(record.Provider) == "ai_search" {
+		record.ProviderLabel = "联网搜索"
+	}
 	if strings.TrimSpace(record.Provider) == "system" {
 		record.ProviderLabel = "系统赠送"
 	}
@@ -266,8 +270,33 @@ func decorateBillingRecord(record BillingRecordListItem) BillingRecordListItem {
 		Provider:      strings.TrimSpace(record.Provider),
 		ProviderLabel: strings.TrimSpace(record.ProviderLabel),
 		Amount:        record.Amount,
+		Detail:        buildBillingRecordFeeDetail(record.Provider, record.UnitPriceSnapshot),
 	}}
 	return record
+}
+
+func buildBillingRecordFeeDetail(provider string, snapshot string) string {
+	if strings.TrimSpace(provider) != "ai_search" {
+		return ""
+	}
+	parts := make([]string, 0, 7)
+	appendField := func(label string, key string) {
+		if value := ExtractBillingSnapshotField(snapshot, key); value != "" {
+			parts = append(parts, label+"："+value)
+		}
+	}
+	appendField("搜索词", "searchQuery")
+	appendField("API", "searchAPI")
+	appendField("状态", "searchStatus")
+	appendField("结果", "searchResultCount")
+	appendField("总结果", "searchTotalResults")
+	appendField("来源", "searchSources")
+	appendField("耗时", "searchDurationMs")
+	appendField("错误", "searchError")
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "；")
 }
 
 func loadBillingSearchGroups(db *gorm.DB, records []BillingRecordListItem) (map[billingSearchGroupKey][]BillingRecordListItem, error) {

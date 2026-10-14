@@ -41,7 +41,7 @@ func TestAIFallbackWritesPrivateFailureDetailToAudit(t *testing.T) {
 	original := runAIFallbackService
 	t.Cleanup(func() { runAIFallbackService = original })
 	detail := strings.Repeat("真实HTTP 503错误，", 50)
-	runAIFallbackService = func(string, int, []string) service.AIFallbackResult {
+	runAIFallbackService = func(model.SearchRequest) service.AIFallbackResult {
 		return service.AIFallbackResult{Error: &service.AIFallbackError{Code: service.AIFallbackErrorCodeUpstreamError, Message: "AI 上游请求失败"}, FailureDetail: detail}
 	}
 	recorder := httptest.NewRecorder()
@@ -81,7 +81,7 @@ func TestAIFallbackAuditsPanicWithoutChangingHTTPFailure(t *testing.T) {
 	}
 	original := runAIFallbackService
 	t.Cleanup(func() { runAIFallbackService = original })
-	runAIFallbackService = func(string, int, []string) service.AIFallbackResult { panic("sync upstream panic") }
+	runAIFallbackService = func(model.SearchRequest) service.AIFallbackResult { panic("sync upstream panic") }
 	router := gin.New()
 	router.Use(gin.Recovery())
 	router.POST("/adapter-service/ai-fallback", func(c *gin.Context) { c.Set("user", &user); AIFallback(c) })
@@ -121,7 +121,7 @@ func TestCreateAIFallbackTaskAuditsFailureDetailsExactlyOnce(t *testing.T) {
 			originalRun, originalStore := runAIFallbackService, defaultAIFallbackTaskStore
 			t.Cleanup(func() { runAIFallbackService = originalRun; defaultAIFallbackTaskStore = originalStore })
 			defaultAIFallbackTaskStore = newAIFallbackTaskStore(time.Minute, time.Now)
-			runAIFallbackService = func(string, int, []string) service.AIFallbackResult {
+			runAIFallbackService = func(model.SearchRequest) service.AIFallbackResult {
 				if tc.panicFailure {
 					panic("panic upstream Authorization: Bearer panic-secret")
 				}

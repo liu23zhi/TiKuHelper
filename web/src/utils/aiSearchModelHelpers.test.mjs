@@ -73,6 +73,7 @@ test('buildAISearchConfigSavePayload persists the editable model list', () => {
         prompt: ' 系统 Prompt ',
         remark: ' 备注 ',
         manualModelsText: 'manual-only,gpt-5.4\nmanual-only',
+        searchPricePerCall: 0.125,
       },
       'https://api.example.com/v1',
     ),
@@ -88,8 +89,14 @@ test('buildAISearchConfigSavePayload persists the editable model list', () => {
       topP: 0,
       maxAISearchModelCalls: 4,
       maxAISearches: 3,
+      searchPricePerCall: 0.125,
     },
   );
+});
+
+test('buildAISearchConfigSavePayload defaults the web search unit price to zero', () => {
+  const payload = buildAISearchConfigSavePayload({ enabled: true }, 'https://api.example.com/v1');
+  assert.equal(payload.searchPricePerCall, 0);
 });
 
 test('buildAISearchConfigSavePayload stops sending any billing fields', () => {

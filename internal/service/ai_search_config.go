@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -43,6 +44,7 @@ type AISearchConfigView struct {
 	TopP                  float64  `json:"topP"`
 	MaxAISearchModelCalls int      `json:"maxAISearchModelCalls"`
 	MaxAISearches         int      `json:"maxAISearches"`
+	SearchPricePerCall    float64  `json:"searchPricePerCall"`
 }
 
 type UpdateAISearchConfigInput struct {
@@ -57,6 +59,7 @@ type UpdateAISearchConfigInput struct {
 	TopP                  float64  `json:"topP"`
 	MaxAISearchModelCalls int      `json:"maxAISearchModelCalls"`
 	MaxAISearches         int      `json:"maxAISearches"`
+	SearchPricePerCall    *float64 `json:"searchPricePerCall,omitempty"`
 }
 
 type AISearchRequestConfig struct {
@@ -68,6 +71,7 @@ type AISearchRequestConfig struct {
 	TopP                  float64
 	MaxAISearchModelCalls int
 	MaxAISearches         int
+	SearchPricePerCall    float64
 }
 
 type ResolvedAISearchConfig struct {
@@ -172,12 +176,19 @@ func GetAISearchConfigWithDB(db *gorm.DB) (AISearchConfigView, error) {
 			TopP:                  0,
 			MaxAISearchModelCalls: maxModelCalls,
 			MaxAISearches:         maxSearches,
+			SearchPricePerCall:    GetAISearchPricePerCallWithDB(db),
 		}, nil
 	}
 	return buildAISearchConfigView(db, config)
 }
 
 func UpdateAISearchConfigWithDB(db *gorm.DB, input UpdateAISearchConfigInput) (AISearchConfigView, error) {
+	if input.SearchPricePerCall != nil {
+		price := *input.SearchPricePerCall
+		if price < 0 || math.IsNaN(price) || math.IsInf(price, 0) {
+			return AISearchConfigView{}, errors.New("联网搜索单价必须是大于或等于 0 的有效金额")
+		}
+	}
 	config, _, err := getAISearchConfigRecord(db)
 	if err != nil {
 		return AISearchConfigView{}, err
@@ -205,6 +216,11 @@ func UpdateAISearchConfigWithDB(db *gorm.DB, input UpdateAISearchConfigInput) (A
 	if err := db.Save(&config).Error; err != nil {
 		return AISearchConfigView{}, err
 	}
+	if input.SearchPricePerCall != nil {
+		if err := SetAISearchPricePerCallWithDB(db, *input.SearchPricePerCall); err != nil {
+			return AISearchConfigView{}, err
+		}
+	}
 	if input.MaxAISearchModelCalls > 0 || input.MaxAISearches > 0 {
 		if err := SetAISearchBudgetsWithDB(db, input.MaxAISearchModelCalls, input.MaxAISearches); err != nil {
 			return AISearchConfigView{}, err
@@ -223,6 +239,7 @@ func BuildAISearchRequestConfigWithDB(db *gorm.DB, query url.Values, allowDefaul
 			TopP:                  0,
 			MaxAISearchModelCalls: maxModelCalls,
 			MaxAISearches:         maxSearches,
+			SearchPricePerCall:    GetAISearchPricePerCallWithDB(db),
 		},
 	}
 	allowExplicitConfig := allowDefaultAccount
@@ -335,6 +352,7 @@ func buildAISearchConfigView(db *gorm.DB, config entity.AISearchConfig) (AISearc
 		TopP:                  0,
 		MaxAISearchModelCalls: maxModelCalls,
 		MaxAISearches:         maxSearches,
+		SearchPricePerCall:    GetAISearchPricePerCallWithDB(db),
 	}, nil
 }
 

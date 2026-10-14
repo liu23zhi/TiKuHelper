@@ -14,6 +14,7 @@ import (
 
 	"github.com/itihey/tikuAdapter/internal/uapi"
 	"github.com/itihey/tikuAdapter/pkg/errors"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/model"
 )
 
@@ -109,6 +110,9 @@ func aiWebSearchToolDefinition() openAITool {
 
 func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model.SearchRequest) ([][]string, AISearchDebugResult, error) {
 	debug := AISearchDebugResult{}
+	if requestID := strings.TrimSpace(req.RequestID); requestID != "" {
+		in.RequestID = requestID
+	}
 	if !in.Enable || strings.TrimSpace(req.Question) == "" || strings.TrimSpace(in.BaseURL) == "" || strings.TrimSpace(in.APIKey) == "" || strings.TrimSpace(in.Model) == "" {
 		return [][]string{}, debug, nil
 	}
@@ -213,7 +217,7 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 			toolStartedAt := time.Now()
 			toolQuery := parseAISearchToolQuery(call.Function.Arguments)
 			in.logAISearchTrace(AISearchTrace{Round: round + 1, Stage: "搜索工具调用开始", Query: toolQuery, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, SearchCount: searches, SearchBudget: maxSearches})
-			content, abort := in.executeAISearchTool(ctx, call, &searches, maxSearches, results, &toolContentBytes)
+			content, abort := in.executeAISearchTool(ctx, call, &searches, maxSearches, results, &toolContentBytes, &debug.Usage)
 			in.logAISearchTrace(AISearchTrace{Round: round + 1, Stage: "搜索工具完成", Query: toolQuery, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, DurationMs: time.Since(toolStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, Status: map[bool]string{true: "停止", false: "继续"}[abort], ResultCount: countAISearchToolResults(content)})
 			messages = append(messages, openAIChatMessage{Role: "tool", ToolCallID: call.ID, Content: content})
 			toolsDisabled = toolsDisabled || abort
@@ -259,6 +263,7 @@ func addAISearchUsage(total *AISearchUsage, usage AISearchUsage) {
 	total.CacheWriteTokens += usage.CacheWriteTokens
 	total.OutputTokens += usage.OutputTokens
 	total.TotalTokens += usage.TotalTokens
+	total.SearchCalls = append(total.SearchCalls, usage.SearchCalls...)
 }
 
 type aiToolContextTransport struct {
@@ -440,7 +445,7 @@ func countAISearchToolResults(content string) int {
 	return len(payload.Results)
 }
 
-func (in *ChatGptClient) executeAISearchTool(ctx context.Context, call openAIToolCall, searches *int, maxSearches int, cache map[string]string, contentBytes *int) (string, bool) {
+func (in *ChatGptClient) executeAISearchTool(ctx context.Context, call openAIToolCall, searches *int, maxSearches int, cache map[string]string, contentBytes *int, usage *AISearchUsage) (string, bool) {
 	failure := func(message string, abort bool) (string, bool) {
 		encoded, _ := json.Marshal(map[string]string{"error": message})
 		return string(encoded), abort
@@ -475,10 +480,40 @@ func (in *ChatGptClient) executeAISearchTool(ctx context.Context, call openAIToo
 	*searches++
 	searchCtx, cancel := context.WithTimeout(ctx, aiToolSearchTimeout)
 	defer cancel()
+	callUsage := AISearchCallUsage{API: uapi.DefaultSearchAggregateURL, Query: req.Query, Status: "error"}
+	apiStartedAt := time.Now()
+	in.logAISearchTrace(AISearchTrace{Stage: "搜索 API 请求开始", Query: req.Query, SearchAPI: callUsage.API, SearchCount: *searches, SearchBudget: maxSearches})
 	result, err := in.SearchTool.SearchAggregate(searchCtx, req)
+	callUsage.DurationMs = time.Since(apiStartedAt).Milliseconds()
 	if err != nil {
+		callUsage.Error = logger.RedactSecrets(err.Error(), in.APIKey)
+		if usage != nil {
+			usage.SearchCalls = append(usage.SearchCalls, callUsage)
+		}
+		in.logAISearchTrace(AISearchTrace{Stage: "搜索 API 响应", Query: req.Query, SearchAPI: callUsage.API, Status: "error", DurationMs: callUsage.DurationMs, SearchCount: *searches, SearchBudget: maxSearches, Error: callUsage.Error})
 		return failure("搜索暂不可用，本轮停止搜索，请根据已有资料直接作答。", true)
 	}
+	callUsage.Status = "success"
+	callUsage.TotalResults = result.TotalResults
+	callUsage.ResultCount = len(result.Results)
+	sourceDetails, _ := json.Marshal(result.Sources)
+	callUsage.SourceDetails = string(sourceDetails)
+	resultSummaries := make([]map[string]string, 0, aiToolMaxResults)
+	for i, item := range result.Results {
+		if i >= aiToolMaxResults {
+			break
+		}
+		resultSummaries = append(resultSummaries, map[string]string{
+			"title":  truncateAIToolText(item.Title, 160),
+			"domain": truncateAIToolText(item.Domain, 120),
+			"url":    truncateAIToolText(item.URL, 300),
+		})
+	}
+	resultSummary, _ := json.Marshal(resultSummaries)
+	if usage != nil {
+		usage.SearchCalls = append(usage.SearchCalls, callUsage)
+	}
+	in.logAISearchTrace(AISearchTrace{Stage: "搜索 API 响应", Query: req.Query, SearchAPI: callUsage.API, Status: "success", DurationMs: callUsage.DurationMs, SearchCount: *searches, SearchBudget: maxSearches, ResultCount: len(result.Results), SourceDetails: callUsage.SourceDetails, ResultSummary: string(resultSummary)})
 	type evidence struct {
 		Title   string `json:"title"`
 		URL     string `json:"url"`

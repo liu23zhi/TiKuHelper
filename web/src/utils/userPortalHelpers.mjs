@@ -196,6 +196,7 @@ export function buildBillingRecordFeeDetails(record) {
       provider: String(item?.provider || '').trim(),
       providerLabel: String(item?.providerLabel || item?.provider || '').trim() || '-',
       amount: Number(item?.amount || 0),
+      ...(String(item?.detail || '').trim() ? { detail: String(item.detail).trim() } : {}),
     }))
     .filter((item) => Number.isFinite(item.amount))
 
@@ -222,6 +223,7 @@ export function buildBillingRecordFeeDetailHtml(record) {
         ${escapeHtmlText(buildBillingRecordAmountText({ amount: item.amount, direction }))}
       </strong>
     </div>
+    ${item.detail ? `<div class="billing-fee-item-detail">${escapeHtmlText(item.detail)}</div>` : ''}
   `).join('')
   const totalAmount = Number(record?.amount || 0)
   const totalText = buildBillingRecordAmountText({

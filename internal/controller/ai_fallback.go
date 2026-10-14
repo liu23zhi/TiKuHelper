@@ -14,26 +14,25 @@ import (
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/model"
+	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 )
 
 const aiFallbackAuditModule = "ai_fallback"
 
 type aiFallbackInput struct {
-	Question string   `json:"question"`
-	Type     int      `json:"type"`
-	Options  []string `json:"options"`
+	Question     string   `json:"question"`
+	Type         int      `json:"type"`
+	Options      []string `json:"options"`
+	DeepThinking bool     `json:"deepThinking,omitempty"`
 	// SkipCache 为显式 true 时跳过读取兜底缓存；缺省与 false 都正常使用缓存。
 	// 与搜题的 skipCache 语义保持一致。
 	SkipCache *bool `json:"skipCache,omitempty"`
 }
 
-var runAIFallbackService = func(question string, questionType int, options []string) service.AIFallbackResult {
-	return service.SearchAIFallbackWithDB(manager.GetManager().GetDB(), model.SearchRequest{
-		Question: strings.TrimSpace(question),
-		Type:     questionType,
-		Options:  options,
-	})
+var runAIFallbackService = func(req model.SearchRequest) service.AIFallbackResult {
+	req.Question = strings.TrimSpace(req.Question)
+	return service.SearchAIFallbackWithDB(manager.GetManager().GetDB(), req)
 }
 
 func AIFallback(c *gin.Context) {
@@ -69,10 +68,12 @@ func AIFallback(c *gin.Context) {
 
 	requestID := uuid.NewString()
 	req := model.SearchRequest{
-		Question:  strings.TrimSpace(input.Question),
-		Type:      input.Type,
-		Options:   input.Options,
-		SkipCache: input.SkipCache,
+		Question:     strings.TrimSpace(input.Question),
+		Type:         input.Type,
+		Options:      input.Options,
+		SkipCache:    input.SkipCache,
+		DeepThinking: input.DeepThinking,
+		RequestID:    requestID,
 	}
 
 	// 缓存命中：与搜题一致 —— 不再调用 AI、不再计费。
@@ -93,9 +94,19 @@ func AIFallback(c *gin.Context) {
 				panic(recovered)
 			}
 		}()
-		return runAIFallbackService(input.Question, input.Type, input.Options)
+		return runAIFallbackService(req)
 	}()
 	if !result.Success {
+		warning, billingErr := persistAIFallbackBillingWithWarning(billingCtx, requestID, req, result)
+		if billingErr != nil {
+			failure := buildAIFallbackBillingFailureResult(billingErr)
+			writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), requestID, "", "billing", "sync", req, failure)
+			c.JSON(http.StatusOK, failure)
+			return
+		}
+		if strings.TrimSpace(warning) != "" {
+			result.Warnings = append(result.Warnings, warning)
+		}
 		writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), requestID, "", "result", "sync", req, result)
 		c.JSON(http.StatusOK, result)
 		return
@@ -168,6 +179,15 @@ func writeAIFallbackAuditLog(identity aiFallbackAuditIdentity, requestID string,
 			fmt.Sprintf("outputTokens=%d", result.Usage.OutputTokens),
 			fmt.Sprintf("totalTokens=%d", result.Usage.TotalTokens),
 		)
+	}
+	if hasAISearchUsage(result.Usage) {
+		descriptionParts = append(descriptionParts, buildAISearchUsageDebugSummary(result.Usage))
+	}
+	descriptionParts = append(descriptionParts, fmt.Sprintf("deepThinking=%t", req.DeepThinking))
+	if len(result.Usage.SearchCalls) > 0 {
+		for index, call := range result.Usage.SearchCalls {
+			descriptionParts = append(descriptionParts, fmt.Sprintf("searchCall%d api=%s query=%s status=%s results=%d/%d durationMs=%d", index+1, logger.RedactSecrets(call.API), truncateForDebug(call.Query, 120), call.Status, call.ResultCount, call.TotalResults, call.DurationMs))
+		}
 	}
 
 	user := &entity.User{ID: identity.UserID, Username: strings.TrimSpace(identity.Username)}
@@ -299,7 +319,15 @@ func persistAIFallbackBilling(billingCtx searchBillingContext, requestID string,
 // persistAIFallbackBillingWithWarning 落账 AI 兜底计费，并回报「模型未配置价格」的情况。
 // 未定价时按 0 计费，不阻断答案返回，只把提示交给调用方。
 func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, requestID string, req model.SearchRequest, result service.AIFallbackResult) (string, error) {
-	if !result.Success || !hasAISearchUsage(result.Usage) {
+	usage := result.Usage
+	if !result.Success {
+		usage.InputTokens = 0
+		usage.CachedInputTokens = 0
+		usage.CacheWriteTokens = 0
+		usage.OutputTokens = 0
+		usage.TotalTokens = 0
+	}
+	if !hasAISearchUsage(usage) {
 		return "", nil
 	}
 	db := resolveSearchPersistenceDB()
@@ -314,19 +342,32 @@ func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, reques
 			Model: strings.TrimSpace(result.Model),
 		},
 	}
-	resolvedCharge, err := resolveCompletedAIBillingCharge(db, resolved, req, result.Usage)
-	if err != nil {
-		return "", err
-	}
-
 	warning := ""
-	if resolvedCharge.UnpricedModel {
-		warning = buildUnpricedAIModelWarning(resolvedCharge.Charge.ModelName)
+	charges := make([]searchBillingCharge, 0, 1+len(usage.SearchCalls))
+	if result.Success && hasAIModelUsage(usage) {
+		resolvedCharge, err := resolveCompletedAIBillingCharge(db, resolved, req, usage)
+		if err != nil {
+			return "", err
+		}
+		if resolvedCharge.UnpricedModel {
+			warning = buildUnpricedAIModelWarning(resolvedCharge.Charge.ModelName)
+		}
+		charges = append(charges, resolvedCharge.Charge)
 	}
-	if resolvedCharge.Charge.Amount <= 0 {
+	if price := service.GetAISearchPricePerCallWithDB(db); price > 0 {
+		for index, call := range usage.SearchCalls {
+			amount := util.RoundMoney(price)
+			charges = append(charges, searchBillingCharge{
+				Provider: "ai_search",
+				Amount:   amount,
+				Snapshot: buildAISearchCallBillingSnapshot(req, call, index+1, price, amount),
+			})
+		}
+	}
+	if len(charges) == 0 {
 		return warning, nil
 	}
-	return warning, persistSearchBillingRecordsWithDB(db, billingCtx, []searchBillingCharge{resolvedCharge.Charge})
+	return warning, persistSearchBillingRecordsWithDB(db, billingCtx, charges)
 }
 
 func buildAIFallbackBillingFailureResult(err error) service.AIFallbackResult {

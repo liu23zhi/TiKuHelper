@@ -51,6 +51,18 @@ type AISearchUsage struct {
 	CacheWriteTokens  int64
 	OutputTokens      int64
 	TotalTokens       int64
+	SearchCalls       []AISearchCallUsage `json:"searchCalls,omitempty"`
+}
+
+type AISearchCallUsage struct {
+	API           string `json:"api"`
+	Query         string `json:"query"`
+	Status        string `json:"status"`
+	DurationMs    int64  `json:"durationMs"`
+	ResultCount   int    `json:"resultCount"`
+	TotalResults  int    `json:"totalResults"`
+	SourceDetails string `json:"sourceDetails,omitempty"`
+	Error         string `json:"error,omitempty"`
 }
 
 type AISearchDebugResult struct {
@@ -65,8 +77,12 @@ type AISearchDebugResult struct {
 type AISearchTrace struct {
 	Round           int
 	Stage           string
+	Model           string
 	Endpoint        string
 	Query           string
+	SearchAPI       string
+	SourceDetails   string
+	ResultSummary   string
 	Status          string
 	DurationMs      int64
 	ModelCallCount  int
@@ -82,7 +98,10 @@ type AISearchTrace struct {
 
 func (in *ChatGptClient) logAISearchTrace(trace AISearchTrace) {
 	requestID := strings.TrimSpace(in.RequestID)
-	logger.SysLog(fmt.Sprintf("AI搜索轨迹 requestId=%s round=%d stage=%s endpoint=%s query=%s status=%s durationMs=%d modelCalls=%d/%d searches=%d/%d results=%d cacheHit=%t reasoningChars=%d content=%s error=%s", requestID, trace.Round, trace.Stage, logger.RedactSecrets(trace.Endpoint), truncateAIToolText(trace.Query, 120), trace.Status, trace.DurationMs, trace.ModelCallCount, trace.ModelCallBudget, trace.SearchCount, trace.SearchBudget, trace.ResultCount, trace.CacheHit, trace.ReasoningChars, truncateAIToolText(trace.ContentPreview, 240), logger.RedactSecrets(trace.Error)))
+	if strings.TrimSpace(trace.Model) == "" {
+		trace.Model = strings.TrimSpace(in.Model)
+	}
+	logger.SysLog(fmt.Sprintf("AI搜索轨迹 requestId=%s round=%d stage=%s model=%s endpoint=%s searchAPI=%s query=%s status=%s durationMs=%d modelCalls=%d/%d searches=%d/%d results=%d cacheHit=%t sources=%s resultSummary=%s reasoningChars=%d content=%s error=%s", requestID, trace.Round, trace.Stage, strings.TrimSpace(trace.Model), logger.RedactSecrets(trace.Endpoint), logger.RedactSecrets(trace.SearchAPI), truncateAIToolText(trace.Query, 120), trace.Status, trace.DurationMs, trace.ModelCallCount, trace.ModelCallBudget, trace.SearchCount, trace.SearchBudget, trace.ResultCount, trace.CacheHit, truncateAIToolText(logger.RedactSecrets(trace.SourceDetails), 1200), truncateAIToolText(logger.RedactSecrets(trace.ResultSummary), 1200), trace.ReasoningChars, truncateAIToolText(trace.ContentPreview, 240), logger.RedactSecrets(trace.Error)))
 }
 
 func errorString(err error) string {
@@ -289,7 +308,7 @@ func (in *ChatGptClient) SearchAnswer(req model.SearchRequest) (answer [][]strin
 }
 
 func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]string, debug AISearchDebugResult, err error) {
-	if in.SearchTool != nil {
+	if req.DeepThinking && in.SearchTool != nil {
 		return in.searchAnswerWithTools(context.Background(), req)
 	}
 	answer = make([][]string, 0)
@@ -343,7 +362,7 @@ func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]
 }
 
 func (in *ChatGptClient) SearchAnswerWithUsage(req model.SearchRequest) (answer [][]string, usage AISearchUsage, err error) {
-	if in.SearchTool != nil {
+	if req.DeepThinking && in.SearchTool != nil {
 		answer, debug, toolErr := in.searchAnswerWithTools(context.Background(), req)
 		return answer, debug.Usage, toolErr
 	}
@@ -384,13 +403,13 @@ func (in *ChatGptClient) SearchAnswerWithUsage(req model.SearchRequest) (answer 
 			lastRequestErr = callErr
 			continue
 		}
-		return nil, AISearchUsage{}, callErr
+		return nil, streamUsage, callErr
 	}
 	if lastRequestErr != nil {
-		return nil, AISearchUsage{}, lastRequestErr
+		return nil, usage, lastRequestErr
 	}
 
-	return nil, AISearchUsage{}, errors.ErrTargetNoAnswer
+	return nil, usage, errors.ErrTargetNoAnswer
 }
 
 func buildAISearchPrompt(req model.SearchRequest) string {

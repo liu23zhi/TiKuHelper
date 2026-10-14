@@ -609,6 +609,15 @@ export default defineComponent({
   background: #f8fafc;
 }
 
+:global(.billing-fee-item-detail) {
+  margin: -4px 14px 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 :global(.billing-fee-provider) {
   color: #334155;
 }

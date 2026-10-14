@@ -19,13 +19,14 @@ func TestBuildFallbackFlightKeyRequiresExactMatch(t *testing.T) {
 	}
 
 	others := map[string]model.SearchRequest{
-		"不同用户":   {Question: "同一道题", Type: 2, Options: []string{"A", "B"}},
-		"不同题目":   {Question: "另一道题", Type: 2, Options: []string{"A", "B"}},
-		"不同类型":   {Question: "同一道题", Type: 0, Options: []string{"A", "B"}},
-		"不同选项":   {Question: "同一道题", Type: 2, Options: []string{"A", "C"}},
-		"选项顺序不同": {Question: "同一道题", Type: 2, Options: []string{"B", "A"}},
-		"选项多一条":  {Question: "同一道题", Type: 2, Options: []string{"A", "B", "C"}},
-		"无选项":    {Question: "同一道题", Type: 2},
+		"不同用户":     {Question: "同一道题", Type: 2, Options: []string{"A", "B"}},
+		"不同深度思考模式": {Question: "同一道题", Type: 2, Options: []string{"A", "B"}, DeepThinking: true},
+		"不同题目":     {Question: "另一道题", Type: 2, Options: []string{"A", "B"}},
+		"不同类型":     {Question: "同一道题", Type: 0, Options: []string{"A", "B"}},
+		"不同选项":     {Question: "同一道题", Type: 2, Options: []string{"A", "C"}},
+		"选项顺序不同":   {Question: "同一道题", Type: 2, Options: []string{"B", "A"}},
+		"选项多一条":    {Question: "同一道题", Type: 2, Options: []string{"A", "B", "C"}},
+		"无选项":      {Question: "同一道题", Type: 2},
 	}
 	for name, req := range others {
 		userID := int32(7)

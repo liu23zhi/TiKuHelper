@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
+	internalsearch "github.com/itihey/tikuAdapter/internal/search"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/model"
 )
@@ -28,12 +29,13 @@ var fallbackResultCache = newResultCache[fallbackCachedValue](defaultResultCache
 // 兜底入参只有 question / type / options（没有渠道与平台概念），
 // 因此键维度相应更少。
 type fallbackResultCacheKey struct {
-	Epoch      uint64   `json:"epoch"`
-	UserID     int32    `json:"userId"`
-	Question   string   `json:"question"`
-	Type       int      `json:"type"`
-	Options    []string `json:"options"`
-	UAPISearch bool     `json:"uapiSearch"`
+	Epoch        uint64   `json:"epoch"`
+	UserID       int32    `json:"userId"`
+	Question     string   `json:"question"`
+	Type         int      `json:"type"`
+	DeepThinking bool     `json:"deepThinking"`
+	Options      []string `json:"options"`
+	UAPISearch   bool     `json:"uapiSearch"`
 }
 
 // buildFallbackResultCacheKey 构造兜底缓存键，并返回当前代次。
@@ -41,12 +43,13 @@ func buildFallbackResultCacheKey(userID int32, req model.SearchRequest) (string,
 	epoch := fallbackResultCache.currentEpoch()
 
 	key, ok := marshalCacheKey(fallbackResultCacheKey{
-		Epoch:      epoch,
-		UserID:     userID,
-		Question:   strings.TrimSpace(req.Question),
-		Type:       req.Type,
-		Options:    req.Options,
-		UAPISearch: uapiSearchToolEnabledForFallback(),
+		Epoch:        epoch,
+		UserID:       userID,
+		Question:     strings.TrimSpace(req.Question),
+		Type:         req.Type,
+		DeepThinking: req.DeepThinking,
+		Options:      req.Options,
+		UAPISearch:   uapiSearchToolEnabledForFallback(),
 	})
 	if !ok {
 		return "", epoch, false
@@ -80,6 +83,9 @@ func cloneAIFallbackResult(source service.AIFallbackResult) service.AIFallbackRe
 	}
 	if source.Warnings != nil {
 		cloned.Warnings = append([]string(nil), source.Warnings...)
+	}
+	if source.Usage.SearchCalls != nil {
+		cloned.Usage.SearchCalls = append([]internalsearch.AISearchCallUsage(nil), source.Usage.SearchCalls...)
 	}
 	return cloned
 }

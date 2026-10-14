@@ -45,6 +45,7 @@ const SMSBaoRegionModeSettingKey = "smsbao_region_mode"
 const MaxLogSizeBytesSettingKey = "max_log_size_bytes"
 const MaxAISearchModelCallsSettingKey = "max_ai_search_model_calls"
 const MaxAISearchesSettingKey = "max_ai_searches"
+const AISearchPricePerCallSettingKey = "ai_search_price_per_call"
 
 // UAPIAPIKeySettingKey 是 UApiPro（uapis.cn）的 API 密钥。
 //
@@ -69,6 +70,7 @@ const DefaultWechatLoginMode = "scan"
 const DefaultMaxLogSizeBytes int64 = 5 * 1024 * 1024 * 1024
 const DefaultMaxAISearchModelCalls = 4
 const DefaultMaxAISearches = 3
+const DefaultAISearchPricePerCall = float64(0)
 const MaxAllowedAISearchModelCalls = 20
 const MaxAllowedAISearches = 20
 
@@ -454,6 +456,26 @@ func SetAISearchBudgetsWithDB(db *gorm.DB, requestedModelCalls int, requestedSea
 		return err
 	}
 	return saveSystemSettingValue(db, MaxAISearchesSettingKey, strconv.Itoa(searches), "AI 搜索最大搜索次数")
+}
+
+func GetAISearchPricePerCallWithDB(db *gorm.DB) float64 {
+	if db == nil || !db.Migrator().HasTable(&entity.SystemSetting{}) {
+		return DefaultAISearchPricePerCall
+	}
+	raw := strings.TrimSpace(getSystemSettingStringWithDefault(db, AISearchPricePerCallSettingKey, "0"))
+	price, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(price) || math.IsInf(price, 0) || price < 0 {
+		return DefaultAISearchPricePerCall
+	}
+	return util.RoundMoney(price)
+}
+
+func SetAISearchPricePerCallWithDB(db *gorm.DB, requested float64) error {
+	if math.IsNaN(requested) || math.IsInf(requested, 0) || requested < 0 {
+		return errors.New("联网搜索单价必须是大于或等于 0 的有效金额")
+	}
+	price := util.RoundMoney(requested)
+	return saveSystemSettingValue(db, AISearchPricePerCallSettingKey, strconv.FormatFloat(price, 'f', -1, 64), "联网搜索单价（元/次）")
 }
 
 func getPositiveBoundedIntSystemSetting(db *gorm.DB, key string, defaultValue int, maxValue int) int {

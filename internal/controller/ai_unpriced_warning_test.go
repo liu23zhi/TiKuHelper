@@ -273,10 +273,10 @@ func TestAIFallbackReturnsWarningWhenModelIsNotPriced(t *testing.T) {
 	const unpricedModel = "fallback-unpriced-model"
 	original := runAIFallbackService
 	defer func() { runAIFallbackService = original }()
-	runAIFallbackService = func(question string, questionType int, options []string) service.AIFallbackResult {
+	runAIFallbackService = func(req model.SearchRequest) service.AIFallbackResult {
 		return service.AIFallbackResult{
 			Success: true,
-			Result:  &service.AIFallbackAnswer{Question: question, Answer: "2"},
+			Result:  &service.AIFallbackAnswer{Question: req.Question, Answer: "2"},
 			Model:   unpricedModel,
 			Usage: searchpkg.AISearchUsage{
 				InputTokens:  1000000,

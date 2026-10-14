@@ -39,7 +39,7 @@ func newSearchControllerTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open test db: %v", err)
 	}
 
-	if err := db.AutoMigrate(&entity.SearchAccountConfig{}, &entity.AISearchConfig{}, &entity.AIModelPrice{}, &entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}, &entity.Log{}, &entity.Tiku{}); err != nil {
+	if err := db.AutoMigrate(&entity.SearchAccountConfig{}, &entity.AISearchConfig{}, &entity.AIModelPrice{}, &entity.SystemSetting{}, &entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}, &entity.Log{}, &entity.Tiku{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 
@@ -1115,6 +1115,49 @@ func TestPersistSearchBillingRecordsWithDBAllowsBillingToCreateNegativeBalance(t
 	}
 	if storedToken.TotalAmountUsed != 2.25 {
 		t.Fatalf("expected token usage 2.25, got %v", storedToken.TotalAmountUsed)
+	}
+}
+
+func TestResolveCompletedSearchBillingChargesAddsOneChargePerActualAISearch(t *testing.T) {
+	db := newSearchControllerTestDB(t)
+	if err := service.SetAISearchPricePerCallWithDB(db, 0.125); err != nil {
+		t.Fatalf("set AI search price: %v", err)
+	}
+	resolved := resolvedSearchRequestContext{SearchMode: searchModeAI}
+	request := model.SearchRequest{Question: "题目"}
+	usage := searchpkg.AISearchUsage{SearchCalls: []searchpkg.AISearchCallUsage{
+		{API: "https://search.example/api", Query: "搜索词一", Status: "success", ResultCount: 2, TotalResults: 8, DurationMs: 34, SourceDetails: `[{"domain":"example.com"}]`},
+		{API: "https://search.example/api", Query: "搜索词二", Status: "error", DurationMs: 51, Error: "服务不可用"},
+	}}
+
+	charges, _, err := resolveCompletedSearchBillingCharges(db, resolved, "ai", request, usage, false)
+	if err != nil {
+		t.Fatalf("resolve search charges: %v", err)
+	}
+	if len(charges) != 2 {
+		t.Fatalf("expected one fee row per actual search API call, got %+v", charges)
+	}
+	for index, charge := range charges {
+		if charge.Provider != "ai_search" || charge.Amount != 0.125 {
+			t.Fatalf("unexpected search fee charge %d: %+v", index, charge)
+		}
+	}
+	if got := service.ExtractBillingSnapshotField(charges[0].Snapshot, "searchQuery"); got != "搜索词一" {
+		t.Fatalf("expected first query in billing snapshot, got %q", got)
+	}
+	if got := service.ExtractBillingSnapshotField(charges[1].Snapshot, "searchStatus"); got != "error" {
+		t.Fatalf("expected failed API status in billing snapshot, got %q", got)
+	}
+
+	if err := service.SetAISearchPricePerCallWithDB(db, 0); err != nil {
+		t.Fatalf("disable AI search price: %v", err)
+	}
+	charges, _, err = resolveCompletedSearchBillingCharges(db, resolved, "ai", request, usage, false)
+	if err != nil {
+		t.Fatalf("resolve zero-priced search calls: %v", err)
+	}
+	if len(charges) != 0 {
+		t.Fatalf("zero price should not add fee rows, got %+v", charges)
 	}
 }
 

@@ -382,6 +382,54 @@ func TestAISearchConfigPersistsAndResolvesSearchBudgets(t *testing.T) {
 	}
 }
 
+func TestAISearchConfigPersistsSearchPricePerCallWithLegacyPayloadCompatibility(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	if err := db.AutoMigrate(&entity.SystemSetting{}); err != nil {
+		t.Fatalf("migrate system settings: %v", err)
+	}
+
+	initial, err := GetAISearchConfigWithDB(db)
+	if err != nil {
+		t.Fatalf("get default AI search config: %v", err)
+	}
+	if initial.SearchPricePerCall != 0 {
+		t.Fatalf("search price should default to zero, got %v", initial.SearchPricePerCall)
+	}
+
+	price := 0.125
+	view, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{SearchPricePerCall: &price})
+	if err != nil {
+		t.Fatalf("set search price: %v", err)
+	}
+	if view.SearchPricePerCall != price {
+		t.Fatalf("expected configured search price %v, got %v", price, view.SearchPricePerCall)
+	}
+	resolved, err := BuildAISearchRequestConfigWithDB(db, url.Values{}, true)
+	if err != nil {
+		t.Fatalf("resolve AI search config: %v", err)
+	}
+	if resolved.Config.SearchPricePerCall != price {
+		t.Fatalf("expected resolved search price %v, got %v", price, resolved.Config.SearchPricePerCall)
+	}
+
+	legacyView, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{Model: "legacy-client"})
+	if err != nil {
+		t.Fatalf("update using legacy payload: %v", err)
+	}
+	if legacyView.SearchPricePerCall != price {
+		t.Fatalf("legacy payload must preserve search price %v, got %v", price, legacyView.SearchPricePerCall)
+	}
+
+	zero := 0.0
+	cleared, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{SearchPricePerCall: &zero})
+	if err != nil {
+		t.Fatalf("clear search price: %v", err)
+	}
+	if cleared.SearchPricePerCall != 0 {
+		t.Fatalf("explicit zero should disable search billing, got %v", cleared.SearchPricePerCall)
+	}
+}
+
 func TestAISearchConfigViewJSONOmitsLegacyRemoteModelsFlag(t *testing.T) {
 	db := newSearchAccountConfigTestDB(t)
 

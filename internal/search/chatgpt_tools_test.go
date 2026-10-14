@@ -84,15 +84,49 @@ func TestAISearchToolsSearchTwiceAndAccumulateUsage(t *testing.T) {
 	}))
 	defer server.Close()
 	client := &ChatGptClient{Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test", SearchTool: tool}
-	answer, usage, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?", Options: []string{"3", "4"}})
+	answer, usage, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?", Options: []string{"3", "4"}, DeepThinking: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(answer, [][]string{{"4"}}) || len(tool.queries) != 2 || round != 3 {
 		t.Fatalf("answer=%v queries=%v rounds=%d", answer, tool.queries, round)
 	}
-	if usage != (AISearchUsage{InputTokens: 40, CachedInputTokens: 4, CacheWriteTokens: 2, OutputTokens: 11, TotalTokens: 51}) {
+	if usage.InputTokens != 40 || usage.CachedInputTokens != 4 || usage.CacheWriteTokens != 2 || usage.OutputTokens != 11 || usage.TotalTokens != 51 {
 		t.Fatalf("usage=%+v", usage)
+	}
+	if len(usage.SearchCalls) != 2 || usage.SearchCalls[0].Query != "二加二 计算" || usage.SearchCalls[1].Query != "加法 验算" {
+		t.Fatalf("expected each actual search query in usage, got %+v", usage.SearchCalls)
+	}
+	for _, call := range usage.SearchCalls {
+		if call.API != uapi.DefaultSearchAggregateURL || call.Status != "success" || call.ResultCount != 1 {
+			t.Fatalf("unexpected search call detail: %+v", call)
+		}
+	}
+}
+
+func TestAISearchDefaultsToOneShotWithoutDeepThinking(t *testing.T) {
+	tool := &testAISearchTool{}
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if _, exists := payload["tools"]; exists {
+			t.Fatal("deepThinking=false must preserve the original one-shot request")
+		}
+		writeAIFinalStream(w)
+	}))
+	defer server.Close()
+
+	client := &ChatGptClient{Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test", SearchTool: tool, MaxAISearchModelCalls: 5}
+	answer, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?", DeepThinking: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || len(tool.queries) != 0 || !reflect.DeepEqual(answer, [][]string{{"4"}}) {
+		t.Fatalf("answer=%v modelCalls=%d searches=%v", answer, calls, tool.queries)
 	}
 }
 
@@ -114,7 +148,7 @@ func TestAISearchToolsRejectLongQueryAndReuseDuplicate(t *testing.T) {
 			}))
 			defer server.Close()
 			client := &ChatGptClient{Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test", SearchTool: tool}
-			if _, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "题目"}); err != nil {
+			if _, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "题目", DeepThinking: true}); err != nil {
 				t.Fatal(err)
 			}
 			if len(tool.queries) != tc.calls {
@@ -142,7 +176,7 @@ func TestAISearchToolsBoundRoundsAndDisableToolsForFinal(t *testing.T) {
 	}))
 	defer server.Close()
 	client := &ChatGptClient{Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test", SearchTool: tool}
-	_, debug, err := client.SearchAnswerDebug(model.SearchRequest{Question: "编写完整项目，生成war、PDF及截图", Type: -4})
+	_, debug, err := client.SearchAnswerDebug(model.SearchRequest{Question: "编写完整项目，生成war、PDF及截图", Type: -4, DeepThinking: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +211,7 @@ func TestAISearchToolsHonorsConfiguredModelCallAndSearchBudgets(t *testing.T) {
 		defer server.Close()
 
 		client := &ChatGptClient{Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test", SearchTool: tool, MaxAISearchModelCalls: 1, MaxAISearches: 3}
-		answer, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?"})
+		answer, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?", DeepThinking: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -215,7 +249,7 @@ func TestAISearchToolsHonorsConfiguredModelCallAndSearchBudgets(t *testing.T) {
 		defer server.Close()
 
 		client := &ChatGptClient{Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test", SearchTool: tool, MaxAISearchModelCalls: 3, MaxAISearches: 1}
-		answer, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "预算测试"})
+		answer, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "预算测试", DeepThinking: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -251,7 +285,7 @@ func TestAISearchToolsEndpointFallbackConsumesModelBudget(t *testing.T) {
 	}))
 	defer server.Close()
 	client := &ChatGptClient{Enable: true, BaseURL: server.URL, APIKey: "sk-test", Model: "test", SearchTool: tool, MaxAISearchModelCalls: 2, MaxAISearches: 3}
-	answer, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?"})
+	answer, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?", DeepThinking: true})
 	if err != nil || calls != 2 || len(tool.queries) != 0 || !reflect.DeepEqual(answer, [][]string{{"4"}}) {
 		t.Fatalf("answer=%v calls=%d searches=%v err=%v", answer, calls, tool.queries, err)
 	}
@@ -271,8 +305,9 @@ func TestAISearchToolsBoundsOriginalTaskBeforeModelCall(t *testing.T) {
 	defer server.Close()
 	client := &ChatGptClient{Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test", SearchTool: tool}
 	_, _, err := client.SearchAnswerWithUsage(model.SearchRequest{
-		Question: strings.Repeat("题", 100000),
-		Options:  []string{strings.Repeat("选项", 10000)},
+		Question:     strings.Repeat("题", 100000),
+		DeepThinking: true,
+		Options:      []string{strings.Repeat("选项", 10000)},
 	})
 	if err == nil || requestBytes > 200000 {
 		t.Fatalf("oversized task should be rejected by the required search round, requestBytes=%d err=%v", requestBytes, err)

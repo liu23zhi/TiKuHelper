@@ -12,6 +12,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/entity"
 	searchpkg "github.com/itihey/tikuAdapter/internal/search"
 	"github.com/itihey/tikuAdapter/internal/service"
+	"github.com/itihey/tikuAdapter/pkg/model"
 	"github.com/itihey/tikuAdapter/pkg/util"
 )
 
@@ -80,14 +81,16 @@ func TestAIFallbackReturnsAIUnavailableWhenServiceUnavailable(t *testing.T) {
 
 	original := runAIFallbackService
 	defer func() { runAIFallbackService = original }()
-	runAIFallbackService = func(question string, questionType int, options []string) service.AIFallbackResult {
+	var receivedRequest model.SearchRequest
+	runAIFallbackService = func(req model.SearchRequest) service.AIFallbackResult {
+		receivedRequest = req
 		return service.BuildAIFallbackUnavailableResult()
 	}
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Set("user", &user)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"],"deepThinking":true}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
 	AIFallback(ctx)
@@ -106,6 +109,9 @@ func TestAIFallbackReturnsAIUnavailableWhenServiceUnavailable(t *testing.T) {
 	if got.Error == nil || got.Error.Code != service.AIFallbackErrorCodeAIUnavailable {
 		t.Fatalf("expected AI_UNAVAILABLE, got %+v", got.Error)
 	}
+	if !receivedRequest.DeepThinking || receivedRequest.RequestID == "" {
+		t.Fatalf("expected deepThinking and requestId to reach fallback service, got %+v", receivedRequest)
+	}
 }
 
 func TestAIFallbackAcceptsAccessTokenAuthorization(t *testing.T) {
@@ -116,11 +122,11 @@ func TestAIFallbackAcceptsAccessTokenAuthorization(t *testing.T) {
 
 	original := runAIFallbackService
 	defer func() { runAIFallbackService = original }()
-	runAIFallbackService = func(question string, questionType int, options []string) service.AIFallbackResult {
+	runAIFallbackService = func(req model.SearchRequest) service.AIFallbackResult {
 		return service.AIFallbackResult{
 			Success: true,
 			Result: &service.AIFallbackAnswer{
-				Question: question,
+				Question: req.Question,
 				Answer:   "2",
 			},
 		}
@@ -162,7 +168,7 @@ func TestAIFallbackAcceptsLoginJWTAndContinuesHandlerChain(t *testing.T) {
 
 	original := runAIFallbackService
 	defer func() { runAIFallbackService = original }()
-	runAIFallbackService = func(question string, questionType int, options []string) service.AIFallbackResult {
+	runAIFallbackService = func(req model.SearchRequest) service.AIFallbackResult {
 		return service.BuildAIFallbackUnavailableResult()
 	}
 
@@ -197,12 +203,12 @@ func TestAIFallbackRejectsZeroBalanceBeforeCallingAI(t *testing.T) {
 	original := runAIFallbackService
 	defer func() { runAIFallbackService = original }()
 	aiCalls := 0
-	runAIFallbackService = func(question string, questionType int, options []string) service.AIFallbackResult {
+	runAIFallbackService = func(req model.SearchRequest) service.AIFallbackResult {
 		aiCalls++
 		return service.AIFallbackResult{
 			Success: true,
 			Result: &service.AIFallbackAnswer{
-				Question: question,
+				Question: req.Question,
 				Answer:   "2",
 			},
 		}
@@ -266,12 +272,12 @@ func TestAIFallbackRejectsExhaustedTokenQuotaBeforeCallingAI(t *testing.T) {
 	original := runAIFallbackService
 	defer func() { runAIFallbackService = original }()
 	aiCalls := 0
-	runAIFallbackService = func(question string, questionType int, options []string) service.AIFallbackResult {
+	runAIFallbackService = func(req model.SearchRequest) service.AIFallbackResult {
 		aiCalls++
 		return service.AIFallbackResult{
 			Success: true,
 			Result: &service.AIFallbackAnswer{
-				Question: question,
+				Question: req.Question,
 				Answer:   "2",
 			},
 		}
@@ -318,11 +324,11 @@ func TestAIFallbackBillsSuccessfulAIUsage(t *testing.T) {
 
 	original := runAIFallbackService
 	defer func() { runAIFallbackService = original }()
-	runAIFallbackService = func(question string, questionType int, options []string) service.AIFallbackResult {
+	runAIFallbackService = func(req model.SearchRequest) service.AIFallbackResult {
 		return service.AIFallbackResult{
 			Success: true,
 			Result: &service.AIFallbackAnswer{
-				Question: question,
+				Question: req.Question,
 				Answer:   "2",
 			},
 			Model: "sync-fallback-billing-model",
@@ -390,7 +396,7 @@ func TestAIFallbackWritesFailureAuditLogWhenAIUnavailable(t *testing.T) {
 
 	original := runAIFallbackService
 	defer func() { runAIFallbackService = original }()
-	runAIFallbackService = func(question string, questionType int, options []string) service.AIFallbackResult {
+	runAIFallbackService = func(req model.SearchRequest) service.AIFallbackResult {
 		return service.BuildAIFallbackUnavailableResult()
 	}
 

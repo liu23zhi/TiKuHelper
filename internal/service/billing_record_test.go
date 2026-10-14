@@ -246,6 +246,20 @@ func TestListBillingRecordsWithDBMergesSearchChargesByRequestID(t *testing.T) {
 	if err := db.Create(&aiRecord).Error; err != nil {
 		t.Fatalf("create ai search billing record: %v", err)
 	}
+	searchRecord := entity.BillingRecord{
+		UserID:             owner.ID,
+		AccessTokenID:      token.ID,
+		Type:               "normal_search",
+		UsedDefaultAccount: true,
+		Provider:           "ai_search",
+		Amount:             0.02,
+		RequestID:          "req-mixed-search",
+		UnitPriceSnapshot:  "provider=ai_search searchQuery=加法%20验算 searchAPI=https%3A%2F%2Fuapis.cn%2Fapi%2Fv1%2Fsearch%2Faggregate searchStatus=success searchResultCount=1",
+		Remark:             "联网搜索调用",
+	}
+	if err := db.Create(&searchRecord).Error; err != nil {
+		t.Fatalf("create AI search billing record: %v", err)
+	}
 
 	result, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{}, 1, 10)
 	if err != nil {
@@ -256,14 +270,14 @@ func TestListBillingRecordsWithDBMergesSearchChargesByRequestID(t *testing.T) {
 	}
 
 	merged := result.Data[0]
-	if merged.ID != aiRecord.ID {
-		t.Fatalf("expected latest search charge id %d to represent merged row, got %d", aiRecord.ID, merged.ID)
+	if merged.ID != searchRecord.ID {
+		t.Fatalf("expected latest search charge id %d to represent merged row, got %d", searchRecord.ID, merged.ID)
 	}
-	if merged.Amount != 2 {
-		t.Fatalf("expected merged amount 2.00, got %.8f", merged.Amount)
+	if merged.Amount != 2.02 {
+		t.Fatalf("expected merged amount 2.02, got %.8f", merged.Amount)
 	}
-	if len(merged.FeeDetails) != 2 {
-		t.Fatalf("expected two fee details, got %+v", merged.FeeDetails)
+	if len(merged.FeeDetails) != 3 {
+		t.Fatalf("expected three fee details, got %+v", merged.FeeDetails)
 	}
 	if merged.FeeDetails[0].ProviderLabel != "Icodef 题库" || merged.FeeDetails[0].Amount != 1.25 {
 		t.Fatalf("unexpected normal fee detail: %+v", merged.FeeDetails[0])
@@ -271,16 +285,19 @@ func TestListBillingRecordsWithDBMergesSearchChargesByRequestID(t *testing.T) {
 	if merged.FeeDetails[1].ProviderLabel != "AI 搜索" || merged.FeeDetails[1].Amount != 0.75 {
 		t.Fatalf("unexpected ai fee detail: %+v", merged.FeeDetails[1])
 	}
+	if merged.FeeDetails[2].ProviderLabel != "联网搜索" || merged.FeeDetails[2].Amount != 0.02 || !strings.Contains(merged.FeeDetails[2].Detail, "加法 验算") {
+		t.Fatalf("unexpected AI web search fee detail: %+v", merged.FeeDetails[2])
+	}
 	if merged.QuestionText != "混合搜索题目" {
 		t.Fatalf("expected question text from normal charge, got %q", merged.QuestionText)
 	}
 	if merged.Subject != "搜索答案，题目：混合搜索题目" {
 		t.Fatalf("expected merged subject to identify a search answer and question, got %q", merged.Subject)
 	}
-	if merged.ProviderLabel != "Icodef 题库、AI 搜索" {
+	if merged.ProviderLabel != "Icodef 题库、AI 搜索、联网搜索" {
 		t.Fatalf("expected merged provider label, got %q", merged.ProviderLabel)
 	}
-	if merged.AnswerSourceLabel != "Icodef 题库、AI 搜索" {
+	if merged.AnswerSourceLabel != "Icodef 题库、AI 搜索、联网搜索" {
 		t.Fatalf("expected merged answer source label, got %q", merged.AnswerSourceLabel)
 	}
 	if merged.ReferenceNo != "req-mixed-search" || merged.AccessTokenName != "混合搜索令牌" {

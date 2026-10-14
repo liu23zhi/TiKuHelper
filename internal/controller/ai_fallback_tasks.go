@@ -192,10 +192,12 @@ func CreateAIFallbackTask(c *gin.Context) {
 	requestID := uuid.NewString()
 	auditIdentity := newAIFallbackAuditIdentity(c)
 	req := model.SearchRequest{
-		Question:  strings.TrimSpace(input.Question),
-		Type:      input.Type,
-		Options:   input.Options,
-		SkipCache: input.SkipCache,
+		Question:     strings.TrimSpace(input.Question),
+		Type:         input.Type,
+		Options:      input.Options,
+		SkipCache:    input.SkipCache,
+		DeepThinking: input.DeepThinking,
+		RequestID:    requestID,
 	}
 	taskID := defaultAIFallbackTaskStore.create(userID, func(taskID string) (result service.AIFallbackResult) {
 		audited := false
@@ -239,7 +241,7 @@ func CreateAIFallbackTask(c *gin.Context) {
 			// 搭车：复用他人结果，**不重复计费**（费用已由发起者结算）。
 			// 整份拷贝而不是逐字段复制：AIFallbackResult 后续新增字段时
 			// 逐字段写法会静默漏掉（例如 UnpricedModel 就曾被漏掉）。
-			result := *borrowed
+			result := cloneAIFallbackResult(*borrowed)
 			logger.SysLog(fmt.Sprintf("AI 兜底并发合并命中 taskId=%s requestId=%s 复用进行中的相同请求", taskID, requestID))
 			auditResult("result", result)
 			return result
@@ -251,8 +253,20 @@ func CreateAIFallbackTask(c *gin.Context) {
 			}()
 		}
 
-		result = runAIFallbackService(input.Question, input.Type, input.Options)
+		result = runAIFallbackService(req)
 		if !result.Success {
+			warning, err := persistAIFallbackBillingWithWarning(currentBillingCtx, requestID, req, result)
+			if err != nil {
+				failure := buildAIFallbackBillingFailureResult(err)
+				if isLeader {
+					finishFallbackFlight(flightKey, leader, &failure)
+				}
+				auditResult("billing", failure)
+				return failure
+			}
+			if strings.TrimSpace(warning) != "" {
+				result.Warnings = append(result.Warnings, warning)
+			}
 			if isLeader {
 				finishFallbackFlight(flightKey, leader, &result)
 			}

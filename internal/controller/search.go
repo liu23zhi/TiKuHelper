@@ -290,10 +290,11 @@ func Search(c *gin.Context) {
 		writeSearchUnauthorized(c, fmt.Errorf("%w: 本地题库未启用，请先在默认账号配置中启用后再调用", service.ErrInvalidAccessTokenAuthorization), rawBody)
 		return
 	}
+	resolved := resolveResult
+	req.RequestID = strings.TrimSpace(resolved.RequestID)
 
 	var result [][]string      // 最后所有的答案的二维数组
 	var localAnswer [][]string // 本地答案
-	resolved := resolveResult
 	failureCollector := &searchFailureCollector{}
 	aiEnabled := shouldUseAISearch(useQuery, resolved.AIConfig)
 	if aiEnabled {
@@ -380,6 +381,7 @@ func Search(c *gin.Context) {
 		if resolved.SearchMode == searchModeAI {
 			failureCollector.beginAttempt()
 			aiResult, usage, aiErr := searchAIAnswer(resolved, req)
+			aiUsage = usage
 			if aiErr != nil {
 				failureCollector.record(resolved, searchModeAI, aiErr)
 			} else if len(aiResult) == 0 {
@@ -396,7 +398,7 @@ func Search(c *gin.Context) {
 					Provider: searchModeAI,
 					Search: func(req model.SearchRequest) ([][]string, error) {
 						answers, usage, err := searchAIAnswer(resolved, req)
-						if err == nil && len(answers) > 0 {
+						if hasAISearchUsage(usage) {
 							aiUsage = usage
 						}
 						return answers, err
@@ -430,11 +432,6 @@ func Search(c *gin.Context) {
 					logger.SysLog(fmt.Sprintf("渠道搜题命中 requestId=%s provider=%s answers=%s", strings.TrimSpace(resolved.RequestID), provider, buildSearchAnswerGroupsDebugSummary(res)))
 					mu.Lock()
 					defer mu.Unlock()
-					if provider == searchModeAI {
-						if !hasAISearchUsage(aiUsage) {
-							aiUsage = search.AISearchUsage{TotalTokens: 1}
-						}
-					}
 					if auditHitProvider == "" {
 						auditHitProvider = provider
 					}
@@ -456,7 +453,15 @@ func Search(c *gin.Context) {
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "", c.ClientIP(), audit)
 	} else {
 		reportCompletedSearchBilling(resolved, useQuery, aiEnabled, result, hasAISearchUsage(aiUsage), usedLocalSearch)
-		billingErr, warning := persistCompletedSearchBilling(resolved, useQuery, aiEnabled, req, result, aiUsage, usedLocalSearch, c.ClientIP(), audit)
+		billingUsage := aiUsage
+		if len(result) == 0 {
+			billingUsage.InputTokens = 0
+			billingUsage.CachedInputTokens = 0
+			billingUsage.CacheWriteTokens = 0
+			billingUsage.OutputTokens = 0
+			billingUsage.TotalTokens = 0
+		}
+		billingErr, warning := persistCompletedSearchBilling(resolved, useQuery, aiEnabled, req, result, billingUsage, usedLocalSearch, c.ClientIP(), audit)
 		if billingErr != nil {
 			writeSearchUnauthorized(c, fmt.Errorf("%w: 当前访问令牌累计额度不足，请调整令牌额度后重试", service.ErrInvalidAccessTokenAuthorization), rawBody)
 			return
@@ -597,15 +602,28 @@ func buildSearchAnswerGroupsDebugSummary(answers [][]string) string {
 }
 
 func buildAISearchUsageDebugSummary(usage search.AISearchUsage) string {
-	return strings.Join([]string{
+	parts := []string{
 		fmt.Sprintf("inputTokens=%d", usage.InputTokens),
 		fmt.Sprintf("cachedInputTokens=%d", usage.CachedInputTokens),
 		fmt.Sprintf("outputTokens=%d", usage.OutputTokens),
 		fmt.Sprintf("totalTokens=%d", usage.TotalTokens),
-	}, " ")
+		fmt.Sprintf("searchCallCount=%d", len(usage.SearchCalls)),
+	}
+	for index, call := range usage.SearchCalls {
+		if index >= 10 {
+			parts = append(parts, fmt.Sprintf("searchCallsOmitted=%d", len(usage.SearchCalls)-index))
+			break
+		}
+		parts = append(parts, fmt.Sprintf("searchCall%d=%s|%s|%s|results:%d/%d|durationMs:%d", index+1, logger.RedactSecrets(call.API), truncateForDebug(call.Query, 120), call.Status, call.ResultCount, call.TotalResults, call.DurationMs))
+	}
+	return strings.Join(parts, " ")
 }
 
 func hasAISearchUsage(usage search.AISearchUsage) bool {
+	return hasAIModelUsage(usage) || len(usage.SearchCalls) > 0
+}
+
+func hasAIModelUsage(usage search.AISearchUsage) bool {
 	return usage.InputTokens > 0 || usage.OutputTokens > 0 || usage.TotalTokens > 0
 }
 
@@ -913,7 +931,7 @@ func buildSearchBillingContext(resolved resolvedSearchRequestContext, useQuery s
 }
 
 func shouldBillCompletedSearch(ctx searchBillingContext, result [][]string, hasAIUsage bool) bool {
-	if !ctx.Billable || len(result) == 0 {
+	if !ctx.Billable || (len(result) == 0 && !hasAIUsage) {
 		return false
 	}
 
@@ -1032,7 +1050,7 @@ func resolveSearchPersistenceDB() *gorm.DB {
 // 第二个返回值是面向调用方的非阻断提示（目前只有「AI 模型未配置价格」），
 // 不影响答案返回，只提醒管理员去价格表补价。
 func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRequestContext, useQuery string, req model.SearchRequest, aiUsage search.AISearchUsage, usedLocalSearch bool) ([]searchBillingCharge, string, error) {
-	charges := make([]searchBillingCharge, 0, 2)
+	charges := make([]searchBillingCharge, 0, 2+len(aiUsage.SearchCalls))
 	warning := ""
 
 	if resolved.SearchMode == searchModeNormal {
@@ -1054,7 +1072,7 @@ func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRe
 
 	// Default search can execute AI while SearchMode remains "normal". AI usage is
 	// billed as a separate record so it never replaces the normal provider charge.
-	if resolved.UsedDefaultAI && hasAISearchUsage(aiUsage) {
+	if resolved.UsedDefaultAI && hasAIModelUsage(aiUsage) {
 		resolvedCharge, err := resolveCompletedAIBillingCharge(db, resolved, req, aiUsage)
 		if err != nil {
 			return nil, warning, err
@@ -1064,8 +1082,42 @@ func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRe
 		}
 		charges = append(charges, resolvedCharge.Charge)
 	}
+	if len(aiUsage.SearchCalls) > 0 {
+		searchPrice := service.GetAISearchPricePerCallWithDB(db)
+		if searchPrice > 0 {
+			for index, call := range aiUsage.SearchCalls {
+				amount := util.RoundMoney(searchPrice)
+				charges = append(charges, searchBillingCharge{
+					Provider: "ai_search",
+					Amount:   amount,
+					Snapshot: buildAISearchCallBillingSnapshot(req, call, index+1, searchPrice, amount),
+				})
+			}
+		}
+	}
 
 	return charges, warning, nil
+}
+
+func buildAISearchCallBillingSnapshot(req model.SearchRequest, call search.AISearchCallUsage, index int, price float64, amount float64) string {
+	parts := []string{
+		"provider=ai_search",
+		fmt.Sprintf("searchCall=%d", index),
+		"searchAPI=" + url.QueryEscape(strings.TrimSpace(call.API)),
+		"searchQuery=" + url.QueryEscape(strings.TrimSpace(call.Query)),
+		"searchStatus=" + url.QueryEscape(strings.TrimSpace(call.Status)),
+		fmt.Sprintf("searchDurationMs=%d", call.DurationMs),
+		fmt.Sprintf("searchResultCount=%d", call.ResultCount),
+		fmt.Sprintf("searchTotalResults=%d", call.TotalResults),
+		"searchSources=" + url.QueryEscape(strings.TrimSpace(call.SourceDetails)),
+		"searchError=" + url.QueryEscape(logger.RedactSecrets(strings.TrimSpace(call.Error))),
+		fmt.Sprintf("unitPrice=%.6f", util.RoundMoney(price)),
+		fmt.Sprintf("amount=%.6f", util.RoundMoney(amount)),
+	}
+	if question := strings.TrimSpace(req.Question); question != "" {
+		parts = append(parts, "question="+url.QueryEscape(question))
+	}
+	return strings.Join(parts, " ")
 }
 
 // buildUnpricedAIModelWarning 生成给调用方看的未定价提示。

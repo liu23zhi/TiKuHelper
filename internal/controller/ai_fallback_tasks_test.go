@@ -15,6 +15,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/entity"
 	searchpkg "github.com/itihey/tikuAdapter/internal/search"
 	"github.com/itihey/tikuAdapter/internal/service"
+	"github.com/itihey/tikuAdapter/pkg/model"
 )
 
 type lockedAIFallbackTestClock struct {
@@ -150,11 +151,11 @@ func TestCreateAIFallbackTaskReturnsRunningTaskAndStatusCanComplete(t *testing.T
 	}()
 
 	defaultAIFallbackTaskStore = newAIFallbackTaskStore(time.Minute, time.Now)
-	runAIFallbackService = func(question string, questionType int, options []string) service.AIFallbackResult {
+	runAIFallbackService = func(req model.SearchRequest) service.AIFallbackResult {
 		return service.AIFallbackResult{
 			Success: true,
 			Result: &service.AIFallbackAnswer{
-				Question: question,
+				Question: req.Question,
 				Answer:   "2",
 			},
 		}
@@ -228,12 +229,12 @@ func TestCreateAIFallbackTaskRejectsZeroBalanceBeforeQueueing(t *testing.T) {
 	}()
 	defaultAIFallbackTaskStore = newAIFallbackTaskStore(time.Minute, time.Now)
 	aiCalls := 0
-	runAIFallbackService = func(question string, questionType int, options []string) service.AIFallbackResult {
+	runAIFallbackService = func(req model.SearchRequest) service.AIFallbackResult {
 		aiCalls++
 		return service.AIFallbackResult{
 			Success: true,
 			Result: &service.AIFallbackAnswer{
-				Question: question,
+				Question: req.Question,
 				Answer:   "2",
 			},
 		}
@@ -293,11 +294,11 @@ func TestCreateAIFallbackTaskBillsSuccessfulAIUsageOnce(t *testing.T) {
 		runAIFallbackService = originalRun
 	}()
 	defaultAIFallbackTaskStore = newAIFallbackTaskStore(time.Minute, time.Now)
-	runAIFallbackService = func(question string, questionType int, options []string) service.AIFallbackResult {
+	runAIFallbackService = func(req model.SearchRequest) service.AIFallbackResult {
 		return service.AIFallbackResult{
 			Success: true,
 			Result: &service.AIFallbackAnswer{
-				Question: question,
+				Question: req.Question,
 				Answer:   "2",
 			},
 			Model: "fallback-billing-model",
@@ -426,7 +427,7 @@ func TestCreateAIFallbackTaskWritesFailureAuditLog(t *testing.T) {
 		runAIFallbackService = originalRun
 	}()
 	defaultAIFallbackTaskStore = newAIFallbackTaskStore(time.Minute, time.Now)
-	runAIFallbackService = func(question string, questionType int, options []string) service.AIFallbackResult {
+	runAIFallbackService = func(req model.SearchRequest) service.AIFallbackResult {
 		return service.BuildAIFallbackUnavailableResult()
 	}
 

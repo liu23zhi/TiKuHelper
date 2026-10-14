@@ -100,18 +100,21 @@ func SearchAIFallbackWithDB(db *gorm.DB, req model.SearchRequest) AIFallbackResu
 		MaxAISearchModelCalls: resolved.Config.MaxAISearchModelCalls,
 		MaxAISearches:         resolved.Config.MaxAISearches,
 		SearchTool:            BuildUAPISearchToolWithDB(db),
+		RequestID:             req.RequestID,
 	}
 
 	answers, usage, searchErr := runAIFallbackSearchWithUsage(client, model.SearchRequest{
-		Question: question,
-		Options:  req.Options,
-		Type:     req.Type,
+		Question:     question,
+		Options:      req.Options,
+		Type:         req.Type,
+		DeepThinking: req.DeepThinking,
+		RequestID:    req.RequestID,
 	})
 	if searchErr != nil {
 		if stderrs.Is(searchErr, pkgerrors.ErrTargetNoAnswer) {
-			return buildAIFallbackErrorResult(AIFallbackErrorCodeNoAnswer, "未找到可用答案")
+			return buildAIFallbackErrorResultWithUsage(AIFallbackErrorCodeNoAnswer, "未找到可用答案", usage, resolved.Config.Model)
 		}
-		result := buildAIFallbackErrorResult(AIFallbackErrorCodeUpstreamError, "AI 上游请求失败")
+		result := buildAIFallbackErrorResultWithUsage(AIFallbackErrorCodeUpstreamError, "AI 上游请求失败", usage, resolved.Config.Model)
 		result.FailureDetail = logger.RedactSecrets(searchErr.Error(), resolved.Config.APIKey)
 		return result
 	}
@@ -119,14 +122,14 @@ func SearchAIFallbackWithDB(db *gorm.DB, req model.SearchRequest) AIFallbackResu
 	normalizedAnswers, resultCode := collectUsableAIFallbackAnswers(answers)
 	if len(normalizedAnswers) == 0 {
 		if resultCode == AIFallbackErrorCodeUnsafeToAnswer {
-			return buildAIFallbackErrorResult(AIFallbackErrorCodeUnsafeToAnswer, "AI 判断当前题目不适合作答")
+			return buildAIFallbackErrorResultWithUsage(AIFallbackErrorCodeUnsafeToAnswer, "AI 判断当前题目不适合作答", usage, resolved.Config.Model)
 		}
-		return buildAIFallbackErrorResult(AIFallbackErrorCodeNoAnswer, "未找到可用答案")
+		return buildAIFallbackErrorResultWithUsage(AIFallbackErrorCodeNoAnswer, "未找到可用答案", usage, resolved.Config.Model)
 	}
 
 	normalizedAnswers = normalizeAIFallbackAnswersForRequest(normalizedAnswers, req)
 	if len(normalizedAnswers) == 0 {
-		return buildAIFallbackErrorResult(AIFallbackErrorCodeNoAnswer, "未找到可用答案")
+		return buildAIFallbackErrorResultWithUsage(AIFallbackErrorCodeNoAnswer, "未找到可用答案", usage, resolved.Config.Model)
 	}
 
 	return AIFallbackResult{
@@ -138,6 +141,13 @@ func SearchAIFallbackWithDB(db *gorm.DB, req model.SearchRequest) AIFallbackResu
 		Usage: usage,
 		Model: resolved.Config.Model,
 	}
+}
+
+func buildAIFallbackErrorResultWithUsage(code AIFallbackErrorCode, message string, usage internalsearch.AISearchUsage, modelName string) AIFallbackResult {
+	result := buildAIFallbackErrorResult(code, message)
+	result.Usage = usage
+	result.Model = strings.TrimSpace(modelName)
+	return result
 }
 
 func buildAIFallbackErrorResult(code AIFallbackErrorCode, message string) AIFallbackResult {

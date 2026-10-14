@@ -128,6 +128,18 @@
         <div class="hint">每次 AI 搜索最多调用搜索 API 的次数，默认 3 次。每一轮模型调用前都会告知剩余搜索次数，达到最后一轮时必须直接输出答案。</div>
       </a-form-item>
 
+      <a-form-item label="联网搜索单价（元/次）">
+        <a-input-number
+          v-model:value="formState.searchPricePerCall"
+          :min="0"
+          :precision="6"
+          :step="0.01"
+          style="width: 180px"
+        />
+        <span class="unit-label">元 / 次</span>
+        <div class="hint">默认 0 元。大于 0 时，每次实际调用联网搜索 API 都单独记一条账单，并合并显示在对应搜题账单详情中；命中本次 AI 搜索内的相同查询缓存不会重复计价。</div>
+      </a-form-item>
+
       <a-form-item label="Prompt 设置">
         <a-textarea
           v-model:value="formState.prompt"
@@ -419,6 +431,7 @@ export default defineComponent({
       topP: 0,
       maxAISearchModelCalls: DEFAULT_MAX_AI_SEARCH_MODEL_CALLS,
       maxAISearches: DEFAULT_MAX_AI_SEARCHES,
+      searchPricePerCall: 0,
     })
 
     const priceRows = ref([])
@@ -474,6 +487,7 @@ export default defineComponent({
           formState.topP = data.topP ?? 0
           formState.maxAISearchModelCalls = normalizeAISearchBudget(data.maxAISearchModelCalls, DEFAULT_MAX_AI_SEARCH_MODEL_CALLS)
           formState.maxAISearches = normalizeAISearchBudget(data.maxAISearches, DEFAULT_MAX_AI_SEARCHES)
+          formState.searchPricePerCall = Number(data.searchPricePerCall ?? 0)
         } else {
           message.error(res?.message || '获取 AI 搜索配置失败')
         }
@@ -607,12 +621,17 @@ export default defineComponent({
     submitSave(baseUrl) {
       const maxAISearchModelCalls = Number(this.formState.maxAISearchModelCalls)
       const maxAISearches = Number(this.formState.maxAISearches)
+      const searchPricePerCall = Number(this.formState.searchPricePerCall)
       if (!Number.isSafeInteger(maxAISearchModelCalls) || maxAISearchModelCalls < MIN_AI_SEARCH_MODEL_CALLS || maxAISearchModelCalls > MAX_AI_SEARCH_BUDGET) {
         message.error(`模型最大调用次数必须是 ${MIN_AI_SEARCH_MODEL_CALLS}～${MAX_AI_SEARCH_BUDGET} 的整数`)
         return
       }
       if (!Number.isSafeInteger(maxAISearches) || maxAISearches < MIN_AI_SEARCHES || maxAISearches > MAX_AI_SEARCH_BUDGET) {
         message.error(`最大搜索次数必须是 ${MIN_AI_SEARCHES}～${MAX_AI_SEARCH_BUDGET} 的整数`)
+        return
+      }
+      if (!Number.isFinite(searchPricePerCall) || searchPricePerCall < 0) {
+        message.error('联网搜索单价必须是大于或等于 0 的有效金额')
         return
       }
       this.saving = true
