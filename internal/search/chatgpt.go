@@ -99,6 +99,7 @@ type AISearchTrace struct {
 	ReasoningChars      int    `json:"reasoningChars,omitempty"`
 	ContentPreview      string `json:"contentPreview,omitempty"`
 	Error               string `json:"error,omitempty"`
+	RequestBody         string `json:"-"`
 	FullResponse        string `json:"-"`
 	RawResponse         string `json:"-"`
 }
@@ -134,6 +135,9 @@ func (in *ChatGptClient) logAISearchTrace(trace AISearchTrace) {
 	}
 	if trace.ResultSummary != "" {
 		logger.AIThinkingWithSecrets(fmt.Sprintf("AI搜索完整结果摘要 requestId=%s round=%d stage=%s\n%s", requestID, trace.Round, trace.Stage, trace.ResultSummary), in.APIKey)
+	}
+	if trace.RequestBody != "" {
+		logger.AIThinkingWithSecrets(fmt.Sprintf("AI模型完整请求 requestId=%s round=%d stage=%s\n%s", requestID, trace.Round, trace.Stage, trace.RequestBody), in.APIKey)
 	}
 	if trace.FullResponse != "" {
 		logger.AIThinkingWithSecrets(fmt.Sprintf("AI模型完整响应 requestId=%s round=%d stage=%s\n%s", requestID, trace.Round, trace.Stage, trace.FullResponse), in.APIKey)
@@ -906,7 +910,7 @@ func (in *ChatGptClient) requestStreamAnswerDetailed(endpoint string, systemProm
 		remainingAfterCall := maxModelCalls - *modelCalls
 		recordTrace(AISearchTrace{Round: *modelCalls, Stage: "普通模型调用开始", Endpoint: endpoint, ModelCallCount: *modelCalls, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingAfterCall})
 		content, usage, statusCode, rawResponse, retryable, callErr := in.executeAISearchStreamRequest(endpoint, payload, requestBody, requestStartedAt)
-		recordTrace(AISearchTrace{Round: *modelCalls, Stage: "普通模型响应", Endpoint: endpoint, ModelCallCount: *modelCalls, ModelCallBudget: maxModelCalls, RemainingModelCalls: maxModelCalls - *modelCalls, Status: fmt.Sprintf("%d", statusCode), DurationMs: time.Since(attemptStartedAt).Milliseconds(), ContentPreview: content, FullResponse: content, RawResponse: rawResponse, Error: errorString(callErr)})
+		recordTrace(AISearchTrace{Round: *modelCalls, Stage: "普通模型响应", Endpoint: endpoint, ModelCallCount: *modelCalls, ModelCallBudget: maxModelCalls, RemainingModelCalls: maxModelCalls - *modelCalls, Status: fmt.Sprintf("%d", statusCode), DurationMs: time.Since(attemptStartedAt).Milliseconds(), RequestBody: requestBody, ContentPreview: content, FullResponse: content, RawResponse: rawResponse, Error: errorString(callErr)})
 		usage.Trace = append([]AISearchTrace(nil), traceEvents...)
 		lastUsage = usage
 		lastStatusCode = statusCode

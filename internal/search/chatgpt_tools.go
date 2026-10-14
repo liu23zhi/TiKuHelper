@@ -157,7 +157,6 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 		}
 		roundStartedAt := time.Now()
 		messages = append(messages, openAIChatMessage{Role: "system", Content: buildAISearchBudgetPrompt(remainingModelCalls, remainingSearches, finalRound)})
-		in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "模型调用开始", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches})
 		payload := openAIChatCompletionRequest{
 			Model: strings.TrimSpace(in.Model), Stream: true, Messages: messages,
 			StreamOptions: &openAIStreamOptions{IncludeUsage: true}, MaxTokens: aiToolMaxOutputTokens,
@@ -175,6 +174,7 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 		if err != nil {
 			return nil, debug, errors.ErrParserJSON
 		}
+		in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "模型调用开始", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, RequestBody: string(encoded)})
 		result, status, callErr := in.requestAIToolRound(ctx, endpoint, encoded)
 		in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "模型响应", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, Status: fmt.Sprintf("%d", status), DurationMs: time.Since(roundStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, ReasoningChars: result.ReasoningChars, ContentPreview: result.Content, FullResponse: result.Content, RawResponse: result.Raw, Error: errorString(callErr)})
 		requestBodies = append(requestBodies, string(encoded))
