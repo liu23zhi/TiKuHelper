@@ -43,6 +43,11 @@ func CreateManager() (*Manager, error) {
 	}
 	config := registry.Config()
 	db := registry.RegisterDB(config)
+	if settings, err := service.GetSystemSettingDetailWithDB(db); err != nil {
+		logger.SysWarn("读取日志大小设置失败，继续使用当前限制：" + err.Error())
+	} else if err := logger.SetMaxTotalLogBytes(settings.MaxLogSizeBytes); err != nil {
+		logger.SysWarn("应用日志大小设置失败，继续使用当前限制：" + err.Error())
+	}
 	jwtSecret, err := registry.ResolveJWTSecretForDB(db, config.JWTSecret)
 	if err != nil {
 		return nil, err

@@ -25,6 +25,7 @@ func TestSystemSettingDetailReturnsCurrentSettings(t *testing.T) {
 	loadSystemSettingDetail = func() (service.SystemSettingDetail, error) {
 		return service.SystemSettingDetail{
 			RegisterEnabled:        true,
+			MaxLogSizeBytes:        service.DefaultMaxLogSizeBytes,
 			EPayVersion:            "v2",
 			EPayGatewayURL:         "https://pay.example.com/submit.php",
 			EPayPartnerID:          "10001",
@@ -52,6 +53,9 @@ func TestSystemSettingDetailReturnsCurrentSettings(t *testing.T) {
 	}
 	if !detail.RegisterEnabled {
 		t.Fatal("expected register enabled true")
+	}
+	if detail.MaxLogSizeBytes != service.DefaultMaxLogSizeBytes {
+		t.Fatalf("expected max log size %d, got %d", service.DefaultMaxLogSizeBytes, detail.MaxLogSizeBytes)
 	}
 	if detail.EPayVersion != "v2" {
 		t.Fatalf("expected epay version v2, got %s", detail.EPayVersion)
@@ -227,7 +231,7 @@ func TestUpdateSystemSettingPersistsAndReturnsDetail(t *testing.T) {
 		}, nil
 	}
 
-	payload := []byte(`{"registerEnabled":true,"epayVersion":"v1","epayGatewayUrl":" https://pay.example.com/submit.php ","epayPartnerId":" 10001 ","epayPlatformPublicKey":" platform-public-key ","epayMerchantPrivateKey":" merchant-private-key ","epayNotifyUrl":" https://app.example.com/adapter-service/payment/notify ","epayReturnUrl":" https://app.example.com/adapter/recharge/result "}`)
+	payload := []byte(`{"registerEnabled":true,"maxLogSizeBytes":2147483648,"epayVersion":"v1","epayGatewayUrl":" https://pay.example.com/submit.php ","epayPartnerId":" 10001 ","epayPlatformPublicKey":" platform-public-key ","epayMerchantPrivateKey":" merchant-private-key ","epayNotifyUrl":" https://app.example.com/adapter-service/payment/notify ","epayReturnUrl":" https://app.example.com/adapter/recharge/result "}`)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/system-settings", bytes.NewReader(payload))
@@ -241,6 +245,9 @@ func TestUpdateSystemSettingPersistsAndReturnsDetail(t *testing.T) {
 	}
 	if !received.RegisterEnabled {
 		t.Fatal("expected register enabled input true")
+	}
+	if received.MaxLogSizeBytes != 2147483648 {
+		t.Fatalf("expected max log size input, got %d", received.MaxLogSizeBytes)
 	}
 	if received.EPayVersion != "v1" {
 		t.Fatalf("expected raw epay version v1, got %s", received.EPayVersion)

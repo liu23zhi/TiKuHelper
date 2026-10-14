@@ -83,6 +83,53 @@ func TestGetSystemSettingDetailWithDBDefaults(t *testing.T) {
 	if detail.SiteName != DefaultSiteName {
 		t.Fatalf("expected default site name %s, got %s", DefaultSiteName, detail.SiteName)
 	}
+	if detail.MaxLogSizeBytes != DefaultMaxLogSizeBytes {
+		t.Fatalf("expected default log size %d, got %d", DefaultMaxLogSizeBytes, detail.MaxLogSizeBytes)
+	}
+}
+
+func TestUpdateSystemSettingDetailWithDBPersistsMaxLogSizeBytes(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+	want := int64(2 * 1024 * 1024 * 1024)
+
+	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{MaxLogSizeBytes: want})
+	if err != nil {
+		t.Fatalf("update max log size: %v", err)
+	}
+	if updated.MaxLogSizeBytes != want {
+		t.Fatalf("expected max log size %d, got %d", want, updated.MaxLogSizeBytes)
+	}
+
+	reloaded, err := GetSystemSettingDetailWithDB(db)
+	if err != nil {
+		t.Fatalf("reload max log size: %v", err)
+	}
+	if reloaded.MaxLogSizeBytes != want {
+		t.Fatalf("expected reloaded max log size %d, got %d", want, reloaded.MaxLogSizeBytes)
+	}
+	setting, exists, err := getSystemSettingByKey(db, MaxLogSizeBytesSettingKey)
+	if err != nil {
+		t.Fatalf("load max log size setting: %v", err)
+	}
+	if !exists || setting.Value != "2147483648" {
+		t.Fatalf("expected persisted max log size bytes, exists=%t setting=%+v", exists, setting)
+	}
+}
+
+func TestUpdateSystemSettingDetailWithDBKeepsMaxLogSizeWhenLegacyPayloadOmitsIt(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+	want := int64(3 * 1024 * 1024 * 1024)
+	if _, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{MaxLogSizeBytes: want}); err != nil {
+		t.Fatalf("seed max log size: %v", err)
+	}
+
+	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{SiteName: "兼容旧前端"})
+	if err != nil {
+		t.Fatalf("update legacy payload: %v", err)
+	}
+	if updated.MaxLogSizeBytes != want {
+		t.Fatalf("legacy payload must preserve max log size %d, got %d", want, updated.MaxLogSizeBytes)
+	}
 }
 
 func TestUpdateSystemSettingDetailWithDBPersistsSiteName(t *testing.T) {

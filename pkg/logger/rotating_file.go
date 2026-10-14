@@ -27,10 +27,10 @@ func openRotatingFile(dir, name string, maxBytes int64) (*rotatingFile, error) {
 	}
 	for _, entry := range entries {
 		filename := entry.Name()
-		if entry.IsDir() || !strings.HasPrefix(filename, name) || !strings.HasSuffix(filename, ".txt") {
+		if entry.IsDir() || !strings.HasPrefix(filename, name) || !isManagedLogArchive(filename) {
 			continue
 		}
-		digits := strings.TrimSuffix(strings.TrimPrefix(filename, name), ".txt")
+		digits := strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(filename, name), ".txt.gz"), ".txt")
 		if digits == "" || strings.IndexFunc(digits, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
 			continue
 		}
@@ -81,10 +81,16 @@ func (w *rotatingFile) rotate() error {
 	archive := ""
 	for {
 		archive = filepath.Join(w.dir, fmt.Sprintf("%s%02d.txt", w.name, sequence))
-		if _, err := os.Lstat(archive); os.IsNotExist(err) {
+		_, archiveErr := os.Lstat(archive)
+		_, gzipErr := os.Lstat(archive + ".gz")
+		if os.IsNotExist(archiveErr) && os.IsNotExist(gzipErr) {
 			break
-		} else if err != nil {
-			return err
+		}
+		if archiveErr != nil && !os.IsNotExist(archiveErr) {
+			return archiveErr
+		}
+		if gzipErr != nil && !os.IsNotExist(gzipErr) {
+			return gzipErr
 		}
 		sequence++
 	}

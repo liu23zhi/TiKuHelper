@@ -82,11 +82,12 @@ type openAIToolCallDelta struct {
 }
 
 type aiToolStreamResult struct {
-	Content      string
-	Calls        []openAIToolCall
-	Usage        AISearchUsage
-	Raw          string
-	FinishReason string
+	Content        string
+	Calls          []openAIToolCall
+	Usage          AISearchUsage
+	Raw            string
+	FinishReason   string
+	ReasoningChars int
 }
 
 func aiWebSearchToolDefinition() openAITool {
@@ -135,6 +136,8 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 			return nil, debug, fmt.Errorf("AI联网搜题超过总时限: %w", err)
 		}
 		finalRound := round == aiToolMaxRounds-1 || toolsDisabled || searches >= aiToolMaxSearches
+		roundStartedAt := time.Now()
+		in.logAISearchTrace(AISearchTrace{Round: round + 1, Stage: "模型调用开始", Endpoint: endpoint, SearchCount: searches, SearchBudget: aiToolMaxSearches})
 		payload := openAIChatCompletionRequest{
 			Model: strings.TrimSpace(in.Model), Stream: true, Messages: messages,
 			StreamOptions: &openAIStreamOptions{IncludeUsage: true}, MaxTokens: aiToolMaxOutputTokens,
@@ -154,10 +157,13 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 			return nil, debug, errors.ErrParserJSON
 		}
 		result, status, callErr := in.requestAIToolRound(ctx, endpoint, encoded)
+		in.logAISearchTrace(AISearchTrace{Round: round + 1, Stage: "模型响应", Endpoint: endpoint, Status: fmt.Sprintf("%d", status), DurationMs: time.Since(roundStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: aiToolMaxSearches, ReasoningChars: result.ReasoningChars, ContentPreview: result.Content, Error: errorString(callErr)})
 		// An alternate URL is only safe before any model round has succeeded.
 		if round == 0 && status == http.StatusNotFound && len(endpoints) > 1 {
+			fallbackStartedAt := time.Now()
 			endpoint = endpoints[1]
-			result, _, callErr = in.requestAIToolRound(ctx, endpoint, encoded)
+			result, status, callErr = in.requestAIToolRound(ctx, endpoint, encoded)
+			in.logAISearchTrace(AISearchTrace{Round: round + 1, Stage: "备用模型端点响应", Endpoint: endpoint, Status: fmt.Sprintf("%d", status), DurationMs: time.Since(fallbackStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: aiToolMaxSearches, ReasoningChars: result.ReasoningChars, ContentPreview: result.Content, Error: errorString(callErr)})
 		}
 		requestBodies = append(requestBodies, string(encoded))
 		rawResponses = append(rawResponses, result.Raw)
@@ -193,7 +199,11 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 			if call.ID == "" {
 				return nil, debug, fmt.Errorf("AI工具调用缺少id")
 			}
+			toolStartedAt := time.Now()
+			toolQuery := parseAISearchToolQuery(call.Function.Arguments)
+			in.logAISearchTrace(AISearchTrace{Round: round + 1, Stage: "搜索工具调用开始", Query: toolQuery, SearchCount: searches, SearchBudget: aiToolMaxSearches})
 			content, abort := in.executeAISearchTool(ctx, call, &searches, results, &toolContentBytes)
+			in.logAISearchTrace(AISearchTrace{Round: round + 1, Stage: "搜索工具完成", Query: toolQuery, DurationMs: time.Since(toolStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: aiToolMaxSearches, Status: map[bool]string{true: "停止", false: "继续"}[abort], ResultCount: countAISearchToolResults(content)})
 			messages = append(messages, openAIChatMessage{Role: "tool", ToolCallID: call.ID, Content: content})
 			toolsDisabled = toolsDisabled || abort
 		}
@@ -326,6 +336,7 @@ func readAIToolStream(body io.Reader) (result aiToolStreamResult, err error) {
 		}
 		for _, choice := range chunk.Choices {
 			content.WriteString(choice.Delta.Content)
+			result.ReasoningChars += len([]rune(choice.Delta.ReasoningContent))
 			if choice.FinishReason != "" {
 				result.FinishReason = choice.FinishReason
 			}
@@ -367,6 +378,24 @@ func readAIToolStream(body io.Reader) (result aiToolStreamResult, err error) {
 		result.Calls = append(result.Calls, *calls[index])
 	}
 	return result, nil
+}
+
+func parseAISearchToolQuery(arguments string) string {
+	var request uapi.SearchAggregateRequest
+	if json.Unmarshal([]byte(arguments), &request) != nil {
+		return "参数解析失败"
+	}
+	return strings.TrimSpace(request.Query)
+}
+
+func countAISearchToolResults(content string) int {
+	var payload struct {
+		Results []json.RawMessage `json:"results"`
+	}
+	if json.Unmarshal([]byte(content), &payload) != nil {
+		return 0
+	}
+	return len(payload.Results)
 }
 
 func (in *ChatGptClient) executeAISearchTool(ctx context.Context, call openAIToolCall, searches *int, cache map[string]string, contentBytes *int) (string, bool) {

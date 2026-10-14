@@ -38,7 +38,7 @@ func writeAuditLog(user *entity.User, module string, action int32, description s
 		Qid:         qid,
 		OldAnswer:   oldAnswer,
 		NewAnswer:   newAnswer,
-		CreateTime:  time.Now(),
+		CreateTime:  time.Now().In(logger.ShanghaiLocation()),
 	}
 	if user != nil {
 		entry.UserID = user.ID

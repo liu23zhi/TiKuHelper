@@ -25,6 +25,7 @@ import (
 
 	"github.com/go-resty/resty/v2"
 	"github.com/itihey/tikuAdapter/pkg/errors"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/model"
 	"github.com/itihey/tikuAdapter/pkg/util"
 )
@@ -39,6 +40,7 @@ type ChatGptClient struct {
 	Temperature float64
 	TopP        float64
 	SearchTool  AISearchTool
+	RequestID   string
 }
 
 type AISearchUsage struct {
@@ -54,6 +56,36 @@ type AISearchDebugResult struct {
 	RequestBody string
 	RawResponse string
 	Usage       AISearchUsage
+	Trace       []AISearchTrace `json:"trace,omitempty"`
+}
+
+// AISearchTrace records the auditable request/tool path without storing hidden chain-of-thought.
+type AISearchTrace struct {
+	Round          int
+	Stage          string
+	Endpoint       string
+	Query          string
+	Status         string
+	DurationMs     int64
+	SearchCount    int
+	SearchBudget   int
+	ResultCount    int
+	CacheHit       bool
+	ReasoningChars int
+	ContentPreview string
+	Error          string
+}
+
+func (in *ChatGptClient) logAISearchTrace(trace AISearchTrace) {
+	requestID := strings.TrimSpace(in.RequestID)
+	logger.SysLog(fmt.Sprintf("AI搜索轨迹 requestId=%s round=%d stage=%s endpoint=%s query=%s status=%s durationMs=%d searches=%d/%d results=%d cacheHit=%t reasoningChars=%d content=%s error=%s", requestID, trace.Round, trace.Stage, logger.RedactSecrets(trace.Endpoint), truncateAIToolText(trace.Query, 120), trace.Status, trace.DurationMs, trace.SearchCount, trace.SearchBudget, trace.ResultCount, trace.CacheHit, trace.ReasoningChars, truncateAIToolText(trace.ContentPreview, 240), logger.RedactSecrets(trace.Error)))
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 type openAIChatCompletionRequest struct {
@@ -93,8 +125,9 @@ type openAIStreamChunk struct {
 	Error   json.RawMessage `json:"error,omitempty"`
 	Choices []struct {
 		Delta struct {
-			Content   string                `json:"content"`
-			ToolCalls []openAIToolCallDelta `json:"tool_calls,omitempty"`
+			Content          string                `json:"content"`
+			ReasoningContent string                `json:"reasoning_content,omitempty"`
+			ToolCalls        []openAIToolCallDelta `json:"tool_calls,omitempty"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -778,7 +811,10 @@ func (in *ChatGptClient) requestStreamAnswerDetailed(endpoint string, systemProm
 			}
 		}
 
+		attemptStartedAt := time.Now()
+		in.logAISearchTrace(AISearchTrace{Round: attempt + 1, Stage: "普通模型调用开始", Endpoint: endpoint})
 		content, usage, statusCode, rawResponse, retryable, callErr := in.executeAISearchStreamRequest(endpoint, payload, requestBody, requestStartedAt)
+		in.logAISearchTrace(AISearchTrace{Round: attempt + 1, Stage: "普通模型响应", Endpoint: endpoint, Status: fmt.Sprintf("%d", statusCode), DurationMs: time.Since(attemptStartedAt).Milliseconds(), ContentPreview: content, Error: errorString(callErr)})
 		lastUsage = usage
 		lastStatusCode = statusCode
 		lastRawResponse = rawResponse

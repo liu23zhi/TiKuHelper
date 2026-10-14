@@ -42,6 +42,7 @@ const CaptchaAPIKeySettingKey = "captcha_api_key"
 const CaptchaTypeSettingKey = "captcha_type"
 const SMSBaoCredentialTypeSettingKey = "smsbao_credential_type"
 const SMSBaoRegionModeSettingKey = "smsbao_region_mode"
+const MaxLogSizeBytesSettingKey = "max_log_size_bytes"
 
 // UAPIAPIKeySettingKey 是 UApiPro（uapis.cn）的 API 密钥。
 //
@@ -63,6 +64,7 @@ const DefaultCaptchaType = "RANDOM"
 const DefaultSMSBaoCredentialType = "apikey"
 const DefaultSMSBaoRegionMode = "auto"
 const DefaultWechatLoginMode = "scan"
+const DefaultMaxLogSizeBytes int64 = 5 * 1024 * 1024 * 1024
 
 const paymentMethodWXPay = "wxpay"
 const wechatLoginModeScan = "scan"
@@ -100,7 +102,8 @@ type SystemSettingDetail struct {
 	SMSBaoCredentialType      string  `json:"smsbaoCredentialType"`
 	SMSBaoRegionMode          string  `json:"smsbaoRegionMode"`
 	// UAPIAPIKey 是 UApiPro 的 API 密钥；与其它密钥一样**明文**返回。
-	UAPIAPIKey string `json:"uapiApiKey"`
+	UAPIAPIKey      string `json:"uapiApiKey"`
+	MaxLogSizeBytes int64  `json:"maxLogSizeBytes"`
 }
 
 type UpdateSystemSettingInput struct {
@@ -135,7 +138,8 @@ type UpdateSystemSettingInput struct {
 	SMSBaoRegionMode          string  `json:"smsbaoRegionMode"`
 	// UAPIAPIKey 是 UApiPro 的 API 密钥；与其它密钥一样**明文**返回。
 	// 写入语义与其它密钥一致：空值或 ******** 表示保持原值，__CLEAR__ 表示清空。
-	UAPIAPIKey string `json:"uapiApiKey"`
+	UAPIAPIKey      string `json:"uapiApiKey"`
+	MaxLogSizeBytes int64  `json:"maxLogSizeBytes"`
 }
 
 var ErrInvalidNewUserBonusAmount = errors.New("新用户赠送金额不能为负数")
@@ -279,6 +283,7 @@ func GetSystemSettingDetailWithDB(db *gorm.DB) (SystemSettingDetail, error) {
 		SMSBaoCredentialType:      normalizeSMSBaoCredentialType(getSystemSettingStringWithDefault(db, SMSBaoCredentialTypeSettingKey, DefaultSMSBaoCredentialType)),
 		SMSBaoRegionMode:          normalizeSMSBaoRegionMode(getSystemSettingStringWithDefault(db, SMSBaoRegionModeSettingKey, DefaultSMSBaoRegionMode)),
 		UAPIAPIKey:                strings.TrimSpace(getSystemSettingStringWithDefault(db, UAPIAPIKeySettingKey, "")),
+		MaxLogSizeBytes:           getPositiveInt64SystemSetting(db, MaxLogSizeBytesSettingKey, DefaultMaxLogSizeBytes),
 	}
 	bonusAmount, err := GetNewUserBonusAmountWithDB(db)
 	if err != nil {
@@ -337,7 +342,8 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		// UApiPro 密钥不脱敏：系统设置页本身只有管理员能打开（与「默认账号配置」
 		// 的 token 处理一致），明文存取、由前端密码框隐藏显示。
 		// 直接 TrimSpace 而不是 mergeStoredSecretInput —— 留空即清空，语义直观。
-		UAPIAPIKey: strings.TrimSpace(input.UAPIAPIKey),
+		UAPIAPIKey:      strings.TrimSpace(input.UAPIAPIKey),
+		MaxLogSizeBytes: resolveMaxLogSizeBytes(db, input.MaxLogSizeBytes),
 	}
 	normalized.AlternativeLoginEnabled = normalized.SMSLoginEnabled || normalized.WechatLoginEnabled
 
@@ -376,6 +382,7 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		{SMSBaoCredentialTypeSettingKey, normalized.SMSBaoCredentialType, "短信宝凭证类型"},
 		{SMSBaoRegionModeSettingKey, normalized.SMSBaoRegionMode, "短信宝发送区域模式"},
 		{UAPIAPIKeySettingKey, normalized.UAPIAPIKey, "UApiPro API 密钥"},
+		{MaxLogSizeBytesSettingKey, strconv.FormatInt(normalized.MaxLogSizeBytes, 10), "日志文件总大小上限（字节）"},
 	}
 	for _, item := range settings {
 		if err := saveSystemSettingValue(db, item.key, item.value, item.remark); err != nil {
@@ -384,6 +391,21 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 	}
 
 	return GetSystemSettingDetailWithDB(db)
+}
+
+func resolveMaxLogSizeBytes(db *gorm.DB, requested int64) int64 {
+	if requested > 0 {
+		return requested
+	}
+	return getPositiveInt64SystemSetting(db, MaxLogSizeBytesSettingKey, DefaultMaxLogSizeBytes)
+}
+
+func getPositiveInt64SystemSetting(db *gorm.DB, key string, defaultValue int64) int64 {
+	value, err := strconv.ParseInt(strings.TrimSpace(getSystemSettingStringWithDefault(db, key, strconv.FormatInt(defaultValue, 10))), 10, 64)
+	if err != nil || value <= 0 {
+		return defaultValue
+	}
+	return value
 }
 
 func getSystemSettingStringWithDefault(db *gorm.DB, key string, defaultValue string) string {

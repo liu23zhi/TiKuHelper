@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"archive/zip"
 	"bytes"
 	"fmt"
 	"io"
@@ -77,14 +78,128 @@ func TestLoggerArchivesOldestFileAsSuffix01(t *testing.T) {
 
 func readLoggerFile(t *testing.T, dir string, name string) string {
 	t.Helper()
-	content, err := os.ReadFile(filepath.Join(dir, name))
-	if err != nil {
-		t.Fatalf("read %s: %v", name, err)
+	path := filepath.Join(dir, name)
+	content, err := os.ReadFile(path)
+	if err == nil {
+		return string(content)
 	}
-	return string(content)
+	t.Fatalf("read %s: %v", name, err)
+	return ""
 }
 
-func TestLoggerAppendsAndContinuesArchiveNumbersAfterRestart(t *testing.T) {
+func readLogArchive(t *testing.T, dir string) (string, map[string]string) {
+	t.Helper()
+	archives, err := filepath.Glob(filepath.Join(dir, "archive", "*.zip"))
+	if err != nil || len(archives) != 1 {
+		t.Fatalf("expected one log archive, got %v (err=%v)", archives, err)
+	}
+	reader, err := zip.OpenReader(archives[0])
+	if err != nil {
+		t.Fatalf("open log archive: %v", err)
+	}
+	defer reader.Close()
+	entries := make(map[string]string, len(reader.File))
+	for _, item := range reader.File {
+		file, err := item.Open()
+		if err != nil {
+			t.Fatalf("open archive entry %s: %v", item.Name, err)
+		}
+		content, readErr := io.ReadAll(file)
+		_ = file.Close()
+		if readErr != nil {
+			t.Fatalf("read archive entry %s: %v", item.Name, readErr)
+		}
+		entries[item.Name] = string(content)
+	}
+	return filepath.Base(archives[0]), entries
+}
+
+func TestLoggerArchivesPreviousLogsAsSingleZipOnStartup(t *testing.T) {
+	dir := t.TempDir()
+	for name, item := range map[string]string{
+		"Tiku.txt":         "[INFO] 2026/10/13 - 08:05:00 | 上一次启动的全部日志\n",
+		"Tiku-warning.txt": "[WARN] 2026/10/13 - 08:00:00 | 上一次启动的警告日志\n",
+		"Tiku-error.txt":   "[ERROR] 2026/10/13 - 08:10:00 | 上一次启动的错误日志\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(item), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := setupLoggerWithLimits(dir, 1024, 1024*1024); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = closeLogger() })
+
+	archiveName, entries := readLogArchive(t, dir)
+	if archiveName != "20261013_080000.zip" {
+		t.Fatalf("archive name should use earliest log start time, got %s", archiveName)
+	}
+	for _, name := range []string{"Tiku.txt", "Tiku-warning.txt", "Tiku-error.txt"} {
+		if !strings.Contains(entries[name], "上一次启动") {
+			t.Fatalf("startup archive lost %s content: %s", name, entries[name])
+		}
+		if got := readLoggerFile(t, dir, name); got != "" {
+			t.Fatalf("active %s log should start empty after startup archive: %q", name, got)
+		}
+	}
+}
+
+func TestLoggerPrunesOldestArchivesWhenTotalLimitExceeded(t *testing.T) {
+	dir := t.TempDir()
+	oldContent := make([]byte, 256)
+	newContent := make([]byte, 256)
+	for i := range oldContent {
+		oldContent[i] = byte(i)
+		newContent[i] = byte(255 - i)
+	}
+	archiveDir := filepath.Join(dir, "archive")
+	if err := os.MkdirAll(archiveDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := filepath.Join(archiveDir, "20260101_000000.zip")
+	newPath := filepath.Join(archiveDir, "20260102_000000.zip")
+	if err := os.WriteFile(oldPath, oldContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newPath, newContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	newTime := oldTime.Add(time.Hour)
+	if err := os.Chtimes(oldPath, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(newPath, newTime, newTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := setupLoggerWithLimits(dir, 1024, 500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = closeLogger() })
+
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("oldest archive should be removed after total limit pruning, err=%v", err)
+	}
+	if got, err := os.ReadFile(newPath); err != nil || len(got) != len(newContent) {
+		t.Fatalf("newest archive should be kept, got %d bytes", len(got))
+	}
+	if _, err := os.Stat(filepath.Join(dir, "Tiku.txt")); err != nil {
+		t.Fatalf("active log must remain after pruning: %v", err)
+	}
+}
+
+func TestLoggerUsesShanghaiTime(t *testing.T) {
+	location := ShanghaiLocation()
+	if location == nil || location.String() != "Asia/Shanghai" {
+		t.Fatalf("expected Asia/Shanghai location, got %v", location)
+	}
+	_, offset := time.Now().In(location).Zone()
+	if offset != 8*60*60 {
+		t.Fatalf("expected Shanghai UTC+8 offset, got %d", offset)
+	}
+}
+
+func TestLoggerArchivesAllPreviousLogsAndStartsFreshAfterRestart(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "Tiku01.txt"), []byte("oldest"), 0644); err != nil {
 		t.Fatal(err)
@@ -103,11 +218,30 @@ func TestLoggerAppendsAndContinuesArchiveNumbersAfterRestart(t *testing.T) {
 	if err := closeLogger(); err != nil {
 		t.Fatal(err)
 	}
-	if got := readLoggerFile(t, dir, "Tiku01.txt"); got != "oldest" {
-		t.Fatalf("oldest archive overwritten: %s", got)
+	archives, err := filepath.Glob(filepath.Join(dir, "archive", "*.zip"))
+	if err != nil || len(archives) != 1 {
+		t.Fatalf("expected one startup archive, got %v (err=%v)", archives, err)
 	}
-	if got := readLoggerFile(t, dir, "Tiku08.txt"); got != strings.Repeat("a", 90) {
-		t.Fatalf("active contents were not archived: %s", got)
+	firstReader, err := zip.OpenReader(archives[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var firstArchiveText strings.Builder
+	for _, item := range firstReader.File {
+		file, openErr := item.Open()
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		content, readErr := io.ReadAll(file)
+		_ = file.Close()
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		firstArchiveText.Write(content)
+	}
+	_ = firstReader.Close()
+	if !strings.Contains(firstArchiveText.String(), "oldest") || !strings.Contains(firstArchiveText.String(), "previous") {
+		t.Fatalf("startup archive did not contain all previous logs: %s", firstArchiveText.String())
 	}
 	if !strings.Contains(readLoggerFile(t, dir, "Tiku.txt"), "new-entry") {
 		t.Fatal("new log entry missing")
@@ -119,9 +253,12 @@ func TestLoggerAppendsAndContinuesArchiveNumbersAfterRestart(t *testing.T) {
 	if err := closeLogger(); err != nil {
 		t.Fatal(err)
 	}
-	active := readLoggerFile(t, dir, "Tiku.txt")
-	if !strings.Contains(active, "new-entry") || !strings.Contains(active, "restart-entry") {
-		t.Fatalf("restart did not append: %s", active)
+	archives, err = filepath.Glob(filepath.Join(dir, "archive", "*.zip"))
+	if err != nil || len(archives) != 2 {
+		t.Fatalf("second startup should create a second batch archive, got %v (err=%v)", archives, err)
+	}
+	if active := readLoggerFile(t, dir, "Tiku.txt"); !strings.Contains(active, "restart-entry") || strings.Contains(active, "new-entry") {
+		t.Fatalf("restart should start a fresh active log: %s", active)
 	}
 }
 

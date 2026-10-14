@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 )
 
 var loadSystemSettingDetail = func() (service.SystemSettingDetail, error) {
@@ -65,6 +66,9 @@ func UpdateSystemSetting(c *gin.Context) {
 			"message": "更新系统设置失败",
 		})
 		return
+	}
+	if err := logger.SetMaxTotalLogBytes(detail.MaxLogSizeBytes); err != nil {
+		logger.SysWarn("应用新的日志大小设置失败：" + err.Error())
 	}
 	// UAPI 密钥控制 AI 联网搜索能力；设置变化后不能继续复用旧的无搜索答案。
 	invalidateSearchResultCaches("update_system_settings")

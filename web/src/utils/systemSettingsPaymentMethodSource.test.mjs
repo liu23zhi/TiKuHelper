@@ -48,6 +48,17 @@ test('SystemSettings exposes the default new-user bonus amount', async () => {
   assert.match(content, /newUserBonusAmount: normalizeBonusAmount\(this\.formState\.newUserBonusAmount\)/);
 });
 
+test('SystemSettings exposes a validated byte-based maximum log size with a 5GB default', async () => {
+  const content = await readFile(systemSettingsPagePath, 'utf8');
+
+  assert.match(content, /const DEFAULT_MAX_LOG_SIZE_BYTES = 5 \* 1024 \* 1024 \* 1024/);
+  assert.match(content, /maxLogSizeBytes: DEFAULT_MAX_LOG_SIZE_BYTES/);
+  assert.match(content, /formState\.maxLogSizeBytes = normalizeMaxLogSizeBytes\(data\.maxLogSizeBytes\)/);
+  assert.match(content, /maxLogSizeBytes,/);
+  assert.match(content, /最大日志大小必须是不小于/);
+  assert.match(content, /日志目录全部日志文件的总占用上限/);
+});
+
 test('SystemSettings removes the non-password login derived status block', async () => {
   const content = await readFile(systemSettingsPagePath, 'utf8');
 

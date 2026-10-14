@@ -398,6 +398,14 @@ test('LogList page renders derived status instead of the raw action column', asy
   assert.doesNotMatch(content, /title: '操作'/);
 });
 
+test('LogList formats timestamps in Shanghai time', async () => {
+  const content = await readFile(logListPagePath, 'utf8');
+
+  assert.match(content, /timeZone:\s*'Asia\/Shanghai'/);
+  assert.match(content, /new Intl\.DateTimeFormat\('zh-CN'/);
+  assert.doesNotMatch(content, /date\.getHours\(\)/);
+});
+
 test('search outcome summaries retain structured request fields', () => {
   for (const summary of ['搜索完成，部分渠道失败', '搜索完成，未找到答案', '搜索未执行，服务未配置或未启用']) {
     const fields = buildLogStructuredFields({

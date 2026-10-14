@@ -14,15 +14,21 @@ http://localhost:8060
 - `Tiku-warning.txt`：warning、error、fatal/panic。
 - `Tiku-error.txt`：error、fatal/panic。
 
-每份文件独立按 10 MiB 自动分割，单条日志不拆断。当前文件不带数字；归档从
-`Tiku01.txt`、`Tiku02.txt` 开始递增，`01` 是最老文件，重启后继续编号。
-warning/error 归档同样命名为 `Tiku-warning01.txt` / `Tiku-error01.txt`。
-归档不自动删除，请按磁盘容量自行保留。可用 `-log-dir <目录>` 覆盖默认目录。
+每份文件独立按 10 MiB 自动分割，单条日志不拆断。每次启动会把日志根目录中的上一批
+日志合并压缩为 `logs/archive/开始时间.zip`，ZIP 内包含 `Tiku.txt`、warning/error
+及运行期间产生的轮转文件，然后创建新的活动文件。文件名使用被压缩日志中最早一条日志的
+开始时间（格式 `YYYYMMDD_HHMMSS.zip`）；同一秒重复归档会追加序号。系统设置中的“最大日志大小”
+默认是 5GB，统计活动日志与 `archive` 下 ZIP 的总占用，超过后从最旧归档开始删除，活动日志不会主动删除。
+可用 `-log-dir <目录>` 覆盖默认目录。日志时间统一使用上海时间（Asia/Shanghai）。
 同一目录只供一个服务进程写入；多实例请使用独立目录。
 
 AI/题库请求失败同时写入管理端“日志列表”，保存请求 ID、失败渠道及完整错误快照；
 部分渠道失败与无答案单独显示，不改变既有计费和缓存规则。密钥不会写入诊断日志，
 数据库日志不展开 SQL 参数。Docker 部署建议挂载 `./logs:/app/logs`。
+
+AI 联网搜索日志会按 requestId 记录每轮模型端点、工具调用、精炼后的搜索词、搜索预算、
+结果数、耗时、HTTP 状态和 token 汇总；服务只记录可审计的调用轨迹与有限响应摘要，不记录
+API 密钥或模型隐藏思维链原文。
 
 ## 环境变量
 
