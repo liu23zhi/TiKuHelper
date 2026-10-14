@@ -43,6 +43,8 @@ const CaptchaTypeSettingKey = "captcha_type"
 const SMSBaoCredentialTypeSettingKey = "smsbao_credential_type"
 const SMSBaoRegionModeSettingKey = "smsbao_region_mode"
 const MaxLogSizeBytesSettingKey = "max_log_size_bytes"
+const MaxAISearchModelCallsSettingKey = "max_ai_search_model_calls"
+const MaxAISearchesSettingKey = "max_ai_searches"
 
 // UAPIAPIKeySettingKey 是 UApiPro（uapis.cn）的 API 密钥。
 //
@@ -65,6 +67,10 @@ const DefaultSMSBaoCredentialType = "apikey"
 const DefaultSMSBaoRegionMode = "auto"
 const DefaultWechatLoginMode = "scan"
 const DefaultMaxLogSizeBytes int64 = 5 * 1024 * 1024 * 1024
+const DefaultMaxAISearchModelCalls = 4
+const DefaultMaxAISearches = 3
+const MaxAllowedAISearchModelCalls = 20
+const MaxAllowedAISearches = 20
 
 const paymentMethodWXPay = "wxpay"
 const wechatLoginModeScan = "scan"
@@ -102,8 +108,10 @@ type SystemSettingDetail struct {
 	SMSBaoCredentialType      string  `json:"smsbaoCredentialType"`
 	SMSBaoRegionMode          string  `json:"smsbaoRegionMode"`
 	// UAPIAPIKey 是 UApiPro 的 API 密钥；与其它密钥一样**明文**返回。
-	UAPIAPIKey      string `json:"uapiApiKey"`
-	MaxLogSizeBytes int64  `json:"maxLogSizeBytes"`
+	UAPIAPIKey            string `json:"uapiApiKey"`
+	MaxLogSizeBytes       int64  `json:"maxLogSizeBytes"`
+	MaxAISearchModelCalls int    `json:"maxAISearchModelCalls"`
+	MaxAISearches         int    `json:"maxAISearches"`
 }
 
 type UpdateSystemSettingInput struct {
@@ -138,8 +146,10 @@ type UpdateSystemSettingInput struct {
 	SMSBaoRegionMode          string  `json:"smsbaoRegionMode"`
 	// UAPIAPIKey 是 UApiPro 的 API 密钥；与其它密钥一样**明文**返回。
 	// 写入语义与其它密钥一致：空值或 ******** 表示保持原值，__CLEAR__ 表示清空。
-	UAPIAPIKey      string `json:"uapiApiKey"`
-	MaxLogSizeBytes int64  `json:"maxLogSizeBytes"`
+	UAPIAPIKey            string `json:"uapiApiKey"`
+	MaxLogSizeBytes       int64  `json:"maxLogSizeBytes"`
+	MaxAISearchModelCalls int    `json:"maxAISearchModelCalls"`
+	MaxAISearches         int    `json:"maxAISearches"`
 }
 
 var ErrInvalidNewUserBonusAmount = errors.New("新用户赠送金额不能为负数")
@@ -284,6 +294,8 @@ func GetSystemSettingDetailWithDB(db *gorm.DB) (SystemSettingDetail, error) {
 		SMSBaoRegionMode:          normalizeSMSBaoRegionMode(getSystemSettingStringWithDefault(db, SMSBaoRegionModeSettingKey, DefaultSMSBaoRegionMode)),
 		UAPIAPIKey:                strings.TrimSpace(getSystemSettingStringWithDefault(db, UAPIAPIKeySettingKey, "")),
 		MaxLogSizeBytes:           getPositiveInt64SystemSetting(db, MaxLogSizeBytesSettingKey, DefaultMaxLogSizeBytes),
+		MaxAISearchModelCalls:     getPositiveBoundedIntSystemSetting(db, MaxAISearchModelCallsSettingKey, DefaultMaxAISearchModelCalls, MaxAllowedAISearchModelCalls),
+		MaxAISearches:             getPositiveBoundedIntSystemSetting(db, MaxAISearchesSettingKey, DefaultMaxAISearches, MaxAllowedAISearches),
 	}
 	bonusAmount, err := GetNewUserBonusAmountWithDB(db)
 	if err != nil {
@@ -342,8 +354,10 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		// UApiPro 密钥不脱敏：系统设置页本身只有管理员能打开（与「默认账号配置」
 		// 的 token 处理一致），明文存取、由前端密码框隐藏显示。
 		// 直接 TrimSpace 而不是 mergeStoredSecretInput —— 留空即清空，语义直观。
-		UAPIAPIKey:      strings.TrimSpace(input.UAPIAPIKey),
-		MaxLogSizeBytes: resolveMaxLogSizeBytes(db, input.MaxLogSizeBytes),
+		UAPIAPIKey:            strings.TrimSpace(input.UAPIAPIKey),
+		MaxLogSizeBytes:       resolveMaxLogSizeBytes(db, input.MaxLogSizeBytes),
+		MaxAISearchModelCalls: resolveMaxAISearchBudget(db, input.MaxAISearchModelCalls, MaxAISearchModelCallsSettingKey, DefaultMaxAISearchModelCalls, MaxAllowedAISearchModelCalls),
+		MaxAISearches:         resolveMaxAISearchBudget(db, input.MaxAISearches, MaxAISearchesSettingKey, DefaultMaxAISearches, MaxAllowedAISearches),
 	}
 	normalized.AlternativeLoginEnabled = normalized.SMSLoginEnabled || normalized.WechatLoginEnabled
 
@@ -383,6 +397,8 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		{SMSBaoRegionModeSettingKey, normalized.SMSBaoRegionMode, "短信宝发送区域模式"},
 		{UAPIAPIKeySettingKey, normalized.UAPIAPIKey, "UApiPro API 密钥"},
 		{MaxLogSizeBytesSettingKey, strconv.FormatInt(normalized.MaxLogSizeBytes, 10), "日志文件总大小上限（字节）"},
+		{MaxAISearchModelCallsSettingKey, strconv.Itoa(normalized.MaxAISearchModelCalls), "AI 搜索模型最大调用次数"},
+		{MaxAISearchesSettingKey, strconv.Itoa(normalized.MaxAISearches), "AI 搜索最大搜索次数"},
 	}
 	for _, item := range settings {
 		if err := saveSystemSettingValue(db, item.key, item.value, item.remark); err != nil {
@@ -404,6 +420,57 @@ func getPositiveInt64SystemSetting(db *gorm.DB, key string, defaultValue int64) 
 	value, err := strconv.ParseInt(strings.TrimSpace(getSystemSettingStringWithDefault(db, key, strconv.FormatInt(defaultValue, 10))), 10, 64)
 	if err != nil || value <= 0 {
 		return defaultValue
+	}
+	return value
+}
+
+func resolveMaxAISearchBudget(db *gorm.DB, requested int, key string, defaultValue int, maxValue int) int {
+	if requested > 0 {
+		return normalizeAISearchBudget(requested, defaultValue, maxValue)
+	}
+	return getPositiveBoundedIntSystemSetting(db, key, defaultValue, maxValue)
+}
+
+// GetAISearchBudgetsWithDB returns the model-round and web-search limits used
+// by every AI search entry point. Invalid or missing settings fall back to the
+// safe defaults so a settings row cannot disable the search path accidentally.
+func GetAISearchBudgetsWithDB(db *gorm.DB) (modelCalls int, searches int) {
+	return getPositiveBoundedIntSystemSetting(db, MaxAISearchModelCallsSettingKey, DefaultMaxAISearchModelCalls, MaxAllowedAISearchModelCalls),
+		getPositiveBoundedIntSystemSetting(db, MaxAISearchesSettingKey, DefaultMaxAISearches, MaxAllowedAISearches)
+}
+
+// SetAISearchBudgetsWithDB updates only the AI search budget rows. It is used
+// by the AI search configuration endpoint so that changing the AI account does
+// not overwrite unrelated system settings.
+func SetAISearchBudgetsWithDB(db *gorm.DB, requestedModelCalls int, requestedSearches int) error {
+	modelCalls, searches := GetAISearchBudgetsWithDB(db)
+	if requestedModelCalls > 0 {
+		modelCalls = normalizeAISearchBudget(requestedModelCalls, DefaultMaxAISearchModelCalls, MaxAllowedAISearchModelCalls)
+	}
+	if requestedSearches > 0 {
+		searches = normalizeAISearchBudget(requestedSearches, DefaultMaxAISearches, MaxAllowedAISearches)
+	}
+	if err := saveSystemSettingValue(db, MaxAISearchModelCallsSettingKey, strconv.Itoa(modelCalls), "AI 搜索模型最大调用次数"); err != nil {
+		return err
+	}
+	return saveSystemSettingValue(db, MaxAISearchesSettingKey, strconv.Itoa(searches), "AI 搜索最大搜索次数")
+}
+
+func getPositiveBoundedIntSystemSetting(db *gorm.DB, key string, defaultValue int, maxValue int) int {
+	raw := strings.TrimSpace(getSystemSettingStringWithDefault(db, key, strconv.Itoa(defaultValue)))
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return defaultValue
+	}
+	return normalizeAISearchBudget(value, defaultValue, maxValue)
+}
+
+func normalizeAISearchBudget(value int, defaultValue int, maxValue int) int {
+	if value <= 0 {
+		return defaultValue
+	}
+	if maxValue > 0 && value > maxValue {
+		return maxValue
 	}
 	return value
 }

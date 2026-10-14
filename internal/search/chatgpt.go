@@ -32,15 +32,17 @@ import (
 
 // ChatGptClient AI 搜题客户端
 type ChatGptClient struct {
-	Enable      bool
-	APIKey      string
-	BaseURL     string
-	Model       string
-	Prompt      string
-	Temperature float64
-	TopP        float64
-	SearchTool  AISearchTool
-	RequestID   string
+	Enable                bool
+	APIKey                string
+	BaseURL               string
+	Model                 string
+	Prompt                string
+	Temperature           float64
+	TopP                  float64
+	SearchTool            AISearchTool
+	RequestID             string
+	MaxAISearchModelCalls int
+	MaxAISearches         int
 }
 
 type AISearchUsage struct {
@@ -61,24 +63,26 @@ type AISearchDebugResult struct {
 
 // AISearchTrace records the auditable request/tool path without storing hidden chain-of-thought.
 type AISearchTrace struct {
-	Round          int
-	Stage          string
-	Endpoint       string
-	Query          string
-	Status         string
-	DurationMs     int64
-	SearchCount    int
-	SearchBudget   int
-	ResultCount    int
-	CacheHit       bool
-	ReasoningChars int
-	ContentPreview string
-	Error          string
+	Round           int
+	Stage           string
+	Endpoint        string
+	Query           string
+	Status          string
+	DurationMs      int64
+	ModelCallCount  int
+	ModelCallBudget int
+	SearchCount     int
+	SearchBudget    int
+	ResultCount     int
+	CacheHit        bool
+	ReasoningChars  int
+	ContentPreview  string
+	Error           string
 }
 
 func (in *ChatGptClient) logAISearchTrace(trace AISearchTrace) {
 	requestID := strings.TrimSpace(in.RequestID)
-	logger.SysLog(fmt.Sprintf("AI搜索轨迹 requestId=%s round=%d stage=%s endpoint=%s query=%s status=%s durationMs=%d searches=%d/%d results=%d cacheHit=%t reasoningChars=%d content=%s error=%s", requestID, trace.Round, trace.Stage, logger.RedactSecrets(trace.Endpoint), truncateAIToolText(trace.Query, 120), trace.Status, trace.DurationMs, trace.SearchCount, trace.SearchBudget, trace.ResultCount, trace.CacheHit, trace.ReasoningChars, truncateAIToolText(trace.ContentPreview, 240), logger.RedactSecrets(trace.Error)))
+	logger.SysLog(fmt.Sprintf("AI搜索轨迹 requestId=%s round=%d stage=%s endpoint=%s query=%s status=%s durationMs=%d modelCalls=%d/%d searches=%d/%d results=%d cacheHit=%t reasoningChars=%d content=%s error=%s", requestID, trace.Round, trace.Stage, logger.RedactSecrets(trace.Endpoint), truncateAIToolText(trace.Query, 120), trace.Status, trace.DurationMs, trace.ModelCallCount, trace.ModelCallBudget, trace.SearchCount, trace.SearchBudget, trace.ResultCount, trace.CacheHit, trace.ReasoningChars, truncateAIToolText(trace.ContentPreview, 240), logger.RedactSecrets(trace.Error)))
 }
 
 func errorString(err error) string {
@@ -303,9 +307,14 @@ func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]
 	systemPrompt := effectiveAISearchPrompt(in.Prompt)
 	userPromptParts := buildAISearchPromptParts(req, in.getAttachmentHTTPClient().GetClient())
 	endpoints := buildAIChatCompletionEndpoints(baseURL)
+	maxModelCalls, _ := in.aiSearchBudgets()
+	modelCalls := 0
 	var lastRequestErr error
 	for _, endpoint := range endpoints {
-		content, usage, statusCode, requestBody, rawResponse, callErr := in.requestStreamAnswerDetailed(endpoint, systemPrompt, userPromptParts)
+		if modelCalls >= maxModelCalls {
+			break
+		}
+		content, usage, statusCode, requestBody, rawResponse, callErr := in.requestStreamAnswerDetailed(endpoint, systemPrompt, userPromptParts, &modelCalls, maxModelCalls)
 		debug = AISearchDebugResult{
 			Endpoint:    endpoint,
 			RequestBody: requestBody,
@@ -353,9 +362,14 @@ func (in *ChatGptClient) SearchAnswerWithUsage(req model.SearchRequest) (answer 
 	systemPrompt := effectiveAISearchPrompt(in.Prompt)
 	userPromptParts := buildAISearchPromptParts(req, in.getAttachmentHTTPClient().GetClient())
 	endpoints := buildAIChatCompletionEndpoints(baseURL)
+	maxModelCalls, _ := in.aiSearchBudgets()
+	modelCalls := 0
 	var lastRequestErr error
 	for _, endpoint := range endpoints {
-		content, streamUsage, statusCode, callErr := in.requestStreamAnswer(endpoint, systemPrompt, userPromptParts)
+		if modelCalls >= maxModelCalls {
+			break
+		}
+		content, streamUsage, statusCode, _, _, callErr := in.requestStreamAnswerDetailed(endpoint, systemPrompt, userPromptParts, &modelCalls, maxModelCalls)
 		if callErr == nil {
 			lastRequestErr = nil
 			parsedAnswers := parseAISearchAnswers(content, req.Options, req.Type)
@@ -773,48 +787,46 @@ func buildAIChatCompletionEndpoints(baseURL string) []string {
 	return endpoints
 }
 
-func (in *ChatGptClient) requestStreamAnswer(endpoint string, systemPrompt string, userPromptParts []openAIContentPart) (string, AISearchUsage, int, error) {
-	content, usage, statusCode, _, _, err := in.requestStreamAnswerDetailed(endpoint, systemPrompt, userPromptParts)
-	return content, usage, statusCode, err
-}
-
-func (in *ChatGptClient) requestStreamAnswerDetailed(endpoint string, systemPrompt string, userPromptParts []openAIContentPart) (string, AISearchUsage, int, string, string, error) {
-	payload, err := json.Marshal(openAIChatCompletionRequest{
-		Model:       strings.TrimSpace(in.Model),
-		Stream:      true,
-		Temperature: 0,
-		TopP:        0,
-		Messages: []openAIChatMessage{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: userPromptParts},
-		},
-		StreamOptions: &openAIStreamOptions{IncludeUsage: true},
-	})
-	if err != nil {
-		return "", AISearchUsage{}, 0, "", "", errors.ErrParserJSON
-	}
-
-	requestBody := string(payload)
+func (in *ChatGptClient) requestStreamAnswerDetailed(endpoint string, systemPrompt string, userPromptParts []openAIContentPart, modelCalls *int, maxModelCalls int) (string, AISearchUsage, int, string, string, error) {
 	requestStartedAt := time.Now()
 
 	var (
+		requestBody     string
 		lastUsage       AISearchUsage
 		lastStatusCode  int
 		lastRawResponse string
 		lastErr         error = errors.ErrTargetServerError
 	)
 
-	for attempt := 0; attempt < aiSearchRetryMaxAttempts; attempt++ {
+	for attempt := 0; attempt < aiSearchRetryMaxAttempts && *modelCalls < maxModelCalls; attempt++ {
 		if attempt > 0 {
 			if !sleepAISearchRetryBackoff(attempt, time.Since(requestStartedAt)) {
 				break
 			}
 		}
 
+		remainingCalls := maxModelCalls - *modelCalls - 1
+		budgetPrompt := buildAISearchBudgetPrompt(remainingCalls, 0, remainingCalls == 0)
+		payload, err := json.Marshal(openAIChatCompletionRequest{
+			Model:       strings.TrimSpace(in.Model),
+			Stream:      true,
+			Temperature: 0,
+			TopP:        0,
+			Messages: []openAIChatMessage{
+				{Role: "system", Content: systemPrompt + "\n" + budgetPrompt + "\n本轮未提供联网搜索工具，必须直接输出最终答案 JSON。"},
+				{Role: "user", Content: userPromptParts},
+			},
+			StreamOptions: &openAIStreamOptions{IncludeUsage: true},
+		})
+		if err != nil {
+			return "", AISearchUsage{}, 0, "", "", errors.ErrParserJSON
+		}
+		requestBody = string(payload)
+		*modelCalls++
 		attemptStartedAt := time.Now()
-		in.logAISearchTrace(AISearchTrace{Round: attempt + 1, Stage: "普通模型调用开始", Endpoint: endpoint})
+		in.logAISearchTrace(AISearchTrace{Round: *modelCalls, Stage: "普通模型调用开始", Endpoint: endpoint, ModelCallCount: *modelCalls, ModelCallBudget: maxModelCalls})
 		content, usage, statusCode, rawResponse, retryable, callErr := in.executeAISearchStreamRequest(endpoint, payload, requestBody, requestStartedAt)
-		in.logAISearchTrace(AISearchTrace{Round: attempt + 1, Stage: "普通模型响应", Endpoint: endpoint, Status: fmt.Sprintf("%d", statusCode), DurationMs: time.Since(attemptStartedAt).Milliseconds(), ContentPreview: content, Error: errorString(callErr)})
+		in.logAISearchTrace(AISearchTrace{Round: *modelCalls, Stage: "普通模型响应", Endpoint: endpoint, ModelCallCount: *modelCalls, ModelCallBudget: maxModelCalls, Status: fmt.Sprintf("%d", statusCode), DurationMs: time.Since(attemptStartedAt).Milliseconds(), ContentPreview: content, Error: errorString(callErr)})
 		lastUsage = usage
 		lastStatusCode = statusCode
 		lastRawResponse = rawResponse

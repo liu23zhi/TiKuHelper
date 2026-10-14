@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -119,10 +120,67 @@ func TestSearchAnswerWithUsageStopsRetryingAfterMaxAttemptsPerEndpoint(t *testin
 		t.Fatal("expected persistent 502 to fail")
 	}
 
-	// BaseURL 不含 /v1 时会候选两个端点，每个端点最多重试 aiSearchRetryMaxAttempts 次。
-	expectedAttempts := int32(aiSearchRetryMaxAttempts * len(buildAIChatCompletionEndpoints(server.URL)))
+	// 候选端点与重试共用一次搜题的模型调用预算。
+	expectedAttempts := int32(aiToolMaxRounds)
 	if got := atomic.LoadInt32(&attempts); got != expectedAttempts {
 		t.Fatalf("expected %d attempts, got %d", expectedAttempts, got)
+	}
+}
+
+func TestOrdinaryAISearchHonorsModelBudgetAcrossRetriesAndEndpoints(t *testing.T) {
+	for _, debugMode := range []bool{false, true} {
+		for _, tc := range []struct {
+			name    string
+			budget  int
+			status  int
+			wantErr bool
+		}{
+			{"no retry after last call", 1, http.StatusBadGateway, true},
+			{"no fallback after last call", 1, http.StatusNotFound, true},
+			{"retry receives remaining budget", 2, http.StatusTooManyRequests, false},
+		} {
+			t.Run(fmt.Sprintf("%s/debug=%t", tc.name, debugMode), func(t *testing.T) {
+				calls := 0
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					calls++
+					var payload struct {
+						Messages []openAIRequestMessagePayload `json:"messages"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+						t.Errorf("decode request: %v", err)
+						return
+					}
+					var prompt string
+					if err := json.Unmarshal(payload.Messages[0].Content, &prompt); err != nil {
+						t.Errorf("decode prompt: %v", err)
+						return
+					}
+					remaining := fmt.Sprintf("还剩模型调用 %d 次", tc.budget-calls)
+					if !strings.Contains(prompt, remaining) || !strings.Contains(prompt, "web_search 搜索还剩 0 次") {
+						t.Errorf("missing current budget %q: %s", remaining, prompt)
+					}
+					if calls == tc.budget && !strings.Contains(prompt, "最后一次模型调用") {
+						t.Errorf("missing final answer requirement: %s", prompt)
+					}
+					if calls == 1 {
+						http.Error(w, "temporary failure", tc.status)
+						return
+					}
+					writeOpenAIStyleStream(w, `{"answers":["4"]}`)
+				}))
+				defer server.Close()
+				client := &ChatGptClient{Enable: true, BaseURL: server.URL, APIKey: "sk-test", Model: "gpt-test", MaxAISearchModelCalls: tc.budget}
+				var err error
+				if debugMode {
+					_, _, err = client.SearchAnswerDebug(model.SearchRequest{Question: "2+2=?"})
+				} else {
+					_, _, err = client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?"})
+				}
+				if (err != nil) != tc.wantErr || calls != tc.budget {
+					t.Fatalf("calls=%d want=%d err=%v wantErr=%t", calls, tc.budget, err, tc.wantErr)
+				}
+			})
+		}
 	}
 }
 

@@ -61,6 +61,8 @@ export function buildAISearchConfigSavePayload(formState, baseUrl) {
     remark: formState?.remark || '',
     temperature: 0,
     topP: 0,
+    maxAISearchModelCalls: Number(formState?.maxAISearchModelCalls || 4),
+    maxAISearches: Number(formState?.maxAISearches || 3),
   };
 }
 

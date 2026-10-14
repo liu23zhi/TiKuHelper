@@ -229,15 +229,17 @@ var buildSearchClients = func(resolved resolvedSearchRequestContext, useQuery st
 
 var searchAIAnswer = func(resolved resolvedSearchRequestContext, req model.SearchRequest) ([][]string, search.AISearchUsage, error) {
 	client := &search.ChatGptClient{
-		Enable:      shouldUseAISearch("ai", resolved.AIConfig),
-		BaseURL:     resolved.AIConfig.BaseURL,
-		APIKey:      resolved.AIConfig.APIKey,
-		Model:       resolved.AIConfig.Model,
-		Prompt:      resolved.AIConfig.Prompt,
-		Temperature: resolved.AIConfig.Temperature,
-		TopP:        resolved.AIConfig.TopP,
-		SearchTool:  service.BuildUAPISearchToolWithDB(manager.GetManager().GetDB()),
-		RequestID:   resolved.RequestID,
+		Enable:                shouldUseAISearch("ai", resolved.AIConfig),
+		BaseURL:               resolved.AIConfig.BaseURL,
+		APIKey:                resolved.AIConfig.APIKey,
+		Model:                 resolved.AIConfig.Model,
+		Prompt:                resolved.AIConfig.Prompt,
+		Temperature:           resolved.AIConfig.Temperature,
+		TopP:                  resolved.AIConfig.TopP,
+		MaxAISearchModelCalls: resolved.AIConfig.MaxAISearchModelCalls,
+		MaxAISearches:         resolved.AIConfig.MaxAISearches,
+		SearchTool:            service.BuildUAPISearchToolWithDB(manager.GetManager().GetDB()),
+		RequestID:             resolved.RequestID,
 	}
 	logger.SysLog(fmt.Sprintf("AI搜题开始 requestId=%s %s", strings.TrimSpace(resolved.RequestID), buildSearchRequestDebugSummary(req)))
 	answer, usage, err := client.SearchAnswerWithUsage(req)

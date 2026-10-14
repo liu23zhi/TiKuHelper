@@ -61,9 +61,20 @@ func TestAISearchToolsSearchTwiceAndAccumulateUsage(t *testing.T) {
 			return
 		}
 		messages := payload["messages"].([]any)
-		last := messages[len(messages)-1].(map[string]any)
-		if last["role"] != "tool" || !strings.Contains(last["content"].(string), "example.com/source") {
-			t.Errorf("missing search evidence: %v", last)
+		foundSearchEvidence := false
+		for _, rawMessage := range messages {
+			message, ok := rawMessage.(map[string]any)
+			if !ok || message["role"] != "tool" {
+				continue
+			}
+			content, ok := message["content"].(string)
+			if ok && strings.Contains(content, "example.com/source") {
+				foundSearchEvidence = true
+				break
+			}
+		}
+		if !foundSearchEvidence {
+			t.Errorf("missing search evidence: %v", messages)
 		}
 		if round == 2 {
 			writeAIToolStream(w, "search2", "加法 验算")
@@ -140,6 +151,109 @@ func TestAISearchToolsBoundRoundsAndDisableToolsForFinal(t *testing.T) {
 	}
 	if !strings.Contains(debug.RequestBody, "不执行") || debug.Usage.TotalTokens != 65 {
 		t.Fatalf("debug=%+v", debug)
+	}
+}
+
+func TestAISearchToolsHonorsConfiguredModelCallAndSearchBudgets(t *testing.T) {
+	t.Run("single model call must answer directly", func(t *testing.T) {
+		tool := &testAISearchTool{}
+		calls := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			if _, exists := payload["tools"]; exists {
+				t.Fatal("single configured model call must be the final answer call")
+			}
+			messages := payload["messages"].([]any)
+			budget := messages[len(messages)-1].(map[string]any)["content"].(string)
+			if !strings.Contains(budget, "还剩模型调用 0 次") || !strings.Contains(budget, "最后一次模型调用") {
+				t.Fatalf("missing final budget instruction: %s", budget)
+			}
+			writeAIFinalStream(w)
+		}))
+		defer server.Close()
+
+		client := &ChatGptClient{Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test", SearchTool: tool, MaxAISearchModelCalls: 1, MaxAISearches: 3}
+		answer, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if calls != 1 || len(tool.queries) != 0 || !reflect.DeepEqual(answer, [][]string{{"4"}}) {
+			t.Fatalf("answer=%v calls=%d searches=%v", answer, calls, tool.queries)
+		}
+	})
+
+	t.Run("search budget forces final answer", func(t *testing.T) {
+		tool := &testAISearchTool{}
+		calls := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request: %v", err)
+			}
+			if calls == 1 {
+				if _, ok := payload["tools"]; !ok {
+					t.Fatal("first call should allow the required search")
+				}
+				writeAIToolStream(w, "search1", "预算测试")
+				return
+			}
+			if _, exists := payload["tools"]; exists {
+				t.Fatal("search budget exhausted; second call must be final")
+			}
+			messages := payload["messages"].([]any)
+			budget := messages[len(messages)-1].(map[string]any)["content"].(string)
+			if !strings.Contains(budget, "web_search 搜索还剩 0 次") {
+				t.Fatalf("missing exhausted search budget: %s", budget)
+			}
+			writeAIFinalStream(w)
+		}))
+		defer server.Close()
+
+		client := &ChatGptClient{Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test", SearchTool: tool, MaxAISearchModelCalls: 3, MaxAISearches: 1}
+		answer, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "预算测试"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if calls != 2 || len(tool.queries) != 1 || !reflect.DeepEqual(answer, [][]string{{"4"}}) {
+			t.Fatalf("answer=%v calls=%d searches=%v", answer, calls, tool.queries)
+		}
+	})
+}
+
+func TestAISearchToolsEndpointFallbackConsumesModelBudget(t *testing.T) {
+	tool := &testAISearchTool{}
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.URL.Path == "/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		if _, exists := payload["tools"]; exists {
+			t.Error("fallback is the last model call and must answer without tools")
+		}
+		messages := payload["messages"].([]any)
+		budget := messages[len(messages)-1].(map[string]any)["content"].(string)
+		if !strings.Contains(budget, "还剩模型调用 0 次") || !strings.Contains(budget, "最后一次模型调用") {
+			t.Errorf("missing final budget on fallback: %s", budget)
+		}
+		writeAIFinalStream(w)
+	}))
+	defer server.Close()
+	client := &ChatGptClient{Enable: true, BaseURL: server.URL, APIKey: "sk-test", Model: "test", SearchTool: tool, MaxAISearchModelCalls: 2, MaxAISearches: 3}
+	answer, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?"})
+	if err != nil || calls != 2 || len(tool.queries) != 0 || !reflect.DeepEqual(answer, [][]string{{"4"}}) {
+		t.Fatalf("answer=%v calls=%d searches=%v err=%v", answer, calls, tool.queries, err)
 	}
 }
 

@@ -36,14 +36,16 @@ var runAISearchDebug = func(input aiSearchTestInput) ([][]string, internalsearch
 		return nil, internalsearch.AISearchDebugResult{}, err
 	}
 	client := &internalsearch.ChatGptClient{
-		Enable:      true,
-		APIKey:      resolved.Config.APIKey,
-		BaseURL:     resolved.Config.BaseURL,
-		Model:       resolved.Config.Model,
-		Prompt:      strings.TrimSpace(input.Prompt),
-		Temperature: 0,
-		TopP:        0,
-		SearchTool:  service.BuildUAPISearchToolWithDB(manager.GetManager().GetDB()),
+		Enable:                true,
+		APIKey:                resolved.Config.APIKey,
+		BaseURL:               resolved.Config.BaseURL,
+		Model:                 resolved.Config.Model,
+		Prompt:                strings.TrimSpace(input.Prompt),
+		Temperature:           0,
+		TopP:                  0,
+		MaxAISearchModelCalls: resolved.Config.MaxAISearchModelCalls,
+		MaxAISearches:         resolved.Config.MaxAISearches,
+		SearchTool:            service.BuildUAPISearchToolWithDB(manager.GetManager().GetDB()),
 	}
 	if strings.TrimSpace(client.Prompt) == "" {
 		client.Prompt = resolved.Config.Prompt

@@ -25,15 +25,19 @@
         <a-divider orientation="left">日志管理</a-divider>
         <a-form-item label="最大日志大小">
           <a-input-number
-            v-model:value="formState.maxLogSizeBytes"
-            :min="MIN_LOG_SIZE_BYTES"
+            v-model:value="formState.maxLogSizeValue"
+            :min="minimumLogSizeValue"
             :precision="0"
-            :step="1024 * 1024 * 1024"
+            :step="1"
             :parser="parseIntegerInput"
-            style="width: 260px"
+            style="width: 180px"
           />
-          <span class="unit-label">字节</span>
-          <div class="hint">日志目录全部日志文件的总占用上限，默认 5GB。超过上限时会优先删除最旧的归档日志，当前日志不会主动删除。</div>
+          <a-select v-model:value="formState.maxLogSizeUnit" style="width: 110px; margin-left: 8px">
+            <a-select-option v-for="unit in LOG_SIZE_UNITS" :key="unit.value" :value="unit.value">
+              {{ unit.label }}
+            </a-select-option>
+          </a-select>
+          <div class="hint">日志目录全部日志文件的总占用上限，默认 5GB。支持 KB、MB、GB、TB，保存时会转换为字节。超过上限时会优先删除最旧的归档日志。</div>
         </a-form-item>
 
         <a-divider orientation="left">公开认证</a-divider>
@@ -329,6 +333,14 @@ const notifyPath = '/adapter-service/payment/notify'
 const returnPath = '/adapter/recharge/result'
 const DEFAULT_MAX_LOG_SIZE_BYTES = 5 * 1024 * 1024 * 1024
 const MIN_LOG_SIZE_BYTES = 1 * 1024 * 1024
+const LOG_SIZE_UNITS = [
+  { value: 'B', label: '字节', bytes: 1 },
+  { value: 'KB', label: 'KB', bytes: 1024 },
+  { value: 'MB', label: 'MB', bytes: 1024 * 1024 },
+  { value: 'GB', label: 'GB', bytes: 1024 * 1024 * 1024 },
+  { value: 'TB', label: 'TB', bytes: 1024 * 1024 * 1024 * 1024 },
+]
+const LOG_SIZE_UNIT_MAP = Object.fromEntries(LOG_SIZE_UNITS.map(unit => [unit.value, unit]))
 
 function normalizeString(value) {
   return String(value || '').trim()
@@ -352,6 +364,26 @@ function normalizeMaxLogSizeBytes(value) {
   return Number.isSafeInteger(parsed) && parsed >= MIN_LOG_SIZE_BYTES
     ? parsed
     : DEFAULT_MAX_LOG_SIZE_BYTES
+}
+
+function splitMaxLogSizeBytes(value) {
+  const bytes = normalizeMaxLogSizeBytes(value)
+  for (let index = LOG_SIZE_UNITS.length - 1; index >= 0; index -= 1) {
+    const unit = LOG_SIZE_UNITS[index]
+    if (bytes >= unit.bytes && bytes % unit.bytes === 0) {
+      return { value: bytes / unit.bytes, unit: unit.value }
+    }
+  }
+  return { value: bytes, unit: 'B' }
+}
+
+function composeMaxLogSizeBytes(value, unitValue) {
+  const amount = Number(value)
+  const unit = LOG_SIZE_UNIT_MAP[unitValue] || LOG_SIZE_UNIT_MAP.GB
+  if (!Number.isSafeInteger(amount) || amount < 0 || !Number.isSafeInteger(amount * unit.bytes)) {
+    return 0
+  }
+  return amount * unit.bytes
 }
 
 function trimTrailingSlash(value) {
@@ -401,7 +433,8 @@ export default defineComponent({
     const paymentMethods = ref([])
     const formState = reactive({
       siteName: '题库',
-      maxLogSizeBytes: DEFAULT_MAX_LOG_SIZE_BYTES,
+      maxLogSizeValue: DEFAULT_MAX_LOG_SIZE_BYTES / LOG_SIZE_UNIT_MAP.GB.bytes,
+      maxLogSizeUnit: 'GB',
       registerEnabled: false,
       newUserBonusAmount: 0,
       epayVersion: 'v2',
@@ -446,10 +479,16 @@ export default defineComponent({
     const derivedNotifyUrl = computed(() => buildAbsoluteURL(formState.siteBaseUrl, notifyPath))
     const derivedReturnUrl = computed(() => buildAbsoluteURL(formState.siteBaseUrl, returnPath))
     const paymentMethodModalTitle = computed(() => (paymentMethodEditing.value ? '编辑支付方式' : '新增支付方式'))
+    const minimumLogSizeValue = computed(() => {
+      const unit = LOG_SIZE_UNIT_MAP[formState.maxLogSizeUnit] || LOG_SIZE_UNIT_MAP.GB
+      return Math.ceil(MIN_LOG_SIZE_BYTES / unit.bytes)
+    })
 
     const applyDetail = (data = {}) => {
       formState.siteName = data.siteName || '题库'
-      formState.maxLogSizeBytes = normalizeMaxLogSizeBytes(data.maxLogSizeBytes)
+      const maxLogSize = splitMaxLogSizeBytes(data.maxLogSizeBytes)
+      formState.maxLogSizeValue = maxLogSize.value
+      formState.maxLogSizeUnit = maxLogSize.unit
       formState.registerEnabled = !!data.registerEnabled
       formState.newUserBonusAmount = Number(data.newUserBonusAmount || 0)
       formState.epayVersion = 'v2'
@@ -562,6 +601,8 @@ export default defineComponent({
       paymentMethods,
       formState,
       MIN_LOG_SIZE_BYTES,
+      LOG_SIZE_UNITS,
+      minimumLogSizeValue,
       parseIntegerInput,
       paymentMethodFormState,
       derivedNotifyUrl,
@@ -638,9 +679,9 @@ export default defineComponent({
       this.loadPaymentMethods()
     },
     handleSave() {
-      const maxLogSizeBytes = Number(this.formState.maxLogSizeBytes)
+      const maxLogSizeBytes = composeMaxLogSizeBytes(this.formState.maxLogSizeValue, this.formState.maxLogSizeUnit)
       if (!Number.isSafeInteger(maxLogSizeBytes) || maxLogSizeBytes < MIN_LOG_SIZE_BYTES) {
-        message.error(`最大日志大小必须是不小于 ${MIN_LOG_SIZE_BYTES} 字节的整数`)
+        message.error('最大日志大小必须是不小于 1MB 的整数')
         return
       }
       const siteBaseUrl = trimTrailingSlash(this.formState.siteBaseUrl)

@@ -32,36 +32,42 @@ func BuildUAPISearchToolWithDB(db *gorm.DB) internalsearch.AISearchTool {
 }
 
 type AISearchConfigView struct {
-	Enabled      bool     `json:"enabled"`
-	BaseURL      string   `json:"baseUrl"`
-	APIKey       string   `json:"apiKey"`
-	Model        string   `json:"model"`
-	ManualModels []string `json:"manualModels"`
-	Prompt       string   `json:"prompt"`
-	Remark       string   `json:"remark"`
-	Temperature  float64  `json:"temperature"`
-	TopP         float64  `json:"topP"`
+	Enabled               bool     `json:"enabled"`
+	BaseURL               string   `json:"baseUrl"`
+	APIKey                string   `json:"apiKey"`
+	Model                 string   `json:"model"`
+	ManualModels          []string `json:"manualModels"`
+	Prompt                string   `json:"prompt"`
+	Remark                string   `json:"remark"`
+	Temperature           float64  `json:"temperature"`
+	TopP                  float64  `json:"topP"`
+	MaxAISearchModelCalls int      `json:"maxAISearchModelCalls"`
+	MaxAISearches         int      `json:"maxAISearches"`
 }
 
 type UpdateAISearchConfigInput struct {
-	Enabled      bool     `json:"enabled"`
-	BaseURL      string   `json:"baseUrl"`
-	APIKey       string   `json:"apiKey"`
-	Model        string   `json:"model"`
-	ManualModels []string `json:"manualModels"`
-	Prompt       string   `json:"prompt"`
-	Remark       string   `json:"remark"`
-	Temperature  float64  `json:"temperature"`
-	TopP         float64  `json:"topP"`
+	Enabled               bool     `json:"enabled"`
+	BaseURL               string   `json:"baseUrl"`
+	APIKey                string   `json:"apiKey"`
+	Model                 string   `json:"model"`
+	ManualModels          []string `json:"manualModels"`
+	Prompt                string   `json:"prompt"`
+	Remark                string   `json:"remark"`
+	Temperature           float64  `json:"temperature"`
+	TopP                  float64  `json:"topP"`
+	MaxAISearchModelCalls int      `json:"maxAISearchModelCalls"`
+	MaxAISearches         int      `json:"maxAISearches"`
 }
 
 type AISearchRequestConfig struct {
-	BaseURL     string
-	APIKey      string
-	Model       string
-	Prompt      string
-	Temperature float64
-	TopP        float64
+	BaseURL               string
+	APIKey                string
+	Model                 string
+	Prompt                string
+	Temperature           float64
+	TopP                  float64
+	MaxAISearchModelCalls int
+	MaxAISearches         int
 }
 
 type ResolvedAISearchConfig struct {
@@ -159,13 +165,16 @@ func GetAISearchConfigWithDB(db *gorm.DB) (AISearchConfigView, error) {
 		return AISearchConfigView{}, err
 	}
 	if !exists {
+		maxModelCalls, maxSearches := GetAISearchBudgetsWithDB(db)
 		return AISearchConfigView{
-			Prompt:      defaultAISearchPrompt(),
-			Temperature: 0,
-			TopP:        0,
+			Prompt:                defaultAISearchPrompt(),
+			Temperature:           0,
+			TopP:                  0,
+			MaxAISearchModelCalls: maxModelCalls,
+			MaxAISearches:         maxSearches,
 		}, nil
 	}
-	return buildAISearchConfigView(config)
+	return buildAISearchConfigView(db, config)
 }
 
 func UpdateAISearchConfigWithDB(db *gorm.DB, input UpdateAISearchConfigInput) (AISearchConfigView, error) {
@@ -196,16 +205,24 @@ func UpdateAISearchConfigWithDB(db *gorm.DB, input UpdateAISearchConfigInput) (A
 	if err := db.Save(&config).Error; err != nil {
 		return AISearchConfigView{}, err
 	}
+	if input.MaxAISearchModelCalls > 0 || input.MaxAISearches > 0 {
+		if err := SetAISearchBudgetsWithDB(db, input.MaxAISearchModelCalls, input.MaxAISearches); err != nil {
+			return AISearchConfigView{}, err
+		}
+	}
 
-	return buildAISearchConfigView(config)
+	return buildAISearchConfigView(db, config)
 }
 
 func BuildAISearchRequestConfigWithDB(db *gorm.DB, query url.Values, allowDefaultAccount bool, explicitConfigAllowed ...bool) (ResolvedAISearchConfig, error) {
+	maxModelCalls, maxSearches := GetAISearchBudgetsWithDB(db)
 	resolved := ResolvedAISearchConfig{
 		Config: AISearchRequestConfig{
-			Prompt:      defaultAISearchPrompt(),
-			Temperature: 0,
-			TopP:        0,
+			Prompt:                defaultAISearchPrompt(),
+			Temperature:           0,
+			TopP:                  0,
+			MaxAISearchModelCalls: maxModelCalls,
+			MaxAISearches:         maxSearches,
 		},
 	}
 	allowExplicitConfig := allowDefaultAccount
@@ -299,22 +316,25 @@ func ListAISearchModelsWithDB(db *gorm.DB, query url.Values) ([]string, error) {
 	return mergeAISearchModelLists(manualModels, remoteModels), nil
 }
 
-func buildAISearchConfigView(config entity.AISearchConfig) (AISearchConfigView, error) {
+func buildAISearchConfigView(db *gorm.DB, config entity.AISearchConfig) (AISearchConfigView, error) {
 	manualModels, err := unmarshalAISearchManualModels(config.ManualModels)
 	if err != nil {
 		return AISearchConfigView{}, err
 	}
+	maxModelCalls, maxSearches := GetAISearchBudgetsWithDB(db)
 
 	return AISearchConfigView{
-		Enabled:      config.Enabled,
-		BaseURL:      config.BaseURL,
-		APIKey:       config.APIKey,
-		Model:        config.Model,
-		ManualModels: manualModels,
-		Prompt:       effectiveAISearchPrompt(config.Prompt),
-		Remark:       config.Remark,
-		Temperature:  0,
-		TopP:         0,
+		Enabled:               config.Enabled,
+		BaseURL:               config.BaseURL,
+		APIKey:                config.APIKey,
+		Model:                 config.Model,
+		ManualModels:          manualModels,
+		Prompt:                effectiveAISearchPrompt(config.Prompt),
+		Remark:                config.Remark,
+		Temperature:           0,
+		TopP:                  0,
+		MaxAISearchModelCalls: maxModelCalls,
+		MaxAISearches:         maxSearches,
 	}, nil
 }
 

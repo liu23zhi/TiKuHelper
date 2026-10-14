@@ -86,6 +86,71 @@ func TestGetSystemSettingDetailWithDBDefaults(t *testing.T) {
 	if detail.MaxLogSizeBytes != DefaultMaxLogSizeBytes {
 		t.Fatalf("expected default log size %d, got %d", DefaultMaxLogSizeBytes, detail.MaxLogSizeBytes)
 	}
+	if detail.MaxAISearchModelCalls != DefaultMaxAISearchModelCalls || detail.MaxAISearches != DefaultMaxAISearches {
+		t.Fatalf("expected default AI budgets %d/%d, got %d/%d", DefaultMaxAISearchModelCalls, DefaultMaxAISearches, detail.MaxAISearchModelCalls, detail.MaxAISearches)
+	}
+}
+
+func TestUpdateSystemSettingDetailWithDBPersistsAISearchBudgets(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+
+	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
+		MaxAISearchModelCalls: 7,
+		MaxAISearches:         6,
+	})
+	if err != nil {
+		t.Fatalf("update AI search budgets: %v", err)
+	}
+	if updated.MaxAISearchModelCalls != 7 || updated.MaxAISearches != 6 {
+		t.Fatalf("expected AI budgets 7/6, got %d/%d", updated.MaxAISearchModelCalls, updated.MaxAISearches)
+	}
+
+	reloaded, err := GetSystemSettingDetailWithDB(db)
+	if err != nil {
+		t.Fatalf("reload AI search budgets: %v", err)
+	}
+	if reloaded.MaxAISearchModelCalls != 7 || reloaded.MaxAISearches != 6 {
+		t.Fatalf("expected reloaded AI budgets 7/6, got %d/%d", reloaded.MaxAISearchModelCalls, reloaded.MaxAISearches)
+	}
+	for key, want := range map[string]string{
+		MaxAISearchModelCallsSettingKey: "7",
+		MaxAISearchesSettingKey:         "6",
+	} {
+		setting, exists, loadErr := getSystemSettingByKey(db, key)
+		if loadErr != nil || !exists || setting.Value != want {
+			t.Fatalf("expected persisted %s=%s, exists=%t setting=%+v err=%v", key, want, exists, setting, loadErr)
+		}
+	}
+}
+
+func TestUpdateSystemSettingDetailWithDBClampsAISearchBudgets(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+
+	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
+		MaxAISearchModelCalls: MaxAllowedAISearchModelCalls + 1,
+		MaxAISearches:         MaxAllowedAISearches + 1,
+	})
+	if err != nil {
+		t.Fatalf("update oversized AI budgets: %v", err)
+	}
+	if updated.MaxAISearchModelCalls != MaxAllowedAISearchModelCalls || updated.MaxAISearches != MaxAllowedAISearches {
+		t.Fatalf("expected clamped AI budgets %d/%d, got %d/%d", MaxAllowedAISearchModelCalls, MaxAllowedAISearches, updated.MaxAISearchModelCalls, updated.MaxAISearches)
+	}
+}
+
+func TestUpdateSystemSettingDetailWithDBKeepsAISearchBudgetsWhenLegacyPayloadOmitsThem(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+	if _, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{MaxAISearchModelCalls: 8, MaxAISearches: 9}); err != nil {
+		t.Fatalf("seed AI budgets: %v", err)
+	}
+
+	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{SiteName: "兼容旧前端"})
+	if err != nil {
+		t.Fatalf("update legacy payload: %v", err)
+	}
+	if updated.MaxAISearchModelCalls != 8 || updated.MaxAISearches != 9 {
+		t.Fatalf("legacy payload must preserve AI budgets 8/9, got %d/%d", updated.MaxAISearchModelCalls, updated.MaxAISearches)
+	}
 }
 
 func TestUpdateSystemSettingDetailWithDBPersistsMaxLogSizeBytes(t *testing.T) {

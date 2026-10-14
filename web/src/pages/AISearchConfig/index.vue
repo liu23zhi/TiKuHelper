@@ -99,6 +99,35 @@
         </a-space>
       </a-form-item>
 
+      <a-divider orientation="left">AI 搜索预算</a-divider>
+      <a-form-item label="模型最大调用次数">
+        <a-input-number
+          v-model:value="formState.maxAISearchModelCalls"
+          :min="MIN_AI_SEARCH_MODEL_CALLS"
+          :max="MAX_AI_SEARCH_BUDGET"
+          :precision="0"
+          :step="1"
+          :parser="parseIntegerInput"
+          style="width: 180px"
+        />
+        <span class="unit-label">次</span>
+        <div class="hint">每次 AI 搜索最多调用模型的次数，包含重试和备用地址请求，默认 4 次，范围 1～20 次。每一轮提示中都会告知模型剩余调用次数。</div>
+      </a-form-item>
+
+      <a-form-item label="最大搜索次数">
+        <a-input-number
+          v-model:value="formState.maxAISearches"
+          :min="MIN_AI_SEARCHES"
+          :max="MAX_AI_SEARCH_BUDGET"
+          :precision="0"
+          :step="1"
+          :parser="parseIntegerInput"
+          style="width: 180px"
+        />
+        <span class="unit-label">次</span>
+        <div class="hint">每次 AI 搜索最多调用搜索 API 的次数，默认 3 次。每一轮模型调用前都会告知剩余搜索次数，达到最后一轮时必须直接输出答案。</div>
+      </a-form-item>
+
       <a-form-item label="Prompt 设置">
         <a-textarea
           v-model:value="formState.prompt"
@@ -334,6 +363,27 @@ function appendV1(url) {
   return `${trimmed}/v1`
 }
 
+const DEFAULT_MAX_AI_SEARCH_MODEL_CALLS = 4
+const DEFAULT_MAX_AI_SEARCHES = 3
+const MIN_AI_SEARCH_MODEL_CALLS = 1
+const MIN_AI_SEARCHES = 1
+const MAX_AI_SEARCH_BUDGET = 20
+
+function parseIntegerInput(value) {
+  if (value === null || value === undefined || value === '') {
+    return ''
+  }
+  return String(value).replace(/[^0-9]/g, '')
+}
+
+function normalizeAISearchBudget(value, fallback) {
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    return fallback
+  }
+  return Math.min(parsed, MAX_AI_SEARCH_BUDGET)
+}
+
 export default defineComponent({
   name: 'AISearchConfig',
   setup() {
@@ -367,6 +417,8 @@ export default defineComponent({
       remark: '',
       temperature: 0,
       topP: 0,
+      maxAISearchModelCalls: DEFAULT_MAX_AI_SEARCH_MODEL_CALLS,
+      maxAISearches: DEFAULT_MAX_AI_SEARCHES,
     })
 
     const priceRows = ref([])
@@ -420,6 +472,8 @@ export default defineComponent({
           formState.remark = data.remark || ''
           formState.temperature = data.temperature ?? 0
           formState.topP = data.topP ?? 0
+          formState.maxAISearchModelCalls = normalizeAISearchBudget(data.maxAISearchModelCalls, DEFAULT_MAX_AI_SEARCH_MODEL_CALLS)
+          formState.maxAISearches = normalizeAISearchBudget(data.maxAISearches, DEFAULT_MAX_AI_SEARCHES)
         } else {
           message.error(res?.message || '获取 AI 搜索配置失败')
         }
@@ -494,6 +548,10 @@ export default defineComponent({
       fixedTemperatureText,
       fixedTopPText,
       formState,
+      MIN_AI_SEARCH_MODEL_CALLS,
+      MIN_AI_SEARCHES,
+      MAX_AI_SEARCH_BUDGET,
+      parseIntegerInput,
       modelOptions,
       priceRows,
       priceColumns,
@@ -547,6 +605,16 @@ export default defineComponent({
       })
     },
     submitSave(baseUrl) {
+      const maxAISearchModelCalls = Number(this.formState.maxAISearchModelCalls)
+      const maxAISearches = Number(this.formState.maxAISearches)
+      if (!Number.isSafeInteger(maxAISearchModelCalls) || maxAISearchModelCalls < MIN_AI_SEARCH_MODEL_CALLS || maxAISearchModelCalls > MAX_AI_SEARCH_BUDGET) {
+        message.error(`模型最大调用次数必须是 ${MIN_AI_SEARCH_MODEL_CALLS}～${MAX_AI_SEARCH_BUDGET} 的整数`)
+        return
+      }
+      if (!Number.isSafeInteger(maxAISearches) || maxAISearches < MIN_AI_SEARCHES || maxAISearches > MAX_AI_SEARCH_BUDGET) {
+        message.error(`最大搜索次数必须是 ${MIN_AI_SEARCHES}～${MAX_AI_SEARCH_BUDGET} 的整数`)
+        return
+      }
       this.saving = true
       const payload = buildAISearchConfigSavePayload(this.formState, baseUrl)
       updateAISearchConfig(payload).then(res => {

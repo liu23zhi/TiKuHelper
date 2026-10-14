@@ -86,6 +86,8 @@ test('buildAISearchConfigSavePayload persists the editable model list', () => {
       remark: ' 备注 ',
       temperature: 0,
       topP: 0,
+      maxAISearchModelCalls: 4,
+      maxAISearches: 3,
     },
   );
 });
@@ -172,6 +174,24 @@ test('AISearchConfig page bills from the model price table', async () => {
   assert.doesNotMatch(content, /Architecture/);
   assert.match(content, /price-table-wrap/);
   assert.match(content, /@media \(max-width: 768px\)/);
+});
+
+test('AISearchConfig page exposes configurable model and search budgets', async () => {
+  const content = await readFile(aiSearchConfigPagePath, 'utf8');
+  const helperContent = await readFile(path.join(__dirname, 'aiSearchModelHelpers.mjs'), 'utf8');
+
+  assert.match(content, /maxAISearchModelCalls: DEFAULT_MAX_AI_SEARCH_MODEL_CALLS/);
+  assert.match(content, /maxAISearches: DEFAULT_MAX_AI_SEARCHES/);
+  assert.match(content, /formState\.maxAISearchModelCalls = normalizeAISearchBudget\(data\.maxAISearchModelCalls/);
+  assert.match(content, /formState\.maxAISearches = normalizeAISearchBudget\(data\.maxAISearches/);
+  assert.match(content, /label="模型最大调用次数"/);
+  assert.match(content, /label="最大搜索次数"/);
+  assert.match(content, /每一轮提示中都会告知模型剩余调用次数/);
+  assert.match(content, /每一轮模型调用前都会告知剩余搜索次数/);
+  assert.match(content, /模型最大调用次数必须是/);
+  assert.match(content, /最大搜索次数必须是/);
+  assert.match(helperContent, /maxAISearchModelCalls: Number\(formState\?\.maxAISearchModelCalls \|\| 4\)/);
+  assert.match(helperContent, /maxAISearches: Number\(formState\?\.maxAISearches \|\| 3\)/);
 });
 
 const pricedRows = [

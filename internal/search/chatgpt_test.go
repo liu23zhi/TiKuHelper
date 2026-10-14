@@ -184,7 +184,7 @@ func TestChatGptClientSearchAnswerUsesSystemPromptAndFixedSamplingParams(t *test
 		if err := json.Unmarshal(payload.Messages[0].Content, &systemPrompt); err != nil {
 			t.Fatalf("decode system prompt: %v", err)
 		}
-		if systemPrompt != "系统规则 Prompt" {
+		if !strings.HasPrefix(systemPrompt, "系统规则 Prompt\n当前预算：") {
 			t.Fatalf("unexpected system prompt: %q", systemPrompt)
 		}
 		parts := decodeUserContentParts(t, payload.Messages)

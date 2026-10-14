@@ -90,14 +90,16 @@ func SearchAIFallbackWithDB(db *gorm.DB, req model.SearchRequest) AIFallbackResu
 	}
 
 	client := &internalsearch.ChatGptClient{
-		Enable:      true,
-		BaseURL:     resolved.Config.BaseURL,
-		APIKey:      resolved.Config.APIKey,
-		Model:       resolved.Config.Model,
-		Prompt:      resolved.Config.Prompt,
-		Temperature: 0,
-		TopP:        0,
-		SearchTool:  BuildUAPISearchToolWithDB(db),
+		Enable:                true,
+		BaseURL:               resolved.Config.BaseURL,
+		APIKey:                resolved.Config.APIKey,
+		Model:                 resolved.Config.Model,
+		Prompt:                resolved.Config.Prompt,
+		Temperature:           0,
+		TopP:                  0,
+		MaxAISearchModelCalls: resolved.Config.MaxAISearchModelCalls,
+		MaxAISearches:         resolved.Config.MaxAISearches,
+		SearchTool:            BuildUAPISearchToolWithDB(db),
 	}
 
 	answers, usage, searchErr := runAIFallbackSearchWithUsage(client, model.SearchRequest{

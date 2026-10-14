@@ -339,6 +339,49 @@ func TestGetAISearchConfigWithDBReturnsParsedManualModels(t *testing.T) {
 	}
 }
 
+func TestAISearchConfigPersistsAndResolvesSearchBudgets(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	if err := db.AutoMigrate(&entity.SystemSetting{}); err != nil {
+		t.Fatalf("migrate system settings: %v", err)
+	}
+
+	view, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{
+		Enabled:               true,
+		BaseURL:               "https://api.example.com/v1",
+		APIKey:                "sk-test",
+		Model:                 "gpt-test",
+		MaxAISearchModelCalls: 6,
+		MaxAISearches:         5,
+	})
+	if err != nil {
+		t.Fatalf("update AI search budgets: %v", err)
+	}
+	if view.MaxAISearchModelCalls != 6 || view.MaxAISearches != 5 {
+		t.Fatalf("expected config view budgets 6/5, got %d/%d", view.MaxAISearchModelCalls, view.MaxAISearches)
+	}
+
+	resolved, err := BuildAISearchRequestConfigWithDB(db, url.Values{}, true)
+	if err != nil {
+		t.Fatalf("resolve AI search config: %v", err)
+	}
+	if resolved.Config.MaxAISearchModelCalls != 6 || resolved.Config.MaxAISearches != 5 {
+		t.Fatalf("expected request budgets 6/5, got %d/%d", resolved.Config.MaxAISearchModelCalls, resolved.Config.MaxAISearches)
+	}
+
+	legacyView, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{
+		Enabled: true,
+		BaseURL: "https://api.example.com/v1",
+		APIKey:  "********",
+		Model:   "gpt-test",
+	})
+	if err != nil {
+		t.Fatalf("update legacy AI config: %v", err)
+	}
+	if legacyView.MaxAISearchModelCalls != 6 || legacyView.MaxAISearches != 5 {
+		t.Fatalf("legacy payload must preserve budgets 6/5, got %d/%d", legacyView.MaxAISearchModelCalls, legacyView.MaxAISearches)
+	}
+}
+
 func TestAISearchConfigViewJSONOmitsLegacyRemoteModelsFlag(t *testing.T) {
 	db := newSearchAccountConfigTestDB(t)
 

@@ -52,10 +52,17 @@ test('SystemSettings exposes a validated byte-based maximum log size with a 5GB 
   const content = await readFile(systemSettingsPagePath, 'utf8');
 
   assert.match(content, /const DEFAULT_MAX_LOG_SIZE_BYTES = 5 \* 1024 \* 1024 \* 1024/);
-  assert.match(content, /maxLogSizeBytes: DEFAULT_MAX_LOG_SIZE_BYTES/);
-  assert.match(content, /formState\.maxLogSizeBytes = normalizeMaxLogSizeBytes\(data\.maxLogSizeBytes\)/);
+  assert.match(content, /maxLogSizeValue: DEFAULT_MAX_LOG_SIZE_BYTES \/ LOG_SIZE_UNIT_MAP\.GB\.bytes/);
+  assert.match(content, /maxLogSizeUnit: 'GB'/);
+  assert.match(content, /const LOG_SIZE_UNITS = \[/);
+  assert.match(content, /value: 'KB'/);
+  assert.match(content, /value: 'MB'/);
+  assert.match(content, /value: 'GB'/);
+  assert.match(content, /value: 'TB'/);
+  assert.match(content, /const maxLogSize = splitMaxLogSizeBytes\(data\.maxLogSizeBytes\)/);
+  assert.match(content, /const maxLogSizeBytes = composeMaxLogSizeBytes\(this\.formState\.maxLogSizeValue, this\.formState\.maxLogSizeUnit\)/);
   assert.match(content, /maxLogSizeBytes,/);
-  assert.match(content, /最大日志大小必须是不小于/);
+  assert.match(content, /最大日志大小必须是不小于 1MB 的整数/);
   assert.match(content, /日志目录全部日志文件的总占用上限/);
 });
 
