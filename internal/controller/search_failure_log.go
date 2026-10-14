@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/itihey/tikuAdapter/internal/search"
 	"github.com/itihey/tikuAdapter/internal/uapi"
 	pkgerrors "github.com/itihey/tikuAdapter/pkg/errors"
 	"github.com/itihey/tikuAdapter/pkg/logger"
@@ -127,9 +128,10 @@ func addSearchFailuresToAudit(audit searchAuditMetadata, status string, failures
 	// Embed the public response unchanged, adding diagnostics only to the stored audit.
 	raw, err := json.Marshal(struct {
 		model.SearchResponse
-		Status   string                  `json:"status"`
-		Failures []searchProviderFailure `json:"failures,omitempty"`
-	}{SearchResponse: resp, Status: status, Failures: failures})
+		Status        string                  `json:"status"`
+		Failures      []searchProviderFailure `json:"failures,omitempty"`
+		AISearchTrace []search.AISearchTrace  `json:"aiSearchTrace,omitempty"`
+	}{SearchResponse: resp, Status: status, Failures: failures, AISearchTrace: audit.AISearchTrace})
 	if err == nil {
 		audit.RawResponse = string(raw)
 	}

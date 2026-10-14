@@ -102,6 +102,32 @@ func TestAISearchToolsSearchTwiceAndAccumulateUsage(t *testing.T) {
 	if len(usage.SearchCalls) != 2 || usage.SearchCalls[0].Query != "二加二 计算" || usage.SearchCalls[1].Query != "加法 验算" {
 		t.Fatalf("expected each actual search query in usage, got %+v", usage.SearchCalls)
 	}
+	if len(usage.Trace) < 8 {
+		t.Fatalf("expected complete model and tool trace, got %+v", usage.Trace)
+	}
+	traceStages := make(map[string]bool)
+	fullResponseCount := 0
+	rawResponseCount := 0
+	for _, trace := range usage.Trace {
+		traceStages[trace.Stage] = true
+		if trace.ModelCallBudget <= 0 {
+			t.Fatalf("trace is missing model call budget: %+v", trace)
+		}
+		if trace.FullResponse != "" {
+			fullResponseCount++
+		}
+		if trace.RawResponse != "" {
+			rawResponseCount++
+		}
+	}
+	for _, stage := range []string{"模型调用开始", "模型响应", "搜索工具调用开始", "搜索工具完成", "搜索 API 请求开始", "搜索 API 响应"} {
+		if !traceStages[stage] {
+			t.Fatalf("complete trace is missing stage %q: %+v", stage, usage.Trace)
+		}
+	}
+	if fullResponseCount == 0 || rawResponseCount == 0 {
+		t.Fatalf("complete model response is missing full=%d raw=%d", fullResponseCount, rawResponseCount)
+	}
 	for _, call := range usage.SearchCalls {
 		if call.API != uapi.DefaultSearchAggregateURL || call.Status != "success" || call.ResultCount != 1 {
 			t.Fatalf("unexpected search call detail: %+v", call)

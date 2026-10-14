@@ -47,6 +47,7 @@ var (
 type loggerState struct {
 	mu            sync.Mutex
 	files         [3]*rotatingFile
+	thinking      *rotatingFile
 	stdout        io.Writer
 	stderr        io.Writer
 	standard      io.Writer
@@ -108,6 +109,16 @@ func setupLoggerWithLimits(dir string, maxBytes int64, maxTotalBytes int64) erro
 		}
 		s.files[index] = file
 	}
+	thinkingFile, err := openRotatingFile(dir, "Tiku-thinking", maxBytes)
+	if err != nil {
+		for _, opened := range s.files {
+			if opened != nil {
+				_ = opened.close()
+			}
+		}
+		return fmt.Errorf("open Tiku-thinking log: %w", err)
+	}
+	s.thinking = thinkingFile
 	if err := pruneLogFiles(dir, maxTotalBytes); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "清理超限日志失败 directory=%s error=%v\n", dir, err)
 	}
@@ -165,6 +176,9 @@ func (s *loggerState) close() error {
 		if file != nil {
 			errs = append(errs, file.close())
 		}
+	}
+	if s.thinking != nil {
+		errs = append(errs, s.thinking.close())
 	}
 	s.mu.Unlock()
 	if gin.DefaultWriter == s.out {
@@ -252,6 +266,36 @@ func writeMessage(level Level, text string) {
 		writer = gin.DefaultErrorWriter
 	}
 	_, _ = fmt.Fprintf(writer, "[%s] %s | %s\n", labels[level], time.Now().In(ShanghaiLocation()).Format("2006/01/02 - 15:04:05"), strings.TrimRight(RedactSecrets(text), "\r\n"))
+}
+
+// AIThinking writes the observable AI search trace to its dedicated file.
+// It intentionally does not mirror the trace to the console or regular logs.
+func AIThinking(text string) {
+	AIThinkingWithSecrets(text)
+}
+
+// AIThinkingWithSecrets writes a detailed AI trace while also redacting
+// request-specific credentials that cannot be recognized by generic patterns.
+func AIThinkingWithSecrets(text string, secrets ...string) {
+	stateMu.Lock()
+	s := active
+	stateMu.Unlock()
+	if s == nil {
+		return
+	}
+
+	line := fmt.Sprintf("[AI-THINKING] %s | %s\n", time.Now().In(ShanghaiLocation()).Format("2006/01/02 - 15:04:05"), strings.TrimRight(RedactSecrets(text, secrets...), "\r\n"))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.thinking == nil {
+		return
+	}
+	if err := s.thinking.write([]byte(line)); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "write AI thinking log: %v\n", err)
+	}
+	if err := pruneLogFiles(s.logDir, s.maxTotalBytes); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "清理超限日志失败 directory=%s error=%v\n", s.logDir, err)
+	}
 }
 
 var shanghaiLocation = func() *time.Location {
@@ -451,7 +495,7 @@ func pruneLogFiles(dir string, maxTotalBytes int64) error {
 }
 
 func isManagedLogFile(name string) bool {
-	for _, prefix := range []string{"Tiku", "Tiku-warning", "Tiku-error"} {
+	for _, prefix := range []string{"Tiku", "Tiku-warning", "Tiku-error", "Tiku-thinking"} {
 		if name == prefix+".txt" || name == prefix+".txt.gz" || isManagedLogArchive(name) {
 			return true
 		}
@@ -460,7 +504,7 @@ func isManagedLogFile(name string) bool {
 }
 
 func isManagedLogArchive(name string) bool {
-	for _, prefix := range []string{"Tiku", "Tiku-warning", "Tiku-error"} {
+	for _, prefix := range []string{"Tiku", "Tiku-warning", "Tiku-error", "Tiku-thinking"} {
 		if !strings.HasPrefix(name, prefix) {
 			continue
 		}

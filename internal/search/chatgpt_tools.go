@@ -108,8 +108,11 @@ func aiWebSearchToolDefinition() openAITool {
 	}}
 }
 
-func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model.SearchRequest) ([][]string, AISearchDebugResult, error) {
-	debug := AISearchDebugResult{}
+func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model.SearchRequest) (answers [][]string, debug AISearchDebugResult, err error) {
+	debug = AISearchDebugResult{}
+	defer func() {
+		debug.Trace = append([]AISearchTrace(nil), debug.Usage.Trace...)
+	}()
 	if requestID := strings.TrimSpace(req.RequestID); requestID != "" {
 		in.RequestID = requestID
 	}
@@ -154,7 +157,7 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 		}
 		roundStartedAt := time.Now()
 		messages = append(messages, openAIChatMessage{Role: "system", Content: buildAISearchBudgetPrompt(remainingModelCalls, remainingSearches, finalRound)})
-		in.logAISearchTrace(AISearchTrace{Round: round + 1, Stage: "模型调用开始", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, SearchCount: searches, SearchBudget: maxSearches})
+		in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "模型调用开始", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches})
 		payload := openAIChatCompletionRequest{
 			Model: strings.TrimSpace(in.Model), Stream: true, Messages: messages,
 			StreamOptions: &openAIStreamOptions{IncludeUsage: true}, MaxTokens: aiToolMaxOutputTokens,
@@ -173,7 +176,7 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 			return nil, debug, errors.ErrParserJSON
 		}
 		result, status, callErr := in.requestAIToolRound(ctx, endpoint, encoded)
-		in.logAISearchTrace(AISearchTrace{Round: round + 1, Stage: "模型响应", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, Status: fmt.Sprintf("%d", status), DurationMs: time.Since(roundStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, ReasoningChars: result.ReasoningChars, ContentPreview: result.Content, Error: errorString(callErr)})
+		in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "模型响应", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, Status: fmt.Sprintf("%d", status), DurationMs: time.Since(roundStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, ReasoningChars: result.ReasoningChars, ContentPreview: result.Content, FullResponse: result.Content, RawResponse: result.Raw, Error: errorString(callErr)})
 		requestBodies = append(requestBodies, string(encoded))
 		rawResponses = append(rawResponses, result.Raw)
 		addAISearchUsage(&debug.Usage, result.Usage)
@@ -216,9 +219,9 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 			}
 			toolStartedAt := time.Now()
 			toolQuery := parseAISearchToolQuery(call.Function.Arguments)
-			in.logAISearchTrace(AISearchTrace{Round: round + 1, Stage: "搜索工具调用开始", Query: toolQuery, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, SearchCount: searches, SearchBudget: maxSearches})
-			content, abort := in.executeAISearchTool(ctx, call, &searches, maxSearches, results, &toolContentBytes, &debug.Usage)
-			in.logAISearchTrace(AISearchTrace{Round: round + 1, Stage: "搜索工具完成", Query: toolQuery, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, DurationMs: time.Since(toolStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, Status: map[bool]string{true: "停止", false: "继续"}[abort], ResultCount: countAISearchToolResults(content)})
+			in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "搜索工具调用开始", Query: toolQuery, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: maxSearches - searches})
+			content, abort := in.executeAISearchTool(ctx, call, &searches, maxSearches, results, &toolContentBytes, &debug.Usage, round+1, maxModelCalls)
+			in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "搜索工具完成", Query: toolQuery, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, DurationMs: time.Since(toolStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: maxSearches - searches, Status: map[bool]string{true: "停止", false: "继续"}[abort], ResultCount: countAISearchToolResults(content)})
 			messages = append(messages, openAIChatMessage{Role: "tool", ToolCallID: call.ID, Content: content})
 			toolsDisabled = toolsDisabled || abort
 		}
@@ -264,6 +267,7 @@ func addAISearchUsage(total *AISearchUsage, usage AISearchUsage) {
 	total.OutputTokens += usage.OutputTokens
 	total.TotalTokens += usage.TotalTokens
 	total.SearchCalls = append(total.SearchCalls, usage.SearchCalls...)
+	total.Trace = append(total.Trace, usage.Trace...)
 }
 
 type aiToolContextTransport struct {
@@ -445,7 +449,7 @@ func countAISearchToolResults(content string) int {
 	return len(payload.Results)
 }
 
-func (in *ChatGptClient) executeAISearchTool(ctx context.Context, call openAIToolCall, searches *int, maxSearches int, cache map[string]string, contentBytes *int, usage *AISearchUsage) (string, bool) {
+func (in *ChatGptClient) executeAISearchTool(ctx context.Context, call openAIToolCall, searches *int, maxSearches int, cache map[string]string, contentBytes *int, usage *AISearchUsage, modelCallCount int, modelCallBudget int) (string, bool) {
 	failure := func(message string, abort bool) (string, bool) {
 		encoded, _ := json.Marshal(map[string]string{"error": message})
 		return string(encoded), abort
@@ -482,7 +486,7 @@ func (in *ChatGptClient) executeAISearchTool(ctx context.Context, call openAIToo
 	defer cancel()
 	callUsage := AISearchCallUsage{API: uapi.DefaultSearchAggregateURL, Query: req.Query, Status: "error"}
 	apiStartedAt := time.Now()
-	in.logAISearchTrace(AISearchTrace{Stage: "搜索 API 请求开始", Query: req.Query, SearchAPI: callUsage.API, SearchCount: *searches, SearchBudget: maxSearches})
+	in.appendAISearchTrace(usage, AISearchTrace{Round: modelCallCount, Stage: "搜索 API 请求开始", Query: req.Query, SearchAPI: callUsage.API, ModelCallCount: modelCallCount, ModelCallBudget: modelCallBudget, RemainingModelCalls: modelCallBudget - modelCallCount, SearchCount: *searches, SearchBudget: maxSearches, RemainingSearches: maxSearches - *searches})
 	result, err := in.SearchTool.SearchAggregate(searchCtx, req)
 	callUsage.DurationMs = time.Since(apiStartedAt).Milliseconds()
 	if err != nil {
@@ -490,7 +494,7 @@ func (in *ChatGptClient) executeAISearchTool(ctx context.Context, call openAIToo
 		if usage != nil {
 			usage.SearchCalls = append(usage.SearchCalls, callUsage)
 		}
-		in.logAISearchTrace(AISearchTrace{Stage: "搜索 API 响应", Query: req.Query, SearchAPI: callUsage.API, Status: "error", DurationMs: callUsage.DurationMs, SearchCount: *searches, SearchBudget: maxSearches, Error: callUsage.Error})
+		in.appendAISearchTrace(usage, AISearchTrace{Round: modelCallCount, Stage: "搜索 API 响应", Query: req.Query, SearchAPI: callUsage.API, ModelCallCount: modelCallCount, ModelCallBudget: modelCallBudget, RemainingModelCalls: modelCallBudget - modelCallCount, Status: "error", DurationMs: callUsage.DurationMs, SearchCount: *searches, SearchBudget: maxSearches, RemainingSearches: maxSearches - *searches, Error: callUsage.Error})
 		return failure("搜索暂不可用，本轮停止搜索，请根据已有资料直接作答。", true)
 	}
 	callUsage.Status = "success"
@@ -510,10 +514,11 @@ func (in *ChatGptClient) executeAISearchTool(ctx context.Context, call openAIToo
 		})
 	}
 	resultSummary, _ := json.Marshal(resultSummaries)
+	rawResult, _ := json.Marshal(result)
 	if usage != nil {
 		usage.SearchCalls = append(usage.SearchCalls, callUsage)
 	}
-	in.logAISearchTrace(AISearchTrace{Stage: "搜索 API 响应", Query: req.Query, SearchAPI: callUsage.API, Status: "success", DurationMs: callUsage.DurationMs, SearchCount: *searches, SearchBudget: maxSearches, ResultCount: len(result.Results), SourceDetails: callUsage.SourceDetails, ResultSummary: string(resultSummary)})
+	in.appendAISearchTrace(usage, AISearchTrace{Round: modelCallCount, Stage: "搜索 API 响应", Query: req.Query, SearchAPI: callUsage.API, ModelCallCount: modelCallCount, ModelCallBudget: modelCallBudget, RemainingModelCalls: modelCallBudget - modelCallCount, Status: "success", DurationMs: callUsage.DurationMs, SearchCount: *searches, SearchBudget: maxSearches, RemainingSearches: maxSearches - *searches, ResultCount: len(result.Results), SourceDetails: callUsage.SourceDetails, ResultSummary: string(resultSummary), RawResponse: string(rawResult)})
 	type evidence struct {
 		Title   string `json:"title"`
 		URL     string `json:"url"`

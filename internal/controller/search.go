@@ -61,6 +61,7 @@ type searchAuditMetadata struct {
 	HitProvider     string
 	Status          string
 	Failures        []searchProviderFailure
+	AISearchTrace   []search.AISearchTrace
 	RawRequest      string
 	RawResponse     string
 	Anonymous       bool
@@ -244,10 +245,12 @@ var searchAIAnswer = func(resolved resolvedSearchRequestContext, req model.Searc
 	logger.SysLog(fmt.Sprintf("AI搜题开始 requestId=%s %s", strings.TrimSpace(resolved.RequestID), buildSearchRequestDebugSummary(req)))
 	answer, usage, err := client.SearchAnswerWithUsage(req)
 	if err != nil {
-		logger.SysError(fmt.Sprintf("AI搜题失败 requestId=%s usage=%s answers=%s error=%s", strings.TrimSpace(resolved.RequestID), buildAISearchUsageDebugSummary(usage), buildSearchAnswerGroupsDebugSummary(answer), err.Error()))
+		logger.SysError(fmt.Sprintf("AI搜题失败 requestId=%s usage=%s answers=%s errorCode=%s", strings.TrimSpace(resolved.RequestID), buildAISearchUsageBasicSummary(usage), buildSearchAnswerGroupsDebugSummary(answer), searchFailureCode(err)))
+		logger.AIThinkingWithSecrets(fmt.Sprintf("AI搜题最终结果 requestId=%s status=failed deepThinking=%t usage=%s answers=%s error=%s", strings.TrimSpace(resolved.RequestID), req.DeepThinking, buildAISearchUsageDebugSummary(usage), buildSearchAnswerGroupsDebugSummary(answer), err.Error()), resolved.AIConfig.APIKey)
 		return answer, usage, err
 	}
-	logger.SysLog(fmt.Sprintf("AI搜题完成 requestId=%s usage=%s answers=%s", strings.TrimSpace(resolved.RequestID), buildAISearchUsageDebugSummary(usage), buildSearchAnswerGroupsDebugSummary(answer)))
+	logger.SysLog(fmt.Sprintf("AI搜题完成 requestId=%s usage=%s answers=%s", strings.TrimSpace(resolved.RequestID), buildAISearchUsageBasicSummary(usage), buildSearchAnswerGroupsDebugSummary(answer)))
+	logger.AIThinkingWithSecrets(fmt.Sprintf("AI搜题最终结果 requestId=%s status=success deepThinking=%t usage=%s answers=%s", strings.TrimSpace(resolved.RequestID), req.DeepThinking, buildAISearchUsageDebugSummary(usage), buildSearchAnswerGroupsDebugSummary(answer)), resolved.AIConfig.APIKey)
 	return answer, usage, err
 }
 
@@ -444,6 +447,7 @@ func Search(c *gin.Context) {
 	resp := util.FillAnswerResponse(result, &req)
 	logger.SysLog(fmt.Sprintf("搜题响应摘要 requestId=%s hitProvider=%s usedLocal=%t usedCache=%t aiEnabled=%t %s", strings.TrimSpace(resolved.RequestID), strings.TrimSpace(auditHitProvider), usedLocalSearch, usedSearchResultCache, aiEnabled, buildSearchResponseDebugSummary(resp)))
 	audit := buildSearchAuditMetadata(c, resolved, query, rawBody, useQuery, result, usedLocalSearch, aiEnabled, auditHitProvider, req, resp)
+	audit.AISearchTrace = append([]search.AISearchTrace(nil), aiUsage.Trace...)
 	status, failures := failureCollector.snapshot(len(result) > 0, resolved.SearchMode == searchModeAI && !aiEnabled)
 	audit = addSearchFailuresToAudit(audit, status, failures, resp)
 	if len(failures) > 0 {
@@ -617,6 +621,10 @@ func buildAISearchUsageDebugSummary(usage search.AISearchUsage) string {
 		parts = append(parts, fmt.Sprintf("searchCall%d=%s|%s|%s|results:%d/%d|durationMs:%d", index+1, logger.RedactSecrets(call.API), truncateForDebug(call.Query, 120), call.Status, call.ResultCount, call.TotalResults, call.DurationMs))
 	}
 	return strings.Join(parts, " ")
+}
+
+func buildAISearchUsageBasicSummary(usage search.AISearchUsage) string {
+	return fmt.Sprintf("inputTokens=%d outputTokens=%d totalTokens=%d modelTraceCount=%d searchCallCount=%d", usage.InputTokens, usage.OutputTokens, usage.TotalTokens, len(usage.Trace), len(usage.SearchCalls))
 }
 
 func hasAISearchUsage(usage search.AISearchUsage) bool {

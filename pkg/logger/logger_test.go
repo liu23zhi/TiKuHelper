@@ -48,6 +48,30 @@ func TestLoggerRoutesMessagesByLevel(t *testing.T) {
 	}
 }
 
+func TestAIThinkingUsesDedicatedRotatingFileAndRedactsSecrets(t *testing.T) {
+	dir := t.TempDir()
+	if err := setupLogger(dir, 1024*1024); err != nil {
+		t.Fatalf("setup logger: %v", err)
+	}
+	t.Cleanup(func() { _ = closeLogger() })
+
+	AIThinking("模型第1轮 requestId=req-thinking 剩余模型调用=2 搜索=1 Authorization: Bearer thinking-secret")
+	if err := closeLogger(); err != nil {
+		t.Fatalf("close logger: %v", err)
+	}
+
+	thinking := readLoggerFile(t, dir, "Tiku-thinking.txt")
+	if !strings.Contains(thinking, "模型第1轮") || !strings.Contains(thinking, "[AI-THINKING]") {
+		t.Fatalf("dedicated thinking log is missing the trace: %s", thinking)
+	}
+	if strings.Contains(thinking, "thinking-secret") {
+		t.Fatalf("dedicated thinking log leaked a secret: %s", thinking)
+	}
+	if strings.Contains(readLoggerFile(t, dir, "Tiku.txt"), "模型第1轮") {
+		t.Fatal("thinking trace should not be written to the general log")
+	}
+}
+
 func TestLoggerArchivesOldestFileAsSuffix01(t *testing.T) {
 	dir := t.TempDir()
 	if err := setupLogger(dir, 90); err != nil {

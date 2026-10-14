@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
+	internalsearch "github.com/itihey/tikuAdapter/internal/search"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/model"
@@ -181,22 +182,19 @@ func writeAIFallbackAuditLog(identity aiFallbackAuditIdentity, requestID string,
 		)
 	}
 	if hasAISearchUsage(result.Usage) {
-		descriptionParts = append(descriptionParts, buildAISearchUsageDebugSummary(result.Usage))
+		descriptionParts = append(descriptionParts, buildAISearchUsageBasicSummary(result.Usage))
 	}
 	descriptionParts = append(descriptionParts, fmt.Sprintf("deepThinking=%t", req.DeepThinking))
-	if len(result.Usage.SearchCalls) > 0 {
-		for index, call := range result.Usage.SearchCalls {
-			descriptionParts = append(descriptionParts, fmt.Sprintf("searchCall%d api=%s query=%s status=%s results=%d/%d durationMs=%d", index+1, logger.RedactSecrets(call.API), truncateForDebug(call.Query, 120), call.Status, call.ResultCount, call.TotalResults, call.DurationMs))
-		}
+	fallbackAnswer := ""
+	if result.Result != nil {
+		fallbackAnswer = truncateForDebug(result.Result.Answer, 240)
 	}
+	logger.AIThinking(fmt.Sprintf("AI兜底最终结果 requestId=%s taskId=%s stage=%s mode=%s status=%s deepThinking=%t answer=%s usage=%s error=%s", strings.TrimSpace(requestID), strings.TrimSpace(taskID), strings.TrimSpace(stage), strings.TrimSpace(mode), aiFallbackResultStatus(result), req.DeepThinking, fallbackAnswer, buildAISearchUsageDebugSummary(result.Usage), logger.RedactSecrets(result.FailureDetail)))
 
 	user := &entity.User{ID: identity.UserID, Username: strings.TrimSpace(identity.Username)}
 	if !result.Success {
 		failureParts := append([]string(nil), descriptionParts...)
 		failureParts = append(failureParts, fmt.Sprintf("userId=%d", identity.UserID), fmt.Sprintf("type=%d", req.Type), fmt.Sprintf("question=%s", truncateForDebug(req.Question, 120)))
-		if result.FailureDetail != "" {
-			failureParts = append(failureParts, "error="+logger.RedactSecrets(result.FailureDetail))
-		}
 		if result.Error == nil || result.Error.Code == service.AIFallbackErrorCodeUpstreamError {
 			logger.SysError(strings.Join(failureParts, " "))
 		} else {
@@ -233,8 +231,9 @@ func buildAIFallbackAuditSnapshot(value any) string {
 func buildAIFallbackResultAuditSnapshot(result service.AIFallbackResult) string {
 	return buildAIFallbackAuditSnapshot(struct {
 		service.AIFallbackResult
-		FailureDetail string `json:"failureDetail,omitempty"`
-	}{AIFallbackResult: result, FailureDetail: logger.RedactSecrets(result.FailureDetail)})
+		FailureDetail string                         `json:"failureDetail,omitempty"`
+		AISearchTrace []internalsearch.AISearchTrace `json:"aiSearchTrace,omitempty"`
+	}{AIFallbackResult: result, FailureDetail: logger.RedactSecrets(result.FailureDetail), AISearchTrace: result.Usage.Trace})
 }
 
 func resolveAIFallbackBillingContext(c *gin.Context) (searchBillingContext, error) {
