@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 	"net/url"
 )
@@ -302,6 +303,25 @@ func TestListBillingRecordsWithDBMergesSearchChargesByRequestID(t *testing.T) {
 	}
 	if merged.ReferenceNo != "req-mixed-search" || merged.AccessTokenName != "混合搜索令牌" {
 		t.Fatalf("expected merged identity fields to be preserved, got %+v", merged)
+	}
+
+	filtered, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{Keyword: "icodef"}, 1, 10)
+	if err != nil {
+		t.Fatalf("list mixed search by a sibling provider: %v", err)
+	}
+	if filtered.Total != 1 || len(filtered.Data) != 1 {
+		t.Fatalf("expected sibling provider filter to retain the request group, got %+v", filtered)
+	}
+	filteredRow := filtered.Data[0]
+	if filteredRow.Amount != 2.02 || filtered.Summary.TotalAmount != 2.02 || filtered.Summary.CurrentPageAmount != 2.02 {
+		t.Fatalf("expected filtered row and summaries to use the full request amount, got row=%v summary=%+v", filteredRow.Amount, filtered.Summary)
+	}
+	feeTotal := 0.0
+	for _, fee := range filteredRow.FeeDetails {
+		feeTotal += fee.Amount
+	}
+	if util.RoundMoney(feeTotal) != filteredRow.Amount {
+		t.Fatalf("expected fee details to equal the merged row amount, got details=%v row=%v", feeTotal, filteredRow.Amount)
 	}
 }
 
@@ -738,13 +758,14 @@ func TestListBillingRecordsWithDBSummaryFollowsKeywordFilter(t *testing.T) {
 		t.Fatalf("expected all-page total 107.5, got %v", all.Summary.TotalAmount)
 	}
 
-	// 按关键词只筛出 ai 渠道：该请求在筛选结果里只剩 0.5，独立请求被排除。
+	// 按渠道关键词筛到请求组内的 ai 明细时，代表行仍呈现完整请求金额与详情，
+	// 独立请求被排除；同一请求不能只显示部分金额却挂载全部费用详情。
 	filtered, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{Keyword: "ai"}, 1, 10)
 	if err != nil {
 		t.Fatalf("list filtered: %v", err)
 	}
-	if filtered.Summary.TotalAmount != 0.5 {
-		t.Fatalf("expected filtered total 0.5 (only the ai channel), got %v", filtered.Summary.TotalAmount)
+	if filtered.Summary.TotalAmount != 100.5 {
+		t.Fatalf("expected filtered total 100.5 (the full matched request group), got %v", filtered.Summary.TotalAmount)
 	}
 	if filtered.Summary.TotalAmount == all.Summary.TotalAmount {
 		t.Fatal("expected the filter to narrow the all-page total")

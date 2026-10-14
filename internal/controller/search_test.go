@@ -1130,7 +1130,7 @@ func TestResolveCompletedSearchBillingChargesAddsOneChargePerActualAISearch(t *t
 		{API: "https://search.example/api", Query: "搜索词二", Status: "error", DurationMs: 51, Error: "服务不可用"},
 	}}
 
-	charges, _, err := resolveCompletedSearchBillingCharges(db, resolved, "ai", request, usage, false)
+	charges, _, err := resolveCompletedSearchBillingCharges(db, resolved, "ai", request, usage, false, true)
 	if err != nil {
 		t.Fatalf("resolve search charges: %v", err)
 	}
@@ -1152,12 +1152,35 @@ func TestResolveCompletedSearchBillingChargesAddsOneChargePerActualAISearch(t *t
 	if err := service.SetAISearchPricePerCallWithDB(db, 0); err != nil {
 		t.Fatalf("disable AI search price: %v", err)
 	}
-	charges, _, err = resolveCompletedSearchBillingCharges(db, resolved, "ai", request, usage, false)
+	charges, _, err = resolveCompletedSearchBillingCharges(db, resolved, "ai", request, usage, false, true)
 	if err != nil {
 		t.Fatalf("resolve zero-priced search calls: %v", err)
 	}
 	if len(charges) != 0 {
 		t.Fatalf("zero price should not add fee rows, got %+v", charges)
+	}
+}
+
+func TestResolveCompletedSearchBillingChargesDoesNotChargeProviderWithoutAnswer(t *testing.T) {
+	db := newSearchControllerTestDB(t)
+	seedControllerDefaultSearchProviderConfig(t, db, "icodef", 1.5)
+	if err := service.SetAISearchPricePerCallWithDB(db, 0.125); err != nil {
+		t.Fatalf("set AI search price: %v", err)
+	}
+
+	resolved := resolvedSearchRequestContext{
+		SearchMode:                 searchModeNormal,
+		UsedDefaultSearchProviders: []string{"icodef"},
+	}
+	usage := searchpkg.AISearchUsage{SearchCalls: []searchpkg.AISearchCallUsage{{
+		API: "https://search.example/api", Query: "检索词", Status: "success", ResultCount: 1,
+	}}}
+	charges, _, err := resolveCompletedSearchBillingCharges(db, resolved, "", model.SearchRequest{Question: "题目"}, usage, false, false)
+	if err != nil {
+		t.Fatalf("resolve no-answer search charges: %v", err)
+	}
+	if len(charges) != 1 || charges[0].Provider != "ai_search" || charges[0].Amount != 0.125 {
+		t.Fatalf("expected only the completed web-search fee, got %+v", charges)
 	}
 }
 

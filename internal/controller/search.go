@@ -1003,7 +1003,7 @@ func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQue
 		return nil, ""
 	}
 
-	charges, warning, err := resolveCompletedSearchBillingCharges(db, resolved, useQuery, req, aiUsage, usedLocalSearch)
+	charges, warning, err := resolveCompletedSearchBillingCharges(db, resolved, useQuery, req, aiUsage, usedLocalSearch, len(result) > 0)
 	if err != nil {
 		logger.SysError(fmt.Sprintf("搜索计费落账失败：%s requestId=%s", err.Error(), resolved.RequestID))
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_charge_resolve_failed", clientIP, audit)
@@ -1049,11 +1049,11 @@ func resolveSearchPersistenceDB() *gorm.DB {
 // resolveCompletedSearchBillingCharges 汇总本次搜索的所有计费项。
 // 第二个返回值是面向调用方的非阻断提示（目前只有「AI 模型未配置价格」），
 // 不影响答案返回，只提醒管理员去价格表补价。
-func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRequestContext, useQuery string, req model.SearchRequest, aiUsage search.AISearchUsage, usedLocalSearch bool) ([]searchBillingCharge, string, error) {
+func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRequestContext, useQuery string, req model.SearchRequest, aiUsage search.AISearchUsage, usedLocalSearch bool, hasSearchAnswer bool) ([]searchBillingCharge, string, error) {
 	charges := make([]searchBillingCharge, 0, 2+len(aiUsage.SearchCalls))
 	warning := ""
 
-	if resolved.SearchMode == searchModeNormal {
+	if resolved.SearchMode == searchModeNormal && hasSearchAnswer {
 		provider := resolveCompletedSearchBillingProvider(useQuery, resolved.UsedDefaultSearchProviders, usedLocalSearch)
 		if provider != "" {
 			var config entity.SearchAccountConfig

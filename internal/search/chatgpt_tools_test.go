@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/itihey/tikuAdapter/internal/uapi"
 	"github.com/itihey/tikuAdapter/pkg/model"
@@ -28,8 +29,12 @@ func (tool *testAISearchTool) SearchAggregate(ctx context.Context, req uapi.Sear
 func writeAIToolStream(w http.ResponseWriter, callID, query string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	arguments, _ := json.Marshal(map[string]string{"query": query})
-	first, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "id": callID, "type": "function", "function": map[string]any{"name": "web_search", "arguments": string(arguments[:len(arguments)/2])}}}}}}})
-	second, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "function": map[string]any{"arguments": string(arguments[len(arguments)/2:])}}}}, "finish_reason": "tool_calls"}}})
+	split := len(arguments) / 2
+	for split > 0 && !utf8.RuneStart(arguments[split]) {
+		split--
+	}
+	first, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "id": callID, "type": "function", "function": map[string]any{"name": "web_search", "arguments": string(arguments[:split])}}}}}}})
+	second, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "function": map[string]any{"arguments": string(arguments[split:])}}}}, "finish_reason": "tool_calls"}}})
 	fmt.Fprintf(w, "data: %s\n\ndata: %s\n\n", first, second)
 	fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":4,\"total_tokens\":14,\"prompt_tokens_details\":{\"cached_tokens\":2},\"cache_creation\":{\"ephemeral_5m_input_tokens\":1}}}\n\ndata: [DONE]\n\n")
 }

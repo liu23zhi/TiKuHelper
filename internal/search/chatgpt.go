@@ -366,6 +366,9 @@ func (in *ChatGptClient) SearchAnswerWithUsage(req model.SearchRequest) (answer 
 		answer, debug, toolErr := in.searchAnswerWithTools(context.Background(), req)
 		return answer, debug.Usage, toolErr
 	}
+	if req.DeepThinking {
+		logger.SysLog(fmt.Sprintf("AI 搜索降级 requestId=%s 原因=未配置联网搜索工具 行为=保持旧版一次性模型回复", strings.TrimSpace(req.RequestID)))
+	}
 	answer = make([][]string, 0)
 	if !in.Enable {
 		return answer, usage, nil

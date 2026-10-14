@@ -593,5 +593,35 @@ func applyBillingRecordFilters(query *gorm.DB, filter BillingRecordListQuery) *g
 	if condition == "" {
 		return query
 	}
-	return query.Where(condition, args...)
+
+	groupCondition, groupArgs := util.BuildInstrCondition(filter.Keyword,
+		"COALESCE(matching_billing_users.username, '')",
+		"COALESCE(matching_records.provider, '')",
+		"COALESCE(matching_records.model_name, '')",
+		"COALESCE(matching_records.question_text, '')",
+		"COALESCE(matching_records.request_id, '')",
+		"COALESCE(matching_records.remark, '')",
+		"COALESCE(matching_access_tokens.name, '')",
+	)
+	if groupCondition == "" {
+		return query.Where(condition, args...)
+	}
+
+	// A normal_search row represents the whole request group. A keyword matching
+	// any sibling charge must retain the representative and aggregate every charge.
+	groupMatch := `billing_records.type = ?
+		AND COALESCE(billing_records.request_id, '') <> ''
+		AND EXISTS (
+			SELECT 1
+			FROM billing_records AS matching_records
+			LEFT JOIN ` + entity.TableNameAccessToken + ` AS matching_access_tokens ON matching_access_tokens.id = matching_records.access_token_id
+			LEFT JOIN ` + entity.TableNameUser + ` AS matching_billing_users ON matching_billing_users.id = matching_records.user_id
+			WHERE matching_records.user_id = billing_records.user_id
+				AND matching_records.request_id = billing_records.request_id
+				AND matching_records.type = ?
+				AND ` + groupCondition + `
+		)`
+	groupArgs = append([]interface{}{normalSearchBillingRecordType, normalSearchBillingRecordType}, groupArgs...)
+	args = append(args, groupArgs...)
+	return query.Where("("+condition+") OR ("+groupMatch+")", args...)
 }
