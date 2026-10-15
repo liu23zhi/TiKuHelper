@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 import {
   buildLogActionColor,
@@ -18,6 +19,7 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const logListPagePath = path.join(__dirname, '..', 'pages', 'LogList', 'index.vue');
+const require = createRequire(import.meta.url);
 
 test('search failures show provider causes and distinguish partial failure and no answer', () => {
   const record = {
@@ -102,7 +104,7 @@ test('buildLogDetailSections exposes structured search summary with raw request 
     {
       key: 'requestParams',
       label: '请求参数',
-      value: 'mode=normal',
+      value: '-',
     },
     {
       key: 'answers',
@@ -146,6 +148,7 @@ test('buildLogDetailSections exposes structured search summary with raw request 
 test('buildLogDetailSections keeps anonymous false and explicit request source in structured sections', () => {
   assert.deepEqual(buildLogDetailSections({
     description: '搜索完成 requestId=req-1 mode=normal use=local,icodef answers=1 hitProvider=local billingProvider=local anonymous=false',
+    oldAnswer: 'method=POST path=/adapter-service/search query=use=local%2Cicodef contentType=application/json body={}',
   }), [
     {
       key: 'requestId',
@@ -177,6 +180,11 @@ test('buildLogDetailSections keeps anonymous false and explicit request source i
       label: '匿名请求',
       value: '否',
     },
+    {
+      key: 'request',
+      label: '原始请求',
+      value: 'method=POST path=/adapter-service/search query=use=local%2Cicodef contentType=application/json body={}',
+    },
   ]);
 });
 
@@ -203,10 +211,11 @@ test('buildLogStructuredFields splits search description and snapshots into sing
   }), {
     summary: '搜索完成',
     requestId: '952e69ad-71aa-419b-8ccc-9599574d81ff',
-    mode: 'mode=normal',
+    mode: '-',
     requestSource: '普通搜题接口',
     answerCount: '4',
     hitProvider: 'icodef',
+    failureReasons: [],
     billingProvider: 'Icodef 题库',
     requestSnapshot: 'method=POST body={"question":"测试"}',
     responseSnapshot: '{"answer":["A"]}',
@@ -230,6 +239,7 @@ test('buildLogStructuredFields maps billing provider codes to Chinese labels', (
 test('buildLogStructuredFields shows request parameters and channel failure details', () => {
   const fields = buildLogStructuredFields({
     description: '搜索失败 requestId=req-failed mode=ai use=ai answers=0',
+    oldAnswer: 'method=POST path=/adapter-service/search query=use=ai contentType=application/json body={}',
     newAnswer: JSON.stringify({
       status: 'failed',
       failures: [{ provider: 'ai', code: 'UPSTREAM_ERROR', error: '对方服务器异常' }],
@@ -238,7 +248,51 @@ test('buildLogStructuredFields shows request parameters and channel failure deta
 
   assert.equal(fields.mode, 'use=ai');
   assert.equal(fields.requestSource, '普通搜题接口');
-  assert.equal(fields.hitProvider, 'ai（错误：[UPSTREAM_ERROR]：对方服务器异常）');
+  assert.equal(fields.hitProvider, 'AI');
+  assert.deepEqual(fields.failureReasons, ['[UPSTREAM_ERROR]：对方服务器异常']);
+});
+
+test('request parameters reflect only safe parameters actually present in request snapshots', () => {
+  const cases = [
+    {
+      description: '搜索完成 mode=normal use= answers=1',
+      request: 'method=POST path=/adapter-service/search query= contentType=application/json body={"question":"测试"}',
+      expected: '-',
+    },
+    {
+      description: '搜索完成 mode=normal use=other answers=1',
+      request: 'method=POST path=/adapter-service/search query=key=private-key&model=test-model&mode=ai&token=private-token&url=https%3A%2F%2Fprivate.example%2F%3Fsecret%3Dprivate-secret&use=ai contentType=application/json body={"question":"测试","deepThinking":true,"skipCache":false}',
+      expected: 'use=ai mode=ai model=test-model deepThinking=true skipCache=false',
+    },
+    {
+      description: 'AI兜底完成 status=success stage=completed mode=async deepThinking=true',
+      request: '{"question":"测试","deepThinking":true,"skipCache":true}',
+      expected: 'deepThinking=true skipCache=true',
+    },
+    {
+      description: 'AI兜底失败 status=failed stage=billing_precheck mode=sync',
+      request: '{"question":"测试"}',
+      expected: '-',
+    },
+    {
+      description: '搜索完成 mode=ai use=ai answers=1',
+      request: '',
+      expected: '-',
+    },
+  ];
+  for (const tc of cases) {
+    assert.equal(buildLogStructuredFields({ description: tc.description, oldAnswer: tc.request }).mode, tc.expected);
+  }
+});
+
+test('channel failures retain complete long diagnostic text separately from the provider', () => {
+  const detail = `AI联网搜题第1轮失败: HTTP 502 ${'完整上游错误'.repeat(100)}`;
+  const fields = buildLogStructuredFields({
+    description: '搜索失败 mode=ai answers=0',
+    newAnswer: JSON.stringify({ failures: [{ provider: 'ai', code: 'UPSTREAM_ERROR', error: detail }] }),
+  });
+  assert.equal(fields.hitProvider, 'AI');
+  assert.deepEqual(fields.failureReasons, [`[UPSTREAM_ERROR]：${detail}`]);
 });
 
 test('buildLogStructuredFields keeps non-search logs on summary and snapshot columns', () => {
@@ -253,6 +307,7 @@ test('buildLogStructuredFields keeps non-search logs on summary and snapshot col
     requestSource: '-',
     answerCount: '-',
     hitProvider: '-',
+    failureReasons: [],
     billingProvider: '-',
     requestSnapshot: 'before',
     responseSnapshot: 'after',
@@ -267,10 +322,11 @@ test('buildLogStructuredFields parses AI fallback failures for list columns', ()
   }), {
     summary: 'AI兜底失败',
     requestId: 'req-ai-fallback',
-    mode: 'mode=async stage=billing_precheck',
+    mode: '-',
     requestSource: 'AI 兜底接口',
     answerCount: '-',
-    hitProvider: 'ai（错误：当前余额不足）',
+    hitProvider: 'AI',
+    failureReasons: ['当前余额不足'],
     billingProvider: '-',
     requestSnapshot: '{"question":"1+1=?","type":0,"options":["1","2"]}',
     responseSnapshot: '{"success":false,"error":{"code":"INSUFFICIENT_BALANCE","message":"当前余额不足"}}',
@@ -364,6 +420,7 @@ test('buildLogStructuredFields summarizes captcha logs for table columns', () =>
     requestSource: 'login_sms',
     answerCount: '200',
     hitProvider: 'true',
+    failureReasons: [],
     billingProvider: '13ms',
     requestSnapshot: 'method=GET path=/check2 id=captcha-2',
     responseSnapshot: 'true',
@@ -405,6 +462,45 @@ test('LogList page renders derived status instead of the raw action column', asy
   assert.doesNotMatch(content, /title: '操作'/);
 });
 
+test('LogList separates channel names from expandable complete failure reasons', async () => {
+  const content = await readFile(logListPagePath, 'utf8');
+  const source = content.match(/<template #hitProvider="\{ record \}">([\s\S]*?)<\/template>/)?.[1];
+  assert.ok(source, 'missing channel cell template');
+  const { compile, createSSRApp, h } = require('vue');
+  const { renderToString } = require('@vue/server-renderer');
+  const render = compile(source);
+  const renderCell = async (detail, expanded) => {
+    const app = createSSRApp({
+      render,
+      setup: () => ({
+        record: {
+          id: 1,
+          description: '搜索失败 mode=ai answers=0',
+          newAnswer: JSON.stringify({ failures: [{ provider: 'ai', code: 'UPSTREAM_ERROR', error: detail }] }),
+        },
+        buildStructuredFields: buildLogStructuredFields,
+        isSnapshotExpanded: () => expanded,
+        toggleSnapshotExpanded: () => {},
+      }),
+    });
+    app.component('a-button', { setup: (_, { slots }) => () => h('button', slots.default?.()) });
+    return renderToString(app);
+  };
+  const short = await renderCell('AI联网搜题第1轮失败: 对方服务器异常', false);
+  assert.match(short, /class="log-channel-name">AI<\/span>/);
+  assert.match(short, /class="log-channel-error">\[UPSTREAM_ERROR\]：AI联网搜题第1轮失败: 对方服务器异常<\/div>/);
+  assert.doesNotMatch(short, /log-channel-reasons--collapsed|<button/);
+
+  const detail = '完整错误'.repeat(100);
+  const collapsed = await renderCell(detail, false);
+  assert.match(collapsed, /log-channel-reasons--collapsed/);
+  assert.ok(collapsed.includes(detail), 'complete cause must remain available for expansion');
+  assert.match(collapsed, /<button[^>]*>展开<\/button>/);
+  const expanded = await renderCell(detail, true);
+  assert.doesNotMatch(expanded, /log-channel-reasons--collapsed/);
+  assert.match(expanded, /<button[^>]*>收起<\/button>/);
+});
+
 test('LogList formats timestamps in Shanghai time', async () => {
   const content = await readFile(logListPagePath, 'utf8');
 
@@ -417,6 +513,7 @@ test('search outcome summaries retain structured request fields', () => {
   for (const summary of ['搜索完成，部分渠道失败', '搜索完成，未找到答案', '搜索未执行，服务未配置或未启用']) {
     const fields = buildLogStructuredFields({
       description: `${summary} requestId=request-1 mode=normal use=ai answers=0 hitProvider=- billingProvider=-`,
+      oldAnswer: 'method=POST path=/adapter-service/search query=use=ai contentType=application/json body={}',
     });
     assert.equal(fields.summary, summary);
     assert.equal(fields.requestId, 'request-1');

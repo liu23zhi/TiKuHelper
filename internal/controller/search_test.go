@@ -1041,6 +1041,9 @@ func TestSearchPersistsAIBillingDuringDefaultAIThatRunsInNormalMode(t *testing.T
 	if record.Provider != searchModeAI || record.Amount != 43.75 {
 		t.Fatalf("expected ai-only default search to bill ai token usage 43.75, got %+v", record)
 	}
+	if record.ClientIP != "192.0.2.1" {
+		t.Fatalf("expected search request source IP on billing record, got %q", record.ClientIP)
+	}
 	if record.BalanceBefore != 0.5 || record.BalanceAfter != -43.25 {
 		t.Fatalf("expected ai-only billing balance 0.5 -> -43.25, got %+v", record)
 	}

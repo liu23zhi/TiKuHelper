@@ -273,7 +273,9 @@ func resolveAIFallbackBillingContext(c *gin.Context) (searchBillingContext, erro
 		accessTokenID = freshToken.ID
 	}
 
-	return loadAIFallbackBillingContextWithDB(db, freshUser.ID, accessTokenID)
+	billingCtx, err := loadAIFallbackBillingContextWithDB(db, freshUser.ID, accessTokenID)
+	billingCtx.ClientIP = strings.TrimSpace(c.ClientIP())
+	return billingCtx, err
 }
 
 func loadAIFallbackBillingContextWithDB(db *gorm.DB, userID int32, accessTokenID int32) (searchBillingContext, error) {

@@ -121,7 +121,8 @@ export function getPhoneLocations(params) {
   return request({
     url: `/adapter-service/uapi/phoneinfo`,
     method: 'get',
-    params
+    params,
+    timeout: 0
   })
 }
 
@@ -134,7 +135,42 @@ export function getIpLocations(params) {
   return request({
     url: `/adapter-service/uapi/ipinfo`,
     method: 'get',
+    params,
+    timeout: 0
+  })
+}
+
+export function getMyLocations(params = {}) {
+  return request({
+    url: `/adapter-service/uapi/my-locations`,
+    method: 'get',
+    params,
+    timeout: 0
+  })
+}
+
+export function getLocationCacheList(params) {
+  return request({
+    url: `/adapter-service/location-cache`,
+    method: 'get',
     params
+  })
+}
+
+export function deleteLocationCache(params) {
+  return request({
+    url: `/adapter-service/location-cache`,
+    method: 'delete',
+    params
+  })
+}
+
+export function refreshLocationCache(data) {
+  return request({
+    url: `/adapter-service/location-cache/refresh`,
+    method: 'post',
+    data,
+    timeout: 0
   })
 }
 

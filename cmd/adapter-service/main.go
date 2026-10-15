@@ -94,7 +94,7 @@ func shutdownHTTPServerOnCancel(shutdownContext context.Context, httpServer *htt
 
 func resolveTrustedProxies(configured string) []string {
 	if strings.TrimSpace(configured) == "" {
-		return []string{"0.0.0.0/0", "::/0"}
+		return nil
 	}
 	trustedProxies := make([]string, 0)
 	for _, item := range strings.Split(configured, ",") {

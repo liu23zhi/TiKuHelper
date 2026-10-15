@@ -53,6 +53,11 @@ func decodePhoneInfo(body []byte) (PhoneInfo, error) {
 	}, nil
 }
 
+// ParsePhoneInfo 解析并保留手机号归属地响应，供 HTTP 调用和持久化缓存复用。
+func ParsePhoneInfo(body []byte) (PhoneInfo, error) {
+	return decodePhoneInfo(body)
+}
+
 // decodeIPInfo 解析 IP 查询 200 响应，同时保留完整原始 body。
 func decodeIPInfo(body []byte) (IPInfo, error) {
 	var fields map[string]json.RawMessage
@@ -71,6 +76,11 @@ func decodeIPInfo(body []byte) (IPInfo, error) {
 		EndIP:     rawString(fields["endip"]),
 		RawJSON:   string(body),
 	}, nil
+}
+
+// ParseIPInfo 解析并保留 IP 归属地响应，供 HTTP 调用和持久化缓存复用。
+func ParseIPInfo(body []byte) (IPInfo, error) {
+	return decodeIPInfo(body)
 }
 
 // rawString 容错取字符串：JSON 字符串原样返回，数字转字符串，其它类型返回空串。

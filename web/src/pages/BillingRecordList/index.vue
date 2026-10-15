@@ -136,13 +136,14 @@
 import { computed, defineComponent, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import Swal from 'sweetalert2'
-import { getBillingRecords, getIpLocations } from '@/api/TikuComponentApi'
+import { getBillingRecords, getIpLocations, getMyLocations } from '@/api/TikuComponentApi'
 import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser'
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
 import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@/utils/listSearchHelpers.mjs'
 import {
   collectLocationKeys,
-  extractLocationAddresses,
+  lookupLocationAddresses,
+  normalizeLocationKey,
   formatValueWithLocation as formatValueWithLocationBase,
 } from '@/utils/locationHelpers.mjs'
 import {
@@ -161,11 +162,6 @@ const tableLoading = ref(false)
 // 页面加载时按当前页的 clientIp 批量查询并落库（服务端持久化，之后翻页零消耗）。
 const ipLocations = reactive({})
 
-// 与后端返回的 map 键保持一致（后端统一小写）。
-function normalizeLocationKey(value) {
-  return value === null || value === undefined ? '' : String(value).trim().toLowerCase()
-}
-
 function formatValueWithLocation(rawValue, address) {
   return formatValueWithLocationBase(rawValue, address)
 }
@@ -178,14 +174,13 @@ function enrichClientIps(rows) {
   if (!ips.length) {
     return
   }
-  getIpLocations({ ips: ips.join(',') })
-    .then((res) => {
-      const addresses = extractLocationAddresses(res)
+  const admin = isAdminUser(getStoredCurrentUser())
+  lookupLocationAddresses('ip', ips, admin ? getIpLocations : getMyLocations, admin ? '' : 'ip')
+    .then((addresses) => {
       Object.keys(addresses).forEach((key) => {
         ipLocations[normalizeLocationKey(key)] = addresses[key]
       })
     })
-    .catch(() => {})
 }
 
 // 服务端返回的金额统计：totalAmount 覆盖全部筛选结果，currentPageAmount 仅当前页。

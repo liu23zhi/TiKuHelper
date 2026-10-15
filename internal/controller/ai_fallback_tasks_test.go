@@ -364,6 +364,9 @@ func TestCreateAIFallbackTaskBillsSuccessfulAIUsageOnce(t *testing.T) {
 	if record.Provider != searchModeAI || record.ModelName != "fallback-billing-model" {
 		t.Fatalf("unexpected billing provider/model: %+v", record)
 	}
+	if record.ClientIP != "192.0.2.1" {
+		t.Fatalf("expected async fallback request IP in billing record, got %q", record.ClientIP)
+	}
 	if record.Amount != 0.35 || record.TotalTokens != 1500000 {
 		t.Fatalf("unexpected billing amount/tokens: %+v", record)
 	}

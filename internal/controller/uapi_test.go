@@ -266,3 +266,34 @@ func TestUAPIIPInfoSkipsPrivateAddresses(t *testing.T) {
 		t.Fatalf("expected private addresses to be skipped, got %v", payload.Data)
 	}
 }
+
+func TestUAPIMyLocationsAllowsOnlyOwnedIPs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUAPILocationTestDB(t)
+	if err := db.AutoMigrate(&entity.User{}, &entity.Log{}, &entity.BillingRecord{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&entity.BillingRecord{UserID: 1, ClientIP: "8.8.8.8"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&entity.Log{UserID: 1, ClientIP: "1.1.1.1"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	seedLocationRow(t, db, entity.LocationKindIP, "8.8.8.8", "账单来源", `{}`)
+	seedLocationRow(t, db, entity.LocationKindIP, "1.1.1.1", "日志来源", `{}`)
+	seedLocationRow(t, db, entity.LocationKindIP, "9.9.9.9", "其他用户", `{}`)
+	recorder := performUAPIRequest(t, "/adapter-service/uapi/my-locations?ips=8.8.8.8,1.1.1.1", "user", UAPIMyLocations)
+	var payload struct {
+		IP map[string]any `json:"ip"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusOK || len(payload.IP) != 2 {
+		t.Fatalf("expected own billing and audit IPs, got %d %s", recorder.Code, recorder.Body.String())
+	}
+	recorder = performUAPIRequest(t, "/adapter-service/uapi/my-locations?ips=9.9.9.9", "user", UAPIMyLocations)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("expected arbitrary IP lookup to be forbidden, got %d %s", recorder.Code, recorder.Body.String())
+	}
+}

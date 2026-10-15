@@ -191,6 +191,74 @@ func TestAISearchToolsRejectLongQueryAndReuseDuplicate(t *testing.T) {
 	}
 }
 
+func TestAISearchToolsStopsSameRoundCallsAfterSearchFailure(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusTooManyRequests, http.StatusBadGateway} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			searchCalls := 0
+			searchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				searchCalls++
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				fmt.Fprint(w, `{"code":"SEARCH_UNAVAILABLE","message":"search unavailable"}`)
+			}))
+			defer searchServer.Close()
+			tool := uapi.NewClient("uapi-test").SetSearchAggregateURL(searchServer.URL).SetMaxRetries(0)
+			modelCalls := 0
+			modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				modelCalls++
+				var payload openAIChatCompletionRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Errorf("decode model request: %v", err)
+					return
+				}
+				if modelCalls == 1 {
+					calls := []map[string]any{
+						{"index": 0, "id": "search1", "type": "function", "function": map[string]string{"name": "web_search", "arguments": `{"query":"first query"}`}},
+						{"index": 1, "id": "search2", "type": "function", "function": map[string]string{"name": "web_search", "arguments": `{"query":"second query"}`}},
+						{"index": 2, "id": "search3", "type": "function", "function": map[string]string{"name": "web_search", "arguments": `{"query":"third query"}`}},
+					}
+					event, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"tool_calls": calls}, "finish_reason": "tool_calls"}}})
+					w.Header().Set("Content-Type", "text/event-stream")
+					fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", event)
+					return
+				}
+				if len(payload.Tools) != 0 {
+					t.Error("search failure must force a final answer without tools")
+				}
+				responses := make(map[string]bool)
+				for _, message := range payload.Messages {
+					if message.Role != "tool" {
+						continue
+					}
+					content, ok := message.Content.(string)
+					var failure map[string]string
+					if !ok || json.Unmarshal([]byte(content), &failure) != nil || failure["error"] == "" {
+						t.Errorf("missing valid error response for tool %s: %v", message.ToolCallID, message.Content)
+					}
+					if responses[message.ToolCallID] {
+						t.Errorf("duplicate tool response for %s", message.ToolCallID)
+					}
+					responses[message.ToolCallID] = true
+				}
+				if len(responses) != 3 || !responses["search1"] || !responses["search2"] || !responses["search3"] {
+					t.Errorf("all tool calls need a response before the final model request: %v", responses)
+				}
+				writeAIFinalStream(w)
+			}))
+			defer modelServer.Close()
+
+			client := &ChatGptClient{Enable: true, BaseURL: modelServer.URL + "/v1", APIKey: "sk-test", Model: "test", SearchTool: tool, MaxAISearchModelCalls: 3, MaxAISearches: 3}
+			answer, usage, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?", DeepThinking: true})
+			if err != nil || !reflect.DeepEqual(answer, [][]string{{"4"}}) || modelCalls != 2 {
+				t.Fatalf("answer=%v modelCalls=%d err=%v", answer, modelCalls, err)
+			}
+			if searchCalls != 1 || len(usage.SearchCalls) != 1 || usage.SearchCalls[0].Query != "first query" || usage.SearchCalls[0].Status != "error" {
+				t.Fatalf("failed first search must stop later external calls and billing usage: requests=%d usage=%+v", searchCalls, usage.SearchCalls)
+			}
+		})
+	}
+}
+
 func TestAISearchToolsBoundRoundsAndDisableToolsForFinal(t *testing.T) {
 	tool := &testAISearchTool{}
 	round := 0
@@ -346,7 +414,7 @@ func TestAISearchToolsRetriesFailedRoundWithoutLeakingRoundError(t *testing.T) {
 	}
 }
 
-func TestAISearchToolsExhaustedRoundReturnsGenericServerError(t *testing.T) {
+func TestAISearchToolsExhaustedRoundPreservesPrivateAuditError(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -362,8 +430,8 @@ func TestAISearchToolsExhaustedRoundReturnsGenericServerError(t *testing.T) {
 	if !errors.Is(err, pkgerrors.ErrTargetServerError) {
 		t.Fatalf("expected generic upstream error, got %v", err)
 	}
-	if strings.Contains(err.Error(), "AI联网搜题第") {
-		t.Fatalf("round detail must not be returned to caller: %v", err)
+	if !strings.Contains(err.Error(), "AI联网搜题第1轮失败") || !strings.Contains(err.Error(), "已尝试2次") || !strings.Contains(err.Error(), "HTTP 502") {
+		t.Fatalf("private error should preserve round/attempt/upstream detail: %v", err)
 	}
 	if calls != 2 {
 		t.Fatalf("expected configured total attempts 2, got %d", calls)

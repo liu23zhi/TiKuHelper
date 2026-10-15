@@ -377,6 +377,9 @@ func mergeBillingSearchGroup(representative BillingRecordListItem, charges []Bil
 	feeDetails := make([]BillingRecordFeeDetail, 0, len(charges))
 	for _, charge := range charges {
 		totalAmount += charge.Amount
+		if strings.TrimSpace(representative.ClientIP) == "" {
+			representative.ClientIP = strings.TrimSpace(charge.ClientIP)
+		}
 		if questionText == "" {
 			questionText = strings.TrimSpace(charge.QuestionText)
 		}

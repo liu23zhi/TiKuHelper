@@ -618,6 +618,12 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		logger.FatalLog(fmt.Errorf("prepare billing client ip schema fail: %w", err))
 	}
 
+	// source-aware 归属地缓存使用新表，旧表保留以兼容 SQLite 和回滚；
+	// 回填失败只记日志，下一次启动会因未写标记而重试。
+	if err := ensureLocationCacheEntriesSchema(db); err != nil {
+		logger.SysLog(fmt.Sprintf("归属地缓存迁移失败（不影响启动）：%v", err))
+	}
+
 	// 题库 hash 迁移与 plat 列删除。两者都依赖 system_settings 表，
 	// 因此必须放在上面的 AutoMigrate（含 SystemSetting）之后。
 	// 失败只记日志、不阻断启动，标记未写入会在下次启动重试。

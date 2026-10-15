@@ -60,7 +60,7 @@
             </div>
             <div class="profile-field">
               <span class="profile-field-label">登录 IP</span>
-              <span>{{ currentUser.lastLoginIp || '-' }}</span>
+              <span>{{ formatValueWithLocation(currentUser.lastLoginIp, ipLocations[normalizeLocationKey(currentUser.lastLoginIp)]) || '-' }}</span>
             </div>
           </div>
         </a-col>
@@ -71,7 +71,7 @@
               <div>
                 <div class="panel-title">手机号绑定</div>
                 <div class="panel-subtitle">
-                  当前：{{ currentUser.phone || '未绑定' }}
+                  当前：{{ currentUser.phone ? formatValueWithLocation(currentUser.phone, phoneLocations[normalizeLocationKey(currentUser.phone)]) : '未绑定' }}
                   <span v-if="currentUser.phoneBoundAt">，绑定于 {{ formatDateTime(currentUser.phoneBoundAt) }}</span>
                 </div>
               </div>
@@ -237,6 +237,7 @@ import {
   updateCurrentUserPhone,
   verifyCaptchaChallenge,
   verifyRemoteCaptcha,
+  getMyLocations,
 } from '@/api/TikuComponentApi'
 import { ensureAuthCaptchaToken } from '@/utils/captchaDialog.mjs'
 import {
@@ -248,8 +249,44 @@ import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
 import { setStoredCurrentUser } from '@/utils/currentUser.js'
 import { useSmsCooldown } from '@/utils/smsCooldown.js'
 import { createWechatQrStatusController } from '@/utils/wechatQrStatus.mjs'
+import { extractLocationAddresses, normalizeLocationKey, formatValueWithLocation as formatValueWithLocationBase } from '@/utils/locationHelpers.mjs'
 
 const CaptchaSceneSMSSendChangePhone = 'sms_send_change_phone'
+const ipLocations = reactive({})
+const phoneLocations = reactive({})
+let locationLoadGeneration = 0
+
+function formatValueWithLocation(rawValue, address) {
+  return formatValueWithLocationBase(rawValue, address)
+}
+
+function clearLocationMap(target) {
+  Object.keys(target).forEach((key) => {
+    delete target[key]
+  })
+}
+
+async function loadProfileLocations() {
+  const generation = ++locationLoadGeneration
+  clearLocationMap(ipLocations)
+  clearLocationMap(phoneLocations)
+  try {
+    const locationRes = await getMyLocations()
+    if (generation !== locationLoadGeneration) {
+      return
+    }
+    const ipAddresses = extractLocationAddresses(locationRes, 'ip')
+    const phoneAddresses = extractLocationAddresses(locationRes, 'phone')
+    Object.keys(ipAddresses).forEach((key) => {
+      ipLocations[normalizeLocationKey(key)] = ipAddresses[key]
+    })
+    Object.keys(phoneAddresses).forEach((key) => {
+      phoneLocations[normalizeLocationKey(key)] = phoneAddresses[key]
+    })
+  } catch {
+    // 归属地只是展示增强，查询失败时保留原始值。
+  }
+}
 
 export default defineComponent({
   name: 'UserProfile',
@@ -307,6 +344,7 @@ export default defineComponent({
           return
         }
         applyCurrentUser(res.data || {})
+        loadProfileLocations()
       } catch (error) {
         message.error(error?.message || '获取个人状态失败')
       } finally {
@@ -403,6 +441,7 @@ export default defineComponent({
         }
         message.success('手机号更换成功')
         applyCurrentUser(res.data || {})
+        loadProfileLocations()
         phoneForm.phone = ''
         phoneForm.smsCode = ''
         phoneForm.captchaToken = ''
@@ -627,6 +666,10 @@ export default defineComponent({
       registerSourceText: buildRegisterSourceLabel,
       formatDateTime,
       formatBalance,
+      ipLocations,
+      phoneLocations,
+      normalizeLocationKey,
+      formatValueWithLocation,
       roleText,
       statusText,
     }

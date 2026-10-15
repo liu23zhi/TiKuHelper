@@ -1,0 +1,161 @@
+package service
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
+	"testing"
+
+	"github.com/itihey/tikuAdapter/internal/entity"
+)
+
+func TestNormalizeLocationAdminKeyValidatesAndNormalizes(t *testing.T) {
+	tests := []struct {
+		name string
+		kind string
+		key  string
+		want string
+		ok   bool
+	}{
+		{name: "phone", kind: entity.LocationKindPhone, key: " 13800138000 ", want: "13800138000", ok: true},
+		{name: "ip lowercases", kind: entity.LocationKindIP, key: " 8.8.8.8 ", want: "8.8.8.8", ok: true},
+		{name: "invalid kind", kind: "domain", key: "8.8.8.8"},
+		{name: "invalid phone", kind: entity.LocationKindPhone, key: "123"},
+		{name: "private ip", kind: entity.LocationKindIP, key: "192.168.1.1", want: "192.168.1.1", ok: true},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			kind, key, err := normalizeLocationAdminKey(testCase.kind, testCase.key)
+			if testCase.name == "private ip" {
+				if err != nil || kind != entity.LocationKindIP || key != testCase.want {
+					t.Fatalf("normalization should not perform public/private policy check: %q %q %v", kind, key, err)
+				}
+				return
+			}
+			if testCase.ok {
+				if err != nil || kind != testCase.kind || key != testCase.want {
+					t.Fatalf("expected normalized key %q, got kind=%q key=%q err=%v", testCase.want, kind, key, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected invalid key to fail, got kind=%q key=%q", kind, key)
+			}
+		})
+	}
+}
+
+func TestResolveOwnLocationIPsRequiresOwnership(t *testing.T) {
+	db := newLocationTestDB(t)
+	if err := db.AutoMigrate(&entity.User{}, &entity.Log{}, &entity.BillingRecord{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&entity.Log{UserID: 7, ClientIP: " 1.1.1.1 "}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&entity.BillingRecord{UserID: 7, ClientIP: "8.8.8.8"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	operator := entity.User{ID: 7, LastLoginIP: "9.9.9.9", RegisterIP: "10.0.0.1"}
+
+	owned, err := ResolveOwnLocationIPsWithDB(db, operator, []string{"1.1.1.1", "8.8.8.8", "9.9.9.9"})
+	if err != nil || len(owned) != 3 {
+		t.Fatalf("expected owned audit, billing and login IPs, got %v err=%v", owned, err)
+	}
+	if _, err := ResolveOwnLocationIPsWithDB(db, operator, []string{"4.4.4.4"}); err != ErrLocationForbidden {
+		t.Fatalf("expected arbitrary IP to be forbidden, got %v", err)
+	}
+}
+
+func TestListAndDeleteLocationCacheWithDB(t *testing.T) {
+	db := newLocationTestDB(t)
+	seedLocationRowForTest(t, db, entity.LocationKindIP, "8.8.8.8", "美国", `{}`)
+	seedLocationRowForTest(t, db, entity.LocationKindPhone, "13800138000", "云南玉溪 移动", `{}`)
+
+	result, err := ListLocationCacheWithDB(db, LocationCacheListQuery{Kind: entity.LocationKindIP, Keyword: "美国"}, 1, 20)
+	if err != nil || result.Total != 1 || len(result.Data) != 1 || result.Data[0].LookupKey != "8.8.8.8" {
+		t.Fatalf("unexpected filtered cache result: %+v err=%v", result, err)
+	}
+	if err := DeleteLocationCacheWithDB(db, entity.LocationKindIP, " 8.8.8.8 "); err != nil {
+		t.Fatal(err)
+	}
+	var count int64
+	if err := db.Model(&entity.LocationCache{}).Where("kind = ?", entity.LocationKindIP).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("expected IP cache row to be deleted, got %d", count)
+	}
+}
+
+func TestRefreshLocationCachePreservesOldRecordOnFailure(t *testing.T) {
+	var requests atomic.Int64
+	var fail atomic.Bool
+	fail.Store(true)
+	const refreshedRaw = `{"ip":"8.8.8.8","region":"美国 加利福尼亚","asn":15169,"extra":{"source":"commercial"}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if fail.Load() {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(refreshedRaw))
+	}))
+	defer server.Close()
+	newDefaultLocationClient(t, server, "uapi-key")
+	db := newLocationTestDB(t)
+	seedLocationRowForTest(t, db, entity.LocationKindIP, "8.8.8.8", "旧地址", `{"region":"旧地址","extra":"preserve"}`)
+	var before entity.LocationCache
+	if err := db.First(&before).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RefreshLocationCacheWithDB(db, entity.LocationKindIP, "8.8.8.8", LocationQueryOptions{UAPIKey: "uapi-key"}); err == nil {
+		t.Fatal("failed upstream refresh should return an error")
+	}
+	var after entity.LocationCache
+	if err := db.First(&after).Error; err != nil {
+		t.Fatal(err)
+	}
+	if before.Address != after.Address || before.RawJSON != after.RawJSON || !before.FetchedAt.Equal(after.FetchedAt) {
+		t.Fatalf("failed refresh changed the old record: before=%+v after=%+v", before, after)
+	}
+	if got := requests.Load(); got != locationLookupMaxAttempts {
+		t.Fatalf("expected exactly %d failed refresh attempts, got %d", locationLookupMaxAttempts, got)
+	}
+	fail.Store(false)
+	refreshed, err := RefreshLocationCacheWithDB(db, entity.LocationKindIP, "8.8.8.8", LocationQueryOptions{UAPIKey: "uapi-key"})
+	if err != nil || refreshed.Address != "美国 加利福尼亚" || refreshed.RawJSON != refreshedRaw {
+		t.Fatalf("successful refresh did not retain full response: %+v err=%v", refreshed, err)
+	}
+	var count int64
+	if err := db.Model(&entity.LocationCache{}).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || requests.Load() != locationLookupMaxAttempts+1 {
+		t.Fatalf("refresh should update one record with one successful request: rows=%d requests=%d", count, requests.Load())
+	}
+}
+
+func TestLegacyLocationCacheCanBeReviewedAndDeletedButNotRefreshed(t *testing.T) {
+	db := newLocationTestDB(t)
+	seedLocationRowForTest(t, db, entity.LocationKindIP, "8.8.8.8", "默认地区", `{}`)
+	legacy := entity.LocationCache{Kind: entity.LocationKindIP, LookupKey: "8.8.8.8", Source: "legacy", Address: "历史地区", RawJSON: `{"extra":"preserve"}`}
+	if err := db.Create(&legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	result, err := ListLocationCacheWithDB(db, LocationCacheListQuery{Kind: entity.LocationKindIP, Source: "legacy"}, 1, 20)
+	if err != nil || result.Total != 1 || result.Data[0].Address != legacy.Address {
+		t.Fatalf("legacy cache should be available for review: %+v err=%v", result, err)
+	}
+	if _, err := RefreshLocationCacheWithDB(db, legacy.Kind, legacy.LookupKey, LocationQueryOptions{UAPIKey: "key", Source: "legacy"}); err != ErrLocationInvalidKey {
+		t.Fatalf("unknown historical source must not be queried as an active source, got %v", err)
+	}
+	if err := DeleteLocationCacheWithDB(db, legacy.Kind, legacy.LookupKey, legacy.Source); err != nil {
+		t.Fatal(err)
+	}
+	var rows []entity.LocationCache
+	if err := db.Find(&rows).Error; err != nil || len(rows) != 1 || rows[0].Source != "" {
+		t.Fatalf("deleting legacy should preserve identified sources: %+v err=%v", rows, err)
+	}
+}

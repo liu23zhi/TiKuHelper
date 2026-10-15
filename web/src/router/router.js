@@ -21,6 +21,7 @@ import AccessTokenManagement from '../pages/AccessTokenManagement/index.vue'
 import BillingRecordList from '../pages/BillingRecordList/index.vue'
 import RechargeOrderList from '../pages/RechargeOrderList/index.vue'
 import RechargeResult from '../pages/RechargeResult/index.vue'
+import LocationCache from '../pages/LocationCache/index.vue'
 const routes = [
   {
     path: '/',
@@ -111,6 +112,23 @@ const routes = [
         component: RechargeOrderList,
       },
       {
+        path: 'location-cache',
+        name: 'location-cache',
+        redirect: '/adapter/ip-location-cache',
+      },
+      {
+        path: 'ip-location-cache',
+        name: 'ip-location-cache',
+        component: LocationCache,
+        meta: { locationKind: 'ip' },
+      },
+      {
+        path: 'phone-location-cache',
+        name: 'phone-location-cache',
+        component: LocationCache,
+        meta: { locationKind: 'phone' },
+      },
+      {
         path: 'billing-records',
         name: 'billing-records',
         component: BillingRecordList,
@@ -128,6 +146,9 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   'search-account-config',
   'ai-search-config',
   'system-settings',
+  'location-cache',
+  'ip-location-cache',
+  'phone-location-cache',
 ])
 const PUBLIC_ADAPTER_ROUTE_NAMES = new Set([
   'recharge-result',

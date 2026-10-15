@@ -119,7 +119,7 @@ func (c *Client) GetPhoneInfo(ctx context.Context, phone string) (PhoneInfo, err
 	if err := checkResponse(resp); err != nil {
 		return PhoneInfo{}, err
 	}
-	info, err := decodePhoneInfo(resp.Body())
+	info, err := ParsePhoneInfo(resp.Body())
 	if err != nil {
 		return PhoneInfo{}, fmt.Errorf("%w: 解析手机归属地响应失败: %w", ErrUpstream, err)
 	}
@@ -152,7 +152,7 @@ func (c *Client) GetIPInfo(ctx context.Context, ip string, source string) (IPInf
 	if err := checkResponse(resp); err != nil {
 		return IPInfo{}, err
 	}
-	info, err := decodeIPInfo(resp.Body())
+	info, err := ParseIPInfo(resp.Body())
 	if err != nil {
 		return IPInfo{}, fmt.Errorf("%w: 解析 IP 查询响应失败: %w", ErrUpstream, err)
 	}

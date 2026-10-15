@@ -72,13 +72,15 @@ export function buildLogStructuredFields(record = {}) {
 
   if (parsedAIFallbackDescription.summary) {
     const fallbackSnapshot = parseLogSnapshot(response);
+    const channel = buildHitProviderFields(parsedAIFallbackDescription.hitProvider || (parsedAIFallbackDescription.code ? 'ai' : '-'), fallbackSnapshot);
     return {
       summary: parsedAIFallbackDescription.summary,
       requestId: parsedAIFallbackDescription.requestId || parsedAIFallbackDescription.taskId || '-',
-      mode: buildRequestParamsLabel(parsedAIFallbackDescription),
+      mode: buildRequestParamsLabel(request),
       requestSource: 'AI 兜底接口',
       answerCount: parsedAIFallbackDescription.answers || '-',
-      hitProvider: buildHitProviderLabel(parsedAIFallbackDescription.hitProvider || (parsedAIFallbackDescription.code ? 'ai' : '-'), fallbackSnapshot),
+      hitProvider: channel.provider,
+      failureReasons: channel.errors,
       billingProvider: buildBillingProviderLabel(parsedAIFallbackDescription.billingProvider),
       requestSnapshot: request || '-',
       responseSnapshot: response || '-',
@@ -93,19 +95,22 @@ export function buildLogStructuredFields(record = {}) {
       requestSource: parsedCaptchaDescription.scene || parsedCaptchaDescription.type || '-',
       answerCount: parsedCaptchaDescription.status || '-',
       hitProvider: parsedCaptchaDescription.remoteValid || parsedCaptchaDescription.result || '-',
+      failureReasons: [],
       billingProvider: parsedCaptchaDescription.durationMs ? `${parsedCaptchaDescription.durationMs}ms` : '-',
       requestSnapshot: request || '-',
       responseSnapshot: response || '-',
     };
   }
 
+  const channel = buildHitProviderFields(parsedDescription.hitProvider, parseLogSnapshot(response));
   return {
     summary: parsedDescription.summary || description || '-',
     requestId: parsedDescription.requestId || '-',
-    mode: buildRequestParamsLabel(parsedDescription),
+    mode: buildRequestParamsLabel(request),
     requestSource: parsedDescription.summary ? '普通搜题接口' : '-',
     answerCount: parsedDescription.answers || '-',
-    hitProvider: buildHitProviderLabel(parsedDescription.hitProvider, parseLogSnapshot(response)),
+    hitProvider: channel.provider,
+    failureReasons: channel.errors,
     billingProvider: buildBillingProviderLabel(parsedDescription.billingProvider),
     requestSnapshot: request || '-',
     responseSnapshot: response || '-',
@@ -225,7 +230,7 @@ export function buildLogDetailSections(record = {}) {
     if (parsedSections.length > 0) {
       sections.push(...parsedSections);
     } else {
-      sections.push(...parseSearchLogDescription(description));
+      sections.push(...parseSearchLogDescription(description, request));
     }
   }
 
@@ -270,7 +275,7 @@ function truncateInlineText(value, limit) {
   return `${text.slice(0, Math.max(0, limit - 3))}...`;
 }
 
-function parseSearchLogDescription(description) {
+function parseSearchLogDescription(description, request) {
   const fieldMap = parseSearchLogDescriptionMap(description);
   const fields = [
     ['requestId', '请求 ID'],
@@ -283,7 +288,7 @@ function parseSearchLogDescription(description) {
   ];
 
   return fields.map(([key, label]) => {
-    let value = key === 'requestParams' ? buildRequestParamsLabel(fieldMap) : (fieldMap[key] || '-');
+    let value = key === 'requestParams' ? buildRequestParamsLabel(request) : (fieldMap[key] || '-');
     if (key === 'anonymous') {
       if (value === 'true') value = '是';
       if (value === 'false') value = '否';
@@ -295,25 +300,31 @@ function parseSearchLogDescription(description) {
   }).filter((section) => section.value !== '-' || section.key === 'requestParams');
 }
 
-function buildRequestParamsLabel(fields = {}) {
+function buildRequestParamsLabel(request) {
+  const raw = String(request || '').trim();
+  const query = new URLSearchParams(raw.match(/(?:^|\s)query=([^\s]*)/)?.[1] || '');
+  const body = parseLogSnapshot(raw.startsWith('{') ? raw : raw.match(/(?:^|\s)body=(\{[\s\S]*\})$/)?.[1]);
   const parts = [];
-  const use = String(fields.use || '').trim();
-  const mode = String(fields.mode || '').trim();
-  if (use && use !== '-') {
-    parts.push(`use=${use}`);
+  // Request snapshots also contain credentials and task text. Only expose
+  // known non-secret routing controls, never arbitrary query/body fields.
+  for (const key of ['use', 'mode', 'model', 'noRecord']) {
+    for (const value of query.getAll(key)) {
+      parts.push(`${key}=${value}`);
+    }
   }
-  if (!parts.length && mode && mode !== '-') {
-    parts.push(`mode=${mode}`);
-  }
-  const stage = String(fields.stage || '').trim();
-  if (stage && stage !== '-') {
-    parts.push(`stage=${stage}`);
+  for (const key of ['deepThinking', 'skipCache']) {
+    if (typeof body[key] === 'boolean') {
+      parts.push(`${key}=${body[key]}`);
+    }
   }
   return parts.join(' ') || '-';
 }
 
-function buildHitProviderLabel(provider, snapshot = {}) {
+function buildHitProviderFields(provider, snapshot = {}) {
   let normalizedProvider = String(provider || '').trim();
+  if (normalizedProvider === '-') {
+    normalizedProvider = '';
+  }
   const errors = [];
 
   if (Array.isArray(snapshot?.failures)) {
@@ -332,7 +343,7 @@ function buildHitProviderLabel(provider, snapshot = {}) {
       const code = String(failure?.code || '').trim();
       const prefix = failureProvider && failureProvider !== normalizedProvider ? `${failureProvider}` : '';
       const codeText = code ? ` [${code}]` : '';
-      errors.push(`${prefix}${codeText}${prefix || codeText ? '：' : ''}${error}`);
+      errors.push(`${prefix}${codeText}${prefix || codeText ? '：' : ''}${error}`.trim());
     });
   }
 
@@ -345,10 +356,10 @@ function buildHitProviderLabel(provider, snapshot = {}) {
     errors.push(errorMessage);
   }
 
-  if (!errors.length) {
-    return normalizedProvider || '-';
-  }
-  return `${normalizedProvider || '-'}（错误：${truncateInlineText(errors.join(' / '), 150)}）`;
+  return {
+    provider: normalizedProvider.split(/[、,]/).map((value) => value === 'ai' ? 'AI' : value).join('、') || '-',
+    errors: [...new Set(errors)],
+  };
 }
 
 function buildBillingProviderLabel(value) {

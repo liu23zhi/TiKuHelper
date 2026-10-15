@@ -1000,6 +1000,7 @@ func accessTokenQuotaWouldExceed(accessToken entity.AccessToken, amount float64)
 
 func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQuery string, aiEnabled bool, req model.SearchRequest, result [][]string, aiUsage search.AISearchUsage, usedLocalSearch bool, clientIP string, audit searchAuditMetadata) (error, string) {
 	ctx := buildCompletedSearchBillingContext(resolved, useQuery, aiEnabled, result, hasAISearchUsage(aiUsage), usedLocalSearch)
+	ctx.ClientIP = strings.TrimSpace(clientIP)
 	if !ctx.Billable {
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "", clientIP, audit)
 		return nil, ""

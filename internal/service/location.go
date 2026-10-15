@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -17,13 +16,6 @@ import (
 )
 
 const (
-	// phoneLocationTTL 手机号归属地有效期。
-	//
-	// 号段归属相对稳定（携号转网会改变运营商，但省市基本不变），
-	// 30 天既省积分又不至于明显失真。
-	phoneLocationTTL = 30 * 24 * time.Hour
-	// ipLocationTTL IP 归属地有效期。IP 段会随运营商调整变动，比手机号保守。
-	ipLocationTTL = 7 * 24 * time.Hour
 	// locationLookupTimeout 单次归属地查询的上游超时上限。
 	locationLookupTimeout = 10 * time.Second
 	// locationLookupMaxAttempts 单个归属地查询的最大尝试次数。
@@ -278,8 +270,28 @@ func locationCacheLookupKey(raw string) string {
 	return strings.ToLower(strings.TrimSpace(raw))
 }
 
-// loadLocationCacheRows 读取仍在 TTL 内的持久化缓存行，键为 lookup_key。
-func loadLocationCacheRows(db *gorm.DB, kind string, lookupKeys []string) map[string]entity.LocationCache {
+// normalizeLocationSource validates the source dimension used by the cache.
+// Phone lookups never carry a source; IP lookups support the default and
+// commercial upstream modes.
+func normalizeLocationSource(kind string, raw string) (string, error) {
+	source := strings.TrimSpace(raw)
+	switch kind {
+	case entity.LocationKindPhone:
+		if source != "" {
+			return "", ErrLocationInvalidKey
+		}
+	case entity.LocationKindIP:
+		if source != "" && source != uapi.SourceCommercial {
+			return "", ErrLocationInvalidKey
+		}
+	default:
+		return "", ErrLocationInvalidKey
+	}
+	return source, nil
+}
+
+// loadLocationCacheRows 永久复用已有有效地址；管理员显式刷新时才重新查询。
+func loadLocationCacheRows(db *gorm.DB, kind string, source string, lookupKeys []string) map[string]entity.LocationCache {
 	result := make(map[string]entity.LocationCache, len(lookupKeys))
 	if db == nil || len(lookupKeys) == 0 {
 		return result
@@ -296,34 +308,25 @@ func loadLocationCacheRows(db *gorm.DB, kind string, lookupKeys []string) map[st
 	}
 
 	rows := make([]entity.LocationCache, 0, len(normalized))
-	if err := db.Where("kind = ? AND lookup_key IN ?", kind, normalized).Find(&rows).Error; err != nil {
+	if err := db.Where("kind = ? AND source = ? AND lookup_key IN ?", kind, source, normalized).Find(&rows).Error; err != nil {
 		// 缓存读失败不影响正确性：回源查询即可。
 		logger.SysLog(fmt.Sprintf("读取归属地缓存失败（将回源查询）：%v", err))
 		return result
 	}
 
-	ttl := locationTTLForKind(kind)
-	now := time.Now()
 	for _, row := range rows {
-		if !row.FetchedAt.IsZero() && now.Sub(row.FetchedAt) > ttl {
+		if strings.TrimSpace(row.Address) == "" {
 			continue
 		}
-		result[row.LookupKey] = row
+		result[locationCacheLookupKey(row.LookupKey)] = row
 	}
 	return result
 }
 
-func locationTTLForKind(kind string) time.Duration {
-	if kind == entity.LocationKindIP {
-		return ipLocationTTL
-	}
-	return phoneLocationTTL
-}
-
 // storeLocationCacheRows 写入/刷新持久化缓存。写失败只记日志，不影响本次返回。
-func storeLocationCacheRows(db *gorm.DB, rows []entity.LocationCache) {
+func storeLocationCacheRows(db *gorm.DB, rows []entity.LocationCache) error {
 	if db == nil || len(rows) == 0 {
-		return
+		return nil
 	}
 
 	now := time.Now()
@@ -332,11 +335,13 @@ func storeLocationCacheRows(db *gorm.DB, rows []entity.LocationCache) {
 	}
 
 	if err := db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "kind"}, {Name: "lookup_key"}},
+		Columns:   []clause.Column{{Name: "kind"}, {Name: "lookup_key"}, {Name: "source"}},
 		DoUpdates: clause.AssignmentColumns([]string{"address", "raw_json", "fetched_at", "updated_at"}),
 	}).Create(&rows).Error; err != nil {
 		logger.SysLog(fmt.Sprintf("写入归属地缓存失败（不影响本次结果）：%v", err))
+		return err
 	}
+	return nil
 }
 
 // LookupPhoneLocationsWithDB 批量查询手机号归属地。
@@ -344,15 +349,21 @@ func storeLocationCacheRows(db *gorm.DB, rows []entity.LocationCache) {
 // 返回 map 的键是归一化后的手机号。查不到的号码（未配置密钥、格式非法、上游无记录）
 // 不会出现在结果里，调用方据此回退为只显示原始号码。
 func LookupPhoneLocationsWithDB(db *gorm.DB, phones []string, options LocationQueryOptions) map[string]PhoneLocation {
+	result, _ := LookupPhoneLocationsDetailedWithDB(db, phones, options)
+	return result
+}
+
+// LookupPhoneLocationsDetailedWithDB 为管理员提供失败原因，普通页面可继续静默降级。
+func LookupPhoneLocationsDetailedWithDB(db *gorm.DB, phones []string, options LocationQueryOptions) (map[string]PhoneLocation, error) {
 	result := make(map[string]PhoneLocation)
 
 	normalizedKeys := normalizePhoneLookupKeys(phones)
 	if len(normalizedKeys) == 0 {
-		return result
+		return result, nil
 	}
 
 	// ① 先读持久化缓存（命中即零积分消耗）。
-	cached := loadLocationCacheRows(db, entity.LocationKindPhone, normalizedKeys)
+	cached := loadLocationCacheRows(db, entity.LocationKindPhone, "", normalizedKeys)
 	for _, rawKey := range normalizedKeys {
 		row, ok := cached[locationCacheLookupKey(rawKey)]
 		if !ok {
@@ -364,30 +375,42 @@ func LookupPhoneLocationsWithDB(db *gorm.DB, phones []string, options LocationQu
 	// ② 未命中的部分回源查询。
 	missing := missingPhoneKeys(normalizedKeys, cached)
 	apiKey := strings.TrimSpace(options.UAPIKey)
-	if len(missing) == 0 || apiKey == "" {
-		return result
+	if len(missing) == 0 {
+		return result, nil
+	}
+	if apiKey == "" {
+		return result, ErrLocationNotConfigured
 	}
 
-	rows := queryPhoneLocations(newLocationClient(apiKey), missing)
+	rows, err := queryLocationRows(db, newLocationClient(apiKey), entity.LocationKindPhone, missing, "", false)
 
 	// ③ 落库并并入结果。
-	storeLocationCacheRows(db, rows)
 	for _, row := range rows {
 		result[row.LookupKey] = phoneLocationFromCacheRow(row)
 	}
-	return result
+	return result, err
 }
 
 // LookupIPLocationsWithDB 批量查询 IP 归属地。
 func LookupIPLocationsWithDB(db *gorm.DB, ips []string, options LocationQueryOptions) map[string]IPLocation {
+	result, _ := LookupIPLocationsDetailedWithDB(db, ips, options)
+	return result
+}
+
+// LookupIPLocationsDetailedWithDB 返回部分成功数据，同时保留可供管理端诊断的错误。
+func LookupIPLocationsDetailedWithDB(db *gorm.DB, ips []string, options LocationQueryOptions) (map[string]IPLocation, error) {
 	result := make(map[string]IPLocation)
 
+	source, sourceErr := normalizeLocationSource(entity.LocationKindIP, options.Source)
+	if sourceErr != nil {
+		return result, sourceErr
+	}
 	normalizedKeys := normalizeIPLookupKeys(ips)
 	if len(normalizedKeys) == 0 {
-		return result
+		return result, nil
 	}
 
-	cached := loadLocationCacheRows(db, entity.LocationKindIP, normalizedKeys)
+	cached := loadLocationCacheRows(db, entity.LocationKindIP, source, normalizedKeys)
 	for _, rawKey := range normalizedKeys {
 		row, ok := cached[locationCacheLookupKey(rawKey)]
 		if !ok {
@@ -398,17 +421,19 @@ func LookupIPLocationsWithDB(db *gorm.DB, ips []string, options LocationQueryOpt
 
 	missing := missingIPKeys(normalizedKeys, cached)
 	apiKey := strings.TrimSpace(options.UAPIKey)
-	if len(missing) == 0 || apiKey == "" {
-		return result
+	if len(missing) == 0 {
+		return result, nil
+	}
+	if apiKey == "" {
+		return result, ErrLocationNotConfigured
 	}
 
-	rows := queryIPLocations(newLocationClient(apiKey), missing, strings.TrimSpace(options.Source))
+	rows, err := queryLocationRows(db, newLocationClient(apiKey), entity.LocationKindIP, missing, source, false)
 
-	storeLocationCacheRows(db, rows)
 	for _, row := range rows {
 		result[row.LookupKey] = ipLocationFromCacheRow(row)
 	}
-	return result
+	return result, err
 }
 
 // phoneLocationFromCacheRow 把缓存行还原成手机号归属地。
@@ -439,48 +464,20 @@ func ipLocationFromCacheRow(row entity.LocationCache) IPLocation {
 
 // parsePhoneInfoRawJSON 从原始响应里解出手机归属地字段；解析失败返回零值。
 func parsePhoneInfoRawJSON(raw string) uapi.PhoneInfo {
-	if strings.TrimSpace(raw) == "" {
+	info, err := uapi.ParsePhoneInfo([]byte(raw))
+	if err != nil {
 		return uapi.PhoneInfo{}
 	}
-	var payload struct {
-		Province string `json:"province"`
-		City     string `json:"city"`
-		SP       string `json:"sp"`
-		AreaCode string `json:"area_code"`
-	}
-	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		return uapi.PhoneInfo{}
-	}
-	return uapi.PhoneInfo{
-		Province: strings.TrimSpace(payload.Province),
-		City:     strings.TrimSpace(payload.City),
-		SP:       strings.TrimSpace(payload.SP),
-		AreaCode: strings.TrimSpace(payload.AreaCode),
-	}
+	return info
 }
 
 // parseIPInfoRawJSON 从原始响应里解出 IP 归属地字段；解析失败返回零值。
 func parseIPInfoRawJSON(raw string) uapi.IPInfo {
-	if strings.TrimSpace(raw) == "" {
+	info, err := uapi.ParseIPInfo([]byte(raw))
+	if err != nil {
 		return uapi.IPInfo{}
 	}
-	var payload struct {
-		IP     string `json:"ip"`
-		Region string `json:"region"`
-		ISP    string `json:"isp"`
-		LLC    string `json:"llc"`
-		ASN    string `json:"asn"`
-	}
-	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		return uapi.IPInfo{}
-	}
-	return uapi.IPInfo{
-		IP:     strings.TrimSpace(payload.IP),
-		Region: strings.TrimSpace(payload.Region),
-		ISP:    strings.TrimSpace(payload.ISP),
-		LLC:    strings.TrimSpace(payload.LLC),
-		ASN:    strings.TrimSpace(payload.ASN),
-	}
+	return info
 }
 
 func missingPhoneKeys(keys []string, cached map[string]entity.LocationCache) []string {
@@ -505,77 +502,73 @@ func missingIPKeys(keys []string, cached map[string]entity.LocationCache) []stri
 	return missing
 }
 
-// queryPhoneLocations 顺序查询手机号归属地，返回可落库的行。
-//
-// **为什么从并发改成顺序**：并发时无法表达「放弃后面的数据」——
-// 一批 goroutine 早已同时发出，想把它们收回来做不到。而顺序执行可以在
-// 判定「密钥无效」的瞬间真正停下来，不再对剩余号码白打上游。
-//
-// 代价是有密钥时一页 20 个号码要串行等待；但每个成功结果都会落库
-// （手机号 30 天 TTL），实际只有第一次翻页慢，后续全是缓存命中。
-//
-// 失败策略见 lookupLocationsWithRetry：同一项最多重试 3 次，仍失败则整批放弃。
-func queryPhoneLocations(client *uapi.Client, phones []string) []entity.LocationCache {
-	rows := make([]entity.LocationCache, 0, len(phones))
-
-	lookupLocationsWithRetry(phones, entity.LocationKindPhone, func(lookupPhone string) locationFlightResult {
-		return locationLookupGroup.do(entity.LocationKindPhone+"|"+lookupPhone, func() locationFlightResult {
-			ctx, cancel := context.WithTimeout(context.Background(), locationLookupTimeout)
-			defer cancel()
-
-			info, err := client.GetPhoneInfo(ctx, lookupPhone)
-			if err != nil {
-				logger.SysLog(fmt.Sprintf("查询手机号归属地失败 phone=%s error=%v", maskPhoneForLog(lookupPhone), err))
-				return locationFlightResult{abort: isLocationAbortError(err)}
+// queryLocationRows 将二次查缓存、重试与落库放在同一并发合并区间，避免落库前重复付费。
+func queryLocationRows(db *gorm.DB, client *uapi.Client, kind string, keys []string, source string, refresh bool) ([]entity.LocationCache, error) {
+	rows := make([]entity.LocationCache, 0, len(keys))
+	var firstErr error
+	normalizedSource, sourceErr := normalizeLocationSource(kind, source)
+	if sourceErr != nil {
+		return rows, sourceErr
+	}
+	for _, key := range keys {
+		lookupKey := locationCacheLookupKey(key)
+		result := locationLookupGroup.do(kind+"|"+normalizedSource+"|"+lookupKey, func() locationFlightResult {
+			if !refresh {
+				if row, ok := loadLocationCacheRows(db, kind, normalizedSource, []string{lookupKey})[lookupKey]; ok {
+					return locationFlightResult{address: row.Address, rawJSON: row.RawJSON, ok: true}
+				}
 			}
-			address := FormatPhoneLocationAddress(info.Province, info.City, info.SP)
-			if address == "" {
-				return locationFlightResult{}
+			var fetched locationFlightResult
+			for attempt := 1; attempt <= locationLookupMaxAttempts; attempt++ {
+				fetched = lookupLocationUpstream(client, kind, lookupKey, source)
+				if fetched.ok {
+					row := entity.LocationCache{Kind: kind, LookupKey: lookupKey, Source: normalizedSource, Address: fetched.address, RawJSON: fetched.rawJSON}
+					fetched.err = storeLocationCacheRows(db, []entity.LocationCache{row})
+					return fetched
+				}
+				logKey := lookupKey
+				if kind == entity.LocationKindPhone {
+					logKey = maskPhoneForLog(logKey)
+				}
+				logger.SysLog(fmt.Sprintf("归属地查询失败 kind=%s key=%s attempt=%d/%d error=%v", kind, logKey, attempt, locationLookupMaxAttempts, fetched.err))
 			}
-			return locationFlightResult{address: address, rawJSON: info.RawJSON, ok: true}
+			return fetched
 		})
-	}, func(lookupPhone string, result locationFlightResult) {
-		rows = append(rows, entity.LocationCache{
-			Kind:      entity.LocationKindPhone,
-			LookupKey: locationCacheLookupKey(lookupPhone),
-			Address:   result.address,
-			RawJSON:   result.rawJSON,
-		})
-	})
-
-	return rows
+		if result.ok {
+			rows = append(rows, entity.LocationCache{Kind: kind, LookupKey: lookupKey, Source: normalizedSource, Address: result.address, RawJSON: result.rawJSON})
+		}
+		if firstErr == nil && result.err != nil {
+			firstErr = result.err
+		}
+		if result.abort {
+			logger.SysLog(fmt.Sprintf("归属地查询属于密钥/权限/配额类错误，停止本批剩余查询 kind=%s", kind))
+			break
+		}
+	}
+	return rows, firstErr
 }
 
-// queryIPLocations 顺序查询 IP 归属地，返回可落库的行。失败策略同手机号。
-func queryIPLocations(client *uapi.Client, ips []string, source string) []entity.LocationCache {
-	rows := make([]entity.LocationCache, 0, len(ips))
-
-	lookupLocationsWithRetry(ips, entity.LocationKindIP, func(lookupIP string) locationFlightResult {
-		return locationLookupGroup.do(entity.LocationKindIP+"|"+lookupIP, func() locationFlightResult {
-			ctx, cancel := context.WithTimeout(context.Background(), locationLookupTimeout)
-			defer cancel()
-
-			info, err := client.GetIPInfo(ctx, lookupIP, source)
-			if err != nil {
-				logger.SysLog(fmt.Sprintf("查询 IP 归属地失败 ip=%s error=%v", lookupIP, err))
-				return locationFlightResult{abort: isLocationAbortError(err)}
-			}
-			address := strings.TrimSpace(info.Region)
-			if address == "" {
-				return locationFlightResult{}
-			}
-			return locationFlightResult{address: address, rawJSON: info.RawJSON, ok: true}
-		})
-	}, func(lookupIP string, result locationFlightResult) {
-		rows = append(rows, entity.LocationCache{
-			Kind:      entity.LocationKindIP,
-			LookupKey: locationCacheLookupKey(lookupIP),
-			Address:   result.address,
-			RawJSON:   result.rawJSON,
-		})
-	})
-
-	return rows
+func lookupLocationUpstream(client *uapi.Client, kind string, key string, source string) locationFlightResult {
+	ctx, cancel := context.WithTimeout(context.Background(), locationLookupTimeout)
+	defer cancel()
+	var address, rawJSON string
+	var err error
+	if kind == entity.LocationKindPhone {
+		var info uapi.PhoneInfo
+		info, err = client.GetPhoneInfo(ctx, key)
+		address, rawJSON = FormatPhoneLocationAddress(info.Province, info.City, info.SP), info.RawJSON
+	} else {
+		var info uapi.IPInfo
+		info, err = client.GetIPInfo(ctx, key, source)
+		address, rawJSON = strings.TrimSpace(info.Region), info.RawJSON
+	}
+	if err != nil {
+		return locationFlightResult{err: err, abort: isLocationAbortError(err)}
+	}
+	if strings.TrimSpace(address) == "" {
+		return locationFlightResult{err: ErrLocationEmptyResponse}
+	}
+	return locationFlightResult{address: address, rawJSON: rawJSON, ok: true}
 }
 
 // compactLocationRows 去掉未填充的占位行。

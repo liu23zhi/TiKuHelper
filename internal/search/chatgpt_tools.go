@@ -215,7 +215,10 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 				endpoint = endpoints[1]
 				continue
 			}
-			return nil, debug, errors.ErrTargetServerError
+			// Keep the detailed, redacted upstream error for the private audit
+			// snapshot. Controllers still map the public response to a generic
+			// failure, while operators can see the failed round and retry budget.
+			return nil, debug, fmt.Errorf("AI联网搜题第%d轮失败（已尝试%d次）: %w", round+1, attempts, callErr)
 		}
 		if len(result.Calls) == 0 {
 			if !hasModelResponse && !finalRound {
@@ -242,6 +245,10 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 		for _, call := range result.Calls {
 			if call.ID == "" {
 				return nil, debug, fmt.Errorf("AI工具调用缺少id")
+			}
+			if toolsDisabled {
+				messages = append(messages, openAIChatMessage{Role: "tool", ToolCallID: call.ID, Content: `{"error":"搜索已停止，请根据已有资料直接作答。"}`})
+				continue
 			}
 			toolStartedAt := time.Now()
 			toolQuery := parseAISearchToolQuery(call.Function.Arguments)

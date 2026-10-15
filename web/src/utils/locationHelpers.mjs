@@ -8,6 +8,11 @@
 /** 归属地展示统一使用全角括号，与设计稿一致：`18287719599 （云南玉溪 移动）`。 */
 export const LOCATION_OPEN_PAREN = '（'
 export const LOCATION_CLOSE_PAREN = '）'
+export const MAX_LOCATION_LOOKUP_KEYS = 100
+
+export function normalizeLocationKey(value) {
+  return value === null || value === undefined ? '' : String(value).trim().toLowerCase()
+}
 
 /**
  * 从归属地接口响应里取出 address 映射。
@@ -18,8 +23,9 @@ export const LOCATION_CLOSE_PAREN = '）'
  * @param {unknown} response
  * @returns {Record<string, string>}
  */
-export function extractLocationAddresses(response) {
-  const rows = response && typeof response === 'object' ? response.data : undefined
+export function extractLocationAddresses(response, kind = '') {
+  const payload = response && typeof response === 'object' ? response.data : undefined
+  const rows = kind ? payload?.[kind] : (payload?.data ?? payload)
   if (!rows || typeof rows !== 'object' || Array.isArray(rows)) {
     return {}
   }
@@ -28,8 +34,9 @@ export function extractLocationAddresses(response) {
   Object.keys(rows).forEach((key) => {
     const row = rows[key]
     const address = row && typeof row === 'object' ? String(row.address ?? '').trim() : ''
-    if (key && address) {
-      addresses[key] = address
+    const normalizedKey = normalizeLocationKey(key)
+    if (normalizedKey && address) {
+      addresses[normalizedKey] = address
     }
   })
   return addresses
@@ -38,7 +45,7 @@ export function extractLocationAddresses(response) {
 /**
  * 收集列表行里的去重查询键。
  *
- * 空值会被剔除；手机号与 IP 都按原样收集（服务端各自再做归一化与内网过滤）。
+ * 空值会被剔除，IP 大小写统一；支持合并多个字段后去重。
  *
  * @param {Array<object>} rows
  * @param {string} field
@@ -51,14 +58,16 @@ export function collectLocationKeys(rows, field) {
 
   const seen = new Set()
   const keys = []
+  const fields = Array.isArray(field) ? field : [field]
   rows.forEach((row) => {
-    const value = row && typeof row === 'object' ? row[field] : undefined
-    const key = value === null || value === undefined ? '' : String(value).trim()
-    if (!key || seen.has(key)) {
-      return
-    }
-    seen.add(key)
-    keys.push(key)
+    fields.forEach((name) => {
+      const key = normalizeLocationKey(row && typeof row === 'object' ? row[name] : undefined)
+      if (!key || seen.has(key)) {
+        return
+      }
+      seen.add(key)
+      keys.push(key)
+    })
   })
   return keys
 }
@@ -88,10 +97,27 @@ export function formatValueWithLocation(rawValue, address) {
 
 /** 拼接批量查询参数：单个 key 用单值参数，多个用逗号分隔的批量参数。 */
 export function buildLocationLookupParams(kind, keys) {
-  const list = Array.isArray(keys) ? keys : []
+  const list = [...new Set((Array.isArray(keys) ? keys : []).map(normalizeLocationKey).filter(Boolean))]
   if (list.length === 0) {
     return null
   }
   const joined = list.join(',')
   return kind === 'ip' ? { ips: joined } : { phones: joined }
+}
+
+// 单批失败不影响已成功的结果；归属地增强不会阻塞或中断列表主流程。
+export async function lookupLocationAddresses(kind, keys, requestBatch, responseKind = '') {
+  const normalized = [...new Set((Array.isArray(keys) ? keys : []).map(normalizeLocationKey).filter(Boolean))]
+  const addresses = {}
+  for (let offset = 0; offset < normalized.length; offset += MAX_LOCATION_LOOKUP_KEYS) {
+    const params = buildLocationLookupParams(kind, normalized.slice(offset, offset + MAX_LOCATION_LOOKUP_KEYS))
+    try {
+      const response = await requestBatch(params)
+      if (response?.status !== undefined && response.status !== 200) continue
+      Object.assign(addresses, extractLocationAddresses(response, responseKind))
+    } catch {
+      // 管理页提供可诊断的刷新入口，列表增强保持静默降级。
+    }
+  }
+  return addresses
 }

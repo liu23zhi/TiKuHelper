@@ -221,6 +221,7 @@ func CreateAIFallbackTask(c *gin.Context) {
 			auditResult("billing_precheck", result)
 			return result
 		}
+		currentBillingCtx.ClientIP = billingCtx.ClientIP
 
 		// 缓存命中：与搜题一致 —— 不再调用 AI、不再计费。
 		// 只有显式 skipCache:true 才跳过读取；跳过读仍会把新结果写回（刷新语义）。

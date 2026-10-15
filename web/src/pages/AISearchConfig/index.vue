@@ -111,7 +111,7 @@
           style="width: 180px"
         />
         <span class="unit-label">次</span>
-        <div class="hint">每次 AI 搜索最多调用模型的次数，包含重试和备用地址请求，默认 4 次，范围 1～20 次。每一轮提示中都会告知模型剩余调用次数。</div>
+        <div class="hint">每次 AI 搜索最多执行的模型逻辑轮次，默认 4 轮，范围 1～20 轮。同一轮内的失败重试不额外占用轮次，切换备用地址会占用一轮。每一轮提示中都会告知模型剩余调用次数。</div>
       </a-form-item>
 
       <a-form-item label="最大搜索次数">

@@ -43,6 +43,22 @@ func TestAIFallbackReturnsInvalidInputWhenQuestionMissing(t *testing.T) {
 	}
 }
 
+func TestResolveAIFallbackBillingContextPreservesClientIP(t *testing.T) {
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 319, "fallback-source-ip", "user")
+	if err := db.Model(&user).Update("balance", 10).Error; err != nil {
+		t.Fatal(err)
+	}
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback", nil)
+	ctx.Request.RemoteAddr = "8.8.8.8:1234"
+	ctx.Set("user", &user)
+	billing, err := resolveAIFallbackBillingContext(ctx)
+	if err != nil || billing.ClientIP != "8.8.8.8" {
+		t.Fatalf("expected billing context to retain request IP, got %+v err=%v", billing, err)
+	}
+}
+
 func TestAIFallbackReturnsInvalidInputWhenJSONMalformed(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	fallbackResultCache.clear()

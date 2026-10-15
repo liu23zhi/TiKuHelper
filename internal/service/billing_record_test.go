@@ -45,6 +45,15 @@ func seedBillingRecordUser(t *testing.T, db *gorm.DB, id int32, role string) ent
 	return user
 }
 
+func TestMergeBillingSearchGroupRecoversIPFromSiblingCharge(t *testing.T) {
+	got := mergeBillingSearchGroup(BillingRecordListItem{ClientIP: ""}, []BillingRecordListItem{
+		{Amount: 1, ClientIP: ""}, {Amount: 2, ClientIP: " 8.8.8.8 "},
+	})
+	if got.ClientIP != "8.8.8.8" || got.Amount != 3 {
+		t.Fatalf("expected merged request to preserve known source IP, got %+v", got)
+	}
+}
+
 func seedBillingRecord(t *testing.T, db *gorm.DB, userID int32, requestID string, amount float64) entity.BillingRecord {
 	t.Helper()
 

@@ -230,6 +230,32 @@ func TestGetIPInfoSuccess(t *testing.T) {
 	}
 }
 
+func TestParseIPInfoPreservesNumericASNForCachedResponse(t *testing.T) {
+	info, err := ParseIPInfo([]byte(ipRaw))
+	if err != nil {
+		t.Fatalf("ParseIPInfo 出错: %v", err)
+	}
+	if info.ASN != "15169" || info.Region != "美国 加利福尼亚州" || info.IP != "8.8.8.8" {
+		t.Fatalf("解析缓存响应丢字段: %+v", info)
+	}
+	if info.RawJSON != ipRaw {
+		t.Fatalf("RawJSON = %q，期望原始响应 %q", info.RawJSON, ipRaw)
+	}
+}
+
+func TestParsePhoneInfoPreservesRawResponse(t *testing.T) {
+	info, err := ParsePhoneInfo([]byte(phoneRaw))
+	if err != nil {
+		t.Fatalf("ParsePhoneInfo 出错: %v", err)
+	}
+	if info.Province != "浙江省" || info.City != "杭州市" || info.SP != "中国移动" || info.AreaCode != "0571" {
+		t.Fatalf("解析缓存响应丢字段: %+v", info)
+	}
+	if info.RawJSON != phoneRaw {
+		t.Fatalf("RawJSON = %q，期望原始响应 %q", info.RawJSON, phoneRaw)
+	}
+}
+
 func TestGetIPInfoSourceVariants(t *testing.T) {
 	t.Run("空 source 不下发 query", func(t *testing.T) {
 		srv, rec := newServer(t, staticJSON(http.StatusOK, ipRaw))

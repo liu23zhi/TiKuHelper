@@ -89,7 +89,25 @@
           <span>{{ buildStructuredFields(record).answerCount }}</span>
         </template>
         <template #hitProvider="{ record }">
-          <span>{{ buildStructuredFields(record).hitProvider }}</span>
+          <div class="log-channel-cell">
+            <span class="log-channel-name">{{ buildStructuredFields(record).hitProvider }}</span>
+            <div :class="['log-channel-reasons', buildStructuredFields(record).failureReasons.join('\n').length > 150 && !isSnapshotExpanded(record.id, 'failureReasons') ? 'log-channel-reasons--collapsed' : 'log-channel-reasons--expanded']">
+              <div
+                v-for="(reason, index) in buildStructuredFields(record).failureReasons"
+                :key="index"
+                class="log-channel-error"
+              >{{ reason }}</div>
+            </div>
+            <a-button
+              v-if="buildStructuredFields(record).failureReasons.join('\n').length > 150"
+              type="link"
+              size="small"
+              class="log-snapshot-toggle"
+              @click="toggleSnapshotExpanded(record.id, 'failureReasons')"
+            >
+              {{ isSnapshotExpanded(record.id, 'failureReasons') ? '收起' : '展开' }}
+            </a-button>
+          </div>
         </template>
         <template #billingProvider="{ record }">
           <span>{{ buildStructuredFields(record).billingProvider }}</span>
@@ -147,7 +165,8 @@ import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser';
 import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@/utils/listSearchHelpers.mjs';
 import {
   collectLocationKeys,
-  extractLocationAddresses,
+  lookupLocationAddresses,
+  normalizeLocationKey,
   formatValueWithLocation as formatValueWithLocationBase,
 } from '@/utils/locationHelpers.mjs';
 import {
@@ -166,11 +185,6 @@ const currentUser = ref(getStoredCurrentUser())
 // 渲染时按行取值，无需改写 dataSource 的行对象。
 const ipLocations = reactive({})
 
-// 与后端返回的 map 键保持一致（后端统一小写）。
-function normalizeLocationKey(value) {
-  return value === null || value === undefined ? '' : String(value).trim().toLowerCase()
-}
-
 function formatValueWithLocation(rawValue, address) {
   return formatValueWithLocationBase(rawValue, address)
 }
@@ -183,14 +197,12 @@ function enrichClientIps(rows) {
   if (!ips.length) {
     return
   }
-  getIpLocations({ ips: ips.join(',') })
-    .then((res) => {
-      const addresses = extractLocationAddresses(res)
+  lookupLocationAddresses('ip', ips, getIpLocations)
+    .then((addresses) => {
       Object.keys(addresses).forEach((key) => {
         ipLocations[normalizeLocationKey(key)] = addresses[key]
       })
     })
-    .catch(() => {})
 }
 const filters = reactive({
   keyword: '',
@@ -519,6 +531,37 @@ export default defineComponent({
 
 .page-alert {
   margin-top: 4px;
+}
+
+.log-channel-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.log-channel-name {
+  font-weight: 500;
+}
+
+.log-channel-reasons {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
+.log-channel-reasons--expanded {
+  display: block;
+  overflow: visible;
+}
+
+.log-channel-error {
+  color: #a61d24;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .log-snapshot-cell {

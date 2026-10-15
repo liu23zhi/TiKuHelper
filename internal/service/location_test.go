@@ -188,8 +188,8 @@ func TestLookupPhoneLocationsUsesPersistedCache(t *testing.T) {
 	}
 }
 
-// 过期行必须被忽略（IP TTL 是 7 天）。
-func TestLookupIPLocationsIgnoresExpiredCacheRows(t *testing.T) {
+// 已有有效地址永久复用，只有管理员显式刷新才重新付费查询。
+func TestLookupIPLocationsReusesOldCacheRows(t *testing.T) {
 	db := newLocationTestDB(t)
 
 	if err := db.Create(&entity.LocationCache{
@@ -202,10 +202,17 @@ func TestLookupIPLocationsIgnoresExpiredCacheRows(t *testing.T) {
 		t.Fatalf("seed cache: %v", err)
 	}
 
-	// 不传 API Key：过期行被忽略后没有可用数据，应当返回空。
 	locations := LookupIPLocationsWithDB(db, []string{"8.8.8.8"}, LocationQueryOptions{})
-	if len(locations) != 0 {
-		t.Fatalf("expected expired rows to be ignored, got %v", locations)
+	if locations["8.8.8.8"].Address != "美国" {
+		t.Fatalf("expected old persisted address to be reused, got %v", locations)
+	}
+}
+
+func TestLocationCacheWithoutAddressIsNotUsable(t *testing.T) {
+	db := newLocationTestDB(t)
+	seedLocationRowForTest(t, db, entity.LocationKindIP, "8.8.8.8", " ", `{}`)
+	if rows := loadLocationCacheRows(db, entity.LocationKindIP, "", []string{"8.8.8.8"}); len(rows) != 0 {
+		t.Fatalf("expected empty addresses to be treated as cache misses, got %+v", rows)
 	}
 }
 

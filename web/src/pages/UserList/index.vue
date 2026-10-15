@@ -284,7 +284,8 @@ import { formatMoneyValue } from '@/utils/moneyFormat.mjs';
 import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@/utils/listSearchHelpers.mjs';
 import {
   collectLocationKeys,
-  extractLocationAddresses,
+  lookupLocationAddresses,
+  normalizeLocationKey,
   formatValueWithLocation as formatValueWithLocationBase,
 } from '@/utils/locationHelpers.mjs';
 import { message } from 'ant-design-vue';
@@ -296,12 +297,6 @@ const dataSource = ref([])
 // 列表渲染时按行取值，因此**不需要**改写 dataSource 里的行对象。
 const phoneLocations = reactive({})
 const ipLocations = reactive({})
-
-// 后端返回的 map 键是归一化后的值（手机号去空白、IP 小写），前端取值前做同样处理。
-// 与 locationHelpers 的纯函数分开导出，便于单测只测纯逻辑。
-function normalizeLocationKey(value) {
-  return value === null || value === undefined ? '' : String(value).trim().toLowerCase()
-}
 
 function formatValueWithLocation(rawValue, address) {
   return formatValueWithLocationBase(rawValue, address)
@@ -320,22 +315,19 @@ function mergeLocations(target, addresses) {
 // 对应列退化为只显示原始值，不能打扰正在管理用户的流程。
 async function enrichColumns(rows) {
   const phones = collectLocationKeys(rows, 'phone')
-  const ips = collectLocationKeys(rows, 'lastLoginIp').concat(collectLocationKeys(rows, 'registerIp'))
+  const ips = collectLocationKeys(rows, ['lastLoginIp', 'registerIp'])
 
   const tasks = []
   if (phones.length) {
     tasks.push(
-      getPhoneLocations({ phones: phones.join(',') })
-        .then((res) => mergeLocations(phoneLocations, extractLocationAddresses(res)))
-        .catch(() => {}),
+      lookupLocationAddresses('phone', phones, getPhoneLocations)
+        .then((addresses) => mergeLocations(phoneLocations, addresses)),
     )
   }
   if (ips.length) {
-    const uniqueIps = Array.from(new Set(ips))
     tasks.push(
-      getIpLocations({ ips: uniqueIps.join(',') })
-        .then((res) => mergeLocations(ipLocations, extractLocationAddresses(res)))
-        .catch(() => {}),
+      lookupLocationAddresses('ip', ips, getIpLocations)
+        .then((addresses) => mergeLocations(ipLocations, addresses)),
     )
   }
   await Promise.all(tasks)

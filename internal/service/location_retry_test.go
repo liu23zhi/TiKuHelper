@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -82,14 +83,66 @@ func TestPhoneLocationRetriesSameKeyUpToMaxAttempts(t *testing.T) {
 	db := newLocationTestDB(t)
 	LookupPhoneLocationsWithDB(db, []string{"13800138001"}, LocationQueryOptions{UAPIKey: "uapi-key"})
 
-	// uapi 客户端自身也有重试（最多 3 次尝试）。这里只要求「次数有界」，
-	// 关键是不能无限重试。
 	total := atomic.LoadInt64(&requests)
-	if total < locationLookupMaxAttempts {
-		t.Fatalf("expected at least %d attempts on a single key, got %d", locationLookupMaxAttempts, total)
+	if total != locationLookupMaxAttempts {
+		t.Fatalf("expected exactly %d attempts without nested retries, got %d", locationLookupMaxAttempts, total)
 	}
-	if total > locationLookupMaxAttempts*4 {
-		t.Fatalf("expected bounded retries, got %d requests", total)
+}
+
+func TestConcurrentIPLocationsShareOnePersistedLookup(t *testing.T) {
+	var requests atomic.Int64
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			close(entered)
+		}
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ip":"8.8.8.8","region":"美国","asn":15169}`))
+	}))
+	defer server.Close()
+	var releaseOnce sync.Once
+	defer releaseOnce.Do(func() { close(release) })
+	newDefaultLocationClient(t, server, "uapi-key")
+	db := newLocationTestDB(t)
+	type lookupResult struct {
+		locations map[string]IPLocation
+		err       error
+	}
+	const callers = 12
+	results := make(chan lookupResult, callers)
+	lookup := func() {
+		locations, err := LookupIPLocationsDetailedWithDB(db, []string{"8.8.8.8"}, LocationQueryOptions{UAPIKey: "uapi-key"})
+		results <- lookupResult{locations: locations, err: err}
+	}
+	go lookup()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("upstream lookup did not start")
+	}
+	for i := 1; i < callers; i++ {
+		go lookup()
+	}
+	releaseOnce.Do(func() { close(release) })
+	for i := 0; i < callers; i++ {
+		select {
+		case result := <-results:
+			if result.err != nil || result.locations["8.8.8.8"].Address != "美国" || result.locations["8.8.8.8"].ASN != "15169" {
+				t.Fatalf("unexpected concurrent lookup result: %+v err=%v", result.locations, result.err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("concurrent location lookup did not finish")
+		}
+	}
+	// 再次调用也应复用持久化结果，而不是仅在并发窗口内去重。
+	locations, err := LookupIPLocationsDetailedWithDB(db, []string{"8.8.8.8"}, LocationQueryOptions{UAPIKey: "uapi-key"})
+	if err != nil || locations["8.8.8.8"].Address != "美国" {
+		t.Fatalf("persisted lookup failed: %+v err=%v", locations, err)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("expected one upstream request across concurrent and sequential lookups, got %d", got)
 	}
 }
 
