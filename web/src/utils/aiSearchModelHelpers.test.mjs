@@ -91,6 +91,8 @@ test('buildAISearchConfigSavePayload persists the editable model list', () => {
       maxAISearches: 3,
       maxAISearchRetries: 3,
       searchPricePerCall: 0.125,
+      maxAIWebReads: 5,
+      webReadPricePerCall: 0,
     },
   );
 });
@@ -98,6 +100,18 @@ test('buildAISearchConfigSavePayload persists the editable model list', () => {
 test('buildAISearchConfigSavePayload defaults the web search unit price to zero', () => {
   const payload = buildAISearchConfigSavePayload({ enabled: true }, 'https://api.example.com/v1');
   assert.equal(payload.searchPricePerCall, 0);
+  assert.equal(payload.maxAIWebReads, 5);
+  assert.equal(payload.webReadPricePerCall, 0);
+});
+
+test('buildAISearchConfigSavePayload preserves web read limits and pricing', () => {
+  const payload = buildAISearchConfigSavePayload({
+    enabled: true,
+    maxAIWebReads: 8,
+    webReadPricePerCall: 0.02,
+  }, 'https://api.example.com/v1');
+  assert.equal(payload.maxAIWebReads, 8);
+  assert.equal(payload.webReadPricePerCall, 0.02);
 });
 
 test('buildAISearchConfigSavePayload preserves an explicitly configured retry budget', () => {
@@ -201,6 +215,12 @@ test('AISearchConfig page exposes configurable model and search budgets', async 
   assert.match(content, /formState\.maxAISearches = normalizeAISearchBudget\(data\.maxAISearches/);
   assert.match(content, /maxAISearchRetries: DEFAULT_MAX_AI_SEARCH_RETRIES/);
   assert.match(content, /formState\.maxAISearchRetries = normalizeAISearchRetries\(data\.maxAISearchRetries/);
+  assert.match(content, /maxAIWebReads: DEFAULT_MAX_AI_WEB_READS/);
+  assert.match(content, /formState\.maxAIWebReads = normalizeAIWebReads\(data\.maxAIWebReads/);
+  assert.match(content, /webReadPricePerCall: 0/);
+  assert.match(content, /formState\.webReadPricePerCall = Number\(data\.webReadPricePerCall/);
+  assert.match(content, /网页读取工具（web_read）/);
+  assert.match(content, /普通模式不会调用网页读取/);
   assert.match(content, /label="模型最大调用次数"/);
   assert.match(content, /label="最大搜索次数"/);
   assert.match(content, /label="每轮重试次数"/);

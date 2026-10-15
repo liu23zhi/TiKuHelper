@@ -87,6 +87,9 @@ func cloneAIFallbackResult(source service.AIFallbackResult) service.AIFallbackRe
 	if source.Usage.SearchCalls != nil {
 		cloned.Usage.SearchCalls = append([]internalsearch.AISearchCallUsage(nil), source.Usage.SearchCalls...)
 	}
+	if source.Usage.WebReadCalls != nil {
+		cloned.Usage.WebReadCalls = append([]internalsearch.AIWebReadCallUsage(nil), source.Usage.WebReadCalls...)
+	}
 	return cloned
 }
 

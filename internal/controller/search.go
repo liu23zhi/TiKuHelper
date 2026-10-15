@@ -240,6 +240,7 @@ var searchAIAnswer = func(resolved resolvedSearchRequestContext, req model.Searc
 		MaxAISearchModelCalls: resolved.AIConfig.MaxAISearchModelCalls,
 		MaxAISearches:         resolved.AIConfig.MaxAISearches,
 		MaxAISearchRetries:    resolved.AIConfig.MaxAISearchRetries,
+		MaxAIWebReads:         resolved.AIConfig.MaxAIWebReads,
 		SearchTool:            service.BuildUAPISearchToolWithDB(manager.GetManager().GetDB()),
 		RequestID:             resolved.RequestID,
 	}
@@ -613,6 +614,7 @@ func buildAISearchUsageDebugSummary(usage search.AISearchUsage) string {
 		fmt.Sprintf("outputTokens=%d", usage.OutputTokens),
 		fmt.Sprintf("totalTokens=%d", usage.TotalTokens),
 		fmt.Sprintf("searchCallCount=%d", len(usage.SearchCalls)),
+		fmt.Sprintf("webReadCallCount=%d", len(usage.WebReadCalls)),
 	}
 	for index, call := range usage.SearchCalls {
 		if index >= 10 {
@@ -621,15 +623,22 @@ func buildAISearchUsageDebugSummary(usage search.AISearchUsage) string {
 		}
 		parts = append(parts, fmt.Sprintf("searchCall%d=%s|%s|%s|results:%d/%d|durationMs:%d", index+1, logger.RedactSecrets(call.API), truncateForDebug(call.Query, 120), call.Status, call.ResultCount, call.TotalResults, call.DurationMs))
 	}
+	for index, call := range usage.WebReadCalls {
+		if index >= 10 {
+			parts = append(parts, fmt.Sprintf("webReadCallsOmitted=%d", len(usage.WebReadCalls)-index))
+			break
+		}
+		parts = append(parts, fmt.Sprintf("webReadCall%d=%s|%s|%s|task:%s|markdownBytes:%d|durationMs:%d", index+1, logger.RedactSecrets(call.API), truncateForDebug(call.URL, 160), call.Status, truncateForDebug(call.TaskID, 80), call.MarkdownBytes, call.DurationMs))
+	}
 	return strings.Join(parts, " ")
 }
 
 func buildAISearchUsageBasicSummary(usage search.AISearchUsage) string {
-	return fmt.Sprintf("inputTokens=%d outputTokens=%d totalTokens=%d modelTraceCount=%d searchCallCount=%d", usage.InputTokens, usage.OutputTokens, usage.TotalTokens, len(usage.Trace), len(usage.SearchCalls))
+	return fmt.Sprintf("inputTokens=%d outputTokens=%d totalTokens=%d modelTraceCount=%d searchCallCount=%d webReadCallCount=%d", usage.InputTokens, usage.OutputTokens, usage.TotalTokens, len(usage.Trace), len(usage.SearchCalls), len(usage.WebReadCalls))
 }
 
 func hasAISearchUsage(usage search.AISearchUsage) bool {
-	return hasAIModelUsage(usage) || len(usage.SearchCalls) > 0
+	return hasAIModelUsage(usage) || len(usage.SearchCalls) > 0 || len(usage.WebReadCalls) > 0
 }
 
 func hasAIModelUsage(usage search.AISearchUsage) bool {
@@ -1105,8 +1114,40 @@ func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRe
 			}
 		}
 	}
+	if len(aiUsage.WebReadCalls) > 0 {
+		price := service.GetWebReadPricePerCallWithDB(db)
+		if price > 0 {
+			for index, call := range aiUsage.WebReadCalls {
+				if strings.TrimSpace(call.Status) != "success" {
+					continue
+				}
+				amount := util.RoundMoney(price)
+				charges = append(charges, searchBillingCharge{Provider: "web_read", Amount: amount, Snapshot: buildAIWebReadBillingSnapshot(req, call, index+1, price, amount)})
+			}
+		}
+	}
 
 	return charges, warning, nil
+}
+
+func buildAIWebReadBillingSnapshot(req model.SearchRequest, call search.AIWebReadCallUsage, index int, price float64, amount float64) string {
+	parts := []string{
+		"provider=web_read",
+		fmt.Sprintf("webReadCall=%d", index),
+		"webReadAPI=" + url.QueryEscape(strings.TrimSpace(call.API)),
+		"webReadURL=" + url.QueryEscape(strings.TrimSpace(call.URL)),
+		"webReadTaskId=" + url.QueryEscape(strings.TrimSpace(call.TaskID)),
+		"webReadStatus=" + url.QueryEscape(strings.TrimSpace(call.Status)),
+		fmt.Sprintf("webReadDurationMs=%d", call.DurationMs),
+		fmt.Sprintf("webReadMarkdownBytes=%d", call.MarkdownBytes),
+		"webReadError=" + url.QueryEscape(logger.RedactSecrets(strings.TrimSpace(call.Error))),
+		fmt.Sprintf("unitPrice=%.6f", util.RoundMoney(price)),
+		fmt.Sprintf("amount=%.6f", util.RoundMoney(amount)),
+	}
+	if question := strings.TrimSpace(req.Question); question != "" {
+		parts = append(parts, "question="+url.QueryEscape(question))
+	}
+	return strings.Join(parts, " ")
 }
 
 func buildAISearchCallBillingSnapshot(req model.SearchRequest, call search.AISearchCallUsage, index int, price float64, amount float64) string {

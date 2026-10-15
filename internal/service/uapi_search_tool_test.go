@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	internalsearch "github.com/itihey/tikuAdapter/internal/search"
 	"github.com/itihey/tikuAdapter/internal/uapi"
 )
 
@@ -19,6 +20,9 @@ func TestBuildUAPISearchToolUsesSystemSettingAndDisablesNestedRetries(t *testing
 	client, ok := tool.(*uapi.Client)
 	if !ok {
 		t.Fatalf("expected configured UAPI search client, got %T", tool)
+	}
+	if _, ok := any(tool).(internalsearch.AIWebReadTool); !ok {
+		t.Fatalf("configured UAPI client must expose web-read capability, got %T", tool)
 	}
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

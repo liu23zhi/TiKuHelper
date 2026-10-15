@@ -1164,6 +1164,27 @@ func TestResolveCompletedSearchBillingChargesAddsOneChargePerActualAISearch(t *t
 	}
 }
 
+func TestResolveCompletedSearchBillingChargesAddsCompletedWebReadOnly(t *testing.T) {
+	db := newSearchControllerTestDB(t)
+	if err := service.SetWebReadPricePerCallWithDB(db, 0.25); err != nil {
+		t.Fatalf("set web-read price: %v", err)
+	}
+	usage := searchpkg.AISearchUsage{WebReadCalls: []searchpkg.AIWebReadCallUsage{
+		{API: "https://uapis.cn/api/v1/web/tomarkdown/async", URL: "https://example.com/a", TaskID: "task-1", Status: "success", MarkdownBytes: 120, DurationMs: 90},
+		{API: "https://uapis.cn/api/v1/web/tomarkdown/async", URL: "https://example.com/b", TaskID: "task-2", Status: "error", Error: "失败"},
+	}}
+	charges, _, err := resolveCompletedSearchBillingCharges(db, resolvedSearchRequestContext{SearchMode: searchModeAI}, "ai", model.SearchRequest{Question: "题目"}, usage, false, true)
+	if err != nil {
+		t.Fatalf("resolve web-read charges: %v", err)
+	}
+	if len(charges) != 1 || charges[0].Provider != "web_read" || charges[0].Amount != 0.25 {
+		t.Fatalf("expected one successful web-read fee row, got %+v", charges)
+	}
+	if got := service.ExtractBillingSnapshotField(charges[0].Snapshot, "webReadURL"); got != "https://example.com/a" {
+		t.Fatalf("expected URL in snapshot, got %q", got)
+	}
+}
+
 func TestResolveCompletedSearchBillingChargesDoesNotChargeProviderWithoutAnswer(t *testing.T) {
 	db := newSearchControllerTestDB(t)
 	seedControllerDefaultSearchProviderConfig(t, db, "icodef", 1.5)

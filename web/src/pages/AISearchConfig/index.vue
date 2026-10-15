@@ -154,6 +154,34 @@
         <div class="hint">默认 0 元。大于 0 时，每次实际调用联网搜索 API 都单独记一条账单，并合并显示在对应搜题账单详情中；命中本次 AI 搜索内的相同查询缓存不会重复计价。</div>
       </a-form-item>
 
+      <a-divider orientation="left">网页读取</a-divider>
+
+      <a-form-item label="网页读取次数">
+        <a-input-number
+          v-model:value="formState.maxAIWebReads"
+          :min="MIN_AI_WEB_READS"
+          :max="MAX_AI_WEB_READS"
+          :precision="0"
+          :step="1"
+          :parser="parseIntegerInput"
+          style="width: 180px"
+        />
+        <span class="unit-label">次</span>
+        <div class="hint">深度思考模式下，模型每次 AI 搜索最多调用网页读取工具的次数，默认 5 次，范围 1～20 次。普通模式仍保持原先的一次性回复，不会调用网页读取。</div>
+      </a-form-item>
+
+      <a-form-item label="网页读取单价（元/次）">
+        <a-input-number
+          v-model:value="formState.webReadPricePerCall"
+          :min="0"
+          :precision="6"
+          :step="0.01"
+          style="width: 180px"
+        />
+        <span class="unit-label">元 / 次</span>
+        <div class="hint">默认 0 元。大于 0 时，每次成功完成网页读取都会单独写入一条账单，并合并到对应的搜题账单详情中。</div>
+      </a-form-item>
+
       <a-form-item label="Prompt 设置">
         <a-textarea
           v-model:value="formState.prompt"
@@ -178,6 +206,29 @@
         <div class="hint">固定为 0，与温度一起保持低随机性，不开放自定义调整。</div>
       </a-form-item>
     </a-form>
+
+    <a-card :bordered="false" class="sub-card web-read-card">
+      <template #title>
+        <div class="sub-card-title-wrap">
+          <div>
+            <div class="sub-card-title">网页读取工具（web_read）</div>
+            <div class="sub-card-subtitle">用于深度思考模式读取指定网页并提取 Markdown 内容，密钥仍由服务端系统设置中的 UApiPro 密钥管理。</div>
+          </div>
+        </div>
+      </template>
+      <a-alert
+        type="info"
+        show-icon
+        message="调用方式"
+        :description="`开启深度思考后，模型会在需要时自动调用 web_read。当前上限为 ${formState.maxAIWebReads} 次/题；普通模式不会调用网页读取工具。`"
+      />
+      <div class="hint-block web-read-hints">
+        <div class="hint">工具参数：url（仅支持 HTTP/HTTPS，禁止内网地址）。</div>
+        <div class="hint">网页读取是异步任务，系统会按 pending、processing、completed、failed 或 timeout 状态处理结果。</div>
+        <div class="hint">只有 completed 的实际读取会按「网页读取单价」计费；默认单价为 0，不产生扣费。</div>
+        <div class="hint">若需要启用深度思考，题目请求中的 deepThinking=true 仍需由扩展端通过 Swal.fire 二次确认。</div>
+      </div>
+    </a-card>
 
     <div class="pricing-grid">
       <a-card :bordered="false" class="sub-card">
@@ -397,6 +448,9 @@ const MIN_AI_SEARCHES = 1
 const MAX_AI_SEARCH_BUDGET = 20
 const MIN_AI_SEARCH_RETRIES = 1
 const MAX_AI_SEARCH_RETRIES = 10
+const DEFAULT_MAX_AI_WEB_READS = 5
+const MIN_AI_WEB_READS = 1
+const MAX_AI_WEB_READS = 20
 
 function parseIntegerInput(value) {
   if (value === null || value === undefined || value === '') {
@@ -419,6 +473,14 @@ function normalizeAISearchRetries(value, fallback = DEFAULT_MAX_AI_SEARCH_RETRIE
     return fallback
   }
   return Math.min(parsed, MAX_AI_SEARCH_RETRIES)
+}
+
+function normalizeAIWebReads(value, fallback = DEFAULT_MAX_AI_WEB_READS) {
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed < MIN_AI_WEB_READS) {
+    return fallback
+  }
+  return Math.min(parsed, MAX_AI_WEB_READS)
 }
 
 export default defineComponent({
@@ -458,6 +520,8 @@ export default defineComponent({
       maxAISearches: DEFAULT_MAX_AI_SEARCHES,
       maxAISearchRetries: DEFAULT_MAX_AI_SEARCH_RETRIES,
       searchPricePerCall: 0,
+      maxAIWebReads: DEFAULT_MAX_AI_WEB_READS,
+      webReadPricePerCall: 0,
     })
 
     const priceRows = ref([])
@@ -515,6 +579,8 @@ export default defineComponent({
           formState.maxAISearches = normalizeAISearchBudget(data.maxAISearches, DEFAULT_MAX_AI_SEARCHES)
           formState.maxAISearchRetries = normalizeAISearchRetries(data.maxAISearchRetries, DEFAULT_MAX_AI_SEARCH_RETRIES)
           formState.searchPricePerCall = Number(data.searchPricePerCall ?? 0)
+          formState.maxAIWebReads = normalizeAIWebReads(data.maxAIWebReads, DEFAULT_MAX_AI_WEB_READS)
+          formState.webReadPricePerCall = Number(data.webReadPricePerCall ?? 0)
         } else {
           message.error(res?.message || '获取 AI 搜索配置失败')
         }
@@ -594,6 +660,8 @@ export default defineComponent({
       MAX_AI_SEARCH_BUDGET,
       MIN_AI_SEARCH_RETRIES,
       MAX_AI_SEARCH_RETRIES,
+      MIN_AI_WEB_READS,
+      MAX_AI_WEB_READS,
       parseIntegerInput,
       modelOptions,
       priceRows,
@@ -652,6 +720,8 @@ export default defineComponent({
       const maxAISearches = Number(this.formState.maxAISearches)
       const maxAISearchRetries = Number(this.formState.maxAISearchRetries)
       const searchPricePerCall = Number(this.formState.searchPricePerCall)
+      const maxAIWebReads = Number(this.formState.maxAIWebReads)
+      const webReadPricePerCall = Number(this.formState.webReadPricePerCall)
       if (!Number.isSafeInteger(maxAISearchModelCalls) || maxAISearchModelCalls < MIN_AI_SEARCH_MODEL_CALLS || maxAISearchModelCalls > MAX_AI_SEARCH_BUDGET) {
         message.error(`模型最大调用次数必须是 ${MIN_AI_SEARCH_MODEL_CALLS}～${MAX_AI_SEARCH_BUDGET} 的整数`)
         return
@@ -666,6 +736,14 @@ export default defineComponent({
       }
       if (!Number.isFinite(searchPricePerCall) || searchPricePerCall < 0) {
         message.error('联网搜索单价必须是大于或等于 0 的有效金额')
+        return
+      }
+      if (!Number.isSafeInteger(maxAIWebReads) || maxAIWebReads < MIN_AI_WEB_READS || maxAIWebReads > MAX_AI_WEB_READS) {
+        message.error(`网页读取次数必须是 ${MIN_AI_WEB_READS}～${MAX_AI_WEB_READS} 的整数`)
+        return
+      }
+      if (!Number.isFinite(webReadPricePerCall) || webReadPricePerCall < 0) {
+        message.error('网页读取单价必须是大于或等于 0 的有效金额')
         return
       }
       this.saving = true
@@ -980,6 +1058,14 @@ export default defineComponent({
   max-width: 100%;
   min-width: 0;
   overflow-x: auto;
+}
+
+.web-read-card {
+  margin-top: 16px;
+}
+
+.web-read-hints {
+  margin-top: 14px;
 }
 
 @media (max-width: 768px) {

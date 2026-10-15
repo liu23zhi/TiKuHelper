@@ -47,6 +47,8 @@ const MaxAISearchModelCallsSettingKey = "max_ai_search_model_calls"
 const MaxAISearchesSettingKey = "max_ai_searches"
 const MaxAISearchRetriesSettingKey = "max_ai_search_retries"
 const AISearchPricePerCallSettingKey = "ai_search_price_per_call"
+const MaxAIWebReadsSettingKey = "max_ai_web_reads"
+const WebReadPricePerCallSettingKey = "web_read_price_per_call"
 
 // UAPIAPIKeySettingKey 是 UApiPro（uapis.cn）的 API 密钥。
 //
@@ -73,6 +75,8 @@ const DefaultMaxAISearchModelCalls = 4
 const DefaultMaxAISearches = 3
 const DefaultMaxAISearchRetries = 3
 const DefaultAISearchPricePerCall = float64(0)
+const DefaultMaxAIWebReads = 5
+const DefaultWebReadPricePerCall = float64(0)
 const MaxAllowedAISearchModelCalls = 20
 const MaxAllowedAISearches = 20
 const MaxAllowedAISearchRetries = 10
@@ -113,11 +117,13 @@ type SystemSettingDetail struct {
 	SMSBaoCredentialType      string  `json:"smsbaoCredentialType"`
 	SMSBaoRegionMode          string  `json:"smsbaoRegionMode"`
 	// UAPIAPIKey 是 UApiPro 的 API 密钥；与其它密钥一样**明文**返回。
-	UAPIAPIKey            string `json:"uapiApiKey"`
-	MaxLogSizeBytes       int64  `json:"maxLogSizeBytes"`
-	MaxAISearchModelCalls int    `json:"maxAISearchModelCalls"`
-	MaxAISearches         int    `json:"maxAISearches"`
-	MaxAISearchRetries    int    `json:"maxAISearchRetries"`
+	UAPIAPIKey            string  `json:"uapiApiKey"`
+	MaxLogSizeBytes       int64   `json:"maxLogSizeBytes"`
+	MaxAISearchModelCalls int     `json:"maxAISearchModelCalls"`
+	MaxAISearches         int     `json:"maxAISearches"`
+	MaxAISearchRetries    int     `json:"maxAISearchRetries"`
+	MaxAIWebReads         int     `json:"maxAIWebReads"`
+	WebReadPricePerCall   float64 `json:"webReadPricePerCall"`
 }
 
 type UpdateSystemSettingInput struct {
@@ -152,11 +158,13 @@ type UpdateSystemSettingInput struct {
 	SMSBaoRegionMode          string  `json:"smsbaoRegionMode"`
 	// UAPIAPIKey 是 UApiPro 的 API 密钥；与其它密钥一样**明文**返回。
 	// 写入语义与其它密钥一致：空值或 ******** 表示保持原值，__CLEAR__ 表示清空。
-	UAPIAPIKey            string `json:"uapiApiKey"`
-	MaxLogSizeBytes       int64  `json:"maxLogSizeBytes"`
-	MaxAISearchModelCalls int    `json:"maxAISearchModelCalls"`
-	MaxAISearches         int    `json:"maxAISearches"`
-	MaxAISearchRetries    int    `json:"maxAISearchRetries"`
+	UAPIAPIKey            string  `json:"uapiApiKey"`
+	MaxLogSizeBytes       int64   `json:"maxLogSizeBytes"`
+	MaxAISearchModelCalls int     `json:"maxAISearchModelCalls"`
+	MaxAISearches         int     `json:"maxAISearches"`
+	MaxAISearchRetries    int     `json:"maxAISearchRetries"`
+	MaxAIWebReads         int     `json:"maxAIWebReads"`
+	WebReadPricePerCall   float64 `json:"webReadPricePerCall"`
 }
 
 var ErrInvalidNewUserBonusAmount = errors.New("新用户赠送金额不能为负数")
@@ -304,6 +312,8 @@ func GetSystemSettingDetailWithDB(db *gorm.DB) (SystemSettingDetail, error) {
 		MaxAISearchModelCalls:     getPositiveBoundedIntSystemSetting(db, MaxAISearchModelCallsSettingKey, DefaultMaxAISearchModelCalls, MaxAllowedAISearchModelCalls),
 		MaxAISearches:             getPositiveBoundedIntSystemSetting(db, MaxAISearchesSettingKey, DefaultMaxAISearches, MaxAllowedAISearches),
 		MaxAISearchRetries:        getPositiveBoundedIntSystemSetting(db, MaxAISearchRetriesSettingKey, DefaultMaxAISearchRetries, MaxAllowedAISearchRetries),
+		MaxAIWebReads:             getPositiveBoundedIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads, MaxAllowedAISearches),
+		WebReadPricePerCall:       GetWebReadPricePerCallWithDB(db),
 	}
 	bonusAmount, err := GetNewUserBonusAmountWithDB(db)
 	if err != nil {
@@ -367,6 +377,8 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		MaxAISearchModelCalls: resolveMaxAISearchBudget(db, input.MaxAISearchModelCalls, MaxAISearchModelCallsSettingKey, DefaultMaxAISearchModelCalls, MaxAllowedAISearchModelCalls),
 		MaxAISearches:         resolveMaxAISearchBudget(db, input.MaxAISearches, MaxAISearchesSettingKey, DefaultMaxAISearches, MaxAllowedAISearches),
 		MaxAISearchRetries:    resolveMaxAISearchBudget(db, input.MaxAISearchRetries, MaxAISearchRetriesSettingKey, DefaultMaxAISearchRetries, MaxAllowedAISearchRetries),
+		MaxAIWebReads:         resolveMaxAISearchBudget(db, input.MaxAIWebReads, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads, MaxAllowedAISearches),
+		WebReadPricePerCall:   resolveWebReadPrice(db, input.WebReadPricePerCall),
 	}
 	normalized.AlternativeLoginEnabled = normalized.SMSLoginEnabled || normalized.WechatLoginEnabled
 
@@ -409,6 +421,8 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		{MaxAISearchModelCallsSettingKey, strconv.Itoa(normalized.MaxAISearchModelCalls), "AI 搜索模型最大调用次数"},
 		{MaxAISearchesSettingKey, strconv.Itoa(normalized.MaxAISearches), "AI 搜索最大搜索次数"},
 		{MaxAISearchRetriesSettingKey, strconv.Itoa(normalized.MaxAISearchRetries), "AI 搜索每轮失败重试次数（含首次调用）"},
+		{MaxAIWebReadsSettingKey, strconv.Itoa(normalized.MaxAIWebReads), "AI 搜索网页读取最大次数"},
+		{WebReadPricePerCallSettingKey, strconv.FormatFloat(normalized.WebReadPricePerCall, 'f', -1, 64), "网页读取单价（元/次）"},
 	}
 	for _, item := range settings {
 		if err := saveSystemSettingValue(db, item.key, item.value, item.remark); err != nil {
@@ -501,6 +515,32 @@ func SetAISearchPricePerCallWithDB(db *gorm.DB, requested float64) error {
 	}
 	price := util.RoundMoney(requested)
 	return saveSystemSettingValue(db, AISearchPricePerCallSettingKey, strconv.FormatFloat(price, 'f', -1, 64), "联网搜索单价（元/次）")
+}
+
+func GetWebReadPricePerCallWithDB(db *gorm.DB) float64 {
+	if db == nil || !db.Migrator().HasTable(&entity.SystemSetting{}) {
+		return DefaultWebReadPricePerCall
+	}
+	raw := strings.TrimSpace(getSystemSettingStringWithDefault(db, WebReadPricePerCallSettingKey, "0"))
+	price, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(price) || math.IsInf(price, 0) || price < 0 {
+		return DefaultWebReadPricePerCall
+	}
+	return util.RoundMoney(price)
+}
+
+func SetWebReadPricePerCallWithDB(db *gorm.DB, requested float64) error {
+	if math.IsNaN(requested) || math.IsInf(requested, 0) || requested < 0 {
+		return errors.New("网页读取单价必须是大于或等于 0 的有效金额")
+	}
+	return saveSystemSettingValue(db, WebReadPricePerCallSettingKey, strconv.FormatFloat(util.RoundMoney(requested), 'f', -1, 64), "网页读取单价（元/次）")
+}
+
+func resolveWebReadPrice(db *gorm.DB, requested float64) float64 {
+	if requested > 0 {
+		return util.RoundMoney(requested)
+	}
+	return GetWebReadPricePerCallWithDB(db)
 }
 
 func getPositiveBoundedIntSystemSetting(db *gorm.DB, key string, defaultValue int, maxValue int) int {

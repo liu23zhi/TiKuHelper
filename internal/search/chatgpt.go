@@ -43,6 +43,7 @@ type ChatGptClient struct {
 	RequestID             string
 	MaxAISearchModelCalls int
 	MaxAISearches         int
+	MaxAIWebReads         int
 	// MaxAISearchRetries is the total number of attempts allowed for each
 	// model round, including the initial request. Zero uses the default.
 	MaxAISearchRetries int
@@ -54,8 +55,9 @@ type AISearchUsage struct {
 	CacheWriteTokens  int64
 	OutputTokens      int64
 	TotalTokens       int64
-	SearchCalls       []AISearchCallUsage `json:"searchCalls,omitempty"`
-	Trace             []AISearchTrace     `json:"trace,omitempty"`
+	SearchCalls       []AISearchCallUsage  `json:"searchCalls,omitempty"`
+	WebReadCalls      []AIWebReadCallUsage `json:"webReadCalls,omitempty"`
+	Trace             []AISearchTrace      `json:"trace,omitempty"`
 }
 
 type AISearchCallUsage struct {
@@ -66,6 +68,19 @@ type AISearchCallUsage struct {
 	ResultCount   int    `json:"resultCount"`
 	TotalResults  int    `json:"totalResults"`
 	SourceDetails string `json:"sourceDetails,omitempty"`
+	Error         string `json:"error,omitempty"`
+}
+
+// AIWebReadCallUsage records one completed/failed web_read tool invocation.
+// The URL is retained for private audit and billing snapshots; credentials are
+// never part of the URL because the UAPI key is sent only as a header.
+type AIWebReadCallUsage struct {
+	API           string `json:"api"`
+	URL           string `json:"url"`
+	TaskID        string `json:"taskId,omitempty"`
+	Status        string `json:"status"`
+	DurationMs    int64  `json:"durationMs"`
+	MarkdownBytes int    `json:"markdownBytes,omitempty"`
 	Error         string `json:"error,omitempty"`
 }
 
@@ -99,6 +114,7 @@ type AISearchTrace struct {
 	SearchCount         int    `json:"searchCount,omitempty"`
 	SearchBudget        int    `json:"searchBudget,omitempty"`
 	RemainingSearches   int    `json:"remainingSearches"`
+	RemainingWebReads   int    `json:"remainingWebReads"`
 	ResultCount         int    `json:"resultCount,omitempty"`
 	CacheHit            bool   `json:"cacheHit,omitempty"`
 	ReasoningChars      int    `json:"reasoningChars,omitempty"`
@@ -115,7 +131,7 @@ func (in *ChatGptClient) prepareAISearchTrace(trace AISearchTrace) AISearchTrace
 	}
 	trace.Endpoint = logger.RedactSecrets(trace.Endpoint, in.APIKey)
 	trace.SearchAPI = logger.RedactSecrets(trace.SearchAPI, in.APIKey)
-	trace.Query = truncateAIToolText(trace.Query, 120)
+	trace.Query = truncateAIToolText(logger.RedactSecrets(trace.Query, in.APIKey), 120)
 	trace.SourceDetails = truncateAIToolText(logger.RedactSecrets(trace.SourceDetails, in.APIKey), 1200)
 	trace.ResultSummary = truncateAIToolText(logger.RedactSecrets(trace.ResultSummary, in.APIKey), 1200)
 	trace.ContentPreview = truncateAIToolText(logger.RedactSecrets(trace.ContentPreview, in.APIKey), 240)
@@ -134,7 +150,7 @@ func (in *ChatGptClient) appendAISearchTrace(usage *AISearchUsage, trace AISearc
 func (in *ChatGptClient) logAISearchTrace(trace AISearchTrace) {
 	structuredTrace := in.prepareAISearchTrace(trace)
 	requestID := strings.TrimSpace(in.RequestID)
-	logger.AIThinkingWithSecrets(fmt.Sprintf("AI搜索轨迹 requestId=%s round=%d attempt=%d/%d stage=%s model=%s endpoint=%s searchAPI=%s query=%s status=%s durationMs=%d modelCalls=%d/%d remainingModelCalls=%d searches=%d/%d remainingSearches=%d results=%d cacheHit=%t sources=%s resultSummary=%s reasoningChars=%d contentPreview=%s error=%s", requestID, structuredTrace.Round, structuredTrace.Attempt, structuredTrace.AttemptBudget, structuredTrace.Stage, strings.TrimSpace(structuredTrace.Model), structuredTrace.Endpoint, structuredTrace.SearchAPI, structuredTrace.Query, structuredTrace.Status, structuredTrace.DurationMs, structuredTrace.ModelCallCount, structuredTrace.ModelCallBudget, structuredTrace.RemainingModelCalls, structuredTrace.SearchCount, structuredTrace.SearchBudget, structuredTrace.RemainingSearches, structuredTrace.ResultCount, structuredTrace.CacheHit, structuredTrace.SourceDetails, structuredTrace.ResultSummary, structuredTrace.ReasoningChars, structuredTrace.ContentPreview, structuredTrace.Error), in.APIKey)
+	logger.AIThinkingWithSecrets(fmt.Sprintf("AI搜索轨迹 requestId=%s round=%d attempt=%d/%d stage=%s model=%s endpoint=%s searchAPI=%s query=%s status=%s durationMs=%d modelCalls=%d/%d remainingModelCalls=%d searches=%d/%d remainingSearches=%d remainingWebReads=%d results=%d cacheHit=%t sources=%s resultSummary=%s reasoningChars=%d contentPreview=%s error=%s", requestID, structuredTrace.Round, structuredTrace.Attempt, structuredTrace.AttemptBudget, structuredTrace.Stage, strings.TrimSpace(structuredTrace.Model), structuredTrace.Endpoint, structuredTrace.SearchAPI, structuredTrace.Query, structuredTrace.Status, structuredTrace.DurationMs, structuredTrace.ModelCallCount, structuredTrace.ModelCallBudget, structuredTrace.RemainingModelCalls, structuredTrace.SearchCount, structuredTrace.SearchBudget, structuredTrace.RemainingSearches, structuredTrace.RemainingWebReads, structuredTrace.ResultCount, structuredTrace.CacheHit, structuredTrace.SourceDetails, structuredTrace.ResultSummary, structuredTrace.ReasoningChars, structuredTrace.ContentPreview, structuredTrace.Error), in.APIKey)
 	if trace.SourceDetails != "" {
 		logger.AIThinkingWithSecrets(fmt.Sprintf("AI搜索完整来源 requestId=%s round=%d stage=%s\n%s", requestID, trace.Round, trace.Stage, trace.SourceDetails), in.APIKey)
 	}
@@ -388,7 +404,7 @@ func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]
 	systemPrompt := effectiveAISearchPrompt(in.Prompt)
 	userPromptParts := buildAISearchPromptParts(req, in.getAttachmentHTTPClient().GetClient())
 	endpoints := buildAIChatCompletionEndpoints(baseURL)
-	maxModelCalls, _ := in.aiSearchBudgets()
+	maxModelCalls, _, _ := in.aiSearchBudgets()
 	modelCalls := 0
 	var lastRequestErr error
 	var allTrace []AISearchTrace
@@ -450,7 +466,7 @@ func (in *ChatGptClient) SearchAnswerWithUsage(req model.SearchRequest) (answer 
 	systemPrompt := effectiveAISearchPrompt(in.Prompt)
 	userPromptParts := buildAISearchPromptParts(req, in.getAttachmentHTTPClient().GetClient())
 	endpoints := buildAIChatCompletionEndpoints(baseURL)
-	maxModelCalls, _ := in.aiSearchBudgets()
+	maxModelCalls, _, _ := in.aiSearchBudgets()
 	modelCalls := 0
 	var lastRequestErr error
 	var lastUsage AISearchUsage
@@ -913,7 +929,7 @@ func (in *ChatGptClient) requestStreamAnswerDetailed(endpoint string, systemProm
 			*modelCalls++
 		}
 		remainingCalls := maxModelCalls - *modelCalls
-		budgetPrompt := buildAISearchBudgetPrompt(remainingCalls, 0, remainingCalls == 0)
+		budgetPrompt := buildAISearchOneShotBudgetPrompt(remainingCalls)
 		payload, err := json.Marshal(openAIChatCompletionRequest{
 			Model:       strings.TrimSpace(in.Model),
 			Stream:      true,

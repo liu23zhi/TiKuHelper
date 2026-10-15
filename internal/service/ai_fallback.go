@@ -100,6 +100,7 @@ func SearchAIFallbackWithDB(db *gorm.DB, req model.SearchRequest) AIFallbackResu
 		MaxAISearchModelCalls: resolved.Config.MaxAISearchModelCalls,
 		MaxAISearches:         resolved.Config.MaxAISearches,
 		MaxAISearchRetries:    resolved.Config.MaxAISearchRetries,
+		MaxAIWebReads:         resolved.Config.MaxAIWebReads,
 		SearchTool:            BuildUAPISearchToolWithDB(db),
 		RequestID:             req.RequestID,
 	}

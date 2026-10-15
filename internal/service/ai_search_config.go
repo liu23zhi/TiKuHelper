@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,7 +20,7 @@ import (
 
 const aiSearchUAPIToolTimeout = 30 * time.Second
 
-// BuildUAPISearchToolWithDB constructs the optional web-search tool for AI.
+// BuildUAPISearchToolWithDB constructs the optional web-search/web-read tool for AI.
 // The UAPI key stays server-side; invalid or missing keys disable the tool
 // rather than turning a normal AI answer into an avoidable configuration error.
 func BuildUAPISearchToolWithDB(db *gorm.DB) internalsearch.AISearchTool {
@@ -46,6 +47,8 @@ type AISearchConfigView struct {
 	MaxAISearches         int      `json:"maxAISearches"`
 	MaxAISearchRetries    int      `json:"maxAISearchRetries"`
 	SearchPricePerCall    float64  `json:"searchPricePerCall"`
+	MaxAIWebReads         int      `json:"maxAIWebReads"`
+	WebReadPricePerCall   float64  `json:"webReadPricePerCall"`
 }
 
 type UpdateAISearchConfigInput struct {
@@ -62,6 +65,8 @@ type UpdateAISearchConfigInput struct {
 	MaxAISearches         int      `json:"maxAISearches"`
 	MaxAISearchRetries    int      `json:"maxAISearchRetries"`
 	SearchPricePerCall    *float64 `json:"searchPricePerCall,omitempty"`
+	MaxAIWebReads         int      `json:"maxAIWebReads"`
+	WebReadPricePerCall   *float64 `json:"webReadPricePerCall,omitempty"`
 }
 
 type AISearchRequestConfig struct {
@@ -75,6 +80,8 @@ type AISearchRequestConfig struct {
 	MaxAISearches         int
 	MaxAISearchRetries    int
 	SearchPricePerCall    float64
+	MaxAIWebReads         int
+	WebReadPricePerCall   float64
 }
 
 type ResolvedAISearchConfig struct {
@@ -181,6 +188,8 @@ func GetAISearchConfigWithDB(db *gorm.DB) (AISearchConfigView, error) {
 			MaxAISearches:         maxSearches,
 			MaxAISearchRetries:    GetAISearchRetriesWithDB(db),
 			SearchPricePerCall:    GetAISearchPricePerCallWithDB(db),
+			MaxAIWebReads:         getPositiveBoundedIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads, MaxAllowedAISearches),
+			WebReadPricePerCall:   GetWebReadPricePerCallWithDB(db),
 		}, nil
 	}
 	return buildAISearchConfigView(db, config)
@@ -191,6 +200,11 @@ func UpdateAISearchConfigWithDB(db *gorm.DB, input UpdateAISearchConfigInput) (A
 		price := *input.SearchPricePerCall
 		if price < 0 || math.IsNaN(price) || math.IsInf(price, 0) {
 			return AISearchConfigView{}, errors.New("联网搜索单价必须是大于或等于 0 的有效金额")
+		}
+	}
+	if input.WebReadPricePerCall != nil {
+		if err := SetWebReadPricePerCallWithDB(db, *input.WebReadPricePerCall); err != nil {
+			return AISearchConfigView{}, err
 		}
 	}
 	config, _, err := getAISearchConfigRecord(db)
@@ -235,6 +249,11 @@ func UpdateAISearchConfigWithDB(db *gorm.DB, input UpdateAISearchConfigInput) (A
 			return AISearchConfigView{}, err
 		}
 	}
+	if input.MaxAIWebReads > 0 {
+		if err := saveSystemSettingValue(db, MaxAIWebReadsSettingKey, strconv.Itoa(normalizeAISearchBudget(input.MaxAIWebReads, DefaultMaxAIWebReads, MaxAllowedAISearches)), "AI 搜索网页读取最大次数"); err != nil {
+			return AISearchConfigView{}, err
+		}
+	}
 
 	return buildAISearchConfigView(db, config)
 }
@@ -250,6 +269,8 @@ func BuildAISearchRequestConfigWithDB(db *gorm.DB, query url.Values, allowDefaul
 			MaxAISearches:         maxSearches,
 			MaxAISearchRetries:    GetAISearchRetriesWithDB(db),
 			SearchPricePerCall:    GetAISearchPricePerCallWithDB(db),
+			MaxAIWebReads:         getPositiveBoundedIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads, MaxAllowedAISearches),
+			WebReadPricePerCall:   GetWebReadPricePerCallWithDB(db),
 		},
 	}
 	allowExplicitConfig := allowDefaultAccount
@@ -364,6 +385,8 @@ func buildAISearchConfigView(db *gorm.DB, config entity.AISearchConfig) (AISearc
 		MaxAISearches:         maxSearches,
 		MaxAISearchRetries:    GetAISearchRetriesWithDB(db),
 		SearchPricePerCall:    GetAISearchPricePerCallWithDB(db),
+		MaxAIWebReads:         getPositiveBoundedIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads, MaxAllowedAISearches),
+		WebReadPricePerCall:   GetWebReadPricePerCallWithDB(db),
 	}, nil
 }
 

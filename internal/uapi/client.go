@@ -35,6 +35,7 @@ type Client struct {
 	ipInfoURL          string
 	searchEnginesURL   string
 	searchAggregateURL string
+	webToMarkdownURL   string
 	http               *resty.Client
 	// maxRetries 本客户端单次业务请求允许的内部重试次数（不含首次）。
 	//

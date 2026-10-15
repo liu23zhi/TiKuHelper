@@ -344,7 +344,7 @@ func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, reques
 		},
 	}
 	warning := ""
-	charges := make([]searchBillingCharge, 0, 1+len(usage.SearchCalls))
+	charges := make([]searchBillingCharge, 0, 1+len(usage.SearchCalls)+len(usage.WebReadCalls))
 	if result.Success && hasAIModelUsage(usage) {
 		resolvedCharge, err := resolveCompletedAIBillingCharge(db, resolved, req, usage)
 		if err != nil {
@@ -363,6 +363,15 @@ func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, reques
 				Amount:   amount,
 				Snapshot: buildAISearchCallBillingSnapshot(req, call, index+1, price, amount),
 			})
+		}
+	}
+	if price := service.GetWebReadPricePerCallWithDB(db); price > 0 {
+		for index, call := range usage.WebReadCalls {
+			if strings.TrimSpace(call.Status) != "success" {
+				continue
+			}
+			amount := util.RoundMoney(price)
+			charges = append(charges, searchBillingCharge{Provider: "web_read", Amount: amount, Snapshot: buildAIWebReadBillingSnapshot(req, call, index+1, price, amount)})
 		}
 	}
 	if len(charges) == 0 {

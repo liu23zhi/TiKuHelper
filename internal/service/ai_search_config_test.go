@@ -431,6 +431,46 @@ func TestAISearchConfigPersistsSearchPricePerCallWithLegacyPayloadCompatibility(
 	}
 }
 
+func TestAISearchConfigPersistsWebReadBudgetAndPrice(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	if err := db.AutoMigrate(&entity.SystemSetting{}); err != nil {
+		t.Fatalf("migrate system settings: %v", err)
+	}
+
+	initial, err := GetAISearchConfigWithDB(db)
+	if err != nil {
+		t.Fatalf("get default AI search config: %v", err)
+	}
+	if initial.MaxAIWebReads != DefaultMaxAIWebReads || initial.WebReadPricePerCall != DefaultWebReadPricePerCall {
+		t.Fatalf("web read defaults should be %d and %v, got %d and %v", DefaultMaxAIWebReads, DefaultWebReadPricePerCall, initial.MaxAIWebReads, initial.WebReadPricePerCall)
+	}
+
+	price := 0.375
+	view, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{MaxAIWebReads: 7, WebReadPricePerCall: &price})
+	if err != nil {
+		t.Fatalf("set web read config: %v", err)
+	}
+	if view.MaxAIWebReads != 7 || view.WebReadPricePerCall != price {
+		t.Fatalf("expected web read config 7/%v, got %d/%v", price, view.MaxAIWebReads, view.WebReadPricePerCall)
+	}
+	resolved, err := BuildAISearchRequestConfigWithDB(db, url.Values{}, true)
+	if err != nil {
+		t.Fatalf("resolve web read config: %v", err)
+	}
+	if resolved.Config.MaxAIWebReads != 7 || resolved.Config.WebReadPricePerCall != price {
+		t.Fatalf("resolved web read config mismatch: %d/%v", resolved.Config.MaxAIWebReads, resolved.Config.WebReadPricePerCall)
+	}
+
+	zero := 0.0
+	cleared, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{WebReadPricePerCall: &zero})
+	if err != nil {
+		t.Fatalf("clear web read price: %v", err)
+	}
+	if cleared.WebReadPricePerCall != 0 {
+		t.Fatalf("explicit zero should disable web read billing, got %v", cleared.WebReadPricePerCall)
+	}
+}
+
 func TestAISearchConfigViewJSONOmitsLegacyRemoteModelsFlag(t *testing.T) {
 	db := newSearchAccountConfigTestDB(t)
 
