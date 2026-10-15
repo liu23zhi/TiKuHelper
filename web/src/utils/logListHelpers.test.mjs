@@ -100,14 +100,9 @@ test('buildLogDetailSections exposes structured search summary with raw request 
       value: '952e69ad-71aa-419b-8ccc-9599574d81ff',
     },
     {
-      key: 'mode',
-      label: '模式',
-      value: 'normal',
-    },
-    {
-      key: 'use',
-      label: '请求来源',
-      value: '-',
+      key: 'requestParams',
+      label: '请求参数',
+      value: 'mode=normal',
     },
     {
       key: 'answers',
@@ -158,14 +153,9 @@ test('buildLogDetailSections keeps anonymous false and explicit request source i
       value: 'req-1',
     },
     {
-      key: 'mode',
-      label: '模式',
-      value: 'normal',
-    },
-    {
-      key: 'use',
-      label: '请求来源',
-      value: 'local,icodef',
+      key: 'requestParams',
+      label: '请求参数',
+      value: 'use=local,icodef',
     },
     {
       key: 'answers',
@@ -213,8 +203,8 @@ test('buildLogStructuredFields splits search description and snapshots into sing
   }), {
     summary: '搜索完成',
     requestId: '952e69ad-71aa-419b-8ccc-9599574d81ff',
-    mode: 'normal',
-    requestSource: '-',
+    mode: 'mode=normal',
+    requestSource: '普通搜题接口',
     answerCount: '4',
     hitProvider: 'icodef',
     billingProvider: 'Icodef 题库',
@@ -235,6 +225,20 @@ test('buildLogStructuredFields maps billing provider codes to Chinese labels', (
   assert.equal(buildLogStructuredFields({
     description: '搜索完成 requestId=req-failed mode=normal use= answers=1 hitProvider=ai billingProvider=billing_persist_failed',
   }).billingProvider, '计费落账失败');
+});
+
+test('buildLogStructuredFields shows request parameters and channel failure details', () => {
+  const fields = buildLogStructuredFields({
+    description: '搜索失败 requestId=req-failed mode=ai use=ai answers=0',
+    newAnswer: JSON.stringify({
+      status: 'failed',
+      failures: [{ provider: 'ai', code: 'UPSTREAM_ERROR', error: '对方服务器异常' }],
+    }),
+  });
+
+  assert.equal(fields.mode, 'use=ai');
+  assert.equal(fields.requestSource, '普通搜题接口');
+  assert.equal(fields.hitProvider, 'ai（错误：[UPSTREAM_ERROR]：对方服务器异常）');
 });
 
 test('buildLogStructuredFields keeps non-search logs on summary and snapshot columns', () => {
@@ -263,10 +267,10 @@ test('buildLogStructuredFields parses AI fallback failures for list columns', ()
   }), {
     summary: 'AI兜底失败',
     requestId: 'req-ai-fallback',
-    mode: 'async',
-    requestSource: 'billing_precheck',
+    mode: 'mode=async stage=billing_precheck',
+    requestSource: 'AI 兜底接口',
     answerCount: '-',
-    hitProvider: 'INSUFFICIENT_BALANCE',
+    hitProvider: 'ai（错误：当前余额不足）',
     billingProvider: '-',
     requestSnapshot: '{"question":"1+1=?","type":0,"options":["1","2"]}',
     responseSnapshot: '{"success":false,"error":{"code":"INSUFFICIENT_BALANCE","message":"当前余额不足"}}',
@@ -387,6 +391,9 @@ test('LogList page renders visible detail column for structured diagnostics', as
   assert.match(content, /buildLogRowDetail/);
   assert.match(content, /title: '详情'/);
   assert.match(content, /customRender: 'detail'/);
+  assert.match(content, /title: '请求参数'/);
+  assert.match(content, /title: '请求接口'/);
+  assert.match(content, /title: '命中渠道 \/ 错误原因'/);
 });
 
 test('LogList page renders derived status instead of the raw action column', async () => {
@@ -413,8 +420,8 @@ test('search outcome summaries retain structured request fields', () => {
     });
     assert.equal(fields.summary, summary);
     assert.equal(fields.requestId, 'request-1');
-    assert.equal(fields.mode, 'normal');
-    assert.equal(fields.requestSource, 'ai');
+    assert.equal(fields.mode, 'use=ai');
+    assert.equal(fields.requestSource, '普通搜题接口');
     assert.equal(fields.answerCount, '0');
   }
 });

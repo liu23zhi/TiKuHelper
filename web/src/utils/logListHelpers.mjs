@@ -71,13 +71,14 @@ export function buildLogStructuredFields(record = {}) {
   const parsedAIFallbackDescription = parseAIFallbackLogDescriptionMap(description);
 
   if (parsedAIFallbackDescription.summary) {
+    const fallbackSnapshot = parseLogSnapshot(response);
     return {
       summary: parsedAIFallbackDescription.summary,
       requestId: parsedAIFallbackDescription.requestId || parsedAIFallbackDescription.taskId || '-',
-      mode: parsedAIFallbackDescription.mode || '-',
-      requestSource: parsedAIFallbackDescription.stage || '-',
+      mode: buildRequestParamsLabel(parsedAIFallbackDescription),
+      requestSource: 'AI 兜底接口',
       answerCount: parsedAIFallbackDescription.answers || '-',
-      hitProvider: parsedAIFallbackDescription.code || parsedAIFallbackDescription.hitProvider || '-',
+      hitProvider: buildHitProviderLabel(parsedAIFallbackDescription.hitProvider || (parsedAIFallbackDescription.code ? 'ai' : '-'), fallbackSnapshot),
       billingProvider: buildBillingProviderLabel(parsedAIFallbackDescription.billingProvider),
       requestSnapshot: request || '-',
       responseSnapshot: response || '-',
@@ -101,10 +102,10 @@ export function buildLogStructuredFields(record = {}) {
   return {
     summary: parsedDescription.summary || description || '-',
     requestId: parsedDescription.requestId || '-',
-    mode: parsedDescription.mode || '-',
-    requestSource: parsedDescription.use || '-',
+    mode: buildRequestParamsLabel(parsedDescription),
+    requestSource: parsedDescription.summary ? '普通搜题接口' : '-',
     answerCount: parsedDescription.answers || '-',
-    hitProvider: parsedDescription.hitProvider || '-',
+    hitProvider: buildHitProviderLabel(parsedDescription.hitProvider, parseLogSnapshot(response)),
     billingProvider: buildBillingProviderLabel(parsedDescription.billingProvider),
     requestSnapshot: request || '-',
     responseSnapshot: response || '-',
@@ -273,8 +274,7 @@ function parseSearchLogDescription(description) {
   const fieldMap = parseSearchLogDescriptionMap(description);
   const fields = [
     ['requestId', '请求 ID'],
-    ['mode', '模式'],
-    ['use', '请求来源'],
+    ['requestParams', '请求参数'],
     ['answers', '答案数'],
     ['hitProvider', '命中渠道'],
     ['billingProvider', '计费渠道'],
@@ -283,7 +283,7 @@ function parseSearchLogDescription(description) {
   ];
 
   return fields.map(([key, label]) => {
-    let value = fieldMap[key] || '-';
+    let value = key === 'requestParams' ? buildRequestParamsLabel(fieldMap) : (fieldMap[key] || '-');
     if (key === 'anonymous') {
       if (value === 'true') value = '是';
       if (value === 'false') value = '否';
@@ -292,7 +292,63 @@ function parseSearchLogDescription(description) {
       value = buildBillingProviderLabel(value);
     }
     return { key, label, value };
-  }).filter((section) => section.value !== '-' || section.key === 'use');
+  }).filter((section) => section.value !== '-' || section.key === 'requestParams');
+}
+
+function buildRequestParamsLabel(fields = {}) {
+  const parts = [];
+  const use = String(fields.use || '').trim();
+  const mode = String(fields.mode || '').trim();
+  if (use && use !== '-') {
+    parts.push(`use=${use}`);
+  }
+  if (!parts.length && mode && mode !== '-') {
+    parts.push(`mode=${mode}`);
+  }
+  const stage = String(fields.stage || '').trim();
+  if (stage && stage !== '-') {
+    parts.push(`stage=${stage}`);
+  }
+  return parts.join(' ') || '-';
+}
+
+function buildHitProviderLabel(provider, snapshot = {}) {
+  let normalizedProvider = String(provider || '').trim();
+  const errors = [];
+
+  if (Array.isArray(snapshot?.failures)) {
+    if (!normalizedProvider) {
+      const failureProviders = [...new Set(snapshot.failures
+        .map((failure) => String(failure?.provider || '').trim())
+        .filter(Boolean))];
+      normalizedProvider = failureProviders.join('、');
+    }
+    snapshot.failures.forEach((failure) => {
+      const error = String(failure?.error || '').trim();
+      if (!error) {
+        return;
+      }
+      const failureProvider = String(failure?.provider || '').trim();
+      const code = String(failure?.code || '').trim();
+      const prefix = failureProvider && failureProvider !== normalizedProvider ? `${failureProvider}` : '';
+      const codeText = code ? ` [${code}]` : '';
+      errors.push(`${prefix}${codeText}${prefix || codeText ? '：' : ''}${error}`);
+    });
+  }
+
+  const failureDetail = String(snapshot?.failureDetail || '').trim();
+  if (failureDetail) {
+    errors.push(failureDetail);
+  }
+  const errorMessage = String(snapshot?.error?.message || '').trim();
+  if (errorMessage && !errors.includes(errorMessage)) {
+    errors.push(errorMessage);
+  }
+
+  if (!errors.length) {
+    return normalizedProvider || '-';
+  }
+  return `${normalizedProvider || '-'}（错误：${truncateInlineText(errors.join(' / '), 150)}）`;
 }
 
 function buildBillingProviderLabel(value) {

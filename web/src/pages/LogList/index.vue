@@ -44,7 +44,7 @@
         type="info"
         show-icon
         class="page-alert"
-        :message="isAdmin ? '当前显示全站审计日志，可按关键词（说明 / 用户名 / 客户端 IP）、模块与操作类型筛选。搜题日志会拆分展示请求来源、请求 ID、命中渠道、计费渠道以及原始请求 / 响应快照。' : '当前仅显示你自己的操作日志，可按关键词（说明 / 用户名 / 客户端 IP）、模块与操作类型筛选。搜题日志会拆分展示请求来源、请求 ID、命中渠道、计费渠道以及原始请求 / 响应快照。'"
+        :message="isAdmin ? '当前显示全站审计日志，可按关键词（说明 / 用户名 / 客户端 IP）、模块与操作类型筛选。搜题日志会拆分展示请求接口、请求参数、请求 ID、命中渠道及错误原因、计费渠道以及原始请求 / 响应快照。' : '当前仅显示你自己的操作日志，可按关键词（说明 / 用户名 / 客户端 IP）、模块与操作类型筛选。搜题日志会拆分展示请求接口、请求参数、请求 ID、命中渠道及错误原因、计费渠道以及原始请求 / 响应快照。'"
       />
     </a-card>
 
@@ -328,7 +328,7 @@ export default defineComponent({
           width: 220,
         },
         {
-          title: '模式',
+          title: '请求参数',
           dataIndex: 'mode',
           key: 'mode',
           slots: {
@@ -337,7 +337,7 @@ export default defineComponent({
           width: 110,
         },
         {
-          title: '请求来源',
+          title: '请求接口',
           dataIndex: 'requestSource',
           key: 'requestSource',
           slots: {
@@ -355,7 +355,7 @@ export default defineComponent({
           width: 100,
         },
         {
-          title: '命中渠道',
+          title: '命中渠道 / 错误原因',
           dataIndex: 'hitProvider',
           key: 'hitProvider',
           slots: {
