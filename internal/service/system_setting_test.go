@@ -86,8 +86,8 @@ func TestGetSystemSettingDetailWithDBDefaults(t *testing.T) {
 	if detail.MaxLogSizeBytes != DefaultMaxLogSizeBytes {
 		t.Fatalf("expected default log size %d, got %d", DefaultMaxLogSizeBytes, detail.MaxLogSizeBytes)
 	}
-	if detail.MaxAISearchModelCalls != DefaultMaxAISearchModelCalls || detail.MaxAISearches != DefaultMaxAISearches {
-		t.Fatalf("expected default AI budgets %d/%d, got %d/%d", DefaultMaxAISearchModelCalls, DefaultMaxAISearches, detail.MaxAISearchModelCalls, detail.MaxAISearches)
+	if detail.MaxAISearchModelCalls != DefaultMaxAISearchModelCalls || detail.MaxAISearches != DefaultMaxAISearches || detail.MaxAISearchRetries != DefaultMaxAISearchRetries {
+		t.Fatalf("expected default AI budgets %d/%d/%d, got %d/%d/%d", DefaultMaxAISearchModelCalls, DefaultMaxAISearches, DefaultMaxAISearchRetries, detail.MaxAISearchModelCalls, detail.MaxAISearches, detail.MaxAISearchRetries)
 	}
 }
 
@@ -97,24 +97,26 @@ func TestUpdateSystemSettingDetailWithDBPersistsAISearchBudgets(t *testing.T) {
 	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
 		MaxAISearchModelCalls: 7,
 		MaxAISearches:         6,
+		MaxAISearchRetries:    4,
 	})
 	if err != nil {
 		t.Fatalf("update AI search budgets: %v", err)
 	}
-	if updated.MaxAISearchModelCalls != 7 || updated.MaxAISearches != 6 {
-		t.Fatalf("expected AI budgets 7/6, got %d/%d", updated.MaxAISearchModelCalls, updated.MaxAISearches)
+	if updated.MaxAISearchModelCalls != 7 || updated.MaxAISearches != 6 || updated.MaxAISearchRetries != 4 {
+		t.Fatalf("expected AI budgets 7/6/4, got %d/%d/%d", updated.MaxAISearchModelCalls, updated.MaxAISearches, updated.MaxAISearchRetries)
 	}
 
 	reloaded, err := GetSystemSettingDetailWithDB(db)
 	if err != nil {
 		t.Fatalf("reload AI search budgets: %v", err)
 	}
-	if reloaded.MaxAISearchModelCalls != 7 || reloaded.MaxAISearches != 6 {
-		t.Fatalf("expected reloaded AI budgets 7/6, got %d/%d", reloaded.MaxAISearchModelCalls, reloaded.MaxAISearches)
+	if reloaded.MaxAISearchModelCalls != 7 || reloaded.MaxAISearches != 6 || reloaded.MaxAISearchRetries != 4 {
+		t.Fatalf("expected reloaded AI budgets 7/6/4, got %d/%d/%d", reloaded.MaxAISearchModelCalls, reloaded.MaxAISearches, reloaded.MaxAISearchRetries)
 	}
 	for key, want := range map[string]string{
 		MaxAISearchModelCallsSettingKey: "7",
 		MaxAISearchesSettingKey:         "6",
+		MaxAISearchRetriesSettingKey:    "4",
 	} {
 		setting, exists, loadErr := getSystemSettingByKey(db, key)
 		if loadErr != nil || !exists || setting.Value != want {

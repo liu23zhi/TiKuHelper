@@ -239,6 +239,7 @@ var searchAIAnswer = func(resolved resolvedSearchRequestContext, req model.Searc
 		TopP:                  resolved.AIConfig.TopP,
 		MaxAISearchModelCalls: resolved.AIConfig.MaxAISearchModelCalls,
 		MaxAISearches:         resolved.AIConfig.MaxAISearches,
+		MaxAISearchRetries:    resolved.AIConfig.MaxAISearchRetries,
 		SearchTool:            service.BuildUAPISearchToolWithDB(manager.GetManager().GetDB()),
 		RequestID:             resolved.RequestID,
 	}

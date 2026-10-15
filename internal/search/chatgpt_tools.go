@@ -174,22 +174,42 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 		if err != nil {
 			return nil, debug, errors.ErrParserJSON
 		}
-		in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "模型调用开始", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, RequestBody: string(encoded)})
-		result, status, callErr := in.requestAIToolRound(ctx, endpoint, encoded)
-		in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "模型响应", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, Status: fmt.Sprintf("%d", status), DurationMs: time.Since(roundStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, ReasoningChars: result.ReasoningChars, ContentPreview: result.Content, FullResponse: result.Content, RawResponse: result.Raw, Error: errorString(callErr)})
-		requestBodies = append(requestBodies, string(encoded))
-		rawResponses = append(rawResponses, result.Raw)
-		addAISearchUsage(&debug.Usage, result.Usage)
+		var result aiToolStreamResult
+		var status int
+		var callErr error
+		attempts := in.aiSearchRetryAttempts()
+		for retry := 0; retry < attempts; retry++ {
+			if retry > 0 && !sleepAISearchRetryBackoff(retry, time.Since(roundStartedAt)) {
+				break
+			}
+			in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "模型调用开始", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, RequestBody: string(encoded), Error: fmt.Sprintf("attempt=%d/%d", retry+1, attempts)})
+			attemptStartedAt := time.Now()
+			result, status, callErr = in.requestAIToolRound(ctx, endpoint, encoded)
+			in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "模型响应", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, Status: fmt.Sprintf("%d", status), DurationMs: time.Since(attemptStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, ReasoningChars: result.ReasoningChars, ContentPreview: result.Content, FullResponse: result.Content, RawResponse: result.Raw, Error: errorString(callErr)})
+			requestBodies = append(requestBodies, string(encoded))
+			rawResponses = append(rawResponses, result.Raw)
+			addAISearchUsage(&debug.Usage, result.Usage)
+			if callErr == nil {
+				break
+			}
+			// A missing completion route is endpoint discovery, not a transient
+			// model failure. Switch to the compatibility endpoint immediately so
+			// one logical round does not spend all retry opportunities on 404s.
+			if status == http.StatusNotFound && len(endpoints) > 1 && endpoint == endpoints[0] {
+				break
+			}
+		}
 		debug.Endpoint = endpoint
 		debug.RequestBody = strings.Join(requestBodies, "\n\n")
 		debug.RawResponse = strings.Join(rawResponses, "\n\n")
 		if callErr != nil {
-			// Endpoint discovery consumes a call too; rebuild the next request with its new budget.
+			// Endpoint discovery consumes a logical round too; switch only after
+			// this round's configured attempts are exhausted.
 			if !hasModelResponse && status == http.StatusNotFound && len(endpoints) > 1 && endpoint == endpoints[0] && round+1 < maxModelCalls {
 				endpoint = endpoints[1]
 				continue
 			}
-			return nil, debug, fmt.Errorf("AI联网搜题第%d轮失败: %w", round+1, callErr)
+			return nil, debug, errors.ErrTargetServerError
 		}
 		if len(result.Calls) == 0 {
 			if !hasModelResponse && !finalRound {

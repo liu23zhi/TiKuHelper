@@ -45,6 +45,7 @@ const SMSBaoRegionModeSettingKey = "smsbao_region_mode"
 const MaxLogSizeBytesSettingKey = "max_log_size_bytes"
 const MaxAISearchModelCallsSettingKey = "max_ai_search_model_calls"
 const MaxAISearchesSettingKey = "max_ai_searches"
+const MaxAISearchRetriesSettingKey = "max_ai_search_retries"
 const AISearchPricePerCallSettingKey = "ai_search_price_per_call"
 
 // UAPIAPIKeySettingKey 是 UApiPro（uapis.cn）的 API 密钥。
@@ -70,9 +71,11 @@ const DefaultWechatLoginMode = "scan"
 const DefaultMaxLogSizeBytes int64 = 5 * 1024 * 1024 * 1024
 const DefaultMaxAISearchModelCalls = 4
 const DefaultMaxAISearches = 3
+const DefaultMaxAISearchRetries = 3
 const DefaultAISearchPricePerCall = float64(0)
 const MaxAllowedAISearchModelCalls = 20
 const MaxAllowedAISearches = 20
+const MaxAllowedAISearchRetries = 10
 
 const paymentMethodWXPay = "wxpay"
 const wechatLoginModeScan = "scan"
@@ -114,6 +117,7 @@ type SystemSettingDetail struct {
 	MaxLogSizeBytes       int64  `json:"maxLogSizeBytes"`
 	MaxAISearchModelCalls int    `json:"maxAISearchModelCalls"`
 	MaxAISearches         int    `json:"maxAISearches"`
+	MaxAISearchRetries    int    `json:"maxAISearchRetries"`
 }
 
 type UpdateSystemSettingInput struct {
@@ -152,6 +156,7 @@ type UpdateSystemSettingInput struct {
 	MaxLogSizeBytes       int64  `json:"maxLogSizeBytes"`
 	MaxAISearchModelCalls int    `json:"maxAISearchModelCalls"`
 	MaxAISearches         int    `json:"maxAISearches"`
+	MaxAISearchRetries    int    `json:"maxAISearchRetries"`
 }
 
 var ErrInvalidNewUserBonusAmount = errors.New("新用户赠送金额不能为负数")
@@ -298,6 +303,7 @@ func GetSystemSettingDetailWithDB(db *gorm.DB) (SystemSettingDetail, error) {
 		MaxLogSizeBytes:           getPositiveInt64SystemSetting(db, MaxLogSizeBytesSettingKey, DefaultMaxLogSizeBytes),
 		MaxAISearchModelCalls:     getPositiveBoundedIntSystemSetting(db, MaxAISearchModelCallsSettingKey, DefaultMaxAISearchModelCalls, MaxAllowedAISearchModelCalls),
 		MaxAISearches:             getPositiveBoundedIntSystemSetting(db, MaxAISearchesSettingKey, DefaultMaxAISearches, MaxAllowedAISearches),
+		MaxAISearchRetries:        getPositiveBoundedIntSystemSetting(db, MaxAISearchRetriesSettingKey, DefaultMaxAISearchRetries, MaxAllowedAISearchRetries),
 	}
 	bonusAmount, err := GetNewUserBonusAmountWithDB(db)
 	if err != nil {
@@ -360,6 +366,7 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		MaxLogSizeBytes:       resolveMaxLogSizeBytes(db, input.MaxLogSizeBytes),
 		MaxAISearchModelCalls: resolveMaxAISearchBudget(db, input.MaxAISearchModelCalls, MaxAISearchModelCallsSettingKey, DefaultMaxAISearchModelCalls, MaxAllowedAISearchModelCalls),
 		MaxAISearches:         resolveMaxAISearchBudget(db, input.MaxAISearches, MaxAISearchesSettingKey, DefaultMaxAISearches, MaxAllowedAISearches),
+		MaxAISearchRetries:    resolveMaxAISearchBudget(db, input.MaxAISearchRetries, MaxAISearchRetriesSettingKey, DefaultMaxAISearchRetries, MaxAllowedAISearchRetries),
 	}
 	normalized.AlternativeLoginEnabled = normalized.SMSLoginEnabled || normalized.WechatLoginEnabled
 
@@ -401,6 +408,7 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		{MaxLogSizeBytesSettingKey, strconv.FormatInt(normalized.MaxLogSizeBytes, 10), "日志文件总大小上限（字节）"},
 		{MaxAISearchModelCallsSettingKey, strconv.Itoa(normalized.MaxAISearchModelCalls), "AI 搜索模型最大调用次数"},
 		{MaxAISearchesSettingKey, strconv.Itoa(normalized.MaxAISearches), "AI 搜索最大搜索次数"},
+		{MaxAISearchRetriesSettingKey, strconv.Itoa(normalized.MaxAISearchRetries), "AI 搜索每轮失败重试次数（含首次调用）"},
 	}
 	for _, item := range settings {
 		if err := saveSystemSettingValue(db, item.key, item.value, item.remark); err != nil {
@@ -439,6 +447,23 @@ func resolveMaxAISearchBudget(db *gorm.DB, requested int, key string, defaultVal
 func GetAISearchBudgetsWithDB(db *gorm.DB) (modelCalls int, searches int) {
 	return getPositiveBoundedIntSystemSetting(db, MaxAISearchModelCallsSettingKey, DefaultMaxAISearchModelCalls, MaxAllowedAISearchModelCalls),
 		getPositiveBoundedIntSystemSetting(db, MaxAISearchesSettingKey, DefaultMaxAISearches, MaxAllowedAISearches)
+}
+
+// GetAISearchRetriesWithDB returns the total number of attempts allowed for
+// each AI model round. The first request is included in this count.
+func GetAISearchRetriesWithDB(db *gorm.DB) int {
+	return getPositiveBoundedIntSystemSetting(db, MaxAISearchRetriesSettingKey, DefaultMaxAISearchRetries, MaxAllowedAISearchRetries)
+}
+
+// SetAISearchRetriesWithDB updates the total per-round attempt count. A value
+// of zero is treated as omitted by callers and therefore keeps the current
+// setting; invalid persisted values fall back to the default on read.
+func SetAISearchRetriesWithDB(db *gorm.DB, requested int) error {
+	retries := GetAISearchRetriesWithDB(db)
+	if requested > 0 {
+		retries = normalizeAISearchBudget(requested, DefaultMaxAISearchRetries, MaxAllowedAISearchRetries)
+	}
+	return saveSystemSettingValue(db, MaxAISearchRetriesSettingKey, strconv.Itoa(retries), "AI 搜索每轮失败重试次数（含首次调用）")
 }
 
 // SetAISearchBudgetsWithDB updates only the AI search budget rows. It is used

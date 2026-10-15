@@ -45,6 +45,7 @@ var runAISearchDebug = func(input aiSearchTestInput) ([][]string, internalsearch
 		TopP:                  0,
 		MaxAISearchModelCalls: resolved.Config.MaxAISearchModelCalls,
 		MaxAISearches:         resolved.Config.MaxAISearches,
+		MaxAISearchRetries:    resolved.Config.MaxAISearchRetries,
 		SearchTool:            service.BuildUAPISearchToolWithDB(manager.GetManager().GetDB()),
 	}
 	if strings.TrimSpace(client.Prompt) == "" {

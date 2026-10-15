@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -196,6 +197,24 @@ func TestAIEmptySuccessfulResponseRemainsNoAnswer(t *testing.T) {
 	_, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "question"})
 	if !errors.Is(err, pkgerrors.ErrTargetNoAnswer) {
 		t.Fatalf("valid empty response should remain no-answer, got %v", err)
+	}
+}
+
+func TestAINormalSearchRetriesWithinOneModelRound(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			http.Error(w, "temporary upstream failure", http.StatusBadGateway)
+			return
+		}
+		writeOpenAIStyleStream(w, `{"answers":["4"]}`)
+	}))
+	defer server.Close()
+	client := &ChatGptClient{Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test", MaxAISearchModelCalls: 1, MaxAISearchRetries: 2}
+	answer, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?"})
+	if err != nil || calls != 2 || !reflect.DeepEqual(answer, [][]string{{"4"}}) {
+		t.Fatalf("normal search should retry within one round: answer=%v calls=%d err=%v", answer, calls, err)
 	}
 }
 

@@ -43,6 +43,9 @@ type ChatGptClient struct {
 	RequestID             string
 	MaxAISearchModelCalls int
 	MaxAISearches         int
+	// MaxAISearchRetries is the total number of attempts allowed for each
+	// model round, including the initial request. Zero uses the default.
+	MaxAISearchRetries int
 }
 
 type AISearchUsage struct {
@@ -79,6 +82,8 @@ type AISearchDebugResult struct {
 // structured audit payload to keep database records bounded.
 type AISearchTrace struct {
 	Round               int    `json:"round"`
+	Attempt             int    `json:"attempt,omitempty"`
+	AttemptBudget       int    `json:"attemptBudget,omitempty"`
 	Stage               string `json:"stage"`
 	Model               string `json:"model"`
 	Endpoint            string `json:"endpoint"`
@@ -129,7 +134,7 @@ func (in *ChatGptClient) appendAISearchTrace(usage *AISearchUsage, trace AISearc
 func (in *ChatGptClient) logAISearchTrace(trace AISearchTrace) {
 	structuredTrace := in.prepareAISearchTrace(trace)
 	requestID := strings.TrimSpace(in.RequestID)
-	logger.AIThinkingWithSecrets(fmt.Sprintf("AI搜索轨迹 requestId=%s round=%d stage=%s model=%s endpoint=%s searchAPI=%s query=%s status=%s durationMs=%d modelCalls=%d/%d remainingModelCalls=%d searches=%d/%d remainingSearches=%d results=%d cacheHit=%t sources=%s resultSummary=%s reasoningChars=%d contentPreview=%s error=%s", requestID, structuredTrace.Round, structuredTrace.Stage, strings.TrimSpace(structuredTrace.Model), structuredTrace.Endpoint, structuredTrace.SearchAPI, structuredTrace.Query, structuredTrace.Status, structuredTrace.DurationMs, structuredTrace.ModelCallCount, structuredTrace.ModelCallBudget, structuredTrace.RemainingModelCalls, structuredTrace.SearchCount, structuredTrace.SearchBudget, structuredTrace.RemainingSearches, structuredTrace.ResultCount, structuredTrace.CacheHit, structuredTrace.SourceDetails, structuredTrace.ResultSummary, structuredTrace.ReasoningChars, structuredTrace.ContentPreview, structuredTrace.Error), in.APIKey)
+	logger.AIThinkingWithSecrets(fmt.Sprintf("AI搜索轨迹 requestId=%s round=%d attempt=%d/%d stage=%s model=%s endpoint=%s searchAPI=%s query=%s status=%s durationMs=%d modelCalls=%d/%d remainingModelCalls=%d searches=%d/%d remainingSearches=%d results=%d cacheHit=%t sources=%s resultSummary=%s reasoningChars=%d contentPreview=%s error=%s", requestID, structuredTrace.Round, structuredTrace.Attempt, structuredTrace.AttemptBudget, structuredTrace.Stage, strings.TrimSpace(structuredTrace.Model), structuredTrace.Endpoint, structuredTrace.SearchAPI, structuredTrace.Query, structuredTrace.Status, structuredTrace.DurationMs, structuredTrace.ModelCallCount, structuredTrace.ModelCallBudget, structuredTrace.RemainingModelCalls, structuredTrace.SearchCount, structuredTrace.SearchBudget, structuredTrace.RemainingSearches, structuredTrace.ResultCount, structuredTrace.CacheHit, structuredTrace.SourceDetails, structuredTrace.ResultSummary, structuredTrace.ReasoningChars, structuredTrace.ContentPreview, structuredTrace.Error), in.APIKey)
 	if trace.SourceDetails != "" {
 		logger.AIThinkingWithSecrets(fmt.Sprintf("AI搜索完整来源 requestId=%s round=%d stage=%s\n%s", requestID, trace.Round, trace.Stage, trace.SourceDetails), in.APIKey)
 	}
@@ -248,6 +253,16 @@ const (
 	aiSearchRetryMaxDelay            = 5 * time.Second
 	aiSearchRetryBudget              = 2 * time.Minute
 )
+
+func (in *ChatGptClient) aiSearchRetryAttempts() int {
+	if in.MaxAISearchRetries <= 0 {
+		return aiSearchRetryMaxAttempts
+	}
+	if in.MaxAISearchRetries > 10 {
+		return 10
+	}
+	return in.MaxAISearchRetries
+}
 
 var aiSearchRequestSemaphore = newAISearchSemaphore(aiSearchMaxConcurrentRequests)
 
@@ -881,14 +896,23 @@ func (in *ChatGptClient) requestStreamAnswerDetailed(endpoint string, systemProm
 		in.logAISearchTrace(trace)
 	}
 
-	for attempt := 0; attempt < aiSearchRetryMaxAttempts && *modelCalls < maxModelCalls; attempt++ {
+	// A retry is another chance for the same logical model round. It must not
+	// consume the configured model-round budget, otherwise maxModelCalls=1
+	// would silently disable the retry setting.
+	for attempt := 0; attempt < in.aiSearchRetryAttempts(); attempt++ {
 		if attempt > 0 {
 			if !sleepAISearchRetryBackoff(attempt, time.Since(requestStartedAt)) {
 				break
 			}
 		}
 
-		remainingCalls := maxModelCalls - *modelCalls - 1
+		if attempt == 0 {
+			if *modelCalls >= maxModelCalls {
+				break
+			}
+			*modelCalls++
+		}
+		remainingCalls := maxModelCalls - *modelCalls
 		budgetPrompt := buildAISearchBudgetPrompt(remainingCalls, 0, remainingCalls == 0)
 		payload, err := json.Marshal(openAIChatCompletionRequest{
 			Model:       strings.TrimSpace(in.Model),
@@ -905,7 +929,6 @@ func (in *ChatGptClient) requestStreamAnswerDetailed(endpoint string, systemProm
 			return "", AISearchUsage{}, 0, "", "", errors.ErrParserJSON
 		}
 		requestBody = string(payload)
-		*modelCalls++
 		attemptStartedAt := time.Now()
 		remainingAfterCall := maxModelCalls - *modelCalls
 		recordTrace(AISearchTrace{Round: *modelCalls, Stage: "普通模型调用开始", Endpoint: endpoint, ModelCallCount: *modelCalls, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingAfterCall})

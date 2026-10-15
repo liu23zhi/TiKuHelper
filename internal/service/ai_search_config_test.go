@@ -352,20 +352,21 @@ func TestAISearchConfigPersistsAndResolvesSearchBudgets(t *testing.T) {
 		Model:                 "gpt-test",
 		MaxAISearchModelCalls: 6,
 		MaxAISearches:         5,
+		MaxAISearchRetries:    4,
 	})
 	if err != nil {
 		t.Fatalf("update AI search budgets: %v", err)
 	}
-	if view.MaxAISearchModelCalls != 6 || view.MaxAISearches != 5 {
-		t.Fatalf("expected config view budgets 6/5, got %d/%d", view.MaxAISearchModelCalls, view.MaxAISearches)
+	if view.MaxAISearchModelCalls != 6 || view.MaxAISearches != 5 || view.MaxAISearchRetries != 4 {
+		t.Fatalf("expected config view budgets 6/5/4, got %d/%d/%d", view.MaxAISearchModelCalls, view.MaxAISearches, view.MaxAISearchRetries)
 	}
 
 	resolved, err := BuildAISearchRequestConfigWithDB(db, url.Values{}, true)
 	if err != nil {
 		t.Fatalf("resolve AI search config: %v", err)
 	}
-	if resolved.Config.MaxAISearchModelCalls != 6 || resolved.Config.MaxAISearches != 5 {
-		t.Fatalf("expected request budgets 6/5, got %d/%d", resolved.Config.MaxAISearchModelCalls, resolved.Config.MaxAISearches)
+	if resolved.Config.MaxAISearchModelCalls != 6 || resolved.Config.MaxAISearches != 5 || resolved.Config.MaxAISearchRetries != 4 {
+		t.Fatalf("expected request budgets 6/5/4, got %d/%d/%d", resolved.Config.MaxAISearchModelCalls, resolved.Config.MaxAISearches, resolved.Config.MaxAISearchRetries)
 	}
 
 	legacyView, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{
@@ -377,8 +378,8 @@ func TestAISearchConfigPersistsAndResolvesSearchBudgets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update legacy AI config: %v", err)
 	}
-	if legacyView.MaxAISearchModelCalls != 6 || legacyView.MaxAISearches != 5 {
-		t.Fatalf("legacy payload must preserve budgets 6/5, got %d/%d", legacyView.MaxAISearchModelCalls, legacyView.MaxAISearches)
+	if legacyView.MaxAISearchModelCalls != 6 || legacyView.MaxAISearches != 5 || legacyView.MaxAISearchRetries != 4 {
+		t.Fatalf("legacy payload must preserve budgets 6/5/4, got %d/%d/%d", legacyView.MaxAISearchModelCalls, legacyView.MaxAISearches, legacyView.MaxAISearchRetries)
 	}
 }
 

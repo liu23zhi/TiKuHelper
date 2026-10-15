@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/itihey/tikuAdapter/internal/uapi"
+	pkgerrors "github.com/itihey/tikuAdapter/pkg/errors"
 	"github.com/itihey/tikuAdapter/pkg/model"
 )
 
@@ -319,6 +321,52 @@ func TestAISearchToolsEndpointFallbackConsumesModelBudget(t *testing.T) {
 	answer, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?", DeepThinking: true})
 	if err != nil || calls != 2 || len(tool.queries) != 0 || !reflect.DeepEqual(answer, [][]string{{"4"}}) {
 		t.Fatalf("answer=%v calls=%d searches=%v err=%v", answer, calls, tool.queries, err)
+	}
+}
+
+func TestAISearchToolsRetriesFailedRoundWithoutLeakingRoundError(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			http.Error(w, "temporary upstream failure", http.StatusBadGateway)
+			return
+		}
+		writeAIFinalStream(w)
+	}))
+	defer server.Close()
+
+	client := &ChatGptClient{
+		Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test",
+		SearchTool: &testAISearchTool{}, MaxAISearchModelCalls: 1, MaxAISearchRetries: 2,
+	}
+	answer, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?", DeepThinking: true})
+	if err != nil || calls != 2 || !reflect.DeepEqual(answer, [][]string{{"4"}}) {
+		t.Fatalf("retry should recover one failed round: answer=%v calls=%d err=%v", answer, calls, err)
+	}
+}
+
+func TestAISearchToolsExhaustedRoundReturnsGenericServerError(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, "temporary upstream failure", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	client := &ChatGptClient{
+		Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test",
+		SearchTool: &testAISearchTool{}, MaxAISearchModelCalls: 1, MaxAISearchRetries: 2,
+	}
+	_, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?", DeepThinking: true})
+	if !errors.Is(err, pkgerrors.ErrTargetServerError) {
+		t.Fatalf("expected generic upstream error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "AI联网搜题第") {
+		t.Fatalf("round detail must not be returned to caller: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected configured total attempts 2, got %d", calls)
 	}
 }
 

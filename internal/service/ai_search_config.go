@@ -44,6 +44,7 @@ type AISearchConfigView struct {
 	TopP                  float64  `json:"topP"`
 	MaxAISearchModelCalls int      `json:"maxAISearchModelCalls"`
 	MaxAISearches         int      `json:"maxAISearches"`
+	MaxAISearchRetries    int      `json:"maxAISearchRetries"`
 	SearchPricePerCall    float64  `json:"searchPricePerCall"`
 }
 
@@ -59,6 +60,7 @@ type UpdateAISearchConfigInput struct {
 	TopP                  float64  `json:"topP"`
 	MaxAISearchModelCalls int      `json:"maxAISearchModelCalls"`
 	MaxAISearches         int      `json:"maxAISearches"`
+	MaxAISearchRetries    int      `json:"maxAISearchRetries"`
 	SearchPricePerCall    *float64 `json:"searchPricePerCall,omitempty"`
 }
 
@@ -71,6 +73,7 @@ type AISearchRequestConfig struct {
 	TopP                  float64
 	MaxAISearchModelCalls int
 	MaxAISearches         int
+	MaxAISearchRetries    int
 	SearchPricePerCall    float64
 }
 
@@ -176,6 +179,7 @@ func GetAISearchConfigWithDB(db *gorm.DB) (AISearchConfigView, error) {
 			TopP:                  0,
 			MaxAISearchModelCalls: maxModelCalls,
 			MaxAISearches:         maxSearches,
+			MaxAISearchRetries:    GetAISearchRetriesWithDB(db),
 			SearchPricePerCall:    GetAISearchPricePerCallWithDB(db),
 		}, nil
 	}
@@ -226,6 +230,11 @@ func UpdateAISearchConfigWithDB(db *gorm.DB, input UpdateAISearchConfigInput) (A
 			return AISearchConfigView{}, err
 		}
 	}
+	if input.MaxAISearchRetries > 0 {
+		if err := SetAISearchRetriesWithDB(db, input.MaxAISearchRetries); err != nil {
+			return AISearchConfigView{}, err
+		}
+	}
 
 	return buildAISearchConfigView(db, config)
 }
@@ -239,6 +248,7 @@ func BuildAISearchRequestConfigWithDB(db *gorm.DB, query url.Values, allowDefaul
 			TopP:                  0,
 			MaxAISearchModelCalls: maxModelCalls,
 			MaxAISearches:         maxSearches,
+			MaxAISearchRetries:    GetAISearchRetriesWithDB(db),
 			SearchPricePerCall:    GetAISearchPricePerCallWithDB(db),
 		},
 	}
@@ -352,6 +362,7 @@ func buildAISearchConfigView(db *gorm.DB, config entity.AISearchConfig) (AISearc
 		TopP:                  0,
 		MaxAISearchModelCalls: maxModelCalls,
 		MaxAISearches:         maxSearches,
+		MaxAISearchRetries:    GetAISearchRetriesWithDB(db),
 		SearchPricePerCall:    GetAISearchPricePerCallWithDB(db),
 	}, nil
 }
