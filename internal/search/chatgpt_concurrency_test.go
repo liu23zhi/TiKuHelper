@@ -120,8 +120,8 @@ func TestSearchAnswerWithUsageStopsRetryingAfterMaxAttemptsPerEndpoint(t *testin
 		t.Fatal("expected persistent 502 to fail")
 	}
 
-	// 候选端点与重试共用一次搜题的模型调用预算。
-	expectedAttempts := int32(aiToolMaxRounds)
+	// 每个候选端点都是一个逻辑模型轮次，重试机会不消耗轮次预算。
+	expectedAttempts := int32(aiSearchRetryMaxAttempts * 2)
 	if got := atomic.LoadInt32(&attempts); got != expectedAttempts {
 		t.Fatalf("expected %d attempts, got %d", expectedAttempts, got)
 	}
@@ -135,7 +135,7 @@ func TestOrdinaryAISearchHonorsModelBudgetAcrossRetriesAndEndpoints(t *testing.T
 			status  int
 			wantErr bool
 		}{
-			{"no retry after last call", 1, http.StatusBadGateway, true},
+			{"retry recovers within one model round", 1, http.StatusBadGateway, false},
 			{"no fallback after last call", 1, http.StatusNotFound, true},
 			{"retry receives remaining budget", 2, http.StatusTooManyRequests, false},
 		} {
@@ -155,11 +155,12 @@ func TestOrdinaryAISearchHonorsModelBudgetAcrossRetriesAndEndpoints(t *testing.T
 						t.Errorf("decode prompt: %v", err)
 						return
 					}
-					remaining := fmt.Sprintf("还剩模型调用 %d 次", tc.budget-calls)
+					logicalCall := 1 // retries stay within the first logical model round
+					remaining := fmt.Sprintf("还剩模型调用 %d 次", tc.budget-logicalCall)
 					if !strings.Contains(prompt, remaining) || !strings.Contains(prompt, "web_search 搜索还剩 0 次") {
 						t.Errorf("missing current budget %q: %s", remaining, prompt)
 					}
-					if calls == tc.budget && !strings.Contains(prompt, "最后一次模型调用") {
+					if logicalCall == tc.budget && !strings.Contains(prompt, "最后一次模型调用") {
 						t.Errorf("missing final answer requirement: %s", prompt)
 					}
 					if calls == 1 {
@@ -176,8 +177,12 @@ func TestOrdinaryAISearchHonorsModelBudgetAcrossRetriesAndEndpoints(t *testing.T
 				} else {
 					_, _, err = client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?"})
 				}
-				if (err != nil) != tc.wantErr || calls != tc.budget {
-					t.Fatalf("calls=%d want=%d err=%v wantErr=%t", calls, tc.budget, err, tc.wantErr)
+				wantCalls := 2
+				if tc.status == http.StatusNotFound {
+					wantCalls = 1
+				}
+				if (err != nil) != tc.wantErr || calls != wantCalls {
+					t.Fatalf("calls=%d want=%d err=%v wantErr=%t", calls, wantCalls, err, tc.wantErr)
 				}
 			})
 		}

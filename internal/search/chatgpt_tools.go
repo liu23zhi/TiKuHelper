@@ -182,10 +182,10 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 			if retry > 0 && !sleepAISearchRetryBackoff(retry, time.Since(roundStartedAt)) {
 				break
 			}
-			in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "模型调用开始", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, RequestBody: string(encoded), Error: fmt.Sprintf("attempt=%d/%d", retry+1, attempts)})
+			in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Attempt: retry + 1, AttemptBudget: attempts, Stage: "模型调用开始", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, RequestBody: string(encoded)})
 			attemptStartedAt := time.Now()
 			result, status, callErr = in.requestAIToolRound(ctx, endpoint, encoded)
-			in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "模型响应", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, Status: fmt.Sprintf("%d", status), DurationMs: time.Since(attemptStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, ReasoningChars: result.ReasoningChars, ContentPreview: result.Content, FullResponse: result.Content, RawResponse: result.Raw, Error: errorString(callErr)})
+			in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Attempt: retry + 1, AttemptBudget: attempts, Stage: "模型响应", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, Status: fmt.Sprintf("%d", status), DurationMs: time.Since(attemptStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, ReasoningChars: result.ReasoningChars, ContentPreview: result.Content, FullResponse: result.Content, RawResponse: result.Raw, Error: errorString(callErr)})
 			requestBodies = append(requestBodies, string(encoded))
 			rawResponses = append(rawResponses, result.Raw)
 			addAISearchUsage(&debug.Usage, result.Usage)
@@ -196,6 +196,12 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 			// model failure. Switch to the compatibility endpoint immediately so
 			// one logical round does not spend all retry opportunities on 404s.
 			if status == http.StatusNotFound && len(endpoints) > 1 && endpoint == endpoints[0] {
+				break
+			}
+			// Authentication and malformed-request responses cannot be fixed by
+			// repeating the same payload. Network failures, transient HTTP errors,
+			// and interrupted 2xx streams remain eligible for this round's retry.
+			if status != 0 && (status < http.StatusOK || status >= http.StatusMultipleChoices) && !isAISearchRetryableStatus(status) {
 				break
 			}
 		}
