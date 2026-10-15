@@ -13,8 +13,10 @@ async function createPage(overrides = {}) {
     watch: () => {},
     useRoute: () => ({ meta: { locationKind: 'ip' } }),
     message: { success() {} },
+    Swal: { fire: async () => ({ isConfirmed: true }) },
     ReloadOutlined: {},
     deleteLocationCache: async () => ({ status: 200 }),
+    deleteLocationCacheBatch: async () => ({ status: 200, data: { deleted: 0 } }),
     getLocationCacheList: async () => ({ status: 200, data: { data: [], configured: true } }),
     refreshLocationCache: async () => ({ status: 200, data: { configured: true } }),
     ...overrides,
@@ -101,4 +103,130 @@ test('legacy IP rows remain deletable with their stored source', async () => {
   })
   await page.remove({ kind: 'ip', lookupKey: '8.8.8.8', source: 'legacy' })
   assert.deepEqual(deleted, { kind: 'ip', lookupKey: '8.8.8.8', source: 'legacy' })
+})
+
+test('location cache reload sends the active filter and server page', async () => {
+  const calls = []
+  const page = await createPage({
+    getLocationCacheList: async (params) => {
+      calls.push(params)
+      return {
+        status: 200,
+        data: {
+          data: [],
+          total: 42,
+          page: 2,
+          pageSize: 50,
+          configured: true,
+          summary: { total: 42, withAddress: 40, withoutAddress: 2 },
+        },
+      }
+    },
+  })
+  page.keywordInput.value = '  上海  '
+  page.pagination.current = 2
+  page.pagination.pageSize = 50
+  page.reload()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.deepEqual(calls, [{ kind: 'ip', keyword: '上海', page: 1, pageSize: 50 }])
+  assert.deepEqual(page.summary.value, { total: 42, withAddress: 40, withoutAddress: 2 })
+})
+
+test('location cache selection supports current page, all pages, and page exceptions', async () => {
+  const page = await createPage()
+  page.rows.value = [
+    { kind: 'ip', lookupKey: '10.0.0.1', source: '' },
+    { kind: 'ip', lookupKey: '10.0.0.2', source: '' },
+  ]
+  page.pagination.total = 5
+
+  page.handleSelectCurrentPage()
+  assert.deepEqual(page.selectedRowKeys.value, ['ip:10.0.0.1:default', 'ip:10.0.0.2:default'])
+  assert.equal(page.selectedCount.value, 2)
+
+  page.handleSelectAll()
+  assert.equal(page.allRowsSelected.value, true)
+  assert.equal(page.selectedCount.value, 5)
+
+  page.handleClearCurrentPage()
+  assert.deepEqual(page.selectedRowKeys.value, [])
+  assert.equal(page.selectedCount.value, 3)
+
+  page.handleSelectCurrentPage()
+  assert.deepEqual(page.selectedRowKeys.value, ['ip:10.0.0.1:default', 'ip:10.0.0.2:default'])
+  assert.equal(page.selectedCount.value, 5)
+
+  page.handleClearSelection()
+  assert.equal(page.allRowsSelected.value, false)
+  assert.equal(page.selectedCount.value, 0)
+})
+
+test('location cache template exposes bulk selection actions and summary', async () => {
+  const page = await readFile(new URL('../pages/LocationCache/index.vue', import.meta.url), 'utf8')
+  assert.match(page, /row-selection/)
+  assert.match(page, /全选本页/)
+  assert.match(page, /全选全部/)
+  assert.match(page, /取消本页全选/)
+  assert.match(page, /取消全部全选/)
+  assert.match(page, /withAddress/)
+  assert.match(page, /withoutAddress/)
+})
+
+test('location cache deletes explicit cross-page selections through the batch API', async () => {
+  let payload
+  const page = await createPage({
+    deleteLocationCacheBatch: async (input) => {
+      payload = input
+      return { status: 200, data: { deleted: 2 } }
+    },
+  })
+  page.rows.value = [
+    { kind: 'ip', lookupKey: '2001:db8::1', source: '' },
+    { kind: 'ip', lookupKey: '8.8.8.8', source: 'commercial' },
+  ]
+  page.pagination.total = 2
+  page.handleSelectCurrentPage()
+  await page.deleteSelected()
+  assert.deepEqual(payload, {
+    kind: 'ip',
+    keyword: '',
+    source: '',
+    items: [
+      { lookupKey: '2001:db8::1', source: '' },
+      { lookupKey: '8.8.8.8', source: 'commercial' },
+    ],
+    all: false,
+    except: [],
+  })
+  assert.equal(page.selectedCount.value, 0)
+})
+
+test('location cache sends filter scope and exceptions when deleting all pages', async () => {
+  let payload
+  const page = await createPage({
+    deleteLocationCacheBatch: async (input) => {
+      payload = input
+      return { status: 200, data: { deleted: 3 } }
+    },
+  })
+  page.rows.value = [
+    { kind: 'ip', lookupKey: '10.0.0.1', source: '' },
+    { kind: 'ip', lookupKey: '10.0.0.2', source: '' },
+  ]
+  page.pagination.total = 5
+  page.handleSelectAll()
+  page.handleClearCurrentPage()
+  await page.deleteSelected()
+  assert.deepEqual(payload, {
+    kind: 'ip',
+    keyword: '',
+    source: '',
+    items: [],
+    all: true,
+    except: [
+      { lookupKey: '10.0.0.1', source: '' },
+      { lookupKey: '10.0.0.2', source: '' },
+    ],
+  })
+  assert.equal(page.selectedCount.value, 0)
 })

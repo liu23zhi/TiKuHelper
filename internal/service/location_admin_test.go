@@ -71,16 +71,19 @@ func TestListAndDeleteLocationCacheWithDB(t *testing.T) {
 	db := newLocationTestDB(t)
 	seedLocationRowForTest(t, db, entity.LocationKindIP, "8.8.8.8", "美国", `{}`)
 	seedLocationRowForTest(t, db, entity.LocationKindPhone, "13800138000", "云南玉溪 移动", `{}`)
+	if err := db.Create(&entity.LocationCache{Kind: entity.LocationKindIP, LookupKey: "1.1.1.1", Address: ""}).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	result, err := ListLocationCacheWithDB(db, LocationCacheListQuery{Kind: entity.LocationKindIP, Keyword: "美国"}, 1, 20)
-	if err != nil || result.Total != 1 || len(result.Data) != 1 || result.Data[0].LookupKey != "8.8.8.8" {
+	if err != nil || result.Total != 1 || len(result.Data) != 1 || result.Data[0].LookupKey != "8.8.8.8" || result.Summary.Total != 1 || result.Summary.WithAddress != 1 || result.Summary.WithoutAddress != 0 {
 		t.Fatalf("unexpected filtered cache result: %+v err=%v", result, err)
 	}
 	if err := DeleteLocationCacheWithDB(db, entity.LocationKindIP, " 8.8.8.8 "); err != nil {
 		t.Fatal(err)
 	}
 	var count int64
-	if err := db.Model(&entity.LocationCache{}).Where("kind = ?", entity.LocationKindIP).Count(&count).Error; err != nil {
+	if err := db.Model(&entity.LocationCache{}).Where("kind = ? AND lookup_key = ?", entity.LocationKindIP, "8.8.8.8").Count(&count).Error; err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {
@@ -157,5 +160,35 @@ func TestLegacyLocationCacheCanBeReviewedAndDeletedButNotRefreshed(t *testing.T)
 	var rows []entity.LocationCache
 	if err := db.Find(&rows).Error; err != nil || len(rows) != 1 || rows[0].Source != "" {
 		t.Fatalf("deleting legacy should preserve identified sources: %+v err=%v", rows, err)
+	}
+}
+
+func TestDeleteLocationCacheBatchSupportsExplicitAndFilteredAllSelection(t *testing.T) {
+	db := newLocationTestDB(t)
+	seedLocationRowForTest(t, db, entity.LocationKindIP, "8.8.8.8", "美国", `{}`)
+	seedLocationRowForTest(t, db, entity.LocationKindIP, "1.1.1.1", "澳大利亚", `{}`)
+	seedLocationRowForTest(t, db, entity.LocationKindIP, "9.9.9.9", "美国", `{}`)
+
+	deleted, err := DeleteLocationCacheBatchWithDB(db, LocationCacheBatchDeleteRequest{
+		Kind:  entity.LocationKindIP,
+		Items: []LocationCacheDeleteItem{{LookupKey: "8.8.8.8"}},
+	})
+	if err != nil || deleted != 1 {
+		t.Fatalf("expected one explicit row to be deleted, got deleted=%d err=%v", deleted, err)
+	}
+
+	deleted, err = DeleteLocationCacheBatchWithDB(db, LocationCacheBatchDeleteRequest{
+		Kind:    entity.LocationKindIP,
+		Keyword: "美国",
+		All:     true,
+		Except:  []LocationCacheDeleteItem{{LookupKey: "9.9.9.9"}},
+	})
+	if err != nil || deleted != 0 {
+		t.Fatalf("expected the exception to preserve the only matching row, got deleted=%d err=%v", deleted, err)
+	}
+
+	deleted, err = DeleteLocationCacheBatchWithDB(db, LocationCacheBatchDeleteRequest{Kind: entity.LocationKindIP, All: true})
+	if err != nil || deleted != 2 {
+		t.Fatalf("expected remaining row to be deleted by filtered all selection, got deleted=%d err=%v", deleted, err)
 	}
 }

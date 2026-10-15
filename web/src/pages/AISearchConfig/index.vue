@@ -4,7 +4,7 @@
       <a-space>
         <a-button @click="handleLoad" :loading="tabLoading">刷新</a-button>
         <a-button @click="handleOpenTestDialog">测试</a-button>
-        <a-button @click="loadSearchEngineInfo" :loading="searchEngineLoading">查看联网搜索能力</a-button>
+        <a-button @click="loadSearchEngineInfo" :loading="searchEngineLoading">查看深度思考能力</a-button>
         <a-button type="primary" @click="handleSave" :loading="saving">保存</a-button>
       </a-space>
     </template>
@@ -38,15 +38,6 @@
       class="page-alert"
       message="模型列表中有模型还没有配置价格"
       :description="`以下模型缺少价格，命中时会按 0 元计费：${pricingGaps.unresolvedModels.join('、')}。请在下方「模型价格表」中补充单价。`"
-    />
-
-    <a-alert
-      v-if="searchEngineInfo"
-      type="info"
-      show-icon
-      class="page-alert"
-      :message="`联网搜索：${searchEngineInfo.engine?.display_name || searchEngineInfo.engine?.name || '未命名引擎'}`"
-      :description="`状态：${searchEngineInfo.engine?.available ? '可用' : '不可用'}；支持 ${searchEngineInfo.supported_parameters?.join('、') || '文档默认参数'}；结果上限 ${searchEngineInfo.limits?.max ?? '-'}。`"
     />
 
     <a-form :label-col="labelCol" :wrapper-col="wrapperCol">
@@ -207,28 +198,66 @@
       </a-form-item>
     </a-form>
 
-    <a-card :bordered="false" class="sub-card web-read-card">
-      <template #title>
-        <div class="sub-card-title-wrap">
-          <div>
-            <div class="sub-card-title">网页读取工具（web_read）</div>
-            <div class="sub-card-subtitle">用于深度思考模式读取指定网页并提取 Markdown 内容，密钥仍由服务端系统设置中的 UApiPro 密钥管理。</div>
-          </div>
-        </div>
-      </template>
-      <a-alert
-        type="info"
-        show-icon
-        message="调用方式"
-        :description="`开启深度思考后，模型会在需要时自动调用 web_read。当前上限为 ${formState.maxAIWebReads} 次/题；普通模式不会调用网页读取工具。`"
-      />
-      <div class="hint-block web-read-hints">
-        <div class="hint">工具参数：url（仅支持 HTTP/HTTPS，禁止内网地址）。</div>
-        <div class="hint">网页读取是异步任务，系统会按 pending、processing、completed、failed 或 timeout 状态处理结果。</div>
-        <div class="hint">只有 completed 的实际读取会按「网页读取单价」计费；默认单价为 0，不产生扣费。</div>
-        <div class="hint">若需要启用深度思考，题目请求中的 deepThinking=true 仍需由扩展端通过 Swal.fire 二次确认。</div>
-      </div>
-    </a-card>
+    <a-modal
+      v-model:visible="capabilityModalVisible"
+      title="深度思考能力"
+      :footer="null"
+      width="960px"
+    >
+      <a-spin :spinning="capabilityLoading">
+        <a-alert
+          v-if="capabilityError"
+          type="warning"
+          show-icon
+          class="page-alert"
+          :message="capabilityError"
+        />
+
+        <a-descriptions bordered size="small" :column="{ xs: 1, sm: 2, md: 3 }">
+          <a-descriptions-item label="搜索引擎">
+            <a-tag v-if="searchEngineInfo" :color="searchEngineInfo.engine?.available ? 'green' : 'red'">
+              {{ searchEngineInfo.engine?.available ? '可用' : '不可用' }}
+            </a-tag>
+            <span v-else>未获取</span>
+            <div v-if="searchEngineInfo" class="capability-detail">
+              {{ searchEngineInfo.engine?.display_name || searchEngineInfo.engine?.name || '未命名引擎' }}
+              <span v-if="searchEngineInfo.engine?.version">（v{{ searchEngineInfo.engine.version }}）</span>
+            </div>
+          </a-descriptions-item>
+          <a-descriptions-item label="联网搜索接口">
+            <a-tag :color="searchUsageRows.length ? 'green' : 'blue'">
+              {{ searchUsageRows.length ? '有调用统计' : '已接入，暂无调用记录' }}
+            </a-tag>
+          </a-descriptions-item>
+          <a-descriptions-item label="网页读取接口">
+            <a-tag :color="webReadUsageRows.length ? 'green' : 'blue'">
+              {{ webReadUsageRows.length ? '有调用统计' : '已接入，暂无调用记录' }}
+            </a-tag>
+          </a-descriptions-item>
+          <a-descriptions-item v-if="searchEngineInfo" label="搜索参数">
+            {{ searchEngineInfo.supported_parameters?.join('、') || '文档默认参数' }}
+          </a-descriptions-item>
+          <a-descriptions-item v-if="searchEngineInfo" label="结果上限">
+            {{ searchEngineInfo.limits?.max ?? '-' }}
+          </a-descriptions-item>
+          <a-descriptions-item v-if="usageInfo?.unaggregated" label="未聚合调用">
+            {{ usageInfo.unaggregated.count ?? 0 }} 次
+          </a-descriptions-item>
+        </a-descriptions>
+
+        <a-table
+          v-if="usageRows.length"
+          class="capability-usage-table"
+          size="small"
+          bordered
+          row-key="path"
+          :pagination="false"
+          :data-source="usageRows"
+          :columns="usageColumns"
+        />
+        <a-empty v-else-if="!capabilityLoading" description="暂无 UAPI 端点调用统计" />
+      </a-spin>
+    </a-modal>
 
     <div class="pricing-grid">
       <a-card :bordered="false" class="sub-card">
@@ -407,6 +436,7 @@ import {
   updateAISearchConfig,
   getAIModelPrices,
   getUAPISearchEngines,
+  getUAPIUsageStatus,
   createAIModelPrice,
   updateAIModelPrice,
   deleteAIModelPrice,
@@ -483,6 +513,19 @@ function normalizeAIWebReads(value, fallback = DEFAULT_MAX_AI_WEB_READS) {
   return Math.min(parsed, MAX_AI_WEB_READS)
 }
 
+function normalizeUsageRows(payload) {
+  if (Array.isArray(payload?.endpoints)) {
+    return payload.endpoints
+      .filter(item => item && typeof item === 'object')
+      .map(item => ({ path: String(item.path || ''), count: Number(item.count || 0) }))
+      .filter(item => item.path)
+  }
+  if (payload?.path) {
+    return [{ path: String(payload.path), count: Number(payload.count || 0) }]
+  }
+  return []
+}
+
 export default defineComponent({
   name: 'AISearchConfig',
   setup() {
@@ -491,6 +534,9 @@ export default defineComponent({
     const fetchingModels = ref(false)
     const searchEngineLoading = ref(false)
     const searchEngineInfo = ref(null)
+    const capabilityModalVisible = ref(false)
+    const capabilityError = ref('')
+    const usageInfo = ref(null)
     const testModalVisible = ref(false)
     const testSubmitting = ref(false)
     const testForm = reactive({
@@ -544,6 +590,14 @@ export default defineComponent({
     const modelOptions = computed(() => {
       return buildModelNameOptions(formState.manualModelsText)
     })
+
+    const usageRows = computed(() => normalizeUsageRows(usageInfo.value))
+    const searchUsageRows = computed(() => usageRows.value.filter(item => /\/search\//i.test(item.path)))
+    const webReadUsageRows = computed(() => usageRows.value.filter(item => /\/web\/tomarkdown/i.test(item.path)))
+    const usageColumns = [
+      { title: 'UAPI 端点', dataIndex: 'path', key: 'path', ellipsis: true },
+      { title: '调用次数', dataIndex: 'count', key: 'count', width: 120, align: 'right' },
+    ]
 
     // 哪些已配置的模型还没有价格：用于页面提示，避免命中后按 0 元计费却无人察觉。
     const pricingGaps = computed(() => buildAIModelPricingGaps(formState, priceRows.value))
@@ -607,15 +661,26 @@ export default defineComponent({
     }
 
     const loadSearchEngineInfo = () => {
+      capabilityModalVisible.value = true
       searchEngineLoading.value = true
-      return getUAPISearchEngines().then(res => {
-        if (res?.status === 200) {
-          searchEngineInfo.value = res?.data || null
-          return
+      capabilityError.value = ''
+      searchEngineInfo.value = null
+      usageInfo.value = null
+      return Promise.allSettled([getUAPISearchEngines(), getUAPIUsageStatus()]).then(([engineResult, usageResult]) => {
+        const errors = []
+        if (engineResult.status === 'fulfilled' && engineResult.value?.status === 200) {
+          searchEngineInfo.value = engineResult.value?.data || null
+        } else {
+          errors.push('搜索引擎状态获取失败')
         }
-        message.error(res?.message || '获取联网搜索能力失败')
+        if (usageResult.status === 'fulfilled' && usageResult.value?.status === 200) {
+          usageInfo.value = usageResult.value?.data || null
+        } else {
+          errors.push('UAPI 端点使用统计获取失败')
+        }
+        capabilityError.value = errors.length ? `${errors.join('；')}，请检查 UApiPro 密钥或服务状态` : ''
       }).catch(() => {
-        message.error('获取联网搜索能力失败，请先在系统设置中配置 UApiPro 密钥')
+        capabilityError.value = '深度思考能力获取失败，请检查 UApiPro 密钥或服务状态'
       }).finally(() => {
         searchEngineLoading.value = false
       })
@@ -648,6 +713,14 @@ export default defineComponent({
       fetchingModels,
       searchEngineLoading,
       searchEngineInfo,
+      capabilityModalVisible,
+      capabilityError,
+      capabilityLoading: searchEngineLoading,
+      usageInfo,
+      usageRows,
+      searchUsageRows,
+      webReadUsageRows,
+      usageColumns,
       testModalVisible,
       testSubmitting,
       testForm,
@@ -1060,12 +1133,14 @@ export default defineComponent({
   overflow-x: auto;
 }
 
-.web-read-card {
-  margin-top: 16px;
+.capability-detail {
+  margin-top: 6px;
+  color: #6b7280;
+  font-size: 12px;
 }
 
-.web-read-hints {
-  margin-top: 14px;
+.capability-usage-table {
+  margin-top: 16px;
 }
 
 @media (max-width: 768px) {

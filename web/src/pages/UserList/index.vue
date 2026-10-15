@@ -108,7 +108,7 @@
           <span>¥ {{ formatBalance(record.balance) }}</span>
         </template>
         <template #phone="{ record }">
-          <span>{{ formatValueWithLocation(record.phone, phoneLocations[normalizeLocationKey(record.phone)]) || '-' }}</span>
+          <span class="location-value">{{ formatValueWithLocation(record.phone, phoneLocations[normalizeLocationKey(record.phone)]) || '-' }}</span>
         </template>
         <template #wechat="{ record }">
           <a-tag :color="record.wechatId ? 'green' : 'default'">
@@ -131,10 +131,10 @@
           <span>{{ formatDateTime(record.lastLoginAt) }}</span>
         </template>
         <template #lastLoginIp="{ record }">
-          <span>{{ formatValueWithLocation(record.lastLoginIp, ipLocations[normalizeLocationKey(record.lastLoginIp)]) || '-' }}</span>
+          <span class="location-value">{{ formatValueWithLocation(record.lastLoginIp, ipLocations[normalizeLocationKey(record.lastLoginIp)]) || '-' }}</span>
         </template>
         <template #registerIp="{ record }">
-          <span>{{ formatValueWithLocation(record.registerIp, ipLocations[normalizeLocationKey(record.registerIp)]) || '-' }}</span>
+          <span class="location-value">{{ formatValueWithLocation(record.registerIp, ipLocations[normalizeLocationKey(record.registerIp)]) || '-' }}</span>
         </template>
         <template #operation="{ record }">
           <a-space size="small" wrap>
@@ -1025,6 +1025,13 @@ export default defineComponent({
 
 .page-alert {
   margin-bottom: 16px;
+}
+
+.location-value {
+  display: inline-block;
+  white-space: pre-line;
+  line-height: 1.5;
+  text-align: left;
 }
 
 .wechat-id-actions {

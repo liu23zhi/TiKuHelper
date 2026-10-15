@@ -156,6 +156,28 @@ func LocationCacheDelete(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "ok"})
 }
 
+// LocationCacheBatchDelete 管理员批量删除显式选择或当前筛选范围内的缓存。
+func LocationCacheBatchDelete(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
+	var request service.LocationCacheBatchDeleteRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "批量删除参数错误"})
+		return
+	}
+	deleted, err := service.DeleteLocationCacheBatchWithDB(resolveSearchPersistenceDB(), request)
+	if err != nil {
+		if errors.Is(err, service.ErrLocationInvalidKey) {
+			c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "批量删除归属地缓存失败"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": deleted})
+}
+
 // LocationCacheRefresh 管理员显式刷新一条归属地，失败不清空已有有效地址。
 func LocationCacheRefresh(c *gin.Context) {
 	if !requireAdmin(c) {

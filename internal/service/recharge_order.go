@@ -119,11 +119,21 @@ type RechargeOrderListItem struct {
 	UpdatedAt                 time.Time  `json:"updatedAt"`
 }
 
+// RechargeOrderListSummary 是充值记录列表的金额统计。
+//
+// TotalAmount 覆盖全部符合权限与筛选条件的订单，CurrentPageAmount 只覆盖当前页。
+// 两者使用同一套基础查询，避免分页或筛选导致顶部统计口径漂移。
+type RechargeOrderListSummary struct {
+	TotalAmount       float64 `json:"totalAmount"`
+	CurrentPageAmount float64 `json:"currentPageAmount"`
+}
+
 type RechargeOrderListResult struct {
-	Data     []RechargeOrderListItem `json:"data"`
-	Total    int64                   `json:"total"`
-	Page     int                     `json:"page"`
-	PageSize int                     `json:"pageSize"`
+	Data     []RechargeOrderListItem  `json:"data"`
+	Total    int64                    `json:"total"`
+	Page     int                      `json:"page"`
+	PageSize int                      `json:"pageSize"`
+	Summary  RechargeOrderListSummary `json:"summary"`
 }
 
 var rechargeHTTPClient = &http.Client{Timeout: 15 * time.Second}
@@ -263,6 +273,14 @@ func ListRechargeOrdersWithDB(db *gorm.DB, operator entity.User, query RechargeO
 		return RechargeOrderListResult{}, err
 	}
 
+	// 金额汇总必须复用同一套权限和筛选条件，但不能带分页。
+	var totalAmount float64
+	if err := baseQuery.Session(&gorm.Session{}).
+		Select("COALESCE(SUM(recharge_orders.amount), 0)").
+		Scan(&totalAmount).Error; err != nil {
+		return RechargeOrderListResult{}, err
+	}
+
 	var records []RechargeOrderListItem
 	offset := (page - 1) * pageSize
 	if err := baseQuery.
@@ -274,11 +292,20 @@ func ListRechargeOrdersWithDB(db *gorm.DB, operator entity.User, query RechargeO
 		return RechargeOrderListResult{}, err
 	}
 
+	currentPageAmount := 0.0
+	for _, record := range records {
+		currentPageAmount += record.Amount
+	}
+
 	return RechargeOrderListResult{
 		Data:     records,
 		Total:    total,
 		Page:     page,
 		PageSize: pageSize,
+		Summary: RechargeOrderListSummary{
+			TotalAmount:       normalizeRechargeAmount(totalAmount),
+			CurrentPageAmount: normalizeRechargeAmount(currentPageAmount),
+		},
 	}, nil
 }
 

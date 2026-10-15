@@ -124,6 +124,27 @@ func TestUAPISearchAggregateControllerReturnsSuccessfulPayload(t *testing.T) {
 	}
 }
 
+func TestUAPIStatusUsageControllerReturnsUsageStatistics(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	newUAPISearchTestDB(t, "uapi-test-key")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/status/usage" || r.URL.Query().Get("path") != "/api/v1/search/aggregate" || r.Header.Get("Authorization") != "Bearer uapi-test-key" {
+			t.Errorf("upstream request = %s %s query=%s auth=%q", r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization"))
+		}
+		_, _ = w.Write([]byte(`{"path":"/api/v1/search/aggregate","count":3}`))
+	}))
+	t.Cleanup(server.Close)
+	oldFactory := newUAPISearchClient
+	newUAPISearchClient = func(key string) *uapi.Client {
+		return uapi.NewClient(key).SetStatusUsageURL(server.URL + "/api/v1/status/usage")
+	}
+	t.Cleanup(func() { newUAPISearchClient = oldFactory })
+	recorder := performUAPISearchRequest(t, http.MethodGet, "/adapter-service/uapi/status/usage?path=/api/v1/search/aggregate", "", "admin", UAPIStatusUsage)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"count":3`) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestUAPISearchErrorResponseShape(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	newUAPISearchTestDB(t, "uapi-key")

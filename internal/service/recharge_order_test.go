@@ -169,6 +169,9 @@ func TestListRechargeOrdersWithDBScopesUsersAndIncludesUsername(t *testing.T) {
 	if memberResult.Total != 1 || len(memberResult.Data) != 1 {
 		t.Fatalf("expected member to see 1 order, got %+v", memberResult)
 	}
+	if memberResult.Summary.TotalAmount != 12.5 || memberResult.Summary.CurrentPageAmount != 12.5 {
+		t.Fatalf("expected member recharge summary to be 12.5/12.5, got %+v", memberResult.Summary)
+	}
 	if memberResult.Data[0].OrderNo != "rcg_user_pending" || memberResult.Data[0].Username != member.Username {
 		t.Fatalf("unexpected member order row: %+v", memberResult.Data[0])
 	}
@@ -180,11 +183,44 @@ func TestListRechargeOrdersWithDBScopesUsersAndIncludesUsername(t *testing.T) {
 	if adminResult.Total != 2 || len(adminResult.Data) != 2 {
 		t.Fatalf("expected admin to see 2 orders, got %+v", adminResult)
 	}
+	if adminResult.Summary.TotalAmount != 32.5 || adminResult.Summary.CurrentPageAmount != 32.5 {
+		t.Fatalf("expected admin recharge summary to be 32.5/32.5, got %+v", adminResult.Summary)
+	}
 	if adminResult.Data[0].OrderNo != "rcg_other_paid" || adminResult.Data[0].Username != other.Username {
 		t.Fatalf("expected newest other order first with username, got %+v", adminResult.Data[0])
 	}
 	if adminResult.Data[0].PaidAt == nil || adminResult.Data[0].ThirdPartyOrderNo != "trade-other" {
 		t.Fatalf("expected paid metadata in admin row, got %+v", adminResult.Data[0])
+	}
+}
+
+func TestListRechargeOrdersWithDBSummaryRespectsFiltersAndPagination(t *testing.T) {
+	db := newRechargeOrderTestDB(t)
+	member := seedRechargeOrderUser(t, db, 24, "user")
+	now := time.Date(2026, 6, 22, 10, 0, 0, 0, time.UTC)
+	orders := []entity.RechargeOrder{
+		{UserID: member.ID, OrderNo: "rcg_summary_1", PaymentProvider: DefaultPaymentProvider, PaymentMethodNameSnapshot: "支付宝", Amount: 10, Status: rechargeOrderStatusPaid, CreatedAt: now},
+		{UserID: member.ID, OrderNo: "rcg_summary_2", PaymentProvider: DefaultPaymentProvider, PaymentMethodNameSnapshot: "支付宝", Amount: 20, Status: rechargeOrderStatusPaid, CreatedAt: now.Add(time.Minute)},
+		{UserID: member.ID, OrderNo: "rcg_summary_3", PaymentProvider: DefaultPaymentProvider, PaymentMethodNameSnapshot: "微信支付", Amount: 40, Status: rechargeOrderStatusPending, CreatedAt: now.Add(2 * time.Minute)},
+	}
+	for _, order := range orders {
+		if err := db.Create(&order).Error; err != nil {
+			t.Fatalf("create recharge order: %v", err)
+		}
+	}
+
+	result, err := ListRechargeOrdersWithDB(db, member, RechargeOrderListQuery{Status: rechargeOrderStatusPaid}, 2, 1)
+	if err != nil {
+		t.Fatalf("list paginated recharge orders: %v", err)
+	}
+	if result.Total != 2 || len(result.Data) != 1 {
+		t.Fatalf("expected 2 filtered orders and 1 current-page row, got %+v", result)
+	}
+	if result.Summary.TotalAmount != 30 {
+		t.Fatalf("expected filtered total amount 30, got %v", result.Summary.TotalAmount)
+	}
+	if result.Summary.CurrentPageAmount != 10 {
+		t.Fatalf("expected current page amount 10, got %v", result.Summary.CurrentPageAmount)
 	}
 }
 

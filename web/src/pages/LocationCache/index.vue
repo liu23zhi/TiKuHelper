@@ -11,9 +11,27 @@
       </a-form>
       <a-alert v-if="configured === false" type="warning" show-icon message="未配置 UApiPro 密钥，已保存的信息仍可查看，暂时无法重新查询。" class="status-alert" />
       <a-alert v-if="errorMessage" type="error" show-icon :message="errorMessage" class="status-alert" />
+      <a-row :gutter="16" class="summary-row">
+        <a-col :xs="12" :sm="6"><a-statistic title="筛选结果" :value="summary.total" suffix="条" /></a-col>
+        <a-col :xs="12" :sm="6"><a-statistic title="已有归属地" :value="summary.withAddress" suffix="条" /></a-col>
+        <a-col :xs="12" :sm="6"><a-statistic title="待补全" :value="summary.withoutAddress" suffix="条" /></a-col>
+        <a-col :xs="12" :sm="6"><a-statistic title="当前选择" :value="selectedCount" suffix="条" /></a-col>
+      </a-row>
     </a-card>
     <a-card :bordered="false" class="table-card">
-      <a-table :data-source="rows" :columns="columns" :loading="loading" :pagination="pagination" :row-key="recordIdentity" :scroll="{ x: 980 }" @change="onTableChange">
+      <a-alert v-if="pagination.total" type="info" show-icon class="selection-alert">
+        <template #message>
+          <div class="selection-alert-content">
+            <span>{{ selectionSummary }}</span>
+            <a-button danger size="small" :loading="batchDeleting" :disabled="!selectedCount" @click="deleteSelected">删除所选</a-button>
+            <a-button type="link" size="small" :disabled="allCurrentPageSelected" @click="handleSelectCurrentPage">全选本页</a-button>
+            <a-button type="link" size="small" :disabled="!hasCurrentPageSelection" @click="handleClearCurrentPage">取消本页全选</a-button>
+            <a-button type="link" size="small" :disabled="allRowsSelected" @click="handleSelectAll">全选全部</a-button>
+            <a-button type="link" size="small" :disabled="!selectedCount" @click="handleClearSelection">取消全部全选</a-button>
+          </div>
+        </template>
+      </a-alert>
+      <a-table :data-source="rows" :columns="columns" :loading="loading" :pagination="pagination" :row-key="recordIdentity" :row-selection="rowSelection" :scroll="{ x: 980 }" @change="onTableChange">
         <template #fetchedAt="{ record }">{{ formatDate(record.fetchedAt) }}</template>
         <template #action="{ record }">
           <a-space>
@@ -44,8 +62,9 @@
 import { computed, defineComponent, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
+import Swal from 'sweetalert2'
 import { ReloadOutlined } from '@ant-design/icons-vue'
-import { deleteLocationCache, getLocationCacheList, refreshLocationCache } from '@/api/TikuComponentApi'
+import { deleteLocationCache, deleteLocationCacheBatch, getLocationCacheList, refreshLocationCache } from '@/api/TikuComponentApi'
 
 export default defineComponent({
   name: 'LocationCache',
@@ -63,6 +82,11 @@ export default defineComponent({
     const keyword = ref('')
     const refreshing = reactive({})
     const removing = reactive({})
+    const selectedKeys = ref(new Set())
+    const deselectedKeys = ref(new Set())
+    const selectAllMode = ref(false)
+    const batchDeleting = ref(false)
+    const summary = ref({ total: 0, withAddress: 0, withoutAddress: 0 })
     const recordIdentity = record => `${record.kind}:${record.lookupKey}:${record.source || 'default'}`
     const sourceLabel = source => source === 'legacy' ? '历史（来源未记录）' : source === 'commercial' ? '商业增强' : '默认'
     const isRefreshDisabled = record => configured.value === false || record.source === 'legacy'
@@ -72,6 +96,24 @@ export default defineComponent({
       current: 1, pageSize: 20, total: 0, showSizeChanger: true,
       pageSizeOptions: ['10', '20', '50', '100'], showTotal: total => `共 ${total} 条`,
     })
+    const currentPageKeys = computed(() => rows.value.map(recordIdentity))
+    const selectedRowKeys = computed(() => {
+      if (selectAllMode.value) {
+        return currentPageKeys.value.filter(key => !deselectedKeys.value.has(key))
+      }
+      return currentPageKeys.value.filter(key => selectedKeys.value.has(key))
+    })
+    const selectedCount = computed(() => selectAllMode.value
+      ? Math.max(0, pagination.total - deselectedKeys.value.size)
+      : selectedKeys.value.size)
+    const allRowsSelected = computed(() => selectAllMode.value && deselectedKeys.value.size === 0 && pagination.total > 0)
+    const allCurrentPageSelected = computed(() => currentPageKeys.value.length > 0 && selectedRowKeys.value.length === currentPageKeys.value.length)
+    const hasCurrentPageSelection = computed(() => selectedRowKeys.value.length > 0)
+    const selectionSummary = computed(() => `已选择 ${selectedCount.value} 条，共 ${pagination.total} 条`)
+    const rowSelection = computed(() => ({
+      selectedRowKeys: selectedRowKeys.value,
+      onChange: onSelectionChange,
+    }))
     const columns = computed(() => [
       { title: kindLabel.value, dataIndex: 'lookupKey', key: 'lookupKey', width: 210 },
       ...(kind.value === 'ip' ? [{ title: '查询模式', key: 'source', customRender: ({ record }) => sourceLabel(record.source), width: 160 }] : []),
@@ -94,6 +136,128 @@ export default defineComponent({
       if (typeof data?.configured === 'boolean') configured.value = data.configured
       return data?.message || error?.message || fallback
     }
+    const clearSelectionState = () => {
+      selectedKeys.value = new Set()
+      deselectedKeys.value = new Set()
+      selectAllMode.value = false
+    }
+    const handleSelectCurrentPage = () => {
+      if (!currentPageKeys.value.length) return
+      if (selectAllMode.value) {
+        const next = new Set(deselectedKeys.value)
+        currentPageKeys.value.forEach(key => next.delete(key))
+        deselectedKeys.value = next
+        return
+      }
+      const next = new Set(selectedKeys.value)
+      currentPageKeys.value.forEach(key => next.add(key))
+      selectedKeys.value = next
+    }
+    const handleClearCurrentPage = () => {
+      if (!currentPageKeys.value.length) return
+      if (selectAllMode.value) {
+        const next = new Set(deselectedKeys.value)
+        currentPageKeys.value.forEach(key => next.add(key))
+        deselectedKeys.value = next
+        return
+      }
+      const next = new Set(selectedKeys.value)
+      currentPageKeys.value.forEach(key => next.delete(key))
+      selectedKeys.value = next
+    }
+    const handleSelectAll = () => {
+      if (!pagination.total) return
+      selectedKeys.value = new Set()
+      deselectedKeys.value = new Set()
+      selectAllMode.value = true
+    }
+    const handleClearSelection = () => clearSelectionState()
+    function onSelectionChange(keys) {
+      const selected = new Set(Array.isArray(keys) ? keys : [])
+      if (selectAllMode.value) {
+        const next = new Set(deselectedKeys.value)
+        currentPageKeys.value.forEach(key => {
+          if (selected.has(key)) next.delete(key)
+          else next.add(key)
+        })
+        deselectedKeys.value = next
+        return
+      }
+      const next = new Set(selectedKeys.value)
+      currentPageKeys.value.forEach(key => {
+        if (selected.has(key)) next.add(key)
+        else next.delete(key)
+      })
+      selectedKeys.value = next
+    }
+    const selectionItemFromIdentity = (identity) => {
+      const prefix = `${kind.value}:`
+      if (!identity.startsWith(prefix)) return null
+      const body = identity.slice(prefix.length)
+      const separator = body.lastIndexOf(':')
+      if (separator <= 0) return null
+      const source = body.slice(separator + 1)
+      return { lookupKey: body.slice(0, separator), source: source === 'default' ? '' : source }
+    }
+    const buildBatchDeletePayload = () => {
+      if (selectAllMode.value) {
+        return {
+          kind: kind.value,
+          keyword: keyword.value,
+          source: '',
+          items: [],
+          all: true,
+          except: [...deselectedKeys.value].map(selectionItemFromIdentity).filter(Boolean),
+        }
+      }
+      return {
+        kind: kind.value,
+        keyword: keyword.value,
+        source: '',
+        items: [...selectedKeys.value].map(selectionItemFromIdentity).filter(Boolean),
+        all: false,
+        except: [],
+      }
+    }
+    const deleteSelected = async () => {
+      if (!selectedCount.value || batchDeleting.value) return
+      const count = selectedCount.value
+      const confirmation = await Swal.fire({
+        title: '确认删除所选归属地？',
+        text: `将删除 ${count} 条记录，删除后下次展示时会重新查询。`,
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        reverseButtons: true,
+      })
+      if (!confirmation?.isConfirmed) return
+      batchDeleting.value = true
+      errorMessage.value = ''
+      try {
+        const res = await deleteLocationCacheBatch(buildBatchDeletePayload())
+        if (res?.status !== 200) throw new Error(res?.message || '批量删除失败')
+        const deleted = Number(res?.data?.deleted)
+        clearSelectionState()
+        message.success(Number.isFinite(deleted) ? `已删除 ${deleted} 条` : '已删除')
+        await load()
+        if (rows.value.length === 0 && pagination.current > 1) {
+          pagination.current--
+          await load()
+        }
+      } catch (error) {
+        errorMessage.value = requestErrorMessage(error, '批量删除失败')
+      } finally {
+        batchDeleting.value = false
+      }
+    }
+    const updateSummary = (data) => {
+      const source = data?.summary || data?.statistics || {}
+      const total = Number(source.total ?? data?.total ?? 0) || 0
+      const withAddress = Number(source.withAddress ?? source.resolved ?? source.cached ?? rows.value.filter(row => String(row.address || '').trim()).length) || 0
+      const withoutAddress = Number(source.withoutAddress ?? source.unresolved ?? Math.max(0, total - withAddress)) || 0
+      summary.value = { total, withAddress, withoutAddress }
+    }
     let loadGeneration = 0
     const load = async () => {
       const generation = ++loadGeneration
@@ -109,13 +273,14 @@ export default defineComponent({
         pagination.current = Number(data.page || pagination.current)
         pagination.pageSize = Number(data.pageSize || pagination.pageSize)
         configured.value = typeof data.configured === 'boolean' ? data.configured : undefined
+        updateSummary(data)
       } catch (error) {
         if (generation === loadGeneration) errorMessage.value = requestErrorMessage(error, '获取归属地信息失败')
       } finally {
         if (generation === loadGeneration) loading.value = false
       }
     }
-    const reload = () => { keyword.value = keywordInput.value.trim(); pagination.current = 1; load() }
+    const reload = () => { clearSelectionState(); keyword.value = keywordInput.value.trim(); pagination.current = 1; load() }
     const resetFilters = () => { keywordInput.value = ''; reload() }
     const onTableChange = (page) => { pagination.current = page.current; pagination.pageSize = page.pageSize; load() }
     const showDetails = (record) => { detailRecord.value = record; detailVisible.value = true }
@@ -142,6 +307,15 @@ export default defineComponent({
         const res = await deleteLocationCache({ kind: record.kind, lookupKey: record.lookupKey, source: record.source || '' })
         if (res?.status !== 200) throw new Error(res?.message || '删除失败')
         if (rows.value.length === 1 && pagination.current > 1) pagination.current--
+        if (selectAllMode.value) {
+          const next = new Set(deselectedKeys.value)
+          next.delete(identity)
+          deselectedKeys.value = next
+        } else {
+          const next = new Set(selectedKeys.value)
+          next.delete(identity)
+          selectedKeys.value = next
+        }
         message.success('已删除')
         await load()
       } catch (error) {
@@ -154,10 +328,12 @@ export default defineComponent({
       keywordInput.value = ''
       keyword.value = ''
       pagination.current = 1
+      clearSelectionState()
+      summary.value = { total: 0, withAddress: 0, withoutAddress: 0 }
       detailVisible.value = false
       load()
     }, { immediate: true })
-    return { rows, loading, configured, errorMessage, keywordInput, pagination, columns, formatDate, formatRawResponse, reload, resetFilters, load, onTableChange, remove, refresh, refreshing, removing, recordIdentity, sourceLabel, isRefreshDisabled, detailVisible, detailRecord, showDetails, kindLabel, pageTitle }
+    return { rows, loading, configured, errorMessage, keywordInput, pagination, columns, formatDate, formatRawResponse, reload, resetFilters, load, onTableChange, remove, refresh, refreshing, removing, recordIdentity, sourceLabel, isRefreshDisabled, detailVisible, detailRecord, showDetails, kindLabel, pageTitle, summary, selectedCount, selectedRowKeys, allRowsSelected, allCurrentPageSelected, hasCurrentPageSelection, selectionSummary, rowSelection, handleSelectCurrentPage, handleClearCurrentPage, handleSelectAll, handleClearSelection, batchDeleting, deleteSelected }
   },
 })
 </script>
@@ -167,6 +343,9 @@ export default defineComponent({
 .filter-form { gap: 12px; }
 .keyword-input { width: 260px; max-width: 100%; }
 .status-alert { margin-top: 16px; }
+.summary-row { margin-top: 18px; }
+.selection-alert { margin-bottom: 16px; }
+.selection-alert-content { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
 .table-card { min-height: 420px; }
 .response-title { margin: 20px 0 8px; font-size: 14px; }
 .raw-response { max-height: 420px; padding: 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #f5f7f8; border: 1px solid #e5e7eb; border-radius: 4px; }

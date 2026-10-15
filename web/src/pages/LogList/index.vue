@@ -145,7 +145,7 @@
           </div>
         </template>
         <template #clientIp="{ record }">
-          <span>{{ formatValueWithLocation(record.clientIp, ipLocations[normalizeLocationKey(record.clientIp)]) || '-' }}</span>
+          <span class="location-value">{{ formatValueWithLocation(record.clientIp, ipLocations[normalizeLocationKey(record.clientIp)]) || '-' }}</span>
         </template>
         <template #qid="{ record }">
           <span>{{ buildLogQidLabel(record.qid) }}</span>
@@ -540,6 +540,13 @@ export default defineComponent({
   gap: 4px;
   min-width: 0;
   word-break: break-word;
+}
+
+.location-value {
+  display: inline-block;
+  white-space: pre-line;
+  line-height: 1.5;
+  text-align: left;
 }
 
 .log-channel-name {

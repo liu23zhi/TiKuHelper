@@ -246,8 +246,8 @@ func TestUAPIPhoneInfoAcceptsBulkParameter(t *testing.T) {
 	}
 }
 
-// 内网 IP 必须被跳过：不发请求、也没有结果。
-func TestUAPIIPInfoSkipsPrivateAddresses(t *testing.T) {
+// 本地和私有 IP 不访问上游，但仍返回可识别的合成归属地。
+func TestUAPIIPInfoLabelsPrivateAddresses(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	newUAPILocationTestDB(t)
 
@@ -257,13 +257,22 @@ func TestUAPIIPInfoSkipsPrivateAddresses(t *testing.T) {
 	}
 
 	var payload struct {
-		Data map[string]any `json:"data"`
+		Data map[string]struct {
+			Address string `json:"address"`
+			Region  string `json:"region"`
+		} `json:"data"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if len(payload.Data) != 0 {
-		t.Fatalf("expected private addresses to be skipped, got %v", payload.Data)
+	if len(payload.Data) != 2 {
+		t.Fatalf("expected local and private addresses to be labeled, got %v", payload.Data)
+	}
+	if payload.Data["127.0.0.1"].Address != "本地地址" || payload.Data["127.0.0.1"].Region != "本地地址" {
+		t.Fatalf("unexpected loopback location: %+v", payload.Data["127.0.0.1"])
+	}
+	if payload.Data["192.168.1.1"].Address != "私有地址" || payload.Data["192.168.1.1"].Region != "私有地址" {
+		t.Fatalf("unexpected private location: %+v", payload.Data["192.168.1.1"])
 	}
 }
 

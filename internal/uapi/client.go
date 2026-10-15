@@ -35,6 +35,7 @@ type Client struct {
 	ipInfoURL          string
 	searchEnginesURL   string
 	searchAggregateURL string
+	statusUsageURL     string
 	webToMarkdownURL   string
 	http               *resty.Client
 	// maxRetries 本客户端单次业务请求允许的内部重试次数（不含首次）。
@@ -56,6 +57,7 @@ func NewClient(apiKey string) *Client {
 		ipInfoURL:          DefaultIPInfoURL,
 		searchEnginesURL:   DefaultSearchEnginesURL,
 		searchAggregateURL: DefaultSearchAggregateURL,
+		statusUsageURL:     DefaultStatusUsageURL,
 		maxRetries:         maxRetries,
 	}
 	c.http = resty.New().SetTimeout(c.timeout)

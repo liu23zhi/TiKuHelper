@@ -5,9 +5,6 @@
  * 二是用户管理与日志列表需要完全一致的展示形态。
  */
 
-/** 归属地展示统一使用全角括号，与设计稿一致：`18287719599 （云南玉溪 移动）`。 */
-export const LOCATION_OPEN_PAREN = '（'
-export const LOCATION_CLOSE_PAREN = '）'
 export const MAX_LOCATION_LOOKUP_KEYS = 100
 
 export function normalizeLocationKey(value) {
@@ -73,10 +70,10 @@ export function collectLocationKeys(rows, field) {
 }
 
 /**
- * 把原始值与归属地拼成展示文本。
+ * 把原始值与归属地拼成两行展示文本。
  *
- * - 有归属地：`18287719599 （云南玉溪 移动）`
- * - 无归属地（未配置密钥 / 查询失败 / 内网 IP）：只显示原始值，**不加空括号**
+ * - 有归属地：`18287719599\n（云南玉溪 移动）`
+ * - 无归属地（未配置密钥 / 查询失败）：只显示原始值
  *
  * @param {unknown} rawValue
  * @param {unknown} address
@@ -92,7 +89,7 @@ export function formatValueWithLocation(rawValue, address) {
   if (!location) {
     return raw
   }
-  return `${raw} ${LOCATION_OPEN_PAREN}${location}${LOCATION_CLOSE_PAREN}`
+  return `${raw}\n（${location}）`
 }
 
 /** 拼接批量查询参数：单个 key 用单值参数，多个用逗号分隔的批量参数。 */

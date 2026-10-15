@@ -1,5 +1,30 @@
 <template>
   <div class="recharge-order-page">
+    <a-row :gutter="16" class="summary-row">
+      <a-col :xs="24" :sm="12" :lg="6">
+        <a-card :bordered="false" class="summary-card">
+          <a-statistic title="充值总数（筛选结果）" :value="summary.total" />
+        </a-card>
+      </a-col>
+      <a-col :xs="24" :sm="12" :lg="6">
+        <a-card :bordered="false" class="summary-card">
+          <a-statistic title="当前页条数" :value="summary.currentPageCount" />
+        </a-card>
+      </a-col>
+      <a-col :xs="24" :sm="12" :lg="6">
+        <a-card :bordered="false" class="summary-card">
+          <a-statistic title="累计充值金额（当前筛选，全部页）" prefix="¥" :value="summary.totalAmount" :precision="2" />
+          <div class="summary-hint">统计当前权限与筛选条件下的全部订单</div>
+        </a-card>
+      </a-col>
+      <a-col :xs="24" :sm="12" :lg="6">
+        <a-card :bordered="false" class="summary-card">
+          <a-statistic title="当前页累计充值金额" prefix="¥" :value="summary.currentPageAmount" :precision="2" />
+          <div class="summary-hint">仅统计第 {{ pagination.current }} 页 {{ summary.currentPageCount }} 条</div>
+        </a-card>
+      </a-col>
+    </a-row>
+
     <a-card :bordered="false" class="page-card">
       <template #title>
         <div class="page-title-wrap">
@@ -105,6 +130,11 @@ import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@
 
 const dataSource = ref([])
 const tableLoading = ref(false)
+// 服务端返回的金额统计：totalAmount 覆盖全部筛选结果，currentPageAmount 仅当前页。
+const amountSummary = reactive({
+  totalAmount: 0,
+  currentPageAmount: 0,
+})
 // 已生效的筛选条件；keywordInput 只是输入框的即时值。
 const filters = reactive({
   keyword: '',
@@ -127,11 +157,18 @@ export default defineComponent({
   setup() {
     const currentUser = computed(() => getStoredCurrentUser())
     const isAdmin = computed(() => isAdminUser(currentUser.value))
+    const summary = computed(() => ({
+      total: Number(pagination.total || 0),
+      currentPageCount: Array.isArray(dataSource.value) ? dataSource.value.length : 0,
+      totalAmount: Number(amountSummary.totalAmount || 0),
+      currentPageAmount: Number(amountSummary.currentPageAmount || 0),
+    }))
 
     return {
       dataSource,
       tableLoading,
       pagination,
+      summary,
       isAdmin,
       filters,
       keywordInput,
@@ -246,6 +283,8 @@ export default defineComponent({
           pagination.total = Number(res?.data?.total || 0)
           pagination.current = Number(res?.data?.page || 1)
           pagination.pageSize = Number(res?.data?.pageSize || 10)
+          amountSummary.totalAmount = Number(res?.data?.summary?.totalAmount || 0)
+          amountSummary.currentPageAmount = Number(res?.data?.summary?.currentPageAmount || 0)
         } else {
           message.error(res?.message || '获取充值记录失败')
         }
@@ -298,6 +337,20 @@ export default defineComponent({
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.summary-row {
+  margin-bottom: 0;
+}
+
+.summary-card {
+  border-radius: 18px;
+}
+
+.summary-hint {
+  margin-top: 4px;
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
 }
 
 .filter-form {

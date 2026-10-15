@@ -219,8 +219,9 @@ test('AISearchConfig page exposes configurable model and search budgets', async 
   assert.match(content, /formState\.maxAIWebReads = normalizeAIWebReads\(data\.maxAIWebReads/);
   assert.match(content, /webReadPricePerCall: 0/);
   assert.match(content, /formState\.webReadPricePerCall = Number\(data\.webReadPricePerCall/);
-  assert.match(content, /网页读取工具（web_read）/);
-  assert.match(content, /普通模式不会调用网页读取/);
+  assert.match(content, /网页读取次数/);
+  assert.match(content, /网页读取单价（元\/次）/);
+  assert.doesNotMatch(content, /网页读取工具（web_read）/);
   assert.match(content, /label="模型最大调用次数"/);
   assert.match(content, /label="最大搜索次数"/);
   assert.match(content, /label="每轮重试次数"/);
@@ -337,5 +338,9 @@ test('AI search config exposes the UAPI search engine capability endpoint', asyn
   assert.match(apiContent, /export function getUAPISearchEngines\(\)/);
   assert.match(apiContent, /\/adapter-service\/uapi\/search\/engines/);
   assert.match(pageContent, /getUAPISearchEngines/);
-  assert.match(pageContent, /查看联网搜索能力/);
+  assert.match(pageContent, /查看深度思考能力/);
+  assert.doesNotMatch(pageContent, /查看联网搜索能力/);
+  assert.match(pageContent, /getUAPIUsageStatus/);
+  assert.match(apiContent, /export function getUAPIUsageStatus\(params\)/);
+  assert.match(apiContent, /\/adapter-service\/uapi\/status\/usage/);
 });

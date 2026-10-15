@@ -119,7 +119,7 @@
           <span>{{ formatDateTime(record.createdAt) }}</span>
         </template>
         <template #clientIp="{ record }">
-          <span>{{ formatValueWithLocation(record.clientIp, ipLocations[normalizeLocationKey(record.clientIp)]) || '-' }}</span>
+          <span class="location-value">{{ formatValueWithLocation(record.clientIp, ipLocations[normalizeLocationKey(record.clientIp)]) || '-' }}</span>
         </template>
         <template #feeDetail="{ record }">
           <a-button type="link" style="padding: 0" @click="handleShowFeeDetail(record)">显示详情</a-button>
@@ -527,6 +527,13 @@ export default defineComponent({
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.6;
+}
+
+.location-value {
+  display: inline-block;
+  white-space: pre-line;
+  line-height: 1.5;
+  text-align: left;
 }
 
 .reference-cell {

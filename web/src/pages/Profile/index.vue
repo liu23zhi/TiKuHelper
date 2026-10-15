@@ -60,7 +60,7 @@
             </div>
             <div class="profile-field">
               <span class="profile-field-label">登录 IP</span>
-              <span>{{ formatValueWithLocation(currentUser.lastLoginIp, ipLocations[normalizeLocationKey(currentUser.lastLoginIp)]) || '-' }}</span>
+              <span class="location-value">{{ formatValueWithLocation(currentUser.lastLoginIp, ipLocations[normalizeLocationKey(currentUser.lastLoginIp)]) || '-' }}</span>
             </div>
           </div>
         </a-col>
@@ -71,8 +71,8 @@
               <div>
                 <div class="panel-title">手机号绑定</div>
                 <div class="panel-subtitle">
-                  当前：{{ currentUser.phone ? formatValueWithLocation(currentUser.phone, phoneLocations[normalizeLocationKey(currentUser.phone)]) : '未绑定' }}
-                  <span v-if="currentUser.phoneBoundAt">，绑定于 {{ formatDateTime(currentUser.phoneBoundAt) }}</span>
+                  当前：<span class="location-value">{{ currentUser.phone ? formatValueWithLocation(currentUser.phone, phoneLocations[normalizeLocationKey(currentUser.phone)]) : '未绑定' }}</span>
+                  <span v-if="currentUser.phoneBoundAt" class="location-extra">，绑定于 {{ formatDateTime(currentUser.phoneBoundAt) }}</span>
                 </div>
               </div>
             </div>
@@ -723,6 +723,17 @@ export default defineComponent({
   color: #6b7280;
   font-size: 13px;
   line-height: 1.7;
+}
+
+.location-value {
+  display: inline-block;
+  white-space: pre-line;
+  line-height: 1.5;
+  text-align: left;
+}
+
+.location-extra {
+  display: block;
 }
 
 .profile-panel {

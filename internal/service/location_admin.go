@@ -28,11 +28,32 @@ type LocationCacheListQuery struct {
 
 // LocationCacheListResult 是归属地缓存管理列表响应。
 type LocationCacheListResult struct {
-	Data       []entity.LocationCache `json:"data"`
-	Total      int64                  `json:"total"`
-	Page       int                    `json:"page"`
-	PageSize   int                    `json:"pageSize"`
-	Configured bool                   `json:"configured"`
+	Data       []entity.LocationCache   `json:"data"`
+	Total      int64                    `json:"total"`
+	Page       int                      `json:"page"`
+	PageSize   int                      `json:"pageSize"`
+	Configured bool                     `json:"configured"`
+	Summary    LocationCacheListSummary `json:"summary"`
+}
+
+type LocationCacheListSummary struct {
+	Total          int64 `json:"total"`
+	WithAddress    int64 `json:"withAddress"`
+	WithoutAddress int64 `json:"withoutAddress"`
+}
+
+type LocationCacheDeleteItem struct {
+	LookupKey string `json:"lookupKey"`
+	Source    string `json:"source"`
+}
+
+type LocationCacheBatchDeleteRequest struct {
+	Kind    string                    `json:"kind"`
+	Keyword string                    `json:"keyword"`
+	Source  string                    `json:"source"`
+	Items   []LocationCacheDeleteItem `json:"items"`
+	All     bool                      `json:"all"`
+	Except  []LocationCacheDeleteItem `json:"except"`
 }
 
 // ListLocationCacheWithDB 按类型和关键字分页读取已持久化的归属地信息。
@@ -74,11 +95,23 @@ func ListLocationCacheWithDB(db *gorm.DB, query LocationCacheListQuery, page int
 	if err := base.Count(&total).Error; err != nil {
 		return LocationCacheListResult{}, err
 	}
+	withAddress := int64(0)
+	withoutAddress := int64(0)
+	if err := base.Session(&gorm.Session{}).Where("COALESCE(address, '') <> ''").Count(&withAddress).Error; err != nil {
+		return LocationCacheListResult{}, err
+	}
+	if err := base.Session(&gorm.Session{}).Where("COALESCE(address, '') = ''").Count(&withoutAddress).Error; err != nil {
+		return LocationCacheListResult{}, err
+	}
 	rows := make([]entity.LocationCache, 0)
 	if err := base.Order("fetched_at DESC, lookup_key ASC").Limit(pageSize).Offset((page - 1) * pageSize).Find(&rows).Error; err != nil {
 		return LocationCacheListResult{}, err
 	}
-	return LocationCacheListResult{Data: rows, Total: total, Page: page, PageSize: pageSize, Configured: GetUAPIAPIKeyWithDB(db) != ""}, nil
+	return LocationCacheListResult{
+		Data: rows, Total: total, Page: page, PageSize: pageSize,
+		Configured: GetUAPIAPIKeyWithDB(db) != "",
+		Summary:    LocationCacheListSummary{Total: total, WithAddress: withAddress, WithoutAddress: withoutAddress},
+	}, nil
 }
 
 // DeleteLocationCacheWithDB 删除一条归属地缓存，使下一次展示请求重新查询上游。
@@ -99,6 +132,78 @@ func DeleteLocationCacheWithDB(db *gorm.DB, kind string, lookupKey string, sourc
 		return err
 	}
 	return db.Where("kind = ? AND lookup_key = ? AND source = ?", kind, lookupKey, normalizedSource).Delete(&entity.LocationCache{}).Error
+}
+
+// DeleteLocationCacheBatchWithDB 批量删除显式选择，或删除当前筛选结果的全部记录（排除例外）。
+// All 模式必须携带 kind，且 keyword/source 只收窄范围，不允许空条件删除两类缓存。
+func DeleteLocationCacheBatchWithDB(db *gorm.DB, request LocationCacheBatchDeleteRequest) (int64, error) {
+	if db == nil {
+		return 0, ErrLocationUnavailable
+	}
+	kind := strings.TrimSpace(request.Kind)
+	if kind != entity.LocationKindIP && kind != entity.LocationKindPhone {
+		return 0, ErrLocationInvalidKey
+	}
+	if request.All && len(request.Items) > 0 {
+		return 0, ErrLocationInvalidKey
+	}
+	if !request.All && len(request.Items) == 0 {
+		return 0, ErrLocationInvalidKey
+	}
+	if len(request.Items) > 1000 || len(request.Except) > 10000 {
+		return 0, ErrLocationInvalidKey
+	}
+
+	if !request.All {
+		var deleted int64
+		for _, item := range request.Items {
+			itemKind, key, err := normalizeLocationAdminKey(kind, item.LookupKey)
+			if err != nil || itemKind != kind {
+				return deleted, ErrLocationInvalidKey
+			}
+			source, err := normalizeLocationRecordSource(kind, item.Source)
+			if err != nil {
+				return deleted, err
+			}
+			result := db.Where("kind = ? AND lookup_key = ? AND source = ?", kind, key, source).Delete(&entity.LocationCache{})
+			if result.Error != nil {
+				return deleted, result.Error
+			}
+			deleted += result.RowsAffected
+		}
+		return deleted, nil
+	}
+
+	query := db.Where("kind = ?", kind)
+	if source := strings.TrimSpace(request.Source); source != "" {
+		normalizedSource, err := normalizeLocationRecordSource(kind, source)
+		if err != nil {
+			return 0, err
+		}
+		query = query.Where("source = ?", normalizedSource)
+	}
+	if condition, args := util.BuildInstrCondition(request.Keyword, "COALESCE(lookup_key, '')", "COALESCE(address, '')"); condition != "" {
+		query = query.Where(condition, args...)
+	}
+	if len(request.Except) > 0 {
+		conditions := make([]string, 0, len(request.Except))
+		args := make([]any, 0, len(request.Except)*2)
+		for _, item := range request.Except {
+			itemKind, key, err := normalizeLocationAdminKey(kind, item.LookupKey)
+			if err != nil || itemKind != kind {
+				return 0, ErrLocationInvalidKey
+			}
+			exceptSource, err := normalizeLocationRecordSource(kind, item.Source)
+			if err != nil {
+				return 0, err
+			}
+			conditions = append(conditions, "NOT (lookup_key = ? AND source = ?)")
+			args = append(args, key, exceptSource)
+		}
+		query = query.Where(strings.Join(conditions, " AND "), args...)
+	}
+	result := query.Delete(&entity.LocationCache{})
+	return result.RowsAffected, result.Error
 }
 
 // 历史来源只支持管理，不可通过刷新或自动查询当成默认来源使用。

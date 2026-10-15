@@ -38,6 +38,27 @@ func UAPISearchEngines(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+// UAPIStatusUsage 返回 UAPI 端点使用统计，仅管理员可用。
+// path 为空时返回全部端点；传入 path 时返回单个端点统计。
+func UAPIStatusUsage(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
+	key := service.GetUAPIAPIKeyWithDB(resolveSearchPersistenceDB())
+	if !requireUAPISearchToken(c, key) {
+		return
+	}
+	client := newUAPISearchClient(key)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), uapiSearchControllerTimeout)
+	defer cancel()
+	result, err := client.GetStatusUsage(ctx, c.Query("path"))
+	if err != nil {
+		writeUAPISearchError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
 // UAPISearchAggregate 执行 UAPI 实时网页搜索，仅管理员可用。
 func UAPISearchAggregate(c *gin.Context) {
 	if !requireAdmin(c) {

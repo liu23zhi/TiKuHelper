@@ -29,8 +29,10 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/uapi/my-locations", controller.Auth, controller.UAPIMyLocations)
 	apiRouter.GET("/location-cache", controller.Auth, middleware.RequireAdmin, controller.LocationCacheList)
 	apiRouter.DELETE("/location-cache", controller.Auth, middleware.RequireAdmin, controller.LocationCacheDelete)
+	apiRouter.POST("/location-cache/batch-delete", controller.Auth, middleware.RequireAdmin, controller.LocationCacheBatchDelete)
 	apiRouter.POST("/location-cache/refresh", controller.Auth, middleware.RequireAdmin, controller.LocationCacheRefresh)
 	apiRouter.GET("/uapi/search/engines", controller.Auth, middleware.RequireAdmin, controller.UAPISearchEngines)
+	apiRouter.GET("/uapi/status/usage", controller.Auth, middleware.RequireAdmin, controller.UAPIStatusUsage)
 	apiRouter.POST("/uapi/search/aggregate", controller.Auth, middleware.RequireAdmin, controller.UAPISearchAggregate)
 
 	apiRouter.POST("/search", controller.Search)

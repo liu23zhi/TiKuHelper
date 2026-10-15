@@ -165,6 +165,14 @@ export function deleteLocationCache(params) {
   })
 }
 
+export function deleteLocationCacheBatch(data) {
+  return request({
+    url: `/adapter-service/location-cache/batch-delete`,
+    method: 'post',
+    data,
+  })
+}
+
 export function refreshLocationCache(data) {
   return request({
     url: `/adapter-service/location-cache/refresh`,
@@ -178,6 +186,17 @@ export function getUAPISearchEngines() {
   return request({
     url: `/adapter-service/uapi/search/engines`,
     method: 'get'
+  })
+}
+
+// UAPI status/usage returns endpoint-level usage statistics. Keep the raw
+// response in the page so both aggregate and single-endpoint responses can be
+// displayed without losing fields added by the upstream API.
+export function getUAPIUsageStatus(params) {
+  return request({
+    url: `/adapter-service/uapi/status/usage`,
+    method: 'get',
+    params
   })
 }
 

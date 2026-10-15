@@ -129,6 +129,19 @@ test('Recharge order list page is routed, menu-visible, and backed by recharge o
   assert.match(pageContent, /getRechargeOrders/);
 });
 
+test('Recharge order list page renders server-side total and current-page amount summaries', async () => {
+  const pageContent = await readFile(rechargeOrderListPagePath, 'utf8');
+
+  assert.match(pageContent, /充值总数（筛选结果）/);
+  assert.match(pageContent, /当前页条数/);
+  assert.match(pageContent, /累计充值金额/);
+  assert.match(pageContent, /当前页累计充值金额/);
+  assert.match(pageContent, /summary\.totalAmount/);
+  assert.match(pageContent, /summary\.currentPageAmount/);
+  assert.match(pageContent, /data\?\.summary\?\.totalAmount/);
+  assert.match(pageContent, /data\?\.summary\?\.currentPageAmount/);
+});
+
 test('UserUsage page renders qrcode payment results without forcing a cashier redirect', async () => {
   const content = await readFile(userUsagePagePath, 'utf8');
 

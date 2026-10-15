@@ -10,17 +10,17 @@ import {
   formatValueWithLocation,
 } from './locationHelpers.mjs'
 
-test('formatValueWithLocation renders the documented phone shape', () => {
+test('formatValueWithLocation renders phone and location on separate lines', () => {
   assert.equal(
     formatValueWithLocation('18287719599', '云南玉溪 移动'),
-    '18287719599 （云南玉溪 移动）',
+    '18287719599\n（云南玉溪 移动）',
   )
 })
 
-test('formatValueWithLocation renders the ip shape', () => {
+test('formatValueWithLocation renders the ip and location on separate lines', () => {
   assert.equal(
     formatValueWithLocation('1.2.3.4', '广东深圳 电信'),
-    '1.2.3.4 （广东深圳 电信）',
+    '1.2.3.4\n（广东深圳 电信）',
   )
 })
 
@@ -40,7 +40,7 @@ test('formatValueWithLocation returns empty for missing raw values', () => {
 test('formatValueWithLocation trims both sides', () => {
   assert.equal(
     formatValueWithLocation('  18287719599  ', '  云南玉溪 移动  '),
-    '18287719599 （云南玉溪 移动）',
+    '18287719599\n（云南玉溪 移动）',
   )
 })
 
@@ -120,6 +120,8 @@ test('location management has separate protected routes and refresh/raw response
   assert.match(menu, /手机号归属地信息管理/)
   assert.match(api, /export function getMyLocations\(params/)
   assert.match(api, /\/location-cache\/refresh/)
+  assert.match(api, /export function deleteLocationCacheBatch\(data/)
+  assert.match(api, /\/location-cache\/batch-delete/)
 })
 
 test('collectLocationKeys deduplicates and skips empty values', () => {
