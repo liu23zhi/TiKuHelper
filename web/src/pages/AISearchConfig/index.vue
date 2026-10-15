@@ -128,6 +128,20 @@
         <div class="hint">每次 AI 搜索最多调用搜索 API 的次数，默认 3 次。每一轮模型调用前都会告知剩余搜索次数，达到最后一轮时必须直接输出答案。</div>
       </a-form-item>
 
+      <a-form-item label="每轮重试次数">
+        <a-input-number
+          v-model:value="formState.maxAISearchRetries"
+          :min="MIN_AI_SEARCH_RETRIES"
+          :max="MAX_AI_SEARCH_RETRIES"
+          :precision="0"
+          :step="1"
+          :parser="parseIntegerInput"
+          style="width: 180px"
+        />
+        <span class="unit-label">次</span>
+        <div class="hint">每轮模型调用最多尝试的机会（包含首次调用），默认 3 次，范围 1～10 次。单次模型调用失败时会在本轮内自动重试，耗尽后才结束本轮。</div>
+      </a-form-item>
+
       <a-form-item label="联网搜索单价（元/次）">
         <a-input-number
           v-model:value="formState.searchPricePerCall"
@@ -377,9 +391,12 @@ function appendV1(url) {
 
 const DEFAULT_MAX_AI_SEARCH_MODEL_CALLS = 4
 const DEFAULT_MAX_AI_SEARCHES = 3
+const DEFAULT_MAX_AI_SEARCH_RETRIES = 3
 const MIN_AI_SEARCH_MODEL_CALLS = 1
 const MIN_AI_SEARCHES = 1
 const MAX_AI_SEARCH_BUDGET = 20
+const MIN_AI_SEARCH_RETRIES = 1
+const MAX_AI_SEARCH_RETRIES = 10
 
 function parseIntegerInput(value) {
   if (value === null || value === undefined || value === '') {
@@ -394,6 +411,14 @@ function normalizeAISearchBudget(value, fallback) {
     return fallback
   }
   return Math.min(parsed, MAX_AI_SEARCH_BUDGET)
+}
+
+function normalizeAISearchRetries(value, fallback = DEFAULT_MAX_AI_SEARCH_RETRIES) {
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed < MIN_AI_SEARCH_RETRIES) {
+    return fallback
+  }
+  return Math.min(parsed, MAX_AI_SEARCH_RETRIES)
 }
 
 export default defineComponent({
@@ -431,6 +456,7 @@ export default defineComponent({
       topP: 0,
       maxAISearchModelCalls: DEFAULT_MAX_AI_SEARCH_MODEL_CALLS,
       maxAISearches: DEFAULT_MAX_AI_SEARCHES,
+      maxAISearchRetries: DEFAULT_MAX_AI_SEARCH_RETRIES,
       searchPricePerCall: 0,
     })
 
@@ -487,6 +513,7 @@ export default defineComponent({
           formState.topP = data.topP ?? 0
           formState.maxAISearchModelCalls = normalizeAISearchBudget(data.maxAISearchModelCalls, DEFAULT_MAX_AI_SEARCH_MODEL_CALLS)
           formState.maxAISearches = normalizeAISearchBudget(data.maxAISearches, DEFAULT_MAX_AI_SEARCHES)
+          formState.maxAISearchRetries = normalizeAISearchRetries(data.maxAISearchRetries, DEFAULT_MAX_AI_SEARCH_RETRIES)
           formState.searchPricePerCall = Number(data.searchPricePerCall ?? 0)
         } else {
           message.error(res?.message || '获取 AI 搜索配置失败')
@@ -565,6 +592,8 @@ export default defineComponent({
       MIN_AI_SEARCH_MODEL_CALLS,
       MIN_AI_SEARCHES,
       MAX_AI_SEARCH_BUDGET,
+      MIN_AI_SEARCH_RETRIES,
+      MAX_AI_SEARCH_RETRIES,
       parseIntegerInput,
       modelOptions,
       priceRows,
@@ -621,6 +650,7 @@ export default defineComponent({
     submitSave(baseUrl) {
       const maxAISearchModelCalls = Number(this.formState.maxAISearchModelCalls)
       const maxAISearches = Number(this.formState.maxAISearches)
+      const maxAISearchRetries = Number(this.formState.maxAISearchRetries)
       const searchPricePerCall = Number(this.formState.searchPricePerCall)
       if (!Number.isSafeInteger(maxAISearchModelCalls) || maxAISearchModelCalls < MIN_AI_SEARCH_MODEL_CALLS || maxAISearchModelCalls > MAX_AI_SEARCH_BUDGET) {
         message.error(`模型最大调用次数必须是 ${MIN_AI_SEARCH_MODEL_CALLS}～${MAX_AI_SEARCH_BUDGET} 的整数`)
@@ -628,6 +658,10 @@ export default defineComponent({
       }
       if (!Number.isSafeInteger(maxAISearches) || maxAISearches < MIN_AI_SEARCHES || maxAISearches > MAX_AI_SEARCH_BUDGET) {
         message.error(`最大搜索次数必须是 ${MIN_AI_SEARCHES}～${MAX_AI_SEARCH_BUDGET} 的整数`)
+        return
+      }
+      if (!Number.isSafeInteger(maxAISearchRetries) || maxAISearchRetries < MIN_AI_SEARCH_RETRIES || maxAISearchRetries > MAX_AI_SEARCH_RETRIES) {
+        message.error(`每轮重试次数必须是 ${MIN_AI_SEARCH_RETRIES}～${MAX_AI_SEARCH_RETRIES} 的整数`)
         return
       }
       if (!Number.isFinite(searchPricePerCall) || searchPricePerCall < 0) {
