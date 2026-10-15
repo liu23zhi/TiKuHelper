@@ -26,8 +26,7 @@ type BillingRecord struct {
 	RequestID     string  `gorm:"column:request_id;type:varchar(64);index" json:"requestId"`
 	// ClientIP 是产生这笔账单的请求来源 IP，供账单明细展示归属地。
 	//
-	// logs 表没有 request_id，无法事后关联，因此必须在落账时一并写入；
-	// 历史行无法回溯（见 registry.ensureBillingClientIPSchema）。
+	// 新请求在落账时一并写入；启动迁移会对日志中能精确匹配 requestId 的历史行尽力回填。
 	ClientIP       string    `gorm:"column:client_ip;type:varchar(64)" json:"clientIp"`
 	RelatedOrderID int32     `gorm:"column:related_order_id;type:int(11);index" json:"relatedOrderId"`
 	Remark         string    `gorm:"column:remark;type:varchar(255)" json:"remark"`

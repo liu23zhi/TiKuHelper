@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -246,13 +247,16 @@ func normalizePhoneLookupKeys(phones []string) []string {
 	return keys
 }
 
-// normalizeIPLookupKeys 归一化并去重 IP/域名，跳过内网与保留地址。
+// normalizeIPLookupKeys 归一化并去重 IP/域名。
+//
+// 回环地址与私有地址不能交给公网归属地 API 查询，但它们仍然是日志中
+// 合法且常见的来源 IP，后续会由 lookupLocationUpstream 生成本地结果。
 func normalizeIPLookupKeys(ips []string) []string {
 	seen := make(map[string]struct{}, len(ips))
 	keys := make([]string, 0, len(ips))
 	for _, raw := range ips {
 		candidate := normalizeIPLookupKey(raw)
-		if candidate == "" || IsPrivateOrReservedIP(candidate) {
+		if candidate == "" || shouldSkipIPLookup(candidate) {
 			continue
 		}
 		lower := strings.ToLower(candidate)
@@ -263,6 +267,59 @@ func normalizeIPLookupKeys(ips []string) []string {
 		keys = append(keys, candidate)
 	}
 	return keys
+}
+
+func shouldSkipIPLookup(candidate string) bool {
+	ip := net.ParseIP(candidate)
+	if ip == nil {
+		return false
+	}
+	// 回环与 RFC1918/ULA 私有地址会由本地合成结果，不能跳过。
+	if ip.IsLoopback() || ip.IsPrivate() {
+		return false
+	}
+	return IsPrivateOrReservedIP(candidate)
+}
+
+// syntheticIPLocation 为回环/私有 IP 生成不需要外呼的本地归属地结果。
+// 这类地址没有公网运营商归属地，使用明确的中文标签比返回空值更便于排查。
+func syntheticIPLocation(key string) (locationFlightResult, bool) {
+	ip := net.ParseIP(strings.TrimSpace(key))
+	if ip == nil {
+		return locationFlightResult{}, false
+	}
+
+	region := ""
+	switch {
+	case ip.IsLoopback():
+		region = "本地地址"
+	case ip.IsPrivate():
+		region = "私有地址"
+	default:
+		return locationFlightResult{}, false
+	}
+
+	payload := struct {
+		IP        string  `json:"ip"`
+		Region    string  `json:"region"`
+		ISP       string  `json:"isp"`
+		ASN       string  `json:"asn"`
+		LLC       string  `json:"llc"`
+		Latitude  float64 `json:"latitude"`
+		Longitude float64 `json:"longitude"`
+	}{
+		IP:        key,
+		Region:    region,
+		ISP:       "N/A",
+		ASN:       "N/A",
+		Latitude:  0,
+		Longitude: 0,
+	}
+	rawJSON, err := json.Marshal(payload)
+	if err != nil {
+		return locationFlightResult{err: err}, true
+	}
+	return locationFlightResult{address: region, rawJSON: string(rawJSON), ok: true}, true
 }
 
 // locationCacheLookupKey 生成持久化缓存主键的 lookup_key 部分（统一小写）。
@@ -420,20 +477,48 @@ func LookupIPLocationsDetailedWithDB(db *gorm.DB, ips []string, options Location
 	}
 
 	missing := missingIPKeys(normalizedKeys, cached)
-	apiKey := strings.TrimSpace(options.UAPIKey)
 	if len(missing) == 0 {
 		return result, nil
 	}
+
+	// 回环/私有 IP 由本地合成并持久化，不需要密钥，也不应因未配置密钥而
+	// 让日志列表退化为空。公网地址再走 UApiPro，并保持原有错误语义。
+	syntheticKeys, upstreamKeys := splitSyntheticIPKeys(missing)
+	if len(syntheticKeys) > 0 {
+		rows, err := queryLocationRows(db, nil, entity.LocationKindIP, syntheticKeys, source, false)
+		for _, row := range rows {
+			result[row.LookupKey] = ipLocationFromCacheRow(row)
+		}
+		if err != nil && len(upstreamKeys) == 0 {
+			return result, err
+		}
+	}
+	if len(upstreamKeys) == 0 {
+		return result, nil
+	}
+
+	apiKey := strings.TrimSpace(options.UAPIKey)
 	if apiKey == "" {
 		return result, ErrLocationNotConfigured
 	}
 
-	rows, err := queryLocationRows(db, newLocationClient(apiKey), entity.LocationKindIP, missing, source, false)
+	rows, err := queryLocationRows(db, newLocationClient(apiKey), entity.LocationKindIP, upstreamKeys, source, false)
 
 	for _, row := range rows {
 		result[row.LookupKey] = ipLocationFromCacheRow(row)
 	}
 	return result, err
+}
+
+func splitSyntheticIPKeys(keys []string) (synthetic []string, upstream []string) {
+	for _, key := range keys {
+		if _, ok := syntheticIPLocation(key); ok {
+			synthetic = append(synthetic, key)
+			continue
+		}
+		upstream = append(upstream, key)
+	}
+	return synthetic, upstream
 }
 
 // phoneLocationFromCacheRow 把缓存行还原成手机号归属地。
@@ -549,6 +634,12 @@ func queryLocationRows(db *gorm.DB, client *uapi.Client, kind string, keys []str
 }
 
 func lookupLocationUpstream(client *uapi.Client, kind string, key string, source string) locationFlightResult {
+	if kind == entity.LocationKindIP {
+		if synthetic, ok := syntheticIPLocation(key); ok {
+			return synthetic
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), locationLookupTimeout)
 	defer cancel()
 	var address, rawJSON string

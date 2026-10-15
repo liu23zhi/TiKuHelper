@@ -109,3 +109,63 @@ func TestBillingClientIPRoundTrips(t *testing.T) {
 		t.Fatalf("expected the client ip to round-trip, got %q", loaded.ClientIP)
 	}
 }
+
+func TestEnsureBillingClientIPSchemaBackfillsByExactRequestID(t *testing.T) {
+	db := newBillingClientIPTestDB(t)
+	if err := db.AutoMigrate(&entity.BillingRecord{}, &entity.Log{}, &entity.SystemSetting{}); err != nil {
+		t.Fatalf("migrate test db: %v", err)
+	}
+
+	requestID := "req-billing-ip-001"
+	if err := db.Create(&entity.BillingRecord{
+		UserID:    1,
+		Type:      "normal_search",
+		Amount:    0.5,
+		RequestID: requestID,
+		ClientIP:  "",
+	}).Error; err != nil {
+		t.Fatalf("create billing record: %v", err)
+	}
+	if err := db.Create(&entity.Log{
+		Module:      "search",
+		Description: "搜索完成 requestId=" + requestID,
+		ClientIP:    "127.0.0.1",
+	}).Error; err != nil {
+		t.Fatalf("create matching log: %v", err)
+	}
+
+	if err := ensureBillingClientIPSchema(db); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	var loaded entity.BillingRecord
+	if err := db.First(&loaded).Error; err != nil {
+		t.Fatalf("load billing record: %v", err)
+	}
+	if loaded.ClientIP != "127.0.0.1" {
+		t.Fatalf("expected client ip to be backfilled from the exact request id, got %q", loaded.ClientIP)
+	}
+	if !systemSettingFlagIsSet(db, billingClientIPBackfilledKey) {
+		t.Fatal("expected the backfill completion flag to be set")
+	}
+
+	// 相似但不同的 requestId 不得误关联。
+	if err := db.Create(&entity.BillingRecord{
+		UserID:    1,
+		Type:      "normal_search",
+		Amount:    0.5,
+		RequestID: requestID + "-other",
+	}).Error; err != nil {
+		t.Fatalf("create unmatched billing record: %v", err)
+	}
+	if err := ensureBillingClientIPSchema(db); err != nil {
+		t.Fatalf("idempotent backfill: %v", err)
+	}
+	var unmatched entity.BillingRecord
+	if err := db.Where("request_id = ?", requestID+"-other").First(&unmatched).Error; err != nil {
+		t.Fatalf("load unmatched billing record: %v", err)
+	}
+	if unmatched.ClientIP != "" {
+		t.Fatalf("expected unmatched request id to remain empty, got %q", unmatched.ClientIP)
+	}
+}

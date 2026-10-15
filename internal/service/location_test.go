@@ -100,16 +100,17 @@ func TestIsPrivateOrReservedIP(t *testing.T) {
 	}
 }
 
-// 内网 IP 不得进入查询集合（不发请求、不耗积分）。
-func TestNormalizeIPLookupKeysSkipsPrivateAndDeduplicates(t *testing.T) {
+// 公网与本地/私有 IP 都应进入统一的归属地流程；本地/私有 IP 由本地合成结果，
+// 不会发起 UApiPro 请求，但必须能持久化并展示。
+func TestNormalizeIPLookupKeysRetainsPrivateAndDeduplicates(t *testing.T) {
 	keys := normalizeIPLookupKeys([]string{
 		"8.8.8.8", "8.8.8.8", " 8.8.8.8 ",
 		"192.168.1.1", "127.0.0.1",
 		"1.1.1.1",
-		"", "bad ip!",
+		"0.0.0.0", "255.255.255.255", "", "bad ip!",
 	})
 
-	want := map[string]bool{"8.8.8.8": true, "1.1.1.1": true}
+	want := map[string]bool{"8.8.8.8": true, "192.168.1.1": true, "127.0.0.1": true, "1.1.1.1": true}
 	if len(keys) != len(want) {
 		t.Fatalf("expected %v, got %v", want, keys)
 	}
@@ -117,6 +118,41 @@ func TestNormalizeIPLookupKeysSkipsPrivateAndDeduplicates(t *testing.T) {
 		if !want[key] {
 			t.Fatalf("unexpected key %q in %v", key, keys)
 		}
+	}
+}
+
+func TestLookupIPLocationsReturnsAndPersistsSyntheticLocalAndPrivate(t *testing.T) {
+	db := newLocationTestDB(t)
+
+	locations, err := LookupIPLocationsDetailedWithDB(db, []string{"127.0.0.1", "192.168.1.1"}, LocationQueryOptions{})
+	if err != nil {
+		t.Fatalf("expected local/private addresses to work without an API key, got %v", err)
+	}
+
+	local, ok := locations["127.0.0.1"]
+	if !ok || local.Address != "本地地址" || local.Region != "本地地址" || local.ISP != "N/A" || local.ASN != "N/A" {
+		t.Fatalf("unexpected local address result: %+v", local)
+	}
+	private, ok := locations["192.168.1.1"]
+	if !ok || private.Address != "私有地址" || private.Region != "私有地址" || private.ISP != "N/A" || private.ASN != "N/A" {
+		t.Fatalf("unexpected private address result: %+v", private)
+	}
+
+	var rows []entity.LocationCache
+	if err := db.Where("kind = ?", entity.LocationKindIP).Order("lookup_key asc").Find(&rows).Error; err != nil {
+		t.Fatalf("read synthetic cache rows: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected two persisted synthetic rows, got %d: %+v", len(rows), rows)
+	}
+	if rows[0].Address != "本地地址" || rows[1].Address != "私有地址" {
+		t.Fatalf("unexpected persisted synthetic rows: %+v", rows)
+	}
+
+	// 没有 API Key 仍可从持久化缓存读取，且不应退化为未配置错误。
+	second, err := LookupIPLocationsDetailedWithDB(db, []string{"127.0.0.1", "192.168.1.1"}, LocationQueryOptions{})
+	if err != nil || len(second) != 2 {
+		t.Fatalf("expected persisted synthetic rows to be reusable, err=%v result=%+v", err, second)
 	}
 }
 
