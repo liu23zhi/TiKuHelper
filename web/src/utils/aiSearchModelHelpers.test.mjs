@@ -344,3 +344,14 @@ test('AI search config exposes the UAPI search engine capability endpoint', asyn
   assert.match(apiContent, /export function getUAPIUsageStatus\(params\)/);
   assert.match(apiContent, /\/adapter-service\/uapi\/status\/usage/);
 });
+
+test('AI capability modal only renders used search and web Markdown endpoints', async () => {
+  const pageContent = await readFile(aiSearchConfigPagePath, 'utf8');
+
+  assert.match(pageContent, /const usedUsageRows = computed\(\(\) =>/);
+  assert.match(pageContent, /item\.count > 0/);
+  assert.match(pageContent, /usedCapabilityCards/);
+  assert.match(pageContent, /联网搜索 API/);
+  assert.match(pageContent, /网页转 Markdown API/);
+  assert.match(pageContent, /暂未使用搜索或网页读取接口/);
+});

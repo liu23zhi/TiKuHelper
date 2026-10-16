@@ -50,11 +50,22 @@
         <a-form-item label="新用户赠送金额">
           <a-input-number
             v-model:value="formState.newUserBonusAmount"
-            :min="0"
+            :min="0.01"
             :precision="6"
             style="width: 220px"
           />
           <div class="hint">新用户注册或后台创建成功后自动计入余额；后台创建时可单独调整或关闭。金额最多支持 6 位小数。</div>
+        </a-form-item>
+
+        <a-form-item label="充值最低金额">
+          <a-input-number
+            v-model:value="formState.minRechargeAmount"
+            :min="0.01"
+            :precision="2"
+            :step="0.01"
+            style="width: 220px"
+          />
+          <div class="hint">限制用户每次充值的最低金额，默认 1 元，最多支持两位小数。</div>
         </a-form-item>
 
         <a-form-item label="开启短信登录">
@@ -332,6 +343,7 @@ import {
 const notifyPath = '/adapter-service/payment/notify'
 const returnPath = '/adapter/recharge/result'
 const DEFAULT_MAX_LOG_SIZE_BYTES = 5 * 1024 * 1024 * 1024
+const DEFAULT_MIN_RECHARGE_AMOUNT = 1
 const MIN_LOG_SIZE_BYTES = 1 * 1024 * 1024
 const LOG_SIZE_UNITS = [
   { value: 'B', label: '字节', bytes: 1 },
@@ -350,6 +362,17 @@ function normalizeBonusAmount(value) {
   const amount = Number(value || 0)
   // 与后端保持一致：金额最多 6 位小数。
   return Number.isFinite(amount) && amount >= 0 ? Math.round(amount * 1e6) / 1e6 : 0
+}
+
+function normalizeMinRechargeAmount(value) {
+  const raw = String(value ?? '').trim()
+  if (!raw) {
+    return DEFAULT_MIN_RECHARGE_AMOUNT
+  }
+  const amount = Number(raw)
+  return Number.isFinite(amount) && amount > 0 && amount <= Number.MAX_SAFE_INTEGER
+    ? Math.round(amount * 100) / 100
+    : DEFAULT_MIN_RECHARGE_AMOUNT
 }
 
 function parseIntegerInput(value) {
@@ -437,6 +460,7 @@ export default defineComponent({
       maxLogSizeUnit: 'GB',
       registerEnabled: false,
       newUserBonusAmount: 0,
+      minRechargeAmount: DEFAULT_MIN_RECHARGE_AMOUNT,
       epayVersion: 'v2',
       epayGatewayUrl: '',
       epayPartnerId: '',
@@ -491,6 +515,7 @@ export default defineComponent({
       formState.maxLogSizeUnit = maxLogSize.unit
       formState.registerEnabled = !!data.registerEnabled
       formState.newUserBonusAmount = Number(data.newUserBonusAmount || 0)
+      formState.minRechargeAmount = normalizeMinRechargeAmount(data.minRechargeAmount)
       formState.epayVersion = 'v2'
       formState.epayGatewayUrl = data.epayGatewayUrl || ''
       formState.epayPartnerId = data.epayPartnerId || ''
@@ -697,11 +722,17 @@ export default defineComponent({
       if (wechatDefaultLoginMode !== 'code' && !wechatScanLoginEnabled && wechatCodeLoginEnabled) {
         wechatDefaultLoginMode = 'code'
       }
+      const minRechargeAmount = normalizeMinRechargeAmount(this.formState.minRechargeAmount)
+      if (!Number.isFinite(minRechargeAmount) || minRechargeAmount <= 0) {
+        message.error('充值最低金额必须是大于 0 的有效金额')
+        return
+      }
       const payload = {
         siteName: normalizeString(this.formState.siteName || '题库'),
         maxLogSizeBytes,
         registerEnabled: !!this.formState.registerEnabled,
         newUserBonusAmount: normalizeBonusAmount(this.formState.newUserBonusAmount),
+        minRechargeAmount,
         epayVersion: 'v2',
         epayGatewayUrl: normalizeString(this.formState.epayGatewayUrl),
         epayPartnerId: normalizeString(this.formState.epayPartnerId),

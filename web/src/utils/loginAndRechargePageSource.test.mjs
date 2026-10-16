@@ -111,6 +111,16 @@ test('UserUsage page removes payment method count and exposes quick recharge amo
   assert.doesNotMatch(extraTemplateMatch[1], /handleOpenRechargeDialog/);
 });
 
+test('UserUsage page exposes the configurable minimum recharge amount and validates before submitting', async () => {
+  const content = await readFile(userUsagePagePath, 'utf8');
+
+  assert.match(content, /const minRechargeAmount = ref\(1\)/);
+  assert.match(content, /:min="(?:minRechargeAmount|Math\.max\(0\.01, minRechargeAmount\))"/);
+  assert.match(content, /最低充值金额：¥/);
+  assert.match(content, /hasOwnProperty\.call\(res\.data, 'minRechargeAmount'\)/);
+  assert.match(content, /充值金额不能低于 ¥/);
+});
+
 test('Recharge order list page is routed, menu-visible, and backed by recharge order API', async () => {
   const apiContent = await readFile(apiPath, 'utf8');
   const routerContent = await readFile(routerPath, 'utf8');

@@ -213,49 +213,28 @@
           :message="capabilityError"
         />
 
-        <a-descriptions bordered size="small" :column="{ xs: 1, sm: 2, md: 3 }">
-          <a-descriptions-item label="搜索引擎">
-            <a-tag v-if="searchEngineInfo" :color="searchEngineInfo.engine?.available ? 'green' : 'red'">
-              {{ searchEngineInfo.engine?.available ? '可用' : '不可用' }}
-            </a-tag>
-            <span v-else>未获取</span>
-            <div v-if="searchEngineInfo" class="capability-detail">
-              {{ searchEngineInfo.engine?.display_name || searchEngineInfo.engine?.name || '未命名引擎' }}
-              <span v-if="searchEngineInfo.engine?.version">（v{{ searchEngineInfo.engine.version }}）</span>
+        <div v-if="usedCapabilityCards.length" class="capability-status-grid">
+          <div v-for="card in usedCapabilityCards" :key="card.key" class="capability-status-card">
+            <div class="capability-status-card__header">
+              <span class="capability-status-card__title">{{ card.title }}</span>
+              <a-tag :color="card.color">{{ card.status }}</a-tag>
             </div>
-          </a-descriptions-item>
-          <a-descriptions-item label="联网搜索接口">
-            <a-tag :color="searchUsageRows.length ? 'green' : 'blue'">
-              {{ searchUsageRows.length ? '有调用统计' : '已接入，暂无调用记录' }}
-            </a-tag>
-          </a-descriptions-item>
-          <a-descriptions-item label="网页读取接口">
-            <a-tag :color="webReadUsageRows.length ? 'green' : 'blue'">
-              {{ webReadUsageRows.length ? '有调用统计' : '已接入，暂无调用记录' }}
-            </a-tag>
-          </a-descriptions-item>
-          <a-descriptions-item v-if="searchEngineInfo" label="搜索参数">
-            {{ searchEngineInfo.supported_parameters?.join('、') || '文档默认参数' }}
-          </a-descriptions-item>
-          <a-descriptions-item v-if="searchEngineInfo" label="结果上限">
-            {{ searchEngineInfo.limits?.max ?? '-' }}
-          </a-descriptions-item>
-          <a-descriptions-item v-if="usageInfo?.unaggregated" label="未聚合调用">
-            {{ usageInfo.unaggregated.count ?? 0 }} 次
-          </a-descriptions-item>
-        </a-descriptions>
+            <div class="capability-status-card__meta">{{ card.detail }}</div>
+            <div v-if="card.count !== null" class="capability-status-card__count">累计调用 {{ card.count }} 次</div>
+          </div>
+        </div>
+        <a-empty v-else-if="!capabilityLoading" description="暂未使用搜索或网页读取接口" />
 
         <a-table
-          v-if="usageRows.length"
+          v-if="usedUsageRows.length"
           class="capability-usage-table"
           size="small"
           bordered
           row-key="path"
           :pagination="false"
-          :data-source="usageRows"
+          :data-source="usedUsageRows"
           :columns="usageColumns"
         />
-        <a-empty v-else-if="!capabilityLoading" description="暂无 UAPI 端点调用统计" />
       </a-spin>
     </a-modal>
 
@@ -592,8 +571,36 @@ export default defineComponent({
     })
 
     const usageRows = computed(() => normalizeUsageRows(usageInfo.value))
-    const searchUsageRows = computed(() => usageRows.value.filter(item => /\/search\//i.test(item.path)))
-    const webReadUsageRows = computed(() => usageRows.value.filter(item => /\/web\/tomarkdown/i.test(item.path)))
+    const searchUsageRows = computed(() => usageRows.value.filter(item => /\/search\/(?:aggregate|engines)(?:\/|$)/i.test(item.path) && item.count > 0))
+    const webReadUsageRows = computed(() => usageRows.value.filter(item => /\/web\/tomarkdown(?:\/|$)/i.test(item.path) && item.count > 0))
+    const usedUsageRows = computed(() => [...searchUsageRows.value, ...webReadUsageRows.value])
+    const usedCapabilityCards = computed(() => {
+      const cards = []
+      if (searchUsageRows.value.length) {
+        const count = searchUsageRows.value.reduce((sum, item) => sum + item.count, 0)
+        const engineAvailable = searchEngineInfo.value?.engine?.available
+        cards.push({
+          key: 'search',
+          title: '联网搜索 API',
+          status: searchEngineInfo.value ? (engineAvailable ? '可用' : '不可用') : '已调用',
+          color: searchEngineInfo.value ? (engineAvailable ? 'green' : 'red') : 'blue',
+          detail: searchEngineInfo.value?.engine?.display_name || searchEngineInfo.value?.engine?.name || '搜索端点已有实际调用记录',
+          count,
+        })
+      }
+      if (webReadUsageRows.value.length) {
+        const count = webReadUsageRows.value.reduce((sum, item) => sum + item.count, 0)
+        cards.push({
+          key: 'web-read',
+          title: '网页转 Markdown API',
+          status: '已调用',
+          color: 'green',
+          detail: '异步网页读取端点已有实际调用记录',
+          count,
+        })
+      }
+      return cards
+    })
     const usageColumns = [
       { title: 'UAPI 端点', dataIndex: 'path', key: 'path', ellipsis: true },
       { title: '调用次数', dataIndex: 'count', key: 'count', width: 120, align: 'right' },
@@ -718,6 +725,8 @@ export default defineComponent({
       capabilityLoading: searchEngineLoading,
       usageInfo,
       usageRows,
+      usedUsageRows,
+      usedCapabilityCards,
       searchUsageRows,
       webReadUsageRows,
       usageColumns,
@@ -1137,6 +1146,48 @@ export default defineComponent({
   margin-top: 6px;
   color: #6b7280;
   font-size: 12px;
+}
+
+.capability-status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+  margin: 4px 0 16px;
+}
+
+.capability-status-card {
+  padding: 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #f8fbff 0%, #ffffff 100%);
+}
+
+.capability-status-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.capability-status-card__title {
+  color: #0f172a;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.capability-status-card__meta {
+  margin-top: 10px;
+  min-height: 20px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.capability-status-card__count {
+  margin-top: 12px;
+  color: #2563eb;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .capability-usage-table {

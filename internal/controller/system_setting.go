@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -62,9 +63,13 @@ func UpdateSystemSetting(c *gin.Context) {
 
 	detail, err := updateSystemSettingDetail(input)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"message": "更新系统设置失败",
-		})
+		status := http.StatusInternalServerError
+		message := "更新系统设置失败"
+		if errors.Is(err, service.ErrInvalidMinRechargeAmount) {
+			status = http.StatusBadRequest
+			message = err.Error()
+		}
+		c.JSON(status, gin.H{"message": message})
 		return
 	}
 	if err := logger.SetMaxTotalLogBytes(detail.MaxLogSizeBytes); err != nil {

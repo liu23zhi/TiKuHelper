@@ -49,7 +49,7 @@
             <a-form-item label="充值金额">
               <a-input-number
                 v-model:value="rechargeAmount"
-                :min="0.01"
+                :min="Math.max(0.01, minRechargeAmount)"
                 :precision="2"
                 :step="1"
                 :parser="parseRechargeAmountInput"
@@ -59,7 +59,7 @@
                 style="width: 100%"
                 @keydown="handleRechargeAmountKeydown"
               />
-              <!-- <div class="hint">充值金额最多两位小数（支付渠道仅支持「分」）。</div> -->
+              <div class="hint">最低充值金额：¥ {{ formatMoneyValue(minRechargeAmount) }}；金额最多支持两位小数。</div>
             </a-form-item>
 
             <a-form-item label="快捷金额">
@@ -228,6 +228,7 @@ const selectedPaymentMethodId = ref(null)
 const paymentResultVisible = ref(false)
 const paymentQRCodeDataUrl = ref('')
 const paymentJumpUrl = ref('')
+const minRechargeAmount = ref(1)
 const rechargeQuickAmounts = [10, 20, 50, 100, 200, 500]
 const currentUser = ref(getStoredCurrentUser())
 const pagination = reactive({
@@ -239,6 +240,13 @@ const pagination = reactive({
   showTotal: (total) => `共 ${total} 条`,
   pageSizeOptions: ['10', '20', '50', '100'],
 })
+
+function normalizeMinRechargeAmount(value) {
+  const amount = Number(value)
+  return Number.isFinite(amount) && amount > 0
+    ? Math.round(amount * 100) / 100
+    : 1
+}
 
 export default defineComponent({
   name: 'UserUsagePage',
@@ -283,6 +291,7 @@ export default defineComponent({
       paymentMethodLoading,
       rechargeSubmitting,
       rechargeAmount,
+      minRechargeAmount,
       parseRechargeAmountInput,
       formatRechargeAmountInput,
       handleRechargeAmountKeydown,
@@ -390,6 +399,12 @@ export default defineComponent({
       getCurrentUser().then((res) => {
         if (res?.status === 200 && res?.data) {
           currentUser.value = res.data
+          if (Object.prototype.hasOwnProperty.call(res.data, 'minRechargeAmount')) {
+            minRechargeAmount.value = normalizeMinRechargeAmount(res.data.minRechargeAmount)
+            if (Number(rechargeAmount.value) < minRechargeAmount.value) {
+              rechargeAmount.value = minRechargeAmount.value
+            }
+          }
           setStoredCurrentUser(res.data)
         }
       }).catch(() => {
@@ -490,6 +505,9 @@ export default defineComponent({
       }
       let payload
       try {
+        if (Number(rechargeAmount.value) < minRechargeAmount.value) {
+          throw new Error(`充值金额不能低于 ¥ ${formatMoneyValue(minRechargeAmount.value)}`)
+        }
         payload = buildRechargeOrderPayload(rechargeAmount.value, selectedPaymentMethodId.value)
       } catch (error) {
         message.warning(error?.message || '充值参数有误')

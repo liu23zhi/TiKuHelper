@@ -92,9 +92,10 @@ type AISearchDebugResult struct {
 	Trace       []AISearchTrace `json:"trace,omitempty"`
 }
 
-// AISearchTrace records the observable request/tool path. Full model output and
-// raw stream data are written to the dedicated thinking log and omitted from the
-// structured audit payload to keep database records bounded.
+// AISearchTrace records the observable request/tool path. Full model output is
+// written to the dedicated thinking log and omitted from the structured audit
+// payload to keep database records bounded. RawResponse is retained for the
+// debug response, but model SSE frames are deliberately not written to logs.
 type AISearchTrace struct {
 	Round               int    `json:"round"`
 	Attempt             int    `json:"attempt,omitempty"`
@@ -163,12 +164,12 @@ func (in *ChatGptClient) logAISearchTrace(trace AISearchTrace) {
 	if trace.FullResponse != "" {
 		logger.AIThinkingWithSecrets(fmt.Sprintf("AI模型完整响应 requestId=%s round=%d stage=%s\n%s", requestID, trace.Round, trace.Stage, trace.FullResponse), in.APIKey)
 	}
-	if trace.RawResponse != "" {
-		label := "AI模型原始流响应"
-		if trace.SearchAPI != "" {
-			label = "AI搜索API完整响应"
-		}
-		logger.AIThinkingWithSecrets(fmt.Sprintf("%s requestId=%s round=%d stage=%s\n%s", label, requestID, trace.Round, trace.Stage, trace.RawResponse), in.APIKey)
+	// RawResponse for model calls is the wire-level SSE body. It is useful to
+	// callers of SearchAnswerDebug, but logging it would emit every `data:`
+	// chunk and make the thinking log noisy. Search/web API responses are normal
+	// complete payloads, so retain those in the detailed trace.
+	if trace.RawResponse != "" && strings.TrimSpace(trace.SearchAPI) != "" {
+		logger.AIThinkingWithSecrets(fmt.Sprintf("AI搜索API完整响应 requestId=%s round=%d stage=%s\n%s", requestID, trace.Round, trace.Stage, trace.RawResponse), in.APIKey)
 	}
 }
 

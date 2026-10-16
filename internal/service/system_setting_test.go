@@ -89,6 +89,61 @@ func TestGetSystemSettingDetailWithDBDefaults(t *testing.T) {
 	if detail.MaxAISearchModelCalls != DefaultMaxAISearchModelCalls || detail.MaxAISearches != DefaultMaxAISearches || detail.MaxAISearchRetries != DefaultMaxAISearchRetries {
 		t.Fatalf("expected default AI budgets %d/%d/%d, got %d/%d/%d", DefaultMaxAISearchModelCalls, DefaultMaxAISearches, DefaultMaxAISearchRetries, detail.MaxAISearchModelCalls, detail.MaxAISearches, detail.MaxAISearchRetries)
 	}
+	if detail.MinRechargeAmount != DefaultMinRechargeAmount {
+		t.Fatalf("expected default minimum recharge amount %.2f, got %.2f", DefaultMinRechargeAmount, detail.MinRechargeAmount)
+	}
+}
+
+func TestUpdateSystemSettingDetailWithDBPersistsMinRechargeAmount(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+
+	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{MinRechargeAmount: 2.345})
+	if err != nil {
+		t.Fatalf("update minimum recharge amount: %v", err)
+	}
+	if updated.MinRechargeAmount != 2.35 {
+		t.Fatalf("expected rounded minimum recharge amount 2.35, got %.4f", updated.MinRechargeAmount)
+	}
+
+	reloaded, err := GetSystemSettingDetailWithDB(db)
+	if err != nil {
+		t.Fatalf("reload minimum recharge amount: %v", err)
+	}
+	if reloaded.MinRechargeAmount != 2.35 {
+		t.Fatalf("expected reloaded minimum recharge amount 2.35, got %.4f", reloaded.MinRechargeAmount)
+	}
+	setting, exists, err := getSystemSettingByKey(db, MinRechargeAmountSettingKey)
+	if err != nil {
+		t.Fatalf("load minimum recharge setting: %v", err)
+	}
+	if !exists || setting.Value != "2.35" {
+		t.Fatalf("expected persisted minimum recharge amount 2.35, exists=%t setting=%+v", exists, setting)
+	}
+}
+
+func TestUpdateSystemSettingDetailWithDBKeepsMinRechargeAmountWhenLegacyPayloadOmitsIt(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+	if _, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{MinRechargeAmount: 3}); err != nil {
+		t.Fatalf("seed minimum recharge amount: %v", err)
+	}
+
+	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{SiteName: "兼容旧前端"})
+	if err != nil {
+		t.Fatalf("update legacy payload: %v", err)
+	}
+	if updated.MinRechargeAmount != 3 {
+		t.Fatalf("legacy payload must preserve minimum recharge amount 3, got %.4f", updated.MinRechargeAmount)
+	}
+}
+
+func TestGetMinRechargeAmountWithDBFallsBackForInvalidPersistedValue(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+	if err := db.Create(&entity.SystemSetting{Key: MinRechargeAmountSettingKey, Value: "-1"}).Error; err != nil {
+		t.Fatalf("seed invalid setting: %v", err)
+	}
+	if got := GetMinRechargeAmountWithDB(db); got != DefaultMinRechargeAmount {
+		t.Fatalf("expected invalid setting to fall back to %.2f, got %.4f", DefaultMinRechargeAmount, got)
+	}
 }
 
 func TestUpdateSystemSettingDetailWithDBPersistsAISearchBudgets(t *testing.T) {

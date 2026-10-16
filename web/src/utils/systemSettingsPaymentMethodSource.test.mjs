@@ -48,6 +48,18 @@ test('SystemSettings exposes the default new-user bonus amount', async () => {
   assert.match(content, /newUserBonusAmount: normalizeBonusAmount\(this\.formState\.newUserBonusAmount\)/);
 });
 
+test('SystemSettings exposes a configurable minimum recharge amount with a 1 yuan default', async () => {
+  const content = await readFile(systemSettingsPagePath, 'utf8');
+
+  assert.match(content, /const DEFAULT_MIN_RECHARGE_AMOUNT = 1/);
+  assert.match(content, /formState\.minRechargeAmount/);
+  assert.match(content, /充值最低金额/);
+  assert.match(content, /默认 1 元/);
+  assert.match(content, /minRechargeAmount: DEFAULT_MIN_RECHARGE_AMOUNT/);
+  assert.match(content, /formState\.minRechargeAmount = normalizeMinRechargeAmount\(data\.minRechargeAmount\)/);
+  assert.match(content, /minRechargeAmount,/);
+});
+
 test('SystemSettings exposes a validated byte-based maximum log size with a 5GB default', async () => {
   const content = await readFile(systemSettingsPagePath, 'utf8');
 

@@ -198,7 +198,19 @@ func AuthOrAccessToken(c *gin.Context) {
 // UserInfo 获取用户信息
 func UserInfo(c *gin.Context) {
 	v, _ := c.Get(`user`)
-	c.JSON(200, v.(*entity.User))
+	user, ok := v.(*entity.User)
+	if !ok || user == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "请重新登录"})
+		return
+	}
+
+	// 普通用户也需要知道当前生效的充值下限，避免管理员调整后页面仍按旧默认值提交。
+	// 读取失败时使用服务层默认值，不影响用户信息接口本身。
+	minimum := service.GetMinRechargeAmountWithDB(dao.User.UnderlyingDB())
+	c.JSON(http.StatusOK, struct {
+		*entity.User
+		MinRechargeAmount float64 `json:"minRechargeAmount"`
+	}{User: user, MinRechargeAmount: minimum})
 }
 
 // UserLogin 用户登录

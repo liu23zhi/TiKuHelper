@@ -734,6 +734,40 @@ func TestCreateRechargeOrderWithDBRejectsInvalidAmount(t *testing.T) {
 	}
 }
 
+func TestCreateRechargeOrderWithDBRejectsAmountBelowConfiguredMinimum(t *testing.T) {
+	db := newRechargeOrderTestDB(t)
+	user := seedRechargeOrderUser(t, db, 33, "user")
+	if err := saveSystemSettingValue(db, MinRechargeAmountSettingKey, "5.00", "充值最低金额（元）"); err != nil {
+		t.Fatalf("seed minimum recharge amount: %v", err)
+	}
+
+	_, err := CreateRechargeOrderWithDB(db, user, CreateRechargeOrderInput{Amount: 4.99, PaymentMethodID: 999})
+	if !errors.Is(err, ErrRechargeAmountBelowMinimum) {
+		t.Fatalf("expected ErrRechargeAmountBelowMinimum, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "5.00") {
+		t.Fatalf("expected error to include configured threshold, got %v", err)
+	}
+
+	var count int64
+	if err := db.Model(&entity.RechargeOrder{}).Count(&count).Error; err != nil {
+		t.Fatalf("count orders: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected no recharge order, got %d", count)
+	}
+}
+
+func TestCreateRechargeOrderWithDBUsesDefaultMinimumRechargeAmount(t *testing.T) {
+	db := newRechargeOrderTestDB(t)
+	user := seedRechargeOrderUser(t, db, 34, "user")
+
+	_, err := CreateRechargeOrderWithDB(db, user, CreateRechargeOrderInput{Amount: 0.99, PaymentMethodID: 999})
+	if !errors.Is(err, ErrRechargeAmountBelowMinimum) {
+		t.Fatalf("expected default minimum error, got %v", err)
+	}
+}
+
 // 充值金额只允许 2 位小数：支付渠道只支持「分」，多余精度必须被拒绝而不是静默四舍五入。
 func TestCreateRechargeOrderWithDBRejectsMoreThanTwoDecimals(t *testing.T) {
 	db := newRechargeOrderTestDB(t)

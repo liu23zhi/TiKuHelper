@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -30,6 +31,7 @@ import (
 
 var ErrRechargeAmountInvalid = errors.New("充值金额不合法")
 var ErrRechargeAmountPrecision = errors.New("充值金额最多支持两位小数")
+var ErrRechargeAmountBelowMinimum = errors.New("充值金额低于最低充值金额")
 var ErrRechargePaymentConfigIncomplete = errors.New("支付配置不完整")
 var ErrRechargePaymentMethodNotFound = errors.New("支付方式不存在")
 var ErrRechargePaymentMethodDisabled = errors.New("支付方式未启用")
@@ -351,6 +353,10 @@ func CreateRechargeOrderWithDB(db *gorm.DB, user entity.User, input CreateRechar
 		return CreateRechargeOrderResult{}, err
 	}
 	amount := normalizeRechargeAmount(input.Amount)
+	minimumAmount := GetMinRechargeAmountWithDB(db)
+	if amount < minimumAmount {
+		return CreateRechargeOrderResult{}, fmt.Errorf("%w：%.2f 元", ErrRechargeAmountBelowMinimum, minimumAmount)
+	}
 
 	paymentMethod, err := loadPaymentMethodByID(db, input.PaymentMethodID)
 	if err != nil {

@@ -92,12 +92,52 @@ type openAIToolCallDelta struct {
 }
 
 type aiToolStreamResult struct {
-	Content        string
-	Calls          []openAIToolCall
-	Usage          AISearchUsage
-	Raw            string
-	FinishReason   string
-	ReasoningChars int
+	Content          string
+	ReasoningContent string
+	Calls            []openAIToolCall
+	Usage            AISearchUsage
+	Raw              string
+	FinishReason     string
+	ReasoningChars   int
+}
+
+// formatAIModelCompleteResponse turns an aggregated stream into one stable
+// response record for the thinking log. The upstream response is streamed as
+// many SSE data frames, but callers need the completed tool arguments and
+// content when reviewing a search round.
+func formatAIModelCompleteResponse(result aiToolStreamResult) string {
+	if len(result.Calls) == 0 && strings.TrimSpace(result.Content) != "" && strings.TrimSpace(result.ReasoningContent) == "" {
+		return result.Content
+	}
+	type usageSnapshot struct {
+		InputTokens  int64 `json:"prompt_tokens,omitempty"`
+		OutputTokens int64 `json:"completion_tokens,omitempty"`
+		TotalTokens  int64 `json:"total_tokens,omitempty"`
+	}
+	payload := struct {
+		Content          string           `json:"content,omitempty"`
+		ReasoningContent string           `json:"reasoning_content,omitempty"`
+		ToolCalls        []openAIToolCall `json:"tool_calls,omitempty"`
+		FinishReason     string           `json:"finish_reason,omitempty"`
+		ReasoningChars   int              `json:"reasoning_chars,omitempty"`
+		Usage            usageSnapshot    `json:"usage,omitempty"`
+	}{
+		Content:          result.Content,
+		ReasoningContent: result.ReasoningContent,
+		ToolCalls:        result.Calls,
+		FinishReason:     result.FinishReason,
+		ReasoningChars:   result.ReasoningChars,
+		Usage: usageSnapshot{
+			InputTokens:  result.Usage.InputTokens,
+			OutputTokens: result.Usage.OutputTokens,
+			TotalTokens:  result.Usage.TotalTokens,
+		},
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return strings.TrimSpace(result.Content)
+	}
+	return string(encoded)
 }
 
 func aiWebSearchToolDefinition() openAITool {
@@ -216,7 +256,7 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 			in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Attempt: retry + 1, AttemptBudget: attempts, Stage: "模型调用开始", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, RequestBody: string(encoded)})
 			attemptStartedAt := time.Now()
 			result, status, callErr = in.requestAIToolRound(ctx, endpoint, encoded)
-			in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Attempt: retry + 1, AttemptBudget: attempts, Stage: "模型响应", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, Status: fmt.Sprintf("%d", status), DurationMs: time.Since(attemptStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, ReasoningChars: result.ReasoningChars, ContentPreview: result.Content, FullResponse: result.Content, RawResponse: result.Raw, Error: errorString(callErr)})
+			in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Attempt: retry + 1, AttemptBudget: attempts, Stage: "模型响应", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, Status: fmt.Sprintf("%d", status), DurationMs: time.Since(attemptStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, ReasoningChars: result.ReasoningChars, ContentPreview: result.Content, FullResponse: formatAIModelCompleteResponse(result), RawResponse: result.Raw, Error: errorString(callErr)})
 			requestBodies = append(requestBodies, string(encoded))
 			rawResponses = append(rawResponses, result.Raw)
 			addAISearchUsage(&debug.Usage, result.Usage)
@@ -451,7 +491,7 @@ func (in *ChatGptClient) requestAIToolRound(ctx context.Context, endpoint string
 func readAIToolStream(body io.Reader) (result aiToolStreamResult, err error) {
 	scanner := bufio.NewScanner(io.LimitReader(body, aiToolMaxStreamBytes+1))
 	scanner.Buffer(make([]byte, 4096), 256*1024)
-	var content, raw strings.Builder
+	var content, reasoning, raw strings.Builder
 	defer func() { result.Raw = raw.String() }()
 	calls := make(map[int]*openAIToolCall)
 	done := false
@@ -483,6 +523,7 @@ func readAIToolStream(body io.Reader) (result aiToolStreamResult, err error) {
 		}
 		for _, choice := range chunk.Choices {
 			content.WriteString(choice.Delta.Content)
+			reasoning.WriteString(choice.Delta.ReasoningContent)
 			result.ReasoningChars += len([]rune(choice.Delta.ReasoningContent))
 			if choice.FinishReason != "" {
 				result.FinishReason = choice.FinishReason
@@ -509,6 +550,7 @@ func readAIToolStream(body io.Reader) (result aiToolStreamResult, err error) {
 		}
 	}
 	result.Content = content.String()
+	result.ReasoningContent = reasoning.String()
 	result.Raw = raw.String()
 	if err := scanner.Err(); err != nil {
 		return result, err

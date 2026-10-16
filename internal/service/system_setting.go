@@ -49,6 +49,7 @@ const MaxAISearchRetriesSettingKey = "max_ai_search_retries"
 const AISearchPricePerCallSettingKey = "ai_search_price_per_call"
 const MaxAIWebReadsSettingKey = "max_ai_web_reads"
 const WebReadPricePerCallSettingKey = "web_read_price_per_call"
+const MinRechargeAmountSettingKey = "min_recharge_amount"
 
 // UAPIAPIKeySettingKey 是 UApiPro（uapis.cn）的 API 密钥。
 //
@@ -77,6 +78,7 @@ const DefaultMaxAISearchRetries = 3
 const DefaultAISearchPricePerCall = float64(0)
 const DefaultMaxAIWebReads = 5
 const DefaultWebReadPricePerCall = float64(0)
+const DefaultMinRechargeAmount = float64(1)
 const MaxAllowedAISearchModelCalls = 20
 const MaxAllowedAISearches = 20
 const MaxAllowedAISearchRetries = 10
@@ -124,6 +126,7 @@ type SystemSettingDetail struct {
 	MaxAISearchRetries    int     `json:"maxAISearchRetries"`
 	MaxAIWebReads         int     `json:"maxAIWebReads"`
 	WebReadPricePerCall   float64 `json:"webReadPricePerCall"`
+	MinRechargeAmount     float64 `json:"minRechargeAmount"`
 }
 
 type UpdateSystemSettingInput struct {
@@ -165,9 +168,11 @@ type UpdateSystemSettingInput struct {
 	MaxAISearchRetries    int     `json:"maxAISearchRetries"`
 	MaxAIWebReads         int     `json:"maxAIWebReads"`
 	WebReadPricePerCall   float64 `json:"webReadPricePerCall"`
+	MinRechargeAmount     float64 `json:"minRechargeAmount"`
 }
 
 var ErrInvalidNewUserBonusAmount = errors.New("新用户赠送金额不能为负数")
+var ErrInvalidMinRechargeAmount = errors.New("最低充值金额必须是大于 0 的有效金额")
 
 type PublicAuthSettings struct {
 	RegisterEnabled           bool   `json:"registerEnabled"`
@@ -314,6 +319,7 @@ func GetSystemSettingDetailWithDB(db *gorm.DB) (SystemSettingDetail, error) {
 		MaxAISearchRetries:        getPositiveBoundedIntSystemSetting(db, MaxAISearchRetriesSettingKey, DefaultMaxAISearchRetries, MaxAllowedAISearchRetries),
 		MaxAIWebReads:             getPositiveBoundedIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads, MaxAllowedAISearches),
 		WebReadPricePerCall:       GetWebReadPricePerCallWithDB(db),
+		MinRechargeAmount:         GetMinRechargeAmountWithDB(db),
 	}
 	bonusAmount, err := GetNewUserBonusAmountWithDB(db)
 	if err != nil {
@@ -328,6 +334,10 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		return SystemSettingDetail{}, err
 	}
 	bonusAmount, err := normalizeNewUserBonusAmount(input.NewUserBonusAmount)
+	if err != nil {
+		return SystemSettingDetail{}, err
+	}
+	minRechargeAmount, err := resolveMinRechargeAmount(db, input.MinRechargeAmount)
 	if err != nil {
 		return SystemSettingDetail{}, err
 	}
@@ -379,6 +389,7 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		MaxAISearchRetries:    resolveMaxAISearchBudget(db, input.MaxAISearchRetries, MaxAISearchRetriesSettingKey, DefaultMaxAISearchRetries, MaxAllowedAISearchRetries),
 		MaxAIWebReads:         resolveMaxAISearchBudget(db, input.MaxAIWebReads, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads, MaxAllowedAISearches),
 		WebReadPricePerCall:   resolveWebReadPrice(db, input.WebReadPricePerCall),
+		MinRechargeAmount:     minRechargeAmount,
 	}
 	normalized.AlternativeLoginEnabled = normalized.SMSLoginEnabled || normalized.WechatLoginEnabled
 
@@ -423,6 +434,7 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		{MaxAISearchRetriesSettingKey, strconv.Itoa(normalized.MaxAISearchRetries), "AI 搜索每轮失败重试次数（含首次调用）"},
 		{MaxAIWebReadsSettingKey, strconv.Itoa(normalized.MaxAIWebReads), "AI 搜索网页读取最大次数"},
 		{WebReadPricePerCallSettingKey, strconv.FormatFloat(normalized.WebReadPricePerCall, 'f', -1, 64), "网页读取单价（元/次）"},
+		{MinRechargeAmountSettingKey, formatRechargeSettingAmount(normalized.MinRechargeAmount), "充值最低金额（元）"},
 	}
 	for _, item := range settings {
 		if err := saveSystemSettingValue(db, item.key, item.value, item.remark); err != nil {
@@ -438,6 +450,49 @@ func resolveMaxLogSizeBytes(db *gorm.DB, requested int64) int64 {
 		return requested
 	}
 	return getPositiveInt64SystemSetting(db, MaxLogSizeBytesSettingKey, DefaultMaxLogSizeBytes)
+}
+
+// GetMinRechargeAmountWithDB returns the configured minimum recharge amount.
+// Invalid or missing persisted values fall back to the one-yuan default so a
+// malformed setting cannot accidentally disable the server-side restriction.
+func GetMinRechargeAmountWithDB(db *gorm.DB) float64 {
+	if db == nil || !db.Migrator().HasTable(&entity.SystemSetting{}) {
+		return DefaultMinRechargeAmount
+	}
+	raw := strings.TrimSpace(getSystemSettingStringWithDefault(db, MinRechargeAmountSettingKey, formatRechargeSettingAmount(DefaultMinRechargeAmount)))
+	amount, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return DefaultMinRechargeAmount
+	}
+	normalized, err := normalizeMinRechargeAmount(amount)
+	if err != nil {
+		return DefaultMinRechargeAmount
+	}
+	return normalized
+}
+
+func normalizeMinRechargeAmount(amount float64) (float64, error) {
+	if math.IsNaN(amount) || math.IsInf(amount, 0) || amount <= 0 {
+		return 0, ErrInvalidMinRechargeAmount
+	}
+	return util.RoundMoneyToDecimals(amount, util.RechargePrecision), nil
+}
+
+func resolveMinRechargeAmount(db *gorm.DB, requested float64) (float64, error) {
+	if requested > 0 {
+		return normalizeMinRechargeAmount(requested)
+	}
+	if requested < 0 || math.IsNaN(requested) || math.IsInf(requested, 0) {
+		return 0, ErrInvalidMinRechargeAmount
+	}
+	// A zero value means the field was omitted by an older frontend. Preserve
+	// the previously stored value instead of resetting it during unrelated
+	// settings updates.
+	return GetMinRechargeAmountWithDB(db), nil
+}
+
+func formatRechargeSettingAmount(amount float64) string {
+	return strconv.FormatFloat(util.RoundMoneyToDecimals(amount, util.RechargePrecision), 'f', util.RechargePrecision, 64)
 }
 
 func getPositiveInt64SystemSetting(db *gorm.DB, key string, defaultValue int64) int64 {

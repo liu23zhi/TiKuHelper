@@ -46,6 +46,34 @@ func writeAIFinalStream(w http.ResponseWriter) {
 	fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[\\\"4\\\"]}\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":3,\"total_tokens\":23}}\n\ndata: [DONE]\n\n")
 }
 
+func TestFormatAIModelCompleteResponseAggregatesToolCallsWithoutSSEFrames(t *testing.T) {
+	result := aiToolStreamResult{
+		Content:          "",
+		ReasoningContent: "先核对搜索结果，再返回答案。",
+		Calls: []openAIToolCall{{
+			ID:   "call-1",
+			Type: "function",
+			Function: openAIToolFunction{
+				Name:      "web_search",
+				Arguments: `{"query":"美少女日常电视剧 动漫 生活幻想 选择题"}`,
+			},
+		}},
+		FinishReason:   "tool_calls",
+		ReasoningChars: 12,
+		Usage:          AISearchUsage{InputTokens: 10, OutputTokens: 4, TotalTokens: 14},
+	}
+
+	complete := formatAIModelCompleteResponse(result)
+	if strings.Contains(complete, "data:") || strings.Contains(complete, "[DONE]") {
+		t.Fatalf("complete response must not contain SSE framing: %s", complete)
+	}
+	for _, expected := range []string{"web_search", "美少女日常电视剧 动漫 生活幻想 选择题", "tool_calls", "先核对搜索结果，再返回答案。", `"prompt_tokens":10`} {
+		if !strings.Contains(complete, expected) {
+			t.Fatalf("complete response is missing %q: %s", expected, complete)
+		}
+	}
+}
+
 func TestAISearchToolsSearchTwiceAndAccumulateUsage(t *testing.T) {
 	tool := &testAISearchTool{}
 	round := 0
@@ -117,6 +145,9 @@ func TestAISearchToolsSearchTwiceAndAccumulateUsage(t *testing.T) {
 		}
 		if trace.FullResponse != "" {
 			fullResponseCount++
+			if strings.Contains(trace.FullResponse, "data:") || strings.Contains(trace.FullResponse, "[DONE]") {
+				t.Fatalf("model trace must contain completed content rather than SSE frames: %s", trace.FullResponse)
+			}
 		}
 		if trace.RawResponse != "" {
 			rawResponseCount++
