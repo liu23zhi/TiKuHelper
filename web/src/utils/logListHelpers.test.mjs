@@ -10,6 +10,7 @@ import {
   buildLogActionLabel,
   buildLogDetailSections,
   buildLogModuleLabel,
+  buildLogResultText,
   buildLogRowDetail,
   buildLogStatusLabel,
   buildLogStatusColor,
@@ -28,7 +29,8 @@ test('search failures show provider causes and distinguish partial failure and n
     newAnswer: JSON.stringify({ status: 'failed', failures: [{ provider: 'ai', code: 'UPSTREAM_ERROR', error: 'HTTP 401: invalid api key' }] }),
   };
   assert.equal(buildLogStatusLabel(record), '失败');
-  assert.equal(buildLogRowDetail(record), 'ai [UPSTREAM_ERROR]：HTTP 401: invalid api key');
+  // 渠道名已经在「命中渠道 / 错误原因」列单独展示，这里只保留原因本身。
+  assert.equal(buildLogRowDetail(record), '失败原因：[UPSTREAM_ERROR]：HTTP 401: invalid api key');
   assert.equal(buildLogStatusLabel({ ...record, description: '搜索完成', newAnswer: JSON.stringify({ status: 'partial_failure' }) }), '部分失败');
   assert.equal(buildLogStatusColor({ ...record, newAnswer: JSON.stringify({ status: 'partial_failure' }) }), 'orange');
   assert.equal(buildLogStatusLabel({ ...record, newAnswer: JSON.stringify({ status: 'no_answer' }) }), '无答案');
@@ -41,8 +43,88 @@ test('AI fallback details prefer diagnostic detail without losing the response s
     description: 'AI兜底失败 status=failed code=UPSTREAM_ERROR',
     newAnswer: JSON.stringify({ success: false, error: { code: 'UPSTREAM_ERROR', message: 'AI 上游请求失败' }, failureDetail: 'HTTP 429: rate limited' }),
   };
-  assert.equal(buildLogRowDetail(record), 'HTTP 429: rate limited');
+  assert.equal(buildLogRowDetail(record), '失败原因：HTTP 429: rate limited / AI 上游请求失败');
   assert.equal(buildLogStructuredFields(record).responseSnapshot, record.newAnswer);
+});
+
+test('search result is shown directly in the detail column', () => {
+  const record = {
+    module: 'search',
+    description: '搜索完成 requestId=req-ok mode=normal use= answers=1 hitProvider=ai billingProvider=ai',
+    newAnswer: JSON.stringify({
+      question: '题干',
+      options: ['A', 'B'],
+      type: 0,
+      answer: {
+        answerKey: ['A'],
+        answerKeyText: 'A',
+        answerIndex: [0],
+        answerText: '有,详细的计划表',
+        bestAnswer: ['有,详细的计划表'],
+      },
+      status: 'success',
+    }),
+  };
+
+  // 详情列直接给结果：选项字母 + 答案文本。
+  assert.equal(buildLogResultText(record), 'A 有,详细的计划表');
+  assert.equal(buildLogRowDetail(record), '答案：A 有,详细的计划表');
+  // 成功的行不该在「命中渠道 / 错误原因」列出现错误原因。
+  assert.deepEqual(buildLogStructuredFields(record).failureReasons, []);
+  assert.equal(buildLogStructuredFields(record).hitProvider, 'AI');
+});
+
+test('detail column falls back to bestAnswer when answerText is missing', () => {
+  const record = {
+    module: 'search',
+    description: '搜索完成 requestId=req-best mode=normal use= answers=1 hitProvider=local',
+    newAnswer: JSON.stringify({
+      answer: { bestAnswer: ['第一条', '第二条'], allAnswer: [['第一条'], ['第二条']] },
+      status: 'partial_failure',
+    }),
+  };
+  assert.equal(buildLogResultText(record), '第一条 / 第二条');
+  assert.equal(buildLogRowDetail(record), '答案：第一条 / 第二条');
+});
+
+test('AI fallback result is shown directly in the detail column', () => {
+  const record = {
+    module: 'ai_fallback',
+    description: 'AI兜底成功 status=success answers=1 hitProvider=ai billingProvider=ai',
+    newAnswer: JSON.stringify({ success: true, result: { question: '题干', answer: '这是兜底答案' } }),
+  };
+  assert.equal(buildLogResultText(record), '这是兜底答案');
+  assert.equal(buildLogRowDetail(record), '答案：这是兜底答案');
+});
+
+test('channel column keeps the failure reason when the snapshot has no failures', () => {
+  // 历史行：快照里只有 status，失败明细只存在于审计描述里。
+  const record = {
+    module: 'search',
+    description: '搜索失败 requestId=req-old mode=ai answers=0 provider=ai code=UPSTREAM_ERROR error=HTTP401',
+    newAnswer: JSON.stringify({ status: 'failed' }),
+  };
+  const fields = buildLogStructuredFields(record);
+  assert.equal(fields.hitProvider, 'AI');
+  assert.deepEqual(fields.failureReasons, ['ai [UPSTREAM_ERROR]：HTTP401']);
+  // 没有答案时详情列才退回原因，保证信息不丢。
+  assert.equal(buildLogRowDetail(record), '失败原因：ai [UPSTREAM_ERROR]：HTTP401');
+});
+
+test('LogList puts channel and billing columns right after the summary column', async () => {
+  const content = await readFile(logListPagePath, 'utf8');
+  const titles = [...content.matchAll(/title: '([^']+)'/g)].map((match) => match[1]);
+
+  const summaryIndex = titles.indexOf('说明');
+  assert.ok(summaryIndex >= 0, 'missing summary column');
+  assert.equal(titles[summaryIndex + 1], '命中渠道 / 错误原因');
+  assert.equal(titles[summaryIndex + 2], '计费渠道');
+  assert.ok(titles.indexOf('详情') > summaryIndex + 2, 'detail column should follow the channel columns');
+  assert.deepEqual(titles, [
+    '时间', '模块', '状态', '用户', '来源 IP', '本地题库 ID',
+    '说明', '命中渠道 / 错误原因', '计费渠道', '详情',
+    '请求 ID', '请求参数', '请求接口', '答案数', '原始请求', '原始响应',
+  ]);
 });
 
 test('buildLogModuleLabel supports search module wording', () => {

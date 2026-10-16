@@ -72,7 +72,11 @@ export function buildLogStructuredFields(record = {}) {
 
   if (parsedAIFallbackDescription.summary) {
     const fallbackSnapshot = parseLogSnapshot(response);
-    const channel = buildHitProviderFields(parsedAIFallbackDescription.hitProvider || (parsedAIFallbackDescription.code ? 'ai' : '-'), fallbackSnapshot);
+    const channel = buildHitProviderFields(
+      parsedAIFallbackDescription.hitProvider || (parsedAIFallbackDescription.code ? 'ai' : '-'),
+      fallbackSnapshot,
+      description,
+    );
     return {
       summary: parsedAIFallbackDescription.summary,
       requestId: parsedAIFallbackDescription.requestId || parsedAIFallbackDescription.taskId || '-',
@@ -102,7 +106,7 @@ export function buildLogStructuredFields(record = {}) {
     };
   }
 
-  const channel = buildHitProviderFields(parsedDescription.hitProvider, parseLogSnapshot(response));
+  const channel = buildHitProviderFields(parsedDescription.hitProvider, parseLogSnapshot(response), description);
   return {
     summary: parsedDescription.summary || description || '-',
     requestId: parsedDescription.requestId || '-',
@@ -115,6 +119,63 @@ export function buildLogStructuredFields(record = {}) {
     requestSnapshot: request || '-',
     responseSnapshot: response || '-',
   };
+}
+
+/**
+ * 提取「结果」文本，供详情列直接展示。
+ *
+ * - 搜题：响应快照里的 answer（选项字母 + 答案文本，缺了再退到 bestAnswer / allAnswer）
+ * - AI 兜底：响应快照里的 result.answer
+ *
+ * 取不到结果时返回空串，由调用方降级（例如退回失败原因或原始快照）。
+ *
+ * @param {object} record
+ * @returns {string}
+ */
+export function buildLogResultText(record = {}) {
+  const module = String(record?.module || '').trim().toLowerCase();
+  if (module !== 'search' && module !== 'ai_fallback') {
+    return '';
+  }
+  const snapshot = parseLogSnapshot(String(record?.newAnswer || '').trim());
+
+  if (module === 'ai_fallback') {
+    return normalizeResultText(snapshot?.result?.answer);
+  }
+
+  const answer = snapshot && typeof snapshot.answer === 'object' && snapshot.answer !== null ? snapshot.answer : {};
+  const keyText = normalizeResultText(answer.answerKeyText);
+  const text = normalizeResultText(answer.answerText);
+  if (keyText && text && keyText !== text) {
+    return `${keyText} ${text}`;
+  }
+  if (text) {
+    return text;
+  }
+  if (keyText) {
+    return keyText;
+  }
+  return joinAnswerList(answer.bestAnswer) || joinAnswerList(flattenAnswerList(answer.allAnswer));
+}
+
+function normalizeResultText(value) {
+  // 答案文本里的换行压成空格：详情列是一行摘要，完整原文仍在「原始响应」列。
+  return String(value ?? '').replace(/\s+/g, ' ').trim();
+}
+
+function joinAnswerList(value) {
+  if (!Array.isArray(value)) {
+    return '';
+  }
+  const list = value.map((item) => normalizeResultText(item)).filter(Boolean);
+  return [...new Set(list)].join(' / ');
+}
+
+function flattenAnswerList(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flat(Infinity);
 }
 
 function resolveLogStatus(record = {}) {
@@ -148,22 +209,15 @@ export function buildLogRowDetail(record = {}) {
   const captchaFields = parseCaptchaLogDescriptionMap(description);
 
   if (record.module === 'search' || record.module === 'ai_fallback') {
-    const snapshot = parseLogSnapshot(response);
-    if (typeof snapshot.failureDetail === 'string' && snapshot.failureDetail.trim()) {
-      return truncateInlineText(snapshot.failureDetail, 120);
+    // 详情列直接给「结果」；失败原因统一在「命中渠道 / 错误原因」列。
+    // 确实没有结果时才退回原因（带「失败原因：」前缀，避免与答案混淆）。
+    const result = buildLogResultText(record);
+    if (result) {
+      return `答案：${truncateInlineText(result, 160)}`;
     }
-    if (Array.isArray(snapshot.failures)) {
-      const failures = snapshot.failures.filter((failure) => typeof failure?.error === 'string' && failure.error.trim());
-      if (failures.length) {
-        return truncateInlineText(failures.map((failure) => {
-          const provider = typeof failure.provider === 'string' ? failure.provider : '-';
-          const code = typeof failure.code === 'string' && failure.code ? ` [${failure.code}]` : '';
-          return `${provider}${code}：${failure.error}`;
-        }).join(' / '), 120);
-      }
-    }
-    if (typeof snapshot.error?.message === 'string' && snapshot.error.message.trim()) {
-      return truncateInlineText(snapshot.error.message, 120);
+    const reasons = buildLogStructuredFields(record).failureReasons;
+    if (reasons.length) {
+      return `失败原因：${truncateInlineText(reasons.join(' / '), 120)}`;
     }
   }
 
@@ -320,12 +374,15 @@ function buildRequestParamsLabel(request) {
   return parts.join(' ') || '-';
 }
 
-function buildHitProviderFields(provider, snapshot = {}) {
+function buildHitProviderFields(provider, snapshot = {}, description = '') {
   let normalizedProvider = String(provider || '').trim();
   if (normalizedProvider === '-') {
     normalizedProvider = '';
   }
   const errors = [];
+  // 描述串里的 `provider=... code=... error=...` 是审计写入口留下的原文，
+  // 快照没有明细时（历史行 / 被裁剪过的快照）靠它兜底。
+  const descriptionFailures = parseDescriptionFailureReasons(description);
 
   if (Array.isArray(snapshot?.failures)) {
     if (!normalizedProvider) {
@@ -346,6 +403,9 @@ function buildHitProviderFields(provider, snapshot = {}) {
       errors.push(`${prefix}${codeText}${prefix || codeText ? '：' : ''}${error}`.trim());
     });
   }
+  if (!normalizedProvider) {
+    normalizedProvider = [...new Set(descriptionFailures.map((failure) => failure.provider).filter(Boolean))].join('、');
+  }
 
   const failureDetail = String(snapshot?.failureDetail || '').trim();
   if (failureDetail) {
@@ -356,10 +416,44 @@ function buildHitProviderFields(provider, snapshot = {}) {
     errors.push(errorMessage);
   }
 
+  if (errors.length === 0) {
+    errors.push(...descriptionFailures.map((failure) => failure.text));
+  }
+
   return {
     provider: normalizedProvider.split(/[、,]/).map((value) => value === 'ai' ? 'AI' : value).join('、') || '-',
     errors: [...new Set(errors)],
   };
+}
+
+/**
+ * 从审计描述里解析失败原因三元组（`provider=ai code=UPSTREAM_ERROR error=xxx`）。
+ *
+ * 描述被截断到 255 字符，error 也是以空白结尾的 token，
+ * 因此这里只当作「快照没有明细时」的兜底。
+ *
+ * @returns {Array<{provider: string, code: string, text: string}>}
+ */
+function parseDescriptionFailureReasons(description) {
+  const text = String(description || '');
+  const reasons = [];
+  const pattern = /provider=([^\s;]+)\s+code=([^\s;]*)\s+error=([^\s;]+)/g;
+  let match = pattern.exec(text);
+  while (match !== null) {
+    const provider = match[1] === '-' ? '' : match[1];
+    const code = match[2] === '-' ? '' : match[2];
+    const error = match[3] === '-' ? '' : match[3];
+    if (error || code) {
+      const codeText = code ? ` [${code}]` : '';
+      reasons.push({
+        provider,
+        code,
+        text: `${provider}${codeText}${provider || codeText ? '：' : ''}${error}`.trim(),
+      });
+    }
+    match = pattern.exec(text);
+  }
+  return reasons;
 }
 
 function buildBillingProviderLabel(value) {

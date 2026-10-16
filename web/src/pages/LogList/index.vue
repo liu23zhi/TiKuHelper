@@ -322,6 +322,26 @@ export default defineComponent({
           width: 220,
         },
         {
+          // 紧跟「说明」：搜题失败时的原因必须第一眼看到（详见 logListHelpers 的 buildHitProviderFields）。
+          title: '命中渠道 / 错误原因',
+          dataIndex: 'hitProvider',
+          key: 'hitProvider',
+          slots: {
+            customRender: 'hitProvider',
+          },
+          width: 200,
+        },
+        {
+          title: '计费渠道',
+          dataIndex: 'billingProvider',
+          key: 'billingProvider',
+          slots: {
+            customRender: 'billingProvider',
+          },
+          width: 140,
+        },
+        {
+          // 详情列直接给「结果」（答案），不再放错误原因。
           title: '详情',
           dataIndex: 'detail',
           key: 'detail',
@@ -365,24 +385,6 @@ export default defineComponent({
             customRender: 'answerCount',
           },
           width: 100,
-        },
-        {
-          title: '命中渠道 / 错误原因',
-          dataIndex: 'hitProvider',
-          key: 'hitProvider',
-          slots: {
-            customRender: 'hitProvider',
-          },
-          width: 140,
-        },
-        {
-          title: '计费渠道',
-          dataIndex: 'billingProvider',
-          key: 'billingProvider',
-          slots: {
-            customRender: 'billingProvider',
-          },
-          width: 140,
         },
         {
           title: '原始请求',
