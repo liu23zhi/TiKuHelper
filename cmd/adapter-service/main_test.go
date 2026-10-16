@@ -68,6 +68,20 @@ func TestTrustedProxyClientIP(t *testing.T) {
 			name: "untrusted peer cannot use configured proxy headers", env: "10.0.0.10",
 			remoteAddr: "198.51.100.10:32100", forwardedFor: "203.0.113.99", realIP: "203.0.113.88", want: "198.51.100.10",
 		},
+		{
+			// 局域网/本地是隐式默认可信来源：只配置了公网代理时，
+			// 内网反代（192.168/10/172.16-31/127/::1）照样能透传 XFF。
+			name: "lan peer is trusted by default", env: "198.51.100.7",
+			remoteAddr: "192.168.1.9:32100", forwardedFor: "203.0.113.99", want: "203.0.113.99",
+		},
+		{
+			name: "loopback peer is trusted by default", env: "198.51.100.7",
+			remoteAddr: "127.0.0.1:32100", forwardedFor: "203.0.113.99", want: "203.0.113.99",
+		},
+		{
+			name: "docker gateway peer is trusted by default", env: "198.51.100.7",
+			remoteAddr: "172.19.0.1:32100", forwardedFor: "203.0.113.99", want: "203.0.113.99",
+		},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -137,7 +151,20 @@ func TestGracefulShutdownClosesHTTPAndFileLogs(t *testing.T) {
 func TestResolveTrustedProxiesUsesConfiguredValues(t *testing.T) {
 	got := resolveTrustedProxies(" 10.0.0.10, 172.18.0.0/16 ", "")
 	expected := []string{"10.0.0.10", "172.18.0.0/16"}
-	if !reflect.DeepEqual(got, expected) {
-		t.Fatalf("expected configured proxies %v, got %v", expected, got)
+	if len(got) < len(expected) || !reflect.DeepEqual(got[:len(expected)], expected) {
+		t.Fatalf("expected configured proxies %v first, got %v", expected, got)
+	}
+	// 配置了可信代理时，局域网/本地地址作为默认值补在后面。
+	for _, entry := range defaultTrustedProxies {
+		found := false
+		for _, gotEntry := range got {
+			if gotEntry == entry {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected LAN/local default %s in %v", entry, got)
+		}
 	}
 }

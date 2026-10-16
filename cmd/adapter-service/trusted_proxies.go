@@ -24,11 +24,31 @@ const (
 	trustAllProxiesIPv6 = "::/0"
 )
 
+// defaultTrustedProxies 是「局域网 + 本地」的隐式默认可信来源。
+//
+// 为什么默认信任它们：这些地址只可能来自本机（宿主机反代 / Docker 网关）
+// 或内网（1Panel、宝塔、内网 Nginx、其它容器），公网客户端根本连不上。
+// 让它们免配置即可透传 X-Forwarded-For，能省掉一大类「整站只看到一个代理地址」的坑。
+//
+// 这条默认值只在用户配置了可信代理时作为补充；用户完全没配置时仍是「信任所有来源」，
+// 见 resolveTrustedProxies —— 不要为了收紧默认值而破坏那条行为。
+var defaultTrustedProxies = []string{
+	"127.0.0.0/8",    // IPv4 本地回环：宿主机上的反向代理
+	"::1/128",        // IPv6 本地回环
+	"10.0.0.0/8",     // RFC1918 局域网
+	"172.16.0.0/12",  // RFC1918 局域网（含 Docker 默认网段 172.17-172.31）
+	"192.168.0.0/16", // RFC1918 局域网
+	"169.254.0.0/16", // IPv4 链路本地
+	"fc00::/7",       // IPv6 ULA
+	"fe80::/10",      // IPv6 链路本地
+}
+
 // trustedProxyConfig 是最终生效的可信代理配置。
 type trustedProxyConfig struct {
-	List    []string
-	Source  string // "env"、文件路径，或空字符串（未配置）
-	Invalid []string
+	List            []string
+	Source          string // "env"、文件路径，或空字符串（未配置）
+	Invalid         []string
+	ConfiguredCount int // 用户显式配置的条目数（不含隐式默认值）
 }
 
 // trustedProxyKeyPrefixes 是各种配置/指令写法里的键名，解析时整段剥掉。
@@ -60,15 +80,63 @@ func loadTrustedProxies() (trustedProxyConfig, error) {
 
 	switch {
 	case len(envEntries) > 0:
-		return trustedProxyConfig{List: envEntries, Source: trustedProxiesEnv, Invalid: envInvalid}, nil
+		return newTrustedProxyConfig(envEntries, trustedProxiesEnv, envInvalid), nil
 	case len(envInvalid) > 0:
 		return trustedProxyConfig{}, fmt.Errorf("环境变量 %s 里没有可解析的 IP/CIDR：%s", trustedProxiesEnv, strings.Join(envInvalid, "、"))
 	case len(fileEntries) > 0:
-		return trustedProxyConfig{List: fileEntries, Source: path, Invalid: fileInvalid}, nil
+		return newTrustedProxyConfig(fileEntries, path, fileInvalid), nil
 	case len(fileInvalid) > 0:
 		return trustedProxyConfig{}, fmt.Errorf("%s 里没有可解析的 IP/CIDR：%s（清空该文件即信任所有来源）", path, strings.Join(fileInvalid, "、"))
 	default:
 		return trustedProxyConfig{List: []string{trustAllProxiesIPv4, trustAllProxiesIPv6}}, nil
+	}
+}
+
+// newTrustedProxyConfig 组装最终配置：用户条目 + 「局域网/本地」默认值。
+func newTrustedProxyConfig(configured []string, source string, invalid []string) trustedProxyConfig {
+	return trustedProxyConfig{
+		List:            composeTrustedProxies(configured),
+		Source:          source,
+		Invalid:         invalid,
+		ConfiguredCount: len(configured),
+	}
+}
+
+// composeTrustedProxies 把用户配置与「局域网 + 本地」默认值合并（去重，配置项在前）。
+//
+// 用户显式写了全信任（0.0.0.0/0 / ::/0）时不再补默认值 —— 那是冗余噪音。
+func composeTrustedProxies(configured []string) []string {
+	seen := make(map[string]struct{}, len(configured)+len(defaultTrustedProxies))
+	list := make([]string, 0, len(configured)+len(defaultTrustedProxies))
+	for _, entry := range configured {
+		if _, ok := seen[entry]; ok {
+			continue
+		}
+		seen[entry] = struct{}{}
+		list = append(list, entry)
+	}
+	for _, entry := range list {
+		if isTrustAllProxyEntry(entry) {
+			return list
+		}
+	}
+	for _, entry := range defaultTrustedProxies {
+		if _, ok := seen[entry]; ok {
+			continue
+		}
+		seen[entry] = struct{}{}
+		list = append(list, entry)
+	}
+	return list
+}
+
+// isTrustAllProxyEntry 判断某条配置本身是否就是「信任所有来源」。
+func isTrustAllProxyEntry(entry string) bool {
+	switch strings.TrimSpace(entry) {
+	case trustAllProxiesIPv4, trustAllProxiesIPv6, "0/0":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -82,10 +150,10 @@ func loadTrustedProxies() (trustedProxyConfig, error) {
 // 真正的配置校验、无效条目告警与「全是错的就报错」在 loadTrustedProxies 里。
 func resolveTrustedProxies(envValue, fileValue string) []string {
 	if entries, _ := parseTrustedProxyEntries(envValue); len(entries) > 0 {
-		return entries
+		return composeTrustedProxies(entries)
 	}
 	if entries, _ := parseTrustedProxyEntries(fileValue); len(entries) > 0 {
-		return entries
+		return composeTrustedProxies(entries)
 	}
 	return []string{trustAllProxiesIPv4, trustAllProxiesIPv6}
 }
@@ -311,5 +379,9 @@ func logTrustedProxies(config trustedProxyConfig) {
 		logger.SysWarn("未配置可信代理（TRUSTED_PROXIES / trusted_proxies.txt 均为空）：将读取所有来源的 X-Forwarded-For，如需收紧请设置其中之一")
 		return
 	}
-	logger.SysLog("可信代理来源=" + config.Source + " count=" + strconv.Itoa(len(config.List)) + " list=" + strings.Join(config.List, ","))
+	message := "可信代理来源=" + config.Source + " 配置=" + strconv.Itoa(config.ConfiguredCount) + " 条"
+	if defaults := len(config.List) - config.ConfiguredCount; defaults > 0 {
+		message += " 默认局域网/本地=+" + strconv.Itoa(defaults) + " 条"
+	}
+	logger.SysLog(message + " list=" + strings.Join(config.List, ","))
 }

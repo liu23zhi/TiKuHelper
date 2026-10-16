@@ -14,7 +14,7 @@ services:
       # 需要固定初始化密码时，取消下一行注释并改成自己的强密码。这个文件只是示例。
       # TIKU_ADMIN_PASSWORD: "请改成你自己的强密码"
       # 可信代理：留空（含只有注释的 trusted_proxies.txt）= 信任所有来源的 X-Forwarded-For；
-      # 填写逗号分隔的 IP/CIDR = 只信任列出的来源。两者都留空即可满足常见反代部署。
+      # 填写逗号分隔的 IP/CIDR = 只信任列出的来源（局域网与本地地址始终默认信任）。
       TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"
       # 固定时区，避免访问日志/GORM 时间变成 UTC。
       TZ: Asia/Shanghai

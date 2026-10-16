@@ -82,23 +82,56 @@ func TestParseTrustedProxyEntriesReportsInvalid(t *testing.T) {
 func TestResolveTrustedProxies(t *testing.T) {
 	trustAll := []string{trustAllProxiesIPv4, trustAllProxiesIPv6}
 	tests := []struct {
-		name string
-		env  string
-		file string
-		want []string
+		name       string
+		env        string
+		file       string
+		want       []string // 非空表示精确匹配
+		configured []string // want 为空时：断言这些条目在最前面且带局域网/本地默认值
 	}{
 		{name: "both empty means trust all", want: trustAll},
 		{name: "blank env and commented file means trust all", env: " \t\n", file: "# 只有注释\n\n", want: trustAll},
-		{name: "env list", env: "10.0.0.10,172.18.0.0/16", want: []string{"10.0.0.10", "172.18.0.0/16"}},
-		{name: "file list with comments and newlines", file: "# 反代\n10.0.0.10\n\n172.26.0.3\n", want: []string{"10.0.0.10", "172.26.0.3"}},
-		{name: "env wins over file", env: "10.0.0.11", file: "10.0.0.10", want: []string{"10.0.0.11"}},
+		{name: "explicit trust all stays as-is", env: "0.0.0.0/0", want: []string{trustAllProxiesIPv4}},
+		{
+			name: "env list", env: "10.0.0.10,172.18.0.0/16",
+			configured: []string{"10.0.0.10", "172.18.0.0/16"},
+		},
+		{
+			name: "file list with comments and newlines", file: "# 反代\n10.0.0.10\n\n172.26.0.3\n",
+			configured: []string{"10.0.0.10", "172.26.0.3"},
+		},
+		{
+			name: "env wins over file", env: "10.0.0.11", file: "10.0.0.10",
+			configured: []string{"10.0.0.11"},
+		},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			if got := resolveTrustedProxies(testCase.env, testCase.file); !reflect.DeepEqual(got, testCase.want) {
-				t.Fatalf("resolveTrustedProxies() = %v, want %v", got, testCase.want)
+			got := resolveTrustedProxies(testCase.env, testCase.file)
+			if len(testCase.want) > 0 {
+				if !reflect.DeepEqual(got, testCase.want) {
+					t.Fatalf("resolveTrustedProxies() = %v, want %v", got, testCase.want)
+				}
+				return
 			}
+			assertConfiguredPlusLanDefaults(t, got, testCase.configured)
 		})
+	}
+}
+
+// 配置了可信代理时，局域网/本地地址必须作为默认值补上（用户条目在前）。
+func TestComposeTrustedProxiesAddsLanAndLocalDefaults(t *testing.T) {
+	assertConfiguredPlusLanDefaults(t, composeTrustedProxies([]string{"172.26.0.3"}), []string{"172.26.0.3"})
+
+	// 去重：用户已经写过某个默认段时不重复追加。
+	got := composeTrustedProxies([]string{"10.0.0.0/8", "10.0.0.0/8"})
+	if countEntry(got, "10.0.0.0/8") != 1 {
+		t.Fatalf("expected no duplicate entries, got %v", got)
+	}
+	assertConfiguredPlusLanDefaults(t, got, []string{"10.0.0.0/8"})
+
+	// 显式全信任时不再补默认值。
+	if got := composeTrustedProxies([]string{"0.0.0.0/0"}); !reflect.DeepEqual(got, []string{trustAllProxiesIPv4}) {
+		t.Fatalf("expected trust-all to stay as-is, got %v", got)
 	}
 }
 
@@ -118,11 +151,12 @@ func TestLoadTrustedProxiesReadsFileAndStripsBOM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if !reflect.DeepEqual(config.List, []string{"172.26.0.3", "172.18.0.0/16"}) {
-		t.Fatalf("unexpected list: %v", config.List)
-	}
+	assertConfiguredPlusLanDefaults(t, config.List, []string{"172.26.0.3", "172.18.0.0/16"})
 	if config.Source != path {
 		t.Fatalf("expected source %q, got %q", path, config.Source)
+	}
+	if config.ConfiguredCount != 2 {
+		t.Fatalf("expected 2 configured entries, got %d", config.ConfiguredCount)
 	}
 	if len(config.Invalid) != 0 {
 		t.Fatalf("unexpected invalid entries: %v", config.Invalid)
@@ -163,7 +197,7 @@ func TestLoadTrustedProxiesRejectsUnparsableFile(t *testing.T) {
 	}
 }
 
-// 部分条目写错时：有效的照常用，写错的报 warning（不阻断启动）。
+// 部分条目写错时：有效的照常用（再补默认值），写错的报 warning（不阻断启动）。
 func TestLoadTrustedProxiesKeepsValidEntriesAndReportsInvalid(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "trusted_proxies.txt")
@@ -178,9 +212,7 @@ func TestLoadTrustedProxiesKeepsValidEntriesAndReportsInvalid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if !reflect.DeepEqual(config.List, []string{"172.26.0.3"}) {
-		t.Fatalf("unexpected list: %v", config.List)
-	}
+	assertConfiguredPlusLanDefaults(t, config.List, []string{"172.26.0.3"})
 	if !reflect.DeepEqual(config.Invalid, []string{"172.26.0.300"}) {
 		t.Fatalf("unexpected invalid: %v", config.Invalid)
 	}
@@ -200,4 +232,27 @@ func TestLoadTrustedProxiesRejectsUnparsableEnv(t *testing.T) {
 	if _, err := loadTrustedProxies(); err == nil {
 		t.Fatal("expected an error when TRUSTED_PROXIES has no parsable entry")
 	}
+}
+
+// assertConfiguredPlusLanDefaults 断言「用户配置在前，随后带局域网/本地默认值」。
+func assertConfiguredPlusLanDefaults(t *testing.T, got, configured []string) {
+	t.Helper()
+	if len(got) < len(configured) || !reflect.DeepEqual(got[:len(configured)], configured) {
+		t.Fatalf("expected configured entries first %v, got %v", configured, got)
+	}
+	for _, entry := range defaultTrustedProxies {
+		if countEntry(got, entry) == 0 {
+			t.Fatalf("expected LAN/local default %s in %v", entry, got)
+		}
+	}
+}
+
+func countEntry(list []string, target string) int {
+	count := 0
+	for _, entry := range list {
+		if entry == target {
+			count++
+		}
+	}
+	return count
 }
