@@ -145,6 +145,9 @@
         <template #source="{ record }">
           <span class="multiline-cell">{{ buildBillingRecordSourceText(record) }}</span>
         </template>
+        <template #searchMode="{ record }">
+          <span>{{ buildBillingRecordModeText(record) }}</span>
+        </template>
         <template #referenceNo="{ record }">
           <span class="reference-cell">{{ buildBillingRecordReferenceText(record) }}</span>
         </template>
@@ -210,6 +213,7 @@ import {
 import {
   buildPersonalUsageBillingRecordParams,
   buildBillingRecordAmountText,
+  buildBillingRecordModeText,
   buildBillingRecordReferenceText,
   buildBillingRecordSourceText,
   buildBillingRecordSubjectText,
@@ -306,6 +310,7 @@ export default defineComponent({
       pageRefreshing,
       formatMoneyValue,
       buildBillingRecordAmountText,
+      buildBillingRecordModeText,
       buildBillingRecordReferenceText,
       buildBillingRecordSourceText,
       buildBillingRecordSubjectText,
@@ -354,6 +359,16 @@ export default defineComponent({
           width: 160,
           slots: {
             customRender: 'source',
+          },
+        },
+        {
+          // 深度思考 / 普通搜索：非搜题账单与加列之前的历史行显示占位符。
+          title: '模式',
+          dataIndex: 'searchMode',
+          key: 'searchMode',
+          width: 120,
+          slots: {
+            customRender: 'searchMode',
           },
         },
         {

@@ -367,6 +367,41 @@ func TestListBillingRecordsWithDBIncludesProviderLabelAndAccessTokenName(t *test
 	}
 }
 
+// 账单的「模式」列：deep→深度思考，normal→普通搜索，空→占位（非搜题/历史行）。
+func TestListBillingRecordsWithDBIncludesSearchModeLabel(t *testing.T) {
+	db := newBillingRecordTestDB(t)
+	owner := seedBillingRecordUser(t, db, 2, "user")
+
+	records := []entity.BillingRecord{
+		{UserID: owner.ID, Type: "normal_search", Provider: "ai", Amount: 0.5, RequestID: "req-deep", SearchMode: "deep"},
+		{UserID: owner.ID, Type: "normal_search", Provider: "icodef", Amount: 0.25, RequestID: "req-normal", SearchMode: "normal"},
+		{UserID: owner.ID, Type: "recharge", Provider: "easy_pay", Amount: 10, RequestID: "req-recharge"},
+	}
+	for index := range records {
+		if err := db.Create(&records[index]).Error; err != nil {
+			t.Fatalf("seed billing record: %v", err)
+		}
+	}
+
+	result, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{}, 1, 10)
+	if err != nil {
+		t.Fatalf("list billing records: %v", err)
+	}
+	labels := make(map[string][2]string, len(result.Data))
+	for _, row := range result.Data {
+		labels[row.RequestID] = [2]string{row.SearchMode, row.SearchModeLabel}
+	}
+	if got := labels["req-deep"]; got != [2]string{"deep", "深度思考"} {
+		t.Fatalf("unexpected deep record mode: %v", got)
+	}
+	if got := labels["req-normal"]; got != [2]string{"normal", "普通搜索"} {
+		t.Fatalf("unexpected normal record mode: %v", got)
+	}
+	if got := labels["req-recharge"]; got != [2]string{"", ""} {
+		t.Fatalf("expected recharge rows to stay empty, got %v", got)
+	}
+}
+
 func TestListBillingRecordsWithDBIncludesQuestionTextFromSnapshot(t *testing.T) {
 	db := newBillingRecordTestDB(t)
 	owner := seedBillingRecordUser(t, db, 2, "user")

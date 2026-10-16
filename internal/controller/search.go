@@ -89,6 +89,9 @@ type searchBillingContext struct {
 	SearchMode         string
 	UsedDefaultAccount bool
 	Billable           bool
+	// DeepThinking 表示这次消费走的是深度思考（带工具的多轮）还是普通搜索，
+	// 落库到 billing_records.search_mode，供账单明细/账单流水展示。
+	DeepThinking bool
 	// ClientIP 随账单一起落库，供账单明细展示来源 IP 归属地。
 	// logs 表没有 request_id，事后无法关联，只能在这里带上。
 	ClientIP string
@@ -1010,6 +1013,7 @@ func accessTokenQuotaWouldExceed(accessToken entity.AccessToken, amount float64)
 func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQuery string, aiEnabled bool, req model.SearchRequest, result [][]string, aiUsage search.AISearchUsage, usedLocalSearch bool, clientIP string, audit searchAuditMetadata) (error, string) {
 	ctx := buildCompletedSearchBillingContext(resolved, useQuery, aiEnabled, result, hasAISearchUsage(aiUsage), usedLocalSearch)
 	ctx.ClientIP = strings.TrimSpace(clientIP)
+	ctx.DeepThinking = req.DeepThinking
 	if !ctx.Billable {
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "", clientIP, audit)
 		return nil, ""
@@ -1432,6 +1436,17 @@ func resolveCompletedSearchBillingProvider(useQuery string, defaultProviders []s
 	return ""
 }
 
+// billingSearchMode 把「是否深度思考」映射成账单里的模式值。
+//
+// 取值只有 deep / normal 两种，界面映射为「深度思考 / 普通搜索」；
+// 非搜题账单（充值、赠送）不写这一列，保持为空。
+func billingSearchMode(deepThinking bool) string {
+	if deepThinking {
+		return "deep"
+	}
+	return "normal"
+}
+
 func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, charges []searchBillingCharge) error {
 	return db.Transaction(func(tx *gorm.DB) error {
 		var accessToken entity.AccessToken
@@ -1484,6 +1499,7 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 				// 快照里已经是 URL 编码的 question=，这里解码后存明文。
 				QuestionText: service.ExtractBillingSnapshotField(charge.Snapshot, "question"),
 				ClientIP:     strings.TrimSpace(ctx.ClientIP),
+				SearchMode:   billingSearchMode(ctx.DeepThinking),
 				Remark:       "搜索答题消耗",
 			}
 			if err := tx.Create(&billingRecord).Error; err != nil {

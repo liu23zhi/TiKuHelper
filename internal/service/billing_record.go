@@ -21,24 +21,28 @@ type BillingRecordFeeDetail struct {
 }
 
 type BillingRecordListItem struct {
-	ID                int32                    `json:"id"`
-	UserID            int32                    `json:"-"`
-	Username          string                   `json:"username"`
-	Type              string                   `json:"type"`
-	TypeLabel         string                   `json:"typeLabel"`
-	Direction         string                   `json:"direction"`
-	DirectionLabel    string                   `json:"directionLabel"`
-	Subject           string                   `json:"subject"`
-	Detail            string                   `json:"detail"`
-	ReferenceNo       string                   `json:"referenceNo"`
-	Provider          string                   `json:"provider"`
-	ProviderLabel     string                   `json:"providerLabel"`
-	AnswerSourceLabel string                   `json:"answerSourceLabel"`
-	QuestionText      string                   `json:"questionText"`
-	Amount            float64                  `json:"amount"`
-	FeeDetails        []BillingRecordFeeDetail `gorm:"-" json:"feeDetails"`
-	AccessTokenName   string                   `json:"accessTokenName"`
-	CreatedAt         time.Time                `json:"createdAt"`
+	ID                int32  `json:"id"`
+	UserID            int32  `json:"-"`
+	Username          string `json:"username"`
+	Type              string `json:"type"`
+	TypeLabel         string `json:"typeLabel"`
+	Direction         string `json:"direction"`
+	DirectionLabel    string `json:"directionLabel"`
+	Subject           string `json:"subject"`
+	Detail            string `json:"detail"`
+	ReferenceNo       string `json:"referenceNo"`
+	Provider          string `json:"provider"`
+	ProviderLabel     string `json:"providerLabel"`
+	AnswerSourceLabel string `json:"answerSourceLabel"`
+	// SearchMode 是这笔消费的搜索模式：deep=深度思考，normal=普通搜索。
+	// 非搜题账单与加列之前的历史行为空，界面降级显示占位符。
+	SearchMode      string                   `json:"searchMode"`
+	SearchModeLabel string                   `json:"searchModeLabel"`
+	QuestionText    string                   `json:"questionText"`
+	Amount          float64                  `json:"amount"`
+	FeeDetails      []BillingRecordFeeDetail `gorm:"-" json:"feeDetails"`
+	AccessTokenName string                   `json:"accessTokenName"`
+	CreatedAt       time.Time                `json:"createdAt"`
 	// ClientIP 是这笔账单的来源 IP，前端据此展示归属地（形如 `1.2.3.4 （广东深圳）`）。
 	//
 	// 历史行（加列之前落账的）为空，前端降级为只显示 `-`。
@@ -70,6 +74,21 @@ type BillingRecordListResult struct {
 	Page     int                     `json:"page"`
 	PageSize int                     `json:"pageSize"`
 	Summary  BillingRecordSummary    `json:"summary"`
+}
+
+// buildBillingSearchModeLabel 把账单里的搜索模式映射成界面标签。
+//
+// deep=深度思考，normal=普通搜索；空值（非搜题账单、或加列之前的历史行）
+// 返回空串，由前端降级为占位符。
+func buildBillingSearchModeLabel(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "deep":
+		return "深度思考"
+	case "normal":
+		return "普通搜索"
+	default:
+		return ""
+	}
 }
 
 func buildCachedLocalProviderLabel(provider string, snapshot string) string {
@@ -260,6 +279,7 @@ func decorateBillingRecord(record BillingRecordListItem) BillingRecordListItem {
 		record.ProviderLabel = strings.TrimSpace(record.Provider)
 	}
 	record.AnswerSourceLabel = buildBillingAnswerSourceLabel(record.Provider, record.ProviderLabel, record.UnitPriceSnapshot)
+	record.SearchModeLabel = buildBillingSearchModeLabel(record.SearchMode)
 	// 优先用持久化的 question_text；旧行或新写入前为空时回退到快照解析。
 	if questionText := strings.TrimSpace(record.QuestionText); questionText == "" {
 		record.QuestionText = ExtractBillingSnapshotField(record.UnitPriceSnapshot, "question")
@@ -324,7 +344,7 @@ func loadBillingSearchGroups(db *gorm.DB, records []BillingRecordListItem) (map[
 	var groupRecords []BillingRecordListItem
 	if err := db.
 		Table(entity.TableNameBillingRecord+" AS billing_records").
-		Select("billing_records.id, billing_records.user_id, COALESCE(billing_users.username, '') AS username, billing_records.type, billing_records.provider, billing_records.amount, billing_records.created_at, billing_records.client_ip, billing_records.unit_price_snapshot, billing_records.request_id, billing_records.remark, access_tokens.name AS access_token_name").
+		Select("billing_records.id, billing_records.user_id, COALESCE(billing_users.username, '') AS username, billing_records.type, billing_records.provider, billing_records.amount, billing_records.created_at, billing_records.client_ip, billing_records.unit_price_snapshot, billing_records.request_id, billing_records.search_mode, billing_records.remark, access_tokens.name AS access_token_name").
 		Joins("LEFT JOIN "+entity.TableNameAccessToken+" AS access_tokens ON access_tokens.id = billing_records.access_token_id").
 		Joins("LEFT JOIN "+entity.TableNameUser+" AS billing_users ON billing_users.id = billing_records.user_id").
 		Where("billing_records.type = ?", normalSearchBillingRecordType).
@@ -541,7 +561,7 @@ func loadBillingRequestExpenseTotals(query *gorm.DB) (map[billingSearchGroupKey]
 func findAllBillingRecordAmountRows(baseQuery *gorm.DB) ([]BillingRecordListItem, error) {
 	var rows []BillingRecordListItem
 	if err := baseQuery.
-		Select("billing_records.id, billing_records.user_id, COALESCE(billing_users.username, '') AS username, billing_records.type, billing_records.provider, billing_records.model_name, billing_records.amount, billing_records.created_at, billing_records.client_ip, billing_records.unit_price_snapshot, billing_records.question_text, billing_records.request_id, billing_records.remark, access_tokens.name AS access_token_name").
+		Select("billing_records.id, billing_records.user_id, COALESCE(billing_users.username, '') AS username, billing_records.type, billing_records.provider, billing_records.model_name, billing_records.amount, billing_records.created_at, billing_records.client_ip, billing_records.unit_price_snapshot, billing_records.question_text, billing_records.request_id, billing_records.search_mode, billing_records.remark, access_tokens.name AS access_token_name").
 		Order("billing_records.id desc").
 		Find(&rows).Error; err != nil {
 		return nil, err

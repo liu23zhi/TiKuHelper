@@ -337,6 +337,7 @@ func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, reques
 	}
 
 	billingCtx.RequestID = strings.TrimSpace(requestID)
+	billingCtx.DeepThinking = req.DeepThinking
 	resolved := resolvedSearchRequestContext{
 		RequestID: billingCtx.RequestID,
 		AIConfig: service.AISearchRequestConfig{

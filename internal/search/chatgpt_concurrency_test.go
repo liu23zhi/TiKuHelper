@@ -155,13 +155,12 @@ func TestOrdinaryAISearchHonorsModelBudgetAcrossRetriesAndEndpoints(t *testing.T
 						t.Errorf("decode prompt: %v", err)
 						return
 					}
-					logicalCall := 1 // retries stay within the first logical model round
-					remaining := fmt.Sprintf("还剩模型调用 %d 次", tc.budget-logicalCall)
-					if !strings.Contains(prompt, remaining) || !strings.Contains(prompt, "web_search 搜索还剩 0 次") {
-						t.Errorf("missing current budget %q: %s", remaining, prompt)
+					// 普通搜索一次性直出答案：提示词里既不该有工具，也不该有预算播报。
+					if strings.Contains(prompt, "当前预算") || strings.Contains(prompt, "web_search") || strings.Contains(prompt, "web_read") {
+						t.Errorf("ordinary search must not announce tools or budget: %s", prompt)
 					}
-					if logicalCall == tc.budget && !strings.Contains(prompt, "最后一次模型调用") {
-						t.Errorf("missing final answer requirement: %s", prompt)
+					if !strings.Contains(prompt, "请直接输出最终答案 JSON") {
+						t.Errorf("missing direct-answer requirement: %s", prompt)
 					}
 					if calls == 1 {
 						http.Error(w, "temporary failure", tc.status)

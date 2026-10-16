@@ -1076,6 +1076,38 @@ func TestSearchPersistsAIBillingDuringDefaultAIThatRunsInNormalMode(t *testing.T
 	}
 }
 
+// 账单里要能看出这次消费是深度思考还是普通搜索（前端「模式」列的数据来源）。
+func TestPersistSearchBillingRecordsWithDBStoresSearchMode(t *testing.T) {
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 218, "search-mode-user", "user")
+
+	cases := []struct {
+		requestID    string
+		deepThinking bool
+		want         string
+	}{
+		{requestID: "req-search-mode-deep", deepThinking: true, want: "deep"},
+		{requestID: "req-search-mode-normal", deepThinking: false, want: "normal"},
+	}
+	for _, testCase := range cases {
+		if err := persistSearchBillingRecordsWithDB(db, searchBillingContext{
+			UserID:       user.ID,
+			RequestID:    testCase.requestID,
+			DeepThinking: testCase.deepThinking,
+		}, []searchBillingCharge{{Provider: searchModeAI, Amount: 0.5}}); err != nil {
+			t.Fatalf("persist billing records (%s): %v", testCase.requestID, err)
+		}
+
+		var stored entity.BillingRecord
+		if err := db.Where("request_id = ?", testCase.requestID).First(&stored).Error; err != nil {
+			t.Fatalf("load billing record (%s): %v", testCase.requestID, err)
+		}
+		if stored.SearchMode != testCase.want {
+			t.Fatalf("expected search_mode %q for %s, got %q", testCase.want, testCase.requestID, stored.SearchMode)
+		}
+	}
+}
+
 func TestPersistSearchBillingRecordsWithDBAllowsBillingToCreateNegativeBalance(t *testing.T) {
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 217, "search-insufficient-balance-user", "user")

@@ -929,15 +929,17 @@ func (in *ChatGptClient) requestStreamAnswerDetailed(endpoint string, systemProm
 			}
 			*modelCalls++
 		}
-		remainingCalls := maxModelCalls - *modelCalls
-		budgetPrompt := buildAISearchOneShotBudgetPrompt(remainingCalls)
 		payload, err := json.Marshal(openAIChatCompletionRequest{
 			Model:       strings.TrimSpace(in.Model),
 			Stream:      true,
 			Temperature: 0,
 			TopP:        0,
 			Messages: []openAIChatMessage{
-				{Role: "system", Content: systemPrompt + "\n" + budgetPrompt + "\n本轮未提供联网搜索工具，必须直接输出最终答案 JSON。"},
+				// 普通搜索是「一次性直出答案」：不提供任何工具，也不播报预算 ——
+				// 模型既不能调用工具、也无法用剩余次数做任何决策，
+				// 只留下一句「直接输出最终答案 JSON」的要求即可。
+				// 预算只在深度思考的工具链路（buildAISearchBudgetPrompt）里播报。
+				{Role: "system", Content: systemPrompt + "\n本轮不提供任何联网/读取工具，请直接输出最终答案 JSON。"},
 				{Role: "user", Content: userPromptParts},
 			},
 			StreamOptions: &openAIStreamOptions{IncludeUsage: true},

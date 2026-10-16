@@ -620,6 +620,11 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		logger.FatalLog(fmt.Errorf("prepare billing client ip schema fail: %w", err))
 	}
 
+	// 账单搜索模式（深度思考 / 普通搜索），供账单明细与账单流水展示。历史行只建列。
+	if err := runStartupMigration("ensureBillingSearchModeSchema", func() error { return ensureBillingSearchModeSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare billing search mode schema fail: %w", err))
+	}
+
 	// source-aware 归属地缓存使用新表，旧表保留以兼容 SQLite 和回滚；
 	// 回填失败只记日志，下一次启动会因未写标记而重试。
 	if err := runStartupMigration("ensureLocationCacheEntriesSchema", func() error { return ensureLocationCacheEntriesSchema(db) }); err != nil {

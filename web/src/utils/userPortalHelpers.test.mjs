@@ -7,6 +7,7 @@ import {
   buildRegisterSourceLabel,
   buildResetPasswordPayload,
   buildBillingRecordAmountText,
+  buildBillingRecordModeText,
   buildBillingRecordFeeDetailHtml,
   buildBillingRecordFeeDetails,
   buildBillingRecordReferenceText,
@@ -19,6 +20,18 @@ import {
   buildUserBalanceUpdatePayload,
   resolveAdapterHomePath,
 } from './userPortalHelpers.mjs';
+
+test('buildBillingRecordModeText renders deep thinking and ordinary search', () => {
+  assert.equal(buildBillingRecordModeText({ searchModeLabel: '深度思考', searchMode: 'deep' }), '深度思考')
+  assert.equal(buildBillingRecordModeText({ searchModeLabel: '普通搜索', searchMode: 'normal' }), '普通搜索')
+  // 后端只给原始值时前端兜底映射（大小写不敏感）。
+  assert.equal(buildBillingRecordModeText({ searchMode: 'DEEP' }), '深度思考')
+  assert.equal(buildBillingRecordModeText({ searchMode: 'normal' }), '普通搜索')
+  // 非搜题账单与历史行没有模式，降级为占位符。
+  assert.equal(buildBillingRecordModeText({}), '-')
+  assert.equal(buildBillingRecordModeText({ searchMode: 'unknown' }), '-')
+  assert.equal(buildBillingRecordModeText(null), '-')
+})
 
 test('resolveAdapterHomePath sends admins to component and users to usage page', () => {
   assert.equal(resolveAdapterHomePath({ role: 'admin' }), '/adapter/component');

@@ -180,6 +180,12 @@ func TestAISearchDefaultsToOneShotWithoutDeepThinking(t *testing.T) {
 		if _, exists := payload["tools"]; exists {
 			t.Fatal("deepThinking=false must preserve the original one-shot request")
 		}
+		// 普通搜索是「一次性直出答案」：不提供工具，也不该播报任何预算。
+		messages := payload["messages"].([]any)
+		system := messages[0].(map[string]any)["content"].(string)
+		if strings.Contains(system, "当前预算") || strings.Contains(system, "web_search") || strings.Contains(system, "web_read") {
+			t.Fatalf("one-shot system prompt must not mention tools or budgets: %s", system)
+		}
 		writeAIFinalStream(w)
 	}))
 	defer server.Close()

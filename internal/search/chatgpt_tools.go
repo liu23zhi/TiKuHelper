@@ -383,18 +383,6 @@ func buildAISearchBudgetPrompt(remainingModelCalls int, remainingSearches int, r
 	return fmt.Sprintf("当前预算：本次模型调用完成后还剩模型调用 %d 次，web_search 搜索还剩 %d 次，web_read 网页读取还剩 %d 次。请根据需要调用工具，并在预算耗尽前准备最终答案。", remainingModelCalls, remainingSearches, remainingWebReads)
 }
 
-// buildAISearchOneShotBudgetPrompt preserves the legacy non-deep-thinking
-// prompt. The web_read budget belongs only to the tool-enabled path.
-func buildAISearchOneShotBudgetPrompt(remainingModelCalls int) string {
-	if remainingModelCalls < 0 {
-		remainingModelCalls = 0
-	}
-	if remainingModelCalls == 0 {
-		return fmt.Sprintf("当前预算：本次模型调用完成后还剩模型调用 %d 次，web_search 搜索还剩 0 次。这是最后一次模型调用，必须直接输出最终答案 JSON，格式严格为 {\"answers\":[\"答案\"]}，不得调用工具，不得输出任何额外文字。", remainingModelCalls)
-	}
-	return fmt.Sprintf("当前预算：本次模型调用完成后还剩模型调用 %d 次，web_search 搜索还剩 0 次。请直接输出当前答案 JSON。", remainingModelCalls)
-}
-
 func addAISearchUsage(total *AISearchUsage, usage AISearchUsage) {
 	total.InputTokens += usage.InputTokens
 	total.CachedInputTokens += usage.CachedInputTokens

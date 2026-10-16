@@ -155,6 +155,30 @@ export function buildBillingRecordTypeText(record) {
   return type || '题目消费'
 }
 
+/**
+ * 账单的搜索模式展示文本：深度思考 / 普通搜索。
+ *
+ * 后端已给出 searchModeLabel，这里再兜一层原始值映射（searchMode=deep|normal），
+ * 都取不到时返回占位符（非搜题账单、或加列之前的历史行）。
+ *
+ * @param {object} record
+ * @returns {string}
+ */
+export function buildBillingRecordModeText(record) {
+  const label = String(record?.searchModeLabel || '').trim()
+  if (label) {
+    return label
+  }
+  const mode = String(record?.searchMode || '').trim().toLowerCase()
+  if (mode === 'deep') {
+    return '深度思考'
+  }
+  if (mode === 'normal') {
+    return '普通搜索'
+  }
+  return '-'
+}
+
 export function buildBillingRecordSubjectText(record) {
   return buildPersonalUsageQuestionText(record)
 }

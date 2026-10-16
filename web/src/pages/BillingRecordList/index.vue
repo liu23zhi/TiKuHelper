@@ -106,6 +106,9 @@
         <template #source="{ record }">
           <span class="multiline-cell">{{ buildBillingRecordSourceText(record) }}</span>
         </template>
+        <template #searchMode="{ record }">
+          <span>{{ buildBillingRecordModeText(record) }}</span>
+        </template>
         <template #amount="{ record }">
           <span :class="record.direction === 'income' ? 'amount-income' : 'amount-expense'">{{ buildBillingRecordAmountText(record) }}</span>
         </template>
@@ -149,6 +152,7 @@ import {
 import {
   buildBillingRecordAmountText,
   buildBillingRecordFeeDetailHtml,
+  buildBillingRecordModeText,
   buildBillingRecordReferenceText,
   buildBillingRecordSourceText,
   buildBillingRecordSubjectText,
@@ -294,6 +298,16 @@ export default defineComponent({
           },
         },
         {
+          // 深度思考 / 普通搜索：非搜题账单与加列之前的历史行显示占位符。
+          title: '模式',
+          dataIndex: 'searchMode',
+          key: 'searchMode',
+          width: 120,
+          slots: {
+            customRender: 'searchMode',
+          },
+        },
+        {
           title: '关联单号',
           dataIndex: 'referenceNo',
           key: 'referenceNo',
@@ -382,6 +396,7 @@ export default defineComponent({
       alertMessage,
       columns,
       buildBillingRecordAmountText,
+      buildBillingRecordModeText,
       buildBillingRecordReferenceText,
       buildBillingRecordSourceText,
       buildBillingRecordSubjectText,

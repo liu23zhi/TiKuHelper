@@ -24,6 +24,9 @@ type BillingRecord struct {
 	BalanceBefore float64 `gorm:"column:balance_before;type:decimal(18,6);not null;default:0" json:"balanceBefore"`
 	BalanceAfter  float64 `gorm:"column:balance_after;type:decimal(18,6);not null;default:0" json:"balanceAfter"`
 	RequestID     string  `gorm:"column:request_id;type:varchar(64);index" json:"requestId"`
+	// SearchMode 记录这笔消费对应的搜索模式：deep=深度思考，normal=普通搜索。
+	// 只有搜题类账单会写；充值/赠送以及加列之前的历史行为空（界面降级为「-」）。
+	SearchMode string `gorm:"column:search_mode;type:varchar(16)" json:"searchMode"`
 	// ClientIP 是产生这笔账单的请求来源 IP，供账单明细展示归属地。
 	//
 	// 新请求在落账时一并写入；启动迁移会对日志中能精确匹配 requestId 的历史行尽力回填。
