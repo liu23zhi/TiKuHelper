@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -23,6 +25,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/middleware"
 	searchpkg "github.com/itihey/tikuAdapter/internal/search"
 	"github.com/itihey/tikuAdapter/internal/service"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/model"
 	"gorm.io/gorm"
 )
@@ -2343,6 +2346,83 @@ func TestSearchRejectsNegativeBalanceUserWithoutExplicitProviderParams(t *testin
 	if got.Detail != "当前余额不足，系统题库已禁用，请充值后再使用" {
 		t.Fatalf("expected negative-balance unauthorized detail to mention balance, got %q", got.Detail)
 	}
+}
+
+// 回归：余额不足这类「客户端可自行修复」的 401 只能写 warning，不能写 error。
+//
+// 线上事故：同一 IP 因余额不足反复调用，1.5 小时往 Tiku-error.txt 写了 656 行，
+// 把真正的系统异常淹没了。
+func TestSearchUnauthorizedLogsBusinessRejectionAsWarning(t *testing.T) {
+	dir := t.TempDir()
+	originalLogDir := *logger.LogDir
+	*logger.LogDir = dir
+	t.Cleanup(func() {
+		_ = logger.Close()
+		*logger.LogDir = originalLogDir
+	})
+	if err := logger.SetupGinLog(); err != nil {
+		t.Fatalf("setup logger: %v", err)
+	}
+
+	db := newSearchControllerTestDB(t)
+	token := seedControllerAccessToken(t, db, "warning-level-token")
+	if err := db.Model(&entity.User{}).Where("id = ?", token.UserID).Update("balance", 0).Error; err != nil {
+		t.Fatalf("seed zero balance: %v", err)
+	}
+	if _, err := service.UpdateSearchAccountConfigWithDB(db, "icodef", service.UpdateSearchAccountConfigInput{
+		TokenValue: "default-search-token",
+		Enabled:    true,
+	}); err != nil {
+		t.Fatalf("seed search config: %v", err)
+	}
+
+	originalResolver := resolveSearchRequestContext
+	originalClientBindings := buildSearchClientBindings
+	defer func() {
+		resolveSearchRequestContext = originalResolver
+		buildSearchClientBindings = originalClientBindings
+	}()
+	resolveSearchRequestContext = func(authorization string, clientIP string, query url.Values) (resolvedSearchRequestContext, error) {
+		return resolveSearchRequestContextWithDB(db, authorization, clientIP, query)
+	}
+	buildSearchClientBindings = func(resolved resolvedSearchRequestContext, useQuery string) []searchClientBinding {
+		return nil
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Basic warning-level-token")
+	ctx.Request = request
+
+	Search(ctx)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatalf("close logger: %v", err)
+	}
+
+	errorLog := readLogFile(t, filepath.Join(dir, "Tiku-error.txt"))
+	if strings.Contains(errorLog, "搜索接口鉴权失败") {
+		t.Fatalf("business rejection must not be written to the error log:\n%s", errorLog)
+	}
+	warnLog := readLogFile(t, filepath.Join(dir, "Tiku-warning.txt"))
+	if !strings.Contains(warnLog, "搜索接口鉴权失败") || !strings.Contains(warnLog, "当前余额不足") {
+		t.Fatalf("expected the business rejection in the warning log, got:\n%s", warnLog)
+	}
+}
+
+// readLogFile 读日志文件；文件不存在时按空处理（例如没有任何 error 级日志）。
+func readLogFile(t *testing.T, path string) string {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(content)
 }
 
 func TestResolveSearchRequestContextWithDBAllowsDefaultAccountsWithValidAuthorization(t *testing.T) {

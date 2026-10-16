@@ -880,7 +880,11 @@ func writeSearchUnauthorized(c *gin.Context, err error, rawBody string) {
 		string(requestSnapshot),
 		string(responseSnapshot),
 	)
-	logger.SysError(fmt.Sprintf(
+	// 这里的 401 全部是「客户端可自行修复」的原因（令牌无效/余额不足/额度不足），
+	// 属于预期业务结果而不是系统故障：只记 WARN，绝不写 ERROR。
+	// 线上实测：同一 IP 因余额不足反复调用，1.5 小时就往 Tiku-error.txt 写了 656 行，
+	// 把真正的系统异常淹没掉了。审计行照常写入（writeAuditLog 在上面）。
+	logger.SysWarn(fmt.Sprintf(
 		"搜索接口鉴权失败 detail=%s method=%s path=%s origin=%s contentType=%s clientIp=%s authorization=%s body=%s",
 		resp.Detail,
 		resp.Request.Method,
