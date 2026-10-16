@@ -20,41 +20,59 @@ func TestTrustedProxyClientIP(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	tests := []struct {
 		name         string
-		configured   string
+		env          string
+		file         string
 		remoteAddr   string
 		forwardedFor string
 		realIP       string
 		want         string
 	}{
 		{
-			name:       "empty configuration ignores forged forwarded for",
-			remoteAddr: "198.51.100.10:32100", forwardedFor: "203.0.113.99", want: "198.51.100.10",
+			// 空配置 = 信任所有来源的转发头（产品约定，见 AGENTS.md 第 26 条）。
+			name:       "empty configuration trusts forwarded for",
+			remoteAddr: "198.51.100.10:32100", forwardedFor: "203.0.113.99", want: "203.0.113.99",
 		},
 		{
-			name: "whitespace configuration ignores forged real ip", configured: " \t ",
-			remoteAddr: "198.51.100.10:32100", realIP: "203.0.113.99", want: "198.51.100.10",
+			name: "whitespace configuration still means empty", env: " \t ", file: "\n# 注释\n",
+			remoteAddr: "198.51.100.10:32100", realIP: "203.0.113.99", want: "203.0.113.99",
 		},
 		{
-			name:       "empty configuration ignores forged ipv6 forwarded for",
-			remoteAddr: "[2001:db8::10]:32100", forwardedFor: "2001:db8::99", want: "2001:db8::10",
+			name:       "empty configuration trusts ipv6 forwarded for",
+			remoteAddr: "[2001:db8::10]:32100", forwardedFor: "2001:db8::99", want: "2001:db8::99",
 		},
 		{
-			name: "explicit trusted proxy ignores forged prefix", configured: "10.0.0.10",
+			// 全信任时取最左侧（真实客户端）那一跳。
+			name:       "empty configuration takes the left-most hop",
+			remoteAddr: "172.19.0.1:32100", forwardedFor: "203.0.113.99, 172.18.0.9", want: "203.0.113.99",
+		},
+		{
+			name:       "file configuration is used when env is empty",
+			file:       "10.0.0.10\n# 反代容器\n",
 			remoteAddr: "10.0.0.10:32100", forwardedFor: "203.0.113.99, 198.51.100.20", want: "198.51.100.20",
 		},
 		{
-			name: "explicit trusted proxy chain", configured: " 10.0.0.10, 172.18.0.0/16 ",
+			name:       "env configuration wins over file",
+			env:        "10.0.0.11",
+			file:       "10.0.0.10",
+			remoteAddr: "10.0.0.11:32100", forwardedFor: "203.0.113.99", want: "203.0.113.99",
+		},
+		{
+			name: "explicit trusted proxy takes the right-most untrusted hop", env: "10.0.0.10",
+			remoteAddr: "10.0.0.10:32100", forwardedFor: "203.0.113.99, 198.51.100.20", want: "198.51.100.20",
+		},
+		{
+			name: "explicit trusted proxy chain", env: " 10.0.0.10, 172.18.0.0/16 ",
 			remoteAddr: "10.0.0.10:32100", forwardedFor: "203.0.113.99, 198.51.100.20, 172.18.0.8", want: "198.51.100.20",
 		},
 		{
-			name: "untrusted peer cannot use configured proxy headers", configured: "10.0.0.10",
+			name: "untrusted peer cannot use configured proxy headers", env: "10.0.0.10",
 			remoteAddr: "198.51.100.10:32100", forwardedFor: "203.0.113.99", realIP: "203.0.113.88", want: "198.51.100.10",
 		},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
 			server := gin.New()
-			if err := server.SetTrustedProxies(resolveTrustedProxies(testCase.configured)); err != nil {
+			if err := server.SetTrustedProxies(resolveTrustedProxies(testCase.env, testCase.file)); err != nil {
 				t.Fatal(err)
 			}
 			server.GET("/", func(c *gin.Context) { c.String(http.StatusOK, c.ClientIP()) })
@@ -117,7 +135,7 @@ func TestGracefulShutdownClosesHTTPAndFileLogs(t *testing.T) {
 }
 
 func TestResolveTrustedProxiesUsesConfiguredValues(t *testing.T) {
-	got := resolveTrustedProxies(" 10.0.0.10, 172.18.0.0/16 ")
+	got := resolveTrustedProxies(" 10.0.0.10, 172.18.0.0/16 ", "")
 	expected := []string{"10.0.0.10", "172.18.0.0/16"}
 	if !reflect.DeepEqual(got, expected) {
 		t.Fatalf("expected configured proxies %v, got %v", expected, got)

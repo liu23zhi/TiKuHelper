@@ -10,9 +10,17 @@ services:
       - "8060:8060"
     environment:
       JWT_SECRET: "${JWT_SECRET:-}"
-      TIKU_ADMIN_PASSWORD: "${TIKU_ADMIN_PASSWORD:-}"
+      # 管理员初始化密码：默认注释掉（不设置时首次启动使用 123456，请登录后立即修改）。
+      # 需要固定初始化密码时，取消下一行注释并改成自己的强密码。这个文件只是示例。
+      # TIKU_ADMIN_PASSWORD: "请改成你自己的强密码"
+      # 可信代理：留空（含只有注释的 trusted_proxies.txt）= 信任所有来源的 X-Forwarded-For；
+      # 填写逗号分隔的 IP/CIDR = 只信任列出的来源。两者都留空即可满足常见反代部署。
       TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"
+      # 固定时区，避免访问日志/GORM 时间变成 UTC。
+      TZ: Asia/Shanghai
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./config.yaml:/app/config.yaml:ro
+      # 可信代理文件（留空或只有注释 = 信任所有来源）。也可用 TRUSTED_PROXIES 环境变量指定。
+      - ./trusted_proxies.txt:/app/trusted_proxies.txt:ro

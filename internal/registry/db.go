@@ -533,7 +533,9 @@ func RegisterDB(config configs.Config) *gorm.DB {
 				}
 			}
 
-			conn = sqlite.Open(dbPath)
+			// 包一层：SQLite 下不再让 AutoMigrate 逐列 AlterColumn（每次都会整表重建），
+			// 详见 sqlite_migrate.go。
+			conn = sqliteQuietDialector{Dialector: sqlite.Open(dbPath)}
 		}
 		db, err = gorm.Open(conn, &gorm.Config{
 			PrepareStmt: true,
@@ -646,24 +648,48 @@ func RegisterDB(config configs.Config) *gorm.DB {
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("hash bootstrap admin password fail: %w", err))
 	}
-	var existingAdmin entity.User
-	if err := db.Where("id = ?", 1).First(&existingAdmin).Error; err == nil &&
-		(existingAdmin.Password == "" || existingAdmin.Password == "123456") {
-		if updateErr := db.Model(&entity.User{}).Where("id = ?", 1).Update("password", hashedBootstrapPassword).Error; updateErr != nil {
-			logger.FatalLog(fmt.Errorf("migrate legacy admin password fail: %w", updateErr))
-		}
+	bootstrapAdminAccount(db, hashedBootstrapPassword)
+	ensureAccountDomainDefaults(db)
+	return db
+}
+
+// bootstrapAdminAccount 保证 id=1 的管理员存在。
+//
+// 不存在 → 创建；已存在且密码仍是空或明文 123456 → 升级为新哈希；
+// **已存在时绝不再次插入** —— 历史实现是无条件 Create，管理员已存在时
+// 每次启动都会撞 `users.id` 唯一键，被数据库日志记成一条 ERROR
+// （线上每次启动都能看到，见 AGENTS.md 第 26 条）。
+func bootstrapAdminAccount(db *gorm.DB, hashedPassword string) {
+	if db == nil {
+		return
 	}
+	var adminCount int64
+	if err := db.Model(&entity.User{}).Where("id = ?", 1).Count(&adminCount).Error; err != nil {
+		logger.SysLog(fmt.Sprintf("检查管理员账号失败（不影响启动）：%v", err))
+	}
+	if adminCount > 0 {
+		var existing entity.User
+		if err := db.Where("id = ?", 1).First(&existing).Error; err == nil &&
+			(existing.Password == "" || existing.Password == "123456") {
+			if updateErr := db.Model(&entity.User{}).Where("id = ?", 1).
+				Update("password", hashedPassword).Error; updateErr != nil {
+				logger.FatalLog(fmt.Errorf("migrate legacy admin password fail: %w", updateErr))
+			}
+		}
+		return
+	}
+
 	user := entity.User{
 		ID:             1,
 		Username:       "admin",
-		Password:       hashedBootstrapPassword,
+		Password:       hashedPassword,
 		Nickname:       "管理员",
 		Role:           "admin",
 		Status:         "enabled",
 		Balance:        0,
 		RegisterSource: "system",
 	}
-	_ = dao.User.Create(&user)
-	ensureAccountDomainDefaults(db)
-	return db
+	if err := db.Create(&user).Error; err != nil {
+		logger.SysLog(fmt.Sprintf("初始化管理员账号失败（可能已存在，不影响启动）：%v", err))
+	}
 }

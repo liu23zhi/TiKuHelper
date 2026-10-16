@@ -50,3 +50,39 @@ func TestCollectAnswerStoresResolvedSourceName(t *testing.T) {
 		t.Fatalf("expected source_name 万能题库, got %q", sourceName.String)
 	}
 }
+
+// 回归：重复收录同一道题不能再走「插入失败 → 报 ERROR」的老路。
+//
+// 线上 8 次收录里有 3 次撞 UNIQUE(hash, course_name)，每次都往 error 日志里刷一行。
+// 现在必须是 upsert 语义：不报错、不产生第二行、已有答案不被覆盖。
+func TestCollectAnswerRepeatedQuestionDoesNotFailOrDuplicate(t *testing.T) {
+	db := newCollectAnswerTestDB(t)
+
+	response := model.SearchResponse{
+		Question: "重复收录题目",
+		Options:  []string{"A"},
+		Type:     4,
+		Answer:   model.Answer{BestAnswer: []string{"第一次的答案"}},
+	}
+	CollectAnswer(response, "课程", "", "wanneng")
+
+	// 第二次换一个答案，模拟同一道题再次命中。
+	response.Answer = model.Answer{BestAnswer: []string{"第二次的答案"}}
+	CollectAnswer(response, "课程", "", "wanneng")
+
+	var count int64
+	if err := db.Table(entity.TableNameTiku).Count(&count).Error; err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly one row for the repeated question, got %d", count)
+	}
+
+	var answer string
+	if err := db.Table(entity.TableNameTiku).Select("answer").Scan(&answer).Error; err != nil {
+		t.Fatalf("load answer: %v", err)
+	}
+	if !strings.Contains(answer, "第一次的答案") {
+		t.Fatalf("expected the stored answer to be kept, got %q", answer)
+	}
+}

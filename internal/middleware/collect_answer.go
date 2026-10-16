@@ -11,6 +11,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/model"
 	"github.com/itihey/tikuAdapter/pkg/util"
+	"gorm.io/gorm/clause"
 )
 
 // FillHash 填充题库的hash值。
@@ -66,8 +67,17 @@ func CollectAnswer(resp model.SearchResponse, courseName, extra, provider string
 			SourceName: sourceName,
 		}
 		FillHash(&t)
-		err := dao.Tiku.Create(&t)
-		if err == nil {
+		// 用 upsert 语义写入：撞唯一键（同一道题已收录）时**不报错、不覆盖**。
+		//
+		// 历史实现是「先 Create，失败再查库补空字段」，于是每搜到一道重复题，
+		// 数据库日志都会记一条 `UNIQUE constraint failed: tiku.hash, tiku.course_name`
+		// 的 ERROR（线上 8 次收录里刷了 3 条），既误导排障、也浪费一次失败写入。
+		// 见 AGENTS.md 第 26 条。
+		result := dao.Tiku.UnderlyingDB().Clauses(clause.OnConflict{DoNothing: true}).Create(&t)
+		if result.Error != nil {
+			return
+		}
+		if result.RowsAffected > 0 {
 			// 注意：这里刻意不失效搜题结果缓存。
 			// 本函数是每次搜题后自动触发的（高频），若在此清缓存，
 			// 会把刚刚 populate 的结果立刻作废，等于关闭缓存。
@@ -76,11 +86,12 @@ func CollectAnswer(resp model.SearchResponse, courseName, extra, provider string
 			return
 		}
 
-		// 已经收录过：补全之前缺失的字段。
+		// 已经收录过（撞唯一键、本次没写入）：补全之前缺失的字段。
 		//
 		// 必须只在「查询成功」时继续（历史实现写成 errNotFind != nil，
 		// 条件写反导致永远拿不到已有记录、答案回填从未生效）。
-		tk, findErr := dao.Tiku.Where(dao.Tiku.Hash.Eq(t.Hash)).First()
+		// 冲突目标就是 (hash, course_name)，因此按这两列定位已有行。
+		tk, findErr := dao.Tiku.Where(dao.Tiku.Hash.Eq(t.Hash), dao.Tiku.CourseName.Eq(t.CourseName)).First()
 		if findErr != nil || tk == nil {
 			return
 		}

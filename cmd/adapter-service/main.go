@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
-	"strings"
 	"syscall"
 	"time"
 
@@ -28,6 +27,8 @@ var indexPage []byte
 
 func main() {
 	flag.Parse()
+	// 时间一律固定上海（见 timezone.go 与 AGENTS.md 第 26 条）。
+	useShanghaiTime()
 	defer func() {
 		if value := recover(); value != nil {
 			logger.PanicLog(value, string(debug.Stack()))
@@ -48,10 +49,14 @@ func main() {
 	}(mg)
 
 	server := gin.Default()
-	trustedProxies := resolveTrustedProxies(os.Getenv("TRUSTED_PROXIES"))
-	if err := server.SetTrustedProxies(trustedProxies); err != nil {
+	trustedProxies, err := loadTrustedProxies()
+	if err != nil {
 		logger.FatalLog(err)
 	}
+	if err := server.SetTrustedProxies(trustedProxies.List); err != nil {
+		logger.FatalLog(err)
+	}
+	logTrustedProxies(trustedProxies)
 	api.SetAPIRouter(server)
 	api.SetWebRouter(buildFS, indexPage, server)
 	timer.StartTimer(mg.GetDB(), mg.GetEs(), mg.GetConfig().Elasticsearch.Addresses)
@@ -68,6 +73,7 @@ func main() {
 	defer stop()
 	shutdownDone := shutdownHTTPServerOnCancel(shutdownContext, httpServer)
 	logger.SysLog("Tiku 服务启动 address=" + httpServer.Addr)
+	logTimeBase()
 	err = httpServer.ListenAndServe()
 	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.FatalLog(err)
@@ -90,17 +96,4 @@ func shutdownHTTPServerOnCancel(shutdownContext context.Context, httpServer *htt
 		}
 	}()
 	return shutdownDone
-}
-
-func resolveTrustedProxies(configured string) []string {
-	if strings.TrimSpace(configured) == "" {
-		return nil
-	}
-	trustedProxies := make([]string, 0)
-	for _, item := range strings.Split(configured, ",") {
-		if trimmed := strings.TrimSpace(item); trimmed != "" {
-			trustedProxies = append(trustedProxies, trimmed)
-		}
-	}
-	return trustedProxies
 }

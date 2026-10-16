@@ -70,9 +70,17 @@ type tikuHashRow struct {
 }
 
 // backfillTikuHashWithoutPlat 分批把历史行的 hash 改写成新公式。
+//
+// ⚠️ 唯一键冲突必须「跳过并继续」，不能中止整个回填。
+// 线上事故（2026-10-16）：第 3 批某行的新 hash 与同 course_name 的已有行撞
+// `UNIQUE constraint failed: tiku.hash, tiku.course_name`，旧实现直接 return err，
+// 标记因此永远写不上 → 每次启动都重跑、永远不收敛。
+// 这类冲突说明两行本来就是同一道题（唯一索引不允许共存），
+// 跳过即可，绝不能删任何数据。
 func backfillTikuHashWithoutPlat(db *gorm.DB) error {
 	lastID := int32(0)
 	total := 0
+	skipped := 0
 
 	for {
 		rows := make([]tikuHashRow, 0, tikuHashBackfillBatchSize)
@@ -100,16 +108,38 @@ func backfillTikuHashWithoutPlat(db *gorm.DB) error {
 			if err := db.Table(entity.TableNameTiku).
 				Where("id = ?", row.ID).
 				Update("hash", expected).Error; err != nil {
+				if isUniqueConstraintViolation(err) {
+					// 与同 course_name 的已有行撞唯一键：保留原 hash，跳过该行。
+					skipped++
+					continue
+				}
 				return err
 			}
 			total++
 		}
 	}
 
-	if total > 0 {
-		logger.SysLog(fmt.Sprintf("题库 hash 已迁移到不含 plat 的新公式，共更新 %d 行", total))
+	if total > 0 || skipped > 0 {
+		logger.SysLog(fmt.Sprintf("题库 hash 已迁移到不含 plat 的新公式，更新 %d 行，跳过 %d 行（与已有行唯一键冲突，保留原值）", total, skipped))
 	}
 	return nil
+}
+
+// isUniqueConstraintViolation 判断数据库错误是否是唯一键冲突。
+//
+// 覆盖 SQLite（UNIQUE constraint failed / 2067）与 MySQL（Duplicate entry / 1062）。
+// GORM 只在开启 TranslateError 时才返回 ErrDuplicatedKey，本项目没开，因此按文本判断。
+func isUniqueConstraintViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{"unique constraint failed", "duplicate entry", "sqlite_constraint_unique"} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // parseTikuOptions 解析入库的选项 JSON；坏数据按空选项处理（与 FillHash 行为一致）。

@@ -208,6 +208,62 @@ func TestEnsureTikuHashWithoutPlatSchemaKeepsUniqueRows(t *testing.T) {
 	}
 }
 
+// 冲突行必须「跳过并完成」，不能中止回填、更不能重跑一辈子。
+//
+// 线上事故复现：同一道题既有一行旧公式、又有一行已经写成新公式，
+// 回填旧行时会撞 UNIQUE(hash, course_name) —— 旧实现直接 return err，
+// 标记永远写不上，于是每次启动都重跑（见 AGENTS.md 第 18 条）。
+func TestEnsureTikuHashWithoutPlatSchemaSkipsConflictingRowAndCompletes(t *testing.T) {
+	db := newTikuMigrationTestDB(t)
+
+	question := "冲突题目"
+	options := []string{"A"}
+	currentHash := util.BuildTikuHash(question, options, 0)
+	legacyHash := util.BuildLegacyTikuHash(question, options, 0)
+	if currentHash == legacyHash {
+		t.Fatal("test setup invalid: legacy and current hash should differ")
+	}
+
+	// 已经是新公式的行（较新代码写入）。
+	if err := db.Create(&entity.Tiku{
+		Question: question, Type: 0, Options: string(util.SortOptionsJSON(options)),
+		Answer: `["新答案"]`, Hash: currentHash, CourseName: "课程",
+	}).Error; err != nil {
+		t.Fatalf("seed current row: %v", err)
+	}
+	// 旧公式的历史行：回填后会与上面那行撞唯一键。
+	if err := db.Create(&entity.Tiku{
+		Question: question, Type: 0, Options: string(util.SortOptionsJSON(options)),
+		Answer: `["旧答案"]`, Hash: legacyHash, CourseName: "课程",
+	}).Error; err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+
+	if err := ensureTikuHashWithoutPlatSchema(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if !tikuHashBackfillDone(db) {
+		t.Fatal("expected the backfill flag to be written even when a row conflicts")
+	}
+
+	// 一行都不能少，冲突行保留旧 hash。
+	var count int64
+	if err := db.Table(entity.TableNameTiku).Where("question = ?", question).Count(&count).Error; err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected both rows to survive, got %d", count)
+	}
+	var kept int64
+	if err := db.Table(entity.TableNameTiku).
+		Where("question = ? AND hash = ?", question, legacyHash).Count(&kept).Error; err != nil {
+		t.Fatalf("count legacy hash: %v", err)
+	}
+	if kept != 1 {
+		t.Fatalf("expected the conflicting row to keep its legacy hash, found %d", kept)
+	}
+}
+
 // plat 列必须被删除，且不影响数据行。
 func TestEnsureTikuPlatColumnDroppedRemovesColumn(t *testing.T) {
 	db := newTikuMigrationTestDB(t)
