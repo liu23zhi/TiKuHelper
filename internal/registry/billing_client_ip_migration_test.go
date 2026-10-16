@@ -1,12 +1,33 @@
 package registry
 
 import (
+	"fmt"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"gorm.io/gorm"
 )
+
+// countLogsTableScans 统计测试期间对 logs 表的读取次数（Scan 与 Rows 两条路径都计入）。
+//
+// 这是回填的性能契约：**日志表只允许扫一次**，扫描次数不得随待回填账单条数增长
+// （旧实现每条账单扫一次全表，3 万行日志 × 上千条账单会把启动拖到几分钟）。
+func countLogsTableScans(db *gorm.DB) *int32 {
+	var scans int32
+	record := func(tx *gorm.DB) {
+		sql := strings.ToLower(tx.Statement.SQL.String())
+		if strings.Contains(sql, "from `logs`") || strings.Contains(sql, "from logs") {
+			atomic.AddInt32(&scans, 1)
+		}
+	}
+	_ = db.Callback().Query().After("gorm:query").Register("test:count_logs_scan", record)
+	_ = db.Callback().Row().After("gorm:row").Register("test:count_logs_scan_rows", record)
+	return &scans
+}
 
 func newBillingClientIPTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
@@ -167,5 +188,94 @@ func TestEnsureBillingClientIPSchemaBackfillsByExactRequestID(t *testing.T) {
 	}
 	if unmatched.ClientIP != "" {
 		t.Fatalf("expected unmatched request id to remain empty, got %q", unmatched.ClientIP)
+	}
+}
+
+// 回归：待回填账单再多，日志表也只能扫一次。
+func TestBackfillBillingClientIPScansLogsOnlyOnce(t *testing.T) {
+	db := newBillingClientIPTestDB(t)
+	if err := db.AutoMigrate(&entity.BillingRecord{}, &entity.Log{}, &entity.SystemSetting{}); err != nil {
+		t.Fatalf("migrate test db: %v", err)
+	}
+
+	// 条数刻意跨过 500 的批次边界，确保分页写回不会重新触发日志扫描。
+	const rowCount = 1200
+	records := make([]entity.BillingRecord, 0, rowCount)
+	logs := make([]entity.Log, 0, rowCount)
+	for i := 0; i < rowCount; i++ {
+		requestID := fmt.Sprintf("req-scan-once-%04d", i)
+		records = append(records, entity.BillingRecord{
+			UserID:    1,
+			Type:      "normal_search",
+			Amount:    0.01,
+			RequestID: requestID,
+		})
+		logs = append(logs, entity.Log{
+			Module:      "search",
+			Description: "搜索完成 requestId=" + requestID,
+			ClientIP:    "10.0.0.9",
+		})
+	}
+	if err := db.CreateInBatches(&records, 200).Error; err != nil {
+		t.Fatalf("seed billing records: %v", err)
+	}
+	if err := db.CreateInBatches(&logs, 200).Error; err != nil {
+		t.Fatalf("seed logs: %v", err)
+	}
+
+	scans := countLogsTableScans(db)
+	start := time.Now()
+	if err := ensureBillingClientIPSchema(db); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	t.Logf("回填 %d 条账单耗时 %s", rowCount, time.Since(start).Round(time.Millisecond))
+
+	if got := atomic.LoadInt32(scans); got != 1 {
+		t.Fatalf("expected the logs table to be scanned exactly once, got %d scans", got)
+	}
+
+	var empty int64
+	if err := db.Table(entity.TableNameBillingRecord).
+		Where("COALESCE(client_ip, '') = ''").Count(&empty).Error; err != nil {
+		t.Fatalf("count empty client ip: %v", err)
+	}
+	if empty != 0 {
+		t.Fatalf("expected every row to be backfilled, %d rows left empty", empty)
+	}
+}
+
+// 回归：没有任何待回填账单时，连日志表都不应该读。
+func TestBackfillBillingClientIPSkipsLogScanWhenNothingPending(t *testing.T) {
+	db := newBillingClientIPTestDB(t)
+	if err := db.AutoMigrate(&entity.BillingRecord{}, &entity.Log{}, &entity.SystemSetting{}); err != nil {
+		t.Fatalf("migrate test db: %v", err)
+	}
+
+	// 已有来源 IP 的行、以及没有 request_id 的行都不需要回填。
+	if err := db.Create(&entity.BillingRecord{
+		UserID: 1, Type: "normal_search", Amount: 0.5, RequestID: "req-already-filled", ClientIP: "1.2.3.4",
+	}).Error; err != nil {
+		t.Fatalf("seed filled record: %v", err)
+	}
+	if err := db.Create(&entity.BillingRecord{
+		UserID: 1, Type: "registration_bonus", Amount: 0.5,
+	}).Error; err != nil {
+		t.Fatalf("seed record without request id: %v", err)
+	}
+	if err := db.Create(&entity.Log{
+		Module: "search", Description: "搜索完成 requestId=req-already-filled", ClientIP: "1.2.3.4",
+	}).Error; err != nil {
+		t.Fatalf("seed log: %v", err)
+	}
+
+	scans := countLogsTableScans(db)
+	if err := ensureBillingClientIPSchema(db); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if got := atomic.LoadInt32(scans); got != 0 {
+		t.Fatalf("expected no logs scan when nothing needs backfilling, got %d scans", got)
+	}
+	if !systemSettingFlagIsSet(db, billingClientIPBackfilledKey) {
+		t.Fatal("expected the backfill completion flag to be set")
 	}
 }

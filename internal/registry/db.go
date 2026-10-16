@@ -559,7 +559,7 @@ func RegisterDB(config configs.Config) *gorm.DB {
 	}
 
 	// register_ip 必须在 users 表存在之后补列；回填依赖 logs 表，失败只记日志。
-	if err := ensureUserRegisterIPSchema(db); err != nil {
+	if err := runStartupMigration("ensureUserRegisterIPSchema", func() error { return ensureUserRegisterIPSchema(db) }); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare user register ip schema fail: %w", err))
 	}
 
@@ -601,36 +601,36 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
 	}
 
-	if err := ensureMoneyPrecisionSchema(db); err != nil {
+	if err := runStartupMigration("ensureMoneyPrecisionSchema", func() error { return ensureMoneyPrecisionSchema(db) }); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare money precision schema fail: %w", err))
 	}
 
-	if err := ensureAIModelPriceSchema(db); err != nil {
+	if err := runStartupMigration("ensureAIModelPriceSchema", func() error { return ensureAIModelPriceSchema(db) }); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare ai model price schema fail: %w", err))
 	}
 
-	if err := ensureBillingQuestionTextSchema(db); err != nil {
+	if err := runStartupMigration("ensureBillingQuestionTextSchema", func() error { return ensureBillingQuestionTextSchema(db) }); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare billing question text schema fail: %w", err))
 	}
 
 	// 账单来源 IP（供账单明细展示归属地）。历史行无法回溯，只建列。
-	if err := ensureBillingClientIPSchema(db); err != nil {
+	if err := runStartupMigration("ensureBillingClientIPSchema", func() error { return ensureBillingClientIPSchema(db) }); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare billing client ip schema fail: %w", err))
 	}
 
 	// source-aware 归属地缓存使用新表，旧表保留以兼容 SQLite 和回滚；
 	// 回填失败只记日志，下一次启动会因未写标记而重试。
-	if err := ensureLocationCacheEntriesSchema(db); err != nil {
+	if err := runStartupMigration("ensureLocationCacheEntriesSchema", func() error { return ensureLocationCacheEntriesSchema(db) }); err != nil {
 		logger.SysLog(fmt.Sprintf("归属地缓存迁移失败（不影响启动）：%v", err))
 	}
 
 	// 题库 hash 迁移与 plat 列删除。两者都依赖 system_settings 表，
 	// 因此必须放在上面的 AutoMigrate（含 SystemSetting）之后。
 	// 失败只记日志、不阻断启动，标记未写入会在下次启动重试。
-	if err := ensureTikuHashWithoutPlatSchema(db); err != nil {
+	if err := runStartupMigration("ensureTikuHashWithoutPlatSchema", func() error { return ensureTikuHashWithoutPlatSchema(db) }); err != nil {
 		logger.SysLog(fmt.Sprintf("题库 hash 迁移失败（不影响启动）：%v", err))
 	}
-	if err := ensureTikuPlatColumnDropped(db); err != nil {
+	if err := runStartupMigration("ensureTikuPlatColumnDropped", func() error { return ensureTikuPlatColumnDropped(db) }); err != nil {
 		logger.SysLog(fmt.Sprintf("tiku.plat 列删除失败（不影响启动）：%v", err))
 	}
 
