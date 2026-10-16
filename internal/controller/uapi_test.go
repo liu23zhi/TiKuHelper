@@ -185,13 +185,14 @@ func TestUAPIPhoneInfoReturnsPersistedLocation(t *testing.T) {
 	}
 }
 
-// IP 端点同理：命中持久化缓存直接返回。
+// IP 端点同理：命中持久化缓存直接返回，且 address 带上运营商。
 func TestUAPIIPInfoReturnsPersistedLocation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newUAPILocationTestDB(t)
 
+	// 故意把 address 列写成旧版本的「只有 region」，验证展示时按 raw_json 补上运营商。
 	seedLocationRow(t, db, entity.LocationKindIP, "8.8.8.8", "美国",
-		`{"ip":"8.8.8.8","region":"美国","isp":"GOOGLE","asn":"AS15169"}`)
+		`{"ip":"8.8.8.8","region":"美国","isp":"GOOGLE","llc":"GOOGLE","asn":"AS15169"}`)
 
 	recorder := performUAPIRequest(t, "/adapter-service/uapi/ipinfo?ip=8.8.8.8", "admin", UAPIIPInfo)
 	if recorder.Code != http.StatusOK {
@@ -212,8 +213,8 @@ func TestUAPIIPInfoReturnsPersistedLocation(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected an entry for the ip, got %v", payload.Data)
 	}
-	if row.Address != "美国" || row.Region != "美国" {
-		t.Fatalf("expected region-based address, got %+v", row)
+	if row.Address != "美国 GOOGLE" || row.Region != "美国" {
+		t.Fatalf("expected 美国 GOOGLE, got %+v", row)
 	}
 }
 

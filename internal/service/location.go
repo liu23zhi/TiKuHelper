@@ -133,7 +133,8 @@ type IPLocation struct {
 	ISP    string `json:"isp"`
 	LLC    string `json:"llc"`
 	ASN    string `json:"asn"`
-	// Address 是展示文本；IP 直接用上游的 region（文档定义其格式为国家 省份 城市）。
+	// Address 是展示文本：`{region} {运营商}`，例如「中国 广东 中山 移动」。
+	// 运营商优先取上游的 llc（中文简称），为空时回退 isp。
 	Address string `json:"address"`
 }
 
@@ -165,6 +166,43 @@ func FormatPhoneLocationAddress(province, city, sp string) string {
 		return region
 	}
 	return region + " " + sp
+}
+
+// FormatIPLocationAddress 把 IP 归属地拼成展示文本。
+//
+// 规则：`{region} {运营商}`，例如「中国 广东 中山 移动」。
+// 运营商优先取上游的 llc（中文简称，如「移动」），为空时回退 isp；
+// 两者都没有（或只是 N/A 之类的占位）时只输出 region。
+//
+// 注意：region 本身已含空格（国家 省份 城市），不要再做拼接去空格处理。
+func FormatIPLocationAddress(region, llc, isp string) string {
+	region = strings.TrimSpace(region)
+	operator := strings.TrimSpace(llc)
+	if isPlaceholderLocationValue(operator) {
+		operator = strings.TrimSpace(isp)
+	}
+	if isPlaceholderLocationValue(operator) {
+		operator = ""
+	}
+	switch {
+	case region == "":
+		return operator
+	case operator == "":
+		return region
+	default:
+		return region + " " + operator
+	}
+}
+
+// isPlaceholderLocationValue 判断归属地字段是不是「没有值」的占位写法。
+// 本地合成的回环/私有地址会写 isp="N/A"，不能显示成「私有地址 N/A」。
+func isPlaceholderLocationValue(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "n/a", "na", "-", "--", "null", "none", "unknown", "未知":
+		return true
+	default:
+		return false
+	}
 }
 
 // NormalizeLocationPhone 归一化手机号，明显非法时返回空串。
@@ -530,7 +568,7 @@ func phoneLocationFromCacheRow(row entity.LocationCache) PhoneLocation {
 		City:     info.City,
 		SP:       info.SP,
 		AreaCode: info.AreaCode,
-		Address:  row.Address,
+		Address:  displayAddressFromCacheRow(row),
 	}
 }
 
@@ -543,8 +581,30 @@ func ipLocationFromCacheRow(row entity.LocationCache) IPLocation {
 		ISP:     info.ISP,
 		LLC:     info.LLC,
 		ASN:     info.ASN,
-		Address: row.Address,
+		Address: displayAddressFromCacheRow(row),
 	}
+}
+
+// displayAddressFromCacheRow 统一拼出展示文本。
+//
+// 一律**用 RawJSON 重新拼**，而不是直接返回 address 列：历史行（以及早期版本写入的行）
+// 的 address 只有 region，运营商被漏掉了；RawJSON 里存着上游原文，
+// 因此不需要回源付费查询就能把「中国 广东 中山」修正成「中国 广东 中山 移动」。
+// RawJSON 缺失或解析不出结构化字段时，才回退到已存的 address 列。
+func displayAddressFromCacheRow(row entity.LocationCache) string {
+	switch row.Kind {
+	case entity.LocationKindPhone:
+		info := parsePhoneInfoRawJSON(row.RawJSON)
+		if formatted := FormatPhoneLocationAddress(info.Province, info.City, info.SP); formatted != "" {
+			return formatted
+		}
+	case entity.LocationKindIP:
+		info := parseIPInfoRawJSON(row.RawJSON)
+		if formatted := FormatIPLocationAddress(info.Region, info.LLC, info.ISP); formatted != "" {
+			return formatted
+		}
+	}
+	return strings.TrimSpace(row.Address)
 }
 
 // parsePhoneInfoRawJSON 从原始响应里解出手机归属地字段；解析失败返回零值。
@@ -651,7 +711,7 @@ func lookupLocationUpstream(client *uapi.Client, kind string, key string, source
 	} else {
 		var info uapi.IPInfo
 		info, err = client.GetIPInfo(ctx, key, source)
-		address, rawJSON = strings.TrimSpace(info.Region), info.RawJSON
+		address, rawJSON = FormatIPLocationAddress(info.Region, info.LLC, info.ISP), info.RawJSON
 	}
 	if err != nil {
 		return locationFlightResult{err: err, abort: isLocationAbortError(err)}

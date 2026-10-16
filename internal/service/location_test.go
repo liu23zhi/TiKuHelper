@@ -59,6 +59,71 @@ func TestFormatPhoneLocationAddressMatchesDocumentedShape(t *testing.T) {
 	}
 }
 
+// IP 展示文本规则：{region} {运营商}，运营商优先 llc，回退 isp。
+func TestFormatIPLocationAddress(t *testing.T) {
+	testCases := []struct {
+		name   string
+		region string
+		llc    string
+		isp    string
+		want   string
+	}{
+		{
+			name:   "llc 优先（用户反馈的 IPv6 例子）",
+			region: "中国 广东 中山", llc: "移动",
+			isp:  "China Mobile Communications Group Co., Ltd.",
+			want: "中国 广东 中山 移动",
+		},
+		{name: "llc 为空回退 isp", region: "美国", isp: "GOOGLE", want: "美国 GOOGLE"},
+		{name: "两者都为空", region: "美国", want: "美国"},
+		{name: "占位 N/A 不展示", region: "私有地址", isp: "N/A", want: "私有地址"},
+		{name: "占位 N/A 但 llc 有值", region: "中国 广东 中山", llc: "移动", isp: "N/A", want: "中国 广东 中山 移动"},
+		{name: "只有运营商", llc: "移动", want: "移动"},
+		{name: "全为空", want: ""},
+		{name: "首尾空白被清理", region: " 美国 ", llc: " GOOGLE ", want: "美国 GOOGLE"},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := FormatIPLocationAddress(testCase.region, testCase.llc, testCase.isp)
+			if got != testCase.want {
+				t.Fatalf("expected %q, got %q", testCase.want, got)
+			}
+		})
+	}
+}
+
+// 回归：历史缓存行的 address 列只有 region（缺运营商），
+// 但 RawJSON 里存着 llc，展示时必须补上，且不需要回源重新付费查询。
+func TestLookupIPLocationsFixesLegacyAddressWithoutOperator(t *testing.T) {
+	db := newLocationTestDB(t)
+
+	const ip = "2409:8a55:f1b1:51c0:68ac:ad9:3802:23fd"
+	if err := db.Create(&entity.LocationCache{
+		Kind:      entity.LocationKindIP,
+		LookupKey: ip,
+		// 旧版本写入的展示文本：只有 region。
+		Address: "中国 广东 中山",
+		RawJSON: `{"ip":"` + ip + `","beginip":"2409:8a55:f100::","endip":"2409:8a55:f1ff:ffff:ffff:ffff:ffff:ffff",` +
+			`"region":"中国 广东 中山","isp":"China Mobile Communications Group Co., Ltd.","asn":"AS9808","llc":"移动",` +
+			`"latitude":22.713907,"longitude":113.296358}`,
+		FetchedAt: time.Now(),
+	}).Error; err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+
+	locations := LookupIPLocationsWithDB(db, []string{ip}, LocationQueryOptions{})
+	got, ok := locations[ip]
+	if !ok {
+		t.Fatalf("expected the persisted cache to be used, got %v", locations)
+	}
+	if got.Address != "中国 广东 中山 移动" {
+		t.Fatalf("expected 中国 广东 中山 移动, got %q", got.Address)
+	}
+	if got.LLC != "移动" || got.Region != "中国 广东 中山" {
+		t.Fatalf("expected structured fields to be restored, got %+v", got)
+	}
+}
+
 func TestNormalizeLocationPhone(t *testing.T) {
 	valid := []string{"13800138000", " 13800138000 "}
 	for _, input := range valid {
@@ -252,7 +317,7 @@ func TestLocationCacheWithoutAddressIsNotUsable(t *testing.T) {
 	}
 }
 
-// IP 缓存命中能还原结构化字段，展示文本取 region。
+// IP 缓存命中能还原结构化字段，展示文本拼成「region + 运营商」。
 func TestLookupIPLocationsUsesPersistedCache(t *testing.T) {
 	db := newLocationTestDB(t)
 
@@ -272,8 +337,8 @@ func TestLookupIPLocationsUsesPersistedCache(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected the persisted cache to be used, got %v", locations)
 	}
-	if got.Address != "美国" || got.Region != "美国" {
-		t.Fatalf("expected region-based address, got %+v", got)
+	if got.Address != "美国 GOOGLE" || got.Region != "美国" {
+		t.Fatalf("expected 美国 GOOGLE, got %+v", got)
 	}
 	if got.ISP != "GOOGLE" || got.ASN != "AS15169" {
 		t.Fatalf("expected structured fields to be restored, got %+v", got)

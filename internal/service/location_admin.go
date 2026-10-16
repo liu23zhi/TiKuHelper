@@ -107,6 +107,11 @@ func ListLocationCacheWithDB(db *gorm.DB, query LocationCacheListQuery, page int
 	if err := base.Order("fetched_at DESC, lookup_key ASC").Limit(pageSize).Offset((page - 1) * pageSize).Find(&rows).Error; err != nil {
 		return LocationCacheListResult{}, err
 	}
+	// 展示文本统一用 RawJSON 重新拼：历史行的 address 只有 region，缺运营商。
+	// 只改返回值，不动数据库里的 address 列（关键字筛选仍按已存列匹配）。
+	for index := range rows {
+		rows[index].Address = displayAddressFromCacheRow(rows[index])
+	}
 	return LocationCacheListResult{
 		Data: rows, Total: total, Page: page, PageSize: pageSize,
 		Configured: GetUAPIAPIKeyWithDB(db) != "",

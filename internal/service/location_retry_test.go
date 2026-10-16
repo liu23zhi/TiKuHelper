@@ -241,7 +241,7 @@ func TestIPLocationStopsAfterConsecutiveFailures(t *testing.T) {
 	}
 }
 
-// IP 成功结果同样落库，且 address 取 region。
+// IP 成功结果同样落库，address 拼成「region + 运营商」。
 func TestIPLocationPersistsSuccessfulResults(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -256,12 +256,15 @@ func TestIPLocationPersistsSuccessfulResults(t *testing.T) {
 	db := newLocationTestDB(t)
 	locations := LookupIPLocationsWithDB(db, []string{"8.8.8.8"}, LocationQueryOptions{UAPIKey: "uapi-key"})
 
-	if locations["8.8.8.8"].Address != "美国" {
-		t.Fatalf("expected 美国, got %+v", locations["8.8.8.8"])
+	if locations["8.8.8.8"].Address != "美国 GOOGLE" {
+		t.Fatalf("expected 美国 GOOGLE, got %+v", locations["8.8.8.8"])
 	}
 	var stored entity.LocationCache
 	if err := db.Where("kind = ? AND lookup_key = ?", entity.LocationKindIP, "8.8.8.8").First(&stored).Error; err != nil {
 		t.Fatalf("expected the result to be persisted: %v", err)
+	}
+	if stored.Address != "美国 GOOGLE" {
+		t.Fatalf("expected the persisted address to include the operator, got %q", stored.Address)
 	}
 }
 

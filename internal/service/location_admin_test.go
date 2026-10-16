@@ -91,6 +91,33 @@ func TestListAndDeleteLocationCacheWithDB(t *testing.T) {
 	}
 }
 
+// 管理页列表也必须显示补上运营商后的文本（历史行 address 列可能只有 region）。
+func TestListLocationCacheComposesAddressWithOperator(t *testing.T) {
+	db := newLocationTestDB(t)
+	seedLocationRowForTest(t, db, entity.LocationKindIP, "8.8.8.8", "美国",
+		`{"ip":"8.8.8.8","region":"美国","isp":"GOOGLE","llc":"GOOGLE","asn":"AS15169"}`)
+
+	result, err := ListLocationCacheWithDB(db, LocationCacheListQuery{Kind: entity.LocationKindIP}, 1, 20)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(result.Data) != 1 {
+		t.Fatalf("expected one row, got %+v", result.Data)
+	}
+	if result.Data[0].Address != "美国 GOOGLE" {
+		t.Fatalf("expected 美国 GOOGLE, got %q", result.Data[0].Address)
+	}
+
+	// 只改展示，不动数据库里的 address 列。
+	var stored entity.LocationCache
+	if err := db.Where("kind = ? AND lookup_key = ?", entity.LocationKindIP, "8.8.8.8").First(&stored).Error; err != nil {
+		t.Fatalf("load stored row: %v", err)
+	}
+	if stored.Address != "美国" {
+		t.Fatalf("expected the stored column to stay untouched, got %q", stored.Address)
+	}
+}
+
 func TestRefreshLocationCachePreservesOldRecordOnFailure(t *testing.T) {
 	var requests atomic.Int64
 	var fail atomic.Bool
