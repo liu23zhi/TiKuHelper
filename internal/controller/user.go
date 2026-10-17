@@ -330,6 +330,10 @@ func UserRegister(c *gin.Context) {
 		})
 		return
 	}
+	if err := util.ValidateRestrictedName(username, util.UsernameMaxLength, "用户名"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
 	if rawPhone == "" || smsCode == "" {
 		c.JSON(400, gin.H{
 			"message": "手机号和验证码不能为空",
@@ -765,6 +769,10 @@ func CreateUser(c *gin.Context) {
 		c.JSON(400, gin.H{
 			"message": "用户名和密码不能为空",
 		})
+		return
+	}
+	if err := util.ValidateRestrictedName(user.Username, util.UsernameMaxLength, "用户名"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
 	if err := validatePasswordComplexity(user.Password); err != nil {

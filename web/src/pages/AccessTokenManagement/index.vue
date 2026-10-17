@@ -139,7 +139,7 @@
     >
       <a-form :model="formState" :label-col="labelCol" :wrapper-col="wrapperCol" layout="horizontal">
         <a-form-item label="令牌名称" required>
-          <a-input v-model:value="formState.name" placeholder="请输入令牌名称" />
+          <a-input v-model:value="formState.name" placeholder="请输入令牌名称" @input="formState.name = limitAccessTokenNameInput(formState.name)" />
         </a-form-item>
         <a-form-item v-if="isEditing" label="状态">
           <a-select v-model:value="formState.status" :options="statusOptions" />
@@ -176,6 +176,8 @@ import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser';
 import {
   buildAccessTokenBalanceAlert,
   buildAccessTokenListParams,
+  normalizeAccessTokenName,
+  limitAccessTokenNameInput,
 } from '@/utils/accessTokenManagementHelpers.mjs';
 import { formatMoneyValue, formatMoneyYuanWithSpace } from '@/utils/moneyFormat.mjs';
 
@@ -189,6 +191,7 @@ const showAllTokens = ref(false)
 const formState = ref({
   id: undefined,
   name: '',
+  originalName: '',
   status: 'enabled',
   totalQuotaLimit: 0,
   remark: '',
@@ -350,6 +353,7 @@ export default defineComponent({
         { label: '禁用', value: 'disabled' },
       ],
       columns,
+      limitAccessTokenNameInput,
     }
   },
   mounted() {
@@ -539,6 +543,7 @@ export default defineComponent({
       formState.value = {
         id: record.id,
         name: record.name || '',
+        originalName: record.name || '',
         status: record.status || 'enabled',
         totalQuotaLimit: Number(record.totalQuotaLimit || 0),
         remark: record.remark || '',
@@ -546,17 +551,25 @@ export default defineComponent({
       visible.value = true
     },
     handleSubmit() {
+      let name
+      const rawName = String(formState.value.name || '').trim()
+      const unchangedLegacyName = isEditing.value && rawName === String(formState.value.originalName || '').trim()
+      if (unchangedLegacyName) {
+        name = rawName
+      } else {
+        try {
+          name = normalizeAccessTokenName(rawName)
+        } catch (error) {
+          message.warning(error?.message || '令牌名称不符合要求')
+          return
+        }
+      }
       const payload = {
         id: formState.value.id,
-        name: String(formState.value.name || '').trim(),
+        name,
         status: String(formState.value.status || 'enabled').trim(),
         totalQuotaLimit: normalizeMoneyInput(formState.value.totalQuotaLimit),
         remark: String(formState.value.remark || '').trim(),
-      }
-
-      if (!payload.name) {
-        message.warning('请输入令牌名称')
-        return
       }
 
       submitLoading.value = true
@@ -606,6 +619,7 @@ export default defineComponent({
       formState.value = {
         id: undefined,
         name: '',
+        originalName: '',
         status: 'enabled',
         totalQuotaLimit: 0,
         remark: '',

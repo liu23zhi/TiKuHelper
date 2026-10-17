@@ -194,7 +194,7 @@ test('buildResetPasswordPayload requires non-empty password', () => {
 test('buildAdminCreateUserPayload trims fields and keeps admin-created defaults', () => {
   assert.equal(typeof userPortalHelpers.buildAdminCreateUserPayload, 'function');
   assert.deepEqual(userPortalHelpers.buildAdminCreateUserPayload({
-    username: '  new-user  ',
+    username: '  new_user  ',
     password: '  Abc12345!  ',
     nickname: '  测试用户  ',
     role: ' admin ',
@@ -203,7 +203,7 @@ test('buildAdminCreateUserPayload trims fields and keeps admin-created defaults'
     giftEnabled: true,
     giftAmount: ' 6.50 ',
   }), {
-    username: 'new-user',
+    username: 'new_user',
     password: 'Abc12345!',
     nickname: '测试用户',
     role: 'admin',
@@ -213,6 +213,12 @@ test('buildAdminCreateUserPayload trims fields and keeps admin-created defaults'
     giftAmount: 6.5,
   });
 });
+
+test('buildAdminCreateUserPayload rejects invalid and overlong usernames', () => {
+  assert.throws(() => userPortalHelpers.buildAdminCreateUserPayload({ username: 'user-name', password: 'Abc12345!' }), /用户名/)
+  assert.throws(() => userPortalHelpers.buildAdminCreateUserPayload({ username: 'https://example.com', password: 'Abc12345!' }), /用户名/)
+  assert.throws(() => userPortalHelpers.buildAdminCreateUserPayload({ username: '用'.repeat(256), password: 'Abc12345!' }), /用户名/)
+})
 
 test('buildUserBalanceUpdatePayload trims fields and keeps edit mode data', () => {
   assert.deepEqual(buildUserBalanceUpdatePayload({

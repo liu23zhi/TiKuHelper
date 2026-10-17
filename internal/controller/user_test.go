@@ -198,7 +198,7 @@ func TestUserRegisterRequiresRegisterEnabled(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	payload := []byte(`{"username":"new-user","password":"123456","nickname":"新用户","captchaToken":"token-1"}`)
+	payload := []byte(`{"username":"new_user","password":"123456","nickname":"新用户","captchaToken":"token-1"}`)
 	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
@@ -228,7 +228,7 @@ func TestUserRegisterRejectsWeakPassword(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	payload := []byte(`{"username":"weak-user","password":"12345678","nickname":"弱密码","phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`)
+	payload := []byte(`{"username":"weak_user","password":"12345678","nickname":"弱密码","phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`)
 	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
@@ -242,12 +242,37 @@ func TestUserRegisterRejectsWeakPassword(t *testing.T) {
 		t.Fatalf("expected password complexity message, got %s", body)
 	}
 
-	count, err := dao.User.Where(dao.User.Username.Eq("weak-user")).Count()
+	count, err := dao.User.Where(dao.User.Username.Eq("weak_user")).Count()
 	if err != nil {
 		t.Fatalf("count weak user: %v", err)
 	}
 	if count != 0 {
 		t.Fatalf("expected weak-password registration to be rejected, got count %d", count)
+	}
+}
+
+func TestUserRegisterRejectsInvalidAndOverlongUsernames(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	if err := db.Create(&entity.SystemSetting{Key: service.RegisterEnabledSettingKey, Value: "true"}).Error; err != nil {
+		t.Fatalf("seed register setting: %v", err)
+	}
+
+	for _, username := range []string{"bad-name", "https://example.com", strings.Repeat("用", 256)} {
+		t.Run(username[:min(len(username), 12)], func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			payload := []byte(fmt.Sprintf(`{"username":%q,"password":"Abc12345!","phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`, username))
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
+			request.Header.Set("Content-Type", "application/json")
+			ctx.Request = request
+
+			UserRegister(ctx)
+
+			if recorder.Code != http.StatusBadRequest || !bytes.Contains(recorder.Body.Bytes(), []byte("用户名")) {
+				t.Fatalf("expected username validation error, got status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+		})
 	}
 }
 
@@ -276,7 +301,7 @@ func TestUserRegisterCreatesPublicUserWithDefaults(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	payload := []byte(`{"username":"new-user","password":"Abc12345!","nickname":"新用户","phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`)
+	payload := []byte(`{"username":"new_user","password":"Abc12345!","nickname":"新用户","phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`)
 	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
@@ -304,7 +329,7 @@ func TestUserRegisterCreatesPublicUserWithDefaults(t *testing.T) {
 		t.Fatalf("expected response phone 13800000000, got %+v", response.Phone)
 	}
 
-	stored, err := dao.User.Where(dao.User.Username.Eq("new-user")).First()
+	stored, err := dao.User.Where(dao.User.Username.Eq("new_user")).First()
 	if err != nil {
 		t.Fatalf("load created user: %v", err)
 	}
@@ -337,7 +362,7 @@ func TestUserRegisterAppliesNewUserBonusAndWritesBillingDetail(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	payload := []byte(`{"username":"bonus-user","password":"Abc12345!","nickname":"赠送用户","phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`)
+	payload := []byte(`{"username":"bonus_user","password":"Abc12345!","nickname":"赠送用户","phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`)
 	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
@@ -347,7 +372,7 @@ func TestUserRegisterAppliesNewUserBonusAndWritesBillingDetail(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
-	stored, err := dao.User.Where(dao.User.Username.Eq("bonus-user")).First()
+	stored, err := dao.User.Where(dao.User.Username.Eq("bonus_user")).First()
 	if err != nil {
 		t.Fatalf("load bonus user: %v", err)
 	}
@@ -1036,7 +1061,7 @@ func TestCreateUserRejectsNonAdminOperator(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	payload := []byte(`{"username":"created-by-user","password":"123456","nickname":"test"}`)
+	payload := []byte(`{"username":"created_by_user","password":"123456","nickname":"test"}`)
 	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
@@ -1051,7 +1076,7 @@ func TestCreateUserRejectsNonAdminOperator(t *testing.T) {
 		t.Fatalf("expected forbidden create message, got %s", body)
 	}
 
-	count, err := dao.User.Where(dao.User.Username.Eq("created-by-user")).Count()
+	count, err := dao.User.Where(dao.User.Username.Eq("created_by_user")).Count()
 	if err != nil {
 		t.Fatalf("count created user: %v", err)
 	}
@@ -1070,7 +1095,7 @@ func TestCreateUserRejectsWeakPassword(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	payload := []byte(`{"username":"weak-created-user","password":"12345678","nickname":"test"}`)
+	payload := []byte(`{"username":"weak_created_user","password":"12345678","nickname":"test"}`)
 	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
@@ -1085,12 +1110,39 @@ func TestCreateUserRejectsWeakPassword(t *testing.T) {
 		t.Fatalf("expected password complexity message, got %s", body)
 	}
 
-	count, err := dao.User.Where(dao.User.Username.Eq("weak-created-user")).Count()
+	count, err := dao.User.Where(dao.User.Username.Eq("weak_created_user")).Count()
 	if err != nil {
 		t.Fatalf("count weak created user: %v", err)
 	}
 	if count != 0 {
 		t.Fatalf("expected weak-password user creation to be rejected, got count %d", count)
+	}
+}
+
+func TestCreateUserRejectsInvalidAndOverlongUsernames(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	admin := &entity.User{ID: 410, Username: "admin_validation", Password: "123456", Role: "admin", Status: "enabled", RegisterSource: "admin"}
+	if err := db.Create(admin).Error; err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+
+	for _, username := range []string{"bad-name", "https://example.com", strings.Repeat("用", 256)} {
+		t.Run(username[:min(len(username), 12)], func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			payload := []byte(fmt.Sprintf(`{"username":%q,"password":"Abc12345!","giftEnabled":false}`, username))
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/user", bytes.NewReader(payload))
+			request.Header.Set("Content-Type", "application/json")
+			ctx.Request = request
+			ctx.Set("user", admin)
+
+			CreateUser(ctx)
+
+			if recorder.Code != http.StatusBadRequest || !bytes.Contains(recorder.Body.Bytes(), []byte("用户名")) {
+				t.Fatalf("expected username validation error, got status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+		})
 	}
 }
 
@@ -1104,7 +1156,7 @@ func TestCreateUserAcceptsStrongPassword(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	payload := []byte(`{"username":"created-strong-user","password":"Abc12345!","nickname":"test","role":"user","status":"enabled"}`)
+	payload := []byte(`{"username":"created_strong_user","password":"Abc12345!","nickname":"test","role":"user","status":"enabled"}`)
 	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
@@ -1116,7 +1168,7 @@ func TestCreateUserAcceptsStrongPassword(t *testing.T) {
 		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
 
-	stored, err := dao.User.Where(dao.User.Username.Eq("created-strong-user")).First()
+	stored, err := dao.User.Where(dao.User.Username.Eq("created_strong_user")).First()
 	if err != nil {
 		t.Fatalf("load created user: %v", err)
 	}
@@ -1138,7 +1190,7 @@ func TestCreateUserAppliesEditableNewUserBonus(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	payload := []byte(`{"username":"created-bonus-user","password":"Abc12345!","nickname":"赠送账号","role":"user","status":"enabled","giftEnabled":true,"giftAmount":8.75}`)
+	payload := []byte(`{"username":"created_bonus_user","password":"Abc12345!","nickname":"赠送账号","role":"user","status":"enabled","giftEnabled":true,"giftAmount":8.75}`)
 	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
@@ -1149,7 +1201,7 @@ func TestCreateUserAppliesEditableNewUserBonus(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
-	stored, err := dao.User.Where(dao.User.Username.Eq("created-bonus-user")).First()
+	stored, err := dao.User.Where(dao.User.Username.Eq("created_bonus_user")).First()
 	if err != nil {
 		t.Fatalf("load created bonus user: %v", err)
 	}
@@ -1178,7 +1230,7 @@ func TestCreateUserCanDisableNewUserBonus(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	payload := []byte(`{"username":"created-no-bonus-user","password":"Abc12345!","nickname":"不赠送账号","role":"user","status":"enabled","giftEnabled":false,"giftAmount":-99}`)
+	payload := []byte(`{"username":"created_no_bonus_user","password":"Abc12345!","nickname":"不赠送账号","role":"user","status":"enabled","giftEnabled":false,"giftAmount":-99}`)
 	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
@@ -1189,7 +1241,7 @@ func TestCreateUserCanDisableNewUserBonus(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
-	stored, err := dao.User.Where(dao.User.Username.Eq("created-no-bonus-user")).First()
+	stored, err := dao.User.Where(dao.User.Username.Eq("created_no_bonus_user")).First()
 	if err != nil {
 		t.Fatalf("load disabled-bonus user: %v", err)
 	}
@@ -1526,7 +1578,7 @@ func TestUserRegisterRequiresPhoneAndSMSCode(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	payload := []byte(`{"username":"new-user","password":"Abc12345!","nickname":"新用户"}`)
+	payload := []byte(`{"username":"new_user","password":"Abc12345!","nickname":"新用户"}`)
 	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request

@@ -8,10 +8,12 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 )
 
 var ErrAccessTokenNameRequired = errors.New("令牌名称不能为空")
+var ErrAccessTokenNameInvalid = errors.New("令牌名称只能使用中文、英文、数字、下划线和@，且长度不能超过128个字符")
 var ErrAccessTokenNotFound = errors.New("访问令牌不存在")
 var ErrAccessTokenForbidden = errors.New("无权限操作访问令牌")
 
@@ -77,6 +79,9 @@ func CreateAccessTokenWithDB(db *gorm.DB, operator entity.User, input CreateAcce
 	if name == "" {
 		return CreatedAccessToken{}, ErrAccessTokenNameRequired
 	}
+	if err := util.ValidateRestrictedName(name, util.AccessTokenNameMaxLength, "令牌名称"); err != nil {
+		return CreatedAccessToken{}, ErrAccessTokenNameInvalid
+	}
 
 	plainToken := "tk_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 	tokenHash := hashAccessTokenValue(plainToken)
@@ -115,6 +120,11 @@ func UpdateAccessTokenWithDB(db *gorm.DB, operator entity.User, tokenID int32, i
 	name := strings.TrimSpace(input.Name)
 	if name == "" {
 		return entity.AccessToken{}, ErrAccessTokenNameRequired
+	}
+	if name != accessToken.Name {
+		if err := util.ValidateRestrictedName(name, util.AccessTokenNameMaxLength, "令牌名称"); err != nil {
+			return entity.AccessToken{}, ErrAccessTokenNameInvalid
+		}
 	}
 
 	accessToken.Name = name

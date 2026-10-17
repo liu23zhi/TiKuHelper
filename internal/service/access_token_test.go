@@ -99,21 +99,44 @@ func TestCreateAccessTokenWithDBStoresPlainTokenForDisplay(t *testing.T) {
 	}
 }
 
+func TestCreateAccessTokenWithDBRejectsInvalidAndOverlongNames(t *testing.T) {
+	db := newAccessTokenTestDB(t)
+	owner := seedAccessTokenOwner(t, db, 1, "user")
+
+	for _, name := range []string{
+		"https://example.com/course?id=1",
+		"token-name",
+		strings.Repeat("令", 129),
+	} {
+		if _, err := CreateAccessTokenWithDB(db, owner, CreateAccessTokenInput{Name: name}); err == nil {
+			t.Errorf("expected invalid token name to be rejected: %q", name)
+		}
+	}
+
+	created, err := CreateAccessTokenWithDB(db, owner, CreateAccessTokenInput{Name: strings.Repeat("令", 128)})
+	if err != nil {
+		t.Fatalf("expected 128-character token name to be accepted: %v", err)
+	}
+	if len([]rune(created.AccessToken.Name)) != 128 {
+		t.Fatalf("expected 128-character name, got %d", len([]rune(created.AccessToken.Name)))
+	}
+}
+
 func TestListAccessTokensWithDBAlwaysScopesToOperatorAndReturnsStoredTokenValue(t *testing.T) {
 	db := newAccessTokenTestDB(t)
 	admin := seedAccessTokenOwner(t, db, 1, "admin")
 	owner := seedAccessTokenOwner(t, db, 2, "user")
 	other := seedAccessTokenOwner(t, db, 3, "user")
 
-	adminToken, err := CreateAccessTokenWithDB(db, admin, CreateAccessTokenInput{Name: "admin-token"})
+	adminToken, err := CreateAccessTokenWithDB(db, admin, CreateAccessTokenInput{Name: "admin_token"})
 	if err != nil {
 		t.Fatalf("create admin token: %v", err)
 	}
-	ownerToken, err := CreateAccessTokenWithDB(db, owner, CreateAccessTokenInput{Name: "owner-token"})
+	ownerToken, err := CreateAccessTokenWithDB(db, owner, CreateAccessTokenInput{Name: "owner_token"})
 	if err != nil {
 		t.Fatalf("create owner token: %v", err)
 	}
-	otherToken, err := CreateAccessTokenWithDB(db, other, CreateAccessTokenInput{Name: "other-token"})
+	otherToken, err := CreateAccessTokenWithDB(db, other, CreateAccessTokenInput{Name: "other_token"})
 	if err != nil {
 		t.Fatalf("create other token: %v", err)
 	}
@@ -151,13 +174,13 @@ func TestListAllAccessTokensWithDBRequiresAdminAndReturnsUsername(t *testing.T) 
 	owner := seedAccessTokenOwner(t, db, 2, "user")
 	other := seedAccessTokenOwner(t, db, 3, "user")
 
-	if _, err := CreateAccessTokenWithDB(db, admin, CreateAccessTokenInput{Name: "admin-token"}); err != nil {
+	if _, err := CreateAccessTokenWithDB(db, admin, CreateAccessTokenInput{Name: "admin_token"}); err != nil {
 		t.Fatalf("create admin token: %v", err)
 	}
-	if _, err := CreateAccessTokenWithDB(db, owner, CreateAccessTokenInput{Name: "owner-token"}); err != nil {
+	if _, err := CreateAccessTokenWithDB(db, owner, CreateAccessTokenInput{Name: "owner_token"}); err != nil {
 		t.Fatalf("create owner token: %v", err)
 	}
-	if _, err := CreateAccessTokenWithDB(db, other, CreateAccessTokenInput{Name: "other-token"}); err != nil {
+	if _, err := CreateAccessTokenWithDB(db, other, CreateAccessTokenInput{Name: "other_token"}); err != nil {
 		t.Fatalf("create other token: %v", err)
 	}
 
@@ -190,7 +213,7 @@ func TestUpdateAccessTokenWithDBRejectsNonOwnerAndUpdatesAllowedFields(t *testin
 	owner := seedAccessTokenOwner(t, db, 2, "user")
 	other := seedAccessTokenOwner(t, db, 3, "user")
 
-	created, err := CreateAccessTokenWithDB(db, owner, CreateAccessTokenInput{Name: "token-a"})
+	created, err := CreateAccessTokenWithDB(db, owner, CreateAccessTokenInput{Name: "token_a"})
 	if err != nil {
 		t.Fatalf("create token: %v", err)
 	}
@@ -222,12 +245,39 @@ func TestUpdateAccessTokenWithDBRejectsNonOwnerAndUpdatesAllowedFields(t *testin
 	}
 }
 
+func TestUpdateAccessTokenWithDBRejectsInvalidAndOverlongNames(t *testing.T) {
+	db := newAccessTokenTestDB(t)
+	owner := seedAccessTokenOwner(t, db, 2, "user")
+	created, err := CreateAccessTokenWithDB(db, owner, CreateAccessTokenInput{Name: "token_a"})
+	if err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+
+	for _, name := range []string{
+		"https://example.com/course?id=1",
+		"token-name",
+		strings.Repeat("令", 129),
+	} {
+		if _, err := UpdateAccessTokenWithDB(db, owner, created.AccessToken.ID, UpdateAccessTokenInput{Name: name}); err == nil {
+			t.Errorf("expected invalid token name to be rejected: %q", name)
+		}
+	}
+
+	var stored entity.AccessToken
+	if err := db.First(&stored, created.AccessToken.ID).Error; err != nil {
+		t.Fatalf("reload token: %v", err)
+	}
+	if stored.Name != "token_a" {
+		t.Fatalf("invalid updates changed token name to %q", stored.Name)
+	}
+}
+
 func TestDeleteAccessTokenWithDBRejectsNonOwnerAndRemovesOwnedToken(t *testing.T) {
 	db := newAccessTokenTestDB(t)
 	owner := seedAccessTokenOwner(t, db, 2, "user")
 	other := seedAccessTokenOwner(t, db, 3, "user")
 
-	created, err := CreateAccessTokenWithDB(db, owner, CreateAccessTokenInput{Name: "token-a"})
+	created, err := CreateAccessTokenWithDB(db, owner, CreateAccessTokenInput{Name: "token_a"})
 	if err != nil {
 		t.Fatalf("create token: %v", err)
 	}

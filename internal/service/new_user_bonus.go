@@ -23,6 +23,9 @@ func CreateUserWithNewUserBonusWithDB(db *gorm.DB, user *entity.User, options Ne
 	if user == nil {
 		return fmt.Errorf("用户不能为空")
 	}
+	if err := util.ValidateRestrictedName(user.Username, util.UsernameMaxLength, "用户名"); err != nil {
+		return err
+	}
 	var bonusAmount float64
 	if options.Enabled {
 		normalized, err := normalizeNewUserBonusAmount(options.Amount)

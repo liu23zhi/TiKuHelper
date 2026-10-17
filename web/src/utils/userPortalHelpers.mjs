@@ -1,4 +1,11 @@
 import { formatMoneyValue } from './moneyFormat.mjs'
+import { limitRestrictedNameLength, normalizeRestrictedName, USERNAME_MAX_LENGTH } from './restrictedName.mjs'
+
+export { USERNAME_MAX_LENGTH }
+
+export function limitUsernameInput(value) {
+  return limitRestrictedNameLength(value, USERNAME_MAX_LENGTH)
+}
 
 export function resolveAdapterHomePath(user) {
   return String(user?.role || '').trim().toLowerCase() === 'admin'
@@ -57,7 +64,7 @@ export function buildResetPasswordPayload(passwordValue) {
 }
 
 export function buildAdminCreateUserPayload(formValue) {
-  const username = String(formValue?.username || '').trim()
+  const username = normalizeRestrictedName(formValue?.username, USERNAME_MAX_LENGTH, '用户名')
   const password = String(formValue?.password || '').trim()
   if (!username || !password) {
     throw new Error('请完善新增用户必填项')

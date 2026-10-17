@@ -168,7 +168,7 @@
     >
       <a-form :model="formState" :label-col="labelCol" :wrapper-col="wrapperCol" layout="horizontal">
         <a-form-item label="用户名" required>
-          <a-input v-model:value="formState.username" :disabled="isEditing" placeholder="请输入用户名" />
+          <a-input v-model:value="formState.username" :disabled="isEditing" placeholder="请输入用户名" @input="formState.username = limitUsernameInput(formState.username)" />
         </a-form-item>
         <a-form-item v-if="!isEditing" label="密码" required>
           <a-input-password v-model:value="formState.password" placeholder="请输入密码" />
@@ -279,7 +279,7 @@ import {
   getPhoneLocations,
   getIpLocations,
 } from '@/api/TikuComponentApi';
-import { buildAdminCreateUserPayload, buildRegisterSourceLabel, buildResetPasswordPayload, buildUserBalanceUpdatePayload } from '@/utils/userPortalHelpers.mjs';
+import { buildAdminCreateUserPayload, buildRegisterSourceLabel, buildResetPasswordPayload, buildUserBalanceUpdatePayload, limitUsernameInput } from '@/utils/userPortalHelpers.mjs';
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs';
 import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@/utils/listSearchHelpers.mjs';
 import {
@@ -450,6 +450,7 @@ export default defineComponent({
       labelCol: { style: { width: '100px' } },
       wrapperCol: { span: 16 },
       formState,
+      limitUsernameInput,
       resetPasswordForm,
       visible,
       resetPasswordVisible,

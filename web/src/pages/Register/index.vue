@@ -24,8 +24,8 @@
           @finishFailed="handleFinishFailed"
           class="form"
         >
-          <a-form-item name="username" label="用户名" :rules="[{ required: true, message: '请输入用户名' }]">
-            <a-input v-model:value="registerForm.username" placeholder="请输入用户名" size="large">
+          <a-form-item name="username" label="用户名" :rules="usernameRules">
+            <a-input v-model:value="registerForm.username" placeholder="请输入用户名" size="large" @input="registerForm.username = limitUsernameInput(registerForm.username)">
               <template #prefix>
                 <UserOutlined style="color: rgba(0, 0, 0, 0.25)" />
               </template>
@@ -118,7 +118,7 @@
 import { defineComponent, reactive, ref } from 'vue';
 import { UserOutlined, LockOutlined, IdcardOutlined, MobileOutlined, SafetyCertificateOutlined } from '@ant-design/icons-vue';
 import { registerUser, sendPublicSMSCode, createCaptchaChallenge, verifyCaptchaChallenge, verifyRemoteCaptcha, getPublicRegisterStatus } from '../../api/TikuComponentApi.js'
-import { buildPublicRegisterPayload, buildPublicSMSCodePayload } from '../../utils/phoneAuthHelpers.mjs'
+import { buildPublicRegisterPayload, buildPublicSMSCodePayload, limitUsernameInput, normalizeUsername } from '../../utils/phoneAuthHelpers.mjs'
 import {
   ensurePhoneBeforeSMSCaptcha,
   normalizePhoneInput,
@@ -159,6 +159,19 @@ export default defineComponent({
       smsCode: '',
       captchaToken: '',
     })
+    const usernameRules = [
+      { required: true, message: '请输入用户名' },
+      {
+        validator: (_rule, value) => {
+          try {
+            normalizeUsername(value)
+            return Promise.resolve()
+          } catch (error) {
+            return Promise.reject(error)
+          }
+        },
+      },
+    ]
 
     const ensureCaptchaToken = (scene, targetForm) => ensureAuthCaptchaToken({
       scene,
@@ -219,6 +232,13 @@ export default defineComponent({
       registerDisabledNotice.value = ''
       submitting.value = true
       try {
+        registerForm.username = normalizeUsername(registerForm.username)
+      } catch (error) {
+        submitting.value = false
+        message.error(error?.message || '用户名不符合要求')
+        return
+      }
+      try {
         await ensureCaptchaToken(CaptchaSceneRegisterSubmit, registerForm)
       } catch (error) {
         submitting.value = false
@@ -273,8 +293,10 @@ export default defineComponent({
       registerDisabledNotice,
       publicAuthSettings,
       registerForm,
+      usernameRules,
       normalizePhoneInput,
       normalizeSMSCodeInput,
+      limitUsernameInput,
       handleRegister,
       sendRegisterCode,
       goToLogin,

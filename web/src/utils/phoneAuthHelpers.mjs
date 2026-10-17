@@ -1,3 +1,15 @@
+import { limitRestrictedNameLength, normalizeRestrictedName, USERNAME_MAX_LENGTH } from './restrictedName.mjs'
+
+export { USERNAME_MAX_LENGTH }
+
+export function normalizeUsername(value) {
+  return normalizeRestrictedName(value, USERNAME_MAX_LENGTH, '用户名')
+}
+
+export function limitUsernameInput(value) {
+  return limitRestrictedNameLength(value, USERNAME_MAX_LENGTH)
+}
+
 function trimText(value) {
   return String(value || '').trim()
 }
@@ -28,6 +40,7 @@ export function buildSMSLoginPayload(formValue) {
 }
 
 export function buildPublicRegisterPayload(formValue) {
+  const username = normalizeUsername(formValue?.username)
   const phone = trimText(formValue?.phone)
   const smsCode = trimText(formValue?.smsCode)
   const captchaToken = trimText(formValue?.captchaToken)
@@ -41,7 +54,7 @@ export function buildPublicRegisterPayload(formValue) {
     throw new Error('请先完成人机验证')
   }
   return {
-    username: trimText(formValue?.username),
+    username,
     password: trimText(formValue?.password),
     nickname: trimText(formValue?.nickname),
     phone,

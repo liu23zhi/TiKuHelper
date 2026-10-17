@@ -1,3 +1,13 @@
+import { limitRestrictedNameLength, normalizeRestrictedName, ACCESS_TOKEN_NAME_MAX_LENGTH } from './restrictedName.mjs'
+
+export function normalizeAccessTokenName(value) {
+  return normalizeRestrictedName(value, ACCESS_TOKEN_NAME_MAX_LENGTH, '令牌名称')
+}
+
+export function limitAccessTokenNameInput(value) {
+  return limitRestrictedNameLength(value, ACCESS_TOKEN_NAME_MAX_LENGTH)
+}
+
 export function buildAccessTokenBalanceAlert(user) {
   const balance = Number(user?.balance);
   if (!Number.isFinite(balance) || balance > 0) {

@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import {
   buildAccessTokenBalanceAlert,
   buildAccessTokenListParams,
+  normalizeAccessTokenName,
+  limitAccessTokenNameInput,
 } from './accessTokenManagementHelpers.mjs';
 
 test('buildAccessTokenBalanceAlert shows zero and negative balance suspension warning', () => {
@@ -28,3 +30,12 @@ test('buildAccessTokenListParams requests all users only when enabled', () => {
   assert.deepEqual(buildAccessTokenListParams(false), {});
   assert.deepEqual(buildAccessTokenListParams(true), { scope: 'all' });
 });
+
+test('normalizeAccessTokenName allows safe names and rejects URLs, punctuation, and overflow', () => {
+  assert.equal(normalizeAccessTokenName('  课程令牌_2026@A  '), '课程令牌_2026@A')
+  assert.equal(normalizeAccessTokenName('令'.repeat(128)), '令'.repeat(128))
+  assert.equal(limitAccessTokenNameInput('令'.repeat(129)), '令'.repeat(128))
+  assert.throws(() => normalizeAccessTokenName('https://example.com'), /令牌名称/)
+  assert.throws(() => normalizeAccessTokenName('token-name'), /令牌名称/)
+  assert.throws(() => normalizeAccessTokenName('令'.repeat(129)), /令牌名称/)
+})
