@@ -1372,7 +1372,9 @@ func TestSearchRejectsAccessTokenAfterQuotaAlreadyExhausted(t *testing.T) {
 	}
 }
 
-func TestSearchRejectsBillingThatWouldExceedAccessTokenQuotaWithoutCaching(t *testing.T) {
+// 回归：额度「不够下一次」必须在调用上游之前拒绝（旧实现跑完上游才在落账阶段拒绝，
+// 上游调用白费、用户还拿不到答案）。这里同时断言不产生上游调用与账单。
+func TestSearchRejectsAccessTokenQuotaExceededBeforeUpstreamCalls(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 221, "search-quota-boundary-user", "user")
@@ -1432,8 +1434,8 @@ func TestSearchRejectsBillingThatWouldExceedAccessTokenQuotaWithoutCaching(t *te
 			}
 		})
 
-	if upstreamCalls != 1 {
-		t.Fatalf("expected one upstream call for quota-boundary request, got %d calls", upstreamCalls)
+	if upstreamCalls != 0 {
+		t.Fatalf("expected quota boundary to be rejected before upstream calls, got %d calls", upstreamCalls)
 	}
 
 	var billingCount int64

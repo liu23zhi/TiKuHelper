@@ -48,6 +48,36 @@ func TestLoggerRoutesMessagesByLevel(t *testing.T) {
 	}
 }
 
+// 一行一事件：多行消息（上游 SSE 原文 / 多行 SQL / 堆栈）必须转义换行，
+// 否则一个事件占多行、只有第一行带级别前缀，文件日志无法逐行解析。
+func TestLoggerEscapesEmbeddedNewlines(t *testing.T) {
+	dir := t.TempDir()
+	if err := setupLogger(dir, 1024*1024); err != nil {
+		t.Fatalf("setup logger: %v", err)
+	}
+	t.Cleanup(func() { _ = closeLogger() })
+
+	SysError("upstream failed\r\ndata: {\"error\":\"busy\"}\nnext-sql-line")
+	if err := closeLogger(); err != nil {
+		t.Fatalf("close logger: %v", err)
+	}
+
+	content := readLoggerFile(t, dir, "Tiku-error.txt")
+	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected exactly one log line, got %d:\n%s", len(lines), content)
+	}
+	if !strings.HasPrefix(lines[0], "[ERROR] ") {
+		t.Fatalf("expected the level prefix on the single line, got %q", lines[0])
+	}
+	if !strings.Contains(lines[0], `\ndata: {"error":"busy"}`) || !strings.Contains(lines[0], `\nnext-sql-line`) {
+		t.Fatalf("expected embedded newlines to be escaped, got %q", lines[0])
+	}
+	if strings.Contains(content, "\ndata: ") {
+		t.Fatalf("raw newline leaked into the log file:\n%s", content)
+	}
+}
+
 func TestAIThinkingUsesDedicatedRotatingFileAndRedactsSecrets(t *testing.T) {
 	dir := t.TempDir()
 	if err := setupLogger(dir, 1024*1024); err != nil {

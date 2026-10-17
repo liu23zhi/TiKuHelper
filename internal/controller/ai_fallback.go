@@ -309,6 +309,14 @@ func loadAIFallbackBillingContextWithDB(db *gorm.DB, userID int32, accessTokenID
 	if accessTokenQuotaExhausted(token) {
 		return searchBillingContext{}, errors.New("当前访问令牌累计额度不足，AI 兜底已禁用，请调整令牌额度后重试")
 	}
+	// 与搜题一致：额度「不够下一次」时也要在调用上游之前拒绝，
+	// 避免 AI 跑完才因落账失败而丢弃结果（线上 4 次）。
+	if token.TotalQuotaLimit > 0 {
+		remaining := util.RoundMoney(token.TotalQuotaLimit - token.TotalAmountUsed)
+		if estimate := maxPerRequestSearchChargeForToken(db, token.ID); estimate > 0 && remaining < estimate {
+			return searchBillingContext{}, errors.New("当前访问令牌累计额度不足，AI 兜底已禁用，请调整令牌额度后重试")
+		}
+	}
 	return billingCtx, nil
 }
 

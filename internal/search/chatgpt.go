@@ -249,6 +249,14 @@ const maxAISearchAttachmentBytes = 8 * 1024 * 1024
 const aiSearchAttachmentTimeout = 60 * time.Second
 const aiSearchFirstTokenTimeout = 5 * time.Minute
 
+// aiSearchTotalTimeout 是单次搜题（含端点回退与重试）的总时限。
+//
+// 必须小于 HTTP 服务的 WriteTimeout（210s，见 cmd/adapter-service/main.go）：
+// 旧实现只有 5 分钟的首字超时且重试不受总时限约束，上游卡住时连接会先被
+// WriteTimeout 掐断，客户端看到的是断流而不是 JSON 错误。
+// 深度思考链路本身也用 180s（aiToolTaskTimeout），两者保持一致。
+const aiSearchTotalTimeout = 180 * time.Second
+
 // 题库公式截图常见尺寸只有 40x22 左右，直接提交给模型时上下标几乎不可辨认，这里统一放大。
 const (
 	aiSearchImageMagnifyBelowWidth  = 320
@@ -387,8 +395,11 @@ func (in *ChatGptClient) SearchAnswer(req model.SearchRequest) (answer [][]strin
 }
 
 func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]string, debug AISearchDebugResult, err error) {
+	// 整个搜题（含端点回退 / 重试）共用一个总时限，避免上游卡住时超过 HTTP WriteTimeout。
+	ctx, cancel := context.WithTimeout(context.Background(), aiSearchTotalTimeout)
+	defer cancel()
 	if req.DeepThinking && in.SearchTool != nil {
-		return in.searchAnswerWithTools(context.Background(), req)
+		return in.searchAnswerWithTools(ctx, req)
 	}
 	answer = make([][]string, 0)
 	if !in.Enable {
@@ -413,7 +424,7 @@ func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]
 		if modelCalls >= maxModelCalls {
 			break
 		}
-		content, usage, statusCode, requestBody, rawResponse, callErr := in.requestStreamAnswerDetailed(endpoint, systemPrompt, userPromptParts, &modelCalls, maxModelCalls)
+		content, usage, statusCode, requestBody, rawResponse, callErr := in.requestStreamAnswerDetailed(ctx, endpoint, systemPrompt, userPromptParts, &modelCalls, maxModelCalls)
 		allTrace = append(allTrace, usage.Trace...)
 		usage.Trace = append([]AISearchTrace(nil), allTrace...)
 		debug = AISearchDebugResult{
@@ -445,8 +456,11 @@ func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]
 }
 
 func (in *ChatGptClient) SearchAnswerWithUsage(req model.SearchRequest) (answer [][]string, usage AISearchUsage, err error) {
+	// 与 SearchAnswerDebug 共用同一总时限：普通搜索的重试与端点回退都必须受它约束。
+	ctx, cancel := context.WithTimeout(context.Background(), aiSearchTotalTimeout)
+	defer cancel()
 	if req.DeepThinking && in.SearchTool != nil {
-		answer, debug, toolErr := in.searchAnswerWithTools(context.Background(), req)
+		answer, debug, toolErr := in.searchAnswerWithTools(ctx, req)
 		return answer, debug.Usage, toolErr
 	}
 	if req.DeepThinking {
@@ -476,7 +490,7 @@ func (in *ChatGptClient) SearchAnswerWithUsage(req model.SearchRequest) (answer 
 		if modelCalls >= maxModelCalls {
 			break
 		}
-		content, streamUsage, statusCode, _, _, callErr := in.requestStreamAnswerDetailed(endpoint, systemPrompt, userPromptParts, &modelCalls, maxModelCalls)
+		content, streamUsage, statusCode, _, _, callErr := in.requestStreamAnswerDetailed(ctx, endpoint, systemPrompt, userPromptParts, &modelCalls, maxModelCalls)
 		allTrace = append(allTrace, streamUsage.Trace...)
 		streamUsage.Trace = append([]AISearchTrace(nil), allTrace...)
 		lastUsage = streamUsage
@@ -507,10 +521,11 @@ func buildAISearchPrompt(req model.SearchRequest) string {
 	var builder strings.Builder
 	builder.WriteString("请根据系统规则返回答案 JSON。")
 	builder.WriteString("\n题型：")
-	builder.WriteString(resolveAISearchQuestionTypeLabel(req.Type))
+	questionType := effectiveAISearchQuestionType(req)
+	builder.WriteString(resolveAISearchQuestionTypeLabel(questionType))
 	builder.WriteString("\n题目：")
 	builder.WriteString(strings.TrimSpace(req.Question))
-	switch req.Type {
+	switch questionType {
 	case 2:
 		builder.WriteString("\n题型补充说明：该题型在调用侧同时承载填空题、连线题、匹配题；如果题目要求建立对应关系，请按每组对应关系依次返回 answers 数组。")
 	case -4:
@@ -543,6 +558,29 @@ func buildAISearchPrompt(req model.SearchRequest) string {
 	builder.WriteString("\n作答要求：如果题目包含多个小问，请按原编号完整回答每一问，不要只回答其中一问或随机选择一个小问。")
 	builder.WriteString("\n作答要求：不要返回“不确定”“不知道”或“无法确定”；请综合题干、选项、图片、课程与学科常识给出最可能的完整答案。")
 	return builder.String()
+}
+
+// effectiveAISearchQuestionType 返回用于提示词的题型。
+//
+// 客户端偶尔把单选题标成 3（判断题），却带着 A-D 选项：此时按判断题提问，
+// 模型会回答「正确/错误」，而选项里根本没有这两个值 → 明明答了却得到空答案
+// （线上 178 条空答案回放里占 26 条）。只在「type=3 且选项完全没有对/错语义」时
+// 按 0（单选）提问；选项是 正确/错误 的判断题不受影响。
+func effectiveAISearchQuestionType(req model.SearchRequest) int {
+	if req.Type == 3 && len(req.Options) > 0 && !hasAISearchJudgementOptions(req.Options) {
+		return 0
+	}
+	return req.Type
+}
+
+// hasAISearchJudgementOptions 判断选项里是否至少有一个表达「对/错」语义。
+func hasAISearchJudgementOptions(options []string) bool {
+	for _, option := range options {
+		if _, ok := util.JudgementPolarity(util.FormatString(option)); ok {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveAISearchQuestionTypeLabel(questionType int) string {
@@ -897,7 +935,7 @@ func buildAIChatCompletionEndpoints(baseURL string) []string {
 	return endpoints
 }
 
-func (in *ChatGptClient) requestStreamAnswerDetailed(endpoint string, systemPrompt string, userPromptParts []openAIContentPart, modelCalls *int, maxModelCalls int) (string, AISearchUsage, int, string, string, error) {
+func (in *ChatGptClient) requestStreamAnswerDetailed(parentCtx context.Context, endpoint string, systemPrompt string, userPromptParts []openAIContentPart, modelCalls *int, maxModelCalls int) (string, AISearchUsage, int, string, string, error) {
 	requestStartedAt := time.Now()
 
 	var (
@@ -951,7 +989,7 @@ func (in *ChatGptClient) requestStreamAnswerDetailed(endpoint string, systemProm
 		attemptStartedAt := time.Now()
 		remainingAfterCall := maxModelCalls - *modelCalls
 		recordTrace(AISearchTrace{Round: *modelCalls, Attempt: attempt + 1, AttemptBudget: in.aiSearchRetryAttempts(), Stage: "普通模型调用开始", Endpoint: endpoint, ModelCallCount: *modelCalls, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingAfterCall})
-		content, usage, statusCode, rawResponse, retryable, callErr := in.executeAISearchStreamRequest(endpoint, payload, requestBody, attemptStartedAt)
+		content, usage, statusCode, rawResponse, retryable, callErr := in.executeAISearchStreamRequest(parentCtx, endpoint, payload, requestBody, attemptStartedAt)
 		recordTrace(AISearchTrace{Round: *modelCalls, Attempt: attempt + 1, AttemptBudget: in.aiSearchRetryAttempts(), Stage: "普通模型响应", Endpoint: endpoint, ModelCallCount: *modelCalls, ModelCallBudget: maxModelCalls, RemainingModelCalls: maxModelCalls - *modelCalls, Status: fmt.Sprintf("%d", statusCode), DurationMs: time.Since(attemptStartedAt).Milliseconds(), RequestBody: requestBody, ContentPreview: content, FullResponse: content, RawResponse: rawResponse, Error: errorString(callErr)})
 		usage.Trace = append([]AISearchTrace(nil), traceEvents...)
 		lastUsage = usage
@@ -968,8 +1006,9 @@ func (in *ChatGptClient) requestStreamAnswerDetailed(endpoint string, systemProm
 
 // executeAISearchStreamRequest 在全局并发配额内执行单次上游请求。
 // retryable 表示该失败是否值得退避重试（限流、网关错误、网络抖动）。
-func (in *ChatGptClient) executeAISearchStreamRequest(endpoint string, payload []byte, requestBody string, requestStartedAt time.Time) (string, AISearchUsage, int, string, bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), aiSearchFirstTokenTimeout)
+func (in *ChatGptClient) executeAISearchStreamRequest(parentCtx context.Context, endpoint string, payload []byte, requestBody string, requestStartedAt time.Time) (string, AISearchUsage, int, string, bool, error) {
+	// 每次尝试最多等 aiSearchFirstTokenTimeout；但它不能超过本次搜题的总时限。
+	ctx, cancel := context.WithTimeout(parentCtx, aiSearchFirstTokenTimeout)
 	defer cancel()
 
 	if err := acquireAISearchSlot(ctx, aiSearchRequestSemaphore); err != nil {
@@ -998,6 +1037,11 @@ func (in *ChatGptClient) executeAISearchStreamRequest(endpoint string, payload [
 	}
 
 	firstTokenTimeout := aiSearchFirstTokenTimeout - time.Since(requestStartedAt)
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining < firstTokenTimeout {
+			firstTokenTimeout = remaining
+		}
+	}
 	if firstTokenTimeout <= 0 {
 		return "", AISearchUsage{}, resp.StatusCode, "", false, in.upstreamError("first_token", resp.StatusCode, "", errAISearchFirstTokenTimeout)
 	}
@@ -1171,14 +1215,9 @@ func normalizeAISearchCacheWriteTokens(cacheWriteTokens int64, promptTokens int6
 }
 
 func parseAISearchAnswers(content string, options []string, questionType int) []string {
-	trimmed := strings.TrimSpace(content)
+	trimmed := stripAISearchCodeFence(strings.TrimSpace(content))
 	if trimmed == "" {
 		return nil
-	}
-
-	var payload aiSearchAnswerPayload
-	if err := json.Unmarshal([]byte(trimmed), &payload); err == nil {
-		return normalizeAISearchAnswers(payload.Answers, options, questionType)
 	}
 
 	var jsonArray []string
@@ -1186,7 +1225,80 @@ func parseAISearchAnswers(content string, options []string, questionType int) []
 		return normalizeAISearchAnswers(jsonArray, options, questionType)
 	}
 
+	// 结构化 JSON：只要出现 answers（哪怕空数组）就以它为准，
+	// 空答案必须保持 NO_ANSWER，不能退化成「把整段 JSON 当答案」。
+	// 其余常见键（answer / 答案 / result / 判断…）来自模型偏离约定格式的响应：
+	//   {"answer":"A","explanation":"..."}
+	//   {"答案":"A","判断":"正确"}
+	//   {"answer":"A","result":"正确"}
+	if answers, structured := extractAISearchAnswersFromJSON(trimmed); structured {
+		return normalizeAISearchAnswers(answers, options, questionType)
+	}
+
 	return normalizeAISearchAnswers([]string{trimmed}, options, questionType)
+}
+
+// stripAISearchCodeFence 去掉模型偶尔包上的 ```json ... ``` 围栏。
+func stripAISearchCodeFence(content string) string {
+	trimmed := strings.TrimSpace(content)
+	if !strings.HasPrefix(trimmed, "```") {
+		return trimmed
+	}
+	trimmed = strings.TrimPrefix(trimmed, "```")
+	if index := strings.IndexByte(trimmed, '\n'); index >= 0 {
+		trimmed = trimmed[index+1:]
+	}
+	trimmed = strings.TrimSuffix(strings.TrimSpace(trimmed), "```")
+	return strings.TrimSpace(trimmed)
+}
+
+// aiSearchLooseAnswerKeys 是模型偏离约定格式时仍可接受的答案键（按优先级）。
+var aiSearchLooseAnswerKeys = []string{"answers", "answer", "答案", "正确答案", "result", "判断", "选择"}
+
+// extractAISearchAnswersFromJSON 解析 JSON 对象里的答案。
+//
+// structured=true 表示「这是结构化答案 JSON」——即使 answers 是空数组，
+// 也必须按空答案处理（NO_ANSWER），不能回退成把整段 JSON 当答案。
+func extractAISearchAnswersFromJSON(content string) (answers []string, structured bool) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(content), &raw); err != nil {
+		return nil, false
+	}
+	for _, key := range aiSearchLooseAnswerKeys {
+		value, ok := raw[key]
+		if !ok {
+			continue
+		}
+		if key == "answers" {
+			structured = true
+		}
+		if decoded := decodeAISearchAnswerValue(value); len(decoded) > 0 {
+			return decoded, true
+		}
+	}
+	return nil, structured
+}
+
+// decodeAISearchAnswerValue 把答案值解析成字符串列表（兼容字符串与字符串数组）。
+func decodeAISearchAnswerValue(raw json.RawMessage) []string {
+	var single string
+	if err := json.Unmarshal(raw, &single); err == nil {
+		if trimmed := strings.TrimSpace(single); trimmed != "" {
+			return []string{trimmed}
+		}
+		return nil
+	}
+	var list []string
+	if err := json.Unmarshal(raw, &list); err == nil {
+		answers := make([]string, 0, len(list))
+		for _, item := range list {
+			if trimmed := strings.TrimSpace(item); trimmed != "" {
+				answers = append(answers, trimmed)
+			}
+		}
+		return answers
+	}
+	return nil
 }
 
 func normalizeAISearchAnswers(rawAnswers []string, options []string, questionType int) []string {
@@ -1196,7 +1308,7 @@ func normalizeAISearchAnswers(rawAnswers []string, options []string, questionTyp
 	// 多个空或多个连线点可能是同一个答案文本，去重会让答案数与空数对不上。
 	preserveRepeatedAnswers := util.AllowsRepeatedAnswers(questionType)
 	for _, rawAnswer := range rawAnswers {
-		resolved := resolveAISearchAnswer(rawAnswer, options)
+		resolved := resolveAISearchAnswer(rawAnswer, options, questionType)
 		if resolved == "" {
 			continue
 		}
@@ -1211,19 +1323,26 @@ func normalizeAISearchAnswers(rawAnswers []string, options []string, questionTyp
 	return answers
 }
 
-func resolveAISearchAnswer(answer string, options []string) string {
+func resolveAISearchAnswer(answer string, options []string, questionType int) string {
 	trimmed := strings.TrimSpace(answer)
 	if trimmed == "" {
 		return ""
 	}
 
-	if mapped := matchAISearchOptionByLabel(trimmed, options); mapped != "" {
+	// 选项先按「最终响应里的形态」归一化：去掉 "A." 前缀、判断题的 对/错 → 正确/错误。
+	// 否则选项是 "A. 正确" 时，模型返回「对」会因为选项带前缀而匹配失败，
+	// 随后 FillAnswerResponse 用归一化选项（"正确"/"错误"）又匹配不上 → 空答案。
+	// 线上实测：判断题 211 次里 181 次返回空答案。
+	normalizedOptions := util.FormatOptions(options, questionType)
+	normalizedAnswer := util.FormatString(trimmed)
+
+	if mapped := matchAISearchOptionByLabel(normalizedAnswer, normalizedOptions); mapped != "" {
 		return mapped
 	}
-	if mapped := matchAISearchJudgementOption(trimmed, options); mapped != "" {
+	if mapped := matchAISearchJudgementOption(normalizedAnswer, normalizedOptions); mapped != "" {
 		return mapped
 	}
-	if mapped := matchAISearchOptionByText(trimmed, options); mapped != "" {
+	if mapped := matchAISearchOptionByText(normalizedAnswer, normalizedOptions); mapped != "" {
 		return mapped
 	}
 
@@ -1270,15 +1389,8 @@ func matchAISearchJudgementOption(answer string, options []string) string {
 }
 
 func aiSearchJudgementPolarity(value string) (bool, bool) {
-	normalized := strings.ToLower(strings.TrimSpace(value))
-	switch normalized {
-	case "正确", "对", "是", "√", "true", "t", "yes", "y":
-		return true, true
-	case "错误", "错", "否", "×", "false", "f", "no", "n":
-		return false, true
-	default:
-		return false, false
-	}
+	// 判定集中在 pkg/util，AI 兜底链路复用同一套，避免两条链路答案有效性不一致。
+	return util.JudgementPolarity(value)
 }
 
 func extractAISearchOptionIndex(answer string) int {

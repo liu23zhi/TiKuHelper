@@ -255,6 +255,26 @@ func normalizeAIFallbackAnswersForRequest(answers []string, req model.SearchRequ
 		return nil
 	}
 
+	// 多选题：模型常把选中的多个选项拆成 answers 数组的多个元素
+	// （例如 ["A. ...","B. ...","C. ..."]）。它们属于**同一个答案集合**，
+	// 必须合成一组：FillAnswerResponse 的多选题分支按「每组命中几个选项」判断，
+	// 拆成多个单元素组会让每个组都被丢弃，最终误判为 NO_ANSWER
+	// （线上 49 次 NO_ANSWER 中 15 次是多选题，模型其实答对了）。
+	if req.Type == 1 {
+		merged := make([]string, 0, len(answerGroups))
+		seen := make(map[string]struct{}, len(answerGroups))
+		for _, group := range answerGroups {
+			for _, item := range group {
+				if _, exists := seen[item]; exists {
+					continue
+				}
+				seen[item] = struct{}{}
+				merged = append(merged, item)
+			}
+		}
+		answerGroups = [][]string{merged}
+	}
+
 	response := util.FillAnswerResponse(answerGroups, &model.SearchRequest{
 		Question: req.Question,
 		Options:  normalizedOptions,
@@ -349,6 +369,16 @@ func mapAIFallbackAnswerToOptions(answer string, options []string) []string {
 
 	if exact := matchAIFallbackOption(normalized, options); exact != "" {
 		return []string{exact}
+	}
+
+	// 判断题：模型常返回 对/错、√/×、true/false，而选项已被 FormatOptions 规范成
+	// 正确/错误。这里按「极性」映射，和 /search 链路（util.JudgementPolarity）保持一致。
+	if polarity, ok := util.JudgementPolarity(normalized); ok {
+		for _, option := range options {
+			if optionPolarity, optionOK := util.JudgementPolarity(option); optionOK && optionPolarity == polarity {
+				return []string{option}
+			}
+		}
 	}
 
 	if len(normalized) == 1 {

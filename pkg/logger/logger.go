@@ -265,7 +265,20 @@ func writeMessage(level Level, text string) {
 	if level >= ErrorLevel {
 		writer = gin.DefaultErrorWriter
 	}
-	_, _ = fmt.Fprintf(writer, "[%s] %s | %s\n", labels[level], time.Now().In(ShanghaiLocation()).Format("2006/01/02 - 15:04:05"), strings.TrimRight(RedactSecrets(text), "\r\n"))
+	_, _ = fmt.Fprintf(writer, "[%s] %s | %s\n", labels[level], time.Now().In(ShanghaiLocation()).Format("2006/01/02 - 15:04:05"), singleLineLogText(text))
+}
+
+// singleLineLogText 先把消息脱敏，再把内嵌换行转义成字面量 \n。
+//
+// 一行一事件是文件日志能被 grep / 解析的前提：上游 SSE 原文（data: {...}）、
+// 多行 SQL、panic 堆栈都带换行，直接写出会让一个事件占多行、级别前缀只落在第一行，
+// 线上实测 Tiku-error.txt 里混进了 68 行没有前缀的裸 data 片段。
+func singleLineLogText(text string) string {
+	message := strings.TrimRight(RedactSecrets(text), "\r\n")
+	if !strings.ContainsAny(message, "\r\n") {
+		return message
+	}
+	return strings.NewReplacer("\r\n", `\n`, "\n", `\n`, "\r", `\r`).Replace(message)
 }
 
 // AIThinking writes the observable AI search trace to its dedicated file.

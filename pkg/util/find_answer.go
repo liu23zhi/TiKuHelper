@@ -47,7 +47,9 @@ func FillAnswerResponse(answers [][]string, req *model.SearchRequest) model.Sear
 		// 使用归一化后的答案进行匹配
 		for i := range normalizedAnswers {
 			ans := arrutil.Intersects(req.Options, normalizedAnswers[i], arrutil.StringEqualsComparer)
-			if ((resp.Type == 0 || resp.Type == 3) && len(ans) > 0) || (resp.Type == 1 && len(ans) > 1) {
+			// 客观题只要命中选项就算有效：多选题同样可能只有 1 个正确选项，
+			// 不能要求「每组至少 2 个选项」，否则正常答案会被判成无答案。
+			if isObjectiveQuestionType(resp.Type) && len(ans) > 0 {
 				filterAnswer = append(filterAnswer, ans)
 			}
 		}
@@ -65,7 +67,9 @@ func FillAnswerResponse(answers [][]string, req *model.SearchRequest) model.Sear
 						}
 						return -1
 					})
-					if len(ans) > resp.Type {
+					// 多选题 / 判断题模糊匹配到至少一个选项即有效（原写法用
+					// `len(ans) > resp.Type`，判断题要求 >3 个选项，永远不成立）。
+					if len(ans) > 0 {
 						filterAnswer = append(filterAnswer, ans)
 					}
 				}

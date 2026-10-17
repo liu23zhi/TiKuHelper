@@ -69,6 +69,22 @@ func FormatString(src string) string {
 	return strings.TrimSpace(src)
 }
 
+// JudgementPolarity 判断一个答案/选项是否表达「对/错」，返回 (polarity, ok)。
+//
+// 判断题的模型输出并不稳定：正确/错误、对/错、√/×、true/false、yes/no 都出现过。
+// 搜题链路与 AI 兜底链路必须用**同一套**判定，否则会出现「/search 能答、兜底判无答案」。
+func JudgementPolarity(value string) (bool, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case "正确", "对", "是", "√", "true", "t", "yes", "y":
+		return true, true
+	case "错误", "错", "否", "×", "false", "f", "no", "n":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
 // FullWidthStrToHalfWidthStr 全角转半角
 func FullWidthStrToHalfWidthStr(str string) string {
 	var b strings.Builder

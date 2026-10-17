@@ -695,6 +695,28 @@ func TestBuildAISearchPromptCoversEverySupportedQuestionType(t *testing.T) {
 	}
 }
 
+// 回归：客户端把单选题标成 type=3 且带 A-D 选项时，提示词按单选题提问。
+// 否则模型会回答「正确/错误」，而选项里没有这两个值 → 空答案（线上 26 例）。
+func TestBuildAISearchPromptCorrectsJudgementTypeWithOptionList(t *testing.T) {
+	optionPrompt := buildAISearchPrompt(model.SearchRequest{
+		Question: "题目",
+		Type:     3,
+		Options:  []string{"A. 甲", "B. 乙", "C. 丙", "D. 丁"},
+	})
+	if !strings.Contains(optionPrompt, "题型：单选题") {
+		t.Fatalf("expected A-D options under type=3 to be prompted as single choice, got %q", optionPrompt)
+	}
+
+	judgementPrompt := buildAISearchPrompt(model.SearchRequest{
+		Question: "题目",
+		Type:     3,
+		Options:  []string{"A. 正确", "B. 错误"},
+	})
+	if !strings.Contains(judgementPrompt, "题型：判断题") {
+		t.Fatalf("expected judgement options to stay judgement type, got %q", judgementPrompt)
+	}
+}
+
 func TestBuildAISearchPromptNormalizesChaoxingStyleOptionPrefixes(t *testing.T) {
 	prompt := buildAISearchPrompt(model.SearchRequest{
 		Question:   "  请完成连线。 ",

@@ -78,7 +78,7 @@ func TestAIUpstreamNetworkFailurePreservesCauseWithoutURLCredentials(t *testing.
 	const key = "private-provider-key"
 	endpoint := strings.Replace(address, "http://", "http://user:private-password@", 1) + "/v1/chat/completions?token=private-query-token"
 	client := &ChatGptClient{APIKey: key}
-	_, _, _, _, _, err := client.executeAISearchStreamRequest(endpoint, []byte(`{}`), `{}`, time.Now())
+	_, _, _, _, _, err := client.executeAISearchStreamRequest(context.Background(), endpoint, []byte(`{}`), `{}`, time.Now())
 	if !errors.Is(err, pkgerrors.ErrTargetServerError) {
 		t.Fatalf("expected network upstream failure, got %v", err)
 	}

@@ -191,6 +191,101 @@ func TestSearchAIFallbackWithDBReturnsUnsafeToAnswerWhenAIRefuses(t *testing.T) 
 	}
 }
 
+// 回归：多选题模型把选中的多个选项拆成 answers 数组的多个元素时，
+// 兜底链路必须把它们视为**同一个答案集合**。
+//
+// 线上事故：`{"answers":["A. ...","B. ...","C. ...","D. ..."]}` 被拆成 4 个单元素组，
+// FillAnswerResponse 的多选题分支要求每组命中 >1 个选项 → 全部丢弃 → NO_ANSWER。
+func TestNormalizeAIFallbackAnswersForRequestMergesMultiSelectArrayItems(t *testing.T) {
+	options := []string{
+		"A. 让对方了解你的独特性",
+		"B. 展示你清晰的求职目标",
+		"C. 获得对方对你KST的信任",
+		"D. 提供对方足够多的好处",
+	}
+	answers := []string{
+		"A. 让对方了解你的独特性",
+		"B. 展示你清晰的求职目标",
+		"C. 获得对方对你KST的信任",
+		"D. 提供对方足够多的好处",
+	}
+
+	got := normalizeAIFallbackAnswersForRequest(answers, model.SearchRequest{
+		Question: "要想获得朋友、亲戚、老师等人际网络的职业机会推荐，应该：",
+		Options:  options,
+		Type:     1,
+	})
+	want := []string{
+		"让对方了解你的独特性",
+		"展示你清晰的求职目标",
+		"获得对方对你KST的信任",
+		"提供对方足够多的好处",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected multi-select answers to merge into one group, got %v", got)
+	}
+}
+
+// 回归：判断题模型返回 对/错/√/×/true/false 时，也要映射到「正确/错误」选项。
+func TestNormalizeAIFallbackAnswersForRequestMapsJudgementVariants(t *testing.T) {
+	cases := map[string]string{
+		"对":     "正确",
+		"√":     "正确",
+		"true":  "正确",
+		"错":     "错误",
+		"×":     "错误",
+		"false": "错误",
+	}
+	for answer, want := range cases {
+		got := normalizeAIFallbackAnswersForRequest([]string{answer}, model.SearchRequest{
+			Options: []string{"A. 正确", "B. 错误"},
+			Type:    3,
+		})
+		if !reflect.DeepEqual(got, []string{want}) {
+			t.Fatalf("answer %q: expected %q, got %v", answer, want, got)
+		}
+	}
+}
+
+// 端到端：真实线上数据（多选题 + A/B/C/D 分开返回）必须成功，而不是 NO_ANSWER。
+func TestSearchAIFallbackWithDBKeepsSeparatedMultiSelectAnswers(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	if _, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{
+		Enabled: true, BaseURL: "https://ai.example.com/v1", APIKey: "sk-test", Model: "gpt-6.1-sol",
+	}); err != nil {
+		t.Fatalf("seed ai config: %v", err)
+	}
+
+	original := runAIFallbackSearchWithUsage
+	defer func() { runAIFallbackSearchWithUsage = original }()
+	runAIFallbackSearchWithUsage = func(client *internalsearch.ChatGptClient, req model.SearchRequest) ([][]string, internalsearch.AISearchUsage, error) {
+		return [][]string{{
+			"A. 让对方了解你的独特性",
+			"B. 展示你清晰的求职目标",
+			"C. 获得对方对你KST的信任",
+			"D. 提供对方足够多的好处",
+		}}, internalsearch.AISearchUsage{InputTokens: 16000, OutputTokens: 423}, nil
+	}
+
+	result := SearchAIFallbackWithDB(db, model.SearchRequest{
+		Question: "要想获得朋友、亲戚、老师等人际网络的职业机会推荐，应该：",
+		Options: []string{
+			"A. 让对方了解你的独特性",
+			"B. 展示你清晰的求职目标",
+			"C. 获得对方对你KST的信任",
+			"D. 提供对方足够多的好处",
+		},
+		Type: 1,
+	})
+	if !result.Success || result.Result == nil {
+		t.Fatalf("expected multi-select fallback to succeed, got %+v", result)
+	}
+	want := "让对方了解你的独特性#展示你清晰的求职目标#获得对方对你KST的信任#提供对方足够多的好处"
+	if result.Result.Answer != want {
+		t.Fatalf("expected %q, got %q", want, result.Result.Answer)
+	}
+}
+
 // 回归：填空题/连线题（type=2）是非客观题，答案允许是自由文本。
 //
 // 线上事故：上游把 UEditor 的 JS 代码当成选项一起传上来（55 条 options），
