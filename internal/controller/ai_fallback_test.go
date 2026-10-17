@@ -272,7 +272,8 @@ func TestAIFallbackRejectsZeroBalanceBeforeCallingAI(t *testing.T) {
 	}
 }
 
-func TestAIFallbackRejectsExhaustedTokenQuotaBeforeCallingAI(t *testing.T) {
+// 令牌累计额度不再拦截 AI 兜底：额度已用尽但余额 > 0 时照常调用。
+func TestAIFallbackAllowsExhaustedTokenQuotaWhenBalancePositive(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	fallbackResultCache.clear()
 	db := newSearchControllerTestDB(t)
@@ -315,14 +316,11 @@ func TestAIFallbackRejectsExhaustedTokenQuotaBeforeCallingAI(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
-	if got.Success {
-		t.Fatalf("expected quota-exhausted request to fail, got %+v", got)
+	if !got.Success {
+		t.Fatalf("expected quota-exhausted request to succeed when balance is positive, got %+v", got)
 	}
-	if got.Error == nil || got.Error.Code != service.AIFallbackErrorCodeInsufficientBalance {
-		t.Fatalf("expected INSUFFICIENT_BALANCE, got %+v", got.Error)
-	}
-	if aiCalls != 0 {
-		t.Fatalf("expected no AI call for exhausted quota, got %d", aiCalls)
+	if aiCalls != 1 {
+		t.Fatalf("expected one AI call, got %d", aiCalls)
 	}
 }
 

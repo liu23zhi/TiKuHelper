@@ -37,8 +37,6 @@ const (
 	maxSearchUnauthorizedBodyLength = 4096
 )
 
-var errAccessTokenQuotaExceeded = errors.New("访问令牌累计额度不足")
-
 type searchUnauthorizedRequestSnapshot struct {
 	Method        string `json:"method"`
 	Path          string `json:"path"`
@@ -362,12 +360,6 @@ func Search(c *gin.Context) {
 		}
 	}
 
-	if !usedSearchResultCache {
-		if err := ensureSearchQuotaAvailable(resolved, useQuery, aiEnabled); err != nil {
-			writeSearchUnauthorized(c, fmt.Errorf("%w: 当前访问令牌累计额度不足，请调整令牌额度后重试", service.ErrInvalidAccessTokenAuthorization), rawBody)
-			return
-		}
-	}
 	logSearchRoutingDecision(c, query, resolved, aiEnabled)
 	logger.SysLog(fmt.Sprintf("搜题请求摘要 requestId=%s %s", strings.TrimSpace(resolved.RequestID), buildSearchRequestDebugSummary(req)))
 	if !usedSearchResultCache && strings.Contains(useQuery, "local") { // 使用本地题库的话
@@ -983,115 +975,6 @@ func reportCompletedSearchBilling(resolved resolvedSearchRequestContext, useQuer
 	searchBillingReporter(buildCompletedSearchBillingContext(resolved, useQuery, aiEnabled, result, hasAIUsage, usedLocalSearch))
 }
 
-func ensureSearchQuotaAvailable(resolved resolvedSearchRequestContext, useQuery string, aiEnabled bool) error {
-	if resolved.AccessTokenCtx == nil || resolved.AccessTokenID == 0 {
-		return nil
-	}
-
-	accessToken := resolved.AccessTokenCtx.AccessToken
-	if accessToken.TotalQuotaLimit <= 0 {
-		return nil
-	}
-
-	potentialLocalSearch := strings.Contains(useQuery, searchBillingProviderLocal)
-	if !buildSearchBillingContext(resolved, useQuery, aiEnabled, potentialLocalSearch).Billable {
-		return nil
-	}
-
-	remaining := util.RoundMoney(accessToken.TotalQuotaLimit - accessToken.TotalAmountUsed)
-	if remaining <= 0 {
-		return errAccessTokenQuotaExceeded
-	}
-
-	// 额度不足必须在上游调用之前拒绝：跑完 AI 再拒会让上游调用白费、用户还拿不到答案
-	// （线上实测 3 次，合计约 35k input tokens、46 秒等待）。
-	// 单次金额只能估算，用「该令牌历史单次最大合计」与「本次已知固定价」取较大值。
-	if estimate := estimateSearchQuotaCharge(resolveSearchPersistenceDB(), resolved, useQuery); estimate > 0 && remaining < estimate {
-		logger.SysLog(fmt.Sprintf("搜索计费预检拒绝：剩余额度 %.6f 低于预估单次金额 %.6f requestId=%s",
-			remaining, estimate, resolved.RequestID))
-		return errAccessTokenQuotaExceeded
-	}
-	return nil
-}
-
-func accessTokenQuotaExhausted(accessToken entity.AccessToken) bool {
-	if accessToken.TotalQuotaLimit <= 0 {
-		return false
-	}
-	return util.RoundMoney(accessToken.TotalAmountUsed) >= util.RoundMoney(accessToken.TotalQuotaLimit)
-}
-
-func accessTokenQuotaWouldExceed(accessToken entity.AccessToken, amount float64) bool {
-	if accessToken.TotalQuotaLimit <= 0 || amount <= 0 {
-		return false
-	}
-	return util.RoundMoney(accessToken.TotalAmountUsed+amount) > util.RoundMoney(accessToken.TotalQuotaLimit)
-}
-
-// estimateSearchQuotaCharge 事前估算本次搜题可能需要的额度。
-//
-// 估算取「该令牌历史单次请求的最大合计金额」与「本次已知固定价」的较大值：
-//   - 固定价：默认/显式搜题渠道的 flat_price，能事前确定；
-//   - AI 按 token 计费无法事前精确计算，用同一令牌历史最大单笔请求合计兜底。
-//
-// 两者都取不到时返回 0（不拦截），由落账阶段的硬上限兜底。
-func estimateSearchQuotaCharge(db *gorm.DB, resolved resolvedSearchRequestContext, useQuery string) float64 {
-	if db == nil {
-		return 0
-	}
-	estimate := maxPerRequestSearchChargeForToken(db, resolved.AccessTokenID)
-	if flat := estimateKnownSearchFlatPrice(db, resolved, useQuery); flat > estimate {
-		estimate = flat
-	}
-	return util.RoundMoney(estimate)
-}
-
-// maxPerRequestSearchChargeForToken 取该令牌历史「单次请求」的最大合计金额。
-func maxPerRequestSearchChargeForToken(db *gorm.DB, accessTokenID int32) float64 {
-	if db == nil || accessTokenID <= 0 {
-		return 0
-	}
-	var row struct {
-		MaxTotal float64 `gorm:"column:max_total"`
-	}
-	err := db.Raw(`SELECT COALESCE(MAX(t.total_amount), 0) AS max_total FROM (
-		SELECT SUM(amount) AS total_amount FROM billing_records
-		WHERE access_token_id = ? AND type = ? AND COALESCE(request_id, '') <> ''
-		GROUP BY request_id
-	) t`, accessTokenID, searchBillingRecordTypeNormal).Scan(&row).Error
-	if err != nil {
-		return 0
-	}
-	return util.RoundMoney(row.MaxTotal)
-}
-
-// estimateKnownSearchFlatPrice 估算本次请求的已知固定价（显式渠道或默认渠道的 flat_price）。
-func estimateKnownSearchFlatPrice(db *gorm.DB, resolved resolvedSearchRequestContext, useQuery string) float64 {
-	if db == nil || resolved.SearchMode != searchModeNormal {
-		return 0
-	}
-	providers := make([]string, 0, len(resolved.UsedDefaultSearchProviders)+1)
-	if explicit := resolveExplicitNormalSearchProvider(useQuery); explicit != "" {
-		providers = append(providers, explicit)
-	} else {
-		providers = append(providers, resolved.UsedDefaultSearchProviders...)
-	}
-	if len(providers) == 0 {
-		return 0
-	}
-	var configs []entity.SearchAccountConfig
-	if err := db.Where("provider IN ?", providers).Find(&configs).Error; err != nil {
-		return 0
-	}
-	maxPrice := 0.0
-	for _, config := range configs {
-		if config.FlatPrice > maxPrice {
-			maxPrice = config.FlatPrice
-		}
-	}
-	return util.RoundMoney(maxPrice)
-}
-
 func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQuery string, aiEnabled bool, req model.SearchRequest, result [][]string, aiUsage search.AISearchUsage, usedLocalSearch bool, clientIP string, audit searchAuditMetadata) (error, string) {
 	ctx := buildCompletedSearchBillingContext(resolved, useQuery, aiEnabled, result, hasAISearchUsage(aiUsage), usedLocalSearch)
 	ctx.ClientIP = strings.TrimSpace(clientIP)
@@ -1120,11 +1003,6 @@ func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQue
 	}
 
 	if err := persistSearchBillingRecordsWithDB(db, ctx, charges); err != nil {
-		if errors.Is(err, errAccessTokenQuotaExceeded) {
-			logger.SysLog(fmt.Sprintf("搜索计费拒绝：访问令牌累计额度不足 requestId=%s", resolved.RequestID))
-			writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_quota_exceeded", clientIP, audit)
-			return err, warning
-		}
 		logger.SysError(fmt.Sprintf("搜索计费落账失败：%s requestId=%s", err.Error(), resolved.RequestID))
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_persist_failed", clientIP, audit)
 		return nil, warning
@@ -1547,12 +1425,6 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 		if len(charges) == 0 {
 			return nil
 		}
-		if ctx.AccessTokenID > 0 {
-			if accessTokenQuotaWouldExceed(accessToken, totalCharged) {
-				return errAccessTokenQuotaExceeded
-			}
-		}
-
 		// 余额扣的是精确消耗额，只在每个记录边界取整：
 		// 若先按入账金额取整再相减，被丢弃的 1e-7 级差额无法靠再次取整挽回，
 		// 会让账单里的余额变化与实际消耗对不上。

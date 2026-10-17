@@ -1307,7 +1307,8 @@ func TestSearchAllowsBillingToCreateNegativeBalance(t *testing.T) {
 	}
 }
 
-func TestSearchRejectsAccessTokenAfterQuotaAlreadyExhausted(t *testing.T) {
+// 令牌累计额度只用于展示/统计：额度已用尽但账号余额 > 0 时，请求必须照常执行并计费。
+func TestSearchAllowsRequestWhenAccessTokenQuotaExhausted(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 220, "search-exhausted-quota-user", "user")
@@ -1330,7 +1331,7 @@ func TestSearchRejectsAccessTokenAfterQuotaAlreadyExhausted(t *testing.T) {
 			return []func(model.SearchRequest) ([][]string, error){
 				func(model.SearchRequest) ([][]string, error) {
 					upstreamCalls++
-					return [][]string{{"额度不足时不应返回的答案"}}, nil
+					return [][]string{{"额度耗尽但余额充足时应返回的答案"}}, nil
 				},
 			}
 		},
@@ -1345,36 +1346,42 @@ func TestSearchRejectsAccessTokenAfterQuotaAlreadyExhausted(t *testing.T) {
 
 			Search(ctx)
 
-			if recorder.Code != http.StatusUnauthorized {
-				t.Fatalf("expected status 401, got %d with body %s", recorder.Code, recorder.Body.String())
-			}
-			var got struct {
-				Detail string `json:"detail"`
-			}
-			if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
-				t.Fatalf("unmarshal unauthorized response: %v, body=%s", err, recorder.Body.String())
-			}
-			if !strings.Contains(got.Detail, "累计额度不足") {
-				t.Fatalf("expected quota error detail, got %q", got.Detail)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
 			}
 		})
 
-	if upstreamCalls != 0 {
-		t.Fatalf("expected exhausted quota to reject before upstream calls, got %d calls", upstreamCalls)
+	if upstreamCalls != 1 {
+		t.Fatalf("expected the request to reach the upstream, got %d calls", upstreamCalls)
 	}
 
 	var billingCount int64
 	if err := db.Model(&entity.BillingRecord{}).Where("access_token_id = ?", token.ID).Count(&billingCount).Error; err != nil {
 		t.Fatalf("count billing records: %v", err)
 	}
-	if billingCount != 0 {
-		t.Fatalf("expected no billing records for exhausted quota, got %d", billingCount)
+	if billingCount != 1 {
+		t.Fatalf("expected one billing record, got %d", billingCount)
+	}
+
+	var storedUser entity.User
+	if err := db.Where("id = ?", user.ID).First(&storedUser).Error; err != nil {
+		t.Fatalf("load user: %v", err)
+	}
+	if storedUser.Balance != 9 {
+		t.Fatalf("expected balance 9 after one charge, got %v", storedUser.Balance)
+	}
+
+	var storedToken entity.AccessToken
+	if err := db.Where("id = ?", token.ID).First(&storedToken).Error; err != nil {
+		t.Fatalf("load access token: %v", err)
+	}
+	if storedToken.TotalAmountUsed != 6 {
+		t.Fatalf("expected token usage to exceed quota (6 > 5), got %v", storedToken.TotalAmountUsed)
 	}
 }
 
-// 回归：额度「不够下一次」必须在调用上游之前拒绝（旧实现跑完上游才在落账阶段拒绝，
-// 上游调用白费、用户还拿不到答案）。这里同时断言不产生上游调用与账单。
-func TestSearchRejectsAccessTokenQuotaExceededBeforeUpstreamCalls(t *testing.T) {
+// 令牌累计额度不再拦截请求：余额充足时允许累计额度超出上限，并照常计费。
+func TestSearchBillsBeyondAccessTokenQuotaWhenBalanceSufficient(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 221, "search-quota-boundary-user", "user")
@@ -1397,7 +1404,7 @@ func TestSearchRejectsAccessTokenQuotaExceededBeforeUpstreamCalls(t *testing.T) 
 			return []func(model.SearchRequest) ([][]string, error){
 				func(model.SearchRequest) ([][]string, error) {
 					upstreamCalls++
-					return [][]string{{"超出额度时不应记账的答案"}}, nil
+					return [][]string{{"超出令牌额度也应记账的答案"}}, nil
 				},
 			}
 		},
@@ -1412,54 +1419,37 @@ func TestSearchRejectsAccessTokenQuotaExceededBeforeUpstreamCalls(t *testing.T) 
 
 			Search(ctx)
 
-			if recorder.Code != http.StatusUnauthorized {
-				t.Fatalf("expected status 401, got %d with body %s", recorder.Code, recorder.Body.String())
-			}
-			var got struct {
-				Detail string `json:"detail"`
-			}
-			if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
-				t.Fatalf("unmarshal unauthorized response: %v, body=%s", err, recorder.Body.String())
-			}
-			if !strings.Contains(got.Detail, "累计额度不足") {
-				t.Fatalf("expected quota error detail, got %q", got.Detail)
-			}
-
-			cacheKey, cacheEpoch := buildSearchAnswerCacheKeyForTest(searchResultCache, token.ID, model.SearchRequest{
-				Question: "额度边界题目",
-				Options:  []string{"A", "B"},
-			})
-			if _, ok := searchResultCache.get(cacheKey, cacheEpoch); ok {
-				t.Fatal("expected quota-rejected result not to be cached")
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
 			}
 		})
 
-	if upstreamCalls != 0 {
-		t.Fatalf("expected quota boundary to be rejected before upstream calls, got %d calls", upstreamCalls)
+	if upstreamCalls != 1 {
+		t.Fatalf("expected the request to reach the upstream, got %d calls", upstreamCalls)
 	}
 
 	var billingCount int64
 	if err := db.Model(&entity.BillingRecord{}).Where("access_token_id = ?", token.ID).Count(&billingCount).Error; err != nil {
 		t.Fatalf("count billing records: %v", err)
 	}
-	if billingCount != 0 {
-		t.Fatalf("expected no billing records for quota-boundary request, got %d", billingCount)
+	if billingCount != 1 {
+		t.Fatalf("expected one billing record, got %d", billingCount)
 	}
 
 	var storedUser entity.User
 	if err := db.Where("id = ?", user.ID).First(&storedUser).Error; err != nil {
 		t.Fatalf("load quota-boundary user: %v", err)
 	}
-	if storedUser.Balance != 10 {
-		t.Fatalf("expected balance to stay 10 after quota rejection, got %v", storedUser.Balance)
+	if storedUser.Balance != 9 {
+		t.Fatalf("expected balance 9 after one charge, got %v", storedUser.Balance)
 	}
 
 	var storedToken entity.AccessToken
 	if err := db.Where("id = ?", token.ID).First(&storedToken).Error; err != nil {
 		t.Fatalf("load quota-boundary token: %v", err)
 	}
-	if storedToken.TotalAmountUsed != 4.5 {
-		t.Fatalf("expected token usage to stay 4.5 after quota rejection, got %v", storedToken.TotalAmountUsed)
+	if storedToken.TotalAmountUsed != 5.5 {
+		t.Fatalf("expected token usage to exceed the 5 quota (5.5), got %v", storedToken.TotalAmountUsed)
 	}
 }
 

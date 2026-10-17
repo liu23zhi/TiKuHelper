@@ -576,7 +576,12 @@ func effectiveAISearchQuestionType(req model.SearchRequest) int {
 // hasAISearchJudgementOptions 判断选项里是否至少有一个表达「对/错」语义。
 func hasAISearchJudgementOptions(options []string) bool {
 	for _, option := range options {
-		if _, ok := util.JudgementPolarity(util.FormatString(option)); ok {
+		// FormatOptions 会去掉 "A. " 前缀并把 对/错 规范成 正确/错误。
+		normalized := util.FormatOptions([]string{option}, 3)
+		if len(normalized) == 0 {
+			continue
+		}
+		if _, ok := util.JudgementPolarity(normalized[0]); ok {
 			return true
 		}
 	}
