@@ -1615,7 +1615,7 @@ func TestUserRegisterCreatesPublicUserWithBoundPhone(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	payload := []byte(`{"username":"phone-user","password":"Abc12345!","nickname":"新用户","phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`)
+	payload := []byte(`{"username":"phone_user","password":"Abc12345!","nickname":"新用户","phone":"13800000000","smsCode":"123456","captchaToken":"token_1"}`)
 	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
@@ -1629,7 +1629,7 @@ func TestUserRegisterCreatesPublicUserWithBoundPhone(t *testing.T) {
 		t.Fatalf("unexpected verify input %s", received)
 	}
 
-	stored, err := dao.User.Where(dao.User.Username.Eq("phone-user")).First()
+	stored, err := dao.User.Where(dao.User.Username.Eq("phone_user")).First()
 	if err != nil {
 		t.Fatalf("load created user: %v", err)
 	}

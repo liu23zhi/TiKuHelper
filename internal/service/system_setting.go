@@ -49,6 +49,8 @@ const MaxAISearchRetriesSettingKey = "max_ai_search_retries"
 const AISearchPricePerCallSettingKey = "ai_search_price_per_call"
 const MaxAIWebReadsSettingKey = "max_ai_web_reads"
 const WebReadPricePerCallSettingKey = "web_read_price_per_call"
+const AIStagedTokenBillingEnabledSettingKey = "enable_ai_staged_token_billing"
+const SmoothAIStagedTokenMultiplierSettingKey = "smooth_ai_staged_token_multiplier"
 const MinRechargeAmountSettingKey = "min_recharge_amount"
 
 // UAPIAPIKeySettingKey 是 UApiPro（uapis.cn）的 API 密钥。
@@ -589,6 +591,41 @@ func SetWebReadPricePerCallWithDB(db *gorm.DB, requested float64) error {
 		return errors.New("网页读取单价必须是大于或等于 0 的有效金额")
 	}
 	return saveSystemSettingValue(db, WebReadPricePerCallSettingKey, strconv.FormatFloat(util.RoundMoney(requested), 'f', -1, 64), "网页读取单价（元/次）")
+}
+
+type AIStagedTokenBillingSettings struct {
+	Enabled      bool
+	SmoothFactor bool
+}
+
+func GetAIStagedTokenBillingSettingsWithDB(db *gorm.DB) AIStagedTokenBillingSettings {
+	return AIStagedTokenBillingSettings{
+		Enabled:      getBoolSystemSetting(db, AIStagedTokenBillingEnabledSettingKey),
+		SmoothFactor: getBoolSystemSetting(db, SmoothAIStagedTokenMultiplierSettingKey),
+	}
+}
+
+func SetAIStagedTokenBillingSettingsWithDB(db *gorm.DB, enabled *bool, smoothFactor *bool) error {
+	if enabled != nil {
+		if err := saveSystemSettingValue(db, AIStagedTokenBillingEnabledSettingKey, strconv.FormatBool(*enabled), "启用 AI 单次模型调用分阶段计费"); err != nil {
+			return err
+		}
+	}
+	if smoothFactor != nil {
+		if err := saveSystemSettingValue(db, SmoothAIStagedTokenMultiplierSettingKey, strconv.FormatBool(*smoothFactor), "AI 阶段计费使用平滑倍率"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func getBoolSystemSetting(db *gorm.DB, key string) bool {
+	if db == nil || !db.Migrator().HasTable(&entity.SystemSetting{}) {
+		return false
+	}
+	raw := strings.TrimSpace(getSystemSettingStringWithDefault(db, key, "false"))
+	value, err := strconv.ParseBool(raw)
+	return err == nil && value
 }
 
 func resolveWebReadPrice(db *gorm.DB, requested float64) float64 {

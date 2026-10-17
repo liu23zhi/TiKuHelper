@@ -22,7 +22,7 @@ func newSearchAccountConfigTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open test db: %v", err)
 	}
 
-	if err := db.AutoMigrate(&entity.SearchAccountConfig{}, &entity.AISearchConfig{}, &entity.User{}, &entity.AccessToken{}); err != nil {
+	if err := db.AutoMigrate(&entity.SearchAccountConfig{}, &entity.AISearchConfig{}, &entity.User{}, &entity.AccessToken{}, &entity.SystemSetting{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 
@@ -505,7 +505,7 @@ func TestUpdateSearchAccountConfigWithDBSupportsAIProvider(t *testing.T) {
 
 	view, err := UpdateSearchAccountConfigWithDB(db, "ai", UpdateSearchAccountConfigInput{
 		Enabled: true,
-		Remark:   "启用 AI 搜索",
+		Remark:  "启用 AI 搜索",
 	})
 	if err != nil {
 		t.Fatalf("update ai config: %v", err)

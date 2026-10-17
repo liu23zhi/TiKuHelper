@@ -46,6 +46,48 @@ func TestUpdateAISearchConfigWithDBIgnoresLegacyBillingFields(t *testing.T) {
 	}
 }
 
+func TestAISearchConfigStagedBillingSettingsDefaultAndPartialUpdate(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+
+	initial, err := GetAISearchConfigWithDB(db)
+	if err != nil {
+		t.Fatalf("get default ai config: %v", err)
+	}
+	if initial.EnableAIStagedTokenBilling || initial.SmoothAIStagedTokenMultiplier {
+		t.Fatalf("staged billing should default off, got %+v", initial)
+	}
+
+	enable := true
+	updated, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{
+		EnableAIStagedTokenBilling: &enable,
+	})
+	if err != nil {
+		t.Fatalf("enable staged billing: %v", err)
+	}
+	if !updated.EnableAIStagedTokenBilling || updated.SmoothAIStagedTokenMultiplier {
+		t.Fatalf("unexpected staged billing update: %+v", updated)
+	}
+
+	smooth := true
+	updated, err = UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{
+		SmoothAIStagedTokenMultiplier: &smooth,
+	})
+	if err != nil {
+		t.Fatalf("enable smooth staged billing: %v", err)
+	}
+	if !updated.EnableAIStagedTokenBilling || !updated.SmoothAIStagedTokenMultiplier {
+		t.Fatalf("partial update should preserve staged billing toggle: %+v", updated)
+	}
+
+	legacy, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{Model: "legacy-client"})
+	if err != nil {
+		t.Fatalf("legacy config update: %v", err)
+	}
+	if !legacy.EnableAIStagedTokenBilling || !legacy.SmoothAIStagedTokenMultiplier {
+		t.Fatalf("legacy update should preserve staged billing settings: %+v", legacy)
+	}
+}
+
 func TestNormalizeAISearchBaseURLTrimsAndKeepsRawHost(t *testing.T) {
 	normalized := normalizeAISearchBaseURL(" https://api.openai.com/ ")
 	if normalized != "https://api.openai.com" {

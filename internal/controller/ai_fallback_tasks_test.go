@@ -286,6 +286,10 @@ func TestCreateAIFallbackTaskBillsSuccessfulAIUsageOnce(t *testing.T) {
 	token := seedControllerTokenForUser(t, db, user, "billed-ai-task-token", 0)
 	// 1000 输入 × 0.10 + 500 输出 × 0.50（元 / 百万 token）= 0.0001 + 0.00025 → 0.00
 	seedControllerAIModelPrice(t, db, "fallback-billing-model", 0.10, 0.01, 0.50)
+	enableStagedBilling := true
+	if err := service.SetAIStagedTokenBillingSettingsWithDB(db, &enableStagedBilling, nil); err != nil {
+		t.Fatalf("enable staged AI billing: %v", err)
+	}
 
 	originalStore := defaultAIFallbackTaskStore
 	originalRun := runAIFallbackService
@@ -306,6 +310,21 @@ func TestCreateAIFallbackTaskBillsSuccessfulAIUsageOnce(t *testing.T) {
 				InputTokens:  1000000,
 				OutputTokens: 500000,
 				TotalTokens:  1500000,
+				ModelCalls: []searchpkg.AIModelCallUsage{{
+					Index:        1,
+					Model:        "fallback-billing-model",
+					InputTokens:  1000000,
+					OutputTokens: 500000,
+					TotalTokens:  1500000,
+				}},
+				Trace: []searchpkg.AISearchTrace{{
+					Stage:          "model_response",
+					Model:          "fallback-billing-model",
+					ModelCallIndex: 1,
+					InputTokens:    1000000,
+					OutputTokens:   500000,
+					TotalTokens:    1500000,
+				}},
 			},
 		}
 	}
@@ -367,10 +386,10 @@ func TestCreateAIFallbackTaskBillsSuccessfulAIUsageOnce(t *testing.T) {
 	if record.ClientIP != "192.0.2.1" {
 		t.Fatalf("expected async fallback request IP in billing record, got %q", record.ClientIP)
 	}
-	if record.Amount != 0.35 || record.TotalTokens != 1500000 {
+	if record.Amount != 0.105 || record.TotalTokens != 1500000 {
 		t.Fatalf("unexpected billing amount/tokens: %+v", record)
 	}
-	if record.BalanceBefore != 10 || record.BalanceAfter != 9.65 {
+	if record.BalanceBefore != 10 || record.BalanceAfter != 9.895 {
 		t.Fatalf("unexpected billing balance: %+v", record)
 	}
 
@@ -378,15 +397,15 @@ func TestCreateAIFallbackTaskBillsSuccessfulAIUsageOnce(t *testing.T) {
 	if err := db.Where("id = ?", user.ID).First(&storedUser).Error; err != nil {
 		t.Fatalf("load user: %v", err)
 	}
-	if storedUser.Balance != 9.65 {
-		t.Fatalf("expected user balance 9.65, got %v", storedUser.Balance)
+	if storedUser.Balance != 9.895 {
+		t.Fatalf("expected user balance 9.895, got %v", storedUser.Balance)
 	}
 	var storedToken entity.AccessToken
 	if err := db.Where("id = ?", token.ID).First(&storedToken).Error; err != nil {
 		t.Fatalf("load token: %v", err)
 	}
-	if storedToken.TotalAmountUsed != 0.35 {
-		t.Fatalf("expected token usage 0.35, got %v", storedToken.TotalAmountUsed)
+	if storedToken.TotalAmountUsed != 0.105 {
+		t.Fatalf("expected token usage 0.105, got %v", storedToken.TotalAmountUsed)
 	}
 
 	statusAgain := httptest.NewRecorder()
@@ -410,6 +429,11 @@ func TestCreateAIFallbackTaskBillsSuccessfulAIUsageOnce(t *testing.T) {
 	for _, check := range []string{"status=success", "billingProvider=ai", "taskId=" + created.TaskID} {
 		if !strings.Contains(entry.Description, check) {
 			t.Fatalf("expected log description %q to contain %q", entry.Description, check)
+		}
+	}
+	for _, check := range []string{`"stageBillingMode":"fixed"`, `"stageMultiplier":0.3`, `"finalMultiplier":0.3`, `"multiplierApplicable":true`} {
+		if !strings.Contains(entry.NewAnswer, check) {
+			t.Fatalf("expected async fallback audit snapshot %q to contain %q", entry.NewAnswer, check)
 		}
 	}
 }

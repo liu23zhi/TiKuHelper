@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -518,6 +519,86 @@ func TestChatGptClientSearchAnswerWithUsageCapturesStreamUsage(t *testing.T) {
 	}
 	if usage.InputTokens != 11 || usage.OutputTokens != 7 || usage.TotalTokens != 18 {
 		t.Fatalf("unexpected usage: %+v", usage)
+	}
+	if len(usage.ModelCalls) != 1 {
+		t.Fatalf("expected one model call usage, got %+v", usage.ModelCalls)
+	}
+	call := usage.ModelCalls[0]
+	if call.Index != 1 || call.Round != 1 || call.Attempt != 1 || call.Model != "gpt-4o-mini" || call.TotalTokens != 18 {
+		t.Fatalf("unexpected model call usage: %+v", call)
+	}
+	var responseTrace *AISearchTrace
+	for i := range usage.Trace {
+		if usage.Trace[i].Stage == "普通模型响应" {
+			responseTrace = &usage.Trace[i]
+			break
+		}
+	}
+	if responseTrace == nil || responseTrace.ModelCallIndex != 1 || responseTrace.TotalTokens != 18 {
+		t.Fatalf("model response trace missing token usage: %+v", usage.Trace)
+	}
+}
+
+func TestBuildAIModelCallUsageFallsBackToInputAndOutput(t *testing.T) {
+	call, ok := buildAIModelCallUsage(AISearchUsage{InputTokens: 11, OutputTokens: 7}, "model", 2, 3)
+	if !ok || call.TotalTokens != 18 {
+		t.Fatalf("expected total token fallback, got ok=%t call=%+v", ok, call)
+	}
+}
+
+func TestSearchAnswerWithUsageRetainsTokenBearingRetryResponses(t *testing.T) {
+	attempt := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if attempt == 1 {
+			fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}}\n\ndata: [DONE]\n\n")
+			return
+		}
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[\\\"A\\\"]}\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":2,\"total_tokens\":13}}\n\ndata: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := &ChatGptClient{Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "retry-model", MaxAISearchModelCalls: 1, MaxAISearchRetries: 2}
+	answer, usage, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "题目"})
+	if err != nil || !reflect.DeepEqual(answer, [][]string{{"A"}}) {
+		t.Fatalf("expected retry answer, answer=%v err=%v", answer, err)
+	}
+	if len(usage.ModelCalls) != 2 || usage.ModelCalls[0].TotalTokens != 10 || usage.ModelCalls[1].TotalTokens != 13 {
+		t.Fatalf("expected both token-bearing attempts, got %+v", usage.ModelCalls)
+	}
+	if usage.InputTokens != 11 || usage.OutputTokens != 2 || usage.TotalTokens != 13 {
+		t.Fatalf("ordinary aggregate must retain final attempt usage, got %+v", usage)
+	}
+}
+
+func TestSearchAnswerWithUsageRetainsTokenBearingEndpointFallbackResponses(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		if r.URL.Path == "/chat/completions" {
+			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[]}\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1,\"total_tokens\":6}}\n\ndata: [DONE]\n\n")
+			return
+		}
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[\\\"B\\\"]}\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":2,\"total_tokens\":10}}\n\ndata: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	client := &ChatGptClient{Enable: true, BaseURL: server.URL, APIKey: "sk-test", Model: "fallback-model", MaxAISearchModelCalls: 2, MaxAISearchRetries: 1}
+	answer, usage, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "题目"})
+	if err != nil || !reflect.DeepEqual(answer, [][]string{{"B"}}) {
+		t.Fatalf("expected endpoint fallback answer, answer=%v err=%v", answer, err)
+	}
+	if len(usage.ModelCalls) != 2 || usage.ModelCalls[0].Index != 1 || usage.ModelCalls[1].Index != 2 {
+		t.Fatalf("expected stable call indexes across endpoints, got %+v", usage.ModelCalls)
+	}
+	var responseIndexes []int
+	for _, trace := range usage.Trace {
+		if trace.Stage == "普通模型响应" && trace.ModelCallIndex > 0 {
+			responseIndexes = append(responseIndexes, trace.ModelCallIndex)
+		}
+	}
+	if !reflect.DeepEqual(responseIndexes, []int{1, 2}) {
+		t.Fatalf("expected response trace indexes aligned with model calls, got %v", responseIndexes)
 	}
 }
 

@@ -104,6 +104,10 @@ type searchBillingCharge struct {
 	CachedInputTokens int64
 	OutputTokens      int64
 	TotalTokens       int64
+	AIStagedBilling   *aiStagedTokenBillingResult
+	AIPrice           service.ResolvedAIModelTokenPrice
+	AIPriceMatched    bool
+	AIStageSettings   service.AIStagedTokenBillingSettings
 }
 
 var searchBillingReporter = func(ctx searchBillingContext) {}
@@ -997,6 +1001,7 @@ func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQue
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_charge_resolve_failed", clientIP, audit)
 		return nil, warning
 	}
+	applyAIStagedBillingToSearchAudit(&audit, aiUsage.Trace, charges)
 	if len(charges) == 0 {
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_zero_amount", clientIP, audit)
 		return nil, warning
@@ -1173,6 +1178,11 @@ func completedSearchBillingProviderLabel(charges []searchBillingCharge) string {
 type resolvedAIBillingCharge struct {
 	Charge        searchBillingCharge
 	UnpricedModel bool
+	StagedBilling aiStagedTokenBillingResult
+	StageSettings service.AIStagedTokenBillingSettings
+	Price         service.ResolvedAIModelTokenPrice
+	PriceMatched  bool
+	Trace         []search.AISearchTrace
 }
 
 func resolveCompletedAIBillingCharge(db *gorm.DB, resolved resolvedSearchRequestContext, req model.SearchRequest, usage search.AISearchUsage) (resolvedAIBillingCharge, error) {
@@ -1183,30 +1193,57 @@ func resolveCompletedAIBillingCharge(db *gorm.DB, resolved resolvedSearchRequest
 		return resolvedAIBillingCharge{}, err
 	}
 
-	var baseAmount, amount float64
+	stageSettings := service.GetAIStagedTokenBillingSettingsWithDB(db)
+	stagedBilling := calculateAIStagedTokenBilling(price, usage, stageSettings, matched)
+	baseAmount := stagedBilling.BaseAmount
+	amount := stagedBilling.RoundedAmount
+	snapshotUsage := usage
+	inputTokens := usage.InputTokens
+	cachedInputTokens := usage.CachedInputTokens
+	cacheWriteTokens := usage.CacheWriteTokens
+	outputTokens := usage.OutputTokens
+	totalTokens := usage.TotalTokens
+	if stageSettings.Enabled && len(usage.ModelCalls) > 0 {
+		inputTokens, cachedInputTokens, cacheWriteTokens, outputTokens, totalTokens = sumAIModelCallUsage(usage.ModelCalls)
+		snapshotUsage.InputTokens = inputTokens
+		snapshotUsage.CachedInputTokens = cachedInputTokens
+		snapshotUsage.CacheWriteTokens = cacheWriteTokens
+		snapshotUsage.OutputTokens = outputTokens
+		snapshotUsage.TotalTokens = totalTokens
+	}
 	snapshot := ""
 	if matched {
-		baseAmount, amount = calculateAIModelPriceTableAmount(price, usage)
-		snapshot = buildAIModelPriceTableBillingSnapshot(resolved, req, usage, price, baseAmount, amount)
+		snapshot = buildAIModelPriceTableBillingSnapshot(resolved, req, snapshotUsage, price, baseAmount, amount)
 	} else {
-		snapshot = buildUnpricedAIModelBillingSnapshot(resolved, req, usage)
+		snapshot = buildUnpricedAIModelBillingSnapshot(resolved, req, snapshotUsage)
 	}
+	snapshot = appendAIStagedBillingSnapshot(snapshot, stageSettings, stagedBilling, baseAmount, amount, matched)
+	logger.SysLog(fmt.Sprintf("AI账单倍率 requestId=%s modelCalls=%d stageMode=%s baseAmount=%.6f finalAmount=%.6f multipliers=%s", strings.TrimSpace(resolved.RequestID), len(stagedBilling.Calls), aiStagedTokenBillingMode(stageSettings), baseAmount, amount, formatAIStagedBillingMultiplierSummary(stagedBilling)))
 
-	totalTokens := usage.TotalTokens
 	if totalTokens == 0 {
-		totalTokens = usage.InputTokens + usage.OutputTokens
+		totalTokens = inputTokens + outputTokens
 	}
+	decoratedTrace := decorateAIStagedBillingTrace(usage.Trace, stagedBilling, price, stageSettings, matched)
 	return resolvedAIBillingCharge{
 		UnpricedModel: !matched,
+		StagedBilling: stagedBilling,
+		StageSettings: stageSettings,
+		Price:         price,
+		PriceMatched:  matched,
+		Trace:         decoratedTrace,
 		Charge: searchBillingCharge{
 			Provider:          searchModeAI,
 			Amount:            amount,
 			Snapshot:          snapshot,
 			ModelName:         modelName,
-			InputTokens:       usage.InputTokens,
-			CachedInputTokens: usage.CachedInputTokens,
-			OutputTokens:      usage.OutputTokens,
+			InputTokens:       inputTokens,
+			CachedInputTokens: cachedInputTokens,
+			OutputTokens:      outputTokens,
 			TotalTokens:       totalTokens,
+			AIStagedBilling:   &stagedBilling,
+			AIPrice:           price,
+			AIPriceMatched:    matched,
+			AIStageSettings:   stageSettings,
 		},
 	}, nil
 }
@@ -1230,6 +1267,119 @@ func buildUnpricedAIModelBillingSnapshot(resolved resolvedSearchRequestContext, 
 		parts = append(parts, fmt.Sprintf("question=%s", url.QueryEscape(questionText)))
 	}
 	return strings.Join(parts, " ")
+}
+
+func appendAIStagedBillingSnapshot(snapshot string, settings service.AIStagedTokenBillingSettings, billing aiStagedTokenBillingResult, baseAmount float64, amount float64, matched bool) string {
+	parts := []string{
+		fmt.Sprintf("stageBillingEnabled=%t", settings.Enabled),
+		fmt.Sprintf("stageBillingSmooth=%t", settings.SmoothFactor),
+		"stageBillingMode=" + aiStagedTokenBillingMode(settings),
+		fmt.Sprintf("stageBillingPriceMatched=%t", matched),
+		fmt.Sprintf("stageBillingModelCallCount=%d", len(billing.Calls)),
+		fmt.Sprintf("stageBillingBaseAmount=%.6f", baseAmount),
+		fmt.Sprintf("stageBillingFinalAmount=%.6f", amount),
+		"stageBillingMultipliers=" + url.QueryEscape(formatAIStagedBillingMultiplierSummary(billing)),
+	}
+	for index, call := range billing.Calls {
+		if index >= 20 {
+			parts = append(parts, fmt.Sprintf("stageBillingCallsOmitted=%d", len(billing.Calls)-index))
+			break
+		}
+		modelName := strings.TrimSpace(call.Model)
+		if modelName == "" {
+			modelName = strings.TrimSpace(billingCallModelFallback(call))
+		}
+		callParts := []string{
+			fmt.Sprintf("index=%d", call.CallIndex),
+			"model=" + url.QueryEscape(modelName),
+			fmt.Sprintf("round=%d", call.Round),
+			fmt.Sprintf("attempt=%d", call.Attempt),
+			fmt.Sprintf("totalTokens=%d", call.TotalTokens),
+			fmt.Sprintf("baseAmount=%.6f", call.BaseAmount),
+			fmt.Sprintf("amount=%.6f", call.Amount),
+		}
+		if call.Applicable {
+			callParts = append(callParts,
+				fmt.Sprintf("stageMultiplier=%.4f", call.StageMultiplier),
+				fmt.Sprintf("finalMultiplier=%.4f", call.FinalMultiplier),
+			)
+		} else {
+			callParts = append(callParts, "stageMultiplier=na", "finalMultiplier=na")
+		}
+		parts = append(parts, fmt.Sprintf("stageBillingCall%d=%s", index+1, url.QueryEscape(strings.Join(callParts, ","))))
+	}
+	if strings.TrimSpace(snapshot) == "" {
+		return strings.Join(parts, " ")
+	}
+	return snapshot + " " + strings.Join(parts, " ")
+}
+
+func billingCallModelFallback(call aiStagedTokenBillingCall) string {
+	return call.Model
+}
+
+func sumAIModelCallUsage(calls []search.AIModelCallUsage) (inputTokens int64, cachedInputTokens int64, cacheWriteTokens int64, outputTokens int64, totalTokens int64) {
+	for _, call := range calls {
+		input := call.InputTokens
+		cached := call.CachedInputTokens
+		cacheWrite := call.CacheWriteTokens
+		output := call.OutputTokens
+		if input < 0 {
+			input = 0
+		}
+		if cached < 0 {
+			cached = 0
+		}
+		if cacheWrite < 0 {
+			cacheWrite = 0
+		}
+		if output < 0 {
+			output = 0
+		}
+		inputTokens += input
+		cachedInputTokens += cached
+		cacheWriteTokens += cacheWrite
+		outputTokens += output
+		callTotal := call.TotalTokens
+		if callTotal == 0 {
+			callTotal = input + output
+		}
+		if callTotal > 0 {
+			totalTokens += callTotal
+		}
+	}
+	return inputTokens, cachedInputTokens, cacheWriteTokens, outputTokens, totalTokens
+}
+
+func applyAIStagedBillingToSearchAudit(audit *searchAuditMetadata, traces []search.AISearchTrace, charges []searchBillingCharge) {
+	if audit == nil {
+		return
+	}
+	for _, charge := range charges {
+		if charge.Provider != searchModeAI || charge.AIStagedBilling == nil {
+			continue
+		}
+		audit.AISearchTrace = decorateAIStagedBillingTrace(traces, *charge.AIStagedBilling, charge.AIPrice, charge.AIStageSettings, charge.AIPriceMatched)
+		audit.RawResponse = replaceSearchAuditTrace(audit.RawResponse, audit.AISearchTrace)
+		return
+	}
+}
+
+func replaceSearchAuditTrace(rawResponse string, traces []search.AISearchTrace) string {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(rawResponse), &payload); err != nil {
+		return rawResponse
+	}
+	if len(traces) == 0 {
+		delete(payload, "aiSearchTrace")
+	} else if encoded, err := json.Marshal(traces); err == nil {
+		payload["aiSearchTrace"] = encoded
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return rawResponse
+	}
+	return string(encoded)
 }
 
 // calculateAIModelPriceTableAmount 按「输入 / 缓存输入 / 缓存写入 / 输出」四段单价计算金额。

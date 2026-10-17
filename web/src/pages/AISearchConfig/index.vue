@@ -258,6 +258,20 @@
           </a-space>
         </template>
 
+        <a-form class="staged-billing-settings" :label-col="labelCol" :wrapper-col="wrapperCol">
+          <a-form-item label="启用阶段计费">
+            <a-switch v-model:checked="formState.enableAIStagedTokenBilling" />
+            <div class="hint">按每次实际上游模型响应的总 token 数应用阶段倍率：3000 以下最高 4x，10 万以上最低 0.3x；关闭时保持现有价格表计费。</div>
+          </a-form-item>
+          <a-form-item label="平滑变化倍率">
+            <a-switch
+              v-model:checked="formState.smoothAIStagedTokenMultiplier"
+              :disabled="!formState.enableAIStagedTokenBilling"
+            />
+            <div class="hint">开启后在固定阶段节点之间线性平滑变化，倍率始终限制在 0.3x～4x；阶段计费关闭时只保存此选项，不影响计费。</div>
+          </a-form-item>
+        </a-form>
+
         <div class="price-table-wrap">
           <a-table
             bordered
@@ -547,6 +561,8 @@ export default defineComponent({
       searchPricePerCall: 0,
       maxAIWebReads: DEFAULT_MAX_AI_WEB_READS,
       webReadPricePerCall: 0,
+      enableAIStagedTokenBilling: false,
+      smoothAIStagedTokenMultiplier: false,
     })
 
     const priceRows = ref([])
@@ -642,6 +658,8 @@ export default defineComponent({
           formState.searchPricePerCall = Number(data.searchPricePerCall ?? 0)
           formState.maxAIWebReads = normalizeAIWebReads(data.maxAIWebReads, DEFAULT_MAX_AI_WEB_READS)
           formState.webReadPricePerCall = Number(data.webReadPricePerCall ?? 0)
+          formState.enableAIStagedTokenBilling = !!data.enableAIStagedTokenBilling
+          formState.smoothAIStagedTokenMultiplier = !!data.smoothAIStagedTokenMultiplier
         } else {
           message.error(res?.message || '获取 AI 搜索配置失败')
         }

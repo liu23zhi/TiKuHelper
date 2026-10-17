@@ -335,6 +335,10 @@ func TestAIFallbackBillsSuccessfulAIUsage(t *testing.T) {
 	token := seedControllerTokenForUser(t, db, user, "billed-ai-fallback-token", 0)
 	// GPT-6 Luna：输入 0.10 / 缓存 0.01 / 输出 0.50（元 / 百万 token）。
 	seedControllerAIModelPrice(t, db, "sync-fallback-billing-model", 0.10, 0.01, 0.50)
+	enableStagedBilling := true
+	if err := service.SetAIStagedTokenBillingSettingsWithDB(db, &enableStagedBilling, nil); err != nil {
+		t.Fatalf("enable staged AI billing: %v", err)
+	}
 
 	original := runAIFallbackService
 	defer func() { runAIFallbackService = original }()
@@ -350,6 +354,21 @@ func TestAIFallbackBillsSuccessfulAIUsage(t *testing.T) {
 				InputTokens:  1000000,
 				OutputTokens: 500000,
 				TotalTokens:  1500000,
+				ModelCalls: []searchpkg.AIModelCallUsage{{
+					Index:        1,
+					Model:        "sync-fallback-billing-model",
+					InputTokens:  1000000,
+					OutputTokens: 500000,
+					TotalTokens:  1500000,
+				}},
+				Trace: []searchpkg.AISearchTrace{{
+					Stage:          "model_response",
+					Model:          "sync-fallback-billing-model",
+					ModelCallIndex: 1,
+					InputTokens:    1000000,
+					OutputTokens:   500000,
+					TotalTokens:    1500000,
+				}},
 			},
 		}
 	}
@@ -381,10 +400,10 @@ func TestAIFallbackBillsSuccessfulAIUsage(t *testing.T) {
 	if record.Provider != searchModeAI || record.ModelName != "sync-fallback-billing-model" {
 		t.Fatalf("unexpected billing provider/model: %+v", record)
 	}
-	if record.Amount != 0.35 || record.TotalTokens != 1500000 {
+	if record.Amount != 0.105 || record.TotalTokens != 1500000 {
 		t.Fatalf("unexpected billing amount/tokens: %+v", record)
 	}
-	if record.BalanceBefore != 10 || record.BalanceAfter != 9.65 {
+	if record.BalanceBefore != 10 || record.BalanceAfter != 9.895 {
 		t.Fatalf("unexpected billing balance: %+v", record)
 	}
 	var entry entity.Log
@@ -394,6 +413,11 @@ func TestAIFallbackBillsSuccessfulAIUsage(t *testing.T) {
 	for _, check := range []string{"status=success", "billingProvider=ai", "model=sync-fallback-billing-model"} {
 		if !strings.Contains(entry.Description, check) {
 			t.Fatalf("expected log description %q to contain %q", entry.Description, check)
+		}
+	}
+	for _, check := range []string{`"stageBillingMode":"fixed"`, `"stageMultiplier":0.3`, `"finalMultiplier":0.3`, `"multiplierApplicable":true`} {
+		if !strings.Contains(entry.NewAnswer, check) {
+			t.Fatalf("expected fallback audit snapshot %q to contain %q", entry.NewAnswer, check)
 		}
 	}
 }

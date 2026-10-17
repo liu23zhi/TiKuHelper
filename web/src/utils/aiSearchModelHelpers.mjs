@@ -67,6 +67,8 @@ export function buildAISearchConfigSavePayload(formState, baseUrl) {
     searchPricePerCall: Number(formState?.searchPricePerCall || 0),
     maxAIWebReads: Number(formState?.maxAIWebReads ?? 5),
     webReadPricePerCall: Number(formState?.webReadPricePerCall || 0),
+    enableAIStagedTokenBilling: !!formState?.enableAIStagedTokenBilling,
+    smoothAIStagedTokenMultiplier: !!formState?.smoothAIStagedTokenMultiplier,
   };
 }
 

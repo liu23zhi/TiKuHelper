@@ -93,6 +93,8 @@ test('buildAISearchConfigSavePayload persists the editable model list', () => {
       searchPricePerCall: 0.125,
       maxAIWebReads: 5,
       webReadPricePerCall: 0,
+      enableAIStagedTokenBilling: false,
+      smoothAIStagedTokenMultiplier: false,
     },
   );
 });
@@ -119,6 +121,24 @@ test('buildAISearchConfigSavePayload preserves an explicitly configured retry bu
     buildAISearchConfigSavePayload({ enabled: true, maxAISearchRetries: 1 }, 'https://api.example.com/v1').maxAISearchRetries,
     1,
   );
+});
+
+test('buildAISearchConfigSavePayload always sends staged billing toggles with false defaults', () => {
+  const payload = buildAISearchConfigSavePayload({ enabled: true }, 'https://api.example.com/v1');
+
+  assert.equal(payload.enableAIStagedTokenBilling, false);
+  assert.equal(payload.smoothAIStagedTokenMultiplier, false);
+});
+
+test('buildAISearchConfigSavePayload preserves explicitly enabled staged billing toggles', () => {
+  const payload = buildAISearchConfigSavePayload({
+    enabled: true,
+    enableAIStagedTokenBilling: true,
+    smoothAIStagedTokenMultiplier: true,
+  }, 'https://api.example.com/v1');
+
+  assert.equal(payload.enableAIStagedTokenBilling, true);
+  assert.equal(payload.smoothAIStagedTokenMultiplier, true);
 });
 
 test('buildAISearchConfigSavePayload stops sending any billing fields', () => {
@@ -233,6 +253,20 @@ test('AISearchConfig page exposes configurable model and search budgets', async 
   assert.match(helperContent, /maxAISearchModelCalls: Number\(formState\?\.maxAISearchModelCalls \|\| 4\)/);
   assert.match(helperContent, /maxAISearches: Number\(formState\?\.maxAISearches \|\| 3\)/);
   assert.match(helperContent, /maxAISearchRetries: Number\(formState\?\.maxAISearchRetries \?\? 3\)/);
+});
+
+test('AISearchConfig page loads and exposes staged billing toggles', async () => {
+  const content = await readFile(aiSearchConfigPagePath, 'utf8');
+
+  assert.match(content, /enableAIStagedTokenBilling: false/);
+  assert.match(content, /smoothAIStagedTokenMultiplier: false/);
+  assert.match(content, /formState\.enableAIStagedTokenBilling = !!data\.enableAIStagedTokenBilling/);
+  assert.match(content, /formState\.smoothAIStagedTokenMultiplier = !!data\.smoothAIStagedTokenMultiplier/);
+  assert.match(content, /v-model:checked="formState\.enableAIStagedTokenBilling"/);
+  assert.match(content, /v-model:checked="formState\.smoothAIStagedTokenMultiplier"/);
+  assert.match(content, /:disabled="!formState\.enableAIStagedTokenBilling"/);
+  assert.match(content, /label="启用阶段计费"/);
+  assert.match(content, /label="平滑变化倍率"/);
 });
 
 const pricedRows = [

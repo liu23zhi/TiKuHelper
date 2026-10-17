@@ -98,13 +98,14 @@ func AIFallback(c *gin.Context) {
 		return runAIFallbackService(req)
 	}()
 	if !result.Success {
-		warning, billingErr := persistAIFallbackBillingWithWarning(billingCtx, requestID, req, result)
+		warning, billedResult, billingErr := persistAIFallbackBillingWithWarning(billingCtx, requestID, req, result)
 		if billingErr != nil {
 			failure := buildAIFallbackBillingFailureResult(billingErr)
 			writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), requestID, "", "billing", "sync", req, failure)
 			c.JSON(http.StatusOK, failure)
 			return
 		}
+		result = billedResult
 		if strings.TrimSpace(warning) != "" {
 			result.Warnings = append(result.Warnings, warning)
 		}
@@ -112,13 +113,14 @@ func AIFallback(c *gin.Context) {
 		c.JSON(http.StatusOK, result)
 		return
 	}
-	warning, err := persistAIFallbackBillingWithWarning(billingCtx, requestID, req, result)
+	warning, billedResult, err := persistAIFallbackBillingWithWarning(billingCtx, requestID, req, result)
 	if err != nil {
 		failure := buildAIFallbackBillingFailureResult(err)
 		writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), requestID, "", "billing", "sync", req, failure)
 		c.JSON(http.StatusOK, failure)
 		return
 	}
+	result = billedResult
 	if strings.TrimSpace(warning) != "" {
 		result.Warnings = append(result.Warnings, warning)
 	}
@@ -300,13 +302,13 @@ func loadAIFallbackBillingContextWithDB(db *gorm.DB, userID int32, accessTokenID
 }
 
 func persistAIFallbackBilling(billingCtx searchBillingContext, requestID string, req model.SearchRequest, result service.AIFallbackResult) error {
-	_, err := persistAIFallbackBillingWithWarning(billingCtx, requestID, req, result)
+	_, _, err := persistAIFallbackBillingWithWarning(billingCtx, requestID, req, result)
 	return err
 }
 
 // persistAIFallbackBillingWithWarning 落账 AI 兜底计费，并回报「模型未配置价格」的情况。
 // 未定价时按 0 计费，不阻断答案返回，只把提示交给调用方。
-func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, requestID string, req model.SearchRequest, result service.AIFallbackResult) (string, error) {
+func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, requestID string, req model.SearchRequest, result service.AIFallbackResult) (string, service.AIFallbackResult, error) {
 	usage := result.Usage
 	if !result.Success {
 		usage.InputTokens = 0
@@ -316,11 +318,11 @@ func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, reques
 		usage.TotalTokens = 0
 	}
 	if !hasAISearchUsage(usage) {
-		return "", nil
+		return "", result, nil
 	}
 	db := resolveSearchPersistenceDB()
 	if db == nil {
-		return "", errors.New("AI 兜底计费失败，请稍后重试")
+		return "", result, errors.New("AI 兜底计费失败，请稍后重试")
 	}
 
 	billingCtx.RequestID = strings.TrimSpace(requestID)
@@ -336,8 +338,11 @@ func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, reques
 	if result.Success && hasAIModelUsage(usage) {
 		resolvedCharge, err := resolveCompletedAIBillingCharge(db, resolved, req, usage)
 		if err != nil {
-			return "", err
+			return "", result, err
 		}
+		// 调用方在计费完成后写审阅记录，因此把倍率信息写入返回结果，确保同步、异步兜底
+		// 与普通搜题的审阅快照包含相同的最终倍率信息。
+		result.Usage.Trace = resolvedCharge.Trace
 		if resolvedCharge.UnpricedModel {
 			warning = buildUnpricedAIModelWarning(resolvedCharge.Charge.ModelName)
 		}
@@ -363,9 +368,12 @@ func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, reques
 		}
 	}
 	if len(charges) == 0 {
-		return warning, nil
+		return warning, result, nil
 	}
-	return warning, persistSearchBillingRecordsWithDB(db, billingCtx, charges)
+	if err := persistSearchBillingRecordsWithDB(db, billingCtx, charges); err != nil {
+		return warning, result, err
+	}
+	return warning, result, nil
 }
 
 func buildAIFallbackBillingFailureResult(err error) service.AIFallbackResult {

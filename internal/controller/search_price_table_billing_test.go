@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -41,6 +42,10 @@ func TestSearchBillsAIUsageFromModelPriceTable(t *testing.T) {
 	}
 	token := seedControllerTokenForUser(t, db, user, "search-price-table-billing-token", 0)
 	seedControllerAIModelPrice(t, db, "GPT-5.5", 5.00, 0.50, 30.00)
+	enableStagedBilling := true
+	if err := service.SetAIStagedTokenBillingSettingsWithDB(db, &enableStagedBilling, nil); err != nil {
+		t.Fatalf("enable staged AI billing: %v", err)
+	}
 
 	withStubSearchDependencies(t,
 		(&stubSearchClient{}).SearchAnswer,
@@ -73,6 +78,23 @@ func TestSearchBillsAIUsageFromModelPriceTable(t *testing.T) {
 				CachedInputTokens: 400000,
 				OutputTokens:      200000,
 				TotalTokens:       1200000,
+				ModelCalls: []searchpkg.AIModelCallUsage{{
+					Index:             1,
+					Model:             "GPT-5.5",
+					InputTokens:       1000000,
+					CachedInputTokens: 400000,
+					OutputTokens:      200000,
+					TotalTokens:       1200000,
+				}},
+				Trace: []searchpkg.AISearchTrace{{
+					Stage:             "普通模型响应",
+					Model:             "GPT-5.5",
+					ModelCallIndex:    1,
+					InputTokens:       1000000,
+					CachedInputTokens: 400000,
+					OutputTokens:      200000,
+					TotalTokens:       1200000,
+				}},
 			}, nil
 		},
 		func() {
@@ -99,8 +121,8 @@ func TestSearchBillsAIUsageFromModelPriceTable(t *testing.T) {
 	if record.Provider != searchModeAI {
 		t.Fatalf("expected ai provider, got %+v", record)
 	}
-	if record.Amount != 9.2 {
-		t.Fatalf("expected price-table amount 9.2, got %v (snapshot %q)", record.Amount, record.UnitPriceSnapshot)
+	if record.Amount != 2.76 {
+		t.Fatalf("expected price-table amount 2.76 after staged multiplier, got %v (snapshot %q)", record.Amount, record.UnitPriceSnapshot)
 	}
 	if record.ModelName != "GPT-5.5" {
 		t.Fatalf("expected model name GPT-5.5, got %q", record.ModelName)
@@ -119,10 +141,25 @@ func TestSearchBillsAIUsageFromModelPriceTable(t *testing.T) {
 		"inputTokens=600000",
 		"cachedInputTokens=400000",
 		"outputTokens=200000",
-		"amount=9.20",
+		"amount=2.76",
+		"stageBillingEnabled=true",
+		"stageBillingFinalAmount=2.760000",
 	} {
 		if !strings.Contains(record.UnitPriceSnapshot, part) {
 			t.Fatalf("expected price-table snapshot to contain %q, got %q", part, record.UnitPriceSnapshot)
 		}
+	}
+	var entry entity.Log
+	if err := db.Where("module = ? AND action = ?", searchAuditModule, logActionSearch).Order("id DESC").First(&entry).Error; err != nil {
+		t.Fatalf("load search audit log: %v", err)
+	}
+	var auditResponse struct {
+		AISearchTrace []searchpkg.AISearchTrace `json:"aiSearchTrace"`
+	}
+	if err := json.Unmarshal([]byte(entry.NewAnswer), &auditResponse); err != nil {
+		t.Fatalf("unmarshal search audit response: %v", err)
+	}
+	if len(auditResponse.AISearchTrace) != 1 || auditResponse.AISearchTrace[0].StageMultiplier != 0.3 || auditResponse.AISearchTrace[0].FinalMultiplier != 0.3 || !auditResponse.AISearchTrace[0].MultiplierApplicable {
+		t.Fatalf("expected final stage multiplier in search audit log, got %+v", auditResponse.AISearchTrace)
 	}
 }

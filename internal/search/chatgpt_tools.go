@@ -256,7 +256,12 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 			in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Attempt: retry + 1, AttemptBudget: attempts, Stage: "模型调用开始", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, RequestBody: string(encoded)})
 			attemptStartedAt := time.Now()
 			result, status, callErr = in.requestAIToolRound(ctx, endpoint, encoded)
-			in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Attempt: retry + 1, AttemptBudget: attempts, Stage: "模型响应", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, Status: fmt.Sprintf("%d", status), DurationMs: time.Since(attemptStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, ReasoningChars: result.ReasoningChars, ContentPreview: result.Content, FullResponse: formatAIModelCompleteResponse(result), RawResponse: result.Raw, Error: errorString(callErr)})
+			responseTrace := AISearchTrace{Round: round + 1, Attempt: retry + 1, AttemptBudget: attempts, Stage: "模型响应", Endpoint: endpoint, Model: in.Model, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, Status: fmt.Sprintf("%d", status), DurationMs: time.Since(attemptStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, ReasoningChars: result.ReasoningChars, ContentPreview: result.Content, FullResponse: formatAIModelCompleteResponse(result), RawResponse: result.Raw, Error: errorString(callErr)}
+			if call, ok := buildAIModelCallUsage(result.Usage, in.Model, round+1, retry+1); ok {
+				appendAIModelCallUsage(&debug.Usage, call)
+				applyAIModelCallUsageToTrace(&responseTrace, debug.Usage.ModelCalls[len(debug.Usage.ModelCalls)-1])
+			}
+			in.appendAISearchTrace(&debug.Usage, responseTrace)
 			requestBodies = append(requestBodies, string(encoded))
 			rawResponses = append(rawResponses, result.Raw)
 			addAISearchUsage(&debug.Usage, result.Usage)
@@ -389,6 +394,9 @@ func addAISearchUsage(total *AISearchUsage, usage AISearchUsage) {
 	total.CacheWriteTokens += usage.CacheWriteTokens
 	total.OutputTokens += usage.OutputTokens
 	total.TotalTokens += usage.TotalTokens
+	for _, call := range usage.ModelCalls {
+		appendAIModelCallUsage(total, call)
+	}
 	total.SearchCalls = append(total.SearchCalls, usage.SearchCalls...)
 	total.WebReadCalls = append(total.WebReadCalls, usage.WebReadCalls...)
 	total.Trace = append(total.Trace, usage.Trace...)

@@ -129,6 +129,14 @@ func TestAISearchToolsSearchTwiceAndAccumulateUsage(t *testing.T) {
 	if usage.InputTokens != 40 || usage.CachedInputTokens != 4 || usage.CacheWriteTokens != 2 || usage.OutputTokens != 11 || usage.TotalTokens != 51 {
 		t.Fatalf("usage=%+v", usage)
 	}
+	if len(usage.ModelCalls) != 3 {
+		t.Fatalf("expected one model call usage per tool round, got %+v", usage.ModelCalls)
+	}
+	for i, call := range usage.ModelCalls {
+		if call.Index != i+1 || call.Model != "test" || call.Round != i+1 || call.Attempt != 1 {
+			t.Fatalf("unexpected model call %d: %+v", i, call)
+		}
+	}
 	if len(usage.SearchCalls) != 2 || usage.SearchCalls[0].Query != "二加二 计算" || usage.SearchCalls[1].Query != "加法 验算" {
 		t.Fatalf("expected each actual search query in usage, got %+v", usage.SearchCalls)
 	}
@@ -151,6 +159,12 @@ func TestAISearchToolsSearchTwiceAndAccumulateUsage(t *testing.T) {
 		}
 		if trace.RawResponse != "" {
 			rawResponseCount++
+		}
+		if strings.Contains(trace.Stage, "模型") && strings.Contains(trace.Stage, "响应") && trace.TotalTokens == 0 {
+			t.Fatalf("model response trace is missing token usage: %+v", trace)
+		}
+		if strings.Contains(trace.Stage, "搜索 API") && trace.TotalTokens != 0 {
+			t.Fatalf("search API trace must not contain model token usage: %+v", trace)
 		}
 	}
 	for _, stage := range []string{"模型调用开始", "模型响应", "搜索工具调用开始", "搜索工具完成", "搜索 API 请求开始", "搜索 API 响应"} {
@@ -448,6 +462,36 @@ func TestAISearchToolsRetriesFailedRoundWithoutLeakingRoundError(t *testing.T) {
 	answer, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?", DeepThinking: true})
 	if err != nil || calls != 2 || !reflect.DeepEqual(answer, [][]string{{"4"}}) {
 		t.Fatalf("retry should recover one failed round: answer=%v calls=%d err=%v", answer, calls, err)
+	}
+}
+
+func TestAISearchToolsRetainsTokenBearingRetryResponses(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if calls == 1 {
+			fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":3,\"total_tokens\":11}}\n\n")
+			fmt.Fprint(w, "data: {malformed\n\n")
+			return
+		}
+		writeAIFinalStream(w)
+	}))
+	defer server.Close()
+
+	client := &ChatGptClient{
+		Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "retry-model",
+		SearchTool: &testAISearchTool{}, MaxAISearchModelCalls: 1, MaxAISearchRetries: 2,
+	}
+	answer, usage, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?", DeepThinking: true})
+	if err != nil || calls != 2 || !reflect.DeepEqual(answer, [][]string{{"4"}}) {
+		t.Fatalf("retry should recover one failed round: answer=%v calls=%d err=%v", answer, calls, err)
+	}
+	if len(usage.ModelCalls) != 2 || usage.ModelCalls[0].TotalTokens != 11 || usage.ModelCalls[1].TotalTokens != 23 {
+		t.Fatalf("expected both token-bearing model responses, got %+v", usage.ModelCalls)
+	}
+	if usage.TotalTokens != 34 {
+		t.Fatalf("tool retry aggregate should include both actual responses, got %+v", usage)
 	}
 }
 

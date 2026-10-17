@@ -256,7 +256,7 @@ func CreateAIFallbackTask(c *gin.Context) {
 
 		result = runAIFallbackService(req)
 		if !result.Success {
-			warning, err := persistAIFallbackBillingWithWarning(currentBillingCtx, requestID, req, result)
+			warning, billedResult, err := persistAIFallbackBillingWithWarning(currentBillingCtx, requestID, req, result)
 			if err != nil {
 				failure := buildAIFallbackBillingFailureResult(err)
 				if isLeader {
@@ -265,6 +265,7 @@ func CreateAIFallbackTask(c *gin.Context) {
 				auditResult("billing", failure)
 				return failure
 			}
+			result = billedResult
 			if strings.TrimSpace(warning) != "" {
 				result.Warnings = append(result.Warnings, warning)
 			}
@@ -274,7 +275,7 @@ func CreateAIFallbackTask(c *gin.Context) {
 			auditResult("result", result)
 			return result
 		}
-		warning, err := persistAIFallbackBillingWithWarning(currentBillingCtx, requestID, req, result)
+		warning, billedResult, err := persistAIFallbackBillingWithWarning(currentBillingCtx, requestID, req, result)
 		if err != nil {
 			failure := buildAIFallbackBillingFailureResult(err)
 			if isLeader {
@@ -283,6 +284,7 @@ func CreateAIFallbackTask(c *gin.Context) {
 			auditResult("billing", failure)
 			return failure
 		}
+		result = billedResult
 		if strings.TrimSpace(warning) != "" {
 			result.Warnings = append(result.Warnings, warning)
 		}

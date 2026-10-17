@@ -55,9 +55,25 @@ type AISearchUsage struct {
 	CacheWriteTokens  int64
 	OutputTokens      int64
 	TotalTokens       int64
+	ModelCalls        []AIModelCallUsage   `json:"modelCalls,omitempty"`
 	SearchCalls       []AISearchCallUsage  `json:"searchCalls,omitempty"`
 	WebReadCalls      []AIWebReadCallUsage `json:"webReadCalls,omitempty"`
 	Trace             []AISearchTrace      `json:"trace,omitempty"`
+}
+
+// AIModelCallUsage records one token-bearing response from the upstream model.
+// Index is assigned in response order within the complete search request,
+// including endpoint fallbacks and retry attempts.
+type AIModelCallUsage struct {
+	Index             int    `json:"index"`
+	Model             string `json:"model"`
+	Round             int    `json:"round"`
+	Attempt           int    `json:"attempt"`
+	InputTokens       int64  `json:"inputTokens"`
+	CachedInputTokens int64  `json:"cachedInputTokens"`
+	CacheWriteTokens  int64  `json:"cacheWriteTokens"`
+	OutputTokens      int64  `json:"outputTokens"`
+	TotalTokens       int64  `json:"totalTokens"`
 }
 
 type AISearchCallUsage struct {
@@ -97,33 +113,43 @@ type AISearchDebugResult struct {
 // payload to keep database records bounded. RawResponse is retained for the
 // debug response, but model SSE frames are deliberately not written to logs.
 type AISearchTrace struct {
-	Round               int    `json:"round"`
-	Attempt             int    `json:"attempt,omitempty"`
-	AttemptBudget       int    `json:"attemptBudget,omitempty"`
-	Stage               string `json:"stage"`
-	Model               string `json:"model"`
-	Endpoint            string `json:"endpoint"`
-	Query               string `json:"query,omitempty"`
-	SearchAPI           string `json:"searchApi,omitempty"`
-	SourceDetails       string `json:"sourceDetails,omitempty"`
-	ResultSummary       string `json:"resultSummary,omitempty"`
-	Status              string `json:"status,omitempty"`
-	DurationMs          int64  `json:"durationMs,omitempty"`
-	ModelCallCount      int    `json:"modelCallCount,omitempty"`
-	ModelCallBudget     int    `json:"modelCallBudget,omitempty"`
-	RemainingModelCalls int    `json:"remainingModelCalls"`
-	SearchCount         int    `json:"searchCount,omitempty"`
-	SearchBudget        int    `json:"searchBudget,omitempty"`
-	RemainingSearches   int    `json:"remainingSearches"`
-	RemainingWebReads   int    `json:"remainingWebReads"`
-	ResultCount         int    `json:"resultCount,omitempty"`
-	CacheHit            bool   `json:"cacheHit,omitempty"`
-	ReasoningChars      int    `json:"reasoningChars,omitempty"`
-	ContentPreview      string `json:"contentPreview,omitempty"`
-	Error               string `json:"error,omitempty"`
-	RequestBody         string `json:"-"`
-	FullResponse        string `json:"-"`
-	RawResponse         string `json:"-"`
+	Round                int     `json:"round"`
+	Attempt              int     `json:"attempt,omitempty"`
+	AttemptBudget        int     `json:"attemptBudget,omitempty"`
+	Stage                string  `json:"stage"`
+	Model                string  `json:"model"`
+	Endpoint             string  `json:"endpoint"`
+	Query                string  `json:"query,omitempty"`
+	SearchAPI            string  `json:"searchApi,omitempty"`
+	SourceDetails        string  `json:"sourceDetails,omitempty"`
+	ResultSummary        string  `json:"resultSummary,omitempty"`
+	Status               string  `json:"status,omitempty"`
+	DurationMs           int64   `json:"durationMs,omitempty"`
+	ModelCallCount       int     `json:"modelCallCount,omitempty"`
+	ModelCallIndex       int     `json:"modelCallIndex,omitempty"`
+	ModelCallBudget      int     `json:"modelCallBudget,omitempty"`
+	RemainingModelCalls  int     `json:"remainingModelCalls"`
+	SearchCount          int     `json:"searchCount,omitempty"`
+	SearchBudget         int     `json:"searchBudget,omitempty"`
+	RemainingSearches    int     `json:"remainingSearches"`
+	RemainingWebReads    int     `json:"remainingWebReads"`
+	ResultCount          int     `json:"resultCount,omitempty"`
+	CacheHit             bool    `json:"cacheHit,omitempty"`
+	ReasoningChars       int     `json:"reasoningChars,omitempty"`
+	InputTokens          int64   `json:"inputTokens,omitempty"`
+	CachedInputTokens    int64   `json:"cachedInputTokens,omitempty"`
+	CacheWriteTokens     int64   `json:"cacheWriteTokens,omitempty"`
+	OutputTokens         int64   `json:"outputTokens,omitempty"`
+	TotalTokens          int64   `json:"totalTokens,omitempty"`
+	StageBillingMode     string  `json:"stageBillingMode,omitempty"`
+	StageMultiplier      float64 `json:"stageMultiplier,omitempty"`
+	FinalMultiplier      float64 `json:"finalMultiplier,omitempty"`
+	MultiplierApplicable bool    `json:"multiplierApplicable,omitempty"`
+	ContentPreview       string  `json:"contentPreview,omitempty"`
+	Error                string  `json:"error,omitempty"`
+	RequestBody          string  `json:"-"`
+	FullResponse         string  `json:"-"`
+	RawResponse          string  `json:"-"`
 }
 
 func (in *ChatGptClient) prepareAISearchTrace(trace AISearchTrace) AISearchTrace {
@@ -148,10 +174,65 @@ func (in *ChatGptClient) appendAISearchTrace(usage *AISearchUsage, trace AISearc
 	in.logAISearchTrace(trace)
 }
 
+func buildAIModelCallUsage(usage AISearchUsage, model string, round int, attempt int) (AIModelCallUsage, bool) {
+	totalTokens := usage.TotalTokens
+	if totalTokens == 0 {
+		totalTokens = usage.InputTokens + usage.OutputTokens
+	}
+	if totalTokens <= 0 {
+		return AIModelCallUsage{}, false
+	}
+	return AIModelCallUsage{
+		Model:             strings.TrimSpace(model),
+		Round:             round,
+		Attempt:           attempt,
+		InputTokens:       usage.InputTokens,
+		CachedInputTokens: usage.CachedInputTokens,
+		CacheWriteTokens:  usage.CacheWriteTokens,
+		OutputTokens:      usage.OutputTokens,
+		TotalTokens:       totalTokens,
+	}, true
+}
+
+func appendAIModelCallUsage(usage *AISearchUsage, call AIModelCallUsage) {
+	if usage == nil {
+		return
+	}
+	call.Index = len(usage.ModelCalls) + 1
+	usage.ModelCalls = append(usage.ModelCalls, call)
+}
+
+func applyAIModelCallUsageToTrace(trace *AISearchTrace, call AIModelCallUsage) {
+	if trace == nil {
+		return
+	}
+	trace.ModelCallIndex = call.Index
+	trace.InputTokens = call.InputTokens
+	trace.CachedInputTokens = call.CachedInputTokens
+	trace.CacheWriteTokens = call.CacheWriteTokens
+	trace.OutputTokens = call.OutputTokens
+	trace.TotalTokens = call.TotalTokens
+}
+
+func offsetAIModelCallIndexes(traces []AISearchTrace, offset int) {
+	if offset <= 0 {
+		return
+	}
+	for i := range traces {
+		if traces[i].ModelCallIndex > 0 {
+			traces[i].ModelCallIndex += offset
+		}
+	}
+}
+
 func (in *ChatGptClient) logAISearchTrace(trace AISearchTrace) {
 	structuredTrace := in.prepareAISearchTrace(trace)
 	requestID := strings.TrimSpace(in.RequestID)
-	logger.AIThinkingWithSecrets(fmt.Sprintf("AI搜索轨迹 requestId=%s round=%d attempt=%d/%d stage=%s model=%s endpoint=%s searchAPI=%s query=%s status=%s durationMs=%d modelCalls=%d/%d remainingModelCalls=%d searches=%d/%d remainingSearches=%d remainingWebReads=%d results=%d cacheHit=%t sources=%s resultSummary=%s reasoningChars=%d contentPreview=%s error=%s", requestID, structuredTrace.Round, structuredTrace.Attempt, structuredTrace.AttemptBudget, structuredTrace.Stage, strings.TrimSpace(structuredTrace.Model), structuredTrace.Endpoint, structuredTrace.SearchAPI, structuredTrace.Query, structuredTrace.Status, structuredTrace.DurationMs, structuredTrace.ModelCallCount, structuredTrace.ModelCallBudget, structuredTrace.RemainingModelCalls, structuredTrace.SearchCount, structuredTrace.SearchBudget, structuredTrace.RemainingSearches, structuredTrace.RemainingWebReads, structuredTrace.ResultCount, structuredTrace.CacheHit, structuredTrace.SourceDetails, structuredTrace.ResultSummary, structuredTrace.ReasoningChars, structuredTrace.ContentPreview, structuredTrace.Error), in.APIKey)
+	tokenDetails := ""
+	if structuredTrace.ModelCallIndex > 0 {
+		tokenDetails = fmt.Sprintf(" modelCallIndex=%d tokens=%d inputTokens=%d cachedInputTokens=%d cacheWriteTokens=%d outputTokens=%d", structuredTrace.ModelCallIndex, structuredTrace.TotalTokens, structuredTrace.InputTokens, structuredTrace.CachedInputTokens, structuredTrace.CacheWriteTokens, structuredTrace.OutputTokens)
+	}
+	logger.AIThinkingWithSecrets(fmt.Sprintf("AI搜索轨迹 requestId=%s round=%d attempt=%d/%d stage=%s model=%s endpoint=%s searchAPI=%s query=%s status=%s durationMs=%d modelCalls=%d/%d%s remainingModelCalls=%d searches=%d/%d remainingSearches=%d remainingWebReads=%d results=%d cacheHit=%t sources=%s resultSummary=%s reasoningChars=%d contentPreview=%s error=%s", requestID, structuredTrace.Round, structuredTrace.Attempt, structuredTrace.AttemptBudget, structuredTrace.Stage, strings.TrimSpace(structuredTrace.Model), structuredTrace.Endpoint, structuredTrace.SearchAPI, structuredTrace.Query, structuredTrace.Status, structuredTrace.DurationMs, structuredTrace.ModelCallCount, structuredTrace.ModelCallBudget, tokenDetails, structuredTrace.RemainingModelCalls, structuredTrace.SearchCount, structuredTrace.SearchBudget, structuredTrace.RemainingSearches, structuredTrace.RemainingWebReads, structuredTrace.ResultCount, structuredTrace.CacheHit, structuredTrace.SourceDetails, structuredTrace.ResultSummary, structuredTrace.ReasoningChars, structuredTrace.ContentPreview, structuredTrace.Error), in.APIKey)
 	if trace.SourceDetails != "" {
 		logger.AIThinkingWithSecrets(fmt.Sprintf("AI搜索完整来源 requestId=%s round=%d stage=%s\n%s", requestID, trace.Round, trace.Stage, trace.SourceDetails), in.APIKey)
 	}
@@ -420,13 +501,20 @@ func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]
 	modelCalls := 0
 	var lastRequestErr error
 	var allTrace []AISearchTrace
+	var allModelCalls []AIModelCallUsage
 	for _, endpoint := range endpoints {
 		if modelCalls >= maxModelCalls {
 			break
 		}
 		content, usage, statusCode, requestBody, rawResponse, callErr := in.requestStreamAnswerDetailed(ctx, endpoint, systemPrompt, userPromptParts, &modelCalls, maxModelCalls)
+		offsetAIModelCallIndexes(usage.Trace, len(allModelCalls))
 		allTrace = append(allTrace, usage.Trace...)
+		allModelCalls = append(allModelCalls, usage.ModelCalls...)
+		for i := range allModelCalls {
+			allModelCalls[i].Index = i + 1
+		}
 		usage.Trace = append([]AISearchTrace(nil), allTrace...)
+		usage.ModelCalls = append([]AIModelCallUsage(nil), allModelCalls...)
 		debug = AISearchDebugResult{
 			Endpoint:    endpoint,
 			RequestBody: requestBody,
@@ -486,13 +574,20 @@ func (in *ChatGptClient) SearchAnswerWithUsage(req model.SearchRequest) (answer 
 	var lastRequestErr error
 	var lastUsage AISearchUsage
 	var allTrace []AISearchTrace
+	var allModelCalls []AIModelCallUsage
 	for _, endpoint := range endpoints {
 		if modelCalls >= maxModelCalls {
 			break
 		}
 		content, streamUsage, statusCode, _, _, callErr := in.requestStreamAnswerDetailed(ctx, endpoint, systemPrompt, userPromptParts, &modelCalls, maxModelCalls)
+		offsetAIModelCallIndexes(streamUsage.Trace, len(allModelCalls))
 		allTrace = append(allTrace, streamUsage.Trace...)
+		allModelCalls = append(allModelCalls, streamUsage.ModelCalls...)
+		for i := range allModelCalls {
+			allModelCalls[i].Index = i + 1
+		}
 		streamUsage.Trace = append([]AISearchTrace(nil), allTrace...)
+		streamUsage.ModelCalls = append([]AIModelCallUsage(nil), allModelCalls...)
 		lastUsage = streamUsage
 		if callErr == nil {
 			lastRequestErr = nil
@@ -995,17 +1090,25 @@ func (in *ChatGptClient) requestStreamAnswerDetailed(parentCtx context.Context, 
 		remainingAfterCall := maxModelCalls - *modelCalls
 		recordTrace(AISearchTrace{Round: *modelCalls, Attempt: attempt + 1, AttemptBudget: in.aiSearchRetryAttempts(), Stage: "普通模型调用开始", Endpoint: endpoint, ModelCallCount: *modelCalls, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingAfterCall})
 		content, usage, statusCode, rawResponse, retryable, callErr := in.executeAISearchStreamRequest(parentCtx, endpoint, payload, requestBody, attemptStartedAt)
-		recordTrace(AISearchTrace{Round: *modelCalls, Attempt: attempt + 1, AttemptBudget: in.aiSearchRetryAttempts(), Stage: "普通模型响应", Endpoint: endpoint, ModelCallCount: *modelCalls, ModelCallBudget: maxModelCalls, RemainingModelCalls: maxModelCalls - *modelCalls, Status: fmt.Sprintf("%d", statusCode), DurationMs: time.Since(attemptStartedAt).Milliseconds(), RequestBody: requestBody, ContentPreview: content, FullResponse: content, RawResponse: rawResponse, Error: errorString(callErr)})
+		responseTrace := AISearchTrace{Round: *modelCalls, Attempt: attempt + 1, AttemptBudget: in.aiSearchRetryAttempts(), Stage: "普通模型响应", Endpoint: endpoint, ModelCallCount: *modelCalls, ModelCallBudget: maxModelCalls, RemainingModelCalls: maxModelCalls - *modelCalls, Status: fmt.Sprintf("%d", statusCode), DurationMs: time.Since(attemptStartedAt).Milliseconds(), RequestBody: requestBody, ContentPreview: content, FullResponse: content, RawResponse: rawResponse, Error: errorString(callErr)}
+		if call, ok := buildAIModelCallUsage(usage, in.Model, *modelCalls, attempt+1); ok {
+			appendAIModelCallUsage(&lastUsage, call)
+			applyAIModelCallUsageToTrace(&responseTrace, lastUsage.ModelCalls[len(lastUsage.ModelCalls)-1])
+		}
+		recordTrace(responseTrace)
 		usage.Trace = append([]AISearchTrace(nil), traceEvents...)
+		usage.ModelCalls = append([]AIModelCallUsage(nil), lastUsage.ModelCalls...)
 		lastUsage = usage
 		lastStatusCode = statusCode
 		lastRawResponse = rawResponse
 		lastErr = callErr
 		if callErr == nil || !retryable {
+			lastUsage.ModelCalls = append([]AIModelCallUsage(nil), usage.ModelCalls...)
 			return content, lastUsage, lastStatusCode, requestBody, lastRawResponse, callErr
 		}
 	}
 
+	lastUsage.ModelCalls = append([]AIModelCallUsage(nil), lastUsage.ModelCalls...)
 	return "", lastUsage, lastStatusCode, requestBody, lastRawResponse, lastErr
 }
 
@@ -1147,7 +1250,7 @@ func readOpenAIStreamContentWithRaw(body io.Reader, firstToken chan<- struct{}) 
 
 		var chunk openAIStreamChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			return "", AISearchUsage{}, raw.String(), err
+			return "", usage, raw.String(), err
 		}
 		if len(chunk.Error) > 0 && string(chunk.Error) != "null" {
 			return "", usage, raw.String(), fmt.Errorf("AI upstream error event: %s", chunk.Error)
@@ -1166,7 +1269,7 @@ func readOpenAIStreamContentWithRaw(body io.Reader, firstToken chan<- struct{}) 
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return "", AISearchUsage{}, raw.String(), err
+		return "", usage, raw.String(), err
 	}
 	return builder.String(), usage, raw.String(), nil
 }

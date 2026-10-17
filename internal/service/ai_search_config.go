@@ -34,39 +34,43 @@ func BuildUAPISearchToolWithDB(db *gorm.DB) internalsearch.AISearchTool {
 }
 
 type AISearchConfigView struct {
-	Enabled               bool     `json:"enabled"`
-	BaseURL               string   `json:"baseUrl"`
-	APIKey                string   `json:"apiKey"`
-	Model                 string   `json:"model"`
-	ManualModels          []string `json:"manualModels"`
-	Prompt                string   `json:"prompt"`
-	Remark                string   `json:"remark"`
-	Temperature           float64  `json:"temperature"`
-	TopP                  float64  `json:"topP"`
-	MaxAISearchModelCalls int      `json:"maxAISearchModelCalls"`
-	MaxAISearches         int      `json:"maxAISearches"`
-	MaxAISearchRetries    int      `json:"maxAISearchRetries"`
-	SearchPricePerCall    float64  `json:"searchPricePerCall"`
-	MaxAIWebReads         int      `json:"maxAIWebReads"`
-	WebReadPricePerCall   float64  `json:"webReadPricePerCall"`
+	Enabled                       bool     `json:"enabled"`
+	BaseURL                       string   `json:"baseUrl"`
+	APIKey                        string   `json:"apiKey"`
+	Model                         string   `json:"model"`
+	ManualModels                  []string `json:"manualModels"`
+	Prompt                        string   `json:"prompt"`
+	Remark                        string   `json:"remark"`
+	Temperature                   float64  `json:"temperature"`
+	TopP                          float64  `json:"topP"`
+	MaxAISearchModelCalls         int      `json:"maxAISearchModelCalls"`
+	MaxAISearches                 int      `json:"maxAISearches"`
+	MaxAISearchRetries            int      `json:"maxAISearchRetries"`
+	SearchPricePerCall            float64  `json:"searchPricePerCall"`
+	MaxAIWebReads                 int      `json:"maxAIWebReads"`
+	WebReadPricePerCall           float64  `json:"webReadPricePerCall"`
+	EnableAIStagedTokenBilling    bool     `json:"enableAIStagedTokenBilling"`
+	SmoothAIStagedTokenMultiplier bool     `json:"smoothAIStagedTokenMultiplier"`
 }
 
 type UpdateAISearchConfigInput struct {
-	Enabled               bool     `json:"enabled"`
-	BaseURL               string   `json:"baseUrl"`
-	APIKey                string   `json:"apiKey"`
-	Model                 string   `json:"model"`
-	ManualModels          []string `json:"manualModels"`
-	Prompt                string   `json:"prompt"`
-	Remark                string   `json:"remark"`
-	Temperature           float64  `json:"temperature"`
-	TopP                  float64  `json:"topP"`
-	MaxAISearchModelCalls int      `json:"maxAISearchModelCalls"`
-	MaxAISearches         int      `json:"maxAISearches"`
-	MaxAISearchRetries    int      `json:"maxAISearchRetries"`
-	SearchPricePerCall    *float64 `json:"searchPricePerCall,omitempty"`
-	MaxAIWebReads         int      `json:"maxAIWebReads"`
-	WebReadPricePerCall   *float64 `json:"webReadPricePerCall,omitempty"`
+	Enabled                       bool     `json:"enabled"`
+	BaseURL                       string   `json:"baseUrl"`
+	APIKey                        string   `json:"apiKey"`
+	Model                         string   `json:"model"`
+	ManualModels                  []string `json:"manualModels"`
+	Prompt                        string   `json:"prompt"`
+	Remark                        string   `json:"remark"`
+	Temperature                   float64  `json:"temperature"`
+	TopP                          float64  `json:"topP"`
+	MaxAISearchModelCalls         int      `json:"maxAISearchModelCalls"`
+	MaxAISearches                 int      `json:"maxAISearches"`
+	MaxAISearchRetries            int      `json:"maxAISearchRetries"`
+	SearchPricePerCall            *float64 `json:"searchPricePerCall,omitempty"`
+	MaxAIWebReads                 int      `json:"maxAIWebReads"`
+	WebReadPricePerCall           *float64 `json:"webReadPricePerCall,omitempty"`
+	EnableAIStagedTokenBilling    *bool    `json:"enableAIStagedTokenBilling,omitempty"`
+	SmoothAIStagedTokenMultiplier *bool    `json:"smoothAIStagedTokenMultiplier,omitempty"`
 }
 
 type AISearchRequestConfig struct {
@@ -180,16 +184,19 @@ func GetAISearchConfigWithDB(db *gorm.DB) (AISearchConfigView, error) {
 	}
 	if !exists {
 		maxModelCalls, maxSearches := GetAISearchBudgetsWithDB(db)
+		stagedBilling := GetAIStagedTokenBillingSettingsWithDB(db)
 		return AISearchConfigView{
-			Prompt:                defaultAISearchPrompt(),
-			Temperature:           0,
-			TopP:                  0,
-			MaxAISearchModelCalls: maxModelCalls,
-			MaxAISearches:         maxSearches,
-			MaxAISearchRetries:    GetAISearchRetriesWithDB(db),
-			SearchPricePerCall:    GetAISearchPricePerCallWithDB(db),
-			MaxAIWebReads:         getPositiveBoundedIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads, MaxAllowedAISearches),
-			WebReadPricePerCall:   GetWebReadPricePerCallWithDB(db),
+			Prompt:                        defaultAISearchPrompt(),
+			Temperature:                   0,
+			TopP:                          0,
+			MaxAISearchModelCalls:         maxModelCalls,
+			MaxAISearches:                 maxSearches,
+			MaxAISearchRetries:            GetAISearchRetriesWithDB(db),
+			SearchPricePerCall:            GetAISearchPricePerCallWithDB(db),
+			MaxAIWebReads:                 getPositiveBoundedIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads, MaxAllowedAISearches),
+			WebReadPricePerCall:           GetWebReadPricePerCallWithDB(db),
+			EnableAIStagedTokenBilling:    stagedBilling.Enabled,
+			SmoothAIStagedTokenMultiplier: stagedBilling.SmoothFactor,
 		}, nil
 	}
 	return buildAISearchConfigView(db, config)
@@ -206,6 +213,9 @@ func UpdateAISearchConfigWithDB(db *gorm.DB, input UpdateAISearchConfigInput) (A
 		if err := SetWebReadPricePerCallWithDB(db, *input.WebReadPricePerCall); err != nil {
 			return AISearchConfigView{}, err
 		}
+	}
+	if err := SetAIStagedTokenBillingSettingsWithDB(db, input.EnableAIStagedTokenBilling, input.SmoothAIStagedTokenMultiplier); err != nil {
+		return AISearchConfigView{}, err
 	}
 	config, _, err := getAISearchConfigRecord(db)
 	if err != nil {
@@ -370,23 +380,26 @@ func buildAISearchConfigView(db *gorm.DB, config entity.AISearchConfig) (AISearc
 		return AISearchConfigView{}, err
 	}
 	maxModelCalls, maxSearches := GetAISearchBudgetsWithDB(db)
+	stagedBilling := GetAIStagedTokenBillingSettingsWithDB(db)
 
 	return AISearchConfigView{
-		Enabled:               config.Enabled,
-		BaseURL:               config.BaseURL,
-		APIKey:                config.APIKey,
-		Model:                 config.Model,
-		ManualModels:          manualModels,
-		Prompt:                effectiveAISearchPrompt(config.Prompt),
-		Remark:                config.Remark,
-		Temperature:           0,
-		TopP:                  0,
-		MaxAISearchModelCalls: maxModelCalls,
-		MaxAISearches:         maxSearches,
-		MaxAISearchRetries:    GetAISearchRetriesWithDB(db),
-		SearchPricePerCall:    GetAISearchPricePerCallWithDB(db),
-		MaxAIWebReads:         getPositiveBoundedIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads, MaxAllowedAISearches),
-		WebReadPricePerCall:   GetWebReadPricePerCallWithDB(db),
+		Enabled:                       config.Enabled,
+		BaseURL:                       config.BaseURL,
+		APIKey:                        config.APIKey,
+		Model:                         config.Model,
+		ManualModels:                  manualModels,
+		Prompt:                        effectiveAISearchPrompt(config.Prompt),
+		Remark:                        config.Remark,
+		Temperature:                   0,
+		TopP:                          0,
+		MaxAISearchModelCalls:         maxModelCalls,
+		MaxAISearches:                 maxSearches,
+		MaxAISearchRetries:            GetAISearchRetriesWithDB(db),
+		SearchPricePerCall:            GetAISearchPricePerCallWithDB(db),
+		MaxAIWebReads:                 getPositiveBoundedIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads, MaxAllowedAISearches),
+		WebReadPricePerCall:           GetWebReadPricePerCallWithDB(db),
+		EnableAIStagedTokenBilling:    stagedBilling.Enabled,
+		SmoothAIStagedTokenMultiplier: stagedBilling.SmoothFactor,
 	}, nil
 }
 

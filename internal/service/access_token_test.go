@@ -188,7 +188,7 @@ func TestListAllAccessTokensWithDBRequiresAdminAndReturnsUsername(t *testing.T) 
 	if err != nil {
 		t.Fatalf("list all tokens as user: %v", err)
 	}
-	if len(userList) != 1 || userList[0].Name != "owner-token" {
+	if len(userList) != 1 || userList[0].Name != "owner_token" {
 		t.Fatalf("expected non-admin all-scope request to remain scoped to self, got %+v", userList)
 	}
 
@@ -203,7 +203,7 @@ func TestListAllAccessTokensWithDBRequiresAdminAndReturnsUsername(t *testing.T) 
 	for _, token := range adminList {
 		usernames[token.Name] = token.Username
 	}
-	if usernames["admin-token"] != admin.Username || usernames["owner-token"] != owner.Username || usernames["other-token"] != other.Username {
+	if usernames["admin_token"] != admin.Username || usernames["owner_token"] != owner.Username || usernames["other_token"] != other.Username {
 		t.Fatalf("expected all-scope tokens to include owner usernames, got %+v", usernames)
 	}
 }
@@ -223,7 +223,7 @@ func TestUpdateAccessTokenWithDBRejectsNonOwnerAndUpdatesAllowedFields(t *testin
 	}
 
 	updated, err := UpdateAccessTokenWithDB(db, owner, created.AccessToken.ID, UpdateAccessTokenInput{
-		Name:            " token-b ",
+		Name:            " token_b ",
 		Status:          "disabled",
 		Remark:          " manual stop ",
 		TotalQuotaLimit: 20,
@@ -231,8 +231,8 @@ func TestUpdateAccessTokenWithDBRejectsNonOwnerAndUpdatesAllowedFields(t *testin
 	if err != nil {
 		t.Fatalf("update token: %v", err)
 	}
-	if updated.Name != "token-b" {
-		t.Fatalf("expected updated name token-b, got %s", updated.Name)
+	if updated.Name != "token_b" {
+		t.Fatalf("expected updated name token_b, got %s", updated.Name)
 	}
 	if updated.Status != "disabled" {
 		t.Fatalf("expected updated status disabled, got %s", updated.Status)
