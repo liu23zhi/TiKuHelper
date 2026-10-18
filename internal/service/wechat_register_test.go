@@ -92,6 +92,28 @@ func TestWechatRegisterFlowStoreQRCodeExpiryKeepsFlowForRefresh(t *testing.T) {
 	}
 }
 
+func TestWechatRegisterFlowStoreStagedStatusSurvivesQRCodeExpiry(t *testing.T) {
+	store := NewWechatRegisterFlowStore()
+	now := time.Unix(100, 0)
+	flow, err := store.CreateOrResume("", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	qr, err := store.GetOrCreateQRCode(flow.Token, now, false, func() (WechatRegisterQRCode, error) {
+		return WechatRegisterQRCode{SessionID: "staged-expiring-session", ExpiresAt: now.Add(time.Second)}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Stage(flow.Token, "staged-wechat", now); err != nil {
+		t.Fatal(err)
+	}
+	status, err := store.StatusByQRCodeSession(qr.SessionID, now.Add(2*time.Second))
+	if err != nil || status.Status != WechatRegisterStatusStaged {
+		t.Fatalf("expected staged status after QR expiry, status=%+v err=%v", status, err)
+	}
+}
+
 func TestWechatRegisterFlowStoreAllowsSameWechatIDInIndependentFlows(t *testing.T) {
 	store := NewWechatRegisterFlowStore()
 	now := time.Unix(100, 0)

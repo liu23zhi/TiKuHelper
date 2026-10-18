@@ -215,6 +215,9 @@ func (s *WechatRegisterFlowStore) StatusByQRCodeSession(sessionID string, now ti
 			s.invalidateExpiredQRCodeLocked(flow, now)
 			flow.lastSeenAt = now
 			flow.expiresAt = now.Add(wechatRegisterFlowIdleTTL)
+			if strings.TrimSpace(flow.stagedID) != "" {
+				return flow.snapshot(""), nil
+			}
 			return WechatRegisterFlowSnapshot{Status: WechatRegisterStatusExpired, ExpiresAtUnix: flow.expiresAt.UnixMilli()}, nil
 		}
 		flow.released = true
