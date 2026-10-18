@@ -696,6 +696,12 @@ func parseRemoteCaptchaCheckResponse(body []byte) (bool, string, error) {
 }
 
 func ConsumeCaptchaTokenWithDB(db *gorm.DB, tokenValue string, scene string, requestIP string) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		return ConsumeCaptchaTokenInTx(tx, tokenValue, scene, requestIP)
+	})
+}
+
+func ConsumeCaptchaTokenInTx(db *gorm.DB, tokenValue string, scene string, requestIP string) error {
 	tokenDB := captchaTokenDB(db)
 
 	trimmedToken := strings.TrimSpace(tokenValue)

@@ -111,6 +111,12 @@ func SendSMSCodeWithDB(db *gorm.DB, input SendSMSCodeInput) error {
 }
 
 func VerifySMSCodeWithDB(db *gorm.DB, rawPhone string, scene string, smsCode string) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		return VerifySMSCodeInTx(tx, rawPhone, scene, smsCode)
+	})
+}
+
+func VerifySMSCodeInTx(db *gorm.DB, rawPhone string, scene string, smsCode string) error {
 	phone, _, err := NormalizePhone(rawPhone)
 	if err != nil {
 		return err

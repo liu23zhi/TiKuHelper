@@ -20,6 +20,12 @@ type NewUserBonusOptions struct {
 }
 
 func CreateUserWithNewUserBonusWithDB(db *gorm.DB, user *entity.User, options NewUserBonusOptions) error {
+	return db.Transaction(func(tx *gorm.DB) error {
+		return CreateUserWithNewUserBonusInTx(tx, user, options)
+	})
+}
+
+func CreateUserWithNewUserBonusInTx(db *gorm.DB, user *entity.User, options NewUserBonusOptions) error {
 	if user == nil {
 		return fmt.Errorf("用户不能为空")
 	}
@@ -35,32 +41,30 @@ func CreateUserWithNewUserBonusWithDB(db *gorm.DB, user *entity.User, options Ne
 		bonusAmount = normalized
 	}
 
-	return db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(user).Error; err != nil {
-			return err
-		}
-		if !options.Enabled || bonusAmount <= 0 {
-			return nil
-		}
+	if err := db.Create(user).Error; err != nil {
+		return err
+	}
+	if !options.Enabled || bonusAmount <= 0 {
+		return nil
+	}
 
-		balanceBefore := util.RoundMoney(user.Balance)
-		balanceAfter := util.RoundMoney(balanceBefore + bonusAmount)
-		if err := tx.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", balanceAfter).Error; err != nil {
-			return err
-		}
-		user.Balance = balanceAfter
+	balanceBefore := util.RoundMoney(user.Balance)
+	balanceAfter := util.RoundMoney(balanceBefore + bonusAmount)
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", balanceAfter).Error; err != nil {
+		return err
+	}
+	user.Balance = balanceAfter
 
-		record := entity.BillingRecord{
-			UserID:            user.ID,
-			Type:              registrationBonusBillingRecordType,
-			Provider:          "system",
-			Amount:            bonusAmount,
-			BalanceBefore:     balanceBefore,
-			BalanceAfter:      balanceAfter,
-			RequestID:         fmt.Sprintf("registration_bonus_%d", user.ID),
-			UnitPriceSnapshot: fmt.Sprintf("source=%s", options.Source),
-			Remark:            "新用户赠送",
-		}
-		return tx.Session(&gorm.Session{NewDB: true}).Create(&record).Error
-	})
+	record := entity.BillingRecord{
+		UserID:            user.ID,
+		Type:              registrationBonusBillingRecordType,
+		Provider:          "system",
+		Amount:            bonusAmount,
+		BalanceBefore:     balanceBefore,
+		BalanceAfter:      balanceAfter,
+		RequestID:         fmt.Sprintf("registration_bonus_%d", user.ID),
+		UnitPriceSnapshot: fmt.Sprintf("source=%s", options.Source),
+		Remark:            "新用户赠送",
+	}
+	return db.Session(&gorm.Session{NewDB: true}).Create(&record).Error
 }
