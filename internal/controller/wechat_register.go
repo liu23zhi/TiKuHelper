@@ -113,20 +113,26 @@ func PublicWechatRegisterStatus(c *gin.Context) {
 	if snapshot.Status == service.WechatRegisterStatusPending {
 		upstream, pollErr := pollWechatRegisterQRCode(buildWechatLoginClientFromSettings(settings), sessionID)
 		if pollErr == nil && upstream.Status == service.WechatLoginStatusExpired {
-			_, expireErr := wechatRegisterFlowStore.ExpireQRCodeSession(sessionID, now)
+			expiredSnapshot, expireErr := wechatRegisterFlowStore.ExpireQRCodeSession(sessionID, now)
 			if expireErr != nil {
 				writeWechatRegisterError(c, expireErr)
 				return
 			}
-			c.JSON(http.StatusGone, gin.H{"status": service.WechatRegisterStatusExpired, "expiresAtUnix": snapshot.ExpiresAtUnix})
+			if expiredSnapshot.Status == service.WechatRegisterStatusStaged {
+				c.JSON(http.StatusOK, gin.H{"status": expiredSnapshot.Status, "expiresAtUnix": expiredSnapshot.ExpiresAtUnix})
+				return
+			}
+			c.JSON(http.StatusGone, gin.H{"status": service.WechatRegisterStatusExpired, "expiresAtUnix": expiredSnapshot.ExpiresAtUnix})
 			return
 		}
 		if pollErr == nil && upstream.Status == service.WechatLoginStatusSuccess {
-			if wechatRegisterFlowStore.StageByQRCodeSession(sessionID, upstream.WechatID, now) {
-				if stagedSnapshot, statusErr := wechatRegisterFlowStore.StatusByQRCodeSession(sessionID, now); statusErr == nil {
-					snapshot = stagedSnapshot
-				}
+			wechatRegisterFlowStore.StageByQRCodeSession(sessionID, upstream.WechatID, now)
+			stagedSnapshot, statusErr := wechatRegisterFlowStore.StatusByQRCodeSession(sessionID, now)
+			if statusErr != nil {
+				writeWechatRegisterError(c, statusErr)
+				return
 			}
+			snapshot = stagedSnapshot
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{

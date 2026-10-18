@@ -163,3 +163,83 @@ func TestPublicWechatRegisterStatusRemovesExpiredUpstreamQRCode(t *testing.T) {
 		t.Fatal("expected expired upstream session mapping to be removed")
 	}
 }
+
+func TestPublicWechatRegisterStatusExpiredKeepsCodeFirstStagedResult(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousStore := wechatRegisterFlowStore
+	previousSettings := loadWechatLoginSettings
+	previousPoll := pollWechatRegisterQRCode
+	wechatRegisterFlowStore = service.NewWechatRegisterFlowStore()
+	flowToken := ""
+	loadWechatLoginSettings = func() (service.SystemSettingDetail, error) {
+		return service.SystemSettingDetail{WechatLoginEnabled: true, WechatScanLoginEnabled: true, WechatAPIBaseURL: "https://wechat.example.com", WechatAPIBearerToken: "token"}, nil
+	}
+	pollWechatRegisterQRCode = func(service.WechatLoginClient, string) (service.WechatRegisterQRCodeStatus, error) {
+		if err := wechatRegisterFlowStore.Stage(flowToken, "code-first-wechat", time.Now()); err != nil {
+			return service.WechatRegisterQRCodeStatus{}, err
+		}
+		return service.WechatRegisterQRCodeStatus{Status: service.WechatLoginStatusExpired}, nil
+	}
+	defer func() {
+		wechatRegisterFlowStore = previousStore
+		loadWechatLoginSettings = previousSettings
+		pollWechatRegisterQRCode = previousPoll
+	}()
+	flow, err := wechatRegisterFlowStore.CreateOrResume("", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	flowToken = flow.Token
+	if _, err := wechatRegisterFlowStore.GetOrCreateQRCode(flow.Token, time.Now(), false, func() (service.WechatRegisterQRCode, error) {
+		return service.WechatRegisterQRCode{SessionID: "code-first-expired-session", ExpiresAt: time.Now().Add(time.Minute)}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	router.GET("/adapter-service/public/wechat-register/status", PublicWechatRegisterStatus)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/adapter-service/public/wechat-register/status?sessionId=code-first-expired-session", nil))
+	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"status":"staged"`)) {
+		t.Fatalf("expected staged status after expired poll, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestPublicWechatRegisterStatusSuccessKeepsCodeFirstStagedResult(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousStore := wechatRegisterFlowStore
+	previousSettings := loadWechatLoginSettings
+	previousPoll := pollWechatRegisterQRCode
+	wechatRegisterFlowStore = service.NewWechatRegisterFlowStore()
+	flowToken := ""
+	loadWechatLoginSettings = func() (service.SystemSettingDetail, error) {
+		return service.SystemSettingDetail{WechatLoginEnabled: true, WechatScanLoginEnabled: true, WechatAPIBaseURL: "https://wechat.example.com", WechatAPIBearerToken: "token"}, nil
+	}
+	pollWechatRegisterQRCode = func(service.WechatLoginClient, string) (service.WechatRegisterQRCodeStatus, error) {
+		if err := wechatRegisterFlowStore.Stage(flowToken, "code-first-wechat", time.Now()); err != nil {
+			return service.WechatRegisterQRCodeStatus{}, err
+		}
+		return service.WechatRegisterQRCodeStatus{Status: service.WechatLoginStatusSuccess, WechatID: "scan-second-wechat"}, nil
+	}
+	defer func() {
+		wechatRegisterFlowStore = previousStore
+		loadWechatLoginSettings = previousSettings
+		pollWechatRegisterQRCode = previousPoll
+	}()
+	flow, err := wechatRegisterFlowStore.CreateOrResume("", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	flowToken = flow.Token
+	if _, err := wechatRegisterFlowStore.GetOrCreateQRCode(flow.Token, time.Now(), false, func() (service.WechatRegisterQRCode, error) {
+		return service.WechatRegisterQRCode{SessionID: "code-first-success-session", ExpiresAt: time.Now().Add(time.Minute)}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	router.GET("/adapter-service/public/wechat-register/status", PublicWechatRegisterStatus)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/adapter-service/public/wechat-register/status?sessionId=code-first-success-session", nil))
+	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"status":"staged"`)) {
+		t.Fatalf("expected staged status after success poll, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
