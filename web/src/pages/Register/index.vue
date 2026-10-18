@@ -326,6 +326,16 @@ export default defineComponent({
 
     const isTerminalWechatRegisterStatus = (status) => status === 401 || status === 409 || status === 410
 
+    const isWechatQRCodeError = (value) => {
+      const message = String(value?.message || value?.response?.data?.message || value?.response?.data?.detail || value || '')
+      return message.includes('微信二维码会话无效') || message.includes('微信二维码已过期')
+    }
+
+    const isWechatFlowError = (value) => {
+      const message = String(value?.message || value?.response?.data?.message || value?.response?.data?.detail || value || '')
+      return message.includes('注册流程令牌无效') || message.includes('注册流程已过期')
+    }
+
     const markWechatQRCodeExpired = () => {
       stopWechatRegisterPolling()
       wechatRegisterSessionId.value = ''
@@ -377,12 +387,13 @@ export default defineComponent({
         if (wechatRegisterSessionId.value) {
           const res = await getWechatRegisterStatus({ sessionId: wechatRegisterSessionId.value })
           if (res?.status === 200) applyWechatRegisterSnapshot(res.data)
-          else if (res?.status === 410) {
+          else if (isWechatQRCodeError(res)) {
             markWechatQRCodeExpired()
-          }
-          else if (isTerminalWechatRegisterStatus(res?.status)) {
+          } else if (isTerminalWechatRegisterStatus(res?.status) && isWechatFlowError(res)) {
             await clearWechatRegisterFlow()
             wechatRegisterStatusText.value = res.status === 410 ? '微信注册流程已过期，请重新绑定' : '微信绑定已被其他注册占用'
+          } else if (isTerminalWechatRegisterStatus(res?.status)) {
+            markWechatQRCodeExpired()
           }
           return
         }
@@ -394,11 +405,13 @@ export default defineComponent({
         }
       } catch (error) {
         const status = flowErrorStatus(error)
-        if (status === 410 && flowCoordinator.token && wechatRegisterSessionId.value) {
+        if (isWechatQRCodeError(error)) {
           markWechatQRCodeExpired()
-        } else if (isTerminalWechatRegisterStatus(status)) {
+        } else if (isTerminalWechatRegisterStatus(status) && isWechatFlowError(error)) {
           await clearWechatRegisterFlow()
           wechatRegisterStatusText.value = status === 410 ? '微信注册流程已过期，请重新绑定' : '微信绑定已被其他注册占用'
+        } else if (isTerminalWechatRegisterStatus(status)) {
+          markWechatQRCodeExpired()
         }
       }
     }
