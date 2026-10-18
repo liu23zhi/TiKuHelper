@@ -92,6 +92,25 @@ test('Login and register pages start a 60 second SMS countdown after a successfu
   }
 })
 
+test('Register page keeps optional WeChat registration lazy and isolated per tab', async () => {
+  const registerContent = await readSource(path.join('pages', 'Register', 'index.vue'))
+  const apiContent = await readSource(path.join('api', 'TikuComponentApi.js'))
+
+  assert.match(registerContent, /createWechatRegisterSession/)
+  assert.match(registerContent, /createWechatRegisterQRCode/)
+  assert.match(registerContent, /getWechatRegisterStatus/)
+  assert.match(registerContent, /stageWechatRegisterCode/)
+  assert.match(registerContent, /releaseWechatRegisterFlow/)
+  assert.match(registerContent, /registrationFlowToken/)
+  assert.match(registerContent, /onMounted/)
+  assert.match(registerContent, /status === 409|status === 410|response\?\.status/)
+  assert.match(apiContent, /url: `\/adapter-service\/public\/wechat-register\/session`/)
+  assert.match(apiContent, /url: `\/adapter-service\/public\/wechat-register\/qrcode`/)
+  assert.match(apiContent, /url: `\/adapter-service\/public\/wechat-register\/status`/)
+  assert.match(apiContent, /url: `\/adapter-service\/public\/wechat-register\/code`/)
+  assert.match(apiContent, /url: `\/adapter-service\/public\/wechat-register\/release`/)
+})
+
 test('Topic overview removes the course name table column while keeping bulk editing', async () => {
   const content = await readSource(path.join('pages', 'TikuComponent', 'index.vue'))
 

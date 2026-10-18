@@ -63,6 +63,46 @@ export function verifyRemoteCaptcha(data) {
   })
 }
 
+export function createWechatRegisterSession(data = {}) {
+  return request({
+    url: `/adapter-service/public/wechat-register/session`,
+    method: 'post',
+    data,
+  })
+}
+
+export function createWechatRegisterQRCode(data) {
+  return request({
+    url: `/adapter-service/public/wechat-register/qrcode`,
+    method: 'post',
+    data,
+  })
+}
+
+export function getWechatRegisterStatus(params) {
+  return request({
+    url: `/adapter-service/public/wechat-register/status`,
+    method: 'get',
+    params,
+  })
+}
+
+export function stageWechatRegisterCode(data) {
+  return request({
+    url: `/adapter-service/public/wechat-register/code`,
+    method: 'post',
+    data,
+  })
+}
+
+export function releaseWechatRegisterFlow(data) {
+  return request({
+    url: `/adapter-service/public/wechat-register/release`,
+    method: 'post',
+    data,
+  })
+}
+
 export function createWechatLoginQRCode() {
   return request({
     url: `/adapter-service/public/wechat-login/qrcode`,
