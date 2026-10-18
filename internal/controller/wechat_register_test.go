@@ -125,3 +125,41 @@ func TestPublicWechatRegisterQRCodeReturnsDisplayDataAndSession(t *testing.T) {
 		t.Fatal("registration QR response must not expose wechatId")
 	}
 }
+
+func TestPublicWechatRegisterStatusRemovesExpiredUpstreamQRCode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousStore := wechatRegisterFlowStore
+	previousSettings := loadWechatLoginSettings
+	previousPoll := pollWechatRegisterQRCode
+	wechatRegisterFlowStore = service.NewWechatRegisterFlowStore()
+	loadWechatLoginSettings = func() (service.SystemSettingDetail, error) {
+		return service.SystemSettingDetail{WechatLoginEnabled: true, WechatScanLoginEnabled: true, WechatAPIBaseURL: "https://wechat.example.com", WechatAPIBearerToken: "token"}, nil
+	}
+	pollWechatRegisterQRCode = func(service.WechatLoginClient, string) (service.WechatRegisterQRCodeStatus, error) {
+		return service.WechatRegisterQRCodeStatus{Status: service.WechatLoginStatusExpired}, nil
+	}
+	defer func() {
+		wechatRegisterFlowStore = previousStore
+		loadWechatLoginSettings = previousSettings
+		pollWechatRegisterQRCode = previousPoll
+	}()
+	flow, err := wechatRegisterFlowStore.CreateOrResume("", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wechatRegisterFlowStore.GetOrCreateQRCode(flow.Token, time.Now(), false, func() (service.WechatRegisterQRCode, error) {
+		return service.WechatRegisterQRCode{SessionID: "expired-upstream-session", ExpiresAt: time.Now().Add(time.Minute)}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	router := gin.New()
+	router.GET("/adapter-service/public/wechat-register/status", PublicWechatRegisterStatus)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/adapter-service/public/wechat-register/status?sessionId=expired-upstream-session", nil))
+	if recorder.Code != http.StatusGone {
+		t.Fatalf("expected expired status, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if _, err := wechatRegisterFlowStore.StatusByQRCodeSession("expired-upstream-session", time.Now()); err == nil {
+		t.Fatal("expected expired upstream session mapping to be removed")
+	}
+}

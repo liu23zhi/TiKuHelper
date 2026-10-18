@@ -17,10 +17,12 @@ const (
 )
 
 var (
-	ErrWechatRegisterFlowInvalid = errors.New("注册流程令牌无效")
-	ErrWechatRegisterFlowExpired = errors.New("注册流程已过期")
-	ErrWechatRegisterQRInvalid   = errors.New("微信二维码会话无效或已过期")
-	ErrWechatRegisterNotStaged   = errors.New("注册流程尚未暂存微信")
+	ErrWechatRegisterFlowInvalid   = errors.New("注册流程令牌无效")
+	ErrWechatRegisterFlowExpired   = errors.New("注册流程已过期")
+	ErrWechatRegisterQRInvalid     = errors.New("微信二维码会话无效或已过期")
+	ErrWechatRegisterQRCodeExpired = errors.New("微信二维码已过期")
+	ErrWechatRegisterNotStaged     = errors.New("注册流程尚未暂存微信")
+	ErrWechatRegisterAlreadyStaged = errors.New("注册流程已暂存微信")
 )
 
 // WechatRegisterQRCode contains only data that is safe to expose to the public
@@ -292,6 +294,30 @@ func (s *WechatRegisterFlowStore) StatusByQRCodeSession(sessionID string, now ti
 	return flow.snapshot(""), nil
 }
 
+func (s *WechatRegisterFlowStore) ExpireQRCodeSession(sessionID string, now time.Time) (WechatRegisterFlowSnapshot, error) {
+	s = s.ensure()
+	sessionID = strings.TrimSpace(sessionID)
+	s.mu.Lock()
+	hash := s.sessions[sessionID]
+	flow := s.flows[hash]
+	s.mu.Unlock()
+	if flow == nil || hash == "" {
+		return WechatRegisterFlowSnapshot{}, ErrWechatRegisterQRInvalid
+	}
+	flow.mu.Lock()
+	defer flow.mu.Unlock()
+	if flow.released || flow.currentQR == nil || flow.currentQR.SessionID != sessionID {
+		return WechatRegisterFlowSnapshot{}, ErrWechatRegisterQRInvalid
+	}
+	s.invalidateQRCodeLocked(flow)
+	flow.lastSeenAt = now
+	flow.expiresAt = now.Add(wechatRegisterFlowIdleTTL)
+	if strings.TrimSpace(flow.stagedID) != "" {
+		return flow.snapshot(""), nil
+	}
+	return WechatRegisterFlowSnapshot{Status: WechatRegisterStatusExpired, ExpiresAtUnix: flow.expiresAt.UnixMilli()}, ErrWechatRegisterQRCodeExpired
+}
+
 func (s *WechatRegisterFlowStore) Status(token string, now time.Time) (WechatRegisterFlowSnapshot, error) {
 	s = s.ensure()
 	flow, hash, err := s.find(token)
@@ -327,6 +353,40 @@ func (s *WechatRegisterFlowStore) Stage(token, wechatID string, now time.Time) e
 		flow.released = true
 		s.removeLocked(hash, flow)
 		return ErrWechatRegisterFlowExpired
+	}
+	flow.stagedID = wechatID
+	flow.lastSeenAt = now
+	flow.expiresAt = now.Add(wechatRegisterFlowIdleTTL)
+	return nil
+}
+
+// StageByCode serializes external code resolution and staging under the flow lock.
+func (s *WechatRegisterFlowStore) StageByCode(token string, now time.Time, resolve func() (string, error)) error {
+	s = s.ensure()
+	flow, hash, err := s.find(token)
+	if err != nil {
+		return err
+	}
+	if resolve == nil {
+		return errors.New("微信验证码解析函数为空")
+	}
+	flow.mu.Lock()
+	defer flow.mu.Unlock()
+	if flow.released || !now.Before(flow.expiresAt) {
+		flow.released = true
+		s.removeLocked(hash, flow)
+		return ErrWechatRegisterFlowExpired
+	}
+	if strings.TrimSpace(flow.stagedID) != "" {
+		return ErrWechatRegisterAlreadyStaged
+	}
+	wechatID, err := resolve()
+	if err != nil {
+		return err
+	}
+	wechatID = strings.TrimSpace(wechatID)
+	if wechatID == "" {
+		return errors.New("微信用户 ID 为空")
 	}
 	flow.stagedID = wechatID
 	flow.lastSeenAt = now
@@ -430,6 +490,13 @@ func (s *WechatRegisterFlowStore) CleanupExpired(now time.Time) int {
 
 func (s *WechatRegisterFlowStore) invalidateExpiredQRCodeLocked(flow *wechatRegisterFlow, now time.Time) {
 	if flow.currentQR == nil || now.Before(flow.currentQR.ExpiresAt) {
+		return
+	}
+	s.invalidateQRCodeLocked(flow)
+}
+
+func (s *WechatRegisterFlowStore) invalidateQRCodeLocked(flow *wechatRegisterFlow) {
+	if flow.currentQR == nil {
 		return
 	}
 	s.mu.Lock()

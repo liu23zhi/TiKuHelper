@@ -112,6 +112,15 @@ func PublicWechatRegisterStatus(c *gin.Context) {
 	}
 	if snapshot.Status == service.WechatRegisterStatusPending {
 		upstream, pollErr := pollWechatRegisterQRCode(buildWechatLoginClientFromSettings(settings), sessionID)
+		if pollErr == nil && upstream.Status == service.WechatLoginStatusExpired {
+			_, expireErr := wechatRegisterFlowStore.ExpireQRCodeSession(sessionID, now)
+			if expireErr != nil {
+				writeWechatRegisterError(c, expireErr)
+				return
+			}
+			c.JSON(http.StatusGone, gin.H{"status": service.WechatRegisterStatusExpired, "expiresAtUnix": snapshot.ExpiresAtUnix})
+			return
+		}
 		if pollErr == nil && upstream.Status == service.WechatLoginStatusSuccess {
 			if wechatRegisterFlowStore.StageByQRCodeSession(sessionID, upstream.WechatID, now) {
 				if stagedSnapshot, statusErr := wechatRegisterFlowStore.StatusByQRCodeSession(sessionID, now); statusErr == nil {
@@ -141,16 +150,17 @@ func PublicWechatRegisterCode(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "微信验证码绑定未开启或配置未完成"})
 		return
 	}
-	wechatID, err := fetchWechatRegisterUserIDByCode(buildWechatLoginClientFromSettings(settings), strings.TrimSpace(payload.Code))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
-		return
-	}
-	if err := wechatRegisterFlowStore.Stage(payload.RegistrationFlowToken, wechatID, time.Now()); err != nil {
+	if err := wechatRegisterFlowStore.StageByCode(payload.RegistrationFlowToken, time.Now(), func() (string, error) {
+		return fetchWechatRegisterUserIDByCode(buildWechatLoginClientFromSettings(settings), strings.TrimSpace(payload.Code))
+	}); err != nil {
 		writeWechatRegisterError(c, err)
 		return
 	}
-	snapshot, _ := wechatRegisterFlowStore.Status(payload.RegistrationFlowToken, time.Now())
+	snapshot, statusErr := wechatRegisterFlowStore.Status(payload.RegistrationFlowToken, time.Now())
+	if statusErr != nil {
+		writeWechatRegisterError(c, statusErr)
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"status": snapshot.Status, "expiresAtUnix": snapshot.ExpiresAtUnix})
 }
 
@@ -170,6 +180,8 @@ func writeWechatRegisterError(c *gin.Context, err error) {
 	status := http.StatusBadRequest
 	message := err.Error()
 	if errors.Is(err, service.ErrWechatRegisterFlowExpired) {
+		status = http.StatusGone
+	} else if errors.Is(err, service.ErrWechatRegisterQRCodeExpired) {
 		status = http.StatusGone
 	} else if errors.Is(err, service.ErrWechatRegisterFlowInvalid) || errors.Is(err, service.ErrWechatRegisterQRInvalid) {
 		status = http.StatusUnauthorized

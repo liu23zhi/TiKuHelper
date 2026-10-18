@@ -397,7 +397,7 @@ func fetchWechatUpstreamStatus(client WechatLoginClient, loginToken string) (wec
 		return wechatUpstreamStatus{}, fmt.Errorf("微信登录状态响应解析失败")
 	}
 	if !payload.Success {
-		return wechatUpstreamStatus{Status: WechatLoginStatusPending, Message: strings.TrimSpace(payload.Message)}, nil
+		return wechatUpstreamStatus{Status: normalizeWechatUpstreamStatus(payload.Data.Status), Message: strings.TrimSpace(payload.Message)}, nil
 	}
 	status := normalizeWechatUpstreamStatus(payload.Data.Status)
 	wechatID := strings.TrimSpace(payload.Data.WechatUser.OpenID)
@@ -417,6 +417,8 @@ func normalizeWechatUpstreamStatus(value string) string {
 		return WechatLoginStatusSuccess
 	case WechatLoginStatusScanned, "scan_success", "waiting_confirm", "confirmed":
 		return WechatLoginStatusScanned
+	case WechatLoginStatusExpired, "timeout", "timed_out", "cancelled", "canceled", "qrcode_expired":
+		return WechatLoginStatusExpired
 	default:
 		return WechatLoginStatusPending
 	}

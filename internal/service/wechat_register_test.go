@@ -355,3 +355,53 @@ func TestWechatRegisterFlowStoreConsumeIsLockScopedAndRetainsOnFailure(t *testin
 		t.Fatal("expected successful consume to release flow")
 	}
 }
+
+func TestWechatRegisterFlowStoreStageByCodeSerializesAndPreservesFirstResult(t *testing.T) {
+	store := NewWechatRegisterFlowStore()
+	now := time.Unix(100, 0)
+	flow, err := store.CreateOrResume("", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	continueResolve := make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- store.StageByCode(flow.Token, now, func() (string, error) {
+			close(started)
+			<-continueResolve
+			return "first-wechat", nil
+		})
+	}()
+	<-started
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- store.StageByCode(flow.Token, now, func() (string, error) {
+			return "second-wechat", nil
+		})
+	}()
+	select {
+	case <-secondDone:
+		t.Fatal("second code request must wait for the per-flow lock")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(continueResolve)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondDone; !errors.Is(err, ErrWechatRegisterAlreadyStaged) {
+		t.Fatalf("expected second code request to preserve first result, got %v", err)
+	}
+	status, err := store.Status(flow.Token, now)
+	if err != nil || status.Status != WechatRegisterStatusStaged {
+		t.Fatalf("expected staged status, status=%+v err=%v", status, err)
+	}
+}
+
+func TestNormalizeWechatUpstreamStatusMapsExpiredValues(t *testing.T) {
+	for _, value := range []string{"expired", "timeout", "timed_out", "cancelled", "canceled", "qrcode_expired"} {
+		if got := normalizeWechatUpstreamStatus(value); got != WechatLoginStatusExpired {
+			t.Fatalf("normalizeWechatUpstreamStatus(%q) = %q, want %q", value, got, WechatLoginStatusExpired)
+		}
+	}
+}
