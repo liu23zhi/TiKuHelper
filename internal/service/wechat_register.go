@@ -55,9 +55,67 @@ type wechatRegisterFlow struct {
 }
 
 type WechatRegisterFlowStore struct {
-	mu       sync.Mutex
-	flows    map[string]*wechatRegisterFlow
-	sessions map[string]string
+	mu            sync.Mutex
+	flows         map[string]*wechatRegisterFlow
+	sessions      map[string]string
+	cleanupStop   chan struct{}
+	cleanupDone   chan struct{}
+	cleanupOnce   *sync.Once
+	cleanupActive bool
+}
+
+// StartCleanup starts at most one background cleanup loop for this store.
+// The returned function is safe to call repeatedly and waits for the loop to
+// stop, which keeps tests and graceful shutdowns deterministic.
+func (s *WechatRegisterFlowStore) StartCleanup(interval time.Duration) func() {
+	s = s.ensure()
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	s.mu.Lock()
+	if s.cleanupActive {
+		stopCh, doneCh, once := s.cleanupStop, s.cleanupDone, s.cleanupOnce
+		s.mu.Unlock()
+		return func() {
+			once.Do(func() { close(stopCh) })
+			<-doneCh
+		}
+	}
+	stopCh := make(chan struct{})
+	doneCh := make(chan struct{})
+	once := &sync.Once{}
+	s.cleanupStop = stopCh
+	s.cleanupDone = doneCh
+	s.cleanupOnce = once
+	s.cleanupActive = true
+	s.mu.Unlock()
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		defer close(doneCh)
+		defer func() {
+			s.mu.Lock()
+			if s.cleanupStop == stopCh {
+				s.cleanupActive = false
+				s.cleanupStop = nil
+				s.cleanupDone = nil
+				s.cleanupOnce = nil
+			}
+			s.mu.Unlock()
+		}()
+		for {
+			select {
+			case now := <-ticker.C:
+				s.CleanupExpired(now)
+			case <-stopCh:
+				return
+			}
+		}
+	}()
+	return func() {
+		once.Do(func() { close(stopCh) })
+		<-doneCh
+	}
 }
 
 func NewWechatRegisterFlowStore() *WechatRegisterFlowStore {
@@ -116,7 +174,11 @@ func (s *WechatRegisterFlowStore) CreateOrResume(token string, now time.Time) (W
 	s = s.ensure()
 	token = strings.TrimSpace(token)
 	if token != "" {
-		if flow, hash, err := s.find(token); err == nil {
+		flow, hash, err := s.find(token)
+		if err != nil {
+			return WechatRegisterFlowSnapshot{}, err
+		}
+		if flow != nil {
 			flow.mu.Lock()
 			if !flow.released && now.Before(flow.expiresAt) {
 				s.invalidateExpiredQRCodeLocked(flow, now)
@@ -129,6 +191,7 @@ func (s *WechatRegisterFlowStore) CreateOrResume(token string, now time.Time) (W
 			flow.released = true
 			s.removeLocked(hash, flow)
 			flow.mu.Unlock()
+			return WechatRegisterFlowSnapshot{Status: WechatRegisterStatusExpired}, ErrWechatRegisterFlowExpired
 		}
 	}
 	newToken := randomTokenHex(32)

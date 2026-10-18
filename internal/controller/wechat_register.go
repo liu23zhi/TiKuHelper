@@ -14,7 +14,7 @@ import (
 var wechatRegisterFlowStore = service.DefaultWechatRegisterFlowStore
 
 var createWechatRegisterQRCode = func(client service.WechatLoginClient) (service.WechatQRCodeResult, error) {
-	return service.CreateWechatLoginQRCodeWithDB(dao.User.UnderlyingDB(), client)
+	return service.CreateWechatRegisterQRCodeWithDB(dao.User.UnderlyingDB(), client)
 }
 
 var pollWechatRegisterQRCode = func(client service.WechatLoginClient, sessionID string) (service.WechatRegisterQRCodeStatus, error) {
@@ -98,6 +98,11 @@ func PublicWechatRegisterQRCode(c *gin.Context) {
 }
 
 func PublicWechatRegisterStatus(c *gin.Context) {
+	settings, settingsErr := loadWechatLoginSettings()
+	if settingsErr != nil || !settings.WechatLoginEnabled || !settings.WechatScanLoginEnabled || strings.TrimSpace(settings.WechatAPIBaseURL) == "" || strings.TrimSpace(settings.WechatAPIBearerToken) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "微信注册绑定未开启或配置未完成"})
+		return
+	}
 	sessionID := strings.TrimSpace(c.Query("sessionId"))
 	now := time.Now()
 	snapshot, err := wechatRegisterFlowStore.StatusByQRCodeSession(sessionID, now)
@@ -106,14 +111,11 @@ func PublicWechatRegisterStatus(c *gin.Context) {
 		return
 	}
 	if snapshot.Status == service.WechatRegisterStatusPending {
-		settings, settingsErr := loadWechatLoginSettings()
-		if settingsErr == nil && settings.WechatLoginEnabled && settings.WechatScanLoginEnabled && strings.TrimSpace(settings.WechatAPIBaseURL) != "" && strings.TrimSpace(settings.WechatAPIBearerToken) != "" {
-			upstream, pollErr := pollWechatRegisterQRCode(buildWechatLoginClientFromSettings(settings), sessionID)
-			if pollErr == nil && upstream.Status == service.WechatLoginStatusSuccess {
-				if wechatRegisterFlowStore.StageByQRCodeSession(sessionID, upstream.WechatID, now) {
-					if stagedSnapshot, statusErr := wechatRegisterFlowStore.StatusByQRCodeSession(sessionID, now); statusErr == nil {
-						snapshot = stagedSnapshot
-					}
+		upstream, pollErr := pollWechatRegisterQRCode(buildWechatLoginClientFromSettings(settings), sessionID)
+		if pollErr == nil && upstream.Status == service.WechatLoginStatusSuccess {
+			if wechatRegisterFlowStore.StageByQRCodeSession(sessionID, upstream.WechatID, now) {
+				if stagedSnapshot, statusErr := wechatRegisterFlowStore.StatusByQRCodeSession(sessionID, now); statusErr == nil {
+					snapshot = stagedSnapshot
 				}
 			}
 		}

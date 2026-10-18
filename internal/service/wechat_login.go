@@ -219,7 +219,19 @@ func CreateWechatLoginQRCodeWithDB(db *gorm.DB, client WechatLoginClient) (Wecha
 	return CreateWechatLoginQRCodeWithStore(db, client, nil)
 }
 
+// CreateWechatRegisterQRCodeWithDB shares the upstream HTTP and image
+// download path with ordinary login, but deliberately does not register the
+// returned session in DefaultWechatLoginSessionStore. Registration ownership
+// belongs exclusively to WechatRegisterFlowStore.
+func CreateWechatRegisterQRCodeWithDB(db *gorm.DB, client WechatLoginClient) (WechatQRCodeResult, error) {
+	return createWechatQRCode(db, client, nil, false)
+}
+
 func CreateWechatLoginQRCodeWithStore(db *gorm.DB, client WechatLoginClient, store *WechatLoginSessionStore) (WechatQRCodeResult, error) {
+	return createWechatQRCode(db, client, store, true)
+}
+
+func createWechatQRCode(db *gorm.DB, client WechatLoginClient, store *WechatLoginSessionStore, registerLoginSession bool) (WechatQRCodeResult, error) {
 	_ = db
 	httpClient := resolveWechatHTTPClient(client)
 	apiURL, err := joinWechatURL(client.BaseURL, "/api/wechat/create_login_qrcode")
@@ -262,10 +274,12 @@ func CreateWechatLoginQRCodeWithStore(db *gorm.DB, client WechatLoginClient, sto
 	ttl := normalizeWechatQRCodeTTL(payload.Data.ExpireSeconds)
 	expiresAt := now.Add(ttl)
 	loginToken := strings.TrimSpace(payload.Data.LoginToken)
-	if store == nil {
-		store = DefaultWechatLoginSessionStore
+	if registerLoginSession {
+		if store == nil {
+			store = DefaultWechatLoginSessionStore
+		}
+		store.Create(loginToken, now, expiresAt)
 	}
-	store.Create(loginToken, now, expiresAt)
 	return WechatQRCodeResult{
 		SceneID:         strings.TrimSpace(payload.Data.SceneID),
 		LoginToken:      loginToken,

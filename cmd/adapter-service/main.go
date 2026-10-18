@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/api"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
+	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/internal/timer"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 )
@@ -59,6 +60,8 @@ func main() {
 	logTrustedProxies(trustedProxies)
 	api.SetAPIRouter(server)
 	api.SetWebRouter(buildFS, indexPage, server)
+	stopWechatRegisterCleanup := service.DefaultWechatRegisterFlowStore.StartCleanup(time.Minute)
+	defer stopWechatRegisterCleanup()
 	timer.StartTimer(mg.GetDB(), mg.GetEs(), mg.GetConfig().Elasticsearch.Addresses)
 	httpServer := &http.Server{
 		Addr:              "0.0.0.0:8060",

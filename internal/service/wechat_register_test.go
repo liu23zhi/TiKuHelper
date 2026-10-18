@@ -1,8 +1,12 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -26,6 +30,62 @@ func TestWechatRegisterFlowStoreCreateOrResumeIsIdempotent(t *testing.T) {
 	}
 	if resumed.ExpiresAtUnix <= created.ExpiresAtUnix {
 		t.Fatalf("expected idle expiry to extend, got created=%+v resumed=%+v", created, resumed)
+	}
+}
+
+func TestWechatRegisterFlowStoreUnknownTokenDoesNotCreateFlow(t *testing.T) {
+	store := NewWechatRegisterFlowStore()
+	if _, err := store.CreateOrResume("unknown-token", time.Unix(100, 0)); !errors.Is(err, ErrWechatRegisterFlowInvalid) {
+		t.Fatalf("expected invalid token error, got %v", err)
+	}
+}
+
+func TestWechatRegisterFlowStoreExpiredTokenDoesNotCreateReplacementFlow(t *testing.T) {
+	store := NewWechatRegisterFlowStore()
+	now := time.Unix(100, 0)
+	flow, err := store.CreateOrResume("", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	stored := store.flows[hashWechatRegisterToken(flow.Token)]
+	store.mu.Unlock()
+	stored.mu.Lock()
+	stored.expiresAt = now.Add(-time.Second)
+	stored.mu.Unlock()
+	if _, err := store.CreateOrResume(flow.Token, now); !errors.Is(err, ErrWechatRegisterFlowExpired) {
+		t.Fatalf("expected expired token error, got %v", err)
+	}
+}
+
+func TestWechatRegisterQRCodeDoesNotCreateOrdinaryLoginSession(t *testing.T) {
+	db := newWechatLoginTestDB(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/wechat/create_login_qrcode":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"data": map[string]any{
+					"scene_id":       "register-scene",
+					"qrcode_url":     "http://" + r.Host + "/qr.png",
+					"login_token":    "register-login-token",
+					"expire_seconds": 180,
+				},
+			})
+		case "/qr.png":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(tinyPNGBytes(t))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	result, err := CreateWechatRegisterQRCodeWithDB(db, WechatLoginClient{BaseURL: server.URL, Token: "token", Client: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CheckWechatLoginStatusWithDB(db, WechatLoginStatusInput{Client: WechatLoginClient{BaseURL: server.URL, Token: "token", Client: server.Client()}, LoginToken: result.LoginToken}); err == nil {
+		t.Fatal("ordinary login status must reject registration QR session")
 	}
 }
 
@@ -64,6 +124,72 @@ func TestWechatRegisterFlowStoreReusesCurrentQRCodeAndRefreshInvalidatesOldSessi
 	}
 	if status, err := store.Status(flow.Token, now.Add(3*time.Second)); err != nil || status.Status != WechatRegisterStatusPending {
 		t.Fatalf("expected pending flow after stale callback, status=%+v err=%v", status, err)
+	}
+}
+
+func TestWechatRegisterFlowStoreResumeThenQRCodeReusesCurrentSession(t *testing.T) {
+	store := NewWechatRegisterFlowStore()
+	now := time.Unix(100, 0)
+	created, err := store.CreateOrResume("", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createdQR, err := store.GetOrCreateQRCode(created.Token, now, false, func() (WechatRegisterQRCode, error) {
+		return WechatRegisterQRCode{SessionID: "resume-session", DisplayData: "image", ExpiresAt: now.Add(time.Minute)}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := store.CreateOrResume(created.Token, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumedQR, err := store.GetOrCreateQRCode(resumed.Token, now.Add(2*time.Second), false, func() (WechatRegisterQRCode, error) {
+		t.Fatal("QR factory must not run when resuming a flow with a current session")
+		return WechatRegisterQRCode{}, nil
+	})
+	if err != nil || resumedQR.SessionID != createdQR.SessionID {
+		t.Fatalf("expected resumed flow to reuse current QR, created=%+v resumed=%+v err=%v", createdQR, resumedQR, err)
+	}
+}
+
+func TestWechatRegisterFlowStoreConcurrentQRCodeCreationCallsFactoryOnce(t *testing.T) {
+	store := NewWechatRegisterFlowStore()
+	now := time.Unix(100, 0)
+	flow, err := store.CreateOrResume("", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	continueFactory := make(chan struct{})
+	var calls atomic.Int32
+	factory := func() (WechatRegisterQRCode, error) {
+		calls.Add(1)
+		close(started)
+		<-continueFactory
+		return WechatRegisterQRCode{SessionID: "concurrent-session", ExpiresAt: now.Add(time.Minute)}, nil
+	}
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		_, _ = store.GetOrCreateQRCode(flow.Token, now, false, factory)
+	}()
+	<-started
+	secondDone := make(chan struct{})
+	go func() {
+		defer close(secondDone)
+		_, _ = store.GetOrCreateQRCode(flow.Token, now, false, factory)
+	}()
+	select {
+	case <-secondDone:
+		t.Fatal("second QR creation should wait for the per-flow lock")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(continueFactory)
+	<-firstDone
+	<-secondDone
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("expected one factory call, got %d", got)
 	}
 }
 
@@ -164,6 +290,41 @@ func TestWechatRegisterFlowStoreReleaseAndExpiryCleanupAreIdempotent(t *testing.
 	if err := store.Release(expired.Token); err != nil {
 		t.Fatalf("expired release should be idempotent: %v", err)
 	}
+}
+
+func TestWechatRegisterFlowStoreBackgroundCleanupRunsOnceAndRemovesExpiredSession(t *testing.T) {
+	store := NewWechatRegisterFlowStore()
+	now := time.Now()
+	flow, err := store.CreateOrResume("", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetOrCreateQRCode(flow.Token, now, false, func() (WechatRegisterQRCode, error) {
+		return WechatRegisterQRCode{SessionID: "cleanup-session", ExpiresAt: now.Add(time.Hour)}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	flowHash := hashWechatRegisterToken(flow.Token)
+	store.mu.Lock()
+	storedFlow := store.flows[flowHash]
+	store.mu.Unlock()
+	storedFlow.mu.Lock()
+	storedFlow.expiresAt = now.Add(-time.Second)
+	storedFlow.mu.Unlock()
+	stop := store.StartCleanup(5 * time.Millisecond)
+	secondStop := store.StartCleanup(5 * time.Millisecond)
+	if stop == nil || secondStop == nil {
+		t.Fatal("expected idempotent cleanup stop functions")
+	}
+	defer stop()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := store.StatusByQRCodeSession("cleanup-session", time.Now()); err != nil {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("background cleanup did not remove expired flow/session")
 }
 
 func TestWechatRegisterFlowStoreConsumeIsLockScopedAndRetainsOnFailure(t *testing.T) {
