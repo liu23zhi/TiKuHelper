@@ -65,6 +65,25 @@ func TestSetAPIRouterRegistersWechatLoginRoutes(t *testing.T) {
 	}
 }
 
+func TestSetAPIRouterRegistersWechatRegisterRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	SetAPIRouter(router)
+	want := map[string]string{
+		"POST /adapter-service/public/wechat-register/session": "",
+		"POST /adapter-service/public/wechat-register/qrcode":  "",
+		"GET /adapter-service/public/wechat-register/status":   "",
+		"POST /adapter-service/public/wechat-register/code":    "",
+		"POST /adapter-service/public/wechat-register/release": "",
+	}
+	for _, route := range router.Routes() {
+		delete(want, route.Method+" "+route.Path)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing registration routes: %v", want)
+	}
+}
+
 func TestSetAPIRouterRegistersCurrentUserBindingRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

@@ -59,6 +59,11 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.POST("/public/captcha/remote-token", controller.VerifyRemoteCaptcha)
 	apiRouter.POST("/public/sms-code", controller.SendPublicSMSCode) // 公开短信验证码接口
 	apiRouter.GET("/public/register-status", controller.PublicRegisterStatus)
+	apiRouter.POST("/public/wechat-register/session", controller.PublicWechatRegisterSession)
+	apiRouter.POST("/public/wechat-register/qrcode", controller.PublicWechatRegisterQRCode)
+	apiRouter.GET("/public/wechat-register/status", controller.PublicWechatRegisterStatus)
+	apiRouter.POST("/public/wechat-register/code", controller.PublicWechatRegisterCode)
+	apiRouter.POST("/public/wechat-register/release", controller.PublicWechatRegisterRelease)
 	apiRouter.POST("/public/wechat-login/qrcode", controller.CreateWechatLoginQRCode)
 	apiRouter.GET("/public/wechat-login/status", controller.CheckWechatLoginStatus)
 	apiRouter.GET("/public/wechat-login/ws", controller.WechatLoginWebSocket)
