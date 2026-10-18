@@ -409,6 +409,9 @@ func (s *WechatRegisterFlowStore) StageByQRCodeSession(sessionID, wechatID strin
 	if flow.released || flow.currentQR == nil || flow.currentQR.SessionID != sessionID || !now.Before(flow.currentQR.ExpiresAt) || !now.Before(flow.expiresAt) {
 		return false
 	}
+	if strings.TrimSpace(flow.stagedID) != "" {
+		return false
+	}
 	wechatID = strings.TrimSpace(wechatID)
 	if wechatID == "" {
 		return false

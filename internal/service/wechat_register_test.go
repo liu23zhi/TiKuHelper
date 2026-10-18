@@ -398,6 +398,69 @@ func TestWechatRegisterFlowStoreStageByCodeSerializesAndPreservesFirstResult(t *
 	}
 }
 
+func TestWechatRegisterFlowStoreQRCodeAndCodeSourcesPreserveFirstStagedResult(t *testing.T) {
+	store := NewWechatRegisterFlowStore()
+	now := time.Unix(100, 0)
+	flow, err := store.CreateOrResume("", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	qr, err := store.GetOrCreateQRCode(flow.Token, now, false, func() (WechatRegisterQRCode, error) {
+		return WechatRegisterQRCode{SessionID: "cross-source-session", ExpiresAt: now.Add(time.Minute)}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !store.StageByQRCodeSession(qr.SessionID, "scan-first", now) {
+		t.Fatal("expected QR source to stage first result")
+	}
+	if err := store.StageByCode(flow.Token, now, func() (string, error) { return "code-second", nil }); !errors.Is(err, ErrWechatRegisterAlreadyStaged) {
+		t.Fatalf("expected code source to preserve scan result, got %v", err)
+	}
+	status, err := store.Status(flow.Token, now)
+	if err != nil || status.Status != WechatRegisterStatusStaged {
+		t.Fatalf("expected staged status after scan-first, status=%+v err=%v", status, err)
+	}
+
+	secondFlow, err := store.CreateOrResume("", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondQR, err := store.GetOrCreateQRCode(secondFlow.Token, now, false, func() (WechatRegisterQRCode, error) {
+		return WechatRegisterQRCode{SessionID: "cross-source-session-2", ExpiresAt: now.Add(time.Minute)}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	continueResolve := make(chan struct{})
+	codeDone := make(chan error, 1)
+	go func() {
+		codeDone <- store.StageByCode(secondFlow.Token, now, func() (string, error) {
+			close(started)
+			<-continueResolve
+			return "code-first", nil
+		})
+	}()
+	<-started
+	qrDone := make(chan bool, 1)
+	go func() {
+		qrDone <- store.StageByQRCodeSession(secondQR.SessionID, "scan-second", now)
+	}()
+	select {
+	case <-qrDone:
+		t.Fatal("expected QR source to wait for code source lock")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(continueResolve)
+	if err := <-codeDone; err != nil {
+		t.Fatal(err)
+	}
+	if <-qrDone {
+		t.Fatal("expected QR source to preserve code-first result")
+	}
+}
+
 func TestNormalizeWechatUpstreamStatusMapsExpiredValues(t *testing.T) {
 	for _, value := range []string{"expired", "timeout", "timed_out", "cancelled", "canceled", "qrcode_expired"} {
 		if got := normalizeWechatUpstreamStatus(value); got != WechatLoginStatusExpired {
