@@ -140,7 +140,7 @@ func TestUserRegisterRejectsInvalidWechatFlowToken(t *testing.T) {
 	}
 }
 
-func TestUserRegisterWechatConflictRollsBackAndKeepsFlowRetryable(t *testing.T) {
+func TestUserRegisterWechatConflictRollsBackAndInvalidatesFlow(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newUserControllerTestDB(t)
 	if err := db.Create(&entity.SystemSetting{Key: service.RegisterEnabledSettingKey, Value: "true"}).Error; err != nil {
@@ -193,6 +193,9 @@ func TestUserRegisterWechatConflictRollsBackAndKeepsFlowRetryable(t *testing.T) 
 	if first.Code != http.StatusConflict {
 		t.Fatalf("expected status 409 for duplicate wechat id, got %d with body %s", first.Code, first.Body.String())
 	}
+	if !bytes.Contains(first.Body.Bytes(), []byte("用户名、手机号或微信已绑定")) {
+		t.Fatalf("expected stable conflict message, got %s", first.Body.String())
+	}
 	var count int64
 	if err := db.Model(&entity.User{}).Where("username = ?", "conflict_user").Count(&count).Error; err != nil {
 		t.Fatalf("count rolled back user: %v", err)
@@ -214,19 +217,16 @@ func TestUserRegisterWechatConflictRollsBackAndKeepsFlowRetryable(t *testing.T) 
 	if sms.Status != service.SMSCodeStatusPending {
 		t.Fatalf("expected sms code rollback, got %s", sms.Status)
 	}
-	if _, err := store.Status(snapshot.Token, time.Now()); err != nil {
-		t.Fatalf("expected failed flow to remain available, got %v", err)
+	if _, err := store.Status(snapshot.Token, time.Now()); !errors.Is(err, service.ErrWechatRegisterFlowInvalid) {
+		t.Fatalf("expected conflict to invalidate flow, got %v", err)
 	}
 
 	if err := db.Where("username = ?", "existing-wechat").Delete(&entity.User{}).Error; err != nil {
 		t.Fatalf("remove conflicting user: %v", err)
 	}
 	second := register("retry_user")
-	if second.Code != http.StatusOK {
-		t.Fatalf("expected retry status 200, got %d with body %s", second.Code, second.Body.String())
-	}
-	if _, err := store.Status(snapshot.Token, time.Now()); !errors.Is(err, service.ErrWechatRegisterFlowInvalid) {
-		t.Fatalf("expected flow consumed after retry, got %v", err)
+	if second.Code != http.StatusUnauthorized {
+		t.Fatalf("expected invalidated flow retry status 401, got %d with body %s", second.Code, second.Body.String())
 	}
 }
 

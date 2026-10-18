@@ -399,14 +399,17 @@ func UserRegister(c *gin.Context) {
 		})
 		if err != nil {
 			status := http.StatusBadRequest
+			message := err.Error()
 			if errors.Is(err, service.ErrWechatRegisterFlowInvalid) {
 				status = http.StatusUnauthorized
 			} else if errors.Is(err, service.ErrWechatRegisterFlowExpired) {
 				status = http.StatusGone
 			} else if isUserRegisterConflictError(err) {
+				_ = wechatRegisterFlowStore.Release(registrationFlowToken)
 				status = http.StatusConflict
+				message = "用户名、手机号或微信已绑定"
 			}
-			c.JSON(status, gin.H{"message": err.Error()})
+			c.JSON(status, gin.H{"message": message})
 			return
 		}
 		c.JSON(http.StatusOK, user)
@@ -474,7 +477,17 @@ func isUserRegisterConflictError(err error) bool {
 		return false
 	}
 	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "unique") || strings.Contains(message, "duplicate") || strings.Contains(message, "constraint failed")
+	for _, marker := range []string{
+		"unique constraint failed", // SQLite
+		"duplicate entry",          // MySQL/MariaDB
+		"duplicate key",            // MySQL/Postgres
+		"unique violation",         // Postgres
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func SendPublicSMSCode(c *gin.Context) {
