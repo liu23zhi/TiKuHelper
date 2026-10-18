@@ -104,11 +104,26 @@ test('Register page keeps optional WeChat registration lazy and isolated per tab
   assert.match(registerContent, /registrationFlowToken/)
   assert.match(registerContent, /onMounted/)
   assert.match(registerContent, /status === 409|status === 410|response\?\.status/)
+  assert.match(registerContent, /data\.status === 'expired'/)
+  assert.match(registerContent, /二维码已过期/)
+  assert.match(registerContent, /markWechatQRCodeExpired/)
+  assert.match(registerContent, /status === 410 && flowCoordinator\.token/)
+  assert.match(registerContent, /wechatRegisterMode\.value === 'code'/)
+  assert.match(registerContent, /wechatRegisterSessionId\.value = ''[\s\S]*wechatQrCodeImageData\.value = ''/)
   assert.match(apiContent, /url: `\/adapter-service\/public\/wechat-register\/session`/)
   assert.match(apiContent, /url: `\/adapter-service\/public\/wechat-register\/qrcode`/)
   assert.match(apiContent, /url: `\/adapter-service\/public\/wechat-register\/status`/)
   assert.match(apiContent, /url: `\/adapter-service\/public\/wechat-register\/code`/)
   assert.match(apiContent, /url: `\/adapter-service\/public\/wechat-register\/release`/)
+})
+
+test('request interceptor preserves public registration flow 401 responses', async () => {
+  const requestContent = await readSource(path.join('utils', 'request.js'))
+  const helperContent = await readSource(path.join('utils', 'requestHelpers.mjs'))
+
+  assert.match(requestContent, /isPublicWechatRegisterRequest/)
+  assert.match(requestContent, /response\.status === 401/)
+  assert.match(helperContent, /function isPublicWechatRegisterRequest/)
 })
 
 test('Topic overview removes the course name table column while keeping bulk editing', async () => {

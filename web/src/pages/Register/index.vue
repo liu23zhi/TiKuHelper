@@ -326,8 +326,20 @@ export default defineComponent({
 
     const isTerminalWechatRegisterStatus = (status) => status === 401 || status === 409 || status === 410
 
+    const markWechatQRCodeExpired = () => {
+      stopWechatRegisterPolling()
+      wechatRegisterSessionId.value = ''
+      wechatQrCodeImageData.value = ''
+      wechatRegisterStaged.value = false
+      wechatRegisterStatusText.value = '二维码已过期，请刷新二维码'
+    }
+
     const applyWechatRegisterSnapshot = (snapshot) => {
       const data = snapshot || {}
+      if (data.status === 'expired') {
+        markWechatQRCodeExpired()
+        return
+      }
       if (data.qrcode?.sessionId) {
         wechatRegisterSessionId.value = data.qrcode.sessionId
         wechatQrCodeImageData.value = data.qrcode.displayData || ''
@@ -365,6 +377,9 @@ export default defineComponent({
         if (wechatRegisterSessionId.value) {
           const res = await getWechatRegisterStatus({ sessionId: wechatRegisterSessionId.value })
           if (res?.status === 200) applyWechatRegisterSnapshot(res.data)
+          else if (res?.status === 410) {
+            markWechatQRCodeExpired()
+          }
           else if (isTerminalWechatRegisterStatus(res?.status)) {
             await clearWechatRegisterFlow()
             wechatRegisterStatusText.value = res.status === 410 ? '微信注册流程已过期，请重新绑定' : '微信绑定已被其他注册占用'
@@ -379,7 +394,9 @@ export default defineComponent({
         }
       } catch (error) {
         const status = flowErrorStatus(error)
-        if (isTerminalWechatRegisterStatus(status)) {
+        if (status === 410 && flowCoordinator.token && wechatRegisterSessionId.value) {
+          markWechatQRCodeExpired()
+        } else if (isTerminalWechatRegisterStatus(status)) {
           await clearWechatRegisterFlow()
           wechatRegisterStatusText.value = status === 410 ? '微信注册流程已过期，请重新绑定' : '微信绑定已被其他注册占用'
         }
@@ -430,7 +447,16 @@ export default defineComponent({
     }
 
     const handleWechatRegisterModeChange = () => {
-      if (wechatRegisterMode.value === 'scan' && !wechatQrCodeImageData.value) {
+      if (wechatRegisterMode.value === 'code') {
+        stopWechatRegisterPolling()
+        wechatRegisterSessionId.value = ''
+        wechatQrCodeImageData.value = ''
+        wechatRegisterStatusText.value = wechatRegisterStaged.value
+          ? '微信已暂存，提交注册后完成绑定'
+          : '请输入微信验证码'
+        return
+      }
+      if (!wechatQrCodeImageData.value) {
         refreshWechatRegisterQRCode(false)
       } else {
         startWechatRegisterPolling()

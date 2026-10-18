@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   buildAuthFailureHandling,
   buildResponsePayload,
+  isPublicWechatRegisterRequest,
 } from './requestHelpers.mjs';
 
 test('buildAuthFailureHandling keeps session for negative-balance default-account suspension', () => {
@@ -57,4 +58,10 @@ test('buildResponsePayload prefers backend detail when present', () => {
     status: 401,
     message: '当前余额不足，系统题库已禁用，请充值后再使用',
   });
+});
+
+test('public registration flow URLs are isolated from login auth handling', () => {
+  assert.equal(isPublicWechatRegisterRequest('/adapter-service/public/wechat-register/session'), true);
+  assert.equal(isPublicWechatRegisterRequest('/adapter-service/user/login'), false);
+  assert.equal(isPublicWechatRegisterRequest(undefined), false);
 });

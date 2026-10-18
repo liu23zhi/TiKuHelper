@@ -2,6 +2,10 @@ function trimText(value) {
   return String(value || '').trim();
 }
 
+export function isPublicWechatRegisterRequest(url) {
+  return typeof url === 'string' && url.includes('/adapter-service/public/wechat-register/')
+}
+
 export function buildAuthFailureHandling(response) {
   const detail = trimText(response?.data?.detail);
   if (detail.includes('余额不足') && (detail.includes('默认账号已停用') || detail.includes('系统题库已禁用'))) {

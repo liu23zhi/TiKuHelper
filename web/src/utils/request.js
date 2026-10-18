@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { clearStoredCurrentUser } from './currentUser'
 import { message } from 'ant-design-vue';
-import { buildAuthFailureHandling, buildResponsePayload } from './requestHelpers.mjs'
+import { buildAuthFailureHandling, buildResponsePayload, isPublicWechatRegisterRequest } from './requestHelpers.mjs'
 
 // 创建axios实例
 const service = axios.create({
@@ -29,6 +29,9 @@ const responseInterceptor = (response) => {
       break;
     case 401:
     case 403: {
+      if (response.status === 401 && isPublicWechatRegisterRequest(response?.config?.url)) {
+        break
+      }
       const handling = buildAuthFailureHandling(response)
       message.error(handling.userMessage)
       if (handling.shouldLogout) {
