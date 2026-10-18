@@ -306,12 +306,13 @@ func UserRegister(c *gin.Context) {
 	}
 
 	var payload struct {
-		Username     string `json:"username"`
-		Password     string `json:"password"`
-		Nickname     string `json:"nickname"`
-		Phone        string `json:"phone"`
-		SMSCode      string `json:"smsCode"`
-		CaptchaToken string `json:"captchaToken"`
+		Username              string `json:"username"`
+		Password              string `json:"password"`
+		Nickname              string `json:"nickname"`
+		Phone                 string `json:"phone"`
+		SMSCode               string `json:"smsCode"`
+		CaptchaToken          string `json:"captchaToken"`
+		RegistrationFlowToken string `json:"registrationFlowToken"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		c.JSON(400, gin.H{
@@ -349,6 +350,66 @@ func UserRegister(c *gin.Context) {
 	phone, _, err := service.NormalizePhone(rawPhone)
 	if err != nil {
 		c.JSON(400, gin.H{"message": err.Error()})
+		return
+	}
+	registrationFlowToken := strings.TrimSpace(payload.RegistrationFlowToken)
+	if registrationFlowToken != "" {
+		hashedPassword, err := util.HashPassword(password)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "注册失败"})
+			return
+		}
+		now := time.Now()
+		user := entity.User{
+			Username:       username,
+			Password:       hashedPassword,
+			Nickname:       nickname,
+			Role:           "user",
+			Status:         "enabled",
+			Balance:        0,
+			RegisterSource: "public",
+			ParentID:       0,
+			Perms:          "",
+			Phone:          &phone,
+			PhoneBoundAt:   &now,
+			RegisterIP:     strings.TrimSpace(c.ClientIP()),
+		}
+		db := dao.User.UnderlyingDB()
+		err = wechatRegisterFlowStore.Consume(registrationFlowToken, time.Now(), func(wechatID string) error {
+			boundAt := time.Now()
+			user.WechatID = &wechatID
+			user.WechatBoundAt = &boundAt
+			return db.Transaction(func(tx *gorm.DB) error {
+				if err := service.ConsumeCaptchaTokenInTx(tx, strings.TrimSpace(payload.CaptchaToken), service.CaptchaSceneRegisterSubmit, strings.TrimSpace(c.ClientIP())); err != nil {
+					return err
+				}
+				if err := service.VerifySMSCodeInTx(tx, phone, service.SMSSceneRegister, smsCode); err != nil {
+					return err
+				}
+				bonusAmount, err := service.GetNewUserBonusAmountWithDB(tx)
+				if err != nil {
+					return err
+				}
+				return service.CreateUserWithNewUserBonusInTx(tx, &user, service.NewUserBonusOptions{
+					Enabled: true,
+					Amount:  bonusAmount,
+					Source:  service.RegistrationBonusSourcePublicRegister,
+				})
+			})
+		})
+		if err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, service.ErrWechatRegisterFlowInvalid) {
+				status = http.StatusUnauthorized
+			} else if errors.Is(err, service.ErrWechatRegisterFlowExpired) {
+				status = http.StatusGone
+			} else if isUserRegisterConflictError(err) {
+				status = http.StatusConflict
+			}
+			c.JSON(status, gin.H{"message": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, user)
 		return
 	}
 	if err := consumeCaptchaTokenWithDB(strings.TrimSpace(payload.CaptchaToken), service.CaptchaSceneRegisterSubmit, strings.TrimSpace(c.ClientIP())); err != nil {
@@ -406,6 +467,14 @@ func UserRegister(c *gin.Context) {
 		return
 	}
 	c.JSON(200, user)
+}
+
+func isUserRegisterConflictError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "unique") || strings.Contains(message, "duplicate") || strings.Contains(message, "constraint failed")
 }
 
 func SendPublicSMSCode(c *gin.Context) {

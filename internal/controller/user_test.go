@@ -2,8 +2,11 @@ package controller
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -30,12 +33,200 @@ func newUserControllerTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open test db: %v", err)
 	}
 
-	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.Log{}, &entity.BillingRecord{}); err != nil {
+	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.Log{}, &entity.BillingRecord{}, &entity.CaptchaToken{}, &entity.SMSVerificationCode{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 
 	dao.SetDefault(db)
 	return db
+}
+
+func registerTestSMSCodeHash(code string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(code)))
+	return hex.EncodeToString(sum[:])
+}
+
+func TestUserRegisterWithWechatFlowBindsWechatIDAtomically(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	if err := db.Create(&entity.SystemSetting{Key: service.RegisterEnabledSettingKey, Value: "true"}).Error; err != nil {
+		t.Fatalf("seed register setting: %v", err)
+	}
+	store := service.NewWechatRegisterFlowStore()
+	previousStore := wechatRegisterFlowStore
+	wechatRegisterFlowStore = store
+	defer func() { wechatRegisterFlowStore = previousStore }()
+	now := time.Now()
+	snapshot, err := store.CreateOrResume("", now)
+	if err != nil {
+		t.Fatalf("create flow: %v", err)
+	}
+	if err := store.Stage(snapshot.Token, "openid-register", now); err != nil {
+		t.Fatalf("stage wechat: %v", err)
+	}
+	if err := db.Create(&entity.CaptchaToken{
+		Token: "captcha-token", Scene: service.CaptchaSceneRegisterSubmit,
+		ChallengeID: "challenge", Status: service.CaptchaTokenStatusActive,
+		ExpiresAt: now.Add(time.Minute),
+	}).Error; err != nil {
+		t.Fatalf("seed captcha token: %v", err)
+	}
+	if err := db.Create(&entity.SMSVerificationCode{
+		Phone: "13800000000", Scene: service.SMSSceneRegister,
+		CodeHash: registerTestSMSCodeHash("123456"), Status: service.SMSCodeStatusPending,
+		ExpiresAt: now.Add(time.Minute),
+	}).Error; err != nil {
+		t.Fatalf("seed sms code: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewBufferString(fmt.Sprintf(`{"username":"wechat_user","password":"Abc12345!","nickname":"微信用户","phone":"13800000000","smsCode":"123456","captchaToken":"captcha-token","registrationFlowToken":%q}`, snapshot.Token)))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	UserRegister(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	stored, err := dao.User.Where(dao.User.Username.Eq("wechat_user")).First()
+	if err != nil {
+		t.Fatalf("load created user: %v", err)
+	}
+	if stored.WechatID == nil || *stored.WechatID != "openid-register" || stored.WechatBoundAt == nil {
+		t.Fatalf("expected wechat binding on created user, got id=%+v boundAt=%+v", stored.WechatID, stored.WechatBoundAt)
+	}
+	if _, err := store.Status(snapshot.Token, time.Now()); !errors.Is(err, service.ErrWechatRegisterFlowInvalid) {
+		t.Fatalf("expected flow to be consumed after commit, got %v", err)
+	}
+}
+
+func TestUserRegisterRejectsInvalidWechatFlowToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	if err := db.Create(&entity.SystemSetting{Key: service.RegisterEnabledSettingKey, Value: "true"}).Error; err != nil {
+		t.Fatalf("seed register setting: %v", err)
+	}
+	now := time.Now()
+	if err := db.Create(&entity.CaptchaToken{
+		Token: "captcha-token", Scene: service.CaptchaSceneRegisterSubmit,
+		ChallengeID: "challenge", Status: service.CaptchaTokenStatusActive,
+		ExpiresAt: now.Add(time.Minute),
+	}).Error; err != nil {
+		t.Fatalf("seed captcha token: %v", err)
+	}
+	if err := db.Create(&entity.SMSVerificationCode{
+		Phone: "13800000000", Scene: service.SMSSceneRegister,
+		CodeHash: registerTestSMSCodeHash("123456"), Status: service.SMSCodeStatusPending,
+		ExpiresAt: now.Add(time.Minute),
+	}).Error; err != nil {
+		t.Fatalf("seed sms code: %v", err)
+	}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewBufferString(`{"username":"invalid_flow_user","password":"Abc12345!","nickname":"无效流程","phone":"13800000000","smsCode":"123456","captchaToken":"captcha-token","registrationFlowToken":"invalid-flow"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	UserRegister(ctx)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401 for invalid flow, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	var count int64
+	if err := db.Model(&entity.User{}).Where("username = ?", "invalid_flow_user").Count(&count).Error; err != nil {
+		t.Fatalf("count invalid flow user: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected invalid flow request not to create user, got %d", count)
+	}
+}
+
+func TestUserRegisterWechatConflictRollsBackAndKeepsFlowRetryable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	if err := db.Create(&entity.SystemSetting{Key: service.RegisterEnabledSettingKey, Value: "true"}).Error; err != nil {
+		t.Fatalf("seed register setting: %v", err)
+	}
+	store := service.NewWechatRegisterFlowStore()
+	previousStore := wechatRegisterFlowStore
+	wechatRegisterFlowStore = store
+	defer func() { wechatRegisterFlowStore = previousStore }()
+	now := time.Now()
+	snapshot, err := store.CreateOrResume("", now)
+	if err != nil {
+		t.Fatalf("create flow: %v", err)
+	}
+	if err := store.Stage(snapshot.Token, "openid-conflict", now); err != nil {
+		t.Fatalf("stage wechat: %v", err)
+	}
+	if err := db.Create(&entity.User{
+		Username: "existing-wechat", Password: "Abc12345!", Role: "user", Status: "enabled",
+		RegisterSource: "public", WechatID: func() *string { value := "openid-conflict"; return &value }(),
+	}).Error; err != nil {
+		t.Fatalf("seed existing wechat user: %v", err)
+	}
+	if err := db.Create(&entity.CaptchaToken{
+		Token: "conflict-captcha", Scene: service.CaptchaSceneRegisterSubmit,
+		ChallengeID: "challenge", Status: service.CaptchaTokenStatusActive,
+		ExpiresAt: now.Add(time.Minute),
+	}).Error; err != nil {
+		t.Fatalf("seed captcha token: %v", err)
+	}
+	if err := db.Create(&entity.SMSVerificationCode{
+		Phone: "13800000000", Scene: service.SMSSceneRegister,
+		CodeHash: registerTestSMSCodeHash("123456"), Status: service.SMSCodeStatusPending,
+		ExpiresAt: now.Add(time.Minute),
+	}).Error; err != nil {
+		t.Fatalf("seed sms code: %v", err)
+	}
+
+	register := func(username string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		payload := fmt.Sprintf(`{"username":%q,"password":"Abc12345!","nickname":"冲突用户","phone":"13800000000","smsCode":"123456","captchaToken":"conflict-captcha","registrationFlowToken":%q}`, username, snapshot.Token)
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewBufferString(payload))
+		ctx.Request.Header.Set("Content-Type", "application/json")
+		UserRegister(ctx)
+		return recorder
+	}
+
+	first := register("conflict_user")
+	if first.Code != http.StatusConflict {
+		t.Fatalf("expected status 409 for duplicate wechat id, got %d with body %s", first.Code, first.Body.String())
+	}
+	var count int64
+	if err := db.Model(&entity.User{}).Where("username = ?", "conflict_user").Count(&count).Error; err != nil {
+		t.Fatalf("count rolled back user: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected duplicate wechat registration to roll back user, got %d", count)
+	}
+	var captcha entity.CaptchaToken
+	if err := db.Where("token = ?", "conflict-captcha").First(&captcha).Error; err != nil {
+		t.Fatalf("load captcha token: %v", err)
+	}
+	if captcha.Status != service.CaptchaTokenStatusActive {
+		t.Fatalf("expected captcha token rollback, got %s", captcha.Status)
+	}
+	var sms entity.SMSVerificationCode
+	if err := db.Where("phone = ?", "13800000000").First(&sms).Error; err != nil {
+		t.Fatalf("load sms code: %v", err)
+	}
+	if sms.Status != service.SMSCodeStatusPending {
+		t.Fatalf("expected sms code rollback, got %s", sms.Status)
+	}
+	if _, err := store.Status(snapshot.Token, time.Now()); err != nil {
+		t.Fatalf("expected failed flow to remain available, got %v", err)
+	}
+
+	if err := db.Where("username = ?", "existing-wechat").Delete(&entity.User{}).Error; err != nil {
+		t.Fatalf("remove conflicting user: %v", err)
+	}
+	second := register("retry_user")
+	if second.Code != http.StatusOK {
+		t.Fatalf("expected retry status 200, got %d with body %s", second.Code, second.Body.String())
+	}
+	if _, err := store.Status(snapshot.Token, time.Now()); !errors.Is(err, service.ErrWechatRegisterFlowInvalid) {
+		t.Fatalf("expected flow consumed after retry, got %v", err)
+	}
 }
 
 func TestUserLoginRejectsDisabledUser(t *testing.T) {
