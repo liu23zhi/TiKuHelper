@@ -22,6 +22,7 @@ import (
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 	"net/url"
+	"sync"
 )
 
 func newUserControllerTestDB(t *testing.T) *gorm.DB {
@@ -226,6 +227,77 @@ func TestUserRegisterWechatConflictRollsBackAndKeepsFlowRetryable(t *testing.T) 
 	}
 	if _, err := store.Status(snapshot.Token, time.Now()); !errors.Is(err, service.ErrWechatRegisterFlowInvalid) {
 		t.Fatalf("expected flow consumed after retry, got %v", err)
+	}
+}
+
+func TestUserRegisterSameWechatFlowConcurrentSubmitCreatesOnce(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	if err := db.Create(&entity.SystemSetting{Key: service.RegisterEnabledSettingKey, Value: "true"}).Error; err != nil {
+		t.Fatalf("seed register setting: %v", err)
+	}
+	store := service.NewWechatRegisterFlowStore()
+	previousStore := wechatRegisterFlowStore
+	wechatRegisterFlowStore = store
+	defer func() { wechatRegisterFlowStore = previousStore }()
+	now := time.Now()
+	snapshot, err := store.CreateOrResume("", now)
+	if err != nil {
+		t.Fatalf("create flow: %v", err)
+	}
+	if err := store.Stage(snapshot.Token, "openid-concurrent", now); err != nil {
+		t.Fatalf("stage wechat: %v", err)
+	}
+	if err := db.Create(&entity.CaptchaToken{
+		Token: "concurrent-captcha", Scene: service.CaptchaSceneRegisterSubmit,
+		ChallengeID: "challenge", Status: service.CaptchaTokenStatusActive,
+		ExpiresAt: now.Add(time.Minute),
+	}).Error; err != nil {
+		t.Fatalf("seed captcha token: %v", err)
+	}
+	if err := db.Create(&entity.SMSVerificationCode{
+		Phone: "13800000000", Scene: service.SMSSceneRegister,
+		CodeHash: registerTestSMSCodeHash("123456"), Status: service.SMSCodeStatusPending,
+		ExpiresAt: now.Add(time.Minute),
+	}).Error; err != nil {
+		t.Fatalf("seed sms code: %v", err)
+	}
+
+	type result struct {
+		status int
+		body   string
+	}
+	results := make(chan result, 2)
+	var wg sync.WaitGroup
+	for _, username := range []string{"parallel_one", "parallel_two"} {
+		username := username
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			payload := fmt.Sprintf(`{"username":%q,"password":"Abc12345!","nickname":"并发用户","phone":"13800000000","smsCode":"123456","captchaToken":"concurrent-captcha","registrationFlowToken":%q}`, username, snapshot.Token)
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewBufferString(payload))
+			ctx.Request.Header.Set("Content-Type", "application/json")
+			UserRegister(ctx)
+			results <- result{status: recorder.Code, body: recorder.Body.String()}
+		}()
+	}
+	wg.Wait()
+	close(results)
+	statusCounts := map[int]int{}
+	for item := range results {
+		statusCounts[item.status]++
+	}
+	if statusCounts[http.StatusOK] != 1 || len(statusCounts) != 2 {
+		t.Fatalf("expected one success and one consumed-flow rejection, got statuses=%v", statusCounts)
+	}
+	var count int64
+	if err := db.Model(&entity.User{}).Where("wechat_id = ?", "openid-concurrent").Count(&count).Error; err != nil {
+		t.Fatalf("count concurrent users: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected one user for one flow, got %d", count)
 	}
 }
 
