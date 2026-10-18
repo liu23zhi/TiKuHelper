@@ -65,12 +65,18 @@ export function createWechatRegisterFlowCoordinator({
 
   const onMessage = (event) => {
     const data = event?.data
-    if (disposed || !token || !data || data.type !== 'claim' || data.token !== token || data.tabId === tabId) return
+    if (disposed || !data || data.tabId === tabId) return
+    if (data.type === 'hello') {
+      if (token) channel?.postMessage?.({ type: 'claim', token, tabId })
+      return
+    }
+    if (!token || data.type !== 'claim' || data.token !== token) return
     if (String(data.tabId) < String(tabId)) clearDuplicate()
   }
 
   if (channel) {
     channel.addEventListener?.('message', onMessage)
+    channel.postMessage?.({ type: 'hello', tabId })
     if (token) channel.postMessage?.({ type: 'claim', token, tabId })
   }
 

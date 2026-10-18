@@ -98,6 +98,27 @@ test('duplicate tabs deterministically keep the lower tab id and clear the other
   coordinatorB.dispose()
 })
 
+test('a later tab receives a claim when the lower-id tab started first', () => {
+  const storageA = new MemoryStorage({ [REGISTRATION_FLOW_STORAGE_KEY]: 'flow-4' })
+  const storageB = new MemoryStorage({ [REGISTRATION_FLOW_STORAGE_KEY]: 'flow-4' })
+  const coordinatorA = createWechatRegisterFlowCoordinator({
+    storage: storageA,
+    channelFactory: (name) => new FakeChannel(name),
+    tabId: 'tab-a',
+  })
+  const coordinatorB = createWechatRegisterFlowCoordinator({
+    storage: storageB,
+    channelFactory: (name) => new FakeChannel(name),
+    tabId: 'tab-b',
+  })
+
+  assert.equal(coordinatorA.token, 'flow-4')
+  assert.equal(coordinatorB.token, '')
+  assert.equal(loadWechatRegisterFlowToken(storageB), '')
+  coordinatorA.dispose()
+  coordinatorB.dispose()
+})
+
 test('registration payload includes a token only for a staged flow', () => {
   const payload = { username: 'user', password: 'secret' }
   assert.deepEqual(appendWechatRegisterFlowToken(payload, ''), payload)
