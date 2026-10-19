@@ -249,12 +249,14 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 		var status int
 		var callErr error
 		attempts := in.aiSearchRetryAttempts()
+		attempted := 0
 		for retry := 0; retry < attempts; retry++ {
 			if retry > 0 && !sleepAISearchRetryBackoff(retry, time.Since(roundStartedAt)) {
 				break
 			}
 			in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Attempt: retry + 1, AttemptBudget: attempts, Stage: "模型调用开始", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, RequestBody: string(encoded)})
 			attemptStartedAt := time.Now()
+			attempted++
 			result, status, callErr = in.requestAIToolRound(ctx, endpoint, encoded)
 			responseTrace := AISearchTrace{Round: round + 1, Attempt: retry + 1, AttemptBudget: attempts, Stage: "模型响应", Endpoint: endpoint, Model: in.Model, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, Status: fmt.Sprintf("%d", status), DurationMs: time.Since(attemptStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, ReasoningChars: result.ReasoningChars, ContentPreview: result.Content, FullResponse: formatAIModelCompleteResponse(result), RawResponse: result.Raw, Error: errorString(callErr)}
 			if call, ok := buildAIModelCallUsage(result.Usage, in.Model, round+1, retry+1); ok {
@@ -294,7 +296,7 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 			// Keep the detailed, redacted upstream error for the private audit
 			// snapshot. Controllers still map the public response to a generic
 			// failure, while operators can see the failed round and retry budget.
-			return nil, debug, fmt.Errorf("AI联网搜题第%d轮失败（已尝试%d次）: %w", round+1, attempts, callErr)
+			return nil, debug, fmt.Errorf("AI联网搜题第%d轮失败（已尝试%d次）: %w", round+1, attempted, callErr)
 		}
 		if len(result.Calls) == 0 {
 			if !hasModelResponse && !finalRound {

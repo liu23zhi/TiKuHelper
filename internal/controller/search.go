@@ -20,6 +20,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/search"
 	"github.com/itihey/tikuAdapter/internal/service"
+	pkgerrors "github.com/itihey/tikuAdapter/pkg/errors"
 	"github.com/itihey/tikuAdapter/pkg/global"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/model"
@@ -50,6 +51,7 @@ type searchUnauthorizedRequestSnapshot struct {
 
 type searchUnauthorizedResponse struct {
 	ErrCode int                               `json:"errCode"`
+	Code    string                            `json:"code,omitempty"`
 	Message string                            `json:"message"`
 	Detail  string                            `json:"detail"`
 	Request searchUnauthorizedRequestSnapshot `json:"request"`
@@ -450,6 +452,9 @@ func Search(c *gin.Context) {
 	audit := buildSearchAuditMetadata(c, resolved, query, rawBody, useQuery, result, usedLocalSearch, aiEnabled, auditHitProvider, req, resp)
 	audit.AISearchTrace = append([]search.AISearchTrace(nil), aiUsage.Trace...)
 	status, failures := failureCollector.snapshot(len(result) > 0, resolved.SearchMode == searchModeAI && !aiEnabled)
+	if status == "failed" {
+		resp.Error = &model.SearchError{Code: "UPSTREAM_ERROR", Message: pkgerrors.PublicSearchFailureMessage}
+	}
 	audit = addSearchFailuresToAudit(audit, status, failures, resp)
 	if len(failures) > 0 {
 		logger.SysError(fmt.Sprintf("%s requestId=%s userId=%d type=%d question=%s %s", searchAuditSummary(status), resolved.RequestID, resolved.UserID, req.Type, truncateForDebug(req.Question, 120), searchFailureSummary(failures)))
@@ -737,8 +742,13 @@ func buildSearchUnauthorizedResponse(c *gin.Context, err error, rawBody string) 
 		}
 	}
 
+	code := ""
+	if errors.Is(err, service.ErrInsufficientSearchBalance) {
+		code = string(service.AIFallbackErrorCodeInsufficientBalance)
+	}
 	return searchUnauthorizedResponse{
 		ErrCode: http.StatusUnauthorized,
+		Code:    code,
 		Message: "访问令牌鉴权失败",
 		Detail:  extractUnauthorizedDetail(err),
 		Request: searchUnauthorizedRequestSnapshot{
@@ -1726,7 +1736,7 @@ func resolveSearchRequestContextWithDB(db *gorm.DB, authorization string, client
 		resolved.AccessTokenID = authCtx.AccessToken.ID
 		if authCtx.User.Balance <= 0 {
 			if authCtx.User.Balance >= 0 || !hasExplicitSearchProviderOverride(query) {
-				return resolved, fmt.Errorf("%w: 当前余额不足，系统题库已禁用，请充值后再使用", service.ErrInvalidAccessTokenAuthorization)
+				return resolved, fmt.Errorf("%w: %w", service.ErrInvalidAccessTokenAuthorization, service.ErrInsufficientSearchBalance)
 			}
 		} else {
 			allowDefaultAccount = true

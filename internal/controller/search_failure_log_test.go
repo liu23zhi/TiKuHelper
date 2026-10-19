@@ -88,6 +88,17 @@ func TestSearchAuditPreservesFailureDetailsAndDistinguishesNoAnswer(t *testing.T
 					if _, ok := publicResp["failures"]; ok {
 						t.Fatal("internal failure audit leaked into public response")
 					}
+					if tc.status == "failed" {
+						failure, ok := publicResp["error"].(map[string]any)
+						if !ok || failure["code"] != "UPSTREAM_ERROR" || failure["message"] != "服务器内部错误，搜题失败。" {
+							t.Fatalf("expected generic public error alongside the legacy answer shape: %s", recorder.Body.String())
+						}
+						if strings.Contains(recorder.Body.String(), tc.err.Error()) {
+							t.Fatal("upstream details leaked into public search failure")
+						}
+					} else if _, exists := publicResp["error"]; exists {
+						t.Fatalf("non-failure response must retain its existing shape: %s", recorder.Body.String())
+					}
 					var response model.SearchResponse
 					if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 						t.Fatal(err)

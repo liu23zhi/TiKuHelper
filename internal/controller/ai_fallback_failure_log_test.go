@@ -42,7 +42,7 @@ func TestAIFallbackWritesPrivateFailureDetailToAudit(t *testing.T) {
 	t.Cleanup(func() { runAIFallbackService = original })
 	detail := strings.Repeat("真实HTTP 503错误，", 50)
 	runAIFallbackService = func(model.SearchRequest) service.AIFallbackResult {
-		return service.AIFallbackResult{Error: &service.AIFallbackError{Code: service.AIFallbackErrorCodeUpstreamError, Message: "AI 上游请求失败"}, FailureDetail: detail}
+		return service.AIFallbackResult{Error: &service.AIFallbackError{Code: service.AIFallbackErrorCodeUpstreamError, Message: detail}, FailureDetail: detail}
 	}
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -52,6 +52,13 @@ func TestAIFallbackWritesPrivateFailureDetailToAudit(t *testing.T) {
 	AIFallback(ctx)
 	if strings.Contains(recorder.Body.String(), "真实HTTP") {
 		t.Fatal("upstream details leaked into public API")
+	}
+	var publicResult service.AIFallbackResult
+	if err := json.Unmarshal(recorder.Body.Bytes(), &publicResult); err != nil {
+		t.Fatal(err)
+	}
+	if publicResult.Error == nil || publicResult.Error.Message != "服务器内部错误，搜题失败。" {
+		t.Fatalf("expected generic public failure, got %s", recorder.Body.String())
 	}
 	var entry entity.Log
 	if err := db.Where("module = ?", aiFallbackAuditModule).First(&entry).Error; err != nil {

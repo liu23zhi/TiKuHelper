@@ -153,6 +153,9 @@ func buildAIFallbackErrorResultWithUsage(code AIFallbackErrorCode, message strin
 }
 
 func buildAIFallbackErrorResult(code AIFallbackErrorCode, message string) AIFallbackResult {
+	if code == AIFallbackErrorCodeUpstreamError {
+		message = pkgerrors.PublicSearchFailureMessage
+	}
 	return AIFallbackResult{
 		Success: false,
 		Error: &AIFallbackError{
@@ -160,6 +163,18 @@ func buildAIFallbackErrorResult(code AIFallbackErrorCode, message string) AIFall
 			Message: strings.TrimSpace(message),
 		},
 	}
+}
+
+// PublicAIFallbackError copies the error so response sanitization never mutates audits.
+func PublicAIFallbackError(failure *AIFallbackError) *AIFallbackError {
+	if failure == nil {
+		return nil
+	}
+	public := *failure
+	if public.Code == AIFallbackErrorCodeUpstreamError {
+		public.Message = pkgerrors.PublicSearchFailureMessage
+	}
+	return &public
 }
 
 func collectUsableAIFallbackAnswers(answerGroups [][]string) ([]string, AIFallbackErrorCode) {

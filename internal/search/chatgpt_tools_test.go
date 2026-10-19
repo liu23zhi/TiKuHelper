@@ -519,6 +519,29 @@ func TestAISearchToolsExhaustedRoundPreservesPrivateAuditError(t *testing.T) {
 	}
 }
 
+func TestAISearchToolsBadRequestStopsAfterOneAttemptAndReportsActualCount(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, `{"error":{"message":"model requires Responses; account only supports Chat Completions"}}`, http.StatusBadRequest)
+	}))
+	defer server.Close()
+	client := &ChatGptClient{
+		Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test",
+		SearchTool: &testAISearchTool{}, MaxAISearchModelCalls: 3, MaxAISearchRetries: 3,
+	}
+	_, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?", DeepThinking: true})
+	if calls != 1 || !errors.Is(err, pkgerrors.ErrTargetServerError) {
+		t.Fatalf("malformed requests must not retry: calls=%d error=%v", calls, err)
+	}
+	if !strings.Contains(err.Error(), "上游服务器异常") || strings.Contains(err.Error(), "对方服务器异常") || !strings.Contains(err.Error(), "已尝试1次") {
+		t.Fatalf("private diagnostics must use upstream wording and actual attempts: %v", err)
+	}
+	if !strings.Contains(err.Error(), "account only supports Chat Completions") {
+		t.Fatalf("private diagnostics lost the upstream cause: %v", err)
+	}
+}
+
 func TestAISearchToolsBoundsOriginalTaskBeforeModelCall(t *testing.T) {
 	tool := &testAISearchTool{}
 	var requestBytes int

@@ -41,7 +41,7 @@ func AIFallback(c *gin.Context) {
 	if err := c.ShouldBindJSON(&input); err != nil {
 		result := service.BuildAIFallbackInvalidInputResult("参数错误")
 		writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), uuid.NewString(), "", "input", "sync", model.SearchRequest{}, result)
-		c.JSON(http.StatusOK, result)
+		writeAIFallbackResult(c, result)
 		return
 	}
 
@@ -51,7 +51,7 @@ func AIFallback(c *gin.Context) {
 			Type:    input.Type,
 			Options: input.Options,
 		}, result)
-		c.JSON(http.StatusOK, result)
+		writeAIFallbackResult(c, result)
 		return
 	}
 	clearAIResponseWriteDeadline(c)
@@ -63,7 +63,7 @@ func AIFallback(c *gin.Context) {
 			Type:     input.Type,
 			Options:  input.Options,
 		}, result)
-		c.JSON(http.StatusOK, result)
+		writeAIFallbackResult(c, result)
 		return
 	}
 
@@ -83,7 +83,7 @@ func AIFallback(c *gin.Context) {
 		if cached, ok := loadCachedAIFallbackResult(billingCtx.UserID, req); ok {
 			logger.SysLog(fmt.Sprintf("AI 兜底缓存命中 requestId=%s", requestID))
 			writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), requestID, "", "result", "sync", req, cached)
-			c.JSON(http.StatusOK, cached)
+			writeAIFallbackResult(c, cached)
 			return
 		}
 	}
@@ -102,7 +102,7 @@ func AIFallback(c *gin.Context) {
 		if billingErr != nil {
 			failure := buildAIFallbackBillingFailureResult(billingErr)
 			writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), requestID, "", "billing", "sync", req, failure)
-			c.JSON(http.StatusOK, failure)
+			writeAIFallbackResult(c, failure)
 			return
 		}
 		result = billedResult
@@ -110,14 +110,14 @@ func AIFallback(c *gin.Context) {
 			result.Warnings = append(result.Warnings, warning)
 		}
 		writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), requestID, "", "result", "sync", req, result)
-		c.JSON(http.StatusOK, result)
+		writeAIFallbackResult(c, result)
 		return
 	}
 	warning, billedResult, err := persistAIFallbackBillingWithWarning(billingCtx, requestID, req, result)
 	if err != nil {
 		failure := buildAIFallbackBillingFailureResult(err)
 		writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), requestID, "", "billing", "sync", req, failure)
-		c.JSON(http.StatusOK, failure)
+		writeAIFallbackResult(c, failure)
 		return
 	}
 	result = billedResult
@@ -126,6 +126,11 @@ func AIFallback(c *gin.Context) {
 	}
 	storeCachedAIFallbackResult(billingCtx.UserID, req, result)
 	writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), requestID, "", "result", "sync", req, result)
+	writeAIFallbackResult(c, result)
+}
+
+func writeAIFallbackResult(c *gin.Context, result service.AIFallbackResult) {
+	result.Error = service.PublicAIFallbackError(result.Error)
 	c.JSON(http.StatusOK, result)
 }
 

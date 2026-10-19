@@ -2338,6 +2338,13 @@ func TestSearchRejectsNegativeBalanceUserWithoutExplicitProviderParams(t *testin
 	if got.Detail != "当前余额不足，系统题库已禁用，请充值后再使用" {
 		t.Fatalf("expected negative-balance unauthorized detail to mention balance, got %q", got.Detail)
 	}
+	var publicFields map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &publicFields); err != nil {
+		t.Fatal(err)
+	}
+	if publicFields["code"] != "INSUFFICIENT_BALANCE" || publicFields["errCode"] != float64(401) || publicFields["message"] != "访问令牌鉴权失败" {
+		t.Fatalf("balance rejection must add a stable code and preserve legacy fields: %s", recorder.Body.String())
+	}
 }
 
 // 回归：余额不足这类「客户端可自行修复」的 401 只能写 warning，不能写 error。

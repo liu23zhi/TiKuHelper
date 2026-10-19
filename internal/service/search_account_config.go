@@ -12,6 +12,7 @@ import (
 
 var ErrUnsupportedSearchAccountProvider = errors.New("不支持的题库 provider")
 var ErrInvalidAccessTokenAuthorization = errors.New("无效的访问令牌")
+var ErrInsufficientSearchBalance = errors.New("当前余额不足，系统题库已禁用，请充值后再使用")
 
 const aiSearchAccountProvider = "ai"
 

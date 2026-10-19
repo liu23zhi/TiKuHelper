@@ -335,7 +335,7 @@ func buildAIFallbackTaskResponse(task aiFallbackTask) aiFallbackTaskResponse {
 	}
 	if task.Status != aiFallbackTaskStatusRunning {
 		response.Result = task.Result.Result
-		response.Error = task.Result.Error
+		response.Error = service.PublicAIFallbackError(task.Result.Error)
 		response.Warnings = task.Result.Warnings
 	}
 	return response

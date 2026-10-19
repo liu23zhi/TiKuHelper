@@ -435,6 +435,9 @@ func TestSearchAIFallbackWithDBReturnsUpstreamErrorWhenAISearchFails(t *testing.
 	if result.Error == nil || result.Error.Code != AIFallbackErrorCodeUpstreamError {
 		t.Fatalf("expected UPSTREAM_ERROR, got %+v", result.Error)
 	}
+	if result.Error.Message != "服务器内部错误，搜题失败。" {
+		t.Fatalf("expected generic public failure, got %q", result.Error.Message)
+	}
 	if !strings.Contains(result.FailureDetail, "upstream timeout") || strings.Contains(result.FailureDetail, "sk-test") {
 		t.Fatalf("expected preserved and redacted failure detail, got %q", result.FailureDetail)
 	}
