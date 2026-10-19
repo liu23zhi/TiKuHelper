@@ -15,8 +15,8 @@ test('billing pages render the search mode column', async () => {
   for (const [label, pagePath] of Object.entries(pages)) {
     const content = await readFile(pagePath, 'utf8');
     assert.match(content, /title: '模式'/, `${label} 缺少模式列`);
-    assert.match(content, /customRender: 'searchMode'/, `${label} 的模式列没有渲染插槽`);
-    assert.match(content, /<template #searchMode="\{ record \}">/, `${label} 缺少模式列模板`);
+    assert.match(content, /customRender: 'searchMode'|customRender: \(\{ record \}\) => buildBillingRecordModeText\(record\)/, `${label} 的模式列没有渲染逻辑`);
+    assert.match(content, /<template #searchMode="\{ record \}">|customRender: \(\{ record \}\) => buildBillingRecordModeText\(record\)/, `${label} 缺少模式列模板`);
     assert.match(content, /buildBillingRecordModeText\(record\)/, `${label} 没有用共享的模式映射函数`);
     assert.match(content, /buildBillingRecordModeText,/, `${label} 没有暴露 buildBillingRecordModeText`);
   }

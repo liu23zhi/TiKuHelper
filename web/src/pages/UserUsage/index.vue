@@ -364,14 +364,11 @@ export default defineComponent({
           },
         },
         {
-          // 深度思考 / 普通搜索：非搜题账单与加列之前的历史行显示占位符。
           title: '模式',
           dataIndex: 'searchMode',
           key: 'searchMode',
           width: 120,
-          slots: {
-            customRender: 'searchMode',
-          },
+          customRender: ({ record }) => buildBillingRecordModeText(record),
         },
         {
           title: '请求编号',

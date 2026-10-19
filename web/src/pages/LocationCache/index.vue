@@ -396,7 +396,7 @@ export default defineComponent({
       detailVisible.value = false
       load()
     }, { immediate: true })
-    return { rows, loading, configured, errorMessage, keywordInput, pagination, columns, formatDate, formatRawResponse, reload, resetFilters, load, onTableChange, remove, refresh, refreshing, removing, recordIdentity, sourceLabel, isRefreshDisabled, detailVisible, detailRecord, showDetails, kindLabel, pageTitle, summary, selectedCount, selectedRowKeys, allRowsSelected, allCurrentPageSelected, hasCurrentPageSelection, selectionSummary, rowSelection, handleSelectCurrentPage, handleClearCurrentPage, handleSelectAll, handleClearSelection, batchDeleting, deleteSelected, allDeleting, deleteAll, manualVisible, manualSubmitting, manualKey, manualSource, manualLookup }
+    return { rows, loading, configured, errorMessage, keywordInput, pagination, columns, formatDate, formatRawResponse, reload, resetFilters, load, onTableChange, remove, refresh, refreshing, removing, recordIdentity, sourceLabel, isRefreshDisabled, detailVisible, detailRecord, showDetails, kind, kindLabel, pageTitle, summary, selectedCount, selectedRowKeys, allRowsSelected, allCurrentPageSelected, hasCurrentPageSelection, selectionSummary, rowSelection, handleSelectCurrentPage, handleClearCurrentPage, handleSelectAll, handleClearSelection, batchDeleting, deleteSelected, allDeleting, deleteAll, manualVisible, manualSubmitting, manualKey, manualSource, manualLookup }
   },
 })
 </script>
