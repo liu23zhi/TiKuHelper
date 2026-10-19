@@ -1,5 +1,12 @@
 <template>
   <div class="user-usage-page">
+    <div class="page-heading">
+      <div>
+        <h1 class="page-title">账户使用</h1>
+        <p class="page-subtitle">管理账户余额，并查看个人消费与充值流水。</p>
+      </div>
+    </div>
+
     <a-row :gutter="16" class="summary-row">
       <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
@@ -24,14 +31,10 @@
     </a-row>
 
     <a-card :bordered="false" class="page-card recharge-card">
-      <template #title>
-        <div class="page-title-wrap">
-          <div>
-            <div class="page-title">账户余额与充值</div>
-            <div class="page-subtitle">当前余额与用户管理保持一致，可直接发起充值补充额度。</div>
-          </div>
-        </div>
-      </template>
+      <div class="section-heading">
+        <h2 class="page-title">账户余额与充值</h2>
+        <p class="page-subtitle">选择金额和支付方式，创建充值订单。</p>
+      </div>
       <template #extra>
         <a-button @click="handleRefreshAll" :loading="pageRefreshing">刷新</a-button>
       </template>
@@ -41,7 +44,7 @@
           <div class="balance-panel">
             <div class="balance-label">当前账户余额</div>
             <div class="balance-value">¥ {{ formatMoneyValue(currentUserBalance) }}</div>
-            <div class="balance-meta">点击右上角刷新可同步最新余额</div>
+            <div class="balance-meta">账户状态以最新余额为准</div>
           </div>
         </a-col>
         <a-col :xs="24" :lg="14">
@@ -83,6 +86,7 @@
                   type="button"
                   class="payment-method-card"
                   :class="{ 'payment-method-card--selected': selectedPaymentMethodId === method.id }"
+                  :aria-pressed="selectedPaymentMethodId === method.id"
                   @click="selectPaymentMethod(method.id)"
                 >
                   <span class="payment-method-icon" v-html="method.iconSvg || fallbackPaymentIcon(method.name)"></span>
@@ -114,14 +118,10 @@
     </a-card>
 
     <a-card :bordered="false" class="page-card">
-      <template #title>
-        <div class="page-title-wrap">
-          <div>
-            <div class="page-title">账单流水</div>
-            <div class="page-subtitle">展示题目消费与充值入账，便于快速回看最近的金额变动、来源渠道与请求编号。</div>
-          </div>
-        </div>
-      </template>
+      <div class="section-heading">
+        <h2 class="page-title">账单流水</h2>
+        <p class="page-subtitle">查看题目消费与充值入账的金额变动、来源渠道和请求编号。</p>
+      </div>
 
       <a-table
         bordered
@@ -556,6 +556,8 @@ export default defineComponent({
 
 <style scoped>
 .user-usage-page {
+  width: 100%;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -566,23 +568,61 @@ export default defineComponent({
 }
 
 .summary-card {
-  border-radius: 18px;
+  border: 1px solid var(--console-border, #e5e7eb);
+  border-radius: var(--console-radius, 12px);
+  box-shadow: 0 2px 8px rgb(15 23 42 / 2%);
 }
 
 .page-card {
-  border-radius: 20px;
+  min-width: 0;
+  border: 1px solid var(--console-border, #e5e7eb);
+  border-radius: var(--console-radius, 12px);
+  box-shadow: 0 2px 8px rgb(15 23 42 / 2%);
+}
+
+.summary-card :deep(.ant-card-body) {
+  min-height: 104px;
+  display: flex;
+  align-items: center;
+  padding: 16px;
+}
+
+.summary-card :deep(.ant-statistic) {
+  min-width: 0;
+}
+
+.summary-card :deep(.ant-statistic-content) {
+  overflow-wrap: anywhere;
+}
+
+.page-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  min-width: 0;
+}
+
+.page-heading > div {
+  min-width: 0;
+}
+
+.section-heading {
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--console-border, #e5e7eb);
+}
+
+.section-heading .page-subtitle {
+  margin-bottom: 0;
 }
 
 .recharge-card {
   margin-bottom: 0;
 }
 
-.page-title-wrap {
-  display: flex;
-  align-items: center;
-}
-
 .page-title {
+  margin: 0;
   font-size: 22px;
   font-weight: 700;
   color: #1f2937;
@@ -604,10 +644,11 @@ export default defineComponent({
 
 .balance-panel {
   min-height: 100%;
-  padding: 24px;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  background: #f8fafc;
+  padding: 22px;
+  border: 1px solid var(--console-border, #e5e7eb);
+  border-top: 3px solid var(--console-primary, #2563eb);
+  border-radius: var(--console-radius, 12px);
+  background: #f7f9fc;
 }
 
 .balance-label {
@@ -640,8 +681,8 @@ export default defineComponent({
 }
 
 .recharge-quick-amount {
-  height: 42px;
-  border-radius: 12px;
+  height: 38px;
+  border-radius: 8px;
 }
 
 .recharge-actions {
@@ -661,7 +702,7 @@ export default defineComponent({
   align-items: center;
   gap: 12px;
   padding: 12px;
-  border: 1px solid #d9e2f2;
+  border: 1px solid var(--console-border, #e5e7eb);
   border-radius: 8px;
   background: #fff;
   cursor: pointer;
@@ -670,8 +711,14 @@ export default defineComponent({
 }
 
 .payment-method-card--selected {
-  border-color: #1677ff;
-  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.12);
+  border-color: var(--console-primary, #2563eb);
+  background: #f5f8ff;
+  box-shadow: 0 0 0 2px rgb(37 99 235 / 10%);
+}
+
+.payment-method-card:focus-visible {
+  outline: 2px solid var(--console-primary, #2563eb);
+  outline-offset: 2px;
 }
 
 .payment-method-icon {
@@ -693,7 +740,7 @@ export default defineComponent({
 }
 
 .payment-method-icon--placeholder {
-  color: #195ca3;
+  color: var(--console-primary, #2563eb);
   font-weight: 700;
 }
 
@@ -784,17 +831,40 @@ export default defineComponent({
 }
 
 @media (max-width: 640px) {
-  .summary-card,
-  .page-card {
-    border-radius: 8px;
-  }
-
   .recharge-quick-amounts {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .balance-value {
     font-size: 30px;
+  }
+}
+
+@media (max-width: 768px) {
+  .page-heading {
+    align-items: flex-start;
+  }
+
+  .page-title {
+    font-size: 20px;
+  }
+}
+
+@media (max-width: 480px) {
+  .page-heading {
+    gap: 10px;
+  }
+
+  .recharge-summary-row {
+    margin-bottom: 4px;
+  }
+
+  .payment-method-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .recharge-actions > .ant-btn {
+    width: 100%;
   }
 }
 </style>

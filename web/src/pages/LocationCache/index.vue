@@ -1,16 +1,19 @@
 <template>
-  <div class="location-page">
-    <a-card :bordered="false">
-      <template #title>{{ pageTitle }}</template>
-      <template #extra>
-        <a-space>
+  <div class="console-page location-page">
+    <header class="section-heading page-heading">
+      <div>
+        <h1>{{ pageTitle }}</h1>
+        <p class="page-lead">查看、补全和维护已保存的归属地信息。</p>
+      </div>
+        <a-space wrap class="section-actions">
           <a-button @click="manualVisible = true">手动添加</a-button>
           <a-popconfirm title="删除当前类型的全部归属地缓存？" ok-text="全部删除" cancel-text="取消" @confirm="deleteAll">
             <a-button danger :loading="allDeleting">全部删除</a-button>
           </a-popconfirm>
           <a-button :loading="loading" @click="load"><template #icon><ReloadOutlined /></template>刷新列表</a-button>
         </a-space>
-      </template>
+    </header>
+    <section class="console-panel">
       <a-form layout="inline" class="filter-form" @finish="reload">
         <a-form-item label="关键词">
           <a-input-search v-model:value="keywordInput" allow-clear placeholder="查询值 / 归属地" class="keyword-input" @search="reload" />
@@ -25,8 +28,8 @@
         <a-col :xs="12" :sm="6"><a-statistic title="待补全" :value="summary.withoutAddress" suffix="条" /></a-col>
         <a-col :xs="12" :sm="6"><a-statistic title="当前选择" :value="selectedCount" suffix="条" /></a-col>
       </a-row>
-    </a-card>
-    <a-card :bordered="false" class="table-card">
+    </section>
+    <section class="console-panel table-card">
       <a-alert v-if="pagination.total" type="info" show-icon class="selection-alert">
         <template #message>
           <div class="selection-alert-content">
@@ -51,7 +54,7 @@
           </a-space>
         </template>
       </a-table>
-    </a-card>
+    </section>
     <a-modal v-model:visible="detailVisible" :title="`${kindLabel}归属地详情`" :footer="null" width="760px">
       <a-descriptions :column="1" size="small" bordered>
         <a-descriptions-item :label="kindLabel">{{ detailRecord.lookupKey || '-' }}</a-descriptions-item>
@@ -402,15 +405,20 @@ export default defineComponent({
 </script>
 
 <style scoped>
-.location-page { display: flex; flex-direction: column; gap: 16px; }
+.location-page { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.page-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.page-heading h1 { margin: 0; color: var(--console-text, #1f2937); font-size: 20px; font-weight: 650; }
+.page-lead { margin: 4px 0 0; color: var(--console-muted, #64748b); font-size: 13px; }
+.console-panel { min-width: 0; padding: 16px; border: 1px solid var(--console-border, #e5e7eb); border-radius: var(--console-radius, 12px); background: var(--console-surface, #fff); }
 .filter-form { gap: 12px; }
 .keyword-input { width: 260px; max-width: 100%; }
 .status-alert { margin-top: 16px; }
-.summary-row { margin-top: 18px; }
+.summary-row { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--console-border, #e5e7eb); }
 .selection-alert { margin-bottom: 16px; }
 .selection-alert-content { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
 .table-card { min-height: 420px; }
+.location-page :deep(.ant-table) { font-size: 13px; }
 .response-title { margin: 20px 0 8px; font-size: 14px; }
 .raw-response { max-height: 420px; padding: 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #f5f7f8; border: 1px solid #e5e7eb; border-radius: 4px; }
-@media (max-width: 600px) { .keyword-input { width: 100%; } .filter-form :deep(.ant-form-item) { width: 100%; margin-right: 0; } }
+@media (max-width: 600px) { .console-panel { padding: 12px; } .keyword-input { width: 100%; } .filter-form :deep(.ant-form-item) { width: 100%; margin-right: 0; } .section-actions { width: 100%; } }
 </style>

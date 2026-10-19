@@ -1,6 +1,13 @@
 <template>
-  <div class="log-page">
-    <a-card :bordered="false" class="filter-card">
+  <div class="console-page log-page">
+    <header class="section-heading page-heading">
+      <div>
+        <h1>操作日志</h1>
+        <p class="page-lead">按关键词、模块和操作类型查看操作记录。</p>
+      </div>
+      <a-button type="primary" @click="handleLogList">刷新</a-button>
+    </header>
+    <section class="console-panel filter-panel">
       <a-form layout="inline" class="filter-form">
         <a-form-item label="关键词">
           <a-input-search
@@ -34,7 +41,6 @@
         </a-form-item>
         <a-form-item>
           <a-space>
-            <a-button type="primary" @click="handleLogList">刷新</a-button>
             <a-button @click="resetFilters">重置筛选</a-button>
             <a-tag v-if="activeFilterCount > 0" color="blue">已启用 {{ activeFilterCount }} 个筛选条件</a-tag>
           </a-space>
@@ -46,9 +52,9 @@
         class="page-alert"
         :message="isAdmin ? '当前显示全站审计日志，可按关键词（说明 / 用户名 / 客户端 IP）、模块与操作类型筛选。搜题日志会拆分展示请求接口、请求参数、请求 ID、命中渠道及错误原因、计费渠道以及原始请求 / 响应快照。' : '当前仅显示你自己的操作日志，可按关键词（说明 / 用户名 / 客户端 IP）、模块与操作类型筛选。搜题日志会拆分展示请求接口、请求参数、请求 ID、命中渠道及错误原因、计费渠道以及原始请求 / 响应快照。'"
       />
-    </a-card>
+    </section>
 
-    <a-card :bordered="false" class="table-card">
+    <section class="console-panel table-card">
       <a-table
         bordered
         :data-source="dataSource"
@@ -154,7 +160,7 @@
           {{ formatDate(text || record.createTime) }}
         </template>
       </a-table>
-    </a-card>
+    </section>
   </div>
 </template>
 
@@ -521,22 +527,74 @@ export default defineComponent({
   display: flex;
   flex-direction: column;
   gap: 16px;
+  min-width: 0;
 }
 
-.filter-card,
-.table-card {
-  border-radius: 20px;
+.page-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.page-heading h1 {
+  margin: 0;
+  color: var(--console-text, #1f2937);
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.page-lead {
+  margin: 4px 0 0;
+  color: var(--console-muted, #64748b);
+  font-size: 13px;
+}
+
+.console-panel {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--console-border, #e5e7eb);
+  border-radius: var(--console-radius, 12px);
+  background: var(--console-surface, #fff);
 }
 
 .filter-form {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 0;
-  margin-bottom: 12px;
+  gap: 8px 16px;
+}
+
+.filter-form :deep(.ant-form-item) {
+  margin: 0;
+}
+
+.filter-form :deep(.ant-input),
+.filter-form :deep(.ant-select) {
+  max-width: 100%;
 }
 
 .page-alert {
   margin-top: 4px;
+}
+
+.table-card {
+  overflow: hidden;
+}
+
+.log-page :deep(.ant-table) {
+  font-size: 13px;
+}
+
+@media (max-width: 640px) {
+  .console-panel {
+    padding: 12px;
+  }
+
+  .filter-form,
+  .filter-form :deep(.ant-form-item) {
+    width: 100%;
+  }
 }
 
 .log-channel-cell {

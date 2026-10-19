@@ -1,5 +1,12 @@
 <template>
-  <div class="billing-page">
+  <div class="console-page billing-page">
+    <header class="section-heading page-heading">
+      <div>
+        <h1>{{ pageTitle }}</h1>
+        <p class="page-lead">{{ pageSubtitle }}</p>
+      </div>
+      <a-button @click="handleLoad" :loading="tableLoading">刷新</a-button>
+    </header>
     <a-row :gutter="16" class="summary-row">
       <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
@@ -36,18 +43,6 @@
     </a-row>
 
     <a-card :bordered="false" class="page-card">
-      <template #title>
-        <div class="page-title-wrap">
-          <div>
-            <div class="page-title">{{ pageTitle }}</div>
-            <div class="page-subtitle">{{ pageSubtitle }}</div>
-          </div>
-        </div>
-      </template>
-      <template #extra>
-        <a-button @click="handleLoad" :loading="tableLoading">刷新</a-button>
-      </template>
-
       <a-alert
         type="info"
         show-icon
@@ -501,6 +496,27 @@ export default defineComponent({
   gap: 16px;
 }
 
+.page-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.page-heading h1 {
+  margin: 0;
+  color: var(--console-text, #1f2937);
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.page-lead {
+  margin: 4px 0 0;
+  color: var(--console-muted, #64748b);
+  font-size: 13px;
+}
+
 .summary-hint {
   margin-top: 4px;
   font-size: 12px;
@@ -519,32 +535,41 @@ export default defineComponent({
 }
 
 .summary-card {
-  border-radius: 18px;
+  border: 1px solid var(--console-border, #e5e7eb);
+  border-radius: 8px;
 }
 
 .page-card {
-  border-radius: 20px;
-}
-
-.page-title-wrap {
-  display: flex;
-  align-items: center;
-}
-
-.page-title {
-  font-size: 22px;
-  font-weight: 700;
-  color: #1f2937;
-}
-
-.page-subtitle {
-  margin-top: 6px;
-  color: #6b7280;
-  font-size: 13px;
+  border: 1px solid var(--console-border, #e5e7eb);
+  border-radius: var(--console-radius, 12px);
 }
 
 .page-alert {
   margin-bottom: 16px;
+}
+
+.filter-form {
+  padding: 16px;
+  border: 1px solid var(--console-border, #e5e7eb);
+  border-radius: 8px;
+  background: var(--console-canvas, #f5f7fb);
+}
+
+@media (max-width: 640px) {
+  .filter-form,
+  .filter-form :deep(.ant-form-item) {
+    width: 100%;
+  }
+
+  .filter-form :deep(.ant-input),
+  .filter-form :deep(.ant-input-search),
+  .filter-form :deep(.ant-select) {
+    width: 100%;
+  }
+}
+
+.billing-page :deep(.ant-table) {
+  font-size: 13px;
 }
 
 .multiline-cell {
@@ -577,7 +602,7 @@ export default defineComponent({
 }
 
 :global(.billing-fee-popup) {
-  border-radius: 22px;
+  border-radius: 8px;
 }
 
 :global(.billing-fee-detail) {
@@ -589,13 +614,13 @@ export default defineComponent({
 
 :global(.billing-fee-card) {
   border: 1px solid #e2e8f0;
-  border-radius: 16px;
+  border-radius: 8px;
   padding: 16px;
   box-shadow: 0 10px 28px rgb(15 23 42 / 8%);
 }
 
 :global(.billing-fee-card--question) {
-  background: linear-gradient(135deg, #f8fafc, #eef2ff);
+  background: #f5f7fb;
 }
 
 :global(.billing-fee-card--cost) {
@@ -631,7 +656,7 @@ export default defineComponent({
   gap: 24px;
   padding: 12px 14px;
   border: 1px solid #e2e8f0;
-  border-radius: 12px;
+  border-radius: 6px;
   background: #f8fafc;
 }
 
@@ -669,8 +694,8 @@ export default defineComponent({
   margin-top: 14px;
   padding: 14px;
   border: 1px solid #bfdbfe;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #eff6ff, #f8fafc);
+  border-radius: 6px;
+  background: #eff6ff;
   color: #1f2937;
   font-size: 16px;
   font-weight: 600;

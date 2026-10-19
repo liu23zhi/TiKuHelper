@@ -2,15 +2,25 @@
   <div class="auth-shell">
     <div class="auth-card auth-card--single">
       <div class="hero hero--wechat-bind">
-        <div class="hero-badge">WeChat Bind</div>
+        <div class="hero-badge">微信账号关联</div>
         <h1>绑定已有账号</h1>
         <p>微信扫码成功后，请使用已有账号完成绑定。</p>
+        <dl class="auth-guide">
+          <div>
+            <dt>验证已有账号</dt>
+            <dd>输入当前账号的用户名与密码，确认微信绑定归属。</dd>
+          </div>
+          <div>
+            <dt>绑定后直接登录</dt>
+            <dd>后续可通过微信登录，也可在个人中心管理绑定。</dd>
+          </div>
+        </dl>
       </div>
 
       <a-card :bordered="false" class="form-card">
         <div class="form-header">
           <div>
-            <div class="form-title">绑定已有账号</div>
+            <h2 class="form-title">绑定已有账号</h2>
             <div class="form-subtitle">绑定成功后，下次即可直接微信扫码登录。</div>
           </div>
         </div>
@@ -149,111 +159,7 @@ export default defineComponent({
 </script>
 
 <style scoped>
-.auth-shell {
-  width: 100%;
-  display: flex;
-  justify-content: center;
-  padding: 24px;
-}
-
-.auth-card {
-  width: min(1080px, 100%);
-  display: grid;
-  grid-template-columns: minmax(320px, 1fr) minmax(360px, 440px);
-  gap: 24px;
-  align-items: stretch;
-}
-
-.hero {
-  min-height: 520px;
-  border-radius: 28px;
-  padding: 40px;
-  color: #fff;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  box-shadow: 0 20px 45px rgba(15, 118, 110, 0.2);
-}
-
-.hero--wechat-bind {
-  background: linear-gradient(135deg, #0f766e 0%, #0ea5e9 100%);
-}
-
-.hero-badge {
-  width: fit-content;
-  padding: 6px 12px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.18);
-  font-size: 13px;
-  margin-bottom: 18px;
-}
-
-.hero h1 {
-  margin: 0;
-  font-size: 40px;
-  line-height: 1.2;
-  color: #fff;
-}
-
-.hero p {
-  margin: 18px 0 0;
-  max-width: 460px;
-  font-size: 15px;
-  line-height: 1.9;
-  color: rgba(255, 255, 255, 0.92);
-}
-
-.form-card {
-  border-radius: 28px;
-  box-shadow: 0 18px 40px rgba(16, 24, 40, 0.08);
-}
-
-.form-header {
-  margin-bottom: 20px;
-}
-
-.form-title {
-  font-size: 24px;
-  font-weight: 700;
-  color: #1f2937;
-}
-
-.form-subtitle {
-  margin-top: 6px;
-  color: #6b7280;
-  font-size: 14px;
-}
-
 .bind-alert {
   margin-bottom: 16px;
-  border-radius: 12px;
-}
-
-.submit-button,
-.secondary-button {
-  height: 46px;
-  border-radius: 12px;
-  font-weight: 600;
-}
-
-.auth-actions {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid #f0f0f0;
-}
-
-@media (max-width: 960px) {
-  .auth-card {
-    grid-template-columns: 1fr;
-  }
-
-  .hero {
-    min-height: auto;
-    padding: 28px;
-  }
-
-  .hero h1 {
-    font-size: 32px;
-  }
 }
 </style>

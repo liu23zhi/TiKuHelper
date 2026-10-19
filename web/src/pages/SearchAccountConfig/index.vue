@@ -1,8 +1,13 @@
 <template>
-  <a-card style="width: 100%" title="默认账号配置" :bordered="false" class="page-card">
-    <template #extra>
+  <div class="console-page search-account-page">
+    <header class="section-heading page-heading">
+      <div>
+        <h1>默认账号配置</h1>
+        <p class="page-lead">维护各题库默认参数和单价。</p>
+      </div>
       <a-button type="primary" :loading="savingAll" @click="onSaveAll">保存全部配置</a-button>
-    </template>
+    </header>
+    <section class="console-panel">
     <a-alert
       type="info"
       show-icon
@@ -51,7 +56,8 @@
         <a-input v-model:value="record.remark" placeholder="备注" />
       </template>
     </a-table>
-  </a-card>
+    </section>
+  </div>
 </template>
 
 <script>
@@ -196,8 +202,49 @@ export default defineComponent({
 </script>
 
 <style scoped>
-.page-card {
-  border-radius: 20px;
+.console-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.page-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.page-heading h1 {
+  margin: 0;
+  color: var(--console-text, #1f2937);
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.page-lead {
+  margin: 4px 0 0;
+  color: var(--console-muted, #64748b);
+  font-size: 13px;
+}
+
+.console-panel {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--console-border, #e5e7eb);
+  border-radius: var(--console-radius, 12px);
+  background: var(--console-surface, #fff);
+}
+
+.config-cell :deep(.ant-input),
+.config-cell :deep(.ant-input-number) {
+  width: 100%;
+}
+
+.search-account-page :deep(.ant-table) {
+  font-size: 13px;
 }
 
 .page-alert {
@@ -219,6 +266,11 @@ export default defineComponent({
 
 .config-ai-button {
   align-self: flex-start;
-  border-radius: 999px;
+}
+
+@media (max-width: 640px) {
+  .console-panel {
+    padding: 12px;
+  }
 }
 </style>

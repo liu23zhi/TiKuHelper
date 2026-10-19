@@ -1,5 +1,15 @@
 <template>
-  <div class="user-page">
+  <div class="console-page user-page">
+    <header class="section-heading page-heading">
+      <div>
+        <h1>用户管理</h1>
+        <p class="page-lead">查看平台全部用户，并创建新的普通用户或管理员用户。</p>
+      </div>
+      <a-space wrap class="section-actions">
+        <a-button @click="handleUserList" :loading="tabLoading">刷新</a-button>
+        <a-button type="primary" @click="openCreateModal">新增用户</a-button>
+      </a-space>
+    </header>
     <a-row :gutter="16" class="summary-row">
       <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
@@ -24,21 +34,6 @@
     </a-row>
 
     <a-card :bordered="false" class="page-card">
-      <template #title>
-        <div class="page-title-wrap">
-          <div>
-            <div class="page-title">用户管理</div>
-            <div class="page-subtitle">查看平台全部用户，并创建新的普通用户或管理员用户。</div>
-          </div>
-        </div>
-      </template>
-      <template #extra>
-        <a-space>
-          <a-button @click="handleUserList" :loading="tabLoading">刷新</a-button>
-          <a-button type="primary" @click="openCreateModal">新增用户</a-button>
-        </a-space>
-      </template>
-
       <a-alert
         type="info"
         show-icon
@@ -986,6 +981,28 @@ export default defineComponent({
   display: flex;
   flex-direction: column;
   gap: 16px;
+  min-width: 0;
+}
+
+.page-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.page-heading h1 {
+  margin: 0;
+  color: var(--console-text, #1f2937);
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.page-lead {
+  margin: 4px 0 0;
+  color: var(--console-muted, #64748b);
+  font-size: 13px;
 }
 
 .filter-form {
@@ -999,12 +1016,9 @@ export default defineComponent({
   margin-bottom: 0;
 }
 
-.summary-card {
-  border-radius: 18px;
-}
-
-.page-card {
-  border-radius: 20px;
+.user-page .page-card {
+  border: 1px solid var(--console-border, #e5e7eb);
+  border-radius: var(--console-radius, 12px);
 }
 
 .page-title-wrap {
@@ -1013,19 +1027,34 @@ export default defineComponent({
 }
 
 .page-title {
-  font-size: 22px;
-  font-weight: 700;
-  color: #1f2937;
+  font-size: 20px;
+  font-weight: 650;
+  color: var(--console-text, #1f2937);
 }
 
 .page-subtitle {
   margin-top: 6px;
-  color: #6b7280;
+  color: var(--console-muted, #64748b);
   font-size: 13px;
 }
 
 .page-alert {
   margin-bottom: 16px;
+}
+
+.filter-form {
+  padding: 16px;
+  border: 1px solid var(--console-border, #e5e7eb);
+  border-radius: 8px;
+  background: var(--console-canvas, #f5f7fb);
+}
+
+.filter-form :deep(.ant-form-item) {
+  margin-bottom: 0;
+}
+
+.user-page :deep(.ant-table) {
+  font-size: 13px;
 }
 
 .location-value {
@@ -1043,7 +1072,7 @@ export default defineComponent({
   margin-top: 10px;
   padding: 12px;
   border: 1px solid #e5e7eb;
-  border-radius: 12px;
+  border-radius: 8px;
   background: #f9fafb;
 }
 
@@ -1060,5 +1089,14 @@ export default defineComponent({
   font-size: 12px;
   line-height: 1.6;
   color: #6b7280;
+}
+
+@media (max-width: 640px) {
+  .filter-form,
+  .filter-form :deep(.ant-form-item),
+  .filter-form :deep(.ant-input-search),
+  .filter-form :deep(.ant-select) {
+    width: 100%;
+  }
 }
 </style>

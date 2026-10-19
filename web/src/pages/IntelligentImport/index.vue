@@ -1,6 +1,18 @@
 <template>
-  <main>
-    <div class="compileBox">
+  <div class="console-page import-page">
+    <header class="section-heading import-heading">
+      <div>
+        <h1>智能导入</h1>
+        <p class="page-lead">识别题目内容，校对后批量写入题库。</p>
+      </div>
+      <a-space wrap class="section-actions import-page-actions">
+        <a-button type="primary" @click="upload" :loading="submitLoading">确认导入</a-button>
+        <a-button @click="navigateToHome">返回</a-button>
+      </a-space>
+    </header>
+
+    <main class="import-workspace">
+    <section class="compileBox console-panel">
       <div class="title">
         <div>
           题目编辑
@@ -47,16 +59,16 @@
           <p class="region">编辑区</p>
         </div>
       </a-spin>
-    </div>
+    </section>
     <div class="handleBox">
-      <a-button @click="handleInput()" type="primary" style="margin-bottom: 16px;">
+      <a-button @click="handleInput()" type="primary">
         重新识别
       </a-button>
       <a-button @click="() => { problemArr = []; showProblemArr = []; data = [] }">
         清空题目
       </a-button>
     </div>
-    <div class="previewBox">
+    <section class="previewBox console-panel">
       <div class="title">
         <div>
           题目预览
@@ -97,14 +109,9 @@
         </div>
       </a-spin>
 
-    </div>
+    </section>
   </main>
-  <footer>
-    <a-space>
-      <a-button type="primary" @click="upload" :loading="submitLoading">确认导入</a-button>
-      <a-button @click="navigateToHome">返回</a-button>
-    </a-space>
-  </footer>
+  </div>
 </template>
 
 <script>
@@ -258,56 +265,78 @@ export default defineComponent({
 });
 </script>
 <style scoped>
-main {
-  width: 100%;
-  height: 100%;
-  background-color: #fff;
+.console-page {
   display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  color: var(--console-text, #1f2937);
 }
 
-footer {
-  position: fixed;
-  bottom: 0;
-  width: calc(90% - 48px);
-  height: 60px;
-  background-color: #fff;
-  line-height: 60px;
+.import-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.import-heading h1 {
+  margin: 0;
+  color: var(--console-text, #1f2937);
   font-size: 20px;
-  font-weight: 600;
-  padding: 0 20px;
-  box-sizing: border-box;
-  text-align: right;
-  /* box-shadow: 0px -1px 12px 0px rgba(0, 0, 0, 0.1); */
+  font-weight: 650;
+}
+
+.page-lead {
+  margin: 4px 0 0;
+  color: var(--console-muted, #64748b);
+  font-size: 13px;
+}
+
+main {
+  width: 100%;
+  display: flex;
+  flex: 1;
+  align-items: stretch;
+  min-width: 0;
+  min-height: 400px;
+}
+
+.import-workspace {
+  display: flex;
+  align-items: stretch;
+  gap: 16px;
+  min-width: 0;
 }
 
 .compileBox {
-  height: 100%;
-  width: calc(50% - 60px);
+  flex: 1 1 0;
+  width: 0;
   min-height: 400px;
-  background-color: #fff;
-  /* box-shadow: 0 1px 12px 0 #EDEEF0; */
-  border-radius: 10px;
-  padding: 20px 20px 30px;
+  padding: 16px;
+  border-color: var(--console-border, #e5e7eb);
+  border-radius: var(--console-radius, 12px);
+  background-color: var(--console-surface, #fff);
 }
 
 .handleBox {
-  width: 120px;
-  height: 100%;
+  flex: 0 0 120px;
   display: flex;
-  padding: 10px;
-  /* box-sizing: border-box; */
   flex-direction: column;
   justify-content: center;
+  gap: 12px;
+  min-width: 0;
 }
 
 .previewBox {
-  height: 100%;
-  width: calc(50% - 60px);
+  flex: 1 1 0;
+  width: 0;
   min-height: 400px;
-  background-color: #fff;
-  /* box-shadow: 0 1px 12px 0 #EDEEF0; */
-  border-radius: 10px;
-  padding: 20px 20px 30px;
+  padding: 16px;
+  border-color: var(--console-border, #e5e7eb);
+  border-radius: var(--console-radius, 12px);
+  background-color: var(--console-surface, #fff);
 }
 
 .title {
@@ -320,10 +349,6 @@ footer {
   align-items: center;
 }
 
-.ant-btn {
-  border-radius: 16px;
-}
-
 .title .overview {
   height: 30px;
   font-size: 12px;
@@ -331,7 +356,7 @@ footer {
   box-sizing: border-box;
   font-weight: 400;
   text-align: left;
-  border-radius: 15px;
+  border-radius: 8px;
   background-color: #f0f2f5;
 }
 
@@ -375,7 +400,7 @@ footer {
   border: 1px solid #e8e8e8;
   max-height: calc(100vh - 120px - 92px - 60px);
   min-height: 200px;
-  border-radius: 6px;
+  border-radius: 4px;
   padding: 10px;
   overflow: hidden;
   overflow-y: scroll;
@@ -386,14 +411,14 @@ footer {
 
 .compileContent>div {
   padding: 10px;
-  border-radius: 6px;
+  border-radius: 4px;
 }
 
 .previewContent {
   border: 1px solid #e8e8e8;
   max-height: calc(100vh - 120px - 92px - 60px);
   min-height: 200px;
-  border-radius: 6px;
+  border-radius: 4px;
   padding: 10px;
   overflow: hidden;
   overflow-y: scroll;
@@ -461,15 +486,64 @@ footer {
 }
 
 .region {
-  position: absolute;
-  top: calc(50% - 60px);
-  left: calc(50% - 60px);
-  font-size: 40px !important;
+  font-size: 28px !important;
   font-weight: 600;
   color: #acb4bf;
 }
 
 .display {
   display: none;
+}
+
+@media (max-width: 900px) {
+  .import-workspace {
+    flex-direction: column;
+  }
+
+  main {
+    flex-direction: column;
+  }
+
+  .compileBox,
+  .previewBox {
+    flex: none;
+    width: 100%;
+    min-height: 360px;
+  }
+
+  .handleBox {
+    flex-direction: row;
+    flex: none;
+    width: 100%;
+  }
+
+  .handleBox :deep(.ant-btn) {
+    flex: 1;
+  }
+}
+
+@media (max-width: 600px) {
+  .import-heading,
+  .import-page-actions {
+    width: 100%;
+  }
+
+  .compileBox,
+  .previewBox {
+    min-height: 300px;
+    padding: 12px;
+  }
+
+  .title {
+    height: auto;
+    min-height: 30px;
+  }
+
+  .tabs {
+    height: auto;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
 }
 </style>

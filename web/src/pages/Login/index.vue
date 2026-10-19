@@ -2,17 +2,27 @@
   <div class="auth-shell">
     <div class="auth-card auth-card--single">
       <div class="hero">
-        <!-- <div class="hero-badge">Tiku Adapter</div> -->
+        <div class="hero-badge">账号控制台</div>
         <h1>{{ publicAuthSettings.siteName }}</h1>
         <p>
           搜题聚合题库平台，集成AI搜索，提供更准确的答案。
         </p>
+        <dl class="auth-guide">
+          <div>
+            <dt>统一账号入口</dt>
+            <dd>登录后管理个人资料、查看账户余额与使用记录。</dd>
+          </div>
+          <div v-if="publicAuthSettings.smsLoginEnabled || publicAuthSettings.wechatLoginEnabled">
+            <dt>选择熟悉的登录方式</dt>
+            <dd>通过已绑定的账号信息完成验证，继续使用题库服务。</dd>
+          </div>
+        </dl>
       </div>
 
       <a-card :bordered="false" class="form-card">
         <div class="form-header">
           <div>
-            <div class="form-title">用户登录</div>
+            <h2 class="form-title">用户登录</h2>
             <div class="form-subtitle">使用已有账号登录获取更多功能。</div>
           </div>
         </div>
@@ -615,178 +625,15 @@ export default defineComponent({
 </script>
 
 <style scoped>
-.auth-shell {
-  width: 100%;
-  display: flex;
-  justify-content: center;
-  padding: 24px;
-}
-
-.auth-card {
-  width: min(1080px, 100%);
-  display: grid;
-  grid-template-columns: minmax(280px, 1fr) minmax(360px, 460px);
-  gap: 24px;
-  align-items: stretch;
-}
-
-.auth-card--single {
-  grid-template-columns: minmax(320px, 1fr) minmax(360px, 440px);
-}
-
-.hero {
-  min-height: 520px;
-  background: linear-gradient(135deg, #195ca3 0%, #2f80ed 52%, #6fb1fc 100%);
-  border-radius: 28px;
-  padding: 40px;
-  color: #fff;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  box-shadow: 0 20px 45px rgba(25, 92, 163, 0.24);
-}
-
-.hero-badge {
-  width: fit-content;
-  padding: 6px 12px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.18);
-  font-size: 13px;
-  margin-bottom: 18px;
-}
-
-.hero h1 {
-  margin: 0;
-  font-size: 40px;
-  line-height: 1.2;
-  color: #fff;
-}
-
-.hero p {
-  margin: 18px 0 0;
-  max-width: 460px;
-  font-size: 15px;
-  line-height: 1.9;
-  color: rgba(255, 255, 255, 0.92);
-}
-
-.hero-alert {
-  margin-top: 24px;
-  border-radius: 14px;
-}
-
-.form-card {
-  border-radius: 28px;
-  box-shadow: 0 18px 40px rgba(16, 24, 40, 0.08);
-}
-
-.form-header {
-  margin-bottom: 20px;
-}
-
-.form-title {
-  font-size: 24px;
-  font-weight: 700;
-  color: #1f2937;
-}
-
-.form-subtitle {
-  margin-top: 6px;
-  color: #6b7280;
-  font-size: 14px;
-}
-
-.form {
-  margin-top: 8px;
-}
-
 .login-mode-switch {
   width: 100%;
-  margin-bottom: 16px;
-}
-
-.sms-code-row {
-  display: flex;
-  gap: 8px;
-}
-
-.sms-code-row :deep(.ant-input-affix-wrapper) {
-  flex: 1;
+  margin-bottom: 20px;
 }
 
 .wechat-login-panel {
   display: grid;
   gap: 14px;
-  margin-bottom: 24px;
+  margin-bottom: 20px;
 }
 
-.wechat-qrcode-frame {
-  width: 220px;
-  height: 220px;
-  margin: 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid #e5e7eb;
-  border-radius: 16px;
-  background: #f8fafc;
-  overflow: hidden;
-}
-
-.wechat-qrcode-frame img {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-}
-
-.wechat-qrcode-empty,
-.wechat-status {
-  text-align: center;
-  color: #6b7280;
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-.submit-button,
-.secondary-button {
-  height: 46px;
-  border-radius: 12px;
-  font-weight: 600;
-}
-
-.auth-actions {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid #f0f0f0;
-}
-
-.action-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: #1f2937;
-  margin-bottom: 14px;
-}
-
-.action-subtitle {
-  margin: 8px 0 14px;
-  color: #6b7280;
-  font-size: 13px;
-  line-height: 1.8;
-}
-
-@media (max-width: 960px) {
-  .auth-card,
-  .auth-card--single {
-    grid-template-columns: 1fr;
-  }
-
-  .hero {
-    min-height: auto;
-    padding: 28px;
-  }
-
-  .hero h1 {
-    font-size: 32px;
-  }
-}
 </style>

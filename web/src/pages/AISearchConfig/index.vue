@@ -1,19 +1,21 @@
 <template>
-  <a-card title="AI 搜索配置" style="width: 100%" :bordered="false" class="page-card">
-    <template #extra>
-      <a-space>
+  <div class="console-page ai-settings-page page-card">
+    <header class="section-heading ai-page-heading">
+      <div>
+        <h1>AI 搜索配置</h1>
+        <p class="page-lead">管理服务连接、执行预算与计费规则。</p>
+      </div>
+      <a-space wrap class="section-actions">
         <a-button @click="handleLoad" :loading="tabLoading">刷新</a-button>
-        <a-button @click="handleOpenTestDialog">测试</a-button>
-        <a-button @click="loadSearchEngineInfo" :loading="searchEngineLoading">查看深度思考能力</a-button>
-        <a-button type="primary" @click="handleSave" :loading="saving">保存</a-button>
+        <a-button type="primary" @click="handleSave" :loading="saving">保存配置</a-button>
       </a-space>
-    </template>
+    </header>
 
     <a-alert
       type="info"
       show-icon
       class="page-alert"
-      message="AI 搜索只在 use=ai 的请求模式下生效。显式传入 url、key、model 时优先使用请求参数；只有带有效 Basic 认证且未显式提供时，才会回退到这里的系统默认配置。"
+      message="AI 搜索只在 use=ai 的请求模式下生效。账号余额必须大于 0；显式传入 url、key、model 时优先使用请求参数，未显式提供时才回退到这里的系统默认配置。"
     />
 
     <a-alert
@@ -40,9 +42,19 @@
       :description="`以下模型缺少价格，命中时会按 0 元计费：${pricingGaps.unresolvedModels.join('、')}。请在下方「模型价格表」中补充单价。`"
     />
 
-    <a-form :label-col="labelCol" :wrapper-col="wrapperCol">
-      <a-form-item label="是否启用">
+    <a-form layout="vertical" class="ai-config-form">
+      <section class="console-panel ai-section">
+        <header class="section-heading ai-section-heading">
+          <div>
+            <h2>连接与模型</h2>
+            <p class="section-description">配置 AI 服务连接、认证信息和可用模型。</p>
+          </div>
+          <a-button @click="handleOpenTestDialog">测试</a-button>
+        </header>
+        <div class="console-form-grid connection-grid">
+      <a-form-item label="是否启用" class="full-width">
         <a-switch v-model:checked="formState.enabled" />
+        <span class="switch-description">{{ formState.enabled ? '已启用 AI 搜索' : 'AI 搜索已关闭' }}</span>
       </a-form-item>
 
       <a-form-item label="服务地址">
@@ -54,7 +66,7 @@
         <a-input-password v-model:value="formState.apiKey" placeholder="请输入 API Key" />
       </a-form-item>
 
-      <a-form-item label="默认模型">
+      <a-form-item label="默认模型" class="full-width">
         <a-input v-model:value="formState.model" placeholder="可手动输入模型名" />
         <div class="hint">也可以点击下方模型列表快速填入。</div>
         <div v-if="pricingGaps.configuredModel && !pricingGaps.configuredModelPriced" class="hint hint-warning">
@@ -63,7 +75,7 @@
         </div>
       </a-form-item>
 
-      <a-form-item label="模型列表">
+      <a-form-item label="模型列表" class="full-width">
         <div class="model-editor">
           <a-textarea
             v-model:value="formState.manualModelsText"
@@ -74,7 +86,7 @@
             获取远程模型列表
           </a-button>
         </div>
-        <div class="hint">保存时会以此处内容作为模型列表，并自动为缺失模型补充默认架构。</div>
+        <div class="hint">保存时会以此处内容作为可用模型列表，点击下方标签可填入默认模型。</div>
         <div class="hint">标签上带「未定价」的模型需要先在下方「模型价格表」中补价，否则会按 0 元计费。</div>
         <a-space wrap class="model-tags">
           <a-tag
@@ -90,7 +102,19 @@
         </a-space>
       </a-form-item>
 
-      <a-divider orientation="left">AI 搜索预算</a-divider>
+        </div>
+      </section>
+
+      <section class="console-panel ai-section">
+        <header class="section-heading ai-section-heading">
+          <div>
+            <h2>执行策略</h2>
+            <p class="section-description">设置模型轮次、工具预算与输出要求。</p>
+          </div>
+          <a-button @click="loadSearchEngineInfo" :loading="searchEngineLoading">查看深度思考能力</a-button>
+        </header>
+        <div class="console-form-grid execution-grid">
+      <a-divider orientation="left" class="full-width">AI 搜索预算</a-divider>
       <a-form-item label="模型最大调用次数">
         <a-input-number
           v-model:value="formState.maxAISearchModelCalls"
@@ -116,7 +140,7 @@
           style="width: 180px"
         />
         <span class="unit-label">次</span>
-        <div class="hint">每次 AI 搜索最多调用搜索 API 的次数，默认 3 次。每一轮模型调用前都会告知剩余搜索次数，达到最后一轮时必须直接输出答案。</div>
+        <div class="hint">深度思考模式下，每次 AI 搜索最多调用搜索 API 的次数，默认 3 次，范围 1～20 次。每一轮模型调用前都会告知剩余搜索次数，最后一轮模型调用直接输出答案。</div>
       </a-form-item>
 
       <a-form-item label="每轮重试次数">
@@ -145,7 +169,7 @@
         <div class="hint">默认 0 元。大于 0 时，每次实际调用联网搜索 API 都单独记一条账单，并合并显示在对应搜题账单详情中；命中本次 AI 搜索内的相同查询缓存不会重复计价。</div>
       </a-form-item>
 
-      <a-divider orientation="left">网页读取</a-divider>
+      <a-divider orientation="left" class="full-width">网页读取与 Prompt</a-divider>
 
       <a-form-item label="网页读取次数">
         <a-input-number
@@ -173,7 +197,7 @@
         <div class="hint">默认 0 元。大于 0 时，每次成功完成网页读取都会单独写入一条账单，并合并到对应的搜题账单详情中。</div>
       </a-form-item>
 
-      <a-form-item label="Prompt 设置">
+      <a-form-item label="Prompt 设置" class="full-width">
         <a-textarea
           v-model:value="formState.prompt"
           :auto-size="{ minRows: 10, maxRows: 18 }"
@@ -196,6 +220,8 @@
         <a-input :value="fixedTopPText" readonly disabled />
         <div class="hint">固定为 0，与温度一起保持低随机性，不开放自定义调整。</div>
       </a-form-item>
+        </div>
+      </section>
     </a-form>
 
     <a-modal
@@ -261,7 +287,7 @@
         <a-form class="staged-billing-settings" :label-col="labelCol" :wrapper-col="wrapperCol">
           <a-form-item label="启用阶段计费">
             <a-switch v-model:checked="formState.enableAIStagedTokenBilling" />
-            <div class="hint">按每次实际上游模型响应的总 token 数应用阶段倍率：3000 以下最高 4x，10 万以上最低 0.3x；关闭时保持现有价格表计费。</div>
+            <div class="hint">按每次实际上游模型响应的总 token 数应用阶段倍率；具体阈值和倍率以你下方配置的阶段表为准。关闭时保持现有价格表计费。</div>
           </a-form-item>
           <a-form-item label="平滑变化倍率">
             <a-switch
@@ -286,7 +312,7 @@
           <a-table
             bordered
             size="small"
-            row-key="tokens"
+            :row-key="stagedPointRowKey"
             :pagination="false"
             :data-source="formState.stagedTokenMultiplierPoints"
             :columns="stagedPointColumns"
@@ -301,7 +327,8 @@
               <a-button type="link" danger :disabled="formState.stagedTokenMultiplierPoints.length <= 2" @click="removeStagedMultiplierPoint(index)">删除</a-button>
             </template>
           </a-table>
-          <div class="hint">首个节点必须为 0 token / 4x；第二个节点不能低于 3000 token；末节点必须覆盖 10 万 token 以上并为 0.3x。修改后点击页面右上角“保存”。</div>
+          <div v-if="stagedPointError" class="hint hint-warning">{{ stagedPointError }}；修正后再保存。</div>
+          <div v-else class="hint">至少保留 2 个节点；首个节点必须为 0 token / 4x，token 阈值必须严格递增，倍率只能保持不变或递减。每个阈值支持 0～1000000000，每个倍率支持 0.3x～4x。</div>
         </div>
 
         <div class="price-table-wrap">
@@ -448,7 +475,7 @@
         </div>
       </div>
     </a-modal>
-  </a-card>
+  </div>
 </template>
 
 <script>
@@ -476,6 +503,11 @@ import {
   filterRemoteModelNames,
   DEFAULT_AI_STAGED_TOKEN_MULTIPLIER_POINTS,
 } from '@/utils/aiSearchModelHelpers.mjs';
+import {
+  createStagedPointRowKey,
+  getStagedMultiplierPointsError,
+  insertStagedMultiplierPoint,
+} from '@/utils/aiStagedMultiplierHelpers.mjs';
 import {
   buildAISearchTestForm,
   buildAISearchTestPayload,
@@ -619,6 +651,8 @@ export default defineComponent({
     const modelOptions = computed(() => {
       return buildModelNameOptions(formState.manualModelsText)
     })
+    const stagedPointError = computed(() => getStagedMultiplierPointsError(formState.stagedTokenMultiplierPoints))
+    const stagedPointRowKey = createStagedPointRowKey()
 
     const usageRows = computed(() => normalizeUsageRows(usageInfo.value))
     const searchUsageRows = computed(() => usageRows.value.filter(item => /\/search\/(?:aggregate|engines)(?:\/|$)/i.test(item.path) && item.count > 0))
@@ -815,6 +849,8 @@ export default defineComponent({
       priceModalVisible,
       priceForm,
       stagedPointColumns,
+      stagedPointError,
+      stagedPointRowKey,
       hasAISearchTestResult,
       pricingGaps,
       isModelPriced,
@@ -860,6 +896,11 @@ export default defineComponent({
       })
     },
     submitSave(baseUrl) {
+      const stagedPointError = getStagedMultiplierPointsError(this.formState.stagedTokenMultiplierPoints)
+      if (stagedPointError) {
+        message.error(stagedPointError)
+        return
+      }
       const maxAISearchModelCalls = Number(this.formState.maxAISearchModelCalls)
       const maxAISearches = Number(this.formState.maxAISearches)
       const maxAISearchRetries = Number(this.formState.maxAISearchRetries)
@@ -925,11 +966,11 @@ export default defineComponent({
       this.submitSave(trimmedBaseUrl)
     },
     addStagedMultiplierPoint() {
-      const points = this.formState.stagedTokenMultiplierPoints
-      const last = points[points.length - 1] || { tokens: 100000, multiplier: 0.3 }
-      const previous = points[points.length - 2] || { tokens: 3000, multiplier: 2 }
-      const nextTokens = Math.min(1000000000, Math.max(previous.tokens + 1000, last.tokens - 10000))
-      points.splice(Math.max(0, points.length - 1), 0, { tokens: nextTokens, multiplier: Math.max(0.3, Math.min(4, previous.multiplier)) })
+      try {
+        this.formState.stagedTokenMultiplierPoints = insertStagedMultiplierPoint(this.formState.stagedTokenMultiplierPoints)
+      } catch (error) {
+        message.warning(error?.message || '无法新增阶段节点')
+      }
     },
     removeStagedMultiplierPoint(index) {
       if (this.formState.stagedTokenMultiplierPoints.length <= 2) {

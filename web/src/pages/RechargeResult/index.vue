@@ -1,5 +1,10 @@
 <template>
   <div class="recharge-result-shell">
+    <div class="page-heading">
+      <h1>充值结果</h1>
+      <p>交易回跳状态与订单信息。</p>
+    </div>
+
     <a-card :bordered="false" class="recharge-result-card">
       <a-result
         :status="resultStatus"
@@ -122,29 +127,51 @@ export default defineComponent({
 
 <style scoped>
 .recharge-result-shell {
-  width: 100%;
+  width: min(900px, 100%);
+  min-width: 0;
+  margin: 0 auto;
   display: flex;
-  justify-content: center;
-  padding: 24px;
+  flex-direction: column;
+  gap: 16px;
 }
 
 .recharge-result-card {
-  width: min(900px, 100%);
-  border-radius: 24px;
-  box-shadow: 0 16px 38px rgba(16, 24, 40, 0.08);
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--console-border, #e5e7eb);
+  border-radius: var(--console-radius, 12px);
+  box-shadow: 0 2px 8px rgb(15 23 42 / 2%);
 }
 
 .notice {
-  margin-top: 8px;
+  margin-top: 0;
   margin-bottom: 18px;
-  border-radius: 14px;
+  border-radius: 8px;
+}
+
+.page-heading {
+  min-width: 0;
+}
+
+.page-heading h1 {
+  margin: 0;
+  color: var(--console-text, #1f2937);
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.page-heading p {
+  margin: 6px 0 0;
+  color: var(--console-muted, #64748b);
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .details {
   display: grid;
   gap: 12px;
   padding: 18px 20px 4px;
-  border-top: 1px solid #f0f0f0;
+  border-top: 1px solid var(--console-border, #e5e7eb);
 }
 
 .detail-row {
@@ -156,13 +183,29 @@ export default defineComponent({
 }
 
 .detail-label {
-  color: #8c8c8c;
+  color: var(--console-muted, #64748b);
   flex: 0 0 auto;
 }
 
 .detail-value {
-  color: rgba(0, 0, 0, 0.88);
+  color: var(--console-text, #1f2937);
   text-align: right;
   word-break: break-all;
+}
+
+@media (max-width: 768px) {
+  .page-heading h1 {
+    font-size: 20px;
+  }
+
+  .recharge-result-card :deep(.ant-result) {
+    padding: 24px 12px;
+  }
+
+  .recharge-result-card :deep(.ant-result-extra .ant-space) {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
 }
 </style>

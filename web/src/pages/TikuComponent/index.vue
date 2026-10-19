@@ -1,53 +1,54 @@
 <template>
-  <a-card>
-    <a-row>
-      <a-col :span="3">
-        <a-form-item label="类型" :label-col="labelCol" :wrapper-col="wrapperCol">
+  <div class="console-page tiku-page">
+    <header class="section-heading page-heading">
+      <div>
+        <h1>题库管理</h1>
+        <p class="page-lead">管理本地题目、答案和导入记录。</p>
+      </div>
+    </header>
+
+    <section class="console-panel filter-panel">
+      <a-form layout="inline" class="filter-form" @finish="onSearch">
+        <a-form-item label="类型">
           <a-select v-model:value="typeValue" show-search allow-clear placeholder="请选择" :options="typeList"
-                    @change="onFilterChange">
-          </a-select>
+                    @change="onFilterChange" />
         </a-form-item>
-      </a-col>
-      <a-col :span="5">
-        <a-form-item label="问题" :label-col="labelCol" :wrapper-col="wrapperCol">
-          <a-input v-model:value="searchValue.question" placeholder="搜索问题"/>
+        <a-form-item label="问题">
+          <a-input v-model:value="searchValue.question" placeholder="搜索问题" @press-enter="onSearch" />
         </a-form-item>
-      </a-col>
-
-      <a-col :span="3">
-        <a-form-item label="无答案" :label-col="labelCol" :wrapper-col="wrapperCol">
-          <a-checkbox v-model:checked="searchValue.onlyShowEmptyAnswer"></a-checkbox>
+        <a-form-item label="无答案">
+          <a-checkbox v-model:checked="searchValue.onlyShowEmptyAnswer" />
         </a-form-item>
-
-      </a-col>
-
-      <a-col :span="2">
-        <a-form-item :label-col="labelCol" :wrapper-col="wrapperCol">
+        <a-form-item>
           <a-button type="primary" @click="onSearch" @keyup.enter="onSearch">
-            <SearchOutlined/>
+            <SearchOutlined />
             搜索
           </a-button>
         </a-form-item>
-      </a-col>
-    </a-row>
-  </a-card>
+      </a-form>
+    </section>
 
-  <a-layout>
+    <a-layout class="tiku-layout">
     <a-layout-content>
-      <div style="padding-top: 24px; text-align: center;">
-        <a-card :bordered="false" style="width: 100%; text-align: start;" :bodyStyle="style">
-          <template #extra>
-            <a-button type="primary" @click="triggerJsonImport" style="margin-right: 12px;">
+      <a-card :bordered="false" class="console-card console-panel tiku-table-card" :bodyStyle="style">
+          <template #title>
+            <div class="section-heading table-heading">
+              <div>
+                <h2>题目列表</h2>
+                <p class="section-description">共 {{ page.total }} 道题目</p>
+              </div>
+              <a-space wrap class="section-actions">
+            <a-button type="primary" @click="triggerJsonImport">
               JSON 导入
             </a-button>
-            <a-button type="primary" @click="navigateToImport" style="margin-right: 12px;">
-              <DownloadOutlined/>
+            <a-button type="primary" @click="navigateToImport">
+              <DownloadOutlined />
               智能导入
             </a-button>
-            <a-button @click="handleExportSelected" style="margin-right: 12px;">
+            <a-button @click="handleExportSelected">
               导出选中
             </a-button>
-            <a-button danger @click="handleDeleteSelected" style="margin-right: 12px;">
+            <a-button danger @click="handleDeleteSelected">
               批量删除
             </a-button>
             <a-button type="primary" @click="showModal({
@@ -59,6 +60,8 @@
               <FormOutlined/>
               添加
             </a-button>
+              </a-space>
+            </div>
           </template>
           <a-alert
             v-if="page.total"
@@ -142,9 +145,7 @@
                         :page-size-options="page.pageSizeOptions" :page-size="page.pageSize"
                         @showSizeChange="onShowSizeChange"
                         style="margin-top: 20px; text-align: right;"/>
-        </a-card>
-
-      </div>
+      </a-card>
       <input
         ref="jsonImportInput"
         type="file"
@@ -197,7 +198,8 @@
         </a-form>
       </a-modal>
     </a-layout-content>
-  </a-layout>
+    </a-layout>
+  </div>
 </template>
 
 <script>
@@ -716,16 +718,76 @@ export default defineComponent({
 })
 </script>
 <style scoped>
-header {
-  width: 100%;
-  height: 60px;
-  background-color: #195ca3;
-  border-bottom: 1px solid #e8e8e8;
-  line-height: 60px;
+.console-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  color: var(--console-text, #1f2937);
+}
+
+.page-heading,
+.table-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.page-heading h1,
+.table-heading h2 {
+  margin: 0;
+  color: var(--console-text, #1f2937);
   font-size: 20px;
-  font-weight: 600;
-  text-align: center;
-  color: #fff;
+  font-weight: 650;
+}
+
+.page-lead,
+.section-description {
+  margin: 4px 0 0;
+  color: var(--console-muted, #64748b);
+  font-size: 13px;
+}
+
+.console-panel {
+  padding: 16px;
+  border: 1px solid var(--console-border, #e5e7eb);
+  border-radius: var(--console-radius, 12px);
+  background: var(--console-surface, #fff);
+}
+
+.filter-form {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.filter-form :deep(.ant-form-item) {
+  margin: 0;
+}
+
+.filter-form :deep(.ant-input),
+.filter-form :deep(.ant-select) {
+  width: 220px;
+  max-width: 100%;
+}
+
+.filter-form :deep(.ant-select:first-child) {
+  width: 180px;
+}
+
+.tiku-layout,
+.tiku-layout :deep(.ant-layout-content),
+.tiku-table-card {
+  min-width: 0;
+  width: 100%;
+  background: transparent;
+}
+
+.tiku-table-card :deep(.ant-card-head-title) {
+  min-width: 0;
 }
 
 .ant-form-item {
@@ -753,5 +815,24 @@ header {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+@media (max-width: 640px) {
+  .console-panel {
+    padding: 12px;
+  }
+
+  .filter-form,
+  .filter-form :deep(.ant-form-item),
+  .filter-form :deep(.ant-input),
+  .filter-form :deep(.ant-select) {
+    width: 100%;
+  }
+
+  .section-actions,
+  .section-actions :deep(.ant-space-item),
+  .section-actions :deep(.ant-btn) {
+    max-width: 100%;
+  }
 }
 </style>

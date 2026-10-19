@@ -1,5 +1,13 @@
 <template>
   <div class="profile-page">
+    <div class="page-heading">
+      <div>
+        <h1 class="page-title">个人中心</h1>
+        <p class="page-subtitle">查看账号状态，更新个人资料与登录绑定信息。</p>
+      </div>
+      <a-button @click="loadProfile" :loading="loading">刷新</a-button>
+    </div>
+
     <a-row :gutter="16" class="summary-row">
       <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
@@ -28,20 +36,13 @@
     </a-row>
 
     <a-card :bordered="false" class="page-card" :loading="loading">
-      <template #title>
-        <div>
-          <div class="page-title">个人中心</div>
-          <div class="page-subtitle">查看个人状态，并维护手机号与微信绑定信息。</div>
-        </div>
-      </template>
-      <template #extra>
-        <a-button @click="loadProfile" :loading="loading">刷新</a-button>
-      </template>
-
       <a-row :gutter="16">
         <a-col :xs="24" :lg="10">
           <div class="profile-panel">
-            <div class="panel-title">基础信息</div>
+            <div class="panel-heading">
+              <h2 class="panel-title">基础信息</h2>
+              <p class="panel-subtitle">账号创建与最近登录情况。</p>
+            </div>
             <div class="profile-field">
               <span class="profile-field-label">用户名</span>
               <span>{{ currentUser.username || '-' }}</span>
@@ -62,8 +63,11 @@
               <span class="profile-field-label">登录 IP</span>
               <span class="location-value">{{ formatValueWithLocation(currentUser.lastLoginIp, ipLocations[normalizeLocationKey(currentUser.lastLoginIp)]) || '-' }}</span>
             </div>
-            <a-divider />
-            <div class="panel-title">修改用户名和昵称</div>
+            <div class="profile-section-divider"></div>
+            <div class="panel-heading panel-heading--form">
+              <h3 class="panel-title">修改用户名和昵称</h3>
+              <p class="panel-subtitle">更新后使用新用户名登录。</p>
+            </div>
             <a-form layout="vertical" :model="profileForm" @finish="submitProfile">
               <a-form-item label="用户名" name="username" required>
                 <a-input
@@ -90,7 +94,7 @@
           <div class="profile-panel">
             <div class="panel-head">
               <div>
-                <div class="panel-title">手机号绑定</div>
+                <h2 class="panel-title">手机号绑定</h2>
                 <div class="panel-subtitle">
                   当前：<span class="location-value">{{ currentUser.phone ? formatValueWithLocation(currentUser.phone, phoneLocations[normalizeLocationKey(currentUser.phone)]) : '未绑定' }}</span>
                   <span v-if="currentUser.phoneBoundAt" class="location-extra">，绑定于 {{ formatDateTime(currentUser.phoneBoundAt) }}</span>
@@ -148,7 +152,7 @@
     <a-card :bordered="false" class="page-card" :loading="loading">
       <template #title>
         <div>
-          <div class="page-title">微信绑定</div>
+          <h2 class="page-title">微信绑定</h2>
           <div class="page-subtitle">绑定后可使用微信扫描或微信验证码登录当前账号。</div>
         </div>
       </template>
@@ -731,6 +735,8 @@ export default defineComponent({
 
 <style scoped>
 .profile-page {
+  width: 100%;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -743,7 +749,37 @@ export default defineComponent({
 .summary-card,
 .page-card,
 .profile-panel {
-  border-radius: 18px;
+  border-radius: var(--console-radius, 12px);
+}
+
+.summary-card,
+.page-card {
+  border: 1px solid var(--console-border, #e5e7eb);
+  box-shadow: 0 2px 8px rgb(15 23 42 / 2%);
+}
+
+.summary-card :deep(.ant-card-body) {
+  min-height: 104px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 18px;
+}
+
+.page-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  min-width: 0;
+}
+
+.page-heading > div {
+  min-width: 0;
+}
+
+.page-heading > .ant-btn {
+  flex: 0 0 auto;
 }
 
 .summary-label {
@@ -754,8 +790,9 @@ export default defineComponent({
 .summary-value {
   margin-top: 10px;
   color: #0f172a;
-  font-size: 24px;
+  font-size: 21px;
   font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 .summary-value--small {
@@ -764,9 +801,14 @@ export default defineComponent({
 }
 
 .page-title {
+  margin: 0;
   color: #1f2937;
   font-size: 21px;
   font-weight: 700;
+}
+
+.page-heading .page-subtitle {
+  margin-bottom: 0;
 }
 
 .page-subtitle,
@@ -790,15 +832,35 @@ export default defineComponent({
 
 .profile-panel {
   height: 100%;
-  padding: 20px;
-  border: 1px solid #e5e7eb;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  min-width: 0;
+  padding: 22px;
+  border: 1px solid var(--console-border, #e5e7eb);
+  background: var(--console-surface, #fff);
 }
 
 .panel-title {
+  margin: 0;
   color: #1f2937;
   font-size: 17px;
   font-weight: 700;
+}
+
+.panel-heading {
+  margin-bottom: 12px;
+}
+
+.panel-heading--form {
+  margin: 0 0 16px;
+}
+
+.panel-heading .panel-subtitle {
+  margin-bottom: 0;
+}
+
+.profile-section-divider {
+  height: 1px;
+  margin: 18px 0;
+  background: var(--console-border, #e5e7eb);
 }
 
 .panel-head {
@@ -812,6 +874,7 @@ export default defineComponent({
   padding: 12px 0;
   border-bottom: 1px solid #eef2f7;
   color: #334155;
+  overflow-wrap: anywhere;
 }
 
 .profile-field:last-child {
@@ -839,8 +902,8 @@ export default defineComponent({
   gap: 14px;
   padding: 18px;
   border: 1px solid #e5e7eb;
-  border-radius: 16px;
-  background: #f8fafc;
+  border-radius: 8px;
+  background: #f7f9fc;
 }
 
 .wechat-bound-time,
@@ -888,13 +951,14 @@ export default defineComponent({
 
 .wechat-qrcode-frame {
   width: 220px;
-  height: 220px;
+  max-width: 100%;
+  aspect-ratio: 1;
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: hidden;
   border: 1px solid #e5e7eb;
-  border-radius: 16px;
+  border-radius: 8px;
   background: #fff;
 }
 
@@ -905,6 +969,28 @@ export default defineComponent({
 }
 
 @media (max-width: 640px) {
+  .page-heading {
+    align-items: flex-start;
+  }
+
+  .page-title {
+    font-size: 20px;
+  }
+
+  .profile-panel {
+    padding: 18px;
+  }
+
+  .profile-field {
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .profile-field > :last-child {
+    max-width: 65%;
+    text-align: right;
+  }
+
   .sms-code-row {
     flex-direction: column;
   }

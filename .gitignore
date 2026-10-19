@@ -31,3 +31,6 @@ adapter-service.exe
 # nginx 证书目录只保留说明文件，其余（证书/私钥/临时文件）一律忽略
 /run/nginx/ssl/*
 !/run/nginx/ssl/README.md
+.superdesign
+# 本地设计工具生成的技能与工作树不属于应用源码
+.claude/

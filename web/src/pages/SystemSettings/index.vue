@@ -1,12 +1,15 @@
 <template>
-  <div class="system-settings-page">
-    <a-card title="系统管理" style="width: 100%" :bordered="false" class="page-card">
-      <template #extra>
-        <a-space>
-          <a-button @click="handleLoad" :loading="tabLoading">刷新</a-button>
-          <a-button type="primary" @click="handleSave" :loading="saving">保存</a-button>
-        </a-space>
-      </template>
+  <div class="console-page system-settings-page">
+    <header class="section-heading settings-heading">
+      <div>
+        <h1>系统设置</h1>
+        <p class="page-lead">集中管理认证、通知、支付和站点运行参数。</p>
+      </div>
+      <a-space wrap class="section-actions">
+        <a-button @click="handleLoad" :loading="tabLoading">刷新</a-button>
+        <a-button type="primary" @click="handleSave" :loading="saving">保存</a-button>
+      </a-space>
+    </header>
 
       <a-alert
         type="info"
@@ -15,14 +18,14 @@
         message="这里维护公开认证、微信登录、验证码、短信宝、支付回调和支付方式。修改后会立即影响后续注册、登录与充值链路。"
       />
 
-      <a-form :label-col="labelCol" :wrapper-col="wrapperCol">
-        <a-divider orientation="left">站点信息</a-divider>
+      <a-form :label-col="labelCol" :wrapper-col="wrapperCol" class="settings-form">
+        <section class="console-panel settings-section">
+          <header class="section-heading"><h2>站点与日志</h2></header>
         <a-form-item label="网站名称">
           <a-input v-model:value="formState.siteName" placeholder="例如 题库" />
           <div class="hint">用于浏览器标题、页头品牌和登录页名称，留空时恢复为“题库”。</div>
         </a-form-item>
 
-        <a-divider orientation="left">日志管理</a-divider>
         <a-form-item label="最大日志大小">
           <a-input-number
             v-model:value="formState.maxLogSizeValue"
@@ -39,14 +42,15 @@
           </a-select>
           <div class="hint">日志目录全部日志文件的总占用上限，默认 5GB。支持 KB、MB、GB、TB，保存时会转换为字节。超过上限时会优先删除最旧的归档日志。</div>
         </a-form-item>
+        </section>
 
-        <a-divider orientation="left">公开认证</a-divider>
+        <section class="console-panel settings-section">
+          <header class="section-heading"><h2>认证与充值</h2></header>
         <a-form-item label="允许公开注册">
           <a-switch v-model:checked="formState.registerEnabled" />
           <div class="hint">关闭后，注册页会直接阻止进入；管理员在后台创建用户不受影响。</div>
         </a-form-item>
 
-        <a-divider orientation="left">新用户赠送</a-divider>
         <a-form-item label="新用户赠送金额">
           <a-input-number
             v-model:value="formState.newUserBonusAmount"
@@ -76,8 +80,10 @@
           <a-switch v-model:checked="formState.wechatLoginEnabled" />
           <div class="hint">总开关会随微信扫描或微信验证码方式自动生效；两个方式都关闭时会自动关闭。</div>
         </a-form-item>
+        </section>
 
-        <a-divider orientation="left">微信登录</a-divider>
+        <section class="console-panel settings-section">
+          <header class="section-heading"><h2>微信登录与验证码</h2></header>
         <a-form-item label="微信扫描">
           <a-switch v-model:checked="formState.wechatScanLoginEnabled" />
         </a-form-item>
@@ -106,7 +112,6 @@
           <!-- <div class="hint">微信验证码模式会在登录页展示该二维码，用户扫码关注后发送“验证码”获取登录码。</div> -->
         </a-form-item>
 
-        <a-divider orientation="left">验证码</a-divider>
         <a-form-item label="验证码提供方">
           <a-select v-model:value="formState.captchaProvider">
             <a-select-option value="remote">远程 TAC 验证码</a-select-option>
@@ -132,15 +137,20 @@
             <a-select-option value="WORD_IMAGE_CLICK">点选</a-select-option>
           </a-select>
         </a-form-item>
+        </section>
 
-        <a-divider orientation="left">归属地查询</a-divider>
+        <section class="console-panel settings-section">
+          <header class="section-heading"><h2>归属地查询</h2></header>
         <a-form-item label="UApiPro API 密钥">
           <a-input-password v-model:value="formState.uapiApiKey" placeholder="请输入 UApiPro API 密钥（以 uapi- 开头）" />
           <div class="hint">
             用于「用户管理」「日志列表」展示手机号 / IP 归属地。留空表示不查询归属地（对应列只显示原始值）。
           </div>
         </a-form-item>
-        <a-divider orientation="left">支付回调</a-divider>
+        </section>
+
+        <section class="console-panel settings-section">
+          <header class="section-heading"><h2>支付回调</h2></header>
         <a-form-item label="接口版本">
           <a-input value="v2" disabled />
           <div class="hint">当前仅兼容易支付 v2；支付方式请在本页下方维护。</div>
@@ -181,8 +191,10 @@
           <a-input :value="derivedReturnUrl" readonly placeholder="将根据网站 Base 地址自动补全" />
           <div class="hint">固定补全为 /adapter/recharge/result，并作为 return_url 参与易支付下单。</div>
         </a-form-item>
+        </section>
 
-        <a-divider orientation="left">短信验证码配置</a-divider>
+        <section class="console-panel settings-section">
+          <header class="section-heading"><h2>短信验证码配置</h2></header>
         <a-form-item label="短信提供方">
           <a-input v-model:value="formState.smsProvider" disabled />
           <!-- <div class="hint">首期固定使用短信宝，后续如有需要再扩展多供应商。</div> -->
@@ -219,9 +231,9 @@
           <a-textarea v-model:value="formState.smsCodeTemplate" :rows="3" placeholder="例如 【{sign}】您的验证码是{code}，5分钟内有效。" />
           <div class="hint">请保留 {sign} 和 {code} 占位符，系统会在发送前替换。</div>
         </a-form-item>
+        </section>
 
       </a-form>
-    </a-card>
 
     <a-card :bordered="false" class="page-card">
       <template #title>
@@ -861,10 +873,57 @@ export default defineComponent({
   display: flex;
   flex-direction: column;
   gap: 16px;
+  min-width: 0;
 }
 
-.page-card {
-  border-radius: 20px;
+.settings-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.settings-heading h1 {
+  margin: 0;
+  color: var(--console-text, #1f2937);
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.page-lead {
+  margin: 4px 0 0;
+  color: var(--console-muted, #64748b);
+  font-size: 13px;
+}
+
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.settings-section {
+  min-width: 0;
+  padding: 12px 0 16px;
+  border-bottom: 1px solid var(--console-border, #e5e7eb);
+}
+
+.settings-section .section-heading {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--console-border, #e5e7eb);
+}
+
+.settings-section .section-heading h2 {
+  margin: 0;
+  color: var(--console-text, #1f2937);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.settings-section :deep(.ant-form-item:last-child) {
+  margin-bottom: 0;
 }
 
 .page-alert {
@@ -879,7 +938,7 @@ export default defineComponent({
 }
 
 .base-url-input {
-  min-width: 320px;
+  min-width: min(320px, 100%);
 }
 
 .section-title-wrap {
@@ -888,15 +947,21 @@ export default defineComponent({
 }
 
 .section-title {
-  font-size: 20px;
-  font-weight: 700;
-  color: #1f2937;
+  font-size: 18px;
+  font-weight: 650;
+  color: var(--console-text, #1f2937);
 }
 
 .section-subtitle {
   margin-top: 6px;
-  color: #6b7280;
+  color: var(--console-muted, #64748b);
   font-size: 13px;
+}
+
+.system-settings-page > .page-card {
+  min-width: 0;
+  border: 1px solid var(--console-border, #e5e7eb);
+  border-radius: var(--console-radius, 12px);
 }
 
 .icon-cell {
@@ -909,5 +974,15 @@ export default defineComponent({
   width: 28px;
   height: 28px;
   display: block;
+}
+
+@media (max-width: 640px) {
+  .settings-section {
+    padding: 12px;
+  }
+
+  .base-url-input {
+    width: 100%;
+  }
 }
 </style>

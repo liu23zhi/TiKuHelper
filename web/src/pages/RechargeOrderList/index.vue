@@ -1,5 +1,12 @@
 <template>
-  <div class="recharge-order-page">
+  <div class="console-page recharge-order-page">
+    <header class="section-heading page-heading">
+      <div>
+        <h1>充值记录</h1>
+        <p class="page-lead">{{ isAdmin ? '管理员可查看全部充值记录。' : '普通用户只能查看自己的充值记录。' }}</p>
+      </div>
+      <a-button @click="handleLoad" :loading="tableLoading">刷新</a-button>
+    </header>
     <a-row :gutter="16" class="summary-row">
       <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
@@ -26,20 +33,6 @@
     </a-row>
 
     <a-card :bordered="false" class="page-card">
-      <template #title>
-        <div class="page-title-wrap">
-          <div>
-            <div class="page-title">充值记录</div>
-            <div class="page-subtitle">
-              {{ isAdmin ? '管理员可查看全部充值记录。' : '普通用户只能查看自己的充值记录。' }}
-            </div>
-          </div>
-        </div>
-      </template>
-      <template #extra>
-        <a-button @click="handleLoad" :loading="tableLoading">刷新</a-button>
-      </template>
-
       <a-alert
         type="info"
         show-icon
@@ -339,12 +332,34 @@ export default defineComponent({
   gap: 16px;
 }
 
+.page-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.page-heading h1 {
+  margin: 0;
+  color: var(--console-text, #1f2937);
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.page-lead {
+  margin: 4px 0 0;
+  color: var(--console-muted, #64748b);
+  font-size: 13px;
+}
+
 .summary-row {
   margin-bottom: 0;
 }
 
 .summary-card {
-  border-radius: 18px;
+  border: 1px solid var(--console-border, #e5e7eb);
+  border-radius: 8px;
 }
 
 .summary-hint {
@@ -355,33 +370,41 @@ export default defineComponent({
 
 .filter-form {
   margin: 12px 0 16px;
+  padding: 16px;
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 0;
+  gap: 8px 16px;
+  border: 1px solid var(--console-border, #e5e7eb);
+  border-radius: 8px;
+  background: var(--console-canvas, #f5f7fb);
+}
+
+.filter-form :deep(.ant-form-item) {
+  margin-bottom: 0;
 }
 
 .page-card {
-  border-radius: 20px;
-}
-
-.page-title-wrap {
-  display: flex;
-  align-items: center;
-}
-
-.page-title {
-  color: #1f2937;
-  font-size: 22px;
-  font-weight: 700;
-}
-
-.page-subtitle {
-  margin-top: 6px;
-  color: #6b7280;
-  font-size: 13px;
+  border: 1px solid var(--console-border, #e5e7eb);
+  border-radius: var(--console-radius, 12px);
 }
 
 .page-alert {
   margin-bottom: 16px;
+}
+
+.recharge-order-page :deep(.ant-table) {
+  font-size: 13px;
+}
+
+@media (max-width: 640px) {
+  .filter-form {
+    padding: 12px;
+  }
+
+  .filter-form :deep(.ant-form-item),
+  .filter-form :deep(.ant-input),
+  .filter-form :deep(.ant-select) {
+    width: 100%;
+  }
 }
 </style>

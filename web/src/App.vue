@@ -26,6 +26,16 @@ export default {
 </script>
 
 <style>
+:root {
+  --console-canvas: #f5f7fb;
+  --console-surface: #ffffff;
+  --console-primary: #2563eb;
+  --console-border: #e5e7eb;
+  --console-text: #1f2937;
+  --console-muted: #64748b;
+  --console-radius: 12px;
+}
+
 html,
 body {
   min-height: 100%;
@@ -39,8 +49,8 @@ body.swal2-height-auto {
   font-family: Avenir, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  color: #2c3e50;
+  color: var(--console-text);
   height: 100%;
-  background-color: #f0f2f5;
+  background-color: var(--console-canvas);
 }
 </style>

@@ -1,5 +1,22 @@
 <template>
-  <div class="token-page">
+  <div class="console-page token-page">
+    <header class="section-heading page-heading">
+      <div>
+        <h1>令牌管理</h1>
+        <p class="page-lead">为当前账号创建多个访问令牌，并按令牌维度维护状态、备注与累计额度上限。</p>
+      </div>
+      <a-space wrap class="section-actions">
+        <a-button
+          v-if="isAdmin"
+          :type="showAllTokens ? 'primary' : 'default'"
+          @click="toggleAllTokens"
+        >
+          {{ showAllTokens ? '只看我的令牌' : '显示全部令牌' }}
+        </a-button>
+        <a-button @click="handleLoad" :loading="tableLoading">刷新</a-button>
+        <a-button type="primary" @click="openCreateModal">新增令牌</a-button>
+      </a-space>
+    </header>
     <a-row :gutter="16" class="summary-row">
       <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
@@ -24,28 +41,6 @@
     </a-row>
 
     <a-card :bordered="false" class="page-card">
-      <template #title>
-        <div class="page-title-wrap">
-          <div>
-            <div class="page-title">令牌管理</div>
-            <div class="page-subtitle">为当前账号创建多个访问令牌，并按令牌维度维护状态、备注与累计额度上限。</div>
-          </div>
-        </div>
-      </template>
-      <template #extra>
-        <a-space>
-          <a-button
-            v-if="isAdmin"
-            :type="showAllTokens ? 'primary' : 'default'"
-            @click="toggleAllTokens"
-          >
-            {{ showAllTokens ? '只看我的令牌' : '显示全部令牌' }}
-          </a-button>
-          <a-button @click="handleLoad" :loading="tableLoading">刷新</a-button>
-          <a-button type="primary" @click="openCreateModal">新增令牌</a-button>
-        </a-space>
-      </template>
-
       <a-alert
         type="info"
         show-icon
@@ -637,37 +632,68 @@ export default defineComponent({
   gap: 16px;
 }
 
+.page-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.page-heading h1 {
+  margin: 0;
+  color: var(--console-text, #1f2937);
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.page-lead {
+  max-width: 680px;
+  margin: 4px 0 0;
+  color: var(--console-muted, #64748b);
+  font-size: 13px;
+}
+
 .summary-row {
   margin-bottom: 0;
 }
 
 .summary-card {
-  border-radius: 18px;
+  border: 1px solid var(--console-border, #e5e7eb);
+  border-radius: 8px;
 }
 
 .page-card {
-  border-radius: 20px;
-}
-
-.page-title-wrap {
-  display: flex;
-  align-items: center;
-}
-
-.page-title {
-  font-size: 22px;
-  font-weight: 700;
-  color: #1f2937;
-}
-
-.page-subtitle {
-  margin-top: 6px;
-  color: #6b7280;
-  font-size: 13px;
+  border: 1px solid var(--console-border, #e5e7eb);
+  border-radius: var(--console-radius, 12px);
 }
 
 .page-alert {
   margin-bottom: 16px;
+}
+
+.token-page :deep(.ant-table) {
+  font-size: 13px;
+}
+
+.filter-form {
+  padding: 16px;
+  border: 1px solid var(--console-border, #e5e7eb);
+  border-radius: 8px;
+  background: var(--console-canvas, #f5f7fb);
+}
+
+@media (max-width: 640px) {
+  .filter-form,
+  .filter-form :deep(.ant-form-item) {
+    width: 100%;
+  }
+
+  .filter-form :deep(.ant-input),
+  .filter-form :deep(.ant-input-search),
+  .filter-form :deep(.ant-select) {
+    width: 100%;
+  }
 }
 
 .hint {
@@ -703,7 +729,6 @@ export default defineComponent({
 .token-copy-button,
 .token-toggle-button {
   flex: 0 0 auto;
-  border-radius: 999px;
 }
 </style>
 
@@ -711,7 +736,7 @@ export default defineComponent({
 .token-created-popup {
   width: min(34rem, calc(100vw - 2rem));
   padding: 28px 28px 24px;
-  border-radius: 24px;
+  border-radius: 12px;
   box-shadow: 0 24px 70px rgba(15, 23, 42, 0.2);
 }
 
@@ -738,7 +763,7 @@ export default defineComponent({
   margin-bottom: 16px;
   padding: 12px 14px;
   border: 1px solid #fde68a;
-  border-radius: 14px;
+  border-radius: 8px;
   background: #fffbeb;
   color: #92400e;
   font-size: 13px;
@@ -763,7 +788,7 @@ export default defineComponent({
 .token-created-dialog__field {
   padding: 14px;
   border: 1px solid #dbe4ee;
-  border-radius: 16px;
+  border-radius: 8px;
   background: #f8fafc;
 }
 
@@ -801,7 +826,7 @@ export default defineComponent({
   min-width: 126px;
   height: 42px;
   padding: 0 20px;
-  border-radius: 999px;
+  border-radius: 8px;
   font-size: 14px;
   font-weight: 600;
   transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
@@ -843,7 +868,7 @@ export default defineComponent({
   .token-created-popup {
     width: calc(100vw - 24px);
     padding: 24px 18px 18px;
-    border-radius: 20px;
+    border-radius: 12px;
   }
 
   .token-created-popup__actions {
