@@ -91,6 +91,7 @@ func TestSetAPIRouterRegistersCurrentUserBindingRoutes(t *testing.T) {
 	SetAPIRouter(router)
 
 	expected := map[string]bool{
+		"PUT /adapter-service/user/profile":           false,
 		"POST /adapter-service/user/phone/sms-code":   false,
 		"PUT /adapter-service/user/phone":             false,
 		"POST /adapter-service/user/wechat/bind":      false,

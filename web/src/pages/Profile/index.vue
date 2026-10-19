@@ -62,6 +62,27 @@
               <span class="profile-field-label">登录 IP</span>
               <span class="location-value">{{ formatValueWithLocation(currentUser.lastLoginIp, ipLocations[normalizeLocationKey(currentUser.lastLoginIp)]) || '-' }}</span>
             </div>
+            <a-divider />
+            <div class="panel-title">修改用户名和昵称</div>
+            <a-form layout="vertical" :model="profileForm" @finish="submitProfile">
+              <a-form-item label="用户名" name="username" required>
+                <a-input
+                  v-model:value="profileForm.username"
+                  placeholder="只能使用中文、英文、数字、下划线和@"
+                  :maxlength="255"
+                />
+              </a-form-item>
+              <a-form-item label="昵称" name="nickname">
+                <a-input
+                  v-model:value="profileForm.nickname"
+                  placeholder="可选，最多255个字符"
+                  :maxlength="255"
+                />
+              </a-form-item>
+              <a-button type="primary" html-type="submit" :loading="updatingProfile">
+                保存资料
+              </a-button>
+            </a-form>
           </div>
         </a-col>
 
@@ -230,6 +251,7 @@ import {
   createCaptchaChallenge,
   createWechatLoginQRCode,
   getCurrentUser,
+  updateCurrentUserProfile,
   getPublicRegisterStatus,
   getWechatLoginStatus,
   sendUserPhoneChangeSMSCode,
@@ -293,6 +315,7 @@ export default defineComponent({
   setup() {
     const loading = ref(false)
     const updatingPhone = ref(false)
+    const updatingProfile = ref(false)
     const sendingPhoneCode = ref(false)
     const unbindingWechat = ref(false)
     const wechatQrLoading = ref(false)
@@ -304,6 +327,10 @@ export default defineComponent({
     const wechatBindSubMode = ref('scan')
     const wechatCodeSubmitting = ref(false)
     const currentUser = reactive({})
+    const profileForm = reactive({
+      username: '',
+      nickname: '',
+    })
     const phoneForm = reactive({
       phone: '',
       smsCode: '',
@@ -332,6 +359,8 @@ export default defineComponent({
       Object.assign(currentUser, user || {})
       if (user) {
         setStoredCurrentUser(user)
+        profileForm.username = user.username || ''
+        profileForm.nickname = user.nickname || ''
       }
     }
 
@@ -449,6 +478,26 @@ export default defineComponent({
         message.error(error?.message || '更换手机号失败')
       } finally {
         updatingPhone.value = false
+      }
+    }
+
+    const submitProfile = async () => {
+      updatingProfile.value = true
+      try {
+        const res = await updateCurrentUserProfile({
+          username: profileForm.username,
+          nickname: profileForm.nickname,
+        })
+        if (res?.status !== 200) {
+          message.error(res?.message || '保存资料失败')
+          return
+        }
+        message.success('资料保存成功')
+        applyCurrentUser(res.data || {})
+      } catch (error) {
+        message.error(error?.message || '保存资料失败')
+      } finally {
+        updatingProfile.value = false
       }
     }
 
@@ -638,6 +687,7 @@ export default defineComponent({
     return {
       loading,
       updatingPhone,
+      updatingProfile,
       sendingPhoneCode,
       unbindingWechat,
       wechatQrLoading,
@@ -649,12 +699,14 @@ export default defineComponent({
       wechatCodeSubmitting,
       currentUser,
       phoneForm,
+      profileForm,
       wechatCodeForm,
       publicAuthSettings,
       smsCooldownText: smsCooldown.buttonText,
       smsCooldownActive: smsCooldown.active,
       sendPhoneChangeCode,
       submitPhoneChange,
+      submitProfile,
       startWechatBind,
       handleWechatBindSubModeChange,
       submitWechatCodeBind,

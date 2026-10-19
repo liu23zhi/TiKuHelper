@@ -455,6 +455,98 @@ func TestAuthRejectsTokenAfterPasswordChange(t *testing.T) {
 	}
 }
 
+func TestUpdateCurrentUserProfileUsesAuthenticatedUserAndUpdatesFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	if err := db.Create(&entity.User{ID: 501, Username: "profile_old", Nickname: "旧昵称", Role: "user", Status: "enabled"}).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := db.Create(&entity.User{ID: 502, Username: "profile_other", Role: "user", Status: "enabled"}).Error; err != nil {
+		t.Fatalf("create other user: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Set("user", &entity.User{ID: 501, Username: "profile_old", Role: "user", Status: "enabled"})
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/user/profile", bytes.NewBufferString(`{"id":502,"username":"profile_new","nickname":"新昵称"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	UpdateCurrentUserProfile(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	var updated entity.User
+	if err := db.First(&updated, 501).Error; err != nil {
+		t.Fatalf("load current user: %v", err)
+	}
+	if updated.Username != "profile_new" || updated.Nickname != "新昵称" {
+		t.Fatalf("unexpected current user: %+v", updated)
+	}
+	var other entity.User
+	if err := db.First(&other, 502).Error; err != nil {
+		t.Fatalf("load other user: %v", err)
+	}
+	if other.Username != "profile_other" {
+		t.Fatalf("target id from request was incorrectly used: %+v", other)
+	}
+}
+
+func TestUpdateCurrentUserProfileRejectsDuplicateUsernameWithConflict(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	if err := db.Create(&entity.User{ID: 503, Username: "profile_current", Nickname: "原昵称", Role: "user", Status: "enabled"}).Error; err != nil {
+		t.Fatalf("create current user: %v", err)
+	}
+	if err := db.Create(&entity.User{ID: 504, Username: "profile_taken", Role: "user", Status: "enabled"}).Error; err != nil {
+		t.Fatalf("create other user: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Set("user", &entity.User{ID: 503, Username: "profile_current", Role: "user", Status: "enabled"})
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/user/profile", bytes.NewBufferString(`{"username":"profile_taken","nickname":"不应保存"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	UpdateCurrentUserProfile(ctx)
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("expected status 409, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	var current entity.User
+	if err := db.First(&current, 503).Error; err != nil {
+		t.Fatalf("load current user: %v", err)
+	}
+	if current.Username != "profile_current" || current.Nickname != "原昵称" {
+		t.Fatalf("duplicate update changed current user: %+v", current)
+	}
+}
+
+func TestUpdateCurrentUserProfileValidatesUsernameAndNicknameLength(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	if err := db.Create(&entity.User{ID: 505, Username: "profile_valid", Role: "user", Status: "enabled"}).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	for _, payload := range []string{
+		`{"username":"https://example.com","nickname":"昵称"}`,
+		fmt.Sprintf(`{"username":"profile_valid","nickname":%q}`, strings.Repeat("字", service.UserNicknameMaxLength+1)),
+	} {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Set("user", &entity.User{ID: 505, Username: "profile_valid", Role: "user", Status: "enabled"})
+		ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/user/profile", bytes.NewBufferString(payload))
+		ctx.Request.Header.Set("Content-Type", "application/json")
+
+		UpdateCurrentUserProfile(ctx)
+
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("expected status 400, got %d with body %s", recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
 func TestUserRegisterRequiresRegisterEnabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	_ = newUserControllerTestDB(t)

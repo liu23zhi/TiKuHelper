@@ -587,6 +587,47 @@ func UpdateCurrentUserPhone(c *gin.Context) {
 	c.JSON(http.StatusOK, updated)
 }
 
+// UpdateCurrentUserProfile updates only the authenticated user's username and nickname.
+func UpdateCurrentUserProfile(c *gin.Context) {
+	operator, ok := c.Get("user")
+	if !ok || operator == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "请重新登录"})
+		return
+	}
+	currentUser, ok := operator.(*entity.User)
+	if !ok || currentUser == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "请重新登录"})
+		return
+	}
+
+	var payload struct {
+		Username string `json:"username"`
+		Nickname string `json:"nickname"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
+		return
+	}
+
+	updated, err := service.UpdateCurrentUserProfileWithDB(dao.User.UnderlyingDB(), currentUser.ID, service.UpdateUserProfileInput{
+		Username: payload.Username,
+		Nickname: payload.Nickname,
+	})
+	if err != nil {
+		if errors.Is(err, service.ErrUserProfileUsernameTaken) || isUserRegisterConflictError(err) {
+			c.JSON(http.StatusConflict, gin.H{"message": "用户名已经被使用"})
+			return
+		}
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusUnauthorized, gin.H{"message": "请重新登录"})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, updated)
+}
+
 func BindCurrentUserWechat(c *gin.Context) {
 	operator, ok := c.Get("user")
 	if !ok || operator == nil {

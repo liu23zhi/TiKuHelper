@@ -304,6 +304,14 @@ export function getCurrentUser() {
   })
 }
 
+export function updateCurrentUserProfile(data) {
+  return request({
+    url: `/adapter-service/user/profile`,
+    method: 'put',
+    data,
+  })
+}
+
 export function sendUserPhoneChangeSMSCode(data) {
   return request({
     url: `/adapter-service/user/phone/sms-code`,

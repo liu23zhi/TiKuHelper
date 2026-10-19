@@ -37,7 +37,11 @@ var bindWechatLoginWithDB = func(input service.WechatBindInput) (service.WechatB
 }
 
 var fetchWechatUserIDByCode = func(client service.WechatLoginClient, code string) (string, error) {
-	return service.FetchWechatUserIDByCode(client, code)
+	result, err := service.ResolveWechatUserIDByCode(client, code)
+	if err != nil {
+		return "", err
+	}
+	return result.WechatID, nil
 }
 
 var resolveAdminWechatScanID = func(client service.WechatLoginClient, loginToken string) (service.WechatScanIDResult, error) {

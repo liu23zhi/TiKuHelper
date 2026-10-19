@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,8 +26,16 @@ const (
 	WechatLoginStatusNeedBind = "need_bind"
 	WechatLoginStatusExpired  = "expired"
 
-	wechatBindTokenTTL = 5 * time.Minute
-	maxWechatQRCodeTTL = 180 * time.Second
+	WechatQRCodeTTL           = 180 * time.Second
+	WechatVerificationCodeTTL = 180 * time.Second
+	wechatBindTokenTTL        = 5 * time.Minute
+)
+
+var (
+	// ErrWechatVerificationCodeExpired is shared by login, registration and
+	// account-management code binding so callers can handle expiry uniformly.
+	ErrWechatVerificationCodeExpired = errors.New("微信验证码已过期，请重新获取")
+	ErrWechatVerificationCodeInvalid = errors.New("微信验证码无效，请重新获取")
 )
 
 type WechatLoginClient struct {
@@ -77,6 +86,16 @@ type WechatScanIDResult struct {
 	Status   string `json:"status"`
 	WechatID string `json:"wechatId,omitempty"`
 	Message  string `json:"message,omitempty"`
+}
+
+// WechatUserIDResult is the common result for every code-based WeChat ID
+// lookup. The expiry is the validity window of the submitted code; the
+// upstream API remains the authority for whether a particular code is still
+// accepted.
+type WechatUserIDResult struct {
+	WechatID  string
+	IssuedAt  time.Time
+	ExpiresAt time.Time
 }
 
 type wechatUpstreamStatus struct {
@@ -160,8 +179,8 @@ func (s *WechatLoginSessionStore) Resolve(loginToken string, now time.Time) (Wec
 
 func normalizeWechatQRCodeTTL(expireSeconds int) time.Duration {
 	ttl := time.Duration(expireSeconds) * time.Second
-	if ttl <= 0 || ttl > maxWechatQRCodeTTL {
-		return maxWechatQRCodeTTL
+	if ttl <= 0 || ttl > WechatQRCodeTTL {
+		return WechatQRCodeTTL
 	}
 	return ttl
 }
@@ -425,12 +444,13 @@ func normalizeWechatUpstreamStatus(value string) string {
 }
 
 func LoginWechatByCodeWithDB(db *gorm.DB, input WechatCodeLoginInput) (WechatLoginStatusResult, error) {
-	wechatID, err := FetchWechatUserIDByCode(input.Client, input.Code)
+	resolved, err := ResolveWechatUserIDByCode(input.Client, input.Code)
 	if err != nil {
 		return WechatLoginStatusResult{}, err
 	}
+	wechatID := resolved.WechatID
 	if strings.TrimSpace(wechatID) == "" {
-		return WechatLoginStatusResult{}, fmt.Errorf("微信验证码无效")
+		return WechatLoginStatusResult{}, ErrWechatVerificationCodeInvalid
 	}
 	return resolveWechatLoginResultByID(db, input.Store, wechatID, input.RequestIP)
 }
@@ -544,12 +564,13 @@ func BindWechatCodeToUserWithDB(db *gorm.DB, client WechatLoginClient, code stri
 	if trimmedCode == "" {
 		return entity.User{}, fmt.Errorf("微信验证码不能为空")
 	}
-	wechatID, err := FetchWechatUserIDByCode(client, trimmedCode)
+	resolved, err := ResolveWechatUserIDByCode(client, trimmedCode)
 	if err != nil {
 		return entity.User{}, err
 	}
+	wechatID := resolved.WechatID
 	if strings.TrimSpace(wechatID) == "" {
-		return entity.User{}, fmt.Errorf("微信验证码无效")
+		return entity.User{}, ErrWechatVerificationCodeInvalid
 	}
 	return bindWechatIDToUserWithDB(db, wechatID, userID, time.Now())
 }
@@ -600,27 +621,36 @@ func UnbindWechatFromUserWithDB(db *gorm.DB, userID int32) (entity.User, error) 
 	return user, nil
 }
 
-func FetchWechatUserIDByCode(client WechatLoginClient, code string) (string, error) {
+// ResolveWechatUserIDByCode is the single code-to-WeChat-ID entry point used
+// by login, registration and account-management flows. Keep expiry/error
+// handling here so a new caller cannot accidentally accept an expired code or
+// expose an upstream-specific error message.
+func ResolveWechatUserIDByCode(client WechatLoginClient, code string) (WechatUserIDResult, error) {
+	trimmedCode := strings.TrimSpace(code)
+	if trimmedCode == "" {
+		return WechatUserIDResult{}, ErrWechatVerificationCodeInvalid
+	}
+	issuedAt := time.Now()
 	httpClient := resolveWechatHTTPClient(client)
 	apiURL, err := joinWechatURL(client.BaseURL, "/api/wechat/user")
 	if err != nil {
-		return "", err
+		return WechatUserIDResult{}, err
 	}
 	parsed, err := url.Parse(apiURL)
 	if err != nil {
-		return "", err
+		return WechatUserIDResult{}, err
 	}
 	query := parsed.Query()
-	query.Set("code", strings.TrimSpace(code))
+	query.Set("code", trimmedCode)
 	parsed.RawQuery = query.Encode()
 	req, err := http.NewRequest(http.MethodGet, parsed.String(), nil)
 	if err != nil {
-		return "", err
+		return WechatUserIDResult{}, err
 	}
 	applyWechatBearer(req, client.Token)
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("微信用户查询失败")
+		return WechatUserIDResult{}, fmt.Errorf("微信用户查询失败")
 	}
 	defer resp.Body.Close()
 	var payload struct {
@@ -629,12 +659,45 @@ func FetchWechatUserIDByCode(client WechatLoginClient, code string) (string, err
 		Message string `json:"message"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 2*1024*1024)).Decode(&payload); err != nil {
-		return "", fmt.Errorf("微信用户响应解析失败")
+		return WechatUserIDResult{}, fmt.Errorf("微信用户响应解析失败")
 	}
 	if !payload.Success {
-		return "", fmt.Errorf("%s", defaultWechatMessage(payload.Message, "微信用户查询失败"))
+		return WechatUserIDResult{}, normalizeWechatVerificationCodeError(payload.Message)
 	}
-	return strings.TrimSpace(payload.Data), nil
+	wechatID := strings.TrimSpace(payload.Data)
+	if wechatID == "" {
+		return WechatUserIDResult{}, ErrWechatVerificationCodeInvalid
+	}
+	return WechatUserIDResult{
+		WechatID:  wechatID,
+		IssuedAt:  issuedAt,
+		ExpiresAt: issuedAt.Add(WechatVerificationCodeTTL),
+	}, nil
+}
+
+// FetchWechatUserIDByCode is retained for existing callers and tests. New
+// code should use ResolveWechatUserIDByCode when it needs the validity window.
+func FetchWechatUserIDByCode(client WechatLoginClient, code string) (string, error) {
+	result, err := ResolveWechatUserIDByCode(client, code)
+	if err != nil {
+		return "", err
+	}
+	return result.WechatID, nil
+}
+
+func normalizeWechatVerificationCodeError(message string) error {
+	trimmed := strings.TrimSpace(message)
+	if trimmed == "" {
+		return fmt.Errorf("微信用户查询失败")
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.Contains(trimmed, "过期") || strings.Contains(lower, "expired") || strings.Contains(lower, "timeout") || strings.Contains(lower, "timed out") {
+		return ErrWechatVerificationCodeExpired
+	}
+	if strings.Contains(trimmed, "无效") || strings.Contains(lower, "invalid") {
+		return ErrWechatVerificationCodeInvalid
+	}
+	return fmt.Errorf("%s", trimmed)
 }
 
 func resolveWechatHTTPClient(client WechatLoginClient) *http.Client {

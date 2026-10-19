@@ -22,7 +22,11 @@ var pollWechatRegisterQRCode = func(client service.WechatLoginClient, sessionID 
 }
 
 var fetchWechatRegisterUserIDByCode = func(client service.WechatLoginClient, code string) (string, error) {
-	return service.FetchWechatUserIDByCode(client, code)
+	result, err := service.ResolveWechatUserIDByCode(client, code)
+	if err != nil {
+		return "", err
+	}
+	return result.WechatID, nil
 }
 
 type wechatRegisterFlowPayload struct {
@@ -75,7 +79,7 @@ func PublicWechatRegisterQRCode(c *gin.Context) {
 		if result.ExpiresAtUnix <= 0 {
 			ttl := time.Duration(result.ExpireSeconds) * time.Second
 			if ttl <= 0 {
-				ttl = 180 * time.Second
+				ttl = service.WechatQRCodeTTL
 			}
 			expiresAt = now.Add(ttl)
 		}

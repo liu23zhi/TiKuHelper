@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -387,6 +388,68 @@ func TestLoginWechatByCodeWithDBRejectsEmptyWechatID(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "微信验证码无效") {
 		t.Fatalf("expected invalid code error, got %v", err)
+	}
+}
+
+func TestResolveWechatUserIDByCodeReturnsCommonValidityWindow(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/wechat/user" || r.URL.Query().Get("code") != "104017" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"data":    "openid-common-resolution",
+		})
+	}))
+	defer server.Close()
+
+	before := time.Now()
+	result, err := ResolveWechatUserIDByCode(WechatLoginClient{BaseURL: server.URL, Client: server.Client()}, "104017")
+	if err != nil {
+		t.Fatalf("resolve wechat id: %v", err)
+	}
+	if result.WechatID != "openid-common-resolution" {
+		t.Fatalf("unexpected wechat id: %q", result.WechatID)
+	}
+	if result.IssuedAt.Before(before) || result.ExpiresAt.Sub(result.IssuedAt) != WechatVerificationCodeTTL {
+		t.Fatalf("unexpected validity window: issued=%s expires=%s", result.IssuedAt, result.ExpiresAt)
+	}
+}
+
+func TestResolveWechatUserIDByCodeMapsExpiredUpstreamMessage(t *testing.T) {
+	for _, message := range []string{"验证码已过期", "verification code expired", "code timeout"} {
+		t.Run(message, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"success": false,
+					"message": message,
+				})
+			}))
+			defer server.Close()
+
+			_, err := ResolveWechatUserIDByCode(WechatLoginClient{BaseURL: server.URL, Client: server.Client()}, "104018")
+			if !errors.Is(err, ErrWechatVerificationCodeExpired) {
+				t.Fatalf("expected expired sentinel, got %v", err)
+			}
+		})
+	}
+}
+
+func TestResolveWechatUserIDByCodeRejectsEmptyCodeWithoutRequest(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	_, err := ResolveWechatUserIDByCode(WechatLoginClient{BaseURL: server.URL, Client: server.Client()}, " ")
+	if !errors.Is(err, ErrWechatVerificationCodeInvalid) {
+		t.Fatalf("expected invalid sentinel, got %v", err)
+	}
+	if requests != 0 {
+		t.Fatalf("expected no upstream request, got %d", requests)
 	}
 }
 
