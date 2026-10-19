@@ -317,7 +317,26 @@ export function buildLogLocalQuestionId(record = {}) {
   if (direct !== '-') {
     return direct;
   }
-  return buildLogQidLabel(parseSearchLogDescriptionMap(String(record?.description || '')).localQuestionId);
+  const description = String(record?.description || '');
+  for (const key of ['localQuestionId', 'qid']) {
+    const match = description.match(new RegExp(`(?:^|\\s)${key}=(\\d+)`));
+    const value = buildLogQidLabel(match?.[1]);
+    if (value !== '-') {
+      return value;
+    }
+  }
+  const request = String(record?.oldAnswer || '');
+  try {
+    const parsed = JSON.parse(request);
+    const parsedValue = buildLogQidLabel(parsed?.qid ?? parsed?.localQuestionId);
+    if (parsedValue !== '-') {
+      return parsedValue;
+    }
+  } catch (_) {
+    // 非 JSON 请求快照继续走文本兜底。
+  }
+  const requestMatch = request.match(/(?:["']?qid["']?\s*[:=]\s*["']?)(\d+)/i);
+  return buildLogQidLabel(requestMatch?.[1]);
 }
 
 function formatBooleanText(value) {

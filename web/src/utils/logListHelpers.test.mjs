@@ -125,6 +125,8 @@ test('ordinary search failure descriptions retain complete error causes', () => 
 test('local question id falls back to structured search metadata when qid is empty', () => {
   assert.equal(buildLogLocalQuestionId({ qid: 42, description: '搜索完成 localQuestionId=99' }), '42');
   assert.equal(buildLogLocalQuestionId({ qid: 0, description: '搜索完成 localQuestionId=99' }), '99');
+  assert.equal(buildLogLocalQuestionId({ qid: 0, description: '普通日志 qid=88 provider=local' }), '88');
+  assert.equal(buildLogLocalQuestionId({ qid: 0, oldAnswer: '{"qid":"77","question":"题目"}' }), '77');
   assert.equal(buildLogLocalQuestionId({ qid: 0, description: '搜索完成 requestId=req-1' }), '-');
 });
 
