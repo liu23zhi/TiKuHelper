@@ -34,43 +34,45 @@ func BuildUAPISearchToolWithDB(db *gorm.DB) internalsearch.AISearchTool {
 }
 
 type AISearchConfigView struct {
-	Enabled                       bool     `json:"enabled"`
-	BaseURL                       string   `json:"baseUrl"`
-	APIKey                        string   `json:"apiKey"`
-	Model                         string   `json:"model"`
-	ManualModels                  []string `json:"manualModels"`
-	Prompt                        string   `json:"prompt"`
-	Remark                        string   `json:"remark"`
-	Temperature                   float64  `json:"temperature"`
-	TopP                          float64  `json:"topP"`
-	MaxAISearchModelCalls         int      `json:"maxAISearchModelCalls"`
-	MaxAISearches                 int      `json:"maxAISearches"`
-	MaxAISearchRetries            int      `json:"maxAISearchRetries"`
-	SearchPricePerCall            float64  `json:"searchPricePerCall"`
-	MaxAIWebReads                 int      `json:"maxAIWebReads"`
-	WebReadPricePerCall           float64  `json:"webReadPricePerCall"`
-	EnableAIStagedTokenBilling    bool     `json:"enableAIStagedTokenBilling"`
-	SmoothAIStagedTokenMultiplier bool     `json:"smoothAIStagedTokenMultiplier"`
+	Enabled                       bool                           `json:"enabled"`
+	BaseURL                       string                         `json:"baseUrl"`
+	APIKey                        string                         `json:"apiKey"`
+	Model                         string                         `json:"model"`
+	ManualModels                  []string                       `json:"manualModels"`
+	Prompt                        string                         `json:"prompt"`
+	Remark                        string                         `json:"remark"`
+	Temperature                   float64                        `json:"temperature"`
+	TopP                          float64                        `json:"topP"`
+	MaxAISearchModelCalls         int                            `json:"maxAISearchModelCalls"`
+	MaxAISearches                 int                            `json:"maxAISearches"`
+	MaxAISearchRetries            int                            `json:"maxAISearchRetries"`
+	SearchPricePerCall            float64                        `json:"searchPricePerCall"`
+	MaxAIWebReads                 int                            `json:"maxAIWebReads"`
+	WebReadPricePerCall           float64                        `json:"webReadPricePerCall"`
+	EnableAIStagedTokenBilling    bool                           `json:"enableAIStagedTokenBilling"`
+	SmoothAIStagedTokenMultiplier bool                           `json:"smoothAIStagedTokenMultiplier"`
+	StagedTokenMultiplierPoints   []AIStagedTokenMultiplierPoint `json:"stagedTokenMultiplierPoints"`
 }
 
 type UpdateAISearchConfigInput struct {
-	Enabled                       bool     `json:"enabled"`
-	BaseURL                       string   `json:"baseUrl"`
-	APIKey                        string   `json:"apiKey"`
-	Model                         string   `json:"model"`
-	ManualModels                  []string `json:"manualModels"`
-	Prompt                        string   `json:"prompt"`
-	Remark                        string   `json:"remark"`
-	Temperature                   float64  `json:"temperature"`
-	TopP                          float64  `json:"topP"`
-	MaxAISearchModelCalls         int      `json:"maxAISearchModelCalls"`
-	MaxAISearches                 int      `json:"maxAISearches"`
-	MaxAISearchRetries            int      `json:"maxAISearchRetries"`
-	SearchPricePerCall            *float64 `json:"searchPricePerCall,omitempty"`
-	MaxAIWebReads                 int      `json:"maxAIWebReads"`
-	WebReadPricePerCall           *float64 `json:"webReadPricePerCall,omitempty"`
-	EnableAIStagedTokenBilling    *bool    `json:"enableAIStagedTokenBilling,omitempty"`
-	SmoothAIStagedTokenMultiplier *bool    `json:"smoothAIStagedTokenMultiplier,omitempty"`
+	Enabled                       bool                            `json:"enabled"`
+	BaseURL                       string                          `json:"baseUrl"`
+	APIKey                        string                          `json:"apiKey"`
+	Model                         string                          `json:"model"`
+	ManualModels                  []string                        `json:"manualModels"`
+	Prompt                        string                          `json:"prompt"`
+	Remark                        string                          `json:"remark"`
+	Temperature                   float64                         `json:"temperature"`
+	TopP                          float64                         `json:"topP"`
+	MaxAISearchModelCalls         int                             `json:"maxAISearchModelCalls"`
+	MaxAISearches                 int                             `json:"maxAISearches"`
+	MaxAISearchRetries            int                             `json:"maxAISearchRetries"`
+	SearchPricePerCall            *float64                        `json:"searchPricePerCall,omitempty"`
+	MaxAIWebReads                 int                             `json:"maxAIWebReads"`
+	WebReadPricePerCall           *float64                        `json:"webReadPricePerCall,omitempty"`
+	EnableAIStagedTokenBilling    *bool                           `json:"enableAIStagedTokenBilling,omitempty"`
+	SmoothAIStagedTokenMultiplier *bool                           `json:"smoothAIStagedTokenMultiplier,omitempty"`
+	StagedTokenMultiplierPoints   *[]AIStagedTokenMultiplierPoint `json:"stagedTokenMultiplierPoints,omitempty"`
 }
 
 type AISearchRequestConfig struct {
@@ -197,6 +199,7 @@ func GetAISearchConfigWithDB(db *gorm.DB) (AISearchConfigView, error) {
 			WebReadPricePerCall:           GetWebReadPricePerCallWithDB(db),
 			EnableAIStagedTokenBilling:    stagedBilling.Enabled,
 			SmoothAIStagedTokenMultiplier: stagedBilling.SmoothFactor,
+			StagedTokenMultiplierPoints:   cloneAIStagedTokenMultiplierPoints(stagedBilling.MultiplierPoints),
 		}, nil
 	}
 	return buildAISearchConfigView(db, config)
@@ -214,7 +217,7 @@ func UpdateAISearchConfigWithDB(db *gorm.DB, input UpdateAISearchConfigInput) (A
 			return AISearchConfigView{}, err
 		}
 	}
-	if err := SetAIStagedTokenBillingSettingsWithDB(db, input.EnableAIStagedTokenBilling, input.SmoothAIStagedTokenMultiplier); err != nil {
+	if err := SetAIStagedTokenBillingSettingsWithDB(db, input.EnableAIStagedTokenBilling, input.SmoothAIStagedTokenMultiplier, input.StagedTokenMultiplierPoints); err != nil {
 		return AISearchConfigView{}, err
 	}
 	config, _, err := getAISearchConfigRecord(db)
@@ -400,6 +403,7 @@ func buildAISearchConfigView(db *gorm.DB, config entity.AISearchConfig) (AISearc
 		WebReadPricePerCall:           GetWebReadPricePerCallWithDB(db),
 		EnableAIStagedTokenBilling:    stagedBilling.Enabled,
 		SmoothAIStagedTokenMultiplier: stagedBilling.SmoothFactor,
+		StagedTokenMultiplierPoints:   cloneAIStagedTokenMultiplierPoints(stagedBilling.MultiplierPoints),
 	}, nil
 }
 

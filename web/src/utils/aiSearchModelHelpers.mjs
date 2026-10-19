@@ -46,10 +46,29 @@ export function filterRemoteModelNames(modelSource) {
   });
 }
 
+export const DEFAULT_AI_STAGED_TOKEN_MULTIPLIER_POINTS = Object.freeze([
+  Object.freeze({ tokens: 0, multiplier: 4 }),
+  Object.freeze({ tokens: 3000, multiplier: 2 }),
+  Object.freeze({ tokens: 10000, multiplier: 1 }),
+  Object.freeze({ tokens: 30000, multiplier: 0.65 }),
+  Object.freeze({ tokens: 100000, multiplier: 0.3 }),
+]);
+
+function normalizeStagedTokenMultiplierPoints(points) {
+  const source = Array.isArray(points) && points.length
+    ? points
+    : DEFAULT_AI_STAGED_TOKEN_MULTIPLIER_POINTS;
+  return source.map(point => ({
+    tokens: Number(point?.tokens || 0),
+    multiplier: Number(point?.multiplier || 1),
+  }));
+}
+
 // 模型单价已迁移到模型价格表，保存 AI 搜索配置时不再提交任何计费字段。
 export function buildAISearchConfigSavePayload(formState, baseUrl) {
   const hasEditableModelText = Object.prototype.hasOwnProperty.call(formState || {}, 'manualModelsText');
   const manualModelSource = hasEditableModelText ? formState?.manualModelsText : formState?.manualModels;
+  const hasStagedPoints = Object.prototype.hasOwnProperty.call(formState || {}, 'stagedTokenMultiplierPoints');
 
   return {
     enabled: !!formState?.enabled,
@@ -69,6 +88,7 @@ export function buildAISearchConfigSavePayload(formState, baseUrl) {
     webReadPricePerCall: Number(formState?.webReadPricePerCall || 0),
     enableAIStagedTokenBilling: !!formState?.enableAIStagedTokenBilling,
     smoothAIStagedTokenMultiplier: !!formState?.smoothAIStagedTokenMultiplier,
+    ...(hasStagedPoints ? { stagedTokenMultiplierPoints: normalizeStagedTokenMultiplierPoints(formState?.stagedTokenMultiplierPoints) } : {}),
   };
 }
 

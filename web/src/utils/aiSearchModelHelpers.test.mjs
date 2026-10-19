@@ -141,6 +141,20 @@ test('buildAISearchConfigSavePayload preserves explicitly enabled staged billing
   assert.equal(payload.smoothAIStagedTokenMultiplier, true);
 });
 
+test('buildAISearchConfigSavePayload persists editable staged multiplier points', () => {
+  const points = [
+    { tokens: 0, multiplier: 4 },
+    { tokens: 3000, multiplier: 2.5 },
+    { tokens: 100000, multiplier: 0.3 },
+  ];
+  const payload = buildAISearchConfigSavePayload({
+    enabled: true,
+    stagedTokenMultiplierPoints: points,
+  }, 'https://api.example.com/v1');
+
+  assert.deepEqual(payload.stagedTokenMultiplierPoints, points);
+});
+
 test('buildAISearchConfigSavePayload stops sending any billing fields', () => {
   const payload = buildAISearchConfigSavePayload({ enabled: true }, 'https://api.example.com/v1');
 
@@ -267,6 +281,10 @@ test('AISearchConfig page loads and exposes staged billing toggles', async () =>
   assert.match(content, /:disabled="!formState\.enableAIStagedTokenBilling"/);
   assert.match(content, /label="启用阶段计费"/);
   assert.match(content, /label="平滑变化倍率"/);
+  assert.match(content, /阶段倍率价格表/);
+  assert.match(content, /stagedTokenMultiplierPoints/);
+  assert.match(content, /新增阶段/);
+  assert.match(content, /恢复默认阶段表/);
 });
 
 const pricedRows = [

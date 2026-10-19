@@ -65,6 +65,23 @@ func TestCalculateAIStagedTokenMultiplierSmoothlyInterpolatesAndClamps(t *testin
 	}
 }
 
+func TestCalculateAIStagedTokenMultiplierUsesCustomPoints(t *testing.T) {
+	points := []service.AIStagedTokenMultiplierPoint{
+		{Tokens: 0, Multiplier: 4},
+		{Tokens: 5000, Multiplier: 2},
+		{Tokens: 100000, Multiplier: 0.3},
+	}
+	if got := calculateAIStagedTokenMultiplierWithPoints(4999, false, points); got != 4 {
+		t.Fatalf("expected fixed multiplier 4 before custom threshold, got %v", got)
+	}
+	if got := calculateAIStagedTokenMultiplierWithPoints(5000, false, points); got != 2 {
+		t.Fatalf("expected custom threshold multiplier 2, got %v", got)
+	}
+	if got := calculateAIStagedTokenMultiplierWithPoints(52500, true, points); got != 1.15 {
+		t.Fatalf("expected smooth custom multiplier 1.15, got %v", got)
+	}
+}
+
 func TestCalculateAIStagedTokenBillingPricesEachModelResponseBeforeRounding(t *testing.T) {
 	price := service.ResolvedAIModelTokenPrice{
 		ModelName:           "model-a",

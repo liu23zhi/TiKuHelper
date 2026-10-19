@@ -88,6 +88,48 @@ func TestAISearchConfigStagedBillingSettingsDefaultAndPartialUpdate(t *testing.T
 	}
 }
 
+func TestAISearchConfigStagedBillingPointsCanBeEditedAndPersisted(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	custom := []AIStagedTokenMultiplierPoint{
+		{Tokens: 0, Multiplier: 4},
+		{Tokens: 3000, Multiplier: 2.5},
+		{Tokens: 10000, Multiplier: 1.2},
+		{Tokens: 100000, Multiplier: 0.3},
+	}
+	enabled := true
+	view, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{
+		EnableAIStagedTokenBilling:  &enabled,
+		StagedTokenMultiplierPoints: &custom,
+	})
+	if err != nil {
+		t.Fatalf("save staged points: %v", err)
+	}
+	if !reflect.DeepEqual(view.StagedTokenMultiplierPoints, custom) {
+		t.Fatalf("expected saved staged points %+v, got %+v", custom, view.StagedTokenMultiplierPoints)
+	}
+
+	settings := GetAIStagedTokenBillingSettingsWithDB(db)
+	if !reflect.DeepEqual(settings.MultiplierPoints, custom) {
+		t.Fatalf("expected billing settings %+v, got %+v", custom, settings.MultiplierPoints)
+	}
+}
+
+func TestAISearchConfigRejectsInvalidStagedBillingPoints(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	invalid := [][]AIStagedTokenMultiplierPoint{
+		{{Tokens: 1, Multiplier: 4}, {Tokens: 100000, Multiplier: 0.3}},
+		{{Tokens: 0, Multiplier: 4}, {Tokens: 2000, Multiplier: 2}, {Tokens: 100000, Multiplier: 0.3}},
+		{{Tokens: 0, Multiplier: 4}, {Tokens: 3000, Multiplier: 4.5}, {Tokens: 100000, Multiplier: 0.3}},
+		{{Tokens: 0, Multiplier: 4}, {Tokens: 3000, Multiplier: 2}, {Tokens: 2000, Multiplier: 1}, {Tokens: 100000, Multiplier: 0.3}},
+		{{Tokens: 0, Multiplier: 4}, {Tokens: 3000, Multiplier: 2}, {Tokens: 100000, Multiplier: 0.4}},
+	}
+	for index, points := range invalid {
+		if _, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{StagedTokenMultiplierPoints: &points}); err == nil {
+			t.Fatalf("case %d: expected invalid staged points to fail", index)
+		}
+	}
+}
+
 func TestNormalizeAISearchBaseURLTrimsAndKeepsRawHost(t *testing.T) {
 	normalized := normalizeAISearchBaseURL(" https://api.openai.com/ ")
 	if normalized != "https://api.openai.com" {

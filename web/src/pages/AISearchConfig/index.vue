@@ -272,6 +272,38 @@
           </a-form-item>
         </a-form>
 
+        <div class="staged-points-editor">
+          <div class="staged-points-editor__header">
+            <div>
+              <div class="sub-card-title">阶段倍率价格表</div>
+              <div class="sub-card-subtitle">按单次实际上游模型响应的总 token 数匹配倍率；固定模式取所在区间的节点倍率，平滑模式在相邻节点之间线性插值。</div>
+            </div>
+            <a-space>
+              <a-button size="small" @click="resetStagedMultiplierPoints">恢复默认阶段表</a-button>
+              <a-button size="small" type="primary" @click="addStagedMultiplierPoint">新增阶段</a-button>
+            </a-space>
+          </div>
+          <a-table
+            bordered
+            size="small"
+            row-key="tokens"
+            :pagination="false"
+            :data-source="formState.stagedTokenMultiplierPoints"
+            :columns="stagedPointColumns"
+          >
+            <template #stageTokens="{ record }">
+              <a-input-number v-model:value="record.tokens" :min="0" :max="1000000000" :precision="0" :step="1000" style="width: 160px" />
+            </template>
+            <template #stageMultiplier="{ record }">
+              <a-input-number v-model:value="record.multiplier" :min="0.3" :max="4" :precision="4" :step="0.1" style="width: 140px" />
+            </template>
+            <template #stageAction="{ index }">
+              <a-button type="link" danger :disabled="formState.stagedTokenMultiplierPoints.length <= 2" @click="removeStagedMultiplierPoint(index)">删除</a-button>
+            </template>
+          </a-table>
+          <div class="hint">首个节点必须为 0 token / 4x；第二个节点不能低于 3000 token；末节点必须覆盖 10 万 token 以上并为 0.3x。修改后点击页面右上角“保存”。</div>
+        </div>
+
         <div class="price-table-wrap">
           <a-table
             bordered
@@ -442,6 +474,7 @@ import {
   buildAIModelPricingGaps,
   isModelPriced,
   filterRemoteModelNames,
+  DEFAULT_AI_STAGED_TOKEN_MULTIPLIER_POINTS,
 } from '@/utils/aiSearchModelHelpers.mjs';
 import {
   buildAISearchTestForm,
@@ -563,6 +596,7 @@ export default defineComponent({
       webReadPricePerCall: 0,
       enableAIStagedTokenBilling: false,
       smoothAIStagedTokenMultiplier: false,
+      stagedTokenMultiplierPoints: DEFAULT_AI_STAGED_TOKEN_MULTIPLIER_POINTS.map(point => ({ ...point })),
     })
 
     const priceRows = ref([])
@@ -638,6 +672,12 @@ export default defineComponent({
       { title: '操作', dataIndex: 'action', key: 'action', fixed: 'right', width: 110, slots: { customRender: 'priceAction' } },
     ]
 
+    const stagedPointColumns = [
+      { title: '总 token 起点', dataIndex: 'tokens', key: 'tokens', width: 210, slots: { customRender: 'stageTokens' } },
+      { title: '倍率', dataIndex: 'multiplier', key: 'multiplier', width: 190, slots: { customRender: 'stageMultiplier' } },
+      { title: '操作', dataIndex: 'action', key: 'action', width: 90, slots: { customRender: 'stageAction' } },
+    ]
+
     const loadConfig = () => {
       tabLoading.value = true
       getAISearchConfig().then(res => {
@@ -660,6 +700,9 @@ export default defineComponent({
           formState.webReadPricePerCall = Number(data.webReadPricePerCall ?? 0)
           formState.enableAIStagedTokenBilling = !!data.enableAIStagedTokenBilling
           formState.smoothAIStagedTokenMultiplier = !!data.smoothAIStagedTokenMultiplier
+          formState.stagedTokenMultiplierPoints = Array.isArray(data.stagedTokenMultiplierPoints) && data.stagedTokenMultiplierPoints.length
+            ? data.stagedTokenMultiplierPoints.map(point => ({ tokens: Number(point.tokens || 0), multiplier: Number(point.multiplier || 1) }))
+            : DEFAULT_AI_STAGED_TOKEN_MULTIPLIER_POINTS.map(point => ({ ...point }))
         } else {
           message.error(res?.message || '获取 AI 搜索配置失败')
         }
@@ -771,6 +814,7 @@ export default defineComponent({
       priceResetting,
       priceModalVisible,
       priceForm,
+      stagedPointColumns,
       hasAISearchTestResult,
       pricingGaps,
       isModelPriced,
@@ -879,6 +923,23 @@ export default defineComponent({
       }
 
       this.submitSave(trimmedBaseUrl)
+    },
+    addStagedMultiplierPoint() {
+      const points = this.formState.stagedTokenMultiplierPoints
+      const last = points[points.length - 1] || { tokens: 100000, multiplier: 0.3 }
+      const previous = points[points.length - 2] || { tokens: 3000, multiplier: 2 }
+      const nextTokens = Math.min(1000000000, Math.max(previous.tokens + 1000, last.tokens - 10000))
+      points.splice(Math.max(0, points.length - 1), 0, { tokens: nextTokens, multiplier: Math.max(0.3, Math.min(4, previous.multiplier)) })
+    },
+    removeStagedMultiplierPoint(index) {
+      if (this.formState.stagedTokenMultiplierPoints.length <= 2) {
+        message.warning('阶段表至少需要保留两个节点')
+        return
+      }
+      this.formState.stagedTokenMultiplierPoints.splice(index, 1)
+    },
+    resetStagedMultiplierPoints() {
+      this.formState.stagedTokenMultiplierPoints = DEFAULT_AI_STAGED_TOKEN_MULTIPLIER_POINTS.map(point => ({ ...point }))
     },
     resetTestResult() {
       this.testResult.answers = []

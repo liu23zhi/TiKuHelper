@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"math"
 	"strconv"
@@ -51,6 +52,7 @@ const MaxAIWebReadsSettingKey = "max_ai_web_reads"
 const WebReadPricePerCallSettingKey = "web_read_price_per_call"
 const AIStagedTokenBillingEnabledSettingKey = "enable_ai_staged_token_billing"
 const SmoothAIStagedTokenMultiplierSettingKey = "smooth_ai_staged_token_multiplier"
+const AIStagedTokenMultiplierPointsSettingKey = "ai_staged_token_multiplier_points"
 const MinRechargeAmountSettingKey = "min_recharge_amount"
 
 // UAPIAPIKeySettingKey 是 UApiPro（uapis.cn）的 API 密钥。
@@ -594,18 +596,109 @@ func SetWebReadPricePerCallWithDB(db *gorm.DB, requested float64) error {
 }
 
 type AIStagedTokenBillingSettings struct {
-	Enabled      bool
-	SmoothFactor bool
+	Enabled          bool
+	SmoothFactor     bool
+	MultiplierPoints []AIStagedTokenMultiplierPoint
 }
 
-func GetAIStagedTokenBillingSettingsWithDB(db *gorm.DB) AIStagedTokenBillingSettings {
-	return AIStagedTokenBillingSettings{
-		Enabled:      getBoolSystemSetting(db, AIStagedTokenBillingEnabledSettingKey),
-		SmoothFactor: getBoolSystemSetting(db, SmoothAIStagedTokenMultiplierSettingKey),
+type AIStagedTokenMultiplierPoint struct {
+	Tokens     int64   `json:"tokens"`
+	Multiplier float64 `json:"multiplier"`
+}
+
+const (
+	MinAIStagedTokenMultiplier        = 0.3
+	MaxAIStagedTokenMultiplier        = 4.0
+	MaxAIStagedMultiplierPoints       = 20
+	MaxAIStagedPointTokens      int64 = 1_000_000_000
+)
+
+func DefaultAIStagedTokenMultiplierPoints() []AIStagedTokenMultiplierPoint {
+	return []AIStagedTokenMultiplierPoint{
+		{Tokens: 0, Multiplier: 4},
+		{Tokens: 3000, Multiplier: 2},
+		{Tokens: 10000, Multiplier: 1},
+		{Tokens: 30000, Multiplier: 0.65},
+		{Tokens: 100000, Multiplier: 0.3},
 	}
 }
 
-func SetAIStagedTokenBillingSettingsWithDB(db *gorm.DB, enabled *bool, smoothFactor *bool) error {
+func NormalizeAIStagedTokenMultiplierPoints(points []AIStagedTokenMultiplierPoint) ([]AIStagedTokenMultiplierPoint, error) {
+	if len(points) < 2 || len(points) > MaxAIStagedMultiplierPoints {
+		return nil, errors.New("阶段倍率价格表至少需要 2 个节点，且不能超过 20 个节点")
+	}
+	normalized := make([]AIStagedTokenMultiplierPoint, len(points))
+	copy(normalized, points)
+	for index := range normalized {
+		point := &normalized[index]
+		if point.Tokens < 0 || point.Tokens > MaxAIStagedPointTokens {
+			return nil, errors.New("阶段倍率 token 阈值必须在 0～1000000000 之间")
+		}
+		if math.IsNaN(point.Multiplier) || math.IsInf(point.Multiplier, 0) || point.Multiplier < MinAIStagedTokenMultiplier || point.Multiplier > MaxAIStagedTokenMultiplier {
+			return nil, errors.New("阶段倍率必须在 0.3～4 之间")
+		}
+		point.Multiplier = math.Round(point.Multiplier*1_000_000) / 1_000_000
+		if index > 0 {
+			previous := normalized[index-1]
+			if point.Tokens <= previous.Tokens {
+				return nil, errors.New("阶段倍率 token 阈值必须严格递增")
+			}
+			if point.Multiplier > previous.Multiplier {
+				return nil, errors.New("阶段倍率必须随 token 数量增加而不升高")
+			}
+		}
+	}
+	if normalized[0].Tokens != 0 || normalized[0].Multiplier != MaxAIStagedTokenMultiplier {
+		return nil, errors.New("阶段倍率价格表必须从 0 token 的 4x 节点开始")
+	}
+	if normalized[1].Tokens < 3000 {
+		return nil, errors.New("阶段倍率价格表的第二个节点不能低于 3000 token")
+	}
+	last := normalized[len(normalized)-1]
+	if last.Tokens < 100000 || last.Multiplier != MinAIStagedTokenMultiplier {
+		return nil, errors.New("阶段倍率价格表必须包含 10 万 token 以上的 0.3x 节点")
+	}
+	return normalized, nil
+}
+
+func cloneAIStagedTokenMultiplierPoints(points []AIStagedTokenMultiplierPoint) []AIStagedTokenMultiplierPoint {
+	cloned := make([]AIStagedTokenMultiplierPoint, len(points))
+	copy(cloned, points)
+	return cloned
+}
+
+func GetAIStagedTokenBillingSettingsWithDB(db *gorm.DB) AIStagedTokenBillingSettings {
+	points := DefaultAIStagedTokenMultiplierPoints()
+	raw := strings.TrimSpace(getSystemSettingStringWithDefault(db, AIStagedTokenMultiplierPointsSettingKey, ""))
+	if raw != "" {
+		var stored []AIStagedTokenMultiplierPoint
+		if json.Unmarshal([]byte(raw), &stored) == nil {
+			if normalized, err := NormalizeAIStagedTokenMultiplierPoints(stored); err == nil {
+				points = normalized
+			}
+		}
+	}
+	return AIStagedTokenBillingSettings{
+		Enabled:          getBoolSystemSetting(db, AIStagedTokenBillingEnabledSettingKey),
+		SmoothFactor:     getBoolSystemSetting(db, SmoothAIStagedTokenMultiplierSettingKey),
+		MultiplierPoints: cloneAIStagedTokenMultiplierPoints(points),
+	}
+}
+
+func SetAIStagedTokenBillingSettingsWithDB(db *gorm.DB, enabled *bool, smoothFactor *bool, points ...*[]AIStagedTokenMultiplierPoint) error {
+	if len(points) > 0 && points[0] != nil {
+		normalized, err := NormalizeAIStagedTokenMultiplierPoints(*points[0])
+		if err != nil {
+			return err
+		}
+		payload, err := json.Marshal(normalized)
+		if err != nil {
+			return err
+		}
+		if err := saveSystemSettingValue(db, AIStagedTokenMultiplierPointsSettingKey, string(payload), "AI 单次模型调用阶段倍率价格表"); err != nil {
+			return err
+		}
+	}
 	if enabled != nil {
 		if err := saveSystemSettingValue(db, AIStagedTokenBillingEnabledSettingKey, strconv.FormatBool(*enabled), "启用 AI 单次模型调用分阶段计费"); err != nil {
 			return err

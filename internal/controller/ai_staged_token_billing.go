@@ -2,7 +2,6 @@ package controller
 
 import (
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
 
@@ -49,49 +48,37 @@ func aiStagedTokenBillingMode(settings service.AIStagedTokenBillingSettings) str
 	return "fixed"
 }
 
-type aiStagedTokenMultiplierPoint struct {
-	tokens     int64
-	multiplier float64
-}
-
-var aiStagedTokenMultiplierPoints = [...]aiStagedTokenMultiplierPoint{
-	{tokens: 0, multiplier: 4},
-	{tokens: 3000, multiplier: 2},
-	{tokens: 10000, multiplier: 1},
-	{tokens: 30000, multiplier: 0.65},
-	{tokens: 100000, multiplier: 0.3},
-}
-
 func calculateAIStagedTokenMultiplier(totalTokens int64, smooth bool) float64 {
+	return calculateAIStagedTokenMultiplierWithPoints(totalTokens, smooth, service.DefaultAIStagedTokenMultiplierPoints())
+}
+
+func calculateAIStagedTokenMultiplierWithPoints(totalTokens int64, smooth bool, points []service.AIStagedTokenMultiplierPoint) float64 {
+	if len(points) == 0 {
+		points = service.DefaultAIStagedTokenMultiplierPoints()
+	}
 	if totalTokens < 0 {
 		totalTokens = 0
 	}
 	if !smooth {
-		switch {
-		case totalTokens < 3000:
-			return 4
-		case totalTokens < 10000:
-			return 2
-		case totalTokens < 30000:
-			return 1
-		case totalTokens < 100000:
-			return 0.65
-		default:
-			return 0.3
+		for index := 1; index < len(points); index++ {
+			if totalTokens < points[index].Tokens {
+				return points[index-1].Multiplier
+			}
 		}
+		return points[len(points)-1].Multiplier
 	}
 
-	for index := 1; index < len(aiStagedTokenMultiplierPoints); index++ {
-		left := aiStagedTokenMultiplierPoints[index-1]
-		right := aiStagedTokenMultiplierPoints[index]
-		if totalTokens > right.tokens {
+	for index := 1; index < len(points); index++ {
+		left := points[index-1]
+		right := points[index]
+		if totalTokens > right.Tokens {
 			continue
 		}
-		ratio := float64(totalTokens-left.tokens) / float64(right.tokens-left.tokens)
-		return left.multiplier + ratio*(right.multiplier-left.multiplier)
+		ratio := float64(totalTokens-left.Tokens) / float64(right.Tokens-left.Tokens)
+		return left.Multiplier + ratio*(right.Multiplier-left.Multiplier)
 	}
 
-	return math.Max(0.3, aiStagedTokenMultiplierPoints[len(aiStagedTokenMultiplierPoints)-1].multiplier)
+	return points[len(points)-1].Multiplier
 }
 
 // calculateAIStagedTokenBilling prices each actual model response separately.
@@ -108,7 +95,7 @@ func calculateAIStagedTokenBilling(price service.ResolvedAIModelTokenPrice, usag
 		}
 		stageMultiplier := 1.0
 		if settings.Enabled && matched && totalTokens > 0 {
-			stageMultiplier = calculateAIStagedTokenMultiplier(totalTokens, settings.SmoothFactor)
+			stageMultiplier = calculateAIStagedTokenMultiplierWithPoints(totalTokens, settings.SmoothFactor, settings.MultiplierPoints)
 			amount = util.RoundMoney(baseAmount * stageMultiplier)
 		}
 		return aiStagedTokenBillingResult{
@@ -168,7 +155,7 @@ func calculateAIStagedTokenBilling(price service.ResolvedAIModelTokenPrice, usag
 		baseAmount, _ := calculateAIModelPriceTableAmount(price, callUsage)
 		stageMultiplier := 1.0
 		if settings.Enabled {
-			stageMultiplier = calculateAIStagedTokenMultiplier(totalTokens, settings.SmoothFactor)
+			stageMultiplier = calculateAIStagedTokenMultiplierWithPoints(totalTokens, settings.SmoothFactor, settings.MultiplierPoints)
 		}
 		amount := baseAmount * stageMultiplier
 		explanation.BaseAmount = baseAmount
