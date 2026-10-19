@@ -2208,7 +2208,7 @@ func TestResolveSearchRequestContextWithDBRejectsUserWithZeroBalance(t *testing.
 	}
 }
 
-func TestResolveSearchRequestContextWithDBAllowsExplicitProviderParamsWhenUserBalanceIsNegative(t *testing.T) {
+func TestResolveSearchRequestContextWithDBRejectsExplicitProviderParamsWhenUserBalanceIsNegative(t *testing.T) {
 	db := newSearchControllerTestDB(t)
 	token := seedControllerAccessToken(t, db, "negative-explicit-provider-token")
 	if err := db.Model(&entity.User{}).Where("id = ?", token.UserID).Update("balance", -3).Error; err != nil {
@@ -2230,28 +2230,25 @@ func TestResolveSearchRequestContextWithDBAllowsExplicitProviderParamsWhenUserBa
 		t.Fatalf("seed ai config: %v", err)
 	}
 
-	resolved, err := resolveSearchRequestContextWithDB(db, "Basic negative-explicit-provider-token", "198.51.100.24", url.Values{
+	_, err := resolveSearchRequestContextWithDB(db, "Basic negative-explicit-provider-token", "198.51.100.24", url.Values{
 		"use":          []string{"wanneng,ai"},
 		"wannengToken": []string{"request-provider-token"},
 		"url":          []string{"https://override.example.com/v1"},
 		"key":          []string{"override-key"},
 		"model":        []string{"override-model"},
 	})
-	if err != nil {
-		t.Fatalf("resolve search context: %v", err)
+	if err == nil {
+		t.Fatal("expected explicit provider parameters not to bypass the negative-balance guard")
 	}
-	if resolved.Tokens["wanneng"] != "request-provider-token" {
-		t.Fatalf("expected explicit provider token to be preserved, got %q", resolved.Tokens["wanneng"])
+	if !errors.Is(err, service.ErrInvalidAccessTokenAuthorization) {
+		t.Fatalf("expected ErrInvalidAccessTokenAuthorization, got %v", err)
 	}
-	if resolved.AIConfig.BaseURL != "https://override.example.com/v1" || resolved.AIConfig.APIKey != "override-key" || resolved.AIConfig.Model != "override-model" {
-		t.Fatalf("expected explicit ai config to be preserved, got %+v", resolved.AIConfig)
-	}
-	if resolved.UsedDefaultSearch || resolved.UsedDefaultAI || len(resolved.UsedDefaultSearchProviders) != 0 {
-		t.Fatalf("expected negative-balance override not to use default accounts, got %+v", resolved)
+	if !strings.Contains(err.Error(), "当前余额不足，系统题库已禁用，请充值后再使用") {
+		t.Fatalf("expected negative-balance error to mention balance, got %q", err.Error())
 	}
 }
 
-func TestSearchAllowsNegativeBalanceUserWithExplicitProviderParams(t *testing.T) {
+func TestSearchRejectsNegativeBalanceUserWithExplicitProviderParams(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 219, "search-negative-explicit-user", "user")
@@ -2282,8 +2279,18 @@ func TestSearchAllowsNegativeBalanceUserWithExplicitProviderParams(t *testing.T)
 
 			Search(ctx)
 
-			if recorder.Code != http.StatusOK {
-				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("expected status 401, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+			var response struct {
+				Code   string `json:"code"`
+				Detail string `json:"detail"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+				t.Fatalf("unmarshal unauthorized response: %v, body=%s", err, recorder.Body.String())
+			}
+			if response.Code != "INSUFFICIENT_BALANCE" || response.Detail != "当前余额不足，系统题库已禁用，请充值后再使用" {
+				t.Fatalf("unexpected balance rejection: %+v", response)
 			}
 		})
 }

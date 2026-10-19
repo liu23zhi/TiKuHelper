@@ -190,7 +190,6 @@ func normalizeCacheKeyOptions(options []string) []string {
 // 注意**不要**拿 resolved.Tokens 判断"是否携带请求级凭据"：
 // 那里混入了系统默认账号的 token（见 service.BuildSearchTokensWithDB 的
 // allowDefaultAccount 分支），几乎所有正常请求都会命中，会把缓存整体关掉。
-// 需要判断请求级覆盖时用 hasExplicitSearchProviderOverride(query)（只看 query）。
 func canUseSearchResultCache(resolved resolvedSearchRequestContext, useQuery string) bool {
 	if resolved.UserID <= 0 {
 		return false

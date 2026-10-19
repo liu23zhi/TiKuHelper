@@ -1686,27 +1686,6 @@ func detectSearchMode(query url.Values) string {
 	return searchModeNormal
 }
 
-func hasExplicitSearchProviderOverride(query url.Values) bool {
-	for provider, token := range service.BuildRequestSearchTokens(query) {
-		if strings.TrimSpace(provider) == searchBillingProviderLocal || strings.TrimSpace(provider) == searchModeAI {
-			continue
-		}
-		if strings.TrimSpace(token) != "" {
-			return true
-		}
-	}
-	if strings.TrimSpace(query.Get("url")) != "" {
-		return true
-	}
-	if strings.TrimSpace(query.Get("key")) != "" {
-		return true
-	}
-	if strings.TrimSpace(query.Get("model")) != "" {
-		return true
-	}
-	return false
-}
-
 func resolveSearchRequestContextWithDB(db *gorm.DB, authorization string, clientIP string, query url.Values) (resolvedSearchRequestContext, error) {
 	resolved := resolvedSearchRequestContext{
 		RequestID:  uuid.NewString(),
@@ -1735,9 +1714,7 @@ func resolveSearchRequestContextWithDB(db *gorm.DB, authorization string, client
 		resolved.UserID = authCtx.User.ID
 		resolved.AccessTokenID = authCtx.AccessToken.ID
 		if authCtx.User.Balance <= 0 {
-			if authCtx.User.Balance >= 0 || !hasExplicitSearchProviderOverride(query) {
-				return resolved, fmt.Errorf("%w: %w", service.ErrInvalidAccessTokenAuthorization, service.ErrInsufficientSearchBalance)
-			}
+			return resolved, fmt.Errorf("%w: %w", service.ErrInvalidAccessTokenAuthorization, service.ErrInsufficientSearchBalance)
 		} else {
 			allowDefaultAccount = true
 		}
