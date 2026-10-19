@@ -38,7 +38,8 @@ func TestCalculateAIStagedTokenMultiplierSmoothlyInterpolatesAndClamps(t *testin
 		want   float64
 	}{
 		{tokens: 0, want: 4},
-		{tokens: 1500, want: 3},
+		{tokens: 1500, want: 4},
+		{tokens: 2999, want: 4},
 		{tokens: 3000, want: 2},
 		{tokens: 6500, want: 1.5},
 		{tokens: 10000, want: 1},
@@ -77,8 +78,24 @@ func TestCalculateAIStagedTokenMultiplierUsesCustomPoints(t *testing.T) {
 	if got := calculateAIStagedTokenMultiplierWithPoints(5000, false, points); got != 2 {
 		t.Fatalf("expected custom threshold multiplier 2, got %v", got)
 	}
+	if got := calculateAIStagedTokenMultiplierWithPoints(2500, true, points); got != 4 {
+		t.Fatalf("expected first node multiplier to remain constant before the second node, got %v", got)
+	}
 	if got := calculateAIStagedTokenMultiplierWithPoints(52500, true, points); got != 1.15 {
 		t.Fatalf("expected smooth custom multiplier 1.15, got %v", got)
+	}
+}
+
+func TestCalculateAIStagedTokenMultiplierKeepsTailNodeMultiplierConstant(t *testing.T) {
+	points := []service.AIStagedTokenMultiplierPoint{
+		{Tokens: 0, Multiplier: 4},
+		{Tokens: 3000, Multiplier: 2},
+		{Tokens: 80000, Multiplier: 0.3},
+	}
+	for _, tokens := range []int64{80000, 100000, 250000} {
+		if got := calculateAIStagedTokenMultiplierWithPoints(tokens, true, points); got != 0.3 {
+			t.Errorf("tokens=%d: expected the final node multiplier to stay constant, got %v", tokens, got)
+		}
 	}
 }
 

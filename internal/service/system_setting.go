@@ -651,13 +651,6 @@ func NormalizeAIStagedTokenMultiplierPoints(points []AIStagedTokenMultiplierPoin
 	if normalized[0].Tokens != 0 || normalized[0].Multiplier != MaxAIStagedTokenMultiplier {
 		return nil, errors.New("阶段倍率价格表必须从 0 token 的 4x 节点开始")
 	}
-	if normalized[1].Tokens < 3000 {
-		return nil, errors.New("阶段倍率价格表的第二个节点不能低于 3000 token")
-	}
-	last := normalized[len(normalized)-1]
-	if last.Tokens < 100000 || last.Multiplier != MinAIStagedTokenMultiplier {
-		return nil, errors.New("阶段倍率价格表必须包含 10 万 token 以上的 0.3x 节点")
-	}
 	return normalized, nil
 }
 

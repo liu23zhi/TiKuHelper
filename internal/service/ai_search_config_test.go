@@ -114,14 +114,38 @@ func TestAISearchConfigStagedBillingPointsCanBeEditedAndPersisted(t *testing.T) 
 	}
 }
 
+func TestAISearchConfigAllowsFlexibleStageEndpoints(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	for _, testCase := range []struct {
+		terminalTokens     int64
+		secondStageTokens  int64
+		terminalMultiplier float64
+	}{
+		{terminalTokens: 50000, secondStageTokens: 1000, terminalMultiplier: 0.8},
+		{terminalTokens: 150000, secondStageTokens: 3000, terminalMultiplier: 0.3},
+	} {
+		points := []AIStagedTokenMultiplierPoint{
+			{Tokens: 0, Multiplier: 4},
+			{Tokens: testCase.secondStageTokens, Multiplier: 2},
+			{Tokens: testCase.terminalTokens, Multiplier: testCase.terminalMultiplier},
+		}
+		if _, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{StagedTokenMultiplierPoints: &points}); err != nil {
+			t.Fatalf("valid custom endpoints %+v should be accepted: %v", testCase, err)
+		}
+		settings := GetAIStagedTokenBillingSettingsWithDB(db)
+		last := settings.MultiplierPoints[len(settings.MultiplierPoints)-1]
+		if last.Tokens != testCase.terminalTokens || last.Multiplier != testCase.terminalMultiplier {
+			t.Fatalf("custom terminal node was not preserved: got %+v, want tokens=%d multiplier=%v", last, testCase.terminalTokens, testCase.terminalMultiplier)
+		}
+	}
+}
+
 func TestAISearchConfigRejectsInvalidStagedBillingPoints(t *testing.T) {
 	db := newSearchAccountConfigTestDB(t)
 	invalid := [][]AIStagedTokenMultiplierPoint{
 		{{Tokens: 1, Multiplier: 4}, {Tokens: 100000, Multiplier: 0.3}},
-		{{Tokens: 0, Multiplier: 4}, {Tokens: 2000, Multiplier: 2}, {Tokens: 100000, Multiplier: 0.3}},
 		{{Tokens: 0, Multiplier: 4}, {Tokens: 3000, Multiplier: 4.5}, {Tokens: 100000, Multiplier: 0.3}},
 		{{Tokens: 0, Multiplier: 4}, {Tokens: 3000, Multiplier: 2}, {Tokens: 2000, Multiplier: 1}, {Tokens: 100000, Multiplier: 0.3}},
-		{{Tokens: 0, Multiplier: 4}, {Tokens: 3000, Multiplier: 2}, {Tokens: 100000, Multiplier: 0.4}},
 	}
 	for index, points := range invalid {
 		if _, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{StagedTokenMultiplierPoints: &points}); err == nil {
