@@ -151,6 +151,7 @@ import {
 } from '@/utils/locationHelpers.mjs'
 import {
   buildBillingRecordAmountText,
+  buildBillingRecordFinalMultiplierText,
   buildBillingRecordFeeDetailHtml,
   buildBillingRecordModeText,
   buildBillingRecordReferenceText,
@@ -245,13 +246,13 @@ export default defineComponent({
     const pageTitle = computed(() => (isAdmin.value ? '账单明细' : '我的账单'))
     const pageSubtitle = computed(() => (
       isAdmin.value
-        ? '查看平台内全部账单流水，包含题目消费、充值入账、来源渠道、关联单号与请求时间。'
-        : '查看当前账号名下的账单流水，包含题目消费、充值入账、来源渠道、关联单号与请求时间。'
+        ? '查看平台内全部账单流水，包含题目消费、充值入账、来源渠道、请求编号与请求时间。'
+        : '查看当前账号名下的账单流水，包含题目消费、充值入账、来源渠道、请求编号与请求时间。'
     ))
     const alertMessage = computed(() => (
       isAdmin.value
         ? '管理员可查看全部账单。'
-        : '这里只展示当前账号自己的账单流水，便于快速查看每次消费或充值对应的来源、单号与时间。'
+        : '这里只展示当前账号自己的账单流水，便于快速查看每次消费或充值对应的来源、请求编号与时间。'
     ))
     const columns = computed(() => {
       const baseColumns = [
@@ -308,13 +309,20 @@ export default defineComponent({
           },
         },
         {
-          title: '关联单号',
+          title: '请求编号',
           dataIndex: 'referenceNo',
           key: 'referenceNo',
           width: 240,
           slots: {
             customRender: 'referenceNo',
           },
+        },
+        {
+          title: '最终倍率',
+          dataIndex: 'finalMultiplier',
+          key: 'finalMultiplier',
+          width: 120,
+          customRender: ({ record }) => buildBillingRecordFinalMultiplierText(record),
         },
         {
           title: '访问令牌名称',
@@ -396,6 +404,7 @@ export default defineComponent({
       alertMessage,
       columns,
       buildBillingRecordAmountText,
+      buildBillingRecordFinalMultiplierText,
       buildBillingRecordModeText,
       buildBillingRecordReferenceText,
       buildBillingRecordSourceText,

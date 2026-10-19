@@ -222,6 +222,15 @@ export function refreshLocationCache(data) {
   })
 }
 
+export function manualLookupLocationCache(data) {
+  return request({
+    url: `/adapter-service/location-cache/manual`,
+    method: 'post',
+    data,
+    timeout: 0
+  })
+}
+
 export function getUAPISearchEngines() {
   return request({
     url: `/adapter-service/uapi/search/engines`,

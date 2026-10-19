@@ -148,7 +148,7 @@
           <span class="location-value">{{ formatValueWithLocation(record.clientIp, ipLocations[normalizeLocationKey(record.clientIp)]) || '-' }}</span>
         </template>
         <template #qid="{ record }">
-          <span>{{ buildLogQidLabel(record.qid) }}</span>
+          <span>{{ buildLogLocalQuestionId(record) }}</span>
         </template>
         <template #createTime="{ text, record }">
           {{ formatDate(text || record.createTime) }}
@@ -171,6 +171,7 @@ import {
 } from '@/utils/locationHelpers.mjs';
 import {
   buildLogModuleLabel,
+  buildLogLocalQuestionId,
   buildLogQidLabel,
   buildLogRowDetail,
   buildLogStatusColor,
@@ -442,6 +443,9 @@ export default defineComponent({
     },
     buildLogQidLabel(value) {
       return buildLogQidLabel(value)
+    },
+    buildLogLocalQuestionId(record) {
+      return buildLogLocalQuestionId(record)
     },
     // 点「搜索」或回车时才把输入框内容变成生效的筛选条件。
     applyKeyword() {

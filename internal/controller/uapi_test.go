@@ -72,6 +72,24 @@ func TestUAPIPhoneInfoRejectsNonAdmin(t *testing.T) {
 	}
 }
 
+func TestLocationCacheManualLookupRejectsInvalidInput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	newUAPILocationTestDB(t)
+	recorder := performUAPIRequest(t, "/adapter-service/location-cache/manual", "admin", LocationCacheManualLookup)
+	// GET 没有 JSON body，ShouldBindJSON 必须稳定返回 400，而不能触发上游调用。
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid manual lookup body, got %d", recorder.Code)
+	}
+}
+
+func TestLocationCacheManualLookupRequiresAdmin(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := performUAPIRequest(t, "/adapter-service/location-cache/manual", "user", LocationCacheManualLookup)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-admin manual lookup, got %d", recorder.Code)
+	}
+}
+
 func TestUAPIIPInfoRejectsNonAdmin(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

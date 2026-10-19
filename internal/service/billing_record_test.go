@@ -54,6 +54,68 @@ func TestMergeBillingSearchGroupRecoversIPFromSiblingCharge(t *testing.T) {
 	}
 }
 
+func TestDecorateBillingRecordExtractsFinalMultiplierFromStagedSnapshot(t *testing.T) {
+	record := decorateBillingRecord(BillingRecordListItem{
+		Type:     "normal_search",
+		Provider: "ai",
+		UnitPriceSnapshot: "provider=ai multiplier=2.0000 " +
+			"stageBillingCall1=index%3D1%2CtotalTokens%3D3000%2CstageMultiplier%3D2.0000%2CfinalMultiplier%3D4.0000",
+	})
+
+	if record.FinalMultiplier != "4x" {
+		t.Fatalf("expected final multiplier to use model price x stage multiplier, got %q", record.FinalMultiplier)
+	}
+}
+
+func TestDecorateBillingRecordUsesPriceMultiplierAndNeutralFallback(t *testing.T) {
+	priced := decorateBillingRecord(BillingRecordListItem{
+		Type:              "normal_search",
+		Provider:          "ai",
+		UnitPriceSnapshot: "provider=ai multiplier=1.3000 stageBillingEnabled=false",
+	})
+	if priced.FinalMultiplier != "1.3x" {
+		t.Fatalf("expected model price multiplier fallback, got %q", priced.FinalMultiplier)
+	}
+
+	ordinary := decorateBillingRecord(BillingRecordListItem{
+		Type:     "normal_search",
+		Provider: "icodef",
+	})
+	if ordinary.FinalMultiplier != "1x" {
+		t.Fatalf("expected ordinary search neutral multiplier, got %q", ordinary.FinalMultiplier)
+	}
+
+	recharge := decorateBillingRecord(BillingRecordListItem{Type: "recharge"})
+	if recharge.FinalMultiplier != "-" {
+		t.Fatalf("expected recharge multiplier placeholder, got %q", recharge.FinalMultiplier)
+	}
+
+	unpriced := decorateBillingRecord(BillingRecordListItem{
+		Type:              "normal_search",
+		Provider:          "ai",
+		UnitPriceSnapshot: "provider=ai pricing=unpriced_model",
+	})
+	if unpriced.FinalMultiplier != "-" {
+		t.Fatalf("expected unpriced AI multiplier placeholder, got %q", unpriced.FinalMultiplier)
+	}
+}
+
+func TestMergeBillingSearchGroupCombinesDistinctFinalMultipliers(t *testing.T) {
+	merged := mergeBillingSearchGroup(
+		BillingRecordListItem{FinalMultiplier: "4x"},
+		[]BillingRecordListItem{
+			{Amount: 1, FinalMultiplier: "4x"},
+			{Amount: 2, FinalMultiplier: "1.3x"},
+			{Amount: 3, FinalMultiplier: "4x"},
+		},
+	)
+
+	want := "4x" + string([]rune{0x3001}) + "1.3x"
+	if merged.FinalMultiplier != want {
+		t.Fatalf("expected merged final multipliers, got %q", merged.FinalMultiplier)
+	}
+}
+
 func seedBillingRecord(t *testing.T, db *gorm.DB, userID int32, requestID string, amount float64) entity.BillingRecord {
 	t.Helper()
 

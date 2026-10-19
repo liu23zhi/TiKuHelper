@@ -206,6 +206,17 @@ export function buildBillingRecordReferenceText(record) {
   return '-'
 }
 
+export function buildBillingRecordFinalMultiplierText(record) {
+  const multiplier = String(record?.finalMultiplier || '').trim()
+  if (multiplier) {
+    return multiplier
+  }
+  if (String(record?.type || '').trim() === 'normal_search') {
+    return '1x'
+  }
+  return '-'
+}
+
 export function buildBillingRecordAmountText(record) {
   const amount = Number(record?.amount || 0)
   // 金额统一最多 6 位小数，保证小额 AI 扣费（如 0.000062）不会被显示成 0。

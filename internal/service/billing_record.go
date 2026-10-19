@@ -1,7 +1,9 @@
 package service
 
 import (
+	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,6 +42,7 @@ type BillingRecordListItem struct {
 	SearchModeLabel string                   `json:"searchModeLabel"`
 	QuestionText    string                   `json:"questionText"`
 	Amount          float64                  `json:"amount"`
+	FinalMultiplier string                   `gorm:"-" json:"finalMultiplier"`
 	FeeDetails      []BillingRecordFeeDetail `gorm:"-" json:"feeDetails"`
 	AccessTokenName string                   `json:"accessTokenName"`
 	CreatedAt       time.Time                `json:"createdAt"`
@@ -220,6 +223,50 @@ func ExtractBillingSnapshotField(snapshot string, key string) string {
 	return strings.TrimSpace(value)
 }
 
+func formatBillingMultiplier(value string) string {
+	multiplier, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil || multiplier < 0 {
+		return ""
+	}
+	return strconv.FormatFloat(multiplier, 'f', -1, 64) + "x"
+}
+
+func extractBillingSnapshotFinalMultipliers(snapshot string) []string {
+	labels := make([]string, 0, 2)
+	for index := 1; index <= 20; index++ {
+		call := ExtractBillingSnapshotField(snapshot, fmt.Sprintf("stageBillingCall%d", index))
+		if call == "" {
+			continue
+		}
+		for _, field := range strings.Split(call, ",") {
+			key, value, ok := strings.Cut(field, "=")
+			if !ok || strings.TrimSpace(key) != "finalMultiplier" {
+				continue
+			}
+			if label := formatBillingMultiplier(value); label != "" {
+				labels = appendUniqueBillingLabel(labels, label)
+			}
+		}
+	}
+	return labels
+}
+
+func buildBillingRecordFinalMultiplier(recordType string, snapshot string) string {
+	if normalizeBillingRecordType(recordType) != normalSearchBillingRecordType {
+		return "-"
+	}
+	if labels := extractBillingSnapshotFinalMultipliers(snapshot); len(labels) > 0 {
+		return strings.Join(labels, "、")
+	}
+	if label := formatBillingMultiplier(ExtractBillingSnapshotField(snapshot, "multiplier")); label != "" {
+		return label
+	}
+	if ExtractBillingSnapshotField(snapshot, "pricing") == "unpriced_model" {
+		return "-"
+	}
+	return "1x"
+}
+
 // buildBillingRecordScopeQuery 构造账单查询的公共范围：JOIN + 操作者权限。
 //
 // JOIN 必须在这里完成：关键词筛选会用到 access_tokens.name 与 billing_users.username，
@@ -280,6 +327,7 @@ func decorateBillingRecord(record BillingRecordListItem) BillingRecordListItem {
 	}
 	record.AnswerSourceLabel = buildBillingAnswerSourceLabel(record.Provider, record.ProviderLabel, record.UnitPriceSnapshot)
 	record.SearchModeLabel = buildBillingSearchModeLabel(record.SearchMode)
+	record.FinalMultiplier = buildBillingRecordFinalMultiplier(record.Type, record.UnitPriceSnapshot)
 	// 优先用持久化的 question_text；旧行或新写入前为空时回退到快照解析。
 	if questionText := strings.TrimSpace(record.QuestionText); questionText == "" {
 		record.QuestionText = ExtractBillingSnapshotField(record.UnitPriceSnapshot, "question")
@@ -394,6 +442,7 @@ func mergeBillingSearchGroup(representative BillingRecordListItem, charges []Bil
 	questionText := strings.TrimSpace(representative.QuestionText)
 	providerLabels := make([]string, 0, len(charges))
 	answerSourceLabels := make([]string, 0, len(charges))
+	finalMultipliers := make([]string, 0, len(charges))
 	feeDetails := make([]BillingRecordFeeDetail, 0, len(charges))
 	for _, charge := range charges {
 		totalAmount += charge.Amount
@@ -405,6 +454,9 @@ func mergeBillingSearchGroup(representative BillingRecordListItem, charges []Bil
 		}
 		providerLabels = appendUniqueBillingLabel(providerLabels, charge.ProviderLabel)
 		answerSourceLabels = appendUniqueBillingLabel(answerSourceLabels, charge.AnswerSourceLabel)
+		if multiplier := strings.TrimSpace(charge.FinalMultiplier); multiplier != "" && multiplier != "-" {
+			finalMultipliers = appendUniqueBillingLabel(finalMultipliers, multiplier)
+		}
 		feeDetails = append(feeDetails, charge.FeeDetails...)
 	}
 
@@ -412,6 +464,9 @@ func mergeBillingSearchGroup(representative BillingRecordListItem, charges []Bil
 	representative.QuestionText = questionText
 	representative.ProviderLabel = strings.Join(providerLabels, "、")
 	representative.AnswerSourceLabel = strings.Join(answerSourceLabels, "、")
+	if len(finalMultipliers) > 0 {
+		representative.FinalMultiplier = strings.Join(finalMultipliers, "、")
+	}
 	if len(feeDetails) > 0 {
 		representative.FeeDetails = feeDetails
 	}

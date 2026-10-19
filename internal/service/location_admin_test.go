@@ -167,6 +167,28 @@ func TestRefreshLocationCachePreservesOldRecordOnFailure(t *testing.T) {
 	}
 }
 
+func TestManualLookupLocationCacheUsesRefreshValidationAndPersists(t *testing.T) {
+	const raw = `{"ip":"8.8.8.8","region":"美国","isp":"GOOGLE"}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(raw))
+	}))
+	defer server.Close()
+	newDefaultLocationClient(t, server, "uapi-key")
+	db := newLocationTestDB(t)
+
+	row, err := ManualLookupLocationCacheWithDB(db, entity.LocationKindIP, " 8.8.8.8 ", LocationQueryOptions{UAPIKey: "uapi-key"})
+	if err != nil {
+		t.Fatalf("manual lookup: %v", err)
+	}
+	if row.LookupKey != "8.8.8.8" || row.RawJSON != raw {
+		t.Fatalf("unexpected persisted row: %+v", row)
+	}
+	if _, err := ManualLookupLocationCacheWithDB(db, entity.LocationKindIP, "192.168.1.1", LocationQueryOptions{UAPIKey: "uapi-key"}); err != ErrLocationInvalidKey {
+		t.Fatalf("private IP must be rejected, got %v", err)
+	}
+}
+
 func TestLegacyLocationCacheCanBeReviewedAndDeletedButNotRefreshed(t *testing.T) {
 	db := newLocationTestDB(t)
 	seedLocationRowForTest(t, db, entity.LocationKindIP, "8.8.8.8", "默认地区", `{}`)

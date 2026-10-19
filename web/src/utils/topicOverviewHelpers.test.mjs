@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 
 import {
   buildQuestionBulkActionIds,
-  buildQuestionBulkCourseUpdatePayload,
   buildQuestionCourseNameCandidates,
   buildQuestionExportPayload,
   buildQuestionImportDryRunPayload,
@@ -11,6 +10,7 @@ import {
   buildQuestionImportSummary,
   buildQuestionSelectionSummary,
   buildQuestionSourceLabel,
+  normalizeQuestionTypeFilter,
   parseQuestionImportText,
 } from './topicOverviewHelpers.mjs';
 import { readFile } from 'node:fs/promises';
@@ -21,14 +21,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const topicOverviewPagePath = path.join(__dirname, '..', 'pages', 'TikuComponent', 'index.vue');
 
-test('buildQuestionBulkCourseUpdatePayload trims course name and keeps selected ids', () => {
-  assert.deepEqual(buildQuestionBulkCourseUpdatePayload([3, '7', 7], '  高等数学  '), {
-    ids: [3, 7],
-    courseName: '高等数学',
-  });
-
-  assert.throws(() => buildQuestionBulkCourseUpdatePayload([], '高等数学'), /请先选择需要批量修改的题目/);
-  assert.throws(() => buildQuestionBulkCourseUpdatePayload([3], '   '), /请输入课程名称/);
+test('normalizeQuestionTypeFilter converts cleared values to the unfiltered sentinel', () => {
+  assert.equal(normalizeQuestionTypeFilter(null), -1);
+  assert.equal(normalizeQuestionTypeFilter(undefined), -1);
+  assert.equal(normalizeQuestionTypeFilter(''), -1);
+  assert.equal(normalizeQuestionTypeFilter('0'), 0);
+  assert.equal(normalizeQuestionTypeFilter(3), 3);
 });
 
 test('buildQuestionCourseNameCandidates prefers matching existing names without duplicates', () => {

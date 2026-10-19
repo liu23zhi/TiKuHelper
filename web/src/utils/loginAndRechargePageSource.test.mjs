@@ -180,7 +180,9 @@ test('Billing pages render mixed ledger fields instead of search-only columns', 
     assert.match(content, /title: '项目'/);
     assert.match(content, /title: '金额'/);
     assert.match(content, /title: '来源\/渠道'/);
-    assert.match(content, /title: '关联单号'/);
+    assert.match(content, /title: '请求编号'/);
+    assert.match(content, /buildBillingRecordFinalMultiplierText/);
+    assert.match(content, /title: '最终倍率'/);
     assert.doesNotMatch(content, /title: '题目'/);
     assert.doesNotMatch(content, /title: '消费金额'/);
   }

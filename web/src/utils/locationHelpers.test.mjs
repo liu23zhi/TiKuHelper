@@ -122,6 +122,8 @@ test('location management has separate protected routes and refresh/raw response
   assert.match(api, /\/location-cache\/refresh/)
   assert.match(api, /export function deleteLocationCacheBatch\(data/)
   assert.match(api, /\/location-cache\/batch-delete/)
+  assert.match(api, /export function manualLookupLocationCache\(data/)
+  assert.match(api, /\/location-cache\/manual/)
 })
 
 test('collectLocationKeys deduplicates and skips empty values', () => {

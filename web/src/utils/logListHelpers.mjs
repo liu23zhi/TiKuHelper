@@ -312,6 +312,14 @@ export function buildLogQidLabel(value) {
   return Number.isFinite(normalized) && normalized > 0 ? String(normalized) : '-';
 }
 
+export function buildLogLocalQuestionId(record = {}) {
+  const direct = buildLogQidLabel(record?.qid);
+  if (direct !== '-') {
+    return direct;
+  }
+  return buildLogQidLabel(parseSearchLogDescriptionMap(String(record?.description || '')).localQuestionId);
+}
+
 function formatBooleanText(value) {
   if (value === 'true') return '是';
   if (value === 'false') return '否';
@@ -437,12 +445,12 @@ function buildHitProviderFields(provider, snapshot = {}, description = '') {
 function parseDescriptionFailureReasons(description) {
   const text = String(description || '');
   const reasons = [];
-  const pattern = /provider=([^\s;]+)\s+code=([^\s;]*)\s+error=([^\s;]+)/g;
+  const pattern = /provider=([^\s;]+)\s+code=([^\s;]*)\s+error=(.*?)(?=\s+provider=[^\s;]+\s+code=|$)/g;
   let match = pattern.exec(text);
   while (match !== null) {
     const provider = match[1] === '-' ? '' : match[1];
     const code = match[2] === '-' ? '' : match[2];
-    const error = match[3] === '-' ? '' : match[3];
+    const error = match[3].trim() === '-' ? '' : match[3].trim();
     if (error || code) {
       const codeText = code ? ` [${code}]` : '';
       reasons.push({

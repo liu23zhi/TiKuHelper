@@ -265,6 +265,15 @@ func RefreshLocationCacheWithDB(db *gorm.DB, kind string, key string, options Lo
 	return row, nil
 }
 
+// ManualLookupLocationCacheWithDB 查询一个管理员手动输入的 IP/手机号，并在成功后写入持久化缓存。
+//
+// 该函数故意复用显式刷新路径的校验和 upsert 语义：非法输入、私网 IP、历史来源、未配置密钥
+// 均不会写入缓存；成功查询才会替换同 kind/key/source 的记录。这样管理页手动添加和已有
+// 「重新查询」不会形成两套容易漂移的安全规则。
+func ManualLookupLocationCacheWithDB(db *gorm.DB, kind string, key string, options LocationQueryOptions) (entity.LocationCache, error) {
+	return RefreshLocationCacheWithDB(db, kind, key, options)
+}
+
 // ResolveOwnLocationIPsWithDB 只接受当前账号字段、账单或审计中真实关联的 IP。
 // 即使操作者是管理员，个人接口也不放宽成任意付费批量查询。
 func ResolveOwnLocationIPsWithDB(db *gorm.DB, operator entity.User, requested []string) ([]string, error) {

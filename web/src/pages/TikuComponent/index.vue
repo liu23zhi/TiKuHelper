@@ -1,16 +1,9 @@
 <template>
   <a-card>
     <a-row>
-      <a-col :span="5">
-        <a-form-item label="课程" :label-col="labelCol" :wrapper-col="wrapperCol">
-          <a-select v-model:value="courseValue" show-search placeholder="请选择" :options="courses"
-                    @change="onFilterChange">
-          </a-select>
-        </a-form-item>
-      </a-col>
       <a-col :span="3">
         <a-form-item label="类型" :label-col="labelCol" :wrapper-col="wrapperCol">
-          <a-select v-model:value="typeValue" show-search placeholder="请选择" :options="typeList"
+          <a-select v-model:value="typeValue" show-search allow-clear placeholder="请选择" :options="typeList"
                     @change="onFilterChange">
           </a-select>
         </a-form-item>
@@ -53,9 +46,6 @@
             </a-button>
             <a-button @click="handleExportSelected" style="margin-right: 12px;">
               导出选中
-            </a-button>
-            <a-button @click="openBulkCourseModal" style="margin-right: 12px;">
-              批量编辑课程名
             </a-button>
             <a-button danger @click="handleDeleteSelected" style="margin-right: 12px;">
               批量删除
@@ -155,31 +145,6 @@
         </a-card>
 
       </div>
-      <a-modal
-        :visible="bulkCourseVisible"
-        title="批量编辑课程名称"
-        ok-text="保存"
-        cancel-text="取消"
-        @ok="handleBulkCourseSubmit"
-        @cancel="closeBulkCourseModal"
-      >
-        <a-form>
-          <a-form-item label="已选题目">
-            <span>{{ selectedRowKeys.length }} 条</span>
-          </a-form-item>
-          <a-form-item label="课程名称">
-            <a-auto-complete
-              :value="bulkCourseName"
-              :options="bulkCourseCandidates"
-              placeholder="请输入新的课程名称"
-              style="width: 100%"
-              @update:value="(value) => bulkCourseName = value"
-              @search="(value) => bulkCourseName = value"
-            />
-            <div class="bulk-course-hint">支持自由输入；若已存在相近课程名，会在下方显示候选项供快速填充。</div>
-          </a-form-item>
-        </a-form>
-      </a-modal>
       <input
         ref="jsonImportInput"
         type="file"
@@ -240,7 +205,6 @@ import {computed, defineComponent, ref} from 'vue';
 import {useRouter} from 'vue-router';
 import Swal from 'sweetalert2'
 import {
-  getCourses,
   getQuestions,
   updateQuestions,
   delQuestions,
@@ -259,14 +223,13 @@ import {questionType} from "@/utils/uitls";
 import {message} from "ant-design-vue";
 import {
   buildQuestionBulkActionIds,
-  buildQuestionBulkCourseUpdatePayload,
-  buildQuestionCourseNameCandidates,
   buildQuestionExportPayload,
   buildQuestionImportDryRunPayload,
   buildQuestionImportExecutePayload,
   buildQuestionImportSummary,
   buildQuestionSelectionSummary,
   buildQuestionSourceLabel,
+  normalizeQuestionTypeFilter,
   parseQuestionImportText,
 } from '@/utils/topicOverviewHelpers.mjs';
 
@@ -344,8 +307,6 @@ const page = ref({
 
 const typeValue = ref(null)
 const typeList = ref([])
-const courses = ref([])
-const courseValue = ref(null)
 const formData = ref({})
 const answer = ref([])
 const visible = ref(false)
@@ -354,8 +315,6 @@ const searchValue = ref({})
 const quesType = ref(questionType)
 const selectedRowKeys = ref([])
 const jsonImportInput = ref(null)
-const bulkCourseVisible = ref(false)
-const bulkCourseName = ref('')
 const selectAllLoading = ref(false)
 const questionCache = new Map()
 
@@ -381,8 +340,7 @@ export default defineComponent({
       router.push('/adapter/import');
     };
     const buildQuestionQuery = (pageNo, pageSize) => ({
-      courseName: courseValue.value ? courseValue.value : "",
-      type: !isNaN(parseInt(typeValue.value)) ? parseInt(typeValue.value) : -1,
+      type: normalizeQuestionTypeFilter(typeValue.value),
       pageSize,
       pageNo,
       question: searchValue.value.question || '',
@@ -417,7 +375,6 @@ export default defineComponent({
       }
       return selectedIds.map(id => questionCache.get(id)).filter(Boolean)
     })
-    const bulkCourseCandidates = computed(() => buildQuestionCourseNameCandidates(bulkCourseName.value, courses.value))
     const currentPageIds = computed(() => buildQuestionBulkActionIds(
       (data.value || []).map(item => item?.id),
     ))
@@ -479,8 +436,6 @@ export default defineComponent({
       tabLoading,
       typeList,
       typeValue,
-      courses,
-      courseValue,
       answer,
       page,
       data,
@@ -502,9 +457,6 @@ export default defineComponent({
       handleClearCurrentPage,
       handleSelectAll,
       handleClearSelection,
-      bulkCourseVisible,
-      bulkCourseName,
-      bulkCourseCandidates,
       jsonImportInput,
       labelCol: {span: 8},
       wrapperCol: {span: 14},
@@ -522,7 +474,6 @@ export default defineComponent({
   },
   mounted() {
     this.getType()
-    this.getCourses()
     this.fetchData()
   },
   methods: {
@@ -553,34 +504,11 @@ export default defineComponent({
       const arr = this.typeObjects(questionType)
       typeList.value = arr
     },
-    async getCourses(data) {
-      if (data) {
-        courses.value = data.map(i => {
-          return {
-            value: i,
-            label: i,
-          }
-        })
-      } else {
-        const list = await getCourses()
-
-        if (list?.data && list?.data.length) {
-          courses.value = list?.data.map(i => {
-            return {
-              value: i,
-              label: i,
-            }
-          })
-        }
-      }
-    },
-
     async fetchData() {
       fileList.value = []
       tabLoading.value = true
       getQuestions({
-        courseName: courseValue.value ? courseValue.value : "",
-        type: !isNaN(parseInt(typeValue.value)) ? parseInt(typeValue.value) : -1,
+        type: normalizeQuestionTypeFilter(typeValue.value),
         pageSize: page.value.pageSize,
         pageNo: page.value.pageNo - 1,
         question: searchValue.value.question || '',
@@ -718,46 +646,6 @@ export default defineComponent({
       }
     },
 
-    openBulkCourseModal() {
-      if (!this.selectedRowKeys.length) {
-        message.warning('请先选择需要批量修改的题目')
-        return
-      }
-      this.bulkCourseName = ''
-      this.bulkCourseVisible = true
-    },
-
-    closeBulkCourseModal() {
-      this.bulkCourseVisible = false
-      this.bulkCourseName = ''
-    },
-
-    async handleBulkCourseSubmit() {
-      let payload
-      try {
-        payload = buildQuestionBulkCourseUpdatePayload(this.selectedRowKeys, this.bulkCourseName)
-      } catch (error) {
-        message.warning(error?.message || '请输入课程名称')
-        return
-      }
-
-      for (const item of this.selectedQuestions) {
-        const response = await updateQuestions({
-          ...item,
-          course_name: payload.courseName,
-        })
-        if (response?.status !== 200) {
-          message.error(`题目 ${item.id} 更新课程名称失败`)
-          return
-        }
-      }
-
-      message.success(`成功更新 ${payload.ids.length} 条题目的课程名称`)
-      this.closeBulkCourseModal()
-      resetSelectionState()
-      await this.fetchData()
-    },
-
     handleExportSelected() {
       const rows = this.selectedQuestions
       if (!rows.length) {
@@ -842,13 +730,6 @@ header {
 
 .ant-form-item {
   margin-bottom: 0;
-}
-
-.bulk-course-hint {
-  margin-top: 6px;
-  color: #8c8c8c;
-  font-size: 12px;
-  line-height: 1.6;
 }
 
 .selection-alert {

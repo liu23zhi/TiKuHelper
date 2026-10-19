@@ -18,6 +18,7 @@ async function createPage(overrides = {}) {
     deleteLocationCache: async () => ({ status: 200 }),
     deleteLocationCacheBatch: async () => ({ status: 200, data: { deleted: 0 } }),
     getLocationCacheList: async () => ({ status: 200, data: { data: [], configured: true } }),
+    manualLookupLocationCache: async () => ({ status: 200, data: { configured: true } }),
     refreshLocationCache: async () => ({ status: 200, data: { configured: true } }),
     ...overrides,
   }
@@ -170,6 +171,36 @@ test('location cache template exposes bulk selection actions and summary', async
   assert.match(page, /取消全部全选/)
   assert.match(page, /withAddress/)
   assert.match(page, /withoutAddress/)
+  assert.match(page, /手动添加/)
+  assert.match(page, /全部删除/)
+  assert.match(page, /manualLookupLocationCache/)
+})
+
+test('location cache manual lookup posts the active kind and persists result', async () => {
+  let input
+  const page = await createPage({
+    manualLookupLocationCache: async (value) => {
+      input = value
+      return { status: 200, data: { configured: true } }
+    },
+  })
+  page.manualKey.value = ' 8.8.8.8 '
+  page.manualSource.value = 'commercial'
+  await page.manualLookup()
+  assert.deepEqual(input, { kind: 'ip', lookupKey: '8.8.8.8', source: 'commercial' })
+  assert.equal(page.manualVisible.value, false)
+})
+
+test('location cache quick delete scopes all=true to the active kind', async () => {
+  let input
+  const page = await createPage({
+    deleteLocationCacheBatch: async (value) => {
+      input = value
+      return { status: 200, data: { deleted: 2 } }
+    },
+  })
+  await page.deleteAll()
+  assert.deepEqual(input, { kind: 'ip', keyword: '', source: '', items: [], all: true, except: [] })
 })
 
 test('location cache deletes explicit cross-page selections through the batch API', async () => {

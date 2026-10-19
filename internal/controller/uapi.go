@@ -208,6 +208,36 @@ func LocationCacheRefresh(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": row, "configured": true})
 }
 
+// LocationCacheManualLookup 管理员手动输入一个 IP/手机号，查询上游并持久化结果。
+func LocationCacheManualLookup(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
+	var input struct {
+		Kind      string `json:"kind"`
+		LookupKey string `json:"lookupKey"`
+		Source    string `json:"source"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "手动查询参数错误"})
+		return
+	}
+	db := resolveSearchPersistenceDB()
+	apiKey := service.GetUAPIAPIKeyWithDB(db)
+	row, err := service.ManualLookupLocationCacheWithDB(db, input.Kind, input.LookupKey, service.LocationQueryOptions{UAPIKey: apiKey, Source: input.Source})
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, service.ErrLocationInvalidKey) {
+			status = http.StatusBadRequest
+		} else if errors.Is(err, service.ErrLocationNotConfigured) || errors.Is(err, service.ErrLocationUnavailable) {
+			status = http.StatusServiceUnavailable
+		}
+		c.JSON(status, gin.H{"message": service.LocationQueryErrorMessage(err), "configured": apiKey != ""})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": row, "configured": true})
+}
+
 // collectLocationLookupKeys 解析单值与批量两种入参形式。
 //
 // 单值参数名与批量参数名都接受，便于调用方按需选择；

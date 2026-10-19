@@ -9,6 +9,7 @@ import {
   buildLogActionColor,
   buildLogActionLabel,
   buildLogDetailSections,
+  buildLogLocalQuestionId,
   buildLogModuleLabel,
   buildLogResultText,
   buildLogRowDetail,
@@ -109,6 +110,22 @@ test('channel column keeps the failure reason when the snapshot has no failures'
   assert.deepEqual(fields.failureReasons, ['ai [UPSTREAM_ERROR]：HTTP401']);
   // 没有答案时详情列才退回原因，保证信息不丢。
   assert.equal(buildLogRowDetail(record), '失败原因：ai [UPSTREAM_ERROR]：HTTP401');
+});
+
+test('ordinary search failure descriptions retain complete error causes', () => {
+  const fields = buildLogStructuredFields({
+    module: 'search',
+    description: '搜索失败 requestId=req-old mode=normal answers=0 provider=wanneng code=UPSTREAM_ERROR error=当前余额不足，请充值后再使用',
+    newAnswer: JSON.stringify({ status: 'failed' }),
+  });
+  assert.equal(fields.hitProvider, 'wanneng');
+  assert.deepEqual(fields.failureReasons, ['wanneng [UPSTREAM_ERROR]：当前余额不足，请充值后再使用']);
+});
+
+test('local question id falls back to structured search metadata when qid is empty', () => {
+  assert.equal(buildLogLocalQuestionId({ qid: 42, description: '搜索完成 localQuestionId=99' }), '42');
+  assert.equal(buildLogLocalQuestionId({ qid: 0, description: '搜索完成 localQuestionId=99' }), '99');
+  assert.equal(buildLogLocalQuestionId({ qid: 0, description: '搜索完成 requestId=req-1' }), '-');
 });
 
 test('LogList puts channel and billing columns right after the summary column', async () => {

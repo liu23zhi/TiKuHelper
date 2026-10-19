@@ -7,6 +7,7 @@ import {
   buildRegisterSourceLabel,
   buildResetPasswordPayload,
   buildBillingRecordAmountText,
+  buildBillingRecordFinalMultiplierText,
   buildBillingRecordModeText,
   buildBillingRecordFeeDetailHtml,
   buildBillingRecordFeeDetails,
@@ -154,6 +155,13 @@ test('billing record fee helpers render per-provider and total charges', () => {
   assert.match(html, /合计/);
   // 合计 2 元按去尾零规则显示为 -¥ 2。
   assert.match(html, /-¥ 2(?!\.)/);
+});
+
+test('buildBillingRecordFinalMultiplierText renders server-provided final multipliers', () => {
+  assert.equal(buildBillingRecordFinalMultiplierText({ finalMultiplier: '4x' }), '4x');
+  assert.equal(buildBillingRecordFinalMultiplierText({ finalMultiplier: '4x、1.3x' }), '4x、1.3x');
+  assert.equal(buildBillingRecordFinalMultiplierText({ type: 'normal_search' }), '1x');
+  assert.equal(buildBillingRecordFinalMultiplierText({ type: 'recharge' }), '-');
 });
 
 test('billing record fee details expose per-search query and render it as escaped text', () => {

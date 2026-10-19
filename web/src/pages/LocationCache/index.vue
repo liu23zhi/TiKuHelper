@@ -2,7 +2,15 @@
   <div class="location-page">
     <a-card :bordered="false">
       <template #title>{{ pageTitle }}</template>
-      <template #extra><a-button :loading="loading" @click="load"><template #icon><ReloadOutlined /></template>刷新列表</a-button></template>
+      <template #extra>
+        <a-space>
+          <a-button @click="manualVisible = true">手动添加</a-button>
+          <a-popconfirm title="删除当前类型的全部归属地缓存？" ok-text="全部删除" cancel-text="取消" @confirm="deleteAll">
+            <a-button danger :loading="allDeleting">全部删除</a-button>
+          </a-popconfirm>
+          <a-button :loading="loading" @click="load"><template #icon><ReloadOutlined /></template>刷新列表</a-button>
+        </a-space>
+      </template>
       <a-form layout="inline" class="filter-form" @finish="reload">
         <a-form-item label="关键词">
           <a-input-search v-model:value="keywordInput" allow-clear placeholder="查询值 / 归属地" class="keyword-input" @search="reload" />
@@ -55,6 +63,19 @@
       <h4 class="response-title">原始响应</h4>
       <pre class="raw-response">{{ formatRawResponse(detailRecord.rawJson) }}</pre>
     </a-modal>
+    <a-modal v-model:visible="manualVisible" :title="`手动添加${kindLabel}归属地`" :confirm-loading="manualSubmitting" ok-text="查询并保存" cancel-text="取消" @ok="manualLookup">
+      <a-form layout="vertical">
+        <a-form-item :label="kindLabel" required>
+          <a-input v-model:value="manualKey" :placeholder="kind === 'phone' ? '请输入 11 位手机号' : '请输入公网 IP 地址'" @press-enter="manualLookup" />
+        </a-form-item>
+        <a-form-item v-if="kind === 'ip'" label="查询模式">
+          <a-select v-model:value="manualSource">
+            <a-select-option value="">默认</a-select-option>
+            <a-select-option value="commercial">商业增强</a-select-option>
+          </a-select>
+        </a-form-item>
+      </a-form>
+    </a-modal>
   </div>
 </template>
 
@@ -64,7 +85,7 @@ import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import Swal from 'sweetalert2'
 import { ReloadOutlined } from '@ant-design/icons-vue'
-import { deleteLocationCache, deleteLocationCacheBatch, getLocationCacheList, refreshLocationCache } from '@/api/TikuComponentApi'
+import { deleteLocationCache, deleteLocationCacheBatch, getLocationCacheList, manualLookupLocationCache, refreshLocationCache } from '@/api/TikuComponentApi'
 
 export default defineComponent({
   name: 'LocationCache',
@@ -86,6 +107,11 @@ export default defineComponent({
     const deselectedKeys = ref(new Set())
     const selectAllMode = ref(false)
     const batchDeleting = ref(false)
+    const allDeleting = ref(false)
+    const manualVisible = ref(false)
+    const manualSubmitting = ref(false)
+    const manualKey = ref('')
+    const manualSource = ref('')
     const summary = ref({ total: 0, withAddress: 0, withoutAddress: 0 })
     const recordIdentity = record => `${record.kind}:${record.lookupKey}:${record.source || 'default'}`
     const sourceLabel = source => source === 'legacy' ? '历史（来源未记录）' : source === 'commercial' ? '商业增强' : '默认'
@@ -251,6 +277,43 @@ export default defineComponent({
         batchDeleting.value = false
       }
     }
+    const deleteAll = async () => {
+      if (allDeleting.value) return
+      allDeleting.value = true
+      errorMessage.value = ''
+      try {
+        const res = await deleteLocationCacheBatch({ kind: kind.value, keyword: '', source: '', items: [], all: true, except: [] })
+        if (res?.status !== 200) throw new Error(res?.message || '全部删除失败')
+        clearSelectionState()
+        pagination.current = 1
+        message.success(`已删除 ${Number(res?.data?.deleted) || 0} 条`)
+        await load()
+      } catch (error) {
+        errorMessage.value = requestErrorMessage(error, '全部删除失败')
+      } finally {
+        allDeleting.value = false
+      }
+    }
+    const manualLookup = async () => {
+      const lookupKey = manualKey.value.trim()
+      if (!lookupKey || manualSubmitting.value) return
+      manualSubmitting.value = true
+      errorMessage.value = ''
+      try {
+        const res = await manualLookupLocationCache({ kind: kind.value, lookupKey, source: kind.value === 'ip' ? manualSource.value : '' })
+        if (typeof res?.data?.configured === 'boolean') configured.value = res.data.configured
+        if (res?.status !== 200) throw new Error(res?.message || '手动查询失败')
+        manualVisible.value = false
+        manualKey.value = ''
+        manualSource.value = ''
+        message.success('查询成功，已保存归属地')
+        await load()
+      } catch (error) {
+        errorMessage.value = `${lookupKey}：${requestErrorMessage(error, '手动查询失败')}`
+      } finally {
+        manualSubmitting.value = false
+      }
+    }
     const updateSummary = (data) => {
       const source = data?.summary || data?.statistics || {}
       const total = Number(source.total ?? data?.total ?? 0) || 0
@@ -333,7 +396,7 @@ export default defineComponent({
       detailVisible.value = false
       load()
     }, { immediate: true })
-    return { rows, loading, configured, errorMessage, keywordInput, pagination, columns, formatDate, formatRawResponse, reload, resetFilters, load, onTableChange, remove, refresh, refreshing, removing, recordIdentity, sourceLabel, isRefreshDisabled, detailVisible, detailRecord, showDetails, kindLabel, pageTitle, summary, selectedCount, selectedRowKeys, allRowsSelected, allCurrentPageSelected, hasCurrentPageSelection, selectionSummary, rowSelection, handleSelectCurrentPage, handleClearCurrentPage, handleSelectAll, handleClearSelection, batchDeleting, deleteSelected }
+    return { rows, loading, configured, errorMessage, keywordInput, pagination, columns, formatDate, formatRawResponse, reload, resetFilters, load, onTableChange, remove, refresh, refreshing, removing, recordIdentity, sourceLabel, isRefreshDisabled, detailVisible, detailRecord, showDetails, kindLabel, pageTitle, summary, selectedCount, selectedRowKeys, allRowsSelected, allCurrentPageSelected, hasCurrentPageSelection, selectionSummary, rowSelection, handleSelectCurrentPage, handleClearCurrentPage, handleSelectAll, handleClearSelection, batchDeleting, deleteSelected, allDeleting, deleteAll, manualVisible, manualSubmitting, manualKey, manualSource, manualLookup }
   },
 })
 </script>

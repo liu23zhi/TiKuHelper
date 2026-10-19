@@ -118,7 +118,7 @@
         <div class="page-title-wrap">
           <div>
             <div class="page-title">账单流水</div>
-            <div class="page-subtitle">展示题目消费与充值入账，便于快速回看最近的金额变动、来源渠道与关联单号。</div>
+            <div class="page-subtitle">展示题目消费与充值入账，便于快速回看最近的金额变动、来源渠道与请求编号。</div>
           </div>
         </div>
       </template>
@@ -213,6 +213,7 @@ import {
 import {
   buildPersonalUsageBillingRecordParams,
   buildBillingRecordAmountText,
+  buildBillingRecordFinalMultiplierText,
   buildBillingRecordModeText,
   buildBillingRecordReferenceText,
   buildBillingRecordSourceText,
@@ -310,6 +311,7 @@ export default defineComponent({
       pageRefreshing,
       formatMoneyValue,
       buildBillingRecordAmountText,
+      buildBillingRecordFinalMultiplierText,
       buildBillingRecordModeText,
       buildBillingRecordReferenceText,
       buildBillingRecordSourceText,
@@ -372,13 +374,20 @@ export default defineComponent({
           },
         },
         {
-          title: '关联单号',
+          title: '请求编号',
           dataIndex: 'referenceNo',
           key: 'referenceNo',
           width: 220,
           slots: {
             customRender: 'referenceNo',
           },
+        },
+        {
+          title: '最终倍率',
+          dataIndex: 'finalMultiplier',
+          key: 'finalMultiplier',
+          width: 120,
+          customRender: ({ record }) => buildBillingRecordFinalMultiplierText(record),
         },
         {
           title: '访问令牌名称',
