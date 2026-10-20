@@ -42,7 +42,7 @@
       :description="`以下模型缺少价格，命中时会按 0 元计费：${pricingGaps.unresolvedModels.join('、')}。请在下方「模型价格表」中补充单价。`"
     />
 
-    <a-form layout="vertical" class="ai-config-form">
+    <a-form layout="vertical" class="ai-config-form" autocomplete="off">
       <section class="console-panel ai-section">
         <header class="section-heading ai-section-heading">
           <div>
@@ -58,12 +58,27 @@
       </a-form-item>
 
       <a-form-item label="服务地址">
-        <a-input v-model:value="formState.baseUrl" placeholder="例如 https://api.openai.com 或 https://api.openai.com/v1" />
+        <a-input
+          v-model:value="formState.baseUrl"
+          name="ai-service-endpoint"
+          type="url"
+          autocomplete="off"
+          autocapitalize="none"
+          :spellcheck="false"
+          placeholder="例如 https://api.openai.com 或 https://api.openai.com/v1"
+        />
         <div class="hint">如果地址未包含 /v1，保存时会提示你是否补全；也可以保持原样保存。</div>
       </a-form-item>
 
       <a-form-item label="API Key">
-        <a-input-password v-model:value="formState.apiKey" placeholder="请输入 API Key" />
+        <a-input-password
+          v-model:value="formState.apiKey"
+          name="ai-service-api-key"
+          autocomplete="new-password"
+          autocapitalize="none"
+          :spellcheck="false"
+          placeholder="请输入 API Key"
+        />
       </a-form-item>
 
       <a-form-item label="默认模型" class="full-width">
@@ -424,7 +439,7 @@
       width="920px"
       @ok="handleRunTest"
     >
-      <a-form :label-col="modalLabelCol" :wrapper-col="modalWrapperCol">
+      <a-form :label-col="modalLabelCol" :wrapper-col="modalWrapperCol" autocomplete="off">
         <a-form-item label="测试模型" required>
           <a-select
             v-model:value="testForm.model"
@@ -436,10 +451,25 @@
           <div class="hint">会向当前配置对应的 AI 服务发送固定测试问题：hello。</div>
         </a-form-item>
         <a-form-item label="服务地址">
-          <a-input v-model:value="testForm.baseUrl" placeholder="留空时使用当前页面中的服务地址" />
+          <a-input
+            v-model:value="testForm.baseUrl"
+            name="ai-test-service-endpoint"
+            type="url"
+            autocomplete="off"
+            autocapitalize="none"
+            :spellcheck="false"
+            placeholder="留空时使用当前页面中的服务地址"
+          />
         </a-form-item>
         <a-form-item label="API Key">
-          <a-input-password v-model:value="testForm.apiKey" placeholder="留空时使用当前页面中的 API Key" />
+          <a-input-password
+            v-model:value="testForm.apiKey"
+            name="ai-test-service-api-key"
+            autocomplete="new-password"
+            autocapitalize="none"
+            :spellcheck="false"
+            placeholder="留空时使用当前页面中的 API Key"
+          />
         </a-form-item>
         <a-form-item label="Prompt 覆盖">
           <a-textarea
