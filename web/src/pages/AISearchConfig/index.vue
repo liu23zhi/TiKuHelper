@@ -254,53 +254,48 @@
           :message="capabilityError"
         />
 
-        <section class="capability-documentation">
-          <p>获取搜索功能的详细信息，包括支持的能力、参数限制和使用说明。</p>
-          <h3>功能概述</h3>
-          <p>此接口返回搜索功能的完整配置信息，你可以用它来：</p>
-          <ul>
-            <li>了解当前可用的搜索能力（如站内搜索、文件类型过滤等）</li>
-            <li>获取参数的默认值和限制范围</li>
-            <li>查看当前配置版本和可用状态</li>
-          </ul>
-          <p>适合在应用初始化时调用，或用于动态配置搜索界面。</p>
-          <h3>API 端点</h3>
-          <dl class="capability-endpoints">
-            <div><dt>方法</dt><dd>GET</dd></div>
-            <div><dt>路径</dt><dd>/search/engines</dd></div>
-            <div><dt>完整 API 地址</dt><dd>https://uapis.cn/api/v1/search/engines</dd></div>
-            <div><dt>文档页面</dt><dd><a href="https://uapis.cn/docs/api-reference/get-search-engines" target="_blank" rel="noopener noreferrer">https://uapis.cn/docs/api-reference/get-search-engines</a></dd></div>
+        <section v-if="searchEngineDetail" class="capability-detail-panel">
+          <header class="capability-detail-panel__header">
+            <div class="capability-detail-panel__identity">
+              <h3>{{ searchEngineDetail.engine.display_name || searchEngineDetail.engine.name }}</h3>
+              <p>{{ searchEngineDetail.engine.description || '暂无搜索引擎描述' }}</p>
+            </div>
+            <a-tag :color="searchEngineDetail.engine.available ? 'green' : 'red'">
+              {{ searchEngineDetail.engine.available ? '可用' : '不可用' }}
+            </a-tag>
+          </header>
+
+          <dl class="capability-detail-facts">
+            <div><dt>引擎标识</dt><dd>{{ searchEngineDetail.engine.name || '-' }}</dd></div>
+            <div><dt>配置版本</dt><dd>{{ searchEngineDetail.engine.version || '-' }}</dd></div>
           </dl>
-          <h3>响应</h3>
-          <p>200 / 请求成功：返回搜索引擎的详细信息。</p>
-          <pre class="capability-response-example">{
-  // 搜索引擎的基本信息
-  "engine": {
-    // 引擎标识名称
-    "name": "uapi-search",
-    // 引擎显示名称
-    "display_name": "UAPI Pro Search",
-    // 引擎描述
-    "description": "UAPI Pro 智能搜索引擎，提供高质量的实时网页搜索和智能摘要",
-    // 引擎是否可用
-    "available": true,
-    // 配置版本标识
-    "version": "2.0",
-    // 支持的特性列表
-    "features": ["string"]
-  },
-  // 搜索结果数量限制
-  "limits": {
-    // 默认返回结果数
-    "default": 10,
-    // 最大返回结果数
-    "max": 100
-  },
-  // 支持的所有参数说明列表
-  "supported_parameters": ["string"]
-}</pre>
+
+          <div class="capability-detail-list">
+            <h4>结果限制</h4>
+            <dl class="capability-detail-facts">
+            <div><dt>默认结果数</dt><dd>{{ searchEngineDetail.limits.default ?? '-' }}</dd></div>
+            <div><dt>最大结果数</dt><dd>{{ searchEngineDetail.limits.max ?? '-' }}</dd></div>
+            </dl>
+          </div>
+
+          <div class="capability-detail-list">
+            <h4>支持的能力</h4>
+            <a-space v-if="searchEngineDetail.features.length" wrap>
+              <a-tag v-for="feature in searchEngineDetail.features" :key="feature">{{ feature }}</a-tag>
+            </a-space>
+            <span v-else class="capability-detail-empty">未提供</span>
+          </div>
+
+          <div class="capability-detail-list">
+            <h4>支持的参数</h4>
+            <a-space v-if="searchEngineDetail.supportedParameters.length" wrap>
+              <a-tag v-for="parameter in searchEngineDetail.supportedParameters" :key="parameter">{{ parameter }}</a-tag>
+            </a-space>
+            <span v-else class="capability-detail-empty">未提供</span>
+          </div>
         </section>
 
+        <h3 v-if="usedCapabilityCards.length || usedUsageRows.length" class="capability-usage-heading">本服务使用统计</h3>
         <div v-if="usedCapabilityCards.length" class="capability-status-grid">
           <div v-for="card in usedCapabilityCards" :key="card.key" class="capability-status-card">
             <div class="capability-status-card__header">
@@ -735,6 +730,16 @@ export default defineComponent({
     const searchUsageRows = computed(() => usageRows.value.filter(item => /\/search\/(?:aggregate|engines)(?:\/|$)/i.test(item.path) && item.count > 0))
     const webReadUsageRows = computed(() => usageRows.value.filter(item => /\/web\/tomarkdown(?:\/|$)/i.test(item.path) && item.count > 0))
     const usedUsageRows = computed(() => [...searchUsageRows.value, ...webReadUsageRows.value])
+    const searchEngineDetail = computed(() => {
+      const response = searchEngineInfo.value
+      if (!response?.engine || typeof response.engine !== 'object') return null
+      return {
+        engine: response.engine,
+        limits: response.limits || {},
+        features: Array.isArray(response.engine.features) ? response.engine.features : [],
+        supportedParameters: Array.isArray(response.supported_parameters) ? response.supported_parameters : [],
+      }
+    })
     const usedCapabilityCards = computed(() => {
       const cards = []
       if (searchUsageRows.value.length) {
@@ -763,7 +768,7 @@ export default defineComponent({
       return cards
     })
     const usageColumns = [
-      { title: 'UAPI 端点', dataIndex: 'path', key: 'path', ellipsis: true },
+      { title: '调用位置', dataIndex: 'path', key: 'path', ellipsis: true },
       { title: '调用次数', dataIndex: 'count', key: 'count', width: 120, align: 'right' },
     ]
 
@@ -892,6 +897,7 @@ export default defineComponent({
       fetchingModels,
       searchEngineLoading,
       searchEngineInfo,
+      searchEngineDetail,
       capabilityModalVisible,
       capabilityError,
       capabilityLoading: searchEngineLoading,
@@ -1420,40 +1426,66 @@ export default defineComponent({
   margin-top: 16px;
 }
 
-.capability-documentation {
-  margin: 8px 0 20px;
-  line-height: 1.7;
+.capability-detail-panel {
+  margin: 4px 0 20px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid #e5e7eb;
 }
 
-.capability-documentation h3 {
-  margin: 16px 0 6px;
-  font-size: 15px;
+.capability-detail-panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
 }
 
-.capability-endpoints div {
+.capability-detail-panel__identity {
+  min-width: 0;
+}
+
+.capability-detail-panel__identity h3 {
+  margin: 0 0 6px;
+  font-size: 17px;
+}
+
+.capability-detail-panel__identity p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.capability-detail-facts {
   display: grid;
-  grid-template-columns: 140px minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px 20px;
+  margin: 18px 0;
 }
 
-.capability-endpoints dt {
+.capability-detail-facts dt,
+.capability-detail-list h4 {
+  margin: 0 0 5px;
+  color: #64748b;
+  font-size: 12px;
   font-weight: 600;
 }
 
-.capability-endpoints dd {
+.capability-detail-facts dd {
   min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
 }
 
-.capability-response-example {
-  max-height: 360px;
-  overflow: auto;
-  padding: 14px;
-  border-radius: 8px;
-  background: #f6f8fa;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+.capability-detail-list + .capability-detail-list {
+  margin-top: 14px;
+}
+
+.capability-detail-empty {
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.capability-usage-heading {
+  margin: 20px 0 8px;
+  font-size: 14px;
 }
 
 @media (max-width: 768px) {

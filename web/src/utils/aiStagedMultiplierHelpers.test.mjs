@@ -147,18 +147,25 @@ test('AI search config delegates staged editing to the shared helpers', () => {
   assert.match(source, /index === 0 \|\| formState\.stagedTokenMultiplierPoints\.length <= 1/);
 });
 
-test('AI search capability modal includes the requested search-engine API documentation', async () => {
+test('deep-thinking capability modal displays search capability details instead of API usage instructions', async () => {
   const source = await readFile(new URL('../pages/AISearchConfig/index.vue', import.meta.url), 'utf8');
   for (const expected of [
-    '获取搜索功能的详细信息，包括支持的能力、参数限制和使用说明。',
-    'https://uapis.cn/api/v1/search/engines',
-    'https://uapis.cn/docs/api-reference/get-search-engines',
-    'supported_parameters',
-    '获取参数的默认值和限制范围',
-    'UAPI Pro 智能搜索引擎',
+    'searchEngineDetail',
+    'capability-detail-panel',
+    '支持的能力',
+    '结果限制',
+    '支持的参数',
+    'engine.description',
+    'engine.features',
   ]) {
-    assert.ok(source.includes(expected), 'missing capability documentation: ' + expected);
+    assert.ok(source.includes(expected), 'missing search capability detail: ' + expected);
   }
+  const modalStart = source.indexOf('v-model:visible="capabilityModalVisible"');
+  const modalEnd = source.indexOf('</a-modal>', modalStart);
+  const modal = source.slice(modalStart, modalEnd);
+  assert.doesNotMatch(modal, /API 端点/);
+  assert.doesNotMatch(modal, /https:\/\/uapis\.cn\/docs\/api-reference/);
+  assert.doesNotMatch(modal, /capability-response-example/);
 });
 
 test('AI pricing card header wraps long copy and actions instead of overlapping', async () => {
