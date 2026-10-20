@@ -606,6 +606,41 @@ type AIStagedTokenMultiplierPoint struct {
 	Multiplier float64 `json:"multiplier"`
 }
 
+func (point AIStagedTokenMultiplierPoint) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Tokens     string  `json:"tokens"`
+		Multiplier float64 `json:"multiplier"`
+	}{Tokens: strconv.FormatInt(point.Tokens, 10), Multiplier: point.Multiplier})
+}
+
+func (point *AIStagedTokenMultiplierPoint) UnmarshalJSON(data []byte) error {
+	var payload struct {
+		Tokens     json.RawMessage `json:"tokens"`
+		Multiplier float64         `json:"multiplier"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return err
+	}
+	tokenValue := strings.TrimSpace(string(payload.Tokens))
+	if tokenValue == "" || tokenValue == "null" {
+		return errors.New("阶段倍率 token 阈值必须是十进制整数")
+	}
+	if strings.HasPrefix(tokenValue, `"`) {
+		var tokenString string
+		if err := json.Unmarshal(payload.Tokens, &tokenString); err != nil {
+			return err
+		}
+		tokenValue = strings.TrimSpace(tokenString)
+	}
+	tokens, err := strconv.ParseInt(tokenValue, 10, 64)
+	if err != nil {
+		return errors.New("阶段倍率 token 阈值超出 int64 整数范围")
+	}
+	point.Tokens = tokens
+	point.Multiplier = payload.Multiplier
+	return nil
+}
+
 func DefaultAIStagedTokenMultiplierPoints() []AIStagedTokenMultiplierPoint {
 	return []AIStagedTokenMultiplierPoint{
 		{Tokens: 0, Multiplier: 4},
@@ -630,6 +665,7 @@ func NormalizeAIStagedTokenMultiplierPoints(points []AIStagedTokenMultiplierPoin
 		if math.IsNaN(point.Multiplier) || math.IsInf(point.Multiplier, 0) {
 			return nil, errors.New("阶段倍率必须是有限数值")
 		}
+		point.Multiplier = RoundAIStagedTokenMultiplier(point.Multiplier)
 		if index > 0 {
 			previous := normalized[index-1]
 			if point.Tokens <= previous.Tokens {
@@ -644,6 +680,13 @@ func NormalizeAIStagedTokenMultiplierPoints(points []AIStagedTokenMultiplierPoin
 		return nil, errors.New("阶段倍率价格表首个节点的 token 阈值必须为 0")
 	}
 	return normalized, nil
+}
+
+func RoundAIStagedTokenMultiplier(multiplier float64) float64 {
+	if math.Abs(multiplier) > math.MaxFloat64/1_000_000 {
+		return multiplier
+	}
+	return util.RoundMoney(multiplier)
 }
 
 func cloneAIStagedTokenMultiplierPoints(points []AIStagedTokenMultiplierPoint) []AIStagedTokenMultiplierPoint {

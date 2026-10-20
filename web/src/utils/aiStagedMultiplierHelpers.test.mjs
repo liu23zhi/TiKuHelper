@@ -40,6 +40,30 @@ test('stage validation accepts a single zero-token node as a flat multiplier', (
   assert.equal(getStagedMultiplierPointsError([]), '阶段倍率价格表至少需要保留首个 0 token 节点');
 });
 
+test('stage thresholds preserve exact int64-range decimal strings', () => {
+  const points = [
+    { tokens: '0', multiplier: 2 },
+    { tokens: '9007199254740993', multiplier: 1 },
+    { tokens: '9223372036854775807', multiplier: 0 },
+  ];
+  assert.equal(getStagedMultiplierPointsError(points), '');
+  assert.ok(getStagedMultiplierPointsError([
+    { tokens: '0', multiplier: 2 },
+    { tokens: '9223372036854775808', multiplier: 1 },
+  ]));
+  assert.ok(getStagedMultiplierPointsError([{ tokens: '1.0', multiplier: 1 }]));
+});
+
+test('inserted stage threshold is computed exactly above Number safe integer range', () => {
+  const points = [
+    { tokens: '0', multiplier: 2 },
+    { tokens: '9007199254740995', multiplier: 1 },
+  ];
+  const inserted = insertStagedMultiplierPoint(points);
+  assert.deepEqual(inserted.map(point => point.tokens), ['0', '4503599627370497', '9007199254740995']);
+  assert.equal(getStagedMultiplierPointsError(inserted), '');
+});
+
 test('stage validation rejects invalid counts, thresholds, ordering and multipliers', () => {
   const invalid = [
     null, [],
@@ -62,8 +86,8 @@ test('stage validation rejects invalid counts, thresholds, ordering and multipli
 
 test('save payload preserves zero and high-precision staged multipliers', () => {
   const points = [
-    { tokens: 0, multiplier: 0 },
-    { tokens: 2000000000, multiplier: 12.3456789 },
+    { tokens: '0', multiplier: 0 },
+    { tokens: '9007199254740993', multiplier: 12.3456789 },
   ];
   assert.deepEqual(buildAISearchConfigSavePayload({ stagedTokenMultiplierPoints: points }, '').stagedTokenMultiplierPoints, points);
 });
@@ -87,7 +111,7 @@ test('inserting a node uses a valid integer gap without changing existing object
 test('consecutive integer thresholds append a valid tail instead of duplicating a node', () => {
   const points = [start(), { tokens: 1, multiplier: 1 }];
   const inserted = insertStagedMultiplierPoint(points);
-  assert.deepEqual(inserted.map(point => point.tokens), [0, 1, 2]);
+  assert.deepEqual(inserted.map(point => point.tokens), [0, 1, '2']);
   assert.equal(inserted.at(-1).multiplier, 1);
   assert.equal(getStagedMultiplierPointsError(inserted), '');
 });
@@ -107,7 +131,10 @@ test('row keys survive editable threshold changes and never collide after deleti
   assert.equal(rowKey(second), secondKey);
   assert.notEqual(firstKey, secondKey);
   assert.notEqual(rowKey({ tokens: 5, multiplier: 2 }), secondKey);
-  assert.deepEqual(buildAISearchConfigSavePayload({ stagedTokenMultiplierPoints: [first, second] }, '').stagedTokenMultiplierPoints, [first, second]);
+  assert.deepEqual(buildAISearchConfigSavePayload({ stagedTokenMultiplierPoints: [first, second] }, '').stagedTokenMultiplierPoints, [
+    { tokens: '0', multiplier: 4 },
+    { tokens: '5', multiplier: 2 },
+  ]);
 });
 
 test('AI search config delegates staged editing to the shared helpers', () => {
@@ -116,6 +143,7 @@ test('AI search config delegates staged editing to the shared helpers', () => {
   assert.match(source, /insertStagedMultiplierPoint/);
   assert.match(source, /createStagedPointRowKey/);
   assert.match(source, /:row-key="stagedPointRowKey"/);
+  assert.match(source, /#stageTokens="\{ record \}"[\s\S]*?<a-input v-model:value="record\.tokens" inputmode="numeric"/);
   assert.match(source, /index === 0 \|\| formState\.stagedTokenMultiplierPoints\.length <= 1/);
 });
 

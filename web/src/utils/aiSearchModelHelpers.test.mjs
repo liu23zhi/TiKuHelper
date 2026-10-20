@@ -143,9 +143,9 @@ test('buildAISearchConfigSavePayload preserves explicitly enabled staged billing
 
 test('buildAISearchConfigSavePayload persists editable staged multiplier points', () => {
   const points = [
-    { tokens: 0, multiplier: 4 },
-    { tokens: 3000, multiplier: 2.5 },
-    { tokens: 100000, multiplier: 0.3 },
+    { tokens: '0', multiplier: 4 },
+    { tokens: '3000', multiplier: 2.5 },
+    { tokens: '100000', multiplier: 0.3 },
   ];
   const payload = buildAISearchConfigSavePayload({
     enabled: true,
@@ -237,6 +237,12 @@ test('AISearchConfig page bills from the model price table', async () => {
   assert.doesNotMatch(content, /Architecture/);
   assert.match(content, /price-table-wrap/);
   assert.match(content, /@media \(max-width: 768px\)/);
+});
+
+test('AISearchConfig model price multiplier accepts positive fractional values below one', async () => {
+  const content = await readFile(aiSearchConfigPagePath, 'utf8');
+  assert.match(content, /v-model:value="priceForm\.multiplier"[^>]*:min="0\.0001"/);
+  assert.match(content, /v-model:value="priceForm\.multiplier"[^>]*:precision="4"/);
 });
 
 test('AISearchConfig page exposes configurable model and search budgets', async () => {

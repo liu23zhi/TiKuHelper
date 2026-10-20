@@ -380,10 +380,10 @@
             :columns="stagedPointColumns"
           >
             <template #stageTokens="{ record }">
-              <a-input-number v-model:value="record.tokens" :min="0" :precision="0" :step="1000" style="width: 160px" />
+              <a-input v-model:value="record.tokens" inputmode="numeric" autocomplete="off" style="width: 180px" />
             </template>
             <template #stageMultiplier="{ record }">
-              <a-input-number v-model:value="record.multiplier" :step="0.1" style="width: 140px" />
+              <a-input-number v-model:value="record.multiplier" :precision="6" :step="0.1" style="width: 140px" />
             </template>
             <template #stageAction="{ index }">
               <a-button type="link" danger :disabled="index === 0 || formState.stagedTokenMultiplierPoints.length <= 1" @click="removeStagedMultiplierPoint(index)">删除</a-button>
@@ -705,7 +705,7 @@ export default defineComponent({
       webReadPricePerCall: 0,
       enableAIStagedTokenBilling: false,
       smoothAIStagedTokenMultiplier: false,
-      stagedTokenMultiplierPoints: DEFAULT_AI_STAGED_TOKEN_MULTIPLIER_POINTS.map(point => ({ ...point })),
+      stagedTokenMultiplierPoints: DEFAULT_AI_STAGED_TOKEN_MULTIPLIER_POINTS.map(point => ({ ...point, tokens: String(point.tokens) })),
     })
 
     const priceRows = ref([])
@@ -812,8 +812,8 @@ export default defineComponent({
           formState.enableAIStagedTokenBilling = !!data.enableAIStagedTokenBilling
           formState.smoothAIStagedTokenMultiplier = !!data.smoothAIStagedTokenMultiplier
           formState.stagedTokenMultiplierPoints = Array.isArray(data.stagedTokenMultiplierPoints) && data.stagedTokenMultiplierPoints.length
-            ? data.stagedTokenMultiplierPoints.map(point => ({ tokens: Number(point.tokens ?? 0), multiplier: Number(point.multiplier ?? 1) }))
-            : DEFAULT_AI_STAGED_TOKEN_MULTIPLIER_POINTS.map(point => ({ ...point }))
+            ? data.stagedTokenMultiplierPoints.map(point => ({ tokens: String(point.tokens ?? 0), multiplier: Number(point.multiplier ?? 1) }))
+            : DEFAULT_AI_STAGED_TOKEN_MULTIPLIER_POINTS.map(point => ({ ...point, tokens: String(point.tokens) }))
         } else {
           message.error(res?.message || '获取 AI 搜索配置失败')
         }
@@ -1061,7 +1061,7 @@ export default defineComponent({
       this.formState.stagedTokenMultiplierPoints.splice(index, 1)
     },
     resetStagedMultiplierPoints() {
-      this.formState.stagedTokenMultiplierPoints = DEFAULT_AI_STAGED_TOKEN_MULTIPLIER_POINTS.map(point => ({ ...point }))
+      this.formState.stagedTokenMultiplierPoints = DEFAULT_AI_STAGED_TOKEN_MULTIPLIER_POINTS.map(point => ({ ...point, tokens: String(point.tokens) }))
     },
     resetTestResult() {
       this.testResult.answers = []

@@ -541,6 +541,28 @@ func TestNormalizeAIModelPriceInputRejectsNegativeAndBlankValues(t *testing.T) {
 	}
 }
 
+func TestAIModelPricePersistsPositiveFractionalMultiplier(t *testing.T) {
+	db := newAIModelPriceTestDB(t)
+	created, err := CreateAIModelPriceWithDB(db, CreateAIModelPriceInput{
+		ModelName:  "discounted-model",
+		InputPrice: 2,
+		Multiplier: 0.1,
+	})
+	if err != nil {
+		t.Fatalf("create model price with a 0.1x multiplier: %v", err)
+	}
+	if created.Multiplier != 0.1 {
+		t.Fatalf("expected 0.1x multiplier, got %v", created.Multiplier)
+	}
+	resolved, found, err := ResolveAIModelTokenPriceWithDB(db, "discounted-model")
+	if err != nil || !found {
+		t.Fatalf("resolve discounted model: found=%t err=%v", found, err)
+	}
+	if resolved.Multiplier != 0.1 || resolved.InputUnitPrice != 0.2 {
+		t.Fatalf("expected resolved 0.1x price multiplier, got %+v", resolved)
+	}
+}
+
 func TestEnsureDefaultAIModelPricesWithDBCreatesTableWhenMissing(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:ai-model-price-missing-"+strings.ReplaceAll(t.Name(), "/", "_")+"?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {

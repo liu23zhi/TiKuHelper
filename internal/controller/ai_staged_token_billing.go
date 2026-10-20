@@ -62,20 +62,20 @@ func calculateAIStagedTokenMultiplierWithPoints(totalTokens int64, smooth bool, 
 	if !smooth {
 		for index := 1; index < len(points); index++ {
 			if totalTokens < points[index].Tokens {
-				return points[index-1].Multiplier
+				return service.RoundAIStagedTokenMultiplier(points[index-1].Multiplier)
 			}
 		}
-		return points[len(points)-1].Multiplier
+		return service.RoundAIStagedTokenMultiplier(points[len(points)-1].Multiplier)
 	}
 
 	// The first node is a flat-rate floor before the second node. The last node
 	// is a flat-rate tail after its threshold; only interior ranges interpolate.
 	if len(points) < 2 || totalTokens < points[1].Tokens {
-		return points[0].Multiplier
+		return service.RoundAIStagedTokenMultiplier(points[0].Multiplier)
 	}
 	last := points[len(points)-1]
 	if totalTokens >= last.Tokens {
-		return last.Multiplier
+		return service.RoundAIStagedTokenMultiplier(last.Multiplier)
 	}
 	for index := 2; index < len(points); index++ {
 		left := points[index-1]
@@ -84,16 +84,16 @@ func calculateAIStagedTokenMultiplierWithPoints(totalTokens int64, smooth bool, 
 			continue
 		}
 		if totalTokens == left.Tokens {
-			return left.Multiplier
+			return service.RoundAIStagedTokenMultiplier(left.Multiplier)
 		}
 		if totalTokens == right.Tokens {
-			return right.Multiplier
+			return service.RoundAIStagedTokenMultiplier(right.Multiplier)
 		}
 		ratio := float64(totalTokens-left.Tokens) / float64(right.Tokens-left.Tokens)
-		return (1-ratio)*left.Multiplier + ratio*right.Multiplier
+		return service.RoundAIStagedTokenMultiplier((1-ratio)*left.Multiplier + ratio*right.Multiplier)
 	}
 
-	return last.Multiplier
+	return service.RoundAIStagedTokenMultiplier(last.Multiplier)
 }
 
 // calculateAIStagedTokenBilling prices each actual model response separately.

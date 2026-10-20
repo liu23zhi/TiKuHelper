@@ -33,7 +33,7 @@ func TestCalculateAIStagedTokenMultiplierUsesFixedInclusiveBands(t *testing.T) {
 	}
 }
 
-func TestCalculateAIStagedTokenMultiplierSmoothlyInterpolatesAndClamps(t *testing.T) {
+func TestCalculateAIStagedTokenMultiplierSmoothlyInterpolatesWithConstantEnds(t *testing.T) {
 	tests := []struct {
 		tokens int64
 		want   float64
@@ -59,9 +59,6 @@ func TestCalculateAIStagedTokenMultiplierSmoothlyInterpolatesAndClamps(t *testin
 		}
 		if got > previous {
 			t.Errorf("multiplier must not increase: tokens=%d previous=%.6f got=%.6f", test.tokens, previous, got)
-		}
-		if got < 0.3 || got > 4 {
-			t.Errorf("multiplier out of bounds: tokens=%d multiplier=%.6f", test.tokens, got)
 		}
 		previous = got
 	}
@@ -125,6 +122,23 @@ func TestCalculateAIStagedTokenMultiplierKeepsTailNodeMultiplierConstant(t *test
 		if got := calculateAIStagedTokenMultiplierWithPoints(tokens, true, points); got != 0.3 {
 			t.Errorf("tokens=%d: expected the final node multiplier to stay constant, got %v", tokens, got)
 		}
+	}
+}
+
+func TestCalculateAIStagedTokenMultiplierRoundsSmoothValuesToMoneyPrecision(t *testing.T) {
+	points := []service.AIStagedTokenMultiplierPoint{
+		{Tokens: 0, Multiplier: 1.23456789},
+		{Tokens: 2, Multiplier: 1.23456789},
+		{Tokens: 4, Multiplier: 0.12345678},
+	}
+	if got := calculateAIStagedTokenMultiplierWithPoints(3, true, points); got != 0.679012 {
+		t.Fatalf("expected smooth multiplier rounded to six decimal places, got %.9f", got)
+	}
+	if got := calculateAIStagedTokenMultiplierWithPoints(1, true, points); got != 1.234568 {
+		t.Fatalf("expected first smooth interval endpoint value rounded to six decimal places, got %.9f", got)
+	}
+	if got := calculateAIStagedTokenMultiplierWithPoints(5, true, points); got != 0.123457 {
+		t.Fatalf("expected constant tail value rounded to six decimal places, got %.9f", got)
 	}
 }
 

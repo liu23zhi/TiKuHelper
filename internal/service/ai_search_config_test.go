@@ -122,12 +122,55 @@ func TestAISearchConfigStagedPointsHaveNoBusinessValueBounds(t *testing.T) {
 		{Tokens: 2_000_000_000, Multiplier: 12.3456789},
 		{Tokens: 9_000_000_000, Multiplier: -3.25},
 	}
+	want := []AIStagedTokenMultiplierPoint{
+		{Tokens: 0, Multiplier: 12.345679},
+		{Tokens: 2_000_000_000, Multiplier: 12.345679},
+		{Tokens: 9_000_000_000, Multiplier: -3.25},
+	}
 	updated, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{StagedTokenMultiplierPoints: &points})
 	if err != nil {
 		t.Fatalf("finite monotonic multipliers and thresholds above the former limit should be accepted: %v", err)
 	}
-	if !reflect.DeepEqual(updated.StagedTokenMultiplierPoints, points) {
-		t.Fatalf("expected unbounded staged values to persist, got %+v", updated.StagedTokenMultiplierPoints)
+	if !reflect.DeepEqual(updated.StagedTokenMultiplierPoints, want) {
+		t.Fatalf("expected unbounded staged values rounded to money precision %+v, got %+v", want, updated.StagedTokenMultiplierPoints)
+	}
+}
+
+func TestAIStagedTokenMultiplierPointJSONPreservesInt64Thresholds(t *testing.T) {
+	const threshold = int64(9_007_199_254_740_993)
+	for _, payload := range []string{
+		`{"tokens":"9007199254740993","multiplier":0.1}`,
+		`{"tokens":9007199254740993,"multiplier":0.1}`,
+	} {
+		var point AIStagedTokenMultiplierPoint
+		if err := json.Unmarshal([]byte(payload), &point); err != nil {
+			t.Fatalf("unmarshal threshold payload %s: %v", payload, err)
+		}
+		if point.Tokens != threshold {
+			t.Fatalf("expected exact threshold %d, got %d", threshold, point.Tokens)
+		}
+		encoded, err := json.Marshal(point)
+		if err != nil {
+			t.Fatalf("marshal staged point: %v", err)
+		}
+		if string(encoded) != `{"tokens":"9007199254740993","multiplier":0.1}` {
+			t.Fatalf("expected canonical string threshold JSON, got %s", encoded)
+		}
+	}
+}
+
+func TestAISearchConfigRoundsStageMultipliersToMoneyPrecision(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	points := []AIStagedTokenMultiplierPoint{
+		{Tokens: 0, Multiplier: 1.23456789},
+		{Tokens: 2000, Multiplier: 0.12345678},
+	}
+	updated, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{StagedTokenMultiplierPoints: &points})
+	if err != nil {
+		t.Fatalf("save staged multipliers: %v", err)
+	}
+	if updated.StagedTokenMultiplierPoints[0].Multiplier != 1.234568 || updated.StagedTokenMultiplierPoints[1].Multiplier != 0.123457 {
+		t.Fatalf("expected staged multipliers rounded to balance precision, got %+v", updated.StagedTokenMultiplierPoints)
 	}
 }
 

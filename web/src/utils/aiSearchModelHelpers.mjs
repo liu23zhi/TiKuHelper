@@ -59,7 +59,7 @@ function normalizeStagedTokenMultiplierPoints(points) {
     ? points
     : DEFAULT_AI_STAGED_TOKEN_MULTIPLIER_POINTS;
   return source.map(point => ({
-    tokens: Number(point?.tokens ?? 0),
+    tokens: String(point?.tokens ?? 0),
     multiplier: Number(point?.multiplier ?? 1),
   }));
 }
