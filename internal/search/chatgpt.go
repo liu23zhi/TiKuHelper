@@ -1,7 +1,6 @@
 package search
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -261,27 +260,34 @@ func errorString(err error) string {
 	return err.Error()
 }
 
-type openAIChatCompletionRequest struct {
-	Model         string               `json:"model"`
-	Stream        bool                 `json:"stream"`
-	Temperature   float64              `json:"temperature"`
-	TopP          float64              `json:"top_p"`
-	Messages      []openAIChatMessage  `json:"messages"`
-	StreamOptions *openAIStreamOptions `json:"stream_options,omitempty"`
-	Tools         []openAITool         `json:"tools,omitempty"`
-	ToolChoice    interface{}          `json:"tool_choice,omitempty"`
-	MaxTokens     int                  `json:"max_tokens,omitempty"`
+type openAIResponsesRequest struct {
+	Model           string                `json:"model"`
+	Stream          bool                  `json:"stream"`
+	Store           bool                  `json:"store"`
+	Input           []any                 `json:"input"`
+	Include         []string              `json:"include,omitempty"`
+	Tools           []openAIResponsesTool `json:"tools,omitempty"`
+	ToolChoice      any                   `json:"tool_choice,omitempty"`
+	MaxOutputTokens int                   `json:"max_output_tokens,omitempty"`
 }
 
-type openAIStreamOptions struct {
-	IncludeUsage bool `json:"include_usage"`
+type openAIResponsesTool struct {
+	Type        string         `json:"type"`
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
+	Strict      bool           `json:"strict"`
 }
 
-type openAIChatMessage struct {
-	Role       string           `json:"role"`
-	Content    interface{}      `json:"content"`
-	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string           `json:"tool_call_id,omitempty"`
+type openAIResponsesMessage struct {
+	Role    string `json:"role"`
+	Content any    `json:"content"`
+}
+
+type openAIResponsesContentPart struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	ImageURL string `json:"image_url,omitempty"`
 }
 
 type openAIContentPart struct {
@@ -294,30 +300,47 @@ type openAIImageURLPart struct {
 	URL string `json:"url"`
 }
 
-type openAIStreamChunk struct {
-	Error   json.RawMessage `json:"error,omitempty"`
-	Choices []struct {
-		Delta struct {
-			Content          string                `json:"content"`
-			ReasoningContent string                `json:"reasoning_content,omitempty"`
-			ToolCalls        []openAIToolCallDelta `json:"tool_calls,omitempty"`
-		} `json:"delta"`
-		FinishReason string `json:"finish_reason"`
-	} `json:"choices"`
-	Usage *openAIStreamUsage `json:"usage,omitempty"`
+type openAIResponsesEvent struct {
+	Type        string          `json:"type"`
+	Delta       string          `json:"delta,omitempty"`
+	Text        string          `json:"text,omitempty"`
+	Arguments   string          `json:"arguments,omitempty"`
+	OutputIndex int             `json:"output_index,omitempty"`
+	ItemID      string          `json:"item_id,omitempty"`
+	Item        json.RawMessage `json:"item,omitempty"`
+	Error       json.RawMessage `json:"error,omitempty"`
+	Response    struct {
+		ID                string                `json:"id"`
+		Status            string                `json:"status"`
+		Output            []json.RawMessage     `json:"output"`
+		Usage             *openAIResponsesUsage `json:"usage,omitempty"`
+		Error             json.RawMessage       `json:"error,omitempty"`
+		IncompleteDetails *struct {
+			Reason string `json:"reason"`
+		} `json:"incomplete_details,omitempty"`
+	} `json:"response,omitempty"`
 }
 
-type openAIStreamUsage struct {
-	PromptTokens        int64 `json:"prompt_tokens"`
-	CompletionTokens    int64 `json:"completion_tokens"`
-	TotalTokens         int64 `json:"total_tokens"`
-	PromptTokensDetails *struct {
+type openAIResponsesUsage struct {
+	InputTokens  int64 `json:"input_tokens"`
+	OutputTokens int64 `json:"output_tokens"`
+	TotalTokens  int64 `json:"total_tokens"`
+	InputDetails *struct {
 		CachedTokens int64 `json:"cached_tokens"`
-	} `json:"prompt_tokens_details,omitempty"`
-	CacheCreation *struct {
-		Ephemeral5mInputTokens int64 `json:"ephemeral_5m_input_tokens"`
-		Ephemeral1hInputTokens int64 `json:"ephemeral_1h_input_tokens"`
-	} `json:"cache_creation,omitempty"`
+	} `json:"input_tokens_details,omitempty"`
+}
+
+type openAIResponsesOutputItem struct {
+	Type             string            `json:"type"`
+	ID               string            `json:"id,omitempty"`
+	CallID           string            `json:"call_id,omitempty"`
+	Name             string            `json:"name,omitempty"`
+	Arguments        string            `json:"arguments,omitempty"`
+	Status           string            `json:"status,omitempty"`
+	Role             string            `json:"role,omitempty"`
+	Content          []json.RawMessage `json:"content,omitempty"`
+	EncryptedContent string            `json:"encrypted_content,omitempty"`
+	Summary          []json.RawMessage `json:"summary,omitempty"`
 }
 
 type aiSearchAnswerPayload struct {
@@ -496,51 +519,25 @@ func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]
 
 	systemPrompt := effectiveAISearchPrompt(in.Prompt)
 	userPromptParts := buildAISearchPromptParts(req, in.getAttachmentHTTPClient().GetClient())
-	endpoints := buildAIChatCompletionEndpoints(baseURL)
+	endpoints := buildAIResponsesEndpoints(baseURL)
 	maxModelCalls, _, _ := in.aiSearchBudgets()
 	modelCalls := 0
-	var lastRequestErr error
-	var allTrace []AISearchTrace
-	var allModelCalls []AIModelCallUsage
-	for _, endpoint := range endpoints {
-		if modelCalls >= maxModelCalls {
-			break
-		}
-		content, usage, statusCode, requestBody, rawResponse, callErr := in.requestStreamAnswerDetailed(ctx, endpoint, systemPrompt, userPromptParts, &modelCalls, maxModelCalls)
-		offsetAIModelCallIndexes(usage.Trace, len(allModelCalls))
-		allTrace = append(allTrace, usage.Trace...)
-		allModelCalls = append(allModelCalls, usage.ModelCalls...)
-		for i := range allModelCalls {
-			allModelCalls[i].Index = i + 1
-		}
-		usage.Trace = append([]AISearchTrace(nil), allTrace...)
-		usage.ModelCalls = append([]AIModelCallUsage(nil), allModelCalls...)
-		debug = AISearchDebugResult{
-			Endpoint:    endpoint,
-			RequestBody: requestBody,
-			RawResponse: rawResponse,
-			Usage:       usage,
-			Trace:       append([]AISearchTrace(nil), usage.Trace...),
-		}
-		if callErr == nil {
-			lastRequestErr = nil
-			parsedAnswers := parseAISearchAnswers(content, req.Options, req.Type)
-			if len(parsedAnswers) > 0 {
-				return [][]string{parsedAnswers}, debug, nil
-			}
-			continue
-		}
-		if isAISearchEndpointFallbackStatus(statusCode) {
-			lastRequestErr = callErr
-			continue
-		}
+	content, usage, _, endpoint, requestBody, rawResponse, callErr := in.requestStreamAnswerDetailed(ctx, endpoints, systemPrompt, userPromptParts, &modelCalls, maxModelCalls)
+	debug = AISearchDebugResult{
+		Endpoint:    endpoint,
+		RequestBody: requestBody,
+		RawResponse: rawResponse,
+		Usage:       usage,
+		Trace:       append([]AISearchTrace(nil), usage.Trace...),
+	}
+	if callErr != nil {
 		return nil, debug, callErr
 	}
-	if lastRequestErr != nil {
-		return nil, debug, lastRequestErr
+	parsedAnswers := parseAISearchAnswers(content, req.Options, req.Type)
+	if len(parsedAnswers) == 0 {
+		return nil, debug, errors.ErrTargetNoAnswer
 	}
-
-	return nil, debug, errors.ErrTargetNoAnswer
+	return [][]string{parsedAnswers}, debug, nil
 }
 
 func (in *ChatGptClient) SearchAnswerWithUsage(req model.SearchRequest) (answer [][]string, usage AISearchUsage, err error) {
@@ -568,48 +565,18 @@ func (in *ChatGptClient) SearchAnswerWithUsage(req model.SearchRequest) (answer 
 
 	systemPrompt := effectiveAISearchPrompt(in.Prompt)
 	userPromptParts := buildAISearchPromptParts(req, in.getAttachmentHTTPClient().GetClient())
-	endpoints := buildAIChatCompletionEndpoints(baseURL)
+	endpoints := buildAIResponsesEndpoints(baseURL)
 	maxModelCalls, _, _ := in.aiSearchBudgets()
 	modelCalls := 0
-	var lastRequestErr error
-	var lastUsage AISearchUsage
-	var allTrace []AISearchTrace
-	var allModelCalls []AIModelCallUsage
-	for _, endpoint := range endpoints {
-		if modelCalls >= maxModelCalls {
-			break
-		}
-		content, streamUsage, statusCode, _, _, callErr := in.requestStreamAnswerDetailed(ctx, endpoint, systemPrompt, userPromptParts, &modelCalls, maxModelCalls)
-		offsetAIModelCallIndexes(streamUsage.Trace, len(allModelCalls))
-		allTrace = append(allTrace, streamUsage.Trace...)
-		allModelCalls = append(allModelCalls, streamUsage.ModelCalls...)
-		for i := range allModelCalls {
-			allModelCalls[i].Index = i + 1
-		}
-		streamUsage.Trace = append([]AISearchTrace(nil), allTrace...)
-		streamUsage.ModelCalls = append([]AIModelCallUsage(nil), allModelCalls...)
-		lastUsage = streamUsage
-		if callErr == nil {
-			lastRequestErr = nil
-			parsedAnswers := parseAISearchAnswers(content, req.Options, req.Type)
-			if len(parsedAnswers) > 0 {
-				return [][]string{parsedAnswers}, streamUsage, nil
-			}
-			// 上游只回了「不确定」这类无效答案：换一个端点重试往往能拿到有效答案，
-			// 而不是直接把失败透传给用户。
-			continue
-		}
-		if isAISearchEndpointFallbackStatus(statusCode) {
-			lastRequestErr = callErr
-			continue
-		}
+	content, streamUsage, _, _, _, _, callErr := in.requestStreamAnswerDetailed(ctx, endpoints, systemPrompt, userPromptParts, &modelCalls, maxModelCalls)
+	if callErr != nil {
 		return nil, streamUsage, callErr
 	}
-	if lastRequestErr != nil {
-		return nil, lastUsage, lastRequestErr
+	parsedAnswers := parseAISearchAnswers(content, req.Options, req.Type)
+	if len(parsedAnswers) == 0 {
+		return nil, streamUsage, errors.ErrTargetNoAnswer
 	}
-
-	return nil, lastUsage, errors.ErrTargetNoAnswer
+	return [][]string{parsedAnswers}, streamUsage, nil
 }
 
 func buildAISearchPrompt(req model.SearchRequest) string {
@@ -1022,20 +989,41 @@ func buildAISearchHTMLAttachment(parsedURL *url.URL, body []byte) string {
 	)
 }
 
-func buildAIChatCompletionEndpoints(baseURL string) []string {
+func buildAIResponsesEndpoints(baseURL string) []string {
 	normalized := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if normalized == "" {
 		return nil
 	}
 
-	endpoints := []string{normalized + "/chat/completions"}
+	endpoints := []string{normalized + "/responses"}
 	if !strings.HasSuffix(normalized, "/v1") {
-		endpoints = append(endpoints, normalized+"/v1/chat/completions")
+		endpoints = append(endpoints, normalized+"/v1/responses")
 	}
 	return endpoints
 }
 
-func (in *ChatGptClient) requestStreamAnswerDetailed(parentCtx context.Context, endpoint string, systemPrompt string, userPromptParts []openAIContentPart, modelCalls *int, maxModelCalls int) (string, AISearchUsage, int, string, string, error) {
+func buildAIResponsesMessage(role string, content any) openAIResponsesMessage {
+	return openAIResponsesMessage{Role: role, Content: content}
+}
+
+func buildAIResponsesContentParts(parts []openAIContentPart) []openAIResponsesContentPart {
+	converted := make([]openAIResponsesContentPart, 0, len(parts))
+	for _, part := range parts {
+		switch part.Type {
+		case "image_url":
+			if part.ImageURL != nil && strings.TrimSpace(part.ImageURL.URL) != "" {
+				converted = append(converted, openAIResponsesContentPart{Type: "input_image", ImageURL: part.ImageURL.URL})
+			}
+		default:
+			if part.Type == "text" && part.Text != "" {
+				converted = append(converted, openAIResponsesContentPart{Type: "input_text", Text: part.Text})
+			}
+		}
+	}
+	return converted
+}
+
+func (in *ChatGptClient) requestStreamAnswerDetailed(parentCtx context.Context, endpoints []string, systemPrompt string, userPromptParts []openAIContentPart, modelCalls *int, maxModelCalls int) (string, AISearchUsage, int, string, string, string, error) {
 	requestStartedAt := time.Now()
 
 	var (
@@ -1067,49 +1055,65 @@ func (in *ChatGptClient) requestStreamAnswerDetailed(parentCtx context.Context, 
 			}
 			*modelCalls++
 		}
-		payload, err := json.Marshal(openAIChatCompletionRequest{
-			Model:       strings.TrimSpace(in.Model),
-			Stream:      true,
-			Temperature: 0,
-			TopP:        0,
-			Messages: []openAIChatMessage{
-				// 普通搜索是「一次性直出答案」：不提供任何工具，也不播报预算 ——
-				// 模型既不能调用工具、也无法用剩余次数做任何决策，
-				// 只留下一句「直接输出最终答案 JSON」的要求即可。
-				// 预算只在深度思考的工具链路（buildAISearchBudgetPrompt）里播报。
-				{Role: "system", Content: systemPrompt + "\n本轮不提供任何联网/读取工具，请直接输出最终答案 JSON。"},
-				{Role: "user", Content: userPromptParts},
+		payload, err := json.Marshal(openAIResponsesRequest{
+			Model:  strings.TrimSpace(in.Model),
+			Stream: true,
+			Store:  false,
+			Input: []any{
+				buildAIResponsesMessage("system", systemPrompt+"\n本轮不提供任何联网/读取工具，请直接输出最终答案 JSON。"),
+				buildAIResponsesMessage("user", buildAIResponsesContentParts(userPromptParts)),
 			},
-			StreamOptions: &openAIStreamOptions{IncludeUsage: true},
+			MaxOutputTokens: aiToolMaxOutputTokens,
 		})
 		if err != nil {
-			return "", AISearchUsage{}, 0, "", "", errors.ErrParserJSON
+			return "", AISearchUsage{}, 0, "", "", "", errors.ErrParserJSON
 		}
-		requestBody = string(payload)
-		attemptStartedAt := time.Now()
-		remainingAfterCall := maxModelCalls - *modelCalls
-		recordTrace(AISearchTrace{Round: *modelCalls, Attempt: attempt + 1, AttemptBudget: in.aiSearchRetryAttempts(), Stage: "普通模型调用开始", Endpoint: endpoint, ModelCallCount: *modelCalls, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingAfterCall})
-		content, usage, statusCode, rawResponse, retryable, callErr := in.executeAISearchStreamRequest(parentCtx, endpoint, payload, requestBody, attemptStartedAt)
-		responseTrace := AISearchTrace{Round: *modelCalls, Attempt: attempt + 1, AttemptBudget: in.aiSearchRetryAttempts(), Stage: "普通模型响应", Endpoint: endpoint, ModelCallCount: *modelCalls, ModelCallBudget: maxModelCalls, RemainingModelCalls: maxModelCalls - *modelCalls, Status: fmt.Sprintf("%d", statusCode), DurationMs: time.Since(attemptStartedAt).Milliseconds(), RequestBody: requestBody, ContentPreview: content, FullResponse: content, RawResponse: rawResponse, Error: errorString(callErr)}
-		if call, ok := buildAIModelCallUsage(usage, in.Model, *modelCalls, attempt+1); ok {
-			appendAIModelCallUsage(&lastUsage, call)
-			applyAIModelCallUsageToTrace(&responseTrace, lastUsage.ModelCalls[len(lastUsage.ModelCalls)-1])
+		var attemptContent string
+		var attemptUsage AISearchUsage
+		var attemptEndpoint string
+		var attemptStatus int
+		var attemptRawResponse string
+		var attemptErr error
+		var attemptRetryable bool
+		for endpointIndex, endpoint := range endpoints {
+			requestBody = string(payload)
+			attemptStartedAt := time.Now()
+			remainingAfterCall := maxModelCalls - *modelCalls
+			recordTrace(AISearchTrace{Round: *modelCalls, Attempt: attempt + 1, AttemptBudget: in.aiSearchRetryAttempts(), Stage: "普通模型调用开始", Endpoint: endpoint, ModelCallCount: *modelCalls, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingAfterCall})
+			content, usage, statusCode, rawResponse, retryable, callErr := in.executeAISearchStreamRequest(parentCtx, endpoint, payload, requestBody, attemptStartedAt)
+			responseTrace := AISearchTrace{Round: *modelCalls, Attempt: attempt + 1, AttemptBudget: in.aiSearchRetryAttempts(), Stage: "普通模型响应", Endpoint: endpoint, ModelCallCount: *modelCalls, ModelCallBudget: maxModelCalls, RemainingModelCalls: maxModelCalls - *modelCalls, Status: fmt.Sprintf("%d", statusCode), DurationMs: time.Since(attemptStartedAt).Milliseconds(), RequestBody: requestBody, ContentPreview: content, FullResponse: content, RawResponse: rawResponse, Error: errorString(callErr)}
+			if call, ok := buildAIModelCallUsage(usage, in.Model, *modelCalls, attempt+1); ok {
+				appendAIModelCallUsage(&lastUsage, call)
+				applyAIModelCallUsageToTrace(&responseTrace, lastUsage.ModelCalls[len(lastUsage.ModelCalls)-1])
+			}
+			recordTrace(responseTrace)
+			attemptContent, attemptUsage, attemptEndpoint, attemptStatus, attemptRawResponse, attemptErr, attemptRetryable = content, usage, endpoint, statusCode, rawResponse, callErr, retryable
+			if callErr == nil {
+				attemptUsage.Trace = append([]AISearchTrace(nil), traceEvents...)
+				attemptUsage.ModelCalls = append([]AIModelCallUsage(nil), lastUsage.ModelCalls...)
+				return content, attemptUsage, statusCode, endpoint, requestBody, rawResponse, nil
+			}
+			if endpointIndex+1 >= len(endpoints) {
+				break
+			}
 		}
-		recordTrace(responseTrace)
-		usage.Trace = append([]AISearchTrace(nil), traceEvents...)
-		usage.ModelCalls = append([]AIModelCallUsage(nil), lastUsage.ModelCalls...)
-		lastUsage = usage
-		lastStatusCode = statusCode
-		lastRawResponse = rawResponse
-		lastErr = callErr
-		if callErr == nil || !retryable {
-			lastUsage.ModelCalls = append([]AIModelCallUsage(nil), usage.ModelCalls...)
-			return content, lastUsage, lastStatusCode, requestBody, lastRawResponse, callErr
+		modelCallHistory := append([]AIModelCallUsage(nil), lastUsage.ModelCalls...)
+		lastUsage = attemptUsage
+		lastUsage.ModelCalls = modelCallHistory
+		lastUsage.Trace = append([]AISearchTrace(nil), traceEvents...)
+		lastStatusCode = attemptStatus
+		lastRawResponse = attemptRawResponse
+		lastErr = attemptErr
+		if !attemptRetryable {
+			lastUsage.Trace = append([]AISearchTrace(nil), traceEvents...)
+			lastUsage.ModelCalls = append([]AIModelCallUsage(nil), lastUsage.ModelCalls...)
+			return attemptContent, lastUsage, lastStatusCode, attemptEndpoint, requestBody, lastRawResponse, lastErr
 		}
 	}
 
 	lastUsage.ModelCalls = append([]AIModelCallUsage(nil), lastUsage.ModelCalls...)
-	return "", lastUsage, lastStatusCode, requestBody, lastRawResponse, lastErr
+	lastUsage.Trace = append([]AISearchTrace(nil), traceEvents...)
+	return "", lastUsage, lastStatusCode, "", requestBody, lastRawResponse, lastErr
 }
 
 // executeAISearchStreamRequest 在全局并发配额内执行单次上游请求。
@@ -1141,7 +1145,7 @@ func (in *ChatGptClient) executeAISearchStreamRequest(parentCtx context.Context,
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		rawBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
 		rawResponse := string(rawBody)
-		return "", AISearchUsage{}, resp.StatusCode, rawResponse, isAISearchRetryableStatus(resp.StatusCode), in.upstreamError("http", resp.StatusCode, rawResponse, readErr)
+		return "", AISearchUsage{}, resp.StatusCode, rawResponse, true, in.upstreamError("http", resp.StatusCode, rawResponse, readErr)
 	}
 
 	firstTokenTimeout := aiSearchFirstTokenTimeout - time.Since(requestStartedAt)
@@ -1151,11 +1155,11 @@ func (in *ChatGptClient) executeAISearchStreamRequest(parentCtx context.Context,
 		}
 	}
 	if firstTokenTimeout <= 0 {
-		return "", AISearchUsage{}, resp.StatusCode, "", false, in.upstreamError("first_token", resp.StatusCode, "", errAISearchFirstTokenTimeout)
+		return "", AISearchUsage{}, resp.StatusCode, "", true, in.upstreamError("first_token", resp.StatusCode, "", errAISearchFirstTokenTimeout)
 	}
 	content, usage, rawResponse, err := readOpenAIStreamContentWithFirstTokenTimeout(resp.Body, firstTokenTimeout)
 	if err != nil {
-		return "", usage, resp.StatusCode, rawResponse, false, in.upstreamError("stream", resp.StatusCode, rawResponse, err)
+		return "", usage, resp.StatusCode, rawResponse, true, in.upstreamError("stream", resp.StatusCode, rawResponse, err)
 	}
 	content = strings.TrimSpace(content)
 	if content == "" {
@@ -1163,23 +1167,6 @@ func (in *ChatGptClient) executeAISearchStreamRequest(parentCtx context.Context,
 		return "", usage, resp.StatusCode, rawResponse, true, errors.ErrTargetNoAnswer
 	}
 	return content, usage, resp.StatusCode, rawResponse, false, nil
-}
-
-// isAISearchRetryableStatus 判断上游状态码是否值得退避重试。
-func isAISearchRetryableStatus(statusCode int) bool {
-	switch statusCode {
-	case http.StatusRequestTimeout, http.StatusTooManyRequests,
-		http.StatusInternalServerError, http.StatusBadGateway,
-		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-		return true
-	default:
-		return false
-	}
-}
-
-// isAISearchEndpointFallbackStatus 判断是否应该换成备用端点再试一次。
-func isAISearchEndpointFallbackStatus(statusCode int) bool {
-	return statusCode == http.StatusNotFound || isAISearchRetryableStatus(statusCode)
 }
 
 // sleepAISearchRetryBackoff 指数退避，并受总重试预算约束。
@@ -1232,66 +1219,21 @@ func readOpenAIStreamContentWithFirstTokenTimeout(body io.ReadCloser, timeout ti
 }
 
 func readOpenAIStreamContentWithRaw(body io.Reader, firstToken chan<- struct{}) (string, AISearchUsage, string, error) {
-	scanner := bufio.NewScanner(body)
-	var builder strings.Builder
-	var raw strings.Builder
-	var usage AISearchUsage
-	for scanner.Scan() {
-		raw.WriteString(scanner.Text())
-		raw.WriteByte('\n')
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || !strings.HasPrefix(line, "data:") {
-			continue
-		}
-		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "[DONE]" {
-			break
-		}
-
-		var chunk openAIStreamChunk
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			return "", usage, raw.String(), err
-		}
-		if len(chunk.Error) > 0 && string(chunk.Error) != "null" {
-			return "", usage, raw.String(), fmt.Errorf("AI upstream error event: %s", chunk.Error)
-		}
-		for _, choice := range chunk.Choices {
-			if choice.Delta.Content != "" && firstToken != nil {
-				select {
-				case firstToken <- struct{}{}:
-				default:
-				}
-			}
-			builder.WriteString(choice.Delta.Content)
-		}
-		if chunk.Usage != nil {
-			usage = buildAISearchUsageFromStream(chunk.Usage)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return "", usage, raw.String(), err
-	}
-	return builder.String(), usage, raw.String(), nil
+	result, err := readAIResponsesStream(body, firstToken)
+	return result.Content, result.Usage, result.Raw, err
 }
 
-func buildAISearchUsageFromStream(streamUsage *openAIStreamUsage) AISearchUsage {
-	if streamUsage == nil {
+func buildAISearchUsageFromResponses(responseUsage *openAIResponsesUsage) AISearchUsage {
+	if responseUsage == nil {
 		return AISearchUsage{}
 	}
-
 	usage := AISearchUsage{
-		InputTokens:  streamUsage.PromptTokens,
-		OutputTokens: streamUsage.CompletionTokens,
-		TotalTokens:  streamUsage.TotalTokens,
+		InputTokens:  responseUsage.InputTokens,
+		OutputTokens: responseUsage.OutputTokens,
+		TotalTokens:  responseUsage.TotalTokens,
 	}
-	if streamUsage.PromptTokensDetails != nil {
-		usage.CachedInputTokens = normalizeAISearchCachedTokens(streamUsage.PromptTokensDetails.CachedTokens, streamUsage.PromptTokens)
-	}
-	if streamUsage.CacheCreation != nil {
-		usage.CacheWriteTokens = normalizeAISearchCacheWriteTokens(
-			streamUsage.CacheCreation.Ephemeral5mInputTokens+streamUsage.CacheCreation.Ephemeral1hInputTokens,
-			streamUsage.PromptTokens,
-		)
+	if responseUsage.InputDetails != nil {
+		usage.CachedInputTokens = normalizeAISearchCachedTokens(responseUsage.InputDetails.CachedTokens, responseUsage.InputTokens)
 	}
 	if usage.TotalTokens == 0 {
 		usage.TotalTokens = usage.InputTokens + usage.OutputTokens
@@ -1309,17 +1251,6 @@ func normalizeAISearchCachedTokens(cachedTokens int64, promptTokens int64) int64
 		return promptTokens
 	}
 	return cachedTokens
-}
-
-// normalizeAISearchCacheWriteTokens 同样把缓存写入 token 收敛到输入总量以内。
-func normalizeAISearchCacheWriteTokens(cacheWriteTokens int64, promptTokens int64) int64 {
-	if cacheWriteTokens <= 0 {
-		return 0
-	}
-	if promptTokens > 0 && cacheWriteTokens > promptTokens {
-		return promptTokens
-	}
-	return cacheWriteTokens
 }
 
 func parseAISearchAnswers(content string, options []string, questionType int) []string {

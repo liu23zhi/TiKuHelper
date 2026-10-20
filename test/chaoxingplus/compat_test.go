@@ -100,7 +100,7 @@ func newAIUpstream(t *testing.T) *aiUpstream {
 
 	upstream := &aiUpstream{}
 	upstream.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/chat/completions" && r.URL.Path != "/chat/completions" {
+		if r.URL.Path != "/v1/responses" && r.URL.Path != "/responses" {
 			http.NotFound(w, r)
 			return
 		}
@@ -143,20 +143,20 @@ func extractUserText(t *testing.T, requestBody []byte) string {
 	t.Helper()
 
 	var payload struct {
-		Messages []struct {
+		Input []struct {
 			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`
-		} `json:"messages"`
+		} `json:"input"`
 	}
 	if err := json.Unmarshal(requestBody, &payload); err != nil {
 		t.Fatalf("decode upstream request: %v", err)
 	}
-	if len(payload.Messages) < 2 {
-		t.Fatalf("expected system and user messages, got %d", len(payload.Messages))
+	if len(payload.Input) < 2 {
+		t.Fatalf("expected system and user input items, got %d", len(payload.Input))
 	}
 
 	userText := ""
-	if err := json.Unmarshal(payload.Messages[1].Content, &userText); err == nil && userText != "" {
+	if err := json.Unmarshal(payload.Input[1].Content, &userText); err == nil && userText != "" {
 		return userText
 	}
 
@@ -165,7 +165,7 @@ func extractUserText(t *testing.T, requestBody []byte) string {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	}
-	if err := json.Unmarshal(payload.Messages[1].Content, &parts); err == nil {
+	if err := json.Unmarshal(payload.Input[1].Content, &parts); err == nil {
 		for _, part := range parts {
 			userText += part.Text
 		}
@@ -179,13 +179,12 @@ func writeOpenAIStream(w http.ResponseWriter, answerJSON string) {
 
 	flusher, _ := w.(http.Flusher)
 	for _, chunk := range splitForStream(answerJSON) {
-		_, _ = fmt.Fprintf(w, "data: %s\n\n", streamChunk(chunk))
+		_, _ = fmt.Fprintf(w, "event: response.output_text.delta\ndata: %s\n\n", responsesTextDeltaChunk(chunk))
 		if flusher != nil {
 			flusher.Flush()
 		}
 	}
-	_, _ = fmt.Fprintf(w, "data: %s\n\n", usageChunk(2000, 300, 512))
-	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	_, _ = fmt.Fprintf(w, "event: response.completed\ndata: %s\n\n", responsesCompletedChunk(answerJSON, 2000, 300, 512))
 	if flusher != nil {
 		flusher.Flush()
 	}
@@ -203,23 +202,20 @@ func splitForStream(answer string) []string {
 	return []string{string(runes[:mid]), string(runes[mid:])}
 }
 
-func streamChunk(content string) string {
-	raw, _ := json.Marshal(map[string]any{
-		"choices": []map[string]any{{"delta": map[string]any{"content": content}}},
-	})
+func responsesTextDeltaChunk(content string) string {
+	raw, _ := json.Marshal(map[string]any{"type": "response.output_text.delta", "delta": content})
 	return string(raw)
 }
 
-func usageChunk(prompt int, completion int, cached int) string {
-	raw, _ := json.Marshal(map[string]any{
-		"choices": []map[string]any{},
-		"usage": map[string]any{
-			"prompt_tokens":         prompt,
-			"completion_tokens":     completion,
-			"total_tokens":          prompt + completion,
-			"prompt_tokens_details": map[string]any{"cached_tokens": cached},
-		},
-	})
+func responsesCompletedChunk(answer string, input, output, cached int) string {
+	message := map[string]any{
+		"type": "message", "role": "assistant", "status": "completed",
+		"content": []any{map[string]any{"type": "output_text", "text": answer, "annotations": []any{}}},
+	}
+	raw, _ := json.Marshal(map[string]any{"type": "response.completed", "response": map[string]any{
+		"status": "completed", "output": []any{message},
+		"usage": map[string]any{"input_tokens": input, "output_tokens": output, "total_tokens": input + output, "input_tokens_details": map[string]any{"cached_tokens": cached}},
+	}})
 	return string(raw)
 }
 

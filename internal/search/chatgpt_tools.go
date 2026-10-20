@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
@@ -84,17 +83,11 @@ type openAIToolFunction struct {
 	Arguments string `json:"arguments"`
 }
 
-type openAIToolCallDelta struct {
-	Index    int                `json:"index"`
-	ID       string             `json:"id,omitempty"`
-	Type     string             `json:"type,omitempty"`
-	Function openAIToolFunction `json:"function"`
-}
-
 type aiToolStreamResult struct {
 	Content          string
 	ReasoningContent string
 	Calls            []openAIToolCall
+	OutputItems      []json.RawMessage
 	Usage            AISearchUsage
 	Raw              string
 	FinishReason     string
@@ -110,21 +103,23 @@ func formatAIModelCompleteResponse(result aiToolStreamResult) string {
 		return result.Content
 	}
 	type usageSnapshot struct {
-		InputTokens  int64 `json:"prompt_tokens,omitempty"`
-		OutputTokens int64 `json:"completion_tokens,omitempty"`
+		InputTokens  int64 `json:"input_tokens,omitempty"`
+		OutputTokens int64 `json:"output_tokens,omitempty"`
 		TotalTokens  int64 `json:"total_tokens,omitempty"`
 	}
 	payload := struct {
-		Content          string           `json:"content,omitempty"`
-		ReasoningContent string           `json:"reasoning_content,omitempty"`
-		ToolCalls        []openAIToolCall `json:"tool_calls,omitempty"`
-		FinishReason     string           `json:"finish_reason,omitempty"`
-		ReasoningChars   int              `json:"reasoning_chars,omitempty"`
-		Usage            usageSnapshot    `json:"usage,omitempty"`
+		Content          string            `json:"content,omitempty"`
+		ReasoningContent string            `json:"reasoning_content,omitempty"`
+		ToolCalls        []openAIToolCall  `json:"tool_calls,omitempty"`
+		OutputItems      []json.RawMessage `json:"output_items,omitempty"`
+		FinishReason     string            `json:"finish_reason,omitempty"`
+		ReasoningChars   int               `json:"reasoning_chars,omitempty"`
+		Usage            usageSnapshot     `json:"usage,omitempty"`
 	}{
 		Content:          result.Content,
 		ReasoningContent: result.ReasoningContent,
 		ToolCalls:        result.Calls,
+		OutputItems:      result.OutputItems,
 		FinishReason:     result.FinishReason,
 		ReasoningChars:   result.ReasoningChars,
 		Usage: usageSnapshot{
@@ -168,6 +163,20 @@ func aiWebReadToolDefinition() openAITool {
 	}}
 }
 
+func buildAIResponsesTools(tools []openAITool) []openAIResponsesTool {
+	responsesTools := make([]openAIResponsesTool, 0, len(tools))
+	for _, tool := range tools {
+		responsesTools = append(responsesTools, openAIResponsesTool{
+			Type:        "function",
+			Name:        tool.Function.Name,
+			Description: tool.Function.Description,
+			Parameters:  tool.Function.Parameters,
+			Strict:      false,
+		})
+	}
+	return responsesTools
+}
+
 func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model.SearchRequest) (answers [][]string, debug AISearchDebugResult, err error) {
 	debug = AISearchDebugResult{}
 	defer func() {
@@ -188,11 +197,11 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 		return nil, debug, err
 	}
 	parts := buildAISearchToolPromptParts(ctx, req, in.getAttachmentHTTPClient().GetClient())
-	messages := []openAIChatMessage{
-		{Role: "system", Content: effectiveAISearchPrompt(in.Prompt) + "\n" + aiSearchToolsPrompt},
-		{Role: "user", Content: parts},
+	input := []any{
+		buildAIResponsesMessage("system", effectiveAISearchPrompt(in.Prompt)+"\n"+aiSearchToolsPrompt),
+		buildAIResponsesMessage("user", buildAIResponsesContentParts(parts)),
 	}
-	endpoints := buildAIChatCompletionEndpoints(in.BaseURL)
+	endpoints := buildAIResponsesEndpoints(in.BaseURL)
 	endpoint := endpoints[0]
 	maxModelCalls, maxSearches, maxWebReads := in.aiSearchBudgets()
 	_, webReaderAvailable := in.SearchTool.(AIWebReadTool)
@@ -224,21 +233,23 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 			remainingWebReads = 0
 		}
 		roundStartedAt := time.Now()
-		messages = append(messages, openAIChatMessage{Role: "system", Content: buildAISearchBudgetPrompt(remainingModelCalls, remainingSearches, remainingWebReads, finalRound)})
-		payload := openAIChatCompletionRequest{
-			Model: strings.TrimSpace(in.Model), Stream: true, Messages: messages,
-			StreamOptions: &openAIStreamOptions{IncludeUsage: true}, MaxTokens: aiToolMaxOutputTokens,
+		roundInput := append([]any(nil), input...)
+		roundInput = append(roundInput, buildAIResponsesMessage("system", buildAISearchBudgetPrompt(remainingModelCalls, remainingSearches, remainingWebReads, finalRound)))
+		payload := openAIResponsesRequest{
+			Model: strings.TrimSpace(in.Model), Stream: true, Store: false, Input: roundInput,
+			Include: []string{"reasoning.encrypted_content"}, MaxOutputTokens: aiToolMaxOutputTokens,
 		}
 		if finalRound {
-			payload.Messages = messages
+			payload.Input = roundInput
 		} else {
-			payload.Tools = []openAITool{aiWebSearchToolDefinition()}
+			tools := []openAITool{aiWebSearchToolDefinition()}
 			if _, ok := in.SearchTool.(AIWebReadTool); ok {
-				payload.Tools = append(payload.Tools, aiWebReadToolDefinition())
+				tools = append(tools, aiWebReadToolDefinition())
 			}
+			payload.Tools = buildAIResponsesTools(tools)
 			payload.ToolChoice = "auto"
 			if !hasModelResponse {
-				payload.ToolChoice = map[string]any{"type": "function", "function": map[string]string{"name": "web_search"}}
+				payload.ToolChoice = map[string]any{"type": "function", "name": "web_search"}
 			}
 		}
 		encoded, err := json.Marshal(payload)
@@ -254,32 +265,26 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 			if retry > 0 && !sleepAISearchRetryBackoff(retry, time.Since(roundStartedAt)) {
 				break
 			}
-			in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Attempt: retry + 1, AttemptBudget: attempts, Stage: "模型调用开始", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, RequestBody: string(encoded)})
-			attemptStartedAt := time.Now()
 			attempted++
-			result, status, callErr = in.requestAIToolRound(ctx, endpoint, encoded)
-			responseTrace := AISearchTrace{Round: round + 1, Attempt: retry + 1, AttemptBudget: attempts, Stage: "模型响应", Endpoint: endpoint, Model: in.Model, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, Status: fmt.Sprintf("%d", status), DurationMs: time.Since(attemptStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, ReasoningChars: result.ReasoningChars, ContentPreview: result.Content, FullResponse: formatAIModelCompleteResponse(result), RawResponse: result.Raw, Error: errorString(callErr)}
-			if call, ok := buildAIModelCallUsage(result.Usage, in.Model, round+1, retry+1); ok {
-				appendAIModelCallUsage(&debug.Usage, call)
-				applyAIModelCallUsageToTrace(&responseTrace, debug.Usage.ModelCalls[len(debug.Usage.ModelCalls)-1])
+			for _, candidateEndpoint := range endpoints {
+				endpoint = candidateEndpoint
+				in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Attempt: retry + 1, AttemptBudget: attempts, Stage: "模型调用开始", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, RequestBody: string(encoded)})
+				attemptStartedAt := time.Now()
+				result, status, callErr = in.requestAIToolRound(ctx, endpoint, encoded)
+				responseTrace := AISearchTrace{Round: round + 1, Attempt: retry + 1, AttemptBudget: attempts, Stage: "模型响应", Endpoint: endpoint, Model: in.Model, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, Status: fmt.Sprintf("%d", status), DurationMs: time.Since(attemptStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, ReasoningChars: result.ReasoningChars, ContentPreview: result.Content, FullResponse: formatAIModelCompleteResponse(result), RawResponse: result.Raw, Error: errorString(callErr)}
+				if call, ok := buildAIModelCallUsage(result.Usage, in.Model, round+1, retry+1); ok {
+					appendAIModelCallUsage(&debug.Usage, call)
+					applyAIModelCallUsageToTrace(&responseTrace, debug.Usage.ModelCalls[len(debug.Usage.ModelCalls)-1])
+				}
+				in.appendAISearchTrace(&debug.Usage, responseTrace)
+				requestBodies = append(requestBodies, string(encoded))
+				rawResponses = append(rawResponses, result.Raw)
+				addAISearchUsage(&debug.Usage, result.Usage)
+				if callErr == nil {
+					break
+				}
 			}
-			in.appendAISearchTrace(&debug.Usage, responseTrace)
-			requestBodies = append(requestBodies, string(encoded))
-			rawResponses = append(rawResponses, result.Raw)
-			addAISearchUsage(&debug.Usage, result.Usage)
 			if callErr == nil {
-				break
-			}
-			// A missing completion route is endpoint discovery, not a transient
-			// model failure. Switch to the compatibility endpoint immediately so
-			// one logical round does not spend all retry opportunities on 404s.
-			if status == http.StatusNotFound && len(endpoints) > 1 && endpoint == endpoints[0] {
-				break
-			}
-			// Authentication and malformed-request responses cannot be fixed by
-			// repeating the same payload. Network failures, transient HTTP errors,
-			// and interrupted 2xx streams remain eligible for this round's retry.
-			if status != 0 && (status < http.StatusOK || status >= http.StatusMultipleChoices) && !isAISearchRetryableStatus(status) {
 				break
 			}
 		}
@@ -287,12 +292,6 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 		debug.RequestBody = strings.Join(requestBodies, "\n\n")
 		debug.RawResponse = strings.Join(rawResponses, "\n\n")
 		if callErr != nil {
-			// Endpoint discovery consumes a logical round too; switch only after
-			// this round's configured attempts are exhausted.
-			if !hasModelResponse && status == http.StatusNotFound && len(endpoints) > 1 && endpoint == endpoints[0] && round+1 < maxModelCalls {
-				endpoint = endpoints[1]
-				continue
-			}
 			// Keep the detailed, redacted upstream error for the private audit
 			// snapshot. Controllers still map the public response to a generic
 			// failure, while operators can see the failed round and retry budget.
@@ -319,13 +318,21 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 			return nil, debug, fmt.Errorf("AI模型在搜索结束后仍调用工具，无法生成最终答案")
 		}
 		hasModelResponse = true
-		messages = append(messages, openAIChatMessage{Role: "assistant", Content: nil, ToolCalls: result.Calls})
+		for _, outputItem := range result.OutputItems {
+			var item map[string]any
+			if err := json.Unmarshal(outputItem, &item); err != nil {
+				return nil, debug, fmt.Errorf("AI Responses输出项无效: %w", err)
+			}
+			input = append(input, item)
+		}
 		for _, call := range result.Calls {
 			if call.ID == "" {
 				return nil, debug, fmt.Errorf("AI工具调用缺少id")
 			}
+			toolOutput := ""
 			if toolsDisabled {
-				messages = append(messages, openAIChatMessage{Role: "tool", ToolCallID: call.ID, Content: `{"error":"搜索已停止，请根据已有资料直接作答。"}`})
+				toolOutput = `{"error":"搜索已停止，请根据已有资料直接作答。"}`
+				input = append(input, map[string]any{"type": "function_call_output", "call_id": call.ID, "output": toolOutput})
 				continue
 			}
 			toolStartedAt := time.Now()
@@ -334,7 +341,8 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 				in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "网页读取工具调用开始", Query: toolURL, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: maxSearches - searches})
 				content, abort := in.executeAIWebReadTool(ctx, call, &webReads, maxWebReads, webReadResults, &toolContentBytes, &debug.Usage, round+1, maxModelCalls, maxSearches)
 				in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "网页读取工具完成", Query: toolURL, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, DurationMs: time.Since(toolStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: maxSearches - searches, Status: map[bool]string{true: "停止", false: "继续"}[abort], ResultCount: countAIWebReadResult(content)})
-				messages = append(messages, openAIChatMessage{Role: "tool", ToolCallID: call.ID, Content: content})
+				toolOutput = content
+				input = append(input, map[string]any{"type": "function_call_output", "call_id": call.ID, "output": toolOutput})
 				toolsDisabled = toolsDisabled || abort
 				continue
 			}
@@ -342,7 +350,8 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 			in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "搜索工具调用开始", Query: toolQuery, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: maxSearches - searches})
 			content, abort := in.executeAISearchTool(ctx, call, &searches, maxSearches, results, &toolContentBytes, &debug.Usage, round+1, maxModelCalls)
 			in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "搜索工具完成", Query: toolQuery, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, DurationMs: time.Since(toolStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: maxSearches - searches, Status: map[bool]string{true: "停止", false: "继续"}[abort], ResultCount: countAISearchToolResults(content)})
-			messages = append(messages, openAIChatMessage{Role: "tool", ToolCallID: call.ID, Content: content})
+			toolOutput = content
+			input = append(input, map[string]any{"type": "function_call_output", "call_id": call.ID, "output": toolOutput})
 			toolsDisabled = toolsDisabled || abort
 		}
 	}
@@ -486,85 +495,223 @@ func (in *ChatGptClient) requestAIToolRound(ctx context.Context, endpoint string
 	return result, resp.StatusCode, err
 }
 
-func readAIToolStream(body io.Reader) (result aiToolStreamResult, err error) {
+func readAIToolStream(body io.Reader) (aiToolStreamResult, error) {
+	return readAIResponsesStream(body, nil)
+}
+
+var errAIResponsesStreamIncomplete = fmt.Errorf("AI Responses响应流未完成")
+
+func readAIResponsesStream(body io.Reader, firstToken chan<- struct{}) (result aiToolStreamResult, err error) {
 	scanner := bufio.NewScanner(io.LimitReader(body, aiToolMaxStreamBytes+1))
 	scanner.Buffer(make([]byte, 4096), 256*1024)
 	var content, reasoning, raw strings.Builder
 	defer func() { result.Raw = raw.String() }()
-	calls := make(map[int]*openAIToolCall)
-	done := false
+	callsByItem := make(map[string]*openAIToolCall)
+	callOrder := make([]string, 0, aiToolMaxCallsPerRound)
+	completed := false
+	eventName := ""
+	addOutputItem := func(encoded json.RawMessage) error {
+		var item openAIResponsesOutputItem
+		if err := json.Unmarshal(encoded, &item); err != nil {
+			return err
+		}
+		if item.Type != "function_call" {
+			return nil
+		}
+		key := item.ID
+		if key == "" {
+			key = item.CallID
+		}
+		if key == "" {
+			return fmt.Errorf("AI Responses工具调用缺少item id")
+		}
+		call, exists := callsByItem[key]
+		if !exists {
+			if len(callOrder) >= aiToolMaxCallsPerRound {
+				return fmt.Errorf("AI单轮工具调用过多")
+			}
+			call = &openAIToolCall{Type: "function"}
+			callsByItem[key] = call
+			callOrder = append(callOrder, key)
+		}
+		call.ID = item.CallID
+		call.Type = "function"
+		call.Function.Name = item.Name
+		call.Function.Arguments = item.Arguments
+		if len(call.Function.Arguments) > aiToolMaxArgumentBytes || len(call.Function.Name) > 128 || len(call.ID) > 256 {
+			return fmt.Errorf("AI工具调用参数超过大小限制")
+		}
+		return nil
+	}
 	for scanner.Scan() {
 		line := scanner.Text()
 		raw.WriteString(line)
 		raw.WriteByte('\n')
 		if raw.Len() > aiToolMaxStreamBytes {
-			return result, fmt.Errorf("AI工具流超过大小限制")
+			return result, fmt.Errorf("AI Responses响应流超过大小限制")
 		}
 		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "event:") {
+			eventName = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+			continue
+		}
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if data == "[DONE]" {
-			done = true
-			break
+			continue
 		}
-		var chunk openAIStreamChunk
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+		var event openAIResponsesEvent
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
 			return result, err
 		}
-		if len(chunk.Error) > 0 && string(chunk.Error) != "null" {
-			return result, fmt.Errorf("AI upstream error event: %s", chunk.Error)
+		if event.Type == "" {
+			event.Type = eventName
 		}
-		if chunk.Usage != nil {
-			result.Usage = buildAISearchUsageFromStream(chunk.Usage)
+		eventName = ""
+		if event.Type == "" {
+			return result, fmt.Errorf("AI Responses事件缺少type")
 		}
-		for _, choice := range chunk.Choices {
-			content.WriteString(choice.Delta.Content)
-			reasoning.WriteString(choice.Delta.ReasoningContent)
-			result.ReasoningChars += len([]rune(choice.Delta.ReasoningContent))
-			if choice.FinishReason != "" {
-				result.FinishReason = choice.FinishReason
+		switch event.Type {
+		case "error", "response.failed":
+			detail := event.Error
+			if len(detail) == 0 || string(detail) == "null" {
+				detail = event.Response.Error
 			}
-			for _, delta := range choice.Delta.ToolCalls {
-				if delta.Index < 0 || delta.Index >= aiToolMaxCallsPerRound {
+			if len(detail) == 0 {
+				detail = json.RawMessage(data)
+			}
+			return result, fmt.Errorf("AI Responses upstream error event: %s", detail)
+		case "response.output_text.delta":
+			content.WriteString(event.Delta)
+			if event.Delta != "" && firstToken != nil {
+				select {
+				case firstToken <- struct{}{}:
+				default:
+				}
+			}
+		case "response.reasoning_summary_text.delta":
+			reasoning.WriteString(event.Delta)
+			result.ReasoningChars += len([]rune(event.Delta))
+		case "response.output_item.added", "response.output_item.done":
+			if len(event.Item) > 0 {
+				if event.Type == "response.output_item.done" {
+					result.OutputItems = append(result.OutputItems, append(json.RawMessage(nil), event.Item...))
+				}
+				if err := addOutputItem(event.Item); err != nil {
+					return result, err
+				}
+			}
+		case "response.function_call_arguments.delta":
+			call := callsByItem[event.ItemID]
+			if call == nil {
+				if len(callOrder) >= aiToolMaxCallsPerRound {
 					return result, fmt.Errorf("AI单轮工具调用过多")
 				}
-				call, exists := calls[delta.Index]
-				if !exists {
-					call = &openAIToolCall{Type: "function"}
-					calls[delta.Index] = call
+				call = &openAIToolCall{Type: "function"}
+				callsByItem[event.ItemID] = call
+				callOrder = append(callOrder, event.ItemID)
+			}
+			call.Function.Arguments += event.Delta
+			if len(call.Function.Arguments) > aiToolMaxArgumentBytes {
+				return result, fmt.Errorf("AI工具调用参数超过大小限制")
+			}
+		case "response.function_call_arguments.done":
+			if call := callsByItem[event.ItemID]; call != nil {
+				call.Function.Arguments = event.Arguments
+			}
+		case "response.completed", "response.incomplete":
+			completed = true
+			result.FinishReason = event.Response.Status
+			if event.Response.Usage != nil {
+				result.Usage = buildAISearchUsageFromResponses(event.Response.Usage)
+			}
+			if len(event.Response.Output) > 0 {
+				result.OutputItems = make([]json.RawMessage, len(event.Response.Output))
+				copy(result.OutputItems, event.Response.Output)
+				callsByItem = make(map[string]*openAIToolCall)
+				callOrder = callOrder[:0]
+				for _, item := range event.Response.Output {
+					if err := addOutputItem(item); err != nil {
+						return result, err
+					}
 				}
-				call.ID += delta.ID
-				if delta.Type != "" {
-					call.Type = delta.Type
+			}
+			if content.Len() == 0 {
+				content.WriteString(extractAIResponsesOutputText(result.OutputItems))
+			}
+			if reasoning.Len() == 0 {
+				reasoning.WriteString(extractAIResponsesReasoningSummary(result.OutputItems))
+				result.ReasoningChars = len([]rune(reasoning.String()))
+			}
+			if event.Type == "response.incomplete" || event.Response.Status == "incomplete" {
+				reason := "unknown"
+				if event.Response.IncompleteDetails != nil {
+					reason = event.Response.IncompleteDetails.Reason
 				}
-				call.Function.Name += delta.Function.Name
-				call.Function.Arguments += delta.Function.Arguments
-				if len(call.Function.Arguments) > aiToolMaxArgumentBytes || len(call.Function.Name) > 128 || len(call.ID) > 256 {
-					return result, fmt.Errorf("AI工具调用参数超过大小限制")
-				}
+				return result, fmt.Errorf("AI Responses响应不完整: %s", reason)
+			}
+		case "response.output_text.done":
+			if content.Len() == 0 {
+				content.WriteString(event.Text)
 			}
 		}
 	}
 	result.Content = content.String()
 	result.ReasoningContent = reasoning.String()
-	result.Raw = raw.String()
 	if err := scanner.Err(); err != nil {
 		return result, err
 	}
-	if !done {
-		return result, fmt.Errorf("AI工具响应流中断")
+	if !completed {
+		return result, errAIResponsesStreamIncomplete
 	}
-	indexes := make([]int, 0, len(calls))
-	for index := range calls {
-		indexes = append(indexes, index)
+	for _, key := range callOrder {
+		result.Calls = append(result.Calls, *callsByItem[key])
 	}
-	sort.Ints(indexes)
-	for _, index := range indexes {
-		result.Calls = append(result.Calls, *calls[index])
+	if len(result.Calls) > 0 {
+		result.FinishReason = "tool_calls"
 	}
 	return result, nil
+}
+
+func extractAIResponsesOutputText(output []json.RawMessage) string {
+	var text strings.Builder
+	for _, encodedItem := range output {
+		var item openAIResponsesOutputItem
+		if json.Unmarshal(encodedItem, &item) != nil || item.Type != "message" {
+			continue
+		}
+		for _, encodedPart := range item.Content {
+			var part struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(encodedPart, &part) == nil && part.Type == "output_text" {
+				text.WriteString(part.Text)
+			}
+		}
+	}
+	return text.String()
+}
+
+func extractAIResponsesReasoningSummary(output []json.RawMessage) string {
+	var text strings.Builder
+	for _, encodedItem := range output {
+		var item openAIResponsesOutputItem
+		if json.Unmarshal(encodedItem, &item) != nil || item.Type != "reasoning" {
+			continue
+		}
+		for _, encodedSummary := range item.Summary {
+			var summary struct {
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(encodedSummary, &summary) == nil {
+				text.WriteString(summary.Text)
+			}
+		}
+	}
+	return text.String()
 }
 
 func parseAISearchToolQuery(arguments string) string {

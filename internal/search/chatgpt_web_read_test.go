@@ -30,8 +30,11 @@ func (tool *webReadTestTool) ReadWebPage(_ context.Context, rawURL string) (uapi
 func writeAIWebReadToolStream(w http.ResponseWriter, callID, rawURL string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	arguments, _ := json.Marshal(map[string]string{"url": rawURL})
-	event, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "id": callID, "type": "function", "function": map[string]any{"name": "web_read", "arguments": string(arguments)}}}}, "finish_reason": "tool_calls"}}})
-	fmt.Fprintf(w, "data: %s\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":4,\"total_tokens\":14}}\n\ndata: [DONE]\n\n", event)
+	item := map[string]any{"type": "function_call", "id": "fc_" + callID, "call_id": callID, "name": "web_read", "arguments": string(arguments), "status": "completed"}
+	writeResponsesEvent(w, "response.output_item.done", map[string]any{"output_index": 0, "item": item})
+	writeResponsesEvent(w, "response.completed", map[string]any{"response": map[string]any{
+		"status": "completed", "output": []any{item}, "usage": map[string]any{"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+	}})
 }
 
 func TestAISearchWebReadToolUsesBudgetAndRecordsUsage(t *testing.T) {
@@ -48,7 +51,7 @@ func TestAISearchWebReadToolUsesBudgetAndRecordsUsage(t *testing.T) {
 			if !ok || len(tools) != 2 {
 				t.Fatalf("expected web_search and web_read tools, got %#v", payload["tools"])
 			}
-			budget := payload["messages"].([]any)
+			budget := payload["input"].([]any)
 			last := budget[len(budget)-1].(map[string]any)["content"].(string)
 			if !strings.Contains(last, "web_read 网页读取还剩 1 次") {
 				t.Fatalf("missing web-read budget: %s", last)
@@ -56,9 +59,9 @@ func TestAISearchWebReadToolUsesBudgetAndRecordsUsage(t *testing.T) {
 			writeAIWebReadToolStream(w, "read-1", "https://example.com/article")
 			return
 		}
-		for _, raw := range payload["messages"].([]any) {
+		for _, raw := range payload["input"].([]any) {
 			message := raw.(map[string]any)
-			if message["role"] == "tool" && strings.Contains(message["content"].(string), "网页正文") {
+			if message["type"] == "function_call_output" && strings.Contains(message["output"].(string), "网页正文") {
 				writeAIFinalStream(w)
 				return
 			}

@@ -14,35 +14,16 @@ import (
 	"github.com/itihey/tikuAdapter/pkg/model"
 )
 
-// writeOpenAIStyleStream 以 OpenAI 兼容的 SSE 形式回写一段答案内容。
+// writeOpenAIStyleStream 以 Responses API 的 SSE 形式回写一段答案内容。
 func writeOpenAIStyleStream(w http.ResponseWriter, answerJSON string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 
 	flusher, _ := w.(http.Flusher)
-	chunks := []string{answerJSON}
-	for _, chunk := range chunks {
-		payload, _ := json.Marshal(map[string]any{
-			"choices": []map[string]any{{"delta": map[string]any{"content": chunk}}},
-		})
-		_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
-		if flusher != nil {
-			flusher.Flush()
-		}
-	}
-	usage, _ := json.Marshal(map[string]any{
-		"choices": []map[string]any{},
-		"usage": map[string]any{
-			"prompt_tokens":     1000,
-			"completion_tokens": 20,
-			"total_tokens":      1020,
-			"prompt_tokens_details": map[string]any{
-				"cached_tokens": 640,
-			},
-		},
+	writeAIResponsesTextStream(w, []string{answerJSON}, map[string]any{
+		"input_tokens": 1000, "output_tokens": 20, "total_tokens": 1020,
+		"input_tokens_details": map[string]any{"cached_tokens": 640},
 	})
-	_, _ = fmt.Fprintf(w, "data: %s\n\n", usage)
-	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 	if flusher != nil {
 		flusher.Flush()
 	}
@@ -79,7 +60,7 @@ func TestSearchAnswerWithUsageParsesCachedInputTokens(t *testing.T) {
 func TestSearchAnswerWithUsageRetriesRateLimitThenSucceeds(t *testing.T) {
 	var attempts int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if atomic.AddInt32(&attempts, 1) == 1 {
+		if atomic.AddInt32(&attempts, 1) <= 2 {
 			http.Error(w, `{"error":"rate limited"}`, http.StatusTooManyRequests)
 			return
 		}
@@ -97,8 +78,8 @@ func TestSearchAnswerWithUsageRetriesRateLimitThenSucceeds(t *testing.T) {
 	if len(answers) != 1 || answers[0][0] != "A" {
 		t.Fatalf("unexpected answers after retry: %v", answers)
 	}
-	if got := atomic.LoadInt32(&attempts); got != 2 {
-		t.Fatalf("expected exactly 2 upstream attempts, got %d", got)
+	if got := atomic.LoadInt32(&attempts); got != 3 {
+		t.Fatalf("expected two endpoint probes plus one retry probe, got %d", got)
 	}
 	// 必须真的退避过，而不是立刻重试打爆上游。
 	if elapsed := time.Since(started); elapsed < aiSearchRetryBaseDelay {
@@ -106,7 +87,7 @@ func TestSearchAnswerWithUsageRetriesRateLimitThenSucceeds(t *testing.T) {
 	}
 }
 
-func TestSearchAnswerWithUsageStopsRetryingAfterMaxAttemptsPerEndpoint(t *testing.T) {
+func TestSearchAnswerWithUsageCountsFallbackPairAsOneAttempt(t *testing.T) {
 	var attempts int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&attempts, 1)
@@ -120,7 +101,7 @@ func TestSearchAnswerWithUsageStopsRetryingAfterMaxAttemptsPerEndpoint(t *testin
 		t.Fatal("expected persistent 502 to fail")
 	}
 
-	// 每个候选端点都是一个逻辑模型轮次，重试机会不消耗轮次预算。
+	// Each configured attempt probes both compatible paths before retrying.
 	expectedAttempts := int32(aiSearchRetryMaxAttempts * 2)
 	if got := atomic.LoadInt32(&attempts); got != expectedAttempts {
 		t.Fatalf("expected %d attempts, got %d", expectedAttempts, got)
@@ -136,6 +117,7 @@ func TestOrdinaryAISearchHonorsModelBudgetAcrossRetriesAndEndpoints(t *testing.T
 			wantErr bool
 		}{
 			{"retry recovers within one model round", 1, http.StatusBadGateway, false},
+			{"retry recovers from bad request within one model round", 1, http.StatusBadRequest, false},
 			{"no fallback after last call", 1, http.StatusNotFound, true},
 			{"retry receives remaining budget", 2, http.StatusTooManyRequests, false},
 		} {
@@ -143,8 +125,11 @@ func TestOrdinaryAISearchHonorsModelBudgetAcrossRetriesAndEndpoints(t *testing.T
 				calls := 0
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					calls++
+					if r.URL.Path != "/responses" && r.URL.Path != "/v1/responses" {
+						t.Errorf("ordinary AI search must use Responses, got %s", r.URL.Path)
+					}
 					var payload struct {
-						Messages []openAIRequestMessagePayload `json:"messages"`
+						Messages []openAIRequestMessagePayload `json:"input"`
 					}
 					if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 						t.Errorf("decode request: %v", err)
@@ -162,7 +147,7 @@ func TestOrdinaryAISearchHonorsModelBudgetAcrossRetriesAndEndpoints(t *testing.T
 					if !strings.Contains(prompt, "请直接输出最终答案 JSON") {
 						t.Errorf("missing direct-answer requirement: %s", prompt)
 					}
-					if calls == 1 {
+					if calls == 1 || tc.status == http.StatusNotFound {
 						http.Error(w, "temporary failure", tc.status)
 						return
 					}
@@ -178,7 +163,7 @@ func TestOrdinaryAISearchHonorsModelBudgetAcrossRetriesAndEndpoints(t *testing.T
 				}
 				wantCalls := 2
 				if tc.status == http.StatusNotFound {
-					wantCalls = 1
+					wantCalls = aiSearchRetryMaxAttempts * 2
 				}
 				if (err != nil) != tc.wantErr || calls != wantCalls {
 					t.Fatalf("calls=%d want=%d err=%v wantErr=%t", calls, wantCalls, err, tc.wantErr)
@@ -188,7 +173,7 @@ func TestOrdinaryAISearchHonorsModelBudgetAcrossRetriesAndEndpoints(t *testing.T
 	}
 }
 
-func TestSearchAnswerWithUsageDoesNotRetryClientErrors(t *testing.T) {
+func TestSearchAnswerWithUsageRetriesClientErrorsIncludingFallbackPath(t *testing.T) {
 	var attempts int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&attempts, 1)
@@ -201,8 +186,8 @@ func TestSearchAnswerWithUsageDoesNotRetryClientErrors(t *testing.T) {
 	if _, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "题目"}); err == nil {
 		t.Fatal("expected 401 to fail")
 	}
-	if got := atomic.LoadInt32(&attempts); got != 1 {
-		t.Fatalf("expected 401 to fail fast without retry, got %d attempts", got)
+	if got := atomic.LoadInt32(&attempts); got != int32(aiSearchRetryMaxAttempts*2) {
+		t.Fatalf("expected each configured attempt to probe both paths, got %d requests", got)
 	}
 }
 
@@ -228,33 +213,6 @@ func TestSearchAnswerWithUsageTreatsUncertainAsParsedButUnusableAnswer(t *testin
 	// 但要保证每个候选端点只请求一次，不会在同一端点上反复重试。
 	if got := atomic.LoadInt32(&attempts); got != 1 {
 		t.Fatalf("expected single attempt per endpoint, got %d", got)
-	}
-}
-
-func TestAISearchEndpointFallbackStatusClassification(t *testing.T) {
-	for _, statusCode := range []int{
-		http.StatusNotFound,
-		http.StatusRequestTimeout,
-		http.StatusTooManyRequests,
-		http.StatusInternalServerError,
-		http.StatusBadGateway,
-		http.StatusServiceUnavailable,
-		http.StatusGatewayTimeout,
-	} {
-		if !isAISearchEndpointFallbackStatus(statusCode) {
-			t.Fatalf("expected status %d to trigger endpoint fallback", statusCode)
-		}
-	}
-
-	for _, statusCode := range []int{
-		http.StatusOK,
-		http.StatusBadRequest,
-		http.StatusUnauthorized,
-		http.StatusForbidden,
-	} {
-		if isAISearchEndpointFallbackStatus(statusCode) {
-			t.Fatalf("expected status %d to fail fast without fallback", statusCode)
-		}
 	}
 }
 

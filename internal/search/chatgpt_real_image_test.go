@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -59,21 +58,10 @@ func TestAISearchPipelineCarriesTransparentFormulaImagesEndToEnd(t *testing.T) {
 
 		answer := `{"answers":["H(z)=(1+(1/3)z^-1)/(1-(3/4)z^-1+(1/8)z^-2)，零点 z=-1/3，极点 z=1/2、z=1/4；收敛域 |z|>1/2；h(n)=[(1/2)^n+(2/3)(1/4)^n]u(n)"]}`
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{
-			"choices": []map[string]any{{"delta": map[string]any{"content": answer}}},
-		}))
-		_, _ = fmt.Fprintf(w, "data: %s\n\n", mustJSON(map[string]any{
-			"choices": []map[string]any{},
-			"usage": map[string]any{
-				"prompt_tokens":     2000,
-				"completion_tokens": 300,
-				"total_tokens":      2300,
-				"prompt_tokens_details": map[string]any{
-					"cached_tokens": 512,
-				},
-			},
-		}))
-		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		writeAIResponsesTextStream(w, []string{answer}, map[string]any{
+			"input_tokens": 2000, "output_tokens": 300, "total_tokens": 2300,
+			"input_tokens_details": map[string]any{"cached_tokens": 512},
+		})
 	}))
 	defer server.Close()
 
@@ -110,7 +98,7 @@ func TestAISearchPipelineCarriesTransparentFormulaImagesEndToEnd(t *testing.T) {
 	}
 
 	// 请求体必须真的带上 4 张可解码的图片，而不是只有 URL 文本。
-	messages, ok := capturedBody["messages"].([]any)
+	messages, ok := capturedBody["input"].([]any)
 	if !ok || len(messages) != 2 {
 		t.Fatalf("expected system and user messages, got %+v", capturedBody["messages"])
 	}
@@ -125,9 +113,8 @@ func TestAISearchPipelineCarriesTransparentFormulaImagesEndToEnd(t *testing.T) {
 	for _, rawPart := range contentParts {
 		part, _ := rawPart.(map[string]any)
 		switch part["type"] {
-		case "image_url":
-			imageURL, _ := part["image_url"].(map[string]any)
-			dataURL, _ := imageURL["url"].(string)
+		case "input_image":
+			dataURL, _ := part["image_url"].(string)
 			if !strings.HasPrefix(dataURL, "data:image/png;base64,") {
 				t.Fatalf("expected a PNG data url, got prefix %q", dataURL[:min(40, len(dataURL))])
 			}
@@ -145,7 +132,7 @@ func TestAISearchPipelineCarriesTransparentFormulaImagesEndToEnd(t *testing.T) {
 				t.Fatalf("expected flattened white background, got r=%d g=%d b=%d a=%d", r, g, b, a)
 			}
 			inlineImages++
-		case "text":
+		case "input_text":
 			text, _ := part["text"].(string)
 			if strings.Contains(text, "图片对应关系") {
 				referenceText = text

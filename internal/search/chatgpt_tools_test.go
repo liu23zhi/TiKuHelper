@@ -23,6 +23,17 @@ type testAISearchTool struct {
 	err     error
 }
 
+type openAIResponsesTestRequest struct {
+	Tools    []openAIResponsesTool `json:"tools"`
+	Messages []struct {
+		Role    string `json:"role"`
+		Content any    `json:"content"`
+		Type    string `json:"type"`
+		CallID  string `json:"call_id"`
+		Output  any    `json:"output"`
+	} `json:"input"`
+}
+
 func (tool *testAISearchTool) SearchAggregate(ctx context.Context, req uapi.SearchAggregateRequest) (uapi.SearchAggregateResponse, error) {
 	tool.queries = append(tool.queries, req.Query)
 	return uapi.SearchAggregateResponse{Query: req.Query, TotalResults: 1, Results: []uapi.SearchResult{{Title: "参考资料", URL: "https://example.com/source", Snippet: "材料给出的答案为4。"}}}, tool.err
@@ -35,15 +46,27 @@ func writeAIToolStream(w http.ResponseWriter, callID, query string) {
 	for split > 0 && !utf8.RuneStart(arguments[split]) {
 		split--
 	}
-	first, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "id": callID, "type": "function", "function": map[string]any{"name": "web_search", "arguments": string(arguments[:split])}}}}}}})
-	second, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"tool_calls": []any{map[string]any{"index": 0, "function": map[string]any{"arguments": string(arguments[split:])}}}}, "finish_reason": "tool_calls"}}})
-	fmt.Fprintf(w, "data: %s\n\ndata: %s\n\n", first, second)
-	fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":4,\"total_tokens\":14,\"prompt_tokens_details\":{\"cached_tokens\":2},\"cache_creation\":{\"ephemeral_5m_input_tokens\":1}}}\n\ndata: [DONE]\n\n")
+	added := map[string]any{"type": "function_call", "id": "fc_" + callID, "call_id": callID, "name": "web_search", "arguments": ""}
+	done := map[string]any{"type": "function_call", "id": "fc_" + callID, "call_id": callID, "name": "web_search", "arguments": string(arguments), "status": "completed"}
+	writeResponsesEvent(w, "response.output_item.added", map[string]any{"output_index": 0, "item": added})
+	writeResponsesEvent(w, "response.function_call_arguments.delta", map[string]any{"output_index": 0, "item_id": "fc_" + callID, "delta": string(arguments[:split])})
+	writeResponsesEvent(w, "response.function_call_arguments.delta", map[string]any{"output_index": 0, "item_id": "fc_" + callID, "delta": string(arguments[split:])})
+	writeResponsesEvent(w, "response.output_item.done", map[string]any{"output_index": 0, "item": done})
+	writeResponsesEvent(w, "response.completed", map[string]any{"response": map[string]any{
+		"id": "resp_" + callID, "status": "completed", "output": []any{done},
+		"usage": map[string]any{"input_tokens": 10, "output_tokens": 4, "total_tokens": 14, "input_tokens_details": map[string]any{"cached_tokens": 2}},
+	}})
 }
 
 func writeAIFinalStream(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/event-stream")
-	fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[\\\"4\\\"]}\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":3,\"total_tokens\":23}}\n\ndata: [DONE]\n\n")
+	content := `{"answers":["4"]}`
+	message := map[string]any{"type": "message", "id": "msg_final", "role": "assistant", "status": "completed", "content": []any{map[string]any{"type": "output_text", "text": content, "annotations": []any{}}}}
+	writeResponsesEvent(w, "response.output_text.delta", map[string]any{"output_index": 0, "content_index": 0, "delta": content})
+	writeResponsesEvent(w, "response.completed", map[string]any{"response": map[string]any{
+		"id": "resp_final", "status": "completed", "output": []any{message},
+		"usage": map[string]any{"input_tokens": 20, "output_tokens": 3, "total_tokens": 23},
+	}})
 }
 
 func TestFormatAIModelCompleteResponseAggregatesToolCallsWithoutSSEFrames(t *testing.T) {
@@ -67,7 +90,7 @@ func TestFormatAIModelCompleteResponseAggregatesToolCallsWithoutSSEFrames(t *tes
 	if strings.Contains(complete, "data:") || strings.Contains(complete, "[DONE]") {
 		t.Fatalf("complete response must not contain SSE framing: %s", complete)
 	}
-	for _, expected := range []string{"web_search", "美少女日常电视剧 动漫 生活幻想 选择题", "tool_calls", "先核对搜索结果，再返回答案。", `"prompt_tokens":10`} {
+	for _, expected := range []string{"web_search", "美少女日常电视剧 动漫 生活幻想 选择题", "tool_calls", "先核对搜索结果，再返回答案。", `"input_tokens":10`} {
 		if !strings.Contains(complete, expected) {
 			t.Fatalf("complete response is missing %q: %s", expected, complete)
 		}
@@ -83,26 +106,26 @@ func TestAISearchToolsSearchTwiceAndAccumulateUsage(t *testing.T) {
 			t.Errorf("decode: %v", err)
 			return
 		}
-		if payload["max_tokens"] != float64(4096) {
-			t.Errorf("missing output bound: %v", payload["max_tokens"])
+		if payload["max_output_tokens"] != float64(4096) {
+			t.Errorf("missing output bound: %v", payload["max_output_tokens"])
 		}
 		round++
 		if round == 1 {
 			choice, ok := payload["tool_choice"].(map[string]any)
-			if !ok || choice["type"] != "function" {
+			if !ok || choice["type"] != "function" || choice["name"] != "web_search" {
 				t.Errorf("first round must require search: %v", payload["tool_choice"])
 			}
 			writeAIToolStream(w, "search1", "二加二 计算")
 			return
 		}
-		messages := payload["messages"].([]any)
+		messages := payload["input"].([]any)
 		foundSearchEvidence := false
 		for _, rawMessage := range messages {
 			message, ok := rawMessage.(map[string]any)
-			if !ok || message["role"] != "tool" {
+			if !ok || message["type"] != "function_call_output" {
 				continue
 			}
-			content, ok := message["content"].(string)
+			content, ok := message["output"].(string)
 			if ok && strings.Contains(content, "example.com/source") {
 				foundSearchEvidence = true
 				break
@@ -126,7 +149,7 @@ func TestAISearchToolsSearchTwiceAndAccumulateUsage(t *testing.T) {
 	if !reflect.DeepEqual(answer, [][]string{{"4"}}) || len(tool.queries) != 2 || round != 3 {
 		t.Fatalf("answer=%v queries=%v rounds=%d", answer, tool.queries, round)
 	}
-	if usage.InputTokens != 40 || usage.CachedInputTokens != 4 || usage.CacheWriteTokens != 2 || usage.OutputTokens != 11 || usage.TotalTokens != 51 {
+	if usage.InputTokens != 40 || usage.CachedInputTokens != 4 || usage.CacheWriteTokens != 0 || usage.OutputTokens != 11 || usage.TotalTokens != 51 {
 		t.Fatalf("usage=%+v", usage)
 	}
 	if len(usage.ModelCalls) != 3 {
@@ -153,7 +176,7 @@ func TestAISearchToolsSearchTwiceAndAccumulateUsage(t *testing.T) {
 		}
 		if trace.FullResponse != "" {
 			fullResponseCount++
-			if strings.Contains(trace.FullResponse, "data:") || strings.Contains(trace.FullResponse, "[DONE]") {
+			if strings.Contains(trace.FullResponse, "data:") || strings.Contains(trace.FullResponse, "response.completed") {
 				t.Fatalf("model trace must contain completed content rather than SSE frames: %s", trace.FullResponse)
 			}
 		}
@@ -195,7 +218,7 @@ func TestAISearchDefaultsToOneShotWithoutDeepThinking(t *testing.T) {
 			t.Fatal("deepThinking=false must preserve the original one-shot request")
 		}
 		// 普通搜索是「一次性直出答案」：不提供工具，也不该播报任何预算。
-		messages := payload["messages"].([]any)
+		messages := payload["input"].([]any)
 		system := messages[0].(map[string]any)["content"].(string)
 		if strings.Contains(system, "当前预算") || strings.Contains(system, "web_search") || strings.Contains(system, "web_read") {
 			t.Fatalf("one-shot system prompt must not mention tools or budgets: %s", system)
@@ -257,20 +280,20 @@ func TestAISearchToolsStopsSameRoundCallsAfterSearchFailure(t *testing.T) {
 			modelCalls := 0
 			modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				modelCalls++
-				var payload openAIChatCompletionRequest
+				var payload openAIResponsesTestRequest
 				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 					t.Errorf("decode model request: %v", err)
 					return
 				}
 				if modelCalls == 1 {
-					calls := []map[string]any{
-						{"index": 0, "id": "search1", "type": "function", "function": map[string]string{"name": "web_search", "arguments": `{"query":"first query"}`}},
-						{"index": 1, "id": "search2", "type": "function", "function": map[string]string{"name": "web_search", "arguments": `{"query":"second query"}`}},
-						{"index": 2, "id": "search3", "type": "function", "function": map[string]string{"name": "web_search", "arguments": `{"query":"third query"}`}},
-					}
-					event, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"tool_calls": calls}, "finish_reason": "tool_calls"}}})
 					w.Header().Set("Content-Type", "text/event-stream")
-					fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", event)
+					output := make([]any, 0, 3)
+					for index, call := range []struct{ id, query string }{{"search1", "first query"}, {"search2", "second query"}, {"search3", "third query"}} {
+						item := map[string]any{"type": "function_call", "id": fmt.Sprintf("fc-%s", call.id), "call_id": call.id, "name": "web_search", "arguments": fmt.Sprintf(`{"query":"%s"}`, call.query), "status": "completed"}
+						output = append(output, item)
+						writeResponsesEvent(w, "response.output_item.done", map[string]any{"output_index": index, "item": item})
+					}
+					writeResponsesEvent(w, "response.completed", map[string]any{"response": map[string]any{"status": "completed", "output": output, "usage": map[string]any{"input_tokens": 10, "output_tokens": 4, "total_tokens": 14}}})
 					return
 				}
 				if len(payload.Tools) != 0 {
@@ -278,18 +301,18 @@ func TestAISearchToolsStopsSameRoundCallsAfterSearchFailure(t *testing.T) {
 				}
 				responses := make(map[string]bool)
 				for _, message := range payload.Messages {
-					if message.Role != "tool" {
+					if message.Type != "function_call_output" {
 						continue
 					}
-					content, ok := message.Content.(string)
+					content, ok := message.Output.(string)
 					var failure map[string]string
 					if !ok || json.Unmarshal([]byte(content), &failure) != nil || failure["error"] == "" {
-						t.Errorf("missing valid error response for tool %s: %v", message.ToolCallID, message.Content)
+						t.Errorf("missing valid error response for tool %s: %v", message.CallID, message.Output)
 					}
-					if responses[message.ToolCallID] {
-						t.Errorf("duplicate tool response for %s", message.ToolCallID)
+					if responses[message.CallID] {
+						t.Errorf("duplicate tool response for %s", message.CallID)
 					}
-					responses[message.ToolCallID] = true
+					responses[message.CallID] = true
 				}
 				if len(responses) != 3 || !responses["search1"] || !responses["search2"] || !responses["search3"] {
 					t.Errorf("all tool calls need a response before the final model request: %v", responses)
@@ -353,7 +376,7 @@ func TestAISearchToolsHonorsConfiguredModelCallAndSearchBudgets(t *testing.T) {
 			if _, exists := payload["tools"]; exists {
 				t.Fatal("single configured model call must be the final answer call")
 			}
-			messages := payload["messages"].([]any)
+			messages := payload["input"].([]any)
 			budget := messages[len(messages)-1].(map[string]any)["content"].(string)
 			if !strings.Contains(budget, "还剩模型调用 0 次") || !strings.Contains(budget, "最后一次模型调用") {
 				t.Fatalf("missing final budget instruction: %s", budget)
@@ -391,7 +414,7 @@ func TestAISearchToolsHonorsConfiguredModelCallAndSearchBudgets(t *testing.T) {
 			if _, exists := payload["tools"]; exists {
 				t.Fatal("search budget exhausted; second call must be final")
 			}
-			messages := payload["messages"].([]any)
+			messages := payload["input"].([]any)
 			budget := messages[len(messages)-1].(map[string]any)["content"].(string)
 			if !strings.Contains(budget, "web_search 搜索还剩 0 次") {
 				t.Fatalf("missing exhausted search budget: %s", budget)
@@ -416,7 +439,7 @@ func TestAISearchToolsEndpointFallbackConsumesModelBudget(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		if r.URL.Path == "/chat/completions" {
+		if r.URL.Path == "/responses" {
 			http.NotFound(w, r)
 			return
 		}
@@ -426,9 +449,10 @@ func TestAISearchToolsEndpointFallbackConsumesModelBudget(t *testing.T) {
 			return
 		}
 		if _, exists := payload["tools"]; exists {
-			t.Error("fallback is the last model call and must answer without tools")
+			writeAIToolStream(w, "fallback-search", "fallback query")
+			return
 		}
-		messages := payload["messages"].([]any)
+		messages := payload["input"].([]any)
 		budget := messages[len(messages)-1].(map[string]any)["content"].(string)
 		if !strings.Contains(budget, "还剩模型调用 0 次") || !strings.Contains(budget, "最后一次模型调用") {
 			t.Errorf("missing final budget on fallback: %s", budget)
@@ -438,7 +462,7 @@ func TestAISearchToolsEndpointFallbackConsumesModelBudget(t *testing.T) {
 	defer server.Close()
 	client := &ChatGptClient{Enable: true, BaseURL: server.URL, APIKey: "sk-test", Model: "test", SearchTool: tool, MaxAISearchModelCalls: 2, MaxAISearches: 3}
 	answer, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?", DeepThinking: true})
-	if err != nil || calls != 2 || len(tool.queries) != 0 || !reflect.DeepEqual(answer, [][]string{{"4"}}) {
+	if err != nil || calls != 4 || len(tool.queries) != 1 || !reflect.DeepEqual(answer, [][]string{{"4"}}) {
 		t.Fatalf("answer=%v calls=%d searches=%v err=%v", answer, calls, tool.queries, err)
 	}
 }
@@ -471,7 +495,7 @@ func TestAISearchToolsRetainsTokenBearingRetryResponses(t *testing.T) {
 		calls++
 		w.Header().Set("Content-Type", "text/event-stream")
 		if calls == 1 {
-			fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":3,\"total_tokens\":11}}\n\n")
+			writeAIResponsesCompleted(w, "", map[string]any{"input_tokens": 8, "output_tokens": 3, "total_tokens": 11})
 			fmt.Fprint(w, "data: {malformed\n\n")
 			return
 		}
@@ -519,7 +543,7 @@ func TestAISearchToolsExhaustedRoundPreservesPrivateAuditError(t *testing.T) {
 	}
 }
 
-func TestAISearchToolsBadRequestStopsAfterOneAttemptAndReportsActualCount(t *testing.T) {
+func TestAISearchToolsRetriesBadRequestAndReportsConfiguredAttemptCount(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -531,14 +555,39 @@ func TestAISearchToolsBadRequestStopsAfterOneAttemptAndReportsActualCount(t *tes
 		SearchTool: &testAISearchTool{}, MaxAISearchModelCalls: 3, MaxAISearchRetries: 3,
 	}
 	_, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?", DeepThinking: true})
-	if calls != 1 || !errors.Is(err, pkgerrors.ErrTargetServerError) {
-		t.Fatalf("malformed requests must not retry: calls=%d error=%v", calls, err)
+	if calls != 3 || !errors.Is(err, pkgerrors.ErrTargetServerError) {
+		t.Fatalf("failed model calls must use all configured attempts: calls=%d error=%v", calls, err)
 	}
-	if !strings.Contains(err.Error(), "上游服务器异常") || strings.Contains(err.Error(), "对方服务器异常") || !strings.Contains(err.Error(), "已尝试1次") {
+	if !strings.Contains(err.Error(), "上游服务器异常") || strings.Contains(err.Error(), "对方服务器异常") || !strings.Contains(err.Error(), "已尝试3次") {
 		t.Fatalf("private diagnostics must use upstream wording and actual attempts: %v", err)
 	}
 	if !strings.Contains(err.Error(), "account only supports Chat Completions") {
 		t.Fatalf("private diagnostics lost the upstream cause: %v", err)
+	}
+}
+
+func TestAISearchToolsEndpointFailuresCountAsOneRetryAttempt(t *testing.T) {
+	calls := make(map[string]int)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls[r.URL.Path]++
+		status := http.StatusBadRequest
+		if r.URL.Path == "/v1/responses" {
+			status = http.StatusBadGateway
+		}
+		http.Error(w, "temporary endpoint failure", status)
+	}))
+	defer server.Close()
+
+	client := &ChatGptClient{
+		Enable: true, BaseURL: server.URL, APIKey: "sk-test", Model: "test",
+		SearchTool: &testAISearchTool{}, MaxAISearchModelCalls: 1, MaxAISearchRetries: 1,
+	}
+	_, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?", DeepThinking: true})
+	if err == nil || !strings.Contains(err.Error(), "已尝试1次") {
+		t.Fatalf("two endpoint failures in one retry cycle must count once, got %v", err)
+	}
+	if calls["/responses"] != 1 || calls["/v1/responses"] != 1 {
+		t.Fatalf("expected both endpoint requests within one retry cycle, got %v", calls)
 	}
 }
 

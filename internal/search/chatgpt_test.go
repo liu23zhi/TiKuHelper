@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -83,7 +82,8 @@ func TestReadOpenAIStreamContentWaitsForFirstTokenOnlyWithinDeadline(t *testing.
 	defer reader.Close()
 	go func() {
 		time.Sleep(50 * time.Millisecond)
-		_, _ = writer.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"first\"}}]}\n\n"))
+		writeResponsesEvent(writer, "response.output_text.delta", map[string]any{"delta": "first"})
+		writeResponsesEvent(writer, "response.completed", map[string]any{"response": map[string]any{"status": "completed"}})
 		_ = writer.Close()
 	}()
 
@@ -137,9 +137,7 @@ type openAIRequestMessagePayload struct {
 type openAIImagePartPayload struct {
 	Type     string `json:"type"`
 	Text     string `json:"text,omitempty"`
-	ImageURL *struct {
-		URL string `json:"url"`
-	} `json:"image_url,omitempty"`
+	ImageURL string `json:"image_url,omitempty"`
 }
 
 func decodeUserContentParts(t *testing.T, messages []openAIRequestMessagePayload) []openAIImagePartPayload {
@@ -164,7 +162,7 @@ func TestChatGptClientSearchAnswerUsesSystemPromptAndFixedSamplingParams(t *test
 			Stream      bool                          `json:"stream"`
 			Temperature float64                       `json:"temperature"`
 			TopP        float64                       `json:"top_p"`
-			Messages    []openAIRequestMessagePayload `json:"messages"`
+			Messages    []openAIRequestMessagePayload `json:"input"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("decode payload: %v", err)
@@ -193,7 +191,7 @@ func TestChatGptClientSearchAnswerUsesSystemPromptAndFixedSamplingParams(t *test
 		if len(parts) != 1 {
 			t.Fatalf("expected one user content part, got %d", len(parts))
 		}
-		if parts[0].Type != "text" {
+		if parts[0].Type != "input_text" {
 			t.Fatalf("expected text content part, got %s", parts[0].Type)
 		}
 		if !strings.Contains(parts[0].Text, "题目：2+2=?") {
@@ -204,8 +202,7 @@ func TestChatGptClientSearchAnswerUsesSystemPromptAndFixedSamplingParams(t *test
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[\\\"B\\\"]}\"}}]}\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		writeAIResponsesTextStream(w, []string{`{"answers":["B"]}`}, nil)
 	}))
 	defer server.Close()
 
@@ -238,7 +235,7 @@ func TestChatGptClientSearchAnswerAttachesDownloadedImagesToUserMessage(t *testi
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload struct {
-			Messages []openAIRequestMessagePayload `json:"messages"`
+			Messages []openAIRequestMessagePayload `json:"input"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("decode payload: %v", err)
@@ -247,23 +244,22 @@ func TestChatGptClientSearchAnswerAttachesDownloadedImagesToUserMessage(t *testi
 		if len(parts) != 3 {
 			t.Fatalf("expected text, one image, and image references, got %d", len(parts))
 		}
-		if parts[0].Type != "text" {
+		if parts[0].Type != "input_text" {
 			t.Fatalf("expected first part to be text, got %s", parts[0].Type)
 		}
 		if !strings.Contains(parts[0].Text, "题目：识别图片") {
 			t.Fatalf("expected text part to include question, got %q", parts[0].Text)
 		}
-		if parts[1].Type != "image_url" || parts[1].ImageURL == nil {
+		if parts[1].Type != "input_image" || parts[1].ImageURL == "" {
 			t.Fatalf("expected second part to be image_url, got %+v", parts[1])
 		}
 		expectedURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("png-image-bytes"))
-		if parts[1].ImageURL.URL != expectedURL {
-			t.Fatalf("expected downloaded image data url %q, got %q", expectedURL, parts[1].ImageURL.URL)
+		if parts[1].ImageURL != expectedURL {
+			t.Fatalf("expected downloaded image data url %q, got %q", expectedURL, parts[1].ImageURL)
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[\\\"A\\\"]}\"}}]}\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		writeAIResponsesTextStream(w, []string{`{"answers":["A"]}`}, nil)
 	}))
 	defer server.Close()
 
@@ -300,7 +296,7 @@ func TestChatGptClientSearchAnswerContinuesWhenSomeImagesFailToDownload(t *testi
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload struct {
-			Messages []openAIRequestMessagePayload `json:"messages"`
+			Messages []openAIRequestMessagePayload `json:"input"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("decode payload: %v", err)
@@ -309,17 +305,16 @@ func TestChatGptClientSearchAnswerContinuesWhenSomeImagesFailToDownload(t *testi
 		if len(parts) != 3 {
 			t.Fatalf("expected text, successful image, and image references, got %d", len(parts))
 		}
-		if parts[1].ImageURL == nil {
+		if parts[1].ImageURL == "" {
 			t.Fatalf("expected successful image part, got %+v", parts[1])
 		}
 		unexpectedFailedURL := "data:text/plain;base64," + base64.StdEncoding.EncodeToString([]byte("404 page not found\n"))
-		if parts[1].ImageURL.URL == unexpectedFailedURL {
-			t.Fatalf("expected failed image to be skipped, got %q", parts[1].ImageURL.URL)
+		if parts[1].ImageURL == unexpectedFailedURL {
+			t.Fatalf("expected failed image to be skipped, got %q", parts[1].ImageURL)
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[\\\"B\\\"]}\"}}]}\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		writeAIResponsesTextStream(w, []string{`{"answers":["B"]}`}, nil)
 	}))
 	defer server.Close()
 
@@ -354,7 +349,7 @@ func TestChatGptClientSearchAnswerAttachesHTMLURLAsNamedFileContent(t *testing.T
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload struct {
-			Messages []openAIRequestMessagePayload `json:"messages"`
+			Messages []openAIRequestMessagePayload `json:"input"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("decode payload: %v", err)
@@ -363,7 +358,7 @@ func TestChatGptClientSearchAnswerAttachesHTMLURLAsNamedFileContent(t *testing.T
 		if len(parts) != 3 {
 			t.Fatalf("expected text prompt, html attachment, and image references, got %d parts", len(parts))
 		}
-		if parts[1].Type != "text" {
+		if parts[1].Type != "input_text" {
 			t.Fatalf("expected html attachment to be sent as text content, got %s", parts[1].Type)
 		}
 		for _, expected := range []string{
@@ -377,8 +372,7 @@ func TestChatGptClientSearchAnswerAttachesHTMLURLAsNamedFileContent(t *testing.T
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[\\\"B\\\"]}\"}}]}\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		writeAIResponsesTextStream(w, []string{`{"answers":["B"]}`}, nil)
 	}))
 	defer server.Close()
 
@@ -410,22 +404,21 @@ func TestChatGptClientSearchAnswerUsesImageContentTypeAfterOctetStreamHeader(t *
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload struct {
-			Messages []openAIRequestMessagePayload `json:"messages"`
+			Messages []openAIRequestMessagePayload `json:"input"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("decode payload: %v", err)
 		}
 		parts := decodeUserContentParts(t, payload.Messages)
-		if len(parts) != 3 || parts[1].Type != "image_url" || parts[1].ImageURL == nil {
+		if len(parts) != 3 || parts[1].Type != "input_image" || parts[1].ImageURL == "" {
 			t.Fatalf("expected image attachment, got %+v", parts)
 		}
-		if !strings.HasPrefix(parts[1].ImageURL.URL, "data:image/jpeg;base64,") {
-			t.Fatalf("expected jpeg data url, got %q", parts[1].ImageURL.URL)
+		if !strings.HasPrefix(parts[1].ImageURL, "data:image/jpeg;base64,") {
+			t.Fatalf("expected jpeg data url, got %q", parts[1].ImageURL)
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[\\\"A\\\"]}\"}}]}\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		writeAIResponsesTextStream(w, []string{`{"answers":["A"]}`}, nil)
 	}))
 	defer server.Close()
 
@@ -449,7 +442,7 @@ func TestChatGptClientSearchAnswerUsesImageContentTypeAfterOctetStreamHeader(t *
 
 func TestChatGptClientSearchAnswerAggregatesStreamContent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/chat/completions" {
+		if r.URL.Path != "/v1/responses" {
 			t.Fatalf("unexpected request path: %s", r.URL.Path)
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer sk-test" {
@@ -468,9 +461,7 @@ func TestChatGptClientSearchAnswerAggregatesStreamContent(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[\\\"第一段\\\"\"}}]}\n\n"))
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\",\\\"第二段\\\"]}\"}}]}\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		writeAIResponsesTextStream(w, []string{`{"answers":["第一段"`, `,"第二段"]}`}, nil)
 	}))
 	defer server.Close()
 
@@ -495,9 +486,7 @@ func TestChatGptClientSearchAnswerAggregatesStreamContent(t *testing.T) {
 func TestChatGptClientSearchAnswerWithUsageCapturesStreamUsage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[\\\"B\\\"]}\"}}]}\n\n"))
-		_, _ = w.Write([]byte("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}}\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		writeAIResponsesTextStream(w, []string{`{"answers":["B"]}`}, map[string]any{"input_tokens": 11, "output_tokens": 7, "total_tokens": 18})
 	}))
 	defer server.Close()
 
@@ -552,10 +541,10 @@ func TestSearchAnswerWithUsageRetainsTokenBearingRetryResponses(t *testing.T) {
 		attempt++
 		w.Header().Set("Content-Type", "text/event-stream")
 		if attempt == 1 {
-			fmt.Fprint(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3,\"total_tokens\":10}}\n\ndata: [DONE]\n\n")
+			writeAIResponsesCompleted(w, "", map[string]any{"input_tokens": 7, "output_tokens": 3, "total_tokens": 10})
 			return
 		}
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[\\\"A\\\"]}\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":2,\"total_tokens\":13}}\n\ndata: [DONE]\n\n")
+		writeAIResponsesTextStream(w, []string{`{"answers":["A"]}`}, map[string]any{"input_tokens": 11, "output_tokens": 2, "total_tokens": 13})
 	}))
 	defer server.Close()
 
@@ -572,14 +561,14 @@ func TestSearchAnswerWithUsageRetainsTokenBearingRetryResponses(t *testing.T) {
 	}
 }
 
-func TestSearchAnswerWithUsageRetainsTokenBearingEndpointFallbackResponses(t *testing.T) {
+func TestSearchAnswerWithUsageRetainsTokenBearingResponsesEndpointFallback(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		if r.URL.Path == "/chat/completions" {
-			fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[]}\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":1,\"total_tokens\":6}}\n\ndata: [DONE]\n\n")
+		if r.URL.Path == "/responses" {
+			http.NotFound(w, r)
 			return
 		}
-		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[\\\"B\\\"]}\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":2,\"total_tokens\":10}}\n\ndata: [DONE]\n\n")
+		writeAIResponsesTextStream(w, []string{`{"answers":["B"]}`}, map[string]any{"input_tokens": 8, "output_tokens": 2, "total_tokens": 10})
 	}))
 	defer server.Close()
 
@@ -588,8 +577,8 @@ func TestSearchAnswerWithUsageRetainsTokenBearingEndpointFallbackResponses(t *te
 	if err != nil || !reflect.DeepEqual(answer, [][]string{{"B"}}) {
 		t.Fatalf("expected endpoint fallback answer, answer=%v err=%v", answer, err)
 	}
-	if len(usage.ModelCalls) != 2 || usage.ModelCalls[0].Index != 1 || usage.ModelCalls[1].Index != 2 {
-		t.Fatalf("expected stable call indexes across endpoints, got %+v", usage.ModelCalls)
+	if len(usage.ModelCalls) != 1 || usage.ModelCalls[0].Index != 1 {
+		t.Fatalf("endpoint fallback must count one model attempt, got %+v", usage.ModelCalls)
 	}
 	var responseIndexes []int
 	for _, trace := range usage.Trace {
@@ -597,8 +586,58 @@ func TestSearchAnswerWithUsageRetainsTokenBearingEndpointFallbackResponses(t *te
 			responseIndexes = append(responseIndexes, trace.ModelCallIndex)
 		}
 	}
-	if !reflect.DeepEqual(responseIndexes, []int{1, 2}) {
+	if !reflect.DeepEqual(responseIndexes, []int{1}) {
 		t.Fatalf("expected response trace indexes aligned with model calls, got %v", responseIndexes)
+	}
+}
+
+func TestResponsesEndpointFallbackSharesOneRetryAttempt(t *testing.T) {
+	calls := make(map[string]int)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls[r.URL.Path]++
+		if r.URL.Path == "/responses" {
+			http.NotFound(w, r)
+			return
+		}
+		writeOpenAIStyleStream(w, `{"answers":["B"]}`)
+	}))
+	defer server.Close()
+
+	client := &ChatGptClient{
+		Enable: true, BaseURL: server.URL, APIKey: "sk-test", Model: "fallback-model",
+		MaxAISearchModelCalls: 1, MaxAISearchRetries: 1,
+	}
+	answer, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "题目"})
+	if err != nil || !reflect.DeepEqual(answer, [][]string{{"B"}}) {
+		t.Fatalf("endpoint fallback must succeed within one attempt: answer=%v err=%v calls=%v", answer, err, calls)
+	}
+	if calls["/responses"] != 1 || calls["/v1/responses"] != 1 {
+		t.Fatalf("expected one request per compatibility endpoint in one attempt, calls=%v", calls)
+	}
+}
+
+func TestResponsesEndpointFailuresCountAsOneRetryAttempt(t *testing.T) {
+	calls := make(map[string]int)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls[r.URL.Path]++
+		status := http.StatusBadRequest
+		if r.URL.Path == "/v1/responses" {
+			status = http.StatusBadGateway
+		}
+		http.Error(w, "temporary endpoint failure", status)
+	}))
+	defer server.Close()
+
+	client := &ChatGptClient{
+		Enable: true, BaseURL: server.URL, APIKey: "sk-test", Model: "fallback-model",
+		MaxAISearchModelCalls: 1, MaxAISearchRetries: 1,
+	}
+	_, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "题目"})
+	if err == nil {
+		t.Fatalf("two endpoint failures in one retry cycle must still fail, got nil")
+	}
+	if calls["/responses"] != 1 || calls["/v1/responses"] != 1 {
+		t.Fatalf("expected both endpoint requests within one retry cycle, got %v", calls)
 	}
 }
 
@@ -611,9 +650,7 @@ func TestChatGptClientSearchAnswerDebugReturnsRequestAndRawResponse(t *testing.T
 		}
 		capturedRequestBody = string(body)
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"answers\\\":[\\\"hello\\\"]}\"}}]}\n\n"))
-		_, _ = w.Write([]byte("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1,\"total_tokens\":4}}\n\n"))
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+		writeAIResponsesTextStream(w, []string{`{"answers":["hello"]}`}, map[string]any{"input_tokens": 3, "output_tokens": 1, "total_tokens": 4})
 	}))
 	defer server.Close()
 
@@ -639,8 +676,8 @@ func TestChatGptClientSearchAnswerDebugReturnsRequestAndRawResponse(t *testing.T
 	if debug.RequestBody != capturedRequestBody {
 		t.Fatalf("expected debug request body to match sent payload, got %s vs %s", debug.RequestBody, capturedRequestBody)
 	}
-	if !strings.Contains(debug.RawResponse, "prompt_tokens") || !strings.Contains(debug.RawResponse, "[DONE]") {
-		t.Fatalf("expected raw response to keep stream body, got %s", debug.RawResponse)
+	if !strings.Contains(debug.RawResponse, "input_tokens") || !strings.Contains(debug.RawResponse, "response.completed") {
+		t.Fatalf("expected raw response to keep Responses stream, got %s", debug.RawResponse)
 	}
 	if debug.Usage.TotalTokens != 4 {
 		t.Fatalf("expected usage total tokens 4, got %+v", debug.Usage)
