@@ -6,6 +6,8 @@ export function buildLogModuleLabel(value) {
   if (normalized === 'search') return '搜题';
   if (normalized === 'ai_fallback') return 'AI 兜底';
   if (normalized === 'captcha') return '验证码';
+  if (normalized === 'user') return '用户管理';
+  if (normalized === 'billing') return '账单管理';
   return value || '-';
 }
 

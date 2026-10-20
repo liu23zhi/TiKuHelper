@@ -261,7 +261,7 @@ export default defineComponent({
       return rows.reduce((acc, item) => {
         const amount = Number(item?.amount || 0)
         acc.currentPageCount += 1
-        if (Number.isFinite(amount) && item?.direction !== 'income') {
+        if (Number.isFinite(amount) && item?.direction !== 'income' && item?.type !== 'balance_adjustment') {
           acc.totalAmount += amount
         }
         return acc

@@ -80,14 +80,16 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.DELETE("/user/wechat", controller.Auth, controller.UnbindCurrentUserWechat)
 	apiRouter.GET("/user/wechat/scan-id", controller.Auth, middleware.RequireAdmin, controller.ResolveAdminWechatIDByScan)
 	apiRouter.POST("/user/wechat/code-id", controller.Auth, middleware.RequireAdmin, controller.ResolveAdminWechatIDByCode)
-	apiRouter.GET("/user", controller.Auth, controller.UserList)                             // 自己创建的用户列表
-	apiRouter.POST("/user", controller.Auth, controller.CreateUser)                          // 创建用户
-	apiRouter.PUT("/user/:id", controller.Auth, controller.UpdateUser)                       // 更新用户
+	apiRouter.GET("/user", controller.Auth, controller.UserList)       // 自己创建的用户列表
+	apiRouter.POST("/user", controller.Auth, controller.CreateUser)    // 创建用户
+	apiRouter.PUT("/user/:id", controller.Auth, controller.UpdateUser) // 更新用户
+	apiRouter.POST("/user/:id/balance", controller.Auth, middleware.RequireAdmin, controller.UpdateUserBalance)
 	apiRouter.PUT("/user/:id/reset-password", controller.Auth, controller.ResetUserPassword) // 重置密码
 	apiRouter.DELETE("/user/:id", controller.Auth, controller.DeleteUser)                    // 删除用户
 
 	apiRouter.GET("/logs", controller.Auth, controller.LogList) // 日志列表
 	apiRouter.GET("/billing-records", controller.Auth, controller.BillingRecordList)
+	apiRouter.PUT("/billing-records/:id/statement-visibility", controller.Auth, middleware.RequireAdmin, controller.UpdateBillingStatementVisibility)
 	apiRouter.GET("/recharge-orders", controller.Auth, controller.RechargeOrderList)
 	apiRouter.POST("/recharge-orders", controller.Auth, controller.CreateRechargeOrder)
 	apiRouter.Any("/payment/notify", controller.RechargePaymentNotify)

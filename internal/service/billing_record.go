@@ -38,14 +38,21 @@ type BillingRecordListItem struct {
 	AnswerSourceLabel string `json:"answerSourceLabel"`
 	// SearchMode 是这笔消费的搜索模式：deep=深度思考，normal=普通搜索。
 	// 非搜题账单与加列之前的历史行为空，界面降级显示占位符。
-	SearchMode      string                   `json:"searchMode"`
-	SearchModeLabel string                   `json:"searchModeLabel"`
-	QuestionText    string                   `json:"questionText"`
-	Amount          float64                  `json:"amount"`
-	FinalMultiplier string                   `gorm:"-" json:"finalMultiplier"`
-	FeeDetails      []BillingRecordFeeDetail `gorm:"-" json:"feeDetails"`
-	AccessTokenName string                   `json:"accessTokenName"`
-	CreatedAt       time.Time                `json:"createdAt"`
+	SearchMode          string                   `json:"searchMode"`
+	SearchModeLabel     string                   `json:"searchModeLabel"`
+	QuestionText        string                   `json:"questionText"`
+	Amount              float64                  `json:"amount"`
+	BalanceBefore       float64                  `json:"balanceBefore"`
+	BalanceAfter        float64                  `json:"balanceAfter"`
+	OperatorID          int32                    `json:"operatorId"`
+	OperatorUsername    string                   `json:"operatorUsername"`
+	AdjustmentMode      string                   `json:"adjustmentMode"`
+	HiddenFromStatement bool                     `json:"-"`
+	ShowInStatement     bool                     `gorm:"-" json:"showInStatement"`
+	FinalMultiplier     string                   `gorm:"-" json:"finalMultiplier"`
+	FeeDetails          []BillingRecordFeeDetail `gorm:"-" json:"feeDetails"`
+	AccessTokenName     string                   `json:"accessTokenName"`
+	CreatedAt           time.Time                `json:"createdAt"`
 	// ClientIP 是这笔账单的来源 IP，前端据此展示归属地（形如 `1.2.3.4 （广东深圳）`）。
 	//
 	// 历史行（加列之前落账的）为空，前端降级为只显示 `-`。
@@ -136,6 +143,8 @@ func buildBillingRecordTypeLabel(recordType string) string {
 		return "充值入账"
 	case registrationBonusBillingRecordType:
 		return "新用户赠送"
+	case balanceAdjustmentBillingRecordType:
+		return "管理员调整余额"
 	case normalSearchBillingRecordType:
 		return "题目消费"
 	default:
@@ -159,6 +168,9 @@ func buildBillingRecordDirectionLabel(direction string) string {
 }
 
 func buildBillingRecordSubject(record BillingRecordListItem) string {
+	if record.Type == balanceAdjustmentBillingRecordType {
+		return record.Remark
+	}
 	if record.Type == rechargeBillingRecordType {
 		if remark := strings.TrimSpace(record.Remark); remark != "" {
 			return remark
@@ -181,6 +193,9 @@ func buildBillingRecordSubject(record BillingRecordListItem) string {
 }
 
 func buildBillingRecordDetail(record BillingRecordListItem) string {
+	if record.Type == balanceAdjustmentBillingRecordType {
+		return fmt.Sprintf("操作管理员：%s (ID=%d)；余额 ¥ %s → ¥ %s", record.OperatorUsername, record.OperatorID, balanceMoneyText(record.BalanceBefore), balanceMoneyText(record.BalanceAfter))
+	}
 	if record.Type == rechargeBillingRecordType {
 		if remark := strings.TrimSpace(record.Remark); remark != "" {
 			return remark
@@ -276,7 +291,7 @@ func buildBillingRecordScopeQuery(db *gorm.DB, operator entity.User) *gorm.DB {
 		Joins("LEFT JOIN " + entity.TableNameAccessToken + " AS access_tokens ON access_tokens.id = billing_records.access_token_id").
 		Joins("LEFT JOIN " + entity.TableNameUser + " AS billing_users ON billing_users.id = billing_records.user_id")
 	if !isAdminUser(operator) {
-		query = query.Where("billing_records.user_id = ?", operator.ID)
+		query = query.Where("billing_records.user_id = ? AND billing_records.hidden_from_statement = ?", operator.ID, false)
 	}
 	return query
 }
@@ -308,6 +323,10 @@ func decorateBillingRecord(record BillingRecordListItem) BillingRecordListItem {
 	record.Type = normalizeBillingRecordType(record.Type)
 	record.TypeLabel = buildBillingRecordTypeLabel(record.Type)
 	record.Direction = buildBillingRecordDirection(record.Type)
+	if record.Type == balanceAdjustmentBillingRecordType && record.BalanceAfter >= record.BalanceBefore {
+		record.Direction = "income"
+	}
+	record.ShowInStatement = !record.HiddenFromStatement
 	record.DirectionLabel = buildBillingRecordDirectionLabel(record.Direction)
 	record.ReferenceNo = strings.TrimSpace(record.RequestID)
 	if meta, ok := getSearchAccountProviderMeta(record.Provider); ok {
@@ -318,6 +337,9 @@ func decorateBillingRecord(record BillingRecordListItem) BillingRecordListItem {
 	}
 	if strings.TrimSpace(record.Provider) == "system" {
 		record.ProviderLabel = "系统赠送"
+	}
+	if record.Type == balanceAdjustmentBillingRecordType {
+		record.ProviderLabel = "管理员调整"
 	}
 	if cachedLabel := buildCachedLocalProviderLabel(record.Provider, record.UnitPriceSnapshot); cachedLabel != "" {
 		record.ProviderLabel = cachedLabel
@@ -340,6 +362,9 @@ func decorateBillingRecord(record BillingRecordListItem) BillingRecordListItem {
 		Amount:        record.Amount,
 		Detail:        buildBillingRecordFeeDetail(record.Provider, record.UnitPriceSnapshot),
 	}}
+	if record.Type == balanceAdjustmentBillingRecordType {
+		record.FeeDetails[0].Detail = record.Detail
+	}
 	return record
 }
 
@@ -392,7 +417,7 @@ func loadBillingSearchGroups(db *gorm.DB, records []BillingRecordListItem) (map[
 	var groupRecords []BillingRecordListItem
 	if err := db.
 		Table(entity.TableNameBillingRecord+" AS billing_records").
-		Select("billing_records.id, billing_records.user_id, COALESCE(billing_users.username, '') AS username, billing_records.type, billing_records.provider, billing_records.amount, billing_records.created_at, billing_records.client_ip, billing_records.unit_price_snapshot, billing_records.request_id, billing_records.search_mode, billing_records.remark, access_tokens.name AS access_token_name").
+		Select("billing_records.id, billing_records.user_id, COALESCE(billing_users.username, '') AS username, billing_records.type, billing_records.provider, billing_records.amount, billing_records.hidden_from_statement, billing_records.created_at, billing_records.client_ip, billing_records.unit_price_snapshot, billing_records.request_id, billing_records.search_mode, billing_records.remark, access_tokens.name AS access_token_name").
 		Joins("LEFT JOIN "+entity.TableNameAccessToken+" AS access_tokens ON access_tokens.id = billing_records.access_token_id").
 		Joins("LEFT JOIN "+entity.TableNameUser+" AS billing_users ON billing_users.id = billing_records.user_id").
 		Where("billing_records.type = ?", normalSearchBillingRecordType).
@@ -616,7 +641,7 @@ func loadBillingRequestExpenseTotals(query *gorm.DB) (map[billingSearchGroupKey]
 func findAllBillingRecordAmountRows(baseQuery *gorm.DB) ([]BillingRecordListItem, error) {
 	var rows []BillingRecordListItem
 	if err := baseQuery.
-		Select("billing_records.id, billing_records.user_id, COALESCE(billing_users.username, '') AS username, billing_records.type, billing_records.provider, billing_records.model_name, billing_records.amount, billing_records.created_at, billing_records.client_ip, billing_records.unit_price_snapshot, billing_records.question_text, billing_records.request_id, billing_records.search_mode, billing_records.remark, access_tokens.name AS access_token_name").
+		Select("billing_records.id, billing_records.user_id, COALESCE(billing_users.username, '') AS username, billing_records.type, billing_records.provider, billing_records.model_name, billing_records.amount, billing_records.balance_before, billing_records.balance_after, billing_records.operator_id, billing_records.operator_username, billing_records.adjustment_mode, billing_records.hidden_from_statement, billing_records.created_at, billing_records.client_ip, billing_records.unit_price_snapshot, billing_records.question_text, billing_records.request_id, billing_records.search_mode, billing_records.remark, access_tokens.name AS access_token_name").
 		Order("billing_records.id desc").
 		Find(&rows).Error; err != nil {
 		return nil, err
@@ -642,7 +667,7 @@ func sliceBillingRecordAmountRows(rows []BillingRecordListItem, offset int, page
 func sumBillingExpenseAmount(rows []BillingRecordListItem) float64 {
 	total := 0.0
 	for _, row := range rows {
-		if row.Direction == "income" {
+		if row.Direction == "income" || row.Type == balanceAdjustmentBillingRecordType {
 			continue
 		}
 		if amount := row.Amount; amount > 0 {

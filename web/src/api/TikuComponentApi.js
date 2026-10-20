@@ -411,6 +411,22 @@ export function resetUserPassword(data) {
   })
 }
 
+export function adjustUserBalance(data) {
+  return request({
+    url: `/adapter-service/user/${data.id}/balance`,
+    method: 'post',
+    data: { mode: data.mode, amount: data.amount, showInStatement: data.showInStatement },
+  })
+}
+
+export function updateBillingStatementVisibility(id, showInStatement) {
+  return request({
+    url: `/adapter-service/billing-records/${id}/statement-visibility`,
+    method: 'put',
+    data: { showInStatement },
+  })
+}
+
 export function getLogList(params) {
   return request({
     url: `/adapter-service/logs`,

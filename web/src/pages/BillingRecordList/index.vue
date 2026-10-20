@@ -26,7 +26,7 @@
             :value="summary.totalAmount"
             :precision="6"
           />
-          <div class="summary-hint">不包含充值入账与新用户赠送</div>
+          <div class="summary-hint">不包含充值、赠送及管理员余额调整</div>
         </a-card>
       </a-col>
       <a-col :xs="24" :sm="12" :lg="6">
@@ -122,6 +122,19 @@
         <template #feeDetail="{ record }">
           <a-button type="link" style="padding: 0" @click="handleShowFeeDetail(record)">显示详情</a-button>
         </template>
+        <template #balanceChange="{ record }">
+          <span v-if="record.type === 'balance_adjustment'">¥ {{ formatAmount(record.balanceBefore) }} → ¥ {{ formatAmount(record.balanceAfter) }}</span>
+          <span v-else>-</span>
+        </template>
+        <template #statementVisibility="{ record }">
+          <a-switch
+            :checked="record.showInStatement !== false"
+            :loading="visibilitySaving[record.id]"
+            checked-children="显示"
+            un-checked-children="隐藏"
+            @change="checked => handleStatementVisibilityChange(record, checked)"
+          />
+        </template>
         <template #emptyText>
           <a-empty description="当前还没有账单记录。" />
         </template>
@@ -134,7 +147,7 @@
 import { computed, defineComponent, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import Swal from 'sweetalert2'
-import { getBillingRecords, getIpLocations, getMyLocations } from '@/api/TikuComponentApi'
+import { getBillingRecords, getIpLocations, getMyLocations, updateBillingStatementVisibility } from '@/api/TikuComponentApi'
 import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser'
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
 import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@/utils/listSearchHelpers.mjs'
@@ -157,6 +170,7 @@ import {
 
 const dataSource = ref([])
 const tableLoading = ref(false)
+const visibilitySaving = reactive({})
 
 // 归属地映射：key 为归一化后的 IP，value 为展示文本。
 // 页面加载时按当前页的 clientIp 批量查询并落库（服务端持久化，之后翻页零消耗）。
@@ -241,12 +255,12 @@ export default defineComponent({
     const pageTitle = computed(() => (isAdmin.value ? '账单明细' : '我的账单'))
     const pageSubtitle = computed(() => (
       isAdmin.value
-        ? '查看平台内全部账单流水，包含题目消费、充值入账、来源渠道、请求编号与请求时间。'
+        ? '查看平台内全部账单明细，包含题目消费、充值与管理员余额调整，也包含未向用户展示的记录。'
         : '查看当前账号名下的账单流水，包含题目消费、充值入账、来源渠道、请求编号与请求时间。'
     ))
     const alertMessage = computed(() => (
       isAdmin.value
-        ? '管理员可查看全部账单。'
+        ? '管理员始终可查看全部账单；通过“账单流水展示”开关调整用户可见性，不改变原始金额和余额记录。'
         : '这里只展示当前账号自己的账单流水，便于快速查看每次消费或充值对应的来源、请求编号与时间。'
     ))
     const columns = computed(() => {
@@ -373,6 +387,24 @@ export default defineComponent({
           },
         },
         ...baseColumns.slice(1),
+        {
+          title: '操作管理员',
+          key: 'operatorUsername',
+          width: 160,
+          customRender: ({ record }) => record.operatorUsername || '-',
+        },
+        {
+          title: '余额变化',
+          key: 'balanceChange',
+          width: 220,
+          slots: { customRender: 'balanceChange' },
+        },
+        {
+          title: '账单流水展示',
+          key: 'statementVisibility',
+          width: 130,
+          slots: { customRender: 'statementVisibility' },
+        },
       ]
     })
 
@@ -383,6 +415,7 @@ export default defineComponent({
       normalizeLocationKey,
       formatValueWithLocation,
       tableLoading,
+      visibilitySaving,
       pagination,
       summary,
       filters,
@@ -393,6 +426,7 @@ export default defineComponent({
         { label: '题目消费', value: 'normal_search' },
         { label: '充值入账', value: 'recharge' },
         { label: '新用户赠送', value: 'registration_bonus' },
+        { label: '管理员调整余额', value: 'balance_adjustment' },
       ],
       pageTitle,
       pageSubtitle,
@@ -411,6 +445,20 @@ export default defineComponent({
     this.handleLoad()
   },
   methods: {
+    async handleStatementVisibilityChange(record, show) {
+      if (visibilitySaving[record.id]) return
+      visibilitySaving[record.id] = true
+      try {
+        const res = await updateBillingStatementVisibility(record.id, show)
+        if (res?.status !== 200) throw new Error(res?.message || '修改流水可见性失败')
+        record.showInStatement = show
+        message.success(show ? '已在用户账单流水中显示' : '已从用户账单流水中隐藏，管理员明细仍保留')
+      } catch (error) {
+        message.error(error?.response?.data?.message || error?.message || '修改流水可见性失败')
+      } finally {
+        visibilitySaving[record.id] = false
+      }
+    },
     // 点「搜索」或回车时才把输入框内容变成生效的筛选条件。
     applyKeyword() {
       filters.keyword = normalizeSearchKeyword(keywordInput.value)

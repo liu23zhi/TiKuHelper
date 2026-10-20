@@ -177,12 +177,9 @@
         <a-form-item label="状态">
           <a-select v-model:value="formState.status" :options="statusOptions" />
         </a-form-item>
-        <a-form-item v-if="isEditing" label="余额模式">
-          <a-select v-model:value="formState.balanceMode" :options="balanceModeOptions" />
-        </a-form-item>
-        <a-form-item v-if="isEditing" label="余额数值">
-          <a-input v-model:value="formState.balance" placeholder="留空表示不调整余额" />
-          <div class="form-hint">可选择增加、减少或覆盖；留空则仅更新基础信息。</div>
+        <a-form-item v-if="isEditing" label="当前余额">
+          <a-input :value="formatBalance(formState.balance)" readonly prefix="¥" />
+          <a-button class="balance-adjust-button" @click="openBalanceModal">修改余额</a-button>
         </a-form-item>
         <a-form-item v-if="isEditing" label="手机号">
           <a-input v-model:value="formState.phone" placeholder="留空表示清空手机号绑定" />
@@ -239,6 +236,46 @@
     </a-modal>
 
     <a-modal
+      v-model:visible="balanceVisible"
+      title="修改用户余额"
+      ok-text="确认修改"
+      cancel-text="取消"
+      :confirm-loading="balanceSubmitting"
+      :mask-closable="!balanceSubmitting"
+      :keyboard="!balanceSubmitting"
+      :closable="!balanceSubmitting"
+      :cancel-button-props="{ disabled: balanceSubmitting }"
+      @ok="submitBalanceAdjustment"
+    >
+      <a-form layout="vertical" autocomplete="off">
+        <a-form-item label="目标用户">
+          <a-input :value="`${formState.username}（ID: ${formState.id}）`" readonly />
+        </a-form-item>
+        <a-form-item label="当前余额">
+          <a-input :value="formatBalance(formState.balance)" readonly prefix="¥" />
+        </a-form-item>
+        <a-form-item label="修改模式" required>
+          <a-select v-model:value="balanceForm.mode" :options="balanceModeOptions" :disabled="balanceSubmitting" />
+        </a-form-item>
+        <a-form-item :label="balanceForm.mode === 'override' ? '覆盖后的余额' : '调整金额'" required>
+          <a-input-number
+            v-model:value="balanceForm.amount"
+            :min="balanceForm.mode === 'override' ? undefined : 0"
+            :precision="6"
+            :step="1"
+            :disabled="balanceSubmitting"
+            style="width: 100%"
+            placeholder="请输入金额，最多 6 位小数"
+          />
+        </a-form-item>
+        <a-form-item>
+          <a-checkbox v-model:checked="balanceForm.showInStatement" :disabled="balanceSubmitting">同步到账单流水，向用户展示本次修改</a-checkbox>
+          <div class="form-hint">无论是否勾选，都会记录操作日志及管理员账单明细；可在账单明细中调整流水可见性。</div>
+        </a-form-item>
+      </a-form>
+    </a-modal>
+
+    <a-modal
       v-model:visible="resetPasswordVisible"
       title="重置用户密码"
       @ok="submitResetPassword"
@@ -266,6 +303,7 @@ import {
   delUser,
   addUser,
   updateUser,
+  adjustUserBalance,
   resetUserPassword,
   createWechatLoginQRCode,
   resolveAdminWechatIDByScan,
@@ -274,7 +312,7 @@ import {
   getPhoneLocations,
   getIpLocations,
 } from '@/api/TikuComponentApi';
-import { buildAdminCreateUserPayload, buildRegisterSourceLabel, buildResetPasswordPayload, buildUserBalanceUpdatePayload, limitUsernameInput } from '@/utils/userPortalHelpers.mjs';
+import { buildAdminCreateUserPayload, buildRegisterSourceLabel, buildResetPasswordPayload, buildUserProfileUpdatePayload, buildUserBalanceAdjustmentPayload, limitUsernameInput } from '@/utils/userPortalHelpers.mjs';
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs';
 import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@/utils/listSearchHelpers.mjs';
 import {
@@ -345,6 +383,9 @@ const pagination = reactive({
 })
 const visible = ref(false)
 const submitLoading = ref(false)
+const balanceVisible = ref(false)
+const balanceSubmitting = ref(false)
+const balanceForm = reactive({ mode: 'increase', amount: null, showInStatement: true })
 const isEditing = ref(false)
 const resetPasswordVisible = ref(false)
 const resetPasswordLoading = ref(false)
@@ -367,7 +408,6 @@ const formState = ref({
   role: 'user',
   status: 'enabled',
   balance: '',
-  balanceMode: 'override',
   registerSource: 'admin',
   phone: '',
   phoneBoundAt: '',
@@ -461,6 +501,9 @@ export default defineComponent({
       keywordInput,
       activeFilterCount: computed(() => countActiveFilters({ keyword: filters.keyword, role: filters.role, status: filters.status })),
       submitLoading,
+      balanceVisible,
+      balanceSubmitting,
+      balanceForm,
       resetPasswordLoading,
       wechatScanVisible,
       wechatScanLoading,
@@ -483,9 +526,9 @@ export default defineComponent({
         { label: '禁用', value: 'disabled' },
       ],
       balanceModeOptions: [
-        { label: '覆盖', value: 'override' },
-        { label: '增加', value: 'increase' },
+        { label: '添加', value: 'increase' },
         { label: '减少', value: 'decrease' },
+        { label: '覆盖', value: 'override' },
       ],
       columns: [
         {
@@ -786,7 +829,6 @@ export default defineComponent({
         role: record.role || 'user',
         status: record.status || 'enabled',
         balance: record.balance ?? '',
-        balanceMode: 'override',
         registerSource: record.registerSource || 'admin',
         phone: record.phone || '',
         phoneBoundAt: record.phoneBoundAt || '',
@@ -804,6 +846,35 @@ export default defineComponent({
         password: '',
       }
       resetPasswordVisible.value = true
+    },
+    openBalanceModal() {
+      balanceForm.mode = 'increase'
+      balanceForm.amount = null
+      balanceForm.showInStatement = true
+      balanceVisible.value = true
+    },
+    async submitBalanceAdjustment() {
+      if (balanceSubmitting.value) return
+      let payload
+      try {
+        payload = buildUserBalanceAdjustmentPayload({ id: formState.value.id, ...balanceForm })
+      } catch (error) {
+        message.warning(error?.message || '请检查余额调整参数')
+        return
+      }
+      balanceSubmitting.value = true
+      try {
+        const res = await adjustUserBalance(payload)
+        if (res?.status !== 200) throw new Error(res?.message || '修改余额失败')
+        formState.value.balance = res.data.balance
+        balanceVisible.value = false
+        message.success('余额修改成功，已记录日志与账单明细')
+        this.handleUserList()
+      } catch (error) {
+        message.error(error?.response?.data?.message || error?.message || '修改余额失败')
+      } finally {
+        balanceSubmitting.value = false
+      }
     },
     // 点「搜索」或回车时才把输入框内容变成生效的筛选条件。
     applyKeyword() {
@@ -880,9 +951,9 @@ export default defineComponent({
       let editPayload = null
       if (isEditing.value) {
         try {
-          editPayload = buildUserBalanceUpdatePayload(formState.value)
+          editPayload = buildUserProfileUpdatePayload(formState.value)
         } catch (error) {
-          message.warning(error?.message || '请输入有效的余额数值')
+          message.warning(error?.message || '请检查用户资料')
           return
         }
       }
@@ -944,7 +1015,6 @@ export default defineComponent({
         role: 'user',
         status: 'enabled',
         balance: '',
-        balanceMode: 'override',
         registerSource: 'admin',
         phone: '',
         phoneBoundAt: '',
@@ -977,6 +1047,10 @@ export default defineComponent({
 </script>
 
 <style scoped>
+.balance-adjust-button {
+  margin-top: 8px;
+}
+
 .user-page {
   display: flex;
   flex-direction: column;

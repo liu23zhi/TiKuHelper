@@ -159,6 +159,9 @@ export function buildBillingRecordTypeText(record) {
   if (type === 'recharge') {
     return '充值入账'
   }
+  if (type === 'balance_adjustment') {
+    return '管理员调整余额'
+  }
   return type || '题目消费'
 }
 
@@ -276,7 +279,7 @@ export function buildBillingRecordFeeDetailHtml(record) {
   return `
     <div class="billing-fee-detail">
       <section class="billing-fee-card billing-fee-card--question">
-        <div class="billing-fee-section-title">题目</div>
+        <div class="billing-fee-section-title">${record?.type === 'balance_adjustment' ? '余额调整' : '题目'}</div>
         <div class="billing-fee-question">${escapeHtmlText(subject)}</div>
       </section>
       <section class="billing-fee-card billing-fee-card--cost">
@@ -293,8 +296,8 @@ export function buildBillingRecordFeeDetailHtml(record) {
   `
 }
 
-export function buildUserBalanceUpdatePayload(formValue) {
-  const payload = {
+export function buildUserProfileUpdatePayload(formValue) {
+  return {
     id: formValue?.id,
     nickname: String(formValue?.nickname || '').trim(),
     role: String(formValue?.role || 'user').trim(),
@@ -304,6 +307,11 @@ export function buildUserBalanceUpdatePayload(formValue) {
     wechatId: String(formValue?.wechatId || '').trim(),
     forceReassignWechat: !!formValue?.forceReassignWechat,
   }
+}
+
+// Kept for legacy callers; current profile forms use the balance-free helper.
+export function buildUserBalanceUpdatePayload(formValue) {
+  const payload = buildUserProfileUpdatePayload(formValue)
 
   const rawBalance = String(formValue?.balance ?? '').trim()
   if (!rawBalance) {
@@ -318,6 +326,22 @@ export function buildUserBalanceUpdatePayload(formValue) {
   payload.balance = balance
   payload.balanceMode = String(formValue?.balanceMode || 'override').trim() || 'override'
   return payload
+}
+
+export function buildUserBalanceAdjustmentPayload(formValue) {
+  const mode = String(formValue?.mode || '').trim()
+  if (!['increase', 'decrease', 'override'].includes(mode)) {
+    throw new Error('请选择有效的余额修改模式')
+  }
+  const rawAmount = String(formValue?.amount ?? '').trim()
+  const amount = Number(rawAmount)
+  if (!/^[+-]?(?:\d+(?:\.\d{0,6})?|\.\d{1,6})$/.test(rawAmount) || !Number.isFinite(amount) || Math.abs(amount) >= 1e12) {
+    throw new Error('请输入最多 6 位小数的有效金额')
+  }
+  if (mode !== 'override' && amount < 0) {
+    throw new Error('添加或减少金额不能为负数')
+  }
+  return { id: formValue?.id, mode, amount, showInStatement: formValue?.showInStatement !== false }
 }
 
 function escapeHtmlText(value) {

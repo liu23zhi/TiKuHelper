@@ -252,6 +252,8 @@ export default defineComponent({
         { label: 'AI 兜底', value: 'ai_fallback' },
         { label: '系统', value: 'system' },
         { label: '验证码', value: 'captcha' },
+        { label: '用户管理', value: 'user' },
+        { label: '账单管理', value: 'billing' },
       ],
       actionOptions: [
         { label: '新增', value: 0 },

@@ -75,21 +75,6 @@ func normalizeUserStatus(status string) string {
 	return "enabled"
 }
 
-func applyUserBalanceUpdate(currentBalance float64, amount float64, mode string) (float64, error) {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "override":
-		return amount, nil
-	case "increase":
-		return currentBalance + amount, nil
-	case "decrease":
-		return currentBalance - amount, nil
-	case "":
-		return currentBalance, nil
-	default:
-		return 0, fmt.Errorf("不支持的余额调整模式")
-	}
-}
-
 func validatePasswordComplexity(password string) error {
 	trimmed := strings.TrimSpace(password)
 	if trimmed == "" {
@@ -990,6 +975,7 @@ func UpdateUser(c *gin.Context) {
 		Status              string   `json:"status"`
 		Balance             *float64 `json:"balance"`
 		BalanceMode         string   `json:"balanceMode"`
+		ShowInStatement     *bool    `json:"showInStatement"`
 		Phone               string   `json:"phone"`
 		ForceReassignPhone  bool     `json:"forceReassignPhone"`
 		WechatID            string   `json:"wechatId"`
@@ -1002,38 +988,40 @@ func UpdateUser(c *gin.Context) {
 		return
 	}
 
-	target.Nickname = strings.TrimSpace(payload.Nickname)
-	target.Role = normalizeUserRole(payload.Role)
-	target.Status = normalizeUserStatus(payload.Status)
-	if payload.Balance != nil {
-		updatedBalance, err := applyUserBalanceUpdate(target.Balance, *payload.Balance, payload.BalanceMode)
+	var balanceInput service.UserBalanceAdjustmentInput
+	// Legacy requests without a balance mode only update profile fields.
+	adjustBalance := payload.Balance != nil && strings.TrimSpace(payload.BalanceMode) != ""
+	if adjustBalance {
+		balanceInput, err = service.NormalizeUserBalanceAdjustment(service.UserBalanceAdjustmentInput{
+			Mode: payload.BalanceMode, Amount: *payload.Balance, ShowInStatement: payload.ShowInStatement, ClientIP: c.ClientIP(),
+		})
 		if err != nil {
-			c.JSON(400, gin.H{
-				"message": "余额调整模式错误",
-			})
+			c.JSON(400, gin.H{"message": err.Error()})
 			return
 		}
-		target.Balance = updatedBalance
 	}
-	if updatedUser, err := service.UpdateUserPhoneWithDB(dao.User.UnderlyingDB(), target.ID, payload.Phone, payload.ForceReassignPhone); err != nil {
+	err = dao.User.UnderlyingDB().Transaction(func(tx *gorm.DB) error {
+		if _, err := service.UpdateUserPhoneWithDB(tx, target.ID, payload.Phone, payload.ForceReassignPhone); err != nil {
+			return err
+		}
+		if _, err := service.UpdateUserWechatBindingWithDB(tx, target.ID, payload.WechatID, payload.ForceReassignWechat); err != nil {
+			return err
+		}
+		// Update only profile columns: an open edit dialog must not restore an old balance.
+		if err := tx.Model(&entity.User{}).Where("id = ?", target.ID).Updates(map[string]any{
+			"nickname": strings.TrimSpace(payload.Nickname), "role": normalizeUserRole(payload.Role), "status": normalizeUserStatus(payload.Status),
+		}).Error; err != nil {
+			return err
+		}
+		if adjustBalance {
+			if _, err := service.AdjustUserBalanceInTx(tx, *currentUser, target.ID, balanceInput); err != nil {
+				return err
+			}
+		}
+		return tx.First(target, target.ID).Error
+	})
+	if err != nil {
 		c.JSON(400, gin.H{"message": err.Error()})
-		return
-	} else {
-		target.Phone = updatedUser.Phone
-		target.PhoneBoundAt = updatedUser.PhoneBoundAt
-	}
-	if updatedUser, err := service.UpdateUserWechatBindingWithDB(dao.User.UnderlyingDB(), target.ID, payload.WechatID, payload.ForceReassignWechat); err != nil {
-		c.JSON(400, gin.H{"message": err.Error()})
-		return
-	} else {
-		target.WechatID = updatedUser.WechatID
-		target.WechatBoundAt = updatedUser.WechatBoundAt
-	}
-
-	if err := dao.User.Save(target); err != nil {
-		c.JSON(400, gin.H{
-			"message": "更新用户失败",
-		})
 		return
 	}
 	c.JSON(200, target)

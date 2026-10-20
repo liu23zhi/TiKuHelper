@@ -23,7 +23,12 @@ type BillingRecord struct {
 	Amount        float64 `gorm:"column:amount;type:decimal(18,8);not null;default:0" json:"amount"`
 	BalanceBefore float64 `gorm:"column:balance_before;type:decimal(18,6);not null;default:0" json:"balanceBefore"`
 	BalanceAfter  float64 `gorm:"column:balance_after;type:decimal(18,6);not null;default:0" json:"balanceAfter"`
-	RequestID     string  `gorm:"column:request_id;type:varchar(64);index" json:"requestId"`
+	// The default keeps historical records visible without a data backfill.
+	HiddenFromStatement bool   `gorm:"column:hidden_from_statement;not null;default:false" json:"-"`
+	OperatorID          int32  `gorm:"column:operator_id;type:int(11);not null;default:0" json:"operatorId"`
+	OperatorUsername    string `gorm:"column:operator_username;type:varchar(255)" json:"operatorUsername"`
+	AdjustmentMode      string `gorm:"column:adjustment_mode;type:varchar(16)" json:"adjustmentMode"`
+	RequestID           string `gorm:"column:request_id;type:varchar(64);index" json:"requestId"`
 	// SearchMode 记录这笔消费对应的搜索模式：deep=深度思考，normal=普通搜索。
 	// 只有搜题类账单会写；充值/赠送以及加列之前的历史行为空（界面降级为「-」）。
 	SearchMode string `gorm:"column:search_mode;type:varchar(16)" json:"searchMode"`
