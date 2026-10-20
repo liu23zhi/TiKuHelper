@@ -17,7 +17,7 @@
 </template>
 
 <script>
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import Header from '../components/PageHeader'
 import SiderMenu from '../components/SiderMenu'
 import { useRouter } from 'vue-router';
@@ -27,11 +27,25 @@ export default {
   name: 'AdapterLayout',
   setup() {
     const router = useRouter()
-    const siderCollapsed = ref(false)
+    const compactViewport = typeof window !== 'undefined'
+      ? window.matchMedia('(max-width: 960px)')
+      : null
+    const siderCollapsed = ref(Boolean(compactViewport?.matches))
     const currentUser = computed(() => getStoredCurrentUser())
     const toggleSider = () => {
       siderCollapsed.value = !siderCollapsed.value
     }
+    const syncSiderToViewport = (event) => {
+      siderCollapsed.value = event.matches
+    }
+    onMounted(() => {
+      compactViewport?.addEventListener?.('change', syncSiderToViewport)
+      compactViewport?.addListener?.(syncSiderToViewport)
+    })
+    onBeforeUnmount(() => {
+      compactViewport?.removeEventListener?.('change', syncSiderToViewport)
+      compactViewport?.removeListener?.(syncSiderToViewport)
+    })
     if (!currentUser.value) {
       router.push('/login')
       return {

@@ -35,8 +35,9 @@ test('sidebar collapse toggle shows an icon like the menu items do', async () =>
   assert.match(menu, /:is="collapsed \? MenuUnfoldOutlined : MenuFoldOutlined"/);
   assert.match(menu, /class="collapse-button-icon"/);
 
-  // 折叠后按钮很窄，文字标签要隐藏（靠 aria-label 保持可访问性），避免文字挤压换行。
-  assert.match(menu, /v-if="!collapsed" class="collapse-button-label"/);
+  // Mobile navigation remains readable while collapsed; desktop keeps the compact icon-only state.
+  assert.match(menu, /class="collapse-button-label">\{\{ collapsed \? '展开侧边栏' : '折叠侧边栏' \}\}<\/span>/);
+  assert.match(menu, /@media \(max-width: 960px\)[\s\S]*\.sider-menu-wrap\s*\{[^}]*min-height:\s*auto/);
   assert.match(menu, /:title="collapsed \? '展开侧边栏' : '折叠侧边栏'"/);
 
   // setup() 必须把图标暴露给模板，否则 _ctx 解析不到。

@@ -56,6 +56,7 @@
 
     <section class="console-panel table-card">
       <a-table
+        class="desktop-log-table"
         bordered
         :data-source="dataSource"
         :columns="columns"
@@ -160,6 +161,25 @@
           {{ formatDate(text || record.createTime) }}
         </template>
       </a-table>
+      <div class="mobile-log-list">
+        <article v-for="record in dataSource" :key="record.id" class="mobile-log-card">
+          <header class="mobile-log-card__header">
+            <a-tag color="blue">{{ buildModuleLabel(record.module) }}</a-tag>
+            <a-tag :color="buildStatusColor(record)">{{ buildStatusLabel(record) }}</a-tag>
+          </header>
+          <strong>{{ buildStructuredFields(record).summary }}</strong>
+          <dl>
+            <div><dt>操作人</dt><dd>{{ record.username || `用户 #${record.userId || '-'}` }}</dd></div>
+            <div><dt>时间</dt><dd>{{ formatDate(record.createTime) }}</dd></div>
+            <div><dt>IP</dt><dd>{{ record.clientIp || '-' }}</dd></div>
+          </dl>
+          <p>{{ buildRowDetail(record) }}</p>
+        </article>
+        <a-empty v-if="!dataSource.length" description="当前还没有日志记录" />
+      </div>
+      <div class="mobile-log-pagination">
+        <a-pagination :current="pagination.current" :page-size="pagination.pageSize" :total="pagination.total" size="small" show-less-items @change="handleMobilePageChange" />
+      </div>
     </section>
   </div>
 </template>
@@ -498,6 +518,11 @@ export default defineComponent({
       pagination.pageSize = paginationData.pageSize
       this.handleLogList()
     },
+    handleMobilePageChange(current, pageSize) {
+      pagination.current = current
+      pagination.pageSize = pageSize
+      this.handleLogList()
+    },
     formatDate(dateString) {
       if (!dateString) return '-'
       const date = new Date(dateString)
@@ -588,6 +613,11 @@ export default defineComponent({
   font-size: 13px;
 }
 
+.mobile-log-list,
+.mobile-log-pagination {
+  display: none;
+}
+
 @media (max-width: 640px) {
   .console-panel {
     padding: 12px;
@@ -596,6 +626,69 @@ export default defineComponent({
   .filter-form,
   .filter-form :deep(.ant-form-item) {
     width: 100%;
+  }
+
+  .desktop-log-table {
+    display: none;
+  }
+
+  .mobile-log-list {
+    display: grid;
+    gap: 10px;
+  }
+
+  .mobile-log-card {
+    display: grid;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid var(--console-border, #e5e7eb);
+    border-radius: 8px;
+    background: var(--console-surface, #fff);
+  }
+
+  .mobile-log-card__header {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .mobile-log-card strong,
+  .mobile-log-card p,
+  .mobile-log-card dd {
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-log-card dl {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin: 0;
+    padding: 8px 0;
+    border-top: 1px solid var(--console-border, #e5e7eb);
+    border-bottom: 1px solid var(--console-border, #e5e7eb);
+  }
+
+  .mobile-log-card dt {
+    color: var(--console-muted, #64748b);
+    font-size: 11px;
+  }
+
+  .mobile-log-card dd {
+    margin: 2px 0 0;
+    font-size: 12px;
+  }
+
+  .mobile-log-card p {
+    margin: 0;
+    color: var(--console-muted, #64748b);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
+  .mobile-log-pagination {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 12px;
   }
 }
 

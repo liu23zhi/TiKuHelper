@@ -33,7 +33,7 @@
       @click="$emit('toggle')"
     >
       <component :is="collapsed ? MenuUnfoldOutlined : MenuFoldOutlined" class="collapse-button-icon" />
-      <span v-if="!collapsed" class="collapse-button-label">折叠侧边栏</span>
+      <span class="collapse-button-label">{{ collapsed ? '展开侧边栏' : '折叠侧边栏' }}</span>
     </a-button>
   </div>
 </template>
@@ -197,6 +197,10 @@ export default defineComponent({
   min-width: 0;
 }
 
+.collapse-button.is-collapsed .collapse-button-label {
+  display: none;
+}
+
 .collapse-button:hover,
 .collapse-button:focus {
   color: #195ca3;
@@ -214,6 +218,24 @@ export default defineComponent({
 }
 
 @media (max-width: 960px) {
+  .sider-menu-wrap {
+    min-height: auto;
+    max-height: calc(100vh - 64px);
+    overflow-y: auto;
+    padding: 8px 12px;
+  }
+
+  .sider-menu-wrap.is-collapsed .collapse-button {
+    width: auto;
+    align-self: flex-end;
+    margin-top: 0;
+    padding: 8px 10px;
+  }
+
+  .sider-menu-wrap.is-collapsed .collapse-button-label {
+    display: inline;
+  }
+
   .sider-menu-wrap.is-collapsed .menu {
     display: none;
   }

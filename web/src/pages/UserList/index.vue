@@ -11,22 +11,22 @@
       </a-space>
     </header>
     <a-row :gutter="16" class="summary-row">
-      <a-col :xs="24" :sm="12" :lg="6">
+      <a-col :xs="12" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
           <a-statistic title="用户总数（筛选结果）" :value="summary.total" />
         </a-card>
       </a-col>
-      <a-col :xs="24" :sm="12" :lg="6">
+      <a-col :xs="12" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
           <a-statistic title="当前页管理员" :value="summary.adminCount" />
         </a-card>
       </a-col>
-      <a-col :xs="24" :sm="12" :lg="6">
+      <a-col :xs="12" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
           <a-statistic title="当前页启用账号" :value="summary.enabledCount" />
         </a-card>
       </a-col>
-      <a-col :xs="24" :sm="12" :lg="6">
+      <a-col :xs="12" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
           <a-statistic title="当前页余额合计" prefix="¥" :value="summary.totalBalance" :precision="6" />
         </a-card>
@@ -81,6 +81,7 @@
       </a-form>
 
       <a-table
+        class="desktop-user-table"
         bordered
         :data-source="dataSource"
         :columns="columns"
@@ -150,6 +151,42 @@
           <a-empty description="当前还没有用户记录，点击右上角新增用户即可开始。" />
         </template>
       </a-table>
+
+      <div class="mobile-user-list">
+        <article v-for="record in dataSource" :key="record.id" class="mobile-user-card">
+          <header class="mobile-user-card__header">
+            <div class="mobile-user-card__identity">
+              <strong>{{ record.nickname || record.username || `用户 #${record.id}` }}</strong>
+              <span>{{ record.username || `ID ${record.id}` }}</span>
+            </div>
+            <a-space size="small" class="mobile-user-card__actions">
+              <a-button type="link" @click="openEditModal(record)">编辑</a-button>
+              <a-popconfirm title="确定删除该用户吗？" ok-text="确定" cancel-text="取消" @confirm="onDelete(record.id)">
+                <a-button type="link" danger>删除</a-button>
+              </a-popconfirm>
+            </a-space>
+          </header>
+          <dl class="mobile-user-card__meta">
+            <div><dt>余额</dt><dd>¥ {{ formatBalance(record.balance) }}</dd></div>
+            <div><dt>角色</dt><dd>{{ roleText(record.role) }}</dd></div>
+            <div><dt>状态</dt><dd>{{ statusText(record.status) }}</dd></div>
+            <div><dt>手机号</dt><dd>{{ record.phone || '-' }}</dd></div>
+            <div><dt>微信</dt><dd>{{ record.wechatId ? '已绑定' : '未绑定' }}</dd></div>
+          </dl>
+          <a-button block size="small" @click="openResetPasswordModal(record)">重置密码</a-button>
+        </article>
+        <a-empty v-if="!dataSource.length" description="当前还没有用户记录" />
+      </div>
+      <div class="mobile-user-pagination">
+        <a-pagination
+          :current="pagination.current"
+          :page-size="pagination.pageSize"
+          :total="pagination.total"
+          size="small"
+          show-less-items
+          @change="handleMobilePageChange"
+        />
+      </div>
     </a-card>
 
     <a-modal
@@ -900,6 +937,11 @@ export default defineComponent({
       pagination.pageSize = paginationData.pageSize
       this.handleUserList()
     },
+    handleMobilePageChange(current, pageSize) {
+      pagination.current = current
+      pagination.pageSize = pageSize
+      this.handleUserList()
+    },
     handleUserList() {
       tabLoading.value = true
       getUserList(buildSearchParams({
@@ -1131,6 +1173,11 @@ export default defineComponent({
   font-size: 13px;
 }
 
+.mobile-user-list,
+.mobile-user-pagination {
+  display: none;
+}
+
 .location-value {
   display: inline-block;
   white-space: pre-line;
@@ -1166,6 +1213,90 @@ export default defineComponent({
 }
 
 @media (max-width: 640px) {
+  .user-page :deep(.ant-card-body),
+  .user-page .page-card :deep(.ant-card-body) {
+    padding: 12px;
+  }
+
+  .desktop-user-table {
+    display: none;
+  }
+
+  .mobile-user-list {
+    display: grid;
+    gap: 10px;
+  }
+
+  .mobile-user-card {
+    padding: 12px;
+    border: 1px solid var(--console-border, #e5e7eb);
+    border-radius: 8px;
+    background: var(--console-surface, #fff);
+  }
+
+  .mobile-user-card__header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .mobile-user-card__identity {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .mobile-user-card__identity strong,
+  .mobile-user-card__identity span {
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-user-card__identity span {
+    color: var(--console-muted, #64748b);
+    font-size: 12px;
+  }
+
+  .mobile-user-card__actions {
+    flex-shrink: 0;
+  }
+
+  .mobile-user-card__actions :deep(.ant-btn) {
+    padding-inline: 4px;
+  }
+
+  .mobile-user-card__meta {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin: 12px 0;
+    padding: 10px 0;
+    border-top: 1px solid var(--console-border, #e5e7eb);
+    border-bottom: 1px solid var(--console-border, #e5e7eb);
+  }
+
+  .mobile-user-card__meta div {
+    min-width: 0;
+  }
+
+  .mobile-user-card__meta dt {
+    color: var(--console-muted, #64748b);
+    font-size: 11px;
+  }
+
+  .mobile-user-card__meta dd {
+    margin: 2px 0 0;
+    overflow-wrap: anywhere;
+    color: var(--console-text, #1f2937);
+    font-size: 13px;
+  }
+
+  .mobile-user-pagination {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 12px;
+  }
+
   .filter-form,
   .filter-form :deep(.ant-form-item),
   .filter-form :deep(.ant-input-search),

@@ -8,17 +8,17 @@
       <a-button @click="handleLoad" :loading="tableLoading">刷新</a-button>
     </header>
     <a-row :gutter="16" class="summary-row">
-      <a-col :xs="24" :sm="12" :lg="6">
+      <a-col :xs="12" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
           <a-statistic title="账单总数（筛选结果）" :value="summary.total" />
         </a-card>
       </a-col>
-      <a-col :xs="24" :sm="12" :lg="6">
+      <a-col :xs="12" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
           <a-statistic title="当前页条数" :value="summary.currentPageCount" />
         </a-card>
       </a-col>
-      <a-col :xs="24" :sm="12" :lg="6">
+      <a-col :xs="12" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
           <a-statistic
             :title="hasActiveFilters ? '累计消费金额（当前筛选，全部页）' : '累计消费金额（全部页）'"
@@ -29,7 +29,7 @@
           <div class="summary-hint">不包含充值、赠送及管理员余额调整</div>
         </a-card>
       </a-col>
-      <a-col :xs="24" :sm="12" :lg="6">
+      <a-col :xs="12" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
           <a-statistic
             title="当前页累计消费金额"
@@ -80,6 +80,7 @@
       </a-form>
 
       <a-table
+        class="desktop-billing-table"
         bordered
         :data-source="dataSource"
         :columns="columns"
@@ -139,6 +140,40 @@
           <a-empty description="当前还没有账单记录。" />
         </template>
       </a-table>
+      <div class="mobile-billing-list">
+        <article v-for="record in dataSource" :key="record.id" class="mobile-billing-card">
+          <header class="mobile-billing-card__header">
+            <a-tag :color="record.direction === 'income' ? 'green' : 'blue'">{{ buildBillingRecordTypeText(record) }}</a-tag>
+            <strong :class="record.direction === 'income' ? 'amount-income' : 'amount-expense'">{{ buildBillingRecordAmountText(record) }}</strong>
+          </header>
+          <div class="mobile-billing-card__subject">{{ buildBillingRecordSubjectText(record) }}</div>
+          <dl class="mobile-billing-card__meta">
+            <div v-if="isAdmin"><dt>用户</dt><dd>{{ record.username || '-' }}</dd></div>
+            <div><dt>来源</dt><dd>{{ buildBillingRecordSourceText(record) }}</dd></div>
+            <div><dt>时间</dt><dd>{{ formatDateTime(record.createdAt) }}</dd></div>
+            <div><dt>编号</dt><dd>{{ buildBillingRecordReferenceText(record) }}</dd></div>
+          </dl>
+          <div v-if="record.type === 'balance_adjustment'" class="mobile-billing-card__adjustment">
+            <span>余额变化</span>
+            <strong>¥ {{ formatAmount(record.balanceBefore) }} → ¥ {{ formatAmount(record.balanceAfter) }}</strong>
+          </div>
+          <div v-if="isAdmin" class="mobile-billing-visibility">
+            <span>用户流水展示</span>
+            <a-switch
+              :checked="record.showInStatement !== false"
+              :loading="visibilitySaving[record.id]"
+              checked-children="显示"
+              un-checked-children="隐藏"
+              @change="checked => handleStatementVisibilityChange(record, checked)"
+            />
+          </div>
+          <a-button block size="small" @click="handleShowFeeDetail(record)">显示详情</a-button>
+        </article>
+        <a-empty v-if="!dataSource.length" description="当前还没有账单记录" />
+      </div>
+      <div class="mobile-billing-pagination">
+        <a-pagination :current="pagination.current" :page-size="pagination.pageSize" :total="pagination.total" size="small" show-less-items @change="handleMobilePageChange" />
+      </div>
     </a-card>
   </div>
 </template>
@@ -416,6 +451,7 @@ export default defineComponent({
       formatValueWithLocation,
       tableLoading,
       visibilitySaving,
+      isAdmin,
       pagination,
       summary,
       filters,
@@ -507,6 +543,11 @@ export default defineComponent({
       pagination.pageSize = paginationData.pageSize
       this.handleLoad()
     },
+    handleMobilePageChange(current, pageSize) {
+      pagination.current = current
+      pagination.pageSize = pageSize
+      this.handleLoad()
+    },
     handleShowFeeDetail(record) {
       Swal.fire({
         title: '账单详情',
@@ -596,6 +637,11 @@ export default defineComponent({
   margin-bottom: 16px;
 }
 
+.mobile-billing-list,
+.mobile-billing-pagination {
+  display: none;
+}
+
 .filter-form {
   padding: 16px;
   border: 1px solid var(--console-border, #e5e7eb);
@@ -604,6 +650,89 @@ export default defineComponent({
 }
 
 @media (max-width: 640px) {
+  .billing-page .page-card :deep(.ant-card-body) {
+    padding: 12px;
+  }
+
+  .desktop-billing-table {
+    display: none;
+  }
+
+  .mobile-billing-list {
+    display: grid;
+    gap: 10px;
+  }
+
+  .mobile-billing-card {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid var(--console-border, #e5e7eb);
+    border-radius: 8px;
+    background: var(--console-surface, #fff);
+  }
+
+  .mobile-billing-card__header,
+  .mobile-billing-visibility,
+  .mobile-billing-card__adjustment {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .mobile-billing-card__subject,
+  .mobile-billing-card__meta dd,
+  .mobile-billing-card__adjustment strong {
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-billing-card__subject {
+    color: var(--console-text, #1f2937);
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.6;
+  }
+
+  .mobile-billing-card__meta {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin: 0;
+    padding: 10px 0;
+    border-top: 1px solid var(--console-border, #e5e7eb);
+    border-bottom: 1px solid var(--console-border, #e5e7eb);
+  }
+
+  .mobile-billing-card__meta div {
+    min-width: 0;
+  }
+
+  .mobile-billing-card__meta dt,
+  .mobile-billing-visibility span,
+  .mobile-billing-card__adjustment span {
+    color: var(--console-muted, #64748b);
+    font-size: 11px;
+  }
+
+  .mobile-billing-card__meta dd {
+    margin: 2px 0 0;
+    color: var(--console-text, #1f2937);
+    font-size: 12px;
+  }
+
+  .mobile-billing-card__adjustment {
+    padding: 8px;
+    border-radius: 6px;
+    background: #f8fafc;
+  }
+
+  .mobile-billing-pagination {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 12px;
+  }
+
   .filter-form,
   .filter-form :deep(.ant-form-item) {
     width: 100%;
