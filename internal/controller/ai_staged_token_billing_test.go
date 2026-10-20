@@ -2,6 +2,7 @@ package controller
 
 import (
 	"encoding/json"
+	"math"
 	"testing"
 
 	searchpkg "github.com/itihey/tikuAdapter/internal/search"
@@ -83,6 +84,34 @@ func TestCalculateAIStagedTokenMultiplierUsesCustomPoints(t *testing.T) {
 	}
 	if got := calculateAIStagedTokenMultiplierWithPoints(52500, true, points); got != 1.15 {
 		t.Fatalf("expected smooth custom multiplier 1.15, got %v", got)
+	}
+}
+
+func TestCalculateAIStagedTokenMultiplierDoesNotClampCustomValues(t *testing.T) {
+	points := []service.AIStagedTokenMultiplierPoint{
+		{Tokens: 0, Multiplier: 12.5},
+		{Tokens: 2_000_000_000, Multiplier: 12.5},
+		{Tokens: 9_000_000_000, Multiplier: -3.25},
+	}
+	if got := calculateAIStagedTokenMultiplierWithPoints(5_500_000_000, false, points); got != 12.5 {
+		t.Fatalf("expected fixed mode to preserve custom multiplier above 4x, got %v", got)
+	}
+	if got := calculateAIStagedTokenMultiplierWithPoints(5_500_000_000, true, points); got != 4.625 {
+		t.Fatalf("expected smooth mode to interpolate custom multiplier range without clamping, got %v", got)
+	}
+	if got := calculateAIStagedTokenMultiplierWithPoints(9_000_000_000, true, points); got != -3.25 {
+		t.Fatalf("expected smooth tail to preserve custom negative multiplier, got %v", got)
+	}
+}
+
+func TestCalculateAIStagedTokenMultiplierInterpolatesFiniteExtremesWithoutOverflow(t *testing.T) {
+	points := []service.AIStagedTokenMultiplierPoint{
+		{Tokens: 0, Multiplier: math.MaxFloat64},
+		{Tokens: 1, Multiplier: math.MaxFloat64},
+		{Tokens: 3, Multiplier: -math.MaxFloat64},
+	}
+	if got := calculateAIStagedTokenMultiplierWithPoints(2, true, points); got != 0 {
+		t.Fatalf("expected midpoint interpolation between finite extremes to be zero, got %v", got)
 	}
 }
 

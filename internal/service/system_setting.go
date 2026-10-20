@@ -606,13 +606,6 @@ type AIStagedTokenMultiplierPoint struct {
 	Multiplier float64 `json:"multiplier"`
 }
 
-const (
-	MinAIStagedTokenMultiplier        = 0.3
-	MaxAIStagedTokenMultiplier        = 4.0
-	MaxAIStagedMultiplierPoints       = 20
-	MaxAIStagedPointTokens      int64 = 1_000_000_000
-)
-
 func DefaultAIStagedTokenMultiplierPoints() []AIStagedTokenMultiplierPoint {
 	return []AIStagedTokenMultiplierPoint{
 		{Tokens: 0, Multiplier: 4},
@@ -624,20 +617,19 @@ func DefaultAIStagedTokenMultiplierPoints() []AIStagedTokenMultiplierPoint {
 }
 
 func NormalizeAIStagedTokenMultiplierPoints(points []AIStagedTokenMultiplierPoint) ([]AIStagedTokenMultiplierPoint, error) {
-	if len(points) < 2 || len(points) > MaxAIStagedMultiplierPoints {
-		return nil, errors.New("阶段倍率价格表至少需要 2 个节点，且不能超过 20 个节点")
+	if len(points) < 1 {
+		return nil, errors.New("阶段倍率价格表至少需要保留首个 0 token 节点")
 	}
 	normalized := make([]AIStagedTokenMultiplierPoint, len(points))
 	copy(normalized, points)
 	for index := range normalized {
 		point := &normalized[index]
-		if point.Tokens < 0 || point.Tokens > MaxAIStagedPointTokens {
-			return nil, errors.New("阶段倍率 token 阈值必须在 0～1000000000 之间")
+		if point.Tokens < 0 {
+			return nil, errors.New("阶段倍率 token 阈值不能小于 0")
 		}
-		if math.IsNaN(point.Multiplier) || math.IsInf(point.Multiplier, 0) || point.Multiplier < MinAIStagedTokenMultiplier || point.Multiplier > MaxAIStagedTokenMultiplier {
-			return nil, errors.New("阶段倍率必须在 0.3～4 之间")
+		if math.IsNaN(point.Multiplier) || math.IsInf(point.Multiplier, 0) {
+			return nil, errors.New("阶段倍率必须是有限数值")
 		}
-		point.Multiplier = math.Round(point.Multiplier*1_000_000) / 1_000_000
 		if index > 0 {
 			previous := normalized[index-1]
 			if point.Tokens <= previous.Tokens {
@@ -648,8 +640,8 @@ func NormalizeAIStagedTokenMultiplierPoints(points []AIStagedTokenMultiplierPoin
 			}
 		}
 	}
-	if normalized[0].Tokens != 0 || normalized[0].Multiplier != MaxAIStagedTokenMultiplier {
-		return nil, errors.New("阶段倍率价格表必须从 0 token 的 4x 节点开始")
+	if normalized[0].Tokens != 0 {
+		return nil, errors.New("阶段倍率价格表首个节点的 token 阈值必须为 0")
 	}
 	return normalized, nil
 }

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
@@ -18,25 +19,53 @@ test('stage validation accepts small second thresholds and configurable tails', 
   }
 });
 
+test('stage validation removes fixed first multiplier and business value bounds', () => {
+  const points = [
+    { tokens: 0, multiplier: 12.5 },
+    { tokens: 2000000000, multiplier: 12.5 },
+    { tokens: Number.MAX_SAFE_INTEGER, multiplier: -3.25 },
+  ];
+  assert.equal(getStagedMultiplierPointsError(points), '');
+});
+
+test('stage validation accepts more than twenty nodes', () => {
+  const points = Array.from({ length: 25 }, (_, index) => ({ tokens: index, multiplier: 25 - index }));
+  assert.equal(getStagedMultiplierPointsError(points), '');
+  const inserted = insertStagedMultiplierPoint(points);
+  assert.equal(inserted.length, 26);
+});
+
+test('stage validation accepts a single zero-token node as a flat multiplier', () => {
+  assert.equal(getStagedMultiplierPointsError([{ tokens: 0, multiplier: 2.75 }]), '');
+  assert.equal(getStagedMultiplierPointsError([]), '阶段倍率价格表至少需要保留首个 0 token 节点');
+});
+
 test('stage validation rejects invalid counts, thresholds, ordering and multipliers', () => {
   const invalid = [
-    null, [], [start()], Array.from({ length: 21 }, (_, tokens) => ({ tokens, multiplier: 4 })),
+    null, [],
     [{ tokens: 1, multiplier: 4 }, { tokens: 2, multiplier: 3 }],
-    [{ tokens: 0, multiplier: 3 }, { tokens: 2, multiplier: 3 }],
     [start(), { tokens: 0, multiplier: 3 }],
     [start(), { tokens: -1, multiplier: 3 }],
     [start(), { tokens: 1.5, multiplier: 3 }],
-    [start(), { tokens: 1000000001, multiplier: 3 }],
     [start(), { tokens: NaN, multiplier: 3 }],
+    [start(), { tokens: Number.MAX_SAFE_INTEGER + 1, multiplier: 3 }],
     [start(), { tokens: null, multiplier: 3 }],
     [start(), { tokens: '', multiplier: 3 }],
     [start(), { tokens: 2, multiplier: 3 }, { tokens: 1, multiplier: 2 }],
     [start(), { tokens: 1, multiplier: 2 }, { tokens: 2, multiplier: 3 }],
-    ...[0.29, 4.01, Infinity, NaN, null, ''].map(multiplier => [start(), { tokens: 1, multiplier }]),
+    ...[Infinity, NaN, null, ''].map(multiplier => [start(), { tokens: 1, multiplier }]),
   ];
   for (const points of invalid) {
     assert.ok(getStagedMultiplierPointsError(points), `must reject ${JSON.stringify(points)}`);
   }
+});
+
+test('save payload preserves zero and high-precision staged multipliers', () => {
+  const points = [
+    { tokens: 0, multiplier: 0 },
+    { tokens: 2000000000, multiplier: 12.3456789 },
+  ];
+  assert.deepEqual(buildAISearchConfigSavePayload({ stagedTokenMultiplierPoints: points }, '').stagedTokenMultiplierPoints, points);
 });
 
 test('inserting a node uses a valid integer gap without changing existing objects', () => {
@@ -63,9 +92,8 @@ test('consecutive integer thresholds append a valid tail instead of duplicating 
   assert.equal(getStagedMultiplierPointsError(inserted), '');
 });
 
-test('insertion refuses invalid drafts and the backend node limit', () => {
+test('insertion refuses invalid drafts', () => {
   assert.throws(() => insertStagedMultiplierPoint([start(), { tokens: 0, multiplier: 3 }]));
-  assert.throws(() => insertStagedMultiplierPoint(Array.from({ length: 20 }, (_, tokens) => ({ tokens, multiplier: 4 }))));
 });
 
 test('row keys survive editable threshold changes and never collide after deletion', () => {
@@ -88,4 +116,25 @@ test('AI search config delegates staged editing to the shared helpers', () => {
   assert.match(source, /insertStagedMultiplierPoint/);
   assert.match(source, /createStagedPointRowKey/);
   assert.match(source, /:row-key="stagedPointRowKey"/);
+  assert.match(source, /index === 0 \|\| formState\.stagedTokenMultiplierPoints\.length <= 1/);
+});
+
+test('AI search capability modal includes the requested search-engine API documentation', async () => {
+  const source = await readFile(new URL('../pages/AISearchConfig/index.vue', import.meta.url), 'utf8');
+  for (const expected of [
+    '获取搜索功能的详细信息，包括支持的能力、参数限制和使用说明。',
+    'https://uapis.cn/api/v1/search/engines',
+    'https://uapis.cn/docs/api-reference/get-search-engines',
+    'supported_parameters',
+    '获取参数的默认值和限制范围',
+    'UAPI Pro 智能搜索引擎',
+  ]) {
+    assert.ok(source.includes(expected), 'missing capability documentation: ' + expected);
+  }
+});
+
+test('AI pricing card header wraps long copy and actions instead of overlapping', async () => {
+  const source = await readFile(new URL('../pages/AISearchConfig/index.vue', import.meta.url), 'utf8');
+  assert.match(source, /\.sub-card-subtitle\s*\{[^}]*overflow-wrap:\s*anywhere/s);
+  assert.match(source, /\.sub-card\s*:deep\(\.ant-card-head-wrapper\)\s*\{[^}]*flex-wrap:\s*wrap/s);
 });

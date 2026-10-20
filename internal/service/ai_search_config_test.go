@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -114,6 +115,49 @@ func TestAISearchConfigStagedBillingPointsCanBeEditedAndPersisted(t *testing.T) 
 	}
 }
 
+func TestAISearchConfigStagedPointsHaveNoBusinessValueBounds(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	points := []AIStagedTokenMultiplierPoint{
+		{Tokens: 0, Multiplier: 12.3456789},
+		{Tokens: 2_000_000_000, Multiplier: 12.3456789},
+		{Tokens: 9_000_000_000, Multiplier: -3.25},
+	}
+	updated, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{StagedTokenMultiplierPoints: &points})
+	if err != nil {
+		t.Fatalf("finite monotonic multipliers and thresholds above the former limit should be accepted: %v", err)
+	}
+	if !reflect.DeepEqual(updated.StagedTokenMultiplierPoints, points) {
+		t.Fatalf("expected unbounded staged values to persist, got %+v", updated.StagedTokenMultiplierPoints)
+	}
+}
+
+func TestAISearchConfigStagedPointsAllowSingleZeroTokenNode(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	points := []AIStagedTokenMultiplierPoint{{Tokens: 0, Multiplier: 2.75}}
+	updated, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{StagedTokenMultiplierPoints: &points})
+	if err != nil {
+		t.Fatalf("expected a single zero-token point to represent a flat multiplier: %v", err)
+	}
+	if !reflect.DeepEqual(updated.StagedTokenMultiplierPoints, points) {
+		t.Fatalf("expected single staged point %+v, got %+v", points, updated.StagedTokenMultiplierPoints)
+	}
+}
+
+func TestAISearchConfigStagedPointsAllowMoreThanTwentyNodes(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	points := make([]AIStagedTokenMultiplierPoint, 25)
+	for index := range points {
+		points[index] = AIStagedTokenMultiplierPoint{Tokens: int64(index), Multiplier: float64(25 - index)}
+	}
+	updated, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{StagedTokenMultiplierPoints: &points})
+	if err != nil {
+		t.Fatalf("expected more than twenty valid staged points to be accepted: %v", err)
+	}
+	if len(updated.StagedTokenMultiplierPoints) != len(points) {
+		t.Fatalf("expected %d staged points, got %d", len(points), len(updated.StagedTokenMultiplierPoints))
+	}
+}
+
 func TestAISearchConfigAllowsFlexibleStageEndpoints(t *testing.T) {
 	db := newSearchAccountConfigTestDB(t)
 	for _, testCase := range []struct {
@@ -144,8 +188,10 @@ func TestAISearchConfigRejectsInvalidStagedBillingPoints(t *testing.T) {
 	db := newSearchAccountConfigTestDB(t)
 	invalid := [][]AIStagedTokenMultiplierPoint{
 		{{Tokens: 1, Multiplier: 4}, {Tokens: 100000, Multiplier: 0.3}},
-		{{Tokens: 0, Multiplier: 4}, {Tokens: 3000, Multiplier: 4.5}, {Tokens: 100000, Multiplier: 0.3}},
 		{{Tokens: 0, Multiplier: 4}, {Tokens: 3000, Multiplier: 2}, {Tokens: 2000, Multiplier: 1}, {Tokens: 100000, Multiplier: 0.3}},
+		{{Tokens: 0, Multiplier: 4}, {Tokens: 3000, Multiplier: 2}, {Tokens: 100000, Multiplier: 2.1}},
+		{{Tokens: 0, Multiplier: 4}, {Tokens: 3000, Multiplier: math.NaN()}},
+		{{Tokens: 0, Multiplier: 4}, {Tokens: 3000, Multiplier: math.Inf(1)}},
 	}
 	for index, points := range invalid {
 		if _, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{StagedTokenMultiplierPoints: &points}); err == nil {

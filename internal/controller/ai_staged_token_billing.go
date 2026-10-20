@@ -90,7 +90,7 @@ func calculateAIStagedTokenMultiplierWithPoints(totalTokens int64, smooth bool, 
 			return right.Multiplier
 		}
 		ratio := float64(totalTokens-left.Tokens) / float64(right.Tokens-left.Tokens)
-		return left.Multiplier + ratio*(right.Multiplier-left.Multiplier)
+		return (1-ratio)*left.Multiplier + ratio*right.Multiplier
 	}
 
 	return last.Multiplier

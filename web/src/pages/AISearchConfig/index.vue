@@ -254,6 +254,53 @@
           :message="capabilityError"
         />
 
+        <section class="capability-documentation">
+          <p>获取搜索功能的详细信息，包括支持的能力、参数限制和使用说明。</p>
+          <h3>功能概述</h3>
+          <p>此接口返回搜索功能的完整配置信息，你可以用它来：</p>
+          <ul>
+            <li>了解当前可用的搜索能力（如站内搜索、文件类型过滤等）</li>
+            <li>获取参数的默认值和限制范围</li>
+            <li>查看当前配置版本和可用状态</li>
+          </ul>
+          <p>适合在应用初始化时调用，或用于动态配置搜索界面。</p>
+          <h3>API 端点</h3>
+          <dl class="capability-endpoints">
+            <div><dt>方法</dt><dd>GET</dd></div>
+            <div><dt>路径</dt><dd>/search/engines</dd></div>
+            <div><dt>完整 API 地址</dt><dd>https://uapis.cn/api/v1/search/engines</dd></div>
+            <div><dt>文档页面</dt><dd><a href="https://uapis.cn/docs/api-reference/get-search-engines" target="_blank" rel="noopener noreferrer">https://uapis.cn/docs/api-reference/get-search-engines</a></dd></div>
+          </dl>
+          <h3>响应</h3>
+          <p>200 / 请求成功：返回搜索引擎的详细信息。</p>
+          <pre class="capability-response-example">{
+  // 搜索引擎的基本信息
+  "engine": {
+    // 引擎标识名称
+    "name": "uapi-search",
+    // 引擎显示名称
+    "display_name": "UAPI Pro Search",
+    // 引擎描述
+    "description": "UAPI Pro 智能搜索引擎，提供高质量的实时网页搜索和智能摘要",
+    // 引擎是否可用
+    "available": true,
+    // 配置版本标识
+    "version": "2.0",
+    // 支持的特性列表
+    "features": ["string"]
+  },
+  // 搜索结果数量限制
+  "limits": {
+    // 默认返回结果数
+    "default": 10,
+    // 最大返回结果数
+    "max": 100
+  },
+  // 支持的所有参数说明列表
+  "supported_parameters": ["string"]
+}</pre>
+        </section>
+
         <div v-if="usedCapabilityCards.length" class="capability-status-grid">
           <div v-for="card in usedCapabilityCards" :key="card.key" class="capability-status-card">
             <div class="capability-status-card__header">
@@ -309,7 +356,7 @@
               v-model:checked="formState.smoothAIStagedTokenMultiplier"
               :disabled="!formState.enableAIStagedTokenBilling"
             />
-            <div class="hint">开启后在固定阶段节点之间线性平滑变化，倍率始终限制在 0.3x～4x；阶段计费关闭时只保存此选项，不影响计费。</div>
+            <div class="hint">开启后在相邻阶段节点之间线性平滑变化；阶段计费关闭时只保存此选项，不影响计费。</div>
           </a-form-item>
         </a-form>
 
@@ -333,17 +380,17 @@
             :columns="stagedPointColumns"
           >
             <template #stageTokens="{ record }">
-              <a-input-number v-model:value="record.tokens" :min="0" :max="1000000000" :precision="0" :step="1000" style="width: 160px" />
+              <a-input-number v-model:value="record.tokens" :min="0" :precision="0" :step="1000" style="width: 160px" />
             </template>
             <template #stageMultiplier="{ record }">
-              <a-input-number v-model:value="record.multiplier" :min="0.3" :max="4" :precision="4" :step="0.1" style="width: 140px" />
+              <a-input-number v-model:value="record.multiplier" :step="0.1" style="width: 140px" />
             </template>
             <template #stageAction="{ index }">
-              <a-button type="link" danger :disabled="formState.stagedTokenMultiplierPoints.length <= 2" @click="removeStagedMultiplierPoint(index)">删除</a-button>
+              <a-button type="link" danger :disabled="index === 0 || formState.stagedTokenMultiplierPoints.length <= 1" @click="removeStagedMultiplierPoint(index)">删除</a-button>
             </template>
           </a-table>
           <div v-if="stagedPointError" class="hint hint-warning">{{ stagedPointError }}；修正后再保存。</div>
-          <div v-else class="hint">至少保留 2 个节点；首个节点必须为 0 token / 4x，token 阈值必须严格递增，倍率只能保持不变或递减。每个阈值支持 0～1000000000，每个倍率支持 0.3x～4x。</div>
+          <div v-else class="hint">至少保留首个 0 token 节点；后续阈值必须严格递增，倍率必须为有限数值且只能保持不变或递减。阈值不设业务上限，倍率推荐使用 0.3x～4x。</div>
         </div>
 
         <div class="price-table-wrap">
@@ -765,7 +812,7 @@ export default defineComponent({
           formState.enableAIStagedTokenBilling = !!data.enableAIStagedTokenBilling
           formState.smoothAIStagedTokenMultiplier = !!data.smoothAIStagedTokenMultiplier
           formState.stagedTokenMultiplierPoints = Array.isArray(data.stagedTokenMultiplierPoints) && data.stagedTokenMultiplierPoints.length
-            ? data.stagedTokenMultiplierPoints.map(point => ({ tokens: Number(point.tokens || 0), multiplier: Number(point.multiplier || 1) }))
+            ? data.stagedTokenMultiplierPoints.map(point => ({ tokens: Number(point.tokens ?? 0), multiplier: Number(point.multiplier ?? 1) }))
             : DEFAULT_AI_STAGED_TOKEN_MULTIPLIER_POINTS.map(point => ({ ...point }))
         } else {
           message.error(res?.message || '获取 AI 搜索配置失败')
@@ -1003,8 +1050,12 @@ export default defineComponent({
       }
     },
     removeStagedMultiplierPoint(index) {
-      if (this.formState.stagedTokenMultiplierPoints.length <= 2) {
-        message.warning('阶段表至少需要保留两个节点')
+      if (index === 0) {
+        message.warning('首个 0 token 节点不能删除')
+        return
+      }
+      if (this.formState.stagedTokenMultiplierPoints.length <= 1) {
+        message.warning('阶段表至少需要保留首个 0 token 节点')
         return
       }
       this.formState.stagedTokenMultiplierPoints.splice(index, 1)
@@ -1267,6 +1318,29 @@ export default defineComponent({
   min-width: 0;
 }
 
+.sub-card :deep(.ant-card-head-wrapper) {
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.sub-card :deep(.ant-card-head-title) {
+  flex: 1 1 320px;
+  min-width: 0;
+  white-space: normal;
+}
+
+.sub-card :deep(.ant-card-extra) {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-left: 0;
+}
+
+.sub-card :deep(.ant-card-extra .ant-space) {
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+
 .sub-card-title-wrap {
   display: flex;
   align-items: center;
@@ -1283,6 +1357,8 @@ export default defineComponent({
   margin-top: 6px;
   color: #6b7280;
   font-size: 13px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .price-table-wrap {
@@ -1342,6 +1418,42 @@ export default defineComponent({
 
 .capability-usage-table {
   margin-top: 16px;
+}
+
+.capability-documentation {
+  margin: 8px 0 20px;
+  line-height: 1.7;
+}
+
+.capability-documentation h3 {
+  margin: 16px 0 6px;
+  font-size: 15px;
+}
+
+.capability-endpoints div {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.capability-endpoints dt {
+  font-weight: 600;
+}
+
+.capability-endpoints dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.capability-response-example {
+  max-height: 360px;
+  overflow: auto;
+  padding: 14px;
+  border-radius: 8px;
+  background: #f6f8fa;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 768px) {
