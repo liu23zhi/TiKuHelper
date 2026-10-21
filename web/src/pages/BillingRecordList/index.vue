@@ -1070,11 +1070,17 @@ export default defineComponent({
   justify-content: flex-start;
   flex: 0 0 auto;
   width: 40px;
+  min-width: 40px;
+  max-width: 40px;
   height: 22px;
-  padding: 3px;
-  border: 1px solid rgb(148 163 184 / 45%);
+  min-height: 22px;
+  max-height: 22px;
+  overflow: hidden;
+  padding: 2px;
+  border: 0;
   border-radius: 999px;
   background: #94a3b8;
+  box-shadow: inset 0 0 0 1px rgb(148 163 184 / 45%);
   cursor: pointer;
   line-height: 0;
   vertical-align: middle;
@@ -1084,8 +1090,8 @@ export default defineComponent({
 
 :global(.billing-statement-switch[aria-checked="true"]) {
   justify-content: flex-end;
-  border-color: #2563eb;
   background: #2563eb;
+  box-shadow: inset 0 0 0 1px rgb(37 99 235 / 55%);
 }
 
 :global(.billing-statement-switch:disabled) {

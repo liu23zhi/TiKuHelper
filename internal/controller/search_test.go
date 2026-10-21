@@ -1207,6 +1207,31 @@ func TestResolveCompletedSearchBillingChargesAddsOneChargePerActualAISearch(t *t
 	}
 }
 
+func TestBuildAIBillingSequenceUsesTraceOrder(t *testing.T) {
+	usage := searchpkg.AISearchUsage{
+		Trace: []searchpkg.AISearchTrace{
+			{Stage: "模型响应", ModelCallIndex: 1},
+			{Stage: "搜索 API 请求开始", SearchCount: 1},
+			{Stage: "搜索 API 响应", SearchCount: 1},
+			{Stage: "模型响应", ModelCallIndex: 2},
+			{Stage: "网页读取 API 请求开始", Round: 2},
+			{Stage: "网页读取 API 响应", Round: 2},
+			{Stage: "模型响应", ModelCallIndex: 3},
+		},
+	}
+
+	sequence := buildAIBillingSequence(usage)
+	if sequence.Models[1] != 1 || sequence.Models[2] != 4 || sequence.Models[3] != 7 {
+		t.Fatalf("unexpected model sequence: %+v", sequence.Models)
+	}
+	if !reflect.DeepEqual(sequence.Searches, []int{2}) {
+		t.Fatalf("unexpected search sequence: %+v", sequence.Searches)
+	}
+	if !reflect.DeepEqual(sequence.WebReads, []int{5}) {
+		t.Fatalf("unexpected web-read sequence: %+v", sequence.WebReads)
+	}
+}
+
 func TestResolveCompletedSearchBillingChargesAddsCompletedWebReadOnly(t *testing.T) {
 	db := newSearchControllerTestDB(t)
 	if err := service.SetWebReadPricePerCallWithDB(db, 0.25); err != nil {

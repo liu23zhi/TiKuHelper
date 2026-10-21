@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ type BillingRecordFeeDetail struct {
 	ProviderLabel string  `json:"providerLabel"`
 	Category      string  `json:"category,omitempty"`
 	CallIndex     int     `json:"callIndex,omitempty"`
+	Sequence      int     `json:"sequence,omitempty"`
 	Amount        float64 `json:"amount"`
 	Detail        string  `json:"detail,omitempty"`
 }
@@ -398,6 +400,7 @@ func buildBillingRecordFeeDetails(record BillingRecordListItem) []BillingRecordF
 		ProviderLabel: strings.TrimSpace(record.ProviderLabel),
 		Category:      category,
 		CallIndex:     callIndex,
+		Sequence:      parseBillingSnapshotInt(snapshot, "feeSequence"),
 		Amount:        record.Amount,
 		Detail:        detail,
 	}}
@@ -419,6 +422,10 @@ func buildAIModelFeeDetails(snapshot string, providerLabel string) []BillingReco
 		if parsed, parseErr := strconv.Atoi(fields["index"]); parseErr == nil && parsed > 0 {
 			callIndex = parsed
 		}
+		sequence := 0
+		if parsed, parseErr := strconv.Atoi(fields["feeSequence"]); parseErr == nil && parsed > 0 {
+			sequence = parsed
+		}
 		parts := make([]string, 0, 6)
 		for _, key := range []string{"model", "round", "attempt", "totalTokens", "stageMultiplier", "finalMultiplier"} {
 			if value := strings.TrimSpace(fields[key]); value != "" && value != "na" {
@@ -430,6 +437,7 @@ func buildAIModelFeeDetails(snapshot string, providerLabel string) []BillingReco
 			ProviderLabel: strings.TrimSpace(providerLabel),
 			Category:      "AI模型调用",
 			CallIndex:     callIndex,
+			Sequence:      sequence,
 			Amount:        util.RoundMoney(amount),
 			Detail:        strings.Join(parts, "；"),
 		})
@@ -594,11 +602,44 @@ func mergeBillingSearchGroup(representative BillingRecordListItem, charges []Bil
 		representative.FinalMultiplier = strings.Join(finalMultipliers, "、")
 	}
 	if len(feeDetails) > 0 {
+		applyBillingFeeSequenceFallback(feeDetails)
+		sort.SliceStable(feeDetails, func(left, right int) bool {
+			leftSequence := feeDetails[left].Sequence
+			rightSequence := feeDetails[right].Sequence
+			if leftSequence <= 0 || rightSequence <= 0 {
+				return false
+			}
+			return leftSequence < rightSequence
+		})
 		representative.FeeDetails = feeDetails
 	}
 	representative.Subject = buildSearchBillingSubject(questionText)
 	representative.Detail = buildBillingRecordDetail(representative)
 	return representative
+}
+
+func applyBillingFeeSequenceFallback(details []BillingRecordFeeDetail) {
+	hasAI := false
+	for _, detail := range details {
+		if detail.Provider == "ai" || detail.Category == "AI模型调用" {
+			hasAI = true
+			break
+		}
+	}
+	if !hasAI {
+		return
+	}
+	for index := range details {
+		if details[index].Sequence > 0 || details[index].CallIndex <= 0 {
+			continue
+		}
+		switch {
+		case details[index].Provider == "ai" || details[index].Category == "AI模型调用":
+			details[index].Sequence = details[index].CallIndex * 2
+		case details[index].Provider == "ai_search" || details[index].Provider == "web_read":
+			details[index].Sequence = details[index].CallIndex*2 + 1
+		}
+	}
 }
 
 // BillingRecordListQuery 是账单列表的筛选条件。

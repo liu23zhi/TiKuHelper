@@ -1126,13 +1126,14 @@ func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRe
 // price is zero. Zero-amount rows do not change balances, but preserve search
 // queries and successful web reads in the billing detail.
 func appendAIToolBillingCharges(charges []searchBillingCharge, db *gorm.DB, req model.SearchRequest, usage search.AISearchUsage) []searchBillingCharge {
+	sequence := buildAIBillingSequence(usage)
 	searchPrice := service.GetAISearchPricePerCallWithDB(db)
 	for index, call := range usage.SearchCalls {
 		amount := util.RoundMoney(searchPrice)
 		charges = append(charges, searchBillingCharge{
 			Provider: "ai_search",
 			Amount:   amount,
-			Snapshot: buildAISearchCallBillingSnapshot(req, call, index+1, searchPrice, amount),
+			Snapshot: buildAISearchCallBillingSnapshot(req, call, index+1, searchPrice, amount, sequenceAt(sequence.Searches, index+1)),
 		})
 	}
 
@@ -1145,16 +1146,17 @@ func appendAIToolBillingCharges(charges []searchBillingCharge, db *gorm.DB, req 
 		charges = append(charges, searchBillingCharge{
 			Provider: "web_read",
 			Amount:   amount,
-			Snapshot: buildAIWebReadBillingSnapshot(req, call, index+1, webReadPrice, amount),
+			Snapshot: buildAIWebReadBillingSnapshot(req, call, index+1, webReadPrice, amount, sequenceAt(sequence.WebReads, index+1)),
 		})
 	}
 	return charges
 }
 
-func buildAIWebReadBillingSnapshot(req model.SearchRequest, call search.AIWebReadCallUsage, index int, price float64, amount float64) string {
+func buildAIWebReadBillingSnapshot(req model.SearchRequest, call search.AIWebReadCallUsage, index int, price float64, amount float64, sequence int) string {
 	parts := []string{
 		"provider=web_read",
 		fmt.Sprintf("webReadCall=%d", index),
+		fmt.Sprintf("feeSequence=%d", sequence),
 		"webReadAPI=" + url.QueryEscape(strings.TrimSpace(call.API)),
 		"webReadURL=" + url.QueryEscape(strings.TrimSpace(call.URL)),
 		"webReadTaskId=" + url.QueryEscape(strings.TrimSpace(call.TaskID)),
@@ -1171,10 +1173,11 @@ func buildAIWebReadBillingSnapshot(req model.SearchRequest, call search.AIWebRea
 	return strings.Join(parts, " ")
 }
 
-func buildAISearchCallBillingSnapshot(req model.SearchRequest, call search.AISearchCallUsage, index int, price float64, amount float64) string {
+func buildAISearchCallBillingSnapshot(req model.SearchRequest, call search.AISearchCallUsage, index int, price float64, amount float64, sequence int) string {
 	parts := []string{
 		"provider=ai_search",
 		fmt.Sprintf("searchCall=%d", index),
+		fmt.Sprintf("feeSequence=%d", sequence),
 		"searchAPI=" + url.QueryEscape(strings.TrimSpace(call.API)),
 		"searchQuery=" + url.QueryEscape(strings.TrimSpace(call.Query)),
 		"searchStatus=" + url.QueryEscape(strings.TrimSpace(call.Status)),
@@ -1247,6 +1250,7 @@ func resolveCompletedAIBillingCharge(db *gorm.DB, resolved resolvedSearchRequest
 
 	stageSettings := service.GetAIStagedTokenBillingSettingsWithDB(db)
 	stagedBilling := calculateAIStagedTokenBilling(price, usage, stageSettings, matched)
+	applyAIModelBillingSequence(stagedBilling.Calls, buildAIBillingSequence(usage))
 	baseAmount := stagedBilling.BaseAmount
 	amount := stagedBilling.RoundedAmount
 	snapshotUsage := usage
@@ -1343,6 +1347,7 @@ func appendAIStagedBillingSnapshot(snapshot string, settings service.AIStagedTok
 		}
 		callParts := []string{
 			fmt.Sprintf("index=%d", call.CallIndex),
+			fmt.Sprintf("feeSequence=%d", call.Sequence),
 			"model=" + url.QueryEscape(modelName),
 			fmt.Sprintf("round=%d", call.Round),
 			fmt.Sprintf("attempt=%d", call.Attempt),

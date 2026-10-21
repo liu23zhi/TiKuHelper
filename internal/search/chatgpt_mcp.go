@@ -343,8 +343,10 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 				debug.Endpoint = endpoint
 				debug.RequestBody = string(payload)
 				debug.RawResponse = result.Raw
+				modelCallIndex := 0
 				if call, ok := buildAIModelCallUsage(result.Usage, in.Model, round+1, retry+1); ok {
 					appendAIModelCallUsage(&debug.Usage, call)
+					modelCallIndex = debug.Usage.ModelCalls[len(debug.Usage.ModelCalls)-1].Index
 				}
 				addAISearchUsage(&debug.Usage, result.Usage)
 				in.appendAISearchTrace(&debug.Usage, AISearchTrace{
@@ -358,6 +360,7 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 					DurationMs:          time.Since(attemptStartedAt).Milliseconds(),
 					ContentPreview:      result.Content,
 					ModelCallCount:      round + 1,
+					ModelCallIndex:      modelCallIndex,
 					ModelCallBudget:     maxModelCalls,
 					RemainingModelCalls: remainingModelCalls,
 					SearchCount:         searches,

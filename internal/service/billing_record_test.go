@@ -116,6 +116,60 @@ func TestMergeBillingSearchGroupCombinesDistinctFinalMultipliers(t *testing.T) {
 	}
 }
 
+func TestMergeBillingSearchGroupSortsFeeDetailsByUsageSequence(t *testing.T) {
+	representative := BillingRecordListItem{
+		Amount: 0.02,
+		FeeDetails: []BillingRecordFeeDetail{
+			{Provider: "ai", ProviderLabel: "AI 搜索", Category: "AI模型调用", CallIndex: 1, Amount: 0.01, Sequence: 1},
+			{Provider: "ai", ProviderLabel: "AI 搜索", Category: "AI模型调用", CallIndex: 2, Amount: 0.01, Sequence: 5},
+		},
+	}
+	searchCharge := BillingRecordListItem{
+		Amount: 0,
+		FeeDetails: []BillingRecordFeeDetail{
+			{Provider: "ai_search", ProviderLabel: "联网搜索", Amount: 0, Sequence: 3},
+		},
+	}
+
+	merged := mergeBillingSearchGroup(representative, []BillingRecordListItem{representative, searchCharge})
+	if len(merged.FeeDetails) != 3 {
+		t.Fatalf("expected three fee details, got %+v", merged.FeeDetails)
+	}
+	if merged.FeeDetails[0].Sequence != 1 || merged.FeeDetails[1].Sequence != 3 || merged.FeeDetails[2].Sequence != 5 {
+		t.Fatalf("fee details must follow usage sequence, got %+v", merged.FeeDetails)
+	}
+}
+
+func TestMergeBillingSearchGroupInterleavesLegacyAIToolDetails(t *testing.T) {
+	representative := BillingRecordListItem{
+		Amount: 0.02,
+		FeeDetails: []BillingRecordFeeDetail{
+			{Provider: "ai", ProviderLabel: "AI 搜索", Category: "AI模型调用", CallIndex: 1, Amount: 0.01},
+			{Provider: "ai", ProviderLabel: "AI 搜索", Category: "AI模型调用", CallIndex: 2, Amount: 0.01},
+		},
+	}
+	searchCharge := BillingRecordListItem{
+		Amount: 0,
+		FeeDetails: []BillingRecordFeeDetail{
+			{Provider: "ai_search", ProviderLabel: "联网搜索", CallIndex: 1, Amount: 0},
+		},
+	}
+
+	merged := mergeBillingSearchGroup(representative, []BillingRecordListItem{representative, searchCharge})
+	if len(merged.FeeDetails) != 3 {
+		t.Fatalf("expected three fee details, got %+v", merged.FeeDetails)
+	}
+	if merged.FeeDetails[0].Category != "AI模型调用" || merged.FeeDetails[0].CallIndex != 1 {
+		t.Fatalf("expected first model call first, got %+v", merged.FeeDetails)
+	}
+	if merged.FeeDetails[1].Provider != "ai_search" {
+		t.Fatalf("expected search tool between model calls, got %+v", merged.FeeDetails)
+	}
+	if merged.FeeDetails[2].Category != "AI模型调用" || merged.FeeDetails[2].CallIndex != 2 {
+		t.Fatalf("expected second model call last, got %+v", merged.FeeDetails)
+	}
+}
+
 func seedBillingRecord(t *testing.T, db *gorm.DB, userID int32, requestID string, amount float64) entity.BillingRecord {
 	t.Helper()
 

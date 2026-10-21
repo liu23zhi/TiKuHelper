@@ -18,6 +18,7 @@ type aiStagedTokenBillingCall struct {
 	Model             string
 	Round             int
 	Attempt           int
+	Sequence          int
 	InputTokens       int64
 	CachedInputTokens int64
 	CacheWriteTokens  int64

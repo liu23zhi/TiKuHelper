@@ -221,6 +221,8 @@ test('Billing statement switch aligns its thumb without transform state', async 
   const content = await readFile(path.join(__dirname, '..', 'pages', 'BillingRecordList', 'index.vue'), 'utf8');
 
   assert.match(content, /appearance:\s*none;/);
+  assert.match(content, /:global\(button\.billing-statement-switch\)\s*\{[\s\S]*?padding:\s*2px;[\s\S]*?border:\s*0;[\s\S]*?\}/);
+  assert.match(content, /:global\(button\.billing-statement-switch\)\s*\{[\s\S]*?min-width:\s*40px;[\s\S]*?max-width:\s*40px;[\s\S]*?min-height:\s*22px;[\s\S]*?max-height:\s*22px;[\s\S]*?\}/);
   assert.match(content, /:global\(\.billing-statement-switch\[aria-checked="true"\]\)\s*\{[\s\S]*?justify-content:\s*flex-end;[\s\S]*?\}/);
   assert.doesNotMatch(content, /translateX\(18px\)/);
 });
