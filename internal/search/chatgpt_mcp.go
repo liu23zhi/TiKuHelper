@@ -64,6 +64,38 @@ func canFallbackToMCP(usage AISearchUsage) bool {
 	return len(usage.SearchCalls) == 0 && len(usage.WebReadCalls) == 0
 }
 
+// fallbackToMCPAfterNativeFailure centralizes the route decision for both the
+// debug and usage-returning entrypoints. Empty native tool responses are safe
+// to retry through MCP because no external search/read has executed; known
+// capability rejections still require the one-time tool probe.
+func (in *ChatGptClient) fallbackToMCPAfterNativeFailure(ctx context.Context, req model.SearchRequest, nativeDebug AISearchDebugResult, nativeErr error) (answer [][]string, debug AISearchDebugResult, handled bool, err error) {
+	debug = nativeDebug
+	if !canFallbackToMCP(debug.Usage) {
+		return nil, debug, false, nativeErr
+	}
+
+	capabilityRejected := isToolCapabilityProbeCandidate(nativeErr)
+	emptyResponse := stdErrors.Is(nativeErr, errAIToolResponseEmpty)
+	if !capabilityRejected && !emptyResponse {
+		return nil, debug, false, nativeErr
+	}
+
+	if capabilityRejected {
+		probeUsage, unsupported := in.probeToolCapability(ctx)
+		debug.Usage = mergeAISearchUsages(debug.Usage, probeUsage)
+		debug.Trace = append([]AISearchTrace(nil), debug.Usage.Trace...)
+		if !unsupported {
+			return nil, debug, false, nativeErr
+		}
+	}
+
+	mcpAnswer, mcpDebug, mcpErr := in.searchAnswerWithMCP(ctx, req)
+	mcpDebug.Usage = mergeAISearchUsages(debug.Usage, mcpDebug.Usage)
+	mcpDebug.Usage.Route = AISearchRouteDeepMCP
+	mcpDebug.Trace = append([]AISearchTrace(nil), mcpDebug.Usage.Trace...)
+	return mcpAnswer, mcpDebug, true, mcpErr
+}
+
 func toolCapabilityCacheKey(client *ChatGptClient) string {
 	return strings.TrimRight(strings.TrimSpace(client.BaseURL), "/") + "\x00" + strings.TrimSpace(client.Model)
 }

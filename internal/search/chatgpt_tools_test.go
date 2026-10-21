@@ -489,6 +489,87 @@ func TestAISearchToolsRetriesFailedRoundWithoutLeakingRoundError(t *testing.T) {
 	}
 }
 
+func TestAISearchToolsRetriesEmptyResponseWithinSameRound(t *testing.T) {
+	tool := &testAISearchTool{}
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		switch calls {
+		case 1:
+			writeAIResponsesCompleted(w, " ", map[string]any{
+				"input_tokens": 8, "output_tokens": 1, "total_tokens": 9,
+			})
+		case 2:
+			writeAIToolStream(w, "empty-retry-search", "空响应重试")
+		default:
+			writeAIFinalStream(w)
+		}
+	}))
+	defer server.Close()
+
+	client := &ChatGptClient{
+		Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test",
+		SearchTool: tool, MaxAISearchModelCalls: 2, MaxAISearches: 3, MaxAISearchRetries: 2,
+	}
+	answer, usage, err := client.SearchAnswerWithUsage(model.SearchRequest{
+		Question: "2+2=?", Options: []string{"3", "4"}, DeepThinking: true,
+	})
+	if err != nil {
+		t.Fatalf("empty first response should be retried, got %v", err)
+	}
+	if calls != 3 || len(tool.queries) != 1 || !reflect.DeepEqual(answer, [][]string{{"4"}}) {
+		t.Fatalf("answer=%v calls=%d searches=%v", answer, calls, tool.queries)
+	}
+	if len(usage.ModelCalls) != 3 || usage.ModelCalls[0].TotalTokens != 9 || usage.ModelCalls[1].Attempt != 2 {
+		t.Fatalf("empty response and successful retry must both be metered: %+v", usage.ModelCalls)
+	}
+}
+
+func TestAISearchToolsFallsBackToMCPAfterEmptyNativeResponses(t *testing.T) {
+	tool := &testAISearchTool{}
+	nativeCalls := 0
+	mcpCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		tools, hasTools := payload["tools"].([]any)
+		if hasTools && len(tools) > 0 {
+			nativeCalls++
+			writeAIResponsesCompleted(w, "", map[string]any{})
+			return
+		}
+		mcpCalls++
+		writeMCPTextStream(w, `{"answers":["4"]}`, 20)
+	}))
+	defer server.Close()
+
+	client := &ChatGptClient{
+		Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test",
+		SearchTool: tool, MaxAISearchModelCalls: 3, MaxAISearches: 3,
+		MaxAIWebReads: 1, MaxAISearchRetries: 2,
+	}
+	answer, usage, err := client.SearchAnswerWithUsage(model.SearchRequest{
+		Question: "2+2=?", Options: []string{"3", "4"}, DeepThinking: true,
+	})
+	if err != nil {
+		t.Fatalf("empty native responses should fall back to MCP, got %v", err)
+	}
+	if nativeCalls != 2 || mcpCalls != 1 {
+		t.Fatalf("nativeCalls=%d mcpCalls=%d", nativeCalls, mcpCalls)
+	}
+	if usage.Route != AISearchRouteDeepMCP {
+		t.Fatalf("expected deep_mcp route, got %q", usage.Route)
+	}
+	if len(tool.queries) != 0 {
+		t.Fatalf("fallback must not repeat external search calls: %v", tool.queries)
+	}
+	if !reflect.DeepEqual(answer, [][]string{{"4"}}) {
+		t.Fatalf("unexpected answers: %#v", answer)
+	}
+}
+
 func TestAISearchToolsRetainsTokenBearingRetryResponses(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

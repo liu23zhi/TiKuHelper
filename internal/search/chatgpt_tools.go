@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	stdErrors "errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -50,6 +51,8 @@ const (
 	aiToolMaxExtraRunes       = 2000
 	aiToolMaxCourseRunes      = 200
 )
+
+var errAIToolResponseEmpty = stdErrors.New("AI原生工具响应为空")
 
 const aiSearchToolsPrompt = `
 【联网搜题与执行边界】
@@ -495,6 +498,9 @@ func (in *ChatGptClient) requestAIToolRound(ctx context.Context, endpoint string
 	result, err := readAIToolStream(resp.Body)
 	if err != nil {
 		return result, resp.StatusCode, in.upstreamError("tool_stream", resp.StatusCode, result.Raw, err)
+	}
+	if len(result.Calls) == 0 && strings.TrimSpace(result.Content) == "" {
+		return result, resp.StatusCode, in.upstreamError("tool_empty", resp.StatusCode, "", errAIToolResponseEmpty)
 	}
 	return result, resp.StatusCode, err
 }

@@ -518,20 +518,11 @@ func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]
 			debug.Usage.Route = AISearchRouteDeepNative
 			return answer, debug, nil
 		}
-		if isToolCapabilityProbeCandidate(toolErr) && canFallbackToMCP(debug.Usage) {
-			probeUsage, unsupported := in.probeToolCapability(ctx)
-			probeUsage = mergeAISearchUsages(debug.Usage, probeUsage)
-			if unsupported {
-				mcpAnswer, mcpDebug, mcpErr := in.searchAnswerWithMCP(ctx, req)
-				mcpDebug.Usage = mergeAISearchUsages(probeUsage, mcpDebug.Usage)
-				mcpDebug.Usage.Route = AISearchRouteDeepMCP
-				if mcpErr == nil {
-					return mcpAnswer, mcpDebug, nil
-				}
-				return nil, mcpDebug, mcpErr
-			}
+		mcpAnswer, mcpDebug, handled, mcpErr := in.fallbackToMCPAfterNativeFailure(ctx, req, debug, toolErr)
+		if handled {
+			return mcpAnswer, mcpDebug, mcpErr
 		}
-		return answer, debug, toolErr
+		return answer, mcpDebug, toolErr
 	}
 	answer = make([][]string, 0)
 	debug.Usage.Route = AISearchRouteNormal
@@ -580,20 +571,11 @@ func (in *ChatGptClient) SearchAnswerWithUsage(req model.SearchRequest) (answer 
 			debug.Usage.Route = AISearchRouteDeepNative
 			return answer, debug.Usage, nil
 		}
-		if isToolCapabilityProbeCandidate(toolErr) && canFallbackToMCP(debug.Usage) {
-			probeUsage, unsupported := in.probeToolCapability(ctx)
-			probeUsage = mergeAISearchUsages(debug.Usage, probeUsage)
-			if unsupported {
-				mcpAnswer, mcpDebug, mcpErr := in.searchAnswerWithMCP(ctx, req)
-				usage = mergeAISearchUsages(probeUsage, mcpDebug.Usage)
-				usage.Route = AISearchRouteDeepMCP
-				if mcpErr == nil {
-					return mcpAnswer, usage, nil
-				}
-				return nil, usage, mcpErr
-			}
+		mcpAnswer, mcpDebug, handled, mcpErr := in.fallbackToMCPAfterNativeFailure(ctx, req, debug, toolErr)
+		if handled {
+			return mcpAnswer, mcpDebug.Usage, mcpErr
 		}
-		return answer, debug.Usage, toolErr
+		return answer, mcpDebug.Usage, toolErr
 	}
 	if req.DeepThinking {
 		logger.SysLog(fmt.Sprintf("AI 搜索降级 requestId=%s 原因=未配置联网搜索工具 行为=保持旧版一次性模型回复", strings.TrimSpace(req.RequestID)))
