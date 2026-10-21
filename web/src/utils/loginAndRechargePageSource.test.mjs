@@ -210,6 +210,13 @@ test('Billing record list opens a SweetAlert fee breakdown with provider costs',
   assert.match(content, /billing-fee-total/);
 });
 
+test('Billing fee item accent uses a real border instead of a global pseudo selector', async () => {
+  const content = await readFile(path.join(__dirname, '..', 'pages', 'BillingRecordList', 'index.vue'), 'utf8');
+
+  assert.match(content, /:global\(\.billing-fee-item\)\s*\{[\s\S]*?border-left:\s*3px solid #60a5fa;[\s\S]*?\}/);
+  assert.doesNotMatch(content, /:global\([^)]*\)::(?:before|after)/);
+});
+
 test('Personal billing flow does not render the owner username column', async () => {
   const content = await readFile(userUsagePagePath, 'utf8');
 

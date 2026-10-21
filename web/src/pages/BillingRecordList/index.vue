@@ -982,19 +982,9 @@ export default defineComponent({
   overflow: hidden;
   padding: 15px 16px;
   border: 1px solid #e2e8f0;
+  border-left: 3px solid #60a5fa;
   border-radius: 10px;
   background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
-}
-
-:global(.billing-fee-item)::before {
-  position: absolute;
-  top: 14px;
-  bottom: 14px;
-  left: 0;
-  width: 3px;
-  border-radius: 0 3px 3px 0;
-  background: #60a5fa;
-  content: "";
 }
 
 :global(.billing-fee-item-head) {
