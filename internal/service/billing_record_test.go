@@ -429,6 +429,40 @@ func TestListBillingRecordsWithDBIncludesProviderLabelAndAccessTokenName(t *test
 	}
 }
 
+func TestBillingSearchModeLabelsIncludeNativeAndMCPRoutes(t *testing.T) {
+	if got := buildBillingSearchModeLabel("normal"); got != "普通搜索" {
+		t.Fatalf("unexpected normal label: %q", got)
+	}
+	if got := buildBillingSearchModeLabel("deep_native"); got != "深度思考 原生工具" {
+		t.Fatalf("unexpected native label: %q", got)
+	}
+	if got := buildBillingSearchModeLabel("deep_mcp"); got != "深度思考 MCP编排" {
+		t.Fatalf("unexpected MCP label: %q", got)
+	}
+	if got := buildBillingSearchModeLabel("deep"); got != "深度思考" {
+		t.Fatalf("unexpected legacy deep label: %q", got)
+	}
+}
+
+func TestDecorateBillingRecordSplitsAIModelStageFees(t *testing.T) {
+	record := decorateBillingRecord(BillingRecordListItem{
+		Type:              normalSearchBillingRecordType,
+		Provider:          "ai",
+		ProviderLabel:     "AI 搜索",
+		Amount:            0.3,
+		UnitPriceSnapshot: "provider=ai stageBillingCall1=index%3D1%2Cmodel%3Dgpt-6-sol%2Cround%3D1%2Cattempt%3D1%2CtotalTokens%3D10%2Camount%3D0.1 stageBillingCall2=index%3D2%2Cmodel%3Dgpt-6-sol%2Cround%3D2%2Cattempt%3D1%2CtotalTokens%3D20%2Camount%3D0.2",
+	})
+	if len(record.FeeDetails) != 2 {
+		t.Fatalf("expected two model fee details, got %+v", record.FeeDetails)
+	}
+	if record.FeeDetails[0].Category != "AI模型调用" || record.FeeDetails[0].CallIndex != 1 || record.FeeDetails[0].Amount != 0.1 {
+		t.Fatalf("unexpected first model fee detail: %+v", record.FeeDetails[0])
+	}
+	if record.FeeDetails[1].CallIndex != 2 || record.FeeDetails[1].Amount != 0.2 {
+		t.Fatalf("unexpected second model fee detail: %+v", record.FeeDetails[1])
+	}
+}
+
 // 账单的「模式」列：deep→深度思考，normal→普通搜索，空→占位（非搜题/历史行）。
 func TestListBillingRecordsWithDBIncludesSearchModeLabel(t *testing.T) {
 	db := newBillingRecordTestDB(t)

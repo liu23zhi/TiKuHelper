@@ -49,6 +49,10 @@ type ChatGptClient struct {
 }
 
 type AISearchUsage struct {
+	// Route identifies the effective execution path for this request.
+	// normal is the one-shot model path; deep_native and deep_mcp are the
+	// two deep-thinking tool orchestration paths.
+	Route             string
 	InputTokens       int64
 	CachedInputTokens int64
 	CacheWriteTokens  int64
@@ -59,6 +63,12 @@ type AISearchUsage struct {
 	WebReadCalls      []AIWebReadCallUsage `json:"webReadCalls,omitempty"`
 	Trace             []AISearchTrace      `json:"trace,omitempty"`
 }
+
+const (
+	AISearchRouteNormal     = "normal"
+	AISearchRouteDeepNative = "deep_native"
+	AISearchRouteDeepMCP    = "deep_mcp"
+)
 
 // AIModelCallUsage records one token-bearing response from the upstream model.
 // Index is assigned in response order within the complete search request,
@@ -503,9 +513,28 @@ func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]
 	ctx, cancel := context.WithTimeout(context.Background(), aiSearchTotalTimeout)
 	defer cancel()
 	if req.DeepThinking && in.SearchTool != nil {
-		return in.searchAnswerWithTools(ctx, req)
+		answer, debug, toolErr := in.searchAnswerWithTools(ctx, req)
+		if toolErr == nil {
+			debug.Usage.Route = AISearchRouteDeepNative
+			return answer, debug, nil
+		}
+		if isToolCapabilityProbeCandidate(toolErr) && canFallbackToMCP(debug.Usage) {
+			probeUsage, unsupported := in.probeToolCapability(ctx)
+			probeUsage = mergeAISearchUsages(debug.Usage, probeUsage)
+			if unsupported {
+				mcpAnswer, mcpDebug, mcpErr := in.searchAnswerWithMCP(ctx, req)
+				mcpDebug.Usage = mergeAISearchUsages(probeUsage, mcpDebug.Usage)
+				mcpDebug.Usage.Route = AISearchRouteDeepMCP
+				if mcpErr == nil {
+					return mcpAnswer, mcpDebug, nil
+				}
+				return nil, mcpDebug, mcpErr
+			}
+		}
+		return answer, debug, toolErr
 	}
 	answer = make([][]string, 0)
+	debug.Usage.Route = AISearchRouteNormal
 	if !in.Enable {
 		return answer, debug, nil
 	}
@@ -530,6 +559,7 @@ func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]
 		Usage:       usage,
 		Trace:       append([]AISearchTrace(nil), usage.Trace...),
 	}
+	debug.Usage.Route = AISearchRouteNormal
 	if callErr != nil {
 		return nil, debug, callErr
 	}
@@ -546,12 +576,30 @@ func (in *ChatGptClient) SearchAnswerWithUsage(req model.SearchRequest) (answer 
 	defer cancel()
 	if req.DeepThinking && in.SearchTool != nil {
 		answer, debug, toolErr := in.searchAnswerWithTools(ctx, req)
+		if toolErr == nil {
+			debug.Usage.Route = AISearchRouteDeepNative
+			return answer, debug.Usage, nil
+		}
+		if isToolCapabilityProbeCandidate(toolErr) && canFallbackToMCP(debug.Usage) {
+			probeUsage, unsupported := in.probeToolCapability(ctx)
+			probeUsage = mergeAISearchUsages(debug.Usage, probeUsage)
+			if unsupported {
+				mcpAnswer, mcpDebug, mcpErr := in.searchAnswerWithMCP(ctx, req)
+				usage = mergeAISearchUsages(probeUsage, mcpDebug.Usage)
+				usage.Route = AISearchRouteDeepMCP
+				if mcpErr == nil {
+					return mcpAnswer, usage, nil
+				}
+				return nil, usage, mcpErr
+			}
+		}
 		return answer, debug.Usage, toolErr
 	}
 	if req.DeepThinking {
 		logger.SysLog(fmt.Sprintf("AI 搜索降级 requestId=%s 原因=未配置联网搜索工具 行为=保持旧版一次性模型回复", strings.TrimSpace(req.RequestID)))
 	}
 	answer = make([][]string, 0)
+	usage.Route = AISearchRouteNormal
 	if !in.Enable {
 		return answer, usage, nil
 	}
@@ -569,6 +617,7 @@ func (in *ChatGptClient) SearchAnswerWithUsage(req model.SearchRequest) (answer 
 	maxModelCalls, _, _ := in.aiSearchBudgets()
 	modelCalls := 0
 	content, streamUsage, _, _, _, _, callErr := in.requestStreamAnswerDetailed(ctx, endpoints, systemPrompt, userPromptParts, &modelCalls, maxModelCalls)
+	streamUsage.Route = AISearchRouteNormal
 	if callErr != nil {
 		return nil, streamUsage, callErr
 	}

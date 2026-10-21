@@ -287,6 +287,10 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 			if callErr == nil {
 				break
 			}
+			// Stop retrying a deterministic tool capability rejection.
+			if isToolCapabilityProbeCandidate(callErr) {
+				return nil, debug, callErr
+			}
 		}
 		debug.Endpoint = endpoint
 		debug.RequestBody = strings.Join(requestBodies, "\n\n")

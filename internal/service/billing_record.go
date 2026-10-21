@@ -18,6 +18,8 @@ const registrationBonusBillingRecordType = "registration_bonus"
 type BillingRecordFeeDetail struct {
 	Provider      string  `json:"provider"`
 	ProviderLabel string  `json:"providerLabel"`
+	Category      string  `json:"category,omitempty"`
+	CallIndex     int     `json:"callIndex,omitempty"`
 	Amount        float64 `json:"amount"`
 	Detail        string  `json:"detail,omitempty"`
 }
@@ -94,6 +96,10 @@ func buildBillingSearchModeLabel(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "deep":
 		return "深度思考"
+	case "deep_native":
+		return "深度思考 原生工具"
+	case "deep_mcp":
+		return "深度思考 MCP编排"
 	case "normal":
 		return "普通搜索"
 	default:
@@ -356,20 +362,106 @@ func decorateBillingRecord(record BillingRecordListItem) BillingRecordListItem {
 	}
 	record.Subject = buildBillingRecordSubject(record)
 	record.Detail = buildBillingRecordDetail(record)
-	record.FeeDetails = []BillingRecordFeeDetail{{
-		Provider:      strings.TrimSpace(record.Provider),
-		ProviderLabel: strings.TrimSpace(record.ProviderLabel),
-		Amount:        record.Amount,
-		Detail:        buildBillingRecordFeeDetail(record.Provider, record.UnitPriceSnapshot),
-	}}
-	if record.Type == balanceAdjustmentBillingRecordType {
-		record.FeeDetails[0].Detail = record.Detail
-	}
+	record.FeeDetails = buildBillingRecordFeeDetails(record)
 	return record
 }
 
+func buildBillingRecordFeeDetails(record BillingRecordListItem) []BillingRecordFeeDetail {
+	provider := strings.TrimSpace(record.Provider)
+	snapshot := record.UnitPriceSnapshot
+	if provider == "ai" {
+		if details := buildAIModelFeeDetails(snapshot, record.ProviderLabel); len(details) > 0 {
+			return details
+		}
+	}
+	category := ""
+	callIndex := 0
+	switch provider {
+	case "ai_search":
+		category = "联网搜索"
+		callIndex = parseBillingSnapshotInt(snapshot, "searchCall")
+	case "web_read":
+		category = "网页转Markdown"
+		callIndex = parseBillingSnapshotInt(snapshot, "webReadCall")
+	case "ai":
+		category = "AI模型调用"
+	}
+	if record.Type == balanceAdjustmentBillingRecordType {
+		category = "余额调整"
+	}
+	detail := buildBillingRecordFeeDetail(provider, snapshot)
+	if record.Type == balanceAdjustmentBillingRecordType {
+		detail = record.Detail
+	}
+	return []BillingRecordFeeDetail{{
+		Provider:      provider,
+		ProviderLabel: strings.TrimSpace(record.ProviderLabel),
+		Category:      category,
+		CallIndex:     callIndex,
+		Amount:        record.Amount,
+		Detail:        detail,
+	}}
+}
+
+func buildAIModelFeeDetails(snapshot string, providerLabel string) []BillingRecordFeeDetail {
+	details := make([]BillingRecordFeeDetail, 0, 4)
+	for index := 1; index <= 20; index++ {
+		encoded := ExtractBillingSnapshotField(snapshot, fmt.Sprintf("stageBillingCall%d", index))
+		if encoded == "" {
+			continue
+		}
+		fields := parseBillingSnapshotPairs(encoded)
+		amount, err := strconv.ParseFloat(fields["amount"], 64)
+		if err != nil {
+			continue
+		}
+		callIndex := index
+		if parsed, parseErr := strconv.Atoi(fields["index"]); parseErr == nil && parsed > 0 {
+			callIndex = parsed
+		}
+		parts := make([]string, 0, 6)
+		for _, key := range []string{"model", "round", "attempt", "totalTokens", "stageMultiplier", "finalMultiplier"} {
+			if value := strings.TrimSpace(fields[key]); value != "" && value != "na" {
+				parts = append(parts, key+"="+value)
+			}
+		}
+		details = append(details, BillingRecordFeeDetail{
+			Provider:      "ai",
+			ProviderLabel: strings.TrimSpace(providerLabel),
+			Category:      "AI模型调用",
+			CallIndex:     callIndex,
+			Amount:        util.RoundMoney(amount),
+			Detail:        strings.Join(parts, "；"),
+		})
+	}
+	return details
+}
+
+func parseBillingSnapshotPairs(value string) map[string]string {
+	decoded, err := url.QueryUnescape(strings.TrimSpace(value))
+	if err != nil {
+		decoded = strings.TrimSpace(value)
+	}
+	fields := make(map[string]string)
+	for _, part := range strings.Split(decoded, ",") {
+		key, itemValue, ok := strings.Cut(part, "=")
+		if ok {
+			fields[strings.TrimSpace(key)] = strings.TrimSpace(itemValue)
+		}
+	}
+	return fields
+}
+
+func parseBillingSnapshotInt(snapshot string, key string) int {
+	value, err := strconv.Atoi(ExtractBillingSnapshotField(snapshot, key))
+	if err != nil || value < 0 {
+		return 0
+	}
+	return value
+}
+
 func buildBillingRecordFeeDetail(provider string, snapshot string) string {
-	if strings.TrimSpace(provider) != "ai_search" {
+	if strings.TrimSpace(provider) != "ai_search" && strings.TrimSpace(provider) != "web_read" {
 		return ""
 	}
 	parts := make([]string, 0, 7)
@@ -378,14 +470,23 @@ func buildBillingRecordFeeDetail(provider string, snapshot string) string {
 			parts = append(parts, label+"："+value)
 		}
 	}
-	appendField("搜索词", "searchQuery")
-	appendField("API", "searchAPI")
-	appendField("状态", "searchStatus")
-	appendField("结果", "searchResultCount")
-	appendField("总结果", "searchTotalResults")
-	appendField("来源", "searchSources")
-	appendField("耗时", "searchDurationMs")
-	appendField("错误", "searchError")
+	if strings.TrimSpace(provider) == "ai_search" {
+		appendField("搜索词", "searchQuery")
+		appendField("API", "searchAPI")
+		appendField("状态", "searchStatus")
+		appendField("结果", "searchResultCount")
+		appendField("总结果", "searchTotalResults")
+		appendField("来源", "searchSources")
+		appendField("耗时", "searchDurationMs")
+		appendField("错误", "searchError")
+	} else {
+		appendField("API", "webReadAPI")
+		appendField("网页", "webReadURL")
+		appendField("状态", "webReadStatus")
+		appendField("Markdown字节", "webReadMarkdownBytes")
+		appendField("耗时", "webReadDurationMs")
+		appendField("错误", "webReadError")
+	}
 	if len(parts) == 0 {
 		return ""
 	}

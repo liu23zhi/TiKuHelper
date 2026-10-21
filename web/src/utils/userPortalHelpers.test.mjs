@@ -28,6 +28,8 @@ test('buildBillingRecordModeText renders deep thinking and ordinary search', () 
   // 后端只给原始值时前端兜底映射（大小写不敏感）。
   assert.equal(buildBillingRecordModeText({ searchMode: 'DEEP' }), '深度思考')
   assert.equal(buildBillingRecordModeText({ searchMode: 'normal' }), '普通搜索')
+  assert.equal(buildBillingRecordModeText({ searchMode: 'deep_native' }), '深度思考 原生工具')
+  assert.equal(buildBillingRecordModeText({ searchMode: 'deep_mcp' }), '深度思考 MCP编排')
   // 非搜题账单与历史行没有模式，降级为占位符。
   assert.equal(buildBillingRecordModeText({}), '-')
   assert.equal(buildBillingRecordModeText({ searchMode: 'unknown' }), '-')
@@ -226,6 +228,28 @@ test('buildAdminCreateUserPayload rejects invalid and overlong usernames', () =>
   assert.throws(() => userPortalHelpers.buildAdminCreateUserPayload({ username: 'user-name', password: 'Abc12345!' }), /用户名/)
   assert.throws(() => userPortalHelpers.buildAdminCreateUserPayload({ username: 'https://example.com', password: 'Abc12345!' }), /用户名/)
   assert.throws(() => userPortalHelpers.buildAdminCreateUserPayload({ username: '用'.repeat(256), password: 'Abc12345!' }), /用户名/)
+})
+
+test('billing record fee details render call category and admin metadata', () => {
+  const record = {
+    type: 'balance_adjustment',
+    direction: 'income',
+    subject: '管理员调整余额',
+    amount: 2,
+    balanceBefore: 1,
+    balanceAfter: 3,
+    operatorId: 7,
+    operatorUsername: 'admin',
+    showInStatement: false,
+    canEditStatement: true,
+    feeDetails: [{ provider: 'ai', providerLabel: 'AI 搜索', category: 'AI模型调用', callIndex: 1, amount: 2, detail: 'model=gpt-6-sol；totalTokens=10' }],
+  }
+  const html = buildBillingRecordFeeDetailHtml(record)
+  assert.match(html, /AI模型调用 第1次/)
+  assert.match(html, /操作管理员：admin（ID 7）/)
+  assert.match(html, /余额变化：¥ 1 → ¥ 3/)
+  assert.match(html, /账单流水展示：隐藏/)
+  assert.match(html, /billing-statement-toggle/)
 })
 
 test('buildUserBalanceUpdatePayload trims fields and keeps edit mode data', () => {

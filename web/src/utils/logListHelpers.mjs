@@ -85,7 +85,7 @@ export function buildLogStructuredFields(record = {}) {
       mode: buildRequestParamsLabel(request),
       requestSource: 'AI 兜底接口',
       answerCount: parsedAIFallbackDescription.answers || '-',
-      hitProvider: channel.provider,
+      hitProvider: buildAIRouteLabel(channel.provider, parsedAIFallbackDescription.aiRoute),
       failureReasons: channel.errors,
       billingProvider: buildBillingProviderLabel(parsedAIFallbackDescription.billingProvider),
       requestSnapshot: request || '-',
@@ -115,7 +115,7 @@ export function buildLogStructuredFields(record = {}) {
     mode: buildRequestParamsLabel(request),
     requestSource: parsedDescription.summary ? '普通搜题接口' : '-',
     answerCount: parsedDescription.answers || '-',
-    hitProvider: channel.provider,
+    hitProvider: buildAIRouteLabel(channel.provider, parsedDescription.aiRoute),
     failureReasons: channel.errors,
     billingProvider: buildBillingProviderLabel(parsedDescription.billingProvider),
     requestSnapshot: request || '-',
@@ -444,6 +444,10 @@ function buildHitProviderFields(provider, snapshot = {}, description = '') {
   if (errorMessage && !errors.includes(errorMessage)) {
     errors.push(errorMessage);
   }
+  const detailMessage = String(snapshot?.detail || snapshot?.message || '').trim();
+  if (detailMessage && !errors.includes(detailMessage)) {
+    errors.push(detailMessage);
+  }
 
   if (errors.length === 0) {
     errors.push(...descriptionFailures.map((failure) => failure.text));
@@ -453,6 +457,27 @@ function buildHitProviderFields(provider, snapshot = {}, description = '') {
     provider: normalizedProvider.split(/[、,]/).map((value) => value === 'ai' ? 'AI' : value).join('、') || '-',
     errors: [...new Set(errors)],
   };
+}
+
+function buildAIRouteLabel(provider, route) {
+  const normalizedProvider = String(provider || '').trim();
+  const normalizedRoute = String(route || '').trim().toLowerCase();
+  if (!normalizedRoute) {
+    return normalizedProvider || '-';
+  }
+  const routeLabel = {
+    normal: '普通搜索',
+    deep_native: '深度思考 原生工具',
+    deep_mcp: '深度思考 MCP编排',
+  }[normalizedRoute];
+  if (!routeLabel) {
+    return normalizedProvider || '-';
+  }
+  const providerLabel = normalizedProvider && normalizedProvider !== '-' ? normalizedProvider : 'AI';
+  if (/^ai$/i.test(providerLabel)) {
+    return `AI ${routeLabel}`;
+  }
+  return `${providerLabel} ${routeLabel}`;
 }
 
 /**
@@ -521,7 +546,7 @@ function parseSearchLogDescriptionMap(description) {
     return {};
   }
 
-  const fields = ['requestId', 'mode', 'use', 'answers', 'hitProvider', 'billingProvider', 'localQuestionId', 'anonymous'];
+  const fields = ['requestId', 'mode', 'use', 'answers', 'hitProvider', 'billingProvider', 'localQuestionId', 'anonymous', 'aiRoute'];
   return fields.reduce((acc, key) => {
     const value = extractDescriptionField(text, key);
     if (value) {
@@ -537,7 +562,7 @@ function parseAIFallbackLogDescriptionMap(description) {
     return {};
   }
 
-  const fields = ['status', 'stage', 'mode', 'requestId', 'taskId', 'code', 'message', 'answers', 'hitProvider', 'billingProvider'];
+  const fields = ['status', 'stage', 'mode', 'requestId', 'taskId', 'code', 'message', 'answers', 'hitProvider', 'billingProvider', 'aiRoute'];
   return fields.reduce((acc, key) => {
     const value = extractDescriptionField(text, key);
     if (value) {

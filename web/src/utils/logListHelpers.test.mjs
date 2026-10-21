@@ -623,3 +623,20 @@ test('search outcome summaries retain structured request fields', () => {
     assert.equal(fields.answerCount, '0');
   }
 });
+
+test('AI route labels and unauthorized search detail are visible in channel errors', () => {
+  const deepMcp = buildLogStructuredFields({
+    module: 'search',
+    description: '搜索失败 requestId=req-mcp mode=ai answers=0 aiRoute=deep_mcp hitProvider=ai',
+    newAnswer: JSON.stringify({ status: 'failed', error: { message: '服务器内部错误，搜题失败。' } }),
+  });
+  assert.equal(deepMcp.hitProvider, 'AI 深度思考 MCP编排');
+  assert.deepEqual(deepMcp.failureReasons, ['服务器内部错误，搜题失败。']);
+
+  const ordinary = buildLogStructuredFields({
+    module: 'search',
+    description: '搜索失败 detail=当前余额不足，请充值后再使用 provider= code=INSUFFICIENT_BALANCE error=当前余额不足，请充值后再使用',
+    newAnswer: JSON.stringify({ detail: '当前余额不足，请充值后再使用' }),
+  });
+  assert.ok(ordinary.failureReasons.some((reason) => reason.includes('当前余额不足')));
+});

@@ -14,6 +14,11 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+type CollectAnswerResult struct {
+	ID     int32
+	Stored bool
+}
+
 // FillHash 填充题库的hash值。
 //
 // 公式集中在 pkg/util.BuildTikuHash：题面、排序后的选项、题型三者决定题目身份。
@@ -36,7 +41,8 @@ func FillHash(t *entity.Tiku) {
 }
 
 // CollectAnswer 收集没有搜索到的答案
-func CollectAnswer(resp model.SearchResponse, courseName, extra, provider string) {
+func CollectAnswer(resp model.SearchResponse, courseName, extra, provider string) CollectAnswerResult {
+	resultInfo := CollectAnswerResult{}
 	sort.Strings(resp.Options) // 将选项排序
 	opts, err := json.Marshal(resp.Options)
 	if err != nil {
@@ -75,7 +81,7 @@ func CollectAnswer(resp model.SearchResponse, courseName, extra, provider string
 		// 见 AGENTS.md 第 26 条。
 		result := dao.Tiku.UnderlyingDB().Clauses(clause.OnConflict{DoNothing: true}).Create(&t)
 		if result.Error != nil {
-			return
+			return resultInfo
 		}
 		if result.RowsAffected > 0 {
 			// 注意：这里刻意不失效搜题结果缓存。
@@ -83,7 +89,9 @@ func CollectAnswer(resp model.SearchResponse, courseName, extra, provider string
 			// 会把刚刚 populate 的结果立刻作废，等于关闭缓存。
 			// 且本地题库走的是不被缓存的 local 通道（canUseSearchResultCache 已排除），
 			// 因此这里的新增不会让缓存中的第三方答案变陈旧。
-			return
+			resultInfo.ID = t.ID
+			resultInfo.Stored = true
+			return resultInfo
 		}
 
 		// 已经收录过（撞唯一键、本次没写入）：补全之前缺失的字段。
@@ -93,8 +101,10 @@ func CollectAnswer(resp model.SearchResponse, courseName, extra, provider string
 		// 冲突目标就是 (hash, course_name)，因此按这两列定位已有行。
 		tk, findErr := dao.Tiku.Where(dao.Tiku.Hash.Eq(t.Hash), dao.Tiku.CourseName.Eq(t.CourseName)).First()
 		if findErr != nil || tk == nil {
-			return
+			return resultInfo
 		}
+		resultInfo.ID = tk.ID
+		resultInfo.Stored = true
 
 		if tk.Answer == "[]" {
 			_, _ = dao.Tiku.Where(dao.Tiku.ID.Eq(tk.ID)).Update(dao.Tiku.Answer, ans)
@@ -109,4 +119,5 @@ func CollectAnswer(resp model.SearchResponse, courseName, extra, provider string
 			_, _ = dao.Tiku.Where(dao.Tiku.ID.Eq(tk.ID)).Update(dao.Tiku.SourceName, sourceName)
 		}
 	}
+	return resultInfo
 }

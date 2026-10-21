@@ -167,6 +167,15 @@ func writeAIFallbackAuditLog(identity aiFallbackAuditIdentity, requestID string,
 		fmt.Sprintf("mode=%s", strings.TrimSpace(mode)),
 		fmt.Sprintf("requestId=%s", strings.TrimSpace(requestID)),
 	}
+	route := strings.TrimSpace(result.Usage.Route)
+	if route == "" {
+		if req.DeepThinking {
+			route = internalsearch.AISearchRouteDeepNative
+		} else {
+			route = internalsearch.AISearchRouteNormal
+		}
+	}
+	descriptionParts = append(descriptionParts, "hitProvider=ai", fmt.Sprintf("aiRoute=%s", route))
 	if strings.TrimSpace(taskID) != "" {
 		descriptionParts = append(descriptionParts, fmt.Sprintf("taskId=%s", strings.TrimSpace(taskID)))
 	}
@@ -332,6 +341,7 @@ func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, reques
 
 	billingCtx.RequestID = strings.TrimSpace(requestID)
 	billingCtx.DeepThinking = req.DeepThinking
+	billingCtx.AIRoute = strings.TrimSpace(result.Usage.Route)
 	resolved := resolvedSearchRequestContext{
 		RequestID: billingCtx.RequestID,
 		AIConfig: service.AISearchRequestConfig{

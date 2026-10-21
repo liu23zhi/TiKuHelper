@@ -57,8 +57,16 @@ type searchUnauthorizedResponse struct {
 	Request searchUnauthorizedRequestSnapshot `json:"request"`
 }
 
+type searchUnauthorizedAuditSnapshot struct {
+	searchUnauthorizedResponse
+	Status   string                  `json:"status"`
+	Failures []searchProviderFailure `json:"failures,omitempty"`
+	AIRoute  string                  `json:"aiRoute,omitempty"`
+}
+
 type searchAuditMetadata struct {
 	HitProvider     string
+	AIRoute         string
 	Status          string
 	Failures        []searchProviderFailure
 	AISearchTrace   []search.AISearchTrace
@@ -92,6 +100,7 @@ type searchBillingContext struct {
 	// DeepThinking 表示这次消费走的是深度思考（带工具的多轮）还是普通搜索，
 	// 落库到 billing_records.search_mode，供账单明细/账单流水展示。
 	DeepThinking bool
+	AIRoute      string
 	// ClientIP 随账单一起落库，供账单明细展示来源 IP 归属地。
 	// logs 表没有 request_id，事后无法关联，只能在这里带上。
 	ClientIP string
@@ -253,6 +262,9 @@ var searchAIAnswer = func(resolved resolvedSearchRequestContext, req model.Searc
 	}
 	logger.SysLog(fmt.Sprintf("AI搜题开始 requestId=%s %s", strings.TrimSpace(resolved.RequestID), buildSearchRequestDebugSummary(req)))
 	answer, usage, err := client.SearchAnswerWithUsage(req)
+	if strings.TrimSpace(usage.Route) == "" {
+		usage.Route = search.AISearchRouteNormal
+	}
 	if err != nil {
 		logger.SysError(fmt.Sprintf("AI搜题失败 requestId=%s usage=%s answers=%s errorCode=%s", strings.TrimSpace(resolved.RequestID), buildAISearchUsageBasicSummary(usage), buildSearchAnswerGroupsDebugSummary(answer), searchFailureCode(err)))
 		logger.AIThinkingWithSecrets(fmt.Sprintf("AI搜题最终结果 requestId=%s status=failed deepThinking=%t usage=%s answers=%s error=%s", strings.TrimSpace(resolved.RequestID), req.DeepThinking, buildAISearchUsageDebugSummary(usage), buildSearchAnswerGroupsDebugSummary(answer), err.Error()), resolved.AIConfig.APIKey)
@@ -451,6 +463,7 @@ func Search(c *gin.Context) {
 	logger.SysLog(fmt.Sprintf("搜题响应摘要 requestId=%s hitProvider=%s usedLocal=%t usedCache=%t aiEnabled=%t %s", strings.TrimSpace(resolved.RequestID), strings.TrimSpace(auditHitProvider), usedLocalSearch, usedSearchResultCache, aiEnabled, buildSearchResponseDebugSummary(resp)))
 	audit := buildSearchAuditMetadata(c, resolved, query, rawBody, useQuery, result, usedLocalSearch, aiEnabled, auditHitProvider, req, resp)
 	audit.AISearchTrace = append([]search.AISearchTrace(nil), aiUsage.Trace...)
+	audit.AIRoute = strings.TrimSpace(aiUsage.Route)
 	status, failures := failureCollector.snapshot(len(result) > 0, resolved.SearchMode == searchModeAI && !aiEnabled)
 	if status == "failed" {
 		resp.Error = &model.SearchError{Code: "UPSTREAM_ERROR", Message: pkgerrors.PublicSearchFailureMessage}
@@ -486,8 +499,10 @@ func Search(c *gin.Context) {
 		}
 	}
 
-	if !usedSearchResultCache && len(localAnswer) == 0 && c.Query("noRecord") == "" { // 只有非缓存结果且本地题库没有答案时才记录
-		middleware.CollectAnswer(resp, req.CourseName, req.Extra, audit.HitProvider)
+	if !usedSearchResultCache && len(localAnswer) == 0 && c.Query("noRecord") == "" {
+		if collected := middleware.CollectAnswer(resp, req.CourseName, req.Extra, audit.HitProvider); collected.ID > 0 {
+			backfillSearchAuditLocalQuestionID(resolved, collected.ID)
+		}
 	}
 
 	// 广播给搭车者，并释放 key。
@@ -845,7 +860,7 @@ func resolveExplicitNormalSearchProvider(useQuery string) string {
 }
 
 func resolveSearchAuditHitProvider(useQuery string, defaultProviders []string, usedLocalSearch bool, aiEnabled bool, hasResult bool) string {
-	if !hasResult {
+	if !hasResult && !aiEnabled {
 		return ""
 	}
 	if usedLocalSearch {
@@ -868,19 +883,40 @@ func writeSearchUnauthorized(c *gin.Context, err error, rawBody string) {
 	resp := buildSearchUnauthorizedResponse(c, err, rawBody)
 	auditUser := resolveSearchUnauthorizedAuditUser(c.GetHeader("Authorization"))
 	requestSnapshot, _ := json.Marshal(resp.Request)
-	responseSnapshot, _ := json.Marshal(resp)
+	provider := ""
+	if c != nil && c.Request != nil && hasExplicitAIMode(c.Request.URL.Query()) {
+		provider = searchModeAI
+	}
+	failure := searchProviderFailure{
+		Provider: provider,
+		Code:     strings.TrimSpace(resp.Code),
+		Error:    logger.RedactSecrets(strings.TrimSpace(resp.Detail)),
+	}
+	if failure.Code == "" {
+		failure.Code = "UPSTREAM_ERROR"
+	}
+	auditResponse := searchUnauthorizedAuditSnapshot{
+		searchUnauthorizedResponse: resp,
+		Status:                     "failed",
+		Failures:                   []searchProviderFailure{failure},
+	}
+	responseSnapshot, _ := json.Marshal(auditResponse)
+	descriptionParts := []string{
+		"搜索失败",
+		fmt.Sprintf("detail=%s", resp.Detail),
+		fmt.Sprintf("provider=%s", failure.Provider),
+		fmt.Sprintf("code=%s", failure.Code),
+		fmt.Sprintf("error=%s", failure.Error),
+		fmt.Sprintf("method=%s", resp.Request.Method),
+		fmt.Sprintf("path=%s", resp.Request.Path),
+		fmt.Sprintf("clientIp=%s", resp.Request.ClientIP),
+		fmt.Sprintf("authorization=%s", resp.Request.Authorization),
+	}
 	writeAuditLog(
 		auditUser,
 		searchAuditModule,
 		logActionSearch,
-		truncateForDebug(fmt.Sprintf(
-			"搜索失败 detail=%s method=%s path=%s clientIp=%s authorization=%s",
-			resp.Detail,
-			resp.Request.Method,
-			resp.Request.Path,
-			resp.Request.ClientIP,
-			resp.Request.Authorization,
-		), 240),
+		truncateForDebug(strings.Join(descriptionParts, " "), 240),
 		resp.Request.ClientIP,
 		0,
 		string(requestSnapshot),
@@ -993,6 +1029,7 @@ func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQue
 	ctx := buildCompletedSearchBillingContext(resolved, useQuery, aiEnabled, result, hasAISearchUsage(aiUsage), usedLocalSearch)
 	ctx.ClientIP = strings.TrimSpace(clientIP)
 	ctx.DeepThinking = req.DeepThinking
+	ctx.AIRoute = strings.TrimSpace(aiUsage.Route)
 	if !ctx.Billable {
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "", clientIP, audit)
 		return nil, ""
@@ -1560,9 +1597,20 @@ func resolveCompletedSearchBillingProvider(useQuery string, defaultProviders []s
 //
 // 取值只有 deep / normal 两种，界面映射为「深度思考 / 普通搜索」；
 // 非搜题账单（充值、赠送）不写这一列，保持为空。
-func billingSearchMode(deepThinking bool) string {
+func billingSearchMode(deepThinking bool, routes ...string) string {
+	route := ""
+	if len(routes) > 0 {
+		route = routes[0]
+	}
 	if deepThinking {
-		return "deep"
+		switch strings.TrimSpace(route) {
+		case search.AISearchRouteDeepNative:
+			return search.AISearchRouteDeepNative
+		case search.AISearchRouteDeepMCP:
+			return search.AISearchRouteDeepMCP
+		default:
+			return "deep"
+		}
 	}
 	return "normal"
 }
@@ -1613,7 +1661,7 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 				// 快照里已经是 URL 编码的 question=，这里解码后存明文。
 				QuestionText: service.ExtractBillingSnapshotField(charge.Snapshot, "question"),
 				ClientIP:     strings.TrimSpace(ctx.ClientIP),
-				SearchMode:   billingSearchMode(ctx.DeepThinking),
+				SearchMode:   billingSearchMode(ctx.DeepThinking, ctx.AIRoute),
 				Remark:       "搜索答题消耗",
 			}
 			if err := tx.Create(&billingRecord).Error; err != nil {
@@ -1651,6 +1699,9 @@ func writeCompletedSearchAuditLog(resolved resolvedSearchRequestContext, useQuer
 	if audit.HitProvider != "" {
 		descriptionParts = append(descriptionParts, fmt.Sprintf("hitProvider=%s", audit.HitProvider))
 	}
+	if audit.AIRoute != "" {
+		descriptionParts = append(descriptionParts, fmt.Sprintf("aiRoute=%s", audit.AIRoute))
+	}
 	if billingProvider != "" {
 		descriptionParts = append(descriptionParts, fmt.Sprintf("billingProvider=%s", billingProvider))
 	}
@@ -1670,6 +1721,35 @@ func writeCompletedSearchAuditLog(resolved resolvedSearchRequestContext, useQuer
 		audit.RawRequest,
 		audit.RawResponse,
 	)
+}
+
+func backfillSearchAuditLocalQuestionID(resolved resolvedSearchRequestContext, questionID int32) {
+	if questionID <= 0 {
+		return
+	}
+	db := resolveSearchPersistenceDB()
+	if db == nil {
+		return
+	}
+	var entry entity.Log
+	requestMarker := "requestId=" + strings.TrimSpace(resolved.RequestID)
+	query := db.Model(&entity.Log{}).
+		Where("module = ? AND user_id = ? AND INSTR(COALESCE(description, ''), ?) > 0", searchAuditModule, resolved.UserID, requestMarker).
+		Order("id DESC")
+	if err := query.First(&entry).Error; err != nil {
+		return
+	}
+	if entry.Qid == questionID && strings.Contains(entry.Description, fmt.Sprintf("localQuestionId=%d", questionID)) {
+		return
+	}
+	description := strings.TrimSpace(entry.Description)
+	if !strings.Contains(description, "localQuestionId=") {
+		description = truncateAuditDescription(fmt.Sprintf("%s localQuestionId=%d", description, questionID))
+	}
+	_ = db.Model(&entity.Log{}).Where("id = ?", entry.ID).Updates(map[string]any{
+		"qid":         questionID,
+		"description": description,
+	})
 }
 
 func hasExplicitAIMode(query url.Values) bool {

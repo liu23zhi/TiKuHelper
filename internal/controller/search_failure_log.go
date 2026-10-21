@@ -130,8 +130,9 @@ func addSearchFailuresToAudit(audit searchAuditMetadata, status string, failures
 		model.SearchResponse
 		Status        string                  `json:"status"`
 		Failures      []searchProviderFailure `json:"failures,omitempty"`
+		AIRoute       string                  `json:"aiRoute,omitempty"`
 		AISearchTrace []search.AISearchTrace  `json:"aiSearchTrace,omitempty"`
-	}{SearchResponse: resp, Status: status, Failures: failures, AISearchTrace: audit.AISearchTrace})
+	}{SearchResponse: resp, Status: status, Failures: failures, AIRoute: audit.AIRoute, AISearchTrace: audit.AISearchTrace})
 	if err == nil {
 		audit.RawResponse = string(raw)
 	}

@@ -86,3 +86,30 @@ func TestCollectAnswerRepeatedQuestionDoesNotFailOrDuplicate(t *testing.T) {
 		t.Fatalf("expected the stored answer to be kept, got %q", answer)
 	}
 }
+
+func TestCollectAnswerReturnsInsertedAndExistingQuestionID(t *testing.T) {
+	db := newCollectAnswerTestDB(t)
+	response := model.SearchResponse{
+		Question: "返回题库 ID",
+		Options:  []string{"A"},
+		Type:     4,
+		Answer:   model.Answer{BestAnswer: []string{"答案"}},
+	}
+
+	first := CollectAnswer(response, "课程", "", "wanneng")
+	second := CollectAnswer(response, "课程", "", "wanneng")
+	if !first.Stored || first.ID <= 0 {
+		t.Fatalf("expected inserted question id, got %+v", first)
+	}
+	if !second.Stored || second.ID != first.ID {
+		t.Fatalf("expected existing question id %d, got %+v", first.ID, second)
+	}
+
+	var count int64
+	if err := db.Table(entity.TableNameTiku).Count(&count).Error; err != nil {
+		t.Fatalf("count tiku rows: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected one stored question, got %d", count)
+	}
+}

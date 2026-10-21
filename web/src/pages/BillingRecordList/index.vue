@@ -123,19 +123,6 @@
         <template #feeDetail="{ record }">
           <a-button type="link" style="padding: 0" @click="handleShowFeeDetail(record)">显示详情</a-button>
         </template>
-        <template #balanceChange="{ record }">
-          <span v-if="record.type === 'balance_adjustment'">¥ {{ formatAmount(record.balanceBefore) }} → ¥ {{ formatAmount(record.balanceAfter) }}</span>
-          <span v-else>-</span>
-        </template>
-        <template #statementVisibility="{ record }">
-          <a-switch
-            :checked="record.showInStatement !== false"
-            :loading="visibilitySaving[record.id]"
-            checked-children="显示"
-            un-checked-children="隐藏"
-            @change="checked => handleStatementVisibilityChange(record, checked)"
-          />
-        </template>
         <template #emptyText>
           <a-empty description="当前还没有账单记录。" />
         </template>
@@ -153,20 +140,6 @@
             <div><dt>时间</dt><dd>{{ formatDateTime(record.createdAt) }}</dd></div>
             <div><dt>编号</dt><dd>{{ buildBillingRecordReferenceText(record) }}</dd></div>
           </dl>
-          <div v-if="record.type === 'balance_adjustment'" class="mobile-billing-card__adjustment">
-            <span>余额变化</span>
-            <strong>¥ {{ formatAmount(record.balanceBefore) }} → ¥ {{ formatAmount(record.balanceAfter) }}</strong>
-          </div>
-          <div v-if="isAdmin" class="mobile-billing-visibility">
-            <span>用户流水展示</span>
-            <a-switch
-              :checked="record.showInStatement !== false"
-              :loading="visibilitySaving[record.id]"
-              checked-children="显示"
-              un-checked-children="隐藏"
-              @change="checked => handleStatementVisibilityChange(record, checked)"
-            />
-          </div>
           <a-button block size="small" @click="handleShowFeeDetail(record)">显示详情</a-button>
         </article>
         <a-empty v-if="!dataSource.length" description="当前还没有账单记录" />
@@ -422,24 +395,6 @@ export default defineComponent({
           },
         },
         ...baseColumns.slice(1),
-        {
-          title: '操作管理员',
-          key: 'operatorUsername',
-          width: 160,
-          customRender: ({ record }) => record.operatorUsername || '-',
-        },
-        {
-          title: '余额变化',
-          key: 'balanceChange',
-          width: 220,
-          slots: { customRender: 'balanceChange' },
-        },
-        {
-          title: '账单流水展示',
-          key: 'statementVisibility',
-          width: 130,
-          slots: { customRender: 'statementVisibility' },
-        },
       ]
     })
 
@@ -549,15 +504,24 @@ export default defineComponent({
       this.handleLoad()
     },
     handleShowFeeDetail(record) {
+      const detailRecord = { ...record, canEditStatement: this.isAdmin }
       Swal.fire({
         title: '账单详情',
-        html: buildBillingRecordFeeDetailHtml(record),
+        html: buildBillingRecordFeeDetailHtml(detailRecord),
         width: 560,
         confirmButtonText: '关闭',
         heightAuto: false,
         scrollbarPadding: false,
         customClass: {
           popup: 'billing-fee-popup',
+        },
+        didOpen: () => {
+          const button = document.querySelector('.billing-statement-toggle')
+          if (!button) return
+          button.addEventListener('click', () => {
+            this.handleStatementVisibilityChange(record, button.dataset.showInStatement !== 'true')
+            Swal.close()
+          }, { once: true })
         },
       })
     },
@@ -673,7 +637,6 @@ export default defineComponent({
   }
 
   .mobile-billing-card__header,
-  .mobile-billing-visibility,
   .mobile-billing-card__adjustment {
     display: flex;
     align-items: center;
@@ -709,7 +672,6 @@ export default defineComponent({
   }
 
   .mobile-billing-card__meta dt,
-  .mobile-billing-visibility span,
   .mobile-billing-card__adjustment span {
     color: var(--console-muted, #64748b);
     font-size: 11px;
@@ -844,6 +806,24 @@ export default defineComponent({
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+:global(.billing-fee-item-category) {
+  margin: -4px 14px 0;
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+:global(.billing-statement-toggle) {
+  margin: 4px 14px 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #2563eb;
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
 }
 
 :global(.billing-fee-provider) {

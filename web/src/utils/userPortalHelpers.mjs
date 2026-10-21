@@ -183,6 +183,12 @@ export function buildBillingRecordModeText(record) {
   if (mode === 'deep') {
     return '深度思考'
   }
+  if (mode === 'deep_native') {
+    return '深度思考 原生工具'
+  }
+  if (mode === 'deep_mcp') {
+    return '深度思考 MCP编排'
+  }
   if (mode === 'normal') {
     return '普通搜索'
   }
@@ -237,12 +243,19 @@ export function buildBillingRecordAmountText(record) {
 export function buildBillingRecordFeeDetails(record) {
   const feeDetails = Array.isArray(record?.feeDetails) ? record.feeDetails : []
   const normalized = feeDetails
-    .map((item) => ({
-      provider: String(item?.provider || '').trim(),
-      providerLabel: String(item?.providerLabel || item?.provider || '').trim() || '-',
-      amount: Number(item?.amount || 0),
-      ...(String(item?.detail || '').trim() ? { detail: String(item.detail).trim() } : {}),
-    }))
+    .map((item) => {
+      const normalizedItem = {
+        provider: String(item?.provider || '').trim(),
+        providerLabel: String(item?.providerLabel || item?.provider || '').trim() || '-',
+        amount: Number(item?.amount || 0),
+      }
+      const category = String(item?.category || '').trim()
+      const callIndex = Number(item?.callIndex || 0)
+      if (category) normalizedItem.category = category
+      if (Number.isInteger(callIndex) && callIndex > 0) normalizedItem.callIndex = callIndex
+      if (String(item?.detail || '').trim()) normalizedItem.detail = String(item.detail).trim()
+      return normalizedItem
+    })
     .filter((item) => Number.isFinite(item.amount))
 
   if (normalized.length > 0) {
@@ -268,6 +281,7 @@ export function buildBillingRecordFeeDetailHtml(record) {
         ${escapeHtmlText(buildBillingRecordAmountText({ amount: item.amount, direction }))}
       </strong>
     </div>
+    ${item.category ? `<div class="billing-fee-item-category">${escapeHtmlText(item.category)}${item.callIndex > 0 ? ` 第${item.callIndex}次` : ''}</div>` : ''}
     ${item.detail ? `<div class="billing-fee-item-detail">${escapeHtmlText(item.detail)}</div>` : ''}
   `).join('')
   const totalAmount = Number(record?.amount || 0)
@@ -275,6 +289,17 @@ export function buildBillingRecordFeeDetailHtml(record) {
     amount: Number.isFinite(totalAmount) ? totalAmount : 0,
     direction,
   })
+  const metadata = []
+  if (String(record?.operatorUsername || '').trim()) {
+    metadata.push(`操作管理员：${record.operatorUsername}${record.operatorId ? `（ID ${record.operatorId}）` : ''}`)
+  }
+  if (record?.type === 'balance_adjustment') {
+    metadata.push(`余额变化：¥ ${formatMoneyValue(record.balanceBefore || 0)} → ¥ ${formatMoneyValue(record.balanceAfter || 0)}`)
+    metadata.push(`账单流水展示：${record.showInStatement === false ? '隐藏' : '显示'}`)
+  }
+  if (record?.canEditStatement) {
+    metadata.push('__STATEMENT_CONTROL__')
+  }
 
   return `
     <div class="billing-fee-detail">
@@ -292,6 +317,7 @@ export function buildBillingRecordFeeDetailHtml(record) {
           </strong>
         </div>
       </section>
+      ${metadata.length ? `<section class="billing-fee-card billing-fee-card--metadata">${metadata.map((item) => item === '__STATEMENT_CONTROL__' ? `<button type="button" class="billing-statement-toggle" data-show-in-statement="${record.showInStatement !== false}">${record.showInStatement === false ? '显示在用户账单流水' : '从用户账单流水隐藏'}</button>` : `<div class="billing-fee-item-detail">${escapeHtmlText(item)}</div>`).join('')}</section>` : ''}
     </div>
   `
 }

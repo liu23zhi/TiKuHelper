@@ -27,12 +27,14 @@ test('user management renders readable mobile user cards with usable mobile pagi
   assert.match(source, /<a-col\s+:xs="12"\s+:sm="12"\s+:lg="6"/);
 });
 
-test('billing records render mobile detail cards including statement visibility', async () => {
+test('billing records render mobile detail cards with statement controls inside details', async () => {
   const source = await read('pages/BillingRecordList/index.vue');
   assert.match(source, /class="mobile-billing-list"/);
   assert.match(source, /class="mobile-billing-card"/);
   assert.match(source, /class="desktop-billing-table"/);
-  assert.match(source, /class="mobile-billing-visibility"/);
+  assert.doesNotMatch(source, /class="mobile-billing-visibility"/);
+  assert.match(source, /billing-statement-toggle/);
+  assert.match(source, /handleShowFeeDetail/);
   assert.match(source, /\bisAdmin,\s*pagination/);
   assert.match(source, /@media\s*\(max-width:\s*640px\)/);
   assert.match(source, /<a-col\s+:xs="12"\s+:sm="12"\s+:lg="6"/);

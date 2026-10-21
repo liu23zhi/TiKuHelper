@@ -34,3 +34,4 @@ adapter-service.exe
 .superdesign
 # 本地设计工具生成的技能与工作树不属于应用源码
 .claude/
+/run/nginx/logs
