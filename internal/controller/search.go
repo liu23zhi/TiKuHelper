@@ -1085,7 +1085,7 @@ func resolveSearchPersistenceDB() *gorm.DB {
 // 第二个返回值是面向调用方的非阻断提示（目前只有「AI 模型未配置价格」），
 // 不影响答案返回，只提醒管理员去价格表补价。
 func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRequestContext, useQuery string, req model.SearchRequest, aiUsage search.AISearchUsage, usedLocalSearch bool, hasSearchAnswer bool) ([]searchBillingCharge, string, error) {
-	charges := make([]searchBillingCharge, 0, 2+len(aiUsage.SearchCalls))
+	charges := make([]searchBillingCharge, 0, 2+len(aiUsage.SearchCalls)+len(aiUsage.WebReadCalls))
 	warning := ""
 
 	if resolved.SearchMode == searchModeNormal && hasSearchAnswer {
@@ -1117,33 +1117,38 @@ func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRe
 		}
 		charges = append(charges, resolvedCharge.Charge)
 	}
-	if len(aiUsage.SearchCalls) > 0 {
-		searchPrice := service.GetAISearchPricePerCallWithDB(db)
-		if searchPrice > 0 {
-			for index, call := range aiUsage.SearchCalls {
-				amount := util.RoundMoney(searchPrice)
-				charges = append(charges, searchBillingCharge{
-					Provider: "ai_search",
-					Amount:   amount,
-					Snapshot: buildAISearchCallBillingSnapshot(req, call, index+1, searchPrice, amount),
-				})
-			}
-		}
-	}
-	if len(aiUsage.WebReadCalls) > 0 {
-		price := service.GetWebReadPricePerCallWithDB(db)
-		if price > 0 {
-			for index, call := range aiUsage.WebReadCalls {
-				if strings.TrimSpace(call.Status) != "success" {
-					continue
-				}
-				amount := util.RoundMoney(price)
-				charges = append(charges, searchBillingCharge{Provider: "web_read", Amount: amount, Snapshot: buildAIWebReadBillingSnapshot(req, call, index+1, price, amount)})
-			}
-		}
-	}
+	charges = appendAIToolBillingCharges(charges, db, req, aiUsage)
 
 	return charges, warning, nil
+}
+
+// appendAIToolBillingCharges keeps tool usage visible even when its configured
+// price is zero. Zero-amount rows do not change balances, but preserve search
+// queries and successful web reads in the billing detail.
+func appendAIToolBillingCharges(charges []searchBillingCharge, db *gorm.DB, req model.SearchRequest, usage search.AISearchUsage) []searchBillingCharge {
+	searchPrice := service.GetAISearchPricePerCallWithDB(db)
+	for index, call := range usage.SearchCalls {
+		amount := util.RoundMoney(searchPrice)
+		charges = append(charges, searchBillingCharge{
+			Provider: "ai_search",
+			Amount:   amount,
+			Snapshot: buildAISearchCallBillingSnapshot(req, call, index+1, searchPrice, amount),
+		})
+	}
+
+	webReadPrice := service.GetWebReadPricePerCallWithDB(db)
+	for index, call := range usage.WebReadCalls {
+		if strings.TrimSpace(call.Status) != "success" {
+			continue
+		}
+		amount := util.RoundMoney(webReadPrice)
+		charges = append(charges, searchBillingCharge{
+			Provider: "web_read",
+			Amount:   amount,
+			Snapshot: buildAIWebReadBillingSnapshot(req, call, index+1, webReadPrice, amount),
+		})
+	}
+	return charges
 }
 
 func buildAIWebReadBillingSnapshot(req model.SearchRequest, call search.AIWebReadCallUsage, index int, price float64, amount float64) string {

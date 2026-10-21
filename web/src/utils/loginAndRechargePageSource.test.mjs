@@ -217,6 +217,14 @@ test('Billing fee item accent uses a real border instead of a global pseudo sele
   assert.doesNotMatch(content, /:global\([^)]*\)::(?:before|after)/);
 });
 
+test('Billing statement switch aligns its thumb without transform state', async () => {
+  const content = await readFile(path.join(__dirname, '..', 'pages', 'BillingRecordList', 'index.vue'), 'utf8');
+
+  assert.match(content, /appearance:\s*none;/);
+  assert.match(content, /:global\(\.billing-statement-switch\[aria-checked="true"\]\)\s*\{[\s\S]*?justify-content:\s*flex-end;[\s\S]*?\}/);
+  assert.doesNotMatch(content, /translateX\(18px\)/);
+});
+
 test('Personal billing flow does not render the owner username column', async () => {
   const content = await readFile(userUsagePagePath, 'utf8');
 

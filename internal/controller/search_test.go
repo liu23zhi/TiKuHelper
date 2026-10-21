@@ -1194,8 +1194,16 @@ func TestResolveCompletedSearchBillingChargesAddsOneChargePerActualAISearch(t *t
 	if err != nil {
 		t.Fatalf("resolve zero-priced search calls: %v", err)
 	}
-	if len(charges) != 0 {
-		t.Fatalf("zero price should not add fee rows, got %+v", charges)
+	if len(charges) != 2 {
+		t.Fatalf("zero-priced search calls must still be visible as fee rows, got %+v", charges)
+	}
+	for index, charge := range charges {
+		if charge.Provider != "ai_search" || charge.Amount != 0 {
+			t.Fatalf("unexpected zero-priced search fee %d: %+v", index, charge)
+		}
+		if got := service.ExtractBillingSnapshotField(charge.Snapshot, "unitPrice"); got != "0.000000" {
+			t.Fatalf("expected zero unit price in snapshot, got %q", got)
+		}
 	}
 }
 
@@ -1217,6 +1225,17 @@ func TestResolveCompletedSearchBillingChargesAddsCompletedWebReadOnly(t *testing
 	}
 	if got := service.ExtractBillingSnapshotField(charges[0].Snapshot, "webReadURL"); got != "https://example.com/a" {
 		t.Fatalf("expected URL in snapshot, got %q", got)
+	}
+
+	if err := service.SetWebReadPricePerCallWithDB(db, 0); err != nil {
+		t.Fatalf("disable web-read price: %v", err)
+	}
+	charges, _, err = resolveCompletedSearchBillingCharges(db, resolvedSearchRequestContext{SearchMode: searchModeAI}, "ai", model.SearchRequest{Question: "题目"}, usage, false, true)
+	if err != nil {
+		t.Fatalf("resolve zero-priced web-read calls: %v", err)
+	}
+	if len(charges) != 1 || charges[0].Provider != "web_read" || charges[0].Amount != 0 {
+		t.Fatalf("zero-priced successful web-read must remain visible as a fee row, got %+v", charges)
 	}
 }
 

@@ -15,7 +15,6 @@ import (
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/model"
-	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 )
 
@@ -363,25 +362,7 @@ func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, reques
 		}
 		charges = append(charges, resolvedCharge.Charge)
 	}
-	if price := service.GetAISearchPricePerCallWithDB(db); price > 0 {
-		for index, call := range usage.SearchCalls {
-			amount := util.RoundMoney(price)
-			charges = append(charges, searchBillingCharge{
-				Provider: "ai_search",
-				Amount:   amount,
-				Snapshot: buildAISearchCallBillingSnapshot(req, call, index+1, price, amount),
-			})
-		}
-	}
-	if price := service.GetWebReadPricePerCallWithDB(db); price > 0 {
-		for index, call := range usage.WebReadCalls {
-			if strings.TrimSpace(call.Status) != "success" {
-				continue
-			}
-			amount := util.RoundMoney(price)
-			charges = append(charges, searchBillingCharge{Provider: "web_read", Amount: amount, Snapshot: buildAIWebReadBillingSnapshot(req, call, index+1, price, amount)})
-		}
-	}
+	charges = appendAIToolBillingCharges(charges, db, req, usage)
 	if len(charges) == 0 {
 		return warning, result, nil
 	}

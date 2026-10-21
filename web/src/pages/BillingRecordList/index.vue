@@ -1064,19 +1064,27 @@ export default defineComponent({
 }
 
 :global(button.billing-statement-switch) {
-  position: relative;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
   flex: 0 0 auto;
   width: 40px;
   height: 22px;
-  padding: 0;
-  border: 0;
+  padding: 3px;
+  border: 1px solid rgb(148 163 184 / 45%);
   border-radius: 999px;
   background: #94a3b8;
   cursor: pointer;
+  line-height: 0;
+  vertical-align: middle;
+  appearance: none;
   transition: background 0.16s ease;
 }
 
 :global(.billing-statement-switch[aria-checked="true"]) {
+  justify-content: flex-end;
+  border-color: #2563eb;
   background: #2563eb;
 }
 
@@ -1086,20 +1094,13 @@ export default defineComponent({
 }
 
 :global(.billing-statement-switch__thumb) {
-  position: relative;
-  top: 3px;
-  left: 3px;
   display: block;
+  flex: 0 0 16px;
   width: 16px;
   height: 16px;
   border-radius: 50%;
   background: #fff;
   box-shadow: 0 1px 3px rgb(15 23 42 / 24%);
-  transition: transform 0.16s ease;
-}
-
-:global(.billing-statement-switch[aria-checked="true"] .billing-statement-switch__thumb) {
-  transform: translateX(18px);
 }
 
 :global(.billing-statement-switch:focus-visible) {
