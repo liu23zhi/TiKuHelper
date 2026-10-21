@@ -198,6 +198,26 @@ func AuthOrAccessToken(c *gin.Context) {
 	Auth(c)
 }
 
+// AuthAccessToken requires a valid access token and never falls back to login JWTs or cookies.
+func AuthAccessToken(c *gin.Context) {
+	authorization := strings.TrimSpace(c.Request.Header.Get("Authorization"))
+	if authorization == "" {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"message": "请提供有效访问令牌"})
+		return
+	}
+
+	authCtx, err := service.ResolveAccessTokenFromBasicAuth(dao.User.UnderlyingDB(), authorization)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"message": "请提供有效访问令牌"})
+		return
+	}
+
+	user := authCtx.User
+	c.Set("user", &user)
+	c.Set("access_token", &authCtx.AccessToken)
+	c.Next()
+}
+
 // UserInfo 获取用户信息
 func UserInfo(c *gin.Context) {
 	v, _ := c.Get(`user`)

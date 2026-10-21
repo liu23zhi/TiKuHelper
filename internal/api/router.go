@@ -37,8 +37,8 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.POST("/uapi/search/aggregate", controller.Auth, middleware.RequireAdmin, controller.UAPISearchAggregate)
 
 	apiRouter.POST("/search", controller.Search)
-	apiRouter.POST("/search/tasks", controller.AuthOrAccessToken, controller.CreateSearchTask)
-	apiRouter.GET("/search/status", controller.AuthOrAccessToken, controller.GetSearchTaskStatus)
+	apiRouter.POST("/search/tasks", controller.AuthAccessToken, controller.CreateSearchTask)
+	apiRouter.GET("/search/status", controller.AuthAccessToken, controller.GetSearchTaskStatus)
 	apiRouter.POST("/ai-fallback", controller.AuthOrAccessToken, controller.AIFallback)
 	apiRouter.POST("/ai-fallback/tasks", controller.AuthOrAccessToken, controller.CreateAIFallbackTask)
 	apiRouter.GET("/ai-fallback/status", controller.AuthOrAccessToken, controller.GetAIFallbackTaskStatus)

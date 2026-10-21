@@ -15,7 +15,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	searchpkg "github.com/itihey/tikuAdapter/internal/search"
+	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/model"
+	"github.com/itihey/tikuAdapter/pkg/util"
 )
 
 func TestSearchTasksCreateReturnsAcceptedTaskEnvelope(t *testing.T) {
@@ -78,6 +80,137 @@ func TestSearchTasksCreateReturnsAcceptedTaskEnvelope(t *testing.T) {
 				t.Fatalf("expected completed search response, got %+v", completed)
 			}
 		})
+}
+
+func TestStrictAccessTokenRoutesCreateAndReadTasksAndRejectLoginAuthWithoutSearch(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 0, "strict-task-owner", "user")
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 12.5).Error; err != nil {
+		t.Fatalf("seed user balance: %v", err)
+	}
+	token := seedControllerTokenForUser(t, db, user, "strict-task-access-token", 0)
+	seedControllerDefaultSearchProviderConfig(t, db, "icodef", 2.5)
+	var providerCalls atomic.Int32
+
+	withStubSearchDependencies(t,
+		(&stubSearchClient{}).SearchAnswer,
+		func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+			return resolvedSearchRequestContext{
+				SearchMode:                 searchModeNormal,
+				UsedDefaultSearch:          true,
+				UsedDefaultSearchProviders: []string{"icodef"},
+				Tokens:                     map[string]string{"icodef": "default-icodef"},
+				UserID:                     user.ID,
+				AccessTokenID:              token.ID,
+				RequestID:                  "req-strict-async-search",
+				AccessTokenCtx:             &service.AccessTokenAuthContext{User: user, AccessToken: token},
+			}, nil
+		},
+		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+			return []func(model.SearchRequest) ([][]string, error){func(model.SearchRequest) ([][]string, error) {
+				providerCalls.Add(1)
+				return [][]string{{"有效令牌答案"}}, nil
+			}}
+		},
+		nil,
+		func() {
+			router := gin.New()
+			router.POST("/adapter-service/search/tasks", AuthAccessToken, CreateSearchTask)
+			router.GET("/adapter-service/search/status", AuthAccessToken, GetSearchTaskStatus)
+
+			create := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search/tasks?use=icodef", bytes.NewBufferString(`{"question":"有效访问令牌题目","options":["A","B"],"skipCache":true}`))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Authorization", "Bearer "+token.TokenValue)
+			router.ServeHTTP(create, request)
+			if create.Code != http.StatusAccepted {
+				t.Fatalf("valid access token should create task, got %d: %s", create.Code, create.Body.String())
+			}
+			var created searchTaskResponse
+			if err := json.Unmarshal(create.Body.Bytes(), &created); err != nil {
+				t.Fatalf("decode create response: %v", err)
+			}
+			completed := waitForSearchTask(t, user.ID, created.TaskID)
+			if completed.Status != searchTaskStatusSucceeded {
+				t.Fatalf("expected successful task, got %+v", completed)
+			}
+
+			for i := 0; i < 3; i++ {
+				status := httptest.NewRecorder()
+				statusRequest := httptest.NewRequest(http.MethodGet, searchTaskStatusURL(created.TaskID), nil)
+				statusRequest.Header.Set("Authorization", "Bearer "+token.TokenValue)
+				router.ServeHTTP(status, statusRequest)
+				if status.Code != http.StatusOK {
+					t.Fatalf("valid access token should read own task, got %d: %s", status.Code, status.Body.String())
+				}
+			}
+
+			jwt := util.GenerateJwtForUser(user.ID, user.Password)
+			authCases := []struct {
+				name   string
+				auth   string
+				cookie bool
+			}{
+				{name: "missing"},
+				{name: "login jwt", auth: jwt},
+				{name: "login cookie", cookie: true},
+			}
+			for _, endpoint := range []struct {
+				name   string
+				method string
+				path   string
+				body   string
+			}{
+				{name: "create", method: http.MethodPost, path: "/adapter-service/search/tasks?use=stub", body: `{"question":"不得执行"}`},
+				{name: "status", method: http.MethodGet, path: searchTaskStatusURL(created.TaskID)},
+			} {
+				for _, tc := range authCases {
+					t.Run(endpoint.name+"-"+tc.name, func(t *testing.T) {
+						denied := httptest.NewRecorder()
+						deniedRequest := httptest.NewRequest(endpoint.method, endpoint.path, bytes.NewBufferString(endpoint.body))
+						if endpoint.body != "" {
+							deniedRequest.Header.Set("Content-Type", "application/json")
+						}
+						if tc.auth != "" {
+							deniedRequest.Header.Set("Authorization", tc.auth)
+						}
+						if tc.cookie {
+							deniedRequest.AddCookie(&http.Cookie{Name: authCookieName, Value: jwt})
+						}
+						router.ServeHTTP(denied, deniedRequest)
+						if denied.Code != http.StatusUnauthorized {
+							t.Fatalf("expected 401, got %d: %s", denied.Code, denied.Body.String())
+						}
+					})
+				}
+			}
+			if got := providerCalls.Load(); got != 1 {
+				t.Fatalf("rejected login requests reached search provider: calls=%d", got)
+			}
+			var asyncBillingCount int64
+			if err := db.Model(&entity.BillingRecord{}).Where("request_id = ?", "req-strict-async-search").Count(&asyncBillingCount).Error; err != nil {
+				t.Fatalf("count async search billing records: %v", err)
+			}
+			if asyncBillingCount != 1 {
+				t.Fatalf("repeated status reads should retain one billing record, got %d", asyncBillingCount)
+			}
+			var balance float64
+			if err := db.Model(&entity.User{}).Select("balance").Where("id = ?", user.ID).Scan(&balance).Error; err != nil {
+				t.Fatalf("read user balance: %v", err)
+			}
+			if balance != 10 {
+				t.Fatalf("expected one async search charge (12.5 -> 10), got balance %v", balance)
+			}
+			var billingCount int64
+			if err := db.Model(&entity.BillingRecord{}).Count(&billingCount).Error; err != nil {
+				t.Fatalf("count billing records: %v", err)
+			}
+			if billingCount != 1 {
+				t.Fatalf("expected only the authorized async search to create a billing record, got %d", billingCount)
+			}
+		},
+	)
 }
 
 func TestSearchTaskNoAnswerSucceedsAndStatusReadsDoNotRepeatSearch(t *testing.T) {

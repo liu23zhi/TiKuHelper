@@ -19,6 +19,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/service"
+	"github.com/itihey/tikuAdapter/pkg/model"
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 	"net/url"
@@ -479,6 +480,80 @@ func TestAuthRejectsTokenAfterPasswordChange(t *testing.T) {
 
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("expected status 401 after password change, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestAuthAccessTokenRejectsLoginSessionsAndAcceptsAccessTokens(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	owner := seedControllerUser(t, db, 901, "strict-auth-owner", "user")
+	other := seedControllerUser(t, db, 902, "strict-auth-other", "user")
+	accessToken := seedControllerTokenForUser(t, db, owner, "strict-access-token", 0)
+	otherToken := seedControllerTokenForUser(t, db, other, "other-access-token", 0)
+	jwt := util.GenerateJwtForUser(owner.ID, owner.Password)
+
+	for _, tc := range []struct {
+		name       string
+		authorize  string
+		cookie     string
+		wantStatus int
+		wantUserID int32
+	}{
+		{name: "missing", wantStatus: http.StatusUnauthorized},
+		{name: "invalid", authorize: "Bearer invalid-token", wantStatus: http.StatusUnauthorized},
+		{name: "jwt", authorize: jwt, wantStatus: http.StatusUnauthorized},
+		{name: "cookie", cookie: jwt, wantStatus: http.StatusUnauthorized},
+		{name: "bearer access token", authorize: "Bearer " + accessToken.TokenValue, wantStatus: http.StatusNoContent, wantUserID: owner.ID},
+		{name: "basic access token", authorize: "Basic " + accessToken.TokenValue, wantStatus: http.StatusNoContent, wantUserID: owner.ID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reached := false
+			router := gin.New()
+			router.GET("/strict", AuthAccessToken, func(c *gin.Context) {
+				reached = true
+				userValue, ok := c.Get("user")
+				if !ok || userValue.(*entity.User).ID != tc.wantUserID {
+					t.Errorf("unexpected authenticated user: %#v", userValue)
+				}
+				tokenValue, ok := c.Get("access_token")
+				if !ok || tokenValue.(*entity.AccessToken).ID != accessToken.ID {
+					t.Errorf("unexpected access token context: %#v", tokenValue)
+				}
+				c.Status(http.StatusNoContent)
+			})
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "/strict", nil)
+			if tc.authorize != "" {
+				request.Header.Set("Authorization", tc.authorize)
+			}
+			if tc.cookie != "" {
+				request.AddCookie(&http.Cookie{Name: authCookieName, Value: tc.cookie})
+			}
+			router.ServeHTTP(recorder, request)
+			if recorder.Code != tc.wantStatus {
+				t.Fatalf("expected status %d, got %d: %s", tc.wantStatus, recorder.Code, recorder.Body.String())
+			}
+			if reached != (tc.wantUserID > 0) {
+				t.Fatalf("downstream reached=%t, want authenticated=%t", reached, tc.wantUserID > 0)
+			}
+		})
+	}
+
+	taskID, _, err := defaultSearchTaskStore.create(owner.ID, "", "", func() (model.SearchResponse, error) {
+		return model.SearchResponse{Question: "owner-only"}, nil
+	})
+	if err != nil {
+		t.Fatalf("create task fixture: %v", err)
+	}
+	waitForSearchTask(t, owner.ID, taskID)
+	router := gin.New()
+	router.GET("/adapter-service/search/status", AuthAccessToken, GetSearchTaskStatus)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, searchTaskStatusURL(taskID), nil)
+	request.Header.Set("Authorization", "Bearer "+otherToken.TokenValue)
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("other token should receive 403, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 }
 
