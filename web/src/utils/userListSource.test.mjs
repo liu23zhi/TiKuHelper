@@ -16,6 +16,9 @@ test('UserList create-user modal explains the password rule and uses the dedicat
   assert.match(content, /runAdminPasswordAction/);
   assert.match(content, /Swal\.fire/);
   assert.match(content, /confirmWeakPassword/);
+  assert.doesNotMatch(content, /async confirmWeakPassword\(action, password\)/);
+  assert.match(content, /async confirmWeakPassword\(action\)/);
+  assert.match(content, /撞库/);
   assert.doesNotMatch(content, /message\.warning\('请输入用户名和密码'\)/);
 });
 

@@ -502,6 +502,18 @@ func TestBindWechatLoginWithDBBindsExistingAccountAndConsumesToken(t *testing.T)
 	}
 }
 
+func TestBindWechatLoginWithDBRejectsPasswordOverBcryptLimit(t *testing.T) {
+	db := newWechatLoginTestDB(t)
+	if err := db.Create(&entity.User{ID: 21, Username: "overlong-bind", Password: "legacy", Role: "user", Status: "enabled", RegisterSource: "public"}).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	store := NewWechatBindTokenStore()
+	bindToken := store.Create("openid-overlong", time.Now().Add(5*time.Minute))
+	if _, err := BindWechatLoginWithDB(db, WechatBindInput{Store: store, BindToken: bindToken, Username: "overlong-bind", Password: strings.Repeat("a", 73)}); err == nil || !strings.Contains(err.Error(), "用户名或密码错误") {
+		t.Fatalf("expected generic password rejection, got %v", err)
+	}
+}
+
 func TestBindWechatToUserWithDBBindsCurrentUserAndConsumesToken(t *testing.T) {
 	db := newWechatLoginTestDB(t)
 	if err := db.Create(&entity.User{

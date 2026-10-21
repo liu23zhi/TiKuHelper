@@ -437,15 +437,17 @@ export default defineComponent({
   },
   methods: {
     async handleStatementVisibilityChange(record, show) {
-      if (visibilitySaving[record.id]) return
+      if (visibilitySaving[record.id]) return false
       visibilitySaving[record.id] = true
       try {
         const res = await updateBillingStatementVisibility(record.id, show)
         if (res?.status !== 200) throw new Error(res?.message || '修改流水可见性失败')
         record.showInStatement = show
         message.success(show ? '已在用户账单流水中显示' : '已从用户账单流水中隐藏，管理员明细仍保留')
+        return true
       } catch (error) {
         message.error(error?.response?.data?.message || error?.message || '修改流水可见性失败')
+        return false
       } finally {
         visibilitySaving[record.id] = false
       }
@@ -516,12 +518,16 @@ export default defineComponent({
           popup: 'billing-fee-popup',
         },
         didOpen: () => {
-          const button = document.querySelector('.billing-statement-toggle')
-          if (!button) return
-          button.addEventListener('click', () => {
-            this.handleStatementVisibilityChange(record, button.dataset.showInStatement !== 'true')
-            Swal.close()
-          }, { once: true })
+          const toggle = document.querySelector('.billing-statement-toggle')
+          if (!toggle) return
+          toggle.addEventListener('click', async () => {
+            if (toggle.disabled) return
+            const show = toggle.getAttribute('aria-checked') !== 'true'
+            toggle.disabled = true
+            const saved = await this.handleStatementVisibilityChange(record, show)
+            if (saved) toggle.setAttribute('aria-checked', String(show))
+            toggle.disabled = false
+          })
         },
       })
     },
@@ -815,15 +821,61 @@ export default defineComponent({
   font-weight: 600;
 }
 
-:global(.billing-statement-toggle) {
-  margin: 4px 14px 0;
+:global(.billing-statement-control) {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+  color: #334155;
+  font-size: 13px;
+}
+
+:global(button.billing-statement-switch) {
+  position: relative;
+  flex: 0 0 auto;
+  width: 40px;
+  height: 22px;
   padding: 0;
   border: 0;
-  background: transparent;
-  color: #2563eb;
+  border-radius: 999px;
+  background: #94a3b8;
   cursor: pointer;
-  font-size: 12px;
-  text-align: left;
+  transition: background 0.16s ease;
+}
+
+:global(.billing-statement-switch[aria-checked="true"]) {
+  background: #2563eb;
+}
+
+:global(.billing-statement-switch:disabled) {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+:global(.billing-statement-switch__thumb) {
+  position: relative;
+  top: 3px;
+  left: 3px;
+  display: block;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(15 23 42 / 24%);
+  transition: transform 0.16s ease;
+}
+
+:global(.billing-statement-switch[aria-checked="true"] .billing-statement-switch__thumb) {
+  transform: translateX(18px);
+}
+
+:global(.billing-statement-switch:focus-visible) {
+  outline: 2px solid #93c5fd;
+  outline-offset: 2px;
+}
+
+:global(.billing-statement-switch__label) {
+  user-select: none;
 }
 
 :global(.billing-fee-provider) {

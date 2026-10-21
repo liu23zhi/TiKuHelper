@@ -353,7 +353,7 @@ export function buildBillingRecordFeeDetailHtml(record) {
           </strong>
         </div>
       </section>
-      ${metadata.length ? `<section class="billing-fee-card billing-fee-card--metadata">${metadata.map((item) => item === '__STATEMENT_CONTROL__' ? `<button type="button" class="billing-statement-toggle" data-show-in-statement="${record.showInStatement !== false}">${record.showInStatement === false ? '显示在用户账单流水' : '从用户账单流水隐藏'}</button>` : `<div class="billing-fee-item-detail">${escapeHtmlText(item)}</div>`).join('')}</section>` : ''}
+      ${metadata.length ? `<section class="billing-fee-card billing-fee-card--metadata">${metadata.map((item) => item === '__STATEMENT_CONTROL__' ? `<div class="billing-statement-control"><button type="button" role="switch" aria-label="显示在用户账单流水" aria-checked="${record.showInStatement !== false}" class="billing-statement-switch billing-statement-toggle" data-show-in-statement="${record.showInStatement !== false}"><span class="billing-statement-switch__thumb" aria-hidden="true"></span></button><span class="billing-statement-switch__label">显示在用户账单流水</span></div>` : `<div class="billing-fee-item-detail">${escapeHtmlText(item)}</div>`).join('')}</section>` : ''}
     </div>
   `
 }

@@ -384,6 +384,33 @@ func TestUserLoginStoresLastLoginMetadata(t *testing.T) {
 	}
 }
 
+func TestUserLoginRejectsPasswordOverBcryptLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	if err := db.Create(&entity.User{ID: 67, Username: "login-overlong", Password: "legacy", Status: "enabled", Role: "user", RegisterSource: "public"}).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	originalConsume := consumeCaptchaTokenWithDB
+	defer func() { consumeCaptchaTokenWithDB = originalConsume }()
+	consumeCalls := 0
+	consumeCaptchaTokenWithDB = func(string, string, string) error {
+		consumeCalls++
+		return nil
+	}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/login", bytes.NewBufferString(fmt.Sprintf(`{"username":"login-overlong","password":%q,"captchaToken":"token"}`, strings.Repeat("a", 73))))
+	request.Header.Set("Content-Type", "application/json")
+	ctx.Request = request
+	UserLogin(ctx)
+	if recorder.Code != http.StatusBadRequest || !bytes.Contains(recorder.Body.Bytes(), []byte("用户名或密码错误")) {
+		t.Fatalf("expected generic login rejection, got status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if consumeCalls != 0 {
+		t.Fatalf("overlong password should be rejected before consuming captcha, got %d calls", consumeCalls)
+	}
+}
+
 func TestAuthRejectsDisabledUser(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newUserControllerTestDB(t)
@@ -603,6 +630,57 @@ func TestUserRegisterRejectsWeakPassword(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("expected weak-password registration to be rejected, got count %d", count)
+	}
+}
+
+func TestUserRegisterRejectsPasswordOverBcryptLimitAsBadRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	if err := db.Create(&entity.SystemSetting{Key: service.RegisterEnabledSettingKey, Value: "true"}).Error; err != nil {
+		t.Fatalf("seed system setting: %v", err)
+	}
+	originalConsume := consumeCaptchaTokenWithDB
+	originalSMS := verifySMSCodeWithDB
+	defer func() {
+		consumeCaptchaTokenWithDB = originalConsume
+		verifySMSCodeWithDB = originalSMS
+	}()
+	consumeCaptchaTokenWithDB = func(string, string, string) error { return nil }
+	verifySMSCodeWithDB = func(string, string, string) error { return nil }
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	payload := []byte(fmt.Sprintf(`{"username":"register_overlong","password":%q,"phone":"13800000000","smsCode":"123456","captchaToken":"token"}`, strings.Repeat("a", 73)))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	UserRegister(ctx)
+	if recorder.Code != http.StatusBadRequest || !bytes.Contains(recorder.Body.Bytes(), []byte("72")) {
+		t.Fatalf("expected bcrypt-length validation 400, got status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestUserRegisterAcceptsStrongPasswordAtBcryptLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	if err := db.Create(&entity.SystemSetting{Key: service.RegisterEnabledSettingKey, Value: "true"}).Error; err != nil {
+		t.Fatalf("seed system setting: %v", err)
+	}
+	originalConsume := consumeCaptchaTokenWithDB
+	originalSMS := verifySMSCodeWithDB
+	defer func() {
+		consumeCaptchaTokenWithDB = originalConsume
+		verifySMSCodeWithDB = originalSMS
+	}()
+	consumeCaptchaTokenWithDB = func(string, string, string) error { return nil }
+	verifySMSCodeWithDB = func(string, string, string) error { return nil }
+	password := "Aa1!" + strings.Repeat("x", 68)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	payload := []byte(fmt.Sprintf(`{"username":"register_72bytes","password":%q,"phone":"13800000000","smsCode":"123456","captchaToken":"token"}`, password))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	UserRegister(ctx)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected exactly 72-byte password to register, got status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

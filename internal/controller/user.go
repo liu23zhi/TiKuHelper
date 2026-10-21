@@ -19,7 +19,6 @@ import (
 )
 
 const authCookieName = "tiku_token"
-const adminManagedPasswordMaxBytes = 72
 
 var sendPublicSMSCodeWithDB = func(input service.SendSMSCodeInput) error {
 	return service.SendSMSCodeWithDB(dao.User.UnderlyingDB(), input)
@@ -81,6 +80,9 @@ func validatePasswordComplexity(password string) error {
 	if trimmed == "" {
 		return fmt.Errorf("密码不能为空")
 	}
+	if err := validateBcryptPasswordLength(trimmed); err != nil {
+		return err
+	}
 	if len([]rune(trimmed)) < 8 {
 		return fmt.Errorf("密码至少需要 8 位，且需包含大小写字母、数字和特殊字符")
 	}
@@ -112,8 +114,12 @@ func validateAdminManagedPassword(password string) error {
 	if trimmed == "" {
 		return fmt.Errorf("密码不能为空")
 	}
-	if len([]byte(trimmed)) > adminManagedPasswordMaxBytes {
-		return fmt.Errorf("密码不能超过 %d 字节", adminManagedPasswordMaxBytes)
+	return validateBcryptPasswordLength(trimmed)
+}
+
+func validateBcryptPasswordLength(password string) error {
+	if err := util.ValidateBcryptPasswordBytes(password); err != nil {
+		return fmt.Errorf("密码不能超过 %d 字节", util.BcryptMaxPasswordBytes)
 	}
 	return nil
 }
@@ -221,6 +227,10 @@ func UserLogin(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
 		return
 	}
+	if err := util.ValidateBcryptPasswordBytes(payload.Password); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "用户名或密码错误"})
+		return
+	}
 
 	captchaToken := strings.TrimSpace(payload.CaptchaToken)
 	if err := consumeCaptchaTokenWithDB(captchaToken, service.CaptchaSceneLoginPassword, strings.TrimSpace(c.ClientIP())); err != nil {
@@ -326,6 +336,10 @@ func UserRegister(c *gin.Context) {
 		c.JSON(400, gin.H{
 			"message": "用户名和密码不能为空",
 		})
+		return
+	}
+	if err := validateAdminManagedPassword(password); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
 	if err := util.ValidateRestrictedName(username, util.UsernameMaxLength, "用户名"); err != nil {

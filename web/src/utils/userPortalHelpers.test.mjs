@@ -308,7 +308,9 @@ test('billing record fee details render call category and admin metadata', () =>
   assert.match(html, /调整模式：添加余额/)
   assert.match(html, /余额变化：¥ 1 → ¥ 3/)
   assert.match(html, /账单流水展示：隐藏/)
-  assert.match(html, /billing-statement-toggle/)
+  assert.match(html, /<button type="button" role="switch" aria-label="显示在用户账单流水" aria-checked="false" class="billing-statement-switch billing-statement-toggle"/)
+  assert.match(html, /billing-statement-switch__thumb/)
+  assert.doesNotMatch(html, /type="checkbox"/)
 })
 
 test('buildUserBalanceUpdatePayload trims fields and keeps edit mode data', () => {

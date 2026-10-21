@@ -982,10 +982,10 @@ export default defineComponent({
         message.error('删除失败')
       })
     },
-    async confirmWeakPassword(action, password) {
+    async confirmWeakPassword(action) {
       const confirmation = await Swal.fire({
         title: '确认使用弱密码？',
-        text: `当前密码未达到推荐强度，仍然${action === 'create' ? '创建用户' : '重置密码'}吗？`,
+        text: `当前密码未达到推荐强度。推荐至少 8 位，并同时包含大写字母、小写字母、数字和特殊字符。弱密码更容易被猜测、撞库或重复使用；密码仍不能超过 bcrypt 支持的 72 字节。确认继续${action === 'create' ? '创建用户' : '重置密码'}吗？`,
         icon: 'warning',
         showCancelButton: true,
         confirmButtonText: action === 'create' ? '仍然创建' : '仍然重置',

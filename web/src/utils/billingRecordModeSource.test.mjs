@@ -28,6 +28,9 @@ test('billing detail table merges administrator fields into the detail action', 
   assert.doesNotMatch(content, /title: '余额变化'/);
   assert.doesNotMatch(content, /title: '账单流水展示'/);
   assert.match(content, /buildBillingRecordFeeDetailHtml\(detailRecord\)/);
+  assert.match(content, /toggle\.getAttribute\('aria-checked'\)/);
+  assert.match(content, /if \(saved\) toggle\.setAttribute\('aria-checked'/);
+  assert.doesNotMatch(content, /Swal\.close\(\)/);
   assert.doesNotMatch(content, /title: '操作管理员'/);
   assert.doesNotMatch(content, /title: '余额变化'/);
   assert.doesNotMatch(content, /title: '账单流水展示'/);

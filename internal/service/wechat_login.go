@@ -497,7 +497,11 @@ func BindWechatLoginWithDB(db *gorm.DB, input WechatBindInput) (WechatBindResult
 	if err != nil {
 		return WechatBindResult{}, fmt.Errorf("用户名或密码错误")
 	}
-	passwordMatches, needsUpgrade := util.VerifyPassword(user.Password, strings.TrimSpace(input.Password))
+	password := strings.TrimSpace(input.Password)
+	if err := util.ValidateBcryptPasswordBytes(password); err != nil {
+		return WechatBindResult{}, fmt.Errorf("用户名或密码错误")
+	}
+	passwordMatches, needsUpgrade := util.VerifyPassword(user.Password, password)
 	if !passwordMatches {
 		return WechatBindResult{}, fmt.Errorf("用户名或密码错误")
 	}
@@ -505,7 +509,7 @@ func BindWechatLoginWithDB(db *gorm.DB, input WechatBindInput) (WechatBindResult
 		return WechatBindResult{}, fmt.Errorf("用户已被禁用")
 	}
 	if needsUpgrade {
-		if hashedPassword, hashErr := util.HashPassword(strings.TrimSpace(input.Password)); hashErr == nil {
+		if hashedPassword, hashErr := util.HashPassword(password); hashErr == nil {
 			if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("password", hashedPassword).Error; err != nil {
 				return WechatBindResult{}, err
 			}
