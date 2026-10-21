@@ -11,9 +11,19 @@ const userListPagePath = path.join(__dirname, '..', 'pages', 'UserList', 'index.
 test('UserList create-user modal explains the password rule and uses the dedicated create payload helper', async () => {
   const content = await readFile(userListPagePath, 'utf8');
 
-  assert.match(content, /<a-form-item\s+v-if="!isEditing"\s+label="密码"\s+required>[\s\S]*密码至少需要 8 位，且需包含大小写字母、数字和特殊字符。/);
+  assert.match(content, /<a-form-item\s+v-if="!isEditing"\s+label="密码"\s+required>[\s\S]*弱密码/);
   assert.match(content, /buildAdminCreateUserPayload/);
+  assert.match(content, /runAdminPasswordAction/);
+  assert.match(content, /Swal\.fire/);
+  assert.match(content, /confirmWeakPassword/);
   assert.doesNotMatch(content, /message\.warning\('请输入用户名和密码'\)/);
+});
+
+test('UserList password forms state that weak passwords require confirmation', async () => {
+  const content = await readFile(userListPagePath, 'utf8');
+  assert.match(content, /弱密码.*二次确认/);
+  assert.match(content, /async onSubmit\(\)/);
+  assert.match(content, /async submitResetPassword\(\)/);
 });
 
 test('UserList table exposes the user id column first', async () => {

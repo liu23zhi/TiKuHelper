@@ -204,6 +204,7 @@
         </a-form-item>
         <a-form-item v-if="!isEditing" label="密码" required>
           <a-input-password v-model:value="formState.password" placeholder="请输入密码" />
+          <div class="form-hint">密码不能为空，最多 72 字节；弱密码提交前会二次确认。</div>
         </a-form-item>
         <a-form-item label="昵称">
           <a-input v-model:value="formState.nickname" placeholder="可选" />
@@ -327,7 +328,7 @@
         </a-form-item>
         <a-form-item label="新密码" required>
           <a-input-password v-model:value="resetPasswordForm.password" placeholder="请输入新密码" />
-          <div class="form-hint">密码至少需要 8 位，且需包含大小写字母、数字和特殊字符。</div>
+          <div class="form-hint">密码不能为空，最多 72 字节；弱密码提交前会二次确认。</div>
         </a-form-item>
       </a-form>
     </a-modal>
@@ -349,7 +350,7 @@ import {
   getPhoneLocations,
   getIpLocations,
 } from '@/api/TikuComponentApi';
-import { buildAdminCreateUserPayload, buildRegisterSourceLabel, buildResetPasswordPayload, buildUserProfileUpdatePayload, buildUserBalanceAdjustmentPayload, limitUsernameInput } from '@/utils/userPortalHelpers.mjs';
+import { buildAdminCreateUserPayload, buildRegisterSourceLabel, buildResetPasswordPayload, buildUserProfileUpdatePayload, buildUserBalanceAdjustmentPayload, limitUsernameInput, runAdminPasswordAction } from '@/utils/userPortalHelpers.mjs';
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs';
 import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@/utils/listSearchHelpers.mjs';
 import {
@@ -359,6 +360,7 @@ import {
   formatValueWithLocation as formatValueWithLocationBase,
 } from '@/utils/locationHelpers.mjs';
 import { message } from 'ant-design-vue';
+import Swal from 'sweetalert2';
 import { computed, defineComponent, reactive, ref } from 'vue';
 
 const dataSource = ref([])
@@ -420,6 +422,7 @@ const pagination = reactive({
 })
 const visible = ref(false)
 const submitLoading = ref(false)
+const passwordConfirmationPending = ref(false)
 const balanceVisible = ref(false)
 const balanceSubmitting = ref(false)
 const balanceForm = reactive({ mode: 'increase', amount: null, showInStatement: true })
@@ -979,7 +982,20 @@ export default defineComponent({
         message.error('删除失败')
       })
     },
-    onSubmit() {
+    async confirmWeakPassword(action, password) {
+      const confirmation = await Swal.fire({
+        title: '确认使用弱密码？',
+        text: `当前密码未达到推荐强度，仍然${action === 'create' ? '创建用户' : '重置密码'}吗？`,
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonText: action === 'create' ? '仍然创建' : '仍然重置',
+        cancelButtonText: '返回修改',
+        reverseButtons: true,
+      })
+      return confirmation?.isConfirmed === true
+    },
+    async onSubmit() {
+      if (submitLoading.value || passwordConfirmationPending.value) return
       let createPayload = null
       if (!isEditing.value) {
         try {
@@ -1000,27 +1016,40 @@ export default defineComponent({
         }
       }
 
-      submitLoading.value = true
-      const submitter = isEditing.value
-        ? updateUser(editPayload)
-        : addUser(createPayload)
-
-      submitter.then(res => {
-        if (res?.status === 200) {
+      const submit = async () => {
+        submitLoading.value = true
+        try {
+          const res = await (isEditing.value ? updateUser(editPayload) : addUser(createPayload))
+          if (res?.status !== 200) {
+            message.error(res?.message || (isEditing.value ? '更新用户失败' : '添加用户失败'))
+            return
+          }
           message.success(isEditing.value ? '更新用户成功' : '添加用户成功')
           this.handleUserList()
           this.resetFormState()
           visible.value = false
-        } else {
-          message.error(res?.message || (isEditing.value ? '更新用户失败' : '添加用户失败'))
+        } catch (error) {
+          message.error(error?.response?.data?.message || (isEditing.value ? '更新用户失败' : '添加用户失败'))
+        } finally {
+          submitLoading.value = false
         }
-      }).catch(() => {
-        message.error(isEditing.value ? '更新用户失败' : '添加用户失败')
-      }).finally(() => {
-        submitLoading.value = false
-      })
+      }
+
+      if (createPayload) {
+        passwordConfirmationPending.value = true
+        try {
+          await runAdminPasswordAction(createPayload.password, submit, () => this.confirmWeakPassword('create', createPayload.password))
+        } catch (error) {
+          message.error(error?.message || '创建用户失败')
+        } finally {
+          passwordConfirmationPending.value = false
+        }
+        return
+      }
+      await submit()
     },
-    submitResetPassword() {
+    async submitResetPassword() {
+      if (resetPasswordLoading.value || passwordConfirmationPending.value) return
       let payload
       try {
         payload = buildResetPasswordPayload(resetPasswordForm.value.password)
@@ -1028,24 +1057,32 @@ export default defineComponent({
         message.warning(error?.message || '请输入新密码')
         return
       }
-
-      resetPasswordLoading.value = true
-      resetUserPassword({
-        id: resetPasswordForm.value.id,
-        ...payload,
-      }).then((res) => {
-        if (res?.status === 200) {
+      const submit = async () => {
+        resetPasswordLoading.value = true
+        try {
+          const res = await resetUserPassword({ id: resetPasswordForm.value.id, ...payload })
+          if (res?.status !== 200) {
+            message.error(res?.message || '重置密码失败')
+            return
+          }
           message.success('重置密码成功')
           resetPasswordVisible.value = false
           this.handleUserList()
-        } else {
-          message.error(res?.message || '重置密码失败')
+        } catch (error) {
+          message.error(error?.response?.data?.message || '重置密码失败')
+        } finally {
+          resetPasswordLoading.value = false
         }
-      }).catch((error) => {
-        message.error(error?.response?.data?.message || '重置密码失败')
-      }).finally(() => {
-        resetPasswordLoading.value = false
-      })
+      }
+
+      passwordConfirmationPending.value = true
+      try {
+        await runAdminPasswordAction(payload.password, submit, () => this.confirmWeakPassword('reset', payload.password))
+      } catch (error) {
+        message.error(error?.message || '重置密码失败')
+      } finally {
+        passwordConfirmationPending.value = false
+      }
     },
     resetFormState() {
       formState.value = {

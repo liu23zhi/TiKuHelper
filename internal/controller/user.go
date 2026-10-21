@@ -19,6 +19,7 @@ import (
 )
 
 const authCookieName = "tiku_token"
+const adminManagedPasswordMaxBytes = 72
 
 var sendPublicSMSCodeWithDB = func(input service.SendSMSCodeInput) error {
 	return service.SendSMSCodeWithDB(dao.User.UnderlyingDB(), input)
@@ -102,6 +103,17 @@ func validatePasswordComplexity(password string) error {
 	}
 	if !hasUpper || !hasLower || !hasDigit || !hasSpecial {
 		return fmt.Errorf("密码至少需要 8 位，且需包含大小写字母、数字和特殊字符")
+	}
+	return nil
+}
+
+func validateAdminManagedPassword(password string) error {
+	trimmed := strings.TrimSpace(password)
+	if trimmed == "" {
+		return fmt.Errorf("密码不能为空")
+	}
+	if len([]byte(trimmed)) > adminManagedPasswordMaxBytes {
+		return fmt.Errorf("密码不能超过 %d 字节", adminManagedPasswordMaxBytes)
 	}
 	return nil
 }
@@ -883,7 +895,7 @@ func CreateUser(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
-	if err := validatePasswordComplexity(user.Password); err != nil {
+	if err := validateAdminManagedPassword(user.Password); err != nil {
 		c.JSON(400, gin.H{
 			"message": err.Error(),
 		})
@@ -1065,7 +1077,7 @@ func ResetUserPassword(c *gin.Context) {
 	}
 
 	password := strings.TrimSpace(payload.Password)
-	if err := validatePasswordComplexity(password); err != nil {
+	if err := validateAdminManagedPassword(password); err != nil {
 		c.JSON(400, gin.H{
 			"message": err.Error(),
 		})

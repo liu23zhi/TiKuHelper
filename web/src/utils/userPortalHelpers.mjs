@@ -55,17 +55,46 @@ export function buildRegisterSourceLabel(value) {
   return String(value || '-').trim() || '-'
 }
 
-export function buildResetPasswordPayload(passwordValue) {
-  const password = String(passwordValue || '').trim()
+export const ADMIN_MANAGED_PASSWORD_MAX_BYTES = 72
+
+function normalizeAdminManagedPassword(passwordValue, emptyMessage = '请输入密码') {
+  const password = String(passwordValue ?? '').trim()
   if (!password) {
-    throw new Error('请输入新密码')
+    throw new Error(emptyMessage)
   }
-  return { password }
+  if (new TextEncoder().encode(password).length > ADMIN_MANAGED_PASSWORD_MAX_BYTES) {
+    throw new Error(`密码不能超过 ${ADMIN_MANAGED_PASSWORD_MAX_BYTES} 字节`)
+  }
+  return password
+}
+
+export function isStrongAdminPassword(passwordValue) {
+  const password = String(passwordValue ?? '').trim()
+  return Array.from(password).length >= 8
+    && /[A-Z]/.test(password)
+    && /[a-z]/.test(password)
+    && /\d/.test(password)
+    && /[^A-Za-z0-9]/.test(password)
+}
+
+export async function runAdminPasswordAction(passwordValue, submit, confirmWeak) {
+  if (!isStrongAdminPassword(passwordValue)) {
+    const confirmed = await confirmWeak()
+    if (!confirmed) {
+      return false
+    }
+  }
+  await submit()
+  return true
+}
+
+export function buildResetPasswordPayload(passwordValue) {
+  return { password: normalizeAdminManagedPassword(passwordValue, '请输入新密码') }
 }
 
 export function buildAdminCreateUserPayload(formValue) {
   const username = normalizeRestrictedName(formValue?.username, USERNAME_MAX_LENGTH, '用户名')
-  const password = String(formValue?.password || '').trim()
+  const password = normalizeAdminManagedPassword(formValue?.password, '请完善新增用户必填项')
   if (!username || !password) {
     throw new Error('请完善新增用户必填项')
   }
@@ -127,6 +156,10 @@ export function buildPersonalUsageQuestionText(record) {
 }
 
 export function buildPersonalUsageAnswerSourceText(record) {
+  if (String(record?.type || '').trim() === 'balance_adjustment') {
+    const operatorId = Number(record?.operatorId)
+    return Number.isInteger(operatorId) && operatorId > 0 ? `操作管理员ID：${operatorId}` : '管理员调整余额'
+  }
   const detail = String(record?.detail || '').trim()
   if (detail) {
     return detail
@@ -295,6 +328,9 @@ export function buildBillingRecordFeeDetailHtml(record) {
   }
   if (record?.type === 'balance_adjustment') {
     metadata.push(`余额变化：¥ ${formatMoneyValue(record.balanceBefore || 0)} → ¥ ${formatMoneyValue(record.balanceAfter || 0)}`)
+    const adjustmentModes = { increase: '添加余额', decrease: '减少余额', override: '覆盖余额' }
+    const adjustmentMode = adjustmentModes[String(record?.adjustmentMode || '').trim()]
+    if (adjustmentMode) metadata.push(`调整模式：${adjustmentMode}`)
     metadata.push(`账单流水展示：${record.showInStatement === false ? '隐藏' : '显示'}`)
   }
   if (record?.canEditStatement) {

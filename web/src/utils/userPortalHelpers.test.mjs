@@ -18,6 +18,8 @@ import {
   buildPersonalUsageBillingRecordParams,
   buildPersonalUsageQuestionText,
   buildPersonalUsageAnswerSourceText,
+  isStrongAdminPassword,
+  runAdminPasswordAction,
   buildUserBalanceUpdatePayload,
   resolveAdapterHomePath,
 } from './userPortalHelpers.mjs';
@@ -91,6 +93,46 @@ test('buildPersonalUsageAnswerSourceText prefers answer source label before prov
   assert.equal(buildPersonalUsageAnswerSourceText({ providerLabel: 'Icodef 题库' }), 'Icodef 题库');
   assert.equal(buildPersonalUsageAnswerSourceText({ provider: 'icodef' }), 'icodef');
   assert.equal(buildPersonalUsageAnswerSourceText({}), '-');
+});
+
+test('buildPersonalUsageAnswerSourceText renders admin balance adjustments by operator id', () => {
+  assert.equal(buildPersonalUsageAnswerSourceText({
+    type: 'balance_adjustment',
+    operatorId: 1,
+    detail: '操作管理员：admin (ID=1)；余额 ¥ 1 → ¥ 2',
+  }), '操作管理员ID：1');
+});
+
+test('admin weak-password check matches the former complexity rule', () => {
+  assert.equal(isStrongAdminPassword('Abc12345!'), true);
+  assert.equal(isStrongAdminPassword('12345678'), false);
+  assert.equal(isStrongAdminPassword('abcdefgh'), false);
+  assert.equal(isStrongAdminPassword(''), false);
+});
+
+test('weak admin password action waits for confirmation and never submits on cancel', async () => {
+  let submitted = 0;
+  let asked = 0;
+  const canceled = await runAdminPasswordAction('12345678', async () => { submitted += 1 }, async () => {
+    asked += 1;
+    return false;
+  });
+  assert.equal(canceled, false);
+  assert.equal(asked, 1);
+  assert.equal(submitted, 0);
+
+  const confirmed = await runAdminPasswordAction('12345678', async () => { submitted += 1 }, async () => true);
+  assert.equal(confirmed, true);
+  assert.equal(submitted, 1);
+});
+
+test('strong admin password action submits without an extra confirmation', async () => {
+  let submitted = 0;
+  const result = await runAdminPasswordAction('Abc12345!', async () => { submitted += 1 }, async () => {
+    throw new Error('strong passwords should not require confirmation');
+  });
+  assert.equal(result, true);
+  assert.equal(submitted, 1);
 });
 
 test('billing record helpers render recharge and search ledger rows', () => {
@@ -199,6 +241,14 @@ test('billing record fee helpers fall back to the row provider for legacy record
 test('buildResetPasswordPayload requires non-empty password', () => {
   assert.deepEqual(buildResetPasswordPayload('  New12345!  '), { password: 'New12345!' });
   assert.throws(() => buildResetPasswordPayload(''), /请输入新密码/);
+  assert.deepEqual(buildResetPasswordPayload('12345678'), { password: '12345678' });
+  assert.throws(() => buildResetPasswordPayload('a'.repeat(73)), /72/);
+});
+
+test('admin password helper distinguishes strong and weak non-empty passwords', () => {
+  assert.equal(userPortalHelpers.isStrongAdminPassword('Abc12345!'), true);
+  assert.equal(userPortalHelpers.isStrongAdminPassword('12345678'), false);
+  assert.equal(userPortalHelpers.isStrongAdminPassword(''), false);
 });
 
 test('buildAdminCreateUserPayload trims fields and keeps admin-created defaults', () => {
@@ -230,6 +280,13 @@ test('buildAdminCreateUserPayload rejects invalid and overlong usernames', () =>
   assert.throws(() => userPortalHelpers.buildAdminCreateUserPayload({ username: '用'.repeat(256), password: 'Abc12345!' }), /用户名/)
 })
 
+test('buildAdminCreateUserPayload accepts non-empty weak password and enforces bcrypt byte limit', () => {
+  assert.equal(userPortalHelpers.buildAdminCreateUserPayload({ username: 'weak_user', password: '12345678', giftEnabled: false }).password, '12345678');
+  assert.equal(userPortalHelpers.buildAdminCreateUserPayload({ username: 'ascii_72', password: 'a'.repeat(72), giftEnabled: false }).password.length, 72);
+  assert.throws(() => userPortalHelpers.buildAdminCreateUserPayload({ username: 'ascii_73', password: 'a'.repeat(73), giftEnabled: false }), /72/);
+  assert.throws(() => userPortalHelpers.buildAdminCreateUserPayload({ username: 'unicode_limit', password: '中'.repeat(25), giftEnabled: false }), /72/);
+});
+
 test('billing record fee details render call category and admin metadata', () => {
   const record = {
     type: 'balance_adjustment',
@@ -238,6 +295,7 @@ test('billing record fee details render call category and admin metadata', () =>
     amount: 2,
     balanceBefore: 1,
     balanceAfter: 3,
+    adjustmentMode: 'increase',
     operatorId: 7,
     operatorUsername: 'admin',
     showInStatement: false,
@@ -247,6 +305,7 @@ test('billing record fee details render call category and admin metadata', () =>
   const html = buildBillingRecordFeeDetailHtml(record)
   assert.match(html, /AI模型调用 第1次/)
   assert.match(html, /操作管理员：admin（ID 7）/)
+  assert.match(html, /调整模式：添加余额/)
   assert.match(html, /余额变化：¥ 1 → ¥ 3/)
   assert.match(html, /账单流水展示：隐藏/)
   assert.match(html, /billing-statement-toggle/)

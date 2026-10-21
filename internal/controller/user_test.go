@@ -1440,7 +1440,7 @@ func TestCreateUserRejectsNonAdminOperator(t *testing.T) {
 	}
 }
 
-func TestCreateUserRejectsWeakPassword(t *testing.T) {
+func TestCreateUserAcceptsWeakPassword(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newUserControllerTestDB(t)
 	admin := &entity.User{ID: 41, Username: "admin-user", Password: "123456", Role: "admin", Status: "enabled", RegisterSource: "admin"}
@@ -1458,19 +1458,47 @@ func TestCreateUserRejectsWeakPassword(t *testing.T) {
 
 	CreateUser(ctx)
 
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d with body %s", recorder.Code, recorder.Body.String())
-	}
-	if body := recorder.Body.String(); !bytes.Contains([]byte(body), []byte("密码")) {
-		t.Fatalf("expected password complexity message, got %s", body)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
 
 	count, err := dao.User.Where(dao.User.Username.Eq("weak_created_user")).Count()
 	if err != nil {
 		t.Fatalf("count weak created user: %v", err)
 	}
-	if count != 0 {
-		t.Fatalf("expected weak-password user creation to be rejected, got count %d", count)
+	if count != 1 {
+		t.Fatalf("expected weak-password user creation, got count %d", count)
+	}
+	created, err := dao.User.Where(dao.User.Username.Eq("weak_created_user")).First()
+	if err != nil {
+		t.Fatalf("load weak-password user: %v", err)
+	}
+	if matched, _ := util.VerifyPassword(created.Password, "12345678"); !matched {
+		t.Fatal("expected weak password to be hashed and usable")
+	}
+}
+
+func TestCreateUserRejectsEmptyOrOverlongAdminPassword(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	admin := &entity.User{ID: 43, Username: "admin-password-boundary", Password: "123456", Role: "admin", Status: "enabled", RegisterSource: "admin"}
+	if err := db.Create(admin).Error; err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	for _, password := range []string{"", strings.Repeat("a", 73)} {
+		t.Run(fmt.Sprintf("bytes=%d", len(password)), func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			payload := []byte(fmt.Sprintf(`{"username":%q,"password":%q,"giftEnabled":false}`, "password_boundary_user_"+fmt.Sprint(len(password)), password))
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/user", bytes.NewReader(payload))
+			request.Header.Set("Content-Type", "application/json")
+			ctx.Request = request
+			ctx.Set("user", admin)
+			CreateUser(ctx)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("expected status 400, got %d body=%s", recorder.Code, recorder.Body.String())
+			}
+		})
 	}
 }
 
@@ -1687,7 +1715,7 @@ func TestResetUserPasswordRejectsNonAdminOperator(t *testing.T) {
 	}
 }
 
-func TestResetUserPasswordRejectsWeakPassword(t *testing.T) {
+func TestResetUserPasswordAcceptsWeakPassword(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newUserControllerTestDB(t)
 	admin := &entity.User{ID: 62, Username: "admin-reset", Password: "123456", Role: "admin", Status: "enabled", RegisterSource: "admin"}
@@ -1710,19 +1738,40 @@ func TestResetUserPasswordRejectsWeakPassword(t *testing.T) {
 
 	ResetUserPassword(ctx)
 
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("expected status 400, got %d with body %s", recorder.Code, recorder.Body.String())
-	}
-	if body := recorder.Body.String(); !bytes.Contains([]byte(body), []byte("密码")) {
-		t.Fatalf("expected password complexity message, got %s", body)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
 
 	stored, err := dao.User.Where(dao.User.ID.Eq(63)).First()
 	if err != nil {
 		t.Fatalf("load target user: %v", err)
 	}
-	if stored.Password != "Old12345!" {
-		t.Fatalf("expected password unchanged, got %s", stored.Password)
+	if matched, _ := util.VerifyPassword(stored.Password, "12345678"); !matched {
+		t.Fatalf("expected weak password to be accepted, got %s", stored.Password)
+	}
+}
+
+func TestResetUserPasswordRejectsOverlongAdminPassword(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	admin := &entity.User{ID: 66, Username: "admin-reset-boundary", Password: "123456", Role: "admin", Status: "enabled", RegisterSource: "admin"}
+	target := &entity.User{ID: 67, Username: "target-reset-boundary", Password: "Old12345!", Role: "user", Status: "enabled", RegisterSource: "admin"}
+	if err := db.Create(admin).Error; err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	if err := db.Create(target).Error; err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	request := httptest.NewRequest(http.MethodPut, "/adapter-service/user/67/reset-password", bytes.NewReader([]byte(fmt.Sprintf(`{"password":%q}`, strings.Repeat("a", 73)))))
+	request.Header.Set("Content-Type", "application/json")
+	ctx.Request = request
+	ctx.Params = gin.Params{{Key: "id", Value: "67"}}
+	ctx.Set("user", admin)
+	ResetUserPassword(ctx)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
