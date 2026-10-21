@@ -192,6 +192,9 @@ export function buildBillingRecordTypeText(record) {
   if (type === 'recharge') {
     return '充值入账'
   }
+  if (type === 'normal_search') {
+    return '题目消费'
+  }
   if (type === 'balance_adjustment') {
     return '管理员调整余额'
   }
@@ -303,20 +306,127 @@ export function buildBillingRecordFeeDetails(record) {
   }]
 }
 
+function parseBillingRecordFeeDetailFields(detail) {
+  const fields = Object.create(null)
+  for (const segment of String(detail || '').split(/[；;]/)) {
+    const trimmed = segment.trim()
+    if (!trimmed) continue
+    const equalsIndex = trimmed.indexOf('=')
+    if (equalsIndex > 0) {
+      fields[trimmed.slice(0, equalsIndex).trim()] = trimmed.slice(equalsIndex + 1).trim()
+      continue
+    }
+    const colonIndex = trimmed.search(/[：:]/)
+    if (colonIndex > 0) {
+      fields[trimmed.slice(0, colonIndex).trim()] = trimmed.slice(colonIndex + 1).trim()
+    }
+  }
+  return fields
+}
+
+function readBillingRecordFeeField(fields, names) {
+  for (const name of names) {
+    const value = String(fields?.[name] || '').trim()
+    if (value) return value
+  }
+  return ''
+}
+
+function formatBillingRecordFeeMultiplier(value) {
+  const raw = String(value || '').trim().replace(/×/g, 'x')
+  if (!raw) return ''
+  const numeric = Number(raw.replace(/x$/i, ''))
+  if (Number.isFinite(numeric)) {
+    return `${formatMoneyValue(Math.round(numeric * 100) / 100)}x`
+  }
+  return /x$/i.test(raw) ? raw : `${raw}x`
+}
+
+function formatBillingRecordFeeTokens(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  const numeric = Number(raw.replace(/,/g, ''))
+  if (Number.isFinite(numeric) && numeric >= 0) {
+    return new Intl.NumberFormat('zh-CN').format(Math.trunc(numeric))
+  }
+  return raw
+}
+
+function buildBillingRecordFeeItemTitle(item) {
+  const category = String(item?.category || '').trim()
+  const callSuffix = item?.callIndex > 0 ? ` 第${item.callIndex}次` : ''
+  if (item?.provider === 'ai_search') {
+    return 'AI 搜索'
+  }
+  if (category === 'AI模型调用') {
+    return `${category}${callSuffix}`
+  }
+  if (category === '网页转Markdown') {
+    return `网页读取${callSuffix}`
+  }
+  if (category) {
+    return `${category}${callSuffix}`
+  }
+  return String(item?.providerLabel || '-').trim() || '-'
+}
+
+function buildBillingRecordFeeItemMeta(item) {
+  const fields = parseBillingRecordFeeDetailFields(item?.detail)
+  if (item?.provider === 'ai_search') {
+    const keyword = readBillingRecordFeeField(fields, ['搜索词', '关键词', 'query', 'searchQuery'])
+    return keyword ? [{ label: '关键词', value: keyword, keyword: true }] : []
+  }
+  if (item?.provider === 'ai' || item?.category === 'AI模型调用') {
+    const meta = []
+    const model = readBillingRecordFeeField(fields, ['model', '模型'])
+    const multiplier = formatBillingRecordFeeMultiplier(
+      readBillingRecordFeeField(fields, ['finalMultiplier', '最终倍率', 'multiplier']),
+    )
+    const tokens = formatBillingRecordFeeTokens(
+      readBillingRecordFeeField(fields, ['totalTokens', 'Token数量', 'Token 数量', 'tokens']),
+    )
+    if (model) meta.push({ label: '模型', value: model })
+    if (multiplier) meta.push({ label: '最终倍率', value: multiplier })
+    if (tokens) meta.push({ label: 'Token数量', value: tokens })
+    return meta
+  }
+  if (item?.provider === 'web_read') {
+    const url = readBillingRecordFeeField(fields, ['URL', 'url', '网页'])
+    return url ? [{ label: '网页', value: url }] : []
+  }
+  return []
+}
+
 export function buildBillingRecordFeeDetailHtml(record) {
   const details = buildBillingRecordFeeDetails(record)
   const direction = String(record?.direction || '').trim()
   const subject = buildBillingRecordSubjectText(record)
-  const rows = details.map((item) => `
-    <div class="billing-fee-item">
-      <span class="billing-fee-provider">${escapeHtmlText(item.providerLabel)}</span>
-      <strong class="billing-fee-amount billing-fee-amount--${direction === 'income' ? 'income' : 'expense'}">
-        ${escapeHtmlText(buildBillingRecordAmountText({ amount: item.amount, direction }))}
-      </strong>
-    </div>
-    ${item.category ? `<div class="billing-fee-item-category">${escapeHtmlText(item.category)}${item.callIndex > 0 ? ` 第${item.callIndex}次` : ''}</div>` : ''}
-    ${item.detail ? `<div class="billing-fee-item-detail">${escapeHtmlText(item.detail)}</div>` : ''}
-  `).join('')
+  const directionLabel = direction === 'income' ? '收入账单' : direction === 'expense' ? '支出账单' : '账单详情'
+  const typeLabel = buildBillingRecordTypeText(record)
+  const modeLabel = buildBillingRecordModeText(record)
+  const showMode = modeLabel && modeLabel !== '-'
+  const rows = details.map((item) => {
+    const meta = buildBillingRecordFeeItemMeta(item)
+    const metaHtml = meta.length
+      ? `<div class="billing-fee-item-meta">${meta.map((entry) => `
+          <span class="billing-fee-meta-item${entry.keyword ? ' billing-fee-meta-item--keyword' : ''}">
+            <span class="billing-fee-meta-label">${escapeHtmlText(entry.label)}：</span>
+            <span class="billing-fee-meta-value">${escapeHtmlText(entry.value)}</span>
+          </span>
+        `).join('')}</div>`
+      : ''
+    return `
+      <div class="billing-fee-item">
+        <div class="billing-fee-item-head">
+          <span class="billing-fee-provider">${escapeHtmlText(buildBillingRecordFeeItemTitle(item))}</span>
+          <strong class="billing-fee-amount billing-fee-amount--${direction === 'income' ? 'income' : 'expense'}">
+            ${escapeHtmlText(buildBillingRecordAmountText({ amount: item.amount, direction }))}
+          </strong>
+        </div>
+        ${metaHtml}
+      </div>
+    `
+  }).join('')
   const totalAmount = Number(record?.amount || 0)
   const totalText = buildBillingRecordAmountText({
     amount: Number.isFinite(totalAmount) ? totalAmount : 0,
@@ -339,12 +449,24 @@ export function buildBillingRecordFeeDetailHtml(record) {
 
   return `
     <div class="billing-fee-detail">
-      <section class="billing-fee-card billing-fee-card--question">
-        <div class="billing-fee-section-title">${record?.type === 'balance_adjustment' ? '余额调整' : '题目'}</div>
+      <section class="billing-fee-card billing-fee-card--question billing-fee-overview">
+        <div class="billing-fee-overview-head">
+          <div class="billing-fee-overview-tags">
+            <span class="billing-fee-status billing-fee-status--${direction === 'income' ? 'income' : 'expense'}">${escapeHtmlText(directionLabel)}</span>
+            <span class="billing-fee-type">${escapeHtmlText(typeLabel)}</span>
+          </div>
+          ${showMode ? `<span class="billing-fee-mode">${escapeHtmlText(modeLabel)}</span>` : ''}
+        </div>
         <div class="billing-fee-question">${escapeHtmlText(subject)}</div>
       </section>
       <section class="billing-fee-card billing-fee-card--cost">
-        <div class="billing-fee-section-title">费用详情</div>
+        <div class="billing-fee-section-head">
+          <div>
+            <div class="billing-fee-section-title">费用详情</div>
+            <div class="billing-fee-section-subtitle">按实际调用拆分</div>
+          </div>
+          <span class="billing-fee-count">${details.length} 项</span>
+        </div>
         <div class="billing-fee-list">${rows}</div>
         <div class="billing-fee-total">
           <span>合计</span>

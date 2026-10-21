@@ -512,10 +512,18 @@ export default defineComponent({
         html: buildBillingRecordFeeDetailHtml(detailRecord),
         width: 560,
         confirmButtonText: '关闭',
+        showCloseButton: true,
+        focusConfirm: false,
+        buttonsStyling: false,
         heightAuto: false,
         scrollbarPadding: false,
         customClass: {
           popup: 'billing-fee-popup',
+          title: 'billing-fee-title',
+          htmlContainer: 'billing-fee-html-container',
+          actions: 'billing-fee-actions',
+          confirmButton: 'billing-fee-confirm',
+          closeButton: 'billing-fee-close',
         },
         didOpen: () => {
           const toggle = document.querySelector('.billing-statement-toggle')
@@ -747,7 +755,86 @@ export default defineComponent({
 }
 
 :global(.billing-fee-popup) {
-  border-radius: 8px;
+  box-sizing: border-box;
+  padding: 24px;
+  border: 1px solid rgb(148 163 184 / 24%);
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at 92% 0%, rgb(37 99 235 / 10%), transparent 32%),
+    linear-gradient(180deg, #fff 0%, #f8fafc 100%);
+  box-shadow:
+    0 28px 80px rgb(15 23 42 / 24%),
+    0 4px 16px rgb(15 23 42 / 8%);
+}
+
+:global(.billing-fee-title) {
+  margin: 0 42px 0 0;
+  padding: 0;
+  color: #0f172a;
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1.25;
+  text-align: left;
+}
+
+:global(.billing-fee-html-container) {
+  margin: 16px 0 0;
+  padding: 0;
+  overflow: visible;
+  text-align: left;
+}
+
+:global(.billing-fee-actions) {
+  margin: 18px 0 0;
+  padding: 0;
+}
+
+:global(.billing-fee-confirm) {
+  width: 100%;
+  min-height: 42px;
+  padding: 10px 20px;
+  border: 0;
+  border-radius: 999px;
+  background: #0f172a;
+  box-shadow: 0 8px 20px rgb(15 23 42 / 18%);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  transition:
+    transform 0.16s ease,
+    background 0.16s ease;
+}
+
+:global(.billing-fee-confirm:hover) {
+  background: #1e293b;
+  transform: translateY(-1px);
+}
+
+:global(.billing-fee-confirm:focus-visible),
+:global(.billing-fee-close:focus-visible) {
+  outline: 2px solid #93c5fd;
+  outline-offset: 3px;
+}
+
+:global(.billing-fee-close) {
+  top: 20px;
+  right: 20px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 72%);
+  box-shadow: 0 2px 8px rgb(15 23 42 / 8%);
+  color: #64748b;
+  font-size: 22px;
+  line-height: 1;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease;
+}
+
+:global(.billing-fee-close:hover) {
+  background: #e2e8f0;
+  color: #0f172a;
 }
 
 :global(.billing-fee-detail) {
@@ -758,51 +845,199 @@ export default defineComponent({
 }
 
 :global(.billing-fee-card) {
+  box-sizing: border-box;
+  width: 100%;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   padding: 16px;
-  box-shadow: 0 10px 28px rgb(15 23 42 / 8%);
+  box-shadow: 0 8px 24px rgb(15 23 42 / 6%);
 }
 
 :global(.billing-fee-card--question) {
-  background: #f5f7fb;
+  border-color: rgb(147 197 253 / 28%);
+  background:
+    radial-gradient(circle at 100% 0%, rgb(96 165 250 / 24%), transparent 38%),
+    linear-gradient(135deg, #172554 0%, #1e3a8a 60%, #1d4ed8 100%);
+  box-shadow: 0 16px 36px rgb(30 64 175 / 22%);
+  color: #fff;
 }
 
 :global(.billing-fee-card--cost) {
   background: #fff;
 }
 
-:global(.billing-fee-section-title) {
-  margin-bottom: 10px;
-  color: #64748b;
+:global(.billing-fee-card--metadata) {
+  padding: 14px 16px;
+  border-color: #e2e8f0;
+  background: #f8fafc;
+  box-shadow: none;
+}
+
+:global(.billing-fee-overview) {
+  overflow: hidden;
+}
+
+:global(.billing-fee-overview-head) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-bottom: 14px;
+}
+
+:global(.billing-fee-overview-tags) {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+:global(.billing-fee-status) {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 9px;
+  border: 1px solid rgb(255 255 255 / 20%);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 12%);
+  color: #fff;
   font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.12em;
+}
+
+:global(.billing-fee-status--income) {
+  background: rgb(34 197 94 / 20%);
+  color: #dcfce7;
+}
+
+:global(.billing-fee-status--expense) {
+  background: rgb(251 113 133 / 18%);
+  color: #ffe4e6;
+}
+
+:global(.billing-fee-type) {
+  color: #dbeafe;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+:global(.billing-fee-mode) {
+  color: #bfdbfe;
+  font-size: 12px;
+}
+
+:global(.billing-fee-section-head) {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+:global(.billing-fee-section-title) {
+  color: #334155;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+
+:global(.billing-fee-section-subtitle) {
+  margin-top: 4px;
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+:global(.billing-fee-count) {
+  flex: 0 0 auto;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #2563eb;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 :global(.billing-fee-question) {
-  color: #0f172a;
-  font-size: 15px;
+  color: #fff;
+  font-size: 16px;
   font-weight: 600;
-  line-height: 1.7;
+  line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 :global(.billing-fee-list) {
   display: grid;
-  gap: 10px;
+  gap: 11px;
 }
 
 :global(.billing-fee-item) {
+  box-sizing: border-box;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  overflow: hidden;
+  padding: 15px 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
+}
+
+:global(.billing-fee-item)::before {
+  position: absolute;
+  top: 14px;
+  bottom: 14px;
+  left: 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: #60a5fa;
+  content: "";
+}
+
+:global(.billing-fee-item-head) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 24px;
-  padding: 12px 14px;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  background: #f8fafc;
+  gap: 20px;
+}
+
+:global(.billing-fee-item-meta) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 18px;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+:global(.billing-fee-meta-item) {
+  display: inline-flex;
+  align-items: baseline;
+  min-width: 0;
+  max-width: 100%;
+}
+
+:global(.billing-fee-meta-label) {
+  flex: 0 0 auto;
+  color: #64748b;
+}
+
+:global(.billing-fee-meta-value) {
+  color: #334155;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+:global(.billing-fee-meta-item--keyword) {
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  background: #eff6ff;
+  color: #1e3a8a;
 }
 
 :global(.billing-fee-item-detail) {
@@ -812,6 +1047,14 @@ export default defineComponent({
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+:global(.billing-fee-card--metadata .billing-fee-item-detail) {
+  margin: 0 0 8px;
+}
+
+:global(.billing-fee-card--metadata .billing-fee-item-detail:last-child) {
+  margin-bottom: 0;
 }
 
 :global(.billing-fee-item-category) {
@@ -879,10 +1122,13 @@ export default defineComponent({
 }
 
 :global(.billing-fee-provider) {
-  color: #334155;
+  color: #1e293b;
+  font-size: 15px;
+  font-weight: 700;
 }
 
 :global(.billing-fee-amount) {
+  font-variant-numeric: tabular-nums;
   font-weight: 700;
   white-space: nowrap;
 }
@@ -896,17 +1142,76 @@ export default defineComponent({
 }
 
 :global(.billing-fee-total) {
+  box-sizing: border-box;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   justify-content: space-between;
   gap: 24px;
-  margin-top: 14px;
-  padding: 14px;
-  border: 1px solid #bfdbfe;
-  border-radius: 6px;
-  background: #eff6ff;
-  color: #1f2937;
-  font-size: 16px;
-  font-weight: 600;
+  margin-top: 16px;
+  padding: 16px;
+  border: 0;
+  border-radius: 10px;
+  background: linear-gradient(120deg, #0f172a 0%, #1e293b 100%);
+  box-shadow: 0 10px 24px rgb(15 23 42 / 16%);
+  color: #f8fafc;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+:global(.billing-fee-total .billing-fee-amount) {
+  font-size: 21px;
+  font-weight: 800;
+}
+
+:global(.billing-fee-total .billing-fee-amount--expense) {
+  color: #fecaca;
+}
+
+:global(.billing-fee-total .billing-fee-amount--income) {
+  color: #bbf7d0;
+}
+
+@media (max-width: 480px) {
+  :global(.billing-fee-popup) {
+    padding: 20px 16px 16px;
+    border-radius: 16px;
+  }
+
+  :global(.billing-fee-title) {
+    font-size: 21px;
+  }
+
+  :global(.billing-fee-close) {
+    top: 16px;
+    right: 16px;
+  }
+
+  :global(.billing-fee-card) {
+    padding: 14px;
+  }
+
+  :global(.billing-fee-item-head) {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+  }
+
+  :global(.billing-fee-item-head .billing-fee-amount) {
+    margin-left: auto;
+  }
+
+  :global(.billing-fee-item-meta) {
+    gap: 7px 12px;
+  }
+
+  :global(.billing-fee-total) {
+    gap: 8px 16px;
+    padding: 14px;
+  }
+
+  :global(.billing-fee-total .billing-fee-amount) {
+    font-size: 19px;
+  }
 }
 </style>

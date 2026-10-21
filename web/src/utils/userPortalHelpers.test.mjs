@@ -163,6 +163,7 @@ test('billing record helpers render recharge and search ledger rows', () => {
     amount: 1.25,
   };
   assert.equal(buildBillingRecordTypeText(search), '题目消费');
+  assert.equal(buildBillingRecordTypeText({ type: 'normal_search' }), '题目消费');
   assert.equal(buildBillingRecordSubjectText(search), '搜索题目');
   assert.equal(buildBillingRecordSourceText(search), 'Icodef 题库');
   assert.equal(buildBillingRecordReferenceText(search), 'req-search');
@@ -184,11 +185,13 @@ test('billing record fee helpers render per-provider and total charges', () => {
 
   const html = buildBillingRecordFeeDetailHtml(record);
   assert.match(html, /class="billing-fee-detail"/);
-  assert.match(html, /class="billing-fee-card billing-fee-card--question"/);
+  assert.match(html, /class="billing-fee-card billing-fee-card--question billing-fee-overview"/);
   assert.match(html, /class="billing-fee-card billing-fee-card--cost"/);
   assert.match(html, /class="billing-fee-section-title"/);
-  assert.match(html, />题目</);
+  assert.match(html, /支出账单/);
+  assert.match(html, /题目消费/);
   assert.match(html, />费用详情</);
+  assert.match(html, /2 项/);
   assert.match(html, /搜索答案，题目：混合题目/);
   assert.match(html, /Icodef 题库/);
   assert.match(html, /-¥ 1\.25/);
@@ -222,8 +225,47 @@ test('billing record fee details expose per-search query and render it as escape
 
   assert.equal(buildBillingRecordFeeDetails(record)[0].detail, '搜索词：<加法验算>；状态：success；结果：2');
   const html = buildBillingRecordFeeDetailHtml(record);
-  assert.match(html, /搜索词：&lt;加法验算&gt;；状态：success；结果：2/);
+  assert.match(html, /billing-fee-meta-label">关键词：<\/span>\s*<span class="billing-fee-meta-value">&lt;加法验算&gt;<\/span>/);
 });
+
+test('billing record fee details render friendly AI search and model call labels', () => {
+  const record = {
+    direction: 'expense',
+    amount: 0.03,
+    feeDetails: [
+      {
+        provider: 'ai_search',
+        providerLabel: '联网搜索',
+        amount: 0.02,
+        detail: '搜索词：怎么弄；状态：success；结果：2',
+      },
+      {
+        provider: 'ai',
+        providerLabel: 'AI 搜索',
+        category: 'AI模型调用',
+        callIndex: 1,
+        amount: 0.01,
+        detail: 'model=gpt-6-sol；round=1；attempt=1；totalTokens=2000；stageMultiplier=1.9700；finalMultiplier=1.9700',
+      },
+    ],
+  }
+
+  const html = buildBillingRecordFeeDetailHtml(record)
+  assert.match(html, />AI 搜索</)
+  assert.match(html, /billing-fee-meta-label">关键词：<\/span>\s*<span class="billing-fee-meta-value">怎么弄<\/span>/)
+  assert.match(html, /AI模型调用 第1次/)
+  assert.match(html, /billing-fee-meta-label">模型：<\/span>\s*<span class="billing-fee-meta-value">gpt-6-sol<\/span>/)
+  assert.match(html, /billing-fee-meta-label">最终倍率：<\/span>\s*<span class="billing-fee-meta-value">1\.97x<\/span>/)
+  assert.match(html, /billing-fee-meta-label">Token数量：<\/span>\s*<span class="billing-fee-meta-value">2,000<\/span>/)
+  assert.match(html, /-¥ 0\.02/)
+  assert.match(html, /-¥ 0\.01/)
+  assert.match(html, /合计/)
+  assert.match(html, /-¥ 0\.03/)
+  assert.doesNotMatch(html, /model=gpt-6-sol/)
+  assert.doesNotMatch(html, /round=1/)
+  assert.doesNotMatch(html, /attempt=1/)
+  assert.doesNotMatch(html, /stageMultiplier=1\.9700/)
+})
 
 test('billing record fee helpers fall back to the row provider for legacy records', () => {
   assert.deepEqual(buildBillingRecordFeeDetails({
