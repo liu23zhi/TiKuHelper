@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -36,6 +37,29 @@ func TestSetAPIRouterRegistersQuestionImportRoute(t *testing.T) {
 	}
 
 	t.Fatal("expected question import route to be registered")
+}
+
+func TestSetAPIRouterRegistersAsyncSearchRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	SetAPIRouter(router)
+
+	want := map[string]bool{
+		"POST /adapter-service/search":       false,
+		"POST /adapter-service/search/tasks": false,
+		"GET /adapter-service/search/status": false,
+	}
+	for _, route := range router.Routes() {
+		key := route.Method + " " + route.Path
+		if _, ok := want[key]; ok {
+			want[key] = true
+		}
+	}
+	for route, found := range want {
+		if !found {
+			t.Fatalf("expected route %s to be registered", route)
+		}
+	}
 }
 
 func TestSetAPIRouterRegistersWechatLoginRoutes(t *testing.T) {
@@ -226,7 +250,7 @@ func TestSetAPIRouterHandlesSearchPreflightWithCORSHeaders(t *testing.T) {
 	request := httptest.NewRequest(http.MethodOptions, "http://adapter.example.com/adapter-service/search", nil)
 	request.Header.Set("Origin", "http://adapter.example.com")
 	request.Header.Set("Access-Control-Request-Method", http.MethodPost)
-	request.Header.Set("Access-Control-Request-Headers", "content-type,authorization")
+	request.Header.Set("Access-Control-Request-Headers", "content-type,authorization,idempotency-key")
 
 	router.ServeHTTP(recorder, request)
 
@@ -239,9 +263,16 @@ func TestSetAPIRouterHandlesSearchPreflightWithCORSHeaders(t *testing.T) {
 	if recorder.Header().Get("Access-Control-Allow-Methods") == "" {
 		t.Fatal("expected allow-methods header on preflight response")
 	}
-	if recorder.Header().Get("Access-Control-Allow-Headers") == "" {
+	allowedHeaders := strings.Split(recorder.Header().Get("Access-Control-Allow-Headers"), ",")
+	if len(allowedHeaders) == 0 || strings.TrimSpace(allowedHeaders[0]) == "" {
 		t.Fatal("expected allow-headers header on preflight response")
 	}
+	for _, header := range allowedHeaders {
+		if strings.EqualFold(strings.TrimSpace(header), "Idempotency-Key") {
+			return
+		}
+	}
+	t.Fatalf("expected Idempotency-Key to be allowed, got %q", recorder.Header().Get("Access-Control-Allow-Headers"))
 }
 
 func TestSetAPIRouterAllowsAnyCrossOriginPreflight(t *testing.T) {
