@@ -63,7 +63,8 @@
         :loading="tabLoading"
         :pagination="pagination"
         row-key="id"
-        :scroll="{ x: 1560 }"
+        table-layout="auto"
+        :scroll="{ x: 'max-content' }"
         @change="handleTableChange"
       >
         <template #module="{ record }">
@@ -81,13 +82,13 @@
           <span>{{ buildStructuredFields(record).summary }}</span>
         </template>
         <template #detail="{ record }">
-          <span>{{ buildRowDetail(record) }}</span>
+          <span class="log-detail-cell">{{ buildRowDetail(record) }}</span>
         </template>
         <template #requestId="{ record }">
           <span>{{ buildStructuredFields(record).requestId }}</span>
         </template>
         <template #mode="{ record }">
-          <span>{{ buildStructuredFields(record).mode }}</span>
+          <span class="log-params-cell">{{ buildStructuredFields(record).mode }}</span>
         </template>
         <template #requestSource="{ record }">
           <span>{{ buildStructuredFields(record).requestSource }}</span>
@@ -98,22 +99,11 @@
         <template #hitProvider="{ record }">
           <div class="log-channel-cell">
             <span class="log-channel-name">{{ buildStructuredFields(record).hitProvider }}</span>
-            <div :class="['log-channel-reasons', buildStructuredFields(record).failureReasons.join('\n').length > 150 && !isSnapshotExpanded(record.id, 'failureReasons') ? 'log-channel-reasons--collapsed' : 'log-channel-reasons--expanded']">
-              <div
-                v-for="(reason, index) in buildStructuredFields(record).failureReasons"
-                :key="index"
-                class="log-channel-error"
-              >{{ reason }}</div>
-            </div>
-            <a-button
-              v-if="buildStructuredFields(record).failureReasons.join('\n').length > 150"
-              type="link"
-              size="small"
-              class="log-snapshot-toggle"
-              @click="toggleSnapshotExpanded(record.id, 'failureReasons')"
-            >
-              {{ isSnapshotExpanded(record.id, 'failureReasons') ? '收起' : '展开' }}
-            </a-button>
+            <span
+              v-for="(reason, index) in buildStructuredFields(record).failureReasons"
+              :key="index"
+              class="log-channel-error"
+            > / {{ reason }}</span>
           </div>
         </template>
         <template #billingProvider="{ record }">
@@ -131,7 +121,7 @@
               class="log-snapshot-toggle"
               @click="toggleSnapshotExpanded(record.id, 'requestSnapshot')"
             >
-              {{ isSnapshotExpanded(record.id, 'requestSnapshot') ? '收起' : '展开' }}
+              {{ isSnapshotExpanded(record.id, 'requestSnapshot') ? '收起' : '查看详情' }}
             </a-button>
           </div>
         </template>
@@ -147,7 +137,7 @@
               class="log-snapshot-toggle"
               @click="toggleSnapshotExpanded(record.id, 'responseSnapshot')"
             >
-              {{ isSnapshotExpanded(record.id, 'responseSnapshot') ? '收起' : '展开' }}
+              {{ isSnapshotExpanded(record.id, 'responseSnapshot') ? '收起' : '查看详情' }}
             </a-button>
           </div>
         </template>
@@ -158,7 +148,7 @@
           <span>{{ buildLogLocalQuestionId(record) }}</span>
         </template>
         <template #createTime="{ text, record }">
-          {{ formatDate(text || record.createTime) }}
+          <span class="log-time-cell">{{ formatDateForTable(text || record.createTime) }}</span>
         </template>
       </a-table>
       <div class="mobile-log-list">
@@ -203,6 +193,7 @@ import {
   buildLogStatusColor,
   buildLogStatusLabel,
   buildLogStructuredFields,
+  formatShanghaiLogDate,
 } from '@/utils/logListHelpers.mjs';
 const dataSource = ref([])
 const tabLoading = ref(true)
@@ -294,7 +285,8 @@ export default defineComponent({
           slots: {
             customRender: 'createTime',
           },
-          width: 180,
+          className: 'log-cell-centered',
+          width: 130,
         },
         {
           title: '模块',
@@ -303,7 +295,8 @@ export default defineComponent({
           slots: {
             customRender: 'module',
           },
-          width: 120,
+          className: 'log-cell-nowrap',
+          width: 100,
         },
         {
           title: '状态',
@@ -312,7 +305,8 @@ export default defineComponent({
           slots: {
             customRender: 'status',
           },
-          width: 120,
+          className: 'log-cell-nowrap',
+          width: 100,
         },
         {
           title: '用户',
@@ -321,7 +315,8 @@ export default defineComponent({
           slots: {
             customRender: 'username',
           },
-          width: 160,
+          className: 'log-cell-nowrap',
+          width: 140,
         },
         {
           title: '来源 IP',
@@ -330,7 +325,8 @@ export default defineComponent({
           slots: {
             customRender: 'clientIp',
           },
-          width: 160,
+          className: 'log-cell-centered',
+          width: 220,
         },
         {
           title: '本地题库 ID',
@@ -339,7 +335,8 @@ export default defineComponent({
           slots: {
             customRender: 'qid',
           },
-          width: 140,
+          className: 'log-cell-nowrap',
+          width: 150,
         },
         {
           title: '说明',
@@ -348,7 +345,8 @@ export default defineComponent({
           slots: {
             customRender: 'summary',
           },
-          width: 220,
+          className: 'log-cell-nowrap',
+          width: 230,
         },
         {
           // 紧跟「说明」：搜题失败时的原因必须第一眼看到（详见 logListHelpers 的 buildHitProviderFields）。
@@ -358,7 +356,8 @@ export default defineComponent({
           slots: {
             customRender: 'hitProvider',
           },
-          width: 200,
+          className: 'log-cell-nowrap',
+          width: 320,
         },
         {
           title: '计费渠道',
@@ -367,7 +366,8 @@ export default defineComponent({
           slots: {
             customRender: 'billingProvider',
           },
-          width: 140,
+          className: 'log-cell-nowrap',
+          width: 130,
         },
         {
           // 详情列直接给「结果」（答案），不再放错误原因。
@@ -377,7 +377,7 @@ export default defineComponent({
           slots: {
             customRender: 'detail',
           },
-          width: 320,
+          width: 100,
         },
         {
           title: '请求 ID',
@@ -386,7 +386,8 @@ export default defineComponent({
           slots: {
             customRender: 'requestId',
           },
-          width: 220,
+          className: 'log-cell-nowrap',
+          width: 310,
         },
         {
           title: '请求参数',
@@ -395,7 +396,7 @@ export default defineComponent({
           slots: {
             customRender: 'mode',
           },
-          width: 110,
+          width: 150,
         },
         {
           title: '请求接口',
@@ -404,7 +405,8 @@ export default defineComponent({
           slots: {
             customRender: 'requestSource',
           },
-          width: 180,
+          className: 'log-cell-nowrap',
+          width: 230,
         },
         {
           title: '答案数',
@@ -413,6 +415,7 @@ export default defineComponent({
           slots: {
             customRender: 'answerCount',
           },
+          className: 'log-cell-nowrap',
           width: 100,
         },
         {
@@ -422,7 +425,7 @@ export default defineComponent({
           slots: {
             customRender: 'requestSnapshot',
           },
-          width: 260,
+          width: 170,
         },
         {
           title: '原始响应',
@@ -431,7 +434,7 @@ export default defineComponent({
           slots: {
             customRender: 'responseSnapshot',
           },
-          width: 260,
+          width: 170,
         },
       ],
     };
@@ -460,7 +463,7 @@ export default defineComponent({
     },
     shouldShowSnapshotExpand(value) {
       const text = String(value || '').trim()
-      return text !== '' && text !== '-' && text.length > 48
+      return text !== '' && text !== '-'
     },
     isSnapshotExpanded(recordId, field) {
       return !!this.expandedSnapshots[this.buildSnapshotExpandKey(recordId, field)]
@@ -524,25 +527,10 @@ export default defineComponent({
       this.handleLogList()
     },
     formatDate(dateString) {
-      if (!dateString) return '-'
-      const date = new Date(dateString)
-      if (isNaN(date.getTime())) return '-'
-
-      const parts = new Intl.DateTimeFormat('zh-CN', {
-        timeZone: 'Asia/Shanghai',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false,
-      }).formatToParts(date).reduce((result, part) => {
-        result[part.type] = part.value
-        return result
-      }, {})
-
-      return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`
+      return formatShanghaiLogDate(dateString)
+    },
+    formatDateForTable(dateString) {
+      return formatShanghaiLogDate(dateString, '\n')
     }
   }
 });
@@ -611,6 +599,38 @@ export default defineComponent({
 
 .log-page :deep(.ant-table) {
   font-size: 13px;
+}
+
+.log-page :deep(.desktop-log-table .ant-table-thead > tr > th) {
+  white-space: nowrap;
+}
+
+.log-page :deep(.desktop-log-table .log-cell-nowrap) {
+  white-space: nowrap;
+}
+
+.log-page :deep(.desktop-log-table .log-cell-centered) {
+  text-align: center;
+}
+
+.log-time-cell {
+  display: block;
+  white-space: pre;
+  text-align: center;
+}
+
+.log-detail-cell {
+  display: block;
+  width: 65px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.log-params-cell {
+  display: block;
+  width: 110px;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .mobile-log-list,
@@ -693,68 +713,51 @@ export default defineComponent({
 }
 
 .log-channel-cell {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  min-width: 0;
-  word-break: break-word;
+  display: block;
+  white-space: nowrap;
 }
 
 .location-value {
-  display: inline-block;
-  white-space: pre-line;
+  display: block;
+  white-space: pre;
   line-height: 1.5;
-  text-align: left;
+  text-align: center;
 }
 
 .log-channel-name {
   font-weight: 500;
 }
 
-.log-channel-reasons {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  overflow: hidden;
-}
-
-.log-channel-reasons--expanded {
-  display: block;
-  overflow: visible;
-}
-
 .log-channel-error {
   color: #a61d24;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 
 .log-snapshot-cell {
-  display: flex;
-  align-items: flex-start;
-  gap: 4px;
-  width: 100%;
+  display: block;
+  width: 130px;
 }
 
 .log-snapshot-text {
-  display: inline-block;
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .log-snapshot-text--expanded {
+  display: block;
+  -webkit-line-clamp: unset;
+  -webkit-box-orient: initial;
   white-space: normal;
   overflow: visible;
-  text-overflow: clip;
-  word-break: break-all;
 }
 
 .log-snapshot-toggle {
-  flex: none;
+  display: block;
   padding-inline: 0;
   height: auto;
   line-height: 1.4;

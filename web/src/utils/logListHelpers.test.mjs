@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import * as logHelpers from './logListHelpers.mjs';
 
 import {
   buildLogActionColor,
@@ -144,6 +145,61 @@ test('LogList puts channel and billing columns right after the summary column', 
     '说明', '命中渠道 / 错误原因', '计费渠道', '详情',
     '请求 ID', '请求参数', '请求接口', '答案数', '原始请求', '原始响应',
   ]);
+});
+
+test('LogList uses content-sized horizontal scrolling while keeping compact columns bounded', async () => {
+  const content = await readFile(logListPagePath, 'utf8');
+  const columnsStart = content.indexOf('      columns: [');
+  const columnsEnd = content.indexOf('\n      ],', columnsStart);
+  assert.ok(columnsStart >= 0 && columnsEnd > columnsStart, 'missing log columns definition');
+
+  const columnsSource = content.slice(columnsStart, columnsEnd);
+  const columnBlocks = [...columnsSource.matchAll(/title: '([^']+)'([\s\S]*?)(?=\n        \},|$)/g)];
+  const widths = Object.fromEntries(columnBlocks.map(([, title, body]) => {
+    const width = body.match(/width:\s*(\d+)/);
+    assert.ok(width, `missing width for ${title}`);
+    return [title, Number(width[1])];
+  }));
+
+  assert.equal(Object.keys(widths).length, 16, 'all log columns should be included');
+  assert.equal(widths['详情'], 100);
+  assert.equal(widths['请求参数'], 150);
+  assert.equal(widths['原始请求'], 170);
+  assert.equal(widths['原始响应'], 170);
+  for (const title of [
+    '模块', '状态', '用户', '本地题库 ID', '说明',
+    '命中渠道 / 错误原因', '计费渠道', '请求 ID', '请求接口', '答案数',
+  ]) {
+    const column = columnBlocks.find(([, columnTitle]) => columnTitle === title);
+    assert.match(column?.[2] || '', /className:\s*'log-cell-nowrap'/, `${title} must show its full value on one line`);
+  }
+  assert.match(content, /:scroll="\{\s*x:\s*'max-content'\s*\}"/);
+  assert.match(content, /table-layout="auto"/);
+  assert.doesNotMatch(content, /table-layout:\s*fixed/);
+  const nowrapRules = content.match(/\.log-cell-nowrap[^}]*\}/)?.[0] || '';
+  assert.match(nowrapRules, /white-space:\s*nowrap/);
+  assert.doesNotMatch(nowrapRules, /text-overflow:\s*ellipsis/);
+});
+
+test('LogList formats timestamp and IP as centered two-line cells', async () => {
+  assert.equal(logHelpers.formatShanghaiLogDate('2026-10-24T18:18:59Z', '\n'), '2026-10-25\n02:18:59');
+  assert.equal(logHelpers.formatShanghaiLogDate('2026-10-24T18:18:59Z'), '2026-10-25 02:18:59');
+  assert.equal(logHelpers.formatShanghaiLogDate('invalid', '\n'), '-');
+  const content = await readFile(logListPagePath, 'utf8');
+  assert.match(content, /class="log-time-cell"[^>]*>\{\{ formatDateForTable\(/);
+  assert.match(content, /class="location-value"/);
+  assert.match(content, /\.log-time-cell[\s\S]*?white-space:\s*pre/);
+  assert.match(content, /\.location-value[\s\S]*?white-space:\s*pre/);
+  assert.match(content, /\.log-cell-centered[\s\S]*?text-align:\s*center/);
+});
+
+test('LogList raw snapshots preview three lines and can expand', async () => {
+  const content = await readFile(logListPagePath, 'utf8');
+  assert.match(content, /\.log-snapshot-text[\s\S]*?-webkit-line-clamp:\s*3/);
+  assert.match(content, /\.log-snapshot-text--expanded\s*\{\s*display:\s*block/);
+  assert.match(content, /\.log-snapshot-text--expanded[\s\S]*?-webkit-line-clamp:\s*unset/);
+  assert.match(content, /toggleSnapshotExpanded\(record\.id, 'requestSnapshot'\)/);
+  assert.match(content, /toggleSnapshotExpanded\(record\.id, 'responseSnapshot'\)/);
 });
 
 test('buildLogModuleLabel supports search module wording', () => {
@@ -563,14 +619,14 @@ test('LogList page renders derived status instead of the raw action column', asy
   assert.doesNotMatch(content, /title: '操作'/);
 });
 
-test('LogList separates channel names from expandable complete failure reasons', async () => {
+test('LogList shows complete channel failures on one unwrapped line', async () => {
   const content = await readFile(logListPagePath, 'utf8');
   const source = content.match(/<template #hitProvider="\{ record \}">([\s\S]*?)<\/template>/)?.[1];
   assert.ok(source, 'missing channel cell template');
   const { compile, createSSRApp, h } = require('vue');
   const { renderToString } = require('@vue/server-renderer');
   const render = compile(source);
-  const renderCell = async (detail, expanded) => {
+  const renderCell = async (detail) => {
     const app = createSSRApp({
       render,
       setup: () => ({
@@ -580,34 +636,27 @@ test('LogList separates channel names from expandable complete failure reasons',
           newAnswer: JSON.stringify({ failures: [{ provider: 'ai', code: 'UPSTREAM_ERROR', error: detail }] }),
         },
         buildStructuredFields: buildLogStructuredFields,
-        isSnapshotExpanded: () => expanded,
-        toggleSnapshotExpanded: () => {},
       }),
     });
     app.component('a-button', { setup: (_, { slots }) => () => h('button', slots.default?.()) });
     return renderToString(app);
   };
-  const short = await renderCell('AI联网搜题第1轮失败: 对方服务器异常', false);
+  const short = await renderCell('AI联网搜题第1轮失败: 对方服务器异常');
   assert.match(short, /class="log-channel-name">AI<\/span>/);
-  assert.match(short, /class="log-channel-error">\[UPSTREAM_ERROR\]：AI联网搜题第1轮失败: 对方服务器异常<\/div>/);
-  assert.doesNotMatch(short, /log-channel-reasons--collapsed|<button/);
+  assert.match(short, /class="log-channel-error"> \/ \[UPSTREAM_ERROR\]：AI联网搜题第1轮失败: 对方服务器异常<\/span>/);
+  assert.doesNotMatch(short, /<button/);
 
   const detail = '完整错误'.repeat(100);
-  const collapsed = await renderCell(detail, false);
-  assert.match(collapsed, /log-channel-reasons--collapsed/);
-  assert.ok(collapsed.includes(detail), 'complete cause must remain available for expansion');
-  assert.match(collapsed, /<button[^>]*>展开<\/button>/);
-  const expanded = await renderCell(detail, true);
-  assert.doesNotMatch(expanded, /log-channel-reasons--collapsed/);
-  assert.match(expanded, /<button[^>]*>收起<\/button>/);
+  const full = await renderCell(detail);
+  assert.ok(full.includes(detail), 'complete cause must remain visible');
+  assert.doesNotMatch(full, /<button/);
 });
 
 test('LogList formats timestamps in Shanghai time', async () => {
   const content = await readFile(logListPagePath, 'utf8');
 
-  assert.match(content, /timeZone:\s*'Asia\/Shanghai'/);
-  assert.match(content, /new Intl\.DateTimeFormat\('zh-CN'/);
-  assert.doesNotMatch(content, /date\.getHours\(\)/);
+  assert.match(content, /formatShanghaiLogDate\(dateString/);
+  assert.match(content, /formatShanghaiLogDate\(dateString, '\\n'\)/);
 });
 
 test('search outcome summaries retain structured request fields', () => {
