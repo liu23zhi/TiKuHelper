@@ -193,6 +193,19 @@ test('LogList formats timestamp and IP as centered two-line cells', async () => 
   assert.match(content, /\.log-cell-centered[\s\S]*?text-align:\s*center/);
 });
 
+test('LogList shows a resolved username only for an identified user', async () => {
+  assert.equal(logHelpers.buildLogUsername({ userId: 17, username: 'anonymous' }), 'anonymous');
+  assert.equal(logHelpers.buildLogUsername({ userId: 17, username: 'member' }), 'member');
+  assert.equal(logHelpers.buildLogUsername({ userId: 0, username: 'anonymous' }), '');
+  assert.equal(logHelpers.buildLogUsername({ userId: 17, username: '' }), '');
+  assert.equal(logHelpers.buildLogUsername({ userId: 17 }), '');
+  assert.equal(logHelpers.buildLogUsername({ username: 'anonymous' }), '');
+  assert.equal(logHelpers.buildLogUsername({ userId: 'unknown', username: 'anonymous' }), '');
+  const content = await readFile(logListPagePath, 'utf8');
+  assert.equal(content.match(/buildLogUsername\(record\)/g)?.length, 2, 'desktop and mobile rows use the same rule');
+  assert.doesNotMatch(content, /record\.username\s*\|\|\s*`用户 #/);
+});
+
 test('LogList raw snapshots preview three lines and can expand', async () => {
   const content = await readFile(logListPagePath, 'utf8');
   assert.match(content, /\.log-snapshot-text[\s\S]*?-webkit-line-clamp:\s*3/);

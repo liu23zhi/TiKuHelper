@@ -76,7 +76,7 @@
           </a-tag>
         </template>
         <template #username="{ record }">
-          <span>{{ record.username || `用户 #${record.userId || '-'}` }}</span>
+          <span>{{ buildLogUsername(record) }}</span>
         </template>
         <template #summary="{ record }">
           <span>{{ buildStructuredFields(record).summary }}</span>
@@ -159,7 +159,7 @@
           </header>
           <strong>{{ buildStructuredFields(record).summary }}</strong>
           <dl>
-            <div><dt>操作人</dt><dd>{{ record.username || `用户 #${record.userId || '-'}` }}</dd></div>
+            <div><dt>操作人</dt><dd>{{ buildLogUsername(record) }}</dd></div>
             <div><dt>时间</dt><dd>{{ formatDate(record.createTime) }}</dd></div>
             <div><dt>IP</dt><dd>{{ record.clientIp || '-' }}</dd></div>
           </dl>
@@ -187,6 +187,7 @@ import {
 } from '@/utils/locationHelpers.mjs';
 import {
   buildLogModuleLabel,
+  buildLogUsername,
   buildLogLocalQuestionId,
   buildLogQidLabel,
   buildLogRowDetail,
@@ -443,6 +444,7 @@ export default defineComponent({
     this.handleLogList()
   },
   methods: {
+    buildLogUsername,
     buildModuleLabel(value) {
       return buildLogModuleLabel(value)
     },

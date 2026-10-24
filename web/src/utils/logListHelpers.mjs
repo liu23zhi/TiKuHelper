@@ -21,6 +21,12 @@ export function formatShanghaiLogDate(dateString, separator = ' ') {
   return `${parts.year}-${parts.month}-${parts.day}${separator}${parts.hour}:${parts.minute}:${parts.second}`;
 }
 
+export function buildLogUsername(record = {}) {
+  const userId = Number(record.userId);
+  if (!Number.isInteger(userId) || userId <= 0) return '';
+  return typeof record.username === 'string' ? record.username.trim() : '';
+}
+
 export function buildLogModuleLabel(value) {
   const normalized = String(value || '').trim().toLowerCase();
   if (normalized === 'auth') return '认证';
