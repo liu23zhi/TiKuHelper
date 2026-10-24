@@ -302,7 +302,7 @@
     </a-card>
 
     <a-modal
-      v-model:visible="paymentMethodVisible"
+      v-model:open="paymentMethodVisible"
       :title="paymentMethodModalTitle"
       @ok="handleSubmitPaymentMethod"
       :afterClose="resetPaymentMethodFormState"

@@ -55,7 +55,7 @@
         </template>
       </a-table>
     </section>
-    <a-modal v-model:visible="detailVisible" :title="`${kindLabel}归属地详情`" :footer="null" width="760px">
+    <a-modal v-model:open="detailVisible" :title="`${kindLabel}归属地详情`" :footer="null" width="760px">
       <a-descriptions :column="1" size="small" bordered>
         <a-descriptions-item :label="kindLabel">{{ detailRecord.lookupKey || '-' }}</a-descriptions-item>
         <a-descriptions-item v-if="detailRecord.kind === 'ip'" label="查询模式">{{ sourceLabel(detailRecord.source) }}</a-descriptions-item>
@@ -66,7 +66,7 @@
       <h4 class="response-title">原始响应</h4>
       <pre class="raw-response">{{ formatRawResponse(detailRecord.rawJson) }}</pre>
     </a-modal>
-    <a-modal v-model:visible="manualVisible" :title="`手动添加${kindLabel}归属地`" :confirm-loading="manualSubmitting" ok-text="查询并保存" cancel-text="取消" @ok="manualLookup">
+    <a-modal v-model:open="manualVisible" :title="`手动添加${kindLabel}归属地`" :confirm-loading="manualSubmitting" ok-text="查询并保存" cancel-text="取消" @ok="manualLookup">
       <a-form layout="vertical">
         <a-form-item :label="kindLabel" required>
           <a-input v-model:value="manualKey" :placeholder="kind === 'phone' ? '请输入 11 位手机号' : '请输入公网 IP 地址'" @press-enter="manualLookup" />

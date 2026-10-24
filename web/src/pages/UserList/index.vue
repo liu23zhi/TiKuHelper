@@ -190,7 +190,7 @@
     </a-card>
 
     <a-modal
-      v-model:visible="visible"
+      v-model:open="visible"
       :title="modalTitle"
       @ok="onSubmit"
       :afterClose="resetFormState"
@@ -274,7 +274,7 @@
     </a-modal>
 
     <a-modal
-      v-model:visible="balanceVisible"
+      v-model:open="balanceVisible"
       title="修改用户余额"
       ok-text="确认修改"
       cancel-text="取消"
@@ -314,7 +314,7 @@
     </a-modal>
 
     <a-modal
-      v-model:visible="resetPasswordVisible"
+      v-model:open="resetPasswordVisible"
       title="重置用户密码"
       @ok="submitResetPassword"
       :afterClose="resetResetPasswordForm"

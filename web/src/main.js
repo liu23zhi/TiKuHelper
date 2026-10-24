@@ -2,7 +2,6 @@ import { createApp } from 'vue'
 import App from './App.vue'
 import {
   Tabs,
-  TabPane,
   Alert,
   Button,
   Pagination,
@@ -25,7 +24,6 @@ import {
   Upload,
   Spin,
   Menu,
-  message,
   Popconfirm,
   Badge,
   Empty,
@@ -33,12 +31,11 @@ import {
   Statistic,
 } from 'ant-design-vue'
 import router from './router/router'
-import 'ant-design-vue/dist/antd.css'
+import 'ant-design-vue/dist/reset.css'
 
 
 const app = createApp(App)
 app.use(Tabs)
-app.use(TabPane)
 app.use(Button)
 app.use(Alert)
 app.use(Modal)
@@ -66,6 +63,5 @@ app.use(Badge)
 app.use(Empty)
 app.use(Radio)
 app.use(Statistic)
-app.use(message)
 app.use(router);
 app.mount('#app')

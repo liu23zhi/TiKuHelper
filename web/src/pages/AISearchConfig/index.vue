@@ -240,7 +240,7 @@
     </a-form>
 
     <a-modal
-      v-model:visible="capabilityModalVisible"
+      v-model:open="capabilityModalVisible"
       title="深度思考能力"
       :footer="null"
       width="960px"
@@ -431,7 +431,7 @@
     </div>
 
     <a-modal
-      v-model:visible="priceModalVisible"
+      v-model:open="priceModalVisible"
       :title="priceForm.id ? '编辑模型价格' : '新增模型价格'"
       ok-text="确定"
       cancel-text="取消"
@@ -473,7 +473,7 @@
     </a-modal>
 
     <a-modal
-      v-model:visible="testModalVisible"
+      v-model:open="testModalVisible"
       title="测试 AI 搜索配置"
       ok-text="发送 hello 测试"
       cancel-text="关闭"

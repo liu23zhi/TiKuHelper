@@ -160,7 +160,8 @@ test('deep-thinking capability modal displays search capability details instead 
   ]) {
     assert.ok(source.includes(expected), 'missing search capability detail: ' + expected);
   }
-  const modalStart = source.indexOf('v-model:visible="capabilityModalVisible"');
+  const modalStart = source.indexOf('v-model:open="capabilityModalVisible"');
+  assert.notEqual(modalStart, -1, 'missing AI capability modal');
   const modalEnd = source.indexOf('</a-modal>', modalStart);
   const modal = source.slice(modalStart, modalEnd);
   assert.doesNotMatch(modal, /API 端点/);

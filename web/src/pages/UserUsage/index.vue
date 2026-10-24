@@ -164,7 +164,7 @@
     </a-card>
 
     <a-modal
-      v-model:visible="paymentResultVisible"
+      v-model:open="paymentResultVisible"
       title="扫码支付"
       :footer="null"
       width="420px"

@@ -153,7 +153,7 @@
         style="display: none"
         @change="handleJsonImportChange"
       />
-      <a-modal :visible="visible" title="详情内容" @ok="confirm" @cancel="visible = false" v-if="visible">
+      <a-modal :open="visible" title="详情内容" @ok="confirm" @cancel="visible = false" v-if="visible">
         <a-form :model="formData">
           <a-form-item label="类型">
             <a-select v-model:value="formData.type">
