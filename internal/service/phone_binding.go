@@ -62,7 +62,8 @@ func UpdateUserPhoneWithDB(db *gorm.DB, targetUserID int32, rawPhone string, for
 		if trimmed == "" {
 			updated.Phone = nil
 			updated.PhoneBoundAt = nil
-			return tx.Select("phone", "phone_bound_at").Updates(&updated).Error
+			return tx.Model(&entity.User{}).Where("id = ?", targetUserID).
+				Select("phone", "phone_bound_at").Updates(&updated).Error
 		}
 
 		phone, _, err := NormalizePhone(trimmed)
@@ -90,7 +91,8 @@ func UpdateUserPhoneWithDB(db *gorm.DB, targetUserID int32, rawPhone string, for
 		now := time.Now()
 		updated.Phone = &phone
 		updated.PhoneBoundAt = &now
-		return tx.Select("phone", "phone_bound_at").Updates(&updated).Error
+		return tx.Model(&entity.User{}).Where("id = ?", targetUserID).
+			Select("phone", "phone_bound_at").Updates(&updated).Error
 	})
 	return updated, err
 }

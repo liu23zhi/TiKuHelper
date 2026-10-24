@@ -20,7 +20,8 @@ func UpdateUserWechatBindingWithDB(db *gorm.DB, targetUserID int32, rawWechatID 
 		if wechatID == "" {
 			updated.WechatID = nil
 			updated.WechatBoundAt = nil
-			return tx.Select("wechat_id", "wechat_bound_at").Updates(&updated).Error
+			return tx.Model(&entity.User{}).Where("id = ?", targetUserID).
+				Select("wechat_id", "wechat_bound_at").Updates(&updated).Error
 		}
 		if updated.WechatID != nil && strings.TrimSpace(*updated.WechatID) == wechatID {
 			return nil
@@ -46,7 +47,8 @@ func UpdateUserWechatBindingWithDB(db *gorm.DB, targetUserID int32, rawWechatID 
 		now := time.Now()
 		updated.WechatID = &wechatID
 		updated.WechatBoundAt = &now
-		return tx.Select("wechat_id", "wechat_bound_at").Updates(&updated).Error
+		return tx.Model(&entity.User{}).Where("id = ?", targetUserID).
+			Select("wechat_id", "wechat_bound_at").Updates(&updated).Error
 	})
 	return updated, err
 }
