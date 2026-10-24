@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"net/url"
@@ -25,24 +27,35 @@ const (
 )
 
 var (
-	errAIFallbackTaskNotFound  = errors.New("AI 兜底任务不存在")
-	errAIFallbackTaskForbidden = errors.New("无权限查看 AI 兜底任务")
+	errAIFallbackTaskNotFound            = errors.New("AI 兜底任务不存在")
+	errAIFallbackTaskForbidden           = errors.New("无权限查看 AI 兜底任务")
+	errAIFallbackTaskIdempotencyConflict = errors.New("幂等键已用于不同的 AI 兜底请求")
 )
 
 type aiFallbackTask struct {
-	ID        string
-	UserID    int32
-	Status    string
-	Result    service.AIFallbackResult
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID                 string
+	UserID             int32
+	Status             string
+	Result             service.AIFallbackResult
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	IdempotencyKey     string
+	RequestFingerprint string
+}
+
+type aiFallbackTaskIdempotencyIndex struct {
+	UserID int32
+	Key    string
 }
 
 type aiFallbackTaskStore struct {
-	mu    sync.RWMutex
-	tasks map[string]aiFallbackTask
-	ttl   time.Duration
-	now   func() time.Time
+	mu            sync.RWMutex
+	creationMu    sync.Mutex
+	tasks         map[string]aiFallbackTask
+	terminalTasks map[string]struct{}
+	idempotency   map[aiFallbackTaskIdempotencyIndex]string
+	ttl           time.Duration
+	now           func() time.Time
 }
 
 type aiFallbackTaskResponse struct {
@@ -65,26 +78,67 @@ func newAIFallbackTaskStore(ttl time.Duration, now func() time.Time) *aiFallback
 		now = time.Now
 	}
 	return &aiFallbackTaskStore{
-		tasks: make(map[string]aiFallbackTask),
-		ttl:   ttl,
-		now:   now,
+		tasks:         make(map[string]aiFallbackTask),
+		terminalTasks: make(map[string]struct{}),
+		idempotency:   make(map[aiFallbackTaskIdempotencyIndex]string),
+		ttl:           ttl,
+		now:           now,
 	}
 }
 
 var defaultAIFallbackTaskStore = newAIFallbackTaskStore(aiFallbackTaskDefaultTTL, time.Now)
 
 func (s *aiFallbackTaskStore) create(userID int32, run func(taskID string) service.AIFallbackResult) string {
-	taskID := uuid.NewString()
+	taskID, _, _ := s.createIdempotent(userID, "", "", run)
+	return taskID
+}
+
+func (s *aiFallbackTaskStore) findByIdempotency(userID int32, key, fingerprint string) (aiFallbackTask, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanupExpiredLocked(s.now())
+	if taskID := s.idempotency[aiFallbackTaskIdempotencyIndex{UserID: userID, Key: key}]; taskID != "" {
+		if task, ok := s.tasks[taskID]; ok {
+			if task.RequestFingerprint != fingerprint {
+				return aiFallbackTask{}, false, errAIFallbackTaskIdempotencyConflict
+			}
+			return task, true, nil
+		}
+		delete(s.idempotency, aiFallbackTaskIdempotencyIndex{UserID: userID, Key: key})
+	}
+	return aiFallbackTask{}, false, nil
+}
+
+func (s *aiFallbackTaskStore) createIdempotent(userID int32, key, fingerprint string, run func(taskID string) service.AIFallbackResult) (string, bool, error) {
 	now := s.now()
 
 	s.mu.Lock()
 	s.cleanupExpiredLocked(now)
+	if key != "" {
+		index := aiFallbackTaskIdempotencyIndex{UserID: userID, Key: key}
+		if existingID := s.idempotency[index]; existingID != "" {
+			if existing, ok := s.tasks[existingID]; ok {
+				s.mu.Unlock()
+				if existing.RequestFingerprint != fingerprint {
+					return "", false, errAIFallbackTaskIdempotencyConflict
+				}
+				return existingID, true, nil
+			}
+			delete(s.idempotency, index)
+		}
+	}
+	taskID := uuid.NewString()
 	s.tasks[taskID] = aiFallbackTask{
-		ID:        taskID,
-		UserID:    userID,
-		Status:    aiFallbackTaskStatusRunning,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:                 taskID,
+		UserID:             userID,
+		Status:             aiFallbackTaskStatusRunning,
+		CreatedAt:          now,
+		UpdatedAt:          now,
+		IdempotencyKey:     key,
+		RequestFingerprint: fingerprint,
+	}
+	if key != "" {
+		s.idempotency[aiFallbackTaskIdempotencyIndex{UserID: userID, Key: key}] = taskID
 	}
 	s.mu.Unlock()
 
@@ -94,7 +148,7 @@ func (s *aiFallbackTaskStore) create(userID int32, run func(taskID string) servi
 		}))
 	}()
 
-	return taskID
+	return taskID, false, nil
 }
 
 func (s *aiFallbackTaskStore) get(taskID string, userID int32) (aiFallbackTask, error) {
@@ -129,15 +183,25 @@ func (s *aiFallbackTaskStore) complete(taskID string, result service.AIFallbackR
 	task.Result = result
 	task.UpdatedAt = s.now()
 	s.tasks[taskID] = task
+	s.terminalTasks[taskID] = struct{}{}
 }
 
 func (s *aiFallbackTaskStore) cleanupExpiredLocked(now time.Time) {
-	for taskID, task := range s.tasks {
-		if task.Status == aiFallbackTaskStatusRunning {
+	for taskID := range s.terminalTasks {
+		task, ok := s.tasks[taskID]
+		if !ok || task.Status == aiFallbackTaskStatusRunning {
+			delete(s.terminalTasks, taskID)
 			continue
 		}
 		if now.Sub(task.UpdatedAt) >= s.ttl {
 			delete(s.tasks, taskID)
+			delete(s.terminalTasks, taskID)
+			if task.IdempotencyKey != "" {
+				index := aiFallbackTaskIdempotencyIndex{UserID: task.UserID, Key: task.IdempotencyKey}
+				if s.idempotency[index] == taskID {
+					delete(s.idempotency, index)
+				}
+			}
 		}
 	}
 }
@@ -160,6 +224,30 @@ func buildAIFallbackPanicResult(recovered any) service.AIFallbackResult {
 
 // CreateAIFallbackTask queues an AI fallback request and returns its task ID.
 func CreateAIFallbackTask(c *gin.Context) {
+	rawBody := readAndRestoreRequestBody(c)
+	idempotencyKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	if len([]rune(idempotencyKey)) > searchTaskMaxIdempotencyKeyLength {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "Idempotency-Key 长度不能超过 128 个字符"})
+		return
+	}
+	userID := currentAIFallbackUserID(c)
+	fingerprint := ""
+	if idempotencyKey != "" {
+		value := strings.Join([]string{c.Request.Method, c.Request.URL.EscapedPath(), c.Request.URL.RawQuery, rawBody}, "\n")
+		digest := sha256.Sum256([]byte(value))
+		fingerprint = hex.EncodeToString(digest[:])
+		defaultAIFallbackTaskStore.creationMu.Lock()
+		defer defaultAIFallbackTaskStore.creationMu.Unlock()
+		existing, found, err := defaultAIFallbackTaskStore.findByIdempotency(userID, idempotencyKey, fingerprint)
+		if errors.Is(err, errAIFallbackTaskIdempotencyConflict) {
+			c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
+			return
+		}
+		if found {
+			writeAIFallbackTaskCreated(c, existing.ID)
+			return
+		}
+	}
 	var input aiFallbackInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		result := service.BuildAIFallbackInvalidInputResult("参数错误")
@@ -188,7 +276,6 @@ func CreateAIFallbackTask(c *gin.Context) {
 		return
 	}
 
-	userID := currentAIFallbackUserID(c)
 	requestID := uuid.NewString()
 	auditIdentity := newAIFallbackAuditIdentity(c)
 	req := model.SearchRequest{
@@ -199,7 +286,7 @@ func CreateAIFallbackTask(c *gin.Context) {
 		DeepThinking: input.DeepThinking,
 		RequestID:    requestID,
 	}
-	taskID := defaultAIFallbackTaskStore.create(userID, func(taskID string) (result service.AIFallbackResult) {
+	taskID, _, err := defaultAIFallbackTaskStore.createIdempotent(userID, idempotencyKey, fingerprint, func(taskID string) (result service.AIFallbackResult) {
 		audited := false
 		auditResult := func(stage string, outcome service.AIFallbackResult) {
 			if audited {
@@ -295,7 +382,18 @@ func CreateAIFallbackTask(c *gin.Context) {
 		auditResult("result", result)
 		return result
 	})
+	if err != nil {
+		if errors.Is(err, errAIFallbackTaskIdempotencyConflict) {
+			c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "无法创建 AI 兜底任务"})
+		return
+	}
+	writeAIFallbackTaskCreated(c, taskID)
+}
 
+func writeAIFallbackTaskCreated(c *gin.Context, taskID string) {
 	c.JSON(http.StatusAccepted, aiFallbackTaskResponse{
 		Success:   false,
 		Status:    aiFallbackTaskStatusRunning,

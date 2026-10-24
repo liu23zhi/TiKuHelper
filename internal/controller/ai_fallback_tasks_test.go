@@ -136,6 +136,54 @@ func TestAIFallbackTaskStoreKeepsRunningTaskWhileConcurrentOwnerTaskCompletes(t 
 	eventuallyAIFallbackTaskStatus(t, store, firstID, 7, aiFallbackTaskStatusSucceeded)
 }
 
+func TestAIFallbackTaskStoreIdempotencyAndRetention(t *testing.T) {
+	clock := newLockedAIFallbackTestClock(time.Now())
+	store := newAIFallbackTaskStore(time.Minute, clock.Now)
+	release := make(chan struct{})
+	var calls int
+	run := func(string) service.AIFallbackResult {
+		calls++
+		<-release
+		return service.AIFallbackResult{Success: true}
+	}
+	firstID, reused, err := store.createIdempotent(7, "same-key", "same-body", run)
+	if err != nil || reused || firstID == "" {
+		t.Fatalf("first create failed: id=%q reused=%t err=%v", firstID, reused, err)
+	}
+	secondID, reused, err := store.createIdempotent(7, "same-key", "same-body", run)
+	if err != nil || !reused || secondID != firstID {
+		t.Fatalf("matching retry should reuse task: id=%q reused=%t err=%v", secondID, reused, err)
+	}
+	if _, _, err := store.createIdempotent(7, "same-key", "different-body", run); !errors.Is(err, errAIFallbackTaskIdempotencyConflict) {
+		t.Fatalf("same key with different body should conflict: %v", err)
+	}
+	otherID, _, err := store.createIdempotent(8, "same-key", "same-body", func(string) service.AIFallbackResult {
+		return service.AIFallbackResult{Success: true}
+	})
+	if err != nil || otherID == firstID {
+		t.Fatalf("other user should have independent key, id=%q err=%v", otherID, err)
+	}
+	clock.Advance(2 * time.Minute)
+	if _, err := store.get(firstID, 7); err != nil {
+		t.Fatalf("running task must survive TTL: %v", err)
+	}
+	close(release)
+	eventuallyAIFallbackTaskStatus(t, store, firstID, 7, aiFallbackTaskStatusSucceeded)
+	if calls != 1 {
+		t.Fatalf("idempotent calls should run once, got %d", calls)
+	}
+	clock.Advance(2 * time.Minute)
+	if _, err := store.get(firstID, 7); !errors.Is(err, errAIFallbackTaskNotFound) {
+		t.Fatalf("terminal task should expire: %v", err)
+	}
+	newID, reused, err := store.createIdempotent(7, "same-key", "different-body", func(string) service.AIFallbackResult {
+		return service.AIFallbackResult{Success: true}
+	})
+	if err != nil || reused || newID == firstID {
+		t.Fatalf("expired key should be released, id=%q reused=%t err=%v", newID, reused, err)
+	}
+}
+
 func TestCreateAIFallbackTaskReturnsRunningTaskAndStatusCanComplete(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newSearchControllerTestDB(t)
@@ -337,6 +385,7 @@ func TestCreateAIFallbackTaskBillsSuccessfulAIUsageOnce(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback/tasks", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+token.TokenValue)
+	request.Header.Set("Idempotency-Key", "billed-ai-task-request")
 	router.ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusAccepted {
@@ -406,6 +455,35 @@ func TestCreateAIFallbackTaskBillsSuccessfulAIUsageOnce(t *testing.T) {
 	}
 	if storedToken.TotalAmountUsed != 0.105 {
 		t.Fatalf("expected token usage 0.105, got %v", storedToken.TotalAmountUsed)
+	}
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 0).Error; err != nil {
+		t.Fatalf("deplete balance before retry: %v", err)
+	}
+	retryRecorder := httptest.NewRecorder()
+	retryRequest := httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback/tasks", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
+	retryRequest.Header.Set("Content-Type", "application/json")
+	retryRequest.Header.Set("Authorization", "Bearer "+token.TokenValue)
+	retryRequest.Header.Set("Idempotency-Key", "billed-ai-task-request")
+	router.ServeHTTP(retryRecorder, retryRequest)
+	if retryRecorder.Code != http.StatusAccepted {
+		t.Fatalf("retry must reuse completed task even after balance depletion, got %d: %s", retryRecorder.Code, retryRecorder.Body.String())
+	}
+	var retried aiFallbackTaskResponse
+	if err := json.Unmarshal(retryRecorder.Body.Bytes(), &retried); err != nil || retried.TaskID != created.TaskID {
+		t.Fatalf("retry returned different task: %+v, err=%v", retried, err)
+	}
+	conflictRecorder := httptest.NewRecorder()
+	conflictRequest := httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback/tasks", bytes.NewBufferString(`{"question":"different question","type":0}`))
+	conflictRequest.Header.Set("Content-Type", "application/json")
+	conflictRequest.Header.Set("Authorization", "Bearer "+token.TokenValue)
+	conflictRequest.Header.Set("Idempotency-Key", "billed-ai-task-request")
+	router.ServeHTTP(conflictRecorder, conflictRequest)
+	if conflictRecorder.Code != http.StatusConflict {
+		t.Fatalf("same key for another request should return 409, got %d: %s", conflictRecorder.Code, conflictRecorder.Body.String())
+	}
+	var auditCount int64
+	if err := db.Model(&entity.Log{}).Where("module = ? AND action = ? AND user_id = ?", "ai_fallback", 11, user.ID).Count(&auditCount).Error; err != nil || auditCount != 1 {
+		t.Fatalf("retried task must retain one audit record: count=%d err=%v", auditCount, err)
 	}
 
 	statusAgain := httptest.NewRecorder()

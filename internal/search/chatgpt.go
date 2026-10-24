@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	stdErrors "errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -13,10 +14,12 @@ import (
 	"image/png"
 	"io"
 	"math"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -384,12 +387,12 @@ const (
 // 多人同时搜题时的并发控制：
 //   - aiSearchMaxConcurrentRequests 限制同时在跑的上游 AI 请求数，避免打爆上游额度或连接池；
 //   - aiSearchMaxConcurrentAttachments 限制单个请求内的图片并发下载数；
-//   - aiSearchRetryMaxAttempts / aiSearchRetryBaseDelay 处理上游 429、5xx 和网络抖动。
+//   - aiSearchRetryMaxAttempts / aiSearchRetryBaseDelay 只处理明确未执行的上游拒绝状态。
 const (
 	aiSearchMaxConcurrentRequests    = 8
 	aiSearchMaxConcurrentAttachments = 4
 	aiSearchRetryMaxAttempts         = 3
-	aiSearchRetryBaseDelay           = 400 * time.Millisecond
+	aiSearchRetryBaseDelay           = 500 * time.Millisecond
 	aiSearchRetryMaxDelay            = 5 * time.Second
 	aiSearchRetryBudget              = 2 * time.Minute
 )
@@ -812,7 +815,7 @@ func downloadAISearchAttachmentPart(httpClient *http.Client, attachmentURL strin
 	}
 	httpReq.Header.Set("Referer", "https://mooc1.chaoxing.com/")
 	httpReq.Header.Set("User-Agent", "Mozilla/5.0")
-	resp, err := httpClient.Do(httpReq)
+	resp, err := util.DoReadOnlyWithRetry(httpClient, httpReq)
 	if err != nil {
 		return openAIContentPart{}, false
 	}
@@ -1076,7 +1079,7 @@ func (in *ChatGptClient) requestStreamAnswerDetailed(parentCtx context.Context, 
 	// would silently disable the retry setting.
 	for attempt := 0; attempt < in.aiSearchRetryAttempts(); attempt++ {
 		if attempt > 0 {
-			if !sleepAISearchRetryBackoff(attempt, time.Since(requestStartedAt)) {
+			if !sleepAISearchRetryBackoff(parentCtx, attempt, time.Since(requestStartedAt), lastErr) {
 				break
 			}
 		}
@@ -1125,7 +1128,7 @@ func (in *ChatGptClient) requestStreamAnswerDetailed(parentCtx context.Context, 
 				attemptUsage.ModelCalls = append([]AIModelCallUsage(nil), lastUsage.ModelCalls...)
 				return content, attemptUsage, statusCode, endpoint, requestBody, rawResponse, nil
 			}
-			if endpointIndex+1 >= len(endpoints) {
+			if endpointIndex+1 >= len(endpoints) || !shouldTryAlternateAIEndpoint(statusCode) {
 				break
 			}
 		}
@@ -1149,7 +1152,7 @@ func (in *ChatGptClient) requestStreamAnswerDetailed(parentCtx context.Context, 
 }
 
 // executeAISearchStreamRequest 在全局并发配额内执行单次上游请求。
-// retryable 表示该失败是否值得退避重试（限流、网关错误、网络抖动）。
+// retryable 表示上游明确拒绝且未开始结果流，可按状态退避重试。
 func (in *ChatGptClient) executeAISearchStreamRequest(parentCtx context.Context, endpoint string, payload []byte, requestBody string, requestStartedAt time.Time) (string, AISearchUsage, int, string, bool, error) {
 	// 每次尝试最多等 aiSearchFirstTokenTimeout；但它不能超过本次搜题的总时限。
 	ctx, cancel := context.WithTimeout(parentCtx, aiSearchFirstTokenTimeout)
@@ -1169,15 +1172,15 @@ func (in *ChatGptClient) executeAISearchStreamRequest(parentCtx context.Context,
 
 	resp, err := in.getHTTPClient().GetClient().Do(httpReq)
 	if err != nil {
-		// 连接失败、超时、被重置通常都是瞬时故障，交给上层退避重试。
-		return "", AISearchUsage{}, 0, "", true, in.upstreamError("network", 0, "", err)
+		// 请求可能已被模型执行；响应丢失时无法证明不会重复付费。
+		return "", AISearchUsage{}, 0, "", false, in.upstreamError("network", 0, "", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		rawBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
 		rawResponse := string(rawBody)
-		return "", AISearchUsage{}, resp.StatusCode, rawResponse, true, in.upstreamError("http", resp.StatusCode, rawResponse, readErr)
+		return "", AISearchUsage{}, resp.StatusCode, rawResponse, isRetryableAIHTTPStatus(resp.StatusCode), withAISearchRetryAfter(in.upstreamError("http", resp.StatusCode, rawResponse, readErr), resp)
 	}
 
 	firstTokenTimeout := aiSearchFirstTokenTimeout - time.Since(requestStartedAt)
@@ -1187,32 +1190,102 @@ func (in *ChatGptClient) executeAISearchStreamRequest(parentCtx context.Context,
 		}
 	}
 	if firstTokenTimeout <= 0 {
-		return "", AISearchUsage{}, resp.StatusCode, "", true, in.upstreamError("first_token", resp.StatusCode, "", errAISearchFirstTokenTimeout)
+		return "", AISearchUsage{}, resp.StatusCode, "", false, in.upstreamError("first_token", resp.StatusCode, "", errAISearchFirstTokenTimeout)
 	}
 	content, usage, rawResponse, err := readOpenAIStreamContentWithFirstTokenTimeout(resp.Body, firstTokenTimeout)
 	if err != nil {
-		return "", usage, resp.StatusCode, rawResponse, true, in.upstreamError("stream", resp.StatusCode, rawResponse, err)
+		return "", usage, resp.StatusCode, rawResponse, false, in.upstreamError("stream", resp.StatusCode, rawResponse, err)
 	}
 	content = strings.TrimSpace(content)
 	if content == "" {
-		// 流里没有任何内容，可能是上游被中断：值得重试一次。
-		return "", usage, resp.StatusCode, rawResponse, true, errors.ErrTargetNoAnswer
+		return "", usage, resp.StatusCode, rawResponse, false, errors.ErrTargetNoAnswer
 	}
 	return content, usage, resp.StatusCode, rawResponse, false, nil
 }
 
+func isRetryableAIHTTPStatus(status int) bool {
+	return status == http.StatusRequestTimeout || status == http.StatusTooEarly || status == http.StatusTooManyRequests
+}
+
+func shouldTryAlternateAIEndpoint(status int) bool {
+	return status == http.StatusNotFound
+}
+
+type aiSearchRetryAfterError struct {
+	err   error
+	delay time.Duration
+}
+
+func (e *aiSearchRetryAfterError) Error() string { return e.err.Error() }
+func (e *aiSearchRetryAfterError) Unwrap() error { return e.err }
+
+func withAISearchRetryAfter(err error, resp *http.Response) error {
+	if err == nil || resp == nil || resp.StatusCode != http.StatusTooManyRequests {
+		return err
+	}
+	value := strings.TrimSpace(resp.Header.Get("Retry-After"))
+	if value == "" {
+		return err
+	}
+	if seconds, parseErr := strconv.ParseInt(value, 10, 64); parseErr == nil && seconds >= 0 {
+		if seconds > int64(aiSearchRetryBudget/time.Second) {
+			return &aiSearchRetryAfterError{err: err, delay: aiSearchRetryBudget + time.Second}
+		}
+		return &aiSearchRetryAfterError{err: err, delay: time.Duration(seconds) * time.Second}
+	}
+	if value[0] >= '0' && value[0] <= '9' && strings.Trim(value, "0123456789") == "" {
+		return &aiSearchRetryAfterError{err: err, delay: aiSearchRetryBudget + time.Second}
+	}
+	if retryAt, parseErr := http.ParseTime(value); parseErr == nil {
+		delay := time.Until(retryAt)
+		if delay < 0 {
+			delay = 0
+		}
+		return &aiSearchRetryAfterError{err: err, delay: delay}
+	}
+	return err
+}
+
+func aiSearchRetryAfter(err error) (time.Duration, bool) {
+	var retryErr *aiSearchRetryAfterError
+	if stdErrors.As(err, &retryErr) {
+		return retryErr.delay, true
+	}
+	return 0, false
+}
+
 // sleepAISearchRetryBackoff 指数退避，并受总重试预算约束。
 // 返回 false 表示预算已经用尽，不应继续重试。
-func sleepAISearchRetryBackoff(attempt int, elapsed time.Duration) bool {
+func sleepAISearchRetryBackoff(ctx context.Context, attempt int, elapsed time.Duration, retryErr error) bool {
+	if ctx.Err() != nil || elapsed >= aiSearchRetryBudget {
+		return false
+	}
 	delay := time.Duration(float64(aiSearchRetryBaseDelay) * math.Pow(2, float64(attempt-1)))
 	if delay > aiSearchRetryMaxDelay {
 		delay = aiSearchRetryMaxDelay
 	}
-	if elapsed+delay > aiSearchRetryBudget {
+	if serverDelay, ok := aiSearchRetryAfter(retryErr); ok {
+		delay = serverDelay
+	} else {
+		delay += time.Duration(rand.Int63n(int64(delay/5) + 1))
+		if delay > aiSearchRetryMaxDelay {
+			delay = aiSearchRetryMaxDelay
+		}
+	}
+	if delay > aiSearchRetryBudget-elapsed {
 		return false
 	}
-	time.Sleep(delay)
-	return true
+	if deadline, ok := ctx.Deadline(); ok && delay > time.Until(deadline) {
+		return false
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func readOpenAIStreamContent(body io.Reader) (string, AISearchUsage, error) {

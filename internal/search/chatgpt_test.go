@@ -535,7 +535,7 @@ func TestBuildAIModelCallUsageFallsBackToInputAndOutput(t *testing.T) {
 	}
 }
 
-func TestSearchAnswerWithUsageRetainsTokenBearingRetryResponses(t *testing.T) {
+func TestSearchAnswerWithUsageDoesNotReplayTokenBearingEmptyResponse(t *testing.T) {
 	attempt := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempt++
@@ -550,14 +550,14 @@ func TestSearchAnswerWithUsageRetainsTokenBearingRetryResponses(t *testing.T) {
 
 	client := &ChatGptClient{Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "retry-model", MaxAISearchModelCalls: 1, MaxAISearchRetries: 2}
 	answer, usage, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "题目"})
-	if err != nil || !reflect.DeepEqual(answer, [][]string{{"A"}}) {
-		t.Fatalf("expected retry answer, answer=%v err=%v", answer, err)
+	if err == nil || len(answer) != 0 || attempt != 1 {
+		t.Fatalf("empty charged response must not be replayed: answer=%v calls=%d err=%v", answer, attempt, err)
 	}
-	if len(usage.ModelCalls) != 2 || usage.ModelCalls[0].TotalTokens != 10 || usage.ModelCalls[1].TotalTokens != 13 {
-		t.Fatalf("expected both token-bearing attempts, got %+v", usage.ModelCalls)
+	if len(usage.ModelCalls) != 1 || usage.ModelCalls[0].TotalTokens != 10 {
+		t.Fatalf("the single token-bearing response must be retained, got %+v", usage.ModelCalls)
 	}
-	if usage.InputTokens != 11 || usage.OutputTokens != 2 || usage.TotalTokens != 13 {
-		t.Fatalf("ordinary aggregate must retain final attempt usage, got %+v", usage)
+	if usage.InputTokens != 7 || usage.OutputTokens != 3 || usage.TotalTokens != 10 {
+		t.Fatalf("ordinary aggregate must retain the charged attempt, got %+v", usage)
 	}
 }
 
@@ -616,7 +616,7 @@ func TestResponsesEndpointFallbackSharesOneRetryAttempt(t *testing.T) {
 	}
 }
 
-func TestResponsesEndpointFailuresCountAsOneRetryAttempt(t *testing.T) {
+func TestResponsesBadRequestDoesNotProbeAlternateEndpoint(t *testing.T) {
 	calls := make(map[string]int)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls[r.URL.Path]++
@@ -634,10 +634,10 @@ func TestResponsesEndpointFailuresCountAsOneRetryAttempt(t *testing.T) {
 	}
 	_, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "题目"})
 	if err == nil {
-		t.Fatalf("two endpoint failures in one retry cycle must still fail, got nil")
+		t.Fatalf("bad request must fail, got nil")
 	}
-	if calls["/responses"] != 1 || calls["/v1/responses"] != 1 {
-		t.Fatalf("expected both endpoint requests within one retry cycle, got %v", calls)
+	if calls["/responses"] != 1 || calls["/v1/responses"] != 0 {
+		t.Fatalf("400 must not probe another endpoint, got %v", calls)
 	}
 }
 

@@ -2,13 +2,11 @@ package search
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 	"time"
 
 	"github.com/go-resty/resty/v2"
 	"github.com/itihey/tikuAdapter/pkg/errors"
-	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/model"
 )
 
@@ -33,14 +31,6 @@ type TikuhaiClient struct {
 func (in *TikuhaiClient) getHTTPClient() *resty.Client {
 	return resty.New().
 		SetTimeout(5 * time.Second).
-		SetRetryCount(1).
-		SetRetryWaitTime(2 * time.Second).
-		AddRetryCondition(func(r *resty.Response, err error) bool {
-			return err != nil || r.StatusCode() >= 500
-		}).
-		AddRetryHook(func(r *resty.Response, err error) {
-			logger.SysError(fmt.Sprintf("题库海题库触发重试，状态码：%d，响应：%s", r.StatusCode(), r.String()))
-		}).
 		SetHeaders(map[string]string{
 			"Content-Type": "application/json",
 			"User-Agent":   "tikuhaiAdapter/0.1.0",

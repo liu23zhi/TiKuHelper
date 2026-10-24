@@ -114,13 +114,13 @@ func TestSearchRejectsInvalidAPIKeysWithoutRequest(t *testing.T) {
 	}
 }
 
-func TestSearchAggregateStatusMappingAndRetry(t *testing.T) {
+func TestSearchAggregateDoesNotReplayFailedSubmission(t *testing.T) {
 	for _, test := range []struct {
 		status   int
 		code     string
 		kind     error
 		attempts int
-	}{{400, "INVALID_REQUEST", ErrInvalidArgument, 1}, {401, "UNAUTHORIZED", ErrUnauthorized, 1}, {429, "RATE_LIMIT_EXCEEDED", ErrRateLimited, 4}, {500, "INTERNAL_ERROR", ErrUpstream, 4}} {
+	}{{400, "INVALID_REQUEST", ErrInvalidArgument, 1}, {401, "UNAUTHORIZED", ErrUnauthorized, 1}, {429, "RATE_LIMIT_EXCEEDED", ErrRateLimited, 1}, {500, "INTERNAL_ERROR", ErrUpstream, 1}} {
 		t.Run(test.code, func(t *testing.T) {
 			server, requests := newServer(t, func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Retry-After", "2")
@@ -135,8 +135,8 @@ func TestSearchAggregateStatusMappingAndRetry(t *testing.T) {
 			if !errors.Is(err, test.kind) || !errors.As(err, &upstream) || upstream.Code != test.code || upstream.RequestID != "search-request" || upstream.RetryAfter != 2*time.Second || requests.count() != test.attempts {
 				t.Fatalf("响应/次数错误: err=%v requests=%d", err, requests.count())
 			}
-			if test.status == http.StatusTooManyRequests {
-				assertDelays(t, delays.recorded(), 2*time.Second, 2*time.Second, 2*time.Second)
+			if len(delays.recorded()) != 0 {
+				t.Fatalf("POST 请求结果未知时不应自动重放，退避=%v", delays.recorded())
 			}
 		})
 	}
@@ -157,7 +157,7 @@ func TestSearchRejectsMalformedSuccess(t *testing.T) {
 	}
 }
 
-func TestSearchAggregateHonorsTotalDeadlineDuringRateLimit(t *testing.T) {
+func TestSearchAggregateRateLimitDoesNotWaitOrReplay(t *testing.T) {
 	server, requests := newServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "3600")
 		staticJSON(http.StatusTooManyRequests, `{"code":"RATE_LIMIT_EXCEEDED","message":"请稍后"}`)(w, r)
@@ -166,8 +166,8 @@ func TestSearchAggregateHonorsTotalDeadlineDuringRateLimit(t *testing.T) {
 	defer cancel()
 	started := time.Now()
 	_, err := NewClient(testAPIKey).SetSearchAggregateURL(server.URL).SearchAggregate(ctx, SearchAggregateRequest{Query: "query"})
-	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrTimeout) || requests.count() != 1 || time.Since(started) > time.Second {
-		t.Fatalf("总时限未生效: err=%v requests=%d elapsed=%v", err, requests.count(), time.Since(started))
+	if !errors.Is(err, ErrRateLimited) || requests.count() != 1 || time.Since(started) > time.Second {
+		t.Fatalf("限流 POST 不应等待重放: err=%v requests=%d elapsed=%v", err, requests.count(), time.Since(started))
 	}
 }
 

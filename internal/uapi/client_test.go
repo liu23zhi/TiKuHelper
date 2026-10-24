@@ -97,6 +97,7 @@ func newTestClient(serverURL string) *Client {
 	c := NewClient(testAPIKey)
 	c.SetPhoneInfoURL(serverURL + phoneInfoPath)
 	c.SetIPInfoURL(serverURL + ipInfoPath)
+	c.jitter = func(delay time.Duration) time.Duration { return delay }
 	return c
 }
 
@@ -427,12 +428,13 @@ func TestStatusMappingAndRetry(t *testing.T) {
 		{"402", http.StatusPaymentRequired, `{"code":"INSUFFICIENT_CREDITS","message":"no credits"}`, ErrInsufficientCredits, 1, 0},
 		{"403", http.StatusForbidden, `{"error":"FORBIDDEN","message":"denied"}`, ErrForbidden, 1, 0},
 		{"404", http.StatusNotFound, `{"code":"NOT_FOUND","message":"not found"}`, ErrNotFound, 1, 0},
-		{"408", http.StatusRequestTimeout, `{"code":"TIMEOUT","message":"timeout"}`, ErrUpstream, 4, 3},
-		{"429", http.StatusTooManyRequests, `{"code":"RATE_LIMITED","message":"slow down"}`, ErrRateLimited, 4, 3},
-		{"429 配额耗尽", http.StatusTooManyRequests, `{"code":"VISITOR_MONTHLY_QUOTA_EXHAUSTED","message":"quota"}`, ErrInsufficientCredits, 4, 3},
-		{"500", http.StatusInternalServerError, `{"code":"INTERNAL_SERVER_ERROR","message":"boom"}`, ErrUpstream, 4, 3},
-		{"502", http.StatusBadGateway, ``, ErrUpstream, 4, 3},
-		{"503", http.StatusServiceUnavailable, ``, ErrUpstream, 4, 3},
+		{"408", http.StatusRequestTimeout, `{"code":"TIMEOUT","message":"timeout"}`, ErrUpstream, 3, 2},
+		{"425", http.StatusTooEarly, `{"code":"TOO_EARLY","message":"retry later"}`, ErrUpstream, 3, 2},
+		{"429", http.StatusTooManyRequests, `{"code":"RATE_LIMITED","message":"slow down"}`, ErrRateLimited, 3, 2},
+		{"429 配额耗尽", http.StatusTooManyRequests, `{"code":"VISITOR_MONTHLY_QUOTA_EXHAUSTED","message":"quota"}`, ErrInsufficientCredits, 1, 0},
+		{"500", http.StatusInternalServerError, `{"code":"INTERNAL_SERVER_ERROR","message":"boom"}`, ErrUpstream, 1, 0},
+		{"502", http.StatusBadGateway, ``, ErrUpstream, 1, 0},
+		{"503", http.StatusServiceUnavailable, ``, ErrUpstream, 1, 0},
 		{"未列举状态码 418", http.StatusTeapot, ``, ErrUpstream, 1, 0},
 	}
 	for _, tt := range tests {
@@ -494,12 +496,12 @@ func TestRetryOn500ThenSuccess(t *testing.T) {
 	sleeps := &sleepRecorder{}
 	c.sleep = sleeps.hook
 
-	info, err := c.GetPhoneInfo(context.Background(), "13800138000")
+	resp, err := c.get(context.Background(), srv.URL, nil)
 	if err != nil {
-		t.Fatalf("GetPhoneInfo 出错: %v", err)
+		t.Fatalf("read-only GET failed: %v", err)
 	}
-	if info.City != "杭州市" {
-		t.Fatalf("结果 = %+v", info)
+	if !resp.IsSuccess() {
+		t.Fatalf("read-only GET status = %d", resp.StatusCode())
 	}
 	if rec.count() != 3 {
 		t.Fatalf("请求次数 = %d，期望 3", rec.count())
@@ -507,21 +509,21 @@ func TestRetryOn500ThenSuccess(t *testing.T) {
 	assertDelays(t, sleeps.recorded(), 500*time.Millisecond, time.Second)
 }
 
-func Test500RetriesAtMostThreeTimes(t *testing.T) {
+func Test500MakesAtMostThreeAttempts(t *testing.T) {
 	srv, rec := newServer(t, staticJSON(http.StatusInternalServerError, `{"code":"INTERNAL_SERVER_ERROR","message":"boom"}`))
 	c := newTestClient(srv.URL)
 	sleeps := &sleepRecorder{}
 	c.sleep = sleeps.hook
 
-	_, err := c.GetPhoneInfo(context.Background(), "13800138000")
-	if !errors.Is(err, ErrUpstream) {
-		t.Fatalf("err = %v，期望 ErrUpstream", err)
+	resp, err := c.get(context.Background(), srv.URL, nil)
+	if err != nil || resp.StatusCode() != http.StatusInternalServerError {
+		t.Fatalf("read-only GET must return final 500 response, resp=%v err=%v", resp, err)
 	}
-	// 首次 + 最多 3 次重试
-	if rec.count() != 4 {
-		t.Fatalf("请求次数 = %d，期望 4", rec.count())
+	// 首次 + 最多 2 次重试
+	if rec.count() != 3 {
+		t.Fatalf("请求次数 = %d，期望 3", rec.count())
 	}
-	assertDelays(t, sleeps.recorded(), 500*time.Millisecond, time.Second, 2*time.Second)
+	assertDelays(t, sleeps.recorded(), 500*time.Millisecond, time.Second)
 }
 
 func Test400NotRetried(t *testing.T) {
@@ -556,10 +558,10 @@ func Test429HonorsRetryAfter(t *testing.T) {
 	if !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("err = %v，期望 ErrRateLimited", err)
 	}
-	if rec.count() != 4 {
-		t.Fatalf("请求次数 = %d，期望 4", rec.count())
+	if rec.count() != 3 {
+		t.Fatalf("请求次数 = %d，期望 3", rec.count())
 	}
-	assertDelays(t, sleeps.recorded(), time.Second, time.Second, time.Second)
+	assertDelays(t, sleeps.recorded(), time.Second, time.Second)
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("errors.As(*APIError) = false")
@@ -602,10 +604,10 @@ func Test429WithoutRetryAfterUsesBackoff(t *testing.T) {
 	if _, err := c.GetPhoneInfo(context.Background(), "13800138000"); !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("err = %v，期望 ErrRateLimited", err)
 	}
-	if rec.count() != 4 {
-		t.Fatalf("请求次数 = %d，期望 4", rec.count())
+	if rec.count() != 3 {
+		t.Fatalf("请求次数 = %d，期望 3", rec.count())
 	}
-	assertDelays(t, sleeps.recorded(), 500*time.Millisecond, time.Second, 2*time.Second)
+	assertDelays(t, sleeps.recorded(), 500*time.Millisecond, time.Second)
 }
 
 func TestRetryBackoffTable(t *testing.T) {
@@ -680,7 +682,7 @@ func TestTimeoutIsRetriedAndReported(t *testing.T) {
 	c.sleep = sleeps.hook
 
 	start := time.Now()
-	_, err := c.GetPhoneInfo(context.Background(), "13800138000")
+	_, err := c.get(context.Background(), srv.URL, nil)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -692,13 +694,56 @@ func TestTimeoutIsRetriedAndReported(t *testing.T) {
 	if !errors.Is(err, ErrNetwork) {
 		t.Fatalf("errors.Is(err, ErrNetwork) = false，err = %v", err)
 	}
-	// 网络超时可重试：首次 + 3 次重试
-	if rec.count() != 4 {
-		t.Fatalf("请求次数 = %d，期望 4", rec.count())
+	// 网络超时可重试：首次 + 2 次重试
+	if rec.count() != 3 {
+		t.Fatalf("请求次数 = %d，期望 3", rec.count())
 	}
-	assertDelays(t, sleeps.recorded(), 500*time.Millisecond, time.Second, 2*time.Second)
+	assertDelays(t, sleeps.recorded(), 500*time.Millisecond, time.Second)
 	if elapsed > 5*time.Second {
 		t.Fatalf("超时未及时返回，耗时 %v", elapsed)
+	}
+}
+
+func TestPaidGETDoesNotReplayLostResponse(t *testing.T) {
+	var calls atomic.Int64
+	srv, _ := newServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		_ = conn.Close()
+	})
+	client := newTestClient(srv.URL)
+	sleeps := &sleepRecorder{}
+	client.sleep = sleeps.hook
+	_, err := client.GetPhoneInfo(context.Background(), "13800138000")
+	if !errors.Is(err, ErrNetwork) || calls.Load() != 1 || len(sleeps.recorded()) != 0 {
+		t.Fatalf("paid GET must not replay an unknown result: calls=%d sleeps=%v err=%v", calls.Load(), sleeps.recorded(), err)
+	}
+}
+
+func TestReadOnlyGETRetriesLostResponse(t *testing.T) {
+	var calls atomic.Int64
+	srv, _ := newServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		_, _ = io.WriteString(w, "ok")
+	})
+	client := newTestClient(srv.URL)
+	sleeps := &sleepRecorder{}
+	client.sleep = sleeps.hook
+	resp, err := client.get(context.Background(), srv.URL, nil)
+	if err != nil || !resp.IsSuccess() || calls.Load() != 2 || len(sleeps.recorded()) != 1 {
+		t.Fatalf("read-only GET should retry transient transport loss: calls=%d sleeps=%v err=%v", calls.Load(), sleeps.recorded(), err)
 	}
 }
 

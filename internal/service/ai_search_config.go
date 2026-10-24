@@ -498,7 +498,7 @@ func requestRemoteAISearchModels(endpoint string, apiKey string) ([]string, int,
 	}
 
 	httpClient := util.NewSafeHTTPClient(15 * time.Second)
-	resp, err := httpClient.Do(httpReq)
+	resp, err := util.DoReadOnlyWithRetry(httpClient, httpReq)
 	if err != nil {
 		return nil, 0, err
 	}

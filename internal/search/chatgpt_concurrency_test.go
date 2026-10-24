@@ -1,6 +1,7 @@
 package search
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -87,7 +88,41 @@ func TestSearchAnswerWithUsageRetriesRateLimitThenSucceeds(t *testing.T) {
 	}
 }
 
-func TestSearchAnswerWithUsageCountsFallbackPairAsOneAttempt(t *testing.T) {
+func TestAISearchRetryAfterHeaderAndBudget(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+	client := &ChatGptClient{APIKey: "sk-test", Model: "test"}
+
+	_, _, status, _, retryable, ordinaryErr := client.executeAISearchStreamRequest(context.Background(), server.URL, []byte(`{}`), `{}`, time.Now())
+	if status != http.StatusTooManyRequests || !retryable {
+		t.Fatalf("ordinary response: status=%d retryable=%t", status, retryable)
+	}
+	_, toolStatus, toolErr := client.requestAIToolRound(context.Background(), server.URL, []byte(`{}`))
+	if toolStatus != http.StatusTooManyRequests {
+		t.Fatalf("tool response: status=%d", toolStatus)
+	}
+	for name, retryErr := range map[string]error{"ordinary": ordinaryErr, "tool": toolErr} {
+		delay, ok := aiSearchRetryAfter(retryErr)
+		if !ok || delay != time.Second {
+			t.Errorf("%s Retry-After: delay=%v present=%t", name, delay, ok)
+		}
+		if sleepAISearchRetryBackoff(context.Background(), 1, aiSearchRetryBudget-time.Second/2, retryErr) {
+			t.Errorf("%s should not retry beyond total budget", name)
+		}
+	}
+	started := time.Now()
+	if !sleepAISearchRetryBackoff(context.Background(), 1, 0, ordinaryErr) {
+		t.Fatal("Retry-After within budget should be accepted")
+	}
+	if elapsed := time.Since(started); elapsed < 900*time.Millisecond {
+		t.Fatalf("Retry-After was not honored: elapsed=%v", elapsed)
+	}
+}
+
+func TestSearchAnswerWithUsageDoesNotReplayGatewayFailure(t *testing.T) {
 	var attempts int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&attempts, 1)
@@ -101,8 +136,8 @@ func TestSearchAnswerWithUsageCountsFallbackPairAsOneAttempt(t *testing.T) {
 		t.Fatal("expected persistent 502 to fail")
 	}
 
-	// Each configured attempt probes both compatible paths before retrying.
-	expectedAttempts := int32(aiSearchRetryMaxAttempts * 2)
+	// A gateway failure may be reported after the model was billed.
+	expectedAttempts := int32(1)
 	if got := atomic.LoadInt32(&attempts); got != expectedAttempts {
 		t.Fatalf("expected %d attempts, got %d", expectedAttempts, got)
 	}
@@ -116,8 +151,8 @@ func TestOrdinaryAISearchHonorsModelBudgetAcrossRetriesAndEndpoints(t *testing.T
 			status  int
 			wantErr bool
 		}{
-			{"retry recovers within one model round", 1, http.StatusBadGateway, false},
-			{"retry recovers from bad request within one model round", 1, http.StatusBadRequest, false},
+			{"retry recovers within one model round", 1, http.StatusTooEarly, false},
+			{"bad request is not retried", 1, http.StatusBadRequest, true},
 			{"no fallback after last call", 1, http.StatusNotFound, true},
 			{"retry receives remaining budget", 2, http.StatusTooManyRequests, false},
 		} {
@@ -162,8 +197,11 @@ func TestOrdinaryAISearchHonorsModelBudgetAcrossRetriesAndEndpoints(t *testing.T
 					_, _, err = client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?"})
 				}
 				wantCalls := 2
+				if tc.status == http.StatusBadRequest {
+					wantCalls = 1
+				}
 				if tc.status == http.StatusNotFound {
-					wantCalls = aiSearchRetryMaxAttempts * 2
+					wantCalls = 2
 				}
 				if (err != nil) != tc.wantErr || calls != wantCalls {
 					t.Fatalf("calls=%d want=%d err=%v wantErr=%t", calls, wantCalls, err, tc.wantErr)
@@ -173,7 +211,7 @@ func TestOrdinaryAISearchHonorsModelBudgetAcrossRetriesAndEndpoints(t *testing.T
 	}
 }
 
-func TestSearchAnswerWithUsageRetriesClientErrorsIncludingFallbackPath(t *testing.T) {
+func TestSearchAnswerWithUsageDoesNotRetryClientErrors(t *testing.T) {
 	var attempts int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&attempts, 1)
@@ -186,8 +224,8 @@ func TestSearchAnswerWithUsageRetriesClientErrorsIncludingFallbackPath(t *testin
 	if _, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "题目"}); err == nil {
 		t.Fatal("expected 401 to fail")
 	}
-	if got := atomic.LoadInt32(&attempts); got != int32(aiSearchRetryMaxAttempts*2) {
-		t.Fatalf("expected each configured attempt to probe both paths, got %d requests", got)
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Fatalf("unauthorized request must not be replayed, got %d requests", got)
 	}
 }
 
@@ -312,6 +350,23 @@ func TestDownloadAISearchAttachmentPartsReturnsNilWithoutClientOrURLs(t *testing
 	}
 	if parts := downloadAISearchAttachmentParts(http.DefaultClient, nil); parts != nil {
 		t.Fatalf("expected nil parts without urls, got %+v", parts)
+	}
+}
+
+func TestDownloadAISearchAttachmentRetriesReadOnlyFailure(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(makeTransparentFormulaImage(32, 20))
+	}))
+	defer server.Close()
+	part, ok := downloadAISearchAttachmentPart(server.Client(), server.URL+"/image.png")
+	if !ok || part.Type != "image_url" || calls.Load() != 2 {
+		t.Fatalf("attachment GET should retry once: part=%+v ok=%t calls=%d", part, ok, calls.Load())
 	}
 }
 

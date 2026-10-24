@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -535,19 +536,16 @@ func SendPublicSMSCode(c *gin.Context) {
 	if strings.TrimSpace(payload.Scene) == service.SMSSceneLogin {
 		captchaScene = service.CaptchaSceneSMSSendLogin
 	}
-	if err := consumeCaptchaTokenWithDB(strings.TrimSpace(payload.CaptchaToken), captchaScene, strings.TrimSpace(c.ClientIP())); err != nil {
-		c.JSON(400, gin.H{"message": err.Error()})
-		return
-	}
-	if err := sendPublicSMSCodeWithDB(service.SendSMSCodeInput{
+	input := service.SendSMSCodeInput{
 		Phone:     strings.TrimSpace(payload.Phone),
 		Scene:     strings.TrimSpace(payload.Scene),
 		RequestIP: strings.TrimSpace(c.ClientIP()),
-	}); err != nil {
-		c.JSON(400, gin.H{"message": err.Error()})
-		return
 	}
-	c.JSON(200, gin.H{"message": "发送成功，请注意查收"})
+	sendSMSWithIdempotency(c, "public-sms", "send-code", payload,
+		func() error {
+			return consumeCaptchaTokenWithDB(strings.TrimSpace(payload.CaptchaToken), captchaScene, input.RequestIP)
+		},
+		func() error { return sendPublicSMSCodeWithDB(input) })
 }
 
 func SendUserPhoneChangeSMSCode(c *gin.Context) {
@@ -570,20 +568,75 @@ func SendUserPhoneChangeSMSCode(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
 		return
 	}
-	if err := consumeCaptchaTokenWithDB(strings.TrimSpace(payload.CaptchaToken), service.CaptchaSceneSMSSendChangePhone, strings.TrimSpace(c.ClientIP())); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
-		return
-	}
-	if err := sendUserPhoneChangeSMSCodeWithDB(service.SendSMSCodeInput{
+	input := service.SendSMSCodeInput{
 		Phone:        strings.TrimSpace(payload.Phone),
 		Scene:        service.SMSSceneChangePhone,
 		RequestIP:    strings.TrimSpace(c.ClientIP()),
 		TargetUserID: currentUser.ID,
-	}); err != nil {
+	}
+	sendSMSWithIdempotency(c, fmt.Sprintf("user:%d", currentUser.ID), "sms-change-phone", payload,
+		func() error {
+			return consumeCaptchaTokenWithDB(strings.TrimSpace(payload.CaptchaToken), service.CaptchaSceneSMSSendChangePhone, input.RequestIP)
+		},
+		func() error { return sendUserPhoneChangeSMSCodeWithDB(input) })
+}
+
+func sendSMSWithIdempotency(c *gin.Context, scope, operation string, payload any, consumeCaptcha, send func() error) {
+	key := c.GetHeader("Idempotency-Key")
+	if key == "" {
+		if err := consumeCaptcha(); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+			return
+		}
+		if err := send(); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"message": "发送成功，请注意查收"})
+		return
+	}
+	request, err := json.Marshal(payload)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
+		return
+	}
+	db := dao.User.UnderlyingDB()
+	record, fresh, err := service.ClaimIdempotencyWithDB(db, scope, operation, key, request)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, service.ErrIdempotencyConflict) {
+			status = http.StatusConflict
+		} else if errors.Is(err, service.ErrIdempotencyKeyInvalid) {
+			status = http.StatusBadRequest
+		}
+		c.JSON(status, gin.H{"message": err.Error()})
+		return
+	}
+	if !fresh {
+		if record.Status == service.IdempotencyStatusSucceeded {
+			c.Data(record.HTTPStatus, "application/json; charset=utf-8", []byte(record.ResponseJSON))
+			return
+		}
+		c.JSON(http.StatusAccepted, gin.H{"status": "pending", "message": "短信发送结果待核对，请勿重复发送"})
+		return
+	}
+	if err := consumeCaptcha(); err != nil {
+		_ = service.ReleaseIdempotencyWithDB(db, record.ID)
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "发送成功，请注意查收"})
+	if err := send(); err != nil {
+		_ = service.MarkIdempotencyUnknownWithDB(db, record.ID)
+		c.JSON(http.StatusAccepted, gin.H{"status": "pending", "message": "短信发送结果待核对，请勿重复发送"})
+		return
+	}
+	response := []byte(`{"message":"发送成功，请注意查收"}`)
+	if err := service.CompleteIdempotencyWithDB(db, record.ID, http.StatusOK, response); err != nil {
+		_ = service.MarkIdempotencyUnknownWithDB(db, record.ID)
+		c.JSON(http.StatusAccepted, gin.H{"status": "pending", "message": "短信发送结果待核对，请勿重复发送"})
+		return
+	}
+	c.Data(http.StatusOK, "application/json; charset=utf-8", response)
 }
 
 func UpdateCurrentUserPhone(c *gin.Context) {

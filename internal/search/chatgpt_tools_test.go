@@ -472,7 +472,8 @@ func TestAISearchToolsRetriesFailedRoundWithoutLeakingRoundError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if calls == 1 {
-			http.Error(w, "temporary upstream failure", http.StatusBadGateway)
+			w.Header().Set("Retry-After", "0")
+			http.Error(w, "rate limited", http.StatusTooManyRequests)
 			return
 		}
 		writeAIFinalStream(w)
@@ -489,7 +490,7 @@ func TestAISearchToolsRetriesFailedRoundWithoutLeakingRoundError(t *testing.T) {
 	}
 }
 
-func TestAISearchToolsRetriesEmptyResponseWithinSameRound(t *testing.T) {
+func TestAISearchToolsDoesNotReplayEmptyResponse(t *testing.T) {
 	tool := &testAISearchTool{}
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -511,17 +512,17 @@ func TestAISearchToolsRetriesEmptyResponseWithinSameRound(t *testing.T) {
 		Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test",
 		SearchTool: tool, MaxAISearchModelCalls: 2, MaxAISearches: 3, MaxAISearchRetries: 2,
 	}
-	answer, usage, err := client.SearchAnswerWithUsage(model.SearchRequest{
+	answer, debug, err := client.searchAnswerWithTools(t.Context(), model.SearchRequest{
 		Question: "2+2=?", Options: []string{"3", "4"}, DeepThinking: true,
 	})
-	if err != nil {
-		t.Fatalf("empty first response should be retried, got %v", err)
+	if err == nil {
+		t.Fatal("empty successful response should fail without replay")
 	}
-	if calls != 3 || len(tool.queries) != 1 || !reflect.DeepEqual(answer, [][]string{{"4"}}) {
-		t.Fatalf("answer=%v calls=%d searches=%v", answer, calls, tool.queries)
+	if calls != 1 || len(tool.queries) != 0 || len(answer) != 0 {
+		t.Fatalf("empty response must not be replayed: answer=%v calls=%d searches=%v", answer, calls, tool.queries)
 	}
-	if len(usage.ModelCalls) != 3 || usage.ModelCalls[0].TotalTokens != 9 || usage.ModelCalls[1].Attempt != 2 {
-		t.Fatalf("empty response and successful retry must both be metered: %+v", usage.ModelCalls)
+	if len(debug.Usage.ModelCalls) != 1 || debug.Usage.ModelCalls[0].TotalTokens != 9 {
+		t.Fatalf("the charged response must be metered: %+v", debug.Usage.ModelCalls)
 	}
 }
 
@@ -556,7 +557,7 @@ func TestAISearchToolsFallsBackToMCPAfterEmptyNativeResponses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("empty native responses should fall back to MCP, got %v", err)
 	}
-	if nativeCalls != 2 || mcpCalls != 1 {
+	if nativeCalls != 1 || mcpCalls != 1 {
 		t.Fatalf("nativeCalls=%d mcpCalls=%d", nativeCalls, mcpCalls)
 	}
 	if usage.Route != AISearchRouteDeepMCP {
@@ -570,7 +571,7 @@ func TestAISearchToolsFallsBackToMCPAfterEmptyNativeResponses(t *testing.T) {
 	}
 }
 
-func TestAISearchToolsRetainsTokenBearingRetryResponses(t *testing.T) {
+func TestAISearchToolsDoesNotReplayTokenBearingStreamError(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -588,15 +589,15 @@ func TestAISearchToolsRetainsTokenBearingRetryResponses(t *testing.T) {
 		Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "retry-model",
 		SearchTool: &testAISearchTool{}, MaxAISearchModelCalls: 1, MaxAISearchRetries: 2,
 	}
-	answer, usage, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?", DeepThinking: true})
-	if err != nil || calls != 2 || !reflect.DeepEqual(answer, [][]string{{"4"}}) {
-		t.Fatalf("retry should recover one failed round: answer=%v calls=%d err=%v", answer, calls, err)
+	answer, debug, err := client.searchAnswerWithTools(t.Context(), model.SearchRequest{Question: "2+2=?", DeepThinking: true})
+	if err == nil || calls != 1 || len(answer) != 0 {
+		t.Fatalf("stream error must not be replayed: answer=%v calls=%d err=%v", answer, calls, err)
 	}
-	if len(usage.ModelCalls) != 2 || usage.ModelCalls[0].TotalTokens != 11 || usage.ModelCalls[1].TotalTokens != 23 {
-		t.Fatalf("expected both token-bearing model responses, got %+v", usage.ModelCalls)
+	if len(debug.Usage.ModelCalls) != 1 || debug.Usage.ModelCalls[0].TotalTokens != 11 {
+		t.Fatalf("expected the single token-bearing response, got %+v", debug.Usage.ModelCalls)
 	}
-	if usage.TotalTokens != 34 {
-		t.Fatalf("tool retry aggregate should include both actual responses, got %+v", usage)
+	if debug.Usage.TotalTokens != 11 {
+		t.Fatalf("the charged attempt must remain in usage, got %+v", debug.Usage)
 	}
 }
 
@@ -604,7 +605,7 @@ func TestAISearchToolsExhaustedRoundPreservesPrivateAuditError(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		http.Error(w, "temporary upstream failure", http.StatusBadGateway)
+		http.Error(w, "temporary upstream failure", http.StatusTooEarly)
 	}))
 	defer server.Close()
 
@@ -616,7 +617,7 @@ func TestAISearchToolsExhaustedRoundPreservesPrivateAuditError(t *testing.T) {
 	if !errors.Is(err, pkgerrors.ErrTargetServerError) {
 		t.Fatalf("expected generic upstream error, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "AI联网搜题第1轮失败") || !strings.Contains(err.Error(), "已尝试2次") || !strings.Contains(err.Error(), "HTTP 502") {
+	if !strings.Contains(err.Error(), "AI联网搜题第1轮失败") || !strings.Contains(err.Error(), "已尝试2次") || !strings.Contains(err.Error(), "HTTP 425") {
 		t.Fatalf("private error should preserve round/attempt/upstream detail: %v", err)
 	}
 	if calls != 2 {
@@ -624,7 +625,7 @@ func TestAISearchToolsExhaustedRoundPreservesPrivateAuditError(t *testing.T) {
 	}
 }
 
-func TestAISearchToolsRetriesBadRequestAndReportsConfiguredAttemptCount(t *testing.T) {
+func TestAISearchToolsBadRequestStopsWithoutReplay(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -636,10 +637,10 @@ func TestAISearchToolsRetriesBadRequestAndReportsConfiguredAttemptCount(t *testi
 		SearchTool: &testAISearchTool{}, MaxAISearchModelCalls: 3, MaxAISearchRetries: 3,
 	}
 	_, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?", DeepThinking: true})
-	if calls != 3 || !errors.Is(err, pkgerrors.ErrTargetServerError) {
-		t.Fatalf("failed model calls must use all configured attempts: calls=%d error=%v", calls, err)
+	if calls != 1 || !errors.Is(err, pkgerrors.ErrTargetServerError) {
+		t.Fatalf("bad request should stop after one call: calls=%d error=%v", calls, err)
 	}
-	if !strings.Contains(err.Error(), "上游服务器异常") || strings.Contains(err.Error(), "对方服务器异常") || !strings.Contains(err.Error(), "已尝试3次") {
+	if !strings.Contains(err.Error(), "上游服务器异常") || strings.Contains(err.Error(), "对方服务器异常") || !strings.Contains(err.Error(), "已尝试1次") {
 		t.Fatalf("private diagnostics must use upstream wording and actual attempts: %v", err)
 	}
 	if !strings.Contains(err.Error(), "account only supports Chat Completions") {
@@ -647,7 +648,7 @@ func TestAISearchToolsRetriesBadRequestAndReportsConfiguredAttemptCount(t *testi
 	}
 }
 
-func TestAISearchToolsEndpointFailuresCountAsOneRetryAttempt(t *testing.T) {
+func TestAISearchToolsBadRequestDoesNotProbeAlternateEndpoint(t *testing.T) {
 	calls := make(map[string]int)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls[r.URL.Path]++
@@ -667,8 +668,8 @@ func TestAISearchToolsEndpointFailuresCountAsOneRetryAttempt(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "已尝试1次") {
 		t.Fatalf("two endpoint failures in one retry cycle must count once, got %v", err)
 	}
-	if calls["/responses"] != 1 || calls["/v1/responses"] != 1 {
-		t.Fatalf("expected both endpoint requests within one retry cycle, got %v", calls)
+	if calls["/responses"] != 1 || calls["/v1/responses"] != 0 {
+		t.Fatalf("bad request must not probe another endpoint, got %v", calls)
 	}
 }
 

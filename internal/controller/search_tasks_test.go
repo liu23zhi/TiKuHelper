@@ -117,8 +117,52 @@ func TestStrictAccessTokenRoutesCreateAndReadTasksAndRejectLoginAuthWithoutSearc
 		nil,
 		func() {
 			router := gin.New()
+			router.GET("/adapter-service/search/health", AuthAccessToken, GetSearchTaskHealth)
 			router.POST("/adapter-service/search/tasks", AuthAccessToken, CreateSearchTask)
 			router.GET("/adapter-service/search/status", AuthAccessToken, GetSearchTaskStatus)
+
+			var probeID string
+			for i := 0; i < 2; i++ {
+				probe := httptest.NewRecorder()
+				probeRequest := httptest.NewRequest(http.MethodGet, "/adapter-service/search/health", nil)
+				probeRequest.Header.Set("Authorization", "Bearer "+token.TokenValue)
+				router.ServeHTTP(probe, probeRequest)
+				if probe.Code != http.StatusOK {
+					t.Fatalf("valid token should read health probe, got %d: %s", probe.Code, probe.Body.String())
+				}
+				var response searchTaskResponse
+				if err := json.Unmarshal(probe.Body.Bytes(), &response); err != nil {
+					t.Fatalf("decode health probe: %v", err)
+				}
+				if !response.Success || response.Status != searchTaskStatusSucceeded || response.TaskID == "" || response.StatusURL != searchTaskStatusURL(response.TaskID) {
+					t.Fatalf("invalid health probe: %+v", response)
+				}
+				if probeID != "" && response.TaskID != probeID {
+					t.Fatalf("health probe should reuse task, first=%q second=%q", probeID, response.TaskID)
+				}
+				probeID = response.TaskID
+				status := httptest.NewRecorder()
+				statusRequest := httptest.NewRequest(http.MethodGet, response.StatusURL, nil)
+				statusRequest.Header.Set("Authorization", "Bearer "+token.TokenValue)
+				router.ServeHTTP(status, statusRequest)
+				if status.Code != http.StatusOK {
+					t.Fatalf("health probe status should be readable, got %d: %s", status.Code, status.Body.String())
+				}
+				var statusResponse searchTaskResponse
+				if err := json.Unmarshal(status.Body.Bytes(), &statusResponse); err != nil {
+					t.Fatalf("decode health probe status: %v", err)
+				}
+				if statusResponse.TaskID != response.TaskID || statusResponse.Status != searchTaskStatusSucceeded || !statusResponse.Success {
+					t.Fatalf("health probe status does not match successful task: %+v", statusResponse)
+				}
+			}
+			if got := providerCalls.Load(); got != 0 {
+				t.Fatalf("health probe must not call providers, got %d calls", got)
+			}
+			var probeBillingCount int64
+			if err := db.Model(&entity.BillingRecord{}).Count(&probeBillingCount).Error; err != nil || probeBillingCount != 0 {
+				t.Fatalf("health probe must not create billing records: count=%d err=%v", probeBillingCount, err)
+			}
 
 			create := httptest.NewRecorder()
 			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search/tasks?use=icodef", bytes.NewBufferString(`{"question":"有效访问令牌题目","options":["A","B"],"skipCache":true}`))
@@ -163,6 +207,7 @@ func TestStrictAccessTokenRoutesCreateAndReadTasksAndRejectLoginAuthWithoutSearc
 				path   string
 				body   string
 			}{
+				{name: "health", method: http.MethodGet, path: "/adapter-service/search/health"},
 				{name: "create", method: http.MethodPost, path: "/adapter-service/search/tasks?use=stub", body: `{"question":"不得执行"}`},
 				{name: "status", method: http.MethodGet, path: searchTaskStatusURL(created.TaskID)},
 			} {
@@ -467,6 +512,31 @@ func TestSearchTaskStoreIndexesTaskWhenItBecomesTerminal(t *testing.T) {
 	}
 	if _, ok := store.terminalTasks["task"]; !ok {
 		t.Fatal("completed task should be indexed for terminal cleanup")
+	}
+}
+
+func TestSearchHealthProbeReusesOwnerScopedTaskUntilExpiry(t *testing.T) {
+	clock := newLockedAIFallbackTestClock(time.Now())
+	store := newSearchTaskStore(time.Minute, clock.Now)
+	first := store.healthProbe(71)
+	if first.Status != searchTaskStatusSucceeded || first.ID == "" {
+		t.Fatalf("expected a completed probe task, got %+v", first)
+	}
+	if again := store.healthProbe(71); again.ID != first.ID {
+		t.Fatalf("probe should be reused during retention, first=%q second=%q", first.ID, again.ID)
+	}
+	if other := store.healthProbe(72); other.ID == first.ID {
+		t.Fatal("different users must not share a probe task")
+	}
+	if _, err := store.get(first.ID, 72); !errors.Is(err, errSearchTaskForbidden) {
+		t.Fatalf("other user must not query probe task: %v", err)
+	}
+	clock.Advance(2 * time.Minute)
+	if _, err := store.get(first.ID, 71); !errors.Is(err, errSearchTaskNotFound) {
+		t.Fatalf("expired probe should be gone: %v", err)
+	}
+	if next := store.healthProbe(71); next.ID == first.ID {
+		t.Fatal("expired probe must be recreated")
 	}
 }
 

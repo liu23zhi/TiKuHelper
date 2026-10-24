@@ -738,11 +738,18 @@ func downloadWechatQRCodeImage(client *http.Client, imageURL string) (string, er
 	query := parsed.Query()
 	query.Set("_", randomTokenHex(6))
 	parsed.RawQuery = query.Encode()
-	resp, err := client.Get(parsed.String())
+	req, err := http.NewRequest(http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		return "", fmt.Errorf("微信二维码地址无效")
+	}
+	resp, err := util.DoReadOnlyWithRetry(client, req)
 	if err != nil {
 		return "", fmt.Errorf("微信二维码下载失败")
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("微信二维码下载失败")
+	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
 	if err != nil {
 		return "", fmt.Errorf("微信二维码读取失败")

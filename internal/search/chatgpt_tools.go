@@ -266,7 +266,7 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 		attempts := in.aiSearchRetryAttempts()
 		attempted := 0
 		for retry := 0; retry < attempts; retry++ {
-			if retry > 0 && !sleepAISearchRetryBackoff(retry, time.Since(roundStartedAt)) {
+			if retry > 0 && !sleepAISearchRetryBackoff(ctx, retry, time.Since(roundStartedAt), callErr) {
 				break
 			}
 			attempted++
@@ -287,6 +287,9 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 				if callErr == nil {
 					break
 				}
+				if !shouldTryAlternateAIEndpoint(status) {
+					break
+				}
 			}
 			if callErr == nil {
 				break
@@ -294,6 +297,9 @@ func (in *ChatGptClient) searchAnswerWithTools(parent context.Context, req model
 			// Stop retrying a deterministic tool capability rejection.
 			if isToolCapabilityProbeCandidate(callErr) {
 				return nil, debug, callErr
+			}
+			if !isRetryableAIHTTPStatus(status) {
+				break
 			}
 		}
 		debug.Endpoint = endpoint
@@ -494,7 +500,7 @@ func (in *ChatGptClient) requestAIToolRound(ctx context.Context, endpoint string
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-		return aiToolStreamResult{Raw: string(raw)}, resp.StatusCode, in.upstreamError("tool_http", resp.StatusCode, string(raw), readErr)
+		return aiToolStreamResult{Raw: string(raw)}, resp.StatusCode, withAISearchRetryAfter(in.upstreamError("tool_http", resp.StatusCode, string(raw), readErr), resp)
 	}
 	result, err := readAIToolStream(resp.Body)
 	if err != nil {

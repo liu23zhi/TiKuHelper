@@ -905,6 +905,11 @@ export default defineComponent({
       balanceSubmitting.value = true
       try {
         const res = await adjustUserBalance(payload)
+        if (res?.status === 202) {
+          message.warning('余额调整状态待核对，请刷新账户信息确认，勿重复提交')
+          this.handleUserList()
+          return
+        }
         if (res?.status !== 200) throw new Error(res?.message || '修改余额失败')
         formState.value.balance = res.data.balance
         balanceVisible.value = false

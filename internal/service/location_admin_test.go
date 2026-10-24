@@ -150,8 +150,8 @@ func TestRefreshLocationCachePreservesOldRecordOnFailure(t *testing.T) {
 	if before.Address != after.Address || before.RawJSON != after.RawJSON || !before.FetchedAt.Equal(after.FetchedAt) {
 		t.Fatalf("failed refresh changed the old record: before=%+v after=%+v", before, after)
 	}
-	if got := requests.Load(); got != locationLookupMaxAttempts {
-		t.Fatalf("expected exactly %d failed refresh attempts, got %d", locationLookupMaxAttempts, got)
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("a failed paid refresh must not be replayed, got %d requests", got)
 	}
 	fail.Store(false)
 	refreshed, err := RefreshLocationCacheWithDB(db, entity.LocationKindIP, "8.8.8.8", LocationQueryOptions{UAPIKey: "uapi-key"})
@@ -162,7 +162,7 @@ func TestRefreshLocationCachePreservesOldRecordOnFailure(t *testing.T) {
 	if err := db.Model(&entity.LocationCache{}).Count(&count).Error; err != nil {
 		t.Fatal(err)
 	}
-	if count != 1 || requests.Load() != locationLookupMaxAttempts+1 {
+	if count != 1 || requests.Load() != 2 {
 		t.Fatalf("refresh should update one record with one successful request: rows=%d requests=%d", count, requests.Load())
 	}
 }

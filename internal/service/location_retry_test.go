@@ -43,7 +43,7 @@ func newDefaultLocationClient(t *testing.T, server *httptest.Server, apiKey stri
 	})
 }
 
-// 密钥错误（401）时：同一个号码连续 3 次都失败就整批放弃，后面的数据一次都不再请求。
+// 密钥错误（401）时无需重复尝试同一个号码，后面的数据也不再请求。
 //
 // 这是用户明确要求的保护：避免因 UApiPro 密钥配错而不断尝试。
 func TestPhoneLocationStopsAfterConsecutiveFailures(t *testing.T) {
@@ -64,18 +64,17 @@ func TestPhoneLocationStopsAfterConsecutiveFailures(t *testing.T) {
 	if len(locations) != 0 {
 		t.Fatalf("expected no locations when the key is invalid, got %v", locations)
 	}
-	// 第一个号码尝试 3 次后放弃 → 总共只应有 3 次请求，而不是 5×3=15 次。
-	if got := atomic.LoadInt64(&requests); got != locationLookupMaxAttempts {
-		t.Fatalf("expected exactly %d requests before giving up, got %d", locationLookupMaxAttempts, got)
+	if got := atomic.LoadInt64(&requests); got != 1 {
+		t.Fatalf("expected one request before giving up, got %d", got)
 	}
 }
 
-// 同一个号码内部必须重试到上限才放弃（扛偶发抖动）。
+// 上游明确拒绝处理的 408 可以在同一个号码内重试到上限。
 func TestPhoneLocationRetriesSameKeyUpToMaxAttempts(t *testing.T) {
 	var requests int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt64(&requests, 1)
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusRequestTimeout)
 	}))
 	defer server.Close()
 	newDefaultLocationClient(t, server, "uapi-key")
@@ -86,6 +85,36 @@ func TestPhoneLocationRetriesSameKeyUpToMaxAttempts(t *testing.T) {
 	total := atomic.LoadInt64(&requests)
 	if total != locationLookupMaxAttempts {
 		t.Fatalf("expected exactly %d attempts without nested retries, got %d", locationLookupMaxAttempts, total)
+	}
+}
+
+func TestPhoneLocationDoesNotReplayUnknownResult(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		fail func(http.ResponseWriter)
+	}{
+		{name: "server error", fail: func(w http.ResponseWriter) { w.WriteHeader(http.StatusBadGateway) }},
+		{name: "lost response", fail: func(w http.ResponseWriter) {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err == nil {
+				_ = conn.Close()
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var requests atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				requests.Add(1)
+				test.fail(w)
+			}))
+			defer server.Close()
+			newDefaultLocationClient(t, server, "uapi-key")
+			db := newLocationTestDB(t)
+			LookupPhoneLocationsWithDB(db, []string{"13800138001"}, LocationQueryOptions{UAPIKey: "uapi-key"})
+			if got := requests.Load(); got != 1 {
+				t.Fatalf("paid lookup result is unknown; expected one request, got %d", got)
+			}
+		})
 	}
 }
 
@@ -184,6 +213,9 @@ func TestPhoneLocationItemLevelFailureDoesNotAbortBatch(t *testing.T) {
 	if _, ok := locations["13800138002"]; ok {
 		t.Fatalf("expected the failing phone to be absent, got %v", locations)
 	}
+	if got := atomic.LoadInt64(&requests); got != 3 {
+		t.Fatalf("404 should not retry, but later keys must still run: got %d requests", got)
+	}
 }
 
 // 成功结果必须落库（供下次零积分命中）。
@@ -236,8 +268,8 @@ func TestIPLocationStopsAfterConsecutiveFailures(t *testing.T) {
 	if len(locations) != 0 {
 		t.Fatalf("expected no locations when the key is invalid, got %v", locations)
 	}
-	if got := atomic.LoadInt64(&requests); got != locationLookupMaxAttempts {
-		t.Fatalf("expected exactly %d requests before giving up, got %d", locationLookupMaxAttempts, got)
+	if got := atomic.LoadInt64(&requests); got != 1 {
+		t.Fatalf("invalid key must stop IP lookups after one request, got %d", got)
 	}
 }
 

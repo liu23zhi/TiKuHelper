@@ -59,6 +59,7 @@ type searchTaskStore struct {
 	tasks         map[string]searchTask
 	terminalTasks map[string]struct{}
 	idempotency   map[searchTaskIdempotencyIndex]string
+	healthTasks   map[int32]string
 	ttl           time.Duration
 	now           func() time.Time
 }
@@ -83,6 +84,7 @@ func newSearchTaskStore(ttl time.Duration, now func() time.Time) *searchTaskStor
 		tasks:         make(map[string]searchTask),
 		terminalTasks: make(map[string]struct{}),
 		idempotency:   make(map[searchTaskIdempotencyIndex]string),
+		healthTasks:   make(map[int32]string),
 		ttl:           ttl,
 		now:           now,
 	}
@@ -148,6 +150,30 @@ func (s *searchTaskStore) get(taskID string, userID int32) (searchTask, error) {
 	return task, nil
 }
 
+func (s *searchTaskStore) healthProbe(userID int32) searchTask {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.now()
+	s.cleanupExpiredLocked(now)
+	if taskID := s.healthTasks[userID]; taskID != "" {
+		if task, ok := s.tasks[taskID]; ok {
+			return task
+		}
+		delete(s.healthTasks, userID)
+	}
+	task := searchTask{
+		ID:        uuid.NewString(),
+		UserID:    userID,
+		Status:    searchTaskStatusSucceeded,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	s.tasks[task.ID] = task
+	s.terminalTasks[task.ID] = struct{}{}
+	s.healthTasks[userID] = task.ID
+	return task
+}
+
 func (s *searchTaskStore) complete(taskID string, result model.SearchResponse, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -181,6 +207,9 @@ func (s *searchTaskStore) cleanupExpiredLocked(now time.Time) {
 		}
 		delete(s.tasks, taskID)
 		delete(s.terminalTasks, taskID)
+		if s.healthTasks[task.UserID] == taskID {
+			delete(s.healthTasks, task.UserID)
+		}
 		if task.IdempotencyKey != "" {
 			index := searchTaskIdempotencyIndex{UserID: task.UserID, Key: task.IdempotencyKey}
 			if s.idempotency[index] == taskID {
@@ -239,6 +268,16 @@ func CreateSearchTask(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusAccepted, buildSearchTaskResponse(task))
+}
+
+// GetSearchTaskHealth provides a real, owner-scoped status URL without executing a search.
+func GetSearchTaskHealth(c *gin.Context) {
+	userID := currentSearchTaskUserID(c)
+	if userID <= 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"message": "请提供有效访问令牌"})
+		return
+	}
+	c.JSON(http.StatusOK, buildSearchTaskResponse(defaultSearchTaskStore.healthProbe(userID)))
 }
 
 // GetSearchTaskStatus returns a task snapshot without executing search work.

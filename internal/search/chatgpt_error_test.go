@@ -205,7 +205,7 @@ func TestAINormalSearchRetriesWithinOneModelRound(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		if calls == 1 {
-			http.Error(w, "temporary upstream failure", http.StatusBadGateway)
+			http.Error(w, "temporary upstream failure", http.StatusTooEarly)
 			return
 		}
 		writeOpenAIStyleStream(w, `{"answers":["4"]}`)

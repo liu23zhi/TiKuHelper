@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"math/rand"
 	"net"
 	"net/http"
 	"strings"
@@ -19,9 +21,9 @@ const (
 	DefaultIPInfoURL = "https://uapis.cn/api/v1/network/ipinfo"
 	// defaultTimeout 默认请求超时，与 internal/search 下的客户端保持一致
 	defaultTimeout = 5 * time.Second
-	// maxRetries 单个业务请求最多重试次数（不含首次请求），共 4 次尝试
-	maxRetries = 3
-	// backoffBase 第 1 次重试的退避时间，其后 1s、2s
+	// maxRetries 只读请求最多重试两次，共三次尝试。
+	maxRetries = 2
+	// backoffBase 第一次退避时间，其后为 1s。
 	backoffBase = 500 * time.Millisecond
 )
 
@@ -40,12 +42,14 @@ type Client struct {
 	http               *resty.Client
 	// maxRetries 本客户端单次业务请求允许的内部重试次数（不含首次）。
 	//
-	// 默认 maxRetries，即共 4 次尝试。上层若自己负责重试编排（例如按
+	// 默认 maxRetries，即共 3 次尝试。上层若自己负责重试编排（例如按
 	// 「连续失败 3 次就整批放弃」控制上游压力），应当通过 SetMaxRetries(0)
-	// 关掉内部重试，否则重试次数会**相乘**（3 × 4 = 12 次）。
+	// 关掉内部重试，否则重试次数会相乘。
 	maxRetries int
 	// sleep 退避等待实现，测试注入后可跳过真实等待
 	sleep func(ctx context.Context, d time.Duration) error
+	// jitter 只作用于普通退避，Retry-After 不加抖动。
+	jitter func(time.Duration) time.Duration
 }
 
 // NewClient 创建 uapi 客户端，apiKey 为 uapis.cn 签发的密钥（uapi- 开头）
@@ -59,6 +63,7 @@ func NewClient(apiKey string) *Client {
 		searchAggregateURL: DefaultSearchAggregateURL,
 		statusUsageURL:     DefaultStatusUsageURL,
 		maxRetries:         maxRetries,
+		jitter:             jitterRetryBackoff,
 	}
 	c.http = resty.New().SetTimeout(c.timeout)
 	return c
@@ -70,6 +75,9 @@ func NewClient(apiKey string) *Client {
 func (c *Client) SetMaxRetries(retries int) *Client {
 	if c == nil || retries < 0 {
 		return c
+	}
+	if retries > maxRetries {
+		retries = maxRetries
 	}
 	c.maxRetries = retries
 	return c
@@ -115,7 +123,7 @@ func (c *Client) GetPhoneInfo(ctx context.Context, phone string) (PhoneInfo, err
 	if err != nil {
 		return PhoneInfo{}, err
 	}
-	resp, err := c.get(ctx, c.phoneInfoAddress(), map[string]string{"phone": normalized})
+	resp, err := c.getBillable(ctx, c.phoneInfoAddress(), map[string]string{"phone": normalized})
 	if err != nil {
 		return PhoneInfo{}, err
 	}
@@ -148,7 +156,7 @@ func (c *Client) GetIPInfo(ctx context.Context, ip string, source string) (IPInf
 	if source != "" {
 		query["source"] = source
 	}
-	resp, err := c.get(ctx, c.ipInfoAddress(), query)
+	resp, err := c.getBillable(ctx, c.ipInfoAddress(), query)
 	if err != nil {
 		return IPInfo{}, err
 	}
@@ -201,16 +209,38 @@ func checkResponse(resp *resty.Response) error {
 }
 
 // get 发起 GET 请求。
-// 仅在 408/429/5xx 与网络超时时重试，最多 maxRetries 次，退避 500ms → 1s → 2s；
+// 仅在 408/425/429/5xx 与瞬时网络错误时重试，最多 maxRetries 次；
 // 429 优先按 Retry-After 等待。返回的响应必然非 nil，非 2xx 由调用方转换。
 func (c *Client) get(ctx context.Context, url string, query map[string]string) (*resty.Response, error) {
-	return c.request(ctx, http.MethodGet, url, query, nil)
+	return c.requestWithPolicy(ctx, http.MethodGet, url, query, nil, retryReadOnly)
 }
 
-// request 统一 GET / POST 的鉴权、网络错误分类和有界重试。
+func (c *Client) getBillable(ctx context.Context, url string, query map[string]string) (*resty.Response, error) {
+	return c.requestWithPolicy(ctx, http.MethodGet, url, query, nil, retryBillable)
+}
+
+type requestRetryPolicy uint8
+
+const (
+	retryNever requestRetryPolicy = iota
+	retryReadOnly
+	retryBillable
+)
+
+// request 提交型请求不重放；调用方若需重试，必须先具备幂等创建或结果核对。
 func (c *Client) request(ctx context.Context, method string, url string, query map[string]string, body interface{}) (*resty.Response, error) {
+	return c.requestWithPolicy(ctx, method, url, query, body, retryNever)
+}
+
+// requestWithPolicy 依据端点费用语义决定是否可重放，不能只看 HTTP 方法。
+func (c *Client) requestWithPolicy(ctx context.Context, method string, url string, query map[string]string, body interface{}, policy requestRetryPolicy) (*resty.Response, error) {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 3*c.timeout+2*time.Second)
+		defer cancel()
 	}
 	for attempt := 0; ; attempt++ {
 		request := c.http.R().
@@ -227,8 +257,8 @@ func (c *Client) request(ctx context.Context, method string, url string, query m
 				return nil, contextRequestError(ctxErr)
 			}
 			timeout := isTimeoutError(err)
-			if timeout && attempt < c.maxRetries {
-				if waitErr := c.wait(ctx, retryBackoff(attempt, 0, nil)); waitErr != nil {
+			if policy == retryReadOnly && isRetryableTransportError(err) && attempt < c.maxRetries {
+				if waitErr := c.wait(ctx, c.retryDelay(attempt, 0, nil)); waitErr != nil {
 					return nil, contextRequestError(waitErr)
 				}
 				continue
@@ -236,19 +266,48 @@ func (c *Client) request(ctx context.Context, method string, url string, query m
 			if timeout {
 				return nil, fmt.Errorf("%w: %w: %w", ErrNetwork, ErrTimeout, err)
 			}
-			// 非超时的网络错误（DNS、连接被拒等）不做重试
 			return nil, fmt.Errorf("%w: %w", ErrNetwork, err)
 		}
 		if resp == nil {
 			return nil, fmt.Errorf("%w: 上游返回空响应", ErrNetwork)
 		}
-		if resp.IsSuccess() || !retryableStatus(resp.StatusCode()) || attempt >= c.maxRetries {
+		if resp.IsSuccess() || !retryableStatusForPolicy(policy, resp.StatusCode()) || attempt >= c.maxRetries || errors.Is(newAPIError(resp.StatusCode(), resp.Body(), resp.Header()), ErrInsufficientCredits) {
 			return resp, nil
 		}
-		if waitErr := c.wait(ctx, retryBackoff(attempt, resp.StatusCode(), resp.Header())); waitErr != nil {
+		delay := c.retryDelay(attempt, resp.StatusCode(), resp.Header())
+		if deadline, ok := ctx.Deadline(); ok && delay >= time.Until(deadline) {
+			return resp, nil
+		}
+		if waitErr := c.wait(ctx, delay); waitErr != nil {
 			return nil, contextRequestError(waitErr)
 		}
 	}
+}
+
+func retryableStatusForPolicy(policy requestRetryPolicy, status int) bool {
+	switch policy {
+	case retryReadOnly:
+		return retryableStatus(status)
+	case retryBillable:
+		return status == http.StatusRequestTimeout || status == http.StatusTooEarly || status == http.StatusTooManyRequests
+	default:
+		return false
+	}
+}
+
+func (c *Client) retryDelay(attempt int, status int, header http.Header) time.Duration {
+	delay := retryBackoff(attempt, status, header)
+	if status == http.StatusTooManyRequests && retryAfterFromHeader(header) > 0 {
+		return delay
+	}
+	if c.jitter != nil {
+		return c.jitter(delay)
+	}
+	return delay
+}
+
+func jitterRetryBackoff(delay time.Duration) time.Duration {
+	return delay * time.Duration(80+rand.Intn(41)) / 100
 }
 
 func contextRequestError(err error) error {
@@ -276,11 +335,20 @@ func (c *Client) wait(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// retryableStatus 判断状态码是否可重试：408、429、5xx
+// retryableStatus 判断状态码是否可重试：408、425、429、5xx
 func retryableStatus(status int) bool {
 	return status == http.StatusRequestTimeout ||
+		status == http.StatusTooEarly ||
 		status == http.StatusTooManyRequests ||
-		status >= 500
+		(status >= 500 && status <= 599)
+}
+
+func isRetryableTransportError(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
 }
 
 // isTimeoutError 判断是否为网络超时（含 http.Client 超时与上下文超时）

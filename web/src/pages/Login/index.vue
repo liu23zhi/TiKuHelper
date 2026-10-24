@@ -539,6 +539,9 @@ export default defineComponent({
         if (res?.status === 200) {
           message.success(res?.message || '发送成功，请注意查收')
           smsCooldown.start()
+        } else if (res?.status === 202) {
+          message.warning('短信发送结果待核对，请先等待短信，勿重复发送')
+          smsCooldown.start()
         } else {
           message.error(res?.message || '发送失败')
         }

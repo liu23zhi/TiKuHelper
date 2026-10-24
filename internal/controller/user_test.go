@@ -35,12 +35,94 @@ func newUserControllerTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open test db: %v", err)
 	}
 
-	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.Log{}, &entity.BillingRecord{}, &entity.CaptchaToken{}, &entity.SMSVerificationCode{}); err != nil {
+	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.Log{}, &entity.BillingRecord{}, &entity.CaptchaToken{}, &entity.SMSVerificationCode{}, &entity.IdempotencyRecord{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 
 	dao.SetDefault(db)
 	return db
+}
+
+func TestSendPublicSMSCodeIdempotencyReplaysWithoutConsumingOrSendingAgain(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	_ = newUserControllerTestDB(t)
+	originalConsume, originalSend := consumeCaptchaTokenWithDB, sendPublicSMSCodeWithDB
+	defer func() { consumeCaptchaTokenWithDB, sendPublicSMSCodeWithDB = originalConsume, originalSend }()
+	consumeCalls, sendCalls := 0, 0
+	consumeCaptchaTokenWithDB = func(string, string, string) error { consumeCalls++; return nil }
+	sendPublicSMSCodeWithDB = func(service.SendSMSCodeInput) error { sendCalls++; return nil }
+	request := func(body string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/public/sms-code", bytes.NewBufferString(body))
+		ctx.Request.Header.Set("Content-Type", "application/json")
+		ctx.Request.Header.Set("Idempotency-Key", "sms-action-1")
+		SendPublicSMSCode(ctx)
+		return recorder
+	}
+	first := request(`{"phone":"13800000000","scene":"login","captchaToken":"token-1"}`)
+	replay := request(`{"phone":"13800000000","scene":"login","captchaToken":"token-1"}`)
+	if first.Code != 200 || replay.Code != 200 || consumeCalls != 1 || sendCalls != 1 {
+		t.Fatalf("duplicate SMS side effect: first=%d replay=%d consume=%d send=%d", first.Code, replay.Code, consumeCalls, sendCalls)
+	}
+	conflict := request(`{"phone":"13800000000","scene":"login","captchaToken":"other"}`)
+	if conflict.Code != 409 || sendCalls != 1 {
+		t.Fatalf("changed request must conflict: code=%d send=%d", conflict.Code, sendCalls)
+	}
+	changedPhone := request(`{"phone":"13900000000","scene":"login","captchaToken":"token-1"}`)
+	if changedPhone.Code != 409 || consumeCalls != 1 || sendCalls != 1 {
+		t.Fatalf("same key with different phone must conflict without side effects: code=%d consume=%d send=%d", changedPhone.Code, consumeCalls, sendCalls)
+	}
+}
+
+func TestSendPublicSMSCodeUnknownProviderResultIsNeverResent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	_ = newUserControllerTestDB(t)
+	originalConsume, originalSend := consumeCaptchaTokenWithDB, sendPublicSMSCodeWithDB
+	defer func() { consumeCaptchaTokenWithDB, sendPublicSMSCodeWithDB = originalConsume, originalSend }()
+	consumeCalls, sendCalls := 0, 0
+	consumeCaptchaTokenWithDB = func(string, string, string) error { consumeCalls++; return nil }
+	sendPublicSMSCodeWithDB = func(service.SendSMSCodeInput) error { sendCalls++; return errors.New("response lost") }
+	for i := 0; i < 2; i++ {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/public/sms-code", bytes.NewBufferString(`{"phone":"13800000000","scene":"login","captchaToken":"token-2"}`))
+		ctx.Request.Header.Set("Content-Type", "application/json")
+		ctx.Request.Header.Set("Idempotency-Key", "sms-action-2")
+		SendPublicSMSCode(ctx)
+		if recorder.Code != http.StatusAccepted {
+			t.Fatalf("unknown send result should be pending, got %d: %s", recorder.Code, recorder.Body.String())
+		}
+	}
+	if consumeCalls != 1 || sendCalls != 1 {
+		t.Fatalf("provider was resent: consume=%d send=%d", consumeCalls, sendCalls)
+	}
+}
+
+func TestPhoneChangeSMSCodeIdempotencyDoesNotSendAgain(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	_ = newUserControllerTestDB(t)
+	originalConsume, originalSend := consumeCaptchaTokenWithDB, sendUserPhoneChangeSMSCodeWithDB
+	defer func() { consumeCaptchaTokenWithDB, sendUserPhoneChangeSMSCodeWithDB = originalConsume, originalSend }()
+	consumeCalls, sendCalls := 0, 0
+	consumeCaptchaTokenWithDB = func(string, string, string) error { consumeCalls++; return nil }
+	sendUserPhoneChangeSMSCodeWithDB = func(service.SendSMSCodeInput) error { sendCalls++; return nil }
+	operator := entity.User{ID: 74, Role: "user", Status: "enabled"}
+	for i := 0; i < 2; i++ {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/phone/sms-code", bytes.NewBufferString(`{"phone":"13900000000","captchaToken":"token-1"}`))
+		ctx.Request.Header.Set("Content-Type", "application/json")
+		ctx.Request.Header.Set("Idempotency-Key", "phone-change-sms-1")
+		ctx.Set("user", &operator)
+		SendUserPhoneChangeSMSCode(ctx)
+		if recorder.Code != 200 {
+			t.Fatalf("send/replay status: %d %s", recorder.Code, recorder.Body.String())
+		}
+	}
+	if consumeCalls != 1 || sendCalls != 1 {
+		t.Fatalf("phone-change SMS duplicated: consume=%d send=%d", consumeCalls, sendCalls)
+	}
 }
 
 func registerTestSMSCodeHash(code string) string {

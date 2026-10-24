@@ -61,6 +61,43 @@ func TestLegacyUserBalanceUpdateAlwaysWritesLedgerAndAudit(t *testing.T) {
 	}
 }
 
+func TestBalanceEndpointIdempotencyPreventsDuplicateAdjustment(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	admin := entity.User{ID: 1, Username: "balance_admin", Role: "admin", Status: "enabled"}
+	target := entity.User{ID: 2, Username: "balance_target", Role: "user", Status: "enabled", Balance: 10}
+	if err := db.Create(&[]entity.User{admin, target}).Error; err != nil {
+		t.Fatal(err)
+	}
+	request := func(amount string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/2/balance", bytes.NewBufferString(`{"mode":"increase","amount":`+amount+`}`))
+		ctx.Request.Header.Set("Content-Type", "application/json")
+		ctx.Request.Header.Set("Idempotency-Key", "balance-action-1")
+		ctx.Params = gin.Params{{Key: "id", Value: "2"}}
+		ctx.Set("user", &admin)
+		UpdateUserBalance(ctx)
+		return recorder
+	}
+	first, replay := request("2"), request("2")
+	if first.Code != 200 || replay.Code != 200 || first.Body.String() != replay.Body.String() {
+		t.Fatalf("replay response mismatch: first=%d %s replay=%d %s", first.Code, first.Body.String(), replay.Code, replay.Body.String())
+	}
+	var stored entity.User
+	if err := db.First(&stored, target.ID).Error; err != nil || stored.Balance != 12 {
+		t.Fatalf("balance changed twice: %+v err=%v", stored, err)
+	}
+	var count int64
+	db.Model(&entity.BillingRecord{}).Where("type = ?", "balance_adjustment").Count(&count)
+	if count != 1 {
+		t.Fatalf("expected one ledger record, got %d", count)
+	}
+	if changed := request("3"); changed.Code != http.StatusConflict {
+		t.Fatalf("changed request should conflict: %d %s", changed.Code, changed.Body.String())
+	}
+}
+
 func TestDedicatedBalanceAndVisibilityEndpointsEnforceAdminAndExplicitValues(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newUserControllerTestDB(t)

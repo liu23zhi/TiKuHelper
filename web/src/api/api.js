@@ -1,32 +1,36 @@
 import axios from 'axios'
 import qs from 'qs';
+import { executeWithRetry, toUserRequestError } from '../utils/requestRetry.mjs'
 
 const xmig6Instance = axios.create({
     baseURL: '/sqp/api',
     timeout: 60 * 1000,
     validateStatus: function (status) {
-        return status >= 200 && status <= 500
+        return status >= 200 && status < 600
     }
 })
-// 这里应该拦截 400 或者 500 的请求，然后给出用户提示，待完善
 const responseInterceptor = (response) => {
     if (response.status !== 200) {
-        console.log(response.data.message); // 应该将这个 msg 展示给用户
+        console.log(response.data?.message)
     }
     return response.data;
 };
-const errorInterceptor = (error) => {
-    // 给出网络错误提示或者各种请求失败的
-    return Promise.reject(error);
-};
-xmig6Instance.interceptors.response.use(responseInterceptor, errorInterceptor);
+
+async function requestParser(config) {
+    try {
+        const response = await executeWithRetry((attemptConfig) => xmig6Instance.request(attemptConfig), config)
+        return responseInterceptor(response)
+    } catch (error) {
+        throw toUserRequestError(config, error)
+    }
+}
 
 export async function parseFile(data) {
-    return await xmig6Instance.get(`/parse`, {params: data})
+    return await requestParser({ url: '/parse', method: 'get', params: data, retryPolicy: 'single' })
 }
 
 export async function reParseFile(data) {
-    return await xmig6Instance.post(`/parse`, qs.stringify({html: data.html}))
+    return await requestParser({ url: '/parse', method: 'post', data: qs.stringify({html: data.html}), retryPolicy: 'single' })
 }
 
 

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -753,8 +754,10 @@ func TestListAISearchModelsWithDBMergesManualAndRemoteModelsWithV1Fallback(t *te
 
 func TestListAISearchModelsWithDBUsesExplicitQueryValuesAndFallsBackToManualModels(t *testing.T) {
 	db := newSearchAccountConfigTestDB(t)
+	var calls atomic.Int64
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
 		if got := r.Header.Get("Authorization"); got != "Bearer sk-request" {
 			t.Fatalf("unexpected authorization header: %s", got)
 		}
@@ -783,6 +786,33 @@ func TestListAISearchModelsWithDBUsesExplicitQueryValuesAndFallsBackToManualMode
 	expected := []string{"gpt-4o-mini", "deepseek-chat"}
 	if !reflect.DeepEqual(models, expected) {
 		t.Fatalf("expected manual models fallback %v, got %v", expected, models)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("expected three model-list attempts, got %d", got)
+	}
+}
+
+func TestRequestRemoteAISearchModelsRetriesTransientStatus(t *testing.T) {
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer sk-test" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if calls.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"model-after-retry"}]}`))
+	}))
+	defer server.Close()
+
+	models, status, err := requestRemoteAISearchModels(server.URL+"/v1/models", "sk-test")
+	if err != nil || status != http.StatusOK || !reflect.DeepEqual(models, []string{"model-after-retry"}) {
+		t.Fatalf("unexpected model-list result: models=%v status=%d err=%v", models, status, err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("expected two model-list attempts, got %d", got)
 	}
 }
 

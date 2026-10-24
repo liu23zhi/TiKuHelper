@@ -543,6 +543,11 @@ export default defineComponent({
             this.handleRefreshCurrentUser()
           })
         }
+        if (res?.status === 202) {
+          const orderNo = res?.data?.orderNo
+          message.warning(`支付平台结果待核对${orderNo ? `（订单号 ${orderNo}）` : ''}，请查看充值记录或联系管理员，勿重复下单`)
+          return
+        }
         message.error(res?.message || '创建充值订单失败')
       }).catch((error) => {
         message.error(error?.response?.data?.message || error?.message || '创建充值订单失败')

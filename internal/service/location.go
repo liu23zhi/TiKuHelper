@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"strings"
 	"time"
 
@@ -21,8 +22,7 @@ const (
 	locationLookupTimeout = 10 * time.Second
 	// locationLookupMaxAttempts 单个归属地查询的最大尝试次数。
 	//
-	// 3 次是为了扛住偶发网络抖动；同时它是「密钥配错」的判定阈值 ——
-	// 连续 3 次全失败就认为不是抖动，而是配置问题。
+	// 仅明确拒绝处理的 408/425 最多尝试 3 次；网络结果未知时不重放付费查询。
 	locationLookupMaxAttempts = 3
 )
 
@@ -36,7 +36,7 @@ var (
 // newLocationClient 构造归属地客户端并应用可覆盖的接口地址。
 //
 // **关掉客户端内部重试**（SetMaxRetries(0)）：重试统一由 lookupLocationsWithRetry 编排。
-// 两边都重试会相乘 —— 3（本层）× 4（客户端）= 12 次请求，既违背「连续 3 次失败就放弃」
+// 两边都重试会相乘 —— 3（本层）× 3（客户端）= 9 次请求，既违背「连续 3 次失败就放弃」
 // 的意图，也会在最坏情况下把一个号码打成十几次上游调用。
 func newLocationClient(apiKey string) *uapi.Client {
 	return uapi.NewClient(apiKey).
@@ -77,6 +77,9 @@ func lookupLocationsWithRetry(
 				succeeded = true
 				break
 			}
+			if !isLocationRetryableError(result.err) {
+				break
+			}
 		}
 
 		if succeeded {
@@ -111,6 +114,11 @@ func isLocationAbortError(err error) bool {
 		errors.Is(err, uapi.ErrInsufficientCredits) ||
 		errors.Is(err, uapi.ErrForbidden) ||
 		errors.Is(err, uapi.ErrRateLimited)
+}
+
+func isLocationRetryableError(err error) bool {
+	var apiErr *uapi.APIError
+	return errors.As(err, &apiErr) && (apiErr.HTTPStatus == http.StatusRequestTimeout || apiErr.HTTPStatus == http.StatusTooEarly)
 }
 
 // locationLookupGroup 合并「同一 key 的并发归属地查询」，见 location_flight.go。
@@ -676,6 +684,9 @@ func queryLocationRows(db *gorm.DB, client *uapi.Client, kind string, keys []str
 					logKey = maskPhoneForLog(logKey)
 				}
 				logger.SysLog(fmt.Sprintf("归属地查询失败 kind=%s key=%s attempt=%d/%d error=%v", kind, logKey, attempt, locationLookupMaxAttempts, fetched.err))
+				if !isLocationRetryableError(fetched.err) {
+					break
+				}
 			}
 			return fetched
 		})

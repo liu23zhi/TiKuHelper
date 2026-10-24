@@ -25,6 +25,35 @@ func newBalanceAdjustmentTestDB(t *testing.T) (*gorm.DB, entity.User, entity.Use
 	return db, admin, user
 }
 
+func TestBalanceAdjustmentIdempotencyReplaysWithoutSecondLedger(t *testing.T) {
+	db, admin, user := newBalanceAdjustmentTestDB(t)
+	if err := db.AutoMigrate(&entity.IdempotencyRecord{}); err != nil {
+		t.Fatal(err)
+	}
+	input := UserBalanceAdjustmentInput{Mode: "increase", Amount: 2.5}
+	first, err := AdjustUserBalanceIdempotentWithDB(db, admin, user.ID, input, "balance-action-1")
+	if err != nil || first.Balance != 12.5 {
+		t.Fatalf("first adjustment: user=%+v err=%v", first, err)
+	}
+	replayed, err := AdjustUserBalanceIdempotentWithDB(db, admin, user.ID, input, "balance-action-1")
+	if err != nil || replayed.Balance != 12.5 {
+		t.Fatalf("replayed adjustment: user=%+v err=%v", replayed, err)
+	}
+	var stored entity.User
+	if err := db.First(&stored, user.ID).Error; err != nil || stored.Balance != 12.5 {
+		t.Fatalf("stored balance: %+v err=%v", stored, err)
+	}
+	var bills, logs int64
+	db.Model(&entity.BillingRecord{}).Where("type = ?", balanceAdjustmentBillingRecordType).Count(&bills)
+	db.Model(&entity.Log{}).Count(&logs)
+	if bills != 1 || logs != 1 {
+		t.Fatalf("replay caused extra side effect: bills=%d logs=%d", bills, logs)
+	}
+	if _, err := AdjustUserBalanceIdempotentWithDB(db, admin, user.ID, UserBalanceAdjustmentInput{Mode: "increase", Amount: 3}, "balance-action-1"); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("changed request must conflict: %v", err)
+	}
+}
+
 func TestBalanceAdjustmentsPersistActorAndVisibilityWithoutCountingAsConsumption(t *testing.T) {
 	for _, mode := range []string{"increase", "decrease", "override"} {
 		for _, show := range []bool{false, true} {

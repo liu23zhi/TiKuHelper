@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/dao"
+	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"gorm.io/gorm"
@@ -31,9 +32,15 @@ func UpdateUserBalance(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "请输入余额调整金额"})
 		return
 	}
-	user, err := service.AdjustUserBalanceWithDB(dao.User.UnderlyingDB(), operator, int32(userID), service.UserBalanceAdjustmentInput{
+	input := service.UserBalanceAdjustmentInput{
 		Mode: payload.Mode, Amount: *payload.Amount, ShowInStatement: payload.ShowInStatement, ClientIP: c.ClientIP(),
-	})
+	}
+	var user entity.User
+	if key := c.GetHeader("Idempotency-Key"); key != "" {
+		user, err = service.AdjustUserBalanceIdempotentWithDB(dao.User.UnderlyingDB(), operator, int32(userID), input, key)
+	} else {
+		user, err = service.AdjustUserBalanceWithDB(dao.User.UnderlyingDB(), operator, int32(userID), input)
+	}
 	if err != nil {
 		writeBalanceOperationError(c, err)
 		return
@@ -67,6 +74,12 @@ func UpdateBillingStatementVisibility(c *gin.Context) {
 
 func writeBalanceOperationError(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, service.ErrIdempotencyConflict):
+		c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
+	case errors.Is(err, service.ErrIdempotencyKeyInvalid):
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+	case errors.Is(err, service.ErrIdempotencyPending):
+		c.JSON(http.StatusAccepted, gin.H{"status": "pending", "message": err.Error()})
 	case errors.Is(err, service.ErrBalanceAdjustmentForbidden):
 		c.JSON(http.StatusForbidden, gin.H{"message": err.Error()})
 	case errors.Is(err, gorm.ErrRecordNotFound):

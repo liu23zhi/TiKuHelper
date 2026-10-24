@@ -332,7 +332,7 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 					callErr = err
 					break
 				}
-				if !sleepAISearchRetryBackoff(retry, time.Since(roundStartedAt)) {
+				if !sleepAISearchRetryBackoff(ctx, retry, time.Since(roundStartedAt), callErr) {
 					break
 				}
 			}
@@ -375,8 +375,14 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 				if callErr == nil {
 					break
 				}
+				if !shouldTryAlternateAIEndpoint(status) {
+					break
+				}
 			}
 			if callErr == nil {
+				break
+			}
+			if !isRetryableAIHTTPStatus(status) {
 				break
 			}
 		}

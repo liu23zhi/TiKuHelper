@@ -183,7 +183,7 @@ func TestSearchAnswerWithMCPAcceptsDirectAnswerWithoutAction(t *testing.T) {
 	}
 }
 
-func TestSearchAnswerWithMCPRetriesEmptyModelResponse(t *testing.T) {
+func TestSearchAnswerWithMCPDoesNotReplayEmptyModelResponse(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
@@ -211,17 +211,39 @@ func TestSearchAnswerWithMCPRetriesEmptyModelResponse(t *testing.T) {
 		Question:     "2+2=?",
 		DeepThinking: true,
 	})
-	if err != nil {
-		t.Fatalf("expected retry after empty MCP response to succeed, got %v", err)
+	if err == nil {
+		t.Fatal("empty successful response should fail without replay")
 	}
-	if calls != 2 {
-		t.Fatalf("expected 2 model calls, got %d", calls)
+	if calls != 1 {
+		t.Fatalf("empty model response must not be replayed, got %d calls", calls)
 	}
-	if len(debug.Usage.ModelCalls) != 2 {
-		t.Fatalf("expected both model calls to be metered, got %+v", debug.Usage.ModelCalls)
+	if len(debug.Usage.ModelCalls) != 1 {
+		t.Fatalf("the single model call must be metered, got %+v", debug.Usage.ModelCalls)
 	}
-	if len(answers) != 1 || len(answers[0]) != 1 || answers[0][0] != "4" {
-		t.Fatalf("unexpected answers: %#v", answers)
+	if len(answers) != 0 {
+		t.Fatalf("empty model response must not yield answers: %#v", answers)
+	}
+}
+
+func TestSearchAnswerWithMCPRetriesRateLimitWithRetryAfter(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			w.Header().Set("Retry-After", "0")
+			http.Error(w, "rate limited", http.StatusTooManyRequests)
+			return
+		}
+		writeMCPTextStream(w, `{"answers":["4"]}`, 20)
+	}))
+	defer server.Close()
+	client := &ChatGptClient{
+		BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test",
+		SearchTool: &testAISearchTool{}, MaxAISearchModelCalls: 1, MaxAISearchRetries: 2,
+	}
+	answers, _, err := client.searchAnswerWithMCP(t.Context(), model.SearchRequest{Question: "2+2=?"})
+	if err != nil || calls != 2 || !reflect.DeepEqual(answers, [][]string{{"4"}}) {
+		t.Fatalf("MCP rate limit retry: answers=%v calls=%d err=%v", answers, calls, err)
 	}
 }
 
@@ -262,7 +284,7 @@ func TestSearchAnswerWithMCPUsesCompleteResponseBeforeExecutingTool(t *testing.T
 	}
 }
 
-func TestSearchAnswerWithMCPCountsEndpointFailuresAsOneAttempt(t *testing.T) {
+func TestSearchAnswerWithMCPDoesNotReplayParseFailure(t *testing.T) {
 	var paths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
@@ -275,17 +297,17 @@ func TestSearchAnswerWithMCPCountsEndpointFailuresAsOneAttempt(t *testing.T) {
 		MaxAISearchModelCalls: 2, MaxAISearchRetries: 3,
 	}
 	_, debug, err := client.searchAnswerWithMCP(t.Context(), model.SearchRequest{Question: "2+2=?"})
-	if err == nil || !strings.Contains(err.Error(), "已尝试3次") || !strings.Contains(err.Error(), "invalid character 'a'") {
-		t.Fatalf("expected the original parse error after three full attempts, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "已尝试1次") || !strings.Contains(err.Error(), "invalid character 'a'") {
+		t.Fatalf("expected the original parse error after one attempt, got %v", err)
 	}
-	if !reflect.DeepEqual(paths, []string{"/responses", "/v1/responses", "/responses", "/v1/responses", "/responses", "/v1/responses"}) {
-		t.Fatalf("each attempt must try both endpoints: %v", paths)
+	if !reflect.DeepEqual(paths, []string{"/responses"}) {
+		t.Fatalf("parsed model output must not be replayed: %v", paths)
 	}
-	if len(tool.queries) != 0 || debug.Usage.TotalTokens != 84 || len(debug.Usage.ModelCalls) != 6 || len(debug.Usage.Trace) != 6 {
+	if len(tool.queries) != 0 || debug.Usage.TotalTokens != 14 || len(debug.Usage.ModelCalls) != 1 || len(debug.Usage.Trace) != 1 {
 		t.Fatalf("invalid actions must not execute tools or lose usage: queries=%v usage=%+v", tool.queries, debug.Usage)
 	}
 	for i, trace := range debug.Usage.Trace {
-		if trace.Attempt != i/2+1 || trace.Error == "" {
+		if trace.Attempt != i+1 || trace.Error == "" {
 			t.Fatalf("trace must record the endpoint's parse failure and shared attempt number: %+v", trace)
 		}
 	}

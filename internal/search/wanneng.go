@@ -39,7 +39,7 @@ func (in *WannengClient) getHTTPClient() *resty.Client {
 		SetRetryCount(1).
 		SetRetryWaitTime(1*time.Second).
 		AddRetryCondition(func(r *resty.Response, err error) bool {
-			return err != nil || strings.Contains(r.String(), "已限流,正在重新请求...")
+			return err == nil && r != nil && strings.Contains(r.String(), "已限流,正在重新请求...")
 		}).
 		SetRetryMaxWaitTime(10*time.Second).
 		AddRetryHook(func(r *resty.Response, err error) {

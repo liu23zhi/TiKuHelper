@@ -72,8 +72,18 @@ func CreateRechargeOrder(c *gin.Context) {
 	input.ClientIP = c.ClientIP()
 	input.Device = detectRechargeDevice(c.GetHeader("User-Agent"))
 
-	created, err := createRechargeOrder(operator, input)
+	var created service.CreateRechargeOrderResult
+	var err error
+	if key := c.GetHeader("Idempotency-Key"); key != "" {
+		created, err = service.CreateRechargeOrderIdempotentWithDB(manager.GetManager().GetDB(), operator, input, key)
+	} else {
+		created, err = createRechargeOrder(operator, input)
+	}
 	if err != nil {
+		if errors.Is(err, service.ErrIdempotencyPending) {
+			c.JSON(http.StatusAccepted, gin.H{"status": "pending", "orderNo": created.Order.OrderNo, "orderStatus": created.Order.Status, "message": "支付网关结果待核对，请勿重复下单"})
+			return
+		}
 		writeRechargeOrderError(c, err, "创建充值订单失败")
 		return
 	}
@@ -101,6 +111,15 @@ func writeRechargeOrderError(c *gin.Context, err error, fallback string) {
 	message := fallback
 
 	switch {
+	case errors.Is(err, service.ErrIdempotencyPending):
+		c.JSON(http.StatusAccepted, gin.H{"status": "pending", "message": "支付网关结果待核对，请勿重复下单"})
+		return
+	case errors.Is(err, service.ErrIdempotencyConflict):
+		status = http.StatusConflict
+		message = err.Error()
+	case errors.Is(err, service.ErrIdempotencyKeyInvalid):
+		status = http.StatusBadRequest
+		message = err.Error()
 	case errors.Is(err, service.ErrRechargeAmountInvalid),
 		errors.Is(err, service.ErrRechargeAmountPrecision),
 		errors.Is(err, service.ErrRechargeAmountBelowMinimum),

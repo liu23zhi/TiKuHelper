@@ -57,6 +57,47 @@ func AdjustUserBalanceWithDB(db *gorm.DB, operator entity.User, userID int32, in
 	return user, err
 }
 
+func AdjustUserBalanceIdempotentWithDB(db *gorm.DB, operator entity.User, userID int32, input UserBalanceAdjustmentInput, key string) (entity.User, error) {
+	var result entity.User
+	request, err := json.Marshal(struct {
+		UserID int32                      `json:"userId"`
+		Input  UserBalanceAdjustmentInput `json:"input"`
+	}{UserID: userID, Input: input})
+	if err != nil {
+		return result, err
+	}
+	err = db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
+		record, fresh, err := ClaimIdempotencyWithDB(tx, fmt.Sprintf("user:%d", operator.ID), "balance-adjustment", key, request)
+		if err != nil {
+			return err
+		}
+		if !fresh {
+			if record.Status != IdempotencyStatusSucceeded {
+				return ErrIdempotencyPending
+			}
+			var saved struct {
+				ID      int32   `json:"id"`
+				Balance float64 `json:"balance"`
+			}
+			if err := json.Unmarshal([]byte(record.ResponseJSON), &saved); err != nil {
+				return err
+			}
+			result.ID, result.Balance = saved.ID, saved.Balance
+			return nil
+		}
+		result, err = AdjustUserBalanceInTx(tx, operator, userID, input)
+		if err != nil {
+			return err
+		}
+		response, err := json.Marshal(map[string]any{"id": result.ID, "balance": result.Balance})
+		if err != nil {
+			return err
+		}
+		return CompleteIdempotencyWithDB(tx, record.ID, 200, response)
+	})
+	return result, err
+}
+
 // Balance, permanent ledger details and audit log have one transaction owner.
 func AdjustUserBalanceInTx(tx *gorm.DB, operator entity.User, userID int32, input UserBalanceAdjustmentInput) (entity.User, error) {
 	tx = tx.Session(&gorm.Session{NewDB: true})

@@ -448,6 +448,11 @@ export default defineComponent({
           phone: phoneForm.phone,
           captchaToken: phoneForm.captchaToken,
         })
+        if (res?.status === 202) {
+          message.warning('短信发送结果待核对，请先等待短信，勿重复发送')
+          smsCooldown.start()
+          return
+        }
         if (res?.status !== 200) {
           message.error(res?.message || '发送失败')
           return

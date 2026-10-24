@@ -31,11 +31,107 @@ func newRechargeOrderTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open test db: %v", err)
 	}
 
-	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.PaymentMethod{}, &entity.RechargeOrder{}, &entity.BillingRecord{}); err != nil {
+	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.PaymentMethod{}, &entity.RechargeOrder{}, &entity.BillingRecord{}, &entity.IdempotencyRecord{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 
 	return db
+}
+
+func TestIdempotentRechargeReplaysGatewayResultAfterResponseLoss(t *testing.T) {
+	db := newRechargeOrderTestDB(t)
+	user := seedRechargeOrderUser(t, db, 91, "user")
+	method := seedRechargePaymentMethod(t, db, entity.PaymentMethod{Name: "微信支付", EPayType: "wxpay", Enabled: true})
+	publicKey, privateKey, _ := generateRechargeRSAKeys(t)
+	seedRechargePaymentSettings(t, db, publicKey, privateKey)
+	original := createRechargePaymentRequest
+	defer func() { createRechargePaymentRequest = original }()
+	calls := 0
+	createRechargePaymentRequest = func(_ RechargePaymentConfig, req RechargePayRequest) (RechargePaymentResult, error) {
+		calls++
+		var order entity.RechargeOrder
+		if err := db.Where("order_no = ?", req.OutTradeNo).First(&order).Error; err != nil {
+			t.Fatalf("order must exist before gateway call: %v", err)
+		}
+		return RechargePaymentResult{PayType: "qrcode", PayInfo: "qr:123", QRCodeContent: "qr:123", ThirdPartyOrderNo: "trade-123"}, nil
+	}
+	input := CreateRechargeOrderInput{Amount: 12.34, PaymentMethodID: method.ID}
+	first, err := CreateRechargeOrderIdempotentWithDB(db, user, input, "recharge-action-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := CreateRechargeOrderIdempotentWithDB(db, user, input, "recharge-action-1")
+	if err != nil || replay.Order.ID != first.Order.ID || replay.PayInfo != first.PayInfo || calls != 1 {
+		t.Fatalf("replay duplicated gateway: first=%+v replay=%+v calls=%d err=%v", first, replay, calls, err)
+	}
+	var count int64
+	db.Model(&entity.RechargeOrder{}).Count(&count)
+	if count != 1 {
+		t.Fatalf("replay duplicated local order: %d", count)
+	}
+	if _, err := CreateRechargeOrderIdempotentWithDB(db, user, CreateRechargeOrderInput{Amount: 15, PaymentMethodID: method.ID}, "recharge-action-1"); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("changed amount must conflict: %v", err)
+	}
+}
+
+func TestIdempotentRechargeUnknownGatewayResultIsNeverResent(t *testing.T) {
+	db := newRechargeOrderTestDB(t)
+	user := seedRechargeOrderUser(t, db, 92, "user")
+	method := seedRechargePaymentMethod(t, db, entity.PaymentMethod{Name: "微信支付", EPayType: "wxpay", Enabled: true})
+	publicKey, privateKey, _ := generateRechargeRSAKeys(t)
+	seedRechargePaymentSettings(t, db, publicKey, privateKey)
+	original := createRechargePaymentRequest
+	defer func() { createRechargePaymentRequest = original }()
+	calls := 0
+	createRechargePaymentRequest = func(_ RechargePaymentConfig, _ RechargePayRequest) (RechargePaymentResult, error) {
+		calls++
+		return RechargePaymentResult{}, errors.New("response lost")
+	}
+	input := CreateRechargeOrderInput{Amount: 12.34, PaymentMethodID: method.ID}
+	if _, err := CreateRechargeOrderIdempotentWithDB(db, user, input, "recharge-action-2"); !errors.Is(err, ErrIdempotencyPending) {
+		t.Fatalf("uncertain gateway result must be pending, got %v", err)
+	}
+	pending, err := CreateRechargeOrderIdempotentWithDB(db, user, input, "recharge-action-2")
+	if !errors.Is(err, ErrIdempotencyPending) || calls != 1 {
+		t.Fatalf("retry must not call gateway again: calls=%d err=%v", calls, err)
+	}
+	if err := db.Model(&entity.RechargeOrder{}).Where("id = ?", pending.Order.ID).Update("status", "paid").Error; err != nil {
+		t.Fatal(err)
+	}
+	reconciled, err := CreateRechargeOrderIdempotentWithDB(db, user, input, "recharge-action-2")
+	if !errors.Is(err, ErrIdempotencyPending) || reconciled.Order.Status != "paid" || calls != 1 {
+		t.Fatalf("retry should expose current local order status without gateway replay: %+v calls=%d err=%v", reconciled.Order, calls, err)
+	}
+	var count int64
+	db.Model(&entity.RechargeOrder{}).Count(&count)
+	if count != 1 {
+		t.Fatalf("expected one local order for manual reconciliation, got %d", count)
+	}
+}
+
+func TestIdempotentRechargePreservesEarlyPaymentCallbackState(t *testing.T) {
+	db := newRechargeOrderTestDB(t)
+	user := seedRechargeOrderUser(t, db, 93, "user")
+	method := seedRechargePaymentMethod(t, db, entity.PaymentMethod{Name: "微信支付", EPayType: "wxpay", Enabled: true})
+	publicKey, privateKey, _ := generateRechargeRSAKeys(t)
+	seedRechargePaymentSettings(t, db, publicKey, privateKey)
+	original := createRechargePaymentRequest
+	defer func() { createRechargePaymentRequest = original }()
+	createRechargePaymentRequest = func(_ RechargePaymentConfig, req RechargePayRequest) (RechargePaymentResult, error) {
+		if err := db.Model(&entity.RechargeOrder{}).Where("order_no = ?", req.OutTradeNo).Updates(map[string]any{
+			"status": "paid", "third_party_order_no": "callback-trade", "callback_payload": "sensitive-callback",
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+		return RechargePaymentResult{PayType: "qrcode", PayInfo: "qr:123", ThirdPartyOrderNo: "create-trade"}, nil
+	}
+	got, err := CreateRechargeOrderIdempotentWithDB(db, user, CreateRechargeOrderInput{Amount: 12.34, PaymentMethodID: method.ID}, "recharge-action-3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Order.Status != "paid" || got.Order.ThirdPartyOrderNo != "callback-trade" || got.Order.CallbackPayload != "" {
+		t.Fatalf("early callback was overwritten or leaked: %+v", got.Order)
+	}
 }
 
 func seedRechargeOrderUser(t *testing.T, db *gorm.DB, id int32, role string) entity.User {

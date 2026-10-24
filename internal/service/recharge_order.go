@@ -348,30 +348,48 @@ func applyRechargeOrderFilters(query *gorm.DB, filter RechargeOrderListQuery) *g
 }
 
 func CreateRechargeOrderWithDB(db *gorm.DB, user entity.User, input CreateRechargeOrderInput) (CreateRechargeOrderResult, error) {
+	config, order, paymentType, err := prepareRechargeOrderWithDB(db, user, input)
+	if err != nil {
+		return CreateRechargeOrderResult{}, err
+	}
+	paymentResult, err := createRechargePaymentRequest(config, rechargePayRequest(order, paymentType, input))
+	if err != nil {
+		return CreateRechargeOrderResult{}, err
+	}
+	if strings.TrimSpace(paymentResult.ThirdPartyOrderNo) != "" {
+		order.ThirdPartyOrderNo = strings.TrimSpace(paymentResult.ThirdPartyOrderNo)
+	}
+	if err := db.Create(&order).Error; err != nil {
+		return CreateRechargeOrderResult{}, err
+	}
+	return rechargeResult(order, paymentResult), nil
+}
+
+func prepareRechargeOrderWithDB(db *gorm.DB, user entity.User, input CreateRechargeOrderInput) (RechargePaymentConfig, entity.RechargeOrder, string, error) {
 	// 充值金额只接受 2 位小数，避免把无法收款的多余精度写进订单。
 	if err := validateRechargeAmount(input.Amount); err != nil {
-		return CreateRechargeOrderResult{}, err
+		return RechargePaymentConfig{}, entity.RechargeOrder{}, "", err
 	}
 	amount := normalizeRechargeAmount(input.Amount)
 	minimumAmount := GetMinRechargeAmountWithDB(db)
 	if amount < minimumAmount {
-		return CreateRechargeOrderResult{}, fmt.Errorf("%w：%.2f 元", ErrRechargeAmountBelowMinimum, minimumAmount)
+		return RechargePaymentConfig{}, entity.RechargeOrder{}, "", fmt.Errorf("%w：%.2f 元", ErrRechargeAmountBelowMinimum, minimumAmount)
 	}
 
 	paymentMethod, err := loadPaymentMethodByID(db, input.PaymentMethodID)
 	if err != nil {
 		if errors.Is(err, ErrPaymentMethodNotFound) {
-			return CreateRechargeOrderResult{}, ErrRechargePaymentMethodNotFound
+			return RechargePaymentConfig{}, entity.RechargeOrder{}, "", ErrRechargePaymentMethodNotFound
 		}
-		return CreateRechargeOrderResult{}, err
+		return RechargePaymentConfig{}, entity.RechargeOrder{}, "", err
 	}
 	if !paymentMethod.Enabled {
-		return CreateRechargeOrderResult{}, ErrRechargePaymentMethodDisabled
+		return RechargePaymentConfig{}, entity.RechargeOrder{}, "", ErrRechargePaymentMethodDisabled
 	}
 
 	settings, err := GetSystemSettingDetailWithDB(db)
 	if err != nil {
-		return CreateRechargeOrderResult{}, err
+		return RechargePaymentConfig{}, entity.RechargeOrder{}, "", err
 	}
 
 	config := RechargePaymentConfig{
@@ -384,7 +402,7 @@ func CreateRechargeOrderWithDB(db *gorm.DB, user entity.User, input CreateRechar
 		ReturnURL:          strings.TrimSpace(settings.EPayReturnURL),
 	}
 	if !isRechargePaymentConfigComplete(config) {
-		return CreateRechargeOrderResult{}, ErrRechargePaymentConfigIncomplete
+		return RechargePaymentConfig{}, entity.RechargeOrder{}, "", ErrRechargePaymentConfigIncomplete
 	}
 
 	order := entity.RechargeOrder{
@@ -396,25 +414,21 @@ func CreateRechargeOrderWithDB(db *gorm.DB, user entity.User, input CreateRechar
 		Status:                    rechargeOrderStatusPending,
 	}
 
-	paymentResult, err := createRechargePaymentRequest(config, RechargePayRequest{
+	return config, order, strings.TrimSpace(paymentMethod.EPayType), nil
+}
+
+func rechargePayRequest(order entity.RechargeOrder, paymentType string, input CreateRechargeOrderInput) RechargePayRequest {
+	return RechargePayRequest{
 		OutTradeNo: order.OrderNo,
 		Name:       rechargeOrderName,
-		Money:      formatRechargeAmount(amount),
-		Type:       strings.TrimSpace(paymentMethod.EPayType),
+		Money:      formatRechargeAmount(order.Amount),
+		Type:       paymentType,
 		ClientIP:   input.ClientIP,
 		Device:     input.Device,
-	})
-	if err != nil {
-		return CreateRechargeOrderResult{}, err
 	}
-	if strings.TrimSpace(paymentResult.ThirdPartyOrderNo) != "" {
-		order.ThirdPartyOrderNo = strings.TrimSpace(paymentResult.ThirdPartyOrderNo)
-	}
+}
 
-	if err := db.Create(&order).Error; err != nil {
-		return CreateRechargeOrderResult{}, err
-	}
-
+func rechargeResult(order entity.RechargeOrder, paymentResult RechargePaymentResult) CreateRechargeOrderResult {
 	return CreateRechargeOrderResult{
 		Order:             order,
 		PayURL:            paymentResult.PayURL,
@@ -422,7 +436,82 @@ func CreateRechargeOrderWithDB(db *gorm.DB, user entity.User, input CreateRechar
 		PayInfo:           paymentResult.PayInfo,
 		QRCodeContent:     paymentResult.QRCodeContent,
 		ThirdPartyOrderNo: paymentResult.ThirdPartyOrderNo,
-	}, nil
+	}
+}
+
+func CreateRechargeOrderIdempotentWithDB(db *gorm.DB, user entity.User, input CreateRechargeOrderInput, key string) (CreateRechargeOrderResult, error) {
+	request, err := json.Marshal(struct {
+		Amount          float64 `json:"amount"`
+		PaymentMethodID int32   `json:"paymentMethodId"`
+	}{Amount: input.Amount, PaymentMethodID: input.PaymentMethodID})
+	if err != nil {
+		return CreateRechargeOrderResult{}, err
+	}
+	record, fresh, err := ClaimIdempotencyWithDB(db, fmt.Sprintf("user:%d", user.ID), "recharge-order", key, request)
+	if err != nil {
+		return CreateRechargeOrderResult{}, err
+	}
+	if !fresh {
+		var previous CreateRechargeOrderResult
+		if record.ResponseJSON != "" {
+			if err := json.Unmarshal([]byte(record.ResponseJSON), &previous); err != nil {
+				return CreateRechargeOrderResult{}, err
+			}
+		}
+		if record.Status == IdempotencyStatusSucceeded {
+			return previous, nil
+		}
+		if previous.Order.ID > 0 {
+			var current entity.RechargeOrder
+			if err := db.First(&current, previous.Order.ID).Error; err == nil && current.UserID == user.ID {
+				current.CallbackPayload = ""
+				previous.Order = current
+			}
+		}
+		return previous, ErrIdempotencyPending
+	}
+	config, order, paymentType, err := prepareRechargeOrderWithDB(db, user, input)
+	if err != nil {
+		_ = ReleaseIdempotencyWithDB(db, record.ID)
+		return CreateRechargeOrderResult{}, err
+	}
+	if err := db.Create(&order).Error; err != nil {
+		_ = MarkIdempotencyUnknownWithDB(db, record.ID)
+		return CreateRechargeOrderResult{}, err
+	}
+	progress, _ := json.Marshal(CreateRechargeOrderResult{Order: order})
+	if err := SaveIdempotencyProgressWithDB(db, record.ID, progress); err != nil {
+		_ = MarkIdempotencyUnknownWithDB(db, record.ID)
+		return CreateRechargeOrderResult{Order: order}, ErrIdempotencyPending
+	}
+	paymentResult, err := createRechargePaymentRequest(config, rechargePayRequest(order, paymentType, input))
+	if err != nil {
+		_ = MarkIdempotencyUnknownWithDB(db, record.ID)
+		return CreateRechargeOrderResult{Order: order}, ErrIdempotencyPending
+	}
+	var result CreateRechargeOrderResult
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&order, order.ID).Error; err != nil {
+			return err
+		}
+		if order.ThirdPartyOrderNo == "" && strings.TrimSpace(paymentResult.ThirdPartyOrderNo) != "" {
+			order.ThirdPartyOrderNo = strings.TrimSpace(paymentResult.ThirdPartyOrderNo)
+			if err := tx.Model(&entity.RechargeOrder{}).Where("id = ?", order.ID).Update("third_party_order_no", order.ThirdPartyOrderNo).Error; err != nil {
+				return err
+			}
+		}
+		order.CallbackPayload = ""
+		result = rechargeResult(order, paymentResult)
+		response, err := json.Marshal(result)
+		if err != nil {
+			return err
+		}
+		return CompleteIdempotencyWithDB(tx, record.ID, http.StatusOK, response)
+	}); err != nil {
+		_ = MarkIdempotencyUnknownWithDB(db, record.ID)
+		return CreateRechargeOrderResult{Order: order}, ErrIdempotencyPending
+	}
+	return result, nil
 }
 
 func HandleRechargePaymentNotifyWithDB(db *gorm.DB, values url.Values) (bool, error) {

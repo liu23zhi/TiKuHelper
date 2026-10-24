@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -89,6 +90,76 @@ func TestCreateWechatLoginQRCodeWithDBDownloadsQRCodeAndSendsBearerToken(t *test
 	}
 	if result.ExpireSeconds != 180 {
 		t.Fatalf("expected expire seconds 180, got %d", result.ExpireSeconds)
+	}
+}
+
+func TestCreateWechatLoginQRCodeRetriesImageDownloadWithoutRecreatingQRCode(t *testing.T) {
+	db := newWechatLoginTestDB(t)
+	qrBytes := tinyPNGBytes(t)
+	var createCalls, imageCalls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/wechat/create_login_qrcode":
+			createCalls.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"data": map[string]any{
+					"scene_id": "retry-scene", "qrcode_url": "http://" + r.Host + "/qr.png",
+					"login_token": "retry-token", "expire_seconds": 180,
+				},
+			})
+		case "/qr.png":
+			if imageCalls.Add(1) == 1 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(qrBytes)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	result, err := CreateWechatLoginQRCodeWithDB(db, WechatLoginClient{BaseURL: server.URL, Client: server.Client()})
+	if err != nil || !strings.HasPrefix(result.QRCodeImageData, "data:image/png;base64,") {
+		t.Fatalf("expected downloaded image after retry, result=%+v err=%v", result, err)
+	}
+	if createCalls.Load() != 1 || imageCalls.Load() != 2 {
+		t.Fatalf("expected one QR creation and two image GETs, got create=%d image=%d", createCalls.Load(), imageCalls.Load())
+	}
+}
+
+func TestCreateWechatLoginQRCodeRejectsFailedImageAfterThreeAttempts(t *testing.T) {
+	db := newWechatLoginTestDB(t)
+	var createCalls, imageCalls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/wechat/create_login_qrcode":
+			createCalls.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"success": true,
+				"data": map[string]any{
+					"scene_id": "failed-scene", "qrcode_url": "http://" + r.Host + "/qr.png",
+					"login_token": "failed-token", "expire_seconds": 180,
+				},
+			})
+		case "/qr.png":
+			imageCalls.Add(1)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("upstream unavailable"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	result, err := CreateWechatLoginQRCodeWithDB(db, WechatLoginClient{BaseURL: server.URL, Client: server.Client()})
+	if err == nil || !strings.Contains(err.Error(), "微信二维码下载失败") || result.QRCodeImageData != "" {
+		t.Fatalf("expected failed image download, result=%+v err=%v", result, err)
+	}
+	if createCalls.Load() != 1 || imageCalls.Load() != 3 {
+		t.Fatalf("expected one QR creation and three image GETs, got create=%d image=%d", createCalls.Load(), imageCalls.Load())
 	}
 }
 

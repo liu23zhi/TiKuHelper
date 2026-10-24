@@ -31,9 +31,14 @@ func (*userWechatBindingSchema) TableName() string {
 
 var db *gorm.DB
 var once sync.Once
+var idempotencyCleanupStop func()
 
 // CloseDB close db
 func CloseDB() error {
+	if idempotencyCleanupStop != nil {
+		idempotencyCleanupStop()
+		idempotencyCleanupStop = nil
+	}
 	sqlDB, err := db.DB()
 	if err != nil {
 		return err
@@ -590,6 +595,7 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		&entity.PriceRule{},
 		&entity.PaymentMethod{},
 		&entity.RechargeOrder{},
+		&entity.IdempotencyRecord{},
 		&entity.BillingRecord{},
 		// ai_model_architectures（模型绑定）已移除：旧库中的表保留但不再由 AutoMigrate 管理。
 		&entity.AIModelPrice{},
@@ -655,6 +661,9 @@ func RegisterDB(config configs.Config) *gorm.DB {
 	}
 	bootstrapAdminAccount(db, hashedBootstrapPassword)
 	ensureAccountDomainDefaults(db)
+	if idempotencyCleanupStop == nil {
+		idempotencyCleanupStop = service.StartIdempotencyCleanup(db, time.Hour)
+	}
 	return db
 }
 
