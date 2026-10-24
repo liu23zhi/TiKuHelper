@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -514,16 +515,36 @@ var errAIResponsesStreamIncomplete = fmt.Errorf("AI Responses响应流未完成"
 func readAIResponsesStream(body io.Reader, firstToken chan<- struct{}) (result aiToolStreamResult, err error) {
 	scanner := bufio.NewScanner(io.LimitReader(body, aiToolMaxStreamBytes+1))
 	scanner.Buffer(make([]byte, 4096), 256*1024)
-	var content, reasoning, raw strings.Builder
+	var reasoning, raw strings.Builder
+	type textPartIndex struct{ output, content int }
+	textParts := make(map[textPartIndex]*strings.Builder)
+	textPart := func(outputIndex, contentIndex int) *strings.Builder {
+		key := textPartIndex{outputIndex, contentIndex}
+		if textParts[key] == nil {
+			textParts[key] = &strings.Builder{}
+		}
+		return textParts[key]
+	}
+	completeContent := ""
 	defer func() { result.Raw = raw.String() }()
 	callsByItem := make(map[string]*openAIToolCall)
 	callOrder := make([]string, 0, aiToolMaxCallsPerRound)
 	completed := false
 	eventName := ""
-	addOutputItem := func(encoded json.RawMessage) error {
+	addOutputItem := func(outputIndex int, encoded json.RawMessage, done bool) error {
 		var item openAIResponsesOutputItem
 		if err := json.Unmarshal(encoded, &item); err != nil {
 			return err
+		}
+		if item.Type == "message" && done {
+			for contentIndex, encodedPart := range item.Content {
+				var part openAIResponsesContentPart
+				if json.Unmarshal(encodedPart, &part) == nil && part.Type == "output_text" {
+					text := textPart(outputIndex, contentIndex)
+					text.Reset()
+					text.WriteString(part.Text)
+				}
+			}
 		}
 		if item.Type != "function_call" {
 			return nil
@@ -594,7 +615,7 @@ func readAIResponsesStream(body io.Reader, firstToken chan<- struct{}) (result a
 			}
 			return result, fmt.Errorf("AI Responses upstream error event: %s", detail)
 		case "response.output_text.delta":
-			content.WriteString(event.Delta)
+			textPart(event.OutputIndex, event.ContentIndex).WriteString(event.Delta)
 			if event.Delta != "" && firstToken != nil {
 				select {
 				case firstToken <- struct{}{}:
@@ -609,7 +630,7 @@ func readAIResponsesStream(body io.Reader, firstToken chan<- struct{}) (result a
 				if event.Type == "response.output_item.done" {
 					result.OutputItems = append(result.OutputItems, append(json.RawMessage(nil), event.Item...))
 				}
-				if err := addOutputItem(event.Item); err != nil {
+				if err := addOutputItem(event.OutputIndex, event.Item, event.Type == "response.output_item.done"); err != nil {
 					return result, err
 				}
 			}
@@ -642,15 +663,15 @@ func readAIResponsesStream(body io.Reader, firstToken chan<- struct{}) (result a
 				copy(result.OutputItems, event.Response.Output)
 				callsByItem = make(map[string]*openAIToolCall)
 				callOrder = callOrder[:0]
-				for _, item := range event.Response.Output {
-					if err := addOutputItem(item); err != nil {
+				for outputIndex, item := range event.Response.Output {
+					if err := addOutputItem(outputIndex, item, true); err != nil {
 						return result, err
 					}
 				}
 			}
-			if content.Len() == 0 {
-				content.WriteString(extractAIResponsesOutputText(result.OutputItems))
-			}
+			// The final snapshot can restore missing or duplicated proxy deltas.
+			// Empty output is common on proxies; keep per-part text in that case.
+			completeContent = extractAIResponsesOutputText(event.Response.Output)
 			if reasoning.Len() == 0 {
 				reasoning.WriteString(extractAIResponsesReasoningSummary(result.OutputItems))
 				result.ReasoningChars = len([]rune(reasoning.String()))
@@ -663,12 +684,30 @@ func readAIResponsesStream(body io.Reader, firstToken chan<- struct{}) (result a
 				return result, fmt.Errorf("AI Responses响应不完整: %s", reason)
 			}
 		case "response.output_text.done":
-			if content.Len() == 0 {
-				content.WriteString(event.Text)
-			}
+			text := textPart(event.OutputIndex, event.ContentIndex)
+			text.Reset()
+			text.WriteString(event.Text)
 		}
 	}
-	result.Content = content.String()
+	if completeContent != "" {
+		result.Content = completeContent
+	} else {
+		keys := make([]textPartIndex, 0, len(textParts))
+		for key := range textParts {
+			keys = append(keys, key)
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			if keys[i].output != keys[j].output {
+				return keys[i].output < keys[j].output
+			}
+			return keys[i].content < keys[j].content
+		})
+		var content strings.Builder
+		for _, key := range keys {
+			content.WriteString(textParts[key].String())
+		}
+		result.Content = content.String()
+	}
 	result.ReasoningContent = reasoning.String()
 	if err := scanner.Err(); err != nil {
 		return result, err

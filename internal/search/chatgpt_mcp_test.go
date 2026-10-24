@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/itihey/tikuAdapter/pkg/model"
@@ -221,5 +222,71 @@ func TestSearchAnswerWithMCPRetriesEmptyModelResponse(t *testing.T) {
 	}
 	if len(answers) != 1 || len(answers[0]) != 1 || answers[0][0] != "4" {
 		t.Fatalf("unexpected answers: %#v", answers)
+	}
+}
+
+func TestSearchAnswerWithMCPUsesCompleteResponseBeforeExecutingTool(t *testing.T) {
+	tool := &testAISearchTool{}
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeResponsesEvent(w, "response.output_text.delta", map[string]any{"delta": "action"})
+		if calls == 1 {
+			writeAIResponsesCompleted(w, `{"action":"web_search","arguments":{"query":"2+2"}}`, map[string]any{
+				"input_tokens": 10, "output_tokens": 4, "total_tokens": 14,
+			})
+			return
+		}
+		writeAIResponsesCompleted(w, `{"answers":["4","4"]}`, map[string]any{
+			"input_tokens": 20, "output_tokens": 5, "total_tokens": 25,
+		})
+	}))
+	defer server.Close()
+	client := &ChatGptClient{
+		BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test",
+		SearchTool: tool, MaxAISearchModelCalls: 2, MaxAISearchRetries: 1,
+	}
+	answers, debug, err := client.searchAnswerWithMCP(t.Context(), model.SearchRequest{Question: "2+2=?", Type: 2})
+	if err != nil {
+		t.Fatalf("complete response must recover the partial MCP JSON: %v", err)
+	}
+	if !reflect.DeepEqual(answers, [][]string{{"4", "4"}}) || calls != 2 {
+		t.Fatalf("expected two answer parts without retry: answers=%v calls=%d", answers, calls)
+	}
+	if !reflect.DeepEqual(tool.queries, []string{"2+2"}) {
+		t.Fatalf("tool must execute once: %v", tool.queries)
+	}
+	if debug.Usage.TotalTokens != 39 || len(debug.Usage.ModelCalls) != 2 {
+		t.Fatalf("all model usage must be retained once: %+v", debug.Usage)
+	}
+}
+
+func TestSearchAnswerWithMCPCountsEndpointFailuresAsOneAttempt(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		writeMCPTextStream(w, "action", 10)
+	}))
+	defer server.Close()
+	tool := &testAISearchTool{}
+	client := &ChatGptClient{
+		BaseURL: server.URL, APIKey: "sk-test", Model: "test", SearchTool: tool,
+		MaxAISearchModelCalls: 2, MaxAISearchRetries: 3,
+	}
+	_, debug, err := client.searchAnswerWithMCP(t.Context(), model.SearchRequest{Question: "2+2=?"})
+	if err == nil || !strings.Contains(err.Error(), "已尝试3次") || !strings.Contains(err.Error(), "invalid character 'a'") {
+		t.Fatalf("expected the original parse error after three full attempts, got %v", err)
+	}
+	if !reflect.DeepEqual(paths, []string{"/responses", "/v1/responses", "/responses", "/v1/responses", "/responses", "/v1/responses"}) {
+		t.Fatalf("each attempt must try both endpoints: %v", paths)
+	}
+	if len(tool.queries) != 0 || debug.Usage.TotalTokens != 84 || len(debug.Usage.ModelCalls) != 6 || len(debug.Usage.Trace) != 6 {
+		t.Fatalf("invalid actions must not execute tools or lose usage: queries=%v usage=%+v", tool.queries, debug.Usage)
+	}
+	for i, trace := range debug.Usage.Trace {
+		if trace.Attempt != i/2+1 || trace.Error == "" {
+			t.Fatalf("trace must record the endpoint's parse failure and shared attempt number: %+v", trace)
+		}
 	}
 }

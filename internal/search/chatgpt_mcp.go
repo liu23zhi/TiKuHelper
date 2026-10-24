@@ -349,6 +349,9 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 					modelCallIndex = debug.Usage.ModelCalls[len(debug.Usage.ModelCalls)-1].Index
 				}
 				addAISearchUsage(&debug.Usage, result.Usage)
+				if callErr == nil {
+					action, callErr = parseAIMCPAction(result.Content)
+				}
 				in.appendAISearchTrace(&debug.Usage, AISearchTrace{
 					Round:               round + 1,
 					Attempt:             retry + 1,
@@ -369,10 +372,6 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 					RemainingWebReads:   remainingWebReads,
 					Error:               errorString(callErr),
 				})
-				if callErr != nil {
-					continue
-				}
-				action, callErr = parseAIMCPAction(result.Content)
 				if callErr == nil {
 					break
 				}

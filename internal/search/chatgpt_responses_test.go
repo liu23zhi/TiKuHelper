@@ -78,3 +78,97 @@ func TestChatGptClientUsesResponsesEndpointAndParsesOutputText(t *testing.T) {
 		t.Fatalf("unexpected usage: %+v", usage)
 	}
 }
+
+func TestReadAIResponsesStreamUsesCompleteTextSnapshots(t *testing.T) {
+	const complete = `{"action":"final","answers":["4"]}`
+	for _, snapshot := range []string{"response.output_text.done", "response.output_item.done", "response.completed"} {
+		t.Run(snapshot, func(t *testing.T) {
+			var stream strings.Builder
+			writeResponsesEvent(&stream, "response.output_text.delta", map[string]any{
+				"output_index": 0, "content_index": 0, "delta": "action",
+			})
+			switch snapshot {
+			case "response.output_text.done":
+				writeResponsesEvent(&stream, snapshot, map[string]any{
+					"output_index": 0, "content_index": 0, "text": complete,
+				})
+			case "response.output_item.done":
+				writeResponsesEvent(&stream, snapshot, map[string]any{
+					"output_index": 0,
+					"item": map[string]any{"id": "msg_snapshot", "type": "message", "content": []any{
+						map[string]any{"type": "output_text", "text": complete},
+					}},
+				})
+			}
+			text := ""
+			if snapshot == "response.completed" {
+				text = complete
+			}
+			writeAIResponsesCompleted(&stream, text, map[string]any{"input_tokens": 10, "output_tokens": 4, "total_tokens": 14})
+
+			result, err := readAIToolStream(strings.NewReader(stream.String()))
+			if err != nil {
+				t.Fatalf("read complete stream: %v", err)
+			}
+			if result.Content != complete {
+				t.Fatalf("complete snapshot must replace partial delta: got %q", result.Content)
+			}
+			if result.Usage.TotalTokens != 14 || !strings.Contains(result.Raw, `"delta":"action"`) {
+				t.Fatalf("usage and raw stream must be retained: %+v", result)
+			}
+		})
+	}
+}
+
+func TestReadAIResponsesStreamKeepsTextPartsInOutputOrder(t *testing.T) {
+	var stream strings.Builder
+	for _, part := range []struct {
+		output, content int
+		text            string
+	}{
+		{1, 0, `"乙"]}`},
+		{0, 1, `"甲","甲",`},
+		{0, 0, `{"answers":[`},
+	} {
+		writeResponsesEvent(&stream, "response.output_text.delta", map[string]any{
+			"output_index": part.output, "content_index": part.content, "delta": part.text,
+		})
+		writeResponsesEvent(&stream, "response.output_text.done", map[string]any{
+			"output_index": part.output, "content_index": part.content, "text": part.text,
+		})
+	}
+	writeAIResponsesCompleted(&stream, "", nil)
+	result, err := readAIToolStream(strings.NewReader(stream.String()))
+	if err != nil {
+		t.Fatalf("read multi-part stream: %v", err)
+	}
+	if result.Content != `{"answers":["甲","甲","乙"]}` {
+		t.Fatalf("text parts must be ordered and snapshots must not duplicate deltas: %q", result.Content)
+	}
+}
+
+func TestReadAIResponsesStreamKeepsCompletedItemsInOutputOrder(t *testing.T) {
+	var stream strings.Builder
+	for _, part := range []struct {
+		index int
+		text  string
+	}{{1, `"4"]}`}, {0, `{"answers":[`}} {
+		writeResponsesEvent(&stream, "response.output_text.delta", map[string]any{
+			"output_index": part.index, "content_index": 0, "delta": "partial",
+		})
+		writeResponsesEvent(&stream, "response.output_item.done", map[string]any{
+			"output_index": part.index,
+			"item": map[string]any{"type": "message", "content": []any{
+				map[string]any{"type": "output_text", "text": part.text},
+			}},
+		})
+	}
+	writeAIResponsesCompleted(&stream, "", nil)
+	result, err := readAIToolStream(strings.NewReader(stream.String()))
+	if err != nil {
+		t.Fatalf("read complete item stream: %v", err)
+	}
+	if result.Content != `{"answers":["4"]}` {
+		t.Fatalf("completed items must follow output_index even without a final output snapshot: %q", result.Content)
+	}
+}

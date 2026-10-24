@@ -311,15 +311,16 @@ type openAIImageURLPart struct {
 }
 
 type openAIResponsesEvent struct {
-	Type        string          `json:"type"`
-	Delta       string          `json:"delta,omitempty"`
-	Text        string          `json:"text,omitempty"`
-	Arguments   string          `json:"arguments,omitempty"`
-	OutputIndex int             `json:"output_index,omitempty"`
-	ItemID      string          `json:"item_id,omitempty"`
-	Item        json.RawMessage `json:"item,omitempty"`
-	Error       json.RawMessage `json:"error,omitempty"`
-	Response    struct {
+	Type         string          `json:"type"`
+	Delta        string          `json:"delta,omitempty"`
+	Text         string          `json:"text,omitempty"`
+	Arguments    string          `json:"arguments,omitempty"`
+	OutputIndex  int             `json:"output_index,omitempty"`
+	ContentIndex int             `json:"content_index,omitempty"`
+	ItemID       string          `json:"item_id,omitempty"`
+	Item         json.RawMessage `json:"item,omitempty"`
+	Error        json.RawMessage `json:"error,omitempty"`
+	Response     struct {
 		ID                string                `json:"id"`
 		Status            string                `json:"status"`
 		Output            []json.RawMessage     `json:"output"`
