@@ -55,11 +55,12 @@ type searchTaskIdempotencyIndex struct {
 }
 
 type searchTaskStore struct {
-	mu          sync.RWMutex
-	tasks       map[string]searchTask
-	idempotency map[searchTaskIdempotencyIndex]string
-	ttl         time.Duration
-	now         func() time.Time
+	mu            sync.RWMutex
+	tasks         map[string]searchTask
+	terminalTasks map[string]struct{}
+	idempotency   map[searchTaskIdempotencyIndex]string
+	ttl           time.Duration
+	now           func() time.Time
 }
 
 type searchTaskResponse struct {
@@ -79,10 +80,11 @@ func newSearchTaskStore(ttl time.Duration, now func() time.Time) *searchTaskStor
 		now = time.Now
 	}
 	return &searchTaskStore{
-		tasks:       make(map[string]searchTask),
-		idempotency: make(map[searchTaskIdempotencyIndex]string),
-		ttl:         ttl,
-		now:         now,
+		tasks:         make(map[string]searchTask),
+		terminalTasks: make(map[string]struct{}),
+		idempotency:   make(map[searchTaskIdempotencyIndex]string),
+		ttl:           ttl,
+		now:           now,
 	}
 }
 
@@ -164,14 +166,21 @@ func (s *searchTaskStore) complete(taskID string, result model.SearchResponse, e
 	}
 	task.UpdatedAt = s.now()
 	s.tasks[taskID] = task
+	s.terminalTasks[taskID] = struct{}{}
 }
 
 func (s *searchTaskStore) cleanupExpiredLocked(now time.Time) {
-	for taskID, task := range s.tasks {
-		if task.Status == searchTaskStatusRunning || now.Sub(task.UpdatedAt) < s.ttl {
+	for taskID := range s.terminalTasks {
+		task, ok := s.tasks[taskID]
+		if !ok || task.Status == searchTaskStatusRunning {
+			delete(s.terminalTasks, taskID)
+			continue
+		}
+		if now.Sub(task.UpdatedAt) < s.ttl {
 			continue
 		}
 		delete(s.tasks, taskID)
+		delete(s.terminalTasks, taskID)
 		if task.IdempotencyKey != "" {
 			index := searchTaskIdempotencyIndex{UserID: task.UserID, Key: task.IdempotencyKey}
 			if s.idempotency[index] == taskID {

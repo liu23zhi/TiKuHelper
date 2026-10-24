@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -406,6 +407,66 @@ func TestSearchTaskStoreRetainsRunningTasksPastTTL(t *testing.T) {
 	nowMu.Unlock()
 	if _, err := store.get(taskID, 1); !errors.Is(err, errSearchTaskNotFound) {
 		t.Fatalf("terminal task should expire after TTL, got %v", err)
+	}
+}
+
+func TestSearchTaskStoreIndexesOnlyTerminalTasksForCleanup(t *testing.T) {
+	now := time.Now()
+	store := newSearchTaskStore(time.Minute, func() time.Time { return now })
+
+	for i := 0; i < 1000; i++ {
+		taskID := fmt.Sprintf("running-%d", i)
+		store.tasks[taskID] = searchTask{ID: taskID, Status: searchTaskStatusRunning, UpdatedAt: now.Add(-2 * time.Minute)}
+	}
+	store.tasks["expired"] = searchTask{
+		ID:             "expired",
+		Status:         searchTaskStatusSucceeded,
+		UpdatedAt:      now.Add(-2 * time.Minute),
+		UserID:         7,
+		IdempotencyKey: "expired-key",
+	}
+	store.tasks["fresh"] = searchTask{ID: "fresh", Status: searchTaskStatusFailed, UpdatedAt: now}
+	store.terminalTasks["expired"] = struct{}{}
+	store.terminalTasks["fresh"] = struct{}{}
+	expiredIndex := searchTaskIdempotencyIndex{UserID: 7, Key: "expired-key"}
+	store.idempotency[expiredIndex] = "expired"
+
+	store.mu.Lock()
+	store.cleanupExpiredLocked(now)
+	store.mu.Unlock()
+
+	if _, ok := store.tasks["running-0"]; !ok {
+		t.Fatal("running task should not expire or participate in terminal cleanup")
+	}
+	if _, ok := store.tasks["expired"]; ok {
+		t.Fatal("expired terminal task should be removed")
+	}
+	if _, ok := store.idempotency[expiredIndex]; ok {
+		t.Fatal("expired terminal task idempotency entry should be removed")
+	}
+	if _, ok := store.tasks["fresh"]; !ok {
+		t.Fatal("terminal task younger than TTL should be retained")
+	}
+	if len(store.terminalTasks) != 1 {
+		t.Fatalf("cleanup should retain only fresh terminal index entries, got %d", len(store.terminalTasks))
+	}
+	if _, ok := store.terminalTasks["fresh"]; !ok {
+		t.Fatal("fresh terminal task should remain indexed")
+	}
+}
+
+func TestSearchTaskStoreIndexesTaskWhenItBecomesTerminal(t *testing.T) {
+	now := time.Now()
+	store := newSearchTaskStore(time.Minute, func() time.Time { return now })
+	store.tasks["task"] = searchTask{ID: "task", Status: searchTaskStatusRunning, UpdatedAt: now}
+
+	store.complete("task", model.SearchResponse{Question: "题目"}, nil)
+
+	if task := store.tasks["task"]; task.Status != searchTaskStatusSucceeded {
+		t.Fatalf("expected successful terminal task, got status %q", task.Status)
+	}
+	if _, ok := store.terminalTasks["task"]; !ok {
+		t.Fatal("completed task should be indexed for terminal cleanup")
 	}
 }
 
