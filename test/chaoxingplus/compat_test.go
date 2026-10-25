@@ -232,6 +232,8 @@ type compatHarness struct {
 // 这样限流等依赖全局 manager 的中间件才能正常工作。
 func newCompatHarness(t *testing.T) *compatHarness {
 	t.Helper()
+	// 本地协议 fixture 仍使用 production 默认；仅为合成新库显式提供强管理员密码。
+	t.Setenv("TIKU_ADMIN_PASSWORD", "IntegrationCompatAdmin261025!")
 
 	// 用 viper 指定临时 SQLite 路径，让 registry.Config() 读到它。
 	viper.Set("database.path", filepath.Join(compatWorkDir, "chaoxing-plus-compat.db"))
