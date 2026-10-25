@@ -257,8 +257,11 @@ func TestSetAPIRouterHandlesSearchPreflightWithCORSHeaders(t *testing.T) {
 	if recorder.Code != http.StatusNoContent {
 		t.Fatalf("expected status 204 for preflight, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
-	if recorder.Header().Get("Access-Control-Allow-Origin") != "http://adapter.example.com" {
-		t.Fatalf("expected allow-origin header to echo request origin, got %q", recorder.Header().Get("Access-Control-Allow-Origin"))
+	if recorder.Header().Get("Access-Control-Allow-Credentials") != "" {
+		t.Fatal("Token-only CORS must never enable browser Cookie credentials")
+	}
+	if recorder.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("expected wildcard allow-origin for explicit Token CORS, got %q", recorder.Header().Get("Access-Control-Allow-Origin"))
 	}
 	if recorder.Header().Get("Access-Control-Allow-Methods") == "" {
 		t.Fatal("expected allow-methods header on preflight response")
@@ -292,7 +295,10 @@ func TestSetAPIRouterAllowsAnyCrossOriginPreflight(t *testing.T) {
 	if recorder.Code != http.StatusNoContent {
 		t.Fatalf("expected status 204 for arbitrary origin, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
-	if recorder.Header().Get("Access-Control-Allow-Origin") != "https://any-origin.example.com" {
-		t.Fatalf("expected allow-origin header to echo request origin, got %q", recorder.Header().Get("Access-Control-Allow-Origin"))
+	if recorder.Header().Get("Access-Control-Allow-Credentials") != "" {
+		t.Fatal("Token-only CORS must never enable browser Cookie credentials")
+	}
+	if recorder.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("expected wildcard allow-origin for explicit Token CORS, got %q", recorder.Header().Get("Access-Control-Allow-Origin"))
 	}
 }

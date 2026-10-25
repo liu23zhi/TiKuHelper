@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -128,10 +130,12 @@ func validateBcryptPasswordLength(password string) error {
 // Auth 鉴权
 func Auth(c *gin.Context) {
 	tokenValue := strings.TrimSpace(c.Request.Header.Get("Authorization"))
+	cookieCredential := false
 	if tokenValue == "" {
 		cookieValue, err := c.Cookie(authCookieName)
 		if err == nil {
 			tokenValue = strings.TrimSpace(cookieValue)
+			cookieCredential = tokenValue != ""
 		}
 	}
 	claims, err := util.ParseJwtWithClaims(tokenValue)
@@ -175,6 +179,10 @@ func Auth(c *gin.Context) {
 	}
 	if !tokenCredentialVersionMatches(claims, user.Password) {
 		c.AbortWithStatusJSON(401, gin.H{"message": "请重新登录"})
+		return
+	}
+	if cookieCredential && !cookieRequestContextAllowed(c.Request) {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"message": "不支持跨源或跨站 Cookie 请求"})
 		return
 	}
 	c.Set("user", user)
@@ -282,6 +290,31 @@ func UserLogin(c *gin.Context) {
 		})
 		return
 	}
+	if needsUpgrade {
+		hashedPassword, hashErr := util.HashPassword(payload.Password)
+		if hashErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "密码升级失败，请使用受控改密流程"})
+			return
+		}
+		db := dao.User.UnderlyingDB()
+		var passwordPredicate string
+		switch db.Dialector.Name() {
+		case "sqlite":
+			passwordPredicate = "CAST(password AS BLOB) = CAST(? AS BLOB)"
+		case "mysql":
+			passwordPredicate = "CAST(password AS BINARY) = CAST(? AS BINARY)"
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"message": "密码升级失败，请使用受控改密流程"})
+			return
+		}
+		updated := db.Model(&entity.User{}).Where("id = ?", user.ID).
+			Where(passwordPredicate, user.Password).Update("password", hashedPassword)
+		if updated.Error != nil || updated.RowsAffected != 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "登录信息更新失败，请重试"})
+			return
+		}
+		user.Password = hashedPassword
+	}
 	jwt := util.GenerateJwtForUser(user.ID, user.Password)
 
 	if jwt == "" {
@@ -289,12 +322,6 @@ func UserLogin(c *gin.Context) {
 			"message": "jwt生成失败",
 		})
 	} else {
-		if needsUpgrade {
-			if hashedPassword, hashErr := util.HashPassword(payload.Password); hashErr == nil {
-				_ = dao.User.UnderlyingDB().Model(&entity.User{}).Where("id = ?", user.ID).Update("password", hashedPassword).Error
-				user.Password = hashedPassword
-			}
-		}
 		now := time.Now()
 		clientIP := strings.TrimSpace(c.ClientIP())
 		if err := dao.User.UnderlyingDB().Model(&entity.User{}).Where("id = ?", user.ID).Updates(map[string]any{
@@ -1263,4 +1290,114 @@ func tokenCredentialVersionMatches(claims jwt.Claims, passwordHash string) bool 
 	}
 	version, _ := mapClaims["ver"].(string)
 	return strings.TrimSpace(version) != "" && version == util.CredentialVersion(passwordHash)
+}
+
+// cookieRequestContextAllowed applies only after actual Cookie credential selection
+// and existing authentication. Missing context keeps approved legacy compatibility.
+// Forwarded headers are intentionally ignored. Without direct TLS, public scheme
+// may be hidden by a TLS terminator: only host/port are established in that case.
+func cookieRequestContextAllowed(request *http.Request) bool {
+	if request == nil {
+		return false
+	}
+	for _, value := range request.Header.Values("Sec-Fetch-Site") {
+		for _, site := range strings.Split(value, ",") {
+			site = strings.TrimSpace(site)
+			if strings.EqualFold(site, "cross-site") || strings.EqualFold(site, "same-site") {
+				return false
+			}
+		}
+	}
+	origins := request.Header.Values("Origin")
+	if len(origins) == 0 || len(origins) == 1 && strings.TrimSpace(origins[0]) == "" {
+		return true
+	}
+	if len(origins) != 1 {
+		return false
+	}
+	originRaw := strings.TrimSpace(origins[0])
+	if strings.Contains(originRaw, "#") {
+		return false
+	}
+	origin, err := url.Parse(originRaw)
+	if err != nil || origin == nil || origin.Opaque != "" || origin.User != nil || origin.Host == "" || origin.Path != "" || origin.RawQuery != "" || origin.ForceQuery || origin.Fragment != "" {
+		return false
+	}
+	scheme := strings.ToLower(origin.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return false
+	}
+	originHost, originPort, ok := cookieContextHost(origin.Host)
+	if !ok {
+		return false
+	}
+	if originPort == "" {
+		if scheme == "https" {
+			originPort = "443"
+		} else {
+			originPort = "80"
+		}
+	}
+	targetHost, targetPort, ok := cookieContextHost(request.Host)
+	if !ok || originHost != targetHost {
+		return false
+	}
+	if request.TLS != nil {
+		if targetPort == "" {
+			targetPort = "443"
+		}
+		return scheme == "https" && originPort == targetPort
+	}
+	if targetPort != "" {
+		return originPort == targetPort
+	}
+	// A no-port Host behind a TLS terminator can represent either public default
+	// scheme. This compatibility allowance is not a complete cross-scheme defense.
+	return scheme == "http" && originPort == "80" || scheme == "https" && originPort == "443"
+}
+
+func cookieContextHost(authority string) (string, string, bool) {
+	if authority == "" || strings.TrimSpace(authority) != authority || strings.Contains(authority, "#") {
+		return "", "", false
+	}
+	parsed, err := url.Parse("//" + authority)
+	if err != nil || parsed.User != nil || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		return "", "", false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host == "" || strings.Contains(host, "%") {
+		return "", "", false
+	}
+	if strings.Contains(host, ":") || strings.HasPrefix(parsed.Host, "[") {
+		if !strings.HasPrefix(parsed.Host, "[") || !strings.Contains(host, ":") || net.ParseIP(host) == nil {
+			return "", "", false
+		}
+	} else {
+		dns := strings.TrimSuffix(host, ".")
+		if len(dns) == 0 || len(dns) > 253 {
+			return "", "", false
+		}
+		for _, label := range strings.Split(dns, ".") {
+			if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+				return "", "", false
+			}
+			for _, char := range label {
+				if !(char >= 'a' && char <= 'z' || char >= '0' && char <= '9' || char == '-') {
+					return "", "", false
+				}
+			}
+		}
+	}
+	port := parsed.Port()
+	if strings.HasSuffix(authority, ":") {
+		return "", "", false
+	}
+	if port != "" {
+		value, err := strconv.Atoi(port)
+		if err != nil || value < 1 || value > 65535 {
+			return "", "", false
+		}
+		port = strconv.Itoa(value)
+	}
+	return host, port, true
 }

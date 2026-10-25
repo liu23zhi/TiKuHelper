@@ -8,13 +8,14 @@ import (
 	"github.com/itihey/tikuAdapter/internal/middleware"
 	"io/fs"
 	"net/http"
+	"strings"
 )
 
 // SetAPIRouter 设置API路由
 func SetAPIRouter(router *gin.Engine) {
-	router.Use(middleware.CORS, middleware.SecurityHeaders)
+	router.Use(middleware.RequestCorrelation, middleware.CORS, middleware.SecurityHeaders)
 
-	router.Any("/sqp/*path", middleware.BodyLimit(16<<20), controller.Proxy)
+	router.Any("/sqp/*path", middleware.BodyLimit(16<<20), controller.Auth, middleware.RequireAdmin, controller.Proxy)
 
 	apiRouter := router.Group("/adapter-service")
 
@@ -148,6 +149,11 @@ func embedFolder(fsEmbed embed.FS, targetPath string) static.ServeFileSystem {
 func SetWebRouter(buildFS embed.FS, indexPage []byte, router *gin.Engine) {
 	router.Use(static.Serve("/", embedFolder(buildFS, "dist")))
 	router.NoRoute(func(c *gin.Context) {
+		path := c.Request.URL.Path
+		if path == "/adapter-service" || strings.HasPrefix(path, "/adapter-service/") {
+			c.JSON(http.StatusNotFound, gin.H{"code": "NOT_FOUND", "message": "接口不存在"})
+			return
+		}
 		c.Data(http.StatusOK, "text/html; charset=utf-8", indexPage)
 	})
 }
