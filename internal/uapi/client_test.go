@@ -231,6 +231,55 @@ func TestGetIPInfoSuccess(t *testing.T) {
 	}
 }
 
+func TestGetIPInfoDefaultSourceAllowsMissingAPIKey(t *testing.T) {
+	for _, key := range []string{"", "   "} {
+		t.Run("key="+key, func(t *testing.T) {
+			srv, rec := newServer(t, staticJSON(http.StatusOK, ipRaw))
+			client := NewClient(key).SetIPInfoURL(srv.URL + ipInfoPath)
+			info, err := client.GetIPInfo(context.Background(), " 8.8.8.8 ", "")
+			if err != nil {
+				t.Fatalf("普通来源无密钥查询失败: %v", err)
+			}
+			if info.IP != "8.8.8.8" || info.RawJSON != ipRaw || rec.count() != 1 {
+				t.Fatalf("普通来源查询结果不完整: info=%+v requests=%d", info, rec.count())
+			}
+			request := rec.last(t)
+			if request.query.Has("source") || request.query.Get("ip") != "8.8.8.8" {
+				t.Fatalf("普通来源请求参数错误: %v", request.query)
+			}
+			if _, exists := request.header["Authorization"]; exists {
+				t.Fatalf("无密钥请求不能发送 Authorization: %v", request.header)
+			}
+		})
+	}
+}
+
+func TestGetIPInfoWithoutAPIKeyStillValidatesLocally(t *testing.T) {
+	srv, rec := newServer(t, staticJSON(http.StatusOK, ipRaw))
+	client := NewClient("").SetIPInfoURL(srv.URL + ipInfoPath)
+	for _, testCase := range []struct {
+		ip     string
+		source string
+	}{
+		{ip: "", source: ""},
+		{ip: "https://example.com", source: ""},
+		{ip: "8.8.8.8", source: "legacy"},
+		{ip: "8.8.8.8", source: "COMMERCIAL"},
+	} {
+		if _, err := client.GetIPInfo(context.Background(), testCase.ip, testCase.source); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("ip=%q source=%q: err=%v, expected ErrInvalidArgument", testCase.ip, testCase.source, err)
+		}
+	}
+	if rec.count() != 0 {
+		t.Fatalf("非法输入不能外呼，实际 %d 次", rec.count())
+	}
+	for _, client := range []*Client{nil, {}} {
+		if _, err := client.GetIPInfo(context.Background(), "8.8.8.8", ""); !errors.Is(err, ErrUnauthorized) {
+			t.Fatalf("未初始化客户端应返回错误，实际 %v", err)
+		}
+	}
+}
+
 func TestParseIPInfoPreservesNumericASNForCachedResponse(t *testing.T) {
 	info, err := ParseIPInfo([]byte(ipRaw))
 	if err != nil {

@@ -56,8 +56,16 @@ type LocationCacheBatchDeleteRequest struct {
 	Except  []LocationCacheDeleteItem `json:"except"`
 }
 
-// LocationCacheBatchRefreshRequest uses the same selection semantics as batch delete.
-type LocationCacheBatchRefreshRequest = LocationCacheBatchDeleteRequest
+// Source identifies stored rows; QuerySource selects the source for this lookup.
+type LocationCacheBatchRefreshRequest struct {
+	Kind        string                    `json:"kind"`
+	Keyword     string                    `json:"keyword"`
+	Source      string                    `json:"source"`
+	Items       []LocationCacheDeleteItem `json:"items"`
+	All         bool                      `json:"all"`
+	Except      []LocationCacheDeleteItem `json:"except"`
+	QuerySource string                    `json:"querySource"`
+}
 
 type LocationCacheRefreshFailure struct {
 	LookupKey string `json:"lookupKey"`
@@ -228,19 +236,23 @@ func DeleteLocationCacheBatchWithDB(db *gorm.DB, request LocationCacheBatchDelet
 }
 
 // RefreshLocationCacheBatchWithDB refreshes the selected cache rows one by one.
-// A legacy row has no source metadata, so it is queried against the explicit
-// default source and its historical row is retained rather than overwritten.
+// Every row uses QuerySource (ordinary by default), independently of its stored
+// source. Only the target source is updated; other source rows are retained.
 func RefreshLocationCacheBatchWithDB(db *gorm.DB, request LocationCacheBatchRefreshRequest, options LocationQueryOptions) (LocationCacheBatchRefreshResult, error) {
 	result := LocationCacheBatchRefreshResult{Failures: make([]LocationCacheRefreshFailure, 0)}
 	if db == nil {
 		return result, ErrLocationUnavailable
 	}
-	if strings.TrimSpace(options.UAPIKey) == "" {
-		return result, ErrLocationNotConfigured
-	}
 	kind := strings.TrimSpace(request.Kind)
 	if kind != entity.LocationKindIP && kind != entity.LocationKindPhone {
 		return result, ErrLocationInvalidKey
+	}
+	querySource, err := normalizeLocationSource(kind, request.QuerySource)
+	if err != nil {
+		return result, err
+	}
+	if strings.TrimSpace(options.UAPIKey) == "" && (kind != entity.LocationKindIP || querySource != "") {
+		return result, ErrLocationNotConfigured
 	}
 	if request.All && len(request.Items) > 0 {
 		return result, ErrLocationInvalidKey
@@ -254,7 +266,7 @@ func RefreshLocationCacheBatchWithDB(db *gorm.DB, request LocationCacheBatchRefr
 
 	rows := make([]entity.LocationCache, 0)
 	if request.All {
-		query := db.Where("kind = ?", kind)
+		query := db.Model(&entity.LocationCache{}).Where("kind = ?", kind)
 		if source := strings.TrimSpace(request.Source); source != "" {
 			normalizedSource, err := normalizeLocationRecordSource(kind, source)
 			if err != nil {
@@ -310,12 +322,6 @@ func RefreshLocationCacheBatchWithDB(db *gorm.DB, request LocationCacheBatchRefr
 			seen[identity] = struct{}{}
 			rows = append(rows, entity.LocationCache{Kind: kind, LookupKey: key, Source: source})
 		}
-		for index := range rows {
-			var stored entity.LocationCache
-			if err := db.Where("kind = ? AND lookup_key = ? AND source = ?", kind, rows[index].LookupKey, rows[index].Source).First(&stored).Error; err == nil {
-				rows[index] = stored
-			}
-		}
 	}
 
 	result.Requested = len(rows)
@@ -327,10 +333,6 @@ func RefreshLocationCacheBatchWithDB(db *gorm.DB, request LocationCacheBatchRefr
 	targets := make(map[string]*refreshTarget, len(rows))
 	order := make([]string, 0, len(rows))
 	for _, row := range rows {
-		querySource := row.Source
-		if querySource == entity.LocationSourceLegacy {
-			querySource = ""
-		}
 		identity := row.LookupKey + "\x00" + querySource
 		target, exists := targets[identity]
 		if !exists {
@@ -340,9 +342,16 @@ func RefreshLocationCacheBatchWithDB(db *gorm.DB, request LocationCacheBatchRefr
 		}
 		target.rows = append(target.rows, row)
 	}
+	var abortErr error
 	for _, identity := range order {
 		target := targets[identity]
-		_, err := RefreshLocationCacheWithDB(db, kind, target.key, LocationQueryOptions{UAPIKey: options.UAPIKey, Source: target.source})
+		err := abortErr
+		if err == nil {
+			_, err = RefreshLocationCacheWithDB(db, kind, target.key, LocationQueryOptions{UAPIKey: options.UAPIKey, Source: target.source})
+			if isLocationAbortError(err) {
+				abortErr = err
+			}
+		}
 		if err != nil {
 			result.Failed += len(target.rows)
 			for _, row := range target.rows {
@@ -359,7 +368,7 @@ func RefreshLocationCacheBatchWithDB(db *gorm.DB, request LocationCacheBatchRefr
 	return result, nil
 }
 
-// 历史来源只支持管理，不可通过刷新或自动查询当成默认来源使用。
+// 历史来源可用于标识已有记录，不能作为上游查询来源。
 func normalizeLocationRecordSource(kind string, source string) (string, error) {
 	if kind == entity.LocationKindIP && strings.TrimSpace(source) == entity.LocationSourceLegacy {
 		return entity.LocationSourceLegacy, nil
@@ -396,7 +405,7 @@ func RefreshLocationCacheWithDB(db *gorm.DB, kind string, key string, options Lo
 	if err != nil {
 		return entity.LocationCache{}, err
 	}
-	if strings.TrimSpace(options.UAPIKey) == "" {
+	if strings.TrimSpace(options.UAPIKey) == "" && (kind != entity.LocationKindIP || options.Source != "") {
 		return entity.LocationCache{}, ErrLocationNotConfigured
 	}
 	rows, err := queryLocationRows(db, newLocationClient(options.UAPIKey), kind, []string{key}, options.Source, true)
@@ -415,8 +424,8 @@ func RefreshLocationCacheWithDB(db *gorm.DB, kind string, key string, options Lo
 
 // ManualLookupLocationCacheWithDB 查询一个管理员手动输入的 IP/手机号，并在成功后写入持久化缓存。
 //
-// 该函数故意复用显式刷新路径的校验和 upsert 语义：非法输入、私网 IP、历史来源、未配置密钥
-// 均不会写入缓存；成功查询才会替换同 kind/key/source 的记录。这样管理页手动添加和已有
+// 该函数复用显式刷新的校验和 upsert 语义：非法输入、私网 IP、历史来源不发起查询；
+// 普通 IP 来源可无密钥查询，其他查询需要密钥。成功才会替换同 kind/key/source 的记录。这样管理页手动添加和已有
 // 「重新查询」不会形成两套容易漂移的安全规则。
 func ManualLookupLocationCacheWithDB(db *gorm.DB, kind string, key string, options LocationQueryOptions) (entity.LocationCache, error) {
 	return RefreshLocationCacheWithDB(db, kind, key, options)

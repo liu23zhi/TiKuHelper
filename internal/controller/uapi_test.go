@@ -90,6 +90,30 @@ func TestLocationCacheManualLookupRequiresAdmin(t *testing.T) {
 	}
 }
 
+func TestLocationCacheBatchRefreshValidatesSelectedSourceWithoutKey(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	newUAPILocationTestDB(t)
+	for _, testCase := range []struct {
+		role   string
+		source string
+		status int
+	}{
+		{role: "user", source: "", status: http.StatusForbidden},
+		{role: "admin", source: "commercial", status: http.StatusServiceUnavailable},
+		{role: "admin", source: "legacy", status: http.StatusBadRequest},
+	} {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		body := fmt.Sprintf(`{"kind":"ip","items":[{"lookupKey":"8.8.8.8","source":"legacy"}],"querySource":%q}`, testCase.source)
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/location-cache/batch-refresh", strings.NewReader(body))
+		ctx.Set("user", &entity.User{ID: 1, Role: testCase.role, Status: "enabled"})
+		LocationCacheBatchRefresh(ctx)
+		if recorder.Code != testCase.status {
+			t.Fatalf("role=%s source=%s: expected %d, got %d %s", testCase.role, testCase.source, testCase.status, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
 func TestUAPIIPInfoRejectsNonAdmin(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

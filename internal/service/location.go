@@ -148,7 +148,7 @@ type IPLocation struct {
 
 // LocationQueryOptions 控制归属地查询行为。
 type LocationQueryOptions struct {
-	// UAPIKey 为空表示未配置：直接返回空结果、**不发起外呼**。
+	// 普通 IP 查询可不配置 UAPIKey；商业增强及手机号查询仍需要密钥。
 	UAPIKey string
 	// Source 传给 IP 查询接口的 source 参数；仅支持 "commercial"。
 	Source string
@@ -544,7 +544,7 @@ func LookupIPLocationsDetailedWithDB(db *gorm.DB, ips []string, options Location
 	}
 
 	apiKey := strings.TrimSpace(options.UAPIKey)
-	if apiKey == "" {
+	if apiKey == "" && source != "" {
 		return result, ErrLocationNotConfigured
 	}
 

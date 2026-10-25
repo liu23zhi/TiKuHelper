@@ -74,3 +74,29 @@ func TestIPLocationLookupDoesNotReuseUnknownLegacySource(t *testing.T) {
 		t.Fatalf("historical original response must remain available: %+v err=%v", retained, err)
 	}
 }
+
+func TestOrdinaryIPLookupWithoutKeyQueriesOnceAndCachesResult(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Header.Get("Authorization") != "" || r.URL.Query().Get("source") != "" {
+			t.Errorf("keyless ordinary lookup should not send authorization or source")
+		}
+		_, _ = w.Write([]byte(`{"ip":"8.8.8.8","region":"普通来源地区"}`))
+	}))
+	defer server.Close()
+	newDefaultLocationClient(t, server, "")
+	db := newLocationTestDB(t)
+	for i := 0; i < 2; i++ {
+		result, err := LookupIPLocationsDetailedWithDB(db, []string{"8.8.8.8"}, LocationQueryOptions{})
+		if err != nil || result["8.8.8.8"].Address != "普通来源地区" {
+			t.Fatalf("ordinary lookup without key: %+v err=%v", result, err)
+		}
+	}
+	if _, err := LookupIPLocationsDetailedWithDB(db, []string{"8.8.8.8"}, LocationQueryOptions{Source: "commercial"}); err != ErrLocationNotConfigured {
+		t.Fatalf("commercial lookup without key must fail locally, got %v", err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("expected one ordinary query and no commercial query, got %d", requests.Load())
+	}
+}

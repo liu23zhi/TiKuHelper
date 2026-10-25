@@ -19,8 +19,15 @@
           <a-input-search v-model:value="keywordInput" allow-clear placeholder="查询值 / 归属地" class="keyword-input" @search="reload" />
         </a-form-item>
         <a-form-item><a-button @click="resetFilters">重置筛选</a-button></a-form-item>
+        <a-form-item v-if="kind === 'ip'" label="查询来源">
+          <a-select :value="querySource" class="query-source-select" @change="setQuerySource">
+            <a-select-option value="">普通来源</a-select-option>
+            <a-select-option value="commercial" :disabled="configured !== true">商业增强</a-select-option>
+          </a-select>
+        </a-form-item>
       </a-form>
-      <a-alert v-if="configured === false" type="warning" show-icon message="未配置 UApiPro 密钥，已保存的信息仍可查看，暂时无法重新查询。" class="status-alert" />
+      <p v-if="kind === 'ip'" class="query-source-hint">重新查询和手动添加使用所选来源，已有其他来源记录保留。</p>
+      <a-alert v-if="configured === false" :type="kind === 'ip' ? 'info' : 'warning'" show-icon :message="kind === 'ip' ? '未配置 UApiPro 密钥，仅可使用普通来源。' : '未配置 UApiPro 密钥，已保存的信息仍可查看，暂时无法重新查询。'" class="status-alert" />
       <a-alert v-if="errorMessage" type="error" show-icon :message="errorMessage" class="status-alert" />
       <a-row :gutter="16" class="summary-row">
         <a-col :xs="12" :sm="6"><a-statistic title="筛选结果" :value="summary.total" suffix="条" /></a-col>
@@ -34,7 +41,7 @@
         <template #message>
           <div class="selection-alert-content">
             <span>{{ selectionSummary }}</span>
-            <a-button type="primary" size="small" :loading="batchRefreshing" :disabled="!selectedCount || configured === false" @click="refreshSelected">重新查询所选</a-button>
+            <a-button type="primary" size="small" :loading="batchRefreshing" :disabled="!selectedCount || isRefreshDisabled()" @click="refreshSelected">重新查询所选</a-button>
             <a-button danger size="small" :loading="batchDeleting" :disabled="!selectedCount" @click="deleteSelected">删除所选</a-button>
             <a-button type="link" size="small" :disabled="allCurrentPageSelected" @click="handleSelectCurrentPage">全选本页</a-button>
             <a-button type="link" size="small" :disabled="!hasCurrentPageSelection" @click="handleClearCurrentPage">取消本页全选</a-button>
@@ -59,7 +66,7 @@
     <a-modal v-model:open="detailVisible" :title="`${kindLabel}归属地详情`" :footer="null" width="760px">
       <a-descriptions :column="1" size="small" bordered>
         <a-descriptions-item :label="kindLabel">{{ detailRecord.lookupKey || '-' }}</a-descriptions-item>
-        <a-descriptions-item v-if="detailRecord.kind === 'ip'" label="查询模式">{{ sourceLabel(detailRecord.source) }}</a-descriptions-item>
+        <a-descriptions-item v-if="detailRecord.kind === 'ip'" label="记录来源">{{ sourceLabel(detailRecord.source) }}</a-descriptions-item>
         <a-descriptions-item label="归属地">{{ detailRecord.address || '-' }}</a-descriptions-item>
         <a-descriptions-item label="最近查询时间">{{ formatDate(detailRecord.fetchedAt) }}</a-descriptions-item>
         <a-descriptions-item label="记录更新时间">{{ formatDate(detailRecord.updatedAt) }}</a-descriptions-item>
@@ -72,10 +79,10 @@
         <a-form-item :label="kindLabel" required>
           <a-input v-model:value="manualKey" :placeholder="kind === 'phone' ? '请输入 11 位手机号' : '请输入公网 IP 地址'" @press-enter="manualLookup" />
         </a-form-item>
-        <a-form-item v-if="kind === 'ip'" label="查询模式">
-          <a-select v-model:value="manualSource">
-            <a-select-option value="">默认</a-select-option>
-            <a-select-option value="commercial">商业增强</a-select-option>
+        <a-form-item v-if="kind === 'ip'" label="查询来源">
+          <a-select :value="querySource" @change="setQuerySource">
+            <a-select-option value="">普通来源</a-select-option>
+            <a-select-option value="commercial" :disabled="configured !== true">商业增强</a-select-option>
           </a-select>
         </a-form-item>
       </a-form>
@@ -84,6 +91,7 @@
 </template>
 
 <script>
+/* global globalThis */
 import { computed, defineComponent, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
@@ -102,6 +110,20 @@ export default defineComponent({
     const rows = ref([])
     const loading = ref(false)
     const configured = ref(undefined)
+    const querySource = ref('')
+    const querySourceStorageKey = 'tiku.location.querySource'
+    try {
+      if (globalThis.localStorage?.getItem(querySourceStorageKey) === 'commercial') querySource.value = 'commercial'
+    } catch { /* Storage may be unavailable; ordinary source remains the default. */ }
+    const setQuerySource = value => {
+      querySource.value = value === 'commercial' && configured.value !== false ? 'commercial' : ''
+      try { globalThis.localStorage?.setItem(querySourceStorageKey, querySource.value) } catch { /* Keep the page setting usable. */ }
+    }
+    const updateConfigured = value => {
+      if (typeof value !== 'boolean') return
+      configured.value = value
+      if (!value) setQuerySource('')
+    }
     const errorMessage = ref('')
     const keywordInput = ref('')
     const keyword = ref('')
@@ -116,11 +138,10 @@ export default defineComponent({
     const manualVisible = ref(false)
     const manualSubmitting = ref(false)
     const manualKey = ref('')
-    const manualSource = ref('')
     const summary = ref({ total: 0, withAddress: 0, withoutAddress: 0 })
     const recordIdentity = record => `${record.kind}:${record.lookupKey}:${record.source || 'default'}`
-    const sourceLabel = source => source === 'legacy' ? '历史（来源未记录）' : source === 'commercial' ? '商业增强' : '默认'
-    const isRefreshDisabled = record => configured.value === false || record.source === 'legacy'
+    const sourceLabel = source => source === 'legacy' ? '历史（来源未记录）' : source === 'commercial' ? '商业增强' : '普通来源'
+    const isRefreshDisabled = () => configured.value === false && kind.value !== 'ip'
     const detailVisible = ref(false)
     const detailRecord = ref({})
     const pagination = reactive({
@@ -147,7 +168,7 @@ export default defineComponent({
     }))
     const columns = computed(() => [
       { title: kindLabel.value, dataIndex: 'lookupKey', key: 'lookupKey', width: 210 },
-      ...(kind.value === 'ip' ? [{ title: '查询模式', key: 'source', customRender: ({ record }) => sourceLabel(record.source), width: 160 }] : []),
+      ...(kind.value === 'ip' ? [{ title: '记录来源', key: 'source', customRender: ({ record }) => sourceLabel(record.source), width: 160 }] : []),
       { title: '归属地', dataIndex: 'address', key: 'address', width: 260 },
       { title: '最近查询时间', dataIndex: 'fetchedAt', key: 'fetchedAt', slots: { customRender: 'fetchedAt' }, width: 200 },
       { title: '操作', key: 'action', slots: { customRender: 'action' }, width: 240 },
@@ -164,7 +185,7 @@ export default defineComponent({
     }
     const requestErrorMessage = (error, fallback) => {
       const data = error?.response?.data
-      if (typeof data?.configured === 'boolean') configured.value = data.configured
+      updateConfigured(data?.configured)
       return data?.message || error?.message || fallback
     }
     const clearSelectionState = () => {
@@ -250,32 +271,17 @@ export default defineComponent({
         except: [],
       }
     }
-    const buildBatchRefreshPayload = () => {
-      if (selectAllMode.value) {
-        return {
-          kind: kind.value,
-          keyword: keyword.value,
-          source: '',
-          items: [],
-          all: true,
-          except: [...deselectedKeys.value].map(selectionItemFromIdentity).filter(Boolean),
-        }
-      }
-      return {
-        kind: kind.value,
-        keyword: keyword.value,
-        source: '',
-        items: [...selectedKeys.value].map(selectionItemFromIdentity).filter(Boolean),
-        all: false,
-        except: [],
-      }
-    }
+    const buildBatchRefreshPayload = () => ({
+      ...buildBatchDeletePayload(),
+      querySource: kind.value === 'ip' ? querySource.value : '',
+    })
     const refreshSelected = async () => {
-      if (!selectedCount.value || batchRefreshing.value || configured.value === false) return
+      if (!selectedCount.value || batchRefreshing.value || isRefreshDisabled()) return
       const count = selectedCount.value
+      const payload = buildBatchRefreshPayload()
       const confirmation = await Swal.fire({
         title: '确认重新查询所选归属地？',
-        text: `将重新查询 ${count} 条记录；历史来源记录将按默认来源查询并保留。`,
+        text: `将${kind.value === 'ip' ? `按${sourceLabel(payload.querySource)}` : ''}重新查询 ${count} 条记录。`,
         icon: 'question',
         showCancelButton: true,
         confirmButtonText: '重新查询',
@@ -286,8 +292,8 @@ export default defineComponent({
       batchRefreshing.value = true
       errorMessage.value = ''
       try {
-        const res = await refreshLocationCacheBatch(buildBatchRefreshPayload())
-        if (typeof res?.data?.configured === 'boolean') configured.value = res.data.configured
+        const res = await refreshLocationCacheBatch(payload)
+        updateConfigured(res?.data?.configured)
         if (res?.status !== 200) throw new Error(res?.message || '批量重新查询失败')
         const summary = res?.data?.data || {}
         const refreshed = Number(summary.refreshed) || 0
@@ -365,12 +371,11 @@ export default defineComponent({
       manualSubmitting.value = true
       errorMessage.value = ''
       try {
-        const res = await manualLookupLocationCache({ kind: kind.value, lookupKey, source: kind.value === 'ip' ? manualSource.value : '' })
-        if (typeof res?.data?.configured === 'boolean') configured.value = res.data.configured
+        const res = await manualLookupLocationCache({ kind: kind.value, lookupKey, source: kind.value === 'ip' ? querySource.value : '' })
+        updateConfigured(res?.data?.configured)
         if (res?.status !== 200) throw new Error(res?.message || '手动查询失败')
         manualVisible.value = false
         manualKey.value = ''
-        manualSource.value = ''
         message.success('查询成功，已保存归属地')
         await load()
       } catch (error) {
@@ -400,7 +405,7 @@ export default defineComponent({
         pagination.total = Number(data.total || 0)
         pagination.current = Number(data.page || pagination.current)
         pagination.pageSize = Number(data.pageSize || pagination.pageSize)
-        configured.value = typeof data.configured === 'boolean' ? data.configured : undefined
+        updateConfigured(data.configured)
         updateSummary(data)
       } catch (error) {
         if (generation === loadGeneration) errorMessage.value = requestErrorMessage(error, '获取归属地信息失败')
@@ -418,8 +423,8 @@ export default defineComponent({
       refreshing[identity] = true
       errorMessage.value = ''
       try {
-        const res = await refreshLocationCache({ kind: record.kind, lookupKey: record.lookupKey, source: record.source || '' })
-        if (typeof res?.data?.configured === 'boolean') configured.value = res.data.configured
+        const res = await refreshLocationCache({ kind: record.kind, lookupKey: record.lookupKey, source: record.kind === 'ip' ? querySource.value : '' })
+        updateConfigured(res?.data?.configured)
         if (res?.status !== 200) throw new Error(res?.message || '重新查询失败')
         message.success('归属地已更新')
         await load()
@@ -461,7 +466,7 @@ export default defineComponent({
       detailVisible.value = false
       load()
     }, { immediate: true })
-    return { rows, loading, configured, errorMessage, keywordInput, pagination, columns, formatDate, formatRawResponse, reload, resetFilters, load, onTableChange, remove, refresh, refreshing, removing, recordIdentity, sourceLabel, isRefreshDisabled, detailVisible, detailRecord, showDetails, kind, kindLabel, pageTitle, summary, selectedCount, selectedRowKeys, allRowsSelected, allCurrentPageSelected, hasCurrentPageSelection, selectionSummary, rowSelection, handleSelectCurrentPage, handleClearCurrentPage, handleSelectAll, handleClearSelection, batchRefreshing, refreshSelected, batchDeleting, deleteSelected, allDeleting, deleteAll, manualVisible, manualSubmitting, manualKey, manualSource, manualLookup }
+    return { rows, loading, configured, querySource, setQuerySource, errorMessage, keywordInput, pagination, columns, formatDate, formatRawResponse, reload, resetFilters, load, onTableChange, remove, refresh, refreshing, removing, recordIdentity, sourceLabel, isRefreshDisabled, detailVisible, detailRecord, showDetails, kind, kindLabel, pageTitle, summary, selectedCount, selectedRowKeys, allRowsSelected, allCurrentPageSelected, hasCurrentPageSelection, selectionSummary, rowSelection, handleSelectCurrentPage, handleClearCurrentPage, handleSelectAll, handleClearSelection, batchRefreshing, refreshSelected, batchDeleting, deleteSelected, allDeleting, deleteAll, manualVisible, manualSubmitting, manualKey, manualLookup }
   },
 })
 </script>
@@ -474,6 +479,8 @@ export default defineComponent({
 .console-panel { min-width: 0; padding: 16px; border: 1px solid var(--console-border, #e5e7eb); border-radius: var(--console-radius, 12px); background: var(--console-surface, #fff); }
 .filter-form { gap: 12px; }
 .keyword-input { width: 260px; max-width: 100%; }
+.query-source-select { width: 160px; }
+.query-source-hint { margin: 8px 0 0; color: var(--console-muted, #64748b); font-size: 13px; }
 .status-alert { margin-top: 16px; }
 .summary-row { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--console-border, #e5e7eb); }
 .selection-alert { margin-bottom: 16px; }

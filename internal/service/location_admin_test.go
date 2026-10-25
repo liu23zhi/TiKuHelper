@@ -256,6 +256,134 @@ func TestRefreshLocationCacheBatchMapsLegacyToDefaultAndKeepsHistory(t *testing.
 	}
 }
 
+func TestRefreshLocationCacheBatchUsesSelectedSourceForEveryRecord(t *testing.T) {
+	for _, source := range []string{"", "commercial"} {
+		t.Run("source="+source, func(t *testing.T) {
+			var requests atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				if got := r.URL.Query().Get("source"); got != source {
+					t.Errorf("query source = %q, want selected source %q", got, source)
+				}
+				_, _ = w.Write([]byte(`{"ip":"8.8.8.8","region":"新地址"}`))
+			}))
+			defer server.Close()
+			newDefaultLocationClient(t, server, "uapi-key")
+			db := newLocationTestDB(t)
+			items := make([]LocationCacheDeleteItem, 0, 3)
+			for _, storedSource := range []string{"", "commercial", "legacy"} {
+				if err := db.Create(&entity.LocationCache{Kind: entity.LocationKindIP, LookupKey: "8.8.8.8", Source: storedSource, Address: "旧地址"}).Error; err != nil {
+					t.Fatal(err)
+				}
+				items = append(items, LocationCacheDeleteItem{LookupKey: "8.8.8.8", Source: storedSource})
+			}
+			result, err := RefreshLocationCacheBatchWithDB(db, LocationCacheBatchRefreshRequest{
+				Kind: entity.LocationKindIP, Items: items, QuerySource: source,
+			}, LocationQueryOptions{UAPIKey: "uapi-key"})
+			if err != nil || result.Requested != 3 || result.Refreshed != 3 || result.Failed != 0 || requests.Load() != 1 {
+				t.Fatalf("expected one query for all three selected rows: %+v calls=%d err=%v", result, requests.Load(), err)
+			}
+			var rows []entity.LocationCache
+			if err := db.Find(&rows).Error; err != nil || len(rows) != 3 {
+				t.Fatalf("source rows must be preserved: %+v err=%v", rows, err)
+			}
+			for _, row := range rows {
+				want := "旧地址"
+				if row.Source == source {
+					want = "新地址"
+				}
+				if row.Address != want {
+					t.Errorf("source %q address = %q, want %q", row.Source, row.Address, want)
+				}
+			}
+		})
+	}
+}
+
+func TestRefreshLocationCacheBatchAllKeepsSelectionSeparateFromQuerySource(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.URL.Query().Get("ip") != "8.8.8.8" || r.URL.Query().Get("source") != "commercial" {
+			t.Errorf("unexpected selected target: %s", r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte(`{"ip":"8.8.8.8","region":"新地址"}`))
+	}))
+	defer server.Close()
+	newDefaultLocationClient(t, server, "uapi-key")
+	db := newLocationTestDB(t)
+	for _, row := range []entity.LocationCache{
+		{Kind: "ip", LookupKey: "8.8.8.8", Source: "legacy", Address: "目标"},
+		{Kind: "ip", LookupKey: "1.1.1.1", Source: "legacy", Address: "目标"},
+		{Kind: "ip", LookupKey: "9.9.9.9", Source: "legacy", Address: "无关"},
+		{Kind: "ip", LookupKey: "8.8.4.4", Source: "", Address: "目标"},
+	} {
+		if err := db.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := RefreshLocationCacheBatchWithDB(db, LocationCacheBatchRefreshRequest{
+		Kind: "ip", All: true, Keyword: "目标", Source: "legacy", QuerySource: "commercial",
+		Except: []LocationCacheDeleteItem{{LookupKey: "1.1.1.1", Source: "legacy"}},
+	}, LocationQueryOptions{UAPIKey: "uapi-key"})
+	if err != nil || result.Requested != 1 || result.Refreshed != 1 || requests.Load() != 1 {
+		t.Fatalf("all selection must preserve filters/exceptions: %+v calls=%d err=%v", result, requests.Load(), err)
+	}
+}
+
+func TestRefreshLocationCacheWithoutKeyOnlyAllowsOrdinaryIP(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Header.Get("Authorization") != "" || r.URL.Query().Get("source") != "" {
+			t.Errorf("ordinary anonymous lookup must omit credentials and source")
+		}
+		_, _ = w.Write([]byte(`{"ip":"8.8.8.8","region":"普通地址"}`))
+	}))
+	defer server.Close()
+	newDefaultLocationClient(t, server, "")
+	db := newLocationTestDB(t)
+	if _, err := RefreshLocationCacheWithDB(db, "ip", "8.8.8.8", LocationQueryOptions{}); err != nil {
+		t.Fatalf("ordinary single refresh should work without a key: %v", err)
+	}
+	result, err := RefreshLocationCacheBatchWithDB(db, LocationCacheBatchRefreshRequest{
+		Kind: "ip", Items: []LocationCacheDeleteItem{{LookupKey: "8.8.8.8"}},
+	}, LocationQueryOptions{})
+	if err != nil || result.Refreshed != 1 || requests.Load() != 2 {
+		t.Fatalf("ordinary batch refresh should work without a key: %+v calls=%d err=%v", result, requests.Load(), err)
+	}
+	if _, err := RefreshLocationCacheWithDB(db, "ip", "8.8.8.8", LocationQueryOptions{Source: "commercial"}); err != ErrLocationNotConfigured {
+		t.Fatalf("commercial refresh requires a key, got %v", err)
+	}
+	if _, err := RefreshLocationCacheBatchWithDB(db, LocationCacheBatchRefreshRequest{
+		Kind: "ip", QuerySource: "commercial", Items: []LocationCacheDeleteItem{{LookupKey: "8.8.8.8"}},
+	}, LocationQueryOptions{}); err != ErrLocationNotConfigured {
+		t.Fatalf("commercial batch refresh requires a key, got %v", err)
+	}
+	if _, err := RefreshLocationCacheWithDB(db, "phone", "13800138000", LocationQueryOptions{}); err != ErrLocationNotConfigured {
+		t.Fatalf("phone lookup policy must remain unchanged, got %v", err)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("blocked requests must not reach upstream, got %d", requests.Load())
+	}
+}
+
+func TestRefreshLocationCacheBatchStopsOnCredentialFailure(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	newDefaultLocationClient(t, server, "uapi-key")
+	result, err := RefreshLocationCacheBatchWithDB(newLocationTestDB(t), LocationCacheBatchRefreshRequest{
+		Kind: "ip", Items: []LocationCacheDeleteItem{{LookupKey: "8.8.8.8"}, {LookupKey: "1.1.1.1"}},
+	}, LocationQueryOptions{UAPIKey: "uapi-key"})
+	if err != nil || result.Failed != 2 || requests.Load() != 1 {
+		t.Fatalf("credential failure must stop remaining requests: %+v calls=%d err=%v", result, requests.Load(), err)
+	}
+}
+
 func TestDeleteLocationCacheBatchSupportsExplicitAndFilteredAllSelection(t *testing.T) {
 	db := newLocationTestDB(t)
 	seedLocationRowForTest(t, db, entity.LocationKindIP, "8.8.8.8", "美国", `{}`)
