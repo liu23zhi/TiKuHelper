@@ -143,6 +143,9 @@ func UpdateAccessTokenWithDB(db *gorm.DB, operator entity.User, tokenID int32, i
 		return entity.AccessToken{}, updated.Error
 	}
 	if err := db.Where("id = ?", accessToken.ID).First(&accessToken).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return entity.AccessToken{}, ErrAccessTokenNotFound
+		}
 		return entity.AccessToken{}, err
 	}
 	return accessToken, nil
