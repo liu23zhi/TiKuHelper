@@ -1657,20 +1657,16 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 			return fmt.Errorf("%w: 用户已禁用", service.ErrInvalidAccessTokenAuthorization)
 		}
 		if ctx.AccessTokenID > 0 {
-			if err := checkSearchSpendingAdmission(user, accessToken); err != nil {
-				return err
+			if !strings.EqualFold(strings.TrimSpace(accessToken.Status), "enabled") || accessToken.UserID != user.ID {
+				return fmt.Errorf("%w: 访问令牌或所属用户已失效", service.ErrInvalidAccessTokenAuthorization)
 			}
-			if accessTokenQuotaWouldExceed(accessToken, totalCharged) {
+			if accessTokenQuotaExhausted(accessToken) || accessTokenQuotaWouldExceed(accessToken, totalCharged) {
 				return errAccessTokenQuotaExceeded
 			}
 		}
-		rawCharged := float64(0)
-		for _, charge := range charges {
-			rawCharged += charge.Amount
-		}
-		if user.Balance <= 0 || util.RoundMoney(user.Balance-rawCharged) < 0 {
-			return service.ErrInsufficientSearchBalance
-		}
+		// Admission checks wallet positivity before a new provider execution.
+		// Settle already-called work even when its actual charge or another
+		// admitted request takes this authoritative wallet below zero.
 		// 余额扣的是精确消耗额，只在每个记录边界取整：
 		// 若先按入账金额取整再相减，被丢弃的 1e-7 级差额无法靠再次取整挽回，
 		// 会让账单里的余额变化与实际消耗对不上。

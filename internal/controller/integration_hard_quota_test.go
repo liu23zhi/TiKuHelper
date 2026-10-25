@@ -92,13 +92,21 @@ func TestIntegrationHardQuotaFinalAtomicGuard(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			db, u, k := integrationQuotaFixture(t, tc.limit, tc.used, tc.balance)
 			err := persistSearchBillingRecordsWithDB(db, searchBillingContext{UserID: u.ID, AccessTokenID: k.ID, RequestID: "hard-final", SearchMode: searchModeNormal, Billable: true}, []searchBillingCharge{{Provider: "local", Amount: tc.charge, Snapshot: "question=fixture"}})
-			if err == nil {
-				t.Errorf("HARD_FINAL_GUARD: %s overrun committed", tc.name)
+			if tc.name == "quota" {
+				if err == nil {
+					t.Fatal("HARD_FINAL_GUARD: key quota overrun committed")
+				}
+				integrationNoFinancialChange(t, db, u, k)
+				return
 			}
-			integrationNoFinancialChange(t, db, u, k)
+			if err != nil {
+				t.Fatalf("CALLED_WALLET_SETTLEMENT: completed charge must not be rejected for wallet: %v", err)
+			}
+			walletSettlementAssertState(t, db, u.ID, k.ID, 1, -.1, .6)
 		})
 	}
 }
+
 func TestIntegrationHardQuotaZeroUnlimitedAndExactBoundary(t *testing.T) {
 	for _, limit := range []float64{0, 1} {
 		t.Run(fmt.Sprint(limit), func(t *testing.T) {
@@ -288,7 +296,7 @@ func TestIntegrationHardQuotaPaidStatusStillDelivered(t *testing.T) {
 	}
 }
 
-func TestIntegrationHardQuotaFallbackSettlementErrorIsActionable(t *testing.T) {
+func TestIntegrationHardQuotaFallbackSettlementPreservesKeyErrorsAndBillsWallet(t *testing.T) {
 	for _, tc := range []struct {
 		name                 string
 		limit, used, balance float64
@@ -296,15 +304,18 @@ func TestIntegrationHardQuotaFallbackSettlementErrorIsActionable(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			db, u, k := integrationQuotaFixture(t, tc.limit, tc.used, tc.balance)
 			err := persistSearchBillingRecordsWithDB(db, searchBillingContext{UserID: u.ID, AccessTokenID: k.ID, RequestID: "fallback-settlement", SearchMode: searchModeAI, Billable: true}, []searchBillingCharge{{Provider: "ai", Amount: .6}})
+			if tc.name == "wallet" {
+				if err != nil {
+					t.Fatalf("CALLED_FALLBACK_SETTLEMENT: wallet is not a post-provider rejection: %v", err)
+				}
+				walletSettlementAssertState(t, db, u.ID, k.ID, 1, -.1, .6)
+				return
+			}
 			if err == nil {
-				t.Fatal("expected rejected settlement")
+				t.Fatal("expected hard-key rejected settlement")
 			}
 			got := buildAIFallbackBillingFailureResult(err)
-			wantCode := "INSUFFICIENT_BALANCE"
-			if tc.name == "quota" {
-				wantCode = "ACCESS_TOKEN_QUOTA_EXCEEDED"
-			}
-			if got.Success || got.Error == nil || string(got.Error.Code) != wantCode {
+			if got.Success || got.Error == nil || string(got.Error.Code) != "ACCESS_TOKEN_QUOTA_EXCEEDED" {
 				t.Fatalf("HARD_ACTIONABLE_BILLING: %+v", got)
 			}
 			integrationNoFinancialChange(t, db, u, k)

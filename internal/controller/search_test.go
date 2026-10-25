@@ -1114,48 +1114,24 @@ func TestPersistSearchBillingRecordsWithDBStoresSearchMode(t *testing.T) {
 	}
 }
 
-func TestPersistSearchBillingRecordsWithDBRejectsNegativeBalanceAtomically(t *testing.T) {
+func TestPersistSearchBillingRecordsWithDBSettlesCompletedUsageIntoNegativeBalanceAtomically(t *testing.T) {
 	db := newSearchControllerTestDB(t)
-	user := seedControllerUser(t, db, 217, "search-insufficient-balance-user", "user")
+	user := seedControllerUser(t, db, 217, "search_insufficient_balance_user", "user")
 	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 1).Error; err != nil {
-		t.Fatalf("seed user balance: %v", err)
+		t.Fatal(err)
 	}
-	token := seedControllerTokenForUser(t, db, user, "search-insufficient-balance-token", 0)
-
-	err := persistSearchBillingRecordsWithDB(db, searchBillingContext{
-		UserID:        user.ID,
-		AccessTokenID: token.ID,
-		RequestID:     "req-search-insufficient-balance",
-	}, []searchBillingCharge{
-		{Provider: "icodef", Amount: 1},
-		{Provider: searchModeAI, Amount: 1.25},
-	})
-	if !errors.Is(err, service.ErrInsufficientSearchBalance) {
-		t.Fatalf("expected wallet rejection, got %v", err)
+	token := seedControllerTokenForUser(t, db, user, "search_insufficient_balance_token", 0)
+	err := persistSearchBillingRecordsWithDB(db, searchBillingContext{UserID: user.ID, AccessTokenID: token.ID, RequestID: "req-search-insufficient-balance"}, []searchBillingCharge{{Provider: "icodef", Amount: 1}, {Provider: searchModeAI, Amount: 1.25}})
+	if err != nil {
+		t.Fatalf("CALLED_USAGE_SETTLEMENT: admitted completed work must settle, got %v", err)
 	}
-
-	var billingCount int64
-	if err := db.Model(&entity.BillingRecord{}).Where("request_id = ?", "req-search-insufficient-balance").Count(&billingCount).Error; err != nil {
-		t.Fatalf("count billing records: %v", err)
+	walletSettlementAssertState(t, db, user.ID, token.ID, 2, -1.25, 2.25)
+	var rows []entity.BillingRecord
+	if e := db.Where("request_id = ?", "req-search-insufficient-balance").Order("id").Find(&rows).Error; e != nil {
+		t.Fatal(e)
 	}
-	if billingCount != 0 {
-		t.Fatalf("expected no partial billing records, got %d", billingCount)
-	}
-
-	var storedUser entity.User
-	if err := db.Where("id = ?", user.ID).First(&storedUser).Error; err != nil {
-		t.Fatalf("load user: %v", err)
-	}
-	if storedUser.Balance != 1 {
-		t.Fatalf("expected unchanged balance 1, got %v", storedUser.Balance)
-	}
-
-	var storedToken entity.AccessToken
-	if err := db.Where("id = ?", token.ID).First(&storedToken).Error; err != nil {
-		t.Fatalf("load access token: %v", err)
-	}
-	if storedToken.TotalAmountUsed != 0 {
-		t.Fatalf("expected unchanged token usage 0, got %v", storedToken.TotalAmountUsed)
+	if len(rows) != 2 || rows[0].Amount != 1 || rows[0].BalanceBefore != 1 || rows[0].BalanceAfter != 0 || rows[1].Amount != 1.25 || rows[1].BalanceBefore != 0 || rows[1].BalanceAfter != -1.25 {
+		t.Fatalf("CALLED_USAGE_SETTLEMENT: complete transaction balance chain lost: %+v", rows)
 	}
 }
 
@@ -1290,7 +1266,7 @@ func TestResolveCompletedSearchBillingChargesDoesNotChargeProviderWithoutAnswer(
 	}
 }
 
-func TestSearchRejectsBillingThatWouldCreateNegativeBalance(t *testing.T) {
+func TestSearchDeliversAndBillsCalledProviderIntoNegativeBalance(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 218, "search-final-balance-user", "user")
@@ -1299,6 +1275,7 @@ func TestSearchRejectsBillingThatWouldCreateNegativeBalance(t *testing.T) {
 	}
 	token := seedControllerTokenForUser(t, db, user, "search-final-balance-token", 0)
 	seedControllerDefaultSearchProviderConfig(t, db, "icodef", 2)
+	providerCalls := 0
 
 	withStubSearchDependencies(t,
 		(&stubSearchClient{}).SearchAnswer,
@@ -1319,21 +1296,27 @@ func TestSearchRejectsBillingThatWouldCreateNegativeBalance(t *testing.T) {
 		},
 		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
 			return []func(model.SearchRequest) ([][]string, error){
-				(&stubSearchClient{enable: true, answer: [][]string{{"答案A"}}}).SearchAnswer,
+				func(req model.SearchRequest) ([][]string, error) {
+					providerCalls++
+					return [][]string{{"答案A"}}, nil
+				},
 			}
 		},
 		nil,
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","type":4}`)))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
 
 			Search(ctx)
+			if !strings.Contains(recorder.Body.String(), "答案A") {
+				t.Fatalf("CALLED_PROVIDER_ANSWER: lost answer: %s", recorder.Body.String())
+			}
 
-			if recorder.Code != http.StatusUnauthorized {
-				t.Fatalf("expected status 401, got %d with body %s", recorder.Code, recorder.Body.String())
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected called answer status 200, got %d with body %s", recorder.Code, recorder.Body.String())
 			}
 		})
 
@@ -1341,17 +1324,21 @@ func TestSearchRejectsBillingThatWouldCreateNegativeBalance(t *testing.T) {
 	if err := db.Model(&entity.BillingRecord{}).Where("request_id = ?", "req-search-final-balance").Count(&billingCount).Error; err != nil {
 		t.Fatalf("count billing records: %v", err)
 	}
-	if billingCount != 0 {
-		t.Fatalf("expected no billing record after rejection, got %d", billingCount)
+	if billingCount != 1 {
+		t.Fatalf("expected one completed-provider billing record, got %d", billingCount)
 	}
 
 	var storedUser entity.User
 	if err := db.Where("id = ?", user.ID).First(&storedUser).Error; err != nil {
 		t.Fatalf("load user: %v", err)
 	}
-	if storedUser.Balance != 1 {
-		t.Fatalf("expected unchanged balance 1 after rejection, got %v", storedUser.Balance)
+	if storedUser.Balance != -1 {
+		t.Fatalf("expected completed charge balance -1, got %v", storedUser.Balance)
 	}
+	if providerCalls != 1 {
+		t.Fatalf("CALLED_PROVIDER_ANSWER: provider calls=%d, want1", providerCalls)
+	}
+	walletSettlementAssertState(t, db, user.ID, token.ID, 1, -1, 2)
 }
 
 // User-confirmed hard limit: exhausted keys do not start a new spending request.
