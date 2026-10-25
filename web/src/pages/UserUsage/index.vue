@@ -163,6 +163,9 @@
         <template #createdAt="{ record }">
           <span class="billing-time-cell">{{ formatDateTime(record.createdAt) }}</span>
         </template>
+        <template #feeDetail="{ record }">
+          <a-button type="link" style="padding: 0" @click="handleShowFeeDetail(record)">查看详情</a-button>
+        </template>
         <template #emptyText>
           <a-empty description="当前还没有消费记录。" />
         </template>
@@ -204,6 +207,7 @@
 import { computed, defineComponent, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import QRCode from 'qrcode'
+import Swal from 'sweetalert2'
 import OverflowTableText from '@/components/OverflowTableText.vue'
 import {
   createRechargeOrder,
@@ -220,7 +224,7 @@ import {
 import {
   buildPersonalUsageBillingRecordParams,
   buildBillingRecordAmountText,
-  buildBillingRecordEffectiveMultiplierText,
+  buildBillingRecordFeeDetailHtml,
   buildBillingRecordListSubjectText,
   buildBillingRecordModeText,
   buildBillingRecordReferenceText,
@@ -273,7 +277,7 @@ export default defineComponent({
       : billingTableColumnWidths.subject)
     const tableScrollX = computed(() => [
       'id', 'typeLabel', 'amount', 'source', 'searchMode', 'referenceNo',
-      'effectiveMultiplier', 'accessTokenName', 'createdAt',
+      'accessTokenName', 'createdAt', 'feeDetail',
     ].reduce((total, key) => total + billingTableColumnWidths[key], subjectColumnWidth.value))
     const summary = computed(() => {
       const rows = Array.isArray(dataSource.value) ? dataSource.value : []
@@ -401,13 +405,6 @@ export default defineComponent({
           },
         },
         {
-          title: '最终倍率',
-          dataIndex: 'effectiveMultiplier',
-          key: 'effectiveMultiplier',
-          width: billingTableColumnWidths.effectiveMultiplier,
-          customRender: ({ record }) => buildBillingRecordEffectiveMultiplierText(record),
-        },
-        {
           title: '访问令牌名称',
           dataIndex: 'accessTokenName',
           key: 'accessTokenName',
@@ -425,6 +422,15 @@ export default defineComponent({
             customRender: 'createdAt',
           },
         },
+        {
+          title: '操作',
+          dataIndex: 'feeDetail',
+          key: 'feeDetail',
+          width: billingTableColumnWidths.feeDetail,
+          slots: {
+            customRender: 'feeDetail',
+          },
+        },
       ]),
     }
   },
@@ -432,6 +438,30 @@ export default defineComponent({
     this.handleRefreshAll()
   },
   methods: {
+    handleShowFeeDetail(record) {
+      Swal.fire({
+        title: '账单详情',
+        html: buildBillingRecordFeeDetailHtml(record, {
+          showAIModelMeta: false,
+          showStatementControl: false,
+        }),
+        width: 560,
+        confirmButtonText: '关闭',
+        showCloseButton: true,
+        focusConfirm: false,
+        buttonsStyling: false,
+        heightAuto: false,
+        scrollbarPadding: false,
+        customClass: {
+          popup: 'billing-fee-popup',
+          title: 'billing-fee-title',
+          htmlContainer: 'billing-fee-html-container',
+          actions: 'billing-fee-actions',
+          confirmButton: 'billing-fee-confirm',
+          closeButton: 'billing-fee-close',
+        },
+      })
+    },
     toggleSubject(id) {
       expandedSubjects[id] = !expandedSubjects[id]
     },

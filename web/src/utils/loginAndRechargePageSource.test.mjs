@@ -181,11 +181,13 @@ test('Billing pages render mixed ledger fields instead of search-only columns', 
     assert.match(content, /title: '金额'/);
     assert.match(content, /title: '来源\/渠道'/);
     assert.match(content, /title: '请求 ID'/);
-    assert.match(content, /buildBillingRecordEffectiveMultiplierText/);
-    assert.match(content, /title: '最终倍率'/);
     assert.doesNotMatch(content, /title: '题目'/);
     assert.doesNotMatch(content, /title: '消费金额'/);
   }
+  assert.match(billingContent, /buildBillingRecordEffectiveMultiplierText/);
+  assert.match(billingContent, /title: '最终倍率'/);
+  assert.doesNotMatch(usageContent, /buildBillingRecordEffectiveMultiplierText/);
+  assert.doesNotMatch(usageContent, /title: '最终倍率'/);
 });
 
 test('Billing record list renders the billing owner username', async () => {

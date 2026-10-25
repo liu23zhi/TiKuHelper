@@ -5,12 +5,16 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/service"
+	"gorm.io/gorm"
 )
 
 func TestBillingRecordListReturnsScopedRecords(t *testing.T) {
@@ -137,6 +141,66 @@ func TestBillingRecordListForcesOwnScopeForUsagePage(t *testing.T) {
 	}
 	if response.Total != 1 || response.Data[0].ID != 101 {
 		t.Fatalf("unexpected personal usage response: %+v", response)
+	}
+}
+
+func TestBillingRecordListRedactsAdminSelfScopeAndPreservesAdminDetails(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, err := gorm.Open(sqlite.Open("file:billing-controller-"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open billing db: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("get billing db: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	if err := db.AutoMigrate(&entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}); err != nil {
+		t.Fatalf("migrate billing db: %v", err)
+	}
+	admin := entity.User{ID: 7, Username: "billing-admin", Password: "test", Role: "admin", Status: "enabled", RegisterSource: "admin"}
+	if err := db.Create(&admin).Error; err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	charge := entity.BillingRecord{
+		UserID: admin.ID, Type: "normal_search", Provider: "ai", ModelName: "private-test-model", Amount: 0.3,
+		InputTokens: 100, TotalTokens: 100, RequestID: "req-admin-self", QuestionText: "测试题目",
+		UnitPriceSnapshot: "provider=ai multiplier=2 stageBillingCall1=" + url.QueryEscape("index=1,model=private-test-model,totalTokens=100,amount=0.3,stageMultiplier=2,finalMultiplier=2"),
+	}
+	if err := db.Create(&charge).Error; err != nil {
+		t.Fatalf("create charge: %v", err)
+	}
+	original := listBillingRecords
+	defer func() { listBillingRecords = original }()
+	listBillingRecords = func(user entity.User, query service.BillingRecordListQuery, page int, pageSize int) (service.BillingRecordListResult, error) {
+		return service.ListBillingRecordsWithDB(db, user, query, page, pageSize)
+	}
+
+	for _, scope := range []string{"self", "all"} {
+		t.Run(scope, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/billing-records?scope="+scope, nil)
+			ctx.Set("user", &admin)
+			BillingRecordList(ctx)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			}
+			body := recorder.Body.String()
+			if scope == "self" {
+				for _, forbidden := range []string{"effectiveMultiplier", "finalMultiplier", "stageMultiplier", "modelName", "inputTokens", "totalTokens", "private-test-model", "unitPriceSnapshot"} {
+					if strings.Contains(body, forbidden) {
+						t.Fatalf("personal scope exposed %q: %s", forbidden, body)
+					}
+				}
+			} else {
+				for _, expected := range []string{"effectiveMultiplier", "finalMultiplier", "stageMultiplier", "totalTokens", "private-test-model"} {
+					if !strings.Contains(body, expected) {
+						t.Fatalf("admin scope lost %q: %s", expected, body)
+					}
+				}
+			}
+		})
 	}
 }
 

@@ -259,6 +259,79 @@ test('billing record fee details expose per-search query and render it as escape
   assert.match(html, /billing-fee-meta-label">关键词：<\/span>\s*<span class="billing-fee-meta-value">&lt;加法验算&gt;<\/span>/);
 });
 
+test('personal billing detail hides AI pricing metadata while retaining keyword and web URL', () => {
+  const record = {
+    direction: 'expense',
+    amount: 0.04,
+    feeDetails: [
+      {
+        provider: 'ai_search',
+        providerLabel: '联网搜索',
+        amount: 0.01,
+        detail: '搜索词：社会媒体；状态：success',
+      },
+      {
+        provider: 'ai',
+        category: 'AI模型调用',
+        amount: 0.02,
+        detail: 'model=gpt-6.1-sol；totalTokens=5949；finalMultiplier=2.06x',
+      },
+      {
+        provider: 'web_read',
+        category: '网页转Markdown',
+        amount: 0.01,
+        url: 'https://example.com/article?id=42&lang=zh',
+        detail: '状态：completed',
+      },
+    ],
+    showInStatement: true,
+    canEditStatement: true,
+  }
+
+  const html = buildBillingRecordFeeDetailHtml(record, {
+    showAIModelMeta: false,
+    showStatementControl: false,
+  })
+  assert.match(html, /关键词：<\/span>\s*<span class="billing-fee-meta-value">社会媒体<\/span>/)
+  assert.match(html, /网页：<\/span>\s*<span class="billing-fee-meta-value">https:\/\/example\.com\/article\?id=42&amp;lang=zh<\/span>/)
+  assert.doesNotMatch(html, /gpt-6\.1-sol/)
+  assert.doesNotMatch(html, /5949/)
+  assert.doesNotMatch(html, /2\.06x/)
+  assert.doesNotMatch(html, /显示在用户账单流水/)
+})
+
+test('web read fee details prefer the structured URL and retain it in normalized items', () => {
+  const record = {
+    direction: 'expense',
+    amount: 0.01,
+    feeDetails: [{
+      provider: 'web_read',
+      providerLabel: '网页读取',
+      amount: 0.01,
+      url: 'https://example.com/read?q=中 文&part=1',
+      detail: '网页：旧详情地址；状态：completed',
+    }],
+  }
+  assert.equal(buildBillingRecordFeeDetails(record)[0].url, 'https://example.com/read?q=中 文&part=1')
+  const html = buildBillingRecordFeeDetailHtml(record)
+  assert.match(html, /https:\/\/example\.com\/read\?q=中 文&amp;part=1/)
+  assert.doesNotMatch(html, /旧详情地址/)
+})
+
+test('legacy web read detail retains query parameters and escapes URL text', () => {
+  const html = buildBillingRecordFeeDetailHtml({
+    direction: 'expense',
+    amount: 0.01,
+    feeDetails: [{
+      provider: 'web_read',
+      providerLabel: '网页读取',
+      amount: 0.01,
+      detail: '网页：https://example.com/read?key=value&next=%3Cscript%3E；状态：completed',
+    }],
+  })
+  assert.match(html, /网页：<\/span>\s*<span class="billing-fee-meta-value">https:\/\/example\.com\/read\?key=value&amp;next=%3Cscript%3E<\/span>/)
+})
+
 test('billing record fee details render friendly AI search and model call labels', () => {
   const record = {
     direction: 'expense',

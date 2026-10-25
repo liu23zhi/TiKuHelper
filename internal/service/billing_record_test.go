@@ -100,6 +100,26 @@ func TestDecorateBillingRecordUsesPriceMultiplierAndNeutralFallback(t *testing.T
 	}
 }
 
+func TestDecorateBillingRecordIncludesWebReadURL(t *testing.T) {
+	const expectedURL = "https://example.com/article?chapter=1&lang=zh"
+	record := decorateBillingRecord(BillingRecordListItem{
+		Type:     normalSearchBillingRecordType,
+		Provider: "web_read",
+		UnitPriceSnapshot: "provider=web_read webReadURL=" + url.QueryEscape(expectedURL) +
+			" webReadStatus=success webReadDurationMs=187",
+	})
+
+	if len(record.FeeDetails) != 1 {
+		t.Fatalf("expected one web-read fee detail, got %+v", record.FeeDetails)
+	}
+	if record.FeeDetails[0].URL != expectedURL {
+		t.Fatalf("expected structured web-read URL %q, got %q", expectedURL, record.FeeDetails[0].URL)
+	}
+	if !strings.Contains(record.FeeDetails[0].Detail, "网页："+expectedURL) {
+		t.Fatalf("legacy web-read detail should retain the URL, got %q", record.FeeDetails[0].Detail)
+	}
+}
+
 func TestMergeBillingSearchGroupCombinesDistinctFinalMultipliers(t *testing.T) {
 	merged := mergeBillingSearchGroup(
 		BillingRecordListItem{FinalMultiplier: "4x"},
@@ -521,6 +541,7 @@ func TestListBillingRecordsWithDBMergesSearchChargesByRequestID(t *testing.T) {
 func TestListBillingRecordsWithDBReportsEffectiveMultiplierWithoutChangingDetails(t *testing.T) {
 	db := newBillingRecordTestDB(t)
 	owner := seedBillingRecordUser(t, db, 2, "user")
+	admin := seedBillingRecordUser(t, db, 1, "admin")
 	for _, charge := range []entity.BillingRecord{
 		{UserID: owner.ID, Type: normalSearchBillingRecordType, Provider: "icodef", Amount: 5, RequestID: "req-effective", UnitPriceSnapshot: "provider=icodef flatPrice=5"},
 		{UserID: owner.ID, Type: normalSearchBillingRecordType, Provider: "ai", ModelName: "gpt-test", Amount: 9.2, RequestID: "req-effective", UnitPriceSnapshot: "provider=ai pricing=model_price_table multiplier=2 inputPrice=1 cachedPrice=0 cacheWritePrice=0 outputPrice=0 inputTokens=5000000 cachedInputTokens=0 cacheWriteTokens=0 outputTokens=0 totalTokens=5000000 stageBillingCall1=" + url.QueryEscape("index=1,totalTokens=1000000,amount=4,finalMultiplier=4") + " stageBillingCall2=" + url.QueryEscape("index=2,totalTokens=4000000,amount=5.2,finalMultiplier=1.3")},
@@ -532,7 +553,7 @@ func TestListBillingRecordsWithDBReportsEffectiveMultiplierWithoutChangingDetail
 	}
 
 	for _, filter := range []BillingRecordListQuery{{}, {Keyword: "gpt-test"}} {
-		result, err := ListBillingRecordsWithDB(db, owner, filter, 1, 10)
+		result, err := ListBillingRecordsWithDB(db, admin, filter, 1, 10)
 		if err != nil {
 			t.Fatalf("list billing records with filter %+v: %v", filter, err)
 		}
@@ -549,6 +570,93 @@ func TestListBillingRecordsWithDBReportsEffectiveMultiplierWithoutChangingDetail
 		payload, err := json.Marshal(row)
 		if err != nil || !strings.Contains(string(payload), `"effectiveMultiplier":"1.84x"`) {
 			t.Fatalf("list JSON must expose read-only effectiveMultiplier: %s, %v", payload, err)
+		}
+	}
+}
+
+func TestListBillingRecordsWithDBRedactsPersonalAIUsageMetadata(t *testing.T) {
+	db := newBillingRecordTestDB(t)
+	owner := seedBillingRecordUser(t, db, 2, "user")
+	admin := seedBillingRecordUser(t, db, 1, "admin")
+	const requestID = "req-personal-redaction"
+	const expectedURL = "https://example.com/article?chapter=1&lang=zh"
+
+	charges := []entity.BillingRecord{
+		{
+			UserID: owner.ID, Type: normalSearchBillingRecordType, Provider: "ai", Amount: 9.2, RequestID: requestID,
+			UnitPriceSnapshot: "provider=ai pricing=model_price_table multiplier=2 inputPrice=1 cachedPrice=0 cacheWritePrice=0 outputPrice=0 inputTokens=5000000 cachedInputTokens=0 cacheWriteTokens=0 outputTokens=0 totalTokens=5000000 stageBillingCall1=" + url.QueryEscape("index=1,model=gpt-test,totalTokens=5000000,amount=9.2,stageMultiplier=2,finalMultiplier=2"),
+		},
+		{
+			UserID: owner.ID, Type: normalSearchBillingRecordType, Provider: "ai_search", Amount: 0.8, RequestID: requestID,
+			UnitPriceSnapshot: "provider=ai_search searchQuery=" + url.QueryEscape("保留搜索关键词") + " searchStatus=success",
+		},
+		{
+			UserID: owner.ID, Type: normalSearchBillingRecordType, Provider: "web_read", Amount: 0.1, RequestID: requestID,
+			UnitPriceSnapshot: "provider=web_read webReadURL=" + url.QueryEscape(expectedURL) + " webReadStatus=success webReadDurationMs=187",
+		},
+	}
+	for index := range charges {
+		if err := db.Create(&charges[index]).Error; err != nil {
+			t.Fatalf("create charge: %v", err)
+		}
+	}
+
+	personal, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{}, 1, 10)
+	if err != nil {
+		t.Fatalf("list personal billing records: %v", err)
+	}
+	if len(personal.Data) != 1 {
+		t.Fatalf("expected one personal merged record, got %+v", personal.Data)
+	}
+	personalRow := personal.Data[0]
+	if personalRow.FinalMultiplier != "" || personalRow.EffectiveMultiplier != "" {
+		t.Fatalf("personal billing row must not expose multipliers: %+v", personalRow)
+	}
+	var foundSearchKeyword, foundWebURL, foundAI bool
+	for _, detail := range personalRow.FeeDetails {
+		switch detail.Provider {
+		case "ai":
+			foundAI = true
+			if detail.Detail != "" || strings.Contains(detail.ProviderLabel, "gpt-test") {
+				t.Fatalf("personal AI fee detail must hide model/token/multiplier metadata: %+v", detail)
+			}
+		case "ai_search":
+			foundSearchKeyword = strings.Contains(detail.Detail, "搜索词：保留搜索关键词")
+		case "web_read":
+			foundWebURL = detail.URL == expectedURL
+		}
+	}
+	if !foundAI || !foundSearchKeyword || !foundWebURL {
+		t.Fatalf("personal details must retain AI search keyword and web-read URL: %+v", personalRow.FeeDetails)
+	}
+	personalPayload, err := json.Marshal(personal)
+	if err != nil {
+		t.Fatalf("marshal personal billing response: %v", err)
+	}
+	for _, forbidden := range []string{`"effectiveMultiplier"`, `"finalMultiplier"`, "gpt-test", "totalTokens=", "stageMultiplier="} {
+		if strings.Contains(string(personalPayload), forbidden) {
+			t.Fatalf("personal billing response leaked %q: %s", forbidden, personalPayload)
+		}
+	}
+
+	adminResult, err := ListBillingRecordsWithDB(db, admin, BillingRecordListQuery{}, 1, 10)
+	if err != nil {
+		t.Fatalf("list admin billing records: %v", err)
+	}
+	if len(adminResult.Data) != 1 {
+		t.Fatalf("expected one admin merged record, got %+v", adminResult.Data)
+	}
+	adminRow := adminResult.Data[0]
+	if adminRow.FinalMultiplier == "" || adminRow.EffectiveMultiplier == "" {
+		t.Fatalf("admin billing row must retain multipliers: %+v", adminRow)
+	}
+	adminPayload, err := json.Marshal(adminResult)
+	if err != nil {
+		t.Fatalf("marshal admin billing response: %v", err)
+	}
+	for _, expected := range []string{`"effectiveMultiplier"`, `"finalMultiplier"`, "gpt-test", "totalTokens=", "stageMultiplier="} {
+		if !strings.Contains(string(adminPayload), expected) {
+			t.Fatalf("admin billing response lost %q: %s", expected, adminPayload)
 		}
 	}
 }

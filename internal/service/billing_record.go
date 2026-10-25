@@ -25,6 +25,9 @@ type BillingRecordFeeDetail struct {
 	Sequence      int     `json:"sequence,omitempty"`
 	Amount        float64 `json:"amount"`
 	Detail        string  `json:"detail,omitempty"`
+	// URL is populated for web-read charges so clients do not need to parse the
+	// human-readable detail string. It is intentionally omitted for other fees.
+	URL string `json:"url,omitempty"`
 }
 
 type BillingRecordListItem struct {
@@ -54,8 +57,8 @@ type BillingRecordListItem struct {
 	AdjustmentMode      string                   `json:"adjustmentMode"`
 	HiddenFromStatement bool                     `json:"-"`
 	ShowInStatement     bool                     `gorm:"-" json:"showInStatement"`
-	FinalMultiplier     string                   `gorm:"-" json:"finalMultiplier"`
-	EffectiveMultiplier string                   `gorm:"-" json:"effectiveMultiplier"`
+	FinalMultiplier     string                   `gorm:"-" json:"finalMultiplier,omitempty"`
+	EffectiveMultiplier string                   `gorm:"-" json:"effectiveMultiplier,omitempty"`
 	FeeDetails          []BillingRecordFeeDetail `gorm:"-" json:"feeDetails"`
 	AccessTokenName     string                   `json:"accessTokenName"`
 	CreatedAt           time.Time                `json:"createdAt"`
@@ -522,6 +525,10 @@ func buildBillingRecordFeeDetails(record BillingRecordListItem) []BillingRecordF
 	if record.Type == balanceAdjustmentBillingRecordType {
 		detail = record.Detail
 	}
+	webReadURL := ""
+	if provider == "web_read" {
+		webReadURL = ExtractBillingSnapshotField(snapshot, "webReadURL")
+	}
 	return []BillingRecordFeeDetail{{
 		Provider:      provider,
 		ProviderLabel: strings.TrimSpace(record.ProviderLabel),
@@ -530,6 +537,7 @@ func buildBillingRecordFeeDetails(record BillingRecordListItem) []BillingRecordF
 		Sequence:      parseBillingSnapshotInt(snapshot, "feeSequence"),
 		Amount:        record.Amount,
 		Detail:        detail,
+		URL:           webReadURL,
 	}}
 }
 
@@ -746,6 +754,18 @@ func mergeBillingSearchGroup(representative BillingRecordListItem, charges []Bil
 	return representative
 }
 
+func redactPersonalBillingRecord(record BillingRecordListItem) BillingRecordListItem {
+	record.FinalMultiplier = ""
+	record.EffectiveMultiplier = ""
+	for index := range record.FeeDetails {
+		if strings.TrimSpace(record.FeeDetails[index].Provider) == "ai" ||
+			record.FeeDetails[index].Category == "AI模型调用" {
+			record.FeeDetails[index].Detail = ""
+		}
+	}
+	return record
+}
+
 func applyBillingFeeSequenceFallback(details []BillingRecordFeeDetail) {
 	hasAI := false
 	for _, detail := range details {
@@ -843,6 +863,11 @@ func ListBillingRecordsWithDB(db *gorm.DB, operator entity.User, query BillingRe
 		// mergeBillingSearchGroup 会依据明细重算金额，这里保持与整笔合计一致。
 		if total, ok := requestExpenses[key]; ok {
 			records[i].Amount = total
+		}
+	}
+	if !isAdminUser(operator) {
+		for i := range records {
+			records[i] = redactPersonalBillingRecord(records[i])
 		}
 	}
 

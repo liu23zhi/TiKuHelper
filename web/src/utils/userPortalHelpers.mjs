@@ -326,6 +326,8 @@ export function buildBillingRecordFeeDetails(record) {
         providerLabel: String(item?.providerLabel || item?.provider || '').trim() || '-',
         amount: Number(item?.amount || 0),
       }
+      const url = String(item?.url || '').trim()
+      if (url) normalizedItem.url = url
       const category = String(item?.category || '').trim()
       const callIndex = Number(item?.callIndex || 0)
       if (category) normalizedItem.category = category
@@ -353,13 +355,12 @@ function parseBillingRecordFeeDetailFields(detail) {
     const trimmed = segment.trim()
     if (!trimmed) continue
     const equalsIndex = trimmed.indexOf('=')
-    if (equalsIndex > 0) {
-      fields[trimmed.slice(0, equalsIndex).trim()] = trimmed.slice(equalsIndex + 1).trim()
-      continue
-    }
     const colonIndex = trimmed.search(/[：:]/)
-    if (colonIndex > 0) {
-      fields[trimmed.slice(0, colonIndex).trim()] = trimmed.slice(colonIndex + 1).trim()
+    const separatorIndex = equalsIndex > 0 && (colonIndex < 0 || equalsIndex < colonIndex)
+      ? equalsIndex
+      : colonIndex
+    if (separatorIndex > 0) {
+      fields[trimmed.slice(0, separatorIndex).trim()] = trimmed.slice(separatorIndex + 1).trim()
     }
   }
   return fields
@@ -411,13 +412,14 @@ function buildBillingRecordFeeItemTitle(item) {
   return String(item?.providerLabel || '-').trim() || '-'
 }
 
-function buildBillingRecordFeeItemMeta(item) {
+function buildBillingRecordFeeItemMeta(item, options = {}) {
   const fields = parseBillingRecordFeeDetailFields(item?.detail)
+  const showAIModelMeta = options.showAIModelMeta !== false
   if (item?.provider === 'ai_search') {
     const keyword = readBillingRecordFeeField(fields, ['搜索词', '关键词', 'query', 'searchQuery'])
     return keyword ? [{ label: '关键词', value: keyword, keyword: true }] : []
   }
-  if (item?.provider === 'ai' || item?.category === 'AI模型调用') {
+  if ((item?.provider === 'ai' || item?.category === 'AI模型调用') && showAIModelMeta) {
     const meta = []
     const model = readBillingRecordFeeField(fields, ['model', '模型'])
     const multiplier = formatBillingRecordFeeMultiplier(
@@ -432,14 +434,15 @@ function buildBillingRecordFeeItemMeta(item) {
     return meta
   }
   if (item?.provider === 'web_read') {
-    const url = readBillingRecordFeeField(fields, ['URL', 'url', '网页'])
+    const url = String(item?.url || '').trim() || readBillingRecordFeeField(fields, ['URL', 'url', '网页'])
     return url ? [{ label: '网页', value: url }] : []
   }
   return []
 }
 
-export function buildBillingRecordFeeDetailHtml(record) {
+export function buildBillingRecordFeeDetailHtml(record, options = {}) {
   const details = buildBillingRecordFeeDetails(record)
+  const showStatementControl = options.showStatementControl !== false
   const direction = String(record?.direction || '').trim()
   const subject = buildBillingRecordSubjectText(record)
   const directionLabel = direction === 'income' ? '收入账单' : direction === 'expense' ? '支出账单' : '账单详情'
@@ -447,7 +450,7 @@ export function buildBillingRecordFeeDetailHtml(record) {
   const modeLabel = buildBillingRecordModeText(record)
   const showMode = modeLabel && modeLabel !== '-'
   const rows = details.map((item) => {
-    const meta = buildBillingRecordFeeItemMeta(item)
+    const meta = buildBillingRecordFeeItemMeta(item, options)
     const metaHtml = meta.length
       ? `<div class="billing-fee-item-meta">${meta.map((entry) => `
           <span class="billing-fee-meta-item${entry.keyword ? ' billing-fee-meta-item--keyword' : ''}">
@@ -484,7 +487,7 @@ export function buildBillingRecordFeeDetailHtml(record) {
     if (adjustmentMode) metadata.push(`调整模式：${adjustmentMode}`)
     metadata.push(`账单流水展示：${record.showInStatement === false ? '隐藏' : '显示'}`)
   }
-  if (record?.canEditStatement) {
+  if (showStatementControl && record?.canEditStatement) {
     metadata.push('__STATEMENT_CONTROL__')
   }
 
