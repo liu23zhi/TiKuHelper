@@ -35,6 +35,21 @@ test('UserList table exposes the user id column first', async () => {
   assert.match(content, /title: 'ID',\s+dataIndex: 'id',\s+key: 'id',/);
 });
 
+test('UserList follows fixed, centered table layout with two-line Shanghai times and locations', async () => {
+  const content = await readFile(userListPagePath, 'utf8');
+
+  assert.match(content, /table-layout="fixed"/);
+  assert.match(content, /:scroll="\{ x: tableScrollX \}"/);
+  assert.match(content, /const userTableScrollX = Object\.values\(userTableColumnWidths\)\.reduce/);
+  assert.match(content, /tableScrollX: userTableScrollX/);
+  assert.match(content, /width: userTableColumnWidths\.(?:username|lastLoginIp|operation)/);
+  assert.match(content, /return formatBillingRecordTime\(value\)/);
+  assert.match(content, /class="user-time-cell"/);
+  assert.match(content, /\.user-time-cell\s*\{[^}]*white-space:\s*pre-wrap/s);
+  assert.match(content, /\.location-value\s*\{[^}]*white-space:\s*pre-wrap[^}]*text-align:\s*center/s);
+  assert.match(content, /\.desktop-user-table \.ant-table-thead > tr > th[\s\S]*text-align:\s*center;[\s\S]*vertical-align:\s*middle;[\s\S]*overflow-wrap:\s*anywhere;/);
+});
+
 test('UserList edit modal exposes wechat binding and force reassign controls', async () => {
   const content = await readFile(userListPagePath, 'utf8');
 

@@ -88,7 +88,8 @@
         :loading="tabLoading"
         :pagination="pagination"
         row-key="id"
-        :scroll="{ x: 1560 }"
+        table-layout="fixed"
+        :scroll="{ x: tableScrollX }"
         @change="handleTableChange"
       >
         <template #nickname="{ record }">
@@ -115,16 +116,16 @@
           <a-tag>{{ registerSourceText(record.registerSource) }}</a-tag>
         </template>
         <template #phoneBoundAt="{ record }">
-          <span>{{ formatDateTime(record.phoneBoundAt) }}</span>
+          <span class="user-time-cell">{{ formatDateTime(record.phoneBoundAt) }}</span>
         </template>
         <template #wechatBoundAt="{ record }">
-          <span>{{ formatDateTime(record.wechatBoundAt) }}</span>
+          <span class="user-time-cell">{{ formatDateTime(record.wechatBoundAt) }}</span>
         </template>
         <template #createdAt="{ record }">
-          <span>{{ formatDateTime(record.createdAt) }}</span>
+          <span class="user-time-cell">{{ formatDateTime(record.createdAt) }}</span>
         </template>
         <template #lastLoginAt="{ record }">
-          <span>{{ formatDateTime(record.lastLoginAt) }}</span>
+          <span class="user-time-cell">{{ formatDateTime(record.lastLoginAt) }}</span>
         </template>
         <template #lastLoginIp="{ record }">
           <span class="location-value">{{ formatValueWithLocation(record.lastLoginIp, ipLocations[normalizeLocationKey(record.lastLoginIp)]) || '-' }}</span>
@@ -133,7 +134,7 @@
           <span class="location-value">{{ formatValueWithLocation(record.registerIp, ipLocations[normalizeLocationKey(record.registerIp)]) || '-' }}</span>
         </template>
         <template #operation="{ record }">
-          <a-space size="small" wrap>
+          <a-space size="small" wrap class="user-operation-actions">
             <a-button type="link" style="padding: 0" @click="openEditModal(record)">编辑</a-button>
             <a-button type="link" style="padding: 0" @click="openResetPasswordModal(record)">重置密码</a-button>
             <a-popconfirm
@@ -350,7 +351,7 @@ import {
   getPhoneLocations,
   getIpLocations,
 } from '@/api/TikuComponentApi';
-import { buildAdminCreateUserPayload, buildRegisterSourceLabel, buildResetPasswordPayload, buildUserProfileUpdatePayload, buildUserBalanceAdjustmentPayload, limitUsernameInput, runAdminPasswordAction } from '@/utils/userPortalHelpers.mjs';
+import { buildAdminCreateUserPayload, buildRegisterSourceLabel, buildResetPasswordPayload, buildUserProfileUpdatePayload, buildUserBalanceAdjustmentPayload, formatBillingRecordTime, limitUsernameInput, runAdminPasswordAction } from '@/utils/userPortalHelpers.mjs';
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs';
 import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@/utils/listSearchHelpers.mjs';
 import {
@@ -465,6 +466,26 @@ const resetPasswordForm = ref({
 })
 const tabLoading = ref(true)
 
+const userTableColumnWidths = Object.freeze({
+  id: 88,
+  username: 170,
+  nickname: 170,
+  role: 104,
+  status: 104,
+  balance: 132,
+  phone: 262,
+  wechat: 104,
+  phoneBoundAt: 112,
+  wechatBoundAt: 112,
+  registerSource: 124,
+  createdAt: 112,
+  lastLoginAt: 112,
+  lastLoginIp: 262,
+  registerIp: 262,
+  operation: 190,
+})
+const userTableScrollX = Object.values(userTableColumnWidths).reduce((sum, width) => sum + width, 0)
+
 function stopWechatScanTimer() {
   if (wechatScanTimer !== null) {
     clearInterval(wechatScanTimer)
@@ -537,6 +558,7 @@ export default defineComponent({
       formatValueWithLocation,
       tabLoading,
       pagination,
+      tableScrollX: userTableScrollX,
       filters,
       keywordInput,
       activeFilterCount: computed(() => countActiveFilters({ keyword: filters.keyword, role: filters.role, status: filters.status })),
@@ -575,13 +597,13 @@ export default defineComponent({
           title: 'ID',
           dataIndex: 'id',
           key: 'id',
-          width: 80,
+          width: userTableColumnWidths.id,
         },
         {
           title: '用户名',
           dataIndex: 'username',
           key: 'username',
-          width: 160,
+          width: userTableColumnWidths.username,
         },
         {
           title: '昵称',
@@ -590,7 +612,7 @@ export default defineComponent({
           slots: {
             customRender: 'nickname',
           },
-          width: 150,
+          width: userTableColumnWidths.nickname,
         },
         {
           title: '角色',
@@ -599,7 +621,7 @@ export default defineComponent({
           slots: {
             customRender: 'role',
           },
-          width: 120,
+          width: userTableColumnWidths.role,
         },
         {
           title: '状态',
@@ -608,7 +630,7 @@ export default defineComponent({
           slots: {
             customRender: 'status',
           },
-          width: 120,
+          width: userTableColumnWidths.status,
         },
         {
           title: '余额',
@@ -617,7 +639,7 @@ export default defineComponent({
           slots: {
             customRender: 'balance',
           },
-          width: 120,
+          width: userTableColumnWidths.balance,
         },
         {
           title: '手机号',
@@ -626,7 +648,7 @@ export default defineComponent({
           slots: {
             customRender: 'phone',
           },
-          width: 150,
+          width: userTableColumnWidths.phone,
         },
         {
           title: '微信绑定',
@@ -635,7 +657,7 @@ export default defineComponent({
           slots: {
             customRender: 'wechat',
           },
-          width: 120,
+          width: userTableColumnWidths.wechat,
         },
         {
           title: '绑定时间',
@@ -644,7 +666,7 @@ export default defineComponent({
           slots: {
             customRender: 'phoneBoundAt',
           },
-          width: 180,
+          width: userTableColumnWidths.phoneBoundAt,
         },
         {
           title: '微信绑定时间',
@@ -653,7 +675,7 @@ export default defineComponent({
           slots: {
             customRender: 'wechatBoundAt',
           },
-          width: 180,
+          width: userTableColumnWidths.wechatBoundAt,
         },
         {
           title: '注册来源',
@@ -662,7 +684,7 @@ export default defineComponent({
           slots: {
             customRender: 'registerSource',
           },
-          width: 140,
+          width: userTableColumnWidths.registerSource,
         },
         {
           title: '创建时间',
@@ -671,7 +693,7 @@ export default defineComponent({
           slots: {
             customRender: 'createdAt',
           },
-          width: 180,
+          width: userTableColumnWidths.createdAt,
         },
         {
           title: '上次登录时间',
@@ -680,7 +702,7 @@ export default defineComponent({
           slots: {
             customRender: 'lastLoginAt',
           },
-          width: 180,
+          width: userTableColumnWidths.lastLoginAt,
         },
         {
           title: '上次登录 IP',
@@ -689,7 +711,7 @@ export default defineComponent({
           slots: {
             customRender: 'lastLoginIp',
           },
-          width: 160,
+          width: userTableColumnWidths.lastLoginIp,
         },
         {
           title: '注册 IP',
@@ -698,7 +720,7 @@ export default defineComponent({
           slots: {
             customRender: 'registerIp',
           },
-          width: 160,
+          width: userTableColumnWidths.registerIp,
         },
         {
           title: '操作',
@@ -708,7 +730,7 @@ export default defineComponent({
           slots: {
             customRender: 'operation',
           },
-          width: 190,
+          width: userTableColumnWidths.operation,
         },
       ],
     };
@@ -725,14 +747,7 @@ export default defineComponent({
       return formatMoneyValue(value || 0)
     },
     formatDateTime(value) {
-      if (!value) {
-        return '-'
-      }
-      const date = new Date(value)
-      if (Number.isNaN(date.getTime())) {
-        return value
-      }
-      return date.toLocaleString()
+      return formatBillingRecordTime(value)
     },
     roleText(value) {
       return String(value || '').toLowerCase() === 'admin' ? '管理员' : '普通用户'
@@ -1215,16 +1230,42 @@ export default defineComponent({
   font-size: 13px;
 }
 
+.user-page :deep(.desktop-user-table .ant-table-thead > tr > th),
+.user-page :deep(.desktop-user-table .ant-table-tbody > tr > td) {
+  text-align: center;
+  vertical-align: middle;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.user-page :deep(.desktop-user-table .ant-tag) {
+  max-width: 100%;
+  margin-inline-end: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.user-time-cell {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.user-operation-actions {
+  justify-content: center;
+}
+
 .mobile-user-list,
 .mobile-user-pagination {
   display: none;
 }
 
 .location-value {
-  display: inline-block;
-  white-space: pre-line;
+  display: block;
+  white-space: pre-wrap;
   line-height: 1.5;
-  text-align: left;
+  text-align: center;
+  overflow-wrap: anywhere;
 }
 
 .wechat-id-actions {
