@@ -12,7 +12,7 @@ var ErrPaymentMethodNameRequired = errors.New("支付方式名称不能为空")
 var ErrPaymentMethodEPayTypeRequired = errors.New("易支付通道值不能为空")
 var ErrPaymentMethodNotFound = errors.New("支付方式不存在")
 
- type CreatePaymentMethodInput struct {
+type CreatePaymentMethodInput struct {
 	Name     string `json:"name"`
 	IconSVG  string `json:"iconSvg"`
 	EPayType string `json:"epayType"`
@@ -21,7 +21,7 @@ var ErrPaymentMethodNotFound = errors.New("支付方式不存在")
 	Remark   string `json:"remark"`
 }
 
- type UpdatePaymentMethodInput struct {
+type UpdatePaymentMethodInput struct {
 	Name     string `json:"name"`
 	IconSVG  string `json:"iconSvg"`
 	EPayType string `json:"epayType"`
@@ -55,12 +55,11 @@ func CreatePaymentMethodWithDB(db *gorm.DB, input CreatePaymentMethodInput) (ent
 }
 
 func UpdatePaymentMethodWithDB(db *gorm.DB, paymentMethodID int32, input UpdatePaymentMethodInput) (entity.PaymentMethod, error) {
-	method, err := loadPaymentMethodByID(db, paymentMethodID)
+	normalized, err := normalizePaymentMethodInput(input.Name, input.IconSVG, input.EPayType, input.Enabled, input.Sort, input.Remark)
 	if err != nil {
 		return entity.PaymentMethod{}, err
 	}
-
-	normalized, err := normalizePaymentMethodInput(input.Name, input.IconSVG, input.EPayType, input.Enabled, input.Sort, input.Remark)
+	method, err := loadPaymentMethodByID(db, paymentMethodID)
 	if err != nil {
 		return entity.PaymentMethod{}, err
 	}
@@ -95,6 +94,10 @@ func normalizePaymentMethodInput(name string, iconSVG string, epayType string, e
 	normalizedEPayType := strings.TrimSpace(epayType)
 	if normalizedEPayType == "" {
 		return entity.PaymentMethod{}, ErrPaymentMethodEPayTypeRequired
+	}
+
+	if err := ValidatePaymentMethodIcon(iconSVG); err != nil {
+		return entity.PaymentMethod{}, err
 	}
 
 	return entity.PaymentMethod{

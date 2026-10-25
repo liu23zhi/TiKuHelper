@@ -28,12 +28,12 @@ func TestCreatePaymentMethodWithDBTrimsFieldsAndPersists(t *testing.T) {
 	db := newPaymentMethodTestDB(t)
 
 	created, err := CreatePaymentMethodWithDB(db, CreatePaymentMethodInput{
-		Name:    " 支付宝 ",
-		IconSVG: " <svg>alipay</svg> ",
+		Name:     " 支付宝 ",
+		IconSVG:  " <svg><path d='M0 0h1'/></svg> ",
 		EPayType: " alipay ",
-		Enabled: true,
-		Sort:    20,
-		Remark:  " 常用支付方式 ",
+		Enabled:  true,
+		Sort:     20,
+		Remark:   " 常用支付方式 ",
 	})
 	if err != nil {
 		t.Fatalf("create payment method: %v", err)
@@ -42,7 +42,7 @@ func TestCreatePaymentMethodWithDBTrimsFieldsAndPersists(t *testing.T) {
 	if created.Name != "支付宝" {
 		t.Fatalf("expected trimmed name, got %q", created.Name)
 	}
-	if created.IconSVG != "<svg>alipay</svg>" {
+	if created.IconSVG != "<svg><path d='M0 0h1'/></svg>" {
 		t.Fatalf("expected trimmed icon svg, got %q", created.IconSVG)
 	}
 	if created.EPayType != "alipay" {
@@ -62,7 +62,7 @@ func TestCreatePaymentMethodWithDBTrimsFieldsAndPersists(t *testing.T) {
 	if err := db.Where("id = ?", created.ID).First(&stored).Error; err != nil {
 		t.Fatalf("load stored payment method: %v", err)
 	}
-	if stored.Name != "支付宝" || stored.EPayType != "alipay" || stored.IconSVG != "<svg>alipay</svg>" {
+	if stored.Name != "支付宝" || stored.EPayType != "alipay" || stored.IconSVG != "<svg><path d='M0 0h1'/></svg>" {
 		t.Fatalf("unexpected stored payment method: %+v", stored)
 	}
 }
@@ -123,18 +123,18 @@ func TestUpdatePaymentMethodWithDBUpdatesFields(t *testing.T) {
 	}
 
 	updated, err := UpdatePaymentMethodWithDB(db, created.ID, UpdatePaymentMethodInput{
-		Name:    " 微信支付 ",
-		IconSVG: " <svg>wx</svg> ",
+		Name:     " 微信支付 ",
+		IconSVG:  " <svg><path d='M0 0v1'/></svg> ",
 		EPayType: " wxpay ",
-		Enabled: false,
-		Sort:    99,
-		Remark:  " 已停用 ",
+		Enabled:  false,
+		Sort:     99,
+		Remark:   " 已停用 ",
 	})
 	if err != nil {
 		t.Fatalf("update payment method: %v", err)
 	}
 
-	if updated.Name != "微信支付" || updated.EPayType != "wxpay" || updated.IconSVG != "<svg>wx</svg>" {
+	if updated.Name != "微信支付" || updated.EPayType != "wxpay" || updated.IconSVG != "<svg><path d='M0 0v1'/></svg>" {
 		t.Fatalf("unexpected updated payment method: %+v", updated)
 	}
 	if updated.Enabled {
