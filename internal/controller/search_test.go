@@ -990,11 +990,11 @@ func TestSearchPersistsAIBillingDuringDefaultAIThatRunsInNormalMode(t *testing.T
 	gin.SetMode(gin.TestMode)
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 216, "search-ai-only-billing-user", "user")
-	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 0.5).Error; err != nil {
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 100).Error; err != nil {
 		t.Fatalf("seed user balance: %v", err)
 	}
 	token := seedControllerTokenForUser(t, db, user, "search-ai-only-billing-token", 0)
-	// 用高价模型让 AI 扣费明显大于余额，覆盖「允许扣成负余额」的场景。
+	// Keep the original high-price/tokens vector, fund it independently of the wallet guard.
 	seedControllerAIModelPrice(t, db, "GPT-6 Astra Law *", 12.50, 1.25, 62.50)
 
 	withStubSearchDependencies(t,
@@ -1047,16 +1047,16 @@ func TestSearchPersistsAIBillingDuringDefaultAIThatRunsInNormalMode(t *testing.T
 	if record.ClientIP != "192.0.2.1" {
 		t.Fatalf("expected search request source IP on billing record, got %q", record.ClientIP)
 	}
-	if record.BalanceBefore != 0.5 || record.BalanceAfter != -43.25 {
-		t.Fatalf("expected ai-only billing balance 0.5 -> -43.25, got %+v", record)
+	if record.BalanceBefore != 100 || record.BalanceAfter != 56.25 {
+		t.Fatalf("expected ai-only billing balance 100 -> 56.25, got %+v", record)
 	}
 
 	var storedUser entity.User
 	if err := db.Where("id = ?", user.ID).First(&storedUser).Error; err != nil {
 		t.Fatalf("load ai-only billing user: %v", err)
 	}
-	if storedUser.Balance != -43.25 {
-		t.Fatalf("expected user balance -43.25 after ai billing, got %v", storedUser.Balance)
+	if storedUser.Balance != 56.25 {
+		t.Fatalf("expected user balance 56.25 after ai billing, got %v", storedUser.Balance)
 	}
 
 	billingList, err := service.ListBillingRecordsWithDB(db, user, service.BillingRecordListQuery{}, 1, 10)
@@ -1083,6 +1083,9 @@ func TestSearchPersistsAIBillingDuringDefaultAIThatRunsInNormalMode(t *testing.T
 func TestPersistSearchBillingRecordsWithDBStoresSearchMode(t *testing.T) {
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 218, "search-mode-user", "user")
+	if err := db.Model(&user).Update("balance", 2).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	cases := []struct {
 		requestID    string
@@ -1111,7 +1114,7 @@ func TestPersistSearchBillingRecordsWithDBStoresSearchMode(t *testing.T) {
 	}
 }
 
-func TestPersistSearchBillingRecordsWithDBAllowsBillingToCreateNegativeBalance(t *testing.T) {
+func TestPersistSearchBillingRecordsWithDBRejectsNegativeBalanceAtomically(t *testing.T) {
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 217, "search-insufficient-balance-user", "user")
 	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 1).Error; err != nil {
@@ -1127,32 +1130,32 @@ func TestPersistSearchBillingRecordsWithDBAllowsBillingToCreateNegativeBalance(t
 		{Provider: "icodef", Amount: 1},
 		{Provider: searchModeAI, Amount: 1.25},
 	})
-	if err != nil {
-		t.Fatalf("persist billing records: %v", err)
+	if !errors.Is(err, service.ErrInsufficientSearchBalance) {
+		t.Fatalf("expected wallet rejection, got %v", err)
 	}
 
 	var billingCount int64
 	if err := db.Model(&entity.BillingRecord{}).Where("request_id = ?", "req-search-insufficient-balance").Count(&billingCount).Error; err != nil {
 		t.Fatalf("count billing records: %v", err)
 	}
-	if billingCount != 2 {
-		t.Fatalf("expected both billing records, got %d", billingCount)
+	if billingCount != 0 {
+		t.Fatalf("expected no partial billing records, got %d", billingCount)
 	}
 
 	var storedUser entity.User
 	if err := db.Where("id = ?", user.ID).First(&storedUser).Error; err != nil {
 		t.Fatalf("load user: %v", err)
 	}
-	if storedUser.Balance != -1.25 {
-		t.Fatalf("expected balance -1.25 after billing, got %v", storedUser.Balance)
+	if storedUser.Balance != 1 {
+		t.Fatalf("expected unchanged balance 1, got %v", storedUser.Balance)
 	}
 
 	var storedToken entity.AccessToken
 	if err := db.Where("id = ?", token.ID).First(&storedToken).Error; err != nil {
 		t.Fatalf("load access token: %v", err)
 	}
-	if storedToken.TotalAmountUsed != 2.25 {
-		t.Fatalf("expected token usage 2.25, got %v", storedToken.TotalAmountUsed)
+	if storedToken.TotalAmountUsed != 0 {
+		t.Fatalf("expected unchanged token usage 0, got %v", storedToken.TotalAmountUsed)
 	}
 }
 
@@ -1287,7 +1290,7 @@ func TestResolveCompletedSearchBillingChargesDoesNotChargeProviderWithoutAnswer(
 	}
 }
 
-func TestSearchAllowsBillingToCreateNegativeBalance(t *testing.T) {
+func TestSearchRejectsBillingThatWouldCreateNegativeBalance(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 218, "search-final-balance-user", "user")
@@ -1329,8 +1332,8 @@ func TestSearchAllowsBillingToCreateNegativeBalance(t *testing.T) {
 
 			Search(ctx)
 
-			if recorder.Code != http.StatusOK {
-				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("expected status 401, got %d with body %s", recorder.Code, recorder.Body.String())
 			}
 		})
 
@@ -1338,21 +1341,21 @@ func TestSearchAllowsBillingToCreateNegativeBalance(t *testing.T) {
 	if err := db.Model(&entity.BillingRecord{}).Where("request_id = ?", "req-search-final-balance").Count(&billingCount).Error; err != nil {
 		t.Fatalf("count billing records: %v", err)
 	}
-	if billingCount != 1 {
-		t.Fatalf("expected billing record to be created, got %d", billingCount)
+	if billingCount != 0 {
+		t.Fatalf("expected no billing record after rejection, got %d", billingCount)
 	}
 
 	var storedUser entity.User
 	if err := db.Where("id = ?", user.ID).First(&storedUser).Error; err != nil {
 		t.Fatalf("load user: %v", err)
 	}
-	if storedUser.Balance != -1 {
-		t.Fatalf("expected balance -1 after billing, got %v", storedUser.Balance)
+	if storedUser.Balance != 1 {
+		t.Fatalf("expected unchanged balance 1 after rejection, got %v", storedUser.Balance)
 	}
 }
 
-// 令牌累计额度只用于展示/统计：额度已用尽但账号余额 > 0 时，请求必须照常执行并计费。
-func TestSearchAllowsRequestWhenAccessTokenQuotaExhausted(t *testing.T) {
+// User-confirmed hard limit: exhausted keys do not start a new spending request.
+func TestSearchRejectsRequestWhenAccessTokenQuotaExhausted(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 220, "search-exhausted-quota-user", "user")
@@ -1390,42 +1393,42 @@ func TestSearchAllowsRequestWhenAccessTokenQuotaExhausted(t *testing.T) {
 
 			Search(ctx)
 
-			if recorder.Code != http.StatusOK {
-				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("expected status 401, got %d with body %s", recorder.Code, recorder.Body.String())
 			}
 		})
 
-	if upstreamCalls != 1 {
-		t.Fatalf("expected the request to reach the upstream, got %d calls", upstreamCalls)
+	if upstreamCalls != 0 {
+		t.Fatalf("expected no request to reach the upstream, got %d calls", upstreamCalls)
 	}
 
 	var billingCount int64
 	if err := db.Model(&entity.BillingRecord{}).Where("access_token_id = ?", token.ID).Count(&billingCount).Error; err != nil {
 		t.Fatalf("count billing records: %v", err)
 	}
-	if billingCount != 1 {
-		t.Fatalf("expected one billing record, got %d", billingCount)
+	if billingCount != 0 {
+		t.Fatalf("expected no billing record, got %d", billingCount)
 	}
 
 	var storedUser entity.User
 	if err := db.Where("id = ?", user.ID).First(&storedUser).Error; err != nil {
 		t.Fatalf("load user: %v", err)
 	}
-	if storedUser.Balance != 9 {
-		t.Fatalf("expected balance 9 after one charge, got %v", storedUser.Balance)
+	if storedUser.Balance != 10 {
+		t.Fatalf("expected unchanged balance 10, got %v", storedUser.Balance)
 	}
 
 	var storedToken entity.AccessToken
 	if err := db.Where("id = ?", token.ID).First(&storedToken).Error; err != nil {
 		t.Fatalf("load access token: %v", err)
 	}
-	if storedToken.TotalAmountUsed != 6 {
-		t.Fatalf("expected token usage to exceed quota (6 > 5), got %v", storedToken.TotalAmountUsed)
+	if storedToken.TotalAmountUsed != 5 {
+		t.Fatalf("expected unchanged token usage 5, got %v", storedToken.TotalAmountUsed)
 	}
 }
 
-// 令牌累计额度不再拦截请求：余额充足时允许累计额度超出上限，并照常计费。
-func TestSearchBillsBeyondAccessTokenQuotaWhenBalanceSufficient(t *testing.T) {
+// A positive wallet does not override the configured Key hard limit at settlement.
+func TestSearchRejectsFinalChargeBeyondAccessTokenQuota(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 221, "search-quota-boundary-user", "user")
@@ -1463,8 +1466,8 @@ func TestSearchBillsBeyondAccessTokenQuotaWhenBalanceSufficient(t *testing.T) {
 
 			Search(ctx)
 
-			if recorder.Code != http.StatusOK {
-				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("expected status 401, got %d with body %s", recorder.Code, recorder.Body.String())
 			}
 		})
 
@@ -1476,24 +1479,24 @@ func TestSearchBillsBeyondAccessTokenQuotaWhenBalanceSufficient(t *testing.T) {
 	if err := db.Model(&entity.BillingRecord{}).Where("access_token_id = ?", token.ID).Count(&billingCount).Error; err != nil {
 		t.Fatalf("count billing records: %v", err)
 	}
-	if billingCount != 1 {
-		t.Fatalf("expected one billing record, got %d", billingCount)
+	if billingCount != 0 {
+		t.Fatalf("expected no billing record, got %d", billingCount)
 	}
 
 	var storedUser entity.User
 	if err := db.Where("id = ?", user.ID).First(&storedUser).Error; err != nil {
 		t.Fatalf("load quota-boundary user: %v", err)
 	}
-	if storedUser.Balance != 9 {
-		t.Fatalf("expected balance 9 after one charge, got %v", storedUser.Balance)
+	if storedUser.Balance != 10 {
+		t.Fatalf("expected unchanged balance 10, got %v", storedUser.Balance)
 	}
 
 	var storedToken entity.AccessToken
 	if err := db.Where("id = ?", token.ID).First(&storedToken).Error; err != nil {
 		t.Fatalf("load quota-boundary token: %v", err)
 	}
-	if storedToken.TotalAmountUsed != 5.5 {
-		t.Fatalf("expected token usage to exceed the 5 quota (5.5), got %v", storedToken.TotalAmountUsed)
+	if storedToken.TotalAmountUsed != 4.5 {
+		t.Fatalf("expected unchanged token usage 4.5, got %v", storedToken.TotalAmountUsed)
 	}
 }
 

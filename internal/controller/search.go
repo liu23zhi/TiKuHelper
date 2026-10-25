@@ -486,7 +486,7 @@ func Search(c *gin.Context) {
 		}
 		billingErr, warning := persistCompletedSearchBilling(resolved, useQuery, aiEnabled, req, result, billingUsage, usedLocalSearch, c.ClientIP(), audit)
 		if billingErr != nil {
-			writeSearchUnauthorized(c, fmt.Errorf("%w: 当前访问令牌累计额度不足，请调整令牌额度后重试", service.ErrInvalidAccessTokenAuthorization), rawBody)
+			writeSearchUnauthorized(c, fmt.Errorf("%w: %w", service.ErrInvalidAccessTokenAuthorization, billingErr), rawBody)
 			return
 		}
 		// AI 用到了未配置价格的模型时给出非阻断提示，答案照常返回。
@@ -760,6 +760,8 @@ func buildSearchUnauthorizedResponse(c *gin.Context, err error, rawBody string) 
 	code := ""
 	if errors.Is(err, service.ErrInsufficientSearchBalance) {
 		code = string(service.AIFallbackErrorCodeInsufficientBalance)
+	} else if errors.Is(err, errAccessTokenQuotaExceeded) {
+		code = service.AccessTokenQuotaExceededCode
 	}
 	return searchUnauthorizedResponse{
 		ErrCode: http.StatusUnauthorized,
@@ -1055,6 +1057,11 @@ func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQue
 	}
 
 	if err := persistSearchBillingRecordsWithDB(db, ctx, charges); err != nil {
+		if errors.Is(err, errAccessTokenQuotaExceeded) || errors.Is(err, service.ErrInsufficientSearchBalance) || errors.Is(err, service.ErrInvalidAccessTokenAuthorization) || errors.Is(err, errSearchBillingCompareAndSwap) {
+			logger.SysWarn(fmt.Sprintf("搜索计费拒绝 requestId=%s", resolved.RequestID))
+			writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_rejected", clientIP, audit)
+			return err, warning
+		}
 		logger.SysError(fmt.Sprintf("搜索计费落账失败：%s requestId=%s", err.Error(), resolved.RequestID))
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_persist_failed", clientIP, audit)
 		return nil, warning
@@ -1643,6 +1650,27 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 		if len(charges) == 0 {
 			return nil
 		}
+		// Recheck authoritative rows inside the same transaction as every bill.
+		// MySQL row locks serialize writers; conditional updates also fail closed
+		// if another writer changes a snapshot on a dialect without row locks.
+		if !strings.EqualFold(strings.TrimSpace(user.Status), "enabled") {
+			return fmt.Errorf("%w: 用户已禁用", service.ErrInvalidAccessTokenAuthorization)
+		}
+		if ctx.AccessTokenID > 0 {
+			if err := checkSearchSpendingAdmission(user, accessToken); err != nil {
+				return err
+			}
+			if accessTokenQuotaWouldExceed(accessToken, totalCharged) {
+				return errAccessTokenQuotaExceeded
+			}
+		}
+		rawCharged := float64(0)
+		for _, charge := range charges {
+			rawCharged += charge.Amount
+		}
+		if user.Balance <= 0 || util.RoundMoney(user.Balance-rawCharged) < 0 {
+			return service.ErrInsufficientSearchBalance
+		}
 		// 余额扣的是精确消耗额，只在每个记录边界取整：
 		// 若先按入账金额取整再相减，被丢弃的 1e-7 级差额无法靠再次取整挽回，
 		// 会让账单里的余额变化与实际消耗对不上。
@@ -1681,12 +1709,28 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 
 		if ctx.AccessTokenID > 0 {
 			totalAmountUsedAfter := util.RoundMoney(accessToken.TotalAmountUsed + totalCharged)
-			if err := tx.Model(&accessToken).Where("id = ?", accessToken.ID).Update("total_amount_used", totalAmountUsedAfter).Error; err != nil {
-				return err
+			if totalAmountUsedAfter != accessToken.TotalAmountUsed {
+				updated := tx.Model(&accessToken).Where("id = ? AND user_id = ? AND total_amount_used = ? AND status = ?", accessToken.ID, user.ID, accessToken.TotalAmountUsed, accessToken.Status).Update("total_amount_used", totalAmountUsedAfter)
+				if updated.Error != nil {
+					return updated.Error
+				}
+				if updated.RowsAffected != 1 {
+					return errSearchBillingCompareAndSwap
+				}
 			}
 		}
-
-		return tx.Model(&user).Where("id = ?", user.ID).Update("balance", util.RoundMoney(exactBalance)).Error
+		balanceAfter := util.RoundMoney(exactBalance)
+		if balanceAfter == user.Balance {
+			return nil
+		}
+		updated := tx.Model(&user).Where("id = ? AND balance = ? AND status = ?", user.ID, user.Balance, user.Status).Update("balance", balanceAfter)
+		if updated.Error != nil {
+			return updated.Error
+		}
+		if updated.RowsAffected != 1 {
+			return errSearchBillingCompareAndSwap
+		}
+		return nil
 	})
 }
 
@@ -1803,11 +1847,10 @@ func resolveSearchRequestContextWithDB(db *gorm.DB, authorization string, client
 		resolved.AccessTokenCtx = &authCtx
 		resolved.UserID = authCtx.User.ID
 		resolved.AccessTokenID = authCtx.AccessToken.ID
-		if authCtx.User.Balance <= 0 {
-			return resolved, fmt.Errorf("%w: %w", service.ErrInvalidAccessTokenAuthorization, service.ErrInsufficientSearchBalance)
-		} else {
-			allowDefaultAccount = true
+		if err := checkSearchSpendingAdmission(authCtx.User, authCtx.AccessToken); err != nil {
+			return resolved, fmt.Errorf("%w: %w", service.ErrInvalidAccessTokenAuthorization, err)
 		}
+		allowDefaultAccount = true
 	}
 
 	resolvedTokens, err := service.BuildSearchTokensWithDB(db, query, allowDefaultAccount)

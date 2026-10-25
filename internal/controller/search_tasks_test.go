@@ -19,6 +19,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/model"
 	"github.com/itihey/tikuAdapter/pkg/util"
+	"gorm.io/gorm"
 )
 
 func TestSearchTasksCreateReturnsAcceptedTaskEnvelope(t *testing.T) {
@@ -53,7 +54,7 @@ func TestSearchTasksCreateReturnsAcceptedTaskEnvelope(t *testing.T) {
 			ctx, _ := gin.CreateTestContext(recorder)
 			ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/search/tasks?use=stub&noRecord=1", bytes.NewBufferString(`{"question":"题目","options":["A","B"]}`))
 			ctx.Request.Header.Set("Content-Type", "application/json")
-			ctx.Set("user", &entity.User{ID: 17})
+			authorizeSearchTaskFixture(t, ctx, 17)
 
 			CreateSearchTask(ctx)
 
@@ -553,7 +554,7 @@ func createSearchTaskRequestWithStatus(t *testing.T, userID int32, idempotencyKe
 	if idempotencyKey != "" {
 		ctx.Request.Header.Set("Idempotency-Key", idempotencyKey)
 	}
-	ctx.Set("user", &entity.User{ID: userID})
+	authorizeSearchTaskFixture(t, ctx, userID)
 	CreateSearchTask(ctx)
 	if recorder.Code != wantStatus {
 		t.Fatalf("create search task: expected HTTP %d, got %d with body %s", wantStatus, recorder.Code, recorder.Body.String())
@@ -625,4 +626,37 @@ func waitForStoreSearchTask(t *testing.T, store *searchTaskStore, taskID string,
 	}
 	t.Fatal("task did not complete")
 	return searchTask{}
+}
+
+// Handler tests use real synthetic credentials rather than a production bypass.
+var searchTaskFixtureDBs sync.Map
+
+func authorizeSearchTaskFixture(t *testing.T, c *gin.Context, userID int32) {
+	t.Helper()
+	value, ok := searchTaskFixtureDBs.Load(t.Name())
+	if !ok {
+		db := newSearchControllerTestDB(t)
+		value, _ = searchTaskFixtureDBs.LoadOrStore(t.Name(), db)
+		t.Cleanup(func() { searchTaskFixtureDBs.Delete(t.Name()) })
+	}
+	db := value.(*gorm.DB)
+	var user entity.User
+	if err := db.First(&user, userID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		user = seedControllerUser(t, db, userID, fmt.Sprintf("task-owner-%d", userID), "user")
+		if err := db.Model(&user).Update("balance", 100).Error; err != nil {
+			t.Fatal(err)
+		}
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	plain := fmt.Sprintf("synthetic-task-key-%d", userID)
+	var token entity.AccessToken
+	if err := db.Where("user_id = ? AND token_value = ?", userID, plain).First(&token).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		token = seedControllerTokenForUser(t, db, user, plain, 0)
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	c.Set("user", &user)
+	c.Set("access_token", &token)
+	c.Request.Header.Set("Authorization", "Bearer "+plain)
 }

@@ -56,7 +56,7 @@ func AIFallback(c *gin.Context) {
 	clearAIResponseWriteDeadline(c)
 	billingCtx, err := resolveAIFallbackBillingContext(c)
 	if err != nil {
-		result := service.BuildAIFallbackInsufficientBalanceResult(err.Error())
+		result := buildAIFallbackSpendingRejection(err)
 		writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), uuid.NewString(), "", "billing_precheck", "sync", model.SearchRequest{
 			Question: strings.TrimSpace(input.Question),
 			Type:     input.Type,
@@ -278,7 +278,6 @@ func resolveAIFallbackBillingContext(c *gin.Context) (searchBillingContext, erro
 		if !ok || token == nil || token.ID <= 0 {
 			return searchBillingContext{}, errors.New("AI 兜底计费校验失败，请稍后重试")
 		}
-		// 令牌累计额度只做展示/统计，不再拦截请求：只要账号余额 > 0 就允许调用。
 		accessTokenID = token.ID
 	}
 
@@ -308,9 +307,18 @@ func loadAIFallbackBillingContextWithDB(db *gorm.DB, userID int32, accessTokenID
 		Billable:           true,
 	}
 	if accessTokenID <= 0 {
+		if !strings.EqualFold(strings.TrimSpace(user.Status), "enabled") {
+			return searchBillingContext{}, errors.New("用户已禁用")
+		}
 		return billingCtx, nil
 	}
-
+	var token entity.AccessToken
+	if err := db.Where("id = ? AND user_id = ?", accessTokenID, user.ID).First(&token).Error; err != nil {
+		return searchBillingContext{}, errors.New("访问令牌已失效")
+	}
+	if err := checkSearchSpendingAdmission(user, token); err != nil {
+		return searchBillingContext{}, err
+	}
 	return billingCtx, nil
 }
 
@@ -373,6 +381,9 @@ func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, reques
 }
 
 func buildAIFallbackBillingFailureResult(err error) service.AIFallbackResult {
+	if errors.Is(err, errAccessTokenQuotaExceeded) || errors.Is(err, service.ErrInsufficientSearchBalance) {
+		return buildAIFallbackSpendingRejection(err)
+	}
 	return service.AIFallbackResult{
 		Success: false,
 		Error: &service.AIFallbackError{

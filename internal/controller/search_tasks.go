@@ -19,6 +19,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/model"
 )
@@ -93,6 +94,12 @@ func newSearchTaskStore(ttl time.Duration, now func() time.Time) *searchTaskStor
 var defaultSearchTaskStore = newSearchTaskStore(searchTaskDefaultTTL, time.Now)
 
 func (s *searchTaskStore) create(userID int32, idempotencyKey string, fingerprint string, run func() (model.SearchResponse, error)) (string, bool, error) {
+	return s.createWithAdmission(userID, idempotencyKey, fingerprint, nil, run)
+}
+
+// Replay and new-execution admission share one store lock: an existing original
+// operation can be delivered at zero budget without launching another worker.
+func (s *searchTaskStore) createWithAdmission(userID int32, idempotencyKey string, fingerprint string, admit func() error, run func() (model.SearchResponse, error)) (string, bool, error) {
 	now := s.now()
 	s.mu.Lock()
 	s.cleanupExpiredLocked(now)
@@ -112,6 +119,12 @@ func (s *searchTaskStore) create(userID int32, idempotencyKey string, fingerprin
 		}
 	}
 
+	if admit != nil {
+		if err := admit(); err != nil {
+			s.mu.Unlock()
+			return "", false, err
+		}
+	}
 	taskID := uuid.NewString()
 	task := searchTask{
 		ID:                 taskID,
@@ -251,11 +264,15 @@ func CreateSearchTask(c *gin.Context) {
 	fingerprint := fingerprintSearchTaskRequest(c.Request, rawBody)
 	requestSnapshot := cloneSearchTaskRequest(c.Request, rawBody)
 	userID := currentSearchTaskUserID(c)
-	taskID, _, err := defaultSearchTaskStore.create(userID, idempotencyKey, fingerprint, func() (model.SearchResponse, error) {
+	taskID, _, err := defaultSearchTaskStore.createWithAdmission(userID, idempotencyKey, fingerprint, func() error { return checkNewSearchTaskSpending(c) }, func() (model.SearchResponse, error) {
 		return executeSearchTask(requestSnapshot)
 	})
 	if errors.Is(err, errSearchTaskIdempotencyConflict) {
 		c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
+		return
+	}
+	if errors.Is(err, errAccessTokenQuotaExceeded) || errors.Is(err, service.ErrInsufficientSearchBalance) || errors.Is(err, service.ErrInvalidAccessTokenAuthorization) {
+		writeSearchUnauthorized(c, err, rawBody)
 		return
 	}
 	if err != nil {

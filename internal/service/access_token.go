@@ -12,6 +12,8 @@ import (
 	"gorm.io/gorm"
 )
 
+const AccessTokenQuotaExceededCode = "ACCESS_TOKEN_QUOTA_EXCEEDED"
+
 var ErrAccessTokenNameRequired = errors.New("令牌名称不能为空")
 var ErrAccessTokenNameInvalid = errors.New("令牌名称只能使用中文、英文、数字、下划线和@，且长度不能超过128个字符")
 var ErrAccessTokenNotFound = errors.New("访问令牌不存在")
@@ -132,7 +134,15 @@ func UpdateAccessTokenWithDB(db *gorm.DB, operator entity.User, tokenID int32, i
 	accessToken.Remark = strings.TrimSpace(input.Remark)
 	accessToken.TotalQuotaLimit = normalizeQuotaLimit(input.TotalQuotaLimit)
 
-	if err := db.Save(&accessToken).Error; err != nil {
+	// Metadata edits must never write a stale usage/last-use snapshot over billing.
+	updated := db.Model(&entity.AccessToken{}).Where("id = ? AND user_id = ?", accessToken.ID, accessToken.UserID).Updates(map[string]any{
+		"name": accessToken.Name, "status": accessToken.Status,
+		"remark": accessToken.Remark, "total_quota_limit": accessToken.TotalQuotaLimit,
+	})
+	if updated.Error != nil {
+		return entity.AccessToken{}, updated.Error
+	}
+	if err := db.Where("id = ?", accessToken.ID).First(&accessToken).Error; err != nil {
 		return entity.AccessToken{}, err
 	}
 	return accessToken, nil

@@ -266,7 +266,7 @@ func CreateAIFallbackTask(c *gin.Context) {
 	}
 	billingCtx, err := resolveAIFallbackBillingContext(c)
 	if err != nil {
-		result := service.BuildAIFallbackInsufficientBalanceResult(err.Error())
+		result := buildAIFallbackSpendingRejection(err)
 		writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), uuid.NewString(), "", "billing_precheck", "async", model.SearchRequest{
 			Question: strings.TrimSpace(input.Question),
 			Type:     input.Type,
@@ -304,7 +304,7 @@ func CreateAIFallbackTask(c *gin.Context) {
 		db := resolveSearchPersistenceDB()
 		currentBillingCtx, err := loadAIFallbackBillingContextWithDB(db, billingCtx.UserID, billingCtx.AccessTokenID)
 		if err != nil {
-			result := service.BuildAIFallbackInsufficientBalanceResult(err.Error())
+			result := buildAIFallbackSpendingRejection(err)
 			auditResult("billing_precheck", result)
 			return result
 		}
