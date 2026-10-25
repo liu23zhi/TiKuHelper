@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"math"
 	"net/url"
 	"sort"
 	"strconv"
@@ -54,6 +55,7 @@ type BillingRecordListItem struct {
 	HiddenFromStatement bool                     `json:"-"`
 	ShowInStatement     bool                     `gorm:"-" json:"showInStatement"`
 	FinalMultiplier     string                   `gorm:"-" json:"finalMultiplier"`
+	EffectiveMultiplier string                   `gorm:"-" json:"effectiveMultiplier"`
 	FeeDetails          []BillingRecordFeeDetail `gorm:"-" json:"feeDetails"`
 	AccessTokenName     string                   `json:"accessTokenName"`
 	CreatedAt           time.Time                `json:"createdAt"`
@@ -290,6 +292,130 @@ func buildBillingRecordFinalMultiplier(recordType string, snapshot string) strin
 	return "1x"
 }
 
+func parseNonnegativeBillingSnapshotFloat(snapshot string, key string) (float64, bool) {
+	value, err := strconv.ParseFloat(ExtractBillingSnapshotField(snapshot, key), 64)
+	return value, err == nil && value >= 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
+func parseNonnegativeBillingSnapshotInt(snapshot string, key string) (int64, bool) {
+	value, err := strconv.ParseInt(ExtractBillingSnapshotField(snapshot, key), 10, 64)
+	return value, err == nil && value >= 0
+}
+
+func billingAIUnmultipliedBaseline(snapshot string) (float64, bool) {
+	if ExtractBillingSnapshotField(snapshot, "pricing") != "model_price_table" {
+		return 0, false
+	}
+	totalTokens, ok := parseNonnegativeBillingSnapshotInt(snapshot, "totalTokens")
+	if !ok || totalTokens == 0 {
+		return 0, false
+	}
+
+	baseline := 0.0
+	for _, category := range []struct{ tokens, price string }{
+		{"inputTokens", "inputPrice"},
+		{"cachedInputTokens", "cachedPrice"},
+		{"cacheWriteTokens", "cacheWritePrice"},
+		{"outputTokens", "outputPrice"},
+	} {
+		tokens, ok := parseNonnegativeBillingSnapshotInt(snapshot, category.tokens)
+		if !ok {
+			return 0, false
+		}
+		if tokens == 0 {
+			continue
+		}
+		price, ok := parseNonnegativeBillingSnapshotFloat(snapshot, category.price)
+		if !ok {
+			return 0, false
+		}
+		baseline += float64(tokens) * price / 1_000_000
+	}
+	return baseline, baseline > 0 && !math.IsNaN(baseline) && !math.IsInf(baseline, 0)
+}
+
+func formatKnownBillingMultiplier(value string) string {
+	multiplier, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil || multiplier <= 0 || math.IsNaN(multiplier) || math.IsInf(multiplier, 0) {
+		return ""
+	}
+	return strconv.FormatFloat(multiplier, 'f', -1, 64) + "x"
+}
+
+func knownHistoricalAIMultiplier(snapshot string) string {
+	if ExtractBillingSnapshotField(snapshot, "pricing") == "unpriced_model" ||
+		parseBillingSnapshotInt(snapshot, "stageBillingCallsOmitted") > 0 {
+		return ""
+	}
+	callCount := 0
+	label := ""
+	for index := 1; index <= 20; index++ {
+		encoded := ExtractBillingSnapshotField(snapshot, fmt.Sprintf("stageBillingCall%d", index))
+		if encoded == "" {
+			continue
+		}
+		callCount++
+		fields := parseBillingSnapshotPairs(encoded)
+		callLabel := formatKnownBillingMultiplier(fields["finalMultiplier"])
+		if callLabel == "" || (label != "" && label != callLabel) {
+			return ""
+		}
+		label = callLabel
+	}
+	if expectedText := ExtractBillingSnapshotField(snapshot, "stageBillingModelCallCount"); expectedText != "" {
+		expected, err := strconv.Atoi(expectedText)
+		if err != nil || expected != callCount {
+			return ""
+		}
+	}
+	if callCount > 0 {
+		return label
+	}
+	return formatKnownBillingMultiplier(ExtractBillingSnapshotField(snapshot, "multiplier"))
+}
+
+// 列表倍率只比较 AI 模型费用与同一批 Token 按落账价格快照计算的未乘倍率金额。
+func buildBillingSearchEffectiveMultiplier(charges []BillingRecordListItem) string {
+	if len(charges) == 0 || normalizeBillingRecordType(charges[0].Type) != normalSearchBillingRecordType {
+		return "-"
+	}
+	var actual, baseline float64
+	hasAI := false
+	completeBaseline := true
+	historicalLabel := ""
+	hasSingleHistoricalLabel := true
+	for _, charge := range charges {
+		if strings.TrimSpace(charge.Provider) != "ai" {
+			continue
+		}
+		hasAI = true
+		if amount, ok := billingAIUnmultipliedBaseline(charge.UnitPriceSnapshot); ok && charge.Amount >= 0 && !math.IsNaN(charge.Amount) && !math.IsInf(charge.Amount, 0) {
+			actual += charge.Amount
+			baseline += amount
+		} else {
+			completeBaseline = false
+		}
+		label := knownHistoricalAIMultiplier(charge.UnitPriceSnapshot)
+		if label == "" || (historicalLabel != "" && historicalLabel != label) {
+			hasSingleHistoricalLabel = false
+		}
+		historicalLabel = label
+	}
+	if !hasAI {
+		return "-"
+	}
+	if completeBaseline && baseline > 0 {
+		ratio := actual / baseline
+		if !math.IsNaN(ratio) && !math.IsInf(ratio, 0) {
+			return strconv.FormatFloat(math.Round(ratio*10_000)/10_000, 'f', -1, 64) + "x"
+		}
+	}
+	if hasSingleHistoricalLabel && historicalLabel != "" {
+		return historicalLabel
+	}
+	return "-"
+}
+
 // buildBillingRecordScopeQuery 构造账单查询的公共范围：JOIN + 操作者权限。
 //
 // JOIN 必须在这里完成：关键词筛选会用到 access_tokens.name 与 billing_users.username，
@@ -358,6 +484,7 @@ func decorateBillingRecord(record BillingRecordListItem) BillingRecordListItem {
 	record.AnswerSourceLabel = buildBillingAnswerSourceLabel(record.Provider, record.ProviderLabel, record.UnitPriceSnapshot)
 	record.SearchModeLabel = buildBillingSearchModeLabel(record.SearchMode)
 	record.FinalMultiplier = buildBillingRecordFinalMultiplier(record.Type, record.UnitPriceSnapshot)
+	record.EffectiveMultiplier = buildBillingSearchEffectiveMultiplier([]BillingRecordListItem{record})
 	// 优先用持久化的 question_text；旧行或新写入前为空时回退到快照解析。
 	if questionText := strings.TrimSpace(record.QuestionText); questionText == "" {
 		record.QuestionText = ExtractBillingSnapshotField(record.UnitPriceSnapshot, "question")
@@ -601,6 +728,7 @@ func mergeBillingSearchGroup(representative BillingRecordListItem, charges []Bil
 	if len(finalMultipliers) > 0 {
 		representative.FinalMultiplier = strings.Join(finalMultipliers, "、")
 	}
+	representative.EffectiveMultiplier = buildBillingSearchEffectiveMultiplier(charges)
 	if len(feeDetails) > 0 {
 		applyBillingFeeSequenceFallback(feeDetails)
 		sort.SliceStable(feeDetails, func(left, right int) bool {

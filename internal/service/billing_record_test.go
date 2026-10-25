@@ -116,6 +116,74 @@ func TestMergeBillingSearchGroupCombinesDistinctFinalMultipliers(t *testing.T) {
 	}
 }
 
+func TestBillingEffectiveMultiplierUsesOnlyAIModelCharges(t *testing.T) {
+	ai := decorateBillingRecord(BillingRecordListItem{
+		Type:     normalSearchBillingRecordType,
+		Provider: "ai",
+		Amount:   9.2,
+		UnitPriceSnapshot: "provider=ai pricing=model_price_table multiplier=2.0000 inputPrice=1.0000 cachedPrice=0 cacheWritePrice=0 outputPrice=0 " +
+			"inputTokens=5000000 cachedInputTokens=0 cacheWriteTokens=0 outputTokens=0 totalTokens=5000000 " +
+			"stageBillingCall1=" + url.QueryEscape("index=1,totalTokens=1000000,baseAmount=2.000000,amount=4.000000,stageMultiplier=2.0000,finalMultiplier=4.0000") + " " +
+			"stageBillingCall2=" + url.QueryEscape("index=2,totalTokens=4000000,baseAmount=8.000000,amount=5.200000,stageMultiplier=0.6500,finalMultiplier=1.3000"),
+	})
+	ordinary := decorateBillingRecord(BillingRecordListItem{Type: normalSearchBillingRecordType, Provider: "icodef", Amount: 5})
+	tool := decorateBillingRecord(BillingRecordListItem{Type: normalSearchBillingRecordType, Provider: "ai_search", Amount: 0.8})
+	merged := mergeBillingSearchGroup(tool, []BillingRecordListItem{ordinary, ai, tool})
+	if merged.EffectiveMultiplier != "1.84x" {
+		t.Fatalf("model-only effective multiplier: got %q, want 1.84x", merged.EffectiveMultiplier)
+	}
+	if merged.Amount != 15 || merged.FinalMultiplier != "1x、4x、1.3x" {
+		t.Fatalf("list calculation must leave existing amount and per-call multiplier labels intact: %+v", merged)
+	}
+	if len(merged.FeeDetails) != 4 || merged.FeeDetails[1].Amount != 4 || merged.FeeDetails[2].Amount != 5.2 {
+		t.Fatalf("per-call fee details must remain intact: %+v", merged.FeeDetails)
+	}
+
+	second := decorateBillingRecord(BillingRecordListItem{
+		Type: normalSearchBillingRecordType, Provider: "ai", Amount: 2,
+		UnitPriceSnapshot: "provider=ai pricing=model_price_table multiplier=2 inputPrice=1 cachedPrice=0 cacheWritePrice=0 outputPrice=0 inputTokens=1000000 cachedInputTokens=0 cacheWriteTokens=0 outputTokens=0 totalTokens=1000000",
+	})
+	merged = mergeBillingSearchGroup(second, []BillingRecordListItem{ai, second})
+	if merged.EffectiveMultiplier != "1.8667x" {
+		t.Fatalf("multiple AI charges must use their combined price baselines, got %q", merged.EffectiveMultiplier)
+	}
+}
+
+func TestBillingEffectiveMultiplierUsesAllPricedTokenCategories(t *testing.T) {
+	record := decorateBillingRecord(BillingRecordListItem{
+		Type: normalSearchBillingRecordType, Provider: "ai", Amount: 13,
+		UnitPriceSnapshot: "provider=ai pricing=model_price_table multiplier=2 inputPrice=1 cachedPrice=0.5 cacheWritePrice=2 outputPrice=3 " +
+			"inputTokens=1000000 cachedInputTokens=1000000 cacheWriteTokens=1000000 outputTokens=1000000 totalTokens=4000000",
+	})
+	if record.EffectiveMultiplier != "2x" {
+		t.Fatalf("all four token prices must contribute to the 6.5 baseline, got %q", record.EffectiveMultiplier)
+	}
+}
+
+func TestBillingEffectiveMultiplierHistoricalFallbacks(t *testing.T) {
+	tests := []struct {
+		name, provider, recordType, snapshot, want string
+	}{
+		{"single known historical multiplier", "ai", normalSearchBillingRecordType, "provider=ai multiplier=1.3000", "1.3x"},
+		{"single staged historical multiplier", "ai", normalSearchBillingRecordType, "provider=ai stageBillingCall1=" + url.QueryEscape("finalMultiplier=4.0000"), "4x"},
+		{"multiple historical multipliers", "ai", normalSearchBillingRecordType, "provider=ai stageBillingCall1=" + url.QueryEscape("finalMultiplier=4.0000") + " stageBillingCall2=" + url.QueryEscape("finalMultiplier=1.3000"), "-"},
+		{"missing staged call", "ai", normalSearchBillingRecordType, "provider=ai stageBillingModelCallCount=2 stageBillingCall1=" + url.QueryEscape("finalMultiplier=4.0000"), "-"},
+		{"invalid historical multiplier", "ai", normalSearchBillingRecordType, "provider=ai multiplier=NaN", "-"},
+		{"missing baseline and multiplier", "ai", normalSearchBillingRecordType, "provider=ai", "-"},
+		{"unpriced model", "ai", normalSearchBillingRecordType, "provider=ai pricing=unpriced_model multiplier=2", "-"},
+		{"ordinary search has no AI multiplier", "icodef", normalSearchBillingRecordType, "provider=icodef", "-"},
+		{"recharge", "epay", rechargeBillingRecordType, "", "-"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			record := decorateBillingRecord(BillingRecordListItem{Type: tc.recordType, Provider: tc.provider, UnitPriceSnapshot: tc.snapshot})
+			if record.EffectiveMultiplier != tc.want {
+				t.Fatalf("effective multiplier = %q, want %q; finalMultiplier=%q", record.EffectiveMultiplier, tc.want, record.FinalMultiplier)
+			}
+		})
+	}
+}
+
 func TestMergeBillingSearchGroupSortsFeeDetailsByUsageSequence(t *testing.T) {
 	representative := BillingRecordListItem{
 		Amount: 0.02,
@@ -447,6 +515,41 @@ func TestListBillingRecordsWithDBMergesSearchChargesByRequestID(t *testing.T) {
 	}
 	if util.RoundMoney(feeTotal) != filteredRow.Amount {
 		t.Fatalf("expected fee details to equal the merged row amount, got details=%v row=%v", feeTotal, filteredRow.Amount)
+	}
+}
+
+func TestListBillingRecordsWithDBReportsEffectiveMultiplierWithoutChangingDetails(t *testing.T) {
+	db := newBillingRecordTestDB(t)
+	owner := seedBillingRecordUser(t, db, 2, "user")
+	for _, charge := range []entity.BillingRecord{
+		{UserID: owner.ID, Type: normalSearchBillingRecordType, Provider: "icodef", Amount: 5, RequestID: "req-effective", UnitPriceSnapshot: "provider=icodef flatPrice=5"},
+		{UserID: owner.ID, Type: normalSearchBillingRecordType, Provider: "ai", ModelName: "gpt-test", Amount: 9.2, RequestID: "req-effective", UnitPriceSnapshot: "provider=ai pricing=model_price_table multiplier=2 inputPrice=1 cachedPrice=0 cacheWritePrice=0 outputPrice=0 inputTokens=5000000 cachedInputTokens=0 cacheWriteTokens=0 outputTokens=0 totalTokens=5000000 stageBillingCall1=" + url.QueryEscape("index=1,totalTokens=1000000,amount=4,finalMultiplier=4") + " stageBillingCall2=" + url.QueryEscape("index=2,totalTokens=4000000,amount=5.2,finalMultiplier=1.3")},
+		{UserID: owner.ID, Type: normalSearchBillingRecordType, Provider: "ai_search", Amount: 0.8, RequestID: "req-effective", UnitPriceSnapshot: "provider=ai_search"},
+	} {
+		if err := db.Create(&charge).Error; err != nil {
+			t.Fatalf("create charge: %v", err)
+		}
+	}
+
+	for _, filter := range []BillingRecordListQuery{{}, {Keyword: "gpt-test"}} {
+		result, err := ListBillingRecordsWithDB(db, owner, filter, 1, 10)
+		if err != nil {
+			t.Fatalf("list billing records with filter %+v: %v", filter, err)
+		}
+		if result.Total != 1 || len(result.Data) != 1 {
+			t.Fatalf("expected one merged record for filter %+v, got %+v", filter, result)
+		}
+		row := result.Data[0]
+		if row.EffectiveMultiplier != "1.84x" || row.Amount != 15 || row.FinalMultiplier != "1x、4x、1.3x" {
+			t.Fatalf("effective multiplier must exclude flat and tool fees without rewriting existing fields: %+v", row)
+		}
+		if len(row.FeeDetails) != 4 || row.FeeDetails[1].Amount != 4 || row.FeeDetails[2].Amount != 5.2 {
+			t.Fatalf("per-call fee detail changed: %+v", row.FeeDetails)
+		}
+		payload, err := json.Marshal(row)
+		if err != nil || !strings.Contains(string(payload), `"effectiveMultiplier":"1.84x"`) {
+			t.Fatalf("list JSON must expose read-only effectiveMultiplier: %s, %v", payload, err)
+		}
 	}
 }
 

@@ -8,6 +8,9 @@ import {
   buildResetPasswordPayload,
   buildBillingRecordAmountText,
   buildBillingRecordFinalMultiplierText,
+  buildBillingRecordEffectiveMultiplierText,
+  buildBillingRecordListSubjectText,
+  formatBillingRecordTime,
   buildBillingRecordModeText,
   buildBillingRecordFeeDetailHtml,
   buildBillingRecordFeeDetails,
@@ -209,6 +212,34 @@ test('buildBillingRecordFinalMultiplierText renders server-provided final multip
   assert.equal(buildBillingRecordFinalMultiplierText({ finalMultiplier: '4x、1.3x' }), '4x、1.3x');
   assert.equal(buildBillingRecordFinalMultiplierText({ type: 'normal_search' }), '1x');
   assert.equal(buildBillingRecordFinalMultiplierText({ type: 'recharge' }), '-');
+});
+
+test('billing list uses the comprehensive multiplier while fee detail keeps each original round', () => {
+  const record = {
+    type: 'normal_search',
+    effectiveMultiplier: '1.84x',
+    finalMultiplier: '4x、1.3x',
+    questionText: '题目原文',
+    subject: '搜索答案，题目：题目原文',
+    direction: 'expense',
+    feeDetails: [{ provider: 'ai', category: 'AI模型调用', callIndex: 1, amount: 0.01, detail: 'totalTokens=100；finalMultiplier=4x' },
+      { provider: 'ai', category: 'AI模型调用', callIndex: 2, amount: 0.02, detail: 'totalTokens=200；finalMultiplier=1.3x' }],
+  };
+  assert.equal(buildBillingRecordEffectiveMultiplierText(record), '1.84x');
+  assert.equal(buildBillingRecordFinalMultiplierText(record), '4x、1.3x');
+  assert.equal(buildBillingRecordListSubjectText(record), '题目原文');
+  assert.equal(buildBillingRecordSubjectText(record), '搜索答案，题目：题目原文');
+  const html = buildBillingRecordFeeDetailHtml(record);
+  assert.match(html, /题目原文/);
+  assert.match(html, /4x/);
+  assert.match(html, /1\.3x/);
+  assert.doesNotMatch(html, /1\.84x/);
+  assert.equal(buildBillingRecordEffectiveMultiplierText({ type: 'normal_search', finalMultiplier: '4x' }), '-');
+});
+
+test('billing time is centered-ready two-line Shanghai time', () => {
+  assert.equal(formatBillingRecordTime('2026-10-25T02:54:04Z'), '2026-10-25\n10:54:04');
+  assert.equal(formatBillingRecordTime(null), '-');
 });
 
 test('billing record fee details expose per-search query and render it as escaped text', () => {

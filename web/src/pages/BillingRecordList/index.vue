@@ -88,7 +88,8 @@
         :pagination="pagination"
         @change="handleTableChange"
         row-key="id"
-        :scroll="{ x: 1460 }"
+        table-layout="fixed"
+        :scroll="{ x: tableScrollX }"
       >
         <template #username="{ record }">
           <span>{{ record.username || '-' }}</span>
@@ -97,7 +98,11 @@
           <a-tag :color="record.direction === 'income' ? 'green' : 'blue'">{{ buildBillingRecordTypeText(record) }}</a-tag>
         </template>
         <template #subject="{ record }">
-          <span class="multiline-cell">{{ buildBillingRecordSubjectText(record) }}</span>
+          <OverflowTableText
+            :text="buildBillingRecordListSubjectText(record)"
+            :expanded="!!expandedSubjects[record.id]"
+            @toggle="toggleSubject(record.id)"
+          />
         </template>
         <template #source="{ record }">
           <span class="multiline-cell">{{ buildBillingRecordSourceText(record) }}</span>
@@ -115,13 +120,13 @@
           <span>{{ record.accessTokenName || '-' }}</span>
         </template>
         <template #createdAt="{ record }">
-          <span>{{ formatDateTime(record.createdAt) }}</span>
+          <span class="billing-time-cell">{{ formatDateTime(record.createdAt) }}</span>
         </template>
         <template #clientIp="{ record }">
           <span class="location-value">{{ formatValueWithLocation(record.clientIp, ipLocations[normalizeLocationKey(record.clientIp)]) || '-' }}</span>
         </template>
         <template #feeDetail="{ record }">
-          <a-button type="link" style="padding: 0" @click="handleShowFeeDetail(record)">显示详情</a-button>
+          <a-button type="link" style="padding: 0" @click="handleShowFeeDetail(record)">查看详情</a-button>
         </template>
         <template #emptyText>
           <a-empty description="当前还没有账单记录。" />
@@ -133,14 +138,20 @@
             <a-tag :color="record.direction === 'income' ? 'green' : 'blue'">{{ buildBillingRecordTypeText(record) }}</a-tag>
             <strong :class="record.direction === 'income' ? 'amount-income' : 'amount-expense'">{{ buildBillingRecordAmountText(record) }}</strong>
           </header>
-          <div class="mobile-billing-card__subject">{{ buildBillingRecordSubjectText(record) }}</div>
+          <div class="mobile-billing-card__subject">
+            <OverflowTableText
+              :text="buildBillingRecordListSubjectText(record)"
+              :expanded="!!expandedSubjects[record.id]"
+              @toggle="toggleSubject(record.id)"
+            />
+          </div>
           <dl class="mobile-billing-card__meta">
             <div v-if="isAdmin"><dt>用户</dt><dd>{{ record.username || '-' }}</dd></div>
             <div><dt>来源</dt><dd>{{ buildBillingRecordSourceText(record) }}</dd></div>
-            <div><dt>时间</dt><dd>{{ formatDateTime(record.createdAt) }}</dd></div>
+            <div><dt>时间</dt><dd class="mobile-billing-time">{{ formatDateTime(record.createdAt) }}</dd></div>
             <div><dt>编号</dt><dd>{{ buildBillingRecordReferenceText(record) }}</dd></div>
           </dl>
-          <a-button block size="small" @click="handleShowFeeDetail(record)">显示详情</a-button>
+          <a-button block size="small" @click="handleShowFeeDetail(record)">查看详情</a-button>
         </article>
         <a-empty v-if="!dataSource.length" description="当前还没有账单记录" />
       </div>
@@ -155,6 +166,7 @@
 import { computed, defineComponent, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import Swal from 'sweetalert2'
+import OverflowTableText from '@/components/OverflowTableText.vue'
 import { getBillingRecords, getIpLocations, getMyLocations, updateBillingStatementVisibility } from '@/api/TikuComponentApi'
 import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser'
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
@@ -167,18 +179,22 @@ import {
 } from '@/utils/locationHelpers.mjs'
 import {
   buildBillingRecordAmountText,
-  buildBillingRecordFinalMultiplierText,
+  buildBillingRecordEffectiveMultiplierText,
   buildBillingRecordFeeDetailHtml,
+  buildBillingRecordListSubjectText,
   buildBillingRecordModeText,
   buildBillingRecordReferenceText,
   buildBillingRecordSourceText,
   buildBillingRecordSubjectText,
   buildBillingRecordTypeText,
+  billingTableColumnWidths,
+  formatBillingRecordTime,
 } from '@/utils/userPortalHelpers.mjs'
 
 const dataSource = ref([])
 const tableLoading = ref(false)
 const visibilitySaving = reactive({})
+const expandedSubjects = reactive({})
 
 // 归属地映射：key 为归一化后的 IP，value 为展示文本。
 // 页面加载时按当前页的 clientIp 批量查询并落库（服务端持久化，之后翻页零消耗）。
@@ -228,6 +244,7 @@ const pagination = reactive({
 
 export default defineComponent({
   name: 'BillingRecordList',
+  components: { OverflowTableText },
   setup() {
     const currentUser = computed(() => getStoredCurrentUser())
     const isAdmin = computed(() => isAdminUser(currentUser.value))
@@ -271,19 +288,22 @@ export default defineComponent({
         ? '管理员始终可查看全部账单；通过“账单流水展示”开关调整用户可见性，不改变原始金额和余额记录。'
         : '这里只展示当前账号自己的账单流水，便于快速查看每次消费或充值对应的来源、请求编号与时间。'
     ))
+    const subjectColumnWidth = computed(() => dataSource.value.some((record) => expandedSubjects[record.id])
+      ? billingTableColumnWidths.subjectExpanded
+      : billingTableColumnWidths.subject)
     const columns = computed(() => {
       const baseColumns = [
         {
           title: '账单 ID',
           dataIndex: 'id',
           key: 'id',
-          width: 90,
+          width: billingTableColumnWidths.id,
         },
         {
           title: '类型',
           dataIndex: 'typeLabel',
           key: 'typeLabel',
-          width: 120,
+          width: billingTableColumnWidths.typeLabel,
           slots: {
             customRender: 'typeLabel',
           },
@@ -292,7 +312,7 @@ export default defineComponent({
           title: '项目',
           dataIndex: 'subject',
           key: 'subject',
-          width: 280,
+          width: subjectColumnWidth.value,
           slots: {
             customRender: 'subject',
           },
@@ -301,7 +321,7 @@ export default defineComponent({
           title: '金额',
           dataIndex: 'amount',
           key: 'amount',
-          width: 130,
+          width: billingTableColumnWidths.amount,
           slots: {
             customRender: 'amount',
           },
@@ -310,7 +330,7 @@ export default defineComponent({
           title: '来源/渠道',
           dataIndex: 'source',
           key: 'source',
-          width: 180,
+          width: billingTableColumnWidths.source,
           slots: {
             customRender: 'source',
           },
@@ -320,41 +340,41 @@ export default defineComponent({
           title: '模式',
           dataIndex: 'searchMode',
           key: 'searchMode',
-          width: 120,
+          width: billingTableColumnWidths.searchMode,
           slots: {
             customRender: 'searchMode',
           },
         },
         {
-          title: '请求编号',
+          title: '请求 ID',
           dataIndex: 'referenceNo',
           key: 'referenceNo',
-          width: 240,
+          width: billingTableColumnWidths.referenceNo,
           slots: {
             customRender: 'referenceNo',
           },
         },
         {
           title: '最终倍率',
-          dataIndex: 'finalMultiplier',
-          key: 'finalMultiplier',
-          width: 120,
-          customRender: ({ record }) => buildBillingRecordFinalMultiplierText(record),
+          dataIndex: 'effectiveMultiplier',
+          key: 'effectiveMultiplier',
+          width: billingTableColumnWidths.effectiveMultiplier,
+          customRender: ({ record }) => buildBillingRecordEffectiveMultiplierText(record),
         },
         {
           title: '访问令牌名称',
           dataIndex: 'accessTokenName',
           key: 'accessTokenName',
-          width: 180,
+          width: billingTableColumnWidths.accessTokenName,
           slots: {
             customRender: 'accessTokenName',
           },
         },
         {
-          title: '请求时间',
+          title: '时间',
           dataIndex: 'createdAt',
           key: 'createdAt',
-          width: 180,
+          width: billingTableColumnWidths.createdAt,
           slots: {
             customRender: 'createdAt',
           },
@@ -363,7 +383,7 @@ export default defineComponent({
           title: '来源 IP',
           dataIndex: 'clientIp',
           key: 'clientIp',
-          width: 200,
+          width: billingTableColumnWidths.clientIp,
           slots: {
             customRender: 'clientIp',
           },
@@ -372,7 +392,7 @@ export default defineComponent({
           title: '操作',
           dataIndex: 'feeDetail',
           key: 'feeDetail',
-          width: 120,
+          width: billingTableColumnWidths.feeDetail,
           slots: {
             customRender: 'feeDetail',
           },
@@ -386,10 +406,10 @@ export default defineComponent({
       return [
         baseColumns[0],
         {
-          title: '用户名',
+          title: '用户',
           dataIndex: 'username',
           key: 'username',
-          width: 160,
+          width: billingTableColumnWidths.username,
           slots: {
             customRender: 'username',
           },
@@ -397,6 +417,7 @@ export default defineComponent({
         ...baseColumns.slice(1),
       ]
     })
+    const tableScrollX = computed(() => columns.value.reduce((total, column) => total + column.width, 0))
 
     return {
       dataSource,
@@ -423,8 +444,10 @@ export default defineComponent({
       pageSubtitle,
       alertMessage,
       columns,
+      tableScrollX,
+      expandedSubjects,
       buildBillingRecordAmountText,
-      buildBillingRecordFinalMultiplierText,
+      buildBillingRecordListSubjectText,
       buildBillingRecordModeText,
       buildBillingRecordReferenceText,
       buildBillingRecordSourceText,
@@ -436,6 +459,9 @@ export default defineComponent({
     this.handleLoad()
   },
   methods: {
+    toggleSubject(id) {
+      expandedSubjects[id] = !expandedSubjects[id]
+    },
     async handleStatementVisibilityChange(record, show) {
       if (visibilitySaving[record.id]) return false
       visibilitySaving[record.id] = true
@@ -543,14 +569,7 @@ export default defineComponent({
       return formatMoneyValue(value || 0)
     },
     formatDateTime(value) {
-      if (!value) {
-        return '-'
-      }
-      const date = new Date(value)
-      if (Number.isNaN(date.getTime())) {
-        return value
-      }
-      return date.toLocaleString()
+      return formatBillingRecordTime(value)
     },
   },
 })
@@ -671,6 +690,18 @@ export default defineComponent({
     line-height: 1.6;
   }
 
+  .mobile-billing-card__subject :deep(.overflow-table-text) {
+    text-align: left;
+  }
+
+  .mobile-billing-card__subject :deep(.overflow-table-text__toggle) {
+    font-weight: 400;
+  }
+
+  .mobile-billing-time {
+    white-space: pre-line;
+  }
+
   .mobile-billing-card__meta {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -725,23 +756,37 @@ export default defineComponent({
   font-size: 13px;
 }
 
+.billing-page :deep(.desktop-billing-table .ant-table-thead > tr > th),
+.billing-page :deep(.desktop-billing-table .ant-table-tbody > tr > td) {
+  text-align: center;
+  vertical-align: middle;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .multiline-cell {
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
   line-height: 1.6;
 }
 
+.billing-time-cell {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .location-value {
-  display: inline-block;
-  white-space: pre-line;
+  display: block;
+  white-space: pre-wrap;
   line-height: 1.5;
-  text-align: left;
+  text-align: center;
+  overflow-wrap: anywhere;
 }
 
 .reference-cell {
-  display: inline-block;
-  max-width: 220px;
-  word-break: break-all;
+  display: block;
+  overflow-wrap: anywhere;
 }
 
 .amount-income {

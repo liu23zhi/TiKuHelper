@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -27,7 +28,7 @@ func newLogControllerTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open test db: %v", err)
 	}
 
-	if err := db.AutoMigrate(&entity.User{}, &entity.Log{}); err != nil {
+	if err := db.AutoMigrate(&entity.User{}, &entity.Log{}, &entity.BillingRecord{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 
@@ -384,5 +385,157 @@ func TestLogListKeywordTreatsLikeWildcardsLiterally(t *testing.T) {
 	}
 	if response.Total != 0 {
 		t.Fatalf("expected %% to match nothing, got %d", response.Total)
+	}
+}
+
+func TestLogListAssociatesBillingIDsWithinUserAndVisibility(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newLogControllerTestDB(t)
+	admin := &entity.User{ID: 431, Username: "billing-log-admin", Role: "admin", Status: "enabled"}
+	member := &entity.User{ID: 432, Username: "billing-log-member", Role: "user", Status: "enabled"}
+	other := &entity.User{ID: 433, Username: "billing-log-other", Role: "user", Status: "enabled"}
+	for _, user := range []*entity.User{admin, member, other} {
+		if err := db.Create(user).Error; err != nil {
+			t.Fatalf("seed user: %v", err)
+		}
+	}
+
+	logs := []entity.Log{
+		{UserID: member.ID, Username: member.Username, Module: "search", Description: "搜索完成 requestId=shared-req mode=normal"},
+		{UserID: other.ID, Username: other.Username, Module: "search", Description: "搜索完成 requestId=shared-req mode=normal"},
+		{UserID: member.ID, Username: member.Username, Module: "search", Description: "搜索无结果 requestId=no-bill"},
+		{UserID: 0, Username: "anonymous", Module: "search", Description: "搜索完成 requestId=shared-req"},
+	}
+	for i := range logs {
+		if err := db.Create(&logs[i]).Error; err != nil {
+			t.Fatalf("seed log: %v", err)
+		}
+	}
+	bills := []entity.BillingRecord{
+		{ID: 44, UserID: member.ID, RequestID: "shared-req", Type: "normal_search", HiddenFromStatement: true},
+		{ID: 42, UserID: member.ID, RequestID: "shared-req", Type: "normal_search"},
+		{ID: 41, UserID: member.ID, RequestID: "shared-req", Type: "normal_search"},
+		{ID: 43, UserID: other.ID, RequestID: "shared-req", Type: "normal_search"},
+		{ID: 45, UserID: member.ID, RequestID: "other-req", Type: "normal_search"},
+	}
+	for i := range bills {
+		if err := db.Create(&bills[i]).Error; err != nil {
+			t.Fatalf("seed bill: %v", err)
+		}
+	}
+
+	request := func(user *entity.User) map[int32][]int32 {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/logs?page=1&pageSize=10", nil)
+		ctx.Set("user", user)
+		LogList(ctx)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("log list status %d: %s", recorder.Code, recorder.Body.String())
+		}
+		var response struct {
+			Data []struct {
+				ID          int32   `json:"id"`
+				BillingIDs  []int32 `json:"billingIds"`
+				Description string  `json:"description"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode log list: %v", err)
+		}
+		result := make(map[int32][]int32, len(response.Data))
+		for _, item := range response.Data {
+			if item.Description == "" || item.BillingIDs == nil {
+				t.Fatalf("expected existing description and non-nil billingIds: %+v", item)
+			}
+			result[item.ID] = item.BillingIDs
+		}
+		return result
+	}
+
+	adminResult := request(admin)
+	if len(adminResult) != 4 {
+		t.Fatalf("admin expected all 4 logs, got %v", adminResult)
+	}
+	for logIndex, want := range map[int][]int32{
+		0: {41, 42, 44},
+		1: {43},
+		2: {},
+		3: {},
+	} {
+		if got := adminResult[logs[logIndex].ID]; !reflect.DeepEqual(got, want) {
+			t.Fatalf("admin log %d billingIds = %v, want %v", logIndex, got, want)
+		}
+	}
+
+	memberResult := request(member)
+	if len(memberResult) != 2 {
+		t.Fatalf("member expected own 2 logs, got %v", memberResult)
+	}
+	if got := memberResult[logs[0].ID]; !reflect.DeepEqual(got, []int32{41, 42}) {
+		t.Fatalf("member visible billingIds = %v, want [41 42]", got)
+	}
+	if got := memberResult[logs[2].ID]; !reflect.DeepEqual(got, []int32{}) {
+		t.Fatalf("member unbilled log billingIds = %v, want []", got)
+	}
+}
+
+func TestLogListQueriesBillingIDsOnceForCurrentPage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newLogControllerTestDB(t)
+	admin := &entity.User{ID: 441, Username: "billing-page-admin", Role: "admin", Status: "enabled"}
+	if err := db.Create(admin).Error; err != nil {
+		t.Fatalf("seed admin: %v", err)
+	}
+	for _, requestID := range []string{"older", "current-a", "current-b"} {
+		entry := entity.Log{UserID: admin.ID, Username: admin.Username, Module: "search", Description: "搜索完成 requestId=" + requestID}
+		if err := db.Create(&entry).Error; err != nil {
+			t.Fatalf("seed log: %v", err)
+		}
+		bill := entity.BillingRecord{UserID: admin.ID, RequestID: requestID, Type: "normal_search"}
+		if err := db.Create(&bill).Error; err != nil {
+			t.Fatalf("seed bill: %v", err)
+		}
+	}
+
+	billingQueries := 0
+	const callbackName = "test:count-log-list-billing-queries"
+	if err := db.Callback().Query().Before("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Schema != nil && tx.Statement.Schema.Table == entity.TableNameBillingRecord {
+			billingQueries++
+		}
+	}); err != nil {
+		t.Fatalf("register query counter: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Callback().Query().Remove(callbackName) })
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/logs?page=1&pageSize=2", nil)
+	ctx.Set("user", admin)
+	LogList(ctx)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("log list status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if billingQueries != 1 {
+		t.Fatalf("expected one billing query for two logs, got %d", billingQueries)
+	}
+	var response struct {
+		Data []struct {
+			Description string  `json:"description"`
+			BillingIDs  []int32 `json:"billingIds"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode log list: %v", err)
+	}
+	if len(response.Data) != 2 {
+		t.Fatalf("expected two current-page logs, got %d", len(response.Data))
+	}
+	for _, item := range response.Data {
+		if strings.Contains(item.Description, "older") || len(item.BillingIDs) != 1 {
+			t.Fatalf("unexpected current-page log: %+v", item)
+		}
 	}
 }

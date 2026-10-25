@@ -102,13 +102,95 @@ func LogList(c *gin.Context) {
 		return
 	}
 	resolveLogUsernames(find)
+	items, err := logListItemsWithBillingIDs(dao.Log.UnderlyingDB(), currentUser, find)
+	if err != nil {
+		c.JSON(400, gin.H{"message": "查询失败"})
+		return
+	}
 
 	c.JSON(200, gin.H{
-		"data":     find,
+		"data":     items,
 		"total":    total,
 		"page":     page,
 		"pageSize": pageSize,
 	})
+}
+
+type logListItem struct {
+	*entity.Log
+	BillingIDs []int32 `json:"billingIds"`
+}
+
+type logBillingKey struct {
+	userID    int32
+	requestID string
+}
+
+func logListItemsWithBillingIDs(db *gorm.DB, currentUser *entity.User, logs []*entity.Log) ([]logListItem, error) {
+	items := make([]logListItem, len(logs))
+	keys := make([]logBillingKey, len(logs))
+	userIDs := make([]int32, 0, len(logs))
+	requestIDs := make([]string, 0, len(logs))
+	seenUsers := make(map[int32]struct{}, len(logs))
+	seenRequests := make(map[string]struct{}, len(logs))
+	for i, entry := range logs {
+		items[i] = logListItem{Log: entry, BillingIDs: []int32{}}
+		if entry == nil || entry.UserID <= 0 {
+			continue
+		}
+		requestID := logRequestID(entry.Description)
+		if requestID == "" {
+			continue
+		}
+		keys[i] = logBillingKey{userID: entry.UserID, requestID: requestID}
+		if _, exists := seenUsers[entry.UserID]; !exists {
+			seenUsers[entry.UserID] = struct{}{}
+			userIDs = append(userIDs, entry.UserID)
+		}
+		if _, exists := seenRequests[requestID]; !exists {
+			seenRequests[requestID] = struct{}{}
+			requestIDs = append(requestIDs, requestID)
+		}
+	}
+	if len(requestIDs) == 0 {
+		return items, nil
+	}
+
+	var bills []struct {
+		ID        int32
+		UserID    int32
+		RequestID string
+	}
+	query := db.Session(&gorm.Session{NewDB: true}).Model(&entity.BillingRecord{}).
+		Select("id, user_id, request_id").
+		Where("user_id IN ? AND request_id IN ?", userIDs, requestIDs)
+	if !isAdminUser(currentUser) {
+		query = query.Where("user_id = ? AND hidden_from_statement = ?", currentUser.ID, false)
+	}
+	if err := query.Order("id ASC").Find(&bills).Error; err != nil {
+		return nil, err
+	}
+
+	billingIDs := make(map[logBillingKey][]int32, len(bills))
+	for _, bill := range bills {
+		key := logBillingKey{userID: bill.UserID, requestID: bill.RequestID}
+		billingIDs[key] = append(billingIDs[key], bill.ID)
+	}
+	for i, key := range keys {
+		if ids := billingIDs[key]; len(ids) > 0 {
+			items[i].BillingIDs = ids
+		}
+	}
+	return items, nil
+}
+
+func logRequestID(description string) string {
+	for _, field := range strings.Fields(description) {
+		if requestID, ok := strings.CutPrefix(field, "requestId="); ok {
+			return requestID
+		}
+	}
+	return ""
 }
 
 // buildLogListQuery 组装日志查询条件：先按权限收窄，再叠加筛选。

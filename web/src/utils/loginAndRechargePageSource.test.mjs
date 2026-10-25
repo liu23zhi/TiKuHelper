@@ -180,8 +180,8 @@ test('Billing pages render mixed ledger fields instead of search-only columns', 
     assert.match(content, /title: '项目'/);
     assert.match(content, /title: '金额'/);
     assert.match(content, /title: '来源\/渠道'/);
-    assert.match(content, /title: '请求编号'/);
-    assert.match(content, /buildBillingRecordFinalMultiplierText/);
+    assert.match(content, /title: '请求 ID'/);
+    assert.match(content, /buildBillingRecordEffectiveMultiplierText/);
     assert.match(content, /title: '最终倍率'/);
     assert.doesNotMatch(content, /title: '题目'/);
     assert.doesNotMatch(content, /title: '消费金额'/);
@@ -193,7 +193,7 @@ test('Billing record list renders the billing owner username', async () => {
 
   assert.match(content, /#username="\{ record \}"/);
   assert.match(content, /record\.username/);
-  assert.match(content, /title: '用户名'/);
+  assert.match(content, /title: '用户'/);
   assert.match(content, /if \(!isAdmin\.value\) \{\s+return baseColumns/);
 });
 
@@ -201,7 +201,7 @@ test('Billing record list opens a SweetAlert fee breakdown with provider costs',
   const content = await readFile(path.join(__dirname, '..', 'pages', 'BillingRecordList', 'index.vue'), 'utf8');
 
   assert.match(content, /import Swal from 'sweetalert2'/);
-  assert.match(content, /显示详情/);
+  assert.match(content, /查看详情/);
   assert.match(content, /Swal\.fire/);
   assert.match(content, /buildBillingRecordFeeDetailHtml/);
   assert.match(content, /handleShowFeeDetail/);

@@ -124,6 +124,7 @@
       </div>
 
       <a-table
+        class="personal-billing-table"
         bordered
         :data-source="dataSource"
         :columns="columns"
@@ -131,13 +132,18 @@
         :pagination="pagination"
         @change="handleTableChange"
         row-key="id"
-        :scroll="{ x: 1180 }"
+        table-layout="fixed"
+        :scroll="{ x: tableScrollX }"
       >
         <template #typeLabel="{ record }">
           <a-tag :color="record.direction === 'income' ? 'green' : 'blue'">{{ buildBillingRecordTypeText(record) }}</a-tag>
         </template>
         <template #subject="{ record }">
-          <span class="multiline-cell">{{ buildBillingRecordSubjectText(record) }}</span>
+          <OverflowTableText
+            :text="buildBillingRecordListSubjectText(record)"
+            :expanded="!!expandedSubjects[record.id]"
+            @toggle="toggleSubject(record.id)"
+          />
         </template>
         <template #amount="{ record }">
           <span :class="record.direction === 'income' ? 'amount-income' : 'amount-expense'">{{ buildBillingRecordAmountText(record) }}</span>
@@ -155,7 +161,7 @@
           <span>{{ record.accessTokenName || '-' }}</span>
         </template>
         <template #createdAt="{ record }">
-          <span>{{ formatDateTime(record.createdAt) }}</span>
+          <span class="billing-time-cell">{{ formatDateTime(record.createdAt) }}</span>
         </template>
         <template #emptyText>
           <a-empty description="当前还没有消费记录。" />
@@ -198,6 +204,7 @@
 import { computed, defineComponent, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import QRCode from 'qrcode'
+import OverflowTableText from '@/components/OverflowTableText.vue'
 import {
   createRechargeOrder,
   getBillingRecords,
@@ -213,17 +220,21 @@ import {
 import {
   buildPersonalUsageBillingRecordParams,
   buildBillingRecordAmountText,
-  buildBillingRecordFinalMultiplierText,
+  buildBillingRecordEffectiveMultiplierText,
+  buildBillingRecordListSubjectText,
   buildBillingRecordModeText,
   buildBillingRecordReferenceText,
   buildBillingRecordSourceText,
   buildBillingRecordSubjectText,
   buildBillingRecordTypeText,
+  billingTableColumnWidths,
+  formatBillingRecordTime,
 } from '@/utils/userPortalHelpers.mjs'
 import { getStoredCurrentUser, setStoredCurrentUser } from '@/utils/currentUser'
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
 
 const dataSource = ref([])
+const expandedSubjects = reactive({})
 const paymentMethods = ref([])
 const tableLoading = ref(false)
 const paymentMethodLoading = ref(false)
@@ -255,7 +266,15 @@ function normalizeMinRechargeAmount(value) {
 
 export default defineComponent({
   name: 'UserUsagePage',
+  components: { OverflowTableText },
   setup() {
+    const subjectColumnWidth = computed(() => dataSource.value.some((record) => expandedSubjects[record.id])
+      ? billingTableColumnWidths.subjectExpanded
+      : billingTableColumnWidths.subject)
+    const tableScrollX = computed(() => [
+      'id', 'typeLabel', 'amount', 'source', 'searchMode', 'referenceNo',
+      'effectiveMultiplier', 'accessTokenName', 'createdAt',
+    ].reduce((total, key) => total + billingTableColumnWidths[key], subjectColumnWidth.value))
     const summary = computed(() => {
       const rows = Array.isArray(dataSource.value) ? dataSource.value : []
       return rows.reduce((acc, item) => {
@@ -306,12 +325,14 @@ export default defineComponent({
       paymentJumpUrl,
       rechargeQuickAmounts,
       pagination,
+      tableScrollX,
+      expandedSubjects,
       summary,
       currentUserBalance,
       pageRefreshing,
       formatMoneyValue,
       buildBillingRecordAmountText,
-      buildBillingRecordFinalMultiplierText,
+      buildBillingRecordListSubjectText,
       buildBillingRecordModeText,
       buildBillingRecordReferenceText,
       buildBillingRecordSourceText,
@@ -320,18 +341,18 @@ export default defineComponent({
       fallbackPaymentIcon() {
         return '<span class="payment-method-icon--placeholder">支</span>'
       },
-      columns: [
+      columns: computed(() => [
         {
           title: '账单 ID',
           dataIndex: 'id',
           key: 'id',
-          width: 90,
+          width: billingTableColumnWidths.id,
         },
         {
           title: '类型',
           dataIndex: 'typeLabel',
           key: 'typeLabel',
-          width: 120,
+          width: billingTableColumnWidths.typeLabel,
           slots: {
             customRender: 'typeLabel',
           },
@@ -340,7 +361,7 @@ export default defineComponent({
           title: '项目',
           dataIndex: 'subject',
           key: 'subject',
-          width: 260,
+          width: subjectColumnWidth.value,
           slots: {
             customRender: 'subject',
           },
@@ -349,7 +370,7 @@ export default defineComponent({
           title: '金额',
           dataIndex: 'amount',
           key: 'amount',
-          width: 130,
+          width: billingTableColumnWidths.amount,
           slots: {
             customRender: 'amount',
           },
@@ -358,7 +379,7 @@ export default defineComponent({
           title: '来源/渠道',
           dataIndex: 'source',
           key: 'source',
-          width: 160,
+          width: billingTableColumnWidths.source,
           slots: {
             customRender: 'source',
           },
@@ -367,50 +388,53 @@ export default defineComponent({
           title: '模式',
           dataIndex: 'searchMode',
           key: 'searchMode',
-          width: 120,
+          width: billingTableColumnWidths.searchMode,
           customRender: ({ record }) => buildBillingRecordModeText(record),
         },
         {
-          title: '请求编号',
+          title: '请求 ID',
           dataIndex: 'referenceNo',
           key: 'referenceNo',
-          width: 220,
+          width: billingTableColumnWidths.referenceNo,
           slots: {
             customRender: 'referenceNo',
           },
         },
         {
           title: '最终倍率',
-          dataIndex: 'finalMultiplier',
-          key: 'finalMultiplier',
-          width: 120,
-          customRender: ({ record }) => buildBillingRecordFinalMultiplierText(record),
+          dataIndex: 'effectiveMultiplier',
+          key: 'effectiveMultiplier',
+          width: billingTableColumnWidths.effectiveMultiplier,
+          customRender: ({ record }) => buildBillingRecordEffectiveMultiplierText(record),
         },
         {
           title: '访问令牌名称',
           dataIndex: 'accessTokenName',
           key: 'accessTokenName',
-          width: 180,
+          width: billingTableColumnWidths.accessTokenName,
           slots: {
             customRender: 'accessTokenName',
           },
         },
         {
-          title: '请求时间',
+          title: '时间',
           dataIndex: 'createdAt',
           key: 'createdAt',
-          width: 180,
+          width: billingTableColumnWidths.createdAt,
           slots: {
             customRender: 'createdAt',
           },
         },
-      ],
+      ]),
     }
   },
   mounted() {
     this.handleRefreshAll()
   },
   methods: {
+    toggleSubject(id) {
+      expandedSubjects[id] = !expandedSubjects[id]
+    },
     handleRefreshAll() {
       this.handleRefreshCurrentUser()
       this.handleLoadBillingRecords()
@@ -475,14 +499,7 @@ export default defineComponent({
       this.handleLoadBillingRecords()
     },
     formatDateTime(value) {
-      if (!value) {
-        return '-'
-      }
-      const date = new Date(value)
-      if (Number.isNaN(date.getTime())) {
-        return value
-      }
-      return date.toLocaleString()
+      return formatBillingRecordTime(value)
     },
     applyRechargeQuickAmount(amount) {
       // 快捷金额是数字，保持与 a-input-number 的取值类型一致。
@@ -770,14 +787,27 @@ export default defineComponent({
 
 .multiline-cell {
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
   line-height: 1.6;
 }
 
+.personal-billing-table :deep(.ant-table-thead > tr > th),
+.personal-billing-table :deep(.ant-table-tbody > tr > td) {
+  text-align: center;
+  vertical-align: middle;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.billing-time-cell {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .reference-cell {
-  display: inline-block;
-  max-width: 220px;
-  word-break: break-all;
+  display: block;
+  overflow-wrap: anywhere;
 }
 
 .amount-income {

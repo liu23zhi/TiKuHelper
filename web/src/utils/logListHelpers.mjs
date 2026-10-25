@@ -93,7 +93,7 @@ export function buildLogStatusColor(record = {}) {
   return buildLogActionColor(record?.action);
 }
 
-export function buildLogStructuredFields(record = {}) {
+export function buildLogStructuredFields(record = {}, requestParamSeparator = ' ') {
   const description = String(record?.description || '').trim();
   const request = String(record?.oldAnswer || '').trim();
   const response = String(record?.newAnswer || '').trim();
@@ -111,7 +111,7 @@ export function buildLogStructuredFields(record = {}) {
     return {
       summary: parsedAIFallbackDescription.summary,
       requestId: parsedAIFallbackDescription.requestId || parsedAIFallbackDescription.taskId || '-',
-      mode: buildRequestParamsLabel(request),
+      mode: buildRequestParamsLabel(request, requestParamSeparator),
       requestSource: 'AI 兜底接口',
       answerCount: parsedAIFallbackDescription.answers || '-',
       hitProvider: buildAIRouteLabel(channel.provider, parsedAIFallbackDescription.aiRoute),
@@ -141,7 +141,7 @@ export function buildLogStructuredFields(record = {}) {
   return {
     summary: parsedDescription.summary || description || '-',
     requestId: parsedDescription.requestId || '-',
-    mode: buildRequestParamsLabel(request),
+    mode: buildRequestParamsLabel(request, requestParamSeparator),
     requestSource: parsedDescription.summary ? '普通搜题接口' : '-',
     answerCount: parsedDescription.answers || '-',
     hitProvider: buildAIRouteLabel(channel.provider, parsedDescription.aiRoute),
@@ -295,6 +295,14 @@ export function buildLogRowDetail(record = {}) {
   return '-';
 }
 
+export function buildLogTableDetail(record = {}) {
+  if ((record.module === 'search' || record.module === 'ai_fallback') &&
+      !buildLogResultText(record) && buildLogStructuredFields(record).failureReasons.length > 0) {
+    return '-';
+  }
+  return buildLogRowDetail(record);
+}
+
 function parseLogSnapshot(value) {
   try {
     const parsed = JSON.parse(String(value || ''));
@@ -412,7 +420,7 @@ function parseSearchLogDescription(description, request) {
   }).filter((section) => section.value !== '-' || section.key === 'requestParams');
 }
 
-function buildRequestParamsLabel(request) {
+function buildRequestParamsLabel(request, separator = ' ') {
   const raw = String(request || '').trim();
   const query = new URLSearchParams(raw.match(/(?:^|\s)query=([^\s]*)/)?.[1] || '');
   const body = parseLogSnapshot(raw.startsWith('{') ? raw : raw.match(/(?:^|\s)body=(\{[\s\S]*\})$/)?.[1]);
@@ -429,7 +437,7 @@ function buildRequestParamsLabel(request) {
       parts.push(`${key}=${body[key]}`);
     }
   }
-  return parts.join(' ') || '-';
+  return parts.join(separator) || '-';
 }
 
 function buildHitProviderFields(provider, snapshot = {}, description = '') {

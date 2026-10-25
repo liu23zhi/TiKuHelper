@@ -235,6 +235,43 @@ export function buildBillingRecordSubjectText(record) {
   return buildPersonalUsageQuestionText(record)
 }
 
+export function buildBillingRecordListSubjectText(record) {
+  if (String(record?.type || '').trim() === 'normal_search') {
+    const question = String(record?.questionText || '').trim()
+    if (question) return question
+  }
+  return buildBillingRecordSubjectText(record)
+}
+
+export const billingTableColumnWidths = Object.freeze({
+  id: 104,
+  username: 170,
+  typeLabel: 124,
+  subject: 170,
+  subjectExpanded: 236,
+  amount: 120,
+  source: 104,
+  searchMode: 170,
+  referenceNo: 300,
+  effectiveMultiplier: 104,
+  accessTokenName: 122,
+  createdAt: 112,
+  clientIp: 270,
+  feeDetail: 88,
+})
+
+export function formatBillingRecordTime(value) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value)
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).formatToParts(date).map(({ type, value: partValue }) => [type, partValue]))
+  return `${parts.year}-${parts.month}-${parts.day}\n${parts.hour}:${parts.minute}:${parts.second}`
+}
+
 export function buildBillingRecordSourceText(record) {
   return buildPersonalUsageAnswerSourceText(record)
 }
@@ -260,6 +297,10 @@ export function buildBillingRecordFinalMultiplierText(record) {
     return '1x'
   }
   return '-'
+}
+
+export function buildBillingRecordEffectiveMultiplierText(record) {
+  return String(record?.effectiveMultiplier || '').trim() || '-'
 }
 
 export function buildBillingRecordAmountText(record) {

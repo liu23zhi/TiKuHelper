@@ -14,6 +14,7 @@ import {
   buildLogModuleLabel,
   buildLogResultText,
   buildLogRowDetail,
+  buildLogTableDetail,
   buildLogStatusLabel,
   buildLogStatusColor,
   buildLogStructuredFields,
@@ -23,6 +24,20 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const logListPagePath = path.join(__dirname, '..', 'pages', 'LogList', 'index.vue');
 const require = createRequire(import.meta.url);
+
+test('table detail does not repeat a long failure already shown in the channel column', () => {
+  const failed = {
+    module: 'search',
+    description: '搜索失败 requestId=req-1 answers=0',
+    newAnswer: JSON.stringify({ failures: [{ provider: 'ai', code: 'UPSTREAM_ERROR', error: '上游错误'.repeat(60) }] }),
+  };
+  assert.equal(buildLogTableDetail(failed), '-');
+  assert.match(buildLogRowDetail(failed), /失败原因/);
+  const solved = { ...failed, newAnswer: JSON.stringify({ answer: { answerKey: ['B'], answerKeyText: 'B', answerText: '正确答案' }, failures: [{ provider: 'ai', error: '部分失败' }] }) };
+  assert.match(buildLogTableDetail(solved), /答案：B/);
+  const legacy = { module: 'search', description: '搜索完成 requestId=old answers=1', newAnswer: '历史渠道答案：B' };
+  assert.equal(buildLogTableDetail(legacy), '历史渠道答案：B');
+});
 
 test('search failures show provider causes and distinguish partial failure and no answer', () => {
   const record = {
@@ -138,47 +153,45 @@ test('LogList puts channel and billing columns right after the summary column', 
   const summaryIndex = titles.indexOf('说明');
   assert.ok(summaryIndex >= 0, 'missing summary column');
   assert.equal(titles[summaryIndex + 1], '命中渠道 / 错误原因');
-  assert.equal(titles[summaryIndex + 2], '计费渠道');
+  assert.equal(titles[summaryIndex + 2], '计费渠道 / 耗时');
   assert.ok(titles.indexOf('详情') > summaryIndex + 2, 'detail column should follow the channel columns');
   assert.deepEqual(titles, [
-    '时间', '模块', '状态', '用户', '来源 IP', '本地题库 ID',
-    '说明', '命中渠道 / 错误原因', '计费渠道', '详情',
+    '时间', '模块', '状态', '用户', '来源 IP', '本地题库 ID', '账单 ID',
+    '说明', '命中渠道 / 错误原因', '计费渠道 / 耗时', '详情',
     '请求 ID', '请求参数', '请求接口', '答案数', '原始请求', '原始响应',
   ]);
 });
 
-test('LogList uses content-sized horizontal scrolling while keeping compact columns bounded', async () => {
+test('LogList uses fixed widths and horizontal scrolling while allowing wraps', async () => {
   const content = await readFile(logListPagePath, 'utf8');
-  const columnsStart = content.indexOf('      columns: [');
-  const columnsEnd = content.indexOf('\n      ],', columnsStart);
+  const columnsStart = content.indexOf('      columns: computed(() => [');
+  const columnsEnd = content.indexOf('\n      ]),', columnsStart);
   assert.ok(columnsStart >= 0 && columnsEnd > columnsStart, 'missing log columns definition');
 
   const columnsSource = content.slice(columnsStart, columnsEnd);
   const columnBlocks = [...columnsSource.matchAll(/title: '([^']+)'([\s\S]*?)(?=\n        \},|$)/g)];
   const widths = Object.fromEntries(columnBlocks.map(([, title, body]) => {
-    const width = body.match(/width:\s*(\d+)/);
+    const width = body.match(/width:\s*(logColumnWidths\.\w+|expandedColumnWidth\('[^']+'\))/);
     assert.ok(width, `missing width for ${title}`);
-    return [title, Number(width[1])];
+    return [title, width[1]];
   }));
 
-  assert.equal(Object.keys(widths).length, 16, 'all log columns should be included');
-  assert.equal(widths['详情'], 100);
-  assert.equal(widths['请求参数'], 150);
-  assert.equal(widths['原始请求'], 170);
-  assert.equal(widths['原始响应'], 170);
+  assert.equal(Object.keys(widths).length, 17, 'all log columns should be included');
+  assert.equal(widths['详情'], 'logColumnWidths.detail');
+  assert.equal(widths['请求参数'], 'logColumnWidths.mode');
+  assert.equal(widths['原始请求'], "expandedColumnWidth('requestSnapshot')");
+  assert.equal(widths['原始响应'], "expandedColumnWidth('responseSnapshot')");
   for (const title of [
     '模块', '状态', '用户', '本地题库 ID', '说明',
-    '命中渠道 / 错误原因', '计费渠道', '请求 ID', '请求接口', '答案数',
+    '命中渠道 / 错误原因', '计费渠道 / 耗时', '请求 ID', '请求接口', '答案数',
   ]) {
     const column = columnBlocks.find(([, columnTitle]) => columnTitle === title);
-    assert.match(column?.[2] || '', /className:\s*'log-cell-nowrap'/, `${title} must show its full value on one line`);
+    assert.match(column?.[2] || '', /width:\s*(?:logColumnWidths\.|expandedColumnWidth\()/, `${title} needs a fixed width`);
   }
-  assert.match(content, /:scroll="\{\s*x:\s*'max-content'\s*\}"/);
-  assert.match(content, /table-layout="auto"/);
-  assert.doesNotMatch(content, /table-layout:\s*fixed/);
-  const nowrapRules = content.match(/\.log-cell-nowrap[^}]*\}/)?.[0] || '';
-  assert.match(nowrapRules, /white-space:\s*nowrap/);
-  assert.doesNotMatch(nowrapRules, /text-overflow:\s*ellipsis/);
+  assert.match(content, /:scroll="\{ x: tableScrollX \}"/);
+  assert.match(content, /table-layout="fixed"/);
+  assert.match(content, /Object\.values\(logColumnWidths\)\.reduce/);
+  assert.doesNotMatch(content, /log-cell-nowrap/);
 });
 
 test('LogList formats timestamp and IP as centered two-line cells', async () => {
@@ -188,9 +201,9 @@ test('LogList formats timestamp and IP as centered two-line cells', async () => 
   const content = await readFile(logListPagePath, 'utf8');
   assert.match(content, /class="log-time-cell"[^>]*>\{\{ formatDateForTable\(/);
   assert.match(content, /class="location-value"/);
-  assert.match(content, /\.log-time-cell[\s\S]*?white-space:\s*pre/);
-  assert.match(content, /\.location-value[\s\S]*?white-space:\s*pre/);
-  assert.match(content, /\.log-cell-centered[\s\S]*?text-align:\s*center/);
+  assert.match(content, /\.log-time-cell[\s\S]*?white-space:\s*pre-wrap/);
+  assert.match(content, /\.location-value[\s\S]*?white-space:\s*pre-wrap/);
+  assert.match(content, /\.desktop-log-table \.ant-table-tbody > tr > td\)[\s\S]*?text-align:\s*center/);
 });
 
 test('LogList shows a resolved username only for an identified user', async () => {
@@ -208,9 +221,10 @@ test('LogList shows a resolved username only for an identified user', async () =
 
 test('LogList raw snapshots preview three lines and can expand', async () => {
   const content = await readFile(logListPagePath, 'utf8');
-  assert.match(content, /\.log-snapshot-text[\s\S]*?-webkit-line-clamp:\s*3/);
-  assert.match(content, /\.log-snapshot-text--expanded\s*\{\s*display:\s*block/);
-  assert.match(content, /\.log-snapshot-text--expanded[\s\S]*?-webkit-line-clamp:\s*unset/);
+  const preview = await readFile(new URL('../components/OverflowTableText.vue', import.meta.url), 'utf8');
+  assert.match(preview, /-webkit-line-clamp:\s*var\(--preview-lines\)/);
+  assert.match(preview, /overflow:\s*hidden/);
+  assert.match(preview, /scrollHeight\s*>\s*element\.clientHeight/);
   assert.match(content, /toggleSnapshotExpanded\(record\.id, 'requestSnapshot'\)/);
   assert.match(content, /toggleSnapshotExpanded\(record\.id, 'responseSnapshot'\)/);
 });
@@ -632,37 +646,21 @@ test('LogList page renders derived status instead of the raw action column', asy
   assert.doesNotMatch(content, /title: '操作'/);
 });
 
-test('LogList shows complete channel failures on one unwrapped line', async () => {
+test('LogList separates channel and complete error text with an expandable preview', async () => {
   const content = await readFile(logListPagePath, 'utf8');
   const source = content.match(/<template #hitProvider="\{ record \}">([\s\S]*?)<\/template>/)?.[1];
   assert.ok(source, 'missing channel cell template');
-  const { compile, createSSRApp, h } = require('vue');
-  const { renderToString } = require('@vue/server-renderer');
-  const render = compile(source);
-  const renderCell = async (detail) => {
-    const app = createSSRApp({
-      render,
-      setup: () => ({
-        record: {
-          id: 1,
-          description: '搜索失败 mode=ai answers=0',
-          newAnswer: JSON.stringify({ failures: [{ provider: 'ai', code: 'UPSTREAM_ERROR', error: detail }] }),
-        },
-        buildStructuredFields: buildLogStructuredFields,
-      }),
-    });
-    app.component('a-button', { setup: (_, { slots }) => () => h('button', slots.default?.()) });
-    return renderToString(app);
-  };
-  const short = await renderCell('AI联网搜题第1轮失败: 对方服务器异常');
-  assert.match(short, /class="log-channel-name">AI<\/span>/);
-  assert.match(short, /class="log-channel-error"> \/ \[UPSTREAM_ERROR\]：AI联网搜题第1轮失败: 对方服务器异常<\/span>/);
-  assert.doesNotMatch(short, /<button/);
-
+  assert.match(source, /class="log-channel-name"/);
+  assert.match(source, /class="log-channel-error"/);
+  assert.match(source, /failureReasons\.join\('\\n'\)/);
+  assert.match(source, /toggleSnapshotExpanded\(record\.id, 'hitProvider'\)/);
+  assert.doesNotMatch(source, /> \/ \{\{ reason \}\}/);
   const detail = '完整错误'.repeat(100);
-  const full = await renderCell(detail);
-  assert.ok(full.includes(detail), 'complete cause must remain visible');
-  assert.doesNotMatch(full, /<button/);
+  const fields = buildLogStructuredFields({
+    description: '搜索失败 mode=ai answers=0',
+    newAnswer: JSON.stringify({ failures: [{ provider: 'ai', code: 'UPSTREAM_ERROR', error: detail }] }),
+  });
+  assert.ok(fields.failureReasons[0].includes(detail));
 });
 
 test('LogList formats timestamps in Shanghai time', async () => {
