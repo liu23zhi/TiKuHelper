@@ -609,6 +609,10 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
 	}
 
+	if err := runStartupMigration("ensureAuditCorrelationSchema", func() error { return ensureAuditCorrelationSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare audit correlation schema fail: %w", err))
+	}
+
 	if err := runStartupMigration("ensureMoneyPrecisionSchema", func() error { return ensureMoneyPrecisionSchema(db) }); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare money precision schema fail: %w", err))
 	}

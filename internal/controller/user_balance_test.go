@@ -50,11 +50,18 @@ func TestLegacyUserBalanceUpdateAlwaysWritesLedgerAndAudit(t *testing.T) {
 					t.Fatalf("missing visibility/operator metadata: %+v", records[0])
 				}
 				var logs []entity.Log
-				if err := db.Where("user_id = ?", admin.ID).Find(&logs).Error; err != nil {
+				if err := db.Where("user_id = ? AND module = ? AND action = ?", admin.ID, "user", logActionUpdate).Find(&logs).Error; err != nil {
 					t.Fatal(err)
 				}
 				if len(logs) != 1 || logs[0].Username != admin.Username || !strings.Contains(logs[0].Description, target.Username) || logs[0].ClientIP != "198.51.100.5" {
 					t.Fatalf("missing operator/target audit: %+v", logs)
+				}
+				var profileLogs []entity.Log
+				if err := db.Where("user_id = ? AND module = ? AND action = ?", admin.ID, "user", 16).Find(&profileLogs).Error; err != nil {
+					t.Fatal(err)
+				}
+				if len(profileLogs) != 1 || !strings.Contains(profileLogs[0].NewAnswer, `"nickname":"test"`) {
+					t.Fatalf("profile change must have its own audit, separate from the balance: %+v", profileLogs)
 				}
 			})
 		}

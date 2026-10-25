@@ -1,3 +1,41 @@
+export const LOG_MODULE_OPTIONS = [
+  { label: '认证', value: 'auth' },
+  { label: '题目', value: 'question' },
+  { label: '搜题', value: 'search' },
+  { label: 'AI 兜底', value: 'ai_fallback' },
+  { label: '系统', value: 'system' },
+  { label: '验证码', value: 'captcha' },
+  { label: '用户管理', value: 'user' },
+  { label: '账单管理', value: 'billing' },
+  { label: '短信', value: 'sms' },
+  { label: '充值', value: 'recharge' },
+  { label: '访问令牌', value: 'access_token' },
+];
+
+export const LOG_ACTION_OPTIONS = [
+  { label: '新增', value: 0 },
+  { label: '更新', value: 1 },
+  { label: '删除', value: 2 },
+  { label: '查询 / 搜题', value: 3 },
+  { label: '登录', value: 10 },
+  { label: 'AI 兜底', value: 11 },
+  { label: '注册', value: 12 },
+  { label: '退出', value: 13 },
+  { label: '密码重置', value: 14 },
+  { label: '手机号修改', value: 15 },
+  { label: '资料修改', value: 16 },
+  { label: '远程验证码生成', value: 20 },
+  { label: '远程验证码校验', value: 21 },
+  { label: '远程验证码二验', value: 22 },
+  { label: '本地验证码生成', value: 23 },
+  { label: '本地验证码校验', value: 24 },
+  { label: '发送短信', value: 30 },
+  { label: '充值下单', value: 40 },
+  { label: '充值到账', value: 41 },
+];
+
+const ACCOUNT_AUDIT_MODULES = new Set(['auth', 'user', 'sms', 'recharge', 'access_token']);
+
 export function formatShanghaiLogDate(dateString, separator = ' ') {
   if (!dateString) return '-';
   const date = new Date(dateString);
@@ -29,15 +67,7 @@ export function buildLogUsername(record = {}) {
 
 export function buildLogModuleLabel(value) {
   const normalized = String(value || '').trim().toLowerCase();
-  if (normalized === 'auth') return '认证';
-  if (normalized === 'question') return '题目';
-  if (normalized === 'system') return '系统';
-  if (normalized === 'search') return '搜题';
-  if (normalized === 'ai_fallback') return 'AI 兜底';
-  if (normalized === 'captcha') return '验证码';
-  if (normalized === 'user') return '用户管理';
-  if (normalized === 'billing') return '账单管理';
-  return value || '-';
+  return LOG_MODULE_OPTIONS.find((option) => option.value === normalized)?.label || value || '-';
 }
 
 export function buildLogActionLabel(value, module) {
@@ -52,7 +82,9 @@ export function buildLogActionLabel(value, module) {
   if (normalizedModule === 'captcha' && normalized === 20) return '远程生成';
   if (normalizedModule === 'captcha' && normalized === 21) return '远程校验';
   if (normalizedModule === 'captcha' && normalized === 22) return '远程二验';
-  return value ?? '-';
+  if (normalizedModule === 'captcha' && normalized === 23) return '本地生成';
+  if (normalizedModule === 'captcha' && normalized === 24) return '本地校验';
+  return LOG_ACTION_OPTIONS.find((option) => option.value === normalized)?.label || (value ?? '-');
 }
 
 export function buildLogActionColor(value) {
@@ -66,6 +98,11 @@ export function buildLogActionColor(value) {
   if (normalized === 20) return 'cyan';
   if (normalized === 21) return 'geekblue';
   if (normalized === 22) return 'volcano';
+  if (normalized === 12 || normalized === 41) return 'green';
+  if (normalized === 13) return 'default';
+  if (normalized >= 14 && normalized <= 16) return 'blue';
+  if (normalized === 23 || normalized === 24 || normalized === 30) return 'cyan';
+  if (normalized === 40) return 'gold';
   return 'default';
 }
 
@@ -97,9 +134,28 @@ export function buildLogStructuredFields(record = {}, requestParamSeparator = ' 
   const description = String(record?.description || '').trim();
   const request = String(record?.oldAnswer || '').trim();
   const response = String(record?.newAnswer || '').trim();
+  const responseSnapshot = parseLogSnapshot(response);
   const parsedDescription = parseSearchLogDescriptionMap(description);
-  const parsedCaptchaDescription = parseCaptchaLogDescriptionMap(description);
+  const parsedCaptchaDescription = parseCaptchaLogDescriptionMap(description, responseSnapshot);
   const parsedAIFallbackDescription = parseAIFallbackLogDescriptionMap(description);
+
+  if (ACCOUNT_AUDIT_MODULES.has(String(record.module || '').toLowerCase())) {
+    const auditRequest = parseLogRequestBody(request);
+    const status = resolveLogStatus(record);
+    const duration = Number(responseSnapshot.durationMs);
+    return {
+      summary: description || buildLogActionLabel(record.action, record.module),
+      requestId: String(responseSnapshot.requestId || responseSnapshot.orderNo || auditRequest.requestId || auditRequest.orderNo || record.correlationId || '-'),
+      mode: responseSnapshot.scene || auditRequest.scene ? `scene=${responseSnapshot.scene || auditRequest.scene}` : '-',
+      requestSource: '-',
+      answerCount: '-',
+      hitProvider: buildAuditProviderLabel(responseSnapshot.provider || auditRequest.provider || responseSnapshot.paymentType || auditRequest.paymentType),
+      failureReasons: ['failed', 'error', 'timeout'].includes(status) && responseSnapshot.message ? [String(responseSnapshot.message)] : [],
+      billingProvider: responseSnapshot.durationMs != null && Number.isFinite(duration) && duration >= 0 ? `${duration}ms` : '-',
+      requestSnapshot: request || '-',
+      responseSnapshot: response || '-',
+    };
+  }
 
   if (parsedAIFallbackDescription.summary) {
     const fallbackSnapshot = parseLogSnapshot(response);
@@ -129,12 +185,12 @@ export function buildLogStructuredFields(record = {}, requestParamSeparator = ' 
   if (parsedCaptchaDescription.summary) {
     return {
       summary: parsedCaptchaDescription.summary,
-      requestId: parsedCaptchaDescription.captchaId || '-',
+      requestId: parsedCaptchaDescription.captchaId || record.correlationId || '-',
       mode: parsedCaptchaDescription.step || '-',
       requestSource: parsedCaptchaDescription.scene || parsedCaptchaDescription.type || '-',
       answerCount: parsedCaptchaDescription.status || '-',
       hitProvider: parsedCaptchaDescription.remoteValid || parsedCaptchaDescription.result || '-',
-      failureReasons: [],
+      failureReasons: parsedCaptchaDescription.result === 'failed' && responseSnapshot.message ? [String(responseSnapshot.message)] : [],
       billingProvider: parsedCaptchaDescription.durationMs ? `${parsedCaptchaDescription.durationMs}ms` : '-',
       requestSnapshot: request || '-',
       responseSnapshot: response || '-',
@@ -214,7 +270,8 @@ function flattenAnswerList(value) {
 }
 
 function resolveLogStatus(record = {}) {
-  if (record.module === 'search' || record.module === 'ai_fallback') {
+  const module = String(record.module || '').trim().toLowerCase();
+  if (module === 'search' || module === 'ai_fallback' || module === 'captcha' || ACCOUNT_AUDIT_MODULES.has(module)) {
     const snapshot = parseLogSnapshot(record.newAnswer);
     if (typeof snapshot.status === 'string' && snapshot.status.trim()) {
       return snapshot.status.trim().toLowerCase();
@@ -241,18 +298,23 @@ export function buildLogRowDetail(record = {}) {
   const description = String(record?.description || '').trim();
   const request = String(record?.oldAnswer || '').trim();
   const response = String(record?.newAnswer || '').trim();
-  const captchaFields = parseCaptchaLogDescriptionMap(description);
+  const snapshot = parseLogSnapshot(response);
+  const captchaFields = parseCaptchaLogDescriptionMap(description, snapshot);
+
+  if (ACCOUNT_AUDIT_MODULES.has(String(record.module || '').trim().toLowerCase()) && Object.keys(snapshot).length) {
+    return buildAccountAuditDetail({ ...parseLogRequestBody(request), ...snapshot });
+  }
 
   if (record.module === 'search' || record.module === 'ai_fallback') {
     // 详情列直接给「结果」；失败原因统一在「命中渠道 / 错误原因」列。
     // 确实没有结果时才退回原因（带「失败原因：」前缀，避免与答案混淆）。
     const result = buildLogResultText(record);
     if (result) {
-      return `答案：${truncateInlineText(result, 160)}`;
+      return `答案：${result}`;
     }
     const reasons = buildLogStructuredFields(record).failureReasons;
     if (reasons.length) {
-      return `失败原因：${truncateInlineText(reasons.join(' / '), 120)}`;
+      return `失败原因：${reasons.join(' / ')}`;
     }
   }
 
@@ -280,21 +342,21 @@ export function buildLogRowDetail(record = {}) {
       parts.push(`耗时：${captchaFields.durationMs}ms`);
     }
     if (captchaFields.result === 'failed' && response) {
-      parts.push(`响应：${truncateInlineText(response, 96)}`);
+      parts.push(`响应：${response}`);
     }
     if (parts.length > 0) {
       return parts.join(' / ');
     }
     if (response) {
-      return `响应：${truncateInlineText(response, 96)}`;
+      return `响应：${response}`;
     }
     if (request) {
-      return `请求：${truncateInlineText(request, 96)}`;
+      return `请求：${request}`;
     }
   }
 
   if (request || response) {
-    return truncateInlineText(response || request, 120);
+    return response || request;
   }
   return '-';
 }
@@ -388,15 +450,37 @@ function formatBooleanText(value) {
   return value || '-';
 }
 
-function truncateInlineText(value, limit) {
-  const text = String(value || '').trim();
-  if (!text) {
-    return '-';
+function buildAuditProviderLabel(value) {
+  const provider = String(value || '').trim();
+  return ({ smsbao: '短信宝', alipay: '支付宝', wxpay: '微信支付', wechat: '微信支付' })[provider.toLowerCase()] || provider || '-';
+}
+
+function buildAccountAuditDetail(snapshot) {
+  const labels = {
+    username: '用户名', nickname: '昵称', phone: '手机号', name: '名称',
+    balance: '余额', amount: '金额', quota: '额度', limit: '限额',
+    totalQuotaLimit: '总额度', perMinuteLimit: '每分钟限额', perDayLimit: '每日限额',
+    enabled: '启用', status: '状态', role: '角色', remark: '备注',
+    expiresAt: '过期时间', tokenId: '令牌 ID', ownerId: '所属用户 ID', targetUserId: '目标用户 ID',
+  };
+  const formatValue = (value) => typeof value === 'boolean' ? (value ? '是' : '否') : String(value ?? '-');
+  const formatChanges = (value) => {
+    if (value === null || value === undefined) return '';
+    if (typeof value !== 'object') return formatValue(value);
+    return Object.entries(labels)
+      .filter(([key]) => Object.hasOwn(value, key) && (value[key] === null || typeof value[key] !== 'object'))
+      .map(([key, label]) => `${label}：${formatValue(value[key])}`).join('，');
+  };
+  const parts = snapshot.message ? [String(snapshot.message)] : [];
+  for (const [key, label] of [['before', '变更前'], ['after', '变更后']]) {
+    const text = formatChanges(snapshot[key]);
+    if (text) parts.push(`${label}：${text}`);
   }
-  if (text.length <= limit) {
-    return text;
+  if (!parts.length) {
+    const text = formatChanges(snapshot);
+    if (text) parts.push(text);
   }
-  return `${text.slice(0, Math.max(0, limit - 3))}...`;
+  return parts.join('\n') || '-';
 }
 
 function parseSearchLogDescription(description, request) {
@@ -582,6 +666,8 @@ function buildBillingProviderLabel(value) {
 
   const labelMap = {
     ai: 'AI 搜索',
+    ai_search: '联网搜索',
+    web_read: '浏览网页',
     local: '本地题库',
     icodef: 'Icodef 题库',
     wanneng: '万能题库',
@@ -669,9 +755,9 @@ function parseCaptchaLogDescription(description) {
   });
 }
 
-function parseCaptchaLogDescriptionMap(description) {
+function parseCaptchaLogDescriptionMap(description, snapshot = {}) {
   const text = String(description || '').trim();
-  if (!text.startsWith('远程验证码')) {
+  if (!/^(远程|本地)验证码/.test(text)) {
     return {};
   }
 
@@ -684,14 +770,27 @@ function parseCaptchaLogDescriptionMap(description) {
     return acc;
   }, {});
 
+  for (const key of fields) {
+    if (!parsed[key] && snapshot[key] !== undefined && snapshot[key] !== null && typeof snapshot[key] !== 'object') {
+      parsed[key] = String(snapshot[key]);
+    }
+  }
+  if (typeof snapshot.status === 'string' && /^(success|succeeded|failed|error|pending|running)$/.test(snapshot.status)) {
+    parsed.result ||= snapshot.status;
+    if (parsed.status === snapshot.status) delete parsed.status;
+  }
+  if (text.startsWith('本地验证码') && !parsed.step) {
+    parsed.step = text.startsWith('本地验证码生成') ? 'local_generate' : 'local_check';
+  }
+
   if (!parsed.step && !parsed.result) {
     return {};
   }
 
   const resultText = parsed.result === 'success' ? '成功' : (parsed.result === 'failed' ? '失败' : '');
-  const summaryBase = text.split(/\s+/)[0] || '远程验证码';
+  const summaryBase = text.split(/\s+/)[0] || '验证码';
   return {
-    summary: `${summaryBase}${resultText}`,
+    summary: resultText && !summaryBase.endsWith(resultText) ? `${summaryBase}${resultText}` : summaryBase,
     ...parsed,
   };
 }

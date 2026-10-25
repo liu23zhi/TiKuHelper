@@ -398,13 +398,13 @@ function buildBillingRecordFeeItemTitle(item) {
   const category = String(item?.category || '').trim()
   const callSuffix = item?.callIndex > 0 ? ` 第${item.callIndex}次` : ''
   if (item?.provider === 'ai_search') {
-    return 'AI 搜索'
+    return '联网搜索'
   }
-  if (category === 'AI模型调用') {
-    return `${category}${callSuffix}`
+  if (item?.provider === 'ai' || category === 'AI模型调用') {
+    return `AI 模型调用${callSuffix}`
   }
-  if (category === '网页转Markdown') {
-    return `网页读取${callSuffix}`
+  if (item?.provider === 'web_read' || category === '网页转Markdown') {
+    return `浏览网页${callSuffix}`
   }
   if (category) {
     return `${category}${callSuffix}`

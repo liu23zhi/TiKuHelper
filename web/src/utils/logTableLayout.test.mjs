@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { buildLogStructuredFields } from './logListHelpers.mjs';
+import { buildLogStructuredFields, LOG_MODULE_OPTIONS } from './logListHelpers.mjs';
 
 const pagePath = new URL('../pages/LogList/index.vue', import.meta.url);
 
@@ -23,10 +23,12 @@ test('log table has the requested columns, fixed layout, and wrapping centered c
   assert.doesNotMatch(source, /log-cell-nowrap/);
 });
 
-test('log widths account for the named samples and expand entire snapshot columns', async () => {
+test('log widths account for the named samples and expand entire detail and snapshot columns', async () => {
   const source = await readFile(pagePath, 'utf8');
   assert.match(source, /const logColumnWidths =/);
-  assert.match(source, /moduleLabels = \['认证', '题目', '搜题', 'AI 兜底', '系统', '验证码', '用户管理', '账单管理'\]/);
+  assert.match(source, /moduleLabels = LOG_MODULE_OPTIONS\.map\(\(option\) => option\.label\)/);
+  assert.match(source, /moduleOptions: LOG_MODULE_OPTIONS/);
+  assert.deepEqual(LOG_MODULE_OPTIONS.slice(-3).map((option) => option.label), ['短信', '充值', '访问令牌']);
   assert.match(source, /module: Math\.max\(\.\.\.moduleLabels\.map/);
   for (const [key, width] of Object.entries({
     createTime: 112, username: 170, clientIp: 262, qid: 104,
@@ -38,9 +40,62 @@ test('log widths account for the named samples and expand entire snapshot column
     assert.match(source, new RegExp(`${key}: ${width}(?:,|\\b)`));
   }
   assert.match(source, /\? 236 : logColumnWidths\[field\]/);
+  assert.match(source, /expandedColumnWidth\('detail'\)/);
   assert.match(source, /expandedColumnWidth\('requestSnapshot'\)/);
   assert.match(source, /expandedColumnWidth\('responseSnapshot'\)/);
+  assert.match(source, /\['hitProvider', 'detail', 'requestSnapshot', 'responseSnapshot'\]/);
   assert.match(source, /Object\.values\(logColumnWidths\)\.reduce\(\(sum, width\) => sum \+ width, 0\)/);
+});
+
+test('log detail previews use measured overflow and preserve expand/collapse state per row', async () => {
+  const source = await readFile(pagePath, 'utf8');
+  assert.match(source, /<template #detail="\{ record \}">\s*<OverflowTableText\s+:text="buildTableDetail\(record\)"\s+:expanded="isSnapshotExpanded\(record\.id, 'detail'\)"\s+@toggle="toggleSnapshotExpanded\(record\.id, 'detail'\)"/);
+
+  const componentSource = await readFile(new URL('../components/OverflowTableText.vue', import.meta.url), 'utf8');
+  const script = componentSource.match(/<script>([\s\S]*?)<\/script>/)[1]
+    .replace(/import[^;]+;/, '')
+    .replace('export default', 'return');
+  const mounted = [];
+  const unmounted = [];
+  const watchers = [];
+  let resizeCallback;
+  let observedElement;
+  let disconnected = false;
+  const component = new Function('nextTick', 'onBeforeUnmount', 'onMounted', 'ref', 'watch', 'ResizeObserver', script)(
+    (callback) => callback ? Promise.resolve(callback()) : Promise.resolve(),
+    (callback) => unmounted.push(callback),
+    (callback) => mounted.push(callback),
+    (value) => ({ value }),
+    (getter, callback) => watchers.push({ getter, callback }),
+    class {
+      constructor(callback) { resizeCallback = callback; }
+      observe(element) { observedElement = element; }
+      disconnect() { disconnected = true; }
+    },
+  );
+  const props = { text: '三行内的完整日志', expanded: false, lines: component.props.lines.default };
+  const state = component.setup(props);
+  const element = { clientHeight: 72, scrollHeight: 72 };
+  state.content.value = element;
+  mounted.forEach((callback) => callback());
+  assert.equal(props.lines, 3);
+  assert.equal(observedElement, element);
+  assert.equal(state.overflowing.value, false, '完整显示时不出现查看详情');
+
+  element.scrollHeight = 96;
+  resizeCallback();
+  assert.equal(state.overflowing.value, true, '容器变窄后重新判断三行溢出');
+  props.expanded = true;
+  await watchers[0].callback();
+  assert.match(componentSource, /v-if="expanded \|\| overflowing"/);
+  assert.match(componentSource, /__content--expanded\s*\{[^}]*-webkit-line-clamp:\s*unset;[^}]*overflow:\s*visible;/);
+  props.expanded = false;
+  props.text = '短日志';
+  element.scrollHeight = 72;
+  await watchers[0].callback();
+  assert.equal(state.overflowing.value, false, '收起或内容变短后恢复完整预览');
+  unmounted.forEach((callback) => callback());
+  assert.equal(disconnected, true);
 });
 
 test('log request parameters can be rendered one per line without changing detail text', () => {

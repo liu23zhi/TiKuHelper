@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 )
@@ -129,8 +130,9 @@ type WechatBindTokenStore struct {
 }
 
 type WechatLoginSession struct {
-	CreatedAt time.Time
-	ExpiresAt time.Time
+	CreatedAt       time.Time
+	ExpiresAt       time.Time
+	completedResult *WechatLoginStatusResult
 }
 
 type WechatLoginSessionStore struct {
@@ -175,6 +177,27 @@ func (s *WechatLoginSessionStore) Resolve(loginToken string, now time.Time) (Wec
 		return WechatLoginSession{}, fmt.Errorf("微信二维码已过期，请刷新")
 	}
 	return session, nil
+}
+
+func (s *WechatLoginSessionStore) completeLogin(loginToken string, resolve func() (WechatLoginStatusResult, error)) (WechatLoginStatusResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	token := strings.TrimSpace(loginToken)
+	session, ok := s.sessions[token]
+	if !ok || token == "" || !time.Now().Before(session.ExpiresAt) {
+		return WechatLoginStatusResult{}, fmt.Errorf("微信二维码已过期，请刷新")
+	}
+	if session.completedResult != nil {
+		return *session.completedResult, nil
+	}
+	// Serialize the final local authentication only; upstream polling happens
+	// before this lock, so concurrent successful polls issue one JWT and audit.
+	result, err := resolve()
+	if err == nil && result.Status == WechatLoginStatusSuccess {
+		session.completedResult = &result
+		s.sessions[token] = session
+	}
+	return result, err
 }
 
 func normalizeWechatQRCodeTTL(expireSeconds int) time.Duration {
@@ -313,8 +336,12 @@ func CheckWechatLoginStatusWithDB(db *gorm.DB, input WechatLoginStatusInput) (We
 	if sessionStore == nil {
 		sessionStore = DefaultWechatLoginSessionStore
 	}
-	if _, err := sessionStore.Resolve(input.LoginToken, time.Now()); err != nil {
+	session, err := sessionStore.Resolve(input.LoginToken, time.Now())
+	if err != nil {
 		return WechatLoginStatusResult{}, err
+	}
+	if session.completedResult != nil {
+		return *session.completedResult, nil
 	}
 	upstream, err := fetchWechatUpstreamStatus(input.Client, input.LoginToken)
 	if err != nil {
@@ -326,7 +353,9 @@ func CheckWechatLoginStatusWithDB(db *gorm.DB, input WechatLoginStatusInput) (We
 	case WechatLoginStatusScanned:
 		return WechatLoginStatusResult{Status: WechatLoginStatusScanned}, nil
 	case WechatLoginStatusSuccess:
-		return resolveWechatLoginResultByID(db, input.Store, upstream.WechatID, input.RequestIP)
+		return sessionStore.completeLogin(input.LoginToken, func() (WechatLoginStatusResult, error) {
+			return resolveWechatLoginResultByID(db, input.Store, upstream.WechatID, input.RequestIP)
+		})
 	default:
 		return WechatLoginStatusResult{Status: WechatLoginStatusPending}, nil
 	}
@@ -776,6 +805,14 @@ func issueWechatJWTWithDB(db *gorm.DB, user *entity.User, requestIP string) (str
 	}
 	user.LastLoginAt = &now
 	user.LastLoginIP = clientIP
+	if err := WriteAccountAuditWithDB(db, AccountAuditEvent{
+		UserID: user.ID, Username: user.Username, Module: "auth", Action: 10,
+		Description: "微信登录成功", ClientIP: clientIP,
+		Request: map[string]any{"scene": "wechat"},
+		Result:  map[string]any{"status": "success", "message": "微信登录成功"},
+	}); err != nil {
+		logger.SysError("微信登录成功，但操作日志写入失败")
+	}
 	return jwt, nil
 }
 

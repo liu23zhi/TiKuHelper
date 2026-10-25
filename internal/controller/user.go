@@ -45,8 +45,8 @@ var unbindCurrentUserWechatWithDB = func(userID int32) (entity.User, error) {
 	return service.UnbindWechatFromUserWithDB(dao.User.UnderlyingDB(), userID)
 }
 
-var verifySMSCodeWithDB = func(phone string, scene string, smsCode string) error {
-	return service.VerifySMSCodeWithDB(dao.User.UnderlyingDB(), phone, scene, smsCode)
+var verifySMSCodeWithDB = func(phone string, scene string, smsCode string) (service.SMSVerificationEvidence, error) {
+	return service.VerifySMSCodeDetailedWithDB(dao.User.UnderlyingDB(), phone, scene, smsCode)
 }
 
 var consumeCaptchaTokenWithDB = func(token string, scene string, requestIP string) error {
@@ -308,7 +308,8 @@ func UserLogin(c *gin.Context) {
 		}
 		user.LastLoginAt = &now
 		user.LastLoginIP = clientIP
-		writeAuditLog(user, "auth", logActionLogin, "用户登录成功", clientIP, 0, "", "")
+		bindSuccessfulVerification(*user, captchaToken, service.CaptchaSceneLoginPassword, service.SMSVerificationEvidence{})
+		recordAccountAudit(c, user, "auth", logActionLogin, "用户登录成功", map[string]any{"status": "success", "message": "用户登录成功", "scene": "password"})
 		setAuthCookie(c, jwt)
 		c.JSON(200, gin.H{
 			"message": "user login",
@@ -385,6 +386,7 @@ func UserRegister(c *gin.Context) {
 		return
 	}
 	registrationFlowToken := strings.TrimSpace(payload.RegistrationFlowToken)
+	var smsEvidence service.SMSVerificationEvidence
 	if registrationFlowToken != "" {
 		hashedPassword, err := util.HashPassword(password)
 		if err != nil {
@@ -415,9 +417,11 @@ func UserRegister(c *gin.Context) {
 				if err := service.ConsumeCaptchaTokenInTx(tx, strings.TrimSpace(payload.CaptchaToken), service.CaptchaSceneRegisterSubmit, strings.TrimSpace(c.ClientIP())); err != nil {
 					return err
 				}
-				if err := service.VerifySMSCodeInTx(tx, phone, service.SMSSceneRegister, smsCode); err != nil {
+				evidence, err := service.VerifySMSCodeDetailedInTx(tx, phone, service.SMSSceneRegister, smsCode)
+				if err != nil {
 					return err
 				}
+				smsEvidence = evidence
 				bonusAmount, err := service.GetNewUserBonusAmountWithDB(tx)
 				if err != nil {
 					return err
@@ -444,6 +448,8 @@ func UserRegister(c *gin.Context) {
 			c.JSON(status, gin.H{"message": message})
 			return
 		}
+		bindSuccessfulVerification(user, payload.CaptchaToken, service.CaptchaSceneRegisterSubmit, smsEvidence)
+		recordAccountAudit(c, &user, "auth", 12, "用户注册成功", map[string]any{"status": "success", "message": "用户注册成功", "scene": "wechat_register"})
 		c.JSON(http.StatusOK, user)
 		return
 	}
@@ -460,7 +466,8 @@ func UserRegister(c *gin.Context) {
 		})
 		return
 	}
-	if err := verifySMSCodeWithDB(phone, service.SMSSceneRegister, smsCode); err != nil {
+	smsEvidence, err = verifySMSCodeWithDB(phone, service.SMSSceneRegister, smsCode)
+	if err != nil {
 		c.JSON(400, gin.H{"message": err.Error()})
 		return
 	}
@@ -501,6 +508,8 @@ func UserRegister(c *gin.Context) {
 		})
 		return
 	}
+	bindSuccessfulVerification(user, payload.CaptchaToken, service.CaptchaSceneRegisterSubmit, smsEvidence)
+	recordAccountAudit(c, &user, "auth", 12, "用户注册成功", map[string]any{"status": "success", "message": "用户注册成功", "scene": "register"})
 	c.JSON(200, user)
 }
 
@@ -543,7 +552,7 @@ func SendPublicSMSCode(c *gin.Context) {
 	}
 	sendSMSWithIdempotency(c, "public-sms", "send-code", payload,
 		func() error {
-			return consumeCaptchaTokenWithDB(strings.TrimSpace(payload.CaptchaToken), captchaScene, input.RequestIP)
+			return consumeSMSCaptcha(payload.CaptchaToken, captchaScene, input.RequestIP, &input)
 		},
 		func() error { return sendPublicSMSCodeWithDB(input) })
 }
@@ -576,7 +585,7 @@ func SendUserPhoneChangeSMSCode(c *gin.Context) {
 	}
 	sendSMSWithIdempotency(c, fmt.Sprintf("user:%d", currentUser.ID), "sms-change-phone", payload,
 		func() error {
-			return consumeCaptchaTokenWithDB(strings.TrimSpace(payload.CaptchaToken), service.CaptchaSceneSMSSendChangePhone, input.RequestIP)
+			return consumeSMSCaptcha(payload.CaptchaToken, service.CaptchaSceneSMSSendChangePhone, input.RequestIP, &input)
 		},
 		func() error { return sendUserPhoneChangeSMSCodeWithDB(input) })
 }
@@ -668,6 +677,9 @@ func UpdateCurrentUserPhone(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
+	if !samePhone(currentUser.Phone, updated.Phone) {
+		recordAccountAudit(c, &updated, "user", 15, "用户修改手机号", map[string]any{"status": "success", "message": "手机号修改成功", "targetUserId": updated.ID, "before": map[string]any{"phone": auditPhoneValue(currentUser.Phone)}, "after": map[string]any{"phone": auditPhoneValue(updated.Phone)}})
+	}
 	c.JSON(http.StatusOK, updated)
 }
 
@@ -708,6 +720,9 @@ func UpdateCurrentUserProfile(c *gin.Context) {
 		}
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
+	}
+	if currentUser.Username != updated.Username || currentUser.Nickname != updated.Nickname {
+		recordAccountAudit(c, &updated, "user", 16, "用户修改资料", map[string]any{"status": "success", "message": "用户资料修改成功", "targetUserId": updated.ID, "before": map[string]any{"username": currentUser.Username, "nickname": currentUser.Nickname}, "after": map[string]any{"username": updated.Username, "nickname": updated.Nickname}})
 	}
 	c.JSON(http.StatusOK, updated)
 }
@@ -820,7 +835,8 @@ func UserSMSLogin(c *gin.Context) {
 		c.JSON(400, gin.H{"message": "用户已被禁用"})
 		return
 	}
-	if err := verifySMSCodeWithDB(phone, service.SMSSceneLogin, payload.SMSCode); err != nil {
+	smsEvidence, err := verifySMSCodeWithDB(phone, service.SMSSceneLogin, payload.SMSCode)
+	if err != nil {
 		c.JSON(400, gin.H{"message": err.Error()})
 		return
 	}
@@ -840,12 +856,16 @@ func UserSMSLogin(c *gin.Context) {
 	}
 	user.LastLoginAt = &now
 	user.LastLoginIP = clientIP
-	writeAuditLog(&user, "auth", logActionLogin, "用户短信登录成功", clientIP, 0, "", "")
+	bindSuccessfulVerification(user, payload.CaptchaToken, service.CaptchaSceneLoginSMS, smsEvidence)
+	recordAccountAudit(c, &user, "auth", logActionLogin, "用户短信登录成功", map[string]any{"status": "success", "message": "用户短信登录成功", "scene": "sms"})
 	setAuthCookie(c, jwt)
 	c.JSON(200, gin.H{"message": "user login", "jwt": jwt})
 }
 
 func UserLogout(c *gin.Context) {
+	if user := optionalLogoutUser(c); user != nil {
+		recordAccountAudit(c, user, "auth", 13, "用户退出登录", map[string]any{"status": "success", "message": "用户退出登录"})
+	}
 	clearAuthCookie(c)
 	c.JSON(http.StatusOK, gin.H{"message": "已退出登录"})
 }
@@ -1099,6 +1119,7 @@ func UpdateUser(c *gin.Context) {
 			return
 		}
 	}
+	previousProfile := *target
 	err = dao.User.UnderlyingDB().Transaction(func(tx *gorm.DB) error {
 		if _, err := service.UpdateUserPhoneWithDB(tx, target.ID, payload.Phone, payload.ForceReassignPhone); err != nil {
 			return err
@@ -1122,6 +1143,12 @@ func UpdateUser(c *gin.Context) {
 	if err != nil {
 		c.JSON(400, gin.H{"message": err.Error()})
 		return
+	}
+	if !samePhone(previousProfile.Phone, target.Phone) {
+		recordAccountAudit(c, currentUser, "user", 15, "管理员修改用户手机号", map[string]any{"status": "success", "message": "用户手机号修改成功", "targetUserId": target.ID, "before": map[string]any{"phone": auditPhoneValue(previousProfile.Phone)}, "after": map[string]any{"phone": auditPhoneValue(target.Phone)}})
+	}
+	if previousProfile.Nickname != target.Nickname || previousProfile.Role != target.Role || previousProfile.Status != target.Status {
+		recordAccountAudit(c, currentUser, "user", 16, "管理员修改用户资料", map[string]any{"status": "success", "message": "用户资料修改成功", "targetUserId": target.ID, "before": map[string]any{"nickname": previousProfile.Nickname, "role": previousProfile.Role, "status": previousProfile.Status}, "after": map[string]any{"nickname": target.Nickname, "role": target.Role, "status": target.Status}})
 	}
 	c.JSON(200, target)
 }
@@ -1183,6 +1210,7 @@ func ResetUserPassword(c *gin.Context) {
 		})
 		return
 	}
+	recordAccountAudit(c, currentUser, "user", 14, "管理员重置用户密码", map[string]any{"status": "success", "message": "用户密码重置成功", "targetUserId": target.ID})
 
 	c.JSON(200, gin.H{
 		"message": "重置密码成功",

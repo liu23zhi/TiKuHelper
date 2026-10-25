@@ -27,8 +27,8 @@ var updateAccessToken = func(user entity.User, tokenID int32, input service.Upda
 	return service.UpdateAccessTokenWithDB(manager.GetManager().GetDB(), user, tokenID, input)
 }
 
-var deleteAccessToken = func(user entity.User, tokenID int32) error {
-	return service.DeleteAccessTokenWithDB(manager.GetManager().GetDB(), user, tokenID)
+var deleteAccessToken = func(user entity.User, tokenID int32, clientIP string) error {
+	return service.DeleteAccessTokenWithAuditWithDB(manager.GetManager().GetDB(), user, tokenID, clientIP)
 }
 
 func AccessTokenList(c *gin.Context) {
@@ -63,6 +63,7 @@ func CreateAccessToken(c *gin.Context) {
 		return
 	}
 
+	input.ClientIP = strings.TrimSpace(c.ClientIP())
 	created, err := createAccessToken(operator, input)
 	if err != nil {
 		writeAccessTokenError(c, err, "创建访问令牌失败")
@@ -94,6 +95,7 @@ func UpdateAccessToken(c *gin.Context) {
 		return
 	}
 
+	input.ClientIP = strings.TrimSpace(c.ClientIP())
 	updated, err := updateAccessToken(operator, int32(tokenID), input)
 	if err != nil {
 		writeAccessTokenError(c, err, "更新访问令牌失败")
@@ -117,7 +119,7 @@ func DeleteAccessToken(c *gin.Context) {
 		return
 	}
 
-	if err := deleteAccessToken(operator, int32(tokenID)); err != nil {
+	if err := deleteAccessToken(operator, int32(tokenID), strings.TrimSpace(c.ClientIP())); err != nil {
 		writeAccessTokenError(c, err, "删除访问令牌失败")
 		return
 	}

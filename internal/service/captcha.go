@@ -89,10 +89,14 @@ const (
 	captchaLogActionRemoteGenerate    = int32(20)
 	captchaLogActionRemoteCheck       = int32(21)
 	captchaLogActionRemoteSecondCheck = int32(22)
+	captchaLogActionLocalGenerate     = int32(23)
+	captchaLogActionLocalCheck        = int32(24)
 
 	remoteCaptchaLogStepGenerate    = "remote_gen"
 	remoteCaptchaLogStepCheck       = "remote_check"
 	remoteCaptchaLogStepSecondCheck = "remote_check2"
+	localCaptchaLogStepGenerate     = "local_gen"
+	localCaptchaLogStepCheck        = "local_check"
 )
 
 type remoteCaptchaLogEvent struct {
@@ -144,14 +148,14 @@ func randomHex(length int) string {
 }
 
 func truncateLogText(value string, limit int) string {
-	text := strings.TrimSpace(value)
+	text := []rune(strings.TrimSpace(value))
 	if limit <= 0 || len(text) <= limit {
-		return text
+		return string(text)
 	}
 	if limit <= 3 {
-		return text[:limit]
+		return string(text[:limit])
 	}
-	return text[:limit-3] + "..."
+	return string(text[:limit-3]) + "..."
 }
 
 func boolLogValue(value bool) string {
@@ -162,6 +166,15 @@ func boolLogValue(value bool) string {
 }
 
 func writeRemoteCaptchaLog(db *gorm.DB, event remoteCaptchaLogEvent) {
+	event.ResponseSnapshot = captchaResponseAuditSnapshot(event.ResponseSnapshot)
+	writeCaptchaLog(db, event, "remote:")
+}
+
+func writeLocalCaptchaLog(db *gorm.DB, event remoteCaptchaLogEvent) {
+	writeCaptchaLog(db, event, "local:")
+}
+
+func writeCaptchaLog(db *gorm.DB, event remoteCaptchaLogEvent, sourcePrefix string) {
 	if db == nil {
 		return
 	}
@@ -181,6 +194,10 @@ func writeRemoteCaptchaLog(db *gorm.DB, event remoteCaptchaLogEvent) {
 		descriptionPrefix = "远程验证码校验"
 	case remoteCaptchaLogStepSecondCheck:
 		descriptionPrefix = "远程验证码二验"
+	case localCaptchaLogStepGenerate:
+		descriptionPrefix = "本地验证码生成"
+	case localCaptchaLogStepCheck:
+		descriptionPrefix = "本地验证码校验"
 	}
 
 	parts := []string{
@@ -211,16 +228,21 @@ func writeRemoteCaptchaLog(db *gorm.DB, event remoteCaptchaLogEvent) {
 	}
 	parts = append(parts, fmt.Sprintf("hasKey=%s", boolLogValue(event.HasKey)))
 
+	correlationID := ""
+	if captchaID := strings.TrimSpace(event.CaptchaID); captchaID != "" {
+		correlationID = sourcePrefix + captchaID
+	}
 	entry := entity.Log{
-		UserID:      0,
-		Username:    "anonymous",
-		Module:      captchaLogModule,
-		Action:      event.Action,
-		Description: truncateLogText(strings.Join(parts, " "), 255),
-		ClientIP:    strings.TrimSpace(event.RequestIP),
-		OldAnswer:   truncateLogText(event.RequestSnapshot, 4000),
-		NewAnswer:   truncateLogText(event.ResponseSnapshot, 4000),
-		CreateTime:  captchaNow(),
+		UserID:        0,
+		Username:      "",
+		Module:        captchaLogModule,
+		Action:        event.Action,
+		Description:   truncateLogText(strings.Join(parts, " "), 255),
+		CorrelationID: correlationID,
+		ClientIP:      strings.TrimSpace(event.RequestIP),
+		OldAnswer:     truncateLogText(event.RequestSnapshot, 4000),
+		NewAnswer:     truncateLogText(event.ResponseSnapshot, 4000),
+		CreateTime:    captchaNow(),
 	}
 	_ = db.Session(&gorm.Session{NewDB: true}).Create(&entry).Error
 }
@@ -360,11 +382,27 @@ func buildCaptchaImageData(code string) string {
 	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes())
 }
 
-func CreateCaptchaChallengeWithDB(db *gorm.DB, scene string, requestIP string) (CaptchaChallengeResult, error) {
+func CreateCaptchaChallengeWithDB(db *gorm.DB, scene string, requestIP string) (result CaptchaChallengeResult, resultErr error) {
+	startedAt := captchaNow()
+	defer func() {
+		status := "success"
+		if resultErr != nil {
+			status = "failed"
+		}
+		writeLocalCaptchaLog(db, remoteCaptchaLogEvent{
+			Action: captchaLogActionLocalGenerate, Step: localCaptchaLogStepGenerate,
+			Result: status, Scene: strings.TrimSpace(scene), CaptchaID: result.ChallengeID,
+			RequestIP: requestIP, Duration: captchaNow().Sub(startedAt),
+			ResponseSnapshot: "result=" + status,
+		})
+	}()
 	if !isSupportedCaptchaScene(scene) {
 		return CaptchaChallengeResult{}, fmt.Errorf("人机验证场景不正确")
 	}
 	challengeDB := captchaChallengeDB(db)
+	if challengeDB == nil {
+		return CaptchaChallengeResult{}, fmt.Errorf("人机验证服务不可用")
+	}
 	code := captchaCodeGenerator()
 	now := captchaNow()
 	challengeID := randomHex(16)
@@ -386,44 +424,56 @@ func CreateCaptchaChallengeWithDB(db *gorm.DB, scene string, requestIP string) (
 	}, nil
 }
 
-func VerifyCaptchaChallengeWithDB(db *gorm.DB, challengeID string, scene string, captchaCode string, requestIP string) (CaptchaTokenResult, error) {
-	challengeDB := captchaChallengeDB(db)
-	tokenDB := captchaTokenDB(db)
-
-	var record entity.CaptchaChallenge
-	if err := challengeDB.Where("challenge_id = ? AND scene = ?", strings.TrimSpace(challengeID), strings.TrimSpace(scene)).First(&record).Error; err != nil {
-		return CaptchaTokenResult{}, fmt.Errorf("人机验证不存在或已过期")
+func VerifyCaptchaChallengeWithDB(db *gorm.DB, challengeID string, scene string, captchaCode string, requestIP string) (result CaptchaTokenResult, resultErr error) {
+	startedAt := captchaNow()
+	defer func() {
+		status := "success"
+		message := "本地验证码校验成功"
+		if resultErr != nil {
+			status, message = "failed", "本地验证码校验失败"
+		}
+		writeLocalCaptchaLog(db, remoteCaptchaLogEvent{
+			Action: captchaLogActionLocalCheck, Step: localCaptchaLogStepCheck,
+			Result: status, Scene: strings.TrimSpace(scene), CaptchaID: strings.TrimSpace(challengeID),
+			RequestIP: requestIP, Duration: captchaNow().Sub(startedAt),
+			ResponseSnapshot: "result=" + status + " message=" + message,
+		})
+	}()
+	if db == nil {
+		return CaptchaTokenResult{}, fmt.Errorf("人机验证服务不可用")
 	}
-	if record.Status != CaptchaChallengeStatusPending || captchaNow().After(record.ExpiresAt) {
-		_ = captchaChallengeDB(db).Model(&record).Update("status", CaptchaChallengeStatusExpired).Error
-		return CaptchaTokenResult{}, fmt.Errorf("人机验证不存在或已过期")
-	}
-	if record.AnswerHash != hashCaptchaValue(captchaCode) {
-		return CaptchaTokenResult{}, fmt.Errorf("图形验证码错误")
-	}
-
-	now := captchaNow()
-	verifiedAt := now
-	if err := captchaChallengeDB(db).Model(&record).Updates(map[string]any{
-		"status":      CaptchaChallengeStatusVerified,
-		"verified_at": &verifiedAt,
-	}).Error; err != nil {
-		return CaptchaTokenResult{}, err
-	}
-
-	tokenValue := randomHex(24)
-	token := entity.CaptchaToken{
-		Token:       tokenValue,
-		Scene:       record.Scene,
-		ChallengeID: record.ChallengeID,
-		RequestIP:   strings.TrimSpace(requestIP),
-		Status:      CaptchaTokenStatusActive,
-		ExpiresAt:   now.Add(captchaTTL),
-	}
-	if err := tokenDB.Create(&token).Error; err != nil {
-		return CaptchaTokenResult{}, err
-	}
-	return CaptchaTokenResult{Token: tokenValue, Scene: token.Scene, ExpiresAt: token.ExpiresAt}, nil
+	resultErr = db.Transaction(func(tx *gorm.DB) error {
+		var record entity.CaptchaChallenge
+		if err := captchaChallengeDB(tx).Where("challenge_id = ? AND scene = ?", strings.TrimSpace(challengeID), strings.TrimSpace(scene)).First(&record).Error; err != nil {
+			return fmt.Errorf("人机验证不存在或已过期")
+		}
+		if record.Status != CaptchaChallengeStatusPending || captchaNow().After(record.ExpiresAt) {
+			return fmt.Errorf("人机验证不存在或已过期")
+		}
+		if record.AnswerHash != hashCaptchaValue(captchaCode) {
+			return fmt.Errorf("图形验证码错误")
+		}
+		now := captchaNow()
+		update := captchaChallengeDB(tx).Where("id = ? AND status = ?", record.ID, CaptchaChallengeStatusPending).Updates(map[string]any{
+			"status": CaptchaChallengeStatusVerified, "verified_at": &now,
+		})
+		if update.Error != nil {
+			return update.Error
+		}
+		if update.RowsAffected != 1 {
+			return fmt.Errorf("人机验证不存在或已过期")
+		}
+		token := entity.CaptchaToken{
+			Token: randomHex(24), Scene: record.Scene, ChallengeID: record.ChallengeID,
+			RequestIP: strings.TrimSpace(requestIP), Status: CaptchaTokenStatusActive, ExpiresAt: now.Add(captchaTTL),
+		}
+		if err := captchaTokenDB(tx).Create(&token).Error; err != nil {
+			return err
+		}
+		result = CaptchaTokenResult{Token: token.Token, Scene: token.Scene, ExpiresAt: token.ExpiresAt}
+		return nil
+	})
+	return result, resultErr
 }
 
 func VerifyRemoteCaptchaWithDB(db *gorm.DB, input RemoteCaptchaVerifyInput) (CaptchaTokenResult, error) {
@@ -586,7 +636,7 @@ func CheckRemoteCaptchaWithDB(input RemoteCaptchaProxyInput) ([]byte, string, er
 	req.Header.Set("Content-Type", "application/json;charset=UTF-8")
 	body, contentType, status, err := doRemoteCaptchaProxyRequest(client, req)
 	responseCaptchaID, remoteCode, remoteValid := extractRemoteCaptchaPayloadMetadata(body)
-	if responseCaptchaID != "" {
+	if requestCaptchaID == "" && responseCaptchaID != "" {
 		logBase.CaptchaID = responseCaptchaID
 	}
 	logBase.Result = "success"
@@ -644,10 +694,64 @@ func buildRemoteCaptchaRequestSnapshot(method string, path string, query map[str
 		parts = append(parts, "query="+values.Encode())
 	}
 	if len(body) > 0 {
-		parts = append(parts, "body="+truncateLogText(string(body), 2000))
+		parts = append(parts, "body="+captchaBodyAuditSnapshot(body, false))
 	}
 	parts = append(parts, "hasKey="+boolLogValue(hasKey))
 	return strings.Join(parts, " ")
+}
+
+func captchaBodyAuditSnapshot(body []byte, response bool) string {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "响应内容已省略"
+	}
+	var sanitize func(map[string]any) map[string]any
+	sanitize = func(fields map[string]any) map[string]any {
+		result := map[string]any{}
+		for key, value := range fields {
+			switch key {
+			case "id", "captchaId", "captcha_id", "type":
+				if text, ok := value.(string); ok {
+					result[key] = truncateLogText(text, 192)
+				}
+			case "code":
+				if number, ok := value.(float64); response && ok {
+					result[key] = number
+				}
+			case "success", "valid":
+				if boolean, ok := value.(bool); response && ok {
+					result[key] = boolean
+				}
+			case "message":
+				if text, ok := value.(string); response && ok {
+					result[key] = truncateLogText(text, 500)
+				}
+			case "data":
+				if nested, ok := value.(map[string]any); ok {
+					result[key] = sanitize(nested)
+				}
+			}
+		}
+		return result
+	}
+	encoded, _ := json.Marshal(sanitize(payload))
+	return string(encoded)
+}
+
+func captchaResponseAuditSnapshot(value string) string {
+	text := strings.TrimSpace(value)
+	if text == "" || text == "true" || text == "false" {
+		return text
+	}
+	if strings.HasPrefix(text, "{") {
+		return captchaBodyAuditSnapshot([]byte(text), true)
+	}
+	if strings.HasPrefix(text, "localError=") || strings.HasPrefix(text, "remoteError=") {
+		// Only fixed local messages reach this branch; upstream bodies are not
+		// copied verbatim because they may contain challenge solutions or tokens.
+		return "验证码服务处理失败"
+	}
+	return "响应内容已省略"
 }
 
 func doRemoteCaptchaProxyRequest(client *http.Client, req *http.Request) ([]byte, string, int, error) {
@@ -710,7 +814,8 @@ func ConsumeCaptchaTokenInTx(db *gorm.DB, tokenValue string, scene string, reque
 	}
 
 	var token entity.CaptchaToken
-	if err := tokenDB.Where("token = ?", trimmedToken).First(&token).Error; err != nil {
+	query := tokenDB.Where("token = ?", trimmedToken).Limit(1).Find(&token)
+	if query.Error != nil || query.RowsAffected != 1 {
 		return fmt.Errorf("请先完成人机验证")
 	}
 	if token.Scene != strings.TrimSpace(scene) {
@@ -725,8 +830,36 @@ func ConsumeCaptchaTokenInTx(db *gorm.DB, tokenValue string, scene string, reque
 	}
 
 	now := captchaNow()
-	return captchaTokenDB(db).Model(&token).Updates(map[string]any{
+	update := captchaTokenDB(db).Where("id = ? AND status = ?", token.ID, CaptchaTokenStatusActive).Updates(map[string]any{
 		"status":      CaptchaTokenStatusConsumed,
 		"consumed_at": &now,
-	}).Error
+	})
+	if update.Error != nil {
+		return update.Error
+	}
+	if update.RowsAffected != 1 {
+		return fmt.Errorf("人机验证已过期，请重新验证")
+	}
+	return nil
+}
+
+// ConsumedCaptchaCorrelationIDWithDB returns only server-validated evidence
+// from the token actually consumed in the requested authentication scene.
+func ConsumedCaptchaCorrelationIDWithDB(db *gorm.DB, tokenValue string, scene string) (string, error) {
+	if db == nil || strings.TrimSpace(tokenValue) == "" {
+		return "", fmt.Errorf("缺少已消费的人机验证凭证")
+	}
+	var token entity.CaptchaToken
+	query := captchaTokenDB(db).Where("token = ? AND scene = ? AND status = ? AND consumed_at IS NOT NULL", strings.TrimSpace(tokenValue), strings.TrimSpace(scene), CaptchaTokenStatusConsumed).Limit(1).Find(&token)
+	if query.Error != nil || query.RowsAffected != 1 {
+		return "", fmt.Errorf("缺少已消费的人机验证凭证")
+	}
+	challengeID := strings.TrimSpace(token.ChallengeID)
+	if challengeID == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(challengeID, "remote:") || strings.HasPrefix(challengeID, "local:") {
+		return challengeID, nil
+	}
+	return "local:" + challengeID, nil
 }

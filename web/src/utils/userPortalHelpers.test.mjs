@@ -198,7 +198,7 @@ test('billing record fee helpers render per-provider and total charges', () => {
   assert.match(html, /搜索答案，题目：混合题目/);
   assert.match(html, /Icodef 题库/);
   assert.match(html, /-¥ 1\.25/);
-  assert.match(html, /AI 搜索/);
+  assert.match(html, /AI 模型调用/);
   assert.match(html, /-¥ 0\.75/);
   assert.match(html, /class="billing-fee-item"/);
   assert.match(html, /class="billing-fee-total"/);
@@ -314,6 +314,7 @@ test('web read fee details prefer the structured URL and retain it in normalized
   }
   assert.equal(buildBillingRecordFeeDetails(record)[0].url, 'https://example.com/read?q=中 文&part=1')
   const html = buildBillingRecordFeeDetailHtml(record)
+  assert.match(html, />浏览网页</)
   assert.match(html, /https:\/\/example\.com\/read\?q=中 文&amp;part=1/)
   assert.doesNotMatch(html, /旧详情地址/)
 })
@@ -329,7 +330,23 @@ test('legacy web read detail retains query parameters and escapes URL text', () 
       detail: '网页：https://example.com/read?key=value&next=%3Cscript%3E；状态：completed',
     }],
   })
+  assert.match(html, />浏览网页</)
   assert.match(html, /网页：<\/span>\s*<span class="billing-fee-meta-value">https:\/\/example\.com\/read\?key=value&amp;next=%3Cscript%3E<\/span>/)
+})
+
+test('billing fee item labels distinguish model calls, internet search and browsing', () => {
+  const html = buildBillingRecordFeeDetailHtml({
+    direction: 'expense',
+    amount: 0.03,
+    feeDetails: [
+      { provider: 'ai', category: 'AI模型调用', callIndex: 1, amount: 0.01 },
+      { provider: 'ai_search', category: '联网搜索', callIndex: 1, amount: 0.01 },
+      { provider: 'web_read', category: '网页转Markdown', callIndex: 1, amount: 0.01 },
+    ],
+  })
+  assert.match(html, />AI 模型调用 第1次</)
+  assert.match(html, />联网搜索</)
+  assert.match(html, />浏览网页 第1次</)
 })
 
 test('billing record fee details render friendly AI search and model call labels', () => {
@@ -355,9 +372,9 @@ test('billing record fee details render friendly AI search and model call labels
   }
 
   const html = buildBillingRecordFeeDetailHtml(record)
-  assert.match(html, />AI 搜索</)
+  assert.match(html, />联网搜索</)
   assert.match(html, /billing-fee-meta-label">关键词：<\/span>\s*<span class="billing-fee-meta-value">怎么弄<\/span>/)
-  assert.match(html, /AI模型调用 第1次/)
+  assert.match(html, /AI 模型调用 第1次/)
   assert.match(html, /billing-fee-meta-label">模型：<\/span>\s*<span class="billing-fee-meta-value">gpt-6-sol<\/span>/)
   assert.match(html, /billing-fee-meta-label">最终倍率：<\/span>\s*<span class="billing-fee-meta-value">1\.97x<\/span>/)
   assert.match(html, /billing-fee-meta-label">Token数量：<\/span>\s*<span class="billing-fee-meta-value">2,000<\/span>/)
@@ -449,7 +466,7 @@ test('billing record fee details render call category and admin metadata', () =>
     feeDetails: [{ provider: 'ai', providerLabel: 'AI 搜索', category: 'AI模型调用', callIndex: 1, amount: 2, detail: 'model=gpt-6-sol；totalTokens=10' }],
   }
   const html = buildBillingRecordFeeDetailHtml(record)
-  assert.match(html, /AI模型调用 第1次/)
+  assert.match(html, /AI 模型调用 第1次/)
   assert.match(html, /操作管理员：admin（ID 7）/)
   assert.match(html, /调整模式：添加余额/)
   assert.match(html, /余额变化：¥ 1 → ¥ 3/)

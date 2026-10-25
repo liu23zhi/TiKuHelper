@@ -82,7 +82,11 @@
           <span>{{ buildStructuredFields(record).summary }}</span>
         </template>
         <template #detail="{ record }">
-          <span class="log-detail-cell">{{ buildTableDetail(record) }}</span>
+          <OverflowTableText
+            :text="buildTableDetail(record)"
+            :expanded="isSnapshotExpanded(record.id, 'detail')"
+            @toggle="toggleSnapshotExpanded(record.id, 'detail')"
+          />
         </template>
         <template #requestId="{ record }">
           <span>{{ buildStructuredFields(record).requestId }}</span>
@@ -174,6 +178,8 @@ import {
   formatValueWithLocation as formatValueWithLocationBase,
 } from '@/utils/locationHelpers.mjs';
 import {
+  LOG_MODULE_OPTIONS,
+  LOG_ACTION_OPTIONS,
   buildLogModuleLabel,
   buildLogUsername,
   buildLogLocalQuestionId,
@@ -229,7 +235,7 @@ const pagination = reactive({
   pageSizeOptions: ['10', '20', '50', '100']
 })
 const expandedSnapshots = reactive({})
-const moduleLabels = ['认证', '题目', '搜题', 'AI 兜底', '系统', '验证码', '用户管理', '账单管理']
+const moduleLabels = LOG_MODULE_OPTIONS.map((option) => option.label)
 const logColumnWidths = {
   createTime: 112, // 2026-10-25 plus cell padding
   module: Math.max(...moduleLabels.map((label) => [...label].reduce((width, character) => width + (character.codePointAt(0) > 127 ? 13 : 7), 0))) + 48,
@@ -253,7 +259,7 @@ function expandedColumnWidth(field) {
   return dataSource.value.some((record) => expandedSnapshots[`${record.id}:${field}`]) ? 236 : logColumnWidths[field]
 }
 const tableScrollX = computed(() => Object.values(logColumnWidths).reduce((sum, width) => sum + width, 0)
-  + ['hitProvider', 'requestSnapshot', 'responseSnapshot']
+  + ['hitProvider', 'detail', 'requestSnapshot', 'responseSnapshot']
     .reduce((sum, field) => sum + expandedColumnWidth(field) - logColumnWidths[field], 0))
 
 export default defineComponent({
@@ -274,27 +280,8 @@ export default defineComponent({
       expandedSnapshots,
       tableScrollX,
       isAdmin: isAdminUser(currentUser.value),
-      moduleOptions: [
-        { label: '认证', value: 'auth' },
-        { label: '题目', value: 'question' },
-        { label: '搜题', value: 'search' },
-        { label: 'AI 兜底', value: 'ai_fallback' },
-        { label: '系统', value: 'system' },
-        { label: '验证码', value: 'captcha' },
-        { label: '用户管理', value: 'user' },
-        { label: '账单管理', value: 'billing' },
-      ],
-      actionOptions: [
-        { label: '新增', value: 0 },
-        { label: '更新', value: 1 },
-        { label: '删除', value: 2 },
-        { label: '查询 / 搜题', value: 3 },
-        { label: '登录', value: 10 },
-        { label: 'AI 兜底', value: 11 },
-        { label: '远程验证码生成', value: 20 },
-        { label: '远程验证码校验', value: 21 },
-        { label: '远程验证码二验', value: 22 },
-      ],
+      moduleOptions: LOG_MODULE_OPTIONS,
+      actionOptions: LOG_ACTION_OPTIONS,
       columns: computed(() => [
         {
           title: '时间',
@@ -393,7 +380,7 @@ export default defineComponent({
           slots: {
             customRender: 'detail',
           },
-          width: logColumnWidths.detail,
+          width: expandedColumnWidth('detail'),
         },
         {
           title: '请求 ID',
@@ -630,12 +617,6 @@ export default defineComponent({
   display: block;
   white-space: pre-wrap;
   text-align: center;
-}
-
-.log-detail-cell {
-  display: block;
-  white-space: normal;
-  overflow-wrap: anywhere;
 }
 
 .log-params-cell {

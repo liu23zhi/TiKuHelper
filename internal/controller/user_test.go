@@ -803,7 +803,9 @@ func TestUserRegisterRejectsPasswordOverBcryptLimitAsBadRequest(t *testing.T) {
 		verifySMSCodeWithDB = originalSMS
 	}()
 	consumeCaptchaTokenWithDB = func(string, string, string) error { return nil }
-	verifySMSCodeWithDB = func(string, string, string) error { return nil }
+	verifySMSCodeWithDB = func(string, string, string) (service.SMSVerificationEvidence, error) {
+		return service.SMSVerificationEvidence{}, nil
+	}
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(fmt.Sprintf(`{"username":"register_overlong","password":%q,"phone":"13800000000","smsCode":"123456","captchaToken":"token"}`, strings.Repeat("a", 73)))
@@ -828,7 +830,9 @@ func TestUserRegisterAcceptsStrongPasswordAtBcryptLimit(t *testing.T) {
 		verifySMSCodeWithDB = originalSMS
 	}()
 	consumeCaptchaTokenWithDB = func(string, string, string) error { return nil }
-	verifySMSCodeWithDB = func(string, string, string) error { return nil }
+	verifySMSCodeWithDB = func(string, string, string) (service.SMSVerificationEvidence, error) {
+		return service.SMSVerificationEvidence{}, nil
+	}
 	password := "Aa1!" + strings.Repeat("x", 68)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -885,8 +889,8 @@ func TestUserRegisterCreatesPublicUserWithDefaults(t *testing.T) {
 	defer func() {
 		verifySMSCodeWithDB = original
 	}()
-	verifySMSCodeWithDB = func(phone string, scene string, smsCode string) error {
-		return nil
+	verifySMSCodeWithDB = func(phone string, scene string, smsCode string) (service.SMSVerificationEvidence, error) {
+		return service.SMSVerificationEvidence{}, nil
 	}
 
 	recorder := httptest.NewRecorder()
@@ -948,7 +952,9 @@ func TestUserRegisterAppliesNewUserBonusAndWritesBillingDetail(t *testing.T) {
 		verifySMSCodeWithDB = originalVerify
 	}()
 	consumeCaptchaTokenWithDB = func(string, string, string) error { return nil }
-	verifySMSCodeWithDB = func(string, string, string) error { return nil }
+	verifySMSCodeWithDB = func(string, string, string) (service.SMSVerificationEvidence, error) {
+		return service.SMSVerificationEvidence{}, nil
+	}
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -2175,9 +2181,9 @@ func TestUserSMSLoginSucceedsAndStoresLoginMetadata(t *testing.T) {
 		verifySMSCodeWithDB = original
 	}()
 	received := ""
-	verifySMSCodeWithDB = func(phone string, scene string, smsCode string) error {
+	verifySMSCodeWithDB = func(phone string, scene string, smsCode string) (service.SMSVerificationEvidence, error) {
 		received = phone + ":" + scene + ":" + smsCode
-		return nil
+		return service.SMSVerificationEvidence{}, nil
 	}
 
 	recorder := httptest.NewRecorder()
@@ -2247,9 +2253,9 @@ func TestUserRegisterCreatesPublicUserWithBoundPhone(t *testing.T) {
 		verifySMSCodeWithDB = original
 	}()
 	received := ""
-	verifySMSCodeWithDB = func(phone string, scene string, smsCode string) error {
+	verifySMSCodeWithDB = func(phone string, scene string, smsCode string) (service.SMSVerificationEvidence, error) {
 		received = phone + ":" + scene + ":" + smsCode
-		return nil
+		return service.SMSVerificationEvidence{}, nil
 	}
 
 	recorder := httptest.NewRecorder()

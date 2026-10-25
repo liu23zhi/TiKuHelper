@@ -30,10 +30,16 @@ var generateSMSCode = func() string {
 }
 
 type SendSMSCodeInput struct {
-	Phone        string `json:"phone"`
-	Scene        string `json:"scene"`
-	RequestIP    string `json:"requestIp"`
-	TargetUserID int32  `json:"targetUserId"`
+	Phone                string `json:"phone"`
+	Scene                string `json:"scene"`
+	RequestIP            string `json:"requestIp"`
+	TargetUserID         int32  `json:"targetUserId"`
+	CaptchaCorrelationID string `json:"-"`
+}
+
+type SMSVerificationEvidence struct {
+	SMSRecordID          int32
+	CaptchaCorrelationID string
 }
 
 func hashSMSCode(code string) string {
@@ -59,87 +65,154 @@ func smsVerificationDB(db *gorm.DB) *gorm.DB {
 }
 
 func SendSMSCodeWithDB(db *gorm.DB, input SendSMSCodeInput) error {
+	_, err := SendSMSCodeDetailedWithDB(db, input)
+	return err
+}
+
+func SendSMSCodeDetailedWithDB(db *gorm.DB, input SendSMSCodeInput) (SMSVerificationEvidence, error) {
+	input.Scene = strings.TrimSpace(input.Scene)
 	phone, _, err := NormalizePhone(input.Phone)
 	if err != nil {
-		return err
+		return SMSVerificationEvidence{}, err
 	}
 	settings, err := GetSystemSettingDetailWithDB(db)
 	if err != nil {
-		return err
+		return SMSVerificationEvidence{}, err
 	}
 	if strings.TrimSpace(settings.SMSBaoUsername) == "" || strings.TrimSpace(settings.SMSBaoSecret) == "" {
-		return fmt.Errorf("短信配置未完成")
+		return SMSVerificationEvidence{}, fmt.Errorf("短信配置未完成")
 	}
 	if strings.TrimSpace(input.Scene) == SMSSceneLogin && !settings.SMSLoginEnabled {
-		return fmt.Errorf("短信验证码登录未开启")
+		return SMSVerificationEvidence{}, fmt.Errorf("短信验证码登录未开启")
 	}
 	if strings.TrimSpace(input.Scene) == SMSSceneChangePhone && !settings.SMSLoginEnabled {
-		return fmt.Errorf("手机号功能未启用")
+		return SMSVerificationEvidence{}, fmt.Errorf("手机号功能未启用")
 	}
 	if strings.TrimSpace(input.Scene) == SMSSceneRegister && !settings.RegisterEnabled {
-		return fmt.Errorf("未开放注册")
+		return SMSVerificationEvidence{}, fmt.Errorf("未开放注册")
 	}
 
 	if err := ensureSMSSceneAllowed(db, phone, input.Scene, input.TargetUserID); err != nil {
-		return err
+		return SMSVerificationEvidence{}, err
 	}
 	if err := ensureSMSCooldown(db, phone, input.Scene); err != nil {
-		return err
+		return SMSVerificationEvidence{}, err
 	}
 
-	verificationDB := smsVerificationDB(db)
 	code := generateSMSCode()
 	provider := smsSender(settings)
+	startedAt := smsCodeNow()
 	if err := provider.SendSMS(phone, buildSMSCodeContent(settings, code)); err != nil {
-		return err
+		status, message := smsSendAuditFailure(err)
+		writeSMSSendAudit(db, input, phone, settings.SMSProvider, SMSVerificationEvidence{}, status, message, smsCodeNow().Sub(startedAt))
+		return SMSVerificationEvidence{}, fmt.Errorf("%s", message)
 	}
 
 	now := smsCodeNow()
-	_ = verificationDB.
-		Where("phone = ? AND scene = ? AND status = ?", phone, input.Scene, SMSCodeStatusPending).
-		Update("status", SMSCodeStatusCanceled).Error
-
 	record := entity.SMSVerificationCode{
-		Phone:     phone,
-		Scene:     input.Scene,
-		CodeHash:  hashSMSCode(code),
-		Status:    SMSCodeStatusPending,
-		ExpiresAt: now.Add(smsCodeTTL),
-		RequestIP: strings.TrimSpace(input.RequestIP),
+		Phone: phone, Scene: input.Scene, CodeHash: hashSMSCode(code),
+		Status: SMSCodeStatusPending, ExpiresAt: now.Add(smsCodeTTL),
+		RequestIP: strings.TrimSpace(input.RequestIP), CaptchaChallengeID: strings.TrimSpace(input.CaptchaCorrelationID),
 	}
-	return verificationDB.Create(&record).Error
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := smsVerificationDB(tx).Where("phone = ? AND scene = ? AND status = ?", phone, input.Scene, SMSCodeStatusPending).Update("status", SMSCodeStatusCanceled).Error; err != nil {
+			return err
+		}
+		return smsVerificationDB(tx).Create(&record).Error
+	}); err != nil {
+		writeSMSSendAudit(db, input, phone, settings.SMSProvider, SMSVerificationEvidence{}, "pending", "短信已发送，但验证码记录保存失败", smsCodeNow().Sub(startedAt))
+		return SMSVerificationEvidence{}, err
+	}
+	evidence := SMSVerificationEvidence{SMSRecordID: record.ID, CaptchaCorrelationID: record.CaptchaChallengeID}
+	writeSMSSendAudit(db, input, phone, settings.SMSProvider, evidence, "success", "短信发送成功", smsCodeNow().Sub(startedAt))
+	return evidence, nil
 }
 
-func VerifySMSCodeWithDB(db *gorm.DB, rawPhone string, scene string, smsCode string) error {
-	return db.Transaction(func(tx *gorm.DB) error {
-		return VerifySMSCodeInTx(tx, rawPhone, scene, smsCode)
+func smsSendAuditFailure(err error) (string, string) {
+	// Unknown transport results must not claim that the provider rejected a send.
+	switch err.Error() {
+	case "短信宝鉴权失败", "短信宝账号不存在", "短信宝余额不足", "短信宝 IP 受限", "短信内容含敏感词", "手机号格式错误", "当前短信配置仅允许发送国内手机号":
+		return "failed", err.Error()
+	default:
+		return "pending", "短信发送结果待确认，请勿重复发送"
+	}
+}
+
+func writeSMSSendAudit(db *gorm.DB, input SendSMSCodeInput, phone string, provider string, evidence SMSVerificationEvidence, status string, message string, duration time.Duration) {
+	correlationID, username := "", ""
+	if evidence.SMSRecordID > 0 {
+		correlationID = fmt.Sprintf("sms:%d", evidence.SMSRecordID)
+	}
+	if input.TargetUserID > 0 {
+		var user entity.User
+		if err := db.Session(&gorm.Session{NewDB: true}).Select("username").First(&user, input.TargetUserID).Error; err == nil {
+			username = user.Username
+		}
+	}
+	_ = WriteAccountAuditWithDB(db, AccountAuditEvent{
+		UserID: input.TargetUserID, Username: username, Module: "sms", Action: 30,
+		Description: message, ClientIP: strings.TrimSpace(input.RequestIP), CorrelationID: correlationID,
+		Request: map[string]any{"scene": input.Scene, "phone": MaskAuditPhone(phone), "provider": provider},
+		Result:  map[string]any{"status": status, "message": message, "durationMs": duration.Milliseconds(), "smsRecordId": evidence.SMSRecordID},
 	})
 }
 
+func VerifySMSCodeWithDB(db *gorm.DB, rawPhone string, scene string, smsCode string) error {
+	_, err := VerifySMSCodeDetailedWithDB(db, rawPhone, scene, smsCode)
+	return err
+}
+
 func VerifySMSCodeInTx(db *gorm.DB, rawPhone string, scene string, smsCode string) error {
+	_, err := VerifySMSCodeDetailedInTx(db, rawPhone, scene, smsCode)
+	return err
+}
+
+func VerifySMSCodeDetailedWithDB(db *gorm.DB, rawPhone string, scene string, smsCode string) (SMSVerificationEvidence, error) {
+	var evidence SMSVerificationEvidence
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		evidence, err = VerifySMSCodeDetailedInTx(tx, rawPhone, scene, smsCode)
+		return err
+	})
+	if err != nil {
+		return SMSVerificationEvidence{}, err
+	}
+	return evidence, nil
+}
+
+// VerifySMSCodeDetailedInTx returns the exact consumed SMS row, so a later
+// successful authentication never infers ownership from phone, IP or time.
+func VerifySMSCodeDetailedInTx(db *gorm.DB, rawPhone string, scene string, smsCode string) (SMSVerificationEvidence, error) {
 	phone, _, err := NormalizePhone(rawPhone)
 	if err != nil {
-		return err
+		return SMSVerificationEvidence{}, err
 	}
 	verificationDB := smsVerificationDB(db)
 	var record entity.SMSVerificationCode
 	if err := verificationDB.Where("phone = ? AND scene = ? AND status = ?", phone, scene, SMSCodeStatusPending).
 		Order("id desc").
 		First(&record).Error; err != nil {
-		return fmt.Errorf("验证码错误或已过期")
+		return SMSVerificationEvidence{}, fmt.Errorf("验证码错误或已过期")
 	}
 	if smsCodeNow().After(record.ExpiresAt) {
 		_ = smsVerificationDB(db).Model(&record).Update("status", SMSCodeStatusExpired).Error
-		return fmt.Errorf("验证码错误或已过期")
+		return SMSVerificationEvidence{}, fmt.Errorf("验证码错误或已过期")
 	}
 	if record.CodeHash != hashSMSCode(smsCode) {
-		return fmt.Errorf("验证码错误或已过期")
+		return SMSVerificationEvidence{}, fmt.Errorf("验证码错误或已过期")
 	}
 	now := smsCodeNow()
-	return smsVerificationDB(db).Model(&record).Updates(map[string]any{
+	update := smsVerificationDB(db).Where("id = ? AND status = ?", record.ID, SMSCodeStatusPending).Updates(map[string]any{
 		"status":      SMSCodeStatusUsed,
 		"consumed_at": &now,
-	}).Error
+	})
+	if update.Error != nil {
+		return SMSVerificationEvidence{}, update.Error
+	}
+	if update.RowsAffected != 1 {
+		return SMSVerificationEvidence{}, fmt.Errorf("验证码错误或已过期")
+	}
+	return SMSVerificationEvidence{SMSRecordID: record.ID, CaptchaCorrelationID: strings.TrimSpace(record.CaptchaChallengeID)}, nil
 }
 
 func ensureSMSSceneAllowed(db *gorm.DB, phone string, scene string, targetUserID int32) error {
