@@ -108,13 +108,17 @@ export function buildLogStructuredFields(record = {}, requestParamSeparator = ' 
       fallbackSnapshot,
       description,
     );
+    const errorCode = fallbackSnapshot?.error?.code || parsedAIFallbackDescription.code;
+    if (errorCode === 'INSUFFICIENT_BALANCE') {
+      channel.errors = ['当前余额不足，AI 兜底已禁用，请充值后再使用'];
+    }
     return {
       summary: parsedAIFallbackDescription.summary,
       requestId: parsedAIFallbackDescription.requestId || parsedAIFallbackDescription.taskId || '-',
       mode: buildRequestParamsLabel(request, requestParamSeparator),
       requestSource: 'AI 兜底接口',
       answerCount: parsedAIFallbackDescription.answers || '-',
-      hitProvider: buildAIRouteLabel(channel.provider, parsedAIFallbackDescription.aiRoute),
+      hitProvider: buildAIRouteLabel(channel.provider, resolveLogAIRoute(parsedAIFallbackDescription.aiRoute, channel.provider, request)),
       failureReasons: channel.errors,
       billingProvider: buildBillingProviderLabel(parsedAIFallbackDescription.billingProvider),
       requestSnapshot: request || '-',
@@ -144,7 +148,7 @@ export function buildLogStructuredFields(record = {}, requestParamSeparator = ' 
     mode: buildRequestParamsLabel(request, requestParamSeparator),
     requestSource: parsedDescription.summary ? '普通搜题接口' : '-',
     answerCount: parsedDescription.answers || '-',
-    hitProvider: buildAIRouteLabel(channel.provider, parsedDescription.aiRoute),
+    hitProvider: buildAIRouteLabel(channel.provider, resolveLogAIRoute(parsedDescription.aiRoute, channel.provider, request)),
     failureReasons: channel.errors,
     billingProvider: buildBillingProviderLabel(parsedDescription.billingProvider),
     requestSnapshot: request || '-',
@@ -423,7 +427,7 @@ function parseSearchLogDescription(description, request) {
 function buildRequestParamsLabel(request, separator = ' ') {
   const raw = String(request || '').trim();
   const query = new URLSearchParams(raw.match(/(?:^|\s)query=([^\s]*)/)?.[1] || '');
-  const body = parseLogSnapshot(raw.startsWith('{') ? raw : raw.match(/(?:^|\s)body=(\{[\s\S]*\})$/)?.[1]);
+  const body = parseLogRequestBody(raw);
   const parts = [];
   // Request snapshots also contain credentials and task text. Only expose
   // known non-secret routing controls, never arbitrary query/body fields.
@@ -440,12 +444,37 @@ function buildRequestParamsLabel(request, separator = ' ') {
   return parts.join(separator) || '-';
 }
 
+function parseLogRequestBody(request) {
+  const raw = String(request || '').trim();
+  const snapshot = parseLogSnapshot(raw.startsWith('{') ? raw : raw.match(/(?:^|\s)body=(\{[\s\S]*\})$/)?.[1]);
+  if (typeof snapshot.body === 'string') return parseLogSnapshot(snapshot.body);
+  if (snapshot.body && typeof snapshot.body === 'object') return snapshot.body;
+  return snapshot;
+}
+
+function resolveLogAIRoute(route, provider, request) {
+  if (route || !String(provider).split(/[、,]/).some((value) => /^ai$/i.test(value.trim()))) return route;
+  const body = parseLogRequestBody(request);
+  if (typeof body.deepThinking === 'boolean') return body.deepThinking ? 'deep' : 'normal';
+  // SearchRequest omits deepThinking=false when serializing audit snapshots.
+  return Object.hasOwn(body, 'question') && !Object.hasOwn(body, 'deepThinking') ? 'normal' : '';
+}
+
 function buildHitProviderFields(provider, snapshot = {}, description = '') {
   let normalizedProvider = String(provider || '').trim();
   if (normalizedProvider === '-') {
     normalizedProvider = '';
   }
   const errors = [];
+  const errorMessages = new Set();
+  const addError = (message, formatted = message, deduplicateMessage = true) => {
+    const text = String(message || '').trim();
+    const display = String(formatted || '').trim();
+    if (text && (!deduplicateMessage || !errorMessages.has(text)) && !errors.includes(display)) {
+      errorMessages.add(text);
+      errors.push(display);
+    }
+  };
   // 描述串里的 `provider=... code=... error=...` 是审计写入口留下的原文，
   // 快照没有明细时（历史行 / 被裁剪过的快照）靠它兜底。
   const descriptionFailures = parseDescriptionFailureReasons(description);
@@ -465,29 +494,25 @@ function buildHitProviderFields(provider, snapshot = {}, description = '') {
       const failureProvider = String(failure?.provider || '').trim();
       const code = String(failure?.code || '').trim();
       const prefix = failureProvider && failureProvider !== normalizedProvider ? `${failureProvider}` : '';
-      const codeText = code ? ` [${code}]` : '';
-      errors.push(`${prefix}${codeText}${prefix || codeText ? '：' : ''}${error}`.trim());
+      const codeText = code && code !== 'INSUFFICIENT_BALANCE' ? ` [${code}]` : '';
+      addError(error, `${prefix}${codeText}${prefix || codeText ? '：' : ''}${error}`.trim(), false);
     });
   }
   if (!normalizedProvider) {
     normalizedProvider = [...new Set(descriptionFailures.map((failure) => failure.provider).filter(Boolean))].join('、');
   }
 
-  const failureDetail = String(snapshot?.failureDetail || '').trim();
-  if (failureDetail) {
-    errors.push(failureDetail);
-  }
-  const errorMessage = String(snapshot?.error?.message || '').trim();
-  if (errorMessage && !errors.includes(errorMessage)) {
-    errors.push(errorMessage);
-  }
-  const detailMessage = String(snapshot?.detail || snapshot?.message || '').trim();
-  if (detailMessage && !errors.includes(detailMessage)) {
-    errors.push(detailMessage);
-  }
+  addError(snapshot?.failureDetail);
+  addError(snapshot?.error?.message);
+  addError(snapshot?.detail || snapshot?.message);
 
   if (errors.length === 0) {
-    errors.push(...descriptionFailures.map((failure) => failure.text));
+    for (const failure of descriptionFailures) {
+      const text = failure.code === 'INSUFFICIENT_BALANCE' && failure.error
+        ? `${failure.provider && failure.provider !== normalizedProvider ? `${failure.provider}：` : ''}${failure.error}`
+        : failure.text;
+      addError(failure.error || text, text, false);
+    }
   }
 
   return {
@@ -504,6 +529,7 @@ function buildAIRouteLabel(provider, route) {
   }
   const routeLabel = {
     normal: '普通搜索',
+    deep: '深度思考',
     deep_native: '深度思考 原生工具',
     deep_mcp: '深度思考 MCP编排',
   }[normalizedRoute];
@@ -539,6 +565,7 @@ function parseDescriptionFailureReasons(description) {
       reasons.push({
         provider,
         code,
+        error,
         text: `${provider}${codeText}${provider || codeText ? '：' : ''}${error}`.trim(),
       });
     }
