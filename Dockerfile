@@ -22,7 +22,7 @@ FROM alpine:3.24
 RUN apk update \
     && apk upgrade \
     && apk add --no-cache ca-certificates tzdata \
-    && update-ca-certificates 2>/dev/null || true
+    && update-ca-certificates
 
 # 时区固定上海：镜像默认 TZ=UTC 会让 Gin 访问日志/GORM 时间变 UTC，
 # 与业务日志（固定 +8）差 8 小时。程序启动时也会强制 time.Local。
