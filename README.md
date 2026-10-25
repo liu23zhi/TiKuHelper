@@ -82,28 +82,50 @@ $env:JWT_SECRET = "使用密码管理器生成的至少32字节随机值"
 - 不要在多个环境复用同一个值。
 - 轮换该值会使现有登录会话失效。
 
+### `TIKU_APP_MODE`
+
+缺省为 `production`；只有显式设为 `development` 才启用旧开发兼容行为。
+该模式独立于 `GIN_MODE`，不要用开发模式绕过生产启动保护。
+
 ### `TIKU_ADMIN_PASSWORD`
 
-可选，仅用于首次创建管理员账号。首次初始化时：
+生产模式下，新建管理员或管理员凭据为空时，必须提供强密码：
 
-- 已设置该变量：用户名为 `admin`，密码使用变量值。
-- 未设置或留空：用户名为 `admin`，密码使用默认值 `123456`。
-- 检测到数据库中的旧版明文默认密码 `123456` 时，程序会将其转换为 bcrypt 哈希，密码值保持不变。
-
-```powershell
-$env:TIKU_ADMIN_PASSWORD = "首次初始化时使用的强密码"
-```
-
-### `TRUSTED_PROXIES`
-
-可选，用于指定可信反向代理的 IP 或 CIDR，多个值以英文逗号分隔。
+- 用户名为 `admin`；密码至少 8 个字符，包含大写字母、小写字母、数字和特殊字符，UTF-8 总长度不超过 72 字节。
+- 已有非空凭据不会被环境变量重置；旧明文凭据按原值升级为 bcrypt，不改成环境变量中的密码。
+- 已有已知默认密码 `123456`（包括其哈希）会阻止生产启动，应通过受控改密流程处理，不能靠环境变量强行重置。
+- 仅显式 `development` 允许未提供密码时的旧默认 `123456`，不应用于生产部署。
 
 ```powershell
-$env:TRUSTED_PROXIES = "10.0.0.10,172.18.0.0/16"
+$env:TIKU_ADMIN_PASSWORD = "<使用密码管理器生成符合上述规则的强密码>"
 ```
 
-为空时不信任代理转发头，来源 IP 使用直连地址；设置后仅信任列表中的代理地址。
-反向代理部署必须显式设置该变量，才能正确记录客户端 IP，并避免任意客户端伪造转发头。
+管理员创建用户或重置用户密码仅要求非空且不超过 72 字节；该简化仅用于管理员创建/重置用户，
+不放宽用户注册或管理员初始化的规则。
+
+### `TRUSTED_PROXIES` / `TRUSTED_PROXIES_FILE`
+
+生产模式必须显式选择以下一种配置：
+
+- `TRUSTED_PROXIES=none`：不信任任何代理转发头，来源 IP 使用直连地址。
+- `TRUSTED_PROXIES`：实际可信代理的 IP/CIDR，多个值以英文逗号分隔。
+- `TRUSTED_PROXIES` 留空时，显式设置 `TRUSTED_PROXIES_FILE` 为容器内可读文件路径，内容为 `none` 或受限 IP/CIDR。
+
+```powershell
+$env:TRUSTED_PROXIES = "none"
+# 反向代理部署请改成实际 nginx IP/CIDR；或显式选择已挂载的文件：
+# $env:TRUSTED_PROXIES_FILE = "/app/trusted_proxies.txt"
+```
+
+未配置、空/仅注释文件、非法条目，或单条/多条合并信任整个 IPv4/IPv6 地址族都会拒绝生产启动；
+不会自动补入本机、局域网或私网网段。非空 `TRUSTED_PROXIES` 优先于显式文件。
+反向代理部署应只信任真实代理地址；选择 `none` 时不会还原代理转发的客户端 IP。
+仅挂载默认文件而未显式设置 `TRUSTED_PROXIES_FILE` 不构成生产配置。
+
+### 跨域调用
+
+Token/API Key 支持任意来源跨域调用，不设置来源白名单；浏览器登录 Cookie 仅用于站内，
+外部网页不能跨站复用登录 Cookie，应携带 Token/API Key。
 
 ## Docker 示例
 
@@ -111,8 +133,9 @@ $env:TRUSTED_PROXIES = "10.0.0.10,172.18.0.0/16"
 docker run -d `
   --name tiku-adapter `
   -e JWT_SECRET="<至少32字节的随机密钥>" `
-  -e TIKU_ADMIN_PASSWORD="<首次初始化管理员密码，留空则使用 123456>" `
-  -e TRUSTED_PROXIES="10.0.0.10,172.18.0.0/16" `
+  -e TIKU_APP_MODE="production" `
+  -e TIKU_ADMIN_PASSWORD="<替换为首次初始化强密码：至少8字符、四类齐全且不超过72字节>" `
+  -e TRUSTED_PROXIES="none" `
   -p 8060:8060 `
   -v ./data:/app/data `
   -v ./logs:/app/logs `
@@ -120,11 +143,13 @@ docker run -d `
   tiku-adapter
 ```
 
-仓库中的 `run/docker-compose.yml` 也支持通过同名环境变量注入这些配置。
+上述占位内容必须替换，不能原样用于部署。已有有效管理员凭据且无须初始化时，可省略密码变量；
+是否需要密码由后端检查数据库状态决定。
+仓库中的 `run/docker-compose.yml` 也支持通过同名环境变量注入这些配置；启动前必须显式配置可信代理策略。
 
 ## 安全注意事项
 
 - 不要将 `tiku.db`、`config.yaml`、`.env`、私钥或实际凭据提交到 Git。
-- 若未配置 `TIKU_ADMIN_PASSWORD`，首次登录后立即修改默认管理员密码 `123456`。
+- 生产新建/空凭据管理员必须配置强密码；已有凭据不被环境变量重置，已知默认 `123456` 不允许生产启动。
 - 生产环境应使用 HTTPS，并仅通过可信反向代理暴露服务。
 - 程序会根据客户端 IP 执行默认限流；反向代理部署时必须正确设置 `TRUSTED_PROXIES`。

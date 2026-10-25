@@ -3,8 +3,11 @@
 # 用法：
 #   1) 先把证书放进 ./nginx/ssl（fullchain.pem / privkey.key），
 #      扫码图放进 ./nginx/html（可选，对应 /api/Wechat_qc_code）。
-#   2) docker compose up -d --build
-#   3) 浏览器访问 http://<主机>:8680 或 https://<主机>:9043 即可；
+#   2) 生产新建/空凭据管理员先设置 TIKU_ADMIN_PASSWORD；已有凭据不会被该变量重置。
+#      同时显式设置 TRUSTED_PROXIES=none 或实际 nginx IP/CIDR；也可显式选择
+#      TRUSTED_PROXIES_FILE=/app/trusted_proxies.txt（TRUSTED_PROXIES 留空时使用）。
+#   3) docker compose up -d --build
+#   4) 浏览器访问 http://<主机>:8680 或 https://<主机>:9043 即可；
 #      nginx 通过 compose 网络以服务名 tiku-adapter:8060 访问后端，
 #      因此 8060 不再需要对外发布（见下面的 ports 说明）。
 
@@ -19,24 +22,26 @@ services:
     ports:
       # 只绑本机回环：容器间由 nginx 通过 compose 网络访问，无需对外暴露。
       # 需要从别的机器直连调试时改成 "8060:8060"，但要知道：
-      # 直接打 8060 时任何人都能伪造 X-Forwarded-For（应用默认信任所有来源的转发头）。
+      # 仍须正确配置可信代理；生产默认不会隐式信任所有来源或局域网。
       - "127.0.0.1:8060:8060"
     environment:
+      TIKU_APP_MODE: "${TIKU_APP_MODE:-production}"
       JWT_SECRET: "${JWT_SECRET:-}"
-      # 管理员初始化密码：默认注释掉（不设置时首次启动使用 123456，请登录后立即修改）。
-      # 需要固定初始化密码时，取消下一行注释并改成自己的强密码。这个文件只是示例。
-      # TIKU_ADMIN_PASSWORD: "请改成你自己的强密码"
-      # 可信代理：留空（含只有注释的 trusted_proxies.txt）= 信任所有来源的 X-Forwarded-For；
-      # 填写逗号分隔的 IP/CIDR = 只信任列出的来源（局域网与本地地址始终默认信任）。
-      # 只有 nginx 能访问后端时留空即可；想收紧就填 nginx 容器 IP 或 compose 网段。
+      # 生产新建/空凭据管理员须强密码：至少8字符且大写/小写/数字/特殊字符齐全，UTF-8不超过72字节。
+      # 已有有效凭据不要求该变量，也不会被其重置；是否需初始化由后端判定。
+      TIKU_ADMIN_PASSWORD: "${TIKU_ADMIN_PASSWORD:-}"
+      # 生产须显式选 none（不信任转发头）或实际受限 IP/CIDR；不补入本机/私网默认段。
+      # 空/非法/合并覆盖整个地址族的列表会拒绝启动，不是信任所有来源。
       TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"
+      # 仅在上项留空时使用显式文件；空/仅注释文件无效，文件须写 none 或受限 IP/CIDR。
+      TRUSTED_PROXIES_FILE: "${TRUSTED_PROXIES_FILE:-}"
       # 固定时区，避免访问日志/GORM 时间变成 UTC。
       TZ: Asia/Shanghai
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
       - ./config.yaml:/app/config.yaml:ro
-      # 可信代理文件（留空或只有注释 = 信任所有来源）。也可用 TRUSTED_PROXIES 环境变量指定。
+      # 仅挂载不自动启用：选择此文件时须显式设置 TRUSTED_PROXIES_FILE=/app/trusted_proxies.txt。
       - ./trusted_proxies.txt:/app/trusted_proxies.txt:ro
 
   nginx:
