@@ -26,6 +26,10 @@ type fallbackFlightPayload struct {
 // 与搜题一致，只有用户、题目、类型、选项**完全一致**才会合并。
 var fallbackFlights = newFlightGroup[fallbackFlightPayload]()
 
+// observeFallbackFlightFollower is nil in production; tests may observe a real
+// follower joining this exact shared call before releasing a synthetic provider.
+var observeFallbackFlightFollower func(string, *flightCall[fallbackFlightPayload])
+
 // buildFallbackFlightKey 构造兜底合并的 key。
 //
 // 用 SHA-256 而不是把原文直接当 key：兜底请求的 options 可能很长
@@ -65,6 +69,9 @@ func beginFallbackFlight(key string) (isLeader bool, borrowed *service.AIFallbac
 		return true, nil, leader
 	}
 
+	if observeFallbackFlightFollower != nil {
+		observeFallbackFlightFollower(key, shared)
+	}
 	payload, ok := fallbackFlights.wait(key, shared, defaultFlightWaitTimeout)
 	if !ok || payload.result == nil {
 		return false, nil, nil
