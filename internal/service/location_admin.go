@@ -56,6 +56,22 @@ type LocationCacheBatchDeleteRequest struct {
 	Except  []LocationCacheDeleteItem `json:"except"`
 }
 
+// LocationCacheBatchRefreshRequest uses the same selection semantics as batch delete.
+type LocationCacheBatchRefreshRequest = LocationCacheBatchDeleteRequest
+
+type LocationCacheRefreshFailure struct {
+	LookupKey string `json:"lookupKey"`
+	Source    string `json:"source"`
+	Message   string `json:"message"`
+}
+
+type LocationCacheBatchRefreshResult struct {
+	Requested int                           `json:"requested"`
+	Refreshed int                           `json:"refreshed"`
+	Failed    int                           `json:"failed"`
+	Failures  []LocationCacheRefreshFailure `json:"failures"`
+}
+
 // ListLocationCacheWithDB 按类型和关键字分页读取已持久化的归属地信息。
 func ListLocationCacheWithDB(db *gorm.DB, query LocationCacheListQuery, page int, pageSize int) (LocationCacheListResult, error) {
 	if db == nil {
@@ -209,6 +225,138 @@ func DeleteLocationCacheBatchWithDB(db *gorm.DB, request LocationCacheBatchDelet
 	}
 	result := query.Delete(&entity.LocationCache{})
 	return result.RowsAffected, result.Error
+}
+
+// RefreshLocationCacheBatchWithDB refreshes the selected cache rows one by one.
+// A legacy row has no source metadata, so it is queried against the explicit
+// default source and its historical row is retained rather than overwritten.
+func RefreshLocationCacheBatchWithDB(db *gorm.DB, request LocationCacheBatchRefreshRequest, options LocationQueryOptions) (LocationCacheBatchRefreshResult, error) {
+	result := LocationCacheBatchRefreshResult{Failures: make([]LocationCacheRefreshFailure, 0)}
+	if db == nil {
+		return result, ErrLocationUnavailable
+	}
+	if strings.TrimSpace(options.UAPIKey) == "" {
+		return result, ErrLocationNotConfigured
+	}
+	kind := strings.TrimSpace(request.Kind)
+	if kind != entity.LocationKindIP && kind != entity.LocationKindPhone {
+		return result, ErrLocationInvalidKey
+	}
+	if request.All && len(request.Items) > 0 {
+		return result, ErrLocationInvalidKey
+	}
+	if !request.All && len(request.Items) == 0 {
+		return result, ErrLocationInvalidKey
+	}
+	if len(request.Items) > 1000 || len(request.Except) > 10000 {
+		return result, ErrLocationInvalidKey
+	}
+
+	rows := make([]entity.LocationCache, 0)
+	if request.All {
+		query := db.Where("kind = ?", kind)
+		if source := strings.TrimSpace(request.Source); source != "" {
+			normalizedSource, err := normalizeLocationRecordSource(kind, source)
+			if err != nil {
+				return result, err
+			}
+			query = query.Where("source = ?", normalizedSource)
+		}
+		if condition, args := util.BuildInstrCondition(request.Keyword, "COALESCE(lookup_key, '')", "COALESCE(address, '')"); condition != "" {
+			query = query.Where(condition, args...)
+		}
+		if len(request.Except) > 0 {
+			conditions := make([]string, 0, len(request.Except))
+			args := make([]any, 0, len(request.Except)*2)
+			for _, item := range request.Except {
+				itemKind, key, err := normalizeLocationAdminKey(kind, item.LookupKey)
+				if err != nil || itemKind != kind {
+					return result, ErrLocationInvalidKey
+				}
+				exceptSource, err := normalizeLocationRecordSource(kind, item.Source)
+				if err != nil {
+					return result, err
+				}
+				conditions = append(conditions, "NOT (lookup_key = ? AND source = ?)")
+				args = append(args, key, exceptSource)
+			}
+			query = query.Where(strings.Join(conditions, " AND "), args...)
+		}
+		var count int64
+		if err := query.Count(&count).Error; err != nil {
+			return result, err
+		}
+		if count > 1000 {
+			return result, ErrLocationInvalidKey
+		}
+		if err := query.Order("lookup_key ASC, source ASC").Find(&rows).Error; err != nil {
+			return result, err
+		}
+	} else {
+		seen := make(map[string]struct{}, len(request.Items))
+		for _, item := range request.Items {
+			itemKind, key, err := normalizeLocationAdminKey(kind, item.LookupKey)
+			if err != nil || itemKind != kind {
+				return result, ErrLocationInvalidKey
+			}
+			source, err := normalizeLocationRecordSource(kind, item.Source)
+			if err != nil {
+				return result, err
+			}
+			identity := key + "\x00" + source
+			if _, exists := seen[identity]; exists {
+				continue
+			}
+			seen[identity] = struct{}{}
+			rows = append(rows, entity.LocationCache{Kind: kind, LookupKey: key, Source: source})
+		}
+		for index := range rows {
+			var stored entity.LocationCache
+			if err := db.Where("kind = ? AND lookup_key = ? AND source = ?", kind, rows[index].LookupKey, rows[index].Source).First(&stored).Error; err == nil {
+				rows[index] = stored
+			}
+		}
+	}
+
+	result.Requested = len(rows)
+	type refreshTarget struct {
+		key    string
+		source string
+		rows   []entity.LocationCache
+	}
+	targets := make(map[string]*refreshTarget, len(rows))
+	order := make([]string, 0, len(rows))
+	for _, row := range rows {
+		querySource := row.Source
+		if querySource == entity.LocationSourceLegacy {
+			querySource = ""
+		}
+		identity := row.LookupKey + "\x00" + querySource
+		target, exists := targets[identity]
+		if !exists {
+			target = &refreshTarget{key: row.LookupKey, source: querySource}
+			targets[identity] = target
+			order = append(order, identity)
+		}
+		target.rows = append(target.rows, row)
+	}
+	for _, identity := range order {
+		target := targets[identity]
+		_, err := RefreshLocationCacheWithDB(db, kind, target.key, LocationQueryOptions{UAPIKey: options.UAPIKey, Source: target.source})
+		if err != nil {
+			result.Failed += len(target.rows)
+			for _, row := range target.rows {
+				result.Failures = append(result.Failures, LocationCacheRefreshFailure{
+					LookupKey: row.LookupKey,
+					Source:    row.Source,
+					Message:   LocationQueryErrorMessage(err),
+				})
+			}
+			continue
+		}
+		result.Refreshed += len(target.rows)
+	}
+	return result, nil
 }
 
 // 历史来源只支持管理，不可通过刷新或自动查询当成默认来源使用。

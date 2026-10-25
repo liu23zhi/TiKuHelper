@@ -34,6 +34,7 @@
         <template #message>
           <div class="selection-alert-content">
             <span>{{ selectionSummary }}</span>
+            <a-button type="primary" size="small" :loading="batchRefreshing" :disabled="!selectedCount || configured === false" @click="refreshSelected">重新查询所选</a-button>
             <a-button danger size="small" :loading="batchDeleting" :disabled="!selectedCount" @click="deleteSelected">删除所选</a-button>
             <a-button type="link" size="small" :disabled="allCurrentPageSelected" @click="handleSelectCurrentPage">全选本页</a-button>
             <a-button type="link" size="small" :disabled="!hasCurrentPageSelection" @click="handleClearCurrentPage">取消本页全选</a-button>
@@ -88,7 +89,7 @@ import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
 import Swal from 'sweetalert2'
 import { ReloadOutlined } from '@ant-design/icons-vue'
-import { deleteLocationCache, deleteLocationCacheBatch, getLocationCacheList, manualLookupLocationCache, refreshLocationCache } from '@/api/TikuComponentApi'
+import { deleteLocationCache, deleteLocationCacheBatch, getLocationCacheList, manualLookupLocationCache, refreshLocationCache, refreshLocationCacheBatch } from '@/api/TikuComponentApi'
 
 export default defineComponent({
   name: 'LocationCache',
@@ -109,6 +110,7 @@ export default defineComponent({
     const selectedKeys = ref(new Set())
     const deselectedKeys = ref(new Set())
     const selectAllMode = ref(false)
+    const batchRefreshing = ref(false)
     const batchDeleting = ref(false)
     const allDeleting = ref(false)
     const manualVisible = ref(false)
@@ -246,6 +248,66 @@ export default defineComponent({
         items: [...selectedKeys.value].map(selectionItemFromIdentity).filter(Boolean),
         all: false,
         except: [],
+      }
+    }
+    const buildBatchRefreshPayload = () => {
+      if (selectAllMode.value) {
+        return {
+          kind: kind.value,
+          keyword: keyword.value,
+          source: '',
+          items: [],
+          all: true,
+          except: [...deselectedKeys.value].map(selectionItemFromIdentity).filter(Boolean),
+        }
+      }
+      return {
+        kind: kind.value,
+        keyword: keyword.value,
+        source: '',
+        items: [...selectedKeys.value].map(selectionItemFromIdentity).filter(Boolean),
+        all: false,
+        except: [],
+      }
+    }
+    const refreshSelected = async () => {
+      if (!selectedCount.value || batchRefreshing.value || configured.value === false) return
+      const count = selectedCount.value
+      const confirmation = await Swal.fire({
+        title: '确认重新查询所选归属地？',
+        text: `将重新查询 ${count} 条记录；历史来源记录将按默认来源查询并保留。`,
+        icon: 'question',
+        showCancelButton: true,
+        confirmButtonText: '重新查询',
+        cancelButtonText: '取消',
+        reverseButtons: true,
+      })
+      if (!confirmation?.isConfirmed) return
+      batchRefreshing.value = true
+      errorMessage.value = ''
+      try {
+        const res = await refreshLocationCacheBatch(buildBatchRefreshPayload())
+        if (typeof res?.data?.configured === 'boolean') configured.value = res.data.configured
+        if (res?.status !== 200) throw new Error(res?.message || '批量重新查询失败')
+        const summary = res?.data?.data || {}
+        const refreshed = Number(summary.refreshed) || 0
+        const failed = Number(summary.failed) || 0
+        clearSelectionState()
+        let failureMessage = ''
+        if (failed > 0) {
+          const detail = Array.isArray(summary.failures) && summary.failures.length
+            ? `：${summary.failures.slice(0, 3).map(item => `${item.lookupKey || '-'}：${item.message || '查询失败'}`).join('；')}`
+            : ''
+          failureMessage = `已成功重新查询 ${refreshed} 条，${failed} 条失败${detail}`
+        } else {
+          message.success(`已重新查询 ${refreshed} 条`)
+        }
+        await load()
+        if (failureMessage) errorMessage.value = failureMessage
+      } catch (error) {
+        errorMessage.value = requestErrorMessage(error, '批量重新查询失败')
+      } finally {
+        batchRefreshing.value = false
       }
     }
     const deleteSelected = async () => {
@@ -399,7 +461,7 @@ export default defineComponent({
       detailVisible.value = false
       load()
     }, { immediate: true })
-    return { rows, loading, configured, errorMessage, keywordInput, pagination, columns, formatDate, formatRawResponse, reload, resetFilters, load, onTableChange, remove, refresh, refreshing, removing, recordIdentity, sourceLabel, isRefreshDisabled, detailVisible, detailRecord, showDetails, kind, kindLabel, pageTitle, summary, selectedCount, selectedRowKeys, allRowsSelected, allCurrentPageSelected, hasCurrentPageSelection, selectionSummary, rowSelection, handleSelectCurrentPage, handleClearCurrentPage, handleSelectAll, handleClearSelection, batchDeleting, deleteSelected, allDeleting, deleteAll, manualVisible, manualSubmitting, manualKey, manualSource, manualLookup }
+    return { rows, loading, configured, errorMessage, keywordInput, pagination, columns, formatDate, formatRawResponse, reload, resetFilters, load, onTableChange, remove, refresh, refreshing, removing, recordIdentity, sourceLabel, isRefreshDisabled, detailVisible, detailRecord, showDetails, kind, kindLabel, pageTitle, summary, selectedCount, selectedRowKeys, allRowsSelected, allCurrentPageSelected, hasCurrentPageSelection, selectionSummary, rowSelection, handleSelectCurrentPage, handleClearCurrentPage, handleSelectAll, handleClearSelection, batchRefreshing, refreshSelected, batchDeleting, deleteSelected, allDeleting, deleteAll, manualVisible, manualSubmitting, manualKey, manualSource, manualLookup }
   },
 })
 </script>

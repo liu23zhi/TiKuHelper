@@ -17,6 +17,7 @@ async function createPage(overrides = {}) {
     ReloadOutlined: {},
     deleteLocationCache: async () => ({ status: 200 }),
     deleteLocationCacheBatch: async () => ({ status: 200, data: { deleted: 0 } }),
+    refreshLocationCacheBatch: async () => ({ status: 200, data: { configured: true, data: { requested: 0, refreshed: 0, failed: 0, failures: [] } } }),
     getLocationCacheList: async () => ({ status: 200, data: { data: [], configured: true } }),
     manualLookupLocationCache: async () => ({ status: 200, data: { configured: true } }),
     refreshLocationCache: async () => ({ status: 200, data: { configured: true } }),
@@ -92,6 +93,50 @@ test('legacy IP rows cannot issue refresh queries', async () => {
   await page.refresh(row)
   assert.equal(refreshCalls, 0)
   assert.equal(Object.keys(page.refreshing).length, 0)
+})
+
+test('selected rows use the batch refresh endpoint and include legacy rows', async () => {
+  let payload
+  const page = await createPage({
+    refreshLocationCacheBatch: async (input) => {
+      payload = input
+      return { status: 200, data: { configured: true, data: { requested: 2, refreshed: 2, failed: 0, failures: [] } } }
+    },
+  })
+  page.rows.value = [
+    { kind: 'ip', lookupKey: '8.8.8.8', source: 'legacy' },
+    { kind: 'ip', lookupKey: '1.1.1.1', source: '' },
+  ]
+  page.pagination.total = 2
+  page.handleSelectCurrentPage()
+  await page.refreshSelected()
+  assert.deepEqual(payload, {
+    kind: 'ip',
+    keyword: '',
+    source: '',
+    items: [
+      { lookupKey: '8.8.8.8', source: 'legacy' },
+      { lookupKey: '1.1.1.1', source: '' },
+    ],
+    all: false,
+    except: [],
+  })
+  assert.equal(page.selectedCount.value, 0)
+})
+
+test('batch refresh keeps partial failure details after reloading the list', async () => {
+  const page = await createPage({
+    refreshLocationCacheBatch: async () => ({
+      status: 200,
+      data: { configured: true, data: { requested: 2, refreshed: 1, failed: 1, failures: [{ lookupKey: '8.8.8.8', message: '上游失败' }] } },
+    }),
+    getLocationCacheList: async () => ({ status: 200, data: { data: [], total: 0, configured: true } }),
+  })
+  page.rows.value = [{ kind: 'ip', lookupKey: '8.8.8.8', source: '' }]
+  page.pagination.total = 1
+  page.handleSelectCurrentPage()
+  await page.refreshSelected()
+  assert.equal(page.errorMessage.value, '已成功重新查询 1 条，1 条失败：8.8.8.8：上游失败')
 })
 
 test('legacy IP rows remain deletable with their stored source', async () => {

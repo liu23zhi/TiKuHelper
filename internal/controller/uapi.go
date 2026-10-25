@@ -178,6 +178,32 @@ func LocationCacheBatchDelete(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"deleted": deleted})
 }
 
+// LocationCacheBatchRefresh 管理员批量重新查询所选归属地缓存。
+func LocationCacheBatchRefresh(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
+	var request service.LocationCacheBatchRefreshRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "批量刷新参数错误"})
+		return
+	}
+	db := resolveSearchPersistenceDB()
+	apiKey := service.GetUAPIAPIKeyWithDB(db)
+	result, err := service.RefreshLocationCacheBatchWithDB(db, request, service.LocationQueryOptions{UAPIKey: apiKey})
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, service.ErrLocationInvalidKey) {
+			status = http.StatusBadRequest
+		} else if errors.Is(err, service.ErrLocationNotConfigured) || errors.Is(err, service.ErrLocationUnavailable) {
+			status = http.StatusServiceUnavailable
+		}
+		c.JSON(status, gin.H{"message": service.LocationQueryErrorMessage(err), "configured": apiKey != ""})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": result, "configured": apiKey != ""})
+}
+
 // LocationCacheRefresh 管理员显式刷新一条归属地，失败不清空已有有效地址。
 func LocationCacheRefresh(c *gin.Context) {
 	if !requireAdmin(c) {

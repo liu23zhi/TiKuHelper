@@ -212,6 +212,50 @@ func TestLegacyLocationCacheCanBeReviewedAndDeletedButNotRefreshed(t *testing.T)
 	}
 }
 
+func TestRefreshLocationCacheBatchMapsLegacyToDefaultAndKeepsHistory(t *testing.T) {
+	const raw = `{"ip":"8.8.8.8","region":"美国","isp":"GOOGLE"}`
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(raw))
+	}))
+	defer server.Close()
+	newDefaultLocationClient(t, server, "uapi-key")
+	db := newLocationTestDB(t)
+	seedLocationRowForTest(t, db, entity.LocationKindIP, "8.8.8.8", "旧默认地址", `{"region":"旧默认地址"}`)
+	if err := db.Create(&entity.LocationCache{Kind: entity.LocationKindIP, LookupKey: "8.8.8.8", Source: entity.LocationSourceLegacy, Address: "历史地址", RawJSON: `{"region":"历史地址"}`}).Error; err != nil {
+		t.Fatal(err)
+	}
+	result, err := RefreshLocationCacheBatchWithDB(db, LocationCacheBatchRefreshRequest{
+		Kind: entity.LocationKindIP,
+		Items: []LocationCacheDeleteItem{
+			{LookupKey: "8.8.8.8", Source: ""},
+			{LookupKey: "8.8.8.8", Source: entity.LocationSourceLegacy},
+		},
+	}, LocationQueryOptions{UAPIKey: "uapi-key"})
+	if err != nil || result.Requested != 2 || result.Refreshed != 2 || result.Failed != 0 {
+		t.Fatalf("unexpected batch refresh result: %+v err=%v", result, err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("default and legacy selection should share one upstream refresh, got %d", requests.Load())
+	}
+	var legacy entity.LocationCache
+	if err := db.Where("kind = ? AND lookup_key = ? AND source = ?", entity.LocationKindIP, "8.8.8.8", entity.LocationSourceLegacy).First(&legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Address != "历史地址" {
+		t.Fatalf("legacy history should remain untouched, got %q", legacy.Address)
+	}
+	var current entity.LocationCache
+	if err := db.Where("kind = ? AND lookup_key = ? AND source = ?", entity.LocationKindIP, "8.8.8.8", "").First(&current).Error; err != nil {
+		t.Fatal(err)
+	}
+	if current.RawJSON != raw {
+		t.Fatalf("default row was not refreshed: %+v", current)
+	}
+}
+
 func TestDeleteLocationCacheBatchSupportsExplicitAndFilteredAllSelection(t *testing.T) {
 	db := newLocationTestDB(t)
 	seedLocationRowForTest(t, db, entity.LocationKindIP, "8.8.8.8", "美国", `{}`)

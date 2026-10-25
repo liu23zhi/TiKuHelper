@@ -213,6 +213,15 @@ export function deleteLocationCacheBatch(data) {
   })
 }
 
+export function refreshLocationCacheBatch(data) {
+  return request({
+    url: `/adapter-service/location-cache/batch-refresh`,
+    method: 'post',
+    data,
+    timeout: 0
+  })
+}
+
 export function refreshLocationCache(data) {
   return request({
     url: `/adapter-service/location-cache/refresh`,
