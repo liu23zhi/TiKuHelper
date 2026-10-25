@@ -17,6 +17,7 @@ test('shared billing widths match specified content examples plus padding', () =
   assert.equal(billingTableColumnWidths.subject, 170)
   assert.equal(billingTableColumnWidths.subjectExpanded, 236)
   assert.equal(billingTableColumnWidths.amount, 120)
+  assert.equal(billingTableColumnWidths.source, 160)
   assert.equal(billingTableColumnWidths.referenceNo, 300)
   assert.equal(billingTableColumnWidths.accessTokenName, 122)
   assert.equal(billingTableColumnWidths.createdAt, 112)

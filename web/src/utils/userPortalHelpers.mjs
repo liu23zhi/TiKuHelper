@@ -250,7 +250,7 @@ export const billingTableColumnWidths = Object.freeze({
   subject: 170,
   subjectExpanded: 236,
   amount: 120,
-  source: 104,
+  source: 160,
   searchMode: 170,
   referenceNo: 300,
   effectiveMultiplier: 104,
