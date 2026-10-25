@@ -507,8 +507,8 @@ test('buildLogStructuredFields parses AI fallback failures for list columns', ()
     mode: '-',
     requestSource: 'AI 兜底接口',
     answerCount: '-',
-    hitProvider: 'AI',
-    failureReasons: ['当前余额不足'],
+    hitProvider: 'AI 普通搜索',
+    failureReasons: ['当前余额不足，AI 兜底已禁用，请充值后再使用'],
     billingProvider: '-',
     requestSnapshot: '{"question":"1+1=?","type":0,"options":["1","2"]}',
     responseSnapshot: '{"success":false,"error":{"code":"INSUFFICIENT_BALANCE","message":"当前余额不足"}}',
@@ -697,4 +697,96 @@ test('AI route labels and unauthorized search detail are visible in channel erro
     newAnswer: JSON.stringify({ detail: '当前余额不足，请充值后再使用' }),
   });
   assert.ok(ordinary.failureReasons.some((reason) => reason.includes('当前余额不足')));
+});
+
+test('ordinary balance rejection shows one readable reason without changing its source', () => {
+  const message = '当前余额不足，系统题库已禁用，请充值后再使用';
+  const record = {
+    module: 'search',
+    description: `搜索失败 provider= code=INSUFFICIENT_BALANCE error=${message}`,
+    newAnswer: JSON.stringify({
+      code: 'INSUFFICIENT_BALANCE',
+      message: '访问令牌鉴权失败',
+      detail: message,
+      failures: [{ provider: '', code: 'INSUFFICIENT_BALANCE', error: message }],
+    }),
+  };
+  const fields = buildLogStructuredFields(record);
+  assert.equal(fields.hitProvider, '-');
+  assert.deepEqual(fields.failureReasons, [message]);
+  assert.equal(fields.responseSnapshot, record.newAnswer);
+  assert.equal(buildLogTableDetail(record), '-');
+});
+
+test('AI fallback balance rejection uses its own message and restores the requested route', () => {
+  for (const [deepThinking, label] of [[false, 'AI 普通搜索'], [true, 'AI 深度思考']]) {
+    const record = {
+      module: 'ai_fallback',
+      description: 'AI兜底失败 status=failed code=INSUFFICIENT_BALANCE',
+      oldAnswer: JSON.stringify({ question: '题目', deepThinking }),
+      newAnswer: JSON.stringify({
+        success: false,
+        error: { code: 'INSUFFICIENT_BALANCE', message: '当前余额不足，系统题库已禁用，请充值后再使用' },
+        failureDetail: '当前余额不足，系统题库已禁用，请充值后再使用',
+      }),
+    };
+    const fields = buildLogStructuredFields(record);
+    assert.equal(fields.hitProvider, label);
+    assert.deepEqual(fields.failureReasons, ['当前余额不足，AI 兜底已禁用，请充值后再使用']);
+    assert.equal(fields.responseSnapshot, record.newAnswer);
+  }
+});
+
+test('ordinary AI rejection restores its route from the unauthorized request snapshot', () => {
+  for (const [deepThinking, label] of [[false, 'AI 普通搜索'], [true, 'AI 深度思考']]) {
+    const message = '当前余额不足，系统题库已禁用，请充值后再使用';
+    const fields = buildLogStructuredFields({
+      module: 'search',
+      description: '搜索失败 provider=ai code=INSUFFICIENT_BALANCE',
+      oldAnswer: JSON.stringify({ method: 'POST', path: '/adapter-service/search', body: JSON.stringify({ deepThinking }) }),
+      newAnswer: JSON.stringify({ detail: message, failures: [{ provider: 'ai', code: 'INSUFFICIENT_BALANCE', error: message }] }),
+    });
+    assert.equal(fields.hitProvider, label);
+    assert.deepEqual(fields.failureReasons, [message]);
+  }
+});
+
+test('balance failure descriptions are readable without reclassifying another question bank as AI', () => {
+  const message = '上游账号余额不足';
+  const fields = buildLogStructuredFields({
+    module: 'search',
+    description: `搜索失败 provider=wanneng code=INSUFFICIENT_BALANCE error=${message}`,
+    newAnswer: '{}',
+  });
+  assert.equal(fields.hitProvider, 'wanneng');
+  assert.deepEqual(fields.failureReasons, [message]);
+});
+
+test('duplicate response fields do not hide distinct provider failures', () => {
+  const record = {
+    module: 'search',
+    description: '搜索失败',
+    newAnswer: JSON.stringify({
+      failures: [
+        { provider: 'ai', code: 'UPSTREAM_ERROR', error: 'HTTP 503' },
+        { provider: 'wanneng', code: 'UPSTREAM_ERROR', error: 'HTTP 503' },
+      ],
+      error: { message: 'HTTP 503' },
+      detail: 'HTTP 503',
+    }),
+  };
+  const fields = buildLogStructuredFields(record);
+  assert.deepEqual(fields.failureReasons, ['ai [UPSTREAM_ERROR]：HTTP 503', 'wanneng [UPSTREAM_ERROR]：HTTP 503']);
+  assert.equal(fields.responseSnapshot, record.newAnswer);
+});
+
+test('explicit AI route takes priority over the requested deep-thinking flag', () => {
+  const fields = buildLogStructuredFields({
+    module: 'ai_fallback',
+    description: 'AI兜底失败 hitProvider=ai aiRoute=deep_mcp code=INSUFFICIENT_BALANCE',
+    oldAnswer: JSON.stringify({ deepThinking: true }),
+    newAnswer: JSON.stringify({ error: { code: 'INSUFFICIENT_BALANCE', message: '当前余额不足' } }),
+  });
+  assert.equal(fields.hitProvider, 'AI 深度思考 MCP编排');
+  assert.deepEqual(fields.failureReasons, ['当前余额不足，AI 兜底已禁用，请充值后再使用']);
 });
