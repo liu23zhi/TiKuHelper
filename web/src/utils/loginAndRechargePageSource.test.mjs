@@ -3,16 +3,38 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import vm from 'node:vm';
+import { parse, compileScript } from '@vue/compiler-sfc';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const loginPagePath = path.join(__dirname, '..', 'pages', 'Login', 'index.vue');
 const userUsagePagePath = path.join(__dirname, '..', 'pages', 'UserUsage', 'index.vue');
+const tikuPagePath = path.join(__dirname, '..', 'pages', 'TikuComponent', 'index.vue');
+const searchAccountPagePath = path.join(__dirname, '..', 'pages', 'SearchAccountConfig', 'index.vue');
 const rechargeOrderListPagePath = path.join(__dirname, '..', 'pages', 'RechargeOrderList', 'index.vue');
 const wechatBindPagePath = path.join(__dirname, '..', 'pages', 'WechatBind', 'index.vue');
 const routerPath = path.join(__dirname, '..', 'router', 'router.js');
 const apiPath = path.join(__dirname, '..', 'api', 'TikuComponentApi.js');
 const siderMenuPath = path.join(__dirname, '..', 'components', 'SiderMenu', 'index.vue');
+
+function loadPageMethod(source, name, scope) {
+  const { descriptor } = parse(source);
+  const compiled = compileScript(descriptor, { id: 'refresh-regression' });
+  const options = compiled.scriptAst.find(node => node.type === 'ExportDefaultDeclaration').declaration.arguments[0];
+  const methods = options.properties.find(property => property.key?.name === 'methods').value;
+  const method = methods.properties.find(property => property.key?.name === name);
+  assert.ok(method, `expected page method ${name}`);
+  const methodSource = descriptor.script.content.slice(method.start, method.end);
+  return vm.runInNewContext(`({${methodSource}})`, scope)[name];
+}
+
+function deferredRequest() {
+  let resolve;
+  let reject;
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+}
 
 test('Login page only renders sms login mode when public sms login is enabled', async () => {
   const content = await readFile(loginPagePath, 'utf8');
@@ -94,9 +116,11 @@ test('Router keeps recharge result callback page public without adapter auth lay
 
 test('UserUsage page removes payment method count and exposes quick recharge amounts with inline recharge action', async () => {
   const content = await readFile(userUsagePagePath, 'utf8');
-  const extraTemplateMatch = content.match(/<template #extra>([\s\S]*?)<\/template>/);
+  const headingMatch = content.match(/<div class="page-heading">([\s\S]*?)<a-row/);
 
-  assert.ok(extraTemplateMatch, 'expected recharge card extra template to exist');
+  assert.ok(headingMatch, 'expected page-level refresh heading to exist');
+  assert.match(headingMatch[1], /@click="handleRefreshAll" :loading="pageRefreshing">刷新/);
+  assert.doesNotMatch(content, /<template #extra>[\s\S]*?handleRefreshAll/);
   assert.doesNotMatch(content, /title="可用支付方式"/);
   assert.match(content, /const rechargeQuickAmounts = \[10, 20, 50, 100, 200, 500\]/);
   assert.match(content, /v-for="amount in rechargeQuickAmounts"/);
@@ -108,7 +132,93 @@ test('UserUsage page removes payment method count and exposes quick recharge amo
   assert.match(content, /@click="applyRechargeQuickAmount\(amount\)"/);
   assert.doesNotMatch(content, /buildPaymentMethodSwalHtml/);
   assert.doesNotMatch(content, /Swal\.fire\(\{\s*title: '请选择支付方式'/);
-  assert.doesNotMatch(extraTemplateMatch[1], /handleOpenRechargeDialog/);
+  assert.doesNotMatch(headingMatch[1], /handleOpenRechargeDialog/);
+});
+
+test('Tiku page refresh preserves current filters and page and clears loading after failures', async () => {
+  const content = await readFile(tikuPagePath, 'utf8');
+  assert.match(content, /<header[\s\S]*?@click="fetchData" :loading="tabLoading">刷新[\s\S]*?<\/header>/);
+  for (const failure of [false, true]) {
+    const request = deferredRequest();
+    let params;
+    const errors = [];
+    const scope = {
+      fileList: { value: [] }, tabLoading: { value: false }, data: { value: [] },
+      typeValue: { value: 2 }, page: { value: { pageNo: 3, pageSize: 20 } },
+      searchValue: { value: { question: '当前筛选', source: '2', extra: '课程', onlyShowEmptyAnswer: true } },
+      normalizeQuestionTypeFilter: value => value, rememberQuestionRows: () => {},
+      getQuestions: value => { params = value; return request.promise; },
+      message: { error: value => errors.push(value) },
+    };
+    const refresh = loadPageMethod(content, 'fetchData', scope).call({ page: scope.page.value });
+    assert.equal(scope.tabLoading.value, true);
+    assert.equal(params.pageNo, 2);
+    assert.equal(params.question, '当前筛选');
+    assert.equal(params.source, 2);
+    if (failure) request.reject(new Error('offline'));
+    else request.resolve({ data: { items: [{ id: 7 }], total: 41 } });
+    await refresh;
+    assert.equal(scope.tabLoading.value, false);
+    assert.equal(scope.page.value.pageNo, 3);
+    assert.equal(errors.length, failure ? 1 : 0);
+    if (!failure) assert.equal(scope.page.value.total, 41);
+  }
+});
+
+test('UserUsage refresh waits for balance, records and payment methods including failed balance requests', async () => {
+  const content = await readFile(userUsagePagePath, 'utf8');
+  assert.match(content, /pageRefreshing = computed\(\(\) => currentUserLoading\.value \|\| tableLoading\.value \|\| paymentMethodLoading\.value\)/);
+  for (const failure of [false, true]) {
+    const request = deferredRequest();
+    const scope = {
+      currentUserLoading: { value: false }, currentUser: { value: { balance: 1 } },
+      minRechargeAmount: { value: 1 }, rechargeAmount: { value: 1 },
+      getCurrentUser: () => request.promise, normalizeMinRechargeAmount: Number, setStoredCurrentUser: () => {},
+    };
+    const refresh = loadPageMethod(content, 'handleRefreshCurrentUser', scope)();
+    assert.equal(scope.currentUserLoading.value, true);
+    if (failure) request.reject(new Error('offline'));
+    else request.resolve({ status: 200, data: { balance: 12 } });
+    await refresh;
+    assert.equal(scope.currentUserLoading.value, false);
+    assert.equal(scope.currentUser.value.balance, failure ? 1 : 12);
+  }
+  const requests = [deferredRequest(), deferredRequest(), deferredRequest()];
+  const names = ['handleRefreshCurrentUser', 'handleLoadBillingRecords', 'handleLoadPaymentMethods'];
+  const calls = [];
+  const context = Object.fromEntries(names.map((name, index) => [name, () => { calls.push(name); return requests[index].promise; }]));
+  let completed = false;
+  const refresh = loadPageMethod(content, 'handleRefreshAll', {}).call(context).then(() => { completed = true; });
+  assert.deepEqual(calls, names);
+  requests[1].resolve();
+  requests[2].resolve();
+  await Promise.resolve();
+  assert.equal(completed, false);
+  requests[0].resolve();
+  await refresh;
+  assert.equal(completed, true);
+});
+
+test('SearchAccountConfig refresh fetches real configuration with loading separate from save', async () => {
+  const content = await readFile(searchAccountPagePath, 'utf8');
+  assert.match(content, /:loading="tabLoading" :disabled="savingAll" @click="handleSearchAccountConfigs">刷新/);
+  assert.match(content, /:loading="savingAll" :disabled="tabLoading" @click="onSaveAll"/);
+  for (const failure of [false, true]) {
+    const request = deferredRequest();
+    const errors = [];
+    const scope = {
+      tabLoading: { value: false }, dataSource: { value: [] },
+      getSearchAccountConfigs: () => request.promise, message: { error: value => errors.push(value) },
+    };
+    const refresh = loadPageMethod(content, 'handleSearchAccountConfigs', scope).call({ normalizeConfigs: value => value });
+    assert.equal(scope.tabLoading.value, true);
+    if (failure) request.reject(new Error('offline'));
+    else request.resolve({ status: 200, data: [{ provider: 'ai' }] });
+    await refresh;
+    assert.equal(scope.tabLoading.value, false);
+    assert.equal(errors.length, failure ? 1 : 0);
+    if (!failure) assert.equal(scope.dataSource.value[0].provider, 'ai');
+  }
 });
 
 test('UserUsage page exposes the configurable minimum recharge amount and validates before submitting', async () => {

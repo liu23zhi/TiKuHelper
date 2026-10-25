@@ -5,7 +5,10 @@
         <h1>默认账号配置</h1>
         <p class="page-lead">维护各题库默认参数和单价。</p>
       </div>
-      <a-button type="primary" :loading="savingAll" @click="onSaveAll">保存全部配置</a-button>
+      <a-space wrap>
+        <a-button :loading="tabLoading" :disabled="savingAll" @click="handleSearchAccountConfigs">刷新</a-button>
+        <a-button type="primary" :loading="savingAll" :disabled="tabLoading" @click="onSaveAll">保存全部配置</a-button>
+      </a-space>
     </header>
     <section class="console-panel">
     <a-alert
@@ -155,7 +158,7 @@ export default defineComponent({
     },
     handleSearchAccountConfigs() {
       tabLoading.value = true
-      getSearchAccountConfigs().then(res => {
+      return getSearchAccountConfigs().then(res => {
         if (res?.status == 200) {
           dataSource.value = this.normalizeConfigs(res?.data)
         } else {

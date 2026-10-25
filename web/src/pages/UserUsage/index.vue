@@ -5,6 +5,7 @@
         <h1 class="page-title">账户使用</h1>
         <p class="page-subtitle">管理账户余额，并查看个人消费与充值流水。</p>
       </div>
+      <a-button @click="handleRefreshAll" :loading="pageRefreshing">刷新</a-button>
     </div>
 
     <a-row :gutter="16" class="summary-row">
@@ -35,10 +36,6 @@
         <h2 class="page-title">账户余额与充值</h2>
         <p class="page-subtitle">选择金额和支付方式，创建充值订单。</p>
       </div>
-      <template #extra>
-        <a-button @click="handleRefreshAll" :loading="pageRefreshing">刷新</a-button>
-      </template>
-
       <a-row :gutter="16" class="recharge-summary-row">
         <a-col :xs="24" :lg="10">
           <div class="balance-panel">
@@ -242,6 +239,7 @@ const expandedSubjects = reactive({})
 const paymentMethods = ref([])
 const tableLoading = ref(false)
 const paymentMethodLoading = ref(false)
+const currentUserLoading = ref(false)
 const rechargeSubmitting = ref(false)
 const rechargeAmount = ref(10)
 const selectedPaymentMethodId = ref(null)
@@ -300,7 +298,7 @@ export default defineComponent({
       return Number.isFinite(balance) ? balance : 0
     })
 
-    const pageRefreshing = computed(() => tableLoading.value || paymentMethodLoading.value)
+    const pageRefreshing = computed(() => currentUserLoading.value || tableLoading.value || paymentMethodLoading.value)
 
     // 充值金额输入约束：输入阶段就挡住超出 2 位的金额。
     const parseRechargeAmountInput = (value) => sanitizeRechargeAmountInput(value)
@@ -466,12 +464,15 @@ export default defineComponent({
       expandedSubjects[id] = !expandedSubjects[id]
     },
     handleRefreshAll() {
-      this.handleRefreshCurrentUser()
-      this.handleLoadBillingRecords()
-      this.handleLoadPaymentMethods()
+      return Promise.all([
+        this.handleRefreshCurrentUser(),
+        this.handleLoadBillingRecords(),
+        this.handleLoadPaymentMethods(),
+      ])
     },
     handleRefreshCurrentUser() {
-      getCurrentUser().then((res) => {
+      currentUserLoading.value = true
+      return getCurrentUser().then((res) => {
         if (res?.status === 200 && res?.data) {
           currentUser.value = res.data
           if (Object.prototype.hasOwnProperty.call(res.data, 'minRechargeAmount')) {
@@ -483,11 +484,13 @@ export default defineComponent({
           setStoredCurrentUser(res.data)
         }
       }).catch(() => {
+      }).finally(() => {
+        currentUserLoading.value = false
       })
     },
     handleLoadBillingRecords() {
       tableLoading.value = true
-      getBillingRecords(buildPersonalUsageBillingRecordParams(pagination.current, pagination.pageSize)).then((res) => {
+      return getBillingRecords(buildPersonalUsageBillingRecordParams(pagination.current, pagination.pageSize)).then((res) => {
         if (res?.status === 200) {
           dataSource.value = Array.isArray(res?.data?.data) ? res.data.data : []
           pagination.total = Number(res?.data?.total || 0)
@@ -504,7 +507,7 @@ export default defineComponent({
     },
     handleLoadPaymentMethods() {
       paymentMethodLoading.value = true
-      getPaymentMethods().then((res) => {
+      return getPaymentMethods().then((res) => {
         if (res?.status === 200) {
           const rows = Array.isArray(res?.data) ? res.data : []
           paymentMethods.value = sortPaymentMethodsForDisplay(rows).filter((item) => !!item.enabled)
