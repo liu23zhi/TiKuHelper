@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -355,8 +356,13 @@ func TestChatGptClientSearchAnswerAttachesHTMLURLAsNamedFileContent(t *testing.T
 			t.Fatalf("decode payload: %v", err)
 		}
 		parts := decodeUserContentParts(t, payload.Messages)
-		if len(parts) != 3 {
-			t.Fatalf("expected text prompt, html attachment, and image references, got %d parts", len(parts))
+		if len(parts) != 2 {
+			t.Fatalf("expected unchanged text prompt and html attachment without image references, got %d parts", len(parts))
+		}
+		for _, part := range parts {
+			if part.Type == "input_image" || strings.HasPrefix(part.Text, "图片对应关系") {
+				t.Error("HTML-only attachment must not create phantom image references")
+			}
 		}
 		if parts[1].Type != "input_text" {
 			t.Fatalf("expected html attachment to be sent as text content, got %s", parts[1].Type)
@@ -753,9 +759,35 @@ func TestBuildAISearchPromptKeepsFormulaImageQuestionAnswerable(t *testing.T) {
 		" 其中:" + inputURL + "为输入," + outputURL + "为输出 " +
 		"1)求系统函数" + systemURL + ",指出系统的零极点; 2)若该系统是因果稳定的,指出系统的收敛域; 3)求该因果稳定系统的单位冲激响应"
 
-	parts := buildAISearchPromptParts(model.SearchRequest{Question: question, Type: 4}, nil)
-	if len(parts) != 2 {
-		t.Fatalf("expected user text plus image reference text, got %d parts", len(parts))
+	var mu sync.Mutex
+	counts := map[string]int{}
+	allowed := map[string]bool{equationURL: true, inputURL: true, outputURL: true, systemURL: true}
+	imageBody := makeTransparentFormulaImage(40, 22)
+	client := &http.Client{Transport: a01ReferenceRoundTrip(func(r *http.Request) (*http.Response, error) {
+		mu.Lock()
+		counts[r.URL.String()]++
+		valid := allowed[r.URL.String()] && r.Method == http.MethodGet
+		mu.Unlock()
+		if !valid {
+			t.Errorf("unexpected closed-fake formula request %s", r.URL)
+			return nil, errors.New("unexpected formula request")
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"image/png"}}, Body: io.NopCloser(strings.NewReader(string(imageBody))), Request: r}, nil
+	})}
+	parts := buildAISearchPromptParts(model.SearchRequest{Question: question, Type: 4}, client)
+	if len(parts) != 6 {
+		t.Fatalf("expected original prompt, four delivered images and reference text, got %d parts", len(parts))
+	}
+	for index := 1; index <= 4; index++ {
+		if parts[index].Type != "image_url" || parts[index].ImageURL == nil || parts[index].ImageURL.URL == "" {
+			t.Fatalf("expected actual delivered formula image %d, got %+v", index, parts[index])
+		}
+		_ = decodeTestPNG(t, decodeDataURLBytes(t, parts[index].ImageURL.URL))
+	}
+	for address := range allowed {
+		if counts[address] != 1 {
+			t.Fatalf("each formula image must be fetched exactly once by closed fake: %v", counts)
+		}
 	}
 
 	userText := parts[0].Text
@@ -774,7 +806,7 @@ func TestBuildAISearchPromptKeepsFormulaImageQuestionAnswerable(t *testing.T) {
 	}
 
 	// 四张公式图必须按出现顺序编号，模型才能把「图一为…图三为输出」对应到题干。
-	referenceText := parts[1].Text
+	referenceText := parts[len(parts)-1].Text
 	if !strings.Contains(referenceText, "图片按出现顺序编号") {
 		t.Fatalf("expected image numbering hint, got %q", referenceText)
 	}

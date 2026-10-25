@@ -712,11 +712,12 @@ func buildAISearchPromptParts(req model.SearchRequest, httpClient *http.Client) 
 		Text: buildAISearchPrompt(req),
 	}}
 	attachmentURLs := extractAISearchURLs(req)
-	parts = append(parts, downloadAISearchAttachmentParts(httpClient, attachmentURLs)...)
-	if len(attachmentURLs) > 0 {
+	attachmentParts, loadedImageURLs := downloadAISearchAttachmentPartsWithImageURLs(httpClient, attachmentURLs)
+	parts = append(parts, attachmentParts...)
+	if len(loadedImageURLs) > 0 {
 		var references strings.Builder
 		references.WriteString("图片对应关系（图片按出现顺序编号，请结合图号理解题目）：")
-		for index, attachmentURL := range attachmentURLs {
+		for index, attachmentURL := range loadedImageURLs {
 			fmt.Fprintf(&references, "\n图%s为：%s", formatAISearchImageIndex(index+1), attachmentURL)
 		}
 		parts = append(parts, openAIContentPart{Type: "text", Text: references.String()})
@@ -727,8 +728,14 @@ func buildAISearchPromptParts(req model.SearchRequest, httpClient *http.Client) 
 // downloadAISearchAttachmentParts 并发下载题目配图，同时保持原有顺序，
 // 避免多张公式图串行下载把单次搜题的耗时叠加到几十秒。
 func downloadAISearchAttachmentParts(httpClient *http.Client, attachmentURLs []string) []openAIContentPart {
+	parts, _ := downloadAISearchAttachmentPartsWithImageURLs(httpClient, attachmentURLs)
+	return parts
+}
+
+// Retain source URLs only for image parts actually delivered to the model.
+func downloadAISearchAttachmentPartsWithImageURLs(httpClient *http.Client, attachmentURLs []string) ([]openAIContentPart, []string) {
 	if httpClient == nil || len(attachmentURLs) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	type attachmentResult struct {
@@ -762,13 +769,17 @@ func downloadAISearchAttachmentParts(httpClient *http.Client, attachmentURLs []s
 	}
 
 	parts := make([]openAIContentPart, 0, len(attachmentURLs))
+	loadedImageURLs := make([]string, 0, len(attachmentURLs))
 	for _, result := range ordered {
 		if !result.ok {
 			continue
 		}
 		parts = append(parts, result.part)
+		if result.part.Type == "image_url" && result.part.ImageURL != nil && strings.TrimSpace(result.part.ImageURL.URL) != "" {
+			loadedImageURLs = append(loadedImageURLs, attachmentURLs[result.index])
+		}
 	}
-	return parts
+	return parts, loadedImageURLs
 }
 
 func formatAISearchImageIndex(index int) string {

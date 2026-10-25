@@ -443,6 +443,7 @@ func buildAISearchToolPromptParts(ctx context.Context, req model.SearchRequest, 
 	if len(urls) > aiToolMaxAttachmentURLs {
 		urls = urls[:aiToolMaxAttachmentURLs]
 	}
+	var loadedImageURLs []string
 	if client != nil {
 		bounded := *client
 		transport := bounded.Transport
@@ -450,12 +451,14 @@ func buildAISearchToolPromptParts(ctx context.Context, req model.SearchRequest, 
 			transport = http.DefaultTransport
 		}
 		bounded.Transport = aiToolContextTransport{ctx: ctx, base: transport}
-		parts = append(parts, downloadAISearchAttachmentParts(&bounded, urls)...)
+		attachmentParts, loadedURLs := downloadAISearchAttachmentPartsWithImageURLs(&bounded, urls)
+		parts = append(parts, attachmentParts...)
+		loadedImageURLs = loadedURLs
 	}
-	if len(urls) > 0 {
+	if len(loadedImageURLs) > 0 {
 		var references strings.Builder
 		references.WriteString("图片对应关系（按出现顺序）：")
-		for i, address := range urls {
+		for i, address := range loadedImageURLs {
 			fmt.Fprintf(&references, "\n图%s为：%s", formatAISearchImageIndex(i+1), address)
 		}
 		parts = append(parts, openAIContentPart{Type: "text", Text: references.String()})
