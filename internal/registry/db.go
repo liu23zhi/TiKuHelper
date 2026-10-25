@@ -197,27 +197,30 @@ func ensureSMSVerificationSchemaForDriver(db *gorm.DB, driverName string) error 
 	}
 
 	if normalizedDriver == "sqlite" {
-		if !db.Migrator().HasColumn(entity.TableNameSMSVerificationCode, "scene") {
-			legacyTableName := entity.TableNameSMSVerificationCode + "__legacy_scene"
-			statements := []string{
-				"ALTER TABLE sms_verification_codes RENAME TO sms_verification_codes__legacy_scene",
-				"CREATE TABLE sms_verification_codes (`id` integer PRIMARY KEY AUTOINCREMENT,`phone` varchar(32) NOT NULL,`scene` varchar(32) NOT NULL DEFAULT '',`code_hash` char(64) NOT NULL,`status` varchar(32) NOT NULL,`expires_at` datetime NOT NULL,`consumed_at` datetime,`request_ip` varchar(64),`created_at` datetime,`updated_at` datetime)",
-				"INSERT INTO sms_verification_codes (`id`,`phone`,`scene`,`code_hash`,`status`,`expires_at`,`consumed_at`,`request_ip`,`created_at`,`updated_at`) SELECT `id`,`phone`,'' AS `scene`,`code_hash`,`status`,`expires_at`,`consumed_at`,`request_ip`,`created_at`,`updated_at` FROM sms_verification_codes__legacy_scene",
-				"DROP TABLE sms_verification_codes__legacy_scene",
-			}
-			for _, statement := range statements {
-				if err := db.Exec(statement).Error; err != nil {
-					_ = db.Exec("ALTER TABLE " + legacyTableName + " RENAME TO " + entity.TableNameSMSVerificationCode).Error
-					return err
+		needsScene := !db.Migrator().HasColumn(entity.TableNameSMSVerificationCode, "scene")
+		needsIndex := !db.Migrator().HasIndex(entity.TableNameSMSVerificationCode, "idx_sms_verification_codes_scene")
+		if !needsScene && !needsIndex {
+			return nil
+		}
+		return withSQLiteSMSMigrationBoundary(db, func(tx *gorm.DB) error {
+			if !tx.Migrator().HasColumn(entity.TableNameSMSVerificationCode, "scene") {
+				statements := []string{
+					"ALTER TABLE sms_verification_codes RENAME TO sms_verification_codes__legacy_scene",
+					"CREATE TABLE sms_verification_codes (`id` integer PRIMARY KEY AUTOINCREMENT,`phone` varchar(32) NOT NULL,`scene` varchar(32) NOT NULL DEFAULT '',`code_hash` char(64) NOT NULL,`status` varchar(32) NOT NULL,`expires_at` datetime NOT NULL,`consumed_at` datetime,`request_ip` varchar(64),`created_at` datetime,`updated_at` datetime)",
+					"INSERT INTO sms_verification_codes (`id`,`phone`,`scene`,`code_hash`,`status`,`expires_at`,`consumed_at`,`request_ip`,`created_at`,`updated_at`) SELECT `id`,`phone`,'' AS `scene`,`code_hash`,`status`,`expires_at`,`consumed_at`,`request_ip`,`created_at`,`updated_at` FROM sms_verification_codes__legacy_scene",
+					"DROP TABLE sms_verification_codes__legacy_scene",
+				}
+				for _, statement := range statements {
+					if err := tx.Exec(statement).Error; err != nil {
+						return err
+					}
 				}
 			}
-		}
-		if !db.Migrator().HasIndex(entity.TableNameSMSVerificationCode, "idx_sms_verification_codes_scene") {
-			if err := db.Exec("CREATE INDEX idx_sms_verification_codes_scene ON sms_verification_codes(scene)").Error; err != nil {
-				return err
+			if !tx.Migrator().HasIndex(entity.TableNameSMSVerificationCode, "idx_sms_verification_codes_scene") {
+				return tx.Exec("CREATE INDEX idx_sms_verification_codes_scene ON sms_verification_codes(scene)").Error
 			}
-		}
-		return nil
+			return nil
+		})
 	}
 
 	if !db.Migrator().HasColumn(entity.TableNameSMSVerificationCode, "scene") {
@@ -515,7 +518,16 @@ func alterMoneyColumn(db *gorm.DB, item moneyColumn) error {
 }
 
 // RegisterDB 注册数据库
+// RegisterDB preserves the legacy entry while policy failures stop before migration.
 func RegisterDB(config configs.Config) *gorm.DB {
+	database, err := RegisterDBWithError(config)
+	if err != nil {
+		logger.FatalLog(err)
+	}
+	return database
+}
+
+func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB {
 	once.Do(func() {
 		var err error
 		var conn gorm.Dialector
@@ -551,6 +563,10 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		}
 		dao.SetDefault(db)
 	})
+	if err := validateExistingSQLiteBillingLookupIndex(db); err != nil {
+		logger.FatalLog(err)
+	}
+
 	err := db.AutoMigrate(&entity.Tiku{})
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
@@ -589,7 +605,7 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		logger.FatalLog(fmt.Errorf("prepare sms verification schema fail: %w", err))
 	}
 
-	err = db.AutoMigrate(
+	accountDomainModels := []any{
 		&entity.AccessToken{},
 		&entity.SystemSetting{},
 		&entity.PriceRule{},
@@ -604,9 +620,14 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		&entity.CaptchaToken{},
 		// 归属地查询结果的持久化缓存（节省按积分计费的 UAPI 调用）。
 		&entity.LocationCache{},
-	)
+	}
+	err = autoMigrateAccountDomainWithBillingLookupIndex(db, accountDomainModels)
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
+	}
+
+	if err := ensureSQLiteBillingLookupIndex(db); err != nil {
+		logger.FatalLog(err)
 	}
 
 	if err := runStartupMigration("ensureMoneyPrecisionSchema", func() error { return ensureMoneyPrecisionSchema(db) }); err != nil {
@@ -649,17 +670,11 @@ func RegisterDB(config configs.Config) *gorm.DB {
 
 	ensureAccountDomainDefaults(db)
 
-	// 首先需要注册一个默认用户
-	bootstrapPassword := strings.TrimSpace(os.Getenv("TIKU_ADMIN_PASSWORD"))
-	if bootstrapPassword == "" {
-		bootstrapPassword = "123456"
-		logger.SysLog("未设置 TIKU_ADMIN_PASSWORD，管理员初始化密码使用 123456；请登录后立即修改密码")
+	// Apply only the preflighted credential plan. Environment never resets an existing account.
+	if err := applyAdminBootstrap(db, plan); err != nil {
+		logger.FatalLog(fmt.Errorf("apply admin bootstrap policy fail: %w", err))
 	}
-	hashedBootstrapPassword, err := util.HashPassword(bootstrapPassword)
-	if err != nil {
-		logger.FatalLog(fmt.Errorf("hash bootstrap admin password fail: %w", err))
-	}
-	bootstrapAdminAccount(db, hashedBootstrapPassword)
+
 	ensureAccountDomainDefaults(db)
 	if idempotencyCleanupStop == nil {
 		idempotencyCleanupStop = service.StartIdempotencyCleanup(db, time.Hour)

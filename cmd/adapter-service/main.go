@@ -38,6 +38,10 @@ func main() {
 		}
 		_ = logger.Close()
 	}()
+	trustedProxies, err := loadTrustedProxies()
+	if err != nil {
+		logger.FatalLog(err)
+	}
 	mg, err := manager.CreateManager()
 	if err != nil {
 		logger.FatalLog(err)
@@ -50,15 +54,16 @@ func main() {
 	}(mg)
 
 	server := gin.Default()
-	trustedProxies, err := loadTrustedProxies()
-	if err != nil {
-		logger.FatalLog(err)
-	}
 	if err := server.SetTrustedProxies(trustedProxies.List); err != nil {
 		logger.FatalLog(err)
 	}
 	logTrustedProxies(trustedProxies)
 	api.SetAPIRouter(server)
+	healthDB, err := mg.GetDB().DB()
+	if err != nil {
+		logger.FatalLog(err)
+	}
+	api.SetHealthRouter(server, healthDB.PingContext)
 	api.SetWebRouter(buildFS, indexPage, server)
 	stopWechatRegisterCleanup := service.DefaultWechatRegisterFlowStore.StartCleanup(time.Minute)
 	defer stopWechatRegisterCleanup()

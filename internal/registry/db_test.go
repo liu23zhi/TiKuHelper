@@ -92,6 +92,8 @@ func resetRegistryDBState(t *testing.T) {
 }
 
 func openRegistryTestDB(t *testing.T) string {
+	// These upstream fixtures intentionally exercise development bootstrap compatibility.
+	t.Setenv("TIKU_APP_MODE", "development")
 	t.Helper()
 	resetRegistryDBState(t)
 	dbPath := filepath.Join(t.TempDir(), "registry-test.db")
@@ -319,6 +321,8 @@ func TestEnsureSMSVerificationSchemaAllowsCurrentAutoMigrateOnLegacySQLiteTable(
 }
 
 func TestRegisterDBMigratesLegacySMSVerificationTableWithSceneColumn(t *testing.T) {
+	// These upstream fixtures intentionally exercise development bootstrap compatibility.
+	t.Setenv("TIKU_APP_MODE", "development")
 	dbPath := filepath.Join(t.TempDir(), "legacy-sms-verification.db")
 
 	legacyDB, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
@@ -358,6 +362,8 @@ func TestRegisterDBMigratesLegacySMSVerificationTableWithSceneColumn(t *testing.
 }
 
 func TestRegisterDBMigratesLegacyUsersTableWithNullablePhoneBindingColumns(t *testing.T) {
+	// These upstream fixtures intentionally exercise development bootstrap compatibility.
+	t.Setenv("TIKU_APP_MODE", "development")
 	dbPath := filepath.Join(t.TempDir(), "legacy-users.db")
 
 	legacyDB, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
