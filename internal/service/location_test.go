@@ -1,6 +1,9 @@
 package service
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -232,21 +235,32 @@ func TestNormalizePhoneLookupKeysDeduplicatesAndSkipsInvalid(t *testing.T) {
 	}
 }
 
-// 未配置密钥时必须直接返回空结果，且**不发起任何外呼**（不消耗积分）。
-func TestLookupPhoneLocationsWithoutAPIKeyReturnsEmpty(t *testing.T) {
+func TestLookupPhoneLocationsWithoutAPIKeyQueriesAndReusesCache(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Header.Get("Authorization") != "" || r.URL.Query().Get("phone") != "13800138000" || r.URL.Query().Get("source") != "" {
+			t.Errorf("unexpected anonymous phone request: %s", r.URL)
+		}
+		_, _ = w.Write([]byte(`{"province":"广东","city":"深圳","sp":"移动","area_code":"0755"}`))
+	}))
+	defer server.Close()
+	newDefaultLocationClient(t, server, "")
 	db := newLocationTestDB(t)
 
-	locations := LookupPhoneLocationsWithDB(db, []string{"13800138000"}, LocationQueryOptions{})
-	if len(locations) != 0 {
-		t.Fatalf("expected no locations without an API key, got %v", locations)
+	for i := 0; i < 2; i++ {
+		locations, err := LookupPhoneLocationsDetailedWithDB(db, []string{"13800138000"}, LocationQueryOptions{})
+		if err != nil || locations["13800138000"].Address != "广东深圳 移动" || locations["13800138000"].AreaCode != "0755" {
+			t.Fatalf("expected anonymous phone location and cached result, got %v err=%v", locations, err)
+		}
 	}
 
 	var count int64
 	if err := db.Model(&entity.LocationCache{}).Count(&count).Error; err != nil {
 		t.Fatalf("count cache rows: %v", err)
 	}
-	if count != 0 {
-		t.Fatalf("expected nothing to be persisted without an API key, got %d rows", count)
+	if count != 1 || requests.Load() != 1 {
+		t.Fatalf("expected one query and one persisted record, got requests=%d rows=%d", requests.Load(), count)
 	}
 }
 

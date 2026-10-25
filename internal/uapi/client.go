@@ -114,9 +114,10 @@ func (c *Client) SetIPInfoURL(url string) *Client {
 }
 
 // GetPhoneInfo 查询手机号归属地。
+// 密钥可选，未配置时使用上游访客额度且不发送 Authorization。
 // 参数不合法时在本地直接返回错误，不发起 HTTP 请求、不消耗积分。
 func (c *Client) GetPhoneInfo(ctx context.Context, phone string) (PhoneInfo, error) {
-	if err := c.ensureReady(); err != nil {
+	if err := c.ensureInitialized(); err != nil {
 		return PhoneInfo{}, err
 	}
 	normalized, err := NormalizePhone(phone)

@@ -148,7 +148,7 @@ type IPLocation struct {
 
 // LocationQueryOptions 控制归属地查询行为。
 type LocationQueryOptions struct {
-	// 普通 IP 查询可不配置 UAPIKey；商业增强及手机号查询仍需要密钥。
+	// 手机号及普通 IP 查询可不配置 UAPIKey；商业增强 IP 查询仍需要密钥。
 	UAPIKey string
 	// Source 传给 IP 查询接口的 source 参数；仅支持 "commercial"。
 	Source string
@@ -449,7 +449,7 @@ func storeLocationCacheRows(db *gorm.DB, rows []entity.LocationCache) error {
 
 // LookupPhoneLocationsWithDB 批量查询手机号归属地。
 //
-// 返回 map 的键是归一化后的手机号。查不到的号码（未配置密钥、格式非法、上游无记录）
+// 返回 map 的键是归一化后的手机号。查不到的号码（格式非法、上游无记录或查询失败）
 // 不会出现在结果里，调用方据此回退为只显示原始号码。
 func LookupPhoneLocationsWithDB(db *gorm.DB, phones []string, options LocationQueryOptions) map[string]PhoneLocation {
 	result, _ := LookupPhoneLocationsDetailedWithDB(db, phones, options)
@@ -481,10 +481,6 @@ func LookupPhoneLocationsDetailedWithDB(db *gorm.DB, phones []string, options Lo
 	if len(missing) == 0 {
 		return result, nil
 	}
-	if apiKey == "" {
-		return result, ErrLocationNotConfigured
-	}
-
 	rows, err := queryLocationRows(db, newLocationClient(apiKey), entity.LocationKindPhone, missing, "", false)
 
 	// ③ 落库并并入结果。

@@ -168,11 +168,16 @@ test('missing key allows ordinary batch refresh, but cancelling sends nothing', 
   assert.equal(calls[0].items[0].source, 'commercial')
 })
 
-test('phone refresh keeps its existing key requirement and never sends the IP source setting', async () => {
+test('phone single, batch and manual queries work without a key and never send the IP source setting', async () => {
   const calls = []
+  const batches = []
+  const manual = []
   const page = await createPage({
     useRoute: () => ({ meta: { locationKind: 'phone' } }),
     refreshLocationCache: async input => { calls.push(input); return { status: 200 } },
+    refreshLocationCacheBatch: async input => { batches.push(input); return { status: 200 } },
+    manualLookupLocationCache: async input => { manual.push(input); return { status: 200 } },
+    getLocationCacheList: async () => ({ status: 200, data: { data: [], configured: false } }),
   })
   page.setQuerySource('commercial')
   const row = { kind: 'phone', lookupKey: '13800138000', source: '' }
@@ -180,7 +185,18 @@ test('phone refresh keeps its existing key requirement and never sends the IP so
   assert.deepEqual(calls, [{ kind: 'phone', lookupKey: '13800138000', source: '' }])
   page.configured.value = false
   await page.refresh(row)
-  assert.equal(calls.length, 1)
+  assert.equal(calls.length, 2)
+  assert.equal(page.isRefreshDisabled(row), false)
+  page.rows.value = [row]
+  page.pagination.total = 1
+  page.handleSelectCurrentPage()
+  await page.refreshSelected()
+  assert.equal(batches.length, 1)
+  assert.equal(batches[0].querySource, '')
+  assert.deepEqual(batches[0].items, [{ lookupKey: row.lookupKey, source: '' }])
+  page.manualKey.value = row.lookupKey
+  await page.manualLookup()
+  assert.deepEqual(manual, [{ kind: 'phone', lookupKey: row.lookupKey, source: '' }])
 })
 
 test('selected rows use the batch refresh endpoint and include legacy rows', async () => {

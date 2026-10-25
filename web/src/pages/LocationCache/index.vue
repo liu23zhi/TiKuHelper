@@ -27,7 +27,7 @@
         </a-form-item>
       </a-form>
       <p v-if="kind === 'ip'" class="query-source-hint">重新查询和手动添加使用所选来源，已有其他来源记录保留。</p>
-      <a-alert v-if="configured === false" :type="kind === 'ip' ? 'info' : 'warning'" show-icon :message="kind === 'ip' ? '未配置 UApiPro 密钥，仅可使用普通来源。' : '未配置 UApiPro 密钥，已保存的信息仍可查看，暂时无法重新查询。'" class="status-alert" />
+      <a-alert v-if="configured === false" type="info" show-icon :message="kind === 'ip' ? '未配置 UApiPro 密钥，仅可使用普通来源。' : '未配置 UApiPro 密钥，仍可查询手机号归属地。'" class="status-alert" />
       <a-alert v-if="errorMessage" type="error" show-icon :message="errorMessage" class="status-alert" />
       <a-row :gutter="16" class="summary-row">
         <a-col :xs="12" :sm="6"><a-statistic title="筛选结果" :value="summary.total" suffix="条" /></a-col>
@@ -141,7 +141,7 @@ export default defineComponent({
     const summary = ref({ total: 0, withAddress: 0, withoutAddress: 0 })
     const recordIdentity = record => `${record.kind}:${record.lookupKey}:${record.source || 'default'}`
     const sourceLabel = source => source === 'legacy' ? '历史（来源未记录）' : source === 'commercial' ? '商业增强' : '普通来源'
-    const isRefreshDisabled = () => configured.value === false && kind.value !== 'ip'
+    const isRefreshDisabled = () => configured.value === false && kind.value === 'ip' && querySource.value === 'commercial'
     const detailVisible = ref(false)
     const detailRecord = ref({})
     const pagination = reactive({

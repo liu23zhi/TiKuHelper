@@ -17,6 +17,12 @@ import (
 // 再大就容易被上游速率限制拒绝，也会让一次请求耗时过长。
 const maxLocationLookupKeys = 100
 
+var (
+	lookupPhoneLocationsDetailed = service.LookupPhoneLocationsDetailedWithDB
+	refreshLocationCache         = service.RefreshLocationCacheWithDB
+	manualLookupLocationCache    = service.ManualLookupLocationCacheWithDB
+)
+
 // UAPIPhoneInfo 查询手机号归属地。
 //
 // 同时支持单值与批量：
@@ -41,7 +47,7 @@ func UAPIPhoneInfo(c *gin.Context) {
 	// 用与搜题链路相同的安全取库方式：manager 未初始化时返回 nil，避免空指针崩溃。
 	db := resolveSearchPersistenceDB()
 	apiKey := service.GetUAPIAPIKeyWithDB(db)
-	locations, lookupErr := service.LookupPhoneLocationsDetailedWithDB(db, phones, service.LocationQueryOptions{
+	locations, lookupErr := lookupPhoneLocationsDetailed(db, phones, service.LocationQueryOptions{
 		UAPIKey: apiKey,
 	})
 
@@ -220,7 +226,7 @@ func LocationCacheRefresh(c *gin.Context) {
 	}
 	db := resolveSearchPersistenceDB()
 	apiKey := service.GetUAPIAPIKeyWithDB(db)
-	row, err := service.RefreshLocationCacheWithDB(db, input.Kind, input.LookupKey, service.LocationQueryOptions{UAPIKey: apiKey, Source: input.Source})
+	row, err := refreshLocationCache(db, input.Kind, input.LookupKey, service.LocationQueryOptions{UAPIKey: apiKey, Source: input.Source})
 	if err != nil {
 		status := http.StatusBadGateway
 		if errors.Is(err, service.ErrLocationInvalidKey) {
@@ -231,7 +237,7 @@ func LocationCacheRefresh(c *gin.Context) {
 		c.JSON(status, gin.H{"message": service.LocationQueryErrorMessage(err), "configured": apiKey != ""})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": row, "configured": true})
+	c.JSON(http.StatusOK, gin.H{"data": row, "configured": apiKey != ""})
 }
 
 // LocationCacheManualLookup 管理员手动输入一个 IP/手机号，查询上游并持久化结果。
@@ -250,7 +256,7 @@ func LocationCacheManualLookup(c *gin.Context) {
 	}
 	db := resolveSearchPersistenceDB()
 	apiKey := service.GetUAPIAPIKeyWithDB(db)
-	row, err := service.ManualLookupLocationCacheWithDB(db, input.Kind, input.LookupKey, service.LocationQueryOptions{UAPIKey: apiKey, Source: input.Source})
+	row, err := manualLookupLocationCache(db, input.Kind, input.LookupKey, service.LocationQueryOptions{UAPIKey: apiKey, Source: input.Source})
 	if err != nil {
 		status := http.StatusBadGateway
 		if errors.Is(err, service.ErrLocationInvalidKey) {
@@ -261,7 +267,7 @@ func LocationCacheManualLookup(c *gin.Context) {
 		c.JSON(status, gin.H{"message": service.LocationQueryErrorMessage(err), "configured": apiKey != ""})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": row, "configured": true})
+	c.JSON(http.StatusOK, gin.H{"data": row, "configured": apiKey != ""})
 }
 
 // collectLocationLookupKeys 解析单值与批量两种入参形式。

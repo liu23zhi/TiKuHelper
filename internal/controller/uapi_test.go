@@ -13,6 +13,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/service"
 	"gorm.io/gorm"
 )
 
@@ -167,10 +168,20 @@ func TestUAPIIPInfoRejectsUnknownSource(t *testing.T) {
 	}
 }
 
-// 未配置密钥时必须返回 200 与空 data（前端据此只显示原始值），不能报错。
-func TestUAPIPhoneInfoWithoutAPIKeyReturnsEmptyData(t *testing.T) {
+// 普通手机号查询允许不配置密钥，configured 只表示是否存在密钥。
+func TestUAPIPhoneInfoWithoutAPIKeyReturnsLocation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	newUAPILocationTestDB(t)
+	originalLookup := lookupPhoneLocationsDetailed
+	t.Cleanup(func() { lookupPhoneLocationsDetailed = originalLookup })
+	var calls int
+	lookupPhoneLocationsDetailed = func(_ *gorm.DB, phones []string, options service.LocationQueryOptions) (map[string]service.PhoneLocation, error) {
+		calls++
+		if options.UAPIKey != "" || len(phones) != 1 || phones[0] != "13800138000" {
+			t.Fatalf("unexpected query: phones=%v options=%+v", phones, options)
+		}
+		return map[string]service.PhoneLocation{"13800138000": {Address: "广东深圳 移动"}}, nil
+	}
 
 	recorder := performUAPIRequest(t, "/adapter-service/uapi/phoneinfo?phone=13800138000", "admin", UAPIPhoneInfo)
 	if recorder.Code != http.StatusOK {
@@ -178,13 +189,95 @@ func TestUAPIPhoneInfoWithoutAPIKeyReturnsEmptyData(t *testing.T) {
 	}
 
 	var payload struct {
-		Data map[string]any `json:"data"`
+		Data       map[string]service.PhoneLocation `json:"data"`
+		Configured bool                             `json:"configured"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if len(payload.Data) != 0 {
-		t.Fatalf("expected empty data without an API key, got %v", payload.Data)
+	if calls != 1 || payload.Configured || payload.Data["13800138000"].Address != "广东深圳 移动" {
+		t.Fatalf("expected keyless ordinary location, got %+v calls=%d", payload, calls)
+	}
+	for _, testCase := range []struct {
+		role   string
+		target string
+		status int
+	}{
+		{role: "user", target: "/adapter-service/uapi/phoneinfo?phone=13800138000", status: http.StatusForbidden},
+		{role: "admin", target: "/adapter-service/uapi/phoneinfo", status: http.StatusBadRequest},
+	} {
+		rejected := performUAPIRequest(t, testCase.target, testCase.role, UAPIPhoneInfo)
+		if rejected.Code != testCase.status || calls != 1 {
+			t.Fatalf("rejected query must not reach lookup: status=%d calls=%d", rejected.Code, calls)
+		}
+	}
+}
+
+func TestLocationCacheLookupSuccessReportsActualKeyConfiguration(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	originalRefresh, originalManual := refreshLocationCache, manualLookupLocationCache
+	t.Cleanup(func() { refreshLocationCache, manualLookupLocationCache = originalRefresh, originalManual })
+	for _, endpoint := range []struct {
+		name    string
+		handler gin.HandlerFunc
+		manual  bool
+	}{
+		{name: "refresh", handler: LocationCacheRefresh},
+		{name: "manual", handler: LocationCacheManualLookup, manual: true},
+	} {
+		for _, key := range []string{"", "uapi-configured"} {
+			keyName := "keyless"
+			if key != "" {
+				keyName = "with-key"
+			}
+			t.Run(endpoint.name+"/"+keyName, func(t *testing.T) {
+				db := newUAPILocationTestDB(t)
+				if key != "" {
+					if err := db.Create(&entity.SystemSetting{Key: "uapi_api_key", Value: key}).Error; err != nil {
+						t.Fatal(err)
+					}
+				}
+				var calls int
+				lookup := func(_ *gorm.DB, kind, lookupKey string, options service.LocationQueryOptions) (entity.LocationCache, error) {
+					calls++
+					if kind != "phone" || lookupKey != "13800138000" || options.UAPIKey != key || options.Source != "" {
+						t.Fatalf("unexpected lookup: kind=%s key=%s options=%+v", kind, lookupKey, options)
+					}
+					return entity.LocationCache{Kind: kind, LookupKey: lookupKey, Address: "广东深圳 移动"}, nil
+				}
+				if endpoint.manual {
+					manualLookupLocationCache = lookup
+				} else {
+					refreshLocationCache = lookup
+				}
+				perform := func(role, body string) *httptest.ResponseRecorder {
+					recorder := httptest.NewRecorder()
+					ctx, _ := gin.CreateTestContext(recorder)
+					ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/location-cache/"+endpoint.name, strings.NewReader(body))
+					ctx.Set("user", &entity.User{ID: 1, Role: role, Status: "enabled"})
+					endpoint.handler(ctx)
+					return recorder
+				}
+				body := `{"kind":"phone","lookupKey":"13800138000"}`
+				recorder := perform("admin", body)
+				var payload struct {
+					Configured bool                 `json:"configured"`
+					Data       entity.LocationCache `json:"data"`
+				}
+				if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+					t.Fatal(err)
+				}
+				if recorder.Code != http.StatusOK || payload.Configured != (key != "") || payload.Data.Address != "广东深圳 移动" || calls != 1 {
+					t.Fatalf("incorrect success response: status=%d payload=%+v calls=%d", recorder.Code, payload, calls)
+				}
+				if rejected := perform("user", body); rejected.Code != http.StatusForbidden || calls != 1 {
+					t.Fatalf("non-admin must not call lookup: status=%d calls=%d", rejected.Code, calls)
+				}
+				if rejected := perform("admin", `{`); rejected.Code != http.StatusBadRequest || calls != 1 {
+					t.Fatalf("invalid JSON must not call lookup: status=%d calls=%d", rejected.Code, calls)
+				}
+			})
+		}
 	}
 }
 
