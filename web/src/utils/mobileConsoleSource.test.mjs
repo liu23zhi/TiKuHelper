@@ -7,14 +7,17 @@ import test from 'node:test';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (file) => readFile(path.join(root, file), 'utf8');
 
-test('compact viewport starts with navigation collapsed and gives an explicit expand action', async () => {
+test('responsive shell uses phone drawer and tablet sidebar with an explicit navigation action', async () => {
   const [layout, menu] = await Promise.all([
     read('layout/TikuAdapterLayout.vue'),
     read('components/SiderMenu/index.vue'),
   ]);
-  assert.match(layout, /window\.matchMedia\(['"]\(max-width:\s*960px\)['"]\)/);
+  assert.match(layout, /window\.matchMedia\(['"]\(max-width:\s*767px\)['"]\)/);
   assert.match(menu, /collapsed\s*\?\s*['"]展开侧边栏['"]\s*:\s*['"]折叠侧边栏['"]/);
-  assert.match(menu, /\.sider-menu-wrap\s*\{[^}]*min-height:\s*auto/s);
+  assert.match(layout, /window\.matchMedia\(['"]\(max-width:\s*1199px\)['"]\)/);
+  assert.match(layout, /aria-label="打开导航"/);
+  assert.match(layout, /:open="drawerVisible"/);
+  assert.match(menu, /\.sider-menu-wrap\.is-mobile\s*\{[^}]*min-height:\s*0/s);
 });
 
 test('user management renders readable mobile user cards with usable mobile pagination', async () => {

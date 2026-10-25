@@ -1167,14 +1167,14 @@ export default defineComponent({
 
 .page-heading h1 {
   margin: 0;
-  color: var(--console-text, #1f2937);
+  color: var(--console-text, var(--text));
   font-size: 20px;
   font-weight: 650;
 }
 
 .page-lead {
   margin: 4px 0 0;
-  color: var(--console-muted, #64748b);
+  color: var(--console-muted, var(--text-muted));
   font-size: 13px;
 }
 
@@ -1190,7 +1190,7 @@ export default defineComponent({
 }
 
 .user-page .page-card {
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   border-radius: var(--console-radius, 12px);
 }
 
@@ -1202,12 +1202,12 @@ export default defineComponent({
 .page-title {
   font-size: 20px;
   font-weight: 650;
-  color: var(--console-text, #1f2937);
+  color: var(--console-text, var(--text));
 }
 
 .page-subtitle {
   margin-top: 6px;
-  color: var(--console-muted, #64748b);
+  color: var(--console-muted, var(--text-muted));
   font-size: 13px;
 }
 
@@ -1217,9 +1217,9 @@ export default defineComponent({
 
 .filter-form {
   padding: 16px;
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   border-radius: 8px;
-  background: var(--console-canvas, #f5f7fb);
+  background: var(--console-canvas, var(--bg));
 }
 
 .filter-form :deep(.ant-form-item) {
@@ -1275,9 +1275,9 @@ export default defineComponent({
 .wechat-id-panel {
   margin-top: 10px;
   padding: 12px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #f9fafb;
+  background: var(--surface-subtle);
 }
 
 .wechat-id-qrcode {
@@ -1292,7 +1292,7 @@ export default defineComponent({
   margin-top: 6px;
   font-size: 12px;
   line-height: 1.6;
-  color: #6b7280;
+  color: var(--text-muted);
 }
 
 @media (max-width: 640px) {
@@ -1312,9 +1312,9 @@ export default defineComponent({
 
   .mobile-user-card {
     padding: 12px;
-    border: 1px solid var(--console-border, #e5e7eb);
+    border: 1px solid var(--console-border, var(--border));
     border-radius: 8px;
-    background: var(--console-surface, #fff);
+    background: var(--console-surface, var(--surface));
   }
 
   .mobile-user-card__header {
@@ -1336,7 +1336,7 @@ export default defineComponent({
   }
 
   .mobile-user-card__identity span {
-    color: var(--console-muted, #64748b);
+    color: var(--console-muted, var(--text-muted));
     font-size: 12px;
   }
 
@@ -1354,8 +1354,8 @@ export default defineComponent({
     gap: 8px;
     margin: 12px 0;
     padding: 10px 0;
-    border-top: 1px solid var(--console-border, #e5e7eb);
-    border-bottom: 1px solid var(--console-border, #e5e7eb);
+    border-top: 1px solid var(--console-border, var(--border));
+    border-bottom: 1px solid var(--console-border, var(--border));
   }
 
   .mobile-user-card__meta div {
@@ -1363,14 +1363,14 @@ export default defineComponent({
   }
 
   .mobile-user-card__meta dt {
-    color: var(--console-muted, #64748b);
+    color: var(--console-muted, var(--text-muted));
     font-size: 11px;
   }
 
   .mobile-user-card__meta dd {
     margin: 2px 0 0;
     overflow-wrap: anywhere;
-    color: var(--console-text, #1f2937);
+    color: var(--console-text, var(--text));
     font-size: 13px;
   }
 

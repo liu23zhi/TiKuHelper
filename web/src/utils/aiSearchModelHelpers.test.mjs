@@ -167,7 +167,8 @@ test('AISearchConfig page bills from the model price table', async () => {
   const content = await readFile(aiSearchConfigPagePath, 'utf8');
 
   assert.match(content, /buildModelNameOptions\(formState\.manualModelsText\)/);
-  assert.match(content, /formState\.manualModelsText = buildModelNameText\(data\.manualModels/);
+  assert.match(content, /nextForm\.manualModelsText = buildModelNameText\(data\.manualModels/);
+  assert.match(content, /Object\.assign\(formState, nextForm\)/, 'normalized server values must still reach the complete upstream form');
   assert.match(content, /filterRemoteModelNames\(remoteModels\)/);
   assert.match(content, /formState\.manualModelsText = buildModelNameText\(filteredRemoteModels\)/);
 
@@ -251,14 +252,14 @@ test('AISearchConfig page exposes configurable model and search budgets', async 
 
   assert.match(content, /maxAISearchModelCalls: DEFAULT_MAX_AI_SEARCH_MODEL_CALLS/);
   assert.match(content, /maxAISearches: DEFAULT_MAX_AI_SEARCHES/);
-  assert.match(content, /formState\.maxAISearchModelCalls = normalizeAISearchBudget\(data\.maxAISearchModelCalls/);
-  assert.match(content, /formState\.maxAISearches = normalizeAISearchBudget\(data\.maxAISearches/);
+  assert.match(content, /nextForm\.maxAISearchModelCalls = normalizeAISearchBudget\(data\.maxAISearchModelCalls/);
+  assert.match(content, /nextForm\.maxAISearches = normalizeAISearchBudget\(data\.maxAISearches/);
   assert.match(content, /maxAISearchRetries: DEFAULT_MAX_AI_SEARCH_RETRIES/);
-  assert.match(content, /formState\.maxAISearchRetries = normalizeAISearchRetries\(data\.maxAISearchRetries/);
+  assert.match(content, /nextForm\.maxAISearchRetries = normalizeAISearchRetries\(data\.maxAISearchRetries/);
   assert.match(content, /maxAIWebReads: DEFAULT_MAX_AI_WEB_READS/);
-  assert.match(content, /formState\.maxAIWebReads = normalizeAIWebReads\(data\.maxAIWebReads/);
+  assert.match(content, /nextForm\.maxAIWebReads = normalizeAIWebReads\(data\.maxAIWebReads/);
   assert.match(content, /webReadPricePerCall: 0/);
-  assert.match(content, /formState\.webReadPricePerCall = Number\(data\.webReadPricePerCall/);
+  assert.match(content, /nextForm\.webReadPricePerCall = Number\(data\.webReadPricePerCall/);
   assert.match(content, /网页读取次数/);
   assert.match(content, /网页读取单价（元\/次）/);
   assert.doesNotMatch(content, /网页读取工具（web_read）/);
@@ -280,8 +281,8 @@ test('AISearchConfig page loads and exposes staged billing toggles', async () =>
 
   assert.match(content, /enableAIStagedTokenBilling: false/);
   assert.match(content, /smoothAIStagedTokenMultiplier: false/);
-  assert.match(content, /formState\.enableAIStagedTokenBilling = !!data\.enableAIStagedTokenBilling/);
-  assert.match(content, /formState\.smoothAIStagedTokenMultiplier = !!data\.smoothAIStagedTokenMultiplier/);
+  assert.match(content, /nextForm\.enableAIStagedTokenBilling = !!data\.enableAIStagedTokenBilling/);
+  assert.match(content, /nextForm\.smoothAIStagedTokenMultiplier = !!data\.smoothAIStagedTokenMultiplier/);
   assert.match(content, /v-model:checked="formState\.enableAIStagedTokenBilling"/);
   assert.match(content, /v-model:checked="formState\.smoothAIStagedTokenMultiplier"/);
   assert.match(content, /:disabled="!formState\.enableAIStagedTokenBilling"/);

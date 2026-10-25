@@ -115,10 +115,11 @@
 </template>
 
 <script>
-import { computed, defineComponent, reactive, ref } from 'vue'
+import { computed, defineComponent, getCurrentInstance, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { getRechargeOrders } from '@/api/TikuComponentApi'
-import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser'
+import { useCurrentUserDisplay, isAdminUser } from '@/utils/currentUser'
+import { useCurrentUserRequestScope } from '@/utils/currentUserScope'
 import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@/utils/listSearchHelpers.mjs'
 
 const dataSource = ref([])
@@ -148,8 +149,20 @@ const pagination = reactive({
 export default defineComponent({
   name: 'RechargeOrderList',
   setup() {
-    const currentUser = computed(() => getStoredCurrentUser())
+    const { currentUser } = useCurrentUserDisplay()
     const isAdmin = computed(() => isAdminUser(currentUser.value))
+    const instance = getCurrentInstance()
+    const { captureDataOwner, canLoadForCurrentUser } = useCurrentUserRequestScope(currentUser, {
+      clear() {
+        dataSource.value = []
+        tableLoading.value = false
+        pagination.total = 0
+        amountSummary.totalAmount = 0
+        amountSummary.currentPageAmount = 0
+      },
+      reset() { filters.keyword = ''; keywordInput.value = ''; pagination.current = 1; filters.status = undefined; filters.paymentProvider = '' },
+      reload() { instance.proxy.handleLoad() },
+    })
     const summary = computed(() => ({
       total: Number(pagination.total || 0),
       currentPageCount: Array.isArray(dataSource.value) ? dataSource.value.length : 0,
@@ -158,6 +171,7 @@ export default defineComponent({
     }))
 
     return {
+      captureDataOwner, canLoadForCurrentUser,
       dataSource,
       tableLoading,
       pagination,
@@ -265,12 +279,15 @@ export default defineComponent({
       this.handleLoad()
     },
     handleLoad() {
+      if (!this.canLoadForCurrentUser()) return
+      const owns = this.captureDataOwner()
       tableLoading.value = true
       getRechargeOrders(buildSearchParams({
         keyword: filters.keyword,
         status: filters.status,
         paymentProvider: filters.paymentProvider,
       }, pagination.current, pagination.pageSize)).then((res) => {
+        if (!owns()) return
         if (res?.status === 200) {
           dataSource.value = Array.isArray(res?.data?.data) ? res.data.data : []
           pagination.total = Number(res?.data?.total || 0)
@@ -282,8 +299,10 @@ export default defineComponent({
           message.error(res?.message || '获取充值记录失败')
         }
       }).catch(() => {
+        if (!owns()) return
         message.error('获取充值记录失败')
       }).finally(() => {
+        if (!owns()) return
         tableLoading.value = false
       })
     },
@@ -342,14 +361,14 @@ export default defineComponent({
 
 .page-heading h1 {
   margin: 0;
-  color: var(--console-text, #1f2937);
+  color: var(--console-text, var(--text));
   font-size: 20px;
   font-weight: 650;
 }
 
 .page-lead {
   margin: 4px 0 0;
-  color: var(--console-muted, #64748b);
+  color: var(--console-muted, var(--text-muted));
   font-size: 13px;
 }
 
@@ -358,7 +377,7 @@ export default defineComponent({
 }
 
 .summary-card {
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   border-radius: 8px;
 }
 
@@ -374,9 +393,9 @@ export default defineComponent({
   display: flex;
   flex-wrap: wrap;
   gap: 8px 16px;
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   border-radius: 8px;
-  background: var(--console-canvas, #f5f7fb);
+  background: var(--console-canvas, var(--bg));
 }
 
 .filter-form :deep(.ant-form-item) {
@@ -384,7 +403,7 @@ export default defineComponent({
 }
 
 .page-card {
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   border-radius: var(--console-radius, 12px);
 }
 

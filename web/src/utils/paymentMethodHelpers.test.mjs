@@ -185,7 +185,7 @@ test('buildPaymentMethodSwalHtml renders icon, label and id marker', () => {
   assert.match(html, /data-payment-method-id="3"/);
   assert.match(html, /支付宝/);
   assert.match(html, /推荐使用/);
-  assert.match(html, /<svg><circle \/><\/svg>/);
+  assert.match(html, /<svg><circle><\/circle><\/svg>/);
 });
 
 test('buildSearchAccountDefaultParameterHint keeps AI guidance in the default parameter column', () => {

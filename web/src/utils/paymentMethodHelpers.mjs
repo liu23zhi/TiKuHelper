@@ -1,3 +1,5 @@
+import { parseSafePaymentIcon } from './safePaymentIcon.mjs'
+
 export function sortPaymentMethodsForDisplay(rows = []) {
   return [...rows].sort((a, b) => {
     const enabledA = !!a?.enabled;
@@ -184,19 +186,22 @@ export function buildRechargeOrderPayload(amountValue, paymentMethodId) {
 }
 
 export function buildPaymentMethodSwalHtml(options = []) {
+  const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+  const serialize = node => `<${node.tag}${Object.entries(node.attrs).map(([key, value]) => ` ${key}="${escape(value)}"`).join('')}>${node.children.map(serialize).join('')}</${node.tag}>`
   return options.map((item) => {
-    const icon = item.iconSVG
-      ? `<span class="payment-option-icon">${item.iconSVG}</span>`
+    const safeIcon = parseSafePaymentIcon(item.iconSVG)
+    const icon = safeIcon
+      ? `<span class="payment-option-icon">${serialize(safeIcon)}</span>`
       : '<span class="payment-option-icon payment-option-icon--placeholder">¥</span>'
     const remark = item.remark
-      ? `<div class="payment-option-remark">${item.remark}</div>`
+      ? `<div class="payment-option-remark">${escape(item.remark)}</div>`
       : ''
     return `
-      <button type="button" class="payment-option" data-payment-method-id="${item.value}">
+      <button type="button" class="payment-option" data-payment-method-id="${escape(item.value)}">
         <div class="payment-option-main">
           ${icon}
           <div>
-            <div class="payment-option-title">${item.label}</div>
+            <div class="payment-option-title">${escape(item.label)}</div>
             ${remark}
           </div>
         </div>

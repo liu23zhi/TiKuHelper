@@ -163,12 +163,13 @@
 </template>
 
 <script>
-import { computed, defineComponent, reactive, ref } from 'vue'
+import { computed, defineComponent, getCurrentInstance, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import Swal from 'sweetalert2'
 import OverflowTableText from '@/components/OverflowTableText.vue'
 import { getBillingRecords, getIpLocations, getMyLocations, updateBillingStatementVisibility } from '@/api/TikuComponentApi'
-import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser'
+import { getStoredCurrentUser, useCurrentUserDisplay, isAdminUser } from '@/utils/currentUser'
+import { useCurrentUserRequestScope } from '@/utils/currentUserScope'
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
 import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@/utils/listSearchHelpers.mjs'
 import {
@@ -207,7 +208,7 @@ function formatValueWithLocation(rawValue, address) {
 // enrichClientIps 批量拉取本页来源 IP 的归属地。
 //
 // 失败静默：归属地只是展示增强，未配置密钥或上游异常时对应列退化为只显示原始 IP。
-function enrichClientIps(rows) {
+function enrichClientIps(rows, owns = () => true) {
   const ips = collectLocationKeys(rows, 'clientIp')
   if (!ips.length) {
     return
@@ -215,6 +216,7 @@ function enrichClientIps(rows) {
   const admin = isAdminUser(getStoredCurrentUser())
   lookupLocationAddresses('ip', ips, admin ? getIpLocations : getMyLocations, admin ? '' : 'ip')
     .then((addresses) => {
+      if (!owns()) return
       Object.keys(addresses).forEach((key) => {
         ipLocations[normalizeLocationKey(key)] = addresses[key]
       })
@@ -246,8 +248,29 @@ export default defineComponent({
   name: 'BillingRecordList',
   components: { OverflowTableText },
   setup() {
-    const currentUser = computed(() => getStoredCurrentUser())
+    const { currentUser } = useCurrentUserDisplay()
     const isAdmin = computed(() => isAdminUser(currentUser.value))
+    const instance = getCurrentInstance()
+    let ownedDetailPopup = null
+    const closeScopePopup = () => {
+      if (ownedDetailPopup && Swal.getPopup() === ownedDetailPopup) Swal.close()
+      ownedDetailPopup = null
+    }
+    const ownScopePopup = popup => { ownedDetailPopup = popup }
+    const { captureDataOwner, canLoadForCurrentUser } = useCurrentUserRequestScope(currentUser, {
+      clear() {
+        dataSource.value = []
+        tableLoading.value = false
+        pagination.total = 0
+        amountSummary.totalAmount = 0
+        amountSummary.currentPageAmount = 0
+      Object.keys(ipLocations).forEach(key => { delete ipLocations[key] })
+      Object.keys(expandedSubjects).forEach(key => { delete expandedSubjects[key] })
+        closeScopePopup()
+      },
+      reset() { filters.keyword = ''; keywordInput.value = ''; pagination.current = 1; filters.type = undefined },
+      reload() { instance.proxy.handleLoad() },
+    })
     const activeFilterCount = computed(() => countActiveFilters({ keyword: filters.keyword, type: filters.type }))
 
     const summary = computed(() => {
@@ -420,6 +443,8 @@ export default defineComponent({
     const tableScrollX = computed(() => columns.value.reduce((total, column) => total + column.width, 0))
 
     return {
+      captureDataOwner, canLoadForCurrentUser,
+      ownScopePopup,
       dataSource,
       // 归属地展示：映射 + 取值/格式化函数（模板按行取值）。
       ipLocations,
@@ -463,10 +488,13 @@ export default defineComponent({
       expandedSubjects[id] = !expandedSubjects[id]
     },
     async handleStatementVisibilityChange(record, show) {
+      if (!this.isAdmin || !dataSource.value.includes(record)) return false
+      const owns = this.captureDataOwner()
       if (visibilitySaving[record.id]) return false
       visibilitySaving[record.id] = true
       try {
         const res = await updateBillingStatementVisibility(record.id, show)
+        if (!owns()) return false
         if (res?.status !== 200) throw new Error(res?.message || '修改流水可见性失败')
         record.showInStatement = show
         message.success(show ? '已在用户账单流水中显示' : '已从用户账单流水中隐藏，管理员明细仍保留')
@@ -497,11 +525,14 @@ export default defineComponent({
       this.handleLoad()
     },
     handleLoad() {
+      if (!this.canLoadForCurrentUser()) return
+      const owns = this.captureDataOwner()
       tableLoading.value = true
       getBillingRecords(buildSearchParams({
         keyword: filters.keyword,
         type: filters.type,
       }, pagination.current, pagination.pageSize)).then((res) => {
+        if (!owns()) return
         if (res?.status === 200) {
           dataSource.value = Array.isArray(res?.data?.data) ? res.data.data : []
           pagination.total = Number(res?.data?.total || 0)
@@ -511,13 +542,15 @@ export default defineComponent({
           amountSummary.totalAmount = Number(res?.data?.summary?.totalAmount || 0)
           amountSummary.currentPageAmount = Number(res?.data?.summary?.currentPageAmount || 0)
           // 来源 IP 归属地：按当前页批量查询并落库（失败静默）。
-          enrichClientIps(dataSource.value)
+          enrichClientIps(dataSource.value, owns)
         } else {
           message.error(res?.message || '获取账单列表失败')
         }
       }).catch(() => {
+        if (!owns()) return
         message.error('获取账单列表失败')
       }).finally(() => {
+        if (!owns()) return
         tableLoading.value = false
       })
     },
@@ -532,9 +565,11 @@ export default defineComponent({
       this.handleLoad()
     },
     handleShowFeeDetail(record) {
+      if (!this.canLoadForCurrentUser() || !dataSource.value.includes(record)) return
       const detailRecord = { ...record, canEditStatement: this.isAdmin }
       Swal.fire({
         title: '账单详情',
+        willOpen: popup => this.ownScopePopup(popup),
         html: buildBillingRecordFeeDetailHtml(detailRecord),
         width: 560,
         confirmButtonText: '关闭',
@@ -592,14 +627,14 @@ export default defineComponent({
 
 .page-heading h1 {
   margin: 0;
-  color: var(--console-text, #1f2937);
+  color: var(--console-text, var(--text));
   font-size: 20px;
   font-weight: 650;
 }
 
 .page-lead {
   margin: 4px 0 0;
-  color: var(--console-muted, #64748b);
+  color: var(--console-muted, var(--text-muted));
   font-size: 13px;
 }
 
@@ -621,12 +656,12 @@ export default defineComponent({
 }
 
 .summary-card {
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   border-radius: 8px;
 }
 
 .page-card {
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   border-radius: var(--console-radius, 12px);
 }
 
@@ -641,9 +676,9 @@ export default defineComponent({
 
 .filter-form {
   padding: 16px;
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   border-radius: 8px;
-  background: var(--console-canvas, #f5f7fb);
+  background: var(--console-canvas, var(--bg));
 }
 
 @media (max-width: 640px) {
@@ -664,9 +699,9 @@ export default defineComponent({
     display: grid;
     gap: 10px;
     padding: 12px;
-    border: 1px solid var(--console-border, #e5e7eb);
+    border: 1px solid var(--console-border, var(--border));
     border-radius: 8px;
-    background: var(--console-surface, #fff);
+    background: var(--console-surface, var(--surface));
   }
 
   .mobile-billing-card__header,
@@ -684,7 +719,7 @@ export default defineComponent({
   }
 
   .mobile-billing-card__subject {
-    color: var(--console-text, #1f2937);
+    color: var(--console-text, var(--text));
     font-size: 14px;
     font-weight: 600;
     line-height: 1.6;
@@ -708,8 +743,8 @@ export default defineComponent({
     gap: 8px;
     margin: 0;
     padding: 10px 0;
-    border-top: 1px solid var(--console-border, #e5e7eb);
-    border-bottom: 1px solid var(--console-border, #e5e7eb);
+    border-top: 1px solid var(--console-border, var(--border));
+    border-bottom: 1px solid var(--console-border, var(--border));
   }
 
   .mobile-billing-card__meta div {
@@ -718,20 +753,20 @@ export default defineComponent({
 
   .mobile-billing-card__meta dt,
   .mobile-billing-card__adjustment span {
-    color: var(--console-muted, #64748b);
+    color: var(--console-muted, var(--text-muted));
     font-size: 11px;
   }
 
   .mobile-billing-card__meta dd {
     margin: 2px 0 0;
-    color: var(--console-text, #1f2937);
+    color: var(--console-text, var(--text));
     font-size: 12px;
   }
 
   .mobile-billing-card__adjustment {
     padding: 8px;
     border-radius: 6px;
-    background: #f8fafc;
+    background: var(--surface-subtle);
   }
 
   .mobile-billing-pagination {
@@ -790,12 +825,12 @@ export default defineComponent({
 }
 
 .amount-income {
-  color: #16a34a;
+  color: var(--success-fg);
   font-weight: 600;
 }
 
 .amount-expense {
-  color: #dc2626;
+  color: var(--danger-fg);
   font-weight: 600;
 }
 
@@ -806,7 +841,7 @@ export default defineComponent({
   border-radius: 20px;
   background:
     radial-gradient(circle at 92% 0%, rgb(37 99 235 / 10%), transparent 32%),
-    linear-gradient(180deg, #fff 0%, #f8fafc 100%);
+    linear-gradient(180deg, var(--surface) 0%, var(--surface-subtle) 100%);
   box-shadow:
     0 28px 80px rgb(15 23 42 / 24%),
     0 4px 16px rgb(15 23 42 / 8%);
@@ -815,7 +850,7 @@ export default defineComponent({
 :global(.billing-fee-title) {
   margin: 0 42px 0 0;
   padding: 0;
-  color: #0f172a;
+  color: var(--text);
   font-size: 24px;
   font-weight: 800;
   line-height: 1.25;
@@ -840,9 +875,9 @@ export default defineComponent({
   padding: 10px 20px;
   border: 0;
   border-radius: 999px;
-  background: #0f172a;
+  background: var(--text);
   box-shadow: 0 8px 20px rgb(15 23 42 / 18%);
-  color: #fff;
+  color: var(--surface);
   font-size: 14px;
   font-weight: 700;
   transition:
@@ -869,7 +904,7 @@ export default defineComponent({
   border-radius: 50%;
   background: rgb(255 255 255 / 72%);
   box-shadow: 0 2px 8px rgb(15 23 42 / 8%);
-  color: #64748b;
+  color: var(--text-muted);
   font-size: 22px;
   line-height: 1;
   transition:
@@ -878,8 +913,8 @@ export default defineComponent({
 }
 
 :global(.billing-fee-close:hover) {
-  background: #e2e8f0;
-  color: #0f172a;
+  background: var(--border);
+  color: var(--text);
 }
 
 :global(.billing-fee-detail) {
@@ -892,7 +927,7 @@ export default defineComponent({
 :global(.billing-fee-card) {
   box-sizing: border-box;
   width: 100%;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 16px;
   box-shadow: 0 8px 24px rgb(15 23 42 / 6%);
@@ -902,19 +937,19 @@ export default defineComponent({
   border-color: rgb(147 197 253 / 28%);
   background:
     radial-gradient(circle at 100% 0%, rgb(96 165 250 / 24%), transparent 38%),
-    linear-gradient(135deg, #172554 0%, #1e3a8a 60%, #1d4ed8 100%);
+    linear-gradient(135deg, #172554 0%, #1e3a8a 60%, var(--primary-hover) 100%);
   box-shadow: 0 16px 36px rgb(30 64 175 / 22%);
-  color: #fff;
+  color: var(--surface);
 }
 
 :global(.billing-fee-card--cost) {
-  background: #fff;
+  background: var(--surface);
 }
 
 :global(.billing-fee-card--metadata) {
   padding: 14px 16px;
-  border-color: #e2e8f0;
-  background: #f8fafc;
+  border-color: var(--border);
+  background: var(--surface-subtle);
   box-shadow: none;
 }
 
@@ -946,7 +981,7 @@ export default defineComponent({
   border: 1px solid rgb(255 255 255 / 20%);
   border-radius: 999px;
   background: rgb(255 255 255 / 12%);
-  color: #fff;
+  color: var(--surface);
   font-size: 12px;
   font-weight: 700;
 }
@@ -962,7 +997,7 @@ export default defineComponent({
 }
 
 :global(.billing-fee-type) {
-  color: #dbeafe;
+  color: var(--selected);
   font-size: 13px;
   font-weight: 600;
 }
@@ -981,7 +1016,7 @@ export default defineComponent({
 }
 
 :global(.billing-fee-section-title) {
-  color: #334155;
+  color: var(--text);
   font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.1em;
@@ -989,7 +1024,7 @@ export default defineComponent({
 
 :global(.billing-fee-section-subtitle) {
   margin-top: 4px;
-  color: #94a3b8;
+  color: var(--placeholder);
   font-size: 11px;
 }
 
@@ -997,14 +1032,14 @@ export default defineComponent({
   flex: 0 0 auto;
   padding: 4px 9px;
   border-radius: 999px;
-  background: #eff6ff;
-  color: #2563eb;
+  background: var(--selected);
+  color: var(--primary);
   font-size: 11px;
   font-weight: 700;
 }
 
 :global(.billing-fee-question) {
-  color: #fff;
+  color: var(--surface);
   font-size: 16px;
   font-weight: 600;
   line-height: 1.65;
@@ -1026,10 +1061,10 @@ export default defineComponent({
   gap: 10px;
   overflow: hidden;
   padding: 15px 16px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid var(--border);
   border-left: 3px solid #60a5fa;
   border-radius: 10px;
-  background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
+  background: linear-gradient(180deg, var(--surface) 0%, var(--surface-subtle) 100%);
 }
 
 :global(.billing-fee-item-head) {
@@ -1043,7 +1078,7 @@ export default defineComponent({
   display: flex;
   flex-wrap: wrap;
   gap: 7px 18px;
-  color: #475569;
+  color: var(--text-muted);
   font-size: 12px;
   line-height: 1.6;
 }
@@ -1057,11 +1092,11 @@ export default defineComponent({
 
 :global(.billing-fee-meta-label) {
   flex: 0 0 auto;
-  color: #64748b;
+  color: var(--text-muted);
 }
 
 :global(.billing-fee-meta-value) {
-  color: #334155;
+  color: var(--text);
   font-weight: 600;
   overflow-wrap: anywhere;
 }
@@ -1069,15 +1104,15 @@ export default defineComponent({
 :global(.billing-fee-meta-item--keyword) {
   width: 100%;
   padding: 9px 11px;
-  border: 1px solid #dbeafe;
+  border: 1px solid var(--selected);
   border-radius: 8px;
-  background: #eff6ff;
+  background: var(--selected);
   color: #1e3a8a;
 }
 
 :global(.billing-fee-item-detail) {
   margin: -4px 14px 0;
-  color: #64748b;
+  color: var(--text-muted);
   font-size: 12px;
   line-height: 1.6;
   white-space: pre-wrap;
@@ -1104,7 +1139,7 @@ export default defineComponent({
   align-items: center;
   gap: 10px;
   margin-top: 4px;
-  color: #334155;
+  color: var(--text);
   font-size: 13px;
 }
 
@@ -1124,7 +1159,7 @@ export default defineComponent({
   padding: 2px;
   border: 0;
   border-radius: 999px;
-  background: #94a3b8;
+  background: var(--placeholder);
   box-shadow: inset 0 0 0 1px rgb(148 163 184 / 45%);
   cursor: pointer;
   line-height: 0;
@@ -1135,7 +1170,7 @@ export default defineComponent({
 
 :global(.billing-statement-switch[aria-checked="true"]) {
   justify-content: flex-end;
-  background: #2563eb;
+  background: var(--primary);
   box-shadow: inset 0 0 0 1px rgb(37 99 235 / 55%);
 }
 
@@ -1150,7 +1185,7 @@ export default defineComponent({
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--surface);
   box-shadow: 0 1px 3px rgb(15 23 42 / 24%);
 }
 
@@ -1176,11 +1211,11 @@ export default defineComponent({
 }
 
 :global(.billing-fee-amount--income) {
-  color: #16a34a;
+  color: var(--success-fg);
 }
 
 :global(.billing-fee-amount--expense) {
-  color: #dc2626;
+  color: var(--danger-fg);
 }
 
 :global(.billing-fee-total) {
@@ -1194,9 +1229,9 @@ export default defineComponent({
   padding: 16px;
   border: 0;
   border-radius: 10px;
-  background: linear-gradient(120deg, #0f172a 0%, #1e293b 100%);
+  background: linear-gradient(120deg, var(--text) 0%, #1e293b 100%);
   box-shadow: 0 10px 24px rgb(15 23 42 / 16%);
-  color: #f8fafc;
+  color: var(--surface-subtle);
   font-size: 15px;
   font-weight: 700;
 }

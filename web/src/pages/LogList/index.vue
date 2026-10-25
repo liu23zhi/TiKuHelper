@@ -165,7 +165,7 @@
 import { getLogList, getIpLocations } from '@/api/TikuComponentApi';
 import { defineComponent, ref, reactive, computed } from 'vue';
 import OverflowTableText from '@/components/OverflowTableText.vue';
-import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser';
+import { useCurrentUserDisplay, isAdminUser } from '@/utils/currentUser';
 import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@/utils/listSearchHelpers.mjs';
 import {
   collectLocationKeys,
@@ -187,7 +187,6 @@ import {
 } from '@/utils/logListHelpers.mjs';
 const dataSource = ref([])
 const tabLoading = ref(true)
-const currentUser = ref(getStoredCurrentUser())
 
 // 归属地映射：key 为归一化后的 IP，value 为展示文本。
 // 渲染时按行取值，无需改写 dataSource 的行对象。
@@ -260,6 +259,7 @@ export default defineComponent({
   name: 'LogList',
   components: { OverflowTableText },
   setup() {
+    const { currentUser } = useCurrentUserDisplay()
     return {
       dataSource,
       // 归属地展示：映射 + 取值/格式化函数（模板按行取值）。
@@ -273,7 +273,7 @@ export default defineComponent({
       activeFilterCount: computed(() => countActiveFilters({ keyword: filters.keyword, module: filters.module, action: filters.action })),
       expandedSnapshots,
       tableScrollX,
-      isAdmin: isAdminUser(currentUser.value),
+      isAdmin: computed(() => isAdminUser(currentUser.value)),
       moduleOptions: [
         { label: '认证', value: 'auth' },
         { label: '题目', value: 'question' },
@@ -565,23 +565,23 @@ export default defineComponent({
 
 .page-heading h1 {
   margin: 0;
-  color: var(--console-text, #1f2937);
+  color: var(--console-text, var(--text));
   font-size: 20px;
   font-weight: 650;
 }
 
 .page-lead {
   margin: 4px 0 0;
-  color: var(--console-muted, #64748b);
+  color: var(--console-muted, var(--text-muted));
   font-size: 13px;
 }
 
 .console-panel {
   min-width: 0;
   padding: 16px;
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   border-radius: var(--console-radius, 12px);
-  background: var(--console-surface, #fff);
+  background: var(--console-surface, var(--surface));
 }
 
 .filter-form {
@@ -677,9 +677,9 @@ export default defineComponent({
     display: grid;
     gap: 8px;
     padding: 12px;
-    border: 1px solid var(--console-border, #e5e7eb);
+    border: 1px solid var(--console-border, var(--border));
     border-radius: 8px;
-    background: var(--console-surface, #fff);
+    background: var(--console-surface, var(--surface));
   }
 
   .mobile-log-card__header {
@@ -700,12 +700,12 @@ export default defineComponent({
     gap: 8px;
     margin: 0;
     padding: 8px 0;
-    border-top: 1px solid var(--console-border, #e5e7eb);
-    border-bottom: 1px solid var(--console-border, #e5e7eb);
+    border-top: 1px solid var(--console-border, var(--border));
+    border-bottom: 1px solid var(--console-border, var(--border));
   }
 
   .mobile-log-card dt {
-    color: var(--console-muted, #64748b);
+    color: var(--console-muted, var(--text-muted));
     font-size: 11px;
   }
 
@@ -720,7 +720,7 @@ export default defineComponent({
 
   .mobile-log-card p {
     margin: 0;
-    color: var(--console-muted, #64748b);
+    color: var(--console-muted, var(--text-muted));
     font-size: 12px;
     line-height: 1.6;
   }

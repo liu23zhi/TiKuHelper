@@ -46,6 +46,7 @@
 
 <script>
 import { computed, defineComponent } from 'vue'
+import { Result } from 'ant-design-vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getStoredCurrentUser, resolveHomePath } from '../../utils/currentUser'
 
@@ -55,6 +56,7 @@ function normalizeValue(value) {
 
 export default defineComponent({
   name: 'RechargeResult',
+  components: { AResult: Result },
   setup() {
     const route = useRoute()
     const router = useRouter()
@@ -138,7 +140,7 @@ export default defineComponent({
 .recharge-result-card {
   width: 100%;
   min-width: 0;
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   border-radius: var(--console-radius, 12px);
   box-shadow: 0 2px 8px rgb(15 23 42 / 2%);
 }
@@ -155,14 +157,14 @@ export default defineComponent({
 
 .page-heading h1 {
   margin: 0;
-  color: var(--console-text, #1f2937);
+  color: var(--console-text, var(--text));
   font-size: 22px;
   font-weight: 700;
 }
 
 .page-heading p {
   margin: 6px 0 0;
-  color: var(--console-muted, #64748b);
+  color: var(--console-muted, var(--text-muted));
   font-size: 13px;
   line-height: 1.6;
 }
@@ -171,7 +173,7 @@ export default defineComponent({
   display: grid;
   gap: 12px;
   padding: 18px 20px 4px;
-  border-top: 1px solid var(--console-border, #e5e7eb);
+  border-top: 1px solid var(--console-border, var(--border));
 }
 
 .detail-row {
@@ -183,12 +185,12 @@ export default defineComponent({
 }
 
 .detail-label {
-  color: var(--console-muted, #64748b);
+  color: var(--console-muted, var(--text-muted));
   flex: 0 0 auto;
 }
 
 .detail-value {
-  color: var(--console-text, #1f2937);
+  color: var(--console-text, var(--text));
   text-align: right;
   word-break: break-all;
 }

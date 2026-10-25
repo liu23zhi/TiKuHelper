@@ -723,7 +723,7 @@ export default defineComponent({
   flex-direction: column;
   gap: 16px;
   min-width: 0;
-  color: var(--console-text, #1f2937);
+  color: var(--console-text, var(--text));
 }
 
 .page-heading,
@@ -738,7 +738,7 @@ export default defineComponent({
 .page-heading h1,
 .table-heading h2 {
   margin: 0;
-  color: var(--console-text, #1f2937);
+  color: var(--console-text, var(--text));
   font-size: 20px;
   font-weight: 650;
 }
@@ -746,15 +746,15 @@ export default defineComponent({
 .page-lead,
 .section-description {
   margin: 4px 0 0;
-  color: var(--console-muted, #64748b);
+  color: var(--console-muted, var(--text-muted));
   font-size: 13px;
 }
 
 .console-panel {
   padding: 16px;
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   border-radius: var(--console-radius, 12px);
-  background: var(--console-surface, #fff);
+  background: var(--console-surface, var(--surface));
 }
 
 .filter-form {

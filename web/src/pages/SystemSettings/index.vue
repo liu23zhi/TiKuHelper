@@ -269,7 +269,8 @@
       >
         <template #iconSvg="{ record }">
           <div class="icon-cell">
-            <div v-if="record.iconSvg" class="icon-preview" v-html="record.iconSvg"></div>
+            <div v-if="record.iconSvg" class="icon-preview"><SafePaymentIcon :value="record.iconSvg" placeholder="¥" /></div>
+            <span v-if="record.iconSvg && !isSafePaymentIcon(record.iconSvg)" role="status">图标不受支持，请编辑并重新选择内置图标</span>
             <span v-else>-</span>
           </div>
         </template>
@@ -316,7 +317,11 @@
           <a-input v-model:value="paymentMethodFormState.name" placeholder="例如 支付宝" />
         </a-form-item>
         <a-form-item label="SVG 图标">
-          <a-textarea v-model:value="paymentMethodFormState.iconSVG" :rows="4" placeholder="可选，直接粘贴 SVG 源码" />
+          <PaymentMethodIconPicker :selected-id="paymentMethodIconCatalogId" :value="paymentMethodFormState.iconSVG"
+            :disabled="paymentMethodSubmitting" @select="handlePaymentIconSelect" />
+          <a-textarea v-model:value="paymentMethodFormState.iconSVG" @change="paymentMethodIconCatalogId = null" :rows="4" placeholder="可选，直接粘贴 SVG 源码" />
+          <div class="icon-preview" aria-label="支付图标安全预览"><SafePaymentIcon :value="paymentMethodFormState.iconSVG" placeholder="¥" /></div>
+          <div v-if="!isSafePaymentIcon(paymentMethodFormState.iconSVG)" class="hint" role="status">图标不受支持，请重新选择内置图标或使用静态 SVG；原值未改写。</div>
           <div class="hint">支持直接粘贴内联 SVG，用于充值选择弹窗与管理页预览。</div>
         </a-form-item>
         <a-form-item label="易支付通道值" required>
@@ -351,6 +356,11 @@ import {
   normalizePaymentMethodForm,
   sortPaymentMethodsForDisplay,
 } from '@/utils/paymentMethodHelpers.mjs';
+
+import SafePaymentIcon from '@/components/SafePaymentIcon.js'
+import PaymentMethodIconPicker from './components/PaymentMethodIconPicker.vue'
+import { isSafePaymentIcon, PAYMENT_ICON_ERROR } from '@/utils/safePaymentIcon.mjs'
+import { serializePaymentIcon } from '@/utils/paymentIconCatalog'
 
 const notifyPath = '/adapter-service/payment/notify'
 const returnPath = '/adapter/recharge/result'
@@ -458,6 +468,7 @@ function inferSiteBaseURL(detail = {}) {
 
 export default defineComponent({
   name: 'SystemSettings',
+  components: { SafePaymentIcon, PaymentMethodIconPicker },
   setup() {
     const tabLoading = ref(true)
     const saving = ref(false)
@@ -502,6 +513,7 @@ export default defineComponent({
       smsbaoRegionMode: 'auto',
       uapiApiKey: '',
     })
+    const paymentMethodIconCatalogId = ref(null)
     const paymentMethodFormState = ref({
       id: undefined,
       name: '',
@@ -623,6 +635,7 @@ export default defineComponent({
     })
 
     return {
+      paymentMethodIconCatalogId,
       labelCol: { style: { width: '140px' } },
       wrapperCol: { span: 14 },
       paymentMethodLabelCol: { style: { width: '110px' } },
@@ -798,6 +811,7 @@ export default defineComponent({
       this.paymentMethodVisible = true
     },
     openEditPaymentMethodModal(record) {
+      this.paymentMethodIconCatalogId = null
       this.paymentMethodEditing = true
       this.paymentMethodFormState = {
         id: record.id,
@@ -810,7 +824,17 @@ export default defineComponent({
       }
       this.paymentMethodVisible = true
     },
+    handlePaymentIconSelect(id) {
+      try {
+        const svg = serializePaymentIcon(id)
+        if (!isSafePaymentIcon(svg)) throw new Error(PAYMENT_ICON_ERROR)
+        this.paymentMethodFormState.iconSVG = svg
+        this.paymentMethodIconCatalogId = id
+      } catch (error) { message.error(error?.message || PAYMENT_ICON_ERROR) }
+    },
+    isSafePaymentIcon,
     handleSubmitPaymentMethod() {
+      if (!isSafePaymentIcon(this.paymentMethodFormState.iconSVG)) { message.warning(PAYMENT_ICON_ERROR); return }
       const payload = normalizePaymentMethodForm(this.paymentMethodFormState)
       if (!payload.name) {
         message.warning('请输入支付方式名称')
@@ -853,6 +877,7 @@ export default defineComponent({
       })
     },
     resetPaymentMethodFormState() {
+      this.paymentMethodIconCatalogId = null
       this.paymentMethodFormState = {
         id: undefined,
         name: '',
@@ -885,14 +910,14 @@ export default defineComponent({
 
 .settings-heading h1 {
   margin: 0;
-  color: var(--console-text, #1f2937);
+  color: var(--console-text, var(--text));
   font-size: 20px;
   font-weight: 650;
 }
 
 .page-lead {
   margin: 4px 0 0;
-  color: var(--console-muted, #64748b);
+  color: var(--console-muted, var(--text-muted));
   font-size: 13px;
 }
 
@@ -906,18 +931,18 @@ export default defineComponent({
 .settings-section {
   min-width: 0;
   padding: 12px 0 16px;
-  border-bottom: 1px solid var(--console-border, #e5e7eb);
+  border-bottom: 1px solid var(--console-border, var(--border));
 }
 
 .settings-section .section-heading {
   margin-bottom: 16px;
   padding-bottom: 12px;
-  border-bottom: 1px solid var(--console-border, #e5e7eb);
+  border-bottom: 1px solid var(--console-border, var(--border));
 }
 
 .settings-section .section-heading h2 {
   margin: 0;
-  color: var(--console-text, #1f2937);
+  color: var(--console-text, var(--text));
   font-size: 15px;
   font-weight: 600;
 }
@@ -949,18 +974,18 @@ export default defineComponent({
 .section-title {
   font-size: 18px;
   font-weight: 650;
-  color: var(--console-text, #1f2937);
+  color: var(--console-text, var(--text));
 }
 
 .section-subtitle {
   margin-top: 6px;
-  color: var(--console-muted, #64748b);
+  color: var(--console-muted, var(--text-muted));
   font-size: 13px;
 }
 
 .system-settings-page > .page-card {
   min-width: 0;
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   border-radius: var(--console-radius, 12px);
 }
 

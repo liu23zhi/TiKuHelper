@@ -1,16 +1,17 @@
 <template>
   <header class="page-header">
     <div class="brand">
-      <ReadOutlined />
+      <ReadOutlined aria-hidden="true" />
       <span class="brand-text">{{ siteName }}</span>
     </div>
-    <div v-if="hasLogout" class="actions">
-      <a-tooltip placement="bottom">
+    <div class="actions">
+      <ThemeControl />
+      <a-tooltip v-if="hasLogout" placement="bottom">
         <template #title>
           <span>退出登录</span>
         </template>
         <a-button type="text" class="logout-btn" @click="logoutOut">
-          <LogoutOutlined />
+          <LogoutOutlined aria-hidden="true" />
           <span>退出</span>
         </a-button>
       </a-tooltip>
@@ -28,6 +29,7 @@ import { logout } from '../../api/TikuComponentApi.js'
 import { useRouter } from 'vue-router';
 import { defineComponent } from 'vue';
 import { siteName } from '../../utils/siteName.js'
+import ThemeControl from '../ThemeControl'
 
 export default defineComponent({
   name: 'PageHeader',
@@ -49,7 +51,8 @@ export default defineComponent({
   },
   components: {
     ReadOutlined,
-    LogoutOutlined
+    LogoutOutlined,
+    ThemeControl
   },
   methods: {
     logoutOut() {
@@ -66,45 +69,46 @@ export default defineComponent({
 <style scoped>
 .page-header {
   width: 100%;
-  min-height: 64px;
-  background: linear-gradient(90deg, #195ca3 0%, #2563eb 100%);
-  border-bottom: 1px solid #e8e8e8;
+  min-height: var(--layout-header-height);
+  box-sizing: border-box;
+  background: var(--surface, var(--surface));
+  border-bottom: var(--layout-divider-width) solid var(--border, #D6D6DA);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 24px;
-  color: #fff;
-  box-shadow: 0 10px 30px rgba(25, 92, 163, 0.15);
+  gap: var(--header-gap);
+  padding: var(--header-padding);
+  color: var(--text, var(--text));
 }
-
 .brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--header-brand-gap);
+  min-width: 0;
   font-size: 20px;
   font-weight: 700;
 }
-
-.brand-text {
-  color: #fff;
-}
-
-.actions {
-  display: flex;
-  align-items: center;
-}
-
+.brand-text { color: var(--text, var(--text)); overflow-wrap: anywhere; }
+.actions { display: flex; align-items: center; flex-shrink: 0; gap: var(--header-actions-gap); }
 .logout-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  color: #fff;
-  border-radius: 10px;
+  justify-content: center;
+  gap: var(--control-icon-label-gap);
+  min-width: var(--header-logout-min-width);
+  min-height: var(--control-touch-min);
+  color: var(--text, var(--text));
+  border-radius: var(--control-radius);
 }
-
 .logout-btn:hover,
 .logout-btn:focus {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.12);
+  color: var(--link, #0066CC);
+  background: var(--surface-subtle, #F5F5F7);
+}
+.logout-btn:focus-visible { outline: var(--focus-outline-width) solid var(--focus, #0066CC); outline-offset: var(--focus-outline-offset); }
+@media (max-width: 480px) {
+  .page-header { flex-wrap: wrap; gap: var(--header-gap-mobile); padding: var(--header-padding-mobile); }
+  .brand { flex: 1 1 var(--header-brand-basis-mobile); gap: var(--header-brand-gap-mobile); font-size: 18px; }
+  .actions { margin-left: var(--g-auto); }
 }
 </style>

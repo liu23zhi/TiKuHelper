@@ -270,7 +270,7 @@ export default defineComponent({
   flex-direction: column;
   gap: 16px;
   min-width: 0;
-  color: var(--console-text, #1f2937);
+  color: var(--console-text, var(--text));
 }
 
 .import-heading {
@@ -283,14 +283,14 @@ export default defineComponent({
 
 .import-heading h1 {
   margin: 0;
-  color: var(--console-text, #1f2937);
+  color: var(--console-text, var(--text));
   font-size: 20px;
   font-weight: 650;
 }
 
 .page-lead {
   margin: 4px 0 0;
-  color: var(--console-muted, #64748b);
+  color: var(--console-muted, var(--text-muted));
   font-size: 13px;
 }
 
@@ -315,9 +315,9 @@ main {
   width: 0;
   min-height: 400px;
   padding: 16px;
-  border-color: var(--console-border, #e5e7eb);
+  border-color: var(--console-border, var(--border));
   border-radius: var(--console-radius, 12px);
-  background-color: var(--console-surface, #fff);
+  background-color: var(--console-surface, var(--surface));
 }
 
 .handleBox {
@@ -334,9 +334,9 @@ main {
   width: 0;
   min-height: 400px;
   padding: 16px;
-  border-color: var(--console-border, #e5e7eb);
+  border-color: var(--console-border, var(--border));
   border-radius: var(--console-radius, 12px);
-  background-color: var(--console-surface, #fff);
+  background-color: var(--console-surface, var(--surface));
 }
 
 .title {
@@ -392,12 +392,12 @@ main {
 }
 
 .active {
-  background-color: #195ca3;
-  color: #fff;
+  background-color: var(--primary);
+  color: var(--surface);
 }
 
 .compileContent {
-  border: 1px solid #e8e8e8;
+  border: 1px solid var(--border);
   max-height: calc(100vh - 120px - 92px - 60px);
   min-height: 200px;
   border-radius: 4px;
@@ -415,7 +415,7 @@ main {
 }
 
 .previewContent {
-  border: 1px solid #e8e8e8;
+  border: 1px solid var(--border);
   max-height: calc(100vh - 120px - 92px - 60px);
   min-height: 200px;
   border-radius: 4px;

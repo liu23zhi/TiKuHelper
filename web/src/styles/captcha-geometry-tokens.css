@@ -1,0 +1,16 @@
+/* CAPTCHA-only persistent geometry. Loaded before local or remote dialog mounting.
+   Keep shadow color at each consumer so local theme overrides remain local. */
+:root {
+  --captcha-dialog-root-gap: 14px;
+  --captcha-dialog-panel-gap: 12px;
+  --captcha-dialog-panel-padding: 14px;
+  --captcha-dialog-panel-radius: 16px;
+  --captcha-dialog-preview-padding: 10px;
+  --captcha-dialog-preview-radius: 12px;
+  --captcha-dialog-preview-shadow-geometry: inset 0 1px 0;
+  --captcha-dialog-image-radius: 10px;
+  --captcha-dialog-refresh-padding: 0 16px;
+  --captcha-dialog-refresh-radius: 12px;
+  --captcha-dialog-refresh-shadow-geometry: 0 1px 2px;
+  --captcha-remote-mount-padding: 24px;
+}

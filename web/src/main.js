@@ -32,6 +32,8 @@ import {
 } from 'ant-design-vue'
 import router from './router/router'
 import 'ant-design-vue/dist/reset.css'
+import './styles/theme-tokens.css'
+import './styles/swal-theme.css'
 
 
 const app = createApp(App)

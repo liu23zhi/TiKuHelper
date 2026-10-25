@@ -219,23 +219,23 @@ export default defineComponent({
 
 .page-heading h1 {
   margin: 0;
-  color: var(--console-text, #1f2937);
+  color: var(--console-text, var(--text));
   font-size: 20px;
   font-weight: 650;
 }
 
 .page-lead {
   margin: 4px 0 0;
-  color: var(--console-muted, #64748b);
+  color: var(--console-muted, var(--text-muted));
   font-size: 13px;
 }
 
 .console-panel {
   min-width: 0;
   padding: 16px;
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   border-radius: var(--console-radius, 12px);
-  background: var(--console-surface, #fff);
+  background: var(--console-surface, var(--surface));
 }
 
 .config-cell :deep(.ant-input),
@@ -260,7 +260,7 @@ export default defineComponent({
 .config-cell-text {
   font-size: 13px;
   line-height: 1.7;
-  color: #6b7280;
+  color: var(--text-muted);
   word-break: break-all;
 }
 

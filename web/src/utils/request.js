@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { clearStoredCurrentUser } from './currentUser'
 import { message } from 'ant-design-vue';
-import { buildAuthFailureHandling, buildResponsePayload, isPublicWechatRegisterRequest } from './requestHelpers.mjs'
+import { buildAuthFailureHandling, buildResponsePayload, isPublicWechatRegisterRequest, captureTransportRequestError } from './requestHelpers.mjs'
 import { executeWithRetry, toUserRequestError } from './requestRetry.mjs'
 
 // 创建axios实例
@@ -31,7 +31,6 @@ const responseInterceptor = (response) => {
       break;
     }
     default:
-      console.log(response.data?.message);
       break;
   }
   return buildResponsePayload(response);
@@ -42,6 +41,6 @@ export default async function request(config) {
     const response = await executeWithRetry((attemptConfig) => service.request(attemptConfig), config)
     return responseInterceptor(response)
   } catch (error) {
-    throw toUserRequestError(config, error)
+    throw captureTransportRequestError(toUserRequestError(config, error))
   }
 }

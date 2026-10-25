@@ -247,7 +247,7 @@
 </template>
 
 <script>
-import { defineComponent, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, defineComponent, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import {
   bindCurrentUserWechat,
@@ -272,7 +272,8 @@ import {
 } from '@/utils/captchaHelpers.mjs'
 import { buildRegisterSourceLabel } from '@/utils/userPortalHelpers.mjs'
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
-import { setStoredCurrentUser } from '@/utils/currentUser.js'
+import { setStoredCurrentUser, useCurrentUserDisplay } from '@/utils/currentUser.js'
+import { currentUserIdentity } from '@/utils/currentUserScope'
 import { useSmsCooldown } from '@/utils/smsCooldown.js'
 import { createWechatQrStatusController } from '@/utils/wechatQrStatus.mjs'
 import { extractLocationAddresses, normalizeLocationKey, formatValueWithLocation as formatValueWithLocationBase } from '@/utils/locationHelpers.mjs'
@@ -292,13 +293,13 @@ function clearLocationMap(target) {
   })
 }
 
-async function loadProfileLocations() {
+async function loadProfileLocations(owns = () => true) {
   const generation = ++locationLoadGeneration
   clearLocationMap(ipLocations)
   clearLocationMap(phoneLocations)
   try {
     const locationRes = await getMyLocations()
-    if (generation !== locationLoadGeneration) {
+    if (generation !== locationLoadGeneration || !owns()) {
       return
     }
     const ipAddresses = extractLocationAddresses(locationRes, 'ip')
@@ -317,6 +318,15 @@ async function loadProfileLocations() {
 export default defineComponent({
   name: 'UserProfile',
   setup() {
+    const { currentUser: displayCurrentUser, captureUpdateGuard } = useCurrentUserDisplay()
+    let active = true
+    let profileLoadSequence = 0
+    let wechatBindSequence = 0
+    let isCurrentWechatBinding = () => false
+    const captureProfileUpdateGuard = () => {
+      const owns = captureUpdateGuard()
+      return () => active && owns()
+    }
     const loading = ref(false)
     const updatingPhone = ref(false)
     const updatingProfile = ref(false)
@@ -330,7 +340,7 @@ export default defineComponent({
     const wechatTransportText = ref('')
     const wechatBindSubMode = ref('scan')
     const wechatCodeSubmitting = ref(false)
-    const currentUser = reactive({})
+    const currentUser = computed(() => displayCurrentUser.value || {})
     const profileForm = reactive({
       username: '',
       nickname: '',
@@ -357,10 +367,6 @@ export default defineComponent({
     const smsCooldown = useSmsCooldown()
 
     const applyCurrentUser = (user) => {
-      Object.keys(currentUser).forEach((key) => {
-        delete currentUser[key]
-      })
-      Object.assign(currentUser, user || {})
       if (user) {
         setStoredCurrentUser(user)
         profileForm.username = user.username || ''
@@ -369,15 +375,18 @@ export default defineComponent({
     }
 
     const loadProfile = async () => {
+      const owns = captureProfileUpdateGuard()
+      const sequence = ++profileLoadSequence
       loading.value = true
       try {
         const res = await getCurrentUser()
+        if (!owns() || sequence !== profileLoadSequence) return
         if (res?.status !== 200) {
           message.error(res?.message || '获取个人状态失败')
           return
         }
         applyCurrentUser(res.data || {})
-        loadProfileLocations()
+        loadProfileLocations(captureProfileUpdateGuard())
       } catch (error) {
         message.error(error?.message || '获取个人状态失败')
       } finally {
@@ -467,19 +476,21 @@ export default defineComponent({
     }
 
     const submitPhoneChange = async () => {
+      const owns = captureProfileUpdateGuard()
       updatingPhone.value = true
       try {
         const res = await updateCurrentUserPhone({
           phone: phoneForm.phone,
           smsCode: phoneForm.smsCode,
         })
+        if (!owns()) return
         if (res?.status !== 200) {
           message.error(res?.message || '更换手机号失败')
           return
         }
         message.success('手机号更换成功')
         applyCurrentUser(res.data || {})
-        loadProfileLocations()
+        loadProfileLocations(captureProfileUpdateGuard())
         phoneForm.phone = ''
         phoneForm.smsCode = ''
         phoneForm.captchaToken = ''
@@ -491,12 +502,14 @@ export default defineComponent({
     }
 
     const submitProfile = async () => {
+      const owns = captureProfileUpdateGuard()
       updatingProfile.value = true
       try {
         const res = await updateCurrentUserProfile({
           username: profileForm.username,
           nickname: profileForm.nickname,
         })
+        if (!owns()) return
         if (res?.status !== 200) {
           message.error(res?.message || '保存资料失败')
           return
@@ -511,6 +524,8 @@ export default defineComponent({
     }
 
     const resolveWechatBindStatus = async (payload = {}) => {
+      const owns = isCurrentWechatBinding
+      if (!owns()) return
       try {
         let resolved = payload || {}
         if (resolved.status === 'need_bind' && !resolved.bindToken) {
@@ -518,6 +533,7 @@ export default defineComponent({
             loginToken: wechatLoginToken.value,
             purpose: 'bind',
           })
+          if (!owns()) return
           if (res?.status !== 200) {
             wechatStatusText.value = res?.message || '微信绑定状态查询失败'
             return
@@ -527,6 +543,7 @@ export default defineComponent({
         if (resolved.status === 'need_bind') {
           wechatStatusText.value = '扫码成功，正在绑定当前账号'
           const bindRes = await bindCurrentUserWechat({ bindToken: resolved.bindToken || '' })
+          if (!owns()) return
           if (bindRes?.status !== 200) {
             message.error(bindRes?.message || '微信绑定失败')
             wechatStatusText.value = '绑定失败，请刷新二维码重试'
@@ -581,11 +598,16 @@ export default defineComponent({
       if (wechatBindSubMode.value !== 'scan' || !publicAuthSettings.value.wechatScanLoginEnabled) {
         return
       }
+      const sequence = ++wechatBindSequence
+      const isCurrentDisplay = captureProfileUpdateGuard()
+      const owns = () => sequence === wechatBindSequence && isCurrentDisplay()
+      isCurrentWechatBinding = owns
       wechatStatusController.stop()
       wechatQrLoading.value = true
       wechatStatusText.value = '正在创建绑定二维码'
       try {
         const res = await createWechatLoginQRCode()
+        if (!owns()) return
         if (res?.status !== 200) {
           throw new Error(res?.message || '二维码创建失败，请稍后重试')
         }
@@ -609,6 +631,8 @@ export default defineComponent({
     }
 
     const handleWechatBindSubModeChange = () => {
+      wechatBindSequence += 1
+      isCurrentWechatBinding = () => false
       if (wechatBindSubMode.value === 'scan') {
         wechatStatusText.value = '请使用微信扫码完成绑定'
         return
@@ -622,6 +646,7 @@ export default defineComponent({
     }
 
     const submitWechatCodeBind = async () => {
+      const owns = captureProfileUpdateGuard()
       if (!wechatCodeForm.code) {
         message.warning('请输入微信验证码')
         return
@@ -629,6 +654,7 @@ export default defineComponent({
       wechatCodeSubmitting.value = true
       try {
         const res = await bindCurrentUserWechatByCode({ code: wechatCodeForm.code })
+        if (!owns()) return
         if (res?.status !== 200) {
           message.error(res?.message || '微信验证码绑定失败')
           return
@@ -648,9 +674,11 @@ export default defineComponent({
     }
 
     const unbindWechat = async () => {
+      const owns = captureProfileUpdateGuard()
       unbindingWechat.value = true
       try {
         const res = await unbindCurrentUserWechat()
+        if (!owns()) return
         if (res?.status !== 200) {
           message.error(res?.message || '微信解绑失败')
           return
@@ -689,7 +717,23 @@ export default defineComponent({
       void Promise.all([loadProfile(), loadPublicSettings()])
     })
 
+    watch(() => currentUserIdentity(displayCurrentUser.value), () => {
+      profileLoadSequence += 1
+      wechatBindSequence += 1
+      isCurrentWechatBinding = () => false
+      wechatStatusController.stop()
+      profileForm.username = displayCurrentUser.value?.username || ''
+      profileForm.nickname = displayCurrentUser.value?.nickname || ''
+      phoneForm.phone = ''; phoneForm.smsCode = ''; phoneForm.captchaToken = ''
+      wechatCodeForm.code = ''
+      wechatQrCodeImageData.value = ''; wechatLoginToken.value = ''
+      clearLocationMap(ipLocations); clearLocationMap(phoneLocations)
+      locationLoadGeneration += 1
+    }, { flush: 'sync' })
     onBeforeUnmount(() => {
+      active = false
+      wechatBindSequence += 1
+      locationLoadGeneration += 1
       wechatStatusController.stop()
     })
 
@@ -759,7 +803,7 @@ export default defineComponent({
 
 .summary-card,
 .page-card {
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   box-shadow: 0 2px 8px rgb(15 23 42 / 2%);
 }
 
@@ -788,13 +832,13 @@ export default defineComponent({
 }
 
 .summary-label {
-  color: #6b7280;
+  color: var(--text-muted);
   font-size: 13px;
 }
 
 .summary-value {
   margin-top: 10px;
-  color: #0f172a;
+  color: var(--text);
   font-size: 21px;
   font-weight: 700;
   overflow-wrap: anywhere;
@@ -807,7 +851,7 @@ export default defineComponent({
 
 .page-title {
   margin: 0;
-  color: #1f2937;
+  color: var(--text);
   font-size: 21px;
   font-weight: 700;
 }
@@ -819,7 +863,7 @@ export default defineComponent({
 .page-subtitle,
 .panel-subtitle {
   margin-top: 6px;
-  color: #6b7280;
+  color: var(--text-muted);
   font-size: 13px;
   line-height: 1.7;
 }
@@ -839,13 +883,13 @@ export default defineComponent({
   height: 100%;
   min-width: 0;
   padding: 22px;
-  border: 1px solid var(--console-border, #e5e7eb);
-  background: var(--console-surface, #fff);
+  border: 1px solid var(--console-border, var(--border));
+  background: var(--console-surface, var(--surface));
 }
 
 .panel-title {
   margin: 0;
-  color: #1f2937;
+  color: var(--text);
   font-size: 17px;
   font-weight: 700;
 }
@@ -865,7 +909,7 @@ export default defineComponent({
 .profile-section-divider {
   height: 1px;
   margin: 18px 0;
-  background: var(--console-border, #e5e7eb);
+  background: var(--console-border, var(--border));
 }
 
 .panel-head {
@@ -877,8 +921,8 @@ export default defineComponent({
   justify-content: space-between;
   gap: 16px;
   padding: 12px 0;
-  border-bottom: 1px solid #eef2f7;
-  color: #334155;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
   overflow-wrap: anywhere;
 }
 
@@ -887,7 +931,7 @@ export default defineComponent({
 }
 
 .profile-field-label {
-  color: #64748b;
+  color: var(--text-muted);
 }
 
 .sms-code-row {
@@ -906,16 +950,16 @@ export default defineComponent({
   align-items: center;
   gap: 14px;
   padding: 18px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #f7f9fc;
+  background: var(--surface-subtle);
 }
 
 .wechat-bound-time,
 .wechat-binding-id,
 .wechat-status,
 .wechat-qrcode-empty {
-  color: #64748b;
+  color: var(--text-muted);
   font-size: 13px;
   text-align: center;
 }
@@ -923,12 +967,12 @@ export default defineComponent({
 .wechat-binding-id {
   max-width: 100%;
   overflow-wrap: anywhere;
-  color: #334155;
+  color: var(--text);
   font-weight: 600;
 }
 
 .wechat-binding-id--empty {
-  color: #64748b;
+  color: var(--text-muted);
   font-weight: 500;
 }
 
@@ -950,7 +994,7 @@ export default defineComponent({
 }
 
 .wechat-code-field label {
-  color: #334155;
+  color: var(--text);
   font-size: 14px;
 }
 
@@ -962,9 +1006,9 @@ export default defineComponent({
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #fff;
+  background: var(--qr-surface);
 }
 
 .wechat-qrcode-frame img {

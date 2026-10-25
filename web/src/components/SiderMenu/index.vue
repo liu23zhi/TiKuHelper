@@ -1,5 +1,5 @@
 <template>
-  <div class="sider-menu-wrap" :class="{ 'is-collapsed': collapsed }">
+  <nav class="sider-menu-wrap" :class="{ 'is-collapsed': collapsed, 'is-mobile': mobile }" :aria-label="isAdmin ? '管理导航' : '用户导航'">
     <div class="menu-heading">
       <div v-if="!collapsed" class="menu-title">{{ isAdmin ? '管理导航' : '用户导航' }}</div>
       <div v-if="!collapsed" class="menu-subtitle">
@@ -7,38 +7,39 @@
       </div>
     </div>
     <a-menu
-      id="portal-navigation"
+      :id="navigationId"
       mode="inline"
-      theme="light"
+      :theme="resolvedTheme"
       :inline-collapsed="collapsed"
       v-model:selectedKeys="selectedKeys"
-      @select="handleSelect"
+      @click="handleSelect"
       class="menu"
     >
       <a-menu-item v-for="item in visibleMenuItems" :key="item.key">
         <template #icon>
           <component :is="item.icon" />
         </template>
-        <span>{{ item.label }}</span>
+        <span class="menu-label"><a class="navigation-link" :href="'/adapter/' + item.key" @click="handleLinkClick">{{ item.label }}</a></span>
       </a-menu-item>
     </a-menu>
     <a-button
+      v-if="showCollapse"
       type="text"
       class="collapse-button"
       :class="{ 'is-collapsed': collapsed }"
       :aria-expanded="!collapsed"
-      aria-controls="portal-navigation"
+      :aria-controls="navigationId"
       :aria-label="collapsed ? '展开侧边栏' : '折叠侧边栏'"
       :title="collapsed ? '展开侧边栏' : '折叠侧边栏'"
       @click="$emit('toggle')"
     >
       <component :is="collapsed ? MenuUnfoldOutlined : MenuFoldOutlined" class="collapse-button-icon" />
-      <span class="collapse-button-label">{{ collapsed ? '展开侧边栏' : '折叠侧边栏' }}</span>
+      <span v-if="!collapsed" class="collapse-button-label">折叠侧边栏</span>
     </a-button>
-  </div>
+  </nav>
 </template>
 <script>
-import { defineComponent, computed, ref, watch } from 'vue';
+import { defineComponent, computed, inject, onBeforeUnmount, ref, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import {
   UserOutlined,
@@ -58,6 +59,7 @@ import {
   MenuUnfoldOutlined,
 } from '@ant-design/icons-vue';
 import { isAdminUser } from '../../utils/currentUser';
+import { THEME_CONTROLLER_KEY } from '../../utils/themeMode.mjs';
 
 const ADMIN_MENU_ITEMS = [
   { key: 'profile', label: '个人中心', icon: UserOutlined },
@@ -95,12 +97,19 @@ export default defineComponent({
       type: Boolean,
       default: false,
     },
+    mobile: { type: Boolean, default: false },
+    showCollapse: { type: Boolean, default: true },
+    navigationId: { type: String, default: 'portal-navigation' },
   },
-  emits: ['toggle'],
-  setup(props) {
+  emits: ['toggle', 'navigate'],
+  setup(props, { emit }) {
     const router = useRouter();
     const route = useRoute();
     const selectedKeys = ref([]);
+    const themeController = inject(THEME_CONTROLLER_KEY, null);
+    const resolvedTheme = ref(themeController?.getState().resolved || 'light');
+    const unsubscribeTheme = themeController?.subscribe(state => { resolvedTheme.value = state.resolved; });
+    onBeforeUnmount(() => unsubscribeTheme?.());
     const isAdmin = computed(() => isAdminUser(props.currentUser));
     const visibleMenuItems = computed(() => (isAdmin.value ? ADMIN_MENU_ITEMS : USER_MENU_ITEMS));
 
@@ -119,16 +128,24 @@ export default defineComponent({
       { immediate: true }
     );
 
-    const handleSelect = ({ key }) => {
+    const handleSelect = async ({ key }) => {
+      if (!visibleMenuItems.value.some(item => item.key === key)) return;
       selectedKeys.value = [key];
-      router.push(`/adapter/${key}`);
+      await router.push('/adapter/' + key);
+      emit('navigate');
+    };
+    const handleLinkClick = (event) => {
+      if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) event.stopPropagation();
+      else event.preventDefault();
     };
 
     return {
       selectedKeys,
+      resolvedTheme,
       visibleMenuItems,
       isAdmin,
       handleSelect,
+      handleLinkClick,
       MenuFoldOutlined,
       MenuUnfoldOutlined,
     };
@@ -140,14 +157,17 @@ export default defineComponent({
 .sider-menu-wrap {
   display: flex;
   flex-direction: column;
-  min-height: calc(100vh - 64px);
+  min-height: calc(100vh - var(--layout-header-height));
+  min-height: calc(100dvh - 64px);
   box-sizing: border-box;
-  padding: 18px 14px 14px;
+  padding: var(--sider-menu-padding);
+  background: var(--surface, var(--surface));
+  color: var(--text, var(--text));
 }
 
 .sider-menu-wrap.is-collapsed {
-  padding-left: 0;
-  padding-right: 0;
+  padding-left: var(--g-zero);
+  padding-right: var(--g-zero);
 }
 
 .menu-heading {
@@ -157,36 +177,36 @@ export default defineComponent({
 .menu-title {
   font-size: 16px;
   font-weight: 700;
-  color: #1f2937;
+  color: var(--text, var(--text));
 }
 
 .menu-subtitle {
-  margin-top: 6px;
-  margin-bottom: 14px;
+  margin-top: var(--sider-menu-subtitle-margin-top);
+  margin-bottom: var(--sider-menu-subtitle-margin-bottom);
   font-size: 12px;
   line-height: 1.6;
-  color: #6b7280;
+  color: var(--text-muted, #5F6368);
 }
 
 .collapse-button {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--control-icon-label-gap);
   width: 100%;
-  min-height: 36px;
+  min-height: var(--control-touch-min);
   height: auto;
-  margin-top: auto;
-  padding: 8px 4px;
-  color: #4b5563;
-  border-radius: 8px;
+  margin-top: var(--g-auto);
+  padding: var(--sider-collapse-padding);
+  color: var(--text-muted, #5F6368);
+  border-radius: var(--control-radius);
   line-height: 1.4;
   white-space: normal;
 }
 
 /* 折叠后侧边栏很窄，只留居中图标，避免文字挤压换行。 */
 .collapse-button.is-collapsed {
-  padding: 8px 0;
+  padding: var(--sider-collapse-padding-collapsed);
 }
 
 .collapse-button-icon {
@@ -197,14 +217,10 @@ export default defineComponent({
   min-width: 0;
 }
 
-.collapse-button.is-collapsed .collapse-button-label {
-  display: none;
-}
-
 .collapse-button:hover,
 .collapse-button:focus {
-  color: #195ca3;
-  background: #eff6ff;
+  color: var(--link, #0066CC);
+  background: var(--surface-subtle, #F5F5F7);
 }
 
 /* 图标跟随按钮主色，与菜单项保持一致。 */
@@ -217,27 +233,10 @@ export default defineComponent({
   background: transparent;
 }
 
-@media (max-width: 960px) {
-  .sider-menu-wrap {
-    min-height: auto;
-    max-height: calc(100vh - 64px);
-    overflow-y: auto;
-    padding: 8px 12px;
-  }
-
-  .sider-menu-wrap.is-collapsed .collapse-button {
-    width: auto;
-    align-self: flex-end;
-    margin-top: 0;
-    padding: 8px 10px;
-  }
-
-  .sider-menu-wrap.is-collapsed .collapse-button-label {
-    display: inline;
-  }
-
-  .sider-menu-wrap.is-collapsed .menu {
-    display: none;
-  }
+.sider-menu-wrap.is-mobile { min-height: 0; }
+.navigation-link { color: inherit; text-decoration: none; }
+.menu :deep(.ant-menu-item:focus-within) { outline: var(--focus-outline-width) solid var(--focus, #0066CC); outline-offset: var(--focus-menu-outline-offset); }
+@media (prefers-reduced-motion: reduce) {
+  .sider-menu-wrap :deep(*) { transition-duration: 1ms !important; }
 }
 </style>

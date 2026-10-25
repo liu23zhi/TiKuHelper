@@ -99,22 +99,22 @@ export default ({
 
 /* 选中的样式 */
 .Check {
-  background-color: #1890ff;
-  color: #fff;
-  border: 1px solid #1890ff;
+  background-color: var(--primary);
+  color: var(--surface);
+  border: 1px solid var(--primary);
 }
 
 /* 未选中的样式 */
 .CheckNo {
-  background-color: #fff;
-  color: #1890ff;
-  border: 1px solid #1890ff;
+  background-color: var(--surface);
+  color: var(--primary);
+  border: 1px solid var(--primary);
   box-sizing: border-box;
 }
 
 .addBut {
   color: rgba(0,0,0,.65);
-  background-color: #fff;
+  background-color: var(--surface);
   border-color: #d9d9d9;
   border-style: dashed;
   padding: 0 15px;
@@ -125,13 +125,13 @@ export default ({
 
 .addBut:focus{
   color: #108ee9;
-  background-color: #fff;
+  background-color: var(--surface);
   border-color: #108ee9;
 }
 
 .addBut:hover{
   color: #108ee9;
-  background-color: #fff;
+  background-color: var(--surface);
   border-color: #108ee9;
 }
 </style>

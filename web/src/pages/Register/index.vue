@@ -702,9 +702,9 @@ export default defineComponent({
 .wechat-register-panel {
   margin: 8px 0 20px;
   padding: 18px;
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   border-radius: 8px;
-  background: #f7f9fc;
+  background: var(--surface-subtle);
 }
 
 .register-alert {

@@ -158,7 +158,7 @@
 </template>
 
 <script>
-import { computed, defineComponent, ref } from 'vue';
+import { getCurrentInstance, computed, defineComponent, ref } from 'vue';
 import { message } from 'ant-design-vue';
 import Swal from 'sweetalert2';
 import {
@@ -167,13 +167,14 @@ import {
   updateAccessToken,
   deleteAccessToken,
 } from '@/api/TikuComponentApi';
-import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser';
+import { useCurrentUserDisplay, isAdminUser } from '@/utils/currentUser';
 import {
   buildAccessTokenBalanceAlert,
   buildAccessTokenListParams,
   normalizeAccessTokenName,
   limitAccessTokenNameInput,
 } from '@/utils/accessTokenManagementHelpers.mjs';
+import { useCurrentUserRequestScope } from '@/utils/currentUserScope'
 import { formatMoneyValue, formatMoneyYuanWithSpace } from '@/utils/moneyFormat.mjs';
 
 const dataSource = ref([])
@@ -227,7 +228,16 @@ export default defineComponent({
     })
 
     const modalTitle = computed(() => isEditing.value ? '编辑令牌' : '新增令牌')
-    const currentUser = computed(() => getStoredCurrentUser())
+    const { currentUser } = useCurrentUserDisplay()
+    const instance = getCurrentInstance()
+    const { captureDataOwner, canLoadForCurrentUser } = useCurrentUserRequestScope(currentUser, {
+      clear() {
+        dataSource.value = []; tableLoading.value = false; visibleTokenIds.value = []
+        visible.value = false; showAllTokens.value = false
+      },
+      reset() {},
+      reload() { instance.proxy.handleLoad() },
+    })
     const isAdmin = computed(() => isAdminUser(currentUser.value))
     const balanceAlert = computed(() => buildAccessTokenBalanceAlert(currentUser.value))
     const baseColumns = [
@@ -329,6 +339,7 @@ export default defineComponent({
     })
 
     return {
+      captureDataOwner, canLoadForCurrentUser,
       labelCol: { style: { width: '110px' } },
       wrapperCol: { span: 16 },
       dataSource,
@@ -508,16 +519,21 @@ export default defineComponent({
       return date.toLocaleString()
     },
     handleLoad() {
+      if (!this.canLoadForCurrentUser()) return
+      const owns = this.captureDataOwner()
       tableLoading.value = true
       getAccessTokens(buildAccessTokenListParams(showAllTokens.value)).then(res => {
+        if (!owns()) return
         if (res?.status === 200) {
           dataSource.value = Array.isArray(res?.data) ? res.data : []
         } else {
           message.error(res?.message || '获取访问令牌失败')
         }
       }).catch(() => {
+        if (!owns()) return
         message.error('获取访问令牌失败')
       }).finally(() => {
+        if (!owns()) return
         tableLoading.value = false
       })
     },
@@ -642,7 +658,7 @@ export default defineComponent({
 
 .page-heading h1 {
   margin: 0;
-  color: var(--console-text, #1f2937);
+  color: var(--console-text, var(--text));
   font-size: 20px;
   font-weight: 650;
 }
@@ -650,7 +666,7 @@ export default defineComponent({
 .page-lead {
   max-width: 680px;
   margin: 4px 0 0;
-  color: var(--console-muted, #64748b);
+  color: var(--console-muted, var(--text-muted));
   font-size: 13px;
 }
 
@@ -659,12 +675,12 @@ export default defineComponent({
 }
 
 .summary-card {
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   border-radius: 8px;
 }
 
 .page-card {
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   border-radius: var(--console-radius, 12px);
 }
 
@@ -678,9 +694,9 @@ export default defineComponent({
 
 .filter-form {
   padding: 16px;
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   border-radius: 8px;
-  background: var(--console-canvas, #f5f7fb);
+  background: var(--console-canvas, var(--bg));
 }
 
 @media (max-width: 640px) {
@@ -700,7 +716,7 @@ export default defineComponent({
   margin-top: 6px;
   font-size: 12px;
   line-height: 1.6;
-  color: #6b7280;
+  color: var(--text-muted);
 }
 
 .token-value-cell {
@@ -752,7 +768,7 @@ export default defineComponent({
 }
 
 .token-created-dialog {
-  color: #334155;
+  color: var(--text);
   text-align: left;
 }
 
@@ -765,7 +781,7 @@ export default defineComponent({
   border: 1px solid #fde68a;
   border-radius: 8px;
   background: #fffbeb;
-  color: #92400e;
+  color: var(--warning-fg);
   font-size: 13px;
   line-height: 1.6;
 }
@@ -780,21 +796,21 @@ export default defineComponent({
   margin-top: 1px;
   border-radius: 50%;
   background: #f59e0b;
-  color: #ffffff;
+  color: var(--surface);
   font-size: 12px;
   font-weight: 800;
 }
 
 .token-created-dialog__field {
   padding: 14px;
-  border: 1px solid #dbe4ee;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #f8fafc;
+  background: var(--surface-subtle);
 }
 
 .token-created-dialog__label {
   margin-bottom: 8px;
-  color: #64748b;
+  color: var(--text-muted);
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -805,8 +821,8 @@ export default defineComponent({
   display: block;
   padding: 14px 16px;
   border-radius: 12px;
-  background: #0f172a;
-  color: #e2e8f0;
+  background: var(--text);
+  color: var(--border);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 14px;
   line-height: 1.7;
@@ -833,9 +849,9 @@ export default defineComponent({
 }
 
 .token-created-popup__copy {
-  border: 1px solid #1677ff;
-  background: #1677ff;
-  color: #ffffff;
+  border: 1px solid var(--primary);
+  background: var(--primary);
+  color: var(--surface);
   box-shadow: 0 8px 20px rgba(22, 119, 255, 0.24);
 }
 
@@ -848,13 +864,13 @@ export default defineComponent({
 
 .token-created-popup__confirm {
   border: 1px solid #cbd5e1;
-  background: #ffffff;
-  color: #475569;
+  background: var(--surface);
+  color: var(--text-muted);
 }
 
 .token-created-popup__confirm:hover {
-  border-color: #94a3b8;
-  background: #f8fafc;
+  border-color: var(--placeholder);
+  background: var(--surface-subtle);
   color: #1e293b;
 }
 

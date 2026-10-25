@@ -89,7 +89,7 @@
                   :aria-pressed="selectedPaymentMethodId === method.id"
                   @click="selectPaymentMethod(method.id)"
                 >
-                  <span class="payment-method-icon" v-html="method.iconSvg || fallbackPaymentIcon(method.name)"></span>
+                  <span class="payment-method-icon"><SafePaymentIcon :value="method.iconSvg || ''" /></span>
                   <span class="payment-method-main">
                     <span class="payment-method-name">{{ method.name }}</span>
                     <span class="payment-method-remark">{{ method.remark || method.epayType || '可用支付方式' }}</span>
@@ -204,9 +204,10 @@
 </template>
 
 <script>
-import { computed, defineComponent, reactive, ref } from 'vue'
+import { computed, defineComponent, getCurrentInstance, onBeforeUnmount, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import QRCode from 'qrcode'
+import SafePaymentIcon from '@/components/SafePaymentIcon.js'
 import Swal from 'sweetalert2'
 import OverflowTableText from '@/components/OverflowTableText.vue'
 import {
@@ -234,7 +235,8 @@ import {
   billingTableColumnWidths,
   formatBillingRecordTime,
 } from '@/utils/userPortalHelpers.mjs'
-import { getStoredCurrentUser, setStoredCurrentUser } from '@/utils/currentUser'
+import { useCurrentUserDisplay, setStoredCurrentUser } from '@/utils/currentUser'
+import { useCurrentUserRequestScope } from '@/utils/currentUserScope'
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
 
 const dataSource = ref([])
@@ -250,7 +252,6 @@ const paymentQRCodeDataUrl = ref('')
 const paymentJumpUrl = ref('')
 const minRechargeAmount = ref(1)
 const rechargeQuickAmounts = [10, 20, 50, 100, 200, 500]
-const currentUser = ref(getStoredCurrentUser())
 const pagination = reactive({
   current: 1,
   pageSize: 10,
@@ -270,8 +271,111 @@ function normalizeMinRechargeAmount(value) {
 
 export default defineComponent({
   name: 'UserUsagePage',
-  components: { OverflowTableText },
+  components: { OverflowTableText, SafePaymentIcon },
   setup() {
+    const { currentUser, captureUpdateGuard } = useCurrentUserDisplay()
+    const instance = getCurrentInstance()
+    let ownedFeeDetail = null
+    const protectInvalidatedReturnFocus = (detail) => {
+      const target = detail.returnFocusTarget
+      if (detail.releaseFocusGuard || !(target instanceof HTMLElement) || target === document.body || target === document.documentElement) return
+      // Actual fee links are our native buttons. Disable only this invalidated
+      // trigger so SweetAlert's delayed focus() is a no-op (not blur-and-restore).
+      if (target instanceof HTMLButtonElement && instance.proxy?.$el?.contains(target)) {
+        const disabled = target.disabled
+        const disabledAttribute = target.getAttribute('disabled')
+        target.disabled = true
+        detail.releaseFocusGuard = () => {
+          target.disabled = disabled
+          if (disabledAttribute === null) target.removeAttribute('disabled')
+          else target.setAttribute('disabled', disabledAttribute)
+          detail.releaseFocusGuard = null
+        }
+        return
+      }
+      const preventStaleFocus = (event) => {
+        if (event.target !== target) return
+        const previous = event.relatedTarget
+        event.stopImmediatePropagation()
+        target.blur()
+        if (previous instanceof HTMLElement && previous.isConnected && previous !== target) previous.focus({ preventScroll: true })
+      }
+      document.addEventListener('focus', preventStaleFocus, true)
+      detail.releaseFocusGuard = () => {
+        document.removeEventListener('focus', preventStaleFocus, true)
+        detail.releaseFocusGuard = null
+      }
+    }
+    const forceCloseFeeDetail = (detail) => {
+      const popup = detail?.popup
+      if (!popup || Swal.getPopup() !== popup) return
+      // SweetAlert samples these durations before willClose. Zero them before
+      // close(), so its own container/body/ARIA/keydown cleanup runs immediately.
+      protectInvalidatedReturnFocus(detail)
+      popup.style.setProperty('animation-duration', '0s', 'important')
+      popup.style.setProperty('transition-duration', '0s', 'important')
+      if (popup.classList.contains('swal2-hide')) {
+        // A normal close may already own an animationend listener and a captured
+        // returnFocus flag. Finish that cleanup instead of cancelling its event.
+        popup.dispatchEvent(new Event('animationend'))
+      } else {
+        Swal.close()
+      }
+    }
+    const closeOwnedFeeDetail = () => {
+      const detail = ownedFeeDetail
+      ownedFeeDetail = null
+      forceCloseFeeDetail(detail)
+    }
+    const { captureDataOwner, canLoadForCurrentUser } = useCurrentUserRequestScope(currentUser, {
+      clear() {
+        closeOwnedFeeDetail()
+        dataSource.value = []; pagination.total = 0; tableLoading.value = false
+        Object.keys(expandedSubjects).forEach(key => { delete expandedSubjects[key] })
+        paymentResultVisible.value = false; paymentQRCodeDataUrl.value = ''; paymentJumpUrl.value = ''
+      },
+      reset() {},
+      reload() { instance.proxy.handleLoadBillingRecords() },
+    })
+    const captureFeeDetailOwner = (record) => {
+      if (!canLoadForCurrentUser() || !dataSource.value.includes(record)) return null
+      const owns = captureDataOwner()
+      const detail = { popup: null, returnFocusTarget: document.activeElement, releaseFocusGuard: null }
+      const adopt = (popup) => {
+        detail.popup = popup
+        if (owns() && Swal.getPopup() === popup) ownedFeeDetail = detail
+        else if (Swal.getPopup() === popup) forceCloseFeeDetail(detail)
+      }
+      return {
+        willOpen: adopt,
+        didOpen: adopt,
+        didClose() {
+          detail.releaseFocusGuard?.()
+          if (ownedFeeDetail === detail) ownedFeeDetail = null
+        },
+        didDestroy() {
+          detail.releaseFocusGuard?.()
+          if (ownedFeeDetail === detail) ownedFeeDetail = null
+        },
+      }
+    }
+    let active = true
+    let refreshSequence = 0
+    onBeforeUnmount(() => { active = false })
+    const handleRefreshCurrentUser = () => {
+      const isCurrentDisplay = captureUpdateGuard()
+      const sequence = ++refreshSequence
+      getCurrentUser().then((res) => {
+        if (!active || sequence !== refreshSequence || !isCurrentDisplay()) return
+        if (res?.status === 200 && res?.data) {
+          if (Object.prototype.hasOwnProperty.call(res.data, 'minRechargeAmount')) {
+            minRechargeAmount.value = normalizeMinRechargeAmount(res.data.minRechargeAmount)
+            if (Number(rechargeAmount.value) < minRechargeAmount.value) rechargeAmount.value = minRechargeAmount.value
+          }
+          setStoredCurrentUser(res.data)
+        }
+      }).catch(() => {})
+    }
     const subjectColumnWidth = computed(() => dataSource.value.some((record) => expandedSubjects[record.id])
       ? billingTableColumnWidths.subjectExpanded
       : billingTableColumnWidths.subject)
@@ -312,6 +416,8 @@ export default defineComponent({
     }
 
     return {
+      captureDataOwner, canLoadForCurrentUser, captureFeeDetailOwner,
+      handleRefreshCurrentUser,
       currentUser,
       dataSource,
       paymentMethods,
@@ -342,9 +448,6 @@ export default defineComponent({
       buildBillingRecordSourceText,
       buildBillingRecordSubjectText,
       buildBillingRecordTypeText,
-      fallbackPaymentIcon() {
-        return '<span class="payment-method-icon--placeholder">支</span>'
-      },
       columns: computed(() => [
         {
           title: '账单 ID',
@@ -439,7 +542,10 @@ export default defineComponent({
   },
   methods: {
     handleShowFeeDetail(record) {
+      const ownership = this.captureFeeDetailOwner(record)
+      if (!ownership) return
       Swal.fire({
+        ...ownership,
         title: '账单详情',
         html: buildBillingRecordFeeDetailHtml(record, {
           showAIModelMeta: false,
@@ -470,24 +576,12 @@ export default defineComponent({
       this.handleLoadBillingRecords()
       this.handleLoadPaymentMethods()
     },
-    handleRefreshCurrentUser() {
-      getCurrentUser().then((res) => {
-        if (res?.status === 200 && res?.data) {
-          currentUser.value = res.data
-          if (Object.prototype.hasOwnProperty.call(res.data, 'minRechargeAmount')) {
-            minRechargeAmount.value = normalizeMinRechargeAmount(res.data.minRechargeAmount)
-            if (Number(rechargeAmount.value) < minRechargeAmount.value) {
-              rechargeAmount.value = minRechargeAmount.value
-            }
-          }
-          setStoredCurrentUser(res.data)
-        }
-      }).catch(() => {
-      })
-    },
     handleLoadBillingRecords() {
+      if (!this.canLoadForCurrentUser()) return
+      const owns = this.captureDataOwner()
       tableLoading.value = true
       getBillingRecords(buildPersonalUsageBillingRecordParams(pagination.current, pagination.pageSize)).then((res) => {
+        if (!owns()) return
         if (res?.status === 200) {
           dataSource.value = Array.isArray(res?.data?.data) ? res.data.data : []
           pagination.total = Number(res?.data?.total || 0)
@@ -497,8 +591,10 @@ export default defineComponent({
           message.error(res?.message || '获取账单列表失败')
         }
       }).catch(() => {
+        if (!owns()) return
         message.error('获取账单列表失败')
       }).finally(() => {
+        if (!owns()) return
         tableLoading.value = false
       })
     },
@@ -620,14 +716,14 @@ export default defineComponent({
 }
 
 .summary-card {
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   border-radius: var(--console-radius, 12px);
   box-shadow: 0 2px 8px rgb(15 23 42 / 2%);
 }
 
 .page-card {
   min-width: 0;
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   border-radius: var(--console-radius, 12px);
   box-shadow: 0 2px 8px rgb(15 23 42 / 2%);
 }
@@ -662,7 +758,7 @@ export default defineComponent({
 .section-heading {
   margin-bottom: 20px;
   padding-bottom: 16px;
-  border-bottom: 1px solid var(--console-border, #e5e7eb);
+  border-bottom: 1px solid var(--console-border, var(--border));
 }
 
 .section-heading .page-subtitle {
@@ -677,12 +773,12 @@ export default defineComponent({
   margin: 0;
   font-size: 22px;
   font-weight: 700;
-  color: #1f2937;
+  color: var(--text);
 }
 
 .page-subtitle {
   margin-top: 6px;
-  color: #6b7280;
+  color: var(--text-muted);
   font-size: 13px;
 }
 
@@ -697,20 +793,20 @@ export default defineComponent({
 .balance-panel {
   min-height: 100%;
   padding: 22px;
-  border: 1px solid var(--console-border, #e5e7eb);
-  border-top: 3px solid var(--console-primary, #2563eb);
+  border: 1px solid var(--console-border, var(--border));
+  border-top: 3px solid var(--console-primary, var(--primary));
   border-radius: var(--console-radius, 12px);
-  background: #f7f9fc;
+  background: var(--surface-subtle);
 }
 
 .balance-label {
-  color: #64748b;
+  color: var(--text-muted);
   font-size: 13px;
 }
 
 .balance-value {
   margin-top: 10px;
-  color: #0f172a;
+  color: var(--text);
   font-size: 36px;
   font-weight: 700;
   line-height: 1.2;
@@ -718,7 +814,7 @@ export default defineComponent({
 
 .balance-meta {
   margin-top: 8px;
-  color: #64748b;
+  color: var(--text-muted);
   font-size: 12px;
 }
 
@@ -754,22 +850,22 @@ export default defineComponent({
   align-items: center;
   gap: 12px;
   padding: 12px;
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   border-radius: 8px;
-  background: #fff;
+  background: var(--surface);
   cursor: pointer;
   text-align: left;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .payment-method-card--selected {
-  border-color: var(--console-primary, #2563eb);
-  background: #f5f8ff;
+  border-color: var(--console-primary, var(--primary));
+  background: var(--selected);
   box-shadow: 0 0 0 2px rgb(37 99 235 / 10%);
 }
 
 .payment-method-card:focus-visible {
-  outline: 2px solid var(--console-primary, #2563eb);
+  outline: 2px solid var(--console-primary, var(--primary));
   outline-offset: 2px;
 }
 
@@ -780,7 +876,7 @@ export default defineComponent({
   align-items: center;
   justify-content: center;
   border-radius: 8px;
-  background: #f4f7fb;
+  background: var(--surface-subtle);
   overflow: hidden;
   flex: 0 0 auto;
 }
@@ -792,7 +888,7 @@ export default defineComponent({
 }
 
 .payment-method-icon--placeholder {
-  color: var(--console-primary, #2563eb);
+  color: var(--console-primary, var(--primary));
   font-weight: 700;
 }
 
@@ -803,13 +899,13 @@ export default defineComponent({
 }
 
 .payment-method-name {
-  color: #1f2937;
+  color: var(--text);
   font-size: 14px;
   font-weight: 600;
 }
 
 .payment-method-remark {
-  color: #6b7280;
+  color: var(--text-muted);
   font-size: 12px;
   line-height: 1.5;
   word-break: break-word;
@@ -841,12 +937,12 @@ export default defineComponent({
 }
 
 .amount-income {
-  color: #16a34a;
+  color: var(--success-fg);
   font-weight: 600;
 }
 
 .amount-expense {
-  color: #dc2626;
+  color: var(--danger-fg);
   font-weight: 600;
 }
 
@@ -860,10 +956,10 @@ export default defineComponent({
 .payment-qrcode-image {
   width: min(256px, 74vw);
   height: min(256px, 74vw);
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 10px;
-  background: #fff;
+  background: var(--qr-surface);
 }
 
 .payment-qrcode-empty {
@@ -873,18 +969,18 @@ export default defineComponent({
   place-items: center;
   border: 1px dashed #cbd5e1;
   border-radius: 8px;
-  color: #64748b;
-  background: #f8fafc;
+  color: var(--text-muted);
+  background: var(--surface-subtle);
 }
 
 .payment-result-title {
-  color: #0f172a;
+  color: var(--text);
   font-size: 16px;
   font-weight: 600;
 }
 
 .payment-result-meta {
-  color: #64748b;
+  color: var(--text-muted);
   font-size: 13px;
   line-height: 1.7;
 }

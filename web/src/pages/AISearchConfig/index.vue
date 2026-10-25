@@ -11,6 +11,9 @@
       </a-space>
     </header>
 
+    <a-alert v-if="hasUnsavedChanges" type="warning" show-icon class="page-alert"
+      :message="savedConfigSnapshot === null ? '保存已完成，配置同步待确认' : '有未保存的更改'"
+      description="请先保存编辑，或确认放弃后刷新。" />
     <a-alert
       type="info"
       show-icon
@@ -586,6 +589,7 @@ import {
   buildAISearchTestResult,
   hasAISearchTestResult,
 } from '@/utils/aiSearchConfigHelpers.mjs';
+import { useUnsavedDraft } from '@/utils/useUnsavedDraft'
 import { formatMoneyCny, formatMoneyValue } from '@/utils/moneyFormat.mjs';
 
 function trimBaseUrl(url) {
@@ -703,6 +707,8 @@ export default defineComponent({
       stagedTokenMultiplierPoints: DEFAULT_AI_STAGED_TOKEN_MULTIPLIER_POINTS.map(point => ({ ...point, tokens: String(point.tokens) })),
     })
 
+    const { currentConfigSnapshot, savedConfigSnapshot, hasUnsavedChanges, requestRouteLeave } = useUnsavedDraft(formState)
+
     const priceRows = ref([])
     const priceLoading = ref(false)
     const priceSaving = ref(false)
@@ -794,31 +800,34 @@ export default defineComponent({
       { title: '操作', dataIndex: 'action', key: 'action', width: 90, slots: { customRender: 'stageAction' } },
     ]
 
-    const loadConfig = () => {
+    const loadConfig = (expectedSnapshot = currentConfigSnapshot.value) => {
       tabLoading.value = true
       getAISearchConfig().then(res => {
         if (res?.status === 200) {
           const data = res?.data || {}
-          formState.enabled = !!data.enabled
-          formState.baseUrl = data.baseUrl || ''
-          formState.apiKey = data.apiKey || ''
-          formState.model = data.model || ''
-          formState.manualModelsText = buildModelNameText(data.manualModels || [])
-          formState.prompt = data.prompt || ''
-          formState.remark = data.remark || ''
-          formState.temperature = data.temperature ?? 0
-          formState.topP = data.topP ?? 0
-          formState.maxAISearchModelCalls = normalizeAISearchBudget(data.maxAISearchModelCalls, DEFAULT_MAX_AI_SEARCH_MODEL_CALLS)
-          formState.maxAISearches = normalizeAISearchBudget(data.maxAISearches, DEFAULT_MAX_AI_SEARCHES)
-          formState.maxAISearchRetries = normalizeAISearchRetries(data.maxAISearchRetries, DEFAULT_MAX_AI_SEARCH_RETRIES)
-          formState.searchPricePerCall = Number(data.searchPricePerCall ?? 0)
-          formState.maxAIWebReads = normalizeAIWebReads(data.maxAIWebReads, DEFAULT_MAX_AI_WEB_READS)
-          formState.webReadPricePerCall = Number(data.webReadPricePerCall ?? 0)
-          formState.enableAIStagedTokenBilling = !!data.enableAIStagedTokenBilling
-          formState.smoothAIStagedTokenMultiplier = !!data.smoothAIStagedTokenMultiplier
-          formState.stagedTokenMultiplierPoints = Array.isArray(data.stagedTokenMultiplierPoints) && data.stagedTokenMultiplierPoints.length
+          const nextForm = {}
+          nextForm.enabled = !!data.enabled
+          nextForm.baseUrl = data.baseUrl || ''
+          nextForm.apiKey = data.apiKey || ''
+          nextForm.model = data.model || ''
+          nextForm.manualModelsText = buildModelNameText(data.manualModels || [])
+          nextForm.prompt = data.prompt || ''
+          nextForm.remark = data.remark || ''
+          nextForm.temperature = data.temperature ?? 0
+          nextForm.topP = data.topP ?? 0
+          nextForm.maxAISearchModelCalls = normalizeAISearchBudget(data.maxAISearchModelCalls, DEFAULT_MAX_AI_SEARCH_MODEL_CALLS)
+          nextForm.maxAISearches = normalizeAISearchBudget(data.maxAISearches, DEFAULT_MAX_AI_SEARCHES)
+          nextForm.maxAISearchRetries = normalizeAISearchRetries(data.maxAISearchRetries, DEFAULT_MAX_AI_SEARCH_RETRIES)
+          nextForm.searchPricePerCall = Number(data.searchPricePerCall ?? 0)
+          nextForm.maxAIWebReads = normalizeAIWebReads(data.maxAIWebReads, DEFAULT_MAX_AI_WEB_READS)
+          nextForm.webReadPricePerCall = Number(data.webReadPricePerCall ?? 0)
+          nextForm.enableAIStagedTokenBilling = !!data.enableAIStagedTokenBilling
+          nextForm.smoothAIStagedTokenMultiplier = !!data.smoothAIStagedTokenMultiplier
+          nextForm.stagedTokenMultiplierPoints = Array.isArray(data.stagedTokenMultiplierPoints) && data.stagedTokenMultiplierPoints.length
             ? data.stagedTokenMultiplierPoints.map(point => ({ tokens: String(point.tokens ?? 0), multiplier: Number(point.multiplier ?? 1) }))
             : DEFAULT_AI_STAGED_TOKEN_MULTIPLIER_POINTS.map(point => ({ ...point, tokens: String(point.tokens) }))
+          savedConfigSnapshot.value = JSON.stringify(nextForm)
+          if (currentConfigSnapshot.value === expectedSnapshot) Object.assign(formState, nextForm)
         } else {
           message.error(res?.message || '获取 AI 搜索配置失败')
         }
@@ -888,6 +897,7 @@ export default defineComponent({
     }
 
     return {
+      currentConfigSnapshot, savedConfigSnapshot, hasUnsavedChanges, requestRouteLeave,
       labelCol: { style: { width: '140px' } },
       wrapperCol: { span: 14 },
       modalLabelCol: { style: { width: '110px' } },
@@ -943,10 +953,15 @@ export default defineComponent({
       resetPriceForm,
     }
   },
+  beforeRouteLeave(to) { return this.requestRouteLeave(to) },
   methods: {
     handleLoad() {
-      this.loadConfig()
-      this.loadAIModelPrices()
+      const refresh = () => { this.loadConfig(); this.loadAIModelPrices() }
+      if (!this.hasUnsavedChanges) { refresh(); return }
+      Modal.confirm({
+        title: '有未保存的更改，确认刷新？', content: '刷新将放弃当前未保存的编辑，并重新加载配置和模型价格。',
+        okText: '放弃并刷新', cancelText: '保留编辑', onOk: refresh,
+      })
     },
     selectModel(model) {
       this.formState.model = model
@@ -1014,12 +1029,14 @@ export default defineComponent({
         message.error('网页读取单价必须是大于或等于 0 的有效金额')
         return
       }
+      const submittedSnapshot = this.currentConfigSnapshot
       this.saving = true
       const payload = buildAISearchConfigSavePayload(this.formState, baseUrl)
       updateAISearchConfig(payload).then(res => {
         if (res?.status === 200) {
           message.success('保存成功')
-          this.loadConfig()
+          this.savedConfigSnapshot = null
+          this.loadConfig(submittedSnapshot)
           return
         }
         throw new Error(res?.message || '保存失败')
@@ -1282,7 +1299,7 @@ export default defineComponent({
 .test-result-block {
   padding: 12px 14px;
   border-radius: 12px;
-  background: #fafafa;
+  background: var(--surface-subtle);
   border: 1px solid #f0f0f0;
 }
 
@@ -1290,7 +1307,7 @@ export default defineComponent({
   margin-bottom: 8px;
   font-size: 13px;
   font-weight: 600;
-  color: #1f2937;
+  color: var(--text);
 }
 
 .test-result-pre {
@@ -1301,7 +1318,7 @@ export default defineComponent({
   word-break: break-word;
   font-size: 12px;
   line-height: 1.6;
-  color: #334155;
+  color: var(--text);
 }
 
 .pricing-grid {
@@ -1356,12 +1373,12 @@ export default defineComponent({
 .sub-card-title {
   font-size: 18px;
   font-weight: 700;
-  color: #1f2937;
+  color: var(--text);
 }
 
 .sub-card-subtitle {
   margin-top: 6px;
-  color: #6b7280;
+  color: var(--text-muted);
   font-size: 13px;
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -1376,7 +1393,7 @@ export default defineComponent({
 
 .capability-detail {
   margin-top: 6px;
-  color: #6b7280;
+  color: var(--text-muted);
   font-size: 12px;
 }
 
@@ -1389,9 +1406,9 @@ export default defineComponent({
 
 .capability-status-card {
   padding: 16px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border);
   border-radius: 12px;
-  background: linear-gradient(135deg, #f8fbff 0%, #ffffff 100%);
+  background: linear-gradient(135deg, #f8fbff 0%, var(--surface) 100%);
 }
 
 .capability-status-card__header {
@@ -1402,7 +1419,7 @@ export default defineComponent({
 }
 
 .capability-status-card__title {
-  color: #0f172a;
+  color: var(--text);
   font-size: 15px;
   font-weight: 700;
 }
@@ -1410,14 +1427,14 @@ export default defineComponent({
 .capability-status-card__meta {
   margin-top: 10px;
   min-height: 20px;
-  color: #64748b;
+  color: var(--text-muted);
   font-size: 12px;
   line-height: 1.6;
 }
 
 .capability-status-card__count {
   margin-top: 12px;
-  color: #2563eb;
+  color: var(--primary);
   font-size: 13px;
   font-weight: 600;
 }
@@ -1429,7 +1446,7 @@ export default defineComponent({
 .capability-detail-panel {
   margin: 4px 0 20px;
   padding-bottom: 20px;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--border);
 }
 
 .capability-detail-panel__header {
@@ -1463,7 +1480,7 @@ export default defineComponent({
 .capability-detail-facts dt,
 .capability-detail-list h4 {
   margin: 0 0 5px;
-  color: #64748b;
+  color: var(--text-muted);
   font-size: 12px;
   font-weight: 600;
 }
@@ -1479,7 +1496,7 @@ export default defineComponent({
 }
 
 .capability-detail-empty {
-  color: #94a3b8;
+  color: var(--placeholder);
   font-size: 13px;
 }
 

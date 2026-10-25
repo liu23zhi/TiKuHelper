@@ -29,7 +29,7 @@ test('both billing tables use shared centered, wrapping columns and conditional 
     const source = await readFile(page, 'utf8')
     assert.match(source, /table-layout="fixed"/)
     assert.match(source, /:scroll="\{ x: tableScrollX \}"/)
-    assert.match(source, /components: \{ OverflowTableText \}/)
+    assert.match(source, /components: \{ OverflowTableText(?:, SafePaymentIcon)? \}/)
     assert.match(source, /<OverflowTableText[\s\S]*?:text="buildBillingRecordListSubjectText\(record\)"/)
     assert.match(source, /:expanded="!!expandedSubjects\[record\.id\]"/)
     assert.match(source, /@toggle="toggleSubject\(record\.id\)"/)

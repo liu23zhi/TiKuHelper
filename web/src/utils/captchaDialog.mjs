@@ -6,8 +6,23 @@ import {
   normalizeCaptchaType,
 } from './captchaHelpers.mjs'
 
+// CAPTCHA-only styles are loaded before either body-mounted dialog is created.
+// A rejected load is not cached forever: the next attempt may retry the chunk.
+let captchaGeometryStylesPromise = null
+
+function ensureCaptchaGeometryStyles() {
+  if (!captchaGeometryStylesPromise) {
+    captchaGeometryStylesPromise = import(/* webpackChunkName: "captcha-geometry" */ '../styles/captcha-geometry-tokens.css')
+      .catch((error) => {
+        captchaGeometryStylesPromise = null
+        throw error
+      })
+  }
+  return captchaGeometryStylesPromise
+}
+
 function buildCaptchaDialogHTML(imageData) {
-  return `<div class="captcha-dialog-root" style="display:flex;flex-direction:column;gap:14px;text-align:left;"><div class="captcha-dialog-copy" style="font-size:14px;line-height:1.7;color:#475569;">请输入下方图片中的验证码</div><div class="captcha-dialog-panel" style="display:flex;align-items:stretch;gap:12px;padding:14px;border-radius:16px;background:linear-gradient(180deg,#f8fafc 0%,#f1f5f9 100%);border:1px solid #e2e8f0;"><div class="captcha-dialog-preview" style="flex:1;min-width:0;padding:10px;border-radius:12px;background:#ffffff;border:1px solid #dbe4ee;box-shadow:inset 0 1px 0 rgba(255,255,255,0.8);"><img id="captcha-popup-image" src="${imageData}" alt="captcha" style="display:block;width:100%;border-radius:10px;cursor:pointer;" /></div><button id="captcha-refresh-trigger" type="button" style="align-self:center;height:42px;padding:0 16px;border:none;border-radius:12px;background:#e2e8f0;color:#0f172a;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;box-shadow:0 1px 2px rgba(15,23,42,0.08);">刷新验证码</button></div><div class="captcha-dialog-hint" id="captcha-dialog-hint" style="font-size:12px;line-height:1.6;color:#64748b;">点击验证码图片也可刷新验证码</div><input id="captcha-code-input" class="swal2-input captcha-dialog-input" placeholder="请输入图形验证码" /></div>`
+  return `<div class="captcha-dialog-root" style="display:flex;flex-direction:column;gap:var(--captcha-dialog-root-gap);text-align:left;"><div class="captcha-dialog-copy" style="font-size:14px;line-height:1.7;color:var(--text-muted);">请输入下方图片中的验证码</div><div class="captcha-dialog-panel" style="display:flex;align-items:stretch;gap:var(--captcha-dialog-panel-gap);padding:var(--captcha-dialog-panel-padding);border-radius:var(--captcha-dialog-panel-radius);background:var(--surface-subtle);border:1px solid var(--border);"><div class="captcha-dialog-preview" style="flex:1;min-width:0;padding:var(--captcha-dialog-preview-padding);border-radius:var(--captcha-dialog-preview-radius);background:var(--surface);border:1px solid var(--control-border);box-shadow:var(--captcha-dialog-preview-shadow-geometry) var(--shadow-color);"><img id="captcha-popup-image" src="${imageData}" alt="captcha" style="display:block;width:100%;border-radius:var(--captcha-dialog-image-radius);cursor:pointer;" /></div><button id="captcha-refresh-trigger" type="button" style="align-self:center;height:42px;padding:var(--captcha-dialog-refresh-padding);border:none;border-radius:var(--captcha-dialog-refresh-radius);background:var(--surface-subtle);color:var(--text);font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;box-shadow:var(--captcha-dialog-refresh-shadow-geometry) var(--shadow-color);">刷新验证码</button></div><div class="captcha-dialog-hint" id="captcha-dialog-hint" style="font-size:12px;line-height:1.6;color:var(--text-muted);">点击验证码图片也可刷新验证码</div><input id="captcha-code-input" class="swal2-input captcha-dialog-input" placeholder="请输入图形验证码" /></div>`
 }
 
 function setCaptchaHint(message, isError = false) {
@@ -16,13 +31,14 @@ function setCaptchaHint(message, isError = false) {
     return
   }
   hint.textContent = message
-  hint.style.color = isError ? '#dc2626' : '#64748b'
+  hint.style.color = isError ? 'var(--danger-fg)' : 'var(--text-muted)'
 }
 
 export async function openCaptchaDialog({
   imageData,
   refreshCaptchaChallenge,
 }) {
+  await ensureCaptchaGeometryStyles()
   const result = await Swal.fire({
     title: '请完成人机验证',
     html: buildCaptchaDialogHTML(imageData),
@@ -128,8 +144,8 @@ function createRemoteCaptchaMount() {
   mount.style.display = 'flex'
   mount.style.alignItems = 'center'
   mount.style.justifyContent = 'center'
-  mount.style.background = 'rgba(15, 23, 42, 0.45)'
-  mount.style.padding = '24px'
+  mount.style.background = 'var(--overlay)'
+  mount.style.padding = 'var(--captcha-remote-mount-padding)'
   document.body.appendChild(mount)
   return { mount, mountId }
 }
@@ -145,6 +161,7 @@ export async function openRemoteCaptchaDialog({
   captchaType,
 }) {
   const remoteConfig = buildRemoteCaptchaConfig(baseUrl, normalizeCaptchaType(captchaType))
+  await ensureCaptchaGeometryStyles()
   await loadRemoteCaptchaSDK(remoteConfig.loaderUrl)
 
   return new Promise((resolve, reject) => {

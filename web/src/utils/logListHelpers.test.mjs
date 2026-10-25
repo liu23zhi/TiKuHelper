@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createRequire } from 'node:module';
 import * as logHelpers from './logListHelpers.mjs';
 
 import {
@@ -23,7 +22,6 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const logListPagePath = path.join(__dirname, '..', 'pages', 'LogList', 'index.vue');
-const require = createRequire(import.meta.url);
 
 test('table detail does not repeat a long failure already shown in the channel column', () => {
   const failed = {
@@ -169,7 +167,7 @@ test('LogList uses fixed widths and horizontal scrolling while allowing wraps', 
   assert.ok(columnsStart >= 0 && columnsEnd > columnsStart, 'missing log columns definition');
 
   const columnsSource = content.slice(columnsStart, columnsEnd);
-  const columnBlocks = [...columnsSource.matchAll(/title: '([^']+)'([\s\S]*?)(?=\n        \},|$)/g)];
+  const columnBlocks = [...columnsSource.matchAll(/title: '([^']+)'([\s\S]*?)(?=\n {8}\},|$)/g)];
   const widths = Object.fromEntries(columnBlocks.map(([, title, body]) => {
     const width = body.match(/width:\s*(logColumnWidths\.\w+|expandedColumnWidth\('[^']+'\))/);
     assert.ok(width, `missing width for ${title}`);

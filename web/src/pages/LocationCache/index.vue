@@ -407,18 +407,18 @@ export default defineComponent({
 <style scoped>
 .location-page { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .page-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-.page-heading h1 { margin: 0; color: var(--console-text, #1f2937); font-size: 20px; font-weight: 650; }
-.page-lead { margin: 4px 0 0; color: var(--console-muted, #64748b); font-size: 13px; }
-.console-panel { min-width: 0; padding: 16px; border: 1px solid var(--console-border, #e5e7eb); border-radius: var(--console-radius, 12px); background: var(--console-surface, #fff); }
+.page-heading h1 { margin: 0; color: var(--console-text, var(--text)); font-size: 20px; font-weight: 650; }
+.page-lead { margin: 4px 0 0; color: var(--console-muted, var(--text-muted)); font-size: 13px; }
+.console-panel { min-width: 0; padding: 16px; border: 1px solid var(--console-border, var(--border)); border-radius: var(--console-radius, 12px); background: var(--console-surface, var(--surface)); }
 .filter-form { gap: 12px; }
 .keyword-input { width: 260px; max-width: 100%; }
 .status-alert { margin-top: 16px; }
-.summary-row { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--console-border, #e5e7eb); }
+.summary-row { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--console-border, var(--border)); }
 .selection-alert { margin-bottom: 16px; }
 .selection-alert-content { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
 .table-card { min-height: 420px; }
 .location-page :deep(.ant-table) { font-size: 13px; }
 .response-title { margin: 20px 0 8px; font-size: 14px; }
-.raw-response { max-height: 420px; padding: 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #f5f7f8; border: 1px solid #e5e7eb; border-radius: 4px; }
+.raw-response { max-height: 420px; padding: 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #f5f7f8; border: 1px solid var(--border); border-radius: 4px; }
 @media (max-width: 600px) { .console-panel { padding: 12px; } .keyword-input { width: 100%; } .filter-form :deep(.ant-form-item) { width: 100%; margin-right: 0; } .section-actions { width: 100%; } }
 </style>
