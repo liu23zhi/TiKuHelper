@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   buildQuestionBulkActionIds,
+  buildQuestionBulkCourseUpdatePayload,
   buildQuestionCourseNameCandidates,
   buildQuestionExportPayload,
   buildQuestionImportDryRunPayload,
@@ -146,4 +147,19 @@ test('Topic overview exposes select-all and clear-selection controls', async () 
   assert.match(content, /取消本页选择/);
   assert.match(content, /全选所有页/);
   assert.match(content, /取消全部选择/);
+});
+
+
+test('buildQuestionBulkCourseUpdatePayload retains ordered unique valid ids and trims only the course name', () => {
+  assert.deepEqual(buildQuestionBulkCourseUpdatePayload([3, '7', 3, 0, null, 'bad', 12], '  新课程 literal  '), {
+    ids: [3, 7, 12],
+    courseName: '新课程 literal',
+  });
+});
+
+test('buildQuestionBulkCourseUpdatePayload rejects empty selections and blank names before any write', () => {
+  assert.throws(() => buildQuestionBulkCourseUpdatePayload([], '课程'), /请先选择需要批量修改的题目/);
+  assert.throws(() => buildQuestionBulkCourseUpdatePayload([0, -1, 'bad'], '课程'), /请先选择需要批量修改的题目/);
+  assert.throws(() => buildQuestionBulkCourseUpdatePayload([101], '   '), /请输入课程名称/);
+  assert.throws(() => buildQuestionBulkCourseUpdatePayload([101], null), /请输入课程名称/);
 });

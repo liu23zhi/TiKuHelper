@@ -45,10 +45,13 @@
               <DownloadOutlined />
               智能导入
             </a-button>
-            <a-button @click="handleExportSelected">
+            <a-button :disabled="!selectedRowKeys.length" @click="handleExportSelected">
               导出选中
             </a-button>
-            <a-button danger @click="handleDeleteSelected">
+            <a-button :disabled="!selectedRowKeys.length" @click="openBulkCourseModal">
+              批量编辑课程名
+            </a-button>
+            <a-button danger :disabled="!selectedRowKeys.length" @click="handleDeleteSelected">
               批量删除
             </a-button>
             <a-button type="primary" @click="showModal({
@@ -146,6 +149,29 @@
                         @showSizeChange="onShowSizeChange"
                         style="margin-top: 20px; text-align: right;"/>
       </a-card>
+      <a-modal
+        :open="bulkCourseVisible"
+        title="批量编辑课程名称"
+        ok-text="保存"
+        cancel-text="取消"
+        @ok="handleBulkCourseSubmit"
+        @cancel="closeBulkCourseModal"
+      >
+        <a-form>
+          <a-form-item label="已选题目">
+            <span>{{ selectedRowKeys.length }} 条</span>
+          </a-form-item>
+          <a-form-item label="课程名称">
+            <a-auto-complete
+              v-model:value="bulkCourseName"
+              :options="bulkCourseCandidates"
+              placeholder="请输入新的课程名称"
+              style="width: 100%"
+            />
+            <div class="bulk-course-hint">支持自由输入；若已存在相近课程名，会在下方显示候选项供快速填充。</div>
+          </a-form-item>
+        </a-form>
+      </a-modal>
       <input
         ref="jsonImportInput"
         type="file"
@@ -207,6 +233,7 @@ import {computed, defineComponent, ref} from 'vue';
 import {useRouter} from 'vue-router';
 import Swal from 'sweetalert2'
 import {
+  getCourses,
   getQuestions,
   updateQuestions,
   delQuestions,
@@ -225,6 +252,8 @@ import {questionType} from "@/utils/uitls";
 import {message} from "ant-design-vue";
 import {
   buildQuestionBulkActionIds,
+  buildQuestionBulkCourseUpdatePayload,
+  buildQuestionCourseNameCandidates,
   buildQuestionExportPayload,
   buildQuestionImportDryRunPayload,
   buildQuestionImportExecutePayload,
@@ -309,6 +338,9 @@ const page = ref({
 
 const typeValue = ref(null)
 const typeList = ref([])
+const courses = ref([])
+const bulkCourseVisible = ref(false)
+const bulkCourseName = ref('')
 const formData = ref({})
 const answer = ref([])
 const visible = ref(false)
@@ -377,6 +409,10 @@ export default defineComponent({
       }
       return selectedIds.map(id => questionCache.get(id)).filter(Boolean)
     })
+    const bulkCourseCandidates = computed(() => buildQuestionCourseNameCandidates(
+      bulkCourseName.value,
+      courses.value,
+    ))
     const currentPageIds = computed(() => buildQuestionBulkActionIds(
       (data.value || []).map(item => item?.id),
     ))
@@ -449,6 +485,10 @@ export default defineComponent({
       searchValue,
       selectedRowKeys,
       selectedQuestions,
+      courses,
+      bulkCourseVisible,
+      bulkCourseName,
+      bulkCourseCandidates,
       rowSelection,
       selectionSummary,
       allRowsSelected,
@@ -476,6 +516,7 @@ export default defineComponent({
   },
   mounted() {
     this.getType()
+    this.getCourses()
     this.fetchData()
   },
   methods: {
@@ -505,6 +546,20 @@ export default defineComponent({
     getType() {
       const arr = this.typeObjects(questionType)
       typeList.value = arr
+    },
+    async getCourses(data) {
+      if (data) {
+        courses.value = data.map(value => ({ value, label: value }))
+      } else {
+        try {
+          const response = await getCourses()
+          if (response?.data && response.data.length) {
+            courses.value = response.data.map(value => ({ value, label: value }))
+          }
+        } catch {
+          message.error('获取课程列表失败')
+        }
+      }
     },
     async fetchData() {
       fileList.value = []
@@ -646,6 +701,46 @@ export default defineComponent({
           input.value = ''
         }
       }
+    },
+
+    openBulkCourseModal() {
+      if (!this.selectedRowKeys.length) {
+        message.warning('请先选择需要批量修改的题目')
+        return
+      }
+      this.bulkCourseName = ''
+      this.bulkCourseVisible = true
+    },
+
+    closeBulkCourseModal() {
+      this.bulkCourseVisible = false
+      this.bulkCourseName = ''
+    },
+
+    async handleBulkCourseSubmit() {
+      let payload
+      try {
+        payload = buildQuestionBulkCourseUpdatePayload(this.selectedRowKeys, this.bulkCourseName)
+      } catch (error) {
+        message.warning(error?.message || '请输入课程名称')
+        return
+      }
+
+      for (const item of this.selectedQuestions) {
+        const response = await updateQuestions({
+          ...item,
+          course_name: payload.courseName,
+        })
+        if (response?.status !== 200) {
+          message.error(`题目 ${item.id} 更新课程名称失败`)
+          return
+        }
+      }
+
+      message.success(`成功更新 ${payload.ids.length} 条题目的课程名称`)
+      this.closeBulkCourseModal()
+      resetSelectionState()
+      await this.fetchData()
     },
 
     handleExportSelected() {
@@ -803,6 +898,12 @@ export default defineComponent({
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.bulk-course-hint {
+  margin-top: 8px;
+  color: var(--console-muted, var(--text-muted));
+  font-size: 12px;
 }
 
 .multiline-cell {
