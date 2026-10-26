@@ -362,8 +362,44 @@ import {
 } from '@/utils/locationHelpers.mjs';
 import { message } from 'ant-design-vue';
 import Swal from 'sweetalert2';
-import { computed, defineComponent, reactive, ref } from 'vue';
+import { computed, defineComponent, markRaw, reactive, ref, watch } from 'vue';
 
+function createUserListState() {
+  let alive = true
+  let wechatLease = {}
+  const ownedTimers = new Set()
+  const owner = {
+    isAlive: () => alive,
+    captureWechatLease: () => wechatLease,
+    isWechatLeaseCurrent: lease => alive && lease === wechatLease,
+    clearTimer() {
+      if (wechatScanTimer !== null) {
+        clearInterval(wechatScanTimer)
+        ownedTimers.delete(wechatScanTimer)
+        wechatScanTimer = null
+      }
+    },
+    invalidateWechatFlow() {
+      if (!alive) return
+      wechatLease = {}
+      ownedTimers.forEach(timer => clearInterval(timer))
+      ownedTimers.clear()
+      wechatScanTimer = null
+    },
+    schedulePoll(callback, lease) {
+      if (!alive || lease !== wechatLease) return
+      const timer = setInterval(() => {
+        if (alive && lease === wechatLease) callback()
+      }, 2500)
+      ownedTimers.add(timer)
+      wechatScanTimer = timer
+    },
+    dispose() {
+      if (!alive) return
+      owner.invalidateWechatFlow()
+      alive = false
+    },
+  }
 const dataSource = ref([])
 
 // 归属地映射：key 为归一化后的手机号 / IP，value 为展示文本。
@@ -387,6 +423,7 @@ function mergeLocations(target, addresses) {
 // 失败必须静默：归属地只是展示增强，未配置密钥或上游异常时
 // 对应列退化为只显示原始值，不能打扰正在管理用户的流程。
 async function enrichColumns(rows) {
+  if (!owner.isAlive()) return
   const phones = collectLocationKeys(rows, 'phone')
   const ips = collectLocationKeys(rows, ['lastLoginIp', 'registerIp'])
 
@@ -394,13 +431,13 @@ async function enrichColumns(rows) {
   if (phones.length) {
     tasks.push(
       lookupLocationAddresses('phone', phones, getPhoneLocations)
-        .then((addresses) => mergeLocations(phoneLocations, addresses)),
+        .then((addresses) => { if (owner.isAlive()) mergeLocations(phoneLocations, addresses) }),
     )
   }
   if (ips.length) {
     tasks.push(
       lookupLocationAddresses('ip', ips, getIpLocations)
-        .then((addresses) => mergeLocations(ipLocations, addresses)),
+        .then((addresses) => { if (owner.isAlive()) mergeLocations(ipLocations, addresses) }),
     )
   }
   await Promise.all(tasks)
@@ -487,10 +524,7 @@ const userTableColumnWidths = Object.freeze({
 const userTableScrollX = Object.values(userTableColumnWidths).reduce((sum, width) => sum + width, 0)
 
 function stopWechatScanTimer() {
-  if (wechatScanTimer !== null) {
-    clearInterval(wechatScanTimer)
-    wechatScanTimer = null
-  }
+  owner.clearTimer()
 }
 
 function resetWechatResolveState() {
@@ -505,9 +539,22 @@ function resetWechatResolveState() {
   wechatCodeLoading.value = false
 }
 
+  watch(visible, next => {
+    if (!next) { owner.invalidateWechatFlow(); resetWechatResolveState() }
+  }, { flush: 'sync' })
+  watch(() => formState.value.id, () => {
+    owner.invalidateWechatFlow()
+    resetWechatResolveState()
+  }, { flush: 'sync' })
+  return { owner, dataSource, phoneLocations, ipLocations, formatValueWithLocation, mergeLocations, enrichColumns, filters, keywordInput, pagination, visible, submitLoading, passwordConfirmationPending, balanceVisible, balanceSubmitting, balanceForm, isEditing, resetPasswordVisible, resetPasswordLoading, wechatScanVisible, wechatScanLoading, wechatScanQrCodeImageData, wechatScanLoginToken, wechatScanStatusText, wechatCodeVisible, wechatCode, wechatCodeLoading, systemNewUserBonusAmount, wechatScanTimer, formState, resetPasswordForm, tabLoading, userTableColumnWidths, userTableScrollX, stopWechatScanTimer, resetWechatResolveState }
+}
+
 export default defineComponent({
   name: 'UserList',
   setup() {
+    const userListContext = markRaw(createUserListState())
+    const { dataSource, pagination, isEditing, formState, resetPasswordForm, visible, resetPasswordVisible, phoneLocations, ipLocations, formatValueWithLocation, tabLoading, userTableScrollX, filters, keywordInput, submitLoading, balanceVisible, balanceSubmitting, balanceForm, resetPasswordLoading, wechatScanVisible, wechatScanLoading, wechatScanQrCodeImageData, wechatScanLoginToken, wechatScanStatusText, wechatCodeVisible, wechatCode, wechatCodeLoading, systemNewUserBonusAmount, userTableColumnWidths } = userListContext
+
     // 用户列表改为服务端分页后，这里的统计只覆盖「当前页」，
     // 因此标题里明确标注范围，避免被误读成全站合计。
     const summary = computed(() => {
@@ -543,6 +590,7 @@ export default defineComponent({
     const modalTitle = computed(() => isEditing.value ? '编辑用户' : '新增用户')
 
     return {
+      userListContext,
       labelCol: { style: { width: '100px' } },
       wrapperCol: { span: 16 },
       formState,
@@ -736,146 +784,221 @@ export default defineComponent({
     };
   },
   mounted() {
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
     this.handleUserList()
     this.loadNewUserBonusDefault()
   },
   beforeUnmount() {
-    stopWechatScanTimer()
+    this.userListContext.owner.dispose()
   },
   methods: {
     formatBalance(value) {
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
       return formatMoneyValue(value || 0)
     },
     formatDateTime(value) {
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
       return formatBillingRecordTime(value)
     },
     roleText(value) {
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
       return String(value || '').toLowerCase() === 'admin' ? '管理员' : '普通用户'
     },
     roleColor(value) {
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
       return String(value || '').toLowerCase() === 'admin' ? 'gold' : 'blue'
     },
     statusText(value) {
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
       return String(value || '').toLowerCase() === 'disabled' ? '禁用' : '启用'
     },
     statusBadge(value) {
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
       return String(value || '').toLowerCase() === 'disabled' ? 'error' : 'success'
     },
     registerSourceText(value) {
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
       return buildRegisterSourceLabel(value)
     },
     normalizeWechatCodeInput(value) {
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
       return String(value || '').replace(/\D/g, '').slice(0, 12)
     },
     toggleWechatCodeInput() {
-      wechatCodeVisible.value = !wechatCodeVisible.value
-      if (!wechatCodeVisible.value) {
-        wechatCode.value = ''
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
+      this.userListContext.wechatCodeVisible.value = !this.userListContext.wechatCodeVisible.value
+      if (!this.userListContext.wechatCodeVisible.value) {
+        this.userListContext.wechatCode.value = ''
       }
     },
     stopWechatScan() {
-      stopWechatScanTimer()
-      wechatScanLoading.value = false
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
+      this.userListContext.stopWechatScanTimer()
+      this.userListContext.wechatScanLoading.value = false
     },
     async startWechatScan() {
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+      const wechatLease = owner.captureWechatLease()
+      if (!owner.isWechatLeaseCurrent(wechatLease)) return
+
       this.stopWechatScan()
-      resetWechatResolveState()
-      wechatScanVisible.value = true
-      wechatScanLoading.value = true
-      wechatScanStatusText.value = '正在创建二维码'
+      this.userListContext.resetWechatResolveState()
+      this.userListContext.wechatScanVisible.value = true
+      this.userListContext.wechatScanLoading.value = true
+      this.userListContext.wechatScanStatusText.value = '正在创建二维码'
       try {
         const res = await createWechatLoginQRCode()
+        if (!owner.isWechatLeaseCurrent(wechatLease)) return
+
         if (res?.status !== 200) {
           throw new Error(res?.message || '二维码创建失败')
         }
-        wechatScanQrCodeImageData.value = res?.data?.qrcodeImageData || ''
-        wechatScanLoginToken.value = res?.data?.loginToken || ''
-        if (!wechatScanQrCodeImageData.value || !wechatScanLoginToken.value) {
+        this.userListContext.wechatScanQrCodeImageData.value = res?.data?.qrcodeImageData || ''
+        this.userListContext.wechatScanLoginToken.value = res?.data?.loginToken || ''
+        if (!this.userListContext.wechatScanQrCodeImageData.value || !this.userListContext.wechatScanLoginToken.value) {
           throw new Error('二维码创建失败')
         }
-        wechatScanStatusText.value = '请使用需要绑定的微信扫码'
-        wechatScanTimer = setInterval(() => {
-          this.pollWechatScanID()
-        }, 2500)
+        this.userListContext.wechatScanStatusText.value = '请使用需要绑定的微信扫码'
+        owner.schedulePoll(() => this.pollWechatScanID(), wechatLease)
         this.pollWechatScanID()
       } catch (error) {
-        wechatScanStatusText.value = error?.message || '二维码创建失败'
-        message.error(wechatScanStatusText.value)
+        if (!owner.isWechatLeaseCurrent(wechatLease)) return
+
+        this.userListContext.wechatScanStatusText.value = error?.message || '二维码创建失败'
+        message.error(this.userListContext.wechatScanStatusText.value)
       } finally {
-        wechatScanLoading.value = false
+        if (owner.isWechatLeaseCurrent(wechatLease)) {
+
+
+        this.userListContext.wechatScanLoading.value = false
+
+        }
       }
     },
     async pollWechatScanID() {
-      if (!wechatScanLoginToken.value) {
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+      const wechatLease = owner.captureWechatLease()
+      if (!owner.isWechatLeaseCurrent(wechatLease)) return
+
+      if (!this.userListContext.wechatScanLoginToken.value) {
         return
       }
       try {
-        const res = await resolveAdminWechatIDByScan({ loginToken: wechatScanLoginToken.value })
+        const res = await resolveAdminWechatIDByScan({ loginToken: this.userListContext.wechatScanLoginToken.value })
+        if (!owner.isWechatLeaseCurrent(wechatLease)) return
+
         if (res?.status !== 200) {
-          wechatScanStatusText.value = res?.message || '扫码状态查询失败'
+          this.userListContext.wechatScanStatusText.value = res?.message || '扫码状态查询失败'
           return
         }
         const status = String(res?.data?.status || '').trim().toLowerCase()
         if (status === 'pending') {
-          wechatScanStatusText.value = '等待微信扫码'
+          this.userListContext.wechatScanStatusText.value = '等待微信扫码'
           return
         }
         if (status === 'scanned') {
-          wechatScanStatusText.value = '已扫码，请确认'
+          this.userListContext.wechatScanStatusText.value = '已扫码，请确认'
           return
         }
         if (status === 'success' && res?.data?.wechatId) {
-          formState.value.wechatId = String(res.data.wechatId || '').trim()
-          wechatScanStatusText.value = '已获取微信 ID，请保存用户'
+          this.userListContext.formState.value.wechatId = String(res.data.wechatId || '').trim()
+          this.userListContext.wechatScanStatusText.value = '已获取微信 ID，请保存用户'
           message.success('微信 ID 已填入')
           this.stopWechatScan()
-          wechatScanVisible.value = false
+          this.userListContext.wechatScanVisible.value = false
           return
         }
         if (status === 'expired') {
-          wechatScanStatusText.value = '二维码已过期，请重新获取'
+          this.userListContext.wechatScanStatusText.value = '二维码已过期，请重新获取'
           this.stopWechatScan()
         }
       } catch (error) {
-        wechatScanStatusText.value = error?.message || '扫码状态查询失败'
+        if (!owner.isWechatLeaseCurrent(wechatLease)) return
+
+        this.userListContext.wechatScanStatusText.value = error?.message || '扫码状态查询失败'
       }
     },
     async resolveWechatIDByCode() {
-      if (!wechatCode.value) {
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+      const wechatLease = owner.captureWechatLease()
+      if (!owner.isWechatLeaseCurrent(wechatLease)) return
+
+      if (!this.userListContext.wechatCode.value) {
         message.warning('请输入微信验证码')
         return
       }
-      wechatCodeLoading.value = true
+      this.userListContext.wechatCodeLoading.value = true
       try {
-        const res = await resolveAdminWechatIDByCode({ code: wechatCode.value })
+        const res = await resolveAdminWechatIDByCode({ code: this.userListContext.wechatCode.value })
+        if (!owner.isWechatLeaseCurrent(wechatLease)) return
+
         if (res?.status !== 200) {
           message.error(res?.message || '获取微信 ID 失败')
           return
         }
-        formState.value.wechatId = String(res?.data?.wechatId || '').trim()
-        if (!formState.value.wechatId) {
+        this.userListContext.formState.value.wechatId = String(res?.data?.wechatId || '').trim()
+        if (!this.userListContext.formState.value.wechatId) {
           message.error('未获取到微信 ID')
           return
         }
-        wechatCodeVisible.value = false
-        wechatCode.value = ''
+        this.userListContext.wechatCodeVisible.value = false
+        this.userListContext.wechatCode.value = ''
         message.success('微信 ID 已填入')
       } catch (error) {
+        if (!owner.isWechatLeaseCurrent(wechatLease)) return
+
         message.error(error?.message || '获取微信 ID 失败')
       } finally {
-        wechatCodeLoading.value = false
+        if (owner.isWechatLeaseCurrent(wechatLease)) {
+
+
+        this.userListContext.wechatCodeLoading.value = false
+
+        }
       }
     },
     openCreateModal() {
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
       this.resetFormState()
-      formState.value.giftAmount = systemNewUserBonusAmount.value
-      isEditing.value = false
-      visible.value = true
+      this.userListContext.formState.value.giftAmount = this.userListContext.systemNewUserBonusAmount.value
+      this.userListContext.isEditing.value = false
+      this.userListContext.visible.value = true
     },
     openEditModal(record) {
-      resetWechatResolveState()
-      isEditing.value = true
-      formState.value = {
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+      owner.invalidateWechatFlow()
+
+      this.userListContext.resetWechatResolveState()
+      this.userListContext.isEditing.value = true
+      this.userListContext.formState.value = {
         id: record.id,
         username: record.username || '',
         password: '',
@@ -892,106 +1015,155 @@ export default defineComponent({
         wechatBoundAt: record.wechatBoundAt || '',
         forceReassignWechat: false,
       }
-      visible.value = true
+      this.userListContext.visible.value = true
     },
     openResetPasswordModal(record) {
-      resetPasswordForm.value = {
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
+      this.userListContext.resetPasswordForm.value = {
         id: record.id,
         username: record.username || '',
         password: '',
       }
-      resetPasswordVisible.value = true
+      this.userListContext.resetPasswordVisible.value = true
     },
     openBalanceModal() {
-      balanceForm.mode = 'increase'
-      balanceForm.amount = null
-      balanceForm.showInStatement = true
-      balanceVisible.value = true
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
+      this.userListContext.balanceForm.mode = 'increase'
+      this.userListContext.balanceForm.amount = null
+      this.userListContext.balanceForm.showInStatement = true
+      this.userListContext.balanceVisible.value = true
     },
     async submitBalanceAdjustment() {
-      if (balanceSubmitting.value) return
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
+      if (this.userListContext.balanceSubmitting.value) return
       let payload
       try {
-        payload = buildUserBalanceAdjustmentPayload({ id: formState.value.id, ...balanceForm })
+        payload = buildUserBalanceAdjustmentPayload({ id: this.userListContext.formState.value.id, ...this.userListContext.balanceForm })
       } catch (error) {
+        if (!owner.isAlive()) return
+
         message.warning(error?.message || '请检查余额调整参数')
         return
       }
-      balanceSubmitting.value = true
+      this.userListContext.balanceSubmitting.value = true
       try {
         const res = await adjustUserBalance(payload)
+        if (!owner.isAlive()) return
+
         if (res?.status === 202) {
           message.warning('余额调整状态待核对，请刷新账户信息确认，勿重复提交')
           this.handleUserList()
           return
         }
         if (res?.status !== 200) throw new Error(res?.message || '修改余额失败')
-        formState.value.balance = res.data.balance
-        balanceVisible.value = false
+        this.userListContext.formState.value.balance = res.data.balance
+        this.userListContext.balanceVisible.value = false
         message.success('余额修改成功，已记录日志与账单明细')
         this.handleUserList()
       } catch (error) {
+        if (!owner.isAlive()) return
+
         message.error(error?.response?.data?.message || error?.message || '修改余额失败')
       } finally {
-        balanceSubmitting.value = false
+        if (owner.isAlive()) {
+
+
+        this.userListContext.balanceSubmitting.value = false
+
+        }
       }
     },
     // 点「搜索」或回车时才把输入框内容变成生效的筛选条件。
     applyKeyword() {
-      filters.keyword = normalizeSearchKeyword(keywordInput.value)
-      keywordInput.value = filters.keyword
-      pagination.current = 1
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
+      this.userListContext.filters.keyword = normalizeSearchKeyword(this.userListContext.keywordInput.value)
+      this.userListContext.keywordInput.value = this.userListContext.filters.keyword
+      this.userListContext.pagination.current = 1
       this.handleUserList()
     },
     onFilterChange() {
-      pagination.current = 1
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
+      this.userListContext.pagination.current = 1
       this.handleUserList()
     },
     resetFilters() {
-      filters.keyword = ''
-      keywordInput.value = ''
-      filters.role = undefined
-      filters.status = undefined
-      pagination.current = 1
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
+      this.userListContext.filters.keyword = ''
+      this.userListContext.keywordInput.value = ''
+      this.userListContext.filters.role = undefined
+      this.userListContext.filters.status = undefined
+      this.userListContext.pagination.current = 1
       this.handleUserList()
     },
     handleTableChange(paginationData) {
-      pagination.current = paginationData.current
-      pagination.pageSize = paginationData.pageSize
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
+      this.userListContext.pagination.current = paginationData.current
+      this.userListContext.pagination.pageSize = paginationData.pageSize
       this.handleUserList()
     },
     handleMobilePageChange(current, pageSize) {
-      pagination.current = current
-      pagination.pageSize = pageSize
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
+      this.userListContext.pagination.current = current
+      this.userListContext.pagination.pageSize = pageSize
       this.handleUserList()
     },
     handleUserList() {
-      tabLoading.value = true
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
+      this.userListContext.tabLoading.value = true
       getUserList(buildSearchParams({
-        keyword: filters.keyword,
-        role: filters.role,
-        status: filters.status,
-      }, pagination.current, pagination.pageSize)).then(res => {
+        keyword: this.userListContext.filters.keyword,
+        role: this.userListContext.filters.role,
+        status: this.userListContext.filters.status,
+      }, this.userListContext.pagination.current, this.userListContext.pagination.pageSize)).then(res => {
+        if (!owner.isAlive()) return
+
         if (res?.status === 200) {
           // 接口现在返回 { data, total, page, pageSize }。
           const payload = res?.data || {}
-          dataSource.value = Array.isArray(payload.data) ? payload.data : []
-          pagination.total = Number(payload.total || 0)
-          pagination.current = Number(payload.page || 1)
-          pagination.pageSize = Number(payload.pageSize || 10)
+          this.userListContext.dataSource.value = Array.isArray(payload.data) ? payload.data : []
+          this.userListContext.pagination.total = Number(payload.total || 0)
+          this.userListContext.pagination.current = Number(payload.page || 1)
+          this.userListContext.pagination.pageSize = Number(payload.pageSize || 10)
           // 归属地单独批量拉取（失败静默）：列表接口本身不依赖它。
-          enrichColumns(dataSource.value)
+          this.userListContext.enrichColumns(this.userListContext.dataSource.value)
         } else {
           message.error(res?.message || '获取用户列表失败')
         }
       }).catch(() => {
+        if (!owner.isAlive()) return
+
         message.error('获取用户列表失败')
       }).finally(() => {
-        tabLoading.value = false
+        if (!owner.isAlive()) return
+
+        this.userListContext.tabLoading.value = false
       })
     },
     onDelete(val) {
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
       delUser({ id: val }).then(res => {
+        if (!owner.isAlive()) return
+
         if (res?.status === 200) {
           message.success('删除成功')
           this.handleUserList()
@@ -999,10 +1171,15 @@ export default defineComponent({
           message.error(res?.message || '删除失败')
         }
       }).catch(() => {
+        if (!owner.isAlive()) return
+
         message.error('删除失败')
       })
     },
     async confirmWeakPassword(action) {
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
       const confirmation = await Swal.fire({
         title: '确认使用弱密码？',
         text: `当前密码未达到推荐强度。推荐至少 8 位，并同时包含大写字母、小写字母、数字和特殊字符。弱密码更容易被猜测、撞库或重复使用；密码仍不能超过 bcrypt 支持的 72 字节。确认继续${action === 'create' ? '创建用户' : '重置密码'}吗？`,
@@ -1012,100 +1189,160 @@ export default defineComponent({
         cancelButtonText: '返回修改',
         reverseButtons: true,
       })
+        if (!owner.isAlive()) return
+
       return confirmation?.isConfirmed === true
     },
     async onSubmit() {
-      if (submitLoading.value || passwordConfirmationPending.value) return
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
+      if (this.userListContext.submitLoading.value || this.userListContext.passwordConfirmationPending.value) return
       let createPayload = null
-      if (!isEditing.value) {
+      if (!this.userListContext.isEditing.value) {
         try {
-          createPayload = buildAdminCreateUserPayload(formState.value)
+          createPayload = buildAdminCreateUserPayload(this.userListContext.formState.value)
         } catch (error) {
+        if (!owner.isAlive()) return
+
           message.warning(error?.message || '请完善新增用户必填项')
           return
         }
       }
 
       let editPayload = null
-      if (isEditing.value) {
+      if (this.userListContext.isEditing.value) {
         try {
-          editPayload = buildUserProfileUpdatePayload(formState.value)
+          editPayload = buildUserProfileUpdatePayload(this.userListContext.formState.value)
         } catch (error) {
+        if (!owner.isAlive()) return
+
           message.warning(error?.message || '请检查用户资料')
           return
         }
       }
 
       const submit = async () => {
-        submitLoading.value = true
+        if (!owner.isAlive()) return
+
+        this.userListContext.submitLoading.value = true
         try {
-          const res = await (isEditing.value ? updateUser(editPayload) : addUser(createPayload))
+          const res = await (this.userListContext.isEditing.value ? updateUser(editPayload) : addUser(createPayload))
+        if (!owner.isAlive()) return
+
           if (res?.status !== 200) {
-            message.error(res?.message || (isEditing.value ? '更新用户失败' : '添加用户失败'))
+            message.error(res?.message || (this.userListContext.isEditing.value ? '更新用户失败' : '添加用户失败'))
             return
           }
-          message.success(isEditing.value ? '更新用户成功' : '添加用户成功')
+          message.success(this.userListContext.isEditing.value ? '更新用户成功' : '添加用户成功')
           this.handleUserList()
           this.resetFormState()
-          visible.value = false
+          this.userListContext.visible.value = false
         } catch (error) {
-          message.error(error?.response?.data?.message || (isEditing.value ? '更新用户失败' : '添加用户失败'))
+        if (!owner.isAlive()) return
+
+          message.error(error?.response?.data?.message || (this.userListContext.isEditing.value ? '更新用户失败' : '添加用户失败'))
         } finally {
-          submitLoading.value = false
+        if (owner.isAlive()) {
+
+
+          this.userListContext.submitLoading.value = false
+
         }
+      }
       }
 
       if (createPayload) {
-        passwordConfirmationPending.value = true
+        this.userListContext.passwordConfirmationPending.value = true
         try {
-          await runAdminPasswordAction(createPayload.password, submit, () => this.confirmWeakPassword('create', createPayload.password))
+          await runAdminPasswordAction(createPayload.password, submit, () => { if (!owner.isAlive()) return; return this.confirmWeakPassword('create', createPayload.password); })
+        if (!owner.isAlive()) return
+
         } catch (error) {
+        if (!owner.isAlive()) return
+
           message.error(error?.message || '创建用户失败')
         } finally {
-          passwordConfirmationPending.value = false
+        if (owner.isAlive()) {
+
+
+          this.userListContext.passwordConfirmationPending.value = false
+
         }
+      }
         return
       }
       await submit()
+        if (!owner.isAlive()) return
+
     },
     async submitResetPassword() {
-      if (resetPasswordLoading.value || passwordConfirmationPending.value) return
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
+      if (this.userListContext.resetPasswordLoading.value || this.userListContext.passwordConfirmationPending.value) return
       let payload
       try {
-        payload = buildResetPasswordPayload(resetPasswordForm.value.password)
+        payload = buildResetPasswordPayload(this.userListContext.resetPasswordForm.value.password)
       } catch (error) {
+        if (!owner.isAlive()) return
+
         message.warning(error?.message || '请输入新密码')
         return
       }
       const submit = async () => {
-        resetPasswordLoading.value = true
+        if (!owner.isAlive()) return
+
+        this.userListContext.resetPasswordLoading.value = true
         try {
-          const res = await resetUserPassword({ id: resetPasswordForm.value.id, ...payload })
+          const res = await resetUserPassword({ id: this.userListContext.resetPasswordForm.value.id, ...payload })
+        if (!owner.isAlive()) return
+
           if (res?.status !== 200) {
             message.error(res?.message || '重置密码失败')
             return
           }
           message.success('重置密码成功')
-          resetPasswordVisible.value = false
+          this.userListContext.resetPasswordVisible.value = false
           this.handleUserList()
         } catch (error) {
+        if (!owner.isAlive()) return
+
           message.error(error?.response?.data?.message || '重置密码失败')
         } finally {
-          resetPasswordLoading.value = false
+        if (owner.isAlive()) {
+
+
+          this.userListContext.resetPasswordLoading.value = false
+
         }
       }
+      }
 
-      passwordConfirmationPending.value = true
+      this.userListContext.passwordConfirmationPending.value = true
       try {
-        await runAdminPasswordAction(payload.password, submit, () => this.confirmWeakPassword('reset', payload.password))
+        await runAdminPasswordAction(payload.password, submit, () => { if (!owner.isAlive()) return; return this.confirmWeakPassword('reset', payload.password); })
+        if (!owner.isAlive()) return
+
       } catch (error) {
+        if (!owner.isAlive()) return
+
         message.error(error?.message || '重置密码失败')
       } finally {
-        passwordConfirmationPending.value = false
+        if (owner.isAlive()) {
+
+
+        this.userListContext.passwordConfirmationPending.value = false
+
+        }
       }
     },
     resetFormState() {
-      formState.value = {
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+      owner.invalidateWechatFlow()
+
+      this.userListContext.formState.value = {
         id: undefined,
         username: '',
         password: '',
@@ -1124,22 +1361,32 @@ export default defineComponent({
         giftEnabled: true,
         giftAmount: '',
       };
-      resetWechatResolveState()
-      isEditing.value = false
+      this.userListContext.resetWechatResolveState()
+      this.userListContext.isEditing.value = false
     },
     resetResetPasswordForm() {
-      resetPasswordForm.value = {
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
+      this.userListContext.resetPasswordForm.value = {
         id: undefined,
         username: '',
         password: '',
       }
     },
     loadNewUserBonusDefault() {
+      const owner = this.userListContext.owner
+      if (!owner.isAlive()) return
+
       getSystemSettings().then((res) => {
+        if (!owner.isAlive()) return
+
         if (res?.status === 200) {
-          systemNewUserBonusAmount.value = Number(res?.data?.newUserBonusAmount || 0)
+          this.userListContext.systemNewUserBonusAmount.value = Number(res?.data?.newUserBonusAmount || 0)
         }
-      }).catch(() => {})
+      }).catch(() => {
+        if (!owner.isAlive()) return
+})
     },
   }
 });

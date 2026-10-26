@@ -554,7 +554,7 @@
 </template>
 
 <script>
-import { defineComponent, computed, onMounted, reactive, ref } from 'vue';
+import { onBeforeUnmount, watch, defineComponent, computed, onMounted, reactive, ref } from 'vue';
 import { message, Modal } from 'ant-design-vue';
 import {
   getAISearchConfig,
@@ -673,6 +673,20 @@ export default defineComponent({
     const usageInfo = ref(null)
     const testModalVisible = ref(false)
     const testSubmitting = ref(false)
+    let testDisplayAlive = true
+    let testDisplayGeneration = 0
+    watch(testModalVisible, () => {
+      testDisplayGeneration += 1
+      testSubmitting.value = false
+    }, { flush: 'sync' })
+    const captureTestDisplayContext = () => testDisplayGeneration
+    const canPublishTestDisplay = ticket => (
+      testDisplayAlive && testModalVisible.value && ticket === testDisplayGeneration
+    )
+    onBeforeUnmount(() => {
+      testDisplayAlive = false
+      testDisplayGeneration += 1
+    })
     const testForm = reactive({
       baseUrl: '',
       apiKey: '',
@@ -919,7 +933,7 @@ export default defineComponent({
       webReadUsageRows,
       usageColumns,
       testModalVisible,
-      testSubmitting,
+      testSubmitting, captureTestDisplayContext, canPublishTestDisplay,
       testForm,
       testResult,
       fixedTemperatureText,
@@ -1109,8 +1123,11 @@ export default defineComponent({
         return
       }
 
+      const displayTicket = this.captureTestDisplayContext()
+      if (!this.canPublishTestDisplay(displayTicket)) return
       this.testSubmitting = true
       testAISearchConfig(payload).then(res => {
+        if (!this.canPublishTestDisplay(displayTicket)) return
         if (res?.status === 200) {
           const result = buildAISearchTestResult(res)
           this.testResult.answers = result.answers
@@ -1121,8 +1138,10 @@ export default defineComponent({
         }
         message.error(res?.message || 'AI 搜索测试失败')
       }).catch(() => {
+        if (!this.canPublishTestDisplay(displayTicket)) return
         message.error('AI 搜索测试失败')
       }).finally(() => {
+        if (!this.canPublishTestDisplay(displayTicket)) return
         this.testSubmitting = false
       })
     },

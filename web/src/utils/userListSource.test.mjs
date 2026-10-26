@@ -75,5 +75,5 @@ test('UserList create modal exposes editable new-user bonus controls', async () 
   assert.match(content, /label="启用赠送"[\s\S]*v-model:checked="formState\.giftEnabled"/);
   assert.match(content, /v-if="!isEditing && formState\.giftEnabled"[\s\S]*v-model:value="formState\.giftAmount"/);
   assert.match(content, /giftEnabled: true/);
-  assert.match(content, /formState\.value\.giftAmount = systemNewUserBonusAmount\.value/);
+  assert.match(content, /this\.userListContext\.formState\.value\.giftAmount = this\.userListContext\.systemNewUserBonusAmount\.value/);
 });

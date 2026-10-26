@@ -100,7 +100,7 @@
             </a-form-item>
 
             <div class="recharge-actions">
-              <a-button type="primary" @click="handleCreateRechargeOrder" :loading="rechargeSubmitting">
+              <a-button type="primary" @click="handleCreateRechargeOrder" :loading="rechargeSubmitting" :disabled="paymentMethodLoading || !paymentMethods.length">
                 创建充值订单
               </a-button>
             </div>
