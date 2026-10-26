@@ -1,48 +1,22 @@
 <template>
   <div class="console-page billing-page">
-    <header class="section-heading page-heading">
-      <div>
-        <h1>{{ pageTitle }}</h1>
-        <p class="page-lead">{{ pageSubtitle }}</p>
+    <ConsolePageHeading :title="pageTitle" :description="pageSubtitle">
+      <template #actions><a-button @click="handleLoad" :loading="tableLoading">刷新</a-button></template>
+    </ConsolePageHeading>
+    <ConsoleSummaryGrid>
+      <div class="summary-card"><a-statistic title="账单总数（筛选结果）" :value="summary.total" /></div>
+      <div class="summary-card"><a-statistic title="当前页条数" :value="summary.currentPageCount" /></div>
+      <div class="summary-card">
+        <a-statistic :title="hasActiveFilters ? '累计消费金额（当前筛选，全部页）' : '累计消费金额（全部页）'" prefix="¥" :value="summary.totalAmount" :precision="6" />
+        <p class="summary-hint">不包含充值、赠送及管理员余额调整</p>
       </div>
-      <a-button @click="handleLoad" :loading="tableLoading">刷新</a-button>
-    </header>
-    <a-row :gutter="16" class="summary-row">
-      <a-col :xs="12" :sm="12" :lg="6">
-        <a-card :bordered="false" class="summary-card">
-          <a-statistic title="账单总数（筛选结果）" :value="summary.total" />
-        </a-card>
-      </a-col>
-      <a-col :xs="12" :sm="12" :lg="6">
-        <a-card :bordered="false" class="summary-card">
-          <a-statistic title="当前页条数" :value="summary.currentPageCount" />
-        </a-card>
-      </a-col>
-      <a-col :xs="12" :sm="12" :lg="6">
-        <a-card :bordered="false" class="summary-card">
-          <a-statistic
-            :title="hasActiveFilters ? '累计消费金额（当前筛选，全部页）' : '累计消费金额（全部页）'"
-            prefix="¥"
-            :value="summary.totalAmount"
-            :precision="6"
-          />
-          <div class="summary-hint">不包含充值、赠送及管理员余额调整</div>
-        </a-card>
-      </a-col>
-      <a-col :xs="12" :sm="12" :lg="6">
-        <a-card :bordered="false" class="summary-card">
-          <a-statistic
-            title="当前页累计消费金额"
-            prefix="¥"
-            :value="summary.currentPageAmount"
-            :precision="6"
-          />
-          <div class="summary-hint">仅统计第 {{ pagination.current }} 页 {{ summary.currentPageCount }} 条</div>
-        </a-card>
-      </a-col>
-    </a-row>
+      <div class="summary-card">
+        <a-statistic title="当前页累计消费金额" prefix="¥" :value="summary.currentPageAmount" :precision="6" />
+        <p class="summary-hint">仅统计第 {{ pagination.current }} 页 {{ summary.currentPageCount }} 条</p>
+      </div>
+    </ConsoleSummaryGrid>
 
-    <a-card :bordered="false" class="page-card">
+    <ConsolePanel class="page-card">
       <a-alert
         type="info"
         show-icon
@@ -79,59 +53,65 @@
         </a-form-item>
       </a-form>
 
-      <a-table
-        class="desktop-billing-table"
-        bordered
-        :data-source="dataSource"
-        :columns="columns"
-        :loading="tableLoading"
-        :pagination="pagination"
-        @change="handleTableChange"
-        row-key="id"
-        table-layout="fixed"
-        :scroll="{ x: tableScrollX }"
-      >
-        <template #username="{ record }">
-          <span>{{ record.username || '-' }}</span>
-        </template>
-        <template #typeLabel="{ record }">
-          <a-tag :color="record.direction === 'income' ? 'green' : 'blue'">{{ buildBillingRecordTypeText(record) }}</a-tag>
-        </template>
-        <template #subject="{ record }">
-          <OverflowTableText
-            :text="buildBillingRecordListSubjectText(record)"
-            :expanded="!!expandedSubjects[record.id]"
-            @toggle="toggleSubject(record.id)"
-          />
-        </template>
-        <template #source="{ record }">
-          <span class="multiline-cell">{{ buildBillingRecordSourceText(record) }}</span>
-        </template>
-        <template #searchMode="{ record }">
-          <span>{{ buildBillingRecordModeText(record) }}</span>
-        </template>
-        <template #amount="{ record }">
-          <span :class="record.direction === 'income' ? 'amount-income' : 'amount-expense'">{{ buildBillingRecordAmountText(record) }}</span>
-        </template>
-        <template #referenceNo="{ record }">
-          <span class="reference-cell">{{ buildBillingRecordReferenceText(record) }}</span>
-        </template>
-        <template #accessTokenName="{ record }">
-          <span>{{ record.accessTokenName || '-' }}</span>
-        </template>
-        <template #createdAt="{ record }">
-          <span class="billing-time-cell">{{ formatDateTime(record.createdAt) }}</span>
-        </template>
-        <template #clientIp="{ record }">
-          <span class="location-value">{{ formatValueWithLocation(record.clientIp, ipLocations[normalizeLocationKey(record.clientIp)]) || '-' }}</span>
-        </template>
-        <template #feeDetail="{ record }">
-          <a-button type="link" style="padding: 0" @click="handleShowFeeDetail(record)">查看详情</a-button>
-        </template>
-        <template #emptyText>
-          <a-empty description="当前还没有账单记录。" />
-        </template>
-      </a-table>
+      <ConsoleTableShell label="账单记录">
+        <a-table
+          class="desktop-billing-table"
+          bordered
+          :data-source="dataSource"
+          :columns="columns"
+          :loading="tableLoading"
+          :pagination="pagination"
+          @change="handleTableChange"
+          row-key="id"
+          table-layout="fixed"
+          :scroll="{ x: tableScrollX }"
+        >
+          <template #bodyCell="{ column, record, text }">
+            <template v-if="column.key === 'username'">
+              <span>{{ record.username || '-' }}</span>
+            </template>
+            <template v-else-if="column.key === 'typeLabel'">
+              <a-tag :color="record.direction === 'income' ? 'green' : 'blue'">{{ buildBillingRecordTypeText(record) }}</a-tag>
+            </template>
+            <template v-else-if="column.key === 'subject'">
+              <OverflowTableText
+                :text="buildBillingRecordListSubjectText(record)"
+                :expanded="isSubjectExpanded(record.id)"
+                @toggle="toggleSubject(record.id)"
+              />
+            </template>
+            <template v-else-if="column.key === 'source'">
+              <span class="multiline-cell">{{ buildBillingRecordSourceText(record) }}</span>
+            </template>
+            <template v-else-if="column.key === 'searchMode'">
+              <span>{{ buildBillingRecordModeText(record) }}</span>
+            </template>
+            <template v-else-if="column.key === 'amount'">
+              <span :class="record.direction === 'income' ? 'amount-income' : 'amount-expense'">{{ buildBillingRecordAmountText(record) }}</span>
+            </template>
+            <template v-else-if="column.key === 'referenceNo'">
+              <span class="reference-cell">{{ buildBillingRecordReferenceText(record) }}</span>
+            </template>
+            <template v-else-if="column.key === 'accessTokenName'">
+              <span>{{ record.accessTokenName || '-' }}</span>
+            </template>
+            <template v-else-if="column.key === 'createdAt'">
+              <span class="billing-time-cell">{{ formatDateTime(record.createdAt) }}</span>
+            </template>
+            <template v-else-if="column.key === 'clientIp'">
+              <span class="location-value">{{ formatValueWithLocation(record.clientIp, ipLocations[normalizeLocationKey(record.clientIp)]) || '-' }}</span>
+            </template>
+            <template v-else-if="column.key === 'feeDetail'">
+              <a-button type="link" style="padding: 0" @click="handleShowFeeDetail(record)">查看详情</a-button>
+            </template>
+            <template v-else-if="column.key === 'effectiveMultiplier'">{{ buildBillingRecordEffectiveMultiplierText(record) }}</template>
+            <template v-else>{{ text }}</template>
+          </template>
+          <template #emptyText>
+            <a-empty description="当前还没有账单记录。" />
+          </template>
+        </a-table>
+      </ConsoleTableShell>
       <div class="mobile-billing-list">
         <article v-for="record in dataSource" :key="record.id" class="mobile-billing-card">
           <header class="mobile-billing-card__header">
@@ -141,7 +121,7 @@
           <div class="mobile-billing-card__subject">
             <OverflowTableText
               :text="buildBillingRecordListSubjectText(record)"
-              :expanded="!!expandedSubjects[record.id]"
+              :expanded="isSubjectExpanded(record.id)"
               @toggle="toggleSubject(record.id)"
             />
           </div>
@@ -158,15 +138,25 @@
       <div class="mobile-billing-pagination">
         <a-pagination :current="pagination.current" :page-size="pagination.pageSize" :total="pagination.total" size="small" show-less-items @change="handleMobilePageChange" />
       </div>
-    </a-card>
+    </ConsolePanel>
+    <BillingDetailDialog
+      v-model:open="billingDetailOpen"
+      :record="selectedBillingRecord"
+      :viewer-scope="isAdmin ? 'admin' : 'self'"
+      :can-edit-statement="isAdmin"
+      :statement-saving="!!visibilitySaving[selectedBillingRecord?.id]"
+      @statement-visibility-change="handleStatementVisibilityChange"
+    />
   </div>
 </template>
 
 <script>
 import { computed, defineComponent, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
-import Swal from 'sweetalert2'
 import OverflowTableText from '@/components/OverflowTableText.vue'
+import BillingDetailDialog from '@/components/BillingDetailDialog.vue'
+import { useTableExpansion } from '@/composables/useTableExpansion.mjs'
+import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
 import { getBillingRecords, getIpLocations, getMyLocations, updateBillingStatementVisibility } from '@/api/TikuComponentApi'
 import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser'
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
@@ -180,7 +170,6 @@ import {
 import {
   buildBillingRecordAmountText,
   buildBillingRecordEffectiveMultiplierText,
-  buildBillingRecordFeeDetailHtml,
   buildBillingRecordListSubjectText,
   buildBillingRecordModeText,
   buildBillingRecordReferenceText,
@@ -194,7 +183,6 @@ import {
 const dataSource = ref([])
 const tableLoading = ref(false)
 const visibilitySaving = reactive({})
-const expandedSubjects = reactive({})
 
 // 归属地映射：key 为归一化后的 IP，value 为展示文本。
 // 页面加载时按当前页的 clientIp 批量查询并落库（服务端持久化，之后翻页零消耗）。
@@ -244,8 +232,11 @@ const pagination = reactive({
 
 export default defineComponent({
   name: 'BillingRecordList',
-  components: { OverflowTableText },
+  components: { OverflowTableText, BillingDetailDialog },
   setup() {
+    const subjectExpansion = useTableExpansion(dataSource)
+    const selectedBillingRecord = ref(null)
+    const billingDetailOpen = ref(false)
     const currentUser = computed(() => getStoredCurrentUser())
     const isAdmin = computed(() => isAdminUser(currentUser.value))
     const activeFilterCount = computed(() => countActiveFilters({ keyword: filters.keyword, type: filters.type }))
@@ -288,9 +279,7 @@ export default defineComponent({
         ? '管理员始终可查看全部账单；通过“账单流水展示”开关调整用户可见性，不改变原始金额和余额记录。'
         : '这里只展示当前账号自己的账单流水，便于快速查看每次消费或充值对应的来源、请求编号与时间。'
     ))
-    const subjectColumnWidth = computed(() => dataSource.value.some((record) => expandedSubjects[record.id])
-      ? billingTableColumnWidths.subjectExpanded
-      : billingTableColumnWidths.subject)
+    const subjectColumnWidth = computed(() => subjectExpansion.columnWidth('subject', billingTableColumnWidths.subject, billingTableColumnWidths.subjectExpanded))
     const columns = computed(() => {
       const baseColumns = [
         {
@@ -304,36 +293,24 @@ export default defineComponent({
           dataIndex: 'typeLabel',
           key: 'typeLabel',
           width: billingTableColumnWidths.typeLabel,
-          slots: {
-            customRender: 'typeLabel',
-          },
         },
         {
           title: '项目',
           dataIndex: 'subject',
           key: 'subject',
           width: subjectColumnWidth.value,
-          slots: {
-            customRender: 'subject',
-          },
         },
         {
           title: '金额',
           dataIndex: 'amount',
           key: 'amount',
           width: billingTableColumnWidths.amount,
-          slots: {
-            customRender: 'amount',
-          },
         },
         {
           title: '来源/渠道',
           dataIndex: 'source',
           key: 'source',
           width: billingTableColumnWidths.source,
-          slots: {
-            customRender: 'source',
-          },
         },
         {
           // 深度思考 / 普通搜索：非搜题账单与加列之前的历史行显示占位符。
@@ -341,66 +318,47 @@ export default defineComponent({
           dataIndex: 'searchMode',
           key: 'searchMode',
           width: billingTableColumnWidths.searchMode,
-          slots: {
-            customRender: 'searchMode',
-          },
         },
         {
           title: '请求 ID',
           dataIndex: 'referenceNo',
           key: 'referenceNo',
           width: billingTableColumnWidths.referenceNo,
-          slots: {
-            customRender: 'referenceNo',
-          },
         },
         {
           title: '最终倍率',
           dataIndex: 'effectiveMultiplier',
           key: 'effectiveMultiplier',
           width: billingTableColumnWidths.effectiveMultiplier,
-          customRender: ({ record }) => buildBillingRecordEffectiveMultiplierText(record),
         },
         {
           title: '访问令牌名称',
           dataIndex: 'accessTokenName',
           key: 'accessTokenName',
           width: billingTableColumnWidths.accessTokenName,
-          slots: {
-            customRender: 'accessTokenName',
-          },
         },
         {
           title: '时间',
           dataIndex: 'createdAt',
           key: 'createdAt',
           width: billingTableColumnWidths.createdAt,
-          slots: {
-            customRender: 'createdAt',
-          },
         },
         {
           title: '来源 IP',
           dataIndex: 'clientIp',
           key: 'clientIp',
           width: billingTableColumnWidths.clientIp,
-          slots: {
-            customRender: 'clientIp',
-          },
         },
         {
           title: '操作',
           dataIndex: 'feeDetail',
           key: 'feeDetail',
           width: billingTableColumnWidths.feeDetail,
-          slots: {
-            customRender: 'feeDetail',
-          },
         },
       ]
 
       if (!isAdmin.value) {
-        return baseColumns
+        return baseColumns.filter((column) => !['effectiveMultiplier', 'clientIp'].includes(column.key))
       }
 
       return [
@@ -410,14 +368,11 @@ export default defineComponent({
           dataIndex: 'username',
           key: 'username',
           width: billingTableColumnWidths.username,
-          slots: {
-            customRender: 'username',
-          },
         },
         ...baseColumns.slice(1),
       ]
     })
-    const tableScrollX = computed(() => columns.value.reduce((total, column) => total + column.width, 0))
+    const tableScrollX = computed(() => sumTableColumnWidths(columns.value))
 
     return {
       dataSource,
@@ -445,7 +400,11 @@ export default defineComponent({
       alertMessage,
       columns,
       tableScrollX,
-      expandedSubjects,
+      selectedBillingRecord,
+      billingDetailOpen,
+      isSubjectExpanded: (id) => subjectExpansion.isExpanded(id, 'subject'),
+      toggleSubject: (id) => subjectExpansion.toggle(id, 'subject'),
+      buildBillingRecordEffectiveMultiplierText,
       buildBillingRecordAmountText,
       buildBillingRecordListSubjectText,
       buildBillingRecordModeText,
@@ -459,23 +418,26 @@ export default defineComponent({
     this.handleLoad()
   },
   methods: {
-    toggleSubject(id) {
-      expandedSubjects[id] = !expandedSubjects[id]
-    },
-    async handleStatementVisibilityChange(record, show) {
-      if (visibilitySaving[record.id]) return false
-      visibilitySaving[record.id] = true
+    async handleStatementVisibilityChange({ id, showInStatement: show }) {
+      if (!this.isAdmin || visibilitySaving[id]) return false
+      const record = dataSource.value.find((item) => item.id === id)
+        || (this.selectedBillingRecord?.id === id ? this.selectedBillingRecord : null)
+      if (!record) return false
+      visibilitySaving[id] = true
       try {
-        const res = await updateBillingStatementVisibility(record.id, show)
+        const res = await updateBillingStatementVisibility(id, show)
         if (res?.status !== 200) throw new Error(res?.message || '修改流水可见性失败')
         record.showInStatement = show
+        const currentRow = dataSource.value.find((item) => item.id === id)
+        if (currentRow) currentRow.showInStatement = show
+        if (this.selectedBillingRecord?.id === id) this.selectedBillingRecord.showInStatement = show
         message.success(show ? '已在用户账单流水中显示' : '已从用户账单流水中隐藏，管理员明细仍保留')
         return true
       } catch (error) {
         message.error(error?.response?.data?.message || error?.message || '修改流水可见性失败')
         return false
       } finally {
-        visibilitySaving[record.id] = false
+        visibilitySaving[id] = false
       }
     },
     // 点「搜索」或回车时才把输入框内容变成生效的筛选条件。
@@ -532,38 +494,8 @@ export default defineComponent({
       this.handleLoad()
     },
     handleShowFeeDetail(record) {
-      const detailRecord = { ...record, canEditStatement: this.isAdmin }
-      Swal.fire({
-        title: '账单详情',
-        html: buildBillingRecordFeeDetailHtml(detailRecord),
-        width: 560,
-        confirmButtonText: '关闭',
-        showCloseButton: true,
-        focusConfirm: false,
-        buttonsStyling: false,
-        heightAuto: false,
-        scrollbarPadding: false,
-        customClass: {
-          popup: 'billing-fee-popup',
-          title: 'billing-fee-title',
-          htmlContainer: 'billing-fee-html-container',
-          actions: 'billing-fee-actions',
-          confirmButton: 'billing-fee-confirm',
-          closeButton: 'billing-fee-close',
-        },
-        didOpen: () => {
-          const toggle = document.querySelector('.billing-statement-toggle')
-          if (!toggle) return
-          toggle.addEventListener('click', async () => {
-            if (toggle.disabled) return
-            const show = toggle.getAttribute('aria-checked') !== 'true'
-            toggle.disabled = true
-            const saved = await this.handleStatementVisibilityChange(record, show)
-            if (saved) toggle.setAttribute('aria-checked', String(show))
-            toggle.disabled = false
-          })
-        },
-      })
+      this.selectedBillingRecord = record
+      this.billingDetailOpen = true
     },
     formatAmount(value) {
       return formatMoneyValue(value || 0)
@@ -576,684 +508,31 @@ export default defineComponent({
 </script>
 
 <style scoped>
-.billing-page {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.page-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.page-heading h1 {
-  margin: 0;
-  color: var(--console-text, #1f2937);
-  font-size: 20px;
-  font-weight: 650;
-}
-
-.page-lead {
-  margin: 4px 0 0;
-  color: var(--console-muted, #64748b);
-  font-size: 13px;
-}
-
-.summary-hint {
-  margin-top: 4px;
-  font-size: 12px;
-  color: rgba(0, 0, 0, 0.45);
-}
-
-.filter-form {
-  margin: 12px 0 16px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 0;
-}
-
-.summary-row {
-  margin-bottom: 0;
-}
-
-.summary-card {
-  border: 1px solid var(--console-border, #e5e7eb);
-  border-radius: 8px;
-}
-
-.page-card {
-  border: 1px solid var(--console-border, #e5e7eb);
-  border-radius: var(--console-radius, 12px);
-}
-
-.page-alert {
-  margin-bottom: 16px;
-}
-
-.mobile-billing-list,
-.mobile-billing-pagination {
-  display: none;
-}
-
-.filter-form {
-  padding: 16px;
-  border: 1px solid var(--console-border, #e5e7eb);
-  border-radius: 8px;
-  background: var(--console-canvas, #f5f7fb);
-}
-
+.summary-card { padding: 20px; border: 1px solid var(--console-border); border-radius: 10px; background: var(--console-surface); }
+.summary-hint { margin: 8px 0 0; font-size: 12px; color: var(--console-muted); line-height: 1.6; }
+.page-alert { margin-bottom: 20px; }
+.filter-form { display: flex; flex-wrap: wrap; gap: 12px 0; margin-bottom: 20px; }
+.filter-form :deep(.ant-form-item) { margin-bottom: 0; }
+.multiline-cell, .reference-cell, .location-value, .billing-time-cell { white-space: pre-wrap; overflow-wrap: anywhere; }
+.billing-time-cell { font-variant-numeric: tabular-nums; }
+.amount-income { color: var(--console-success, #15803d); }
+.amount-expense { color: var(--console-danger, #c13e41); }
+.mobile-billing-list, .mobile-billing-pagination { display: none; }
 @media (max-width: 640px) {
-  .billing-page .page-card :deep(.ant-card-body) {
-    padding: 12px;
-  }
-
-  .desktop-billing-table {
-    display: none;
-  }
-
-  .mobile-billing-list {
-    display: grid;
-    gap: 10px;
-  }
-
-  .mobile-billing-card {
-    display: grid;
-    gap: 10px;
-    padding: 12px;
-    border: 1px solid var(--console-border, #e5e7eb);
-    border-radius: 8px;
-    background: var(--console-surface, #fff);
-  }
-
-  .mobile-billing-card__header,
-  .mobile-billing-card__adjustment {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-  }
-
-  .mobile-billing-card__subject,
-  .mobile-billing-card__meta dd,
-  .mobile-billing-card__adjustment strong {
-    overflow-wrap: anywhere;
-  }
-
-  .mobile-billing-card__subject {
-    color: var(--console-text, #1f2937);
-    font-size: 14px;
-    font-weight: 600;
-    line-height: 1.6;
-  }
-
-  .mobile-billing-card__subject :deep(.overflow-table-text) {
-    text-align: left;
-  }
-
-  .mobile-billing-card__subject :deep(.overflow-table-text__toggle) {
-    font-weight: 400;
-  }
-
-  .mobile-billing-time {
-    white-space: pre-line;
-  }
-
-  .mobile-billing-card__meta {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
-    margin: 0;
-    padding: 10px 0;
-    border-top: 1px solid var(--console-border, #e5e7eb);
-    border-bottom: 1px solid var(--console-border, #e5e7eb);
-  }
-
-  .mobile-billing-card__meta div {
-    min-width: 0;
-  }
-
-  .mobile-billing-card__meta dt,
-  .mobile-billing-card__adjustment span {
-    color: var(--console-muted, #64748b);
-    font-size: 11px;
-  }
-
-  .mobile-billing-card__meta dd {
-    margin: 2px 0 0;
-    color: var(--console-text, #1f2937);
-    font-size: 12px;
-  }
-
-  .mobile-billing-card__adjustment {
-    padding: 8px;
-    border-radius: 6px;
-    background: #f8fafc;
-  }
-
-  .mobile-billing-pagination {
-    display: flex;
-    justify-content: flex-end;
-    margin-top: 12px;
-  }
-
-  .filter-form,
-  .filter-form :deep(.ant-form-item) {
-    width: 100%;
-  }
-
-  .filter-form :deep(.ant-input),
-  .filter-form :deep(.ant-input-search),
-  .filter-form :deep(.ant-select) {
-    width: 100%;
-  }
-}
-
-.billing-page :deep(.ant-table) {
-  font-size: 13px;
-}
-
-.billing-page :deep(.desktop-billing-table .ant-table-thead > tr > th),
-.billing-page :deep(.desktop-billing-table .ant-table-tbody > tr > td) {
-  text-align: center;
-  vertical-align: middle;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
-.multiline-cell {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  line-height: 1.6;
-}
-
-.billing-time-cell {
-  display: block;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.location-value {
-  display: block;
-  white-space: pre-wrap;
-  line-height: 1.5;
-  text-align: center;
-  overflow-wrap: anywhere;
-}
-
-.reference-cell {
-  display: block;
-  overflow-wrap: anywhere;
-}
-
-.amount-income {
-  color: #16a34a;
-  font-weight: 600;
-}
-
-.amount-expense {
-  color: #dc2626;
-  font-weight: 600;
-}
-
-:global(.billing-fee-popup) {
-  box-sizing: border-box;
-  padding: 24px;
-  border: 1px solid rgb(148 163 184 / 24%);
-  border-radius: 20px;
-  background:
-    radial-gradient(circle at 92% 0%, rgb(37 99 235 / 10%), transparent 32%),
-    linear-gradient(180deg, #fff 0%, #f8fafc 100%);
-  box-shadow:
-    0 28px 80px rgb(15 23 42 / 24%),
-    0 4px 16px rgb(15 23 42 / 8%);
-}
-
-:global(.billing-fee-title) {
-  margin: 0 42px 0 0;
-  padding: 0;
-  color: #0f172a;
-  font-size: 24px;
-  font-weight: 800;
-  line-height: 1.25;
-  text-align: left;
-}
-
-:global(.billing-fee-html-container) {
-  margin: 16px 0 0;
-  padding: 0;
-  overflow: visible;
-  text-align: left;
-}
-
-:global(.billing-fee-actions) {
-  margin: 18px 0 0;
-  padding: 0;
-}
-
-:global(.billing-fee-confirm) {
-  width: 100%;
-  min-height: 42px;
-  padding: 10px 20px;
-  border: 0;
-  border-radius: 999px;
-  background: #0f172a;
-  box-shadow: 0 8px 20px rgb(15 23 42 / 18%);
-  color: #fff;
-  font-size: 14px;
-  font-weight: 700;
-  transition:
-    transform 0.16s ease,
-    background 0.16s ease;
-}
-
-:global(.billing-fee-confirm:hover) {
-  background: #1e293b;
-  transform: translateY(-1px);
-}
-
-:global(.billing-fee-confirm:focus-visible),
-:global(.billing-fee-close:focus-visible) {
-  outline: 2px solid #93c5fd;
-  outline-offset: 3px;
-}
-
-:global(.billing-fee-close) {
-  top: 20px;
-  right: 20px;
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  background: rgb(255 255 255 / 72%);
-  box-shadow: 0 2px 8px rgb(15 23 42 / 8%);
-  color: #64748b;
-  font-size: 22px;
-  line-height: 1;
-  transition:
-    background 0.16s ease,
-    color 0.16s ease;
-}
-
-:global(.billing-fee-close:hover) {
-  background: #e2e8f0;
-  color: #0f172a;
-}
-
-:global(.billing-fee-detail) {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  text-align: left;
-}
-
-:global(.billing-fee-card) {
-  box-sizing: border-box;
-  width: 100%;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  padding: 16px;
-  box-shadow: 0 8px 24px rgb(15 23 42 / 6%);
-}
-
-:global(.billing-fee-card--question) {
-  border-color: rgb(147 197 253 / 28%);
-  background:
-    radial-gradient(circle at 100% 0%, rgb(96 165 250 / 24%), transparent 38%),
-    linear-gradient(135deg, #172554 0%, #1e3a8a 60%, #1d4ed8 100%);
-  box-shadow: 0 16px 36px rgb(30 64 175 / 22%);
-  color: #fff;
-}
-
-:global(.billing-fee-card--cost) {
-  background: #fff;
-}
-
-:global(.billing-fee-card--metadata) {
-  padding: 14px 16px;
-  border-color: #e2e8f0;
-  background: #f8fafc;
-  box-shadow: none;
-}
-
-:global(.billing-fee-overview) {
-  overflow: hidden;
-}
-
-:global(.billing-fee-overview-head) {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 10px 16px;
-  margin-bottom: 14px;
-}
-
-:global(.billing-fee-overview-tags) {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-:global(.billing-fee-status) {
-  display: inline-flex;
-  align-items: center;
-  min-height: 24px;
-  padding: 3px 9px;
-  border: 1px solid rgb(255 255 255 / 20%);
-  border-radius: 999px;
-  background: rgb(255 255 255 / 12%);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-:global(.billing-fee-status--income) {
-  background: rgb(34 197 94 / 20%);
-  color: #dcfce7;
-}
-
-:global(.billing-fee-status--expense) {
-  background: rgb(251 113 133 / 18%);
-  color: #ffe4e6;
-}
-
-:global(.billing-fee-type) {
-  color: #dbeafe;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-:global(.billing-fee-mode) {
-  color: #bfdbfe;
-  font-size: 12px;
-}
-
-:global(.billing-fee-section-head) {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 12px;
-}
-
-:global(.billing-fee-section-title) {
-  color: #334155;
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.1em;
-}
-
-:global(.billing-fee-section-subtitle) {
-  margin-top: 4px;
-  color: #94a3b8;
-  font-size: 11px;
-}
-
-:global(.billing-fee-count) {
-  flex: 0 0 auto;
-  padding: 4px 9px;
-  border-radius: 999px;
-  background: #eff6ff;
-  color: #2563eb;
-  font-size: 11px;
-  font-weight: 700;
-}
-
-:global(.billing-fee-question) {
-  color: #fff;
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 1.65;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-:global(.billing-fee-list) {
-  display: grid;
-  gap: 11px;
-}
-
-:global(.billing-fee-item) {
-  box-sizing: border-box;
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 10px;
-  overflow: hidden;
-  padding: 15px 16px;
-  border: 1px solid #e2e8f0;
-  border-left: 3px solid #60a5fa;
-  border-radius: 10px;
-  background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
-}
-
-:global(.billing-fee-item-head) {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-}
-
-:global(.billing-fee-item-meta) {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px 18px;
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-:global(.billing-fee-meta-item) {
-  display: inline-flex;
-  align-items: baseline;
-  min-width: 0;
-  max-width: 100%;
-}
-
-:global(.billing-fee-meta-label) {
-  flex: 0 0 auto;
-  color: #64748b;
-}
-
-:global(.billing-fee-meta-value) {
-  color: #334155;
-  font-weight: 600;
-  overflow-wrap: anywhere;
-}
-
-:global(.billing-fee-meta-item--keyword) {
-  width: 100%;
-  padding: 9px 11px;
-  border: 1px solid #dbeafe;
-  border-radius: 8px;
-  background: #eff6ff;
-  color: #1e3a8a;
-}
-
-:global(.billing-fee-item-detail) {
-  margin: -4px 14px 0;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-:global(.billing-fee-card--metadata .billing-fee-item-detail) {
-  margin: 0 0 8px;
-}
-
-:global(.billing-fee-card--metadata .billing-fee-item-detail:last-child) {
-  margin-bottom: 0;
-}
-
-:global(.billing-fee-item-category) {
-  margin: -4px 14px 0;
-  color: #0f766e;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-:global(.billing-statement-control) {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 4px;
-  color: #334155;
-  font-size: 13px;
-}
-
-:global(button.billing-statement-switch) {
-  box-sizing: border-box;
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-start;
-  flex: 0 0 auto;
-  width: 40px;
-  min-width: 40px;
-  max-width: 40px;
-  height: 22px;
-  min-height: 22px;
-  max-height: 22px;
-  overflow: hidden;
-  padding: 2px;
-  border: 0;
-  border-radius: 999px;
-  background: #94a3b8;
-  box-shadow: inset 0 0 0 1px rgb(148 163 184 / 45%);
-  cursor: pointer;
-  line-height: 0;
-  vertical-align: middle;
-  appearance: none;
-  transition: background 0.16s ease;
-}
-
-:global(.billing-statement-switch[aria-checked="true"]) {
-  justify-content: flex-end;
-  background: #2563eb;
-  box-shadow: inset 0 0 0 1px rgb(37 99 235 / 55%);
-}
-
-:global(.billing-statement-switch:disabled) {
-  cursor: wait;
-  opacity: 0.65;
-}
-
-:global(.billing-statement-switch__thumb) {
-  display: block;
-  flex: 0 0 16px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 3px rgb(15 23 42 / 24%);
-}
-
-:global(.billing-statement-switch:focus-visible) {
-  outline: 2px solid #93c5fd;
-  outline-offset: 2px;
-}
-
-:global(.billing-statement-switch__label) {
-  user-select: none;
-}
-
-:global(.billing-fee-provider) {
-  color: #1e293b;
-  font-size: 15px;
-  font-weight: 700;
-}
-
-:global(.billing-fee-amount) {
-  font-variant-numeric: tabular-nums;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-:global(.billing-fee-amount--income) {
-  color: #16a34a;
-}
-
-:global(.billing-fee-amount--expense) {
-  color: #dc2626;
-}
-
-:global(.billing-fee-total) {
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 24px;
-  margin-top: 16px;
-  padding: 16px;
-  border: 0;
-  border-radius: 10px;
-  background: linear-gradient(120deg, #0f172a 0%, #1e293b 100%);
-  box-shadow: 0 10px 24px rgb(15 23 42 / 16%);
-  color: #f8fafc;
-  font-size: 15px;
-  font-weight: 700;
-}
-
-:global(.billing-fee-total .billing-fee-amount) {
-  font-size: 21px;
-  font-weight: 800;
-}
-
-:global(.billing-fee-total .billing-fee-amount--expense) {
-  color: #fecaca;
-}
-
-:global(.billing-fee-total .billing-fee-amount--income) {
-  color: #bbf7d0;
-}
-
-@media (max-width: 480px) {
-  :global(.billing-fee-popup) {
-    padding: 20px 16px 16px;
-    border-radius: 16px;
-  }
-
-  :global(.billing-fee-title) {
-    font-size: 21px;
-  }
-
-  :global(.billing-fee-close) {
-    top: 16px;
-    right: 16px;
-  }
-
-  :global(.billing-fee-card) {
-    padding: 14px;
-  }
-
-  :global(.billing-fee-item-head) {
-    align-items: flex-start;
-    flex-wrap: wrap;
-    gap: 6px 12px;
-  }
-
-  :global(.billing-fee-item-head .billing-fee-amount) {
-    margin-left: auto;
-  }
-
-  :global(.billing-fee-item-meta) {
-    gap: 7px 12px;
-  }
-
-  :global(.billing-fee-total) {
-    gap: 8px 16px;
-    padding: 14px;
-  }
-
-  :global(.billing-fee-total .billing-fee-amount) {
-    font-size: 19px;
-  }
+  .summary-card { padding: 16px; }
+  .filter-form { display: block; }
+  .filter-form :deep(.ant-form-item) { margin: 0 0 12px; }
+  .filter-form :deep(.ant-form-item-control), .filter-form :deep(.ant-input-search), .filter-form :deep(.ant-select) { width: 100% !important; }
+  .desktop-billing-table { display: none; }
+  .mobile-billing-list { display: grid; gap: 12px; }
+  .mobile-billing-card { padding: 16px; border: 1px solid var(--console-border); border-radius: 8px; background: var(--console-surface); min-width: 0; }
+  .mobile-billing-card__header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .mobile-billing-card__subject { margin: 16px 0; text-align: center; overflow-wrap: anywhere; }
+  .mobile-billing-card__meta { display: grid; gap: 8px; margin: 0 0 16px; }
+  .mobile-billing-card__meta > div { display: grid; grid-template-columns: 3em minmax(0, 1fr); gap: 12px; }
+  .mobile-billing-card__meta dt { color: var(--console-muted); }
+  .mobile-billing-card__meta dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .mobile-billing-time { white-space: pre-line; }
+  .mobile-billing-pagination { display: flex; justify-content: center; margin-top: 16px; }
 }
 </style>

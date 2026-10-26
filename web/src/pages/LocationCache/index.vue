@@ -1,19 +1,21 @@
 <template>
   <div class="console-page location-page">
-    <header class="section-heading page-heading">
-      <div>
-        <h1>{{ pageTitle }}</h1>
-        <p class="page-lead">查看、补全和维护已保存的归属地信息。</p>
-      </div>
-        <a-space wrap class="section-actions">
+    <ConsolePageHeading :title="pageTitle" description="查看、补全和维护已保存的归属地信息。">
+      <template #actions><a-space wrap class="section-actions">
           <a-button @click="manualVisible = true">手动添加</a-button>
           <a-popconfirm title="删除当前类型的全部归属地缓存？" ok-text="全部删除" cancel-text="取消" @confirm="deleteAll">
             <a-button danger :loading="allDeleting">全部删除</a-button>
           </a-popconfirm>
           <a-button :loading="loading" @click="load"><template #icon><ReloadOutlined /></template>刷新列表</a-button>
-        </a-space>
-    </header>
-    <section class="console-panel">
+      </a-space></template>
+    </ConsolePageHeading>
+    <ConsoleSummaryGrid>
+      <a-statistic title="筛选结果" :value="summary.total" suffix="条" />
+      <a-statistic title="已有归属地" :value="summary.withAddress" suffix="条" />
+      <a-statistic title="待补全" :value="summary.withoutAddress" suffix="条" />
+      <a-statistic title="当前选择" :value="selectedCount" suffix="条" />
+    </ConsoleSummaryGrid>
+    <ConsolePanel title="查询与维护" description="按查询值或归属地筛选，查询来源用于后续重新查询和手动添加。">
       <a-form layout="inline" class="filter-form" @finish="reload">
         <a-form-item label="关键词">
           <a-input-search v-model:value="keywordInput" allow-clear placeholder="查询值 / 归属地" class="keyword-input" @search="reload" />
@@ -29,14 +31,8 @@
       <p v-if="kind === 'ip'" class="query-source-hint">重新查询和手动添加使用所选来源，重查成功后同步更新所选记录来源，未选中的其他来源记录保留。</p>
       <a-alert v-if="configured === false" type="info" show-icon :message="kind === 'ip' ? '未配置 UApiPro 密钥，仅可使用普通来源。' : '未配置 UApiPro 密钥，仍可查询手机号归属地。'" class="status-alert" />
       <a-alert v-if="errorMessage" type="error" show-icon :message="errorMessage" class="status-alert" />
-      <a-row :gutter="16" class="summary-row">
-        <a-col :xs="12" :sm="6"><a-statistic title="筛选结果" :value="summary.total" suffix="条" /></a-col>
-        <a-col :xs="12" :sm="6"><a-statistic title="已有归属地" :value="summary.withAddress" suffix="条" /></a-col>
-        <a-col :xs="12" :sm="6"><a-statistic title="待补全" :value="summary.withoutAddress" suffix="条" /></a-col>
-        <a-col :xs="12" :sm="6"><a-statistic title="当前选择" :value="selectedCount" suffix="条" /></a-col>
-      </a-row>
-    </section>
-    <section class="console-panel table-card">
+    </ConsolePanel>
+    <ConsolePanel title="归属地记录" class="table-card">
       <a-alert v-if="pagination.total" type="info" show-icon class="selection-alert">
         <template #message>
           <div class="selection-alert-content">
@@ -50,19 +46,19 @@
           </div>
         </template>
       </a-alert>
-      <a-table :data-source="rows" :columns="columns" :loading="loading" :pagination="pagination" :row-key="recordIdentity" :row-selection="rowSelection" :scroll="{ x: 980 }" @change="onTableChange">
-        <template #fetchedAt="{ record }">{{ formatDate(record.fetchedAt) }}</template>
-        <template #action="{ record }">
-          <a-space>
-            <a-button type="link" @click="showDetails(record)">详情</a-button>
+      <ConsoleTableShell :label="`${kindLabel}归属地记录`"><a-table table-layout="fixed" :data-source="rows" :columns="columns" :loading="loading" :pagination="pagination" :row-key="recordIdentity" :row-selection="rowSelection" :scroll="{ x: sumTableColumnWidths(columns, 48) }" @change="onTableChange">
+        <template #bodyCell="{ column, record }">
+          <span v-if="column.key === 'fetchedAt'">{{ formatDate(record.fetchedAt) }}</span>
+          <a-space v-else-if="column.key === 'action'" wrap>
+            <a-button type="link" @click="showDetails(record)">查看详情</a-button>
             <a-button type="link" :loading="!!refreshing[recordIdentity(record)]" :disabled="isRefreshDisabled(record)" @click="refresh(record)">重新查询</a-button>
             <a-popconfirm title="删除后下次展示会重新查询，确认删除吗？" ok-text="删除" cancel-text="取消" @confirm="remove(record)">
               <a-button type="link" danger :loading="!!removing[recordIdentity(record)]">删除</a-button>
             </a-popconfirm>
           </a-space>
         </template>
-      </a-table>
-    </section>
+      </a-table></ConsoleTableShell>
+    </ConsolePanel>
     <a-modal v-model:open="detailVisible" :title="`${kindLabel}归属地详情`" :footer="null" width="760px">
       <a-descriptions :column="1" size="small" bordered>
         <a-descriptions-item :label="kindLabel">{{ detailRecord.lookupKey || '-' }}</a-descriptions-item>
@@ -97,10 +93,12 @@ import { useRoute } from 'vue-router'
 import { Descriptions, message } from 'ant-design-vue'
 import Swal from 'sweetalert2'
 import { ReloadOutlined } from '@ant-design/icons-vue'
+import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
 import { deleteLocationCache, deleteLocationCacheBatch, getLocationCacheList, manualLookupLocationCache, refreshLocationCache, refreshLocationCacheBatch } from '@/api/TikuComponentApi'
 
 export default defineComponent({
   name: 'LocationCache',
+  methods: { sumTableColumnWidths },
   components: { ReloadOutlined, ADescriptions: Descriptions, ADescriptionsItem: Descriptions.Item },
   setup() {
     const route = useRoute()
@@ -163,6 +161,7 @@ export default defineComponent({
     const hasCurrentPageSelection = computed(() => selectedRowKeys.value.length > 0)
     const selectionSummary = computed(() => `已选择 ${selectedCount.value} 条，共 ${pagination.total} 条`)
     const rowSelection = computed(() => ({
+      columnWidth: 48,
       selectedRowKeys: selectedRowKeys.value,
       onChange: onSelectionChange,
     }))
@@ -170,8 +169,8 @@ export default defineComponent({
       { title: kindLabel.value, dataIndex: 'lookupKey', key: 'lookupKey', width: 210 },
       ...(kind.value === 'ip' ? [{ title: '记录来源', key: 'source', customRender: ({ record }) => sourceLabel(record.source), width: 160 }] : []),
       { title: '归属地', dataIndex: 'address', key: 'address', width: 260 },
-      { title: '最近查询时间', dataIndex: 'fetchedAt', key: 'fetchedAt', slots: { customRender: 'fetchedAt' }, width: 200 },
-      { title: '操作', key: 'action', slots: { customRender: 'action' }, width: 240 },
+      { title: '最近查询时间', dataIndex: 'fetchedAt', key: 'fetchedAt', width: 200 },
+      { title: '操作', key: 'action', width: 260 },
     ])
     const formatDate = (value) => {
       const date = value ? new Date(value) : null
@@ -499,22 +498,13 @@ export default defineComponent({
 </script>
 
 <style scoped>
-.location-page { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-.page-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-.page-heading h1 { margin: 0; color: var(--console-text, #1f2937); font-size: 20px; font-weight: 650; }
-.page-lead { margin: 4px 0 0; color: var(--console-muted, #64748b); font-size: 13px; }
-.console-panel { min-width: 0; padding: 16px; border: 1px solid var(--console-border, #e5e7eb); border-radius: var(--console-radius, 12px); background: var(--console-surface, #fff); }
-.filter-form { gap: 12px; }
-.keyword-input { width: 260px; max-width: 100%; }
+.keyword-input { width: 280px; max-width: 100%; }
 .query-source-select { width: 160px; }
-.query-source-hint { margin: 8px 0 0; color: var(--console-muted, #64748b); font-size: 13px; }
+.query-source-hint { margin: 14px 0 0; color: var(--console-muted); font-size: 13px; line-height: 1.7; }
 .status-alert { margin-top: 16px; }
-.summary-row { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--console-border, #e5e7eb); }
-.selection-alert { margin-bottom: 16px; }
-.selection-alert-content { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
-.table-card { min-height: 420px; }
-.location-page :deep(.ant-table) { font-size: 13px; }
+.selection-alert { margin-bottom: 20px; }
+.selection-alert-content { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .response-title { margin: 20px 0 8px; font-size: 14px; }
-.raw-response { max-height: 420px; padding: 12px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #f5f7f8; border: 1px solid #e5e7eb; border-radius: 4px; }
-@media (max-width: 600px) { .console-panel { padding: 12px; } .keyword-input { width: 100%; } .filter-form :deep(.ant-form-item) { width: 100%; margin-right: 0; } .section-actions { width: 100%; } }
+.raw-response { max-height: 420px; padding: 16px; margin: 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--console-text); background: var(--console-subtle); border: 1px solid var(--console-border); border-radius: 8px; }
+@media (max-width: 600px) { .keyword-input { width: 100%; } .filter-form :deep(.ant-form-item) { width: 100%; } .filter-form :deep(.ant-form-item-control) { flex: 1; } }
 </style>

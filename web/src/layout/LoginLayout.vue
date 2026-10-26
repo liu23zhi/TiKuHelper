@@ -35,13 +35,13 @@ export default {
   align-items: center;
   justify-content: center;
   padding: 40px 24px;
-  background: var(--console-canvas, #f5f7fb);
+  background: var(--console-canvas);
 }
 
 .auth-main :deep(.auth-shell) {
   width: min(1040px, 100%);
   min-width: 0;
-  color: var(--console-text, #1f2937);
+  color: var(--console-text);
 }
 
 .auth-main :deep(.auth-card) {
@@ -53,10 +53,10 @@ export default {
 
 .auth-main :deep(.hero) {
   padding: 32px;
-  border: 1px solid var(--console-border, #e5e7eb);
-  border-top: 3px solid var(--console-primary, #2563eb);
+  border: 1px solid var(--console-border);
+  border-top: 3px solid var(--console-primary);
   border-radius: var(--console-radius, 12px);
-  background: #eef3fa;
+  background: var(--console-selected);
   overflow-wrap: anywhere;
 }
 
@@ -88,7 +88,7 @@ export default {
   gap: 20px;
   margin: 32px 0 0;
   padding-top: 24px;
-  border-top: 1px solid #dbe3ef;
+  border-top: 1px solid var(--console-border);
 }
 
 .auth-main :deep(.auth-guide dt) {
@@ -110,7 +110,7 @@ export default {
   border: 1px solid var(--console-border, #e5e7eb);
   border-radius: var(--console-radius, 12px);
   background: var(--console-surface, #fff);
-  box-shadow: 0 4px 16px rgb(15 23 42 / 3%);
+  box-shadow: none;
 }
 
 .auth-main :deep(.form-card > .ant-card-body) {
@@ -260,7 +260,7 @@ export default {
   padding: 18px;
   border: 1px solid var(--console-border, #e5e7eb);
   border-radius: 8px;
-  background: #f7f9fc;
+  background: var(--console-subtle);
 }
 
 .auth-main :deep(.wechat-register-intro),

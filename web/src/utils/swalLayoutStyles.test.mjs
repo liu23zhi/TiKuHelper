@@ -6,10 +6,10 @@ import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const appVuePath = path.join(__dirname, '..', 'App.vue');
+const stylesheetPath = path.join(__dirname, '..', 'styles', 'console.css');
 
-test('App.vue keeps only SweetAlert height override and does not break body scrollbar compensation', async () => {
-  const content = await readFile(appVuePath, 'utf8');
+test('console stylesheet keeps SweetAlert height override without breaking scrollbar compensation', async () => {
+  const content = await readFile(stylesheetPath, 'utf8');
 
   assert.match(content, /body\.swal2-height-auto\s*\{[\s\S]*height:\s*auto\s*!important;/);
   assert.doesNotMatch(content, /body\.swal2-shown[\s\S]*padding-right:\s*0\s*!important;/);

@@ -15,8 +15,8 @@ test('billing pages render the search mode column', async () => {
   for (const [label, pagePath] of Object.entries(pages)) {
     const content = await readFile(pagePath, 'utf8');
     assert.match(content, /title: '模式'/, `${label} 缺少模式列`);
-    assert.match(content, /customRender: 'searchMode'|customRender: \(\{ record \}\) => buildBillingRecordModeText\(record\)/, `${label} 的模式列没有渲染逻辑`);
-    assert.match(content, /<template #searchMode="\{ record \}">|customRender: \(\{ record \}\) => buildBillingRecordModeText\(record\)/, `${label} 缺少模式列模板`);
+    assert.match(content, /#bodyCell="\{ column, record, text \}"/, `${label} 缺少现代单元格插槽`);
+    assert.match(content, /column.key === 'searchMode'/, `${label} 缺少模式列模板`);
     assert.match(content, /buildBillingRecordModeText\(record\)/, `${label} 没有用共享的模式映射函数`);
     assert.match(content, /buildBillingRecordModeText,/, `${label} 没有暴露 buildBillingRecordModeText`);
   }
@@ -27,10 +27,10 @@ test('billing detail table merges administrator fields into the detail action', 
   assert.doesNotMatch(content, /title: '操作管理员'/);
   assert.doesNotMatch(content, /title: '余额变化'/);
   assert.doesNotMatch(content, /title: '账单流水展示'/);
-  assert.match(content, /buildBillingRecordFeeDetailHtml\(detailRecord\)/);
-  assert.match(content, /toggle\.getAttribute\('aria-checked'\)/);
-  assert.match(content, /if \(saved\) toggle\.setAttribute\('aria-checked'/);
-  assert.doesNotMatch(content, /Swal\.close\(\)/);
+  assert.match(content, /<BillingDetailDialog/);
+  assert.match(content, /@statement-visibility-change="handleStatementVisibilityChange"/);
+  assert.match(content, /:viewer-scope="isAdmin \? 'admin' : 'self'"/);
+  assert.doesNotMatch(content, /Swal|document\.querySelector|addEventListener/);
   assert.doesNotMatch(content, /title: '操作管理员'/);
   assert.doesNotMatch(content, /title: '余额变化'/);
   assert.doesNotMatch(content, /title: '账单流水展示'/);

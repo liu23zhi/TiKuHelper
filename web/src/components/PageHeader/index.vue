@@ -67,14 +67,15 @@ export default defineComponent({
 .page-header {
   width: 100%;
   min-height: 64px;
-  background: linear-gradient(90deg, #195ca3 0%, #2563eb 100%);
-  border-bottom: 1px solid #e8e8e8;
+  flex-shrink: 0;
+  background: var(--console-surface);
+  border-bottom: 1px solid var(--console-border);
+  border-top: 2px solid var(--console-primary);
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 24px;
-  color: #fff;
-  box-shadow: 0 10px 30px rgba(25, 92, 163, 0.15);
+  color: var(--console-text);
 }
 
 .brand {
@@ -83,28 +84,32 @@ export default defineComponent({
   gap: 10px;
   font-size: 20px;
   font-weight: 700;
+  min-width: 0;
 }
 
 .brand-text {
-  color: #fff;
+  color: var(--console-text);
+  overflow-wrap: anywhere;
 }
 
 .actions {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .logout-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  color: #fff;
-  border-radius: 10px;
+  color: var(--console-text);
+  border-radius: 6px;
 }
 
 .logout-btn:hover,
 .logout-btn:focus {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.12);
+  color: var(--console-primary);
+  background: var(--console-selected);
 }
+@media (max-width: 768px) { .page-header { padding: 0 16px; } .brand { font-size: 18px; } }
 </style>

@@ -1,7 +1,8 @@
 <template>
-  <div class="layout-shell">
+  <div class="layout-shell" @keydown.esc="siderCollapsed = true">
     <Header :hasLogout="true" />
     <main class="layout-main">
+      <button v-if="compact && !siderCollapsed" class="layout-backdrop" aria-label="收起侧边栏" @click="toggleSider" />
       <aside class="layout-sider" :class="{ 'layout-sider--collapsed': siderCollapsed }">
         <SiderMenu
           :currentUser="currentUser"
@@ -31,25 +32,28 @@ export default {
       ? window.matchMedia('(max-width: 960px)')
       : null
     const siderCollapsed = ref(Boolean(compactViewport?.matches))
+    const compact = ref(Boolean(compactViewport?.matches))
     const currentUser = computed(() => getStoredCurrentUser())
     const toggleSider = () => {
       siderCollapsed.value = !siderCollapsed.value
     }
     const syncSiderToViewport = (event) => {
+      compact.value = event.matches
       siderCollapsed.value = event.matches
     }
     onMounted(() => {
-      compactViewport?.addEventListener?.('change', syncSiderToViewport)
-      compactViewport?.addListener?.(syncSiderToViewport)
+      if (compactViewport?.addEventListener) compactViewport.addEventListener('change', syncSiderToViewport)
+      else compactViewport?.addListener?.(syncSiderToViewport)
     })
     onBeforeUnmount(() => {
-      compactViewport?.removeEventListener?.('change', syncSiderToViewport)
-      compactViewport?.removeListener?.(syncSiderToViewport)
+      if (compactViewport?.removeEventListener) compactViewport.removeEventListener('change', syncSiderToViewport)
+      else compactViewport?.removeListener?.(syncSiderToViewport)
     })
     if (!currentUser.value) {
       router.push('/login')
       return {
         currentUser,
+        compact,
         siderCollapsed,
         toggleSider,
       }
@@ -73,6 +77,7 @@ export default {
 
     return {
       currentUser,
+      compact,
       siderCollapsed,
       toggleSider,
     }
@@ -86,12 +91,18 @@ export default {
 
 <style scoped>
 .layout-shell {
-  min-height: 100%;
-  background: #f5f7fb;
+  height: 100vh;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--console-canvas);
 }
 
 .layout-main {
-  min-height: calc(100vh - 64px);
+  position: relative;
+  min-height: 0;
+  flex: 1;
   width: 100%;
   display: flex;
 }
@@ -99,14 +110,14 @@ export default {
 .layout-sider {
   width: 260px;
   flex-shrink: 0;
-  background: #ffffff;
-  border-right: 1px solid #eef2f7;
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
-  transition: width 0.2s ease;
+  min-height: 0;
+  background: var(--console-surface);
+  border-right: 1px solid var(--console-border);
+  transition: width 160ms ease;
 }
 
 .layout-sider--collapsed {
-  width: 80px;
+  width: 64px;
 }
 
 .layout-content {
@@ -115,26 +126,27 @@ export default {
   padding: 24px;
   overflow-x: hidden;
   overflow-y: auto;
+  scrollbar-gutter: stable;
 }
+.layout-backdrop { position: absolute; inset: 0; z-index: 20; border: 0; background: rgb(23 43 39 / 15%); cursor: pointer; }
 
 @media (max-width: 960px) {
-  .layout-main {
-    flex-direction: column;
-  }
-
   .layout-sider {
-    width: 100%;
-    border-right: none;
-    border-bottom: 1px solid #eef2f7;
-    transition: none;
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 260px;
+    z-index: 30;
+    box-shadow: 8px 0 24px rgb(23 43 39 / 8%);
   }
 
   .layout-sider.layout-sider--collapsed {
-    width: 100%;
+    width: 64px;
+    box-shadow: none;
   }
 
   .layout-content {
     padding: 16px;
+    margin-left: 64px;
   }
 }
 </style>

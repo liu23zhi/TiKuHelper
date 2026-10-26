@@ -235,7 +235,8 @@ test('AISearchConfig page bills from the model price table', async () => {
   assert.doesNotMatch(content, /模型绑定/);
   assert.doesNotMatch(content, /architecture/i);
   assert.doesNotMatch(content, /Architecture/);
-  assert.match(content, /price-table-wrap/);
+  assert.match(content, /<ConsoleTableShell label="模型价格表">/);
+  assert.match(content, /table-layout="fixed"[\s\S]*?:scroll="\{ x: sumTableColumnWidths\(priceColumns\) \}"/);
   assert.match(content, /@media \(max-width: 768px\)/);
 });
 
@@ -405,11 +406,14 @@ test('AI search config exposes the UAPI search engine capability endpoint', asyn
 
 test('AI capability modal only renders used search and web Markdown endpoints', async () => {
   const pageContent = await readFile(aiSearchConfigPagePath, 'utf8');
+  const dialog = await readFile(path.join(__dirname, '..', 'pages', 'AISearchConfig', 'AISearchCapabilityDialog.vue'), 'utf8');
 
   assert.match(pageContent, /const usedUsageRows = computed\(\(\) =>/);
   assert.match(pageContent, /item\.count > 0/);
   assert.match(pageContent, /usedCapabilityCards/);
   assert.match(pageContent, /联网搜索 API/);
   assert.match(pageContent, /网页转 Markdown API/);
-  assert.match(pageContent, /暂未使用搜索或网页读取接口/);
+  assert.match(dialog, /暂未使用搜索或网页读取接口/);
+  assert.match(pageContent, /:rows="usedUsageRows"/);
+  assert.match(pageContent, /:cards="usedCapabilityCards"/);
 });

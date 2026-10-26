@@ -143,34 +143,35 @@ test('AI search config delegates staged editing to the shared helpers', () => {
   assert.match(source, /insertStagedMultiplierPoint/);
   assert.match(source, /createStagedPointRowKey/);
   assert.match(source, /:row-key="stagedPointRowKey"/);
-  assert.match(source, /#stageTokens="\{ record \}"[\s\S]*?<a-input v-model:value="record\.tokens" inputmode="numeric"/);
+  assert.match(source, /#bodyCell="\{ column, record, index \}"[\s\S]*?<a-input v-if="column\.key === 'tokens'" v-model:value="record\.tokens" inputmode="numeric"/);
   assert.match(source, /index === 0 \|\| formState\.stagedTokenMultiplierPoints\.length <= 1/);
 });
 
 test('deep-thinking capability modal displays search capability details instead of API usage instructions', async () => {
   const source = await readFile(new URL('../pages/AISearchConfig/index.vue', import.meta.url), 'utf8');
+  const dialog = await readFile(new URL('../pages/AISearchConfig/AISearchCapabilityDialog.vue', import.meta.url), 'utf8');
   for (const expected of [
-    'searchEngineDetail',
     'capability-detail-panel',
     '支持的能力',
-    '结果限制',
+    '默认结果数',
+    '最大结果数',
     '支持的参数',
     'engine.description',
-    'engine.features',
   ]) {
-    assert.ok(source.includes(expected), 'missing search capability detail: ' + expected);
+    assert.ok(dialog.includes(expected), 'missing search capability detail: ' + expected);
   }
-  const modalStart = source.indexOf('v-model:open="capabilityModalVisible"');
-  assert.notEqual(modalStart, -1, 'missing AI capability modal');
-  const modalEnd = source.indexOf('</a-modal>', modalStart);
-  const modal = source.slice(modalStart, modalEnd);
-  assert.doesNotMatch(modal, /API 端点/);
-  assert.doesNotMatch(modal, /https:\/\/uapis\.cn\/docs\/api-reference/);
-  assert.doesNotMatch(modal, /capability-response-example/);
+  assert.match(source, /v-model:open="capabilityModalVisible"/);
+  assert.match(source, /:detail="searchEngineDetail"/);
+  assert.match(source, /features: Array\.isArray\(response\.engine\.features\)/);
+  assert.doesNotMatch(dialog, /API 端点/);
+  assert.doesNotMatch(dialog, /https:\/\/uapis\.cn\/docs\/api-reference/);
+  assert.doesNotMatch(dialog, /capability-response-example/);
 });
 
 test('AI pricing card header wraps long copy and actions instead of overlapping', async () => {
   const source = await readFile(new URL('../pages/AISearchConfig/index.vue', import.meta.url), 'utf8');
+  const panel = await readFile(new URL('../components/ConsolePanel.vue', import.meta.url), 'utf8');
   assert.match(source, /\.sub-card-subtitle\s*\{[^}]*overflow-wrap:\s*anywhere/s);
-  assert.match(source, /\.sub-card\s*:deep\(\.ant-card-head-wrapper\)\s*\{[^}]*flex-wrap:\s*wrap/s);
+  assert.match(source, /<ConsolePanel title="模型价格表"/);
+  assert.match(panel, /flex-wrap:\s*wrap/);
 });

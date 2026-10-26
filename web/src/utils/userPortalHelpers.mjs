@@ -440,6 +440,39 @@ function buildBillingRecordFeeItemMeta(item, options = {}) {
   return []
 }
 
+export function buildBillingDetailViewModel(record, options = {}) {
+  const admin = options.viewerScope === 'admin'
+  const direction = String(record?.direction || '').trim()
+  const metadata = []
+  if (String(record?.operatorUsername || '').trim()) {
+    metadata.push({ label: '操作管理员', value: `${record.operatorUsername}${record.operatorId ? `（ID ${record.operatorId}）` : ''}` })
+  }
+  if (record?.type === 'balance_adjustment') {
+    metadata.push({ label: '余额变化', value: `¥ ${formatMoneyValue(record.balanceBefore || 0)} → ¥ ${formatMoneyValue(record.balanceAfter || 0)}` })
+    const adjustmentMode = { increase: '添加余额', decrease: '减少余额', override: '覆盖余额' }[record?.adjustmentMode]
+    if (adjustmentMode) metadata.push({ label: '调整模式', value: adjustmentMode })
+    if (admin) metadata.push({ label: '账单流水展示', value: record.showInStatement === false ? '隐藏' : '显示' })
+  }
+  return {
+    id: record?.id,
+    direction,
+    directionLabel: direction === 'income' ? '收入账单' : direction === 'expense' ? '支出账单' : '账单详情',
+    typeLabel: buildBillingRecordTypeText(record),
+    subject: buildBillingRecordSubjectText(record),
+    mode: buildBillingRecordModeText(record),
+    amount: buildBillingRecordAmountText(record),
+    items: buildBillingRecordFeeDetails(record).map((item, index) => ({
+      key: `${index}:${item.provider}:${item.callIndex || ''}`,
+      title: buildBillingRecordFeeItemTitle(item),
+      amount: buildBillingRecordAmountText({ amount: item.amount, direction }),
+      metadata: buildBillingRecordFeeItemMeta(item, { showAIModelMeta: admin }),
+    })),
+    metadata,
+    showInStatement: record?.showInStatement !== false,
+    canEditStatement: admin && options.canEditStatement === true,
+  }
+}
+
 export function buildBillingRecordFeeDetailHtml(record, options = {}) {
   const details = buildBillingRecordFeeDetails(record)
   const showStatementControl = options.showStatementControl !== false

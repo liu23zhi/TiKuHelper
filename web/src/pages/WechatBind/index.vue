@@ -1,10 +1,7 @@
 <template>
   <div class="auth-shell">
     <div class="auth-card auth-card--single">
-      <div class="hero hero--wechat-bind">
-        <div class="hero-badge">微信账号关联</div>
-        <h1>绑定已有账号</h1>
-        <p>微信扫码成功后，请使用已有账号完成绑定。</p>
+      <AuthPageIntro eyebrow="微信账号关联" title="绑定已有账号" description="微信扫码成功后，请使用已有账号完成绑定。">
         <dl class="auth-guide">
           <div>
             <dt>验证已有账号</dt>
@@ -15,7 +12,7 @@
             <dd>后续可通过微信登录，也可在个人中心管理绑定。</dd>
           </div>
         </dl>
-      </div>
+      </AuthPageIntro>
 
       <a-card :bordered="false" class="form-card">
         <div class="form-header">
@@ -80,6 +77,7 @@
 
 <script>
 import { defineComponent, reactive, ref } from 'vue'
+import AuthPageIntro from '../../components/AuthPageIntro.vue'
 import { UserOutlined, LockOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -152,6 +150,7 @@ export default defineComponent({
     }
   },
   components: {
+    AuthPageIntro,
     UserOutlined,
     LockOutlined,
   },

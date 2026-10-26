@@ -2,17 +2,18 @@
   <div class="overflow-table-text">
     <div
       ref="content"
+      :id="contentId"
       :class="['overflow-table-text__content', { 'overflow-table-text__content--expanded': expanded }]"
       :style="{ '--preview-lines': lines }"
-    >{{ text || '-' }}</div>
-    <a-button v-if="expanded || overflowing" type="link" size="small" class="overflow-table-text__toggle" @click="$emit('toggle')">
+    >{{ displayText }}</div>
+    <a-button v-if="expanded || overflowing" type="link" size="small" class="overflow-table-text__toggle" :aria-expanded="expanded" :aria-controls="contentId" @click="$emit('toggle')">
       {{ expanded ? '收起' : '查看详情' }}
     </a-button>
   </div>
 </template>
 
 <script>
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue';
 
 export default {
   name: 'OverflowTableText',
@@ -24,6 +25,8 @@ export default {
   emits: ['toggle'],
   setup(props) {
     const content = ref(null);
+    const contentId = useId();
+    const displayText = computed(() => props.text === '' || props.text == null ? '-' : String(props.text));
     const overflowing = ref(false);
     let observer;
 
@@ -46,7 +49,7 @@ export default {
       await nextTick();
       measureOverflow();
     });
-    return { content, overflowing };
+    return { content, contentId, displayText, overflowing };
   },
 };
 </script>

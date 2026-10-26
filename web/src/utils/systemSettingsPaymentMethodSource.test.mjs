@@ -10,11 +10,14 @@ const systemSettingsPagePath = path.join(__dirname, '..', 'pages', 'SystemSettin
 
 test('SystemSettings payment method management reads backend epayType field consistently', async () => {
   const content = await readFile(systemSettingsPagePath, 'utf8');
+  const panel = await readFile(path.join(__dirname, '..', 'pages', 'SystemSettings', 'PaymentMethodPanel.vue'), 'utf8');
 
-  assert.match(content, /record\.epayType\s*\|\|\s*'-'/);
+  assert.match(panel, /record\.epayType\s*\|\|\s*'-'/);
   assert.match(content, /ePayType:\s*record\.epayType\s*\|\|\s*''/);
-  assert.doesNotMatch(content, /record\.ePayType\s*\|\|\s*'-'/);
+  assert.doesNotMatch(panel, /record\.ePayType\s*\|\|\s*'-'/);
   assert.doesNotMatch(content, /ePayType:\s*record\.ePayType\s*\|\|\s*''/);
+  assert.match(content, /@edit="openEditPaymentMethodModal"/);
+  assert.match(content, /@delete="handleDeletePaymentMethod"/);
 });
 
 test('SystemSettings exposes wechat captcha and smsbao credential settings', async () => {

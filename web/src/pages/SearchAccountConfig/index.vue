@@ -1,33 +1,30 @@
 <template>
   <div class="console-page search-account-page">
-    <header class="section-heading page-heading">
-      <div>
-        <h1>默认账号配置</h1>
-        <p class="page-lead">维护各题库默认参数和单价。</p>
-      </div>
-      <a-space wrap>
+    <ConsolePageHeading title="默认账号配置" description="维护题库渠道、默认参数和单价。">
+      <template #actions><a-space wrap>
         <a-button :loading="tabLoading" :disabled="savingAll" @click="handleSearchAccountConfigs">刷新</a-button>
         <a-button type="primary" :loading="savingAll" :disabled="tabLoading" @click="onSaveAll">保存全部配置</a-button>
-      </a-space>
-    </header>
-    <section class="console-panel">
+      </a-space></template>
+    </ConsolePageHeading>
+    <ConsolePanel title="渠道配置" description="按渠道维护默认参数，保存后应用于后续搜题请求。">
     <a-alert
       type="info"
       show-icon
       class="page-alert"
       message="匿名搜索请求不能使用系统默认账号；只有携带有效 Authorization: Basic xxxx 的请求，在未显式提供参数时才会回退到这里的默认配置。"
     />
-    <a-table
+    <ConsoleTableShell label="题库默认账号配置"><a-table
       bordered
       :data-source="dataSource"
       :columns="columns"
       :loading="tabLoading"
       :pagination="false"
       row-key="provider"
-      :scroll="{ x: 1180 }"
+      table-layout="fixed"
+      :scroll="{ x: sumTableColumnWidths(columns) }"
     >
-      <template #defaultParameter="{ record }">
-        <div class="config-cell">
+      <template #bodyCell="{ column, record }">
+        <div v-if="column.key === 'defaultParameter'" class="config-cell">
           <div class="config-cell-text">{{ buildSearchAccountDefaultParameterHint(record) }}</div>
           <template v-if="record.provider === 'ai'">
             <a-button type="primary" ghost class="config-ai-button" @click="goToAIConfig">前往 AI 搜索配置页</a-button>
@@ -36,9 +33,7 @@
             <a-input-password v-model:value="record.tokenValue" placeholder="请输入默认 Token" />
           </template>
         </div>
-      </template>
-      <template #unitPrice="{ record }">
-        <div class="config-cell">
+        <div v-else-if="column.key === 'unitPrice'" class="config-cell">
           <div class="config-cell-text">{{ buildSearchAccountUnitPriceHint(record) }}</div>
           <template v-if="record.provider !== 'ai'">
             <a-input-number
@@ -51,15 +46,11 @@
             />
           </template>
         </div>
+        <a-switch v-else-if="column.key === 'enabled'" :checked="!!record.enabled" @change="checked => onEnabledChange(record.provider, checked)" />
+        <a-input v-else-if="column.key === 'remark'" v-model:value="record.remark" placeholder="备注" />
       </template>
-      <template #enabled="{ record }">
-        <a-switch :checked="!!record.enabled" @change="checked => onEnabledChange(record.provider, checked)" />
-      </template>
-      <template #remark="{ record }">
-        <a-input v-model:value="record.remark" placeholder="备注" />
-      </template>
-    </a-table>
-    </section>
+    </a-table></ConsoleTableShell>
+    </ConsolePanel>
   </div>
 </template>
 
@@ -67,6 +58,7 @@
 import { defineComponent, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { message } from 'ant-design-vue';
+import { sumTableColumnWidths } from '@/utils/tableLayout.mjs';
 import { getSearchAccountConfigs, updateSearchAccountConfig } from '@/api/TikuComponentApi';
 import {
   buildSearchAccountConfigSavePayloads,
@@ -93,6 +85,7 @@ export default defineComponent({
       goToAIConfig,
       buildSearchAccountDefaultParameterHint,
       buildSearchAccountUnitPriceHint,
+      sumTableColumnWidths,
       columns: [
         {
           title: '题库名称',
@@ -110,36 +103,24 @@ export default defineComponent({
           title: '默认参数',
           dataIndex: 'defaultParameter',
           key: 'defaultParameter',
-          slots: {
-            customRender: 'defaultParameter',
-          },
           width: 360,
         },
         {
           title: '单价',
           dataIndex: 'unitPrice',
           key: 'unitPrice',
-          slots: {
-            customRender: 'unitPrice',
-          },
           width: 280,
         },
         {
           title: '是否启用',
           dataIndex: 'enabled',
           key: 'enabled',
-          slots: {
-            customRender: 'enabled',
-          },
           width: 110,
         },
         {
           title: '备注',
           dataIndex: 'remark',
           key: 'remark',
-          slots: {
-            customRender: 'remark',
-          },
           width: 220,
         },
       ],
@@ -205,75 +186,9 @@ export default defineComponent({
 </script>
 
 <style scoped>
-.console-page {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  min-width: 0;
-}
-
-.page-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.page-heading h1 {
-  margin: 0;
-  color: var(--console-text, #1f2937);
-  font-size: 20px;
-  font-weight: 650;
-}
-
-.page-lead {
-  margin: 4px 0 0;
-  color: var(--console-muted, #64748b);
-  font-size: 13px;
-}
-
-.console-panel {
-  min-width: 0;
-  padding: 16px;
-  border: 1px solid var(--console-border, #e5e7eb);
-  border-radius: var(--console-radius, 12px);
-  background: var(--console-surface, #fff);
-}
-
-.config-cell :deep(.ant-input),
-.config-cell :deep(.ant-input-number) {
-  width: 100%;
-}
-
-.search-account-page :deep(.ant-table) {
-  font-size: 13px;
-}
-
-.page-alert {
-  margin-bottom: 16px;
-}
-
-.config-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.config-cell-text {
-  font-size: 13px;
-  line-height: 1.7;
-  color: #6b7280;
-  word-break: break-all;
-}
-
-.config-ai-button {
-  align-self: flex-start;
-}
-
-@media (max-width: 640px) {
-  .console-panel {
-    padding: 12px;
-  }
-}
+.page-alert { margin-bottom: 20px; }
+.config-cell { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.config-cell-text { color: var(--console-muted); line-height: 1.7; overflow-wrap: anywhere; }
+.config-cell :deep(.ant-input-affix-wrapper), .config-cell :deep(.ant-input-number) { width: 100%; }
+.config-ai-button { max-width: 100%; white-space: normal; height: auto; min-height: 32px; }
 </style>

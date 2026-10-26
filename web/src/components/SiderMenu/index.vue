@@ -33,7 +33,7 @@
       @click="$emit('toggle')"
     >
       <component :is="collapsed ? MenuUnfoldOutlined : MenuFoldOutlined" class="collapse-button-icon" />
-      <span class="collapse-button-label">{{ collapsed ? '展开侧边栏' : '折叠侧边栏' }}</span>
+      <span class="collapse-button-label">{{ collapsed ? '展开' : '折叠侧边栏' }}</span>
     </a-button>
   </div>
 </template>
@@ -140,14 +140,14 @@ export default defineComponent({
 .sider-menu-wrap {
   display: flex;
   flex-direction: column;
-  min-height: calc(100vh - 64px);
+  height: 100%;
+  min-height: 0;
   box-sizing: border-box;
   padding: 18px 14px 14px;
 }
 
 .sider-menu-wrap.is-collapsed {
-  padding-left: 0;
-  padding-right: 0;
+  padding: 12px 0;
 }
 
 .menu-heading {
@@ -157,7 +157,7 @@ export default defineComponent({
 .menu-title {
   font-size: 16px;
   font-weight: 700;
-  color: #1f2937;
+  color: var(--console-text);
 }
 
 .menu-subtitle {
@@ -165,7 +165,7 @@ export default defineComponent({
   margin-bottom: 14px;
   font-size: 12px;
   line-height: 1.6;
-  color: #6b7280;
+  color: var(--console-muted);
 }
 
 .collapse-button {
@@ -178,15 +178,16 @@ export default defineComponent({
   height: auto;
   margin-top: auto;
   padding: 8px 4px;
-  color: #4b5563;
-  border-radius: 8px;
+  color: var(--console-muted);
+  border-radius: 6px;
+  flex-shrink: 0;
   line-height: 1.4;
   white-space: normal;
 }
 
-/* 折叠后侧边栏很窄，只留居中图标，避免文字挤压换行。 */
 .collapse-button.is-collapsed {
   padding: 8px 0;
+  font-size: 12px;
 }
 
 .collapse-button-icon {
@@ -198,13 +199,14 @@ export default defineComponent({
 }
 
 .collapse-button.is-collapsed .collapse-button-label {
-  display: none;
+  display: inline;
 }
+.collapse-button.is-collapsed .collapse-button-icon { display: none; }
 
 .collapse-button:hover,
 .collapse-button:focus {
-  color: #195ca3;
-  background: #eff6ff;
+  color: var(--console-primary);
+  background: var(--console-selected);
 }
 
 /* 图标跟随按钮主色，与菜单项保持一致。 */
@@ -215,29 +217,13 @@ export default defineComponent({
 .menu {
   border-inline-end: none !important;
   background: transparent;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
-
-@media (max-width: 960px) {
-  .sider-menu-wrap {
-    min-height: auto;
-    max-height: calc(100vh - 64px);
-    overflow-y: auto;
-    padding: 8px 12px;
-  }
-
-  .sider-menu-wrap.is-collapsed .collapse-button {
-    width: auto;
-    align-self: flex-end;
-    margin-top: 0;
-    padding: 8px 10px;
-  }
-
-  .sider-menu-wrap.is-collapsed .collapse-button-label {
-    display: inline;
-  }
-
-  .sider-menu-wrap.is-collapsed .menu {
-    display: none;
-  }
-}
+.menu :deep(.ant-menu-item) { min-height: 44px; height: auto; line-height: 1.5; padding-block: 12px; border-radius: 6px; }
+.menu :deep(.ant-menu-title-content) { white-space: normal; }
+.menu.ant-menu-inline-collapsed { width: 64px; }
+.menu.ant-menu-inline-collapsed :deep(.ant-menu-item) { padding-inline: 24px; }
+.menu.ant-menu-inline-collapsed :deep(.ant-menu-title-content) { display: none; }
 </style>
