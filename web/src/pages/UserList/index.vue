@@ -221,7 +221,7 @@
           <a-button class="balance-adjust-button" @click="openBalanceModal">修改余额</a-button>
         </a-form-item>
         <a-form-item v-if="isEditing" label="手机号">
-          <a-input v-model:value="formState.phone" placeholder="留空表示清空手机号绑定" />
+          <MainlandPhoneInput v-model:value="formState.phone" />
           <div class="form-hint">输入新手机号可直接绑定；留空则清空当前绑定。</div>
         </a-form-item>
         <a-form-item v-if="isEditing" label="重指派同号">
@@ -353,6 +353,8 @@ import {
 } from '@/api/TikuComponentApi';
 import { buildAdminCreateUserPayload, buildRegisterSourceLabel, buildResetPasswordPayload, buildUserProfileUpdatePayload, buildUserBalanceAdjustmentPayload, formatBillingRecordTime, limitUsernameInput, runAdminPasswordAction } from '@/utils/userPortalHelpers.mjs';
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs';
+import { ensurePhoneBeforeSMSCaptcha, normalizePhonePaste } from '@/utils/captchaHelpers.mjs';
+import MainlandPhoneInput from '@/components/MainlandPhoneInput.vue';
 import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@/utils/listSearchHelpers.mjs';
 import {
   collectLocationKeys,
@@ -507,6 +509,7 @@ function resetWechatResolveState() {
 
 export default defineComponent({
   name: 'UserList',
+  components: { MainlandPhoneInput },
   setup() {
     // 用户列表改为服务端分页后，这里的统计只覆盖「当前页」，
     // 因此标题里明确标注范围，避免被误读成全站合计。
@@ -885,7 +888,7 @@ export default defineComponent({
         status: record.status || 'enabled',
         balance: record.balance ?? '',
         registerSource: record.registerSource || 'admin',
-        phone: record.phone || '',
+        phone: normalizePhonePaste(record.phone) || record.phone || '',
         phoneBoundAt: record.phoneBoundAt || '',
         forceReassignPhone: false,
         wechatId: record.wechatId || '',
@@ -1029,6 +1032,9 @@ export default defineComponent({
       let editPayload = null
       if (isEditing.value) {
         try {
+          if (String(formState.value.phone || '').trim()) {
+            formState.value.phone = ensurePhoneBeforeSMSCaptcha(formState.value.phone)
+          }
           editPayload = buildUserProfileUpdatePayload(formState.value)
         } catch (error) {
           message.warning(error?.message || '请检查用户资料')

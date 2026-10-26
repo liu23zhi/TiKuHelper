@@ -57,18 +57,10 @@
 
           <template v-if="loginMode === 'sms'">
             <a-form-item name="phone" label="手机号" :rules="[{ required: true, message: '请输入手机号' }]">
-              <a-input
+              <MainlandPhoneInput
                 v-model:value="smsLoginForm.phone"
-                placeholder="请输入绑定手机号，国际号码请带 + 区号"
                 size="large"
-                inputmode="tel"
-                :maxlength="20"
-                @input="smsLoginForm.phone = normalizePhoneInput(smsLoginForm.phone)"
-              >
-                <template #prefix>
-                  <MobileOutlined style="color: rgba(0, 0, 0, 0.25)" />
-                </template>
-              </a-input>
+              />
             </a-form-item>
             <a-form-item name="smsCode" label="验证码" :rules="[{ required: true, message: '请输入验证码' }]">
               <div class="sms-code-row">
@@ -180,7 +172,7 @@
 
 <script>
 import { computed, defineComponent, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
-import { UserOutlined, LockOutlined, MobileOutlined, SafetyCertificateOutlined } from '@ant-design/icons-vue';
+import { UserOutlined, LockOutlined, SafetyCertificateOutlined } from '@ant-design/icons-vue';
 import Swal from 'sweetalert2'
 import {
   login,
@@ -198,9 +190,9 @@ import {
 import { buildPublicSMSCodePayload, buildSMSLoginPayload } from '../../utils/phoneAuthHelpers.mjs'
 import {
   ensurePhoneBeforeSMSCaptcha,
-  normalizePhoneInput,
   normalizeSMSCodeInput,
 } from '../../utils/captchaHelpers.mjs'
+import MainlandPhoneInput from '../../components/MainlandPhoneInput.vue'
 import { ensureAuthCaptchaToken } from '../../utils/captchaDialog.mjs'
 import { setStoredCurrentUser, resolveHomePath } from '../../utils/currentUser.js'
 import { useSmsCooldown } from '../../utils/smsCooldown.js'
@@ -605,7 +597,6 @@ export default defineComponent({
       loginForm,
       smsLoginForm,
       wechatCodeForm,
-      normalizePhoneInput,
       normalizeSMSCodeInput,
       normalizeWechatCodeInput,
       handleLogin,
@@ -621,8 +612,8 @@ export default defineComponent({
   components: {
     UserOutlined,
     LockOutlined,
-    MobileOutlined,
     SafetyCertificateOutlined,
+    MainlandPhoneInput,
   },
 })
 </script>

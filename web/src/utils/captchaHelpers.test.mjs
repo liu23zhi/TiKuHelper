@@ -9,6 +9,8 @@ import {
   normalizeCaptchaType,
   normalizeSMSCodeInput,
   normalizePhoneInput,
+  normalizePhonePaste,
+  isValidMainlandPhone,
   shouldRetryWithCaptcha,
 } from './captchaHelpers.mjs'
 
@@ -31,10 +33,35 @@ test('ensurePhoneBeforeSMSCaptcha requires phone before captcha challenge', () =
   assert.throws(() => ensurePhoneBeforeSMSCaptcha('   '), /请输入手机号/)
 })
 
-test('normalizePhoneInput keeps digits and a leading plus for international numbers', () => {
-  assert.equal(normalizePhoneInput(' 138-0000-0000abc '), '13800000000')
-  assert.equal(normalizePhoneInput('+1 415-555-2671abc'), '+14155552671')
-  assert.equal(normalizePhoneInput('++1 415 555'), '+1415555')
+test('normalizePhoneInput accepts only mainland phone digits and partial typing', () => {
+  assert.equal(normalizePhoneInput('13800000000'), '13800000000')
+  assert.equal(normalizePhoneInput('138000'), '138000')
+  assert.equal(normalizePhoneInput('138000000000'), '')
+  assert.equal(normalizePhoneInput('1380000000a'), '')
+  assert.equal(normalizePhoneInput('+8613800000000'), '')
+  assert.equal(normalizePhoneInput('138 0000 0000'), '')
+  assert.equal(normalizePhoneInput(''), '')
+})
+
+test('normalizePhonePaste handles a complete optional +86 prefix without truncating invalid input', () => {
+  assert.equal(normalizePhonePaste('13800000000'), '13800000000')
+  assert.equal(normalizePhonePaste('+86 13800000000'), '13800000000')
+  assert.equal(normalizePhonePaste('+8613800000000'), '13800000000')
+  assert.equal(normalizePhonePaste('138 0000 0000'), '13800000000')
+  assert.equal(normalizePhonePaste('+86 \t138 0000 0000'), '13800000000')
+  assert.equal(normalizePhonePaste(' 13800000000 '), '13800000000')
+  assert.equal(normalizePhonePaste('+86-138-0000-0000'), '')
+  assert.equal(normalizePhonePaste('+1 3800000000'), '')
+  assert.equal(normalizePhonePaste('1380000000a'), '')
+  assert.equal(normalizePhonePaste('138000000000'), '')
+})
+
+test('isValidMainlandPhone validates exactly eleven ASCII digits', () => {
+  assert.equal(isValidMainlandPhone('13800000000'), true)
+  assert.equal(isValidMainlandPhone(' 13800000000 '), false)
+  assert.equal(isValidMainlandPhone('1380000000'), false)
+  assert.equal(isValidMainlandPhone('23800000000'), false)
+  assert.equal(isValidMainlandPhone('１３８００００００００'), false)
 })
 
 test('normalizeSMSCodeInput keeps only digits and caps at 6 characters', () => {

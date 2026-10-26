@@ -6,6 +6,8 @@ function onlyDigits(value) {
   return String(value || '').replace(/\D+/g, '')
 }
 
+const MAINLAND_PHONE_PATTERN = /^1[0-9]{10}$/
+
 function trimTrailingSlash(value) {
   return trimText(value).replace(/\/+$/, '')
 }
@@ -25,13 +27,23 @@ export function buildCaptchaVerifyPayload({ challengeId, scene, captchaCode }) {
 }
 
 export function normalizePhoneInput(value) {
-  const text = String(value || '').trim()
-  const hasLeadingPlus = text.startsWith('+')
-  const digits = onlyDigits(text)
-  if (hasLeadingPlus) {
-    return `+${digits}`.slice(0, 20)
+  const text = String(value ?? '')
+  if (!/^\d*$/.test(text) || text.length > 11) {
+    return ''
   }
-  return digits.slice(0, 11)
+  return text
+}
+
+export function normalizePhonePaste(value) {
+  const text = String(value ?? '').trim()
+  const body = text.startsWith('+86') ? text.slice(3) : text
+  if (!/^[0-9\s]+$/.test(body)) return ''
+  const digits = body.replace(/\s/g, '')
+  return isValidMainlandPhone(digits) ? digits : ''
+}
+
+export function isValidMainlandPhone(value) {
+  return typeof value === 'string' && MAINLAND_PHONE_PATTERN.test(value)
 }
 
 export function normalizeSMSCodeInput(value) {
@@ -42,6 +54,9 @@ export function ensurePhoneBeforeSMSCaptcha(phone) {
   const normalizedPhone = trimText(phone)
   if (!normalizedPhone) {
     throw new Error('请输入手机号')
+  }
+  if (!isValidMainlandPhone(normalizedPhone)) {
+    throw new Error('请输入11位手机号')
   }
   return normalizedPhone
 }

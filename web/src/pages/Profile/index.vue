@@ -109,12 +109,8 @@
             />
             <a-form v-else layout="vertical" :model="phoneForm" @finish="submitPhoneChange">
               <a-form-item label="新手机号" required>
-                <a-input
+                <MainlandPhoneInput
                   v-model:value="phoneForm.phone"
-                  placeholder="请输入新手机号，国际号码请带 + 区号"
-                  :maxlength="20"
-                  inputmode="tel"
-                  @input="phoneForm.phone = normalizePhoneInput(phoneForm.phone)"
                 />
               </a-form-item>
               <a-form-item label="新手机号验证码" required>
@@ -267,9 +263,10 @@ import {
 } from '@/api/TikuComponentApi'
 import { ensureAuthCaptchaToken } from '@/utils/captchaDialog.mjs'
 import {
-  normalizePhoneInput,
   normalizeSMSCodeInput,
+  ensurePhoneBeforeSMSCaptcha,
 } from '@/utils/captchaHelpers.mjs'
+import MainlandPhoneInput from '@/components/MainlandPhoneInput.vue'
 import { buildRegisterSourceLabel } from '@/utils/userPortalHelpers.mjs'
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
 import { setStoredCurrentUser } from '@/utils/currentUser.js'
@@ -439,10 +436,7 @@ export default defineComponent({
     const sendPhoneChangeCode = async () => {
       sendingPhoneCode.value = true
       try {
-        phoneForm.phone = normalizePhoneInput(phoneForm.phone)
-        if (!phoneForm.phone) {
-          throw new Error('请输入新手机号')
-        }
+        phoneForm.phone = ensurePhoneBeforeSMSCaptcha(phoneForm.phone)
         await ensureCaptchaToken(CaptchaSceneSMSSendChangePhone, phoneForm)
         const res = await sendUserPhoneChangeSMSCode({
           phone: phoneForm.phone,
@@ -469,6 +463,8 @@ export default defineComponent({
     const submitPhoneChange = async () => {
       updatingPhone.value = true
       try {
+        phoneForm.phone = ensurePhoneBeforeSMSCaptcha(phoneForm.phone)
+        if (!phoneForm.smsCode) throw new Error('请输入短信验证码')
         const res = await updateCurrentUserPhone({
           phone: phoneForm.phone,
           smsCode: phoneForm.smsCode,
@@ -721,7 +717,6 @@ export default defineComponent({
       submitWechatCodeBind,
       unbindWechat,
       loadProfile,
-      normalizePhoneInput,
       normalizeSMSCodeInput,
       normalizeWechatCodeInput,
       registerSourceText: buildRegisterSourceLabel,
@@ -735,6 +730,7 @@ export default defineComponent({
       statusText,
     }
   },
+  components: { MainlandPhoneInput },
 })
 </script>
 

@@ -1,4 +1,5 @@
 import { limitRestrictedNameLength, normalizeRestrictedName, USERNAME_MAX_LENGTH } from './restrictedName.mjs'
+import { isValidMainlandPhone } from './captchaHelpers.mjs'
 
 export { USERNAME_MAX_LENGTH }
 
@@ -14,22 +15,30 @@ function trimText(value) {
   return String(value || '').trim()
 }
 
+function requireMainlandPhone(value) {
+  const phone = trimText(value)
+  if (!phone) {
+    throw new Error('请输入手机号')
+  }
+  if (!isValidMainlandPhone(phone)) {
+    throw new Error('请输入11位手机号')
+  }
+  return phone
+}
+
 export function buildPublicSMSCodePayload(formValue, scene) {
   const captchaToken = trimText(formValue?.captchaToken)
   return {
-    phone: trimText(formValue?.phone),
+    phone: requireMainlandPhone(formValue?.phone),
     scene: trimText(scene),
     ...(captchaToken ? { captchaToken } : {}),
   }
 }
 
 export function buildSMSLoginPayload(formValue) {
-  const phone = trimText(formValue?.phone)
+  const phone = requireMainlandPhone(formValue?.phone)
   const smsCode = trimText(formValue?.smsCode)
   const captchaToken = trimText(formValue?.captchaToken)
-  if (!phone) {
-    throw new Error('请输入手机号')
-  }
   if (!smsCode) {
     throw new Error('请输入验证码')
   }
@@ -41,12 +50,9 @@ export function buildSMSLoginPayload(formValue) {
 
 export function buildPublicRegisterPayload(formValue) {
   const username = normalizeUsername(formValue?.username)
-  const phone = trimText(formValue?.phone)
+  const phone = requireMainlandPhone(formValue?.phone)
   const smsCode = trimText(formValue?.smsCode)
   const captchaToken = trimText(formValue?.captchaToken)
-  if (!phone) {
-    throw new Error('请输入手机号')
-  }
   if (!smsCode) {
     throw new Error('请输入验证码')
   }

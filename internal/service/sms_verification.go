@@ -115,7 +115,7 @@ func SendSMSCodeDetailedWithDB(db *gorm.DB, input SendSMSCodeInput) (SMSVerifica
 		RequestIP: strings.TrimSpace(input.RequestIP), CaptchaChallengeID: strings.TrimSpace(input.CaptchaCorrelationID),
 	}
 	if err := db.Transaction(func(tx *gorm.DB) error {
-		if err := smsVerificationDB(tx).Where("phone = ? AND scene = ? AND status = ?", phone, input.Scene, SMSCodeStatusPending).Update("status", SMSCodeStatusCanceled).Error; err != nil {
+		if err := smsVerificationDB(tx).Where("phone IN ? AND scene = ? AND status = ?", PhoneLookupCandidates(phone), input.Scene, SMSCodeStatusPending).Update("status", SMSCodeStatusCanceled).Error; err != nil {
 			return err
 		}
 		return smsVerificationDB(tx).Create(&record).Error
@@ -189,7 +189,7 @@ func VerifySMSCodeDetailedInTx(db *gorm.DB, rawPhone string, scene string, smsCo
 	}
 	verificationDB := smsVerificationDB(db)
 	var record entity.SMSVerificationCode
-	if err := verificationDB.Where("phone = ? AND scene = ? AND status = ?", phone, scene, SMSCodeStatusPending).
+	if err := verificationDB.Where("phone IN ? AND scene = ? AND status = ?", PhoneLookupCandidates(phone), scene, SMSCodeStatusPending).
 		Order("id desc").
 		First(&record).Error; err != nil {
 		return SMSVerificationEvidence{}, fmt.Errorf("验证码错误或已过期")
@@ -216,21 +216,24 @@ func VerifySMSCodeDetailedInTx(db *gorm.DB, rawPhone string, scene string, smsCo
 }
 
 func ensureSMSSceneAllowed(db *gorm.DB, phone string, scene string, targetUserID int32) error {
+	users, err := FindUsersByPhoneAliases(db, phone)
+	if err != nil {
+		return err
+	}
+	if len(users) > 1 {
+		return ErrPhoneBindingConflict
+	}
 	switch strings.TrimSpace(scene) {
 	case SMSSceneRegister:
-		var count int64
-		if err := db.Model(&entity.User{}).Where("phone = ?", phone).Count(&count).Error; err != nil {
-			return err
-		}
-		if count > 0 {
-			return fmt.Errorf("该手机号已被绑定")
+		if len(users) > 0 {
+			return ErrPhoneAlreadyBound
 		}
 		return nil
 	case SMSSceneLogin:
-		var user entity.User
-		if err := db.Where("phone = ?", phone).First(&user).Error; err != nil {
+		if len(users) == 0 {
 			return fmt.Errorf("该手机号未绑定账号，请先注册")
 		}
+		user := users[0]
 		if !strings.EqualFold(strings.TrimSpace(user.Status), "enabled") {
 			return fmt.Errorf("用户已被禁用")
 		}
@@ -239,14 +242,10 @@ func ensureSMSSceneAllowed(db *gorm.DB, phone string, scene string, targetUserID
 		if targetUserID <= 0 {
 			return fmt.Errorf("换绑手机号用户无效")
 		}
-		var occupied int64
-		if err := db.Model(&entity.User{}).
-			Where("phone = ? AND id <> ?", phone, targetUserID).
-			Count(&occupied).Error; err != nil {
-			return err
-		}
-		if occupied > 0 {
-			return fmt.Errorf("该手机号已被绑定")
+		for _, user := range users {
+			if user.ID != targetUserID {
+				return ErrPhoneAlreadyBound
+			}
 		}
 		return nil
 	default:
@@ -257,7 +256,7 @@ func ensureSMSSceneAllowed(db *gorm.DB, phone string, scene string, targetUserID
 func ensureSMSCooldown(db *gorm.DB, phone string, scene string) error {
 	verificationDB := smsVerificationDB(db)
 	var latest entity.SMSVerificationCode
-	err := verificationDB.Where("phone = ? AND scene = ?", phone, scene).Order("id desc").First(&latest).Error
+	err := verificationDB.Where("phone IN ? AND scene = ?", PhoneLookupCandidates(phone), scene).Order("id desc").First(&latest).Error
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return nil

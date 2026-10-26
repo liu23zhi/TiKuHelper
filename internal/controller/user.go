@@ -53,6 +53,14 @@ var consumeCaptchaTokenWithDB = func(token string, scene string, requestIP strin
 	return service.ConsumeCaptchaTokenWithDB(dao.User.UnderlyingDB(), token, scene, requestIP)
 }
 
+var consumeRegisterCaptchaTokenInTx = func(tx *gorm.DB, token string, scene string, requestIP string) error {
+	return service.ConsumeCaptchaTokenInTx(tx, token, scene, requestIP)
+}
+
+var verifyRegisterSMSCodeInTx = func(tx *gorm.DB, phone string, scene string, smsCode string) (service.SMSVerificationEvidence, error) {
+	return service.VerifySMSCodeDetailedInTx(tx, phone, scene, smsCode)
+}
+
 func isUserEnabled(user *entity.User) bool {
 	status := strings.TrimSpace(user.Status)
 	return status == "" || strings.EqualFold(status, "enabled")
@@ -352,7 +360,7 @@ func UserRegister(c *gin.Context) {
 	username := strings.TrimSpace(payload.Username)
 	password := strings.TrimSpace(payload.Password)
 	nickname := strings.TrimSpace(payload.Nickname)
-	rawPhone := strings.TrimSpace(payload.Phone)
+	rawPhone := payload.Phone
 	smsCode := strings.TrimSpace(payload.SMSCode)
 	if username == "" || password == "" {
 		c.JSON(400, gin.H{
@@ -380,7 +388,7 @@ func UserRegister(c *gin.Context) {
 		})
 		return
 	}
-	phone, _, err := service.NormalizePhone(rawPhone)
+	phone, err := service.NormalizeMainlandPhoneInput(rawPhone)
 	if err != nil {
 		c.JSON(400, gin.H{"message": err.Error()})
 		return
@@ -440,6 +448,9 @@ func UserRegister(c *gin.Context) {
 				status = http.StatusUnauthorized
 			} else if errors.Is(err, service.ErrWechatRegisterFlowExpired) {
 				status = http.StatusGone
+			} else if isPhoneBindingError(err) {
+				_ = wechatRegisterFlowStore.Release(registrationFlowToken)
+				status = http.StatusConflict
 			} else if isUserRegisterConflictError(err) {
 				_ = wechatRegisterFlowStore.Release(registrationFlowToken)
 				status = http.StatusConflict
@@ -453,22 +464,12 @@ func UserRegister(c *gin.Context) {
 		c.JSON(http.StatusOK, user)
 		return
 	}
-	if err := consumeCaptchaTokenWithDB(strings.TrimSpace(payload.CaptchaToken), service.CaptchaSceneRegisterSubmit, strings.TrimSpace(c.ClientIP())); err != nil {
-		c.JSON(400, gin.H{"message": err.Error()})
-		return
-	}
-
 	// 检测用户名是否被使用
 	_, err = dao.User.Where(dao.User.Username.Eq(username)).First()
 	if err == nil {
 		c.JSON(400, gin.H{
 			"message": "用户名已经被使用",
 		})
-		return
-	}
-	smsEvidence, err = verifySMSCodeWithDB(phone, service.SMSSceneRegister, smsCode)
-	if err != nil {
-		c.JSON(400, gin.H{"message": err.Error()})
 		return
 	}
 	now := time.Now()
@@ -493,19 +494,35 @@ func UserRegister(c *gin.Context) {
 		RegisterIP: strings.TrimSpace(c.ClientIP()),
 	}
 
-	bonusAmount, err := service.GetNewUserBonusAmountWithDB(dao.User.UnderlyingDB())
-	if err != nil {
-		c.JSON(400, gin.H{"message": "新用户赠送配置读取失败"})
-		return
-	}
-	if err := service.CreateUserWithNewUserBonusWithDB(dao.User.UnderlyingDB(), &user, service.NewUserBonusOptions{
-		Enabled: true,
-		Amount:  bonusAmount,
-		Source:  service.RegistrationBonusSourcePublicRegister,
-	}); err != nil {
-		c.JSON(400, gin.H{
-			"message": "注册失败",
+	failureMessage := "注册失败"
+	err = dao.User.UnderlyingDB().Transaction(func(tx *gorm.DB) error {
+		if err := consumeRegisterCaptchaTokenInTx(tx, strings.TrimSpace(payload.CaptchaToken), service.CaptchaSceneRegisterSubmit, strings.TrimSpace(c.ClientIP())); err != nil {
+			failureMessage = err.Error()
+			return err
+		}
+		evidence, err := verifyRegisterSMSCodeInTx(tx, phone, service.SMSSceneRegister, smsCode)
+		if err != nil {
+			failureMessage = err.Error()
+			return err
+		}
+		smsEvidence = evidence
+		bonusAmount, err := service.GetNewUserBonusAmountWithDB(tx)
+		if err != nil {
+			failureMessage = "新用户赠送配置读取失败"
+			return err
+		}
+		err = service.CreateUserWithNewUserBonusInTx(tx, &user, service.NewUserBonusOptions{
+			Enabled: true,
+			Amount:  bonusAmount,
+			Source:  service.RegistrationBonusSourcePublicRegister,
 		})
+		if isPhoneBindingError(err) {
+			failureMessage = err.Error()
+		}
+		return err
+	})
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": failureMessage})
 		return
 	}
 	bindSuccessfulVerification(user, payload.CaptchaToken, service.CaptchaSceneRegisterSubmit, smsEvidence)
@@ -531,6 +548,10 @@ func isUserRegisterConflictError(err error) bool {
 	return false
 }
 
+func isPhoneBindingError(err error) bool {
+	return errors.Is(err, service.ErrPhoneAlreadyBound) || errors.Is(err, service.ErrPhoneBindingConflict)
+}
+
 func SendPublicSMSCode(c *gin.Context) {
 	var payload struct {
 		Phone        string `json:"phone"`
@@ -541,12 +562,17 @@ func SendPublicSMSCode(c *gin.Context) {
 		c.JSON(400, gin.H{"message": "参数错误"})
 		return
 	}
+	phone, err := service.NormalizeMainlandPhoneInput(payload.Phone)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
 	captchaScene := service.CaptchaSceneSMSSendRegister
 	if strings.TrimSpace(payload.Scene) == service.SMSSceneLogin {
 		captchaScene = service.CaptchaSceneSMSSendLogin
 	}
 	input := service.SendSMSCodeInput{
-		Phone:     strings.TrimSpace(payload.Phone),
+		Phone:     phone,
 		Scene:     strings.TrimSpace(payload.Scene),
 		RequestIP: strings.TrimSpace(c.ClientIP()),
 	}
@@ -577,8 +603,13 @@ func SendUserPhoneChangeSMSCode(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
 		return
 	}
+	phone, err := service.NormalizeMainlandPhoneInput(payload.Phone)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
 	input := service.SendSMSCodeInput{
-		Phone:        strings.TrimSpace(payload.Phone),
+		Phone:        phone,
 		Scene:        service.SMSSceneChangePhone,
 		RequestIP:    strings.TrimSpace(c.ClientIP()),
 		TargetUserID: currentUser.ID,
@@ -672,7 +703,12 @@ func UpdateCurrentUserPhone(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "手机号和验证码不能为空"})
 		return
 	}
-	updated, err := updateUserPhoneWithVerificationWithDB(currentUser.ID, strings.TrimSpace(payload.Phone), strings.TrimSpace(payload.SMSCode))
+	phone, err := service.NormalizeMainlandPhoneInput(payload.Phone)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	updated, err := updateUserPhoneWithVerificationWithDB(currentUser.ID, phone, strings.TrimSpace(payload.SMSCode))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
@@ -817,7 +853,7 @@ func UserSMSLogin(c *gin.Context) {
 		c.JSON(400, gin.H{"message": "参数错误"})
 		return
 	}
-	phone, _, err := service.NormalizePhone(payload.Phone)
+	phone, err := service.NormalizeMainlandPhoneInput(payload.Phone)
 	if err != nil {
 		c.JSON(400, gin.H{"message": err.Error()})
 		return
@@ -826,11 +862,20 @@ func UserSMSLogin(c *gin.Context) {
 		c.JSON(400, gin.H{"message": err.Error()})
 		return
 	}
-	var user entity.User
-	if err := dao.User.UnderlyingDB().Where("phone = ?", phone).First(&user).Error; err != nil {
+	users, err := service.FindUsersByPhoneAliases(dao.User.UnderlyingDB(), phone)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "手机号绑定查询失败"})
+		return
+	}
+	if len(users) > 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"message": service.ErrPhoneBindingConflict.Error()})
+		return
+	}
+	if len(users) == 0 {
 		c.JSON(400, gin.H{"message": "该手机号未绑定账号，请先注册"})
 		return
 	}
+	user := users[0]
 	if !isUserEnabled(&user) {
 		c.JSON(400, gin.H{"message": "用户已被禁用"})
 		return
@@ -992,6 +1037,20 @@ func CreateUser(c *gin.Context) {
 	user.Username = strings.TrimSpace(user.Username)
 	user.Password = strings.TrimSpace(user.Password)
 	user.Nickname = strings.TrimSpace(user.Nickname)
+	if user.Phone != nil {
+		if strings.TrimSpace(*user.Phone) == "" {
+			user.Phone = nil
+		} else {
+			phone, err := service.NormalizeMainlandPhoneInput(*user.Phone)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+				return
+			}
+			user.Phone = &phone
+			now := time.Now()
+			user.PhoneBoundAt = &now
+		}
+	}
 	if user.Username == "" || user.Password == "" {
 		c.JSON(400, gin.H{
 			"message": "用户名和密码不能为空",
@@ -1050,7 +1109,7 @@ func CreateUser(c *gin.Context) {
 		Source:  service.RegistrationBonusSourceAdminCreate,
 	})
 	if err != nil {
-		if errors.Is(err, service.ErrInvalidNewUserBonusAmount) {
+		if errors.Is(err, service.ErrInvalidNewUserBonusAmount) || isPhoneBindingError(err) {
 			c.JSON(400, gin.H{"message": err.Error()})
 			return
 		}

@@ -21,13 +21,11 @@ test('Login page requests captcha before password login, sms login, and sms send
   assert.match(content, /captchaToken/)
 })
 
-test('Login page accepts domestic or international phone input and constrains sms code length', async () => {
+test('Login page uses the mainland phone component and constrains sms code length', async () => {
   const content = await readFile(loginPagePath, 'utf8')
 
-  assert.doesNotMatch(content, /addonBefore="\+86"/)
-  assert.match(content, /:maxlength="20"/)
+  assert.match(content, /<MainlandPhoneInput/)
   assert.match(content, /:maxlength="6"/)
-  assert.match(content, /inputmode="tel"/)
-  assert.match(content, /normalizePhoneInput/)
+  assert.match(content, /ensurePhoneBeforeSMSCaptcha/)
   assert.match(content, /normalizeSMSCodeInput/)
 })

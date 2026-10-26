@@ -23,6 +23,12 @@ test('buildPublicSMSCodePayload includes captcha token', () => {
   });
 });
 
+test('phone auth payloads reject prefixed, malformed, and overlong numbers', () => {
+  assert.throws(() => buildPublicSMSCodePayload({ phone: '+86 13800000000' }, 'login'), /11位手机号/)
+  assert.throws(() => buildSMSLoginPayload({ phone: '1380000000a', smsCode: '123456', captchaToken: 'token' }), /11位手机号/)
+  assert.throws(() => buildPublicRegisterPayload({ username: 'user', password: 'Abc12345!', phone: '138000000000', smsCode: '654321', captchaToken: 'token' }), /11位手机号/)
+});
+
 test('buildSMSLoginPayload requires phone and sms code', () => {
   assert.deepEqual(buildSMSLoginPayload({ phone: ' 13800000000 ', smsCode: ' 123456 ', captchaToken: ' token-2 ' }), {
     phone: '13800000000',

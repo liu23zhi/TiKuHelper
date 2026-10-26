@@ -759,12 +759,6 @@ func TestUserRegisterRejectsWeakPassword(t *testing.T) {
 		t.Fatalf("seed system setting: %v", err)
 	}
 
-	originalConsume := consumeCaptchaTokenWithDB
-	defer func() { consumeCaptchaTokenWithDB = originalConsume }()
-	consumeCaptchaTokenWithDB = func(token string, scene string, requestIP string) error {
-		return nil
-	}
-
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"username":"weak_user","password":"12345678","nickname":"弱密码","phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`)
@@ -796,16 +790,6 @@ func TestUserRegisterRejectsPasswordOverBcryptLimitAsBadRequest(t *testing.T) {
 	if err := db.Create(&entity.SystemSetting{Key: service.RegisterEnabledSettingKey, Value: "true"}).Error; err != nil {
 		t.Fatalf("seed system setting: %v", err)
 	}
-	originalConsume := consumeCaptchaTokenWithDB
-	originalSMS := verifySMSCodeWithDB
-	defer func() {
-		consumeCaptchaTokenWithDB = originalConsume
-		verifySMSCodeWithDB = originalSMS
-	}()
-	consumeCaptchaTokenWithDB = func(string, string, string) error { return nil }
-	verifySMSCodeWithDB = func(string, string, string) (service.SMSVerificationEvidence, error) {
-		return service.SMSVerificationEvidence{}, nil
-	}
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(fmt.Sprintf(`{"username":"register_overlong","password":%q,"phone":"13800000000","smsCode":"123456","captchaToken":"token"}`, strings.Repeat("a", 73)))
@@ -823,14 +807,14 @@ func TestUserRegisterAcceptsStrongPasswordAtBcryptLimit(t *testing.T) {
 	if err := db.Create(&entity.SystemSetting{Key: service.RegisterEnabledSettingKey, Value: "true"}).Error; err != nil {
 		t.Fatalf("seed system setting: %v", err)
 	}
-	originalConsume := consumeCaptchaTokenWithDB
-	originalSMS := verifySMSCodeWithDB
+	originalConsume := consumeRegisterCaptchaTokenInTx
+	originalSMS := verifyRegisterSMSCodeInTx
 	defer func() {
-		consumeCaptchaTokenWithDB = originalConsume
-		verifySMSCodeWithDB = originalSMS
+		consumeRegisterCaptchaTokenInTx = originalConsume
+		verifyRegisterSMSCodeInTx = originalSMS
 	}()
-	consumeCaptchaTokenWithDB = func(string, string, string) error { return nil }
-	verifySMSCodeWithDB = func(string, string, string) (service.SMSVerificationEvidence, error) {
+	consumeRegisterCaptchaTokenInTx = func(*gorm.DB, string, string, string) error { return nil }
+	verifyRegisterSMSCodeInTx = func(*gorm.DB, string, string, string) (service.SMSVerificationEvidence, error) {
 		return service.SMSVerificationEvidence{}, nil
 	}
 	password := "Aa1!" + strings.Repeat("x", 68)
@@ -877,19 +861,19 @@ func TestUserRegisterCreatesPublicUserWithDefaults(t *testing.T) {
 		t.Fatalf("seed system setting: %v", err)
 	}
 
-	originalConsume := consumeCaptchaTokenWithDB
+	originalConsume := consumeRegisterCaptchaTokenInTx
 	defer func() {
-		consumeCaptchaTokenWithDB = originalConsume
+		consumeRegisterCaptchaTokenInTx = originalConsume
 	}()
-	consumeCaptchaTokenWithDB = func(token string, scene string, requestIP string) error {
+	consumeRegisterCaptchaTokenInTx = func(_ *gorm.DB, token string, scene string, requestIP string) error {
 		return nil
 	}
 
-	original := verifySMSCodeWithDB
+	original := verifyRegisterSMSCodeInTx
 	defer func() {
-		verifySMSCodeWithDB = original
+		verifyRegisterSMSCodeInTx = original
 	}()
-	verifySMSCodeWithDB = func(phone string, scene string, smsCode string) (service.SMSVerificationEvidence, error) {
+	verifyRegisterSMSCodeInTx = func(_ *gorm.DB, phone string, scene string, smsCode string) (service.SMSVerificationEvidence, error) {
 		return service.SMSVerificationEvidence{}, nil
 	}
 
@@ -945,14 +929,14 @@ func TestUserRegisterAppliesNewUserBonusAndWritesBillingDetail(t *testing.T) {
 		t.Fatalf("seed bonus setting: %v", err)
 	}
 
-	originalConsume := consumeCaptchaTokenWithDB
-	originalVerify := verifySMSCodeWithDB
+	originalConsume := consumeRegisterCaptchaTokenInTx
+	originalVerify := verifyRegisterSMSCodeInTx
 	defer func() {
-		consumeCaptchaTokenWithDB = originalConsume
-		verifySMSCodeWithDB = originalVerify
+		consumeRegisterCaptchaTokenInTx = originalConsume
+		verifyRegisterSMSCodeInTx = originalVerify
 	}()
-	consumeCaptchaTokenWithDB = func(string, string, string) error { return nil }
-	verifySMSCodeWithDB = func(string, string, string) (service.SMSVerificationEvidence, error) {
+	consumeRegisterCaptchaTokenInTx = func(*gorm.DB, string, string, string) error { return nil }
+	verifyRegisterSMSCodeInTx = func(*gorm.DB, string, string, string) (service.SMSVerificationEvidence, error) {
 		return service.SMSVerificationEvidence{}, nil
 	}
 
@@ -2242,18 +2226,18 @@ func TestUserRegisterCreatesPublicUserWithBoundPhone(t *testing.T) {
 		t.Fatalf("seed system setting: %v", err)
 	}
 
-	originalConsume := consumeCaptchaTokenWithDB
-	defer func() { consumeCaptchaTokenWithDB = originalConsume }()
-	consumeCaptchaTokenWithDB = func(token string, scene string, requestIP string) error {
+	originalConsume := consumeRegisterCaptchaTokenInTx
+	defer func() { consumeRegisterCaptchaTokenInTx = originalConsume }()
+	consumeRegisterCaptchaTokenInTx = func(_ *gorm.DB, token string, scene string, requestIP string) error {
 		return nil
 	}
 
-	original := verifySMSCodeWithDB
+	original := verifyRegisterSMSCodeInTx
 	defer func() {
-		verifySMSCodeWithDB = original
+		verifyRegisterSMSCodeInTx = original
 	}()
 	received := ""
-	verifySMSCodeWithDB = func(phone string, scene string, smsCode string) (service.SMSVerificationEvidence, error) {
+	verifyRegisterSMSCodeInTx = func(_ *gorm.DB, phone string, scene string, smsCode string) (service.SMSVerificationEvidence, error) {
 		received = phone + ":" + scene + ":" + smsCode
 		return service.SMSVerificationEvidence{}, nil
 	}

@@ -62,18 +62,10 @@
           </a-form-item>
           <h3 class="form-section-heading phone-section-heading">手机号验证</h3>
           <a-form-item name="phone" label="手机号" :rules="[{ required: true, message: '请输入手机号' }]">
-            <a-input
+            <MainlandPhoneInput
               v-model:value="registerForm.phone"
-              placeholder="请输入手机号，国际号码请带 + 区号"
               size="large"
-              inputmode="tel"
-              :maxlength="20"
-              @input="registerForm.phone = normalizePhoneInput(registerForm.phone)"
-            >
-              <template #prefix>
-                <MobileOutlined style="color: rgba(0, 0, 0, 0.25)" />
-              </template>
-            </a-input>
+            />
           </a-form-item>
           <a-form-item name="smsCode" label="验证码" :rules="[{ required: true, message: '请输入验证码' }]">
             <div class="sms-code-row">
@@ -180,7 +172,7 @@
 
 <script>
 import { defineComponent, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
-import { UserOutlined, LockOutlined, IdcardOutlined, MobileOutlined, SafetyCertificateOutlined } from '@ant-design/icons-vue';
+import { UserOutlined, LockOutlined, IdcardOutlined, SafetyCertificateOutlined } from '@ant-design/icons-vue';
 import {
   registerUser,
   sendPublicSMSCode,
@@ -197,9 +189,9 @@ import {
 import { buildPublicRegisterPayload, buildPublicSMSCodePayload, limitUsernameInput, normalizeUsername } from '../../utils/phoneAuthHelpers.mjs'
 import {
   ensurePhoneBeforeSMSCaptcha,
-  normalizePhoneInput,
   normalizeSMSCodeInput,
 } from '../../utils/captchaHelpers.mjs'
+import MainlandPhoneInput from '../../components/MainlandPhoneInput.vue'
 import { ensureAuthCaptchaToken } from '../../utils/captchaDialog.mjs'
 import { useSmsCooldown } from '../../utils/smsCooldown.js'
 import { applySiteName } from '../../utils/siteName.js'
@@ -674,7 +666,6 @@ export default defineComponent({
       wechatRegisterStatusText,
       registerForm,
       usernameRules,
-      normalizePhoneInput,
       normalizeSMSCodeInput,
       limitUsernameInput,
       handleRegister,
@@ -692,8 +683,8 @@ export default defineComponent({
     UserOutlined,
     LockOutlined,
     IdcardOutlined,
-    MobileOutlined,
     SafetyCertificateOutlined,
+    MainlandPhoneInput,
   },
 })
 </script>
