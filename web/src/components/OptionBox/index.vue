@@ -2,7 +2,8 @@
   <div v-if="data.length">
     <a-row v-for="(item, index) in data" :key="index" class="rowStyle">
       <a-col :span="2">
-        <div :class="item.check ? 'CheckStyle Check' : 'CheckStyle CheckNo'"
+        <button type="button" :class="item.check ? 'CheckStyle Check' : 'CheckStyle CheckNo'"
+             :aria-label="'切换选项 ' + item.key + ' 的答案状态'" :aria-pressed="item.check"
              @click="item.check = !item.check">
           <a-tooltip placement="top">
             <template #title>
@@ -10,7 +11,7 @@
             </template>
             {{ item.key }}
           </a-tooltip>
-        </div>
+        </button>
       </a-col>
       <a-col :span="17">
         <a-input v-model:value="item.value"/>
@@ -30,9 +31,9 @@
     </a-row>
   </div>
   <div v-else>
-    <Button class="addBut" @click="addOption" style="width: 100%">
+    <a-button class="addBut" @click="addOption" html-type="button" style="width: 100%">
     添加
-    </Button>
+    </a-button>
   </div>
 
 </template>
@@ -157,4 +158,14 @@ export default ({
   border-color: #108ee9;
 }
 
+.CheckStyle {
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  cursor: pointer;
+}
+.CheckStyle:focus-visible {
+  outline: var(--focus-outline-width, 2px) solid var(--focus, #0066CC);
+  outline-offset: var(--focus-outline-offset, 2px);
+}
 </style>

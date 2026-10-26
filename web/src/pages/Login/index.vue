@@ -27,7 +27,7 @@
           </div>
         </div>
 
-        <a-radio-group v-model:value="loginMode" button-style="solid" class="login-mode-switch" @change="handleLoginModeChange">
+        <a-radio-group v-model:value="loginMode" button-style="solid" class="login-mode-switch" aria-label="登录方式" @change="handleLoginModeChange">
           <a-radio-button value="password">账号密码登录</a-radio-button>
           <a-radio-button v-if="publicAuthSettings.smsLoginEnabled" value="sms">短信验证码登录</a-radio-button>
           <a-radio-button v-if="publicAuthSettings.wechatLoginEnabled" value="wechat">微信登录</a-radio-button>
@@ -35,30 +35,42 @@
 
         <a-form
           layout="vertical"
+          :name="formName"
           :model="activeLoginForm"
+          @validate="handleFieldValidation"
           @finish="handleLogin"
           @finishFailed="handleFinishFailed"
           class="form"
         >
-          <a-form-item v-if="loginMode === 'password'" name="username" label="用户名" :rules="[{ required: true, message: '请输入用户名' }]">
-            <a-input v-model:value="loginForm.username" placeholder="请输入用户名" size="large">
+          <a-form-item v-if="loginMode === 'password'" name="username" :help="fieldHelp('username')" label="用户名" :rules="[{ required: true, message: '请输入用户名' }]">
+            <a-input v-bind="fieldAttrs('username')" autocomplete="username" aria-required="true" v-model:value="loginForm.username" placeholder="请输入用户名" size="large">
               <template #prefix>
                 <UserOutlined style="color: rgba(0, 0, 0, 0.25)" />
               </template>
             </a-input>
           </a-form-item>
-          <a-form-item v-if="loginMode === 'password'" name="password" label="密码" :rules="[{ required: true, message: '请输入密码' }]">
-            <a-input-password v-model:value="loginForm.password" placeholder="请输入密码" size="large">
+          <a-form-item v-if="loginMode === 'password'" name="password" :help="fieldHelp('password')" label="密码" :rules="[{ required: true, message: '请输入密码' }]">
+            <a-input-password v-bind="fieldAttrs('password')" autocomplete="current-password" aria-required="true" v-model:value="loginForm.password" placeholder="请输入密码" size="large">
               <template #prefix>
                 <LockOutlined style="color: rgba(0, 0, 0, 0.25)" />
+              </template>
+              <template #iconRender="visible">
+                <button type="button" class="auth-password-toggle" data-auth-password-toggle="true"
+                  :aria-label="visible ? '隐藏密码' : '显示密码'" :aria-pressed="visible">
+                  <EyeInvisibleOutlined v-if="visible" aria-hidden="true" />
+                  <EyeOutlined v-else aria-hidden="true" />
+                </button>
               </template>
             </a-input-password>
           </a-form-item>
 
           <template v-if="loginMode === 'sms'">
-            <a-form-item name="phone" label="手机号" :rules="[{ required: true, message: '请输入手机号' }]">
+            <a-form-item name="phone" :help="fieldHelp('phone')" label="手机号" :rules="[{ required: true, message: '请输入手机号' }]">
               <a-input
                 v-model:value="smsLoginForm.phone"
+                    v-bind="fieldAttrs('phone')"
+                    autocomplete="tel"
+                    aria-required="true"
                 placeholder="请输入绑定手机号，国际号码请带 + 区号"
                 size="large"
                 inputmode="tel"
@@ -70,10 +82,13 @@
                 </template>
               </a-input>
             </a-form-item>
-            <a-form-item name="smsCode" label="验证码" :rules="[{ required: true, message: '请输入验证码' }]">
+            <a-form-item name="smsCode" :help="fieldHelp('smsCode')" label="验证码" :rules="[{ required: true, message: '请输入验证码' }]">
               <div class="sms-code-row">
                 <a-input
                   v-model:value="smsLoginForm.smsCode"
+                    v-bind="fieldAttrs('smsCode')"
+                    autocomplete="one-time-code"
+                    aria-required="true"
                   placeholder="请输入验证码"
                   size="large"
                   inputmode="numeric"
@@ -102,6 +117,7 @@
                 v-model:value="wechatLoginSubMode"
                 button-style="solid"
                 class="wechat-mode-switch"
+                aria-label="微信登录方式"
                 @change="handleWechatSubModeChange"
               >
                 <a-radio-button value="scan">微信扫描</a-radio-button>
@@ -115,7 +131,7 @@
                   <div v-else class="wechat-qrcode-empty">点击下方按钮获取二维码</div>
                 </div>
                 <div class="wechat-status">
-                  {{ wechatLoginStatusText }}
+                  <span role="status" aria-live="polite" aria-atomic="true">{{ wechatLoginStatusText }}</span>
                   <span v-if="wechatRemainingSeconds !== null">，剩余 {{ wechatRemainingSeconds }} 秒</span>
                   <span v-if="wechatTransportText">，{{ wechatTransportText }}</span>
                 </div>
@@ -128,9 +144,12 @@
                   <div v-else class="wechat-qrcode-empty">请联系管理员配置验证码二维码</div>
                 </div>
                 <div class="wechat-status">扫码关注后发送“验证码”，再输入收到的验证码登录</div>
-                <a-form-item name="wechatCode" label="微信验证码" :rules="[{ required: true, message: '请输入微信验证码' }]">
+                <a-form-item name="code" :help="fieldHelp('code')" label="微信验证码" :rules="[{ required: true, message: '请输入微信验证码' }]">
                   <a-input
                     v-model:value="wechatCodeForm.code"
+                    v-bind="fieldAttrs('code')"
+                    autocomplete="one-time-code"
+                    aria-required="true"
                     placeholder="请输入微信验证码"
                     size="large"
                     inputmode="numeric"
@@ -179,8 +198,8 @@
 </template>
 
 <script>
-import { computed, defineComponent, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
-import { UserOutlined, LockOutlined, MobileOutlined, SafetyCertificateOutlined } from '@ant-design/icons-vue';
+import { computed, defineComponent, getCurrentInstance, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { UserOutlined, LockOutlined, MobileOutlined, SafetyCertificateOutlined, EyeOutlined, EyeInvisibleOutlined } from '@ant-design/icons-vue';
 import Swal from 'sweetalert2'
 import {
   login,
@@ -229,6 +248,9 @@ export default defineComponent({
   setup() {
     const router = useRouter()
     const route = useRoute()
+    const formName = 'login-form-' + getCurrentInstance().uid
+    let formAlive = true
+    const fieldErrors = reactive({})
     const submitting = ref(false)
     const sendingLoginCode = ref(false)
     const smsCooldown = useSmsCooldown()
@@ -277,6 +299,26 @@ export default defineComponent({
       }
       return loginForm
     })
+
+    const fieldKey = name => Array.isArray(name) ? name.join('_') : String(name || '')
+    const fieldId = name => formName + '_' + fieldKey(name)
+    const fieldAttrs = name => ({
+      id: fieldId(name),
+      'aria-invalid': fieldErrors[name] ? 'true' : undefined,
+      'aria-describedby': fieldErrors[name] ? fieldId(name) + '-error' : undefined,
+    })
+    const fieldHelp = name => fieldErrors[name]
+      ? h('span', { id: fieldId(name) + '-error' }, fieldErrors[name])
+      : undefined
+    const handleFieldValidation = (name, valid, errors) => {
+      const key = fieldKey(name)
+      if (!formAlive || !Object.prototype.hasOwnProperty.call(activeLoginForm.value, key)) return
+      if (valid || !errors?.length) delete fieldErrors[key]
+      else fieldErrors[key] = String(errors[0])
+    }
+    watch([loginMode, wechatLoginSubMode], () => {
+      Object.keys(fieldErrors).forEach(key => { delete fieldErrors[key] })
+    }, { flush: 'sync' })
 
     const ensureCaptchaToken = (scene, targetForm) => ensureAuthCaptchaToken({
       scene,
@@ -351,7 +393,8 @@ export default defineComponent({
 
     const handleLogin = async () => {
       if (loginMode.value === 'wechat') {
-        await startWechatLogin()
+        if (wechatLoginSubMode.value === 'code') await submitWechatCodeLogin()
+        else await startWechatLogin()
         return
       }
       submitting.value = true
@@ -385,7 +428,6 @@ export default defineComponent({
         message.error(res?.message || '登录失败')
         return null
       }).catch((error) => {
-        console.log(error)
         message.error(error?.message || '登录失败')
       }).finally(() => {
         submitting.value = false
@@ -569,7 +611,13 @@ export default defineComponent({
     }
 
     const handleFinishFailed = (errors) => {
-      console.log(errors)
+      if (!formAlive) return
+      const fields = Array.isArray(errors?.errorFields) ? errors.errorFields : []
+      fields.forEach(field => handleFieldValidation(field.name, false, field.errors))
+      const first = fields[0]?.name
+      if (first) nextTick(() => {
+        if (formAlive) document.getElementById(fieldId(first))?.focus()
+      })
     }
 
     const normalizeWechatCodeInput = (value) => String(value || '').replace(/\D/g, '').slice(0, 12)
@@ -583,10 +631,12 @@ export default defineComponent({
     })
 
     onBeforeUnmount(() => {
+      formAlive = false
       wechatStatusController.stop()
     })
 
     return {
+      formName, fieldAttrs, fieldHelp, handleFieldValidation,
       submitting,
       sendingLoginCode,
       smsCooldownText: smsCooldown.buttonText,
@@ -623,6 +673,8 @@ export default defineComponent({
     LockOutlined,
     MobileOutlined,
     SafetyCertificateOutlined,
+    EyeOutlined,
+    EyeInvisibleOutlined,
   },
 })
 </script>
@@ -639,4 +691,19 @@ export default defineComponent({
   margin-bottom: 20px;
 }
 
+.auth-password-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.auth-password-toggle:focus-visible {
+  outline: var(--focus-outline-width, 2px) solid var(--focus, #0066CC);
+  outline-offset: var(--focus-outline-offset, 2px);
+}
 </style>

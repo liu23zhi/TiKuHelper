@@ -174,7 +174,7 @@
 
         <a-form-item label="网站 Base 地址">
           <a-space direction="vertical" style="width: 100%" :size="8">
-            <a-space style="width: 100%" wrap>
+            <a-space class="base-url-controls" style="width: 100%" wrap>
               <a-input v-model:value="formState.siteBaseUrl" placeholder="例如 https://app.example.com" class="base-url-input" />
               <a-button @click="fillBaseUrlFromBrowser">从浏览器地址栏获取</a-button>
             </a-space>
@@ -962,8 +962,19 @@ export default defineComponent({
   line-height: 1.6;
 }
 
+.base-url-controls {
+  width: 100%;
+}
+
+.base-url-controls :deep(.ant-space-item) {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .base-url-input {
-  min-width: min(320px, 100%);
+  width: 320px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .section-title-wrap {

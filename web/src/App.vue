@@ -13,11 +13,13 @@ import zhCN from 'ant-design-vue/lib/locale/zh_CN'
 import { createThemeController, THEME_CONTROLLER_KEY } from './utils/themeMode.mjs'
 import { getPublicRegisterStatus } from './api/TikuComponentApi'
 import { applySiteName } from './utils/siteName'
+import { installLegacyFormFallback } from './utils/legacyFormAccessibility.mjs'
 
 export default {
   name: 'App',
   components: { AConfigProvider: ConfigProvider },
   setup() {
+    let stopLegacyForms = () => {}
     const controller = createThemeController()
     provide(THEME_CONTROLLER_KEY, controller)
     const themeState = ref(controller.getState())
@@ -38,8 +40,9 @@ export default {
         },
       }
     })
-    onBeforeUnmount(() => { stopTheme(); controller.dispose() })
+    onBeforeUnmount(() => { stopLegacyForms(); stopTheme(); controller.dispose() })
     onMounted(() => {
+      if (typeof document !== 'undefined') stopLegacyForms = installLegacyFormFallback(document.body)
       getPublicRegisterStatus().then((res) => {
         if (res?.status === 200) {
           applySiteName(res?.data?.siteName)
