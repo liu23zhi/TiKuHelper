@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/internal/uapi"
 )
@@ -20,6 +21,7 @@ const maxLocationLookupKeys = 100
 var (
 	lookupPhoneLocationsDetailed = service.LookupPhoneLocationsDetailedWithDB
 	refreshLocationCache         = service.RefreshLocationCacheWithDB
+	refreshLocationCacheRecord   = service.RefreshLocationCacheRecordWithDB
 	manualLookupLocationCache    = service.ManualLookupLocationCacheWithDB
 )
 
@@ -216,9 +218,10 @@ func LocationCacheRefresh(c *gin.Context) {
 		return
 	}
 	var input struct {
-		Kind      string `json:"kind"`
-		LookupKey string `json:"lookupKey"`
-		Source    string `json:"source"`
+		Kind         string  `json:"kind"`
+		LookupKey    string  `json:"lookupKey"`
+		Source       string  `json:"source"`
+		RecordSource *string `json:"recordSource"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "归属地刷新参数错误"})
@@ -226,7 +229,14 @@ func LocationCacheRefresh(c *gin.Context) {
 	}
 	db := resolveSearchPersistenceDB()
 	apiKey := service.GetUAPIAPIKeyWithDB(db)
-	row, err := refreshLocationCache(db, input.Kind, input.LookupKey, service.LocationQueryOptions{UAPIKey: apiKey, Source: input.Source})
+	options := service.LocationQueryOptions{UAPIKey: apiKey, Source: input.Source}
+	var row entity.LocationCache
+	var err error
+	if input.RecordSource != nil {
+		row, err = refreshLocationCacheRecord(db, input.Kind, input.LookupKey, *input.RecordSource, options)
+	} else {
+		row, err = refreshLocationCache(db, input.Kind, input.LookupKey, options)
+	}
 	if err != nil {
 		status := http.StatusBadGateway
 		if errors.Is(err, service.ErrLocationInvalidKey) {

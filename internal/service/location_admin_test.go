@@ -212,7 +212,7 @@ func TestLegacyLocationCacheCanBeReviewedAndDeletedButNotRefreshed(t *testing.T)
 	}
 }
 
-func TestRefreshLocationCacheBatchMapsLegacyToDefaultAndKeepsHistory(t *testing.T) {
+func TestRefreshLocationCacheBatchMapsSelectedLegacyToDefault(t *testing.T) {
 	const raw = `{"ip":"8.8.8.8","region":"美国","isp":"GOOGLE"}`
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -240,12 +240,12 @@ func TestRefreshLocationCacheBatchMapsLegacyToDefaultAndKeepsHistory(t *testing.
 	if requests.Load() != 1 {
 		t.Fatalf("default and legacy selection should share one upstream refresh, got %d", requests.Load())
 	}
-	var legacy entity.LocationCache
-	if err := db.Where("kind = ? AND lookup_key = ? AND source = ?", entity.LocationKindIP, "8.8.8.8", entity.LocationSourceLegacy).First(&legacy).Error; err != nil {
+	var legacyCount int64
+	if err := db.Model(&entity.LocationCache{}).Where("kind = ? AND lookup_key = ? AND source = ?", entity.LocationKindIP, "8.8.8.8", entity.LocationSourceLegacy).Count(&legacyCount).Error; err != nil {
 		t.Fatal(err)
 	}
-	if legacy.Address != "历史地址" {
-		t.Fatalf("legacy history should remain untouched, got %q", legacy.Address)
+	if legacyCount != 0 {
+		t.Fatalf("selected legacy row should merge into the queried source, got %d rows", legacyCount)
 	}
 	var current entity.LocationCache
 	if err := db.Where("kind = ? AND lookup_key = ? AND source = ?", entity.LocationKindIP, "8.8.8.8", "").First(&current).Error; err != nil {
@@ -284,16 +284,12 @@ func TestRefreshLocationCacheBatchUsesSelectedSourceForEveryRecord(t *testing.T)
 				t.Fatalf("expected one query for all three selected rows: %+v calls=%d err=%v", result, requests.Load(), err)
 			}
 			var rows []entity.LocationCache
-			if err := db.Find(&rows).Error; err != nil || len(rows) != 3 {
-				t.Fatalf("source rows must be preserved: %+v err=%v", rows, err)
+			if err := db.Find(&rows).Error; err != nil || len(rows) != 1 {
+				t.Fatalf("selected source rows must merge into the queried source: %+v err=%v", rows, err)
 			}
 			for _, row := range rows {
-				want := "旧地址"
-				if row.Source == source {
-					want = "新地址"
-				}
-				if row.Address != want {
-					t.Errorf("source %q address = %q, want %q", row.Source, row.Address, want)
+				if row.Source != source || row.Address != "新地址" {
+					t.Errorf("unexpected merged source row: %+v", row)
 				}
 			}
 		})
@@ -328,6 +324,19 @@ func TestRefreshLocationCacheBatchAllKeepsSelectionSeparateFromQuerySource(t *te
 	}, LocationQueryOptions{UAPIKey: "uapi-key"})
 	if err != nil || result.Requested != 1 || result.Refreshed != 1 || requests.Load() != 1 {
 		t.Fatalf("all selection must preserve filters/exceptions: %+v calls=%d err=%v", result, requests.Load(), err)
+	}
+	var rows []entity.LocationCache
+	if err := db.Order("lookup_key, source").Find(&rows).Error; err != nil || len(rows) != 4 {
+		t.Fatalf("all selection changed the number of records: %+v err=%v", rows, err)
+	}
+	for _, row := range rows {
+		if row.LookupKey == "8.8.8.8" {
+			if row.Source != "commercial" || row.Address != "新地址" {
+				t.Fatalf("selected legacy record did not change source: %+v", row)
+			}
+		} else if row.Source == "commercial" || row.Address == "新地址" {
+			t.Fatalf("excluded or filtered record was changed: %+v", row)
+		}
 	}
 }
 

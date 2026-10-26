@@ -26,7 +26,7 @@
           </a-select>
         </a-form-item>
       </a-form>
-      <p v-if="kind === 'ip'" class="query-source-hint">重新查询和手动添加使用所选来源，已有其他来源记录保留。</p>
+      <p v-if="kind === 'ip'" class="query-source-hint">重新查询和手动添加使用所选来源，重查成功后同步更新所选记录来源，未选中的其他来源记录保留。</p>
       <a-alert v-if="configured === false" type="info" show-icon :message="kind === 'ip' ? '未配置 UApiPro 密钥，仅可使用普通来源。' : '未配置 UApiPro 密钥，仍可查询手机号归属地。'" class="status-alert" />
       <a-alert v-if="errorMessage" type="error" show-icon :message="errorMessage" class="status-alert" />
       <a-row :gutter="16" class="summary-row">
@@ -94,14 +94,14 @@
 /* global globalThis */
 import { computed, defineComponent, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { message } from 'ant-design-vue'
+import { Descriptions, message } from 'ant-design-vue'
 import Swal from 'sweetalert2'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import { deleteLocationCache, deleteLocationCacheBatch, getLocationCacheList, manualLookupLocationCache, refreshLocationCache, refreshLocationCacheBatch } from '@/api/TikuComponentApi'
 
 export default defineComponent({
   name: 'LocationCache',
-  components: { ReloadOutlined },
+  components: { ReloadOutlined, ADescriptions: Descriptions, ADescriptionsItem: Descriptions.Item },
   setup() {
     const route = useRoute()
     const kind = computed(() => route.meta.locationKind === 'phone' ? 'phone' : 'ip')
@@ -275,6 +275,21 @@ export default defineComponent({
       ...buildBatchDeletePayload(),
       querySource: kind.value === 'ip' ? querySource.value : '',
     })
+    const selectedDetailForRefresh = (payload) => {
+      if (!detailVisible.value || detailRecord.value.kind !== payload.kind) return null
+      const record = detailRecord.value
+      const matchesRecord = item => item.lookupKey === record.lookupKey && (item.source || '') === (record.source || '')
+      const filter = String(payload.keyword || '').trim().toLowerCase()
+      const matchesFilter = (!payload.source || (record.source || '') === payload.source)
+        && (!filter || [record.lookupKey, record.address].some(value => String(value || '').toLowerCase().includes(filter)))
+      const selected = payload.all ? matchesFilter && !payload.except.some(matchesRecord) : payload.items.some(matchesRecord)
+      return selected ? { ...record } : null
+    }
+    const updateRefreshedDetail = (original, refreshed) => {
+      if (!original || !detailVisible.value || recordIdentity(detailRecord.value) !== recordIdentity(original)) return
+      if (refreshed) detailRecord.value = refreshed
+      else detailVisible.value = false
+    }
     const refreshSelected = async () => {
       if (!selectedCount.value || batchRefreshing.value || isRefreshDisabled()) return
       const count = selectedCount.value
@@ -309,6 +324,13 @@ export default defineComponent({
           message.success(`已重新查询 ${refreshed} 条`)
         }
         await load()
+        const detailToRefresh = selectedDetailForRefresh(payload)
+        const detailFailed = detailToRefresh && Array.isArray(summary.failures) && summary.failures.some(item =>
+          item.lookupKey === detailToRefresh.lookupKey && (item.source || '') === (detailToRefresh.source || ''))
+        if (detailToRefresh && !detailFailed) {
+          const refreshedDetail = rows.value.find(row => row.kind === payload.kind && row.lookupKey === detailToRefresh.lookupKey && (row.source || '') === payload.querySource)
+          updateRefreshedDetail(detailToRefresh, refreshedDetail)
+        }
         if (failureMessage) errorMessage.value = failureMessage
       } catch (error) {
         errorMessage.value = requestErrorMessage(error, '批量重新查询失败')
@@ -420,14 +442,19 @@ export default defineComponent({
     const refresh = async (record) => {
       if (isRefreshDisabled(record)) return
       const identity = recordIdentity(record)
+      const original = { ...record }
+      const source = record.kind === 'ip' ? querySource.value : ''
       refreshing[identity] = true
       errorMessage.value = ''
       try {
-        const res = await refreshLocationCache({ kind: record.kind, lookupKey: record.lookupKey, source: record.kind === 'ip' ? querySource.value : '' })
+        const res = await refreshLocationCache({ kind: record.kind, lookupKey: record.lookupKey, source, recordSource: record.source || '' })
         updateConfigured(res?.data?.configured)
         if (res?.status !== 200) throw new Error(res?.message || '重新查询失败')
+        if ((original.source || '') !== source) clearSelectionState()
         message.success('归属地已更新')
         await load()
+        const refreshed = res?.data?.data || rows.value.find(row => row.kind === original.kind && row.lookupKey === original.lookupKey && (row.source || '') === source)
+        updateRefreshedDetail(original, refreshed)
       } catch (error) {
         errorMessage.value = `${record.lookupKey}：${requestErrorMessage(error, '重新查询失败')}`
       } finally { refreshing[identity] = false }

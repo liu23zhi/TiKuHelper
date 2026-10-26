@@ -9,6 +9,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/uapi"
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var (
@@ -235,9 +236,8 @@ func DeleteLocationCacheBatchWithDB(db *gorm.DB, request LocationCacheBatchDelet
 	return result.RowsAffected, result.Error
 }
 
-// RefreshLocationCacheBatchWithDB refreshes the selected cache rows one by one.
-// Every row uses QuerySource (ordinary by default), independently of its stored
-// source. Only the target source is updated; other source rows are retained.
+// RefreshLocationCacheBatchWithDB 按查询目标合并重查，成功后转换所选记录来源。
+// 同一 key 只查询一次；目标来源已有记录时合并，未选中的其他来源不变。
 func RefreshLocationCacheBatchWithDB(db *gorm.DB, request LocationCacheBatchRefreshRequest, options LocationQueryOptions) (LocationCacheBatchRefreshResult, error) {
 	result := LocationCacheBatchRefreshResult{Failures: make([]LocationCacheRefreshFailure, 0)}
 	if db == nil {
@@ -347,7 +347,11 @@ func RefreshLocationCacheBatchWithDB(db *gorm.DB, request LocationCacheBatchRefr
 		target := targets[identity]
 		err := abortErr
 		if err == nil {
-			_, err = RefreshLocationCacheWithDB(db, kind, target.key, LocationQueryOptions{UAPIKey: options.UAPIKey, Source: target.source})
+			recordSources := make([]string, 0, len(target.rows))
+			for _, row := range target.rows {
+				recordSources = append(recordSources, row.Source)
+			}
+			_, err = refreshLocationCacheRecordSourcesWithDB(db, kind, target.key, recordSources, LocationQueryOptions{UAPIKey: options.UAPIKey, Source: target.source})
 			if isLocationAbortError(err) {
 				abortErr = err
 			}
@@ -394,6 +398,15 @@ func normalizeLocationAdminKey(kind string, key string) (string, string, error) 
 
 // RefreshLocationCacheWithDB 只在新结果成功查询且落库后替换旧行，不先删缓存。
 func RefreshLocationCacheWithDB(db *gorm.DB, kind string, key string, options LocationQueryOptions) (entity.LocationCache, error) {
+	return refreshLocationCacheRecordSourcesWithDB(db, kind, key, nil, options)
+}
+
+// RefreshLocationCacheRecordWithDB 成功后将指定原记录转换为本次查询来源，未选来源不变。
+func RefreshLocationCacheRecordWithDB(db *gorm.DB, kind string, key string, recordSource string, options LocationQueryOptions) (entity.LocationCache, error) {
+	return refreshLocationCacheRecordSourcesWithDB(db, kind, key, []string{recordSource}, options)
+}
+
+func refreshLocationCacheRecordSourcesWithDB(db *gorm.DB, kind string, key string, recordSources []string, options LocationQueryOptions) (entity.LocationCache, error) {
 	kind, key, err := normalizeLocationAdminKey(kind, key)
 	if err != nil || (kind == entity.LocationKindIP && IsPrivateOrReservedIP(key)) {
 		return entity.LocationCache{}, ErrLocationInvalidKey
@@ -408,7 +421,40 @@ func RefreshLocationCacheWithDB(db *gorm.DB, kind string, key string, options Lo
 	if strings.TrimSpace(options.UAPIKey) == "" && options.Source != "" {
 		return entity.LocationCache{}, ErrLocationNotConfigured
 	}
-	rows, err := queryLocationRows(db, newLocationClient(options.UAPIKey), kind, []string{key}, options.Source, true)
+	oldSources := make([]string, 0, len(recordSources))
+	seenSources := make(map[string]bool, len(recordSources))
+	for _, source := range recordSources {
+		source, err = normalizeLocationRecordSource(kind, source)
+		if err != nil {
+			return entity.LocationCache{}, err
+		}
+		if source != options.Source && !seenSources[source] {
+			seenSources[source] = true
+			oldSources = append(oldSources, source)
+		}
+	}
+	var persist func(entity.LocationCache, bool) error
+	if len(recordSources) > 0 {
+		persist = func(row entity.LocationCache, writeResult bool) error {
+			return db.Transaction(func(tx *gorm.DB) error {
+				if writeResult {
+					if err := storeLocationCacheRows(tx, []entity.LocationCache{row}); err != nil {
+						return err
+					}
+				} else {
+					var target entity.LocationCache
+					if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("kind = ? AND lookup_key = ? AND source = ?", kind, key, options.Source).First(&target).Error; err != nil {
+						return err
+					}
+				}
+				if len(oldSources) == 0 {
+					return nil
+				}
+				return tx.Where("kind = ? AND lookup_key = ? AND source IN ?", kind, key, oldSources).Delete(&entity.LocationCache{}).Error
+			})
+		}
+	}
+	rows, err := queryLocationRowsWithPersistence(db, newLocationClient(options.UAPIKey), kind, []string{key}, options.Source, true, persist)
 	if err != nil {
 		return entity.LocationCache{}, err
 	}

@@ -653,6 +653,11 @@ func missingIPKeys(keys []string, cached map[string]entity.LocationCache) []stri
 
 // queryLocationRows 将二次查缓存、重试与落库放在同一并发合并区间，避免落库前重复付费。
 func queryLocationRows(db *gorm.DB, client *uapi.Client, kind string, keys []string, source string, refresh bool) ([]entity.LocationCache, error) {
+	return queryLocationRowsWithPersistence(db, client, kind, keys, source, refresh, nil)
+}
+
+// persist 的 writeResult 仅对发起者为 true；搭车者只转换自己的旧来源，不能回写可能过时的共享结果。
+func queryLocationRowsWithPersistence(db *gorm.DB, client *uapi.Client, kind string, keys []string, source string, refresh bool, persist func(row entity.LocationCache, writeResult bool) error) ([]entity.LocationCache, error) {
 	rows := make([]entity.LocationCache, 0, len(keys))
 	var firstErr error
 	normalizedSource, sourceErr := normalizeLocationSource(kind, source)
@@ -661,7 +666,9 @@ func queryLocationRows(db *gorm.DB, client *uapi.Client, kind string, keys []str
 	}
 	for _, key := range keys {
 		lookupKey := locationCacheLookupKey(key)
+		executed := false
 		result := locationLookupGroup.do(kind+"|"+normalizedSource+"|"+lookupKey, func() locationFlightResult {
+			executed = true
 			if !refresh {
 				if row, ok := loadLocationCacheRows(db, kind, normalizedSource, []string{lookupKey})[lookupKey]; ok {
 					return locationFlightResult{address: row.Address, rawJSON: row.RawJSON, ok: true}
@@ -672,7 +679,11 @@ func queryLocationRows(db *gorm.DB, client *uapi.Client, kind string, keys []str
 				fetched = lookupLocationUpstream(client, kind, lookupKey, source)
 				if fetched.ok {
 					row := entity.LocationCache{Kind: kind, LookupKey: lookupKey, Source: normalizedSource, Address: fetched.address, RawJSON: fetched.rawJSON}
-					fetched.err = storeLocationCacheRows(db, []entity.LocationCache{row})
+					if persist != nil {
+						fetched.err = persist(row, true)
+					} else {
+						fetched.err = storeLocationCacheRows(db, []entity.LocationCache{row})
+					}
 					return fetched
 				}
 				logKey := lookupKey
@@ -686,6 +697,9 @@ func queryLocationRows(db *gorm.DB, client *uapi.Client, kind string, keys []str
 			}
 			return fetched
 		})
+		if persist != nil && !executed && result.ok && result.err == nil {
+			result.err = persist(entity.LocationCache{Kind: kind, LookupKey: lookupKey, Source: normalizedSource}, false)
+		}
 		if result.ok {
 			rows = append(rows, entity.LocationCache{Kind: kind, LookupKey: lookupKey, Source: normalizedSource, Address: result.address, RawJSON: result.rawJSON})
 		}

@@ -16,6 +16,7 @@ async function createPage(overrides = {}) {
     message: { success() {} },
     Swal: { fire: async () => ({ isConfirmed: true }) },
     ReloadOutlined: {},
+    Descriptions: { Item: {} },
     deleteLocationCache: async () => ({ status: 200 }),
     deleteLocationCacheBatch: async () => ({ status: 200, data: { deleted: 0 } }),
     refreshLocationCacheBatch: async () => ({ status: 200, data: { configured: true, data: { requested: 0, refreshed: 0, failed: 0, failures: [] } } }),
@@ -25,6 +26,12 @@ async function createPage(overrides = {}) {
     ...overrides,
   }
   return new Function(...Object.keys(dependencies), script)(...Object.values(dependencies)).setup()
+}
+
+function deferred() {
+  let resolve
+  const promise = new Promise(done => { resolve = done })
+  return { promise, resolve }
 }
 
 for (const [status, configured, reason] of [
@@ -95,9 +102,37 @@ for (const querySource of ['', 'commercial']) {
       assert.equal(page.isRefreshDisabled(row), false)
       await page.refresh(row)
     }
-    assert.deepEqual(inputs, Array(3).fill({ kind: 'ip', lookupKey: '8.8.8.8', source: querySource }))
+    assert.deepEqual(inputs, ['', 'commercial', 'legacy'].map(recordSource => ({ kind: 'ip', lookupKey: '8.8.8.8', source: querySource, recordSource })))
   })
 }
+
+test('single refresh replaces the open detail with the confirmed target row and clears stale selection identities', async () => {
+  const original = { kind: 'ip', lookupKey: '8.8.8.8', source: 'legacy', address: '历史地址', rawJson: '{"old":true}' }
+  const refreshed = { ...original, source: 'commercial', address: '商业增强地址', rawJson: '{"fresh":true}' }
+  const page = await createPage({
+    refreshLocationCache: async () => ({ status: 200, data: { data: refreshed, configured: true } }),
+    getLocationCacheList: async () => ({ status: 200, data: { data: [refreshed], total: 1, configured: true } }),
+  })
+  page.setQuerySource('commercial')
+  page.rows.value = [original]
+  page.pagination.total = 1
+  page.handleSelectCurrentPage()
+  page.showDetails(original)
+  await page.refresh(original)
+  assert.deepEqual(page.detailRecord.value, refreshed)
+  assert.equal(page.detailVisible.value, true)
+  assert.equal(page.selectedCount.value, 0)
+  assert.deepEqual(page.rows.value, [refreshed])
+})
+
+test('failed single refresh preserves the open detail and its original source', async () => {
+  const original = { kind: 'ip', lookupKey: '8.8.8.8', source: 'legacy', address: '历史地址' }
+  const page = await createPage({ refreshLocationCache: async () => ({ status: 502, message: '上游失败' }) })
+  page.showDetails(original)
+  await page.refresh(original)
+  assert.deepEqual(page.detailRecord.value, original)
+  assert.equal(page.detailVisible.value, true)
+})
 
 test('query source defaults to ordinary and persists a valid browser preference', async () => {
   const values = new Map()
@@ -124,7 +159,7 @@ test('missing key forces ordinary source but still allows IP refresh', async () 
   page.setQuerySource('commercial')
   assert.equal(page.querySource.value, '')
   await page.refresh({ kind: 'ip', lookupKey: '8.8.8.8', source: 'commercial' })
-  assert.deepEqual(input, { kind: 'ip', lookupKey: '8.8.8.8', source: '' })
+  assert.deepEqual(input, { kind: 'ip', lookupKey: '8.8.8.8', source: '', recordSource: 'commercial' })
 })
 
 test('batch refresh applies the chosen source without changing all-page exceptions', async () => {
@@ -182,7 +217,7 @@ test('phone single, batch and manual queries work without a key and never send t
   page.setQuerySource('commercial')
   const row = { kind: 'phone', lookupKey: '13800138000', source: '' }
   await page.refresh(row)
-  assert.deepEqual(calls, [{ kind: 'phone', lookupKey: '13800138000', source: '' }])
+  assert.deepEqual(calls, [{ kind: 'phone', lookupKey: '13800138000', source: '', recordSource: '' }])
   page.configured.value = false
   await page.refresh(row)
   assert.equal(calls.length, 2)
@@ -243,6 +278,141 @@ test('batch refresh keeps partial failure details after reloading the list', asy
   await page.refreshSelected()
   assert.equal(page.errorMessage.value, '已成功重新查询 1 条，1 条失败：8.8.8.8：上游失败')
 })
+
+for (const targetOnPage of [true, false]) {
+  test(`batch refresh synchronizes selected open detail after source conversion (${targetOnPage ? 'target on page' : 'target outside page'})`, async () => {
+    const original = { kind: 'ip', lookupKey: '8.8.8.8', source: 'legacy', address: '历史地址' }
+    const refreshed = { ...original, source: '', address: '普通来源地址', rawJson: '{"fresh":true}' }
+    const page = await createPage({
+      refreshLocationCacheBatch: async () => ({ status: 200, data: { data: { requested: 1, refreshed: 1, failed: 0, failures: [] } } }),
+      getLocationCacheList: async () => ({ status: 200, data: { data: targetOnPage ? [refreshed] : [], total: 1, configured: true } }),
+    })
+    page.rows.value = [original]
+    page.pagination.total = 1
+    page.handleSelectCurrentPage()
+    page.showDetails(original)
+    await page.refreshSelected()
+    assert.equal(page.detailVisible.value, targetOnPage)
+    if (targetOnPage) assert.deepEqual(page.detailRecord.value, refreshed)
+  })
+}
+
+test('batch refresh leaves failed or unselected open detail unchanged', async () => {
+  for (const failed of [true, false]) {
+    const original = { kind: 'ip', lookupKey: '8.8.8.8', source: 'legacy', address: '历史地址' }
+    const refreshed = { ...original, source: '', address: '普通来源地址' }
+    const selected = failed ? original : { ...original, lookupKey: '1.1.1.1' }
+    const page = await createPage({
+      refreshLocationCacheBatch: async () => ({ status: 200, data: { data: { requested: 1, refreshed: failed ? 0 : 1, failed: failed ? 1 : 0, failures: failed ? [{ lookupKey: original.lookupKey, source: original.source, message: '上游失败' }] : [] } } }),
+      getLocationCacheList: async () => ({ status: 200, data: { data: [refreshed], total: 1, configured: true } }),
+    })
+    page.rows.value = [selected]
+    page.pagination.total = 1
+    page.handleSelectCurrentPage()
+    page.showDetails(original)
+    await page.refreshSelected()
+    assert.deepEqual(page.detailRecord.value, original)
+    assert.equal(page.detailVisible.value, true)
+  }
+})
+
+for (const targetOnPage of [true, false]) {
+  test(`batch refresh synchronizes detail opened during the request (${targetOnPage ? 'target on page' : 'target outside page'})`, async () => {
+    const original = { kind: 'ip', lookupKey: '8.8.8.8', source: 'legacy', address: '历史地址' }
+    const refreshed = { ...original, source: '', address: '普通来源地址' }
+    const started = deferred()
+    const response = deferred()
+    const page = await createPage({
+      refreshLocationCacheBatch: () => { started.resolve(); return response.promise },
+      getLocationCacheList: async () => ({ status: 200, data: { data: targetOnPage ? [refreshed] : [], total: 1 } }),
+    })
+    page.rows.value = [original]
+    page.pagination.total = 1
+    page.handleSelectCurrentPage()
+    const task = page.refreshSelected()
+    await started.promise
+    page.showDetails(original)
+    response.resolve({ status: 200, data: { data: { requested: 1, refreshed: 1, failed: 0, failures: [] } } })
+    await task
+    assert.equal(page.detailVisible.value, targetOnPage)
+    if (targetOnPage) assert.deepEqual(page.detailRecord.value, refreshed)
+  })
+}
+
+test('batch refresh updates the currently open selected detail after switching during the request', async () => {
+  const first = { kind: 'ip', lookupKey: '8.8.8.8', source: 'legacy', address: '原地址一' }
+  const second = { kind: 'ip', lookupKey: '1.1.1.1', source: 'legacy', address: '原地址二' }
+  const refreshed = { ...second, source: '', address: '新地址二' }
+  const started = deferred()
+  const response = deferred()
+  const page = await createPage({
+    refreshLocationCacheBatch: () => { started.resolve(); return response.promise },
+    getLocationCacheList: async () => ({ status: 200, data: { data: [refreshed], total: 2 } }),
+  })
+  page.rows.value = [first, second]
+  page.pagination.total = 2
+  page.handleSelectCurrentPage()
+  page.showDetails(first)
+  const task = page.refreshSelected()
+  await started.promise
+  page.showDetails(second)
+  response.resolve({ status: 200, data: { data: { requested: 2, refreshed: 2, failed: 0, failures: [] } } })
+  await task
+  assert.equal(page.detailVisible.value, true)
+  assert.deepEqual(page.detailRecord.value, refreshed)
+})
+
+test('batch refresh preserves failed or unselected detail opened during the request', async () => {
+  for (const failed of [true, false]) {
+    const original = { kind: 'ip', lookupKey: '8.8.8.8', source: 'legacy', address: '历史地址' }
+    const refreshed = { ...original, source: '', address: '新地址' }
+    const selected = failed ? original : { ...original, lookupKey: '1.1.1.1' }
+    const started = deferred()
+    const response = deferred()
+    const page = await createPage({
+      refreshLocationCacheBatch: () => { started.resolve(); return response.promise },
+      getLocationCacheList: async () => ({ status: 200, data: { data: [refreshed], total: 1 } }),
+    })
+    page.rows.value = [selected]
+    page.pagination.total = 1
+    page.handleSelectCurrentPage()
+    const task = page.refreshSelected()
+    await started.promise
+    page.showDetails(original)
+    response.resolve({ status: 200, data: { data: { requested: 1, refreshed: failed ? 0 : 1, failed: failed ? 1 : 0, failures: failed ? [{ lookupKey: original.lookupKey, source: original.source, message: '上游失败' }] : [] } } })
+    await task
+    assert.equal(page.detailVisible.value, true)
+    assert.deepEqual(page.detailRecord.value, original)
+  }
+})
+
+for (const matchingField of [null, 'lookupKey', 'address']) {
+  test(`all-page batch refresh respects its original keyword filter (${matchingField || 'outside filter'})`, async () => {
+    const original = { kind: 'ip', lookupKey: '8.8.8.8', source: 'legacy', address: 'SHANGHAI 电信' }
+    const refreshed = { ...original, source: '', address: '新地址' }
+    const filter = matchingField ? original[matchingField].toLowerCase() : '北京'
+    const started = deferred()
+    const response = deferred()
+    const page = await createPage({
+      refreshLocationCacheBatch: () => { started.resolve(); return response.promise },
+      getLocationCacheList: async () => ({ status: 200, data: { data: [refreshed], total: 1 } }),
+    })
+    page.keywordInput.value = filter
+    page.reload()
+    await Promise.resolve()
+    page.rows.value = [original]
+    page.pagination.total = 1
+    page.handleSelectAll()
+    page.showDetails(original)
+    const task = page.refreshSelected()
+    await started.promise
+    page.keywordInput.value = '不能用回包时的输入框条件'
+    response.resolve({ status: 200, data: { data: { requested: 1, refreshed: 1, failed: 0, failures: [] } } })
+    await task
+    assert.equal(page.detailVisible.value, true)
+    assert.deepEqual(page.detailRecord.value, matchingField ? refreshed : original)
+  })
+}
 
 test('legacy IP rows remain deletable with their stored source', async () => {
   let deleted
