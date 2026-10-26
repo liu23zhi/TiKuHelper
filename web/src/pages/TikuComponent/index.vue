@@ -59,7 +59,7 @@
               question: '',
               options: '[]',
               answer: '[]'
-            }, 2)">
+            }, 2, $event)">
               <FormOutlined/>
               添加
             </a-button>
@@ -139,7 +139,7 @@
 
             <template #action="{ record }">
               <div style="display:flex;justify-content: space-between">
-                <a-button type="primary" ghost @click="showModal(record, 1)">编辑</a-button>
+                <a-button type="primary" ghost @click="showModal(record, 1, $event)">编辑</a-button>
                 <a-button type="primary" ghost danger @click="deleteQuestion(record.id)">删除</a-button>
               </div>
             </template>
@@ -179,8 +179,10 @@
         style="display: none"
         @change="handleJsonImportChange"
       />
-      <a-modal :open="visible" title="详情内容" @ok="confirm" @cancel="visible = false" v-if="visible">
-        <a-form :model="formData">
+      <a-modal :key="questionDialogKey" :open="visible" title="详情内容" @ok="confirm"
+               @cancel="visible = false" v-if="questionDialogMounted"
+               :focusTriggerAfterClose="false" :afterClose="questionDialogAfterClose">
+        <a-form ref="questionDialogForm" :model="formData">
           <a-form-item label="类型">
             <a-select v-model:value="formData.type">
               <a-select-option v-for="(value, key) in quesType" :key="key" :value="parseInt(key)">
@@ -229,7 +231,7 @@
 </template>
 
 <script>
-import {computed, defineComponent, ref} from 'vue';
+import {computed, defineComponent, nextTick, onBeforeUnmount, ref, shallowRef} from 'vue';
 import {useRouter} from 'vue-router';
 import Swal from 'sweetalert2'
 import {
@@ -370,6 +372,56 @@ export default defineComponent({
   name: 'TikuComponent',
   setup() {
     const router = useRouter();
+    const questionDialogKey = ref(0)
+    const questionDialogMounted = ref(false)
+    const questionDialogForm = ref(null)
+    const questionDialogAfterClose = shallowRef(null)
+    let questionFocusOwner = null
+    let questionFocusAlive = true
+    const captureQuestionDialogOpener = (event) => {
+      const owner = {
+        opener: event?.currentTarget || document.activeElement,
+        dialog: null,
+        epoch: ++questionDialogKey.value,
+      }
+      questionFocusOwner = owner
+      questionDialogMounted.value = true
+      questionDialogAfterClose.value = () => {
+        if (!questionFocusAlive || questionFocusOwner !== owner
+          || owner.epoch !== questionDialogKey.value || visible.value) return
+        questionFocusOwner = null
+        questionDialogMounted.value = false
+        const opener = owner.opener
+        const active = document.activeElement
+        const isVisible = (element) => {
+          for (let node = element; node; node = node.parentElement) {
+            const style = window.getComputedStyle(node)
+            if (node.hidden || node.inert || node.getAttribute('aria-hidden') === 'true'
+              || style.display === 'none' || style.visibility === 'hidden') return false
+          }
+          return true
+        }
+        // Another portal can be opening before its enter transition takes focus.
+        if ([...document.querySelectorAll('[role="dialog"]')]
+          .some(dialog => dialog !== owner.dialog && isVisible(dialog))) return
+        // A later user action or another dialog owns any outside focus.
+        if (active && active !== document.body && active !== opener
+          && !owner.dialog?.contains(active)) return
+        if (!(opener instanceof HTMLElement) || !opener.isConnected
+          || opener.tabIndex < 0 || opener.matches(':disabled, [aria-disabled="true"]')
+          || !isVisible(opener)) return
+        opener.focus({ preventScroll: true })
+      }
+      nextTick(() => {
+        if (questionFocusOwner === owner) {
+          owner.dialog = questionDialogForm.value?.$el?.closest('[role="dialog"]')
+        }
+      })
+    }
+    onBeforeUnmount(() => {
+      questionFocusAlive = false
+      questionFocusOwner = null
+    })
     const navigateToImport = () => {
       router.push('/adapter/import');
     };
@@ -471,6 +523,11 @@ export default defineComponent({
       },
     }))
     return {
+      questionDialogKey,
+      questionDialogMounted,
+      questionDialogForm,
+      questionDialogAfterClose,
+      captureQuestionDialogOpener,
       tabLoading,
       typeList,
       typeValue,
@@ -597,7 +654,8 @@ export default defineComponent({
       this.fetchData()
     },
 
-    showModal(record, act) {
+    showModal(record, act, event) {
+      this.captureQuestionDialogOpener(event)
       if (record.options === '[]' || record.options === '') {
         record.options = '[]'
       }
