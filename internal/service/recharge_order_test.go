@@ -31,7 +31,7 @@ func newRechargeOrderTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open test db: %v", err)
 	}
 
-	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.PaymentMethod{}, &entity.RechargeOrder{}, &entity.BillingRecord{}, &entity.IdempotencyRecord{}); err != nil {
+	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.PaymentMethod{}, &entity.RechargeOrder{}, &entity.BillingRecord{}, &entity.IdempotencyRecord{}, &entity.Log{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 
@@ -71,6 +71,13 @@ func TestIdempotentRechargeReplaysGatewayResultAfterResponseLoss(t *testing.T) {
 	}
 	if _, err := CreateRechargeOrderIdempotentWithDB(db, user, CreateRechargeOrderInput{Amount: 15, PaymentMethodID: method.ID}, "recharge-action-1"); !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("changed amount must conflict: %v", err)
+	}
+	var logs []entity.Log
+	if err := db.Where("module = ? AND action = ?", "recharge", 40).Find(&logs).Error; err != nil || len(logs) != 1 {
+		t.Fatalf("idempotent create must emit one audit event: logs=%+v err=%v", logs, err)
+	}
+	if !strings.Contains(logs[0].NewAnswer, `"status":"success"`) || !strings.Contains(logs[0].NewAnswer, first.Order.OrderNo) {
+		t.Fatalf("unexpected recharge create audit: %+v", logs[0])
 	}
 }
 
@@ -1069,6 +1076,16 @@ func TestHandleRechargePaymentNotifyWithDBSettlesPendingOrderOnce(t *testing.T) 
 	if updatedUser.Balance != 17.6 {
 		t.Fatalf("expected balance to stay 17.6 after duplicate notify, got %v", updatedUser.Balance)
 	}
+	var logs []entity.Log
+	if err := db.Where("module = ? AND action = ?", "recharge", 41).Find(&logs).Error; err != nil || len(logs) != 1 {
+		t.Fatalf("duplicate notify must keep one successful recharge audit: logs=%+v err=%v", logs, err)
+	}
+	if logs[0].UserID != user.ID || logs[0].Username != user.Username || !strings.Contains(logs[0].NewAnswer, `"billingId":`) {
+		t.Fatalf("settlement audit must identify credited user and billing row: %+v", logs[0])
+	}
+	if strings.Contains(logs[0].NewAnswer, signature) || strings.Contains(logs[0].NewAnswer, "sign=") {
+		t.Fatalf("payment credentials leaked into settlement audit: %+v", logs[0])
+	}
 }
 
 func TestHandleRechargePaymentNotifyWithDBRejectsInvalidSignature(t *testing.T) {
@@ -1131,6 +1148,9 @@ func TestHandleRechargePaymentNotifyWithDBRejectsInvalidSignature(t *testing.T) 
 	if count != 0 {
 		t.Fatalf("expected no billing record, got %d", count)
 	}
+	if err := db.Model(&entity.Log{}).Where("module = ? AND action = ?", "recharge", 41).Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("invalid callback must not record credited audit: count=%d err=%v", count, err)
+	}
 }
 
 func TestHandleRechargePaymentNotifyWithDBAcknowledgesNonSuccessStatusWithoutSettlement(t *testing.T) {
@@ -1187,5 +1207,8 @@ func TestHandleRechargePaymentNotifyWithDBAcknowledgesNonSuccessStatusWithoutSet
 	}
 	if count != 0 {
 		t.Fatalf("expected no billing record for non-success notify, got %d", count)
+	}
+	if err := db.Model(&entity.Log{}).Where("module = ? AND action = ?", "recharge", 41).Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("unpaid callback must not record credited audit: count=%d err=%v", count, err)
 	}
 }

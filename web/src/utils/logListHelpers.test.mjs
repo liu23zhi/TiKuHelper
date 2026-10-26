@@ -175,7 +175,7 @@ test('LogList uses fixed widths and horizontal scrolling while allowing wraps', 
   }));
 
   assert.equal(Object.keys(widths).length, 17, 'all log columns should be included');
-  assert.equal(widths['详情'], 'logColumnWidths.detail');
+  assert.equal(widths['详情'], "expandedColumnWidth('detail')");
   assert.equal(widths['请求参数'], 'logColumnWidths.mode');
   assert.equal(widths['原始请求'], "expandedColumnWidth('requestSnapshot')");
   assert.equal(widths['原始响应'], "expandedColumnWidth('responseSnapshot')");
@@ -232,6 +232,9 @@ test('buildLogModuleLabel supports search module wording', () => {
   assert.equal(buildLogModuleLabel('ai_fallback'), 'AI 兜底');
   assert.equal(buildLogModuleLabel('auth'), '认证');
   assert.equal(buildLogModuleLabel('captcha'), '验证码');
+  assert.equal(buildLogModuleLabel('sms'), '短信');
+  assert.equal(buildLogModuleLabel('recharge'), '充值');
+  assert.equal(buildLogModuleLabel('access_token'), '访问令牌');
   assert.equal(buildLogModuleLabel('unknown'), 'unknown');
 });
 
@@ -243,6 +246,110 @@ test('buildLogActionLabel renders search action specially for search module', ()
   assert.equal(buildLogActionLabel(20, 'captcha'), '远程生成');
   assert.equal(buildLogActionLabel(21, 'captcha'), '远程校验');
   assert.equal(buildLogActionLabel(22, 'captcha'), '远程二验');
+  assert.equal(buildLogActionLabel(23, 'captcha'), '本地生成');
+  assert.equal(buildLogActionLabel(24, 'captcha'), '本地校验');
+  for (const [action, label] of [[12, '注册'], [13, '退出'], [14, '密码重置'], [15, '手机号修改'], [16, '资料修改'], [30, '发送短信'], [40, '充值下单'], [41, '充值到账']]) {
+    assert.equal(buildLogActionLabel(action, 'auth'), label);
+    assert.ok(logHelpers.LOG_ACTION_OPTIONS.some((option) => option.value === action && option.label === label));
+  }
+});
+
+test('account audit modules use snapshot status without treating successful messages as failures', () => {
+  for (const module of ['auth', 'user', 'sms', 'recharge', 'access_token']) {
+    for (const [status, label, color] of [['success', '成功', 'green'], ['failed', '失败', 'red'], ['pending', '等待中', 'gold']]) {
+      const record = {
+        module, action: 1, description: '安全操作摘要',
+        newAnswer: JSON.stringify({ status, message: '操作结果', requestId: 'request-1', durationMs: 187, provider: 'smsbao', scene: 'login_sms' }),
+      };
+      assert.equal(buildLogStatusLabel(record), label);
+      assert.equal(buildLogStatusColor(record), color);
+      assert.equal(buildLogStructuredFields(record).requestId, 'request-1');
+      assert.equal(buildLogStructuredFields(record).billingProvider, '187ms');
+      assert.equal(buildLogStructuredFields(record).hitProvider, '短信宝');
+      assert.equal(buildLogStructuredFields(record).mode, 'scene=login_sms');
+      assert.deepEqual(buildLogStructuredFields(record).failureReasons, status === 'failed' ? ['操作结果'] : []);
+    }
+  }
+});
+
+test('recharge audit rows expose order correlation and a readable safe summary', () => {
+  const record = {
+    module: 'recharge', action: 41, description: '充值到账',
+    newAnswer: JSON.stringify({ status: 'success', message: '充值已到账', orderNo: 'rcg_order_1', amount: 10, paymentType: 'alipay' }),
+  };
+  assert.equal(buildLogStructuredFields(record).summary, '充值到账');
+  assert.equal(buildLogStructuredFields(record).requestId, 'rcg_order_1');
+  assert.equal(buildLogStructuredFields(record).hitProvider, '支付宝');
+  assert.equal(buildLogRowDetail(record), '充值已到账');
+});
+
+test('SMS audits read scene and provider from the actual safe request snapshot', () => {
+  const record = {
+    module: 'sms', action: 30, description: '短信发送成功',
+    oldAnswer: JSON.stringify({ scene: 'login', phone: '138****0000', provider: 'smsbao' }),
+    newAnswer: JSON.stringify({ status: 'success', message: '短信发送成功', durationMs: 187, smsRecordId: 12 }),
+  };
+  const fields = buildLogStructuredFields(record);
+  assert.equal(fields.mode, 'scene=login');
+  assert.equal(fields.hitProvider, '短信宝');
+  assert.equal(fields.billingProvider, '187ms');
+  assert.equal(buildLogStatusLabel(record), '成功');
+  assert.equal(buildLogRowDetail(record), '短信发送成功');
+  assert.equal(fields.requestSnapshot, record.oldAnswer);
+  assert.equal(fields.responseSnapshot, record.newAnswer);
+  assert.deepEqual(fields.failureReasons, []);
+});
+
+test('account change details accept before in request and after in response without rendering secrets', () => {
+  const record = {
+    module: 'access_token', action: 1, description: '更新访问令牌成功',
+    oldAnswer: JSON.stringify({ before: { name: '原令牌', totalQuotaLimit: 5, tokenValue: 'secret-old' } }),
+    newAnswer: JSON.stringify({ status: 'success', after: { name: '新令牌', totalQuotaLimit: 10, tokenValue: 'secret-new' } }),
+  };
+  assert.equal(buildLogRowDetail(record), '变更前：名称：原令牌，总额度：5\n变更后：名称：新令牌，总额度：10');
+  assert.doesNotMatch(buildLogRowDetail(record), /secret|tokenValue/);
+  assert.equal(buildLogStructuredFields({ ...record, oldAnswer: JSON.stringify({ orderNo: 'request-order', provider: 'smsbao', scene: 'old' }), newAnswer: JSON.stringify({ status: 'success', requestId: 'result-request', provider: 'alipay', scene: 'new' }) }).requestId, 'result-request');
+  assert.equal(buildLogStructuredFields({ ...record, oldAnswer: JSON.stringify({ orderNo: 'request-order' }), newAnswer: JSON.stringify({ status: 'success' }) }).requestId, 'request-order');
+});
+
+test('account change details preserve readable changes without exposing unrecognized secret fields', () => {
+  const record = {
+    module: 'user', description: '资料修改',
+    newAnswer: JSON.stringify({
+      status: 'success', message: '资料已更新',
+      before: { nickname: '旧昵称', enabled: false, password: 'secret-old' },
+      after: { nickname: '新昵称', enabled: true, password: 'secret-new', token: 'secret-token' },
+    }),
+  };
+  assert.equal(buildLogRowDetail(record), '资料已更新\n变更前：昵称：旧昵称，启用：否\n变更后：昵称：新昵称，启用：是');
+  assert.doesNotMatch(buildLogRowDetail(record), /secret|password|token/);
+  assert.equal(buildLogRowDetail({ module: 'auth', newAnswer: '历史登录结果' }), '历史登录结果');
+});
+
+test('local captcha audit snapshots share status, correlation and duration rendering', () => {
+  const record = {
+    module: 'captcha', action: 24, description: '本地验证码校验', correlationId: 'captcha-local',
+    newAnswer: JSON.stringify({ status: 'success', scene: 'register', captchaId: 'captcha-local', durationMs: 0 }),
+  };
+  assert.equal(buildLogStatusLabel(record), '成功');
+  const fields = buildLogStructuredFields(record);
+  assert.equal(fields.summary, '本地验证码校验成功');
+  assert.equal(fields.requestId, 'captcha-local');
+  assert.equal(fields.mode, 'local_check');
+  assert.equal(fields.requestSource, 'register');
+  assert.equal(fields.billingProvider, '0ms');
+  assert.match(buildLogRowDetail(record), /场景：register/);
+  assert.doesNotMatch(buildLogRowDetail(record), /HTTP success/);
+  const failed = { ...record, newAnswer: JSON.stringify({ status: 'failed', message: '验证码无效' }) };
+  assert.equal(buildLogStatusLabel(failed), '失败');
+  assert.equal(buildLogStructuredFields(failed).requestId, 'captcha-local');
+  assert.deepEqual(buildLogStructuredFields(failed).failureReasons, ['验证码无效']);
+});
+
+test('expandable detail text retains the complete answer and legacy response', () => {
+  const text = '需要完整显示的答案'.repeat(100);
+  assert.equal(buildLogTableDetail({ module: 'search', newAnswer: JSON.stringify({ answer: { answerText: text } }) }), `答案：${text}`);
+  assert.equal(buildLogTableDetail({ module: 'question', newAnswer: text }), text);
 });
 
 test('buildLogActionColor keeps search action purple and login gold', () => {
@@ -412,6 +519,10 @@ test('buildLogStructuredFields maps billing provider codes to Chinese labels', (
   assert.equal(buildLogStructuredFields({
     description: '搜索完成 requestId=req-mixed mode=normal use=icodef answers=1 hitProvider=ai billingProvider=icodef,ai',
   }).billingProvider, 'Icodef 题库、AI 搜索');
+
+  assert.equal(buildLogStructuredFields({
+    description: '搜索完成 requestId=req-tools mode=normal use=ai answers=1 hitProvider=ai billingProvider=ai,ai_search,web_read,custom_provider',
+  }).billingProvider, 'AI 搜索、联网搜索、浏览网页、custom_provider');
 
   assert.equal(buildLogStructuredFields({
     description: '搜索完成 requestId=req-failed mode=normal use= answers=1 hitProvider=ai billingProvider=billing_persist_failed',

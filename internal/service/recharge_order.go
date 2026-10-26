@@ -24,6 +24,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -350,17 +351,25 @@ func applyRechargeOrderFilters(query *gorm.DB, filter RechargeOrderListQuery) *g
 func CreateRechargeOrderWithDB(db *gorm.DB, user entity.User, input CreateRechargeOrderInput) (CreateRechargeOrderResult, error) {
 	config, order, paymentType, err := prepareRechargeOrderWithDB(db, user, input)
 	if err != nil {
+		writeRechargeCreateFailureAudit(db, user, input, order, paymentType, err)
 		return CreateRechargeOrderResult{}, err
 	}
 	paymentResult, err := createRechargePaymentRequest(config, rechargePayRequest(order, paymentType, input))
 	if err != nil {
+		_ = writeRechargeCreateAudit(db, user, input, order, paymentType, "pending", "PAYMENT_RESULT_UNKNOWN", "支付下单结果待核对，请勿重复下单")
 		return CreateRechargeOrderResult{}, err
 	}
 	if strings.TrimSpace(paymentResult.ThirdPartyOrderNo) != "" {
 		order.ThirdPartyOrderNo = strings.TrimSpace(paymentResult.ThirdPartyOrderNo)
 	}
 	if err := db.Create(&order).Error; err != nil {
+		_ = writeRechargeCreateAudit(db, user, input, order, paymentType, "pending", "ORDER_RESULT_UNKNOWN", "支付订单状态待核对，请勿重复下单")
 		return CreateRechargeOrderResult{}, err
+	}
+	// The gateway already created this legacy order. Audit failures must not
+	// discard the local record needed to reconcile a later payment callback.
+	if err := writeRechargeCreateAudit(db, user, input, order, paymentType, "success", "", "充值订单创建成功"); err != nil {
+		logger.SysError("充值下单成功，但操作日志写入失败: " + logger.RedactSecrets(err.Error()))
 	}
 	return rechargeResult(order, paymentResult), nil
 }
@@ -473,20 +482,24 @@ func CreateRechargeOrderIdempotentWithDB(db *gorm.DB, user entity.User, input Cr
 	config, order, paymentType, err := prepareRechargeOrderWithDB(db, user, input)
 	if err != nil {
 		_ = ReleaseIdempotencyWithDB(db, record.ID)
+		writeRechargeCreateFailureAudit(db, user, input, order, paymentType, err)
 		return CreateRechargeOrderResult{}, err
 	}
 	if err := db.Create(&order).Error; err != nil {
 		_ = MarkIdempotencyUnknownWithDB(db, record.ID)
+		writeRechargeCreateFailureAudit(db, user, input, order, paymentType, err)
 		return CreateRechargeOrderResult{}, err
 	}
 	progress, _ := json.Marshal(CreateRechargeOrderResult{Order: order})
 	if err := SaveIdempotencyProgressWithDB(db, record.ID, progress); err != nil {
 		_ = MarkIdempotencyUnknownWithDB(db, record.ID)
+		_ = writeRechargeCreateAudit(db, user, input, order, paymentType, "pending", "ORDER_RESULT_UNKNOWN", "支付订单状态待核对，请勿重复下单")
 		return CreateRechargeOrderResult{Order: order}, ErrIdempotencyPending
 	}
 	paymentResult, err := createRechargePaymentRequest(config, rechargePayRequest(order, paymentType, input))
 	if err != nil {
 		_ = MarkIdempotencyUnknownWithDB(db, record.ID)
+		_ = writeRechargeCreateAudit(db, user, input, order, paymentType, "pending", "PAYMENT_RESULT_UNKNOWN", "支付下单结果待核对，请勿重复下单")
 		return CreateRechargeOrderResult{Order: order}, ErrIdempotencyPending
 	}
 	var result CreateRechargeOrderResult
@@ -506,9 +519,13 @@ func CreateRechargeOrderIdempotentWithDB(db *gorm.DB, user entity.User, input Cr
 		if err != nil {
 			return err
 		}
-		return CompleteIdempotencyWithDB(tx, record.ID, http.StatusOK, response)
+		if err := CompleteIdempotencyWithDB(tx, record.ID, http.StatusOK, response); err != nil {
+			return err
+		}
+		return writeRechargeCreateAudit(tx, user, input, order, paymentType, "success", "", "充值订单创建成功")
 	}); err != nil {
 		_ = MarkIdempotencyUnknownWithDB(db, record.ID)
+		_ = writeRechargeCreateAudit(db, user, input, order, paymentType, "pending", "ORDER_RESULT_UNKNOWN", "支付订单状态待核对，请勿重复下单")
 		return CreateRechargeOrderResult{Order: order}, ErrIdempotencyPending
 	}
 	return result, nil
@@ -543,6 +560,7 @@ func HandleRechargePaymentNotifyWithDB(db *gorm.DB, values url.Values) (bool, er
 	tradeStatus := strings.TrimSpace(values.Get("trade_status"))
 	tradeNo := strings.TrimSpace(values.Get("trade_no"))
 	paidAmount := normalizeRechargeAmount(parseRechargeAmount(values.Get("money")))
+	var settledAudit *AccountAuditEvent
 
 	err = db.Transaction(func(tx *gorm.DB) error {
 		var order entity.RechargeOrder
@@ -609,13 +627,63 @@ func HandleRechargePaymentNotifyWithDB(db *gorm.DB, values url.Values) (bool, er
 			return err
 		}
 
+		settledAudit = &AccountAuditEvent{
+			UserID: user.ID, Username: user.Username, Module: "recharge", Action: 41,
+			Description: "充值到账", CorrelationID: order.OrderNo,
+			Request: map[string]any{"orderNo": order.OrderNo, "amount": order.Amount, "paymentType": values.Get("type")},
+			Result: map[string]any{
+				"status": "success", "message": "充值已到账", "orderNo": order.OrderNo,
+				"amount": order.Amount, "provider": order.PaymentProvider,
+				"paymentType": values.Get("type"), "billingId": billingRecord.ID,
+			},
+		}
 		return nil
 	})
 	if err != nil {
 		return false, err
 	}
 
+	// Financial state is committed before this best-effort audit. A repeated paid
+	// callback creates no event and never credits or attempts the same audit twice.
+	if settledAudit != nil {
+		if auditErr := WriteAccountAuditWithDB(db, *settledAudit); auditErr != nil {
+			logger.SysWarn(fmt.Sprintf("充值到账审计写入失败 orderNo=%s: %v", orderNo, auditErr))
+		}
+	}
 	return acknowledged, nil
+}
+
+func writeRechargeCreateAudit(db *gorm.DB, user entity.User, input CreateRechargeOrderInput, order entity.RechargeOrder, paymentType, status, code, message string) error {
+	description := "充值下单失败"
+	if status == "success" {
+		description = "充值下单成功"
+	} else if status == "pending" {
+		description = "充值下单结果待确认"
+	}
+	return WriteAccountAuditWithDB(db, AccountAuditEvent{
+		UserID: user.ID, Username: user.Username, Module: "recharge", Action: 40,
+		Description: description, ClientIP: input.ClientIP, CorrelationID: order.OrderNo,
+		Request: map[string]any{"amount": input.Amount, "paymentType": paymentType},
+		Result: map[string]any{
+			"status": status, "message": message, "code": code, "orderNo": order.OrderNo,
+			"amount": input.Amount, "paymentType": paymentType, "provider": order.PaymentProvider,
+		},
+	})
+}
+
+func writeRechargeCreateFailureAudit(db *gorm.DB, user entity.User, input CreateRechargeOrderInput, order entity.RechargeOrder, paymentType string, err error) {
+	code, message := "ORDER_CREATE_FAILED", "创建充值订单失败"
+	switch {
+	case errors.Is(err, ErrRechargeAmountInvalid), errors.Is(err, ErrRechargeAmountPrecision), errors.Is(err, ErrRechargeAmountBelowMinimum):
+		code, message = "INVALID_AMOUNT", "充值金额不符合要求"
+	case errors.Is(err, ErrRechargePaymentConfigIncomplete):
+		code, message = "PAYMENT_CONFIG_INCOMPLETE", "支付配置不完整"
+	case errors.Is(err, ErrRechargePaymentMethodDisabled):
+		code, message = "PAYMENT_METHOD_DISABLED", "支付方式未启用"
+	case errors.Is(err, ErrRechargePaymentMethodNotFound):
+		code, message = "PAYMENT_METHOD_NOT_FOUND", "支付方式不存在"
+	}
+	_ = writeRechargeCreateAudit(db, user, input, order, paymentType, "failed", code, message)
 }
 
 func isRechargePaymentConfigComplete(config RechargePaymentConfig) bool {

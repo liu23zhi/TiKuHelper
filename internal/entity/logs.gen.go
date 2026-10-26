@@ -12,17 +12,18 @@ const TableNameLog = "logs"
 
 // Log mapped from table <logs>
 type Log struct {
-	ID          int32     `gorm:"primaryKey;autoIncrement" json:"id"`
-	Qid         int32     `gorm:"column:qid;type:int(11);not null;default:0;comment:被修改的qid" json:"qid"`
-	OldAnswer   string    `gorm:"column:old_answer;type:longtext;comment:修改之前的答案" json:"oldAnswer"`
-	NewAnswer   string    `gorm:"column:new_answer;type:longtext;comment:修改之后的答案" json:"newAnswer"`
-	UserID      int32     `gorm:"column:user_id;type:int(11);not null;index;comment:谁执行的操作" json:"userId"`
-	Username    string    `gorm:"column:username;type:varchar(255);index" json:"username"`
-	Module      string    `gorm:"column:module;type:varchar(64);index" json:"module"`
-	Action      int32     `gorm:"column:action;type:tinyint(4);not null;comment:操作类型" json:"action"`
-	Description string    `gorm:"column:description;type:varchar(255)" json:"description"`
-	ClientIP    string    `gorm:"column:client_ip;type:varchar(64)" json:"clientIp"`
-	CreateTime  time.Time `gorm:"column:create_time;type:datetime;not null;index;comment:操作日期" json:"createTime"`
+	ID            int32     `gorm:"primaryKey;autoIncrement" json:"id"`
+	Qid           int32     `gorm:"column:qid;type:int(11);not null;default:0;comment:被修改的qid" json:"qid"`
+	OldAnswer     string    `gorm:"column:old_answer;type:longtext;comment:修改之前的答案" json:"oldAnswer"`
+	NewAnswer     string    `gorm:"column:new_answer;type:longtext;comment:修改之后的答案" json:"newAnswer"`
+	UserID        int32     `gorm:"column:user_id;type:int(11);not null;index;comment:谁执行的操作" json:"userId"`
+	Username      string    `gorm:"column:username;type:varchar(255);index" json:"username"`
+	Module        string    `gorm:"column:module;type:varchar(64);index" json:"module"`
+	Action        int32     `gorm:"column:action;type:tinyint(4);not null;comment:操作类型" json:"action"`
+	Description   string    `gorm:"column:description;type:varchar(255)" json:"description"`
+	CorrelationID string    `gorm:"column:correlation_id;type:varchar(192);index" json:"-"`
+	ClientIP      string    `gorm:"column:client_ip;type:varchar(64)" json:"clientIp"`
+	CreateTime    time.Time `gorm:"column:create_time;type:datetime;not null;index;comment:操作日期" json:"createTime"`
 }
 
 // TableName Log's table name

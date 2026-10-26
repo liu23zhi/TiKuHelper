@@ -5,6 +5,7 @@
         <h1 class="page-title">账户使用</h1>
         <p class="page-subtitle">管理账户余额，并查看个人消费与充值流水。</p>
       </div>
+      <a-button @click="handleRefreshAll" :loading="pageRefreshing">刷新</a-button>
     </div>
 
     <a-row :gutter="16" class="summary-row">
@@ -35,10 +36,6 @@
         <h2 class="page-title">账户余额与充值</h2>
         <p class="page-subtitle">选择金额和支付方式，创建充值订单。</p>
       </div>
-      <template #extra>
-        <a-button @click="handleRefreshAll" :loading="pageRefreshing">刷新</a-button>
-      </template>
-
       <a-row :gutter="16" class="recharge-summary-row">
         <a-col :xs="24" :lg="10">
           <div class="balance-panel">
@@ -242,8 +239,6 @@ import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
 const dataSource = ref([])
 const expandedSubjects = reactive({})
 const paymentMethods = ref([])
-const tableLoading = ref(false)
-const paymentMethodLoading = ref(false)
 const rechargeSubmitting = ref(false)
 const rechargeAmount = ref(10)
 const selectedPaymentMethodId = ref(null)
@@ -275,6 +270,11 @@ export default defineComponent({
   setup() {
     const { currentUser, captureUpdateGuard } = useCurrentUserDisplay()
     const instance = getCurrentInstance()
+    const tableLoading = ref(false)
+    const paymentMethodLoading = ref(false)
+    const currentUserLoading = ref(false)
+    let active = true
+    let refreshSequence = 0
     let ownedFeeDetail = null
     const protectInvalidatedReturnFocus = (detail) => {
       const target = detail.returnFocusTarget
@@ -330,6 +330,9 @@ export default defineComponent({
     const { captureDataOwner, canLoadForCurrentUser } = useCurrentUserRequestScope(currentUser, {
       clear() {
         closeOwnedFeeDetail()
+        refreshSequence += 1
+        currentUserLoading.value = false
+        paymentMethodLoading.value = false
         dataSource.value = []; pagination.total = 0; tableLoading.value = false
         Object.keys(expandedSubjects).forEach(key => { delete expandedSubjects[key] })
         paymentResultVisible.value = false; paymentQRCodeDataUrl.value = ''; paymentJumpUrl.value = ''
@@ -359,13 +362,14 @@ export default defineComponent({
         },
       }
     }
-    let active = true
-    let refreshSequence = 0
     onBeforeUnmount(() => { active = false })
     const handleRefreshCurrentUser = () => {
+      if (!canLoadForCurrentUser()) return Promise.resolve()
       const isCurrentDisplay = captureUpdateGuard()
+      const owns = captureDataOwner()
       const sequence = ++refreshSequence
-      getCurrentUser().then((res) => {
+      currentUserLoading.value = true
+      return getCurrentUser().then((res) => {
         if (!active || sequence !== refreshSequence || !isCurrentDisplay()) return
         if (res?.status === 200 && res?.data) {
           if (Object.prototype.hasOwnProperty.call(res.data, 'minRechargeAmount')) {
@@ -374,7 +378,11 @@ export default defineComponent({
           }
           setStoredCurrentUser(res.data)
         }
-      }).catch(() => {})
+      }).catch(() => {}).finally(() => {
+        // A successful setStoredCurrentUser changes the display-version guard.
+        // Release only this live request's busy state, not the captured raw value.
+        if (active && sequence === refreshSequence && owns()) currentUserLoading.value = false
+      })
     }
     const subjectColumnWidth = computed(() => dataSource.value.some((record) => expandedSubjects[record.id])
       ? billingTableColumnWidths.subjectExpanded
@@ -404,7 +412,7 @@ export default defineComponent({
       return Number.isFinite(balance) ? balance : 0
     })
 
-    const pageRefreshing = computed(() => tableLoading.value || paymentMethodLoading.value)
+    const pageRefreshing = computed(() => currentUserLoading.value || tableLoading.value || paymentMethodLoading.value)
 
     // 充值金额输入约束：输入阶段就挡住超出 2 位的金额。
     const parseRechargeAmountInput = (value) => sanitizeRechargeAmountInput(value)
@@ -423,6 +431,7 @@ export default defineComponent({
       paymentMethods,
       tableLoading,
       paymentMethodLoading,
+      currentUserLoading,
       rechargeSubmitting,
       rechargeAmount,
       minRechargeAmount,
@@ -572,15 +581,17 @@ export default defineComponent({
       expandedSubjects[id] = !expandedSubjects[id]
     },
     handleRefreshAll() {
-      this.handleRefreshCurrentUser()
-      this.handleLoadBillingRecords()
-      this.handleLoadPaymentMethods()
+      return Promise.all([
+        this.handleRefreshCurrentUser(),
+        this.handleLoadBillingRecords(),
+        this.handleLoadPaymentMethods(),
+      ])
     },
     handleLoadBillingRecords() {
-      if (!this.canLoadForCurrentUser()) return
+      if (!this.canLoadForCurrentUser()) return Promise.resolve()
       const owns = this.captureDataOwner()
-      tableLoading.value = true
-      getBillingRecords(buildPersonalUsageBillingRecordParams(pagination.current, pagination.pageSize)).then((res) => {
+      this.tableLoading = true
+      return getBillingRecords(buildPersonalUsageBillingRecordParams(pagination.current, pagination.pageSize)).then((res) => {
         if (!owns()) return
         if (res?.status === 200) {
           dataSource.value = Array.isArray(res?.data?.data) ? res.data.data : []
@@ -595,12 +606,15 @@ export default defineComponent({
         message.error('获取账单列表失败')
       }).finally(() => {
         if (!owns()) return
-        tableLoading.value = false
+        this.tableLoading = false
       })
     },
     handleLoadPaymentMethods() {
-      paymentMethodLoading.value = true
-      getPaymentMethods().then((res) => {
+      if (!this.canLoadForCurrentUser()) return Promise.resolve()
+      const owns = this.captureDataOwner()
+      this.paymentMethodLoading = true
+      return getPaymentMethods().then((res) => {
+        if (!owns()) return
         if (res?.status === 200) {
           const rows = Array.isArray(res?.data) ? res.data : []
           paymentMethods.value = sortPaymentMethodsForDisplay(rows).filter((item) => !!item.enabled)
@@ -614,9 +628,11 @@ export default defineComponent({
           message.error(res?.message || '获取支付方式失败')
         }
       }).catch(() => {
+        if (!owns()) return
         message.error('获取支付方式失败')
       }).finally(() => {
-        paymentMethodLoading.value = false
+        if (!owns()) return
+        this.paymentMethodLoading = false
       })
     },
     handleTableChange(paginationData) {

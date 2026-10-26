@@ -1,6 +1,9 @@
 package service
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -232,25 +235,35 @@ func TestNormalizePhoneLookupKeysDeduplicatesAndSkipsInvalid(t *testing.T) {
 	}
 }
 
-// 未配置密钥时必须直接返回空结果，且**不发起任何外呼**（不消耗积分）。
-func TestLookupPhoneLocationsWithoutAPIKeyReturnsEmpty(t *testing.T) {
+func TestLookupPhoneLocationsWithoutAPIKeyDeniesMissesButReusesCache(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write([]byte(`{"province":"广东","city":"深圳","sp":"移动"}`))
+	}))
+	defer server.Close()
+	newDefaultLocationClient(t, server, "")
 	db := newLocationTestDB(t)
-
-	locations := LookupPhoneLocationsWithDB(db, []string{"13800138000"}, LocationQueryOptions{})
-	if len(locations) != 0 {
-		t.Fatalf("expected no locations without an API key, got %v", locations)
+	for i := 0; i < 2; i++ {
+		locations, err := LookupPhoneLocationsDetailedWithDB(db, []string{"13800138000"}, LocationQueryOptions{})
+		if err != ErrLocationNotConfigured || len(locations) != 0 {
+			t.Fatalf("uncached keyless query must fail locally: %v err=%v", locations, err)
+		}
 	}
-
 	var count int64
-	if err := db.Model(&entity.LocationCache{}).Count(&count).Error; err != nil {
-		t.Fatalf("count cache rows: %v", err)
+	db.Model(&entity.LocationCache{}).Count(&count)
+	if count != 0 || requests.Load() != 0 {
+		t.Fatalf("keyless query populated cache or called upstream: rows=%d requests=%d", count, requests.Load())
 	}
-	if count != 0 {
-		t.Fatalf("expected nothing to be persisted without an API key, got %d rows", count)
+	if err := storeLocationCacheRows(db, []entity.LocationCache{{Kind: "phone", LookupKey: "13800138000", Address: "广东深圳 移动"}}); err != nil {
+		t.Fatal(err)
+	}
+	locations, err := LookupPhoneLocationsDetailedWithDB(db, []string{"13800138000"}, LocationQueryOptions{})
+	if err != nil || locations["13800138000"].Address != "广东深圳 移动" || requests.Load() != 0 {
+		t.Fatalf("existing cache must remain readable without calls: %v err=%v requests=%d", locations, err, requests.Load())
 	}
 }
 
-// 非法号码同样不得触达上游。
 func TestLookupPhoneLocationsWithInvalidNumbersReturnsEmpty(t *testing.T) {
 	db := newLocationTestDB(t)
 

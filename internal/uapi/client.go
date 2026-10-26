@@ -114,13 +114,17 @@ func (c *Client) SetIPInfoURL(url string) *Client {
 }
 
 // GetPhoneInfo 查询手机号归属地。
+// 所有手机号查询都必须配置密钥；不使用访客外呼。
 // 参数不合法时在本地直接返回错误，不发起 HTTP 请求、不消耗积分。
 func (c *Client) GetPhoneInfo(ctx context.Context, phone string) (PhoneInfo, error) {
-	if err := c.ensureReady(); err != nil {
+	if err := c.ensureInitialized(); err != nil {
 		return PhoneInfo{}, err
 	}
 	normalized, err := NormalizePhone(phone)
 	if err != nil {
+		return PhoneInfo{}, err
+	}
+	if err := c.ensureReady(); err != nil {
 		return PhoneInfo{}, err
 	}
 	resp, err := c.getBillable(ctx, c.phoneInfoAddress(), map[string]string{"phone": normalized})
@@ -139,9 +143,9 @@ func (c *Client) GetPhoneInfo(ctx context.Context, phone string) (PhoneInfo, err
 
 // GetIPInfo 查询 IP 归属地。
 // source 为空时不下发该 query；唯一合法值为 "commercial"，其它取值在本地拒绝，
-// 不发起 HTTP 请求。
+// 不发起 HTTP 请求。普通与商业增强来源均要求密钥，不使用访客外呼。
 func (c *Client) GetIPInfo(ctx context.Context, ip string, source string) (IPInfo, error) {
-	if err := c.ensureReady(); err != nil {
+	if err := c.ensureInitialized(); err != nil {
 		return IPInfo{}, err
 	}
 	normalized, err := NormalizeIPQuery(ip)
@@ -151,6 +155,9 @@ func (c *Client) GetIPInfo(ctx context.Context, ip string, source string) (IPInf
 	source = strings.TrimSpace(source)
 	if source != "" && source != SourceCommercial {
 		return IPInfo{}, fmt.Errorf("%w: source 唯一合法值为 %q", ErrInvalidArgument, SourceCommercial)
+	}
+	if err := c.ensureReady(); err != nil {
+		return IPInfo{}, err
 	}
 	query := map[string]string{"ip": normalized}
 	if source != "" {
@@ -170,10 +177,17 @@ func (c *Client) GetIPInfo(ctx context.Context, ip string, source string) (IPInf
 	return info, nil
 }
 
-// ensureReady 校验客户端配置，避免密钥缺失时白跑一次请求
-func (c *Client) ensureReady() error {
+func (c *Client) ensureInitialized() error {
 	if c == nil || c.http == nil {
 		return fmt.Errorf("%w: uapi 客户端未初始化", ErrUnauthorized)
+	}
+	return nil
+}
+
+// ensureReady 校验需要密钥的客户端配置，避免密钥缺失时白跑一次请求。
+func (c *Client) ensureReady() error {
+	if err := c.ensureInitialized(); err != nil {
+		return err
 	}
 	if c.apiKey == "" {
 		return fmt.Errorf("%w: 缺少 uapi 密钥", ErrUnauthorized)
@@ -245,8 +259,10 @@ func (c *Client) requestWithPolicy(ctx context.Context, method string, url strin
 	for attempt := 0; ; attempt++ {
 		request := c.http.R().
 			SetContext(ctx).
-			SetHeader("Authorization", "Bearer "+c.apiKey).
 			SetQueryParams(query)
+		if c.apiKey != "" {
+			request.SetHeader("Authorization", "Bearer "+c.apiKey)
+		}
 		if body != nil {
 			request.SetHeader("Content-Type", "application/json").SetBody(body)
 		}

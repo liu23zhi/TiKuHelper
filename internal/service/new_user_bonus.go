@@ -32,6 +32,23 @@ func CreateUserWithNewUserBonusInTx(db *gorm.DB, user *entity.User, options NewU
 	if err := util.ValidateRestrictedName(user.Username, util.UsernameMaxLength, "用户名"); err != nil {
 		return err
 	}
+	if user.Phone != nil && *user.Phone != "" {
+		phone, err := NormalizeMainlandPhoneInput(*user.Phone)
+		if err != nil {
+			return err
+		}
+		owners, err := FindUsersByPhoneAliases(db, phone)
+		if err != nil {
+			return err
+		}
+		if len(owners) > 1 {
+			return ErrPhoneBindingConflict
+		}
+		if len(owners) > 0 {
+			return ErrPhoneAlreadyBound
+		}
+		user.Phone = &phone
+	}
 	var bonusAmount float64
 	if options.Enabled {
 		normalized, err := normalizeNewUserBonusAmount(options.Amount)

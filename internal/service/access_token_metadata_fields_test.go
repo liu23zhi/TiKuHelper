@@ -107,7 +107,11 @@ func TestUpdateAccessTokenWithDBSelectedFieldsCompatibility(t *testing.T) {
 				if !errors.Is(err, tc.wantError) {
 					t.Fatalf("expected %v, got %v", tc.wantError, err)
 				}
-				if readsAfterCall != 1 {
+				wantReads := 1
+				if tc.failUpdate {
+					wantReads = 2
+				}
+				if readsAfterCall != wantReads {
 					t.Fatalf("rejected update performed readback: queries=%d", readsAfterCall)
 				}
 				if stored.Name != initial.Name || stored.Status != initial.Status || stored.Remark != initial.Remark ||
@@ -120,11 +124,11 @@ func TestUpdateAccessTokenWithDBSelectedFieldsCompatibility(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if readsAfterCall != 2 {
-				t.Fatalf("successful update must load and read back: queries=%d", readsAfterCall)
+			if readsAfterCall != 3 {
+				t.Fatalf("successful update must admit, lock fresh mutation state, then read back after commit: queries=%d", readsAfterCall)
 			}
-			if tc.zeroAffectedRows && zeroCountReports != 1 {
-				t.Fatalf("zero-row adapter result was not exercised: reports=%d", zeroCountReports)
+			if tc.zeroAffectedRows && zeroCountReports != 0 {
+				t.Fatalf("no-op must avoid a fake metadata write: reports=%d", zeroCountReports)
 			}
 			for _, token := range []entity.AccessToken{updated, stored} {
 				assertAccessTokenMetadataIdentity(t, token, initial)
@@ -208,7 +212,7 @@ func TestUpdateAccessTokenWithDBReadbackFailureDoesNotUndoMetadataWrite(t *testi
 			return
 		}
 		reads++
-		if reads == 2 {
+		if reads == 3 {
 			tx.AddError(readbackFailure)
 		}
 	}); err != nil {
@@ -216,8 +220,8 @@ func TestUpdateAccessTokenWithDBReadbackFailureDoesNotUndoMetadataWrite(t *testi
 	}
 	updated, err := UpdateAccessTokenWithDB(db, owner, initial.ID,
 		UpdateAccessTokenInput{Name: " after_readback_failure ", Status: "disabled", Remark: "", TotalQuotaLimit: 0})
-	if reads != 2 || !errors.Is(err, readbackFailure) {
-		t.Fatalf("expected original readback error on second query, reads=%d error=%v", reads, err)
+	if reads != 3 || !errors.Is(err, readbackFailure) {
+		t.Fatalf("expected original readback error on third, post-commit query, reads=%d error=%v", reads, err)
 	}
 	if updated != (entity.AccessToken{}) {
 		t.Fatalf("readback failure returned stale token: %+v", updated)

@@ -630,6 +630,10 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		logger.FatalLog(err)
 	}
 
+	if err := runStartupMigration("ensureAuditCorrelationSchema", func() error { return ensureAuditCorrelationSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare audit correlation schema fail: %w", err))
+	}
+
 	if err := runStartupMigration("ensureMoneyPrecisionSchema", func() error { return ensureMoneyPrecisionSchema(db) }); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare money precision schema fail: %w", err))
 	}

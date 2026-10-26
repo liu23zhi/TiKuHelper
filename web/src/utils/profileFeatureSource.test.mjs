@@ -128,12 +128,12 @@ test('request interceptor preserves public registration flow 401 responses', asy
   assert.match(helperContent, /function isPublicWechatRegisterRequest/)
 })
 
-test('Topic overview removes the course name table column and bulk editing controls', async () => {
+test('Topic overview hides course table column while preserving approved local bulk editing and clearable filters', async () => {
   const content = await readSource(path.join('pages', 'TikuComponent', 'index.vue'))
 
   assert.doesNotMatch(content, /title: '课程名称'/)
-  assert.doesNotMatch(content, /批量编辑课程名称/)
-  assert.doesNotMatch(content, /buildQuestionBulkCourseUpdatePayload/)
+  assert.match(content, /批量编辑课程名称/)
+  assert.match(content, /buildQuestionBulkCourseUpdatePayload/)
   assert.match(content, /allow-clear/)
   assert.match(content, /normalizeQuestionTypeFilter/)
 })

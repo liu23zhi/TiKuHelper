@@ -29,11 +29,16 @@ type SMSBaoProvider struct {
 }
 
 func (p SMSBaoProvider) SendSMS(phone string, content string) error {
-	normalizedPhone, phoneRegion, err := NormalizePhone(phone)
+	normalizedPhone, err := NormalizeMainlandPhoneInput(phone)
 	if err != nil {
 		return err
 	}
-	endpoint, err := p.endpointForPhoneRegion(phoneRegion)
+	// The domestic API only accepts eleven ASCII digits, including when a
+	// caller supplied the explicitly supported legacy +86 form.
+	if !mainlandPhonePattern.MatchString(normalizedPhone) {
+		return fmt.Errorf("手机号格式不正确")
+	}
+	endpoint, err := p.endpointForPhoneRegion(PhoneRegionMainland)
 	if err != nil {
 		return err
 	}

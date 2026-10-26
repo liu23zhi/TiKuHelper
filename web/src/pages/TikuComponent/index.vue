@@ -5,6 +5,7 @@
         <h1>题库管理</h1>
         <p class="page-lead">管理本地题目、答案和导入记录。</p>
       </div>
+      <a-button @click="fetchData" :loading="tabLoading">刷新</a-button>
     </header>
 
     <section class="console-panel filter-panel">
@@ -621,21 +622,24 @@ export default defineComponent({
     async fetchData() {
       fileList.value = []
       tabLoading.value = true
-      getQuestions({
-        type: normalizeQuestionTypeFilter(typeValue.value),
-        pageSize: page.value.pageSize,
-        pageNo: page.value.pageNo - 1,
-        question: searchValue.value.question || '',
-        source: parseInt(searchValue.value.source) || 0,
-        extra: searchValue.value.extra || '',
-        onlyShowEmptyAnswer: searchValue.value.onlyShowEmptyAnswer || false
-      }).then(res => {
+      try {
+        const res = await getQuestions({
+          type: normalizeQuestionTypeFilter(typeValue.value),
+          pageSize: page.value.pageSize,
+          pageNo: page.value.pageNo - 1,
+          question: searchValue.value.question || '',
+          source: parseInt(searchValue.value.source) || 0,
+          extra: searchValue.value.extra || '',
+          onlyShowEmptyAnswer: searchValue.value.onlyShowEmptyAnswer || false
+        })
         data.value = Array.isArray(res?.data?.items) ? res.data.items : []
         rememberQuestionRows(data.value)
-        tabLoading.value = false
         this.page.total = res?.data?.total
-      })
-
+      } catch {
+        message.error('获取题目列表失败')
+      } finally {
+        tabLoading.value = false
+      }
     },
     onSearch() {
       // Reset page number when search filters change

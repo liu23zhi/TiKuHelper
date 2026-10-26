@@ -79,21 +79,22 @@ func TestSMSBaoProviderMapsSuccessAndKnownErrors(t *testing.T) {
 	}
 }
 
-func TestSMSBaoProviderSelectsInternationalEndpointAndHashesPasswordCredential(t *testing.T) {
+func TestSMSBaoProviderNormalizesLegacy86AndUsesDomesticEndpoint(t *testing.T) {
 	var domesticCalled bool
 	var capturedPhone string
 	var capturedPassword string
-	internationalServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	domesticServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		domesticCalled = true
 		capturedPhone = r.URL.Query().Get("m")
 		capturedPassword = r.URL.Query().Get("p")
 		_, _ = w.Write([]byte("0"))
 	}))
-	defer internationalServer.Close()
-	domesticServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		domesticCalled = true
-		_, _ = w.Write([]byte("0"))
-	}))
 	defer domesticServer.Close()
+	internationalServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("international endpoint must not be called for mainland phone")
+		_, _ = w.Write([]byte("51"))
+	}))
+	defer internationalServer.Close()
 
 	provider := SMSBaoProvider{
 		DomesticEndpoint:      domesticServer.URL,
@@ -102,21 +103,24 @@ func TestSMSBaoProviderSelectsInternationalEndpointAndHashesPasswordCredential(t
 		Secret:                "plain-password",
 		CredentialType:        "password",
 		RegionMode:            "auto",
-		Client:                internationalServer.Client(),
+		Client:                domesticServer.Client(),
 	}
-	if err := provider.SendSMS("+14155552671", "验证码 123456"); err != nil {
-		t.Fatalf("send international sms: %v", err)
+	if err := provider.SendSMS("+86 138-0000-0000", "验证码 123456"); err != nil {
+		t.Fatalf("send mainland sms: %v", err)
 	}
 
 	sum := md5.Sum([]byte("plain-password"))
-	if domesticCalled {
-		t.Fatal("expected international endpoint only")
+	if !domesticCalled {
+		t.Fatal("expected domestic endpoint")
 	}
-	if capturedPhone != "+14155552671" {
-		t.Fatalf("expected international phone with plus preserved, got %s", capturedPhone)
+	if capturedPhone != "13800000000" {
+		t.Fatalf("expected domestic phone without +86, got %s", capturedPhone)
 	}
 	if capturedPassword != hex.EncodeToString(sum[:]) {
 		t.Fatalf("expected md5 password credential, got %s", capturedPassword)
+	}
+	if err := provider.SendSMS("+14155552671", "验证码 123456"); err == nil {
+		t.Fatal("expected non-mainland phone to be rejected")
 	}
 }
 
@@ -143,7 +147,142 @@ func TestSMSBaoProviderUsesApiKeyVerbatimAndRejectsRegionMismatch(t *testing.T) 
 		t.Fatalf("expected api key credential verbatim, got %s", capturedPassword)
 	}
 	if err := provider.SendSMS("+14155552671", "验证码 123456"); err == nil {
-		t.Fatal("expected domestic mode to reject international phone")
+		t.Fatal("expected domestic mode to reject non-mainland phone")
+	}
+}
+
+func TestSMSBaoProviderRejectsInvalidPhonesAndConfiguredInternationalModeWithoutSending(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_, _ = w.Write([]byte("0"))
+	}))
+	defer server.Close()
+	provider := SMSBaoProvider{DomesticEndpoint: server.URL, InternationalEndpoint: server.URL, RegionMode: "auto", Client: server.Client()}
+	for _, phone := range []string{"+14155552671", "+85213800000000", "138000000000", "1380000000a", "１３８００００００００"} {
+		if err := provider.SendSMS(phone, "验证码 123456"); err == nil {
+			t.Fatalf("expected invalid mainland phone %q to be rejected", phone)
+		}
+	}
+	provider.RegionMode = "international"
+	if err := provider.SendSMS("+8613800000000", "验证码 123456"); err == nil {
+		t.Fatal("expected international-only configuration to remain unchanged and reject mainland sends")
+	}
+	if calls != 0 {
+		t.Fatalf("invalid/mismatched phone must not reach an SMS endpoint, got %d calls", calls)
+	}
+}
+
+func TestVerifySMSCodeWithDBMatchesLegacy86PhoneAlias(t *testing.T) {
+	db := newSMSVerificationTestDB(t)
+	seedSMSSettings(t, db)
+	if err := db.Create(&entity.SMSVerificationCode{
+		Phone: "+8613800000000", Scene: SMSSceneLogin, CodeHash: hashSMSCode("222222"),
+		Status: SMSCodeStatusPending, ExpiresAt: time.Now().Add(5 * time.Minute),
+	}).Error; err != nil {
+		t.Fatalf("seed legacy sms code: %v", err)
+	}
+	if err := VerifySMSCodeWithDB(db, "13800000000", SMSSceneLogin, "222222"); err != nil {
+		t.Fatalf("verify legacy phone alias: %v", err)
+	}
+	if err := VerifySMSCodeWithDB(db, "+8613800000000", SMSSceneLogin, "222222"); err == nil {
+		t.Fatal("legacy code must still be consumed only once")
+	}
+}
+
+func TestSendSMSCodeWithDBMatchesAliasesForScenesAndCooldown(t *testing.T) {
+	cases := []struct {
+		name      string
+		phone     string
+		scene     string
+		seedPhone string
+		seedCode  bool
+		wantError string
+	}{
+		{name: "legacy login", phone: "13800000000", scene: SMSSceneLogin, seedPhone: "+8613800000000"},
+		{name: "legacy register occupation", phone: "13800000000", scene: SMSSceneRegister, seedPhone: "+8613800000000", wantError: "已被绑定"},
+		{name: "legacy cooldown", phone: "13800000000", scene: SMSSceneRegister, seedCode: true, wantError: "发送过于频繁"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newSMSVerificationTestDB(t)
+			seedSMSSettings(t, db)
+			if tc.seedPhone != "" {
+				if err := db.Create(&entity.User{Username: "legacy-user", Password: "123456", Role: "user", Status: "enabled", RegisterSource: "public", Phone: strPtr(tc.seedPhone)}).Error; err != nil {
+					t.Fatalf("create legacy user: %v", err)
+				}
+			}
+			if tc.seedCode {
+				if err := db.Create(&entity.SMSVerificationCode{Phone: "+8613800000000", Scene: tc.scene, CodeHash: hashSMSCode("123456"), Status: SMSCodeStatusPending, ExpiresAt: time.Now().Add(time.Minute)}).Error; err != nil {
+					t.Fatalf("seed legacy cooldown: %v", err)
+				}
+			}
+			calls := 0
+			smsSender = func(settings SystemSettingDetail) SMSProvider {
+				return stubSMSProvider(func(phone string, content string) error {
+					calls++
+					if phone != "13800000000" {
+						t.Fatalf("provider received noncanonical phone %q", phone)
+					}
+					return nil
+				})
+			}
+			t.Cleanup(func() { smsSender = newSMSProviderFromSettings })
+			err := SendSMSCodeWithDB(db, SendSMSCodeInput{Phone: tc.phone, Scene: tc.scene})
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantError) || calls != 0 {
+					t.Fatalf("expected %q with no send, err=%v calls=%d", tc.wantError, err, calls)
+				}
+			} else if err != nil || calls != 1 {
+				t.Fatalf("expected canonical send, err=%v calls=%d", err, calls)
+			}
+		})
+	}
+}
+
+func TestSendSMSCodeWithDBCancelsLegacyAliasBeforeCreatingCanonicalCode(t *testing.T) {
+	db := newSMSVerificationTestDB(t)
+	seedSMSSettings(t, db)
+	old := entity.SMSVerificationCode{Phone: "+8613800000000", Scene: SMSSceneRegister, CodeHash: hashSMSCode("111111"), Status: SMSCodeStatusPending, ExpiresAt: time.Now().Add(time.Minute), CreatedAt: time.Now().Add(-2 * time.Minute)}
+	if err := db.Create(&old).Error; err != nil {
+		t.Fatalf("seed old legacy code: %v", err)
+	}
+	smsSender = func(settings SystemSettingDetail) SMSProvider {
+		return stubSMSProvider(func(phone string, content string) error { return nil })
+	}
+	defer func() { smsSender = newSMSProviderFromSettings }()
+	if err := SendSMSCodeWithDB(db, SendSMSCodeInput{Phone: "+86 13800000000", Scene: SMSSceneRegister}); err != nil {
+		t.Fatalf("send canonical replacement code: %v", err)
+	}
+	var records []entity.SMSVerificationCode
+	if err := db.Order("id asc").Find(&records).Error; err != nil {
+		t.Fatalf("load code records: %v", err)
+	}
+	if len(records) != 2 || records[0].Status != SMSCodeStatusCanceled || records[1].Phone != "13800000000" || records[1].Status != SMSCodeStatusPending {
+		t.Fatalf("expected canceled legacy code and canonical replacement, got %+v", records)
+	}
+}
+
+func TestSendSMSCodeWithDBRejectsCrossAccountAliasConflictBeforeProvider(t *testing.T) {
+	for _, scene := range []string{SMSSceneLogin, SMSSceneRegister, SMSSceneChangePhone} {
+		t.Run(scene, func(t *testing.T) {
+			db := newSMSVerificationTestDB(t)
+			seedSMSSettings(t, db)
+			for id, stored := range map[int32]string{1: "13800000000", 2: "+8613800000000"} {
+				if err := db.Create(&entity.User{ID: id, Username: fmt.Sprintf("owner-%d", id), Password: "123456", Role: "user", Status: "enabled", RegisterSource: "public", Phone: strPtr(stored)}).Error; err != nil {
+					t.Fatalf("create conflict owner: %v", err)
+				}
+			}
+			calls := 0
+			smsSender = func(settings SystemSettingDetail) SMSProvider {
+				return stubSMSProvider(func(phone string, content string) error { calls++; return nil })
+			}
+			t.Cleanup(func() { smsSender = newSMSProviderFromSettings })
+			err := SendSMSCodeWithDB(db, SendSMSCodeInput{Phone: "13800000000", Scene: scene, TargetUserID: 3})
+			if err == nil || !strings.Contains(err.Error(), "历史绑定冲突") || calls != 0 {
+				t.Fatalf("expected historical conflict with no SMS send, err=%v calls=%d", err, calls)
+			}
+		})
 	}
 }
 

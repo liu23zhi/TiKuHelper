@@ -231,6 +231,47 @@ func TestGetIPInfoSuccess(t *testing.T) {
 	}
 }
 
+func TestGetIPInfoDefaultSourceRejectsMissingAPIKey(t *testing.T) {
+	for _, key := range []string{"", "   "} {
+		t.Run("key="+key, func(t *testing.T) {
+			srv, rec := newServer(t, staticJSON(http.StatusOK, ipRaw))
+			client := NewClient(key).SetIPInfoURL(srv.URL + ipInfoPath)
+			if _, err := client.GetIPInfo(context.Background(), " 8.8.8.8 ", ""); !errors.Is(err, ErrUnauthorized) {
+				t.Fatalf("ordinary IP must require key: %v", err)
+			}
+			if rec.count() != 0 {
+				t.Fatalf("missing key must not call upstream: %d", rec.count())
+			}
+		})
+	}
+}
+
+func TestGetIPInfoWithoutAPIKeyStillValidatesLocally(t *testing.T) {
+	srv, rec := newServer(t, staticJSON(http.StatusOK, ipRaw))
+	client := NewClient("").SetIPInfoURL(srv.URL + ipInfoPath)
+	for _, testCase := range []struct {
+		ip     string
+		source string
+	}{
+		{ip: "", source: ""},
+		{ip: "https://example.com", source: ""},
+		{ip: "8.8.8.8", source: "legacy"},
+		{ip: "8.8.8.8", source: "COMMERCIAL"},
+	} {
+		if _, err := client.GetIPInfo(context.Background(), testCase.ip, testCase.source); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("ip=%q source=%q: err=%v, expected ErrInvalidArgument", testCase.ip, testCase.source, err)
+		}
+	}
+	if rec.count() != 0 {
+		t.Fatalf("非法输入不能外呼，实际 %d 次", rec.count())
+	}
+	for _, client := range []*Client{nil, {}} {
+		if _, err := client.GetIPInfo(context.Background(), "8.8.8.8", ""); !errors.Is(err, ErrUnauthorized) {
+			t.Fatalf("未初始化客户端应返回错误，实际 %v", err)
+		}
+	}
+}
+
 func TestParseIPInfoPreservesNumericASNForCachedResponse(t *testing.T) {
 	info, err := ParseIPInfo([]byte(ipRaw))
 	if err != nil {
@@ -881,21 +922,51 @@ func TestValidQueryFormsAreAccepted(t *testing.T) {
 	}
 }
 
-func TestMissingAPIKeySendsNoRequest(t *testing.T) {
+func TestMissingAPIKeyRejectsCommercialIPWithoutRequest(t *testing.T) {
 	srv, rec := newServer(t, staticJSON(http.StatusOK, phoneRaw))
 	for _, key := range []string{"", "   "} {
 		c := NewClient(key)
 		c.SetPhoneInfoURL(srv.URL + phoneInfoPath)
 		c.SetIPInfoURL(srv.URL + ipInfoPath)
-		if _, err := c.GetPhoneInfo(context.Background(), "13800138000"); !errors.Is(err, ErrUnauthorized) {
-			t.Fatalf("密钥 %q：err = %v，期望 ErrUnauthorized", key, err)
-		}
 		if _, err := c.GetIPInfo(context.Background(), "8.8.8.8", SourceCommercial); !errors.Is(err, ErrUnauthorized) {
 			t.Fatalf("密钥 %q：err = %v，期望 ErrUnauthorized", key, err)
 		}
 	}
 	if rec.count() != 0 {
 		t.Fatalf("缺少密钥时不应发起请求，实际 %d 次", rec.count())
+	}
+}
+
+func TestGetPhoneInfoWithoutAPIKey(t *testing.T) {
+	for _, key := range []string{"", "   "} {
+		t.Run("key="+key, func(t *testing.T) {
+			srv, rec := newServer(t, staticJSON(http.StatusOK, phoneRaw))
+			client := NewClient(key).SetPhoneInfoURL(srv.URL + phoneInfoPath)
+			if _, err := client.GetPhoneInfo(context.Background(), " 13800138000 "); !errors.Is(err, ErrUnauthorized) {
+				t.Fatalf("phone must require key: %v", err)
+			}
+			if rec.count() != 0 {
+				t.Fatalf("missing key must not call upstream: %d", rec.count())
+			}
+		})
+	}
+}
+
+func TestGetPhoneInfoWithoutAPIKeyValidatesLocally(t *testing.T) {
+	srv, rec := newServer(t, staticJSON(http.StatusOK, phoneRaw))
+	client := NewClient("").SetPhoneInfoURL(srv.URL + phoneInfoPath)
+	for _, phone := range []string{"", "1380013800", "23800138000", "1380013800a", "138 0013 8000"} {
+		if _, err := client.GetPhoneInfo(context.Background(), phone); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("手机号 %q：err = %v，期望 ErrInvalidArgument", phone, err)
+		}
+	}
+	if rec.count() != 0 {
+		t.Fatalf("非法手机号不应发起请求，实际 %d 次", rec.count())
+	}
+	for _, client := range []*Client{nil, {}} {
+		if _, err := client.GetPhoneInfo(context.Background(), "13800138000"); !errors.Is(err, ErrUnauthorized) {
+			t.Fatalf("未初始化客户端 err = %v，期望 ErrUnauthorized", err)
+		}
 	}
 }
 

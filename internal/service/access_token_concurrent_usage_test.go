@@ -177,7 +177,7 @@ func newAccessTokenMetadataUsagePair(t *testing.T) (*gorm.DB, *gorm.DB) {
 			t.Errorf("close database A: %v", err)
 		}
 	})
-	if err = a.AutoMigrate(&entity.User{}, &entity.AccessToken{}); err != nil {
+	if err = a.AutoMigrate(&entity.User{}, &entity.AccessToken{}, &entity.Log{}); err != nil {
 		t.Fatal(err)
 	}
 	b, err := gorm.Open(sqlite.Open(path), &gorm.Config{})

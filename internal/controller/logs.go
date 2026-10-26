@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -138,7 +139,7 @@ func logListItemsWithBillingIDs(db *gorm.DB, currentUser *entity.User, logs []*e
 		if entry == nil || entry.UserID <= 0 {
 			continue
 		}
-		requestID := logRequestID(entry.Description)
+		requestID := logBillingRequestID(entry)
 		if requestID == "" {
 			continue
 		}
@@ -189,6 +190,30 @@ func logRequestID(description string) string {
 		if requestID, ok := strings.CutPrefix(field, "requestId="); ok {
 			return requestID
 		}
+	}
+	return ""
+}
+
+func logBillingRequestID(entry *entity.Log) string {
+	if requestID := logRequestID(entry.Description); requestID != "" {
+		return requestID
+	}
+	for _, raw := range []string{entry.NewAnswer, entry.OldAnswer} {
+		var snapshot struct {
+			RequestID string `json:"requestId"`
+			OrderNo   string `json:"orderNo"`
+		}
+		if json.Unmarshal([]byte(raw), &snapshot) == nil {
+			if requestID := strings.TrimSpace(snapshot.RequestID); requestID != "" {
+				return requestID
+			}
+			if entry.Module == "recharge" && strings.TrimSpace(snapshot.OrderNo) != "" {
+				return strings.TrimSpace(snapshot.OrderNo)
+			}
+		}
+	}
+	if entry.Module == "recharge" {
+		return strings.TrimSpace(entry.CorrelationID)
 	}
 	return ""
 }
