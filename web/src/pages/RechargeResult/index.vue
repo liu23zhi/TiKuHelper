@@ -1,18 +1,15 @@
 <template>
-  <div class="recharge-result-shell">
-    <div class="page-heading">
-      <h1>充值结果</h1>
-      <p>交易回跳状态与订单信息。</p>
-    </div>
+  <div class="console-page recharge-result-shell">
+    <ConsolePageHeading title="充值结果" description="查看支付回跳状态与订单信息。" />
 
-    <a-card :bordered="false" class="recharge-result-card">
+    <ConsolePanel class="recharge-result-card">
       <a-result
         :status="resultStatus"
         :title="title"
         :sub-title="subtitle"
       >
         <template #extra>
-          <a-space>
+          <a-space wrap>
             <a-button type="primary" @click="goHome">返回首页</a-button>
             <a-button @click="refreshPage">刷新页面</a-button>
           </a-space>
@@ -40,7 +37,7 @@
           <span class="detail-value">{{ money || '—' }}</span>
         </div>
       </div>
-    </a-card>
+    </ConsolePanel>
   </div>
 </template>
 
@@ -126,86 +123,11 @@ export default defineComponent({
 </script>
 
 <style scoped>
-.recharge-result-shell {
-  width: min(900px, 100%);
-  min-width: 0;
-  margin: 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.recharge-result-card {
-  width: 100%;
-  min-width: 0;
-  border: 1px solid var(--console-border, #e5e7eb);
-  border-radius: var(--console-radius, 12px);
-  box-shadow: 0 2px 8px rgb(15 23 42 / 2%);
-}
-
-.notice {
-  margin-top: 0;
-  margin-bottom: 18px;
-  border-radius: 8px;
-}
-
-.page-heading {
-  min-width: 0;
-}
-
-.page-heading h1 {
-  margin: 0;
-  color: var(--console-text, #1f2937);
-  font-size: 22px;
-  font-weight: 700;
-}
-
-.page-heading p {
-  margin: 6px 0 0;
-  color: var(--console-muted, #64748b);
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.details {
-  display: grid;
-  gap: 12px;
-  padding: 18px 20px 4px;
-  border-top: 1px solid var(--console-border, #e5e7eb);
-}
-
-.detail-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  font-size: 14px;
-  line-height: 1.6;
-}
-
-.detail-label {
-  color: var(--console-muted, #64748b);
-  flex: 0 0 auto;
-}
-
-.detail-value {
-  color: var(--console-text, #1f2937);
-  text-align: right;
-  word-break: break-all;
-}
-
-@media (max-width: 768px) {
-  .page-heading h1 {
-    font-size: 20px;
-  }
-
-  .recharge-result-card :deep(.ant-result) {
-    padding: 24px 12px;
-  }
-
-  .recharge-result-card :deep(.ant-result-extra .ant-space) {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-  }
-}
+.recharge-result-shell { max-width: 900px; margin: 0 auto; }
+.notice { margin-bottom: 20px; }
+.details { display: grid; gap: 16px; padding-top: 20px; border-top: 1px solid var(--console-border); }
+.detail-row { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 16px; line-height: 1.7; }
+.detail-label { color: var(--console-muted); }
+.detail-value { color: var(--console-text); text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+@media (max-width: 768px) { .recharge-result-card :deep(.ant-result) { padding: 24px 0; } .recharge-result-card :deep(.ant-result-extra .ant-space) { justify-content: center; } }
 </style>

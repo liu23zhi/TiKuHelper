@@ -185,18 +185,22 @@ export function buildRechargeOrderPayload(amountValue, paymentMethodId) {
 
 export function buildPaymentMethodSwalHtml(options = []) {
   return options.map((item) => {
-    const icon = item.iconSVG
-      ? `<span class="payment-option-icon">${item.iconSVG}</span>`
-      : '<span class="payment-option-icon payment-option-icon--placeholder">¥</span>'
-    const remark = item.remark
-      ? `<div class="payment-option-remark">${item.remark}</div>`
+    const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    })[character])
+    const icon = '<span class="payment-option-icon payment-option-icon--placeholder">¥</span>'
+    const remarkText = String(item.remark || '').trim()
+    const remark = remarkText
+      ? `<div class="payment-option-remark">${escapeHtml(remarkText)}</div>`
       : ''
+    const label = escapeHtml(item.label)
+    const value = Number(item.value) || 0
     return `
-      <button type="button" class="payment-option" data-payment-method-id="${item.value}">
+      <button type="button" class="payment-option" data-payment-method-id="${value}">
         <div class="payment-option-main">
           ${icon}
           <div>
-            <div class="payment-option-title">${item.label}</div>
+            <div class="payment-option-title">${label}</div>
             ${remark}
           </div>
         </div>

@@ -1,12 +1,15 @@
 <template>
   <div class="console-page tiku-page">
-    <header class="section-heading page-heading">
-      <div>
-        <h1>题库管理</h1>
-        <p class="page-lead">管理本地题目、答案和导入记录。</p>
-      </div>
+    <ConsolePageHeading title="题库管理" description="管理本地题目、答案和导入记录。">
+      <template #actions>
       <a-button @click="fetchData" :loading="tabLoading">刷新</a-button>
-    </header>
+      <a-button @click="triggerJsonImport">JSON 导入</a-button>
+      <a-button @click="navigateToImport"><DownloadOutlined />智能导入</a-button>
+      <a-button @click="handleExportSelected">导出选中</a-button>
+      <a-button danger @click="handleDeleteSelected">批量删除</a-button>
+      <a-button type="primary" @click="showModal({ type: 0, question: '', options: '[]', answer: '[]' }, 2)"><FormOutlined />添加</a-button>
+      </template>
+    </ConsolePageHeading>
 
     <section class="console-panel filter-panel">
       <a-form layout="inline" class="filter-form" @finish="onSearch">
@@ -38,30 +41,6 @@
                 <h2>题目列表</h2>
                 <p class="section-description">共 {{ page.total }} 道题目</p>
               </div>
-              <a-space wrap class="section-actions">
-            <a-button type="primary" @click="triggerJsonImport">
-              JSON 导入
-            </a-button>
-            <a-button type="primary" @click="navigateToImport">
-              <DownloadOutlined />
-              智能导入
-            </a-button>
-            <a-button @click="handleExportSelected">
-              导出选中
-            </a-button>
-            <a-button danger @click="handleDeleteSelected">
-              批量删除
-            </a-button>
-            <a-button type="primary" @click="showModal({
-              type: 0,
-              question: '',
-              options: '[]',
-              answer: '[]'
-            }, 2)">
-              <FormOutlined/>
-              添加
-            </a-button>
-              </a-space>
             </div>
           </template>
           <a-alert
@@ -109,39 +88,24 @@
               </div>
             </template>
           </a-alert>
-          <a-table :columns="columns" :data-source="data" :pagination="false" :row-key="record => record.id"
-                   :loading="tabLoading" :scroll="{ x: 'max-content' }" :row-selection="rowSelection">
-            <template #type="{ record }">
-              <a-tag :color="record.type === 0 ? 'green' : record.type === 1 ? 'cyan' : 'orange'">
+          <ConsoleTableShell label="题库管理">
+          <a-table :columns="columns" :data-source="data" :pagination="false" :row-key="record => record.id" table-layout="fixed"
+                   :loading="tabLoading" :scroll="{ x: tableScrollX }" :row-selection="rowSelection">
+            <template #bodyCell="{ column, record }">
+              <a-tag v-if="column.key === 'type'" :color="record.type === 0 ? 'green' : record.type === 1 ? 'cyan' : 'orange'">
                 {{ quesType[record.type] }}
               </a-tag>
-            </template>
-            <template #question="{ record }">
-              <div class="multiline-cell">{{ record.question || '-' }}</div>
-            </template>
-            <template #answer="{ record }">
-              <div class="multiline-cell answer-cell">
-                <a-tag v-for="(value, index) in (record.answer ? JSON.parse(record.answer) : [])" color="blue"
-                       :key="index">{{ record.source === 2 ? index : value }}
-                </a-tag>
-              </div>
-            </template>
-
-
-            <template #sourceName="{ record }">
-              <span>
-                {{ getSourceNameText(record.source_name) }}
-              </span>
-            </template>
-
-
-            <template #action="{ record }">
-              <div style="display:flex;justify-content: space-between">
+              <OverflowTableText v-else-if="['question', 'answer', 'extra'].includes(column.key)"
+                :text="column.key === 'answer' ? buildQuestionAnswerText(record) : record[column.key]"
+                :expanded="isExpanded(record, column.key)" @toggle="toggleExpanded(record, column.key)" />
+              <span v-else-if="column.key === 'source_name'">{{ getSourceNameText(record.source_name) }}</span>
+              <div v-else-if="column.key === 'action'" class="row-actions">
                 <a-button type="primary" ghost @click="showModal(record, 1)">编辑</a-button>
                 <a-button type="primary" ghost danger @click="deleteQuestion(record.id)">删除</a-button>
               </div>
             </template>
           </a-table>
+          </ConsoleTableShell>
           <a-pagination @change="onChange" :current="page.pageNo" :total="page.total" show-size-changer
                         :page-size-options="page.pageSizeOptions" :page-size="page.pageSize"
                         @showSizeChange="onShowSizeChange"
@@ -168,7 +132,7 @@
           </a-form-item>
           <div v-if="/[013]/.test(formData.type)" class="margin_top">
             <a-form-item label="选项">
-              <OptionBox :options="formData.options ? JSON.parse(formData.options) : []" :type="formData.type"
+              <OptionBox :options="parseQuestionAnswerValues(formData.options)" :type="formData.type"
                          :answer="answer" ref="optionBox"/>
             </a-form-item>
           </div>
@@ -222,6 +186,10 @@ import {
 } from '@ant-design/icons-vue';
 import OptionBox from '../../components/OptionBox/index.vue'
 import AnswerBox from '../../components/AnswerBox/index.vue'
+import OverflowTableText from '@/components/OverflowTableText.vue'
+import { useTableExpansion } from '@/composables/useTableExpansion.mjs'
+import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
+import { buildQuestionAnswerText, parseQuestionAnswerValues } from '@/utils/questionAnswerDisplay.mjs'
 import {questionType} from "@/utils/uitls";
 import {message} from "ant-design-vue";
 import {
@@ -237,70 +205,11 @@ import {
 } from '@/utils/topicOverviewHelpers.mjs';
 
 const style = {
-  padding: "0 0 24px"
+  padding: "24px"
 }
 const fileList = ref([])
 const tabLoading = ref(true)
 const data = ref([])
-const columns = [
-  {
-    title: 'ID',
-    dataIndex: 'id',
-    key: 'id',
-    width: 90
-  },
-  {
-    title: '类型',
-    key: 'type',
-    dataIndex: 'type',
-    width: 80,
-    slots: {
-      customRender: 'type',
-    },
-  },
-  {
-    title: '问题',
-    width: 520,
-    dataIndex: 'question',
-    key: 'question',
-    slots: {
-      customRender: 'question',
-    },
-  },
-  {
-    title: '答案',
-    dataIndex: 'answer',
-    key: 'answer',
-    width: 340,
-    slots: {
-      customRender: 'answer',
-    },
-  },
-  {
-    title: '数据来源',
-    dataIndex: 'source_name',
-    key: 'source_name',
-    width: 160,
-    slots: {
-      customRender: 'sourceName',
-    },
-  },
-  {
-    title: '拓展参数',
-    dataIndex: 'extra',
-    key: 'extra',
-    width: 300,
-  },
-  {
-    title: '操作',
-    fixed: 'right',
-    key: 'action',
-    width: 180,
-    slots: {
-      customRender: 'action',
-    },
-  },
-]
 const page = ref({
   pageSizeOptions: ['10', '20', '50', '100'],
   pageNo: 1,
@@ -339,6 +248,17 @@ export default defineComponent({
   name: 'TikuComponent',
   setup() {
     const router = useRouter();
+    const { isExpanded, toggle: toggleExpanded, columnWidth } = useTableExpansion(data)
+    const columns = computed(() => [
+      { title: 'ID', dataIndex: 'id', key: 'id', width: 90 },
+      { title: '类型', dataIndex: 'type', key: 'type', width: 100 },
+      { title: '问题', dataIndex: 'question', key: 'question', width: columnWidth('question') },
+      { title: '答案', dataIndex: 'answer', key: 'answer', width: columnWidth('answer') },
+      { title: '数据来源', dataIndex: 'source_name', key: 'source_name', width: 160 },
+      { title: '拓展参数', dataIndex: 'extra', key: 'extra', width: columnWidth('extra') },
+      { title: '操作', key: 'action', fixed: 'right', width: 180 },
+    ].map(column => ({ ...column, align: 'center' })))
+    const tableScrollX = computed(() => sumTableColumnWidths(columns.value, 48))
     const navigateToImport = () => {
       router.push('/adapter/import');
     };
@@ -429,6 +349,7 @@ export default defineComponent({
       resetSelectionState()
     }
     const rowSelection = computed(() => ({
+      columnWidth: 48,
       selectedRowKeys: selectedRowKeys.value,
       preserveSelectedRowKeys: true,
       onChange: (keys) => {
@@ -443,6 +364,11 @@ export default defineComponent({
       page,
       data,
       columns,
+      tableScrollX,
+      isExpanded,
+      toggleExpanded,
+      buildQuestionAnswerText,
+      parseQuestionAnswerValues,
       quesType,
       visible,
       formData,
@@ -473,7 +399,8 @@ export default defineComponent({
     AnswerBox,
     FormOutlined,
     SearchOutlined,
-    DownloadOutlined
+    DownloadOutlined,
+    OverflowTableText
   },
   mounted() {
     this.getType()
@@ -520,6 +447,7 @@ export default defineComponent({
           extra: searchValue.value.extra || '',
           onlyShowEmptyAnswer: searchValue.value.onlyShowEmptyAnswer || false
         })
+        if (res?.status !== 200) throw new Error(res?.message || '获取题目列表失败')
         data.value = Array.isArray(res?.data?.items) ? res.data.items : []
         rememberQuestionRows(data.value)
         this.page.total = res?.data?.total
@@ -555,7 +483,7 @@ export default defineComponent({
       }
 
       formData.value = record
-      answer.value = formData.value.answer ? JSON.parse(formData.value.answer) : []
+      answer.value = parseQuestionAnswerValues(formData.value.answer)
       action.value = act
       fileList.value = []
       visible.value = true
@@ -722,54 +650,8 @@ export default defineComponent({
 })
 </script>
 <style scoped>
-.console-page {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  min-width: 0;
-  color: var(--console-text, #1f2937);
-}
-
-.page-heading,
-.table-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.page-heading h1,
-.table-heading h2 {
-  margin: 0;
-  color: var(--console-text, #1f2937);
-  font-size: 20px;
-  font-weight: 650;
-}
-
-.page-lead,
-.section-description {
-  margin: 4px 0 0;
-  color: var(--console-muted, #64748b);
-  font-size: 13px;
-}
-
-.console-panel {
+.filter-panel {
   padding: 16px;
-  border: 1px solid var(--console-border, #e5e7eb);
-  border-radius: var(--console-radius, 12px);
-  background: var(--console-surface, #fff);
-}
-
-.filter-form {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-}
-
-.filter-form :deep(.ant-form-item) {
-  margin: 0;
 }
 
 .filter-form :deep(.ant-input),
@@ -783,23 +665,14 @@ export default defineComponent({
 }
 
 .tiku-layout,
-.tiku-layout :deep(.ant-layout-content),
-.tiku-table-card {
+.tiku-layout :deep(.ant-layout-content) {
   min-width: 0;
   width: 100%;
   background: transparent;
 }
 
-.tiku-table-card :deep(.ant-card-head-title) {
-  min-width: 0;
-}
-
-.ant-form-item {
-  margin-bottom: 0;
-}
-
 .selection-alert {
-  margin: 12px 0;
+  margin: 0 0 16px;
 }
 
 .selection-alert-content {
@@ -809,23 +682,14 @@ export default defineComponent({
   flex-wrap: wrap;
 }
 
-.multiline-cell {
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.6;
-}
-
-.answer-cell {
+.row-actions {
   display: flex;
+  justify-content: center;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
 }
 
 @media (max-width: 640px) {
-  .console-panel {
-    padding: 12px;
-  }
-
   .filter-form,
   .filter-form :deep(.ant-form-item),
   .filter-form :deep(.ant-input),
@@ -833,10 +697,5 @@ export default defineComponent({
     width: 100%;
   }
 
-  .section-actions,
-  .section-actions :deep(.ant-space-item),
-  .section-actions :deep(.ant-btn) {
-    max-width: 100%;
-  }
 }
 </style>

@@ -1,15 +1,11 @@
 <template>
-  <div class="console-page ai-settings-page page-card">
-    <header class="section-heading ai-page-heading">
-      <div>
-        <h1>AI 搜索配置</h1>
-        <p class="page-lead">管理服务连接、执行预算与计费规则。</p>
-      </div>
-      <a-space wrap class="section-actions">
+  <div class="console-page ai-settings-page">
+    <ConsolePageHeading title="AI 搜索配置" description="管理服务连接、执行预算和模型价格。">
+      <template #actions><a-space wrap class="section-actions">
         <a-button @click="handleLoad" :loading="tabLoading">刷新</a-button>
         <a-button type="primary" @click="handleSave" :loading="saving">保存配置</a-button>
-      </a-space>
-    </header>
+      </a-space></template>
+    </ConsolePageHeading>
 
     <a-alert
       type="info"
@@ -43,14 +39,8 @@
     />
 
     <a-form layout="vertical" class="ai-config-form" autocomplete="off">
-      <section class="console-panel ai-section">
-        <header class="section-heading ai-section-heading">
-          <div>
-            <h2>连接与模型</h2>
-            <p class="section-description">配置 AI 服务连接、认证信息和可用模型。</p>
-          </div>
-          <a-button @click="handleOpenTestDialog">测试</a-button>
-        </header>
+      <ConsolePanel title="连接与模型" description="配置 AI 服务连接、认证信息和可用模型。">
+        <template #actions><a-button @click="handleOpenTestDialog">测试</a-button></template>
         <div class="console-form-grid connection-grid">
       <a-form-item label="是否启用" class="full-width">
         <a-switch v-model:checked="formState.enabled" />
@@ -118,16 +108,10 @@
       </a-form-item>
 
         </div>
-      </section>
+      </ConsolePanel>
 
-      <section class="console-panel ai-section">
-        <header class="section-heading ai-section-heading">
-          <div>
-            <h2>执行策略</h2>
-            <p class="section-description">设置模型轮次、工具预算与输出要求。</p>
-          </div>
-          <a-button @click="loadSearchEngineInfo" :loading="searchEngineLoading">查看深度思考能力</a-button>
-        </header>
+      <ConsolePanel title="执行策略" description="设置模型轮次、工具预算和输出要求。">
+        <template #actions><a-button @click="loadSearchEngineInfo" :loading="searchEngineLoading">查看深度思考能力</a-button></template>
         <div class="console-form-grid execution-grid">
       <a-divider orientation="left" class="full-width">AI 搜索预算</a-divider>
       <a-form-item label="模型最大调用次数">
@@ -236,103 +220,23 @@
         <div class="hint">固定为 0，与温度一起保持低随机性，不开放自定义调整。</div>
       </a-form-item>
         </div>
-      </section>
+      </ConsolePanel>
     </a-form>
 
-    <a-modal
+    <AISearchCapabilityDialog
       v-model:open="capabilityModalVisible"
-      title="深度思考能力"
-      :footer="null"
-      width="960px"
-    >
-      <a-spin :spinning="capabilityLoading">
-        <a-alert
-          v-if="capabilityError"
-          type="warning"
-          show-icon
-          class="page-alert"
-          :message="capabilityError"
-        />
-
-        <section v-if="searchEngineDetail" class="capability-detail-panel">
-          <header class="capability-detail-panel__header">
-            <div class="capability-detail-panel__identity">
-              <h3>{{ searchEngineDetail.engine.display_name || searchEngineDetail.engine.name }}</h3>
-              <p>{{ searchEngineDetail.engine.description || '暂无搜索引擎描述' }}</p>
-            </div>
-            <a-tag :color="searchEngineDetail.engine.available ? 'green' : 'red'">
-              {{ searchEngineDetail.engine.available ? '可用' : '不可用' }}
-            </a-tag>
-          </header>
-
-          <dl class="capability-detail-facts">
-            <div><dt>引擎标识</dt><dd>{{ searchEngineDetail.engine.name || '-' }}</dd></div>
-            <div><dt>配置版本</dt><dd>{{ searchEngineDetail.engine.version || '-' }}</dd></div>
-          </dl>
-
-          <div class="capability-detail-list">
-            <h4>结果限制</h4>
-            <dl class="capability-detail-facts">
-            <div><dt>默认结果数</dt><dd>{{ searchEngineDetail.limits.default ?? '-' }}</dd></div>
-            <div><dt>最大结果数</dt><dd>{{ searchEngineDetail.limits.max ?? '-' }}</dd></div>
-            </dl>
-          </div>
-
-          <div class="capability-detail-list">
-            <h4>支持的能力</h4>
-            <a-space v-if="searchEngineDetail.features.length" wrap>
-              <a-tag v-for="feature in searchEngineDetail.features" :key="feature">{{ feature }}</a-tag>
-            </a-space>
-            <span v-else class="capability-detail-empty">未提供</span>
-          </div>
-
-          <div class="capability-detail-list">
-            <h4>支持的参数</h4>
-            <a-space v-if="searchEngineDetail.supportedParameters.length" wrap>
-              <a-tag v-for="parameter in searchEngineDetail.supportedParameters" :key="parameter">{{ parameter }}</a-tag>
-            </a-space>
-            <span v-else class="capability-detail-empty">未提供</span>
-          </div>
-        </section>
-
-        <h3 v-if="usedCapabilityCards.length || usedUsageRows.length" class="capability-usage-heading">本服务使用统计</h3>
-        <div v-if="usedCapabilityCards.length" class="capability-status-grid">
-          <div v-for="card in usedCapabilityCards" :key="card.key" class="capability-status-card">
-            <div class="capability-status-card__header">
-              <span class="capability-status-card__title">{{ card.title }}</span>
-              <a-tag :color="card.color">{{ card.status }}</a-tag>
-            </div>
-            <div class="capability-status-card__meta">{{ card.detail }}</div>
-            <div v-if="card.count !== null" class="capability-status-card__count">累计调用 {{ card.count }} 次</div>
-          </div>
-        </div>
-        <a-empty v-else-if="!capabilityLoading" description="暂未使用搜索或网页读取接口" />
-
-        <a-table
-          v-if="usedUsageRows.length"
-          class="capability-usage-table"
-          size="small"
-          bordered
-          row-key="path"
-          :pagination="false"
-          :data-source="usedUsageRows"
-          :columns="usageColumns"
-        />
-      </a-spin>
-    </a-modal>
+      :loading="capabilityLoading"
+      :error="capabilityError"
+      :detail="searchEngineDetail"
+      :cards="usedCapabilityCards"
+      :rows="usedUsageRows"
+      :columns="usageColumns"
+    />
 
     <div class="pricing-grid">
-      <a-card :bordered="false" class="sub-card">
-        <template #title>
-          <div class="sub-card-title-wrap">
-            <div>
-              <div class="sub-card-title">模型价格表</div>
-              <div class="sub-card-subtitle">单价单位为 元 / 百万 token（人民币，无汇率换算）。实际扣费 =（输入 − 缓存输入）× 输入价 + 缓存输入 × 缓存价 + 输出 × 输出价。</div>
-            </div>
-          </div>
-        </template>
-        <template #extra>
-          <a-space>
+      <ConsolePanel title="模型价格表" description="单价单位为 元 / 百万 token（人民币，无汇率换算）。实际扣费 =（输入 − 缓存输入）× 输入价 + 缓存输入 × 缓存价 + 输出 × 输出价。">
+        <template #actions>
+          <a-space wrap>
             <a-popconfirm title="确定恢复内置默认价格表吗？自定义价格会被清空。" ok-text="确定" cancel-text="取消" @confirm="handleResetModelPrices">
               <a-button :loading="priceResetting">恢复默认</a-button>
             </a-popconfirm>
@@ -366,29 +270,27 @@
               <a-button size="small" type="primary" @click="addStagedMultiplierPoint">新增阶段</a-button>
             </a-space>
           </div>
-          <a-table
+          <ConsoleTableShell label="阶段倍率价格表"><a-table
             bordered
             size="small"
             :row-key="stagedPointRowKey"
             :pagination="false"
             :data-source="formState.stagedTokenMultiplierPoints"
             :columns="stagedPointColumns"
+            table-layout="fixed"
+            :scroll="{ x: sumTableColumnWidths(stagedPointColumns) }"
           >
-            <template #stageTokens="{ record }">
-              <a-input v-model:value="record.tokens" inputmode="numeric" autocomplete="off" style="width: 180px" />
+            <template #bodyCell="{ column, record, index }">
+              <a-input v-if="column.key === 'tokens'" v-model:value="record.tokens" inputmode="numeric" autocomplete="off" style="width: 180px" />
+              <a-input-number v-else-if="column.key === 'multiplier'" v-model:value="record.multiplier" :precision="6" :step="0.1" style="width: 140px" />
+              <a-button v-else-if="column.key === 'action'" type="link" danger :disabled="index === 0 || formState.stagedTokenMultiplierPoints.length <= 1" @click="removeStagedMultiplierPoint(index)">删除</a-button>
             </template>
-            <template #stageMultiplier="{ record }">
-              <a-input-number v-model:value="record.multiplier" :precision="6" :step="0.1" style="width: 140px" />
-            </template>
-            <template #stageAction="{ index }">
-              <a-button type="link" danger :disabled="index === 0 || formState.stagedTokenMultiplierPoints.length <= 1" @click="removeStagedMultiplierPoint(index)">删除</a-button>
-            </template>
-          </a-table>
+          </a-table></ConsoleTableShell>
           <div v-if="stagedPointError" class="hint hint-warning">{{ stagedPointError }}；修正后再保存。</div>
           <div v-else class="hint">至少保留首个 0 token 节点；后续阈值必须严格递增，倍率必须为有限数值且只能保持不变或递减。阈值不设业务上限，倍率推荐使用 0.3x～4x。</div>
         </div>
 
-        <div class="price-table-wrap">
+        <ConsoleTableShell label="模型价格表">
           <a-table
             bordered
             row-key="id"
@@ -396,28 +298,16 @@
             :columns="priceColumns"
             :loading="priceLoading"
             :pagination="{ pageSize: 8, size: 'small' }"
-            :scroll="{ x: 'max-content' }"
+            table-layout="fixed"
+            :scroll="{ x: sumTableColumnWidths(priceColumns) }"
           >
-            <template #inputPrice="{ record }">{{ formatPriceAmount(record.inputPrice) }}</template>
-            <template #cachedPrice="{ record }">{{ formatPriceAmount(record.cachedPrice) }}</template>
-            <template #cacheWritePrice="{ record }">{{ formatPriceAmount(record.cacheWritePrice) }}</template>
-            <template #outputPrice="{ record }">{{ formatPriceAmount(record.outputPrice) }}</template>
-            <template #multiplier="{ record }">
-              <span :class="{ 'multiplier-cell--custom': Number(record.multiplier || 1) !== 1 }">
+            <template #bodyCell="{ column, record }">
+              <span v-if="['inputPrice', 'cachedPrice', 'cacheWritePrice', 'outputPrice'].includes(column.key)">{{ formatPriceAmount(record[column.key]) }}</span>
+              <span v-else-if="column.key === 'multiplier'" :class="{ 'multiplier-cell--custom': Number(record.multiplier || 1) !== 1 }">
                 ×{{ formatMultiplier(record.multiplier) }}
               </span>
-            </template>
-            <template #status="{ record }">
-              <a-tag :color="record.status === 'enabled' ? 'green' : 'default'">
-                {{ record.status === 'enabled' ? '启用' : '停用' }}
-              </a-tag>
-            </template>
-            <template #priceRemark="{ record }">
-              <span>{{ record.remark || '-' }}</span>
-              <a-tag v-if="record.isUserModified" color="orange" style="margin-left: 6px">已改</a-tag>
-            </template>
-            <template #priceAction="{ record }">
-              <a-space size="small">
+              <span v-else-if="column.key === 'remark'">{{ record.remark || '-' }} <a-tag v-if="record.isUserModified" color="orange">已改</a-tag></span>
+              <a-space v-else-if="column.key === 'action'" size="small" wrap>
                 <a-button type="link" style="padding: 0" @click="openPriceModal(record)">编辑</a-button>
                 <a-popconfirm title="确定删除该模型价格吗？" ok-text="确定" cancel-text="取消" @confirm="handleDeleteModelPrice(record)">
                   <a-button type="link" danger style="padding: 0">删除</a-button>
@@ -425,8 +315,8 @@
               </a-space>
             </template>
           </a-table>
-        </div>
-      </a-card>
+        </ConsoleTableShell>
+      </ConsolePanel>
 
     </div>
 
@@ -553,6 +443,8 @@
 <script>
 import { defineComponent, computed, onMounted, reactive, ref } from 'vue';
 import { message, Modal } from 'ant-design-vue';
+import AISearchCapabilityDialog from './AISearchCapabilityDialog.vue';
+import { sumTableColumnWidths } from '@/utils/tableLayout.mjs';
 import {
   getAISearchConfig,
   getAISearchModels,
@@ -658,6 +550,7 @@ function normalizeUsageRows(payload) {
 
 export default defineComponent({
   name: 'AISearchConfig',
+  components: { AISearchCapabilityDialog },
   setup() {
     const tabLoading = ref(true)
     const saving = ref(false)
@@ -768,8 +661,8 @@ export default defineComponent({
       return cards
     })
     const usageColumns = [
-      { title: '调用位置', dataIndex: 'path', key: 'path', ellipsis: true },
-      { title: '调用次数', dataIndex: 'count', key: 'count', width: 120, align: 'right' },
+      { title: '调用位置', dataIndex: 'path', key: 'path', width: 540 },
+      { title: '调用次数', dataIndex: 'count', key: 'count', width: 120 },
     ]
 
     // 哪些已配置的模型还没有价格：用于页面提示，避免命中后按 0 元计费却无人察觉。
@@ -777,21 +670,21 @@ export default defineComponent({
 
     const priceColumns = [
       { title: 'ID', dataIndex: 'id', key: 'id', width: 60 },
-      { title: '模型 ID', dataIndex: 'modelName', key: 'modelName', width: 190, ellipsis: true },
-      { title: '显示名称', dataIndex: 'displayName', key: 'displayName', width: 165, ellipsis: true },
-      { title: '输入（￥/M）', dataIndex: 'inputPrice', key: 'inputPrice', width: 105, align: 'right', slots: { customRender: 'inputPrice' } },
-      { title: '缓存输入（￥/M）', dataIndex: 'cachedPrice', key: 'cachedPrice', width: 120, align: 'right', slots: { customRender: 'cachedPrice' } },
-      { title: '缓存写入（￥/M）', dataIndex: 'cacheWritePrice', key: 'cacheWritePrice', width: 125, align: 'right', slots: { customRender: 'cacheWritePrice' } },
-      { title: '输出（￥/M）', dataIndex: 'outputPrice', key: 'outputPrice', width: 105, align: 'right', slots: { customRender: 'outputPrice' } },
-      { title: '倍率', dataIndex: 'multiplier', key: 'multiplier', width: 85, align: 'right', slots: { customRender: 'multiplier' } },
-      { title: '备注', dataIndex: 'remark', key: 'remark', width: 140, ellipsis: true, slots: { customRender: 'priceRemark' } },
-      { title: '操作', dataIndex: 'action', key: 'action', fixed: 'right', width: 110, slots: { customRender: 'priceAction' } },
+      { title: '模型 ID', dataIndex: 'modelName', key: 'modelName', width: 190 },
+      { title: '显示名称', dataIndex: 'displayName', key: 'displayName', width: 165 },
+      { title: '输入（￥/M）', dataIndex: 'inputPrice', key: 'inputPrice', width: 105 },
+      { title: '缓存输入（￥/M）', dataIndex: 'cachedPrice', key: 'cachedPrice', width: 120 },
+      { title: '缓存写入（￥/M）', dataIndex: 'cacheWritePrice', key: 'cacheWritePrice', width: 125 },
+      { title: '输出（￥/M）', dataIndex: 'outputPrice', key: 'outputPrice', width: 105 },
+      { title: '倍率', dataIndex: 'multiplier', key: 'multiplier', width: 85 },
+      { title: '备注', dataIndex: 'remark', key: 'remark', width: 170 },
+      { title: '操作', dataIndex: 'action', key: 'action', width: 110 },
     ]
 
     const stagedPointColumns = [
-      { title: '总 token 起点', dataIndex: 'tokens', key: 'tokens', width: 210, slots: { customRender: 'stageTokens' } },
-      { title: '倍率', dataIndex: 'multiplier', key: 'multiplier', width: 190, slots: { customRender: 'stageMultiplier' } },
-      { title: '操作', dataIndex: 'action', key: 'action', width: 90, slots: { customRender: 'stageAction' } },
+      { title: '总 token 起点', dataIndex: 'tokens', key: 'tokens', width: 220 },
+      { title: '倍率', dataIndex: 'multiplier', key: 'multiplier', width: 190 },
+      { title: '操作', dataIndex: 'action', key: 'action', width: 90 },
     ]
 
     const loadConfig = () => {
@@ -944,6 +837,7 @@ export default defineComponent({
     }
   },
   methods: {
+    sumTableColumnWidths,
     handleLoad() {
       this.loadConfig()
       this.loadAIModelPrices()
@@ -1219,291 +1113,30 @@ export default defineComponent({
 </script>
 
 <style scoped>
-.page-card {
-  border-radius: 20px;
-  /* 表格列较宽时，卡片本身不能被内容顶宽，否则会横向溢出整个页面。 */
-  max-width: 100%;
-  overflow: hidden;
-}
-
-.page-alert {
-  margin-bottom: 16px;
-}
-
-.hint {
-  margin-top: 6px;
-  color: #8c8c8c;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.hint-warning {
-  color: #d46b08;
-}
-
-/* 非默认倍率用醒目标色，方便一眼看出哪些模型被加价/打折。 */
-.multiplier-cell--custom {
-  color: #d46b08;
-  font-weight: 600;
-}
-
-.hint-block {
-  margin-top: 6px;
-}
-
-.model-editor {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-}
-
-.model-editor :deep(.ant-input-textarea) {
-  flex: 1;
-}
-
-.fetch-btn {
-  flex-shrink: 0;
-}
-
-.model-tags {
-  margin-top: 10px;
-}
-
-.test-alert {
-  margin-bottom: 16px;
-}
-
-.test-result-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.test-result-block {
-  padding: 12px 14px;
-  border-radius: 12px;
-  background: #fafafa;
-  border: 1px solid #f0f0f0;
-}
-
-.test-result-title {
-  margin-bottom: 8px;
-  font-size: 13px;
-  font-weight: 600;
-  color: #1f2937;
-}
-
-.test-result-pre {
-  margin: 0;
-  max-height: 240px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 12px;
-  line-height: 1.6;
-  color: #334155;
-}
-
-.pricing-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 16px;
-  margin-top: 16px;
-  /* grid/flex 子项默认 min-width:auto，会被宽表格顶破容器，必须显式归零。 */
-  min-width: 0;
-}
-
-.sub-card {
-  border-radius: 20px;
-  min-width: 0;
-}
-
-/* ant-design 卡片内容区同样是 flex 子项，需要允许收缩。 */
-.sub-card :deep(.ant-card-body),
-.sub-card :deep(.ant-card-head) {
-  min-width: 0;
-}
-
-.sub-card :deep(.ant-card-head-wrapper) {
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 12px;
-}
-
-.sub-card :deep(.ant-card-head-title) {
-  flex: 1 1 320px;
-  min-width: 0;
-  white-space: normal;
-}
-
-.sub-card :deep(.ant-card-extra) {
-  flex: 1 1 auto;
-  min-width: 0;
-  margin-left: 0;
-}
-
-.sub-card :deep(.ant-card-extra .ant-space) {
-  max-width: 100%;
-  flex-wrap: wrap;
-}
-
-.sub-card-title-wrap {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-}
-
-.sub-card-title {
-  font-size: 18px;
-  font-weight: 700;
-  color: #1f2937;
-}
-
-.sub-card-subtitle {
-  margin-top: 6px;
-  color: #6b7280;
-  font-size: 13px;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-.price-table-wrap {
-  width: 100%;
-  max-width: 100%;
-  min-width: 0;
-  overflow-x: auto;
-}
-
-.capability-detail {
-  margin-top: 6px;
-  color: #6b7280;
-  font-size: 12px;
-}
-
-.capability-status-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 12px;
-  margin: 4px 0 16px;
-}
-
-.capability-status-card {
-  padding: 16px;
-  border: 1px solid #e5e7eb;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #f8fbff 0%, #ffffff 100%);
-}
-
-.capability-status-card__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.capability-status-card__title {
-  color: #0f172a;
-  font-size: 15px;
-  font-weight: 700;
-}
-
-.capability-status-card__meta {
-  margin-top: 10px;
-  min-height: 20px;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.capability-status-card__count {
-  margin-top: 12px;
-  color: #2563eb;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.capability-usage-table {
-  margin-top: 16px;
-}
-
-.capability-detail-panel {
-  margin: 4px 0 20px;
-  padding-bottom: 20px;
-  border-bottom: 1px solid #e5e7eb;
-}
-
-.capability-detail-panel__header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.capability-detail-panel__identity {
-  min-width: 0;
-}
-
-.capability-detail-panel__identity h3 {
-  margin: 0 0 6px;
-  font-size: 17px;
-}
-
-.capability-detail-panel__identity p {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-.capability-detail-facts {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 12px 20px;
-  margin: 18px 0;
-}
-
-.capability-detail-facts dt,
-.capability-detail-list h4 {
-  margin: 0 0 5px;
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.capability-detail-facts dd {
-  min-width: 0;
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-.capability-detail-list + .capability-detail-list {
-  margin-top: 14px;
-}
-
-.capability-detail-empty {
-  color: #94a3b8;
-  font-size: 13px;
-}
-
-.capability-usage-heading {
-  margin: 20px 0 8px;
-  font-size: 14px;
-}
-
-@media (max-width: 768px) {
-  .page-card,
-  .sub-card {
-    border-radius: 8px;
-  }
-
-  .model-editor {
-    display: grid;
-  }
-
-  .fetch-btn {
-    width: 100%;
-  }
-
-  .sub-card-title {
-    font-size: 16px;
-  }
-}
+.ai-config-form { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.console-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 32px; row-gap: 8px; }
+.full-width { grid-column: 1 / -1; }
+.switch-description { margin-left: 12px; color: var(--console-muted); }
+.unit-label { margin-left: 8px; color: var(--console-muted); }
+.hint { margin-top: 8px; color: var(--console-muted); font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.hint-warning, .multiplier-cell--custom { color: var(--console-warning); }
+.multiplier-cell--custom { font-weight: 600; }
+.model-editor { display: flex; gap: 12px; align-items: flex-start; }
+.model-editor :deep(.ant-input-textarea) { min-width: 0; flex: 1; }
+.fetch-btn { flex-shrink: 0; }
+.model-tags { margin-top: 12px; }
+.model-tags :deep(.ant-tag) { padding: 4px 8px; border-radius: 6px; }
+.pricing-grid { display: grid; gap: 16px; min-width: 0; }
+.staged-points-editor { margin: 20px 0 24px; }
+.staged-points-editor__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
+.staged-points-editor__header > div { flex: 1 1 320px; min-width: 0; }
+.staged-points-editor__header :deep(.ant-space) { flex-wrap: wrap; }
+.sub-card-title { color: var(--console-text); font-size: 15px; font-weight: 600; }
+.sub-card-subtitle { margin-top: 6px; color: var(--console-muted); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.test-alert { margin-bottom: 16px; }
+.test-result-panel { display: flex; flex-direction: column; gap: 12px; }
+.test-result-block { padding: 16px; border-radius: 8px; background: var(--console-subtle); border: 1px solid var(--console-border); }
+.test-result-title { margin-bottom: 8px; font-weight: 600; color: var(--console-text); }
+.test-result-pre { margin: 0; max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.7; color: var(--console-text); }
+@media (max-width: 768px) { .console-form-grid { grid-template-columns: minmax(0, 1fr); } .model-editor { display: grid; } .fetch-btn { width: 100%; } .staged-billing-settings :deep(.ant-form-item) { display: block; } .staged-billing-settings :deep(.ant-form-item-label) { width: 100% !important; text-align: left; } .staged-billing-settings :deep(.ant-form-item-control) { max-width: 100%; } }
 </style>

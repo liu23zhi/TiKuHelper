@@ -29,9 +29,18 @@ import {
   Empty,
   Radio,
   Statistic,
+  ConfigProvider,
+  Divider,
+  Result,
+  Typography,
 } from 'ant-design-vue'
 import router from './router/router'
 import 'ant-design-vue/dist/reset.css'
+import './styles/console.css'
+import ConsolePageHeading from './components/ConsolePageHeading.vue'
+import ConsolePanel from './components/ConsolePanel.vue'
+import ConsoleSummaryGrid from './components/ConsoleSummaryGrid.vue'
+import ConsoleTableShell from './components/ConsoleTableShell.vue'
 
 
 const app = createApp(App)
@@ -63,5 +72,13 @@ app.use(Badge)
 app.use(Empty)
 app.use(Radio)
 app.use(Statistic)
+app.use(ConfigProvider)
+app.use(Divider)
+app.use(Result)
+app.use(Typography)
+app.component('ConsolePageHeading', ConsolePageHeading)
+app.component('ConsolePanel', ConsolePanel)
+app.component('ConsoleSummaryGrid', ConsoleSummaryGrid)
+app.component('ConsoleTableShell', ConsoleTableShell)
 app.use(router);
 app.mount('#app')

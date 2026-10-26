@@ -28,12 +28,12 @@ func TestCreatePaymentMethodWithDBTrimsFieldsAndPersists(t *testing.T) {
 	db := newPaymentMethodTestDB(t)
 
 	created, err := CreatePaymentMethodWithDB(db, CreatePaymentMethodInput{
-		Name:    " 支付宝 ",
-		IconSVG: " <svg>alipay</svg> ",
+		Name:     " 支付宝 ",
+		IconSVG:  " <svg>alipay</svg> ",
 		EPayType: " alipay ",
-		Enabled: true,
-		Sort:    20,
-		Remark:  " 常用支付方式 ",
+		Enabled:  true,
+		Sort:     20,
+		Remark:   " 常用支付方式 ",
 	})
 	if err != nil {
 		t.Fatalf("create payment method: %v", err)
@@ -75,6 +75,64 @@ func TestCreatePaymentMethodWithDBValidatesRequiredFields(t *testing.T) {
 	}
 	if _, err := CreatePaymentMethodWithDB(db, CreatePaymentMethodInput{Name: "支付宝", EPayType: ""}); err != ErrPaymentMethodEPayTypeRequired {
 		t.Fatalf("expected ErrPaymentMethodEPayTypeRequired, got %v", err)
+	}
+}
+
+func TestPaymentMethodIconSVGSanitizerKeepsSafeMarkup(t *testing.T) {
+	safe, err := sanitizePaymentMethodIconSVG(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#1677ff" d="M1 1h22v22H1z"/></svg>`)
+	if err != nil {
+		t.Fatalf("safe SVG should be accepted: %v", err)
+	}
+	if !strings.Contains(safe, "<svg") || !strings.Contains(safe, "<path") || !strings.Contains(safe, "viewBox=\"0 0 24 24\"") {
+		t.Fatalf("safe SVG was not preserved: %q", safe)
+	}
+}
+
+func TestPaymentMethodIconSVGSanitizerRejectsExecutableAndExternalContent(t *testing.T) {
+	for _, raw := range []string{
+		`<svg><script>alert(1)</script></svg>`,
+		`<svg onload="alert(1)"></svg>`,
+		`<svg><foreignObject><div>unsafe</div></foreignObject></svg>`,
+		`<svg><a href="javascript:alert(1)"><path d="M0 0"/></a></svg>`,
+		`<svg><image href="data:image/svg+xml;base64,AAAA"/></svg>`,
+		`<svg><path style="fill:url(https://evil.invalid/x)" d="M0 0"/></svg>`,
+	} {
+		if _, err := sanitizePaymentMethodIconSVG(raw); err != ErrPaymentMethodIconUnsafe {
+			t.Errorf("expected unsafe SVG %q to be rejected, got %v", raw, err)
+		}
+	}
+}
+
+func TestCreatePaymentMethodWithDBRejectsUnsafeIconBeforeWrite(t *testing.T) {
+	db := newPaymentMethodTestDB(t)
+	if _, err := CreatePaymentMethodWithDB(db, CreatePaymentMethodInput{
+		Name: "恶意图标", EPayType: "unsafe", IconSVG: `<svg><script>alert(1)</script></svg>`,
+	}); err != ErrPaymentMethodIconUnsafe {
+		t.Fatalf("expected unsafe icon error, got %v", err)
+	}
+	var count int64
+	if err := db.Model(&entity.PaymentMethod{}).Count(&count).Error; err != nil {
+		t.Fatalf("count payment methods: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("unsafe icon must not be persisted, count=%d", count)
+	}
+}
+
+func TestListPaymentMethodsWithDBHidesUnsafeLegacyIcons(t *testing.T) {
+	db := newPaymentMethodTestDB(t)
+	if err := db.Create(&entity.PaymentMethod{
+		Name: "旧支付方式", EPayType: "legacy", Enabled: true,
+		IconSVG: `<svg><script>alert(1)</script></svg>`,
+	}).Error; err != nil {
+		t.Fatalf("seed legacy payment method: %v", err)
+	}
+	methods, err := ListPaymentMethodsWithDB(db, false)
+	if err != nil {
+		t.Fatalf("list payment methods: %v", err)
+	}
+	if len(methods) != 1 || methods[0].IconSVG != "" {
+		t.Fatalf("legacy unsafe SVG must be hidden from API responses, got %+v", methods)
 	}
 }
 
@@ -123,12 +181,12 @@ func TestUpdatePaymentMethodWithDBUpdatesFields(t *testing.T) {
 	}
 
 	updated, err := UpdatePaymentMethodWithDB(db, created.ID, UpdatePaymentMethodInput{
-		Name:    " 微信支付 ",
-		IconSVG: " <svg>wx</svg> ",
+		Name:     " 微信支付 ",
+		IconSVG:  " <svg>wx</svg> ",
 		EPayType: " wxpay ",
-		Enabled: false,
-		Sort:    99,
-		Remark:  " 已停用 ",
+		Enabled:  false,
+		Sort:     99,
+		Remark:   " 已停用 ",
 	})
 	if err != nil {
 		t.Fatalf("update payment method: %v", err)

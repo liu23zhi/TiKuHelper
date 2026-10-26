@@ -1,37 +1,27 @@
 <template>
   <div class="console-page user-page">
-    <header class="section-heading page-heading">
-      <div>
-        <h1>用户管理</h1>
-        <p class="page-lead">查看平台全部用户，并创建新的普通用户或管理员用户。</p>
-      </div>
+    <ConsolePageHeading title="用户管理" description="查看平台全部用户，并创建新的普通用户或管理员用户。">
+      <template #actions>
       <a-space wrap class="section-actions">
         <a-button @click="handleUserList" :loading="tabLoading">刷新</a-button>
         <a-button type="primary" @click="openCreateModal">新增用户</a-button>
       </a-space>
-    </header>
-    <a-row :gutter="16" class="summary-row">
-      <a-col :xs="12" :sm="12" :lg="6">
+      </template>
+    </ConsolePageHeading>
+    <ConsoleSummaryGrid>
         <a-card :bordered="false" class="summary-card">
           <a-statistic title="用户总数（筛选结果）" :value="summary.total" />
         </a-card>
-      </a-col>
-      <a-col :xs="12" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
           <a-statistic title="当前页管理员" :value="summary.adminCount" />
         </a-card>
-      </a-col>
-      <a-col :xs="12" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
           <a-statistic title="当前页启用账号" :value="summary.enabledCount" />
         </a-card>
-      </a-col>
-      <a-col :xs="12" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
           <a-statistic title="当前页余额合计" prefix="¥" :value="summary.totalBalance" :precision="6" />
         </a-card>
-      </a-col>
-    </a-row>
+    </ConsoleSummaryGrid>
 
     <a-card :bordered="false" class="page-card">
       <a-alert
@@ -80,6 +70,7 @@
         </a-form-item>
       </a-form>
 
+      <ConsoleTableShell label="用户列表" class="desktop-user-table-shell">
       <a-table
         class="desktop-user-table"
         bordered
@@ -92,49 +83,19 @@
         :scroll="{ x: tableScrollX }"
         @change="handleTableChange"
       >
-        <template #nickname="{ record }">
-          <span>{{ record.nickname || '-' }}</span>
-        </template>
-        <template #role="{ record }">
-          <a-tag :color="roleColor(record.role)">{{ roleText(record.role) }}</a-tag>
-        </template>
-        <template #status="{ record }">
-          <a-badge :status="statusBadge(record.status)" :text="statusText(record.status)" />
-        </template>
-        <template #balance="{ record }">
-          <span>¥ {{ formatBalance(record.balance) }}</span>
-        </template>
-        <template #phone="{ record }">
-          <span class="location-value">{{ formatValueWithLocation(record.phone, phoneLocations[normalizeLocationKey(record.phone)]) || '-' }}</span>
-        </template>
-        <template #wechat="{ record }">
-          <a-tag :color="record.wechatId ? 'green' : 'default'">
+        <template #bodyCell="{ column, record }">
+          <span v-if="column.key === 'nickname'">{{ record.nickname || '-' }}</span>
+          <a-tag v-else-if="column.key === 'role'" :color="roleColor(record.role)">{{ roleText(record.role) }}</a-tag>
+          <a-badge v-else-if="column.key === 'status'" :status="statusBadge(record.status)" :text="statusText(record.status)" />
+          <span v-else-if="column.key === 'balance'">¥ {{ formatBalance(record.balance) }}</span>
+          <span v-else-if="column.key === 'phone'" class="location-value">{{ formatValueWithLocation(record.phone, phoneLocations[normalizeLocationKey(record.phone)]) || '-' }}</span>
+          <a-tag v-else-if="column.key === 'wechat'" :color="record.wechatId ? 'green' : 'default'">
             {{ record.wechatId ? '已绑定' : '未绑定' }}
           </a-tag>
-        </template>
-        <template #registerSource="{ record }">
-          <a-tag>{{ registerSourceText(record.registerSource) }}</a-tag>
-        </template>
-        <template #phoneBoundAt="{ record }">
-          <span class="user-time-cell">{{ formatDateTime(record.phoneBoundAt) }}</span>
-        </template>
-        <template #wechatBoundAt="{ record }">
-          <span class="user-time-cell">{{ formatDateTime(record.wechatBoundAt) }}</span>
-        </template>
-        <template #createdAt="{ record }">
-          <span class="user-time-cell">{{ formatDateTime(record.createdAt) }}</span>
-        </template>
-        <template #lastLoginAt="{ record }">
-          <span class="user-time-cell">{{ formatDateTime(record.lastLoginAt) }}</span>
-        </template>
-        <template #lastLoginIp="{ record }">
-          <span class="location-value">{{ formatValueWithLocation(record.lastLoginIp, ipLocations[normalizeLocationKey(record.lastLoginIp)]) || '-' }}</span>
-        </template>
-        <template #registerIp="{ record }">
-          <span class="location-value">{{ formatValueWithLocation(record.registerIp, ipLocations[normalizeLocationKey(record.registerIp)]) || '-' }}</span>
-        </template>
-        <template #operation="{ record }">
-          <a-space size="small" wrap class="user-operation-actions">
+          <a-tag v-else-if="column.key === 'registerSource'">{{ registerSourceText(record.registerSource) }}</a-tag>
+          <span v-else-if="['phoneBoundAt', 'wechatBoundAt', 'createdAt', 'lastLoginAt'].includes(column.key)" class="user-time-cell">{{ formatDateTime(record[column.key]) }}</span>
+          <span v-else-if="['lastLoginIp', 'registerIp'].includes(column.key)" class="location-value">{{ formatValueWithLocation(record[column.key], ipLocations[normalizeLocationKey(record[column.key])]) || '-' }}</span>
+          <a-space v-else-if="column.key === 'operation'" size="small" wrap class="user-operation-actions">
             <a-button type="link" style="padding: 0" @click="openEditModal(record)">编辑</a-button>
             <a-button type="link" style="padding: 0" @click="openResetPasswordModal(record)">重置密码</a-button>
             <a-popconfirm
@@ -147,11 +108,13 @@
               <a-button type="link" danger style="padding: 0">删除</a-button>
             </a-popconfirm>
           </a-space>
+          <template v-else>{{ record[column.dataIndex] ?? '-' }}</template>
         </template>
         <template #emptyText>
           <a-empty description="当前还没有用户记录，点击右上角新增用户即可开始。" />
         </template>
       </a-table>
+      </ConsoleTableShell>
 
       <div class="mobile-user-list">
         <article v-for="record in dataSource" :key="record.id" class="mobile-user-card">
@@ -612,117 +575,78 @@ export default defineComponent({
           title: '昵称',
           dataIndex: 'nickname',
           key: 'nickname',
-          slots: {
-            customRender: 'nickname',
-          },
           width: userTableColumnWidths.nickname,
         },
         {
           title: '角色',
           dataIndex: 'role',
           key: 'role',
-          slots: {
-            customRender: 'role',
-          },
           width: userTableColumnWidths.role,
         },
         {
           title: '状态',
           dataIndex: 'status',
           key: 'status',
-          slots: {
-            customRender: 'status',
-          },
           width: userTableColumnWidths.status,
         },
         {
           title: '余额',
           dataIndex: 'balance',
           key: 'balance',
-          slots: {
-            customRender: 'balance',
-          },
           width: userTableColumnWidths.balance,
         },
         {
           title: '手机号',
           dataIndex: 'phone',
           key: 'phone',
-          slots: {
-            customRender: 'phone',
-          },
           width: userTableColumnWidths.phone,
         },
         {
           title: '微信绑定',
           dataIndex: 'wechatId',
           key: 'wechat',
-          slots: {
-            customRender: 'wechat',
-          },
           width: userTableColumnWidths.wechat,
         },
         {
           title: '绑定时间',
           dataIndex: 'phoneBoundAt',
           key: 'phoneBoundAt',
-          slots: {
-            customRender: 'phoneBoundAt',
-          },
           width: userTableColumnWidths.phoneBoundAt,
         },
         {
           title: '微信绑定时间',
           dataIndex: 'wechatBoundAt',
           key: 'wechatBoundAt',
-          slots: {
-            customRender: 'wechatBoundAt',
-          },
           width: userTableColumnWidths.wechatBoundAt,
         },
         {
           title: '注册来源',
           dataIndex: 'registerSource',
           key: 'registerSource',
-          slots: {
-            customRender: 'registerSource',
-          },
           width: userTableColumnWidths.registerSource,
         },
         {
           title: '创建时间',
           dataIndex: 'createdAt',
           key: 'createdAt',
-          slots: {
-            customRender: 'createdAt',
-          },
           width: userTableColumnWidths.createdAt,
         },
         {
           title: '上次登录时间',
           dataIndex: 'lastLoginAt',
           key: 'lastLoginAt',
-          slots: {
-            customRender: 'lastLoginAt',
-          },
           width: userTableColumnWidths.lastLoginAt,
         },
         {
           title: '上次登录 IP',
           dataIndex: 'lastLoginIp',
           key: 'lastLoginIp',
-          slots: {
-            customRender: 'lastLoginIp',
-          },
           width: userTableColumnWidths.lastLoginIp,
         },
         {
           title: '注册 IP',
           dataIndex: 'registerIp',
           key: 'registerIp',
-          slots: {
-            customRender: 'registerIp',
-          },
           width: userTableColumnWidths.registerIp,
         },
         {
@@ -730,9 +654,6 @@ export default defineComponent({
           dataIndex: 'operation',
           key: 'operation',
           fixed: 'right',
-          slots: {
-            customRender: 'operation',
-          },
           width: userTableColumnWidths.operation,
         },
       ],
@@ -1163,69 +1084,24 @@ export default defineComponent({
   min-width: 0;
 }
 
-.page-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.page-heading h1 {
-  margin: 0;
-  color: var(--console-text, #1f2937);
-  font-size: 20px;
-  font-weight: 650;
-}
-
-.page-lead {
-  margin: 4px 0 0;
-  color: var(--console-muted, #64748b);
-  font-size: 13px;
-}
-
 .filter-form {
   margin: 12px 0 16px;
   display: flex;
   flex-wrap: wrap;
   gap: 8px 0;
-}
-
-.summary-row {
-  margin-bottom: 0;
+  padding: 16px;
+  border: 1px solid var(--console-border, #dce5e1);
+  border-radius: 12px;
+  background: var(--console-surface-secondary, #f8faf9);
 }
 
 .user-page .page-card {
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, #dce5e1);
   border-radius: var(--console-radius, 12px);
-}
-
-.page-title-wrap {
-  display: flex;
-  align-items: center;
-}
-
-.page-title {
-  font-size: 20px;
-  font-weight: 650;
-  color: var(--console-text, #1f2937);
-}
-
-.page-subtitle {
-  margin-top: 6px;
-  color: var(--console-muted, #64748b);
-  font-size: 13px;
 }
 
 .page-alert {
   margin-bottom: 16px;
-}
-
-.filter-form {
-  padding: 16px;
-  border: 1px solid var(--console-border, #e5e7eb);
-  border-radius: 8px;
-  background: var(--console-canvas, #f5f7fb);
 }
 
 .filter-form :deep(.ant-form-item) {
@@ -1233,7 +1109,7 @@ export default defineComponent({
 }
 
 .user-page :deep(.ant-table) {
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .user-page :deep(.desktop-user-table .ant-table-thead > tr > th),
@@ -1281,9 +1157,9 @@ export default defineComponent({
 .wechat-id-panel {
   margin-top: 10px;
   padding: 12px;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  background: #f9fafb;
+  border: 1px solid var(--console-border, #dce5e1);
+  border-radius: 12px;
+  background: var(--console-surface-secondary, #f8faf9);
 }
 
 .wechat-id-qrcode {
@@ -1298,7 +1174,7 @@ export default defineComponent({
   margin-top: 6px;
   font-size: 12px;
   line-height: 1.6;
-  color: #6b7280;
+  color: var(--console-muted, #62766e);
 }
 
 @media (max-width: 640px) {
@@ -1307,7 +1183,7 @@ export default defineComponent({
     padding: 12px;
   }
 
-  .desktop-user-table {
+  .desktop-user-table-shell {
     display: none;
   }
 
@@ -1318,8 +1194,8 @@ export default defineComponent({
 
   .mobile-user-card {
     padding: 12px;
-    border: 1px solid var(--console-border, #e5e7eb);
-    border-radius: 8px;
+    border: 1px solid var(--console-border, #dce5e1);
+    border-radius: 12px;
     background: var(--console-surface, #fff);
   }
 

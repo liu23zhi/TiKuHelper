@@ -1,12 +1,7 @@
 <template>
   <div class="auth-shell">
     <div class="auth-card auth-card--single">
-      <div class="hero hero--register">
-        <div class="hero-badge">{{ publicAuthSettings.siteName }}</div>
-        <h1>创建普通用户账号</h1>
-        <p>
-          注册成功后即可使用新账号登录后台。
-        </p>
+      <AuthPageIntro :eyebrow="publicAuthSettings.siteName" title="创建普通用户账号" description="注册成功后即可使用新账号登录后台。">
         <dl class="auth-guide">
           <div>
             <dt>设置账号资料</dt>
@@ -21,7 +16,7 @@
             <dd>支持注册时绑定，之后也可在个人中心管理。</dd>
           </div>
         </dl>
-      </div>
+      </AuthPageIntro>
 
       <a-card :bordered="false" class="form-card">
         <div class="form-header">
@@ -192,6 +187,7 @@ import {
   normalizeSMSCodeInput,
 } from '../../utils/captchaHelpers.mjs'
 import MainlandPhoneInput from '../../components/MainlandPhoneInput.vue'
+import AuthPageIntro from '../../components/AuthPageIntro.vue'
 import { ensureAuthCaptchaToken } from '../../utils/captchaDialog.mjs'
 import { useSmsCooldown } from '../../utils/smsCooldown.js'
 import { applySiteName } from '../../utils/siteName.js'
@@ -680,6 +676,7 @@ export default defineComponent({
     }
   },
   components: {
+    AuthPageIntro,
     UserOutlined,
     LockOutlined,
     IdcardOutlined,
@@ -693,9 +690,9 @@ export default defineComponent({
 .wechat-register-panel {
   margin: 8px 0 20px;
   padding: 18px;
-  border: 1px solid var(--console-border, #e5e7eb);
-  border-radius: 8px;
-  background: #f7f9fc;
+  border: 1px solid var(--console-border, #dce5e1);
+  border-radius: 12px;
+  background: var(--console-surface-secondary, #f8faf9);
 }
 
 .register-alert {

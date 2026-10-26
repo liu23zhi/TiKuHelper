@@ -1,17 +1,28 @@
 <template>
+  <a-config-provider :locale="locale" :theme="theme" :auto-insert-space-in-button="false">
   <div id="app">
     <router-view></router-view>
   </div>
+  </a-config-provider>
 </template>
 
 <script>
 import { onMounted } from 'vue'
 import { getPublicRegisterStatus } from './api/TikuComponentApi'
 import { applySiteName } from './utils/siteName'
+import zhCN from 'ant-design-vue/es/locale/zh_CN'
 
 export default {
   name: 'App',
   setup() {
+    const theme = { token: {
+      colorPrimary: '#0f766e', colorInfo: '#0f766e', colorSuccess: '#15803d',
+      colorPrimaryBg: '#e7f3ef', colorPrimaryBgHover: '#d9ebe6',
+      colorInfoBg: '#e7f3ef', colorInfoBorder: '#b8d7ce', controlItemBgActive: '#e7f3ef',
+      colorWarning: '#a16207', colorError: '#c13e41', colorText: '#172b27',
+      colorTextSecondary: '#62766e', colorBorder: '#dce5e1', borderRadius: 6,
+      fontSize: 14, fontFamily: "'Noto Sans SC', 'Microsoft YaHei', sans-serif",
+    } }
     onMounted(() => {
       getPublicRegisterStatus().then((res) => {
         if (res?.status === 200) {
@@ -21,36 +32,7 @@ export default {
         applySiteName()
       })
     })
+    return { locale: zhCN, theme }
   },
 }
 </script>
-
-<style>
-:root {
-  --console-canvas: #f5f7fb;
-  --console-surface: #ffffff;
-  --console-primary: #2563eb;
-  --console-border: #e5e7eb;
-  --console-text: #1f2937;
-  --console-muted: #64748b;
-  --console-radius: 12px;
-}
-
-html,
-body {
-  min-height: 100%;
-}
-
-body.swal2-height-auto {
-  height: auto !important;
-}
-
-#app {
-  font-family: Avenir, Helvetica, Arial, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  color: var(--console-text);
-  height: 100%;
-  background-color: var(--console-canvas);
-}
-</style>

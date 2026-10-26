@@ -14,7 +14,9 @@ test('compact viewport starts with navigation collapsed and gives an explicit ex
   ]);
   assert.match(layout, /window\.matchMedia\(['"]\(max-width:\s*960px\)['"]\)/);
   assert.match(menu, /collapsed\s*\?\s*['"]展开侧边栏['"]\s*:\s*['"]折叠侧边栏['"]/);
-  assert.match(menu, /\.sider-menu-wrap\s*\{[^}]*min-height:\s*auto/s);
+  assert.match(menu, /\.sider-menu-wrap\s*\{[^}]*min-height:\s*0/s);
+  assert.match(layout, /compact && !siderCollapsed/);
+  assert.match(layout, /aria-label="收起侧边栏"/);
 });
 
 test('user management renders readable mobile user cards with usable mobile pagination', async () => {
@@ -24,7 +26,8 @@ test('user management renders readable mobile user cards with usable mobile pagi
   assert.match(source, /class="mobile-user-pagination"/);
   assert.match(source, /class="desktop-user-table"/);
   assert.match(source, /@media\s*\(max-width:\s*640px\)/);
-  assert.match(source, /<a-col\s+:xs="12"\s+:sm="12"\s+:lg="6"/);
+  assert.match(source, /<ConsoleSummaryGrid>/);
+  assert.match(source, /\.desktop-user-table-shell\s*\{[^}]*display:\s*none/s);
 });
 
 test('billing records render mobile detail cards with statement controls inside details', async () => {
@@ -33,11 +36,14 @@ test('billing records render mobile detail cards with statement controls inside 
   assert.match(source, /class="mobile-billing-card"/);
   assert.match(source, /class="desktop-billing-table"/);
   assert.doesNotMatch(source, /class="mobile-billing-visibility"/);
-  assert.match(source, /billing-statement-toggle/);
+  assert.match(source, /<BillingDetailDialog/);
+  assert.match(source, /:viewer-scope="isAdmin \? 'admin' : 'self'"/);
+  assert.match(source, /:can-edit-statement="isAdmin"/);
+  assert.match(source, /@statement-visibility-change="handleStatementVisibilityChange"/);
   assert.match(source, /handleShowFeeDetail/);
   assert.match(source, /\bisAdmin,\s*pagination/);
   assert.match(source, /@media\s*\(max-width:\s*640px\)/);
-  assert.match(source, /<a-col\s+:xs="12"\s+:sm="12"\s+:lg="6"/);
+  assert.match(source, /<ConsoleSummaryGrid>/);
   assert.match(source, /\.mobile-billing-pagination\s*\{[^}]*display:\s*flex/s);
 });
 

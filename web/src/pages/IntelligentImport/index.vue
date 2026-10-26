@@ -1,23 +1,15 @@
 <template>
   <div class="console-page import-page">
-    <header class="section-heading import-heading">
-      <div>
-        <h1>智能导入</h1>
-        <p class="page-lead">识别题目内容，校对后批量写入题库。</p>
-      </div>
-      <a-space wrap class="section-actions import-page-actions">
+    <ConsolePageHeading title="智能导入" description="上传文档、识别题目，校对后批量写入题库。">
+      <template #actions><a-space wrap class="section-actions import-page-actions">
         <a-button type="primary" @click="upload" :loading="submitLoading">确认导入</a-button>
         <a-button @click="navigateToHome">返回</a-button>
-      </a-space>
-    </header>
+      </a-space></template>
+    </ConsolePageHeading>
 
     <main class="import-workspace">
-    <section class="compileBox console-panel">
-      <div class="title">
-        <div>
-          题目编辑
-        </div>
-        <div>
+    <ConsolePanel class="compileBox" title="题目编辑" description="上传 .docx 文档后，按题目格式校对识别内容。">
+      <template #actions>
           <a-upload name="file" action="/sqp/api/upload" @change="handleChange" :showUploadList="false"
             :beforeUpload="beforeUpload" accept=".docx">
             <a-button>
@@ -25,8 +17,7 @@
               上传文件
             </a-button>
           </a-upload>
-        </div>
-      </div>
+      </template>
       <div class="info">
         提示：若识别有误，可点击左侧题目按格式进行修改后重新识别
       </div>
@@ -59,7 +50,7 @@
           <p class="region">编辑区</p>
         </div>
       </a-spin>
-    </section>
+    </ConsolePanel>
     <div class="handleBox">
       <a-button @click="handleInput()" type="primary">
         重新识别
@@ -68,22 +59,13 @@
         清空题目
       </a-button>
     </div>
-    <section class="previewBox console-panel">
-      <div class="title">
-        <div>
-          题目预览
-        </div>
-        <div class="overview" v-if="data.length > 0">
-          共识别
-          <span>{{ data.length }}</span>
-          题。
-        </div>
-      </div>
-      <div class="tabs">
-        <span v-for="(i, index) in problemArr" :key="index" @click="() => { type = i.typeAlias }"
+    <ConsolePanel class="previewBox" title="题目预览" description="检查题型、选项和答案，确认后导入题库。">
+      <template #actions><a-tag v-if="data.length > 0" color="cyan">共识别 {{ data.length }} 题</a-tag></template>
+      <div v-if="problemArr.length" class="tabs" role="group" aria-label="预览题型筛选">
+        <button v-for="(i, index) in problemArr" :key="index" type="button" :aria-pressed="type === i.typeAlias" @click="() => { type = i.typeAlias }"
           :class="type === i.typeAlias ? 'active tabsBtn' : 'tabsBtn'">
           {{ i.typeAlias || '其他' }}({{ i.paperList.length }})
-        </span>
+        </button>
       </div>
       <a-spin :spinning="loading">
         <template v-if="showProblemArr.length > 0">
@@ -109,7 +91,7 @@
         </div>
       </a-spin>
 
-    </section>
+    </ConsolePanel>
   </main>
   </div>
 </template>
@@ -265,285 +247,25 @@ export default defineComponent({
 });
 </script>
 <style scoped>
-.console-page {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  min-width: 0;
-  color: var(--console-text, #1f2937);
-}
-
-.import-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.import-heading h1 {
-  margin: 0;
-  color: var(--console-text, #1f2937);
-  font-size: 20px;
-  font-weight: 650;
-}
-
-.page-lead {
-  margin: 4px 0 0;
-  color: var(--console-muted, #64748b);
-  font-size: 13px;
-}
-
-main {
-  width: 100%;
-  display: flex;
-  flex: 1;
-  align-items: stretch;
-  min-width: 0;
-  min-height: 400px;
-}
-
-.import-workspace {
-  display: flex;
-  align-items: stretch;
-  gap: 16px;
-  min-width: 0;
-}
-
-.compileBox {
-  flex: 1 1 0;
-  width: 0;
-  min-height: 400px;
-  padding: 16px;
-  border-color: var(--console-border, #e5e7eb);
-  border-radius: var(--console-radius, 12px);
-  background-color: var(--console-surface, #fff);
-}
-
-.handleBox {
-  flex: 0 0 120px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 12px;
-  min-width: 0;
-}
-
-.previewBox {
-  flex: 1 1 0;
-  width: 0;
-  min-height: 400px;
-  padding: 16px;
-  border-color: var(--console-border, #e5e7eb);
-  border-radius: var(--console-radius, 12px);
-  background-color: var(--console-surface, #fff);
-}
-
-.title {
-  font-size: 18px;
-  font-weight: 600;
-  margin-bottom: 12px;
-  display: flex;
-  justify-content: space-between;
-  height: 30px;
-  align-items: center;
-}
-
-.title .overview {
-  height: 30px;
-  font-size: 12px;
-  padding: 8px 20px;
-  box-sizing: border-box;
-  font-weight: 400;
-  text-align: left;
-  border-radius: 8px;
-  background-color: #f0f2f5;
-}
-
-.overview>span:nth-child(1) {
-  color: #00B368;
-  font-weight: 500;
-}
-
-.overview>span:nth-child(2) {
-  color: #F33131;
-  font-weight: 500;
-}
-
-.info {
-  height: 36px;
-  display: flex;
-  align-items: center;
-}
-
-.tabs {
-  height: 36px;
-}
-
-.tabsBtn {
-  cursor: pointer;
-  height: 30px;
-  line-height: 30px;
-  display: inline-block;
-  border-radius: 4px;
-  padding: 0 10px;
-  color: #000;
-  box-sizing: border-box;
-}
-
-.active {
-  background-color: #195ca3;
-  color: #fff;
-}
-
-.compileContent {
-  border: 1px solid #e8e8e8;
-  max-height: calc(100vh - 120px - 92px - 60px);
-  min-height: 200px;
-  border-radius: 4px;
-  padding: 10px;
-  overflow: hidden;
-  overflow-y: scroll;
-  box-sizing: border-box;
-  color: #A8A8B3;
-
-}
-
-.compileContent>div {
-  padding: 10px;
-  border-radius: 4px;
-}
-
-.previewContent {
-  border: 1px solid #e8e8e8;
-  max-height: calc(100vh - 120px - 92px - 60px);
-  min-height: 200px;
-  border-radius: 4px;
-  padding: 10px;
-  overflow: hidden;
-  overflow-y: scroll;
-  box-sizing: border-box;
-}
-
-.previewContent>div {
-  padding: 10px;
-  border-radius: 6px;
-}
-
-.previewContent>div:hover {
-  background-color: #f0f2f5;
-}
-
-:focus-visible {
-  outline-color: transparent;
-  outline-style: solid;
-  outline-width: 1px;
-}
-
-:focus {
-  box-shadow: 0 0 4px 1px rgba(58, 139, 255, 0.5);
-  color: #333;
-}
-
-.line {
-  font-size: 14px;
-  line-height: 24px;
-  /* color: #333; */
-  display: block;
-
-}
-
-.lines {
-  font-size: 14px;
-  line-height: 24px;
-  /* color: #333; */
-  display: block;
-
-}
-
-
-.green {
-  color: #00B368;
-}
-
-.red {
-  color: #F33131;
-}
-
-.explain {
-  height: calc(100vh - 120px - 92px - 60px);
-  overflow: hidden;
-  border: 1px solid #e3e3e3;
-  border-radius: 6px;
-  padding: 10px;
-  position: relative;
-}
-
-.explain p {
-  font-size: 14px;
-  color: #acb4bf;
-  margin-bottom: 10px;
-}
-
-.region {
-  font-size: 28px !important;
-  font-weight: 600;
-  color: #acb4bf;
-}
-
-.display {
-  display: none;
-}
-
-@media (max-width: 900px) {
-  .import-workspace {
-    flex-direction: column;
-  }
-
-  main {
-    flex-direction: column;
-  }
-
-  .compileBox,
-  .previewBox {
-    flex: none;
-    width: 100%;
-    min-height: 360px;
-  }
-
-  .handleBox {
-    flex-direction: row;
-    flex: none;
-    width: 100%;
-  }
-
-  .handleBox :deep(.ant-btn) {
-    flex: 1;
-  }
-}
-
-@media (max-width: 600px) {
-  .import-heading,
-  .import-page-actions {
-    width: 100%;
-  }
-
-  .compileBox,
-  .previewBox {
-    min-height: 300px;
-    padding: 12px;
-  }
-
-  .title {
-    height: auto;
-    min-height: 30px;
-  }
-
-  .tabs {
-    height: auto;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-  }
-}
+.import-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 108px minmax(0, 1fr); gap: 16px; align-items: stretch; min-width: 0; }
+.compileBox, .previewBox { min-width: 0; }
+.handleBox { display: flex; flex-direction: column; justify-content: center; gap: 12px; }
+.info { margin-bottom: 16px; color: var(--console-muted); font-size: 13px; line-height: 1.7; }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+.tabsBtn { padding: 6px 10px; border: 1px solid var(--console-border); border-radius: 6px; background: var(--console-surface); color: var(--console-muted); cursor: pointer; font: inherit; font-size: 13px; }
+.tabsBtn:hover, .tabsBtn.active { border-color: var(--console-primary); color: var(--console-primary); background: var(--console-selected); }
+.compileContent, .previewContent { min-height: 360px; max-height: 65vh; overflow: auto; padding: 8px; border: 1px solid var(--console-border); border-radius: 8px; background: var(--console-subtle); overflow-wrap: anywhere; }
+.compileContent > div, .previewContent > div { padding: 12px; border-radius: 6px; }
+.compileContent > div + div, .previewContent > div + div { margin-top: 8px; }
+.compileContent > div { background: var(--console-surface); border: 1px solid var(--console-border); }
+.previewContent > div:hover { background: var(--console-selected); }
+.compileContent [contenteditable]:focus-visible { outline: 2px solid var(--console-primary); outline-offset: 1px; }
+.line, .lines { display: block; margin: 0 0 8px; line-height: 1.8; white-space: pre-wrap; }
+.green { color: var(--console-success); }
+.red { color: var(--console-danger); }
+.explain { min-height: 360px; padding: 20px; border: 1px dashed var(--console-border); border-radius: 8px; background: var(--console-subtle); }
+.explain p { color: var(--console-muted); font-size: 13px; line-height: 1.9; }
+.region { margin: 32px 0 0; text-align: center; font-size: 24px !important; color: var(--console-muted); }
+.display { display: none; }
+@media (max-width: 1024px) { .import-workspace { grid-template-columns: minmax(0, 1fr); } .handleBox { flex-direction: row; justify-content: flex-start; flex-wrap: wrap; } .compileContent, .previewContent { min-height: 280px; max-height: 50vh; } .explain { min-height: 240px; } }
 </style>

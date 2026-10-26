@@ -116,7 +116,7 @@ test('Router keeps recharge result callback page public without adapter auth lay
 
 test('UserUsage page removes payment method count and exposes quick recharge amounts with inline recharge action', async () => {
   const content = await readFile(userUsagePagePath, 'utf8');
-  const headingMatch = content.match(/<div class="page-heading">([\s\S]*?)<a-row/);
+  const headingMatch = content.match(/<ConsolePageHeading[^>]*>([\s\S]*?)<\/ConsolePageHeading>/);
 
   assert.ok(headingMatch, 'expected page-level refresh heading to exist');
   assert.match(headingMatch[1], /@click="handleRefreshAll" :loading="pageRefreshing">刷新/);
@@ -137,8 +137,8 @@ test('UserUsage page removes payment method count and exposes quick recharge amo
 
 test('Tiku page refresh preserves current filters and page and clears loading after failures', async () => {
   const content = await readFile(tikuPagePath, 'utf8');
-  assert.match(content, /<header[\s\S]*?@click="fetchData" :loading="tabLoading">刷新[\s\S]*?<\/header>/);
-  for (const failure of [false, true]) {
+  assert.match(content, /<ConsolePageHeading[\s\S]*?@click="fetchData" :loading="tabLoading">刷新[\s\S]*?<\/ConsolePageHeading>/);
+  for (const failure of [false, 'network', 'http']) {
     const request = deferredRequest();
     let params;
     const errors = [];
@@ -155,8 +155,9 @@ test('Tiku page refresh preserves current filters and page and clears loading af
     assert.equal(params.pageNo, 2);
     assert.equal(params.question, '当前筛选');
     assert.equal(params.source, 2);
-    if (failure) request.reject(new Error('offline'));
-    else request.resolve({ data: { items: [{ id: 7 }], total: 41 } });
+    if (failure === 'network') request.reject(new Error('offline'));
+    else if (failure === 'http') request.resolve({ status: 503, message: 'offline' });
+    else request.resolve({ status: 200, data: { items: [{ id: 7 }], total: 41 } });
     await refresh;
     assert.equal(scope.tabLoading.value, false);
     assert.equal(scope.page.value.pageNo, 3);
@@ -303,40 +304,38 @@ test('Billing pages render mixed ledger fields instead of search-only columns', 
 test('Billing record list renders the billing owner username', async () => {
   const content = await readFile(path.join(__dirname, '..', 'pages', 'BillingRecordList', 'index.vue'), 'utf8');
 
-  assert.match(content, /#username="\{ record \}"/);
+  assert.match(content, /column.key === 'username'/);
   assert.match(content, /record\.username/);
   assert.match(content, /title: '用户'/);
   assert.match(content, /if \(!isAdmin\.value\) \{\s+return baseColumns/);
 });
 
-test('Billing record list opens a SweetAlert fee breakdown with provider costs', async () => {
+test('Billing record list opens the shared Vue fee breakdown with provider costs', async () => {
   const content = await readFile(path.join(__dirname, '..', 'pages', 'BillingRecordList', 'index.vue'), 'utf8');
+  const detail = await readFile(path.join(__dirname, '..', 'components', 'BillingDetailDialog.vue'), 'utf8');
 
-  assert.match(content, /import Swal from 'sweetalert2'/);
   assert.match(content, /查看详情/);
-  assert.match(content, /Swal\.fire/);
-  assert.match(content, /buildBillingRecordFeeDetailHtml/);
+  assert.match(content, /<BillingDetailDialog/);
   assert.match(content, /handleShowFeeDetail/);
-  assert.match(content, /billing-fee-card/);
-  assert.match(content, /billing-fee-item/);
-  assert.match(content, /billing-fee-total/);
+  assert.match(detail, /billing-detail__fee-item/);
+  assert.match(detail, /billing-detail__total/);
+  assert.doesNotMatch(content, /Swal|document\.querySelector/);
 });
 
-test('Billing fee item accent uses a real border instead of a global pseudo selector', async () => {
-  const content = await readFile(path.join(__dirname, '..', 'pages', 'BillingRecordList', 'index.vue'), 'utf8');
+test('Billing fee item styles use the shared theme without global popup selectors', async () => {
+  const content = await readFile(path.join(__dirname, '..', 'components', 'BillingDetailDialog.vue'), 'utf8');
 
-  assert.match(content, /:global\(\.billing-fee-item\)\s*\{[\s\S]*?border-left:\s*3px solid #60a5fa;[\s\S]*?\}/);
-  assert.doesNotMatch(content, /:global\([^)]*\)::(?:before|after)/);
+  assert.match(content, /\.billing-detail__fee-item\s*\{[^}]*border:\s*1px solid var\(--console-border\)/);
+  assert.doesNotMatch(content, /:global\(/);
 });
 
-test('Billing statement switch aligns its thumb without transform state', async () => {
-  const content = await readFile(path.join(__dirname, '..', 'pages', 'BillingRecordList', 'index.vue'), 'utf8');
+test('Billing statement visibility uses the controlled Ant switch and ID event', async () => {
+  const content = await readFile(path.join(__dirname, '..', 'components', 'BillingDetailDialog.vue'), 'utf8');
 
-  assert.match(content, /appearance:\s*none;/);
-  assert.match(content, /:global\(button\.billing-statement-switch\)\s*\{[\s\S]*?padding:\s*2px;[\s\S]*?border:\s*0;[\s\S]*?\}/);
-  assert.match(content, /:global\(button\.billing-statement-switch\)\s*\{[\s\S]*?min-width:\s*40px;[\s\S]*?max-width:\s*40px;[\s\S]*?min-height:\s*22px;[\s\S]*?max-height:\s*22px;[\s\S]*?\}/);
-  assert.match(content, /:global\(\.billing-statement-switch\[aria-checked="true"\]\)\s*\{[\s\S]*?justify-content:\s*flex-end;[\s\S]*?\}/);
-  assert.doesNotMatch(content, /translateX\(18px\)/);
+  assert.match(content, /<a-switch[\s\S]*?:checked="detail.showInStatement"[\s\S]*?:loading="statementSaving"/);
+  assert.match(content, /v-if="detail.canEditStatement"/);
+  assert.match(content, /emit\('statement-visibility-change', \{ id: detail.value.id, showInStatement \}\)/);
+  assert.doesNotMatch(content, /addEventListener|setAttribute|translateX\(18px\)/);
 });
 
 test('Personal billing flow does not render the owner username column', async () => {

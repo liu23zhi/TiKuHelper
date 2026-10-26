@@ -1,10 +1,7 @@
 <template>
   <div class="console-page token-page">
-    <header class="section-heading page-heading">
-      <div>
-        <h1>令牌管理</h1>
-        <p class="page-lead">为当前账号创建多个访问令牌，并按令牌维度维护状态、备注与累计额度上限。</p>
-      </div>
+    <ConsolePageHeading title="令牌管理" description="为当前账号创建多个访问令牌，并按令牌维度维护状态、备注与累计额度上限。">
+      <template #actions>
       <a-space wrap class="section-actions">
         <a-button
           v-if="isAdmin"
@@ -16,29 +13,22 @@
         <a-button @click="handleLoad" :loading="tableLoading">刷新</a-button>
         <a-button type="primary" @click="openCreateModal">新增令牌</a-button>
       </a-space>
-    </header>
-    <a-row :gutter="16" class="summary-row">
-      <a-col :xs="24" :sm="12" :lg="6">
+      </template>
+    </ConsolePageHeading>
+    <ConsoleSummaryGrid>
         <a-card :bordered="false" class="summary-card">
           <a-statistic title="令牌总数" :value="summary.total" />
         </a-card>
-      </a-col>
-      <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
           <a-statistic title="启用令牌" :value="summary.enabledCount" />
         </a-card>
-      </a-col>
-      <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
           <a-statistic title="已禁用令牌" :value="summary.disabledCount" />
         </a-card>
-      </a-col>
-      <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
           <a-statistic title="累计已消费" prefix="¥" :value="summary.totalAmountUsed" :precision="6" />
         </a-card>
-      </a-col>
-    </a-row>
+    </ConsoleSummaryGrid>
 
     <a-card :bordered="false" class="page-card">
       <a-alert
@@ -57,6 +47,7 @@
         :description="balanceAlert.description"
       />
 
+      <ConsoleTableShell label="访问令牌列表">
       <a-table
         bordered
         :data-source="dataSource"
@@ -64,13 +55,12 @@
         :loading="tableLoading"
         :pagination="false"
         row-key="id"
-        :scroll="{ x: 'max-content' }"
+        table-layout="fixed"
+        :scroll="{ x: tableScrollX }"
       >
-        <template #username="{ record }">
-          <span>{{ record.username || '-' }}</span>
-        </template>
-        <template #tokenValue="{ record }">
-          <div class="token-value-cell">
+        <template #bodyCell="{ column, record }">
+          <span v-if="column.key === 'username'">{{ record.username || '-' }}</span>
+          <div v-else-if="column.key === 'tokenValue'" class="token-value-cell">
             <a-typography-paragraph
               copyable
               class="token-value-text"
@@ -85,27 +75,18 @@
               {{ isTokenVisible(record.id) ? '隐藏中间部分' : '显示全部' }}
             </a-button>
           </div>
-        </template>
-        <template #status="{ record }">
-          <a-badge :status="statusBadge(record.status)" :text="statusText(record.status)" />
-        </template>
-        <template #totalQuotaLimit="{ record }">
-          <span>{{ quotaText(record.totalQuotaLimit) }}</span>
-        </template>
-        <template #totalAmountUsed="{ record }">
-          <span>¥ {{ formatAmount(record.totalAmountUsed) }}</span>
-        </template>
-        <template #lastUsedAt="{ record }">
-          <span>{{ formatDateTime(record.lastUsedAt) }}</span>
-        </template>
-        <template #lastUsedIp="{ record }">
-          <span>{{ record.lastUsedIp || '-' }}</span>
-        </template>
-        <template #remark="{ record }">
-          <span>{{ record.remark || '-' }}</span>
-        </template>
-        <template #operation="{ record }">
-          <a-space size="small">
+          <a-badge v-else-if="column.key === 'status'" :status="statusBadge(record.status)" :text="statusText(record.status)" />
+          <span v-else-if="column.key === 'totalQuotaLimit'">{{ quotaText(record.totalQuotaLimit) }}</span>
+          <span v-else-if="column.key === 'totalAmountUsed'">¥ {{ formatAmount(record.totalAmountUsed) }}</span>
+          <span v-else-if="column.key === 'lastUsedAt'" class="token-time-cell">{{ formatDateTime(record.lastUsedAt) }}</span>
+          <span v-else-if="column.key === 'lastUsedIp'">{{ record.lastUsedIp || '-' }}</span>
+          <OverflowTableText
+            v-else-if="column.key === 'remark'"
+            :text="record.remark || '-'"
+            :expanded="remarkExpansion.isExpanded(record, 'remark')"
+            @toggle="remarkExpansion.toggle(record, 'remark')"
+          />
+          <a-space v-else-if="column.key === 'operation'" size="small" wrap>
             <a-button type="link" style="padding: 0" @click="openEditModal(record)">编辑</a-button>
             <a-popconfirm
               ok-text="确定"
@@ -116,11 +97,13 @@
               <a-button type="link" danger style="padding: 0">删除</a-button>
             </a-popconfirm>
           </a-space>
+          <template v-else>{{ record[column.dataIndex] ?? '-' }}</template>
         </template>
         <template #emptyText>
           <a-empty description="当前还没有访问令牌，可点击右上角新增令牌。" />
         </template>
       </a-table>
+      </ConsoleTableShell>
     </a-card>
 
     <a-modal
@@ -175,6 +158,9 @@ import {
   limitAccessTokenNameInput,
 } from '@/utils/accessTokenManagementHelpers.mjs';
 import { formatMoneyValue, formatMoneyYuanWithSpace } from '@/utils/moneyFormat.mjs';
+import { sumTableColumnWidths } from '@/utils/tableLayout.mjs';
+import OverflowTableText from '@/components/OverflowTableText.vue';
+import { useTableExpansion } from '@/composables/useTableExpansion.mjs';
 
 const dataSource = ref([])
 const tableLoading = ref(true)
@@ -202,7 +188,9 @@ function normalizeMoneyInput(value) {
 
 export default defineComponent({
   name: 'AccessTokenManagement',
+  components: { OverflowTableText },
   setup() {
+    const remarkExpansion = useTableExpansion(dataSource)
     const summary = computed(() => {
       const rows = Array.isArray(dataSource.value) ? dataSource.value : []
       return rows.reduce((acc, item) => {
@@ -241,62 +229,42 @@ export default defineComponent({
         title: '访问令牌',
         dataIndex: 'tokenValue',
         key: 'tokenValue',
-        slots: {
-          customRender: 'tokenValue',
-        },
+        width: 360,
       },
       {
         title: '状态',
         dataIndex: 'status',
         key: 'status',
-        slots: {
-          customRender: 'status',
-        },
         width: 120,
       },
       {
         title: '累计额度上限',
         dataIndex: 'totalQuotaLimit',
         key: 'totalQuotaLimit',
-        slots: {
-          customRender: 'totalQuotaLimit',
-        },
         width: 150,
       },
       {
         title: '累计已消费',
         dataIndex: 'totalAmountUsed',
         key: 'totalAmountUsed',
-        slots: {
-          customRender: 'totalAmountUsed',
-        },
         width: 140,
       },
       {
         title: '最近使用时间',
         dataIndex: 'lastUsedAt',
         key: 'lastUsedAt',
-        slots: {
-          customRender: 'lastUsedAt',
-        },
         width: 180,
       },
       {
         title: '最近使用 IP',
         dataIndex: 'lastUsedIp',
         key: 'lastUsedIp',
-        slots: {
-          customRender: 'lastUsedIp',
-        },
         width: 150,
       },
       {
         title: '备注',
         dataIndex: 'remark',
         key: 'remark',
-        slots: {
-          customRender: 'remark',
-        },
         width: 200,
       },
       {
@@ -304,29 +272,25 @@ export default defineComponent({
         dataIndex: 'operation',
         key: 'operation',
         fixed: 'right',
-        slots: {
-          customRender: 'operation',
-        },
         width: 120,
       },
     ]
     const columns = computed(() => {
       if (!showAllTokens.value) {
-        return baseColumns
+        return baseColumns.map(column => column.key === 'remark' ? { ...column, width: remarkExpansion.columnWidth('remark') } : column)
       }
       return [
         {
           title: '用户名',
           dataIndex: 'username',
           key: 'username',
-          slots: {
-            customRender: 'username',
-          },
           width: 160,
         },
-        ...baseColumns,
+        ...baseColumns.map(column => column.key === 'remark' ? { ...column, width: remarkExpansion.columnWidth('remark') } : column),
       ]
     })
+
+    const tableScrollX = computed(() => sumTableColumnWidths(columns.value))
 
     return {
       labelCol: { style: { width: '110px' } },
@@ -348,6 +312,8 @@ export default defineComponent({
         { label: '禁用', value: 'disabled' },
       ],
       columns,
+      tableScrollX,
+      remarkExpansion,
       limitAccessTokenNameInput,
     }
   },
@@ -630,41 +596,11 @@ export default defineComponent({
   display: flex;
   flex-direction: column;
   gap: 16px;
-}
-
-.page-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.page-heading h1 {
-  margin: 0;
-  color: var(--console-text, #1f2937);
-  font-size: 20px;
-  font-weight: 650;
-}
-
-.page-lead {
-  max-width: 680px;
-  margin: 4px 0 0;
-  color: var(--console-muted, #64748b);
-  font-size: 13px;
-}
-
-.summary-row {
-  margin-bottom: 0;
-}
-
-.summary-card {
-  border: 1px solid var(--console-border, #e5e7eb);
-  border-radius: 8px;
+  min-width: 0;
 }
 
 .page-card {
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, #dce5e1);
   border-radius: var(--console-radius, 12px);
 }
 
@@ -673,34 +609,14 @@ export default defineComponent({
 }
 
 .token-page :deep(.ant-table) {
-  font-size: 13px;
-}
-
-.filter-form {
-  padding: 16px;
-  border: 1px solid var(--console-border, #e5e7eb);
-  border-radius: 8px;
-  background: var(--console-canvas, #f5f7fb);
-}
-
-@media (max-width: 640px) {
-  .filter-form,
-  .filter-form :deep(.ant-form-item) {
-    width: 100%;
-  }
-
-  .filter-form :deep(.ant-input),
-  .filter-form :deep(.ant-input-search),
-  .filter-form :deep(.ant-select) {
-    width: 100%;
-  }
+  font-size: 14px;
 }
 
 .hint {
   margin-top: 6px;
   font-size: 12px;
   line-height: 1.6;
-  color: #6b7280;
+  color: var(--console-muted, #62766e);
 }
 
 .token-value-cell {
@@ -708,6 +624,7 @@ export default defineComponent({
   align-items: center;
   gap: 8px;
   flex-wrap: nowrap;
+  min-width: 0;
 }
 
 .token-value-text {
@@ -730,6 +647,19 @@ export default defineComponent({
 .token-toggle-button {
   flex: 0 0 auto;
 }
+
+.token-time-cell {
+  display: block;
+  white-space: pre-wrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.token-page :deep(.ant-table-cell) {
+  text-align: center;
+  vertical-align: middle;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
 </style>
 
 <style>
@@ -737,11 +667,12 @@ export default defineComponent({
   width: min(34rem, calc(100vw - 2rem));
   padding: 28px 28px 24px;
   border-radius: 12px;
-  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.2);
+  border: 1px solid var(--console-border, #dce5e1);
+  box-shadow: 0 12px 36px rgb(23 43 39 / 12%);
 }
 
 .token-created-popup__title {
-  color: #172033;
+  color: var(--console-text, #172b27);
   font-size: 23px;
   font-weight: 700;
   letter-spacing: -0.02em;
@@ -752,7 +683,7 @@ export default defineComponent({
 }
 
 .token-created-dialog {
-  color: #334155;
+  color: var(--console-text, #172b27);
   text-align: left;
 }
 
@@ -787,14 +718,14 @@ export default defineComponent({
 
 .token-created-dialog__field {
   padding: 14px;
-  border: 1px solid #dbe4ee;
+  border: 1px solid var(--console-border, #dce5e1);
   border-radius: 8px;
-  background: #f8fafc;
+  background: var(--console-surface-secondary, #f8faf9);
 }
 
 .token-created-dialog__label {
   margin-bottom: 8px;
-  color: #64748b;
+  color: var(--console-muted, #62766e);
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -804,9 +735,10 @@ export default defineComponent({
 .token-created-dialog__value {
   display: block;
   padding: 14px 16px;
-  border-radius: 12px;
-  background: #0f172a;
-  color: #e2e8f0;
+  border: 1px solid var(--console-border, #dce5e1);
+  border-radius: 6px;
+  background: var(--console-surface, #fff);
+  color: var(--console-text, #172b27);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 14px;
   line-height: 1.7;
@@ -829,38 +761,35 @@ export default defineComponent({
   border-radius: 8px;
   font-size: 14px;
   font-weight: 600;
-  transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+  transition: border-color 0.15s ease, background 0.15s ease;
 }
 
 .token-created-popup__copy {
-  border: 1px solid #1677ff;
-  background: #1677ff;
+  border: 1px solid var(--console-primary, #0f766e);
+  background: var(--console-primary, #0f766e);
   color: #ffffff;
-  box-shadow: 0 8px 20px rgba(22, 119, 255, 0.24);
 }
 
 .token-created-popup__copy:hover {
-  border-color: #0958d9;
-  background: #0958d9;
-  box-shadow: 0 10px 24px rgba(22, 119, 255, 0.3);
-  transform: translateY(-1px);
+  border-color: var(--console-primary-hover, #115e59);
+  background: var(--console-primary-hover, #115e59);
 }
 
 .token-created-popup__confirm {
-  border: 1px solid #cbd5e1;
+  border: 1px solid var(--console-border, #dce5e1);
   background: #ffffff;
-  color: #475569;
+  color: var(--console-muted, #62766e);
 }
 
 .token-created-popup__confirm:hover {
-  border-color: #94a3b8;
-  background: #f8fafc;
-  color: #1e293b;
+  border-color: var(--console-primary, #0f766e);
+  background: var(--console-surface-secondary, #f8faf9);
+  color: var(--console-text, #172b27);
 }
 
 .token-created-popup__copy:focus-visible,
 .token-created-popup__confirm:focus-visible {
-  outline: 3px solid rgba(22, 119, 255, 0.2);
+  outline: 3px solid rgb(15 118 110 / 20%);
   outline-offset: 2px;
 }
 

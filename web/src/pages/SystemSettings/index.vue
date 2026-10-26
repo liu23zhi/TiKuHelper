@@ -1,15 +1,11 @@
 <template>
   <div class="console-page system-settings-page">
-    <header class="section-heading settings-heading">
-      <div>
-        <h1>系统设置</h1>
-        <p class="page-lead">集中管理认证、通知、支付和站点运行参数。</p>
-      </div>
-      <a-space wrap class="section-actions">
+    <ConsolePageHeading title="系统设置" description="集中管理认证、通知、支付和站点运行参数。">
+      <template #actions><a-space wrap class="section-actions">
         <a-button @click="handleLoad" :loading="tabLoading">刷新</a-button>
         <a-button type="primary" @click="handleSave" :loading="saving">保存</a-button>
-      </a-space>
-    </header>
+      </a-space></template>
+    </ConsolePageHeading>
 
       <a-alert
         type="info"
@@ -19,8 +15,7 @@
       />
 
       <a-form :label-col="labelCol" :wrapper-col="wrapperCol" class="settings-form">
-        <section class="console-panel settings-section">
-          <header class="section-heading"><h2>站点与日志</h2></header>
+        <ConsolePanel title="站点与日志" description="配置站点名称和日志存储上限。" class="settings-section">
         <a-form-item label="网站名称">
           <a-input v-model:value="formState.siteName" placeholder="例如 题库" />
           <div class="hint">用于浏览器标题、页头品牌和登录页名称，留空时恢复为“题库”。</div>
@@ -42,10 +37,9 @@
           </a-select>
           <div class="hint">日志目录全部日志文件的总占用上限，默认 5GB。支持 KB、MB、GB、TB，保存时会转换为字节。超过上限时会优先删除最旧的归档日志。</div>
         </a-form-item>
-        </section>
+        </ConsolePanel>
 
-        <section class="console-panel settings-section">
-          <header class="section-heading"><h2>认证与充值</h2></header>
+        <ConsolePanel title="认证与充值" description="管理注册、登录和账户充值规则。" class="settings-section">
         <a-form-item label="允许公开注册">
           <a-switch v-model:checked="formState.registerEnabled" />
           <div class="hint">关闭后，注册页会直接阻止进入；管理员在后台创建用户不受影响。</div>
@@ -80,10 +74,9 @@
           <a-switch v-model:checked="formState.wechatLoginEnabled" />
           <div class="hint">总开关会随微信扫描或微信验证码方式自动生效；两个方式都关闭时会自动关闭。</div>
         </a-form-item>
-        </section>
+        </ConsolePanel>
 
-        <section class="console-panel settings-section">
-          <header class="section-heading"><h2>微信登录与验证码</h2></header>
+        <ConsolePanel title="微信登录与验证码" description="配置微信验证方式和验证码服务。" class="settings-section">
         <a-form-item label="微信扫描">
           <a-switch v-model:checked="formState.wechatScanLoginEnabled" />
         </a-form-item>
@@ -137,20 +130,18 @@
             <a-select-option value="WORD_IMAGE_CLICK">点选</a-select-option>
           </a-select>
         </a-form-item>
-        </section>
+        </ConsolePanel>
 
-        <section class="console-panel settings-section">
-          <header class="section-heading"><h2>归属地查询</h2></header>
+        <ConsolePanel title="归属地查询" description="管理普通和商业增强归属地服务的访问密钥。" class="settings-section">
         <a-form-item label="UApiPro API 密钥">
           <a-input-password v-model:value="formState.uapiApiKey" placeholder="请输入 UApiPro API 密钥（以 uapi- 开头）" />
           <div class="hint">
-            用于「用户管理」「日志列表」展示手机号 / IP 归属地。留空表示不查询归属地（对应列只显示原始值）。
+            用于「用户管理」「日志列表」展示手机号 / IP 归属地。留空时仍可使用普通 IP 和手机号查询，商业增强 IP 查询需要配置密钥。
           </div>
         </a-form-item>
-        </section>
+        </ConsolePanel>
 
-        <section class="console-panel settings-section">
-          <header class="section-heading"><h2>支付回调</h2></header>
+        <ConsolePanel title="支付回调" description="配置支付渠道、商户密钥和结算回调地址。" class="settings-section">
         <a-form-item label="接口版本">
           <a-input value="v2" disabled />
           <div class="hint">当前仅兼容易支付 v2；支付方式请在本页下方维护。</div>
@@ -191,10 +182,9 @@
           <a-input :value="derivedReturnUrl" readonly placeholder="将根据网站 Base 地址自动补全" />
           <div class="hint">固定补全为 /adapter/recharge/result，并作为 return_url 参与易支付下单。</div>
         </a-form-item>
-        </section>
+        </ConsolePanel>
 
-        <section class="console-panel settings-section">
-          <header class="section-heading"><h2>短信验证码配置</h2></header>
+        <ConsolePanel title="短信验证码配置" description="管理短信宝账号、发送模式和验证码模板。" class="settings-section">
         <a-form-item label="短信提供方">
           <a-input v-model:value="formState.smsProvider" disabled />
           <!-- <div class="hint">首期固定使用短信宝，后续如有需要再扩展多供应商。</div> -->
@@ -231,75 +221,19 @@
           <a-textarea v-model:value="formState.smsCodeTemplate" :rows="3" placeholder="例如 【{sign}】您的验证码是{code}，5分钟内有效。" />
           <div class="hint">请保留 {sign} 和 {code} 占位符，系统会在发送前替换。</div>
         </a-form-item>
-        </section>
+        </ConsolePanel>
 
       </a-form>
 
-    <a-card :bordered="false" class="page-card">
-      <template #title>
-        <div class="section-title-wrap">
-          <div>
-            <div class="section-title">支付方式管理</div>
-            <div class="section-subtitle">统一维护充值时可选的支付方式名称、图标、易支付通道、启停状态与排序。</div>
-          </div>
-        </div>
-      </template>
-      <template #extra>
-        <a-space>
-          <a-button @click="handleLoadPaymentMethods" :loading="paymentMethodLoading">刷新</a-button>
-          <a-button type="primary" @click="openCreatePaymentMethodModal">新增支付方式</a-button>
-        </a-space>
-      </template>
-
-      <a-alert
-        type="info"
-        show-icon
-        class="page-alert"
-        message="订单只保存支付方式名称快照；如需调整实际通道值、图标或排序，请直接在这里编辑。"
-      />
-
-      <a-table
-        bordered
-        :data-source="paymentMethods"
-        :columns="paymentMethodColumns"
-        :loading="paymentMethodLoading"
-        :pagination="false"
-        row-key="id"
-        :scroll="{ x: 1180 }"
-      >
-        <template #iconSvg="{ record }">
-          <div class="icon-cell">
-            <div v-if="record.iconSvg" class="icon-preview" v-html="record.iconSvg"></div>
-            <span v-else>-</span>
-          </div>
-        </template>
-        <template #ePayType="{ record }">
-          <a-tag color="blue">{{ record.epayType || '-' }}</a-tag>
-        </template>
-        <template #enabled="{ record }">
-          <a-badge :status="record.enabled ? 'success' : 'default'" :text="record.enabled ? '启用' : '停用'" />
-        </template>
-        <template #remark="{ record }">
-          <span>{{ record.remark || '-' }}</span>
-        </template>
-        <template #operation="{ record }">
-          <a-space size="small">
-            <a-button type="link" style="padding: 0" @click="openEditPaymentMethodModal(record)">编辑</a-button>
-            <a-popconfirm
-              ok-text="确定"
-              cancel-text="取消"
-              title="确定删除该支付方式吗？"
-              @confirm="handleDeletePaymentMethod(record.id)"
-            >
-              <a-button type="link" danger style="padding: 0">删除</a-button>
-            </a-popconfirm>
-          </a-space>
-        </template>
-        <template #emptyText>
-          <a-empty description="当前还没有支付方式，请先新增可用渠道。" />
-        </template>
-      </a-table>
-    </a-card>
+    <PaymentMethodPanel
+      :rows="paymentMethods"
+      :columns="paymentMethodColumns"
+      :loading="paymentMethodLoading"
+      @refresh="handleLoadPaymentMethods"
+      @create="openCreatePaymentMethodModal"
+      @edit="openEditPaymentMethodModal"
+      @delete="handleDeletePaymentMethod"
+    />
 
     <a-modal
       v-model:open="paymentMethodVisible"
@@ -339,6 +273,7 @@
 <script>
 import { computed, defineComponent, onMounted, reactive, ref, watch } from 'vue';
 import { message } from 'ant-design-vue';
+import PaymentMethodPanel from './PaymentMethodPanel.vue';
 import {
   createPaymentMethod,
   deletePaymentMethod,
@@ -458,6 +393,7 @@ function inferSiteBaseURL(detail = {}) {
 
 export default defineComponent({
   name: 'SystemSettings',
+  components: { PaymentMethodPanel },
   setup() {
     const tabLoading = ref(true)
     const saving = ref(false)
@@ -659,27 +595,18 @@ export default defineComponent({
           title: '图标',
           dataIndex: 'iconSvg',
           key: 'iconSvg',
-          slots: {
-            customRender: 'iconSvg',
-          },
           width: 120,
         },
         {
           title: '易支付通道',
           dataIndex: 'epayType',
           key: 'epayType',
-          slots: {
-            customRender: 'ePayType',
-          },
           width: 150,
         },
         {
           title: '状态',
           dataIndex: 'enabled',
           key: 'enabled',
-          slots: {
-            customRender: 'enabled',
-          },
           width: 120,
         },
         {
@@ -692,19 +619,12 @@ export default defineComponent({
           title: '备注',
           dataIndex: 'remark',
           key: 'remark',
-          slots: {
-            customRender: 'remark',
-          },
           width: 240,
         },
         {
           title: '操作',
           dataIndex: 'operation',
           key: 'operation',
-          fixed: 'right',
-          slots: {
-            customRender: 'operation',
-          },
           width: 120,
         },
       ],
@@ -869,120 +789,11 @@ export default defineComponent({
 </script>
 
 <style scoped>
-.system-settings-page {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  min-width: 0;
-}
-
-.settings-heading {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 16px;
-}
-
-.settings-heading h1 {
-  margin: 0;
-  color: var(--console-text, #1f2937);
-  font-size: 20px;
-  font-weight: 650;
-}
-
-.page-lead {
-  margin: 4px 0 0;
-  color: var(--console-muted, #64748b);
-  font-size: 13px;
-}
-
-.settings-form {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  min-width: 0;
-}
-
-.settings-section {
-  min-width: 0;
-  padding: 12px 0 16px;
-  border-bottom: 1px solid var(--console-border, #e5e7eb);
-}
-
-.settings-section .section-heading {
-  margin-bottom: 16px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--console-border, #e5e7eb);
-}
-
-.settings-section .section-heading h2 {
-  margin: 0;
-  color: var(--console-text, #1f2937);
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.settings-section :deep(.ant-form-item:last-child) {
-  margin-bottom: 0;
-}
-
-.page-alert {
-  margin-bottom: 16px;
-}
-
-.hint {
-  margin-top: 6px;
-  color: #8c8c8c;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.base-url-input {
-  min-width: min(320px, 100%);
-}
-
-.section-title-wrap {
-  display: flex;
-  align-items: center;
-}
-
-.section-title {
-  font-size: 18px;
-  font-weight: 650;
-  color: var(--console-text, #1f2937);
-}
-
-.section-subtitle {
-  margin-top: 6px;
-  color: var(--console-muted, #64748b);
-  font-size: 13px;
-}
-
-.system-settings-page > .page-card {
-  min-width: 0;
-  border: 1px solid var(--console-border, #e5e7eb);
-  border-radius: var(--console-radius, 12px);
-}
-
-.icon-cell {
-  min-height: 36px;
-  display: flex;
-  align-items: center;
-}
-
-.icon-preview :deep(svg) {
-  width: 28px;
-  height: 28px;
-  display: block;
-}
-
-@media (max-width: 640px) {
-  .settings-section {
-    padding: 12px;
-  }
-
-  .base-url-input {
-    width: 100%;
-  }
-}
+.settings-form { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.settings-section :deep(.ant-form-item:last-child) { margin-bottom: 0; }
+.settings-section :deep(.ant-form-item-control) { max-width: 820px; }
+.page-alert { margin-bottom: 0; }
+.hint { margin-top: 8px; color: var(--console-muted); font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
+.base-url-input { min-width: min(320px, 100%); }
+@media (max-width: 768px) { .settings-section :deep(.ant-form-item) { display: block; } .settings-section :deep(.ant-form-item-label) { width: 100% !important; text-align: left; padding-bottom: 8px; } .settings-section :deep(.ant-form-item-control) { max-width: 100%; } .base-url-input { width: 100%; } }
 </style>

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { computed, defineComponent, reactive, ref } from 'vue'
+import { sumTableColumnWidths } from './tableLayout.mjs'
 
 async function createPage(overrides = {}) {
   const source = await readFile(new URL('../pages/LocationCache/index.vue', import.meta.url), 'utf8')
@@ -10,6 +11,7 @@ async function createPage(overrides = {}) {
     .replace('export default defineComponent', 'return defineComponent')
   const dependencies = {
     computed, defineComponent, reactive, ref,
+    sumTableColumnWidths,
     watch: () => {},
     globalThis: { localStorage: undefined },
     useRoute: () => ({ meta: { locationKind: 'ip' } }),

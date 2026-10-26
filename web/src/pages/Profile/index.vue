@@ -1,48 +1,34 @@
 <template>
-  <div class="profile-page">
-    <div class="page-heading">
-      <div>
-        <h1 class="page-title">个人中心</h1>
-        <p class="page-subtitle">查看账号状态，更新个人资料与登录绑定信息。</p>
-      </div>
+  <div class="console-page profile-page">
+    <ConsolePageHeading title="个人中心" description="查看账号状态，更新个人资料与登录绑定信息。">
+      <template #actions>
       <a-button @click="loadProfile" :loading="loading">刷新</a-button>
-    </div>
+      </template>
+    </ConsolePageHeading>
 
-    <a-row :gutter="16" class="summary-row">
-      <a-col :xs="24" :sm="12" :lg="6">
+    <ConsoleSummaryGrid>
         <a-card :bordered="false" class="summary-card">
           <div class="summary-label">账号状态</div>
           <div class="summary-value">{{ statusText(currentUser.status) }}</div>
         </a-card>
-      </a-col>
-      <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
           <div class="summary-label">账号角色</div>
           <div class="summary-value">{{ roleText(currentUser.role) }}</div>
         </a-card>
-      </a-col>
-      <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
           <div class="summary-label">账户余额</div>
           <div class="summary-value">¥ {{ formatBalance(currentUser.balance) }}</div>
         </a-card>
-      </a-col>
-      <a-col :xs="24" :sm="12" :lg="6">
         <a-card :bordered="false" class="summary-card">
           <div class="summary-label">上次登录</div>
           <div class="summary-value summary-value--small">{{ formatDateTime(currentUser.lastLoginAt) }}</div>
         </a-card>
-      </a-col>
-    </a-row>
+    </ConsoleSummaryGrid>
 
     <a-card :bordered="false" class="page-card" :loading="loading">
-      <a-row :gutter="16">
+      <a-row :gutter="[16, 16]">
         <a-col :xs="24" :lg="10">
-          <div class="profile-panel">
-            <div class="panel-heading">
-              <h2 class="panel-title">基础信息</h2>
-              <p class="panel-subtitle">账号创建与最近登录情况。</p>
-            </div>
+          <ConsolePanel class="profile-panel" title="基础信息" description="账号创建与最近登录情况。">
             <div class="profile-field">
               <span class="profile-field-label">用户名</span>
               <span>{{ currentUser.username || '-' }}</span>
@@ -87,12 +73,12 @@
                 保存资料
               </a-button>
             </a-form>
-          </div>
+          </ConsolePanel>
         </a-col>
 
         <a-col :xs="24" :lg="14">
-          <div class="profile-panel">
-            <div class="panel-head">
+          <ConsolePanel class="profile-panel">
+            <template #heading>
               <div>
                 <h2 class="panel-title">手机号绑定</h2>
                 <div class="panel-subtitle">
@@ -100,7 +86,7 @@
                   <span v-if="currentUser.phoneBoundAt" class="location-extra">，绑定于 {{ formatDateTime(currentUser.phoneBoundAt) }}</span>
                 </div>
               </div>
-            </div>
+            </template>
             <a-alert
               v-if="!publicAuthSettings.smsLoginEnabled"
               type="warning"
@@ -140,7 +126,7 @@
                 确认更换手机号
               </a-button>
             </a-form>
-          </div>
+          </ConsolePanel>
         </a-col>
       </a-row>
     </a-card>
@@ -743,10 +729,6 @@ export default defineComponent({
   gap: 16px;
 }
 
-.summary-row {
-  margin-bottom: 0;
-}
-
 .summary-card,
 .page-card,
 .profile-panel {
@@ -755,8 +737,8 @@ export default defineComponent({
 
 .summary-card,
 .page-card {
-  border: 1px solid var(--console-border, #e5e7eb);
-  box-shadow: 0 2px 8px rgb(15 23 42 / 2%);
+  border: 1px solid var(--console-border, #dce5e1);
+  box-shadow: none;
 }
 
 .summary-card :deep(.ant-card-body) {
@@ -767,30 +749,14 @@ export default defineComponent({
   padding: 18px;
 }
 
-.page-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  min-width: 0;
-}
-
-.page-heading > div {
-  min-width: 0;
-}
-
-.page-heading > .ant-btn {
-  flex: 0 0 auto;
-}
-
 .summary-label {
-  color: #6b7280;
+  color: var(--console-muted, #62766e);
   font-size: 13px;
 }
 
 .summary-value {
   margin-top: 10px;
-  color: #0f172a;
+  color: var(--console-text, #172b27);
   font-size: 21px;
   font-weight: 700;
   overflow-wrap: anywhere;
@@ -803,19 +769,15 @@ export default defineComponent({
 
 .page-title {
   margin: 0;
-  color: #1f2937;
-  font-size: 21px;
-  font-weight: 700;
-}
-
-.page-heading .page-subtitle {
-  margin-bottom: 0;
+  color: var(--console-text, #172b27);
+  font-size: 16px;
+  font-weight: 600;
 }
 
 .page-subtitle,
 .panel-subtitle {
   margin-top: 6px;
-  color: #6b7280;
+  color: var(--console-muted, #62766e);
   font-size: 13px;
   line-height: 1.7;
 }
@@ -834,20 +796,15 @@ export default defineComponent({
 .profile-panel {
   height: 100%;
   min-width: 0;
-  padding: 22px;
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, #dce5e1);
   background: var(--console-surface, #fff);
 }
 
 .panel-title {
   margin: 0;
-  color: #1f2937;
-  font-size: 17px;
-  font-weight: 700;
-}
-
-.panel-heading {
-  margin-bottom: 12px;
+  color: var(--console-text, #172b27);
+  font-size: 16px;
+  font-weight: 600;
 }
 
 .panel-heading--form {
@@ -861,11 +818,7 @@ export default defineComponent({
 .profile-section-divider {
   height: 1px;
   margin: 18px 0;
-  background: var(--console-border, #e5e7eb);
-}
-
-.panel-head {
-  margin-bottom: 18px;
+  background: var(--console-border, #dce5e1);
 }
 
 .profile-field {
@@ -873,8 +826,8 @@ export default defineComponent({
   justify-content: space-between;
   gap: 16px;
   padding: 12px 0;
-  border-bottom: 1px solid #eef2f7;
-  color: #334155;
+  border-bottom: 1px solid var(--console-border, #dce5e1);
+  color: var(--console-text, #172b27);
   overflow-wrap: anywhere;
 }
 
@@ -883,7 +836,8 @@ export default defineComponent({
 }
 
 .profile-field-label {
-  color: #64748b;
+  color: var(--console-muted, #62766e);
+  flex-shrink: 0;
 }
 
 .sms-code-row {
@@ -893,6 +847,7 @@ export default defineComponent({
 
 .sms-code-row :deep(.ant-input) {
   flex: 1;
+  min-width: 0;
 }
 
 .wechat-bound-panel,
@@ -902,16 +857,16 @@ export default defineComponent({
   align-items: center;
   gap: 14px;
   padding: 18px;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  background: #f7f9fc;
+  border: 1px solid var(--console-border, #dce5e1);
+  border-radius: 12px;
+  background: var(--console-surface-secondary, #f8faf9);
 }
 
 .wechat-bound-time,
 .wechat-binding-id,
 .wechat-status,
 .wechat-qrcode-empty {
-  color: #64748b;
+  color: var(--console-muted, #62766e);
   font-size: 13px;
   text-align: center;
 }
@@ -919,12 +874,12 @@ export default defineComponent({
 .wechat-binding-id {
   max-width: 100%;
   overflow-wrap: anywhere;
-  color: #334155;
+  color: var(--console-text, #172b27);
   font-weight: 600;
 }
 
 .wechat-binding-id--empty {
-  color: #64748b;
+  color: var(--console-muted, #62766e);
   font-weight: 500;
 }
 
@@ -946,7 +901,7 @@ export default defineComponent({
 }
 
 .wechat-code-field label {
-  color: #334155;
+  color: var(--console-text, #172b27);
   font-size: 14px;
 }
 
@@ -958,8 +913,8 @@ export default defineComponent({
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
+  border: 1px solid var(--console-border, #dce5e1);
+  border-radius: 12px;
   background: #fff;
 }
 
@@ -970,18 +925,6 @@ export default defineComponent({
 }
 
 @media (max-width: 640px) {
-  .page-heading {
-    align-items: flex-start;
-  }
-
-  .page-title {
-    font-size: 20px;
-  }
-
-  .profile-panel {
-    padding: 18px;
-  }
-
   .profile-field {
     align-items: flex-start;
     gap: 12px;

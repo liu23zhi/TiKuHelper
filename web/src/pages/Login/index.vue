@@ -1,12 +1,7 @@
 <template>
   <div class="auth-shell">
     <div class="auth-card auth-card--single">
-      <div class="hero">
-        <div class="hero-badge">账号控制台</div>
-        <h1>{{ publicAuthSettings.siteName }}</h1>
-        <p>
-          搜题聚合题库平台，集成AI搜索，提供更准确的答案。
-        </p>
+      <AuthPageIntro eyebrow="账号控制台" :title="publicAuthSettings.siteName" description="搜题聚合题库平台，集成AI搜索，提供更准确的答案。">
         <dl class="auth-guide">
           <div>
             <dt>统一账号入口</dt>
@@ -17,7 +12,7 @@
             <dd>通过已绑定的账号信息完成验证，继续使用题库服务。</dd>
           </div>
         </dl>
-      </div>
+      </AuthPageIntro>
 
       <a-card :bordered="false" class="form-card">
         <div class="form-header">
@@ -193,6 +188,7 @@ import {
   normalizeSMSCodeInput,
 } from '../../utils/captchaHelpers.mjs'
 import MainlandPhoneInput from '../../components/MainlandPhoneInput.vue'
+import AuthPageIntro from '../../components/AuthPageIntro.vue'
 import { ensureAuthCaptchaToken } from '../../utils/captchaDialog.mjs'
 import { setStoredCurrentUser, resolveHomePath } from '../../utils/currentUser.js'
 import { useSmsCooldown } from '../../utils/smsCooldown.js'
@@ -610,6 +606,7 @@ export default defineComponent({
     }
   },
   components: {
+    AuthPageIntro,
     UserOutlined,
     LockOutlined,
     SafetyCertificateOutlined,

@@ -35,9 +35,9 @@ test('sidebar collapse toggle shows an icon like the menu items do', async () =>
   assert.match(menu, /:is="collapsed \? MenuUnfoldOutlined : MenuFoldOutlined"/);
   assert.match(menu, /class="collapse-button-icon"/);
 
-  // Mobile navigation remains readable while collapsed; desktop keeps the compact icon-only state.
-  assert.match(menu, /class="collapse-button-label">\{\{ collapsed \? '展开侧边栏' : '折叠侧边栏' \}\}<\/span>/);
-  assert.match(menu, /@media \(max-width: 960px\)[\s\S]*\.sider-menu-wrap\s*\{[^}]*min-height:\s*auto/);
+  // A compact rail keeps the explicit Chinese action available on every viewport.
+  assert.match(menu, /class="collapse-button-label">\{\{ collapsed \? '展开' : '折叠侧边栏' \}\}<\/span>/);
+  assert.match(menu, /\.collapse-button\.is-collapsed \.collapse-button-label\s*\{[^}]*display:\s*inline/);
   assert.match(menu, /:title="collapsed \? '展开侧边栏' : '折叠侧边栏'"/);
 
   // setup() 必须把图标暴露给模板，否则 _ctx 解析不到。

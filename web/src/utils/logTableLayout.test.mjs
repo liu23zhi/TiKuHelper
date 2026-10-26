@@ -15,8 +15,8 @@ test('log table has the requested columns, fixed layout, and wrapping centered c
   ]);
   assert.match(source, /table-layout="fixed"/);
   assert.match(source, /:scroll="\{ x: tableScrollX \}"/);
-  assert.match(source, /text-align:\s*center/);
-  assert.match(source, /vertical-align:\s*middle/);
+  assert.match(source, /<ConsoleTableShell/);
+  assert.match(source, /#bodyCell="\{ column, record, text \}"/);
   assert.match(source, /overflow-wrap:\s*anywhere/);
   assert.match(source, /class="mobile-log-time">\{\{ formatDateForTable\(record\.createTime\) \}\}/);
   assert.match(source, /\.mobile-log-time\s*\{\s*white-space:\s*pre-line/);
@@ -39,17 +39,18 @@ test('log widths account for the named samples and expand entire detail and snap
   })) {
     assert.match(source, new RegExp(`${key}: ${width}(?:,|\\b)`));
   }
-  assert.match(source, /\? 236 : logColumnWidths\[field\]/);
+  assert.match(source, /snapshots\.columnWidth\(field, logColumnWidths\[field\], 236\)/);
   assert.match(source, /expandedColumnWidth\('detail'\)/);
   assert.match(source, /expandedColumnWidth\('requestSnapshot'\)/);
   assert.match(source, /expandedColumnWidth\('responseSnapshot'\)/);
-  assert.match(source, /\['hitProvider', 'detail', 'requestSnapshot', 'responseSnapshot'\]/);
-  assert.match(source, /Object\.values\(logColumnWidths\)\.reduce\(\(sum, width\) => sum \+ width, 0\)/);
+  assert.match(source, /expandedColumnWidth\('hitProvider'\)/);
+  assert.match(source, /sumTableColumnWidths\(columns\.value\)/);
+  assert.match(source, /useTableExpansion\(dataSource\)/);
 });
 
 test('log detail previews use measured overflow and preserve expand/collapse state per row', async () => {
   const source = await readFile(pagePath, 'utf8');
-  assert.match(source, /<template #detail="\{ record \}">\s*<OverflowTableText\s+:text="buildTableDetail\(record\)"\s+:expanded="isSnapshotExpanded\(record\.id, 'detail'\)"\s+@toggle="toggleSnapshotExpanded\(record\.id, 'detail'\)"/);
+  assert.match(source, /<template v-else-if="column.key === 'detail'">\s*<OverflowTableText\s+:text="buildTableDetail\(record\)"\s+:expanded="isSnapshotExpanded\(record\.id, 'detail'\)"\s+@toggle="toggleSnapshotExpanded\(record\.id, 'detail'\)"/);
 
   const componentSource = await readFile(new URL('../components/OverflowTableText.vue', import.meta.url), 'utf8');
   const script = componentSource.match(/<script>([\s\S]*?)<\/script>/)[1]
@@ -61,12 +62,14 @@ test('log detail previews use measured overflow and preserve expand/collapse sta
   let resizeCallback;
   let observedElement;
   let disconnected = false;
-  const component = new Function('nextTick', 'onBeforeUnmount', 'onMounted', 'ref', 'watch', 'ResizeObserver', script)(
+  const component = new Function('nextTick', 'onBeforeUnmount', 'onMounted', 'ref', 'watch', 'useId', 'computed', 'ResizeObserver', script)(
     (callback) => callback ? Promise.resolve(callback()) : Promise.resolve(),
     (callback) => unmounted.push(callback),
     (callback) => mounted.push(callback),
     (value) => ({ value }),
     (getter, callback) => watchers.push({ getter, callback }),
+    () => 'overflow-log-test',
+    (getter) => ({ get value() { return getter(); } }),
     class {
       constructor(callback) { resizeCallback = callback; }
       observe(element) { observedElement = element; }
@@ -102,4 +105,11 @@ test('log request parameters can be rendered one per line without changing detai
   const row = { oldAnswer: 'method=POST path=/adapter-service/search query=use=ai contentType=application/json body={"deepThinking":true,"skipCache":false}' };
   assert.equal(buildLogStructuredFields(row).mode, 'use=ai deepThinking=true skipCache=false');
   assert.equal(buildLogStructuredFields(row, '\n').mode, 'use=ai\ndeepThinking=true\nskipCache=false');
+});
+
+test('LogList handles a final request failure without clearing existing rows', async () => {
+  const source = await readFile(pagePath, 'utf8');
+  assert.match(source, /import \{ message \} from 'ant-design-vue'/);
+  assert.match(source, /\}\)\.catch\(\(\) => \{\s*message\.error\('获取操作日志失败'\)\s*\}\)\.finally\(\(\) => \{\s*tabLoading\.value = false/);
+  assert.doesNotMatch(source, /catch\([\s\S]*?dataSource\.value\s*=\s*\[\]/);
 });

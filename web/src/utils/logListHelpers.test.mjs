@@ -162,8 +162,8 @@ test('LogList puts channel and billing columns right after the summary column', 
 
 test('LogList uses fixed widths and horizontal scrolling while allowing wraps', async () => {
   const content = await readFile(logListPagePath, 'utf8');
-  const columnsStart = content.indexOf('      columns: computed(() => [');
-  const columnsEnd = content.indexOf('\n      ]),', columnsStart);
+  const columnsStart = content.indexOf('    const columns = computed(() => [');
+  const columnsEnd = content.indexOf('\n      ])', columnsStart);
   assert.ok(columnsStart >= 0 && columnsEnd > columnsStart, 'missing log columns definition');
 
   const columnsSource = content.slice(columnsStart, columnsEnd);
@@ -188,7 +188,7 @@ test('LogList uses fixed widths and horizontal scrolling while allowing wraps', 
   }
   assert.match(content, /:scroll="\{ x: tableScrollX \}"/);
   assert.match(content, /table-layout="fixed"/);
-  assert.match(content, /Object\.values\(logColumnWidths\)\.reduce/);
+  assert.match(content, /sumTableColumnWidths\(columns\.value\)/);
   assert.doesNotMatch(content, /log-cell-nowrap/);
 });
 
@@ -201,7 +201,9 @@ test('LogList formats timestamp and IP as centered two-line cells', async () => 
   assert.match(content, /class="location-value"/);
   assert.match(content, /\.log-time-cell[\s\S]*?white-space:\s*pre-wrap/);
   assert.match(content, /\.location-value[\s\S]*?white-space:\s*pre-wrap/);
-  assert.match(content, /\.desktop-log-table \.ant-table-tbody > tr > td\)[\s\S]*?text-align:\s*center/);
+  assert.match(content, /<ConsoleTableShell/);
+  const styles = await readFile(new URL('../styles/console.css', import.meta.url), 'utf8');
+  assert.match(styles, /\.console-table-shell \.ant-table-tbody > tr > td\s*\{[^}]*text-align:\s*center;[^}]*vertical-align:\s*middle/);
 });
 
 test('LogList shows a resolved username only for an identified user', async () => {
@@ -736,11 +738,12 @@ test('buildLogRowDetail exposes compact remote captcha diagnostics for visible t
 test('LogList page renders visible detail column for structured diagnostics', async () => {
   const content = await readFile(logListPagePath, 'utf8');
 
-  assert.match(content, /<template #detail="\{ record \}">/);
+  assert.match(content, /#bodyCell="\{ column, record, text \}"/);
+  assert.match(content, /column.key === 'detail'/);
   assert.match(content, /buildRowDetail\(record\)/);
   assert.match(content, /buildLogRowDetail/);
   assert.match(content, /title: '详情'/);
-  assert.match(content, /customRender: 'detail'/);
+  assert.match(content, /:text="buildTableDetail\(record\)"/);
   assert.match(content, /title: '请求参数'/);
   assert.match(content, /title: '请求接口'/);
   assert.match(content, /title: '命中渠道 \/ 错误原因'/);
@@ -750,14 +753,14 @@ test('LogList page renders derived status instead of the raw action column', asy
   const content = await readFile(logListPagePath, 'utf8');
 
   assert.match(content, /title: '状态'/);
-  assert.match(content, /<template #status="\{ record \}">/);
+  assert.match(content, /column.key === 'status'/);
   assert.match(content, /buildStatusLabel\(record\)/);
   assert.doesNotMatch(content, /title: '操作'/);
 });
 
 test('LogList separates channel and complete error text with an expandable preview', async () => {
   const content = await readFile(logListPagePath, 'utf8');
-  const source = content.match(/<template #hitProvider="\{ record \}">([\s\S]*?)<\/template>/)?.[1];
+  const source = content.match(/<template v-else-if="column.key === 'hitProvider'">([\s\S]*?)<\/template>/)?.[1];
   assert.ok(source, 'missing channel cell template');
   assert.match(source, /class="log-channel-name"/);
   assert.match(source, /class="log-channel-error"/);

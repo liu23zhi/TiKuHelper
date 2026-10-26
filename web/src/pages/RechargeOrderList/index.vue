@@ -1,38 +1,26 @@
 <template>
   <div class="console-page recharge-order-page">
-    <header class="section-heading page-heading">
+    <ConsolePageHeading title="充值记录" :description="isAdmin ? '查看全部充值订单、支付方式和到账状态。' : '查看自己的充值订单和到账状态。'">
+      <template #actions><a-button @click="handleLoad" :loading="tableLoading">刷新</a-button></template>
+    </ConsolePageHeading>
+    <ConsoleSummaryGrid>
       <div>
-        <h1>充值记录</h1>
-        <p class="page-lead">{{ isAdmin ? '管理员可查看全部充值记录。' : '普通用户只能查看自己的充值记录。' }}</p>
-      </div>
-      <a-button @click="handleLoad" :loading="tableLoading">刷新</a-button>
-    </header>
-    <a-row :gutter="16" class="summary-row">
-      <a-col :xs="24" :sm="12" :lg="6">
-        <a-card :bordered="false" class="summary-card">
           <a-statistic title="充值总数（筛选结果）" :value="summary.total" />
-        </a-card>
-      </a-col>
-      <a-col :xs="24" :sm="12" :lg="6">
-        <a-card :bordered="false" class="summary-card">
+      </div>
+      <div>
           <a-statistic title="当前页条数" :value="summary.currentPageCount" />
-        </a-card>
-      </a-col>
-      <a-col :xs="24" :sm="12" :lg="6">
-        <a-card :bordered="false" class="summary-card">
+      </div>
+      <div>
           <a-statistic title="累计充值金额（当前筛选，全部页）" prefix="¥" :value="summary.totalAmount" :precision="2" />
           <div class="summary-hint">统计当前权限与筛选条件下的全部订单</div>
-        </a-card>
-      </a-col>
-      <a-col :xs="24" :sm="12" :lg="6">
-        <a-card :bordered="false" class="summary-card">
+      </div>
+      <div>
           <a-statistic title="当前页累计充值金额" prefix="¥" :value="summary.currentPageAmount" :precision="2" />
           <div class="summary-hint">仅统计第 {{ pagination.current }} 页 {{ summary.currentPageCount }} 条</div>
-        </a-card>
-      </a-col>
-    </a-row>
+      </div>
+    </ConsoleSummaryGrid>
 
-    <a-card :bordered="false" class="page-card">
+    <ConsolePanel title="订单列表" description="按关键词、支付状态和渠道筛选充值记录。">
       <a-alert
         type="info"
         show-icon
@@ -79,38 +67,30 @@
         </a-form-item>
       </a-form>
 
-      <a-table
+      <ConsoleTableShell label="充值记录"><a-table
         bordered
         :data-source="dataSource"
         :columns="columns"
         :loading="tableLoading"
         :pagination="pagination"
         row-key="id"
-        :scroll="{ x: 1180 }"
+        table-layout="fixed"
+        :scroll="{ x: sumTableColumnWidths(columns) }"
         @change="handleTableChange"
       >
-        <template #username="{ record }">
-          <span>{{ record.username || `用户 #${record.userId || '-'}` }}</span>
-        </template>
-        <template #amount="{ record }">
-          <span>¥ {{ formatAmount(record.amount) }}</span>
-        </template>
-        <template #status="{ record }">
-          <a-tag :color="buildStatusColor(record.status)">
+        <template #bodyCell="{ column, record }">
+          <span v-if="column.key === 'username'">{{ record.username || `用户 #${record.userId || '-'}` }}</span>
+          <span v-else-if="column.key === 'amount'" class="money-cell">¥ {{ formatAmount(record.amount) }}</span>
+          <a-tag v-else-if="column.key === 'status'" :color="buildStatusColor(record.status)">
             {{ buildStatusLabel(record.status) }}
           </a-tag>
-        </template>
-        <template #paidAt="{ record }">
-          <span>{{ formatDateTime(record.paidAt) }}</span>
-        </template>
-        <template #createdAt="{ record }">
-          <span>{{ formatDateTime(record.createdAt) }}</span>
+          <span v-else-if="column.key === 'paidAt' || column.key === 'createdAt'" class="time-cell">{{ formatDateTime(record[column.key]) }}</span>
         </template>
         <template #emptyText>
           <a-empty description="当前还没有充值记录。" />
         </template>
-      </a-table>
-    </a-card>
+      </a-table></ConsoleTableShell>
+    </ConsolePanel>
   </div>
 </template>
 
@@ -120,6 +100,7 @@ import { message } from 'ant-design-vue'
 import { getRechargeOrders } from '@/api/TikuComponentApi'
 import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser'
 import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@/utils/listSearchHelpers.mjs'
+import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
 
 const dataSource = ref([])
 const tableLoading = ref(false)
@@ -165,6 +146,7 @@ export default defineComponent({
       isAdmin,
       filters,
       keywordInput,
+      sumTableColumnWidths,
       activeFilterCount: computed(() => countActiveFilters({
         keyword: filters.keyword,
         status: filters.status,
@@ -185,18 +167,12 @@ export default defineComponent({
           title: '用户',
           dataIndex: 'username',
           key: 'username',
-          slots: {
-            customRender: 'username',
-          },
-          width: 150,
+          width: 170,
         },
         {
           title: '金额',
           dataIndex: 'amount',
           key: 'amount',
-          slots: {
-            customRender: 'amount',
-          },
           width: 120,
         },
         {
@@ -209,9 +185,6 @@ export default defineComponent({
           title: '状态',
           dataIndex: 'status',
           key: 'status',
-          slots: {
-            customRender: 'status',
-          },
           width: 120,
         },
         {
@@ -224,19 +197,13 @@ export default defineComponent({
           title: '支付时间',
           dataIndex: 'paidAt',
           key: 'paidAt',
-          slots: {
-            customRender: 'paidAt',
-          },
-          width: 180,
+          width: 122,
         },
         {
           title: '创建时间',
           dataIndex: 'createdAt',
           key: 'createdAt',
-          slots: {
-            customRender: 'createdAt',
-          },
-          width: 180,
+          width: 122,
         },
       ],
     }
@@ -305,7 +272,10 @@ export default defineComponent({
       if (Number.isNaN(date.getTime())) {
         return value
       }
-      return date.toLocaleString()
+      return new Intl.DateTimeFormat('sv-SE', {
+        timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+      }).format(date).replace(' ', '\n')
     },
     buildStatusLabel(value) {
       const normalized = String(value || '').trim().toLowerCase()
@@ -326,85 +296,14 @@ export default defineComponent({
 </script>
 
 <style scoped>
-.recharge-order-page {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.page-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.page-heading h1 {
-  margin: 0;
-  color: var(--console-text, #1f2937);
-  font-size: 20px;
-  font-weight: 650;
-}
-
-.page-lead {
-  margin: 4px 0 0;
-  color: var(--console-muted, #64748b);
-  font-size: 13px;
-}
-
-.summary-row {
-  margin-bottom: 0;
-}
-
-.summary-card {
-  border: 1px solid var(--console-border, #e5e7eb);
-  border-radius: 8px;
-}
-
-.summary-hint {
-  margin-top: 4px;
-  color: rgba(0, 0, 0, 0.45);
-  font-size: 12px;
-}
-
-.filter-form {
-  margin: 12px 0 16px;
-  padding: 16px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-  border: 1px solid var(--console-border, #e5e7eb);
-  border-radius: 8px;
-  background: var(--console-canvas, #f5f7fb);
-}
-
-.filter-form :deep(.ant-form-item) {
-  margin-bottom: 0;
-}
-
-.page-card {
-  border: 1px solid var(--console-border, #e5e7eb);
-  border-radius: var(--console-radius, 12px);
-}
-
-.page-alert {
-  margin-bottom: 16px;
-}
-
-.recharge-order-page :deep(.ant-table) {
-  font-size: 13px;
-}
-
+.summary-hint { margin-top: 8px; color: var(--console-muted); font-size: 12px; line-height: 1.6; }
+.filter-form { margin: 20px 0; }
+.page-alert { margin-bottom: 16px; }
+.money-cell, .time-cell { font-variant-numeric: tabular-nums; }
+.time-cell { white-space: pre-line; }
 @media (max-width: 640px) {
-  .filter-form {
-    padding: 12px;
-  }
-
-  .filter-form :deep(.ant-form-item),
-  .filter-form :deep(.ant-input),
-  .filter-form :deep(.ant-select) {
-    width: 100%;
-  }
+  .filter-form :deep(.ant-form-item) { width: 100%; }
+  .filter-form :deep(.ant-form-item-control) { flex: 1; }
+  .filter-form :deep(.ant-input-search), .filter-form :deep(.ant-input), .filter-form :deep(.ant-select) { width: 100% !important; }
 }
 </style>

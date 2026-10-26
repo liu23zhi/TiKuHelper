@@ -1,41 +1,17 @@
 <template>
-  <div class="user-usage-page">
-    <div class="page-heading">
-      <div>
-        <h1 class="page-title">账户使用</h1>
-        <p class="page-subtitle">管理账户余额，并查看个人消费与充值流水。</p>
-      </div>
-      <a-button @click="handleRefreshAll" :loading="pageRefreshing">刷新</a-button>
-    </div>
+  <div class="console-page user-usage-page">
+    <ConsolePageHeading title="账户使用" description="管理账户余额，并查看个人消费与充值流水。">
+      <template #actions><a-button @click="handleRefreshAll" :loading="pageRefreshing">刷新</a-button></template>
+    </ConsolePageHeading>
 
-    <a-row :gutter="16" class="summary-row">
-      <a-col :xs="24" :sm="12" :lg="6">
-        <a-card :bordered="false" class="summary-card">
-          <a-statistic title="当前余额" prefix="¥" :value="currentUserBalance" :precision="6" />
-        </a-card>
-      </a-col>
-      <a-col :xs="24" :sm="12" :lg="6">
-        <a-card :bordered="false" class="summary-card">
-          <a-statistic title="账单总数" :value="summary.total" />
-        </a-card>
-      </a-col>
-      <a-col :xs="24" :sm="12" :lg="6">
-        <a-card :bordered="false" class="summary-card">
-          <a-statistic title="当前页条数" :value="summary.currentPageCount" />
-        </a-card>
-      </a-col>
-      <a-col :xs="24" :sm="12" :lg="6">
-        <a-card :bordered="false" class="summary-card">
-          <a-statistic title="累计消费金额" prefix="¥" :value="summary.totalAmount" :precision="6" />
-        </a-card>
-      </a-col>
-    </a-row>
+    <ConsoleSummaryGrid>
+      <div class="summary-card"><a-statistic title="当前余额" prefix="¥" :value="currentUserBalance" :precision="6" /></div>
+      <div class="summary-card"><a-statistic title="账单总数" :value="summary.total" /></div>
+      <div class="summary-card"><a-statistic title="当前页条数" :value="summary.currentPageCount" /></div>
+      <div class="summary-card"><a-statistic title="当前页消费金额" prefix="¥" :value="summary.totalAmount" :precision="6" /></div>
+    </ConsoleSummaryGrid>
 
-    <a-card :bordered="false" class="page-card recharge-card">
-      <div class="section-heading">
-        <h2 class="page-title">账户余额与充值</h2>
-        <p class="page-subtitle">选择金额和支付方式，创建充值订单。</p>
-      </div>
+    <ConsolePanel title="账户余额与充值" description="选择金额和支付方式，创建充值订单。" class="recharge-card">
       <a-row :gutter="16" class="recharge-summary-row">
         <a-col :xs="24" :lg="10">
           <div class="balance-panel">
@@ -86,7 +62,7 @@
                   :aria-pressed="selectedPaymentMethodId === method.id"
                   @click="selectPaymentMethod(method.id)"
                 >
-                  <span class="payment-method-icon" v-html="method.iconSvg || fallbackPaymentIcon(method.name)"></span>
+                  <SafePaymentIcon class="payment-method-icon" :icon-svg="method.iconSvg" fallback="支" />
                   <span class="payment-method-main">
                     <span class="payment-method-name">{{ method.name }}</span>
                     <span class="payment-method-remark">{{ method.remark || method.epayType || '可用支付方式' }}</span>
@@ -112,62 +88,65 @@
         message="这里只展示当前账号自己的账单记录。充值创建订单后会跳转至收银台，支付结果以异步通知为准；如余额已变化，可点击刷新同步最新余额。"
         style="display: none"
       />
-    </a-card>
+    </ConsolePanel>
 
-    <a-card :bordered="false" class="page-card">
-      <div class="section-heading">
-        <h2 class="page-title">账单流水</h2>
-        <p class="page-subtitle">查看题目消费与充值入账的金额变动、来源渠道和请求编号。</p>
-      </div>
+    <ConsolePanel title="账单流水" description="查看题目消费与充值入账的金额变动、来源渠道和请求 ID。" class="page-card">
 
-      <a-table
-        class="personal-billing-table"
-        bordered
-        :data-source="dataSource"
-        :columns="columns"
-        :loading="tableLoading"
-        :pagination="pagination"
-        @change="handleTableChange"
-        row-key="id"
-        table-layout="fixed"
-        :scroll="{ x: tableScrollX }"
-      >
-        <template #typeLabel="{ record }">
-          <a-tag :color="record.direction === 'income' ? 'green' : 'blue'">{{ buildBillingRecordTypeText(record) }}</a-tag>
-        </template>
-        <template #subject="{ record }">
-          <OverflowTableText
-            :text="buildBillingRecordListSubjectText(record)"
-            :expanded="!!expandedSubjects[record.id]"
-            @toggle="toggleSubject(record.id)"
-          />
-        </template>
-        <template #amount="{ record }">
-          <span :class="record.direction === 'income' ? 'amount-income' : 'amount-expense'">{{ buildBillingRecordAmountText(record) }}</span>
-        </template>
-        <template #source="{ record }">
-          <span class="multiline-cell">{{ buildBillingRecordSourceText(record) }}</span>
-        </template>
-        <template #searchMode="{ record }">
-          <span>{{ buildBillingRecordModeText(record) }}</span>
-        </template>
-        <template #referenceNo="{ record }">
-          <span class="reference-cell">{{ buildBillingRecordReferenceText(record) }}</span>
-        </template>
-        <template #accessTokenName="{ record }">
-          <span>{{ record.accessTokenName || '-' }}</span>
-        </template>
-        <template #createdAt="{ record }">
-          <span class="billing-time-cell">{{ formatDateTime(record.createdAt) }}</span>
-        </template>
-        <template #feeDetail="{ record }">
-          <a-button type="link" style="padding: 0" @click="handleShowFeeDetail(record)">查看详情</a-button>
-        </template>
-        <template #emptyText>
-          <a-empty description="当前还没有消费记录。" />
-        </template>
-      </a-table>
-    </a-card>
+      <ConsoleTableShell label="个人账单流水">
+        <a-table
+          class="personal-billing-table"
+          bordered
+          :data-source="dataSource"
+          :columns="columns"
+          :loading="tableLoading"
+          :pagination="pagination"
+          @change="handleTableChange"
+          row-key="id"
+          table-layout="fixed"
+          :scroll="{ x: tableScrollX }"
+        >
+          <template #bodyCell="{ column, record, text }">
+            <template v-if="column.key === 'typeLabel'">
+              <a-tag :color="record.direction === 'income' ? 'green' : 'blue'">{{ buildBillingRecordTypeText(record) }}</a-tag>
+            </template>
+            <template v-else-if="column.key === 'subject'">
+              <OverflowTableText
+                :text="buildBillingRecordListSubjectText(record)"
+                :expanded="isSubjectExpanded(record.id)"
+                @toggle="toggleSubject(record.id)"
+              />
+            </template>
+            <template v-else-if="column.key === 'amount'">
+              <span :class="record.direction === 'income' ? 'amount-income' : 'amount-expense'">{{ buildBillingRecordAmountText(record) }}</span>
+            </template>
+            <template v-else-if="column.key === 'source'">
+              <span class="multiline-cell">{{ buildBillingRecordSourceText(record) }}</span>
+            </template>
+            <template v-else-if="column.key === 'searchMode'">
+              <span>{{ buildBillingRecordModeText(record) }}</span>
+            </template>
+            <template v-else-if="column.key === 'referenceNo'">
+              <span class="reference-cell">{{ buildBillingRecordReferenceText(record) }}</span>
+            </template>
+            <template v-else-if="column.key === 'accessTokenName'">
+              <span>{{ record.accessTokenName || '-' }}</span>
+            </template>
+            <template v-else-if="column.key === 'createdAt'">
+              <span class="billing-time-cell">{{ formatDateTime(record.createdAt) }}</span>
+            </template>
+            <template v-else-if="column.key === 'feeDetail'">
+              <a-button type="link" style="padding: 0" @click="handleShowFeeDetail(record)">查看详情</a-button>
+            </template>
+            <template v-else>{{ text }}</template>
+          </template>
+          <template #emptyText>
+            <a-empty description="当前还没有消费记录。" />
+          </template>
+        </a-table>
+      </ConsoleTableShell>
+    </ConsolePanel>
+
+    <BillingDetailDialog v-model:open="billingDetailOpen" :record="selectedBillingRecord" viewer-scope="self" />
 
     <a-modal
       v-model:open="paymentResultVisible"
@@ -204,8 +183,11 @@
 import { computed, defineComponent, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import QRCode from 'qrcode'
-import Swal from 'sweetalert2'
 import OverflowTableText from '@/components/OverflowTableText.vue'
+import BillingDetailDialog from '@/components/BillingDetailDialog.vue'
+import SafePaymentIcon from '@/components/SafePaymentIcon.vue'
+import { useTableExpansion } from '@/composables/useTableExpansion.mjs'
+import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
 import {
   createRechargeOrder,
   getBillingRecords,
@@ -221,7 +203,6 @@ import {
 import {
   buildPersonalUsageBillingRecordParams,
   buildBillingRecordAmountText,
-  buildBillingRecordFeeDetailHtml,
   buildBillingRecordListSubjectText,
   buildBillingRecordModeText,
   buildBillingRecordReferenceText,
@@ -235,7 +216,6 @@ import { getStoredCurrentUser, setStoredCurrentUser } from '@/utils/currentUser'
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
 
 const dataSource = ref([])
-const expandedSubjects = reactive({})
 const paymentMethods = ref([])
 const tableLoading = ref(false)
 const paymentMethodLoading = ref(false)
@@ -268,15 +248,12 @@ function normalizeMinRechargeAmount(value) {
 
 export default defineComponent({
   name: 'UserUsagePage',
-  components: { OverflowTableText },
+  components: { OverflowTableText, BillingDetailDialog, SafePaymentIcon },
   setup() {
-    const subjectColumnWidth = computed(() => dataSource.value.some((record) => expandedSubjects[record.id])
-      ? billingTableColumnWidths.subjectExpanded
-      : billingTableColumnWidths.subject)
-    const tableScrollX = computed(() => [
-      'id', 'typeLabel', 'amount', 'source', 'searchMode', 'referenceNo',
-      'accessTokenName', 'createdAt', 'feeDetail',
-    ].reduce((total, key) => total + billingTableColumnWidths[key], subjectColumnWidth.value))
+    const subjectExpansion = useTableExpansion(dataSource)
+    const subjectColumnWidth = computed(() => subjectExpansion.columnWidth('subject', billingTableColumnWidths.subject, billingTableColumnWidths.subjectExpanded))
+    const selectedBillingRecord = ref(null)
+    const billingDetailOpen = ref(false)
     const summary = computed(() => {
       const rows = Array.isArray(dataSource.value) ? dataSource.value : []
       return rows.reduce((acc, item) => {
@@ -309,6 +286,70 @@ export default defineComponent({
       }
     }
 
+    const columns = computed(() => [
+        {
+          title: '账单 ID',
+          dataIndex: 'id',
+          key: 'id',
+          width: billingTableColumnWidths.id,
+        },
+        {
+          title: '类型',
+          dataIndex: 'typeLabel',
+          key: 'typeLabel',
+          width: billingTableColumnWidths.typeLabel,
+        },
+        {
+          title: '项目',
+          dataIndex: 'subject',
+          key: 'subject',
+          width: subjectColumnWidth.value,
+        },
+        {
+          title: '金额',
+          dataIndex: 'amount',
+          key: 'amount',
+          width: billingTableColumnWidths.amount,
+        },
+        {
+          title: '来源/渠道',
+          dataIndex: 'source',
+          key: 'source',
+          width: billingTableColumnWidths.source,
+        },
+        {
+          title: '模式',
+          dataIndex: 'searchMode',
+          key: 'searchMode',
+          width: billingTableColumnWidths.searchMode,
+        },
+        {
+          title: '请求 ID',
+          dataIndex: 'referenceNo',
+          key: 'referenceNo',
+          width: billingTableColumnWidths.referenceNo,
+        },
+        {
+          title: '访问令牌名称',
+          dataIndex: 'accessTokenName',
+          key: 'accessTokenName',
+          width: billingTableColumnWidths.accessTokenName,
+        },
+        {
+          title: '时间',
+          dataIndex: 'createdAt',
+          key: 'createdAt',
+          width: billingTableColumnWidths.createdAt,
+        },
+        {
+          title: '操作',
+          dataIndex: 'feeDetail',
+          key: 'feeDetail',
+          width: billingTableColumnWidths.feeDetail,
+        },
+      ])
+    const tableScrollX = computed(() => sumTableColumnWidths(columns.value))
+
     return {
       currentUser,
       dataSource,
@@ -328,7 +369,10 @@ export default defineComponent({
       rechargeQuickAmounts,
       pagination,
       tableScrollX,
-      expandedSubjects,
+      selectedBillingRecord,
+      billingDetailOpen,
+      isSubjectExpanded: (id) => subjectExpansion.isExpanded(id, 'subject'),
+      toggleSubject: (id) => subjectExpansion.toggle(id, 'subject'),
       summary,
       currentUserBalance,
       pageRefreshing,
@@ -340,96 +384,8 @@ export default defineComponent({
       buildBillingRecordSourceText,
       buildBillingRecordSubjectText,
       buildBillingRecordTypeText,
-      fallbackPaymentIcon() {
-        return '<span class="payment-method-icon--placeholder">支</span>'
-      },
-      columns: computed(() => [
-        {
-          title: '账单 ID',
-          dataIndex: 'id',
-          key: 'id',
-          width: billingTableColumnWidths.id,
-        },
-        {
-          title: '类型',
-          dataIndex: 'typeLabel',
-          key: 'typeLabel',
-          width: billingTableColumnWidths.typeLabel,
-          slots: {
-            customRender: 'typeLabel',
-          },
-        },
-        {
-          title: '项目',
-          dataIndex: 'subject',
-          key: 'subject',
-          width: subjectColumnWidth.value,
-          slots: {
-            customRender: 'subject',
-          },
-        },
-        {
-          title: '金额',
-          dataIndex: 'amount',
-          key: 'amount',
-          width: billingTableColumnWidths.amount,
-          slots: {
-            customRender: 'amount',
-          },
-        },
-        {
-          title: '来源/渠道',
-          dataIndex: 'source',
-          key: 'source',
-          width: billingTableColumnWidths.source,
-          slots: {
-            customRender: 'source',
-          },
-        },
-        {
-          title: '模式',
-          dataIndex: 'searchMode',
-          key: 'searchMode',
-          width: billingTableColumnWidths.searchMode,
-          customRender: ({ record }) => buildBillingRecordModeText(record),
-        },
-        {
-          title: '请求 ID',
-          dataIndex: 'referenceNo',
-          key: 'referenceNo',
-          width: billingTableColumnWidths.referenceNo,
-          slots: {
-            customRender: 'referenceNo',
-          },
-        },
-        {
-          title: '访问令牌名称',
-          dataIndex: 'accessTokenName',
-          key: 'accessTokenName',
-          width: billingTableColumnWidths.accessTokenName,
-          slots: {
-            customRender: 'accessTokenName',
-          },
-        },
-        {
-          title: '时间',
-          dataIndex: 'createdAt',
-          key: 'createdAt',
-          width: billingTableColumnWidths.createdAt,
-          slots: {
-            customRender: 'createdAt',
-          },
-        },
-        {
-          title: '操作',
-          dataIndex: 'feeDetail',
-          key: 'feeDetail',
-          width: billingTableColumnWidths.feeDetail,
-          slots: {
-            customRender: 'feeDetail',
-          },
-        },
-      ]),
+      columns,
+
     }
   },
   mounted() {
@@ -437,31 +393,8 @@ export default defineComponent({
   },
   methods: {
     handleShowFeeDetail(record) {
-      Swal.fire({
-        title: '账单详情',
-        html: buildBillingRecordFeeDetailHtml(record, {
-          showAIModelMeta: false,
-          showStatementControl: false,
-        }),
-        width: 560,
-        confirmButtonText: '关闭',
-        showCloseButton: true,
-        focusConfirm: false,
-        buttonsStyling: false,
-        heightAuto: false,
-        scrollbarPadding: false,
-        customClass: {
-          popup: 'billing-fee-popup',
-          title: 'billing-fee-title',
-          htmlContainer: 'billing-fee-html-container',
-          actions: 'billing-fee-actions',
-          confirmButton: 'billing-fee-confirm',
-          closeButton: 'billing-fee-close',
-        },
-      })
-    },
-    toggleSubject(id) {
-      expandedSubjects[id] = !expandedSubjects[id]
+      this.selectedBillingRecord = record
+      this.billingDetailOpen = true
     },
     handleRefreshAll() {
       return Promise.all([
@@ -610,329 +543,39 @@ export default defineComponent({
 </script>
 
 <style scoped>
-.user-usage-page {
-  width: 100%;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.summary-row {
-  margin-bottom: 0;
-}
-
-.summary-card {
-  border: 1px solid var(--console-border, #e5e7eb);
-  border-radius: var(--console-radius, 12px);
-  box-shadow: 0 2px 8px rgb(15 23 42 / 2%);
-}
-
-.page-card {
-  min-width: 0;
-  border: 1px solid var(--console-border, #e5e7eb);
-  border-radius: var(--console-radius, 12px);
-  box-shadow: 0 2px 8px rgb(15 23 42 / 2%);
-}
-
-.summary-card :deep(.ant-card-body) {
-  min-height: 104px;
-  display: flex;
-  align-items: center;
-  padding: 16px;
-}
-
-.summary-card :deep(.ant-statistic) {
-  min-width: 0;
-}
-
-.summary-card :deep(.ant-statistic-content) {
-  overflow-wrap: anywhere;
-}
-
-.page-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  min-width: 0;
-}
-
-.page-heading > div {
-  min-width: 0;
-}
-
-.section-heading {
-  margin-bottom: 20px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid var(--console-border, #e5e7eb);
-}
-
-.section-heading .page-subtitle {
-  margin-bottom: 0;
-}
-
-.recharge-card {
-  margin-bottom: 0;
-}
-
-.page-title {
-  margin: 0;
-  font-size: 22px;
-  font-weight: 700;
-  color: #1f2937;
-}
-
-.page-subtitle {
-  margin-top: 6px;
-  color: #6b7280;
-  font-size: 13px;
-}
-
-.page-alert {
-  margin-bottom: 16px;
-}
-
-.recharge-summary-row {
-  margin-bottom: 16px;
-}
-
-.balance-panel {
-  min-height: 100%;
-  padding: 22px;
-  border: 1px solid var(--console-border, #e5e7eb);
-  border-top: 3px solid var(--console-primary, #2563eb);
-  border-radius: var(--console-radius, 12px);
-  background: #f7f9fc;
-}
-
-.balance-label {
-  color: #64748b;
-  font-size: 13px;
-}
-
-.balance-value {
-  margin-top: 10px;
-  color: #0f172a;
-  font-size: 36px;
-  font-weight: 700;
-  line-height: 1.2;
-}
-
-.balance-meta {
-  margin-top: 8px;
-  color: #64748b;
-  font-size: 12px;
-}
-
-.recharge-form {
-  max-width: 100%;
-}
-
-.recharge-quick-amounts {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.recharge-quick-amount {
-  height: 38px;
-  border-radius: 8px;
-}
-
-.recharge-actions {
-  display: flex;
-  justify-content: flex-start;
-}
-
-.payment-method-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 12px;
-}
-
-.payment-method-card {
-  min-height: 74px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px;
-  border: 1px solid var(--console-border, #e5e7eb);
-  border-radius: 8px;
-  background: #fff;
-  cursor: pointer;
-  text-align: left;
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
-}
-
-.payment-method-card--selected {
-  border-color: var(--console-primary, #2563eb);
-  background: #f5f8ff;
-  box-shadow: 0 0 0 2px rgb(37 99 235 / 10%);
-}
-
-.payment-method-card:focus-visible {
-  outline: 2px solid var(--console-primary, #2563eb);
-  outline-offset: 2px;
-}
-
-.payment-method-icon {
-  width: 42px;
-  height: 42px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-  background: #f4f7fb;
-  overflow: hidden;
-  flex: 0 0 auto;
-}
-
-.payment-method-icon :deep(svg),
-.payment-method-icon svg {
-  width: 26px;
-  height: 26px;
-}
-
-.payment-method-icon--placeholder {
-  color: var(--console-primary, #2563eb);
-  font-weight: 700;
-}
-
-.payment-method-main {
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-}
-
-.payment-method-name {
-  color: #1f2937;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.payment-method-remark {
-  color: #6b7280;
-  font-size: 12px;
-  line-height: 1.5;
-  word-break: break-word;
-}
-
-.multiline-cell {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  line-height: 1.6;
-}
-
-.personal-billing-table :deep(.ant-table-thead > tr > th),
-.personal-billing-table :deep(.ant-table-tbody > tr > td) {
-  text-align: center;
-  vertical-align: middle;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
-.billing-time-cell {
-  display: block;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.reference-cell {
-  display: block;
-  overflow-wrap: anywhere;
-}
-
-.amount-income {
-  color: #16a34a;
-  font-weight: 600;
-}
-
-.amount-expense {
-  color: #dc2626;
-  font-weight: 600;
-}
-
-.payment-result {
-  display: grid;
-  gap: 14px;
-  justify-items: center;
-  text-align: center;
-}
-
-.payment-qrcode-image {
-  width: min(256px, 74vw);
-  height: min(256px, 74vw);
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  padding: 10px;
-  background: #fff;
-}
-
-.payment-qrcode-empty {
-  width: min(256px, 74vw);
-  min-height: min(256px, 74vw);
-  display: grid;
-  place-items: center;
-  border: 1px dashed #cbd5e1;
-  border-radius: 8px;
-  color: #64748b;
-  background: #f8fafc;
-}
-
-.payment-result-title {
-  color: #0f172a;
-  font-size: 16px;
-  font-weight: 600;
-}
-
-.payment-result-meta {
-  color: #64748b;
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-.payment-result-actions {
-  width: min(260px, 100%);
-  display: grid;
-  gap: 10px;
-}
-
+.summary-card { padding: 20px; border: 1px solid var(--console-border); border-radius: 10px; background: var(--console-surface); min-width: 0; }
+.recharge-summary-row { row-gap: 20px; }
+.balance-panel { display: flex; flex-direction: column; justify-content: center; height: 100%; min-height: 190px; padding: 24px; border-radius: 10px; background: var(--console-selected, #e7f3ef); border: 1px solid var(--console-border); }
+.balance-label { color: var(--console-muted); }
+.balance-value { margin: 12px 0; color: var(--console-primary); font-size: clamp(24px, 3vw, 36px); font-weight: 600; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.balance-meta, .hint { color: var(--console-muted); font-size: 12px; line-height: 1.6; }
+.hint { margin-top: 8px; }
+.recharge-quick-amounts { display: flex; flex-wrap: wrap; gap: 8px; }
+.recharge-quick-amount { min-width: 60px; }
+.recharge-actions { display: flex; justify-content: flex-end; }
+.payment-method-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
+.payment-method-card { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 14px; background: var(--console-surface); border: 1px solid var(--console-border); border-radius: 8px; color: var(--console-text); text-align: left; cursor: pointer; transition: border-color .15s, background .15s; }
+.payment-method-card--selected { border-color: var(--console-primary); background: var(--console-selected, #e7f3ef); }
+.payment-method-card:focus-visible { outline: 2px solid var(--console-primary); outline-offset: 2px; }
+.payment-method-icon { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 36px; width: 36px; height: 36px; }
+.payment-method-icon :deep(svg), .payment-method-icon svg { width: 28px; height: 28px; }
+.payment-method-main { display: grid; gap: 4px; min-width: 0; }
+.payment-method-name { font-weight: 600; overflow-wrap: anywhere; }
+.payment-method-remark { color: var(--console-muted); font-size: 12px; overflow-wrap: anywhere; }
+.amount-income { color: var(--console-success, #15803d); }
+.amount-expense { color: var(--console-danger, #c13e41); }
+.reference-cell, .multiline-cell, .billing-time-cell { white-space: pre-wrap; overflow-wrap: anywhere; }
+.billing-time-cell { font-variant-numeric: tabular-nums; }
+.payment-result { display: grid; gap: 16px; text-align: center; }
+.payment-qrcode-image { width: 256px; max-width: 100%; height: auto; margin: 0 auto; border: 1px solid var(--console-border); border-radius: 8px; }
+.payment-qrcode-empty { display: grid; place-items: center; width: 256px; max-width: 100%; min-height: 220px; margin: 0 auto; color: var(--console-muted); background: var(--console-surface-muted, #f8faf9); border-radius: 8px; }
+.payment-result-title { font-size: 16px; font-weight: 600; }
+.payment-result-meta { color: var(--console-muted); line-height: 1.6; }
+.payment-result-actions { display: grid; gap: 12px; }
 @media (max-width: 640px) {
-  .recharge-quick-amounts {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .balance-value {
-    font-size: 30px;
-  }
-}
-
-@media (max-width: 768px) {
-  .page-heading {
-    align-items: flex-start;
-  }
-
-  .page-title {
-    font-size: 20px;
-  }
-}
-
-@media (max-width: 480px) {
-  .page-heading {
-    gap: 10px;
-  }
-
-  .recharge-summary-row {
-    margin-bottom: 4px;
-  }
-
-  .payment-method-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .recharge-actions > .ant-btn {
-    width: 100%;
-  }
+  .summary-card { padding: 16px; }
+  .balance-panel { min-height: 150px; padding: 20px; }
+  .recharge-actions :deep(.ant-btn) { width: 100%; }
+  .payment-method-grid { grid-template-columns: 1fr; }
 }
 </style>
