@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -101,6 +102,31 @@ func TestCreatePaymentMethodReturnsCreatedItemForAdmin(t *testing.T) {
 	}
 	if method.ID != 11 || method.Name != "支付宝" {
 		t.Fatalf("unexpected created payment method: %+v", method)
+	}
+}
+
+func TestCreatePaymentMethodRejectsUnsafeIcon(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	original := createPaymentMethod
+	defer func() { createPaymentMethod = original }()
+	createPaymentMethod = func(user entity.User, input service.CreatePaymentMethodInput) (entity.PaymentMethod, error) {
+		return entity.PaymentMethod{}, service.ErrPaymentMethodIconUnsafe
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/payment-methods", bytes.NewBufferString(`{"name":"支付宝","epayType":"alipay","iconSvg":"<svg><script>alert(1)</script></svg>"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("user", &entity.User{ID: 9, Role: "admin", Status: "enabled"})
+
+	CreatePaymentMethod(ctx)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "SVG") {
+		t.Fatalf("expected unsafe SVG message, got %s", recorder.Body.String())
 	}
 }
 

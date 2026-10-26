@@ -127,7 +127,7 @@ func writePaymentMethodError(c *gin.Context, err error, fallback string) {
 	message := fallback
 
 	switch {
-	case errors.Is(err, service.ErrPaymentMethodNameRequired), errors.Is(err, service.ErrPaymentMethodEPayTypeRequired):
+	case errors.Is(err, service.ErrPaymentMethodNameRequired), errors.Is(err, service.ErrPaymentMethodEPayTypeRequired), errors.Is(err, service.ErrPaymentMethodIconUnsafe):
 		status = http.StatusBadRequest
 		message = err.Error()
 	case errors.Is(err, service.ErrPaymentMethodNotFound):

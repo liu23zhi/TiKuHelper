@@ -661,6 +661,59 @@ func TestListBillingRecordsWithDBRedactsPersonalAIUsageMetadata(t *testing.T) {
 	}
 }
 
+func TestListBillingRecordsWithDBDoesNotMergeHiddenSiblingForPersonal(t *testing.T) {
+	db := newBillingRecordTestDB(t)
+	owner := seedBillingRecordUser(t, db, 2, "user")
+	admin := seedBillingRecordUser(t, db, 1, "admin")
+	const requestID = "req-hidden-sibling"
+
+	charges := []entity.BillingRecord{
+		{
+			UserID: owner.ID, Type: normalSearchBillingRecordType, Provider: "icodef", Amount: 1.25, RequestID: requestID,
+			UnitPriceSnapshot: "provider=icodef question=可见题目",
+		},
+		{
+			UserID: owner.ID, Type: normalSearchBillingRecordType, Provider: "web_read", Amount: 0.75, RequestID: requestID,
+			HiddenFromStatement: true,
+			UnitPriceSnapshot:   "provider=web_read webReadURL=" + url.QueryEscape("https://hidden.example/article"),
+		},
+	}
+	for index := range charges {
+		if err := db.Create(&charges[index]).Error; err != nil {
+			t.Fatalf("create charge: %v", err)
+		}
+	}
+
+	personal, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{}, 1, 10)
+	if err != nil {
+		t.Fatalf("list personal billing records: %v", err)
+	}
+	if len(personal.Data) != 1 {
+		t.Fatalf("expected one personal record, got %+v", personal.Data)
+	}
+	personalRow := personal.Data[0]
+	if personalRow.Amount != 1.25 {
+		t.Fatalf("personal amount must exclude hidden sibling, got %v", personalRow.Amount)
+	}
+	for _, detail := range personalRow.FeeDetails {
+		if detail.Provider == "web_read" || strings.Contains(detail.Detail, "hidden.example") {
+			t.Fatalf("personal row leaked hidden sibling: %+v", personalRow.FeeDetails)
+		}
+	}
+
+	adminResult, err := ListBillingRecordsWithDB(db, admin, BillingRecordListQuery{}, 1, 10)
+	if err != nil {
+		t.Fatalf("list admin billing records: %v", err)
+	}
+	if len(adminResult.Data) != 1 {
+		t.Fatalf("expected one admin record, got %+v", adminResult.Data)
+	}
+	adminRow := adminResult.Data[0]
+	if adminRow.Amount != 2 || len(adminRow.FeeDetails) != 2 {
+		t.Fatalf("admin row must retain hidden sibling details, got %+v", adminRow)
+	}
+}
+
 func TestListBillingRecordsWithDBIncludesProviderLabelAndAccessTokenName(t *testing.T) {
 	db := newBillingRecordTestDB(t)
 	owner := seedBillingRecordUser(t, db, 2, "user")

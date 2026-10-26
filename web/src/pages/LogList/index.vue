@@ -168,6 +168,7 @@
 
 <script>
 import { getLogList, getIpLocations } from '@/api/TikuComponentApi';
+import { message } from 'ant-design-vue';
 import { defineComponent, ref, reactive, computed } from 'vue';
 import OverflowTableText from '@/components/OverflowTableText.vue';
 import { useTableExpansion } from '@/composables/useTableExpansion.mjs';
@@ -443,6 +444,8 @@ export default defineComponent({
           // 来源 IP 归属地单独批量拉取（失败静默）。
           enrichClientIps(dataSource.value)
         }
+      }).catch(() => {
+        message.error('获取操作日志失败')
       }).finally(() => {
         tabLoading.value = false
       })

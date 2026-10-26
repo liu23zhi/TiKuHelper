@@ -106,3 +106,10 @@ test('log request parameters can be rendered one per line without changing detai
   assert.equal(buildLogStructuredFields(row).mode, 'use=ai deepThinking=true skipCache=false');
   assert.equal(buildLogStructuredFields(row, '\n').mode, 'use=ai\ndeepThinking=true\nskipCache=false');
 });
+
+test('LogList handles a final request failure without clearing existing rows', async () => {
+  const source = await readFile(pagePath, 'utf8');
+  assert.match(source, /import \{ message \} from 'ant-design-vue'/);
+  assert.match(source, /\}\)\.catch\(\(\) => \{\s*message\.error\('获取操作日志失败'\)\s*\}\)\.finally\(\(\) => \{\s*tabLoading\.value = false/);
+  assert.doesNotMatch(source, /catch\([\s\S]*?dataSource\.value\s*=\s*\[\]/);
+});

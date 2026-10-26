@@ -436,8 +436,8 @@ func buildBillingRecordScopeQuery(db *gorm.DB, operator entity.User) *gorm.DB {
 // applyBillingRecordSearchDedup 保留每个 request_id 最新的一条明细。
 //
 // 一次搜题命中多个渠道会写成多条 normal_search，列表只展示最新的一条（代表整笔）。
-func applyBillingRecordSearchDedup(query *gorm.DB) *gorm.DB {
-	return query.Where(`
+func applyBillingRecordSearchDedup(query *gorm.DB, includeHidden bool) *gorm.DB {
+	condition := `
 		NOT EXISTS (
 			SELECT 1
 			FROM billing_records AS newer_records
@@ -446,14 +446,22 @@ func applyBillingRecordSearchDedup(query *gorm.DB) *gorm.DB {
 				AND newer_records.type = ?
 				AND billing_records.type = ?
 				AND COALESCE(billing_records.request_id, '') <> ''
-				AND newer_records.id > billing_records.id
+				AND newer_records.id > billing_records.id`
+	args := []interface{}{normalSearchBillingRecordType, normalSearchBillingRecordType}
+	if !includeHidden {
+		condition += `
+				AND newer_records.hidden_from_statement = ?`
+		args = append(args, false)
+	}
+	condition += `
 		)
-	`, normalSearchBillingRecordType, normalSearchBillingRecordType)
+	`
+	return query.Where(condition, args...)
 }
 
 // buildBillingRecordDisplayQuery 构造账单展示用的基础查询（含同请求去重）。
 func buildBillingRecordDisplayQuery(db *gorm.DB, operator entity.User) *gorm.DB {
-	return applyBillingRecordSearchDedup(buildBillingRecordScopeQuery(db, operator))
+	return applyBillingRecordSearchDedup(buildBillingRecordScopeQuery(db, operator), isAdminUser(operator))
 }
 
 func decorateBillingRecord(record BillingRecordListItem) BillingRecordListItem {
@@ -636,7 +644,7 @@ func buildBillingRecordFeeDetail(provider string, snapshot string) string {
 	return strings.Join(parts, "；")
 }
 
-func loadBillingSearchGroups(db *gorm.DB, records []BillingRecordListItem) (map[billingSearchGroupKey][]BillingRecordListItem, error) {
+func loadBillingSearchGroups(db *gorm.DB, records []BillingRecordListItem, includeHidden bool) (map[billingSearchGroupKey][]BillingRecordListItem, error) {
 	requestIDs := make([]string, 0, len(records))
 	userIDs := make([]int32, 0, len(records))
 	seenRequestIDs := make(map[string]struct{}, len(records))
@@ -667,6 +675,12 @@ func loadBillingSearchGroups(db *gorm.DB, records []BillingRecordListItem) (map[
 		Where("billing_records.type = ?", normalSearchBillingRecordType).
 		Where("billing_records.request_id IN ?", requestIDs).
 		Where("billing_records.user_id IN ?", userIDs).
+		Scopes(func(query *gorm.DB) *gorm.DB {
+			if includeHidden {
+				return query
+			}
+			return query.Where("billing_records.hidden_from_statement = ?", false)
+		}).
 		Order("billing_records.id asc").
 		Find(&groupRecords).Error; err != nil {
 		return nil, err
@@ -850,7 +864,7 @@ func ListBillingRecordsWithDB(db *gorm.DB, operator entity.User, query BillingRe
 	records = append(records, pageRows...)
 
 	// 当前页的代表行还需要兄弟明细，才能展示渠道构成与费用明细。
-	searchGroups, err := loadBillingSearchGroups(db, records)
+	searchGroups, err := loadBillingSearchGroups(db, records, isAdminUser(operator))
 	if err != nil {
 		return BillingRecordListResult{}, err
 	}

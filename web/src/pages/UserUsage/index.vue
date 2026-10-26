@@ -62,7 +62,7 @@
                   :aria-pressed="selectedPaymentMethodId === method.id"
                   @click="selectPaymentMethod(method.id)"
                 >
-                  <span class="payment-method-icon" v-html="method.iconSvg || fallbackPaymentIcon(method.name)"></span>
+                  <SafePaymentIcon class="payment-method-icon" :icon-svg="method.iconSvg" fallback="支" />
                   <span class="payment-method-main">
                     <span class="payment-method-name">{{ method.name }}</span>
                     <span class="payment-method-remark">{{ method.remark || method.epayType || '可用支付方式' }}</span>
@@ -185,6 +185,7 @@ import { message } from 'ant-design-vue'
 import QRCode from 'qrcode'
 import OverflowTableText from '@/components/OverflowTableText.vue'
 import BillingDetailDialog from '@/components/BillingDetailDialog.vue'
+import SafePaymentIcon from '@/components/SafePaymentIcon.vue'
 import { useTableExpansion } from '@/composables/useTableExpansion.mjs'
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
 import {
@@ -247,7 +248,7 @@ function normalizeMinRechargeAmount(value) {
 
 export default defineComponent({
   name: 'UserUsagePage',
-  components: { OverflowTableText, BillingDetailDialog },
+  components: { OverflowTableText, BillingDetailDialog, SafePaymentIcon },
   setup() {
     const subjectExpansion = useTableExpansion(dataSource)
     const subjectColumnWidth = computed(() => subjectExpansion.columnWidth('subject', billingTableColumnWidths.subject, billingTableColumnWidths.subjectExpanded))
@@ -383,9 +384,6 @@ export default defineComponent({
       buildBillingRecordSourceText,
       buildBillingRecordSubjectText,
       buildBillingRecordTypeText,
-      fallbackPaymentIcon() {
-        return '<span class="payment-method-icon--placeholder">支</span>'
-      },
       columns,
 
     }
@@ -561,7 +559,6 @@ export default defineComponent({
 .payment-method-card:focus-visible { outline: 2px solid var(--console-primary); outline-offset: 2px; }
 .payment-method-icon { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 36px; width: 36px; height: 36px; }
 .payment-method-icon :deep(svg), .payment-method-icon svg { width: 28px; height: 28px; }
-.payment-method-icon--placeholder { color: var(--console-primary); font-size: 24px; font-weight: 600; }
 .payment-method-main { display: grid; gap: 4px; min-width: 0; }
 .payment-method-name { font-weight: 600; overflow-wrap: anywhere; }
 .payment-method-remark { color: var(--console-muted); font-size: 12px; overflow-wrap: anywhere; }

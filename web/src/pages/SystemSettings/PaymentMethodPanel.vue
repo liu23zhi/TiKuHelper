@@ -11,7 +11,7 @@
       <a-table bordered table-layout="fixed" :data-source="rows" :columns="columns" :loading="loading" :pagination="false" row-key="id" :scroll="{ x: sumTableColumnWidths(columns) }">
         <template #bodyCell="{ column, record }">
           <div v-if="column.key === 'iconSvg'" class="icon-cell">
-            <div v-if="record.iconSvg" class="icon-preview" v-html="record.iconSvg"></div>
+            <SafePaymentIcon v-if="record.iconSvg" :icon-svg="record.iconSvg" />
             <span v-else>-</span>
           </div>
           <a-tag v-else-if="column.key === 'epayType'" color="cyan">{{ record.epayType || '-' }}</a-tag>
@@ -32,9 +32,11 @@
 
 <script>
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
+import SafePaymentIcon from '@/components/SafePaymentIcon.vue'
 
 export default {
   name: 'PaymentMethodPanel',
+  components: { SafePaymentIcon },
   props: {
     rows: { type: Array, default: () => [] },
     columns: { type: Array, default: () => [] },
@@ -48,5 +50,4 @@ export default {
 <style scoped>
 .page-alert { margin-bottom: 16px; }
 .icon-cell { min-height: 36px; display: flex; align-items: center; justify-content: center; }
-.icon-preview :deep(svg) { width: 28px; height: 28px; display: block; }
 </style>
