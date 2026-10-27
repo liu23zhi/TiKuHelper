@@ -88,6 +88,32 @@ func TestPaymentMethodIconSVGSanitizerKeepsSafeMarkup(t *testing.T) {
 	}
 }
 
+func TestPaymentMethodIconSVGSanitizerAcceptsIconfontMetadata(t *testing.T) {
+	svg := `<svg t="1765858760722" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="2038" width="200" height="200"><path d="M1 1h22v22H1z" fill="#02A9F1" p-id="2039"></path></svg>`
+
+	sanitized, err := sanitizePaymentMethodIconSVG(svg)
+	if err != nil {
+		t.Fatalf("iconfont metadata should be accepted: %v", err)
+	}
+	if !strings.Contains(sanitized, `p-id="2038"`) || !strings.Contains(sanitized, `p-id="2039"`) {
+		t.Fatalf("expected p-id metadata to be preserved, got %q", sanitized)
+	}
+}
+
+func TestPaymentMethodIconSVGSanitizerAcceptsInertMetadataAndRejectsMetadataLookalikes(t *testing.T) {
+	if _, err := sanitizePaymentMethodIconSVG(`<svg data-name="wechat" aria-label="支付"><path d="M0 0"/></svg>`); err != nil {
+		t.Fatalf("inert metadata should be accepted: %v", err)
+	}
+	for _, raw := range []string{
+		`<svg data-name="x" onclick="alert(1)"><path d="M0 0"/></svg>`,
+		`<svg data-name="x" style="color:red"><path d="M0 0"/></svg>`,
+	} {
+		if _, err := sanitizePaymentMethodIconSVG(raw); err != ErrPaymentMethodIconUnsafe {
+			t.Errorf("metadata lookalike %q should be rejected, got %v", raw, err)
+		}
+	}
+}
+
 func TestPaymentMethodIconSVGSanitizerRejectsExecutableAndExternalContent(t *testing.T) {
 	for _, raw := range []string{
 		`<svg><script>alert(1)</script></svg>`,

@@ -35,8 +35,9 @@ var paymentMethodSVGAttributes = map[string]struct{}{
 	"r": {}, "rect": {}, "role": {}, "rx": {}, "ry": {}, "spreadmethod": {},
 	"stop-color": {}, "stop-opacity": {}, "stroke": {}, "stroke-linecap": {},
 	"stroke-linejoin": {}, "stroke-miterlimit": {}, "stroke-opacity": {}, "stroke-width": {},
-	"transform": {}, "version": {}, "viewbox": {}, "viewtarget": {}, "width": {},
+	"t": {}, "transform": {}, "version": {}, "viewbox": {}, "viewtarget": {}, "width": {},
 	"x": {}, "x1": {}, "x2": {}, "xmlns": {}, "xmlns:xlink": {}, "y": {}, "y1": {}, "y2": {},
+	"p-id": {}, "xml:space": {},
 }
 
 var paymentMethodSVGInternalURL = regexp.MustCompile(`^url\(\s*#[a-zA-Z0-9_.:-]+\s*\)$`)
@@ -195,7 +196,7 @@ func validatePaymentMethodSVGNode(node *html.Node, root bool) error {
 		if strings.HasPrefix(key, "on") || strings.EqualFold(key, "style") {
 			return ErrPaymentMethodIconUnsafe
 		}
-		if _, ok := paymentMethodSVGAttributes[key]; !ok {
+		if _, ok := paymentMethodSVGAttributes[key]; !ok && !isPaymentMethodSVGMetadataAttribute(key) {
 			return ErrPaymentMethodIconUnsafe
 		}
 		value := strings.TrimSpace(attr.Val)
@@ -215,6 +216,13 @@ func validatePaymentMethodSVGNode(node *html.Node, root bool) error {
 		}
 	}
 	return nil
+}
+
+// Icon exporters commonly add inert metadata attributes. Keep these prefixes
+// narrow and separate from presentation attributes so executable SVG features
+// cannot be introduced by accepting arbitrary attributes.
+func isPaymentMethodSVGMetadataAttribute(key string) bool {
+	return strings.HasPrefix(key, "data-") || strings.HasPrefix(key, "aria-")
 }
 
 func isSafePaymentMethodSVGAttributeValue(key, value string) bool {
