@@ -12,7 +12,6 @@
 /run/logs/
 /.history
 adapter-service.exe
-/.history
 
 # --- TLS 证书 / 私钥：任何位置都不得入库 ---
 *.pem
