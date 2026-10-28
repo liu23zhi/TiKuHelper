@@ -36,6 +36,9 @@ export function buildAISearchTestForm(config) {
     apiKey: trimText(config?.apiKey),
     model: trimText(config?.model),
     prompt: trimText(config?.prompt),
+    history: trimText(config?.history),
+    compressionMode: ['configured', 'local', 'remote'].includes(trimText(config?.compressionMode))
+      ? trimText(config?.compressionMode) : 'configured',
   };
 }
 
@@ -120,10 +123,12 @@ export function buildAIToolTestPrompt(form) {
 export function buildAIToolTestPayload(form, fallbackConfig) {
   const mode = trimText(form?.mode);
   const tool = trimText(form?.tool);
-  if (!['direct', 'ai'].includes(mode)) throw new Error('请选择测试类型');
-  if (!(mode === 'ai' ? ['web_search', 'web_read', 'both'] : ['web_search', 'web_read']).includes(tool)) throw new Error('请选择要测试的工具');
+  if (!['direct', 'ai', 'compression', 'ai_compression'].includes(mode)) throw new Error('请选择测试类型');
+  if (['ai', 'ai_compression'].includes(mode) && !['web_search', 'web_read', 'both'].includes(tool)) throw new Error('请选择要测试的工具');
+  if (mode === 'direct' && !['web_search', 'web_read'].includes(tool)) throw new Error('请选择要测试的工具');
   const connection = buildAISearchTestForm(form);
   const fallback = buildAISearchTestForm(fallbackConfig);
+  const compressionMode = trimText(form?.compressionMode) || 'configured';
   const payload = {
     mode, tool,
     query: trimText(form?.query),
@@ -133,18 +138,26 @@ export function buildAIToolTestPayload(form, fallbackConfig) {
     model: connection.model || fallback.model,
     prompt: connection.prompt || fallback.prompt,
   };
-  if (mode === 'ai') {
+  if (mode === 'compression' || mode === 'ai_compression') {
+    if (!['configured', 'local', 'remote'].includes(compressionMode)) throw new Error('请选择有效的压缩策略');
+    payload.history = trimText(form?.history);
+    payload.compressionMode = compressionMode;
+  }
+  if (mode === 'compression') {
+    if (!payload.history) throw new Error('请填写待压缩历史');
+  } else if (mode === 'ai' || mode === 'ai_compression') {
     const { target, isURL } = resolveAIToolTestTarget(form);
     payload.target = target;
     payload.query = isURL ? '' : target;
     payload.url = isURL ? target : '';
+    if (mode === 'ai_compression' && !payload.history) throw new Error('请填写待压缩历史');
   } else if (tool === 'web_read') {
     validateToolTestURL(payload.url);
   } else {
     if (!payload.query) throw new Error('请填写搜索词');
     if ([...payload.query].length > 120) throw new Error('搜索词不能超过 120 个字符');
   }
-  if (mode === 'ai' && !payload.model) throw new Error('请选择要测试的 AI 模型');
+  if (['ai', 'compression', 'ai_compression'].includes(mode) && !payload.model) throw new Error('请选择要测试的 AI 模型');
   return payload;
 }
 
@@ -221,6 +234,15 @@ function buildAIToolTestCalls(value) {
 
 export function buildAIToolTestResult(response) {
   const data = response?.data || {};
+  const compression = isDiagnosticObject(data.compression) ? {
+    success: data.compression.success === true,
+    strategy: ['remote', 'local'].includes(diagnosticText(data.compression.strategy)) ? diagnosticText(data.compression.strategy) : '',
+    beforeTokens: diagnosticCount(data.compression.beforeTokens),
+    afterTokens: diagnosticCount(data.compression.afterTokens),
+    summary: diagnosticText(data.compression.summary),
+    remoteFallback: data.compression.remoteFallback === true,
+    error: diagnosticText(data.compression.error),
+  } : null;
   return {
     ...buildAISearchTestResult(response),
     success: data.success === true,
@@ -233,5 +255,6 @@ export function buildAIToolTestResult(response) {
     requestId: trimText(data.requestId),
     billingRecord: data.billingRecord && typeof data.billingRecord === 'object' ? data.billingRecord : null,
     billingWarning: trimText(data.billingWarning),
+    compression,
   };
 }

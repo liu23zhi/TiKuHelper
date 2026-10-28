@@ -17,32 +17,46 @@
           <a-radio-button value="hello">hello 连通性测试</a-radio-button>
           <a-radio-button value="direct">独立工具测试</a-radio-button>
           <a-radio-button value="ai">AI 工具调用测试</a-radio-button>
+          <a-radio-button value="compression">独立压缩测试</a-radio-button>
+          <a-radio-button value="ai_compression">AI 调用压缩测试</a-radio-button>
         </a-radio-group>
       </a-form-item>
-      <template v-if="testType !== 'hello'">
+      <a-form-item v-if="includesCompression" label="压缩策略">
+        <a-radio-group v-model:value="form.compressionMode" :disabled="submitting" class="test-tool-options" @change="resetResult">
+          <a-radio value="configured">使用当前配置</a-radio>
+          <a-radio value="local">仅本地摘要</a-radio>
+          <a-radio value="remote">优先远程，失败回退本地</a-radio>
+        </a-radio-group>
+        <div class="hint">压缩测试会使用当前配置的重试次数；AI 调用压缩测试会先压缩历史，再继续真实工具调用并计入管理员账单。</div>
+      </a-form-item>
+      <a-form-item v-if="includesCompression" label="待压缩历史" required>
+        <a-textarea v-model:value="form.history" :disabled="submitting" :auto-size="{ minRows: 6, maxRows: 14 }" placeholder="粘贴已有的搜索记录、网页内容或工具调用历史。压缩后将展示摘要、前后 Token 估算和执行轨迹。" />
+        <div class="hint">测试会主动执行压缩，无需等待触发阈值。默认内容为合成测试资料，可替换为真实历史；过短或无法安全缩小的内容会明确报错。</div>
+      </a-form-item>
+      <template v-if="testType === 'direct' || testType === 'ai' || testType === 'ai_compression'">
         <a-form-item label="测试工具">
           <a-radio-group v-model:value="form.tool" :disabled="submitting" class="test-tool-options" @change="resetResult">
             <a-radio value="web_search">联网搜索（web_search）</a-radio>
             <a-radio value="web_read">网页读取（web_read）</a-radio>
-            <a-radio v-if="testType === 'ai'" value="both">搜索＋网页读取</a-radio>
+            <a-radio v-if="testType !== 'direct'" value="both">搜索＋网页读取</a-radio>
           </a-radio-group>
         </a-form-item>
-        <a-form-item v-if="testType === 'ai'" :label="form.tool === 'web_read' ? '网页地址' : '关键词或网页地址'" required>
+        <a-form-item v-if="testType === 'direct' && form.tool === 'web_search'" label="搜索词" required>
+          <a-input v-model:value="form.query" :disabled="submitting" placeholder="例如 OpenAI" />
+        </a-form-item>
+        <a-form-item v-else-if="testType === 'direct'" label="网页地址" required>
+          <a-input v-model:value="form.url" :disabled="submitting" type="url" placeholder="https://www.openai.com/" />
+        </a-form-item>
+        <a-form-item v-else :label="form.tool === 'web_read' ? '网页地址' : '关键词或网页地址'" required>
           <a-input v-model:value="form.target" :disabled="submitting" :type="form.tool === 'web_read' ? 'url' : 'text'" :placeholder="form.tool === 'web_read' ? 'https://www.openai.com/' : '例如 OpenAI 或 https://www.openai.com/'" />
           <div v-if="form.tool === 'web_read'" class="hint">单独测试网页读取时，请提供完整网页地址。</div>
         </a-form-item>
-        <a-form-item v-else-if="form.tool === 'web_search'" label="搜索词" required>
-          <a-input v-model:value="form.query" :disabled="submitting" placeholder="例如 OpenAI" />
-        </a-form-item>
-        <a-form-item v-else label="网页地址" required>
-          <a-input v-model:value="form.url" :disabled="submitting" type="url" placeholder="https://www.openai.com/" />
-        </a-form-item>
-        <a-form-item v-if="testType === 'ai'" label="生成的测试提示词">
+        <a-form-item v-if="testType === 'ai' || testType === 'ai_compression'" label="生成的测试提示词">
           <a-textarea v-if="promptPreview.text" :value="promptPreview.text" readonly :auto-size="{ minRows: 3, maxRows: 6 }" aria-label="生成的测试提示词" />
           <div v-else class="hint" role="status">{{ promptPreview.error }}</div>
         </a-form-item>
       </template>
-      <template v-if="testType !== 'direct'">
+      <template v-if="testType === 'hello' || testType === 'ai' || testType === 'compression' || testType === 'ai_compression'">
         <a-form-item label="测试模型" required>
           <a-select v-model:value="form.model" :disabled="submitting" show-search allow-clear :options="modelOptions" placeholder="请选择测试模型" />
         </a-form-item>
@@ -52,15 +66,15 @@
         <a-form-item label="API Key">
           <a-input-password v-model:value="form.apiKey" :disabled="submitting" name="ai-test-service-api-key" autocomplete="new-password" autocapitalize="none" :spellcheck="false" placeholder="留空时使用当前页面中的 API Key" />
         </a-form-item>
-        <a-form-item :label="testType === 'ai' ? '系统 Prompt 覆盖' : 'Prompt 覆盖'">
+        <a-form-item :label="testType === 'ai' || testType === 'ai_compression' ? '系统 Prompt 覆盖' : 'Prompt 覆盖'">
           <a-textarea v-model:value="form.prompt" :disabled="submitting" :auto-size="{ minRows: 3, maxRows: 6 }" placeholder="留空时使用当前页面中的 Prompt" />
         </a-form-item>
       </template>
     </a-form>
 
     <a-alert v-if="testType === 'hello'" type="info" show-icon class="test-alert" message="固定发送 hello，展示请求体、原始流式响应和解析答案。此测试不写入账单。" />
-    <a-alert v-else type="info" show-icon class="test-alert" :message="testType === 'direct' ? '直接调用所选工具，检查工具是否返回结果。' : '根据输入生成提示词，发起真实 AI 请求，检查模型是否实际调用所选工具并返回结果。'" :description="toolTestDescription" />
-    <a-alert v-if="submitting && testType !== 'hello' && includesWebRead" type="info" show-icon class="test-alert" message="网页读取为异步任务，提交后将自动轮询，请等待任务完成并返回正文。" />
+    <a-alert v-else type="info" show-icon class="test-alert" :message="testModeDescription" :description="toolTestDescription" />
+    <a-alert v-if="submitting && includesWebRead" type="info" show-icon class="test-alert" message="网页读取为异步任务，提交后将自动轮询，请等待任务完成并返回正文。" />
     <a-alert v-if="error" type="error" show-icon class="test-alert" :message="error" />
 
     <div v-if="result" class="test-result-panel" aria-live="polite">
@@ -72,16 +86,27 @@
           <span v-else class="hint">本次未生成账单记录</span>
         </div>
         <a-alert v-if="result.billingWarning" type="warning" show-icon :message="result.billingWarning" />
-        <section v-if="testType === 'ai' && result.testPrompt" class="test-result-block">
+        <section v-if="includesCompression && result.compression" class="test-result-block">
+          <h3>压缩结果</h3>
+          <div class="compression-summary">
+            <a-tag :color="result.compression.success ? 'green' : 'red'">{{ result.compression.success ? '压缩成功' : '压缩失败' }}</a-tag>
+            <span>策略：{{ compressionStrategyText(result.compression.strategy) }}</span>
+            <span>Token 估算：{{ result.compression.beforeTokens ?? '-' }} → {{ result.compression.afterTokens ?? '-' }}</span>
+            <a-tag v-if="result.compression.remoteFallback" color="orange">远程失败后回退本地</a-tag>
+          </div>
+          <p v-if="result.compression.error" class="compression-error">{{ result.compression.error }}</p>
+          <pre>{{ result.compression.summary || '暂无压缩摘要' }}</pre>
+        </section>
+        <section v-if="(testType === 'ai' || testType === 'ai_compression') && result.testPrompt" class="test-result-block">
           <h3>本次实际提示词</h3>
           <pre>{{ result.testPrompt }}</pre>
         </section>
-        <section class="test-result-block">
+        <section v-if="testType === 'ai' || testType === 'ai_compression' || testType === 'direct'" class="test-result-block">
           <h3>工具调用详情</h3>
           <AIToolTestResults :calls="result.toolCalls" />
         </section>
       </template>
-      <section v-if="testType !== 'direct'" class="test-result-block">
+      <section v-if="testType === 'hello' || testType === 'ai' || testType === 'ai_compression'" class="test-result-block">
         <h3>解析答案</h3>
         <ol v-if="result.answers.length" class="test-answer-list">
           <li v-for="(answer, index) in result.answers" :key="index" class="test-answer-text">{{ answer }}</li>
@@ -121,26 +146,39 @@ export default defineComponent({
   },
   emits: ['update:open'],
   setup(props, { emit }) {
+    const defaultCompressionHistory = [
+      '【合成测试资料】以下记录仅用于验证压缩，不代表真实搜索、浏览结果或事实。',
+      ...Array.from({ length: 32 }, (_, index) => `记录 ${index + 1}：测试项目需要保留原始任务、输出格式、已经确认的结论以及尚未完成的事项。示例搜索词为“上下文压缩测试”，示例来源为 https://example.com/context-test 。此前步骤仅整理了候选资料，尚未完成在线核验；不能将模拟记录表述为真实工具调用。压缩时应合并重复说明，保留这些限制，后续仍需按照当前任务实际调用所选工具。`),
+      '待完成：根据当前测试目标执行所选工具，并明确区分真实返回结果与上述合成资料。',
+    ].join('\n')
     const testType = ref('hello')
-    const form = reactive({ ...buildAISearchTestForm(null), tool: 'web_search', target: 'OpenAI', query: 'OpenAI', url: 'https://www.openai.com/' })
+    const form = reactive({ ...buildAISearchTestForm(null), tool: 'web_search', target: 'OpenAI', query: 'OpenAI', url: 'https://www.openai.com/', history: defaultCompressionHistory })
     const submitting = ref(false)
     const result = ref(null)
     const error = ref('')
     const billingOpen = ref(false)
-    const submitText = computed(() => ({ hello: '发送 hello 测试', direct: '测试工具', ai: '发起 AI 工具调用' }[testType.value]))
-    const includesWebRead = computed(() => ['web_read', 'both'].includes(form.tool))
+    const submitText = computed(() => ({ hello: '发送 hello 测试', direct: '测试工具', ai: '发起 AI 工具调用', compression: '执行压缩测试', ai_compression: '压缩并调用工具' }[testType.value]))
+    const includesCompression = computed(() => ['compression', 'ai_compression'].includes(testType.value))
+    const includesWebRead = computed(() => ['direct', 'ai', 'ai_compression'].includes(testType.value) && ['web_read', 'both'].includes(form.tool))
     const toolTestDescription = computed(() => `${includesWebRead.value ? '网页读取会先提交异步任务，再轮询获取正文。' : ''}测试会产生真实模型或工具调用费用，并按当前已保存的价格配置写入当前管理员的账单。`)
+    const testModeDescription = computed(() => ({
+      direct: '直接调用所选工具，检查工具是否返回结果。',
+      ai: '根据输入生成提示词，发起真实 AI 请求，检查模型是否实际调用所选工具并返回结果。',
+      compression: '独立执行上下文压缩，不发起答题或联网工具调用；压缩模型用量正常计入管理员账单。',
+      ai_compression: '先压缩给定历史，再发起真实 AI 工具调用，检查压缩后的上下文能否继续完成请求。',
+    }[testType.value]))
     const promptPreview = computed(() => {
       try { return { text: buildAIToolTestPrompt(form), error: '' } }
       catch (validationError) { return { text: '', error: validationError.message } }
     })
     const diagnosticBlocks = computed(() => [
-      { title: '工具原始返回结果', text: result.value?.toolResultText },
+      { title: '压缩指标', text: result.value?.compression ? JSON.stringify({ strategy: result.value.compression.strategy, beforeTokens: result.value.compression.beforeTokens, afterTokens: result.value.compression.afterTokens, remoteFallback: result.value.compression.remoteFallback, error: result.value.compression.error }, null, 2) : '' },
+      { title: '工具原始返回结果', text: testType.value === 'compression' ? '' : result.value?.toolResultText },
       { title: '调用轨迹', text: result.value?.traceText },
       { title: '用量', text: result.value?.usageText },
       { title: '请求内容', text: result.value?.requestBody },
       { title: '完整回复', text: result.value?.rawResponse },
-    ])
+    ].filter(item => item.text))
     function resetResult() {
       result.value = null
       error.value = ''
@@ -149,10 +187,11 @@ export default defineComponent({
     watch(() => props.open, (open) => {
       if (!open) return
       Object.assign(form, buildAISearchTestForm(props.config))
+      if (!form.history) form.history = defaultCompressionHistory
       resetResult()
     })
     watch(testType, (mode) => {
-      if (mode !== 'ai' && form.tool === 'both') form.tool = 'web_search'
+      if (!['ai', 'ai_compression'].includes(mode) && form.tool === 'both') form.tool = 'web_search'
     })
     async function runTest() {
       if (submitting.value) return
@@ -179,7 +218,8 @@ export default defineComponent({
       }
     }
     function close() { if (!submitting.value) emit('update:open', false) }
-    return { testType, form, submitting, result, error, billingOpen, submitText, includesWebRead, toolTestDescription, promptPreview, diagnosticBlocks, resetResult, runTest, close }
+    function compressionStrategyText(strategy) { return ({ remote: '远程压缩', local: '本地摘要', '': '未完成' }[strategy] || '未知') }
+    return { testType, form, submitting, result, error, billingOpen, submitText, includesCompression, includesWebRead, toolTestDescription, testModeDescription, compressionStrategyText, promptPreview, diagnosticBlocks, resetResult, runTest, close }
   },
 })
 </script>
@@ -198,6 +238,8 @@ export default defineComponent({
 .test-result-block summary { cursor: pointer; color: var(--console-text); font-weight: 600; }
 .test-diagnostic-block { margin-top: 16px; }
 .test-result-reference { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; overflow-wrap: anywhere; }
+.compression-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 12px; color: var(--console-muted); font-size: 12px; }
+.compression-error { margin: 8px 0; color: var(--console-danger); white-space: pre-wrap; overflow-wrap: anywhere; }
 .hint { color: var(--console-muted); font-size: 12px; }
 @media (max-width: 480px) {
   .test-result-block { padding: 12px; }

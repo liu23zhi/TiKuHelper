@@ -228,6 +228,22 @@ func BuildAIToolTestPrompt(toolName, target string) (string, error) {
 // TestToolCall tests the selected native model tools, then requests a final answer.
 // It preserves the complete usage even when the tool or final model round fails.
 func (in *ChatGptClient) TestToolCall(ctx context.Context, toolName string, target string) ([][]string, AISearchDebugResult, error) {
+	return in.testToolCall(ctx, toolName, target, nil)
+}
+
+// TestToolCallWithCompression forces a test-only historical context through
+// the production compactor before running the selected real tool test.
+func (in *ChatGptClient) TestToolCallWithCompression(ctx context.Context, toolName, target, history, compressionMode string) ([][]string, AISearchDebugResult, AIContextCompressionTestResult, error) {
+	compression := AIContextCompressionTestResult{}
+	if strings.TrimSpace(history) == "" {
+		return nil, AISearchDebugResult{}, compression, fmt.Errorf("请填写待压缩历史内容")
+	}
+	options := &aiToolTestCompressionOptions{history: history, mode: compressionMode, result: &compression}
+	answers, debug, err := in.testToolCall(ctx, toolName, target, options)
+	return answers, debug, compression, err
+}
+
+func (in *ChatGptClient) testToolCall(ctx context.Context, toolName string, target string, compression *aiToolTestCompressionOptions) ([][]string, AISearchDebugResult, error) {
 	toolName = strings.TrimSpace(toolName)
 	target = strings.TrimSpace(target)
 	prompt, err := BuildAIToolTestPrompt(toolName, target)
@@ -246,7 +262,7 @@ func (in *ChatGptClient) TestToolCall(ctx context.Context, toolName string, targ
 		}
 	}
 	req := model.SearchRequest{Question: prompt, DeepThinking: true}
-	answers, debug, err := in.searchAnswerWithToolMode(ctx, req, toolName)
+	answers, debug, err := in.searchAnswerWithToolModeWithOptions(ctx, req, toolName, compression)
 	debug.Usage.Route = AISearchRouteDeepNative
 	if err != nil {
 		return answers, debug, err
@@ -272,7 +288,17 @@ func (in *ChatGptClient) TestToolCall(ctx context.Context, toolName string, targ
 	return answers, debug, nil
 }
 
-func (in *ChatGptClient) searchAnswerWithToolMode(parent context.Context, req model.SearchRequest, testTool string) (answers [][]string, debug AISearchDebugResult, err error) {
+type aiToolTestCompressionOptions struct {
+	history string
+	mode    string
+	result  *AIContextCompressionTestResult
+}
+
+func (in *ChatGptClient) searchAnswerWithToolMode(parent context.Context, req model.SearchRequest, testTool string) ([][]string, AISearchDebugResult, error) {
+	return in.searchAnswerWithToolModeWithOptions(parent, req, testTool, nil)
+}
+
+func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Context, req model.SearchRequest, testTool string, compression *aiToolTestCompressionOptions) (answers [][]string, debug AISearchDebugResult, err error) {
 	debug = AISearchDebugResult{}
 	defer func() {
 		debug.Trace = append([]AISearchTrace(nil), debug.Usage.Trace...)
@@ -303,7 +329,28 @@ func (in *ChatGptClient) searchAnswerWithToolMode(parent context.Context, req mo
 		buildAIResponsesMessage("system", effectiveAISearchPrompt(in.Prompt)+"\n"+toolPrompt),
 		buildAIResponsesMessage("user", buildAIResponsesContentParts(parts)),
 	}
-	compactor := in.newAIContextCompactor(input, &debug.Usage)
+	anchors := append([]any(nil), input...)
+	if compression != nil {
+		if strings.TrimSpace(compression.history) == "" {
+			return nil, debug, fmt.Errorf("请填写待压缩历史内容")
+		}
+		historyItem := buildAIResponsesMessage("user", "【不可信待压缩历史】\n"+compression.history)
+		input = []any{input[0], historyItem, input[1]}
+	}
+	compactor := in.newAIContextCompactor(anchors, &debug.Usage)
+	if compression != nil {
+		compactor.config.Enabled = true
+		mode := strings.TrimSpace(compression.mode)
+		switch mode {
+		case "", "configured":
+		case "local":
+			compactor.config.RemoteEnabled = false
+		case "remote":
+			compactor.config.RemoteEnabled = true
+		default:
+			return nil, debug, fmt.Errorf("压缩测试模式须为 configured、local 或 remote")
+		}
+	}
 	endpoints := buildAIResponsesEndpoints(in.BaseURL)
 	endpoint := endpoints[0]
 	maxModelCalls, maxSearches, maxWebReads := in.aiSearchBudgets()
@@ -332,9 +379,15 @@ func (in *ChatGptClient) searchAnswerWithToolMode(parent context.Context, req mo
 		if err := ctx.Err(); err != nil {
 			return nil, debug, fmt.Errorf("AI联网搜题请求已取消: %w", err)
 		}
-		input, err = compactor.prepare(ctx, endpoint, input, false, round+1)
+		input, err = compactor.prepare(ctx, endpoint, input, compression != nil && round == 0, round+1)
 		if err != nil {
+			if compression != nil && round == 0 && compression.result != nil {
+				*compression.result = compactor.testResult(nil, err, compactor.config.RemoteEnabled)
+			}
 			return nil, debug, err
+		}
+		if compression != nil && round == 0 && compression.result != nil {
+			*compression.result = compactor.testResult(input, nil, compactor.config.RemoteEnabled)
 		}
 		testsComplete := testTool != "" && (testedTools[testTool] || (testTool == "both" && testedTools["web_search"] && testedTools["web_read"]))
 		finalRound := round == maxModelCalls-1 || toolsDisabled || testsComplete || (searches >= maxSearches && (!webReaderAvailable || webReads >= maxWebReads))
@@ -409,7 +462,7 @@ func (in *ChatGptClient) searchAnswerWithToolMode(parent context.Context, req mo
 					addAISearchUsage(&debug.Usage, result.Usage)
 					// A compression stage has its own finite retries. Replay this
 					// answer round once, rather than multiplying those attempts.
-					if in.ContextCompression.Enabled && isAIContextLengthFailure(status, callErr) && recovery == 0 {
+					if compactor.config.Enabled && isAIContextLengthFailure(status, callErr) && recovery == 0 {
 						input, err = compactor.prepare(ctx, endpoint, input, true, round+1)
 						if err != nil {
 							callErr = fmt.Errorf("上下文超限后压缩失败: %w", err)

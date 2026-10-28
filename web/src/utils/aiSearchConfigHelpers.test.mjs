@@ -55,6 +55,8 @@ test('buildAISearchTestForm seeds the dialog from current AI search config', () 
     apiKey: 'test-key',
     model: 'gpt-4o-mini',
     prompt: '系统 Prompt',
+    history: '',
+    compressionMode: 'configured',
   });
 
   assert.deepEqual(buildAISearchTestForm(null), {
@@ -62,7 +64,67 @@ test('buildAISearchTestForm seeds the dialog from current AI search config', () 
     apiKey: '',
     model: '',
     prompt: '',
+    history: '',
+    compressionMode: 'configured',
   });
+});
+
+test('independent compression tests require history and a model and preserve the selected strategy', () => {
+  const base = { mode: 'compression', model: 'gpt-test', history: ' Earlier search results and verified facts. ' };
+  for (const compressionMode of ['configured', 'local', 'remote']) {
+    const payload = buildAIToolTestPayload({ ...base, compressionMode }, { baseUrl: 'https://api.example.com/v1', apiKey: 'saved' });
+    assert.equal(payload.mode, 'compression');
+    assert.equal(payload.history, 'Earlier search results and verified facts.');
+    assert.equal(payload.compressionMode, compressionMode);
+    assert.equal(payload.baseUrl, 'https://api.example.com/v1');
+    assert.equal(payload.tool, '');
+    assert.equal(payload.target, undefined);
+  }
+  assert.throws(() => buildAIToolTestPayload({ mode: 'compression', model: 'gpt-test', history: ' ' }), /历史/);
+  assert.throws(() => buildAIToolTestPayload({ mode: 'compression', history: 'evidence' }), /模型/);
+});
+
+test('AI compression tests combine a compression history with a selected real tool call', () => {
+  const payload = buildAIToolTestPayload({
+    mode: 'ai_compression', tool: 'both', target: 'OpenAI context window',
+    history: 'Earlier search result summary and verified source. ', model: 'gpt-test', compressionMode: 'remote',
+  }, { baseUrl: 'https://api.example.com/v1', apiKey: 'saved', prompt: 'System rules' });
+  assert.deepEqual({ mode: payload.mode, tool: payload.tool, target: payload.target, query: payload.query, url: payload.url }, {
+    mode: 'ai_compression', tool: 'both', target: 'OpenAI context window', query: 'OpenAI context window', url: '',
+  });
+  assert.equal(payload.history, 'Earlier search result summary and verified source.');
+  assert.equal(payload.compressionMode, 'remote');
+  assert.equal(payload.model, 'gpt-test');
+  assert.equal(payload.baseUrl, 'https://api.example.com/v1');
+  assert.equal(payload.apiKey, 'saved');
+  assert.equal(payload.prompt, 'System rules');
+  assert.equal(buildAIToolTestPayload({ mode: 'ai', tool: 'web_search', target: 'OpenAI', model: 'gpt-test', compressionMode: 'invalid' }).compressionMode, undefined);
+  assert.throws(() => buildAIToolTestPayload({ mode: 'ai_compression', tool: 'both', target: 'OpenAI', model: 'gpt-test', history: '' }), /历史/);
+  assert.throws(() => buildAIToolTestPayload({ mode: 'ai_compression', tool: 'other', target: 'OpenAI', model: 'gpt-test', history: 'evidence' }), /工具/);
+  assert.throws(() => buildAIToolTestPayload({ mode: 'compression', model: 'gpt-test', history: 'evidence', compressionMode: 'invalid' }), /策略/);
+});
+
+test('compression results normalize strategy, token counts, fallback and summary without losing diagnostics', () => {
+  const result = buildAIToolTestResult({ data: {
+    success: true, message: '完成压缩', requestId: 'cmp-1', answers: ['答案'],
+    compression: {
+      success: true, strategy: 'local', beforeTokens: 2500, afterTokens: 410,
+      summary: '保留答案线索、来源网址和工具返回状态。', remoteFallback: true,
+    },
+    trace: [{ stage: '本地历史摘要' }], usage: { totalTokens: 120 },
+    billingRecord: { id: 9 }, billingWarning: '账单读取提示',
+  } });
+  assert.deepEqual(result.compression, {
+    success: true, strategy: 'local', beforeTokens: 2500, afterTokens: 410,
+    summary: '保留答案线索、来源网址和工具返回状态。', remoteFallback: true, error: '',
+  });
+  assert.equal(result.success, true);
+  assert.equal(result.requestId, 'cmp-1');
+  assert.equal(result.traceText, '[\n  {\n    "stage": "本地历史摘要"\n  }\n]');
+  assert.equal(result.billingRecord.id, 9);
+  assert.equal(result.billingWarning, '账单读取提示');
+  assert.equal(buildAIToolTestResult({ data: { compression: { strategy: 'unknown', beforeTokens: -1, afterTokens: '2' } } }).compression.strategy, '');
+  assert.equal(buildAIToolTestResult({ data: {} }).compression, null);
 });
 
 test('buildAISearchTestPayload prefers explicit dialog overrides and falls back to current config', () => {

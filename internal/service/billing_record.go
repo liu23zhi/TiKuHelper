@@ -197,8 +197,15 @@ func BuildAIToolTestBillingQuestion(mode, tool, target string) string {
 		modeLabel = "AI 工具调用测试"
 	case "direct":
 		modeLabel = "联网工具直连测试"
+	case "compression":
+		modeLabel = "AI 历史压缩测试"
+	case "ai_compression":
+		modeLabel = "AI 工具调用压缩测试"
 	default:
 		return ""
+	}
+	if mode == "compression" {
+		return fmt.Sprintf("%s：%s", modeLabel, strings.TrimSpace(target))
 	}
 	toolLabel := ""
 	switch tool {
@@ -207,10 +214,14 @@ func BuildAIToolTestBillingQuestion(mode, tool, target string) string {
 	case "web_read":
 		toolLabel = "网页浏览"
 	case "both":
-		if mode != "ai" {
+		if mode != "ai" && mode != "ai_compression" {
 			return ""
 		}
-		toolLabel = "联网搜索 + 网页浏览"
+		if mode == "ai_compression" {
+			toolLabel = "上下文压缩 + 联网搜索 + 网页浏览"
+		} else {
+			toolLabel = "联网搜索 + 网页浏览"
+		}
 	default:
 		return ""
 	}
@@ -218,7 +229,7 @@ func BuildAIToolTestBillingQuestion(mode, tool, target string) string {
 }
 
 func normalizeBillingToolTestQuestion(question string) (string, bool) {
-	for _, mode := range []string{"ai", "direct"} {
+	for _, mode := range []string{"ai", "ai_compression", "compression", "direct"} {
 		for _, tool := range []string{"web_search", "web_read", "both"} {
 			prefix := BuildAIToolTestBillingQuestion(mode, tool, "")
 			if prefix == "" {
