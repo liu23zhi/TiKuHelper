@@ -111,6 +111,7 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/ai-search-config/models", controller.Auth, middleware.RequireAdmin, controller.AISearchModels)
 	apiRouter.GET("/ai-search-config/pricing-status", controller.Auth, middleware.RequireAdmin, controller.AISearchConfigPricingStatus)
 	apiRouter.POST("/ai-search-config/test", controller.Auth, controller.TestAISearchConfig)
+	apiRouter.POST("/ai-search-config/tool-test", controller.Auth, middleware.RequireAdmin, controller.TestAIToolCall)
 	apiRouter.PUT("/ai-search-config", controller.Auth, middleware.RequireAdmin, controller.UpdateAISearchConfig)
 	// 模型绑定（ai-model-architectures）已移除：模型列表由 AI 搜索配置维护，
 	// 计费由模型价格表按「模型 ID / 显示名称」匹配。

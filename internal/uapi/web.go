@@ -176,6 +176,12 @@ func parseWebToMarkdownTask(body []byte) (WebToMarkdownTask, error) {
 	return task, nil
 }
 
+// ValidateWebURL applies the same validation used by ReadWebPage before a test
+// starts a paid model request.
+func ValidateWebURL(raw string) (string, error) {
+	return normalizeWebURL(raw)
+}
+
 func normalizeWebURL(raw string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {

@@ -362,81 +362,7 @@
       </a-form>
     </a-modal>
 
-    <a-modal
-      v-model:open="testModalVisible"
-      title="测试 AI 搜索配置"
-      ok-text="发送 hello 测试"
-      cancel-text="关闭"
-      :confirm-loading="testSubmitting"
-      width="920px"
-      @ok="handleRunTest"
-    >
-      <a-form :label-col="modalLabelCol" :wrapper-col="modalWrapperCol" autocomplete="off">
-        <a-form-item label="测试模型" required>
-          <a-select
-            v-model:value="testForm.model"
-            show-search
-            allow-clear
-            :options="modelOptions"
-            placeholder="请选择模型或先在上方手动填写模型名"
-          />
-          <div class="hint">会向当前配置对应的 AI 服务发送固定测试问题：hello。</div>
-        </a-form-item>
-        <a-form-item label="服务地址">
-          <a-input
-            v-model:value="testForm.baseUrl"
-            name="ai-test-service-endpoint"
-            type="url"
-            autocomplete="off"
-            autocapitalize="none"
-            :spellcheck="false"
-            placeholder="留空时使用当前页面中的服务地址"
-          />
-        </a-form-item>
-        <a-form-item label="API Key">
-          <a-input-password
-            v-model:value="testForm.apiKey"
-            name="ai-test-service-api-key"
-            autocomplete="new-password"
-            autocapitalize="none"
-            :spellcheck="false"
-            placeholder="留空时使用当前页面中的 API Key"
-          />
-        </a-form-item>
-        <a-form-item label="Prompt 覆盖">
-          <a-textarea
-            v-model:value="testForm.prompt"
-            :auto-size="{ minRows: 4, maxRows: 8 }"
-            placeholder="留空时使用当前页面中的 Prompt"
-          />
-        </a-form-item>
-      </a-form>
-
-      <a-alert
-        type="info"
-        show-icon
-        class="test-alert"
-        message="测试请求固定发送 hello，弹窗会展示完整请求体、原始流式响应以及最终解析出的答案。"
-      />
-
-      <div v-if="hasAISearchTestResult(testResult)" class="test-result-panel">
-        <div class="test-result-block">
-          <div class="test-result-title">解析答案</div>
-          <a-space wrap>
-            <a-tag v-for="item in testResult.answers" :key="item" color="blue">{{ item }}</a-tag>
-            <span v-if="!testResult.answers.length" class="hint">暂无解析答案</span>
-          </a-space>
-        </div>
-        <div class="test-result-block">
-          <div class="test-result-title">请求内容</div>
-          <pre class="test-result-pre">{{ testResult.requestBody || '-' }}</pre>
-        </div>
-        <div class="test-result-block">
-          <div class="test-result-title">完整回复</div>
-          <pre class="test-result-pre">{{ testResult.rawResponse || '-' }}</pre>
-        </div>
-      </div>
-    </a-modal>
+    <AISearchTestDialog v-model:open="testModalVisible" :config="formState" :model-options="modelOptions" />
   </div>
 </template>
 
@@ -444,11 +370,11 @@
 import { defineComponent, computed, onMounted, reactive, ref } from 'vue';
 import { message, Modal } from 'ant-design-vue';
 import AISearchCapabilityDialog from './AISearchCapabilityDialog.vue';
+import AISearchTestDialog from './AISearchTestDialog.vue';
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs';
 import {
   getAISearchConfig,
   getAISearchModels,
-  testAISearchConfig,
   updateAISearchConfig,
   getAIModelPrices,
   getUAPISearchEngines,
@@ -472,12 +398,6 @@ import {
   getStagedMultiplierPointsError,
   insertStagedMultiplierPoint,
 } from '@/utils/aiStagedMultiplierHelpers.mjs';
-import {
-  buildAISearchTestForm,
-  buildAISearchTestPayload,
-  buildAISearchTestResult,
-  hasAISearchTestResult,
-} from '@/utils/aiSearchConfigHelpers.mjs';
 import { formatMoneyCny, formatMoneyValue } from '@/utils/moneyFormat.mjs';
 
 function trimBaseUrl(url) {
@@ -550,7 +470,7 @@ function normalizeUsageRows(payload) {
 
 export default defineComponent({
   name: 'AISearchConfig',
-  components: { AISearchCapabilityDialog },
+  components: { AISearchCapabilityDialog, AISearchTestDialog },
   setup() {
     const tabLoading = ref(true)
     const saving = ref(false)
@@ -561,18 +481,6 @@ export default defineComponent({
     const capabilityError = ref('')
     const usageInfo = ref(null)
     const testModalVisible = ref(false)
-    const testSubmitting = ref(false)
-    const testForm = reactive({
-      baseUrl: '',
-      apiKey: '',
-      model: '',
-      prompt: '',
-    })
-    const testResult = reactive({
-      answers: [],
-      requestBody: '',
-      rawResponse: '',
-    })
     const fixedTemperatureText = '0'
     const fixedTopPText = '0'
     const formState = reactive({
@@ -802,9 +710,6 @@ export default defineComponent({
       webReadUsageRows,
       usageColumns,
       testModalVisible,
-      testSubmitting,
-      testForm,
-      testResult,
       fixedTemperatureText,
       fixedTopPText,
       formState,
@@ -827,7 +732,6 @@ export default defineComponent({
       stagedPointColumns,
       stagedPointError,
       stagedPointRowKey,
-      hasAISearchTestResult,
       pricingGaps,
       isModelPriced,
       loadConfig,
@@ -963,45 +867,8 @@ export default defineComponent({
     resetStagedMultiplierPoints() {
       this.formState.stagedTokenMultiplierPoints = DEFAULT_AI_STAGED_TOKEN_MULTIPLIER_POINTS.map(point => ({ ...point, tokens: String(point.tokens) }))
     },
-    resetTestResult() {
-      this.testResult.answers = []
-      this.testResult.requestBody = ''
-      this.testResult.rawResponse = ''
-    },
     handleOpenTestDialog() {
-      const nextForm = buildAISearchTestForm(this.formState)
-      this.testForm.baseUrl = nextForm.baseUrl
-      this.testForm.apiKey = nextForm.apiKey
-      this.testForm.model = nextForm.model
-      this.testForm.prompt = nextForm.prompt
-      this.resetTestResult()
       this.testModalVisible = true
-    },
-    handleRunTest() {
-      let payload
-      try {
-        payload = buildAISearchTestPayload(this.testForm, this.formState)
-      } catch (error) {
-        message.warning(error?.message || '请选择要测试的 AI 模型')
-        return
-      }
-
-      this.testSubmitting = true
-      testAISearchConfig(payload).then(res => {
-        if (res?.status === 200) {
-          const result = buildAISearchTestResult(res)
-          this.testResult.answers = result.answers
-          this.testResult.requestBody = result.requestBody
-          this.testResult.rawResponse = result.rawResponse
-          message.success('AI 搜索测试完成')
-          return
-        }
-        message.error(res?.message || 'AI 搜索测试失败')
-      }).catch(() => {
-        message.error('AI 搜索测试失败')
-      }).finally(() => {
-        this.testSubmitting = false
-      })
     },
     formatPriceAmount(value) {
       const amount = Number(value)
@@ -1133,10 +1000,5 @@ export default defineComponent({
 .staged-points-editor__header :deep(.ant-space) { flex-wrap: wrap; }
 .sub-card-title { color: var(--console-text); font-size: 15px; font-weight: 600; }
 .sub-card-subtitle { margin-top: 6px; color: var(--console-muted); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
-.test-alert { margin-bottom: 16px; }
-.test-result-panel { display: flex; flex-direction: column; gap: 12px; }
-.test-result-block { padding: 16px; border-radius: 8px; background: var(--console-subtle); border: 1px solid var(--console-border); }
-.test-result-title { margin-bottom: 8px; font-weight: 600; color: var(--console-text); }
-.test-result-pre { margin: 0; max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.7; color: var(--console-text); }
 @media (max-width: 768px) { .console-form-grid { grid-template-columns: minmax(0, 1fr); } .model-editor { display: grid; } .fetch-btn { width: 100%; } .staged-billing-settings :deep(.ant-form-item) { display: block; } .staged-billing-settings :deep(.ant-form-item-label) { width: 100% !important; text-align: left; } .staged-billing-settings :deep(.ant-form-item-control) { max-width: 100%; } }
 </style>

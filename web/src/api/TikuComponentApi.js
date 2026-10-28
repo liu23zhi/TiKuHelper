@@ -627,6 +627,15 @@ export function testAISearchConfig(data) {
   })
 }
 
+export function testAIToolCall(data) {
+  return request({
+    url: `/adapter-service/ai-search-config/tool-test`,
+    method: 'post',
+    data,
+    timeout: 0
+  })
+}
+
 export function updateAISearchConfig(data) {
   return request({
     url: `/adapter-service/ai-search-config`,
