@@ -29,7 +29,7 @@
           <a-radio value="local">本地压缩</a-radio>
         </a-radio-group>
         <div v-if="form.compressionMode === 'configured'" class="hint">保存的顺序：{{ configuredCompressionOrder }}</div>
-        <div class="hint">压缩测试会使用已保存的压缩尝试次数；AI 调用压缩测试会先压缩历史，再继续真实工具调用并计入管理员账单。</div>
+        <div class="hint">压缩测试会使用已保存的压缩尝试次数；AI 调用压缩测试默认仅验证历史是否保留。需要验证压缩后联网时，请显式选择工具并填写目标。实际模型和工具用量计入管理员账单。</div>
       </a-form-item>
       <a-form-item v-if="includesCompression" label="待压缩历史" required>
         <a-textarea v-model:value="form.history" :disabled="submitting" :auto-size="{ minRows: 6, maxRows: 14 }" placeholder="粘贴已有的搜索记录、网页内容或工具调用历史。压缩后将展示摘要、前后 Token 估算和执行轨迹。" />
@@ -38,6 +38,7 @@
       <template v-if="testType === 'direct' || testType === 'ai' || testType === 'ai_compression'">
         <a-form-item label="测试工具">
           <a-radio-group v-model:value="form.tool" :disabled="submitting" class="test-tool-options" @change="resetResult">
+            <a-radio v-if="testType === 'ai_compression'" value="none">不联网，仅验证历史</a-radio>
             <a-radio value="web_search">联网搜索（web_search）</a-radio>
             <a-radio value="web_read">网页读取（web_read）</a-radio>
             <a-radio v-if="testType !== 'direct'" value="both">搜索＋网页读取</a-radio>
@@ -49,7 +50,7 @@
         <a-form-item v-else-if="testType === 'direct'" label="网页地址" required>
           <a-input v-model:value="form.url" :disabled="submitting" type="url" placeholder="https://www.openai.com/" />
         </a-form-item>
-        <a-form-item v-else :label="form.tool === 'web_read' ? '网页地址' : '关键词或网页地址'" required>
+        <a-form-item v-else-if="form.tool !== 'none'" :label="form.tool === 'web_read' ? '网页地址' : '关键词或网页地址'" required>
           <a-input v-model:value="form.target" :disabled="submitting" :type="form.tool === 'web_read' ? 'url' : 'text'" :placeholder="form.tool === 'web_read' ? 'https://www.openai.com/' : '例如 OpenAI 或 https://www.openai.com/'" />
           <div v-if="form.tool === 'web_read'" class="hint">单独测试网页读取时，请提供完整网页地址。</div>
         </a-form-item>
@@ -105,7 +106,7 @@
           <h3>本次实际提示词</h3>
           <pre>{{ result.testPrompt }}</pre>
         </section>
-        <section v-if="testType === 'ai' || testType === 'ai_compression' || testType === 'direct'" class="test-result-block">
+        <section v-if="testType === 'ai' || testType === 'direct' || (testType === 'ai_compression' && (form.tool !== 'none' || result.toolCalls.length))" class="test-result-block">
           <h3>工具调用详情</h3>
           <AIToolTestResults :calls="result.toolCalls" />
         </section>
@@ -152,12 +153,15 @@ export default defineComponent({
   emits: ['update:open'],
   setup(props, { emit }) {
     const testType = ref('hello')
-    const form = reactive({ ...buildAISearchTestForm(null), tool: 'web_search', target: 'OpenAI', query: 'OpenAI', url: 'https://www.openai.com/', history: AI_COMPRESSION_TEST_HISTORY })
+    const form = reactive({ ...buildAISearchTestForm(null), tool: 'web_search', target: '', query: '', url: '', history: AI_COMPRESSION_TEST_HISTORY })
+    let initialized = false
+    let compressionTool = AI_COMPRESSION_TEST_DEFAULTS.tool
+    let networkTool = 'web_search'
     const submitting = ref(false)
     const result = ref(null)
     const error = ref('')
     const billingOpen = ref(false)
-    const submitText = computed(() => ({ hello: '发送 hello 测试', direct: '测试工具', ai: '发起 AI 工具调用', compression: '执行压缩测试', ai_compression: '压缩并调用工具' }[testType.value]))
+    const submitText = computed(() => testType.value === 'ai_compression' && form.tool === 'none' ? '压缩并验证历史' : ({ hello: '发送 hello 测试', direct: '测试工具', ai: '发起 AI 工具调用', compression: '执行压缩测试', ai_compression: '压缩并调用工具' }[testType.value]))
     const includesCompression = computed(() => ['compression', 'ai_compression'].includes(testType.value))
     const configuredCompressionOrder = computed(() => props.savedCompressionOrder.map(aiContextCompressionStrategyText).join(' → '))
     const includesWebRead = computed(() => ['direct', 'ai', 'ai_compression'].includes(testType.value) && ['web_read', 'both'].includes(form.tool))
@@ -166,7 +170,7 @@ export default defineComponent({
       direct: '直接调用所选工具，检查工具是否返回结果。',
       ai: '根据输入生成提示词，发起真实 AI 请求，检查模型是否实际调用所选工具并返回结果。',
       compression: '独立执行上下文压缩，不发起答题或联网工具调用；压缩模型用量正常计入管理员账单。',
-      ai_compression: '先压缩给定历史，再发起真实 AI 工具调用，检查压缩后的上下文能否继续完成请求。',
+      ai_compression: form.tool === 'none' ? '先压缩给定历史，再通过 AI 回读标记、字段和待办状态，不发起联网请求。' : '先压缩给定历史，再发起所选工具调用，检查压缩后的上下文能否继续完成请求。',
     }[testType.value]))
     const promptPreview = computed(() => {
       try { return { text: testType.value === 'ai_compression' ? buildAICompressionToolTestPrompt(form) : buildAIToolTestPrompt(form), error: '' } }
@@ -174,7 +178,7 @@ export default defineComponent({
     })
     const diagnosticBlocks = computed(() => [
       { title: '压缩指标', text: result.value?.compression ? JSON.stringify(result.value.compression, null, 2) : '' },
-      { title: '工具原始返回结果', text: testType.value === 'compression' ? '' : result.value?.toolResultText },
+      { title: '工具原始返回结果', text: testType.value === 'compression' || (testType.value === 'ai_compression' && form.tool === 'none' && !result.value?.toolCalls?.length) ? '' : result.value?.toolResultText },
       { title: '调用轨迹', text: result.value?.traceText },
       { title: '用量', text: result.value?.usageText },
       { title: '请求内容', text: result.value?.requestBody },
@@ -187,18 +191,25 @@ export default defineComponent({
     }
     watch(() => props.open, (open) => {
       if (!open) return
-      Object.assign(form, buildAISearchTestForm(props.config))
-      if (!form.history) form.history = AI_COMPRESSION_TEST_HISTORY
-      if (testType.value === 'ai_compression') {
-        Object.assign(form, AI_COMPRESSION_TEST_DEFAULTS)
+      const { history, compressionMode, ...connection } = buildAISearchTestForm(props.config)
+      Object.assign(form, connection)
+      if (!initialized) {
+        form.history = history || AI_COMPRESSION_TEST_HISTORY
+        form.compressionMode = compressionMode
+        initialized = true
       }
       resetResult()
     })
-    watch(testType, (mode) => {
+    watch(testType, (mode, previous) => {
+      if (previous === 'ai_compression') compressionTool = form.tool
+      else if (previous === 'ai' || previous === 'direct') networkTool = form.tool
       if (mode === 'ai_compression') {
-        Object.assign(form, AI_COMPRESSION_TEST_DEFAULTS)
+        form.tool = compressionTool
+      } else if (mode === 'ai') {
+        form.tool = networkTool
+      } else if (mode === 'direct') {
+        form.tool = networkTool === 'web_read' ? 'web_read' : 'web_search'
       }
-      if (!['ai', 'ai_compression'].includes(mode) && form.tool === 'both') form.tool = 'web_search'
     })
     async function runTest() {
       if (submitting.value) return

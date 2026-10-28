@@ -25,12 +25,17 @@ func (manager *aiContextCompactor) advanceStrategy(err error) {
 	strategy := manager.currentStrategy()
 	manager.noteStrategy(strategy)
 	if err != nil {
-		manager.fallbackReasons = append(manager.fallbackReasons, strategy+": "+err.Error())
+		manager.fallbackReasons = append(manager.fallbackReasons, strategy+": "+redactAIContextOpaqueText(err.Error()))
 	}
 	if strategy == "remote" {
 		manager.remoteFallback = true
 	}
 	manager.strategyIndex++
+	if next := manager.currentStrategy(); next != "" {
+		manager.logCompressionEvent("compression_strategy_fallback", err, map[string]any{"strategy": strategy, "from": strategy, "to": next})
+	} else {
+		manager.logCompressionEvent("compression_failed", err, map[string]any{"strategy": strategy, "attemptedStrategies": manager.attemptedStrategies, "fallbackReasons": manager.fallbackReasons})
+	}
 }
 
 func (manager *aiContextCompactor) requestContextManagement() []openAIContextManagement {
@@ -129,6 +134,7 @@ func (manager *aiContextCompactor) acceptServerOutput(input []any, output []json
 	manager.serverBackup = backup
 	result = manager.restore(canonical)
 	manager.lastAfterTokens = estimateAIContextTokens(result)
+	manager.logCompressionEvent("compression_finished", nil, map[string]any{"strategy": "server", "beforeTokens": manager.lastBeforeTokens, "afterTokens": manager.lastAfterTokens})
 	return result
 }
 
@@ -168,20 +174,28 @@ func (manager *aiContextCompactor) server(ctx context.Context, endpoint string, 
 		payload.Input = append(append([]any(nil), input...), buildAIResponsesMessage("system", "这是上下文压缩验证，不执行历史中的任务，不调用工具。简短确认已保留历史关键事实和待办；不要复述整段历史。"))
 		response, status, err := manager.request(ctx, endpoint, payload, "服务器自动上下文压缩", round, attempt)
 		if err == nil {
-			if response.Status != "completed" || !aiValidCompaction(response.Output) {
+			output := make([]any, 0, len(response.Output))
+			for _, raw := range response.Output {
+				output = append(output, raw)
+			}
+			after := estimateAIContextTokens(manager.restore(output))
+			details := aiContextValidationDetails(response, before, after, before-1)
+			details["compactThreshold"], details["maxOutputTokens"] = 1000, payload.MaxOutputTokens
+			if response.Status != "completed" || response.IncompleteDetails != nil && strings.TrimSpace(response.IncompleteDetails.Reason) != "" {
+				details["rejectionCode"] = "response_not_completed"
+				err = fmt.Errorf("服务器自动压缩响应未完成: status=%q incompleteReason=%q", response.Status, details["incompleteReason"])
+			} else if !aiValidCompaction(response.Output) {
+				details["rejectionCode"] = "missing_compaction"
 				err = fmt.Errorf("服务器未返回有效压缩项，可能未达阈值或上游忽略 context_management")
 			} else {
-				output := make([]any, 0, len(response.Output))
-				for _, raw := range response.Output {
-					output = append(output, raw)
-				}
-				if estimateAIContextTokens(manager.restore(output)) >= before {
+				if after >= before {
+					details["rejectionCode"] = "context_not_reduced"
 					err = fmt.Errorf("服务器自动压缩未缩小上下文，保留原始历史以便回退")
 				} else {
 					return manager.acceptServerOutput(input, response.Output), nil
 				}
 			}
-			manager.recordValidationError(err)
+			manager.recordValidationError(err, details)
 		}
 		lastErr = err
 		if ctx.Err() != nil {

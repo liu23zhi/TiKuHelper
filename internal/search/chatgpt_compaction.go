@@ -106,6 +106,7 @@ func (manager *aiContextCompactor) prepare(ctx context.Context, endpoint string,
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
+		manager.logCompressionEvent("compression_failed", err, map[string]any{"round": round, "cancelled": true})
 		return nil, err
 	}
 	if manager.currentStrategy() != "server" {
@@ -126,7 +127,9 @@ func (manager *aiContextCompactor) prepare(ctx context.Context, endpoint string,
 		if !force {
 			return input, nil
 		}
-		return nil, fmt.Errorf("上下文无法压缩：没有可压缩历史，原始题目、选项与图片必须完整保留")
+		err := fmt.Errorf("上下文无法压缩：没有可压缩历史，原始题目、选项与图片必须完整保留")
+		manager.logCompressionEvent("compression_failed", err, map[string]any{"round": round, "rejectionCode": "no_compressible_history"})
+		return nil, err
 	}
 	target := before * int64(manager.config.TargetPercent) / 100
 	if window > 0 {
@@ -160,9 +163,13 @@ func (manager *aiContextCompactor) prepare(ctx context.Context, endpoint string,
 		if err == nil {
 			manager.lastStrategy = strategy
 			manager.lastAfterTokens = estimateAIContextTokens(result)
+			if strategy != "server" {
+				manager.logCompressionEvent("compression_finished", nil, map[string]any{"strategy": strategy, "beforeTokens": before, "afterTokens": manager.lastAfterTokens, "attemptedStrategies": manager.attemptedStrategies})
+			}
 			return result, nil
 		}
 		if ctx.Err() != nil {
+			manager.logCompressionEvent("compression_failed", ctx.Err(), map[string]any{"round": round, "cancelled": true, "attemptedStrategies": manager.attemptedStrategies})
 			return nil, ctx.Err()
 		}
 		lastErr = err
@@ -170,6 +177,7 @@ func (manager *aiContextCompactor) prepare(ctx context.Context, endpoint string,
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("所有上下文压缩策略均已失败")
+		manager.logCompressionEvent("compression_failed", lastErr, map[string]any{"attemptedStrategies": manager.attemptedStrategies, "fallbackReasons": manager.fallbackReasons})
 	}
 	return nil, lastErr
 }
@@ -383,7 +391,9 @@ func (manager *aiContextCompactor) requestEndpoint(ctx context.Context, endpoint
 			err = fmt.Errorf("上下文压缩响应不是有效JSON: %w", decodeErr)
 		}
 		if status < 200 || status >= 300 {
-			err = withAISearchRetryAfter(manager.client.upstreamError("context_compression_http", status, string(raw), err), resp)
+			// Redact before upstreamError bounds the body; otherwise a long
+			// ciphertext can be truncated inside its JSON string and leak a prefix.
+			err = withAISearchRetryAfter(manager.client.upstreamError("context_compression_http", status, redactAIContextOpaqueText(string(raw)), err), resp)
 		}
 	} else {
 		err = manager.client.upstreamError("context_compression_network", 0, "", err)
@@ -409,14 +419,24 @@ func aiSearchErrorText(err error) string {
 	return err.Error()
 }
 
-func (manager *aiContextCompactor) recordValidationError(err error) {
-	if err == nil || manager.usage == nil || len(manager.usage.Trace) == 0 {
+func (manager *aiContextCompactor) recordValidationError(err error, details ...map[string]any) {
+	if err == nil {
 		return
 	}
-	trace := &manager.usage.Trace[len(manager.usage.Trace)-1]
-	if trace.Error == "" {
-		trace.Error = err.Error()
+	metadata := map[string]any{}
+	if len(details) > 0 {
+		metadata = details[0]
 	}
+	if manager.usage != nil && len(manager.usage.Trace) > 0 {
+		trace := &manager.usage.Trace[len(manager.usage.Trace)-1]
+		encoded, _ := json.Marshal(metadata)
+		prepared := manager.client.prepareAISearchTrace(AISearchTrace{Error: err.Error(), ResultSummary: string(encoded)})
+		if trace.Error == "" {
+			trace.Error = prepared.Error
+		}
+		trace.ResultSummary = prepared.ResultSummary
+	}
+	manager.logCompressionEvent("compression_validation_rejected", err, metadata)
 }
 
 func aiContextRetryable(status int, err error) bool {
@@ -451,9 +471,15 @@ func (manager *aiContextCompactor) remote(ctx context.Context, endpoint string, 
 				output = append(output, raw)
 			}
 			result := manager.restore(output)
-			if response.Object != "response.compaction" || !found {
+			details := aiContextValidationDetails(response, before, estimateAIContextTokens(result), target)
+			if response.Object != "response.compaction" {
+				details["rejectionCode"] = "unexpected_response_object"
+				err = fmt.Errorf("独立压缩节点响应类型无效: object=%q", response.Object)
+			} else if !found {
+				details["rejectionCode"] = "missing_compaction"
 				err = fmt.Errorf("远程压缩未返回有效的encrypted compaction结果")
 			} else if estimateAIContextTokens(result) >= before || estimateAIContextTokens(result) > target {
+				details["rejectionCode"] = "context_not_reduced"
 				err = fmt.Errorf("远程压缩未达到缩小目标，保留原始历史以便回退")
 			} else {
 				manager.canonicalRetained = make(map[string]int, len(output))
@@ -462,7 +488,7 @@ func (manager *aiContextCompactor) remote(ctx context.Context, endpoint string, 
 				}
 				return result, nil
 			}
-			manager.recordValidationError(err)
+			manager.recordValidationError(err, details)
 		}
 		lastErr = err
 		if ctx.Err() != nil {
@@ -674,17 +700,28 @@ func (manager *aiContextCompactor) modelSummary(ctx context.Context, endpoint st
 				Summary string `json:"summary"`
 			}
 			text := strings.TrimSpace(extractAIResponsesOutputText(response.Output))
-			if response.Status != "completed" || response.IncompleteDetails != nil || json.Unmarshal([]byte(text), &summary) != nil || strings.TrimSpace(summary.Summary) == "" {
+			details := aiContextValidationDetails(response, estimateAIContextTokens(history), 0, attemptBudget)
+			details["maxOutputTokens"] = attemptBudget
+			if response.Status != "completed" || response.IncompleteDetails != nil {
+				details["rejectionCode"] = "response_not_completed"
+				err = fmt.Errorf("历史摘要响应未完成: status=%q incompleteReason=%q", response.Status, details["incompleteReason"])
+			} else if json.Unmarshal([]byte(text), &summary) != nil || strings.TrimSpace(summary.Summary) == "" {
+				details["rejectionCode"] = "invalid_summary"
 				err = fmt.Errorf("历史摘要为空、格式错误或生成未完成")
 			} else if estimateAIContextTokens([]any{summary.Summary}) >= estimateAIContextTokens(history) || estimateAIContextTokens([]any{summary.Summary}) > attemptBudget {
+				details["rejectionCode"] = "summary_not_reduced"
 				err = fmt.Errorf("历史摘要未缩小到目标范围")
 			} else if validate != nil {
 				err = validate(summary.Summary)
+				if err != nil {
+					details["rejectionCode"] = "unsafe_summary"
+				}
 			}
 			if err == nil {
 				return summary.Summary, nil
 			}
-			manager.recordValidationError(err)
+			details["afterTokens"] = estimateAIContextTokens([]any{summary.Summary})
+			manager.recordValidationError(err, details)
 		}
 		lastErr = err
 		if ctx.Err() != nil {

@@ -136,6 +136,25 @@ test('AI compression tests combine a compression history with a selected real to
   assert.throws(() => buildAIToolTestPayload({ mode: 'compression', model: 'gpt-test', history: 'evidence', compressionMode: 'invalid' }), /策略/);
 });
 
+test('AI compression history-only verification never includes stale network targets', () => {
+  const payload = buildAIToolTestPayload({
+    mode: 'ai_compression', tool: 'none', history: 'Historical evidence.', model: 'gpt-test',
+    target: 'old target', query: 'old query', url: 'https://example.com/old',
+  });
+  assert.equal(payload.tool, 'none');
+  assert.equal(payload.history, 'Historical evidence.');
+  assert.equal(payload.target, undefined);
+  assert.equal(payload.query, '');
+  assert.equal(payload.url, '');
+  assert.equal(buildAIToolTestPayload({ mode: 'ai_compression', history: 'Historical evidence.', model: 'gpt-test' }).tool, 'none');
+  assert.doesNotMatch(buildAICompressionToolTestPrompt({ tool: 'none', target: 'old target' }), /old target/);
+  assert.throws(() => buildAIToolTestPayload({ mode: 'ai', tool: 'none', target: 'anything', model: 'gpt-test' }), /工具/);
+  assert.throws(() => buildAIToolTestPayload({ mode: 'direct', tool: 'none' }), /工具/);
+  for (const tool of ['web_search', 'web_read', 'both']) {
+    assert.throws(() => buildAIToolTestPayload({ mode: 'ai_compression', tool, target: '', history: 'evidence', model: 'gpt-test' }), /关键词|地址/);
+  }
+});
+
 test('compression results normalize strategy, token counts, fallback and summary without losing diagnostics', () => {
   const result = buildAIToolTestResult({ data: {
     success: true, message: '完成压缩', requestId: 'cmp-1', answers: ['答案'],
@@ -304,21 +323,29 @@ test('combined AI prompts choose search then read for keywords and read then sea
 test('AI compression test defaults include verifiable history anchors without leaking expected values into the prompt', () => {
   assert.ok(AI_COMPRESSION_TEST_HISTORY.length > 1000);
   assert.deepEqual(AI_COMPRESSION_TEST_DEFAULTS, {
-    tool: 'both',
+    tool: 'none',
     target: AI_COMPRESSION_TEST_TARGET,
     compressionMode: 'configured',
   });
-  assert.equal(AI_COMPRESSION_TEST_TARGET, 'OpenAI Responses API context compaction');
+  assert.equal(AI_COMPRESSION_TEST_TARGET, '');
   assert.match(AI_COMPRESSION_TEST_HISTORY, /【历史校验】.*HISTORY-KEEP-7F3A/);
   assert.match(AI_COMPRESSION_TEST_HISTORY, /【关键事实校验】.*城市=宁波.*数量=17/);
   assert.match(AI_COMPRESSION_TEST_HISTORY, /【待办校验】.*尚未核验/);
 
-  const prompt = buildAICompressionToolTestPrompt({ tool: 'both', target: AI_COMPRESSION_TEST_TARGET });
-  assert.match(prompt, /先调用一次 web_search/);
-  assert.match(prompt, /再.*调用一次 web_read/);
+  assert.doesNotMatch(AI_COMPRESSION_TEST_HISTORY, /完成联网工具调用后|历史任务.*联网核验/);
+  const prompt = buildAICompressionToolTestPrompt({ tool: 'none', target: '' });
+  assert.match(prompt, /不提供联网工具/);
+  assert.match(prompt, /不得搜索、浏览网页或执行历史中的待办/);
   assert.match(prompt, /【历史校验】.*【关键事实校验】.*【待办校验】/);
-  assert.match(prompt, /字段缺失/);
+  assert.match(prompt, /历史字段缺失/);
   assert.doesNotMatch(prompt, /HISTORY-KEEP-7F3A|城市=宁波|数量=17/);
+
+  const toolPrompt = buildAICompressionToolTestPrompt({ tool: 'both', target: 'user supplied topic' });
+  assert.match(toolPrompt, /先调用一次 web_search/);
+  assert.match(toolPrompt, /再.*调用一次 web_read/);
+  assert.match(toolPrompt, /【历史校验】.*【关键事实校验】.*【待办校验】/);
+  assert.match(toolPrompt, /字段缺失/);
+  assert.doesNotMatch(toolPrompt, /HISTORY-KEEP-7F3A|城市=宁波|数量=17/);
 
   const ordinaryPrompt = buildAIToolTestPrompt({ mode: 'ai', tool: 'web_search', target: 'OpenAI' });
   assert.doesNotMatch(ordinaryPrompt, /历史校验|关键事实校验|待办校验/);

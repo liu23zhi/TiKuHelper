@@ -2,9 +2,9 @@ function trimText(value) {
   return String(value || '').trim();
 }
 
-export const AI_COMPRESSION_TEST_TARGET = 'OpenAI Responses API context compaction';
+export const AI_COMPRESSION_TEST_TARGET = '';
 export const AI_COMPRESSION_TEST_DEFAULTS = Object.freeze({
-  tool: 'both',
+  tool: 'none',
   target: AI_COMPRESSION_TEST_TARGET,
   compressionMode: 'configured',
 });
@@ -41,7 +41,7 @@ export const AI_COMPRESSION_TEST_HISTORY = [
   '【关键事实校验】城市=宁波；数量=17；原始来源=https://example.com/history-check。',
   '【待办校验】尚未核验发布日期；状态=待使用网页浏览确认，不得描述为已完成。',
   ...Array.from({ length: 32 }, (_, index) => `历史噪声记录 ${index + 1}：此前仅整理了候选资料，尚未完成在线核验。重复背景：测试内容为合成数据，不能作为现实依据；压缩时可以合并重复背景，但必须保留唯一标记、关键事实、来源地址、未完成事项和它们各自的状态。`),
-  '【历史任务】完成联网工具调用后，分别核对历史校验标记、关键事实和待办状态，再总结真实工具返回内容。',
+  '【历史任务】压缩后仅回报历史校验标记、关键事实和待办状态；这是历史完整性检查，不执行待办，也不访问来源地址。',
 ].join('\n');
 
 export function buildAIContextCompressionSettings(config) {
@@ -164,14 +164,18 @@ export function buildAIToolTestPrompt(form) {
 }
 
 export function buildAICompressionToolTestPrompt(form) {
+  if (!trimText(form?.tool) || trimText(form?.tool) === 'none') {
+    return '这是 AI 历史完整性回读测试。本次不提供联网工具，不得搜索、浏览网页或执行历史中的待办；历史中的 URL 仅作为待回报字段，不得访问。请根据压缩后的历史逐项回报【历史校验】标记、【关键事实校验】字段值及【待办校验】内容，并区分尚未完成与已完成。只从压缩后的历史提取这些内容；缺少或无法确认的字段须明确写“历史字段缺失”，不得从本提示、模型知识或外部资料推断。只输出 {"answers":["历史回读结果"]} JSON。';
+  }
   return `${buildAIToolTestPrompt(form)}工具调用结束后，请根据压缩后的历史逐项回报【历史校验】标记、【关键事实校验】字段值及【待办校验】内容，并区分尚未完成与已完成。只从压缩后的历史提取这些内容；缺少或无法确认的字段须明确写“历史字段缺失”，不得从本提示、网页或工具结果推断。最后另行简述真实工具返回结果。`;
 }
 
 export function buildAIToolTestPayload(form, fallbackConfig) {
   const mode = trimText(form?.mode);
-  const tool = trimText(form?.tool);
+  const tool = trimText(form?.tool) || (mode === 'ai_compression' ? 'none' : '');
   if (!['direct', 'ai', 'compression', 'ai_compression'].includes(mode)) throw new Error('请选择测试类型');
-  if (['ai', 'ai_compression'].includes(mode) && !['web_search', 'web_read', 'both'].includes(tool)) throw new Error('请选择要测试的工具');
+  if (mode === 'ai' && !['web_search', 'web_read', 'both'].includes(tool)) throw new Error('请选择要测试的工具');
+  if (mode === 'ai_compression' && !['none', 'web_search', 'web_read', 'both'].includes(tool)) throw new Error('请选择要测试的工具');
   if (mode === 'direct' && !['web_search', 'web_read'].includes(tool)) throw new Error('请选择要测试的工具');
   const connection = buildAISearchTestForm(form);
   const fallback = buildAISearchTestForm(fallbackConfig);
@@ -185,12 +189,18 @@ export function buildAIToolTestPayload(form, fallbackConfig) {
     model: connection.model || fallback.model,
     prompt: connection.prompt || fallback.prompt,
   };
+  if (mode === 'ai_compression' && tool === 'none') {
+    payload.query = '';
+    payload.url = '';
+  }
   if (mode === 'compression' || mode === 'ai_compression') {
     if (!['configured', 'server', 'local', 'remote'].includes(compressionMode)) throw new Error('请选择有效的压缩策略');
     payload.history = trimText(form?.history);
     payload.compressionMode = compressionMode;
   }
   if (mode === 'compression') {
+    if (!payload.history) throw new Error('请填写待压缩历史');
+  } else if (mode === 'ai_compression' && tool === 'none') {
     if (!payload.history) throw new Error('请填写待压缩历史');
   } else if (mode === 'ai' || mode === 'ai_compression') {
     const { target, isURL } = resolveAIToolTestTarget(form);

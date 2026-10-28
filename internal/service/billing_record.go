@@ -191,6 +191,9 @@ func buildBillingRecordDirectionLabel(direction string) string {
 // BuildAIToolTestBillingQuestion keeps the test mode, selected tools and target
 // readable in the shared billing views without changing provider identifiers.
 func BuildAIToolTestBillingQuestion(mode, tool, target string) string {
+	if mode == "ai_compression" && tool == "none" {
+		return "AI 压缩历史回读测试"
+	}
 	modeLabel := ""
 	switch mode {
 	case "ai":
@@ -229,6 +232,9 @@ func BuildAIToolTestBillingQuestion(mode, tool, target string) string {
 }
 
 func normalizeBillingToolTestQuestion(question string) (string, bool) {
+	if strings.TrimSpace(question) == BuildAIToolTestBillingQuestion("ai_compression", "none", "") {
+		return "AI 压缩历史回读测试", true
+	}
 	for _, mode := range []string{"ai", "ai_compression", "compression", "direct"} {
 		for _, tool := range []string{"web_search", "web_read", "both"} {
 			prefix := BuildAIToolTestBillingQuestion(mode, tool, "")

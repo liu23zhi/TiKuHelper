@@ -102,6 +102,9 @@ func (input *aiToolTestInput) validate() (string, error) {
 		if mode := strings.TrimSpace(input.CompressionMode); mode != "" && mode != "configured" && mode != "server" && mode != "local" && mode != "remote" {
 			return "", errors.New("压缩测试模式须为 configured、server、remote 或 local")
 		}
+		if input.Tool == "none" {
+			return "", nil
+		}
 	}
 	if input.Mode == "ai" || input.Mode == "ai_compression" {
 		target := ""
@@ -179,7 +182,7 @@ func TestAIToolCall(c *gin.Context) {
 		return
 	}
 	var tool search.AISearchTool
-	if input.Mode != "compression" {
+	if input.Mode != "compression" && !(input.Mode == "ai_compression" && input.Tool == "none") {
 		tool = newAIToolTestTool(db)
 		if tool == nil {
 			c.JSON(http.StatusBadRequest, gin.H{"message": "请先在系统设置中配置有效的 UApiPro 令牌"})
@@ -236,8 +239,11 @@ func TestAIToolCall(c *gin.Context) {
 		compression, debug, err = &outcome, result, callErr
 	} else {
 		client := &search.ChatGptClient{Enable: true, BaseURL: config.BaseURL, APIKey: config.APIKey, Model: config.Model,
-			Prompt: config.Prompt, SearchTool: recorder, RequestID: requestID, MaxAISearchRetries: config.MaxAISearchRetries,
+			Prompt: config.Prompt, RequestID: requestID, MaxAISearchRetries: config.MaxAISearchRetries,
 			ContextCompression: compressionSettings}
+		if recorder != nil {
+			client.SearchTool = recorder
+		}
 		if input.Mode == "ai_compression" {
 			var outcome search.AIContextCompressionTestResult
 			answers, debug, outcome, err = runAIToolCompressionDebug(c.Request.Context(), client, input.Tool, target, input.History, input.CompressionMode)
@@ -286,12 +292,18 @@ func TestAIToolCall(c *gin.Context) {
 		message = "上下文压缩测试完成"
 	} else if input.Mode == "ai_compression" {
 		message = "AI 工具调用压缩测试完成"
+		if input.Tool == "none" {
+			message = "AI 压缩历史回读测试完成"
+		}
 	}
 	if err != nil {
 		if input.Mode == "compression" {
 			message = "上下文压缩测试失败：" + err.Error()
 		} else if input.Mode == "ai_compression" {
 			message = "AI 工具调用压缩测试失败：" + err.Error()
+			if input.Tool == "none" {
+				message = "AI 压缩历史回读测试失败：" + err.Error()
+			}
 		} else {
 			message = "工具调用测试失败：" + err.Error()
 		}
