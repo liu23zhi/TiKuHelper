@@ -188,6 +188,54 @@ func buildBillingRecordDirectionLabel(direction string) string {
 	return "支出"
 }
 
+// BuildAIToolTestBillingQuestion keeps the test mode, selected tools and target
+// readable in the shared billing views without changing provider identifiers.
+func BuildAIToolTestBillingQuestion(mode, tool, target string) string {
+	modeLabel := ""
+	switch mode {
+	case "ai":
+		modeLabel = "AI 工具调用测试"
+	case "direct":
+		modeLabel = "联网工具直连测试"
+	default:
+		return ""
+	}
+	toolLabel := ""
+	switch tool {
+	case "web_search":
+		toolLabel = "联网搜索"
+	case "web_read":
+		toolLabel = "网页浏览"
+	case "both":
+		if mode != "ai" {
+			return ""
+		}
+		toolLabel = "联网搜索 + 网页浏览"
+	default:
+		return ""
+	}
+	return fmt.Sprintf("%s（%s）：%s", modeLabel, toolLabel, strings.TrimSpace(target))
+}
+
+func normalizeBillingToolTestQuestion(question string) (string, bool) {
+	for _, mode := range []string{"ai", "direct"} {
+		for _, tool := range []string{"web_search", "web_read", "both"} {
+			prefix := BuildAIToolTestBillingQuestion(mode, tool, "")
+			if prefix == "" {
+				continue
+			}
+			if strings.HasPrefix(question, prefix) {
+				return question, true
+			}
+			legacyPrefix := fmt.Sprintf("[工具测试] %s %s: ", mode, tool)
+			if strings.HasPrefix(question, legacyPrefix) {
+				return BuildAIToolTestBillingQuestion(mode, tool, strings.TrimPrefix(question, legacyPrefix)), true
+			}
+		}
+	}
+	return question, false
+}
+
 func buildBillingRecordSubject(record BillingRecordListItem) string {
 	if record.Type == balanceAdjustmentBillingRecordType {
 		return record.Remark
@@ -485,8 +533,13 @@ func decorateBillingRecord(record BillingRecordListItem) BillingRecordListItem {
 	if meta, ok := getSearchAccountProviderMeta(record.Provider); ok {
 		record.ProviderLabel = meta.ProviderLabel
 	}
-	if strings.TrimSpace(record.Provider) == "ai_search" {
+	switch strings.TrimSpace(record.Provider) {
+	case "ai":
+		record.ProviderLabel = "AI 模型调用"
+	case "ai_search":
 		record.ProviderLabel = "联网搜索"
+	case "web_read":
+		record.ProviderLabel = "网页浏览"
 	}
 	if strings.TrimSpace(record.Provider) == "system" {
 		record.ProviderLabel = "系统赠送"
@@ -507,6 +560,9 @@ func decorateBillingRecord(record BillingRecordListItem) BillingRecordListItem {
 	// 优先用持久化的 question_text；旧行或新写入前为空时回退到快照解析。
 	if questionText := strings.TrimSpace(record.QuestionText); questionText == "" {
 		record.QuestionText = ExtractBillingSnapshotField(record.UnitPriceSnapshot, "question")
+	}
+	if record.Type == normalSearchBillingRecordType {
+		record.QuestionText, _ = normalizeBillingToolTestQuestion(record.QuestionText)
 	}
 	record.Subject = buildBillingRecordSubject(record)
 	record.Detail = buildBillingRecordDetail(record)
@@ -727,6 +783,9 @@ func buildSearchBillingSubject(questionText string) string {
 	question := strings.TrimSpace(questionText)
 	if question == "" {
 		return "搜索答案"
+	}
+	if project, ok := normalizeBillingToolTestQuestion(question); ok {
+		return project
 	}
 	return "搜索答案，题目：" + question
 }

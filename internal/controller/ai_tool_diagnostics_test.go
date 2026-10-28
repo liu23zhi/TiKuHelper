@@ -215,6 +215,16 @@ func TestAIToolCombinedModelCallsMergeBothToolCharges(t *testing.T) {
 				t.Fatalf("missing generated prompt: %q", response.TestPrompt)
 			}
 			bill := response.BillingRecord
+			if bill.QuestionText != "AI 工具调用测试（联网搜索 + 网页浏览）：tool keyword" || bill.Subject != bill.QuestionText {
+				t.Fatalf("tool-test project name was not localized: %+v", bill)
+			}
+			wantSources := "AI 模型调用、联网搜索"
+			if complete {
+				wantSources += "、网页浏览"
+			}
+			if bill.ProviderLabel != wantSources || bill.AnswerSourceLabel != wantSources {
+				t.Fatalf("combined tool-test billing labels were not localized: %+v", bill)
+			}
 			if bill.ID == 0 || bill.Amount != wantAmount || len(bill.FeeDetails) != wantDetails || len(response.Usage.ModelCalls) != wantRounds {
 				t.Fatalf("incorrect combined bill: %+v usage=%+v", bill, response.Usage)
 			}
@@ -227,6 +237,11 @@ func TestAIToolCombinedModelCallsMergeBothToolCharges(t *testing.T) {
 			db.First(&account, user.ID)
 			if len(records) != wantRecords || account.Balance != util.RoundMoney(10-wantAmount) {
 				t.Fatalf("records=%+v balance=%f", records, account.Balance)
+			}
+			for _, record := range records {
+				if record.QuestionText != bill.QuestionText {
+					t.Fatalf("tool-test project name was not persisted consistently: %+v", record)
+				}
 			}
 		})
 	}
@@ -286,6 +301,13 @@ func TestAIToolDirectTestPersistsRealToolCharges(t *testing.T) {
 			}
 			if response.BillingRecord.Amount != want || len(response.BillingRecord.FeeDetails) != 1 {
 				t.Fatalf("record: %+v", response.BillingRecord)
+			}
+			wantProject := "联网工具直连测试（联网搜索）：test"
+			if toolName == "web_read" {
+				wantProject = "联网工具直连测试（网页浏览）：https://example.com/"
+			}
+			if response.BillingRecord.Subject != wantProject || records[0].QuestionText != wantProject {
+				t.Fatalf("direct tool-test project name was not localized: response=%+v stored=%+v", response.BillingRecord, records[0])
 			}
 			var reloaded entity.User
 			db.First(&reloaded, user.ID)

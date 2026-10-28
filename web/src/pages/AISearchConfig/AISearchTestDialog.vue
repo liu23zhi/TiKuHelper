@@ -13,7 +13,7 @@
   >
     <a-form layout="vertical" autocomplete="off">
       <a-form-item label="测试类型">
-        <a-radio-group v-model:value="testType" :disabled="submitting" @change="resetResult">
+        <a-radio-group v-model:value="testType" :disabled="submitting" class="test-type-options" @change="resetResult">
           <a-radio-button value="hello">hello 连通性测试</a-radio-button>
           <a-radio-button value="direct">独立工具测试</a-radio-button>
           <a-radio-button value="ai">AI 工具调用测试</a-radio-button>
@@ -77,16 +77,16 @@
           <pre>{{ result.testPrompt }}</pre>
         </section>
         <section class="test-result-block">
-          <h3>工具返回结果</h3>
-          <pre>{{ result.toolResultText || '-' }}</pre>
+          <h3>工具调用详情</h3>
+          <AIToolTestResults :calls="result.toolCalls" />
         </section>
       </template>
       <section v-if="testType !== 'direct'" class="test-result-block">
         <h3>解析答案</h3>
-        <a-space wrap>
-          <a-tag v-for="(answer, index) in result.answers" :key="index" color="blue">{{ answer }}</a-tag>
-          <span v-if="!result.answers.length" class="hint">暂无解析答案</span>
-        </a-space>
+        <ol v-if="result.answers.length" class="test-answer-list">
+          <li v-for="(answer, index) in result.answers" :key="index" class="test-answer-text">{{ answer }}</li>
+        </ol>
+        <span v-else class="hint">暂无解析答案</span>
       </section>
       <details v-if="testType !== 'hello'" class="test-result-block">
         <summary>调用轨迹及请求响应</summary>
@@ -107,12 +107,13 @@
 import { computed, defineComponent, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import BillingDetailDialog from '@/components/BillingDetailDialog.vue'
+import AIToolTestResults from './AIToolTestResults.vue'
 import { testAISearchConfig, testAIToolCall } from '@/api/TikuComponentApi'
 import { buildAISearchTestForm, buildAISearchTestPayload, buildAISearchTestResult, buildAIToolTestPayload, buildAIToolTestPrompt, buildAIToolTestResult } from '@/utils/aiSearchConfigHelpers.mjs'
 
 export default defineComponent({
   name: 'AISearchTestDialog',
-  components: { BillingDetailDialog },
+  components: { BillingDetailDialog, AIToolTestResults },
   props: {
     open: { type: Boolean, default: false },
     config: { type: Object, default: () => ({}) },
@@ -134,6 +135,7 @@ export default defineComponent({
       catch (validationError) { return { text: '', error: validationError.message } }
     })
     const diagnosticBlocks = computed(() => [
+      { title: '工具原始返回结果', text: result.value?.toolResultText },
       { title: '调用轨迹', text: result.value?.traceText },
       { title: '用量', text: result.value?.usageText },
       { title: '请求内容', text: result.value?.requestBody },
@@ -184,11 +186,15 @@ export default defineComponent({
 
 <style scoped>
 .test-alert { margin-bottom: 16px; }
+.test-type-options { display: flex; flex-wrap: wrap; row-gap: 8px; }
 .test-tool-options { display: flex; flex-wrap: wrap; gap: 8px 0; }
-.test-result-panel { display: grid; gap: 12px; min-width: 0; }
-.test-result-block { min-width: 0; padding: 16px; border: 1px solid var(--console-border); border-radius: 8px; background: var(--console-subtle); }
+.test-result-panel { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; min-width: 0; }
+.test-result-panel :deep(.ant-alert-message), .test-result-panel :deep(.ant-alert-description) { overflow-wrap: anywhere; white-space: pre-wrap; }
+.test-result-block { min-width: 0; max-width: 100%; padding: 16px; border: 1px solid var(--console-border); border-radius: 8px; background: var(--console-subtle); }
 .test-result-block h3 { margin: 0 0 8px; color: var(--console-text); font-size: 14px; font-weight: 600; }
-.test-result-block pre { margin: 0; max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.7; color: var(--console-text); }
+.test-result-block pre { margin: 0; max-width: 100%; max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.7; color: var(--console-text); }
+.test-answer-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin: 0; padding-inline-start: 24px; color: var(--console-text); }
+.test-answer-text { min-width: 0; max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; }
 .test-result-block summary { cursor: pointer; color: var(--console-text); font-weight: 600; }
 .test-diagnostic-block { margin-top: 16px; }
 .test-result-reference { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; overflow-wrap: anywhere; }

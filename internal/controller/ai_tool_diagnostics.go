@@ -192,7 +192,7 @@ func TestAIToolCall(c *gin.Context) {
 	// Sanitize before persisting tool errors as well as before returning diagnostics.
 	encodedUsage, _ := json.Marshal(redactAIToolTestData(debug.Usage, secrets))
 	_ = json.Unmarshal(encodedUsage, &debug.Usage)
-	question := logger.RedactSecrets(fmt.Sprintf("[工具测试] %s %s: %s", input.Mode, input.Tool, target), secrets...)
+	question := logger.RedactSecrets(service.BuildAIToolTestBillingQuestion(input.Mode, input.Tool, target), secrets...)
 	req := model.SearchRequest{Question: question, DeepThinking: input.Mode == "ai", RequestID: requestID}
 	resolved := resolvedSearchRequestContext{UserID: operator.ID, RequestID: requestID, SearchMode: searchModeAI,
 		UsedDefaultAI: input.Mode == "ai", AIConfig: config}

@@ -1066,11 +1066,11 @@ func TestSearchPersistsAIBillingDuringDefaultAIThatRunsInNormalMode(t *testing.T
 	if billingList.Total != 1 || len(billingList.Data) != 1 {
 		t.Fatalf("expected one ai-only billing row, got %+v", billingList)
 	}
-	if billingList.Data[0].ProviderLabel != "AI 搜索" || billingList.Data[0].Amount != 43.75 {
+	if billingList.Data[0].ProviderLabel != "AI 模型调用" || billingList.Data[0].Amount != 43.75 {
 		t.Fatalf("expected ai-only billing row to expose AI provider and amount, got %+v", billingList.Data[0])
 	}
 	if len(billingList.Data[0].FeeDetails) != 1 ||
-		billingList.Data[0].FeeDetails[0].ProviderLabel != "AI 搜索" ||
+		billingList.Data[0].FeeDetails[0].ProviderLabel != "AI 模型调用" ||
 		billingList.Data[0].FeeDetails[0].Amount != 43.75 {
 		t.Fatalf("expected ai-only billing row fee details, got %+v", billingList.Data[0].FeeDetails)
 	}

@@ -126,6 +126,71 @@ function formatTestDiagnostic(value) {
   return JSON.stringify(value, null, 2);
 }
 
+function isDiagnosticObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function diagnosticText(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function diagnosticCount(value) {
+  return Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function diagnosticHref(value) {
+  if (!/^https?:\/\//i.test(value) || [...value].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)) return '';
+  try {
+    const parsed = new URL(value);
+    const authority = value.match(/^https?:\/\/([^/?#]*)/i)?.[1] || '';
+    if (!parsed.hostname || parsed.username || parsed.password || authority.includes('@')) return '';
+    return value;
+  } catch { return ''; }
+}
+
+function buildAIToolTestCalls(value) {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item, index) => {
+    if (!isDiagnosticObject(item) || !['web_search', 'web_read'].includes(item.tool)) return [];
+    const isSearch = item.tool === 'web_search';
+    const payload = isDiagnosticObject(item.result) ? item.result : {};
+    const error = diagnosticText(item.error) || (isSearch ? '' : diagnosticText(payload.error));
+    const results = isSearch && Array.isArray(payload.results) ? payload.results.filter(isDiagnosticObject).map(result => {
+      const url = diagnosticText(result.url);
+      return {
+        title: diagnosticText(result.title), url, href: diagnosticHref(url),
+        snippet: diagnosticText(result.snippet), domain: diagnosticText(result.domain), source: diagnosticText(result.source),
+      };
+    }).filter(result => result.title || result.url || result.snippet || result.domain || result.source) : [];
+    const sources = isSearch && Array.isArray(payload.sources) ? payload.sources.filter(isDiagnosticObject).map(source => ({
+      name: diagnosticText(source.name), status: diagnosticText(source.status), resultCount: diagnosticCount(source.result_count),
+    })).filter(source => source.name || source.status || source.resultCount !== null) : [];
+    const target = diagnosticText(isSearch ? item.query : item.url);
+    const markdown = !isSearch && typeof payload.result?.markdown === 'string' ? payload.result.markdown : '';
+    const taskStatus = isSearch ? '' : diagnosticText(payload.status).toLowerCase();
+    let status = 'unknown';
+    if (error) status = 'error';
+    else if (isSearch) status = results.length > 0 ? 'success' : 'empty';
+    else if (taskStatus === 'completed') status = markdown.trim() ? 'success' : 'empty';
+    else if (['queued', 'pending', 'processing'].includes(taskStatus)) status = 'pending';
+    else if (['failed', 'timeout', 'cancelled'].includes(taskStatus)) status = 'error';
+    const statusText = {
+      success: '调用成功', error: '调用失败', empty: isSearch ? '无搜索结果' : '未返回网页正文',
+      pending: '等待完成', unknown: '状态未知',
+    }[status];
+    return [{
+      key: `${item.tool}-${index}`, tool: item.tool,
+      title: isSearch ? '联网搜索' : '网页读取', targetLabel: isSearch ? '搜索关键词' : '网页地址',
+      target, targetHref: isSearch ? '' : diagnosticHref(target), status, statusText,
+      statusColor: { success: 'green', error: 'red', empty: 'orange', pending: 'orange', unknown: 'default' }[status],
+      error, results, resultCount: results.length, totalResults: isSearch ? diagnosticCount(payload.total_results) : null, sources,
+      markdown, taskId: isSearch ? '' : diagnosticText(payload.task_id), taskStatus,
+      taskMessage: isSearch ? '' : diagnosticText(payload.message),
+      rawResponse: typeof item.rawResponse === 'string' ? item.rawResponse : '',
+    }];
+  });
+}
+
 export function buildAIToolTestResult(response) {
   const data = response?.data || {};
   return {
@@ -133,6 +198,7 @@ export function buildAIToolTestResult(response) {
     success: data.success === true,
     message: trimText(data.message),
     testPrompt: trimText(data.testPrompt),
+    toolCalls: buildAIToolTestCalls(data.toolResult),
     toolResultText: formatTestDiagnostic(data.toolResult),
     traceText: formatTestDiagnostic(data.trace ?? data.usage?.trace),
     usageText: formatTestDiagnostic(data.usage),

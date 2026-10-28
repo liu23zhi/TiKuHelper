@@ -120,6 +120,52 @@ func TestDecorateBillingRecordIncludesWebReadURL(t *testing.T) {
 	}
 }
 
+func TestDecorateBillingRecordUsesChineseAIToolProviderLabels(t *testing.T) {
+	for _, test := range []struct{ provider, label string }{
+		{"ai", "AI 模型调用"},
+		{"ai_search", "联网搜索"},
+		{"web_read", "网页浏览"},
+	} {
+		t.Run(test.provider, func(t *testing.T) {
+			record := decorateBillingRecord(BillingRecordListItem{Type: normalSearchBillingRecordType, Provider: test.provider})
+			if record.Provider != test.provider || record.ProviderLabel != test.label || record.AnswerSourceLabel != test.label ||
+				len(record.FeeDetails) != 1 || record.FeeDetails[0].ProviderLabel != test.label {
+				t.Fatalf("expected Chinese billing labels without changing provider identity, got %+v", record)
+			}
+		})
+	}
+}
+
+func TestDecorateBillingRecordNormalizesHistoricalToolTestProjectNames(t *testing.T) {
+	for _, test := range []struct{ question, want string }{
+		{"[工具测试] ai both: OpenAI", "AI 工具调用测试（联网搜索 + 网页浏览）：OpenAI"},
+		{"[工具测试] ai web_search: OpenAI news", "AI 工具调用测试（联网搜索）：OpenAI news"},
+		{"[工具测试] ai web_read: https://example.com/a?next=https://example.org", "AI 工具调用测试（网页浏览）：https://example.com/a?next=https://example.org"},
+		{"[工具测试] direct web_search: OpenAI", "联网工具直连测试（联网搜索）：OpenAI"},
+		{"[工具测试] direct web_read: https://example.com", "联网工具直连测试（网页浏览）：https://example.com"},
+	} {
+		t.Run(test.question, func(t *testing.T) {
+			for _, snapshotOnly := range []bool{false, true} {
+				input := BillingRecordListItem{Type: normalSearchBillingRecordType, Provider: "ai", QuestionText: test.question}
+				if snapshotOnly {
+					input.QuestionText = ""
+					input.UnitPriceSnapshot = "question=" + url.QueryEscape(test.question)
+				}
+				record := decorateBillingRecord(input)
+				if record.QuestionText != test.want || record.Subject != test.want {
+					t.Fatalf("snapshotOnly=%t expected normalized tool project %q, got %+v", snapshotOnly, test.want, record)
+				}
+			}
+		})
+	}
+	for _, question := range []string{"ordinary question", "[工具测试] ai unknown: question", "[工具测试] other both: question"} {
+		record := decorateBillingRecord(BillingRecordListItem{Type: normalSearchBillingRecordType, Provider: "ai", QuestionText: question})
+		if record.QuestionText != question || record.Subject != "搜索答案，题目："+question {
+			t.Fatalf("ordinary question was rewritten: %+v", record)
+		}
+	}
+}
+
 func TestMergeBillingSearchGroupCombinesDistinctFinalMultipliers(t *testing.T) {
 	merged := mergeBillingSearchGroup(
 		BillingRecordListItem{FinalMultiplier: "4x"},
@@ -496,7 +542,7 @@ func TestListBillingRecordsWithDBMergesSearchChargesByRequestID(t *testing.T) {
 	if merged.FeeDetails[0].ProviderLabel != "Icodef 题库" || merged.FeeDetails[0].Amount != 1.25 {
 		t.Fatalf("unexpected normal fee detail: %+v", merged.FeeDetails[0])
 	}
-	if merged.FeeDetails[1].ProviderLabel != "AI 搜索" || merged.FeeDetails[1].Amount != 0.75 {
+	if merged.FeeDetails[1].ProviderLabel != "AI 模型调用" || merged.FeeDetails[1].Amount != 0.75 {
 		t.Fatalf("unexpected ai fee detail: %+v", merged.FeeDetails[1])
 	}
 	if merged.FeeDetails[2].ProviderLabel != "联网搜索" || merged.FeeDetails[2].Amount != 0.02 || !strings.Contains(merged.FeeDetails[2].Detail, "加法 验算") {
@@ -508,10 +554,10 @@ func TestListBillingRecordsWithDBMergesSearchChargesByRequestID(t *testing.T) {
 	if merged.Subject != "搜索答案，题目：混合搜索题目" {
 		t.Fatalf("expected merged subject to identify a search answer and question, got %q", merged.Subject)
 	}
-	if merged.ProviderLabel != "Icodef 题库、AI 搜索、联网搜索" {
+	if merged.ProviderLabel != "Icodef 题库、AI 模型调用、联网搜索" {
 		t.Fatalf("expected merged provider label, got %q", merged.ProviderLabel)
 	}
-	if merged.AnswerSourceLabel != "Icodef 题库、AI 搜索、联网搜索" {
+	if merged.AnswerSourceLabel != "Icodef 题库、AI 模型调用、联网搜索" {
 		t.Fatalf("expected merged answer source label, got %q", merged.AnswerSourceLabel)
 	}
 	if merged.ReferenceNo != "req-mixed-search" || merged.AccessTokenName != "混合搜索令牌" {

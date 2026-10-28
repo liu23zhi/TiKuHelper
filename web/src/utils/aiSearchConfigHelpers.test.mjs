@@ -189,3 +189,147 @@ test('tool test results preserve Markdown content and explicit empty trace', () 
   assert.equal(result.billingRecord, null);
   assert.equal(result.testPrompt, '实际发送的提示词');
 });
+
+test('tool calls show the actual rewritten search query and webpage response in execution order', () => {
+  const markdown = '  # 实际网页\n\n第一段正文。\n第二段正文。  ';
+  const response = buildAIToolTestResult({ data: {
+    target: '用户原始关键词',
+    toolResult: [
+      {
+        tool: 'web_search', query: ' OpenAI research 2026 ', error: '', rawResponse: '{"original":"search"}',
+        result: {
+          total_results: 25,
+          results: [{ title: ' 搜索标题 ', url: 'https://example.com/article', snippet: '真实摘要', domain: 'example.com', source: 'engine-a' }],
+          sources: [{ name: ' engine-a ', status: 'success', result_count: 30 }],
+        },
+      },
+      {
+        tool: 'web_read', url: 'https://example.com/article', error: '', rawResponse: '{"original":"read"}',
+        result: { task_id: ' task-12 ', status: ' COMPLETED ', message: ' 读取完成 ', result: { markdown } },
+      },
+    ],
+  } });
+  const [search, read] = response.toolCalls;
+  assert.deepEqual(response.toolCalls.map(call => call.tool), ['web_search', 'web_read']);
+  assert.equal(search.title, '联网搜索');
+  assert.equal(search.targetLabel, '搜索关键词');
+  assert.equal(search.target, 'OpenAI research 2026');
+  assert.equal(search.status, 'success');
+  assert.equal(search.statusColor, 'green');
+  assert.equal(search.resultCount, 1);
+  assert.equal(search.totalResults, 25);
+  assert.deepEqual(search.results[0], { title: '搜索标题', url: 'https://example.com/article', href: 'https://example.com/article', snippet: '真实摘要', domain: 'example.com', source: 'engine-a' });
+  assert.deepEqual(search.sources, [{ name: 'engine-a', status: 'success', resultCount: 30 }]);
+  assert.equal(read.title, '网页读取');
+  assert.equal(read.targetLabel, '网页地址');
+  assert.equal(read.target, 'https://example.com/article');
+  assert.equal(read.taskId, 'task-12');
+  assert.equal(read.taskStatus, 'completed');
+  assert.equal(read.taskMessage, '读取完成');
+  assert.equal(read.status, 'success');
+  assert.equal(read.markdown, markdown);
+  assert.equal(read.rawResponse, '{"original":"read"}');
+  assert.notEqual(search.key, read.key);
+});
+
+test('tool call order follows recorded invocations instead of grouped usage or requested tool order', () => {
+  const response = buildAIToolTestResult({ data: {
+    usage: { searchCalls: [{ query: 'later' }], webReadCalls: [{ url: 'https://example.com/first' }] },
+    toolResult: [
+      { tool: 'web_read', url: 'https://example.com/first', result: { status: 'completed', result: { markdown: '# First' } } },
+      { tool: 'web_search', query: 'later', result: { results: [{ title: 'Later' }] } },
+      { tool: 'web_search', query: 'later', result: { results: [{ title: 'Another actual call' }] } },
+    ],
+  } });
+  assert.deepEqual(response.toolCalls.map(call => call.target), ['https://example.com/first', 'later', 'later']);
+  assert.equal(new Set(response.toolCalls.map(call => call.key)).size, 3);
+});
+
+test('failed invocations retain partial results without showing a successful status', () => {
+  const response = buildAIToolTestResult({ data: { toolResult: [
+    { tool: 'web_search', query: 'partial', error: ' 搜索上游失败 ', result: { results: [{ title: 'Partial search result' }] } },
+    { tool: 'web_read', url: 'https://example.com/partial', error: ' 读取中断 ', result: { task_id: 'partial-task', status: 'completed', result: { markdown: '# Partial body' }, error: '次要错误' } },
+  ] } });
+  assert.deepEqual(response.toolCalls.map(call => call.status), ['error', 'error']);
+  assert.deepEqual(response.toolCalls.map(call => call.error), ['搜索上游失败', '读取中断']);
+  assert.equal(response.toolCalls[0].results[0].title, 'Partial search result');
+  assert.equal(response.toolCalls[1].markdown, '# Partial body');
+  assert.equal(response.toolCalls[1].taskId, 'partial-task');
+});
+
+test('webpage success requires a completed state and nonempty body while terminal errors remain failures', () => {
+  for (const scenario of [
+    { taskStatus: 'completed', markdown: '# Body', status: 'success' },
+    { taskStatus: 'completed', markdown: '  ', status: 'empty' },
+    { taskStatus: 'completed', status: 'empty' },
+    { taskStatus: 'queued', status: 'pending' },
+    { taskStatus: 'pending', status: 'pending' },
+    { taskStatus: 'processing', status: 'pending' },
+    { taskStatus: 'failed', markdown: '# Ignore as success', status: 'error' },
+    { taskStatus: 'timeout', status: 'error' },
+    { taskStatus: 'cancelled', status: 'error' },
+    { taskStatus: 'unexpected', markdown: '# Cannot imply success', status: 'unknown' },
+    { taskStatus: '', markdown: '# Cannot imply success', status: 'unknown' },
+  ]) {
+    const response = buildAIToolTestResult({ data: { toolResult: [{
+      tool: 'web_read', url: 'https://example.com/',
+      result: { status: scenario.taskStatus, result: { markdown: scenario.markdown } },
+    }] } });
+    assert.equal(response.toolCalls[0].status, scenario.status, JSON.stringify(scenario));
+  }
+  const response = buildAIToolTestResult({ data: { toolResult: [{
+    tool: 'web_read', result: { status: 'failed', error: ' 原始任务错误 ', message: '失败说明' },
+  }] } });
+  assert.equal(response.toolCalls[0].error, '原始任务错误');
+  assert.equal(response.toolCalls[0].taskMessage, '失败说明');
+});
+
+test('search result links only permit complete HTTP URLs without credentials', () => {
+  const urls = [
+    'https://example.com/a?x=1&y=2#section', 'http://example.com/',
+    'javascript:alert(1)', 'data:text/html,test', '//example.com/a',
+    'https://user:pass@example.com/a', 'https://@example.com/a', '/relative', 'https://example.com/\nunsafe',
+  ];
+  const response = buildAIToolTestResult({ data: { toolResult: [{
+    tool: 'web_search', query: 'urls', result: { results: urls.map(url => ({ title: 'Result', url })) },
+  }] } });
+  assert.deepEqual(response.toolCalls[0].results.map(item => item.url), urls);
+  assert.deepEqual(response.toolCalls[0].results.map(item => item.href), [urls[0], urls[1], '', '', '', '', '', '', '']);
+});
+
+test('large multiline webpage content is preserved without truncation or guessed summaries', () => {
+  const markdown = `# ${'标题'.repeat(1000)}\n\n${'完整正文\n'.repeat(1000)}`;
+  const response = buildAIToolTestResult({ data: { toolResult: [{
+    tool: 'web_read', url: 'https://example.com/long', result: { status: 'completed', result: { markdown } },
+  }] } });
+  assert.equal(response.toolCalls[0].markdown, markdown);
+});
+
+test('missing or legacy tool results never invent calls from an AI answer or usage trace', () => {
+  for (const toolResult of [undefined, null, [], { error: 'old response' }, '# Legacy Markdown']) {
+    const response = buildAIToolTestResult({ data: {
+      toolResult, answers: ['我已经搜索并浏览网页'],
+      usage: { searchCalls: [{ query: 'claimed query' }], webReadCalls: [{ url: 'https://example.com' }] },
+    } });
+    assert.deepEqual(response.toolCalls, []);
+    assert.equal(response.toolResultText, toolResult == null ? '' : typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult, null, 2));
+  }
+});
+
+test('malformed diagnostic entries are ignored safely while recognized empty calls stay visible', () => {
+  const response = buildAIToolTestResult({ data: { toolResult: [
+    null, 'invalid', 7, [], { tool: 'other_tool' },
+    { tool: 'web_search', query: {}, result: { total_results: '25', results: [null, 5, [], {}, { title: ' ' }, { title: 'Real' }], sources: [null, {}, { name: 'Source', result_count: -1 }] } },
+    { tool: 'web_read', url: {}, result: null },
+  ] } });
+  assert.equal(response.toolCalls.length, 2);
+  assert.equal(response.toolCalls[0].target, '');
+  assert.equal(response.toolCalls[0].resultCount, 1);
+  assert.equal(response.toolCalls[0].totalResults, null);
+  assert.deepEqual(response.toolCalls[0].sources, [{ name: 'Source', status: '', resultCount: null }]);
+  assert.equal(response.toolCalls[1].status, 'unknown');
+  assert.equal(response.toolCalls[1].target, '');
+  const emptySearch = buildAIToolTestResult({ data: { toolResult: [{ tool: 'web_search', result: { total_results: 0, results: [] } }] } }).toolCalls[0];
+  assert.equal(emptySearch.status, 'empty');
+  assert.equal(emptySearch.totalResults, 0);
+});
