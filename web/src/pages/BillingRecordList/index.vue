@@ -14,6 +14,14 @@
         <a-statistic title="当前页累计消费金额" prefix="¥" :value="summary.currentPageAmount" :precision="6" />
         <p class="summary-hint">仅统计第 {{ pagination.current }} 页 {{ summary.currentPageCount }} 条</p>
       </div>
+      <div class="summary-card">
+        <a-statistic title="当前页缓存命中率" :value="formatBillingCacheHitRate(summary.currentPageCacheHitRate)" />
+        <p class="summary-hint">缓存输入 Token / 总输入 Token</p>
+      </div>
+      <div class="summary-card">
+        <a-statistic :title="hasActiveFilters ? '综合缓存命中率（当前筛选，全部页）' : '综合缓存命中率（全部页）'" :value="formatBillingCacheHitRate(summary.totalCacheHitRate)" />
+        <p class="summary-hint">仅统计 AI 模型输入 Token</p>
+      </div>
     </ConsoleSummaryGrid>
 
     <ConsolePanel class="page-card">
@@ -105,6 +113,7 @@
               <a-button type="link" style="padding: 0" @click="handleShowFeeDetail(record)">查看详情</a-button>
             </template>
             <template v-else-if="column.key === 'effectiveMultiplier'">{{ buildBillingRecordEffectiveMultiplierText(record) }}</template>
+            <template v-else-if="column.key === 'cacheHitRate'">{{ formatBillingCacheHitRate(record.cacheHitRate) }}</template>
             <template v-else>{{ text }}</template>
           </template>
           <template #emptyText>
@@ -128,6 +137,7 @@
           <dl class="mobile-billing-card__meta">
             <div v-if="isAdmin"><dt>用户</dt><dd>{{ record.username || '-' }}</dd></div>
             <div><dt>来源</dt><dd>{{ buildBillingRecordSourceText(record) }}</dd></div>
+            <div><dt>缓存命中率</dt><dd>{{ formatBillingCacheHitRate(record.cacheHitRate) }}</dd></div>
             <div><dt>时间</dt><dd class="mobile-billing-time">{{ formatDateTime(record.createdAt) }}</dd></div>
             <div><dt>编号</dt><dd>{{ buildBillingRecordReferenceText(record) }}</dd></div>
           </dl>
@@ -178,6 +188,7 @@ import {
   buildBillingRecordTypeText,
   billingTableColumnWidths,
   formatBillingRecordTime,
+  formatBillingCacheHitRate,
 } from '@/utils/userPortalHelpers.mjs'
 
 const dataSource = ref([])
@@ -209,10 +220,12 @@ function enrichClientIps(rows) {
     })
 }
 
-// 服务端返回的金额统计：totalAmount 覆盖全部筛选结果，currentPageAmount 仅当前页。
-const amountSummary = reactive({
+// 服务端统计覆盖完整筛选结果，缓存命中率按输入 Token 加权。
+const billingSummary = reactive({
   totalAmount: 0,
   currentPageAmount: 0,
+  currentPageCacheHitRate: null,
+  totalCacheHitRate: null,
 })
 // 已生效的筛选条件；keywordInput 只是输入框的即时值。
 const filters = reactive({
@@ -256,8 +269,10 @@ export default defineComponent({
         total: Number(pagination.total || 0),
         currentPageCount: 0,
         // 金额一律用服务端口径：它能覆盖所有页，且已按请求去重、剔除充值等收入项。
-        totalAmount: Number(amountSummary.totalAmount || 0),
-        currentPageAmount: Number(amountSummary.currentPageAmount || 0),
+        totalAmount: Number(billingSummary.totalAmount || 0),
+        currentPageAmount: Number(billingSummary.currentPageAmount || 0),
+        currentPageCacheHitRate: billingSummary.currentPageCacheHitRate,
+        totalCacheHitRate: billingSummary.totalCacheHitRate,
         providerCount: 0,
       })
     })
@@ -330,6 +345,12 @@ export default defineComponent({
           dataIndex: 'effectiveMultiplier',
           key: 'effectiveMultiplier',
           width: billingTableColumnWidths.effectiveMultiplier,
+        },
+        {
+          title: '缓存命中率',
+          dataIndex: 'cacheHitRate',
+          key: 'cacheHitRate',
+          width: billingTableColumnWidths.cacheHitRate,
         },
         {
           title: '访问令牌名称',
@@ -412,6 +433,7 @@ export default defineComponent({
       buildBillingRecordSourceText,
       buildBillingRecordSubjectText,
       buildBillingRecordTypeText,
+      formatBillingCacheHitRate,
     }
   },
   mounted() {
@@ -470,8 +492,10 @@ export default defineComponent({
           pagination.current = Number(res?.data?.page || 1)
           pagination.pageSize = Number(res?.data?.pageSize || 10)
           // 金额统计由服务端给出：覆盖全部筛选结果，而非仅当前页。
-          amountSummary.totalAmount = Number(res?.data?.summary?.totalAmount || 0)
-          amountSummary.currentPageAmount = Number(res?.data?.summary?.currentPageAmount || 0)
+          billingSummary.totalAmount = Number(res?.data?.summary?.totalAmount || 0)
+          billingSummary.currentPageAmount = Number(res?.data?.summary?.currentPageAmount || 0)
+          billingSummary.currentPageCacheHitRate = res?.data?.summary?.currentPageCacheHitRate ?? null
+          billingSummary.totalCacheHitRate = res?.data?.summary?.totalCacheHitRate ?? null
           // 来源 IP 归属地：按当前页批量查询并落库（失败静默）。
           enrichClientIps(dataSource.value)
         } else {
@@ -518,6 +542,9 @@ export default defineComponent({
 .amount-income { color: var(--console-success, #15803d); }
 .amount-expense { color: var(--console-danger, #c13e41); }
 .mobile-billing-list, .mobile-billing-pagination { display: none; }
+@media (min-width: 641px) and (max-width: 1279px) {
+  .billing-page :deep(.console-summary-grid) { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
 @media (max-width: 640px) {
   .summary-card { padding: 16px; }
   .filter-form { display: block; }
@@ -529,7 +556,7 @@ export default defineComponent({
   .mobile-billing-card__header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .mobile-billing-card__subject { margin: 16px 0; text-align: center; overflow-wrap: anywhere; }
   .mobile-billing-card__meta { display: grid; gap: 8px; margin: 0 0 16px; }
-  .mobile-billing-card__meta > div { display: grid; grid-template-columns: 3em minmax(0, 1fr); gap: 12px; }
+  .mobile-billing-card__meta > div { display: grid; grid-template-columns: 5em minmax(0, 1fr); gap: 12px; }
   .mobile-billing-card__meta dt { color: var(--console-muted); }
   .mobile-billing-card__meta dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
   .mobile-billing-time { white-space: pre-line; }

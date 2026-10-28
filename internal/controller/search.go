@@ -1351,6 +1351,8 @@ func appendAIStagedBillingSnapshot(snapshot string, settings service.AIStagedTok
 			"model=" + url.QueryEscape(modelName),
 			fmt.Sprintf("round=%d", call.Round),
 			fmt.Sprintf("attempt=%d", call.Attempt),
+			fmt.Sprintf("inputTokens=%d", call.InputTokens),
+			fmt.Sprintf("cachedInputTokens=%d", call.CachedInputTokens),
 			fmt.Sprintf("totalTokens=%d", call.TotalTokens),
 			fmt.Sprintf("baseAmount=%.6f", call.BaseAmount),
 			fmt.Sprintf("amount=%.6f", call.Amount),

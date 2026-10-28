@@ -25,6 +25,8 @@ type BillingRecordFeeDetail struct {
 	Sequence      int     `json:"sequence,omitempty"`
 	Amount        float64 `json:"amount"`
 	Detail        string  `json:"detail,omitempty"`
+	// Unknown historical usage and personal-scope metadata omit this field.
+	CacheHitRate *float64 `json:"cacheHitRate,omitempty"`
 	// URL is populated for web-read charges so clients do not need to parse the
 	// human-readable detail string. It is intentionally omitted for other fees.
 	URL string `json:"url,omitempty"`
@@ -59,6 +61,7 @@ type BillingRecordListItem struct {
 	ShowInStatement     bool                     `gorm:"-" json:"showInStatement"`
 	FinalMultiplier     string                   `gorm:"-" json:"finalMultiplier,omitempty"`
 	EffectiveMultiplier string                   `gorm:"-" json:"effectiveMultiplier,omitempty"`
+	CacheHitRate        *float64                 `gorm:"-" json:"cacheHitRate"`
 	FeeDetails          []BillingRecordFeeDetail `gorm:"-" json:"feeDetails"`
 	AccessTokenName     string                   `json:"accessTokenName"`
 	CreatedAt           time.Time                `json:"createdAt"`
@@ -69,6 +72,8 @@ type BillingRecordListItem struct {
 	UnitPriceSnapshot string `json:"-"`
 	RequestID         string `json:"-"`
 	Remark            string `json:"-"`
+	InputTokens       int64  `json:"-"`
+	CachedInputTokens int64  `json:"-"`
 }
 
 type billingSearchGroupKey struct {
@@ -76,15 +81,18 @@ type billingSearchGroupKey struct {
 	RequestID string
 }
 
-// BillingRecordSummary 是账单列表的金额统计。
+// BillingRecordSummary 是账单列表的金额与 AI 输入缓存统计。
 //
 // 口径说明：
 //   - 只统计「支出」（题目消费），充值入账与新用户赠送属于收入，不计入消费金额；
 //   - 与列表一样按 (user_id, request_id) 去重，避免一次搜题的多个渠道被重复累加；
 //   - TotalAmount 覆盖**全部符合筛选条件**的账单，CurrentPageAmount 只覆盖当前页。
+//   - 缓存命中率仅计 AI 模型输入，先汇总 Token 再相除；无输入返回 nil。
 type BillingRecordSummary struct {
-	TotalAmount       float64 `json:"totalAmount"`
-	CurrentPageAmount float64 `json:"currentPageAmount"`
+	TotalAmount             float64  `json:"totalAmount"`
+	CurrentPageAmount       float64  `json:"currentPageAmount"`
+	CurrentPageCacheHitRate *float64 `json:"currentPageCacheHitRate"`
+	TotalCacheHitRate       *float64 `json:"totalCacheHitRate"`
 }
 
 type BillingRecordListResult struct {
@@ -575,6 +583,12 @@ func buildAIModelFeeDetails(snapshot string, providerLabel string) []BillingReco
 				parts = append(parts, key+"="+value)
 			}
 		}
+		var cacheHitRate *float64
+		inputTokens, inputErr := strconv.ParseInt(fields["inputTokens"], 10, 64)
+		cachedInputTokens, cachedErr := strconv.ParseInt(fields["cachedInputTokens"], 10, 64)
+		if inputErr == nil && cachedErr == nil {
+			cacheHitRate = billingCacheHitRate(inputTokens, cachedInputTokens)
+		}
 		details = append(details, BillingRecordFeeDetail{
 			Provider:      "ai",
 			ProviderLabel: strings.TrimSpace(providerLabel),
@@ -583,6 +597,7 @@ func buildAIModelFeeDetails(snapshot string, providerLabel string) []BillingReco
 			Sequence:      sequence,
 			Amount:        util.RoundMoney(amount),
 			Detail:        strings.Join(parts, "；"),
+			CacheHitRate:  cacheHitRate,
 		})
 	}
 	return details
@@ -772,6 +787,7 @@ func redactPersonalBillingRecord(record BillingRecordListItem) BillingRecordList
 	record.FinalMultiplier = ""
 	record.EffectiveMultiplier = ""
 	for index := range record.FeeDetails {
+		record.FeeDetails[index].CacheHitRate = nil
 		if strings.TrimSpace(record.FeeDetails[index].Provider) == "ai" ||
 			record.FeeDetails[index].Category == "AI模型调用" {
 			record.FeeDetails[index].Detail = ""
@@ -814,15 +830,15 @@ type BillingRecordListQuery struct {
 
 // ListBillingRecordsWithDB 返回账单列表。
 //
-// 分页与筛选都在数据库侧完成：先 JOIN 出展示需要的用户 / 令牌列，
-// 再把全部筛选条件应用到同一个 query 上，最后分别 Count 与 Find，
-// 避免出现「total 与当前页数据口径不一致」。
+// 范围与筛选共享同一套数据库条件；同请求的完整金额与 AI 输入用量先聚合，
+// 再按代表行切页，避免列表、当前页统计和跨页统计口径不一致。
 //
 // 金额统计（Summary）覆盖**全部筛选结果**，不随分页变化；同时给出当前页小计。
 // 一次搜题命中多个渠道会写成多条 normal_search，同一 request_id 视为**一笔消费**，
 // 其金额为组内明细之和，避免重复累加，也避免只算最新一条而漏掉其他渠道。
 func ListBillingRecordsWithDB(db *gorm.DB, operator entity.User, query BillingRecordListQuery, page int, pageSize int) (BillingRecordListResult, error) {
-	baseQuery := applyBillingRecordFilters(buildBillingRecordDisplayQuery(db, operator), query)
+	includeHidden := isAdminUser(operator)
+	baseQuery := applyBillingRecordFilters(buildBillingRecordDisplayQuery(db, operator), query, includeHidden)
 
 	var total int64
 	if err := baseQuery.Count(&total).Error; err != nil {
@@ -839,8 +855,8 @@ func ListBillingRecordsWithDB(db *gorm.DB, operator entity.User, query BillingRe
 	// 每笔请求的真实消费总额：同一 request_id 的多个渠道相加。
 	// 必须同样带上筛选条件（否则「累计」不会跟随搜索收窄），
 	// 但不能带展示层的同请求去重（否则会漏掉其他渠道的金额）。
-	requestExpenses, err := loadBillingRequestExpenseTotals(
-		applyBillingRecordFilters(buildBillingRecordScopeQuery(db, operator), query),
+	requestTotals, err := loadBillingRequestTotals(
+		applyBillingRecordFilters(buildBillingRecordScopeQuery(db, operator), query, includeHidden),
 	)
 	if err != nil {
 		return BillingRecordListResult{}, err
@@ -848,13 +864,19 @@ func ListBillingRecordsWithDB(db *gorm.DB, operator entity.User, query BillingRe
 
 	for i := range allRows {
 		allRows[i] = decorateBillingRecord(allRows[i])
+		if allRows[i].Type != normalSearchBillingRecordType || strings.TrimSpace(allRows[i].Provider) != "ai" {
+			allRows[i].InputTokens, allRows[i].CachedInputTokens = 0, 0
+		}
 		// 列表里的代表行金额改成整笔请求的合计，避免「只显示最新渠道金额」造成误读，
 		// 也让「累计消费金额」与逐行金额相加的结果一致。
 		if key, grouped := billingRecordExpenseKey(allRows[i]); grouped {
-			if total, ok := requestExpenses[key]; ok {
-				allRows[i].Amount = total
+			if total, ok := requestTotals[key]; ok {
+				allRows[i].Amount = total.Amount
+				allRows[i].InputTokens = total.InputTokens
+				allRows[i].CachedInputTokens = total.CachedInputTokens
 			}
 		}
+		allRows[i].CacheHitRate = billingCacheHitRate(allRows[i].InputTokens, allRows[i].CachedInputTokens)
 	}
 
 	offset := (page - 1) * pageSize
@@ -875,8 +897,8 @@ func ListBillingRecordsWithDB(db *gorm.DB, operator entity.User, query BillingRe
 		key := billingSearchGroupKey{UserID: records[i].UserID, RequestID: strings.TrimSpace(records[i].RequestID)}
 		records[i] = mergeBillingSearchGroup(records[i], searchGroups[key])
 		// mergeBillingSearchGroup 会依据明细重算金额，这里保持与整笔合计一致。
-		if total, ok := requestExpenses[key]; ok {
-			records[i].Amount = total
+		if total, ok := requestTotals[key]; ok {
+			records[i].Amount = total.Amount
 		}
 	}
 	if !isAdminUser(operator) {
@@ -891,8 +913,10 @@ func ListBillingRecordsWithDB(db *gorm.DB, operator entity.User, query BillingRe
 		Page:     page,
 		PageSize: pageSize,
 		Summary: BillingRecordSummary{
-			TotalAmount:       sumBillingExpenseAmount(allRows),
-			CurrentPageAmount: sumBillingExpenseAmount(pageRows),
+			TotalAmount:             sumBillingExpenseAmount(allRows),
+			CurrentPageAmount:       sumBillingExpenseAmount(pageRows),
+			CurrentPageCacheHitRate: sumBillingCacheHitRate(pageRows),
+			TotalCacheHitRate:       sumBillingCacheHitRate(allRows),
 		},
 	}, nil
 }
@@ -908,7 +932,13 @@ func billingRecordExpenseKey(row BillingRecordListItem) (billingSearchGroupKey, 
 	return billingSearchGroupKey{UserID: row.UserID, RequestID: strings.TrimSpace(row.RequestID)}, true
 }
 
-// loadBillingRequestExpenseTotals 按 (user_id, request_id) 汇总每笔请求的消费总额。
+type billingRequestTotals struct {
+	Amount            float64
+	InputTokens       int64
+	CachedInputTokens int64
+}
+
+// loadBillingRequestTotals 按 (user_id, request_id) 汇总消费金额与 AI 输入用量。
 //
 // 入参 query 必须已经带上「操作者范围 + 全部筛选条件」，但**不能带展示层的同请求去重**：
 // 那个 NOT EXISTS 只保留每个请求最新的一条明细，用它求和会漏掉同一笔请求的其他渠道
@@ -917,25 +947,36 @@ func billingRecordExpenseKey(row BillingRecordListItem) (billingSearchGroupKey, 
 // 只按「类型」筛出题目消费：充值入账与新用户赠送分别是 recharge / registration_bonus。
 // 不能改用 provider 过滤 —— 新用户赠送的 provider 正是 "system"（界面标签「系统赠送」），
 // 用 provider <> 'system' 会把它误排除，导致「逐行金额相加」与「累计」对不上。
-func loadBillingRequestExpenseTotals(query *gorm.DB) (map[billingSearchGroupKey]float64, error) {
+func loadBillingRequestTotals(query *gorm.DB) (map[billingSearchGroupKey]billingRequestTotals, error) {
 	query = query.
-		Select("billing_records.user_id, billing_records.request_id, COALESCE(SUM(billing_records.amount), 0) AS total_amount").
+		Select(`billing_records.user_id, billing_records.request_id,
+			COALESCE(SUM(billing_records.amount), 0) AS total_amount,
+			COALESCE(SUM(CASE WHEN billing_records.provider = 'ai' AND billing_records.input_tokens > 0
+				THEN billing_records.input_tokens ELSE 0 END), 0) AS input_tokens,
+			COALESCE(SUM(CASE WHEN billing_records.provider = 'ai' AND billing_records.input_tokens > 0 AND billing_records.cached_input_tokens > 0
+				THEN CASE WHEN billing_records.cached_input_tokens > billing_records.input_tokens
+					THEN billing_records.input_tokens ELSE billing_records.cached_input_tokens END
+				ELSE 0 END), 0) AS cached_input_tokens`).
 		Where("billing_records.type = ?", normalSearchBillingRecordType).
 		Where("COALESCE(billing_records.request_id, '') <> ''").
 		Group("billing_records.user_id, billing_records.request_id")
 
 	var rows []struct {
-		UserID      int32   `gorm:"column:user_id"`
-		RequestID   string  `gorm:"column:request_id"`
-		TotalAmount float64 `gorm:"column:total_amount"`
+		UserID            int32   `gorm:"column:user_id"`
+		RequestID         string  `gorm:"column:request_id"`
+		TotalAmount       float64 `gorm:"column:total_amount"`
+		InputTokens       int64   `gorm:"column:input_tokens"`
+		CachedInputTokens int64   `gorm:"column:cached_input_tokens"`
 	}
 	if err := query.Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 
-	totals := make(map[billingSearchGroupKey]float64, len(rows))
+	totals := make(map[billingSearchGroupKey]billingRequestTotals, len(rows))
 	for _, row := range rows {
-		totals[billingSearchGroupKey{UserID: row.UserID, RequestID: strings.TrimSpace(row.RequestID)}] = util.RoundMoney(row.TotalAmount)
+		totals[billingSearchGroupKey{UserID: row.UserID, RequestID: strings.TrimSpace(row.RequestID)}] = billingRequestTotals{
+			Amount: util.RoundMoney(row.TotalAmount), InputTokens: row.InputTokens, CachedInputTokens: row.CachedInputTokens,
+		}
 	}
 	return totals, nil
 }
@@ -950,7 +991,7 @@ func loadBillingRequestExpenseTotals(query *gorm.DB) (map[billingSearchGroupKey]
 func findAllBillingRecordAmountRows(baseQuery *gorm.DB) ([]BillingRecordListItem, error) {
 	var rows []BillingRecordListItem
 	if err := baseQuery.
-		Select("billing_records.id, billing_records.user_id, COALESCE(billing_users.username, '') AS username, billing_records.type, billing_records.provider, billing_records.model_name, billing_records.amount, billing_records.balance_before, billing_records.balance_after, billing_records.operator_id, billing_records.operator_username, billing_records.adjustment_mode, billing_records.hidden_from_statement, billing_records.created_at, billing_records.client_ip, billing_records.unit_price_snapshot, billing_records.question_text, billing_records.request_id, billing_records.search_mode, billing_records.remark, access_tokens.name AS access_token_name").
+		Select("billing_records.id, billing_records.user_id, COALESCE(billing_users.username, '') AS username, billing_records.type, billing_records.provider, billing_records.model_name, billing_records.amount, billing_records.balance_before, billing_records.balance_after, billing_records.operator_id, billing_records.operator_username, billing_records.adjustment_mode, billing_records.hidden_from_statement, billing_records.created_at, billing_records.client_ip, billing_records.unit_price_snapshot, billing_records.question_text, billing_records.request_id, billing_records.search_mode, billing_records.remark, billing_records.input_tokens, billing_records.cached_input_tokens, access_tokens.name AS access_token_name").
 		Order("billing_records.id desc").
 		Find(&rows).Error; err != nil {
 		return nil, err
@@ -987,7 +1028,7 @@ func sumBillingExpenseAmount(rows []BillingRecordListItem) float64 {
 }
 
 // applyBillingRecordFilters 把关键词与类型筛选应用到账单查询上。
-func applyBillingRecordFilters(query *gorm.DB, filter BillingRecordListQuery) *gorm.DB {
+func applyBillingRecordFilters(query *gorm.DB, filter BillingRecordListQuery, includeHidden bool) *gorm.DB {
 	if recordType := strings.TrimSpace(filter.Type); recordType != "" {
 		query = query.Where("billing_records.type = ?", recordType)
 	}
@@ -1030,10 +1071,46 @@ func applyBillingRecordFilters(query *gorm.DB, filter BillingRecordListQuery) *g
 			LEFT JOIN ` + entity.TableNameUser + ` AS matching_billing_users ON matching_billing_users.id = matching_records.user_id
 			WHERE matching_records.user_id = billing_records.user_id
 				AND matching_records.request_id = billing_records.request_id
-				AND matching_records.type = ?
-				AND ` + groupCondition + `
-		)`
-	groupArgs = append([]interface{}{normalSearchBillingRecordType, normalSearchBillingRecordType}, groupArgs...)
+				AND matching_records.type = ?`
+	visibilityArgs := []interface{}{normalSearchBillingRecordType, normalSearchBillingRecordType}
+	if !includeHidden {
+		groupMatch += ` AND matching_records.hidden_from_statement = ?`
+		visibilityArgs = append(visibilityArgs, false)
+	}
+	groupMatch += ` AND ` + groupCondition + `)`
+	groupArgs = append(visibilityArgs, groupArgs...)
 	args = append(args, groupArgs...)
 	return query.Where("("+condition+") OR ("+groupMatch+")", args...)
+}
+
+func normalizedBillingInputTokens(inputTokens int64, cachedInputTokens int64) (int64, int64) {
+	if inputTokens <= 0 {
+		return 0, 0
+	}
+	if cachedInputTokens < 0 {
+		cachedInputTokens = 0
+	} else if cachedInputTokens > inputTokens {
+		cachedInputTokens = inputTokens
+	}
+	return inputTokens, cachedInputTokens
+}
+
+func billingCacheHitRate(inputTokens int64, cachedInputTokens int64) *float64 {
+	inputTokens, cachedInputTokens = normalizedBillingInputTokens(inputTokens, cachedInputTokens)
+	if inputTokens == 0 {
+		return nil
+	}
+	rate := float64(cachedInputTokens) / float64(inputTokens)
+	return &rate
+}
+
+// Sum tokens before dividing: averaging per-request percentages loses weighting.
+func sumBillingCacheHitRate(rows []BillingRecordListItem) *float64 {
+	var inputTotal, cachedTotal int64
+	for _, row := range rows {
+		input, cached := normalizedBillingInputTokens(row.InputTokens, row.CachedInputTokens)
+		inputTotal += input
+		cachedTotal += cached
+	}
+	return billingCacheHitRate(inputTotal, cachedTotal)
 }

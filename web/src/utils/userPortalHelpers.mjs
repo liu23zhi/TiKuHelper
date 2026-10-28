@@ -254,6 +254,7 @@ export const billingTableColumnWidths = Object.freeze({
   searchMode: 170,
   referenceNo: 300,
   effectiveMultiplier: 104,
+  cacheHitRate: 112,
   accessTokenName: 122,
   createdAt: 112,
   clientIp: 270,
@@ -303,6 +304,11 @@ export function buildBillingRecordEffectiveMultiplierText(record) {
   return String(record?.effectiveMultiplier || '').trim() || '-'
 }
 
+export function formatBillingCacheHitRate(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) return '-'
+  return `${new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 2 }).format(value * 100)}%`
+}
+
 export function buildBillingRecordAmountText(record) {
   const amount = Number(record?.amount || 0)
   // 金额统一最多 6 位小数，保证小额 AI 扣费（如 0.000062）不会被显示成 0。
@@ -333,6 +339,7 @@ export function buildBillingRecordFeeDetails(record) {
       if (category) normalizedItem.category = category
       if (Number.isInteger(callIndex) && callIndex > 0) normalizedItem.callIndex = callIndex
       if (String(item?.detail || '').trim()) normalizedItem.detail = String(item.detail).trim()
+      if (item?.cacheHitRate !== undefined) normalizedItem.cacheHitRate = item.cacheHitRate
       return normalizedItem
     })
     .filter((item) => Number.isFinite(item.amount))
@@ -431,6 +438,7 @@ function buildBillingRecordFeeItemMeta(item, options = {}) {
     if (model) meta.push({ label: '模型', value: model })
     if (multiplier) meta.push({ label: '最终倍率', value: multiplier })
     if (tokens) meta.push({ label: 'Token数量', value: tokens })
+    meta.push({ label: '缓存命中率', value: formatBillingCacheHitRate(item?.cacheHitRate) })
     return meta
   }
   if (item?.provider === 'web_read') {

@@ -6,6 +6,7 @@ import * as Vue from 'vue'
 import * as billingHelpers from './userPortalHelpers.mjs'
 import { useTableExpansion } from '../composables/useTableExpansion.mjs'
 import { sumTableColumnWidths } from './tableLayout.mjs'
+import { buildSearchParams, countActiveFilters } from './listSearchHelpers.mjs'
 
 const require = createRequire(import.meta.url)
 const { parse, compileScript, compileTemplate } = require('@vue/compiler-sfc')
@@ -22,9 +23,9 @@ const sample = {
   amount: 0.054963,
   showInStatement: true,
   feeDetails: [
-    { provider: 'ai', category: 'AI模型调用', callIndex: 1, amount: 0.025052, detail: 'model=gpt-6.1-sol;finalMultiplier=2.06;totalTokens=5949' },
+    { provider: 'ai', category: 'AI模型调用', callIndex: 1, amount: 0.025052, cacheHitRate: 0.1, detail: 'model=gpt-6.1-sol;finalMultiplier=2.06;totalTokens=5949' },
     { provider: 'ai_search', amount: 0.005, detail: '关键词：社交媒体 隐私 <script>' },
-    { provider: 'ai', category: 'AI模型调用', callIndex: 2, amount: 0.024911, detail: 'model=gpt-6.1-sol;finalMultiplier=1.73;totalTokens=7083' },
+    { provider: 'ai', category: 'AI模型调用', callIndex: 2, amount: 0.024911, cacheHitRate: 0.3333333, detail: 'model=gpt-6.1-sol;finalMultiplier=1.73;totalTokens=7083' },
     { provider: 'web_read', amount: 0, url: 'https://example.invalid/a?x=1&y=two', detail: '网页：旧 URL' },
   ],
 }
@@ -38,7 +39,7 @@ test('billing view model defaults to personal scope and keeps keyword, URL and a
   assert.deepEqual(view.items[3].metadata, [{ label: '网页', value: 'https://example.invalid/a?x=1&y=two' }])
   assert.equal(view.items[0].amount, '-¥ 0.025052')
   assert.equal(view.amount, '-¥ 0.054963')
-  assert.doesNotMatch(JSON.stringify(view), /gpt-6|2\.06|1\.73|5,949|7,083|finalMultiplier|effectiveMultiplier|Token数量/)
+  assert.doesNotMatch(JSON.stringify(view), /gpt-6|2\.06|1\.73|5,949|7,083|finalMultiplier|effectiveMultiplier|Token数量|缓存命中率/)
   assert.equal(new Set(view.items.map(item => item.key)).size, view.items.length)
 })
 
@@ -51,13 +52,32 @@ test('administrator detail retains each original round and requires explicit sta
     { label: '模型', value: 'gpt-6.1-sol' },
     { label: '最终倍率', value: '2.06x' },
     { label: 'Token数量', value: '5,949' },
+    { label: '缓存命中率', value: '10%' },
   ])
   assert.deepEqual(view.items[2].metadata.slice(1), [
     { label: '最终倍率', value: '1.73x' },
     { label: 'Token数量', value: '7,083' },
+    { label: '缓存命中率', value: '33.33%' },
   ])
   assert.equal(billingHelpers.buildBillingDetailViewModel(sample, { viewerScope: 'admin' }).canEditStatement, false)
   assert.equal(sample.feeDetails[0].detail, 'model=gpt-6.1-sol;finalMultiplier=2.06;totalTokens=5949')
+})
+
+test('administrator model calls distinguish zero cache usage from historical missing input splits', () => {
+  const record = { ...sample, feeDetails: [
+    { ...sample.feeDetails[0], cacheHitRate: 0 },
+    { ...sample.feeDetails[2], cacheHitRate: null },
+    { ...sample.feeDetails[0], cacheHitRate: undefined },
+  ] }
+  const admin = billingHelpers.buildBillingDetailViewModel(record, { viewerScope: 'admin' })
+  assert.deepEqual(admin.items.map(item => item.metadata.at(-1)), [
+    { label: '缓存命中率', value: '0%' },
+    { label: '缓存命中率', value: '-' },
+    { label: '缓存命中率', value: '-' },
+  ])
+  const self = billingHelpers.buildBillingDetailViewModel(record, { viewerScope: 'self' })
+  assert.deepEqual(self.items.map(item => item.metadata), [[], [], []])
+  assert.doesNotMatch(billingHelpers.buildBillingRecordFeeDetailHtml(record, { showAIModelMeta: false }), /缓存命中率/)
 })
 
 test('detail dialog uses escaped Vue text, defaults to self, and only emits edits for the current ID', async () => {
@@ -90,7 +110,7 @@ test('detail dialog uses escaped Vue text, defaults to self, and only emits edit
   assert.deepEqual(events, [['statement-visibility-change', { id: 42, showInStatement: false }]])
 })
 
-async function loadBillingPage(role = 'admin', save = async () => ({ status: 200 })) {
+async function loadBillingPage(role = 'admin', save = async () => ({ status: 200 }), load = async () => ({ status: 200, data: {} })) {
   const source = await readFile(adminPath, 'utf8')
   const script = parse(source).descriptor.script.content
     .replace(/import[\s\S]*?from ['"][^'"]+['"];?\r?\n/g, '')
@@ -110,7 +130,11 @@ async function loadBillingPage(role = 'admin', save = async () => ({ status: 200
     normalizeLocationKey: value => String(value || '').trim(),
     formatValueWithLocationBase: value => value,
     formatMoneyValue: value => String(value),
-    countActiveFilters: () => 0,
+    buildSearchParams,
+    countActiveFilters,
+    normalizeSearchKeyword: value => String(value || '').trim(),
+    getBillingRecords: load,
+    collectLocationKeys: () => [],
     updateBillingStatementVisibility: save,
     message: { success() {}, error() {} },
   }
@@ -136,6 +160,7 @@ test('billing columns keep admin metadata separate and expansion adjusts the who
       assert.equal(keys.includes('effectiveMultiplier'), role === 'admin')
       assert.equal(keys.includes('username'), role === 'admin')
       assert.equal(keys.includes('clientIp'), role === 'admin')
+      assert.equal(keys.includes('cacheHitRate'), true)
       assert.equal(page.state.columns.value.find(column => column.key === 'source').width, 160)
       page.state.dataSource.value = [{ id: 1 }, { id: 2 }]
       const collapsedWidth = page.state.tableScrollX.value
@@ -147,6 +172,26 @@ test('billing columns keep admin metadata separate and expansion adjusts the who
       assert.equal(page.state.isSubjectExpanded(2), false)
     } finally { page.close() }
   }
+})
+
+test('billing page uses server weighted rates and preserves unknown values when reloading', async () => {
+  const responses = [
+    { status: 200, data: { data: [{ id: 1, cacheHitRate: 0.99 }], total: 2, page: 1, pageSize: 1, summary: { totalAmount: 3, currentPageAmount: 1, currentPageCacheHitRate: 0.1, totalCacheHitRate: 0.46 } } },
+    { status: 200, data: { data: [], total: 0, page: 1, pageSize: 1, summary: { currentPageCacheHitRate: null, totalCacheHitRate: null } } },
+  ]
+  const page = await loadBillingPage('admin', undefined, async () => responses.shift())
+  try {
+    page.component.methods.handleLoad.call(page.context)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(page.state.summary.value.currentPageCacheHitRate, 0.1)
+    assert.equal(page.state.summary.value.totalCacheHitRate, 0.46)
+    page.state.filters.keyword = 'model'
+    assert.equal(page.state.hasActiveFilters.value, true)
+    page.component.methods.handleLoad.call(page.context)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(page.state.summary.value.currentPageCacheHitRate, null)
+    assert.equal(page.state.summary.value.totalCacheHitRate, null)
+  } finally { page.close() }
 })
 
 test('pending statement save updates only its captured ID after dialog switch and list refresh', async () => {

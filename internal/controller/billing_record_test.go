@@ -164,8 +164,8 @@ func TestBillingRecordListRedactsAdminSelfScopeAndPreservesAdminDetails(t *testi
 	}
 	charge := entity.BillingRecord{
 		UserID: admin.ID, Type: "normal_search", Provider: "ai", ModelName: "private-test-model", Amount: 0.3,
-		InputTokens: 100, TotalTokens: 100, RequestID: "req-admin-self", QuestionText: "测试题目",
-		UnitPriceSnapshot: "provider=ai multiplier=2 stageBillingCall1=" + url.QueryEscape("index=1,model=private-test-model,totalTokens=100,amount=0.3,stageMultiplier=2,finalMultiplier=2"),
+		InputTokens: 100, CachedInputTokens: 10, TotalTokens: 100, RequestID: "req-admin-self", QuestionText: "测试题目",
+		UnitPriceSnapshot: "provider=ai multiplier=2 stageBillingCall1=" + url.QueryEscape("index=1,model=private-test-model,inputTokens=100,cachedInputTokens=10,totalTokens=100,amount=0.3,stageMultiplier=2,finalMultiplier=2"),
 	}
 	if err := db.Create(&charge).Error; err != nil {
 		t.Fatalf("create charge: %v", err)
@@ -187,13 +187,31 @@ func TestBillingRecordListRedactsAdminSelfScopeAndPreservesAdminDetails(t *testi
 				t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
 			}
 			body := recorder.Body.String()
+			var response struct {
+				Data []struct {
+					FeeDetails []map[string]interface{} `json:"feeDetails"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+				t.Fatalf("decode fee details: %v", err)
+			}
+			if len(response.Data) != 1 || len(response.Data[0].FeeDetails) != 1 {
+				t.Fatalf("expected one model call detail, got %s", body)
+			}
+			cacheHitRate, hasCacheHitRate := response.Data[0].FeeDetails[0]["cacheHitRate"]
 			if scope == "self" {
+				if hasCacheHitRate {
+					t.Fatalf("personal scope exposed per-call cacheHitRate: %s", body)
+				}
 				for _, forbidden := range []string{"effectiveMultiplier", "finalMultiplier", "stageMultiplier", "modelName", "inputTokens", "totalTokens", "private-test-model", "unitPriceSnapshot"} {
 					if strings.Contains(body, forbidden) {
 						t.Fatalf("personal scope exposed %q: %s", forbidden, body)
 					}
 				}
 			} else {
+				if !hasCacheHitRate || cacheHitRate != 0.1 {
+					t.Fatalf("admin scope must expose per-call cacheHitRate 0.1, got %v: %s", cacheHitRate, body)
+				}
 				for _, expected := range []string{"effectiveMultiplier", "finalMultiplier", "stageMultiplier", "totalTokens", "private-test-model"} {
 					if !strings.Contains(body, expected) {
 						t.Fatalf("admin scope lost %q: %s", expected, body)

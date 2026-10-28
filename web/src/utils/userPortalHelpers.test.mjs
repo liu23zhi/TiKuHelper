@@ -27,6 +27,17 @@ import {
   resolveAdapterHomePath,
 } from './userPortalHelpers.mjs';
 
+test('billing cache hit rate formats known ratios and leaves missing usage unknown', () => {
+  assert.equal(typeof userPortalHelpers.formatBillingCacheHitRate, 'function')
+  const format = userPortalHelpers.formatBillingCacheHitRate
+  for (const [rate, expected] of [[0, '0%'], [0.1, '10%'], [0.3333333, '33.33%'], [0.46, '46%'], [0.001, '0.1%'], [1, '100%']]) {
+    assert.equal(format(rate), expected)
+  }
+  for (const value of [null, undefined, NaN, Infinity, -0.1, 1.1, '', '0.1']) {
+    assert.equal(format(value), '-')
+  }
+})
+
 test('buildBillingRecordModeText renders deep thinking and ordinary search', () => {
   assert.equal(buildBillingRecordModeText({ searchModeLabel: '深度思考', searchMode: 'deep' }), '深度思考')
   assert.equal(buildBillingRecordModeText({ searchModeLabel: '普通搜索', searchMode: 'normal' }), '普通搜索')
