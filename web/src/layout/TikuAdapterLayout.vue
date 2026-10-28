@@ -1,6 +1,6 @@
 <template>
   <div class="layout-shell" @keydown.esc="siderCollapsed = true">
-    <Header :hasLogout="true" />
+    <PageHeader :hasLogout="true" />
     <main class="layout-main">
       <button v-if="compact && !siderCollapsed" class="layout-backdrop" aria-label="收起侧边栏" @click="toggleSider" />
       <aside class="layout-sider" :class="{ 'layout-sider--collapsed': siderCollapsed }">
@@ -19,7 +19,7 @@
 
 <script>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import Header from '../components/PageHeader'
+import PageHeader from '../components/PageHeader'
 import SiderMenu from '../components/SiderMenu'
 import { useRouter } from 'vue-router';
 import { getStoredCurrentUser, isAdminUser, resolveHomePath } from '../utils/currentUser'
@@ -83,7 +83,7 @@ export default {
     }
   },
   components: {
-    Header,
+    PageHeader,
     SiderMenu
   }
 }

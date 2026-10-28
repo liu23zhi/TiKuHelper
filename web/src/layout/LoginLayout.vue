@@ -1,14 +1,14 @@
 <template>
-  <Header/>
+  <PageHeader/>
   <main class="auth-main">
     <router-view></router-view>
   </main>
-  <Footer/>
+  <PageFoot/>
 </template>
 
 <script>
-import Header from '../components/PageHeader'
-import Footer from '../components/PageFoot'
+import PageHeader from '../components/PageHeader'
+import PageFoot from '../components/PageFoot'
 import { useRouter } from 'vue-router';
 import { getStoredCurrentUser, resolveHomePath } from '../utils/currentUser'
 export default {
@@ -21,8 +21,8 @@ export default {
     }
   },
   components:{
-    Header,
-    Footer
+    PageHeader,
+    PageFoot
   }
 }
 </script>

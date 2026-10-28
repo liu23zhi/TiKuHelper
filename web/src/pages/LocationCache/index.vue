@@ -87,7 +87,6 @@
 </template>
 
 <script>
-/* global globalThis */
 import { computed, defineComponent, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { Descriptions, message } from 'ant-design-vue'
