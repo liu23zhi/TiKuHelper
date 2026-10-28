@@ -90,8 +90,8 @@ func (input *aiToolTestInput) validate() (string, error) {
 		if strings.TrimSpace(input.History) == "" {
 			return "", errors.New("请填写待压缩历史内容")
 		}
-		if mode := strings.TrimSpace(input.CompressionMode); mode != "" && mode != "configured" && mode != "local" && mode != "remote" {
-			return "", errors.New("压缩测试模式须为 configured、local 或 remote")
+		if mode := strings.TrimSpace(input.CompressionMode); mode != "" && mode != "configured" && mode != "server" && mode != "local" && mode != "remote" {
+			return "", errors.New("压缩测试模式须为 configured、server、remote 或 local")
 		}
 		return "历史上下文", nil
 	}
@@ -99,8 +99,8 @@ func (input *aiToolTestInput) validate() (string, error) {
 		if strings.TrimSpace(input.History) == "" {
 			return "", errors.New("请填写待压缩历史内容")
 		}
-		if mode := strings.TrimSpace(input.CompressionMode); mode != "" && mode != "configured" && mode != "local" && mode != "remote" {
-			return "", errors.New("压缩测试模式须为 configured、local 或 remote")
+		if mode := strings.TrimSpace(input.CompressionMode); mode != "" && mode != "configured" && mode != "server" && mode != "local" && mode != "remote" {
+			return "", errors.New("压缩测试模式须为 configured、server、remote 或 local")
 		}
 	}
 	if input.Mode == "ai" || input.Mode == "ai_compression" {

@@ -57,6 +57,7 @@ type AISearchConfigView struct {
 	ContextCompressionTriggerPercent int                            `json:"contextCompressionTriggerPercent"`
 	ContextCompressionTargetPercent  int                            `json:"contextCompressionTargetPercent"`
 	ContextCompressionMaxAttempts    int                            `json:"contextCompressionMaxAttempts"`
+	ContextCompressionOrder          []string                       `json:"contextCompressionOrder"`
 }
 
 type UpdateAISearchConfigInput struct {
@@ -83,6 +84,7 @@ type UpdateAISearchConfigInput struct {
 	ContextCompressionTriggerPercent *int                            `json:"contextCompressionTriggerPercent,omitempty"`
 	ContextCompressionTargetPercent  *int                            `json:"contextCompressionTargetPercent,omitempty"`
 	ContextCompressionMaxAttempts    *int                            `json:"contextCompressionMaxAttempts,omitempty"`
+	ContextCompressionOrder          *[]string                       `json:"contextCompressionOrder,omitempty"`
 }
 
 type AISearchRequestConfig struct {
@@ -103,6 +105,7 @@ type AISearchRequestConfig struct {
 	ContextCompressionTriggerPercent int
 	ContextCompressionTargetPercent  int
 	ContextCompressionMaxAttempts    int
+	ContextCompressionOrder          []string
 }
 
 type ResolvedAISearchConfig struct {
@@ -221,6 +224,7 @@ func GetAISearchConfigWithDB(db *gorm.DB) (AISearchConfigView, error) {
 			ContextCompressionTriggerPercent: compression.TriggerPercent,
 			ContextCompressionTargetPercent:  compression.TargetPercent,
 			ContextCompressionMaxAttempts:    compression.MaxAttempts,
+			ContextCompressionOrder:          append([]string(nil), compression.Order...),
 		}, nil
 	}
 	return buildAISearchConfigView(db, config)
@@ -320,6 +324,7 @@ func BuildAISearchRequestConfigWithDB(db *gorm.DB, query url.Values, allowDefaul
 			ContextCompressionTriggerPercent: compression.TriggerPercent,
 			ContextCompressionTargetPercent:  compression.TargetPercent,
 			ContextCompressionMaxAttempts:    compression.MaxAttempts,
+			ContextCompressionOrder:          append([]string(nil), compression.Order...),
 		},
 	}
 	allowExplicitConfig := allowDefaultAccount
@@ -446,6 +451,7 @@ func buildAISearchConfigView(db *gorm.DB, config entity.AISearchConfig) (AISearc
 		ContextCompressionTriggerPercent: compression.TriggerPercent,
 		ContextCompressionTargetPercent:  compression.TargetPercent,
 		ContextCompressionMaxAttempts:    compression.MaxAttempts,
+		ContextCompressionOrder:          append([]string(nil), compression.Order...),
 	}, nil
 }
 

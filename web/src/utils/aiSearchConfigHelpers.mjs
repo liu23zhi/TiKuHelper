@@ -6,8 +6,34 @@ export const AI_COMPRESSION_TEST_TARGET = 'OpenAI Responses API context compacti
 export const AI_COMPRESSION_TEST_DEFAULTS = Object.freeze({
   tool: 'both',
   target: AI_COMPRESSION_TEST_TARGET,
-  compressionMode: 'local',
+  compressionMode: 'configured',
 });
+
+export const AI_CONTEXT_COMPRESSION_STRATEGIES = Object.freeze([
+  Object.freeze({ value: 'server', label: '服务器自动压缩', description: '在正常 AI 请求中由上游自动压缩历史' }),
+  Object.freeze({ value: 'remote', label: '独立压缩节点', description: '调用当前供应商的独立压缩接口' }),
+  Object.freeze({ value: 'local', label: '本地压缩', description: '由当前模型生成历史摘要' }),
+]);
+
+export function aiContextCompressionStrategyText(strategy) {
+  return AI_CONTEXT_COMPRESSION_STRATEGIES.find(item => item.value === strategy)?.label || (strategy ? '未知策略' : '未完成');
+}
+
+export function moveAIContextCompressionStrategy(order, from, to) {
+  const result = [...order];
+  if (![from, to].every(index => Number.isInteger(index) && index >= 0 && index < result.length)) return result;
+  result.splice(to, 0, result.splice(from, 1)[0]);
+  return result;
+}
+
+function compressionOrder(value) {
+  const expected = AI_CONTEXT_COMPRESSION_STRATEGIES.map(item => item.value);
+  if (value === undefined || value === null) return expected;
+  if (!Array.isArray(value) || value.length !== expected.length || new Set(value).size !== expected.length || value.some(item => !expected.includes(item))) {
+    throw new Error('压缩顺序必须完整包含服务器自动压缩、独立压缩节点和本地压缩，且不能重复');
+  }
+  return [...value];
+}
 
 export const AI_COMPRESSION_TEST_HISTORY = [
   '【合成历史测试数据】仅用于检查模型摘要是否保留历史，不代表真实搜索、浏览结果或事实。',
@@ -27,6 +53,7 @@ export function buildAIContextCompressionSettings(config) {
   const settings = {
     contextCompressionEnabled: config?.contextCompressionEnabled ?? true,
     useRemoteContextCompression: config?.useRemoteContextCompression ?? false,
+    contextCompressionOrder: compressionOrder(config?.contextCompressionOrder),
     contextCompressionTriggerPercent: integer(config?.contextCompressionTriggerPercent, 80),
     contextCompressionTargetPercent: integer(config?.contextCompressionTargetPercent, 50),
     contextCompressionMaxAttempts: integer(config?.contextCompressionMaxAttempts, 3),
@@ -53,7 +80,7 @@ export function buildAISearchTestForm(config) {
     model: trimText(config?.model),
     prompt: trimText(config?.prompt),
     history: trimText(config?.history),
-    compressionMode: ['configured', 'local', 'remote'].includes(trimText(config?.compressionMode))
+    compressionMode: ['configured', 'server', 'local', 'remote'].includes(trimText(config?.compressionMode))
       ? trimText(config?.compressionMode) : 'configured',
   };
 }
@@ -159,7 +186,7 @@ export function buildAIToolTestPayload(form, fallbackConfig) {
     prompt: connection.prompt || fallback.prompt,
   };
   if (mode === 'compression' || mode === 'ai_compression') {
-    if (!['configured', 'local', 'remote'].includes(compressionMode)) throw new Error('请选择有效的压缩策略');
+    if (!['configured', 'server', 'local', 'remote'].includes(compressionMode)) throw new Error('请选择有效的压缩策略');
     payload.history = trimText(form?.history);
     payload.compressionMode = compressionMode;
   }
@@ -256,11 +283,14 @@ export function buildAIToolTestResult(response) {
   const data = response?.data || {};
   const compression = isDiagnosticObject(data.compression) ? {
     success: data.compression.success === true,
-    strategy: ['remote', 'local'].includes(diagnosticText(data.compression.strategy)) ? diagnosticText(data.compression.strategy) : '',
+    strategy: ['server', 'remote', 'local'].includes(diagnosticText(data.compression.strategy)) ? diagnosticText(data.compression.strategy) : '',
     beforeTokens: diagnosticCount(data.compression.beforeTokens),
     afterTokens: diagnosticCount(data.compression.afterTokens),
     summary: diagnosticText(data.compression.summary),
     remoteFallback: data.compression.remoteFallback === true,
+    attemptedStrategies: Array.isArray(data.compression.attemptedStrategies)
+      ? data.compression.attemptedStrategies.filter(item => ['server', 'remote', 'local'].includes(item)) : [],
+    fallbackReason: diagnosticText(data.compression.fallbackReason),
     error: diagnosticText(data.compression.error),
   } : null;
   return {

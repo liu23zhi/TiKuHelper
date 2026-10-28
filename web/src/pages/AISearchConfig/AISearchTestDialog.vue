@@ -23,11 +23,13 @@
       </a-form-item>
       <a-form-item v-if="includesCompression" label="压缩策略">
         <a-radio-group v-model:value="form.compressionMode" :disabled="submitting" class="test-tool-options" @change="resetResult">
-          <a-radio value="configured">使用当前配置</a-radio>
-          <a-radio value="local">仅本地摘要</a-radio>
-          <a-radio value="remote">优先远程，失败回退本地</a-radio>
+          <a-radio value="configured">按已保存顺序自动尝试</a-radio>
+          <a-radio value="server">服务器自动压缩</a-radio>
+          <a-radio value="remote">独立节点，失败回退本地</a-radio>
+          <a-radio value="local">本地压缩</a-radio>
         </a-radio-group>
-        <div class="hint">压缩测试会使用当前配置的重试次数；AI 调用压缩测试会先压缩历史，再继续真实工具调用并计入管理员账单。</div>
+        <div v-if="form.compressionMode === 'configured'" class="hint">保存的顺序：{{ configuredCompressionOrder }}</div>
+        <div class="hint">压缩测试会使用已保存的压缩尝试次数；AI 调用压缩测试会先压缩历史，再继续真实工具调用并计入管理员账单。</div>
       </a-form-item>
       <a-form-item v-if="includesCompression" label="待压缩历史" required>
         <a-textarea v-model:value="form.history" :disabled="submitting" :auto-size="{ minRows: 6, maxRows: 14 }" placeholder="粘贴已有的搜索记录、网页内容或工具调用历史。压缩后将展示摘要、前后 Token 估算和执行轨迹。" />
@@ -92,8 +94,10 @@
             <a-tag :color="result.compression.success ? 'green' : 'red'">{{ result.compression.success ? '压缩成功' : '压缩失败' }}</a-tag>
             <span>策略：{{ compressionStrategyText(result.compression.strategy) }}</span>
             <span>Token 估算：{{ result.compression.beforeTokens ?? '-' }} → {{ result.compression.afterTokens ?? '-' }}</span>
-            <a-tag v-if="result.compression.remoteFallback" color="orange">远程失败后回退本地</a-tag>
+            <a-tag v-if="result.compression.attemptedStrategies.length > 1 || result.compression.remoteFallback" color="orange">已按顺序回退</a-tag>
           </div>
+          <p v-if="result.compression.attemptedStrategies.length" class="compression-attempts">实际尝试：{{ result.compression.attemptedStrategies.map(compressionStrategyText).join(' → ') }}</p>
+          <p v-if="result.compression.fallbackReason" class="compression-error">回退原因：{{ result.compression.fallbackReason }}</p>
           <p v-if="result.compression.error" class="compression-error">{{ result.compression.error }}</p>
           <pre>{{ result.compression.summary || '暂无压缩摘要' }}</pre>
         </section>
@@ -134,7 +138,7 @@ import { message } from 'ant-design-vue'
 import BillingDetailDialog from '@/components/BillingDetailDialog.vue'
 import AIToolTestResults from './AIToolTestResults.vue'
 import { testAISearchConfig, testAIToolCall } from '@/api/TikuComponentApi'
-import { AI_COMPRESSION_TEST_DEFAULTS, AI_COMPRESSION_TEST_HISTORY, buildAISearchTestForm, buildAISearchTestPayload, buildAISearchTestResult, buildAICompressionToolTestPrompt, buildAIToolTestPayload, buildAIToolTestPrompt, buildAIToolTestResult } from '@/utils/aiSearchConfigHelpers.mjs'
+import { AI_COMPRESSION_TEST_DEFAULTS, AI_COMPRESSION_TEST_HISTORY, aiContextCompressionStrategyText, buildAIContextCompressionSettings, buildAISearchTestForm, buildAISearchTestPayload, buildAISearchTestResult, buildAICompressionToolTestPrompt, buildAIToolTestPayload, buildAIToolTestPrompt, buildAIToolTestResult } from '@/utils/aiSearchConfigHelpers.mjs'
 
 export default defineComponent({
   name: 'AISearchTestDialog',
@@ -143,6 +147,7 @@ export default defineComponent({
     open: { type: Boolean, default: false },
     config: { type: Object, default: () => ({}) },
     modelOptions: { type: Array, default: () => [] },
+    savedCompressionOrder: { type: Array, default: () => buildAIContextCompressionSettings().contextCompressionOrder },
   },
   emits: ['update:open'],
   setup(props, { emit }) {
@@ -154,6 +159,7 @@ export default defineComponent({
     const billingOpen = ref(false)
     const submitText = computed(() => ({ hello: '发送 hello 测试', direct: '测试工具', ai: '发起 AI 工具调用', compression: '执行压缩测试', ai_compression: '压缩并调用工具' }[testType.value]))
     const includesCompression = computed(() => ['compression', 'ai_compression'].includes(testType.value))
+    const configuredCompressionOrder = computed(() => props.savedCompressionOrder.map(aiContextCompressionStrategyText).join(' → '))
     const includesWebRead = computed(() => ['direct', 'ai', 'ai_compression'].includes(testType.value) && ['web_read', 'both'].includes(form.tool))
     const toolTestDescription = computed(() => `${includesWebRead.value ? '网页读取会先提交异步任务，再轮询获取正文。' : ''}测试会产生真实模型或工具调用费用，并按当前已保存的价格配置写入当前管理员的账单。`)
     const testModeDescription = computed(() => ({
@@ -167,7 +173,7 @@ export default defineComponent({
       catch (validationError) { return { text: '', error: validationError.message } }
     })
     const diagnosticBlocks = computed(() => [
-      { title: '压缩指标', text: result.value?.compression ? JSON.stringify({ strategy: result.value.compression.strategy, beforeTokens: result.value.compression.beforeTokens, afterTokens: result.value.compression.afterTokens, remoteFallback: result.value.compression.remoteFallback, error: result.value.compression.error }, null, 2) : '' },
+      { title: '压缩指标', text: result.value?.compression ? JSON.stringify(result.value.compression, null, 2) : '' },
       { title: '工具原始返回结果', text: testType.value === 'compression' ? '' : result.value?.toolResultText },
       { title: '调用轨迹', text: result.value?.traceText },
       { title: '用量', text: result.value?.usageText },
@@ -219,8 +225,7 @@ export default defineComponent({
       }
     }
     function close() { if (!submitting.value) emit('update:open', false) }
-    function compressionStrategyText(strategy) { return ({ remote: '远程压缩', local: '本地摘要', '': '未完成' }[strategy] || '未知') }
-    return { testType, form, submitting, result, error, billingOpen, submitText, includesCompression, includesWebRead, toolTestDescription, testModeDescription, compressionStrategyText, promptPreview, diagnosticBlocks, resetResult, runTest, close }
+    return { testType, form, submitting, result, error, billingOpen, submitText, includesCompression, includesWebRead, configuredCompressionOrder, toolTestDescription, testModeDescription, compressionStrategyText: aiContextCompressionStrategyText, promptPreview, diagnosticBlocks, resetResult, runTest, close }
   },
 })
 </script>
@@ -241,6 +246,7 @@ export default defineComponent({
 .test-result-reference { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; overflow-wrap: anywhere; }
 .compression-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 12px; color: var(--console-muted); font-size: 12px; }
 .compression-error { margin: 8px 0; color: var(--console-danger); white-space: pre-wrap; overflow-wrap: anywhere; }
+.compression-attempts { margin: 8px 0; color: var(--console-muted); overflow-wrap: anywhere; }
 .hint { color: var(--console-muted); font-size: 12px; }
 @media (max-width: 480px) {
   .test-result-block { padding: 12px; }

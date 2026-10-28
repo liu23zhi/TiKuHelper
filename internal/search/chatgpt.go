@@ -276,14 +276,20 @@ func errorString(err error) string {
 }
 
 type openAIResponsesRequest struct {
-	Model           string                `json:"model"`
-	Stream          bool                  `json:"stream"`
-	Store           bool                  `json:"store"`
-	Input           []any                 `json:"input"`
-	Include         []string              `json:"include,omitempty"`
-	Tools           []openAIResponsesTool `json:"tools,omitempty"`
-	ToolChoice      any                   `json:"tool_choice,omitempty"`
-	MaxOutputTokens int                   `json:"max_output_tokens,omitempty"`
+	Model             string                    `json:"model"`
+	Stream            bool                      `json:"stream"`
+	Store             bool                      `json:"store"`
+	Input             []any                     `json:"input"`
+	Include           []string                  `json:"include,omitempty"`
+	Tools             []openAIResponsesTool     `json:"tools,omitempty"`
+	ToolChoice        any                       `json:"tool_choice,omitempty"`
+	MaxOutputTokens   int                       `json:"max_output_tokens,omitempty"`
+	ContextManagement []openAIContextManagement `json:"context_management,omitempty"`
+}
+
+type openAIContextManagement struct {
+	Type             string `json:"type"`
+	CompactThreshold int64  `json:"compact_threshold"`
 }
 
 type openAIResponsesTool struct {

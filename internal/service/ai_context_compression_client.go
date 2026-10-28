@@ -13,12 +13,17 @@ import (
 // display-name aliases and zero-priced rows. An unknown window disables size
 // estimation in the client; lookup failure must not block an answer request.
 func BuildAIContextCompressionConfigWithDB(db *gorm.DB, cfg AISearchRequestConfig) search.AIContextCompressionConfig {
+	order := cfg.ContextCompressionOrder
+	if !validAIContextCompressionOrder(order) {
+		order = defaultAIContextCompressionOrder()
+	}
 	compression := search.AIContextCompressionConfig{
 		Enabled:        cfg.ContextCompressionEnabled,
 		RemoteEnabled:  cfg.UseRemoteContextCompression,
 		TriggerPercent: cfg.ContextCompressionTriggerPercent,
 		TargetPercent:  cfg.ContextCompressionTargetPercent,
 		MaxAttempts:    cfg.ContextCompressionMaxAttempts,
+		StrategyOrder:  append([]string(nil), order...),
 	}
 	if !compression.Enabled || db == nil || strings.TrimSpace(cfg.Model) == "" {
 		return compression

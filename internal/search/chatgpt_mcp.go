@@ -321,12 +321,21 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 			remainingModelCalls, remainingSearches, remainingWebReads = 0, 0, 0
 		}
 		requireInitialSearch := round == 0 && !finalRound && in.SearchTool != nil && remainingSearches > 0
-		roundInput := append([]any(nil), input...)
-		roundInput = append(roundInput, buildAIResponsesMessage("system", buildAIMCPBudgetPrompt(remainingModelCalls, remainingSearches, remainingWebReads, finalRound)))
-		if requireInitialSearch {
-			roundInput = append(roundInput, buildAIResponsesMessage("system", "本轮首次工具调用必须为 web_search。请先输出搜索动作 JSON，提炼与题目关键事实相关的简短 query；完成搜索后再浏览或作答，不得直接输出最终答案。"))
+		buildRoundPayload := func() ([]byte, error) {
+			roundInput := append([]any(nil), input...)
+			roundInput = append(roundInput, buildAIResponsesMessage("system", buildAIMCPBudgetPrompt(remainingModelCalls, remainingSearches, remainingWebReads, finalRound)))
+			if requireInitialSearch {
+				roundInput = append(roundInput, buildAIResponsesMessage("system", "本轮首次工具调用必须为 web_search。请先输出搜索动作 JSON，提炼与题目关键事实相关的简短 query；完成搜索后再浏览或作答，不得直接输出最终答案。"))
+			}
+			return json.Marshal(openAIResponsesRequest{
+				Model:             strings.TrimSpace(in.Model),
+				Stream:            true,
+				Store:             false,
+				Input:             roundInput,
+				ContextManagement: compactor.requestContextManagement(),
+			})
 		}
-		payload, err := json.Marshal(openAIResponsesRequest{Model: strings.TrimSpace(in.Model), Stream: true, Store: false, Input: roundInput})
+		payload, err := buildRoundPayload()
 		if err != nil {
 			return nil, debug, errors.ErrParserJSON
 		}
@@ -387,17 +396,18 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 						RemainingWebReads:   remainingWebReads,
 						Error:               errorString(callErr),
 					})
-					if in.ContextCompression.Enabled && isAIContextLengthFailure(status, callErr) && recovery == 0 {
-						input, compactErr = compactor.prepare(ctx, endpoint, input, true, round+1)
+					serverFallback := compactor.handleServerFailure(callErr)
+					if !serverFallback && (retry == attempts-1 || !isRetryableAIHTTPStatus(status)) && ctx.Err() == nil {
+						serverFallback = compactor.handleServerExhausted(status, callErr)
+					}
+					contextExceeded := isAIContextLengthFailure(status, callErr)
+					if serverFallback || (in.ContextCompression.Enabled && contextExceeded && recovery == 0) {
+						input, compactErr = compactor.prepare(ctx, endpoint, input, contextExceeded, round+1)
 						if compactErr != nil {
-							callErr = fmt.Errorf("MCP上下文超限后压缩失败: %w", compactErr)
+							callErr = fmt.Errorf("MCP上下文恢复或压缩回退失败: %w", compactErr)
 							break
 						}
-						roundInput = append(append([]any(nil), input...), buildAIResponsesMessage("system", buildAIMCPBudgetPrompt(remainingModelCalls, remainingSearches, remainingWebReads, finalRound)))
-						if requireInitialSearch {
-							roundInput = append(roundInput, buildAIResponsesMessage("system", "本轮首次工具调用必须为 web_search。请先搜索，再浏览或作答。"))
-						}
-						payload, compactErr = json.Marshal(openAIResponsesRequest{Model: strings.TrimSpace(in.Model), Stream: true, Store: false, Input: roundInput})
+						payload, compactErr = buildRoundPayload()
 						if compactErr != nil {
 							callErr = compactErr
 							break
@@ -422,6 +432,10 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 		}
 		if callErr != nil {
 			return nil, debug, fmt.Errorf("AI MCP第%d轮失败（已尝试%d次）: %w", round+1, attempted, callErr)
+		}
+		input = compactor.acceptServerOutput(input, result.OutputItems, result.Usage.InputTokens)
+		if extractAIResponsesOutputText(result.OutputItems) == "" {
+			input = append(input, buildAIResponsesMessage("assistant", result.Content))
 		}
 		if action.Action == "final" {
 			encoded, _ := json.Marshal(map[string]any{"answers": action.Answers})
@@ -452,10 +466,7 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 			return nil, debug, fmt.Errorf("MCP动作不受支持: %s", action.Action)
 		}
 		in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "MCP工具完成", Model: in.Model, Endpoint: endpoints[0], Query: string(arguments), DurationMs: time.Since(startedAt).Milliseconds(), Status: map[bool]string{true: "停止", false: "继续"}[abort], ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, RemainingWebReads: maxWebReads - webReads})
-		input = append(input,
-			buildAIResponsesMessage("assistant", result.Content),
-			buildAIResponsesMessage("user", fmt.Sprintf("本地MCP工具 %s 返回：\n%s", action.Action, output)),
-		)
+		input = append(input, buildAIResponsesMessage("user", fmt.Sprintf("本地MCP工具 %s 返回：\n%s", action.Action, output)))
 		toolsDisabled = toolsDisabled || abort
 	}
 	return nil, debug, fmt.Errorf("AI MCP编排超过最大轮数")

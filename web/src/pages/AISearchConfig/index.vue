@@ -198,9 +198,8 @@
         <div class="hint">按模型价格表中的上下文窗口估算触发比例；未设置窗口时，仅在上游明确返回上下文超限后尝试。压缩后会重新注入原题和系统规则，不将估算值当作精确 Token 数。</div>
       </a-form-item>
       <template v-if="formState.contextCompressionEnabled">
-        <a-form-item label="使用远程压缩接口" class="full-width">
-          <a-switch v-model:checked="formState.useRemoteContextCompression" />
-          <div class="hint">仅在上游支持压缩接口时使用，失败后回退到当前模型生成历史摘要；未开启时直接由当前模型生成摘要。模型摘要会产生 Token 用量并计入账单。</div>
+        <a-form-item label="压缩执行顺序" class="full-width">
+          <AICompressionOrder v-model="formState.contextCompressionOrder" />
         </a-form-item>
         <a-form-item label="压缩触发比例">
           <a-input-number v-model:value="formState.contextCompressionTriggerPercent" :min="50" :max="95" :precision="0" :step="1" style="width: 140px" />
@@ -215,7 +214,7 @@
         <a-form-item label="压缩最大尝试次数" class="full-width">
           <a-input-number v-model:value="formState.contextCompressionMaxAttempts" :min="1" :precision="0" :step="1" :parser="parseIntegerInput" style="width: 140px" />
           <span class="unit-label">次</span>
-          <div class="hint">填写正整数，含首次；远程压缩与本地摘要的每个阶段分别按此次数尝试，可重试的失败自动重试，长历史可分块摘要后归并。压缩尝试独立于正式答题轮次，每轮最多恢复重放一次；远程压缩和模型摘要产生的用量均计入账单。</div>
+          <div class="hint">填写正整数，含首次；独立压缩、服务器压缩测试和本地摘要各阶段按此次数尝试，长历史可分块摘要后归并。正常答题的服务器自动压缩与同次模型请求共用每轮重试次数；回退不重复已完成工具，实际模型用量均计入账单。</div>
         </a-form-item>
       </template>
 
@@ -390,7 +389,7 @@
       </a-form>
     </a-modal>
 
-    <AISearchTestDialog v-model:open="testModalVisible" :config="formState" :model-options="modelOptions" />
+    <AISearchTestDialog v-model:open="testModalVisible" :config="formState" :model-options="modelOptions" :saved-compression-order="savedCompressionOrder" />
   </div>
 </template>
 
@@ -399,6 +398,7 @@ import { defineComponent, computed, onMounted, reactive, ref } from 'vue';
 import { message, Modal } from 'ant-design-vue';
 import AISearchCapabilityDialog from './AISearchCapabilityDialog.vue';
 import AISearchTestDialog from './AISearchTestDialog.vue';
+import AICompressionOrder from './AICompressionOrder.vue';
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs';
 import { buildAIContextCompressionSettings } from '@/utils/aiSearchConfigHelpers.mjs';
 import {
@@ -498,7 +498,7 @@ function normalizeUsageRows(payload) {
 
 export default defineComponent({
   name: 'AISearchConfig',
-  components: { AISearchCapabilityDialog, AISearchTestDialog },
+  components: { AISearchCapabilityDialog, AISearchTestDialog, AICompressionOrder },
   setup() {
     const tabLoading = ref(true)
     const saving = ref(false)
@@ -509,6 +509,7 @@ export default defineComponent({
     const capabilityError = ref('')
     const usageInfo = ref(null)
     const testModalVisible = ref(false)
+    const savedCompressionOrder = ref(buildAIContextCompressionSettings().contextCompressionOrder)
     const fixedTemperatureText = '0'
     const fixedTopPText = '0'
     const formState = reactive({
@@ -632,6 +633,7 @@ export default defineComponent({
         if (res?.status === 200) {
           const data = res?.data || {}
           Object.assign(formState, buildAIContextCompressionSettings(data))
+          savedCompressionOrder.value = [...formState.contextCompressionOrder]
           formState.enabled = !!data.enabled
           formState.baseUrl = data.baseUrl || ''
           formState.apiKey = data.apiKey || ''
@@ -743,6 +745,7 @@ export default defineComponent({
       webReadUsageRows,
       usageColumns,
       testModalVisible,
+      savedCompressionOrder,
       fixedTemperatureText,
       fixedTopPText,
       formState,

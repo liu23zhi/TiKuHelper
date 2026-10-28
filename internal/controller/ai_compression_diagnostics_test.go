@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -24,6 +25,8 @@ func TestAICompressionInputValidation(t *testing.T) {
 		{`{"mode":"compression","history":"history"}`, true},
 		{`{"mode":"compression","history":"history","compressionMode":"configured"}`, true},
 		{`{"mode":"compression","history":"history","compressionMode":"remote"}`, true},
+		{`{"mode":"compression","history":"history","compressionMode":"server"}`, true},
+		{`{"mode":"ai_compression","tool":"both","target":"OpenAI","history":"history","compressionMode":"server"}`, true},
 		{`{"mode":"compression","history":" "}`, false},
 		{`{"mode":"compression","history":"history","compressionMode":"unknown"}`, false},
 		{`{"mode":"ai_compression","tool":"both","target":"OpenAI","history":"history","compressionMode":"local"}`, true},
@@ -181,7 +184,7 @@ func TestAICompressionDiagnosticsForceWindowLookupWithoutChangingSavedSettings(t
 			if res.Code != http.StatusOK || !called || !strings.Contains(res.Body.String(), `"success":true`) {
 				t.Fatalf("status=%d called=%t response=%s", res.Code, called, res.Body)
 			}
-			if after := service.GetAIContextCompressionSettingsWithDB(db); after != before {
+			if after := service.GetAIContextCompressionSettingsWithDB(db); !reflect.DeepEqual(after, before) {
 				t.Fatalf("one-off diagnostic changed saved compression settings: before=%+v after=%+v", before, after)
 			}
 		})

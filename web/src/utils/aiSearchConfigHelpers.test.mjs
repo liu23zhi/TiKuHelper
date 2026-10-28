@@ -14,12 +14,14 @@ import {
   AI_COMPRESSION_TEST_HISTORY,
   AI_COMPRESSION_TEST_TARGET,
   buildAIContextCompressionSettings,
+  moveAIContextCompressionStrategy,
 } from './aiSearchConfigHelpers.mjs';
 
 test('context compression settings preserve disabled and remote values with defaults for missing fields', () => {
   assert.deepEqual(buildAIContextCompressionSettings({}), {
     contextCompressionEnabled: true,
     useRemoteContextCompression: false,
+    contextCompressionOrder: ['server', 'remote', 'local'],
     contextCompressionTriggerPercent: 80,
     contextCompressionTargetPercent: 50,
     contextCompressionMaxAttempts: 3,
@@ -29,8 +31,33 @@ test('context compression settings preserve disabled and remote values with defa
     contextCompressionTriggerPercent: '85', contextCompressionTargetPercent: '45', contextCompressionMaxAttempts: '4',
   }), {
     contextCompressionEnabled: false, useRemoteContextCompression: true,
+    contextCompressionOrder: ['server', 'remote', 'local'],
     contextCompressionTriggerPercent: 85, contextCompressionTargetPercent: 45, contextCompressionMaxAttempts: 4,
   });
+});
+
+test('compression order preserves a complete custom order without sharing mutable defaults', () => {
+  const order = ['local', 'server', 'remote'];
+  const settings = buildAIContextCompressionSettings({ contextCompressionOrder: order });
+  assert.deepEqual(settings.contextCompressionOrder, order);
+  settings.contextCompressionOrder.reverse();
+  assert.deepEqual(order, ['local', 'server', 'remote']);
+  const defaults = buildAIContextCompressionSettings({});
+  defaults.contextCompressionOrder.reverse();
+  assert.deepEqual(buildAIContextCompressionSettings({}).contextCompressionOrder, ['server', 'remote', 'local']);
+  for (const invalid of [[], ['server', 'local'], ['server', 'server', 'local'], ['server', 'remote', 'unknown'], 'server,remote,local']) {
+    assert.throws(() => buildAIContextCompressionSettings({ contextCompressionOrder: invalid }), /顺序/);
+  }
+});
+
+test('compression strategy moves retain every strategy and ignore invalid drag positions', () => {
+  const order = ['server', 'remote', 'local'];
+  assert.deepEqual(moveAIContextCompressionStrategy(order, 0, 2), ['remote', 'local', 'server']);
+  assert.deepEqual(moveAIContextCompressionStrategy(order, 2, 0), ['local', 'server', 'remote']);
+  for (const [from, to] of [[-1, 0], [0, 3], [NaN, 1], [0.5, 1]]) {
+    assert.deepEqual(moveAIContextCompressionStrategy(order, from, to), order);
+  }
+  assert.deepEqual(order, ['server', 'remote', 'local']);
 });
 
 test('context compression settings reject invalid budgets instead of silently correcting them', () => {
@@ -76,7 +103,7 @@ test('buildAISearchTestForm seeds the dialog from current AI search config', () 
 
 test('independent compression tests require history and a model and preserve the selected strategy', () => {
   const base = { mode: 'compression', model: 'gpt-test', history: ' Earlier search results and verified facts. ' };
-  for (const compressionMode of ['configured', 'local', 'remote']) {
+  for (const compressionMode of ['configured', 'server', 'local', 'remote']) {
     const payload = buildAIToolTestPayload({ ...base, compressionMode }, { baseUrl: 'https://api.example.com/v1', apiKey: 'saved' });
     assert.equal(payload.mode, 'compression');
     assert.equal(payload.history, 'Earlier search results and verified facts.');
@@ -121,7 +148,7 @@ test('compression results normalize strategy, token counts, fallback and summary
   } });
   assert.deepEqual(result.compression, {
     success: true, strategy: 'local', beforeTokens: 2500, afterTokens: 410,
-    summary: '保留答案线索、来源网址和工具返回状态。', remoteFallback: true, error: '',
+    summary: '保留答案线索、来源网址和工具返回状态。', remoteFallback: true, error: '', attemptedStrategies: [], fallbackReason: '',
   });
   assert.equal(result.success, true);
   assert.equal(result.requestId, 'cmp-1');
@@ -130,6 +157,17 @@ test('compression results normalize strategy, token counts, fallback and summary
   assert.equal(result.billingWarning, '账单读取提示');
   assert.equal(buildAIToolTestResult({ data: { compression: { strategy: 'unknown', beforeTokens: -1, afterTokens: '2' } } }).compression.strategy, '');
   assert.equal(buildAIToolTestResult({ data: {} }).compression, null);
+});
+
+test('server compression diagnostics preserve ordered attempts and failure reason', () => {
+  const compression = buildAIToolTestResult({ data: { compression: {
+    success: true, strategy: 'server', attemptedStrategies: ['local', 'server'], fallbackReason: '本地摘要失败',
+    beforeTokens: 4000, afterTokens: 500,
+  } } }).compression;
+  assert.equal(compression.strategy, 'server');
+  assert.deepEqual(compression.attemptedStrategies, ['local', 'server']);
+  assert.equal(compression.fallbackReason, '本地摘要失败');
+  assert.equal(buildAISearchTestForm({ compressionMode: 'server' }).compressionMode, 'server');
 });
 
 test('buildAISearchTestPayload prefers explicit dialog overrides and falls back to current config', () => {
@@ -268,7 +306,7 @@ test('AI compression test defaults include verifiable history anchors without le
   assert.deepEqual(AI_COMPRESSION_TEST_DEFAULTS, {
     tool: 'both',
     target: AI_COMPRESSION_TEST_TARGET,
-    compressionMode: 'local',
+    compressionMode: 'configured',
   });
   assert.equal(AI_COMPRESSION_TEST_TARGET, 'OpenAI Responses API context compaction');
   assert.match(AI_COMPRESSION_TEST_HISTORY, /【历史校验】.*HISTORY-KEEP-7F3A/);

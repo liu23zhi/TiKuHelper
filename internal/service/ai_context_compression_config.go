@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -16,6 +17,7 @@ const (
 	AIContextCompressionTriggerPercentSettingKey = "ai_context_compression_trigger_percent"
 	AIContextCompressionTargetPercentSettingKey  = "ai_context_compression_target_percent"
 	AIContextCompressionMaxAttemptsSettingKey    = "ai_context_compression_max_attempts"
+	AIContextCompressionOrderSettingKey          = "ai_context_compression_order"
 )
 
 type AIContextCompressionSettings struct {
@@ -24,6 +26,34 @@ type AIContextCompressionSettings struct {
 	TriggerPercent int
 	TargetPercent  int
 	MaxAttempts    int
+	Order          []string
+}
+
+func defaultAIContextCompressionOrder() []string {
+	return []string{"server", "remote", "local"}
+}
+
+func validAIContextCompressionOrder(order []string) bool {
+	if len(order) != 3 {
+		return false
+	}
+	seen := make(map[string]bool, 3)
+	for _, strategy := range order {
+		if (strategy != "server" && strategy != "remote" && strategy != "local") || seen[strategy] {
+			return false
+		}
+		seen[strategy] = true
+	}
+	return true
+}
+
+func readAIContextCompressionOrder(db *gorm.DB) []string {
+	var order []string
+	value := getSystemSettingStringWithDefault(db, AIContextCompressionOrderSettingKey, "")
+	if json.Unmarshal([]byte(value), &order) != nil || !validAIContextCompressionOrder(order) {
+		return defaultAIContextCompressionOrder()
+	}
+	return order
 }
 
 func GetAIContextCompressionSettingsWithDB(db *gorm.DB) AIContextCompressionSettings {
@@ -52,6 +82,7 @@ func GetAIContextCompressionSettingsWithDB(db *gorm.DB) AIContextCompressionSett
 		TriggerPercent: trigger,
 		TargetPercent:  target,
 		MaxAttempts:    getPositiveIntSystemSetting(db, AIContextCompressionMaxAttemptsSettingKey, 3),
+		Order:          readAIContextCompressionOrder(db),
 	}
 }
 
@@ -72,6 +103,12 @@ func mergeAIContextCompressionSettings(db *gorm.DB, input UpdateAISearchConfigIn
 	if input.ContextCompressionMaxAttempts != nil {
 		settings.MaxAttempts = *input.ContextCompressionMaxAttempts
 	}
+	if input.ContextCompressionOrder != nil {
+		settings.Order = append([]string(nil), (*input.ContextCompressionOrder)...)
+	}
+	if !validAIContextCompressionOrder(settings.Order) {
+		return settings, fmt.Errorf("%w: 压缩顺序必须完整包含 server、remote、local，且不能重复", ErrAIContextCompressionSettingsInvalid)
+	}
 	if settings.TriggerPercent < 50 || settings.TriggerPercent > 95 {
 		return settings, fmt.Errorf("%w: 触发比例必须是 50～95 的整数", ErrAIContextCompressionSettingsInvalid)
 	}
@@ -85,11 +122,15 @@ func mergeAIContextCompressionSettings(db *gorm.DB, input UpdateAISearchConfigIn
 }
 
 func saveAIContextCompressionSettingsWithDB(db *gorm.DB, input UpdateAISearchConfigInput) error {
-	if input.ContextCompressionEnabled == nil && input.UseRemoteContextCompression == nil && input.ContextCompressionTriggerPercent == nil && input.ContextCompressionTargetPercent == nil && input.ContextCompressionMaxAttempts == nil {
+	if input.ContextCompressionEnabled == nil && input.UseRemoteContextCompression == nil && input.ContextCompressionTriggerPercent == nil && input.ContextCompressionTargetPercent == nil && input.ContextCompressionMaxAttempts == nil && input.ContextCompressionOrder == nil {
 		return nil
 	}
 	return db.Transaction(func(tx *gorm.DB) error {
 		settings, err := mergeAIContextCompressionSettings(tx, input)
+		if err != nil {
+			return err
+		}
+		orderJSON, err := json.Marshal(settings.Order)
 		if err != nil {
 			return err
 		}
@@ -102,6 +143,7 @@ func saveAIContextCompressionSettingsWithDB(db *gorm.DB, input UpdateAISearchCon
 			{input.ContextCompressionTriggerPercent != nil, AIContextCompressionTriggerPercentSettingKey, strconv.Itoa(settings.TriggerPercent), "AI 上下文压缩触发比例"},
 			{input.ContextCompressionTargetPercent != nil, AIContextCompressionTargetPercentSettingKey, strconv.Itoa(settings.TargetPercent), "AI 上下文压缩目标比例"},
 			{input.ContextCompressionMaxAttempts != nil, AIContextCompressionMaxAttemptsSettingKey, strconv.Itoa(settings.MaxAttempts), "AI 上下文压缩最大尝试次数（含首次）"},
+			{input.ContextCompressionOrder != nil, AIContextCompressionOrderSettingKey, string(orderJSON), "AI 上下文压缩自动回退顺序"},
 		}
 		for _, update := range updates {
 			if update.provided {

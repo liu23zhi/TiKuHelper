@@ -359,10 +359,14 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 		case "", "configured":
 		case "local":
 			compactor.config.RemoteEnabled = false
+			compactor.config.StrategyOrder = []string{"local"}
 		case "remote":
 			compactor.config.RemoteEnabled = true
+			compactor.config.StrategyOrder = []string{"remote", "local"}
+		case "server":
+			compactor.config.StrategyOrder = []string{"server"}
 		default:
-			return nil, debug, fmt.Errorf("压缩测试模式须为 configured、local 或 remote")
+			return nil, debug, fmt.Errorf("压缩测试模式须为 configured、server、remote 或 local")
 		}
 	}
 	endpoints := buildAIResponsesEndpoints(in.BaseURL)
@@ -424,7 +428,8 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 		roundInput = append(roundInput, buildAIResponsesMessage("system", buildAISearchBudgetPrompt(remainingModelCalls, remainingSearches, remainingWebReads, finalRound)))
 		payload := openAIResponsesRequest{
 			Model: strings.TrimSpace(in.Model), Stream: true, Store: false, Input: roundInput,
-			Include: []string{"reasoning.encrypted_content"},
+			Include:           []string{"reasoning.encrypted_content"},
+			ContextManagement: compactor.requestContextManagement(),
 		}
 		if finalRound {
 			payload.Input = roundInput
@@ -476,13 +481,18 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 					addAISearchUsage(&debug.Usage, result.Usage)
 					// A compression stage has its own finite retries. Replay this
 					// answer round once, rather than multiplying those attempts.
-					if compactor.config.Enabled && isAIContextLengthFailure(status, callErr) && recovery == 0 {
-						input, err = compactor.prepare(ctx, endpoint, input, true, round+1)
+					serverFallback := compactor.handleServerFailure(callErr)
+					if !serverFallback && (retry == attempts-1 || !isRetryableAIHTTPStatus(status)) && ctx.Err() == nil {
+						serverFallback = compactor.handleServerExhausted(status, callErr)
+					}
+					if serverFallback || (compactor.config.Enabled && isAIContextLengthFailure(status, callErr) && recovery == 0) {
+						input, err = compactor.prepare(ctx, endpoint, input, isAIContextLengthFailure(status, callErr), round+1)
 						if err != nil {
 							callErr = fmt.Errorf("上下文超限后压缩失败: %w", err)
 							break
 						}
 						payload.Input = append(append([]any(nil), input...), buildAIResponsesMessage("system", buildAISearchBudgetPrompt(remainingModelCalls, remainingSearches, remainingWebReads, finalRound)))
+						payload.ContextManagement = compactor.requestContextManagement()
 						encoded, err = json.Marshal(payload)
 						if err != nil {
 							callErr = err
@@ -519,6 +529,7 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 			// failure, while operators can see the failed round and retry budget.
 			return nil, debug, fmt.Errorf("AI联网搜题第%d轮失败（已尝试%d次）: %w", round+1, attempted, callErr)
 		}
+		input = compactor.acceptServerOutput(input, result.OutputItems, result.Usage.InputTokens)
 		if len(result.Calls) == 0 {
 			if !hasModelResponse && !finalRound {
 				if testTool != "" {
@@ -543,13 +554,6 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 			return nil, debug, fmt.Errorf("AI模型在搜索结束后仍调用工具，无法生成最终答案")
 		}
 		hasModelResponse = true
-		for _, outputItem := range result.OutputItems {
-			var item map[string]any
-			if err := json.Unmarshal(outputItem, &item); err != nil {
-				return nil, debug, fmt.Errorf("AI Responses输出项无效: %w", err)
-			}
-			input = append(input, item)
-		}
 		for _, call := range result.Calls {
 			if call.ID == "" {
 				return nil, debug, fmt.Errorf("AI工具调用缺少id")
