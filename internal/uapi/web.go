@@ -100,7 +100,7 @@ func (c *Client) GetWebToMarkdownStatus(ctx context.Context, taskID string) (Web
 }
 
 // ReadWebPage submits and polls one URL. It returns a completed task only;
-// failed and timeout tasks are classified as ErrUpstream with their message.
+// Failed, timed out and cancelled tasks return ErrUpstream with their message.
 func (c *Client) ReadWebPage(ctx context.Context, rawURL string) (WebToMarkdownTask, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -112,29 +112,37 @@ func (c *Client) ReadWebPage(ctx context.Context, rawURL string) (WebToMarkdownT
 		return WebToMarkdownTask{}, err
 	}
 	for {
-		switch strings.ToLower(strings.TrimSpace(task.Status)) {
+		switch task.Status {
 		case "completed":
 			if task.Result == nil || strings.TrimSpace(task.Result.Markdown) == "" {
 				return task, fmt.Errorf("%w: 网页转 Markdown 完成但结果为空", ErrUpstream)
 			}
 			return task, nil
-		case "failed", "timeout":
+		case "failed", "timeout", "cancelled":
 			message := strings.TrimSpace(task.Error)
 			if message == "" {
 				message = strings.TrimSpace(task.Message)
 			}
 			if message == "" {
-				message = "网页转 Markdown 任务失败"
+				switch task.Status {
+				case "timeout":
+					message = "网页转 Markdown 任务超时"
+				case "cancelled":
+					message = "网页转 Markdown 任务已取消"
+				default:
+					message = "网页转 Markdown 任务失败"
+				}
 			}
 			return task, fmt.Errorf("%w: %s", ErrUpstream, message)
-		case "pending", "processing", "":
+		case "queued", "pending", "processing", "":
 			if err := sleepWebPoll(ctx, webToMarkdownPollInterval); err != nil {
-				return WebToMarkdownTask{}, contextRequestError(err)
+				return task, contextRequestError(err)
 			}
-			task, err = c.GetWebToMarkdownStatus(ctx, task.TaskID)
+			nextTask, err := c.GetWebToMarkdownStatus(ctx, task.TaskID)
 			if err != nil {
-				return WebToMarkdownTask{}, err
+				return task, err
 			}
+			task = nextTask
 		default:
 			return task, fmt.Errorf("%w: 未知任务状态 %q", ErrUpstream, task.Status)
 		}
@@ -172,8 +180,35 @@ func parseWebToMarkdownTask(body []byte) (WebToMarkdownTask, error) {
 	if err := json.Unmarshal(body, &task); err != nil {
 		return WebToMarkdownTask{}, fmt.Errorf("%w: 解析网页转 Markdown 响应失败: %w", ErrUpstream, err)
 	}
+	task.TaskID = strings.TrimSpace(task.TaskID)
+	task.Status = normalizeWebToMarkdownStatus(task.Status)
 	task.RawJSON = string(body)
 	return task, nil
+}
+
+// Normalize compatibility aliases at the response boundary so all callers use
+// the same terminal states. Unknown values remain errors, never inferred success.
+func normalizeWebToMarkdownStatus(status string) string {
+	status = strings.ToLower(strings.TrimSpace(status))
+	key := strings.Join(strings.Fields(strings.ReplaceAll(status, "-", "_")), "_")
+	switch key {
+	case "queued", "accepted", "submitted", "waiting", "scheduled", "enqueued", "in_queue":
+		return "queued"
+	case "pending":
+		return "pending"
+	case "processing", "running", "started", "in_progress":
+		return "processing"
+	case "completed", "complete", "success", "succeeded", "done", "finished":
+		return "completed"
+	case "failed", "failure", "error", "errored", "rejected":
+		return "failed"
+	case "timeout", "timed_out", "expired":
+		return "timeout"
+	case "cancelled", "canceled", "aborted":
+		return "cancelled"
+	default:
+		return status
+	}
 }
 
 // ValidateWebURL applies the same validation used by ReadWebPage before a test

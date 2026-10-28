@@ -826,6 +826,10 @@ type BillingRecordListQuery struct {
 	Keyword string
 	// Type 精确匹配账单类型（题目消费 / 充值入账 / 新用户赠送）。
 	Type string
+	// RequestID and UserID allow internal callers to look up one known request
+	// without the substring and sibling matching used by the search box.
+	RequestID string
+	UserID    int32
 }
 
 // ListBillingRecordsWithDB 返回账单列表。
@@ -1029,6 +1033,12 @@ func sumBillingExpenseAmount(rows []BillingRecordListItem) float64 {
 
 // applyBillingRecordFilters 把关键词与类型筛选应用到账单查询上。
 func applyBillingRecordFilters(query *gorm.DB, filter BillingRecordListQuery, includeHidden bool) *gorm.DB {
+	if filter.UserID > 0 {
+		query = query.Where("billing_records.user_id = ?", filter.UserID)
+	}
+	if requestID := strings.TrimSpace(filter.RequestID); requestID != "" {
+		query = query.Where("billing_records.request_id = ?", requestID)
+	}
 	if recordType := strings.TrimSpace(filter.Type); recordType != "" {
 		query = query.Where("billing_records.type = ?", recordType)
 	}

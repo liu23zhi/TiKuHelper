@@ -206,7 +206,9 @@ func TestAIToolCall(c *gin.Context) {
 		warning = strings.TrimSpace(warning + " 测试已执行，但账单保存失败，请检查服务日志。")
 		logger.SysError(fmt.Sprintf("AI工具测试账单保存失败 requestId=%s: %s", requestID, logger.RedactSecrets(billingErr.Error(), secrets...)))
 	} else if len(charges) > 0 {
-		list, listErr := service.ListBillingRecordsWithDB(db, operator, service.BillingRecordListQuery{Keyword: requestID}, 1, 1)
+		list, listErr := service.ListBillingRecordsWithDB(db, operator, service.BillingRecordListQuery{
+			UserID: operator.ID, RequestID: requestID, Type: "normal_search",
+		}, 1, 1)
 		if listErr == nil && len(list.Data) > 0 {
 			billingRecord = &list.Data[0]
 		} else {

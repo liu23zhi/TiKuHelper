@@ -244,6 +244,14 @@ func TestAIToolDirectTestPersistsRealToolCharges(t *testing.T) {
 			t.Cleanup(func() { newAIToolTestTool = original })
 			tool := &toolTestStub{}
 			newAIToolTestTool = func(*gorm.DB) searchpkg.AISearchTool { return tool }
+			var billingQueries []string
+			if err := db.Callback().Query().After("gorm:query").Register("capture-tool-test-billing", func(tx *gorm.DB) {
+				if sql := tx.Statement.SQL.String(); strings.Contains(sql, "billing_records") {
+					billingQueries = append(billingQueries, sql)
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
 			res := callToolTest(t, user, `{"mode":"direct","tool":"`+toolName+`","query":"test","url":"https://example.com/"}`)
 			if res.Code != http.StatusOK {
 				t.Fatalf("%d %s", res.Code, res.Body)
@@ -258,6 +266,14 @@ func TestAIToolDirectTestPersistsRealToolCharges(t *testing.T) {
 			}
 			if !response.Success || response.RequestID == "" || response.BillingRecord.ID == 0 {
 				t.Fatalf("%s", res.Body)
+			}
+			if len(billingQueries) == 0 {
+				t.Fatal("billing response lookup was not captured")
+			}
+			for _, sql := range billingQueries {
+				if strings.Contains(strings.ToUpper(sql), "INSTR(") || strings.Contains(sql, "matching_records") {
+					t.Fatalf("test billing lookup must use exact owner and request filters instead of keyword scans: %s", sql)
+				}
 			}
 			var records []entity.BillingRecord
 			db.Find(&records)
@@ -351,12 +367,15 @@ func TestAIToolModelAndToolSuccessMergeActualUsageIntoAdminBill(t *testing.T) {
 					if r.Method == http.MethodPost {
 						webSubmits.Add(1)
 						w.WriteHeader(http.StatusAccepted)
-						_, _ = w.Write([]byte(`{"task_id":"async-tool-test","status":"pending"}`))
+						_, _ = w.Write([]byte(`{"task_id":"async-tool-test","status":"queued","message":"Task submitted"}`))
 					} else if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/async-tool-test") {
-						if webPolls.Add(1) == 1 {
+						switch webPolls.Add(1) {
+						case 1:
+							_, _ = w.Write([]byte(`{"task_id":"async-tool-test","status":"queued"}`))
+						case 2:
 							_, _ = w.Write([]byte(`{"task_id":"async-tool-test","status":"processing"}`))
-						} else {
-							_, _ = w.Write([]byte(`{"task_id":"async-tool-test","status":"completed","result":{"markdown":"# Async test page"}}`))
+						default:
+							_, _ = w.Write([]byte(`{"task_id":"async-tool-test","status":" SuCcEeDeD ","result":{"markdown":"# Async test page"}}`))
 						}
 					} else {
 						t.Errorf("unexpected async tool request: %s %s", r.Method, r.URL.Path)
@@ -407,7 +426,7 @@ func TestAIToolModelAndToolSuccessMergeActualUsageIntoAdminBill(t *testing.T) {
 			if res.Code != http.StatusOK || !response.Success || rounds != 2 || tool.searches+tool.reads+int(webSubmits.Load()) != 1 || len(response.ToolResult) != 1 {
 				t.Fatalf("rounds=%d tool=%+v response=%s", rounds, tool, res.Body)
 			}
-			if toolName == "web_read" && (webSubmits.Load() != 1 || webPolls.Load() != 2 || !strings.Contains(string(response.ToolResult[0]), "Async test page")) {
+			if toolName == "web_read" && (webSubmits.Load() != 1 || webPolls.Load() != 3 || !strings.Contains(string(response.ToolResult[0]), "Async test page")) {
 				t.Fatalf("async web read did not wait for its body: submissions=%d polls=%d result=%s", webSubmits.Load(), webPolls.Load(), response.ToolResult)
 			}
 			bill := response.BillingRecord
@@ -429,6 +448,20 @@ func TestAIToolModelAndToolSuccessMergeActualUsageIntoAdminBill(t *testing.T) {
 			}
 			var records []entity.BillingRecord
 			db.Where("request_id = ?", response.RequestID).Find(&records)
+			if toolName == "web_read" {
+				var webReadBills int
+				for _, record := range records {
+					if record.Provider == "web_read" {
+						webReadBills++
+						if record.UserID != user.ID || record.Amount != 0.3 {
+							t.Fatalf("incorrect completed web read charge: %+v", record)
+						}
+					}
+				}
+				if webReadBills != 1 {
+					t.Fatalf("completed web read should be billed once: %+v", records)
+				}
+			}
 			var reloaded entity.User
 			db.First(&reloaded, user.ID)
 			if len(records) != 2 || reloaded.Balance != util.RoundMoney(10-wantAmount) {
