@@ -2,6 +2,34 @@ function trimText(value) {
   return String(value || '').trim();
 }
 
+export function buildAIContextCompressionSettings(config) {
+  const integer = (value, fallback) => {
+    if (value === undefined || value === null) return fallback;
+    if (!['string', 'number'].includes(typeof value) || String(value).trim() === '') return NaN;
+    return Number(value);
+  };
+  const settings = {
+    contextCompressionEnabled: config?.contextCompressionEnabled ?? true,
+    useRemoteContextCompression: config?.useRemoteContextCompression ?? false,
+    contextCompressionTriggerPercent: integer(config?.contextCompressionTriggerPercent, 80),
+    contextCompressionTargetPercent: integer(config?.contextCompressionTargetPercent, 50),
+    contextCompressionMaxAttempts: integer(config?.contextCompressionMaxAttempts, 3),
+  };
+  const trigger = settings.contextCompressionTriggerPercent;
+  const target = settings.contextCompressionTargetPercent;
+  const attempts = settings.contextCompressionMaxAttempts;
+  if (!Number.isSafeInteger(trigger) || trigger < 50 || trigger > 95) {
+    throw new Error('上下文压缩触发比例必须是 50～95 的整数');
+  }
+  if (!Number.isSafeInteger(target) || target < 10 || target >= trigger) {
+    throw new Error('上下文压缩目标比例必须至少为 10，且小于触发比例');
+  }
+  if (!Number.isSafeInteger(attempts) || attempts < 1) {
+    throw new Error('上下文压缩最大尝试次数必须是正整数（含首次），且不能超过安全整数范围');
+  }
+  return settings;
+}
+
 export function buildAISearchTestForm(config) {
   return {
     baseUrl: trimText(config?.baseUrl),

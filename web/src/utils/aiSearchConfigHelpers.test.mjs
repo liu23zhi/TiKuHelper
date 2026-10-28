@@ -8,7 +8,41 @@ import {
   hasAISearchTestResult,
   buildAIToolTestPayload,
   buildAIToolTestResult,
+  buildAIContextCompressionSettings,
 } from './aiSearchConfigHelpers.mjs';
+
+test('context compression settings preserve disabled and remote values with defaults for missing fields', () => {
+  assert.deepEqual(buildAIContextCompressionSettings({}), {
+    contextCompressionEnabled: true,
+    useRemoteContextCompression: false,
+    contextCompressionTriggerPercent: 80,
+    contextCompressionTargetPercent: 50,
+    contextCompressionMaxAttempts: 3,
+  });
+  assert.deepEqual(buildAIContextCompressionSettings({
+    contextCompressionEnabled: false, useRemoteContextCompression: true,
+    contextCompressionTriggerPercent: '85', contextCompressionTargetPercent: '45', contextCompressionMaxAttempts: '4',
+  }), {
+    contextCompressionEnabled: false, useRemoteContextCompression: true,
+    contextCompressionTriggerPercent: 85, contextCompressionTargetPercent: 45, contextCompressionMaxAttempts: 4,
+  });
+});
+
+test('context compression settings reject invalid budgets instead of silently correcting them', () => {
+  for (const override of [
+    { contextCompressionTriggerPercent: 49 }, { contextCompressionTriggerPercent: 96 },
+    { contextCompressionTargetPercent: 9 }, { contextCompressionTargetPercent: 80 },
+    { contextCompressionTriggerPercent: 60, contextCompressionTargetPercent: 60 },
+    { contextCompressionMaxAttempts: 0 }, { contextCompressionMaxAttempts: Number.MAX_SAFE_INTEGER + 1 }, { contextCompressionMaxAttempts: 1.5 },
+    { contextCompressionTriggerPercent: '' }, { contextCompressionTargetPercent: NaN },
+  ]) assert.throws(() => buildAIContextCompressionSettings(override), /压缩/);
+});
+
+test('context compression attempts retain positive safe integers above the former limit', () => {
+  for (const attempts of [6, 100, Number.MAX_SAFE_INTEGER]) {
+    assert.equal(buildAIContextCompressionSettings({ contextCompressionMaxAttempts: String(attempts) }).contextCompressionMaxAttempts, attempts);
+  }
+});
 
 test('buildAISearchTestForm seeds the dialog from current AI search config', () => {
   assert.deepEqual(buildAISearchTestForm({

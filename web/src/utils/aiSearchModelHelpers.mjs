@@ -46,6 +46,46 @@ export function filterRemoteModelNames(modelSource) {
   });
 }
 
+function normalizeAIModelContextWindowTokens(value) {
+  const input = typeof value === 'string' ? value.trim() : value;
+  if (input === '' || input === undefined || input === null) return 0;
+  if ((typeof input !== 'number' && typeof input !== 'string')
+    || (typeof input === 'string' && !/^\d+$/.test(input))) {
+    throw new Error('上下文窗口必须是非负整数 Token 数，0 表示未设置');
+  }
+  const tokens = Number(input);
+  if (!Number.isSafeInteger(tokens) || tokens < 0) {
+    throw new Error('上下文窗口必须是非负整数 Token 数，且不能超过安全整数范围');
+  }
+  return tokens;
+}
+
+export function formatAIModelContextWindowTokens(value) {
+  try {
+    const tokens = normalizeAIModelContextWindowTokens(value);
+    return tokens > 0 ? tokens.toLocaleString('zh-CN') : '未设置';
+  } catch {
+    return '未设置';
+  }
+}
+
+export function buildAIModelPriceSavePayload(formState) {
+  const modelName = trimText(formState?.modelName);
+  if (!modelName) throw new Error('请填写模型名称');
+  return {
+    id: formState?.id,
+    modelName,
+    displayName: trimText(formState?.displayName),
+    contextWindowTokens: normalizeAIModelContextWindowTokens(formState?.contextWindowTokens),
+    inputPrice: Number(formState?.inputPrice || 0),
+    cachedPrice: Number(formState?.cachedPrice || 0),
+    cacheWritePrice: Number(formState?.cacheWritePrice || 0),
+    outputPrice: Number(formState?.outputPrice || 0),
+    multiplier: Number(formState?.multiplier || 1),
+    remark: formState?.remark || '',
+  };
+}
+
 export const DEFAULT_AI_STAGED_TOKEN_MULTIPLIER_POINTS = Object.freeze([
   Object.freeze({ tokens: 0, multiplier: 4 }),
   Object.freeze({ tokens: 3000, multiplier: 2 }),
@@ -64,6 +104,15 @@ function normalizeStagedTokenMultiplierPoints(points) {
   }));
 }
 
+function positiveCount(value, fallback, label) {
+  if (value === undefined) return fallback;
+  const number = ['number', 'string'].includes(typeof value) && String(value).trim() !== '' ? Number(value) : NaN;
+  if (!Number.isSafeInteger(number) || number < 1) {
+    throw new Error(`${label}必须是正整数，且不能超过安全整数范围`);
+  }
+  return number;
+}
+
 // 模型单价已迁移到模型价格表，保存 AI 搜索配置时不再提交任何计费字段。
 export function buildAISearchConfigSavePayload(formState, baseUrl) {
   const hasEditableModelText = Object.prototype.hasOwnProperty.call(formState || {}, 'manualModelsText');
@@ -80,11 +129,11 @@ export function buildAISearchConfigSavePayload(formState, baseUrl) {
     remark: formState?.remark || '',
     temperature: 0,
     topP: 0,
-    maxAISearchModelCalls: Number(formState?.maxAISearchModelCalls || 4),
-    maxAISearches: Number(formState?.maxAISearches || 3),
-    maxAISearchRetries: Number(formState?.maxAISearchRetries ?? 3),
+    maxAISearchModelCalls: positiveCount(formState?.maxAISearchModelCalls, 4, '模型最大调用次数'),
+    maxAISearches: positiveCount(formState?.maxAISearches, 3, '最大搜索次数'),
+    maxAISearchRetries: positiveCount(formState?.maxAISearchRetries, 3, '每轮重试次数'),
     searchPricePerCall: Number(formState?.searchPricePerCall || 0),
-    maxAIWebReads: Number(formState?.maxAIWebReads ?? 5),
+    maxAIWebReads: positiveCount(formState?.maxAIWebReads, 5, '网页读取次数'),
     webReadPricePerCall: Number(formState?.webReadPricePerCall || 0),
     enableAIStagedTokenBilling: !!formState?.enableAIStagedTokenBilling,
     smoothAIStagedTokenMultiplier: !!formState?.smoothAIStagedTokenMultiplier,

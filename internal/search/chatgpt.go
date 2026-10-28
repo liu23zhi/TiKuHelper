@@ -34,6 +34,7 @@ import (
 
 // ChatGptClient AI 搜题客户端
 type ChatGptClient struct {
+	Context               context.Context
 	Enable                bool
 	APIKey                string
 	BaseURL               string
@@ -49,6 +50,7 @@ type ChatGptClient struct {
 	// MaxAISearchRetries is the total number of attempts allowed for each
 	// model round, including the initial request. Zero uses the default.
 	MaxAISearchRetries int
+	ContextCompression AIContextCompressionConfig
 }
 
 type AISearchUsage struct {
@@ -367,14 +369,6 @@ const maxAISearchAttachmentBytes = 8 * 1024 * 1024
 const aiSearchAttachmentTimeout = 60 * time.Second
 const aiSearchFirstTokenTimeout = 5 * time.Minute
 
-// aiSearchTotalTimeout 是单次搜题（含端点回退与重试）的总时限。
-//
-// 必须小于 HTTP 服务的 WriteTimeout（210s，见 cmd/adapter-service/main.go）：
-// 旧实现只有 5 分钟的首字超时且重试不受总时限约束，上游卡住时连接会先被
-// WriteTimeout 掐断，客户端看到的是断流而不是 JSON 错误。
-// 深度思考链路本身也用 180s（aiToolTaskTimeout），两者保持一致。
-const aiSearchTotalTimeout = 180 * time.Second
-
 // 题库公式截图常见尺寸只有 40x22 左右，直接提交给模型时上下标几乎不可辨认，这里统一放大。
 const (
 	aiSearchImageMagnifyBelowWidth  = 320
@@ -394,17 +388,20 @@ const (
 	aiSearchRetryMaxAttempts         = 3
 	aiSearchRetryBaseDelay           = 500 * time.Millisecond
 	aiSearchRetryMaxDelay            = 5 * time.Second
-	aiSearchRetryBudget              = 2 * time.Minute
 )
 
 func (in *ChatGptClient) aiSearchRetryAttempts() int {
 	if in.MaxAISearchRetries <= 0 {
 		return aiSearchRetryMaxAttempts
 	}
-	if in.MaxAISearchRetries > 10 {
-		return 10
-	}
 	return in.MaxAISearchRetries
+}
+
+func (in *ChatGptClient) requestContext() context.Context {
+	if in.Context != nil {
+		return in.Context
+	}
+	return context.Background()
 }
 
 var aiSearchRequestSemaphore = newAISearchSemaphore(aiSearchMaxConcurrentRequests)
@@ -470,7 +467,7 @@ func DefaultAISearchPrompt() string {
 
 【准确性与完整交付】
 - 准确率是最高优先级：区分已核实事实与推断，不得编造事实、引用或执行结果；条件缺失时说明必要假设及适用范围，不能把猜测写成已核实的结论。不得用推脱式回答代替分析，但也不得为显得确定而虚构依据。
-- 仅在本轮实际提供联网工具时，对时效信息、陌生概念、关键接口或相互矛盾的资料按需检索；鼓励使用网页浏览核对原始正文和上下文，避免仅凭搜索摘要下结论。题干和可靠知识足以解答时直接完成作答；未提供工具时不声称已联网核验。
+- 仅在本轮实际提供联网工具时，正式联网答题必须先完成一次搜索，核对问题相关的最新事实，不能只凭模型知识库作答；必要时使用网页浏览核对原始正文和上下文，避免仅凭搜索摘要下结论。管理员工具专项测试遵循所选工具和指定顺序；未提供工具或本轮只允许最终作答时，基于已有资料完成答案，不声称已联网核验。
 - 复杂项目、编程及综合作业应覆盖全部核心要求，在答案文本中组织必要的核心代码、配置及验证步骤，先保证关键流程完整，再补充细节；受篇幅限制时明确交付范围及尚待补充的部分，不能只写计划或只回答其中一问。
 - 本接口交付文本答案；没有实际执行能力时，不得声称已经创建文件、运行构建或通过测试，将需要实际执行的操作列为验证步骤。
 
@@ -519,8 +516,7 @@ func (in *ChatGptClient) SearchAnswer(req model.SearchRequest) (answer [][]strin
 }
 
 func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]string, debug AISearchDebugResult, err error) {
-	// 整个搜题（含端点回退 / 重试）共用一个总时限，避免上游卡住时超过 HTTP WriteTimeout。
-	ctx, cancel := context.WithTimeout(context.Background(), aiSearchTotalTimeout)
+	ctx, cancel := context.WithCancel(in.requestContext())
 	defer cancel()
 	if req.DeepThinking && in.SearchTool != nil {
 		answer, debug, toolErr := in.searchAnswerWithTools(ctx, req)
@@ -572,8 +568,7 @@ func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]
 }
 
 func (in *ChatGptClient) SearchAnswerWithUsage(req model.SearchRequest) (answer [][]string, usage AISearchUsage, err error) {
-	// 与 SearchAnswerDebug 共用同一总时限：普通搜索的重试与端点回退都必须受它约束。
-	ctx, cancel := context.WithTimeout(context.Background(), aiSearchTotalTimeout)
+	ctx, cancel := context.WithCancel(in.requestContext())
 	defer cancel()
 	if req.DeepThinking && in.SearchTool != nil {
 		answer, debug, toolErr := in.searchAnswerWithTools(ctx, req)
@@ -1065,8 +1060,6 @@ func buildAIResponsesContentParts(parts []openAIContentPart) []openAIResponsesCo
 }
 
 func (in *ChatGptClient) requestStreamAnswerDetailed(parentCtx context.Context, endpoints []string, systemPrompt string, userPromptParts []openAIContentPart, modelCalls *int, maxModelCalls int) (string, AISearchUsage, int, string, string, string, error) {
-	requestStartedAt := time.Now()
-
 	var (
 		requestBody     string
 		lastUsage       AISearchUsage
@@ -1085,7 +1078,7 @@ func (in *ChatGptClient) requestStreamAnswerDetailed(parentCtx context.Context, 
 	// would silently disable the retry setting.
 	for attempt := 0; attempt < in.aiSearchRetryAttempts(); attempt++ {
 		if attempt > 0 {
-			if !sleepAISearchRetryBackoff(parentCtx, attempt, time.Since(requestStartedAt), lastErr) {
+			if !sleepAISearchRetryBackoff(parentCtx, attempt, lastErr) {
 				break
 			}
 		}
@@ -1104,7 +1097,6 @@ func (in *ChatGptClient) requestStreamAnswerDetailed(parentCtx context.Context, 
 				buildAIResponsesMessage("system", systemPrompt+"\n本轮不提供任何联网/读取工具，请直接输出最终答案 JSON。"),
 				buildAIResponsesMessage("user", buildAIResponsesContentParts(userPromptParts)),
 			},
-			MaxOutputTokens: aiToolMaxOutputTokens,
 		})
 		if err != nil {
 			return "", AISearchUsage{}, 0, "", "", "", errors.ErrParserJSON
@@ -1118,10 +1110,10 @@ func (in *ChatGptClient) requestStreamAnswerDetailed(parentCtx context.Context, 
 		var attemptRetryable bool
 		for endpointIndex, endpoint := range endpoints {
 			requestBody = string(payload)
-			attemptStartedAt := time.Now()
 			remainingAfterCall := maxModelCalls - *modelCalls
 			recordTrace(AISearchTrace{Round: *modelCalls, Attempt: attempt + 1, AttemptBudget: in.aiSearchRetryAttempts(), Stage: "普通模型调用开始", Endpoint: endpoint, ModelCallCount: *modelCalls, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingAfterCall})
-			content, usage, statusCode, rawResponse, retryable, callErr := in.executeAISearchStreamRequest(parentCtx, endpoint, payload, requestBody, attemptStartedAt)
+			attemptStartedAt := time.Now()
+			content, usage, statusCode, rawResponse, retryable, callErr := in.executeAISearchStreamRequest(parentCtx, endpoint, payload, requestBody)
 			responseTrace := AISearchTrace{Round: *modelCalls, Attempt: attempt + 1, AttemptBudget: in.aiSearchRetryAttempts(), Stage: "普通模型响应", Endpoint: endpoint, ModelCallCount: *modelCalls, ModelCallBudget: maxModelCalls, RemainingModelCalls: maxModelCalls - *modelCalls, Status: fmt.Sprintf("%d", statusCode), DurationMs: time.Since(attemptStartedAt).Milliseconds(), RequestBody: requestBody, ContentPreview: content, FullResponse: content, RawResponse: rawResponse, Error: errorString(callErr)}
 			if call, ok := buildAIModelCallUsage(usage, in.Model, *modelCalls, attempt+1); ok {
 				appendAIModelCallUsage(&lastUsage, call)
@@ -1159,8 +1151,9 @@ func (in *ChatGptClient) requestStreamAnswerDetailed(parentCtx context.Context, 
 
 // executeAISearchStreamRequest 在全局并发配额内执行单次上游请求。
 // retryable 表示上游明确拒绝且未开始结果流，可按状态退避重试。
-func (in *ChatGptClient) executeAISearchStreamRequest(parentCtx context.Context, endpoint string, payload []byte, requestBody string, requestStartedAt time.Time) (string, AISearchUsage, int, string, bool, error) {
-	// 每次尝试最多等 aiSearchFirstTokenTimeout；但它不能超过本次搜题的总时限。
+func (in *ChatGptClient) executeAISearchStreamRequest(parentCtx context.Context, endpoint string, payload []byte, requestBody string) (string, AISearchUsage, int, string, bool, error) {
+	requestStartedAt := time.Now()
+	// 每次独立尝试最多等待首字超时；任务总时长由调用方 context 控制。
 	ctx, cancel := context.WithTimeout(parentCtx, aiSearchFirstTokenTimeout)
 	defer cancel()
 
@@ -1234,13 +1227,13 @@ func withAISearchRetryAfter(err error, resp *http.Response) error {
 		return err
 	}
 	if seconds, parseErr := strconv.ParseInt(value, 10, 64); parseErr == nil && seconds >= 0 {
-		if seconds > int64(aiSearchRetryBudget/time.Second) {
-			return &aiSearchRetryAfterError{err: err, delay: aiSearchRetryBudget + time.Second}
+		if seconds > int64(time.Duration(1<<63-1)/time.Second) {
+			return &aiSearchRetryAfterError{err: err, delay: time.Duration(1<<63 - 1)}
 		}
 		return &aiSearchRetryAfterError{err: err, delay: time.Duration(seconds) * time.Second}
 	}
 	if value[0] >= '0' && value[0] <= '9' && strings.Trim(value, "0123456789") == "" {
-		return &aiSearchRetryAfterError{err: err, delay: aiSearchRetryBudget + time.Second}
+		return &aiSearchRetryAfterError{err: err, delay: time.Duration(1<<63 - 1)}
 	}
 	if retryAt, parseErr := http.ParseTime(value); parseErr == nil {
 		delay := time.Until(retryAt)
@@ -1260,15 +1253,14 @@ func aiSearchRetryAfter(err error) (time.Duration, bool) {
 	return 0, false
 }
 
-// sleepAISearchRetryBackoff 指数退避，并受总重试预算约束。
-// 返回 false 表示预算已经用尽，不应继续重试。
-func sleepAISearchRetryBackoff(ctx context.Context, attempt int, elapsed time.Duration, retryErr error) bool {
-	if ctx.Err() != nil || elapsed >= aiSearchRetryBudget {
-		return false
-	}
-	delay := time.Duration(float64(aiSearchRetryBaseDelay) * math.Pow(2, float64(attempt-1)))
-	if delay > aiSearchRetryMaxDelay {
-		delay = aiSearchRetryMaxDelay
+func aiSearchRetryDelay(attempt int, retryErr error) time.Duration {
+	delay := aiSearchRetryBaseDelay
+	for step := 1; step < attempt && delay < aiSearchRetryMaxDelay; step++ {
+		if delay > aiSearchRetryMaxDelay/2 {
+			delay = aiSearchRetryMaxDelay
+			break
+		}
+		delay *= 2
 	}
 	if serverDelay, ok := aiSearchRetryAfter(retryErr); ok {
 		delay = serverDelay
@@ -1278,9 +1270,15 @@ func sleepAISearchRetryBackoff(ctx context.Context, attempt int, elapsed time.Du
 			delay = aiSearchRetryMaxDelay
 		}
 	}
-	if delay > aiSearchRetryBudget-elapsed {
+	return delay
+}
+
+// Retry count comes from configuration; waits remain interruptible by the caller.
+func sleepAISearchRetryBackoff(ctx context.Context, attempt int, retryErr error) bool {
+	if ctx.Err() != nil {
 		return false
 	}
+	delay := aiSearchRetryDelay(attempt, retryErr)
 	if deadline, ok := ctx.Deadline(); ok && delay > time.Until(deadline) {
 		return false
 	}

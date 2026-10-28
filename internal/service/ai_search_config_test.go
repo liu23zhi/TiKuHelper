@@ -581,6 +581,40 @@ func TestAISearchConfigPersistsAndResolvesSearchBudgets(t *testing.T) {
 	}
 }
 
+func TestAISearchConfigPreservesLargeBudgetsAcrossEveryView(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	view, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{
+		MaxAISearchModelCalls: 1000, MaxAISearches: 700, MaxAISearchRetries: 80, MaxAIWebReads: 600,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertView := func(view AISearchConfigView) {
+		t.Helper()
+		if view.MaxAISearchModelCalls != 1000 || view.MaxAISearches != 700 || view.MaxAISearchRetries != 80 || view.MaxAIWebReads != 600 {
+			t.Fatalf("large AI settings were changed: %+v", view)
+		}
+	}
+	assertView(view)
+	reloaded, err := GetAISearchConfigWithDB(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertView(reloaded)
+	resolved, err := BuildAISearchRequestConfigWithDB(db, url.Values{}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Config.MaxAISearchModelCalls != 1000 || resolved.Config.MaxAISearches != 700 || resolved.Config.MaxAISearchRetries != 80 || resolved.Config.MaxAIWebReads != 600 {
+		t.Fatalf("request settings changed large budgets: %+v", resolved.Config)
+	}
+	legacy, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{Model: "legacy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertView(legacy)
+}
+
 func TestAISearchConfigPersistsSearchPricePerCallWithLegacyPayloadCompatibility(t *testing.T) {
 	db := newSearchAccountConfigTestDB(t)
 	if err := db.AutoMigrate(&entity.SystemSetting{}); err != nil {

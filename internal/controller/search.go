@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -77,6 +78,7 @@ type searchAuditMetadata struct {
 }
 
 type resolvedSearchRequestContext struct {
+	Context                    context.Context
 	Tokens                     map[string]string
 	EnabledSearchProviders     []string
 	AIConfig                   service.AISearchRequestConfig
@@ -246,6 +248,7 @@ var buildSearchClients = func(resolved resolvedSearchRequestContext, useQuery st
 
 var searchAIAnswer = func(resolved resolvedSearchRequestContext, req model.SearchRequest) ([][]string, search.AISearchUsage, error) {
 	client := &search.ChatGptClient{
+		Context:               resolved.Context,
 		Enable:                shouldUseAISearch("ai", resolved.AIConfig),
 		BaseURL:               resolved.AIConfig.BaseURL,
 		APIKey:                resolved.AIConfig.APIKey,
@@ -258,6 +261,7 @@ var searchAIAnswer = func(resolved resolvedSearchRequestContext, req model.Searc
 		MaxAISearchRetries:    resolved.AIConfig.MaxAISearchRetries,
 		MaxAIWebReads:         resolved.AIConfig.MaxAIWebReads,
 		SearchTool:            service.BuildUAPISearchToolWithDB(manager.GetManager().GetDB()),
+		ContextCompression:    service.BuildAIContextCompressionConfigWithDB(manager.GetManager().GetDB(), resolved.AIConfig),
 		RequestID:             resolved.RequestID,
 	}
 	logger.SysLog(fmt.Sprintf("AI搜题开始 requestId=%s %s", strings.TrimSpace(resolved.RequestID), buildSearchRequestDebugSummary(req)))
@@ -314,6 +318,7 @@ func Search(c *gin.Context) {
 		writeSearchUnauthorized(c, fmt.Errorf("%w: 本地题库未启用，请先在默认账号配置中启用后再调用", service.ErrInvalidAccessTokenAuthorization), rawBody)
 		return
 	}
+	resolveResult.Context = c.Request.Context()
 	resolved := resolveResult
 	req.RequestID = strings.TrimSpace(resolved.RequestID)
 

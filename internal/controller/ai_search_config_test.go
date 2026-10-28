@@ -3,6 +3,7 @@ package controller
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,7 +11,47 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	internalsearch "github.com/itihey/tikuAdapter/internal/search"
+	"github.com/itihey/tikuAdapter/internal/service"
 )
+
+func TestUpdateAISearchConfigRejectsInvalidCompressionSettingsAsBadRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	original := updateAISearchConfig
+	t.Cleanup(func() { updateAISearchConfig = original })
+	updateAISearchConfig = func(input service.UpdateAISearchConfigInput) (service.AISearchConfigView, error) {
+		if input.ContextCompressionTargetPercent == nil || *input.ContextCompressionTargetPercent != 90 {
+			t.Fatalf("compression input was not parsed: %+v", input)
+		}
+		return service.AISearchConfigView{}, fmt.Errorf("%w: 目标比例必须小于触发比例", service.ErrAIContextCompressionSettingsInvalid)
+	}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/ai-search-config", bytes.NewBufferString(`{"contextCompressionTargetPercent":90}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
+	UpdateAISearchConfig(ctx)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid compression input, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestUpdateAISearchConfigRejectsInvalidCountAsBadRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	original := updateAISearchConfig
+	t.Cleanup(func() { updateAISearchConfig = original })
+	updateAISearchConfig = func(input service.UpdateAISearchConfigInput) (service.AISearchConfigView, error) {
+		return service.AISearchConfigView{}, service.ErrInvalidAISearchCount
+	}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/ai-search-config", bytes.NewBufferString(`{"maxAISearchModelCalls":-1}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
+	UpdateAISearchConfig(ctx)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid count, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
 
 func TestAISearchConfigTestRejectsNonAdmin(t *testing.T) {
 	gin.SetMode(gin.TestMode)

@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"hash/fnv"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const (
@@ -21,15 +23,19 @@ const (
 
 	// aimodelPriceSeededSettingKey 记录上次同步时的默认表指纹，
 	// 用于在默认表未变化时跳过逐行同步。
-	aimodelPriceSeededSettingKey = "ai_model_price_defaults_seeded"
+	aimodelPriceSeededSettingKey        = "ai_model_price_defaults_seeded"
+	aimodelPriceCatalogSettingKey       = "ai_model_price_defaults_catalog"
+	MaxAIModelContextWindowTokens int64 = 9007199254740991
 )
 
 var aimodelPriceSeeded sync.Map
 
 var ErrAIModelPriceNameRequired = errors.New("模型 ID 不能为空")
 var ErrAIModelPriceNotFound = errors.New("模型价格不存在")
+var ErrAIModelContextWindowInvalid = errors.New("上下文窗口必须为 0 到 9007199254740991 之间的整数 Token 数，0 表示未设置")
 
-// defaultAIModelPrices 是内置的默认模型价格表。
+// legacyDefaultAIModelPrices 固定保留本次升级前的默认模型清单与价格。
+// 默认补全不能改写这些价格；该清单也用于识别旧版本中已删除的默认模型。
 //
 // ModelName 是**模型 ID**（发送给上游的 model 字段，例如 gpt-6-astra），
 // DisplayName 是可读名称（例如 GPT-6 Astra）。价格匹配同时接受两者，
@@ -42,7 +48,7 @@ var ErrAIModelPriceNotFound = errors.New("模型价格不存在")
 // 输出的 1.5 倍；Fast / Flex / Batch / Ultrafast 档位价格不同，如需按这些档位计费，
 // 请另建一条带后缀的模型行（例如 gpt-6-astra-fast）。
 // CacheWritePrice 为「缓存写入」单价；文档中为「-」的模型填 0。
-var defaultAIModelPrices = []entity.AIModelPrice{
+var legacyDefaultAIModelPrices = []entity.AIModelPrice{
 	// 旗舰模型
 	{ModelName: "gpt-6-astra", DisplayName: "GPT-6 Astra", InputPrice: 10.00, CachedPrice: 1.00, CacheWritePrice: 12.50, OutputPrice: 50.00},
 	{ModelName: "gpt-6.1-sol", DisplayName: "GPT-6.1 Sol", InputPrice: 2.00, CachedPrice: 0.10, CacheWritePrice: 2.50, OutputPrice: 10.00},
@@ -106,30 +112,34 @@ var defaultAIModelPrices = []entity.AIModelPrice{
 	{ModelName: "gpt-6-astra-law", DisplayName: "GPT-6 Astra Law *", InputPrice: 12.50, CachedPrice: 1.25, CacheWritePrice: 15.625, OutputPrice: 62.50},
 }
 
+var defaultAIModelPrices = buildDefaultAIModelPrices()
+
 type CreateAIModelPriceInput struct {
-	ModelName       string  `json:"modelName"`
-	DisplayName     string  `json:"displayName"`
-	InputPrice      float64 `json:"inputPrice"`
-	CachedPrice     float64 `json:"cachedPrice"`
-	CacheWritePrice float64 `json:"cacheWritePrice"`
-	OutputPrice     float64 `json:"outputPrice"`
-	Multiplier      float64 `json:"multiplier"`
-	Status          string  `json:"status"`
-	Sort            int     `json:"sort"`
-	Remark          string  `json:"remark"`
+	ModelName           string  `json:"modelName"`
+	DisplayName         string  `json:"displayName"`
+	ContextWindowTokens *int64  `json:"contextWindowTokens"`
+	InputPrice          float64 `json:"inputPrice"`
+	CachedPrice         float64 `json:"cachedPrice"`
+	CacheWritePrice     float64 `json:"cacheWritePrice"`
+	OutputPrice         float64 `json:"outputPrice"`
+	Multiplier          float64 `json:"multiplier"`
+	Status              string  `json:"status"`
+	Sort                int     `json:"sort"`
+	Remark              string  `json:"remark"`
 }
 
 type UpdateAIModelPriceInput struct {
-	ModelName       string  `json:"modelName"`
-	DisplayName     string  `json:"displayName"`
-	InputPrice      float64 `json:"inputPrice"`
-	CachedPrice     float64 `json:"cachedPrice"`
-	CacheWritePrice float64 `json:"cacheWritePrice"`
-	OutputPrice     float64 `json:"outputPrice"`
-	Multiplier      float64 `json:"multiplier"`
-	Status          string  `json:"status"`
-	Sort            int     `json:"sort"`
-	Remark          string  `json:"remark"`
+	ModelName           string  `json:"modelName"`
+	DisplayName         string  `json:"displayName"`
+	ContextWindowTokens *int64  `json:"contextWindowTokens"`
+	InputPrice          float64 `json:"inputPrice"`
+	CachedPrice         float64 `json:"cachedPrice"`
+	CacheWritePrice     float64 `json:"cacheWritePrice"`
+	OutputPrice         float64 `json:"outputPrice"`
+	Multiplier          float64 `json:"multiplier"`
+	Status              string  `json:"status"`
+	Sort                int     `json:"sort"`
+	Remark              string  `json:"remark"`
 }
 
 // ResolvedAIModelTokenPrice 是最终生效的模型单价，单位为「人民币（元）/ 百万 token」。
@@ -137,6 +147,7 @@ type UpdateAIModelPriceInput struct {
 type ResolvedAIModelTokenPrice struct {
 	ModelName           string  `json:"modelName"`
 	DisplayName         string  `json:"displayName"`
+	ContextWindowTokens int64   `json:"contextWindowTokens"`
 	PriceID             int32   `json:"priceId"`
 	InputPrice          float64 `json:"inputPrice"`
 	CachedPrice         float64 `json:"cachedPrice"`
@@ -171,10 +182,10 @@ func ListAIModelPricesWithDB(db *gorm.DB) ([]entity.AIModelPrice, error) {
 //
 // 行为：
 //   - 默认表中新增的模型会自动补入（这样扩充默认价格表后，既有部署启动即生效）；
-//   - 内置模型的单价会跟随默认表更新；
-//   - 管理员手动改过的行（IsUserModified）与管理员删除的模型都不会被覆盖或复活。
+//   - 已存在的价格、倍率、ID、名称及排序都保持不变，仅补缺失的上下文窗口；
+//   - 已同步的模型清单保留删除意图，升级默认表不能复活管理员删除的模型。
 //
-// 数据库尚未建表时直接返回 nil：价格表缺失不应该让搜题链路整体失败。
+// 尚未建表的数据库会创建价格表；结构或同步失败时不写成功标记，以便下次重试。
 func EnsureDefaultAIModelPricesWithDB(db *gorm.DB) error {
 	if db == nil {
 		return nil
@@ -199,33 +210,37 @@ func EnsureDefaultAIModelPricesWithDB(db *gorm.DB) error {
 		return nil
 	}
 
-	if err := syncDefaultAIModelPrices(db); err != nil {
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := syncDefaultAIModelPrices(tx); err != nil {
+			return err
+		}
+		return storeAIModelPriceSeededMarker(tx, aimodelPriceDefaultsFingerprint())
+	}); err != nil {
 		return err
 	}
 
-	storeAIModelPriceSeededMarker(db, aimodelPriceDefaultsFingerprint())
 	aimodelPriceSeeded.Store(cacheKey, struct{}{})
 	return nil
 }
 
 func syncDefaultAIModelPrices(db *gorm.DB) error {
+	known, err := loadAIModelPriceCatalog(db)
+	if err != nil {
+		return err
+	}
 	for index, seed := range defaultAIModelPrices {
-		if err := syncOneDefaultAIModelPrice(db, seed, (index+1)*10); err != nil {
+		if err := syncDefaultAIModelPrice(db, seed, (index+1)*10, known[strings.ToLower(seed.ModelName)]); err != nil {
 			return err
 		}
+		known[strings.ToLower(seed.ModelName)] = true
 	}
-	return nil
+	return storeAIModelPriceCatalog(db, known)
 }
 
 // findExistingAIModelPriceForSeed 为一条默认价格找它对应的既有行。
 //
 // 先按模型 ID 匹配；未命中再按显示名称匹配（命中时第二个 bool 为 true）。
-// 这样内置表从「可读名」改成「上游模型 ID」时，旧行会被原地认领并重命名，
-// 而不是插入一条重复的新行。
-//
-// 注意：匹配是大小写不敏感的，所以模型 ID 分支也可能命中旧的可读名行
-// （"GPT-5.5" 与 "gpt-5.5"）。调用方必须比较两者的实际值来判断是否需要重命名，
-// 不能只看命中了哪个分支。
+// 这样旧版本以可读名存储的行仍会被认领补全，不插入重复的新行，也不改写其模型 ID。
 func findExistingAIModelPriceForSeed(db *gorm.DB, seed entity.AIModelPrice) (entity.AIModelPrice, bool, bool, error) {
 	var existing entity.AIModelPrice
 	err := db.Where("LOWER(model_name) = LOWER(?)", seed.ModelName).First(&existing).Error
@@ -251,6 +266,10 @@ func findExistingAIModelPriceForSeed(db *gorm.DB, seed entity.AIModelPrice) (ent
 }
 
 func syncOneDefaultAIModelPrice(db *gorm.DB, seed entity.AIModelPrice, seedSort int) error {
+	return syncDefaultAIModelPrice(db, seed, seedSort, false)
+}
+
+func syncDefaultAIModelPrice(db *gorm.DB, seed entity.AIModelPrice, seedSort int, wasSynced bool) error {
 	existing, found, _, err := findExistingAIModelPriceForSeed(db, seed)
 	if err != nil {
 		if isAIModelPriceTableMissingError(err) {
@@ -260,6 +279,9 @@ func syncOneDefaultAIModelPrice(db *gorm.DB, seed entity.AIModelPrice, seedSort 
 	}
 
 	if !found {
+		if wasSynced {
+			return nil
+		}
 		item := seed
 		item.Status = AIModelPriceStatusEnabled
 		item.Multiplier = normalizeAIModelPriceMultiplier(seed.Multiplier)
@@ -278,48 +300,14 @@ func syncOneDefaultAIModelPrice(db *gorm.DB, seed entity.AIModelPrice, seedSort 
 		return nil
 	}
 
-	updates := map[string]any{}
-	// 旧行把可读名当作模型 ID，这里原地迁移为上游模型 ID，避免出现重复行。
-	// 使用精确比较：strings.EqualFold 会把 "GPT-5.5" 与 "gpt-5.5" 视为相等
-	// （Unicode 简单折叠里 '.' 与 '-' 等价），那样就漏掉了旧行需要改名的判断。
-	if strings.TrimSpace(existing.ModelName) != seed.ModelName {
-		updates["model_name"] = seed.ModelName
-	}
-	// 显示名只在「仍为空」或「仍是旧的默认值（等于旧模型 ID）」时补齐，
-	// 不覆盖管理员自定义的显示名。
-	trimmedDisplay := strings.TrimSpace(existing.DisplayName)
-	if !existing.IsUserModified &&
-		trimmedDisplay != seed.DisplayName &&
-		(trimmedDisplay == "" || trimmedDisplay == strings.TrimSpace(existing.ModelName)) {
-		updates["display_name"] = seed.DisplayName
-	}
-
-	// 管理员改过的价格保持不动（但仍然接受改名与默认排序）。
-	if !existing.IsUserModified {
-		updates["input_price"] = seed.InputPrice
-		updates["cached_price"] = seed.CachedPrice
-		updates["cache_write_price"] = seed.CacheWritePrice
-		updates["output_price"] = seed.OutputPrice
-		updates["multiplier"] = normalizeAIModelPriceMultiplier(seed.Multiplier)
-		if existing.Sort == 0 || existing.IsSeed {
-			updates["sort"] = seedSort
-		}
-	}
-	if len(updates) == 0 {
-		return nil
-	}
-
-	if err := db.Model(&entity.AIModelPrice{}).Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
-		if isAIModelPriceTableMissingError(err) || isAIModelPriceUniqueConflictError(err) {
-			return nil
-		}
-		return err
+	if existing.ContextWindowTokens == 0 && seed.ContextWindowTokens > 0 {
+		return db.Model(&entity.AIModelPrice{}).Where("id = ? AND COALESCE(context_window_tokens, 0) = 0", existing.ID).UpdateColumn("context_window_tokens", seed.ContextWindowTokens).Error
 	}
 	return nil
 }
 
 // aimodelPriceDefaultsFingerprint 给默认价格表算一个稳定指纹。
-// 默认表内容变化（新增模型或调整价格）时指纹随之变化，用于触发一次同步。
+// 默认表内容变化（新增模型或补充上下文窗口）时指纹随之变化，用于触发一次补全。
 func aimodelPriceDefaultsFingerprint() string {
 	payload, err := json.Marshal(defaultAIModelPrices)
 	if err != nil {
@@ -339,14 +327,52 @@ func aimodelPriceSeededMarker(db *gorm.DB) string {
 	return strings.TrimSpace(setting.Value)
 }
 
-func storeAIModelPriceSeededMarker(db *gorm.DB, fingerprint string) {
-	if err := db.Where("key = ?", aimodelPriceSeededSettingKey).Delete(&entity.SystemSetting{}).Error; err != nil {
-		return
+func storeAIModelPriceSeededMarker(db *gorm.DB, fingerprint string) error {
+	return storeAIModelPriceSetting(db, aimodelPriceSeededSettingKey, fingerprint)
+}
+
+func storeAIModelPriceSetting(db *gorm.DB, key, value string) error {
+	return db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "key"}}, DoUpdates: clause.AssignmentColumns([]string{"value"})}).Create(&entity.SystemSetting{Key: key, Value: value}).Error
+}
+
+func loadAIModelPriceCatalog(db *gorm.DB) (map[string]bool, error) {
+	known := make(map[string]bool)
+	var setting entity.SystemSetting
+	err := db.Where("key = ?", aimodelPriceCatalogSettingKey).First(&setting).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// Old releases recorded only a fingerprint. Their original catalog is
+		// treated as already synced so an absent old model stays deleted.
+		if aimodelPriceSeededMarker(db) != "" {
+			for _, seed := range legacyDefaultAIModelPrices {
+				known[strings.ToLower(seed.ModelName)] = true
+			}
+		}
+		return known, nil
 	}
-	_ = db.Create(&entity.SystemSetting{
-		Key:   aimodelPriceSeededSettingKey,
-		Value: fingerprint,
-	}).Error
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	if err := json.Unmarshal([]byte(setting.Value), &names); err != nil {
+		return nil, fmt.Errorf("读取默认模型同步清单失败: %w", err)
+	}
+	for _, name := range names {
+		known[strings.ToLower(strings.TrimSpace(name))] = true
+	}
+	return known, nil
+}
+
+func storeAIModelPriceCatalog(db *gorm.DB, known map[string]bool) error {
+	names := make([]string, 0, len(known))
+	for name := range known {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	payload, err := json.Marshal(names)
+	if err != nil {
+		return err
+	}
+	return storeAIModelPriceSetting(db, aimodelPriceCatalogSettingKey, string(payload))
 }
 
 // aimodelPriceCacheKey 用底层连接池指针区分不同数据库（生产库与测试内存库）。
@@ -362,16 +388,22 @@ func aimodelPriceCacheKey(db *gorm.DB) string {
 func aimodelPriceTableReady(db *gorm.DB) (bool, error) {
 	ready := db.Migrator().HasTable(&entity.AIModelPrice{})
 	if ready {
-		return true, nil
-	}
-
-	// 生产环境由 registry 的 AutoMigrate 建表；这里兜底是为了兼容
-	// 只初始化了历史表的数据库与测试用内存库，避免计费因缺表而中断。
-	if err := db.Migrator().CreateTable(&entity.AIModelPrice{}); err != nil {
-		if isAIModelPriceTableMissingError(err) {
-			return false, nil
+		if !db.Migrator().HasColumn(&entity.AIModelPrice{}, "context_window_tokens") {
+			if err := db.Migrator().AddColumn(&entity.AIModelPrice{}, "ContextWindowTokens"); err != nil {
+				return false, err
+			}
 		}
-		return false, err
+	} else {
+		// Registry normally creates the table; standalone callers also support
+		// upgrades from databases that have not registered it yet.
+		if err := db.Migrator().CreateTable(&entity.AIModelPrice{}); err != nil {
+			return false, err
+		}
+	}
+	if !db.Migrator().HasTable(&entity.SystemSetting{}) {
+		if err := db.Migrator().CreateTable(&entity.SystemSetting{}); err != nil {
+			return false, err
+		}
 	}
 	return true, nil
 }
@@ -399,16 +431,17 @@ func isAIModelPriceUniqueConflictError(err error) bool {
 
 func CreateAIModelPriceWithDB(db *gorm.DB, input CreateAIModelPriceInput) (entity.AIModelPrice, error) {
 	item, err := normalizeAIModelPriceInput(entity.AIModelPrice{
-		ModelName:       input.ModelName,
-		DisplayName:     input.DisplayName,
-		InputPrice:      input.InputPrice,
-		CachedPrice:     input.CachedPrice,
-		CacheWritePrice: input.CacheWritePrice,
-		OutputPrice:     input.OutputPrice,
-		Multiplier:      input.Multiplier,
-		Status:          input.Status,
-		Sort:            input.Sort,
-		Remark:          input.Remark,
+		ModelName:           input.ModelName,
+		DisplayName:         input.DisplayName,
+		ContextWindowTokens: modelContextWindowValue(input.ContextWindowTokens),
+		InputPrice:          input.InputPrice,
+		CachedPrice:         input.CachedPrice,
+		CacheWritePrice:     input.CacheWritePrice,
+		OutputPrice:         input.OutputPrice,
+		Multiplier:          input.Multiplier,
+		Status:              input.Status,
+		Sort:                input.Sort,
+		Remark:              input.Remark,
 	})
 	if err != nil {
 		return entity.AIModelPrice{}, err
@@ -425,39 +458,50 @@ func UpdateAIModelPriceWithDB(db *gorm.DB, priceID int32, input UpdateAIModelPri
 	if err != nil {
 		return entity.AIModelPrice{}, err
 	}
+	contextWindowTokens := item.ContextWindowTokens
+	if input.ContextWindowTokens != nil {
+		contextWindowTokens = *input.ContextWindowTokens
+	}
 
 	normalized, err := normalizeAIModelPriceInput(entity.AIModelPrice{
-		ModelName:       input.ModelName,
-		DisplayName:     input.DisplayName,
-		InputPrice:      input.InputPrice,
-		CachedPrice:     input.CachedPrice,
-		CacheWritePrice: input.CacheWritePrice,
-		OutputPrice:     input.OutputPrice,
-		Multiplier:      input.Multiplier,
-		Status:          input.Status,
-		Sort:            input.Sort,
-		Remark:          input.Remark,
+		ModelName:           input.ModelName,
+		DisplayName:         input.DisplayName,
+		ContextWindowTokens: contextWindowTokens,
+		InputPrice:          input.InputPrice,
+		CachedPrice:         input.CachedPrice,
+		CacheWritePrice:     input.CacheWritePrice,
+		OutputPrice:         input.OutputPrice,
+		Multiplier:          input.Multiplier,
+		Status:              input.Status,
+		Sort:                input.Sort,
+		Remark:              input.Remark,
 	})
 	if err != nil {
 		return entity.AIModelPrice{}, err
 	}
 
-	item.ModelName = normalized.ModelName
-	item.DisplayName = normalized.DisplayName
-	item.InputPrice = normalized.InputPrice
-	item.CachedPrice = normalized.CachedPrice
-	item.CacheWritePrice = normalized.CacheWritePrice
-	item.OutputPrice = normalized.OutputPrice
-	item.Multiplier = normalized.Multiplier
-	item.Status = normalized.Status
-	item.Sort = normalized.Sort
-	item.Remark = normalized.Remark
-	item.IsUserModified = true
-
-	if err := db.Save(&item).Error; err != nil {
+	updates := map[string]any{
+		"model_name":        normalized.ModelName,
+		"display_name":      normalized.DisplayName,
+		"input_price":       normalized.InputPrice,
+		"cached_price":      normalized.CachedPrice,
+		"cache_write_price": normalized.CacheWritePrice,
+		"output_price":      normalized.OutputPrice,
+		"multiplier":        normalized.Multiplier,
+		"status":            normalized.Status,
+		"sort":              normalized.Sort,
+		"remark":            normalized.Remark,
+		"is_user_modified":  true,
+	}
+	// Omitted context must stay absent from SQL, so a concurrent default
+	// completion cannot be overwritten with the value read before it.
+	if input.ContextWindowTokens != nil {
+		updates["context_window_tokens"] = normalized.ContextWindowTokens
+	}
+	if err := db.Model(&entity.AIModelPrice{}).Where("id = ?", priceID).Updates(updates).Error; err != nil {
 		return entity.AIModelPrice{}, err
 	}
-	return item, nil
+	return loadAIModelPriceByID(db, priceID)
 }
 
 func DeleteAIModelPriceWithDB(db *gorm.DB, priceID int32) error {
@@ -465,7 +509,17 @@ func DeleteAIModelPriceWithDB(db *gorm.DB, priceID int32) error {
 	if err != nil {
 		return err
 	}
-	return db.Delete(&item).Error
+	return db.Transaction(func(tx *gorm.DB) error {
+		known, err := loadAIModelPriceCatalog(tx)
+		if err != nil {
+			return err
+		}
+		known[strings.ToLower(strings.TrimSpace(item.ModelName))] = true
+		if err := storeAIModelPriceCatalog(tx, known); err != nil {
+			return err
+		}
+		return tx.Delete(&item).Error
+	})
 }
 
 // ResetAIModelPricesWithDB 恢复内置默认价格表，用于管理员误改后回滚。
@@ -478,7 +532,7 @@ func ResetAIModelPricesWithDB(db *gorm.DB) error {
 	}
 
 	// 清除初始化标记与进程内缓存，让下一轮重新写入默认价格。
-	if err := db.Where("key = ?", aimodelPriceSeededSettingKey).Delete(&entity.SystemSetting{}).Error; err != nil {
+	if err := db.Where("key IN ?", []string{aimodelPriceSeededSettingKey, aimodelPriceCatalogSettingKey}).Delete(&entity.SystemSetting{}).Error; err != nil {
 		return err
 	}
 	aimodelPriceSeeded.Delete(aimodelPriceCacheKey(db))
@@ -511,6 +565,7 @@ func ResolveAIModelTokenPriceWithDB(db *gorm.DB, modelName string) (ResolvedAIMo
 	return ResolvedAIModelTokenPrice{
 		ModelName:           item.ModelName,
 		DisplayName:         resolveAIModelPriceDisplayName(*item),
+		ContextWindowTokens: item.ContextWindowTokens,
 		PriceID:             item.ID,
 		InputPrice:          item.InputPrice,
 		CachedPrice:         item.CachedPrice,
@@ -588,6 +643,9 @@ func normalizeAIModelPriceInput(input entity.AIModelPrice) (entity.AIModelPrice,
 	if normalizedName == "" {
 		return entity.AIModelPrice{}, ErrAIModelPriceNameRequired
 	}
+	if input.ContextWindowTokens < 0 || input.ContextWindowTokens > MaxAIModelContextWindowTokens {
+		return entity.AIModelPrice{}, ErrAIModelContextWindowInvalid
+	}
 
 	sortOrder := input.Sort
 	if sortOrder < 0 {
@@ -595,18 +653,26 @@ func normalizeAIModelPriceInput(input entity.AIModelPrice) (entity.AIModelPrice,
 	}
 
 	return entity.AIModelPrice{
-		ModelName:       normalizedName,
-		DisplayName:     strings.TrimSpace(input.DisplayName),
-		InputPrice:      normalizeAIModelPriceAmount(input.InputPrice),
-		CachedPrice:     normalizeAIModelPriceAmount(input.CachedPrice),
-		CacheWritePrice: normalizeAIModelPriceAmount(input.CacheWritePrice),
-		OutputPrice:     normalizeAIModelPriceAmount(input.OutputPrice),
-		Multiplier:      normalizeAIModelPriceMultiplier(input.Multiplier),
+		ModelName:           normalizedName,
+		DisplayName:         strings.TrimSpace(input.DisplayName),
+		ContextWindowTokens: input.ContextWindowTokens,
+		InputPrice:          normalizeAIModelPriceAmount(input.InputPrice),
+		CachedPrice:         normalizeAIModelPriceAmount(input.CachedPrice),
+		CacheWritePrice:     normalizeAIModelPriceAmount(input.CacheWritePrice),
+		OutputPrice:         normalizeAIModelPriceAmount(input.OutputPrice),
+		Multiplier:          normalizeAIModelPriceMultiplier(input.Multiplier),
 		// 价格表不再有状态概念，写入时固定为启用，避免出现静默不计费的行。
 		Status: AIModelPriceStatusEnabled,
 		Sort:   sortOrder,
 		Remark: strings.TrimSpace(input.Remark),
 	}, nil
+}
+
+func modelContextWindowValue(value *int64) int64 {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 // normalizeAIModelPriceMultiplier 把倍率收敛到合法范围：默认 1，负值/非法值回落到 1。

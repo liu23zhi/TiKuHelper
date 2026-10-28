@@ -27,7 +27,7 @@ func newAIModelPriceTestDB(t *testing.T) *gorm.DB {
 
 func TestDefaultAIModelPricesMatchAgreedPriceTable(t *testing.T) {
 	// 全量默认表：Standard 短上下文档位 + 别名行。
-	if got := len(defaultAIModelPrices); got != 54 {
+	if got := len(legacyDefaultAIModelPrices); got != 54 {
 		t.Fatalf("expected 54 default model prices, got %d", got)
 	}
 
@@ -102,8 +102,8 @@ func TestDefaultAIModelPricesMatchAgreedPriceTable(t *testing.T) {
 		{"gpt-6-astra-law", "GPT-6 Astra Law *", [4]float64{12.50, 1.25, 15.625, 62.50}},
 	}
 
-	if len(expected) != len(defaultAIModelPrices) {
-		t.Fatalf("expected table covers %d models but defaults have %d", len(expected), len(defaultAIModelPrices))
+	if len(expected) != len(legacyDefaultAIModelPrices) {
+		t.Fatalf("expected table covers %d models but legacy defaults have %d", len(expected), len(legacyDefaultAIModelPrices))
 	}
 
 	wantByID := make(map[string]expectation, len(expected))
@@ -111,7 +111,7 @@ func TestDefaultAIModelPricesMatchAgreedPriceTable(t *testing.T) {
 		wantByID[item.id] = item
 	}
 
-	for _, item := range defaultAIModelPrices {
+	for _, item := range legacyDefaultAIModelPrices {
 		want, ok := wantByID[item.ModelName]
 		if !ok {
 			t.Fatalf("unexpected seeded model %q", item.ModelName)
@@ -129,14 +129,14 @@ func TestDefaultAIModelPricesMatchAgreedPriceTable(t *testing.T) {
 	}
 }
 
-// 模型 ID 必须是发送给上游的小写 ID 形态，且每行都要有可读的显示名称。
-func TestDefaultAIModelPricesUseLowercaseModelIDsAndReadableDisplayNames(t *testing.T) {
-	modelIDPattern := regexp.MustCompile(`^[a-z0-9][a-z0-9.\-]*$`)
+// 模型 ID 保留上游规定的大小写，且每行都要有可读的显示名称。
+func TestDefaultAIModelPricesUseProviderModelIDsAndReadableDisplayNames(t *testing.T) {
+	modelIDPattern := regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.\-]*$`)
 
 	seen := make(map[string]struct{}, len(defaultAIModelPrices))
 	for _, item := range defaultAIModelPrices {
 		if !modelIDPattern.MatchString(item.ModelName) {
-			t.Fatalf("expected %q to be a lowercase upstream model id", item.ModelName)
+			t.Fatalf("expected %q to be a valid upstream model id", item.ModelName)
 		}
 		if _, exists := seen[item.ModelName]; exists {
 			t.Fatalf("duplicated model id %q in default table", item.ModelName)
@@ -229,9 +229,54 @@ func TestEnsureDefaultAIModelPricesWithDBSeedsOnceAndKeepsAdminEdits(t *testing.
 	}
 }
 
-// 内置表从「可读名当模型 ID」改为「上游模型 ID + 显示名称」时，
-// 旧行必须被原地认领并重命名，而不是插出一条重复行。
-func TestModelPriceSeedRenamesLegacyRowsInPlace(t *testing.T) {
+func TestModelPriceSeedOnlyCompletesMissingMetadata(t *testing.T) {
+	db := newAIModelPriceTestDB(t)
+	existing := entity.AIModelPrice{ModelName: "GPT-6 Astra", DisplayName: "GPT-6 Astra", InputPrice: 7.25, CachedPrice: 0.7, CacheWritePrice: 3, OutputPrice: 44, Multiplier: 1.7, Sort: 987, Remark: "已有配置", IsSeed: true}
+	if err := db.Create(&existing).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := syncOneDefaultAIModelPrice(db, defaultAIModelPrices[0], 10); err != nil {
+		t.Fatal(err)
+	}
+	var got entity.AIModelPrice
+	if err := db.First(&got, existing.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got.ModelName != existing.ModelName || got.DisplayName != existing.DisplayName || got.InputPrice != existing.InputPrice || got.CachedPrice != existing.CachedPrice || got.CacheWritePrice != existing.CacheWritePrice || got.OutputPrice != existing.OutputPrice || got.Multiplier != existing.Multiplier || got.Sort != existing.Sort || got.Remark != existing.Remark {
+		t.Fatalf("default completion overwrote existing configuration: before=%+v after=%+v", existing, got)
+	}
+}
+
+func TestModelPriceSeedDoesNotResurrectAfterCatalogChange(t *testing.T) {
+	db := newAIModelPriceTestDB(t)
+	if err := EnsureDefaultAIModelPricesWithDB(db); err != nil {
+		t.Fatal(err)
+	}
+	var deleted entity.AIModelPrice
+	if err := db.Where("model_name = ?", "gpt-6-astra").First(&deleted).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteAIModelPriceWithDB(db, deleted.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&entity.SystemSetting{}).Where("key = ?", aimodelPriceSeededSettingKey).Update("value", "older-catalog").Error; err != nil {
+		t.Fatal(err)
+	}
+	aimodelPriceSeeded.Delete(aimodelPriceCacheKey(db))
+	if err := EnsureDefaultAIModelPricesWithDB(db); err != nil {
+		t.Fatal(err)
+	}
+	var count int64
+	if err := db.Model(&entity.AIModelPrice{}).Where("id = ? OR model_name = ?", deleted.ID, deleted.ModelName).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatal("catalog update resurrected an explicitly deleted model")
+	}
+}
+
+// 补全时可按可读名认领历史行，但不能改写既有 ID 或价格。
+func TestModelPriceSeedPreservesLegacyRowsInPlace(t *testing.T) {
 	db := newAIModelPriceTestDB(t)
 
 	// 模拟旧版部署：模型 ID 与显示名称都是可读名。
@@ -265,19 +310,19 @@ func TestModelPriceSeedRenamesLegacyRowsInPlace(t *testing.T) {
 	if err := db.Where("id = ?", legacy.ID).First(&renamed).Error; err != nil {
 		t.Fatalf("reload legacy row: %v", err)
 	}
-	if renamed.ModelName != "gpt-6-astra" {
-		t.Fatalf("expected legacy model id to be renamed to gpt-6-astra, got %q", renamed.ModelName)
+	if renamed.ModelName != legacy.ModelName {
+		t.Fatalf("expected legacy model id to stay unchanged, got %q", renamed.ModelName)
 	}
 	if renamed.DisplayName != "GPT-6 Astra" {
 		t.Fatalf("expected display name to stay readable, got %q", renamed.DisplayName)
 	}
-	if renamed.CacheWritePrice != 12.5 {
-		t.Fatalf("expected cache write price to be filled from defaults, got %v", renamed.CacheWritePrice)
+	if renamed.CacheWritePrice != 0 {
+		t.Fatalf("expected existing zero cache-write price to stay unchanged, got %v", renamed.CacheWritePrice)
 	}
 }
 
-// 管理员改过价格的旧行：仍然重命名，但价格保持不动。
-func TestModelPriceSeedKeepsAdminEditedRowDuringRename(t *testing.T) {
+// 管理员改过价格的旧行：模型 ID 与价格都保持不动。
+func TestModelPriceSeedKeepsAdminEditedRowUnchanged(t *testing.T) {
 	db := newAIModelPriceTestDB(t)
 
 	legacy := entity.AIModelPrice{
@@ -301,8 +346,8 @@ func TestModelPriceSeedKeepsAdminEditedRowDuringRename(t *testing.T) {
 	if err := db.Where("id = ?", legacy.ID).First(&renamed).Error; err != nil {
 		t.Fatalf("reload legacy row: %v", err)
 	}
-	if renamed.ModelName != "gpt-5.5" {
-		t.Fatalf("expected rename to gpt-5.5, got %q", renamed.ModelName)
+	if renamed.ModelName != legacy.ModelName {
+		t.Fatalf("expected legacy ID to remain unchanged, got %q", renamed.ModelName)
 	}
 	if renamed.InputPrice != 7.77 || renamed.OutputPrice != 77.77 {
 		t.Fatalf("expected admin prices to survive the rename, got %+v", renamed)

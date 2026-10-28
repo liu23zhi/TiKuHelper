@@ -10,7 +10,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
 
 	pkgerrors "github.com/itihey/tikuAdapter/pkg/errors"
@@ -78,7 +77,7 @@ func TestAIUpstreamNetworkFailurePreservesCauseWithoutURLCredentials(t *testing.
 	const key = "private-provider-key"
 	endpoint := strings.Replace(address, "http://", "http://user:private-password@", 1) + "/v1/responses?token=private-query-token"
 	client := &ChatGptClient{APIKey: key}
-	_, _, _, _, _, err := client.executeAISearchStreamRequest(context.Background(), endpoint, []byte(`{}`), `{}`, time.Now())
+	_, _, _, _, _, err := client.executeAISearchStreamRequest(context.Background(), endpoint, []byte(`{}`), `{}`)
 	if !errors.Is(err, pkgerrors.ErrTargetServerError) {
 		t.Fatalf("expected network upstream failure, got %v", err)
 	}

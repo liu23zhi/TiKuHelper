@@ -160,7 +160,7 @@ func TestSearchAnswerWithMCPAcceptsDirectAnswerWithoutAction(t *testing.T) {
 		APIKey:                "sk-test",
 		Model:                 "gpt-6.1-sol",
 		SearchTool:            &testAISearchTool{},
-		MaxAISearchModelCalls: 2,
+		MaxAISearchModelCalls: 1,
 		MaxAISearches:         1,
 		MaxAIWebReads:         1,
 		MaxAISearchRetries:    1,

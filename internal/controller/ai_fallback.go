@@ -68,12 +68,13 @@ func AIFallback(c *gin.Context) {
 
 	requestID := uuid.NewString()
 	req := model.SearchRequest{
-		Question:     strings.TrimSpace(input.Question),
-		Type:         input.Type,
-		Options:      input.Options,
-		SkipCache:    input.SkipCache,
-		DeepThinking: input.DeepThinking,
-		RequestID:    requestID,
+		RequestContext: c.Request.Context(),
+		Question:       strings.TrimSpace(input.Question),
+		Type:           input.Type,
+		Options:        input.Options,
+		SkipCache:      input.SkipCache,
+		DeepThinking:   input.DeepThinking,
+		RequestID:      requestID,
 	}
 
 	// 缓存命中：与搜题一致 —— 不再调用 AI、不再计费。

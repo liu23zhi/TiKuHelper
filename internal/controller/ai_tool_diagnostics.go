@@ -185,7 +185,8 @@ func TestAIToolCall(c *gin.Context) {
 		debug, err = runDirectAIToolTest(c.Request.Context(), recorder, input.Tool, target)
 	} else {
 		client := &search.ChatGptClient{Enable: true, BaseURL: config.BaseURL, APIKey: config.APIKey, Model: config.Model,
-			Prompt: config.Prompt, SearchTool: recorder, RequestID: requestID, MaxAISearchRetries: config.MaxAISearchRetries}
+			Prompt: config.Prompt, SearchTool: recorder, RequestID: requestID, MaxAISearchRetries: config.MaxAISearchRetries,
+			ContextCompression: service.BuildAIContextCompressionConfigWithDB(db, config)}
 		answers, debug, err = runAIToolDebug(c.Request.Context(), client, input.Tool, target)
 	}
 	secrets := []string{config.APIKey, service.GetUAPIAPIKeyWithDB(db)}

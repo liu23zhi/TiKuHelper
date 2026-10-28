@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -12,11 +14,16 @@ import (
 	"github.com/itihey/tikuAdapter/pkg/model"
 )
 
+var updateAISearchConfig = func(input service.UpdateAISearchConfigInput) (service.AISearchConfigView, error) {
+	return service.UpdateAISearchConfigWithDB(manager.GetManager().GetDB(), input)
+}
+
 type aiSearchTestInput struct {
-	BaseURL string `json:"baseUrl"`
-	APIKey  string `json:"apiKey"`
-	Model   string `json:"model"`
-	Prompt  string `json:"prompt"`
+	BaseURL        string `json:"baseUrl"`
+	APIKey         string `json:"apiKey"`
+	Model          string `json:"model"`
+	Prompt         string `json:"prompt"`
+	requestContext context.Context
 }
 
 var runAISearchDebug = func(input aiSearchTestInput) ([][]string, internalsearch.AISearchDebugResult, error) {
@@ -36,6 +43,7 @@ var runAISearchDebug = func(input aiSearchTestInput) ([][]string, internalsearch
 		return nil, internalsearch.AISearchDebugResult{}, err
 	}
 	client := &internalsearch.ChatGptClient{
+		Context:               input.requestContext,
 		Enable:                true,
 		APIKey:                resolved.Config.APIKey,
 		BaseURL:               resolved.Config.BaseURL,
@@ -48,6 +56,7 @@ var runAISearchDebug = func(input aiSearchTestInput) ([][]string, internalsearch
 		MaxAISearchRetries:    resolved.Config.MaxAISearchRetries,
 		MaxAIWebReads:         resolved.Config.MaxAIWebReads,
 		SearchTool:            service.BuildUAPISearchToolWithDB(manager.GetManager().GetDB()),
+		ContextCompression:    service.BuildAIContextCompressionConfigWithDB(manager.GetManager().GetDB(), resolved.Config),
 	}
 	if strings.TrimSpace(client.Prompt) == "" {
 		client.Prompt = resolved.Config.Prompt
@@ -104,6 +113,7 @@ func TestAISearchConfig(c *gin.Context) {
 	}
 
 	clearAIResponseWriteDeadline(c)
+	input.requestContext = c.Request.Context()
 	answers, debug, err := runAISearchDebug(input)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "AI 搜索测试失败"})
@@ -154,8 +164,12 @@ func UpdateAISearchConfig(c *gin.Context) {
 		return
 	}
 
-	config, err := service.UpdateAISearchConfigWithDB(manager.GetManager().GetDB(), input)
+	config, err := updateAISearchConfig(input)
 	if err != nil {
+		if errors.Is(err, service.ErrAIContextCompressionSettingsInvalid) || errors.Is(err, service.ErrInvalidAISearchCount) {
+			c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"message": "更新 AI 搜索配置失败",
 		})

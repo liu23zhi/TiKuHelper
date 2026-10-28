@@ -118,42 +118,39 @@
         <a-input-number
           v-model:value="formState.maxAISearchModelCalls"
           :min="MIN_AI_SEARCH_MODEL_CALLS"
-          :max="MAX_AI_SEARCH_BUDGET"
           :precision="0"
           :step="1"
           :parser="parseIntegerInput"
           style="width: 180px"
         />
         <span class="unit-label">次</span>
-        <div class="hint">每次 AI 搜索最多执行的模型逻辑轮次，默认 4 轮，范围 1～20 轮。同一轮内的失败重试不额外占用轮次，切换备用地址会占用一轮。每一轮提示中都会告知模型剩余调用次数。</div>
+        <div class="hint">每次 AI 搜索最多执行的模型逻辑轮次，默认 4 轮，填写正整数。同一轮内的失败重试不额外占用轮次。每一轮提示中都会告知模型剩余调用次数；实际执行仍受单次外呼超时和请求取消控制。</div>
       </a-form-item>
 
       <a-form-item label="最大搜索次数">
         <a-input-number
           v-model:value="formState.maxAISearches"
           :min="MIN_AI_SEARCHES"
-          :max="MAX_AI_SEARCH_BUDGET"
           :precision="0"
           :step="1"
           :parser="parseIntegerInput"
           style="width: 180px"
         />
         <span class="unit-label">次</span>
-        <div class="hint">深度思考模式下，每次 AI 搜索最多调用搜索 API 的次数，默认 3 次，范围 1～20 次。每一轮模型调用前都会告知剩余搜索次数，最后一轮模型调用直接输出答案。</div>
+        <div class="hint">深度思考模式下，每次 AI 搜索最多调用搜索 API 的次数，默认 3 次，填写正整数。每一轮模型调用前都会告知剩余搜索次数，最后一轮模型调用直接输出答案。</div>
       </a-form-item>
 
       <a-form-item label="每轮重试次数">
         <a-input-number
           v-model:value="formState.maxAISearchRetries"
           :min="MIN_AI_SEARCH_RETRIES"
-          :max="MAX_AI_SEARCH_RETRIES"
           :precision="0"
           :step="1"
           :parser="parseIntegerInput"
           style="width: 180px"
         />
         <span class="unit-label">次</span>
-        <div class="hint">每轮模型调用最多尝试的机会（包含首次调用），默认 3 次，范围 1～10 次。单次模型调用失败时会在本轮内自动重试，耗尽后才结束本轮。</div>
+        <div class="hint">每轮模型调用最多尝试的机会（包含首次调用），默认 3 次，填写正整数。对可重试的失败会在本轮内自动重试，耗尽后才结束本轮。</div>
       </a-form-item>
 
       <a-form-item label="联网搜索单价（元/次）">
@@ -174,14 +171,13 @@
         <a-input-number
           v-model:value="formState.maxAIWebReads"
           :min="MIN_AI_WEB_READS"
-          :max="MAX_AI_WEB_READS"
           :precision="0"
           :step="1"
           :parser="parseIntegerInput"
           style="width: 180px"
         />
         <span class="unit-label">次</span>
-        <div class="hint">深度思考模式下，模型每次 AI 搜索最多调用网页读取工具的次数，默认 5 次，范围 1～20 次。普通模式仍保持原先的一次性回复，不会调用网页读取。</div>
+        <div class="hint">深度思考模式下，模型每次 AI 搜索最多调用网页读取工具的次数，默认 5 次，填写正整数。普通模式仍保持原先的一次性回复，不会调用网页读取。</div>
       </a-form-item>
 
       <a-form-item label="网页读取单价（元/次）">
@@ -195,6 +191,33 @@
         <span class="unit-label">元 / 次</span>
         <div class="hint">默认 0 元。大于 0 时，每次成功完成网页读取都会单独写入一条账单，并合并到对应的搜题账单详情中。</div>
       </a-form-item>
+
+      <a-divider orientation="left" class="full-width">上下文压缩</a-divider>
+      <a-form-item label="自动压缩上下文" class="full-width">
+        <a-switch v-model:checked="formState.contextCompressionEnabled" />
+        <div class="hint">按模型价格表中的上下文窗口估算触发比例；未设置窗口时，仅在上游明确返回上下文超限后尝试。压缩后会重新注入原题和系统规则，不将估算值当作精确 Token 数。</div>
+      </a-form-item>
+      <template v-if="formState.contextCompressionEnabled">
+        <a-form-item label="使用远程压缩接口" class="full-width">
+          <a-switch v-model:checked="formState.useRemoteContextCompression" />
+          <div class="hint">仅在上游支持压缩接口时使用，失败后回退到当前模型生成历史摘要；未开启时直接由当前模型生成摘要。模型摘要会产生 Token 用量并计入账单。</div>
+        </a-form-item>
+        <a-form-item label="压缩触发比例">
+          <a-input-number v-model:value="formState.contextCompressionTriggerPercent" :min="50" :max="95" :precision="0" :step="1" style="width: 140px" />
+          <span class="unit-label">%</span>
+          <div class="hint">估算上下文达到窗口的此比例时触发，范围 50～95%。</div>
+        </a-form-item>
+        <a-form-item label="压缩目标比例">
+          <a-input-number v-model:value="formState.contextCompressionTargetPercent" :min="10" :max="Math.max(10, Number(formState.contextCompressionTriggerPercent) - 1)" :precision="0" :step="1" style="width: 140px" />
+          <span class="unit-label">%</span>
+          <div class="hint">至少 10%，且必须小于触发比例；保留原题和规则所需的空间。</div>
+        </a-form-item>
+        <a-form-item label="压缩最大尝试次数" class="full-width">
+          <a-input-number v-model:value="formState.contextCompressionMaxAttempts" :min="1" :precision="0" :step="1" :parser="parseIntegerInput" style="width: 140px" />
+          <span class="unit-label">次</span>
+          <div class="hint">填写正整数，含首次；远程压缩与本地摘要的每个阶段分别按此次数尝试，可重试的失败自动重试，长历史可分块摘要后归并。压缩尝试独立于正式答题轮次，每轮最多恢复重放一次；远程压缩和模型摘要产生的用量均计入账单。</div>
+        </a-form-item>
+      </template>
 
       <a-form-item label="Prompt 设置" class="full-width">
         <a-textarea
@@ -303,6 +326,7 @@
           >
             <template #bodyCell="{ column, record }">
               <span v-if="['inputPrice', 'cachedPrice', 'cacheWritePrice', 'outputPrice'].includes(column.key)">{{ formatPriceAmount(record[column.key]) }}</span>
+              <span v-else-if="column.key === 'contextWindowTokens'">{{ formatAIModelContextWindowTokens(record.contextWindowTokens) }}</span>
               <span v-else-if="column.key === 'multiplier'" :class="{ 'multiplier-cell--custom': Number(record.multiplier || 1) !== 1 }">
                 ×{{ formatMultiplier(record.multiplier) }}
               </span>
@@ -335,6 +359,10 @@
         </a-form-item>
         <a-form-item label="显示名称">
           <a-input v-model:value="priceForm.displayName" placeholder="留空时与模型名称相同" />
+        </a-form-item>
+        <a-form-item label="上下文窗口">
+          <a-input v-model:value="priceForm.contextWindowTokens" inputmode="numeric" autocomplete="off" placeholder="完整 Token 数，0 表示未设置" />
+          <div class="hint">填写供应商公布的上下文 Token 数，以其输入/输出预算规则为准；此项不是单次输出上限。</div>
         </a-form-item>
         <a-form-item label="输入单价">
           <a-input-number v-model:value="priceForm.inputPrice" :min="0" :precision="6" :step="0.01" style="width: 100%" />
@@ -372,6 +400,7 @@ import { message, Modal } from 'ant-design-vue';
 import AISearchCapabilityDialog from './AISearchCapabilityDialog.vue';
 import AISearchTestDialog from './AISearchTestDialog.vue';
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs';
+import { buildAIContextCompressionSettings } from '@/utils/aiSearchConfigHelpers.mjs';
 import {
   getAISearchConfig,
   getAISearchModels,
@@ -388,7 +417,9 @@ import {
   buildModelNameOptions,
   buildModelNameText,
   buildAISearchConfigSavePayload,
+  buildAIModelPriceSavePayload,
   buildAIModelPricingGaps,
+  formatAIModelContextWindowTokens,
   isModelPriced,
   filterRemoteModelNames,
   DEFAULT_AI_STAGED_TOKEN_MULTIPLIER_POINTS,
@@ -417,12 +448,9 @@ const DEFAULT_MAX_AI_SEARCHES = 3
 const DEFAULT_MAX_AI_SEARCH_RETRIES = 3
 const MIN_AI_SEARCH_MODEL_CALLS = 1
 const MIN_AI_SEARCHES = 1
-const MAX_AI_SEARCH_BUDGET = 20
 const MIN_AI_SEARCH_RETRIES = 1
-const MAX_AI_SEARCH_RETRIES = 10
 const DEFAULT_MAX_AI_WEB_READS = 5
 const MIN_AI_WEB_READS = 1
-const MAX_AI_WEB_READS = 20
 
 function parseIntegerInput(value) {
   if (value === null || value === undefined || value === '') {
@@ -436,7 +464,7 @@ function normalizeAISearchBudget(value, fallback) {
   if (!Number.isSafeInteger(parsed) || parsed < 1) {
     return fallback
   }
-  return Math.min(parsed, MAX_AI_SEARCH_BUDGET)
+  return parsed
 }
 
 function normalizeAISearchRetries(value, fallback = DEFAULT_MAX_AI_SEARCH_RETRIES) {
@@ -444,7 +472,7 @@ function normalizeAISearchRetries(value, fallback = DEFAULT_MAX_AI_SEARCH_RETRIE
   if (!Number.isSafeInteger(parsed) || parsed < MIN_AI_SEARCH_RETRIES) {
     return fallback
   }
-  return Math.min(parsed, MAX_AI_SEARCH_RETRIES)
+  return parsed
 }
 
 function normalizeAIWebReads(value, fallback = DEFAULT_MAX_AI_WEB_READS) {
@@ -452,7 +480,7 @@ function normalizeAIWebReads(value, fallback = DEFAULT_MAX_AI_WEB_READS) {
   if (!Number.isSafeInteger(parsed) || parsed < MIN_AI_WEB_READS) {
     return fallback
   }
-  return Math.min(parsed, MAX_AI_WEB_READS)
+  return parsed
 }
 
 function normalizeUsageRows(payload) {
@@ -484,6 +512,7 @@ export default defineComponent({
     const fixedTemperatureText = '0'
     const fixedTopPText = '0'
     const formState = reactive({
+      ...buildAIContextCompressionSettings(),
       enabled: false,
       baseUrl: '',
       apiKey: '',
@@ -513,6 +542,7 @@ export default defineComponent({
       id: null,
       modelName: '',
       displayName: '',
+      contextWindowTokens: 0,
       inputPrice: 0,
       cachedPrice: 0,
       cacheWritePrice: 0,
@@ -580,6 +610,7 @@ export default defineComponent({
       { title: 'ID', dataIndex: 'id', key: 'id', width: 60 },
       { title: '模型 ID', dataIndex: 'modelName', key: 'modelName', width: 190 },
       { title: '显示名称', dataIndex: 'displayName', key: 'displayName', width: 165 },
+      { title: '上下文窗口（Token）', dataIndex: 'contextWindowTokens', key: 'contextWindowTokens', width: 150 },
       { title: '输入（￥/M）', dataIndex: 'inputPrice', key: 'inputPrice', width: 105 },
       { title: '缓存输入（￥/M）', dataIndex: 'cachedPrice', key: 'cachedPrice', width: 120 },
       { title: '缓存写入（￥/M）', dataIndex: 'cacheWritePrice', key: 'cacheWritePrice', width: 125 },
@@ -600,6 +631,7 @@ export default defineComponent({
       getAISearchConfig().then(res => {
         if (res?.status === 200) {
           const data = res?.data || {}
+          Object.assign(formState, buildAIContextCompressionSettings(data))
           formState.enabled = !!data.enabled
           formState.baseUrl = data.baseUrl || ''
           formState.apiKey = data.apiKey || ''
@@ -680,6 +712,7 @@ export default defineComponent({
       priceForm.id = null
       priceForm.modelName = ''
       priceForm.displayName = ''
+      priceForm.contextWindowTokens = 0
       priceForm.inputPrice = 0
       priceForm.cachedPrice = 0
       priceForm.cacheWritePrice = 0
@@ -715,11 +748,8 @@ export default defineComponent({
       formState,
       MIN_AI_SEARCH_MODEL_CALLS,
       MIN_AI_SEARCHES,
-      MAX_AI_SEARCH_BUDGET,
       MIN_AI_SEARCH_RETRIES,
-      MAX_AI_SEARCH_RETRIES,
       MIN_AI_WEB_READS,
-      MAX_AI_WEB_READS,
       parseIntegerInput,
       modelOptions,
       priceRows,
@@ -742,6 +772,7 @@ export default defineComponent({
   },
   methods: {
     sumTableColumnWidths,
+    formatAIModelContextWindowTokens,
     handleLoad() {
       this.loadConfig()
       this.loadAIModelPrices()
@@ -788,32 +819,38 @@ export default defineComponent({
       const searchPricePerCall = Number(this.formState.searchPricePerCall)
       const maxAIWebReads = Number(this.formState.maxAIWebReads)
       const webReadPricePerCall = Number(this.formState.webReadPricePerCall)
-      if (!Number.isSafeInteger(maxAISearchModelCalls) || maxAISearchModelCalls < MIN_AI_SEARCH_MODEL_CALLS || maxAISearchModelCalls > MAX_AI_SEARCH_BUDGET) {
-        message.error(`模型最大调用次数必须是 ${MIN_AI_SEARCH_MODEL_CALLS}～${MAX_AI_SEARCH_BUDGET} 的整数`)
+      if (!Number.isSafeInteger(maxAISearchModelCalls) || maxAISearchModelCalls < MIN_AI_SEARCH_MODEL_CALLS) {
+        message.error('模型最大调用次数必须是正整数，且不能超过安全整数范围')
         return
       }
-      if (!Number.isSafeInteger(maxAISearches) || maxAISearches < MIN_AI_SEARCHES || maxAISearches > MAX_AI_SEARCH_BUDGET) {
-        message.error(`最大搜索次数必须是 ${MIN_AI_SEARCHES}～${MAX_AI_SEARCH_BUDGET} 的整数`)
+      if (!Number.isSafeInteger(maxAISearches) || maxAISearches < MIN_AI_SEARCHES) {
+        message.error('最大搜索次数必须是正整数，且不能超过安全整数范围')
         return
       }
-      if (!Number.isSafeInteger(maxAISearchRetries) || maxAISearchRetries < MIN_AI_SEARCH_RETRIES || maxAISearchRetries > MAX_AI_SEARCH_RETRIES) {
-        message.error(`每轮重试次数必须是 ${MIN_AI_SEARCH_RETRIES}～${MAX_AI_SEARCH_RETRIES} 的整数`)
+      if (!Number.isSafeInteger(maxAISearchRetries) || maxAISearchRetries < MIN_AI_SEARCH_RETRIES) {
+        message.error('每轮重试次数必须是正整数，且不能超过安全整数范围')
         return
       }
       if (!Number.isFinite(searchPricePerCall) || searchPricePerCall < 0) {
         message.error('联网搜索单价必须是大于或等于 0 的有效金额')
         return
       }
-      if (!Number.isSafeInteger(maxAIWebReads) || maxAIWebReads < MIN_AI_WEB_READS || maxAIWebReads > MAX_AI_WEB_READS) {
-        message.error(`网页读取次数必须是 ${MIN_AI_WEB_READS}～${MAX_AI_WEB_READS} 的整数`)
+      if (!Number.isSafeInteger(maxAIWebReads) || maxAIWebReads < MIN_AI_WEB_READS) {
+        message.error('网页读取次数必须是正整数，且不能超过安全整数范围')
         return
       }
       if (!Number.isFinite(webReadPricePerCall) || webReadPricePerCall < 0) {
         message.error('网页读取单价必须是大于或等于 0 的有效金额')
         return
       }
+      let payload
+      try {
+        payload = { ...buildAISearchConfigSavePayload(this.formState, baseUrl), ...buildAIContextCompressionSettings(this.formState) }
+      } catch (error) {
+        message.error(error.message)
+        return
+      }
       this.saving = true
-      const payload = buildAISearchConfigSavePayload(this.formState, baseUrl)
       updateAISearchConfig(payload).then(res => {
         if (res?.status === 200) {
           message.success('保存成功')
@@ -891,6 +928,7 @@ export default defineComponent({
         this.priceForm.id = record.id
         this.priceForm.modelName = record.modelName || ''
         this.priceForm.displayName = record.displayName || ''
+        this.priceForm.contextWindowTokens = record.contextWindowTokens ?? 0
         this.priceForm.inputPrice = Number(record.inputPrice || 0)
         this.priceForm.cachedPrice = Number(record.cachedPrice || 0)
         this.priceForm.cacheWritePrice = Number(record.cacheWritePrice || 0)
@@ -915,22 +953,12 @@ export default defineComponent({
       this.resetPriceForm()
     },
     handleSaveModelPrice() {
-      const modelName = String(this.priceForm.modelName || '').trim()
-      if (!modelName) {
-        message.warning('请填写模型名称')
+      let payload
+      try {
+        payload = buildAIModelPriceSavePayload(this.priceForm)
+      } catch (error) {
+        message.warning(error.message)
         return
-      }
-
-      const payload = {
-        id: this.priceForm.id,
-        modelName,
-        displayName: String(this.priceForm.displayName || '').trim(),
-        inputPrice: Number(this.priceForm.inputPrice || 0),
-        cachedPrice: Number(this.priceForm.cachedPrice || 0),
-        cacheWritePrice: Number(this.priceForm.cacheWritePrice || 0),
-        outputPrice: Number(this.priceForm.outputPrice || 0),
-        multiplier: Number(this.priceForm.multiplier || 1),
-        remark: this.priceForm.remark || '',
       }
       this.priceSaving = true
       const action = payload.id ? updateAIModelPrice(payload) : createAIModelPrice(payload)

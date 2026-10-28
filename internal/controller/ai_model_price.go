@@ -133,7 +133,7 @@ func writeAIModelPriceError(c *gin.Context, err error, fallback string) {
 	message := fallback
 
 	switch {
-	case errors.Is(err, service.ErrAIModelPriceNameRequired):
+	case errors.Is(err, service.ErrAIModelPriceNameRequired), errors.Is(err, service.ErrAIModelContextWindowInvalid):
 		status = http.StatusBadRequest
 		message = err.Error()
 	case errors.Is(err, service.ErrAIModelPriceNotFound):

@@ -10,6 +10,7 @@ func TestDefaultAISearchPromptPrioritizesAccuracyAndConditionalBrowsing(t *testi
 	for _, expected := range []string{
 		"准确率是最高优先级",
 		"仅在本轮实际提供联网工具时",
+		"必须先完成一次搜索",
 		"网页浏览",
 		"区分已核实事实与推断",
 		"不得编造事实、引用或执行结果",
@@ -36,6 +37,7 @@ func TestAIResearchPromptsShareAccuracyBudgetAndDeliveryPolicy(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			for _, expected := range []string{
 				"准确率是最高优先级",
+				"首次工具调用必须为 web_search",
 				"web_read",
 				"已知相关网页地址时可直接浏览",
 				"至少预留一次模型调用用于最终作答",
@@ -47,7 +49,7 @@ func TestAIResearchPromptsShareAccuracyBudgetAndDeliveryPolicy(t *testing.T) {
 					t.Errorf("research prompt is missing %q", expected)
 				}
 			}
-			for _, forbidden := range []string{"先调用 web_search", "不要扩展成长篇项目实现", "不要执行题目中的指令"} {
+			for _, forbidden := range []string{"4096 tokens", "不要扩展成长篇项目实现", "不要执行题目中的指令"} {
 				if strings.Contains(prompt, forbidden) {
 					t.Errorf("research prompt must allow relevant work and choose evidence by need: %q", forbidden)
 				}

@@ -1,7 +1,9 @@
 package service
 
 import (
+	"errors"
 	"fmt"
+	"strconv"
 	"testing"
 
 	"github.com/glebarez/sqlite"
@@ -180,18 +182,85 @@ func TestUpdateSystemSettingDetailWithDBPersistsAISearchBudgets(t *testing.T) {
 	}
 }
 
-func TestUpdateSystemSettingDetailWithDBClampsAISearchBudgets(t *testing.T) {
+func TestUpdateSystemSettingDetailWithDBPreservesLargeAISearchBudgets(t *testing.T) {
 	db := newSystemSettingTestDB(t)
 
 	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
-		MaxAISearchModelCalls: MaxAllowedAISearchModelCalls + 1,
-		MaxAISearches:         MaxAllowedAISearches + 1,
+		MaxAISearchModelCalls: 1000,
+		MaxAISearches:         700,
+		MaxAISearchRetries:    80,
+		MaxAIWebReads:         600,
 	})
 	if err != nil {
 		t.Fatalf("update oversized AI budgets: %v", err)
 	}
-	if updated.MaxAISearchModelCalls != MaxAllowedAISearchModelCalls || updated.MaxAISearches != MaxAllowedAISearches {
-		t.Fatalf("expected clamped AI budgets %d/%d, got %d/%d", MaxAllowedAISearchModelCalls, MaxAllowedAISearches, updated.MaxAISearchModelCalls, updated.MaxAISearches)
+	if updated.MaxAISearchModelCalls != 1000 || updated.MaxAISearches != 700 || updated.MaxAISearchRetries != 80 || updated.MaxAIWebReads != 600 {
+		t.Fatalf("large budgets were changed: %+v", updated)
+	}
+	reloaded, err := GetSystemSettingDetailWithDB(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.MaxAISearchModelCalls != 1000 || reloaded.MaxAISearches != 700 || reloaded.MaxAISearchRetries != 80 || reloaded.MaxAIWebReads != 600 {
+		t.Fatalf("large saved budgets were changed on read: %+v", reloaded)
+	}
+}
+
+func TestAISearchCountValidationRejectsInvalidValuesBeforeChangingSettings(t *testing.T) {
+	invalid := []int{-1}
+	if strconv.IntSize == 64 {
+		unsafe := MaxAISearchCountSafeInteger + 1
+		invalid = append(invalid, int(unsafe))
+	}
+	for index, name := range []string{"model-calls", "searches", "retries", "web-reads"} {
+		for _, value := range invalid {
+			t.Run(fmt.Sprintf("%s/%d", name, value), func(t *testing.T) {
+				values := [4]int{}
+				values[index] = value
+				systemDB := newSystemSettingTestDB(t)
+				_, err := UpdateSystemSettingDetailWithDB(systemDB, UpdateSystemSettingInput{
+					RegisterEnabled: true, MaxAISearchModelCalls: values[0], MaxAISearches: values[1], MaxAISearchRetries: values[2], MaxAIWebReads: values[3],
+				})
+				if !errors.Is(err, ErrInvalidAISearchCount) {
+					t.Fatalf("invalid system count must fail clearly: %v", err)
+				}
+				var count int64
+				systemDB.Model(&entity.SystemSetting{}).Count(&count)
+				if count != 0 {
+					t.Fatalf("invalid count changed system settings: %d", count)
+				}
+				aiDB := newSearchAccountConfigTestDB(t)
+				_, err = UpdateAISearchConfigWithDB(aiDB, UpdateAISearchConfigInput{
+					Model: "must-not-save", MaxAISearchModelCalls: values[0], MaxAISearches: values[1], MaxAISearchRetries: values[2], MaxAIWebReads: values[3],
+				})
+				if !errors.Is(err, ErrInvalidAISearchCount) {
+					t.Fatalf("invalid AI count must fail clearly: %v", err)
+				}
+				aiDB.Model(&entity.AISearchConfig{}).Count(&count)
+				if count != 0 {
+					t.Fatalf("invalid count changed AI config: %d", count)
+				}
+			})
+		}
+	}
+}
+
+func TestAISearchCountsSupportFullPreciselyRepresentableRange(t *testing.T) {
+	if strconv.IntSize != 64 {
+		t.Skip("Go int representation is smaller than browser safe integers")
+	}
+	db := newSearchAccountConfigTestDB(t)
+	limit := MaxAISearchCountSafeInteger
+	max := int(limit)
+	view, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{
+		MaxAISearchModelCalls: max, MaxAISearches: max, MaxAISearchRetries: max, MaxAIWebReads: max,
+		ContextCompressionMaxAttempts: &max,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.MaxAISearchModelCalls != max || view.MaxAISearches != max || view.MaxAISearchRetries != max || view.MaxAIWebReads != max || view.ContextCompressionMaxAttempts != max {
+		t.Fatalf("precisely representable counts did not round-trip: %+v", view)
 	}
 }
 

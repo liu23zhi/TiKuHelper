@@ -1,5 +1,7 @@
 package model
 
+import "context"
+
 // SearchRequest 搜题的请求体
 //
 // 注意：不再有 plat 字段。它历史取值恒为 -1、没有任何区分度，已彻底移除。
@@ -13,6 +15,9 @@ type SearchRequest struct {
 	SkipCache    *bool    `json:"skipCache,omitempty"`
 	DeepThinking bool     `json:"deepThinking,omitempty"`
 	RequestID    string   `json:"-"`
+	// RequestContext belongs to synchronous server work, never client input.
+	// Async task constructors leave it nil to keep their independent lifetime.
+	RequestContext context.Context `json:"-" form:"-"`
 
 	CourseName string `json:"courseName"`
 

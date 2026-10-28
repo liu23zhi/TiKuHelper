@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	stderrs "errors"
 	"net/url"
 	"strconv"
@@ -74,6 +75,20 @@ func BuildAIFallbackInsufficientBalanceResult(message string) AIFallbackResult {
 }
 
 func SearchAIFallbackWithDB(db *gorm.DB, req model.SearchRequest) AIFallbackResult {
+	return SearchAIFallbackWithContext(req.RequestContext, db, req)
+}
+
+// SearchAIFallbackWithContext lets synchronous callers cancel paid upstream
+// work, while the legacy entry point and async tasks may use a nil context.
+func SearchAIFallbackWithContext(ctx context.Context, db *gorm.DB, req model.SearchRequest) AIFallbackResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		result := buildAIFallbackErrorResult(AIFallbackErrorCodeUpstreamError, "AI 上游请求失败")
+		result.FailureDetail = err.Error()
+		return result
+	}
 	question := strings.TrimSpace(req.Question)
 	if question == "" {
 		return BuildAIFallbackInvalidInputResult("题目不能为空")
@@ -90,6 +105,7 @@ func SearchAIFallbackWithDB(db *gorm.DB, req model.SearchRequest) AIFallbackResu
 	}
 
 	client := &internalsearch.ChatGptClient{
+		Context:               ctx,
 		Enable:                true,
 		BaseURL:               resolved.Config.BaseURL,
 		APIKey:                resolved.Config.APIKey,
@@ -102,6 +118,7 @@ func SearchAIFallbackWithDB(db *gorm.DB, req model.SearchRequest) AIFallbackResu
 		MaxAISearchRetries:    resolved.Config.MaxAISearchRetries,
 		MaxAIWebReads:         resolved.Config.MaxAIWebReads,
 		SearchTool:            BuildUAPISearchToolWithDB(db),
+		ContextCompression:    BuildAIContextCompressionConfigWithDB(db, resolved.Config),
 		RequestID:             req.RequestID,
 	}
 

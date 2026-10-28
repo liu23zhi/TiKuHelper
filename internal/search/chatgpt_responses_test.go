@@ -52,8 +52,8 @@ func TestChatGptClientUsesResponsesEndpointAndParsesOutputText(t *testing.T) {
 		if _, ok := payload["input"]; !ok {
 			t.Fatalf("expected Responses input, got %v", payload)
 		}
-		if payload["max_output_tokens"] != float64(aiToolMaxOutputTokens) {
-			t.Fatalf("expected max_output_tokens, got %v", payload["max_output_tokens"])
+		if _, exists := payload["max_output_tokens"]; exists {
+			t.Fatalf("ordinary answer requests must use the upstream output allowance: %v", payload["max_output_tokens"])
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		writeResponsesEvent(w, "response.output_text.delta", map[string]any{"delta": `{"answers":["4"]}`})
@@ -76,6 +76,35 @@ func TestChatGptClientUsesResponsesEndpointAndParsesOutputText(t *testing.T) {
 	}
 	if usage.TotalTokens != 18 {
 		t.Fatalf("unexpected usage: %+v", usage)
+	}
+}
+
+func TestReadAIResponsesStreamPreservesLongProjectAnswerSnapshots(t *testing.T) {
+	answer := strings.Repeat("实现代码和验证步骤必须完整保留。\n", 50000)
+	content, err := json.Marshal(map[string]any{"answers": []string{answer}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stream strings.Builder
+	writeAIResponsesTextStream(&stream, []string{string(content)}, map[string]any{"input_tokens": 100, "output_tokens": 50000, "total_tokens": 50100})
+	if stream.Len() <= 2*1024*1024 {
+		t.Fatal("fixture must exceed the former stream limit")
+	}
+	result, err := readAIResponsesStream(strings.NewReader(stream.String()), nil)
+	if err != nil {
+		t.Fatalf("long valid answer and complete snapshot must be accepted: %v", err)
+	}
+	if result.Content != string(content) || result.Usage.OutputTokens != 50000 {
+		t.Fatalf("long answer was truncated or duplicated: length=%d want=%d usage=%+v", len(result.Content), len(content), result.Usage)
+	}
+}
+
+func TestReadAIResponsesStreamStillBoundsTransportMemory(t *testing.T) {
+	const keepalive = ": keepalive\n"
+	stream := strings.Repeat(keepalive, aiToolMaxStreamBytes/len(keepalive)+1)
+	_, err := readAIResponsesStream(strings.NewReader(stream), nil)
+	if err == nil || !strings.Contains(err.Error(), "响应流超过大小限制") {
+		t.Fatalf("oversized transport must still fail explicitly: %v", err)
 	}
 }
 
@@ -170,5 +199,38 @@ func TestReadAIResponsesStreamKeepsCompletedItemsInOutputOrder(t *testing.T) {
 	}
 	if result.Content != `{"answers":["4"]}` {
 		t.Fatalf("completed items must follow output_index even without a final output snapshot: %q", result.Content)
+	}
+}
+
+func TestReadAIResponsesStreamRetainsUsageOnFailureEvents(t *testing.T) {
+	for _, eventType := range []string{"error", "response.failed"} {
+		t.Run(eventType, func(t *testing.T) {
+			var stream strings.Builder
+			failure := map[string]any{"code": "context_length_exceeded", "message": "maximum context length exceeded"}
+			payload := map[string]any{
+				"response": map[string]any{
+					"status": "failed", "error": failure,
+					"usage": map[string]any{
+						"input_tokens": 30, "output_tokens": 2, "total_tokens": 32,
+						"input_tokens_details": map[string]any{"cached_tokens": 3},
+					},
+				},
+			}
+			if eventType == "error" {
+				payload["error"] = failure
+			}
+			writeResponsesEvent(&stream, eventType, payload)
+
+			result, err := readAIResponsesStream(strings.NewReader(stream.String()), nil)
+			if err == nil || !strings.Contains(err.Error(), "context_length_exceeded") {
+				t.Fatalf("failed events must still return the upstream error: %v", err)
+			}
+			if result.Usage.InputTokens != 30 || result.Usage.OutputTokens != 2 || result.Usage.TotalTokens != 32 || result.Usage.CachedInputTokens != 3 {
+				t.Fatalf("failed response usage must remain available for billing: %+v", result.Usage)
+			}
+			if !strings.Contains(result.Raw, `"status":"failed"`) {
+				t.Fatalf("failed response raw stream must remain available: %q", result.Raw)
+			}
+		})
 	}
 }

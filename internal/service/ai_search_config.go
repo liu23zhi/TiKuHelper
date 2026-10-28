@@ -34,60 +34,75 @@ func BuildUAPISearchToolWithDB(db *gorm.DB) internalsearch.AISearchTool {
 }
 
 type AISearchConfigView struct {
-	Enabled                       bool                           `json:"enabled"`
-	BaseURL                       string                         `json:"baseUrl"`
-	APIKey                        string                         `json:"apiKey"`
-	Model                         string                         `json:"model"`
-	ManualModels                  []string                       `json:"manualModels"`
-	Prompt                        string                         `json:"prompt"`
-	Remark                        string                         `json:"remark"`
-	Temperature                   float64                        `json:"temperature"`
-	TopP                          float64                        `json:"topP"`
-	MaxAISearchModelCalls         int                            `json:"maxAISearchModelCalls"`
-	MaxAISearches                 int                            `json:"maxAISearches"`
-	MaxAISearchRetries            int                            `json:"maxAISearchRetries"`
-	SearchPricePerCall            float64                        `json:"searchPricePerCall"`
-	MaxAIWebReads                 int                            `json:"maxAIWebReads"`
-	WebReadPricePerCall           float64                        `json:"webReadPricePerCall"`
-	EnableAIStagedTokenBilling    bool                           `json:"enableAIStagedTokenBilling"`
-	SmoothAIStagedTokenMultiplier bool                           `json:"smoothAIStagedTokenMultiplier"`
-	StagedTokenMultiplierPoints   []AIStagedTokenMultiplierPoint `json:"stagedTokenMultiplierPoints"`
+	Enabled                          bool                           `json:"enabled"`
+	BaseURL                          string                         `json:"baseUrl"`
+	APIKey                           string                         `json:"apiKey"`
+	Model                            string                         `json:"model"`
+	ManualModels                     []string                       `json:"manualModels"`
+	Prompt                           string                         `json:"prompt"`
+	Remark                           string                         `json:"remark"`
+	Temperature                      float64                        `json:"temperature"`
+	TopP                             float64                        `json:"topP"`
+	MaxAISearchModelCalls            int                            `json:"maxAISearchModelCalls"`
+	MaxAISearches                    int                            `json:"maxAISearches"`
+	MaxAISearchRetries               int                            `json:"maxAISearchRetries"`
+	SearchPricePerCall               float64                        `json:"searchPricePerCall"`
+	MaxAIWebReads                    int                            `json:"maxAIWebReads"`
+	WebReadPricePerCall              float64                        `json:"webReadPricePerCall"`
+	EnableAIStagedTokenBilling       bool                           `json:"enableAIStagedTokenBilling"`
+	SmoothAIStagedTokenMultiplier    bool                           `json:"smoothAIStagedTokenMultiplier"`
+	StagedTokenMultiplierPoints      []AIStagedTokenMultiplierPoint `json:"stagedTokenMultiplierPoints"`
+	ContextCompressionEnabled        bool                           `json:"contextCompressionEnabled"`
+	UseRemoteContextCompression      bool                           `json:"useRemoteContextCompression"`
+	ContextCompressionTriggerPercent int                            `json:"contextCompressionTriggerPercent"`
+	ContextCompressionTargetPercent  int                            `json:"contextCompressionTargetPercent"`
+	ContextCompressionMaxAttempts    int                            `json:"contextCompressionMaxAttempts"`
 }
 
 type UpdateAISearchConfigInput struct {
-	Enabled                       bool                            `json:"enabled"`
-	BaseURL                       string                          `json:"baseUrl"`
-	APIKey                        string                          `json:"apiKey"`
-	Model                         string                          `json:"model"`
-	ManualModels                  []string                        `json:"manualModels"`
-	Prompt                        string                          `json:"prompt"`
-	Remark                        string                          `json:"remark"`
-	Temperature                   float64                         `json:"temperature"`
-	TopP                          float64                         `json:"topP"`
-	MaxAISearchModelCalls         int                             `json:"maxAISearchModelCalls"`
-	MaxAISearches                 int                             `json:"maxAISearches"`
-	MaxAISearchRetries            int                             `json:"maxAISearchRetries"`
-	SearchPricePerCall            *float64                        `json:"searchPricePerCall,omitempty"`
-	MaxAIWebReads                 int                             `json:"maxAIWebReads"`
-	WebReadPricePerCall           *float64                        `json:"webReadPricePerCall,omitempty"`
-	EnableAIStagedTokenBilling    *bool                           `json:"enableAIStagedTokenBilling,omitempty"`
-	SmoothAIStagedTokenMultiplier *bool                           `json:"smoothAIStagedTokenMultiplier,omitempty"`
-	StagedTokenMultiplierPoints   *[]AIStagedTokenMultiplierPoint `json:"stagedTokenMultiplierPoints,omitempty"`
+	Enabled                          bool                            `json:"enabled"`
+	BaseURL                          string                          `json:"baseUrl"`
+	APIKey                           string                          `json:"apiKey"`
+	Model                            string                          `json:"model"`
+	ManualModels                     []string                        `json:"manualModels"`
+	Prompt                           string                          `json:"prompt"`
+	Remark                           string                          `json:"remark"`
+	Temperature                      float64                         `json:"temperature"`
+	TopP                             float64                         `json:"topP"`
+	MaxAISearchModelCalls            int                             `json:"maxAISearchModelCalls"`
+	MaxAISearches                    int                             `json:"maxAISearches"`
+	MaxAISearchRetries               int                             `json:"maxAISearchRetries"`
+	SearchPricePerCall               *float64                        `json:"searchPricePerCall,omitempty"`
+	MaxAIWebReads                    int                             `json:"maxAIWebReads"`
+	WebReadPricePerCall              *float64                        `json:"webReadPricePerCall,omitempty"`
+	EnableAIStagedTokenBilling       *bool                           `json:"enableAIStagedTokenBilling,omitempty"`
+	SmoothAIStagedTokenMultiplier    *bool                           `json:"smoothAIStagedTokenMultiplier,omitempty"`
+	StagedTokenMultiplierPoints      *[]AIStagedTokenMultiplierPoint `json:"stagedTokenMultiplierPoints,omitempty"`
+	ContextCompressionEnabled        *bool                           `json:"contextCompressionEnabled,omitempty"`
+	UseRemoteContextCompression      *bool                           `json:"useRemoteContextCompression,omitempty"`
+	ContextCompressionTriggerPercent *int                            `json:"contextCompressionTriggerPercent,omitempty"`
+	ContextCompressionTargetPercent  *int                            `json:"contextCompressionTargetPercent,omitempty"`
+	ContextCompressionMaxAttempts    *int                            `json:"contextCompressionMaxAttempts,omitempty"`
 }
 
 type AISearchRequestConfig struct {
-	BaseURL               string
-	APIKey                string
-	Model                 string
-	Prompt                string
-	Temperature           float64
-	TopP                  float64
-	MaxAISearchModelCalls int
-	MaxAISearches         int
-	MaxAISearchRetries    int
-	SearchPricePerCall    float64
-	MaxAIWebReads         int
-	WebReadPricePerCall   float64
+	BaseURL                          string
+	APIKey                           string
+	Model                            string
+	Prompt                           string
+	Temperature                      float64
+	TopP                             float64
+	MaxAISearchModelCalls            int
+	MaxAISearches                    int
+	MaxAISearchRetries               int
+	SearchPricePerCall               float64
+	MaxAIWebReads                    int
+	WebReadPricePerCall              float64
+	ContextCompressionEnabled        bool
+	UseRemoteContextCompression      bool
+	ContextCompressionTriggerPercent int
+	ContextCompressionTargetPercent  int
+	ContextCompressionMaxAttempts    int
 }
 
 type ResolvedAISearchConfig struct {
@@ -187,25 +202,37 @@ func GetAISearchConfigWithDB(db *gorm.DB) (AISearchConfigView, error) {
 	if !exists {
 		maxModelCalls, maxSearches := GetAISearchBudgetsWithDB(db)
 		stagedBilling := GetAIStagedTokenBillingSettingsWithDB(db)
+		compression := GetAIContextCompressionSettingsWithDB(db)
 		return AISearchConfigView{
-			Prompt:                        defaultAISearchPrompt(),
-			Temperature:                   0,
-			TopP:                          0,
-			MaxAISearchModelCalls:         maxModelCalls,
-			MaxAISearches:                 maxSearches,
-			MaxAISearchRetries:            GetAISearchRetriesWithDB(db),
-			SearchPricePerCall:            GetAISearchPricePerCallWithDB(db),
-			MaxAIWebReads:                 getPositiveBoundedIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads, MaxAllowedAISearches),
-			WebReadPricePerCall:           GetWebReadPricePerCallWithDB(db),
-			EnableAIStagedTokenBilling:    stagedBilling.Enabled,
-			SmoothAIStagedTokenMultiplier: stagedBilling.SmoothFactor,
-			StagedTokenMultiplierPoints:   cloneAIStagedTokenMultiplierPoints(stagedBilling.MultiplierPoints),
+			Prompt:                           defaultAISearchPrompt(),
+			Temperature:                      0,
+			TopP:                             0,
+			MaxAISearchModelCalls:            maxModelCalls,
+			MaxAISearches:                    maxSearches,
+			MaxAISearchRetries:               GetAISearchRetriesWithDB(db),
+			SearchPricePerCall:               GetAISearchPricePerCallWithDB(db),
+			MaxAIWebReads:                    getPositiveIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads),
+			WebReadPricePerCall:              GetWebReadPricePerCallWithDB(db),
+			EnableAIStagedTokenBilling:       stagedBilling.Enabled,
+			SmoothAIStagedTokenMultiplier:    stagedBilling.SmoothFactor,
+			StagedTokenMultiplierPoints:      cloneAIStagedTokenMultiplierPoints(stagedBilling.MultiplierPoints),
+			ContextCompressionEnabled:        compression.Enabled,
+			UseRemoteContextCompression:      compression.UseRemote,
+			ContextCompressionTriggerPercent: compression.TriggerPercent,
+			ContextCompressionTargetPercent:  compression.TargetPercent,
+			ContextCompressionMaxAttempts:    compression.MaxAttempts,
 		}, nil
 	}
 	return buildAISearchConfigView(db, config)
 }
 
 func UpdateAISearchConfigWithDB(db *gorm.DB, input UpdateAISearchConfigInput) (AISearchConfigView, error) {
+	if err := validateAISearchCountInputs(input.MaxAISearchModelCalls, input.MaxAISearches, input.MaxAISearchRetries, input.MaxAIWebReads); err != nil {
+		return AISearchConfigView{}, err
+	}
+	if _, err := mergeAIContextCompressionSettings(db, input); err != nil {
+		return AISearchConfigView{}, err
+	}
 	if input.SearchPricePerCall != nil {
 		price := *input.SearchPricePerCall
 		if price < 0 || math.IsNaN(price) || math.IsInf(price, 0) {
@@ -263,27 +290,36 @@ func UpdateAISearchConfigWithDB(db *gorm.DB, input UpdateAISearchConfigInput) (A
 		}
 	}
 	if input.MaxAIWebReads > 0 {
-		if err := saveSystemSettingValue(db, MaxAIWebReadsSettingKey, strconv.Itoa(normalizeAISearchBudget(input.MaxAIWebReads, DefaultMaxAIWebReads, MaxAllowedAISearches)), "AI 搜索网页读取最大次数"); err != nil {
+		if err := saveSystemSettingValue(db, MaxAIWebReadsSettingKey, strconv.Itoa(input.MaxAIWebReads), "AI 搜索网页读取最大次数"); err != nil {
 			return AISearchConfigView{}, err
 		}
 	}
 
+	if err := saveAIContextCompressionSettingsWithDB(db, input); err != nil {
+		return AISearchConfigView{}, err
+	}
 	return buildAISearchConfigView(db, config)
 }
 
 func BuildAISearchRequestConfigWithDB(db *gorm.DB, query url.Values, allowDefaultAccount bool, explicitConfigAllowed ...bool) (ResolvedAISearchConfig, error) {
 	maxModelCalls, maxSearches := GetAISearchBudgetsWithDB(db)
+	compression := GetAIContextCompressionSettingsWithDB(db)
 	resolved := ResolvedAISearchConfig{
 		Config: AISearchRequestConfig{
-			Prompt:                defaultAISearchPrompt(),
-			Temperature:           0,
-			TopP:                  0,
-			MaxAISearchModelCalls: maxModelCalls,
-			MaxAISearches:         maxSearches,
-			MaxAISearchRetries:    GetAISearchRetriesWithDB(db),
-			SearchPricePerCall:    GetAISearchPricePerCallWithDB(db),
-			MaxAIWebReads:         getPositiveBoundedIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads, MaxAllowedAISearches),
-			WebReadPricePerCall:   GetWebReadPricePerCallWithDB(db),
+			Prompt:                           defaultAISearchPrompt(),
+			Temperature:                      0,
+			TopP:                             0,
+			MaxAISearchModelCalls:            maxModelCalls,
+			MaxAISearches:                    maxSearches,
+			MaxAISearchRetries:               GetAISearchRetriesWithDB(db),
+			SearchPricePerCall:               GetAISearchPricePerCallWithDB(db),
+			MaxAIWebReads:                    getPositiveIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads),
+			WebReadPricePerCall:              GetWebReadPricePerCallWithDB(db),
+			ContextCompressionEnabled:        compression.Enabled,
+			UseRemoteContextCompression:      compression.UseRemote,
+			ContextCompressionTriggerPercent: compression.TriggerPercent,
+			ContextCompressionTargetPercent:  compression.TargetPercent,
+			ContextCompressionMaxAttempts:    compression.MaxAttempts,
 		},
 	}
 	allowExplicitConfig := allowDefaultAccount
@@ -384,26 +420,32 @@ func buildAISearchConfigView(db *gorm.DB, config entity.AISearchConfig) (AISearc
 	}
 	maxModelCalls, maxSearches := GetAISearchBudgetsWithDB(db)
 	stagedBilling := GetAIStagedTokenBillingSettingsWithDB(db)
+	compression := GetAIContextCompressionSettingsWithDB(db)
 
 	return AISearchConfigView{
-		Enabled:                       config.Enabled,
-		BaseURL:                       config.BaseURL,
-		APIKey:                        config.APIKey,
-		Model:                         config.Model,
-		ManualModels:                  manualModels,
-		Prompt:                        effectiveAISearchPrompt(config.Prompt),
-		Remark:                        config.Remark,
-		Temperature:                   0,
-		TopP:                          0,
-		MaxAISearchModelCalls:         maxModelCalls,
-		MaxAISearches:                 maxSearches,
-		MaxAISearchRetries:            GetAISearchRetriesWithDB(db),
-		SearchPricePerCall:            GetAISearchPricePerCallWithDB(db),
-		MaxAIWebReads:                 getPositiveBoundedIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads, MaxAllowedAISearches),
-		WebReadPricePerCall:           GetWebReadPricePerCallWithDB(db),
-		EnableAIStagedTokenBilling:    stagedBilling.Enabled,
-		SmoothAIStagedTokenMultiplier: stagedBilling.SmoothFactor,
-		StagedTokenMultiplierPoints:   cloneAIStagedTokenMultiplierPoints(stagedBilling.MultiplierPoints),
+		Enabled:                          config.Enabled,
+		BaseURL:                          config.BaseURL,
+		APIKey:                           config.APIKey,
+		Model:                            config.Model,
+		ManualModels:                     manualModels,
+		Prompt:                           effectiveAISearchPrompt(config.Prompt),
+		Remark:                           config.Remark,
+		Temperature:                      0,
+		TopP:                             0,
+		MaxAISearchModelCalls:            maxModelCalls,
+		MaxAISearches:                    maxSearches,
+		MaxAISearchRetries:               GetAISearchRetriesWithDB(db),
+		SearchPricePerCall:               GetAISearchPricePerCallWithDB(db),
+		MaxAIWebReads:                    getPositiveIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads),
+		WebReadPricePerCall:              GetWebReadPricePerCallWithDB(db),
+		EnableAIStagedTokenBilling:       stagedBilling.Enabled,
+		SmoothAIStagedTokenMultiplier:    stagedBilling.SmoothFactor,
+		StagedTokenMultiplierPoints:      cloneAIStagedTokenMultiplierPoints(stagedBilling.MultiplierPoints),
+		ContextCompressionEnabled:        compression.Enabled,
+		UseRemoteContextCompression:      compression.UseRemote,
+		ContextCompressionTriggerPercent: compression.TriggerPercent,
+		ContextCompressionTargetPercent:  compression.TargetPercent,
+		ContextCompressionMaxAttempts:    compression.MaxAttempts,
 	}, nil
 }
 

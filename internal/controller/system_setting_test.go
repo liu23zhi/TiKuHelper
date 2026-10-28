@@ -72,6 +72,24 @@ func TestSystemSettingDetailReturnsCurrentSettings(t *testing.T) {
 	}
 }
 
+func TestUpdateSystemSettingRejectsInvalidCountAsBadRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	original := updateSystemSettingDetail
+	t.Cleanup(func() { updateSystemSettingDetail = original })
+	updateSystemSettingDetail = func(input service.UpdateSystemSettingInput) (service.SystemSettingDetail, error) {
+		return service.SystemSettingDetail{}, service.ErrInvalidAISearchCount
+	}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/system-settings", bytes.NewBufferString(`{"maxAIWebReads":-1}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
+	UpdateSystemSetting(ctx)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid count, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestSystemSettingDetailReturnsServerErrorWhenLoadFails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

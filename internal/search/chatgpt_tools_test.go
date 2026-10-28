@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -106,8 +105,8 @@ func TestAISearchToolsSearchTwiceAndAccumulateUsage(t *testing.T) {
 			t.Errorf("decode: %v", err)
 			return
 		}
-		if payload["max_output_tokens"] != float64(4096) {
-			t.Errorf("missing output bound: %v", payload["max_output_tokens"])
+		if _, exists := payload["max_output_tokens"]; exists {
+			t.Errorf("tool answer requests must use the upstream output allowance: %v", payload["max_output_tokens"])
 		}
 		round++
 		if round == 1 {
@@ -542,6 +541,10 @@ func TestAISearchToolsFallsBackToMCPAfterEmptyNativeResponses(t *testing.T) {
 			return
 		}
 		mcpCalls++
+		if mcpCalls == 1 {
+			writeMCPTextStream(w, `{"action":"web_search","arguments":{"query":"2+2"}}`, 10)
+			return
+		}
 		writeMCPTextStream(w, `{"answers":["4"]}`, 20)
 	}))
 	defer server.Close()
@@ -557,14 +560,14 @@ func TestAISearchToolsFallsBackToMCPAfterEmptyNativeResponses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("empty native responses should fall back to MCP, got %v", err)
 	}
-	if nativeCalls != 1 || mcpCalls != 1 {
+	if nativeCalls != 1 || mcpCalls != 2 {
 		t.Fatalf("nativeCalls=%d mcpCalls=%d", nativeCalls, mcpCalls)
 	}
 	if usage.Route != AISearchRouteDeepMCP {
 		t.Fatalf("expected deep_mcp route, got %q", usage.Route)
 	}
-	if len(tool.queries) != 0 {
-		t.Fatalf("fallback must not repeat external search calls: %v", tool.queries)
+	if !reflect.DeepEqual(tool.queries, []string{"2+2"}) {
+		t.Fatalf("fallback must search exactly once before answering: %v", tool.queries)
 	}
 	if !reflect.DeepEqual(answer, [][]string{{"4"}}) {
 		t.Fatalf("unexpected answers: %#v", answer)
@@ -673,25 +676,64 @@ func TestAISearchToolsBadRequestDoesNotProbeAlternateEndpoint(t *testing.T) {
 	}
 }
 
-func TestAISearchToolsBoundsOriginalTaskBeforeModelCall(t *testing.T) {
-	tool := &testAISearchTool{}
-	var requestBytes int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("read request: %v", err)
-		}
-		requestBytes = len(body)
-		writeAIFinalStream(w)
-	}))
-	defer server.Close()
-	client := &ChatGptClient{Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test", SearchTool: tool}
-	_, _, err := client.SearchAnswerWithUsage(model.SearchRequest{
-		Question:     strings.Repeat("题", 100000),
-		DeepThinking: true,
-		Options:      []string{strings.Repeat("选项", 10000)},
-	})
-	if err == nil || requestBytes > 200000 {
-		t.Fatalf("oversized task should be rejected by the required search round, requestBytes=%d err=%v", requestBytes, err)
+func TestAISearchToolsPreservesOriginalTaskBeforeModelCall(t *testing.T) {
+	for _, route := range []string{"native", "MCP", "admin-test"} {
+		t.Run(route, func(t *testing.T) {
+			req := model.SearchRequest{
+				Question: strings.Repeat("题", 8600) + "题目末尾不可遗漏",
+				Extra:    strings.Repeat("补充", 1100) + "补充末尾不可遗漏", CourseName: strings.Repeat("课程", 130) + "课程末尾",
+				Type: 4, DeepThinking: true,
+			}
+			for index := 0; index < 30; index++ {
+				req.Options = append(req.Options, fmt.Sprintf("第%d个完整选项%s末尾不可遗漏", index+1, strings.Repeat("正文", 400)))
+			}
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var payload openAIResponsesTestRequest
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Error(err)
+					return
+				}
+				calls++
+				var userText string
+				for _, message := range payload.Messages {
+					if message.Role != "user" {
+						continue
+					}
+					if parts, ok := message.Content.([]any); ok {
+						for _, raw := range parts {
+							if part, ok := raw.(map[string]any); ok && part["type"] == "input_text" {
+								userText += fmt.Sprint(part["text"])
+							}
+						}
+					}
+				}
+				for _, original := range append([]string{req.Question, req.Extra, req.CourseName}, req.Options...) {
+					if !strings.Contains(userText, original) {
+						t.Errorf("original task was truncated before constructing prompt anchors: length=%d tail=%s", len([]rune(original)), string([]rune(original)[len([]rune(original))-8:]))
+					}
+				}
+				if route == "admin-test" && calls == 1 {
+					writeAIToolStream(w, "preserve-original", "关键词")
+					return
+				}
+				writeMCPTextStream(w, `{"answers":["已完成"]}`, 10)
+			}))
+			defer server.Close()
+			client := &ChatGptClient{Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test", SearchTool: &testAISearchTool{}, MaxAISearchModelCalls: 1}
+			var err error
+			if route == "MCP" {
+				_, _, err = client.searchAnswerWithMCP(t.Context(), req)
+			} else {
+				toolMode := ""
+				if route == "admin-test" {
+					toolMode = "web_search"
+				}
+				_, _, err = client.searchAnswerWithToolMode(t.Context(), req, toolMode)
+			}
+			if err != nil || calls == 0 {
+				t.Fatalf("request did not finish: calls=%d err=%v", calls, err)
+			}
+		})
 	}
 }

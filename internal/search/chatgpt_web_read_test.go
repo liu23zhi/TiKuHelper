@@ -3,7 +3,6 @@ package search
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -15,11 +14,13 @@ import (
 )
 
 type webReadTestTool struct {
-	urls []string
+	urls    []string
+	queries []string
 }
 
-func (tool *webReadTestTool) SearchAggregate(context.Context, uapi.SearchAggregateRequest) (uapi.SearchAggregateResponse, error) {
-	return uapi.SearchAggregateResponse{}, fmt.Errorf("unexpected web_search call")
+func (tool *webReadTestTool) SearchAggregate(_ context.Context, req uapi.SearchAggregateRequest) (uapi.SearchAggregateResponse, error) {
+	tool.queries = append(tool.queries, req.Query)
+	return uapi.SearchAggregateResponse{Query: req.Query, TotalResults: 1, Results: []uapi.SearchResult{{Title: "参考资料", URL: "https://example.com/article", Snippet: "参考网页"}}}, nil
 }
 
 func (tool *webReadTestTool) ReadWebPage(_ context.Context, rawURL string) (uapi.WebToMarkdownTask, error) {
@@ -56,6 +57,10 @@ func TestAISearchWebReadToolUsesBudgetAndRecordsUsage(t *testing.T) {
 			if !strings.Contains(last, "web_read 网页读取还剩 1 次") {
 				t.Fatalf("missing web-read budget: %s", last)
 			}
+			writeAIToolStream(w, "search-1", "2+2")
+			return
+		}
+		if modelCalls == 2 {
 			writeAIWebReadToolStream(w, "read-1", "https://example.com/article")
 			return
 		}
@@ -75,7 +80,7 @@ func TestAISearchWebReadToolUsesBudgetAndRecordsUsage(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(answer, [][]string{{"4"}}) {
 		t.Fatalf("answer=%v err=%v", answer, err)
 	}
-	if modelCalls != 2 || len(tool.urls) != 1 || len(usage.WebReadCalls) != 1 || usage.WebReadCalls[0].Status != "success" || usage.WebReadCalls[0].TaskID != "web-task-1" {
+	if modelCalls != 3 || !reflect.DeepEqual(tool.queries, []string{"2+2"}) || len(tool.urls) != 1 || len(usage.WebReadCalls) != 1 || usage.WebReadCalls[0].Status != "success" || usage.WebReadCalls[0].TaskID != "web-task-1" {
 		t.Fatalf("calls=%d urls=%v webReads=%+v", modelCalls, tool.urls, usage.WebReadCalls)
 	}
 }

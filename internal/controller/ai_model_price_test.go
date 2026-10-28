@@ -145,6 +145,40 @@ func TestCreateAIModelPriceTreatsMissingNameAsBadRequest(t *testing.T) {
 	}
 }
 
+func TestCreateAIModelPricePassesContextAndRejectsInvalidWindow(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	original := createAIModelPrice
+	defer func() { createAIModelPrice = original }()
+	createAIModelPrice = func(input service.CreateAIModelPriceInput) (entity.AIModelPrice, error) {
+		if input.ContextWindowTokens == nil || *input.ContextWindowTokens != 128000 {
+			t.Fatalf("context window was not parsed: %+v", input)
+		}
+		return entity.AIModelPrice{ModelName: input.ModelName, ContextWindowTokens: *input.ContextWindowTokens}, nil
+	}
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-model-prices", bytes.NewBufferString(`{"modelName":"fixture","contextWindowTokens":128000}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
+	CreateAIModelPrice(ctx)
+	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"contextWindowTokens":128000`)) {
+		t.Fatalf("context not returned: %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	createAIModelPrice = func(service.CreateAIModelPriceInput) (entity.AIModelPrice, error) {
+		return entity.AIModelPrice{}, service.ErrAIModelContextWindowInvalid
+	}
+	recorder = httptest.NewRecorder()
+	ctx, _ = gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-model-prices", bytes.NewBufferString(`{"modelName":"fixture","contextWindowTokens":-1}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
+	CreateAIModelPrice(ctx)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("invalid context should be bad request: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestUpdateAIModelPriceHandlesNotFound(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

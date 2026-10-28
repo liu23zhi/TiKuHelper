@@ -388,6 +388,7 @@ func ensureAIModelPriceSchema(db *gorm.DB) error {
 	}{
 		{field: "CacheWritePrice", name: "cache_write_price"},
 		{field: "Multiplier", name: "multiplier"},
+		{field: "ContextWindowTokens", name: "context_window_tokens"},
 	}
 
 	for _, column := range columns {

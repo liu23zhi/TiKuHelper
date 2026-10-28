@@ -96,7 +96,7 @@ func TestAISearchRetryAfterHeaderAndBudget(t *testing.T) {
 	defer server.Close()
 	client := &ChatGptClient{APIKey: "sk-test", Model: "test"}
 
-	_, _, status, _, retryable, ordinaryErr := client.executeAISearchStreamRequest(context.Background(), server.URL, []byte(`{}`), `{}`, time.Now())
+	_, _, status, _, retryable, ordinaryErr := client.executeAISearchStreamRequest(context.Background(), server.URL, []byte(`{}`), `{}`)
 	if status != http.StatusTooManyRequests || !retryable {
 		t.Fatalf("ordinary response: status=%d retryable=%t", status, retryable)
 	}
@@ -109,12 +109,14 @@ func TestAISearchRetryAfterHeaderAndBudget(t *testing.T) {
 		if !ok || delay != time.Second {
 			t.Errorf("%s Retry-After: delay=%v present=%t", name, delay, ok)
 		}
-		if sleepAISearchRetryBackoff(context.Background(), 1, aiSearchRetryBudget-time.Second/2, retryErr) {
-			t.Errorf("%s should not retry beyond total budget", name)
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second/2)
+		if sleepAISearchRetryBackoff(ctx, 1, retryErr) {
+			t.Errorf("%s should not retry beyond the caller's deadline", name)
 		}
+		cancel()
 	}
 	started := time.Now()
-	if !sleepAISearchRetryBackoff(context.Background(), 1, 0, ordinaryErr) {
+	if !sleepAISearchRetryBackoff(context.Background(), 1, ordinaryErr) {
 		t.Fatal("Retry-After within budget should be accepted")
 	}
 	if elapsed := time.Since(started); elapsed < 900*time.Millisecond {

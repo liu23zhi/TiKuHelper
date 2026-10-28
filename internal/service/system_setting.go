@@ -83,9 +83,9 @@ const DefaultAISearchPricePerCall = float64(0)
 const DefaultMaxAIWebReads = 5
 const DefaultWebReadPricePerCall = float64(0)
 const DefaultMinRechargeAmount = float64(1)
-const MaxAllowedAISearchModelCalls = 20
-const MaxAllowedAISearches = 20
-const MaxAllowedAISearchRetries = 10
+
+// JSON numbers must round-trip through the browser without losing precision.
+const MaxAISearchCountSafeInteger int64 = 9007199254740991
 
 const paymentMethodWXPay = "wxpay"
 const wechatLoginModeScan = "scan"
@@ -177,6 +177,7 @@ type UpdateSystemSettingInput struct {
 
 var ErrInvalidNewUserBonusAmount = errors.New("新用户赠送金额不能为负数")
 var ErrInvalidMinRechargeAmount = errors.New("最低充值金额必须是大于 0 的有效金额")
+var ErrInvalidAISearchCount = errors.New("AI 调用与工具次数必须是可精确表示的正整数")
 
 type PublicAuthSettings struct {
 	RegisterEnabled           bool   `json:"registerEnabled"`
@@ -318,10 +319,10 @@ func GetSystemSettingDetailWithDB(db *gorm.DB) (SystemSettingDetail, error) {
 		SMSBaoRegionMode:          normalizeSMSBaoRegionMode(getSystemSettingStringWithDefault(db, SMSBaoRegionModeSettingKey, DefaultSMSBaoRegionMode)),
 		UAPIAPIKey:                strings.TrimSpace(getSystemSettingStringWithDefault(db, UAPIAPIKeySettingKey, "")),
 		MaxLogSizeBytes:           getPositiveInt64SystemSetting(db, MaxLogSizeBytesSettingKey, DefaultMaxLogSizeBytes),
-		MaxAISearchModelCalls:     getPositiveBoundedIntSystemSetting(db, MaxAISearchModelCallsSettingKey, DefaultMaxAISearchModelCalls, MaxAllowedAISearchModelCalls),
-		MaxAISearches:             getPositiveBoundedIntSystemSetting(db, MaxAISearchesSettingKey, DefaultMaxAISearches, MaxAllowedAISearches),
-		MaxAISearchRetries:        getPositiveBoundedIntSystemSetting(db, MaxAISearchRetriesSettingKey, DefaultMaxAISearchRetries, MaxAllowedAISearchRetries),
-		MaxAIWebReads:             getPositiveBoundedIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads, MaxAllowedAISearches),
+		MaxAISearchModelCalls:     getPositiveIntSystemSetting(db, MaxAISearchModelCallsSettingKey, DefaultMaxAISearchModelCalls),
+		MaxAISearches:             getPositiveIntSystemSetting(db, MaxAISearchesSettingKey, DefaultMaxAISearches),
+		MaxAISearchRetries:        getPositiveIntSystemSetting(db, MaxAISearchRetriesSettingKey, DefaultMaxAISearchRetries),
+		MaxAIWebReads:             getPositiveIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads),
 		WebReadPricePerCall:       GetWebReadPricePerCallWithDB(db),
 		MinRechargeAmount:         GetMinRechargeAmountWithDB(db),
 	}
@@ -334,6 +335,9 @@ func GetSystemSettingDetailWithDB(db *gorm.DB) (SystemSettingDetail, error) {
 }
 
 func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput) (SystemSettingDetail, error) {
+	if err := validateAISearchCountInputs(input.MaxAISearchModelCalls, input.MaxAISearches, input.MaxAISearchRetries, input.MaxAIWebReads); err != nil {
+		return SystemSettingDetail{}, err
+	}
 	if _, err := SetRegisterEnabledWithDB(db, input.RegisterEnabled); err != nil {
 		return SystemSettingDetail{}, err
 	}
@@ -388,10 +392,10 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		// 直接 TrimSpace 而不是 mergeStoredSecretInput —— 留空即清空，语义直观。
 		UAPIAPIKey:            strings.TrimSpace(input.UAPIAPIKey),
 		MaxLogSizeBytes:       resolveMaxLogSizeBytes(db, input.MaxLogSizeBytes),
-		MaxAISearchModelCalls: resolveMaxAISearchBudget(db, input.MaxAISearchModelCalls, MaxAISearchModelCallsSettingKey, DefaultMaxAISearchModelCalls, MaxAllowedAISearchModelCalls),
-		MaxAISearches:         resolveMaxAISearchBudget(db, input.MaxAISearches, MaxAISearchesSettingKey, DefaultMaxAISearches, MaxAllowedAISearches),
-		MaxAISearchRetries:    resolveMaxAISearchBudget(db, input.MaxAISearchRetries, MaxAISearchRetriesSettingKey, DefaultMaxAISearchRetries, MaxAllowedAISearchRetries),
-		MaxAIWebReads:         resolveMaxAISearchBudget(db, input.MaxAIWebReads, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads, MaxAllowedAISearches),
+		MaxAISearchModelCalls: resolveMaxAISearchBudget(db, input.MaxAISearchModelCalls, MaxAISearchModelCallsSettingKey, DefaultMaxAISearchModelCalls),
+		MaxAISearches:         resolveMaxAISearchBudget(db, input.MaxAISearches, MaxAISearchesSettingKey, DefaultMaxAISearches),
+		MaxAISearchRetries:    resolveMaxAISearchBudget(db, input.MaxAISearchRetries, MaxAISearchRetriesSettingKey, DefaultMaxAISearchRetries),
+		MaxAIWebReads:         resolveMaxAISearchBudget(db, input.MaxAIWebReads, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads),
 		WebReadPricePerCall:   resolveWebReadPrice(db, input.WebReadPricePerCall),
 		MinRechargeAmount:     minRechargeAmount,
 	}
@@ -507,34 +511,37 @@ func getPositiveInt64SystemSetting(db *gorm.DB, key string, defaultValue int64) 
 	return value
 }
 
-func resolveMaxAISearchBudget(db *gorm.DB, requested int, key string, defaultValue int, maxValue int) int {
+func resolveMaxAISearchBudget(db *gorm.DB, requested int, key string, defaultValue int) int {
 	if requested > 0 {
-		return normalizeAISearchBudget(requested, defaultValue, maxValue)
+		return requested
 	}
-	return getPositiveBoundedIntSystemSetting(db, key, defaultValue, maxValue)
+	return getPositiveIntSystemSetting(db, key, defaultValue)
 }
 
 // GetAISearchBudgetsWithDB returns the model-round and web-search limits used
 // by every AI search entry point. Invalid or missing settings fall back to the
 // safe defaults so a settings row cannot disable the search path accidentally.
 func GetAISearchBudgetsWithDB(db *gorm.DB) (modelCalls int, searches int) {
-	return getPositiveBoundedIntSystemSetting(db, MaxAISearchModelCallsSettingKey, DefaultMaxAISearchModelCalls, MaxAllowedAISearchModelCalls),
-		getPositiveBoundedIntSystemSetting(db, MaxAISearchesSettingKey, DefaultMaxAISearches, MaxAllowedAISearches)
+	return getPositiveIntSystemSetting(db, MaxAISearchModelCallsSettingKey, DefaultMaxAISearchModelCalls),
+		getPositiveIntSystemSetting(db, MaxAISearchesSettingKey, DefaultMaxAISearches)
 }
 
 // GetAISearchRetriesWithDB returns the total number of attempts allowed for
 // each AI model round. The first request is included in this count.
 func GetAISearchRetriesWithDB(db *gorm.DB) int {
-	return getPositiveBoundedIntSystemSetting(db, MaxAISearchRetriesSettingKey, DefaultMaxAISearchRetries, MaxAllowedAISearchRetries)
+	return getPositiveIntSystemSetting(db, MaxAISearchRetriesSettingKey, DefaultMaxAISearchRetries)
 }
 
 // SetAISearchRetriesWithDB updates the total per-round attempt count. A value
 // of zero is treated as omitted by callers and therefore keeps the current
 // setting; invalid persisted values fall back to the default on read.
 func SetAISearchRetriesWithDB(db *gorm.DB, requested int) error {
+	if err := validateAISearchCountInputs(requested); err != nil {
+		return err
+	}
 	retries := GetAISearchRetriesWithDB(db)
 	if requested > 0 {
-		retries = normalizeAISearchBudget(requested, DefaultMaxAISearchRetries, MaxAllowedAISearchRetries)
+		retries = requested
 	}
 	return saveSystemSettingValue(db, MaxAISearchRetriesSettingKey, strconv.Itoa(retries), "AI 搜索每轮失败重试次数（含首次调用）")
 }
@@ -543,12 +550,15 @@ func SetAISearchRetriesWithDB(db *gorm.DB, requested int) error {
 // by the AI search configuration endpoint so that changing the AI account does
 // not overwrite unrelated system settings.
 func SetAISearchBudgetsWithDB(db *gorm.DB, requestedModelCalls int, requestedSearches int) error {
+	if err := validateAISearchCountInputs(requestedModelCalls, requestedSearches); err != nil {
+		return err
+	}
 	modelCalls, searches := GetAISearchBudgetsWithDB(db)
 	if requestedModelCalls > 0 {
-		modelCalls = normalizeAISearchBudget(requestedModelCalls, DefaultMaxAISearchModelCalls, MaxAllowedAISearchModelCalls)
+		modelCalls = requestedModelCalls
 	}
 	if requestedSearches > 0 {
-		searches = normalizeAISearchBudget(requestedSearches, DefaultMaxAISearches, MaxAllowedAISearches)
+		searches = requestedSearches
 	}
 	if err := saveSystemSettingValue(db, MaxAISearchModelCallsSettingKey, strconv.Itoa(modelCalls), "AI 搜索模型最大调用次数"); err != nil {
 		return err
@@ -756,23 +766,27 @@ func resolveWebReadPrice(db *gorm.DB, requested float64) float64 {
 	return GetWebReadPricePerCallWithDB(db)
 }
 
-func getPositiveBoundedIntSystemSetting(db *gorm.DB, key string, defaultValue int, maxValue int) int {
+func getPositiveIntSystemSetting(db *gorm.DB, key string, defaultValue int) int {
 	raw := strings.TrimSpace(getSystemSettingStringWithDefault(db, key, strconv.Itoa(defaultValue)))
 	value, err := strconv.Atoi(raw)
-	if err != nil || value <= 0 {
+	if err != nil || !isValidAISearchCount(value) {
 		return defaultValue
-	}
-	return normalizeAISearchBudget(value, defaultValue, maxValue)
-}
-
-func normalizeAISearchBudget(value int, defaultValue int, maxValue int) int {
-	if value <= 0 {
-		return defaultValue
-	}
-	if maxValue > 0 && value > maxValue {
-		return maxValue
 	}
 	return value
+}
+
+func isValidAISearchCount(value int) bool {
+	return value > 0 && int64(value) <= MaxAISearchCountSafeInteger
+}
+
+func validateAISearchCountInputs(values ...int) error {
+	for _, value := range values {
+		// Zero is the legacy omitted-field value for non-pointer settings.
+		if value != 0 && !isValidAISearchCount(value) {
+			return ErrInvalidAISearchCount
+		}
+	}
+	return nil
 }
 
 func getSystemSettingStringWithDefault(db *gorm.DB, key string, defaultValue string) string {

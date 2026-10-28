@@ -12,11 +12,51 @@ import {
   buildAISearchConfigSavePayload,
   buildAIModelPricingGaps,
   isModelPriced,
+  buildAIModelPriceSavePayload,
+  formatAIModelContextWindowTokens,
 } from './aiSearchModelHelpers.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const aiSearchConfigPagePath = path.join(__dirname, '..', 'pages', 'AISearchConfig', 'index.vue');
+
+test('model price payload keeps existing prices and explicit context token counts', () => {
+  const input = {
+    id: 8,
+    modelName: ' deepseek-chat ',
+    displayName: 'DeepSeek 自定义',
+    contextWindowTokens: '131072',
+    inputPrice: 7.123456,
+    cachedPrice: 0.5,
+    cacheWritePrice: 1.2,
+    outputPrice: 12,
+    multiplier: 0.7,
+    remark: '已有价格保持不变',
+  };
+  assert.deepEqual(buildAIModelPriceSavePayload(input), {
+    ...input, modelName: 'deepseek-chat', contextWindowTokens: 131072,
+  });
+  assert.equal(input.contextWindowTokens, '131072');
+  for (const value of [undefined, null, '', '  ', 0, '0']) {
+    assert.equal(buildAIModelPriceSavePayload({ ...input, contextWindowTokens: value }).contextWindowTokens, 0);
+  }
+  assert.equal(buildAIModelPriceSavePayload({ ...input, contextWindowTokens: 1048576 }).contextWindowTokens, 1048576);
+});
+
+test('model price payload rejects invalid context windows before submission', () => {
+  for (const value of [-1, '-1', 0.5, '131072.5', '128K', '1e6', NaN, Infinity, true, [], {}, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => buildAIModelPriceSavePayload({ modelName: 'deepseek-chat', contextWindowTokens: value }), /上下文窗口/);
+  }
+  assert.throws(() => buildAIModelPriceSavePayload({ modelName: ' ' }), /模型名称/);
+});
+
+test('model context windows display readable token counts and preserve unknown values', () => {
+  assert.equal(formatAIModelContextWindowTokens(131072), '131,072');
+  assert.equal(formatAIModelContextWindowTokens('1048576'), '1,048,576');
+  for (const value of [0, undefined, null, '', -1, 1.5, '128K', Infinity]) {
+    assert.equal(formatAIModelContextWindowTokens(value), '未设置');
+  }
+});
 
 test('splitModelNames handles commas newlines and trimming', () => {
   assert.deepEqual(
@@ -123,6 +163,20 @@ test('buildAISearchConfigSavePayload preserves an explicitly configured retry bu
   );
 });
 
+test('AI search count settings retain configured values above the former limits', () => {
+  const configured = { maxAISearchModelCalls: 101, maxAISearches: 102, maxAISearchRetries: 103, maxAIWebReads: 104 };
+  const payload = buildAISearchConfigSavePayload(configured, 'https://api.example.com/v1');
+  for (const [field, value] of Object.entries(configured)) assert.equal(payload[field], value);
+});
+
+test('AI search count settings reject nonpositive, fractional and unsafe values before saving', () => {
+  for (const field of ['maxAISearchModelCalls', 'maxAISearches', 'maxAISearchRetries', 'maxAIWebReads']) {
+    for (const value of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '', null, true]) {
+      assert.throws(() => buildAISearchConfigSavePayload({ [field]: value }, ''), /正整数/);
+    }
+  }
+});
+
 test('buildAISearchConfigSavePayload always sends staged billing toggles with false defaults', () => {
   const payload = buildAISearchConfigSavePayload({ enabled: true }, 'https://api.example.com/v1');
 
@@ -197,7 +251,7 @@ test('AISearchConfig page bills from the model price table', async () => {
   assert.match(content, /title: '倍率'/);
   assert.match(content, /dataIndex: 'multiplier'/);
   assert.match(content, /priceForm\.multiplier = 1/);
-  assert.match(content, /multiplier: Number\(this\.priceForm\.multiplier \|\| 1\)/);
+  assert.match(content, /buildAIModelPriceSavePayload\(this\.priceForm\)/);
   assert.match(content, /formatMultiplier/);
 
   // 价格表的排序列已移除。
@@ -271,9 +325,19 @@ test('AISearchConfig page exposes configurable model and search budgets', async 
   assert.match(content, /模型最大调用次数必须是/);
   assert.match(content, /最大搜索次数必须是/);
   assert.match(content, /每轮重试次数必须是/);
-  assert.match(helperContent, /maxAISearchModelCalls: Number\(formState\?\.maxAISearchModelCalls \|\| 4\)/);
-  assert.match(helperContent, /maxAISearches: Number\(formState\?\.maxAISearches \|\| 3\)/);
-  assert.match(helperContent, /maxAISearchRetries: Number\(formState\?\.maxAISearchRetries \?\? 3\)/);
+  assert.match(helperContent, /maxAISearchModelCalls: positiveCount\(formState\?\.maxAISearchModelCalls, 4/);
+  assert.match(helperContent, /maxAISearches: positiveCount\(formState\?\.maxAISearches, 3/);
+  assert.match(helperContent, /maxAISearchRetries: positiveCount\(formState\?\.maxAISearchRetries, 3/);
+});
+
+test('AISearchConfig count inputs and loading do not impose arbitrary upper bounds', async () => {
+  const content = await readFile(aiSearchConfigPagePath, 'utf8');
+  for (const field of ['maxAISearchModelCalls', 'maxAISearches', 'maxAISearchRetries', 'maxAIWebReads', 'contextCompressionMaxAttempts']) {
+    const input = content.match(new RegExp(`<a-input-number\\s+v-model:value="formState\\.${field}"[^>]*>`));
+    assert.ok(input, `missing ${field} input`);
+    assert.doesNotMatch(input[0], /:max=/);
+  }
+  assert.doesNotMatch(content, /MAX_AI_SEARCH_BUDGET|MAX_AI_SEARCH_RETRIES = 10|MAX_AI_WEB_READS = 20|Math\.min\(parsed/);
 });
 
 test('AISearchConfig page loads and exposes staged billing toggles', async () => {
