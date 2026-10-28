@@ -134,7 +134,7 @@ import { message } from 'ant-design-vue'
 import BillingDetailDialog from '@/components/BillingDetailDialog.vue'
 import AIToolTestResults from './AIToolTestResults.vue'
 import { testAISearchConfig, testAIToolCall } from '@/api/TikuComponentApi'
-import { buildAISearchTestForm, buildAISearchTestPayload, buildAISearchTestResult, buildAIToolTestPayload, buildAIToolTestPrompt, buildAIToolTestResult } from '@/utils/aiSearchConfigHelpers.mjs'
+import { AI_COMPRESSION_TEST_DEFAULTS, AI_COMPRESSION_TEST_HISTORY, buildAISearchTestForm, buildAISearchTestPayload, buildAISearchTestResult, buildAICompressionToolTestPrompt, buildAIToolTestPayload, buildAIToolTestPrompt, buildAIToolTestResult } from '@/utils/aiSearchConfigHelpers.mjs'
 
 export default defineComponent({
   name: 'AISearchTestDialog',
@@ -146,13 +146,8 @@ export default defineComponent({
   },
   emits: ['update:open'],
   setup(props, { emit }) {
-    const defaultCompressionHistory = [
-      '【合成测试资料】以下记录仅用于验证压缩，不代表真实搜索、浏览结果或事实。',
-      ...Array.from({ length: 32 }, (_, index) => `记录 ${index + 1}：测试项目需要保留原始任务、输出格式、已经确认的结论以及尚未完成的事项。示例搜索词为“上下文压缩测试”，示例来源为 https://example.com/context-test 。此前步骤仅整理了候选资料，尚未完成在线核验；不能将模拟记录表述为真实工具调用。压缩时应合并重复说明，保留这些限制，后续仍需按照当前任务实际调用所选工具。`),
-      '待完成：根据当前测试目标执行所选工具，并明确区分真实返回结果与上述合成资料。',
-    ].join('\n')
     const testType = ref('hello')
-    const form = reactive({ ...buildAISearchTestForm(null), tool: 'web_search', target: 'OpenAI', query: 'OpenAI', url: 'https://www.openai.com/', history: defaultCompressionHistory })
+    const form = reactive({ ...buildAISearchTestForm(null), tool: 'web_search', target: 'OpenAI', query: 'OpenAI', url: 'https://www.openai.com/', history: AI_COMPRESSION_TEST_HISTORY })
     const submitting = ref(false)
     const result = ref(null)
     const error = ref('')
@@ -168,7 +163,7 @@ export default defineComponent({
       ai_compression: '先压缩给定历史，再发起真实 AI 工具调用，检查压缩后的上下文能否继续完成请求。',
     }[testType.value]))
     const promptPreview = computed(() => {
-      try { return { text: buildAIToolTestPrompt(form), error: '' } }
+      try { return { text: testType.value === 'ai_compression' ? buildAICompressionToolTestPrompt(form) : buildAIToolTestPrompt(form), error: '' } }
       catch (validationError) { return { text: '', error: validationError.message } }
     })
     const diagnosticBlocks = computed(() => [
@@ -187,10 +182,16 @@ export default defineComponent({
     watch(() => props.open, (open) => {
       if (!open) return
       Object.assign(form, buildAISearchTestForm(props.config))
-      if (!form.history) form.history = defaultCompressionHistory
+      if (!form.history) form.history = AI_COMPRESSION_TEST_HISTORY
+      if (testType.value === 'ai_compression') {
+        Object.assign(form, AI_COMPRESSION_TEST_DEFAULTS)
+      }
       resetResult()
     })
     watch(testType, (mode) => {
+      if (mode === 'ai_compression') {
+        Object.assign(form, AI_COMPRESSION_TEST_DEFAULTS)
+      }
       if (!['ai', 'ai_compression'].includes(mode) && form.tool === 'both') form.tool = 'web_search'
     })
     async function runTest() {

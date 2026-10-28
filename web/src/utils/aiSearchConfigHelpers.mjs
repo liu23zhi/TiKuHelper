@@ -2,6 +2,22 @@ function trimText(value) {
   return String(value || '').trim();
 }
 
+export const AI_COMPRESSION_TEST_TARGET = 'OpenAI Responses API context compaction';
+export const AI_COMPRESSION_TEST_DEFAULTS = Object.freeze({
+  tool: 'both',
+  target: AI_COMPRESSION_TEST_TARGET,
+  compressionMode: 'local',
+});
+
+export const AI_COMPRESSION_TEST_HISTORY = [
+  '【合成历史测试数据】仅用于检查模型摘要是否保留历史，不代表真实搜索、浏览结果或事实。',
+  '【历史校验】必须保留的唯一标记：HISTORY-KEEP-7F3A。',
+  '【关键事实校验】城市=宁波；数量=17；原始来源=https://example.com/history-check。',
+  '【待办校验】尚未核验发布日期；状态=待使用网页浏览确认，不得描述为已完成。',
+  ...Array.from({ length: 32 }, (_, index) => `历史噪声记录 ${index + 1}：此前仅整理了候选资料，尚未完成在线核验。重复背景：测试内容为合成数据，不能作为现实依据；压缩时可以合并重复背景，但必须保留唯一标记、关键事实、来源地址、未完成事项和它们各自的状态。`),
+  '【历史任务】完成联网工具调用后，分别核对历史校验标记、关键事实和待办状态，再总结真实工具返回内容。',
+].join('\n');
+
 export function buildAIContextCompressionSettings(config) {
   const integer = (value, fallback) => {
     if (value === undefined || value === null) return fallback;
@@ -118,6 +134,10 @@ export function buildAIToolTestPrompt(form) {
       : '请调用一次 web_search，根据实际搜索结果简述相关信息。';
   }
   return `这是 AI 工具调用测试。用户输入：${JSON.stringify(target)}。${instruction}必须实际调用所选工具；失败或无结果时如实说明，不得编造。`;
+}
+
+export function buildAICompressionToolTestPrompt(form) {
+  return `${buildAIToolTestPrompt(form)}工具调用结束后，请根据压缩后的历史逐项回报【历史校验】标记、【关键事实校验】字段值及【待办校验】内容，并区分尚未完成与已完成。只从压缩后的历史提取这些内容；缺少或无法确认的字段须明确写“历史字段缺失”，不得从本提示、网页或工具结果推断。最后另行简述真实工具返回结果。`;
 }
 
 export function buildAIToolTestPayload(form, fallbackConfig) {

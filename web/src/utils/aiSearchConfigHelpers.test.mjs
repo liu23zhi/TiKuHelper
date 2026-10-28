@@ -7,7 +7,12 @@ import {
   buildAISearchTestResult,
   hasAISearchTestResult,
   buildAIToolTestPayload,
+  buildAIToolTestPrompt,
   buildAIToolTestResult,
+  buildAICompressionToolTestPrompt,
+  AI_COMPRESSION_TEST_DEFAULTS,
+  AI_COMPRESSION_TEST_HISTORY,
+  AI_COMPRESSION_TEST_TARGET,
   buildAIContextCompressionSettings,
 } from './aiSearchConfigHelpers.mjs';
 
@@ -256,6 +261,29 @@ test('combined AI prompts choose search then read for keywords and read then sea
   assert.match(buildAIToolTestPrompt({ tool: 'both', target: 'OpenAI' }), /先调用一次 web_search.*再.*调用一次 web_read/);
   assert.match(buildAIToolTestPrompt({ tool: 'both', target: 'https://example.com/' }), /先调用一次 web_read.*再.*调用一次 web_search/);
   assert.throws(() => buildAIToolTestPrompt({ tool: 'both', target: '' }), /关键词|地址/);
+});
+
+test('AI compression test defaults include verifiable history anchors without leaking expected values into the prompt', () => {
+  assert.ok(AI_COMPRESSION_TEST_HISTORY.length > 1000);
+  assert.deepEqual(AI_COMPRESSION_TEST_DEFAULTS, {
+    tool: 'both',
+    target: AI_COMPRESSION_TEST_TARGET,
+    compressionMode: 'local',
+  });
+  assert.equal(AI_COMPRESSION_TEST_TARGET, 'OpenAI Responses API context compaction');
+  assert.match(AI_COMPRESSION_TEST_HISTORY, /【历史校验】.*HISTORY-KEEP-7F3A/);
+  assert.match(AI_COMPRESSION_TEST_HISTORY, /【关键事实校验】.*城市=宁波.*数量=17/);
+  assert.match(AI_COMPRESSION_TEST_HISTORY, /【待办校验】.*尚未核验/);
+
+  const prompt = buildAICompressionToolTestPrompt({ tool: 'both', target: AI_COMPRESSION_TEST_TARGET });
+  assert.match(prompt, /先调用一次 web_search/);
+  assert.match(prompt, /再.*调用一次 web_read/);
+  assert.match(prompt, /【历史校验】.*【关键事实校验】.*【待办校验】/);
+  assert.match(prompt, /字段缺失/);
+  assert.doesNotMatch(prompt, /HISTORY-KEEP-7F3A|城市=宁波|数量=17/);
+
+  const ordinaryPrompt = buildAIToolTestPrompt({ mode: 'ai', tool: 'web_search', target: 'OpenAI' });
+  assert.doesNotMatch(ordinaryPrompt, /历史校验|关键事实校验|待办校验/);
 });
 
 test('failed tool tests retain diagnostics and the actual billing record', () => {

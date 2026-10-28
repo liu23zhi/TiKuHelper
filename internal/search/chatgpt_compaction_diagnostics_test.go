@@ -12,6 +12,23 @@ import (
 	"testing"
 )
 
+func TestBuildAICompressionToolTestPromptRequiresHistoryVerification(t *testing.T) {
+	prompt, err := BuildAICompressionToolTestPrompt("both", "OpenAI Responses API context compaction")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"调用一次 web_search", "调用一次 web_read", "【历史校验】", "【关键事实校验】", "【待办校验】", "历史字段缺失"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("compression prompt does not contain %q: %s", want, prompt)
+		}
+	}
+	for _, leaked := range []string{"HISTORY-KEEP-7F3A", "城市=宁波", "数量=17"} {
+		if strings.Contains(prompt, leaked) {
+			t.Errorf("compression prompt leaks expected history value %q: %s", leaked, prompt)
+		}
+	}
+}
+
 func compressionDiagnosticClient(endpoint string) *ChatGptClient {
 	return &ChatGptClient{Enable: true, BaseURL: endpoint, APIKey: "test-key", Model: "test-model", Prompt: "Return answers JSON; preserve every original task.",
 		ContextCompression: AIContextCompressionConfig{Enabled: false, RemoteEnabled: true, MaxAttempts: 2}}
@@ -126,7 +143,7 @@ func TestToolCallWithCompressionRestoresTaskAndContinuesRealToolLoop(t *testing.
 		}
 		rounds++
 		encoded, _ := json.Marshal(payload)
-		for _, preserved := range []string{"Return answers JSON", "test keyword", "上下文压缩后的执行规则", "History establishes test evidence"} {
+		for _, preserved := range []string{"Return answers JSON", "test keyword", "上下文压缩后的执行规则", "History establishes test evidence", "【历史校验】", "【关键事实校验】", "【待办校验】", "历史字段缺失"} {
 			if !strings.Contains(string(encoded), preserved) {
 				t.Errorf("compressed AI request lost %q: %s", preserved, encoded)
 			}

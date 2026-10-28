@@ -225,6 +225,16 @@ func BuildAIToolTestPrompt(toolName, target string) (string, error) {
 	return "这是 AI 工具调用测试。用户输入：" + strings.TrimSpace(quoted.String()) + "。" + instruction + "必须实际调用所选工具；失败或无结果时如实说明，不得编造。", nil
 }
 
+// BuildAICompressionToolTestPrompt adds explicit history-loss checks to the
+// ordinary tool-test prompt without revealing the expected marker values.
+func BuildAICompressionToolTestPrompt(toolName, target string) (string, error) {
+	prompt, err := BuildAIToolTestPrompt(toolName, target)
+	if err != nil {
+		return "", err
+	}
+	return prompt + "工具调用结束后，请根据压缩后的历史逐项回报【历史校验】标记、【关键事实校验】字段值及【待办校验】内容，并区分尚未完成与已完成。只从压缩后的历史提取这些内容；缺少或无法确认的字段须明确写“历史字段缺失”，不得从本提示、网页或工具结果推断。最后另行简述真实工具返回结果。", nil
+}
+
 // TestToolCall tests the selected native model tools, then requests a final answer.
 // It preserves the complete usage even when the tool or final model round fails.
 func (in *ChatGptClient) TestToolCall(ctx context.Context, toolName string, target string) ([][]string, AISearchDebugResult, error) {
@@ -246,7 +256,11 @@ func (in *ChatGptClient) TestToolCallWithCompression(ctx context.Context, toolNa
 func (in *ChatGptClient) testToolCall(ctx context.Context, toolName string, target string, compression *aiToolTestCompressionOptions) ([][]string, AISearchDebugResult, error) {
 	toolName = strings.TrimSpace(toolName)
 	target = strings.TrimSpace(target)
-	prompt, err := BuildAIToolTestPrompt(toolName, target)
+	promptBuilder := BuildAIToolTestPrompt
+	if compression != nil {
+		promptBuilder = BuildAICompressionToolTestPrompt
+	}
+	prompt, err := promptBuilder(toolName, target)
 	if err != nil {
 		return nil, AISearchDebugResult{}, err
 	}
