@@ -109,6 +109,59 @@ test('AI tool tests require a model and resolve current connection overrides', (
   assert.throws(() => buildAIToolTestPayload({ mode: 'direct', tool: 'unknown', query: 'q' }), /工具/);
 });
 
+test('AI tests accept one target for either a single tool or both tools', () => {
+  for (const tool of ['web_search', 'both']) {
+    const payload = buildAIToolTestPayload({ mode: 'ai', tool, target: ' OpenAI 最新动态 ', model: 'gpt-test' });
+    assert.equal(payload.target, 'OpenAI 最新动态');
+    assert.equal(payload.tool, tool);
+  }
+  const payload = buildAIToolTestPayload({ mode: 'ai', tool: 'web_read', target: ' https://example.com/article ', model: 'gpt-test' });
+  assert.equal(payload.target, 'https://example.com/article');
+  const legacy = buildAIToolTestPayload({ mode: 'ai', tool: 'both', query: 'OpenAI', url: 'https://example.com/article', model: 'gpt-test' });
+  assert.equal(legacy.target, 'https://example.com/article');
+  assert.throws(() => buildAIToolTestPayload({ mode: 'direct', tool: 'both', query: 'OpenAI' }), /工具/);
+});
+
+test('AI targets validate URL safety and count keyword Unicode characters', () => {
+  const ai = { mode: 'ai', tool: 'both', model: 'gpt-test' };
+  assert.equal(buildAIToolTestPayload({ ...ai, target: '中'.repeat(120) }).target.length, 120);
+  assert.throws(() => buildAIToolTestPayload({ ...ai, target: '中'.repeat(121) }), /120/);
+  assert.equal([...buildAIToolTestPayload({ ...ai, target: '😀'.repeat(120) }).target].length, 120);
+  assert.equal(buildAIToolTestPayload({ ...ai, target: 'OpenAI: API' }).target, 'OpenAI: API');
+  assert.throws(() => buildAIToolTestPayload({ ...ai, target: ' ' }), /关键词|地址/);
+  assert.throws(() => buildAIToolTestPayload({ ...ai, target: ' ', query: 'stale keyword', url: 'https://example.com/' }), /关键词|地址/);
+  assert.throws(() => buildAIToolTestPayload({ ...ai, tool: 'web_read', target: 'OpenAI' }), /HTTP|地址/);
+  for (const target of ['ftp://example.com/a', 'https://user:pass@example.com/a', 'https://@example.com/a', 'https://example.com/a#section']) {
+    assert.throws(() => buildAIToolTestPayload({ ...ai, target }), /HTTP|地址|凭据|片段/);
+  }
+  const url = `https://example.com/${'a'.repeat(200)}`;
+  assert.equal(buildAIToolTestPayload({ ...ai, target: url }).target, url);
+  assert.throws(() => buildAIToolTestPayload({ ...ai, target: `https://example.com/${'a'.repeat(2048)}` }), /2048/);
+});
+
+test('generated AI prompts request only the selected tool and use the exact input', async () => {
+  const { buildAIToolTestPrompt } = await import('./aiSearchConfigHelpers.mjs');
+  assert.equal(typeof buildAIToolTestPrompt, 'function');
+  const search = buildAIToolTestPrompt({ tool: 'web_search', target: ' OpenAI <新闻> ' });
+  assert.match(search, /用户输入："OpenAI <新闻>"/);
+  assert.match(search, /调用一次 web_search/);
+  assert.doesNotMatch(search, /web_read/);
+  const read = buildAIToolTestPrompt({ tool: 'web_read', target: 'https://example.com/a?x=1&y=2' });
+  assert.match(read, /调用一次 web_read/);
+  assert.match(read, /等待正文返回/);
+  assert.doesNotMatch(read, /web_search/);
+  const urlSearch = buildAIToolTestPrompt({ tool: 'web_search', target: 'https://example.com/' });
+  assert.match(urlSearch, /网页地址提炼关键词/);
+});
+
+test('combined AI prompts choose search then read for keywords and read then search for URLs', async () => {
+  const { buildAIToolTestPrompt } = await import('./aiSearchConfigHelpers.mjs');
+  assert.equal(typeof buildAIToolTestPrompt, 'function');
+  assert.match(buildAIToolTestPrompt({ tool: 'both', target: 'OpenAI' }), /先调用一次 web_search.*再.*调用一次 web_read/);
+  assert.match(buildAIToolTestPrompt({ tool: 'both', target: 'https://example.com/' }), /先调用一次 web_read.*再.*调用一次 web_search/);
+  assert.throws(() => buildAIToolTestPrompt({ tool: 'both', target: '' }), /关键词|地址/);
+});
+
 test('failed tool tests retain diagnostics and the actual billing record', () => {
   const record = { id: 12, feeDetails: [{ provider: 'ai', cacheHitRate: 0.1 }] };
   const result = buildAIToolTestResult({ data: {
@@ -129,9 +182,10 @@ test('failed tool tests retain diagnostics and the actual billing record', () =>
 
 test('tool test results preserve Markdown content and explicit empty trace', () => {
   const result = buildAIToolTestResult({ data: {
-    success: true, toolResult: '# Page\n\nContent', trace: [], usage: { trace: [{ type: 'model' }] },
+    success: true, toolResult: '# Page\n\nContent', trace: [], usage: { trace: [{ type: 'model' }] }, testPrompt: ' 实际发送的提示词 ',
   } });
   assert.equal(result.toolResultText, '# Page\n\nContent');
   assert.equal(result.traceText, '[]');
   assert.equal(result.billingRecord, null);
+  assert.equal(result.testPrompt, '实际发送的提示词');
 });

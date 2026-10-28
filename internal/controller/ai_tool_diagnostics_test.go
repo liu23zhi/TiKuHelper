@@ -61,6 +61,14 @@ func TestAIToolTestValidatesBeforeExternalCalls(t *testing.T) {
 		`{"mode":"direct","tool":"web_search","query":""}`,
 		`{"mode":"direct","tool":"web_search","query":"` + strings.Repeat("中", 121) + `"}`,
 		`{"mode":"direct","tool":"web_read","url":"file:///test"}`,
+		`{"mode":"direct","tool":"both","query":"test"}`,
+		`{"mode":"ai","tool":"both","target":""}`,
+		`{"mode":"ai","tool":"both","target":"https://example.com/#part"}`,
+		`{"mode":"ai","tool":"web_read","target":"search words"}`,
+		`{"mode":"ai","tool":"web_search","target":"file:///test"}`,
+		`{"mode":"ai","tool":"both","target":"` + strings.Repeat("中", 121) + `"}`,
+		`{"mode":"ai","tool":"both","target":"https://example.com/` + strings.Repeat("a", 2048) + `"}`,
+		`{"mode":"ai","tool":"both","target":"http://127.0.0.1/"}`,
 	} {
 		if res := callToolTest(t, user, body); res.Code != http.StatusBadRequest {
 			t.Fatalf("invalid request: %d %s", res.Code, res.Body)
@@ -72,6 +80,155 @@ func TestAIToolTestValidatesBeforeExternalCalls(t *testing.T) {
 	}
 	if tool.searches+tool.reads != 0 {
 		t.Fatal("invalid request reached tool")
+	}
+}
+
+func TestAIToolCombinedRequiresWebReadBeforeModelCall(t *testing.T) {
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 0, "tool-admin", "admin")
+	if err := db.Model(&user).Update("balance", 10).Error; err != nil {
+		t.Fatal(err)
+	}
+	originalTool, originalDebug := newAIToolTestTool, runAIToolDebug
+	t.Cleanup(func() { newAIToolTestTool, runAIToolDebug = originalTool, originalDebug })
+	tool := &toolTestStub{}
+	newAIToolTestTool = func(*gorm.DB) searchpkg.AISearchTool {
+		return struct{ searchpkg.AISearchTool }{tool}
+	}
+	called := false
+	runAIToolDebug = func(context.Context, *searchpkg.ChatGptClient, string, string) ([][]string, searchpkg.AISearchDebugResult, error) {
+		called = true
+		return nil, searchpkg.AISearchDebugResult{}, nil
+	}
+	res := callToolTest(t, user, `{"mode":"ai","tool":"both","target":"test"}`)
+	if res.Code != http.StatusBadRequest || !strings.Contains(res.Body.String(), "未配置网页读取工具") || called || tool.searches+tool.reads != 0 {
+		t.Fatalf("status=%d called=%t tool=%+v response=%s", res.Code, called, tool, res.Body)
+	}
+}
+
+func TestAIToolAIInputUsesTargetAndPreservesLegacyFields(t *testing.T) {
+	for _, test := range []struct {
+		name, body, want string
+	}{
+		{"combined keyword", `{"mode":"ai","tool":"both","target":" tool keyword "}`, "tool keyword"},
+		{"combined URL", `{"mode":"ai","tool":"both","target":"https://example.com/page"}`, "https://example.com/page"},
+		{"target precedence", `{"mode":"ai","tool":"web_search","target":"chosen","query":"legacy"}`, "chosen"},
+		{"legacy search", `{"mode":"ai","tool":"web_search","query":" legacy "}`, "legacy"},
+		{"legacy read", `{"mode":"ai","tool":"web_read","url":"https://example.com/page"}`, "https://example.com/page"},
+		{"legacy combined", `{"mode":"ai","tool":"both","query":"legacy","url":"https://example.com/page"}`, "https://example.com/page"},
+		{"search long URL", `{"mode":"ai","tool":"web_search","target":"https://example.com/` + strings.Repeat("a", 121) + `"}`, "https://example.com/" + strings.Repeat("a", 121)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var input aiToolTestInput
+			if err := json.Unmarshal([]byte(test.body), &input); err != nil {
+				t.Fatal(err)
+			}
+			target, err := input.validate()
+			if err != nil || target != test.want {
+				t.Fatalf("target=%q err=%v want=%q", target, err, test.want)
+			}
+		})
+	}
+}
+
+func TestAIToolAIInputRejectsExplicitEmptyTarget(t *testing.T) {
+	var input aiToolTestInput
+	if err := json.Unmarshal([]byte(`{"mode":"ai","tool":"web_search","target":" ","query":"old keyword"}`), &input); err != nil {
+		t.Fatal(err)
+	}
+	if target, err := input.validate(); err == nil {
+		t.Fatalf("explicit empty target reused old input: %q", target)
+	}
+}
+
+func TestAIToolCombinedModelCallsMergeBothToolCharges(t *testing.T) {
+	t.Setenv("TIKU_ALLOW_PRIVATE_OUTBOUND", "true")
+	for _, complete := range []bool{true, false} {
+		t.Run(fmt.Sprintf("complete=%t", complete), func(t *testing.T) {
+			db := newSearchControllerTestDB(t)
+			user := seedControllerUser(t, db, 0, "combined-tool-admin", "admin")
+			if err := db.Model(&user).Update("balance", 10).Error; err != nil {
+				t.Fatal(err)
+			}
+			seedControllerAIModelPrice(t, db, "tool-model", 1, 0.1, 2)
+			disabled := false
+			if err := service.SetAIStagedTokenBillingSettingsWithDB(db, &disabled, nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := service.SetAISearchPricePerCallWithDB(db, 0.2); err != nil {
+				t.Fatal(err)
+			}
+			if err := service.SetWebReadPricePerCallWithDB(db, 0.3); err != nil {
+				t.Fatal(err)
+			}
+			original := newAIToolTestTool
+			t.Cleanup(func() { newAIToolTestTool = original })
+			tool := &toolTestStub{}
+			newAIToolTestTool = func(*gorm.DB) searchpkg.AISearchTool { return tool }
+			rounds := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				rounds++
+				var request struct {
+					ToolChoice any `json:"tool_choice"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+				}
+				if rounds == 1 && request.ToolChoice != "auto" {
+					t.Errorf("AI test should use prompt-driven tool choice: %+v", request.ToolChoice)
+				}
+				output := []any{gin.H{"type": "message", "role": "assistant", "content": []any{gin.H{"type": "output_text", "text": `{"answers":["tool results received"]}`}}}}
+				if rounds == 1 {
+					output = []any{gin.H{"type": "function_call", "id": "fc_search", "call_id": "call_search", "name": "web_search", "arguments": `{"query":"tool keyword"}`, "status": "completed"}}
+				} else if rounds == 2 && complete {
+					output = []any{gin.H{"type": "function_call", "id": "fc_read", "call_id": "call_read", "name": "web_read", "arguments": `{"url":"https://example.com"}`, "status": "completed"}}
+				}
+				input, cached, out := rounds*1000, []int{0, 100, 1000, 1500}[rounds], rounds*20
+				payload, _ := json.Marshal(gin.H{"type": "response.completed", "response": gin.H{"status": "completed", "model": "tool-model", "output": output,
+					"usage": gin.H{"input_tokens": input, "input_tokens_details": gin.H{"cached_tokens": cached}, "output_tokens": out, "total_tokens": input + out}}})
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprintf(w, "event: response.completed\ndata: %s\n\n", payload)
+			}))
+			defer server.Close()
+			body, _ := json.Marshal(gin.H{"mode": "ai", "tool": "both", "target": "tool keyword", "baseUrl": server.URL, "apiKey": "sk-fixture", "model": "tool-model"})
+			res := callToolTest(t, user, string(body))
+			var response struct {
+				Success       bool                          `json:"success"`
+				TestPrompt    string                        `json:"testPrompt"`
+				RequestID     string                        `json:"requestId"`
+				BillingRecord service.BillingRecordListItem `json:"billingRecord"`
+				Usage         searchpkg.AISearchUsage       `json:"usage"`
+				ToolResult    []json.RawMessage             `json:"toolResult"`
+			}
+			if err := json.Unmarshal(res.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			wantRounds, wantReads, wantRecords, wantDetails := 3, 1, 3, 5
+			wantAmount := 0.5039
+			if !complete {
+				wantRounds, wantReads, wantRecords, wantDetails, wantAmount = 2, 0, 2, 3, 0.20213
+			}
+			if res.Code != http.StatusOK || response.Success != complete || rounds != wantRounds || tool.searches != 1 || tool.reads != wantReads || len(response.ToolResult) != 1+wantReads {
+				t.Fatalf("rounds=%d tool=%+v response=%s", rounds, tool, res.Body)
+			}
+			if !strings.Contains(response.TestPrompt, "tool keyword") || !strings.Contains(response.TestPrompt, "web_search") || !strings.Contains(response.TestPrompt, "web_read") {
+				t.Fatalf("missing generated prompt: %q", response.TestPrompt)
+			}
+			bill := response.BillingRecord
+			if bill.ID == 0 || bill.Amount != wantAmount || len(bill.FeeDetails) != wantDetails || len(response.Usage.ModelCalls) != wantRounds {
+				t.Fatalf("incorrect combined bill: %+v usage=%+v", bill, response.Usage)
+			}
+			if complete && (bill.CacheHitRate == nil || *bill.CacheHitRate != float64(2600)/6000) {
+				t.Fatalf("incorrect cache rate: %+v", bill)
+			}
+			var records []entity.BillingRecord
+			db.Where("request_id = ?", response.RequestID).Find(&records)
+			var account entity.User
+			db.First(&account, user.ID)
+			if len(records) != wantRecords || account.Balance != util.RoundMoney(10-wantAmount) {
+				t.Fatalf("records=%+v balance=%f", records, account.Balance)
+			}
+		})
 	}
 }
 

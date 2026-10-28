@@ -52,9 +52,11 @@ func TestToolCallSelectsOnlyRequestedToolAndRetainsUsage(t *testing.T) {
 				}
 				if modelCalls == 1 {
 					tools, _ := payload["tools"].([]any)
-					choice, _ := payload["tool_choice"].(map[string]any)
-					if len(tools) != 1 || tools[0].(map[string]any)["name"] != toolName || choice["name"] != toolName {
-						t.Errorf("test must force only %s, got tools=%v choice=%v", toolName, tools, choice)
+					if len(tools) != 1 || tools[0].(map[string]any)["name"] != toolName || payload["tool_choice"] != "auto" {
+						t.Errorf("test must let the prompt request %s, got tools=%v choice=%v", toolName, tools, payload["tool_choice"])
+					}
+					if !strings.Contains(fmt.Sprint(payload["input"]), "用户输入：\"https://example.com/source\"") {
+						t.Error("model did not receive the generated test prompt")
 					}
 					if toolName == "web_search" {
 						writeAIToolStream(w, "test-tool", "二加二")
@@ -92,6 +94,95 @@ func TestToolCallSelectsOnlyRequestedToolAndRetainsUsage(t *testing.T) {
 			}
 			if toolName == "web_read" && (tool.reads != 1 || len(debug.Usage.WebReadCalls) != 1 || debug.Usage.WebReadCalls[0].Status != "success") {
 				t.Fatalf("missing read usage: %+v", debug.Usage)
+			}
+		})
+	}
+}
+
+func TestToolCallUsesBothToolsFromKeywordOrURL(t *testing.T) {
+	for _, target := range []string{"二加二", "https://example.com/source"} {
+		t.Run(target, func(t *testing.T) {
+			tool := &diagnosticTestTool{}
+			rounds := 0
+			firstTool, secondTool := "web_search", "web_read"
+			if strings.HasPrefix(target, "https://") {
+				firstTool, secondTool = secondTool, firstTool
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				rounds++
+				var payload map[string]any
+				if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+					t.Error(err)
+					return
+				}
+				tools, _ := payload["tools"].([]any)
+				if rounds < 3 {
+					if payload["tool_choice"] != "auto" || len(tools) != 3-rounds {
+						t.Errorf("unexpected available tools in round %d: %v", rounds, payload)
+					}
+					if rounds == 2 && (len(tools) != 1 || tools[0].(map[string]any)["name"] != secondTool) {
+						t.Errorf("used tool was not withdrawn: %v", tools)
+					}
+					name := firstTool
+					if rounds == 2 {
+						name = secondTool
+					}
+					if name == "web_search" {
+						writeAIToolStream(w, "search-evidence", "二加二")
+					} else {
+						writeAIWebReadToolStream(w, "read-evidence", "https://example.com/source")
+					}
+					return
+				}
+				if payload["tools"] != nil || payload["tool_choice"] != nil {
+					t.Error("final round still offered tools")
+				}
+				outputs := 0
+				for _, raw := range payload["input"].([]any) {
+					if raw.(map[string]any)["type"] == "function_call_output" {
+						outputs++
+					}
+				}
+				if outputs != 2 {
+					t.Errorf("final answer did not receive both tool outputs: %d", outputs)
+				}
+				writeAIFinalStream(w)
+			}))
+			defer server.Close()
+			client := &ChatGptClient{Enable: true, BaseURL: server.URL, APIKey: "test-key", Model: "test-model", SearchTool: tool}
+			answers, debug, err := client.TestToolCall(context.Background(), "both", target)
+			if err != nil || len(answers) != 1 || rounds != 3 || tool.searches != 1 || tool.reads != 1 {
+				t.Fatalf("joint test failed: answers=%v rounds=%d tool=%+v err=%v", answers, rounds, tool, err)
+			}
+			if len(debug.Usage.ModelCalls) != 3 || len(debug.Usage.SearchCalls) != 1 || len(debug.Usage.WebReadCalls) != 1 {
+				t.Fatalf("joint test lost usage: %+v", debug.Usage)
+			}
+		})
+	}
+}
+
+func TestToolCallJointTestRejectsMissingOrFailedTool(t *testing.T) {
+	for _, calledTool := range []string{"web_search", "web_read", "none"} {
+		t.Run(calledTool, func(t *testing.T) {
+			tool := &diagnosticTestTool{}
+			rounds := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				rounds++
+				if rounds == 1 && calledTool != "none" {
+					if calledTool == "web_search" {
+						writeAIToolStream(w, "only-search", "二加二")
+					} else {
+						writeAIWebReadToolStream(w, "only-read", "https://example.com/source")
+					}
+					return
+				}
+				writeAIFinalStream(w)
+			}))
+			defer server.Close()
+			client := &ChatGptClient{Enable: true, BaseURL: server.URL, APIKey: "test-key", Model: "test-model", SearchTool: tool}
+			_, debug, err := client.TestToolCall(context.Background(), "both", "二加二")
+			if err == nil || len(debug.Usage.ModelCalls) != rounds || rounds == 0 {
+				t.Fatalf("incomplete joint test must fail and retain model usage: rounds=%d err=%v usage=%+v", rounds, err, debug.Usage)
 			}
 		})
 	}

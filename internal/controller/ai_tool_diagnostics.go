@@ -22,10 +22,11 @@ import (
 
 type aiToolTestInput struct {
 	aiSearchTestInput
-	Mode  string `json:"mode"`
-	Tool  string `json:"tool"`
-	Query string `json:"query"`
-	URL   string `json:"url"`
+	Mode   string  `json:"mode"`
+	Tool   string  `json:"tool"`
+	Target *string `json:"target"`
+	Query  string  `json:"query"`
+	URL    string  `json:"url"`
 }
 
 var newAIToolTestTool = service.BuildUAPISearchToolWithDB
@@ -74,6 +75,29 @@ func (input *aiToolTestInput) validate() (string, error) {
 	input.Mode, input.Tool = strings.TrimSpace(input.Mode), strings.TrimSpace(input.Tool)
 	if input.Mode != "direct" && input.Mode != "ai" {
 		return "", errors.New("测试类型须为 direct 或 ai")
+	}
+	if input.Mode == "ai" {
+		target := ""
+		if input.Target != nil {
+			target = strings.TrimSpace(*input.Target)
+		} else {
+			switch input.Tool {
+			case "web_read":
+				target = strings.TrimSpace(input.URL)
+			case "both":
+				target = strings.TrimSpace(input.URL)
+				if target == "" {
+					target = strings.TrimSpace(input.Query)
+				}
+			default:
+				target = strings.TrimSpace(input.Query)
+			}
+		}
+		_, err := search.BuildAIToolTestPrompt(input.Tool, target)
+		if err == nil && strings.Contains(target, "://") {
+			target, err = uapi.ValidateWebURL(target)
+		}
+		return target, err
 	}
 	switch input.Tool {
 	case "web_search":
@@ -132,12 +156,14 @@ func TestAIToolCall(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "请先在系统设置中配置有效的 UApiPro 令牌"})
 		return
 	}
-	if _, ok := tool.(search.AIWebReadTool); input.Tool == "web_read" && !ok {
+	if _, ok := tool.(search.AIWebReadTool); (input.Tool == "web_read" || input.Tool == "both") && !ok {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "未配置网页读取工具"})
 		return
 	}
 	config := service.AISearchRequestConfig{}
+	testPrompt := ""
 	if input.Mode == "ai" {
+		testPrompt, _ = search.BuildAIToolTestPrompt(input.Tool, target)
 		query := url.Values{"url": {input.BaseURL}, "key": {input.APIKey}, "model": {input.Model}}
 		resolved, err := service.BuildAISearchRequestConfigWithDB(db, query, true)
 		if err != nil || !service.IsAISearchConfigUsable(resolved.Config) {
@@ -197,6 +223,7 @@ func TestAIToolCall(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, redactAIToolTestData(gin.H{
 		"success": err == nil, "message": message, "requestId": requestID, "answers": flattened,
+		"testPrompt": testPrompt,
 		"toolResult": recorder.results, "usage": debug.Usage, "trace": debug.Usage.Trace,
 		"requestBody": debug.RequestBody, "rawResponse": debug.RawResponse, "endpoint": debug.Endpoint,
 		"billingRecord": billingRecord, "billingWarning": warning,

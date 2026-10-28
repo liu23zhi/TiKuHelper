@@ -45,11 +45,55 @@ export function hasAISearchTestResult(result) {
   );
 }
 
+function validateToolTestURL(value) {
+  let parsed;
+  try { parsed = new URL(value); } catch { throw new Error('请填写有效的 HTTP 或 HTTPS 网页地址'); }
+  if (!/^https?:\/\//i.test(value) || !['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) {
+    throw new Error('网页地址仅支持完整 HTTP 或 HTTPS 地址');
+  }
+  const authority = value.match(/^https?:\/\/([^/?#]*)/i)?.[1] || '';
+  if (authority.includes('@') || parsed.username || parsed.password || parsed.hash) throw new Error('网页地址不能包含凭据或片段');
+  if ([...value].length > 2048) throw new Error('网页地址不能超过 2048 个字符');
+}
+
+function resolveAIToolTestTarget(form) {
+  const tool = trimText(form?.tool);
+  if (!['web_search', 'web_read', 'both'].includes(tool)) throw new Error('请选择要测试的工具');
+  let target = trimText(form?.target);
+  if (!Object.prototype.hasOwnProperty.call(form || {}, 'target')) {
+    target = tool === 'web_read' ? trimText(form?.url)
+      : tool === 'both' ? trimText(form?.url) || trimText(form?.query) : trimText(form?.query);
+  }
+  if (!target) throw new Error('请填写关键词或网页地址');
+  const isURL = target.includes('://');
+  if (isURL || tool === 'web_read') validateToolTestURL(target);
+  else if ([...target].length > 120) throw new Error('关键词不能超过 120 个字符');
+  return { target, isURL };
+}
+
+export function buildAIToolTestPrompt(form) {
+  const { target, isURL } = resolveAIToolTestTarget(form);
+  const tool = trimText(form?.tool);
+  let instruction;
+  if (tool === 'web_read') {
+    instruction = '请调用一次 web_read 读取该网页，等待正文返回后简述内容。';
+  } else if (tool === 'both') {
+    instruction = isURL
+      ? '请先调用一次 web_read 读取该网页，再根据网页主题调用一次 web_search 核对相关信息，最后综合说明。'
+      : '请先调用一次 web_search 搜索该关键词，再从搜索结果中选择一个相关网页调用一次 web_read，等待正文返回后综合说明。';
+  } else {
+    instruction = isURL
+      ? '请根据该网页地址提炼关键词，调用一次 web_search，根据实际搜索结果简述相关信息。'
+      : '请调用一次 web_search，根据实际搜索结果简述相关信息。';
+  }
+  return `这是 AI 工具调用测试。用户输入：${JSON.stringify(target)}。${instruction}必须实际调用所选工具；失败或无结果时如实说明，不得编造。`;
+}
+
 export function buildAIToolTestPayload(form, fallbackConfig) {
   const mode = trimText(form?.mode);
   const tool = trimText(form?.tool);
   if (!['direct', 'ai'].includes(mode)) throw new Error('请选择测试类型');
-  if (!['web_search', 'web_read'].includes(tool)) throw new Error('请选择要测试的工具');
+  if (!(mode === 'ai' ? ['web_search', 'web_read', 'both'] : ['web_search', 'web_read']).includes(tool)) throw new Error('请选择要测试的工具');
   const connection = buildAISearchTestForm(form);
   const fallback = buildAISearchTestForm(fallbackConfig);
   const payload = {
@@ -61,11 +105,16 @@ export function buildAIToolTestPayload(form, fallbackConfig) {
     model: connection.model || fallback.model,
     prompt: connection.prompt || fallback.prompt,
   };
-  if (tool === 'web_search' && !payload.query) throw new Error('请填写搜索词');
-  if (tool === 'web_read') {
-    let parsed;
-    try { parsed = new URL(payload.url); } catch { throw new Error('请填写有效的 HTTP 或 HTTPS 网页地址'); }
-    if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('网页地址仅支持 HTTP 或 HTTPS');
+  if (mode === 'ai') {
+    const { target, isURL } = resolveAIToolTestTarget(form);
+    payload.target = target;
+    payload.query = isURL ? '' : target;
+    payload.url = isURL ? target : '';
+  } else if (tool === 'web_read') {
+    validateToolTestURL(payload.url);
+  } else {
+    if (!payload.query) throw new Error('请填写搜索词');
+    if ([...payload.query].length > 120) throw new Error('搜索词不能超过 120 个字符');
   }
   if (mode === 'ai' && !payload.model) throw new Error('请选择要测试的 AI 模型');
   return payload;
@@ -83,6 +132,7 @@ export function buildAIToolTestResult(response) {
     ...buildAISearchTestResult(response),
     success: data.success === true,
     message: trimText(data.message),
+    testPrompt: trimText(data.testPrompt),
     toolResultText: formatTestDiagnostic(data.toolResult),
     traceText: formatTestDiagnostic(data.trace ?? data.usage?.trace),
     usageText: formatTestDiagnostic(data.usage),
