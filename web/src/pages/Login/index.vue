@@ -228,6 +228,7 @@ export default defineComponent({
     const wechatTransportText = ref('')
     const wechatLoginSubMode = ref('scan')
     const wechatCodeSubmitting = ref(false)
+    let wechatScanGeneration = 0
     const loginMode = ref('password')
     const publicAuthSettings = ref({
       siteName: '题库',
@@ -325,13 +326,15 @@ export default defineComponent({
       })
     }
 
-    const finishLogin = () => {
+    const finishLogin = (_jwt, isCurrent = () => true) => {
+      if (!isCurrent()) return Promise.resolve(false)
       return getCurrentUser().then((userRes) => {
+        if (!isCurrent()) return false
         if (userRes?.status === 200) {
           setStoredCurrentUser(userRes.data)
           message.success('登录成功')
           router.push(resolveHomePath(userRes.data))
-          return
+          return true
         }
         throw new Error(userRes?.message || '获取当前用户失败')
       })
@@ -380,11 +383,11 @@ export default defineComponent({
       })
     }
 
-    const handleWechatLoginResult = async (res) => {
+    const handleWechatLoginResult = async (res, isCurrent = () => true) => {
+      if (!isCurrent()) return false
       const status = res?.data?.status
       if (status === 'success') {
-        await finishLogin(res?.data?.jwt)
-        return true
+        return finishLogin(res?.data?.jwt, isCurrent)
       }
       if (status === 'need_bind') {
         router.push({ path: '/wechat-bind', query: { bindToken: res?.data?.bindToken || '' } })
@@ -394,20 +397,22 @@ export default defineComponent({
     }
 
     const resolveWechatLoginStatus = async (payload = {}) => {
+      const loginToken = wechatLoginToken.value
+      const generation = wechatScanGeneration
+      const isCurrent = () => generation === wechatScanGeneration && !!loginToken && loginToken === wechatLoginToken.value && loginMode.value === 'wechat' && wechatLoginSubMode.value === 'scan'
       if (payload?.status === 'success' && payload?.jwt) {
-        await handleWechatLoginResult({ data: payload })
-        return
+        return handleWechatLoginResult({ data: payload }, isCurrent)
       }
       if (payload?.status === 'need_bind' && payload?.bindToken) {
-        await handleWechatLoginResult({ data: payload })
-        return
+        return handleWechatLoginResult({ data: payload }, isCurrent)
       }
-      const res = await getWechatLoginStatus({ loginToken: wechatLoginToken.value })
+      const res = await getWechatLoginStatus({ loginToken })
+      if (!isCurrent()) return false
       if (res?.status !== 200) {
         wechatLoginStatusText.value = res?.message || '微信登录状态查询失败'
-        return
+        return false
       }
-      await handleWechatLoginResult(res)
+      return handleWechatLoginResult(res, isCurrent)
     }
 
     const wechatStatusController = createWechatQrStatusController({
@@ -421,6 +426,9 @@ export default defineComponent({
       onExpired: () => {
         wechatLoginStatusText.value = '二维码已过期，请刷新'
       },
+      onError: (error) => {
+        wechatLoginStatusText.value = error?.message || '微信登录状态查询失败，正在重试'
+      },
       onStatus: async (status, payload) => {
         if (status === 'pending') {
           wechatLoginStatusText.value = '请使用微信扫码确认登录'
@@ -431,13 +439,15 @@ export default defineComponent({
           return
         }
         if (status === 'success' || status === 'need_bind') {
-          await resolveWechatLoginStatus(payload)
+          return resolveWechatLoginStatus(payload)
         }
       },
     })
 
     const resetWechatScanState = () => {
+      wechatScanGeneration += 1
       wechatStatusController.stop()
+      wechatQrLoading.value = false
       wechatQrCodeImageData.value = ''
       wechatLoginToken.value = ''
       wechatRemainingSeconds.value = null
@@ -448,11 +458,14 @@ export default defineComponent({
       if (wechatLoginSubMode.value !== 'scan' || !publicAuthSettings.value.wechatScanLoginEnabled) {
         return
       }
-      wechatStatusController.stop()
+      resetWechatScanState()
+      const generation = wechatScanGeneration
+      const isCurrent = () => generation === wechatScanGeneration && loginMode.value === 'wechat' && wechatLoginSubMode.value === 'scan'
       wechatQrLoading.value = true
       wechatLoginStatusText.value = '正在创建二维码'
       try {
         const res = await createWechatLoginQRCode()
+        if (!isCurrent()) return
         if (res?.status !== 200) {
           throw new Error(res?.message || '二维码创建失败，请稍后重试')
         }
@@ -468,10 +481,11 @@ export default defineComponent({
           expiresAtUnix: res?.data?.expiresAtUnix,
         })
       } catch (error) {
+        if (!isCurrent()) return
         wechatLoginStatusText.value = error?.message || '二维码创建失败，请稍后重试'
         message.error(wechatLoginStatusText.value)
       } finally {
-        wechatQrLoading.value = false
+        if (isCurrent()) wechatQrLoading.value = false
       }
     }
 
@@ -571,7 +585,7 @@ export default defineComponent({
     })
 
     onBeforeUnmount(() => {
-      wechatStatusController.stop()
+      resetWechatScanState()
     })
 
     return {

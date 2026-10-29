@@ -43,3 +43,19 @@ type sqliteQuietDialector struct {
 func (d sqliteQuietDialector) Migrator(db *gorm.DB) gorm.Migrator {
 	return sqliteQuietMigrator{Migrator: d.Dialector.Migrator(db)}
 }
+
+// Embedding gorm.Dialector hides optional interfaces. Forward savepoints so
+// account updates keep their nested transaction rollback semantics.
+func (d sqliteQuietDialector) SavePoint(tx *gorm.DB, name string) error {
+	if driver, ok := d.Dialector.(gorm.SavePointerDialectorInterface); ok {
+		return driver.SavePoint(tx, name)
+	}
+	return gorm.ErrUnsupportedDriver
+}
+
+func (d sqliteQuietDialector) RollbackTo(tx *gorm.DB, name string) error {
+	if driver, ok := d.Dialector.(gorm.SavePointerDialectorInterface); ok {
+		return driver.RollbackTo(tx, name)
+	}
+	return gorm.ErrUnsupportedDriver
+}

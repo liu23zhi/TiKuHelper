@@ -602,16 +602,16 @@ export default defineComponent({
           width: userTableColumnWidths.phone,
         },
         {
+          title: '手机号绑定时间',
+          dataIndex: 'phoneBoundAt',
+          key: 'phoneBoundAt',
+          width: userTableColumnWidths.phoneBoundAt,
+        },
+        {
           title: '微信绑定',
           dataIndex: 'wechatId',
           key: 'wechat',
           width: userTableColumnWidths.wechat,
-        },
-        {
-          title: '绑定时间',
-          dataIndex: 'phoneBoundAt',
-          key: 'phoneBoundAt',
-          width: userTableColumnWidths.phoneBoundAt,
         },
         {
           title: '微信绑定时间',

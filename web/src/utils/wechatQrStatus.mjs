@@ -24,6 +24,7 @@ export function createWechatQrStatusController({
   onTransport = () => {},
   onRemaining = () => {},
   onExpired = () => {},
+  onError = () => {},
   createWebSocket = (url) => new WebSocket(url),
   buildWebSocketURL = buildWechatLoginWebSocketURL,
   setIntervalFn = setInterval,
@@ -32,19 +33,22 @@ export function createWechatQrStatusController({
   pollIntervalMs = 2000,
   wsRecoveryIntervalMs = 30000,
   heartbeatIntervalMs = 25000,
+  wsStatusTimeoutMs = 10000,
   maxReconnectAttempts = 3,
 } = {}) {
   let stopped = true
   let session = null
   let socket = null
   let reconnectFailures = 0
-  let socketOpened = false
   let pollTimer = null
   let recoveryTimer = null
   let heartbeatTimer = null
   let countdownTimer = null
+  let statusTimer = null
   let lastStatus = ''
   let lastRemaining = null
+  let resolvingTerminal = null
+  let pollingSession = null
 
   const clearTimer = (timer) => {
     if (timer !== null) {
@@ -55,6 +59,11 @@ export function createWechatQrStatusController({
   const stopHeartbeat = () => {
     clearTimer(heartbeatTimer)
     heartbeatTimer = null
+  }
+
+  const stopStatusWatchdog = () => {
+    clearTimer(statusTimer)
+    statusTimer = null
   }
 
   const stopPolling = () => {
@@ -70,7 +79,7 @@ export function createWechatQrStatusController({
       return
     }
     lastStatus = normalized
-    Promise.resolve(onStatus(normalized, payload)).catch(() => {})
+    return onStatus(normalized, payload)
   }
 
   const stop = () => {
@@ -79,10 +88,13 @@ export function createWechatQrStatusController({
     clearTimer(recoveryTimer)
     clearTimer(heartbeatTimer)
     clearTimer(countdownTimer)
+    stopStatusWatchdog()
     pollTimer = null
     recoveryTimer = null
     heartbeatTimer = null
     countdownTimer = null
+    resolvingTerminal = null
+    pollingSession = null
     session = null
     if (socket) {
       socket.onopen = null
@@ -95,29 +107,68 @@ export function createWechatQrStatusController({
   }
 
   const handleStatus = (status, payload = {}) => {
-    emitStatus(status, payload)
-    if (status === 'success' || status === 'need_bind') {
-      stop()
+    if (stopped || !session) return
+    const activeSession = session
+    if (resolvingTerminal === activeSession) return
+    const normalized = String(status || '').trim()
+    if (normalized === 'success' || normalized === 'need_bind') {
+      resolvingTerminal = activeSession
+      const retryResolution = () => {
+        if (stopped || session !== activeSession) return
+        resolvingTerminal = null
+        lastStatus = ''
+        startPolling()
+      }
+      let resolution
+      try {
+        resolution = emitStatus(normalized, payload)
+      } catch (error) {
+        onError(error)
+        retryResolution()
+        return
+      }
+      Promise.resolve(resolution).then((completed) => {
+        if (stopped || session !== activeSession) return
+        if (completed === false) retryResolution()
+        else stop()
+      }).catch((error) => {
+        if (stopped || session !== activeSession) return
+        onError(error)
+        retryResolution()
+      })
       return
     }
-    if (status === 'expired') {
+    try {
+      Promise.resolve(emitStatus(normalized, payload)).catch((error) => {
+        if (!stopped && session === activeSession) onError(error)
+      })
+    } catch (error) {
+      onError(error)
+    }
+    if (normalized === 'expired') {
       onExpired()
       stop()
     }
   }
 
   const pollOnce = async () => {
-    if (stopped) {
+    if (stopped || !session || pollingSession === session || resolvingTerminal === session) {
       return
     }
+    const activeSession = session
+    pollingSession = activeSession
     try {
       const response = await checkStatus()
+      if (stopped || session !== activeSession) return
       if (response?.status !== 200) {
+        onError(new Error(response?.message || '微信状态查询失败，正在重试'))
         return
       }
       handleStatus(response?.data?.status, response?.data || {})
-    } catch (_) {
-      // A transient polling failure is retried by the interval.
+    } catch (error) {
+      if (!stopped && session === activeSession) onError(error)
+    } finally {
+      if (pollingSession === activeSession) pollingSession = null
     }
   }
 
@@ -133,16 +184,27 @@ export function createWechatQrStatusController({
       return
     }
     socket = nextSocket
-    socketOpened = false
+    const resetStatusWatchdog = () => {
+      stopStatusWatchdog()
+      statusTimer = setIntervalFn(() => {
+        if (stopped || socket !== nextSocket) return
+        nextSocket.onopen = null
+        nextSocket.onmessage = null
+        nextSocket.onclose = null
+        nextSocket.onerror = null
+        nextSocket.close()
+        socket = null
+        stopHeartbeat()
+        stopStatusWatchdog()
+        startPolling()
+      }, wsStatusTimeoutMs)
+    }
+    resetStatusWatchdog()
 
     nextSocket.onopen = () => {
       if (stopped || socket !== nextSocket) {
         return
       }
-      socketOpened = true
-      reconnectFailures = 0
-      stopPolling()
-      onTransport('websocket')
       nextSocket.send(JSON.stringify({ type: 'ping', timestamp: now() }))
       stopHeartbeat()
       heartbeatTimer = setIntervalFn(() => {
@@ -153,13 +215,21 @@ export function createWechatQrStatusController({
     }
 
     nextSocket.onmessage = (event) => {
+      if (stopped || socket !== nextSocket) return
       let message
       try {
         message = JSON.parse(event?.data || '{}')
       } catch (_) {
         return
       }
-      if (message.type !== 'status') {
+      if (message.type !== 'status' || !['pending', 'scanned', 'success', 'need_bind', 'expired'].includes(message.status)) {
+        return
+      }
+      resetStatusWatchdog()
+      stopPolling()
+      onTransport('websocket')
+      if (message.status === 'success' || message.status === 'need_bind') {
+        handleStatus(message.status, message)
         return
       }
       const remainingSeconds = Number(message.remainingSeconds)
@@ -196,15 +266,11 @@ export function createWechatQrStatusController({
     }
     socket = null
     stopHeartbeat()
+    stopStatusWatchdog()
     if (stopped || !session) {
       return
     }
-    if (socketOpened) {
-      socketOpened = false
-      reconnectFailures = 0
-      connectWebSocket()
-      return
-    }
+    if (resolvingTerminal === session) return
     reconnectFailures += 1
     if (reconnectFailures <= maxReconnectAttempts) {
       connectWebSocket()
@@ -222,7 +288,7 @@ export function createWechatQrStatusController({
       lastRemaining = remaining
       onRemaining(remaining)
     }
-    if (remaining <= 0) {
+    if (remaining <= 0 && resolvingTerminal !== session) {
       handleStatus('expired', { status: 'expired' })
     }
   }
@@ -235,7 +301,6 @@ export function createWechatQrStatusController({
       expiresAtUnix: resolveWechatQrExpiresAt(nextSession, now()),
     }
     reconnectFailures = 0
-    socketOpened = false
     lastStatus = ''
     lastRemaining = null
     if (!session.loginToken) {

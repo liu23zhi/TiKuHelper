@@ -327,3 +327,54 @@ func TestWechatLoginWebSocketSendsStatusAndPong(t *testing.T) {
 		t.Fatalf("unexpected pong: %+v", pong)
 	}
 }
+
+func TestWechatLoginWebSocketDeliversTerminalStatusBeforeClose(t *testing.T) {
+	for _, status := range []string{service.WechatLoginStatusSuccess, service.WechatLoginStatusNeedBind, service.WechatLoginStatusExpired} {
+		for _, alreadyScanned := range []bool{true, false} {
+			t.Run(status+map[bool]string{true: "/initial", false: "/after-poll"}[alreadyScanned], func(t *testing.T) {
+				gin.SetMode(gin.TestMode)
+				previousSettings, previousProbe := loadWechatLoginSettings, probeWechatScanStatusWithDB
+				previousStore := service.DefaultWechatLoginSessionStore
+				t.Cleanup(func() {
+					loadWechatLoginSettings, probeWechatScanStatusWithDB = previousSettings, previousProbe
+					service.DefaultWechatLoginSessionStore = previousStore
+				})
+				loadWechatLoginSettings = func() (service.SystemSettingDetail, error) {
+					return service.SystemSettingDetail{WechatLoginEnabled: true, WechatScanLoginEnabled: true, WechatAPIBaseURL: "https://wechat.example.com", WechatAPIBearerToken: "token"}, nil
+				}
+				calls := 0
+				probeWechatScanStatusWithDB = func(service.WechatScanProbeInput) (service.WechatScanProbeResult, error) {
+					calls++
+					if !alreadyScanned && calls == 1 {
+						return service.WechatScanProbeResult{Status: service.WechatLoginStatusPending}, nil
+					}
+					return service.WechatScanProbeResult{Status: status}, nil
+				}
+				service.DefaultWechatLoginSessionStore = service.NewWechatLoginSessionStore()
+				service.DefaultWechatLoginSessionStore.Create("terminal-session", time.Now(), time.Now().Add(time.Minute))
+				engine := gin.New()
+				engine.GET("/ws", WechatLoginWebSocket)
+				server := httptest.NewServer(engine)
+				defer server.Close()
+				conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/ws?loginToken=terminal-session", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer conn.Close()
+				_ = conn.SetReadDeadline(time.Now().Add(4 * time.Second))
+				for _, want := range []string{service.WechatLoginStatusPending, status} {
+					var message map[string]any
+					if err := conn.ReadJSON(&message); err != nil {
+						t.Fatalf("read %s before close: %v", want, err)
+					}
+					if message["type"] != "status" || message["status"] != want {
+						t.Fatalf("message=%+v want=%s", message, want)
+					}
+					if message["jwt"] != nil || message["bindToken"] != nil {
+						t.Fatal("status transport must not issue authentication credentials")
+					}
+				}
+			})
+		}
+	}
+}

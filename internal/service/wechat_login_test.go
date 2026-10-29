@@ -222,6 +222,28 @@ func TestCheckWechatLoginStatusRejectsExpiredQRSession(t *testing.T) {
 	}
 }
 
+func TestWechatScanStatusPropagatesUpstreamExpiry(t *testing.T) {
+	for _, success := range []bool{true, false} {
+		t.Run(fmt.Sprintf("success-%t", success), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]any{"success": success, "data": map[string]any{"status": "expired"}, "message": "二维码已过期"})
+			}))
+			defer server.Close()
+			client := WechatLoginClient{BaseURL: server.URL, Client: server.Client()}
+			store := NewWechatLoginSessionStore()
+			store.Create("expired-upstream", time.Now(), time.Now().Add(time.Minute))
+			result, err := CheckWechatLoginStatusWithDB(nil, WechatLoginStatusInput{Client: client, SessionStore: store, LoginToken: "expired-upstream"})
+			if err != nil || result.Status != WechatLoginStatusExpired || result.JWT != "" || result.BindToken != "" {
+				t.Fatalf("status=%+v err=%v", result, err)
+			}
+			probe, err := ProbeWechatScanStatusWithDB(nil, WechatScanProbeInput{Client: client, LoginToken: "expired-upstream"})
+			if err != nil || probe.Status != WechatLoginStatusExpired {
+				t.Fatalf("probe=%+v err=%v", probe, err)
+			}
+		})
+	}
+}
+
 func TestCheckWechatLoginStatusWithDBReturnsJWTForBoundUser(t *testing.T) {
 	db := newWechatLoginTestDB(t)
 	wechatID := "openid-bound"

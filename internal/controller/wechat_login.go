@@ -136,7 +136,6 @@ func runWechatLoginWebSocket(conn *websocket.Conn, expiresAt time.Time, client s
 	})
 
 	inbound := make(chan wechatSocketMessage, 8)
-	outbound := make(chan wechatSocketMessage, 8)
 	readClosed := make(chan struct{})
 	go func() {
 		defer close(readClosed)
@@ -162,29 +161,31 @@ func runWechatLoginWebSocket(conn *websocket.Conn, expiresAt time.Time, client s
 	defer expiryTimer.Stop()
 
 	lastStatus := ""
-	sendStatus := func(status string) bool {
+	writeMessage := func(message wechatSocketMessage) bool {
+		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		return conn.WriteJSON(message) == nil
+	}
+	sendStatus := func(status string, repeat bool) bool {
 		status = strings.TrimSpace(status)
-		if status == "" || status == lastStatus {
+		if status == "" || !repeat && status == lastStatus {
 			return true
 		}
 		remaining := int64(time.Until(expiresAt).Seconds())
 		if remaining < 0 {
 			remaining = 0
 		}
-		select {
-		case outbound <- wechatSocketMessage{
+		if !writeMessage(wechatSocketMessage{
 			Type:             "status",
 			Status:           status,
 			RemainingSeconds: remaining,
-		}:
-			lastStatus = status
-			return true
-		case <-readClosed:
+		}) {
 			return false
 		}
+		lastStatus = status
+		return true
 	}
 
-	probeAndSend := func() bool {
+	probeAndSend := func(repeat bool) bool {
 		result, err := probeWechatScanStatusWithDB(service.WechatScanProbeInput{
 			Client:     client,
 			LoginToken: loginToken,
@@ -192,15 +193,18 @@ func runWechatLoginWebSocket(conn *websocket.Conn, expiresAt time.Time, client s
 		if err != nil {
 			return true
 		}
-		if !sendStatus(result.Status) {
+		if !sendStatus(result.Status, repeat) {
 			return false
 		}
 		return result.Status != service.WechatLoginStatusSuccess &&
-			result.Status != service.WechatLoginStatusNeedBind
+			result.Status != service.WechatLoginStatusNeedBind &&
+			result.Status != service.WechatLoginStatusExpired
 	}
 
-	sendStatus(service.WechatLoginStatusPending)
-	if !probeAndSend() {
+	if !sendStatus(service.WechatLoginStatusPending, false) {
+		return
+	}
+	if !probeAndSend(false) {
 		return
 	}
 
@@ -210,14 +214,7 @@ func runWechatLoginWebSocket(conn *websocket.Conn, expiresAt time.Time, client s
 			if message.Type != "ping" {
 				continue
 			}
-			select {
-			case outbound <- wechatSocketMessage{Type: "pong", Timestamp: message.Timestamp}:
-			case <-readClosed:
-				return
-			}
-		case message := <-outbound:
-			_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-			if err := conn.WriteJSON(message); err != nil {
+			if !writeMessage(wechatSocketMessage{Type: "pong", Timestamp: message.Timestamp}) {
 				return
 			}
 		case <-heartbeatTicker.C:
@@ -225,7 +222,7 @@ func runWechatLoginWebSocket(conn *websocket.Conn, expiresAt time.Time, client s
 				return
 			}
 		case <-statusTicker.C:
-			if !probeAndSend() {
+			if !probeAndSend(true) {
 				return
 			}
 		case <-expiryTimer.C:

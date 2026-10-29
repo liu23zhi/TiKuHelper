@@ -352,6 +352,8 @@ func CheckWechatLoginStatusWithDB(db *gorm.DB, input WechatLoginStatusInput) (We
 		return WechatLoginStatusResult{Status: WechatLoginStatusPending, Message: upstream.Message}, nil
 	case WechatLoginStatusScanned:
 		return WechatLoginStatusResult{Status: WechatLoginStatusScanned}, nil
+	case WechatLoginStatusExpired:
+		return WechatLoginStatusResult{Status: WechatLoginStatusExpired, Message: upstream.Message}, nil
 	case WechatLoginStatusSuccess:
 		return sessionStore.completeLogin(input.LoginToken, func() (WechatLoginStatusResult, error) {
 			return resolveWechatLoginResultByID(db, input.Store, upstream.WechatID, input.RequestIP)
@@ -366,7 +368,7 @@ func ProbeWechatScanStatusWithDB(db *gorm.DB, input WechatScanProbeInput) (Wecha
 	if err != nil {
 		return WechatScanProbeResult{}, err
 	}
-	if upstream.Status == WechatLoginStatusPending || upstream.Status == WechatLoginStatusScanned {
+	if upstream.Status == WechatLoginStatusPending || upstream.Status == WechatLoginStatusScanned || upstream.Status == WechatLoginStatusExpired {
 		return WechatScanProbeResult{Status: upstream.Status}, nil
 	}
 	if upstream.Status != WechatLoginStatusSuccess {

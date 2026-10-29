@@ -67,7 +67,7 @@ test('Profile page keeps scan QR manual while using realtime status lifecycle', 
 test('User management displays wechat binding state and binding time', async () => {
   const content = await readSource(path.join('pages', 'UserList', 'index.vue'))
 
-  assert.match(content, /title: '微信绑定'/)
+  assert.match(content, /title: '手机号'[\s\S]*title: '手机号绑定时间',[\s\S]*dataIndex: 'phoneBoundAt',[\s\S]*key: 'phoneBoundAt',[\s\S]*title: '微信绑定',[\s\S]*dataIndex: 'wechatId',[\s\S]*key: 'wechat',[\s\S]*title: '微信绑定时间',[\s\S]*dataIndex: 'wechatBoundAt',[\s\S]*key: 'wechatBoundAt'/)
   assert.match(content, /title: '微信绑定时间'/)
   assert.match(content, /record\.wechatId/)
   assert.match(content, /record\.wechatBoundAt/)
