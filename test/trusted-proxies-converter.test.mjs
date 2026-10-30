@@ -30,6 +30,51 @@ test('Nginx converter preserves the source format and emits realip directives', 
     assert.match(await readFile(output, 'utf8'), /set_real_ip_from 10\.0\.0\.0\/8;/)
     assert.match(await readFile(output, 'utf8'), /set_real_ip_from 172\.26\.0\.10\/31;/)
     assert.match(await readFile(output, 'utf8'), /set_real_ip_from 172\.26\.0\.12\/32;/)
+    const generated = await readFile(output, 'utf8')
+    for (const subnet of ['127.0.0.0/8', '::1/128', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '169.254.0.0/16', 'fc00::/7', 'fe80::/10']) {
+      assert.match(generated, new RegExp(`set_real_ip_from ${subnet.replaceAll('.', '\\.').replace('/', '\\/')};`))
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('empty or comment-only trusted proxy input emits trust-all realip directives', async (t) => {
+  const probe = spawnSync('bash.exe', ['-lc', 'command -v awk && command -v grep'], { encoding: 'utf8', timeout: 30000 })
+  if (probe.status !== 0) return t.skip('bash/WSL is unavailable')
+  const directory = await mkdtemp(join(tmpdir(), 'tiku-proxy-empty-'))
+  const source = join(directory, 'trusted_proxies.txt')
+  const output = join(directory, 'trusted-proxies.generated.conf')
+  const original = '# only comments\n\n'
+  try {
+    await writeFile(source, original)
+    const command = `sh '${wslPath(script)}' '${wslPath(source)}' '${wslPath(output)}'`
+    const result = spawnSync('bash.exe', ['-lc', command], { encoding: 'utf8', timeout: 30000 })
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(await readFile(source, 'utf8'), original)
+    assert.deepEqual((await readFile(output, 'utf8')).trim().split(/\r?\n/), [
+      'set_real_ip_from 0.0.0.0/0;',
+      'set_real_ip_from ::/0;',
+    ])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('missing trusted proxy input follows the application empty-file default', async (t) => {
+  const probe = spawnSync('bash.exe', ['-lc', 'command -v awk && command -v grep'], { encoding: 'utf8', timeout: 30000 })
+  if (probe.status !== 0) return t.skip('bash/WSL is unavailable')
+  const directory = await mkdtemp(join(tmpdir(), 'tiku-proxy-missing-'))
+  const source = join(directory, 'missing.txt')
+  const output = join(directory, 'trusted-proxies.generated.conf')
+  try {
+    const command = `sh '${wslPath(script)}' '${wslPath(source)}' '${wslPath(output)}'`
+    const result = spawnSync('bash.exe', ['-lc', command], { encoding: 'utf8', timeout: 30000 })
+    assert.equal(result.status, 0, result.stderr)
+    assert.deepEqual((await readFile(output, 'utf8')).trim().split(/\r?\n/), [
+      'set_real_ip_from 0.0.0.0/0;',
+      'set_real_ip_from ::/0;',
+    ])
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

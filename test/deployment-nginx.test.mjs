@@ -136,7 +136,9 @@ test('real Nginx cleans forwarded headers on HTTP/HTTPS and trusts only configur
       .replace('/tmp/trusted-proxies.generated.conf', `${prefix}trusted-proxies.generated.conf`)
       .replace('/etc/nginx/ssl/fullchain.pem', `${prefix}cert.pem`)
       .replace('/etc/nginx/ssl/privkey.key', `${prefix}key.pem`);
-    await writeFile(join(directory, 'trusted-proxies.generated.conf'), trustedUpstream ? 'set_real_ip_from 127.0.0.1;\n' : '# no trusted upstreams\n');
+    await writeFile(join(directory, 'trusted-proxies.generated.conf'), trustedUpstream
+      ? 'set_real_ip_from 127.0.0.1;\n'
+      : 'set_real_ip_from 0.0.0.0/0;\nset_real_ip_from ::/0;\n');
     await writeFile(join(directory, 'nginx.conf'), `daemon off; master_process off;\npid nginx.pid;\nerror_log logs/error.log;\nevents {}\nhttp { ${config}\n}\n`);
     const validation = execute(nginx, ['-p', prefix, '-c', 'nginx.conf', '-t'], { cwd: directory });
     successful(validation);
@@ -156,7 +158,7 @@ test('real Nginx cleans forwarded headers on HTTP/HTTPS and trusts only configur
         'X-Forwarded-For': '198.51.100.99, 203.0.113.7', 'X-Real-IP': '198.51.100.98',
         Forwarded: 'for=198.51.100.97', 'X-Forwarded-Proto': 'spoofed',
       });
-      const expected = trustedUpstream ? '203.0.113.7' : '127.0.0.1';
+      const expected = trustedUpstream ? '203.0.113.7' : '198.51.100.99';
       assert.equal(received['x-forwarded-for'], expected);
       assert.equal(received['x-real-ip'], expected);
       assert.equal(received.forwarded, undefined);

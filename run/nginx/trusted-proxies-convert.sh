@@ -5,7 +5,6 @@ source_file=${1:-/app/trusted_proxies.txt}
 output_file=${2:-/tmp/trusted-proxies.generated.conf}
 mkdir -p "$(dirname "$output_file")"
 : > "$output_file"
-[ -f "$source_file" ] || exit 0
 
 is_ipv4() {
   old_ifs=$IFS
@@ -111,6 +110,7 @@ seen_file=$(mktemp)
 trap 'rm -f "$candidate_file" "$seen_file"' EXIT HUP INT TERM
 
 # Split the original application format without changing the source file.
+if [ -f "$source_file" ]; then
 awk '
 {
   sub(/\r$/, ""); sub(/^\xef\xbb\xbf/, "")
@@ -127,6 +127,9 @@ awk '
   }
 }
 ' "$source_file" > "$candidate_file"
+else
+  : > "$candidate_file"
+fi
 
 : > "$seen_file"
 candidate_count=0
@@ -154,4 +157,25 @@ done < "$candidate_file"
 if [ "$candidate_count" -gt 0 ] && [ "$valid_count" -eq 0 ]; then
   printf 'trusted-proxies: no valid proxy entries found\n' >&2
   exit 1
+fi
+
+add_directive() {
+  entry=$1
+  if ! grep -Fqx "$entry" "$seen_file"; then
+    printf '%s\n' "$entry" >> "$seen_file"
+    printf 'set_real_ip_from %s;\n' "$entry" >> "$output_file"
+  fi
+}
+
+if [ "$candidate_count" -eq 0 ]; then
+  # Empty or comment-only input has the documented trust-all meaning.
+  add_directive '0.0.0.0/0'
+  add_directive '::/0'
+elif ! grep -Fqx '0.0.0.0/0' "$seen_file" && ! grep -Fqx '::/0' "$seen_file"; then
+  # Match the application parser: explicit entries also get LAN/local defaults.
+  for entry in \
+    '127.0.0.0/8' '::1/128' '10.0.0.0/8' '172.16.0.0/12' \
+    '192.168.0.0/16' '169.254.0.0/16' 'fc00::/7' 'fe80::/10'; do
+    add_directive "$entry"
+  done
 fi
