@@ -112,10 +112,12 @@ test('controller recovers websocket, stops polling, and sends heartbeat', () => 
   assert.ok(scheduler.delays().includes(2000), 'keep polling until the recovered socket delivers a status')
   recoveredSocket.onmessage({ data: JSON.stringify({ type: 'status', status: 'pending', remainingSeconds: 180 }) })
 
-  assert.deepEqual(scheduler.delays(), [1000, 25000, 10000])
+  assert.deepEqual(scheduler.delays(), [1000, 1000, 2000])
   assert.equal(transports.at(-1), 'websocket')
 
-  const heartbeat = [...scheduler.timers.values()].find((timer) => timer.delay === 25000)
+  const heartbeatTimers = [...scheduler.timers.values()].filter((timer) => timer.delay === 1000)
+  assert.equal(heartbeatTimers.length, 2, 'countdown and heartbeat both use one-second timers')
+  const heartbeat = heartbeatTimers.at(-1)
   heartbeat.fn()
   assert.match(recoveredSocket.sent.at(-1), /"type":"ping"/)
 
@@ -143,7 +145,7 @@ test('controller falls back when the websocket handshake or status delivery stal
       sockets[0].onopen()
       sockets[0].onmessage({ data: JSON.stringify({ type: 'status', status: 'pending' }) })
     }
-    const watchdog = [...scheduler.timers.values()].find((timer) => timer.delay === 10000)
+    const watchdog = [...scheduler.timers.values()].find((timer) => timer.delay === 2000)
     watchdog.fn()
     await new Promise((resolve) => setImmediate(resolve))
     assert.equal(polls, 1)
@@ -193,7 +195,9 @@ test('malformed websocket statuses cannot stop polling or reset its recovery dea
   recovery.fn()
   const recovered = sockets.at(-1)
   recovered.onopen()
-  const watchdog = [...scheduler.timers.values()].find((timer) => timer.delay === 10000)
+  const watchdogTimers = [...scheduler.timers.values()].filter((timer) => timer.delay === 2000)
+  assert.equal(watchdogTimers.length, 2, 'polling and websocket watchdog both use the two-second cadence')
+  const watchdog = watchdogTimers.at(-1)
   for (const payload of [{ type: 'status' }, { type: 'status', status: 'unknown' }, { type: 'pong' }]) {
     recovered.onmessage({ data: JSON.stringify(payload) })
     assert.ok(scheduler.delays().includes(2000))

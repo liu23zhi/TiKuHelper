@@ -32,8 +32,8 @@ export function createWechatQrStatusController({
   now = () => Date.now(),
   pollIntervalMs = 2000,
   wsRecoveryIntervalMs = 30000,
-  heartbeatIntervalMs = 25000,
-  wsStatusTimeoutMs = 10000,
+  heartbeatIntervalMs = 1000,
+  wsStatusTimeoutMs = 2000,
   maxReconnectAttempts = 3,
 } = {}) {
   let stopped = true
