@@ -79,7 +79,7 @@ func ExtensionStoreConfigFromEnv() (ExtensionStoreConfig, error) {
 func extensionStoreConfigFromEnv() (ExtensionStoreConfig, ExtensionEnvironmentOverrides, error) {
 	config := ExtensionStoreConfig{
 		Directory:  strings.TrimSpace(os.Getenv("EXTENSION_CACHE_DIR")),
-		Interval:   6 * time.Hour,
+		Interval:   240 * time.Hour,
 		AutoUpdate: true,
 		IDs:        map[string]string{"edge": DefaultEdgeExtensionID},
 	}
@@ -104,8 +104,8 @@ func extensionStoreConfigFromEnv() (ExtensionStoreConfig, ExtensionEnvironmentOv
 	if value, ok := os.LookupEnv("EXTENSION_UPDATE_INTERVAL"); ok {
 		overrides.IntervalMinutes = true
 		interval, err := time.ParseDuration(strings.TrimSpace(value))
-		if err != nil || interval < time.Minute || interval > 7*24*time.Hour {
-			return config, overrides, errors.New("EXTENSION_UPDATE_INTERVAL must be between 1m and 168h")
+		if err != nil || interval < time.Minute {
+			return config, overrides, errors.New("EXTENSION_UPDATE_INTERVAL must be at least 1m and fit in time.Duration")
 		}
 		config.Interval = interval
 	}
@@ -548,7 +548,7 @@ func newConfiguredExtensionStore(db *gorm.DB) (*ExtensionStore, error) {
 		return nil, err
 	}
 	if !found {
-		settings = ExtensionUpdateSettings{AutoUpdate: true, IntervalMinutes: 360, EdgeID: DefaultEdgeExtensionID}
+		settings = ExtensionUpdateSettings{AutoUpdate: true, IntervalMinutes: 14400, EdgeID: DefaultEdgeExtensionID}
 	}
 	applyExtensionSettings(&config, settings)
 	applyExtensionEnvironment(&config, environmentConfig, overrides)

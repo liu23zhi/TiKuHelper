@@ -55,7 +55,7 @@ func UpdateExtensionConfiguration(c *gin.Context) {
 		AutoUpdate: *input.AutoUpdate, IntervalMinutes: *input.IntervalMinutes, EdgeID: *input.EdgeID, ChromeID: *input.ChromeID,
 	})
 	if errors.Is(err, service.ErrInvalidExtensionSettings) {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "检查间隔应为 1～10080 分钟，扩展 ID 应为 32 位 a-p 字母或留空停用"})
+		c.JSON(http.StatusBadRequest, gin.H{"message": "检查间隔应至少为 1 分钟且不超过系统支持范围，扩展 ID 应为 32 位 a-p 字母或留空停用"})
 		return
 	}
 	if err != nil {

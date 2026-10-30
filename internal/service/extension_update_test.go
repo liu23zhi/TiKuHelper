@@ -85,6 +85,20 @@ func TestExtensionURLAllowlist(t *testing.T) {
 	}
 }
 
+func TestExtensionIntervalEnvironmentAcceptsLongDuration(t *testing.T) {
+	clearExtensionSettingsEnvironment(t)
+	t.Setenv("EXTENSION_CACHE_DIR", t.TempDir())
+	t.Setenv("EXTENSION_UPDATE_INTERVAL", "241h")
+	config, err := ExtensionStoreConfigFromEnv()
+	if err != nil || config.Interval != 241*time.Hour {
+		t.Fatalf("long interval: %v %v", config.Interval, err)
+	}
+	t.Setenv("EXTENSION_UPDATE_INTERVAL", "153722868m")
+	if _, err := ExtensionStoreConfigFromEnv(); err == nil {
+		t.Fatal("duration overflow was accepted")
+	}
+}
+
 type extensionFixture struct {
 	id  string
 	key *rsa.PrivateKey
@@ -563,7 +577,7 @@ func TestExtensionRunCancelsInFlightAndStops(t *testing.T) {
 }
 
 func TestExtensionConfigValidation(t *testing.T) {
-	for _, test := range []struct{ name, value string }{{"EXTENSION_UPDATE_INTERVAL", ""}, {"EXTENSION_UPDATE_INTERVAL", "1s"}, {"EXTENSION_UPDATE_INTERVAL", "169h"}, {"EXTENSION_UPDATE_ENABLED", ""}, {"EXTENSION_UPDATE_ENABLED", "unknown"}, {"EXTENSION_EDGE_ID", "../../bad"}, {"EXTENSION_CHROME_ID", strings.Repeat("z", 32)}} {
+	for _, test := range []struct{ name, value string }{{"EXTENSION_UPDATE_INTERVAL", ""}, {"EXTENSION_UPDATE_INTERVAL", "1s"}, {"EXTENSION_UPDATE_INTERVAL", "153722868m"}, {"EXTENSION_UPDATE_ENABLED", ""}, {"EXTENSION_UPDATE_ENABLED", "unknown"}, {"EXTENSION_EDGE_ID", "../../bad"}, {"EXTENSION_CHROME_ID", strings.Repeat("z", 32)}} {
 		t.Run(test.name+"="+test.value, func(t *testing.T) {
 			clearExtensionSettingsEnvironment(t)
 			t.Setenv(test.name, test.value)

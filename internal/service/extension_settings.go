@@ -12,6 +12,8 @@ import (
 
 const extensionSettingsKey = "extension_update_config"
 
+const maxExtensionIntervalMinutes = int64(1<<63-1) / int64(time.Minute)
+
 var ErrInvalidExtensionSettings = errors.New("扩展更新设置无效")
 
 type ExtensionUpdateSettings struct {
@@ -49,7 +51,7 @@ type ExtensionConfiguration struct {
 func normalizeExtensionSettings(settings ExtensionUpdateSettings) (ExtensionUpdateSettings, error) {
 	settings.EdgeID = strings.TrimSpace(settings.EdgeID)
 	settings.ChromeID = strings.TrimSpace(settings.ChromeID)
-	if settings.IntervalMinutes < 1 || settings.IntervalMinutes > 10080 ||
+	if settings.IntervalMinutes < 1 || int64(settings.IntervalMinutes) > maxExtensionIntervalMinutes ||
 		(settings.EdgeID != "" && !validExtensionID(settings.EdgeID)) ||
 		(settings.ChromeID != "" && !validExtensionID(settings.ChromeID)) {
 		return settings, ErrInvalidExtensionSettings

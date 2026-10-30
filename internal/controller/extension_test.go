@@ -43,7 +43,7 @@ func TestExtensionConfigurationRequiresAdminAndPersistsLiveSettings(t *testing.T
 	router := gin.New()
 	router.GET("/extensions/config", Auth, middleware.RequireAdmin, ExtensionConfiguration)
 	router.PUT("/extensions/config", Auth, middleware.RequireAdmin, UpdateExtensionConfiguration)
-	body := `{"autoUpdate":true,"intervalMinutes":9,"edgeId":"","chromeId":"abcdefghijklmnopabcdefghijklmnop"}`
+	body := `{"autoUpdate":true,"intervalMinutes":20160,"edgeId":"","chromeId":"abcdefghijklmnopabcdefghijklmnop"}`
 	request := func(method, authorization, payload string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
 		req := httptest.NewRequest(method, "/extensions/config", strings.NewReader(payload))
@@ -67,7 +67,7 @@ func TestExtensionConfigurationRequiresAdminAndPersistsLiveSettings(t *testing.T
 	}
 	got := request(http.MethodGet, admin, "")
 	var configuration service.ExtensionConfiguration
-	if got.Code != 200 || json.Unmarshal(got.Body.Bytes(), &configuration) != nil || configuration.Config.IntervalMinutes != 9 || configuration.Config.EdgeID != "" || len(configuration.Sources) != 2 || configuration.Sources[0].Configured || !configuration.Sources[1].Configured {
+	if got.Code != 200 || json.Unmarshal(got.Body.Bytes(), &configuration) != nil || configuration.Config.IntervalMinutes != 20160 || configuration.Config.EdgeID != "" || len(configuration.Sources) != 2 || configuration.Sources[0].Configured || !configuration.Sources[1].Configured {
 		t.Fatalf("saved contract %d %s", got.Code, got.Body.String())
 	}
 	if configuration.DatabaseConfig != configuration.Config || configuration.EnvironmentOverrides != (service.ExtensionEnvironmentOverrides{}) || !strings.Contains(got.Body.String(), `"environmentOverrides":{"autoUpdate":false,"intervalMinutes":false,"edgeId":false,"chromeId":false}`) || strings.Contains(got.Body.String(), "Directory") || strings.Contains(got.Body.String(), "directory") {
@@ -78,7 +78,7 @@ func TestExtensionConfigurationRequiresAdminAndPersistsLiveSettings(t *testing.T
 			t.Fatalf("invalid accepted %d %s", got.Code, got.Body.String())
 		}
 	}
-	if !store.Configuration().Config.AutoUpdate || store.Configuration().Config.IntervalMinutes != 9 {
+	if !store.Configuration().Config.AutoUpdate || store.Configuration().Config.IntervalMinutes != 20160 {
 		t.Fatal("invalid request mutated live settings")
 	}
 }

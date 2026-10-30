@@ -3,10 +3,36 @@ export const EXTENSION_SOURCES = [
   { source: 'chrome', label: 'Google Chrome' },
 ]
 
+export const EXTENSION_INTERVAL_MAX_MINUTES = 153722867
+export const EXTENSION_INTERVAL_UNITS = [
+  { value: 'minute', label: '分钟', minutes: 1 },
+  { value: 'hour', label: '小时', minutes: 60 },
+  { value: 'day', label: '天', minutes: 1440 },
+  { value: 'week', label: '周', minutes: 10080 },
+  { value: 'month', label: '月', minutes: 43200 },
+]
+
+const extensionIntervalUnitMap = Object.fromEntries(EXTENSION_INTERVAL_UNITS.map(unit => [unit.value, unit]))
+
+export function extensionIntervalToMinutes(value, unit = 'minute') {
+  const numeric = Number(value), factor = extensionIntervalUnitMap[unit]?.minutes
+  const minutes = numeric * Number(factor)
+  return Number.isSafeInteger(minutes) && minutes >= 1 && minutes <= EXTENSION_INTERVAL_MAX_MINUTES ? minutes : Number.NaN
+}
+
+export function splitExtensionInterval(minutes) {
+  const numeric = Number(minutes)
+  if (!Number.isSafeInteger(numeric) || numeric < 1 || numeric > EXTENSION_INTERVAL_MAX_MINUTES) return { value: numeric, unit: 'minute' }
+  for (const unit of [...EXTENSION_INTERVAL_UNITS].reverse()) {
+    if (numeric % unit.minutes === 0) return { value: numeric / unit.minutes, unit: unit.value }
+  }
+  return { value: numeric, unit: 'minute' }
+}
+
 export function normalizeExtensionConfig(config = {}) {
   return {
     autoUpdate: config.autoUpdate === true,
-    intervalMinutes: config.intervalMinutes === undefined ? 360 : config.intervalMinutes === null ? null : Number(config.intervalMinutes),
+    intervalMinutes: config.intervalMinutes === undefined ? 14400 : config.intervalMinutes === null ? null : Number(config.intervalMinutes),
     edgeId: String(config.edgeId || '').trim(),
     chromeId: String(config.chromeId || '').trim(),
   }
@@ -27,7 +53,7 @@ export function extensionDatabasePayload(form, databaseConfig, overrides) {
 
 export function validateExtensionConfig(config) {
   const minutes = Number(config.intervalMinutes)
-  if (!Number.isInteger(minutes) || minutes < 1 || minutes > 10080) return '检查间隔须为 1 到 10080 分钟的整数。'
+  if (!Number.isSafeInteger(minutes) || minutes < 1 || minutes > EXTENSION_INTERVAL_MAX_MINUTES) return '检查间隔须为至少 1 分钟且不超过系统支持范围。'
   for (const [key, label] of [['edgeId', 'Edge'], ['chromeId', 'Chrome']]) {
     if (config[key] && !/^[a-p]{32}$/.test(config[key])) return `${label} 扩展 ID 须为 32 位 a 到 p 的小写字母，留空可停用。`
   }

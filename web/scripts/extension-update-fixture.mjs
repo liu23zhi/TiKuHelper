@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 
 const dist = fileURLToPath(new URL('../dist/', import.meta.url))
 export async function startExtensionUpdateFixture(options = {}) {
-  let databaseConfig = { autoUpdate: true, intervalMinutes: 360, edgeId: 'lcmeenlnjihhjcjoakekikoaldigonac', chromeId: '', ...options.databaseConfig }
+  let databaseConfig = { autoUpdate: true, intervalMinutes: 14400, edgeId: 'lcmeenlnjihhjcjoakekikoaldigonac', chromeId: '', ...options.databaseConfig }
   const environment = options.environment || {}
   const environmentOverrides = Object.fromEntries(Object.keys(databaseConfig).map(key => [key, Object.hasOwn(environment, key)]))
   let version = '1.2.3', lastError = '', failRefresh = false

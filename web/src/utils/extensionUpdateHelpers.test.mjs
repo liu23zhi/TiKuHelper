@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { extensionDatabasePayload, normalizeExtensionConfig, normalizeExtensionOverrides, validateExtensionConfig, normalizeExtensionSources, extensionStatusText, formatExtensionSize, formatExtensionTime } from './extensionUpdateHelpers.mjs'
+import { extensionDatabasePayload, normalizeExtensionConfig, normalizeExtensionOverrides, validateExtensionConfig, normalizeExtensionSources, extensionStatusText, formatExtensionSize, formatExtensionTime, extensionIntervalToMinutes, splitExtensionInterval, EXTENSION_INTERVAL_MAX_MINUTES } from './extensionUpdateHelpers.mjs'
 
 const edgeId = 'lcmeenlnjihhjcjoakekikoaldigonac'
 test('extension settings retain explicit disabled sources and validate integer intervals', () => {
@@ -9,10 +9,24 @@ test('extension settings retain explicit disabled sources and validate integer i
   assert.deepEqual(config, { autoUpdate: true, intervalMinutes: 60, edgeId, chromeId: '' })
   assert.equal(validateExtensionConfig(config), '')
   assert.equal(validateExtensionConfig({ ...config, edgeId: '', chromeId: '' }), '')
-  for (const intervalMinutes of [null, '', 0, -1, 1.2, 10081, NaN]) assert.match(validateExtensionConfig({ ...config, intervalMinutes }), /间隔/)
-  for (const intervalMinutes of [1, 10080]) assert.equal(validateExtensionConfig({ ...config, intervalMinutes }), '')
+  for (const intervalMinutes of [null, '', 0, -1, 1.2, EXTENSION_INTERVAL_MAX_MINUTES + 1, NaN]) assert.match(validateExtensionConfig({ ...config, intervalMinutes }), /间隔/)
+  for (const intervalMinutes of [1, 14400, 43200]) assert.equal(validateExtensionConfig({ ...config, intervalMinutes }), '')
   for (const id of ['a'.repeat(31), 'a'.repeat(33), 'A'.repeat(32), 'q'.repeat(32), 'https://example.com']) assert.match(validateExtensionConfig({ ...config, chromeId: id }), /Chrome/)
   assert.equal(normalizeExtensionConfig({ intervalMinutes: null }).intervalMinutes, null, 'clearing an interval must remain invalid rather than silently saving a default')
+})
+
+test('extension interval input supports all units and safe long durations', () => {
+  assert.equal(extensionIntervalToMinutes(90, 'minute'), 90)
+  assert.equal(extensionIntervalToMinutes(2, 'hour'), 120)
+  assert.equal(extensionIntervalToMinutes(10, 'day'), 14400)
+  assert.equal(extensionIntervalToMinutes(2, 'week'), 20160)
+  assert.equal(extensionIntervalToMinutes(1, 'month'), 43200)
+  assert.equal(extensionIntervalToMinutes(1.5, 'hour'), 90)
+  assert.equal(Number.isNaN(extensionIntervalToMinutes(0.5, 'minute')), true)
+  assert.deepEqual(splitExtensionInterval(14400), { value: 10, unit: 'day' })
+  assert.deepEqual(splitExtensionInterval(43200), { value: 1, unit: 'month' })
+  assert.equal(extensionIntervalToMinutes(EXTENSION_INTERVAL_MAX_MINUTES, 'minute'), EXTENSION_INTERVAL_MAX_MINUTES)
+  assert.equal(Number.isNaN(extensionIntervalToMinutes(EXTENSION_INTERVAL_MAX_MINUTES + 1, 'minute')), true)
 })
 
 test('saving editable extension settings retains database values hidden by environment overrides', () => {

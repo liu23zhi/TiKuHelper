@@ -51,7 +51,7 @@ func TestExtensionSettingsPersistDatabaseAndRestart(t *testing.T) {
 		t.Fatalf("not one atomic system-setting document: %d", count)
 	}
 	before := store.Configuration()
-	for _, invalid := range []ExtensionUpdateSettings{{IntervalMinutes: 0}, {IntervalMinutes: 10081}, {IntervalMinutes: 5, EdgeID: "private.invalid"}, {IntervalMinutes: 5, ChromeID: strings.Repeat("z", 32)}} {
+	for _, invalid := range []ExtensionUpdateSettings{{IntervalMinutes: 0}, {IntervalMinutes: int(maxExtensionIntervalMinutes + 1)}, {IntervalMinutes: 5, EdgeID: "private.invalid"}, {IntervalMinutes: 5, ChromeID: strings.Repeat("z", 32)}} {
 		if _, err := store.UpdateSettingsWithDB(db, invalid); !errors.Is(err, ErrInvalidExtensionSettings) {
 			t.Fatalf("invalid settings accepted: %+v %v", invalid, err)
 		}
@@ -68,6 +68,20 @@ func TestExtensionSettingsPersistDatabaseAndRestart(t *testing.T) {
 	}
 	if !reflect.DeepEqual(before, store.Configuration()) {
 		t.Fatal("database failure changed live settings")
+	}
+}
+
+func TestExtensionSettingsAcceptsIntervalsAboveTenDays(t *testing.T) {
+	for _, minutes := range []int{14401, 43200, 525600, int(maxExtensionIntervalMinutes)} {
+		settings, err := normalizeExtensionSettings(ExtensionUpdateSettings{IntervalMinutes: minutes})
+		if err != nil {
+			t.Fatalf("interval %d should be accepted: %v", minutes, err)
+		}
+		config := ExtensionStoreConfig{}
+		applyExtensionSettings(&config, settings)
+		if got := int(config.Interval / time.Minute); got != minutes {
+			t.Fatalf("interval %d converted to %d minutes", minutes, got)
+		}
 	}
 }
 
@@ -153,7 +167,7 @@ func TestExtensionSettingsEnvironmentOverridesEachFieldAndSurvivesSave(t *testin
 func TestExtensionSettingsInvalidEnvironmentCannotBeHiddenByDatabase(t *testing.T) {
 	for _, test := range []struct{ name, value string }{
 		{"EXTENSION_UPDATE_ENABLED", ""}, {"EXTENSION_UPDATE_ENABLED", "unknown"},
-		{"EXTENSION_UPDATE_INTERVAL", ""}, {"EXTENSION_UPDATE_INTERVAL", "not-a-duration"}, {"EXTENSION_UPDATE_INTERVAL", "169h"},
+		{"EXTENSION_UPDATE_INTERVAL", ""}, {"EXTENSION_UPDATE_INTERVAL", "not-a-duration"}, {"EXTENSION_UPDATE_INTERVAL", "153722868m"},
 		{"EXTENSION_EDGE_ID", "invalid"}, {"EXTENSION_CHROME_ID", strings.Repeat("z", 32)},
 	} {
 		t.Run(test.name+"="+test.value, func(t *testing.T) {
@@ -185,8 +199,8 @@ func TestExtensionSettingsDefaultsWithoutDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	configuration := store.Configuration()
-	wantDatabase := ExtensionUpdateSettings{AutoUpdate: true, IntervalMinutes: 360, EdgeID: DefaultEdgeExtensionID}
-	wantEffective := ExtensionUpdateSettings{IntervalMinutes: 360}
+	wantDatabase := ExtensionUpdateSettings{AutoUpdate: true, IntervalMinutes: 14400, EdgeID: DefaultEdgeExtensionID}
+	wantEffective := ExtensionUpdateSettings{IntervalMinutes: 14400}
 	if configuration.Config != wantEffective || configuration.DatabaseConfig != wantDatabase || configuration.EnvironmentOverrides != (ExtensionEnvironmentOverrides{AutoUpdate: true, EdgeID: true}) {
 		t.Fatalf("default precedence: %+v", configuration)
 	}
