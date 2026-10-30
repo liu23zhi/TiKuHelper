@@ -54,3 +54,41 @@ test('extension update UI saves validated settings, refreshes once, retains fail
     await fixture.close()
   }
 })
+
+test('extension update UI locks environment fields and preserves their database fallback when saving', {
+  skip: !process.env.TIKU_BROWSER_MODULE_ROOT,
+  timeout: 90_000,
+}, async () => {
+  const require = createRequire(path.join(path.resolve(process.env.TIKU_BROWSER_MODULE_ROOT), 'package.json'))
+  const puppeteer = require('puppeteer')
+  const databaseConfig = { autoUpdate: true, intervalMinutes: 360, chromeId: 'b'.repeat(32) }
+  const fixture = await startExtensionUpdateFixture({ databaseConfig, environment: { autoUpdate: false, intervalMinutes: 30, chromeId: '' } })
+  let browser
+  try {
+    browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-gpu'] })
+    const page = await browser.newPage(), errors = []
+    page.on('pageerror', error => errors.push(error.message))
+    await page.goto(fixture.url, { waitUntil: 'networkidle0' })
+    await page.waitForSelector('#extension-edge-id')
+    assert.deepEqual(await page.$eval('#extension-auto-update', element => ({ disabled: element.disabled, checked: element.getAttribute('aria-checked') })), { disabled: true, checked: 'false' })
+    assert.deepEqual(await page.$eval('#extension-interval', element => ({ disabled: element.disabled, value: element.value })), { disabled: true, value: '30' })
+    assert.deepEqual(await page.$eval('#extension-chrome-id', element => ({ disabled: element.disabled, value: element.value })), { disabled: true, value: '' })
+    assert.equal(await page.$eval('#extension-edge-id', element => element.disabled), false)
+    assert.match(await page.$eval('body', element => element.textContent), /由环境变量 EXTENSION_CHROME_ID 控制/)
+    await page.focus('#extension-edge-id')
+    await page.keyboard.down('Control'); await page.keyboard.press('A'); await page.keyboard.up('Control'); await page.keyboard.type('c'.repeat(32)); await page.keyboard.press('Tab')
+    await page.evaluate(() => Array.from(document.querySelectorAll('button')).find(element => element.textContent.trim() === '保存配置').click())
+    await page.waitForFunction(() => document.body.textContent.includes('扩展更新配置已保存'))
+    assert.deepEqual(fixture.requests.filter(request => request.method === 'PUT').map(request => request.body), [{ ...databaseConfig, edgeId: 'c'.repeat(32) }])
+    await page.reload({ waitUntil: 'networkidle0' })
+    await page.waitForSelector('#extension-edge-id')
+    assert.equal(await page.$eval('#extension-edge-id', element => element.value), 'c'.repeat(32))
+    assert.equal(await page.$eval('#extension-interval', element => element.value), '30')
+    assert.equal(await page.$eval('#extension-chrome-id', element => element.value), '')
+    assert.equal(await page.$eval('button[aria-label="检查 Google Chrome 更新"]', element => element.disabled), true)
+    assert.deepEqual(errors, [])
+  } finally {
+    if (browser) await browser.close()
+    await fixture.close()
+  }
+})

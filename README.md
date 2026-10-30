@@ -64,8 +64,10 @@ AI 详细轨迹写入 `Tiku-thinking.txt`，按 requestId 记录每轮模型端�
 原生客户端可通过 `GET /adapter-service/extensions/edge/latest` 查询已验证的 Edge 扩展，
 再从响应中的相对 `downloadUrl` 下载 CRX3。管理员在后台“扩展更新”页设置自动检查、检查间隔、
 Edge/Chrome 商店 ID，并查看版本和手动刷新；配置保存到数据库后立即生效，无需重启。
-默认每 6 小时检查，失败保留上一份可用包，Chrome 来源默认停用。以下环境变量仅作首次设置的
-初始默认值，数据库配置优先。完整接口、权限和校验规则见 [`docs/extension-update-api.md`](docs/extension-update-api.md)。
+默认每 6 小时检查，失败保留上一份可用包，Chrome 来源默认停用。设置逐字段按“环境变量 →
+数据库 → 内置默认值”读取；未设置环境变量的字段可在后台修改，已由环境变量覆盖的字段会标明来源
+并禁止编辑。移除覆盖变量并重启后恢复数据库保存值。完整接口、权限和校验规则见
+[`docs/extension-update-api.md`](docs/extension-update-api.md)。
 
 ```powershell
 $env:EXTENSION_UPDATE_ENABLED = "true"
@@ -74,6 +76,11 @@ $env:EXTENSION_CACHE_DIR = "data/extensions"
 # 后续上架 Chrome 后再设置；留空时不启用 Chrome 来源。
 $env:EXTENSION_CHROME_ID = ""
 ```
+
+缓存默认在 `data/extensions`（相对服务工作目录）。使用 `run/docker-compose.yml` 时，容器路径为
+`/app/data/extensions`，宿主路径为 `run/data/extensions`，已包含在 `./data:/app/data` 挂载中，
+无需新增缓存卷。目录中保存已验证的 CRX 与最新版本元数据；升级或重建容器时保留 `data` 即可保留缓存。
+`EXTENSION_CACHE_DIR` 是部署目录设置，不存于数据库；如改到 `/app/data` 以外，须另行挂载该目录才能持久化。
 
 ### `JWT_SECRET`
 
@@ -118,8 +125,16 @@ $env:TIKU_ADMIN_PASSWORD = "首次初始化时使用的强密码"
 $env:TRUSTED_PROXIES = "10.0.0.10,172.18.0.0/16"
 ```
 
-为空时不信任代理转发头，来源 IP 使用直连地址；设置后仅信任列表中的代理地址。
-反向代理部署必须显式设置该变量，才能正确记录客户端 IP，并避免任意客户端伪造转发头。
+不经过 Nginx 的应用部署读取顺序为 `TRUSTED_PROXIES` → 可信代理文件（`TRUSTED_PROXIES_FILE`
+指定路径，默认工作目录下 `trusted_proxies.txt`）；两者均为空或只有注释时，应用信任所有来源的
+转发头。填写名单后信任名单内来源及内置局域网/本地地址段，其余来源使用直连地址。环境变量优先于文件。
+
+示例 Nginx 部署默认重建 `X-Forwarded-For` / `X-Real-IP`，并把原格式的 `trusted_proxies.txt`
+只读挂载到 Nginx 的 `/app/trusted_proxies.txt`。Nginx 启动脚本转换后再加载 realip 配置，原文件
+不会被改写。应用侧仍须防止不可信调用方绕过 Nginx 直连后端。Compose 仅将 8060 发布到宿主回环供本地调试，
+外部访问走 Nginx 的 8680/9043。同宿主及同 Docker 网络仍能直接访问后端，应只允许可信调用方。
+有 CDN 或负载均衡前置时，在 Nginx 中按实际可信上游设置 `set_real_ip_from`、`real_ip_header`
+和 `real_ip_recursive`，再重建传给应用的来源头；Nginx 的上游名单与应用的可信代理名单是两层独立配置。
 
 ## Docker 示例
 
@@ -136,11 +151,13 @@ docker run -d `
   tiku-adapter
 ```
 
-仓库中的 `run/docker-compose.yml` 也支持通过同名环境变量注入这些配置。
+`run/docker-compose.yml` 默认只注入容器启动所需的基础变量，不会为扩展设置或
+`TRUSTED_PROXIES` 注入空值，以免覆盖数据库或可选文件配置。需要环境变量覆盖时，请在 Compose
+override 文件中显式添加对应字段；未添加的字段继续按“环境变量 → 数据库 → 默认值”读取。
 
 ## 安全注意事项
 
 - 不要将 `tiku.db`、`config.yaml`、`.env`、私钥或实际凭据提交到 Git。
 - 若未配置 `TIKU_ADMIN_PASSWORD`，首次登录后立即修改默认管理员密码 `123456`。
 - 生产环境应使用 HTTPS，并仅通过可信反向代理暴露服务。
-- 程序会根据客户端 IP 执行默认限流；反向代理部署时必须正确设置 `TRUSTED_PROXIES`。
+- 程序会根据客户端 IP 执行默认限流；反向代理部署需正确处理来源头与后端访问边界，不能让不可信调用方绕过 Nginx。

@@ -7,23 +7,25 @@
       </template>
     </ConsolePageHeading>
     <a-alert v-if="errorMessage" type="error" show-icon :message="errorMessage" role="alert" />
-    <ConsolePanel title="更新设置" description="扩展 ID 对应各自商店，留空停用该来源。">
+    <ConsolePanel title="更新设置" description="环境变量优先，其余设置从数据库读取。扩展 ID 留空可停用对应来源。">
       <a-spin :spinning="loading">
         <a-form layout="vertical" :disabled="busy || !loaded" @finish="save">
           <div class="extension-config-grid">
             <a-form-item label="自动检查更新" html-for="extension-auto-update">
-              <a-switch id="extension-auto-update" v-model:checked="form.autoUpdate" checked-children="开启" un-checked-children="关闭" />
-              <p class="field-hint">关闭后仍可手动检查更新。</p>
+              <a-switch id="extension-auto-update" v-model:checked="form.autoUpdate" :disabled="busy || !loaded || environmentOverrides.autoUpdate" checked-children="开启" un-checked-children="关闭" />
+              <p class="field-hint">{{ environmentOverrides.autoUpdate ? '由环境变量 EXTENSION_UPDATE_ENABLED 控制，修改后需重启服务。' : '关闭后仍可手动检查更新。' }}</p>
             </a-form-item>
             <a-form-item label="检查间隔（分钟）" html-for="extension-interval" required>
-              <a-input-number id="extension-interval" v-model:value="form.intervalMinutes" :min="1" :max="10080" :step="1" class="interval-input" />
-              <p class="field-hint">支持 1 到 10080 分钟。</p>
+              <a-input-number id="extension-interval" v-model:value="form.intervalMinutes" :disabled="busy || !loaded || environmentOverrides.intervalMinutes" :min="1" :max="10080" :step="1" class="interval-input" />
+              <p class="field-hint">{{ environmentOverrides.intervalMinutes ? '由环境变量 EXTENSION_UPDATE_INTERVAL 控制，修改后需重启服务。' : '支持 1 到 10080 分钟。' }}</p>
             </a-form-item>
             <a-form-item label="Edge 扩展 ID" html-for="extension-edge-id">
-              <a-input id="extension-edge-id" v-model:value="form.edgeId" :maxlength="32" allow-clear placeholder="Edge 商店扩展 ID" />
+              <a-input id="extension-edge-id" v-model:value="form.edgeId" :disabled="busy || !loaded || environmentOverrides.edgeId" :maxlength="32" allow-clear placeholder="Edge 商店扩展 ID" />
+              <p v-if="environmentOverrides.edgeId" class="field-hint">由环境变量 EXTENSION_EDGE_ID 控制，修改后需重启服务。</p>
             </a-form-item>
             <a-form-item label="Chrome 扩展 ID" html-for="extension-chrome-id">
-              <a-input id="extension-chrome-id" v-model:value="form.chromeId" :maxlength="32" allow-clear placeholder="未配置时不检查 Chrome 来源" />
+              <a-input id="extension-chrome-id" v-model:value="form.chromeId" :disabled="busy || !loaded || environmentOverrides.chromeId" :maxlength="32" allow-clear placeholder="未配置时不检查 Chrome 来源" />
+              <p v-if="environmentOverrides.chromeId" class="field-hint">由环境变量 EXTENSION_CHROME_ID 控制，修改后需重启服务。</p>
             </a-form-item>
           </div>
           <a-alert v-if="validationMessage" type="warning" show-icon :message="validationMessage" />
@@ -41,12 +43,13 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { getExtensionUpdateConfig, saveExtensionUpdateConfig, refreshExtensionUpdate } from '@/api/ExtensionUpdateApi'
-import { normalizeExtensionConfig, normalizeExtensionSources, validateExtensionConfig } from '@/utils/extensionUpdateHelpers.mjs'
+import { extensionDatabasePayload, normalizeExtensionConfig, normalizeExtensionOverrides, normalizeExtensionSources, validateExtensionConfig } from '@/utils/extensionUpdateHelpers.mjs'
 import ExtensionSourceStatus from './ExtensionSourceStatus.vue'
 
 defineOptions({ name: 'ExtensionUpdates' })
 const form = reactive(normalizeExtensionConfig())
 const savedConfig = ref(null), sources = ref(normalizeExtensionSources())
+const databaseConfig = ref(normalizeExtensionConfig()), environmentOverrides = ref(normalizeExtensionOverrides())
 const loading = ref(false), saving = ref(false), refreshing = ref(''), loaded = ref(false), errorMessage = ref('')
 const busy = computed(() => loading.value || saving.value || !!refreshing.value)
 const payload = computed(() => normalizeExtensionConfig(form))
@@ -59,8 +62,13 @@ function apply(data, resetForm) {
   if (!data?.config || !Array.isArray(data.sources)) throw new Error('invalid response')
   const replaceForm = resetForm || !loaded.value || !dirty.value
   savedConfig.value = normalizeExtensionConfig(data.config)
+  databaseConfig.value = normalizeExtensionConfig(data.databaseConfig || data.config)
+  environmentOverrides.value = normalizeExtensionOverrides(data.environmentOverrides)
   sources.value = normalizeExtensionSources(data.sources)
   if (replaceForm) Object.assign(form, savedConfig.value)
+  else for (const key of Object.keys(environmentOverrides.value)) {
+    if (environmentOverrides.value[key]) form[key] = savedConfig.value[key]
+  }
   loaded.value = true
 }
 async function load(resetForm = false) {
@@ -82,7 +90,7 @@ async function save() {
   if (busy.value || !loaded.value || !dirty.value || validationMessage.value) return
   saving.value = true
   try {
-    const response = await saveExtensionUpdateConfig(payload.value)
+    const response = await saveExtensionUpdateConfig(extensionDatabasePayload(payload.value, databaseConfig.value, environmentOverrides.value))
     if (!active) return
     if (response.status !== 200) throw new Error('save failed')
     apply(response.data, true); errorMessage.value = ''; message.success('扩展更新配置已保存')

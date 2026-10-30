@@ -4,15 +4,20 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const dist = fileURLToPath(new URL('../dist/', import.meta.url))
-export async function startExtensionUpdateFixture() {
-  let config = { autoUpdate: true, intervalMinutes: 360, edgeId: 'lcmeenlnjihhjcjoakekikoaldigonac', chromeId: '' }
+export async function startExtensionUpdateFixture(options = {}) {
+  let databaseConfig = { autoUpdate: true, intervalMinutes: 360, edgeId: 'lcmeenlnjihhjcjoakekikoaldigonac', chromeId: '', ...options.databaseConfig }
+  const environment = options.environment || {}
+  const environmentOverrides = Object.fromEntries(Object.keys(databaseConfig).map(key => [key, Object.hasOwn(environment, key)]))
   let version = '1.2.3', lastError = '', failRefresh = false
   const requests = []
-  const state = () => ({ config, sources: ['edge', 'chrome'].map(source => ({
+  const state = () => {
+    const config = { ...databaseConfig, ...environment }
+    return { config, databaseConfig, environmentOverrides, sources: ['edge', 'chrome'].map(source => ({
     source, configured: !!config[`${source}Id`], extensionId: config[`${source}Id`], available: source === 'edge', updating: false,
     lastCheckedAt: '2026-10-30T08:00:00Z', lastError: source === 'edge' ? lastError : '',
     ...(source === 'edge' ? { release: { version, size: 1234567, sha256: 'a'.repeat(64), checkedAt: '2026-10-30T08:00:00Z', updatedAt: '2026-10-30T07:00:00Z' } } : {}),
-  })) })
+    })) }
+  }
   const server = http.createServer(async (req, res) => {
     try {
       const json = (status, value) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(value)) }
@@ -21,7 +26,7 @@ export async function startExtensionUpdateFixture() {
         requests.push({ url: req.url, method: req.method, body: body ? JSON.parse(body) : undefined })
         if (req.url === '/adapter-service/public/register-status') return json(200, { siteName: '题库管理测试', registerEnabled: false })
         if (req.url === '/adapter-service/extensions/config') {
-          if (req.method === 'PUT') config = JSON.parse(body)
+          if (req.method === 'PUT') databaseConfig = JSON.parse(body)
           return json(200, state())
         }
         if (req.url === '/adapter-service/extensions/edge/refresh') {

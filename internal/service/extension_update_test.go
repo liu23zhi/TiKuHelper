@@ -49,6 +49,7 @@ func TestCompareExtensionVersions(t *testing.T) {
 }
 
 func TestExtensionURLAllowlist(t *testing.T) {
+	clearExtensionSettingsEnvironment(t)
 	t.Setenv("EXTENSION_EDGE_ID", DefaultEdgeExtensionID)
 	t.Setenv("EXTENSION_UPDATE_INTERVAL", "6h")
 	t.Setenv("EXTENSION_UPDATE_ENABLED", "true")
@@ -562,15 +563,14 @@ func TestExtensionRunCancelsInFlightAndStops(t *testing.T) {
 }
 
 func TestExtensionConfigValidation(t *testing.T) {
-	for _, name := range []string{"EXTENSION_EDGE_ID", "EXTENSION_CHROME_ID", "EXTENSION_CACHE_DIR", "EXTENSION_UPDATE_INTERVAL", "EXTENSION_UPDATE_ENABLED"} {
-		t.Setenv(name, "")
-	}
-	for _, test := range []struct{ name, value string }{{"EXTENSION_UPDATE_INTERVAL", "1s"}, {"EXTENSION_UPDATE_INTERVAL", "169h"}, {"EXTENSION_UPDATE_ENABLED", "unknown"}} {
-		t.Setenv(test.name, test.value)
-		if _, err := ExtensionStoreConfigFromEnv(); err == nil {
-			t.Fatalf("accepted %s=%s", test.name, test.value)
-		}
-		t.Setenv(test.name, "")
+	for _, test := range []struct{ name, value string }{{"EXTENSION_UPDATE_INTERVAL", ""}, {"EXTENSION_UPDATE_INTERVAL", "1s"}, {"EXTENSION_UPDATE_INTERVAL", "169h"}, {"EXTENSION_UPDATE_ENABLED", ""}, {"EXTENSION_UPDATE_ENABLED", "unknown"}, {"EXTENSION_EDGE_ID", "../../bad"}, {"EXTENSION_CHROME_ID", strings.Repeat("z", 32)}} {
+		t.Run(test.name+"="+test.value, func(t *testing.T) {
+			clearExtensionSettingsEnvironment(t)
+			t.Setenv(test.name, test.value)
+			if _, err := ExtensionStoreConfigFromEnv(); err == nil || !strings.Contains(err.Error(), test.name) {
+				t.Fatalf("accepted %s=%s or reported wrong variable: %v", test.name, test.value, err)
+			}
+		})
 	}
 	if _, err := NewExtensionStore(ExtensionStoreConfig{Directory: t.TempDir(), Interval: time.Hour, IDs: map[string]string{"edge": "../../bad"}}); err == nil {
 		t.Fatal("accepted invalid store ID")

@@ -70,6 +70,9 @@ func TestExtensionConfigurationRequiresAdminAndPersistsLiveSettings(t *testing.T
 	if got.Code != 200 || json.Unmarshal(got.Body.Bytes(), &configuration) != nil || configuration.Config.IntervalMinutes != 9 || configuration.Config.EdgeID != "" || len(configuration.Sources) != 2 || configuration.Sources[0].Configured || !configuration.Sources[1].Configured {
 		t.Fatalf("saved contract %d %s", got.Code, got.Body.String())
 	}
+	if configuration.DatabaseConfig != configuration.Config || configuration.EnvironmentOverrides != (service.ExtensionEnvironmentOverrides{}) || !strings.Contains(got.Body.String(), `"environmentOverrides":{"autoUpdate":false,"intervalMinutes":false,"edgeId":false,"chromeId":false}`) || strings.Contains(got.Body.String(), "Directory") || strings.Contains(got.Body.String(), "directory") {
+		t.Fatalf("configuration origin contract leaked paths or lost explicit override flags: %s", got.Body.String())
+	}
 	for _, invalid := range []string{`{}`, `{"autoUpdate":true,"intervalMinutes":1.5,"edgeId":"","chromeId":""}`, `{"autoUpdate":true,"intervalMinutes":0,"edgeId":"","chromeId":""}`, `{"autoUpdate":true,"intervalMinutes":5,"edgeId":"https://private.invalid","chromeId":""}`} {
 		if got := request(http.MethodPut, admin, invalid); got.Code != 400 {
 			t.Fatalf("invalid accepted %d %s", got.Code, got.Body.String())

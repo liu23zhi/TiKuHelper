@@ -21,6 +21,13 @@ type ExtensionUpdateSettings struct {
 	ChromeID        string `json:"chromeId"`
 }
 
+type ExtensionEnvironmentOverrides struct {
+	AutoUpdate      bool `json:"autoUpdate"`
+	IntervalMinutes bool `json:"intervalMinutes"`
+	EdgeID          bool `json:"edgeId"`
+	ChromeID        bool `json:"chromeId"`
+}
+
 type ExtensionSourceStatus struct {
 	Source        string            `json:"source"`
 	Configured    bool              `json:"configured"`
@@ -33,8 +40,10 @@ type ExtensionSourceStatus struct {
 }
 
 type ExtensionConfiguration struct {
-	Config  ExtensionUpdateSettings `json:"config"`
-	Sources []ExtensionSourceStatus `json:"sources"`
+	Config               ExtensionUpdateSettings       `json:"config"`
+	DatabaseConfig       ExtensionUpdateSettings       `json:"databaseConfig"`
+	EnvironmentOverrides ExtensionEnvironmentOverrides `json:"environmentOverrides"`
+	Sources              []ExtensionSourceStatus       `json:"sources"`
 }
 
 func normalizeExtensionSettings(settings ExtensionUpdateSettings) (ExtensionUpdateSettings, error) {
@@ -74,10 +83,29 @@ func applyExtensionSettings(config *ExtensionStoreConfig, settings ExtensionUpda
 	config.IDs = map[string]string{"edge": settings.EdgeID, "chrome": settings.ChromeID}
 }
 
+func extensionSettingsFromConfig(config ExtensionStoreConfig) ExtensionUpdateSettings {
+	return ExtensionUpdateSettings{AutoUpdate: config.AutoUpdate, IntervalMinutes: int(config.Interval / time.Minute), EdgeID: config.IDs["edge"], ChromeID: config.IDs["chrome"]}
+}
+
+func applyExtensionEnvironment(config *ExtensionStoreConfig, environment ExtensionStoreConfig, overrides ExtensionEnvironmentOverrides) {
+	if overrides.AutoUpdate {
+		config.AutoUpdate = environment.AutoUpdate
+	}
+	if overrides.IntervalMinutes {
+		config.Interval = environment.Interval
+	}
+	if overrides.EdgeID {
+		config.IDs["edge"] = environment.IDs["edge"]
+	}
+	if overrides.ChromeID {
+		config.IDs["chrome"] = environment.IDs["chrome"]
+	}
+}
+
 func (s *ExtensionStore) Configuration() ExtensionConfiguration {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	result := ExtensionConfiguration{Config: ExtensionUpdateSettings{AutoUpdate: s.config.AutoUpdate, IntervalMinutes: int(s.config.Interval / time.Minute), EdgeID: s.config.IDs["edge"], ChromeID: s.config.IDs["chrome"]}}
+	result := ExtensionConfiguration{Config: extensionSettingsFromConfig(s.config), DatabaseConfig: s.databaseConfig, EnvironmentOverrides: s.environmentOverrides}
 	for _, source := range []string{"edge", "chrome"} {
 		status := s.statuses[source]
 		status.Source, status.ExtensionID = source, s.config.IDs[source]
@@ -111,7 +139,9 @@ func (s *ExtensionStore) UpdateSettingsWithDB(db *gorm.DB, settings ExtensionUpd
 		return ExtensionConfiguration{}, err
 	}
 	oldIDs := s.config.IDs
+	s.databaseConfig = settings
 	applyExtensionSettings(&s.config, settings)
+	applyExtensionEnvironment(&s.config, s.environmentConfig, s.environmentOverrides)
 	for _, source := range []string{"edge", "chrome"} {
 		if oldIDs[source] == s.config.IDs[source] {
 			continue

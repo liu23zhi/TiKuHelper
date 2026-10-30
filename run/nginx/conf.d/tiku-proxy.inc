@@ -3,8 +3,11 @@
 
 proxy_http_version 1.1;
 proxy_set_header Host              $http_host;
+# 对外入口重建来源头，不能保留客户端自带的 XFF 链（后端空代理名单默认全信任）。
+# 多层代理应先用 set_real_ip_from 校验上游并还原 $remote_addr，见 tiku-adapter.conf。
 proxy_set_header X-Real-IP         $remote_addr;
-proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-For   $remote_addr;
+proxy_set_header Forwarded         "";
 proxy_set_header X-Forwarded-Proto $scheme;
 proxy_set_header X-Forwarded-Port  $server_port;
 

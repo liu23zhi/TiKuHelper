@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -16,11 +17,21 @@ import (
 	"github.com/itihey/tikuAdapter/internal/entity"
 )
 
-func TestExtensionSettingsPersistOverrideEnvironmentAndRestart(t *testing.T) {
+func clearExtensionSettingsEnvironment(t *testing.T) {
+	t.Helper()
+	for _, name := range []string{"EXTENSION_CACHE_DIR", "EXTENSION_UPDATE_INTERVAL", "EXTENSION_UPDATE_ENABLED", "EXTENSION_EDGE_ID", "EXTENSION_CHROME_ID"} {
+		t.Setenv(name, "")
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestExtensionSettingsPersistDatabaseAndRestart(t *testing.T) {
+	clearExtensionSettingsEnvironment(t)
 	db := newSearchAccountConfigTestDB(t)
 	directory := t.TempDir()
 	t.Setenv("EXTENSION_CACHE_DIR", directory)
-	t.Setenv("EXTENSION_UPDATE_INTERVAL", "invalid-env-but-database-wins")
 	store, err := NewExtensionStore(ExtensionStoreConfig{Directory: directory, Interval: time.Hour, IDs: map[string]string{"edge": DefaultEdgeExtensionID}})
 	if err != nil {
 		t.Fatal(err)
@@ -32,7 +43,7 @@ func TestExtensionSettingsPersistOverrideEnvironmentAndRestart(t *testing.T) {
 	}
 	restarted, err := newConfiguredExtensionStore(db)
 	if err != nil || restarted.Configuration().Config != want {
-		t.Fatalf("restart database priority: %v %v", restarted, err)
+		t.Fatalf("restart database fallback: %v %v", restarted, err)
 	}
 	var count int64
 	db.Model(&entity.SystemSetting{}).Where("key = ?", extensionSettingsKey).Count(&count)
@@ -57,6 +68,179 @@ func TestExtensionSettingsPersistOverrideEnvironmentAndRestart(t *testing.T) {
 	}
 	if !reflect.DeepEqual(before, store.Configuration()) {
 		t.Fatal("database failure changed live settings")
+	}
+}
+
+func TestExtensionSettingsEnvironmentOverridesEachFieldAndSurvivesSave(t *testing.T) {
+	baseline := ExtensionUpdateSettings{AutoUpdate: false, IntervalMinutes: 9, EdgeID: strings.Repeat("b", 32), ChromeID: strings.Repeat("c", 32)}
+	updated := ExtensionUpdateSettings{AutoUpdate: true, IntervalMinutes: 13, EdgeID: strings.Repeat("e", 32), ChromeID: strings.Repeat("f", 32)}
+	for _, test := range []struct {
+		name      string
+		env       map[string]string
+		overrides ExtensionEnvironmentOverrides
+	}{
+		{"explicit false", map[string]string{"EXTENSION_UPDATE_ENABLED": "false"}, ExtensionEnvironmentOverrides{AutoUpdate: true}},
+		{"explicit true", map[string]string{"EXTENSION_UPDATE_ENABLED": "true"}, ExtensionEnvironmentOverrides{AutoUpdate: true}},
+		{"interval only", map[string]string{"EXTENSION_UPDATE_INTERVAL": "17m"}, ExtensionEnvironmentOverrides{IntervalMinutes: true}},
+		{"empty edge disables", map[string]string{"EXTENSION_EDGE_ID": ""}, ExtensionEnvironmentOverrides{EdgeID: true}},
+		{"empty chrome disables", map[string]string{"EXTENSION_CHROME_ID": ""}, ExtensionEnvironmentOverrides{ChromeID: true}},
+		{"chrome only", map[string]string{"EXTENSION_CHROME_ID": strings.Repeat("d", 32)}, ExtensionEnvironmentOverrides{ChromeID: true}},
+		{"mixed fields", map[string]string{"EXTENSION_UPDATE_ENABLED": "false", "EXTENSION_UPDATE_INTERVAL": "17m", "EXTENSION_EDGE_ID": strings.Repeat("d", 32)}, ExtensionEnvironmentOverrides{AutoUpdate: true, IntervalMinutes: true, EdgeID: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clearExtensionSettingsEnvironment(t)
+			t.Setenv("EXTENSION_CACHE_DIR", t.TempDir())
+			db := newSearchAccountConfigTestDB(t)
+			store, err := newConfiguredExtensionStore(db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.UpdateSettingsWithDB(db, baseline); err != nil {
+				t.Fatal(err)
+			}
+			for name, value := range test.env {
+				t.Setenv(name, value)
+			}
+			store, err = newConfiguredExtensionStore(db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantEffective := func(saved ExtensionUpdateSettings) ExtensionUpdateSettings {
+				if test.overrides.AutoUpdate {
+					saved.AutoUpdate = test.env["EXTENSION_UPDATE_ENABLED"] == "true"
+				}
+				if test.overrides.IntervalMinutes {
+					saved.IntervalMinutes = 17
+				}
+				if test.overrides.EdgeID {
+					saved.EdgeID = test.env["EXTENSION_EDGE_ID"]
+				}
+				if test.overrides.ChromeID {
+					saved.ChromeID = test.env["EXTENSION_CHROME_ID"]
+				}
+				return saved
+			}
+			assertConfiguration := func(config ExtensionConfiguration, saved ExtensionUpdateSettings) {
+				t.Helper()
+				if config.Config != wantEffective(saved) || config.DatabaseConfig != saved || config.EnvironmentOverrides != test.overrides {
+					t.Fatalf("incorrect field precedence: %+v; database=%+v overrides=%+v", config, saved, test.overrides)
+				}
+			}
+			assertConfiguration(store.Configuration(), baseline)
+			configuration, err := store.UpdateSettingsWithDB(db, updated)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertConfiguration(configuration, updated)
+			restarted, err := newConfiguredExtensionStore(db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertConfiguration(restarted.Configuration(), updated)
+			for name := range test.env {
+				if err := os.Unsetenv(name); err != nil {
+					t.Fatal(err)
+				}
+			}
+			restarted, err = newConfiguredExtensionStore(db)
+			if err != nil || restarted.Configuration().Config != updated || restarted.Configuration().EnvironmentOverrides != (ExtensionEnvironmentOverrides{}) {
+				t.Fatalf("removed environment did not restore database: %+v %v", restarted, err)
+			}
+		})
+	}
+}
+
+func TestExtensionSettingsInvalidEnvironmentCannotBeHiddenByDatabase(t *testing.T) {
+	for _, test := range []struct{ name, value string }{
+		{"EXTENSION_UPDATE_ENABLED", ""}, {"EXTENSION_UPDATE_ENABLED", "unknown"},
+		{"EXTENSION_UPDATE_INTERVAL", ""}, {"EXTENSION_UPDATE_INTERVAL", "not-a-duration"}, {"EXTENSION_UPDATE_INTERVAL", "169h"},
+		{"EXTENSION_EDGE_ID", "invalid"}, {"EXTENSION_CHROME_ID", strings.Repeat("z", 32)},
+	} {
+		t.Run(test.name+"="+test.value, func(t *testing.T) {
+			clearExtensionSettingsEnvironment(t)
+			t.Setenv("EXTENSION_CACHE_DIR", t.TempDir())
+			db := newSearchAccountConfigTestDB(t)
+			store, err := newConfiguredExtensionStore(db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.UpdateSettingsWithDB(db, ExtensionUpdateSettings{IntervalMinutes: 5}); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv(test.name, test.value)
+			if store, err := newConfiguredExtensionStore(db); err == nil || store != nil || !strings.Contains(err.Error(), test.name) {
+				t.Fatalf("invalid environment hidden by saved settings: store=%v error=%v", store, err)
+			}
+		})
+	}
+}
+
+func TestExtensionSettingsDefaultsWithoutDatabase(t *testing.T) {
+	clearExtensionSettingsEnvironment(t)
+	t.Setenv("EXTENSION_CACHE_DIR", t.TempDir())
+	t.Setenv("EXTENSION_UPDATE_ENABLED", "false")
+	t.Setenv("EXTENSION_EDGE_ID", "")
+	store, err := newConfiguredExtensionStore(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := store.Configuration()
+	wantDatabase := ExtensionUpdateSettings{AutoUpdate: true, IntervalMinutes: 360, EdgeID: DefaultEdgeExtensionID}
+	wantEffective := ExtensionUpdateSettings{IntervalMinutes: 360}
+	if configuration.Config != wantEffective || configuration.DatabaseConfig != wantDatabase || configuration.EnvironmentOverrides != (ExtensionEnvironmentOverrides{AutoUpdate: true, EdgeID: true}) {
+		t.Fatalf("default precedence: %+v", configuration)
+	}
+}
+
+func TestExtensionSettingsEnvironmentIdentitySurvivesDatabaseSave(t *testing.T) {
+	clearExtensionSettingsEnvironment(t)
+	t.Setenv("EXTENSION_CACHE_DIR", t.TempDir())
+	fixture := newExtensionFixture(t)
+	t.Setenv("EXTENSION_EDGE_ID", fixture.id)
+	db := newSearchAccountConfigTestDB(t)
+	store, err := newConfiguredExtensionStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := fixture.build(t, "1.0", nil)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var unblock sync.Once
+	t.Cleanup(func() { unblock.Do(func() { close(release) }) })
+	store.client.Transport = extensionRoundTripper(func(r *http.Request) (*http.Response, error) {
+		response := data
+		if r.URL.Path != "/package" {
+			close(entered)
+			<-release
+			response = []byte(fmt.Sprintf(`<gupdate><app appid="%s" status="ok"><updatecheck status="ok" version="1.0" codebase="https://edge.microsoft.com/package" hash_sha256="%s"/></app></gupdate>`, fixture.id, extensionSHA256(data)))
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(response)), Request: r}, nil
+	})
+	done := make(chan error, 1)
+	go func() { done <- store.Refresh(context.Background(), "edge") }()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("environment identity check did not start")
+	}
+	saved := ExtensionUpdateSettings{IntervalMinutes: 5, EdgeID: strings.Repeat("b", 32)}
+	configuration, err := store.UpdateSettingsWithDB(db, saved)
+	if err != nil || configuration.Config.EdgeID != fixture.id || configuration.DatabaseConfig != saved || !configuration.Sources[0].Updating {
+		t.Fatalf("database replaced an environment-owned in-flight identity: %+v %v", configuration, err)
+	}
+	unblock.Do(func() { close(release) })
+	if err := <-done; err != nil {
+		t.Fatalf("environment-owned check was cancelled: %v", err)
+	}
+	current, err := store.Latest("edge")
+	if err != nil || current.ExtensionID != fixture.id {
+		t.Fatalf("published database identity instead of environment: %+v %v", current, err)
+	}
+	restarted, err := newConfiguredExtensionStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cached, err := restarted.Latest("edge"); err != nil || cached.ExtensionID != fixture.id {
+		t.Fatalf("environment identity did not survive cache reload: %+v %v", cached, err)
 	}
 }
 

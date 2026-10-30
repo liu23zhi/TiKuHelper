@@ -59,43 +59,65 @@ type extensionCheck struct {
 }
 
 type ExtensionStore struct {
-	config   ExtensionStoreConfig
-	client   *http.Client
-	mu       sync.RWMutex
-	cache    map[string]cachedExtension
-	checks   map[string]*extensionCheck
-	statuses map[string]ExtensionSourceStatus
-	wake     chan struct{}
+	config               ExtensionStoreConfig
+	databaseConfig       ExtensionUpdateSettings
+	environmentConfig    ExtensionStoreConfig
+	environmentOverrides ExtensionEnvironmentOverrides
+	client               *http.Client
+	mu                   sync.RWMutex
+	cache                map[string]cachedExtension
+	checks               map[string]*extensionCheck
+	statuses             map[string]ExtensionSourceStatus
+	wake                 chan struct{}
 }
 
 func ExtensionStoreConfigFromEnv() (ExtensionStoreConfig, error) {
+	config, _, err := extensionStoreConfigFromEnv()
+	return config, err
+}
+
+func extensionStoreConfigFromEnv() (ExtensionStoreConfig, ExtensionEnvironmentOverrides, error) {
 	config := ExtensionStoreConfig{
 		Directory:  strings.TrimSpace(os.Getenv("EXTENSION_CACHE_DIR")),
 		Interval:   6 * time.Hour,
 		AutoUpdate: true,
-		IDs:        map[string]string{"edge": DefaultEdgeExtensionID, "chrome": strings.TrimSpace(os.Getenv("EXTENSION_CHROME_ID"))},
+		IDs:        map[string]string{"edge": DefaultEdgeExtensionID},
 	}
+	var overrides ExtensionEnvironmentOverrides
 	if config.Directory == "" {
 		config.Directory = filepath.Join("data", "extensions")
 	}
 	if id, ok := os.LookupEnv("EXTENSION_EDGE_ID"); ok {
+		overrides.EdgeID = true
 		config.IDs["edge"] = strings.TrimSpace(id)
+		if config.IDs["edge"] != "" && !validExtensionID(config.IDs["edge"]) {
+			return config, overrides, errors.New("EXTENSION_EDGE_ID must be 32 a-p letters or empty to disable")
+		}
 	}
-	if value := strings.TrimSpace(os.Getenv("EXTENSION_UPDATE_INTERVAL")); value != "" {
-		interval, err := time.ParseDuration(value)
+	if id, ok := os.LookupEnv("EXTENSION_CHROME_ID"); ok {
+		overrides.ChromeID = true
+		config.IDs["chrome"] = strings.TrimSpace(id)
+		if config.IDs["chrome"] != "" && !validExtensionID(config.IDs["chrome"]) {
+			return config, overrides, errors.New("EXTENSION_CHROME_ID must be 32 a-p letters or empty to disable")
+		}
+	}
+	if value, ok := os.LookupEnv("EXTENSION_UPDATE_INTERVAL"); ok {
+		overrides.IntervalMinutes = true
+		interval, err := time.ParseDuration(strings.TrimSpace(value))
 		if err != nil || interval < time.Minute || interval > 7*24*time.Hour {
-			return config, errors.New("EXTENSION_UPDATE_INTERVAL must be between 1m and 168h")
+			return config, overrides, errors.New("EXTENSION_UPDATE_INTERVAL must be between 1m and 168h")
 		}
 		config.Interval = interval
 	}
-	if value := strings.TrimSpace(os.Getenv("EXTENSION_UPDATE_ENABLED")); value != "" {
-		enabled, err := strconv.ParseBool(value)
+	if value, ok := os.LookupEnv("EXTENSION_UPDATE_ENABLED"); ok {
+		overrides.AutoUpdate = true
+		enabled, err := strconv.ParseBool(strings.TrimSpace(value))
 		if err != nil {
-			return config, errors.New("EXTENSION_UPDATE_ENABLED must be a boolean")
+			return config, overrides, errors.New("EXTENSION_UPDATE_ENABLED must be a boolean")
 		}
 		config.AutoUpdate = enabled
 	}
-	return config, nil
+	return config, overrides, nil
 }
 
 func NewExtensionStore(config ExtensionStoreConfig) (*ExtensionStore, error) {
@@ -115,7 +137,7 @@ func NewExtensionStore(config ExtensionStoreConfig) (*ExtensionStore, error) {
 		}
 	}
 	config.IDs = ids
-	store := &ExtensionStore{config: config, cache: make(map[string]cachedExtension), checks: make(map[string]*extensionCheck), statuses: make(map[string]ExtensionSourceStatus), wake: make(chan struct{}, 1)}
+	store := &ExtensionStore{config: config, databaseConfig: extensionSettingsFromConfig(config), cache: make(map[string]cachedExtension), checks: make(map[string]*extensionCheck), statuses: make(map[string]ExtensionSourceStatus), wake: make(chan struct{}, 1)}
 	store.client = &http.Client{Timeout: 90 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 5 || !allowedExtensionURL(req.URL, "") {
 			return errors.New("untrusted extension redirect")
@@ -516,15 +538,27 @@ func DefaultExtensionStoreWithDB(db *gorm.DB) (*ExtensionStore, error) {
 }
 
 func newConfiguredExtensionStore(db *gorm.DB) (*ExtensionStore, error) {
-	config, envErr := ExtensionStoreConfigFromEnv()
+	config, overrides, err := extensionStoreConfigFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	environmentConfig := config
 	settings, found, err := loadExtensionSettings(db)
 	if err != nil {
 		return nil, err
 	}
-	if found {
-		applyExtensionSettings(&config, settings)
-	} else if envErr != nil {
-		return nil, envErr
+	if !found {
+		settings = ExtensionUpdateSettings{AutoUpdate: true, IntervalMinutes: 360, EdgeID: DefaultEdgeExtensionID}
 	}
-	return NewExtensionStore(config)
+	applyExtensionSettings(&config, settings)
+	applyExtensionEnvironment(&config, environmentConfig, overrides)
+	store, err := NewExtensionStore(config)
+	if err != nil {
+		return nil, err
+	}
+	store.databaseConfig = settings
+	// Environment values are fixed for this process. Database saves may change
+	// their fallback values without replacing the active deployment overrides.
+	store.environmentConfig, store.environmentOverrides = environmentConfig, overrides
+	return store, nil
 }

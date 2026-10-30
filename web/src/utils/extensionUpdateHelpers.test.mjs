@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { normalizeExtensionConfig, validateExtensionConfig, normalizeExtensionSources, extensionStatusText, formatExtensionSize, formatExtensionTime } from './extensionUpdateHelpers.mjs'
+import { extensionDatabasePayload, normalizeExtensionConfig, normalizeExtensionOverrides, validateExtensionConfig, normalizeExtensionSources, extensionStatusText, formatExtensionSize, formatExtensionTime } from './extensionUpdateHelpers.mjs'
 
 const edgeId = 'lcmeenlnjihhjcjoakekikoaldigonac'
 test('extension settings retain explicit disabled sources and validate integer intervals', () => {
@@ -13,6 +13,14 @@ test('extension settings retain explicit disabled sources and validate integer i
   for (const intervalMinutes of [1, 10080]) assert.equal(validateExtensionConfig({ ...config, intervalMinutes }), '')
   for (const id of ['a'.repeat(31), 'a'.repeat(33), 'A'.repeat(32), 'q'.repeat(32), 'https://example.com']) assert.match(validateExtensionConfig({ ...config, chromeId: id }), /Chrome/)
   assert.equal(normalizeExtensionConfig({ intervalMinutes: null }).intervalMinutes, null, 'clearing an interval must remain invalid rather than silently saving a default')
+})
+
+test('saving editable extension settings retains database values hidden by environment overrides', () => {
+  const databaseConfig = { autoUpdate: true, intervalMinutes: 360, edgeId, chromeId: 'b'.repeat(32) }
+  const form = { autoUpdate: false, intervalMinutes: 30, edgeId: 'c'.repeat(32), chromeId: '' }
+  const overrides = normalizeExtensionOverrides({ autoUpdate: true, intervalMinutes: true, chromeId: true })
+  assert.deepEqual(extensionDatabasePayload(form, databaseConfig, overrides), { ...databaseConfig, edgeId: form.edgeId })
+  assert.deepEqual(extensionDatabasePayload(form, databaseConfig, normalizeExtensionOverrides()), form)
 })
 
 test('extension state separates disabled, empty, updating and preserved-cache failure', () => {

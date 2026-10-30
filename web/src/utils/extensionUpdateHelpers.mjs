@@ -12,6 +12,19 @@ export function normalizeExtensionConfig(config = {}) {
   }
 }
 
+export function normalizeExtensionOverrides(overrides = {}) {
+  return Object.fromEntries(['autoUpdate', 'intervalMinutes', 'edgeId', 'chromeId'].map(key => [key, overrides[key] === true]))
+}
+
+export function extensionDatabasePayload(form, databaseConfig, overrides) {
+  const config = normalizeExtensionConfig(form)
+  const stored = normalizeExtensionConfig(databaseConfig)
+  for (const key of Object.keys(config)) {
+    if (overrides[key]) config[key] = stored[key]
+  }
+  return config
+}
+
 export function validateExtensionConfig(config) {
   const minutes = Number(config.intervalMinutes)
   if (!Number.isInteger(minutes) || minutes < 1 || minutes > 10080) return '检查间隔须为 1 到 10080 分钟的整数。'
