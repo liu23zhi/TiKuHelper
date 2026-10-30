@@ -38,6 +38,13 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.POST("/uapi/search/aggregate", controller.Auth, middleware.RequireAdmin, controller.UAPISearchAggregate)
 
 	apiRouter.POST("/search", controller.SearchWithIdempotency)
+	// Browser extension packages are publicly readable so native clients can
+	// bootstrap before login; only administrators can force an upstream refresh.
+	apiRouter.GET("/extensions/:source/latest", controller.ExtensionLatest)
+	apiRouter.GET("/extensions/:source/download", controller.ExtensionDownload)
+	apiRouter.POST("/extensions/:source/refresh", controller.Auth, middleware.RequireAdmin, controller.RefreshExtension)
+	apiRouter.GET("/extensions/config", controller.Auth, middleware.RequireAdmin, controller.ExtensionConfiguration)
+	apiRouter.PUT("/extensions/config", controller.Auth, middleware.RequireAdmin, controller.UpdateExtensionConfiguration)
 	apiRouter.POST("/search/tasks", controller.AuthAccessToken, controller.CreateSearchTask)
 	apiRouter.GET("/search/health", controller.AuthAccessToken, controller.GetSearchTaskHealth)
 	apiRouter.GET("/search/status", controller.AuthAccessToken, controller.GetSearchTaskStatus)

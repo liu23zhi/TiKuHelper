@@ -62,6 +62,30 @@ func TestSetAPIRouterRegistersAsyncSearchRoutes(t *testing.T) {
 	}
 }
 
+func TestSetAPIRouterRegistersExtensionRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	SetAPIRouter(router)
+	want := map[string]bool{
+		"GET /adapter-service/extensions/:source/latest":   false,
+		"GET /adapter-service/extensions/:source/download": false,
+		"POST /adapter-service/extensions/:source/refresh": false,
+		"GET /adapter-service/extensions/config":           false,
+		"PUT /adapter-service/extensions/config":           false,
+	}
+	for _, route := range router.Routes() {
+		key := route.Method + " " + route.Path
+		if _, ok := want[key]; ok {
+			want[key] = true
+		}
+	}
+	for route, found := range want {
+		if !found {
+			t.Fatalf("expected route %s to be registered", route)
+		}
+	}
+}
+
 func TestSetAPIRouterRegistersWechatLoginRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

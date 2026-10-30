@@ -17,6 +17,7 @@ import LogList from '../pages/LogList/index.vue'
 import SearchAccountConfig from '../pages/SearchAccountConfig/index.vue'
 import AISearchConfig from '../pages/AISearchConfig/index.vue'
 import SystemSettings from '../pages/SystemSettings/index.vue'
+import ExtensionUpdates from '../pages/ExtensionUpdates/index.vue'
 import AccessTokenManagement from '../pages/AccessTokenManagement/index.vue'
 import BillingRecordList from '../pages/BillingRecordList/index.vue'
 import RechargeOrderList from '../pages/RechargeOrderList/index.vue'
@@ -97,6 +98,11 @@ const routes = [
         component: AISearchConfig,
       },
       {
+        path: 'extension-updates',
+        name: 'extension-updates',
+        component: ExtensionUpdates,
+      },
+      {
         path: 'system-settings',
         name: 'system-settings',
         component: SystemSettings,
@@ -146,6 +152,7 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   'search-account-config',
   'ai-search-config',
   'system-settings',
+  'extension-updates',
   'location-cache',
   'ip-location-cache',
   'phone-location-cache',

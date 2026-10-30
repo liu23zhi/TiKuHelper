@@ -69,6 +69,7 @@ export default {
         '/adapter/search-account-config',
         '/adapter/ai-search-config',
         '/adapter/system-settings',
+        '/adapter/extension-updates',
       ]
       if (adminOnlyPrefixes.some(prefix => routePath.startsWith(prefix))) {
         router.replace(resolveHomePath(currentUser.value))

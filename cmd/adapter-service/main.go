@@ -60,6 +60,24 @@ func main() {
 	logTrustedProxies(trustedProxies)
 	api.SetAPIRouter(server)
 	api.SetWebRouter(buildFS, indexPage, server)
+	shutdownContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	extensionStore, err := service.DefaultExtensionStoreWithDB(mg.GetDB())
+	if err != nil {
+		logger.FatalLog(err)
+	}
+	extensionDone := startExtensionUpdates(shutdownContext, extensionStore.Run, func(source string, updateErr error) {
+		if shutdownContext.Err() != nil {
+			return
+		}
+		if updateErr != nil && !errors.Is(updateErr, service.ErrExtensionUnavailable) {
+			logger.SysError("扩展更新检查失败 source=" + source + " error=" + updateErr.Error())
+			return
+		}
+		if updateErr == nil {
+			logger.SysLog("扩展更新检查完成 source=" + source)
+		}
+	})
 	stopWechatRegisterCleanup := service.DefaultWechatRegisterFlowStore.StartCleanup(time.Minute)
 	defer stopWechatRegisterCleanup()
 	timer.StartTimer(mg.GetDB(), mg.GetEs(), mg.GetConfig().Elasticsearch.Addresses)
@@ -72,8 +90,6 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
-	shutdownContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	shutdownDone := shutdownHTTPServerOnCancel(shutdownContext, httpServer)
 	logger.SysLog("Tiku 服务启动 address=" + httpServer.Addr)
 	logTimeBase()
@@ -83,7 +99,17 @@ func main() {
 	}
 	stop()
 	<-shutdownDone
+	<-extensionDone
 	logger.SysLog("Tiku 服务已停止")
+}
+
+func startExtensionUpdates(ctx context.Context, run func(context.Context, func(string, error)), report func(string, error)) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		run(ctx, report)
+	}()
+	return done
 }
 
 func shutdownHTTPServerOnCancel(shutdownContext context.Context, httpServer *http.Server) <-chan struct{} {

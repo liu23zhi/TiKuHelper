@@ -59,6 +59,22 @@ AI 详细轨迹写入 `Tiku-thinking.txt`，按 requestId 记录每轮模型端�
 
 ## 环境变量
 
+### 浏览器扩展更新
+
+原生客户端可通过 `GET /adapter-service/extensions/edge/latest` 查询已验证的 Edge 扩展，
+再从响应中的相对 `downloadUrl` 下载 CRX3。管理员在后台“扩展更新”页设置自动检查、检查间隔、
+Edge/Chrome 商店 ID，并查看版本和手动刷新；配置保存到数据库后立即生效，无需重启。
+默认每 6 小时检查，失败保留上一份可用包，Chrome 来源默认停用。以下环境变量仅作首次设置的
+初始默认值，数据库配置优先。完整接口、权限和校验规则见 [`docs/extension-update-api.md`](docs/extension-update-api.md)。
+
+```powershell
+$env:EXTENSION_UPDATE_ENABLED = "true"
+$env:EXTENSION_UPDATE_INTERVAL = "6h"
+$env:EXTENSION_CACHE_DIR = "data/extensions"
+# 后续上架 Chrome 后再设置；留空时不启用 Chrome 来源。
+$env:EXTENSION_CHROME_ID = ""
+```
+
 ### `JWT_SECRET`
 
 用于签发和校验登录 JWT。程序按以下顺序处理：
