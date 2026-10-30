@@ -44,6 +44,16 @@ test('Login page only renders sms login mode when public sms login is enabled', 
   assert.doesNotMatch(content, /<a-radio-button\s+value="sms"[^>]*:disabled="!publicAuthSettings\.smsLoginEnabled"/);
 });
 
+test('Login page shows a SweetAlert and registration action for an unregistered SMS phone', async () => {
+  const content = await readFile(loginPagePath, 'utf8');
+
+  assert.match(content, /isUnregisteredPhoneLoginMessage/);
+  assert.match(content, /title: '手机号未注册'/);
+  assert.match(content, /text: '该手机号未绑定账号，请先注册。'/);
+  assert.match(content, /confirmButtonText: '前往注册'/);
+  assert.match(content, /showUnregisteredPhoneAlert/);
+});
+
 test('Login page supports wechat QR login and need-bind redirect', async () => {
   const content = await readFile(loginPagePath, 'utf8');
 

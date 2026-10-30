@@ -212,6 +212,11 @@ function showRegisterDisabledAlert() {
   })
 }
 
+function isUnregisteredPhoneLoginMessage(value) {
+  const message = String(value || '').trim()
+  return message.includes('手机号未绑定账号') || message.includes('手机号未注册')
+}
+
 export default defineComponent({
   name: 'AdapterLogin',
   setup() {
@@ -358,9 +363,10 @@ export default defineComponent({
         return
       }
 
+      const requestMode = loginMode.value
       let requester
       try {
-        requester = loginMode.value === 'sms'
+        requester = requestMode === 'sms'
           ? loginBySMS(buildSMSLoginPayload(smsLoginForm))
           : login(loginForm)
       } catch (error) {
@@ -369,15 +375,24 @@ export default defineComponent({
         return
       }
 
-      requester.then((res) => {
+      requester.then(async (res) => {
         if (res?.status === 200) {
           return finishLogin(res?.data?.jwt)
+        }
+        if (requestMode === 'sms' && isUnregisteredPhoneLoginMessage(res?.message)) {
+          await showUnregisteredPhoneAlert()
+          return null
         }
         message.error(res?.message || '登录失败')
         return null
       }).catch((error) => {
         console.log(error)
-        message.error(error?.message || '登录失败')
+        const errorMessage = error?.response?.data?.message || error?.message
+        if (requestMode === 'sms' && isUnregisteredPhoneLoginMessage(errorMessage)) {
+          void showUnregisteredPhoneAlert()
+          return
+        }
+        message.error(errorMessage || '登录失败')
       }).finally(() => {
         submitting.value = false
       })
@@ -568,6 +583,23 @@ export default defineComponent({
       }).catch(() => {
         return showRegisterDisabledAlert()
       })
+    }
+
+    const showUnregisteredPhoneAlert = async () => {
+      const result = await Swal.fire({
+        icon: 'warning',
+        title: '手机号未注册',
+        text: '该手机号未绑定账号，请先注册。',
+        confirmButtonText: '前往注册',
+        showCancelButton: true,
+        cancelButtonText: '取消',
+        heightAuto: false,
+        scrollbarPadding: false,
+      })
+      if (result?.isConfirmed) {
+        return goToRegister()
+      }
+      return null
     }
 
     const handleFinishFailed = (errors) => {

@@ -54,6 +54,19 @@ func TestUserSMSLoginSupportsLegacyPhoneAlias(t *testing.T) {
 	}
 }
 
+func TestUserSMSLoginReportsUnregisteredPhone(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	newUserControllerTestDB(t)
+	originalConsume := consumeCaptchaTokenWithDB
+	t.Cleanup(func() { consumeCaptchaTokenWithDB = originalConsume })
+	consumeCaptchaTokenWithDB = func(string, string, string) error { return nil }
+
+	response := phoneControllerRequest(t, http.MethodPost, "/adapter-service/user/login/sms", `{"phone":"13800000000","smsCode":"123456","captchaToken":"captcha"}`, nil, UserSMSLogin)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "该手机号未绑定账号，请先注册") {
+		t.Fatalf("unregistered phone must return registration guidance: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestUserSMSLoginRejectsConflictingPhoneAliasesBeforeCodeConsumption(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newUserControllerTestDB(t)
