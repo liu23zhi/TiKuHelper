@@ -614,6 +614,7 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		&entity.Ticket{},
 		&entity.TicketMessage{},
 		&entity.TicketNotification{},
+		&entity.AIOCRCache{},
 	)
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))

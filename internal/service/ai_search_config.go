@@ -45,7 +45,7 @@ func BuildUAPIImageOCRProviderWithDB(db *gorm.DB) internalsearch.AIImageOCRProvi
 		return nil
 	}
 	client := uapi.NewClient(key).SetTimeout(aiImageOCRUAPITimeout).SetMaxRetries(0)
-	return func(ctx context.Context, sourceURL, imageName, contentType string, image []byte) (string, error) {
+	return func(ctx context.Context, _, imageName, contentType string, image []byte) (string, error) {
 		if strings.TrimSpace(imageName) == "" {
 			imageName = imageNameForContentType(contentType)
 		}
@@ -63,6 +63,12 @@ func BuildUAPIImageOCRProviderWithDB(db *gorm.DB) internalsearch.AIImageOCRProvi
 		}
 		return strings.TrimSpace(result.PlainText), nil
 	}
+}
+
+// BuildCachedUAPIImageOCRProviderWithDB adds persistent URL/image fingerprint
+// caching around the regular UAPI OCR provider.
+func BuildCachedUAPIImageOCRProviderWithDB(db *gorm.DB) internalsearch.AIImageOCRCacheProvider {
+	return cacheAIImageOCRProviderWithDB(db, BuildUAPIImageOCRProviderWithDB(db))
 }
 
 func imageNameForContentType(contentType string) string {

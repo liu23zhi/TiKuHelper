@@ -261,7 +261,7 @@ var searchAIAnswer = func(resolved resolvedSearchRequestContext, req model.Searc
 		MaxAISearchRetries:    resolved.AIConfig.MaxAISearchRetries,
 		MaxAIWebReads:         resolved.AIConfig.MaxAIWebReads,
 		SearchTool:            service.BuildUAPISearchToolWithDB(manager.GetManager().GetDB()),
-		OCRProvider:           service.BuildUAPIImageOCRProviderWithDB(manager.GetManager().GetDB()),
+		OCRCacheProvider:      service.BuildCachedUAPIImageOCRProviderWithDB(manager.GetManager().GetDB()),
 		OCRAPI:                "https://uapis.cn/api/v1/image/ocr",
 		ContextCompression:    service.BuildAIContextCompressionConfigWithDB(manager.GetManager().GetDB(), resolved.AIConfig),
 		RequestID:             resolved.RequestID,
@@ -1131,8 +1131,8 @@ func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRe
 }
 
 // appendAIToolBillingCharges keeps successful tool usage visible even when its
-// configured price is zero. Failed attempts remain in usage diagnostics but
-// do not create charges or change balances.
+// configured price is zero. Cached OCR results remain billable; failed attempts
+// remain in usage diagnostics but do not create charges or change balances.
 func appendAIToolBillingCharges(charges []searchBillingCharge, db *gorm.DB, req model.SearchRequest, usage search.AISearchUsage) []searchBillingCharge {
 	sequence := buildAIBillingSequence(usage)
 	searchPrice := service.GetAISearchPricePerCallWithDB(db)

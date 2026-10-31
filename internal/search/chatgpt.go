@@ -57,8 +57,9 @@ type ChatGptClient struct {
 	ContextCompression AIContextCompressionConfig
 	// OCRProvider receives server-downloaded image bytes as an auxiliary signal;
 	// the original visual image remains in the model request.
-	OCRProvider AIImageOCRProvider
-	OCRAPI      string
+	OCRProvider      AIImageOCRProvider
+	OCRCacheProvider AIImageOCRCacheProvider
+	OCRAPI           string
 }
 
 type AISearchUsage struct {
@@ -82,12 +83,17 @@ type AISearchUsage struct {
 // must not pass sourceURL to the OCR service as a remote URL.
 type AIImageOCRProvider func(ctx context.Context, sourceURL, imageName, contentType string, image []byte) (string, error)
 
+// AIImageOCRCacheProvider returns whether the OCR result was reused from the
+// image cache. Cached OCR remains a billable OCR call.
+type AIImageOCRCacheProvider func(ctx context.Context, sourceURL, imageName, contentType string, image []byte) (text string, cached bool, err error)
+
 type AIOCRCallUsage struct {
 	API        string `json:"api"`
 	ImageURL   string `json:"imageUrl"`
 	Status     string `json:"status"`
 	DurationMs int64  `json:"durationMs"`
 	TextChars  int    `json:"textChars,omitempty"`
+	Cached     bool   `json:"cached,omitempty"`
 	Error      string `json:"error,omitempty"`
 }
 
@@ -817,7 +823,7 @@ func buildAISearchAttachmentReferences(urls []string, attachments []downloadedAI
 }
 
 func (in *ChatGptClient) runAISearchImageOCR(ctx context.Context, attachments []downloadedAISearchAttachment) (string, []AIOCRCallUsage) {
-	if in == nil || in.OCRProvider == nil || len(attachments) == 0 {
+	if in == nil || (in.OCRProvider == nil && in.OCRCacheProvider == nil) || len(attachments) == 0 {
 		return "", nil
 	}
 	images := make([]downloadedAISearchAttachment, 0, len(attachments))
@@ -844,7 +850,14 @@ func (in *ChatGptClient) runAISearchImageOCR(ctx context.Context, attachments []
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
 			started := time.Now()
-			text, err := in.OCRProvider(ctx, attachment.sourceURL, attachment.imageName, attachment.contentType, attachment.body)
+			var text string
+			var cached bool
+			var err error
+			if in.OCRCacheProvider != nil {
+				text, cached, err = in.OCRCacheProvider(ctx, attachment.sourceURL, attachment.imageName, attachment.contentType, attachment.body)
+			} else {
+				text, err = in.OCRProvider(ctx, attachment.sourceURL, attachment.imageName, attachment.contentType, attachment.body)
+			}
 			call := AIOCRCallUsage{API: strings.TrimSpace(in.OCRAPI), ImageURL: attachment.sourceURL, DurationMs: time.Since(started).Milliseconds()}
 			if call.API == "" {
 				call.API = "https://uapis.cn/api/v1/image/ocr"
@@ -854,6 +867,7 @@ func (in *ChatGptClient) runAISearchImageOCR(ctx context.Context, attachments []
 				call.Error = truncateAIToolText(logger.RedactSecrets(err.Error(), in.APIKey), 500)
 			} else {
 				call.Status = "success"
+				call.Cached = cached
 				call.TextChars = len([]rune(strings.TrimSpace(text)))
 				text = truncateAIToolText(strings.TrimSpace(text), 12000)
 			}
