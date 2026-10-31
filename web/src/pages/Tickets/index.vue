@@ -29,7 +29,11 @@
       description="提醒以异步队列发送，保存后可发送测试消息。Webhook 地址不会回显完整内容。"
       class="settings-panel"
     >
-      <a-form layout="vertical" @finish="saveNotificationConfig">
+      <a-form
+        :model="notificationConfig"
+        layout="vertical"
+        @finish="saveNotificationConfig"
+      >
         <div class="config-grid">
           <a-form-item label="启用提醒"
             ><a-switch

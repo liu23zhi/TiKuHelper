@@ -477,7 +477,7 @@ func GetTicketWecomConfigWithDB(db *gorm.DB) (TicketWecomConfig, error) {
 
 func normalizeMentionedList(value string) []string {
 	value = strings.TrimSpace(value)
-	if value == "" {
+	if value == "" || value == "null" {
 		return nil
 	}
 	var list []string

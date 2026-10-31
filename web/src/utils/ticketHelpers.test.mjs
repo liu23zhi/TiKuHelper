@@ -16,6 +16,8 @@ import * as ticketHelpers from "./ticketHelpers.mjs";
 const require = createRequire(import.meta.url);
 const Vue = require("vue");
 const { parse } = require("@vue/compiler-sfc");
+const { compile } = require("@vue/compiler-dom");
+const { Form } = require("ant-design-vue");
 
 async function loadTicketApi(request) {
   const source = (
@@ -26,7 +28,7 @@ async function loadTicketApi(request) {
   return new Function(
     "request",
     "requireTicketResponse",
-    `${source}\nreturn {createTicket, addTicketMessage, updateTicket, testTicketNotification};`
+    `${source}\nreturn {createTicket, addTicketMessage, updateTicket, testTicketNotification, getTicketNotificationConfig, saveTicketNotificationConfig};`
   )(request, requireTicketResponse);
 }
 
@@ -76,11 +78,181 @@ async function loadTicketPage(overrides = {}) {
   const state = scope.run(() =>
     new Function(
       ...Object.keys(dependencies),
-      `${script}\nreturn {loadDetail, loadTickets, submitReply, saveStatus, detailTicket, detailStatus, messages, replyBody, tickets};`
+      `${script}\nreturn {loadDetail, loadTickets, submitReply, saveStatus, detailTicket, detailStatus, messages, replyBody, tickets, notificationConfig, configSaving, configTesting, saveNotificationConfig, testNotification};`
     )(...Object.values(dependencies))
   );
   return { ...state, close: () => scope.stop() };
 }
+
+async function mountNotificationForm(page) {
+  const source = await readFile(
+    new URL("../pages/Tickets/index.vue", import.meta.url),
+    "utf8"
+  );
+  const findForm = (node) => {
+    if (
+      node.tag === "a-form" &&
+      node.props.some((prop) => prop.exp?.content === "saveNotificationConfig")
+    )
+      return node;
+    return node.children?.map(findForm).find(Boolean);
+  };
+  const form = findForm(parse(source).descriptor.template.ast);
+  assert.ok(form, "notification settings form exists");
+  const render = new Function(
+    "Vue",
+    compile(form.loc.source, { mode: "function", prefixIdentifiers: true }).code
+  )(Vue);
+  const node = (type, text = "") => ({
+    type,
+    text,
+    children: [],
+    props: {},
+    parent: null,
+  });
+  const renderer = Vue.createRenderer({
+    createElement: (type) => node(type),
+    createText: (text) => node("#text", text),
+    createComment: (text) => node("#comment", text),
+    setText: (target, text) => (target.text = text),
+    setElementText: (target, text) => (target.text = text),
+    parentNode: (target) => target.parent,
+    nextSibling: (target) =>
+      target.parent?.children[target.parent.children.indexOf(target) + 1],
+    insert: (target, parent, anchor = null) => {
+      target.parent = parent;
+      const index = parent.children.indexOf(anchor);
+      parent.children.splice(index < 0 ? parent.children.length : index, 0, target);
+    },
+    remove: (target) => {
+      const index = target.parent?.children.indexOf(target);
+      if (index >= 0) target.parent.children.splice(index, 1);
+    },
+    patchProp: (target, key, previous, next) => (target.props[key] = next),
+  });
+  const app = renderer.createApp({ setup: () => page, render });
+  // Keep the actual form's validation and submit handling; other controls need no DOM.
+  app.component("a-form", Form);
+  for (const tag of ["a-form-item", "a-switch", "a-input", "a-button", "a-space"])
+    app.component(tag, {
+      setup: (_, { slots }) => () => Vue.h("div", {}, slots.default?.()),
+    });
+  const container = node("root");
+  app.mount(container);
+  const nativeForm = container.children.find((child) => child.type === "form");
+  return {
+    async submit() {
+      nativeForm.props.onSubmit({ preventDefault() {}, stopPropagation() {} });
+      await new Promise((resolve) => setImmediate(resolve));
+    },
+    close: () => app.unmount(),
+  };
+}
+
+test("notification form submits settings and reloads the saved configuration", async () => {
+  const saved = [];
+  const successes = [];
+  let reloads = 0;
+  const page = await loadTicketPage({
+    saveTicketNotificationConfig: async (payload) => saved.push(payload),
+    getTicketNotificationConfig: async () => {
+      reloads++;
+      return {
+        data: {
+          data: { enabled: true, configured: true, mentionedList: ["alice", "bob"] },
+        },
+      };
+    },
+    message: { success: (value) => successes.push(value), error() {} },
+  });
+  const form = await mountNotificationForm(page);
+  try {
+    Object.assign(page.notificationConfig, {
+      enabled: true,
+      webhookUrl: " https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test ",
+      mentionedList: "alice, bob",
+    });
+    await form.submit();
+    assert.deepEqual(saved, [
+      {
+        enabled: true,
+        clearWebhook: false,
+        mentionedList: ["alice", "bob"],
+        webhookUrl: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test",
+      },
+    ]);
+    assert.equal(reloads, 1);
+    assert.equal(successes.length, 1);
+    assert.equal(page.notificationConfig.webhookUrl, "");
+    assert.equal(page.notificationConfig.configured, true);
+    assert.equal(page.configSaving.value, false);
+  } finally {
+    form.close();
+    page.close();
+  }
+});
+
+test("notification form keeps its draft and reports a failed save", async () => {
+  const failures = [];
+  const successes = [];
+  let reloads = 0;
+  const page = await loadTicketPage({
+    saveTicketNotificationConfig: async () => {
+      throw new Error("保存失败，请稍后重试");
+    },
+    getTicketNotificationConfig: async () => reloads++,
+    message: {
+      success: (value) => successes.push(value),
+      error: (value) => failures.push(value),
+    },
+  });
+  const form = await mountNotificationForm(page);
+  try {
+    Object.assign(page.notificationConfig, {
+      enabled: true,
+      webhookUrl: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=draft",
+      mentionedList: "alice,bob",
+    });
+    const draft = { ...page.notificationConfig };
+    await form.submit();
+    assert.deepEqual({ ...page.notificationConfig }, draft);
+    assert.deepEqual(failures, ["保存失败，请稍后重试"]);
+    assert.equal(successes.length, 0);
+    assert.equal(reloads, 0);
+    assert.equal(page.configSaving.value, false);
+  } finally {
+    form.close();
+    page.close();
+  }
+});
+
+test("notification form can retain or explicitly clear an existing webhook", async () => {
+  const saved = [];
+  const page = await loadTicketPage({
+    saveTicketNotificationConfig: async (payload) => saved.push(payload),
+    getTicketNotificationConfig: async () => ({
+      data: {
+        data: { enabled: false, configured: saved.length === 1, mentionedList: [] },
+      },
+    }),
+  });
+  const form = await mountNotificationForm(page);
+  try {
+    page.notificationConfig.configured = true;
+    await form.submit();
+    page.notificationConfig.clearWebhook = true;
+    await form.submit();
+    assert.deepEqual(saved, [
+      { enabled: false, clearWebhook: false, mentionedList: [] },
+      { enabled: false, clearWebhook: true, mentionedList: [] },
+    ]);
+    assert.equal(page.notificationConfig.configured, false);
+    assert.equal(page.notificationConfig.clearWebhook, false);
+  } finally {
+    form.close();
+    page.close();
+  }
+});
 
 test("ticket API rejects resolved HTTP failures instead of reporting mutation success", async () => {
   for (const status of [400, 500]) {
@@ -92,7 +264,22 @@ test("ticket API rejects resolved HTTP failures instead of reporting mutation su
     await assert.rejects(api.addTicketMessage(1, {}), /服务端失败原因/);
     await assert.rejects(api.updateTicket(1, {}), /服务端失败原因/);
     await assert.rejects(api.testTicketNotification(), /服务端失败原因/);
+    await assert.rejects(api.getTicketNotificationConfig(), /服务端失败原因/);
+    await assert.rejects(api.saveTicketNotificationConfig({}), /服务端失败原因/);
   }
+});
+
+test("notification settings API uses the protected config PUT endpoint", async () => {
+  const requests = [];
+  const api = await loadTicketApi(async (config) => {
+    requests.push(config);
+    return { status: 200, data: { data: { configured: true } } };
+  });
+  const payload = { enabled: true, mentionedList: ["alice"] };
+  await api.saveTicketNotificationConfig(payload);
+  assert.deepEqual(requests, [
+    { url: "/adapter-service/tickets/config", method: "put", data: payload },
+  ]);
 });
 
 test("late ticket detail and reply responses cannot replace the newly opened ticket", async () => {
