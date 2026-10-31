@@ -63,7 +63,6 @@
           <span v-if="column.key === 'username'">{{ record.username || '-' }}</span>
           <div v-else-if="column.key === 'tokenValue'" class="token-value-cell">
             <a-typography-paragraph
-              copyable
               class="token-value-text"
               :class="{ 'token-value-text--visible': isTokenVisible(record.id) }"
             >
