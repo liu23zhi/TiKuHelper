@@ -897,8 +897,8 @@ func waitTicketNotificationWorker(ctx context.Context, delay time.Duration) bool
 	}
 }
 
-// RunTicketNotificationWorker runs the outbox loop for the standalone worker
-// process. Database operations are short and the webhook call is always made
+// RunTicketNotificationWorker runs the outbox loop for the background worker
+// goroutine. Database operations are short and the webhook call is always made
 // after the claim transaction has committed.
 func RunTicketNotificationWorker(ctx context.Context, db *gorm.DB) error {
 	if db == nil {
