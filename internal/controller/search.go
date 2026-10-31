@@ -261,7 +261,7 @@ var searchAIAnswer = func(resolved resolvedSearchRequestContext, req model.Searc
 		MaxAISearchRetries:    resolved.AIConfig.MaxAISearchRetries,
 		MaxAIWebReads:         resolved.AIConfig.MaxAIWebReads,
 		SearchTool:            service.BuildUAPISearchToolWithDB(manager.GetManager().GetDB()),
-		OCRProvider:           service.BuildUAPIImageOCRProviderWithDB(manager.GetManager().GetDB()),
+		OCRCacheProvider:      service.BuildCachedUAPIImageOCRProviderWithDB(manager.GetManager().GetDB()),
 		OCRAPI:                "https://uapis.cn/api/v1/image/ocr",
 		ContextCompression:    service.BuildAIContextCompressionConfigWithDB(manager.GetManager().GetDB(), resolved.AIConfig),
 		RequestID:             resolved.RequestID,
@@ -1163,7 +1163,7 @@ func appendAIToolBillingCharges(charges []searchBillingCharge, db *gorm.DB, req 
 
 	ocrPrice := service.GetImageOCRPricePerCallWithDB(db)
 	for index, call := range usage.OCRCalls {
-		if strings.TrimSpace(call.Status) != "success" {
+		if strings.TrimSpace(call.Status) != "success" || call.Cached {
 			continue
 		}
 		amount := util.RoundMoney(ocrPrice)

@@ -118,7 +118,7 @@ func SearchAIFallbackWithContext(ctx context.Context, db *gorm.DB, req model.Sea
 		MaxAISearchRetries:    resolved.Config.MaxAISearchRetries,
 		MaxAIWebReads:         resolved.Config.MaxAIWebReads,
 		SearchTool:            BuildUAPISearchToolWithDB(db),
-		OCRProvider:           BuildUAPIImageOCRProviderWithDB(db),
+		OCRCacheProvider:      BuildCachedUAPIImageOCRProviderWithDB(db),
 		OCRAPI:                "https://uapis.cn/api/v1/image/ocr",
 		ContextCompression:    BuildAIContextCompressionConfigWithDB(db, resolved.Config),
 		RequestID:             req.RequestID,

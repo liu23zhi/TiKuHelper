@@ -40,7 +40,7 @@ func allEntities() []interface{} {
 		&entity.PaymentMethod{}, &entity.RechargeOrder{}, &entity.BillingRecord{},
 		&entity.AIModelPrice{}, &entity.SMSVerificationCode{}, &entity.CaptchaChallenge{},
 		&entity.CaptchaToken{}, &entity.LocationCache{}, &entity.Ticket{},
-		&entity.TicketMessage{}, &entity.TicketNotification{},
+		&entity.TicketMessage{}, &entity.TicketNotification{}, &entity.AIOCRCache{},
 	}
 }
 

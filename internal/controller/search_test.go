@@ -1268,6 +1268,7 @@ func TestResolveCompletedSearchBillingChargesAddsSuccessfulOCROnly(t *testing.T)
 	usage := searchpkg.AISearchUsage{OCRCalls: []searchpkg.AIOCRCallUsage{
 		{API: "https://uapis.cn/api/v1/image/ocr", ImageURL: "https://images.example/a.webp", Status: "success", TextChars: 12, DurationMs: 80},
 		{API: "https://uapis.cn/api/v1/image/ocr", ImageURL: "https://images.example/b.png", Status: "error", Error: "服务不可用", DurationMs: 90},
+		{API: "https://uapis.cn/api/v1/image/ocr", ImageURL: "https://images.example/c.png", Status: "success", Cached: true, TextChars: 12, DurationMs: 2},
 	}}
 	charges, _, err := resolveCompletedSearchBillingCharges(db, resolvedSearchRequestContext{SearchMode: searchModeAI}, "ai", model.SearchRequest{Question: "图片题"}, usage, false, true)
 	if err != nil {

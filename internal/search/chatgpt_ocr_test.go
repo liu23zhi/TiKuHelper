@@ -110,6 +110,24 @@ func TestAISearchOCRSkipsHTMLAttachments(t *testing.T) {
 	}
 }
 
+func TestAISearchOCRReportsCachedProviderResults(t *testing.T) {
+	client := &ChatGptClient{OCRCacheProvider: func(_ context.Context, _, _, _ string, _ []byte) (string, bool, error) {
+		return "缓存的识别结构", true, nil
+	}}
+	text, calls := client.runAISearchImageOCR(context.Background(), []downloadedAISearchAttachment{{
+		sourceURL:   "https://example.com/image.png",
+		imageName:   "image.png",
+		contentType: "image/png",
+		body:        []byte("png"),
+	}})
+	if !strings.Contains(text, "缓存的识别结构") {
+		t.Fatalf("cached OCR text was not added to prompt: %q", text)
+	}
+	if len(calls) != 1 || calls[0].Status != "success" || !calls[0].Cached {
+		t.Fatalf("cached OCR usage was not marked as cached: %+v", calls)
+	}
+}
+
 func makeBMPImage(width, height int) []byte {
 	rowSize := (width*3 + 3) &^ 3
 	dataSize := rowSize * height
