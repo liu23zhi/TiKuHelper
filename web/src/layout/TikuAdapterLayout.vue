@@ -22,7 +22,8 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import PageHeader from '../components/PageHeader'
 import SiderMenu from '../components/SiderMenu'
 import { useRouter } from 'vue-router';
-import { getStoredCurrentUser, isAdminUser, resolveHomePath } from '../utils/currentUser'
+import { getCurrentSessionRevision, getStoredCurrentUser, isAdminUser, resolveHomePath } from '../utils/currentUser'
+import { checkUserSession } from '../api/TikuComponentApi'
 
 export default {
   name: 'AdapterLayout',
@@ -41,11 +42,43 @@ export default {
       compact.value = event.matches
       siderCollapsed.value = event.matches
     }
+    let sessionTimer = null
+    let sessionRequest = null
+    let sessionChecksStopped = false
+    const stopSessionChecks = () => {
+      sessionChecksStopped = true
+      if (sessionTimer !== null) window.clearInterval(sessionTimer)
+      sessionTimer = null
+      window.removeEventListener('focus', checkSession)
+      document.removeEventListener('visibilitychange', checkSession)
+      sessionRequest?.abort()
+    }
+    const checkSession = async () => {
+      if (sessionChecksStopped || sessionRequest || document.visibilityState === 'hidden' || !getStoredCurrentUser()) return
+      const controller = new AbortController()
+      const revision = getCurrentSessionRevision()
+      sessionRequest = controller
+      try {
+        const response = await checkUserSession(controller.signal)
+        if ((response?.status === 401 || response?.status === 403) && revision === getCurrentSessionRevision()) stopSessionChecks()
+      } catch {
+        // Temporary network failures are retried by the next heartbeat.
+      } finally {
+        if (sessionRequest === controller) sessionRequest = null
+      }
+    }
     onMounted(() => {
       if (compactViewport?.addEventListener) compactViewport.addEventListener('change', syncSiderToViewport)
       else compactViewport?.addListener?.(syncSiderToViewport)
+      if (currentUser.value) {
+        sessionTimer = window.setInterval(checkSession, 30_000)
+        window.addEventListener('focus', checkSession)
+        document.addEventListener('visibilitychange', checkSession)
+        void checkSession()
+      }
     })
     onBeforeUnmount(() => {
+      stopSessionChecks()
       if (compactViewport?.removeEventListener) compactViewport.removeEventListener('change', syncSiderToViewport)
       else compactViewport?.removeListener?.(syncSiderToViewport)
     })

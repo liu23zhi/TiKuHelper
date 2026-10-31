@@ -467,6 +467,52 @@ func TestUserLoginStoresLastLoginMetadata(t *testing.T) {
 	}
 }
 
+func TestUserLoginReplacesPreviousDeviceSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	if err := db.Create(&entity.User{ID: 68, Username: "single-device-login", Password: "123456", Status: "enabled", Role: "user", RegisterSource: "public"}).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	originalConsume := consumeCaptchaTokenWithDB
+	t.Cleanup(func() { consumeCaptchaTokenWithDB = originalConsume })
+	consumeCaptchaTokenWithDB = func(string, string, string) error { return nil }
+	login := func() string {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/login", bytes.NewBufferString(`{"username":"single-device-login","password":"123456","captchaToken":"token"}`))
+		request.Header.Set("Content-Type", "application/json")
+		ctx.Request = request
+		UserLogin(ctx)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("login status = %d, body = %s", recorder.Code, recorder.Body.String())
+		}
+		var response struct {
+			JWT string `json:"jwt"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || response.JWT == "" {
+			t.Fatalf("login response token: %s", recorder.Body.String())
+		}
+		return response.JWT
+	}
+	oldToken := login()
+	currentToken := login()
+	authenticate := func(token string) int {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		request := httptest.NewRequest(http.MethodGet, "/adapter-service/user/info", nil)
+		request.Header.Set("Authorization", token)
+		ctx.Request = request
+		Auth(ctx)
+		return recorder.Code
+	}
+	if got := authenticate(oldToken); got != http.StatusUnauthorized {
+		t.Fatalf("old device status = %d, want 401", got)
+	}
+	if got := authenticate(currentToken); got != http.StatusOK {
+		t.Fatalf("new device status = %d, want 200", got)
+	}
+}
+
 func TestUserLoginRejectsPasswordOverBcryptLimit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newUserControllerTestDB(t)
@@ -562,6 +608,35 @@ func TestAuthRejectsTokenAfterPasswordChange(t *testing.T) {
 
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("expected status 401 after password change, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestAuthRejectsPreviousLoginSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserControllerTestDB(t)
+	if err := db.Create(&entity.User{ID: 90, Username: "single-session-user", Password: "password", Status: "enabled", Role: "user", RegisterSource: "public", LoginSessionID: "current-session"}).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	oldToken := util.GenerateJwtForUserSession(90, "password", "old-session")
+	currentToken := util.GenerateJwtForUserSession(90, "password", "current-session")
+
+	authenticate := func(token string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		request := httptest.NewRequest(http.MethodGet, "/adapter-service/user/info", nil)
+		request.Header.Set("Authorization", token)
+		ctx.Request = request
+		Auth(ctx)
+		return recorder
+	}
+	if recorder := authenticate(oldToken); recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("old session status = %d, want 401", recorder.Code)
+	}
+	if recorder := authenticate(util.GenerateJwtForUser(90, "password")); recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("legacy token after new login status = %d, want 401", recorder.Code)
+	}
+	if recorder := authenticate(currentToken); recorder.Code != http.StatusOK {
+		t.Fatalf("current session status = %d, want 200", recorder.Code)
 	}
 }
 

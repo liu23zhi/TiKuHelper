@@ -88,16 +88,20 @@ func CheckWechatLoginStatus(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "微信登录未开启或配置未完成"})
 		return
 	}
+	bindOnly := strings.EqualFold(strings.TrimSpace(c.Query("purpose")), "bind")
 	result, err := checkWechatLoginStatusWithDB(service.WechatLoginStatusInput{
 		Client:     buildWechatLoginClientFromSettings(settings),
 		LoginToken: strings.TrimSpace(c.Query("loginToken")),
 		RequestIP:  strings.TrimSpace(c.ClientIP()),
+		BindOnly:   bindOnly,
 	})
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
-	if strings.TrimSpace(result.JWT) != "" && !strings.EqualFold(strings.TrimSpace(c.Query("purpose")), "bind") {
+	if bindOnly {
+		result.JWT = ""
+	} else if strings.TrimSpace(result.JWT) != "" {
 		setAuthCookie(c, result.JWT)
 	}
 	c.JSON(http.StatusOK, result)

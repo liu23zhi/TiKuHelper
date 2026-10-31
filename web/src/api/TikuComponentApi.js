@@ -16,6 +16,16 @@ export function logout() {
   });
 }
 
+export function checkUserSession(signal) {
+  return request({
+    url: '/adapter-service/user/session',
+    method: 'get',
+    timeout: 10_000,
+    retryPolicy: 'single',
+    signal,
+  })
+}
+
 export function registerUser(data) {
   return request({
     url: `/adapter-service/user/register`,

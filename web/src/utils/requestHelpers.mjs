@@ -22,6 +22,9 @@ export function buildAuthFailureHandling(response) {
   }
 
   const message = trimText(response?.data?.message);
+  if (response?.status === 401 && message === '账号已在其他设备登录，请重新登录') {
+    return { shouldLogout: true, userMessage: message };
+  }
   if (message.includes('人机验证') || message.includes('图形验证码')) {
     return {
       shouldLogout: false,

@@ -76,8 +76,15 @@ func GenerateJwt(id int32) string {
 // GenerateJwtForUser binds the token to the current password hash so password
 // changes and resets invalidate previously issued sessions.
 func GenerateJwtForUser(id int32, passwordHash string) string {
+	return GenerateJwtForUserSession(id, passwordHash, "")
+}
+
+// GenerateJwtForUserSession also binds the token to the user's current login
+// session. A new login replaces this value and invalidates tokens from older
+// devices without changing the user's password.
+func GenerateJwtForUserSession(id int32, passwordHash, sessionID string) string {
 	now := time.Now()
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+	claims := jwt.MapClaims{
 		"sub": strconv.Itoa(int(id)),
 		"ver": credentialVersion(passwordHash),
 		"iss": JWTIssuer,
@@ -86,7 +93,11 @@ func GenerateJwtForUser(id int32, passwordHash string) string {
 		"nbf": now.Unix(),
 		"exp": now.Add(JWTTTL).Unix(),
 		"jti": randomToken(16),
-	})
+	}
+	if sessionID = strings.TrimSpace(sessionID); sessionID != "" {
+		claims["sid"] = sessionID
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	jwtStr, err := token.SignedString(jwtKey)
 	if err != nil {
 		logger.SysLog(err.Error())

@@ -14,6 +14,7 @@ func TestSetAPIRouterRegistersTicketRoutes(t *testing.T) {
 	router := gin.New()
 	SetAPIRouter(router)
 	want := map[string]bool{
+		"GET /adapter-service/user/session":                                     false,
 		"GET /adapter-service/tickets":                                          false,
 		"POST /adapter-service/tickets":                                         false,
 		"GET /adapter-service/tickets/config":                                   false,

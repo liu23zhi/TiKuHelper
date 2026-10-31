@@ -1,6 +1,10 @@
 package util
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/golang-jwt/jwt/v5"
+)
 
 func TestConfigureJWTUsesExplicitSecret(t *testing.T) {
 	if err := ConfigureJWT("fixed-secret-0123456789abcdef-0123456789"); err != nil {
@@ -74,5 +78,17 @@ func TestGenerateJWTSecretProducesValidSecret(t *testing.T) {
 	}
 	if err := ValidateJWTSecret(secret); err != nil {
 		t.Fatalf("generated jwt secret should be valid: %v", err)
+	}
+}
+
+func TestGenerateJwtForUserSessionIncludesSessionID(t *testing.T) {
+	token := GenerateJwtForUserSession(42, "password-hash", "session-2")
+	claims, err := ParseJwtWithClaims(token)
+	if err != nil {
+		t.Fatalf("parse token: %v", err)
+	}
+	mapClaims, ok := claims.(jwt.MapClaims)
+	if !ok || mapClaims["sid"] != "session-2" {
+		t.Fatalf("session claim = %#v", mapClaims["sid"])
 	}
 }

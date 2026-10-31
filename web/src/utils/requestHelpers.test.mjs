@@ -43,6 +43,16 @@ test('buildAuthFailureHandling logs out for expired login responses', () => {
   });
 });
 
+test('buildAuthFailureHandling explains when another device replaced the session', () => {
+  assert.deepEqual(buildAuthFailureHandling({
+    status: 401,
+    data: { message: '账号已在其他设备登录，请重新登录' },
+  }), {
+    shouldLogout: true,
+    userMessage: '账号已在其他设备登录，请重新登录',
+  });
+});
+
 test('buildResponsePayload prefers backend detail when present', () => {
   assert.deepEqual(buildResponsePayload({
     status: 401,

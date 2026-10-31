@@ -59,6 +59,7 @@ type WechatLoginStatusInput struct {
 	SessionStore *WechatLoginSessionStore
 	LoginToken   string
 	RequestIP    string
+	BindOnly     bool
 }
 
 type WechatCodeLoginInput struct {
@@ -340,7 +341,7 @@ func CheckWechatLoginStatusWithDB(db *gorm.DB, input WechatLoginStatusInput) (We
 	if err != nil {
 		return WechatLoginStatusResult{}, err
 	}
-	if session.completedResult != nil {
+	if session.completedResult != nil && !input.BindOnly {
 		return *session.completedResult, nil
 	}
 	upstream, err := fetchWechatUpstreamStatus(input.Client, input.LoginToken)
@@ -355,6 +356,9 @@ func CheckWechatLoginStatusWithDB(db *gorm.DB, input WechatLoginStatusInput) (We
 	case WechatLoginStatusExpired:
 		return WechatLoginStatusResult{Status: WechatLoginStatusExpired, Message: upstream.Message}, nil
 	case WechatLoginStatusSuccess:
+		if input.BindOnly {
+			return resolveWechatStatusResultByID(db, input.Store, upstream.WechatID, input.RequestIP, true)
+		}
 		return sessionStore.completeLogin(input.LoginToken, func() (WechatLoginStatusResult, error) {
 			return resolveWechatLoginResultByID(db, input.Store, upstream.WechatID, input.RequestIP)
 		})
@@ -487,6 +491,10 @@ func LoginWechatByCodeWithDB(db *gorm.DB, input WechatCodeLoginInput) (WechatLog
 }
 
 func resolveWechatLoginResultByID(db *gorm.DB, store *WechatBindTokenStore, wechatID string, requestIP string) (WechatLoginStatusResult, error) {
+	return resolveWechatStatusResultByID(db, store, wechatID, requestIP, false)
+}
+
+func resolveWechatStatusResultByID(db *gorm.DB, store *WechatBindTokenStore, wechatID string, requestIP string, bindOnly bool) (WechatLoginStatusResult, error) {
 	wechatID = strings.TrimSpace(wechatID)
 	if wechatID == "" {
 		return WechatLoginStatusResult{}, fmt.Errorf("微信用户 ID 为空")
@@ -495,6 +503,9 @@ func resolveWechatLoginResultByID(db *gorm.DB, store *WechatBindTokenStore, wech
 	if err := db.Where("wechat_id = ?", wechatID).First(&user).Error; err == nil {
 		if !isServiceUserEnabled(&user) {
 			return WechatLoginStatusResult{}, fmt.Errorf("用户已被禁用")
+		}
+		if bindOnly {
+			return WechatLoginStatusResult{Status: WechatLoginStatusSuccess}, nil
 		}
 		jwt, err := issueWechatJWTWithDB(db, &user, requestIP)
 		if err != nil {
@@ -793,20 +804,11 @@ func downloadWechatQRCodeImage(client *http.Client, imageURL string) (string, er
 }
 
 func issueWechatJWTWithDB(db *gorm.DB, user *entity.User, requestIP string) (string, error) {
-	jwt := util.GenerateJwtForUser(user.ID, user.Password)
-	if jwt == "" {
-		return "", fmt.Errorf("jwt生成失败")
-	}
-	now := time.Now()
-	clientIP := strings.TrimSpace(requestIP)
-	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Updates(map[string]any{
-		"last_login_at": now,
-		"last_login_ip": clientIP,
-	}).Error; err != nil {
+	token, err := IssueUserLoginJWTWithDB(db, user, requestIP, "")
+	if err != nil {
 		return "", fmt.Errorf("登录信息更新失败")
 	}
-	user.LastLoginAt = &now
-	user.LastLoginIP = clientIP
+	clientIP := strings.TrimSpace(requestIP)
 	if err := WriteAccountAuditWithDB(db, AccountAuditEvent{
 		UserID: user.ID, Username: user.Username, Module: "auth", Action: 10,
 		Description: "微信登录成功", ClientIP: clientIP,
@@ -815,7 +817,7 @@ func issueWechatJWTWithDB(db *gorm.DB, user *entity.User, requestIP string) (str
 	}); err != nil {
 		logger.SysError("微信登录成功，但操作日志写入失败")
 	}
-	return jwt, nil
+	return token, nil
 }
 
 func isServiceUserEnabled(user *entity.User) bool {

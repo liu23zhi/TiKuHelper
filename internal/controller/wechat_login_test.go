@@ -109,7 +109,10 @@ func TestCheckWechatLoginStatusControllerBindPurposeDoesNotSetAuthCookie(t *test
 			WechatAPIBearerToken:   "token",
 		}, nil
 	}
-	checkWechatLoginStatusWithDB = func(service.WechatLoginStatusInput) (service.WechatLoginStatusResult, error) {
+	checkWechatLoginStatusWithDB = func(input service.WechatLoginStatusInput) (service.WechatLoginStatusResult, error) {
+		if !input.BindOnly {
+			t.Fatal("binding status must use the non-login service path")
+		}
 		return service.WechatLoginStatusResult{Status: service.WechatLoginStatusSuccess, JWT: "jwt-other-user"}, nil
 	}
 
@@ -124,6 +127,9 @@ func TestCheckWechatLoginStatusControllerBindPurposeDoesNotSetAuthCookie(t *test
 	}
 	if cookie := recorder.Header().Get("Set-Cookie"); strings.Contains(cookie, authCookieName) {
 		t.Fatalf("binding status must not set auth cookie, got %q", cookie)
+	}
+	if strings.Contains(recorder.Body.String(), "jwt-other-user") {
+		t.Fatalf("binding status must not return login credentials: %s", recorder.Body.String())
 	}
 }
 

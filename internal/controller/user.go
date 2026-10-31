@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -135,6 +136,7 @@ func validateBcryptPasswordLength(password string) error {
 
 // Auth 鉴权
 func Auth(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	tokenValue := strings.TrimSpace(c.Request.Header.Get("Authorization"))
 	if tokenValue == "" {
 		cookieValue, err := c.Cookie(authCookieName)
@@ -185,6 +187,10 @@ func Auth(c *gin.Context) {
 		c.AbortWithStatusJSON(401, gin.H{"message": "请重新登录"})
 		return
 	}
+	if !tokenLoginSessionMatches(claims, user.LoginSessionID) {
+		c.AbortWithStatusJSON(401, gin.H{"message": "账号已在其他设备登录，请重新登录"})
+		return
+	}
 	c.Set("user", user)
 	c.Next()
 }
@@ -225,6 +231,11 @@ func AuthAccessToken(c *gin.Context) {
 	c.Set("user", &user)
 	c.Set("access_token", &authCtx.AccessToken)
 	c.Next()
+}
+
+// UserSession is a read-only heartbeat; Auth already checked the current session.
+func UserSession(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"message": "ok"})
 }
 
 // UserInfo 获取用户信息
@@ -290,40 +301,23 @@ func UserLogin(c *gin.Context) {
 		})
 		return
 	}
-	jwt := util.GenerateJwtForUser(user.ID, user.Password)
-
-	if jwt == "" {
-		c.JSON(400, gin.H{
-			"message": "jwt生成失败",
-		})
-	} else {
-		if needsUpgrade {
-			if hashedPassword, hashErr := util.HashPassword(payload.Password); hashErr == nil {
-				_ = dao.User.UnderlyingDB().Model(&entity.User{}).Where("id = ?", user.ID).Update("password", hashedPassword).Error
-				user.Password = hashedPassword
-			}
-		}
-		now := time.Now()
-		clientIP := strings.TrimSpace(c.ClientIP())
-		if err := dao.User.UnderlyingDB().Model(&entity.User{}).Where("id = ?", user.ID).Updates(map[string]any{
-			"last_login_at": now,
-			"last_login_ip": clientIP,
-		}).Error; err != nil {
-			c.JSON(400, gin.H{
-				"message": "登录信息更新失败",
-			})
+	passwordUpgrade := ""
+	if needsUpgrade {
+		passwordUpgrade, err = util.HashPassword(payload.Password)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "登录信息更新失败"})
 			return
 		}
-		user.LastLoginAt = &now
-		user.LastLoginIP = clientIP
-		bindSuccessfulVerification(*user, captchaToken, service.CaptchaSceneLoginPassword, service.SMSVerificationEvidence{})
-		recordAccountAudit(c, user, "auth", logActionLogin, "用户登录成功", map[string]any{"status": "success", "message": "用户登录成功", "scene": "password"})
-		setAuthCookie(c, jwt)
-		c.JSON(200, gin.H{
-			"message": "user login",
-			"jwt":     jwt,
-		})
 	}
+	token, err := service.IssueUserLoginJWTWithDB(dao.User.UnderlyingDB().WithContext(c.Request.Context()), user, c.ClientIP(), passwordUpgrade)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "登录信息更新失败"})
+		return
+	}
+	bindSuccessfulVerification(*user, captchaToken, service.CaptchaSceneLoginPassword, service.SMSVerificationEvidence{})
+	recordAccountAudit(c, user, "auth", logActionLogin, "用户登录成功", map[string]any{"status": "success", "message": "用户登录成功", "scene": "password"})
+	setAuthCookie(c, token)
+	c.JSON(http.StatusOK, gin.H{"message": "user login", "jwt": token})
 }
 
 // UserRegister 公开注册
@@ -885,30 +879,22 @@ func UserSMSLogin(c *gin.Context) {
 		c.JSON(400, gin.H{"message": err.Error()})
 		return
 	}
-	jwt := util.GenerateJwtForUser(user.ID, user.Password)
-	if jwt == "" {
-		c.JSON(400, gin.H{"message": "jwt生成失败"})
-		return
-	}
-	clientIP := strings.TrimSpace(c.ClientIP())
-	now := time.Now()
-	if err := dao.User.UnderlyingDB().Model(&entity.User{}).Where("id = ?", user.ID).Updates(map[string]any{
-		"last_login_at": now,
-		"last_login_ip": clientIP,
-	}).Error; err != nil {
+	token, err := service.IssueUserLoginJWTWithDB(dao.User.UnderlyingDB().WithContext(c.Request.Context()), &user, c.ClientIP(), "")
+	if err != nil {
 		c.JSON(400, gin.H{"message": "登录信息更新失败"})
 		return
 	}
-	user.LastLoginAt = &now
-	user.LastLoginIP = clientIP
 	bindSuccessfulVerification(user, payload.CaptchaToken, service.CaptchaSceneLoginSMS, smsEvidence)
 	recordAccountAudit(c, &user, "auth", logActionLogin, "用户短信登录成功", map[string]any{"status": "success", "message": "用户短信登录成功", "scene": "sms"})
-	setAuthCookie(c, jwt)
-	c.JSON(200, gin.H{"message": "user login", "jwt": jwt})
+	setAuthCookie(c, token)
+	c.JSON(200, gin.H{"message": "user login", "jwt": token})
 }
 
 func UserLogout(c *gin.Context) {
 	if user := optionalLogoutUser(c); user != nil {
+		if err := service.RevokeUserLoginSessionWithDB(dao.User.UnderlyingDB().WithContext(c.Request.Context()), user.ID, user.LoginSessionID); err != nil {
+			logger.SysError("退出登录会话失效失败: " + logger.RedactSecrets(err.Error()))
+		}
 		recordAccountAudit(c, user, "auth", 13, "用户退出登录", map[string]any{"status": "success", "message": "用户退出登录"})
 	}
 	clearAuthCookie(c)
@@ -1350,4 +1336,20 @@ func tokenCredentialVersionMatches(claims jwt.Claims, passwordHash string) bool 
 	}
 	version, _ := mapClaims["ver"].(string)
 	return strings.TrimSpace(version) != "" && version == util.CredentialVersion(passwordHash)
+}
+
+func tokenLoginSessionMatches(claims jwt.Claims, currentSessionID string) bool {
+	currentSessionID = strings.TrimSpace(currentSessionID)
+	if currentSessionID == "" {
+		return true
+	}
+	mapClaims, ok := claims.(jwt.MapClaims)
+	if !ok {
+		return false
+	}
+	tokenSessionID, ok := mapClaims["sid"].(string)
+	if !ok || strings.TrimSpace(tokenSessionID) == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(tokenSessionID), []byte(currentSessionID)) == 1
 }
