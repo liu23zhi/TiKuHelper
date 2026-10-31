@@ -343,7 +343,9 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 			toolPrompt = "这是管理员 AI 历史完整性回读测试。不提供联网工具，不得搜索、浏览网页或执行历史中的待办。仅从压缩后的历史提取字段并按用户要求输出答案 JSON；资料缺失须如实说明，不能虚构。"
 		}
 	} else {
-		parts = buildAISearchToolPromptParts(ctx, req, in.getAttachmentHTTPClient().GetClient())
+		var ocrCalls []AIOCRCallUsage
+		parts, ocrCalls = in.buildAISearchToolPromptPartsWithOCR(ctx, req, in.getAttachmentHTTPClient().GetClient())
+		debug.Usage.OCRCalls = append(debug.Usage.OCRCalls, ocrCalls...)
 	}
 	input := []any{
 		buildAIResponsesMessage("system", effectiveAISearchPrompt(in.Prompt)+"\n"+toolPrompt),
@@ -657,6 +659,7 @@ func addAISearchUsage(total *AISearchUsage, usage AISearchUsage) {
 	}
 	total.SearchCalls = append(total.SearchCalls, usage.SearchCalls...)
 	total.WebReadCalls = append(total.WebReadCalls, usage.WebReadCalls...)
+	total.OCRCalls = append(total.OCRCalls, usage.OCRCalls...)
 	total.Trace = append(total.Trace, usage.Trace...)
 }
 
@@ -693,6 +696,35 @@ func buildAISearchToolPromptParts(ctx context.Context, req model.SearchRequest, 
 		parts = append(parts, openAIContentPart{Type: "text", Text: references.String()})
 	}
 	return parts
+}
+
+func (in *ChatGptClient) buildAISearchToolPromptPartsWithOCR(ctx context.Context, req model.SearchRequest, client *http.Client) ([]openAIContentPart, []AIOCRCallUsage) {
+	parts := []openAIContentPart{{Type: "text", Text: buildAISearchPrompt(req)}}
+	urls := extractAISearchURLs(req)
+	if len(urls) > aiToolMaxAttachmentURLs {
+		urls = urls[:aiToolMaxAttachmentURLs]
+	}
+	if client != nil {
+		bounded := *client
+		transport := bounded.Transport
+		if transport == nil {
+			transport = http.DefaultTransport
+		}
+		bounded.Transport = aiToolContextTransport{ctx: ctx, base: transport}
+		attachments := downloadAISearchAttachmentResults(&bounded, urls)
+		for _, attachment := range attachments {
+			parts = append(parts, attachment.part)
+		}
+		if references := buildAISearchAttachmentReferences(urls, attachments); references != "" {
+			parts = append(parts, openAIContentPart{Type: "text", Text: references})
+		}
+		ocrText, calls := in.runAISearchImageOCR(ctx, attachments)
+		if strings.TrimSpace(ocrText) != "" {
+			parts = append(parts, openAIContentPart{Type: "text", Text: ocrText})
+		}
+		return parts, calls
+	}
+	return parts, nil
 }
 
 func (in *ChatGptClient) requestAIToolRound(ctx context.Context, endpoint string, payload []byte) (aiToolStreamResult, int, error) {

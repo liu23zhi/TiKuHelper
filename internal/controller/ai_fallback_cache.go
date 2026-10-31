@@ -90,6 +90,9 @@ func cloneAIFallbackResult(source service.AIFallbackResult) service.AIFallbackRe
 	if source.Usage.WebReadCalls != nil {
 		cloned.Usage.WebReadCalls = append([]internalsearch.AIWebReadCallUsage(nil), source.Usage.WebReadCalls...)
 	}
+	if source.Usage.OCRCalls != nil {
+		cloned.Usage.OCRCalls = append([]internalsearch.AIOCRCallUsage(nil), source.Usage.OCRCalls...)
+	}
 	return cloned
 }
 

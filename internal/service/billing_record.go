@@ -557,6 +557,8 @@ func decorateBillingRecord(record BillingRecordListItem) BillingRecordListItem {
 		record.ProviderLabel = "联网搜索"
 	case "web_read":
 		record.ProviderLabel = "网页浏览"
+	case "ai_ocr":
+		record.ProviderLabel = "图片 OCR"
 	}
 	if strings.TrimSpace(record.Provider) == "system" {
 		record.ProviderLabel = "系统赠送"
@@ -604,6 +606,9 @@ func buildBillingRecordFeeDetails(record BillingRecordListItem) []BillingRecordF
 	case "web_read":
 		category = "网页转Markdown"
 		callIndex = parseBillingSnapshotInt(snapshot, "webReadCall")
+	case "ai_ocr":
+		category = "图片 OCR"
+		callIndex = parseBillingSnapshotInt(snapshot, "ocrCall")
 	case "ai":
 		category = "AI模型调用"
 	}
@@ -700,7 +705,7 @@ func parseBillingSnapshotInt(snapshot string, key string) int {
 }
 
 func buildBillingRecordFeeDetail(provider string, snapshot string) string {
-	if strings.TrimSpace(provider) != "ai_search" && strings.TrimSpace(provider) != "web_read" {
+	if strings.TrimSpace(provider) != "ai_search" && strings.TrimSpace(provider) != "web_read" && strings.TrimSpace(provider) != "ai_ocr" {
 		return ""
 	}
 	parts := make([]string, 0, 7)
@@ -718,13 +723,20 @@ func buildBillingRecordFeeDetail(provider string, snapshot string) string {
 		appendField("来源", "searchSources")
 		appendField("耗时", "searchDurationMs")
 		appendField("错误", "searchError")
-	} else {
+	} else if strings.TrimSpace(provider) == "web_read" {
 		appendField("API", "webReadAPI")
 		appendField("网页", "webReadURL")
 		appendField("状态", "webReadStatus")
 		appendField("Markdown字节", "webReadMarkdownBytes")
 		appendField("耗时", "webReadDurationMs")
 		appendField("错误", "webReadError")
+	} else {
+		appendField("API", "ocrAPI")
+		appendField("图片", "ocrImageURL")
+		appendField("状态", "ocrStatus")
+		appendField("文字字符数", "ocrTextChars")
+		appendField("耗时", "ocrDurationMs")
+		appendField("错误", "ocrError")
 	}
 	if len(parts) == 0 {
 		return ""
@@ -890,7 +902,7 @@ func applyBillingFeeSequenceFallback(details []BillingRecordFeeDetail) {
 		switch {
 		case details[index].Provider == "ai" || details[index].Category == "AI模型调用":
 			details[index].Sequence = details[index].CallIndex * 2
-		case details[index].Provider == "ai_search" || details[index].Provider == "web_read":
+		case details[index].Provider == "ai_search" || details[index].Provider == "web_read" || details[index].Provider == "ai_ocr":
 			details[index].Sequence = details[index].CallIndex*2 + 1
 		}
 	}

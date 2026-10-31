@@ -135,6 +135,9 @@ export function buildAISearchConfigSavePayload(formState, baseUrl) {
     searchPricePerCall: Number(formState?.searchPricePerCall || 0),
     maxAIWebReads: positiveCount(formState?.maxAIWebReads, 5, '网页读取次数'),
     webReadPricePerCall: Number(formState?.webReadPricePerCall || 0),
+    ...(Object.prototype.hasOwnProperty.call(formState || {}, 'imageOCRPricePerCall')
+      ? { imageOCRPricePerCall: Number(formState?.imageOCRPricePerCall || 0) }
+      : {}),
     enableAIStagedTokenBilling: !!formState?.enableAIStagedTokenBilling,
     smoothAIStagedTokenMultiplier: !!formState?.smoothAIStagedTokenMultiplier,
     ...(hasStagedPoints ? { stagedTokenMultiplierPoints: normalizeStagedTokenMultiplierPoints(formState?.stagedTokenMultiplierPoints) } : {}),

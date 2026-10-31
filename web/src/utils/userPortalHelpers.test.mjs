@@ -347,7 +347,7 @@ test('legacy web read detail retains query parameters and escapes URL text', () 
   assert.match(html, /网页：<\/span>\s*<span class="billing-fee-meta-value">https:\/\/example\.com\/read\?key=value&amp;next=%3Cscript%3E<\/span>/)
 })
 
-test('billing fee item labels distinguish model calls, internet search and browsing', () => {
+test('billing fee item labels distinguish model calls, internet search, browsing and OCR', () => {
   const html = buildBillingRecordFeeDetailHtml({
     direction: 'expense',
     amount: 0.03,
@@ -355,11 +355,31 @@ test('billing fee item labels distinguish model calls, internet search and brows
       { provider: 'ai', category: 'AI模型调用', callIndex: 1, amount: 0.01 },
       { provider: 'ai_search', category: '联网搜索', callIndex: 1, amount: 0.01 },
       { provider: 'web_read', category: '网页转Markdown', callIndex: 1, amount: 0.01 },
+      { provider: 'ai_ocr', category: '图片 OCR', callIndex: 1, amount: 0 },
     ],
   })
   assert.match(html, />AI 模型调用 第1次</)
   assert.match(html, />联网搜索</)
   assert.match(html, />浏览网页 第1次</)
+  assert.match(html, />图片 OCR 第1次</)
+})
+
+test('billing OCR fee metadata keeps the image URL and recognized character count', () => {
+  const html = buildBillingRecordFeeDetailHtml({
+    direction: 'expense',
+    amount: 0,
+    feeDetails: [{
+      provider: 'ai_ocr',
+      category: '图片 OCR',
+      callIndex: 1,
+      amount: 0,
+      detail: '图片：https://images.example/question.webp；文字字符数：42；状态：success',
+    }],
+  })
+  assert.match(html, />图片 OCR 第1次</)
+  assert.match(html, /图片：<\/span>\s*<span class="billing-fee-meta-value">https:\/\/images\.example\/question\.webp<\/span>/)
+  assert.match(html, /文字字符数：<\/span>\s*<span class="billing-fee-meta-value">42<\/span>/)
+  assert.match(html, /-¥ 0/)
 })
 
 test('billing record fee details render friendly AI search and model call labels', () => {

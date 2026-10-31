@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -30,6 +31,9 @@ import (
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/model"
 	"github.com/itihey/tikuAdapter/pkg/util"
+	_ "golang.org/x/image/bmp"
+	_ "golang.org/x/image/tiff"
+	_ "golang.org/x/image/webp"
 )
 
 // ChatGptClient AI 搜题客户端
@@ -51,6 +55,10 @@ type ChatGptClient struct {
 	// model round, including the initial request. Zero uses the default.
 	MaxAISearchRetries int
 	ContextCompression AIContextCompressionConfig
+	// OCRProvider receives server-downloaded image bytes as an auxiliary signal;
+	// the original visual image remains in the model request.
+	OCRProvider AIImageOCRProvider
+	OCRAPI      string
 }
 
 type AISearchUsage struct {
@@ -66,7 +74,21 @@ type AISearchUsage struct {
 	ModelCalls        []AIModelCallUsage   `json:"modelCalls,omitempty"`
 	SearchCalls       []AISearchCallUsage  `json:"searchCalls,omitempty"`
 	WebReadCalls      []AIWebReadCallUsage `json:"webReadCalls,omitempty"`
+	OCRCalls          []AIOCRCallUsage     `json:"ocrCalls,omitempty"`
 	Trace             []AISearchTrace      `json:"trace,omitempty"`
+}
+
+// AIImageOCRProvider uploads bytes downloaded by the server. Implementations
+// must not pass sourceURL to the OCR service as a remote URL.
+type AIImageOCRProvider func(ctx context.Context, sourceURL, imageName, contentType string, image []byte) (string, error)
+
+type AIOCRCallUsage struct {
+	API        string `json:"api"`
+	ImageURL   string `json:"imageUrl"`
+	Status     string `json:"status"`
+	DurationMs int64  `json:"durationMs"`
+	TextChars  int    `json:"textChars,omitempty"`
+	Error      string `json:"error,omitempty"`
 }
 
 const (
@@ -550,11 +572,12 @@ func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]
 	}
 
 	systemPrompt := effectiveAISearchPrompt(in.Prompt)
-	userPromptParts := buildAISearchPromptParts(req, in.getAttachmentHTTPClient().GetClient())
+	userPromptParts, ocrCalls := in.buildAISearchPromptPartsWithOCR(ctx, req, in.getAttachmentHTTPClient().GetClient())
 	endpoints := buildAIResponsesEndpoints(baseURL)
 	maxModelCalls, _, _ := in.aiSearchBudgets()
 	modelCalls := 0
 	content, usage, _, endpoint, requestBody, rawResponse, callErr := in.requestStreamAnswerDetailed(ctx, endpoints, systemPrompt, userPromptParts, &modelCalls, maxModelCalls)
+	usage.OCRCalls = append(usage.OCRCalls, ocrCalls...)
 	debug = AISearchDebugResult{
 		Endpoint:    endpoint,
 		RequestBody: requestBody,
@@ -605,11 +628,12 @@ func (in *ChatGptClient) SearchAnswerWithUsage(req model.SearchRequest) (answer 
 	}
 
 	systemPrompt := effectiveAISearchPrompt(in.Prompt)
-	userPromptParts := buildAISearchPromptParts(req, in.getAttachmentHTTPClient().GetClient())
+	userPromptParts, ocrCalls := in.buildAISearchPromptPartsWithOCR(ctx, req, in.getAttachmentHTTPClient().GetClient())
 	endpoints := buildAIResponsesEndpoints(baseURL)
 	maxModelCalls, _, _ := in.aiSearchBudgets()
 	modelCalls := 0
 	content, streamUsage, _, _, _, _, callErr := in.requestStreamAnswerDetailed(ctx, endpoints, systemPrompt, userPromptParts, &modelCalls, maxModelCalls)
+	streamUsage.OCRCalls = append(streamUsage.OCRCalls, ocrCalls...)
 	streamUsage.Route = AISearchRouteNormal
 	if callErr != nil {
 		return nil, streamUsage, callErr
@@ -731,6 +755,135 @@ func buildAISearchPromptParts(req model.SearchRequest, httpClient *http.Client) 
 	return parts
 }
 
+func (in *ChatGptClient) buildAISearchPromptPartsWithOCR(ctx context.Context, req model.SearchRequest, httpClient *http.Client) ([]openAIContentPart, []AIOCRCallUsage) {
+	parts := []openAIContentPart{{Type: "text", Text: buildAISearchPrompt(req)}}
+	urls := extractAISearchURLs(req)
+	attachments := downloadAISearchAttachmentResults(httpClient, urls)
+	for _, attachment := range attachments {
+		parts = append(parts, attachment.part)
+	}
+	if references := buildAISearchAttachmentReferences(urls, attachments); references != "" {
+		parts = append(parts, openAIContentPart{Type: "text", Text: references})
+	}
+	ocrText, calls := in.runAISearchImageOCR(ctx, attachments)
+	if strings.TrimSpace(ocrText) != "" {
+		parts = append(parts, openAIContentPart{Type: "text", Text: ocrText})
+	}
+	return parts, calls
+}
+
+type downloadedAISearchAttachment struct {
+	sourceIndex int
+	sourceURL   string
+	imageName   string
+	contentType string
+	body        []byte
+	part        openAIContentPart
+}
+
+// buildAISearchAttachmentReferences keeps original image numbers even when
+// one or more downloads fail. The model still receives the text question and
+// every successful image, so a partial download never turns into a hard
+// no-answer path or silently remaps option C to option B.
+func buildAISearchAttachmentReferences(urls []string, attachments []downloadedAISearchAttachment) string {
+	if len(urls) == 0 {
+		return ""
+	}
+	byURL := make(map[string]downloadedAISearchAttachment, len(attachments))
+	for index, attachment := range attachments {
+		if strings.TrimSpace(attachment.sourceURL) == "" {
+			continue
+		}
+		if attachment.sourceIndex <= 0 {
+			attachment.sourceIndex = index + 1
+		}
+		byURL[attachment.sourceURL] = attachment
+	}
+	var references strings.Builder
+	references.WriteString("图片对应关系（视觉图片按成功下载顺序提供，图号沿用原题顺序；缺失图片不应阻止作答）：")
+	missing := 0
+	for index, address := range urls {
+		if _, ok := byURL[address]; ok {
+			fmt.Fprintf(&references, "\n图%s为：%s", formatAISearchImageIndex(index+1), address)
+			continue
+		}
+		missing++
+		fmt.Fprintf(&references, "\n图%s下载失败：%s（请结合题干和其他可见图片继续作答）", formatAISearchImageIndex(index+1), address)
+	}
+	if missing > 0 {
+		fmt.Fprintf(&references, "\n共有%d张图片未成功下载；不要仅因缺图返回不确定，除非现有文字和图片确实不足以判断。", missing)
+	}
+	return references.String()
+}
+
+func (in *ChatGptClient) runAISearchImageOCR(ctx context.Context, attachments []downloadedAISearchAttachment) (string, []AIOCRCallUsage) {
+	if in == nil || in.OCRProvider == nil || len(attachments) == 0 {
+		return "", nil
+	}
+	images := make([]downloadedAISearchAttachment, 0, len(attachments))
+	for _, attachment := range attachments {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(attachment.contentType)), "image/") {
+			images = append(images, attachment)
+		}
+	}
+	if len(images) == 0 {
+		return "", nil
+	}
+	type result struct {
+		index int
+		text  string
+		call  AIOCRCallUsage
+	}
+	results := make(chan result, len(images))
+	semaphore := make(chan struct{}, aiSearchMaxConcurrentAttachments)
+	var wg sync.WaitGroup
+	for index, attachment := range images {
+		wg.Add(1)
+		go func(index int, attachment downloadedAISearchAttachment) {
+			defer wg.Done()
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+			started := time.Now()
+			text, err := in.OCRProvider(ctx, attachment.sourceURL, attachment.imageName, attachment.contentType, attachment.body)
+			call := AIOCRCallUsage{API: strings.TrimSpace(in.OCRAPI), ImageURL: attachment.sourceURL, DurationMs: time.Since(started).Milliseconds()}
+			if call.API == "" {
+				call.API = "https://uapis.cn/api/v1/image/ocr"
+			}
+			if err != nil {
+				call.Status = "error"
+				call.Error = truncateAIToolText(logger.RedactSecrets(err.Error(), in.APIKey), 500)
+			} else {
+				call.Status = "success"
+				call.TextChars = len([]rune(strings.TrimSpace(text)))
+				text = truncateAIToolText(strings.TrimSpace(text), 12000)
+			}
+			results <- result{index: index, text: text, call: call}
+		}(index, attachment)
+	}
+	wg.Wait()
+	close(results)
+	ordered := make([]result, len(images))
+	for item := range results {
+		ordered[item.index] = item
+	}
+	var builder strings.Builder
+	for index, item := range ordered {
+		if item.call.Status == "success" && strings.TrimSpace(item.text) != "" {
+			if builder.Len() == 0 {
+				builder.WriteString("OCR辅助识别结果（由服务器下载图片后识别，仅作为视觉图片的辅助文本，原图仍已发送）：")
+			}
+			fmt.Fprintf(&builder, "\n图%s OCR：%s", formatAISearchImageIndex(index+1), item.text)
+		}
+	}
+	calls := make([]AIOCRCallUsage, 0, len(ordered))
+	for _, item := range ordered {
+		if item.call.Status != "" {
+			calls = append(calls, item.call)
+		}
+	}
+	return builder.String(), calls
+}
+
 // downloadAISearchAttachmentParts 并发下载题目配图，同时保持原有顺序，
 // 避免多张公式图串行下载把单次搜题的耗时叠加到几十秒。
 func downloadAISearchAttachmentParts(httpClient *http.Client, attachmentURLs []string) []openAIContentPart {
@@ -778,6 +931,47 @@ func downloadAISearchAttachmentParts(httpClient *http.Client, attachmentURLs []s
 	return parts
 }
 
+// downloadAISearchAttachmentResults keeps the successful source URL together
+// with the downloaded bytes. This prevents a failed middle image from making
+// the remaining image references point at the wrong visual attachment.
+func downloadAISearchAttachmentResults(httpClient *http.Client, attachmentURLs []string) []downloadedAISearchAttachment {
+	if httpClient == nil || len(attachmentURLs) == 0 {
+		return nil
+	}
+	type attachmentResult struct {
+		index int
+		item  downloadedAISearchAttachment
+		ok    bool
+	}
+	semaphore := make(chan struct{}, aiSearchMaxConcurrentAttachments)
+	results := make(chan attachmentResult, len(attachmentURLs))
+	var wg sync.WaitGroup
+	for index, address := range attachmentURLs {
+		wg.Add(1)
+		go func(index int, address string) {
+			defer wg.Done()
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+			item, ok := downloadAISearchAttachment(httpClient, address)
+			results <- attachmentResult{index: index, item: item, ok: ok}
+		}(index, address)
+	}
+	wg.Wait()
+	close(results)
+	ordered := make([]attachmentResult, len(attachmentURLs))
+	for item := range results {
+		ordered[item.index] = item
+	}
+	attachments := make([]downloadedAISearchAttachment, 0, len(attachmentURLs))
+	for index, item := range ordered {
+		if item.ok {
+			item.item.sourceIndex = index + 1
+			attachments = append(attachments, item.item)
+		}
+	}
+	return attachments
+}
+
 func formatAISearchImageIndex(index int) string {
 	if index >= 1 && index <= 10 {
 		return []string{"一", "二", "三", "四", "五", "六", "七", "八", "九", "十"}[index-1]
@@ -809,55 +1003,76 @@ func extractAISearchURLs(req model.SearchRequest) []string {
 }
 
 func downloadAISearchAttachmentPart(httpClient *http.Client, attachmentURL string) (openAIContentPart, bool) {
-	if httpClient == nil {
+	attachment, ok := downloadAISearchAttachment(httpClient, attachmentURL)
+	if !ok {
 		return openAIContentPart{}, false
+	}
+	return attachment.part, true
+}
+
+func downloadAISearchAttachment(httpClient *http.Client, attachmentURL string) (downloadedAISearchAttachment, bool) {
+	if httpClient == nil {
+		return downloadedAISearchAttachment{}, false
 	}
 	parsed, err := url.Parse(strings.TrimSpace(attachmentURL))
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return openAIContentPart{}, false
+		return downloadedAISearchAttachment{}, false
 	}
 	httpReq, err := http.NewRequest(http.MethodGet, attachmentURL, nil)
 	if err != nil {
-		return openAIContentPart{}, false
+		return downloadedAISearchAttachment{}, false
 	}
 	httpReq.Header.Set("Referer", "https://mooc1.chaoxing.com/")
+	httpReq.Header.Set("Origin", "https://mooc1.chaoxing.com")
 	httpReq.Header.Set("User-Agent", "Mozilla/5.0")
+	httpReq.Header.Set("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
 	resp, err := util.DoReadOnlyWithRetry(httpClient, httpReq)
 	if err != nil {
-		return openAIContentPart{}, false
+		return downloadedAISearchAttachment{}, false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return openAIContentPart{}, false
+		return downloadedAISearchAttachment{}, false
 	}
 	if resp.ContentLength > maxAISearchAttachmentBytes {
-		return openAIContentPart{}, false
+		return downloadedAISearchAttachment{}, false
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAISearchAttachmentBytes+1))
 	if err != nil || len(body) == 0 {
-		return openAIContentPart{}, false
+		return downloadedAISearchAttachment{}, false
 	}
 	if len(body) > maxAISearchAttachmentBytes {
-		return openAIContentPart{}, false
+		return downloadedAISearchAttachment{}, false
 	}
 
 	contentType := resolveAISearchAttachmentContentType(resp.Header.Values("Content-Type"), body)
 	switch {
 	case strings.HasPrefix(contentType, "image/"):
 		preparedBody, preparedContentType := prepareAISearchImageAttachment(body, contentType)
-		return openAIContentPart{
+		ocrBody, ocrContentType := body, contentType
+		if preparedContentType == "image/png" {
+			// The prepared PNG is the locally converted representation. Reusing it
+			// for OCR keeps WebP/BMP/TIFF and transparent formula images compatible
+			// with the multipart endpoint while preserving the original source URL.
+			ocrBody, ocrContentType = preparedBody, preparedContentType
+		}
+		imageName := filepath.Base(parsed.Path)
+		if imageName == "." || imageName == "" || filepath.Ext(imageName) == "" || (ocrContentType == "image/png" && strings.ToLower(filepath.Ext(imageName)) != ".png") {
+			imageName = "image.png"
+		}
+		return downloadedAISearchAttachment{sourceURL: attachmentURL, imageName: imageName, contentType: ocrContentType, body: ocrBody, part: openAIContentPart{
 			Type: "image_url",
 			ImageURL: &openAIImageURLPart{
 				URL: "data:" + preparedContentType + ";base64," + base64.StdEncoding.EncodeToString(preparedBody),
 			},
-		}, true
+		}}, true
 	case contentType == "text/html":
-		return openAIContentPart{
+		return downloadedAISearchAttachment{sourceURL: attachmentURL, imageName: filepath.Base(parsed.Path), contentType: contentType, body: body, part: openAIContentPart{
 			Type: "text",
 			Text: buildAISearchHTMLAttachment(parsed, body),
-		}, true
+		}}, true
 	default:
-		return openAIContentPart{}, false
+		return downloadedAISearchAttachment{}, false
 	}
 }
 

@@ -125,6 +125,7 @@ func TestDecorateBillingRecordUsesChineseAIToolProviderLabels(t *testing.T) {
 		{"ai", "AI 模型调用"},
 		{"ai_search", "联网搜索"},
 		{"web_read", "网页浏览"},
+		{"ai_ocr", "图片 OCR"},
 	} {
 		t.Run(test.provider, func(t *testing.T) {
 			record := decorateBillingRecord(BillingRecordListItem{Type: normalSearchBillingRecordType, Provider: test.provider})
@@ -133,6 +134,23 @@ func TestDecorateBillingRecordUsesChineseAIToolProviderLabels(t *testing.T) {
 				t.Fatalf("expected Chinese billing labels without changing provider identity, got %+v", record)
 			}
 		})
+	}
+}
+
+func TestDecorateBillingRecordIncludesOCRDetails(t *testing.T) {
+	const imageURL = "https://images.example/question.webp"
+	record := decorateBillingRecord(BillingRecordListItem{
+		Type:     normalSearchBillingRecordType,
+		Provider: "ai_ocr",
+		Amount:   0,
+		UnitPriceSnapshot: "provider=ai_ocr ocrCall=1 ocrAPI=" + url.QueryEscape("https://uapis.cn/api/v1/image/ocr") +
+			" ocrImageURL=" + url.QueryEscape(imageURL) + " ocrStatus=success ocrTextChars=42 ocrDurationMs=81",
+	})
+	if len(record.FeeDetails) != 1 || record.FeeDetails[0].ProviderLabel != "图片 OCR" || record.FeeDetails[0].Amount != 0 {
+		t.Fatalf("expected zero-priced OCR fee detail, got %+v", record)
+	}
+	if !strings.Contains(record.FeeDetails[0].Detail, "图片："+imageURL) || !strings.Contains(record.FeeDetails[0].Detail, "文字字符数：42") {
+		t.Fatalf("expected OCR fields in fee detail, got %q", record.FeeDetails[0].Detail)
 	}
 }
 

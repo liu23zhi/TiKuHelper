@@ -20,7 +20,7 @@ func expectedAISearchDefaultPrompt() string {
 	return defaultAISearchPrompt()
 }
 
-// AI 搜索配置只负责模型/提示词等运行参数，不再承载任何计费字段。
+// AI 搜索配置不承载模型 token 价格；工具调用单价仍通过系统设置集中管理。
 func TestUpdateAISearchConfigWithDBIgnoresLegacyBillingFields(t *testing.T) {
 	db := newSearchAccountConfigTestDB(t)
 
@@ -700,6 +700,45 @@ func TestAISearchConfigPersistsWebReadBudgetAndPrice(t *testing.T) {
 	}
 	if cleared.WebReadPricePerCall != 0 {
 		t.Fatalf("explicit zero should disable web read billing, got %v", cleared.WebReadPricePerCall)
+	}
+}
+
+func TestAISearchConfigPersistsImageOCRPrice(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	if err := db.AutoMigrate(&entity.SystemSetting{}); err != nil {
+		t.Fatalf("migrate system settings: %v", err)
+	}
+	initial, err := GetAISearchConfigWithDB(db)
+	if err != nil {
+		t.Fatalf("get default AI search config: %v", err)
+	}
+	if initial.ImageOCRPricePerCall != DefaultImageOCRPricePerCall {
+		t.Fatalf("OCR price should default to zero, got %v", initial.ImageOCRPricePerCall)
+	}
+
+	price := 0.015
+	view, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{ImageOCRPricePerCall: &price})
+	if err != nil {
+		t.Fatalf("set OCR price: %v", err)
+	}
+	if view.ImageOCRPricePerCall != price {
+		t.Fatalf("expected OCR price %v, got %v", price, view.ImageOCRPricePerCall)
+	}
+	resolved, err := BuildAISearchRequestConfigWithDB(db, url.Values{}, true)
+	if err != nil {
+		t.Fatalf("resolve OCR price: %v", err)
+	}
+	if resolved.Config.ImageOCRPricePerCall != price {
+		t.Fatalf("resolved OCR price mismatch: %v", resolved.Config.ImageOCRPricePerCall)
+	}
+
+	zero := 0.0
+	cleared, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{ImageOCRPricePerCall: &zero})
+	if err != nil {
+		t.Fatalf("clear OCR price: %v", err)
+	}
+	if cleared.ImageOCRPricePerCall != 0 {
+		t.Fatalf("explicit zero should disable OCR billing, got %v", cleared.ImageOCRPricePerCall)
 	}
 }
 

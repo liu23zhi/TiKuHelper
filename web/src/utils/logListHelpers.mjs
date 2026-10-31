@@ -668,6 +668,7 @@ function buildBillingProviderLabel(value) {
     ai: 'AI 搜索',
     ai_search: '联网搜索',
     web_read: '浏览网页',
+    ai_ocr: '图片 OCR',
     local: '本地题库',
     icodef: 'Icodef 题库',
     wanneng: '万能题库',

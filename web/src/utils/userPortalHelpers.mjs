@@ -415,6 +415,9 @@ function buildBillingRecordFeeItemTitle(item) {
   if (item?.provider === 'web_read' || category === '网页转Markdown') {
     return `浏览网页${callSuffix}`
   }
+  if (item?.provider === 'ai_ocr' || category === '图片 OCR') {
+    return `图片 OCR${callSuffix}`
+  }
   if (category) {
     return `${category}${callSuffix}`
   }
@@ -446,6 +449,14 @@ function buildBillingRecordFeeItemMeta(item, options = {}) {
   if (item?.provider === 'web_read') {
     const url = String(item?.url || '').trim() || readBillingRecordFeeField(fields, ['URL', 'url', '网页'])
     return url ? [{ label: '网页', value: url }] : []
+  }
+  if (item?.provider === 'ai_ocr') {
+    const imageURL = readBillingRecordFeeField(fields, ['图片', 'ocrImageURL', 'imageURL'])
+    const textChars = readBillingRecordFeeField(fields, ['文字字符数', 'ocrTextChars', 'textChars'])
+    const meta = []
+    if (imageURL) meta.push({ label: '图片', value: imageURL })
+    if (textChars) meta.push({ label: '文字字符数', value: textChars })
+    return meta
   }
   return []
 }

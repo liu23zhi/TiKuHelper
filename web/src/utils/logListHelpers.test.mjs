@@ -527,6 +527,10 @@ test('buildLogStructuredFields maps billing provider codes to Chinese labels', (
   }).billingProvider, 'AI 搜索、联网搜索、浏览网页、custom_provider');
 
   assert.equal(buildLogStructuredFields({
+    description: '搜索完成 requestId=req-ocr mode=normal use=ai answers=1 hitProvider=ai billingProvider=ai_ocr',
+  }).billingProvider, '图片 OCR');
+
+  assert.equal(buildLogStructuredFields({
     description: '搜索完成 requestId=req-failed mode=normal use= answers=1 hitProvider=ai billingProvider=billing_persist_failed',
   }).billingProvider, '计费落账失败');
 });

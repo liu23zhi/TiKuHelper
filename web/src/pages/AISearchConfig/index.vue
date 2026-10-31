@@ -162,7 +162,7 @@
           style="width: 180px"
         />
         <span class="unit-label">元 / 次</span>
-        <div class="hint">默认 0 元。大于 0 时，每次实际调用联网搜索 API 都单独记一条账单，并合并显示在对应搜题账单详情中；命中本次 AI 搜索内的相同查询缓存不会重复计价。</div>
+        <div class="hint">默认 0 元。每次成功完成联网搜索 API 调用都会单独记一条账单，单价为 0 时也会保留 0 元明细，并合并显示在对应搜题账单详情中；命中本次 AI 搜索内的相同查询缓存不会重复计价。</div>
       </a-form-item>
 
       <a-divider orientation="left" class="full-width">网页读取与 Prompt</a-divider>
@@ -189,7 +189,19 @@
           style="width: 180px"
         />
         <span class="unit-label">元 / 次</span>
-        <div class="hint">默认 0 元。大于 0 时，每次成功完成网页读取都会单独写入一条账单，并合并到对应的搜题账单详情中。</div>
+        <div class="hint">默认 0 元。每次成功完成网页读取都会单独写入一条账单，单价为 0 时也会保留 0 元明细，并合并到对应的搜题账单详情中；失败调用只进入诊断。</div>
+      </a-form-item>
+
+      <a-form-item label="图片 OCR 单价（元/次）">
+        <a-input-number
+          v-model:value="formState.imageOCRPricePerCall"
+          :min="0"
+          :precision="6"
+          :step="0.01"
+          style="width: 180px"
+        />
+        <span class="unit-label">元 / 次</span>
+        <div class="hint">默认 0 元。配置 UAPI（uapi-）密钥后，服务器会先下载题图，再将转换后的本地图片上传 OCR；原图仍发送给视觉模型。成功 OCR 调用在单价为 0 时也会保留 0 元账单明细，失败调用只进入诊断。</div>
       </a-form-item>
 
       <a-divider orientation="left" class="full-width">上下文压缩</a-divider>
@@ -529,6 +541,7 @@ export default defineComponent({
       searchPricePerCall: 0,
       maxAIWebReads: DEFAULT_MAX_AI_WEB_READS,
       webReadPricePerCall: 0,
+      imageOCRPricePerCall: 0,
       enableAIStagedTokenBilling: false,
       smoothAIStagedTokenMultiplier: false,
       stagedTokenMultiplierPoints: DEFAULT_AI_STAGED_TOKEN_MULTIPLIER_POINTS.map(point => ({ ...point, tokens: String(point.tokens) })),
@@ -561,7 +574,8 @@ export default defineComponent({
     const usageRows = computed(() => normalizeUsageRows(usageInfo.value))
     const searchUsageRows = computed(() => usageRows.value.filter(item => /\/search\/(?:aggregate|engines)(?:\/|$)/i.test(item.path) && item.count > 0))
     const webReadUsageRows = computed(() => usageRows.value.filter(item => /\/web\/tomarkdown(?:\/|$)/i.test(item.path) && item.count > 0))
-    const usedUsageRows = computed(() => [...searchUsageRows.value, ...webReadUsageRows.value])
+    const ocrUsageRows = computed(() => usageRows.value.filter(item => /\/image\/ocr(?:\/|$)/i.test(item.path) && item.count > 0))
+    const usedUsageRows = computed(() => [...searchUsageRows.value, ...webReadUsageRows.value, ...ocrUsageRows.value])
     const searchEngineDetail = computed(() => {
       const response = searchEngineInfo.value
       if (!response?.engine || typeof response.engine !== 'object') return null
@@ -594,6 +608,17 @@ export default defineComponent({
           status: '已调用',
           color: 'green',
           detail: '异步网页读取端点已有实际调用记录',
+          count,
+        })
+      }
+      if (ocrUsageRows.value.length) {
+        const count = ocrUsageRows.value.reduce((sum, item) => sum + item.count, 0)
+        cards.push({
+          key: 'image-ocr',
+          title: '图片 OCR API',
+          status: '已调用',
+          color: 'green',
+          detail: '图片 OCR 端点已有实际调用记录',
           count,
         })
       }
@@ -649,6 +674,7 @@ export default defineComponent({
           formState.searchPricePerCall = Number(data.searchPricePerCall ?? 0)
           formState.maxAIWebReads = normalizeAIWebReads(data.maxAIWebReads, DEFAULT_MAX_AI_WEB_READS)
           formState.webReadPricePerCall = Number(data.webReadPricePerCall ?? 0)
+          formState.imageOCRPricePerCall = Number(data.imageOCRPricePerCall ?? 0)
           formState.enableAIStagedTokenBilling = !!data.enableAIStagedTokenBilling
           formState.smoothAIStagedTokenMultiplier = !!data.smoothAIStagedTokenMultiplier
           formState.stagedTokenMultiplierPoints = Array.isArray(data.stagedTokenMultiplierPoints) && data.stagedTokenMultiplierPoints.length
@@ -822,6 +848,7 @@ export default defineComponent({
       const searchPricePerCall = Number(this.formState.searchPricePerCall)
       const maxAIWebReads = Number(this.formState.maxAIWebReads)
       const webReadPricePerCall = Number(this.formState.webReadPricePerCall)
+      const imageOCRPricePerCall = Number(this.formState.imageOCRPricePerCall)
       if (!Number.isSafeInteger(maxAISearchModelCalls) || maxAISearchModelCalls < MIN_AI_SEARCH_MODEL_CALLS) {
         message.error('模型最大调用次数必须是正整数，且不能超过安全整数范围')
         return
@@ -844,6 +871,10 @@ export default defineComponent({
       }
       if (!Number.isFinite(webReadPricePerCall) || webReadPricePerCall < 0) {
         message.error('网页读取单价必须是大于或等于 0 的有效金额')
+        return
+      }
+      if (!Number.isFinite(imageOCRPricePerCall) || imageOCRPricePerCall < 0) {
+        message.error('图片 OCR 单价必须是大于或等于 0 的有效金额')
         return
       }
       let payload

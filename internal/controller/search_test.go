@@ -1156,7 +1156,7 @@ func TestPersistSearchBillingRecordsWithDBAllowsBillingToCreateNegativeBalance(t
 	}
 }
 
-func TestResolveCompletedSearchBillingChargesAddsOneChargePerActualAISearch(t *testing.T) {
+func TestResolveCompletedSearchBillingChargesAddsSuccessfulAISearchOnly(t *testing.T) {
 	db := newSearchControllerTestDB(t)
 	if err := service.SetAISearchPricePerCallWithDB(db, 0.125); err != nil {
 		t.Fatalf("set AI search price: %v", err)
@@ -1172,8 +1172,8 @@ func TestResolveCompletedSearchBillingChargesAddsOneChargePerActualAISearch(t *t
 	if err != nil {
 		t.Fatalf("resolve search charges: %v", err)
 	}
-	if len(charges) != 2 {
-		t.Fatalf("expected one fee row per actual search API call, got %+v", charges)
+	if len(charges) != 1 {
+		t.Fatalf("expected only successful search API calls to be billed, got %+v", charges)
 	}
 	for index, charge := range charges {
 		if charge.Provider != "ai_search" || charge.Amount != 0.125 {
@@ -1183,10 +1183,6 @@ func TestResolveCompletedSearchBillingChargesAddsOneChargePerActualAISearch(t *t
 	if got := service.ExtractBillingSnapshotField(charges[0].Snapshot, "searchQuery"); got != "搜索词一" {
 		t.Fatalf("expected first query in billing snapshot, got %q", got)
 	}
-	if got := service.ExtractBillingSnapshotField(charges[1].Snapshot, "searchStatus"); got != "error" {
-		t.Fatalf("expected failed API status in billing snapshot, got %q", got)
-	}
-
 	if err := service.SetAISearchPricePerCallWithDB(db, 0); err != nil {
 		t.Fatalf("disable AI search price: %v", err)
 	}
@@ -1194,8 +1190,8 @@ func TestResolveCompletedSearchBillingChargesAddsOneChargePerActualAISearch(t *t
 	if err != nil {
 		t.Fatalf("resolve zero-priced search calls: %v", err)
 	}
-	if len(charges) != 2 {
-		t.Fatalf("zero-priced search calls must still be visible as fee rows, got %+v", charges)
+	if len(charges) != 1 {
+		t.Fatalf("zero-priced successful search calls must remain visible as a fee row, got %+v", charges)
 	}
 	for index, charge := range charges {
 		if charge.Provider != "ai_search" || charge.Amount != 0 {
@@ -1246,7 +1242,7 @@ func TestResolveCompletedSearchBillingChargesAddsCompletedWebReadOnly(t *testing
 		t.Fatalf("resolve web-read charges: %v", err)
 	}
 	if len(charges) != 1 || charges[0].Provider != "web_read" || charges[0].Amount != 0.25 {
-		t.Fatalf("expected one successful web-read fee row, got %+v", charges)
+		t.Fatalf("expected only successful web-read calls to be billed, got %+v", charges)
 	}
 	if got := service.ExtractBillingSnapshotField(charges[0].Snapshot, "webReadURL"); got != "https://example.com/a" {
 		t.Fatalf("expected URL in snapshot, got %q", got)
@@ -1261,6 +1257,29 @@ func TestResolveCompletedSearchBillingChargesAddsCompletedWebReadOnly(t *testing
 	}
 	if len(charges) != 1 || charges[0].Provider != "web_read" || charges[0].Amount != 0 {
 		t.Fatalf("zero-priced successful web-read must remain visible as a fee row, got %+v", charges)
+	}
+}
+
+func TestResolveCompletedSearchBillingChargesAddsSuccessfulOCROnly(t *testing.T) {
+	db := newSearchControllerTestDB(t)
+	if err := service.SetImageOCRPricePerCallWithDB(db, 0.015); err != nil {
+		t.Fatalf("set OCR price: %v", err)
+	}
+	usage := searchpkg.AISearchUsage{OCRCalls: []searchpkg.AIOCRCallUsage{
+		{API: "https://uapis.cn/api/v1/image/ocr", ImageURL: "https://images.example/a.webp", Status: "success", TextChars: 12, DurationMs: 80},
+		{API: "https://uapis.cn/api/v1/image/ocr", ImageURL: "https://images.example/b.png", Status: "error", Error: "服务不可用", DurationMs: 90},
+	}}
+	charges, _, err := resolveCompletedSearchBillingCharges(db, resolvedSearchRequestContext{SearchMode: searchModeAI}, "ai", model.SearchRequest{Question: "图片题"}, usage, false, true)
+	if err != nil {
+		t.Fatalf("resolve OCR charges: %v", err)
+	}
+	if len(charges) != 1 {
+		t.Fatalf("expected only successful OCR calls to be billed, got %+v", charges)
+	}
+	for index, charge := range charges {
+		if charge.Provider != "ai_ocr" || charge.Amount != 0.015 {
+			t.Fatalf("unexpected OCR fee %d: %+v", index, charge)
+		}
 	}
 }
 

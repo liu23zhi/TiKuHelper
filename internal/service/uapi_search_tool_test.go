@@ -47,3 +47,14 @@ func TestBuildUAPISearchToolReturnsNilWhenKeyIsMissing(t *testing.T) {
 		t.Fatalf("expected no search tool when UAPI key is missing, got %T", got)
 	}
 }
+
+func TestBuildUAPIImageOCRProviderKeepsZeroPriceCallsAuditable(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+	if _, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{UAPIAPIKey: "uapi-test-key"}); err != nil {
+		t.Fatal(err)
+	}
+	provider := BuildUAPIImageOCRProviderWithDB(db)
+	if provider == nil {
+		t.Fatal("OCR provider must remain enabled at a zero configured price so the zero-yuan billing row is recorded")
+	}
+}

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -19,6 +20,7 @@ import (
 )
 
 const aiSearchUAPIToolTimeout = 30 * time.Second
+const aiImageOCRUAPITimeout = 60 * time.Second
 
 // BuildUAPISearchToolWithDB constructs the optional web-search/web-read tool for AI.
 // The UAPI key stays server-side; invalid or missing keys disable the tool
@@ -31,6 +33,51 @@ func BuildUAPISearchToolWithDB(db *gorm.DB) internalsearch.AISearchTool {
 	return uapi.NewClient(key).
 		SetTimeout(aiSearchUAPIToolTimeout).
 		SetMaxRetries(0)
+}
+
+// BuildUAPIImageOCRProviderWithDB creates the optional auxiliary OCR provider.
+// It is enabled when a valid UAPI key exists. The configured unit price only
+// controls the billing amount; a zero price still produces a visible 0-yuan
+// OCR billing detail for auditability.
+func BuildUAPIImageOCRProviderWithDB(db *gorm.DB) internalsearch.AIImageOCRProvider {
+	key := strings.TrimSpace(GetUAPIAPIKeyWithDB(db))
+	if !strings.HasPrefix(key, "uapi-") || len(key) <= len("uapi-") {
+		return nil
+	}
+	client := uapi.NewClient(key).SetTimeout(aiImageOCRUAPITimeout).SetMaxRetries(0)
+	return func(ctx context.Context, sourceURL, imageName, contentType string, image []byte) (string, error) {
+		if strings.TrimSpace(imageName) == "" {
+			imageName = imageNameForContentType(contentType)
+		}
+		result, err := client.ImageOCR(ctx, uapi.ImageOCRRequest{
+			Image:        image,
+			ImageName:    imageName,
+			NeedLocation: false,
+			// OCR is only used to supplement the model prompt; avoid paying for
+			// coordinate and Markdown payloads that are not consumed here.
+			ReturnMarkdown: false,
+			EnableCLS:      false,
+		})
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(result.PlainText), nil
+	}
+}
+
+func imageNameForContentType(contentType string) string {
+	switch strings.ToLower(strings.TrimSpace(contentType)) {
+	case "image/jpeg":
+		return "image.jpg"
+	case "image/gif":
+		return "image.gif"
+	case "image/webp":
+		return "image.webp"
+	case "image/bmp":
+		return "image.bmp"
+	default:
+		return "image.png"
+	}
 }
 
 type AISearchConfigView struct {
@@ -49,6 +96,7 @@ type AISearchConfigView struct {
 	SearchPricePerCall               float64                        `json:"searchPricePerCall"`
 	MaxAIWebReads                    int                            `json:"maxAIWebReads"`
 	WebReadPricePerCall              float64                        `json:"webReadPricePerCall"`
+	ImageOCRPricePerCall             float64                        `json:"imageOCRPricePerCall"`
 	EnableAIStagedTokenBilling       bool                           `json:"enableAIStagedTokenBilling"`
 	SmoothAIStagedTokenMultiplier    bool                           `json:"smoothAIStagedTokenMultiplier"`
 	StagedTokenMultiplierPoints      []AIStagedTokenMultiplierPoint `json:"stagedTokenMultiplierPoints"`
@@ -76,6 +124,7 @@ type UpdateAISearchConfigInput struct {
 	SearchPricePerCall               *float64                        `json:"searchPricePerCall,omitempty"`
 	MaxAIWebReads                    int                             `json:"maxAIWebReads"`
 	WebReadPricePerCall              *float64                        `json:"webReadPricePerCall,omitempty"`
+	ImageOCRPricePerCall             *float64                        `json:"imageOCRPricePerCall,omitempty"`
 	EnableAIStagedTokenBilling       *bool                           `json:"enableAIStagedTokenBilling,omitempty"`
 	SmoothAIStagedTokenMultiplier    *bool                           `json:"smoothAIStagedTokenMultiplier,omitempty"`
 	StagedTokenMultiplierPoints      *[]AIStagedTokenMultiplierPoint `json:"stagedTokenMultiplierPoints,omitempty"`
@@ -100,6 +149,7 @@ type AISearchRequestConfig struct {
 	SearchPricePerCall               float64
 	MaxAIWebReads                    int
 	WebReadPricePerCall              float64
+	ImageOCRPricePerCall             float64
 	ContextCompressionEnabled        bool
 	UseRemoteContextCompression      bool
 	ContextCompressionTriggerPercent int
@@ -216,6 +266,7 @@ func GetAISearchConfigWithDB(db *gorm.DB) (AISearchConfigView, error) {
 			SearchPricePerCall:               GetAISearchPricePerCallWithDB(db),
 			MaxAIWebReads:                    getPositiveIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads),
 			WebReadPricePerCall:              GetWebReadPricePerCallWithDB(db),
+			ImageOCRPricePerCall:             GetImageOCRPricePerCallWithDB(db),
 			EnableAIStagedTokenBilling:       stagedBilling.Enabled,
 			SmoothAIStagedTokenMultiplier:    stagedBilling.SmoothFactor,
 			StagedTokenMultiplierPoints:      cloneAIStagedTokenMultiplierPoints(stagedBilling.MultiplierPoints),
@@ -245,6 +296,11 @@ func UpdateAISearchConfigWithDB(db *gorm.DB, input UpdateAISearchConfigInput) (A
 	}
 	if input.WebReadPricePerCall != nil {
 		if err := SetWebReadPricePerCallWithDB(db, *input.WebReadPricePerCall); err != nil {
+			return AISearchConfigView{}, err
+		}
+	}
+	if input.ImageOCRPricePerCall != nil {
+		if err := SetImageOCRPricePerCallWithDB(db, *input.ImageOCRPricePerCall); err != nil {
 			return AISearchConfigView{}, err
 		}
 	}
@@ -319,6 +375,7 @@ func BuildAISearchRequestConfigWithDB(db *gorm.DB, query url.Values, allowDefaul
 			SearchPricePerCall:               GetAISearchPricePerCallWithDB(db),
 			MaxAIWebReads:                    getPositiveIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads),
 			WebReadPricePerCall:              GetWebReadPricePerCallWithDB(db),
+			ImageOCRPricePerCall:             GetImageOCRPricePerCallWithDB(db),
 			ContextCompressionEnabled:        compression.Enabled,
 			UseRemoteContextCompression:      compression.UseRemote,
 			ContextCompressionTriggerPercent: compression.TriggerPercent,
@@ -443,6 +500,7 @@ func buildAISearchConfigView(db *gorm.DB, config entity.AISearchConfig) (AISearc
 		SearchPricePerCall:               GetAISearchPricePerCallWithDB(db),
 		MaxAIWebReads:                    getPositiveIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads),
 		WebReadPricePerCall:              GetWebReadPricePerCallWithDB(db),
+		ImageOCRPricePerCall:             GetImageOCRPricePerCallWithDB(db),
 		EnableAIStagedTokenBilling:       stagedBilling.Enabled,
 		SmoothAIStagedTokenMultiplier:    stagedBilling.SmoothFactor,
 		StagedTokenMultiplierPoints:      cloneAIStagedTokenMultiplierPoints(stagedBilling.MultiplierPoints),

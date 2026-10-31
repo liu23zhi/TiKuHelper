@@ -261,6 +261,8 @@ var searchAIAnswer = func(resolved resolvedSearchRequestContext, req model.Searc
 		MaxAISearchRetries:    resolved.AIConfig.MaxAISearchRetries,
 		MaxAIWebReads:         resolved.AIConfig.MaxAIWebReads,
 		SearchTool:            service.BuildUAPISearchToolWithDB(manager.GetManager().GetDB()),
+		OCRProvider:           service.BuildUAPIImageOCRProviderWithDB(manager.GetManager().GetDB()),
+		OCRAPI:                "https://uapis.cn/api/v1/image/ocr",
 		ContextCompression:    service.BuildAIContextCompressionConfigWithDB(manager.GetManager().GetDB(), resolved.AIConfig),
 		RequestID:             resolved.RequestID,
 	}
@@ -639,6 +641,7 @@ func buildAISearchUsageDebugSummary(usage search.AISearchUsage) string {
 		fmt.Sprintf("totalTokens=%d", usage.TotalTokens),
 		fmt.Sprintf("searchCallCount=%d", len(usage.SearchCalls)),
 		fmt.Sprintf("webReadCallCount=%d", len(usage.WebReadCalls)),
+		fmt.Sprintf("ocrCallCount=%d", len(usage.OCRCalls)),
 	}
 	for index, call := range usage.SearchCalls {
 		if index >= 10 {
@@ -658,11 +661,11 @@ func buildAISearchUsageDebugSummary(usage search.AISearchUsage) string {
 }
 
 func buildAISearchUsageBasicSummary(usage search.AISearchUsage) string {
-	return fmt.Sprintf("inputTokens=%d outputTokens=%d totalTokens=%d modelTraceCount=%d searchCallCount=%d webReadCallCount=%d", usage.InputTokens, usage.OutputTokens, usage.TotalTokens, len(usage.Trace), len(usage.SearchCalls), len(usage.WebReadCalls))
+	return fmt.Sprintf("inputTokens=%d outputTokens=%d totalTokens=%d modelTraceCount=%d searchCallCount=%d webReadCallCount=%d ocrCallCount=%d", usage.InputTokens, usage.OutputTokens, usage.TotalTokens, len(usage.Trace), len(usage.SearchCalls), len(usage.WebReadCalls), len(usage.OCRCalls))
 }
 
 func hasAISearchUsage(usage search.AISearchUsage) bool {
-	return hasAIModelUsage(usage) || len(usage.SearchCalls) > 0 || len(usage.WebReadCalls) > 0
+	return hasAIModelUsage(usage) || len(usage.SearchCalls) > 0 || len(usage.WebReadCalls) > 0 || len(usage.OCRCalls) > 0
 }
 
 func hasAIModelUsage(usage search.AISearchUsage) bool {
@@ -1090,7 +1093,7 @@ func resolveSearchPersistenceDB() *gorm.DB {
 // 第二个返回值是面向调用方的非阻断提示（目前只有「AI 模型未配置价格」），
 // 不影响答案返回，只提醒管理员去价格表补价。
 func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRequestContext, useQuery string, req model.SearchRequest, aiUsage search.AISearchUsage, usedLocalSearch bool, hasSearchAnswer bool) ([]searchBillingCharge, string, error) {
-	charges := make([]searchBillingCharge, 0, 2+len(aiUsage.SearchCalls)+len(aiUsage.WebReadCalls))
+	charges := make([]searchBillingCharge, 0, 2+len(aiUsage.SearchCalls)+len(aiUsage.WebReadCalls)+len(aiUsage.OCRCalls))
 	warning := ""
 
 	if resolved.SearchMode == searchModeNormal && hasSearchAnswer {
@@ -1127,13 +1130,16 @@ func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRe
 	return charges, warning, nil
 }
 
-// appendAIToolBillingCharges keeps tool usage visible even when its configured
-// price is zero. Zero-amount rows do not change balances, but preserve search
-// queries and successful web reads in the billing detail.
+// appendAIToolBillingCharges keeps successful tool usage visible even when its
+// configured price is zero. Failed attempts remain in usage diagnostics but
+// do not create charges or change balances.
 func appendAIToolBillingCharges(charges []searchBillingCharge, db *gorm.DB, req model.SearchRequest, usage search.AISearchUsage) []searchBillingCharge {
 	sequence := buildAIBillingSequence(usage)
 	searchPrice := service.GetAISearchPricePerCallWithDB(db)
 	for index, call := range usage.SearchCalls {
+		if strings.TrimSpace(call.Status) != "success" {
+			continue
+		}
 		amount := util.RoundMoney(searchPrice)
 		charges = append(charges, searchBillingCharge{
 			Provider: "ai_search",
@@ -1154,7 +1160,39 @@ func appendAIToolBillingCharges(charges []searchBillingCharge, db *gorm.DB, req 
 			Snapshot: buildAIWebReadBillingSnapshot(req, call, index+1, webReadPrice, amount, sequenceAt(sequence.WebReads, index+1)),
 		})
 	}
+
+	ocrPrice := service.GetImageOCRPricePerCallWithDB(db)
+	for index, call := range usage.OCRCalls {
+		if strings.TrimSpace(call.Status) != "success" {
+			continue
+		}
+		amount := util.RoundMoney(ocrPrice)
+		charges = append(charges, searchBillingCharge{
+			Provider: "ai_ocr",
+			Amount:   amount,
+			Snapshot: buildAIOCRBillingSnapshot(req, call, index+1, ocrPrice, amount),
+		})
+	}
 	return charges
+}
+
+func buildAIOCRBillingSnapshot(req model.SearchRequest, call search.AIOCRCallUsage, index int, price float64, amount float64) string {
+	parts := []string{
+		"provider=ai_ocr",
+		fmt.Sprintf("ocrCall=%d", index),
+		"ocrAPI=" + url.QueryEscape(strings.TrimSpace(call.API)),
+		"ocrImageURL=" + url.QueryEscape(strings.TrimSpace(call.ImageURL)),
+		"ocrStatus=" + url.QueryEscape(strings.TrimSpace(call.Status)),
+		fmt.Sprintf("ocrDurationMs=%d", call.DurationMs),
+		fmt.Sprintf("ocrTextChars=%d", call.TextChars),
+		"ocrError=" + url.QueryEscape(logger.RedactSecrets(strings.TrimSpace(call.Error))),
+		fmt.Sprintf("unitPrice=%.6f", util.RoundMoney(price)),
+		fmt.Sprintf("amount=%.6f", util.RoundMoney(amount)),
+	}
+	if question := strings.TrimSpace(req.Question); question != "" {
+		parts = append(parts, "question="+url.QueryEscape(question))
+	}
+	return strings.Join(parts, " ")
 }
 
 func buildAIWebReadBillingSnapshot(req model.SearchRequest, call search.AIWebReadCallUsage, index int, price float64, amount float64, sequence int) string {

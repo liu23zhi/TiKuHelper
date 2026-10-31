@@ -349,7 +349,7 @@ func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, reques
 		},
 	}
 	warning := ""
-	charges := make([]searchBillingCharge, 0, 1+len(usage.SearchCalls)+len(usage.WebReadCalls))
+	charges := make([]searchBillingCharge, 0, 1+len(usage.SearchCalls)+len(usage.WebReadCalls)+len(usage.OCRCalls))
 	if result.Success && hasAIModelUsage(usage) {
 		resolvedCharge, err := resolveCompletedAIBillingCharge(db, resolved, req, usage)
 		if err != nil {
