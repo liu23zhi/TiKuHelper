@@ -74,6 +74,7 @@ func main() {
 	}
 	shutdownContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	notificationWorkerDone := service.StartTicketNotificationWorker(shutdownContext, mg.GetDB())
 	shutdownDone := shutdownHTTPServerOnCancel(shutdownContext, httpServer)
 	logger.SysLog("Tiku 服务启动 address=" + httpServer.Addr)
 	logTimeBase()
@@ -83,6 +84,7 @@ func main() {
 	}
 	stop()
 	<-shutdownDone
+	<-notificationWorkerDone
 	logger.SysLog("Tiku 服务已停止")
 }
 

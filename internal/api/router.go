@@ -91,6 +91,16 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.PUT("/user/:id/reset-password", controller.Auth, controller.ResetUserPassword) // 重置密码
 	apiRouter.DELETE("/user/:id", controller.Auth, controller.DeleteUser)                    // 删除用户
 
+	apiRouter.GET("/tickets", controller.Auth, controller.TicketList)
+	apiRouter.POST("/tickets", controller.Auth, controller.CreateTicket)
+	apiRouter.GET("/tickets/config", controller.Auth, middleware.RequireAdmin, controller.TicketWecomSettings)
+	apiRouter.PUT("/tickets/config", controller.Auth, middleware.RequireAdmin, controller.UpdateTicketWecomSettings)
+	apiRouter.POST("/tickets/config/test", controller.Auth, middleware.RequireAdmin, controller.TestTicketWecomWebhook)
+	apiRouter.GET("/tickets/:id", controller.Auth, controller.TicketDetail)
+	apiRouter.POST("/tickets/:id/messages", controller.Auth, controller.AddTicketMessage)
+	apiRouter.PUT("/tickets/:id", controller.Auth, middleware.RequireAdmin, controller.UpdateTicket)
+	apiRouter.POST("/tickets/:id/notifications/:notificationId/retry", controller.Auth, middleware.RequireAdmin, controller.RetryTicketNotification)
+
 	apiRouter.GET("/logs", controller.Auth, controller.LogList) // 日志列表
 	apiRouter.GET("/billing-records", controller.Auth, controller.BillingRecordList)
 	apiRouter.PUT("/billing-records/:id/statement-visibility", controller.Auth, middleware.RequireAdmin, controller.UpdateBillingStatementVisibility)

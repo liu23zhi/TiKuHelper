@@ -9,6 +9,34 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func TestSetAPIRouterRegistersTicketRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	SetAPIRouter(router)
+	want := map[string]bool{
+		"GET /adapter-service/tickets":                                          false,
+		"POST /adapter-service/tickets":                                         false,
+		"GET /adapter-service/tickets/config":                                   false,
+		"PUT /adapter-service/tickets/config":                                   false,
+		"POST /adapter-service/tickets/config/test":                             false,
+		"GET /adapter-service/tickets/:id":                                      false,
+		"POST /adapter-service/tickets/:id/messages":                            false,
+		"PUT /adapter-service/tickets/:id":                                      false,
+		"POST /adapter-service/tickets/:id/notifications/:notificationId/retry": false,
+	}
+	for _, route := range router.Routes() {
+		key := route.Method + " " + route.Path
+		if _, exists := want[key]; exists {
+			want[key] = true
+		}
+	}
+	for route, found := range want {
+		if !found {
+			t.Fatalf("missing route %s", route)
+		}
+	}
+}
+
 func TestSetAPIRouterRegistersResetPasswordRoute(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

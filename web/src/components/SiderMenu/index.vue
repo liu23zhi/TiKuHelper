@@ -74,6 +74,7 @@ const ADMIN_MENU_ITEMS = [
   { key: 'ai-search-config', label: 'AI 搜索配置', icon: RobotOutlined },
   { key: 'system-settings', label: '系统管理', icon: ToolOutlined },
   { key: 'access-tokens', label: '令牌管理', icon: SafetyCertificateOutlined },
+  { key: 'tickets', label: '工单管理', icon: FileTextOutlined },
 ]
 
 const USER_MENU_ITEMS = [
@@ -82,6 +83,7 @@ const USER_MENU_ITEMS = [
   { key: 'access-tokens', label: '令牌管理', icon: SafetyCertificateOutlined },
   { key: 'recharge-orders', label: '充值记录', icon: CreditCardOutlined },
   { key: 'billing-records', label: '我的账单', icon: AccountBookOutlined },
+  { key: 'tickets', label: '工单反馈', icon: FileTextOutlined },
 ]
 
 export default defineComponent({
@@ -106,7 +108,7 @@ export default defineComponent({
 
     const syncSelectedKeys = () => {
       const pathSegments = String(route.path || '').split('/');
-      const currentKey = pathSegments[pathSegments.length - 1];
+      const currentKey = String(route.name || '') === 'tickets' ? 'tickets' : pathSegments[pathSegments.length - 1];
       const matched = visibleMenuItems.value.some((item) => item.key === currentKey)
         ? currentKey
         : visibleMenuItems.value[0]?.key;

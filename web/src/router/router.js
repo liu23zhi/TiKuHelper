@@ -22,6 +22,7 @@ import BillingRecordList from '../pages/BillingRecordList/index.vue'
 import RechargeOrderList from '../pages/RechargeOrderList/index.vue'
 import RechargeResult from '../pages/RechargeResult/index.vue'
 import LocationCache from '../pages/LocationCache/index.vue'
+import Tickets from '../pages/Tickets/index.vue'
 const routes = [
   {
     path: '/',
@@ -132,6 +133,11 @@ const routes = [
         path: 'billing-records',
         name: 'billing-records',
         component: BillingRecordList,
+      },
+      {
+        path: 'tickets/:id?',
+        name: 'tickets',
+        component: Tickets,
       }
     ]
   }
