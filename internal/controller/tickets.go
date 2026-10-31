@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"gorm.io/gorm"
@@ -34,7 +35,7 @@ func TicketList(c *gin.Context) {
 		return
 	}
 	query := service.TicketListQuery{Status: strings.TrimSpace(c.Query("status")), Keyword: strings.TrimSpace(c.Query("keyword")), CreatedFrom: createdFrom, CreatedTo: createdTo, UpdatedFrom: updatedFrom, UpdatedTo: updatedTo}
-	result, err := service.ListTicketsWithDB(ticketControllerDB(), &user, query, page, pageSize)
+	result, err := service.ListTicketsWithDB(withDatabasePriority(ticketControllerDB(), databaseRequestContext(c), dbqueue.PriorityLow), &user, query, page, pageSize)
 	if err != nil {
 		writeTicketError(c, err, "获取工单列表失败")
 		return
@@ -69,7 +70,7 @@ func TicketDetail(c *gin.Context) {
 	if !ok {
 		return
 	}
-	detail, err := service.GetTicketWithDB(ticketControllerDB(), &user, id)
+	detail, err := service.GetTicketWithDB(withDatabasePriority(ticketControllerDB(), databaseRequestContext(c), dbqueue.PriorityLow), &user, id)
 	if err != nil {
 		writeTicketError(c, err, "获取工单详情失败")
 		return
@@ -137,7 +138,7 @@ func RetryTicketNotification(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
 		return
 	}
-	db := ticketControllerDB()
+	db := withDatabasePriority(ticketControllerDB(), databaseRequestContext(c), dbqueue.PriorityLow)
 	var notification entity.TicketNotification
 	if err := db.Where("id = ? AND ticket_id = ?", notificationID, ticketID).First(&notification).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"message": "提醒记录不存在"})
@@ -154,7 +155,7 @@ func TestTicketWecomWebhook(c *gin.Context) {
 	if !requireAdmin(c) {
 		return
 	}
-	config, err := service.GetTicketWecomConfigWithDB(ticketControllerDB())
+	config, err := service.GetTicketWecomConfigWithDB(withDatabasePriority(ticketControllerDB(), databaseRequestContext(c), dbqueue.PriorityLow))
 	if err != nil {
 		writeTicketError(c, err, "读取企业微信工单通知配置失败")
 		return
@@ -180,7 +181,7 @@ func TicketWecomSettings(c *gin.Context) {
 	if !requireAdmin(c) {
 		return
 	}
-	settings, err := service.GetTicketWecomSettingsWithDB(ticketControllerDB())
+	settings, err := service.GetTicketWecomSettingsWithDB(withDatabasePriority(ticketControllerDB(), databaseRequestContext(c), dbqueue.PriorityLow))
 	if err != nil {
 		writeTicketError(c, err, "获取企业微信工单通知配置失败")
 		return

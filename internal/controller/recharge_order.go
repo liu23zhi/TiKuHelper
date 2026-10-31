@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/url"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/util"
@@ -19,7 +21,7 @@ var createRechargeOrder = func(user entity.User, input service.CreateRechargeOrd
 }
 
 var listRechargeOrders = func(user entity.User, query service.RechargeOrderListQuery, page int, pageSize int) (service.RechargeOrderListResult, error) {
-	return service.ListRechargeOrdersWithDB(manager.GetManager().GetDB(), user, query, page, pageSize)
+	return service.ListRechargeOrdersWithDB(withDatabasePriority(manager.GetManager().GetDB(), context.Background(), dbqueue.PriorityLow), user, query, page, pageSize)
 }
 
 var handleRechargePaymentNotify = func(values url.Values) (bool, error) {

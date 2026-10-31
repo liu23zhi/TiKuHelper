@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -8,15 +9,16 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
 )
 
 var listAccessTokens = func(user entity.User, includeAll bool) ([]service.AccessTokenListItem, error) {
 	if includeAll {
-		return service.ListAllAccessTokensWithDB(manager.GetManager().GetDB(), user)
+		return service.ListAllAccessTokensWithDB(withDatabasePriority(manager.GetManager().GetDB(), context.Background(), dbqueue.PriorityLow), user)
 	}
-	return service.ListAccessTokensWithDB(manager.GetManager().GetDB(), user)
+	return service.ListAccessTokensWithDB(withDatabasePriority(manager.GetManager().GetDB(), context.Background(), dbqueue.PriorityLow), user)
 }
 
 var createAccessToken = func(user entity.User, input service.CreateAccessTokenInput) (service.CreatedAccessToken, error) {

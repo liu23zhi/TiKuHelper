@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/internal/uapi"
 )
@@ -23,7 +24,7 @@ func UAPISearchEngines(c *gin.Context) {
 	if !requireAdmin(c) {
 		return
 	}
-	key := service.GetUAPIAPIKeyWithDB(resolveSearchPersistenceDB())
+	key := service.GetUAPIAPIKeyWithDB(withDatabasePriority(resolveSearchPersistenceDB(), databaseRequestContext(c), dbqueue.PriorityLow))
 	if !requireUAPISearchToken(c, key) {
 		return
 	}
@@ -44,7 +45,7 @@ func UAPIStatusUsage(c *gin.Context) {
 	if !requireAdmin(c) {
 		return
 	}
-	key := service.GetUAPIAPIKeyWithDB(resolveSearchPersistenceDB())
+	key := service.GetUAPIAPIKeyWithDB(withDatabasePriority(resolveSearchPersistenceDB(), databaseRequestContext(c), dbqueue.PriorityLow))
 	if !requireUAPISearchToken(c, key) {
 		return
 	}
@@ -69,7 +70,7 @@ func UAPISearchAggregate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": "INVALID_REQUEST", "message": "请求参数格式错误"})
 		return
 	}
-	key := service.GetUAPIAPIKeyWithDB(resolveSearchPersistenceDB())
+	key := service.GetUAPIAPIKeyWithDB(withDatabasePriority(resolveSearchPersistenceDB(), databaseRequestContext(c), dbqueue.PriorityLow))
 	if !requireUAPISearchToken(c, key) {
 		return
 	}

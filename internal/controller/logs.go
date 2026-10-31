@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
@@ -83,7 +85,8 @@ func LogList(c *gin.Context) {
 	actionValue := strings.TrimSpace(c.Query("action"))
 	keyword := util.NormalizeSearchKeyword(c.Query("keyword"))
 
-	query := buildLogListQuery(dao.Log.UnderlyingDB().Model(&entity.Log{}), currentUser, module, actionValue, keyword)
+	readDB := withDatabasePriority(dao.Log.UnderlyingDB(), databaseRequestContext(c), dbqueue.PriorityLow)
+	query := buildLogListQuery(readDB.Model(&entity.Log{}), currentUser, module, actionValue, keyword)
 
 	var (
 		total int64
@@ -103,7 +106,7 @@ func LogList(c *gin.Context) {
 		return
 	}
 	resolveLogUsernames(find)
-	items, err := logListItemsWithBillingIDs(dao.Log.UnderlyingDB(), currentUser, find)
+	items, err := logListItemsWithBillingIDs(readDB, currentUser, find)
 	if err != nil {
 		c.JSON(400, gin.H{"message": "查询失败"})
 		return
@@ -264,7 +267,7 @@ func resolveLogUsernames(logs []*entity.Log) {
 	}
 
 	var users []entity.User
-	if err := dao.User.UnderlyingDB().Where("id IN ?", userIDs).Find(&users).Error; err != nil {
+	if err := withDatabasePriority(dao.User.UnderlyingDB(), context.Background(), dbqueue.PriorityLow).Where("id IN ?", userIDs).Find(&users).Error; err != nil {
 		return
 	}
 	usernameByID := make(map[int32]string, len(users))

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -110,7 +112,7 @@ func SaveIdempotencyProgressWithDB(db *gorm.DB, id int64, response []byte) error
 }
 
 func CleanupExpiredIdempotencyWithDB(db *gorm.DB, now time.Time) error {
-	return db.Session(&gorm.Session{NewDB: true}).Where("expires_at <= ? AND status IN ?", now, []string{IdempotencyStatusSucceeded, IdempotencyStatusFailed}).Delete(&entity.IdempotencyRecord{}).Error
+	return db.WithContext(dbqueue.WithPriority(context.Background(), dbqueue.PriorityLow)).Session(&gorm.Session{NewDB: true}).Where("expires_at <= ? AND status IN ?", now, []string{IdempotencyStatusSucceeded, IdempotencyStatusFailed}).Delete(&entity.IdempotencyRecord{}).Error
 }
 
 func StartIdempotencyCleanup(db *gorm.DB, interval time.Duration) func() {

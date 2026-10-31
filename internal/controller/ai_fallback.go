@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	internalsearch "github.com/itihey/tikuAdapter/internal/search"
 	"github.com/itihey/tikuAdapter/internal/service"
@@ -32,7 +34,7 @@ type aiFallbackInput struct {
 
 var runAIFallbackService = func(req model.SearchRequest) service.AIFallbackResult {
 	req.Question = strings.TrimSpace(req.Question)
-	return service.SearchAIFallbackWithDB(manager.GetManager().GetDB(), req)
+	return service.SearchAIFallbackWithDB(withDatabasePriority(manager.GetManager().GetDB(), req.RequestContext, dbqueue.PriorityHigh), req)
 }
 
 func AIFallback(c *gin.Context) {
@@ -259,7 +261,7 @@ func resolveAIFallbackBillingContext(c *gin.Context) (searchBillingContext, erro
 		return searchBillingContext{}, errors.New("请重新登录后再使用 AI 兜底")
 	}
 
-	db := resolveSearchPersistenceDB()
+	db := withDatabasePriority(resolveSearchPersistenceDB(), databaseRequestContext(c), dbqueue.PriorityHigh)
 	if db == nil {
 		return searchBillingContext{}, errors.New("AI 兜底计费校验失败，请稍后重试")
 	}
@@ -334,7 +336,7 @@ func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, reques
 	if !hasAISearchUsage(usage) {
 		return "", result, nil
 	}
-	db := resolveSearchPersistenceDB()
+	db := withDatabasePriority(resolveSearchPersistenceDB(), context.Background(), dbqueue.PriorityHigh)
 	if db == nil {
 		return "", result, errors.New("AI 兜底计费失败，请稍后重试")
 	}

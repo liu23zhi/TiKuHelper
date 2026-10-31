@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
@@ -725,6 +726,7 @@ func ProcessPendingTicketNotifications(ctx context.Context, db *gorm.DB, now tim
 	if ctx.Err() != nil {
 		return 0, nil
 	}
+	db = db.WithContext(dbqueue.WithPriority(ctx, dbqueue.PriorityLow))
 	config, err := GetTicketWecomConfigWithDB(db)
 	if err != nil {
 		return 0, err
@@ -885,6 +887,11 @@ func processTicketNotification(ctx context.Context, db *gorm.DB, row entity.Tick
 }
 
 func restoreCanceledTicketNotification(db *gorm.DB, id int64, now time.Time) error {
+	cleanupContext := context.Background()
+	if db != nil && db.Statement != nil && db.Statement.Context != nil {
+		cleanupContext = context.WithoutCancel(db.Statement.Context)
+	}
+	db = db.WithContext(dbqueue.WithPriority(cleanupContext, dbqueue.PriorityLow))
 	return db.Model(&entity.TicketNotification{}).Where("id = ? AND status = ?", id, ticketNotificationSending).
 		Updates(map[string]interface{}{"status": ticketNotificationPending, "next_attempt_at": now, "updated_at": now}).Error
 }
@@ -948,6 +955,7 @@ func RunTicketNotificationWorker(ctx context.Context, db *gorm.DB) error {
 	if db == nil {
 		return errors.New("数据库未初始化")
 	}
+	db = db.WithContext(dbqueue.WithPriority(ctx, dbqueue.PriorityLow))
 	lastInvalidConfig := ""
 	backoff := time.Second
 	nextRecovery := time.Time{}

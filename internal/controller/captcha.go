@@ -1,11 +1,13 @@
 package controller
 
 import (
+	"context"
 	"io"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/dao"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/service"
 )
 
@@ -30,7 +32,7 @@ var checkRemoteCaptchaWithDB = func(input service.RemoteCaptchaProxyInput) ([]by
 }
 
 var loadCaptchaSettings = func() (service.SystemSettingDetail, error) {
-	return service.GetSystemSettingDetailWithDB(dao.User.UnderlyingDB())
+	return service.GetSystemSettingDetailWithDB(withDatabasePriority(dao.User.UnderlyingDB(), context.Background(), dbqueue.PriorityLow))
 }
 
 func CreateCaptchaChallenge(c *gin.Context) {

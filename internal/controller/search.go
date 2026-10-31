@@ -18,6 +18,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/middleware"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/search"
 	"github.com/itihey/tikuAdapter/internal/service"
@@ -129,8 +130,9 @@ var defaultDBSearchProvider = func() func(model.SearchRequest) ([][]string, erro
 	return search.GetDBSearch().SearchAnswer
 }
 
-var resolveSearchRequestContext = func(authorization string, clientIP string, query url.Values) (resolvedSearchRequestContext, error) {
-	return resolveSearchRequestContextWithDB(manager.GetManager().GetDB(), authorization, clientIP, query)
+var resolveSearchRequestContext = func(requestContext context.Context, authorization string, clientIP string, query url.Values) (resolvedSearchRequestContext, error) {
+	db := withDatabasePriority(manager.GetManager().GetDB(), requestContext, dbqueue.PriorityHigh)
+	return resolveSearchRequestContextWithDB(db, authorization, clientIP, query)
 }
 
 type searchClientBinding struct {
@@ -260,10 +262,10 @@ var searchAIAnswer = func(resolved resolvedSearchRequestContext, req model.Searc
 		MaxAISearches:         resolved.AIConfig.MaxAISearches,
 		MaxAISearchRetries:    resolved.AIConfig.MaxAISearchRetries,
 		MaxAIWebReads:         resolved.AIConfig.MaxAIWebReads,
-		SearchTool:            service.BuildUAPISearchToolWithDB(manager.GetManager().GetDB()),
-		OCRCacheProvider:      service.BuildCachedUAPIImageOCRProviderWithDB(manager.GetManager().GetDB()),
+		SearchTool:            service.BuildUAPISearchToolWithDB(withDatabasePriority(manager.GetManager().GetDB(), resolved.Context, dbqueue.PriorityHigh)),
+		OCRCacheProvider:      service.BuildCachedUAPIImageOCRProviderWithDB(withDatabasePriority(manager.GetManager().GetDB(), resolved.Context, dbqueue.PriorityHigh)),
 		OCRAPI:                "https://uapis.cn/api/v1/image/ocr",
-		ContextCompression:    service.BuildAIContextCompressionConfigWithDB(manager.GetManager().GetDB(), resolved.AIConfig),
+		ContextCompression:    service.BuildAIContextCompressionConfigWithDB(withDatabasePriority(manager.GetManager().GetDB(), resolved.Context, dbqueue.PriorityHigh), resolved.AIConfig),
 		RequestID:             resolved.RequestID,
 	}
 	logger.SysLog(fmt.Sprintf("AI搜题开始 requestId=%s %s", strings.TrimSpace(resolved.RequestID), buildSearchRequestDebugSummary(req)))
@@ -294,7 +296,7 @@ func Search(c *gin.Context) {
 
 	query := c.Request.URL.Query()
 	useQuery := query.Get("use")
-	resolveResult, resolveErr := resolveSearchRequestContext(c.GetHeader("Authorization"), c.ClientIP(), query)
+	resolveResult, resolveErr := resolveSearchRequestContext(c.Request.Context(), c.GetHeader("Authorization"), c.ClientIP(), query)
 	if resolveErr != nil {
 		if errors.Is(resolveErr, service.ErrInvalidAccessTokenAuthorization) {
 			writeSearchUnauthorized(c, resolveErr, rawBody)
@@ -800,7 +802,8 @@ func buildSearchAuditMetadata(c *gin.Context, resolved resolvedSearchRequestCont
 
 	localQuestionID := int32(0)
 	if usedLocalSearch {
-		localQuestionID = resolveLocalQuestionID(resolveSearchPersistenceDB(), req, true)
+		db := withDatabasePriority(resolveSearchPersistenceDB(), databaseRequestContext(c), dbqueue.PriorityHigh)
+		localQuestionID = resolveLocalQuestionID(db, req, true)
 	}
 
 	return searchAuditMetadata{
@@ -952,7 +955,7 @@ func resolveSearchUnauthorizedAuditUser(authorization string) *entity.User {
 	if strings.TrimSpace(authorization) == "" {
 		return nil
 	}
-	db := resolveSearchPersistenceDB()
+	db := withDatabasePriority(resolveSearchPersistenceDB(), context.Background(), dbqueue.PriorityHigh)
 	if db == nil {
 		return nil
 	}
@@ -1043,7 +1046,7 @@ func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQue
 		return nil, ""
 	}
 
-	db := resolveSearchPersistenceDB()
+	db := withDatabasePriority(resolveSearchPersistenceDB(), resolved.Context, dbqueue.PriorityHigh)
 	if db == nil {
 		logger.SysError(fmt.Sprintf("搜索计费落账失败：数据库不可用 requestId=%s", resolved.RequestID))
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_db_unavailable", clientIP, audit)
@@ -1782,7 +1785,7 @@ func backfillSearchAuditLocalQuestionID(resolved resolvedSearchRequestContext, q
 	if questionID <= 0 {
 		return
 	}
-	db := resolveSearchPersistenceDB()
+	db := withDatabasePriority(resolveSearchPersistenceDB(), context.Background(), dbqueue.PriorityLow)
 	if db == nil {
 		return
 	}

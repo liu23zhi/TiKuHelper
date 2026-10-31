@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"net/url"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 )
@@ -910,6 +912,9 @@ func applyBillingFeeSequenceFallback(details []BillingRecordFeeDetail) {
 
 // BillingRecordListQuery 是账单列表的筛选条件。
 type BillingRecordListQuery struct {
+	// RequestContext allows an HTTP caller to cancel a queued low-priority read.
+	// It is transport metadata and is not part of the billing filter itself.
+	RequestContext context.Context `json:"-"`
 	// Keyword 同时匹配题目、用户名、渠道、模型、请求 ID、令牌名与备注。
 	Keyword string
 	// Type 精确匹配账单类型（题目消费 / 充值入账 / 新用户赠送）。
@@ -929,6 +934,9 @@ type BillingRecordListQuery struct {
 // 一次搜题命中多个渠道会写成多条 normal_search，同一 request_id 视为**一笔消费**，
 // 其金额为组内明细之和，避免重复累加，也避免只算最新一条而漏掉其他渠道。
 func ListBillingRecordsWithDB(db *gorm.DB, operator entity.User, query BillingRecordListQuery, page int, pageSize int) (BillingRecordListResult, error) {
+	if query.RequestContext != nil {
+		db = db.WithContext(dbqueue.WithPriority(query.RequestContext, dbqueue.PriorityLow))
+	}
 	includeHidden := isAdminUser(operator)
 	baseQuery := applyBillingRecordFilters(buildBillingRecordDisplayQuery(db, operator), query, includeHidden)
 

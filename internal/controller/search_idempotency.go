@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"gorm.io/gorm"
 )
@@ -26,7 +27,7 @@ func SearchWithIdempotency(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Idempotency-Key 长度不能超过 128 个字符"})
 		return
 	}
-	db := resolveSearchPersistenceDB()
+	db := withDatabasePriority(resolveSearchPersistenceDB(), databaseRequestContext(c), dbqueue.PriorityHigh)
 	if db == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "搜题服务暂不可用"})
 		return

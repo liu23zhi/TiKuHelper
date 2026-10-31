@@ -1,10 +1,12 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
 )
@@ -13,7 +15,7 @@ func SearchAccountConfigList(c *gin.Context) {
 	if !requireAdmin(c) {
 		return
 	}
-	configs, err := service.ListSearchAccountConfigsWithDB(manager.GetManager().GetDB())
+	configs, err := service.ListSearchAccountConfigsWithDB(withDatabasePriority(manager.GetManager().GetDB(), context.Background(), dbqueue.PriorityLow))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"message": "获取默认账号配置失败",

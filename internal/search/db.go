@@ -1,11 +1,13 @@
 package search
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 
 	"github.com/go-resty/resty/v2"
 	"github.com/itihey/tikuAdapter/internal/dao"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/pkg/model"
 	"github.com/itihey/tikuAdapter/pkg/util"
 )
@@ -32,8 +34,13 @@ func (in *dBSearch) SearchAnswer(req model.SearchRequest) (answer [][]string, er
 	// 保证公式切换与灰度共存期间已有题库不会失联。
 	hashCandidates := util.BuildTikuHashCandidates(req.Question, req.Options, req.Type)
 
+	requestContext := req.RequestContext
+	if requestContext == nil {
+		requestContext = context.Background()
+	}
+	ctx := dbqueue.WithPriority(requestContext, dbqueue.PriorityHigh)
 	tiku := dao.Tiku
-	tx := tiku.Where(tiku.Hash.In(hashCandidates...))
+	tx := tiku.WithContext(ctx).Where(tiku.Hash.In(hashCandidates...))
 
 	// 如果提供了courseName，则也匹配courseName
 	if req.CourseName != "" {
@@ -46,7 +53,7 @@ func (in *dBSearch) SearchAnswer(req model.SearchRequest) (answer [][]string, er
 	}
 	// 如果数据库中没有extra那么自动补全他
 	if len(find) == 1 && find[0].Extra == "" {
-		_, err1 := tiku.Where(tiku.ID.Eq(find[0].ID)).Update(tiku.Extra, req.Extra)
+		_, err1 := tiku.WithContext(ctx).Where(tiku.ID.Eq(find[0].ID)).Update(tiku.Extra, req.Extra)
 		if err1 != nil {
 			log.Println("更新extra失败", err1)
 		}

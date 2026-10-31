@@ -1,18 +1,20 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
 )
 
 var listPaymentMethods = func(user entity.User) ([]entity.PaymentMethod, error) {
-	return service.ListPaymentMethodsWithDB(manager.GetManager().GetDB(), isAdminUser(&user))
+	return service.ListPaymentMethodsWithDB(withDatabasePriority(manager.GetManager().GetDB(), context.Background(), dbqueue.PriorityLow), isAdminUser(&user))
 }
 
 var createPaymentMethod = func(user entity.User, input service.CreatePaymentMethodInput) (entity.PaymentMethod, error) {

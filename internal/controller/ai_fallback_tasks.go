@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/model"
@@ -301,7 +303,7 @@ func CreateAIFallbackTask(c *gin.Context) {
 				auditResult("panic", result)
 			}
 		}()
-		db := resolveSearchPersistenceDB()
+		db := withDatabasePriority(resolveSearchPersistenceDB(), context.Background(), dbqueue.PriorityHigh)
 		currentBillingCtx, err := loadAIFallbackBillingContextWithDB(db, billingCtx.UserID, billingCtx.AccessTokenID)
 		if err != nil {
 			result := service.BuildAIFallbackInsufficientBalanceResult(err.Error())

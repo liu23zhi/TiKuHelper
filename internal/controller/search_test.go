@@ -2,6 +2,7 @@ package controller
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -198,7 +199,9 @@ func withStubSearchDependencies(
 	// 中途替换会让「读到的实例」与「持锁的实例」不一致，留下永不释放的锁。
 	searchResultCache.clear()
 	fallbackResultCache.clear()
-	resolveSearchRequestContext = resolver
+	resolveSearchRequestContext = func(_ context.Context, authorization string, clientIP string, query url.Values) (resolvedSearchRequestContext, error) {
+		return resolver(authorization, clientIP, query)
+	}
 	buildSearchClients = remoteBuilder
 	buildSearchClientBindings = func(resolved resolvedSearchRequestContext, useQuery string) []searchClientBinding {
 		clients := remoteBuilder(resolved, useQuery)
@@ -239,7 +242,7 @@ func TestSearchReturnsUnauthorizedDetailAndRequestSnapshot(t *testing.T) {
 	defer func() {
 		resolveSearchRequestContext = originalResolver
 	}()
-	resolveSearchRequestContext = func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+	resolveSearchRequestContext = func(context.Context, string, string, url.Values) (resolvedSearchRequestContext, error) {
 		return resolvedSearchRequestContext{}, fmt.Errorf("%w: Authorization 必须使用 Basic 方案", service.ErrInvalidAccessTokenAuthorization)
 	}
 
@@ -316,7 +319,7 @@ func TestSearchUnauthorizedWritesAuditLogWithResolvedUser(t *testing.T) {
 
 	originalResolver := resolveSearchRequestContext
 	defer func() { resolveSearchRequestContext = originalResolver }()
-	resolveSearchRequestContext = func(authorization string, clientIP string, query url.Values) (resolvedSearchRequestContext, error) {
+	resolveSearchRequestContext = func(_ context.Context, authorization string, clientIP string, query url.Values) (resolvedSearchRequestContext, error) {
 		return resolveSearchRequestContextWithDB(db, authorization, clientIP, query)
 	}
 
@@ -1936,7 +1939,7 @@ func TestSearchRejectsDisabledLocalSearchEvenForAuthenticatedRequests(t *testing
 		resolveSearchRequestContext = originalResolver
 		buildSearchClientBindings = originalClientBindings
 	}()
-	resolveSearchRequestContext = func(authorization string, clientIP string, query url.Values) (resolvedSearchRequestContext, error) {
+	resolveSearchRequestContext = func(_ context.Context, authorization string, clientIP string, query url.Values) (resolvedSearchRequestContext, error) {
 		return resolveSearchRequestContextWithDB(db, authorization, clientIP, query)
 	}
 	buildSearchClientBindings = func(resolvedSearchRequestContext, string) []searchClientBinding {
@@ -2380,7 +2383,7 @@ func TestSearchRejectsNegativeBalanceUserWithoutExplicitProviderParams(t *testin
 		resolveSearchRequestContext = originalResolver
 		buildSearchClientBindings = originalClientBindings
 	}()
-	resolveSearchRequestContext = func(authorization string, clientIP string, query url.Values) (resolvedSearchRequestContext, error) {
+	resolveSearchRequestContext = func(_ context.Context, authorization string, clientIP string, query url.Values) (resolvedSearchRequestContext, error) {
 		return resolveSearchRequestContextWithDB(db, authorization, clientIP, query)
 	}
 	buildSearchClientBindings = func(resolved resolvedSearchRequestContext, useQuery string) []searchClientBinding {
@@ -2452,7 +2455,7 @@ func TestSearchUnauthorizedLogsBusinessRejectionAsWarning(t *testing.T) {
 		resolveSearchRequestContext = originalResolver
 		buildSearchClientBindings = originalClientBindings
 	}()
-	resolveSearchRequestContext = func(authorization string, clientIP string, query url.Values) (resolvedSearchRequestContext, error) {
+	resolveSearchRequestContext = func(_ context.Context, authorization string, clientIP string, query url.Values) (resolvedSearchRequestContext, error) {
 		return resolveSearchRequestContextWithDB(db, authorization, clientIP, query)
 	}
 	buildSearchClientBindings = func(resolved resolvedSearchRequestContext, useQuery string) []searchClientBinding {

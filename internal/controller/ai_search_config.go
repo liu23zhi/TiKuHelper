@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	internalsearch "github.com/itihey/tikuAdapter/internal/search"
 	"github.com/itihey/tikuAdapter/internal/service"
@@ -38,7 +39,7 @@ var runAISearchDebug = func(input aiSearchTestInput) ([][]string, internalsearch
 		query.Set("model", strings.TrimSpace(input.Model))
 	}
 
-	resolved, err := service.BuildAISearchRequestConfigWithDB(manager.GetManager().GetDB(), query, true)
+	resolved, err := service.BuildAISearchRequestConfigWithDB(withDatabasePriority(manager.GetManager().GetDB(), input.requestContext, dbqueue.PriorityLow), query, true)
 	if err != nil {
 		return nil, internalsearch.AISearchDebugResult{}, err
 	}
@@ -55,8 +56,8 @@ var runAISearchDebug = func(input aiSearchTestInput) ([][]string, internalsearch
 		MaxAISearches:         resolved.Config.MaxAISearches,
 		MaxAISearchRetries:    resolved.Config.MaxAISearchRetries,
 		MaxAIWebReads:         resolved.Config.MaxAIWebReads,
-		SearchTool:            service.BuildUAPISearchToolWithDB(manager.GetManager().GetDB()),
-		ContextCompression:    service.BuildAIContextCompressionConfigWithDB(manager.GetManager().GetDB(), resolved.Config),
+		SearchTool:            service.BuildUAPISearchToolWithDB(withDatabasePriority(manager.GetManager().GetDB(), input.requestContext, dbqueue.PriorityLow)),
+		ContextCompression:    service.BuildAIContextCompressionConfigWithDB(withDatabasePriority(manager.GetManager().GetDB(), input.requestContext, dbqueue.PriorityLow), resolved.Config),
 	}
 	if strings.TrimSpace(client.Prompt) == "" {
 		client.Prompt = resolved.Config.Prompt
@@ -68,7 +69,7 @@ func AISearchConfigDetail(c *gin.Context) {
 	if !requireAdmin(c) {
 		return
 	}
-	config, err := service.GetAISearchConfigWithDB(manager.GetManager().GetDB())
+	config, err := service.GetAISearchConfigWithDB(withDatabasePriority(manager.GetManager().GetDB(), databaseRequestContext(c), dbqueue.PriorityLow))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"message": "获取 AI 搜索配置失败",
@@ -83,7 +84,7 @@ func AISearchModels(c *gin.Context) {
 	if !requireAdmin(c) {
 		return
 	}
-	models, err := service.ListAISearchModelsWithDB(manager.GetManager().GetDB(), c.Request.URL.Query())
+	models, err := service.ListAISearchModelsWithDB(withDatabasePriority(manager.GetManager().GetDB(), databaseRequestContext(c), dbqueue.PriorityLow), c.Request.URL.Query())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"message": "获取 AI 模型列表失败",
@@ -141,7 +142,7 @@ func AISearchConfigPricingStatus(c *gin.Context) {
 		return
 	}
 
-	status, err := service.InspectAISearchModelPricingWithDB(manager.GetManager().GetDB())
+	status, err := service.InspectAISearchModelPricingWithDB(withDatabasePriority(manager.GetManager().GetDB(), databaseRequestContext(c), dbqueue.PriorityLow))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"message": "获取模型定价状态失败",

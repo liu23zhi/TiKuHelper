@@ -11,6 +11,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/configs"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 	"net/url"
@@ -118,6 +119,20 @@ func TestRegisterDBAddsAccountDomainTables(t *testing.T) {
 		if !db.Migrator().HasTable(table) {
 			t.Fatalf("expected table %s to be migrated", table)
 		}
+	}
+}
+
+func TestRegisterDBUsesSharedDatabaseScheduler(t *testing.T) {
+	openRegistryTestDB(t)
+
+	if _, ok := db.ConnPool.(*dbqueue.Pool); !ok {
+		t.Fatalf("db.ConnPool type = %T, want *dbqueue.Pool", db.ConnPool)
+	}
+	if _, ok := db.Statement.ConnPool.(*dbqueue.Pool); !ok {
+		t.Fatalf("db.Statement.ConnPool type = %T, want *dbqueue.Pool", db.Statement.ConnPool)
+	}
+	if _, ok := db.Config.ConnPool.(*dbqueue.Pool); !ok {
+		t.Fatalf("db.Config.ConnPool type = %T, want *dbqueue.Pool", db.Config.ConnPool)
 	}
 }
 

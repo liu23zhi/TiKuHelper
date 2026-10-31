@@ -1,18 +1,20 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
 )
 
 var listAIModelPrices = func() ([]entity.AIModelPrice, error) {
-	return service.ListAIModelPricesWithDB(manager.GetManager().GetDB())
+	return service.ListAIModelPricesWithDB(withDatabasePriority(manager.GetManager().GetDB(), context.Background(), dbqueue.PriorityLow))
 }
 
 var createAIModelPrice = func(input service.CreateAIModelPriceInput) (entity.AIModelPrice, error) {

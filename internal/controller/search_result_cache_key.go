@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/logger"
@@ -91,7 +93,7 @@ func normalizeSearchUseKey(useQuery string) string {
 func buildSearchSourceDigest(resolved resolvedSearchRequestContext, useQuery string) string {
 	parts := []string{
 		"use=" + normalizeSearchUseKey(useQuery),
-		"uapiSearch=" + strconv.FormatBool(uapiSearchToolEnabled()),
+		"uapiSearch=" + strconv.FormatBool(uapiSearchToolEnabled(resolved.Context)),
 	}
 
 	// 实际会启用的渠道集合（排序保证稳定）。
@@ -115,12 +117,12 @@ func buildSearchSourceDigest(resolved resolvedSearchRequestContext, useQuery str
 	return hex.EncodeToString(sum[:16])
 }
 
-func uapiSearchToolEnabled() bool {
+func uapiSearchToolEnabled(requestContext context.Context) bool {
 	currentManager := manager.GetManager()
 	if currentManager == nil {
 		return false
 	}
-	key := strings.TrimSpace(service.GetUAPIAPIKeyWithDB(currentManager.GetDB()))
+	key := strings.TrimSpace(service.GetUAPIAPIKeyWithDB(withDatabasePriority(currentManager.GetDB(), requestContext, dbqueue.PriorityHigh)))
 	return strings.HasPrefix(key, "uapi-") && len(key) > len("uapi-")
 }
 
@@ -157,7 +159,7 @@ func buildSearchResultCacheKey(resolved resolvedSearchRequestContext, req model.
 		DeepThinking: req.DeepThinking,
 		Use:          normalizeSearchUseKey(useQuery),
 		SourceDigest: buildSearchSourceDigest(resolved, useQuery),
-		UAPISearch:   uapiSearchToolEnabled(),
+		UAPISearch:   uapiSearchToolEnabled(resolved.Context),
 	})
 	if !ok {
 		return "", epoch, false

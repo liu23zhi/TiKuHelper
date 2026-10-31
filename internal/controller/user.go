@@ -14,6 +14,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/util"
@@ -249,7 +250,7 @@ func UserInfo(c *gin.Context) {
 
 	// 普通用户也需要知道当前生效的充值下限，避免管理员调整后页面仍按旧默认值提交。
 	// 读取失败时使用服务层默认值，不影响用户信息接口本身。
-	minimum := service.GetMinRechargeAmountWithDB(dao.User.UnderlyingDB())
+	minimum := service.GetMinRechargeAmountWithDB(withDatabasePriority(dao.User.UnderlyingDB(), databaseRequestContext(c), dbqueue.PriorityLow))
 	c.JSON(http.StatusOK, struct {
 		*entity.User
 		MinRechargeAmount float64 `json:"minRechargeAmount"`
@@ -322,7 +323,7 @@ func UserLogin(c *gin.Context) {
 
 // UserRegister 公开注册
 func UserRegister(c *gin.Context) {
-	enabled, err := service.GetRegisterEnabledWithDB(dao.User.UnderlyingDB())
+	enabled, err := service.GetRegisterEnabledWithDB(withDatabasePriority(dao.User.UnderlyingDB(), databaseRequestContext(c), dbqueue.PriorityLow))
 	if err != nil {
 		c.JSON(400, gin.H{
 			"message": "注册配置读取失败",
@@ -924,7 +925,7 @@ func UserList(c *gin.Context) {
 		pageSize = 10
 	}
 
-	query := buildUserListQuery(dao.User.UnderlyingDB().Model(&entity.User{}), c.Query("keyword"), c.Query("role"), c.Query("status"))
+	query := buildUserListQuery(withDatabasePriority(dao.User.UnderlyingDB(), databaseRequestContext(c), dbqueue.PriorityLow).Model(&entity.User{}), c.Query("keyword"), c.Query("role"), c.Query("status"))
 
 	var total int64
 	if err := query.Count(&total).Error; err != nil {

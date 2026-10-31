@@ -1,21 +1,23 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 )
 
 var loadSystemSettingDetail = func() (service.SystemSettingDetail, error) {
-	return service.GetSystemSettingDetailWithDB(manager.GetManager().GetDB())
+	return service.GetSystemSettingDetailWithDB(withDatabasePriority(manager.GetManager().GetDB(), context.Background(), dbqueue.PriorityLow))
 }
 
 var loadPublicAuthSettings = func() (service.PublicAuthSettings, error) {
-	return service.GetPublicAuthSettingsWithDB(manager.GetManager().GetDB())
+	return service.GetPublicAuthSettingsWithDB(withDatabasePriority(manager.GetManager().GetDB(), context.Background(), dbqueue.PriorityLow))
 }
 
 var updateSystemSettingDetail = func(input service.UpdateSystemSettingInput) (service.SystemSettingDetail, error) {

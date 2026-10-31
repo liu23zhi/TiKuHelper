@@ -1,8 +1,10 @@
 package controller
 
 import (
+	"context"
 	"strings"
 
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	internalsearch "github.com/itihey/tikuAdapter/internal/search"
 	"github.com/itihey/tikuAdapter/internal/service"
@@ -62,7 +64,7 @@ func uapiSearchToolEnabledForFallback() bool {
 	if currentManager == nil {
 		return false
 	}
-	key := strings.TrimSpace(service.GetUAPIAPIKeyWithDB(currentManager.GetDB()))
+	key := strings.TrimSpace(service.GetUAPIAPIKeyWithDB(withDatabasePriority(currentManager.GetDB(), context.Background(), dbqueue.PriorityHigh)))
 	return strings.HasPrefix(key, "uapi-") && len(key) > len("uapi-")
 }
 

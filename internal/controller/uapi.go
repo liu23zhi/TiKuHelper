@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/internal/uapi"
 )
@@ -47,7 +48,7 @@ func UAPIPhoneInfo(c *gin.Context) {
 	}
 
 	// 用与搜题链路相同的安全取库方式：manager 未初始化时返回 nil，避免空指针崩溃。
-	db := resolveSearchPersistenceDB()
+	db := withDatabasePriority(resolveSearchPersistenceDB(), databaseRequestContext(c), dbqueue.PriorityLow)
 	apiKey := service.GetUAPIAPIKeyWithDB(db)
 	locations, lookupErr := lookupPhoneLocationsDetailed(db, phones, service.LocationQueryOptions{
 		UAPIKey: apiKey,
@@ -79,7 +80,7 @@ func UAPIIPInfo(c *gin.Context) {
 	}
 
 	// 用与搜题链路相同的安全取库方式：manager 未初始化时返回 nil，避免空指针崩溃。
-	db := resolveSearchPersistenceDB()
+	db := withDatabasePriority(resolveSearchPersistenceDB(), databaseRequestContext(c), dbqueue.PriorityLow)
 	apiKey := service.GetUAPIAPIKeyWithDB(db)
 	locations, lookupErr := service.LookupIPLocationsDetailedWithDB(db, ips, service.LocationQueryOptions{
 		UAPIKey: apiKey,
@@ -96,7 +97,7 @@ func UAPIMyLocations(c *gin.Context) {
 	if !ok {
 		return
 	}
-	db := resolveSearchPersistenceDB()
+	db := withDatabasePriority(resolveSearchPersistenceDB(), databaseRequestContext(c), dbqueue.PriorityLow)
 	phones := make([]string, 0, 1)
 	if operator.Phone != nil {
 		phones = append(phones, *operator.Phone)
@@ -134,7 +135,7 @@ func LocationCacheList(c *gin.Context) {
 	}
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
-	result, err := service.ListLocationCacheWithDB(resolveSearchPersistenceDB(), service.LocationCacheListQuery{
+	result, err := service.ListLocationCacheWithDB(withDatabasePriority(resolveSearchPersistenceDB(), databaseRequestContext(c), dbqueue.PriorityLow), service.LocationCacheListQuery{
 		Kind: c.Query("kind"), Keyword: c.Query("keyword"), Source: c.Query("source"),
 	}, page, pageSize)
 	if err != nil {

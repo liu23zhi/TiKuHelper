@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"time"
@@ -9,11 +10,12 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/service"
 )
 
 var loadWechatLoginSettings = func() (service.SystemSettingDetail, error) {
-	return service.GetSystemSettingDetailWithDB(dao.User.UnderlyingDB())
+	return service.GetSystemSettingDetailWithDB(withDatabasePriority(dao.User.UnderlyingDB(), context.Background(), dbqueue.PriorityLow))
 }
 
 var createWechatLoginQRCodeWithDB = func(client service.WechatLoginClient) (service.WechatQRCodeResult, error) {

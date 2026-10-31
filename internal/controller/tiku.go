@@ -6,6 +6,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/middleware"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"net/http"
 	"strconv"
@@ -173,7 +174,7 @@ func GetQuestions(c *gin.Context) {
 		return
 	}
 
-	tx := dao.Tiku.Order(dao.Tiku.ID.Desc())
+	tx := dao.Tiku.WithContext(dbqueue.WithPriority(databaseRequestContext(c), dbqueue.PriorityLow)).Order(dao.Tiku.ID.Desc())
 	if searchValue.Question != "" {
 		tx.Where(dao.Tiku.Question.Like("%" + searchValue.Question + "%"))
 	}
@@ -348,7 +349,7 @@ func CreateQuestion(c *gin.Context) {
 func Courses(c *gin.Context) {
 	// plat 已从题库模型移除（历史取值恒为 -1，无区分度），
 	// 因此这里不再按平台过滤；为兼容旧前端仍接受该参数但忽略其值。
-	tx := dao.Tiku.Select(dao.Tiku.CourseName)
+	tx := dao.Tiku.WithContext(dbqueue.WithPriority(databaseRequestContext(c), dbqueue.PriorityLow)).Select(dao.Tiku.CourseName)
 
 	find, err := tx.Group(dao.Tiku.CourseName).Find()
 	if err != nil {

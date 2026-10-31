@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/itihey/tikuAdapter/configs"
 	"github.com/itihey/tikuAdapter/internal/dao"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"gorm.io/driver/mysql"
 	"os"
 	"path/filepath"
@@ -30,6 +31,7 @@ func (*userWechatBindingSchema) TableName() string {
 }
 
 var db *gorm.DB
+var databaseScheduler *dbqueue.Scheduler
 var once sync.Once
 var idempotencyCleanupStop func()
 
@@ -38,6 +40,13 @@ func CloseDB() error {
 	if idempotencyCleanupStop != nil {
 		idempotencyCleanupStop()
 		idempotencyCleanupStop = nil
+	}
+	if databaseScheduler != nil {
+		databaseScheduler.Close()
+		databaseScheduler = nil
+	}
+	if db == nil {
+		return nil
 	}
 	sqlDB, err := db.DB()
 	if err != nil {
@@ -556,6 +565,20 @@ func RegisterDB(config configs.Config) *gorm.DB {
 				logger.FatalLog(fmt.Errorf("configure sqlite connection fail: %w", err))
 			}
 		}
+		maxActive := 1
+		if db.Dialector.Name() != "sqlite" {
+			// Keep MySQL concurrency while still applying the same priority gate.
+			// SQLite is configured with one connection and therefore stays serial.
+			maxActive = 32
+			if sqlDB, statsErr := db.DB(); statsErr == nil && sqlDB.Stats().MaxOpenConnections > 0 {
+				maxActive = sqlDB.Stats().MaxOpenConnections
+			}
+		}
+		databaseScheduler = dbqueue.NewScheduler(maxActive)
+		managedPool := dbqueue.Wrap(db.ConnPool, databaseScheduler)
+		db.ConnPool = managedPool
+		db.Config.ConnPool = managedPool
+		db.Statement.ConnPool = managedPool
 		dao.SetDefault(db)
 	})
 	err := db.AutoMigrate(&entity.Tiku{})

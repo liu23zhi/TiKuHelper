@@ -36,8 +36,9 @@ func BillingRecordList(c *gin.Context) {
 	}
 
 	filter := service.BillingRecordListQuery{
-		Keyword: util.NormalizeSearchKeyword(c.Query("keyword")),
-		Type:    strings.TrimSpace(c.Query("type")),
+		RequestContext: c.Request.Context(),
+		Keyword:        util.NormalizeSearchKeyword(c.Query("keyword")),
+		Type:           strings.TrimSpace(c.Query("type")),
 	}
 
 	result, err := listBillingRecords(operator, filter, page, pageSize)
