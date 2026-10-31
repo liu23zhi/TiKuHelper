@@ -60,6 +60,18 @@ func TestAISearchOCRUsesDownloadedBytesAndKeepsVisionParts(t *testing.T) {
 	}
 }
 
+func TestAISearchOCRReportsCachedProviderResultsWithDownloadedImage(t *testing.T) {
+	client := &ChatGptClient{OCRCacheProvider: func(context.Context, string, string, string, []byte) (string, bool, error) {
+		return "缓存的识别结构", true, nil
+	}}
+	text, calls := client.runAISearchImageOCR(context.Background(), []downloadedAISearchAttachment{
+		{sourceURL: "https://images.example/cached.png", imageName: "cached.png", contentType: "image/png", body: []byte("image")},
+	})
+	if !strings.Contains(text, "缓存的识别结构") || len(calls) != 1 || calls[0].Status != "success" || !calls[0].Cached {
+		t.Fatalf("cached OCR result was not included or marked: text=%q usage=%+v", text, calls)
+	}
+}
+
 func TestAISearchMissingAllImagesStillLeavesTheModelAQuestion(t *testing.T) {
 	client := &ChatGptClient{}
 	parts, calls := client.buildAISearchPromptPartsWithOCR(context.Background(), model.SearchRequest{
@@ -110,7 +122,7 @@ func TestAISearchOCRSkipsHTMLAttachments(t *testing.T) {
 	}
 }
 
-func TestAISearchOCRReportsCachedProviderResults(t *testing.T) {
+func TestAISearchOCRReportsCachedProviderResultsWithExplicitMetadata(t *testing.T) {
 	client := &ChatGptClient{OCRCacheProvider: func(_ context.Context, _, _, _ string, _ []byte) (string, bool, error) {
 		return "缓存的识别结构", true, nil
 	}}
