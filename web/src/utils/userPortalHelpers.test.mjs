@@ -77,6 +77,7 @@ test('buildPortalMenuKeys includes personal usage for admin users', () => {
     'ai-search-config',
     'system-settings',
     'access-tokens',
+    'tickets',
   ]);
   assert.deepEqual(buildPortalMenuKeys({ role: 'user' }), [
     'profile',
@@ -84,6 +85,7 @@ test('buildPortalMenuKeys includes personal usage for admin users', () => {
     'access-tokens',
     'recharge-orders',
     'billing-records',
+    'tickets',
   ]);
 });
 

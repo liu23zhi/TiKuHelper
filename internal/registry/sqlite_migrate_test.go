@@ -39,7 +39,8 @@ func allEntities() []interface{} {
 		&entity.AccessToken{}, &entity.SystemSetting{}, &entity.PriceRule{},
 		&entity.PaymentMethod{}, &entity.RechargeOrder{}, &entity.BillingRecord{},
 		&entity.AIModelPrice{}, &entity.SMSVerificationCode{}, &entity.CaptchaChallenge{},
-		&entity.CaptchaToken{}, &entity.LocationCache{},
+		&entity.CaptchaToken{}, &entity.LocationCache{}, &entity.Ticket{},
+		&entity.TicketMessage{}, &entity.TicketNotification{},
 	}
 }
 

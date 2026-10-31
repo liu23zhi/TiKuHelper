@@ -28,6 +28,7 @@ export function buildPortalMenuKeys(user) {
         'ai-search-config',
         'system-settings',
         'access-tokens',
+        'tickets',
       ]
     : [
         'profile',
@@ -35,6 +36,7 @@ export function buildPortalMenuKeys(user) {
         'access-tokens',
         'recharge-orders',
         'billing-records',
+        'tickets',
       ]
 }
 

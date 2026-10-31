@@ -10,6 +10,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const RegisterEnabledSettingKey = "register_enabled"
@@ -975,7 +976,7 @@ func normalizeEnabledWechatLoginMode(value string, scanEnabled bool, codeEnabled
 func getSystemSettingByKey(db *gorm.DB, key string) (entity.SystemSetting, bool, error) {
 	var setting entity.SystemSetting
 	freshDB := db.Session(&gorm.Session{NewDB: true})
-	if err := freshDB.Where("key = ?", key).First(&setting).Error; err != nil {
+	if err := freshDB.Where(clause.Eq{Column: clause.Column{Name: "key"}, Value: key}).First(&setting).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return entity.SystemSetting{}, false, nil
 		}

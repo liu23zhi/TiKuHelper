@@ -605,6 +605,9 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		&entity.CaptchaToken{},
 		// 归属地查询结果的持久化缓存（节省按积分计费的 UAPI 调用）。
 		&entity.LocationCache{},
+		&entity.Ticket{},
+		&entity.TicketMessage{},
+		&entity.TicketNotification{},
 	)
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
