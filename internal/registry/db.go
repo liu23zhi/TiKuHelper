@@ -541,14 +541,20 @@ func RegisterDB(config configs.Config) *gorm.DB {
 
 			// 包一层：SQLite 下不再让 AutoMigrate 逐列 AlterColumn（每次都会整表重建），
 			// 详见 sqlite_migrate.go。
-			conn = sqliteQuietDialector{Dialector: sqlite.Open(dbPath)}
+			conn = sqliteQuietDialector{Dialector: sqlite.Open(sqliteProductionDSN(dbPath))}
 		}
+		prepareStmt := prepareStatementsFor(config.Mysql, os.Getenv("SQL_DSN"))
 		db, err = gorm.Open(conn, &gorm.Config{
-			PrepareStmt: true,
+			PrepareStmt: prepareStmt,
 			Logger:      newDatabaseLogger(),
 		})
 		if err != nil {
 			logger.FatalLog(fmt.Errorf("open db fail: %w", err))
+		}
+		if !prepareStmt {
+			if err := configureSQLiteConnection(db, config.Database.Path); err != nil {
+				logger.FatalLog(fmt.Errorf("configure sqlite connection fail: %w", err))
+			}
 		}
 		dao.SetDefault(db)
 	})
@@ -611,6 +617,10 @@ func RegisterDB(config configs.Config) *gorm.DB {
 	)
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
+	}
+
+	if err := runStartupMigration("ensureBillingRecordIndexes", func() error { return ensureBillingRecordIndexes(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare billing record indexes fail: %w", err))
 	}
 
 	if err := runStartupMigration("ensureAuditCorrelationSchema", func() error { return ensureAuditCorrelationSchema(db) }); err != nil {

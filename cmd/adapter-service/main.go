@@ -90,7 +90,6 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
-	notificationWorkerDone := service.StartTicketNotificationWorker(shutdownContext, mg.GetDB())
 	shutdownDone := shutdownHTTPServerOnCancel(shutdownContext, httpServer)
 	logger.SysLog("Tiku 服务启动 address=" + httpServer.Addr)
 	logTimeBase()
@@ -101,7 +100,6 @@ func main() {
 	stop()
 	<-shutdownDone
 	<-extensionDone
-	<-notificationWorkerDone
 	logger.SysLog("Tiku 服务已停止")
 }
 

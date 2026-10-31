@@ -39,6 +39,24 @@ services:
       - ./logs:/app/logs
       - ./config.yaml:/app/config.yaml:ro
 
+  ticket-notification-worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: tiku-ticket-notification-worker
+    restart: unless-stopped
+    entrypoint: ["/app/ticket-notification-worker"]
+    command: ["-log-dir", "/app/logs/ticket-worker"]
+    depends_on:
+      - tiku-adapter
+    environment:
+      JWT_SECRET: "${JWT_SECRET:-}"
+      TZ: Asia/Shanghai
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config.yaml:/app/config.yaml:ro
+
   nginx:
     image: nginx:alpine
     container_name: tiku-nginx

@@ -18,6 +18,10 @@
 docker build -t tiku-adapter .
 ```
 
+镜像同时包含主服务 `/app/tiku-adapter` 和工单提醒 worker
+`/app/ticket-notification-worker`。使用本目录的 Compose 配置时，两个进程共享
+`./data`、`./config.yaml` 和日志目录；worker 不监听 HTTP 端口。
+
 ### 运行容器
 
 #### 基础运行（使用默认配置）
@@ -52,6 +56,19 @@ docker run -d \
   tiku-adapter
 ```
 
+使用 `docker run` 时还需要单独启动共享同一数据卷的 worker：
+
+```bash
+docker run -d \
+  --name tiku-ticket-notification-worker \
+  --restart unless-stopped \
+  --entrypoint /app/ticket-notification-worker \
+  -v ./data:/app/data \
+  -v ./logs:/app/logs \
+  -v ./config.yaml:/app/config.yaml:ro \
+  tiku-adapter -log-dir /app/logs/ticket-worker
+```
+
 ### 目录结构说明
 
 容器内的目录结构：
@@ -79,3 +96,16 @@ database:
 - 如果不指定 `database.path`，默认使用 `tiku.db`（向后兼容，但不适合 Docker 持久化）
 - 将数据库路径设置在 `data` 目录下，可以只挂载该目录，不会影响容器内的程序文件
 - 本地部署（非 Docker）保持默认即可，数据库会在程序所在目录创建
+
+### 原生运行
+
+主服务和工单提醒 worker 需要作为两个进程启动，并使用同一工作目录、配置文件和数据库：
+
+```bash
+./tiku-adapter
+./ticket-notification-worker -log-dir logs/ticket-worker
+```
+
+SQLite 生产库默认启用 WAL、5000ms `busy_timeout`、单连接池和关闭 GORM
+prepared statement；worker 与主服务可以共享同一个数据库文件。MySQL 继续使用
+原有连接池和 prepared statement 配置，不受这些 SQLite 选项影响。

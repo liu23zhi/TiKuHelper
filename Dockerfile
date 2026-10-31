@@ -16,6 +16,7 @@ RUN go mod download
 COPY . .
 COPY --from=builder1 /build/dist ./cmd/adapter-service/dist
 RUN go build -ldflags "-s -w -extldflags '-static'" -o tiku-adapter ./cmd/adapter-service
+RUN go build -ldflags "-s -w -extldflags '-static'" -o ticket-notification-worker ./cmd/ticket-notification-worker
 
 FROM alpine:3.24
 
@@ -29,6 +30,7 @@ RUN apk update \
 ENV TZ=Asia/Shanghai
 
 COPY --from=builder2 /build/tiku-adapter /app/tiku-adapter
+COPY --from=builder2 /build/ticket-notification-worker /app/ticket-notification-worker
 
 # 创建数据目录用于持久化数据库文件
 RUN mkdir -p /app/data

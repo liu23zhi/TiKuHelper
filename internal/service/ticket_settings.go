@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/url"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -51,12 +52,14 @@ func UpdateTicketWecomSettingsWithDB(db *gorm.DB, input UpdateTicketWecomSetting
 	case strings.TrimSpace(input.WebhookURL) != "" && input.WebhookURL != SecretMask:
 		webhook = strings.TrimSpace(input.WebhookURL)
 	}
-	if err := validateTicketWecomWebhookURL(webhook); err != nil {
-		return TicketWecomSettings{}, err
-	}
 	enabled := config.Enabled
 	if input.Enabled != nil {
 		enabled = *input.Enabled
+	}
+	if enabled {
+		if err := validateTicketWecomWebhookURL(webhook); err != nil {
+			return TicketWecomSettings{}, err
+		}
 	}
 	mentioned := config.MentionedList
 	if input.MentionedList != nil {
@@ -76,6 +79,13 @@ func UpdateTicketWecomSettingsWithDB(db *gorm.DB, input UpdateTicketWecomSetting
 			if err := saveSystemSettingValue(tx, item.key, item.value, item.remark); err != nil {
 				return err
 			}
+		}
+		// Disabling or clearing the integration must make existing pending
+		// outbox rows terminal in the same transaction as the configuration
+		// change. They must never be replayed automatically after re-enabling.
+		if configErr := validateTicketWecomConfig(TicketWecomConfig{Enabled: enabled, WebhookURL: webhook}); configErr != nil {
+			_, err := skipPendingTicketNotificationsInTx(tx, configErr.Error(), time.Now())
+			return err
 		}
 		return nil
 	})

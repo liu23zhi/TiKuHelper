@@ -1,7 +1,9 @@
 package service
 
 import (
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -14,7 +16,7 @@ func newTicketSettingsTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&entity.SystemSetting{}); err != nil {
+	if err := db.AutoMigrate(&entity.SystemSetting{}, &entity.TicketNotification{}); err != nil {
 		t.Fatal(err)
 	}
 	sqlDB, err := db.DB()
@@ -53,6 +55,32 @@ func TestTicketWecomSettingsRejectsNonWecomURL(t *testing.T) {
 	enabled := true
 	if _, err := UpdateTicketWecomSettingsWithDB(db, UpdateTicketWecomSettingsInput{Enabled: &enabled, WebhookURL: "http://example.com/hook"}); err == nil {
 		t.Fatal("expected invalid webhook URL")
+	}
+}
+
+func TestTicketWecomSettingsDisableSkipsPendingNotificationsAtomically(t *testing.T) {
+	db := newTicketSettingsTestDB(t)
+	enabled := true
+	if _, err := UpdateTicketWecomSettingsWithDB(db, UpdateTicketWecomSettingsInput{
+		Enabled: &enabled, WebhookURL: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=secret",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	notice := entity.TicketNotification{TicketID: 1, EventType: "new_ticket", Payload: "pending", Status: ticketNotificationPending, NextAttemptAt: &now}
+	if err := db.Create(&notice).Error; err != nil {
+		t.Fatal(err)
+	}
+	disabled := false
+	if _, err := UpdateTicketWecomSettingsWithDB(db, UpdateTicketWecomSettingsInput{Enabled: &disabled}); err != nil {
+		t.Fatal(err)
+	}
+	var stored entity.TicketNotification
+	if err := db.First(&stored, notice.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != ticketNotificationSkipped || stored.NextAttemptAt != nil || !strings.Contains(stored.LastError, "未启用") {
+		t.Fatalf("pending notice was not skipped: %+v", stored)
 	}
 }
 

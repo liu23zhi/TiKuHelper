@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -198,7 +200,7 @@ func TestTicketNotificationWorkerClaimsAndDoesNotRetryFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 	processed, err := ProcessPendingTicketNotifications(context.Background(), db, now)
-	if err != nil || processed != 2 {
+	if err != nil || processed != 0 {
 		t.Fatalf("processed=%d err=%v", processed, err)
 	}
 	var pending, failed, skipped entity.TicketNotification
@@ -211,8 +213,156 @@ func TestTicketNotificationWorkerClaimsAndDoesNotRetryFailed(t *testing.T) {
 	if err := db.First(&skipped, rows[2].ID).Error; err != nil {
 		t.Fatal(err)
 	}
-	if pending.Status != ticketNotificationSkipped || failed.Status != ticketNotificationFailed || skipped.Status != ticketNotificationSkipped {
+	if pending.Status != ticketNotificationPending || failed.Status != ticketNotificationFailed || skipped.Status != ticketNotificationSending {
 		t.Fatalf("statuses: %s/%s/%s", pending.Status, failed.Status, skipped.Status)
+	}
+	if _, err := SkipPendingTicketNotifications(db, ErrTicketWebhookNotConfigured.Error(), now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecoverStaleTicketNotifications(db, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&pending, rows[0].ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.First(&skipped, rows[2].ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if pending.Status != ticketNotificationSkipped || skipped.Status != ticketNotificationPending {
+		t.Fatalf("explicit recovery/skip statuses: %s/%s", pending.Status, skipped.Status)
+	}
+}
+
+func TestTicketNotificationEnqueueSkipsWhenWecomIsInvalid(t *testing.T) {
+	db := newTicketTestDB(t)
+	user := &entity.User{ID: 1, Username: "alice", Role: "user"}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	detail, err := CreateTicketWithDB(db, user, CreateTicketInput{Subject: "标题", Body: "内容"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notice entity.TicketNotification
+	if err := db.Where("ticket_id = ?", detail.Ticket.ID).First(&notice).Error; err != nil {
+		t.Fatal(err)
+	}
+	if notice.Status != ticketNotificationSkipped || !strings.Contains(notice.LastError, "未启用") {
+		t.Fatalf("invalid configuration should skip: %+v", notice)
+	}
+}
+
+func TestTicketNotificationEnqueueSkipsInvalidWebhookURLWithoutSending(t *testing.T) {
+	db := newTicketTestDB(t)
+	for _, setting := range []entity.SystemSetting{
+		{Key: TicketWecomEnabledSettingKey, Value: "true"},
+		{Key: TicketWecomWebhookURLSettingKey, Value: "http://example.invalid/webhook"},
+	} {
+		if err := db.Create(&setting).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	user := &entity.User{ID: 2, Username: "alice", Role: "user"}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	detail, err := CreateTicketWithDB(db, user, CreateTicketInput{Subject: "标题", Body: "内容"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notice entity.TicketNotification
+	if err := db.Where("ticket_id = ?", detail.Ticket.ID).First(&notice).Error; err != nil {
+		t.Fatal(err)
+	}
+	if notice.Status != ticketNotificationSkipped || !strings.Contains(notice.LastError, "Webhook") {
+		t.Fatalf("invalid URL should be skipped: %+v", notice)
+	}
+}
+
+func TestRetryTicketNotificationKeepsFailedWhenWebhookIsInvalid(t *testing.T) {
+	db := newTicketTestDB(t)
+	for _, setting := range []entity.SystemSetting{
+		{Key: TicketWecomEnabledSettingKey, Value: "true"},
+		{Key: TicketWecomWebhookURLSettingKey, Value: "not-a-webhook"},
+	} {
+		if err := db.Create(&setting).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	notice := entity.TicketNotification{TicketID: 1, EventType: "new_ticket", Payload: "test", Status: ticketNotificationFailed, AttemptCount: 2}
+	if err := db.Create(&notice).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := RetryTicketNotificationWithDB(db, notice.ID); !errors.Is(err, ErrTicketWebhookInvalid) {
+		t.Fatalf("retry error = %v, want invalid webhook", err)
+	}
+	var stored entity.TicketNotification
+	if err := db.First(&stored, notice.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != ticketNotificationFailed || stored.AttemptCount != 2 {
+		t.Fatalf("failed notification changed: %+v", stored)
+	}
+}
+
+func TestTicketNotificationConcurrentClaimsSendOnce(t *testing.T) {
+	db := newTicketTestDB(t)
+	for _, setting := range []entity.SystemSetting{
+		{Key: TicketWecomEnabledSettingKey, Value: "true"},
+		{Key: TicketWecomWebhookURLSettingKey, Value: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=secret"},
+	} {
+		if err := db.Create(&setting).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now()
+	notice := entity.TicketNotification{TicketID: 1, EventType: "new_ticket", Payload: "hello", Status: ticketNotificationPending, NextAttemptAt: &now}
+	if err := db.Create(&notice).Error; err != nil {
+		t.Fatal(err)
+	}
+	var snapshot entity.TicketNotification
+	if err := db.First(&snapshot, notice.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	oldClient := ticketWebhookHTTPClient
+	t.Cleanup(func() { ticketWebhookHTTPClient = oldClient })
+	var calls atomic.Int32
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	ticketWebhookHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls.Add(1)
+		once.Do(func() { close(entered) })
+		<-release
+		return &http.Response{StatusCode: http.StatusOK, Body: closeReader{Reader: strings.NewReader(`{"errcode":0,"errmsg":"ok"}`)}, Header: make(http.Header)}, nil
+	})}
+	firstResult := make(chan error, 1)
+	secondResult := make(chan error, 1)
+	go func() { firstResult <- processTicketNotification(context.Background(), db, snapshot, now) }()
+	<-entered
+	go func() { secondResult <- processTicketNotification(context.Background(), db, snapshot, now) }()
+	select {
+	case err := <-secondResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		close(release)
+		t.Fatal("second claim was blocked while webhook was in flight")
+	}
+	close(release)
+	if err := <-firstResult; err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("webhook calls = %d, want 1", calls.Load())
+	}
+	var stored entity.TicketNotification
+	if err := db.First(&stored, notice.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != ticketNotificationSent {
+		t.Fatalf("notification status = %s, want sent", stored.Status)
 	}
 }
 

@@ -46,6 +46,7 @@ var (
 	ErrTicketInvalidStatus            = errors.New("工单状态无效")
 	ErrTicketInvalidPriority          = errors.New("工单优先级无效")
 	ErrTicketWebhookInvalid           = errors.New("企业微信机器人 Webhook 必须是 HTTPS 地址")
+	ErrTicketWebhookNotConfigured     = errors.New("企业微信工单通知未启用或未配置有效 Webhook")
 	ErrTicketNotificationNotRetryable = errors.New("该提醒当前不可重试")
 )
 
@@ -505,12 +506,22 @@ func normalizeMentionedList(value string) []string {
 }
 
 // Persist the outbox event in the same transaction as its source message. The
-// worker resolves configuration later, so a crash cannot lose the reminder
-// between the successful message commit and notification enqueue.
+// configuration decision is made in the same transaction so a disabled or
+// malformed integration never creates an automatically retryable task.
 func enqueueTicketNotificationInTx(tx *gorm.DB, ticket entity.Ticket, body, eventType string) error {
 	content := buildTicketNotificationContent(ticket, body, eventType)
 	now := time.Now()
-	notification := entity.TicketNotification{TicketID: ticket.ID, EventType: eventType, Payload: content, Status: ticketNotificationPending, NextAttemptAt: &now}
+	config, err := GetTicketWecomConfigWithDB(tx)
+	if err != nil {
+		return err
+	}
+	status, reason := ticketNotificationStatusForConfig(config)
+	notification := entity.TicketNotification{TicketID: ticket.ID, EventType: eventType, Payload: content, Status: status}
+	if status == ticketNotificationPending {
+		notification.NextAttemptAt = &now
+	} else {
+		notification.LastError = reason
+	}
 	return tx.Create(&notification).Error
 }
 
@@ -523,12 +534,37 @@ func QueueTicketNotificationWithDB(db *gorm.DB, ticketID int64, eventType, conte
 		return err
 	}
 	now := time.Now()
-	return db.Create(&entity.TicketNotification{TicketID: ticketID, EventType: strings.TrimSpace(eventType), Payload: truncateUTF8(content, 4000), MentionedList: string(mentioned), Status: ticketNotificationPending, NextAttemptAt: &now}).Error
+	config, err := GetTicketWecomConfigWithDB(db)
+	if err != nil {
+		return err
+	}
+	status, reason := ticketNotificationStatusForConfig(config)
+	notification := entity.TicketNotification{TicketID: ticketID, EventType: strings.TrimSpace(eventType), Payload: truncateUTF8(content, 4000), MentionedList: string(mentioned), Status: status}
+	if status == ticketNotificationPending {
+		notification.NextAttemptAt = &now
+	} else {
+		notification.LastError = reason
+	}
+	return db.Create(&notification).Error
 }
 
 func RetryTicketNotificationWithDB(db *gorm.DB, notificationID int64) error {
 	if db == nil || notificationID <= 0 {
 		return gorm.ErrRecordNotFound
+	}
+	var existing entity.TicketNotification
+	if err := db.Select("status").First(&existing, notificationID).Error; err != nil {
+		return err
+	}
+	if existing.Status != ticketNotificationFailed {
+		return ErrTicketNotificationNotRetryable
+	}
+	config, err := GetTicketWecomConfigWithDB(db)
+	if err != nil {
+		return err
+	}
+	if configErr := validateTicketWecomConfig(config); configErr != nil {
+		return configErr
 	}
 	now := time.Now()
 	result := db.Model(&entity.TicketNotification{}).Where("id = ? AND status = ?", notificationID, ticketNotificationFailed).Updates(map[string]interface{}{"status": ticketNotificationPending, "attempt_count": 0, "last_error": "", "next_attempt_at": now, "sent_at": nil})
@@ -537,6 +573,26 @@ func RetryTicketNotificationWithDB(db *gorm.DB, notificationID int64) error {
 	}
 	if result.RowsAffected == 0 {
 		return ErrTicketNotificationNotRetryable
+	}
+	return nil
+}
+
+// ticketNotificationStatusForConfig is the enqueue policy. It deliberately
+// returns skipped for every invalid configuration, including a missing system
+// setting, so a later configuration change cannot silently replay old events.
+func ticketNotificationStatusForConfig(config TicketWecomConfig) (string, string) {
+	if err := validateTicketWecomConfig(config); err != nil {
+		return ticketNotificationSkipped, err.Error()
+	}
+	return ticketNotificationPending, ""
+}
+
+func validateTicketWecomConfig(config TicketWecomConfig) error {
+	if !config.Enabled || strings.TrimSpace(config.WebhookURL) == "" {
+		return ErrTicketWebhookNotConfigured
+	}
+	if err := validateTicketWecomWebhookURL(config.WebhookURL); err != nil {
+		return ErrTicketWebhookInvalid
 	}
 	return nil
 }
@@ -625,20 +681,19 @@ func ProcessPendingTicketNotifications(ctx context.Context, db *gorm.DB, now tim
 	if ctx.Err() != nil {
 		return 0, nil
 	}
-	// A process crash can leave a claimed notification in sending. HTTP requests
-	// are bounded to ten seconds, so two minutes is long enough to recover only
-	// abandoned claims while avoiding duplicate sends from a live worker.
-	recoveryBefore := now.Add(-2 * time.Minute)
-	if err := db.Model(&entity.TicketNotification{}).
-		Where("status = ? AND updated_at < ?", ticketNotificationSending, recoveryBefore).
-		Updates(map[string]interface{}{"status": ticketNotificationPending, "next_attempt_at": now, "updated_at": now}).Error; err != nil {
+	config, err := GetTicketWecomConfigWithDB(db)
+	if err != nil {
 		return 0, err
+	}
+	if err := validateTicketWecomConfig(config); err != nil {
+		return 0, nil
 	}
 	var rows []entity.TicketNotification
 	if err := db.Where("status = ? AND attempt_count < ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?)", ticketNotificationPending, TicketNotificationMaxAttempts, now).Order("id ASC").Limit(20).Find(&rows).Error; err != nil {
 		return 0, err
 	}
 	processed := 0
+	var firstError error
 	for _, row := range rows {
 		if ctx.Err() != nil {
 			break
@@ -646,9 +701,75 @@ func ProcessPendingTicketNotifications(ctx context.Context, db *gorm.DB, now tim
 		processed++
 		if err := processTicketNotification(ctx, db, row, now); err != nil {
 			logger.SysWarn(fmt.Sprintf("ticket_notification_process_failed notificationId=%d ticketId=%d error=%v", row.ID, row.TicketID, err))
+			if firstError == nil {
+				firstError = err
+			}
 		}
 	}
-	return processed, nil
+	return processed, firstError
+}
+
+// RecoverStaleTicketNotifications is intentionally explicit. It is called at
+// worker startup and on a fixed recovery interval, rather than on every poll.
+func RecoverStaleTicketNotifications(db *gorm.DB, now time.Time) (int64, error) {
+	if db == nil {
+		return 0, errors.New("数据库未初始化")
+	}
+	recoveryBefore := now.Add(-2 * time.Minute)
+	var affected int64
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var staleCount int64
+		if err := tx.Model(&entity.TicketNotification{}).
+			Where("status = ? AND updated_at < ?", ticketNotificationSending, recoveryBefore).
+			Count(&staleCount).Error; err != nil {
+			return err
+		}
+		if staleCount == 0 {
+			return nil
+		}
+		result := tx.Model(&entity.TicketNotification{}).
+			Where("status = ? AND updated_at < ?", ticketNotificationSending, recoveryBefore).
+			Updates(map[string]interface{}{"status": ticketNotificationPending, "next_attempt_at": now, "updated_at": now})
+		affected = result.RowsAffected
+		return result.Error
+	})
+	return affected, err
+}
+
+// SkipPendingTicketNotifications marks legacy pending rows as skipped after a
+// configuration is found invalid. New rows already use this policy at enqueue.
+func SkipPendingTicketNotifications(db *gorm.DB, reason string, now time.Time) (int64, error) {
+	if db == nil {
+		return 0, errors.New("数据库未初始化")
+	}
+	var affected int64
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		affected, err = skipPendingTicketNotificationsInTx(tx, reason, now)
+		return err
+	})
+	return affected, err
+}
+
+func skipPendingTicketNotificationsInTx(tx *gorm.DB, reason string, now time.Time) (int64, error) {
+	if tx == nil {
+		return 0, errors.New("数据库未初始化")
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = ErrTicketWebhookNotConfigured.Error()
+	}
+	var pendingCount int64
+	if err := tx.Model(&entity.TicketNotification{}).Where("status = ?", ticketNotificationPending).Count(&pendingCount).Error; err != nil {
+		return 0, err
+	}
+	if pendingCount == 0 {
+		return 0, nil
+	}
+	result := tx.Model(&entity.TicketNotification{}).
+		Where("status = ?", ticketNotificationPending).
+		Updates(map[string]interface{}{"status": ticketNotificationSkipped, "last_error": reason, "next_attempt_at": nil, "updated_at": now})
+	return result.RowsAffected, result.Error
 }
 
 func processTicketNotification(ctx context.Context, db *gorm.DB, row entity.TicketNotification, now time.Time) error {
@@ -658,14 +779,21 @@ func processTicketNotification(ctx context.Context, db *gorm.DB, row entity.Tick
 	// Revalidate the selected snapshot. Another worker may already have tried
 	// and requeued it; status alone would allow a stale worker to bypass backoff.
 	now = time.Now()
-	claim := db.Model(&entity.TicketNotification{}).
-		Where("id = ? AND status = ? AND attempt_count = ? AND updated_at = ?", row.ID, ticketNotificationPending, row.AttemptCount, row.UpdatedAt).
-		Where("next_attempt_at IS NULL OR next_attempt_at <= ?", now).
-		Updates(map[string]interface{}{"status": ticketNotificationSending, "updated_at": now})
-	if claim.Error != nil {
-		return claim.Error
+	claimed := false
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		claim := tx.Model(&entity.TicketNotification{}).
+			Where("id = ? AND status = ? AND attempt_count = ? AND updated_at = ?", row.ID, ticketNotificationPending, row.AttemptCount, row.UpdatedAt).
+			Where("next_attempt_at IS NULL OR next_attempt_at <= ?", now).
+			Updates(map[string]interface{}{"status": ticketNotificationSending, "updated_at": now})
+		if claim.Error != nil {
+			return claim.Error
+		}
+		claimed = claim.RowsAffected > 0
+		return nil
+	}); err != nil {
+		return err
 	}
-	if claim.RowsAffected == 0 {
+	if !claimed {
 		return nil
 	}
 	if ctx.Err() != nil {
@@ -673,10 +801,15 @@ func processTicketNotification(ctx context.Context, db *gorm.DB, row entity.Tick
 	}
 	config, err := GetTicketWecomConfigWithDB(db)
 	if err != nil {
-		return db.Model(&entity.TicketNotification{}).Where("id = ?", row.ID).Updates(map[string]interface{}{"status": ticketNotificationFailed, "last_error": "读取企业微信配置失败", "updated_at": now}).Error
+		if requeueErr := db.Model(&entity.TicketNotification{}).Where("id = ? AND status = ?", row.ID, ticketNotificationSending).
+			Updates(map[string]interface{}{"status": ticketNotificationPending, "last_error": "读取企业微信配置失败", "next_attempt_at": now.Add(time.Second), "updated_at": now}).Error; requeueErr != nil {
+			return requeueErr
+		}
+		return err
 	}
-	if !config.Enabled || strings.TrimSpace(config.WebhookURL) == "" {
-		return db.Model(&entity.TicketNotification{}).Where("id = ?", row.ID).Updates(map[string]interface{}{"status": ticketNotificationSkipped, "last_error": "企业微信工单通知未启用或未配置 Webhook", "updated_at": now}).Error
+	if configErr := validateTicketWecomConfig(config); configErr != nil {
+		return db.Model(&entity.TicketNotification{}).Where("id = ? AND status = ?", row.ID, ticketNotificationSending).
+			Updates(map[string]interface{}{"status": ticketNotificationSkipped, "last_error": configErr.Error(), "next_attempt_at": nil, "updated_at": now}).Error
 	}
 	mentioned := normalizeMentionedList(row.MentionedList)
 	if strings.TrimSpace(row.MentionedList) == "" {
@@ -740,18 +873,117 @@ func StartTicketNotificationWorker(ctx context.Context, db *gorm.DB) <-chan stru
 	}
 	go func() {
 		defer close(done)
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case now := <-ticker.C:
-				if _, err := ProcessPendingTicketNotifications(ctx, db, now); err != nil {
-					logger.SysWarn(fmt.Sprintf("ticket_notification_worker_failed error=%v", err))
-				}
-			}
+		if err := RunTicketNotificationWorker(ctx, db); err != nil && ctx.Err() == nil {
+			logger.SysWarn(fmt.Sprintf("ticket_notification_worker_failed error=%v", err))
 		}
 	}()
 	return done
+}
+
+const (
+	ticketNotificationPollInterval     = 5 * time.Second
+	ticketNotificationInvalidInterval  = 30 * time.Second
+	ticketNotificationRecoveryInterval = 5 * time.Minute
+)
+
+func waitTicketNotificationWorker(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// RunTicketNotificationWorker runs the outbox loop for the standalone worker
+// process. Database operations are short and the webhook call is always made
+// after the claim transaction has committed.
+func RunTicketNotificationWorker(ctx context.Context, db *gorm.DB) error {
+	if db == nil {
+		return errors.New("数据库未初始化")
+	}
+	lastInvalidConfig := ""
+	backoff := time.Second
+	nextRecovery := time.Time{}
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+		now := time.Now()
+		config, err := GetTicketWecomConfigWithDB(db)
+		if err != nil {
+			logger.SysWarn(fmt.Sprintf("ticket_notification_config_read_failed error=%v", err))
+			if !waitTicketNotificationWorker(ctx, backoff) {
+				return nil
+			}
+			if backoff < time.Minute {
+				backoff *= 2
+				if backoff > time.Minute {
+					backoff = time.Minute
+				}
+			}
+			continue
+		}
+		configErr := validateTicketWecomConfig(config)
+		if configErr != nil {
+			state := fmt.Sprintf("%t|%s|%s", config.Enabled, config.WebhookURL, configErr.Error())
+			if state != lastInvalidConfig {
+				if _, skipErr := SkipPendingTicketNotifications(db, configErr.Error(), now); skipErr != nil {
+					logger.SysWarn(fmt.Sprintf("ticket_notification_skip_invalid_config_failed error=%v", skipErr))
+					if !waitTicketNotificationWorker(ctx, backoff) {
+						return nil
+					}
+					if backoff < time.Minute {
+						backoff *= 2
+						if backoff > time.Minute {
+							backoff = time.Minute
+						}
+					}
+					continue
+				}
+				lastInvalidConfig = state
+			}
+			backoff = time.Second
+			if !waitTicketNotificationWorker(ctx, ticketNotificationInvalidInterval) {
+				return nil
+			}
+			continue
+		}
+		if nextRecovery.IsZero() || !now.Before(nextRecovery) {
+			if _, err := RecoverStaleTicketNotifications(db, now); err != nil {
+				logger.SysWarn(fmt.Sprintf("ticket_notification_recovery_failed error=%v", err))
+				if !waitTicketNotificationWorker(ctx, backoff) {
+					return nil
+				}
+				if backoff < time.Minute {
+					backoff *= 2
+					if backoff > time.Minute {
+						backoff = time.Minute
+					}
+				}
+				continue
+			}
+			nextRecovery = now.Add(ticketNotificationRecoveryInterval)
+		}
+		lastInvalidConfig = ""
+		backoff = time.Second
+		if _, err := ProcessPendingTicketNotifications(ctx, db, now); err != nil {
+			logger.SysWarn(fmt.Sprintf("ticket_notification_poll_failed error=%v", err))
+			if !waitTicketNotificationWorker(ctx, backoff) {
+				return nil
+			}
+			if backoff < time.Minute {
+				backoff *= 2
+				if backoff > time.Minute {
+					backoff = time.Minute
+				}
+			}
+			continue
+		}
+		if !waitTicketNotificationWorker(ctx, ticketNotificationPollInterval) {
+			return nil
+		}
+	}
 }

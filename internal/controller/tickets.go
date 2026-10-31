@@ -242,7 +242,7 @@ func writeTicketError(c *gin.Context, err error, fallback string) {
 	switch {
 	case errors.Is(err, service.ErrTicketSubjectRequired), errors.Is(err, service.ErrTicketBodyRequired),
 		errors.Is(err, service.ErrTicketInvalidStatus), errors.Is(err, service.ErrTicketInvalidPriority),
-		errors.Is(err, service.ErrTicketWebhookInvalid), errors.Is(err, service.ErrTicketTextTooLong):
+		errors.Is(err, service.ErrTicketWebhookInvalid), errors.Is(err, service.ErrTicketWebhookNotConfigured), errors.Is(err, service.ErrTicketTextTooLong):
 		status, message = http.StatusBadRequest, err.Error()
 	case errors.Is(err, service.ErrTicketNotFound):
 		status, message = http.StatusNotFound, err.Error()
