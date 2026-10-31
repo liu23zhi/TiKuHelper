@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -375,6 +376,7 @@ func AddTicketMessageWithDB(db *gorm.DB, user *entity.User, id int64, input Repl
 		if err := tx.Model(&entity.Ticket{}).Where("id = ?", ticket.ID).Updates(updates).Error; err != nil {
 			return err
 		}
+		ticket.Status, ticket.LastMessageAt = status, now
 		if !isTicketAdmin(user) {
 			return enqueueTicketNotificationInTx(tx, ticket, body, "user_reply")
 		}
@@ -539,7 +541,7 @@ func QueueTicketNotificationWithDB(db *gorm.DB, ticketID int64, eventType, conte
 		return err
 	}
 	status, reason := ticketNotificationStatusForConfig(config)
-	notification := entity.TicketNotification{TicketID: ticketID, EventType: strings.TrimSpace(eventType), Payload: truncateUTF8(content, 4000), MentionedList: string(mentioned), Status: status}
+	notification := entity.TicketNotification{TicketID: ticketID, EventType: strings.TrimSpace(eventType), Payload: content, MentionedList: string(mentioned), Status: status}
 	if status == ticketNotificationPending {
 		notification.NextAttemptAt = &now
 	} else {
@@ -602,7 +604,29 @@ func buildTicketNotificationContent(ticket entity.Ticket, body, eventType string
 	if eventType == "user_reply" {
 		label = "用户追问"
 	}
-	return fmt.Sprintf("%s\n工单 #%d\n标题：%s\n用户：%s\n内容：%s\n详情：/adapter/tickets/%d", label, ticket.ID, ticket.Subject, ticket.UserName, truncateUTF8(body, 1200), ticket.ID)
+	status := map[string]string{entity.TicketStatusOpen: "待处理", entity.TicketStatusPending: "处理中", entity.TicketStatusResolved: "已解决", entity.TicketStatusClosed: "已关闭"}[ticket.Status]
+	if status == "" {
+		status = "待处理"
+	}
+	header := fmt.Sprintf("## %s\n**工单 #%d**\n> **标题：** %s\n> **用户：** %s\n> **状态：** %s", label, ticket.ID, escapeTicketMarkdown(strings.Join(strings.Fields(ticket.Subject), " ")), escapeTicketMarkdown(strings.Join(strings.Fields(ticket.UserName), " ")), status)
+	if !ticket.LastMessageAt.IsZero() {
+		header += "\n> **时间：** " + ticket.LastMessageAt.Format("2006-01-02 15:04:05")
+	}
+	return header + "\n\n**内容：**\n" + escapeTicketMarkdown(body)
+}
+
+func escapeTicketMarkdown(value string) string {
+	return strings.NewReplacer("\\", "\\\\", "*", "\\*", "_", "\\_", "`", "\\`", "[", "\\[", "]", "\\]", "#", "\\#").Replace(html.EscapeString(value))
+}
+
+const ticketMarkdownMaxBytes = 4096
+
+func truncateTicketMarkdown(value string, maxBytes int) string {
+	if len(value) <= maxBytes {
+		return value
+	}
+	const suffix = "\n\n> 内容过长，已截断。"
+	return truncateUTF8(value, maxBytes-len(suffix)) + suffix
 }
 
 func truncateUTF8(value string, maxBytes int) string {
@@ -632,7 +656,27 @@ func SendTicketWebhook(ctx context.Context, config TicketWecomConfig, content st
 	}
 	parsed, _ := url.Parse(strings.TrimSpace(config.WebhookURL))
 	mentioned := normalizeMentionedList(strings.Join(mentionedList, ","))
-	body, err := json.Marshal(map[string]interface{}{"msgtype": "text", "text": map[string]interface{}{"content": truncateUTF8(content, 4000), "mentioned_list": mentioned}})
+	tags := make([]string, 0, len(mentioned))
+	for _, member := range mentioned {
+		if strings.ContainsAny(member, "<>&\"' \t\r\n") {
+			continue
+		}
+		if member == "@all" {
+			member = "all"
+		}
+		tags = append(tags, "<@"+member+">")
+	}
+	suffix := ""
+	if len(tags) > 0 {
+		suffix = "\n\n" + strings.Join(tags, " ")
+	}
+	// Markdown mentions are part of content. Reserve their bytes before
+	// truncating user details so neither UTF-8 characters nor tags are cut.
+	if ticketMarkdownMaxBytes-len(suffix) < 128 {
+		return &webhookError{err: errors.New("企业微信提醒成员列表过长"), retryable: false}
+	}
+	markdown := truncateTicketMarkdown(content, ticketMarkdownMaxBytes-len(suffix)) + suffix
+	body, err := json.Marshal(map[string]interface{}{"msgtype": "markdown", "markdown": map[string]interface{}{"content": markdown}})
 	if err != nil {
 		return err
 	}

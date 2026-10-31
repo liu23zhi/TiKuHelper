@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -382,8 +383,89 @@ func TestSendTicketWebhookPayloadAndStatus(t *testing.T) {
 	if err := json.Unmarshal(requestBody, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["msgtype"] != "text" {
+	if payload["msgtype"] != "markdown" {
 		t.Fatalf("payload: %s", requestBody)
+	}
+	markdown, ok := payload["markdown"].(map[string]interface{})
+	if !ok || markdown["content"] != "hello\n\n<@user1>" {
+		t.Fatalf("markdown payload: %s", requestBody)
+	}
+	if _, ok := markdown["mentioned_list"]; ok {
+		t.Fatalf("markdown must use inline mentions: %s", requestBody)
+	}
+}
+
+func TestBuildTicketNotificationContentUsesMarkdownDetails(t *testing.T) {
+	content := buildTicketNotificationContent(entity.Ticket{ID: 1, Subject: "系统太卡了", UserName: "admin2"}, "系统太卡了", "new_ticket")
+	if strings.Contains(content, "/adapter/tickets/1") {
+		t.Fatalf("notification must not contain ticket route: %s", content)
+	}
+	for _, expected := range []string{"## 新工单", "**工单 #1**", "**标题：** 系统太卡了", "**用户：** admin2", "**内容：**", "系统太卡了"} {
+		if !strings.Contains(content, expected) {
+			t.Fatalf("notification missing %q: %s", expected, content)
+		}
+	}
+}
+
+func TestTicketMarkdownPreservesDetailsAndEscapesUserText(t *testing.T) {
+	body := "第一行\n第二行 " + strings.Repeat("详细内容", 180)
+	content := buildTicketNotificationContent(entity.Ticket{ID: 2, Subject: "*标题* <@all>", UserName: "[用户](https://example.com)", Status: entity.TicketStatusPending}, body, "user_reply")
+	if !strings.Contains(content, body) || !strings.HasPrefix(content, "## 用户追问") || !strings.Contains(content, "**状态：** 处理中") {
+		t.Fatalf("details lost: %s", content)
+	}
+	if strings.Contains(content, "<@all>") || strings.Contains(content, "*标题*") || strings.Contains(content, "[用户](") {
+		t.Fatalf("user text can inject markdown/mentions: %s", content)
+	}
+}
+
+func TestTicketReplyNotificationShowsUpdatedStatusAndTime(t *testing.T) {
+	db := newTicketTestDB(t)
+	user := &entity.User{ID: 1, Username: "alice"}
+	admin := &entity.User{ID: 2, Username: "admin", Role: "admin"}
+	detail, err := CreateTicketWithDB(db, user, CreateTicketInput{Subject: "重新打开工单", Body: "最初消息"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UpdateTicketWithDB(db, admin, detail.Ticket.ID, UpdateTicketInput{Status: entity.TicketStatusClosed}); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := time.Now().Add(-time.Hour)
+	if err := db.Model(&entity.Ticket{}).Where("id = ?", detail.Ticket.ID).Update("last_message_at", oldTime).Error; err != nil {
+		t.Fatal(err)
+	}
+	replied, err := AddTicketMessageWithDB(db, user, detail.Ticket.ID, ReplyTicketInput{Body: "补充新的详情"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notice entity.TicketNotification
+	if err := db.Where("ticket_id = ? AND event_type = ?", detail.Ticket.ID, "user_reply").First(&notice).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(notice.Payload, "**状态：** 待处理") || !strings.Contains(notice.Payload, replied.Ticket.LastMessageAt.Format("2006-01-02 15:04:05")) || !strings.Contains(notice.Payload, "补充新的详情") {
+		t.Fatalf("reply notification has stale metadata: %s", notice.Payload)
+	}
+}
+
+func TestTicketMarkdownRespectsUTF8ByteLimitAndKeepsMentions(t *testing.T) {
+	old := ticketWebhookHTTPClient
+	t.Cleanup(func() { ticketWebhookHTTPClient = old })
+	ticketWebhookHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		var payload struct {
+			Markdown struct {
+				Content string `json:"content"`
+			} `json:"markdown"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		content := payload.Markdown.Content
+		if len(content) > 4096 || !utf8.ValidString(content) || !strings.Contains(content, "内容过长，已截断") || !strings.HasSuffix(content, "<@user1> <@all>") {
+			t.Fatalf("invalid long markdown (%d bytes): %s", len(content), content)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: closeReader{Reader: strings.NewReader(`{"errcode":0}`)}, Header: make(http.Header)}, nil
+	})}
+	if err := SendTicketWebhook(context.Background(), TicketWecomConfig{WebhookURL: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=secret"}, strings.Repeat("工单详情", 1500), []string{"user1", "@all", "user1"}); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -93,3 +93,10 @@ database:
 SQLite 生产库默认启用 WAL、5000ms `busy_timeout`、单连接池和关闭 GORM
 prepared statement；通知子线程与主服务共享同一个数据库连接策略。MySQL 继续使用
 原有连接池和 prepared statement 配置，不受这些 SQLite 选项影响。
+
+### 工单通知格式
+
+企业微信机器人使用 Markdown 推送新工单和用户追问，直接展示工单编号、标题、用户、
+状态、时间和本次消息内容，不再附带 `/adapter/tickets/...` 路径。消息超过企业微信
+4096 字节上限时按 UTF-8 安全截断并显示说明，配置的提醒成员保留在末尾。
+未配置、未启用或配置无效时仍跳过通知；此变更无需调整 Compose 或增加容器。
