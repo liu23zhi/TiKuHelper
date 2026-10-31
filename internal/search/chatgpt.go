@@ -83,8 +83,8 @@ type AISearchUsage struct {
 // must not pass sourceURL to the OCR service as a remote URL.
 type AIImageOCRProvider func(ctx context.Context, sourceURL, imageName, contentType string, image []byte) (string, error)
 
-// AIImageOCRCacheProvider returns whether the OCR result was reused rather
-// than obtained from a new billable OCR request.
+// AIImageOCRCacheProvider returns whether the OCR result was reused from the
+// image cache. Cached OCR remains a billable OCR call.
 type AIImageOCRCacheProvider func(ctx context.Context, sourceURL, imageName, contentType string, image []byte) (text string, cached bool, err error)
 
 type AIOCRCallUsage struct {

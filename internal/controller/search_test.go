@@ -1260,7 +1260,7 @@ func TestResolveCompletedSearchBillingChargesAddsCompletedWebReadOnly(t *testing
 	}
 }
 
-func TestResolveCompletedSearchBillingChargesAddsSuccessfulOCROnly(t *testing.T) {
+func TestResolveCompletedSearchBillingChargesAddsSuccessfulOCRIncludingCachedResults(t *testing.T) {
 	db := newSearchControllerTestDB(t)
 	if err := service.SetImageOCRPricePerCallWithDB(db, 0.015); err != nil {
 		t.Fatalf("set OCR price: %v", err)
@@ -1274,8 +1274,8 @@ func TestResolveCompletedSearchBillingChargesAddsSuccessfulOCROnly(t *testing.T)
 	if err != nil {
 		t.Fatalf("resolve OCR charges: %v", err)
 	}
-	if len(charges) != 1 {
-		t.Fatalf("expected only successful OCR calls to be billed, got %+v", charges)
+	if len(charges) != 2 {
+		t.Fatalf("expected successful OCR calls, including cached results, to be billed, got %+v", charges)
 	}
 	for index, charge := range charges {
 		if charge.Provider != "ai_ocr" || charge.Amount != 0.015 {

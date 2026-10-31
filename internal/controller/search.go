@@ -1131,8 +1131,8 @@ func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRe
 }
 
 // appendAIToolBillingCharges keeps successful tool usage visible even when its
-// configured price is zero. Failed attempts remain in usage diagnostics but
-// do not create charges or change balances.
+// configured price is zero. Cached OCR results remain billable; failed attempts
+// remain in usage diagnostics but do not create charges or change balances.
 func appendAIToolBillingCharges(charges []searchBillingCharge, db *gorm.DB, req model.SearchRequest, usage search.AISearchUsage) []searchBillingCharge {
 	sequence := buildAIBillingSequence(usage)
 	searchPrice := service.GetAISearchPricePerCallWithDB(db)
@@ -1163,7 +1163,7 @@ func appendAIToolBillingCharges(charges []searchBillingCharge, db *gorm.DB, req 
 
 	ocrPrice := service.GetImageOCRPricePerCallWithDB(db)
 	for index, call := range usage.OCRCalls {
-		if strings.TrimSpace(call.Status) != "success" || call.Cached {
+		if strings.TrimSpace(call.Status) != "success" {
 			continue
 		}
 		amount := util.RoundMoney(ocrPrice)
