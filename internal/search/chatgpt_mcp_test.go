@@ -247,6 +247,38 @@ func TestSearchAnswerWithMCPRetriesRateLimitWithRetryAfter(t *testing.T) {
 	}
 }
 
+func TestSearchAnswerWithMCPSafetyRetriesThenUsesBackupModel(t *testing.T) {
+	calls := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		modelName, _ := payload["model"].(string)
+		calls[modelName]++
+		if modelName == "primary" {
+			writeResponsesEvent(w, "error", map[string]any{"error": map[string]any{
+				"type": "invalid_request_error", "code": "invalid_prompt", "message": "retry denied by safety policy",
+			}})
+			return
+		}
+		writeMCPTextStream(w, `{"answers":["4"]}`, 20)
+	}))
+	defer server.Close()
+	client := &ChatGptClient{Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "primary", BackupModel: "backup", SearchTool: &testAISearchTool{}, MaxAISearchModelCalls: 1, MaxAISearchRetries: 2}
+	answer, debug, err := client.searchAnswerWithMCP(t.Context(), model.SearchRequest{Question: "2+2=?", DeepThinking: true})
+	if err != nil || !reflect.DeepEqual(answer, [][]string{{"4"}}) {
+		t.Fatalf("backup MCP model should answer: answer=%v err=%v", answer, err)
+	}
+	if calls["primary"] != 2 || calls["backup"] != 1 {
+		t.Fatalf("MCP safety retry/fallback mismatch: calls=%v", calls)
+	}
+	if len(debug.Usage.ModelCalls) != 1 || debug.Usage.ModelCalls[0].Model != "backup" {
+		t.Fatalf("MCP usage must retain backup model: %+v", debug.Usage.ModelCalls)
+	}
+}
+
 func TestSearchAnswerWithMCPUsesCompleteResponseBeforeExecutingTool(t *testing.T) {
 	tool := &testAISearchTool{}
 	calls := 0

@@ -124,6 +124,7 @@ export function buildAISearchConfigSavePayload(formState, baseUrl) {
     baseUrl,
     apiKey: formState?.apiKey || '',
     model: formState?.model || '',
+    backupModel: formState?.backupModel || '',
     manualModels: buildModelNameValues(manualModelSource),
     prompt: formState?.prompt || '',
     remark: formState?.remark || '',
@@ -174,13 +175,14 @@ export function isModelPriced(modelName, priceRows) {
 
 /**
  * 汇总 AI 设置页需要提示的「缺价格」情况。
- * - unresolvedModels：模型列表里没有价格的模型（含当前默认模型）
+ * - unresolvedModels：模型列表、默认模型或备用模型中没有价格的模型
  * - configuredModel：当前默认模型名
  * - configuredModelPriced：当前默认模型是否已配置价格
  * - hasUnpricedModel：是否需要展示提示
  */
 export function buildAIModelPricingGaps(formState, priceRows) {
   const configuredModel = trimText(formState?.model);
+  const backupModel = trimText(formState?.backupModel);
   const pricedKeys = buildPricedModelKeys(priceRows);
 
   const unresolvedModels = [];
@@ -198,11 +200,21 @@ export function buildAIModelPricingGaps(formState, priceRows) {
   const configuredModelPriced = Boolean(configuredKey) && pricedKeys.has(configuredKey);
   if (configuredKey && !configuredModelPriced && !seen.has(configuredKey)) {
     unresolvedModels.unshift(configuredModel);
+    seen.add(configuredKey);
+  }
+
+  const backupKey = normalizePricingKey(backupModel);
+  const backupModelPriced = Boolean(backupKey) && pricedKeys.has(backupKey);
+  if (backupKey && !backupModelPriced && !seen.has(backupKey)) {
+    unresolvedModels.splice(configuredKey && !configuredModelPriced ? 1 : 0, 0, backupModel);
+    seen.add(backupKey);
   }
 
   return {
     configuredModel,
     configuredModelPriced,
+    backupModel,
+    backupModelPriced,
     unresolvedModels,
     hasUnpricedModel: unresolvedModels.length > 0,
   };

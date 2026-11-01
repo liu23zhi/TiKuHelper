@@ -164,6 +164,8 @@ jobs:
       - name: 构建并载入 Docker 镜像（不推送）
         id: build
         uses: docker/build-push-action@v7
+        env:
+          DOCKER_BUILD_SUMMARY: "false"
         with:
           context: .
           file: ./Dockerfile
@@ -184,6 +186,45 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
+
+      - name: 输出 Docker 镜像构建摘要
+        if: always()
+        shell: bash
+        env:
+          BUILD_STATUS: ${{ job.status }}
+          IMAGE_TAG: tiku-adapter:ci-${{ github.sha }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_ID: ${{ steps.build.outputs.imageid }}
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+          COMMIT_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          case "$BUILD_STATUS" in
+            success) BUILD_RESULT="成功" ;;
+            failure) BUILD_RESULT="失败" ;;
+            cancelled) BUILD_RESULT="已取消" ;;
+            *) BUILD_RESULT="未执行" ;;
+          esac
+
+          {
+            echo '## Docker 镜像构建摘要'
+            echo
+            echo '| 项目 | 内容 |'
+            echo '| --- | --- |'
+            printf '| 构建结果 | %s |\n' "$BUILD_RESULT"
+            printf '| 镜像标签 | `%s` |\n' "$IMAGE_TAG"
+            printf '| 镜像摘要 | `%s` |\n' "${IMAGE_DIGEST:-未生成}"
+            printf '| 镜像 ID | `%s` |\n' "${IMAGE_ID:-未生成}"
+            printf '| 代码提交 | `%s` |\n' "$COMMIT_SHA"
+            echo
+            if [[ -n "$ARTIFACT_URL" ]]; then
+              printf '[下载 Docker 镜像归档](%s)（下载后可使用 docker load 导入）\n' "$ARTIFACT_URL"
+            else
+              echo 'Docker 镜像归档未生成或上传失败。'
+            fi
+            echo
+            printf '[查看完整运行日志](%s)\n' "$RUN_URL"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   summary:
     name: 持续集成摘要

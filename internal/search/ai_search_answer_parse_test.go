@@ -28,6 +28,48 @@ func TestParseAISearchAnswersAcceptsLooseModelShapes(t *testing.T) {
 	}
 }
 
+func TestParseAISearchAnswerJSONAcceptsEscapeAndFenceWrappers(t *testing.T) {
+	cases := []string{
+		`<escape>{"answers":["正确"]}</escape>`,
+		"<escape>\n```json\n{\"answers\":[\"正确\"]}\n```\n</escape>",
+		"```json\n{\"answers\":[\"正确\"],\"explanation\":\"说明\"}\n```",
+	}
+	for _, content := range cases {
+		got, err := parseAISearchAnswersJSON(content, []string{"正确", "错误"}, 3)
+		if err != nil || !reflect.DeepEqual(got, []string{"正确"}) {
+			t.Fatalf("content=%q: answers=%v err=%v", content, got, err)
+		}
+	}
+}
+
+func TestParseAISearchAnswerJSONAnswersKeyIsAuthoritative(t *testing.T) {
+	for _, content := range []string{
+		`{"answers":[],"answer":"正确"}`,
+		`{"answers":null,"answer":"正确"}`,
+		`{"answers":{"unexpected":true},"answer":"正确"}`,
+	} {
+		got, err := parseAISearchAnswersJSON(content, []string{"正确", "错误"}, 3)
+		if err != nil {
+			t.Fatalf("content=%s: parse error: %v", content, err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("answers key must not fall through to answer: content=%s got=%v", content, got)
+		}
+	}
+}
+
+func TestParseAISearchAnswerJSONRejectsUnstructuredOrMalformedContent(t *testing.T) {
+	for _, content := range []string{
+		`{"explanation":"正确"}`,
+		`{"answers":["正确"]} trailing text`,
+		`<escape>{"answers":["正确"]}`,
+	} {
+		if got, err := parseAISearchAnswersJSON(content, []string{"正确"}, 3); err == nil || got != nil {
+			t.Fatalf("content=%q should be rejected, answers=%v err=%v", content, got, err)
+		}
+	}
+}
+
 // 多选题：数组里每个元素是一个被选中的选项，必须原样保留（不能当成多个答案组）。
 func TestParseAISearchAnswersKeepsAllMultiSelectOptions(t *testing.T) {
 	options := []string{"甲", "乙", "丙", "丁"}

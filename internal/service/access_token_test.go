@@ -133,7 +133,7 @@ func TestCreateAndUpdateAccessTokenRejectQuotaOutsideDecimalRange(t *testing.T) 
 	db := newAccessTokenTestDB(t)
 	owner := seedAccessTokenOwner(t, db, 1, "user")
 
-	for _, quota := range []float64{1_000_000_000_000, math.Inf(1), math.NaN()} {
+	for _, quota := range []float64{-1, 1_000_000_000_000, math.Inf(1), math.NaN()} {
 		if _, err := CreateAccessTokenWithDB(db, owner, CreateAccessTokenInput{Name: "invalid_quota", TotalQuotaLimit: quota}); !errors.Is(err, ErrAccessTokenQuotaLimitInvalid) {
 			t.Errorf("create quota %v error = %v, want %v", quota, err, ErrAccessTokenQuotaLimitInvalid)
 		}
@@ -153,6 +153,14 @@ func TestCreateAndUpdateAccessTokenRejectQuotaOutsideDecimalRange(t *testing.T) 
 		TotalQuotaLimit: 1_000_000_000_000,
 	}); !errors.Is(err, ErrAccessTokenQuotaLimitInvalid) {
 		t.Fatalf("update out-of-range quota error = %v, want %v", err, ErrAccessTokenQuotaLimitInvalid)
+	}
+
+	if _, err := UpdateAccessTokenWithDB(db, owner, created.AccessToken.ID, UpdateAccessTokenInput{
+		Name:            created.AccessToken.Name,
+		Status:          created.AccessToken.Status,
+		TotalQuotaLimit: -0.000001,
+	}); !errors.Is(err, ErrAccessTokenQuotaLimitInvalid) {
+		t.Fatalf("update negative quota error = %v, want %v", err, ErrAccessTokenQuotaLimitInvalid)
 	}
 }
 

@@ -49,6 +49,7 @@ var runAISearchDebug = func(input aiSearchTestInput) ([][]string, internalsearch
 		APIKey:                resolved.Config.APIKey,
 		BaseURL:               resolved.Config.BaseURL,
 		Model:                 resolved.Config.Model,
+		BackupModel:           resolved.Config.BackupModel,
 		Prompt:                strings.TrimSpace(input.Prompt),
 		Temperature:           0,
 		TopP:                  0,

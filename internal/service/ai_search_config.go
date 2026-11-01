@@ -91,6 +91,7 @@ type AISearchConfigView struct {
 	BaseURL                          string                         `json:"baseUrl"`
 	APIKey                           string                         `json:"apiKey"`
 	Model                            string                         `json:"model"`
+	BackupModel                      string                         `json:"backupModel"`
 	ManualModels                     []string                       `json:"manualModels"`
 	Prompt                           string                         `json:"prompt"`
 	Remark                           string                         `json:"remark"`
@@ -119,6 +120,7 @@ type UpdateAISearchConfigInput struct {
 	BaseURL                          string                          `json:"baseUrl"`
 	APIKey                           string                          `json:"apiKey"`
 	Model                            string                          `json:"model"`
+	BackupModel                      *string                         `json:"backupModel,omitempty"`
 	ManualModels                     []string                        `json:"manualModels"`
 	Prompt                           string                          `json:"prompt"`
 	Remark                           string                          `json:"remark"`
@@ -146,6 +148,7 @@ type AISearchRequestConfig struct {
 	BaseURL                          string
 	APIKey                           string
 	Model                            string
+	BackupModel                      string
 	Prompt                           string
 	Temperature                      float64
 	TopP                             float64
@@ -221,6 +224,9 @@ func InspectAISearchModelPricingWithDB(db *gorm.DB) (AISearchModelPricingStatus,
 	candidates := make([]string, 0, 8)
 	if configuredModel != "" {
 		candidates = append(candidates, configuredModel)
+	}
+	if backupModel := strings.TrimSpace(config.BackupModel); backupModel != "" {
+		candidates = append(candidates, backupModel)
 	}
 	manualModels, err := unmarshalAISearchManualModels(config.ManualModels)
 	if err != nil {
@@ -331,6 +337,12 @@ func UpdateAISearchConfigWithDB(db *gorm.DB, input UpdateAISearchConfigInput) (A
 	config.BaseURL = normalizeAISearchBaseURL(input.BaseURL)
 	config.APIKey = mergeSecretInput(input.APIKey, config.APIKey)
 	config.Model = strings.TrimSpace(input.Model)
+	if input.BackupModel != nil {
+		config.BackupModel = strings.TrimSpace(*input.BackupModel)
+		if config.BackupModel == config.Model {
+			config.BackupModel = ""
+		}
+	}
 	config.ManualModels = manualModelsJSON
 	config.Prompt = strings.TrimSpace(input.Prompt)
 	config.Remark = strings.TrimSpace(input.Remark)
@@ -430,6 +442,17 @@ func BuildAISearchRequestConfigWithDB(db *gorm.DB, query url.Values, allowDefaul
 			usedDefault = true
 		}
 	}
+	// A backup model belongs to the saved account. Explicit endpoint/key
+	// overrides must not silently inherit it from another provider account.
+	storedAccount := normalizeAISearchBaseURL(resolved.Config.BaseURL) == normalizeAISearchBaseURL(defaultConfig.BaseURL) &&
+		strings.TrimSpace(resolved.Config.APIKey) == strings.TrimSpace(defaultConfig.APIKey) &&
+		strings.TrimSpace(resolved.Config.Model) == strings.TrimSpace(defaultConfig.Model)
+	if storedAccount {
+		resolved.Config.BackupModel = strings.TrimSpace(defaultConfig.BackupModel)
+		if resolved.Config.BackupModel == resolved.Config.Model {
+			resolved.Config.BackupModel = ""
+		}
+	}
 	resolved.Config.Prompt = effectiveAISearchPrompt(defaultConfig.Prompt)
 	resolved.Config.Temperature = 0
 	resolved.Config.TopP = 0
@@ -495,6 +518,7 @@ func buildAISearchConfigView(db *gorm.DB, config entity.AISearchConfig) (AISearc
 		BaseURL:                          config.BaseURL,
 		APIKey:                           config.APIKey,
 		Model:                            config.Model,
+		BackupModel:                      config.BackupModel,
 		ManualModels:                     manualModels,
 		Prompt:                           effectiveAISearchPrompt(config.Prompt),
 		Remark:                           config.Remark,

@@ -80,6 +80,21 @@
         </div>
       </a-form-item>
 
+      <a-form-item label="备用模型" class="full-width">
+        <a-auto-complete
+          v-model:value="formState.backupModel"
+          :options="modelOptions"
+          :filter-option="true"
+          allow-clear
+          placeholder="可选；主模型安全策略重试耗尽后切换"
+        />
+        <div class="hint">仅当主模型触发上游安全策略错误且本轮重试耗尽后切换；限流、普通上游错误仍按原逻辑重试，不会切换模型。留空表示不启用备用模型。</div>
+        <div v-if="pricingGaps.backupModel && !pricingGaps.backupModelPriced" class="hint hint-warning">
+          该备用模型尚未配置价格，调用会按 0 元计费。
+          <a @click="openPriceModalForModel(pricingGaps.backupModel)">去设置价格</a>
+        </div>
+      </a-form-item>
+
       <a-form-item label="模型列表" class="full-width">
         <div class="model-editor">
           <a-textarea
@@ -571,6 +586,7 @@ export default defineComponent({
       baseUrl: '',
       apiKey: '',
       model: '',
+      backupModel: '',
       manualModelsText: '',
       prompt: '',
       remark: '',
@@ -704,6 +720,7 @@ export default defineComponent({
           formState.baseUrl = data.baseUrl || ''
           formState.apiKey = data.apiKey || ''
           formState.model = data.model || ''
+          formState.backupModel = data.backupModel || ''
           formState.manualModelsText = buildModelNameText(data.manualModels || [])
           formState.prompt = data.prompt || ''
           formState.remark = data.remark || ''
@@ -1059,9 +1076,14 @@ export default defineComponent({
     // 从「默认模型未配置价格」提示直接跳到新增价格，并预填模型名。
     openPriceModalForConfiguredModel() {
       const modelName = String(this.pricingGaps?.configuredModel || this.formState.model || '').trim()
+      this.openPriceModalForModel(modelName)
+    },
+    openPriceModalForModel(modelName) {
+      const normalizedModelName = String(modelName || '').trim()
+      if (!normalizedModelName) return
       this.resetPriceForm()
-      this.priceForm.modelName = modelName
-      this.priceForm.displayName = modelName
+      this.priceForm.modelName = normalizedModelName
+      this.priceForm.displayName = normalizedModelName
       this.priceModalVisible = true
     },
     closePriceModal() {

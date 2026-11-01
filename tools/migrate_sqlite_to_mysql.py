@@ -21,8 +21,8 @@ The script intentionally does not copy SQLite's internal sqlite_sequence table.
 MySQL AUTO_INCREMENT values are restored after copying rows, so preserved IDs
 remain valid for existing references.
 
-Access-token quota limits outside DECIMAL(18,6) are normalized to 0 (unlimited)
-while copying, matching the application startup repair behavior.
+Negative or unrepresentable access-token quota limits are normalized to 0
+(unlimited) while copying, matching the application startup repair behavior.
 """
 
 from __future__ import annotations
@@ -242,9 +242,11 @@ def mysql_type(column: dict[str, Any], primary_key_columns: set[str]) -> str:
         return "SMALLINT"
     if declared.startswith("DECIMAL") or declared.startswith("NUMERIC"):
         if not re.search(r"\(\s*\d+", declared):
-            raise RuntimeError(
-                f"SQLite 数值列 {name!r} 未声明精度，无法保证 MySQL DECIMAL 无损映射；请先显式定义精度"
-            )
+            # SQLite NUMERIC without a precision is commonly used for booleans
+            # in GORM schemas. DOUBLE preserves both integer and fractional
+            # values without inventing a DECIMAL precision that SQLite never
+            # declared.
+            return "DOUBLE"
         return declared.replace("NUMERIC", "DECIMAL", 1)
     if declared.startswith("DOUBLE") or declared.startswith("REAL") or declared.startswith("FLOAT"):
         return "DOUBLE"
@@ -256,6 +258,11 @@ def mysql_type(column: dict[str, Any], primary_key_columns: set[str]) -> str:
         return "LONGTEXT"
     if declared.startswith("VARCHAR"):
         if re.search(r"\(\s*\d+", declared):
+            length = int(re.search(r"\(\s*(\d+)", declared).group(1))
+            if length > 255:
+                # SQLite does not enforce VARCHAR(n). Widen larger declared
+                # strings so historical rows cannot fail strict MySQL writes.
+                return "LONGTEXT"
             return declared
         return "LONGTEXT"
     if declared.startswith("DATE") and not declared.startswith("DATETIME"):
@@ -352,14 +359,14 @@ def convert_value(value: Any, declared_type: str) -> Any:
 
 
 def normalize_access_token_quota_limit(value: Any) -> tuple[Any, bool]:
-    """Map unrepresentable DECIMAL(18,6) quotas to the app's unlimited value."""
+    """Map negative or unrepresentable quotas to the app's unlimited value."""
     if value is None:
         return value, False
     try:
         quota = Decimal(str(value))
     except Exception:
         return value, False
-    if not quota.is_finite() or quota >= ACCESS_TOKEN_QUOTA_LIMIT_MAX_EXCLUSIVE or quota <= -ACCESS_TOKEN_QUOTA_LIMIT_MAX_EXCLUSIVE:
+    if not quota.is_finite() or quota < 0 or quota >= ACCESS_TOKEN_QUOTA_LIMIT_MAX_EXCLUSIVE:
         return Decimal(0), True
     return value, False
 
@@ -420,9 +427,9 @@ def check_mysql_capabilities(connection, source: sqlite3.Connection, tables: Seq
             column = next(column for column in columns if column["name"] == name)
             declared = normalize_declared_type(column["type"])
             length_match = re.search(r"\((\d+)\)", declared)
-            if declared.startswith(("VARCHAR", "CHAR")) and length_match:
+            if declared.startswith(("VARCHAR", "CHAR")) and length_match and int(length_match.group(1)) <= 255:
                 total_bytes += int(length_match.group(1)) * 4
-            elif "TEXT" in declared or "CLOB" in declared:
+            elif "TEXT" in declared or "CLOB" in declared or (declared.startswith("VARCHAR") and length_match):
                 if unique:
                     raise RuntimeError(f"MySQL 无法安全表达 LONGTEXT 唯一索引：{label}")
                 total_bytes += 191 * 4
@@ -488,7 +495,7 @@ def copy_table(source: sqlite3.Connection, target, table_name: str, staging_name
         count += len(rows)
         print(f"  {table_name}: {count} 行")
     if corrected_quotas:
-        print(f"  {table_name}.total_quota_limit: {corrected_quotas} 个超范围值已修正为 0（无限额）")
+        print(f"  {table_name}.total_quota_limit: {corrected_quotas} 个非法或超范围值已修正为 0（无限额）")
     return count
 
 
@@ -499,7 +506,8 @@ def create_indexes(source: sqlite3.Connection, target, table_name: str, staging_
         for name in index["columns"]:
             column = columns_by_name[name]
             declared = normalize_declared_type(column["type"])
-            if "TEXT" in declared or "CLOB" in declared:
+            length_match = re.search(r"^VARCHAR\s*\(\s*(\d+)\s*\)$", declared)
+            if "TEXT" in declared or "CLOB" in declared or (length_match and int(length_match.group(1)) > 255):
                 if index["unique"]:
                     raise RuntimeError(f"MySQL 无法安全表达 LONGTEXT 唯一索引：{table_name}.{index['name']}")
                 indexed_columns.append(f"{quote_mysql(name)}(191)")

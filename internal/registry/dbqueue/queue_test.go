@@ -78,9 +78,33 @@ func TestSchedulerCancellationRemovesWaitingWork(t *testing.T) {
 		t.Fatalf("acquire blocker: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	acquireDone := make(chan error, 1)
+	go func() {
+		_, acquireErr := scheduler.Acquire(ctx, PriorityLow)
+		acquireDone <- acquireErr
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		scheduler.mu.Lock()
+		queued := scheduler.waiters.Len()
+		scheduler.mu.Unlock()
+		if queued == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("cancelled work did not enter the queue")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	cancel()
-	if _, err := scheduler.Acquire(ctx, PriorityLow); !errors.Is(err, context.Canceled) {
+	if err := <-acquireDone; !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled acquire error = %v, want context.Canceled", err)
+	}
+	scheduler.mu.Lock()
+	queued := scheduler.waiters.Len()
+	scheduler.mu.Unlock()
+	if queued != 0 {
+		t.Fatalf("cancelled waiter remained queued: %d", queued)
 	}
 	release()
 }
@@ -133,6 +157,44 @@ func TestPoolKeepsTransactionLeaseUntilCommit(t *testing.T) {
 	}
 	if err := <-outsideDone; err != nil {
 		t.Fatalf("outside operation: %v", err)
+	}
+}
+
+func TestPoolTransactionRollbackReleasesSchedulerLease(t *testing.T) {
+	dsn := "file:dbqueue-transaction-rollback-" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("get sql db: %v", err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	scheduler := NewScheduler()
+	t.Cleanup(func() {
+		scheduler.Close()
+		_ = sqlDB.Close()
+	})
+	db.ConnPool = Wrap(db.ConnPool, scheduler)
+
+	transactionErr := errors.New("rollback transaction")
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		return transactionErr
+	}); !errors.Is(err, transactionErr) {
+		t.Fatalf("transaction error = %v, want %v", err, transactionErr)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- db.WithContext(WithPriority(context.Background(), PriorityHigh)).Exec("SELECT 1").Error
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("operation after rollback: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("transaction rollback leaked its scheduler lease")
 	}
 }
 

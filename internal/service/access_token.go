@@ -16,7 +16,7 @@ import (
 
 var ErrAccessTokenNameRequired = errors.New("令牌名称不能为空")
 var ErrAccessTokenNameInvalid = errors.New("令牌名称只能使用中文、英文、数字、下划线和@，且长度不能超过128个字符")
-var ErrAccessTokenQuotaLimitInvalid = errors.New("总额度超出数据库可存储范围")
+var ErrAccessTokenQuotaLimitInvalid = errors.New("总额度必须为非负且不超过数据库可存储范围")
 var ErrAccessTokenNotFound = errors.New("访问令牌不存在")
 var ErrAccessTokenForbidden = errors.New("无权限操作访问令牌")
 
@@ -261,7 +261,7 @@ func normalizeQuotaLimit(limit float64) float64 {
 }
 
 func validateAccessTokenQuotaLimit(limit float64) error {
-	if math.IsNaN(limit) || math.IsInf(limit, 0) || limit >= entity.AccessTokenQuotaLimitMaxExclusive || limit <= -entity.AccessTokenQuotaLimitMaxExclusive {
+	if math.IsNaN(limit) || math.IsInf(limit, 0) || limit < 0 || limit >= entity.AccessTokenQuotaLimitMaxExclusive {
 		return ErrAccessTokenQuotaLimitInvalid
 	}
 	return nil

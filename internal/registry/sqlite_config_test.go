@@ -1,10 +1,13 @@
 package registry
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -12,12 +15,89 @@ import (
 )
 
 func TestSQLiteProductionDSNAddsPragmasWithoutChangingMemoryDSN(t *testing.T) {
-	if got := sqliteProductionDSN("file:test.db?cache=shared"); !strings.Contains(got, "&_pragma=busy_timeout(5000)") || !strings.Contains(got, "_pragma=journal_mode(WAL)") {
+	if got := sqliteProductionDSN("file:test.db?cache=shared"); !strings.Contains(got, "_txlock=immediate") || !strings.Contains(got, "&_pragma=busy_timeout(5000)") || !strings.Contains(got, "_pragma=journal_mode(WAL)") {
 		t.Fatalf("production DSN missing pragmas: %s", got)
 	}
 	memory := "file:test?mode=memory&cache=shared"
 	if got := sqliteProductionDSN(memory); got != memory {
 		t.Fatalf("memory DSN changed: got %s", got)
+	}
+}
+
+// A separate process cannot share the admission scheduler. Exercise two real
+// SQLite connections so a read-to-write upgrade cannot hide behind one pool.
+func TestSQLiteImmediateTransactionsAvoidBusySnapshotUpgrade(t *testing.T) {
+	for _, immediate := range []bool{false, true} {
+		t.Run(fmt.Sprintf("immediate=%t", immediate), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "snapshot.db")
+			dsn := path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+			if immediate {
+				dsn = sqliteProductionDSN(path)
+			}
+			db, err := sql.Open("sqlite", dsn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			if _, err := db.Exec("CREATE TABLE counter (id INTEGER PRIMARY KEY, value INTEGER); INSERT INTO counter VALUES (1, 0)"); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			first, err := db.Conn(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer first.Close()
+			second, err := db.Conn(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer second.Close()
+			tx, err := first.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback()
+			var value int
+			if err := tx.QueryRowContext(ctx, "SELECT value FROM counter WHERE id = 1").Scan(&value); err != nil {
+				t.Fatal(err)
+			}
+			if !immediate {
+				if _, err := second.ExecContext(ctx, "UPDATE counter SET value = value + 1 WHERE id = 1"); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tx.ExecContext(ctx, "UPDATE counter SET value = value + 1 WHERE id = 1"); err == nil || (!strings.Contains(err.Error(), "SQLITE_BUSY") && !strings.Contains(err.Error(), "database is locked")) {
+					t.Fatalf("deferred upgrade error = %v, want SQLITE_BUSY/database is locked", err)
+				}
+				return
+			}
+			started := make(chan struct{})
+			otherWrite := make(chan error, 1)
+			go func() {
+				close(started)
+				_, err := second.ExecContext(ctx, "UPDATE counter SET value = value + 1 WHERE id = 1")
+				otherWrite <- err
+			}()
+			<-started
+			select {
+			case err := <-otherWrite:
+				t.Fatalf("other writer did not wait for transaction: %v", err)
+			case <-time.After(30 * time.Millisecond):
+			}
+			if _, err := tx.ExecContext(ctx, "UPDATE counter SET value = value + 1 WHERE id = 1"); err != nil {
+				t.Fatalf("immediate read-to-write transaction failed: %v", err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-otherWrite; err != nil {
+				t.Fatalf("other writer failed after transaction commit: %v", err)
+			}
+			if err := first.QueryRowContext(ctx, "SELECT value FROM counter WHERE id = 1").Scan(&value); err != nil || value != 2 {
+				t.Fatalf("committed counter = %d, err = %v, want 2", value, err)
+			}
+		})
 	}
 }
 

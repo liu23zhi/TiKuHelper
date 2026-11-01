@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -214,6 +215,160 @@ func TestAINormalSearchRetriesWithinOneModelRound(t *testing.T) {
 	answer, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?"})
 	if err != nil || calls != 2 || !reflect.DeepEqual(answer, [][]string{{"4"}}) {
 		t.Fatalf("normal search should retry within one round: answer=%v calls=%d err=%v", answer, calls, err)
+	}
+}
+
+func TestAINormalSearchRetriesTypedSSEUpstreamError(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			writeResponsesEvent(w, "response.failed", map[string]any{"response": map[string]any{"error": map[string]any{
+				"type": "server_error", "code": "server_error", "message": "temporary upstream stream failure",
+			}}})
+			return
+		}
+		writeOpenAIStyleStream(w, `{"answers":["4"]}`)
+	}))
+	defer server.Close()
+	client := &ChatGptClient{Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test", MaxAISearchModelCalls: 1, MaxAISearchRetries: 2}
+	answer, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?"})
+	if err != nil || calls != 2 || !reflect.DeepEqual(answer, [][]string{{"4"}}) {
+		t.Fatalf("typed SSE error should retry within one model round: answer=%v calls=%d err=%v", answer, calls, err)
+	}
+}
+
+func TestAISafetyPolicyErrorClassificationAndRetryEligibility(t *testing.T) {
+	var stream strings.Builder
+	writeResponsesEvent(&stream, "error", map[string]any{"error": map[string]any{
+		"type": "invalid_request_error", "code": "invalid_prompt", "message": "prompt flagged by safety policy",
+	}})
+	_, streamErr := readAIResponsesStream(strings.NewReader(stream.String()), nil)
+	if !IsAISearchSafetyPolicyError(streamErr) || !shouldRetryAISearchFailure(http.StatusOK, streamErr) {
+		t.Fatalf("invalid_prompt SSE error should be retryable and classified: %v", streamErr)
+	}
+
+	client := &ChatGptClient{}
+	httpErr := client.upstreamError("http", http.StatusBadRequest, `{"error":{"code":"invalid_prompt","message":"blocked"}}`, nil)
+	if !IsAISearchSafetyPolicyError(httpErr) || !shouldRetryAISearchFailure(http.StatusBadRequest, httpErr) {
+		t.Fatalf("invalid_prompt HTTP error should be retryable and classified: %v", httpErr)
+	}
+
+	permanentErr := client.upstreamError("http", http.StatusBadRequest, `{"error":{"code":"invalid_request_error","message":"bad payload"}}`, nil)
+	if shouldRetryAISearchFailure(http.StatusBadRequest, permanentErr) || IsAISearchSafetyPolicyError(permanentErr) {
+		t.Fatalf("ordinary bad request must remain non-retryable: %v", permanentErr)
+	}
+}
+
+func TestAISafetyPolicyRetriesThenUsesBackupModel(t *testing.T) {
+	calls := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request openAIResponsesRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		calls[request.Model]++
+		if request.Model == "primary" {
+			writeResponsesEvent(w, "error", map[string]any{"error": map[string]any{
+				"type": "invalid_request_error", "code": "invalid_prompt", "message": "retry denied by safety policy",
+			}})
+			return
+		}
+		writeAIResponsesTextStream(w, []string{`{"answers":["4"]}`}, map[string]any{"input_tokens": 6, "output_tokens": 2, "total_tokens": 8})
+	}))
+	defer server.Close()
+	client := &ChatGptClient{Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "primary", BackupModel: "backup", MaxAISearchModelCalls: 1, MaxAISearchRetries: 2}
+	answer, usage, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?"})
+	if err != nil || !reflect.DeepEqual(answer, [][]string{{"4"}}) {
+		t.Fatalf("backup model should answer after safety retries: answer=%v err=%v", answer, err)
+	}
+	if calls["primary"] != 2 || calls["backup"] != 1 {
+		t.Fatalf("primary retry budget and backup fallback mismatch: calls=%v", calls)
+	}
+	if len(usage.ModelCalls) != 1 || usage.ModelCalls[0].Model != "backup" || usage.TotalTokens != 8 {
+		t.Fatalf("usage must identify and retain the successful backup call: %+v", usage)
+	}
+	models := make([]string, 0)
+	for _, trace := range usage.Trace {
+		if trace.Stage == "普通模型响应" || trace.Stage == "普通模型调用开始" {
+			models = append(models, trace.Model)
+		}
+	}
+	if !reflect.DeepEqual(models, []string{"primary", "primary", "primary", "primary", "backup", "backup"}) {
+		t.Fatalf("traces must identify each attempted model: %v", models)
+	}
+}
+
+func TestAISafetyPolicyBackupPreservesUsageFromFailedAttempts(t *testing.T) {
+	var primaryCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request openAIResponsesRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		if request.Model == "primary" {
+			primaryCalls++
+			writeResponsesEvent(w, "error", map[string]any{
+				"error": map[string]any{
+					"type": "invalid_request_error", "code": "invalid_prompt", "message": "retry denied by safety policy",
+				},
+				"response": map[string]any{
+					"usage": map[string]any{"input_tokens": 3, "output_tokens": 1, "total_tokens": 4},
+				},
+			})
+			return
+		}
+		writeAIResponsesTextStream(w, []string{`{"answers":["4"]}`}, map[string]any{"input_tokens": 6, "output_tokens": 2, "total_tokens": 8})
+	}))
+	defer server.Close()
+
+	client := &ChatGptClient{Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "primary", BackupModel: "backup", MaxAISearchModelCalls: 1, MaxAISearchRetries: 2}
+	answer, usage, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?"})
+	if err != nil || !reflect.DeepEqual(answer, [][]string{{"4"}}) {
+		t.Fatalf("backup model should answer after usage-bearing safety retries: answer=%v err=%v", answer, err)
+	}
+	if primaryCalls != 2 || usage.TotalTokens != 16 || usage.InputTokens != 12 || usage.OutputTokens != 4 {
+		t.Fatalf("failed attempts must remain in aggregate usage: primaryCalls=%d usage=%+v", primaryCalls, usage)
+	}
+	if len(usage.ModelCalls) != 3 {
+		t.Fatalf("each token-bearing attempt must remain metered: %+v", usage.ModelCalls)
+	}
+	for i, call := range usage.ModelCalls {
+		expectedModel := "primary"
+		expectedTotal := int64(4)
+		if i == 2 {
+			expectedModel = "backup"
+			expectedTotal = 8
+		}
+		if call.Model != expectedModel || call.TotalTokens != expectedTotal {
+			t.Fatalf("unexpected model call %d: %+v", i, call)
+		}
+	}
+}
+
+func TestAISafetyPolicyCancellationDoesNotSwitchBackup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request openAIResponsesRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		calls[request.Model]++
+		writeResponsesEvent(w, "error", map[string]any{"error": map[string]any{
+			"type": "invalid_request_error", "code": "invalid_prompt", "message": "retry denied by safety policy",
+		}})
+		cancel()
+	}))
+	defer server.Close()
+	client := &ChatGptClient{Context: ctx, Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "primary", BackupModel: "backup", MaxAISearchModelCalls: 1, MaxAISearchRetries: 2}
+	_, _, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?"})
+	if err == nil || calls["primary"] != 1 || calls["backup"] != 0 {
+		t.Fatalf("canceled safety retry must not switch backup: calls=%v err=%v", calls, err)
 	}
 }
 

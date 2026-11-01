@@ -38,11 +38,15 @@ import (
 
 // ChatGptClient AI 搜题客户端
 type ChatGptClient struct {
-	Context               context.Context
-	Enable                bool
-	APIKey                string
-	BaseURL               string
-	Model                 string
+	Context context.Context
+	Enable  bool
+	APIKey  string
+	BaseURL string
+	Model   string
+	// BackupModel is used only after the primary model exhausts retries for a
+	// safety-policy rejection. Other upstream errors keep the existing retry
+	// and failure behavior.
+	BackupModel           string
 	Prompt                string
 	Temperature           float64
 	TopP                  float64
@@ -396,6 +400,35 @@ type openAIResponsesOutputItem struct {
 type aiSearchAnswerPayload struct {
 	Answers []string `json:"answers"`
 }
+
+// aiResponsesUpstreamError preserves structured error metadata emitted in a
+// 2xx SSE response. A typed error is needed because the HTTP status alone is
+// not sufficient to decide whether a stream failure is safe to retry.
+type aiResponsesUpstreamError struct {
+	Code    string
+	Type    string
+	Message string
+	Raw     string
+}
+
+func (e *aiResponsesUpstreamError) Error() string {
+	parts := make([]string, 0, 3)
+	if e.Code != "" {
+		parts = append(parts, "code="+e.Code)
+	}
+	if e.Type != "" {
+		parts = append(parts, "type="+e.Type)
+	}
+	if e.Message != "" {
+		parts = append(parts, e.Message)
+	}
+	if len(parts) == 0 {
+		return "AI Responses upstream error event"
+	}
+	return "AI Responses upstream error event: " + strings.Join(parts, ", ")
+}
+
+func (e *aiResponsesUpstreamError) Unwrap() error { return errors.ErrTargetServerError }
 
 var aiSearchURLPattern = regexp.MustCompile(`https?://[A-Za-z0-9][A-Za-z0-9._~:/?@!$&'()*+,;=%-]*`)
 
@@ -1308,75 +1341,86 @@ func (in *ChatGptClient) requestStreamAnswerDetailed(parentCtx context.Context, 
 		in.logAISearchTrace(trace)
 	}
 
+	modelName := strings.TrimSpace(in.Model)
+	backupUsed := false
+	if *modelCalls >= maxModelCalls {
+		return "", lastUsage, lastStatusCode, "", requestBody, lastRawResponse, lastErr
+	}
+	*modelCalls++
 	// A retry is another chance for the same logical model round. It must not
 	// consume the configured model-round budget, otherwise maxModelCalls=1
-	// would silently disable the retry setting.
-	for attempt := 0; attempt < in.aiSearchRetryAttempts(); attempt++ {
-		if attempt > 0 {
-			if !sleepAISearchRetryBackoff(parentCtx, attempt, lastErr) {
-				break
+	// would silently disable the retry setting. A backup model is entered only
+	// after the primary exhausts its complete retry budget for invalid_prompt.
+	for {
+		attempted := 0
+		for attempt := 0; attempt < in.aiSearchRetryAttempts(); attempt++ {
+			if attempt > 0 {
+				if !sleepAISearchRetryBackoff(parentCtx, attempt, lastErr) {
+					break
+				}
 			}
-		}
 
-		if attempt == 0 {
-			if *modelCalls >= maxModelCalls {
-				break
+			attempted++
+			payload, err := json.Marshal(openAIResponsesRequest{
+				Model:  modelName,
+				Stream: true,
+				Store:  false,
+				Input: []any{
+					buildAIResponsesMessage("system", systemPrompt+"\n本轮不提供任何联网/读取工具，请直接输出最终答案 JSON。"),
+					buildAIResponsesMessage("user", buildAIResponsesContentParts(userPromptParts)),
+				},
+			})
+			if err != nil {
+				return "", AISearchUsage{}, 0, "", "", "", errors.ErrParserJSON
 			}
-			*modelCalls++
-		}
-		payload, err := json.Marshal(openAIResponsesRequest{
-			Model:  strings.TrimSpace(in.Model),
-			Stream: true,
-			Store:  false,
-			Input: []any{
-				buildAIResponsesMessage("system", systemPrompt+"\n本轮不提供任何联网/读取工具，请直接输出最终答案 JSON。"),
-				buildAIResponsesMessage("user", buildAIResponsesContentParts(userPromptParts)),
-			},
-		})
-		if err != nil {
-			return "", AISearchUsage{}, 0, "", "", "", errors.ErrParserJSON
-		}
-		var attemptContent string
-		var attemptUsage AISearchUsage
-		var attemptEndpoint string
-		var attemptStatus int
-		var attemptRawResponse string
-		var attemptErr error
-		var attemptRetryable bool
-		for endpointIndex, endpoint := range endpoints {
-			requestBody = string(payload)
-			remainingAfterCall := maxModelCalls - *modelCalls
-			recordTrace(AISearchTrace{Round: *modelCalls, Attempt: attempt + 1, AttemptBudget: in.aiSearchRetryAttempts(), Stage: "普通模型调用开始", Endpoint: endpoint, ModelCallCount: *modelCalls, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingAfterCall})
-			attemptStartedAt := time.Now()
-			content, usage, statusCode, rawResponse, retryable, callErr := in.executeAISearchStreamRequest(parentCtx, endpoint, payload, requestBody)
-			responseTrace := AISearchTrace{Round: *modelCalls, Attempt: attempt + 1, AttemptBudget: in.aiSearchRetryAttempts(), Stage: "普通模型响应", Endpoint: endpoint, ModelCallCount: *modelCalls, ModelCallBudget: maxModelCalls, RemainingModelCalls: maxModelCalls - *modelCalls, Status: fmt.Sprintf("%d", statusCode), DurationMs: time.Since(attemptStartedAt).Milliseconds(), RequestBody: requestBody, ContentPreview: content, FullResponse: content, RawResponse: rawResponse, Error: errorString(callErr)}
-			if call, ok := buildAIModelCallUsage(usage, in.Model, *modelCalls, attempt+1); ok {
-				appendAIModelCallUsage(&lastUsage, call)
-				applyAIModelCallUsageToTrace(&responseTrace, lastUsage.ModelCalls[len(lastUsage.ModelCalls)-1])
+			var attemptContent string
+			var attemptUsage AISearchUsage
+			var attemptEndpoint string
+			var attemptStatus int
+			var attemptRawResponse string
+			var attemptErr error
+			var attemptRetryable bool
+			for endpointIndex, endpoint := range endpoints {
+				requestBody = string(payload)
+				remainingAfterCall := maxModelCalls - *modelCalls
+				recordTrace(AISearchTrace{Round: *modelCalls, Attempt: attempt + 1, AttemptBudget: in.aiSearchRetryAttempts(), Stage: "普通模型调用开始", Endpoint: endpoint, Model: modelName, ModelCallCount: *modelCalls, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingAfterCall})
+				attemptStartedAt := time.Now()
+				content, usage, statusCode, rawResponse, retryable, callErr := in.executeAISearchStreamRequest(parentCtx, endpoint, payload, requestBody)
+				responseTrace := AISearchTrace{Round: *modelCalls, Attempt: attempt + 1, AttemptBudget: in.aiSearchRetryAttempts(), Stage: "普通模型响应", Endpoint: endpoint, Model: modelName, ModelCallCount: *modelCalls, ModelCallBudget: maxModelCalls, RemainingModelCalls: maxModelCalls - *modelCalls, Status: fmt.Sprintf("%d", statusCode), DurationMs: time.Since(attemptStartedAt).Milliseconds(), RequestBody: requestBody, ContentPreview: content, FullResponse: content, RawResponse: rawResponse, Error: errorString(callErr)}
+				if call, ok := buildAIModelCallUsage(usage, modelName, *modelCalls, attempt+1); ok {
+					appendAIModelCallUsage(&lastUsage, call)
+					applyAIModelCallUsageToTrace(&responseTrace, lastUsage.ModelCalls[len(lastUsage.ModelCalls)-1])
+				}
+				recordTrace(responseTrace)
+				attemptContent, attemptUsage, attemptEndpoint, attemptStatus, attemptRawResponse, attemptErr, attemptRetryable = content, usage, endpoint, statusCode, rawResponse, callErr, retryable
+				modelCallHistory := append([]AIModelCallUsage(nil), lastUsage.ModelCalls...)
+				addAISearchUsage(&lastUsage, attemptUsage)
+				lastUsage.ModelCalls = modelCallHistory
+				lastUsage.Trace = append([]AISearchTrace(nil), traceEvents...)
+				if callErr == nil {
+					lastUsage.Trace = append([]AISearchTrace(nil), traceEvents...)
+					lastUsage.ModelCalls = append([]AIModelCallUsage(nil), modelCallHistory...)
+					return content, lastUsage, statusCode, endpoint, requestBody, rawResponse, nil
+				}
+				if endpointIndex+1 >= len(endpoints) || !shouldTryAlternateAIEndpoint(statusCode) {
+					break
+				}
 			}
-			recordTrace(responseTrace)
-			attemptContent, attemptUsage, attemptEndpoint, attemptStatus, attemptRawResponse, attemptErr, attemptRetryable = content, usage, endpoint, statusCode, rawResponse, callErr, retryable
-			if callErr == nil {
-				attemptUsage.Trace = append([]AISearchTrace(nil), traceEvents...)
-				attemptUsage.ModelCalls = append([]AIModelCallUsage(nil), lastUsage.ModelCalls...)
-				return content, attemptUsage, statusCode, endpoint, requestBody, rawResponse, nil
-			}
-			if endpointIndex+1 >= len(endpoints) || !shouldTryAlternateAIEndpoint(statusCode) {
-				break
+			lastStatusCode = attemptStatus
+			lastRawResponse = attemptRawResponse
+			lastErr = attemptErr
+			if !attemptRetryable {
+				lastUsage.Trace = append([]AISearchTrace(nil), traceEvents...)
+				lastUsage.ModelCalls = append([]AIModelCallUsage(nil), lastUsage.ModelCalls...)
+				return attemptContent, lastUsage, lastStatusCode, attemptEndpoint, requestBody, lastRawResponse, lastErr
 			}
 		}
-		modelCallHistory := append([]AIModelCallUsage(nil), lastUsage.ModelCalls...)
-		lastUsage = attemptUsage
-		lastUsage.ModelCalls = modelCallHistory
-		lastUsage.Trace = append([]AISearchTrace(nil), traceEvents...)
-		lastStatusCode = attemptStatus
-		lastRawResponse = attemptRawResponse
-		lastErr = attemptErr
-		if !attemptRetryable {
-			lastUsage.Trace = append([]AISearchTrace(nil), traceEvents...)
-			lastUsage.ModelCalls = append([]AIModelCallUsage(nil), lastUsage.ModelCalls...)
-			return attemptContent, lastUsage, lastStatusCode, attemptEndpoint, requestBody, lastRawResponse, lastErr
+		if attempted == in.aiSearchRetryAttempts() && parentCtx.Err() == nil && !backupUsed && strings.TrimSpace(in.BackupModel) != "" && modelName != strings.TrimSpace(in.BackupModel) && IsAISearchSafetyPolicyError(lastErr) {
+			modelName = strings.TrimSpace(in.BackupModel)
+			backupUsed = true
+			continue
 		}
+		break
 	}
 
 	lastUsage.ModelCalls = append([]AIModelCallUsage(nil), lastUsage.ModelCalls...)
@@ -1414,7 +1458,8 @@ func (in *ChatGptClient) executeAISearchStreamRequest(parentCtx context.Context,
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		rawBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
 		rawResponse := string(rawBody)
-		return "", AISearchUsage{}, resp.StatusCode, rawResponse, isRetryableAIHTTPStatus(resp.StatusCode), withAISearchRetryAfter(in.upstreamError("http", resp.StatusCode, rawResponse, readErr), resp)
+		upstreamErr := in.upstreamError("http", resp.StatusCode, rawResponse, readErr)
+		return "", AISearchUsage{}, resp.StatusCode, rawResponse, shouldRetryAISearchFailure(resp.StatusCode, upstreamErr), withAISearchRetryAfter(upstreamErr, resp)
 	}
 
 	firstTokenTimeout := aiSearchFirstTokenTimeout - time.Since(requestStartedAt)
@@ -1428,7 +1473,8 @@ func (in *ChatGptClient) executeAISearchStreamRequest(parentCtx context.Context,
 	}
 	content, usage, rawResponse, err := readOpenAIStreamContentWithFirstTokenTimeout(resp.Body, firstTokenTimeout)
 	if err != nil {
-		return "", usage, resp.StatusCode, rawResponse, false, in.upstreamError("stream", resp.StatusCode, rawResponse, err)
+		upstreamErr := in.upstreamError("stream", resp.StatusCode, rawResponse, err)
+		return "", usage, resp.StatusCode, rawResponse, shouldRetryAISearchFailure(resp.StatusCode, upstreamErr), withAISearchRetryAfter(upstreamErr, resp)
 	}
 	content = strings.TrimSpace(content)
 	if content == "" {
@@ -1454,7 +1500,7 @@ func (e *aiSearchRetryAfterError) Error() string { return e.err.Error() }
 func (e *aiSearchRetryAfterError) Unwrap() error { return e.err }
 
 func withAISearchRetryAfter(err error, resp *http.Response) error {
-	if err == nil || resp == nil || resp.StatusCode != http.StatusTooManyRequests {
+	if err == nil || resp == nil || (resp.StatusCode != http.StatusTooManyRequests && !shouldRetryAISearchFailure(resp.StatusCode, err)) {
 		return err
 	}
 	value := strings.TrimSpace(resp.Header.Get("Retry-After"))
@@ -1598,14 +1644,13 @@ func normalizeAISearchCachedTokens(cachedTokens int64, promptTokens int64) int64
 }
 
 func parseAISearchAnswers(content string, options []string, questionType int) []string {
-	trimmed := stripAISearchCodeFence(strings.TrimSpace(content))
+	trimmed := unwrapAISearchAnswerContent(content)
 	if trimmed == "" {
 		return nil
 	}
 
-	var jsonArray []string
-	if err := json.Unmarshal([]byte(trimmed), &jsonArray); err == nil {
-		return normalizeAISearchAnswers(jsonArray, options, questionType)
+	if answers, err := parseAISearchAnswersJSON(trimmed, options, questionType); err == nil {
+		return answers
 	}
 
 	// 结构化 JSON：只要出现 answers（哪怕空数组）就以它为准，
@@ -1621,18 +1666,65 @@ func parseAISearchAnswers(content string, options []string, questionType int) []
 	return normalizeAISearchAnswers([]string{trimmed}, options, questionType)
 }
 
+// parseAISearchAnswersJSON accepts only a complete, recognized answer JSON
+// document. Transport/model wrappers are removed by unwrapAISearchAnswerContent
+// before decoding; arbitrary prose or partial JSON is rejected.
+func parseAISearchAnswersJSON(content string, options []string, questionType int) ([]string, error) {
+	trimmed := unwrapAISearchAnswerContent(content)
+	if trimmed == "" {
+		return nil, fmt.Errorf("答案JSON为空")
+	}
+	var jsonArray []string
+	if err := json.Unmarshal([]byte(trimmed), &jsonArray); err == nil {
+		return normalizeAISearchAnswers(jsonArray, options, questionType), nil
+	}
+	answers, structured := extractAISearchAnswersFromJSON(trimmed)
+	if !structured {
+		return nil, fmt.Errorf("答案JSON缺少 answers 字段")
+	}
+	return normalizeAISearchAnswers(answers, options, questionType), nil
+}
+
+// unwrapAISearchAnswerContent handles only paired wrappers observed in model
+// responses. It never searches for an inner brace or silently accepts a
+// truncated wrapper, preventing prose/partial JSON from becoming an answer.
+func unwrapAISearchAnswerContent(content string) string {
+	trimmed := strings.TrimSpace(strings.TrimPrefix(content, "\ufeff"))
+	for depth := 0; depth < 3; depth++ {
+		if strings.HasPrefix(trimmed, "```") {
+			lineEnd := strings.IndexByte(trimmed, '\n')
+			if lineEnd < 0 {
+				return trimmed
+			}
+			if !strings.HasSuffix(strings.TrimSpace(trimmed), "```") {
+				return trimmed
+			}
+			body := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(trimmed), "```"))
+			trimmed = strings.TrimSpace(body[lineEnd+1:])
+			continue
+		}
+		unwrapped := false
+		for _, tag := range []string{"escape", "json", "answer"} {
+			open, close := "<"+tag+">", "</"+tag+">"
+			if len(trimmed) >= len(open)+len(close) && strings.EqualFold(trimmed[:len(open)], open) {
+				if !strings.EqualFold(trimmed[len(trimmed)-len(close):], close) {
+					return trimmed
+				}
+				trimmed = strings.TrimSpace(trimmed[len(open) : len(trimmed)-len(close)])
+				unwrapped = true
+				break
+			}
+		}
+		if !unwrapped {
+			break
+		}
+	}
+	return strings.TrimSpace(trimmed)
+}
+
 // stripAISearchCodeFence 去掉模型偶尔包上的 ```json ... ``` 围栏。
 func stripAISearchCodeFence(content string) string {
-	trimmed := strings.TrimSpace(content)
-	if !strings.HasPrefix(trimmed, "```") {
-		return trimmed
-	}
-	trimmed = strings.TrimPrefix(trimmed, "```")
-	if index := strings.IndexByte(trimmed, '\n'); index >= 0 {
-		trimmed = trimmed[index+1:]
-	}
-	trimmed = strings.TrimSuffix(strings.TrimSpace(trimmed), "```")
-	return strings.TrimSpace(trimmed)
+	return unwrapAISearchAnswerContent(content)
 }
 
 // aiSearchLooseAnswerKeys 是模型偏离约定格式时仍可接受的答案键（按优先级）。
@@ -1647,13 +1739,15 @@ func extractAISearchAnswersFromJSON(content string) (answers []string, structure
 	if err := json.Unmarshal([]byte(content), &raw); err != nil {
 		return nil, false
 	}
+	if value, ok := raw["answers"]; ok {
+		// answers is authoritative, including null, empty, or unsupported values;
+		// never fall through to a conflicting singular answer field.
+		return decodeAISearchAnswerValue(value), true
+	}
 	for _, key := range aiSearchLooseAnswerKeys {
 		value, ok := raw[key]
 		if !ok {
 			continue
-		}
-		if key == "answers" {
-			structured = true
 		}
 		if decoded := decodeAISearchAnswerValue(value); len(decoded) > 0 {
 			return decoded, true

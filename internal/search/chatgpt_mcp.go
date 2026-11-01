@@ -307,6 +307,8 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 	results := make(map[string]string)
 	webReadResults := make(map[string]string)
 	toolsDisabled := in.SearchTool == nil
+	modelName := strings.TrimSpace(in.Model)
+	backupUsed := false
 	for round := 0; round < maxModelCalls; round++ {
 		var compactErr error
 		input, compactErr = compactor.prepare(ctx, activeEndpoint, input, false, round+1)
@@ -328,7 +330,7 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 				roundInput = append(roundInput, buildAIResponsesMessage("system", "本轮首次工具调用必须为 web_search。请先输出搜索动作 JSON，提炼与题目关键事实相关的简短 query；完成搜索后再浏览或作答，不得直接输出最终答案。"))
 			}
 			return json.Marshal(openAIResponsesRequest{
-				Model:             strings.TrimSpace(in.Model),
+				Model:             modelName,
 				Stream:            true,
 				Store:             false,
 				Input:             roundInput,
@@ -365,7 +367,7 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 					debug.RequestBody = string(payload)
 					debug.RawResponse = result.Raw
 					modelCallIndex := 0
-					if call, ok := buildAIModelCallUsage(result.Usage, in.Model, round+1, retry+1); ok {
+					if call, ok := buildAIModelCallUsage(result.Usage, modelName, round+1, retry+1); ok {
 						appendAIModelCallUsage(&debug.Usage, call)
 						modelCallIndex = debug.Usage.ModelCalls[len(debug.Usage.ModelCalls)-1].Index
 					}
@@ -381,7 +383,7 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 						Attempt:             retry + 1,
 						AttemptBudget:       attempts,
 						Stage:               "MCP模型响应",
-						Model:               in.Model,
+						Model:               modelName,
 						Endpoint:            endpoint,
 						Status:              fmt.Sprintf("%d", status),
 						DurationMs:          time.Since(attemptStartedAt).Milliseconds(),
@@ -397,7 +399,7 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 						Error:               errorString(callErr),
 					})
 					serverFallback := compactor.handleServerFailure(callErr)
-					if !serverFallback && (retry == attempts-1 || !isRetryableAIHTTPStatus(status)) && ctx.Err() == nil {
+					if !serverFallback && (retry == attempts-1 || !shouldRetryAISearchFailure(status, callErr)) && ctx.Err() == nil {
 						serverFallback = compactor.handleServerExhausted(status, callErr)
 					}
 					contextExceeded := isAIContextLengthFailure(status, callErr)
@@ -426,11 +428,17 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 			if callErr == nil {
 				break
 			}
-			if !isRetryableAIHTTPStatus(status) {
+			if !shouldRetryAISearchFailure(status, callErr) {
 				break
 			}
 		}
 		if callErr != nil {
+			if attempted == attempts && ctx.Err() == nil && !backupUsed && strings.TrimSpace(in.BackupModel) != "" && modelName != strings.TrimSpace(in.BackupModel) && IsAISearchSafetyPolicyError(callErr) {
+				modelName = strings.TrimSpace(in.BackupModel)
+				backupUsed = true
+				round--
+				continue
+			}
 			return nil, debug, fmt.Errorf("AI MCP第%d轮失败（已尝试%d次）: %w", round+1, attempted, callErr)
 		}
 		input = compactor.acceptServerOutput(input, result.OutputItems, result.Usage.InputTokens)
@@ -465,7 +473,7 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 		default:
 			return nil, debug, fmt.Errorf("MCP动作不受支持: %s", action.Action)
 		}
-		in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "MCP工具完成", Model: in.Model, Endpoint: endpoints[0], Query: string(arguments), DurationMs: time.Since(startedAt).Milliseconds(), Status: map[bool]string{true: "停止", false: "继续"}[abort], ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, RemainingWebReads: maxWebReads - webReads})
+		in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "MCP工具完成", Model: modelName, Endpoint: endpoints[0], Query: string(arguments), DurationMs: time.Since(startedAt).Milliseconds(), Status: map[bool]string{true: "停止", false: "继续"}[abort], ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: maxSearches - searches, RemainingWebReads: maxWebReads - webReads})
 		input = append(input, buildAIResponsesMessage("user", fmt.Sprintf("本地MCP工具 %s 返回：\n%s", action.Action, output)))
 		toolsDisabled = toolsDisabled || abort
 	}

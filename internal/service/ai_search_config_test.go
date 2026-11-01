@@ -375,6 +375,28 @@ func TestInspectAISearchModelPricingWithDBReportsUnpricedModels(t *testing.T) {
 	}
 }
 
+func TestInspectAISearchModelPricingIncludesBackupModel(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	backupModel := "backup-model-without-price"
+	if _, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{
+		Enabled:     true,
+		BaseURL:     "https://api.example.com/v1",
+		APIKey:      "sk-test",
+		Model:       "gpt-4o-mini",
+		BackupModel: &backupModel,
+	}); err != nil {
+		t.Fatalf("seed ai config: %v", err)
+	}
+
+	status, err := InspectAISearchModelPricingWithDB(db)
+	if err != nil {
+		t.Fatalf("inspect pricing: %v", err)
+	}
+	if !reflect.DeepEqual(status.UnpricedModels, []string{backupModel}) {
+		t.Fatalf("expected unpriced backup model %q, got %v", backupModel, status.UnpricedModels)
+	}
+}
+
 func TestInspectAISearchModelPricingWithDBFlagsUnpricedConfiguredModel(t *testing.T) {
 	db := newSearchAccountConfigTestDB(t)
 	if err := EnsureDefaultAIModelPricesWithDB(db); err != nil {
@@ -921,12 +943,14 @@ func TestBuildAISearchRequestConfigWithDBUsesExplicitQueryValuesFirst(t *testing
 
 func TestBuildAISearchRequestConfigWithDBFallsBackToEnabledDefault(t *testing.T) {
 	db := newSearchAccountConfigTestDB(t)
+	backupModel := "backup-model"
 
 	_, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{
-		Enabled: true,
-		BaseURL: "https://default.example.com/v1",
-		APIKey:  "default-key",
-		Model:   "default-model",
+		Enabled:     true,
+		BaseURL:     "https://default.example.com/v1",
+		APIKey:      "default-key",
+		Model:       "default-model",
+		BackupModel: &backupModel,
 	})
 	if err != nil {
 		t.Fatalf("seed ai config: %v", err)
@@ -942,6 +966,50 @@ func TestBuildAISearchRequestConfigWithDBFallsBackToEnabledDefault(t *testing.T)
 	}
 	if !resolved.UsedDefaultAccount {
 		t.Fatal("expected ai default fallback to be recorded")
+	}
+	if resolved.Config.BackupModel != backupModel {
+		t.Fatalf("expected backup model %q, got %q", backupModel, resolved.Config.BackupModel)
+	}
+}
+
+func TestBuildAISearchRequestConfigDoesNotApplySavedBackupToExplicitAccount(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	backupModel := "saved-backup-model"
+	if _, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{
+		Enabled:     true,
+		BaseURL:     "https://default.example.com/v1",
+		APIKey:      "default-key",
+		Model:       "default-model",
+		BackupModel: &backupModel,
+	}); err != nil {
+		t.Fatalf("seed ai config: %v", err)
+	}
+
+	resolved, err := BuildAISearchRequestConfigWithDB(db, url.Values{
+		"url":   []string{"https://request.example.com/v1"},
+		"key":   []string{"request-key"},
+		"model": []string{"request-model"},
+	}, true)
+	if err != nil {
+		t.Fatalf("build request config: %v", err)
+	}
+	if resolved.Config.BackupModel != "" {
+		t.Fatalf("explicit account unexpectedly inherited saved backup model %q", resolved.Config.BackupModel)
+	}
+}
+
+func TestAISearchConfigUpdateWithoutBackupModelPreservesSavedValue(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	backupModel := "saved-backup-model"
+	if _, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{BackupModel: &backupModel}); err != nil {
+		t.Fatalf("set backup model: %v", err)
+	}
+	view, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{Model: "updated-primary"})
+	if err != nil {
+		t.Fatalf("update legacy fields: %v", err)
+	}
+	if view.BackupModel != backupModel {
+		t.Fatalf("omitted backup model should be preserved, got %q", view.BackupModel)
 	}
 }
 

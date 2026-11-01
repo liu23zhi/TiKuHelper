@@ -403,6 +403,8 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 	webReadResults := make(map[string]string)
 	testedTools := make(map[string]bool)
 	var requestBodies, rawResponses []string
+	modelName := strings.TrimSpace(in.Model)
+	backupUsed := false
 	for round := 0; round < maxModelCalls; round++ {
 		if err := ctx.Err(); err != nil {
 			return nil, debug, fmt.Errorf("AI联网搜题请求已取消: %w", err)
@@ -437,7 +439,7 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 		roundInput := append([]any(nil), input...)
 		roundInput = append(roundInput, buildAIResponsesMessage("system", buildAISearchBudgetPrompt(remainingModelCalls, remainingSearches, remainingWebReads, finalRound)))
 		payload := openAIResponsesRequest{
-			Model: strings.TrimSpace(in.Model), Stream: true, Store: false, Input: roundInput,
+			Model: modelName, Stream: true, Store: false, Input: roundInput,
 			Include:           []string{"reasoning.encrypted_content"},
 			ContextManagement: compactor.requestContextManagement(),
 		}
@@ -474,14 +476,14 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 			for _, candidateEndpoint := range endpoints {
 				endpoint = candidateEndpoint
 				for recovery := 0; ; recovery++ {
-					in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Attempt: retry + 1, AttemptBudget: attempts, Stage: "模型调用开始", Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, RequestBody: string(encoded)})
+					in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Attempt: retry + 1, AttemptBudget: attempts, Stage: "模型调用开始", Model: modelName, Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, RequestBody: string(encoded)})
 					attemptStartedAt := time.Now()
 					result, status, callErr = in.requestAIToolRound(ctx, endpoint, encoded)
 					if callErr == nil && requireInitialSearch && (len(result.Calls) == 0 || result.Calls[0].Function.Name != "web_search") {
 						callErr = fmt.Errorf("AI联网搜题首次工具调用必须为 web_search，尚未执行搜索")
 					}
-					responseTrace := AISearchTrace{Round: round + 1, Attempt: retry + 1, AttemptBudget: attempts, Stage: "模型响应", Endpoint: endpoint, Model: in.Model, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, Status: fmt.Sprintf("%d", status), DurationMs: time.Since(attemptStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, ReasoningChars: result.ReasoningChars, ContentPreview: result.Content, FullResponse: formatAIModelCompleteResponse(result), RawResponse: result.Raw, Error: errorString(callErr)}
-					if call, ok := buildAIModelCallUsage(result.Usage, in.Model, round+1, retry+1); ok {
+					responseTrace := AISearchTrace{Round: round + 1, Attempt: retry + 1, AttemptBudget: attempts, Stage: "模型响应", Endpoint: endpoint, Model: modelName, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, Status: fmt.Sprintf("%d", status), DurationMs: time.Since(attemptStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, ReasoningChars: result.ReasoningChars, ContentPreview: result.Content, FullResponse: formatAIModelCompleteResponse(result), RawResponse: result.Raw, Error: errorString(callErr)}
+					if call, ok := buildAIModelCallUsage(result.Usage, modelName, round+1, retry+1); ok {
 						appendAIModelCallUsage(&debug.Usage, call)
 						applyAIModelCallUsageToTrace(&responseTrace, debug.Usage.ModelCalls[len(debug.Usage.ModelCalls)-1])
 					}
@@ -492,7 +494,7 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 					// A compression stage has its own finite retries. Replay this
 					// answer round once, rather than multiplying those attempts.
 					serverFallback := compactor.handleServerFailure(callErr)
-					if !serverFallback && (retry == attempts-1 || !isRetryableAIHTTPStatus(status)) && ctx.Err() == nil {
+					if !serverFallback && (retry == attempts-1 || !shouldRetryAISearchFailure(status, callErr)) && ctx.Err() == nil {
 						serverFallback = compactor.handleServerExhausted(status, callErr)
 					}
 					if serverFallback || (compactor.config.Enabled && isAIContextLengthFailure(status, callErr) && recovery == 0) {
@@ -526,7 +528,7 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 			if isToolCapabilityProbeCandidate(callErr) {
 				return nil, debug, callErr
 			}
-			if !isRetryableAIHTTPStatus(status) {
+			if !shouldRetryAISearchFailure(status, callErr) {
 				break
 			}
 		}
@@ -534,6 +536,12 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 		debug.RequestBody = strings.Join(requestBodies, "\n\n")
 		debug.RawResponse = strings.Join(rawResponses, "\n\n")
 		if callErr != nil {
+			if attempted == attempts && ctx.Err() == nil && !backupUsed && strings.TrimSpace(in.BackupModel) != "" && modelName != strings.TrimSpace(in.BackupModel) && IsAISearchSafetyPolicyError(callErr) {
+				modelName = strings.TrimSpace(in.BackupModel)
+				backupUsed = true
+				round--
+				continue
+			}
 			// Keep the detailed, redacted upstream error for the private audit
 			// snapshot. Controllers still map the public response to a generic
 			// failure, while operators can see the failed round and retry budget.
@@ -550,11 +558,10 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 			if result.FinishReason == "length" {
 				return nil, debug, fmt.Errorf("AI答案超过输出限制，未返回完整JSON")
 			}
-			var answer aiSearchAnswerPayload
-			if err := json.Unmarshal([]byte(strings.TrimSpace(result.Content)), &answer); err != nil {
+			parsed, err := parseAISearchAnswersJSON(result.Content, req.Options, req.Type)
+			if err != nil {
 				return nil, debug, fmt.Errorf("AI联网搜题未返回有效答案JSON: %w", err)
 			}
-			parsed := parseAISearchAnswers(result.Content, req.Options, req.Type)
 			if len(parsed) == 0 {
 				return nil, debug, errors.ErrTargetNoAnswer
 			}
@@ -866,7 +873,11 @@ func readAIResponsesStream(body io.Reader, firstToken chan<- struct{}) (result a
 			if len(detail) == 0 {
 				detail = json.RawMessage(data)
 			}
-			return result, fmt.Errorf("AI Responses upstream error event: %s", detail)
+			metadata := decodeAIErrorMetadata(detail)
+			if metadata.Code == "" && metadata.Type == "" && metadata.Message == "" {
+				metadata = decodeAIErrorMetadata([]byte(data))
+			}
+			return result, &aiResponsesUpstreamError{Code: metadata.Code, Type: metadata.Type, Message: metadata.Message, Raw: string(detail)}
 		case "response.output_text.delta":
 			textPart(event.OutputIndex, event.ContentIndex).WriteString(event.Delta)
 			if event.Delta != "" && firstToken != nil {

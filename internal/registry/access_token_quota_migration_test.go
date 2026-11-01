@@ -79,8 +79,8 @@ func TestEnsureAccessTokenQuotaLimitRepairBatchesAndMarksComplete(t *testing.T) 
 	if err := db.Where("name = ?", "negative").First(&negative).Error; err != nil {
 		t.Fatalf("load negative quota: %v", err)
 	}
-	if negative.TotalQuotaLimit != -2 {
-		t.Fatalf("negative quota changed to %v, want -2", negative.TotalQuotaLimit)
+	if negative.TotalQuotaLimit != 0 {
+		t.Fatalf("negative quota = %v, want 0", negative.TotalQuotaLimit)
 	}
 	var nullQuota *float64
 	if err := db.Table(entity.TableNameAccessToken).Select("total_quota_limit").Where("name = ?", "null").Scan(&nullQuota).Error; err != nil {
@@ -101,6 +101,37 @@ func TestEnsureAccessTokenQuotaLimitRepairBatchesAndMarksComplete(t *testing.T) 
 	}
 	if updates != 0 {
 		t.Fatalf("completed repair performed %d updates, want 0", updates)
+	}
+}
+
+func TestEnsureAccessTokenQuotaLimitRepairRunsAfterLegacyMarker(t *testing.T) {
+	db := newAccessTokenQuotaMigrationDB(t)
+	token := entity.AccessToken{
+		UserID: 1, Name: "legacy-negative", TokenHash: fmt.Sprintf("%064x", 1), TokenPrefix: "tk_test",
+		Status: "enabled", TotalQuotaLimit: -2,
+	}
+	if err := db.Create(&token).Error; err != nil {
+		t.Fatalf("seed access token: %v", err)
+	}
+	if err := db.Create(&entity.SystemSetting{Key: "access_token_quota_limit_repaired", Value: "1"}).Error; err != nil {
+		t.Fatalf("seed legacy repair marker: %v", err)
+	}
+
+	if err := ensureAccessTokenQuotaLimitData(db); err != nil {
+		t.Fatalf("repair access token quotas after legacy marker: %v", err)
+	}
+	if !systemSettingFlagIsSet(db, accessTokenQuotaLimitRepairedKey) {
+		t.Fatal("expected version 2 repair marker to be set")
+	}
+	if !systemSettingFlagIsSet(db, "access_token_quota_limit_repaired") {
+		t.Fatal("legacy repair marker must be preserved")
+	}
+	var stored entity.AccessToken
+	if err := db.First(&stored, token.ID).Error; err != nil {
+		t.Fatalf("load repaired token: %v", err)
+	}
+	if stored.TotalQuotaLimit != 0 {
+		t.Fatalf("repaired quota = %v, want 0", stored.TotalQuotaLimit)
 	}
 }
 

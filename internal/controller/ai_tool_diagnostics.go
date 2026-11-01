@@ -235,11 +235,11 @@ func TestAIToolCall(c *gin.Context) {
 	if input.Mode == "direct" {
 		debug, err = runDirectAIToolTest(c.Request.Context(), recorder, input.Tool, target)
 	} else if input.Mode == "compression" {
-		outcome, result, callErr := runAIContextCompressionTest(c.Request.Context(), &search.ChatGptClient{Enable: true, BaseURL: config.BaseURL, APIKey: config.APIKey, Model: config.Model,
+		outcome, result, callErr := runAIContextCompressionTest(c.Request.Context(), &search.ChatGptClient{Enable: true, BaseURL: config.BaseURL, APIKey: config.APIKey, Model: config.Model, BackupModel: config.BackupModel,
 			Prompt: config.Prompt, RequestID: requestID, ContextCompression: compressionSettings}, input.History, input.CompressionMode)
 		compression, debug, err = &outcome, result, callErr
 	} else {
-		client := &search.ChatGptClient{Enable: true, BaseURL: config.BaseURL, APIKey: config.APIKey, Model: config.Model,
+		client := &search.ChatGptClient{Enable: true, BaseURL: config.BaseURL, APIKey: config.APIKey, Model: config.Model, BackupModel: config.BackupModel,
 			Prompt: config.Prompt, RequestID: requestID, MaxAISearchRetries: config.MaxAISearchRetries,
 			ContextCompression: compressionSettings}
 		if recorder != nil {

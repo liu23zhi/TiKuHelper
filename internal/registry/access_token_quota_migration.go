@@ -9,14 +9,18 @@ import (
 )
 
 const (
-	accessTokenQuotaLimitRepairedKey = "access_token_quota_limit_repaired"
+	// Version 2 expands the repair scope from only DECIMAL overflow to every
+	// negative quota. A new marker makes already-migrated databases run this
+	// stricter historical-data pass once.
+	accessTokenQuotaLimitRepairedKey = "access_token_quota_limit_repaired_v2"
 	accessTokenQuotaRepairBatchSize  = 500
 )
 
-// ensureAccessTokenQuotaLimitData repairs historical quota values that cannot fit
-// decimal(18,6). Such rows become 0, which the UI defines as unlimited. The
-// repair is idempotent, bounded to 500 IDs per batch, and retried on later starts
-// unless the system_settings marker is written successfully.
+// ensureAccessTokenQuotaLimitData repairs historical negative quota values and
+// values that cannot fit decimal(18,6). Such rows become 0, which the UI defines
+// as unlimited. The repair is idempotent, bounded to 500 IDs per batch, and
+// retried on later starts unless the system_settings marker is written
+// successfully.
 func ensureAccessTokenQuotaLimitData(db *gorm.DB) error {
 	if db == nil || !db.Migrator().HasTable(entity.TableNameAccessToken) ||
 		!db.Migrator().HasColumn(entity.TableNameAccessToken, "total_quota_limit") {
@@ -56,8 +60,7 @@ func repairAccessTokenQuotaLimits(db *gorm.DB) error {
 		var rows []accessTokenQuotaRepairRow
 		if err := db.Table(entity.TableNameAccessToken).
 			Select("id").
-			Where("total_quota_limit >= ? OR total_quota_limit <= ?",
-				entity.AccessTokenQuotaLimitMaxExclusive, -entity.AccessTokenQuotaLimitMaxExclusive).
+			Where("total_quota_limit < ? OR total_quota_limit >= ?", 0, entity.AccessTokenQuotaLimitMaxExclusive).
 			Order("id asc").
 			Limit(accessTokenQuotaRepairBatchSize).
 			Find(&rows).Error; err != nil {
@@ -72,8 +75,8 @@ func repairAccessTokenQuotaLimits(db *gorm.DB) error {
 			ids = append(ids, row.ID)
 		}
 		result := db.Table(entity.TableNameAccessToken).
-			Where("id IN ? AND (total_quota_limit >= ? OR total_quota_limit <= ?)", ids,
-				entity.AccessTokenQuotaLimitMaxExclusive, -entity.AccessTokenQuotaLimitMaxExclusive).
+			Where("id IN ? AND (total_quota_limit < ? OR total_quota_limit >= ?)", ids,
+				0, entity.AccessTokenQuotaLimitMaxExclusive).
 			Update("total_quota_limit", 0)
 		if result.Error != nil {
 			return result.Error

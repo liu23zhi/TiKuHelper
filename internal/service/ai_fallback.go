@@ -110,6 +110,7 @@ func SearchAIFallbackWithContext(ctx context.Context, db *gorm.DB, req model.Sea
 		BaseURL:               resolved.Config.BaseURL,
 		APIKey:                resolved.Config.APIKey,
 		Model:                 resolved.Config.Model,
+		BackupModel:           resolved.Config.BackupModel,
 		Prompt:                resolved.Config.Prompt,
 		Temperature:           0,
 		TopP:                  0,

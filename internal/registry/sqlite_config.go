@@ -22,7 +22,13 @@ func sqliteProductionDSN(path string) string {
 	if strings.Contains(trimmed, "?") {
 		separator = "&"
 	}
-	return trimmed + separator + "_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
+	// BEGIN IMMEDIATE reserves the write lock when a write transaction starts.
+	// With SQLite's default deferred mode, a transaction that first reads and
+	// then writes can fail immediately with SQLITE_BUSY_SNAPSHOT while upgrading
+	// its read snapshot; busy_timeout cannot help that upgrade. Reserving the
+	// lock at BEGIN makes the configured busy timeout effective and keeps the
+	// whole transaction retryable at its boundary.
+	return trimmed + separator + "_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
 }
 
 func isSQLiteMemoryPath(path string) bool {

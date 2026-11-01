@@ -604,6 +604,49 @@ func TestAISearchToolsDoesNotReplayTokenBearingStreamError(t *testing.T) {
 	}
 }
 
+func TestAISearchToolsAcceptsWrappedFinalAnswerJSON(t *testing.T) {
+	// The helper's normal final answer is a JSON object; exercise wrapped
+	// payloads directly through the shared parser to keep this test deterministic.
+	for _, content := range []string{`<escape>{"answers":["4"]}</escape>`, "```json\n{\"answers\":[\"4\"]}\n```"} {
+		got, err := parseAISearchAnswersJSON(content, []string{"3", "4"}, 3)
+		if err != nil || !reflect.DeepEqual(got, []string{"4"}) {
+			t.Fatalf("wrapped final answer content=%q: got=%v err=%v", content, got, err)
+		}
+	}
+}
+
+func TestAISearchToolsSafetyRetriesThenUsesBackupModel(t *testing.T) {
+	calls := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		modelName, _ := payload["model"].(string)
+		calls[modelName]++
+		if modelName == "primary" {
+			writeResponsesEvent(w, "error", map[string]any{"error": map[string]any{
+				"type": "invalid_request_error", "code": "invalid_prompt", "message": "retry denied by safety policy",
+			}})
+			return
+		}
+		writeAIFinalStream(w)
+	}))
+	defer server.Close()
+	client := &ChatGptClient{Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "primary", BackupModel: "backup", SearchTool: &testAISearchTool{}, MaxAISearchModelCalls: 1, MaxAISearchRetries: 2}
+	answer, usage, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?", DeepThinking: true})
+	if err != nil || !reflect.DeepEqual(answer, [][]string{{"4"}}) {
+		t.Fatalf("backup native model should answer: answer=%v err=%v", answer, err)
+	}
+	if calls["primary"] != 2 || calls["backup"] != 1 {
+		t.Fatalf("native safety retry/fallback mismatch: calls=%v", calls)
+	}
+	if len(usage.ModelCalls) != 1 || usage.ModelCalls[0].Model != "backup" {
+		t.Fatalf("native usage must retain backup model: %+v", usage.ModelCalls)
+	}
+}
+
 func TestAISearchToolsExhaustedRoundPreservesPrivateAuditError(t *testing.T) {
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

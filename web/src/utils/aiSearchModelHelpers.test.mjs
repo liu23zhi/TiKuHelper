@@ -122,6 +122,7 @@ test('buildAISearchConfigSavePayload persists the editable model list', () => {
       baseUrl: 'https://api.example.com/v1',
       apiKey: ' sk-test ',
       model: ' gpt-5.4 ',
+      backupModel: '',
       manualModels: ['manual-only', 'gpt-5.4'],
       prompt: ' 系统 Prompt ',
       remark: ' 备注 ',
@@ -137,6 +138,17 @@ test('buildAISearchConfigSavePayload persists the editable model list', () => {
       smoothAIStagedTokenMultiplier: false,
     },
   );
+});
+
+test('buildAISearchConfigSavePayload persists the optional backup model', () => {
+  const payload = buildAISearchConfigSavePayload({
+    enabled: true,
+    model: 'primary-model',
+    backupModel: 'backup-model',
+    manualModelsText: 'primary-model\nbackup-model',
+  }, 'https://api.example.com/v1');
+
+  assert.equal(payload.backupModel, 'backup-model');
 });
 
 test('buildAISearchConfigSavePayload defaults the web search unit price to zero', () => {
@@ -222,6 +234,9 @@ test('AISearchConfig page bills from the model price table', async () => {
 
   assert.match(content, /buildModelNameOptions\(formState\.manualModelsText\)/);
   assert.match(content, /formState\.manualModelsText = buildModelNameText\(data\.manualModels/);
+  assert.match(content, /formState\.backupModel = data\.backupModel/);
+  assert.match(content, /label="备用模型"/);
+  assert.match(content, /openPriceModalForModel/);
   assert.match(content, /filterRemoteModelNames\(remoteModels\)/);
   assert.match(content, /formState\.manualModelsText = buildModelNameText\(filteredRemoteModels\)/);
 
@@ -392,6 +407,18 @@ test('buildAIModelPricingGaps reports the configured model when it has no price'
   assert.equal(gaps.configuredModelPriced, false);
   assert.equal(gaps.hasUnpricedModel, true);
   assert.deepEqual(gaps.unresolvedModels, ['my-private-model']);
+});
+
+test('buildAIModelPricingGaps reports an unpriced backup model separately', () => {
+  const gaps = buildAIModelPricingGaps(
+    { model: 'GPT-5.5', backupModel: 'backup-model', manualModelsText: 'GPT-5.5' },
+    pricedRows,
+  );
+
+  assert.equal(gaps.configuredModelPriced, true);
+  assert.equal(gaps.backupModel, 'backup-model');
+  assert.equal(gaps.backupModelPriced, false);
+  assert.deepEqual(gaps.unresolvedModels, ['backup-model']);
 });
 
 test('buildAIModelPricingGaps lists both configured and extra unpriced models', () => {

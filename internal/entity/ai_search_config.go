@@ -17,6 +17,7 @@ type AISearchConfig struct {
 	BaseURL                    string    `gorm:"column:base_url;type:varchar(255)" json:"baseUrl"`
 	APIKey                     string    `gorm:"column:api_key;type:text" json:"apiKey"`
 	Model                      string    `gorm:"column:model;type:varchar(128)" json:"model"`
+	BackupModel                string    `gorm:"column:backup_model;type:varchar(128)" json:"backupModel"`
 	ManualModels               string    `gorm:"column:manual_models;type:text" json:"manualModels"`
 	Prompt                     string    `gorm:"column:prompt;type:text" json:"prompt"`
 	Remark                     string    `gorm:"column:remark;type:varchar(255)" json:"remark"`
