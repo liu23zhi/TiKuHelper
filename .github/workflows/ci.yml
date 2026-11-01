@@ -1,0 +1,245 @@
+name: 持续集成
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Go 后端检查
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      artifact-url: ${{ steps.upload.outputs.artifact-url }}
+    steps:
+      - name: 检出仓库代码
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 配置 Go 环境
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 检查变更 Go 文件的格式
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base="$PR_BASE_SHA"
+          elif [[ -n "$BEFORE_SHA" && ! "$BEFORE_SHA" =~ ^0+$ ]]; then
+            base="$BEFORE_SHA"
+          else
+            base="origin/$DEFAULT_BRANCH"
+          fi
+
+          if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "::error::找不到格式检查的基准提交：$base"
+            exit 1
+          fi
+
+          mapfile -t files < <(git diff --diff-filter=ACMRT --name-only "$base" "$SHA" -- '*.go')
+          if ((${#files[@]} == 0)); then
+            echo "本次变更没有 Go 文件。"
+            exit 0
+          fi
+
+          mapfile -t unformatted < <(gofmt -l "${files[@]}")
+          if ((${#unformatted[@]} > 0)); then
+            printf '以下 Go 文件未通过 gofmt：\n%s\n' "${unformatted[@]}"
+            exit 1
+          fi
+
+      - name: 构建后端
+        run: go build ./...
+
+      - name: 生成 Linux 后端程序
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 go build -o dist/tiku-adapter ./cmd/adapter-service
+
+      - name: 上传后端构建产物
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: 后端构建产物-${{ github.sha }}
+          path: dist/tiku-adapter
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 执行 Go 静态检查
+        run: go vet ./...
+
+      - name: 运行本地包测试
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 仅跳过需要访问真实题库服务的集成测试，其他测试仍正常执行。
+          mapfile -t packages < <(go list ./...)
+          go test "${packages[@]}" -count=1 \
+            -skip '^(TestSearchIcodefClient_SearchAnswer|TestSearchWannengClient_SearchAnswer|TestSearchEnncyClient_SearchAnswer|TestBuguake_SearchAnswer|TestAidian_SearchAnswer|TestSearchLemonClient_SearchAnswer|TestSearchTikuhaiClient_SearchAnswer)$'
+
+  frontend:
+    name: Vue 前端检查
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    outputs:
+      artifact-url: ${{ steps.upload.outputs.artifact-url }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: web
+    steps:
+      - name: 检出仓库代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 配置 Node.js 环境
+        uses: actions/setup-node@v7
+        with:
+          node-version: '26.x'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: 安装锁定版本的前端依赖
+        run: npm ci
+
+      - name: 运行前端与仓库脚本测试
+        run: node --test "src/utils/*.test.mjs" "../test/*.test.mjs"
+
+      - name: 检查全部 Vue 单文件组件
+        run: node scripts/check-sfc.cjs
+
+      - name: 执行前端代码规范检查
+        run: npm run lint -- --no-fix
+
+      - name: 构建生产环境前端
+        run: npm run build
+
+      - name: 上传前端构建产物
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: 前端构建产物-${{ github.sha }}
+          path: web/dist
+          if-no-files-found: error
+          retention-days: 14
+
+  docker:
+    name: Docker 镜像构建
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      artifact-url: ${{ steps.upload.outputs.artifact-url }}
+    steps:
+      - name: 检出仓库代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 配置 Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: 构建并载入 Docker 镜像（不推送）
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          tags: tiku-adapter:ci-${{ github.sha }}
+          provenance: false
+          sbom: false
+
+      - name: 导出 Docker 镜像归档
+        run: docker save -o "$RUNNER_TEMP/tiku-adapter-ci.tar" "tiku-adapter:ci-${GITHUB_SHA}"
+
+      - name: 上传 Docker 镜像归档
+        id: upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: Docker 镜像构建产物-${{ github.sha }}
+          path: ${{ runner.temp }}/tiku-adapter-ci.tar
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  summary:
+    name: 持续集成摘要
+    runs-on: ubuntu-24.04
+    needs: [backend, frontend, docker]
+    if: always()
+    steps:
+      - name: 输出构建结果与产物链接
+        env:
+          BACKEND_RESULT: ${{ needs.backend.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          DOCKER_RESULT: ${{ needs.docker.result }}
+          BACKEND_ARTIFACT_URL: ${{ needs.backend.outputs.artifact-url }}
+          FRONTEND_ARTIFACT_URL: ${{ needs.frontend.outputs.artifact-url }}
+          DOCKER_ARTIFACT_URL: ${{ needs.docker.outputs.artifact-url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          {
+            result_label() {
+              case "$1" in
+                success) echo "成功" ;;
+                failure) echo "失败" ;;
+                cancelled) echo "已取消" ;;
+                skipped) echo "已跳过" ;;
+                *) echo "未执行" ;;
+              esac
+            }
+
+            echo '# 持续集成结果'
+            echo
+            echo '| 检查项目 | 结果 |'
+            echo '| --- | --- |'
+            printf '| Go 后端检查 | %s |\n' "$(result_label "$BACKEND_RESULT")"
+            printf '| Vue 前端检查 | %s |\n' "$(result_label "$FRONTEND_RESULT")"
+            printf '| Docker 镜像构建 | %s |\n' "$(result_label "$DOCKER_RESULT")"
+            echo
+            echo '## 构建产物'
+            echo
+            if [[ -n "$BACKEND_ARTIFACT_URL" ]]; then
+              printf -- '- [下载后端构建产物](%s)\n' "$BACKEND_ARTIFACT_URL"
+            else
+              echo '- 后端构建产物未生成或上传失败。'
+            fi
+            if [[ -n "$FRONTEND_ARTIFACT_URL" ]]; then
+              printf -- '- [下载前端构建产物](%s)\n' "$FRONTEND_ARTIFACT_URL"
+            else
+              echo '- 前端构建产物未生成或上传失败。'
+            fi
+            if [[ -n "$DOCKER_ARTIFACT_URL" ]]; then
+              printf -- '- [下载 Docker 镜像归档](%s)（下载后可使用 docker load 导入）\n' "$DOCKER_ARTIFACT_URL"
+            else
+              echo '- Docker 镜像归档未生成或上传失败。'
+            fi
+            echo
+            printf '[查看完整运行日志](%s)\n' "$RUN_URL"
+            printf '\n代码提交：`%s`\n' "$COMMIT_SHA"
+          } >> "$GITHUB_STEP_SUMMARY"

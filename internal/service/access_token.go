@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"math"
 	"strings"
 
 	"github.com/google/uuid"
@@ -15,6 +16,7 @@ import (
 
 var ErrAccessTokenNameRequired = errors.New("令牌名称不能为空")
 var ErrAccessTokenNameInvalid = errors.New("令牌名称只能使用中文、英文、数字、下划线和@，且长度不能超过128个字符")
+var ErrAccessTokenQuotaLimitInvalid = errors.New("总额度超出数据库可存储范围")
 var ErrAccessTokenNotFound = errors.New("访问令牌不存在")
 var ErrAccessTokenForbidden = errors.New("无权限操作访问令牌")
 
@@ -78,6 +80,9 @@ func ListAllAccessTokensWithDB(db *gorm.DB, operator entity.User) ([]AccessToken
 }
 
 func CreateAccessTokenWithDB(db *gorm.DB, operator entity.User, input CreateAccessTokenInput) (CreatedAccessToken, error) {
+	if err := validateAccessTokenQuotaLimit(input.TotalQuotaLimit); err != nil {
+		return CreatedAccessToken{}, err
+	}
 	name := strings.TrimSpace(input.Name)
 	if name == "" {
 		return CreatedAccessToken{}, ErrAccessTokenNameRequired
@@ -120,6 +125,9 @@ func CreateAccessTokenWithDB(db *gorm.DB, operator entity.User, input CreateAcce
 }
 
 func UpdateAccessTokenWithDB(db *gorm.DB, operator entity.User, tokenID int32, input UpdateAccessTokenInput) (entity.AccessToken, error) {
+	if err := validateAccessTokenQuotaLimit(input.TotalQuotaLimit); err != nil {
+		return entity.AccessToken{}, err
+	}
 	var accessToken entity.AccessToken
 	err := db.Transaction(func(tx *gorm.DB) error {
 		var err error
@@ -250,6 +258,13 @@ func normalizeQuotaLimit(limit float64) float64 {
 		return 0
 	}
 	return limit
+}
+
+func validateAccessTokenQuotaLimit(limit float64) error {
+	if math.IsNaN(limit) || math.IsInf(limit, 0) || limit >= entity.AccessTokenQuotaLimitMaxExclusive || limit <= -entity.AccessTokenQuotaLimitMaxExclusive {
+		return ErrAccessTokenQuotaLimitInvalid
+	}
+	return nil
 }
 
 func normalizeAccessTokenValue(token string) string {

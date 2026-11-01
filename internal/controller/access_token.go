@@ -162,6 +162,9 @@ func writeAccessTokenError(c *gin.Context, err error, fallback string) {
 	case errors.Is(err, service.ErrAccessTokenNameInvalid):
 		status = http.StatusBadRequest
 		message = err.Error()
+	case errors.Is(err, service.ErrAccessTokenQuotaLimitInvalid):
+		status = http.StatusBadRequest
+		message = err.Error()
 	case errors.Is(err, service.ErrAccessTokenNotFound):
 		status = http.StatusNotFound
 		message = err.Error()

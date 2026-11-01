@@ -20,6 +20,9 @@ credentials directly into command-line arguments.
 The script intentionally does not copy SQLite's internal sqlite_sequence table.
 MySQL AUTO_INCREMENT values are restored after copying rows, so preserved IDs
 remain valid for existing references.
+
+Access-token quota limits outside DECIMAL(18,6) are normalized to 0 (unlimited)
+while copying, matching the application startup repair behavior.
 """
 
 from __future__ import annotations
@@ -42,6 +45,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 
 DEPENDENCY = "PyMySQL>=1.1.1,<2"
+ACCESS_TOKEN_QUOTA_LIMIT_MAX_EXCLUSIVE = Decimal("1000000000000")
 
 
 def load_pymysql(auto_install: bool):
@@ -347,6 +351,19 @@ def convert_value(value: Any, declared_type: str) -> Any:
     return value
 
 
+def normalize_access_token_quota_limit(value: Any) -> tuple[Any, bool]:
+    """Map unrepresentable DECIMAL(18,6) quotas to the app's unlimited value."""
+    if value is None:
+        return value, False
+    try:
+        quota = Decimal(str(value))
+    except Exception:
+        return value, False
+    if not quota.is_finite() or quota >= ACCESS_TOKEN_QUOTA_LIMIT_MAX_EXCLUSIVE or quota <= -ACCESS_TOKEN_QUOTA_LIMIT_MAX_EXCLUSIVE:
+        return Decimal(0), True
+    return value, False
+
+
 def mysql_server_info(connection) -> tuple[tuple[int, int, int], str]:
     with connection.cursor() as cursor:
         cursor.execute("SELECT VERSION(), @@character_set_server, @@collation_server")
@@ -445,12 +462,22 @@ def copy_table(source: sqlite3.Connection, target, table_name: str, staging_name
         f"VALUES ({', '.join(['%s'] * len(names))})"
     )
     count = 0
+    corrected_quotas = 0
     cursor = source.execute(source_sql)
     while True:
         rows = cursor.fetchmany(batch_size)
         if not rows:
             break
-        converted = [tuple(convert_value(value, column["type"]) for value, column in zip(row, columns)) for row in rows]
+        converted = []
+        for row in rows:
+            converted_row = []
+            for value, column in zip(row, columns):
+                converted_value = convert_value(value, column["type"])
+                if table_name.lower() == "access_tokens" and column["name"].lower() == "total_quota_limit":
+                    converted_value, corrected = normalize_access_token_quota_limit(converted_value)
+                    corrected_quotas += int(corrected)
+                converted_row.append(converted_value)
+            converted.append(tuple(converted_row))
         with target.cursor() as target_cursor:
             target_cursor.executemany(insert_sql, converted)
             target_cursor.execute("SHOW WARNINGS LIMIT 1")
@@ -460,6 +487,8 @@ def copy_table(source: sqlite3.Connection, target, table_name: str, staging_name
         target.commit()
         count += len(rows)
         print(f"  {table_name}: {count} 行")
+    if corrected_quotas:
+        print(f"  {table_name}.total_quota_limit: {corrected_quotas} 个超范围值已修正为 0（无限额）")
     return count
 
 

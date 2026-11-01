@@ -172,6 +172,31 @@ func TestCreateAccessTokenReturnsPlainTokenOnce(t *testing.T) {
 	}
 }
 
+func TestCreateAccessTokenReturnsBadRequestForOutOfRangeQuota(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	original := createAccessToken
+	defer func() { createAccessToken = original }()
+	createAccessToken = func(entity.User, service.CreateAccessTokenInput) (service.CreatedAccessToken, error) {
+		return service.CreatedAccessToken{}, service.ErrAccessTokenQuotaLimitInvalid
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/access-tokens", bytes.NewBufferString(`{"name":"demo-token","totalQuotaLimit":1000000000000}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	ctx.Set("user", &entity.User{ID: 9, Role: "user", Status: "enabled"})
+
+	CreateAccessToken(ctx)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte(service.ErrAccessTokenQuotaLimitInvalid.Error())) {
+		t.Fatalf("expected explicit quota validation error, got %s", recorder.Body.String())
+	}
+}
+
 func TestUpdateAccessTokenRejectsInvalidPayload(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

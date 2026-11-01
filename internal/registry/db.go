@@ -428,6 +428,10 @@ type moneyColumn struct {
 // SQLite 只有 NUMERIC 亲和性、不做定标截断，且 AutoMigrate 会顺带改写建表语句，
 // 因此这里只对真正会截断的驱动做显式迁移。
 func ensureMoneyPrecisionSchema(db *gorm.DB) error {
+	return ensureMoneyPrecisionSchemaWithOptions(db, false)
+}
+
+func ensureMoneyPrecisionSchemaWithOptions(db *gorm.DB, skipAccessTokenQuotaLimit bool) error {
 	if db == nil {
 		return nil
 	}
@@ -447,6 +451,9 @@ func ensureMoneyPrecisionSchema(db *gorm.DB) error {
 	}
 
 	for _, item := range columns {
+		if skipAccessTokenQuotaLimit && item.Table == entity.TableNameAccessToken && item.Column == "TotalQuotaLimit" {
+			continue
+		}
 		narrow, err := moneyColumnNeedsWidening(db, item)
 		if err != nil {
 			return err
@@ -615,12 +622,21 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
 	}
 
+	// Create the marker table before repairing legacy quotas, but repair access_tokens
+	// before its AutoMigrate can convert the column to DECIMAL(18,6) on MySQL.
+	if err := db.AutoMigrate(&entity.SystemSetting{}); err != nil {
+		logger.FatalLog(fmt.Errorf("auto migrate system settings fail: %w", err))
+	}
+	quotaRepairErr := runStartupMigration("ensureAccessTokenQuotaLimitData", func() error { return ensureAccessTokenQuotaLimitData(db) })
+	if quotaRepairErr != nil {
+		logger.SysLog(fmt.Sprintf("访问令牌总额度修复失败（不影响启动）：%v", quotaRepairErr))
+	}
+
 	if err := ensureSMSVerificationSchema(db); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare sms verification schema fail: %w", err))
 	}
 
 	err = db.AutoMigrate(
-		&entity.AccessToken{},
 		&entity.SystemSetting{},
 		&entity.PriceRule{},
 		&entity.PaymentMethod{},
@@ -642,6 +658,11 @@ func RegisterDB(config configs.Config) *gorm.DB {
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
 	}
+	if quotaRepairErr != nil {
+		logger.SysLog("访问令牌表结构迁移已跳过，避免超范围额度阻断启动；修复成功后将在下次启动重试")
+	} else if err := db.AutoMigrate(&entity.AccessToken{}); err != nil {
+		logger.FatalLog(fmt.Errorf("auto migrate access tokens fail: %w", err))
+	}
 
 	if err := runStartupMigration("ensureBillingRecordIndexes", func() error { return ensureBillingRecordIndexes(db) }); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare billing record indexes fail: %w", err))
@@ -651,7 +672,9 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		logger.FatalLog(fmt.Errorf("prepare audit correlation schema fail: %w", err))
 	}
 
-	if err := runStartupMigration("ensureMoneyPrecisionSchema", func() error { return ensureMoneyPrecisionSchema(db) }); err != nil {
+	if err := runStartupMigration("ensureMoneyPrecisionSchema", func() error {
+		return ensureMoneyPrecisionSchemaWithOptions(db, quotaRepairErr != nil)
+	}); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare money precision schema fail: %w", err))
 	}
 

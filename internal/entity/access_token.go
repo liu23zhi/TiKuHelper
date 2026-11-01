@@ -4,6 +4,9 @@ import "time"
 
 const TableNameAccessToken = "access_tokens"
 
+// AccessTokenQuotaLimitMaxExclusive is the first value outside DECIMAL(18,6).
+const AccessTokenQuotaLimitMaxExclusive = 1_000_000_000_000.0
+
 type AccessToken struct {
 	ID              int32      `gorm:"primaryKey;autoIncrement" json:"id"`
 	UserID          int32      `gorm:"column:user_id;type:int(11);not null;index" json:"userId"`
