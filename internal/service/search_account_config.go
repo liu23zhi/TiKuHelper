@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"strings"
 
@@ -13,8 +14,11 @@ import (
 var ErrUnsupportedSearchAccountProvider = errors.New("不支持的题库 provider")
 var ErrInvalidAccessTokenAuthorization = errors.New("无效的访问令牌")
 var ErrInsufficientSearchBalance = errors.New("当前余额不足，系统题库已禁用，请充值后再使用")
+var ErrInvalidSearchAccountFlatPrice = errors.New("题库固定价格必须为非负且不超过数据库可存储范围")
 
 const aiSearchAccountProvider = "ai"
+
+const searchAccountFlatPriceMaxExclusive = 1e10
 
 type SearchAccountProviderMeta struct {
 	Provider      string
@@ -113,6 +117,11 @@ func UpdateSearchAccountConfigWithDB(db *gorm.DB, provider string, input UpdateS
 	if !ok {
 		return SearchAccountConfigView{}, fmt.Errorf("%w: %s", ErrUnsupportedSearchAccountProvider, provider)
 	}
+	if provider != aiSearchAccountProvider {
+		if err := validateSearchAccountFlatPrice(input.FlatPrice); err != nil {
+			return SearchAccountConfigView{}, err
+		}
+	}
 
 	if provider == aiSearchAccountProvider {
 		config, err := upsertAISearchAccountConfig(db, input)
@@ -159,6 +168,22 @@ func UpdateSearchAccountConfigWithDB(db *gorm.DB, provider string, input UpdateS
 		Remark:        config.Remark,
 		FlatPrice:     config.FlatPrice,
 	}, nil
+}
+
+func validateSearchAccountFlatPrice(price float64) error {
+	if math.IsNaN(price) || math.IsInf(price, 0) || price < 0 || price >= searchAccountFlatPriceMaxExclusive {
+		return ErrInvalidSearchAccountFlatPrice
+	}
+	return nil
+}
+
+// NormalizeSearchAccountFlatPrice clamps invalid historical values before they
+// can produce a negative charge or an unusable non-finite billing amount.
+func NormalizeSearchAccountFlatPrice(price float64) float64 {
+	if validateSearchAccountFlatPrice(price) != nil {
+		return 0
+	}
+	return price
 }
 
 func BuildRequestSearchTokens(query url.Values) map[string]string {

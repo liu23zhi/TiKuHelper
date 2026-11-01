@@ -255,6 +255,7 @@ var searchAIAnswer = func(resolved resolvedSearchRequestContext, req model.Searc
 		BaseURL:               resolved.AIConfig.BaseURL,
 		APIKey:                resolved.AIConfig.APIKey,
 		Model:                 resolved.AIConfig.Model,
+		BackupModel:           resolved.AIConfig.BackupModel,
 		Prompt:                resolved.AIConfig.Prompt,
 		Temperature:           resolved.AIConfig.Temperature,
 		TopP:                  resolved.AIConfig.TopP,
@@ -1113,7 +1114,7 @@ func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRe
 				return nil, warning, err
 			}
 
-			amount := util.RoundMoney(config.FlatPrice)
+			amount := util.RoundMoney(service.NormalizeSearchAccountFlatPrice(config.FlatPrice))
 			charges = append(charges, searchBillingCharge{
 				Provider: provider,
 				Amount:   amount,

@@ -1310,6 +1310,35 @@ func TestResolveCompletedSearchBillingChargesDoesNotChargeProviderWithoutAnswer(
 	}
 }
 
+func TestResolveCompletedSearchBillingChargesNormalizesInvalidHistoricalFlatPrice(t *testing.T) {
+	db := newSearchControllerTestDB(t)
+	if err := db.Create(&entity.SearchAccountConfig{
+		Provider:   "icodef",
+		TokenKey:   "icodefToken",
+		TokenValue: "legacy-token",
+		Enabled:    true,
+		FlatPrice:  -2.5,
+	}).Error; err != nil {
+		t.Fatalf("seed invalid historical search price: %v", err)
+	}
+
+	charges, _, err := resolveCompletedSearchBillingCharges(
+		db,
+		resolvedSearchRequestContext{SearchMode: searchModeNormal, UsedDefaultSearchProviders: []string{"icodef"}},
+		"icodef",
+		model.SearchRequest{Question: "题目"},
+		searchpkg.AISearchUsage{},
+		false,
+		true,
+	)
+	if err != nil {
+		t.Fatalf("resolve historical invalid price: %v", err)
+	}
+	if len(charges) != 1 || charges[0].Provider != "icodef" || charges[0].Amount != 0 {
+		t.Fatalf("expected invalid historical flat price to normalize to zero charge, got %+v", charges)
+	}
+}
+
 func TestSearchAllowsBillingToCreateNegativeBalance(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newSearchControllerTestDB(t)

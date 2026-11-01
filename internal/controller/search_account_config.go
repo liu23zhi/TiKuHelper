@@ -41,7 +41,7 @@ func UpdateSearchAccountConfig(c *gin.Context) {
 	config, err := service.UpdateSearchAccountConfigWithDB(manager.GetManager().GetDB(), c.Param("provider"), input)
 	if err != nil {
 		status := http.StatusInternalServerError
-		if errors.Is(err, service.ErrUnsupportedSearchAccountProvider) {
+		if errors.Is(err, service.ErrUnsupportedSearchAccountProvider) || errors.Is(err, service.ErrInvalidSearchAccountFlatPrice) {
 			status = http.StatusBadRequest
 		}
 		c.JSON(status, gin.H{

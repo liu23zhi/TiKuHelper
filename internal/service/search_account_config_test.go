@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"strings"
 	"testing"
@@ -179,6 +180,27 @@ func TestUpdateSearchAccountConfigWithDBRejectsUnsupportedProvider(t *testing.T)
 
 	if _, err := UpdateSearchAccountConfigWithDB(db, "unsupported-provider", UpdateSearchAccountConfigInput{}); err == nil {
 		t.Fatal("expected invalid provider error")
+	}
+}
+
+func TestUpdateSearchAccountConfigWithDBRejectsInvalidFlatPrice(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	for _, price := range []float64{-0.01, math.NaN(), math.Inf(1), math.Inf(-1), searchAccountFlatPriceMaxExclusive} {
+		_, err := UpdateSearchAccountConfigWithDB(db, "icodef", UpdateSearchAccountConfigInput{FlatPrice: price})
+		if !errors.Is(err, ErrInvalidSearchAccountFlatPrice) {
+			t.Fatalf("price %v: expected invalid flat price error, got %v", price, err)
+		}
+	}
+}
+
+func TestNormalizeSearchAccountFlatPriceClampsInvalidHistoricalValues(t *testing.T) {
+	for _, price := range []float64{-0.01, math.NaN(), math.Inf(1), math.Inf(-1), searchAccountFlatPriceMaxExclusive} {
+		if got := NormalizeSearchAccountFlatPrice(price); got != 0 {
+			t.Fatalf("price %v: expected invalid historical price to normalize to 0, got %v", price, got)
+		}
+	}
+	if got := NormalizeSearchAccountFlatPrice(1.25); got != 1.25 {
+		t.Fatalf("expected valid flat price to be preserved, got %v", got)
 	}
 }
 
