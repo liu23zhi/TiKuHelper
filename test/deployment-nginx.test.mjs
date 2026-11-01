@@ -139,7 +139,7 @@ test('real Nginx cleans forwarded headers on HTTP/HTTPS and trusts only configur
     await writeFile(join(directory, 'trusted-proxies.generated.conf'), trustedUpstream
       ? 'set_real_ip_from 127.0.0.1;\n'
       : 'set_real_ip_from 0.0.0.0/0;\nset_real_ip_from ::/0;\n');
-    await writeFile(join(directory, 'nginx.conf'), `daemon off; master_process off;\npid nginx.pid;\nerror_log logs/error.log;\nevents {}\nhttp { ${config}\n}\n`);
+    await writeFile(join(directory, 'nginx.conf'), `daemon off; master_process off;\npid nginx.pid;\nerror_log logs/error.log;\nevents {}\nhttp { access_log off; ${config}\n}\n`);
     const validation = execute(nginx, ['-p', prefix, '-c', 'nginx.conf', '-t'], { cwd: directory });
     successful(validation);
     t.diagnostic(validation.stderr.trim());

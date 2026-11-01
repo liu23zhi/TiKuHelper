@@ -99,6 +99,74 @@ jobs:
           go test "${packages[@]}" -count=1 \
             -skip '^(TestSearchIcodefClient_SearchAnswer|TestSearchWannengClient_SearchAnswer|TestSearchEnncyClient_SearchAnswer|TestBuguake_SearchAnswer|TestAidian_SearchAnswer|TestSearchLemonClient_SearchAnswer|TestSearchTikuhaiClient_SearchAnswer)$'
 
+  python:
+    name: Python 工具测试
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: 检出仓库代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 配置 Python 环境
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: 测试 SQLite 到 MySQL 迁移工具
+        run: python -m unittest discover -s tools -p 'test_*.py' -v
+
+  release-build:
+    name: 跨平台发布构建（${{ matrix.goos }}/${{ matrix.goarch }}）
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: linux
+            goarch: '386'
+          - goos: linux
+            goarch: arm
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - name: 检出仓库代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 配置 Go 环境
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: 编译发布目标
+        env:
+          TARGET_OS: ${{ matrix.goos }}
+          TARGET_ARCH: ${{ matrix.goarch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/tiku-adapter-${TARGET_OS}-${TARGET_ARCH}"
+          if [[ "$TARGET_OS" == "windows" ]]; then
+            output+=".exe"
+          fi
+          CGO_ENABLED=0 GOOS="$TARGET_OS" GOARCH="$TARGET_ARCH" \
+            go build -o "$output" ./cmd/adapter-service
+
   frontend:
     name: Vue 前端检查
     runs-on: ubuntu-24.04
@@ -229,7 +297,7 @@ jobs:
   summary:
     name: 持续集成摘要
     runs-on: ubuntu-24.04
-    needs: [backend, frontend, docker]
+    needs: [backend, frontend, docker, python, release-build]
     if: always()
     steps:
       - name: 输出构建结果与产物链接
@@ -237,6 +305,8 @@ jobs:
           BACKEND_RESULT: ${{ needs.backend.result }}
           FRONTEND_RESULT: ${{ needs.frontend.result }}
           DOCKER_RESULT: ${{ needs.docker.result }}
+          PYTHON_RESULT: ${{ needs.python.result }}
+          RELEASE_BUILD_RESULT: ${{ needs.release-build.result }}
           BACKEND_ARTIFACT_URL: ${{ needs.backend.outputs.artifact-url }}
           FRONTEND_ARTIFACT_URL: ${{ needs.frontend.outputs.artifact-url }}
           DOCKER_ARTIFACT_URL: ${{ needs.docker.outputs.artifact-url }}
@@ -260,6 +330,8 @@ jobs:
             echo '| 检查项目 | 结果 |'
             echo '| --- | --- |'
             printf '| Go 后端检查 | %s |\n' "$(result_label "$BACKEND_RESULT")"
+            printf '| Python 工具测试 | %s |\n' "$(result_label "$PYTHON_RESULT")"
+            printf '| 跨平台发布构建 | %s |\n' "$(result_label "$RELEASE_BUILD_RESULT")"
             printf '| Vue 前端检查 | %s |\n' "$(result_label "$FRONTEND_RESULT")"
             printf '| Docker 镜像构建 | %s |\n' "$(result_label "$DOCKER_RESULT")"
             echo
