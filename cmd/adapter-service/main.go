@@ -14,6 +14,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/api"
+	"github.com/itihey/tikuAdapter/internal/controller"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/internal/timer"
@@ -91,6 +92,7 @@ func main() {
 		MaxHeaderBytes:    1 << 20,
 	}
 	notificationWorkerDone := service.StartTicketNotificationWorker(shutdownContext, mg.GetDB())
+	billingRetryWorkerDone := controller.StartSearchBillingRetryWorker(shutdownContext)
 	shutdownDone := shutdownHTTPServerOnCancel(shutdownContext, httpServer)
 	logger.SysLog("Tiku 服务启动 address=" + httpServer.Addr)
 	logTimeBase()
@@ -102,6 +104,7 @@ func main() {
 	<-shutdownDone
 	<-extensionDone
 	<-notificationWorkerDone
+	<-billingRetryWorkerDone
 	logger.SysLog("Tiku 服务已停止")
 }
 

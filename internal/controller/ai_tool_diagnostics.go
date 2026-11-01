@@ -266,15 +266,22 @@ func TestAIToolCall(c *gin.Context) {
 	resolved := resolvedSearchRequestContext{UserID: operator.ID, RequestID: requestID, SearchMode: searchModeAI,
 		UsedDefaultAI: input.Mode != "direct", AIConfig: config}
 	charges, warning, billingErr := resolveCompletedSearchBillingCharges(db, resolved, "ai", req, debug.Usage, false, len(answers) > 0)
+	billingDeferred := false
 	if billingErr == nil && len(charges) > 0 {
-		billingErr = persistSearchBillingRecordsWithDB(db, searchBillingContext{UserID: operator.ID, RequestID: requestID,
-			UsedDefaultAccount: true, Billable: true, DeepThinking: deepThinking, AIRoute: search.AISearchRouteDeepNative, ClientIP: c.ClientIP()}, charges)
+		queued, persistErr := persistSearchBillingRecordsWithRetry(db, searchBillingContext{UserID: operator.ID, RequestID: requestID,
+			UsedDefaultAccount: true, Billable: true, DeepThinking: deepThinking, AIRoute: search.AISearchRouteDeepNative, ClientIP: c.ClientIP()}, charges, searchBillingRetries)
+		billingErr = persistErr
+		if queued {
+			billingDeferred = true
+			billingErr = nil
+			warning = appendSearchBillingRetryWarning(warning)
+		}
 	}
 	var billingRecord *service.BillingRecordListItem
 	if billingErr != nil {
 		warning = strings.TrimSpace(warning + " 测试已执行，但账单保存失败，请检查服务日志。")
 		logger.SysError(fmt.Sprintf("AI工具测试账单保存失败 requestId=%s: %s", requestID, logger.RedactSecrets(billingErr.Error(), secrets...)))
-	} else if len(charges) > 0 {
+	} else if len(charges) > 0 && !billingDeferred {
 		list, listErr := service.ListBillingRecordsWithDB(db, operator, service.BillingRecordListQuery{
 			UserID: operator.ID, RequestID: requestID, Type: "normal_search",
 		}, 1, 1)

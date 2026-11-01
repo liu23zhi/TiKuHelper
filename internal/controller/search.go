@@ -1065,9 +1065,15 @@ func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQue
 		return nil, warning
 	}
 
-	if err := persistSearchBillingRecordsWithDB(db, ctx, charges); err != nil {
+	queued, err := persistSearchBillingRecordsWithRetry(db, ctx, charges, searchBillingRetries)
+	if err != nil {
 		logger.SysError(fmt.Sprintf("搜索计费落账失败：%s requestId=%s", err.Error(), resolved.RequestID))
-		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_persist_failed", clientIP, audit)
+		status := "billing_persist_failed"
+		if queued {
+			status = "billing_retry_pending"
+			warning = appendSearchBillingRetryWarning(warning)
+		}
+		writeCompletedSearchAuditLog(resolved, useQuery, result, status, clientIP, audit)
 		return nil, warning
 	}
 
@@ -1685,6 +1691,14 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 		var user entity.User
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", ctx.UserID).First(&user).Error; err != nil {
 			return err
+		}
+
+		alreadyPersisted, err := searchBillingRetryBatchAlreadyPersisted(tx, ctx, charges)
+		if err != nil {
+			return err
+		}
+		if alreadyPersisted {
+			return nil
 		}
 
 		totalCharged := completedSearchBillingAmount(charges)

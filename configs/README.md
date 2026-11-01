@@ -24,8 +24,9 @@ export JWT_SECRET="使用密码管理器生成的至少32字节随机值"
 您可以对您的数据库配置，默认使用sqlite3，您可以指定mysql为您的数据库。
 一种是在配置文件中指定，另外一种是在指定环境变量`SQL_DSN`。
 ```yaml
-mysql: "tiku:tiku@tcp(127.0.0.1:3306)/tiku?charset=utf84&parseTime=True&loc=Local"
+mysql: "tiku:tiku@tcp(127.0.0.1:3306)/tiku?charset=utf8mb4&parseTime=True&loc=Local"
 ```
+建议使用 MySQL 8.0 和 InnoDB。项目包含多个 utf8mb4 复合索引，旧版 MySQL 需确认大索引前缀与 `DYNAMIC` 行格式已启用，否则启动迁移可能无法创建索引。
 
 
 ### 自定义外部题库配置

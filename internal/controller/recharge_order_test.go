@@ -100,7 +100,7 @@ func TestRechargeOrderListNormalizesInvalidPagination(t *testing.T) {
 	}
 }
 
-func TestRechargeOrderListRejectsReversedCreatedAndPaidRanges(t *testing.T) {
+func TestRechargeOrderListRejectsReversedCreatedPaidAndAmountRanges(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, tc := range []struct {
 		name  string
@@ -109,6 +109,7 @@ func TestRechargeOrderListRejectsReversedCreatedAndPaidRanges(t *testing.T) {
 	}{
 		{name: "created", query: "createdFrom=2026-06-21&createdTo=2026-06-20", want: "创建时间范围无效"},
 		{name: "paid", query: "paidFrom=2026-06-21&paidTo=2026-06-20", want: "支付时间范围无效"},
+		{name: "amount", query: "amountMin=20&amountMax=10", want: "金额范围无效"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()

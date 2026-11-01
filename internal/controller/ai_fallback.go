@@ -369,8 +369,12 @@ func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, reques
 	if len(charges) == 0 {
 		return warning, result, nil
 	}
-	if err := persistSearchBillingRecordsWithDB(db, billingCtx, charges); err != nil {
-		return warning, result, err
+	queued, err := persistSearchBillingRecordsWithRetry(db, billingCtx, charges, searchBillingRetries)
+	if err != nil {
+		if !queued {
+			return warning, result, err
+		}
+		return appendSearchBillingRetryWarning(warning), result, nil
 	}
 	return warning, result, nil
 }
