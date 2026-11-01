@@ -172,6 +172,18 @@ func TestLogListAdminSeesAllAuditLogsWithMetadata(t *testing.T) {
 	t.Fatal("expected auth module log in response")
 }
 
+func TestLogListRejectsReversedCreatedTimeRange(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Set("user", &entity.User{ID: 301, Role: "admin", Status: "enabled"})
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/logs?createdFrom=2026-06-21&createdTo=2026-06-20", nil)
+	LogList(ctx)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "创建时间范围无效") {
+		t.Fatalf("reversed log range must return explicit 400, status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestLogListResolvesUsernameForLegacyRows(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newLogControllerTestDB(t)
@@ -269,6 +281,52 @@ func TestLogListAdminCanFilterByModuleAndAction(t *testing.T) {
 	}
 	if response.Data[0]["action"] != float64(10) {
 		t.Fatalf("expected login action 10, got %#v", response.Data[0]["action"])
+	}
+}
+
+func TestLogListAdminCanFilterByDateUserQuestionAndIP(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newLogControllerTestDB(t)
+	admin := &entity.User{ID: 421, Username: "admin-filter-details", Password: "123456", Role: "admin", Status: "enabled", RegisterSource: "admin"}
+	member := &entity.User{ID: 422, Username: "member-filter-details", Password: "123456", Role: "user", Status: "enabled", RegisterSource: "public"}
+	if err := db.Create(admin).Error; err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	if err := db.Create(member).Error; err != nil {
+		t.Fatalf("create member: %v", err)
+	}
+	baseTime := time.Date(2026, 5, 6, 11, 0, 0, 0, time.UTC)
+	entries := []entity.Log{
+		{UserID: member.ID, Username: member.Username, Module: "question", Action: 3, Qid: 77, Description: "修改题目", ClientIP: "203.0.113.20", CreateTime: baseTime},
+		{UserID: member.ID, Username: member.Username, Module: "question", Action: 3, Qid: 78, Description: "修改其他题目", ClientIP: "203.0.113.20", CreateTime: baseTime},
+		{UserID: member.ID, Username: member.Username, Module: "question", Action: 3, Qid: 77, Description: "其他 IP", ClientIP: "203.0.113.21", CreateTime: baseTime},
+		{UserID: member.ID, Username: member.Username, Module: "question", Action: 3, Qid: 77, Description: "其他日期", ClientIP: "203.0.113.20", CreateTime: baseTime.Add(24 * time.Hour)},
+		{UserID: admin.ID, Username: admin.Username, Module: "question", Action: 3, Qid: 77, Description: "其他用户", ClientIP: "203.0.113.20", CreateTime: baseTime},
+	}
+	for _, entry := range entries {
+		if err := db.Create(&entry).Error; err != nil {
+			t.Fatalf("seed log: %v", err)
+		}
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/logs?page=1&pageSize=10&createdFrom=2026-05-06&createdTo=2026-05-06&userId=422&qid=77&clientIp=203.0.113.20", nil)
+	ctx.Set("user", admin)
+	LogList(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Data  []map[string]any `json:"data"`
+		Total int              `json:"total"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode filtered log list response: %v", err)
+	}
+	if response.Total != 1 || len(response.Data) != 1 || response.Data[0]["description"] != "修改题目" {
+		t.Fatalf("expected one matching log, got total=%d data=%+v", response.Total, response.Data)
 	}
 }
 

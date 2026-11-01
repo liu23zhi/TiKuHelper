@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
 )
@@ -88,6 +89,70 @@ func TestListAndDeleteLocationCacheWithDB(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("expected IP cache row to be deleted, got %d", count)
+	}
+}
+
+func TestLocationCacheFiltersSourceAddressAndFetchedAt(t *testing.T) {
+	db := newLocationTestDB(t)
+	base := time.Date(2026, 10, 10, 12, 0, 0, 0, time.Local)
+	rows := []entity.LocationCache{
+		{Kind: entity.LocationKindIP, LookupKey: "8.8.8.8", Source: "", Address: "默认地址", FetchedAt: base},
+		{Kind: entity.LocationKindIP, LookupKey: "1.1.1.1", Source: "commercial", Address: "商业地址", FetchedAt: base.AddDate(0, 0, 1)},
+		{Kind: entity.LocationKindIP, LookupKey: "9.9.9.9", Source: entity.LocationSourceLegacy, Address: "", FetchedAt: base.AddDate(0, 0, 2)},
+		{Kind: entity.LocationKindPhone, LookupKey: "13800138000", Address: "手机号地址", FetchedAt: base},
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ListLocationCacheWithDB(db, LocationCacheListQuery{
+		Kind: entity.LocationKindIP, Source: "default", AddressStatus: "with",
+		FetchedFrom: "2026-10-10", FetchedTo: "2026-10-11",
+	}, 1, 20)
+	if err != nil || result.Total != 1 || len(result.Data) != 1 || result.Data[0].LookupKey != "8.8.8.8" {
+		t.Fatalf("default source/date/address filters returned %+v err=%v", result, err)
+	}
+
+	result, err = ListLocationCacheWithDB(db, LocationCacheListQuery{
+		Kind: entity.LocationKindIP, Source: "legacy", AddressStatus: "without",
+		FetchedFrom: "2026-10-12", FetchedTo: "2026-10-13",
+	}, 1, 20)
+	if err != nil || result.Total != 1 || len(result.Data) != 1 || result.Data[0].LookupKey != "9.9.9.9" {
+		t.Fatalf("legacy/date/address filters returned %+v err=%v", result, err)
+	}
+
+	if _, err := ListLocationCacheWithDB(db, LocationCacheListQuery{Kind: entity.LocationKindIP, FetchedFrom: "2026-10-12", FetchedTo: "2026-10-11"}, 1, 20); err != ErrLocationInvalidKey {
+		t.Fatalf("reversed date range should be rejected, got %v", err)
+	}
+	if _, err := ListLocationCacheWithDB(db, LocationCacheListQuery{Kind: entity.LocationKindIP, AddressStatus: "unknown"}, 1, 20); err != ErrLocationInvalidKey {
+		t.Fatalf("invalid address status should be rejected, got %v", err)
+	}
+}
+
+func TestDeleteLocationCacheBatchAllUsesEveryFilter(t *testing.T) {
+	db := newLocationTestDB(t)
+	base := time.Date(2026, 10, 10, 12, 0, 0, 0, time.Local)
+	rows := []entity.LocationCache{
+		{Kind: entity.LocationKindIP, LookupKey: "8.8.8.8", Source: "", Address: "默认地址", FetchedAt: base},
+		{Kind: entity.LocationKindIP, LookupKey: "1.1.1.1", Source: "commercial", Address: "商业地址", FetchedAt: base},
+		{Kind: entity.LocationKindIP, LookupKey: "9.9.9.9", Source: "", Address: "", FetchedAt: base},
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := DeleteLocationCacheBatchWithDB(db, LocationCacheBatchDeleteRequest{
+		Kind: entity.LocationKindIP, Source: "default", AddressStatus: "with",
+		FetchedFrom: "2026-10-10", FetchedTo: "2026-10-11", All: true,
+	})
+	if err != nil || deleted != 1 {
+		t.Fatalf("filtered batch delete removed %d rows, err=%v", deleted, err)
+	}
+	var remaining int64
+	if err := db.Model(&entity.LocationCache{}).Where("kind = ?", entity.LocationKindIP).Count(&remaining).Error; err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 2 {
+		t.Fatalf("batch delete crossed filter boundary, remaining=%d", remaining)
 	}
 }
 

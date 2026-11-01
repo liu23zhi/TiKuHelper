@@ -15,12 +15,39 @@
       <a-statistic title="待补全" :value="summary.withoutAddress" suffix="条" />
       <a-statistic title="当前选择" :value="selectedCount" suffix="条" />
     </ConsoleSummaryGrid>
-    <ConsolePanel title="查询与维护" description="按查询值或归属地筛选，查询来源用于后续重新查询和手动添加。">
+    <ConsolePanel title="查询与维护" description="按查询值、归属地、记录来源、归属地状态和查询时间筛选，查询来源用于后续重新查询和手动添加。">
       <a-form layout="inline" class="filter-form" @finish="reload">
         <a-form-item label="关键词">
           <a-input-search v-model:value="keywordInput" allow-clear placeholder="查询值 / 归属地" class="keyword-input" @search="reload" />
         </a-form-item>
-        <a-form-item><a-button @click="resetFilters">重置筛选</a-button></a-form-item>
+        <a-form-item label="记录来源">
+          <a-select v-model:value="recordSource" class="record-source-select">
+            <a-select-option value="">全部来源</a-select-option>
+            <a-select-option value="default">默认来源</a-select-option>
+            <a-select-option v-if="kind === 'ip'" value="commercial">商业增强</a-select-option>
+            <a-select-option v-if="kind === 'ip'" value="legacy">历史来源</a-select-option>
+          </a-select>
+        </a-form-item>
+        <a-form-item label="归属地状态">
+          <a-select v-model:value="addressStatus" class="address-status-select">
+            <a-select-option value="">全部状态</a-select-option>
+            <a-select-option value="with">已有归属地</a-select-option>
+            <a-select-option value="without">待补全</a-select-option>
+          </a-select>
+        </a-form-item>
+        <a-form-item label="查询时间">
+          <a-space class="date-filter-space">
+            <a-input v-model:value="fetchedFrom" type="date" aria-label="查询时间起始" />
+            <span>至</span>
+            <a-input v-model:value="fetchedTo" type="date" aria-label="查询时间结束" />
+          </a-space>
+        </a-form-item>
+        <a-form-item>
+          <a-space>
+            <a-button type="primary" html-type="submit" :loading="loading">查询</a-button>
+            <a-button @click="resetFilters">重置筛选</a-button>
+          </a-space>
+        </a-form-item>
         <a-form-item v-if="kind === 'ip'" label="查询来源">
           <a-select :value="querySource" class="query-source-select" @change="setQuerySource">
             <a-select-option value="">普通来源</a-select-option>
@@ -108,6 +135,10 @@ export default defineComponent({
     const loading = ref(false)
     const configured = ref(undefined)
     const querySource = ref('')
+    const recordSource = ref('')
+    const addressStatus = ref('')
+    const fetchedFrom = ref('')
+    const fetchedTo = ref('')
     const querySourceStorageKey = 'tiku.location.querySource'
     try {
       if (globalThis.localStorage?.getItem(querySourceStorageKey) === 'commercial') querySource.value = 'commercial'
@@ -249,21 +280,28 @@ export default defineComponent({
       const source = body.slice(separator + 1)
       return { lookupKey: body.slice(0, separator), source: source === 'default' ? '' : source }
     }
+    const buildFilterParams = () => {
+      const params = { kind: kind.value, keyword: keyword.value }
+      if (recordSource.value) params.source = recordSource.value
+      if (addressStatus.value) params.addressStatus = addressStatus.value
+      if (fetchedFrom.value) params.fetchedFrom = fetchedFrom.value
+      if (fetchedTo.value) params.fetchedTo = fetchedTo.value
+      return params
+    }
     const buildBatchDeletePayload = () => {
+      const filters = buildFilterParams()
       if (selectAllMode.value) {
         return {
-          kind: kind.value,
-          keyword: keyword.value,
-          source: '',
+          ...filters,
+          source: recordSource.value,
           items: [],
           all: true,
           except: [...deselectedKeys.value].map(selectionItemFromIdentity).filter(Boolean),
         }
       }
       return {
-        kind: kind.value,
-        keyword: keyword.value,
-        source: '',
+        ...filters,
+        source: recordSource.value,
         items: [...selectedKeys.value].map(selectionItemFromIdentity).filter(Boolean),
         all: false,
         except: [],
@@ -278,7 +316,8 @@ export default defineComponent({
       const record = detailRecord.value
       const matchesRecord = item => item.lookupKey === record.lookupKey && (item.source || '') === (record.source || '')
       const filter = String(payload.keyword || '').trim().toLowerCase()
-      const matchesFilter = (!payload.source || (record.source || '') === payload.source)
+      const wantedSource = payload.source === 'default' ? '' : payload.source
+      const matchesFilter = (!payload.source || (record.source || '') === wantedSource)
         && (!filter || [record.lookupKey, record.address].some(value => String(value || '').toLowerCase().includes(filter)))
       const selected = payload.all ? matchesFilter && !payload.except.some(matchesRecord) : payload.items.some(matchesRecord)
       return selected ? { ...record } : null
@@ -373,7 +412,7 @@ export default defineComponent({
       allDeleting.value = true
       errorMessage.value = ''
       try {
-        const res = await deleteLocationCacheBatch({ kind: kind.value, keyword: '', source: '', items: [], all: true, except: [] })
+        const res = await deleteLocationCacheBatch({ ...buildFilterParams(), source: recordSource.value, items: [], all: true, except: [] })
         if (res?.status !== 200) throw new Error(res?.message || '全部删除失败')
         clearSelectionState()
         pagination.current = 1
@@ -417,7 +456,7 @@ export default defineComponent({
       loading.value = true
       errorMessage.value = ''
       try {
-        const res = await getLocationCacheList({ kind: kind.value, keyword: keyword.value, page: pagination.current, pageSize: pagination.pageSize })
+        const res = await getLocationCacheList({ ...buildFilterParams(), page: pagination.current, pageSize: pagination.pageSize })
         if (generation !== loadGeneration) return
         if (res?.status !== 200) throw new Error(res?.message || '获取归属地信息失败')
         const data = res.data || {}
@@ -434,7 +473,7 @@ export default defineComponent({
       }
     }
     const reload = () => { clearSelectionState(); keyword.value = keywordInput.value.trim(); pagination.current = 1; load() }
-    const resetFilters = () => { keywordInput.value = ''; reload() }
+    const resetFilters = () => { keywordInput.value = ''; recordSource.value = ''; addressStatus.value = ''; fetchedFrom.value = ''; fetchedTo.value = ''; reload() }
     const onTableChange = (page) => { pagination.current = page.current; pagination.pageSize = page.pageSize; load() }
     const showDetails = (record) => { detailRecord.value = record; detailVisible.value = true }
     const refresh = async (record) => {
@@ -485,13 +524,17 @@ export default defineComponent({
       configured.value = undefined
       keywordInput.value = ''
       keyword.value = ''
+      recordSource.value = ''
+      addressStatus.value = ''
+      fetchedFrom.value = ''
+      fetchedTo.value = ''
       pagination.current = 1
       clearSelectionState()
       summary.value = { total: 0, withAddress: 0, withoutAddress: 0 }
       detailVisible.value = false
       load()
     }, { immediate: true })
-    return { rows, loading, configured, querySource, setQuerySource, errorMessage, keywordInput, pagination, columns, formatDate, formatRawResponse, reload, resetFilters, load, onTableChange, remove, refresh, refreshing, removing, recordIdentity, sourceLabel, isRefreshDisabled, detailVisible, detailRecord, showDetails, kind, kindLabel, pageTitle, summary, selectedCount, selectedRowKeys, allRowsSelected, allCurrentPageSelected, hasCurrentPageSelection, selectionSummary, rowSelection, handleSelectCurrentPage, handleClearCurrentPage, handleSelectAll, handleClearSelection, batchRefreshing, refreshSelected, batchDeleting, deleteSelected, allDeleting, deleteAll, manualVisible, manualSubmitting, manualKey, manualLookup }
+    return { rows, loading, configured, querySource, setQuerySource, recordSource, addressStatus, fetchedFrom, fetchedTo, errorMessage, keywordInput, pagination, columns, formatDate, formatRawResponse, reload, resetFilters, load, onTableChange, remove, refresh, refreshing, removing, recordIdentity, sourceLabel, isRefreshDisabled, detailVisible, detailRecord, showDetails, kind, kindLabel, pageTitle, summary, selectedCount, selectedRowKeys, allRowsSelected, allCurrentPageSelected, hasCurrentPageSelection, selectionSummary, rowSelection, handleSelectCurrentPage, handleClearCurrentPage, handleSelectAll, handleClearSelection, batchRefreshing, refreshSelected, batchDeleting, deleteSelected, allDeleting, deleteAll, manualVisible, manualSubmitting, manualKey, manualLookup }
   },
 })
 </script>

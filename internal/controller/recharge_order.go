@@ -48,6 +48,32 @@ func RechargeOrderList(c *gin.Context) {
 		Status:          strings.TrimSpace(c.Query("status")),
 		PaymentProvider: strings.TrimSpace(c.Query("paymentProvider")),
 	}
+	createdFrom, createdFromErr := parseListFilterTime(c.Query("createdFrom"), false)
+	createdTo, createdToErr := parseListFilterTime(c.Query("createdTo"), true)
+	paidFrom, paidFromErr := parseListFilterTime(c.Query("paidFrom"), false)
+	paidTo, paidToErr := parseListFilterTime(c.Query("paidTo"), true)
+	userID, userIDErr := parseOptionalPositiveInt32(c.Query("userId"))
+	amountMin, amountMinErr := parseOptionalNonNegativeFloat(c.Query("amountMin"))
+	amountMax, amountMaxErr := parseOptionalNonNegativeFloat(c.Query("amountMax"))
+	if createdFromErr != nil || createdToErr != nil || paidFromErr != nil || paidToErr != nil || userIDErr != nil || amountMinErr != nil || amountMaxErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "筛选参数格式无效"})
+		return
+	}
+	if err := validateListFilterTimeRange(createdFrom, createdTo, "创建时间"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	if err := validateListFilterTimeRange(paidFrom, paidTo, "支付时间"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	if amountMin != nil && amountMax != nil && *amountMin > *amountMax {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "金额范围无效"})
+		return
+	}
+	filter.CreatedFrom, filter.CreatedTo = createdFrom, createdTo
+	filter.PaidFrom, filter.PaidTo = paidFrom, paidTo
+	filter.UserID, filter.AmountMin, filter.AmountMax = userID, amountMin, amountMax
 
 	result, err := listRechargeOrders(operator, filter, page, pageSize)
 	if err != nil {

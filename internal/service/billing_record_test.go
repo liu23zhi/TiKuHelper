@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"fmt"
 	"github.com/glebarez/sqlite"
@@ -1069,6 +1070,83 @@ func TestListBillingRecordsWithDBFiltersByType(t *testing.T) {
 	}
 	if all.Total != 3 {
 		t.Fatalf("expected 3 rows without filters, got %d", all.Total)
+	}
+}
+
+func TestListBillingRecordsWithDBFiltersByRequestProviderModeIPAndDate(t *testing.T) {
+	db := newBillingRecordTestDB(t)
+	owner := seedBillingRecordUser(t, db, 6, "filter-owner")
+	other := seedBillingRecordUser(t, db, 7, "filter-other")
+	base := time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)
+	records := []entity.BillingRecord{
+		{UserID: owner.ID, Type: normalSearchBillingRecordType, Provider: "ai", SearchMode: "deep", ClientIP: "203.0.113.10", Amount: 2, RequestID: "req-filter-match", CreatedAt: base.Add(time.Hour)},
+		{UserID: owner.ID, Type: normalSearchBillingRecordType, Provider: "ai", SearchMode: "normal", ClientIP: "203.0.113.10", Amount: 3, RequestID: "req-filter-mode", CreatedAt: base.Add(time.Hour)},
+		{UserID: owner.ID, Type: normalSearchBillingRecordType, Provider: "icodef", SearchMode: "deep", ClientIP: "203.0.113.10", Amount: 4, RequestID: "req-filter-provider", CreatedAt: base.Add(time.Hour)},
+		{UserID: owner.ID, Type: normalSearchBillingRecordType, Provider: "ai", SearchMode: "deep", ClientIP: "198.51.100.4", Amount: 5, RequestID: "req-filter-ip", CreatedAt: base.Add(time.Hour)},
+		{UserID: owner.ID, Type: normalSearchBillingRecordType, Provider: "ai", SearchMode: "deep", ClientIP: "203.0.113.10", Amount: 6, RequestID: "req-filter-date", CreatedAt: base.Add(3 * time.Hour)},
+		{UserID: other.ID, Type: normalSearchBillingRecordType, Provider: "ai", SearchMode: "deep", ClientIP: "203.0.113.10", Amount: 7, RequestID: "req-filter-other", CreatedAt: base.Add(time.Hour)},
+	}
+	for i := range records {
+		if err := db.Create(&records[i]).Error; err != nil {
+			t.Fatalf("create billing record: %v", err)
+		}
+	}
+	createdFrom := base.Add(30 * time.Minute)
+	createdTo := base.Add(2 * time.Hour)
+	result, err := ListBillingRecordsWithDB(db, owner, BillingRecordListQuery{
+		RequestID: "req-filter-match", UserID: owner.ID, Provider: "ai", SearchMode: "deep",
+		ClientIP: "203.0.113.10", CreatedFrom: &createdFrom, CreatedTo: &createdTo,
+	}, 1, 10)
+	if err != nil {
+		t.Fatalf("list filtered billing records: %v", err)
+	}
+	if result.Total != 1 || len(result.Data) != 1 || result.Data[0].RequestID != "req-filter-match" {
+		t.Fatalf("expected one row after combined billing filters, got %+v", result)
+	}
+	if result.Summary.TotalAmount != 2 || result.Summary.CurrentPageAmount != 2 {
+		t.Fatalf("billing summary must use the same filters, got %+v", result.Summary)
+	}
+}
+
+func TestListBillingRecordsWithDBExactFiltersMatchVisibleSiblingAndKeepRequestTotals(t *testing.T) {
+	db := newBillingRecordTestDB(t)
+	owner := seedBillingRecordUser(t, db, 6, "user")
+	admin := seedBillingRecordUser(t, db, 7, "admin")
+	base := time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)
+	records := []entity.BillingRecord{
+		{UserID: owner.ID, Type: normalSearchBillingRecordType, Provider: "ai", SearchMode: "deep_native", ClientIP: "203.0.113.10", Amount: 2, RequestID: "req-matching-sibling", QuestionText: "matching-charge", InputTokens: 100, CachedInputTokens: 25, CreatedAt: base.Add(time.Hour)},
+		{UserID: owner.ID, Type: normalSearchBillingRecordType, Provider: "icodef", SearchMode: "normal", ClientIP: "198.51.100.4", Amount: 3, RequestID: "req-matching-sibling", CreatedAt: base.Add(3 * time.Hour)},
+		{UserID: owner.ID, Type: normalSearchBillingRecordType, Provider: "ai", SearchMode: "deep_native", ClientIP: "203.0.113.10", Amount: 4, RequestID: "req-hidden-sibling", QuestionText: "matching-charge", HiddenFromStatement: true, CreatedAt: base.Add(time.Hour)},
+		{UserID: owner.ID, Type: normalSearchBillingRecordType, Provider: "icodef", SearchMode: "normal", ClientIP: "198.51.100.4", Amount: 5, RequestID: "req-hidden-sibling", CreatedAt: base.Add(3 * time.Hour)},
+		{UserID: owner.ID, Type: normalSearchBillingRecordType, Provider: "ai", SearchMode: "deep_native", ClientIP: "198.51.100.4", Amount: 6, RequestID: "req-split-conditions", QuestionText: "matching-charge", CreatedAt: base.Add(time.Hour)},
+		{UserID: owner.ID, Type: normalSearchBillingRecordType, Provider: "icodef", SearchMode: "deep_native", ClientIP: "203.0.113.10", Amount: 7, RequestID: "req-split-conditions", QuestionText: "matching-charge", CreatedAt: base.Add(time.Hour)},
+	}
+	for i := range records {
+		if err := db.Create(&records[i]).Error; err != nil {
+			t.Fatalf("create billing record: %v", err)
+		}
+	}
+	createdFrom, createdTo := base.Add(30*time.Minute), base.Add(2*time.Hour)
+	filter := BillingRecordListQuery{UserID: owner.ID, Provider: "ai", SearchMode: "deep_native", ClientIP: "203.0.113.10", Keyword: "matching-charge", CreatedFrom: &createdFrom, CreatedTo: &createdTo}
+	result, err := ListBillingRecordsWithDB(db, owner, filter, 1, 10)
+	if err != nil {
+		t.Fatalf("list billing records by sibling filters: %v", err)
+	}
+	if result.Total != 1 || len(result.Data) != 1 || result.Data[0].RequestID != "req-matching-sibling" {
+		t.Fatalf("only visible sibling satisfying all conditions must match, got %+v", result)
+	}
+	if result.Data[0].Amount != 5 || result.Summary.TotalAmount != 5 || result.Summary.CurrentPageAmount != 5 {
+		t.Fatalf("matching request must retain all visible charges, got %+v", result)
+	}
+	if result.Summary.TotalCacheHitRate == nil || *result.Summary.TotalCacheHitRate != 0.25 {
+		t.Fatalf("matching request must retain complete AI usage, got %+v", result.Summary)
+	}
+	result, err = ListBillingRecordsWithDB(db, admin, filter, 1, 10)
+	if err != nil {
+		t.Fatalf("list admin billing records by sibling filters: %v", err)
+	}
+	if result.Total != 2 || result.Summary.TotalAmount != 14 {
+		t.Fatalf("admin must include hidden matching siblings and complete requests, got %+v", result)
 	}
 }
 

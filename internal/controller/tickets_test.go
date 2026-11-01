@@ -53,6 +53,29 @@ func TestTicketListRejectsInvalidFilterTime(t *testing.T) {
 	}
 }
 
+func TestTicketListRejectsReversedCreatedAndUpdatedRanges(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name  string
+		query string
+		want  string
+	}{
+		{name: "created", query: "createdFrom=2026-06-21&createdTo=2026-06-20", want: "创建时间范围无效"},
+		{name: "updated", query: "updatedFrom=2026-06-21&updatedTo=2026-06-20", want: "更新时间范围无效"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
+			ctx.Request = httptest.NewRequest(http.MethodGet, "/tickets?"+tc.query, nil)
+			TicketList(ctx)
+			if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), tc.want) {
+				t.Fatalf("reversed ticket range must return explicit 400, status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
 func TestTicketControllerOwnListAndAdminConfiguration(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newTicketControllerTestDB(t)
@@ -95,7 +118,13 @@ func TestTicketControllerOwnListAndAdminConfiguration(t *testing.T) {
 	ctx.Request = httptest.NewRequest(http.MethodPut, "/tickets/config", strings.NewReader(`{"enabled":true,"webhookUrl":"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=private","mentionedList":["a"]}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	UpdateTicketWecomSettings(ctx)
-	if recorder.Code != http.StatusOK || strings.Contains(recorder.Body.String(), "private") {
+	var settingsResponse struct {
+		Data service.TicketWecomSettings `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &settingsResponse); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusOK || settingsResponse.Data.WebhookURL != "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=private" || strings.Contains(settingsResponse.Data.Preview, "private") {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }

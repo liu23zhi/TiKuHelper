@@ -257,6 +257,41 @@
       </ConsolePanel>
     </a-form>
 
+    <ConsolePanel title="图片 OCR 缓存" description="按图片 URL 和图片内容指纹复用成功 OCR 结果；每次请求仍会下载图片确认内容未变化。">
+      <template #actions>
+        <a-space wrap>
+          <a-button @click="loadAIOCRCacheStatus" :loading="ocrCacheLoading">刷新</a-button>
+          <a-popconfirm
+            title="确定清空图片 OCR 缓存吗？"
+            description="正在执行的识别请求会继续完成，但其旧结果不会重新写入缓存。"
+            ok-text="清空"
+            cancel-text="取消"
+            @confirm="handleClearAIOCRCache"
+          >
+            <a-button danger :disabled="!ocrCacheStatus || ocrCacheStatus.entries === 0" :loading="ocrCacheClearing">清空缓存</a-button>
+          </a-popconfirm>
+        </a-space>
+      </template>
+      <a-alert v-if="ocrCacheError" type="error" show-icon :message="ocrCacheError" />
+      <div class="ocr-cache-grid">
+        <div class="ocr-cache-stat">
+          <span class="ocr-cache-stat__label">识别服务</span>
+          <a-tag :color="ocrCacheStatus?.configured ? 'green' : 'default'">
+            {{ ocrCacheStatus?.configured ? 'UAPI 已配置' : '未配置有效 UAPI 密钥' }}
+          </a-tag>
+        </div>
+        <div class="ocr-cache-stat">
+          <span class="ocr-cache-stat__label">缓存条目</span>
+          <strong>{{ ocrCacheStatus?.entries ?? 0 }}</strong>
+        </div>
+        <div class="ocr-cache-stat">
+          <span class="ocr-cache-stat__label">最近更新</span>
+          <span>{{ formatAIOCRCacheTime(ocrCacheStatus?.latestUpdatedAt) }}</span>
+        </div>
+      </div>
+      <div class="hint">命中缓存仍按现有搜题计费口径处理；清空只删除已持久化的 OCR 结果，不会取消正在执行的请求。</div>
+    </ConsolePanel>
+
     <AISearchCapabilityDialog
       v-model:open="capabilityModalVisible"
       :loading="capabilityLoading"
@@ -420,6 +455,8 @@ import {
   getAIModelPrices,
   getUAPISearchEngines,
   getUAPIUsageStatus,
+  getAIOCRCacheStatus,
+  clearAIOCRCache,
   createAIModelPrice,
   updateAIModelPrice,
   deleteAIModelPrice,
@@ -521,6 +558,10 @@ export default defineComponent({
     const capabilityError = ref('')
     const usageInfo = ref(null)
     const testModalVisible = ref(false)
+    const ocrCacheLoading = ref(false)
+    const ocrCacheClearing = ref(false)
+    const ocrCacheStatus = ref(null)
+    const ocrCacheError = ref('')
     const savedCompressionOrder = ref(buildAIContextCompressionSettings().contextCompressionOrder)
     const fixedTemperatureText = '0'
     const fixedTopPText = '0'
@@ -731,9 +772,25 @@ export default defineComponent({
       })
     }
 
+    const loadAIOCRCacheStatus = () => {
+      ocrCacheLoading.value = true
+      ocrCacheError.value = ''
+      return getAIOCRCacheStatus().then(res => {
+        if (res?.status !== 200) {
+          throw new Error(res?.message || '获取图片 OCR 缓存状态失败')
+        }
+        ocrCacheStatus.value = res?.data || { configured: false, entries: 0 }
+      }).catch(error => {
+        ocrCacheError.value = error?.message || '获取图片 OCR 缓存状态失败'
+      }).finally(() => {
+        ocrCacheLoading.value = false
+      })
+    }
+
     onMounted(() => {
       loadConfig()
       loadAIModelPrices()
+      loadAIOCRCacheStatus()
     })
 
     const resetPriceForm = () => {
@@ -788,6 +845,10 @@ export default defineComponent({
       priceResetting,
       priceModalVisible,
       priceForm,
+      ocrCacheLoading,
+      ocrCacheClearing,
+      ocrCacheStatus,
+      ocrCacheError,
       stagedPointColumns,
       stagedPointError,
       stagedPointRowKey,
@@ -796,6 +857,7 @@ export default defineComponent({
       loadConfig,
       loadAIModelPrices,
       loadSearchEngineInfo,
+      loadAIOCRCacheStatus,
       resetPriceForm,
     }
   },
@@ -805,6 +867,26 @@ export default defineComponent({
     handleLoad() {
       this.loadConfig()
       this.loadAIModelPrices()
+      this.loadAIOCRCacheStatus()
+    },
+    formatAIOCRCacheTime(value) {
+      if (!value) return '暂无'
+      const date = new Date(value)
+      return Number.isNaN(date.getTime()) ? '暂无' : date.toLocaleString()
+    },
+    handleClearAIOCRCache() {
+      this.ocrCacheClearing = true
+      clearAIOCRCache().then(res => {
+        if (res?.status !== 200) {
+          throw new Error(res?.message || '清空图片 OCR 缓存失败')
+        }
+        message.success(`已清空 ${Number(res?.data?.deleted || 0)} 条图片 OCR 缓存`)
+        return this.loadAIOCRCacheStatus()
+      }).catch(error => {
+        this.ocrCacheError = error?.message || '清空图片 OCR 缓存失败'
+      }).finally(() => {
+        this.ocrCacheClearing = false
+      })
     },
     selectModel(model) {
       this.formState.model = model
@@ -1056,11 +1138,15 @@ export default defineComponent({
 .model-tags { margin-top: 12px; }
 .model-tags :deep(.ant-tag) { padding: 4px 8px; border-radius: 6px; }
 .pricing-grid { display: grid; gap: 16px; min-width: 0; }
+.ocr-cache-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }
+.ocr-cache-stat { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ocr-cache-stat__label { color: var(--console-muted); white-space: nowrap; }
+.ocr-cache-stat > :last-child { overflow-wrap: anywhere; }
 .staged-points-editor { margin: 20px 0 24px; }
 .staged-points-editor__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; }
 .staged-points-editor__header > div { flex: 1 1 320px; min-width: 0; }
 .staged-points-editor__header :deep(.ant-space) { flex-wrap: wrap; }
 .sub-card-title { color: var(--console-text); font-size: 15px; font-weight: 600; }
 .sub-card-subtitle { margin-top: 6px; color: var(--console-muted); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
-@media (max-width: 768px) { .console-form-grid { grid-template-columns: minmax(0, 1fr); } .model-editor { display: grid; } .fetch-btn { width: 100%; } .staged-billing-settings :deep(.ant-form-item) { display: block; } .staged-billing-settings :deep(.ant-form-item-label) { width: 100% !important; text-align: left; } .staged-billing-settings :deep(.ant-form-item-control) { max-width: 100%; } }
+@media (max-width: 768px) { .console-form-grid { grid-template-columns: minmax(0, 1fr); } .ocr-cache-grid { grid-template-columns: minmax(0, 1fr); } .model-editor { display: grid; } .fetch-btn { width: 100%; } .staged-billing-settings :deep(.ant-form-item) { display: block; } .staged-billing-settings :deep(.ant-form-item-label) { width: 100% !important; text-align: left; } .staged-billing-settings :deep(.ant-form-item-control) { max-width: 100%; } }
 </style>

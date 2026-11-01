@@ -53,6 +53,26 @@
             @change="onFilterChange"
           />
         </a-form-item>
+        <a-form-item v-if="isAdmin" label="用户 ID">
+          <a-input-number v-model:value="filters.userId" :min="1" placeholder="精确用户" style="width: 130px" @change="onFilterChange" />
+        </a-form-item>
+        <a-form-item label="请求 ID">
+          <a-input v-model:value="filters.requestId" allow-clear placeholder="精确请求 ID" style="width: 220px" @press-enter="onFilterChange" @blur="onFilterChange" />
+        </a-form-item>
+        <a-form-item label="渠道">
+          <a-input v-model:value="filters.provider" allow-clear placeholder="例如 ai" style="width: 130px" @press-enter="onFilterChange" @blur="onFilterChange" />
+        </a-form-item>
+        <a-form-item label="搜索模式">
+          <a-select v-model:value="filters.searchMode" allow-clear placeholder="全部模式" style="width: 140px" :options="searchModeOptions" @change="onFilterChange" />
+        </a-form-item>
+        <a-form-item label="来源 IP">
+          <a-input v-model:value="filters.clientIp" allow-clear placeholder="精确 IP" style="width: 160px" @press-enter="onFilterChange" @blur="onFilterChange" />
+        </a-form-item>
+        <a-form-item label="创建日期">
+          <a-input v-model:value="filters.createdFrom" type="date" style="width: 155px" @change="onFilterChange" />
+          <span class="filter-range-separator">至</span>
+          <a-input v-model:value="filters.createdTo" type="date" style="width: 155px" @change="onFilterChange" />
+        </a-form-item>
         <a-form-item>
           <a-space>
             <a-button @click="resetFilters">重置筛选</a-button>
@@ -231,6 +251,13 @@ const billingSummary = reactive({
 const filters = reactive({
   keyword: '',
   type: undefined,
+  userId: undefined,
+  requestId: '',
+  provider: '',
+  searchMode: undefined,
+  clientIp: '',
+  createdFrom: '',
+  createdTo: '',
 })
 const keywordInput = ref('')
 const pagination = reactive({
@@ -252,7 +279,7 @@ export default defineComponent({
     const billingDetailOpen = ref(false)
     const currentUser = computed(() => getStoredCurrentUser())
     const isAdmin = computed(() => isAdminUser(currentUser.value))
-    const activeFilterCount = computed(() => countActiveFilters({ keyword: filters.keyword, type: filters.type }))
+    const activeFilterCount = computed(() => countActiveFilters({ keyword: filters.keyword, type: filters.type, userId: filters.userId, requestId: filters.requestId, provider: filters.provider, searchMode: filters.searchMode, clientIp: filters.clientIp, createdFrom: filters.createdFrom, createdTo: filters.createdTo }))
 
     const summary = computed(() => {
       const rows = Array.isArray(dataSource.value) ? dataSource.value : []
@@ -281,6 +308,13 @@ export default defineComponent({
     const hasActiveFilters = computed(() => countActiveFilters({
       keyword: filters.keyword,
       type: filters.type,
+      userId: filters.userId,
+      requestId: filters.requestId,
+      provider: filters.provider,
+      searchMode: filters.searchMode,
+      clientIp: filters.clientIp,
+      createdFrom: filters.createdFrom,
+      createdTo: filters.createdTo,
     }) > 0)
 
     const pageTitle = computed(() => (isAdmin.value ? '账单明细' : '我的账单'))
@@ -416,6 +450,12 @@ export default defineComponent({
         { label: '新用户赠送', value: 'registration_bonus' },
         { label: '管理员调整余额', value: 'balance_adjustment' },
       ],
+      searchModeOptions: [
+        { label: '普通搜索', value: 'normal' },
+        { label: '深度思考', value: 'deep' },
+        { label: '深度思考 原生工具', value: 'deep_native' },
+        { label: '深度思考 MCP编排', value: 'deep_mcp' },
+      ],
       pageTitle,
       pageSubtitle,
       alertMessage,
@@ -477,6 +517,13 @@ export default defineComponent({
       filters.keyword = ''
       keywordInput.value = ''
       filters.type = undefined
+      filters.userId = undefined
+      filters.requestId = ''
+      filters.provider = ''
+      filters.searchMode = undefined
+      filters.clientIp = ''
+      filters.createdFrom = ''
+      filters.createdTo = ''
       pagination.current = 1
       this.handleLoad()
     },
@@ -485,6 +532,13 @@ export default defineComponent({
       getBillingRecords(buildSearchParams({
         keyword: filters.keyword,
         type: filters.type,
+        userId: filters.userId,
+        requestId: filters.requestId,
+        provider: filters.provider,
+        searchMode: filters.searchMode,
+        clientIp: filters.clientIp,
+        createdFrom: filters.createdFrom,
+        createdTo: filters.createdTo,
       }, pagination.current, pagination.pageSize)).then((res) => {
         if (res?.status === 200) {
           dataSource.value = Array.isArray(res?.data?.data) ? res.data.data : []

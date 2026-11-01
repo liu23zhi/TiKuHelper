@@ -59,6 +59,24 @@
             @blur="onFilterChange"
           />
         </a-form-item>
+        <a-form-item v-if="isAdmin" label="用户 ID">
+          <a-input-number v-model:value="filters.userId" :min="1" placeholder="精确用户" style="width: 130px" @change="onFilterChange" />
+        </a-form-item>
+        <a-form-item label="创建日期">
+          <a-input v-model:value="filters.createdFrom" type="date" style="width: 155px" @change="onFilterChange" />
+          <span class="filter-range-separator">至</span>
+          <a-input v-model:value="filters.createdTo" type="date" style="width: 155px" @change="onFilterChange" />
+        </a-form-item>
+        <a-form-item label="付款日期">
+          <a-input v-model:value="filters.paidFrom" type="date" style="width: 155px" @change="onFilterChange" />
+          <span class="filter-range-separator">至</span>
+          <a-input v-model:value="filters.paidTo" type="date" style="width: 155px" @change="onFilterChange" />
+        </a-form-item>
+        <a-form-item label="金额范围">
+          <a-input-number v-model:value="filters.amountMin" :min="0" :precision="2" placeholder="最低" style="width: 110px" @change="onFilterChange" />
+          <span class="filter-range-separator">至</span>
+          <a-input-number v-model:value="filters.amountMax" :min="0" :precision="2" placeholder="最高" style="width: 110px" @change="onFilterChange" />
+        </a-form-item>
         <a-form-item>
           <a-space>
             <a-button @click="resetFilters">重置筛选</a-button>
@@ -114,6 +132,13 @@ const filters = reactive({
   keyword: '',
   status: undefined,
   paymentProvider: '',
+  userId: undefined,
+  createdFrom: '',
+  createdTo: '',
+  paidFrom: '',
+  paidTo: '',
+  amountMin: undefined,
+  amountMax: undefined,
 })
 const keywordInput = ref('')
 const pagination = reactive({
@@ -151,6 +176,13 @@ export default defineComponent({
         keyword: filters.keyword,
         status: filters.status,
         paymentProvider: filters.paymentProvider,
+        userId: filters.userId,
+        createdFrom: filters.createdFrom,
+        createdTo: filters.createdTo,
+        paidFrom: filters.paidFrom,
+        paidTo: filters.paidTo,
+        amountMin: filters.amountMin,
+        amountMax: filters.amountMax,
       })),
       statusOptions: [
         { label: '待支付', value: 'pending' },
@@ -228,6 +260,13 @@ export default defineComponent({
       keywordInput.value = ''
       filters.status = undefined
       filters.paymentProvider = ''
+      filters.userId = undefined
+      filters.createdFrom = ''
+      filters.createdTo = ''
+      filters.paidFrom = ''
+      filters.paidTo = ''
+      filters.amountMin = undefined
+      filters.amountMax = undefined
       pagination.current = 1
       this.handleLoad()
     },
@@ -237,6 +276,13 @@ export default defineComponent({
         keyword: filters.keyword,
         status: filters.status,
         paymentProvider: filters.paymentProvider,
+        userId: filters.userId,
+        createdFrom: filters.createdFrom,
+        createdTo: filters.createdTo,
+        paidFrom: filters.paidFrom,
+        paidTo: filters.paidTo,
+        amountMin: filters.amountMin,
+        amountMax: filters.amountMax,
       }, pagination.current, pagination.pageSize)).then((res) => {
         if (res?.status === 200) {
           dataSource.value = Array.isArray(res?.data?.data) ? res.data.data : []

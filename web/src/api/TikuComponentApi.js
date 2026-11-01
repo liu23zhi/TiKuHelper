@@ -544,6 +544,20 @@ export function getAISearchConfigPricingStatus() {
   })
 }
 
+export function getAIOCRCacheStatus() {
+  return request({
+    url: `/adapter-service/ai-search-config/ocr-cache`,
+    method: 'get'
+  })
+}
+
+export function clearAIOCRCache() {
+  return request({
+    url: `/adapter-service/ai-search-config/ocr-cache`,
+    method: 'delete'
+  })
+}
+
 export function createAIModelPrice(data) {
   return request({
     url: `/adapter-service/ai-model-prices`,

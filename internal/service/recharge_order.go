@@ -266,6 +266,15 @@ type RechargeOrderListQuery struct {
 	Status string
 	// PaymentProvider 精确匹配支付渠道。
 	PaymentProvider string
+	// UserID 精确匹配所属用户（管理员筛选；普通用户仍受权限范围限制）。
+	UserID int32
+	// CreatedFrom/CreatedTo filter order creation time; PaidFrom/PaidTo filter payment time.
+	CreatedFrom *time.Time
+	CreatedTo   *time.Time
+	PaidFrom    *time.Time
+	PaidTo      *time.Time
+	AmountMin   *float64
+	AmountMax   *float64
 }
 
 func ListRechargeOrdersWithDB(db *gorm.DB, operator entity.User, query RechargeOrderListQuery, page int, pageSize int) (RechargeOrderListResult, error) {
@@ -327,6 +336,27 @@ func buildRechargeOrderListQuery(db *gorm.DB, operator entity.User) *gorm.DB {
 
 // applyRechargeOrderFilters 把关键词、状态与支付渠道筛选应用到充值记录查询上。
 func applyRechargeOrderFilters(query *gorm.DB, filter RechargeOrderListQuery) *gorm.DB {
+	if filter.UserID > 0 {
+		query = query.Where("recharge_orders.user_id = ?", filter.UserID)
+	}
+	if filter.CreatedFrom != nil {
+		query = query.Where("recharge_orders.created_at >= ?", filter.CreatedFrom)
+	}
+	if filter.CreatedTo != nil {
+		query = query.Where("recharge_orders.created_at < ?", filter.CreatedTo)
+	}
+	if filter.PaidFrom != nil {
+		query = query.Where("recharge_orders.paid_at >= ?", filter.PaidFrom)
+	}
+	if filter.PaidTo != nil {
+		query = query.Where("recharge_orders.paid_at < ?", filter.PaidTo)
+	}
+	if filter.AmountMin != nil {
+		query = query.Where("recharge_orders.amount >= ?", *filter.AmountMin)
+	}
+	if filter.AmountMax != nil {
+		query = query.Where("recharge_orders.amount <= ?", *filter.AmountMax)
+	}
 	if status := strings.TrimSpace(filter.Status); status != "" {
 		query = query.Where("recharge_orders.status = ?", status)
 	}

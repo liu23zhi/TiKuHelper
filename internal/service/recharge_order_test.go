@@ -443,6 +443,44 @@ func TestListRechargeOrdersWithDBFiltersByStatusAndProvider(t *testing.T) {
 	}
 }
 
+func TestListRechargeOrdersWithDBFiltersByOwnerDatesAndAmount(t *testing.T) {
+	db := newRechargeOrderTestDB(t)
+	owner := seedRechargeOrderUser(t, db, 12, "filter-owner")
+	other := seedRechargeOrderUser(t, db, 13, "filter-other")
+	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	paidInside := base.Add(30 * time.Minute)
+	paidOutside := base.Add(3 * time.Hour)
+	orders := []entity.RechargeOrder{
+		{UserID: owner.ID, OrderNo: "rcg_filter_inside", PaymentProvider: DefaultPaymentProvider, Amount: 20, Status: rechargeOrderStatusPaid, PaidAt: &paidInside, CreatedAt: base.Add(time.Hour)},
+		{UserID: owner.ID, OrderNo: "rcg_filter_amount", PaymentProvider: DefaultPaymentProvider, Amount: 80, Status: rechargeOrderStatusPaid, PaidAt: &paidInside, CreatedAt: base.Add(2 * time.Hour)},
+		{UserID: owner.ID, OrderNo: "rcg_filter_paid_out", PaymentProvider: DefaultPaymentProvider, Amount: 30, Status: rechargeOrderStatusPaid, PaidAt: &paidOutside, CreatedAt: base.Add(time.Hour)},
+		{UserID: other.ID, OrderNo: "rcg_filter_other", PaymentProvider: DefaultPaymentProvider, Amount: 20, Status: rechargeOrderStatusPaid, PaidAt: &paidInside, CreatedAt: base.Add(time.Hour)},
+	}
+	for i := range orders {
+		if err := db.Create(&orders[i]).Error; err != nil {
+			t.Fatalf("create recharge order: %v", err)
+		}
+	}
+	createdFrom := base.Add(45 * time.Minute)
+	createdTo := base.Add(150 * time.Minute)
+	paidFrom := base
+	paidTo := base.Add(time.Hour)
+	amountMin, amountMax := 10.0, 50.0
+	result, err := ListRechargeOrdersWithDB(db, owner, RechargeOrderListQuery{
+		UserID: owner.ID, CreatedFrom: &createdFrom, CreatedTo: &createdTo,
+		PaidFrom: &paidFrom, PaidTo: &paidTo, AmountMin: &amountMin, AmountMax: &amountMax,
+	}, 1, 10)
+	if err != nil {
+		t.Fatalf("list filtered recharge orders: %v", err)
+	}
+	if result.Total != 1 || len(result.Data) != 1 || result.Data[0].OrderNo != "rcg_filter_inside" {
+		t.Fatalf("expected one row after combined filters, got %+v", result)
+	}
+	if result.Summary.TotalAmount != 20 || result.Summary.CurrentPageAmount != 20 {
+		t.Fatalf("summary must use the same combined filters, got %+v", result.Summary)
+	}
+}
+
 // 关键词里的 % 与 _ 必须按「字面量」处理，而不是 LIKE 通配符。
 //
 // 注意样本选择：两个订单号都含下划线（前缀就是 rcg_），

@@ -93,6 +93,18 @@ func TestBillingRecordListNormalizesInvalidPagination(t *testing.T) {
 	}
 }
 
+func TestBillingRecordListRejectsReversedCreatedTimeRange(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Set("user", &entity.User{ID: 8, Role: "admin", Status: "enabled"})
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/billing-records?createdFrom=2026-06-21&createdTo=2026-06-20", nil)
+	BillingRecordList(ctx)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "创建时间范围无效") {
+		t.Fatalf("reversed billing range must return explicit 400, status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestBillingRecordListForcesOwnScopeForUsagePage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

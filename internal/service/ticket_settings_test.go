@@ -38,7 +38,7 @@ func TestTicketWecomSettingsUpdateRedactsAndPreservesWebhook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !settings.Enabled || !settings.Configured || settings.Preview != "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=已配置" {
+	if !settings.Enabled || !settings.Configured || settings.WebhookURL != "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=secret" || settings.Preview != "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=已配置" {
 		t.Fatalf("unexpected settings: %+v", settings)
 	}
 	if len(settings.MentionedList) != 2 {

@@ -84,9 +84,25 @@ func LogList(c *gin.Context) {
 	module := strings.TrimSpace(c.Query("module"))
 	actionValue := strings.TrimSpace(c.Query("action"))
 	keyword := util.NormalizeSearchKeyword(c.Query("keyword"))
+	createdFrom, createdFromErr := parseListFilterTime(c.Query("createdFrom"), false)
+	createdTo, createdToErr := parseListFilterTime(c.Query("createdTo"), true)
+	userID, userIDErr := parseOptionalPositiveInt32(c.Query("userId"))
+	qid, qidErr := parseOptionalPositiveInt32(c.Query("qid"))
+	if createdFromErr != nil || createdToErr != nil || userIDErr != nil || qidErr != nil {
+		c.JSON(400, gin.H{"message": "筛选参数格式无效"})
+		return
+	}
+	if err := validateListFilterTimeRange(createdFrom, createdTo, "创建时间"); err != nil {
+		c.JSON(400, gin.H{"message": err.Error()})
+		return
+	}
+	clientIP := strings.TrimSpace(c.Query("clientIp"))
 
 	readDB := withDatabasePriority(dao.Log.UnderlyingDB(), databaseRequestContext(c), dbqueue.PriorityLow)
-	query := buildLogListQuery(readDB.Model(&entity.Log{}), currentUser, module, actionValue, keyword)
+	query := buildLogListQueryWithFilter(readDB.Model(&entity.Log{}), currentUser, logListFilter{
+		Module: module, Action: actionValue, Keyword: keyword, ClientIP: clientIP,
+		UserID: userID, QID: qid, CreatedFrom: createdFrom, CreatedTo: createdTo,
+	})
 
 	var (
 		total int64
@@ -224,20 +240,50 @@ func logBillingRequestID(entry *entity.Log) string {
 // buildLogListQuery 组装日志查询条件：先按权限收窄，再叠加筛选。
 // 抽成独立函数便于单测覆盖关键词转义与筛选组合。
 func buildLogListQuery(query *gorm.DB, currentUser *entity.User, module string, actionValue string, keyword string) *gorm.DB {
+	return buildLogListQueryWithFilter(query, currentUser, logListFilter{Module: module, Action: actionValue, Keyword: keyword})
+}
+
+type logListFilter struct {
+	Module      string
+	Action      string
+	Keyword     string
+	ClientIP    string
+	UserID      int32
+	QID         int32
+	CreatedFrom *time.Time
+	CreatedTo   *time.Time
+}
+
+func buildLogListQueryWithFilter(query *gorm.DB, currentUser *entity.User, filter logListFilter) *gorm.DB {
 	if !isAdminUser(currentUser) {
 		query = query.Where("user_id = ?", currentUser.ID)
 	}
-	if strings.TrimSpace(module) != "" {
-		query = query.Where("module = ?", module)
+	if strings.TrimSpace(filter.Module) != "" {
+		query = query.Where("module = ?", filter.Module)
 	}
-	if actionValue != "" {
-		if action, parseErr := strconv.Atoi(actionValue); parseErr == nil {
+	if filter.Action != "" {
+		if action, parseErr := strconv.Atoi(filter.Action); parseErr == nil {
 			query = query.Where("action = ?", action)
 		}
 	}
+	if filter.UserID > 0 {
+		query = query.Where("user_id = ?", filter.UserID)
+	}
+	if filter.QID > 0 {
+		query = query.Where("qid = ?", filter.QID)
+	}
+	if filter.ClientIP != "" {
+		query = query.Where("client_ip = ?", filter.ClientIP)
+	}
+	if filter.CreatedFrom != nil {
+		query = query.Where("create_time >= ?", filter.CreatedFrom)
+	}
+	if filter.CreatedTo != nil {
+		query = query.Where("create_time < ?", filter.CreatedTo)
+	}
 
 	// 关键词按「纯子串」匹配（不使用 LIKE 通配符），见 util.BuildInstrCondition。
-	condition, args := util.BuildInstrCondition(keyword,
+	condition, args := util.BuildInstrCondition(filter.Keyword,
 		"COALESCE(description, '')",
 		"COALESCE(username, '')",
 		"COALESCE(client_ip, '')",

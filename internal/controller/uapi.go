@@ -137,6 +137,7 @@ func LocationCacheList(c *gin.Context) {
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
 	result, err := service.ListLocationCacheWithDB(withDatabasePriority(resolveSearchPersistenceDB(), databaseRequestContext(c), dbqueue.PriorityLow), service.LocationCacheListQuery{
 		Kind: c.Query("kind"), Keyword: c.Query("keyword"), Source: c.Query("source"),
+		AddressStatus: c.Query("addressStatus"), FetchedFrom: c.Query("fetchedFrom"), FetchedTo: c.Query("fetchedTo"),
 	}, page, pageSize)
 	if err != nil {
 		if errors.Is(err, service.ErrLocationInvalidKey) {

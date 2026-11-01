@@ -455,6 +455,37 @@ test('location cache reload sends the active filter and server page', async () =
   assert.deepEqual(page.summary.value, { total: 42, withAddress: 40, withoutAddress: 2 })
 })
 
+test('location cache reload and bulk delete keep all active filters', async () => {
+  const listCalls = []
+  let deletePayload
+  const page = await createPage({
+    getLocationCacheList: async params => {
+      listCalls.push(params)
+      return { status: 200, data: { data: [], total: 0, configured: true } }
+    },
+    deleteLocationCacheBatch: async payload => {
+      deletePayload = payload
+      return { status: 200, data: { deleted: 1 } }
+    },
+  })
+  page.keywordInput.value = '上海'
+  page.recordSource.value = 'default'
+  page.addressStatus.value = 'without'
+  page.fetchedFrom.value = '2026-10-10'
+  page.fetchedTo.value = '2026-10-12'
+  page.reload()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.deepEqual(listCalls.at(-1), {
+    kind: 'ip', keyword: '上海', source: 'default', addressStatus: 'without',
+    fetchedFrom: '2026-10-10', fetchedTo: '2026-10-12', page: 1, pageSize: 20,
+  })
+  await page.deleteAll()
+  assert.deepEqual(deletePayload, {
+    kind: 'ip', keyword: '上海', source: 'default', addressStatus: 'without',
+    fetchedFrom: '2026-10-10', fetchedTo: '2026-10-12', items: [], all: true, except: [],
+  })
+})
+
 test('location cache selection supports current page, all pages, and page exceptions', async () => {
   const page = await createPage()
   page.rows.value = [
@@ -499,6 +530,12 @@ test('location cache template exposes bulk selection actions and summary', async
   assert.match(page, /label="查询来源"/)
   assert.match(page, /value="">普通来源/)
   assert.match(page, /value="commercial" :disabled="configured !== true"/)
+  assert.match(page, /label="记录来源"/)
+  assert.match(page, /value="default">默认来源/)
+  assert.match(page, /label="归属地状态"/)
+  assert.match(page, /value="without">待补全/)
+  assert.match(page, /fetchedFrom/)
+  assert.match(page, /fetchedTo/)
 })
 
 test('location cache manual lookup posts the active kind and persists result', async () => {

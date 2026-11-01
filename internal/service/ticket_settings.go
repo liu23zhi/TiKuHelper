@@ -13,6 +13,7 @@ import (
 type TicketWecomSettings struct {
 	Enabled       bool     `json:"enabled"`
 	Configured    bool     `json:"configured"`
+	WebhookURL    string   `json:"webhookUrl"`
 	Preview       string   `json:"preview"`
 	MentionedList []string `json:"mentionedList"`
 }
@@ -33,7 +34,8 @@ func GetTicketWecomSettingsWithDB(db *gorm.DB) (TicketWecomSettings, error) {
 	}
 	return TicketWecomSettings{
 		Enabled: config.Enabled, Configured: strings.TrimSpace(config.WebhookURL) != "",
-		Preview: maskTicketWebhookURL(config.WebhookURL), MentionedList: config.MentionedList,
+		WebhookURL: config.WebhookURL,
+		Preview:    maskTicketWebhookURL(config.WebhookURL), MentionedList: config.MentionedList,
 	}, nil
 }
 

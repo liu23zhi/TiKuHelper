@@ -159,7 +159,7 @@ test("notification form submits settings and reloads the saved configuration", a
       reloads++;
       return {
         data: {
-          data: { enabled: true, configured: true, mentionedList: ["alice", "bob"] },
+          data: { enabled: true, configured: true, webhookUrl: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test", mentionedList: ["alice", "bob"] },
         },
       };
     },
@@ -183,7 +183,7 @@ test("notification form submits settings and reloads the saved configuration", a
     ]);
     assert.equal(reloads, 1);
     assert.equal(successes.length, 1);
-    assert.equal(page.notificationConfig.webhookUrl, "");
+    assert.equal(page.notificationConfig.webhookUrl, "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test");
     assert.equal(page.notificationConfig.configured, true);
     assert.equal(page.configSaving.value, false);
   } finally {

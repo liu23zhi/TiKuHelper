@@ -35,6 +35,21 @@
             @change="onFilterChange"
           />
         </a-form-item>
+        <a-form-item label="用户 ID">
+          <a-input-number v-model:value="filters.userId" :min="1" placeholder="精确用户" style="width: 130px" @change="onFilterChange" />
+        </a-form-item>
+        <a-form-item label="题目 ID">
+          <a-input-number v-model:value="filters.qid" :min="1" placeholder="精确题目" style="width: 130px" @change="onFilterChange" />
+        </a-form-item>
+        <a-form-item label="客户端 IP">
+          <a-input v-model:value="filters.clientIp" allow-clear placeholder="精确 IP" style="width: 160px" @press-enter="onFilterChange" @blur="onFilterChange" />
+        </a-form-item>
+        <a-form-item label="开始日期">
+          <a-input v-model:value="filters.createdFrom" type="date" style="width: 160px" @change="onFilterChange" />
+        </a-form-item>
+        <a-form-item label="结束日期">
+          <a-input v-model:value="filters.createdTo" type="date" style="width: 160px" @change="onFilterChange" />
+        </a-form-item>
         <a-form-item>
           <a-space>
             <a-button @click="resetFilters">重置筛选</a-button>
@@ -226,6 +241,11 @@ const filters = reactive({
   keyword: '',
   module: undefined,
   action: undefined,
+  userId: undefined,
+  qid: undefined,
+  clientIp: '',
+  createdFrom: '',
+  createdTo: '',
 })
 // 关键词输入框的即时值：只有点「搜索」或回车才生效，避免每敲一个字就请求一次。
 const keywordInput = ref('')
@@ -382,7 +402,7 @@ export default defineComponent({
       pagination,
       filters,
       keywordInput,
-      activeFilterCount: computed(() => countActiveFilters({ keyword: filters.keyword, module: filters.module, action: filters.action })),
+      activeFilterCount: computed(() => countActiveFilters({ keyword: filters.keyword, module: filters.module, action: filters.action, userId: filters.userId, qid: filters.qid, clientIp: filters.clientIp, createdFrom: filters.createdFrom, createdTo: filters.createdTo })),
       isSnapshotExpanded: snapshots.isExpanded,
       toggleSnapshotExpanded: snapshots.toggle,
       tableScrollX,
@@ -435,6 +455,11 @@ export default defineComponent({
         keyword: filters.keyword,
         module: filters.module,
         action: filters.action === undefined ? undefined : filters.action,
+        userId: filters.userId,
+        qid: filters.qid,
+        clientIp: filters.clientIp,
+        createdFrom: filters.createdFrom,
+        createdTo: filters.createdTo,
       }, pagination.current, pagination.pageSize)).then(res => {
         if (res?.status == 200) {
           dataSource.value = res?.data?.data || []
@@ -459,6 +484,11 @@ export default defineComponent({
       keywordInput.value = ''
       filters.module = undefined
       filters.action = undefined
+      filters.userId = undefined
+      filters.qid = undefined
+      filters.clientIp = ''
+      filters.createdFrom = ''
+      filters.createdTo = ''
       pagination.current = 1
       this.handleLogList()
     },

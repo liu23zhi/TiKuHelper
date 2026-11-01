@@ -921,8 +921,13 @@ type BillingRecordListQuery struct {
 	Type string
 	// RequestID and UserID allow internal callers to look up one known request
 	// without the substring and sibling matching used by the search box.
-	RequestID string
-	UserID    int32
+	RequestID   string
+	UserID      int32
+	Provider    string
+	SearchMode  string
+	ClientIP    string
+	CreatedFrom *time.Time
+	CreatedTo   *time.Time
 }
 
 // ListBillingRecordsWithDB 返回账单列表。
@@ -1139,6 +1144,33 @@ func applyBillingRecordFilters(query *gorm.DB, filter BillingRecordListQuery, in
 		query = query.Where("billing_records.type = ?", recordType)
 	}
 
+	// 代表行或同请求兄弟明细都必须满足筛选。账单展示会先按 request_id 去重，
+	// 因而只把条件写在代表行上会漏掉“较早渠道命中、最新渠道未命中”的整笔请求。
+	var directParts []string
+	var directArgs []interface{}
+	appendDirect := func(condition string, args ...interface{}) {
+		if strings.TrimSpace(condition) == "" {
+			return
+		}
+		directParts = append(directParts, condition)
+		directArgs = append(directArgs, args...)
+	}
+	if provider := strings.TrimSpace(filter.Provider); provider != "" {
+		appendDirect("billing_records.provider = ?", provider)
+	}
+	if searchMode := strings.TrimSpace(filter.SearchMode); searchMode != "" {
+		appendDirect("billing_records.search_mode = ?", searchMode)
+	}
+	if clientIP := strings.TrimSpace(filter.ClientIP); clientIP != "" {
+		appendDirect("billing_records.client_ip = ?", clientIP)
+	}
+	if filter.CreatedFrom != nil {
+		appendDirect("billing_records.created_at >= ?", filter.CreatedFrom)
+	}
+	if filter.CreatedTo != nil {
+		appendDirect("billing_records.created_at < ?", filter.CreatedTo)
+	}
+
 	// 关键词按「纯子串」匹配（不使用 LIKE 通配符），见 util.BuildInstrCondition。
 	condition, args := util.BuildInstrCondition(filter.Keyword,
 		"COALESCE(billing_users.username, '')",
@@ -1149,11 +1181,40 @@ func applyBillingRecordFilters(query *gorm.DB, filter BillingRecordListQuery, in
 		"COALESCE(billing_records.remark, '')",
 		"COALESCE(access_tokens.name, '')",
 	)
-	if condition == "" {
+	appendDirect(condition, args...)
+	if len(directParts) == 0 {
 		return query
 	}
 
-	groupCondition, groupArgs := util.BuildInstrCondition(filter.Keyword,
+	groupParts := []string{
+		"billing_records.type = ?",
+		"COALESCE(billing_records.request_id, '') <> ''",
+	}
+	groupArgs := []interface{}{normalSearchBillingRecordType}
+	groupFilterParts := []string{}
+	groupFilterArgs := []interface{}{}
+	if provider := strings.TrimSpace(filter.Provider); provider != "" {
+		groupFilterParts = append(groupFilterParts, "matching_records.provider = ?")
+		groupFilterArgs = append(groupFilterArgs, provider)
+	}
+	if searchMode := strings.TrimSpace(filter.SearchMode); searchMode != "" {
+		groupFilterParts = append(groupFilterParts, "matching_records.search_mode = ?")
+		groupFilterArgs = append(groupFilterArgs, searchMode)
+	}
+	if clientIP := strings.TrimSpace(filter.ClientIP); clientIP != "" {
+		groupFilterParts = append(groupFilterParts, "matching_records.client_ip = ?")
+		groupFilterArgs = append(groupFilterArgs, clientIP)
+	}
+	if filter.CreatedFrom != nil {
+		groupFilterParts = append(groupFilterParts, "matching_records.created_at >= ?")
+		groupFilterArgs = append(groupFilterArgs, filter.CreatedFrom)
+	}
+	if filter.CreatedTo != nil {
+		groupFilterParts = append(groupFilterParts, "matching_records.created_at < ?")
+		groupFilterArgs = append(groupFilterArgs, filter.CreatedTo)
+	}
+
+	groupCondition, keywordGroupArgs := util.BuildInstrCondition(filter.Keyword,
 		"COALESCE(matching_billing_users.username, '')",
 		"COALESCE(matching_records.provider, '')",
 		"COALESCE(matching_records.model_name, '')",
@@ -1162,31 +1223,26 @@ func applyBillingRecordFilters(query *gorm.DB, filter BillingRecordListQuery, in
 		"COALESCE(matching_records.remark, '')",
 		"COALESCE(matching_access_tokens.name, '')",
 	)
-	if groupCondition == "" {
-		return query.Where(condition, args...)
+	if groupCondition != "" {
+		groupFilterParts = append(groupFilterParts, groupCondition)
+		groupFilterArgs = append(groupFilterArgs, keywordGroupArgs...)
 	}
-
-	// A normal_search row represents the whole request group. A keyword matching
-	// any sibling charge must retain the representative and aggregate every charge.
-	groupMatch := `billing_records.type = ?
-		AND COALESCE(billing_records.request_id, '') <> ''
-		AND EXISTS (
+	if !includeHidden {
+		groupFilterParts = append(groupFilterParts, "matching_records.hidden_from_statement = ?")
+		groupFilterArgs = append(groupFilterArgs, false)
+	}
+	groupArgs = append(groupArgs, normalSearchBillingRecordType)
+	groupArgs = append(groupArgs, groupFilterArgs...)
+	groupParts = append(groupParts, `EXISTS (
 			SELECT 1
 			FROM billing_records AS matching_records
-			LEFT JOIN ` + entity.TableNameAccessToken + ` AS matching_access_tokens ON matching_access_tokens.id = matching_records.access_token_id
-			LEFT JOIN ` + entity.TableNameUser + ` AS matching_billing_users ON matching_billing_users.id = matching_records.user_id
+			LEFT JOIN `+entity.TableNameAccessToken+` AS matching_access_tokens ON matching_access_tokens.id = matching_records.access_token_id
+			LEFT JOIN `+entity.TableNameUser+` AS matching_billing_users ON matching_billing_users.id = matching_records.user_id
 			WHERE matching_records.user_id = billing_records.user_id
 				AND matching_records.request_id = billing_records.request_id
-				AND matching_records.type = ?`
-	visibilityArgs := []interface{}{normalSearchBillingRecordType, normalSearchBillingRecordType}
-	if !includeHidden {
-		groupMatch += ` AND matching_records.hidden_from_statement = ?`
-		visibilityArgs = append(visibilityArgs, false)
-	}
-	groupMatch += ` AND ` + groupCondition + `)`
-	groupArgs = append(visibilityArgs, groupArgs...)
-	args = append(args, groupArgs...)
-	return query.Where("("+condition+") OR ("+groupMatch+")", args...)
+				AND matching_records.type = ?
+				AND `+strings.Join(groupFilterParts, " AND ")+`)`)
+	return query.Where("("+strings.Join(directParts, " AND ")+") OR ("+strings.Join(groupParts, " AND ")+")", append(directArgs, groupArgs...)...)
 }
 
 func normalizedBillingInputTokens(inputTokens int64, cachedInputTokens int64) (int64, int64) {

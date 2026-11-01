@@ -100,6 +100,29 @@ func TestRechargeOrderListNormalizesInvalidPagination(t *testing.T) {
 	}
 }
 
+func TestRechargeOrderListRejectsReversedCreatedAndPaidRanges(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, tc := range []struct {
+		name  string
+		query string
+		want  string
+	}{
+		{name: "created", query: "createdFrom=2026-06-21&createdTo=2026-06-20", want: "创建时间范围无效"},
+		{name: "paid", query: "paidFrom=2026-06-21&paidTo=2026-06-20", want: "支付时间范围无效"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Set("user", &entity.User{ID: 32, Role: "admin", Status: "enabled"})
+			ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/recharge-orders?"+tc.query, nil)
+			RechargeOrderList(ctx)
+			if recorder.Code != http.StatusBadRequest || !bytes.Contains(recorder.Body.Bytes(), []byte(tc.want)) {
+				t.Fatalf("reversed recharge range must return explicit 400, status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
 func TestRechargeOrderListReturnsServerErrorOnFailure(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

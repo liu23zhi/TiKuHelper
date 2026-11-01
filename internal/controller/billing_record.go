@@ -39,7 +39,23 @@ func BillingRecordList(c *gin.Context) {
 		RequestContext: c.Request.Context(),
 		Keyword:        util.NormalizeSearchKeyword(c.Query("keyword")),
 		Type:           strings.TrimSpace(c.Query("type")),
+		RequestID:      strings.TrimSpace(c.Query("requestId")),
+		Provider:       strings.TrimSpace(c.Query("provider")),
+		SearchMode:     strings.TrimSpace(c.Query("searchMode")),
+		ClientIP:       strings.TrimSpace(c.Query("clientIp")),
 	}
+	createdFrom, createdFromErr := parseListFilterTime(c.Query("createdFrom"), false)
+	createdTo, createdToErr := parseListFilterTime(c.Query("createdTo"), true)
+	userID, userIDErr := parseOptionalPositiveInt32(c.Query("userId"))
+	if createdFromErr != nil || createdToErr != nil || userIDErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "筛选参数格式无效"})
+		return
+	}
+	if err := validateListFilterTimeRange(createdFrom, createdTo, "创建时间"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	filter.UserID, filter.CreatedFrom, filter.CreatedTo = userID, createdFrom, createdTo
 
 	result, err := listBillingRecords(operator, filter, page, pageSize)
 	if err != nil {

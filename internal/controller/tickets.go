@@ -34,6 +34,14 @@ func TicketList(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "时间筛选格式无效，请使用 RFC3339 或 YYYY-MM-DD"})
 		return
 	}
+	if err := validateListFilterTimeRange(createdFrom, createdTo, "创建时间"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	if err := validateListFilterTimeRange(updatedFrom, updatedTo, "更新时间"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
 	query := service.TicketListQuery{Status: strings.TrimSpace(c.Query("status")), Keyword: strings.TrimSpace(c.Query("keyword")), CreatedFrom: createdFrom, CreatedTo: createdTo, UpdatedFrom: updatedFrom, UpdatedTo: updatedTo}
 	result, err := service.ListTicketsWithDB(withDatabasePriority(ticketControllerDB(), databaseRequestContext(c), dbqueue.PriorityLow), &user, query, page, pageSize)
 	if err != nil {

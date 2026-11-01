@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/uapi"
@@ -22,9 +23,12 @@ var (
 
 // LocationCacheListQuery 是管理员查看归属地缓存的筛选条件。
 type LocationCacheListQuery struct {
-	Kind    string
-	Keyword string
-	Source  string
+	Kind          string
+	Keyword       string
+	Source        string
+	AddressStatus string
+	FetchedFrom   string
+	FetchedTo     string
 }
 
 // LocationCacheListResult 是归属地缓存管理列表响应。
@@ -49,23 +53,29 @@ type LocationCacheDeleteItem struct {
 }
 
 type LocationCacheBatchDeleteRequest struct {
-	Kind    string                    `json:"kind"`
-	Keyword string                    `json:"keyword"`
-	Source  string                    `json:"source"`
-	Items   []LocationCacheDeleteItem `json:"items"`
-	All     bool                      `json:"all"`
-	Except  []LocationCacheDeleteItem `json:"except"`
+	Kind          string                    `json:"kind"`
+	Keyword       string                    `json:"keyword"`
+	Source        string                    `json:"source"`
+	AddressStatus string                    `json:"addressStatus"`
+	FetchedFrom   string                    `json:"fetchedFrom"`
+	FetchedTo     string                    `json:"fetchedTo"`
+	Items         []LocationCacheDeleteItem `json:"items"`
+	All           bool                      `json:"all"`
+	Except        []LocationCacheDeleteItem `json:"except"`
 }
 
 // Source identifies stored rows; QuerySource selects the source for this lookup.
 type LocationCacheBatchRefreshRequest struct {
-	Kind        string                    `json:"kind"`
-	Keyword     string                    `json:"keyword"`
-	Source      string                    `json:"source"`
-	Items       []LocationCacheDeleteItem `json:"items"`
-	All         bool                      `json:"all"`
-	Except      []LocationCacheDeleteItem `json:"except"`
-	QuerySource string                    `json:"querySource"`
+	Kind          string                    `json:"kind"`
+	Keyword       string                    `json:"keyword"`
+	Source        string                    `json:"source"`
+	AddressStatus string                    `json:"addressStatus"`
+	FetchedFrom   string                    `json:"fetchedFrom"`
+	FetchedTo     string                    `json:"fetchedTo"`
+	Items         []LocationCacheDeleteItem `json:"items"`
+	All           bool                      `json:"all"`
+	Except        []LocationCacheDeleteItem `json:"except"`
+	QuerySource   string                    `json:"querySource"`
 }
 
 type LocationCacheRefreshFailure struct {
@@ -89,32 +99,15 @@ func ListLocationCacheWithDB(db *gorm.DB, query LocationCacheListQuery, page int
 	if query.Kind != "" && query.Kind != entity.LocationKindIP && query.Kind != entity.LocationKindPhone {
 		return LocationCacheListResult{}, ErrLocationInvalidKey
 	}
-	if query.Source != "" {
-		if query.Kind == "" {
-			return LocationCacheListResult{}, ErrLocationInvalidKey
-		}
-		if _, err := normalizeLocationRecordSource(query.Kind, query.Source); err != nil {
-			return LocationCacheListResult{}, err
-		}
-	}
 	if page < 1 {
 		page = 1
 	}
 	if pageSize < 1 || pageSize > 100 {
 		pageSize = 20
 	}
-	base := db.Model(&entity.LocationCache{})
-	if kind := strings.TrimSpace(query.Kind); kind == entity.LocationKindIP || kind == entity.LocationKindPhone {
-		base = base.Where("kind = ?", kind)
-	}
-	if source := strings.TrimSpace(query.Source); source != "" {
-		base = base.Where("source = ?", source)
-	}
-	if condition, args := util.BuildInstrCondition(query.Keyword,
-		"COALESCE(lookup_key, '')",
-		"COALESCE(address, '')",
-	); condition != "" {
-		base = base.Where(condition, args...)
+	base, err := applyLocationCacheFilters(db.Model(&entity.LocationCache{}), query.Kind, query.Keyword, query.Source, query.AddressStatus, query.FetchedFrom, query.FetchedTo)
+	if err != nil {
+		return LocationCacheListResult{}, err
 	}
 	var total int64
 	if err := base.Count(&total).Error; err != nil {
@@ -142,6 +135,87 @@ func ListLocationCacheWithDB(db *gorm.DB, query LocationCacheListQuery, page int
 		Configured: GetUAPIAPIKeyWithDB(db) != "",
 		Summary:    LocationCacheListSummary{Total: total, WithAddress: withAddress, WithoutAddress: withoutAddress},
 	}, nil
+}
+
+// parseLocationDateFilter accepts the date controls used by the admin page and
+// RFC3339 values from API clients. The end date is exclusive, matching ticket
+// list filtering and avoiding loss of records created late in the day.
+func parseLocationDateFilter(value string, endOfDay bool) (*time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		parsed, err = time.ParseInLocation("2006-01-02", value, time.Local)
+		if err == nil && endOfDay {
+			parsed = parsed.AddDate(0, 0, 1)
+		}
+	}
+	if err != nil {
+		return nil, ErrLocationInvalidKey
+	}
+	return &parsed, nil
+}
+
+func normalizeLocationFilterSource(kind, raw string) (string, bool, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", false, nil
+	}
+	if raw == "default" {
+		return "", true, nil
+	}
+	source, err := normalizeLocationRecordSource(kind, raw)
+	return source, true, err
+}
+
+func applyLocationCacheFilters(query *gorm.DB, kind, keyword, source, addressStatus, fetchedFrom, fetchedTo string) (*gorm.DB, error) {
+	kind = strings.TrimSpace(kind)
+	if kind != "" && kind != entity.LocationKindIP && kind != entity.LocationKindPhone {
+		return nil, ErrLocationInvalidKey
+	}
+	if kind != "" {
+		query = query.Where("kind = ?", kind)
+	}
+	if normalizedSource, active, err := normalizeLocationFilterSource(kind, source); err != nil {
+		return nil, err
+	} else if active {
+		if kind == "" {
+			return nil, ErrLocationInvalidKey
+		}
+		query = query.Where("source = ?", normalizedSource)
+	}
+	if condition, args := util.BuildInstrCondition(keyword, "COALESCE(lookup_key, '')", "COALESCE(address, '')"); condition != "" {
+		query = query.Where(condition, args...)
+	}
+	switch strings.TrimSpace(addressStatus) {
+	case "":
+	case "with":
+		query = query.Where("COALESCE(address, '') <> ''")
+	case "without":
+		query = query.Where("COALESCE(address, '') = ''")
+	default:
+		return nil, ErrLocationInvalidKey
+	}
+	from, err := parseLocationDateFilter(fetchedFrom, false)
+	if err != nil {
+		return nil, err
+	}
+	to, err := parseLocationDateFilter(fetchedTo, true)
+	if err != nil {
+		return nil, err
+	}
+	if from != nil {
+		query = query.Where("fetched_at >= ?", *from)
+	}
+	if to != nil {
+		query = query.Where("fetched_at < ?", *to)
+	}
+	if from != nil && to != nil && !from.Before(*to) {
+		return nil, ErrLocationInvalidKey
+	}
+	return query, nil
 }
 
 // DeleteLocationCacheWithDB 删除一条归属地缓存，使下一次展示请求重新查询上游。
@@ -204,16 +278,9 @@ func DeleteLocationCacheBatchWithDB(db *gorm.DB, request LocationCacheBatchDelet
 		return deleted, nil
 	}
 
-	query := db.Where("kind = ?", kind)
-	if source := strings.TrimSpace(request.Source); source != "" {
-		normalizedSource, err := normalizeLocationRecordSource(kind, source)
-		if err != nil {
-			return 0, err
-		}
-		query = query.Where("source = ?", normalizedSource)
-	}
-	if condition, args := util.BuildInstrCondition(request.Keyword, "COALESCE(lookup_key, '')", "COALESCE(address, '')"); condition != "" {
-		query = query.Where(condition, args...)
+	query, err := applyLocationCacheFilters(db.Model(&entity.LocationCache{}), kind, request.Keyword, request.Source, request.AddressStatus, request.FetchedFrom, request.FetchedTo)
+	if err != nil {
+		return 0, err
 	}
 	if len(request.Except) > 0 {
 		conditions := make([]string, 0, len(request.Except))
@@ -266,16 +333,9 @@ func RefreshLocationCacheBatchWithDB(db *gorm.DB, request LocationCacheBatchRefr
 
 	rows := make([]entity.LocationCache, 0)
 	if request.All {
-		query := db.Model(&entity.LocationCache{}).Where("kind = ?", kind)
-		if source := strings.TrimSpace(request.Source); source != "" {
-			normalizedSource, err := normalizeLocationRecordSource(kind, source)
-			if err != nil {
-				return result, err
-			}
-			query = query.Where("source = ?", normalizedSource)
-		}
-		if condition, args := util.BuildInstrCondition(request.Keyword, "COALESCE(lookup_key, '')", "COALESCE(address, '')"); condition != "" {
-			query = query.Where(condition, args...)
+		query, err := applyLocationCacheFilters(db.Model(&entity.LocationCache{}), kind, request.Keyword, request.Source, request.AddressStatus, request.FetchedFrom, request.FetchedTo)
+		if err != nil {
+			return result, err
 		}
 		if len(request.Except) > 0 {
 			conditions := make([]string, 0, len(request.Except))

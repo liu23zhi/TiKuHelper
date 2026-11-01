@@ -26,7 +26,7 @@
     <ConsolePanel
       v-if="isAdmin"
       title="企业微信工单提醒"
-      description="提醒以异步队列发送，保存后可发送测试消息。Webhook 地址不会回显完整内容。"
+      description="提醒以异步队列发送，保存后可发送测试消息。Webhook 地址返回原文但默认隐藏。"
       class="settings-panel"
     >
       <a-form
@@ -43,13 +43,13 @@
           /></a-form-item>
           <a-form-item
             label="Webhook 地址"
-            help="只接受企业微信机器人 HTTPS 地址；留空表示保持已保存地址。"
+            help="只接受企业微信机器人 HTTPS 地址；地址默认隐藏，点击眼睛可查看。"
           >
-            <a-input
+            <a-input-password
               v-model:value="notificationConfig.webhookUrl"
-              type="url"
               allow-clear
-              placeholder="输入新地址以替换已保存地址"
+              autocomplete="off"
+              placeholder="输入地址以替换已保存地址"
               @input="notificationConfig.clearWebhook = false"
             />
             <div
@@ -142,6 +142,20 @@
             v-model:value="filters.createdTo"
             type="date"
             aria-label="创建日期截止"
+            @change="applyFilters"
+        /></a-form-item>
+        <a-form-item v-if="isAdmin" label="更新日期"
+          ><a-input
+            v-model:value="filters.updatedFrom"
+            type="date"
+            aria-label="更新日期起始"
+            @change="applyFilters"
+        /></a-form-item>
+        <a-form-item v-if="isAdmin"
+          ><a-input
+            v-model:value="filters.updatedTo"
+            type="date"
+            aria-label="更新日期截止"
             @change="applyFilters"
         /></a-form-item>
         <a-form-item
@@ -379,6 +393,8 @@ const filters = reactive({
   status: "",
   createdFrom: "",
   createdTo: "",
+  updatedFrom: "",
+  updatedTo: "",
 });
 const keywordInput = ref("");
 const pagination = reactive({
@@ -477,6 +493,8 @@ function resetFilters() {
   filters.status = "";
   filters.createdFrom = "";
   filters.createdTo = "";
+  filters.updatedFrom = "";
+  filters.updatedTo = "";
   pagination.current = 1;
   loadTickets();
 }
@@ -656,7 +674,7 @@ async function loadNotificationConfig() {
     const data = response?.data?.data || response?.data || {};
     notificationConfig.enabled = Boolean(data.enabled);
     notificationConfig.configured = Boolean(data.configured);
-    notificationConfig.webhookUrl = "";
+    notificationConfig.webhookUrl = String(data.webhookUrl || "").trim();
     notificationConfig.clearWebhook = false;
     notificationConfig.mentionedList = Array.isArray(data.mentionedList)
       ? data.mentionedList.join(",")
@@ -679,7 +697,6 @@ async function saveNotificationConfig() {
     if (notificationConfig.webhookUrl.trim())
       payload.webhookUrl = notificationConfig.webhookUrl.trim();
     await saveTicketNotificationConfig(payload);
-    notificationConfig.webhookUrl = "";
     message.success("企业微信提醒设置已保存");
     await loadNotificationConfig();
   } catch (error) {
