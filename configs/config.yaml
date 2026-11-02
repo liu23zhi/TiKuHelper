@@ -5,7 +5,7 @@ limit:
   duration: 60 # 时间窗口为60秒
   requests: 120 # 每个来源IP在窗口内最多120个请求
 jwtSecret: "" # 可选，至少32字节；JWT_SECRET 环境变量优先
-mysql: ""
+mysql: "" # MySQL DSN；SQL_DSN 环境变量优先，两者都填时以环境变量为准
 database:
   path: "" # SQLite数据库文件路径，留空默认为 tiku.db（向后兼容），Docker部署建议设置为 data/tiku.db
 api:

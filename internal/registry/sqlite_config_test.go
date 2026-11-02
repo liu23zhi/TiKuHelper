@@ -113,6 +113,37 @@ func TestPrepareStatementsRemainEnabledForMySQLOnly(t *testing.T) {
 	}
 }
 
+func TestResolveDatabaseDSNPrefersEnvironmentOverConfig(t *testing.T) {
+	const envDSN = "env_user:pw@tcp(env-host:3306)/env_db"
+	const configDSN = "cfg_user:pw@tcp(cfg-host:3306)/cfg_db"
+	cases := []struct {
+		name       string
+		mysqlInCfg string
+		sqlDSNEnv  string
+		wantDSN    string
+		wantSource string
+	}{
+		{"both set uses env", configDSN, envDSN, envDSN, DSNSourceEnv},
+		{"only env", "", envDSN, envDSN, DSNSourceEnv},
+		{"only config", configDSN, "", configDSN, DSNSourceConfig},
+		{"neither falls back to sqlite", "", "", "", DSNSourceSQLite},
+		{"blank env does not win", configDSN, "   ", configDSN, DSNSourceConfig},
+		{"env is trimmed", configDSN, "  " + envDSN + "  ", envDSN, DSNSourceEnv},
+		{"blank config falls back to sqlite", "  ", "", "", DSNSourceSQLite},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			dsn, source := resolveDatabaseDSN(test.mysqlInCfg, test.sqlDSNEnv)
+			if dsn != test.wantDSN {
+				t.Fatalf("dsn = %q, want %q", dsn, test.wantDSN)
+			}
+			if source != test.wantSource {
+				t.Fatalf("source = %q, want %q", source, test.wantSource)
+			}
+		})
+	}
+}
+
 func TestConfigureSQLiteConnectionUsesWALBusyTimeoutAndSingleConnection(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "tiku.db")
 	db, err := gorm.Open(sqliteQuietDialector{Dialector: sqlite.Open(sqliteProductionDSN(path))}, &gorm.Config{PrepareStmt: false})

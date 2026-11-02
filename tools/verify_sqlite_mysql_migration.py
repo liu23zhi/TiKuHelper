@@ -54,6 +54,13 @@ def parse_args() -> argparse.Namespace:
         metavar="TABLE.COLUMN=LIMIT",
         help="声明「该列已按 LIMIT 截断」，可重复；比对时两侧都截到 LIMIT",
     )
+    parser.add_argument(
+        "--allow-row-growth",
+        action="append",
+        default=[],
+        metavar="TABLE",
+        help="允许目标库该表比源库多行（应用启动迁移会写 system_settings 标记），可重复",
+    )
     parser.add_argument("--allow-quota-repair", action="store_true", help="放行配额上限归一为 0 的差异")
     parser.add_argument(
         "--datetime-precision",
@@ -215,9 +222,10 @@ def tolerated_difference(
         return False
     try:
         expected, corrected = migration.normalize_access_token_quota_limit(Decimal(source_value))
+        target_decimal = Decimal(target_value)
     except Exception:
         return False
-    return corrected and str(expected) == target_value
+    return corrected and Decimal(str(expected)) == target_decimal
 
 
 def compare_rows(
@@ -244,6 +252,9 @@ def compare_rows(
             for column, source_value, target_value in zip(columns, left, right)
             if not values_equal(column, source_value, target_value, column_precision(column, precisions, precision_override))
         ]
+        if not column_diffs:
+            # 归一化字符串不同但每个列都在容差内（例如只差微秒/毫秒），视为一致。
+            continue
         if column_diffs and all(
             tolerated_difference(table, name, source_value, target_value, allow_quota_repair)
             for name, source_value, target_value in column_diffs
@@ -274,18 +285,68 @@ def compare_table(
     source_count = int(source.execute("SELECT COUNT(*) FROM %s" % source_sql_table).fetchone()[0])
     target_cursor.execute("SELECT COUNT(*) FROM %s" % table_sql)
     target_count = int(target_cursor.fetchone()[0])
-    if source_count != target_count:
-        report["tables"][table] = {"rows": source_count, "target_rows": target_count, "status": "行数不一致"}
-        return
 
-    precisions = mysql_datetime_precisions(target_cursor, table)
-    narrowed = {name: precision for name, precision in precisions.items() if precision < 6}
+    precision_map = mysql_datetime_precisions(target_cursor, table)
+    narrowed = {name: precision for name, precision in precision_map.items() if precision < 6}
     if narrowed:
         report.setdefault("precision_notes", []).append({"table": table, "columns": narrowed})
 
     primary = sorted([column for column in columns if column["pk"] > 0], key=lambda item: item["pk"])
     order_sql = ", ".join(common.quote_sqlite(column["name"]) for column in primary) or "rowid"
     target_order = ", ".join(common.quote_mysql(column["name"]) for column in primary) or "rowid"
+    allowed_growth = {name.lower() for name in args.allow_row_growth}
+
+    if source_count != target_count:
+        if table.lower() in allowed_growth and target_count > source_count and len(primary) == 1:
+            # 应用启动迁移会往 system_settings 之类的小表追加标记行，按主键逐行比对源行即可。
+            report.setdefault("growth", []).append(
+                {"table": table, "source": source_count, "target": target_count}
+            )
+            key_name = primary[0]["name"]
+            source_rows = source.execute(
+                "SELECT %s FROM %s ORDER BY %s"
+                % (", ".join(common.quote_sqlite(name) for name in names), source_sql_table, common.quote_sqlite(key_name))
+            ).fetchall()
+            mismatches = 0
+            for start in range(0, len(source_rows), 500):
+                chunk = [row[0] for row in source_rows[start:start + 500]]
+                target_cursor.execute(
+                    "SELECT %s FROM %s WHERE %s IN (%s)"
+                    % (
+                        ", ".join(common.quote_mysql(name) for name in names),
+                        table_sql,
+                        common.quote_mysql(key_name),
+                        ",".join(["%s"] * len(chunk)),
+                    ),
+                    chunk,
+                )
+                matched = {row[0]: row for row in target_cursor.fetchall()}
+                pairs = [(row, matched[row[0]]) for row in source_rows[start:start + 500] if row[0] in matched]
+                mismatches += compare_rows(
+                    table,
+                    columns,
+                    [pair[0] for pair in pairs],
+                    [pair[1] for pair in pairs],
+                    truncations,
+                    args.allow_quota_repair,
+                    report,
+                    precisions=precision_map,
+                    precision_override=args.datetime_precision,
+                )
+                missing = len(chunk) - len(pairs)
+                mismatches += missing
+            report["tables"][table] = {
+                "rows": source_count,
+                "target_rows": target_count,
+                "mode": "keyed",
+                "status": "OK（目标多 %d 行，已按主键核对源行）" % (target_count - source_count)
+                if mismatches == 0
+                else "差异 %d 行" % mismatches,
+                "mismatches": mismatches,
+            }
+            return
+        report["tables"][table] = {"rows": source_count, "target_rows": target_count, "status": "行数不一致"}
+        return
 
     if source_count <= args.full_compare_limit or len(primary) != 1:
         source_rows = source.execute(
@@ -305,7 +366,7 @@ def compare_table(
             truncations,
             args.allow_quota_repair,
             report,
-            precisions=precisions,
+            precisions=precision_map,
             precision_override=args.datetime_precision,
         )
         report["tables"][table] = {
@@ -362,7 +423,7 @@ def compare_table(
             truncations,
             args.allow_quota_repair,
             report,
-            precisions=precisions,
+            precisions=precision_map,
             precision_override=args.datetime_precision,
         )
 
@@ -392,7 +453,7 @@ def main() -> int:
         for table in sqlite_tables(source):
             compare_table(source, target.cursor(), table, args, truncations, report)
             entry = report["tables"][table]
-            if entry["status"] != "OK":
+            if not entry["status"].startswith("OK"):
                 failures.append("%s: %s" % (table, entry["status"]))
             if not args.quiet:
                 detail = "（%s）" % entry["mode"] if "mode" in entry else ""

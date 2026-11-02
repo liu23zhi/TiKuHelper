@@ -537,10 +537,15 @@ func RegisterDB(config configs.Config) *gorm.DB {
 	once.Do(func() {
 		var err error
 		var conn gorm.Dialector
-		if config.Mysql != "" {
-			conn = mysql.Open(config.Mysql)
-		} else if os.Getenv("SQL_DSN") != "" {
-			conn = mysql.Open(os.Getenv("SQL_DSN"))
+		sqlDSN := os.Getenv("SQL_DSN")
+		// 环境变量最高优先级：SQL_DSN > config.yaml 的 mysql > SQLite。
+		mysqlDSN, dsnSource := resolveDatabaseDSN(config.Mysql, sqlDSN)
+		if mysqlDSN != "" {
+			conn = mysql.Open(mysqlDSN)
+			logger.SysLog("数据库连接来源：" + dsnSource)
+			if strings.TrimSpace(sqlDSN) != "" && strings.TrimSpace(config.Mysql) != "" && strings.TrimSpace(config.Mysql) != strings.TrimSpace(sqlDSN) {
+				logger.SysWarn("SQL_DSN 环境变量与 config.yaml 的 mysql 同时存在且不一致，已按环境变量生效")
+			}
 		} else {
 			// 使用 SQLite，从配置读取路径，默认为 tiku.db（向后兼容）
 			dbPath := config.Database.Path
@@ -560,7 +565,7 @@ func RegisterDB(config configs.Config) *gorm.DB {
 			// 详见 sqlite_migrate.go。
 			conn = sqliteQuietDialector{Dialector: sqlite.Open(sqliteProductionDSN(dbPath))}
 		}
-		prepareStmt := prepareStatementsFor(config.Mysql, os.Getenv("SQL_DSN"))
+		prepareStmt := prepareStatementsFor(config.Mysql, sqlDSN)
 		db, err = gorm.Open(conn, &gorm.Config{
 			PrepareStmt: prepareStmt,
 			Logger:      newDatabaseLogger(),

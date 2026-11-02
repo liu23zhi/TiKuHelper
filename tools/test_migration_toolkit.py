@@ -181,6 +181,23 @@ class DatetimePrecisionTests(unittest.TestCase):
 
 
 class SamplingAndSpecTests(unittest.TestCase):
+    def test_quota_tolerance_compares_decimals_not_strings(self):
+        # 源值是越界的 1.1111111111111111e+24，迁移脚本归一成 0（无限额），
+        # 目标列是 decimal(18,6)，读出的是 "0.000000" —— 必须按数值比较。
+        self.assertTrue(
+            verify.tolerated_difference(
+                "access_tokens", "total_quota_limit", "1.1111111111111111e+24", "0.000000", True
+            )
+        )
+        self.assertFalse(
+            verify.tolerated_difference(
+                "access_tokens", "total_quota_limit", "1.1111111111111111e+24", "0.000000", False
+            )
+        )
+        self.assertFalse(
+            verify.tolerated_difference("users", "balance", "-2", "0.000000", True)
+        )
+
     def test_sample_stride(self):
         self.assertEqual(verify.sample_stride(10, 5000), 1)
         self.assertEqual(verify.sample_stride(146725, 5000), 29)

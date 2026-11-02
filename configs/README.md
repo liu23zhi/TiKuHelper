@@ -26,6 +26,17 @@ export JWT_SECRET="使用密码管理器生成的至少32字节随机值"
 ```yaml
 mysql: "tiku:tiku@tcp(127.0.0.1:3306)/tiku?charset=utf8mb4&parseTime=True&loc=Local"
 ```
+
+**优先级（环境变量最高）**：
+
+```
+SQL_DSN 环境变量  >  config.yaml 的 mysql 字段  >  SQLite（database.path，默认 tiku.db）
+```
+
+- 两者都配置时**以环境变量为准**，并在启动日志里提示两者不一致（不会打印 DSN 本体，里面含密码）。
+- 容器部署建议只用 `SQL_DSN`：改镜像不必动配置文件，也不会出现「改了环境变量却仍然连旧库」。
+- 启动日志会打印 `数据库连接来源：SQL_DSN 环境变量 / config.yaml 的 mysql 字段 / SQLite`，可据此确认实际生效的是哪一份。
+
 建议使用 MySQL 8.0 和 InnoDB。项目包含多个 utf8mb4 复合索引，旧版 MySQL 需确认大索引前缀与 `DYNAMIC` 行格式已启用，否则启动迁移可能无法创建索引。
 
 
