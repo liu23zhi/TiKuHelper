@@ -10,10 +10,10 @@
       <a-statistic title="当前页" :value="rows.length" suffix="条" />
       <div class="provider-status"><span>识别服务</span><a-tag :color="configured ? 'green' : 'default'">{{ configured === undefined ? (loading ? '加载中' : '状态未知') : configured ? 'UAPI 已配置' : '未配置有效 UAPI 密钥' }}</a-tag></div>
     </ConsoleSummaryGrid>
-    <ConsolePanel title="筛选缓存" description="关键词匹配识别文本、URL 哈希、图片哈希或图片类型；更新时间按上海时间筛选，包含结束日期当天。">
+    <ConsolePanel title="筛选缓存" description="关键词匹配识别文本、图片 URL、URL 哈希、图片哈希或图片类型；更新时间按上海时间筛选，包含结束日期当天。">
       <a-form :model="filters" layout="inline" class="filter-form" @finish="reload">
         <a-form-item label="关键词">
-          <a-input v-model:value="filters.keyword" allow-clear placeholder="识别文本 / URL 哈希 / 图片哈希" class="keyword-input" :disabled="clearing" />
+          <a-input v-model:value="filters.keyword" allow-clear placeholder="识别文本 / 图片 URL / URL 哈希 / 图片哈希" class="keyword-input" :disabled="clearing" />
         </a-form-item>
         <a-form-item label="图片类型">
           <a-select v-model:value="filters.contentType" class="content-type-select" :disabled="clearing">
@@ -41,11 +41,12 @@
       <template #actions>
         <a-button danger :loading="clearing" :disabled="loading || !!errorMessage || !matched" @click="clearMatching">{{ hasFilters ? '清空筛选结果' : '清空全部缓存' }}</a-button>
       </template>
-      <p class="cache-hint">仅保存识别文本与哈希，不保存原始图片或网址。命中缓存仍按现有搜题计费口径处理；清空不会取消正在执行的请求，旧请求的结果不会重新写回缓存。</p>
+      <p class="cache-hint">保存识别文本、完整图片 URL 与哈希，不保存原始图片。命中缓存仍按现有搜题计费口径处理；清空不会取消正在执行的请求，旧请求的结果不会重新写回缓存。</p>
       <ConsoleTableShell label="OCR 缓存记录">
         <a-table table-layout="fixed" :data-source="rows" :columns="columns" :loading="loading" :pagination="pagination" row-key="urlHash" :scroll="{ x: sumTableColumnWidths(columns) }" :locale="{ emptyText: errorMessage ? '列表加载失败，请重试' : '暂无符合条件的 OCR 缓存' }" @change="onTableChange">
           <template #bodyCell="{ column, record }">
             <span v-if="column.key === 'ocrText'" class="text-preview">{{ record.ocrText || '-' }}</span>
+            <span v-else-if="column.key === 'url'" class="url-value">{{ record.url || '历史记录未保存 URL' }}</span>
             <code v-else-if="column.key === 'urlHash' || column.key === 'imageSha256'" class="hash-value">{{ record[column.key] || '-' }}</code>
             <span v-else-if="column.key === 'updatedAt'">{{ formatDate(record.updatedAt) }}</span>
             <a-button v-else-if="column.key === 'action'" type="link" @click="showDetails(record)">查看全文</a-button>
@@ -55,6 +56,7 @@
     </ConsolePanel>
     <a-modal v-model:open="detailVisible" title="OCR 缓存详情" :footer="null" width="760px">
       <a-descriptions :column="1" size="small" bordered>
+        <a-descriptions-item label="图片 URL"><span class="url-value">{{ detailRecord.url || '历史记录未保存 URL' }}</span></a-descriptions-item>
         <a-descriptions-item label="URL 哈希"><code class="hash-value">{{ detailRecord.urlHash }}</code></a-descriptions-item>
         <a-descriptions-item label="图片 SHA-256"><code class="hash-value">{{ detailRecord.imageSha256 }}</code></a-descriptions-item>
         <a-descriptions-item label="图片类型">{{ detailRecord.contentType || '-' }}</a-descriptions-item>
@@ -100,6 +102,7 @@ export default defineComponent({
     })
     const columns = [
       { title: '识别文本', dataIndex: 'ocrText', key: 'ocrText', width: 320 },
+      { title: '图片 URL', dataIndex: 'url', key: 'url', width: 320 },
       { title: '图片类型', dataIndex: 'contentType', key: 'contentType', width: 140 },
       { title: 'URL 哈希', dataIndex: 'urlHash', key: 'urlHash', width: 210 },
       { title: '图片 SHA-256', dataIndex: 'imageSha256', key: 'imageSha256', width: 210 },
@@ -195,6 +198,7 @@ export default defineComponent({
 .provider-status { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; color: var(--console-muted); }
 .cache-hint { margin: 0 0 20px; color: var(--console-muted); line-height: 1.7; }
 .hash-value { overflow-wrap: anywhere; white-space: normal; }
+.url-value { overflow-wrap: anywhere; white-space: normal; }
 .text-preview { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; }
 .response-title { margin: 20px 0 8px; font-size: 14px; }
 .ocr-text { max-height: 440px; padding: 16px; margin: 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--console-text); background: var(--console-subtle); border: 1px solid var(--console-border); border-radius: var(--console-radius); }

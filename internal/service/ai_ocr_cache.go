@@ -32,8 +32,8 @@ type AIOCRCacheStatus struct {
 	LatestUpdatedAt *time.Time `json:"latestUpdatedAt,omitempty"`
 }
 
-// AIOCRCacheListQuery contains the administrator-facing cache filters. Hashes
-// are searchable because the raw source URL and image bytes are never stored.
+// AIOCRCacheListQuery contains the administrator-facing cache filters for the
+// full source URL, hashes, content type, OCR text, and update time.
 type AIOCRCacheListQuery struct {
 	Keyword     string
 	ContentType string
@@ -181,6 +181,9 @@ func lookupOrRecognizeAIOCR(
 	var entry entity.AIOCRCache
 	lookup := db.Where("url_hash = ? AND image_sha256 = ?", urlHash, imageHash).Find(&entry)
 	if lookup.Error == nil && lookup.RowsAffected > 0 && strings.TrimSpace(entry.OCRText) != "" {
+		if entry.URL == "" {
+			backfillAIOCRCacheURL(db, urlHash, imageHash, sourceURL, epoch)
+		}
 		return strings.TrimSpace(entry.OCRText), true, nil
 	}
 	if lookup.Error != nil {
@@ -204,6 +207,7 @@ func lookupOrRecognizeAIOCR(
 
 	entry = entity.AIOCRCache{
 		URLHash:     urlHash,
+		URL:         sourceURL,
 		ImageSHA256: imageHash,
 		ContentType: strings.TrimSpace(contentType),
 		OCRText:     text,
@@ -212,13 +216,29 @@ func lookupOrRecognizeAIOCR(
 	if err := db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "url_hash"}},
 		DoUpdates: clause.AssignmentColumns([]string{
-			"image_sha256", "content_type", "ocr_text", "updated_at",
+			"url", "image_sha256", "content_type", "ocr_text", "updated_at",
 		}),
 	}).Create(&entry).Error; err != nil {
 		logger.SysLog(fmt.Sprintf("AI OCR cache write failed; result will not be cached: %v", err))
 		return text, false, nil
 	}
 	return text, false, nil
+}
+
+// Backfill only display metadata on a legacy hit. Never insert a missing row,
+// change its OCR timestamp, or repopulate a cache cleared after this request began.
+func backfillAIOCRCacheURL(db *gorm.DB, urlHash, imageHash, sourceURL string, epoch uint64) {
+	cacheLock := aiOCRCacheLock(db)
+	cacheLock.Lock()
+	defer cacheLock.Unlock()
+	if currentAIOCRCacheEpoch(db) != epoch {
+		return
+	}
+	if err := db.Model(&entity.AIOCRCache{}).
+		Where("url_hash = ? AND image_sha256 = ? AND COALESCE(url, '') = ''", urlHash, imageHash).
+		UpdateColumn("url", sourceURL).Error; err != nil {
+		logger.SysLog(fmt.Sprintf("AI OCR cache URL backfill failed; cached result remains usable: %v", err))
+	}
 }
 
 func isAIOCRProviderConfigured(db *gorm.DB) bool {
@@ -296,7 +316,7 @@ func validateAIOCRCacheFilters(filters AIOCRCacheListQuery) error {
 
 func applyAIOCRCacheFilters(query *gorm.DB, filters AIOCRCacheListQuery) (*gorm.DB, error) {
 	if condition, args := util.BuildInstrCondition(filters.Keyword,
-		"COALESCE(url_hash, '')", "COALESCE(image_sha256, '')", "COALESCE(content_type, '')", "COALESCE(ocr_text, '')"); condition != "" {
+		"COALESCE(url, '')", "COALESCE(url_hash, '')", "COALESCE(image_sha256, '')", "COALESCE(content_type, '')", "COALESCE(ocr_text, '')"); condition != "" {
 		query = query.Where(condition, args...)
 	}
 	if contentType := strings.TrimSpace(filters.ContentType); contentType != "" {
@@ -316,7 +336,7 @@ func applyAIOCRCacheFilters(query *gorm.DB, filters AIOCRCacheListQuery) (*gorm.
 }
 
 // ListAIOCRCacheWithDB returns a bounded, filterable administrator view of the
-// persistent OCR cache. It never exposes the original image URL or bytes.
+// persistent OCR cache, including its full source URL but never image bytes.
 func ListAIOCRCacheWithDB(db *gorm.DB, filters AIOCRCacheListQuery, page, pageSize int) (AIOCRCacheListResult, error) {
 	result := AIOCRCacheListResult{Data: make([]entity.AIOCRCache, 0)}
 	if err := validateAIOCRCacheFilters(filters); err != nil {

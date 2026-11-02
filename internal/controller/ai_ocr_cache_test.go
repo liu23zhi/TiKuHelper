@@ -68,7 +68,7 @@ func TestAIOCRCacheListReturnsCamelCaseEntriesAndFilteredTotals(t *testing.T) {
 	db := newAIOCRCacheControllerTestDB(t)
 	updatedAt := time.Date(2026, 11, 1, 12, 0, 0, 0, time.Local)
 	entries := []entity.AIOCRCache{
-		{URLHash: "one", ImageSHA256: "first", ContentType: "image/png", OCRText: "OCR_100%", UpdatedAt: updatedAt},
+		{URLHash: "one", URL: "https://images.example/题图.png?token=A%2FB&x=1&x=2", ImageSHA256: "first", ContentType: "image/png", OCRText: "OCR_100%", UpdatedAt: updatedAt},
 		{URLHash: "two", ImageSHA256: "second", ContentType: "image/jpeg", OCRText: "OCR100", UpdatedAt: updatedAt},
 	}
 	if err := db.Create(&entries).Error; err != nil {
@@ -94,7 +94,7 @@ func TestAIOCRCacheListReturnsCamelCaseEntriesAndFilteredTotals(t *testing.T) {
 		t.Fatalf("unexpected list: %s", response.Body.String())
 	}
 	row := result.Data[0]
-	if len(row) != 5 || row["urlHash"] != "one" || row["imageSha256"] != "first" || row["contentType"] != "image/png" || row["ocrText"] != "OCR_100%" || row["updatedAt"] == nil {
+	if len(row) != 6 || row["urlHash"] != "one" || row["url"] != "https://images.example/题图.png?token=A%2FB&x=1&x=2" || row["imageSha256"] != "first" || row["contentType"] != "image/png" || row["ocrText"] != "OCR_100%" || row["updatedAt"] == nil {
 		t.Fatalf("unexpected OCR entry JSON fields: %+v", row)
 	}
 }

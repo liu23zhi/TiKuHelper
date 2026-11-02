@@ -3,6 +3,7 @@ package registry
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -89,5 +90,46 @@ func TestSqliteAutoMigrateStillAddsMissingColumnAndIndex(t *testing.T) {
 	}
 	if !db.Migrator().HasIndex(entity.TableNameLog, "idx_logs_module") {
 		t.Fatal("expected AutoMigrate to create the missing idx_logs_module index")
+	}
+}
+
+func TestSqliteAIOCRCacheAddsURLToLegacyTableWithoutRewritingRows(t *testing.T) {
+	hits := make([]string, 0)
+	db, err := gorm.Open(recordingDialector{
+		Dialector: sqliteQuietDialector{Dialector: sqlite.Open("file:" + t.Name() + "?mode=memory&cache=shared")},
+		hits:      &hits,
+	}, &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+	if err := db.Exec("CREATE TABLE ai_ocr_cache_entries (url_hash char(64) PRIMARY KEY, image_sha256 char(64) NOT NULL, content_type varchar(128) NOT NULL DEFAULT '', ocr_text text NOT NULL, updated_at datetime)").Error; err != nil {
+		t.Fatal(err)
+	}
+	updatedAt := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	if err := db.Exec("INSERT INTO ai_ocr_cache_entries (url_hash, image_sha256, content_type, ocr_text, updated_at) VALUES (?, ?, ?, ?, ?)", "legacy-hash", "image-hash", "image/png", "历史识别文本", updatedAt).Error; err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := db.AutoMigrate(&entity.AIOCRCache{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !db.Migrator().HasColumn(entity.TableNameAIOCRCache, "url") {
+		t.Fatal("startup migration must add the URL column to an existing OCR table")
+	}
+	var rows []entity.AIOCRCache
+	if err := db.Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].URLHash != "legacy-hash" || rows[0].ImageSHA256 != "image-hash" || rows[0].OCRText != "历史识别文本" || rows[0].URL != "" || !rows[0].UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("URL column migration changed legacy OCR content or identity: %+v", rows)
+	}
+	if len(hits) != 0 {
+		t.Fatalf("URL column addition must not rewrite existing columns: %v", hits)
 	}
 }

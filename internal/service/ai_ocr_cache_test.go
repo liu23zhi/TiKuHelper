@@ -86,7 +86,7 @@ func TestAIOCRCacheReusesOnlySameURLAndImage(t *testing.T) {
 		t.Fatalf("same-URL cache entry was not refreshed: %+v", stored)
 	}
 	if stored.URLHash == signedURL || stored.OCRText == "" {
-		t.Fatalf("OCR cache stored raw URL or omitted result: %+v", stored)
+		t.Fatalf("OCR cache did not keep the URL hash key or OCR result: %+v", stored)
 	}
 }
 

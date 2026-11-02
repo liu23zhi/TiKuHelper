@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
-import { computed, defineComponent, reactive, ref } from 'vue'
+import { compile, computed, createSSRApp, defineComponent, h, reactive, ref } from 'vue'
+import { renderToString } from 'vue/server-renderer'
 import { sumTableColumnWidths } from './tableLayout.mjs'
 
-const row = { urlHash: 'a'.repeat(64), imageSha256: 'b'.repeat(64), contentType: 'image/png', ocrText: '完整识别结果\n第二行', updatedAt: '2026-11-02T00:00:00Z' }
+const row = { url: 'https://images.example.test/question.png?token=original', urlHash: 'a'.repeat(64), imageSha256: 'b'.repeat(64), contentType: 'image/png', ocrText: '完整识别结果\n第二行', updatedAt: '2026-11-02T00:00:00Z' }
 const response = (data = {}) => ({ status: 200, data: { data: [row], total: 1, summary: { matched: 1 }, configured: true, ...data } })
 async function createPage(overrides = {}) {
   const source = await readFile(new URL('../pages/OCRCache/index.vue', import.meta.url), 'utf8')
@@ -20,6 +21,45 @@ async function createPage(overrides = {}) {
   }
   return new Function(...Object.keys(dependencies), script)(...Object.values(dependencies)).setup()
 }
+
+async function renderPage(page) {
+  const source = await readFile(new URL('../pages/OCRCache/index.vue', import.meta.url), 'utf8')
+  const template = source.match(/<template>([\s\S]*?)<\/template>\s*<script>/)[1]
+  const components = Object.fromEntries([...template.matchAll(/<([A-Z][\w-]*|a-[\w-]+)/g)].map(([, name]) => [name, { setup: (_, { slots }) => () => h('div', null, slots.default?.()) }]))
+  components['a-table'] = {
+    props: ['dataSource', 'columns'],
+    setup: (props, { slots }) => () => h('table', null, props.dataSource.map(record => h('tr', null, props.columns.map(column => h('td', { 'data-column': column.key }, slots.bodyCell({ column, record })))))),
+  }
+  return renderToString(createSSRApp({ components, methods: { sumTableColumnWidths }, setup: () => page, render: compile(template, { prefixIdentifiers: true }) }))
+}
+
+test('OCR list and detail show the full original URL as escaped plain text', async () => {
+  const url = `https://images.example.test/原始图片.png?token=abc_%&unsafe=<img src=x onerror=alert(1)>&tail=${'x'.repeat(800)}`
+  const page = await createPage({ getAIOCRCacheEntries: async () => response({ data: [{ ...row, url }] }) })
+  await page.load()
+  page.showDetails(page.rows.value[0])
+  const html = await renderPage(page)
+  const listURL = html.match(/<td data-column="url">([\s\S]*?)<\/td>/)?.[1] || ''
+  const detailURL = html.match(/<div[^>]*label="图片 URL"[^>]*>([\s\S]*?)<\/div>/)?.[1] || ''
+  const escapedURL = url.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+  for (const displayed of [listURL, detailURL]) {
+    assert.ok(displayed.includes(escapedURL), 'URL must keep every original character without truncation')
+    assert.doesNotMatch(displayed, /<(?:a|img)\b/)
+  }
+  assert.equal(page.detailRecord.value.url, url)
+  assert.ok(html.includes(row.urlHash), 'URL hash remains visible')
+})
+
+test('OCR list and detail identify historical records without a stored URL', async () => {
+  const page = await createPage({ getAIOCRCacheEntries: async () => response({ data: [{ ...row, url: '' }] }) })
+  await page.load()
+  page.showDetails(page.rows.value[0])
+  const html = await renderPage(page)
+  const listURL = html.match(/<td data-column="url">([\s\S]*?)<\/td>/)?.[1] || ''
+  const detailURL = html.match(/<div[^>]*label="图片 URL"[^>]*>([\s\S]*?)<\/div>/)?.[1] || ''
+  assert.match(listURL, /历史记录未保存 URL/)
+  assert.match(detailURL, /历史记录未保存 URL/)
+})
 
 test('OCR filters, pagination and matching count use the same submitted scope', async () => {
   const calls = []
