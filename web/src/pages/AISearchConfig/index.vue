@@ -40,7 +40,7 @@
 
     <a-form layout="vertical" class="ai-config-form" autocomplete="off">
       <ConsolePanel title="连接与模型" description="配置 AI 服务连接、认证信息和可用模型。">
-        <template #actions><a-button @click="handleOpenTestDialog">测试</a-button></template>
+        <template #actions><a-button @click="handleOpenTestDialog">测试 AI、联网与 OCR 工具</a-button></template>
         <div class="console-form-grid connection-grid">
       <a-form-item label="是否启用" class="full-width">
         <a-switch v-model:checked="formState.enabled" />
@@ -275,6 +275,7 @@
     <ConsolePanel title="图片 OCR 缓存" description="按图片 URL 和图片内容指纹复用成功 OCR 结果；每次请求仍会下载图片确认内容未变化。">
       <template #actions>
         <a-space wrap>
+          <a-button @click="$router.push('/adapter/ocr-cache')">管理缓存条目</a-button>
           <a-button @click="loadAIOCRCacheStatus" :loading="ocrCacheLoading">刷新</a-button>
           <a-popconfirm
             title="确定清空图片 OCR 缓存吗？"
@@ -651,9 +652,9 @@ export default defineComponent({
         cards.push({
           key: 'search',
           title: '联网搜索 API',
-          status: searchEngineInfo.value ? (engineAvailable ? '可用' : '不可用') : '已调用',
+          status: searchEngineInfo.value ? (engineAvailable ? '可用' : '不可用') : '服务商有记录',
           color: searchEngineInfo.value ? (engineAvailable ? 'green' : 'red') : 'blue',
-          detail: searchEngineInfo.value?.engine?.display_name || searchEngineInfo.value?.engine?.name || '搜索端点已有实际调用记录',
+          detail: searchEngineInfo.value?.engine?.display_name || searchEngineInfo.value?.engine?.name || '服务商返回的搜索端点累计调用统计',
           count,
         })
       }
@@ -662,9 +663,9 @@ export default defineComponent({
         cards.push({
           key: 'web-read',
           title: '网页转 Markdown API',
-          status: '已调用',
+          status: '服务商有记录',
           color: 'green',
-          detail: '异步网页读取端点已有实际调用记录',
+          detail: '服务商返回的异步网页读取端点累计调用统计',
           count,
         })
       }
@@ -673,9 +674,9 @@ export default defineComponent({
         cards.push({
           key: 'image-ocr',
           title: '图片 OCR API',
-          status: '已调用',
+          status: '服务商有记录',
           color: 'green',
-          detail: '图片 OCR 端点已有实际调用记录',
+          detail: '服务商返回的图片 OCR 端点累计调用统计',
           count,
         })
       }

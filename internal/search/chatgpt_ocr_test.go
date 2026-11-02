@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"image"
 	"net/http"
 	"net/http/httptest"
@@ -57,6 +60,123 @@ func TestAISearchOCRUsesDownloadedBytesAndKeepsVisionParts(t *testing.T) {
 	}
 	if len(calls) != 1 || calls[0].Status != "success" || len(ocrURLs) != 1 || ocrURLs[0] != server.URL+"/first.png" {
 		t.Fatalf("unexpected OCR usage: calls=%+v urls=%v", calls, ocrURLs)
+	}
+}
+
+func TestImageOCRToolTestDownloadsImageAndReportsUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(makeTransparentFormulaImage(16, 16))
+	}))
+	defer server.Close()
+	client := &ChatGptClient{OCRAPI: "https://uapis.cn/api/v1/image/ocr", OCRProvider: func(_ context.Context, sourceURL, imageName, contentType string, body []byte) (string, error) {
+		if sourceURL != server.URL+"/question.png" || imageName != "question.png" || contentType != "image/png" || len(body) == 0 {
+			t.Fatalf("unexpected OCR test input: url=%q name=%q type=%q bytes=%d", sourceURL, imageName, contentType, len(body))
+		}
+		return "图片中的答案", nil
+	}}
+	text, debug, err := client.TestImageOCR(context.Background(), server.URL+"/question.png")
+	if err != nil || text != "图片中的答案" || len(debug.Usage.OCRCalls) != 1 || debug.Usage.OCRCalls[0].Status != "success" {
+		t.Fatalf("unexpected OCR tool-test result: text=%q usage=%+v err=%v", text, debug.Usage, err)
+	}
+}
+
+func TestImageOCRToolTestRejectsNonImageAndEmptyOCR(t *testing.T) {
+	for _, kind := range []string{"html", "empty", "error", "cached"} {
+		t.Run(kind, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if kind == "html" {
+					w.Header().Set("Content-Type", "text/html")
+					_, _ = w.Write([]byte("<html>not an image</html>"))
+					return
+				}
+				w.Header().Set("Content-Type", "image/png")
+				_, _ = w.Write(makeTransparentFormulaImage(16, 16))
+			}))
+			defer server.Close()
+			calls := 0
+			client := &ChatGptClient{OCRCacheProvider: func(context.Context, string, string, string, []byte) (string, bool, error) {
+				calls++
+				if kind == "error" {
+					return "", false, errors.New("OCR unavailable")
+				}
+				if kind == "cached" {
+					return "缓存文字", true, nil
+				}
+				return "", false, nil
+			}}
+			text, debug, err := client.TestImageOCR(t.Context(), server.URL+"/image.png")
+			if kind == "cached" {
+				if err != nil || text != "缓存文字" || len(debug.Usage.OCRCalls) != 1 || !debug.Usage.OCRCalls[0].Cached {
+					t.Fatalf("cached result: %q %+v %v", text, debug, err)
+				}
+			} else if err == nil {
+				t.Fatal("invalid OCR result passed")
+			}
+			if kind == "html" && calls != 0 {
+				t.Fatal("non-image reached OCR")
+			}
+		})
+	}
+}
+
+func TestOCRToolCallUsesImageAndRunsSelectedWebTools(t *testing.T) {
+	for _, toolName := range []string{"image_ocr", "image_ocr_and_tools"} {
+		t.Run(toolName, func(t *testing.T) {
+			tool := &diagnosticTestTool{}
+			modelCalls, imageCalls, ocrCalls := 0, 0, 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					imageCalls++
+					if r.URL.Path != "/中文图.png" {
+						t.Errorf("image URL changed: %s", r.URL)
+					}
+					w.Header().Set("Content-Type", "image/png")
+					_, _ = w.Write(makeTransparentFormulaImage(16, 16))
+					return
+				}
+				modelCalls++
+				var payload map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Error(err)
+					return
+				}
+				if modelCalls == 1 && (!strings.Contains(fmt.Sprint(payload["input"]), "图中文字") || !strings.Contains(fmt.Sprint(payload["input"]), "input_image")) {
+					t.Error("model did not receive image and OCR evidence")
+				}
+				if toolName == "image_ocr_and_tools" && modelCalls == 1 {
+					writeAIToolStream(w, "ocr-search", "图中文字")
+					return
+				}
+				if toolName == "image_ocr_and_tools" && modelCalls == 2 {
+					writeAIWebReadToolStream(w, "ocr-read", "https://example.com/source")
+					return
+				}
+				if payload["tools"] != nil {
+					t.Error("final response should not offer web tools")
+				}
+				writeAIFinalStream(w)
+			}))
+			defer server.Close()
+			client := &ChatGptClient{Enable: true, BaseURL: server.URL, APIKey: "test-key", Model: "test-model", OCRCacheProvider: func(context.Context, string, string, string, []byte) (string, bool, error) {
+				ocrCalls++
+				return "图中文字", true, nil
+			}}
+			if toolName == "image_ocr_and_tools" {
+				client.SearchTool = tool
+			}
+			answers, debug, err := client.TestToolCall(t.Context(), toolName, server.URL+"/中文图.png?x=1&y=2")
+			if err != nil || len(answers) == 0 || imageCalls != 1 || ocrCalls != 1 || len(debug.Usage.OCRCalls) != 1 || !debug.Usage.OCRCalls[0].Cached {
+				t.Fatalf("OCR test failed: answers=%v images=%d ocr=%d usage=%+v err=%v", answers, imageCalls, ocrCalls, debug.Usage, err)
+			}
+			wantCalls, wantWeb := 1, 0
+			if toolName == "image_ocr_and_tools" {
+				wantCalls, wantWeb = 3, 1
+			}
+			if modelCalls != wantCalls || tool.searches != wantWeb || tool.reads != wantWeb {
+				t.Fatalf("unexpected calls: model=%d tool=%+v", modelCalls, tool)
+			}
+		})
 	}
 }
 

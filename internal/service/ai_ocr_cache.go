@@ -13,18 +13,45 @@ import (
 	"github.com/itihey/tikuAdapter/internal/entity"
 	internalsearch "github.com/itihey/tikuAdapter/internal/search"
 	"github.com/itihey/tikuAdapter/pkg/logger"
+	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
 const aiOCRCacheProfile = "uapi-image-ocr-plain-v1"
 
-var ErrAIOCRCacheUnavailable = errors.New("图片 OCR 缓存不可用")
+var (
+	ErrAIOCRCacheUnavailable   = errors.New("图片 OCR 缓存不可用")
+	ErrAIOCRCacheFilterInvalid = errors.New("图片 OCR 缓存筛选参数无效")
+	errAIOCRFlightInterrupted  = errors.New("图片 OCR 识别意外中断，请重试")
+)
 
 type AIOCRCacheStatus struct {
 	Configured      bool       `json:"configured"`
 	Entries         int64      `json:"entries"`
 	LatestUpdatedAt *time.Time `json:"latestUpdatedAt,omitempty"`
+}
+
+// AIOCRCacheListQuery contains the administrator-facing cache filters. Hashes
+// are searchable because the raw source URL and image bytes are never stored.
+type AIOCRCacheListQuery struct {
+	Keyword     string
+	ContentType string
+	UpdatedFrom string
+	UpdatedTo   string
+}
+
+type AIOCRCacheListSummary struct {
+	Matched int64 `json:"matched"`
+}
+
+type AIOCRCacheListResult struct {
+	Data       []entity.AIOCRCache   `json:"data"`
+	Total      int64                 `json:"total"`
+	Page       int                   `json:"page"`
+	PageSize   int                   `json:"pageSize"`
+	Configured bool                  `json:"configured"`
+	Summary    AIOCRCacheListSummary `json:"summary"`
 }
 
 type aiOCRFlight struct {
@@ -86,7 +113,7 @@ func cacheAIImageOCRProviderWithDB(db *gorm.DB, provider internalsearch.AIImageO
 	if provider == nil {
 		return nil
 	}
-	return func(ctx context.Context, sourceURL, imageName, contentType string, image []byte) (string, bool, error) {
+	return func(ctx context.Context, sourceURL, imageName, contentType string, image []byte) (text string, cached bool, err error) {
 		if db == nil || strings.TrimSpace(sourceURL) == "" || len(image) == 0 {
 			text, err := provider(ctx, sourceURL, imageName, contentType, image)
 			return text, false, err
@@ -98,11 +125,19 @@ func cacheAIImageOCRProviderWithDB(db *gorm.DB, provider internalsearch.AIImageO
 		flightKey := fmt.Sprintf("%s:%s:%s:%d", aiOCRCacheIdentity(db), urlHash, imageHash, epoch)
 		if text, cached, err, leader := joinAIOCRFlight(ctx, flightKey); !leader {
 			return text, cached, err
-		} else {
-			text, cached, err := lookupOrRecognizeAIOCR(ctx, db, provider, urlHash, imageHash, sourceURL, imageName, contentType, image, epoch)
-			finishAIOCRFlight(flightKey, text, cached, err)
-			return text, cached, err
 		}
+		completed := false
+		defer func() {
+			// Keep a leader panic visible to the caller, while releasing followers
+			// and allowing a later request to retry the same image.
+			if !completed {
+				text, cached, err = "", false, errAIOCRFlightInterrupted
+			}
+			finishAIOCRFlight(flightKey, text, cached, err)
+		}()
+		text, cached, err = lookupOrRecognizeAIOCR(ctx, db, provider, urlHash, imageHash, sourceURL, imageName, contentType, image, epoch)
+		completed = true
+		return text, cached, err
 	}
 }
 
@@ -221,9 +256,117 @@ func GetAIOCRCacheStatusWithDB(db *gorm.DB) (AIOCRCacheStatus, error) {
 	return status, nil
 }
 
-func ClearAIOCRCacheWithDB(db *gorm.DB) (int64, error) {
+func parseAIOCRCacheDate(value string, endOfDay bool) (*time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		parsed, err = time.ParseInLocation("2006-01-02", value, time.Local)
+		if err == nil && endOfDay {
+			parsed = parsed.AddDate(0, 0, 1)
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: 日期格式无效", ErrAIOCRCacheFilterInvalid)
+	}
+	return &parsed, nil
+}
+
+func parseAIOCRCacheFilterRange(filters AIOCRCacheListQuery) (from, to *time.Time, err error) {
+	from, err = parseAIOCRCacheDate(filters.UpdatedFrom, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	to, err = parseAIOCRCacheDate(filters.UpdatedTo, true)
+	if err != nil {
+		return nil, nil, err
+	}
+	if from != nil && to != nil && !from.Before(*to) {
+		return nil, nil, fmt.Errorf("%w: 开始时间必须早于结束时间", ErrAIOCRCacheFilterInvalid)
+	}
+	return from, to, nil
+}
+
+func validateAIOCRCacheFilters(filters AIOCRCacheListQuery) error {
+	_, _, err := parseAIOCRCacheFilterRange(filters)
+	return err
+}
+
+func applyAIOCRCacheFilters(query *gorm.DB, filters AIOCRCacheListQuery) (*gorm.DB, error) {
+	if condition, args := util.BuildInstrCondition(filters.Keyword,
+		"COALESCE(url_hash, '')", "COALESCE(image_sha256, '')", "COALESCE(content_type, '')", "COALESCE(ocr_text, '')"); condition != "" {
+		query = query.Where(condition, args...)
+	}
+	if contentType := strings.TrimSpace(filters.ContentType); contentType != "" {
+		query = query.Where("content_type = ?", contentType)
+	}
+	from, to, err := parseAIOCRCacheFilterRange(filters)
+	if err != nil {
+		return nil, err
+	}
+	if from != nil {
+		query = query.Where("updated_at >= ?", *from)
+	}
+	if to != nil {
+		query = query.Where("updated_at < ?", *to)
+	}
+	return query, nil
+}
+
+// ListAIOCRCacheWithDB returns a bounded, filterable administrator view of the
+// persistent OCR cache. It never exposes the original image URL or bytes.
+func ListAIOCRCacheWithDB(db *gorm.DB, filters AIOCRCacheListQuery, page, pageSize int) (AIOCRCacheListResult, error) {
+	result := AIOCRCacheListResult{Data: make([]entity.AIOCRCache, 0)}
+	if err := validateAIOCRCacheFilters(filters); err != nil {
+		return result, err
+	}
+	if db == nil {
+		return result, ErrAIOCRCacheUnavailable
+	}
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+	result.Page, result.PageSize = page, pageSize
+	base, err := applyAIOCRCacheFilters(db.Model(&entity.AIOCRCache{}), filters)
+	if err != nil {
+		return result, err
+	}
+	if err := db.Session(&gorm.Session{NewDB: true}).Exec("SELECT 1").Error; err != nil {
+		return result, err
+	}
+	result.Configured = isAIOCRProviderConfigured(db)
+	if !db.Migrator().HasTable(&entity.AIOCRCache{}) {
+		return result, nil
+	}
+	if err := base.Count(&result.Total).Error; err != nil {
+		return result, err
+	}
+	result.Summary.Matched = result.Total
+	if err := base.Order("updated_at DESC, url_hash ASC").Limit(pageSize).Offset((page - 1) * pageSize).Find(&result.Data).Error; err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func ClearAIOCRCacheWithDB(db *gorm.DB, queries ...AIOCRCacheListQuery) (int64, error) {
+	var filters AIOCRCacheListQuery
+	if len(queries) > 0 {
+		filters = queries[0]
+	}
+	if err := validateAIOCRCacheFilters(filters); err != nil {
+		return 0, err
+	}
 	if db == nil {
 		return 0, ErrAIOCRCacheUnavailable
+	}
+	query, err := applyAIOCRCacheFilters(db.Model(&entity.AIOCRCache{}), filters)
+	if err != nil {
+		return 0, err
 	}
 	cacheLock := aiOCRCacheLock(db)
 	cacheLock.Lock()
@@ -231,13 +374,17 @@ func ClearAIOCRCacheWithDB(db *gorm.DB) (int64, error) {
 	if err := db.Session(&gorm.Session{NewDB: true}).Exec("SELECT 1").Error; err != nil {
 		return 0, err
 	}
-	bumpAIOCRCacheEpoch(db)
 	hasTable := db.Migrator().HasTable(&entity.AIOCRCache{})
 	if !hasTable {
+		bumpAIOCRCacheEpoch(db)
 		return 0, nil
 	}
-	result := db.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&entity.AIOCRCache{})
-	return result.RowsAffected, result.Error
+	result := query.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&entity.AIOCRCache{})
+	if result.Error != nil {
+		return 0, result.Error
+	}
+	bumpAIOCRCacheEpoch(db)
+	return result.RowsAffected, nil
 }
 
 func hashAIOCRURL(sourceURL string) string {

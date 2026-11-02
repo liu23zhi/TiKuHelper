@@ -27,16 +27,17 @@
           <span v-else class="capability-detail-empty">未提供</span>
         </div>
       </section>
-      <h3 v-if="cards.length || rows.length" class="capability-usage-heading">本服务使用统计</h3>
+      <h3 v-if="cards.length || rows.length" class="capability-usage-heading">UAPI Pro 服务商端点统计</h3>
+      <p v-if="cards.length || rows.length" class="capability-usage-note">以下数字由 UAPI Pro 返回，表示服务商端点的累计调用次数，不是本服务本地的调用次数；本地账单和 OCR 缓存条目请分别查看账单明细与 OCR 缓存管理。</p>
       <div v-if="cards.length" class="capability-status-grid">
         <div v-for="card in cards" :key="card.key" class="capability-status-card">
           <div class="capability-status-card__header"><span>{{ card.title }}</span><a-tag :color="card.color">{{ card.status }}</a-tag></div>
           <div class="capability-status-card__meta">{{ card.detail }}</div>
-          <div v-if="card.count !== null" class="capability-status-card__count">累计调用 {{ card.count }} 次</div>
+          <div v-if="card.count !== null" class="capability-status-card__count">服务商累计调用 {{ card.count }} 次</div>
         </div>
       </div>
-      <a-empty v-else-if="!loading" description="暂未使用搜索或网页读取接口" />
-      <ConsoleTableShell v-if="rows.length" label="深度思考工具使用统计">
+      <a-empty v-else-if="!loading" description="服务商暂未返回端点统计" />
+      <ConsoleTableShell v-if="rows.length" label="UAPI Pro 服务商端点统计明细">
         <a-table size="small" bordered table-layout="fixed" row-key="path" :pagination="false" :data-source="rows" :columns="columns" :scroll="{ x: sumTableColumnWidths(columns) }" />
       </ConsoleTableShell>
     </a-spin>
@@ -74,7 +75,8 @@ export default {
 .capability-detail-facts dd { margin: 0; overflow-wrap: anywhere; }
 .capability-detail-list + .capability-detail-list { margin-top: 16px; }
 .capability-detail-empty { color: var(--console-muted); }
-.capability-usage-heading { margin: 20px 0 12px; font-size: 15px; }
+.capability-usage-heading { margin: 20px 0 4px; font-size: 15px; }
+.capability-usage-note { margin: 0 0 12px; color: var(--console-muted); font-size: 12px; line-height: 1.7; }
 .capability-status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 12px; margin-bottom: 16px; }
 .capability-status-card { min-width: 0; padding: 16px; border: 1px solid var(--console-border); border-radius: 8px; background: var(--console-subtle); }
 .capability-status-card__header { font-weight: 600; }

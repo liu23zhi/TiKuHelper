@@ -202,6 +202,9 @@ func BuildAIToolTestBillingQuestion(mode, tool, target string) string {
 		modeLabel = "AI 工具调用测试"
 	case "direct":
 		modeLabel = "联网工具直连测试"
+		if tool == "image_ocr" {
+			modeLabel = "图片 OCR 直连测试"
+		}
 	case "compression":
 		modeLabel = "AI 历史压缩测试"
 	case "ai_compression":
@@ -214,6 +217,13 @@ func BuildAIToolTestBillingQuestion(mode, tool, target string) string {
 	}
 	toolLabel := ""
 	switch tool {
+	case "image_ocr":
+		toolLabel = "图片 OCR"
+	case "image_ocr_and_tools":
+		if mode != "ai" && mode != "ai_compression" {
+			return ""
+		}
+		toolLabel = "图片 OCR + 联网搜索 + 网页浏览"
 	case "web_search":
 		toolLabel = "联网搜索"
 	case "web_read":
@@ -238,7 +248,7 @@ func normalizeBillingToolTestQuestion(question string) (string, bool) {
 		return "AI 压缩历史回读测试", true
 	}
 	for _, mode := range []string{"ai", "ai_compression", "compression", "direct"} {
-		for _, tool := range []string{"web_search", "web_read", "both"} {
+		for _, tool := range []string{"web_search", "web_read", "both", "image_ocr", "image_ocr_and_tools"} {
 			prefix := BuildAIToolTestBillingQuestion(mode, tool, "")
 			if prefix == "" {
 				continue

@@ -882,28 +882,7 @@ func (in *ChatGptClient) runAISearchImageOCR(ctx context.Context, attachments []
 			defer wg.Done()
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
-			started := time.Now()
-			var text string
-			var cached bool
-			var err error
-			if in.OCRCacheProvider != nil {
-				text, cached, err = in.OCRCacheProvider(ctx, attachment.sourceURL, attachment.imageName, attachment.contentType, attachment.body)
-			} else {
-				text, err = in.OCRProvider(ctx, attachment.sourceURL, attachment.imageName, attachment.contentType, attachment.body)
-			}
-			call := AIOCRCallUsage{API: strings.TrimSpace(in.OCRAPI), ImageURL: attachment.sourceURL, DurationMs: time.Since(started).Milliseconds()}
-			if call.API == "" {
-				call.API = "https://uapis.cn/api/v1/image/ocr"
-			}
-			if err != nil {
-				call.Status = "error"
-				call.Error = truncateAIToolText(logger.RedactSecrets(err.Error(), in.APIKey), 500)
-			} else {
-				call.Status = "success"
-				call.Cached = cached
-				call.TextChars = len([]rune(strings.TrimSpace(text)))
-				text = truncateAIToolText(strings.TrimSpace(text), 12000)
-			}
+			text, call := in.recognizeAISearchImage(ctx, attachment)
 			results <- result{index: index, text: text, call: call}
 		}(index, attachment)
 	}
@@ -929,6 +908,76 @@ func (in *ChatGptClient) runAISearchImageOCR(ctx context.Context, attachments []
 		}
 	}
 	return builder.String(), calls
+}
+
+// recognizeAISearchImage is shared by production prompts and direct diagnostics.
+// Keep the recognized text separate from the model-facing image annotations.
+func (in *ChatGptClient) recognizeAISearchImage(ctx context.Context, attachment downloadedAISearchAttachment) (string, AIOCRCallUsage) {
+	started := time.Now()
+	var text string
+	var cached bool
+	var err error
+	if in.OCRCacheProvider != nil {
+		text, cached, err = in.OCRCacheProvider(ctx, attachment.sourceURL, attachment.imageName, attachment.contentType, attachment.body)
+	} else {
+		text, err = in.OCRProvider(ctx, attachment.sourceURL, attachment.imageName, attachment.contentType, attachment.body)
+	}
+	call := AIOCRCallUsage{API: strings.TrimSpace(in.OCRAPI), ImageURL: attachment.sourceURL, DurationMs: time.Since(started).Milliseconds()}
+	if call.API == "" {
+		call.API = "https://uapis.cn/api/v1/image/ocr"
+	}
+	if err != nil {
+		call.Status = "error"
+		call.Error = truncateAIToolText(logger.RedactSecrets(err.Error(), in.APIKey), 500)
+		return "", call
+	}
+	text = strings.TrimSpace(text)
+	call.Status, call.Cached, call.TextChars = "success", cached, len([]rune(text))
+	return truncateAIToolText(text, 12000), call
+}
+
+// TestImageOCR downloads one image using the same bounded attachment path as
+// normal AI search and runs the configured OCR provider against local bytes.
+// It is used by the administrator's direct OCR diagnostic and keeps the raw
+// image URL out of the upstream OCR request.
+func (in *ChatGptClient) TestImageOCR(ctx context.Context, address string) (string, AISearchDebugResult, error) {
+	debug := AISearchDebugResult{}
+	address = strings.TrimSpace(address)
+	parsed, err := url.Parse(address)
+	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.Fragment != "" {
+		return "", debug, fmt.Errorf("请填写不含用户信息和片段的完整 HTTP/HTTPS 图片地址")
+	}
+	if in == nil || (in.OCRProvider == nil && in.OCRCacheProvider == nil) {
+		return "", debug, stdErrors.New("未配置图片 OCR 工具，请检查 UApiPro 令牌")
+	}
+	if len([]rune(address)) > aiToolMaxWebReadURLRunes {
+		return "", debug, stdErrors.New("图片地址不能超过 2048 个字符")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	bounded := *in.getAttachmentHTTPClient().GetClient()
+	transport := bounded.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	bounded.Transport = aiToolContextTransport{ctx: ctx, base: transport}
+	attachment, ok := downloadAISearchAttachment(&bounded, address)
+	if !ok {
+		return "", debug, fmt.Errorf("图片下载失败")
+	}
+	if !strings.HasPrefix(attachment.contentType, "image/") {
+		return "", debug, stdErrors.New("目标地址未返回图片")
+	}
+	text, call := in.recognizeAISearchImage(ctx, attachment)
+	debug.Usage.OCRCalls = append(debug.Usage.OCRCalls, call)
+	if call.Status != "success" {
+		return text, debug, stdErrors.New(call.Error)
+	}
+	if strings.TrimSpace(text) == "" {
+		return text, debug, stdErrors.New("OCR 未返回识别文本")
+	}
+	return text, debug, nil
 }
 
 // downloadAISearchAttachmentParts 并发下载题目配图，同时保持原有顺序，

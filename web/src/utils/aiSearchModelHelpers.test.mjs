@@ -485,7 +485,7 @@ test('TikuComponentApi exposes OCR cache status and clear endpoints', async () =
   const content = await readFile(apiPath, 'utf8');
 
   assert.match(content, /export function getAIOCRCacheStatus\(\)/);
-  assert.match(content, /export function clearAIOCRCache\(\)/);
+  assert.match(content, /export function clearAIOCRCache\(params\)/);
   assert.match(content, /\/adapter-service\/ai-search-config\/ocr-cache/);
   assert.match(content, /method: 'delete'/);
 });
@@ -514,7 +514,14 @@ test('AI search config exposes the UAPI search engine capability endpoint', asyn
   assert.match(apiContent, /\/adapter-service\/uapi\/status\/usage/);
 });
 
-test('AI capability modal only renders used search and web Markdown endpoints', async () => {
+test('capability usage is clearly labeled as provider endpoint statistics', async () => {
+  const content = await readFile(path.join(__dirname, '..', 'pages', 'AISearchConfig', 'AISearchCapabilityDialog.vue'), 'utf8');
+  assert.match(content, /UAPI Pro 服务商端点统计/);
+  assert.match(content, /不是本服务本地的调用次数/);
+  assert.match(content, /服务商累计调用/);
+});
+
+test('AI capability modal shows provider statistics for used search, web Markdown and OCR endpoints', async () => {
   const pageContent = await readFile(aiSearchConfigPagePath, 'utf8');
   const dialog = await readFile(path.join(__dirname, '..', 'pages', 'AISearchConfig', 'AISearchCapabilityDialog.vue'), 'utf8');
 
@@ -523,7 +530,8 @@ test('AI capability modal only renders used search and web Markdown endpoints', 
   assert.match(pageContent, /usedCapabilityCards/);
   assert.match(pageContent, /联网搜索 API/);
   assert.match(pageContent, /网页转 Markdown API/);
-  assert.match(dialog, /暂未使用搜索或网页读取接口/);
+  assert.match(pageContent, /图片 OCR API/);
+  assert.match(dialog, /服务商暂未返回端点统计/);
   assert.match(pageContent, /:rows="usedUsageRows"/);
   assert.match(pageContent, /:cards="usedCapabilityCards"/);
 });

@@ -1,7 +1,7 @@
 <template>
   <a-modal
     :open="open"
-    title="测试 AI 与联网工具"
+    title="测试 AI、联网与 OCR 工具"
     :ok-text="submitText"
     cancel-text="关闭"
     :confirm-loading="submitting"
@@ -42,17 +42,21 @@
             <a-radio value="web_search">联网搜索（web_search）</a-radio>
             <a-radio value="web_read">网页读取（web_read）</a-radio>
             <a-radio v-if="testType !== 'direct'" value="both">搜索＋网页读取</a-radio>
+            <a-radio value="image_ocr">图片 OCR</a-radio>
+            <a-radio v-if="testType !== 'direct'" value="image_ocr_and_tools">OCR＋搜索＋网页读取</a-radio>
           </a-radio-group>
         </a-form-item>
         <a-form-item v-if="testType === 'direct' && form.tool === 'web_search'" label="搜索词" required>
           <a-input v-model:value="form.query" :disabled="submitting" placeholder="例如 OpenAI" />
         </a-form-item>
-        <a-form-item v-else-if="testType === 'direct'" label="网页地址" required>
-          <a-input v-model:value="form.url" :disabled="submitting" type="url" placeholder="https://www.openai.com/" />
+        <a-form-item v-else-if="testType === 'direct'" :label="toolTargetLabel" required>
+          <a-input v-model:value="form.url" :disabled="submitting" type="url" :placeholder="toolTargetPlaceholder" />
+          <div v-if="includesOCR" class="hint">请提供可直接访问的图片地址。测试会下载图片并使用当前 OCR 配置和缓存。</div>
         </a-form-item>
-        <a-form-item v-else-if="form.tool !== 'none'" :label="form.tool === 'web_read' ? '网页地址' : '关键词或网页地址'" required>
-          <a-input v-model:value="form.target" :disabled="submitting" :type="form.tool === 'web_read' ? 'url' : 'text'" :placeholder="form.tool === 'web_read' ? 'https://www.openai.com/' : '例如 OpenAI 或 https://www.openai.com/'" />
+        <a-form-item v-else-if="form.tool !== 'none'" :label="toolTargetLabel" required>
+          <a-input v-model:value="form.target" :disabled="submitting" :type="form.tool === 'web_read' || includesOCR ? 'url' : 'text'" :placeholder="toolTargetPlaceholder" />
           <div v-if="form.tool === 'web_read'" class="hint">单独测试网页读取时，请提供完整网页地址。</div>
+          <div v-if="includesOCR" class="hint">请提供可直接访问的图片地址。先执行 OCR，再将实际识别内容交给 AI；联合测试还会执行搜索和网页读取。</div>
         </a-form-item>
         <a-form-item v-if="testType === 'ai' || testType === 'ai_compression'" label="生成的测试提示词">
           <a-textarea v-if="promptPreview.text" :value="promptPreview.text" readonly :auto-size="{ minRows: 3, maxRows: 6 }" aria-label="生成的测试提示词" />
@@ -164,11 +168,14 @@ export default defineComponent({
     const submitText = computed(() => testType.value === 'ai_compression' && form.tool === 'none' ? '压缩并验证历史' : ({ hello: '发送 hello 测试', direct: '测试工具', ai: '发起 AI 工具调用', compression: '执行压缩测试', ai_compression: '压缩并调用工具' }[testType.value]))
     const includesCompression = computed(() => ['compression', 'ai_compression'].includes(testType.value))
     const configuredCompressionOrder = computed(() => props.savedCompressionOrder.map(aiContextCompressionStrategyText).join(' → '))
-    const includesWebRead = computed(() => ['direct', 'ai', 'ai_compression'].includes(testType.value) && ['web_read', 'both'].includes(form.tool))
-    const toolTestDescription = computed(() => `${includesWebRead.value ? '网页读取会先提交异步任务，再轮询获取正文。' : ''}测试会产生真实模型或工具调用费用，并按当前已保存的价格配置写入当前管理员的账单。`)
+    const includesWebRead = computed(() => ['direct', 'ai', 'ai_compression'].includes(testType.value) && ['web_read', 'both', 'image_ocr_and_tools'].includes(form.tool))
+    const includesOCR = computed(() => ['direct', 'ai', 'ai_compression'].includes(testType.value) && ['image_ocr', 'image_ocr_and_tools'].includes(form.tool))
+    const toolTargetLabel = computed(() => includesOCR.value ? '图片地址' : form.tool === 'web_read' ? '网页地址' : '关键词或网页地址')
+    const toolTargetPlaceholder = computed(() => includesOCR.value ? 'https://example.com/question.png' : form.tool === 'web_read' ? 'https://www.openai.com/' : '例如 OpenAI 或 https://www.openai.com/')
+    const toolTestDescription = computed(() => `${includesWebRead.value ? '网页读取会先提交异步任务，再轮询获取正文。' : ''}${includesOCR.value ? 'OCR 缓存命中仍按成功调用计费。' : ''}测试会产生真实模型或工具调用费用，并按当前已保存的价格配置写入当前管理员的账单。`)
     const testModeDescription = computed(() => ({
       direct: '直接调用所选工具，检查工具是否返回结果。',
-      ai: '根据输入生成提示词，发起真实 AI 请求，检查模型是否实际调用所选工具并返回结果。',
+      ai: includesOCR.value ? '先识别图片，再根据实际 OCR 文本发起 AI 请求；联合测试会继续检查搜索与网页读取结果。' : '根据输入生成提示词，发起真实 AI 请求，检查模型是否实际调用所选工具并返回结果。',
       compression: '独立执行上下文压缩，不发起答题或联网工具调用；压缩模型用量正常计入管理员账单。',
       ai_compression: form.tool === 'none' ? '先压缩给定历史，再通过 AI 回读标记、字段和待办状态，不发起联网请求。' : '先压缩给定历史，再发起所选工具调用，检查压缩后的上下文能否继续完成请求。',
     }[testType.value]))
@@ -208,7 +215,7 @@ export default defineComponent({
       } else if (mode === 'ai') {
         form.tool = networkTool
       } else if (mode === 'direct') {
-        form.tool = networkTool === 'web_read' ? 'web_read' : 'web_search'
+        form.tool = ['image_ocr', 'image_ocr_and_tools'].includes(networkTool) ? 'image_ocr' : networkTool === 'web_read' ? 'web_read' : 'web_search'
       }
     })
     async function runTest() {
@@ -236,7 +243,7 @@ export default defineComponent({
       }
     }
     function close() { if (!submitting.value) emit('update:open', false) }
-    return { testType, form, submitting, result, error, billingOpen, submitText, includesCompression, includesWebRead, configuredCompressionOrder, toolTestDescription, testModeDescription, compressionStrategyText: aiContextCompressionStrategyText, promptPreview, diagnosticBlocks, resetResult, runTest, close }
+    return { testType, form, submitting, result, error, billingOpen, submitText, includesCompression, includesWebRead, includesOCR, toolTargetLabel, toolTargetPlaceholder, configuredCompressionOrder, toolTestDescription, testModeDescription, compressionStrategyText: aiContextCompressionStrategyText, promptPreview, diagnosticBlocks, resetResult, runTest, close }
   },
 })
 </script>

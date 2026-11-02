@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -33,9 +34,14 @@ type aiToolTestInput struct {
 }
 
 var newAIToolTestTool = service.BuildUAPISearchToolWithDB
+var newAIToolTestOCRProvider = service.BuildCachedUAPIImageOCRProviderWithDB
 
 var runAIToolDebug = func(ctx context.Context, client *search.ChatGptClient, tool, target string) ([][]string, search.AISearchDebugResult, error) {
 	return client.TestToolCall(ctx, tool, target)
+}
+
+var runAIImageOCRTest = func(ctx context.Context, client *search.ChatGptClient, target string) (string, search.AISearchDebugResult, error) {
+	return client.TestImageOCR(ctx, target)
 }
 
 var runAIContextCompressionTest = func(ctx context.Context, client *search.ChatGptClient, history, mode string) (search.AIContextCompressionTestResult, search.AISearchDebugResult, error) {
@@ -113,7 +119,7 @@ func (input *aiToolTestInput) validate() (string, error) {
 			target = strings.TrimSpace(*input.Target)
 		} else {
 			switch input.Tool {
-			case "web_read":
+			case "web_read", "image_ocr", "image_ocr_and_tools":
 				target = strings.TrimSpace(input.URL)
 			case "both":
 				target = strings.TrimSpace(input.URL)
@@ -137,14 +143,18 @@ func (input *aiToolTestInput) validate() (string, error) {
 			return "", errors.New("搜索词须为 1 至 120 个字符")
 		}
 		return input.Query, nil
-	case "web_read":
+	case "web_read", "image_ocr":
 		if len([]rune(input.URL)) > 2048 {
 			return "", errors.New("网页地址不能超过 2048 个字符")
 		}
 		return uapi.ValidateWebURL(input.URL)
 	default:
-		return "", errors.New("仅支持 web_search 和 web_read 测试")
+		return "", errors.New("直连测试仅支持 web_search、web_read 和 image_ocr")
 	}
+}
+
+func requiresAITestWebTool(tool string) bool {
+	return tool == "web_search" || tool == "web_read" || tool == "both" || tool == "image_ocr_and_tools"
 }
 
 // TestAIToolCall uses the production token/tool billing functions, while bypassing
@@ -183,13 +193,13 @@ func TestAIToolCall(c *gin.Context) {
 		return
 	}
 	var tool search.AISearchTool
-	if input.Mode != "compression" && !(input.Mode == "ai_compression" && input.Tool == "none") {
+	if input.Mode != "compression" && !(input.Mode == "ai_compression" && input.Tool == "none") && requiresAITestWebTool(input.Tool) {
 		tool = newAIToolTestTool(db)
 		if tool == nil {
 			c.JSON(http.StatusBadRequest, gin.H{"message": "请先在系统设置中配置有效的 UApiPro 令牌"})
 			return
 		}
-		if _, ok := tool.(search.AIWebReadTool); (input.Tool == "web_read" || input.Tool == "both") && !ok {
+		if _, ok := tool.(search.AIWebReadTool); (input.Tool == "web_read" || input.Tool == "both" || input.Tool == "image_ocr_and_tools") && !ok {
 			c.JSON(http.StatusBadRequest, gin.H{"message": "未配置网页读取工具"})
 			return
 		}
@@ -216,6 +226,26 @@ func TestAIToolCall(c *gin.Context) {
 		}
 	}
 
+	var ocrProvider search.AIImageOCRCacheProvider
+	if input.Tool == "image_ocr" || input.Tool == "image_ocr_and_tools" {
+		ocrProvider = newAIToolTestOCRProvider(db)
+		if ocrProvider == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "请先在系统设置中配置有效的 UApiPro 令牌以启用图片 OCR"})
+			return
+		}
+	}
+	var ocrResults []any
+	var ocrResultsLock sync.Mutex
+	if ocrProvider != nil {
+		provider := ocrProvider
+		ocrProvider = func(ctx context.Context, address, name, contentType string, image []byte) (string, bool, error) {
+			text, cached, callErr := provider(ctx, address, name, contentType, image)
+			ocrResultsLock.Lock()
+			ocrResults = append(ocrResults, gin.H{"tool": "image_ocr", "url": address, "text": text, "cached": cached, "error": toolTestError(callErr)})
+			ocrResultsLock.Unlock()
+			return text, cached, callErr
+		}
+	}
 	clearAIResponseWriteDeadline(c)
 	requestID := "tool-test-" + uuid.NewString()
 	compressionConfig := config
@@ -233,7 +263,12 @@ func TestAIToolCall(c *gin.Context) {
 	var debug search.AISearchDebugResult
 	var compression *search.AIContextCompressionTestResult
 	if input.Mode == "direct" {
-		debug, err = runDirectAIToolTest(c.Request.Context(), recorder, input.Tool, target)
+		if input.Tool == "image_ocr" {
+			client := &search.ChatGptClient{OCRCacheProvider: ocrProvider, OCRAPI: "https://uapis.cn/api/v1/image/ocr"}
+			_, debug, err = runAIImageOCRTest(c.Request.Context(), client, target)
+		} else {
+			debug, err = runDirectAIToolTest(c.Request.Context(), recorder, input.Tool, target)
+		}
 	} else if input.Mode == "compression" {
 		outcome, result, callErr := runAIContextCompressionTest(c.Request.Context(), &search.ChatGptClient{Enable: true, BaseURL: config.BaseURL, APIKey: config.APIKey, Model: config.Model, BackupModel: config.BackupModel,
 			Prompt: config.Prompt, RequestID: requestID, ContextCompression: compressionSettings}, input.History, input.CompressionMode)
@@ -241,7 +276,7 @@ func TestAIToolCall(c *gin.Context) {
 	} else {
 		client := &search.ChatGptClient{Enable: true, BaseURL: config.BaseURL, APIKey: config.APIKey, Model: config.Model, BackupModel: config.BackupModel,
 			Prompt: config.Prompt, RequestID: requestID, MaxAISearchRetries: config.MaxAISearchRetries,
-			ContextCompression: compressionSettings}
+			ContextCompression: compressionSettings, OCRCacheProvider: ocrProvider, OCRAPI: "https://uapis.cn/api/v1/image/ocr"}
 		if recorder != nil {
 			client.SearchTool = recorder
 		}
@@ -320,6 +355,7 @@ func TestAIToolCall(c *gin.Context) {
 	if recorder != nil {
 		toolResults = recorder.results
 	}
+	toolResults = append(ocrResults, toolResults...)
 	c.JSON(http.StatusOK, redactAIToolTestData(gin.H{
 		"success": err == nil, "message": message, "requestId": requestID, "answers": flattened,
 		"testPrompt": testPrompt,

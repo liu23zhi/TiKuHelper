@@ -551,10 +551,19 @@ export function getAIOCRCacheStatus() {
   })
 }
 
-export function clearAIOCRCache() {
+export function getAIOCRCacheEntries(params) {
+  return request({
+    url: `/adapter-service/ai-search-config/ocr-cache/entries`,
+    method: 'get',
+    params,
+  })
+}
+
+export function clearAIOCRCache(params) {
   return request({
     url: `/adapter-service/ai-search-config/ocr-cache`,
-    method: 'delete'
+    method: 'delete',
+    params,
   })
 }
 

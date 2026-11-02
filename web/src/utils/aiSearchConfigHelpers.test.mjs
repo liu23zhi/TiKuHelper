@@ -522,3 +522,78 @@ test('malformed diagnostic entries are ignored safely while recognized empty cal
   assert.equal(emptySearch.status, 'empty');
   assert.equal(emptySearch.totalResults, 0);
 });
+
+test('direct OCR tests send the image URL without requiring an AI model', () => {
+  const payload = buildAIToolTestPayload({ mode: 'direct', tool: 'image_ocr', url: ' https://example.com/question.png ' });
+  assert.equal(payload.tool, 'image_ocr');
+  assert.equal(payload.url, 'https://example.com/question.png');
+  assert.equal(payload.model, '');
+  assert.throws(() => buildAIToolTestPayload({ mode: 'direct', tool: 'image_ocr_and_tools', url: 'https://example.com/question.png' }), /工具/);
+});
+
+test('AI OCR and combined tests keep the image URL as the target and require a model', () => {
+  for (const tool of ['image_ocr', 'image_ocr_and_tools']) {
+    const payload = buildAIToolTestPayload({ mode: 'ai', tool, target: ' https://example.com/question.png ', model: 'gpt-test' });
+    assert.equal(payload.target, 'https://example.com/question.png');
+    assert.equal(payload.url, 'https://example.com/question.png');
+    assert.equal(payload.query, '');
+    assert.throws(() => buildAIToolTestPayload({ mode: 'ai', tool, target: 'https://example.com/question.png' }), /模型/);
+    const compressed = buildAIToolTestPayload({ mode: 'ai_compression', tool, target: payload.target, model: 'gpt-test', history: 'Historical evidence.' });
+    assert.equal(compressed.history, 'Historical evidence.');
+    assert.equal(compressed.tool, tool);
+  }
+});
+
+test('OCR targets must be complete safe image URLs rather than search keywords', () => {
+  for (const tool of ['image_ocr', 'image_ocr_and_tools']) {
+    for (const target of ['a picture', '', 'file:///question.png', 'https://user:pass@example.com/q.png', 'https://example.com/q.png#section']) {
+      assert.throws(() => buildAIToolTestPayload({ mode: 'ai', tool, target, model: 'gpt-test' }), /HTTP|地址|凭据|片段/);
+      assert.throws(() => buildAIToolTestPrompt({ tool, target }), /HTTP|地址|凭据|片段/);
+    }
+  }
+  assert.throws(() => buildAIToolTestPayload({ mode: 'direct', tool: 'image_ocr', url: 'question.png' }), /HTTP|地址/);
+});
+
+test('OCR prompts request real recognition before any selected web tools', () => {
+  const target = 'https://example.com/question.png';
+  const ocr = buildAIToolTestPrompt({ tool: 'image_ocr', target });
+  assert.match(ocr, /OCR/);
+  assert.match(ocr, /识别/);
+  assert.doesNotMatch(ocr, /web_search|web_read/);
+  const combined = buildAIToolTestPrompt({ tool: 'image_ocr_and_tools', target });
+  assert.match(combined, /OCR.*web_search.*web_read/);
+  assert.match(combined, /https:\/\/example.com\/question.png/);
+});
+
+test('OCR results preserve recognized text and actual cache state in recorded call order', () => {
+  const text = '  第一行\n第二行 <script>text</script>  ';
+  const response = buildAIToolTestResult({ data: { toolResult: [
+    { tool: 'image_ocr', url: 'https://example.com/q.png', text, cached: true, error: '' },
+    { tool: 'web_search', query: '识别后的搜索词', result: { results: [{ title: '真实结果' }] } },
+    { tool: 'image_ocr', url: 'javascript:alert(1)', text: '', cached: false, error: '识别失败' },
+  ] } });
+  assert.deepEqual(response.toolCalls.map(call => call.tool), ['image_ocr', 'web_search', 'image_ocr']);
+  const [ocr, , failed] = response.toolCalls;
+  assert.equal(ocr.title, '图片 OCR');
+  assert.equal(ocr.targetLabel, '图片地址');
+  assert.equal(ocr.targetHref, 'https://example.com/q.png');
+  assert.equal(ocr.text, text);
+  assert.equal(ocr.cached, true);
+  assert.equal(ocr.status, 'success');
+  assert.equal(failed.status, 'error');
+  assert.equal(failed.error, '识别失败');
+  assert.equal(failed.targetHref, '');
+  assert.equal(failed.cached, false);
+});
+
+test('OCR diagnostics distinguish empty recognition and unknown cache state', () => {
+  const result = buildAIToolTestResult({ data: { toolResult: [
+    { tool: 'image_ocr', text: ' ', cached: 'true' },
+    { tool: 'image_ocr', text: 'Partial text', cached: false, error: 'upstream error' },
+  ], usage: { ocrCalls: [{ imageUrl: 'https://example.com/only-usage.png', status: 'success', textChars: 100, cached: true }] } } });
+  assert.equal(result.toolCalls.length, 2);
+  assert.equal(result.toolCalls[0].status, 'empty');
+  assert.equal(result.toolCalls[0].cached, null);
+  assert.equal(result.toolCalls[1].status, 'error');
+  assert.equal(result.toolCalls[1].text, 'Partial text');
+});

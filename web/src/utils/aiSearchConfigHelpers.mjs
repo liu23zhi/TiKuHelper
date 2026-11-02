@@ -132,15 +132,16 @@ function validateToolTestURL(value) {
 
 function resolveAIToolTestTarget(form) {
   const tool = trimText(form?.tool);
-  if (!['web_search', 'web_read', 'both'].includes(tool)) throw new Error('请选择要测试的工具');
+  const isOCR = ['image_ocr', 'image_ocr_and_tools'].includes(tool);
+  if (!['web_search', 'web_read', 'both', 'image_ocr', 'image_ocr_and_tools'].includes(tool)) throw new Error('请选择要测试的工具');
   let target = trimText(form?.target);
   if (!Object.prototype.hasOwnProperty.call(form || {}, 'target')) {
-    target = tool === 'web_read' ? trimText(form?.url)
+    target = tool === 'web_read' || isOCR ? trimText(form?.url)
       : tool === 'both' ? trimText(form?.url) || trimText(form?.query) : trimText(form?.query);
   }
-  if (!target) throw new Error('请填写关键词或网页地址');
+  if (!target) throw new Error(isOCR ? '请填写图片地址' : '请填写关键词或网页地址');
   const isURL = target.includes('://');
-  if (isURL || tool === 'web_read') validateToolTestURL(target);
+  if (isURL || tool === 'web_read' || isOCR) validateToolTestURL(target);
   else if ([...target].length > 120) throw new Error('关键词不能超过 120 个字符');
   return { target, isURL };
 }
@@ -149,7 +150,11 @@ export function buildAIToolTestPrompt(form) {
   const { target, isURL } = resolveAIToolTestTarget(form);
   const tool = trimText(form?.tool);
   let instruction;
-  if (tool === 'web_read') {
+  if (tool === 'image_ocr') {
+    instruction = '请根据图片 OCR 的实际识别内容回报图片中的文字，再简述内容；本次不使用联网工具。';
+  } else if (tool === 'image_ocr_and_tools') {
+    instruction = '请先根据图片 OCR 的实际识别内容提炼关键词，调用一次 web_search，再从搜索结果中选择相关网页调用一次 web_read，等待正文返回后综合说明。';
+  } else if (tool === 'web_read') {
     instruction = '请调用一次 web_read 读取该网页，等待正文返回后简述内容。';
   } else if (tool === 'both') {
     instruction = isURL
@@ -174,9 +179,9 @@ export function buildAIToolTestPayload(form, fallbackConfig) {
   const mode = trimText(form?.mode);
   const tool = trimText(form?.tool) || (mode === 'ai_compression' ? 'none' : '');
   if (!['direct', 'ai', 'compression', 'ai_compression'].includes(mode)) throw new Error('请选择测试类型');
-  if (mode === 'ai' && !['web_search', 'web_read', 'both'].includes(tool)) throw new Error('请选择要测试的工具');
-  if (mode === 'ai_compression' && !['none', 'web_search', 'web_read', 'both'].includes(tool)) throw new Error('请选择要测试的工具');
-  if (mode === 'direct' && !['web_search', 'web_read'].includes(tool)) throw new Error('请选择要测试的工具');
+  if (mode === 'ai' && !['web_search', 'web_read', 'both', 'image_ocr', 'image_ocr_and_tools'].includes(tool)) throw new Error('请选择要测试的工具');
+  if (mode === 'ai_compression' && !['none', 'web_search', 'web_read', 'both', 'image_ocr', 'image_ocr_and_tools'].includes(tool)) throw new Error('请选择要测试的工具');
+  if (mode === 'direct' && !['web_search', 'web_read', 'image_ocr'].includes(tool)) throw new Error('请选择要测试的工具');
   const connection = buildAISearchTestForm(form);
   const fallback = buildAISearchTestForm(fallbackConfig);
   const compressionMode = trimText(form?.compressionMode) || 'configured';
@@ -208,7 +213,7 @@ export function buildAIToolTestPayload(form, fallbackConfig) {
     payload.query = isURL ? '' : target;
     payload.url = isURL ? target : '';
     if (mode === 'ai_compression' && !payload.history) throw new Error('请填写待压缩历史');
-  } else if (tool === 'web_read') {
+  } else if (tool === 'web_read' || tool === 'image_ocr') {
     validateToolTestURL(payload.url);
   } else {
     if (!payload.query) throw new Error('请填写搜索词');
@@ -249,7 +254,20 @@ function diagnosticHref(value) {
 function buildAIToolTestCalls(value) {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item, index) => {
-    if (!isDiagnosticObject(item) || !['web_search', 'web_read'].includes(item.tool)) return [];
+    if (!isDiagnosticObject(item) || !['web_search', 'web_read', 'image_ocr'].includes(item.tool)) return [];
+    if (item.tool === 'image_ocr') {
+      const text = typeof item.text === 'string' ? item.text : '';
+      const error = diagnosticText(item.error);
+      const target = diagnosticText(item.url);
+      const status = error ? 'error' : text.trim() ? 'success' : 'empty';
+      return [{
+        key: `${item.tool}-${index}`, tool: item.tool, title: '图片 OCR', targetLabel: '图片地址',
+        target, targetHref: diagnosticHref(target), text, error,
+        cached: typeof item.cached === 'boolean' ? item.cached : null,
+        status, statusText: { success: '识别成功', error: '识别失败', empty: '未识别到文字' }[status],
+        statusColor: { success: 'green', error: 'red', empty: 'orange' }[status],
+      }];
+    }
     const isSearch = item.tool === 'web_search';
     const payload = isDiagnosticObject(item.result) ? item.result : {};
     const error = diagnosticText(item.error) || (isSearch ? '' : diagnosticText(payload.error));

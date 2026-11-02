@@ -33,6 +33,14 @@
         </ol>
         <p v-else class="tool-call-hint">未返回可展示的搜索结果。</p>
       </template>
+      <template v-else-if="call.tool === 'image_ocr'">
+        <p class="tool-call-meta">缓存状态：{{ call.cached === true ? '缓存命中' : call.cached === false ? '未命中缓存' : '未知' }}</p>
+        <template v-if="call.text">
+          <h5>实际识别文本</h5>
+          <pre class="web-read-content" tabindex="0" aria-label="OCR 识别文本">{{ call.text }}</pre>
+        </template>
+        <p v-else class="tool-call-hint">未返回识别文本。</p>
+      </template>
       <template v-else>
         <div v-if="call.taskId || call.taskStatus" class="web-task-meta">
           <span v-if="call.taskId">任务编号：{{ call.taskId }}</span>

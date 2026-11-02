@@ -96,6 +96,22 @@ func TestFormatAIModelCompleteResponseAggregatesToolCallsWithoutSSEFrames(t *tes
 	}
 }
 
+func TestBuildAIToolTestPromptSupportsOCRAndCombinedTools(t *testing.T) {
+	for _, test := range []struct {
+		name, tool, target, want string
+	}{
+		{name: "ocr", tool: "image_ocr", target: "https://example.com/question.png", want: "OCR"},
+		{name: "combined", tool: "image_ocr_and_tools", target: "https://example.com/question.png", want: "web_search"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			prompt, err := BuildAIToolTestPrompt(test.tool, test.target)
+			if err != nil || !strings.Contains(prompt, test.want) {
+				t.Fatalf("prompt=%q err=%v", prompt, err)
+			}
+		})
+	}
+}
+
 func TestAISearchToolsSearchTwiceAndAccumulateUsage(t *testing.T) {
 	tool := &testAISearchTool{}
 	round := 0

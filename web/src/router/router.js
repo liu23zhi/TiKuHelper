@@ -23,6 +23,7 @@ import BillingRecordList from '../pages/BillingRecordList/index.vue'
 import RechargeOrderList from '../pages/RechargeOrderList/index.vue'
 import RechargeResult from '../pages/RechargeResult/index.vue'
 import LocationCache from '../pages/LocationCache/index.vue'
+import OCRCache from '../pages/OCRCache/index.vue'
 import Tickets from '../pages/Tickets/index.vue'
 const routes = [
   {
@@ -99,6 +100,11 @@ const routes = [
         component: AISearchConfig,
       },
       {
+        path: 'ocr-cache',
+        name: 'ocr-cache',
+        component: OCRCache,
+      },
+      {
         path: 'extension-updates',
         name: 'extension-updates',
         component: ExtensionUpdates,
@@ -157,6 +163,7 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   'loglist',
   'search-account-config',
   'ai-search-config',
+  'ocr-cache',
   'system-settings',
   'extension-updates',
   'location-cache',

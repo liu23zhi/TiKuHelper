@@ -72,6 +72,7 @@ const ADMIN_MENU_ITEMS = [
   { key: 'phone-location-cache', label: '手机号归属地信息管理', icon: PhoneOutlined },
   { key: 'search-account-config', label: '默认账号配置', icon: SettingOutlined },
   { key: 'ai-search-config', label: 'AI 搜索配置', icon: RobotOutlined },
+  { key: 'ocr-cache', label: 'OCR 缓存管理', icon: FileTextOutlined },
   { key: 'system-settings', label: '系统管理', icon: ToolOutlined },
   { key: 'extension-updates', label: '扩展更新', icon: DownloadOutlined },
   { key: 'access-tokens', label: '令牌管理', icon: SafetyCertificateOutlined },
