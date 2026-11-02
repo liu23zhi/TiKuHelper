@@ -2,7 +2,10 @@
   <div class="console-page ocr-cache-page">
     <ConsolePageHeading title="OCR 缓存管理" description="查看和维护已保存的图片识别结果。">
       <template #actions>
-        <a-button :loading="loading" :disabled="clearing" @click="load">刷新列表</a-button>
+        <a-space wrap>
+          <a-button type="primary" :disabled="clearing || adding" @click="openAddDialog">手动添加</a-button>
+          <a-button :loading="loading" :disabled="clearing || adding" @click="load">刷新列表</a-button>
+        </a-space>
       </template>
     </ConsolePageHeading>
     <ConsoleSummaryGrid>
@@ -10,6 +13,7 @@
       <a-statistic title="当前页" :value="rows.length" suffix="条" />
       <div class="provider-status"><span>识别服务</span><a-tag :color="configured ? 'green' : 'default'">{{ configured === undefined ? (loading ? '加载中' : '状态未知') : configured ? 'UAPI 已配置' : '未配置有效 UAPI 密钥' }}</a-tag></div>
     </ConsoleSummaryGrid>
+    <a-alert v-if="operationWarning" type="warning" show-icon :message="operationWarning" class="operation-alert" />
     <ConsolePanel title="筛选缓存" description="关键词匹配识别文本、图片 URL、URL 哈希、图片哈希或图片类型；更新时间按上海时间筛选，包含结束日期当天。">
       <a-form :model="filters" layout="inline" class="filter-form" @finish="reload">
         <a-form-item label="关键词">
@@ -39,9 +43,9 @@
     </ConsolePanel>
     <ConsolePanel title="识别结果" :description="scopeDescription">
       <template #actions>
-        <a-button danger :loading="clearing" :disabled="loading || !!errorMessage || !matched" @click="clearMatching">{{ hasFilters ? '清空筛选结果' : '清空全部缓存' }}</a-button>
+        <a-button danger :loading="clearing" :disabled="loading || adding || !!errorMessage || !matched" @click="clearMatching">{{ hasFilters ? '清空筛选结果' : '清空全部缓存' }}</a-button>
       </template>
-      <p class="cache-hint">保存识别文本、完整图片 URL 与哈希，不保存原始图片。命中缓存仍按现有搜题计费口径处理；清空不会取消正在执行的请求，旧请求的结果不会重新写回缓存。</p>
+      <!-- <p class="cache-hint">保存识别文本、完整图片 URL 与哈希，不保存原始图片。命中缓存仍按现有搜题计费口径处理；清空不会取消正在执行的请求，旧请求的结果不会重新写回缓存。</p> -->
       <ConsoleTableShell label="OCR 缓存记录">
         <a-table table-layout="fixed" :data-source="rows" :columns="columns" :loading="loading" :pagination="pagination" row-key="urlHash" :scroll="{ x: sumTableColumnWidths(columns) }" :locale="{ emptyText: errorMessage ? '列表加载失败，请重试' : '暂无符合条件的 OCR 缓存' }" @change="onTableChange">
           <template #bodyCell="{ column, record }">
@@ -54,7 +58,22 @@
         </a-table>
       </ConsoleTableShell>
     </ConsolePanel>
-    <a-modal v-model:open="detailVisible" title="OCR 缓存详情" :footer="null" width="760px">
+    <a-modal :open="addVisible" title="手动添加 OCR 缓存" ok-text="识别并添加" cancel-text="取消" :confirm-loading="adding" :closable="!adding" :mask-closable="!adding" :keyboard="!adding" :cancel-button-props="{ disabled: adding }" @ok="addOCRCache" @cancel="closeAddDialog">
+      <a-alert type="info" show-icon message="填写可直接访问的图片 URL，系统会自动识别并保存缓存；相同图片可复用已有结果，调用按现有 OCR 价格计入当前管理员账单。" class="add-hint" />
+      <a-form :model="addForm" layout="vertical" @finish="addOCRCache">
+        <a-form-item label="图片 URL" name="url" required>
+          <a-input v-model:value="addImageURL" type="url" :disabled="adding" placeholder="https://example.com/image.png" @press-enter.prevent="addOCRCache" />
+        </a-form-item>
+      </a-form>
+      <a-alert v-if="addError" type="error" show-icon :message="addError" class="status-alert" />
+      <a-alert v-if="addBillingWarning" type="warning" show-icon :message="addBillingWarning" class="status-alert" />
+      <p v-if="addRequestId" class="request-id">请求编号：{{ addRequestId }}</p>
+      <template v-if="addRecognizedText">
+        <h3 class="response-title">识别结果</h3>
+        <pre class="ocr-text">{{ addRecognizedText }}</pre>
+      </template>
+    </a-modal>
+    <a-modal :open="detailVisible" title="OCR 缓存详情" :footer="null" width="760px" @update:open="onDetailVisibilityChange">
       <a-descriptions :column="1" size="small" bordered>
         <a-descriptions-item label="图片 URL"><span class="url-value">{{ detailRecord.url || '历史记录未保存 URL' }}</span></a-descriptions-item>
         <a-descriptions-item label="URL 哈希"><code class="hash-value">{{ detailRecord.urlHash }}</code></a-descriptions-item>
@@ -62,6 +81,12 @@
         <a-descriptions-item label="图片类型">{{ detailRecord.contentType || '-' }}</a-descriptions-item>
         <a-descriptions-item label="更新时间（上海）">{{ formatDate(detailRecord.updatedAt) }}</a-descriptions-item>
       </a-descriptions>
+      <div class="current-image-tools">
+        <a-button type="primary" :loading="imageLoading" :disabled="!detailRecord.url" @click="loadCurrentImage">获取当前图片</a-button>
+        <a-alert v-if="imageError" type="error" show-icon :message="imageError" />
+        <a-spin v-if="imageLoading" tip="正在获取图片" />
+        <img v-if="currentImageUrl" :src="currentImageUrl" alt="缓存图片预览" class="current-image-preview" @error="handleCurrentImageError" />
+      </div>
       <h3 class="response-title">识别全文</h3>
       <pre class="ocr-text">{{ detailRecord.ocrText || '-' }}</pre>
     </a-modal>
@@ -72,8 +97,9 @@
 import { computed, defineComponent, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { Descriptions, message } from 'ant-design-vue'
 import Swal from 'sweetalert2'
-import { getAIOCRCacheEntries, clearAIOCRCache } from '@/api/TikuComponentApi'
+import { getAIOCRCacheEntries, getAIOCRCacheImage, clearAIOCRCache, testAIToolCall } from '@/api/TikuComponentApi'
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
+import { buildAIToolTestPayload } from '@/utils/aiSearchConfigHelpers.mjs'
 
 const emptyFilters = () => ({ keyword: '', contentType: '', updatedFrom: '', updatedTo: '' })
 const requestError = (error, fallback) => error?.response?.data?.message || error?.message || fallback
@@ -88,11 +114,23 @@ export default defineComponent({
     const appliedFilters = ref({})
     const loading = ref(false)
     const clearing = ref(false)
+    const addVisible = ref(false)
+    const adding = ref(false)
+    const addImageURL = ref('')
+    const addForm = reactive({ url: addImageURL })
+    const addError = ref('')
+    const addRequestId = ref('')
+    const addRecognizedText = ref('')
+    const addBillingWarning = ref('')
+    const operationWarning = ref('')
     const configured = ref(undefined)
     const matched = ref(0)
     const errorMessage = ref('')
     const detailVisible = ref(false)
     const detailRecord = ref({})
+    const imageLoading = ref(false)
+    const imageError = ref('')
+    const currentImageUrl = ref('')
     const pagination = reactive({ current: 1, pageSize: 20, total: 0, showSizeChanger: true, pageSizeOptions: ['10', '20', '50', '100'] })
     const contentTypes = computed(() => [...new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/bmp', 'image/tiff', ...rows.value.map(row => row.contentType), filters.contentType].filter(Boolean))])
     const hasFilters = computed(() => Object.keys(appliedFilters.value).length > 0)
@@ -114,6 +152,18 @@ export default defineComponent({
       return date && Number.isFinite(date.getTime()) ? date.toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' }) : '-'
     }
     let loadGeneration = 0
+    let imageGeneration = 0
+    let addGeneration = 0
+    const releaseCurrentImage = () => {
+      if (currentImageUrl.value) URL.revokeObjectURL(currentImageUrl.value)
+      currentImageUrl.value = ''
+    }
+    const clearImageState = () => {
+      imageGeneration++
+      releaseCurrentImage()
+      imageLoading.value = false
+      imageError.value = ''
+    }
     const load = async () => {
       if (clearing.value) return
       const generation = ++loadGeneration
@@ -159,9 +209,112 @@ export default defineComponent({
       pagination.pageSize = page.pageSize
       return load()
     }
-    const showDetails = record => { detailRecord.value = record; detailVisible.value = true }
+    const showDetails = record => {
+      clearImageState()
+      detailRecord.value = record
+      detailVisible.value = true
+    }
+    const closeDetails = () => {
+      detailVisible.value = false
+      clearImageState()
+    }
+    const onDetailVisibilityChange = visible => {
+      if (visible) detailVisible.value = true
+      else closeDetails()
+    }
+    const loadCurrentImage = async () => {
+      clearImageState()
+      const generation = ++imageGeneration
+      const record = detailRecord.value
+      if (!record?.url) {
+        imageError.value = '该历史缓存记录没有保存图片 URL'
+        return
+      }
+      if (!record?.urlHash) {
+        imageError.value = '该缓存记录缺少 URL 哈希，无法获取图片'
+        return
+      }
+      imageLoading.value = true
+      try {
+        const res = await getAIOCRCacheImage(record.urlHash)
+        if (generation !== imageGeneration || !detailVisible.value || detailRecord.value.urlHash !== record.urlHash) return
+        if (res?.status !== 200) {
+          let messageText = res?.message
+          if (!messageText && typeof res?.data?.text === 'function') {
+            try { messageText = JSON.parse(await res.data.text())?.message } catch { /* Keep the fallback for non-JSON error responses. */ }
+          }
+          throw new Error(messageText || '获取当前图片失败')
+        }
+        const blob = res.data
+        if (!(blob instanceof Blob) || !blob.type.startsWith('image/')) throw new Error('图片服务未返回有效图片')
+        currentImageUrl.value = URL.createObjectURL(blob)
+      } catch (error) {
+        if (generation === imageGeneration) imageError.value = requestError(error, '获取当前图片失败')
+      } finally {
+        if (generation === imageGeneration) imageLoading.value = false
+      }
+    }
+    const handleCurrentImageError = () => {
+      releaseCurrentImage()
+      imageError.value = '图片显示失败'
+    }
+    const resetAddResult = () => {
+      addError.value = ''
+      addRequestId.value = ''
+      addRecognizedText.value = ''
+      addBillingWarning.value = ''
+    }
+    const openAddDialog = () => {
+      if (adding.value || clearing.value) return
+      addGeneration++
+      addImageURL.value = ''
+      resetAddResult()
+      addVisible.value = true
+    }
+    const closeAddDialog = () => {
+      if (adding.value) return
+      addGeneration++
+      addVisible.value = false
+    }
+    const addOCRCache = async () => {
+      if (adding.value || clearing.value || !addVisible.value) return
+      let payload
+      try {
+        const { mode, tool, url } = buildAIToolTestPayload({ mode: 'direct', tool: 'image_ocr', url: addImageURL.value })
+        payload = { mode, tool, url }
+      } catch (error) {
+        addError.value = requestError(error, '请填写有效的图片 URL')
+        return
+      }
+      const generation = ++addGeneration
+      resetAddResult()
+      adding.value = true
+      try {
+        const res = await testAIToolCall(payload)
+        if (generation !== addGeneration) return
+        const data = res?.data || {}
+        addRequestId.value = data.requestId || ''
+        addBillingWarning.value = data.billingWarning || ''
+        addRecognizedText.value = Array.isArray(data.toolResult) ? (data.toolResult.find(item => item?.tool === 'image_ocr')?.text || '') : ''
+        if (res?.status !== 200 || !data.success) throw new Error(data.message || res?.message || '图片识别失败')
+        if (!data.ocrCacheEntry?.urlHash) throw new Error(data.ocrCacheWarning || '识别已完成，但未确认缓存保存成功。请先刷新列表核对，勿重复提交。')
+        operationWarning.value = addBillingWarning.value ? `${addBillingWarning.value}${addRequestId.value ? ` 请求编号：${addRequestId.value}` : ''}` : ''
+        addVisible.value = false
+        addImageURL.value = ''
+        // The diagnostic response redacts URL tokens; keep the administrator's
+        // original input for this preview while all cache lookups use urlHash.
+        showDetails({ ...data.ocrCacheEntry, url: payload.url })
+        message.success('OCR 缓存已添加')
+        pagination.current = 1
+        await load()
+      } catch (error) {
+        if (generation === addGeneration) addError.value = requestError(error, '图片识别请求失败，请先刷新列表核对后再试')
+      } finally {
+        if (generation === addGeneration) adding.value = false
+      }
+    }
     const clearMatching = async () => {
-      if (loading.value || clearing.value || errorMessage.value || !matched.value) return
+      if (loading.value || adding.value || clearing.value || errorMessage.value || !matched.value) return
       const scope = { ...appliedFilters.value }
       const filtered = Object.keys(scope).length > 0
       clearing.value = true
@@ -174,7 +327,7 @@ export default defineComponent({
         if (!result.isConfirmed) return
         const res = await clearAIOCRCache(scope)
         if (res?.status !== 200) throw new Error(res?.message || '清空 OCR 缓存失败')
-        detailVisible.value = false
+        closeDetails()
         message.success(`已清空 ${Number(res.data?.deleted || 0)} 条 OCR 缓存`)
         pagination.current = 1
         clearing.value = false
@@ -184,8 +337,8 @@ export default defineComponent({
       } finally { clearing.value = false }
     }
     onMounted(load)
-    onBeforeUnmount(() => { loadGeneration++ })
-    return { rows, filters, loading, clearing, configured, matched, errorMessage, detailVisible, detailRecord, pagination, contentTypes, hasFilters, scopeDescription, columns, formatDate, load, reload, resetFilters, onTableChange, showDetails, clearMatching }
+    onBeforeUnmount(() => { loadGeneration++; addGeneration++; clearImageState() })
+    return { rows, filters, loading, clearing, addVisible, adding, addImageURL, addForm, addError, addRequestId, addRecognizedText, addBillingWarning, operationWarning, configured, matched, errorMessage, detailVisible, detailRecord, imageLoading, imageError, currentImageUrl, pagination, contentTypes, hasFilters, scopeDescription, columns, formatDate, load, reload, resetFilters, onTableChange, showDetails, closeDetails, onDetailVisibilityChange, loadCurrentImage, handleCurrentImageError, openAddDialog, closeAddDialog, addOCRCache, clearMatching }
   },
 })
 </script>
@@ -195,12 +348,16 @@ export default defineComponent({
 .content-type-select { width: 170px; }
 .filter-form { row-gap: 16px; }
 .status-alert { margin-top: 16px; }
+.operation-alert, .add-hint { margin-bottom: 16px; }
+.request-id { margin: 12px 0 0; overflow-wrap: anywhere; color: var(--console-muted); }
 .provider-status { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; color: var(--console-muted); }
 .cache-hint { margin: 0 0 20px; color: var(--console-muted); line-height: 1.7; }
 .hash-value { overflow-wrap: anywhere; white-space: normal; }
 .url-value { overflow-wrap: anywhere; white-space: normal; }
 .text-preview { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; }
 .response-title { margin: 20px 0 8px; font-size: 14px; }
+.current-image-tools { display: grid; justify-items: start; gap: 12px; margin-top: 16px; }
+.current-image-preview { display: block; max-width: 100%; max-height: 55vh; object-fit: contain; border: 1px solid var(--console-border); border-radius: var(--console-radius); }
 .ocr-text { max-height: 440px; padding: 16px; margin: 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--console-text); background: var(--console-subtle); border: 1px solid var(--console-border); border-radius: var(--console-radius); }
 @media (max-width: 600px) {
   .keyword-input, .content-type-select { width: 100%; }

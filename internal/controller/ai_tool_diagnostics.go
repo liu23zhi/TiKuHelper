@@ -236,12 +236,21 @@ func TestAIToolCall(c *gin.Context) {
 	}
 	var ocrResults []any
 	var ocrResultsLock sync.Mutex
+	var confirmOCRCache func() (*entity.AIOCRCache, error)
 	if ocrProvider != nil {
 		provider := ocrProvider
 		ocrProvider = func(ctx context.Context, address, name, contentType string, image []byte) (string, bool, error) {
 			text, cached, callErr := provider(ctx, address, name, contentType, image)
 			ocrResultsLock.Lock()
 			ocrResults = append(ocrResults, gin.H{"tool": "image_ocr", "url": address, "text": text, "cached": cached, "error": toolTestError(callErr)})
+			if input.Mode == "direct" && input.Tool == "image_ocr" && callErr == nil && strings.TrimSpace(text) != "" {
+				// Keep the successful result separate from persistence confirmation.
+				// Re-read after billing so a clear during execution is not reported
+				// as a successful manual cache addition, and never repeat OCR.
+				confirmOCRCache = func() (*entity.AIOCRCache, error) {
+					return service.FindMatchingAIOCRCacheEntryWithDB(db, address, image, text)
+				}
+			}
 			ocrResultsLock.Unlock()
 			return text, cached, callErr
 		}
@@ -356,13 +365,30 @@ func TestAIToolCall(c *gin.Context) {
 		toolResults = recorder.results
 	}
 	toolResults = append(ocrResults, toolResults...)
-	c.JSON(http.StatusOK, redactAIToolTestData(gin.H{
+	response := gin.H{
 		"success": err == nil, "message": message, "requestId": requestID, "answers": flattened,
 		"testPrompt": testPrompt,
 		"toolResult": toolResults, "compression": compression, "usage": debug.Usage, "trace": debug.Usage.Trace,
 		"requestBody": debug.RequestBody, "rawResponse": debug.RawResponse, "endpoint": debug.Endpoint,
 		"billingRecord": billingRecord, "billingWarning": warning,
-	}, secrets))
+	}
+	if input.Mode == "direct" && input.Tool == "image_ocr" {
+		var entry *entity.AIOCRCache
+		cacheWarning := ""
+		if err == nil {
+			var confirmErr error
+			if confirmOCRCache != nil {
+				entry, confirmErr = confirmOCRCache()
+			}
+			if confirmErr != nil {
+				cacheWarning = "OCR 识别已完成，但读取缓存失败，请刷新列表核对，勿直接重复提交。"
+			} else if entry == nil {
+				cacheWarning = "OCR 识别已完成，但未确认缓存已保存，可能写入失败或已被清空。请刷新列表核对，勿直接重复提交。"
+			}
+		}
+		response["ocrCacheEntry"], response["ocrCacheWarning"] = entry, cacheWarning
+	}
+	c.JSON(http.StatusOK, redactAIToolTestData(response, secrets))
 }
 
 func runDirectAIToolTest(ctx context.Context, recorder *recordedAITestTool, tool, target string) (search.AISearchDebugResult, error) {

@@ -31,12 +31,13 @@
     </ConsoleSummaryGrid>
 
     <a-card :bordered="false" class="page-card">
-      <a-alert
+      <!-- <a-alert
         type="info"
         show-icon
         class="page-alert"
         message="令牌默认隐藏中间部分；如需核对完整值，可点击右侧按钮直接查看，也可直接复制。"
-      />
+      /> -->
+      
       <!-- 访问令牌用于 /adapter-service/search 的 Authorization: Basic xxxx 认证。 -->
 
       <a-alert

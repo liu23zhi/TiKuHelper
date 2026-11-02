@@ -4,6 +4,7 @@ import test from 'node:test'
 import { compile, computed, createSSRApp, defineComponent, h, reactive, ref } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 import { sumTableColumnWidths } from './tableLayout.mjs'
+import { buildAIToolTestPayload } from './aiSearchConfigHelpers.mjs'
 
 const row = { url: 'https://images.example.test/question.png?token=original', urlHash: 'a'.repeat(64), imageSha256: 'b'.repeat(64), contentType: 'image/png', ocrText: '完整识别结果\n第二行', updatedAt: '2026-11-02T00:00:00Z' }
 const response = (data = {}) => ({ status: 200, data: { data: [row], total: 1, summary: { matched: 1 }, configured: true, ...data } })
@@ -11,11 +12,15 @@ async function createPage(overrides = {}) {
   const source = await readFile(new URL('../pages/OCRCache/index.vue', import.meta.url), 'utf8')
   const script = source.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '').replace('export default defineComponent', 'return defineComponent')
   const dependencies = {
-    computed, defineComponent, reactive, ref, sumTableColumnWidths,
+    computed, defineComponent, reactive, ref, sumTableColumnWidths, buildAIToolTestPayload,
     onMounted() {}, onBeforeUnmount() {},
-    Descriptions: { Item: {} }, message: { success() {} },
+    Descriptions: { Item: {} }, message: { success() {}, error() {} },
     Swal: { fire: async () => ({ isConfirmed: true }) },
     getAIOCRCacheEntries: async () => response(),
+    Blob,
+    getAIOCRCacheImage: async () => ({ status: 200, data: new Blob(['image'], { type: 'image/png' }) }),
+    URL: { createObjectURL: () => 'blob:ocr-preview', revokeObjectURL() {} },
+    testAIToolCall: async () => ({ status: 200, data: { success: true, ocrCacheEntry: row } }),
     clearAIOCRCache: async () => ({ status: 200, data: { deleted: 1 } }),
     ...overrides,
   }
@@ -40,7 +45,7 @@ test('OCR list and detail show the full original URL as escaped plain text', asy
   page.showDetails(page.rows.value[0])
   const html = await renderPage(page)
   const listURL = html.match(/<td data-column="url">([\s\S]*?)<\/td>/)?.[1] || ''
-  const detailURL = html.match(/<div[^>]*label="图片 URL"[^>]*>([\s\S]*?)<\/div>/)?.[1] || ''
+  const detailURL = html.match(/<div[^>]*label="图片 URL"[^>]*><span class="url-value">([\s\S]*?)<\/span><\/div>/)?.[1] || ''
   const escapedURL = url.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
   for (const displayed of [listURL, detailURL]) {
     assert.ok(displayed.includes(escapedURL), 'URL must keep every original character without truncation')
@@ -56,9 +61,184 @@ test('OCR list and detail identify historical records without a stored URL', asy
   page.showDetails(page.rows.value[0])
   const html = await renderPage(page)
   const listURL = html.match(/<td data-column="url">([\s\S]*?)<\/td>/)?.[1] || ''
-  const detailURL = html.match(/<div[^>]*label="图片 URL"[^>]*>([\s\S]*?)<\/div>/)?.[1] || ''
+  const detailURL = html.match(/<div[^>]*label="图片 URL"[^>]*><span class="url-value">([\s\S]*?)<\/span><\/div>/)?.[1] || ''
   assert.match(listURL, /历史记录未保存 URL/)
   assert.match(detailURL, /历史记录未保存 URL/)
+})
+
+test('OCR detail fetches the stored image on demand and renders the returned blob', async () => {
+  const calls = []
+  const page = await createPage({ getAIOCRCacheImage: async hash => { calls.push(hash); return { status: 200, data: new Blob(['image'], { type: 'image/png' }) } } })
+  page.showDetails(row)
+  await page.loadCurrentImage()
+  assert.deepEqual(calls, [row.urlHash])
+  assert.equal(page.currentImageUrl.value, 'blob:ocr-preview')
+  assert.equal(page.imageLoading.value, false)
+  const html = await renderPage(page)
+  assert.match(html, /获取当前图片/)
+  assert.match(html, /<img[^>]+src="blob:ocr-preview"/)
+})
+
+test('OCR detail reports image fetch failure and never requests an unsaved historical URL', async () => {
+  let calls = 0
+  const page = await createPage({
+    getAIOCRCacheImage: async () => { calls++; return { status: 502, data: new Blob([JSON.stringify({ message: '图片源暂不可用' })], { type: 'application/json' }) } },
+  })
+  page.showDetails(row)
+  await page.loadCurrentImage()
+  assert.equal(calls, 1)
+  assert.match(page.imageError.value, /图片源暂不可用/)
+  assert.equal(page.imageLoading.value, false)
+  assert.equal(page.currentImageUrl.value, '')
+  page.showDetails({ ...row, url: '' })
+  await page.loadCurrentImage()
+  assert.equal(calls, 1)
+  assert.match(page.imageError.value, /没有保存图片 URL/)
+})
+
+test('OCR detail releases the temporary image URL when closed or switched', async () => {
+  const revoked = []
+  const page = await createPage({ URL: { createObjectURL: () => 'blob:ocr-preview', revokeObjectURL: value => revoked.push(value) } })
+  page.showDetails(row)
+  await page.loadCurrentImage()
+  page.showDetails({ ...row, urlHash: 'next-row' })
+  assert.deepEqual(revoked, ['blob:ocr-preview'])
+  await page.loadCurrentImage()
+  page.closeDetails()
+  assert.deepEqual(revoked, ['blob:ocr-preview', 'blob:ocr-preview'])
+  assert.equal(page.currentImageUrl.value, '')
+})
+
+test('OCR detail ignores a late image response after it closes', async () => {
+  let finishRequest
+  const created = []
+  const page = await createPage({
+    getAIOCRCacheImage: () => new Promise(resolve => { finishRequest = resolve }),
+    URL: { createObjectURL: () => { created.push('created'); return 'blob:ocr-preview' }, revokeObjectURL() {} },
+  })
+  page.showDetails(row)
+  const pending = page.loadCurrentImage()
+  page.closeDetails()
+  finishRequest({ status: 200, data: new Blob(['image'], { type: 'image/png' }) })
+  await pending
+  assert.deepEqual(created, [])
+  assert.equal(page.currentImageUrl.value, '')
+  assert.equal(page.imageLoading.value, false)
+})
+
+test('OCR cache manual add runs the existing direct OCR flow and reloads after success', async () => {
+  const calls = []
+  const listCalls = []
+  const page = await createPage({
+    testAIToolCall: async body => { calls.push(body); return { status: 200, data: { success: true, ocrCacheEntry: { ...row, url: body.url } } } },
+    getAIOCRCacheEntries: async params => { listCalls.push(params); return response() },
+  })
+  page.openAddDialog()
+  page.addImageURL.value = 'https://images.example.test/manual.png?token=abc'
+  assert.equal(page.addForm.url, page.addImageURL.value)
+  await page.addOCRCache()
+  assert.deepEqual(calls, [{ mode: 'direct', tool: 'image_ocr', url: 'https://images.example.test/manual.png?token=abc' }])
+  assert.equal(page.addVisible.value, false)
+  assert.equal(page.adding.value, false)
+  assert.equal(page.addImageURL.value, '')
+  assert.equal(page.detailVisible.value, true)
+  assert.equal(page.detailRecord.value.url, 'https://images.example.test/manual.png?token=abc')
+  assert.equal(listCalls.length, 1)
+  const html = await renderPage(page)
+  assert.match(html, /手动添加/)
+  assert.match(html, /识别并添加/)
+  assert.match(html, /计入当前管理员账单/)
+})
+
+test('OCR cache manual add retains the URL and explains OCR failure', async () => {
+  let calls = 0
+  const page = await createPage({ testAIToolCall: async () => { calls++; return { status: 200, data: { success: false, message: '工具调用测试失败：图片 OCR 失败' } } } })
+  page.openAddDialog()
+  page.addImageURL.value = 'https://images.example.test/manual.png'
+  await page.addOCRCache()
+  assert.equal(calls, 1)
+  assert.equal(page.addVisible.value, true)
+  assert.equal(page.addImageURL.value, 'https://images.example.test/manual.png')
+  assert.match(page.addError.value, /图片 OCR 失败/)
+  assert.equal(page.adding.value, false)
+})
+
+test('OCR cache manual add validates before requesting and prevents duplicate submission', { timeout: 5000 }, async () => {
+  let finishRequest
+  let calls = 0
+  const page = await createPage({ testAIToolCall: () => { calls++; return new Promise(resolve => { finishRequest = resolve }) } })
+  page.openAddDialog()
+  for (const url of ['', 'file:///image.png', 'https://example.com/image.png#fragment', 'https://user:pass@example.com/image.png']) {
+    page.addImageURL.value = url
+    await page.addOCRCache()
+    assert.equal(calls, 0)
+    assert.ok(page.addError.value)
+  }
+  page.addImageURL.value = 'https://images.example.test/manual.png'
+  const pending = page.addOCRCache()
+  await page.addOCRCache()
+  page.closeAddDialog()
+  assert.equal(calls, 1)
+  assert.equal(page.addVisible.value, true)
+  assert.equal(page.adding.value, true)
+  finishRequest({ status: 200, data: { success: true, ocrCacheEntry: row } })
+  await pending
+})
+
+test('OCR recognition alone never reports manual cache addition success', async () => {
+  const page = await createPage({ testAIToolCall: async () => ({ status: 200, data: {
+    success: true, requestId: 'tool-test-not-saved', ocrCacheEntry: null, ocrCacheWarning: '识别成功，但缓存未保存，请先刷新核对。',
+    toolResult: [{ tool: 'image_ocr', text: '实际识别文字' }], billingWarning: '账单已排队',
+  } }) })
+  page.openAddDialog()
+  page.addImageURL.value = 'https://images.example.test/manual.png'
+  await page.addOCRCache()
+  assert.equal(page.addVisible.value, true)
+  assert.match(page.addError.value, /缓存未保存/)
+  assert.equal(page.addRequestId.value, 'tool-test-not-saved')
+  assert.equal(page.addRecognizedText.value, '实际识别文字')
+  assert.equal(page.addBillingWarning.value, '账单已排队')
+})
+
+test('OCR cache manual add preserves billing warnings and submitted filters after saving', async () => {
+  const scopes = []
+  const page = await createPage({
+    testAIToolCall: async () => ({ status: 200, data: { success: true, ocrCacheEntry: row, requestId: 'tool-test-saved', billingWarning: '账单已排队' } }),
+    getAIOCRCacheEntries: async scope => { scopes.push(scope); return response() },
+  })
+  page.filters.keyword = '已提交筛选'
+  await page.reload()
+  page.filters.keyword = '未提交输入'
+  page.openAddDialog()
+  page.addImageURL.value = row.url
+  await page.addOCRCache()
+  assert.equal(scopes.at(-1).keyword, '已提交筛选')
+  assert.equal(page.filters.keyword, '未提交输入')
+  assert.equal(page.addVisible.value, false)
+  assert.match(page.operationWarning.value, /账单已排队/)
+  assert.match(page.operationWarning.value, /tool-test-saved/)
+})
+
+test('OCR cache manual add keeps the original signed URL when the diagnostic response redacts it', async () => {
+  const page = await createPage({ testAIToolCall: async () => ({ status: 200, data: { success: true, ocrCacheEntry: { ...row, url: 'https://images.example.test/image.png?token=[REDACTED]' } } }) })
+  page.openAddDialog()
+  page.addImageURL.value = row.url
+  await page.addOCRCache()
+  assert.equal(page.detailRecord.value.url, row.url)
+  assert.equal(page.detailRecord.value.urlHash, row.urlHash)
+})
+
+test('OCR cache manual add retains network uncertainty without retrying the OCR request', async () => {
+  let calls = 0
+  const page = await createPage({ testAIToolCall: async () => { calls++; throw new Error('网络中断，操作结果未确认。请先刷新核对，勿重复提交。') } })
+  page.openAddDialog()
+  page.addImageURL.value = row.url
+  await page.addOCRCache()
+  assert.equal(calls, 1)
+  assert.equal(page.addImageURL.value, row.url)
+  assert.equal(page.addVisible.value, true)
+  assert.match(page.addError.value, /先刷新核对，勿重复提交/)
+  assert.equal(page.adding.value, false)
 })
 
 test('OCR filters, pagination and matching count use the same submitted scope', async () => {
@@ -182,6 +362,8 @@ test('OCR cache management is linked only from the administrator menu and protec
   assert.match(menu.match(/const ADMIN_MENU_ITEMS[\s\S]*?\n\]/)[0], /key: 'ocr-cache', label: 'OCR 缓存管理'/)
   assert.doesNotMatch(menu.match(/const USER_MENU_ITEMS[\s\S]*?\n\]/)[0], /ocr-cache/)
   assert.match(api, /export function getAIOCRCacheEntries\(params\)[\s\S]*?ocr-cache\/entries/)
+  assert.match(api, /export function getAIOCRCacheImage\(urlHash\)[\s\S]*?responseType: 'blob'/)
+  assert.match(api, /ocr-cache\/entries\/\$\{encodeURIComponent\(urlHash\)\}\/image/)
   assert.match(api, /export function clearAIOCRCache\(params\)[\s\S]*?method: 'delete',\s*params/)
   assert.match(page, /a-form :model="filters"/)
   assert.doesNotMatch(page, /v-html/)

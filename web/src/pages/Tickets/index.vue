@@ -43,7 +43,7 @@
           /></a-form-item>
           <a-form-item
             label="Webhook 地址"
-            help="只接受企业微信机器人 HTTPS 地址；地址默认隐藏，点击眼睛可查看。"
+            help="只接受企业微信机器人 HTTPS 地址。"
           >
             <a-input-password
               v-model:value="notificationConfig.webhookUrl"

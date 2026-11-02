@@ -241,6 +241,28 @@ func backfillAIOCRCacheURL(db *gorm.DB, urlHash, imageHash, sourceURL string, ep
 	}
 }
 
+// FindMatchingAIOCRCacheEntryWithDB confirms a completed OCR result by reading
+// its exact persisted fingerprints. It never calls OCR or writes missing rows;
+// a cache write failure or a concurrent clear must not be reported as saved.
+func FindMatchingAIOCRCacheEntryWithDB(db *gorm.DB, sourceURL string, image []byte, text string) (*entity.AIOCRCache, error) {
+	if db == nil {
+		return nil, ErrAIOCRCacheUnavailable
+	}
+	text = strings.TrimSpace(text)
+	if strings.TrimSpace(sourceURL) == "" || len(image) == 0 || text == "" {
+		return nil, nil
+	}
+	var entry entity.AIOCRCache
+	result := db.Session(&gorm.Session{NewDB: true}).Where("url_hash = ? AND image_sha256 = ?", hashAIOCRURL(sourceURL), hashAIOCRImage(image)).Limit(1).Find(&entry)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected == 0 || entry.URL != sourceURL || strings.TrimSpace(entry.OCRText) != text {
+		return nil, nil
+	}
+	return &entry, nil
+}
+
 func isAIOCRProviderConfigured(db *gorm.DB) bool {
 	if db == nil {
 		return false

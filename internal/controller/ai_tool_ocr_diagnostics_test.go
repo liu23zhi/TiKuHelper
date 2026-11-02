@@ -2,7 +2,10 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -12,8 +15,94 @@ import (
 	searchpkg "github.com/itihey/tikuAdapter/internal/search"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/internal/uapi"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"gorm.io/gorm"
 )
+
+func TestAIToolOCRReportsOnlyMatchingPersistedCacheWithoutChangingBilling(t *testing.T) {
+	for _, scenario := range []string{"saved", "missing", "changed-image", "changed-text", "missing-url", "cleared-after-ocr", "read-failed"} {
+		t.Run(scenario, func(t *testing.T) {
+			db := newSearchControllerTestDB(t)
+			if err := db.AutoMigrate(&entity.AIOCRCache{}); err != nil {
+				t.Fatal(err)
+			}
+			user := seedControllerUser(t, db, 0, "ocr-persisted-admin", "admin")
+			if err := db.Model(&user).Update("balance", 10).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := service.SetImageOCRPricePerCallWithDB(db, 0.015); err != nil {
+				t.Fatal(err)
+			}
+			address := "https://images.example/image.png?token=full%2Fvalue&x=1"
+			imageBytes := []byte("image fixture")
+			urlHash, imageHash := sha256.Sum256([]byte("uapi-image-ocr-plain-v1\x00"+address)), sha256.Sum256(imageBytes)
+			stored := entity.AIOCRCache{URLHash: hex.EncodeToString(urlHash[:]), URL: address, ImageSHA256: hex.EncodeToString(imageHash[:]), ContentType: "image/png", OCRText: "识别原文"}
+			if scenario == "changed-image" {
+				stored.ImageSHA256 = strings.Repeat("f", 64)
+			} else if scenario == "changed-text" {
+				stored.OCRText = "另一版本文字"
+			} else if scenario == "missing-url" {
+				stored.URL = ""
+			}
+			if scenario != "missing" {
+				if err := db.Create(&stored).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			originalOCR, originalDirect := newAIToolTestOCRProvider, runAIImageOCRTest
+			t.Cleanup(func() { newAIToolTestOCRProvider, runAIImageOCRTest = originalOCR, originalDirect })
+			ocrCalls := 0
+			newAIToolTestOCRProvider = func(*gorm.DB) searchpkg.AIImageOCRCacheProvider {
+				return func(context.Context, string, string, string, []byte) (string, bool, error) {
+					ocrCalls++
+					return "识别原文", false, nil
+				}
+			}
+			runAIImageOCRTest = func(ctx context.Context, client *searchpkg.ChatGptClient, target string) (string, searchpkg.AISearchDebugResult, error) {
+				text, cached, err := client.OCRCacheProvider(ctx, target, "image.png", "image/png", imageBytes)
+				if scenario == "cleared-after-ocr" {
+					if _, clearErr := service.ClearAIOCRCacheWithDB(db); clearErr != nil {
+						t.Fatal(clearErr)
+					}
+				} else if scenario == "read-failed" {
+					if callbackErr := db.Callback().Query().Before("gorm:query").Register("fail_cache_confirmation", func(tx *gorm.DB) {
+						if tx.Statement.Table == entity.TableNameAIOCRCache {
+							tx.AddError(errors.New("cache read unavailable"))
+						}
+					}); callbackErr != nil {
+						t.Fatal(callbackErr)
+					}
+				}
+				return text, searchpkg.AISearchDebugResult{Usage: searchpkg.AISearchUsage{OCRCalls: []searchpkg.AIOCRCallUsage{{API: client.OCRAPI, ImageURL: target, Status: "success", TextChars: len([]rune(text)), Cached: cached}}}}, err
+			}
+			body, _ := json.Marshal(gin.H{"mode": "direct", "tool": "image_ocr", "url": address})
+			res := callToolTest(t, user, string(body))
+			var response struct {
+				Success         bool               `json:"success"`
+				OCRCacheEntry   *entity.AIOCRCache `json:"ocrCacheEntry"`
+				OCRCacheWarning string             `json:"ocrCacheWarning"`
+				RequestID       string             `json:"requestId"`
+			}
+			if err := json.Unmarshal(res.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if res.Code != http.StatusOK || !response.Success || ocrCalls != 1 || response.RequestID == "" {
+				t.Fatalf("OCR execution changed: status=%d calls=%d body=%s", res.Code, ocrCalls, res.Body)
+			}
+			if scenario == "saved" {
+				if response.OCRCacheEntry == nil || response.OCRCacheEntry.URL != logger.RedactSecrets(address) || response.OCRCacheEntry.URLHash != stored.URLHash || response.OCRCacheEntry.OCRText != stored.OCRText || response.OCRCacheWarning != "" {
+					t.Fatalf("stored OCR cache was not confirmed: %s", res.Body)
+				}
+			} else if response.OCRCacheEntry != nil || response.OCRCacheWarning == "" {
+				t.Fatalf("unconfirmed OCR cache was reported saved: %s", res.Body)
+			}
+			var records []entity.BillingRecord
+			if err := db.Where("provider = ?", "ai_ocr").Find(&records).Error; err != nil || len(records) != 1 || records[0].Amount != 0.015 {
+				t.Fatalf("cache confirmation changed billing: records=%+v err=%v", records, err)
+			}
+		})
+	}
+}
 
 func TestAIToolOCRRejectsInvalidInputAndMissingProvider(t *testing.T) {
 	for _, body := range []string{

@@ -130,6 +130,7 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/ai-search-config/pricing-status", controller.Auth, middleware.RequireAdmin, controller.AISearchConfigPricingStatus)
 	apiRouter.GET("/ai-search-config/ocr-cache", controller.Auth, middleware.RequireAdmin, controller.AIOCRCacheStatus)
 	apiRouter.GET("/ai-search-config/ocr-cache/entries", controller.Auth, middleware.RequireAdmin, controller.AIOCRCacheList)
+	apiRouter.GET("/ai-search-config/ocr-cache/entries/:url_hash/image", controller.Auth, middleware.RequireAdmin, controller.AIOCRCacheImage)
 	apiRouter.DELETE("/ai-search-config/ocr-cache", controller.Auth, middleware.RequireAdmin, controller.ClearAIOCRCache)
 	apiRouter.POST("/ai-search-config/test", controller.Auth, controller.TestAISearchConfig)
 	apiRouter.POST("/ai-search-config/tool-test", controller.Auth, middleware.RequireAdmin, controller.TestAIToolCall)

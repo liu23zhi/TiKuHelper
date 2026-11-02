@@ -559,6 +559,15 @@ export function getAIOCRCacheEntries(params) {
   })
 }
 
+export function getAIOCRCacheImage(urlHash) {
+  return request({
+    url: `/adapter-service/ai-search-config/ocr-cache/entries/${encodeURIComponent(urlHash)}/image`,
+    method: 'get',
+    responseType: 'blob',
+    timeout: 20 * 1000,
+  })
+}
+
 export function clearAIOCRCache(params) {
   return request({
     url: `/adapter-service/ai-search-config/ocr-cache`,

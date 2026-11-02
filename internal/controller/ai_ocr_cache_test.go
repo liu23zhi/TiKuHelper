@@ -1,10 +1,15 @@
 package controller
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,13 +59,116 @@ func TestAIOCRCacheAdminEndpointsRequireAdminBeforeDatabaseAccess(t *testing.T) 
 		return nil
 	}
 	t.Cleanup(func() { aiOCRCacheDatabase = original })
-	for _, handler := range []gin.HandlerFunc{AIOCRCacheList, AIOCRCacheStatus, ClearAIOCRCache} {
+	for _, handler := range []gin.HandlerFunc{AIOCRCacheList, AIOCRCacheStatus, AIOCRCacheImage, ClearAIOCRCache} {
 		for role, want := range map[string]int{"": http.StatusUnauthorized, "user": http.StatusForbidden} {
 			response := callAIOCRCacheAdmin(t, handler, "", role)
 			if response.Code != want {
 				t.Fatalf("role=%q: status=%d want=%d body=%s", role, response.Code, want, response.Body.String())
 			}
 		}
+	}
+}
+
+func callAIOCRCacheImage(t *testing.T, hash string, role string) *httptest.ResponseRecorder {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/ai-search-config/ocr-cache/entries/"+hash+"/image", nil)
+	if role != "" {
+		c.Set("user", &entity.User{ID: 1, Role: role, Status: "enabled"})
+	}
+	c.Params = gin.Params{{Key: "url_hash", Value: hash}}
+	AIOCRCacheImage(c)
+	return recorder
+}
+
+type imageRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn imageRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return fn(req) }
+
+func TestAIOCRCacheImageServesStoredImageForAdmins(t *testing.T) {
+	db := newAIOCRCacheControllerTestDB(t)
+	const storedURL = "https://images.example.test/question.png?token=private%2Fvalue&x=1"
+	if err := db.Create(&entity.AIOCRCache{URLHash: strings.Repeat("a", 64), URL: storedURL, ImageSHA256: "sha", OCRText: "识别"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var imageBytes bytes.Buffer
+	if err := png.Encode(&imageBytes, image.NewRGBA(image.Rect(0, 0, 2, 2))); err != nil {
+		t.Fatal(err)
+	}
+	original := newAIOCRCacheImageHTTPClient
+	t.Cleanup(func() { newAIOCRCacheImageHTTPClient = original })
+	newAIOCRCacheImageHTTPClient = func() *http.Client {
+		return &http.Client{Transport: imageRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.URL.String() != storedURL {
+				t.Errorf("request URL=%q, want stored URL %q", req.URL, storedURL)
+			}
+			if req.Header.Get("Referer") != "https://mooc1.chaoxing.com/" || req.Header.Get("Origin") != "https://mooc1.chaoxing.com" || req.Header.Get("User-Agent") != "Mozilla/5.0" {
+				t.Errorf("missing source image headers: %+v", req.Header)
+			}
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"image/png"}}, Body: io.NopCloser(bytes.NewReader(imageBytes.Bytes())), ContentLength: int64(imageBytes.Len()), Request: req}, nil
+		})}
+	}
+	response := callAIOCRCacheImage(t, strings.Repeat("a", 64), "admin")
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "image/png" || response.Header().Get("X-Content-Type-Options") != "nosniff" || response.Header().Get("Cache-Control") != "private, no-store" || !bytes.Equal(response.Body.Bytes(), imageBytes.Bytes()) {
+		t.Fatalf("image response: status=%d headers=%v body=%d bytes", response.Code, response.Header(), response.Body.Len())
+	}
+}
+
+func TestAIOCRCacheImageRejectsMissingURLAndUnsafeURL(t *testing.T) {
+	db := newAIOCRCacheControllerTestDB(t)
+	for _, row := range []entity.AIOCRCache{
+		{URLHash: strings.Repeat("d", 64), ImageSHA256: "a", OCRText: "legacy"},
+		{URLHash: strings.Repeat("e", 64), URL: "http://127.0.0.1/private", ImageSHA256: "b", OCRText: "unsafe"},
+	} {
+		if err := db.Create(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, test := range []struct {
+		hash string
+		want int
+	}{{strings.Repeat("f", 64), http.StatusNotFound}, {strings.Repeat("d", 64), http.StatusNotFound}, {strings.Repeat("e", 64), http.StatusBadRequest}} {
+		response := callAIOCRCacheImage(t, test.hash, "admin")
+		if response.Code != test.want {
+			t.Errorf("hash=%s status=%d want=%d body=%s", test.hash, response.Code, test.want, response.Body.String())
+		}
+	}
+}
+
+func TestAIOCRCacheImageRejectsNonImagesAndOversizedResponses(t *testing.T) {
+	db := newAIOCRCacheControllerTestDB(t)
+	for _, hash := range []string{strings.Repeat("b", 64), strings.Repeat("c", 64)} {
+		if err := db.Create(&entity.AIOCRCache{URLHash: hash, URL: "https://images.example.test/image", ImageSHA256: "sha", OCRText: "识别"}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	original := newAIOCRCacheImageHTTPClient
+	t.Cleanup(func() { newAIOCRCacheImageHTTPClient = original })
+	newAIOCRCacheImageHTTPClient = func() *http.Client {
+		return &http.Client{Transport: imageRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if strings.Contains(req.URL.Path, "image") && req.URL.Query().Get("case") == "large" {
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"image/png"}}, Body: io.NopCloser(strings.NewReader("")), ContentLength: maxAIOCRCacheImageBytes + 1, Request: req}, nil
+			}
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"text/html"}}, Body: io.NopCloser(strings.NewReader("<html>not an image</html>")), Request: req}, nil
+		})}
+	}
+	for _, test := range []struct {
+		hash string
+		want int
+	}{{strings.Repeat("b", 64), http.StatusUnsupportedMediaType}, {strings.Repeat("c", 64), http.StatusUnsupportedMediaType}} {
+		response := callAIOCRCacheImage(t, test.hash, "admin")
+		if response.Code != test.want {
+			t.Errorf("hash=%s status=%d want=%d", test.hash[:1], response.Code, test.want)
+		}
+	}
+	if err := db.Model(&entity.AIOCRCache{}).Where("url_hash = ?", strings.Repeat("c", 64)).Update("url", "https://images.example.test/image?case=large").Error; err != nil {
+		t.Fatal(err)
+	}
+	response := callAIOCRCacheImage(t, strings.Repeat("c", 64), "admin")
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized response status=%d want=%d", response.Code, http.StatusRequestEntityTooLarge)
 	}
 }
 
