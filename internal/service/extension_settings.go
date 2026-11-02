@@ -65,7 +65,7 @@ func loadExtensionSettings(db *gorm.DB) (ExtensionUpdateSettings, bool, error) {
 		return settings, false, nil
 	}
 	var row entity.SystemSetting
-	err := db.Where("key = ?", extensionSettingsKey).First(&row).Error
+	err := db.Where(map[string]any{"key": extensionSettingsKey}).First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return settings, false, nil
 	}

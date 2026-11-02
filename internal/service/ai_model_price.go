@@ -321,7 +321,7 @@ func aimodelPriceDefaultsFingerprint() string {
 // aimodelPriceSeededMarker 读取上次同步时记录的默认表指纹。
 func aimodelPriceSeededMarker(db *gorm.DB) string {
 	var setting entity.SystemSetting
-	if err := db.Where("key = ?", aimodelPriceSeededSettingKey).First(&setting).Error; err != nil {
+	if err := db.Where(map[string]any{"key": aimodelPriceSeededSettingKey}).First(&setting).Error; err != nil {
 		return ""
 	}
 	return strings.TrimSpace(setting.Value)
@@ -338,7 +338,7 @@ func storeAIModelPriceSetting(db *gorm.DB, key, value string) error {
 func loadAIModelPriceCatalog(db *gorm.DB) (map[string]bool, error) {
 	known := make(map[string]bool)
 	var setting entity.SystemSetting
-	err := db.Where("key = ?", aimodelPriceCatalogSettingKey).First(&setting).Error
+	err := db.Where(map[string]any{"key": aimodelPriceCatalogSettingKey}).First(&setting).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		// Old releases recorded only a fingerprint. Their original catalog is
 		// treated as already synced so an absent old model stays deleted.
@@ -532,7 +532,7 @@ func ResetAIModelPricesWithDB(db *gorm.DB) error {
 	}
 
 	// 清除初始化标记与进程内缓存，让下一轮重新写入默认价格。
-	if err := db.Where("key IN ?", []string{aimodelPriceSeededSettingKey, aimodelPriceCatalogSettingKey}).Delete(&entity.SystemSetting{}).Error; err != nil {
+	if err := db.Where(map[string]any{"key": []string{aimodelPriceSeededSettingKey, aimodelPriceCatalogSettingKey}}).Delete(&entity.SystemSetting{}).Error; err != nil {
 		return err
 	}
 	aimodelPriceSeeded.Delete(aimodelPriceCacheKey(db))

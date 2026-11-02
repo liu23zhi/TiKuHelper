@@ -303,14 +303,15 @@ func billingQuestionTextBackfillDone(db *gorm.DB) bool {
 		return false
 	}
 	var setting entity.SystemSetting
-	if err := db.Where("key = ?", billingQuestionTextBackfilledKey).First(&setting).Error; err != nil {
+	// key 是 MySQL/MariaDB 的保留字，必须让 GORM 生成带反引号的标识符（见 map 条件）。
+	if err := db.Where(map[string]any{"key": billingQuestionTextBackfilledKey}).First(&setting).Error; err != nil {
 		return false
 	}
 	return strings.TrimSpace(setting.Value) == "1"
 }
 
 func markBillingQuestionTextBackfilled(db *gorm.DB) error {
-	_ = db.Where("key = ?", billingQuestionTextBackfilledKey).Delete(&entity.SystemSetting{}).Error
+	_ = db.Where(map[string]any{"key": billingQuestionTextBackfilledKey}).Delete(&entity.SystemSetting{}).Error
 	return db.Create(&entity.SystemSetting{
 		Key:   billingQuestionTextBackfilledKey,
 		Value: "1",

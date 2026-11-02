@@ -56,7 +56,7 @@ func resolveJWTSecret(db *gorm.DB, configured string, environment string) (strin
 
 func loadStoredJWTSecret(db *gorm.DB) (string, error) {
 	var setting entity.SystemSetting
-	err := db.Where("key = ?", JWTSecretSettingKey).First(&setting).Error
+	err := db.Where(map[string]any{"key": JWTSecretSettingKey}).First(&setting).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return "", nil
 	}
@@ -81,7 +81,7 @@ func persistJWTSecret(db *gorm.DB, secret string) (string, error) {
 	}
 
 	var setting entity.SystemSetting
-	err := db.Where("key = ?", JWTSecretSettingKey).First(&setting).Error
+	err := db.Where(map[string]any{"key": JWTSecretSettingKey}).First(&setting).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		setting = entity.SystemSetting{
 			Key:    JWTSecretSettingKey,

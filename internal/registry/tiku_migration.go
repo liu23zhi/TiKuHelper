@@ -206,7 +206,9 @@ func systemSettingFlagIsSet(db *gorm.DB, key string) bool {
 		return false
 	}
 	var setting entity.SystemSetting
-	if err := db.Where("key = ?", key).First(&setting).Error; err != nil {
+	// key 是 MySQL/MariaDB 保留字：用 map 条件让 GORM 生成 `key`，否则 MySQL 上条件语法报错、
+	// 标记永远读不到也写不进，启动迁移会反复重跑并 FATAL。
+	if err := db.Where(map[string]any{"key": key}).First(&setting).Error; err != nil {
 		return false
 	}
 	return strings.TrimSpace(setting.Value) == "1"
@@ -220,6 +222,6 @@ func setSystemSettingFlag(db *gorm.DB, key string) error {
 	if !db.Migrator().HasTable(entity.TableNameSystemSetting) {
 		return fmt.Errorf("system_settings 表不存在")
 	}
-	_ = db.Where("key = ?", key).Delete(&entity.SystemSetting{}).Error
+	_ = db.Where(map[string]any{"key": key}).Delete(&entity.SystemSetting{}).Error
 	return db.Create(&entity.SystemSetting{Key: key, Value: "1"}).Error
 }
