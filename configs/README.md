@@ -39,6 +39,14 @@ SQL_DSN 环境变量  >  config.yaml 的 mysql 字段  >  SQLite（database.path
 
 建议使用 MySQL 8.0 和 InnoDB。项目包含多个 utf8mb4 复合索引，旧版 MySQL 需确认大索引前缀与 `DYNAMIC` 行格式已启用，否则启动迁移可能无法创建索引。
 
+**DSN 参数会自动补齐**：程序建连前补 `parseTime=true`（缺它则时间列无法扫描，
+`system_settings` 读取失败会让服务启动即崩）、未显式指定时的 `loc=Asia/Shanghai` 与
+`charset=utf8mb4`，并在启动日志打印 `MySQL DSN 已补齐参数：…`。
+最省心的写法仍然是把参数写全：
+```
+user:password@tcp(host:3306)/db?charset=utf8mb4&parseTime=True&loc=Local
+```
+
 
 ### 自定义外部题库配置
 当然您也可以接入外部的第三方题库，通过简单的配置，如下给出两个demo。

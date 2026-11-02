@@ -541,8 +541,14 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		// 环境变量最高优先级：SQL_DSN > config.yaml 的 mysql > SQLite。
 		mysqlDSN, dsnSource := resolveDatabaseDSN(config.Mysql, sqlDSN)
 		if mysqlDSN != "" {
-			conn = mysql.Open(mysqlDSN)
+			// 补齐 parseTime/loc/charset，避免时间列扫描失败引发启动即崩（见 dsn.go）。
+			normalizedDSN, dsnFixes := normalizeMySQLDSN(mysqlDSN)
+			conn = mysql.Open(normalizedDSN)
 			logger.SysLog("数据库连接来源：" + dsnSource)
+			if len(dsnFixes) > 0 {
+				logger.SysLog("MySQL DSN 已补齐参数：" + strings.Join(dsnFixes, ", ") +
+					"（缺少 parseTime 会让时间列无法扫描并导致服务反复重启）")
+			}
 			if strings.TrimSpace(sqlDSN) != "" && strings.TrimSpace(config.Mysql) != "" && strings.TrimSpace(config.Mysql) != strings.TrimSpace(sqlDSN) {
 				logger.SysWarn("SQL_DSN 环境变量与 config.yaml 的 mysql 同时存在且不一致，已按环境变量生效")
 			}
