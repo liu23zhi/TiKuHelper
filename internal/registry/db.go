@@ -579,19 +579,19 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		if err != nil {
 			logger.FatalLog(fmt.Errorf("open db fail: %w", err))
 		}
-		if !prepareStmt {
+		maxActive := 1
+		if db.Dialector.Name() == "sqlite" {
 			if err := configureSQLiteConnection(db, config.Database.Path); err != nil {
 				logger.FatalLog(fmt.Errorf("configure sqlite connection fail: %w", err))
 			}
-		}
-		maxActive := 1
-		if db.Dialector.Name() != "sqlite" {
-			// Keep MySQL concurrency while still applying the same priority gate.
-			// SQLite is configured with one connection and therefore stays serial.
-			maxActive = 32
-			if sqlDB, statsErr := db.DB(); statsErr == nil && sqlDB.Stats().MaxOpenConnections > 0 {
-				maxActive = sqlDB.Stats().MaxOpenConnections
+		} else {
+			poolSettings, poolErr := configureMySQLConnection(db, config.Database.MySQLPool)
+			if poolErr != nil {
+				logger.FatalLog(fmt.Errorf("configure mysql connection pool fail: %w", poolErr))
 			}
+			maxActive = poolSettings.MaxOpenConns
+			logger.SysLog(fmt.Sprintf("MySQL 连接池：最大连接=%d，最大空闲=%d，连接最长存活=%s，最大空闲时长=%s",
+				poolSettings.MaxOpenConns, poolSettings.MaxIdleConns, poolSettings.ConnMaxLifetime, poolSettings.ConnMaxIdleTime))
 		}
 		databaseScheduler = dbqueue.NewScheduler(maxActive)
 		managedPool := dbqueue.Wrap(db.ConnPool, databaseScheduler)

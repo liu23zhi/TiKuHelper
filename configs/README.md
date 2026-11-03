@@ -39,6 +39,19 @@ SQL_DSN 环境变量  >  config.yaml 的 mysql 字段  >  SQLite（database.path
 
 建议使用 MySQL 8.0 和 InnoDB。项目包含多个 utf8mb4 复合索引，旧版 MySQL 需确认大索引前缀与 `DYNAMIC` 行格式已启用，否则启动迁移可能无法创建索引。
 
+MySQL 使用 `database.mysqlPool` 控制 Go 进程内的连接池。默认最多打开 32 个连接、保留 8 个空闲连接，连接最长存活 30 分钟、空闲 5 分钟；`maxOpenConns` 同时控制优先级调度器的并发上限。按 MySQL 服务端连接数、应用实例数和实际负载调低或调高，避免多个实例的连接池总量超过数据库容量。
+
+```yaml
+database:
+  mysqlPool:
+    maxOpenConns: 32
+    maxIdleConns: 8
+    connMaxLifetimeSeconds: 1800
+    connMaxIdleTimeSeconds: 300
+```
+
+连接池用于连接复用和限制并发，不会缩短单条慢 SQL。查询延迟仍应结合 `SLOW SQL` 日志、MySQL 慢查询日志和 `EXPLAIN` 检查筛选、排序、JOIN 与索引使用情况；不要仅为提高并发盲目增大连接数。
+
 **DSN 参数会自动补齐**：程序建连前补 `parseTime=true`（缺它则时间列无法扫描，
 `system_settings` 读取失败会让服务启动即崩）、未显式指定时的 `loc=Asia/Shanghai` 与
 `charset=utf8mb4`，并在启动日志打印 `MySQL DSN 已补齐参数：…`。

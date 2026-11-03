@@ -8,6 +8,11 @@ jwtSecret: "" # 可选，至少32字节；JWT_SECRET 环境变量优先
 mysql: "" # MySQL DSN；SQL_DSN 环境变量优先，两者都填时以环境变量为准
 database:
   path: "" # SQLite数据库文件路径，留空默认为 tiku.db（向后兼容），Docker部署建议设置为 data/tiku.db
+  mysqlPool:
+    maxOpenConns: 32 # MySQL最大打开连接数；同时作为优先级调度器并发上限
+    maxIdleConns: 8 # MySQL最大空闲连接数
+    connMaxLifetimeSeconds: 1800 # MySQL连接最长存活时间
+    connMaxIdleTimeSeconds: 300 # MySQL连接最大空闲时间
 api:
   - name: '样例接口 json 请求'
     enable: false

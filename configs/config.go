@@ -19,7 +19,17 @@ type Config struct {
 
 // DatabaseConfig 数据库配置
 type DatabaseConfig struct {
-	Path string `yaml:"path"` // SQLite数据库文件路径，默认为 tiku.db（向后兼容），Docker部署建议使用 data/tiku.db
+	Path      string          `yaml:"path"` // SQLite数据库文件路径，默认为 tiku.db（向后兼容），Docker部署建议使用 data/tiku.db
+	MySQLPool MySQLPoolConfig `yaml:"mysqlPool"`
+}
+
+// MySQLPoolConfig controls the database/sql connection pool used by MySQL.
+// Duration fields are expressed in seconds for YAML configuration.
+type MySQLPoolConfig struct {
+	MaxOpenConns           int `yaml:"maxOpenConns"`
+	MaxIdleConns           int `yaml:"maxIdleConns"`
+	ConnMaxLifetimeSeconds int `yaml:"connMaxLifetimeSeconds"`
+	ConnMaxIdleTimeSeconds int `yaml:"connMaxIdleTimeSeconds"`
 }
 
 // LimitConfig 限流配置
