@@ -39,7 +39,7 @@ func TestSearchReusesCachedResultForIdenticalQuestionAndOptions(t *testing.T) {
 			return []func(model.SearchRequest) ([][]string, error){
 				func(model.SearchRequest) ([][]string, error) {
 					upstreamCalls++
-					return [][]string{{"缓存答案"}}, nil
+					return [][]string{{"A"}}, nil
 				},
 			}
 		},
@@ -310,7 +310,7 @@ func TestSearchDoesNotCacheFailedResult(t *testing.T) {
 					if shouldFail {
 						return nil, errors.New("上游失败")
 					}
-					return [][]string{{"恢复后的答案"}}, nil
+					return [][]string{{"A"}}, nil
 				},
 			}
 		},

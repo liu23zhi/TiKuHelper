@@ -95,6 +95,9 @@ func cloneAIFallbackResult(source service.AIFallbackResult) service.AIFallbackRe
 	if source.Usage.OCRCalls != nil {
 		cloned.Usage.OCRCalls = append([]internalsearch.AIOCRCallUsage(nil), source.Usage.OCRCalls...)
 	}
+	if source.Usage.Attachments != nil {
+		cloned.Usage.Attachments = append([]internalsearch.AIAttachmentDiagnostic(nil), source.Usage.Attachments...)
+	}
 	return cloned
 }
 

@@ -76,11 +76,28 @@ type AISearchUsage struct {
 	CacheWriteTokens  int64
 	OutputTokens      int64
 	TotalTokens       int64
-	ModelCalls        []AIModelCallUsage   `json:"modelCalls,omitempty"`
-	SearchCalls       []AISearchCallUsage  `json:"searchCalls,omitempty"`
-	WebReadCalls      []AIWebReadCallUsage `json:"webReadCalls,omitempty"`
-	OCRCalls          []AIOCRCallUsage     `json:"ocrCalls,omitempty"`
-	Trace             []AISearchTrace      `json:"trace,omitempty"`
+	ModelCalls        []AIModelCallUsage       `json:"modelCalls,omitempty"`
+	SearchCalls       []AISearchCallUsage      `json:"searchCalls,omitempty"`
+	WebReadCalls      []AIWebReadCallUsage     `json:"webReadCalls,omitempty"`
+	OCRCalls          []AIOCRCallUsage         `json:"ocrCalls,omitempty"`
+	Attachments       []AIAttachmentDiagnostic `json:"attachments,omitempty"`
+	Trace             []AISearchTrace          `json:"trace,omitempty"`
+}
+
+// AIAttachmentDiagnostic records bounded, URL-free attachment preparation
+// details. SourceIndex follows the original question order; SentIndex is the
+// one-based order among successful attachments sent to the model (zero means omitted).
+type AIAttachmentDiagnostic struct {
+	SourceIndex         int    `json:"sourceIndex"`
+	SentIndex           int    `json:"sentIndex"`
+	DownloadStatus      string `json:"downloadStatus"`
+	FailureCode         string `json:"failureCode,omitempty"`
+	HTTPStatus          int    `json:"httpStatus,omitempty"`
+	OriginalContentType string `json:"originalContentType,omitempty"`
+	DownloadedBytes     int    `json:"downloadedBytes,omitempty"`
+	PreparedContentType string `json:"preparedContentType,omitempty"`
+	PreparedBytes       int    `json:"preparedBytes,omitempty"`
+	Preprocessing       string `json:"preprocessing,omitempty"`
 }
 
 // AIImageOCRProvider uploads bytes downloaded by the server. Implementations
@@ -92,13 +109,16 @@ type AIImageOCRProvider func(ctx context.Context, sourceURL, imageName, contentT
 type AIImageOCRCacheProvider func(ctx context.Context, sourceURL, imageName, contentType string, image []byte) (text string, cached bool, err error)
 
 type AIOCRCallUsage struct {
-	API        string `json:"api"`
-	ImageURL   string `json:"imageUrl"`
-	Status     string `json:"status"`
-	DurationMs int64  `json:"durationMs"`
-	TextChars  int    `json:"textChars,omitempty"`
-	Cached     bool   `json:"cached,omitempty"`
-	Error      string `json:"error,omitempty"`
+	API         string `json:"api"`
+	ImageURL    string `json:"imageUrl"`
+	SourceIndex int    `json:"sourceIndex,omitempty"`
+	ContentType string `json:"contentType,omitempty"`
+	ImageBytes  int    `json:"imageBytes,omitempty"`
+	Status      string `json:"status"`
+	DurationMs  int64  `json:"durationMs"`
+	TextChars   int    `json:"textChars,omitempty"`
+	Cached      bool   `json:"cached,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 const (
@@ -611,12 +631,13 @@ func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]
 	}
 
 	systemPrompt := effectiveAISearchPrompt(in.Prompt)
-	userPromptParts, ocrCalls := in.buildAISearchPromptPartsWithOCR(ctx, req, in.getAttachmentHTTPClient().GetClient())
+	userPromptParts, ocrCalls, attachmentDiagnostics := in.buildAISearchPromptPartsWithOCRDetailed(ctx, req, in.getAttachmentHTTPClient().GetClient())
 	endpoints := buildAIResponsesEndpoints(baseURL)
 	maxModelCalls, _, _ := in.aiSearchBudgets()
 	modelCalls := 0
 	content, usage, _, endpoint, requestBody, rawResponse, callErr := in.requestStreamAnswerDetailed(ctx, endpoints, systemPrompt, userPromptParts, &modelCalls, maxModelCalls)
 	usage.OCRCalls = append(usage.OCRCalls, ocrCalls...)
+	usage.Attachments = append(usage.Attachments, attachmentDiagnostics...)
 	debug = AISearchDebugResult{
 		Endpoint:    endpoint,
 		RequestBody: requestBody,
@@ -667,12 +688,13 @@ func (in *ChatGptClient) SearchAnswerWithUsage(req model.SearchRequest) (answer 
 	}
 
 	systemPrompt := effectiveAISearchPrompt(in.Prompt)
-	userPromptParts, ocrCalls := in.buildAISearchPromptPartsWithOCR(ctx, req, in.getAttachmentHTTPClient().GetClient())
+	userPromptParts, ocrCalls, attachmentDiagnostics := in.buildAISearchPromptPartsWithOCRDetailed(ctx, req, in.getAttachmentHTTPClient().GetClient())
 	endpoints := buildAIResponsesEndpoints(baseURL)
 	maxModelCalls, _, _ := in.aiSearchBudgets()
 	modelCalls := 0
 	content, streamUsage, _, _, _, _, callErr := in.requestStreamAnswerDetailed(ctx, endpoints, systemPrompt, userPromptParts, &modelCalls, maxModelCalls)
 	streamUsage.OCRCalls = append(streamUsage.OCRCalls, ocrCalls...)
+	streamUsage.Attachments = append(streamUsage.Attachments, attachmentDiagnostics...)
 	streamUsage.Route = AISearchRouteNormal
 	if callErr != nil {
 		return nil, streamUsage, callErr
@@ -795,11 +817,24 @@ func buildAISearchPromptParts(req model.SearchRequest, httpClient *http.Client) 
 }
 
 func (in *ChatGptClient) buildAISearchPromptPartsWithOCR(ctx context.Context, req model.SearchRequest, httpClient *http.Client) ([]openAIContentPart, []AIOCRCallUsage) {
+	parts, calls, _ := in.buildAISearchPromptPartsWithOCRDetailed(ctx, req, httpClient)
+	return parts, calls
+}
+
+func (in *ChatGptClient) buildAISearchPromptPartsWithOCRDetailed(ctx context.Context, req model.SearchRequest, httpClient *http.Client) ([]openAIContentPart, []AIOCRCallUsage, []AIAttachmentDiagnostic) {
 	parts := []openAIContentPart{{Type: "text", Text: buildAISearchPrompt(req)}}
 	urls := extractAISearchURLs(req)
-	attachments := downloadAISearchAttachmentResults(httpClient, urls)
+	attachments, diagnostics := downloadAISearchAttachmentResultsDetailed(httpClient, urls)
+	sentIndex := 1
 	for _, attachment := range attachments {
 		parts = append(parts, attachment.part)
+		for index := range diagnostics {
+			if diagnostics[index].SourceIndex == attachment.sourceIndex {
+				diagnostics[index].SentIndex = sentIndex
+				break
+			}
+		}
+		sentIndex++
 	}
 	if references := buildAISearchAttachmentReferences(urls, attachments); references != "" {
 		parts = append(parts, openAIContentPart{Type: "text", Text: references})
@@ -808,7 +843,7 @@ func (in *ChatGptClient) buildAISearchPromptPartsWithOCR(ctx context.Context, re
 	if strings.TrimSpace(ocrText) != "" {
 		parts = append(parts, openAIContentPart{Type: "text", Text: ocrText})
 	}
-	return parts, calls
+	return parts, calls, diagnostics
 }
 
 type downloadedAISearchAttachment struct {
@@ -869,9 +904,10 @@ func (in *ChatGptClient) runAISearchImageOCR(ctx context.Context, attachments []
 		return "", nil
 	}
 	type result struct {
-		index int
-		text  string
-		call  AIOCRCallUsage
+		index         int
+		originalIndex int
+		text          string
+		call          AIOCRCallUsage
 	}
 	results := make(chan result, len(images))
 	semaphore := make(chan struct{}, aiSearchMaxConcurrentAttachments)
@@ -883,7 +919,11 @@ func (in *ChatGptClient) runAISearchImageOCR(ctx context.Context, attachments []
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
 			text, call := in.recognizeAISearchImage(ctx, attachment)
-			results <- result{index: index, text: text, call: call}
+			originalIndex := attachment.sourceIndex
+			if originalIndex <= 0 {
+				originalIndex = index + 1
+			}
+			results <- result{index: index, originalIndex: originalIndex, text: text, call: call}
 		}(index, attachment)
 	}
 	wg.Wait()
@@ -893,12 +933,12 @@ func (in *ChatGptClient) runAISearchImageOCR(ctx context.Context, attachments []
 		ordered[item.index] = item
 	}
 	var builder strings.Builder
-	for index, item := range ordered {
+	for _, item := range ordered {
 		if item.call.Status == "success" && strings.TrimSpace(item.text) != "" {
 			if builder.Len() == 0 {
 				builder.WriteString("OCR辅助识别结果（由服务器下载图片后识别，仅作为视觉图片的辅助文本，原图仍已发送）：")
 			}
-			fmt.Fprintf(&builder, "\n图%s OCR：%s", formatAISearchImageIndex(index+1), item.text)
+			fmt.Fprintf(&builder, "\n图%s OCR：%s", formatAISearchImageIndex(item.originalIndex), item.text)
 		}
 	}
 	calls := make([]AIOCRCallUsage, 0, len(ordered))
@@ -922,7 +962,7 @@ func (in *ChatGptClient) recognizeAISearchImage(ctx context.Context, attachment 
 	} else {
 		text, err = in.OCRProvider(ctx, attachment.sourceURL, attachment.imageName, attachment.contentType, attachment.body)
 	}
-	call := AIOCRCallUsage{API: strings.TrimSpace(in.OCRAPI), ImageURL: attachment.sourceURL, DurationMs: time.Since(started).Milliseconds()}
+	call := AIOCRCallUsage{API: strings.TrimSpace(in.OCRAPI), ImageURL: attachment.sourceURL, SourceIndex: attachment.sourceIndex, ContentType: attachment.contentType, ImageBytes: len(attachment.body), DurationMs: time.Since(started).Milliseconds()}
 	if call.API == "" {
 		call.API = "https://uapis.cn/api/v1/image/ocr"
 	}
@@ -962,7 +1002,8 @@ func (in *ChatGptClient) TestImageOCR(ctx context.Context, address string) (stri
 		transport = http.DefaultTransport
 	}
 	bounded.Transport = aiToolContextTransport{ctx: ctx, base: transport}
-	attachment, ok := downloadAISearchAttachment(&bounded, address)
+	attachment, diagnostic, ok := downloadAISearchAttachmentDetailed(&bounded, address, 1)
+	debug.Usage.Attachments = append(debug.Usage.Attachments, diagnostic)
 	if !ok {
 		return "", debug, fmt.Errorf("图片下载失败")
 	}
@@ -1031,13 +1072,19 @@ func downloadAISearchAttachmentParts(httpClient *http.Client, attachmentURLs []s
 // with the downloaded bytes. This prevents a failed middle image from making
 // the remaining image references point at the wrong visual attachment.
 func downloadAISearchAttachmentResults(httpClient *http.Client, attachmentURLs []string) []downloadedAISearchAttachment {
+	attachments, _ := downloadAISearchAttachmentResultsDetailed(httpClient, attachmentURLs)
+	return attachments
+}
+
+func downloadAISearchAttachmentResultsDetailed(httpClient *http.Client, attachmentURLs []string) ([]downloadedAISearchAttachment, []AIAttachmentDiagnostic) {
 	if httpClient == nil || len(attachmentURLs) == 0 {
-		return nil
+		return nil, nil
 	}
 	type attachmentResult struct {
-		index int
-		item  downloadedAISearchAttachment
-		ok    bool
+		index      int
+		item       downloadedAISearchAttachment
+		diagnostic AIAttachmentDiagnostic
+		ok         bool
 	}
 	semaphore := make(chan struct{}, aiSearchMaxConcurrentAttachments)
 	results := make(chan attachmentResult, len(attachmentURLs))
@@ -1048,8 +1095,8 @@ func downloadAISearchAttachmentResults(httpClient *http.Client, attachmentURLs [
 			defer wg.Done()
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
-			item, ok := downloadAISearchAttachment(httpClient, address)
-			results <- attachmentResult{index: index, item: item, ok: ok}
+			item, diagnostic, ok := downloadAISearchAttachmentDetailed(httpClient, address, index+1)
+			results <- attachmentResult{index: index, item: item, diagnostic: diagnostic, ok: ok}
 		}(index, address)
 	}
 	wg.Wait()
@@ -1059,13 +1106,15 @@ func downloadAISearchAttachmentResults(httpClient *http.Client, attachmentURLs [
 		ordered[item.index] = item
 	}
 	attachments := make([]downloadedAISearchAttachment, 0, len(attachmentURLs))
+	diagnostics := make([]AIAttachmentDiagnostic, len(attachmentURLs))
 	for index, item := range ordered {
+		diagnostics[index] = item.diagnostic
 		if item.ok {
 			item.item.sourceIndex = index + 1
 			attachments = append(attachments, item.item)
 		}
 	}
-	return attachments
+	return attachments, diagnostics
 }
 
 func formatAISearchImageIndex(index int) string {
@@ -1107,16 +1156,25 @@ func downloadAISearchAttachmentPart(httpClient *http.Client, attachmentURL strin
 }
 
 func downloadAISearchAttachment(httpClient *http.Client, attachmentURL string) (downloadedAISearchAttachment, bool) {
+	attachment, _, ok := downloadAISearchAttachmentDetailed(httpClient, attachmentURL, 0)
+	return attachment, ok
+}
+
+func downloadAISearchAttachmentDetailed(httpClient *http.Client, attachmentURL string, sourceIndex int) (downloadedAISearchAttachment, AIAttachmentDiagnostic, bool) {
+	diagnostic := AIAttachmentDiagnostic{SourceIndex: sourceIndex, DownloadStatus: "error"}
 	if httpClient == nil {
-		return downloadedAISearchAttachment{}, false
+		diagnostic.FailureCode = "no_client"
+		return downloadedAISearchAttachment{}, diagnostic, false
 	}
 	parsed, err := url.Parse(strings.TrimSpace(attachmentURL))
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return downloadedAISearchAttachment{}, false
+		diagnostic.FailureCode = "invalid_url"
+		return downloadedAISearchAttachment{}, diagnostic, false
 	}
 	httpReq, err := http.NewRequest(http.MethodGet, attachmentURL, nil)
 	if err != nil {
-		return downloadedAISearchAttachment{}, false
+		diagnostic.FailureCode = "request_error"
+		return downloadedAISearchAttachment{}, diagnostic, false
 	}
 	httpReq.Header.Set("Referer", "https://mooc1.chaoxing.com/")
 	httpReq.Header.Set("Origin", "https://mooc1.chaoxing.com")
@@ -1124,27 +1182,38 @@ func downloadAISearchAttachment(httpClient *http.Client, attachmentURL string) (
 	httpReq.Header.Set("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
 	resp, err := util.DoReadOnlyWithRetry(httpClient, httpReq)
 	if err != nil {
-		return downloadedAISearchAttachment{}, false
+		diagnostic.FailureCode = "network_error"
+		return downloadedAISearchAttachment{}, diagnostic, false
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return downloadedAISearchAttachment{}, false
+		diagnostic.HTTPStatus = resp.StatusCode
+		diagnostic.FailureCode = "http_status"
+		return downloadedAISearchAttachment{}, diagnostic, false
 	}
 	if resp.ContentLength > maxAISearchAttachmentBytes {
-		return downloadedAISearchAttachment{}, false
+		diagnostic.FailureCode = "too_large"
+		return downloadedAISearchAttachment{}, diagnostic, false
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAISearchAttachmentBytes+1))
 	if err != nil || len(body) == 0 {
-		return downloadedAISearchAttachment{}, false
+		diagnostic.FailureCode = "read_error"
+		return downloadedAISearchAttachment{}, diagnostic, false
 	}
 	if len(body) > maxAISearchAttachmentBytes {
-		return downloadedAISearchAttachment{}, false
+		diagnostic.FailureCode = "too_large"
+		return downloadedAISearchAttachment{}, diagnostic, false
 	}
 
 	contentType := resolveAISearchAttachmentContentType(resp.Header.Values("Content-Type"), body)
+	diagnostic.OriginalContentType = contentType
+	diagnostic.DownloadedBytes = len(body)
 	switch {
 	case strings.HasPrefix(contentType, "image/"):
-		preparedBody, preparedContentType := prepareAISearchImageAttachment(body, contentType)
+		preparedBody, preparedContentType, preprocessing := prepareAISearchImageAttachmentDetailed(body, contentType)
+		diagnostic.PreparedContentType = preparedContentType
+		diagnostic.PreparedBytes = len(preparedBody)
+		diagnostic.Preprocessing = preprocessing
 		ocrBody, ocrContentType := body, contentType
 		if preparedContentType == "image/png" {
 			// The prepared PNG is the locally converted representation. Reusing it
@@ -1156,19 +1225,22 @@ func downloadAISearchAttachment(httpClient *http.Client, attachmentURL string) (
 		if imageName == "." || imageName == "" || filepath.Ext(imageName) == "" || (ocrContentType == "image/png" && strings.ToLower(filepath.Ext(imageName)) != ".png") {
 			imageName = "image.png"
 		}
-		return downloadedAISearchAttachment{sourceURL: attachmentURL, imageName: imageName, contentType: ocrContentType, body: ocrBody, part: openAIContentPart{
+		diagnostic.DownloadStatus = "success"
+		return downloadedAISearchAttachment{sourceURL: attachmentURL, sourceIndex: sourceIndex, imageName: imageName, contentType: ocrContentType, body: ocrBody, part: openAIContentPart{
 			Type: "image_url",
 			ImageURL: &openAIImageURLPart{
 				URL: "data:" + preparedContentType + ";base64," + base64.StdEncoding.EncodeToString(preparedBody),
 			},
-		}}, true
+		}}, diagnostic, true
 	case contentType == "text/html":
-		return downloadedAISearchAttachment{sourceURL: attachmentURL, imageName: filepath.Base(parsed.Path), contentType: contentType, body: body, part: openAIContentPart{
+		diagnostic.DownloadStatus = "success"
+		return downloadedAISearchAttachment{sourceURL: attachmentURL, sourceIndex: sourceIndex, imageName: filepath.Base(parsed.Path), contentType: contentType, body: body, part: openAIContentPart{
 			Type: "text",
 			Text: buildAISearchHTMLAttachment(parsed, body),
-		}}, true
+		}}, diagnostic, true
 	default:
-		return downloadedAISearchAttachment{}, false
+		diagnostic.FailureCode = "unsupported_content_type"
+		return downloadedAISearchAttachment{}, diagnostic, false
 	}
 }
 
@@ -1179,27 +1251,34 @@ func downloadAISearchAttachment(httpClient *http.Client, attachmentURL string) (
 // 模型只能看到一张空图，于是统一回答“不确定”——这正是公式题答不出来的根因。
 // 因此这里统一把透明像素合成到白底，并适度放大过小的公式图。
 func prepareAISearchImageAttachment(body []byte, contentType string) ([]byte, string) {
-	decoded, format, err := image.Decode(bytes.NewReader(body))
+	preparedBody, preparedContentType, _ := prepareAISearchImageAttachmentDetailed(body, contentType)
+	return preparedBody, preparedContentType
+}
+
+func prepareAISearchImageAttachmentDetailed(body []byte, contentType string) ([]byte, string, string) {
+	decoded, _, err := image.Decode(bytes.NewReader(body))
 	if err != nil {
-		return body, contentType
+		return body, contentType, "decode_failed"
 	}
 
 	prepared := flattenAISearchImageOntoWhite(decoded)
 	if prepared == nil {
-		return body, contentType
+		return body, contentType, "preparation_failed"
 	}
 	prepared = upscaleAISearchImage(prepared)
 
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, prepared); err != nil {
-		return body, contentType
+		return body, contentType, "encode_failed"
 	}
-	if buf.Len() == 0 || buf.Len() > maxAISearchAttachmentBytes {
-		return body, contentType
+	if buf.Len() == 0 {
+		return body, contentType, "encode_failed"
+	}
+	if buf.Len() > maxAISearchAttachmentBytes {
+		return body, contentType, "size_fallback"
 	}
 	// 统一输出 PNG：无损、保留字形的锐利边缘，避免 JPEG 压缩糊掉下标和分数。
-	_ = format
-	return buf.Bytes(), "image/png"
+	return buf.Bytes(), "image/png", "png_normalized"
 }
 
 // flattenAISearchImageOntoWhite 把带透明通道的图片合成到纯白背景上。

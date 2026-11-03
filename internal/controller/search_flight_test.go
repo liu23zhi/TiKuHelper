@@ -79,7 +79,7 @@ func TestConcurrentIdenticalSearchesShareOneUpstreamCallAndOneBilling(t *testing
 					mu.Unlock()
 					// 卡住上游，让第二个请求在此期间进入。
 					<-release
-					return [][]string{{"并发答案"}}, nil
+					return [][]string{{"A"}}, nil
 				},
 			}
 		},
@@ -288,7 +288,7 @@ func TestSearchFlightReleasedWhenLeaderFails(t *testing.T) {
 					if shouldFail {
 						return nil, errors.New("上游失败")
 					}
-					return [][]string{{"恢复后的答案"}}, nil
+					return [][]string{{"A"}}, nil
 				},
 			}
 		},

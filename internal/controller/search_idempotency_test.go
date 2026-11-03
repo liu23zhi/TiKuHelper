@@ -48,7 +48,7 @@ func TestSearchWithIdempotencyReplaysCompletedResultWithoutRepeatingCharge(t *te
 		func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
 			return []func(model.SearchRequest) ([][]string, error){func(model.SearchRequest) ([][]string, error) {
 				providerCalls.Add(1)
-				return [][]string{{"幂等答案"}}, nil
+				return [][]string{{"A"}}, nil
 			}}
 		},
 		func(resolvedSearchRequestContext, model.SearchRequest) ([][]string, searchpkg.AISearchUsage, error) {

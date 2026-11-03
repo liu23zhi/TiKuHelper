@@ -62,3 +62,107 @@ func TestFillAnswerResponsePreservesAllTextAnswersForMultiPartQuestions(t *testi
 		t.Fatalf("expected ordered multipart answer text, got %q", resp.Answer.AnswerText)
 	}
 }
+
+func TestFillAnswerResponseRejectsLowConfidenceSingleChoiceFuzzyMatch(t *testing.T) {
+	resp := FillAnswerResponse([][]string{{"完全无关的回答"}}, &model.SearchRequest{
+		Question: "请选择正确选项",
+		Options:  []string{"苹果汁", "苹果树"},
+		Type:     0,
+	})
+	if len(resp.Answer.BestAnswer) != 0 {
+		t.Fatalf("expected low-confidence answer to be rejected, got %v", resp.Answer.BestAnswer)
+	}
+}
+
+func TestFillAnswerResponseRejectsAmbiguousSingleChoiceFuzzyMatch(t *testing.T) {
+	resp := FillAnswerResponse([][]string{{"苹果"}}, &model.SearchRequest{
+		Question: "请选择正确选项",
+		Options:  []string{"苹果汁", "苹果树"},
+		Type:     0,
+	})
+	if len(resp.Answer.BestAnswer) != 0 {
+		t.Fatalf("expected ambiguous answer to be rejected, got %v", resp.Answer.BestAnswer)
+	}
+}
+
+func TestFillAnswerResponseRejectsAmbiguousJudgementFuzzyMatch(t *testing.T) {
+	resp := FillAnswerResponse([][]string{{"alphabeta00"}}, &model.SearchRequest{
+		Question: "错误标记成判断的单选题",
+		Options:  []string{"alphabeta0x", "alphabeta0y"},
+		Type:     3,
+	})
+	if len(resp.Answer.BestAnswer) != 0 {
+		t.Fatalf("expected ambiguous judgement answer to be rejected, got %v", resp.Answer.BestAnswer)
+	}
+}
+
+func TestSearchRightAnswerUsesFirstGroupForTies(t *testing.T) {
+	answers := [][]string{{"甲"}, {"乙"}}
+	for i := 0; i < 20; i++ {
+		got := SearchRightAnswer(answers)
+		if !reflect.DeepEqual(got, []string{"甲"}) {
+			t.Fatalf("expected deterministic first group on tie, got %v", got)
+		}
+	}
+}
+
+func TestFillAnswerResponseMapsJudgementPolarityToActualOptions(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		options []string
+		answer  string
+		want    []string
+		index   int
+	}{
+		{"yes exact", []string{"yes", "no"}, "yes", []string{"yes"}, 0},
+		{"no exact", []string{"yes", "no"}, "no", []string{"no"}, 1},
+		{"uppercase true", []string{"TRUE", "FALSE"}, "TRUE", []string{"TRUE"}, 0},
+		{"uppercase false synonym", []string{"TRUE", "FALSE"}, "错误", []string{"FALSE"}, 1},
+		{"yes synonym", []string{"yes", "no"}, "正确", []string{"yes"}, 0},
+		{"ambiguous polarity", []string{"yes", "TRUE"}, "yes", nil, -1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := FillAnswerResponse([][]string{{tt.answer}}, &model.SearchRequest{Type: 3, Options: tt.options})
+			if len(resp.Answer.BestAnswer) != len(tt.want) || (len(tt.want) > 0 && !reflect.DeepEqual(resp.Answer.BestAnswer, tt.want)) {
+				t.Fatalf("want %v, got %v", tt.want, resp.Answer.BestAnswer)
+			}
+			if tt.index >= 0 && !reflect.DeepEqual(resp.Answer.AnswerIndex, []int{tt.index}) {
+				t.Fatalf("want option index %d, got %v", tt.index, resp.Answer.AnswerIndex)
+			}
+		})
+	}
+}
+
+func TestFillAnswerResponseRejectsAmbiguousMultipleChoiceFuzzyMatch(t *testing.T) {
+	resp := FillAnswerResponse([][]string{{"alphabeta00"}}, &model.SearchRequest{
+		Options: []string{"alphabeta0x", "alphabeta0y"}, Type: 1,
+	})
+	if len(resp.Answer.BestAnswer) != 0 {
+		t.Fatalf("ambiguous multi-choice answer must be rejected, got %v", resp.Answer.BestAnswer)
+	}
+}
+
+func TestFillAnswerResponseValidatesWholeObjectiveAnswerGroups(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		questionType int
+		options      []string
+		answers      []string
+		want         []string
+	}{
+		{"partial multiple group", 1, []string{"苹果汁", "香蕉汁"}, []string{"苹果汁", "完全无关"}, nil},
+		{"conflicting single group", 0, []string{"苹果汁", "香蕉汁"}, []string{"苹果汁", "香蕉汁"}, nil},
+		{"conflicting judgement group", 3, []string{"正确", "错误"}, []string{"正确", "错误"}, nil},
+		{"duplicate option text", 0, []string{"same", "same"}, []string{"same"}, nil},
+		{"mixed exact and fuzzy multiple group", 1, []string{"abcdefghijklmnop", "abcdefghijklmnoq", "somethingelse"}, []string{"abcdefghijklmnop", "somethingels"}, []string{"abcdefghijklmnop", "somethingelse"}},
+		{"judgement synonym", 3, []string{"正确", "错误"}, []string{"对"}, []string{"正确"}},
+		{"single member multiple group", 1, []string{"苹果汁", "香蕉汁"}, []string{"苹果汁"}, []string{"苹果汁"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := FillAnswerResponse([][]string{tt.answers}, &model.SearchRequest{Type: tt.questionType, Options: tt.options})
+			if len(resp.Answer.BestAnswer) != len(tt.want) || (len(tt.want) > 0 && !reflect.DeepEqual(resp.Answer.BestAnswer, tt.want)) {
+				t.Fatalf("want %v, got %v", tt.want, resp.Answer.BestAnswer)
+			}
+		})
+	}
+}

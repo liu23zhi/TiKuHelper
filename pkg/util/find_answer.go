@@ -2,6 +2,7 @@ package util
 
 import (
 	"github.com/antlabs/strsim"
+	"github.com/antlabs/strsim/similarity"
 	"github.com/gookit/goutil/arrutil"
 	"github.com/itihey/tikuAdapter/pkg/model"
 	"strings"
@@ -44,38 +45,19 @@ func FillAnswerResponse(answers [][]string, req *model.SearchRequest) model.Sear
 		resp.Answer.BestAnswer = SearchRightAnswer(normalizedAnswers)
 	} else {
 		var filterAnswer [][]string
-		// 使用归一化后的答案进行匹配
-		for i := range normalizedAnswers {
-			ans := arrutil.Intersects(req.Options, normalizedAnswers[i], arrutil.StringEqualsComparer)
-			// 客观题只要命中选项就算有效：多选题同样可能只有 1 个正确选项，
-			// 不能要求「每组至少 2 个选项」，否则正常答案会被判成无答案。
-			if isObjectiveQuestionType(resp.Type) && len(ans) > 0 {
-				filterAnswer = append(filterAnswer, ans)
+		// Prefer complete exact groups. Only fall back to fuzzy mapping when no
+		// exact group is valid; never turn a partially matched group into an answer.
+		for _, allowFuzzy := range []bool{false, true} {
+			for _, group := range normalizedAnswers {
+				if mapped := matchObjectiveAnswerGroup(group, req, allowFuzzy); len(mapped) > 0 {
+					filterAnswer = append(filterAnswer, mapped)
+				}
+			}
+			if len(filterAnswer) > 0 {
+				break
 			}
 		}
 		resp.Answer.BestAnswer = SearchRightAnswer(filterAnswer)
-
-		if len(resp.Answer.BestAnswer) == 0 { // 开始模糊匹配
-			for i := range normalizedAnswers {
-				if resp.Type == 0 { // 单选或判断题
-					match := strsim.FindBestMatch(strings.Join(normalizedAnswers[i], ""), req.Options)
-					filterAnswer = append(filterAnswer, []string{resp.Options[match.BestIndex]})
-				} else {
-					ans := arrutil.Intersects(req.Options, normalizedAnswers[i], func(a, b string) int {
-						if strsim.Compare(a, b) >= 0.7 {
-							return 0
-						}
-						return -1
-					})
-					// 多选题 / 判断题模糊匹配到至少一个选项即有效（原写法用
-					// `len(ans) > resp.Type`，判断题要求 >3 个选项，永远不成立）。
-					if len(ans) > 0 {
-						filterAnswer = append(filterAnswer, ans)
-					}
-				}
-				resp.Answer.BestAnswer = SearchRightAnswer(filterAnswer)
-			}
-		}
 	}
 	fillAnswer(&resp.Answer, req)
 	return resp
@@ -132,7 +114,95 @@ func SearchRightAnswer(answers [][]string) []string {
 		sortedAnswer := strings.Join(answer, sep)
 		answerMap[sortedAnswer]++
 	}
-	return getMaxCountAnswer(answerMap)
+	maxCount := 0
+	for _, count := range answerMap {
+		if count > maxCount {
+			maxCount = count
+		}
+	}
+	for _, answer := range answers {
+		if answerMap[strings.Join(answer, sep)] == maxCount {
+			return append([]string(nil), answer...)
+		}
+	}
+	return nil
+}
+
+const (
+	fuzzyAnswerMinScore  = 0.7
+	fuzzyAnswerMinMargin = 0.1
+)
+
+func matchObjectiveAnswerGroup(answers []string, req *model.SearchRequest, allowFuzzy bool) []string {
+	if len(answers) == 0 {
+		return nil
+	}
+	selected := make(map[int]bool)
+	for _, answer := range answers {
+		if req.Type == 3 {
+			if polarity, ok := JudgementPolarity(answer); ok {
+				matchedIndex, matchedCount := -1, 0
+				for i, option := range req.Options {
+					if optionPolarity, valid := JudgementPolarity(option); valid && optionPolarity == polarity {
+						matchedIndex, matchedCount = i, matchedCount+1
+					}
+				}
+				if matchedCount > 1 {
+					return nil
+				}
+				if matchedCount == 1 {
+					selected[matchedIndex] = true
+					continue
+				}
+			}
+		}
+		if strings.TrimSpace(answer) == "" {
+			return nil
+		}
+		index, count := -1, 0
+		for i, option := range req.Options {
+			if option == answer {
+				index, count = i, count+1
+			}
+		}
+		if count > 1 {
+			return nil
+		}
+		if count == 0 {
+			if !allowFuzzy {
+				return nil
+			}
+			match := strsim.FindBestMatch(answer, req.Options)
+			if match == nil || match.Match == nil || match.Match.Score < fuzzyAnswerMinScore || fuzzyAnswerMargin(match) < fuzzyAnswerMinMargin {
+				return nil
+			}
+			index = match.BestIndex
+		}
+		selected[index] = true
+	}
+	if req.Type != 1 && len(selected) != 1 {
+		return nil
+	}
+	var mapped []string
+	for index, option := range req.Options {
+		if selected[index] {
+			mapped = append(mapped, option)
+		}
+	}
+	return mapped
+}
+
+func fuzzyAnswerMargin(match *similarity.MatchResult) float64 {
+	secondBest := 0.0
+	for index, candidate := range match.AllResult {
+		if index == match.BestIndex || candidate == nil {
+			continue
+		}
+		if candidate.Score > secondBest {
+			secondBest = candidate.Score
+		}
+	}
+	return match.Match.Score - secondBest
 }
 
 func getMaxCountAnswer(answerCount map[string]int) []string {

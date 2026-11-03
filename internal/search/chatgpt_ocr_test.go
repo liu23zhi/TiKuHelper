@@ -242,6 +242,26 @@ func TestAISearchOCRSkipsHTMLAttachments(t *testing.T) {
 	}
 }
 
+func TestAISearchOCRUsesOriginalAttachmentIndex(t *testing.T) {
+	client := &ChatGptClient{OCRProvider: func(_ context.Context, _, _, _ string, _ []byte) (string, error) {
+		return "公式文字", nil
+	}}
+	text, calls := client.runAISearchImageOCR(context.Background(), []downloadedAISearchAttachment{
+		{sourceIndex: 1, sourceURL: "https://example.com/page", contentType: "text/html", body: []byte("<html>")},
+		{sourceIndex: 2, sourceURL: "https://example.com/question.png", imageName: "question.png", contentType: "image/png", body: []byte("png")},
+		{sourceIndex: 4, sourceURL: "https://example.com/choice-b.png", imageName: "choice-b.png", contentType: "image/png", body: []byte("png")},
+	})
+	if len(calls) != 2 {
+		t.Fatalf("expected two OCR calls, got %+v", calls)
+	}
+	if !strings.Contains(text, "图二 OCR：公式文字") || !strings.Contains(text, "图四 OCR：公式文字") {
+		t.Fatalf("OCR text lost original image numbering: %q", text)
+	}
+	if strings.Contains(text, "图一 OCR") || strings.Contains(text, "图三 OCR") {
+		t.Fatalf("OCR text used image-only indexes: %q", text)
+	}
+}
+
 func TestAISearchOCRReportsCachedProviderResultsWithExplicitMetadata(t *testing.T) {
 	client := &ChatGptClient{OCRCacheProvider: func(_ context.Context, _, _, _ string, _ []byte) (string, bool, error) {
 		return "缓存的识别结构", true, nil

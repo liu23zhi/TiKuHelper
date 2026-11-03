@@ -361,8 +361,10 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 		ocrTest := testTool == "image_ocr" || testTool == "image_ocr_and_tools"
 		if ocrTest {
 			var ocrCalls []AIOCRCallUsage
-			parts, ocrCalls = in.buildAISearchToolPromptPartsWithOCR(ctx, req, in.getAttachmentHTTPClient().GetClient(), testTarget...)
+			var diagnostics []AIAttachmentDiagnostic
+			parts, ocrCalls, diagnostics = in.buildAISearchToolPromptPartsWithOCRDetailed(ctx, req, in.getAttachmentHTTPClient().GetClient(), testTarget...)
 			debug.Usage.OCRCalls = append(debug.Usage.OCRCalls, ocrCalls...)
+			debug.Usage.Attachments = append(debug.Usage.Attachments, diagnostics...)
 		} else {
 			parts = []openAIContentPart{{Type: "text", Text: buildAISearchPrompt(req)}}
 		}
@@ -377,8 +379,10 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 		}
 	} else {
 		var ocrCalls []AIOCRCallUsage
-		parts, ocrCalls = in.buildAISearchToolPromptPartsWithOCR(ctx, req, in.getAttachmentHTTPClient().GetClient())
+		var diagnostics []AIAttachmentDiagnostic
+		parts, ocrCalls, diagnostics = in.buildAISearchToolPromptPartsWithOCRDetailed(ctx, req, in.getAttachmentHTTPClient().GetClient())
 		debug.Usage.OCRCalls = append(debug.Usage.OCRCalls, ocrCalls...)
+		debug.Usage.Attachments = append(debug.Usage.Attachments, diagnostics...)
 	}
 	input := []any{
 		buildAIResponsesMessage("system", effectiveAISearchPrompt(in.Prompt)+"\n"+toolPrompt),
@@ -705,6 +709,7 @@ func addAISearchUsage(total *AISearchUsage, usage AISearchUsage) {
 	total.SearchCalls = append(total.SearchCalls, usage.SearchCalls...)
 	total.WebReadCalls = append(total.WebReadCalls, usage.WebReadCalls...)
 	total.OCRCalls = append(total.OCRCalls, usage.OCRCalls...)
+	total.Attachments = append(total.Attachments, usage.Attachments...)
 	total.Trace = append(total.Trace, usage.Trace...)
 }
 
@@ -744,6 +749,11 @@ func buildAISearchToolPromptParts(ctx context.Context, req model.SearchRequest, 
 }
 
 func (in *ChatGptClient) buildAISearchToolPromptPartsWithOCR(ctx context.Context, req model.SearchRequest, client *http.Client, testTarget ...string) ([]openAIContentPart, []AIOCRCallUsage) {
+	parts, calls, _ := in.buildAISearchToolPromptPartsWithOCRDetailed(ctx, req, client, testTarget...)
+	return parts, calls
+}
+
+func (in *ChatGptClient) buildAISearchToolPromptPartsWithOCRDetailed(ctx context.Context, req model.SearchRequest, client *http.Client, testTarget ...string) ([]openAIContentPart, []AIOCRCallUsage, []AIAttachmentDiagnostic) {
 	parts := []openAIContentPart{{Type: "text", Text: buildAISearchPrompt(req)}}
 	urls := extractAISearchURLs(req)
 	if len(testTarget) > 0 {
@@ -761,9 +771,17 @@ func (in *ChatGptClient) buildAISearchToolPromptPartsWithOCR(ctx context.Context
 			transport = http.DefaultTransport
 		}
 		bounded.Transport = aiToolContextTransport{ctx: ctx, base: transport}
-		attachments := downloadAISearchAttachmentResults(&bounded, urls)
+		attachments, diagnostics := downloadAISearchAttachmentResultsDetailed(&bounded, urls)
+		sentIndex := 1
 		for _, attachment := range attachments {
 			parts = append(parts, attachment.part)
+			for index := range diagnostics {
+				if diagnostics[index].SourceIndex == attachment.sourceIndex {
+					diagnostics[index].SentIndex = sentIndex
+					break
+				}
+			}
+			sentIndex++
 		}
 		if references := buildAISearchAttachmentReferences(urls, attachments); references != "" {
 			parts = append(parts, openAIContentPart{Type: "text", Text: references})
@@ -772,9 +790,9 @@ func (in *ChatGptClient) buildAISearchToolPromptPartsWithOCR(ctx context.Context
 		if strings.TrimSpace(ocrText) != "" {
 			parts = append(parts, openAIContentPart{Type: "text", Text: ocrText})
 		}
-		return parts, calls
+		return parts, calls, diagnostics
 	}
-	return parts, nil
+	return parts, nil, nil
 }
 
 func (in *ChatGptClient) requestAIToolRound(ctx context.Context, endpoint string, payload []byte) (aiToolStreamResult, int, error) {

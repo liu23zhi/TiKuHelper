@@ -52,7 +52,7 @@ func TestSearchReturnsWarningWhenAIModelIsNotPriced(t *testing.T) {
 			return nil
 		},
 		func(resolvedSearchRequestContext, model.SearchRequest) ([][]string, searchpkg.AISearchUsage, error) {
-			return [][]string{{"AI答案"}}, searchpkg.AISearchUsage{InputTokens: 1000000, OutputTokens: 500000, TotalTokens: 1500000}, nil
+			return [][]string{{"A"}}, searchpkg.AISearchUsage{InputTokens: 1000000, OutputTokens: 500000, TotalTokens: 1500000}, nil
 		},
 		func() {
 			recorder := httptest.NewRecorder()
@@ -74,7 +74,7 @@ func TestSearchReturnsWarningWhenAIModelIsNotPriced(t *testing.T) {
 
 			// 关键：未定价不阻断作答（带选项的选择题会被格式化成选项字母）。
 			if len(response.Answer.AllAnswer) == 0 || len(response.Answer.AllAnswer[0]) == 0 ||
-				response.Answer.AllAnswer[0][0] != "AI答案" {
+				response.Answer.AllAnswer[0][0] != "A" {
 				t.Fatalf("expected raw AI answer to be preserved, got %+v", response.Answer.AllAnswer)
 			}
 			if response.Answer.AnswerText == "" {
