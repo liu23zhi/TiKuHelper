@@ -200,3 +200,24 @@ func ClearAIOCRCache(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"deleted": deleted})
 }
+
+func AIOCRCacheBatchDelete(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
+	var request service.AIOCRCacheBatchDeleteRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "批量删除参数无效"})
+		return
+	}
+	deleted, err := service.DeleteAIOCRCacheBatchWithDB(aiOCRCacheDatabase(c), request)
+	if err != nil {
+		if errors.Is(err, service.ErrAIOCRCacheFilterInvalid) {
+			c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "批量删除图片 OCR 缓存失败"})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": deleted})
+}

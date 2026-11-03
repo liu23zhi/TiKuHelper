@@ -666,6 +666,7 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		&entity.TicketMessage{},
 		&entity.TicketNotification{},
 		&entity.AIOCRCache{},
+		&entity.AIOCRCacheSequence{},
 	)
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
@@ -674,6 +675,9 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		logger.SysLog("访问令牌表结构迁移已跳过，避免超范围额度阻断启动；修复成功后将在下次启动重试")
 	} else if err := db.AutoMigrate(&entity.AccessToken{}); err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate access tokens fail: %w", err))
+	}
+	if err := runStartupMigration("ensureAIOCRCacheIDs", func() error { return ensureAIOCRCacheIDs(db) }); err != nil {
+		logger.SysLog(fmt.Sprintf("OCR 缓存 ID 回填失败（不影响启动，将在下次启动重试）：%v", err))
 	}
 
 	if err := runStartupMigration("ensureBillingRecordIndexes", func() error { return ensureBillingRecordIndexes(db) }); err != nil {

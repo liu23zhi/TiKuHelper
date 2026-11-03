@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -88,6 +89,77 @@ func TestListAIOCRCacheAppliesTextTypeDateFiltersAndPagination(t *testing.T) {
 	deleted, err := ClearAIOCRCacheWithDB(db, AIOCRCacheListQuery{Keyword: "alpha"})
 	if err != nil || deleted != 2 {
 		t.Fatalf("filtered OCR cache clear: deleted=%d err=%v", deleted, err)
+	}
+}
+
+func TestDeleteAIOCRCacheBatchSupportsExplicitAndFilteredAllSelection(t *testing.T) {
+	db := newAIOCRCacheTestDB(t)
+	hashA, hashB, hashC, hashD := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64), strings.Repeat("d", 64)
+	entries := []entity.AIOCRCache{
+		{URLHash: hashA, ImageSHA256: "image-a", ContentType: "image/png", OCRText: "Alpha"},
+		{URLHash: hashB, ImageSHA256: "image-b", ContentType: "image/png", OCRText: "Beta"},
+		{URLHash: hashC, ImageSHA256: "image-c", ContentType: "image/png", OCRText: "Gamma"},
+		{URLHash: hashD, ImageSHA256: "image-d", ContentType: "image/jpeg", OCRText: "Delta"},
+	}
+	if err := db.Create(&entries).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := DeleteAIOCRCacheBatchWithDB(db, AIOCRCacheBatchDeleteRequest{Items: []string{hashA}})
+	if err != nil || deleted != 1 {
+		t.Fatalf("explicit OCR cache delete: deleted=%d err=%v", deleted, err)
+	}
+	deleted, err = DeleteAIOCRCacheBatchWithDB(db, AIOCRCacheBatchDeleteRequest{
+		AIOCRCacheListQuery: AIOCRCacheListQuery{ContentType: "image/png"},
+		All:                 true,
+		Except:              []string{hashC},
+	})
+	if err != nil || deleted != 1 {
+		t.Fatalf("filtered OCR cache delete: deleted=%d err=%v", deleted, err)
+	}
+
+	var remaining []entity.AIOCRCache
+	if err := db.Order("url_hash").Find(&remaining).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 2 || remaining[0].URLHash != hashC || remaining[1].URLHash != hashD {
+		t.Fatalf("filtered batch delete must retain the exception and rows outside the filter: %+v", remaining)
+	}
+}
+
+func TestDeleteAIOCRCacheBatchRejectsAmbiguousSelection(t *testing.T) {
+	db := newAIOCRCacheTestDB(t)
+	for _, request := range []AIOCRCacheBatchDeleteRequest{
+		{},
+		{All: true, Items: []string{strings.Repeat("a", 64)}},
+	} {
+		if _, err := DeleteAIOCRCacheBatchWithDB(db, request); !errors.Is(err, ErrAIOCRCacheFilterInvalid) {
+			t.Fatalf("ambiguous batch selection should be rejected: request=%+v err=%v", request, err)
+		}
+	}
+	if _, err := DeleteAIOCRCacheBatchWithDB(nil, AIOCRCacheBatchDeleteRequest{Items: []string{strings.Repeat("a", 64)}}); !errors.Is(err, ErrAIOCRCacheUnavailable) {
+		t.Fatalf("nil database should report unavailable, got %v", err)
+	}
+}
+
+func TestListAIOCRCacheOrdersByNewestIDFirst(t *testing.T) {
+	db := newAIOCRCacheTestDB(t)
+	older := uint64(10)
+	newer := uint64(11)
+	entries := []entity.AIOCRCache{
+		{ID: &older, URLHash: "newer-time", ImageSHA256: "image-one", OCRText: "older id", UpdatedAt: time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)},
+		{ID: &newer, URLHash: "older-time", ImageSHA256: "image-two", OCRText: "newer id", UpdatedAt: time.Date(2026, 11, 3, 11, 0, 0, 0, time.UTC)},
+	}
+	if err := db.Create(&entries).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := ListAIOCRCacheWithDB(db, AIOCRCacheListQuery{}, 1, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Data) != 2 || result.Data[0].ID == nil || *result.Data[0].ID != newer || result.Data[1].ID == nil || *result.Data[1].ID != older {
+		t.Fatalf("OCR cache must be ordered by newest ID first: %+v", result.Data)
 	}
 }
 

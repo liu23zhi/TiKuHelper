@@ -23,7 +23,7 @@ func TestAIToolOCRReportsOnlyMatchingPersistedCacheWithoutChangingBilling(t *tes
 	for _, scenario := range []string{"saved", "missing", "changed-image", "changed-text", "missing-url", "cleared-after-ocr", "read-failed"} {
 		t.Run(scenario, func(t *testing.T) {
 			db := newSearchControllerTestDB(t)
-			if err := db.AutoMigrate(&entity.AIOCRCache{}); err != nil {
+			if err := db.AutoMigrate(&entity.AIOCRCache{}, &entity.AIOCRCacheSequence{}); err != nil {
 				t.Fatal(err)
 			}
 			user := seedControllerUser(t, db, 0, "ocr-persisted-admin", "admin")

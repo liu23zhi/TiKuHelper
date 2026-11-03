@@ -3,57 +3,74 @@
     <ConsolePageHeading title="OCR 缓存管理" description="查看和维护已保存的图片识别结果。">
       <template #actions>
         <a-space wrap>
-          <a-button type="primary" :disabled="clearing || adding" @click="openAddDialog">手动添加</a-button>
-          <a-button :loading="loading" :disabled="clearing || adding" @click="load">刷新列表</a-button>
+          <a-button type="primary" :disabled="deleting || adding" @click="openAddDialog">手动添加</a-button>
+          <a-button danger :loading="deleting" :disabled="loading || adding || !!errorMessage || !matched" @click="deleteAllMatching">全部删除</a-button>
+          <a-button :loading="loading" :disabled="deleting || adding" @click="load">刷新列表</a-button>
         </a-space>
       </template>
     </ConsolePageHeading>
     <ConsoleSummaryGrid>
       <a-statistic title="筛选结果" :value="matched" suffix="条" />
       <a-statistic title="当前页" :value="rows.length" suffix="条" />
+      <a-statistic title="当前选择" :value="selectedCount" suffix="条" />
       <div class="provider-status"><span>识别服务</span><a-tag :color="configured ? 'green' : 'default'">{{ configured === undefined ? (loading ? '加载中' : '状态未知') : configured ? 'UAPI 已配置' : '未配置有效 UAPI 密钥' }}</a-tag></div>
     </ConsoleSummaryGrid>
     <a-alert v-if="operationWarning" type="warning" show-icon :message="operationWarning" class="operation-alert" />
     <ConsolePanel title="筛选缓存" description="关键词匹配识别文本、图片 URL、URL 哈希、图片哈希或图片类型；更新时间按上海时间筛选，包含结束日期当天。">
       <a-form :model="filters" layout="inline" class="filter-form" @finish="reload">
         <a-form-item label="关键词">
-          <a-input v-model:value="filters.keyword" allow-clear placeholder="识别文本 / 图片 URL / URL 哈希 / 图片哈希" class="keyword-input" :disabled="clearing" />
+          <a-input v-model:value="filters.keyword" allow-clear placeholder="识别文本 / 图片 URL / URL 哈希 / 图片哈希" class="keyword-input" :disabled="deleting" />
         </a-form-item>
         <a-form-item label="图片类型">
-          <a-select v-model:value="filters.contentType" class="content-type-select" :disabled="clearing">
+          <a-select v-model:value="filters.contentType" class="content-type-select" :disabled="deleting">
             <a-select-option value="">全部类型</a-select-option>
             <a-select-option v-for="type in contentTypes" :key="type" :value="type">{{ type }}</a-select-option>
           </a-select>
         </a-form-item>
         <a-form-item label="更新时间">
           <a-space class="date-filter-space">
-            <a-input v-model:value="filters.updatedFrom" type="date" aria-label="更新时间起始日期" :disabled="clearing" />
+            <a-input v-model:value="filters.updatedFrom" type="date" aria-label="更新时间起始日期" :disabled="deleting" />
             <span>至</span>
-            <a-input v-model:value="filters.updatedTo" type="date" aria-label="更新时间结束日期" :disabled="clearing" />
+            <a-input v-model:value="filters.updatedTo" type="date" aria-label="更新时间结束日期" :disabled="deleting" />
           </a-space>
         </a-form-item>
         <a-form-item>
           <a-space wrap>
-            <a-button type="primary" html-type="submit" :loading="loading" :disabled="clearing">查询</a-button>
-            <a-button :disabled="clearing" @click="resetFilters">重置筛选</a-button>
+            <a-button type="primary" html-type="submit" :loading="loading" :disabled="deleting">查询</a-button>
+            <a-button :disabled="deleting" @click="resetFilters">重置筛选</a-button>
           </a-space>
         </a-form-item>
       </a-form>
       <a-alert v-if="errorMessage" type="error" show-icon :message="errorMessage" class="status-alert" />
     </ConsolePanel>
     <ConsolePanel title="识别结果" :description="scopeDescription">
-      <template #actions>
-        <a-button danger :loading="clearing" :disabled="loading || adding || !!errorMessage || !matched" @click="clearMatching">{{ hasFilters ? '清空筛选结果' : '清空全部缓存' }}</a-button>
-      </template>
-      <!-- <p class="cache-hint">保存识别文本、完整图片 URL 与哈希，不保存原始图片。命中缓存仍按现有搜题计费口径处理；清空不会取消正在执行的请求，旧请求的结果不会重新写回缓存。</p> -->
+      <a-alert v-if="pagination.total" type="info" show-icon class="selection-alert">
+        <template #message>
+          <div class="selection-alert-content">
+            <span>{{ selectionSummary }}</span>
+            <a-button danger size="small" :loading="deleting" :disabled="!selectedCount" @click="deleteSelected">删除所选</a-button>
+            <a-button type="link" size="small" :disabled="allCurrentPageSelected" @click="handleSelectCurrentPage">全选本页</a-button>
+            <a-button type="link" size="small" :disabled="!hasCurrentPageSelection" @click="handleClearCurrentPage">取消本页全选</a-button>
+            <a-button type="link" size="small" :disabled="allRowsSelected" @click="handleSelectAll">全选全部</a-button>
+            <a-button type="link" size="small" :disabled="!selectedCount" @click="handleClearSelection">取消全部全选</a-button>
+          </div>
+        </template>
+      </a-alert>
+      <!-- <p class="cache-hint">保存识别文本、完整图片 URL 与哈希，不保存原始图片。命中缓存仍按现有搜题计费口径处理；删除不会取消正在执行的请求，旧请求的结果不会重新写回缓存。</p> -->
       <ConsoleTableShell label="OCR 缓存记录">
-        <a-table table-layout="fixed" :data-source="rows" :columns="columns" :loading="loading" :pagination="pagination" row-key="urlHash" :scroll="{ x: sumTableColumnWidths(columns) }" :locale="{ emptyText: errorMessage ? '列表加载失败，请重试' : '暂无符合条件的 OCR 缓存' }" @change="onTableChange">
+        <a-table table-layout="fixed" :data-source="rows" :columns="columns" :loading="loading" :pagination="pagination" row-key="urlHash" :row-selection="rowSelection" :scroll="{ x: sumTableColumnWidths(columns, 48) }" :locale="{ emptyText: errorMessage ? '列表加载失败，请重试' : '暂无符合条件的 OCR 缓存' }" @change="onTableChange">
           <template #bodyCell="{ column, record }">
-            <span v-if="column.key === 'ocrText'" class="text-preview">{{ record.ocrText || '-' }}</span>
+            <span v-if="column.key === 'id'">{{ record.id ?? '-' }}</span>
+            <span v-else-if="column.key === 'ocrText'" class="text-preview">{{ record.ocrText || '-' }}</span>
             <span v-else-if="column.key === 'url'" class="url-value">{{ record.url || '历史记录未保存 URL' }}</span>
             <code v-else-if="column.key === 'urlHash' || column.key === 'imageSha256'" class="hash-value">{{ record[column.key] || '-' }}</code>
             <span v-else-if="column.key === 'updatedAt'">{{ formatDate(record.updatedAt) }}</span>
-            <a-button v-else-if="column.key === 'action'" type="link" @click="showDetails(record)">查看全文</a-button>
+            <a-space v-else-if="column.key === 'action'" wrap>
+              <a-button type="link" @click="showDetails(record)">查看全文</a-button>
+              <a-popconfirm title="删除这条 OCR 缓存？" ok-text="删除" cancel-text="取消" @confirm="deleteSingle(record)">
+                <a-button type="link" danger :disabled="deleting">删除</a-button>
+              </a-popconfirm>
+            </a-space>
           </template>
         </a-table>
       </ConsoleTableShell>
@@ -97,7 +114,7 @@
 import { computed, defineComponent, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { Descriptions, message } from 'ant-design-vue'
 import Swal from 'sweetalert2'
-import { getAIOCRCacheEntries, getAIOCRCacheImage, clearAIOCRCache, testAIToolCall } from '@/api/TikuComponentApi'
+import { getAIOCRCacheEntries, getAIOCRCacheImage, deleteAIOCRCacheBatch, testAIToolCall } from '@/api/TikuComponentApi'
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
 import { buildAIToolTestPayload } from '@/utils/aiSearchConfigHelpers.mjs'
 
@@ -113,7 +130,7 @@ export default defineComponent({
     const filters = reactive(emptyFilters())
     const appliedFilters = ref({})
     const loading = ref(false)
-    const clearing = ref(false)
+    const deleting = ref(false)
     const addVisible = ref(false)
     const adding = ref(false)
     const addImageURL = ref('')
@@ -139,14 +156,31 @@ export default defineComponent({
       return [scope.keyword && `关键词：${scope.keyword}`, scope.contentType && `类型：${scope.contentType}`, scope.updatedFrom && `起始：${scope.updatedFrom}`, scope.updatedTo && `结束：${scope.updatedTo}`].filter(Boolean).join('；') || '当前范围：全部 OCR 缓存。'
     })
     const columns = [
+      { title: 'ID', dataIndex: 'id', key: 'id', width: 90 },
       { title: '识别文本', dataIndex: 'ocrText', key: 'ocrText', width: 320 },
       { title: '图片 URL', dataIndex: 'url', key: 'url', width: 320 },
       { title: '图片类型', dataIndex: 'contentType', key: 'contentType', width: 140 },
       { title: 'URL 哈希', dataIndex: 'urlHash', key: 'urlHash', width: 210 },
       { title: '图片 SHA-256', dataIndex: 'imageSha256', key: 'imageSha256', width: 210 },
       { title: '更新时间（上海）', dataIndex: 'updatedAt', key: 'updatedAt', width: 180 },
-      { title: '操作', key: 'action', width: 100 },
+      { title: '操作', key: 'action', width: 160 },
     ]
+    const selectedKeys = ref(new Set())
+    const deselectedKeys = ref(new Set())
+    const selectAllMode = ref(false)
+    const recordIdentity = record => String(record?.urlHash || '')
+    const currentPageKeys = computed(() => rows.value.map(recordIdentity).filter(Boolean))
+    const selectedRowKeys = computed(() => selectAllMode.value
+      ? currentPageKeys.value.filter(key => !deselectedKeys.value.has(key))
+      : currentPageKeys.value.filter(key => selectedKeys.value.has(key)))
+    const selectedCount = computed(() => selectAllMode.value
+      ? Math.max(0, matched.value - deselectedKeys.value.size)
+      : selectedKeys.value.size)
+    const allRowsSelected = computed(() => selectAllMode.value && deselectedKeys.value.size === 0 && matched.value > 0)
+    const allCurrentPageSelected = computed(() => currentPageKeys.value.length > 0 && selectedRowKeys.value.length === currentPageKeys.value.length)
+    const hasCurrentPageSelection = computed(() => selectedRowKeys.value.length > 0)
+    const selectionSummary = computed(() => `已选择 ${selectedCount.value} 条，共 ${matched.value} 条`)
+    const rowSelection = computed(() => ({ columnWidth: 48, selectedRowKeys: selectedRowKeys.value, onChange: onSelectionChange }))
     const formatDate = value => {
       const date = value ? new Date(value) : null
       return date && Number.isFinite(date.getTime()) ? date.toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' }) : '-'
@@ -165,7 +199,7 @@ export default defineComponent({
       imageError.value = ''
     }
     const load = async () => {
-      if (clearing.value) return
+      if (deleting.value) return
       const generation = ++loadGeneration
       loading.value = true
       errorMessage.value = ''
@@ -190,21 +224,22 @@ export default defineComponent({
       }
     }
     const reload = () => {
-      if (clearing.value) return
+      if (deleting.value) return
       if (filters.updatedFrom && filters.updatedTo && filters.updatedFrom > filters.updatedTo) {
         errorMessage.value = '起始日期不能晚于结束日期'
         return
       }
       appliedFilters.value = Object.fromEntries(Object.entries(filters).map(([key, value]) => [key, String(value || '').trim()]).filter(([, value]) => value))
+      clearSelectionState()
       pagination.current = 1
       rows.value = []
       matched.value = 0
       pagination.total = 0
       return load()
     }
-    const resetFilters = () => { if (!clearing.value) { Object.assign(filters, emptyFilters()); return reload() } }
+    const resetFilters = () => { if (!deleting.value) { Object.assign(filters, emptyFilters()); return reload() } }
     const onTableChange = page => {
-      if (clearing.value) return
+      if (deleting.value) return
       pagination.current = page.pageSize === pagination.pageSize ? page.current : 1
       pagination.pageSize = page.pageSize
       return load()
@@ -265,7 +300,7 @@ export default defineComponent({
       addBillingWarning.value = ''
     }
     const openAddDialog = () => {
-      if (adding.value || clearing.value) return
+      if (adding.value || deleting.value) return
       addGeneration++
       addImageURL.value = ''
       resetAddResult()
@@ -277,7 +312,7 @@ export default defineComponent({
       addVisible.value = false
     }
     const addOCRCache = async () => {
-      if (adding.value || clearing.value || !addVisible.value) return
+      if (adding.value || deleting.value || !addVisible.value) return
       let payload
       try {
         const { mode, tool, url } = buildAIToolTestPayload({ mode: 'direct', tool: 'image_ocr', url: addImageURL.value })
@@ -313,32 +348,127 @@ export default defineComponent({
         if (generation === addGeneration) adding.value = false
       }
     }
-    const clearMatching = async () => {
-      if (loading.value || adding.value || clearing.value || errorMessage.value || !matched.value) return
-      const scope = { ...appliedFilters.value }
-      const filtered = Object.keys(scope).length > 0
-      clearing.value = true
+    const clearSelectionState = () => {
+      selectedKeys.value = new Set()
+      deselectedKeys.value = new Set()
+      selectAllMode.value = false
+    }
+    const handleSelectCurrentPage = () => {
+      if (!currentPageKeys.value.length) return
+      if (selectAllMode.value) {
+        const next = new Set(deselectedKeys.value)
+        currentPageKeys.value.forEach(key => next.delete(key))
+        deselectedKeys.value = next
+        return
+      }
+      const next = new Set(selectedKeys.value)
+      currentPageKeys.value.forEach(key => next.add(key))
+      selectedKeys.value = next
+    }
+    const handleClearCurrentPage = () => {
+      if (!currentPageKeys.value.length) return
+      if (selectAllMode.value) {
+        const next = new Set(deselectedKeys.value)
+        currentPageKeys.value.forEach(key => next.add(key))
+        deselectedKeys.value = next
+        return
+      }
+      const next = new Set(selectedKeys.value)
+      currentPageKeys.value.forEach(key => next.delete(key))
+      selectedKeys.value = next
+    }
+    const handleSelectAll = () => {
+      if (!matched.value) return
+      selectedKeys.value = new Set()
+      deselectedKeys.value = new Set()
+      selectAllMode.value = true
+    }
+    const handleClearSelection = () => clearSelectionState()
+    function onSelectionChange(keys) {
+      const selected = new Set(Array.isArray(keys) ? keys : [])
+      if (selectAllMode.value) {
+        const next = new Set(deselectedKeys.value)
+        currentPageKeys.value.forEach(key => selected.has(key) ? next.delete(key) : next.add(key))
+        deselectedKeys.value = next
+        return
+      }
+      const next = new Set(selectedKeys.value)
+      currentPageKeys.value.forEach(key => selected.has(key) ? next.add(key) : next.delete(key))
+      selectedKeys.value = next
+    }
+    const selectedDeletePayload = () => selectAllMode.value
+      ? { ...appliedFilters.value, items: [], all: true, except: [...deselectedKeys.value] }
+      : { items: [...selectedKeys.value], all: false, except: [] }
+    const deleteSelected = async () => {
+      if (loading.value || adding.value || deleting.value || errorMessage.value || !selectedCount.value) return
       try {
         const result = await Swal.fire({
-          title: filtered ? '确认清空筛选结果？' : '确认清空全部 OCR 缓存？',
-          text: `${scopeDescription.value} 将删除当前范围内的 ${matched.value} 条缓存，包含其他分页。正在执行的请求不会被取消。`,
-          icon: 'warning', showCancelButton: true, confirmButtonText: '确认清空', cancelButtonText: '取消',
+          title: '确认删除所选 OCR 缓存？',
+          text: `将删除 ${selectedCount.value} 条已选择的缓存，正在执行的请求不会被取消。`,
+          icon: 'warning', showCancelButton: true, confirmButtonText: '确认删除', cancelButtonText: '取消',
         })
         if (!result.isConfirmed) return
-        const res = await clearAIOCRCache(scope)
-        if (res?.status !== 200) throw new Error(res?.message || '清空 OCR 缓存失败')
+        deleting.value = true
+        const res = await deleteAIOCRCacheBatch(selectedDeletePayload())
+        if (res?.status !== 200) throw new Error(res?.message || '删除 OCR 缓存失败')
         closeDetails()
-        message.success(`已清空 ${Number(res.data?.deleted || 0)} 条 OCR 缓存`)
+        message.success(`已删除 ${Number(res.data?.deleted || 0)} 条 OCR 缓存`)
         pagination.current = 1
-        clearing.value = false
+        clearSelectionState()
         await load()
       } catch (error) {
-        errorMessage.value = requestError(error, '清空 OCR 缓存失败')
-      } finally { clearing.value = false }
+        errorMessage.value = requestError(error, '删除 OCR 缓存失败')
+      } finally { deleting.value = false }
+    }
+    const deleteSingle = async record => {
+      if (!record?.urlHash || deleting.value) return
+      deleting.value = true
+      try {
+        const res = await deleteAIOCRCacheBatch({ items: [record.urlHash], all: false, except: [] })
+        if (res?.status !== 200) throw new Error(res?.message || '删除 OCR 缓存失败')
+        if (detailRecord.value.urlHash === record.urlHash) closeDetails()
+        if (selectAllMode.value) {
+          const next = new Set(deselectedKeys.value)
+          next.delete(record.urlHash)
+          deselectedKeys.value = next
+        } else {
+          const next = new Set(selectedKeys.value)
+          next.delete(record.urlHash)
+          selectedKeys.value = next
+        }
+        message.success('已删除 1 条 OCR 缓存')
+        if (rows.value.length === 1 && pagination.current > 1) pagination.current--
+        await load()
+      } catch (error) {
+        errorMessage.value = requestError(error, '删除 OCR 缓存失败')
+      } finally { deleting.value = false }
+    }
+    const deleteAllMatching = async () => {
+      if (loading.value || adding.value || deleting.value || errorMessage.value || !matched.value) return
+      const scope = { ...appliedFilters.value, items: [], all: true, except: [] }
+      const filtered = Object.keys(appliedFilters.value).length > 0
+      const result = await Swal.fire({
+        title: filtered ? '确认删除筛选结果？' : '确认删除全部 OCR 缓存？',
+        text: `${scopeDescription.value} 将删除当前范围内的 ${matched.value} 条缓存，包含其他分页。正在执行的请求不会被取消。`,
+        icon: 'warning', showCancelButton: true, confirmButtonText: '确认删除', cancelButtonText: '取消',
+      })
+      if (!result.isConfirmed) return
+      deleting.value = true
+      try {
+        const res = await deleteAIOCRCacheBatch(scope)
+        if (res?.status !== 200) throw new Error(res?.message || '删除 OCR 缓存失败')
+        closeDetails()
+        clearSelectionState()
+        message.success(`已删除 ${Number(res.data?.deleted || 0)} 条 OCR 缓存`)
+        pagination.current = 1
+        await load()
+      } catch (error) {
+        errorMessage.value = requestError(error, '删除 OCR 缓存失败')
+      } finally { deleting.value = false }
     }
     onMounted(load)
     onBeforeUnmount(() => { loadGeneration++; addGeneration++; clearImageState() })
-    return { rows, filters, loading, clearing, addVisible, adding, addImageURL, addForm, addError, addRequestId, addRecognizedText, addBillingWarning, operationWarning, configured, matched, errorMessage, detailVisible, detailRecord, imageLoading, imageError, currentImageUrl, pagination, contentTypes, hasFilters, scopeDescription, columns, formatDate, load, reload, resetFilters, onTableChange, showDetails, closeDetails, onDetailVisibilityChange, loadCurrentImage, handleCurrentImageError, openAddDialog, closeAddDialog, addOCRCache, clearMatching }
+    return { rows, filters, loading, deleting, addVisible, adding, addImageURL, addForm, addError, addRequestId, addRecognizedText, addBillingWarning, operationWarning, configured, matched, errorMessage, detailVisible, detailRecord, imageLoading, imageError, currentImageUrl, pagination, contentTypes, hasFilters, scopeDescription, columns, formatDate, load, reload, resetFilters, onTableChange, showDetails, closeDetails, onDetailVisibilityChange, loadCurrentImage, handleCurrentImageError, openAddDialog, closeAddDialog, addOCRCache, deleteSingle, deleteSelected, deleteAllMatching, selectedCount, selectionSummary, selectedRowKeys, allRowsSelected, allCurrentPageSelected, hasCurrentPageSelection, rowSelection, onSelectionChange, handleSelectCurrentPage, handleClearCurrentPage, handleSelectAll, handleClearSelection }
   },
 })
 </script>
@@ -349,6 +479,8 @@ export default defineComponent({
 .filter-form { row-gap: 16px; }
 .status-alert { margin-top: 16px; }
 .operation-alert, .add-hint { margin-bottom: 16px; }
+.selection-alert { margin-bottom: 20px; }
+.selection-alert-content { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .request-id { margin: 12px 0 0; overflow-wrap: anywhere; color: var(--console-muted); }
 .provider-status { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; color: var(--console-muted); }
 .cache-hint { margin: 0 0 20px; color: var(--console-muted); line-height: 1.7; }

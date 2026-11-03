@@ -35,10 +35,19 @@ type AIOCRCacheStatus struct {
 // AIOCRCacheListQuery contains the administrator-facing cache filters for the
 // full source URL, hashes, content type, OCR text, and update time.
 type AIOCRCacheListQuery struct {
-	Keyword     string
-	ContentType string
-	UpdatedFrom string
-	UpdatedTo   string
+	Keyword     string `json:"keyword"`
+	ContentType string `json:"contentType"`
+	UpdatedFrom string `json:"updatedFrom"`
+	UpdatedTo   string `json:"updatedTo"`
+}
+
+// AIOCRCacheBatchDeleteRequest describes an explicit selection or all rows in
+// the filtered scope, optionally excluding rows deselected after select-all.
+type AIOCRCacheBatchDeleteRequest struct {
+	AIOCRCacheListQuery
+	Items  []string `json:"items"`
+	All    bool     `json:"all"`
+	Except []string `json:"except"`
 }
 
 type AIOCRCacheListSummary struct {
@@ -213,10 +222,16 @@ func lookupOrRecognizeAIOCR(
 		OCRText:     text,
 		UpdatedAt:   time.Now(),
 	}
+	sequence := entity.AIOCRCacheSequence{}
+	if err := db.Create(&sequence).Error; err != nil {
+		logger.SysLog(fmt.Sprintf("AI OCR cache ID allocation failed; result will not be cached: %v", err))
+		return text, false, nil
+	}
+	entry.ID = &sequence.ID
 	if err := db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "url_hash"}},
 		DoUpdates: clause.AssignmentColumns([]string{
-			"url", "image_sha256", "content_type", "ocr_text", "updated_at",
+			"id", "url", "image_sha256", "content_type", "ocr_text", "updated_at",
 		}),
 	}).Create(&entry).Error; err != nil {
 		logger.SysLog(fmt.Sprintf("AI OCR cache write failed; result will not be cached: %v", err))
@@ -389,26 +404,39 @@ func ListAIOCRCacheWithDB(db *gorm.DB, filters AIOCRCacheListQuery, page, pageSi
 		return result, err
 	}
 	result.Summary.Matched = result.Total
-	if err := base.Order("updated_at DESC, url_hash ASC").Limit(pageSize).Offset((page - 1) * pageSize).Find(&result.Data).Error; err != nil {
+	if err := base.Order("id DESC, updated_at DESC, url_hash ASC").Limit(pageSize).Offset((page - 1) * pageSize).Find(&result.Data).Error; err != nil {
 		return result, err
 	}
 	return result, nil
 }
 
-func ClearAIOCRCacheWithDB(db *gorm.DB, queries ...AIOCRCacheListQuery) (int64, error) {
-	var filters AIOCRCacheListQuery
-	if len(queries) > 0 {
-		filters = queries[0]
+func DeleteAIOCRCacheBatchWithDB(db *gorm.DB, request AIOCRCacheBatchDeleteRequest) (int64, error) {
+	if request.All && len(request.Items) > 0 || !request.All && len(request.Items) == 0 || len(request.Items) > 1000 || len(request.Except) > 10000 {
+		return 0, ErrAIOCRCacheFilterInvalid
 	}
-	if err := validateAIOCRCacheFilters(filters); err != nil {
+	items := uniqueAIOCRCacheHashes(request.Items)
+	except := uniqueAIOCRCacheHashes(request.Except)
+	if !request.All && len(items) == 0 || request.All && len(request.Except) > 0 && len(except) == 0 {
+		return 0, ErrAIOCRCacheFilterInvalid
+	}
+	if err := validateAIOCRCacheFilters(request.AIOCRCacheListQuery); err != nil {
 		return 0, err
 	}
 	if db == nil {
 		return 0, ErrAIOCRCacheUnavailable
 	}
-	query, err := applyAIOCRCacheFilters(db.Model(&entity.AIOCRCache{}), filters)
-	if err != nil {
-		return 0, err
+	var query *gorm.DB
+	var err error
+	if request.All {
+		query, err = applyAIOCRCacheFilters(db.Model(&entity.AIOCRCache{}), request.AIOCRCacheListQuery)
+		if err != nil {
+			return 0, err
+		}
+		if len(except) > 0 {
+			query = query.Where("url_hash NOT IN ?", except)
+		}
+	} else {
+		query = db.Model(&entity.AIOCRCache{}).Where("url_hash IN ?", items)
 	}
 	cacheLock := aiOCRCacheLock(db)
 	cacheLock.Lock()
@@ -427,6 +455,34 @@ func ClearAIOCRCacheWithDB(db *gorm.DB, queries ...AIOCRCacheListQuery) (int64, 
 	}
 	bumpAIOCRCacheEpoch(db)
 	return result.RowsAffected, nil
+}
+
+func uniqueAIOCRCacheHashes(hashes []string) []string {
+	unique := make([]string, 0, len(hashes))
+	seen := make(map[string]struct{}, len(hashes))
+	for _, hash := range hashes {
+		hash = strings.TrimSpace(hash)
+		if len(hash) != sha256.Size*2 {
+			continue
+		}
+		if _, err := hex.DecodeString(hash); err != nil {
+			continue
+		}
+		if _, exists := seen[hash]; exists {
+			continue
+		}
+		seen[hash] = struct{}{}
+		unique = append(unique, hash)
+	}
+	return unique
+}
+
+func ClearAIOCRCacheWithDB(db *gorm.DB, queries ...AIOCRCacheListQuery) (int64, error) {
+	var filters AIOCRCacheListQuery
+	if len(queries) > 0 {
+		filters = queries[0]
+	}
+	return DeleteAIOCRCacheBatchWithDB(db, AIOCRCacheBatchDeleteRequest{AIOCRCacheListQuery: filters, All: true})
 }
 
 func hashAIOCRURL(sourceURL string) string {

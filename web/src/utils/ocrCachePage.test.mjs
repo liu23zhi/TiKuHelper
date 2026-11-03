@@ -17,11 +17,12 @@ async function createPage(overrides = {}) {
     Descriptions: { Item: {} }, message: { success() {}, error() {} },
     Swal: { fire: async () => ({ isConfirmed: true }) },
     getAIOCRCacheEntries: async () => response(),
+    getAIOCRCacheStatus: async () => ({ status: 200, data: { entries: 1, configured: true, latestUpdatedAt: row.updatedAt } }),
     Blob,
     getAIOCRCacheImage: async () => ({ status: 200, data: new Blob(['image'], { type: 'image/png' }) }),
     URL: { createObjectURL: () => 'blob:ocr-preview', revokeObjectURL() {} },
     testAIToolCall: async () => ({ status: 200, data: { success: true, ocrCacheEntry: row } }),
-    clearAIOCRCache: async () => ({ status: 200, data: { deleted: 1 } }),
+    deleteAIOCRCacheBatch: async () => ({ status: 200, data: { deleted: 1 } }),
     ...overrides,
   }
   return new Function(...Object.keys(dependencies), script)(...Object.values(dependencies)).setup()
@@ -271,40 +272,90 @@ test('OCR rejects reversed dates before any request but accepts the same start a
   assert.equal(page.errorMessage.value, '')
 })
 
-test('OCR deletion uses displayed filters without pagination and ignores unsubmitted edits', async () => {
+test('OCR select-all deletion uses displayed filters without pagination', async () => {
   const deleted = []
   const confirmations = []
   const page = await createPage({
-    clearAIOCRCache: async params => { deleted.push(params); return { status: 200, data: { deleted: 1 } } },
+    deleteAIOCRCacheBatch: async params => { deleted.push(params); return { status: 200, data: { deleted: 1 } } },
     Swal: { fire: async params => { confirmations.push(params); return { isConfirmed: true } } },
   })
   Object.assign(page.filters, { keyword: '指定题目', contentType: 'image/png', updatedFrom: '2026-11-02', updatedTo: '2026-11-02' })
   await page.reload()
   page.showDetails(row)
   page.filters.keyword = '不该删除的输入'
-  await page.clearMatching()
-  assert.deepEqual(deleted, [{ keyword: '指定题目', contentType: 'image/png', updatedFrom: '2026-11-02', updatedTo: '2026-11-02' }])
+  await page.deleteAllMatching()
+  assert.deepEqual(deleted, [{ keyword: '指定题目', contentType: 'image/png', updatedFrom: '2026-11-02', updatedTo: '2026-11-02', items: [], all: true, except: [] }])
   assert.match(confirmations[0].title, /筛选结果/)
   assert.match(confirmations[0].text, /指定题目/)
   assert.match(confirmations[0].text, /包含其他分页/)
   assert.equal(page.detailVisible.value, false)
   assert.equal(page.pagination.current, 1)
-  assert.equal(page.clearing.value, false)
+  assert.equal(page.deleting.value, false)
 })
 
-test('OCR whole-cache clear is explicit and cancellation sends no DELETE', async () => {
+test('OCR whole-cache deletion is explicit and cancellation sends no POST', async () => {
   const deleted = []
   let confirmed = false
   const page = await createPage({
-    clearAIOCRCache: async params => { deleted.push(params); return { status: 200, data: { deleted: 1 } } },
+    deleteAIOCRCacheBatch: async params => { deleted.push(params); return { status: 200, data: { deleted: 1 } } },
     Swal: { fire: async params => { assert.match(params.title, /全部 OCR 缓存/); return { isConfirmed: confirmed } } },
   })
   await page.load()
-  await page.clearMatching()
+  await page.deleteAllMatching()
   assert.deepEqual(deleted, [])
   confirmed = true
-  await page.clearMatching()
-  assert.deepEqual(deleted, [{}])
+  await page.deleteAllMatching()
+  assert.deepEqual(deleted, [{ items: [], all: true, except: [] }])
+})
+
+test('OCR explicit selection remains selected across pages and deletes only selected hashes', async () => {
+  const deleted = []
+  const secondRow = { ...row, urlHash: 'b'.repeat(64), ocrText: '第二条' }
+  const thirdRow = { ...row, urlHash: 'c'.repeat(64), ocrText: '第三条' }
+  const page = await createPage({
+    getAIOCRCacheEntries: async params => params.page === 2
+      ? response({ data: [thirdRow], total: 3, summary: { matched: 3 } })
+      : response({ data: [row, secondRow], total: 3, summary: { matched: 3 } }),
+    deleteAIOCRCacheBatch: async params => { deleted.push(params); return { status: 200, data: { deleted: 2 } } },
+  })
+  await page.load()
+  page.onSelectionChange([row.urlHash])
+  await page.onTableChange({ current: 1, pageSize: 1 })
+  await page.onTableChange({ current: 2, pageSize: 1 })
+  page.onSelectionChange([thirdRow.urlHash])
+  assert.equal(page.selectedCount.value, 2)
+  await page.deleteSelected()
+  assert.deepEqual(deleted, [{ items: [row.urlHash, thirdRow.urlHash], all: false, except: [] }])
+  assert.equal(page.selectedCount.value, 0)
+})
+
+test('OCR select-all uses the filtered scope and transmits deselected exceptions', async () => {
+  const deleted = []
+  const secondRow = { ...row, urlHash: 'b'.repeat(64), ocrText: '第二条' }
+  const page = await createPage({
+    getAIOCRCacheEntries: async () => response({ data: [row, secondRow], total: 60, summary: { matched: 60 } }),
+    deleteAIOCRCacheBatch: async params => { deleted.push(params); return { status: 200, data: { deleted: 59 } } },
+  })
+  page.filters.keyword = '题目'
+  await page.reload()
+  page.handleSelectAll()
+  page.onSelectionChange([row.urlHash])
+  assert.equal(page.selectedCount.value, 59)
+  await page.deleteSelected()
+  assert.deepEqual(deleted, [{ keyword: '题目', items: [], all: true, except: [secondRow.urlHash] }])
+})
+
+test('OCR row deletion sends only the row hash and clears its detail', async () => {
+  const deleted = []
+  const page = await createPage({
+    deleteAIOCRCacheBatch: async params => { deleted.push(params); return { status: 200, data: { deleted: 1 } } },
+  })
+  await page.load()
+  page.showDetails(row)
+  await page.deleteSingle(row)
+  assert.deepEqual(deleted, [{ items: [row.urlHash], all: false, except: [] }])
+  assert.equal(page.detailVisible.value, false)
+  assert.equal(page.deleting.value, false)
 })
 
 test('OCR stale response cannot replace the newer search results or summary', async () => {
@@ -327,7 +378,7 @@ test('OCR failed list never enables deletion against stale results and keeps the
   let fail = false
   const page = await createPage({
     getAIOCRCacheEntries: async () => { if (fail) throw { response: { data: { message: '缓存数据库暂不可用' } } }; return response() },
-    clearAIOCRCache: () => { throw new Error('列表失败不应删除') },
+    deleteAIOCRCacheBatch: () => { throw new Error('列表失败不应删除') },
   })
   await page.load()
   fail = true
@@ -336,7 +387,7 @@ test('OCR failed list never enables deletion against stale results and keeps the
   assert.equal(page.errorMessage.value, '缓存数据库暂不可用')
   assert.deepEqual(page.rows.value, [])
   assert.equal(page.matched.value, 0)
-  await page.clearMatching()
+  await page.deleteAllMatching()
   assert.equal(page.errorMessage.value, '缓存数据库暂不可用')
 })
 
@@ -364,7 +415,8 @@ test('OCR cache management is linked only from the administrator menu and protec
   assert.match(api, /export function getAIOCRCacheEntries\(params\)[\s\S]*?ocr-cache\/entries/)
   assert.match(api, /export function getAIOCRCacheImage\(urlHash\)[\s\S]*?responseType: 'blob'/)
   assert.match(api, /ocr-cache\/entries\/\$\{encodeURIComponent\(urlHash\)\}\/image/)
-  assert.match(api, /export function clearAIOCRCache\(params\)[\s\S]*?method: 'delete',\s*params/)
+  assert.match(api, /export function deleteAIOCRCacheBatch\(data\)[\s\S]*?ocr-cache\/batch-delete/)
   assert.match(page, /a-form :model="filters"/)
+  assert.match(page, /:row-selection="rowSelection"/)
   assert.doesNotMatch(page, /v-html/)
 })

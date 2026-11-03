@@ -277,15 +277,6 @@
         <a-space wrap>
           <a-button @click="$router.push('/adapter/ocr-cache')">管理缓存条目</a-button>
           <a-button @click="loadAIOCRCacheStatus" :loading="ocrCacheLoading">刷新</a-button>
-          <a-popconfirm
-            title="确定清空图片 OCR 缓存吗？"
-            description="正在执行的识别请求会继续完成，但其旧结果不会重新写入缓存。"
-            ok-text="清空"
-            cancel-text="取消"
-            @confirm="handleClearAIOCRCache"
-          >
-            <a-button danger :disabled="!ocrCacheStatus || ocrCacheStatus.entries === 0" :loading="ocrCacheClearing">清空缓存</a-button>
-          </a-popconfirm>
         </a-space>
       </template>
       <a-alert v-if="ocrCacheError" type="error" show-icon :message="ocrCacheError" />
@@ -472,7 +463,6 @@ import {
   getUAPISearchEngines,
   getUAPIUsageStatus,
   getAIOCRCacheStatus,
-  clearAIOCRCache,
   createAIModelPrice,
   updateAIModelPrice,
   deleteAIModelPrice,
@@ -575,7 +565,6 @@ export default defineComponent({
     const usageInfo = ref(null)
     const testModalVisible = ref(false)
     const ocrCacheLoading = ref(false)
-    const ocrCacheClearing = ref(false)
     const ocrCacheStatus = ref(null)
     const ocrCacheError = ref('')
     const savedCompressionOrder = ref(buildAIContextCompressionSettings().contextCompressionOrder)
@@ -864,7 +853,6 @@ export default defineComponent({
       priceModalVisible,
       priceForm,
       ocrCacheLoading,
-      ocrCacheClearing,
       ocrCacheStatus,
       ocrCacheError,
       stagedPointColumns,
@@ -891,20 +879,6 @@ export default defineComponent({
       if (!value) return '暂无'
       const date = new Date(value)
       return Number.isNaN(date.getTime()) ? '暂无' : date.toLocaleString()
-    },
-    handleClearAIOCRCache() {
-      this.ocrCacheClearing = true
-      clearAIOCRCache().then(res => {
-        if (res?.status !== 200) {
-          throw new Error(res?.message || '清空图片 OCR 缓存失败')
-        }
-        message.success(`已清空 ${Number(res?.data?.deleted || 0)} 条图片 OCR 缓存`)
-        return this.loadAIOCRCacheStatus()
-      }).catch(error => {
-        this.ocrCacheError = error?.message || '清空图片 OCR 缓存失败'
-      }).finally(() => {
-        this.ocrCacheClearing = false
-      })
     },
     selectModel(model) {
       this.formState.model = model

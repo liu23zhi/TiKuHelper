@@ -576,6 +576,14 @@ export function clearAIOCRCache(params) {
   })
 }
 
+export function deleteAIOCRCacheBatch(data) {
+  return request({
+    url: `/adapter-service/ai-search-config/ocr-cache/batch-delete`,
+    method: 'post',
+    data,
+  })
+}
+
 export function createAIModelPrice(data) {
   return request({
     url: `/adapter-service/ai-model-prices`,

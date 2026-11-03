@@ -480,14 +480,15 @@ test('TikuComponentApi exposes the AI pricing-status endpoint', async () => {
   assert.match(content, /\/adapter-service\/ai-search-config\/pricing-status/);
 });
 
-test('TikuComponentApi exposes OCR cache status and clear endpoints', async () => {
+test('TikuComponentApi exposes OCR cache status and management endpoints', async () => {
   const apiPath = path.join(__dirname, '..', 'api', 'TikuComponentApi.js');
   const content = await readFile(apiPath, 'utf8');
 
   assert.match(content, /export function getAIOCRCacheStatus\(\)/);
-  assert.match(content, /export function clearAIOCRCache\(params\)/);
+  assert.match(content, /export function deleteAIOCRCacheBatch\(data\)/);
   assert.match(content, /\/adapter-service\/ai-search-config\/ocr-cache/);
-  assert.match(content, /method: 'delete'/);
+  assert.match(content, /ocr-cache\/batch-delete/);
+  assert.match(content, /method: 'post'/);
 });
 
 test('AISearchConfig page exposes OCR cache management controls', async () => {
@@ -495,8 +496,9 @@ test('AISearchConfig page exposes OCR cache management controls', async () => {
 
   assert.match(content, /图片 OCR 缓存/);
   assert.match(content, /loadAIOCRCacheStatus/);
-  assert.match(content, /handleClearAIOCRCache/);
-  assert.match(content, /正在执行的识别请求会继续完成/);
+  assert.doesNotMatch(content, /handleClearAIOCRCache/);
+  assert.doesNotMatch(content, /清空缓存/);
+  assert.match(content, /管理缓存条目/);
 });
 
 test('AI search config exposes the UAPI search engine capability endpoint', async () => {

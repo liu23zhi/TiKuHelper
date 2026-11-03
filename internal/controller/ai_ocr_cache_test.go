@@ -30,7 +30,7 @@ func newAIOCRCacheControllerTestDB(t *testing.T) *gorm.DB {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	if err := db.AutoMigrate(&entity.AIOCRCache{}, &entity.SystemSetting{}); err != nil {
+	if err := db.AutoMigrate(&entity.AIOCRCache{}, &entity.AIOCRCacheSequence{}, &entity.SystemSetting{}); err != nil {
 		t.Fatal(err)
 	}
 	original := aiOCRCacheDatabase
@@ -52,6 +52,24 @@ func callAIOCRCacheAdmin(t *testing.T, handler gin.HandlerFunc, query string, ro
 	return recorder
 }
 
+func callAIOCRCacheBatchDelete(t *testing.T, payload any, role string) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-search-config/ocr-cache/batch-delete", bytes.NewReader(body))
+	c.Request.Header.Set("Content-Type", "application/json")
+	if role != "" {
+		c.Set("user", &entity.User{ID: 1, Role: role, Status: "enabled"})
+	}
+	AIOCRCacheBatchDelete(c)
+	return recorder
+}
+
 func TestAIOCRCacheAdminEndpointsRequireAdminBeforeDatabaseAccess(t *testing.T) {
 	original := aiOCRCacheDatabase
 	aiOCRCacheDatabase = func(*gin.Context) *gorm.DB {
@@ -65,6 +83,12 @@ func TestAIOCRCacheAdminEndpointsRequireAdminBeforeDatabaseAccess(t *testing.T) 
 			if response.Code != want {
 				t.Fatalf("role=%q: status=%d want=%d body=%s", role, response.Code, want, response.Body.String())
 			}
+		}
+	}
+	for role, want := range map[string]int{"": http.StatusUnauthorized, "user": http.StatusForbidden} {
+		response := callAIOCRCacheBatchDelete(t, map[string]any{"items": []string{"hash"}}, role)
+		if response.Code != want {
+			t.Fatalf("batch delete role=%q: status=%d want=%d body=%s", role, response.Code, want, response.Body.String())
 		}
 	}
 }
@@ -175,9 +199,10 @@ func TestAIOCRCacheImageRejectsNonImagesAndOversizedResponses(t *testing.T) {
 func TestAIOCRCacheListReturnsCamelCaseEntriesAndFilteredTotals(t *testing.T) {
 	db := newAIOCRCacheControllerTestDB(t)
 	updatedAt := time.Date(2026, 11, 1, 12, 0, 0, 0, time.Local)
+	firstID, secondID := uint64(1), uint64(2)
 	entries := []entity.AIOCRCache{
-		{URLHash: "one", URL: "https://images.example/题图.png?token=A%2FB&x=1&x=2", ImageSHA256: "first", ContentType: "image/png", OCRText: "OCR_100%", UpdatedAt: updatedAt},
-		{URLHash: "two", ImageSHA256: "second", ContentType: "image/jpeg", OCRText: "OCR100", UpdatedAt: updatedAt},
+		{ID: &firstID, URLHash: "one", URL: "https://images.example/题图.png?token=A%2FB&x=1&x=2", ImageSHA256: "first", ContentType: "image/png", OCRText: "OCR_100%", UpdatedAt: updatedAt},
+		{ID: &secondID, URLHash: "two", ImageSHA256: "second", ContentType: "image/jpeg", OCRText: "OCR100", UpdatedAt: updatedAt},
 	}
 	if err := db.Create(&entries).Error; err != nil {
 		t.Fatal(err)
@@ -202,7 +227,7 @@ func TestAIOCRCacheListReturnsCamelCaseEntriesAndFilteredTotals(t *testing.T) {
 		t.Fatalf("unexpected list: %s", response.Body.String())
 	}
 	row := result.Data[0]
-	if len(row) != 6 || row["urlHash"] != "one" || row["url"] != "https://images.example/题图.png?token=A%2FB&x=1&x=2" || row["imageSha256"] != "first" || row["contentType"] != "image/png" || row["ocrText"] != "OCR_100%" || row["updatedAt"] == nil {
+	if len(row) != 7 || row["id"] == nil || row["urlHash"] != "one" || row["url"] != "https://images.example/题图.png?token=A%2FB&x=1&x=2" || row["imageSha256"] != "first" || row["contentType"] != "image/png" || row["ocrText"] != "OCR_100%" || row["updatedAt"] == nil {
 		t.Fatalf("unexpected OCR entry JSON fields: %+v", row)
 	}
 }
@@ -284,5 +309,48 @@ func TestClearAIOCRCacheEmptyQueryAndMissingTable(t *testing.T) {
 	}
 	if response.Code != http.StatusOK || result.Data == nil || len(result.Data) != 0 {
 		t.Fatalf("missing table list: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestAIOCRCacheBatchDeleteSupportsSelectedAndFilteredAll(t *testing.T) {
+	db := newAIOCRCacheControllerTestDB(t)
+	hashA, hashB, hashC, hashD := strings.Repeat("a", 64), strings.Repeat("b", 64), strings.Repeat("c", 64), strings.Repeat("d", 64)
+	entries := []entity.AIOCRCache{
+		{URLHash: hashA, ImageSHA256: "a", ContentType: "image/png", OCRText: "first"},
+		{URLHash: hashB, ImageSHA256: "b", ContentType: "image/png", OCRText: "second"},
+		{URLHash: hashC, ImageSHA256: "c", ContentType: "image/jpeg", OCRText: "third"},
+		{URLHash: hashD, ImageSHA256: "d", ContentType: "image/png", OCRText: "fourth"},
+	}
+	if err := db.Create(&entries).Error; err != nil {
+		t.Fatal(err)
+	}
+	response := callAIOCRCacheBatchDelete(t, map[string]any{"items": []string{hashA}, "all": false}, "admin")
+	if response.Code != http.StatusOK || response.Body.String() != `{"deleted":1}` {
+		t.Fatalf("selected delete: status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = callAIOCRCacheBatchDelete(t, map[string]any{"contentType": "image/png", "all": true, "except": []string{hashB}}, "admin")
+	if response.Code != http.StatusOK || response.Body.String() != `{"deleted":1}` {
+		t.Fatalf("filtered all delete with exception: status=%d body=%s", response.Code, response.Body.String())
+	}
+	var remaining []entity.AIOCRCache
+	if err := db.Order("url_hash").Find(&remaining).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 2 || remaining[0].URLHash != hashB || remaining[1].URLHash != hashC {
+		t.Fatalf("unexpected remaining OCR cache rows: %+v", remaining)
+	}
+}
+
+func TestAIOCRCacheBatchDeleteRejectsInvalidSelection(t *testing.T) {
+	newAIOCRCacheControllerTestDB(t)
+	for _, payload := range []map[string]any{
+		{},
+		{"all": true, "items": []string{strings.Repeat("a", 64)}},
+		{"items": []string{strings.Repeat("a", 64)}, "updatedFrom": "invalid"},
+	} {
+		response := callAIOCRCacheBatchDelete(t, payload, "admin")
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("payload=%v: status=%d body=%s", payload, response.Code, response.Body.String())
+		}
 	}
 }

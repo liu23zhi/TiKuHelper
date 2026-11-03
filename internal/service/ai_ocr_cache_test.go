@@ -29,7 +29,7 @@ func newAIOCRCacheTestDB(t *testing.T) *gorm.DB {
 	}
 	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	if err := db.AutoMigrate(&entity.AIOCRCache{}); err != nil {
+	if err := db.AutoMigrate(&entity.AIOCRCache{}, &entity.AIOCRCacheSequence{}); err != nil {
 		t.Fatalf("migrate OCR cache: %v", err)
 	}
 	return db
@@ -87,6 +87,30 @@ func TestAIOCRCacheReusesOnlySameURLAndImage(t *testing.T) {
 	}
 	if stored.URLHash == signedURL || stored.OCRText == "" {
 		t.Fatalf("OCR cache did not keep the URL hash key or OCR result: %+v", stored)
+	}
+}
+
+func TestAIOCRCacheIDsIncreaseWhenEntriesAreAddedOrUpdated(t *testing.T) {
+	db := newAIOCRCacheTestDB(t)
+	provider := cacheAIImageOCRProviderWithDB(db, func(_ context.Context, _, _, _ string, image []byte) (string, error) {
+		return string(image), nil
+	})
+	address := "https://images.example.test/question.png"
+	for _, recognized := range []string{"first result", "updated result"} {
+		if _, _, err := provider(context.Background(), address, "question.png", "image/png", []byte(recognized)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var entry entity.AIOCRCache
+	if err := db.Where("url_hash = ?", hashAIOCRURL(address)).First(&entry).Error; err != nil {
+		t.Fatal(err)
+	}
+	var sequenceCount int64
+	if err := db.Model(&entity.AIOCRCacheSequence{}).Count(&sequenceCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID == nil || *entry.ID != uint64(sequenceCount) || entry.OCRText != "updated result" || sequenceCount != 2 {
+		t.Fatalf("cache update should receive a newer stable ID: entry=%+v sequences=%d", entry, sequenceCount)
 	}
 }
 
