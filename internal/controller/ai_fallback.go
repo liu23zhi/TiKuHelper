@@ -23,10 +23,11 @@ import (
 const aiFallbackAuditModule = "ai_fallback"
 
 type aiFallbackInput struct {
-	Question     string   `json:"question"`
-	Type         int      `json:"type"`
-	Options      []string `json:"options"`
-	DeepThinking bool     `json:"deepThinking,omitempty"`
+	Question         string                  `json:"question"`
+	Type             int                     `json:"type"`
+	Options          []string                `json:"options"`
+	DeepThinking     bool                    `json:"deepThinking,omitempty"`
+	QuestionEvidence *model.QuestionEvidence `json:"questionEvidence,omitempty"`
 	// SkipCache 为显式 true 时跳过读取兜底缓存；缺省与 false 都正常使用缓存。
 	// 与搜题的 skipCache 语义保持一致。
 	SkipCache *bool `json:"skipCache,omitempty"`
@@ -70,13 +71,14 @@ func AIFallback(c *gin.Context) {
 
 	requestID := uuid.NewString()
 	req := model.SearchRequest{
-		RequestContext: c.Request.Context(),
-		Question:       strings.TrimSpace(input.Question),
-		Type:           input.Type,
-		Options:        input.Options,
-		SkipCache:      input.SkipCache,
-		DeepThinking:   input.DeepThinking,
-		RequestID:      requestID,
+		RequestContext:   c.Request.Context(),
+		Question:         strings.TrimSpace(input.Question),
+		Type:             input.Type,
+		Options:          input.Options,
+		SkipCache:        input.SkipCache,
+		DeepThinking:     input.DeepThinking,
+		QuestionEvidence: input.QuestionEvidence,
+		RequestID:        requestID,
 	}
 
 	// 缓存命中：与搜题一致 —— 不再调用 AI、不再计费。
@@ -351,7 +353,7 @@ func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, reques
 		},
 	}
 	warning := ""
-	charges := make([]searchBillingCharge, 0, 1+len(usage.SearchCalls)+len(usage.WebReadCalls)+len(usage.OCRCalls))
+	charges := make([]searchBillingCharge, 0, 1+len(usage.SearchCalls)+len(usage.WebReadCalls)+len(usage.OCRCalls)+len(usage.TikuSearchCalls))
 	if result.Success && hasAIModelUsage(usage) {
 		resolvedCharge, err := resolveCompletedAIBillingCharge(db, resolved, req, usage)
 		if err != nil {

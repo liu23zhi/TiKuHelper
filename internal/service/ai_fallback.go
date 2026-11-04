@@ -119,6 +119,7 @@ func SearchAIFallbackWithContext(ctx context.Context, db *gorm.DB, req model.Sea
 		MaxAISearchRetries:    resolved.Config.MaxAISearchRetries,
 		MaxAIWebReads:         resolved.Config.MaxAIWebReads,
 		SearchTool:            BuildUAPISearchToolWithDB(db),
+		TikuSearchTool:        BuildAITikuSearchToolWithDB(db),
 		OCRCacheProvider:      BuildCachedUAPIImageOCRProviderWithDB(db),
 		OCRAPI:                "https://uapis.cn/api/v1/image/ocr",
 		ContextCompression:    BuildAIContextCompressionConfigWithDB(db, resolved.Config),
@@ -126,11 +127,12 @@ func SearchAIFallbackWithContext(ctx context.Context, db *gorm.DB, req model.Sea
 	}
 
 	answers, usage, searchErr := runAIFallbackSearchWithUsage(client, model.SearchRequest{
-		Question:     question,
-		Options:      req.Options,
-		Type:         req.Type,
-		DeepThinking: req.DeepThinking,
-		RequestID:    req.RequestID,
+		Question:         question,
+		Options:          req.Options,
+		Type:             req.Type,
+		DeepThinking:     req.DeepThinking,
+		QuestionEvidence: req.QuestionEvidence,
+		RequestID:        req.RequestID,
 	})
 	if searchErr != nil {
 		if stderrs.Is(searchErr, pkgerrors.ErrTargetNoAnswer) {

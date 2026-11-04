@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"testing"
 
@@ -93,6 +94,24 @@ func TestGetSystemSettingDetailWithDBDefaults(t *testing.T) {
 	}
 	if detail.MinRechargeAmount != DefaultMinRechargeAmount {
 		t.Fatalf("expected default minimum recharge amount %.2f, got %.2f", DefaultMinRechargeAmount, detail.MinRechargeAmount)
+	}
+}
+
+func TestTikuSearchPriceSettingDefaultsPersistsAndRejectsInvalidValues(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+	if got := GetTikuSearchPricePerCallWithDB(db); got != 0 {
+		t.Fatalf("default local Tiku search price = %v", got)
+	}
+	if err := SetTikuSearchPricePerCallWithDB(db, 0.137); err != nil {
+		t.Fatal(err)
+	}
+	if got := GetTikuSearchPricePerCallWithDB(db); got != 0.137 {
+		t.Fatalf("rounded price = %v", got)
+	}
+	for _, invalid := range []float64{-0.01, math.NaN(), math.Inf(1)} {
+		if err := SetTikuSearchPricePerCallWithDB(db, invalid); err == nil {
+			t.Fatalf("expected invalid price %v rejected", invalid)
+		}
 	}
 }
 

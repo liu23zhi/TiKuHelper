@@ -43,7 +43,7 @@ func newSearchControllerTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open test db: %v", err)
 	}
 
-	if err := db.AutoMigrate(&entity.SearchAccountConfig{}, &entity.AISearchConfig{}, &entity.AIModelPrice{}, &entity.SystemSetting{}, &entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}, &entity.Log{}, &entity.Tiku{}); err != nil {
+	if err := db.AutoMigrate(&entity.SearchAccountConfig{}, &entity.AISearchConfig{}, &entity.AIModelPrice{}, &entity.SystemSetting{}, &entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}, &entity.Log{}, &entity.Tiku{}, &entity.TikuAnswerEvidence{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 
@@ -1284,6 +1284,40 @@ func TestResolveCompletedSearchBillingChargesAddsSuccessfulOCRIncludingCachedRes
 		if charge.Provider != "ai_ocr" || charge.Amount != 0.015 {
 			t.Fatalf("unexpected OCR fee %d: %+v", index, charge)
 		}
+	}
+}
+
+func TestResolveCompletedSearchBillingChargesSuccessfulTikuLookupIncludingNoHit(t *testing.T) {
+	db := newSearchControllerTestDB(t)
+	if err := service.SetTikuSearchPricePerCallWithDB(db, 0.2); err != nil {
+		t.Fatal(err)
+	}
+	usage := searchpkg.AISearchUsage{TikuSearchCalls: []searchpkg.AITikuSearchCallUsage{
+		{Query: "命中题", Status: "success", MatchKind: "exact", CandidateCount: 2},
+		{Query: "无命中题", Status: "success", MatchKind: "none", CandidateCount: 0},
+		{Query: "失败题", Status: "error", Error: "db down"},
+	}}
+	charges, _, err := resolveCompletedSearchBillingCharges(db, resolvedSearchRequestContext{SearchMode: searchModeAI}, "ai", model.SearchRequest{Question: "原题"}, usage, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(charges) != 2 {
+		t.Fatalf("expected hit and no-hit lookups to be charged, got %+v", charges)
+	}
+	for index, charge := range charges {
+		if charge.Provider != "tiku_search" || charge.Amount != 0.2 {
+			t.Fatalf("unexpected charge %d: %+v", index, charge)
+		}
+	}
+	if got := service.ExtractBillingSnapshotField(charges[1].Snapshot, "candidate_count"); got != "0" {
+		t.Fatalf("no-hit count missing: %q", got)
+	}
+	if err := service.SetTikuSearchPricePerCallWithDB(db, 0); err != nil {
+		t.Fatal(err)
+	}
+	charges, _, err = resolveCompletedSearchBillingCharges(db, resolvedSearchRequestContext{SearchMode: searchModeAI}, "ai", model.SearchRequest{Question: "原题"}, usage, false, true)
+	if err != nil || len(charges) != 2 || charges[0].Amount != 0 {
+		t.Fatalf("zero-price successful lookup must remain visible: %+v err=%v", charges, err)
 	}
 }
 

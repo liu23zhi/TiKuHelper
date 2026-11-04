@@ -22,6 +22,22 @@ type testAISearchTool struct {
 	err     error
 }
 
+type testAITikuSearchTool struct {
+	calls  int
+	err    error
+	result AITikuSearchResult
+}
+
+func (tool *testAITikuSearchTool) SearchTiku(_ context.Context, request model.SearchRequest) (AITikuSearchResult, error) {
+	tool.calls++
+	if tool.err != nil {
+		return AITikuSearchResult{}, tool.err
+	}
+	result := tool.result
+	result.Query = request.Question
+	return result, nil
+}
+
 type openAIResponsesTestRequest struct {
 	Tools    []openAIResponsesTool `json:"tools"`
 	Messages []struct {
@@ -55,6 +71,75 @@ func writeAIToolStream(w http.ResponseWriter, callID, query string) {
 		"id": "resp_" + callID, "status": "completed", "output": []any{done},
 		"usage": map[string]any{"input_tokens": 10, "output_tokens": 4, "total_tokens": 14, "input_tokens_details": map[string]any{"cached_tokens": 2}},
 	}})
+}
+
+func writeAITikuSearchToolStream(w http.ResponseWriter, callID string, args map[string]any) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	encoded, _ := json.Marshal(args)
+	item := map[string]any{"type": "function_call", "id": "fc_" + callID, "call_id": callID, "name": "tiku_search", "arguments": string(encoded), "status": "completed"}
+	writeResponsesEvent(w, "response.output_item.done", map[string]any{"output_index": 0, "item": item})
+	writeResponsesEvent(w, "response.completed", map[string]any{"response": map[string]any{"id": "resp_" + callID, "status": "completed", "output": []any{item}, "usage": map[string]any{"input_tokens": 8, "output_tokens": 3, "total_tokens": 11}}})
+}
+
+func TestDeepThinkingSearchesWebFirstThenOptionallySearchesLocalTiku(t *testing.T) {
+	webTool := &testAISearchTool{}
+	tikuTool := &testAITikuSearchTool{result: AITikuSearchResult{MatchKind: "exact", CandidateCount: 1, Candidates: []AITikuSearchCandidate{{Question: "2+2=?", Type: -1, Answers: []string{"4"}, Source: "Chaoxing", Status: "unverified", Evidence: `{"grade":"review"}`, Score: 1}}}}
+	round := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		round++
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Error(err)
+			return
+		}
+		switch round {
+		case 1:
+			choice, _ := payload["tool_choice"].(map[string]any)
+			if choice["name"] != "web_search" {
+				t.Errorf("first tool must remain web_search: %v", payload["tool_choice"])
+			}
+			for _, item := range payload["tools"].([]any) {
+				if item.(map[string]any)["name"] == "tiku_search" {
+					t.Error("local search must wait until after the initial web search")
+				}
+			}
+			writeAIToolStream(w, "initial-web", "2+2 calculation")
+		case 2:
+			foundTiku := false
+			for _, item := range payload["tools"].([]any) {
+				if item.(map[string]any)["name"] == "tiku_search" {
+					foundTiku = true
+				}
+			}
+			if !foundTiku {
+				t.Errorf("optional local search tool missing: %v", payload["tools"])
+			}
+			writeAITikuSearchToolStream(w, "local-tiku", map[string]any{"question": "2+2=?", "type": -1, "options": []string{"4"}})
+		case 3:
+			foundLocalEvidence := false
+			for _, raw := range payload["input"].([]any) {
+				item, _ := raw.(map[string]any)
+				if item["type"] == "function_call_output" && strings.Contains(fmt.Sprint(item["output"]), `"source":"Chaoxing"`) {
+					foundLocalEvidence = true
+				}
+			}
+			if !foundLocalEvidence {
+				t.Errorf("model final round did not receive source and evidence: %v", payload["input"])
+			}
+			writeAIFinalStream(w)
+		default:
+			t.Errorf("unexpected model round %d", round)
+		}
+	}))
+	defer server.Close()
+	client := &ChatGptClient{Enable: true, BaseURL: server.URL, APIKey: "test-key", Model: "test-model", SearchTool: webTool, TikuSearchTool: tikuTool, MaxAISearches: 3, MaxAISearchModelCalls: 4}
+	answers, usage, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "2+2=?", Type: -1, Options: []string{"4"}, DeepThinking: true})
+	if err != nil || !reflect.DeepEqual(answers, [][]string{{"4"}}) {
+		t.Fatalf("answers=%v err=%v", answers, err)
+	}
+	if webTool.queries == nil || len(webTool.queries) != 1 || tikuTool.calls != 1 || len(usage.TikuSearchCalls) != 1 || usage.TikuSearchCalls[0].Status != "success" {
+		t.Fatalf("unexpected tool usage: web=%+v localCalls=%d usage=%+v", webTool.queries, tikuTool.calls, usage)
+	}
 }
 
 func writeAIFinalStream(w http.ResponseWriter) {

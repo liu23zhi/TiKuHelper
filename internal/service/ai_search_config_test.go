@@ -725,6 +725,26 @@ func TestAISearchConfigPersistsWebReadBudgetAndPrice(t *testing.T) {
 	}
 }
 
+func TestAISearchConfigPersistsTikuSearchPrice(t *testing.T) {
+	db := newSearchAccountConfigTestDB(t)
+	if err := db.AutoMigrate(&entity.SystemSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := GetAISearchConfigWithDB(db)
+	if err != nil || initial.TikuSearchPricePerCall != 0 {
+		t.Fatalf("default config=%+v err=%v", initial, err)
+	}
+	price := 0.125
+	updated, err := UpdateAISearchConfigWithDB(db, UpdateAISearchConfigInput{TikuSearchPricePerCall: &price})
+	if err != nil || updated.TikuSearchPricePerCall != 0.125 {
+		t.Fatalf("updated config=%+v err=%v", updated, err)
+	}
+	resolved, err := BuildAISearchRequestConfigWithDB(db, url.Values{}, true)
+	if err != nil || resolved.Config.TikuSearchPricePerCall != 0.125 {
+		t.Fatalf("resolved=%+v err=%v", resolved.Config, err)
+	}
+}
+
 func TestAISearchConfigPersistsImageOCRPrice(t *testing.T) {
 	db := newSearchAccountConfigTestDB(t)
 	if err := db.AutoMigrate(&entity.SystemSetting{}); err != nil {

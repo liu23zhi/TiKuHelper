@@ -109,6 +109,130 @@ func TestToolCapabilityProbeCandidateDoesNotTreatArbitraryBadRequestAsUnsupporte
 	}
 }
 
+func TestMCPInstructionsDescribeLocalTikuSearchAction(t *testing.T) {
+	if !strings.Contains(aiMCPInstructions, `"action":"tiku_search"`) || !strings.Contains(aiMCPInstructions, "待核验") {
+		t.Fatal("MCP instructions must expose local Tiku search as unverified candidate evidence")
+	}
+}
+
+func TestMCPDoesNotRestartAfterLocalTikuLookup(t *testing.T) {
+	if canFallbackToMCP(AISearchUsage{TikuSearchCalls: []AITikuSearchCallUsage{{Status: "success"}}}) {
+		t.Fatal("a completed local lookup must not be replayed in a new MCP orchestration")
+	}
+}
+
+func TestSearchAnswerWithMCPSharesWebAndTikuBudgetWithoutBillingCacheHits(t *testing.T) {
+	webTool := &testAISearchTool{}
+	tikuTool := &testAITikuSearchTool{result: AITikuSearchResult{MatchKind: "exact", CandidateCount: 1, Candidates: []AITikuSearchCandidate{{Question: "2+2=?", Type: -1, Answers: []string{"4"}, Source: "Chaoxing", Status: "unverified", Evidence: `{"page":"review"}`, Score: 1}}}}
+	modelCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		modelCalls++
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Error(err)
+			return
+		}
+		encoded, _ := json.Marshal(payload)
+		if _, hasTools := payload["tools"]; hasTools {
+			t.Error("MCP must keep tools in the JSON action protocol")
+		}
+		switch modelCalls {
+		case 1:
+			if !strings.Contains(string(encoded), "首次工具调用必须为 web_search") {
+				t.Error("MCP must retain the initial web search requirement")
+			}
+			writeMCPTextStream(w, `{"action":"web_search","arguments":{"query":"2+2"}}`, 10)
+		case 2, 3:
+			writeMCPTextStream(w, `{"action":"tiku_search","arguments":{"question":"2+2=?","type":-1,"options":["4"]}}`, 10)
+		case 4:
+			if !strings.Contains(string(encoded), `\"source\":\"Chaoxing\"`) {
+				t.Error("MCP must deliver local source and evidence to the next model call")
+			}
+			writeMCPTextStream(w, `{"action":"web_search","arguments":{"query":"addition proof"}}`, 10)
+		case 5:
+			if !strings.Contains(string(encoded), "这是最后一轮") || !strings.Contains(string(encoded), "web_search/tiku_search 共用 0 次") {
+				t.Errorf("shared search budget must be exhausted before final answer: %s", encoded)
+			}
+			writeMCPTextStream(w, `{"answers":["4"]}`, 10)
+		default:
+			t.Errorf("unexpected MCP model call %d", modelCalls)
+			writeMCPTextStream(w, `{"answers":["4"]}`, 10)
+		}
+	}))
+	defer server.Close()
+	client := &ChatGptClient{Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test-model", SearchTool: webTool, TikuSearchTool: tikuTool, MaxAISearchModelCalls: 6, MaxAISearches: 3, MaxAISearchRetries: 1}
+	answers, debug, err := client.searchAnswerWithMCP(t.Context(), model.SearchRequest{Question: "2+2=?", Type: -1, Options: []string{"4"}, DeepThinking: true})
+	if err != nil || !reflect.DeepEqual(answers, [][]string{{"4"}}) {
+		t.Fatalf("answers=%v err=%v", answers, err)
+	}
+	if modelCalls != 5 || len(webTool.queries) != 2 || tikuTool.calls != 1 || len(debug.Usage.TikuSearchCalls) != 1 || debug.Usage.TikuSearchCalls[0].Status != "success" {
+		t.Fatalf("unexpected shared-budget/cache usage: models=%d web=%v localCalls=%d usage=%+v", modelCalls, webTool.queries, tikuTool.calls, debug.Usage)
+	}
+	starts := 0
+	for _, trace := range debug.Usage.Trace {
+		if trace.Stage == "本地题库检索开始" {
+			starts++
+		}
+	}
+	if starts != 1 {
+		t.Fatalf("only the real local lookup should produce a billing-sequence trace: got %d", starts)
+	}
+}
+
+func TestSearchAnswerWithMCPRejectsLocalTikuLookupBeforeInitialWebSearch(t *testing.T) {
+	tikuTool := &testAITikuSearchTool{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		writeMCPTextStream(w, `{"action":"tiku_search","arguments":{"question":"2+2=?","type":-1,"options":[]}}`, 10)
+	}))
+	defer server.Close()
+	client := &ChatGptClient{Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test-model", SearchTool: &testAISearchTool{}, TikuSearchTool: tikuTool, MaxAISearchModelCalls: 3, MaxAISearches: 2, MaxAISearchRetries: 1}
+	_, debug, err := client.searchAnswerWithMCP(t.Context(), model.SearchRequest{Question: "2+2=?", Type: -1, DeepThinking: true})
+	if err == nil || !strings.Contains(err.Error(), "首次工具调用必须为 web_search") || tikuTool.calls != 0 || len(debug.Usage.TikuSearchCalls) != 0 {
+		t.Fatalf("local lookup must not bypass initial web search: calls=%d usage=%+v err=%v", tikuTool.calls, debug.Usage, err)
+	}
+}
+
+func TestSearchAnswerWithMCPLocalTikuArgumentsUseDedicatedSizeLimit(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		question string
+		wantErr  bool
+	}{
+		{name: "long Chinese question exceeds old shared limit", question: strings.Repeat("长题干", 500)},
+		{name: "oversized local arguments are rejected", question: strings.Repeat("x", aiToolArgumentLimit("tiku_search")+1), wantErr: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			webTool := &testAISearchTool{}
+			tikuTool := &testAITikuSearchTool{}
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				calls++
+				switch calls {
+				case 1:
+					writeMCPTextStream(w, `{"action":"web_search","arguments":{"query":"2+2"}}`, 10)
+				case 2:
+					content, _ := json.Marshal(map[string]any{"action": "tiku_search", "arguments": map[string]any{"question": testCase.question, "type": -1, "options": []string{}}})
+					writeMCPTextStream(w, string(content), 10)
+				default:
+					writeMCPTextStream(w, `{"answers":["4"]}`, 10)
+				}
+			}))
+			defer server.Close()
+			client := &ChatGptClient{Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-test", Model: "test-model", SearchTool: webTool, TikuSearchTool: tikuTool, MaxAISearchModelCalls: 3, MaxAISearches: 2, MaxAISearchRetries: 1}
+			answers, debug, err := client.searchAnswerWithMCP(t.Context(), model.SearchRequest{Question: "2+2=?", Type: -1, DeepThinking: true})
+			if testCase.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "参数超过大小限制") || tikuTool.calls != 0 || len(debug.Usage.TikuSearchCalls) != 0 {
+					t.Fatalf("oversized arguments must not reach local lookup: calls=%d usage=%+v err=%v", tikuTool.calls, debug.Usage, err)
+				}
+				return
+			}
+			if err != nil || tikuTool.calls != 1 || !reflect.DeepEqual(answers, [][]string{{"4"}}) {
+				t.Fatalf("long local question must remain supported: answers=%v calls=%d err=%v", answers, tikuTool.calls, err)
+			}
+		})
+	}
+}
+
 func TestParseAIMCPActionAcceptsDirectAnswerPayloads(t *testing.T) {
 	tests := []struct {
 		name    string

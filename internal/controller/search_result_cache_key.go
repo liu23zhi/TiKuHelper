@@ -43,15 +43,16 @@ var searchResultCache = newResultCache[searchAnswerPayload](defaultResultCacheTT
 // 维度取「会影响答案」的全部字段：用户、题目、选项、题型、渠道选择、来源指纹、代次。
 // **不含 plat**：该字段在本项目与全部调用方恒为 -1（或已删除），没有区分度。
 type searchResultCacheKey struct {
-	Epoch        uint64   `json:"epoch"`
-	UserID       int32    `json:"userId"`
-	Question     string   `json:"question"`
-	Options      []string `json:"options"`
-	Type         int      `json:"type"`
-	DeepThinking bool     `json:"deepThinking"`
-	Use          string   `json:"use"`
-	SourceDigest string   `json:"sourceDigest"`
-	UAPISearch   bool     `json:"uapiSearch"`
+	Epoch            uint64                  `json:"epoch"`
+	UserID           int32                   `json:"userId"`
+	Question         string                  `json:"question"`
+	Options          []string                `json:"options"`
+	Type             int                     `json:"type"`
+	DeepThinking     bool                    `json:"deepThinking"`
+	Use              string                  `json:"use"`
+	SourceDigest     string                  `json:"sourceDigest"`
+	UAPISearch       bool                    `json:"uapiSearch"`
+	QuestionEvidence *model.QuestionEvidence `json:"questionEvidence,omitempty"`
 }
 
 // normalizeSearchUseKey 归一化 use 查询参数。
@@ -151,15 +152,16 @@ func buildSearchResultCacheKey(resolved resolvedSearchRequestContext, req model.
 	epoch := searchResultCache.currentEpoch()
 
 	key, ok := marshalCacheKey(searchResultCacheKey{
-		Epoch:        epoch,
-		UserID:       resolved.UserID,
-		Question:     normalizeCacheKeyText(req.Question),
-		Options:      normalizeCacheKeyOptions(req.Options),
-		Type:         req.Type,
-		DeepThinking: req.DeepThinking,
-		Use:          normalizeSearchUseKey(useQuery),
-		SourceDigest: buildSearchSourceDigest(resolved, useQuery),
-		UAPISearch:   uapiSearchToolEnabled(resolved.Context),
+		Epoch:            epoch,
+		UserID:           resolved.UserID,
+		Question:         normalizeCacheKeyText(req.Question),
+		Options:          normalizeCacheKeyOptions(req.Options),
+		Type:             req.Type,
+		DeepThinking:     req.DeepThinking,
+		Use:              normalizeSearchUseKey(useQuery),
+		SourceDigest:     buildSearchSourceDigest(resolved, useQuery),
+		UAPISearch:       uapiSearchToolEnabled(resolved.Context),
+		QuestionEvidence: req.QuestionEvidence,
 	})
 	if !ok {
 		return "", epoch, false

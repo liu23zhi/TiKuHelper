@@ -180,6 +180,18 @@
         <div class="hint">默认 0 元。每次成功完成联网搜索 API 调用都会单独记一条账单，单价为 0 时也会保留 0 元明细，并合并显示在对应搜题账单详情中；命中本次 AI 搜索内的相同查询缓存不会重复计价。</div>
       </a-form-item>
 
+      <a-form-item label="本地题库检索单价（元/次）">
+        <a-input-number
+          v-model:value="formState.tikuSearchPricePerCall"
+          :min="0"
+          :precision="6"
+          :step="0.01"
+          style="width: 180px"
+        />
+        <span class="unit-label">元 / 次</span>
+        <div class="hint">默认 0 元。深度思考模式下每次成功完成本地题库检索按此单价计费，并在对应搜题账单详情中显示检索词与候选数。</div>
+      </a-form-item>
+
       <a-divider orientation="left" class="full-width">网页读取与 Prompt</a-divider>
 
       <a-form-item label="网页读取次数">
@@ -586,6 +598,7 @@ export default defineComponent({
       maxAISearches: DEFAULT_MAX_AI_SEARCHES,
       maxAISearchRetries: DEFAULT_MAX_AI_SEARCH_RETRIES,
       searchPricePerCall: 0,
+      tikuSearchPricePerCall: 0,
       maxAIWebReads: DEFAULT_MAX_AI_WEB_READS,
       webReadPricePerCall: 0,
       imageOCRPricePerCall: 0,
@@ -720,6 +733,7 @@ export default defineComponent({
           formState.maxAISearches = normalizeAISearchBudget(data.maxAISearches, DEFAULT_MAX_AI_SEARCHES)
           formState.maxAISearchRetries = normalizeAISearchRetries(data.maxAISearchRetries, DEFAULT_MAX_AI_SEARCH_RETRIES)
           formState.searchPricePerCall = Number(data.searchPricePerCall ?? 0)
+          formState.tikuSearchPricePerCall = Number(data.tiku_search_price_per_call ?? 0)
           formState.maxAIWebReads = normalizeAIWebReads(data.maxAIWebReads, DEFAULT_MAX_AI_WEB_READS)
           formState.webReadPricePerCall = Number(data.webReadPricePerCall ?? 0)
           formState.imageOCRPricePerCall = Number(data.imageOCRPricePerCall ?? 0)
@@ -920,6 +934,7 @@ export default defineComponent({
       const maxAISearches = Number(this.formState.maxAISearches)
       const maxAISearchRetries = Number(this.formState.maxAISearchRetries)
       const searchPricePerCall = Number(this.formState.searchPricePerCall)
+      const tikuSearchPricePerCall = Number(this.formState.tikuSearchPricePerCall)
       const maxAIWebReads = Number(this.formState.maxAIWebReads)
       const webReadPricePerCall = Number(this.formState.webReadPricePerCall)
       const imageOCRPricePerCall = Number(this.formState.imageOCRPricePerCall)
@@ -937,6 +952,10 @@ export default defineComponent({
       }
       if (!Number.isFinite(searchPricePerCall) || searchPricePerCall < 0) {
         message.error('联网搜索单价必须是大于或等于 0 的有效金额')
+        return
+      }
+      if (!Number.isFinite(tikuSearchPricePerCall) || tikuSearchPricePerCall < 0) {
+        message.error('本地题库检索单价必须是大于或等于 0 的有效金额')
         return
       }
       if (!Number.isSafeInteger(maxAIWebReads) || maxAIWebReads < MIN_AI_WEB_READS) {

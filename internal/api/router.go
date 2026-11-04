@@ -38,6 +38,7 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.POST("/uapi/search/aggregate", controller.Auth, middleware.RequireAdmin, controller.UAPISearchAggregate)
 
 	apiRouter.POST("/search", controller.SearchWithIdempotency)
+	apiRouter.POST("/tiku/evidence", controller.AuthOrAccessToken, controller.UploadTikuAnswerEvidence)
 	// Browser extension packages are publicly readable so native clients can
 	// bootstrap before login; only administrators can force an upstream refresh.
 	apiRouter.GET("/extensions/:source/latest", controller.ExtensionLatest)

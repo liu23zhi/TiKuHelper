@@ -133,6 +133,33 @@ func TestFillAnswerResponseMapsJudgementPolarityToActualOptions(t *testing.T) {
 	}
 }
 
+func TestFillAnswerResponseStripsOptionLabelRepeatedByProvider(t *testing.T) {
+	// 提供方常把选项标签重复进答案正文（"B. 还原反应"）。选项侧在 FormatOptions
+	// 里已经剥过前缀，答案侧不剥就会把本来正确的答案判成无答案。
+	for _, tt := range []struct {
+		name    string
+		answer  string
+		options []string
+		want    []string
+		index   int
+	}{
+		{"dot label", "B. 还原反应", []string{"A. 氧化反应", "B. 还原反应"}, []string{"还原反应"}, 1},
+		{"ideographic comma label", "C、38%", []string{"A、12%", "B、25%", "C、38%"}, []string{"38%"}, 2},
+		{"colon label", "A：细胞膜", []string{"A：细胞膜", "B：细胞壁"}, []string{"细胞膜"}, 0},
+		{"letter-only answer stays unmapped", "B", []string{"甲", "乙"}, nil, -1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := FillAnswerResponse([][]string{{tt.answer}}, &model.SearchRequest{Type: 0, Options: tt.options})
+			if len(resp.Answer.BestAnswer) != len(tt.want) || (len(tt.want) > 0 && !reflect.DeepEqual(resp.Answer.BestAnswer, tt.want)) {
+				t.Fatalf("want %v, got %v", tt.want, resp.Answer.BestAnswer)
+			}
+			if tt.index >= 0 && !reflect.DeepEqual(resp.Answer.AnswerIndex, []int{tt.index}) {
+				t.Fatalf("want option index %d, got %v", tt.index, resp.Answer.AnswerIndex)
+			}
+		})
+	}
+}
+
 func TestFillAnswerResponseRejectsAmbiguousMultipleChoiceFuzzyMatch(t *testing.T) {
 	resp := FillAnswerResponse([][]string{{"alphabeta00"}}, &model.SearchRequest{
 		Options: []string{"alphabeta0x", "alphabeta0y"}, Type: 1,

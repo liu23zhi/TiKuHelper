@@ -68,6 +68,16 @@ func TestDecorateBillingRecordExtractsFinalMultiplierFromStagedSnapshot(t *testi
 	}
 }
 
+func TestDecorateTikuSearchBillingRecordShowsToolAndQueryDetails(t *testing.T) {
+	record := decorateBillingRecord(BillingRecordListItem{Type: normalSearchBillingRecordType, Provider: "tiku_search", UnitPriceSnapshot: "provider=tiku_search tikuSearchCall=1 query=2%2B2%3D%3F matchKind=exact candidate_count=2 unitPrice=0.100000 amount=0.100000"})
+	if record.ProviderLabel != "本地题库检索" || len(record.FeeDetails) != 1 || record.FeeDetails[0].Category != "本地题库检索" {
+		t.Fatalf("unexpected local Tiku fee display: %+v", record)
+	}
+	if !strings.Contains(record.FeeDetails[0].Detail, "候选数：2") || !strings.Contains(record.FeeDetails[0].Detail, "检索词：2+2=?") {
+		t.Fatalf("expected query and candidate count in detail, got %+v", record.FeeDetails[0])
+	}
+}
+
 func TestDecorateBillingRecordUsesPriceMultiplierAndNeutralFallback(t *testing.T) {
 	priced := decorateBillingRecord(BillingRecordListItem{
 		Type:              "normal_search",

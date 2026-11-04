@@ -264,6 +264,7 @@ var searchAIAnswer = func(resolved resolvedSearchRequestContext, req model.Searc
 		MaxAISearchRetries:    resolved.AIConfig.MaxAISearchRetries,
 		MaxAIWebReads:         resolved.AIConfig.MaxAIWebReads,
 		SearchTool:            service.BuildUAPISearchToolWithDB(withDatabasePriority(manager.GetManager().GetDB(), resolved.Context, dbqueue.PriorityHigh)),
+		TikuSearchTool:        service.BuildAITikuSearchToolWithDB(withDatabasePriority(manager.GetManager().GetDB(), resolved.Context, dbqueue.PriorityHigh)),
 		OCRCacheProvider:      service.BuildCachedUAPIImageOCRProviderWithDB(withDatabasePriority(manager.GetManager().GetDB(), resolved.Context, dbqueue.PriorityHigh)),
 		OCRAPI:                "https://uapis.cn/api/v1/image/ocr",
 		ContextCompression:    service.BuildAIContextCompressionConfigWithDB(withDatabasePriority(manager.GetManager().GetDB(), resolved.Context, dbqueue.PriorityHigh), resolved.AIConfig),
@@ -645,6 +646,7 @@ func buildAISearchUsageDebugSummary(usage search.AISearchUsage) string {
 		fmt.Sprintf("searchCallCount=%d", len(usage.SearchCalls)),
 		fmt.Sprintf("webReadCallCount=%d", len(usage.WebReadCalls)),
 		fmt.Sprintf("ocrCallCount=%d", len(usage.OCRCalls)),
+		fmt.Sprintf("tikuSearchCallCount=%d", len(usage.TikuSearchCalls)),
 	}
 	for index, call := range usage.SearchCalls {
 		if index >= 10 {
@@ -664,11 +666,11 @@ func buildAISearchUsageDebugSummary(usage search.AISearchUsage) string {
 }
 
 func buildAISearchUsageBasicSummary(usage search.AISearchUsage) string {
-	return fmt.Sprintf("inputTokens=%d outputTokens=%d totalTokens=%d modelTraceCount=%d searchCallCount=%d webReadCallCount=%d ocrCallCount=%d", usage.InputTokens, usage.OutputTokens, usage.TotalTokens, len(usage.Trace), len(usage.SearchCalls), len(usage.WebReadCalls), len(usage.OCRCalls))
+	return fmt.Sprintf("inputTokens=%d outputTokens=%d totalTokens=%d modelTraceCount=%d searchCallCount=%d webReadCallCount=%d ocrCallCount=%d tikuSearchCallCount=%d", usage.InputTokens, usage.OutputTokens, usage.TotalTokens, len(usage.Trace), len(usage.SearchCalls), len(usage.WebReadCalls), len(usage.OCRCalls), len(usage.TikuSearchCalls))
 }
 
 func hasAISearchUsage(usage search.AISearchUsage) bool {
-	return hasAIModelUsage(usage) || len(usage.SearchCalls) > 0 || len(usage.WebReadCalls) > 0 || len(usage.OCRCalls) > 0
+	return hasAIModelUsage(usage) || len(usage.SearchCalls) > 0 || len(usage.WebReadCalls) > 0 || len(usage.OCRCalls) > 0 || len(usage.TikuSearchCalls) > 0
 }
 
 func hasAIModelUsage(usage search.AISearchUsage) bool {
@@ -1103,7 +1105,7 @@ func resolveSearchPersistenceDB() *gorm.DB {
 // 第二个返回值是面向调用方的非阻断提示（目前只有「AI 模型未配置价格」），
 // 不影响答案返回，只提醒管理员去价格表补价。
 func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRequestContext, useQuery string, req model.SearchRequest, aiUsage search.AISearchUsage, usedLocalSearch bool, hasSearchAnswer bool) ([]searchBillingCharge, string, error) {
-	charges := make([]searchBillingCharge, 0, 2+len(aiUsage.SearchCalls)+len(aiUsage.WebReadCalls)+len(aiUsage.OCRCalls))
+	charges := make([]searchBillingCharge, 0, 2+len(aiUsage.SearchCalls)+len(aiUsage.WebReadCalls)+len(aiUsage.OCRCalls)+len(aiUsage.TikuSearchCalls))
 	warning := ""
 
 	if resolved.SearchMode == searchModeNormal && hasSearchAnswer {
@@ -1183,7 +1185,33 @@ func appendAIToolBillingCharges(charges []searchBillingCharge, db *gorm.DB, req 
 			Snapshot: buildAIOCRBillingSnapshot(req, call, index+1, ocrPrice, amount),
 		})
 	}
+
+	tikuPrice := service.GetTikuSearchPricePerCallWithDB(db)
+	for index, call := range usage.TikuSearchCalls {
+		if strings.TrimSpace(call.Status) != "success" {
+			continue
+		}
+		amount := util.RoundMoney(tikuPrice)
+		charges = append(charges, searchBillingCharge{
+			Provider: "tiku_search", Amount: amount,
+			Snapshot: buildAITikuSearchBillingSnapshot(req, call, index+1, tikuPrice, amount, sequenceAt(sequence.TikuSearches, index+1)),
+		})
+	}
 	return charges
+}
+
+func buildAITikuSearchBillingSnapshot(req model.SearchRequest, call search.AITikuSearchCallUsage, index int, price, amount float64, sequence int) string {
+	parts := []string{
+		"provider=tiku_search", fmt.Sprintf("tikuSearchCall=%d", index), fmt.Sprintf("feeSequence=%d", sequence),
+		"query=" + url.QueryEscape(strings.TrimSpace(call.Query)),
+		"matchKind=" + url.QueryEscape(strings.TrimSpace(call.MatchKind)),
+		fmt.Sprintf("candidate_count=%d", call.CandidateCount),
+		fmt.Sprintf("unitPrice=%.6f", util.RoundMoney(price)), fmt.Sprintf("amount=%.6f", util.RoundMoney(amount)),
+	}
+	if question := strings.TrimSpace(req.Question); question != "" {
+		parts = append(parts, "question="+url.QueryEscape(question))
+	}
+	return strings.Join(parts, " ")
 }
 
 func buildAIOCRBillingSnapshot(req model.SearchRequest, call search.AIOCRCallUsage, index int, price float64, amount float64) string {

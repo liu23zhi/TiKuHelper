@@ -52,6 +52,7 @@ const AISearchPricePerCallSettingKey = "ai_search_price_per_call"
 const MaxAIWebReadsSettingKey = "max_ai_web_reads"
 const WebReadPricePerCallSettingKey = "web_read_price_per_call"
 const ImageOCRPricePerCallSettingKey = "image_ocr_price_per_call"
+const TikuSearchPricePerCallSettingKey = "tiku_search_price_per_call"
 const AIStagedTokenBillingEnabledSettingKey = "enable_ai_staged_token_billing"
 const SmoothAIStagedTokenMultiplierSettingKey = "smooth_ai_staged_token_multiplier"
 const AIStagedTokenMultiplierPointsSettingKey = "ai_staged_token_multiplier_points"
@@ -85,6 +86,7 @@ const DefaultAISearchPricePerCall = float64(0)
 const DefaultMaxAIWebReads = 5
 const DefaultWebReadPricePerCall = float64(0)
 const DefaultImageOCRPricePerCall = float64(0)
+const DefaultTikuSearchPricePerCall = float64(0)
 const DefaultMinRechargeAmount = float64(1)
 
 // JSON numbers must round-trip through the browser without losing precision.
@@ -625,6 +627,25 @@ func SetImageOCRPricePerCallWithDB(db *gorm.DB, requested float64) error {
 		return errors.New("图片 OCR 单价必须是大于或等于 0 的有效金额")
 	}
 	return saveSystemSettingValue(db, ImageOCRPricePerCallSettingKey, strconv.FormatFloat(util.RoundMoney(requested), 'f', -1, 64), "图片 OCR 单价（元/次）")
+}
+
+func GetTikuSearchPricePerCallWithDB(db *gorm.DB) float64 {
+	if db == nil || !db.Migrator().HasTable(&entity.SystemSetting{}) {
+		return DefaultTikuSearchPricePerCall
+	}
+	raw := strings.TrimSpace(getSystemSettingStringWithDefault(db, TikuSearchPricePerCallSettingKey, "0"))
+	price, err := strconv.ParseFloat(raw, 64)
+	if err != nil || math.IsNaN(price) || math.IsInf(price, 0) || price < 0 {
+		return DefaultTikuSearchPricePerCall
+	}
+	return util.RoundMoney(price)
+}
+
+func SetTikuSearchPricePerCallWithDB(db *gorm.DB, requested float64) error {
+	if math.IsNaN(requested) || math.IsInf(requested, 0) || requested < 0 {
+		return errors.New("本地题库检索单价必须是大于或等于 0 的有效金额")
+	}
+	return saveSystemSettingValue(db, TikuSearchPricePerCallSettingKey, strconv.FormatFloat(util.RoundMoney(requested), 'f', -1, 64), "本地题库检索单价（元/次）")
 }
 
 type AIStagedTokenBillingSettings struct {

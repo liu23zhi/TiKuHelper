@@ -347,21 +347,41 @@ test('legacy web read detail retains query parameters and escapes URL text', () 
   assert.match(html, /网页：<\/span>\s*<span class="billing-fee-meta-value">https:\/\/example\.com\/read\?key=value&amp;next=%3Cscript%3E<\/span>/)
 })
 
-test('billing fee item labels distinguish model calls, internet search, browsing and OCR', () => {
+test('billing fee item labels distinguish model calls, internet search, local Tiku search, browsing and OCR', () => {
   const html = buildBillingRecordFeeDetailHtml({
     direction: 'expense',
     amount: 0.03,
     feeDetails: [
       { provider: 'ai', category: 'AI模型调用', callIndex: 1, amount: 0.01 },
       { provider: 'ai_search', category: '联网搜索', callIndex: 1, amount: 0.01 },
+      { provider: 'tiku_search', category: '本地题库检索', callIndex: 1, amount: 0.01 },
       { provider: 'web_read', category: '网页转Markdown', callIndex: 1, amount: 0.01 },
       { provider: 'ai_ocr', category: '图片 OCR', callIndex: 1, amount: 0 },
     ],
   })
   assert.match(html, />AI 模型调用 第1次</)
   assert.match(html, />联网搜索</)
+  assert.match(html, />本地题库检索 第1次</)
   assert.match(html, />浏览网页 第1次</)
   assert.match(html, />图片 OCR 第1次</)
+})
+
+test('billing local Tiku search detail shows escaped query and candidate count', () => {
+  const html = buildBillingRecordFeeDetailHtml({
+    direction: 'expense',
+    amount: 0.01,
+    feeDetails: [{
+      provider: 'tiku_search',
+      category: '本地题库检索',
+      amount: 0.01,
+      detail: 'query=比较 <script>；candidate_count=3',
+    }],
+  })
+
+  assert.match(html, />本地题库检索</)
+  assert.match(html, /检索词：<\/span>\s*<span class="billing-fee-meta-value">比较 &lt;script&gt;<\/span>/)
+  assert.match(html, /候选数：<\/span>\s*<span class="billing-fee-meta-value">3<\/span>/)
+  assert.doesNotMatch(html, /比较 <script>/)
 })
 
 test('billing OCR fee metadata keeps the image URL and recognized character count', () => {

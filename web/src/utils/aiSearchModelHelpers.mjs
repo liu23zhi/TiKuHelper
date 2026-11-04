@@ -113,7 +113,7 @@ function positiveCount(value, fallback, label) {
   return number;
 }
 
-// 模型单价已迁移到模型价格表，保存 AI 搜索配置时不再提交任何计费字段。
+// 模型单价由模型价格表管理；这里保留按次计费的工具单价。
 export function buildAISearchConfigSavePayload(formState, baseUrl) {
   const hasEditableModelText = Object.prototype.hasOwnProperty.call(formState || {}, 'manualModelsText');
   const manualModelSource = hasEditableModelText ? formState?.manualModelsText : formState?.manualModels;
@@ -134,6 +134,7 @@ export function buildAISearchConfigSavePayload(formState, baseUrl) {
     maxAISearches: positiveCount(formState?.maxAISearches, 3, '最大搜索次数'),
     maxAISearchRetries: positiveCount(formState?.maxAISearchRetries, 3, '每轮重试次数'),
     searchPricePerCall: Number(formState?.searchPricePerCall || 0),
+    tiku_search_price_per_call: Number(formState?.tikuSearchPricePerCall || 0),
     maxAIWebReads: positiveCount(formState?.maxAIWebReads, 5, '网页读取次数'),
     webReadPricePerCall: Number(formState?.webReadPricePerCall || 0),
     ...(Object.prototype.hasOwnProperty.call(formState || {}, 'imageOCRPricePerCall')

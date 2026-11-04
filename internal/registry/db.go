@@ -604,6 +604,9 @@ func RegisterDB(config configs.Config) *gorm.DB {
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
 	}
+	if err := db.AutoMigrate(&entity.TikuAnswerEvidence{}); err != nil {
+		logger.FatalLog(fmt.Errorf("auto migrate tiku answer evidence fail: %w", err))
+	}
 
 	if err := ensureUserPhoneBindingSchema(db); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare user phone binding schema fail: %w", err))

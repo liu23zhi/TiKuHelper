@@ -31,13 +31,14 @@ var fallbackResultCache = newResultCache[fallbackCachedValue](defaultResultCache
 // 兜底入参只有 question / type / options（没有渠道与平台概念），
 // 因此键维度相应更少。
 type fallbackResultCacheKey struct {
-	Epoch        uint64   `json:"epoch"`
-	UserID       int32    `json:"userId"`
-	Question     string   `json:"question"`
-	Type         int      `json:"type"`
-	DeepThinking bool     `json:"deepThinking"`
-	Options      []string `json:"options"`
-	UAPISearch   bool     `json:"uapiSearch"`
+	Epoch            uint64                  `json:"epoch"`
+	UserID           int32                   `json:"userId"`
+	Question         string                  `json:"question"`
+	Type             int                     `json:"type"`
+	DeepThinking     bool                    `json:"deepThinking"`
+	Options          []string                `json:"options"`
+	UAPISearch       bool                    `json:"uapiSearch"`
+	QuestionEvidence *model.QuestionEvidence `json:"questionEvidence,omitempty"`
 }
 
 // buildFallbackResultCacheKey 构造兜底缓存键，并返回当前代次。
@@ -45,13 +46,14 @@ func buildFallbackResultCacheKey(userID int32, req model.SearchRequest) (string,
 	epoch := fallbackResultCache.currentEpoch()
 
 	key, ok := marshalCacheKey(fallbackResultCacheKey{
-		Epoch:        epoch,
-		UserID:       userID,
-		Question:     strings.TrimSpace(req.Question),
-		Type:         req.Type,
-		DeepThinking: req.DeepThinking,
-		Options:      req.Options,
-		UAPISearch:   uapiSearchToolEnabledForFallback(),
+		Epoch:            epoch,
+		UserID:           userID,
+		Question:         strings.TrimSpace(req.Question),
+		Type:             req.Type,
+		DeepThinking:     req.DeepThinking,
+		Options:          req.Options,
+		UAPISearch:       uapiSearchToolEnabledForFallback(),
+		QuestionEvidence: req.QuestionEvidence,
 	})
 	if !ok {
 		return "", epoch, false
@@ -91,6 +93,9 @@ func cloneAIFallbackResult(source service.AIFallbackResult) service.AIFallbackRe
 	}
 	if source.Usage.WebReadCalls != nil {
 		cloned.Usage.WebReadCalls = append([]internalsearch.AIWebReadCallUsage(nil), source.Usage.WebReadCalls...)
+	}
+	if source.Usage.TikuSearchCalls != nil {
+		cloned.Usage.TikuSearchCalls = append([]internalsearch.AITikuSearchCallUsage(nil), source.Usage.TikuSearchCalls...)
 	}
 	if source.Usage.OCRCalls != nil {
 		cloned.Usage.OCRCalls = append([]internalsearch.AIOCRCallUsage(nil), source.Usage.OCRCalls...)

@@ -33,17 +33,19 @@ var fallbackFlights = newFlightGroup[fallbackFlightPayload]()
 // 哈希只用于压缩 key，不影响「完全一致才合并」的语义。
 func buildFallbackFlightKey(userID int32, req model.SearchRequest) string {
 	payload, err := json.Marshal(struct {
-		UserID       int32    `json:"userId"`
-		Question     string   `json:"question"`
-		Type         int      `json:"type"`
-		DeepThinking bool     `json:"deepThinking"`
-		Options      []string `json:"options"`
+		UserID           int32                   `json:"userId"`
+		Question         string                  `json:"question"`
+		Type             int                     `json:"type"`
+		DeepThinking     bool                    `json:"deepThinking"`
+		Options          []string                `json:"options"`
+		QuestionEvidence *model.QuestionEvidence `json:"questionEvidence,omitempty"`
 	}{
-		UserID:       userID,
-		Question:     strings.TrimSpace(req.Question),
-		Type:         req.Type,
-		DeepThinking: req.DeepThinking,
-		Options:      req.Options,
+		UserID:           userID,
+		Question:         strings.TrimSpace(req.Question),
+		Type:             req.Type,
+		DeepThinking:     req.DeepThinking,
+		Options:          req.Options,
+		QuestionEvidence: req.QuestionEvidence,
 	})
 	if err != nil {
 		// 理论上 json.Marshal 对这几个类型不会失败；退化为仅按题目合并，

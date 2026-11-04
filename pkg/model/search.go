@@ -8,13 +8,14 @@ import "context"
 // 旧客户端若仍发送 "plat": -1，会被 JSON 解码**静默忽略**（本项目未启用
 // DisallowUnknownFields），不会报错。
 type SearchRequest struct {
-	QID          string   `json:"qid"`
-	Question     string   `json:"question"`
-	Options      []string `json:"options"`
-	Type         int      `json:"type"`
-	SkipCache    *bool    `json:"skipCache,omitempty"`
-	DeepThinking bool     `json:"deepThinking,omitempty"`
-	RequestID    string   `json:"-"`
+	QID              string            `json:"qid"`
+	Question         string            `json:"question"`
+	Options          []string          `json:"options"`
+	Type             int               `json:"type"`
+	SkipCache        *bool             `json:"skipCache,omitempty"`
+	DeepThinking     bool              `json:"deepThinking,omitempty"`
+	QuestionEvidence *QuestionEvidence `json:"questionEvidence,omitempty"`
+	RequestID        string            `json:"-"`
 	// RequestContext belongs to synchronous server work, never client input.
 	// Async task constructors leave it nil to keep their independent lifetime.
 	RequestContext context.Context `json:"-" form:"-"`
@@ -22,6 +23,19 @@ type SearchRequest struct {
 	CourseName string `json:"courseName"`
 
 	Extra string `json:"extra"`
+}
+
+// QuestionEvidence is optional structured image context from newer clients.
+// Slice order follows the question DOM; alt is auxiliary evidence, not truth.
+type QuestionEvidence struct {
+	StemImages   []QuestionImageEvidence `json:"stemImages,omitempty"`
+	OptionImages []QuestionImageEvidence `json:"optionImages,omitempty"`
+}
+
+type QuestionImageEvidence struct {
+	URL   string `json:"url"`
+	Alt   string `json:"alt"`
+	Index int    `json:"index"`
 }
 
 // SearchResponse 搜题响应体

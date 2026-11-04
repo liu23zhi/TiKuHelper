@@ -409,6 +409,9 @@ function buildBillingRecordFeeItemTitle(item) {
   if (item?.provider === 'ai_search') {
     return '联网搜索'
   }
+  if (item?.provider === 'tiku_search') {
+    return `本地题库检索${callSuffix}`
+  }
   if (item?.provider === 'ai' || category === 'AI模型调用') {
     return `AI 模型调用${callSuffix}`
   }
@@ -430,6 +433,14 @@ function buildBillingRecordFeeItemMeta(item, options = {}) {
   if (item?.provider === 'ai_search') {
     const keyword = readBillingRecordFeeField(fields, ['搜索词', '关键词', 'query', 'searchQuery'])
     return keyword ? [{ label: '关键词', value: keyword, keyword: true }] : []
+  }
+  if (item?.provider === 'tiku_search') {
+    const meta = []
+    const query = readBillingRecordFeeField(fields, ['query', 'tikuSearchQuery', '检索词', '搜索词'])
+    const candidateCount = readBillingRecordFeeField(fields, ['candidate_count', 'candidateCount', '候选数'])
+    if (query) meta.push({ label: '检索词', value: query })
+    if (candidateCount) meta.push({ label: '候选数', value: candidateCount })
+    return meta
   }
   if ((item?.provider === 'ai' || item?.category === 'AI模型调用') && showAIModelMeta) {
     const meta = []

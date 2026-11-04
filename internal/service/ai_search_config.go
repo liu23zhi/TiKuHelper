@@ -35,6 +35,13 @@ func BuildUAPISearchToolWithDB(db *gorm.DB) internalsearch.AISearchTool {
 		SetMaxRetries(0)
 }
 
+func BuildAITikuSearchToolWithDB(db *gorm.DB) internalsearch.AITikuSearchTool {
+	if db == nil || !db.Migrator().HasTable(&entity.Tiku{}) {
+		return nil
+	}
+	return internalsearch.NewDBTikuSearchTool(db)
+}
+
 // BuildUAPIImageOCRProviderWithDB creates the optional auxiliary OCR provider.
 // It is enabled when a valid UAPI key exists. The configured unit price only
 // controls the billing amount; a zero price still produces a visible 0-yuan
@@ -104,6 +111,7 @@ type AISearchConfigView struct {
 	MaxAIWebReads                    int                            `json:"maxAIWebReads"`
 	WebReadPricePerCall              float64                        `json:"webReadPricePerCall"`
 	ImageOCRPricePerCall             float64                        `json:"imageOCRPricePerCall"`
+	TikuSearchPricePerCall           float64                        `json:"tiku_search_price_per_call"`
 	EnableAIStagedTokenBilling       bool                           `json:"enableAIStagedTokenBilling"`
 	SmoothAIStagedTokenMultiplier    bool                           `json:"smoothAIStagedTokenMultiplier"`
 	StagedTokenMultiplierPoints      []AIStagedTokenMultiplierPoint `json:"stagedTokenMultiplierPoints"`
@@ -133,6 +141,7 @@ type UpdateAISearchConfigInput struct {
 	MaxAIWebReads                    int                             `json:"maxAIWebReads"`
 	WebReadPricePerCall              *float64                        `json:"webReadPricePerCall,omitempty"`
 	ImageOCRPricePerCall             *float64                        `json:"imageOCRPricePerCall,omitempty"`
+	TikuSearchPricePerCall           *float64                        `json:"tiku_search_price_per_call,omitempty"`
 	EnableAIStagedTokenBilling       *bool                           `json:"enableAIStagedTokenBilling,omitempty"`
 	SmoothAIStagedTokenMultiplier    *bool                           `json:"smoothAIStagedTokenMultiplier,omitempty"`
 	StagedTokenMultiplierPoints      *[]AIStagedTokenMultiplierPoint `json:"stagedTokenMultiplierPoints,omitempty"`
@@ -159,6 +168,7 @@ type AISearchRequestConfig struct {
 	MaxAIWebReads                    int
 	WebReadPricePerCall              float64
 	ImageOCRPricePerCall             float64
+	TikuSearchPricePerCall           float64
 	ContextCompressionEnabled        bool
 	UseRemoteContextCompression      bool
 	ContextCompressionTriggerPercent int
@@ -279,6 +289,7 @@ func GetAISearchConfigWithDB(db *gorm.DB) (AISearchConfigView, error) {
 			MaxAIWebReads:                    getPositiveIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads),
 			WebReadPricePerCall:              GetWebReadPricePerCallWithDB(db),
 			ImageOCRPricePerCall:             GetImageOCRPricePerCallWithDB(db),
+			TikuSearchPricePerCall:           GetTikuSearchPricePerCallWithDB(db),
 			EnableAIStagedTokenBilling:       stagedBilling.Enabled,
 			SmoothAIStagedTokenMultiplier:    stagedBilling.SmoothFactor,
 			StagedTokenMultiplierPoints:      cloneAIStagedTokenMultiplierPoints(stagedBilling.MultiplierPoints),
@@ -313,6 +324,11 @@ func UpdateAISearchConfigWithDB(db *gorm.DB, input UpdateAISearchConfigInput) (A
 	}
 	if input.ImageOCRPricePerCall != nil {
 		if err := SetImageOCRPricePerCallWithDB(db, *input.ImageOCRPricePerCall); err != nil {
+			return AISearchConfigView{}, err
+		}
+	}
+	if input.TikuSearchPricePerCall != nil {
+		if err := SetTikuSearchPricePerCallWithDB(db, *input.TikuSearchPricePerCall); err != nil {
 			return AISearchConfigView{}, err
 		}
 	}
@@ -394,6 +410,7 @@ func BuildAISearchRequestConfigWithDB(db *gorm.DB, query url.Values, allowDefaul
 			MaxAIWebReads:                    getPositiveIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads),
 			WebReadPricePerCall:              GetWebReadPricePerCallWithDB(db),
 			ImageOCRPricePerCall:             GetImageOCRPricePerCallWithDB(db),
+			TikuSearchPricePerCall:           GetTikuSearchPricePerCallWithDB(db),
 			ContextCompressionEnabled:        compression.Enabled,
 			UseRemoteContextCompression:      compression.UseRemote,
 			ContextCompressionTriggerPercent: compression.TriggerPercent,
@@ -531,6 +548,7 @@ func buildAISearchConfigView(db *gorm.DB, config entity.AISearchConfig) (AISearc
 		MaxAIWebReads:                    getPositiveIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads),
 		WebReadPricePerCall:              GetWebReadPricePerCallWithDB(db),
 		ImageOCRPricePerCall:             GetImageOCRPricePerCallWithDB(db),
+		TikuSearchPricePerCall:           GetTikuSearchPricePerCallWithDB(db),
 		EnableAIStagedTokenBilling:       stagedBilling.Enabled,
 		SmoothAIStagedTokenMultiplier:    stagedBilling.SmoothFactor,
 		StagedTokenMultiplierPoints:      cloneAIStagedTokenMultiplierPoints(stagedBilling.MultiplierPoints),

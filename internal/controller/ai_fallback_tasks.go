@@ -281,12 +281,13 @@ func CreateAIFallbackTask(c *gin.Context) {
 	requestID := uuid.NewString()
 	auditIdentity := newAIFallbackAuditIdentity(c)
 	req := model.SearchRequest{
-		Question:     strings.TrimSpace(input.Question),
-		Type:         input.Type,
-		Options:      input.Options,
-		SkipCache:    input.SkipCache,
-		DeepThinking: input.DeepThinking,
-		RequestID:    requestID,
+		Question:         strings.TrimSpace(input.Question),
+		Type:             input.Type,
+		Options:          input.Options,
+		SkipCache:        input.SkipCache,
+		DeepThinking:     input.DeepThinking,
+		QuestionEvidence: input.QuestionEvidence,
+		RequestID:        requestID,
 	}
 	taskID, _, err := defaultAIFallbackTaskStore.createIdempotent(userID, idempotencyKey, fingerprint, func(taskID string) (result service.AIFallbackResult) {
 		audited := false

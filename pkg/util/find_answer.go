@@ -5,6 +5,7 @@ import (
 	"github.com/antlabs/strsim/similarity"
 	"github.com/gookit/goutil/arrutil"
 	"github.com/itihey/tikuAdapter/pkg/model"
+	"regexp"
 	"strings"
 )
 
@@ -133,12 +134,27 @@ const (
 	fuzzyAnswerMinMargin = 0.1
 )
 
+// answerLabelPrefix matches the option label a provider sometimes repeats at the
+// head of the answer text ("B. 还原反应", "C、38%"). FormatOptions already drops
+// this prefix from options, so the answer side needs the same treatment before
+// comparing, otherwise a correctly labelled answer never matches its option.
+var answerLabelPrefix = regexp.MustCompile(`^[A-Za-z][.．、:：)）]\s*`)
+
+func stripAnswerLabelPrefix(answer string) string {
+	trimmed := answerLabelPrefix.ReplaceAllString(answer, "")
+	if strings.TrimSpace(trimmed) == "" {
+		return answer
+	}
+	return trimmed
+}
+
 func matchObjectiveAnswerGroup(answers []string, req *model.SearchRequest, allowFuzzy bool) []string {
 	if len(answers) == 0 {
 		return nil
 	}
 	selected := make(map[int]bool)
-	for _, answer := range answers {
+	for _, rawAnswer := range answers {
+		answer := stripAnswerLabelPrefix(rawAnswer)
 		if req.Type == 3 {
 			if polarity, ok := JudgementPolarity(answer); ok {
 				matchedIndex, matchedCount := -1, 0

@@ -569,6 +569,8 @@ func decorateBillingRecord(record BillingRecordListItem) BillingRecordListItem {
 		record.ProviderLabel = "联网搜索"
 	case "web_read":
 		record.ProviderLabel = "网页浏览"
+	case "tiku_search":
+		record.ProviderLabel = "本地题库检索"
 	case "ai_ocr":
 		record.ProviderLabel = "图片 OCR"
 	}
@@ -618,6 +620,9 @@ func buildBillingRecordFeeDetails(record BillingRecordListItem) []BillingRecordF
 	case "web_read":
 		category = "网页转Markdown"
 		callIndex = parseBillingSnapshotInt(snapshot, "webReadCall")
+	case "tiku_search":
+		category = "本地题库检索"
+		callIndex = parseBillingSnapshotInt(snapshot, "tikuSearchCall")
 	case "ai_ocr":
 		category = "图片 OCR"
 		callIndex = parseBillingSnapshotInt(snapshot, "ocrCall")
@@ -717,7 +722,7 @@ func parseBillingSnapshotInt(snapshot string, key string) int {
 }
 
 func buildBillingRecordFeeDetail(provider string, snapshot string) string {
-	if strings.TrimSpace(provider) != "ai_search" && strings.TrimSpace(provider) != "web_read" && strings.TrimSpace(provider) != "ai_ocr" {
+	if strings.TrimSpace(provider) != "ai_search" && strings.TrimSpace(provider) != "web_read" && strings.TrimSpace(provider) != "ai_ocr" && strings.TrimSpace(provider) != "tiku_search" {
 		return ""
 	}
 	parts := make([]string, 0, 7)
@@ -742,6 +747,10 @@ func buildBillingRecordFeeDetail(provider string, snapshot string) string {
 		appendField("Markdown字节", "webReadMarkdownBytes")
 		appendField("耗时", "webReadDurationMs")
 		appendField("错误", "webReadError")
+	} else if strings.TrimSpace(provider) == "tiku_search" {
+		appendField("检索词", "query")
+		appendField("匹配", "matchKind")
+		appendField("候选数", "candidate_count")
 	} else {
 		appendField("API", "ocrAPI")
 		appendField("图片", "ocrImageURL")
@@ -914,7 +923,7 @@ func applyBillingFeeSequenceFallback(details []BillingRecordFeeDetail) {
 		switch {
 		case details[index].Provider == "ai" || details[index].Category == "AI模型调用":
 			details[index].Sequence = details[index].CallIndex * 2
-		case details[index].Provider == "ai_search" || details[index].Provider == "web_read" || details[index].Provider == "ai_ocr":
+		case details[index].Provider == "ai_search" || details[index].Provider == "web_read" || details[index].Provider == "ai_ocr" || details[index].Provider == "tiku_search":
 			details[index].Sequence = details[index].CallIndex*2 + 1
 		}
 	}

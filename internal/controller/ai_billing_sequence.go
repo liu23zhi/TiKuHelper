@@ -7,9 +7,10 @@ import (
 )
 
 type aiBillingSequence struct {
-	Models   map[int]int
-	Searches []int
-	WebReads []int
+	Models       map[int]int
+	Searches     []int
+	WebReads     []int
+	TikuSearches []int
 }
 
 // buildAIBillingSequence maps billed model/tool calls to their chronological
@@ -36,6 +37,9 @@ func buildAIBillingSequence(usage search.AISearchUsage) aiBillingSequence {
 		}
 		if strings.Contains(stage, "网页读取 API 请求开始") {
 			sequence.WebReads = append(sequence.WebReads, position)
+		}
+		if strings.Contains(stage, "本地题库检索开始") || stage == "本地题库检索未执行" {
+			sequence.TikuSearches = append(sequence.TikuSearches, position)
 		}
 	}
 	return sequence

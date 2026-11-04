@@ -58,6 +58,7 @@ var runAISearchDebug = func(input aiSearchTestInput) ([][]string, internalsearch
 		MaxAISearchRetries:    resolved.Config.MaxAISearchRetries,
 		MaxAIWebReads:         resolved.Config.MaxAIWebReads,
 		SearchTool:            service.BuildUAPISearchToolWithDB(withDatabasePriority(manager.GetManager().GetDB(), input.requestContext, dbqueue.PriorityLow)),
+		TikuSearchTool:        service.BuildAITikuSearchToolWithDB(withDatabasePriority(manager.GetManager().GetDB(), input.requestContext, dbqueue.PriorityLow)),
 		ContextCompression:    service.BuildAIContextCompressionConfigWithDB(withDatabasePriority(manager.GetManager().GetDB(), input.requestContext, dbqueue.PriorityLow), resolved.Config),
 	}
 	if strings.TrimSpace(client.Prompt) == "" {

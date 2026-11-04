@@ -132,6 +132,7 @@ test('buildAISearchConfigSavePayload persists the editable model list', () => {
       maxAISearches: 3,
       maxAISearchRetries: 3,
       searchPricePerCall: 0.125,
+      tiku_search_price_per_call: 0,
       maxAIWebReads: 5,
       webReadPricePerCall: 0,
       enableAIStagedTokenBilling: false,
@@ -154,8 +155,14 @@ test('buildAISearchConfigSavePayload persists the optional backup model', () => 
 test('buildAISearchConfigSavePayload defaults the web search unit price to zero', () => {
   const payload = buildAISearchConfigSavePayload({ enabled: true }, 'https://api.example.com/v1');
   assert.equal(payload.searchPricePerCall, 0);
+  assert.equal(payload.tiku_search_price_per_call, 0);
   assert.equal(payload.maxAIWebReads, 5);
   assert.equal(payload.webReadPricePerCall, 0);
+});
+
+test('buildAISearchConfigSavePayload sends the configured local Tiku search price using the API field name', () => {
+  const payload = buildAISearchConfigSavePayload({ tikuSearchPricePerCall: 0.025 }, 'https://api.example.com/v1');
+  assert.equal(payload.tiku_search_price_per_call, 0.025);
 });
 
 test('buildAISearchConfigSavePayload preserves web read limits and pricing', () => {
@@ -221,7 +228,7 @@ test('buildAISearchConfigSavePayload persists editable staged multiplier points'
   assert.deepEqual(payload.stagedTokenMultiplierPoints, points);
 });
 
-test('buildAISearchConfigSavePayload stops sending any billing fields', () => {
+test('buildAISearchConfigSavePayload does not send legacy model pricing fields', () => {
   const payload = buildAISearchConfigSavePayload({ enabled: true }, 'https://api.example.com/v1');
 
   for (const field of ['exchangeRate', 'useGlobalBillingMultiplier', 'globalBillingMultiplier', 'inputTokenPrice', 'outputTokenPrice']) {
@@ -325,6 +332,11 @@ test('AISearchConfig page exposes configurable model and search budgets', async 
   assert.match(content, /formState\.maxAISearches = normalizeAISearchBudget\(data\.maxAISearches/);
   assert.match(content, /maxAISearchRetries: DEFAULT_MAX_AI_SEARCH_RETRIES/);
   assert.match(content, /formState\.maxAISearchRetries = normalizeAISearchRetries\(data\.maxAISearchRetries/);
+  assert.match(content, /tikuSearchPricePerCall: 0/);
+  assert.match(content, /formState\.tikuSearchPricePerCall = Number\(data\.tiku_search_price_per_call/);
+  assert.match(content, /label="本地题库检索单价（元\/次）"/);
+  assert.match(content, /本地题库检索单价必须是大于或等于 0 的有效金额/);
+  assert.match(helperContent, /tiku_search_price_per_call: Number\(formState\?\.tikuSearchPricePerCall/);
   assert.match(content, /maxAIWebReads: DEFAULT_MAX_AI_WEB_READS/);
   assert.match(content, /formState\.maxAIWebReads = normalizeAIWebReads\(data\.maxAIWebReads/);
   assert.match(content, /webReadPricePerCall: 0/);

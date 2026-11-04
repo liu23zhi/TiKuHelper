@@ -51,6 +51,7 @@ type ChatGptClient struct {
 	Temperature           float64
 	TopP                  float64
 	SearchTool            AISearchTool
+	TikuSearchTool        AITikuSearchTool
 	RequestID             string
 	MaxAISearchModelCalls int
 	MaxAISearches         int
@@ -78,6 +79,7 @@ type AISearchUsage struct {
 	TotalTokens       int64
 	ModelCalls        []AIModelCallUsage       `json:"modelCalls,omitempty"`
 	SearchCalls       []AISearchCallUsage      `json:"searchCalls,omitempty"`
+	TikuSearchCalls   []AITikuSearchCallUsage  `json:"tikuSearchCalls,omitempty"`
 	WebReadCalls      []AIWebReadCallUsage     `json:"webReadCalls,omitempty"`
 	OCRCalls          []AIOCRCallUsage         `json:"ocrCalls,omitempty"`
 	Attachments       []AIAttachmentDiagnostic `json:"attachments,omitempty"`
@@ -164,6 +166,15 @@ type AIWebReadCallUsage struct {
 	DurationMs    int64  `json:"durationMs"`
 	MarkdownBytes int    `json:"markdownBytes,omitempty"`
 	Error         string `json:"error,omitempty"`
+}
+
+type AITikuSearchCallUsage struct {
+	Query          string `json:"query"`
+	Status         string `json:"status"`
+	DurationMs     int64  `json:"durationMs"`
+	MatchKind      string `json:"matchKind,omitempty"`
+	CandidateCount int    `json:"candidateCount"`
+	Error          string `json:"error,omitempty"`
 }
 
 type AISearchDebugResult struct {
@@ -744,6 +755,19 @@ func buildAISearchPrompt(req model.SearchRequest) string {
 			}
 		}
 	}
+	if evidence := req.QuestionEvidence; evidence != nil {
+		builder.WriteString("\n客户端图片证据（按页面出现顺序；alt仅为辅助文字，需核验图片）：")
+		appendImages := func(label string, images []model.QuestionImageEvidence) {
+			for index, image := range images {
+				if index >= 100 {
+					break
+				}
+				fmt.Fprintf(&builder, "\n%s图%d：alt=%s url=%s", label, image.Index+1, truncateAITikuText(image.Alt, 2048), truncateAITikuText(image.URL, 2048))
+			}
+		}
+		appendImages("题干", evidence.StemImages)
+		appendImages("选项", evidence.OptionImages)
+	}
 	builder.WriteString("\n作答要求：如果题目包含多个小问，请按原编号完整回答每一问，不要只回答其中一问或随机选择一个小问。")
 	builder.WriteString("\n作答要求：不要返回“不确定”“不知道”或“无法确定”；请综合题干、选项、图片、课程与学科常识给出最可能的完整答案。")
 	return builder.String()
@@ -779,6 +803,8 @@ func hasAISearchJudgementOptions(options []string) bool {
 
 func resolveAISearchQuestionTypeLabel(questionType int) string {
 	switch questionType {
+	case -1:
+		return "未知题型（仅根据可见结构判断，不预设为单选题）"
 	case 0:
 		return "单选题"
 	case 1:
@@ -1138,6 +1164,19 @@ func extractAISearchURLs(req model.SearchRequest) []string {
 			}
 			seen[trimmed] = struct{}{}
 			urls = append(urls, trimmed)
+		}
+	}
+	if evidence := req.QuestionEvidence; evidence != nil {
+		for _, images := range [][]model.QuestionImageEvidence{evidence.StemImages, evidence.OptionImages} {
+			for index, image := range images {
+				if index >= 100 {
+					break
+				}
+				parsed, err := url.Parse(strings.TrimSpace(image.URL))
+				if err == nil && parsed.Hostname() != "" && parsed.User == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
+					appendMatches(parsed.String())
+				}
+			}
 		}
 	}
 	appendMatches(req.Question)

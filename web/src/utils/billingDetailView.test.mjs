@@ -43,6 +43,24 @@ test('billing view model defaults to personal scope and keeps keyword, URL and a
   assert.equal(new Set(view.items.map(item => item.key)).size, view.items.length)
 })
 
+test('billing detail view model includes local Tiku search query and candidate count', () => {
+  const view = billingHelpers.buildBillingDetailViewModel({
+    direction: 'expense',
+    amount: 0.01,
+    feeDetails: [{
+      provider: 'tiku_search',
+      amount: 0.01,
+      detail: 'query=微积分题；candidate_count=4',
+    }],
+  })
+
+  assert.equal(view.items[0].title, '本地题库检索')
+  assert.deepEqual(view.items[0].metadata, [
+    { label: '检索词', value: '微积分题' },
+    { label: '候选数', value: '4' },
+  ])
+})
+
 test('administrator detail retains each original round and requires explicit statement edit capability', () => {
   const view = billingHelpers.buildBillingDetailViewModel(sample, { viewerScope: 'admin', canEditStatement: true })
   assert.equal(view.canEditStatement, true)
