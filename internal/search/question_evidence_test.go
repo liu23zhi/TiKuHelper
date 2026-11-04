@@ -28,6 +28,14 @@ func TestStructuredQuestionEvidencePreservesImageOrderAndAlt(t *testing.T) {
 	}
 }
 
+func TestStructuredImageURLDoesNotStripSignedQueryPunctuation(t *testing.T) {
+	const address = "https://example.com/figure(1).png?signature=abc)"
+	req := model.SearchRequest{QuestionEvidence: &model.QuestionEvidence{StemImages: []model.QuestionImageEvidence{{URL: address}}}}
+	if got := extractAISearchURLs(req); !reflect.DeepEqual(got, []string{address}) {
+		t.Fatalf("structured URL was rewritten: %v", got)
+	}
+}
+
 func TestLocalTikuSearchSharesBudgetCachesQueriesAndRecordsFailures(t *testing.T) {
 	tool := &testAITikuSearchTool{result: AITikuSearchResult{MatchKind: "none", Candidates: []AITikuSearchCandidate{}}}
 	client := &ChatGptClient{TikuSearchTool: tool}

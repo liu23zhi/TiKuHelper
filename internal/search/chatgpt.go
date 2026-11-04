@@ -1153,17 +1153,20 @@ func formatAISearchImageIndex(index int) string {
 func extractAISearchURLs(req model.SearchRequest) []string {
 	seen := make(map[string]struct{})
 	urls := make([]string, 0)
+	appendURL := func(value string) {
+		if _, exists := seen[value]; exists {
+			return
+		}
+		seen[value] = struct{}{}
+		urls = append(urls, value)
+	}
 	appendMatches := func(value string) {
 		for _, match := range aiSearchURLPattern.FindAllString(value, -1) {
 			trimmed := strings.TrimSpace(strings.TrimRight(match, ".,;:!?)]}，。；：！？》」』、"))
 			if trimmed == "" {
 				continue
 			}
-			if _, ok := seen[trimmed]; ok {
-				continue
-			}
-			seen[trimmed] = struct{}{}
-			urls = append(urls, trimmed)
+			appendURL(trimmed)
 		}
 	}
 	if evidence := req.QuestionEvidence; evidence != nil {
@@ -1174,7 +1177,7 @@ func extractAISearchURLs(req model.SearchRequest) []string {
 				}
 				parsed, err := url.Parse(strings.TrimSpace(image.URL))
 				if err == nil && parsed.Hostname() != "" && parsed.User == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") {
-					appendMatches(parsed.String())
+					appendURL(parsed.String())
 				}
 			}
 		}
