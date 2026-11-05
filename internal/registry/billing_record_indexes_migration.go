@@ -8,15 +8,19 @@ import (
 	"gorm.io/gorm"
 )
 
-const billingRecordIndexesMigrationKey = "billing_record_indexes_v1"
+const billingRecordIndexesMigrationKey = "billing_record_indexes_v2"
 
 type billingRecordIndexSpec struct {
 	name    string
 	columns []string
 }
 
-// ensureBillingRecordIndexes adds the two indexes used by billing-record
-// deduplication and request aggregation. Raw CREATE INDEX is used after the
+// ensureBillingRecordIndexes adds the indexes used by billing-record
+// deduplication and request aggregation, including a covering usage index so
+// current-page amount/token aggregation can avoid reading complete table rows.
+// Existing v1 markers do not skip index checks: old databases must still gain
+// the usage index, and rerunning this migration only reads index metadata.
+// Raw CREATE INDEX is used after the
 // dialect-neutral HasIndex check because GORM's CreateIndex cannot express a
 // composite index's columns independently of model tags. Backtick quoting is
 // accepted by both SQLite and MySQL.
@@ -27,6 +31,7 @@ func ensureBillingRecordIndexes(db *gorm.DB) error {
 	indexes := []billingRecordIndexSpec{
 		{name: "idx_billing_records_dedup", columns: []string{"user_id", "request_id", "type", "hidden_from_statement", "id"}},
 		{name: "idx_billing_records_aggregation", columns: []string{"type", "request_id", "user_id", "hidden_from_statement"}},
+		{name: "idx_billing_records_usage", columns: []string{"type", "user_id", "request_id", "hidden_from_statement", "provider", "input_tokens", "cached_input_tokens", "amount"}},
 	}
 	for _, index := range indexes {
 		hasIndex := db.Migrator().HasIndex(&entity.BillingRecord{}, index.name)
