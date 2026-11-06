@@ -110,14 +110,15 @@ test('controller recovers websocket, stops polling, and sends heartbeat', () => 
   const recoveredSocket = sockets.at(-1)
   recoveredSocket.onopen()
   assert.ok(scheduler.delays().includes(2000), 'keep polling until the recovered socket delivers a status')
+  recoveredSocket.onmessage({ data: JSON.stringify({ type: 'pong' }) })
   recoveredSocket.onmessage({ data: JSON.stringify({ type: 'status', status: 'pending', remainingSeconds: 180 }) })
 
-  assert.deepEqual(scheduler.delays(), [1000, 1000, 2000])
+  assert.deepEqual(scheduler.delays(), [1000, 2000, 500])
   assert.equal(transports.at(-1), 'websocket')
 
-  const heartbeatTimers = [...scheduler.timers.values()].filter((timer) => timer.delay === 1000)
-  assert.equal(heartbeatTimers.length, 2, 'countdown and heartbeat both use one-second timers')
-  const heartbeat = heartbeatTimers.at(-1)
+  const heartbeatTimers = [...scheduler.timers.values()].filter((timer) => timer.delay === 500)
+  assert.equal(heartbeatTimers.length, 1, 'heartbeat uses a 500ms timer')
+  const heartbeat = heartbeatTimers[0]
   heartbeat.fn()
   assert.match(recoveredSocket.sent.at(-1), /"type":"ping"/)
 
@@ -131,6 +132,7 @@ test('controller falls back when the websocket handshake or status delivery stal
     const scheduler = createFakeScheduler()
     const transports = []
     let polls = 0
+    let clock = 0
     const controller = createWechatQrStatusController({
       checkStatus: async () => { polls += 1; return { status: 200, data: { status: 'pending' } } },
       onTransport: (transport) => transports.push(transport),
@@ -138,22 +140,61 @@ test('controller falls back when the websocket handshake or status delivery stal
       createWebSocket: () => createFakeSocket(sockets),
       setIntervalFn: scheduler.setIntervalFn,
       clearIntervalFn: scheduler.clearIntervalFn,
-      now: () => 0,
+      now: () => clock,
     })
     controller.start({ loginToken: 'token', expiresAtUnix: 180000 })
     if (opened) {
       sockets[0].onopen()
       sockets[0].onmessage({ data: JSON.stringify({ type: 'status', status: 'pending' }) })
     }
+    clock = 3000
     const watchdog = [...scheduler.timers.values()].find((timer) => timer.delay === 2000)
     watchdog.fn()
     await new Promise((resolve) => setImmediate(resolve))
     assert.equal(polls, 1)
     assert.equal(sockets[0].closed, true)
     assert.equal(transports.at(-1), 'polling')
+    assert.equal(sockets.length, 2, 'heartbeat timeout immediately attempts a replacement websocket')
     assert.ok(scheduler.delays().includes(30000), 'retain periodic websocket recovery')
     controller.stop()
   }
+})
+
+test('heartbeat sends every 500ms, accepts pong, then falls back immediately after 2s without pong', async () => {
+  const sockets = []
+  const scheduler = createFakeScheduler()
+  const transports = []
+  let clock = 0
+  const controller = createWechatQrStatusController({
+    checkStatus: async () => ({ status: 200, data: { status: 'pending' } }),
+    onTransport: (transport) => transports.push(transport),
+    buildWebSocketURL: (token) => `ws://example.test/${token}`,
+    createWebSocket: () => createFakeSocket(sockets),
+    setIntervalFn: scheduler.setIntervalFn,
+    clearIntervalFn: scheduler.clearIntervalFn,
+    now: () => clock,
+    maxReconnectAttempts: 1,
+  })
+  controller.start({ loginToken: 'token', expiresAtUnix: 180000 })
+  const first = sockets[0]
+  first.onopen()
+  const heartbeat = [...scheduler.timers.values()].find((timer) => timer.delay === 500)
+  heartbeat.fn()
+  assert.match(first.sent.at(-1), /"type":"ping"/)
+  clock = 1500
+  first.onmessage({ data: JSON.stringify({ type: 'pong' }) })
+  clock = 3000
+  const watchdog = [...scheduler.timers.values()].find((timer) => timer.delay === 2000)
+  watchdog.fn()
+  assert.equal(first.closed, false, 'recent pong keeps the active socket alive')
+  clock = 3501
+  watchdog.fn()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(first.closed, true)
+  assert.equal(transports.at(-1), 'polling')
+  assert.equal(sockets.length, 2, 'timeout immediately attempts websocket reconnection')
+  assert.ok(scheduler.delays().includes(2000), 'HTTP polling remains active during reconnection')
+  controller.stop()
 })
 
 test('controller bounds repeated websocket open-close cycles before polling', () => {

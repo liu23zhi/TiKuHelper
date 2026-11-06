@@ -32,7 +32,7 @@ export function createWechatQrStatusController({
   now = () => Date.now(),
   pollIntervalMs = 2000,
   wsRecoveryIntervalMs = 30000,
-  heartbeatIntervalMs = 1000,
+  heartbeatIntervalMs = 500,
   wsStatusTimeoutMs = 2000,
   maxReconnectAttempts = 3,
 } = {}) {
@@ -49,6 +49,7 @@ export function createWechatQrStatusController({
   let lastRemaining = null
   let resolvingTerminal = null
   let pollingSession = null
+  let lastHeartbeatAt = 0
 
   const clearTimer = (timer) => {
     if (timer !== null) {
@@ -59,6 +60,7 @@ export function createWechatQrStatusController({
   const stopHeartbeat = () => {
     clearTimer(heartbeatTimer)
     heartbeatTimer = null
+    lastHeartbeatAt = 0
   }
 
   const stopStatusWatchdog = () => {
@@ -188,6 +190,7 @@ export function createWechatQrStatusController({
       stopStatusWatchdog()
       statusTimer = setIntervalFn(() => {
         if (stopped || socket !== nextSocket) return
+        if (nextSocket.readyState === 1 && now() - lastHeartbeatAt < wsStatusTimeoutMs) return
         nextSocket.onopen = null
         nextSocket.onmessage = null
         nextSocket.onclose = null
@@ -197,6 +200,7 @@ export function createWechatQrStatusController({
         stopHeartbeat()
         stopStatusWatchdog()
         startPolling()
+        handleSocketClosed(null)
       }, wsStatusTimeoutMs)
     }
     resetStatusWatchdog()
@@ -206,6 +210,7 @@ export function createWechatQrStatusController({
         return
       }
       nextSocket.send(JSON.stringify({ type: 'ping', timestamp: now() }))
+      lastHeartbeatAt = now()
       stopHeartbeat()
       heartbeatTimer = setIntervalFn(() => {
         if (socket === nextSocket && (nextSocket.readyState === undefined || nextSocket.readyState === 1)) {
@@ -223,9 +228,9 @@ export function createWechatQrStatusController({
         return
       }
       if (message.type !== 'status' || !['pending', 'scanned', 'success', 'need_bind', 'expired'].includes(message.status)) {
+        if (message.type === 'pong') lastHeartbeatAt = now()
         return
       }
-      resetStatusWatchdog()
       stopPolling()
       onTransport('websocket')
       if (message.status === 'success' || message.status === 'need_bind') {
