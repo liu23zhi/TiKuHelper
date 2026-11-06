@@ -3,6 +3,7 @@ package middleware
 import (
 	"database/sql"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -48,6 +49,31 @@ func TestCollectAnswerStoresResolvedSourceName(t *testing.T) {
 	}
 	if strings.TrimSpace(sourceName.String) != "万能题库" {
 		t.Fatalf("expected source_name 万能题库, got %q", sourceName.String)
+	}
+}
+
+func TestCollectAnswerDoesNotMutateSearchResponseOptionOrder(t *testing.T) {
+	newCollectAnswerTestDB(t)
+	options := []string{"zeta option", "alpha option"}
+	response := model.SearchResponse{
+		Question: "多选题选项顺序",
+		Options:  options,
+		Type:     1,
+		Answer: model.Answer{
+			AnswerKey:   []string{"B"},
+			AnswerIndex: []int{1},
+			BestAnswer:  []string{"alpha option"},
+		},
+	}
+
+	CollectAnswer(response, "课程", "", "wanneng")
+
+	wantOptions := []string{"zeta option", "alpha option"}
+	if !reflect.DeepEqual(options, wantOptions) {
+		t.Fatalf("collection changed the caller's option order: want %v, got %v", wantOptions, options)
+	}
+	if !reflect.DeepEqual(response.Options, wantOptions) {
+		t.Fatalf("response options no longer align with answer indexes: want %v, got %v", wantOptions, response.Options)
 	}
 }
 

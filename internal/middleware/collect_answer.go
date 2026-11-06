@@ -43,8 +43,9 @@ func FillHash(t *entity.Tiku) {
 // CollectAnswer 收集没有搜索到的答案
 func CollectAnswer(resp model.SearchResponse, courseName, extra, provider string) CollectAnswerResult {
 	resultInfo := CollectAnswerResult{}
-	sort.Strings(resp.Options) // 将选项排序
-	opts, err := json.Marshal(resp.Options)
+	options := append([]string(nil), resp.Options...)
+	sort.Strings(options) // 题库存储统一排序，不能改动响应中答案索引所依赖的选项顺序。
+	opts, err := json.Marshal(options)
 	if err != nil {
 		opts = []byte("[]")
 	}
