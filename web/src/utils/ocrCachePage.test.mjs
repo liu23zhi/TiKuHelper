@@ -12,7 +12,7 @@ async function createPage(overrides = {}) {
   const source = await readFile(new URL('../pages/OCRCache/index.vue', import.meta.url), 'utf8')
   const script = source.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '').replace('export default defineComponent', 'return defineComponent')
   const dependencies = {
-    computed, defineComponent, reactive, ref, sumTableColumnWidths, buildAIToolTestPayload,
+    computed, defineComponent, reactive, ref, sumTableColumnWidths, buildAIToolTestPayload, OverflowTableText: {},
     onMounted() {}, onBeforeUnmount() {},
     Descriptions: { Item: {} }, message: { success() {}, error() {} },
     Swal: { fire: async () => ({ isConfirmed: true }) },

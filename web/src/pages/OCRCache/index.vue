@@ -61,7 +61,7 @@
         <a-table table-layout="fixed" :data-source="rows" :columns="columns" :loading="loading" :pagination="pagination" row-key="urlHash" :row-selection="rowSelection" :scroll="{ x: sumTableColumnWidths(columns, 48) }" :locale="{ emptyText: errorMessage ? '列表加载失败，请重试' : '暂无符合条件的 OCR 缓存' }" @change="onTableChange">
           <template #bodyCell="{ column, record }">
             <span v-if="column.key === 'id'">{{ record.id ?? '-' }}</span>
-            <span v-else-if="column.key === 'ocrText'" class="text-preview">{{ record.ocrText || '-' }}</span>
+            <OverflowTableText v-else-if="column.key === 'ocrText'" :text="record.ocrText || '-'" :expanded="expandedOCRText.has(record.urlHash)" @toggle="toggleOCRText(record.urlHash)" />
             <span v-else-if="column.key === 'url'" class="url-value">{{ record.url || '历史记录未保存 URL' }}</span>
             <code v-else-if="column.key === 'urlHash' || column.key === 'imageSha256'" class="hash-value">{{ record[column.key] || '-' }}</code>
             <span v-else-if="column.key === 'updatedAt'">{{ formatDate(record.updatedAt) }}</span>
@@ -116,6 +116,7 @@ import { Descriptions, message } from 'ant-design-vue'
 import Swal from 'sweetalert2'
 import { getAIOCRCacheEntries, getAIOCRCacheImage, deleteAIOCRCacheBatch, testAIToolCall } from '@/api/TikuComponentApi'
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
+import OverflowTableText from '@/components/OverflowTableText.vue'
 import { buildAIToolTestPayload } from '@/utils/aiSearchConfigHelpers.mjs'
 
 const emptyFilters = () => ({ keyword: '', contentType: '', updatedFrom: '', updatedTo: '' })
@@ -123,10 +124,16 @@ const requestError = (error, fallback) => error?.response?.data?.message || erro
 
 export default defineComponent({
   name: 'OCRCache',
-  components: { ADescriptions: Descriptions, ADescriptionsItem: Descriptions.Item },
+  components: { OverflowTableText, ADescriptions: Descriptions, ADescriptionsItem: Descriptions.Item },
   methods: { sumTableColumnWidths },
   setup() {
     const rows = ref([])
+    const expandedOCRText = ref(new Set())
+    const toggleOCRText = key => {
+      const next = new Set(expandedOCRText.value)
+      next.has(key) ? next.delete(key) : next.add(key)
+      expandedOCRText.value = next
+    }
     const filters = reactive(emptyFilters())
     const appliedFilters = ref({})
     const loading = ref(false)
@@ -468,7 +475,7 @@ export default defineComponent({
     }
     onMounted(load)
     onBeforeUnmount(() => { loadGeneration++; addGeneration++; clearImageState() })
-    return { rows, filters, loading, deleting, addVisible, adding, addImageURL, addForm, addError, addRequestId, addRecognizedText, addBillingWarning, operationWarning, configured, matched, errorMessage, detailVisible, detailRecord, imageLoading, imageError, currentImageUrl, pagination, contentTypes, hasFilters, scopeDescription, columns, formatDate, load, reload, resetFilters, onTableChange, showDetails, closeDetails, onDetailVisibilityChange, loadCurrentImage, handleCurrentImageError, openAddDialog, closeAddDialog, addOCRCache, deleteSingle, deleteSelected, deleteAllMatching, selectedCount, selectionSummary, selectedRowKeys, allRowsSelected, allCurrentPageSelected, hasCurrentPageSelection, rowSelection, onSelectionChange, handleSelectCurrentPage, handleClearCurrentPage, handleSelectAll, handleClearSelection }
+    return { rows, expandedOCRText, toggleOCRText, filters, loading, deleting, addVisible, adding, addImageURL, addForm, addError, addRequestId, addRecognizedText, addBillingWarning, operationWarning, configured, matched, errorMessage, detailVisible, detailRecord, imageLoading, imageError, currentImageUrl, pagination, contentTypes, hasFilters, scopeDescription, columns, formatDate, load, reload, resetFilters, onTableChange, showDetails, closeDetails, onDetailVisibilityChange, loadCurrentImage, handleCurrentImageError, openAddDialog, closeAddDialog, addOCRCache, deleteSingle, deleteSelected, deleteAllMatching, selectedCount, selectionSummary, selectedRowKeys, allRowsSelected, allCurrentPageSelected, hasCurrentPageSelection, rowSelection, onSelectionChange, handleSelectCurrentPage, handleClearCurrentPage, handleSelectAll, handleClearSelection }
   },
 })
 </script>
@@ -486,7 +493,6 @@ export default defineComponent({
 .cache-hint { margin: 0 0 20px; color: var(--console-muted); line-height: 1.7; }
 .hash-value { overflow-wrap: anywhere; white-space: normal; }
 .url-value { overflow-wrap: anywhere; white-space: normal; }
-.text-preview { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; }
 .response-title { margin: 20px 0 8px; font-size: 14px; }
 .current-image-tools { display: grid; justify-items: start; gap: 12px; margin-top: 16px; }
 .current-image-preview { display: block; max-width: 100%; max-height: 55vh; object-fit: contain; border: 1px solid var(--console-border); border-radius: var(--console-radius); }
