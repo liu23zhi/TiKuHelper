@@ -282,29 +282,32 @@ test('OCR select-all deletion uses displayed filters without pagination', async 
   Object.assign(page.filters, { keyword: '指定题目', contentType: 'image/png', updatedFrom: '2026-11-02', updatedTo: '2026-11-02' })
   await page.reload()
   page.showDetails(row)
+  page.handleSelectAll()
   page.filters.keyword = '不该删除的输入'
-  await page.deleteAllMatching()
+  await page.deleteSelected()
   assert.deepEqual(deleted, [{ keyword: '指定题目', contentType: 'image/png', updatedFrom: '2026-11-02', updatedTo: '2026-11-02', items: [], all: true, except: [] }])
-  assert.match(confirmations[0].title, /筛选结果/)
-  assert.match(confirmations[0].text, /指定题目/)
-  assert.match(confirmations[0].text, /包含其他分页/)
+  assert.match(confirmations[0].title, /所选 OCR 缓存/)
+  assert.match(confirmations[0].text, /1 条已选择的缓存/)
   assert.equal(page.detailVisible.value, false)
   assert.equal(page.pagination.current, 1)
   assert.equal(page.deleting.value, false)
 })
 
-test('OCR whole-cache deletion is explicit and cancellation sends no POST', async () => {
+test('OCR bulk deletion requires selection and cancellation sends no POST', async () => {
   const deleted = []
   let confirmed = false
   const page = await createPage({
     deleteAIOCRCacheBatch: async params => { deleted.push(params); return { status: 200, data: { deleted: 1 } } },
-    Swal: { fire: async params => { assert.match(params.title, /全部 OCR 缓存/); return { isConfirmed: confirmed } } },
+    Swal: { fire: async params => { assert.match(params.title, /所选 OCR 缓存/); return { isConfirmed: confirmed } } },
   })
   await page.load()
-  await page.deleteAllMatching()
+  await page.deleteSelected()
+  assert.deepEqual(deleted, [])
+  page.handleSelectAll()
+  await page.deleteSelected()
   assert.deepEqual(deleted, [])
   confirmed = true
-  await page.deleteAllMatching()
+  await page.deleteSelected()
   assert.deepEqual(deleted, [{ items: [], all: true, except: [] }])
 })
 
@@ -387,7 +390,7 @@ test('OCR failed list never enables deletion against stale results and keeps the
   assert.equal(page.errorMessage.value, '缓存数据库暂不可用')
   assert.deepEqual(page.rows.value, [])
   assert.equal(page.matched.value, 0)
-  await page.deleteAllMatching()
+  await page.deleteSelected()
   assert.equal(page.errorMessage.value, '缓存数据库暂不可用')
 })
 

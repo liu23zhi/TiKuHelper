@@ -4,7 +4,6 @@
       <template #actions>
         <a-space wrap>
           <a-button type="primary" :disabled="deleting || adding" @click="openAddDialog">手动添加</a-button>
-          <a-button danger :loading="deleting" :disabled="loading || adding || !!errorMessage || !matched" @click="deleteAllMatching">全部删除</a-button>
           <a-button :loading="loading" :disabled="deleting || adding" @click="load">刷新列表</a-button>
         </a-space>
       </template>
@@ -450,32 +449,9 @@ export default defineComponent({
         errorMessage.value = requestError(error, '删除 OCR 缓存失败')
       } finally { deleting.value = false }
     }
-    const deleteAllMatching = async () => {
-      if (loading.value || adding.value || deleting.value || errorMessage.value || !matched.value) return
-      const scope = { ...appliedFilters.value, items: [], all: true, except: [] }
-      const filtered = Object.keys(appliedFilters.value).length > 0
-      const result = await Swal.fire({
-        title: filtered ? '确认删除筛选结果？' : '确认删除全部 OCR 缓存？',
-        text: `${scopeDescription.value} 将删除当前范围内的 ${matched.value} 条缓存，包含其他分页。正在执行的请求不会被取消。`,
-        icon: 'warning', showCancelButton: true, confirmButtonText: '确认删除', cancelButtonText: '取消',
-      })
-      if (!result.isConfirmed) return
-      deleting.value = true
-      try {
-        const res = await deleteAIOCRCacheBatch(scope)
-        if (res?.status !== 200) throw new Error(res?.message || '删除 OCR 缓存失败')
-        closeDetails()
-        clearSelectionState()
-        message.success(`已删除 ${Number(res.data?.deleted || 0)} 条 OCR 缓存`)
-        pagination.current = 1
-        await load()
-      } catch (error) {
-        errorMessage.value = requestError(error, '删除 OCR 缓存失败')
-      } finally { deleting.value = false }
-    }
     onMounted(load)
     onBeforeUnmount(() => { loadGeneration++; addGeneration++; clearImageState() })
-    return { rows, expandedOCRText, toggleOCRText, filters, loading, deleting, addVisible, adding, addImageURL, addForm, addError, addRequestId, addRecognizedText, addBillingWarning, operationWarning, configured, matched, errorMessage, detailVisible, detailRecord, imageLoading, imageError, currentImageUrl, pagination, contentTypes, hasFilters, scopeDescription, columns, formatDate, load, reload, resetFilters, onTableChange, showDetails, closeDetails, onDetailVisibilityChange, loadCurrentImage, handleCurrentImageError, openAddDialog, closeAddDialog, addOCRCache, deleteSingle, deleteSelected, deleteAllMatching, selectedCount, selectionSummary, selectedRowKeys, allRowsSelected, allCurrentPageSelected, hasCurrentPageSelection, rowSelection, onSelectionChange, handleSelectCurrentPage, handleClearCurrentPage, handleSelectAll, handleClearSelection }
+    return { rows, expandedOCRText, toggleOCRText, filters, loading, deleting, addVisible, adding, addImageURL, addForm, addError, addRequestId, addRecognizedText, addBillingWarning, operationWarning, configured, matched, errorMessage, detailVisible, detailRecord, imageLoading, imageError, currentImageUrl, pagination, contentTypes, hasFilters, scopeDescription, columns, formatDate, load, reload, resetFilters, onTableChange, showDetails, closeDetails, onDetailVisibilityChange, loadCurrentImage, handleCurrentImageError, openAddDialog, closeAddDialog, addOCRCache, deleteSingle, deleteSelected, selectedCount, selectionSummary, selectedRowKeys, allRowsSelected, allCurrentPageSelected, hasCurrentPageSelection, rowSelection, onSelectionChange, handleSelectCurrentPage, handleClearCurrentPage, handleSelectAll, handleClearSelection }
   },
 })
 </script>
