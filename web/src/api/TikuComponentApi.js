@@ -697,6 +697,21 @@ export function uploadScriptVersion(file, version) {
   })
 }
 
+export function getScriptDomainSettings() {
+  return request({
+    url: `/adapter-service/script-domain-settings`,
+    method: 'get',
+  })
+}
+
+export function updateScriptDomainSettings(data) {
+  return request({
+    url: `/adapter-service/script-domain-settings`,
+    method: 'put',
+    data,
+  })
+}
+
 export function getSystemSettings() {
   return request({
     url: `/adapter-service/system-settings`,

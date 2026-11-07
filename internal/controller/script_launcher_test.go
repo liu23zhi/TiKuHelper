@@ -19,7 +19,7 @@ func TestScriptLaunchersStayPowerShell2Compatible(t *testing.T) {
 	}
 
 	payload := buildScriptPayload("https://a.a.com", "a", "/adapter-service/script-command/a/file", "tk_secret", "eyJzZXR0aW5ncyI6e30=")
-	for _, fragment := range []string{"DownloadFile", "WriteAllBytes", "FromBase64String", "Start-Process", "X-Script-Key", "--config"} {
+	for _, fragment := range []string{"DownloadFile", "CXPLUS_SCRIPT_BOOTSTRAP_B64", "Start-Process", "WaitForExit", "Remove-Item", "X-Script-Activation"} {
 		if !strings.Contains(payload, fragment) {
 			t.Fatalf("payload missing %q: %s", fragment, payload)
 		}

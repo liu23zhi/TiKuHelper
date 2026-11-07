@@ -43,7 +43,7 @@ func newSearchControllerTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open test db: %v", err)
 	}
 
-	if err := db.AutoMigrate(&entity.SearchAccountConfig{}, &entity.AISearchConfig{}, &entity.AIModelPrice{}, &entity.SystemSetting{}, &entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}, &entity.Log{}, &entity.Tiku{}, &entity.TikuAnswerEvidence{}, &entity.ScriptVersion{}, &entity.UserScript{}, &entity.ScriptExchangeToken{}); err != nil {
+	if err := db.AutoMigrate(&entity.SearchAccountConfig{}, &entity.AISearchConfig{}, &entity.AIModelPrice{}, &entity.SystemSetting{}, &entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}, &entity.Log{}, &entity.Tiku{}, &entity.TikuAnswerEvidence{}, &entity.ScriptVersion{}, &entity.UserScript{}, &entity.ScriptExchangeToken{}, &entity.ScriptRunSession{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 
@@ -2338,7 +2338,7 @@ func TestResolveSearchRequestContextWithDBRejectsUserWithZeroBalance(t *testing.
 	}
 }
 
-func TestResolveSearchRequestContextWithDBAllowsReservedScriptTokenAtZeroBalance(t *testing.T) {
+func TestResolveSearchRequestContextWithDBAllowsReservedScriptSessionAtZeroBalance(t *testing.T) {
 	db := newSearchControllerTestDB(t)
 	user := seedControllerUser(t, db, 0, "script-user", "user")
 	version := entity.ScriptVersion{Version: "v1", Filename: "script.exe", SHA256: strings.Repeat("a", 64), SizeBytes: 2, Data: []byte("MZ"), IsCurrent: true, CreatedBy: user.ID}
@@ -2356,10 +2356,28 @@ func TestResolveSearchRequestContextWithDBAllowsReservedScriptTokenAtZeroBalance
 	if err := db.Model(&entity.AccessToken{}).Where("id = ?", token.ID).Update("script_id", script.ID).Error; err != nil {
 		t.Fatalf("mark script token: %v", err)
 	}
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 10).Error; err != nil {
+		t.Fatalf("restore balance for one-time exchange: %v", err)
+	}
 	if _, err := service.UpdateSearchAccountConfigWithDB(db, "icodef", service.UpdateSearchAccountConfigInput{TokenValue: "default-search-token", Enabled: true}); err != nil {
 		t.Fatalf("seed search config: %v", err)
 	}
-	resolved, err := resolveSearchRequestContextWithDB(db, "Basic script-token", "198.51.100.25", url.Values{})
+	grant, err := service.IssuePublicScriptExchangeTokenWithDB(db, script.ShortCode, service.ScriptExchangeTokenTTL)
+	if err != nil {
+		t.Fatalf("issue public exchange token: %v", err)
+	}
+	exchange, err := service.ExchangeScriptTokenWithDB(db, script.ShortCode, grant.Token)
+	if err != nil {
+		t.Fatalf("exchange public token: %v", err)
+	}
+	session, err := service.ActivateScriptRunSessionWithDB(db, script.ShortCode, exchange.ActivationToken, "controller-test-identity")
+	if err != nil {
+		t.Fatalf("activate script run session: %v", err)
+	}
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", 0).Error; err != nil {
+		t.Fatalf("set post-launch balance: %v", err)
+	}
+	resolved, err := resolveSearchRequestContextWithDBAndIdentity(db, "Bearer "+session.Token, "controller-test-identity", "198.51.100.25", url.Values{})
 	if err != nil {
 		t.Fatalf("reserved script token should bypass the normal balance gate: %v", err)
 	}

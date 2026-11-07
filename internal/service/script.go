@@ -20,57 +20,68 @@ import (
 )
 
 const (
-	ScriptReservationFee         = 10.0
-	ScriptExchangeTokenTTL       = 5 * time.Minute
-	ScriptVersionMaxBytes  int64 = 64 << 20
+	ScriptReservationFee = 10.0
+	// ScriptExchangeMinimumBalance is the spendable balance that must remain
+	// after a script's reservation before another launcher ticket can be issued.
+	// The reservation itself is returned only when the script is deleted.
+	ScriptExchangeMinimumBalance       = 9.0
+	ScriptExchangeTokenTTL             = 5 * time.Minute
+	ScriptRunSessionTTL                = 150 * time.Minute
+	ScriptVersionMaxBytes        int64 = 64 << 20
 )
 
 var (
-	ErrScriptForbidden           = errors.New("无权限操作脚本")
-	ErrScriptNotFound            = errors.New("脚本不存在")
-	ErrScriptVersionNotFound     = errors.New("脚本版本不存在")
-	ErrScriptNameRequired        = errors.New("脚本名称不能为空")
-	ErrScriptDomainRequired      = errors.New("脚本域名不能为空")
-	ErrScriptVersionRequired     = errors.New("脚本版本不能为空")
-	ErrScriptVersionInvalid      = errors.New("脚本版本无效")
-	ErrScriptBalanceInsufficient = errors.New("余额不足，创建脚本需要预扣 ¥10")
-	ErrScriptTokenInvalid        = errors.New("脚本兑换令牌无效或已过期")
-	ErrScriptTokenRequired       = errors.New("脚本兑换令牌不能为空")
+	ErrScriptForbidden                = errors.New("无权限操作脚本")
+	ErrScriptNotFound                 = errors.New("脚本不存在")
+	ErrScriptVersionNotFound          = errors.New("脚本版本不存在")
+	ErrScriptNameRequired             = errors.New("脚本名称不能为空")
+	ErrScriptDomainRequired           = errors.New("脚本域名不能为空")
+	ErrScriptVersionRequired          = errors.New("脚本版本不能为空")
+	ErrScriptVersionInvalid           = errors.New("脚本版本无效")
+	ErrScriptBalanceInsufficient      = errors.New("余额不足，创建脚本需要预扣 ¥10")
+	ErrScriptExchangeAlreadyIssued    = errors.New("该脚本已有未使用的兑换令牌，请先使用或等待令牌过期")
+	ErrScriptTokenBalanceInsufficient = errors.New("可用余额不足 ¥9，暂不能下发脚本兑换令牌；请充值后重试")
+	ErrScriptTokenInvalid             = errors.New("脚本兑换令牌无效或已过期")
+	ErrScriptTokenRequired            = errors.New("脚本兑换令牌不能为空")
 )
 
 type CreateUserScriptInput struct {
-	Name                string         `json:"name"`
-	Instruction         string         `json:"instruction"`
-	Command             string         `json:"command"`
-	VersionID           int32          `json:"versionId"`
-	Parameters          map[string]any `json:"parameters"`
-	Description         string         `json:"description"`
-	BaseDomain          string         `json:"baseDomain"`
-	Scheme              string         `json:"scheme"`
-	UseWildcardDomain   *bool          `json:"useWildcardDomain"`
-	Enabled             *bool          `json:"enabled"`
-	BillingEnabled      *bool          `json:"billingEnabled"`
-	UseTikuPrice        *bool          `json:"useTikuPrice"`
-	BillingUseTikuPrice *bool          `json:"billingUseTikuPrice"`
-	PresetParams        map[string]any `json:"presetParams"`
-	AnswerPrice         float64        `json:"answerPrice"`
+	Name                  string         `json:"name"`
+	Instruction           string         `json:"instruction"`
+	Command               string         `json:"command"`
+	VersionID             int32          `json:"versionId"`
+	Parameters            map[string]any `json:"parameters"`
+	Description           string         `json:"description"`
+	BaseDomain            string         `json:"baseDomain"`
+	Scheme                string         `json:"scheme"`
+	UseWildcardDomain     *bool          `json:"useWildcardDomain"`
+	Enabled               *bool          `json:"enabled"`
+	BillingEnabled        *bool          `json:"billingEnabled"`
+	UseTikuPrice          *bool          `json:"useTikuPrice"`
+	BillingUseTikuPrice   *bool          `json:"billingUseTikuPrice"`
+	PresetParams          map[string]any `json:"presetParams"`
+	PriceMultiplier       *float64       `json:"priceMultiplier"`
+	AnswerPriceMultiplier *float64       `json:"answerPriceMultiplier"`
+	AnswerPrice           float64        `json:"answerPrice"`
 }
 
 type UpdateUserScriptInput struct {
-	Name                string         `json:"name"`
-	Instruction         string         `json:"instruction"`
-	Command             string         `json:"command"`
-	Parameters          map[string]any `json:"parameters"`
-	PresetParams        map[string]any `json:"presetParams"`
-	Description         string         `json:"description"`
-	BaseDomain          string         `json:"baseDomain"`
-	Scheme              string         `json:"scheme"`
-	UseWildcardDomain   *bool          `json:"useWildcardDomain"`
-	Enabled             *bool          `json:"enabled"`
-	BillingEnabled      *bool          `json:"billingEnabled"`
-	UseTikuPrice        *bool          `json:"useTikuPrice"`
-	BillingUseTikuPrice *bool          `json:"billingUseTikuPrice"`
-	AnswerPrice         *float64       `json:"answerPrice"`
+	Name                  string         `json:"name"`
+	Instruction           string         `json:"instruction"`
+	Command               string         `json:"command"`
+	Parameters            map[string]any `json:"parameters"`
+	PresetParams          map[string]any `json:"presetParams"`
+	Description           string         `json:"description"`
+	BaseDomain            string         `json:"baseDomain"`
+	Scheme                string         `json:"scheme"`
+	UseWildcardDomain     *bool          `json:"useWildcardDomain"`
+	Enabled               *bool          `json:"enabled"`
+	BillingEnabled        *bool          `json:"billingEnabled"`
+	UseTikuPrice          *bool          `json:"useTikuPrice"`
+	BillingUseTikuPrice   *bool          `json:"billingUseTikuPrice"`
+	PriceMultiplier       *float64       `json:"priceMultiplier"`
+	AnswerPriceMultiplier *float64       `json:"answerPriceMultiplier"`
+	AnswerPrice           *float64       `json:"answerPrice"`
 }
 
 type ScriptListItem struct {
@@ -89,16 +100,17 @@ type ScriptExchangeGrant struct {
 }
 
 type ScriptExchangeResult struct {
-	ScriptID     int32          `json:"scriptId"`
-	Name         string         `json:"name"`
-	Instruction  string         `json:"instruction"`
-	Parameters   map[string]any `json:"parameters"`
-	Version      string         `json:"version"`
-	Filename     string         `json:"filename"`
-	DownloadURL  string         `json:"downloadUrl"`
-	AccessKey    string         `json:"key"`
-	CommandURL   string         `json:"commandUrl"`
-	BootstrapURL string         `json:"bootstrapUrl"`
+	ScriptID            int32          `json:"scriptId"`
+	Name                string         `json:"name"`
+	Instruction         string         `json:"instruction"`
+	Parameters          map[string]any `json:"parameters"`
+	Version             string         `json:"version"`
+	Filename            string         `json:"filename"`
+	DownloadURL         string         `json:"downloadUrl"`
+	ActivationToken     string         `json:"activationToken"`
+	ActivationExpiresAt time.Time      `json:"activationExpiresAt"`
+	CommandURL          string         `json:"commandUrl"`
+	BootstrapURL        string         `json:"bootstrapUrl"`
 }
 
 func ListScriptVersionsWithDB(db *gorm.DB) ([]entity.ScriptVersion, error) {
@@ -128,7 +140,15 @@ func UploadScriptVersionWithDB(db *gorm.DB, admin entity.User, version, filename
 		if err := tx.Model(&entity.ScriptVersion{}).Where("is_current = ?", true).Update("is_current", false).Error; err != nil {
 			return err
 		}
-		return tx.Create(&result).Error
+		if err := tx.Create(&result).Error; err != nil {
+			return err
+		}
+		// A script always follows the currently published executable. The update
+		// is transactional, so requests started before this commit keep reading
+		// their already selected version while new requests see the replacement.
+		return tx.Model(&entity.UserScript{}).
+			Where("deleted_at IS NULL").
+			Updates(map[string]any{"version_id": result.ID, "updated_at": time.Now()}).Error
 	})
 	return result, err
 }
@@ -150,6 +170,18 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 	}
 	if input.AnswerPrice >= 1_000_000_000_000 {
 		return ScriptListItem{}, errors.New("脚本答题单价超出可存储范围")
+	}
+	multiplier := 1.0
+	if input.PriceMultiplier != nil {
+		multiplier = *input.PriceMultiplier
+	} else if input.AnswerPriceMultiplier != nil {
+		multiplier = *input.AnswerPriceMultiplier
+	}
+	if math.IsNaN(multiplier) || math.IsInf(multiplier, 0) || multiplier < 0 {
+		return ScriptListItem{}, errors.New("脚本答题倍率必须是大于或等于 0 的有效数字")
+	}
+	if multiplier >= 1_000_000_000_000 {
+		return ScriptListItem{}, errors.New("脚本答题倍率超出可存储范围")
 	}
 	parameterValues := input.Parameters
 	if parameterValues == nil {
@@ -175,6 +207,9 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 			}
 			return err
 		}
+		if !version.IsCurrent {
+			return ErrScriptVersionInvalid
+		}
 		before := util.RoundMoney(user.Balance)
 		if before < ScriptReservationFee {
 			return ErrScriptBalanceInsufficient
@@ -199,7 +234,10 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 		if input.UseWildcardDomain != nil {
 			useWildcard = *input.UseWildcardDomain
 		}
-		script := entity.UserScript{UserID: user.ID, VersionID: version.ID, Name: name, Parameters: string(parameters), Description: strings.TrimSpace(input.Description), BaseDomain: baseDomain, Scheme: normalizeScriptScheme(input.Scheme), UseWildcardDomain: useWildcard, Enabled: true, BillingEnabled: true, UseTikuPrice: true, AnswerPrice: util.RoundMoney(input.AnswerPrice), ShortCode: shortCode, AccessKey: key, ReservedFee: ScriptReservationFee}
+		if err := ValidateScriptDomainWithDB(tx, baseDomain, useWildcard); err != nil {
+			return err
+		}
+		script := entity.UserScript{UserID: user.ID, VersionID: version.ID, Name: name, Parameters: string(parameters), Description: strings.TrimSpace(input.Description), BaseDomain: baseDomain, Scheme: normalizeScriptScheme(input.Scheme), UseWildcardDomain: useWildcard, Enabled: true, BillingEnabled: true, UseTikuPrice: true, AnswerPriceMultiplier: util.RoundMoney(multiplier), AnswerPrice: util.RoundMoney(input.AnswerPrice), ShortCode: shortCode, AccessKey: key, ReservedFee: ScriptReservationFee}
 		if input.Enabled != nil {
 			script.Enabled = *input.Enabled
 		}
@@ -311,11 +349,24 @@ func UpdateUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32, i
 			}
 			updates["answer_price"] = util.RoundMoney(*input.AnswerPrice)
 		}
+		if input.PriceMultiplier != nil || input.AnswerPriceMultiplier != nil {
+			multiplier := input.PriceMultiplier
+			if multiplier == nil {
+				multiplier = input.AnswerPriceMultiplier
+			}
+			if math.IsNaN(*multiplier) || math.IsInf(*multiplier, 0) || *multiplier < 0 || *multiplier >= 1_000_000_000_000 {
+				return errors.New("脚本答题倍率必须是有效的非负数字")
+			}
+			updates["answer_price_multiplier"] = util.RoundMoney(*multiplier)
+		}
 		updatedScript := script
 		updatedScript.BaseDomain = baseDomain
 		updatedScript.Scheme = scheme
 		if input.UseWildcardDomain != nil {
 			updatedScript.UseWildcardDomain = *input.UseWildcardDomain
+		}
+		if err := ValidateScriptDomainWithDB(tx, baseDomain, updatedScript.UseWildcardDomain); err != nil {
+			return err
 		}
 		updates["instruction"] = BuildScriptCommand(updatedScript)
 		if err := tx.Model(&script).Updates(updates).Error; err != nil {
@@ -355,6 +406,9 @@ func DeleteUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32) e
 				return err
 			}
 		}
+		if err := tx.Model(&entity.ScriptRunSession{}).Where("script_id = ? AND revoked_at IS NULL", script.ID).Update("revoked_at", now).Error; err != nil {
+			return err
+		}
 		var user entity.User
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&user, script.UserID).Error; err != nil {
 			return err
@@ -372,31 +426,52 @@ func IssueScriptExchangeTokenWithDB(db *gorm.DB, operator entity.User, scriptID 
 	if ttl <= 0 || ttl > ScriptExchangeTokenTTL {
 		ttl = ScriptExchangeTokenTTL
 	}
-	var script entity.UserScript
-	query := db.Session(&gorm.Session{NewDB: true}).Where("id = ? AND deleted_at IS NULL", scriptID)
-	if !isAdminUser(operator) {
-		query = query.Where("user_id = ?", operator.ID)
-	}
-	if err := query.First(&script).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ScriptExchangeGrant{}, ErrScriptNotFound
-		}
-		return ScriptExchangeGrant{}, err
-	}
 	token, err := randomScriptSecret(24)
 	if err != nil {
 		return ScriptExchangeGrant{}, err
 	}
 	expires := time.Now().Add(ttl)
+	shortCode := ""
 	if err := db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
+		var script entity.UserScript
+		query := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND deleted_at IS NULL AND enabled = ?", scriptID, true)
+		if !isAdminUser(operator) {
+			query = query.Where("user_id = ?", operator.ID)
+		}
+		if err := query.First(&script).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrScriptNotFound
+			}
+			return err
+		}
+		shortCode = script.ShortCode
+		var user entity.User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&user, script.UserID).Error; err != nil {
+			return err
+		}
+		// A launcher ticket is a capability to consume the reserved script
+		// balance. Keep at least ¥9 available after prior script answers so a
+		// user cannot keep minting tickets while their account is overdrawn.
+		if util.RoundMoney(user.Balance) < ScriptExchangeMinimumBalance {
+			return ErrScriptTokenBalanceInsufficient
+		}
 		if err := deleteExpiredScriptExchangeTokens(tx, script.ID); err != nil {
 			return err
 		}
-		return tx.Create(&entity.ScriptExchangeToken{ScriptID: script.ID, TokenHash: hashScriptSecret(token), ExpiresAt: expires}).Error
+		var active int64
+		if err := tx.Model(&entity.ScriptExchangeToken{}).
+			Where("script_id = ? AND purpose = ? AND used_at IS NULL AND expires_at > ?", script.ID, "exchange", time.Now()).
+			Count(&active).Error; err != nil {
+			return err
+		}
+		if active > 0 {
+			return ErrScriptExchangeAlreadyIssued
+		}
+		return tx.Create(&entity.ScriptExchangeToken{ScriptID: script.ID, VersionID: script.VersionID, Purpose: "exchange", TokenHash: hashScriptSecret(token), ExpiresAt: expires}).Error
 	}); err != nil {
 		return ScriptExchangeGrant{}, err
 	}
-	return ScriptExchangeGrant{ShortCode: script.ShortCode, Token: token, ExpiresAt: expires}, nil
+	return ScriptExchangeGrant{ShortCode: shortCode, Token: token, ExpiresAt: expires}, nil
 }
 
 func ExchangeScriptTokenWithDB(db *gorm.DB, shortCode, token string) (ScriptExchangeResult, error) {
@@ -410,17 +485,21 @@ func ExchangeScriptTokenWithDB(db *gorm.DB, shortCode, token string) (ScriptExch
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("token_hash = ?", hashScriptSecret(token)).First(&grant).Error; err != nil {
 			return ErrScriptTokenInvalid
 		}
-		if grant.UsedAt != nil || time.Now().After(grant.ExpiresAt) {
+		if grant.Purpose != "exchange" || grant.UsedAt != nil || !time.Now().Before(grant.ExpiresAt) {
 			return ErrScriptTokenInvalid
 		}
 		var script entity.UserScript
 		if err := tx.Where("id = ? AND short_code = ? AND deleted_at IS NULL AND enabled = ?", grant.ScriptID, shortCode, true).First(&script).Error; err != nil {
 			return ErrScriptTokenInvalid
 		}
+		versionID := grant.VersionID
+		if versionID <= 0 {
+			versionID = script.VersionID
+		}
 		var version entity.ScriptVersion
 		// The exchange response only needs release metadata. Avoid loading a
 		// potentially 64 MiB executable into memory before the actual download.
-		if err := tx.Select("id", "version", "filename").First(&version, script.VersionID).Error; err != nil {
+		if err := tx.Select("id", "version", "filename").First(&version, versionID).Error; err != nil {
 			return ErrScriptTokenInvalid
 		}
 		now := time.Now()
@@ -431,18 +510,18 @@ func ExchangeScriptTokenWithDB(db *gorm.DB, shortCode, token string) (ScriptExch
 		if strings.TrimSpace(script.Parameters) != "" && json.Unmarshal([]byte(script.Parameters), &parameters) != nil {
 			return errors.New("脚本参数损坏")
 		}
-		accessKey := script.AccessKey
-		if script.AccessTokenID > 0 {
-			var accessToken entity.AccessToken
-			if err := tx.Where("id = ? AND script_id = ? AND status = ?", script.AccessTokenID, script.ID, "enabled").First(&accessToken).Error; err != nil {
-				return ErrScriptTokenInvalid
-			}
-			accessKey = accessToken.TokenValue
-		}
 		if parameters == nil {
 			parameters = map[string]any{}
 		}
-		result = ScriptExchangeResult{ScriptID: script.ID, Name: script.Name, Instruction: script.Instruction, Parameters: parameters, Version: version.Version, Filename: version.Filename, DownloadURL: "/adapter-service/script-command/" + script.ShortCode + "/file", AccessKey: accessKey, CommandURL: BuildScriptCommandURL(script), BootstrapURL: "/adapter-service/script-command/" + script.ShortCode + "/bootstrap"}
+		activationToken, err := randomScriptSecret(24)
+		if err != nil {
+			return err
+		}
+		activationExpiresAt := now.Add(ScriptExchangeTokenTTL)
+		if err := tx.Create(&entity.ScriptExchangeToken{ScriptID: script.ID, VersionID: version.ID, Purpose: "activation", TokenHash: hashScriptSecret(activationToken), ExpiresAt: activationExpiresAt}).Error; err != nil {
+			return err
+		}
+		result = ScriptExchangeResult{ScriptID: script.ID, Name: script.Name, Instruction: script.Instruction, Parameters: parameters, Version: version.Version, Filename: version.Filename, DownloadURL: "/adapter-service/script-command/" + script.ShortCode + "/file", ActivationToken: activationToken, ActivationExpiresAt: activationExpiresAt, CommandURL: BuildScriptCommandURL(script), BootstrapURL: "/adapter-service/script-command/" + script.ShortCode + "/bootstrap"}
 		return nil
 	})
 	return result, err
@@ -568,27 +647,45 @@ func IssuePublicScriptExchangeTokenWithDB(db *gorm.DB, shortCode string, ttl tim
 	if ttl <= 0 || ttl > ScriptExchangeTokenTTL {
 		ttl = ScriptExchangeTokenTTL
 	}
-	var script entity.UserScript
-	if err := db.Session(&gorm.Session{NewDB: true}).Where("short_code = ? AND deleted_at IS NULL AND enabled = ?", strings.TrimSpace(shortCode), true).First(&script).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ScriptExchangeGrant{}, ErrScriptNotFound
-		}
-		return ScriptExchangeGrant{}, err
-	}
 	token, err := randomScriptSecret(24)
 	if err != nil {
 		return ScriptExchangeGrant{}, err
 	}
 	expires := time.Now().Add(ttl)
+	resolvedShortCode := ""
 	if err := db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
+		var script entity.UserScript
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("short_code = ? AND deleted_at IS NULL AND enabled = ?", strings.TrimSpace(shortCode), true).First(&script).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrScriptNotFound
+			}
+			return err
+		}
+		resolvedShortCode = script.ShortCode
+		var user entity.User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&user, script.UserID).Error; err != nil {
+			return err
+		}
+		if util.RoundMoney(user.Balance) < ScriptExchangeMinimumBalance {
+			return ErrScriptTokenBalanceInsufficient
+		}
 		if err := deleteExpiredScriptExchangeTokens(tx, script.ID); err != nil {
 			return err
 		}
-		return tx.Create(&entity.ScriptExchangeToken{ScriptID: script.ID, TokenHash: hashScriptSecret(token), ExpiresAt: expires}).Error
+		var active int64
+		if err := tx.Model(&entity.ScriptExchangeToken{}).
+			Where("script_id = ? AND purpose = ? AND used_at IS NULL AND expires_at > ?", script.ID, "exchange", time.Now()).
+			Count(&active).Error; err != nil {
+			return err
+		}
+		if active > 0 {
+			return ErrScriptExchangeAlreadyIssued
+		}
+		return tx.Create(&entity.ScriptExchangeToken{ScriptID: script.ID, VersionID: script.VersionID, Purpose: "exchange", TokenHash: hashScriptSecret(token), ExpiresAt: expires}).Error
 	}); err != nil {
 		return ScriptExchangeGrant{}, err
 	}
-	return ScriptExchangeGrant{ShortCode: script.ShortCode, Token: token, ExpiresAt: expires}, nil
+	return ScriptExchangeGrant{ShortCode: resolvedShortCode, Token: token, ExpiresAt: expires}, nil
 }
 
 func deleteExpiredScriptExchangeTokens(tx *gorm.DB, scriptID int32) error {

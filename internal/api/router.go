@@ -28,6 +28,8 @@ func SetAPIRouter(router *gin.Engine) {
 	scriptUploadRouter.POST("", controller.Auth, middleware.RequireAdmin, controller.UploadScriptVersion)
 	// 用户脚本：版本由管理员上传，脚本实例按用户隔离；exchange 不把专用 key 放进 URL。
 	apiRouter.GET("/script-versions", controller.Auth, controller.ScriptVersionList)
+	apiRouter.GET("/script-domain-settings", controller.Auth, middleware.RequireAdmin, controller.ScriptDomainSettings)
+	apiRouter.PUT("/script-domain-settings", controller.Auth, middleware.RequireAdmin, controller.UpdateScriptDomainSettings)
 	apiRouter.GET("/script-versions/:id/download", controller.Auth, controller.DownloadScriptVersion)
 	apiRouter.GET("/scripts", controller.Auth, controller.ScriptList)
 	apiRouter.POST("/scripts", controller.Auth, controller.CreateScript)
@@ -38,6 +40,7 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.POST("/script-command/:shortCode/exchange", controller.ExchangeScriptToken)
 	apiRouter.GET("/script-command/:shortCode/bootstrap", controller.ScriptBootstrap)
 	apiRouter.GET("/script-command/:shortCode/exchange-script", controller.ScriptExchangeScript)
+	apiRouter.POST("/script-command/:shortCode/activate", controller.ActivateScriptRunSession)
 	apiRouter.GET("/script-command/:shortCode/file", controller.ScriptBinaryDownload)
 	apiRouter.GET("/scripts/:shortCode/bootstrap", controller.ScriptBootstrap)
 	apiRouter.POST("/scripts/command/:shortCode/exchange", controller.ExchangeScriptToken)

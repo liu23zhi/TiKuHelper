@@ -24,5 +24,7 @@ test('script management is routed for both scopes and exposes admin upload contr
   assert.match(page, /显示全部脚本/)
   assert.match(page, /预置参数/)
   assert.match(page, /跟随题库计费/)
+  assert.match(page, /独立答题倍率（X）/)
+  assert.match(page, /发布为最新版本/)
   assert.match(page, /PowerShell \+ \.NET WebClient/)
 })

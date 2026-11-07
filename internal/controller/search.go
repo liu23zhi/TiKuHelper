@@ -300,7 +300,15 @@ func Search(c *gin.Context) {
 
 	query := c.Request.URL.Query()
 	useQuery := query.Get("use")
-	resolveResult, resolveErr := resolveSearchRequestContext(c.Request.Context(), c.GetHeader("Authorization"), c.ClientIP(), query)
+	var resolveResult resolvedSearchRequestContext
+	var resolveErr error
+	identity := strings.TrimSpace(c.GetHeader("X-Script-Identity"))
+	if identity != "" {
+		db := withDatabasePriority(manager.GetManager().GetDB(), c.Request.Context(), dbqueue.PriorityHigh)
+		resolveResult, resolveErr = resolveSearchRequestContextWithDBAndIdentity(db, c.GetHeader("Authorization"), identity, c.ClientIP(), query)
+	} else {
+		resolveResult, resolveErr = resolveSearchRequestContext(c.Request.Context(), c.GetHeader("Authorization"), c.ClientIP(), query)
+	}
 	if resolveErr != nil {
 		if errors.Is(resolveErr, service.ErrInvalidAccessTokenAuthorization) {
 			writeSearchUnauthorized(c, resolveErr, rawBody)
@@ -1164,12 +1172,22 @@ func resolveScriptAnswerBillingCharge(db *gorm.DB, scriptID int32, req model.Sea
 	if !script.Enabled || !script.BillingEnabled || (!hasSearchAnswer && !hasAIModelUsage(aiUsage)) {
 		return nil, "", nil
 	}
-	price := script.AnswerPrice
-	if script.UseTikuPrice {
-		price = service.GetTikuSearchPricePerCallWithDB(db)
+	basePrice := service.GetTikuSearchPricePerCallWithDB(db)
+	price := basePrice
+	if !script.UseTikuPrice {
+		if script.AnswerPrice > 0 && script.AnswerPriceMultiplier <= 1 {
+			// Legacy rows stored a fixed unit price. The startup migration clears
+			// that field after converting them to 1X; retain the read fallback for
+			// databases before that migration runs.
+			price = script.AnswerPrice
+		} else {
+			// A configured 0X multiplier is a valid free script mode; do not
+			// fall back to the tiku price when the multiplier is zero.
+			price = basePrice * script.AnswerPriceMultiplier
+		}
 	}
 	amount := util.RoundMoney(price)
-	snapshot := fmt.Sprintf("provider=script_answer unitPrice=%.6f amount=%.6f question=%s", amount, amount, url.QueryEscape(strings.TrimSpace(req.Question)))
+	snapshot := fmt.Sprintf("provider=script_answer multiplier=%.6f unitPrice=%.6f amount=%.6f question=%s", script.AnswerPriceMultiplier, price, amount, url.QueryEscape(strings.TrimSpace(req.Question)))
 	return []searchBillingCharge{{Provider: "script_answer", Amount: amount, Snapshot: snapshot}}, "", nil
 }
 
@@ -1899,6 +1917,10 @@ func detectSearchMode(query url.Values) string {
 }
 
 func resolveSearchRequestContextWithDB(db *gorm.DB, authorization string, clientIP string, query url.Values) (resolvedSearchRequestContext, error) {
+	return resolveSearchRequestContextWithDBAndIdentity(db, authorization, "", clientIP, query)
+}
+
+func resolveSearchRequestContextWithDBAndIdentity(db *gorm.DB, authorization string, identity string, clientIP string, query url.Values) (resolvedSearchRequestContext, error) {
 	resolved := resolvedSearchRequestContext{
 		RequestID:  uuid.NewString(),
 		SearchMode: detectSearchMode(query),
@@ -1906,7 +1928,16 @@ func resolveSearchRequestContextWithDB(db *gorm.DB, authorization string, client
 	allowDefaultAccount := false
 
 	if strings.TrimSpace(authorization) != "" {
-		authCtx, err := service.ResolveAccessTokenFromBasicAuth(db, authorization)
+		var authCtx service.AccessTokenAuthContext
+		var err error
+		if strings.TrimSpace(identity) != "" {
+			authCtx, _, err = service.ResolveScriptRunSessionWithDB(db, authorization, identity)
+		} else {
+			authCtx, err = service.ResolveAccessTokenFromBasicAuth(db, authorization)
+			if err == nil && authCtx.AccessToken.ScriptID > 0 {
+				return resolved, fmt.Errorf("%w: 脚本请求必须使用绑定身份码的运行会话", service.ErrInvalidAccessTokenAuthorization)
+			}
+		}
 		if err != nil {
 			return resolved, err
 		}

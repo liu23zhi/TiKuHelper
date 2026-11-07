@@ -40,6 +40,35 @@ func ScriptVersionList(c *gin.Context) {
 	c.JSON(http.StatusOK, items)
 }
 
+func ScriptDomainSettings(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
+	settings, err := service.GetScriptDomainSettingsWithDB(scriptDB())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "获取脚本域名设置失败"})
+		return
+	}
+	c.JSON(http.StatusOK, settings)
+}
+
+func UpdateScriptDomainSettings(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
+	var input service.ScriptDomainSettings
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
+		return
+	}
+	settings, err := service.UpdateScriptDomainSettingsWithDB(scriptDB(), input)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, settings)
+}
+
 func UploadScriptVersion(c *gin.Context) {
 	operator, ok := currentOperator(c)
 	if !ok {
@@ -202,12 +231,54 @@ func ExchangeScriptToken(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+// ActivateScriptRunSession exchanges the short-lived launcher ticket for a
+// 150-minute session bound to the executable's generated identity code.
+func ActivateScriptRunSession(c *gin.Context) {
+	activationToken := strings.TrimSpace(c.GetHeader("X-Script-Activation"))
+	if activationToken == "" {
+		activationToken = strings.TrimSpace(c.GetHeader("X-Script-Token"))
+	}
+	identity := strings.TrimSpace(c.GetHeader("X-Script-Identity"))
+	if activationToken == "" || identity == "" {
+		var body struct {
+			ActivationToken string `json:"activationToken"`
+			Identity        string `json:"identity"`
+		}
+		if c.ShouldBindJSON(&body) == nil {
+			if activationToken == "" {
+				activationToken = strings.TrimSpace(body.ActivationToken)
+			}
+			if identity == "" {
+				identity = strings.TrimSpace(body.Identity)
+			}
+		}
+	}
+	grant, err := service.ActivateScriptRunSessionWithDB(scriptDB(), c.Param("shortCode"), activationToken, identity)
+	if err != nil {
+		writeScriptError(c, err, "脚本运行会话激活失败")
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, grant)
+}
+
 // ScriptBootstrap returns a PowerShell 2 compatible launcher with a newly
 // issued one-time exchange token in its response body.
 func ScriptBootstrap(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
-	shortCode := c.Param("shortCode")
-	grant, err := service.IssuePublicScriptExchangeTokenWithDB(scriptDB(), shortCode, service.ScriptExchangeTokenTTL)
+	db := scriptDB()
+	shortCode := strings.TrimSpace(c.Param("shortCode"))
+	// The short code is intentionally compact, so the explicit compatibility
+	// route must still require the published wildcard host. Otherwise anyone
+	// could guess /script-command/a/bootstrap and mint a ticket for another
+	// user's script. Non-wildcard deployments use the root NoRoute path and do
+	// not pass through this compatibility route.
+	script, err := service.ResolvePublicScriptWithDB(db, c.Request.Host, "/")
+	if err != nil || script.ShortCode != shortCode {
+		writeScriptError(c, service.ErrScriptNotFound, "脚本不存在")
+		return
+	}
+	grant, err := service.IssuePublicScriptExchangeTokenWithDB(db, shortCode, service.ScriptExchangeTokenTTL)
 	if err != nil {
 		writeScriptError(c, err, "生成脚本兑换令牌失败")
 		return
@@ -216,8 +287,8 @@ func ScriptBootstrap(c *gin.Context) {
 }
 
 // ScriptExchangeScript consumes a one-time exchange token and emits the final
-// PowerShell 2 launcher. The long-lived script key is sent as a header to the
-// executable download and is written only into the local configuration file.
+// PowerShell 2 launcher. It only carries the one-time activation ticket; the
+// long-lived dedicated access key is never returned to the client.
 func ScriptExchangeScript(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	token := scriptTokenFromRequest(c)
@@ -236,26 +307,45 @@ func ScriptExchangeScript(c *gin.Context) {
 		settings[key] = value
 	}
 	settings["common.settings.tiku-adapter.baseurl"] = scriptPublicOrigin(c)
-	settings["common.settings.tiku-adapter.key"] = result.AccessKey
-	config, err := json.Marshal(map[string]any{"settings": settings})
+	settings["common.settings.tiku-adapter.key"] = result.ActivationToken
+	settings["common.settings.tiku-adapter.script-activation-token"] = result.ActivationToken
+	settings["common.settings.tiku-adapter.script-session-url"] = strings.TrimRight(scriptPublicOrigin(c), "/") + "/adapter-service/script-command/" + shortCode + "/activate"
+	config, err := json.Marshal(map[string]any{
+		"settings":                     settings,
+		"noDiskWrite":                  true,
+		"executionMode":                "delete-suspend",
+		"retainData":                   false,
+		"logFileEnabled":               false,
+		"quiet":                        true,
+		"noDiagnose":                   true,
+		"noScanCache":                  true,
+		"wipeOwnedFilesOnStart":        true,
+		"selfDestructOnFullscreenExit": true,
+		"selfDestructConfirm":          false,
+	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "脚本配置生成失败"})
 		return
 	}
 	encodedConfig := base64.StdEncoding.EncodeToString(config)
-	content := buildScriptPayload(scriptPublicOrigin(c), shortCode, result.DownloadURL, result.AccessKey, encodedConfig)
+	content := buildScriptPayload(scriptPublicOrigin(c), shortCode, result.DownloadURL, result.ActivationToken, encodedConfig)
 	c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(content))
 }
 
 // ScriptBinaryDownload serves the executable only after validating the
-// dedicated script key. It avoids placing the key in a URL or command line.
+// one-time activation ticket. It avoids placing any long-lived key in a URL or
+// command line. X-Script-Key is retained as a compatibility header name for
+// older launchers, but its value is now always the activation ticket.
 func ScriptBinaryDownload(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
-	key := strings.TrimSpace(c.GetHeader("X-Script-Key"))
-	if key == "" {
-		key = strings.TrimSpace(strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer "))
+	activationToken := strings.TrimSpace(c.GetHeader("X-Script-Activation"))
+	if activationToken == "" {
+		activationToken = strings.TrimSpace(c.GetHeader("X-Script-Key"))
 	}
-	version, err := service.DownloadPublicScriptVersionWithDB(scriptDB(), c.Param("shortCode"), key)
+	if activationToken == "" {
+		activationToken = strings.TrimSpace(strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer "))
+	}
+	version, err := service.DownloadScriptVersionByActivationTokenWithDB(scriptDB(), c.Param("shortCode"), activationToken)
 	if err != nil {
 		writeScriptError(c, err, "脚本下载令牌无效")
 		return
@@ -314,13 +404,15 @@ func buildScriptBootstrap(baseURL, shortCode, token string) string {
 	return "$w=New-Object Net.WebClient;$w.Headers.Add('X-Script-Token','" + escapePowerShellSingleQuoted(token) + "');iex ($w.DownloadString('" + escapePowerShellSingleQuoted(exchangeURL) + "'))"
 }
 
-func buildScriptPayload(baseURL, shortCode, downloadURL, accessKey, encodedConfig string) string {
+func buildScriptPayload(baseURL, shortCode, downloadURL, activationToken, encodedConfig string) string {
 	if strings.HasPrefix(downloadURL, "/") {
 		downloadURL = strings.TrimRight(baseURL, "/") + downloadURL
 	}
 	exePath := "$env:TEMP+'\\tikuAdapter-'+ '" + escapePowerShellSingleQuoted(shortCode) + "'+'.exe'"
-	configPath := "$env:TEMP+'\\tikuAdapter-'+ '" + escapePowerShellSingleQuoted(shortCode) + "'+'.json'"
-	return "$ErrorActionPreference='Stop';$wc=New-Object Net.WebClient;$wc.Headers.Add('X-Script-Key','" + escapePowerShellSingleQuoted(accessKey) + "');$e=" + exePath + ";$c=" + configPath + ";$wc.DownloadFile('" + escapePowerShellSingleQuoted(downloadURL) + "',$e);[IO.File]::WriteAllBytes($c,[Convert]::FromBase64String('" + escapePowerShellSingleQuoted(encodedConfig) + "'));Start-Process $e -ArgumentList ('--config',$c)"
+	// Keep the launcher payload in the child process environment. The EXE
+	// consumes it at startup, activates an in-memory 150-minute session, and
+	// never receives a persistent config file or a long-lived access key.
+	return "$ErrorActionPreference='Stop';$wc=New-Object Net.WebClient;$wc.Headers.Add('X-Script-Activation','" + escapePowerShellSingleQuoted(activationToken) + "');$wc.Headers.Add('X-Script-Key','" + escapePowerShellSingleQuoted(activationToken) + "');$e=" + exePath + ";$wc.DownloadFile('" + escapePowerShellSingleQuoted(downloadURL) + "',$e);$env:CXPLUS_SCRIPT_BOOTSTRAP_B64='" + escapePowerShellSingleQuoted(encodedConfig) + "';$p=Start-Process $e -PassThru;$p.WaitForExit();Remove-Item -LiteralPath $e -Force -ErrorAction SilentlyContinue;Remove-Item Env:CXPLUS_SCRIPT_BOOTSTRAP_B64 -ErrorAction SilentlyContinue"
 }
 
 func scriptTokenFromRequest(c *gin.Context) string {
@@ -379,9 +471,9 @@ func writeScriptError(c *gin.Context, err error, fallback string) {
 		status, message = http.StatusForbidden, err.Error()
 	case errors.Is(err, service.ErrScriptNotFound), errors.Is(err, service.ErrScriptVersionNotFound):
 		status, message = http.StatusNotFound, err.Error()
-	case errors.Is(err, service.ErrScriptNameRequired), errors.Is(err, service.ErrScriptDomainRequired), errors.Is(err, service.ErrScriptVersionRequired), errors.Is(err, service.ErrScriptVersionInvalid), errors.Is(err, service.ErrScriptTokenRequired):
+	case errors.Is(err, service.ErrScriptNameRequired), errors.Is(err, service.ErrScriptDomainRequired), errors.Is(err, service.ErrScriptVersionRequired), errors.Is(err, service.ErrScriptVersionInvalid), errors.Is(err, service.ErrScriptTokenRequired), errors.Is(err, service.ErrScriptDomainUnavailable), errors.Is(err, service.ErrScriptWildcardDisabled):
 		status, message = http.StatusBadRequest, err.Error()
-	case errors.Is(err, service.ErrScriptBalanceInsufficient):
+	case errors.Is(err, service.ErrScriptBalanceInsufficient), errors.Is(err, service.ErrScriptTokenBalanceInsufficient), errors.Is(err, service.ErrScriptExchangeAlreadyIssued):
 		status, message = http.StatusPaymentRequired, err.Error()
 	case errors.Is(err, service.ErrScriptTokenInvalid):
 		status, message = http.StatusUnauthorized, err.Error()

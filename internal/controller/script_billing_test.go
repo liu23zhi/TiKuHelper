@@ -43,6 +43,15 @@ func TestScriptAnswerBillingUsesIndependentPriceOrTikuPrice(t *testing.T) {
 		t.Fatalf("expected independent script price, got %+v", charges)
 	}
 
+	free := entity.UserScript{UserID: 1, Enabled: true, BillingEnabled: true, UseTikuPrice: false, AnswerPriceMultiplier: 0, BaseDomain: "a.com", ShortCode: "free"}
+	if err := db.Create(&free).Error; err != nil {
+		t.Fatal(err)
+	}
+	charges, _, err = resolveScriptAnswerBillingCharge(db, free.ID, model.SearchRequest{Question: "免费题"}, search.AISearchUsage{}, true)
+	if err != nil || len(charges) != 1 || charges[0].Amount != 0 {
+		t.Fatalf("expected 0X script price, got charges=%+v err=%v", charges, err)
+	}
+
 	tiku := entity.UserScript{UserID: 1, Enabled: true, BillingEnabled: true, UseTikuPrice: true, AnswerPrice: 9.99, BaseDomain: "a.com", ShortCode: "b"}
 	if err := db.Create(&tiku).Error; err != nil {
 		t.Fatal(err)

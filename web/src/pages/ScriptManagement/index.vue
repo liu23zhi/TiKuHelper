@@ -17,10 +17,10 @@
       show-icon
       class="page-alert"
       message="每条脚本指令创建时预扣 ¥10"
-      description="删除脚本时会幂等释放预扣金额；即使余额为负也允许删除，但欠费期间其它需要余额的功能可能会受限。脚本答题计费可以选择跟随题库或使用独立单价。"
+      description="删除脚本时会幂等释放预扣金额；即使余额为负也允许删除，但欠费期间其它需要余额的功能可能会受限。脚本答题计费可以选择跟随题库或设置独立倍率。"
     />
 
-    <ConsolePanel v-if="isAdmin" title="管理员上传 EXE" description="上传可复用的 EXE 版本，用户创建脚本指令时选择版本。">
+    <ConsolePanel v-if="isAdmin" title="管理员上传 EXE" description="上传后自动发布为最新版本；已有脚本会原子切换到新版本，正在下载的旧版本会继续完成。">
       <a-space wrap>
         <a-input v-model:value="uploadVersion" placeholder="版本号，例如 1.0.0" style="width: 180px" :disabled="uploading" />
         <a-upload :show-upload-list="false" accept=".exe,application/vnd.microsoft.portable-executable" :custom-request="handleUpload" :disabled="uploading">
@@ -30,7 +30,16 @@
         </a-upload>
         <span v-if="lastUploadKey" class="upload-result">最近上传版本：<code>{{ lastUploadKey }}</code></span>
       </a-space>
-      <p class="hint">上传不会自动创建脚本；用户可以在脚本设置中选择已上传版本。</p>
+      <p class="hint">上传不会创建脚本。新建脚本默认引用当前版本；发布后所有未删除脚本都会自动使用最新 EXE。</p>
+    </ConsolePanel>
+
+    <ConsolePanel v-if="isAdmin" title="脚本可用域名" description="管理员可以限制用户创建脚本时可选择的域名，并控制是否允许泛域名短地址。留空域名列表表示兼容旧配置，允许任意域名。">
+      <a-textarea v-model:value="domainText" :rows="3" placeholder="每行一个域名，例如 example.com\na.example.net" :disabled="domainSaving" />
+      <a-space wrap class="domain-settings-actions">
+        <a-switch v-model:checked="domainAllowWildcard" :disabled="domainSaving" />
+        <span class="switch-description">允许泛域名模式（a.example.com）</span>
+        <a-button type="primary" :loading="domainSaving" @click="saveDomainSettings">保存域名设置</a-button>
+      </a-space>
     </ConsolePanel>
 
     <ConsoleSummaryGrid>
@@ -90,12 +99,12 @@
           <div class="hint">短标识由服务端按最短可用长度自动分配。</div>
         </a-form-item>
         <a-form-item label="EXE 版本" required>
-          <a-select v-model:value="form.versionId" allow-clear :disabled="editing" :placeholder="editing ? '版本在创建时绑定' : '选择管理员上传的 EXE 版本'">
+          <a-select v-model:value="form.versionId" allow-clear disabled :placeholder="editing ? '跟随当前发布版本' : '请先上传 EXE'">
             <a-select-option v-for="version in versions" :key="version.id" :value="version.id">
               {{ version.version }} · {{ version.filename || version.fileName || 'script.exe' }}
             </a-select-option>
           </a-select>
-          <div class="hint">管理员上传 EXE 后，所有账号都可以选择已发布版本创建自己的指令；已有指令的 EXE 版本在创建时绑定。</div>
+          <div class="hint">此版本由服务端维护。新建脚本使用当前发布版本，管理员上传新 EXE 后会自动切换所有未删除脚本。</div>
         </a-form-item>
         <a-form-item label="说明"><a-textarea v-model:value="form.description" :rows="2" placeholder="可选，说明用途或适用客户端" /></a-form-item>
         <a-form-item label="预置参数">
@@ -103,17 +112,18 @@
           <div class="hint">参数由服务端在脚本执行入口注入；此处只保存键和值，不会写进 PowerShell 命令文本。</div>
         </a-form-item>
         <a-form-item label="启用状态"><a-switch v-model:checked="form.enabled" /></a-form-item>
-        <ConsolePanel title="脚本答题计费" description="脚本答题计费与题库计费独立保存；可直接选择跟随题库。" class="billing-panel">
+        <ConsolePanel title="脚本答题计费" description="脚本答题计费与题库计费独立保存；倍率默认 1X，可直接选择跟随题库。" class="billing-panel">
           <a-form-item label="启用脚本答题计费">
             <a-switch v-model:checked="form.billingEnabled" />
             <span class="switch-description">{{ form.billingEnabled ? '启用' : '停用' }}</span>
           </a-form-item>
           <a-form-item v-if="form.billingEnabled" label="跟随题库计费">
             <a-switch v-model:checked="form.billingUseTikuPrice" />
-            <span class="switch-description">{{ form.billingUseTikuPrice ? '使用题库当前标准' : '使用脚本独立单价' }}</span>
+            <span class="switch-description">{{ form.billingUseTikuPrice ? '使用题库当前标准（1X）' : '使用脚本独立倍率' }}</span>
           </a-form-item>
-          <a-form-item v-if="form.billingEnabled && !form.billingUseTikuPrice" label="独立答题单价（元 / 题）">
-            <a-input-number v-model:value="form.answerPrice" :min="0" :precision="6" :step="0.01" style="width: 220px" />
+          <a-form-item v-if="form.billingEnabled && !form.billingUseTikuPrice" label="独立答题倍率（X）">
+            <a-input-number v-model:value="form.priceMultiplier" :min="0" :precision="6" :step="0.1" style="width: 220px" />
+            <div class="hint">按题库当前标准乘以该倍率计费；支持 0X，服务端校验非负和可存储范围。</div>
           </a-form-item>
         </ConsolePanel>
         <ConsolePanel title="指令预览" description="PowerShell + .NET WebClient 可覆盖 Windows 7 至 Windows 11。" class="preview-panel">
@@ -129,7 +139,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import { UploadOutlined } from '@ant-design/icons-vue'
 import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser'
-import { createScript, deleteScript, getScripts, getScriptVersions, updateScript, uploadScriptVersion } from '@/api/TikuComponentApi'
+import { createScript, deleteScript, getScripts, getScriptDomainSettings, getScriptVersions, updateScript, updateScriptDomainSettings, uploadScriptVersion } from '@/api/TikuComponentApi'
 import { buildScriptBillingText, buildScriptCommand, buildScriptListParams, buildScriptSavePayload, formatPresetParams, normalizeScriptRecord, normalizeScriptRows } from '@/utils/scriptManagementHelpers.mjs'
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
 
@@ -148,8 +158,11 @@ const modalOpen = ref(false)
 const editing = ref(false)
 const lastUploadKey = ref('')
 const summary = reactive({ total: 0, enabled: 0, reserved: 0 })
+const domainText = ref('')
+const domainAllowWildcard = ref(true)
+const domainSaving = ref(false)
 
-const emptyForm = () => ({ id: undefined, name: '', description: '', versionId: undefined, slug: 'a', scheme: 'https', baseDomain: '', useWildcardDomain: true, enabled: true, presetText: '', billingEnabled: true, billingUseTikuPrice: true, answerPrice: 0 })
+const emptyForm = () => ({ id: undefined, name: '', description: '', versionId: undefined, slug: 'a', scheme: 'https', baseDomain: '', useWildcardDomain: true, enabled: true, presetText: '', billingEnabled: true, billingUseTikuPrice: true, priceMultiplier: 1 })
 const form = reactive(emptyForm())
 const previewRecord = computed(() => normalizeScriptRecord({ ...form, presetParams: form.presetText }))
 const scopeDescription = computed(() => isAdmin.value && showAll.value ? '当前显示全部用户的脚本；删除和编辑仍由服务端校验权限。' : '当前只显示自己的脚本。')
@@ -175,6 +188,7 @@ function resetForm(record) {
 function openCreate() {
   editing.value = false
   resetForm()
+  if (versions.value[0]?.id) form.versionId = versions.value[0].id
   modalOpen.value = true
 }
 
@@ -240,7 +254,7 @@ async function handleUpload({ file, onSuccess, onError }) {
     openCreate()
     form.versionId = uploaded.id
     onSuccess?.(data)
-    message.success('EXE 上传成功，已填入新脚本表单')
+    message.success('EXE 上传成功，已发布为最新版本并填入新脚本表单')
   } catch (error) {
     onError?.(error)
     message.error(error?.message || '上传 EXE 失败')
@@ -254,7 +268,7 @@ async function handleSubmit() {
   if (!payload.name) return message.warning('请输入脚本名称')
   if (!payload.baseDomain) return message.warning('请输入脚本域名')
   if (!payload.versionId) return message.warning('请选择 EXE 版本')
-  if (payload.billingEnabled && !payload.billingUseTikuPrice && payload.answerPrice < 0) return message.warning('独立答题单价不能小于 0')
+  if (payload.billingEnabled && !payload.billingUseTikuPrice && payload.priceMultiplier < 0) return message.warning('独立答题倍率不能小于 0')
   saving.value = true
   try {
     const response = editing.value ? await updateScript(payload) : await createScript(payload)
@@ -305,14 +319,47 @@ function formatDateTime(value) {
 async function loadVersions() {
   try {
     const response = await getScriptVersions()
-    if (response?.status === 200) versions.value = Array.isArray(response.data) ? response.data : (response.data?.items || [])
+    if (response?.status === 200) {
+      versions.value = Array.isArray(response.data) ? response.data : (response.data?.items || [])
+      if (!editing.value && !form.versionId && versions.value[0]?.id) form.versionId = versions.value[0].id
+    }
   } catch (_) {
     // The list page remains usable when version metadata is temporarily unavailable.
   }
 }
 
+async function loadDomainSettings() {
+  if (!isAdmin.value) return
+  try {
+    const response = await getScriptDomainSettings()
+    if (response?.status === 200) {
+      domainText.value = Array.isArray(response.data?.domains) ? response.data.domains.join('\n') : ''
+      domainAllowWildcard.value = response.data?.allowWildcard !== false
+    }
+  } catch (_) {
+    // Script creation remains usable when the optional admin setting is unavailable.
+  }
+}
+
+async function saveDomainSettings() {
+  domainSaving.value = true
+  try {
+    const domains = domainText.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean)
+    const response = await updateScriptDomainSettings({ domains, allowWildcard: domainAllowWildcard.value })
+    if (response?.status !== 200) throw new Error(response?.message || '保存域名设置失败')
+    domainText.value = Array.isArray(response.data?.domains) ? response.data.domains.join('\n') : domainText.value
+    domainAllowWildcard.value = response.data?.allowWildcard !== false
+    message.success('脚本域名设置已保存')
+  } catch (error) {
+    message.error(error?.message || '保存域名设置失败')
+  } finally {
+    domainSaving.value = false
+  }
+}
+
 onMounted(() => {
   loadVersions()
+  loadDomainSettings()
   loadScripts()
 })
 </script>
@@ -321,6 +368,7 @@ onMounted(() => {
 .page-alert { margin-bottom: 20px; }
 .hint, .table-hint { margin: 8px 0 0; color: var(--console-muted); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .upload-result { max-width: 100%; overflow-wrap: anywhere; }
+.domain-settings-actions { margin-top: 12px; }
 .script-name-cell, .command-cell { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .script-name-cell { flex-wrap: wrap; }
 .command-cell { align-items: flex-start; flex-direction: column; }

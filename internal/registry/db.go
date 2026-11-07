@@ -673,6 +673,7 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		&entity.ScriptVersion{},
 		&entity.UserScript{},
 		&entity.ScriptExchangeToken{},
+		&entity.ScriptRunSession{},
 	)
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
@@ -716,6 +717,9 @@ func RegisterDB(config configs.Config) *gorm.DB {
 	// 账单搜索模式（深度思考 / 普通搜索），供账单明细与账单流水展示。历史行只建列。
 	if err := runStartupMigration("ensureBillingSearchModeSchema", func() error { return ensureBillingSearchModeSchema(db) }); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare billing search mode schema fail: %w", err))
+	}
+	if err := runStartupMigration("ensureScriptPriceMultiplierSchema", func() error { return ensureScriptPriceMultiplierSchema(db) }); err != nil {
+		logger.SysLog(fmt.Sprintf("脚本答题倍率迁移失败（不影响启动）：%v", err))
 	}
 
 	// source-aware 归属地缓存使用新表，旧表保留以兼容 SQLite 和回滚；

@@ -200,6 +200,18 @@ func Auth(c *gin.Context) {
 // preserving the existing login-JWT behavior for other protected endpoints.
 func AuthOrAccessToken(c *gin.Context) {
 	authorization := strings.TrimSpace(c.Request.Header.Get("Authorization"))
+	if identity := strings.TrimSpace(c.Request.Header.Get("X-Script-Identity")); identity != "" {
+		authCtx, _, err := service.ResolveScriptRunSessionWithDB(dao.User.UnderlyingDB(), authorization, identity)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"message": "脚本运行会话无效或已过期"})
+			return
+		}
+		user := authCtx.User
+		c.Set("user", &user)
+		c.Set("access_token", &authCtx.AccessToken)
+		c.Next()
+		return
+	}
 	if authorization != "" {
 		authCtx, err := service.ResolveAccessTokenFromBasicAuth(dao.User.UnderlyingDB(), authorization)
 		if err == nil {
@@ -222,7 +234,17 @@ func AuthAccessToken(c *gin.Context) {
 		return
 	}
 
-	authCtx, err := service.ResolveAccessTokenFromBasicAuth(dao.User.UnderlyingDB(), authorization)
+	identity := strings.TrimSpace(c.Request.Header.Get("X-Script-Identity"))
+	var authCtx service.AccessTokenAuthContext
+	var err error
+	if identity != "" {
+		authCtx, _, err = service.ResolveScriptRunSessionWithDB(dao.User.UnderlyingDB(), authorization, identity)
+	} else {
+		authCtx, err = service.ResolveAccessTokenFromBasicAuth(dao.User.UnderlyingDB(), authorization)
+		if err == nil && authCtx.AccessToken.ScriptID > 0 {
+			err = service.ErrInvalidAccessTokenAuthorization
+		}
+	}
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"message": "请提供有效访问令牌"})
 		return

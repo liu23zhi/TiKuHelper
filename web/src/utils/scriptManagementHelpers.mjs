@@ -55,6 +55,7 @@ export function normalizeScriptRecord(record = {}) {
   const useWildcardDomain = firstDefined(record, ['useWildcardDomain', 'wildcardDomain', 'wildcard'], true) !== false
   const billingEnabled = firstDefined(record, ['billingEnabled', 'enableBilling'], true) !== false
   const billingUseTikuPrice = firstDefined(record, ['billingUseTikuPrice', 'useTikuPrice', 'useTikuBilling', 'tikuBilling'], true) !== false
+  const multiplierRaw = Number(firstDefined(record, ['priceMultiplier', 'answerPriceMultiplier', 'answer_multiplier'], 1))
   const answerPriceRaw = Number(firstDefined(record, ['answerPrice', 'scriptAnswerPrice', 'questionPrice'], 0))
   return {
     ...record,
@@ -77,6 +78,9 @@ export function normalizeScriptRecord(record = {}) {
     presetParams: parsePresetParams(firstDefined(record, ['presetParams', 'parameters', 'configParams'], {})),
     billingEnabled,
     billingUseTikuPrice,
+    priceMultiplier: Number.isFinite(multiplierRaw) && multiplierRaw >= 0 ? multiplierRaw : 1,
+    answerPriceMultiplier: Number.isFinite(multiplierRaw) && multiplierRaw >= 0 ? multiplierRaw : 1,
+    // Kept for old API responses; new writes use the multiplier fields above.
     answerPrice: Number.isFinite(answerPriceRaw) && answerPriceRaw >= 0 ? answerPriceRaw : 0,
     reservedFee: Number(firstDefined(record, ['reservedFee', 'reserved_fee'], 0)) || 0,
     totalUses: Number(firstDefined(record, ['totalUses', 'useCount'], 0)) || 0,
@@ -124,7 +128,12 @@ export function buildScriptSavePayload(form = {}) {
     billingEnabled: form.billingEnabled !== false,
     billingUseTikuPrice: form.billingUseTikuPrice !== false,
     useTikuPrice: form.billingUseTikuPrice !== false,
-    answerPrice: Number.isFinite(Number(form.answerPrice)) && Number(form.answerPrice) >= 0 ? Number(form.answerPrice) : 0,
+    priceMultiplier: Number.isFinite(Number(form.priceMultiplier ?? form.answerPriceMultiplier)) && Number(form.priceMultiplier ?? form.answerPriceMultiplier) >= 0
+      ? Number(form.priceMultiplier ?? form.answerPriceMultiplier)
+      : 1,
+    answerPriceMultiplier: Number.isFinite(Number(form.priceMultiplier ?? form.answerPriceMultiplier)) && Number(form.priceMultiplier ?? form.answerPriceMultiplier) >= 0
+      ? Number(form.priceMultiplier ?? form.answerPriceMultiplier)
+      : 1,
     versionId: Number(form.versionId || 0),
     instruction,
     command: instruction,
@@ -137,5 +146,5 @@ export function buildScriptSavePayload(form = {}) {
 export function buildScriptBillingText(record = {}) {
   const normalized = normalizeScriptRecord(record)
   if (!normalized.billingEnabled) return '未启用脚本答题计费'
-  return normalized.billingUseTikuPrice ? '与题库一致' : `独立 ¥${normalized.answerPrice.toFixed(6)} / 题`
+  return normalized.billingUseTikuPrice ? '与题库一致（1X）' : `独立 ${normalized.priceMultiplier}X 题库标准`
 }

@@ -37,12 +37,19 @@ test('script list scope only requests all rows for an administrator', () => {
 test('save payload includes generated instruction and server parameter shape', () => {
   const payload = buildScriptSavePayload({
     name: '助手', versionId: 7, slug: 'a', baseDomain: 'a.com',
-    useWildcardDomain: false, presetParams: 'key=secret', billingUseTikuPrice: false, answerPrice: 0.25,
+    useWildcardDomain: false, presetParams: 'key=secret', billingUseTikuPrice: false, priceMultiplier: 1.25,
   })
   assert.equal(payload.versionId, 7)
   assert.equal(payload.instruction, `powershell -c "iex (New-Object Net.WebClient).DownloadString('https://a.a.com/a')"`)
   assert.deepEqual(payload.parameters, { key: 'secret' })
   assert.equal(payload.billingUseTikuPrice, false)
+  assert.equal(payload.priceMultiplier, 1.25)
+  assert.equal(payload.answerPriceMultiplier, 1.25)
+})
+
+test('script billing defaults to and displays an independent multiplier', () => {
+  const row = normalizeScriptRecord({ billingEnabled: true, billingUseTikuPrice: false })
+  assert.equal(row.priceMultiplier, 1)
 })
 
 test('backend instruction and parameters normalize for existing rows', () => {
