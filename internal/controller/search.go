@@ -89,6 +89,7 @@ type resolvedSearchRequestContext struct {
 	UsedDefaultAI              bool
 	UserID                     int32
 	AccessTokenID              int32
+	ScriptID                   int32
 	RequestID                  string
 	SearchMode                 string
 }
@@ -96,6 +97,7 @@ type resolvedSearchRequestContext struct {
 type searchBillingContext struct {
 	UserID             int32
 	AccessTokenID      int32
+	ScriptID           int32
 	RequestID          string
 	SearchMode         string
 	UsedDefaultAccount bool
@@ -988,12 +990,17 @@ func buildSearchBillingContext(resolved resolvedSearchRequestContext, useQuery s
 	ctx := searchBillingContext{
 		UserID:        resolved.UserID,
 		AccessTokenID: resolved.AccessTokenID,
+		ScriptID:      resolved.ScriptID,
 		RequestID:     resolved.RequestID,
 		SearchMode:    resolved.SearchMode,
 	}
 	usedDefaultAI := aiEnabled && resolved.UsedDefaultAI
 
 	if resolved.AccessTokenID == 0 {
+		return ctx
+	}
+	if resolved.ScriptID > 0 {
+		ctx.Billable = true
 		return ctx
 	}
 
@@ -1108,6 +1115,10 @@ func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRe
 	charges := make([]searchBillingCharge, 0, 2+len(aiUsage.SearchCalls)+len(aiUsage.WebReadCalls)+len(aiUsage.OCRCalls)+len(aiUsage.TikuSearchCalls))
 	warning := ""
 
+	if resolved.ScriptID > 0 {
+		return resolveScriptAnswerBillingCharge(db, resolved.ScriptID, req, aiUsage, hasSearchAnswer)
+	}
+
 	if resolved.SearchMode == searchModeNormal && hasSearchAnswer {
 		provider := resolveCompletedSearchBillingProvider(useQuery, resolved.UsedDefaultSearchProviders, usedLocalSearch)
 		if provider != "" {
@@ -1140,6 +1151,26 @@ func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRe
 	charges = appendAIToolBillingCharges(charges, db, req, aiUsage)
 
 	return charges, warning, nil
+}
+
+func resolveScriptAnswerBillingCharge(db *gorm.DB, scriptID int32, req model.SearchRequest, aiUsage search.AISearchUsage, hasSearchAnswer bool) ([]searchBillingCharge, string, error) {
+	var script entity.UserScript
+	if err := db.Where("id = ? AND deleted_at IS NULL", scriptID).First(&script).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, "", nil
+		}
+		return nil, "", err
+	}
+	if !script.Enabled || !script.BillingEnabled || (!hasSearchAnswer && !hasAIModelUsage(aiUsage)) {
+		return nil, "", nil
+	}
+	price := script.AnswerPrice
+	if script.UseTikuPrice {
+		price = service.GetTikuSearchPricePerCallWithDB(db)
+	}
+	amount := util.RoundMoney(price)
+	snapshot := fmt.Sprintf("provider=script_answer unitPrice=%.6f amount=%.6f question=%s", amount, amount, url.QueryEscape(strings.TrimSpace(req.Question)))
+	return []searchBillingCharge{{Provider: "script_answer", Amount: amount, Snapshot: snapshot}}, "", nil
 }
 
 // appendAIToolBillingCharges keeps successful tool usage visible even when its
@@ -1894,7 +1925,15 @@ func resolveSearchRequestContextWithDB(db *gorm.DB, authorization string, client
 		resolved.AccessTokenCtx = &authCtx
 		resolved.UserID = authCtx.User.ID
 		resolved.AccessTokenID = authCtx.AccessToken.ID
-		if authCtx.User.Balance <= 0 {
+		resolved.ScriptID = authCtx.AccessToken.ScriptID
+		// A script token already has a ¥10 reservation. Its answer charges are
+		// deliberately independent from the default-account balance gate so a
+		// script can consume its configured service after the reservation has
+		// reduced the user's available balance to zero. Other token types retain
+		// the existing positive-balance requirement.
+		if resolved.ScriptID > 0 {
+			allowDefaultAccount = true
+		} else if authCtx.User.Balance <= 0 {
 			return resolved, fmt.Errorf("%w: %w", service.ErrInvalidAccessTokenAuthorization, service.ErrInsufficientSearchBalance)
 		} else {
 			allowDefaultAccount = true

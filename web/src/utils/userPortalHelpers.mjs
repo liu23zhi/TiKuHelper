@@ -28,12 +28,14 @@ export function buildPortalMenuKeys(user) {
         'ai-search-config',
         'system-settings',
         'access-tokens',
+        'scripts',
         'tickets',
       ]
     : [
         'profile',
         'user-usage',
         'access-tokens',
+        'scripts',
         'recharge-orders',
         'billing-records',
         'tickets',
@@ -199,6 +201,12 @@ export function buildBillingRecordTypeText(record) {
   }
   if (type === 'balance_adjustment') {
     return '管理员调整余额'
+  }
+  if (type === 'script_reservation') {
+    return '脚本预扣'
+  }
+  if (type === 'script_refund') {
+    return '脚本退款'
   }
   return type || '题目消费'
 }
@@ -411,6 +419,9 @@ function buildBillingRecordFeeItemTitle(item) {
   }
   if (item?.provider === 'tiku_search') {
     return `本地题库检索${callSuffix}`
+  }
+  if (item?.provider === 'script_answer') {
+    return `脚本答题${callSuffix}`
   }
   if (item?.provider === 'ai' || category === 'AI模型调用') {
     return `AI 模型调用${callSuffix}`

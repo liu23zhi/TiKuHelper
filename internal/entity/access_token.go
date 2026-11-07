@@ -8,8 +8,10 @@ const TableNameAccessToken = "access_tokens"
 const AccessTokenQuotaLimitMaxExclusive = 1_000_000_000_000.0
 
 type AccessToken struct {
-	ID              int32      `gorm:"primaryKey;autoIncrement" json:"id"`
-	UserID          int32      `gorm:"column:user_id;type:int(11);not null;index" json:"userId"`
+	ID     int32 `gorm:"primaryKey;autoIncrement" json:"id"`
+	UserID int32 `gorm:"column:user_id;type:int(11);not null;index" json:"userId"`
+	// ScriptID links a dedicated token to the script that owns it. Zero means a normal user token.
+	ScriptID        int32      `gorm:"column:script_id;type:int(11);not null;default:0;index" json:"scriptId,omitempty"`
 	Name            string     `gorm:"column:name;type:varchar(128);not null" json:"name"`
 	TokenHash       string     `gorm:"column:token_hash;type:char(64);uniqueIndex;not null" json:"tokenHash"`
 	TokenPrefix     string     `gorm:"column:token_prefix;type:varchar(32);not null" json:"tokenPrefix"`

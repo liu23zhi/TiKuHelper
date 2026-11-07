@@ -18,6 +18,8 @@ import (
 
 const normalSearchBillingRecordType = "normal_search"
 const registrationBonusBillingRecordType = "registration_bonus"
+const scriptReservationBillingRecordType = "script_reservation"
+const scriptRefundBillingRecordType = "script_refund"
 
 type BillingRecordFeeDetail struct {
 	Provider      string  `json:"provider"`
@@ -168,6 +170,10 @@ func buildBillingRecordTypeLabel(recordType string) string {
 		return "新用户赠送"
 	case balanceAdjustmentBillingRecordType:
 		return "管理员调整余额"
+	case scriptReservationBillingRecordType:
+		return "脚本预扣"
+	case scriptRefundBillingRecordType:
+		return "脚本退款"
 	case normalSearchBillingRecordType:
 		return "题目消费"
 	default:
@@ -177,7 +183,8 @@ func buildBillingRecordTypeLabel(recordType string) string {
 
 func buildBillingRecordDirection(recordType string) string {
 	if strings.TrimSpace(recordType) == rechargeBillingRecordType ||
-		strings.TrimSpace(recordType) == registrationBonusBillingRecordType {
+		strings.TrimSpace(recordType) == registrationBonusBillingRecordType ||
+		strings.TrimSpace(recordType) == scriptRefundBillingRecordType {
 		return "income"
 	}
 	return "expense"
@@ -281,6 +288,18 @@ func buildBillingRecordSubject(record BillingRecordListItem) string {
 		}
 		return "新用户赠送"
 	}
+	if record.Type == scriptReservationBillingRecordType {
+		if remark := strings.TrimSpace(record.Remark); remark != "" {
+			return remark
+		}
+		return "脚本预扣"
+	}
+	if record.Type == scriptRefundBillingRecordType {
+		if remark := strings.TrimSpace(record.Remark); remark != "" {
+			return remark
+		}
+		return "脚本退款"
+	}
 	if question := strings.TrimSpace(record.QuestionText); question != "" {
 		return buildSearchBillingSubject(question)
 	}
@@ -305,6 +324,18 @@ func buildBillingRecordDetail(record BillingRecordListItem) string {
 			return remark
 		}
 		return "新用户赠送"
+	}
+	if record.Type == scriptReservationBillingRecordType {
+		if remark := strings.TrimSpace(record.Remark); remark != "" {
+			return remark
+		}
+		return "脚本预扣"
+	}
+	if record.Type == scriptRefundBillingRecordType {
+		if remark := strings.TrimSpace(record.Remark); remark != "" {
+			return remark
+		}
+		return "脚本退款"
 	}
 	if source := strings.TrimSpace(record.AnswerSourceLabel); source != "" {
 		return source
@@ -577,6 +608,10 @@ func decorateBillingRecord(record BillingRecordListItem) BillingRecordListItem {
 		record.ProviderLabel = "网页浏览"
 	case "tiku_search":
 		record.ProviderLabel = "本地题库检索"
+	case "script_answer":
+		record.ProviderLabel = "脚本答题"
+	case "script":
+		record.ProviderLabel = "脚本管理"
 	case "ai_ocr":
 		record.ProviderLabel = "图片 OCR"
 	}
@@ -629,6 +664,8 @@ func buildBillingRecordFeeDetails(record BillingRecordListItem) []BillingRecordF
 	case "tiku_search":
 		category = "本地题库检索"
 		callIndex = parseBillingSnapshotInt(snapshot, "tikuSearchCall")
+	case "script_answer":
+		category = "脚本答题"
 	case "ai_ocr":
 		category = "图片 OCR"
 		callIndex = parseBillingSnapshotInt(snapshot, "ocrCall")
@@ -728,7 +765,7 @@ func parseBillingSnapshotInt(snapshot string, key string) int {
 }
 
 func buildBillingRecordFeeDetail(provider string, snapshot string) string {
-	if strings.TrimSpace(provider) != "ai_search" && strings.TrimSpace(provider) != "web_read" && strings.TrimSpace(provider) != "ai_ocr" && strings.TrimSpace(provider) != "tiku_search" {
+	if strings.TrimSpace(provider) != "ai_search" && strings.TrimSpace(provider) != "web_read" && strings.TrimSpace(provider) != "ai_ocr" && strings.TrimSpace(provider) != "tiku_search" && strings.TrimSpace(provider) != "script_answer" {
 		return ""
 	}
 	parts := make([]string, 0, 7)
@@ -757,6 +794,9 @@ func buildBillingRecordFeeDetail(provider string, snapshot string) string {
 		appendField("检索词", "query")
 		appendField("匹配", "matchKind")
 		appendField("候选数", "candidate_count")
+	} else if strings.TrimSpace(provider) == "script_answer" {
+		appendField("题目", "question")
+		appendField("单价", "unitPrice")
 	} else {
 		appendField("API", "ocrAPI")
 		appendField("图片", "ocrImageURL")
@@ -1058,7 +1098,7 @@ func loadBillingRecordSummary(db *gorm.DB, operator entity.User, filter BillingR
 			THEN CASE WHEN billing_records.cached_input_tokens > billing_records.input_tokens
 				THEN billing_records.input_tokens ELSE billing_records.cached_input_tokens END
 			ELSE 0 END) AS cached_input_tokens`, util.MoneyPrecision).
-		Where("TRIM(billing_records.type) NOT IN ?", []string{rechargeBillingRecordType, registrationBonusBillingRecordType, balanceAdjustmentBillingRecordType}).
+		Where("TRIM(billing_records.type) NOT IN ?", []string{rechargeBillingRecordType, registrationBonusBillingRecordType, balanceAdjustmentBillingRecordType, scriptRefundBillingRecordType}).
 		Group(`billing_records.user_id, billing_records.type, billing_records.request_id,
 			CASE WHEN billing_records.type = 'normal_search' AND TRIM(COALESCE(billing_records.request_id, '')) <> ''
 				THEN 0 ELSE billing_records.id END`)

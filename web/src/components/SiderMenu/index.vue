@@ -54,6 +54,7 @@ import {
   SafetyCertificateOutlined,
   AccountBookOutlined,
   CreditCardOutlined,
+  CodeOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
 } from '@ant-design/icons-vue';
@@ -76,6 +77,7 @@ const ADMIN_MENU_ITEMS = [
   { key: 'system-settings', label: '系统管理', icon: ToolOutlined },
   { key: 'extension-updates', label: '扩展更新', icon: DownloadOutlined },
   { key: 'access-tokens', label: '令牌管理', icon: SafetyCertificateOutlined },
+  { key: 'scripts', label: '脚本管理', icon: CodeOutlined },
   { key: 'tickets', label: '工单管理', icon: FileTextOutlined },
 ]
 
@@ -83,6 +85,7 @@ const USER_MENU_ITEMS = [
   { key: 'profile', label: '个人中心', icon: UserOutlined },
   { key: 'user-usage', label: '个人使用', icon: CreditCardOutlined },
   { key: 'access-tokens', label: '令牌管理', icon: SafetyCertificateOutlined },
+  { key: 'scripts', label: '我的脚本', icon: CodeOutlined },
   { key: 'recharge-orders', label: '充值记录', icon: CreditCardOutlined },
   { key: 'billing-records', label: '我的账单', icon: AccountBookOutlined },
   { key: 'tickets', label: '工单反馈', icon: FileTextOutlined },

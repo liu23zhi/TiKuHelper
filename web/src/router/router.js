@@ -19,6 +19,7 @@ import AISearchConfig from '../pages/AISearchConfig/index.vue'
 import SystemSettings from '../pages/SystemSettings/index.vue'
 import ExtensionUpdates from '../pages/ExtensionUpdates/index.vue'
 import AccessTokenManagement from '../pages/AccessTokenManagement/index.vue'
+import ScriptManagement from '../pages/ScriptManagement/index.vue'
 import BillingRecordList from '../pages/BillingRecordList/index.vue'
 import RechargeOrderList from '../pages/RechargeOrderList/index.vue'
 import RechargeResult from '../pages/RechargeResult/index.vue'
@@ -118,6 +119,11 @@ const routes = [
         path: 'access-tokens',
         name: 'access-tokens',
         component: AccessTokenManagement,
+      },
+      {
+        path: 'scripts',
+        name: 'scripts',
+        component: ScriptManagement,
       },
       {
         path: 'recharge-orders',

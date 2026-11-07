@@ -43,7 +43,7 @@ func newSearchControllerTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open test db: %v", err)
 	}
 
-	if err := db.AutoMigrate(&entity.SearchAccountConfig{}, &entity.AISearchConfig{}, &entity.AIModelPrice{}, &entity.SystemSetting{}, &entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}, &entity.Log{}, &entity.Tiku{}, &entity.TikuAnswerEvidence{}); err != nil {
+	if err := db.AutoMigrate(&entity.SearchAccountConfig{}, &entity.AISearchConfig{}, &entity.AIModelPrice{}, &entity.SystemSetting{}, &entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}, &entity.Log{}, &entity.Tiku{}, &entity.TikuAnswerEvidence{}, &entity.ScriptVersion{}, &entity.UserScript{}, &entity.ScriptExchangeToken{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 
@@ -2335,6 +2335,36 @@ func TestResolveSearchRequestContextWithDBRejectsUserWithZeroBalance(t *testing.
 	}
 	if !strings.Contains(err.Error(), "当前余额不足，系统题库已禁用，请充值后再使用") {
 		t.Fatalf("expected zero-balance error to mention balance, got %q", err.Error())
+	}
+}
+
+func TestResolveSearchRequestContextWithDBAllowsReservedScriptTokenAtZeroBalance(t *testing.T) {
+	db := newSearchControllerTestDB(t)
+	user := seedControllerUser(t, db, 0, "script-user", "user")
+	version := entity.ScriptVersion{Version: "v1", Filename: "script.exe", SHA256: strings.Repeat("a", 64), SizeBytes: 2, Data: []byte("MZ"), IsCurrent: true, CreatedBy: user.ID}
+	if err := db.Create(&version).Error; err != nil {
+		t.Fatalf("create script version: %v", err)
+	}
+	script := entity.UserScript{UserID: user.ID, VersionID: version.ID, Name: "script", Instruction: "powershell", Parameters: "{}", BaseDomain: "a.com", Scheme: "https", Enabled: true, BillingEnabled: true, UseTikuPrice: true, ShortCode: "a", AccessKey: "script-key", ReservedFee: 10}
+	if err := db.Create(&script).Error; err != nil {
+		t.Fatalf("create script: %v", err)
+	}
+	token := seedControllerTokenForUser(t, db, user, "script-token", 0)
+	if err := db.Model(&entity.UserScript{}).Where("id = ?", script.ID).Updates(map[string]any{"access_token_id": token.ID}).Error; err != nil {
+		t.Fatalf("link script token: %v", err)
+	}
+	if err := db.Model(&entity.AccessToken{}).Where("id = ?", token.ID).Update("script_id", script.ID).Error; err != nil {
+		t.Fatalf("mark script token: %v", err)
+	}
+	if _, err := service.UpdateSearchAccountConfigWithDB(db, "icodef", service.UpdateSearchAccountConfigInput{TokenValue: "default-search-token", Enabled: true}); err != nil {
+		t.Fatalf("seed search config: %v", err)
+	}
+	resolved, err := resolveSearchRequestContextWithDB(db, "Basic script-token", "198.51.100.25", url.Values{})
+	if err != nil {
+		t.Fatalf("reserved script token should bypass the normal balance gate: %v", err)
+	}
+	if resolved.ScriptID != script.ID || !resolved.UsedDefaultSearch || resolved.Tokens["icodef"] != "default-search-token" {
+		t.Fatalf("expected reserved script context to use defaults, got %+v", resolved)
 	}
 }
 

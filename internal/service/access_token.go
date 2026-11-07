@@ -53,6 +53,7 @@ type AccessTokenListItem struct {
 func ListAccessTokensWithDB(db *gorm.DB, operator entity.User) ([]AccessTokenListItem, error) {
 	query := db.Table(entity.TableNameAccessToken+" AS access_tokens").
 		Where("access_tokens.user_id = ?", operator.ID).
+		Where("COALESCE(access_tokens.script_id, 0) = 0").
 		Order("access_tokens.id desc")
 
 	var tokens []AccessTokenListItem
@@ -72,6 +73,7 @@ func ListAllAccessTokensWithDB(db *gorm.DB, operator entity.User) ([]AccessToken
 		Table(entity.TableNameAccessToken + " AS access_tokens").
 		Select("access_tokens.*, users.username AS username").
 		Joins("LEFT JOIN " + entity.TableNameUser + " AS users ON users.id = access_tokens.user_id").
+		Where("COALESCE(access_tokens.script_id, 0) = 0").
 		Order("access_tokens.id desc").
 		Find(&tokens).Error; err != nil {
 		return nil, err

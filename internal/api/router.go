@@ -21,6 +21,26 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.Use(middleware.GlobalAPIRateLimit, middleware.BodyLimit(16<<20)) // 全局限流
 
 	apiRouter.POST("/upload", controller.Auth, middleware.RequireAdmin, controller.UploadFile)
+	// EXE uploads need a larger multipart envelope than ordinary API requests.
+	scriptUploadRouter := router.Group("/adapter-service/script-versions")
+	scriptUploadRouter.Use(middleware.GlobalAPIRateLimit, middleware.BodyLimit(65<<20))
+	scriptUploadRouter.POST("/upload", controller.Auth, middleware.RequireAdmin, controller.UploadScriptVersion)
+	scriptUploadRouter.POST("", controller.Auth, middleware.RequireAdmin, controller.UploadScriptVersion)
+	// 用户脚本：版本由管理员上传，脚本实例按用户隔离；exchange 不把专用 key 放进 URL。
+	apiRouter.GET("/script-versions", controller.Auth, controller.ScriptVersionList)
+	apiRouter.GET("/script-versions/:id/download", controller.Auth, controller.DownloadScriptVersion)
+	apiRouter.GET("/scripts", controller.Auth, controller.ScriptList)
+	apiRouter.POST("/scripts", controller.Auth, controller.CreateScript)
+	apiRouter.PUT("/scripts/:id", controller.Auth, controller.UpdateScript)
+	apiRouter.DELETE("/scripts/:id", controller.Auth, controller.DeleteScript)
+	apiRouter.POST("/scripts/:id/exchange-token", controller.Auth, controller.IssueScriptExchangeToken)
+	apiRouter.POST("/scripts/:id/token", controller.Auth, controller.IssueScriptExchangeToken)
+	apiRouter.POST("/script-command/:shortCode/exchange", controller.ExchangeScriptToken)
+	apiRouter.GET("/script-command/:shortCode/bootstrap", controller.ScriptBootstrap)
+	apiRouter.GET("/script-command/:shortCode/exchange-script", controller.ScriptExchangeScript)
+	apiRouter.GET("/script-command/:shortCode/file", controller.ScriptBinaryDownload)
+	apiRouter.GET("/scripts/:shortCode/bootstrap", controller.ScriptBootstrap)
+	apiRouter.POST("/scripts/command/:shortCode/exchange", controller.ExchangeScriptToken)
 
 	// UApiPro 归属地查询（管理员专用）：用户管理 / 日志列表的归属地展示。
 	// 密钥从系统设置读取，不下发到前端，也不出现在 URL 里。
@@ -172,8 +192,12 @@ func embedFolder(fsEmbed embed.FS, targetPath string) static.ServeFileSystem {
 
 // SetWebRouter 设置web路由
 func SetWebRouter(buildFS embed.FS, indexPage []byte, router *gin.Engine) {
+	router.Use(controller.ScriptPublicHostMiddleware)
 	router.Use(static.Serve("/", embedFolder(buildFS, "dist")))
 	router.NoRoute(func(c *gin.Context) {
+		if controller.ScriptPublicPath(c) {
+			return
+		}
 		c.Data(http.StatusOK, "text/html; charset=utf-8", indexPage)
 	})
 }

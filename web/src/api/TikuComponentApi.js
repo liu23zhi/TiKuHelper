@@ -645,6 +645,58 @@ export function deleteAccessToken(data) {
   })
 }
 
+// Script management is available to every authenticated user. The backend
+// applies the owner/admin scope; the UI only uses `scope=all` for admins.
+export function getScripts(params = {}) {
+  return request({
+    url: `/adapter-service/scripts`,
+    method: 'get',
+    params,
+  })
+}
+
+export function createScript(data) {
+  return request({
+    url: `/adapter-service/scripts`,
+    method: 'post',
+    data,
+  })
+}
+
+export function updateScript(data) {
+  return request({
+    url: `/adapter-service/scripts/${data.id}`,
+    method: 'put',
+    data,
+  })
+}
+
+export function deleteScript(data) {
+  return request({
+    url: `/adapter-service/scripts/${data.id}`,
+    method: 'delete',
+  })
+}
+
+export function getScriptVersions() {
+  return request({
+    url: `/adapter-service/script-versions`,
+    method: 'get',
+  })
+}
+
+export function uploadScriptVersion(file, version) {
+  const formData = new FormData()
+  formData.append('version', String(version || ''))
+  formData.append('file', file)
+  return request({
+    url: `/adapter-service/script-versions/upload`,
+    method: 'post',
+    data: formData,
+    timeout: 0,
+  })
+}
+
 export function getSystemSettings() {
   return request({
     url: `/adapter-service/system-settings`,

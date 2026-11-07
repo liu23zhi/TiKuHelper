@@ -77,12 +77,14 @@ test('buildPortalMenuKeys includes personal usage for admin users', () => {
     'ai-search-config',
     'system-settings',
     'access-tokens',
+    'scripts',
     'tickets',
   ]);
   assert.deepEqual(buildPortalMenuKeys({ role: 'user' }), [
     'profile',
     'user-usage',
     'access-tokens',
+    'scripts',
     'recharge-orders',
     'billing-records',
     'tickets',
@@ -180,6 +182,8 @@ test('billing record helpers render recharge and search ledger rows', () => {
   };
   assert.equal(buildBillingRecordTypeText(search), '题目消费');
   assert.equal(buildBillingRecordTypeText({ type: 'normal_search' }), '题目消费');
+  assert.equal(buildBillingRecordTypeText({ type: 'script_reservation' }), '脚本预扣');
+  assert.equal(buildBillingRecordTypeText({ type: 'script_refund' }), '脚本退款');
   assert.equal(buildBillingRecordSubjectText(search), '搜索题目');
   assert.equal(buildBillingRecordSourceText(search), 'Icodef 题库');
   assert.equal(buildBillingRecordReferenceText(search), 'req-search');
