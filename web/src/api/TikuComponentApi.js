@@ -870,3 +870,49 @@ export function updateAISearchConfig(data) {
     data
   })
 }
+
+const ticketRefundBase = '/adapter-service/ticket-refunds'
+
+function ticketRefundRequest(config) {
+  return request({ errorFeedback: 'local', retryPolicy: 'single', ...config })
+}
+
+function ticketRefundItem(id, action) {
+  return ticketRefundBase + '/' + encodeURIComponent(id) + '/' + action
+}
+
+export function getEligibleTicketRefundOrders(signal) {
+  return ticketRefundRequest({ url: ticketRefundBase + '/eligible-orders', method: 'get', signal })
+}
+
+export function listTicketRefunds(signal) {
+  return ticketRefundRequest({ url: ticketRefundBase, method: 'get', signal })
+}
+
+export function createTicketRefund(data, signal) {
+  return ticketRefundRequest({ url: ticketRefundBase, method: 'post', data, signal })
+}
+
+export function reviewTicketRefund(id, data, signal) {
+  return ticketRefundRequest({ url: ticketRefundItem(id, 'decision'), method: 'post', data, signal })
+}
+
+export function processTicketRefund(id, data, signal) {
+  return ticketRefundRequest({ url: ticketRefundItem(id, 'process'), method: 'post', data, signal })
+}
+
+export function reconcileTicketRefund(id, data, signal) {
+  return ticketRefundRequest({ url: ticketRefundItem(id, 'reconcile'), method: 'post', data, signal })
+}
+
+export function uploadTicketRefundProof(id, file, signal) {
+  const data = new FormData()
+  data.append('file', file)
+  return ticketRefundRequest({ url: ticketRefundItem(id, 'proof'), method: 'post', data, signal })
+}
+
+export function getTicketRefundProof(id, signal) {
+  return ticketRefundRequest({
+    url: ticketRefundItem(id, 'proof'), method: 'get', responseType: 'blob', timeout: 20_000, signal,
+  })
+}

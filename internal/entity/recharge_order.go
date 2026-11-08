@@ -13,6 +13,8 @@ type RechargeOrder struct {
 	Amount                    float64    `gorm:"column:amount;type:decimal(18,6);not null" json:"amount"`
 	Status                    string     `gorm:"column:status;type:varchar(32);not null;default:pending" json:"status"`
 	ThirdPartyOrderNo         string     `gorm:"column:third_party_order_no;type:varchar(128)" json:"thirdPartyOrderNo"`
+	RefundChannelFingerprint  string     `gorm:"column:refund_channel_fingerprint;type:char(64);not null;default:''" json:"-"`
+	RefundOriginalTradeNo     string     `gorm:"column:refund_original_trade_no;type:varchar(128);not null;default:''" json:"-"`
 	PaidAt                    *time.Time `gorm:"column:paid_at" json:"paidAt"`
 	CallbackPayload           string     `gorm:"column:callback_payload;type:longtext" json:"callbackPayload"`
 	CreatedAt                 time.Time  `gorm:"column:created_at;autoCreateTime" json:"createdAt"`

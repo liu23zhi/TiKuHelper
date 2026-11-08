@@ -144,6 +144,15 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.POST("/tickets/:id/messages", controller.Auth, controller.AddTicketMessage)
 	apiRouter.PUT("/tickets/:id", controller.Auth, middleware.RequireAdmin, controller.UpdateTicket)
 	apiRouter.POST("/tickets/:id/notifications/:notificationId/retry", controller.Auth, middleware.RequireAdmin, controller.RetryTicketNotification)
+	apiRouter.GET("/ticket-refunds/eligible-orders", controller.Auth, controller.EligibleTicketRefundOrders)
+	apiRouter.GET("/ticket-refunds", controller.Auth, controller.TicketRefundList)
+	apiRouter.POST("/ticket-refunds", controller.Auth, controller.CreateTicketRefund)
+	apiRouter.GET("/ticket-refunds/:id", controller.Auth, controller.TicketRefundDetail)
+	apiRouter.POST("/ticket-refunds/:id/decision", controller.Auth, middleware.RequireAdmin, controller.ReviewTicketRefund)
+	apiRouter.POST("/ticket-refunds/:id/process", controller.Auth, middleware.RequireAdmin, controller.ProcessTicketRefund)
+	apiRouter.POST("/ticket-refunds/:id/reconcile", controller.Auth, middleware.RequireAdmin, controller.ReconcileManualTicketRefund)
+	apiRouter.POST("/ticket-refunds/:id/proof", middleware.BodyLimit((2<<20)+65536), controller.Auth, controller.UploadTicketRefundProof)
+	apiRouter.GET("/ticket-refunds/:id/proof", controller.Auth, controller.DownloadTicketRefundProof)
 
 	apiRouter.GET("/logs", controller.Auth, controller.LogList) // 日志列表
 	apiRouter.GET("/billing-records", controller.Auth, controller.BillingRecordList)
