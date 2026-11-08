@@ -17,10 +17,11 @@ test('sidebar provides an accessible collapse toggle wired to the layout', async
   assert.match(layout, /siderCollapsed/);
   assert.match(layout, /@toggle="toggleSider"/);
   assert.match(menu, /aria-expanded/);
-  assert.match(menu, /aria-controls="portal-navigation"/);
+  assert.match(menu, /:aria-controls="navigationId"/);
+  assert.match(menu, /navigationId: \{ type: String, default: 'portal-navigation' \}/);
   assert.match(menu, /折叠侧边栏/);
   assert.match(menu, /展开侧边栏/);
-  assert.match(menu, /margin-top:\s*auto/);
+  assert.match(menu, /margin-top:\s*var\(--g-auto\)/);
 });
 
 test('sidebar collapse toggle shows an icon like the menu items do', async () => {
@@ -35,9 +36,10 @@ test('sidebar collapse toggle shows an icon like the menu items do', async () =>
   assert.match(menu, /:is="collapsed \? MenuUnfoldOutlined : MenuFoldOutlined"/);
   assert.match(menu, /class="collapse-button-icon"/);
 
-  // A compact rail keeps the explicit Chinese action available on every viewport.
-  assert.match(menu, /class="collapse-button-label">\{\{ collapsed \? '展开' : '折叠侧边栏' \}\}<\/span>/);
-  assert.match(menu, /\.collapse-button\.is-collapsed \.collapse-button-label\s*\{[^}]*display:\s*inline/);
+  // Mobile navigation is an expanded drawer; desktop collapse remains icon-only.
+  assert.match(menu, /v-if="!collapsed" class="collapse-button-label">折叠侧边栏<\/span>/);
+  assert.match(layoutPath, /TikuAdapterLayout\.vue$/);
+  assert.match(menu, /v-if="showCollapse"/);
   assert.match(menu, /:title="collapsed \? '展开侧边栏' : '折叠侧边栏'"/);
 
   // setup() 必须把图标暴露给模板，否则 _ctx 解析不到。

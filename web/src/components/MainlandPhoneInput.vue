@@ -30,6 +30,7 @@ export default defineComponent({
   name: 'MainlandPhoneInput',
   components: { MobileOutlined },
   props: {
+    id: { type: String, default: undefined },
     value: { type: [String, Number], default: '' },
     placeholder: { type: String, default: '请输入11位手机号，无需输入+86' },
     size: { type: String, default: undefined },
@@ -108,7 +109,7 @@ export default defineComponent({
 
     const handleBlur = () => formItemContext.onFieldBlur()
 
-    return { displayValue, formItemId: formItemContext.id, handleInput, handlePaste, handleBlur }
+    return { displayValue, formItemId: computed(() => props.id ?? formItemContext.id.value), handleInput, handlePaste, handleBlur }
   },
 })
 </script>

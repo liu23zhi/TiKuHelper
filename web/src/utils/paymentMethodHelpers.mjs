@@ -1,3 +1,5 @@
+import { parseSafePaymentIcon } from './safePaymentIcon.mjs'
+
 export function sortPaymentMethodsForDisplay(rows = []) {
   return [...rows].sort((a, b) => {
     const enabledA = !!a?.enabled;
@@ -184,23 +186,22 @@ export function buildRechargeOrderPayload(amountValue, paymentMethodId) {
 }
 
 export function buildPaymentMethodSwalHtml(options = []) {
+  const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+  const serialize = node => `<${node.tag}${Object.entries(node.attrs).map(([key, value]) => ` ${key}="${escape(value)}"`).join('')}>${node.children.map(serialize).join('')}</${node.tag}>`
   return options.map((item) => {
-    const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (character) => ({
-      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-    })[character])
-    const icon = '<span class="payment-option-icon payment-option-icon--placeholder">¥</span>'
-    const remarkText = String(item.remark || '').trim()
-    const remark = remarkText
-      ? `<div class="payment-option-remark">${escapeHtml(remarkText)}</div>`
+    const safeIcon = parseSafePaymentIcon(item.iconSVG)
+    const icon = safeIcon
+      ? `<span class="payment-option-icon">${serialize(safeIcon)}</span>`
+      : '<span class="payment-option-icon payment-option-icon--placeholder">¥</span>'
+    const remark = item.remark
+      ? `<div class="payment-option-remark">${escape(item.remark)}</div>`
       : ''
-    const label = escapeHtml(item.label)
-    const value = Number(item.value) || 0
     return `
-      <button type="button" class="payment-option" data-payment-method-id="${value}">
+      <button type="button" class="payment-option" data-payment-method-id="${escape(item.value)}">
         <div class="payment-option-main">
           ${icon}
           <div>
-            <div class="payment-option-title">${label}</div>
+            <div class="payment-option-title">${escape(item.label)}</div>
             ${remark}
           </div>
         </div>

@@ -44,7 +44,9 @@ test('log widths account for the named samples and expand entire detail and snap
   assert.match(source, /expandedColumnWidth\('requestSnapshot'\)/);
   assert.match(source, /expandedColumnWidth\('responseSnapshot'\)/);
   assert.match(source, /expandedColumnWidth\('hitProvider'\)/);
-  assert.match(source, /sumTableColumnWidths\(columns\.value\)/);
+  assert.match(source, /:columns="visibleColumns"/);
+  assert.match(source, /useTableColumnPreferences\(\{\s*pageKey: 'LogList', columns,/);
+  assert.match(source, /sumTableColumnWidths\(visibleColumns\.value\)/);
   assert.match(source, /useTableExpansion\(dataSource\)/);
 });
 
@@ -107,9 +109,27 @@ test('log request parameters can be rendered one per line without changing detai
   assert.equal(buildLogStructuredFields(row, '\n').mode, 'use=ai\ndeepThinking=true\nskipCache=false');
 });
 
-test('LogList handles a final request failure without clearing existing rows', async () => {
+test('LogList marks the failed query explicitly instead of presenting stale rows as a current success', async () => {
   const source = await readFile(pagePath, 'utf8');
-  assert.match(source, /import \{ message \} from 'ant-design-vue'/);
-  assert.match(source, /\}\)\.catch\(\(\) => \{\s*message\.error\('获取操作日志失败'\)\s*\}\)\.finally\(\(\) => \{\s*tabLoading\.value = false/);
-  assert.doesNotMatch(source, /catch\([\s\S]*?dataSource\.value\s*=\s*\[\]/);
+  assert.match(source, /import RequestFailureAlert from '@\/components\/RequestFailureAlert\.vue'/);
+  assert.match(source, /import \{ ensureRequestFailure \} from '@\/utils\/requestFailureView\.mjs'/);
+  const requestStart = source.indexOf('handleLogList() {');
+  const catchStart = source.indexOf('}).catch((error) => {', requestStart);
+  assert.ok(requestStart >= 0 && catchStart > requestStart, 'current list read and original Error branch remain present');
+  const requestBody = source.slice(requestStart, source.indexOf('onFilterChange() {', requestStart));
+  const catchBody = source.slice(catchStart, source.indexOf('onFilterChange() {', requestStart));
+  assert.match(catchBody, /if \(!owns\(\)\) return/);
+  assert.match(catchBody, /dataSource\.value = \[\]/);
+  assert.match(catchBody, /pagination\.total = 0/);
+  assert.match(catchBody, /loadError\.value = '获取操作日志失败，请重试。'/);
+  assert.match(catchBody, /this\.listFailure = ensureRequestFailure\(error\)/, 'retain original errors for transport diagnostics');
+  assert.match(requestBody, /this\.listFailure = ensureRequestFailure\(res\)/, 'non200 preserves the original response object');
+  assert.doesNotMatch(requestBody, /message\.error/, 'persistent inline state replaces duplicate read-error toast');
+  assert.match(requestBody, /getLogList\(buildSearchParams\(\{[\s\S]*?keyword: filters\.keyword,[\s\S]*?module: filters\.module,[\s\S]*?action: filters\.action[\s\S]*?pagination\.current, pagination\.pageSize\)\)/);
+  assert.match(catchBody, /finally\(\(\) => \{\s*if \(!owns\(\)\) return\s*tabLoading\.value = false/);
+  assert.match(source, /class="log-read-error"/);
+  assert.match(source, /!tabLoading && !loadError/);
+  assert.match(source, /<RequestFailureAlert v-if="listFailure" :failure="listFailure"[\s\S]*?message="获取操作日志失败，请重试。" :retryable="true" :busy="tabLoading"[\s\S]*?@retry="guardedRetryListFailure"/);
+  assert.match(source, /guardedRetryListFailure\(failure, contextKey\) \{\s*if \(this\.isCurrentListFailure\(failure, contextKey\)\) this\.handleLogList\(\)/);
+  assert.match(source, /const captureListRequest = \(\) => \{[\s\S]*?listFailure\.value = null[\s\S]*?listFailureContext\.value \+= 1/, 'new query retires the prior inline error and stale actions');
 });

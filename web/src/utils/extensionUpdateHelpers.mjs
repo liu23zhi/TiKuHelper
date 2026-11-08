@@ -51,13 +51,17 @@ export function extensionDatabasePayload(form, databaseConfig, overrides) {
   return config
 }
 
-export function validateExtensionConfig(config) {
+export function getExtensionConfigValidation(config) {
   const minutes = Number(config.intervalMinutes)
-  if (!Number.isSafeInteger(minutes) || minutes < 1 || minutes > EXTENSION_INTERVAL_MAX_MINUTES) return '检查间隔须为至少 1 分钟且不超过系统支持范围。'
+  if (!Number.isSafeInteger(minutes) || minutes < 1 || minutes > EXTENSION_INTERVAL_MAX_MINUTES) return Object.freeze({ field: 'intervalMinutes', message: '检查间隔须为至少 1 分钟且不超过系统支持范围。' })
   for (const [key, label] of [['edgeId', 'Edge'], ['chromeId', 'Chrome']]) {
-    if (config[key] && !/^[a-p]{32}$/.test(config[key])) return `${label} 扩展 ID 须为 32 位 a 到 p 的小写字母，留空可停用。`
+    if (config[key] && !/^[a-p]{32}$/.test(config[key])) return Object.freeze({ field: key, message: `${label} 扩展 ID 须为 32 位 a 到 p 的小写字母，留空可停用。` })
   }
-  return ''
+  return Object.freeze({ field: '', message: '' })
+}
+
+export function validateExtensionConfig(config) {
+  return getExtensionConfigValidation(config).message
 }
 
 export function normalizeExtensionSources(sources = []) {

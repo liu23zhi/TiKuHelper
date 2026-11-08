@@ -11,7 +11,7 @@ const userListPagePath = path.join(__dirname, '..', 'pages', 'UserList', 'index.
 test('UserList create-user modal explains the password rule and uses the dedicated create payload helper', async () => {
   const content = await readFile(userListPagePath, 'utf8');
 
-  assert.match(content, /<a-form-item\s+v-if="!isEditing"\s+label="密码"\s+required>[\s\S]*弱密码/);
+  assert.match(content, /<a-form-item\s+v-if="!isEditing"\s+label="密码"\s+required(?:\s+:html-for="fieldId\('editor-password'\)")?>[\s\S]*弱密码/);
   assert.match(content, /buildAdminCreateUserPayload/);
   assert.match(content, /runAdminPasswordAction/);
   assert.match(content, /Swal\.fire/);
@@ -41,7 +41,8 @@ test('UserList follows fixed, centered table layout with two-line Shanghai times
   assert.match(content, /table-layout="fixed"/);
   assert.match(content, /:scroll="\{ x: tableScrollX \}"/);
   assert.match(content, /const userTableScrollX = Object\.values\(userTableColumnWidths\)\.reduce/);
-  assert.match(content, /tableScrollX: userTableScrollX/);
+  assert.match(content, /tableScrollX: computed\(\(\) => sumTableColumnWidths\(visibleColumns\.value\)\)/);
+  assert.match(content, /columns: visibleColumns/);
   assert.match(content, /width: userTableColumnWidths\.(?:username|lastLoginIp|operation)/);
   assert.match(content, /return formatBillingRecordTime\(value\)/);
   assert.match(content, /class="user-time-cell"/);
@@ -75,5 +76,5 @@ test('UserList create modal exposes editable new-user bonus controls', async () 
   assert.match(content, /label="启用赠送"[\s\S]*v-model:checked="formState\.giftEnabled"/);
   assert.match(content, /v-if="!isEditing && formState\.giftEnabled"[\s\S]*v-model:value="formState\.giftAmount"/);
   assert.match(content, /giftEnabled: true/);
-  assert.match(content, /formState\.value\.giftAmount = systemNewUserBonusAmount\.value/);
+  assert.match(content, /this\.userListContext\.formState\.value\.giftAmount = this\.userListContext\.systemNewUserBonusAmount\.value/);
 });

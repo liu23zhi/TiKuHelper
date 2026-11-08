@@ -31,6 +31,8 @@ test('billing detail table merges administrator fields into the detail action', 
   assert.match(content, /@statement-visibility-change="handleStatementVisibilityChange"/);
   assert.match(content, /:viewer-scope="isAdmin \? 'admin' : 'self'"/);
   assert.doesNotMatch(content, /Swal|document\.querySelector|addEventListener/);
+  assert.match(content, /closeScopePopup = \(\) => \{ billingDetailOpen\.value = false; selectedBillingRecord\.value = null \}/, 'scope changes close only the page-owned controlled dialog');
+  assert.match(content, /if \(!owns\(\)\) return false/, 'late visibility saves cannot repaint a new user scope');
   assert.doesNotMatch(content, /title: '操作管理员'/);
   assert.doesNotMatch(content, /title: '余额变化'/);
   assert.doesNotMatch(content, /title: '账单流水展示'/);

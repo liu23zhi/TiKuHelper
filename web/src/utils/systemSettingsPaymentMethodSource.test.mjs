@@ -16,8 +16,15 @@ test('SystemSettings payment method management reads backend epayType field cons
   assert.match(content, /ePayType:\s*record\.epayType\s*\|\|\s*''/);
   assert.doesNotMatch(panel, /record\.ePayType\s*\|\|\s*'-'/);
   assert.doesNotMatch(content, /ePayType:\s*record\.ePayType\s*\|\|\s*''/);
-  assert.match(content, /@edit="openEditPaymentMethodModal"/);
-  assert.match(content, /@delete="handleDeletePaymentMethod"/);
+  assert.match(content, /:onEdit="paymentPanelEntry\.bind\(openEditPaymentMethodModal\)"/);
+  assert.match(content, /:onDelete="paymentPanelEntry\.bind\(handleDeletePaymentMethod\)"/);
+  assert.match(content, /import SafePaymentIcon from '@\/components\/SafePaymentIcon\.js'/, 'inline preview binds the strict VNode renderer');
+  const registeredComponents = content.match(/components:\s*\{([^}]+)\}/)?.[1] || '';
+  for (const component of ['PaymentMethodPanel', 'SafePaymentIcon', 'PaymentMethodIconPicker', 'SystemMetricsPanel']) {
+    assert.match(registeredComponents, new RegExp(`\\b${component}\\b`), `${component} remains registered`);
+    assert.match(content, new RegExp(`import ${component} from `), `${component} remains imported`);
+    assert.match(content, new RegExp(`<${component}(?:\\s|/|>)`), `${component} remains mounted`);
+  }
 });
 
 test('SystemSettings exposes wechat captcha and smsbao credential settings', async () => {
@@ -48,7 +55,7 @@ test('SystemSettings exposes the default new-user bonus amount', async () => {
   assert.match(content, /formState\.newUserBonusAmount/);
   assert.match(content, /新用户赠送金额/);
   assert.match(content, /新用户注册或后台创建成功后自动计入余额/);
-  assert.match(content, /newUserBonusAmount: normalizeBonusAmount\(this\.formState\.newUserBonusAmount\)/);
+  assert.match(content, /newUserBonusAmount: normalizeBonusAmount\(formState\.newUserBonusAmount\)/);
 });
 
 test('SystemSettings exposes a configurable minimum recharge amount with a 1 yuan default', async () => {
@@ -75,7 +82,7 @@ test('SystemSettings exposes a validated byte-based maximum log size with a 5GB 
   assert.match(content, /value: 'GB'/);
   assert.match(content, /value: 'TB'/);
   assert.match(content, /const maxLogSize = splitMaxLogSizeBytes\(data\.maxLogSizeBytes\)/);
-  assert.match(content, /const maxLogSizeBytes = composeMaxLogSizeBytes\(this\.formState\.maxLogSizeValue, this\.formState\.maxLogSizeUnit\)/);
+  assert.match(content, /const maxLogSizeBytes = composeMaxLogSizeBytes\(formState\.maxLogSizeValue, formState\.maxLogSizeUnit\)/);
   assert.match(content, /maxLogSizeBytes,/);
   assert.match(content, /最大日志大小必须是不小于 1MB 的整数/);
   assert.match(content, /日志目录全部日志文件的总占用上限/);

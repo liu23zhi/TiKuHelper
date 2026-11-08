@@ -1,37 +1,62 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import test from 'node:test'
-import { compile, computed, createSSRApp, defineComponent, h, reactive, ref } from 'vue'
+import test, { afterEach } from 'node:test'
+import { createRequire } from 'node:module'
+import { compile, computed, createSSRApp, createRenderer, defineComponent, h, reactive, ref, shallowRef, watch, nextTick, onMounted, onBeforeUnmount, useId } from 'vue'
+import { createRouter, createMemoryHistory, RouterView, useRoute } from 'vue-router'
+import { inheritTransportRequestId } from './requestHelpers.mjs'
+import { inheritRequestFailureView } from './requestFailureView.mjs'
 import { renderToString } from 'vue/server-renderer'
 import { sumTableColumnWidths } from './tableLayout.mjs'
 import { buildAIToolTestPayload } from './aiSearchConfigHelpers.mjs'
 
 const row = { url: 'https://images.example.test/question.png?token=original', urlHash: 'a'.repeat(64), imageSha256: 'b'.repeat(64), contentType: 'image/png', ocrText: '完整识别结果\n第二行', updatedAt: '2026-11-02T00:00:00Z' }
 const response = (data = {}) => ({ status: 200, data: { data: [row], total: 1, summary: { matched: 1 }, configured: true, ...data } })
+const require = createRequire(import.meta.url)
+require('../../tests/helpers/vue-dom.cjs')
+const { useCurrentUserDisplay, isAdminUser, getCurrentUserLogoutEpoch, getStoredCurrentUser, setStoredCurrentUser, clearStoredCurrentUser } = require('./currentUser.js')
+const fixtures = []
+const renderer = createRenderer({
+  createElement: tag => document.createElement(tag), createText: text => document.createTextNode(text), createComment: text => document.createComment(text),
+  setText: (node, text) => { node.nodeValue = text }, setElementText: (node, text) => { node.textContent = text },
+  parentNode: node => node.parentNode, nextSibling: node => node.nextSibling, patchProp: (node, key, _old, value) => { node[key] = value },
+  insert: (node, parent, anchor = null) => parent.insertBefore(node, anchor), remove: node => node.remove(),
+})
+afterEach(async () => { for (const { app, history } of fixtures.splice(0)) { app.unmount(); history.destroy() } await nextTick(); clearStoredCurrentUser() })
+
 async function createPage(overrides = {}) {
   const source = await readFile(new URL('../pages/OCRCache/index.vue', import.meta.url), 'utf8')
   const script = source.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/^import .*$/gm, '').replace('export default defineComponent', 'return defineComponent')
+  let bootstrapping = true
   const dependencies = {
-    computed, defineComponent, reactive, ref, sumTableColumnWidths, buildAIToolTestPayload, OverflowTableText: {},
-    onMounted() {}, onBeforeUnmount() {},
-    Descriptions: { Item: {} }, message: { success() {}, error() {} },
+    computed, defineComponent, reactive, ref, shallowRef, watch, nextTick, onMounted, onBeforeUnmount, useId, useRoute, sumTableColumnWidths,
+    useCurrentUserDisplay, isAdminUser, getCurrentUserLogoutEpoch, getStoredCurrentUser, inheritTransportRequestId, inheritRequestFailureView,
+    RequestFailureAlert: {}, OverflowTableText: {}, buildAIToolTestPayload,
+    Descriptions: { Item: {} }, message: { success() {} },
     Swal: { fire: async () => ({ isConfirmed: true }) },
-    getAIOCRCacheEntries: async () => response(),
-    getAIOCRCacheStatus: async () => ({ status: 200, data: { entries: 1, configured: true, latestUpdatedAt: row.updatedAt } }),
     Blob,
-    getAIOCRCacheImage: async () => ({ status: 200, data: new Blob(['image'], { type: 'image/png' }) }),
     URL: { createObjectURL: () => 'blob:ocr-preview', revokeObjectURL() {} },
+    getAIOCRCacheImage: async () => ({ status: 200, data: new Blob(['image'], { type: 'image/png' }) }),
     testAIToolCall: async () => ({ status: 200, data: { success: true, ocrCacheEntry: row } }),
     deleteAIOCRCacheBatch: async () => ({ status: 200, data: { deleted: 1 } }),
     ...overrides,
+    getAIOCRCacheEntries: params => bootstrapping ? Promise.resolve(response()) : (overrides.getAIOCRCacheEntries || (async () => response()))(params),
   }
-  return new Function(...Object.keys(dependencies), script)(...Object.values(dependencies)).setup()
+  setStoredCurrentUser({ id: 74502, role: 'admin', status: 'enabled', username: 'SYNTHETIC_OCR_UTILS' })
+  const component = new Function(...Object.keys(dependencies), script)(...Object.values(dependencies))
+  let page
+  const fixturePage = defineComponent({ setup() { page = component.setup(); return () => null } })
+  const history = createMemoryHistory(), router = createRouter({ history, routes: [{ path: '/adapter/ocr-cache', component: fixturePage }] })
+  await router.push('/adapter/ocr-cache'); await router.isReady()
+  const app = renderer.createApp({ render: () => h(RouterView) }); app.use(router); app.mount(document.createElement('div')); fixtures.push({ app, history })
+  await Promise.resolve(); await nextTick(); await Promise.resolve(); await nextTick(); bootstrapping = false
+  return page
 }
 
 async function renderPage(page) {
   const source = await readFile(new URL('../pages/OCRCache/index.vue', import.meta.url), 'utf8')
   const template = source.match(/<template>([\s\S]*?)<\/template>\s*<script>/)[1]
-  const components = Object.fromEntries([...template.matchAll(/<([A-Z][\w-]*|a-[\w-]+)/g)].map(([, name]) => [name, { setup: (_, { slots }) => () => h('div', null, slots.default?.()) }]))
+  const components = Object.fromEntries([...template.matchAll(/<([A-Z][\w-]*|a-[\w-]+)/g)].map(([, name]) => [name, { setup: (_, { slots }) => () => h('div', null, [slots.actions?.(), slots.default?.(), slots.message?.()]) }]))
   components['a-table'] = {
     props: ['dataSource', 'columns'],
     setup: (props, { slots }) => () => h('table', null, props.dataSource.map(record => h('tr', null, props.columns.map(column => h('td', { 'data-column': column.key }, slots.bodyCell({ column, record })))))),
@@ -46,7 +71,7 @@ test('OCR list and detail show the full original URL as escaped plain text', asy
   page.showDetails(page.rows.value[0])
   const html = await renderPage(page)
   const listURL = html.match(/<td data-column="url">([\s\S]*?)<\/td>/)?.[1] || ''
-  const detailURL = html.match(/<div[^>]*label="图片 URL"[^>]*><span class="url-value">([\s\S]*?)<\/span><\/div>/)?.[1] || ''
+  const detailURL = html.match(/<div[^>]*label="图片 URL"[^>]*>([\s\S]*?)<\/div>/)?.[1] || ''
   const escapedURL = url.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
   for (const displayed of [listURL, detailURL]) {
     assert.ok(displayed.includes(escapedURL), 'URL must keep every original character without truncation')
@@ -62,15 +87,30 @@ test('OCR list and detail identify historical records without a stored URL', asy
   page.showDetails(page.rows.value[0])
   const html = await renderPage(page)
   const listURL = html.match(/<td data-column="url">([\s\S]*?)<\/td>/)?.[1] || ''
-  const detailURL = html.match(/<div[^>]*label="图片 URL"[^>]*><span class="url-value">([\s\S]*?)<\/span><\/div>/)?.[1] || ''
+  const detailURL = html.match(/<div[^>]*label="图片 URL"[^>]*>([\s\S]*?)<\/div>/)?.[1] || ''
   assert.match(listURL, /历史记录未保存 URL/)
   assert.match(detailURL, /历史记录未保存 URL/)
+})
+
+test('missing effective UAPI key blocks preview before any image request but keeps cached text', async () => {
+  let fetches = 0
+  const page = await createPage({
+    getAIOCRCacheEntries: async () => response({ configured: false }),
+    getAIOCRCacheImage: async () => { fetches++; return { status: 200, data: new Blob(['x'], { type: 'image/png' }) } },
+  })
+  await page.load()
+  page.showDetails(page.rows.value[0])
+  await page.loadCurrentImage()
+  assert.equal(fetches, 0)
+  assert.equal(page.currentImageUrl.value, '')
+  assert.match(await renderPage(page), /未配置有效 UAPI 密钥/)
+  assert.equal(page.detailRecord.value.ocrText, row.ocrText)
 })
 
 test('OCR detail fetches the stored image on demand and renders the returned blob', async () => {
   const calls = []
   const page = await createPage({ getAIOCRCacheImage: async hash => { calls.push(hash); return { status: 200, data: new Blob(['image'], { type: 'image/png' }) } } })
-  page.showDetails(row)
+  page.showDetails(page.rows.value[0])
   await page.loadCurrentImage()
   assert.deepEqual(calls, [row.urlHash])
   assert.equal(page.currentImageUrl.value, 'blob:ocr-preview')
@@ -85,13 +125,14 @@ test('OCR detail reports image fetch failure and never requests an unsaved histo
   const page = await createPage({
     getAIOCRCacheImage: async () => { calls++; return { status: 502, data: new Blob([JSON.stringify({ message: '图片源暂不可用' })], { type: 'application/json' }) } },
   })
-  page.showDetails(row)
+  page.showDetails(page.rows.value[0])
   await page.loadCurrentImage()
   assert.equal(calls, 1)
-  assert.match(page.imageError.value, /图片源暂不可用/)
+  assert.match(page.imageError.value, /获取当前图片失败/)
   assert.equal(page.imageLoading.value, false)
   assert.equal(page.currentImageUrl.value, '')
-  page.showDetails({ ...row, url: '' })
+  page.rows.value = [{ ...row, url: '' }]
+  page.showDetails(page.rows.value[0])
   await page.loadCurrentImage()
   assert.equal(calls, 1)
   assert.match(page.imageError.value, /没有保存图片 URL/)
@@ -100,12 +141,13 @@ test('OCR detail reports image fetch failure and never requests an unsaved histo
 test('OCR detail releases the temporary image URL when closed or switched', async () => {
   const revoked = []
   const page = await createPage({ URL: { createObjectURL: () => 'blob:ocr-preview', revokeObjectURL: value => revoked.push(value) } })
-  page.showDetails(row)
+  page.showDetails(page.rows.value[0])
   await page.loadCurrentImage()
-  page.showDetails({ ...row, urlHash: 'next-row' })
+  page.rows.value = [{ ...row, urlHash: 'next-row' }]
+  page.showDetails(page.rows.value[0])
   assert.deepEqual(revoked, ['blob:ocr-preview'])
   await page.loadCurrentImage()
-  page.closeDetails()
+  page.closeDetail()
   assert.deepEqual(revoked, ['blob:ocr-preview', 'blob:ocr-preview'])
   assert.equal(page.currentImageUrl.value, '')
 })
@@ -117,9 +159,9 @@ test('OCR detail ignores a late image response after it closes', async () => {
     getAIOCRCacheImage: () => new Promise(resolve => { finishRequest = resolve }),
     URL: { createObjectURL: () => { created.push('created'); return 'blob:ocr-preview' }, revokeObjectURL() {} },
   })
-  page.showDetails(row)
+  page.showDetails(page.rows.value[0])
   const pending = page.loadCurrentImage()
-  page.closeDetails()
+  page.closeDetail()
   finishRequest({ status: 200, data: new Blob(['image'], { type: 'image/png' }) })
   await pending
   assert.deepEqual(created, [])
@@ -137,6 +179,10 @@ test('OCR cache manual add runs the existing direct OCR flow and reloads after s
   page.openAddDialog()
   page.addImageURL.value = 'https://images.example.test/manual.png?token=abc'
   assert.equal(page.addForm.url, page.addImageURL.value)
+  const openHTML = await renderPage(page)
+  assert.match(openHTML, /手动添加/)
+  assert.match(openHTML, /识别并添加/)
+  assert.match(openHTML, /计入当前管理员账单/)
   await page.addOCRCache()
   assert.deepEqual(calls, [{ mode: 'direct', tool: 'image_ocr', url: 'https://images.example.test/manual.png?token=abc' }])
   assert.equal(page.addVisible.value, false)
@@ -145,10 +191,7 @@ test('OCR cache manual add runs the existing direct OCR flow and reloads after s
   assert.equal(page.detailVisible.value, true)
   assert.equal(page.detailRecord.value.url, 'https://images.example.test/manual.png?token=abc')
   assert.equal(listCalls.length, 1)
-  const html = await renderPage(page)
-  assert.match(html, /手动添加/)
-  assert.match(html, /识别并添加/)
-  assert.match(html, /计入当前管理员账单/)
+  assert.doesNotMatch(await renderPage(page), /识别并添加/, 'completed dialog no longer exposes the submit control')
 })
 
 test('OCR cache manual add retains the URL and explains OCR failure', async () => {
@@ -160,7 +203,7 @@ test('OCR cache manual add retains the URL and explains OCR failure', async () =
   assert.equal(calls, 1)
   assert.equal(page.addVisible.value, true)
   assert.equal(page.addImageURL.value, 'https://images.example.test/manual.png')
-  assert.match(page.addError.value, /图片 OCR 失败/)
+  assert.match(page.addError.value, /图片识别未成功/)
   assert.equal(page.adding.value, false)
 })
 
@@ -195,7 +238,7 @@ test('OCR recognition alone never reports manual cache addition success', async 
   page.addImageURL.value = 'https://images.example.test/manual.png'
   await page.addOCRCache()
   assert.equal(page.addVisible.value, true)
-  assert.match(page.addError.value, /缓存未保存/)
+  assert.match(page.addError.value, /未确认缓存保存成功/)
   assert.equal(page.addRequestId.value, 'tool-test-not-saved')
   assert.equal(page.addRecognizedText.value, '实际识别文字')
   assert.equal(page.addBillingWarning.value, '账单已排队')
@@ -238,7 +281,7 @@ test('OCR cache manual add retains network uncertainty without retrying the OCR 
   assert.equal(calls, 1)
   assert.equal(page.addImageURL.value, row.url)
   assert.equal(page.addVisible.value, true)
-  assert.match(page.addError.value, /先刷新核对，勿重复提交/)
+  assert.match(page.addError.value, /先刷新列表核对，勿重复提交/)
   assert.equal(page.adding.value, false)
 })
 
@@ -281,13 +324,15 @@ test('OCR select-all deletion uses displayed filters without pagination', async 
   })
   Object.assign(page.filters, { keyword: '指定题目', contentType: 'image/png', updatedFrom: '2026-11-02', updatedTo: '2026-11-02' })
   await page.reload()
-  page.showDetails(row)
+  page.showDetails(page.rows.value[0])
   page.handleSelectAll()
   page.filters.keyword = '不该删除的输入'
   await page.deleteSelected()
   assert.deepEqual(deleted, [{ keyword: '指定题目', contentType: 'image/png', updatedFrom: '2026-11-02', updatedTo: '2026-11-02', items: [], all: true, except: [] }])
   assert.match(confirmations[0].title, /所选 OCR 缓存/)
   assert.match(confirmations[0].text, /1 条已选择的缓存/)
+  assert.match(confirmations[0].text, /指定题目/)
+  assert.match(confirmations[0].text, /包含其他分页/)
   assert.equal(page.detailVisible.value, false)
   assert.equal(page.pagination.current, 1)
   assert.equal(page.deleting.value, false)
@@ -354,8 +399,8 @@ test('OCR row deletion sends only the row hash and clears its detail', async () 
     deleteAIOCRCacheBatch: async params => { deleted.push(params); return { status: 200, data: { deleted: 1 } } },
   })
   await page.load()
-  page.showDetails(row)
-  await page.deleteSingle(row)
+  page.showDetails(page.rows.value[0])
+  await page.deleteSingle(page.rows.value[0])
   assert.deepEqual(deleted, [{ items: [row.urlHash], all: false, except: [] }])
   assert.equal(page.detailVisible.value, false)
   assert.equal(page.deleting.value, false)
@@ -377,7 +422,7 @@ test('OCR stale response cannot replace the newer search results or summary', as
   assert.equal(page.loading.value, false)
 })
 
-test('OCR failed list never enables deletion against stale results and keeps the server reason', async () => {
+test('OCR failed list never enables deletion against stale results and uses safe feedback without raw server echo', async () => {
   let fail = false
   const page = await createPage({
     getAIOCRCacheEntries: async () => { if (fail) throw { response: { data: { message: '缓存数据库暂不可用' } } }; return response() },
@@ -387,22 +432,22 @@ test('OCR failed list never enables deletion against stale results and keeps the
   fail = true
   page.filters.keyword = '下一次查询'
   await page.reload()
-  assert.equal(page.errorMessage.value, '缓存数据库暂不可用')
+  assert.match(page.errorMessage.value, /读取 OCR 缓存失败，请重试/); assert.doesNotMatch(page.errorMessage.value, /缓存数据库暂不可用/); assert.equal(page.hasLoaded.value, false); assert.match(page.scopeDescription.value, /下一次查询/)
   assert.deepEqual(page.rows.value, [])
   assert.equal(page.matched.value, 0)
   await page.deleteSelected()
-  assert.equal(page.errorMessage.value, '缓存数据库暂不可用')
+  assert.match(page.errorMessage.value, /读取 OCR 缓存失败，请重试/); assert.doesNotMatch(page.errorMessage.value, /缓存数据库暂不可用/); assert.equal(page.hasLoaded.value, false); assert.match(page.scopeDescription.value, /下一次查询/)
 })
 
 test('OCR reset clears every filter and detail preserves full plain text with Shanghai time', async () => {
   const calls = []
-  const page = await createPage({ getAIOCRCacheEntries: async params => { calls.push(params); return response() } })
+  const fullText = `${'识别文本'.repeat(3000)}\n<script>alert(1)</script>`
+  const page = await createPage({ getAIOCRCacheEntries: async params => { calls.push(params); return response({ data: [{ ...row, ocrText: fullText }] }) } })
   Object.assign(page.filters, { keyword: 'x', contentType: 'image/gif', updatedFrom: '2026-11-01', updatedTo: '2026-11-02' })
   await page.resetFilters()
   assert.deepEqual(calls, [{ page: 1, pageSize: 20 }])
   assert.equal(page.hasFilters.value, false)
-  const fullText = `${'识别文本'.repeat(3000)}\n<script>alert(1)</script>`
-  page.showDetails({ ...row, ocrText: fullText })
+  page.showDetails(page.rows.value[0])
   assert.equal(page.detailRecord.value.ocrText, fullText)
   assert.equal(page.detailVisible.value, true)
   assert.match(page.formatDate(row.updatedAt), /8:00:00|08:00:00/)
@@ -415,11 +460,53 @@ test('OCR cache management is linked only from the administrator menu and protec
   assert.match(router.match(/const ADMIN_ONLY_ROUTE_NAMES[\s\S]*?\]\)/)[0], /'ocr-cache'/)
   assert.match(menu.match(/const ADMIN_MENU_ITEMS[\s\S]*?\n\]/)[0], /key: 'ocr-cache', label: 'OCR 缓存管理'/)
   assert.doesNotMatch(menu.match(/const USER_MENU_ITEMS[\s\S]*?\n\]/)[0], /ocr-cache/)
-  assert.match(api, /export function getAIOCRCacheEntries\(params\)[\s\S]*?ocr-cache\/entries/)
+  assert.match(api, /export function getAIOCRCacheEntries\(params, feedback\)[\s\S]*?ocr-cache\/entries/)
   assert.match(api, /export function getAIOCRCacheImage\(urlHash\)[\s\S]*?responseType: 'blob'/)
-  assert.match(api, /ocr-cache\/entries\/\$\{encodeURIComponent\(urlHash\)\}\/image/)
   assert.match(api, /export function deleteAIOCRCacheBatch\(data\)[\s\S]*?ocr-cache\/batch-delete/)
-  assert.match(page, /a-form :model="filters"/)
   assert.match(page, /:row-selection="rowSelection"/)
+  assert.match(page, /a-form :model="filters"/)
   assert.doesNotMatch(page, /v-html/)
+})
+
+test('OCR principal retirement cancels confirmed delete and rejects late charged-add results', async () => {
+  let confirm, finishAdd
+  const deleted = [], success = []
+  const page = await createPage({
+    Swal: { fire: () => new Promise(resolve => { confirm = resolve }), getPopup: () => null },
+    testAIToolCall: () => new Promise(resolve => { finishAdd = resolve }),
+    deleteAIOCRCacheBatch: async body => { deleted.push(body); return response() },
+    message: { success: text => success.push(text) },
+  })
+  page.handleSelectAll()
+  const deletion = page.deleteSelected()
+  clearStoredCurrentUser()
+  confirm({ isConfirmed: true })
+  await deletion
+  assert.deepEqual(deleted, [])
+  assert.equal(page.rows.value.length, 0)
+  assert.equal(page.selectedCount.value, 0)
+  setStoredCurrentUser({ id: 74503, role: 'admin', status: 'enabled' })
+  for (let i = 0; i < 6; i++) await nextTick()
+  page.openAddDialog()
+  page.addImageURL.value = row.url
+  const added = page.addOCRCache()
+  clearStoredCurrentUser()
+  finishAdd({ status: 200, data: { success: true, ocrCacheEntry: row } })
+  await added
+  assert.equal(page.addImageURL.value, '')
+  assert.equal(page.detailVisible.value, false)
+  assert.equal(page.addVisible.value, false)
+  assert.deepEqual(success, [])
+})
+
+test('OCR confirmed deletion reloads once after releasing the mutation lock', async () => {
+  let reads = 0
+  const page = await createPage({
+    getAIOCRCacheEntries: async () => { reads++; return response({ data: [], total: 0, summary: { matched: 0 } }) },
+  })
+  page.handleSelectAll()
+  await page.deleteSelected()
+  assert.equal(reads, 1)
+  assert.deepEqual(page.rows.value, [])
+  assert.equal(page.deleting.value, false)
 })

@@ -1,16 +1,18 @@
 <template>
+  <div class="answer-editor">
   <div v-if="data.length">
-    <a-row v-for="(item, index) in data" :key="index" class="rowStyle">
+    <a-row v-for="(item, index) in data" :key="item.id" class="rowStyle">
       <a-col :span="20">
-        <a-textarea v-model:value="item.value" />
+        <label :for="item.id" class="answer-label">答案 {{ index + 1 }}</label>
+        <a-textarea :id="item.id" :ref="input => setAnswerInput(item.id, input)" :value="item.value == null ? '' : String(item.value)" @update:value="item.value = $event" />
       </a-col>
       <a-col :span="4">
-        <a-button v-if="index >= 0" @click="addOption" type="link" primary>
+        <a-button v-if="index >= 0" @click="addOption" type="link" html-type="button" aria-label="添加答案" title="添加答案" primary>
           <template #icon>
             <PlusCircleOutlined />
           </template>
         </a-button>
-        <a-button v-if="index >= 0" @click="data.splice(index, 1)" type="link" danger>
+        <a-button v-if="index >= 0" @click="removeOption(index)" type="link" html-type="button" :aria-label="'删除第 ' + (index + 1) + ' 条答案'" :title="'删除第 ' + (index + 1) + ' 条答案'" danger>
           <template #icon>
             <MinusCircleOutlined />
           </template>
@@ -19,66 +21,69 @@
     </a-row>
   </div>
   <div v-else>
-    <Button class="addBut" @click="addOption" style="width: 100%">
+    <a-button ref="emptyAddButton" class="addBut" @click="addOption" html-type="button" aria-label="添加答案" style="width: 100%">
       添加
-    </Button>
+    </a-button>
+  </div>
+  <span class="answer-status" role="status" aria-live="polite" aria-atomic="true">{{ announcement }}</span>
   </div>
 </template>
 
 <script>
-// 创建选项数组
-import { ref } from 'vue'
-import {
-  PlusCircleOutlined,
-  MinusCircleOutlined
-} from '@ant-design/icons-vue';
+import { getCurrentInstance, nextTick, onBeforeUnmount, ref } from 'vue'
+import { PlusCircleOutlined, MinusCircleOutlined } from '@ant-design/icons-vue'
 
-export default ({
+export default {
   name: 'AnswerBox',
-  components: {
-    PlusCircleOutlined,
-    MinusCircleOutlined
-  },
-  props: {
-    answer: {
-      type: Array,
-      default: () => {
-        return []
-      }
-    }
-  },
+  components: { PlusCircleOutlined, MinusCircleOutlined },
+  props: { answer: { type: Array, default: () => [] } },
   setup(props) {
-    return {
-      data: ref(props.answer.length > 0
-        ? props.answer.map(i => {
-          return {
-            value: i
-          };
-        })
-        : [])
+    const prefix = 'answer-box-' + getCurrentInstance().uid
+    let nextRow = 0
+    let alive = true
+    const makeRow = value => ({ id: prefix + '-row-' + nextRow++, value })
+    const data = ref(props.answer.map(makeRow))
+    const inputRefs = new Map()
+    const emptyAddButton = ref(null)
+    const announcement = ref('')
+    const setAnswerInput = (id, input) => {
+      if (input) inputRefs.set(id, input)
+      else inputRefs.delete(id)
     }
+    const focusRow = (id) => {
+      nextTick(() => {
+        if (!alive) return
+        const input = inputRefs.get(id)
+        if (typeof input?.focus === 'function') input.focus()
+        else input?.$el?.focus()
+      })
+    }
+    const addOption = () => {
+      const row = makeRow('')
+      data.value.push(row)
+      announcement.value = '已添加答案 ' + data.value.length + '，共 ' + data.value.length + ' 条'
+      focusRow(row.id)
+    }
+    const removeOption = (index) => {
+      if (index < 0 || index >= data.value.length) return
+      data.value.splice(index, 1)
+      announcement.value = '已删除答案 ' + (index + 1) + '，剩余 ' + data.value.length + ' 条'
+      const target = data.value[index] || data.value[data.value.length - 1]
+      if (target) focusRow(target.id)
+      else nextTick(() => {
+        if (alive) (emptyAddButton.value?.$el || emptyAddButton.value)?.focus()
+      })
+    }
+    // Upload/import calls must keep focus where the user is working.
+    const pushAnswer = (str) => { data.value.push(makeRow(str)) }
+    // Preserve the public JSON contract, ordering, and repeated non-objective answers.
+    const getData = () => JSON.stringify(data.value.map(item => item.value).filter(value =>
+      value !== null && value !== undefined && value !== '' &&
+      (typeof value !== 'number' || Number.isFinite(value))))
+    onBeforeUnmount(() => { alive = false; inputRefs.clear() })
+    return { data, emptyAddButton, announcement, setAnswerInput, addOption, removeOption, pushAnswer, getData }
   },
-
-  methods: {
-    addOption() {
-      this.data.push({
-        value: '',
-      })
-    },
-    pushAnswer(str){
-      this.data.push({
-        value: str,
-      })
-    },
-    getData() {
-      return JSON.stringify(this.data.map((item) => {
-        if (item.value !== null && item.value!== undefined) {
-          return item.value
-        }
-      }).filter(i=>i))
-    }
-  }
-})
+}
 </script>
 
 <style scoped>
@@ -99,22 +104,22 @@ export default ({
 
 /* 选中的样式 */
 .Check {
-  background-color: #1890ff;
-  color: #fff;
-  border: 1px solid #1890ff;
+  background-color: var(--primary);
+  color: var(--surface);
+  border: 1px solid var(--primary);
 }
 
 /* 未选中的样式 */
 .CheckNo {
-  background-color: #fff;
-  color: #1890ff;
-  border: 1px solid #1890ff;
+  background-color: var(--surface);
+  color: var(--primary);
+  border: 1px solid var(--primary);
   box-sizing: border-box;
 }
 
 .addBut {
   color: rgba(0,0,0,.65);
-  background-color: #fff;
+  background-color: var(--surface);
   border-color: #d9d9d9;
   border-style: dashed;
   padding: 0 15px;
@@ -125,13 +130,25 @@ export default ({
 
 .addBut:focus{
   color: #108ee9;
-  background-color: #fff;
+  background-color: var(--surface);
   border-color: #108ee9;
 }
 
 .addBut:hover{
   color: #108ee9;
-  background-color: #fff;
+  background-color: var(--surface);
   border-color: #108ee9;
+}
+/* Authored accessible labels/live updates do not change the existing row grid. */
+.answer-label,
+.answer-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 </style>

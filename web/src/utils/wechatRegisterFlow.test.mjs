@@ -1,13 +1,16 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {
+import path from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+const webRoot = process.env.TIKU_WEB_SOURCE || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+const {
   REGISTRATION_FLOW_STORAGE_KEY,
   loadWechatRegisterFlowToken,
   saveWechatRegisterFlowToken,
   clearWechatRegisterFlowToken,
   createWechatRegisterFlowCoordinator,
   appendWechatRegisterFlowToken,
-} from './wechatRegisterFlow.mjs'
+} = await import(pathToFileURL(path.join(webRoot, 'src/utils/wechatRegisterFlow.mjs')))
 
 class MemoryStorage {
   constructor(entries = {}) {
@@ -127,4 +130,71 @@ test('registration payload includes a token only for a staged flow', () => {
     registrationFlowToken: 'flow-3',
   })
   assert.equal(Object.hasOwn(appendWechatRegisterFlowToken(payload, ''), 'registrationFlowToken'), false)
+})
+
+test('denied session storage methods keep an in-memory flow without blocking anonymous registration', () => {
+  const storage = { getItem() { throw new Error('SYNTHETIC denied') }, setItem() { throw new Error('SYNTHETIC denied') }, removeItem() { throw new Error('SYNTHETIC denied') } }
+  assert.equal(loadWechatRegisterFlowToken(storage), '')
+  assert.equal(saveWechatRegisterFlowToken(' SYNTHETIC_MEMORY ', storage), 'SYNTHETIC_MEMORY')
+  assert.doesNotThrow(() => clearWechatRegisterFlowToken(storage))
+  const flow = createWechatRegisterFlowCoordinator({ storage, channelFactory: null })
+  flow.save('SYNTHETIC_MEMORY'); assert.equal(flow.token, 'SYNTHETIC_MEMORY')
+  flow.clear(); assert.equal(flow.token, ''); flow.dispose()
+})
+
+test('unavailable default sessionStorage getter does not prevent creating the public form flow', () => {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage')
+  Object.defineProperty(globalThis, 'sessionStorage', { configurable: true, get() { throw new Error('SYNTHETIC blocked getter') } })
+  try {
+    const flow = createWechatRegisterFlowCoordinator({ channelFactory: null })
+    flow.save('SYNTHETIC_MEMORY'); assert.equal(flow.token, 'SYNTHETIC_MEMORY'); flow.dispose()
+  } finally {
+    if (previous) Object.defineProperty(globalThis, 'sessionStorage', previous)
+    else delete globalThis.sessionStorage
+  }
+})
+
+test('retired coordinator clear cannot erase a newer flow owned in the same storage', () => {
+  const storage = new MemoryStorage()
+  const old = createWechatRegisterFlowCoordinator({ storage, channelFactory: null, tabId: 'old' })
+  old.save('SYNTHETIC_OLD')
+  const current = createWechatRegisterFlowCoordinator({ storage, channelFactory: null, tabId: 'new' })
+  current.save('SYNTHETIC_NEW'); old.clear()
+  assert.equal(old.token, '')
+  assert.equal(current.token, 'SYNTHETIC_NEW')
+  assert.equal(loadWechatRegisterFlowToken(storage), 'SYNTHETIC_NEW')
+  old.dispose(); current.dispose()
+})
+
+test('blocked optional broadcast transport does not disable normal flow persistence', () => {
+  const storage = new MemoryStorage()
+  const flow = createWechatRegisterFlowCoordinator({ storage, channelFactory: () => { throw new Error('SYNTHETIC broadcast unavailable') } })
+  flow.save('SYNTHETIC_FLOW')
+  assert.equal(loadWechatRegisterFlowToken(storage), 'SYNTHETIC_FLOW')
+  flow.clear(); assert.equal(loadWechatRegisterFlowToken(storage), ''); flow.dispose()
+})
+
+test('disposed coordinator cannot save or clear a newer active flow', () => {
+  const storage = new MemoryStorage()
+  const old = createWechatRegisterFlowCoordinator({ storage, channelFactory: null })
+  old.save('SYNTHETIC_OLD'); old.dispose()
+  const current = createWechatRegisterFlowCoordinator({ storage, channelFactory: null })
+  current.save('SYNTHETIC_NEW')
+  old.save('SYNTHETIC_STALE_CALLBACK'); old.clear()
+  assert.equal(loadWechatRegisterFlowToken(storage), 'SYNTHETIC_NEW')
+  assert.equal(old.token, '')
+  current.dispose()
+})
+
+test('explicit clear compares the exact local token before touching a newer operation', () => {
+  const storage = new MemoryStorage()
+  const flow = createWechatRegisterFlowCoordinator({ storage, channelFactory: null })
+  flow.save('SYNTHETIC_CURRENT')
+  assert.equal(flow.clear('SYNTHETIC_RETIRED'), false)
+  assert.equal(flow.token, 'SYNTHETIC_CURRENT')
+  assert.equal(loadWechatRegisterFlowToken(storage), 'SYNTHETIC_CURRENT')
+  assert.equal(flow.clear('SYNTHETIC_CURRENT'), true)
+  assert.equal(flow.token, '')
+  assert.equal(loadWechatRegisterFlowToken(storage), '')
+  flow.dispose()
 })

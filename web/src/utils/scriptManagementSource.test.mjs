@@ -28,3 +28,22 @@ test('script management is routed for both scopes and exposes admin upload contr
   assert.match(page, /发布为最新版本/)
   assert.match(page, /PowerShell \+ \.NET WebClient/)
 })
+
+test('paid script creation sends exactly one stable idempotency header without changing the payload', async () => {
+  const api = await read('api/TikuComponentApi.js')
+  const start = api.indexOf('export function createScript(')
+  const end = api.indexOf('\n}', start)
+  assert.ok(start >= 0 && end > start)
+  const declaration = api.slice(start, end + 2).replace('export ', '')
+  const invoke = new Function('request', declaration + '; return createScript')(config => config)
+  const payload = { name: 'fixture script' }, key = 'script-create-' + '1'.repeat(32)
+  assert.deepEqual(invoke(payload, key), {
+    errorFeedback: 'local',
+    retryPolicy: 'single',
+    headers: { 'Idempotency-Key': key },
+    url: '/adapter-service/scripts',
+    method: 'post',
+    data: payload,
+  })
+  assert.equal(Object.hasOwn(invoke(payload), 'headers'), false)
+})

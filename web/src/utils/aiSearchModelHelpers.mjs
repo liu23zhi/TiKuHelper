@@ -76,7 +76,9 @@ export function buildAIModelPriceSavePayload(formState) {
     id: formState?.id,
     modelName,
     displayName: trimText(formState?.displayName),
-    contextWindowTokens: normalizeAIModelContextWindowTokens(formState?.contextWindowTokens),
+    ...(Object.prototype.hasOwnProperty.call(formState || {}, 'contextWindowTokens') && formState.contextWindowTokens !== undefined
+      ? { contextWindowTokens: normalizeAIModelContextWindowTokens(formState.contextWindowTokens) }
+      : {}),
     inputPrice: Number(formState?.inputPrice || 0),
     cachedPrice: Number(formState?.cachedPrice || 0),
     cacheWritePrice: Number(formState?.cacheWritePrice || 0),

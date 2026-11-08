@@ -1,31 +1,33 @@
 import { createRouter, createWebHistory } from 'vue-router';
+import { h } from 'vue'
+import { message } from 'ant-design-vue'
 import { getStoredCurrentUser, isAdminUser, resolveHomePath } from '../utils/currentUser'
 import { getPublicRegisterStatus } from '../api/TikuComponentApi'
 
 import AdapterLoginLayout from '../layout/LoginLayout.vue';
 import AdapterLoginPage from '../pages/Login/index.vue'
-import AdapterRegisterPage from '../pages/Register/index.vue'
-import WechatBind from '../pages/WechatBind/index.vue'
-import Profile from '../pages/Profile/index.vue'
+const AdapterRegisterPage = () => import(/* webpackChunkName: "route-adapter-register-page" */ '../pages/Register/index.vue')
+const WechatBind = () => import(/* webpackChunkName: "route-wechat-bind" */ '../pages/WechatBind/index.vue')
+const Profile = () => import(/* webpackChunkName: "route-profile" */ '../pages/Profile/index.vue')
 
-import TikuAdapterLayout from '../layout/TikuAdapterLayout.vue';
-import TikuComponent from '../pages/TikuComponent/index.vue';
-import IntelligentImport from '../pages/IntelligentImport/index.vue';
-import UserList from '../pages/UserList/index.vue'
-import UserUsagePage from '../pages/UserUsage/index.vue'
-import LogList from '../pages/LogList/index.vue'
-import SearchAccountConfig from '../pages/SearchAccountConfig/index.vue'
-import AISearchConfig from '../pages/AISearchConfig/index.vue'
-import SystemSettings from '../pages/SystemSettings/index.vue'
-import ExtensionUpdates from '../pages/ExtensionUpdates/index.vue'
-import AccessTokenManagement from '../pages/AccessTokenManagement/index.vue'
-import ScriptManagement from '../pages/ScriptManagement/index.vue'
-import BillingRecordList from '../pages/BillingRecordList/index.vue'
-import RechargeOrderList from '../pages/RechargeOrderList/index.vue'
-import RechargeResult from '../pages/RechargeResult/index.vue'
-import LocationCache from '../pages/LocationCache/index.vue'
-import OCRCache from '../pages/OCRCache/index.vue'
-import Tickets from '../pages/Tickets/index.vue'
+const TikuAdapterLayout = () => import(/* webpackChunkName: "route-tiku-adapter-layout" */ '../layout/TikuAdapterLayout.vue')
+const TikuComponent = () => import(/* webpackChunkName: "route-tiku-component" */ '../pages/TikuComponent/index.vue')
+const IntelligentImport = () => import(/* webpackChunkName: "route-intelligent-import" */ '../pages/IntelligentImport/index.vue')
+const UserList = () => import(/* webpackChunkName: "route-user-list" */ '../pages/UserList/index.vue')
+const UserUsagePage = () => import(/* webpackChunkName: "route-user-usage-page" */ '../pages/UserUsage/index.vue')
+const LogList = () => import(/* webpackChunkName: "route-log-list" */ '../pages/LogList/index.vue')
+const SearchAccountConfig = () => import(/* webpackChunkName: "route-search-account-config" */ '../pages/SearchAccountConfig/index.vue')
+const AISearchConfig = () => import(/* webpackChunkName: "route-a-i-search-config" */ '../pages/AISearchConfig/index.vue')
+const SystemSettings = () => import(/* webpackChunkName: "route-system-settings" */ '../pages/SystemSettings/index.vue')
+const AccessTokenManagement = () => import(/* webpackChunkName: "route-access-token-management" */ '../pages/AccessTokenManagement/index.vue')
+const ScriptManagement = () => import(/* webpackChunkName: "route-script-management" */ '../pages/ScriptManagement/index.vue')
+const BillingRecordList = () => import(/* webpackChunkName: "route-billing-record-list" */ '../pages/BillingRecordList/index.vue')
+const RechargeOrderList = () => import(/* webpackChunkName: "route-recharge-order-list" */ '../pages/RechargeOrderList/index.vue')
+const RechargeResult = () => import(/* webpackChunkName: "route-recharge-result" */ '../pages/RechargeResult/index.vue')
+const LocationCache = () => import(/* webpackChunkName: "route-location-cache" */ '../pages/LocationCache/index.vue')
+const ExtensionUpdates = () => import(/* webpackChunkName: "route-extension-updates" */ '../pages/ExtensionUpdates/index.vue')
+const Tickets = () => import(/* webpackChunkName: "route-tickets" */ '../pages/Tickets/index.vue')
+const OCRCache = () => import(/* webpackChunkName: "route-o-c-r-cache" */ '../pages/OCRCache/index.vue')
 const routes = [
   {
     path: '/',
@@ -221,6 +223,19 @@ router.beforeEach((to, from, next) => {
   }
 
   next()
+})
+
+router.onError((error) => {
+  const chunkFailure = error?.name === 'ChunkLoadError'
+    || /Loading (?:CSS )?chunk|Failed to fetch dynamically imported module|Importing a module script failed/i.test(String(error?.message || ''))
+  if (!chunkFailure) return
+  message.error({
+    key: 'route-load-failure', duration: 0,
+    content: h('span', [
+      '页面资源加载失败。刷新会丢弃未保存内容，请确认后重试。 ',
+      h('button', { type: 'button', 'aria-label': '刷新页面', style: { minHeight: '44px', cursor: 'pointer' }, onClick: () => window.location.reload() }, '刷新页面'),
+    ]),
+  })
 })
 
 export default router;

@@ -12,6 +12,8 @@ import {
   validateTicketDraft,
 } from "./ticketHelpers.mjs";
 import * as ticketHelpers from "./ticketHelpers.mjs";
+import { isAdminUser, getCurrentUserLogoutEpoch } from "./currentUser.js";
+import { ensureRequestFailure } from "./requestFailureView.mjs";
 
 const require = createRequire(import.meta.url);
 const Vue = require("vue");
@@ -41,6 +43,7 @@ function deferred() {
 }
 
 async function loadTicketPage(overrides = {}) {
+  const { fixtureActor = { id: 88001, role: "admin", status: "enabled" }, ...apiOverrides } = overrides;
   const source = await readFile(
     new URL("../pages/Tickets/index.vue", import.meta.url),
     "utf8"
@@ -50,16 +53,25 @@ async function loadTicketPage(overrides = {}) {
     ""
   );
   const route = Vue.reactive({ params: {} });
+  const currentUser = Vue.shallowRef({ ...fixtureActor });
+  const unmount = [];
+  // Business-unit constructor only: real scope source/capture predicates with
+  // explicit synthetic identity. Native owner/logout qualification is separate.
+  const ownerSource = (await readFile(new URL("./currentUserScope.js", import.meta.url), "utf8"))
+    .replace(/^import .*$/gm, "").replace(/export function/g, "function");
+  const useCurrentUserRequestScope = new Function("watch", "onMounted", "onBeforeUnmount", "isAdminUser", "getCurrentUserLogoutEpoch", `${ownerSource}\nreturn useCurrentUserRequestScope;`)(Vue.watch, () => {}, callback => unmount.push(callback), isAdminUser, getCurrentUserLogoutEpoch);
   const dependencies = {
     ...Vue,
     ...ticketHelpers,
+    ensureRequestFailure,
     defineOptions: () => {},
     onMounted: () => {},
-    onBeforeUnmount: () => {},
+    onBeforeUnmount: callback => unmount.push(callback),
     useRoute: () => route,
     useRouter: () => ({ push() {}, replace() {} }),
-    getStoredCurrentUser: () => ({ role: "admin" }),
-    isAdminUser: () => true,
+    useCurrentUserDisplay: () => ({ currentUser }),
+    useCurrentUserRequestScope,
+    isAdminUser,
     message: { success() {}, error() {}, warning() {} },
     getTickets: async () => ({ data: { data: { items: [] } } }),
     getTicket: async (id) => ({
@@ -72,16 +84,16 @@ async function loadTicketPage(overrides = {}) {
     retryTicketNotification: async () => ({}),
     saveTicketNotificationConfig: async () => ({}),
     testTicketNotification: async () => ({}),
-    ...overrides,
+    ...apiOverrides,
   };
   const scope = Vue.effectScope();
   const state = scope.run(() =>
     new Function(
       ...Object.keys(dependencies),
-      `${script}\nreturn {loadDetail, loadTickets, submitReply, saveStatus, detailTicket, detailStatus, messages, replyBody, tickets, notificationConfig, configSaving, configTesting, saveNotificationConfig, testNotification};`
+      `${script}\nreturn {loadDetail, loadTickets, submitReply, saveStatus, detailTicket, detailStatus, messages, replyBody, tickets, notificationConfig, configSaving, configTesting, saveNotificationConfig, testNotification, loadNotificationConfig, pageEntry, configLoaded, canManage};`
     )(...Object.values(dependencies))
   );
-  return { ...state, close: () => scope.stop() };
+  return { ...state, close: () => { unmount.forEach(callback => callback()); scope.stop(); } };
 }
 
 async function mountNotificationForm(page) {
@@ -92,13 +104,14 @@ async function mountNotificationForm(page) {
   const findForm = (node) => {
     if (
       node.tag === "a-form" &&
-      node.props.some((prop) => prop.exp?.content === "saveNotificationConfig")
+      node.props.some((prop) => prop.exp?.content === "saveNotificationConfig" || prop.exp?.content === "pageEntry.bind(saveNotificationConfig)")
     )
       return node;
     return node.children?.map(findForm).find(Boolean);
   };
   const form = findForm(parse(source).descriptor.template.ast);
   assert.ok(form, "notification settings form exists");
+  assert.ok(form.props.some(prop => prop.arg?.content === "model" && prop.exp?.content === "notificationConfig"), "real AntForm has its actual notificationConfig model");
   const render = new Function(
     "Vue",
     compile(form.loc.source, { mode: "function", prefixIdentifiers: true }).code
@@ -145,6 +158,10 @@ async function mountNotificationForm(page) {
       nativeForm.props.onSubmit({ preventDefault() {}, stopPropagation() {} });
       await new Promise((resolve) => setImmediate(resolve));
     },
+    text() {
+      const collect = target => [target.text, ...target.children.map(collect)].join(" ");
+      return collect(container);
+    },
     close: () => app.unmount(),
   };
 }
@@ -159,7 +176,7 @@ test("notification form submits settings and reloads the saved configuration", a
       reloads++;
       return {
         data: {
-          data: { enabled: true, configured: true, webhookUrl: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test", mentionedList: ["alice", "bob"] },
+          data: { enabled: true, configured: true, webhookUrl: "", preview: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=***", mentionedList: ["alice", "bob"] },
         },
       };
     },
@@ -167,6 +184,11 @@ test("notification form submits settings and reloads the saved configuration", a
   });
   const form = await mountNotificationForm(page);
   try {
+    await page.loadNotificationConfig();
+    const initialReads = reloads;
+    assert.equal(page.notificationConfig.webhookUrl, "", "protected read never prefills a saved secret or masked preview");
+    assert.match(form.text(), /已配置企业微信机器人/, "configured state uses a safe public status preview");
+    assert.doesNotMatch(form.text(), /qyapi\.weixin\.qq\.com|key=test|key=\*\*\*/, "neither raw address nor masked URL becomes visible form text");
     Object.assign(page.notificationConfig, {
       enabled: true,
       webhookUrl: " https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test ",
@@ -181,9 +203,11 @@ test("notification form submits settings and reloads the saved configuration", a
         webhookUrl: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test",
       },
     ]);
-    assert.equal(reloads, 1);
+    assert.equal(reloads - initialReads, 1, "one actual saved-config readback after the required initial GET");
     assert.equal(successes.length, 1);
-    assert.equal(page.notificationConfig.webhookUrl, "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test");
+    assert.equal(page.notificationConfig.webhookUrl, "", "successful save/readback clears the entered secret, preserving blank-retain policy");
+    assert.match(form.text(), /已配置企业微信机器人/);
+    assert.doesNotMatch(form.text(), /key=test/);
     assert.equal(page.notificationConfig.configured, true);
     assert.equal(page.configSaving.value, false);
   } finally {
@@ -200,7 +224,7 @@ test("notification form keeps its draft and reports a failed save", async () => 
     saveTicketNotificationConfig: async () => {
       throw new Error("保存失败，请稍后重试");
     },
-    getTicketNotificationConfig: async () => reloads++,
+    getTicketNotificationConfig: async () => { reloads++; return { data: { data: { enabled: false, configured: false, mentionedList: [] } } }; },
     message: {
       success: (value) => successes.push(value),
       error: (value) => failures.push(value),
@@ -208,6 +232,8 @@ test("notification form keeps its draft and reports a failed save", async () => 
   });
   const form = await mountNotificationForm(page);
   try {
+    await page.loadNotificationConfig();
+    const initialReads = reloads;
     Object.assign(page.notificationConfig, {
       enabled: true,
       webhookUrl: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=draft",
@@ -216,9 +242,9 @@ test("notification form keeps its draft and reports a failed save", async () => 
     const draft = { ...page.notificationConfig };
     await form.submit();
     assert.deepEqual({ ...page.notificationConfig }, draft);
-    assert.deepEqual(failures, ["保存失败，请稍后重试"]);
+    assert.deepEqual(failures, ["企业微信提醒设置保存失败，请核对配置后重试。"]);
     assert.equal(successes.length, 0);
-    assert.equal(reloads, 0);
+    assert.equal(reloads - initialReads, 0, "failed save never performs a success readback");
     assert.equal(page.configSaving.value, false);
   } finally {
     form.close();
@@ -232,12 +258,15 @@ test("notification form can retain or explicitly clear an existing webhook", asy
     saveTicketNotificationConfig: async (payload) => saved.push(payload),
     getTicketNotificationConfig: async () => ({
       data: {
-        data: { enabled: false, configured: saved.length === 1, mentionedList: [] },
+        data: { enabled: false, configured: saved.length < 2, mentionedList: [] },
       },
     }),
   });
   const form = await mountNotificationForm(page);
   try {
+    await page.loadNotificationConfig();
+    assert.equal(page.notificationConfig.configured, true, "initial protected GET confirms an existing secret before retain/clear");
+    assert.equal(page.notificationConfig.webhookUrl, "", "blank input is the actual retain control");
     page.notificationConfig.configured = true;
     await form.submit();
     page.notificationConfig.clearWebhook = true;

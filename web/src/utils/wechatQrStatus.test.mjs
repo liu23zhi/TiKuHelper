@@ -1,10 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {
+import path from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+
+const webRoot = process.env.TIKU_WEB_SOURCE || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+const {
   buildWechatLoginWebSocketURL,
   createWechatQrStatusController,
   resolveWechatQrExpiresAt,
-} from './wechatQrStatus.mjs'
+} = await import(pathToFileURL(path.join(webRoot, 'src/utils/wechatQrStatus.mjs')))
 
 function createFakeScheduler() {
   let nextId = 1
@@ -390,5 +394,83 @@ test('controller ignores old polling results and terminal completion after a new
   await new Promise((resolve) => setImmediate(resolve))
   assert.equal(newestSocket.closed, false)
   assert.ok(scheduler.timers.size > 0)
+  controller.stop()
+})
+
+function pendingStatus() {
+  let resolve
+  const promise = new Promise(done => { resolve = done })
+  return { promise, resolve }
+}
+
+test('stopped QR poll cannot emit a late successful authentication result', async () => {
+  const pending = pendingStatus(), statuses = [], scheduler = createFakeScheduler()
+  const controller = createWechatQrStatusController({
+    checkStatus: () => pending.promise, onStatus: status => statuses.push(status),
+    createWebSocket: () => { throw new Error('SYNTHETIC socket unavailable') },
+    maxReconnectAttempts: 0, setIntervalFn: scheduler.setIntervalFn, clearIntervalFn: scheduler.clearIntervalFn, now: () => 0,
+  })
+  controller.start({ loginToken: 'SYNTHETIC_A', expireSeconds: 180 })
+  controller.stop()
+  pending.resolve({ status: 200, data: { status: 'success', jwt: 'SYNTHETIC_NOT_A_JWT' } })
+  await Promise.resolve(); await Promise.resolve()
+  assert.deepEqual(statuses, [], 'retired poll cannot initiate a login chain')
+  assert.equal(scheduler.timers.size, 0)
+})
+
+test('restarted QR session rejects prior poll and preserves current timers', async () => {
+  const pending = [], statuses = [], scheduler = createFakeScheduler()
+  const controller = createWechatQrStatusController({
+    checkStatus: () => { const next = pendingStatus(); pending.push(next); return next.promise },
+    onStatus: status => statuses.push(status), createWebSocket: () => { throw new Error('SYNTHETIC socket unavailable') },
+    maxReconnectAttempts: 0, setIntervalFn: scheduler.setIntervalFn, clearIntervalFn: scheduler.clearIntervalFn, now: () => 0,
+  })
+  controller.start({ loginToken: 'SYNTHETIC_A', expireSeconds: 180 })
+  controller.start({ loginToken: 'SYNTHETIC_B', expireSeconds: 180 })
+  assert.equal(pending.length, 2)
+  pending[0].resolve({ status: 200, data: { status: 'need_bind', bindToken: 'SYNTHETIC_OLD_BIND' } })
+  await Promise.resolve(); await Promise.resolve()
+  assert.deepEqual(statuses, [], 'old poll cannot stop or authenticate the new session')
+  assert.ok(scheduler.timers.size > 0)
+  controller.stop(); pending[1].resolve({ status: 200, data: { status: 'pending' } })
+  await Promise.resolve()
+})
+
+test('retained old websocket callback cannot change new QR countdown or terminal state', () => {
+  const sockets = [], statuses = [], remaining = [], scheduler = createFakeScheduler()
+  const controller = createWechatQrStatusController({
+    checkStatus: async () => ({ status: 200, data: { status: 'pending' } }), onStatus: status => statuses.push(status),
+    onRemaining: value => remaining.push(value), buildWebSocketURL: token => 'ws://synthetic.invalid/' + token,
+    createWebSocket: () => createFakeSocket(sockets), setIntervalFn: scheduler.setIntervalFn, clearIntervalFn: scheduler.clearIntervalFn, now: () => 0,
+  })
+  controller.start({ loginToken: 'SYNTHETIC_A', expireSeconds: 180 })
+  const oldMessage = sockets[0].onmessage
+  controller.start({ loginToken: 'SYNTHETIC_B', expireSeconds: 180 })
+  oldMessage({ data: JSON.stringify({ type: 'status', status: 'need_bind', remainingSeconds: 1 }) })
+  assert.deepEqual(statuses, [])
+  assert.equal(remaining.at(-1), 180)
+  assert.equal(sockets[1].closed, false)
+  controller.stop()
+})
+
+test('websocket opened near handshake timeout gets a full initial heartbeat window', () => {
+  const sockets = []
+  const scheduler = createFakeScheduler()
+  let clock = 0
+  const controller = createWechatQrStatusController({
+    checkStatus: async () => ({ status: 200, data: { status: 'pending' } }),
+    buildWebSocketURL: token => 'ws://example.test/' + token,
+    createWebSocket: () => createFakeSocket(sockets),
+    setIntervalFn: scheduler.setIntervalFn,
+    clearIntervalFn: scheduler.clearIntervalFn,
+    now: () => clock,
+  })
+  controller.start({ loginToken: 'fixture', expiresAtUnix: 180000 })
+  const socket = sockets[0]
+  clock = 1900
+  socket.onopen()
+  clock = 2000
+  ;[...scheduler.timers.values()].find(timer => timer.delay === 2000).fn()
+  assert.equal(socket.closed, false)
   controller.stop()
 })

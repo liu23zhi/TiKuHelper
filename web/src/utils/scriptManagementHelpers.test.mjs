@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildScriptCommand,
+  buildScriptDownloadURL,
   buildScriptListParams,
   buildScriptSavePayload,
   formatPresetParams,
@@ -9,17 +10,17 @@ import {
   parsePresetParams,
 } from './scriptManagementHelpers.mjs'
 
-test('script command prefers the shortest wildcard hostname', () => {
+test('script address prefers the shortest wildcard hostname', () => {
   assert.equal(
-    buildScriptCommand({ slug: 'a', baseDomain: 'Example.COM', useWildcardDomain: true }),
-    `powershell -c "iex (New-Object Net.WebClient).DownloadString('https://a.example.com')"`,
+    buildScriptDownloadURL({ slug: 'a', baseDomain: 'Example.COM', useWildcardDomain: true }),
+    'https://a.example.com',
   )
 })
 
-test('script command keeps a path when wildcard domains are unavailable', () => {
+test('script address keeps a path when wildcard domains are unavailable', () => {
   assert.equal(
-    buildScriptCommand({ slug: 'a', baseDomain: 'a.com', useWildcardDomain: false }),
-    `powershell -c "iex (New-Object Net.WebClient).DownloadString('https://a.a.com/a')"`,
+    buildScriptDownloadURL({ slug: 'a', baseDomain: 'a.com', useWildcardDomain: false }),
+    'https://a.a.com/a',
   )
 })
 
@@ -34,13 +35,14 @@ test('script list scope only requests all rows for an administrator', () => {
   assert.deepEqual(buildScriptListParams(false, true), { scope: 'self' })
 })
 
-test('save payload includes generated instruction and server parameter shape', () => {
+test('save payload includes server parameter shape but never a client-generated executable command', () => {
   const payload = buildScriptSavePayload({
     name: '助手', versionId: 7, slug: 'a', baseDomain: 'a.com',
     useWildcardDomain: false, presetParams: 'key=secret', billingUseTikuPrice: false, priceMultiplier: 1.25,
   })
   assert.equal(payload.versionId, 7)
-  assert.equal(payload.instruction, `powershell -c "iex (New-Object Net.WebClient).DownloadString('https://a.a.com/a')"`)
+  assert.equal(Object.hasOwn(payload, 'instruction'), false)
+  assert.equal(Object.hasOwn(payload, 'command'), false)
   assert.deepEqual(payload.parameters, { key: 'secret' })
   assert.equal(payload.billingUseTikuPrice, false)
   assert.equal(payload.priceMultiplier, 1.25)
@@ -58,4 +60,19 @@ test('backend instruction and parameters normalize for existing rows', () => {
   assert.deepEqual(row.presetParams, { key: 'secret' })
   assert.equal(row.shortCode, 'abc123')
   assert.equal(row.versionId, 2)
+})
+
+test('script command never interpolates shell syntax or trusts raw commands', () => {
+  for (const domain of ["example.com');calc;('", 'example.com"$(cmd)', 'example.com%27', 'example.com:443', 'example.com@other.test']) {
+    assert.equal(buildScriptDownloadURL({ slug: 'a', baseDomain: domain }), '')
+    assert.equal(buildScriptCommand({ slug: 'a', baseDomain: domain }), '')
+  }
+  assert.equal(buildScriptCommand({ downloadUrl: "https://example.com/');calc;('", instruction: 'powershell -c malicious' }), '')
+})
+
+test('saved script accepts only server launcher shape and ignores a legacy executable field', () => {
+  assert.equal(buildScriptCommand({ command: 'powershell -EncodedCommand ZgA=' }), 'powershell -EncodedCommand ZgA=')
+  assert.equal(buildScriptCommand({ instruction: 'powershell -EncodedCommand ZgA=' }), '')
+  assert.equal(buildScriptCommand({ command: 'powershell -EncodedCommand ZgA=;calc' }), '')
+  assert.equal(buildScriptCommand({ command: 'powershell -c raw' }), '')
 })

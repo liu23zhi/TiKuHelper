@@ -103,20 +103,22 @@ export function buildScriptListParams(isAdmin, showAll) {
 export function buildScriptDownloadURL(record = {}) {
   const normalized = normalizeScriptRecord(record)
   const domain = normalized.baseDomain
-  if (!domain) return text(firstDefined(record, ['downloadUrl', 'scriptUrl', 'url'], ''))
+  if (!domain || domain.length > 253 || !domain.split('.').every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) return ''
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(normalized.slug)) return ''
   const host = `${normalized.slug}.${domain}`
   const path = normalized.useWildcardDomain ? '' : `/${normalized.slug}`
   return `${normalized.scheme}://${host}${path}`
 }
 
+// The authenticated API constructs the launcher and controls whether the caller
+// may receive one. Do not reconstruct executable code from a draft, a URL, or
+// the legacy instruction field.
 export function buildScriptCommand(record = {}) {
-  const url = buildScriptDownloadURL(record)
-  if (url) return `powershell -c "iex (New-Object Net.WebClient).DownloadString('${url}')"`
-  return text(firstDefined(record, ['command', 'instruction'], ''))
+  const command = typeof record.command === 'string' ? record.command : ''
+  return command.length <= 16384 && /^powershell -EncodedCommand [A-Za-z0-9+/]+={0,2}$/.test(command) ? command : ''
 }
 
 export function buildScriptSavePayload(form = {}) {
-  const instruction = buildScriptCommand(form)
   const payload = {
     name: text(form.name),
     description: text(form.description),
@@ -135,8 +137,6 @@ export function buildScriptSavePayload(form = {}) {
       ? Number(form.priceMultiplier ?? form.answerPriceMultiplier)
       : 1,
     versionId: Number(form.versionId || 0),
-    instruction,
-    command: instruction,
     parameters: parsePresetParams(form.presetParams),
   }
   if (form.id !== undefined && form.id !== null && String(form.id) !== '') payload.id = form.id
@@ -145,6 +145,6 @@ export function buildScriptSavePayload(form = {}) {
 
 export function buildScriptBillingText(record = {}) {
   const normalized = normalizeScriptRecord(record)
-  if (!normalized.billingEnabled) return '未启用脚本答题计费'
+  if (!normalized.billingEnabled) return '按原渠道费率'
   return normalized.billingUseTikuPrice ? '与题库一致（1X）' : `独立 ${normalized.priceMultiplier}X 题库标准`
 }

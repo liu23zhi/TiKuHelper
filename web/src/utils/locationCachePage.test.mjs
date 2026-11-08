@@ -1,33 +1,79 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import test from 'node:test'
-import { computed, defineComponent, reactive, ref } from 'vue'
+import { createRequire } from 'node:module'
+import test, { afterEach } from 'node:test'
+import { computed, createRenderer, defineComponent, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
+import { createMemoryHistory, createRouter, onBeforeRouteLeave, RouterView, useRoute } from 'vue-router'
 import { sumTableColumnWidths } from './tableLayout.mjs'
+
+const require = createRequire(import.meta.url)
+require('../../tests/helpers/vue-dom.cjs')
+const { useCurrentUserDisplay, isAdminUser, setStoredCurrentUser, clearStoredCurrentUser } = require('./currentUser.js')
+const { useUnsavedDraft } = require('./useUnsavedDraft.js')
+const fixtures = []
+const renderer = createRenderer({
+  createElement: tag => document.createElement(tag),
+  createText: text => document.createTextNode(text), createComment: text => document.createComment(text),
+  setText: (node, text) => { node.nodeValue = text },
+  setElementText: (node, text) => { node.textContent = text },
+  parentNode: node => node.parentNode, nextSibling: node => node.nextSibling,
+  patchProp: (node, key, _previous, value) => { node[key] = value },
+  insert: (node, parent, anchor = null) => parent.insertBefore(node, anchor),
+  remove: node => node.remove(),
+})
+function confirming(decide = () => true) {
+  return { confirm(options) {
+    queueMicrotask(() => { if (decide(options)) options.onOk(); else options.onCancel() })
+    return { destroy() {} }
+  } }
+}
+afterEach(async () => {
+  for (const { app, history } of fixtures.splice(0)) { app.unmount(); history.destroy() }
+  await nextTick()
+  clearStoredCurrentUser()
+})
 
 async function createPage(overrides = {}) {
   const source = await readFile(new URL('../pages/LocationCache/index.vue', import.meta.url), 'utf8')
   const script = source.match(/<script>([\s\S]*?)<\/script>/)[1]
     .replace(/^import .*$/gm, '')
     .replace('export default defineComponent', 'return defineComponent')
+  const defaultList = async () => ({ status: 200, data: { data: [], total: 0, configured: true } })
+  let bootstrapping = true
   const dependencies = {
-    computed, defineComponent, reactive, ref,
+    computed, defineComponent, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch,
+    onBeforeRouteLeave, useRoute, useCurrentUserDisplay, isAdminUser, useUnsavedDraft,
     sumTableColumnWidths,
-    watch: () => {},
     globalThis: { localStorage: undefined },
-    useRoute: () => ({ meta: { locationKind: 'ip' } }),
     message: { success() {} },
-    Swal: { fire: async () => ({ isConfirmed: true }) },
+    Modal: confirming(),
     ReloadOutlined: {},
     Descriptions: { Item: {} },
     deleteLocationCache: async () => ({ status: 200 }),
     deleteLocationCacheBatch: async () => ({ status: 200, data: { deleted: 0 } }),
     refreshLocationCacheBatch: async () => ({ status: 200, data: { configured: true, data: { requested: 0, refreshed: 0, failed: 0, failures: [] } } }),
-    getLocationCacheList: async () => ({ status: 200, data: { data: [], configured: true } }),
     manualLookupLocationCache: async () => ({ status: 200, data: { configured: true } }),
     refreshLocationCache: async () => ({ status: 200, data: { configured: true } }),
     ...overrides,
+    getLocationCacheList: params => bootstrapping ? defaultList(params) : (overrides.getLocationCacheList || defaultList)(params),
   }
-  return new Function(...Object.keys(dependencies), script)(...Object.values(dependencies)).setup()
+  // Run the complete production setup with real watchers, principal/draft helpers,
+  // router guards and lifecycle. The source fixture begins after a successful local
+  // bootstrap; only transport and confirmation UI are mocked. Rendered Antd paths
+  // are independently covered by LocationCachePrincipalAnt4.test.cjs.
+  setStoredCurrentUser({ id: 74501, role: 'admin', username: 'SYNTHETIC_LOCATION_UTILS' })
+  const component = new Function(...Object.keys(dependencies), script)(...Object.values(dependencies))
+  let page
+  const fixturePage = defineComponent({ setup() { page = component.setup(); return () => null } })
+  const history = createMemoryHistory()
+  const router = createRouter({ history, routes: [{ path: '/cache', component: fixturePage, meta: { locationKind: 'ip' } }] })
+  await router.push('/cache'); await router.isReady()
+  const app = renderer.createApp({ render: () => h(RouterView) })
+  app.use(router); app.mount(document.createElement('div'))
+  fixtures.push({ app, history })
+  await Promise.resolve(); await nextTick()
+  bootstrapping = false
+  return page
 }
 
 function deferred() {
@@ -49,7 +95,7 @@ for (const [status, configured, reason] of [
       },
     })
     await page.refresh({ kind: 'ip', lookupKey: '8.8.8.8', source: '' })
-    assert.equal(page.errorMessage.value, `8.8.8.8：${reason}`)
+    assert.equal(page.errorMessage.value, configured ? `8.8.8.8：${reason}` : '8.8.8.8：未配置 UApiPro 密钥，不能重新查询或手动添加。')
     assert.equal(page.configured.value, configured)
   })
 }
@@ -57,7 +103,8 @@ for (const [status, configured, reason] of [
 test('location refresh retains a useful network error without an HTTP response', async () => {
   const page = await createPage({ refreshLocationCache: async () => { throw new Error('Network Error') } })
   await page.refresh({ kind: 'ip', lookupKey: '8.8.8.8', source: '' })
-  assert.equal(page.errorMessage.value, '8.8.8.8：Network Error')
+  assert.equal(page.errorMessage.value, '8.8.8.8：重新查询失败，当前数据与未保存的编辑仍保留，请重试。')
+  assert.doesNotMatch(page.errorMessage.value, /Network Error/)
 })
 
 for (const [action, requestName, stateName] of [
@@ -149,26 +196,27 @@ test('query source defaults to ordinary and persists a valid browser preference'
   assert.equal((await createPage({ globalThis })).querySource.value, '')
 })
 
-test('missing key forces ordinary source but still allows IP refresh', async () => {
+test('missing key keeps cache read-only and disables all IP query actions', async () => {
   let input
   const page = await createPage({
-    refreshLocationCache: async value => { input = value; return { status: 200, data: { configured: false } } },
-    getLocationCacheList: async () => ({ status: 200, data: { data: [], configured: false } }),
+    refreshLocationCache: async value => { input = value; return { status: 200 } },
+    getLocationCacheList: async () => ({ status: 200, data: { data: [], total: 0, configured: false } }),
   })
   page.setQuerySource('commercial')
   await page.load()
   assert.equal(page.querySource.value, '')
   page.setQuerySource('commercial')
   assert.equal(page.querySource.value, '')
+  assert.equal(page.isRefreshDisabled(), true)
   await page.refresh({ kind: 'ip', lookupKey: '8.8.8.8', source: 'commercial' })
-  assert.deepEqual(input, { kind: 'ip', lookupKey: '8.8.8.8', source: '', recordSource: 'commercial' })
+  assert.equal(input, undefined)
 })
 
 test('batch refresh applies the chosen source without changing all-page exceptions', async () => {
   let payload
   let confirmation
   const page = await createPage({
-    Swal: { fire: async options => { confirmation = options; return { isConfirmed: true } } },
+    Modal: confirming(options => { confirmation = options; return true }),
     refreshLocationCacheBatch: async input => { payload = input; return { status: 200 } },
   })
   page.setQuerySource('commercial')
@@ -181,16 +229,16 @@ test('batch refresh applies the chosen source without changing all-page exceptio
     kind: 'ip', keyword: '', source: '', items: [], all: true,
     except: [{ lookupKey: '8.8.8.8', source: 'legacy' }], querySource: 'commercial',
   })
-  assert.match(confirmation.text, /按商业增强重新查询 2 条/)
+  assert.match(confirmation.content, /按商业增强重新查询 2 条/)
 })
 
-test('missing key allows ordinary batch refresh, but cancelling sends nothing', async () => {
+test('missing key blocks batch refresh; configured cancellation still sends nothing', async () => {
   const calls = []
   let confirmed = false
   const page = await createPage({
-    Swal: { fire: async () => ({ isConfirmed: confirmed }) },
+    Modal: confirming(() => confirmed),
     refreshLocationCacheBatch: async input => { calls.push(input); return { status: 200 } },
-    getLocationCacheList: async () => ({ status: 200, data: { data: [], configured: false } }),
+    getLocationCacheList: async () => ({ status: 200, data: { data: [], total: 0, configured: false } }),
   })
   await page.load()
   page.rows.value = [{ kind: 'ip', lookupKey: '8.8.8.8', source: 'commercial' }]
@@ -200,37 +248,43 @@ test('missing key allows ordinary batch refresh, but cancelling sends nothing', 
   assert.equal(calls.length, 0)
   confirmed = true
   await page.refreshSelected()
+  assert.equal(calls.length, 0)
+  page.configured.value = true
+  confirmed = false
+  await page.refreshSelected()
+  assert.equal(calls.length, 0)
+  confirmed = true
+  await page.refreshSelected()
   assert.equal(calls.length, 1)
   assert.equal(calls[0].querySource, '')
   assert.equal(calls[0].items[0].source, 'commercial')
 })
 
-test('phone single, batch and manual queries work without a key and never send the IP source setting', async () => {
-  const calls = []
-  const batches = []
-  const manual = []
+test('phone query actions require a key and never send the IP source setting', async () => {
+  const calls = []; const batches = []; const manual = []
   const page = await createPage({
     useRoute: () => ({ meta: { locationKind: 'phone' } }),
     refreshLocationCache: async input => { calls.push(input); return { status: 200 } },
     refreshLocationCacheBatch: async input => { batches.push(input); return { status: 200 } },
     manualLookupLocationCache: async input => { manual.push(input); return { status: 200 } },
-    getLocationCacheList: async () => ({ status: 200, data: { data: [], configured: false } }),
   })
+  page.configured.value = true
   page.setQuerySource('commercial')
   const row = { kind: 'phone', lookupKey: '13800138000', source: '' }
   await page.refresh(row)
   assert.deepEqual(calls, [{ kind: 'phone', lookupKey: '13800138000', source: '', recordSource: '' }])
   page.configured.value = false
+  assert.equal(page.isRefreshDisabled(row), true)
   await page.refresh(row)
-  assert.equal(calls.length, 2)
-  assert.equal(page.isRefreshDisabled(row), false)
-  page.rows.value = [row]
-  page.pagination.total = 1
-  page.handleSelectCurrentPage()
+  assert.equal(calls.length, 1)
+  page.rows.value = [row]; page.pagination.total = 1; page.handleSelectCurrentPage()
   await page.refreshSelected()
-  assert.equal(batches.length, 1)
-  assert.equal(batches[0].querySource, '')
-  assert.deepEqual(batches[0].items, [{ lookupKey: row.lookupKey, source: '' }])
+  page.manualKey.value = row.lookupKey
+  await page.manualLookup()
+  assert.equal(batches.length, 0); assert.equal(manual.length, 0)
+  page.configured.value = true
+  await page.refreshSelected()
+  assert.equal(batches.length, 1); assert.equal(batches[0].querySource, '')
   page.manualKey.value = row.lookupKey
   await page.manualLookup()
   assert.deepEqual(manual, [{ kind: 'phone', lookupKey: row.lookupKey, source: '' }])
@@ -278,7 +332,8 @@ test('batch refresh keeps partial failure details after reloading the list', asy
   page.pagination.total = 1
   page.handleSelectCurrentPage()
   await page.refreshSelected()
-  assert.equal(page.errorMessage.value, '已成功重新查询 1 条，1 条失败：8.8.8.8：上游失败')
+  assert.equal(page.errorMessage.value, '已成功重新查询 1 条，1 条失败：8.8.8.8（普通来源）：查询失败')
+  assert.doesNotMatch(page.errorMessage.value, /上游失败/)
 })
 
 for (const targetOnPage of [true, false]) {
@@ -326,7 +381,7 @@ for (const targetOnPage of [true, false]) {
     const response = deferred()
     const page = await createPage({
       refreshLocationCacheBatch: () => { started.resolve(); return response.promise },
-      getLocationCacheList: async () => ({ status: 200, data: { data: targetOnPage ? [refreshed] : [], total: 1 } }),
+      getLocationCacheList: async () => ({ status: 200, data: { data: targetOnPage ? [refreshed] : [], total: 1, configured: true } }),
     })
     page.rows.value = [original]
     page.pagination.total = 1
@@ -349,7 +404,7 @@ test('batch refresh updates the currently open selected detail after switching d
   const response = deferred()
   const page = await createPage({
     refreshLocationCacheBatch: () => { started.resolve(); return response.promise },
-    getLocationCacheList: async () => ({ status: 200, data: { data: [refreshed], total: 2 } }),
+    getLocationCacheList: async () => ({ status: 200, data: { data: [refreshed], total: 2, configured: true } }),
   })
   page.rows.value = [first, second]
   page.pagination.total = 2
@@ -373,7 +428,7 @@ test('batch refresh preserves failed or unselected detail opened during the requ
     const response = deferred()
     const page = await createPage({
       refreshLocationCacheBatch: () => { started.resolve(); return response.promise },
-      getLocationCacheList: async () => ({ status: 200, data: { data: [refreshed], total: 1 } }),
+      getLocationCacheList: async () => ({ status: 200, data: { data: [refreshed], total: 1, configured: true } }),
     })
     page.rows.value = [selected]
     page.pagination.total = 1
@@ -397,7 +452,7 @@ for (const matchingField of [null, 'lookupKey', 'address']) {
     const response = deferred()
     const page = await createPage({
       refreshLocationCacheBatch: () => { started.resolve(); return response.promise },
-      getLocationCacheList: async () => ({ status: 200, data: { data: [refreshed], total: 1 } }),
+      getLocationCacheList: async () => ({ status: 200, data: { data: [refreshed], total: 1, configured: true } }),
     })
     page.keywordInput.value = filter
     page.reload()
@@ -469,10 +524,10 @@ test('location cache reload and bulk delete keep all active filters', async () =
     },
   })
   page.keywordInput.value = '上海'
-  page.recordSource.value = 'default'
-  page.addressStatus.value = 'without'
-  page.fetchedFrom.value = '2026-10-10'
-  page.fetchedTo.value = '2026-10-12'
+  page.updateRecordSource('default')
+  page.updateAddressStatus('without')
+  page.updateFetchedFrom('2026-10-10')
+  page.updateFetchedTo('2026-10-12')
   page.reload()
   await new Promise(resolve => setTimeout(resolve, 0))
   assert.deepEqual(listCalls.at(-1), {
@@ -622,4 +677,19 @@ test('location cache sends filter scope and exceptions when deleting all pages',
     ],
   })
   assert.equal(page.selectedCount.value, 0)
+})
+
+test('missing-key status message never promises visitor lookups', async () => {
+  const source = await readFile(new URL('../pages/LocationCache/index.vue', import.meta.url), 'utf8')
+  assert.match(source, /未配置 UApiPro 密钥，仅可查看已有缓存，不能重新查询或手动添加/)
+  assert.doesNotMatch(source, /仍可查询手机号|仅可使用普通来源/)
+})
+
+test('unknown configuration cannot start a query before the key status is known', async () => {
+  let calls = 0
+  const page = await createPage({ refreshLocationCache: async () => { calls++; return { status: 200 } } })
+  page.configured.value = undefined
+  assert.equal(page.isRefreshDisabled(), true)
+  await page.refresh({ kind: 'ip', lookupKey: '8.8.8.8', source: '' })
+  assert.equal(calls, 0)
 })

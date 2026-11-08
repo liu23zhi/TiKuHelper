@@ -1,5 +1,6 @@
 <template>
-  <div>
+  <div :id="`${controlPrefix}-group`" class="compression-order-group" role="group" :aria-labelledby="labelledBy || `${controlPrefix}-label`">
+    <span v-if="!labelledBy" :id="`${controlPrefix}-label`">压缩执行顺序</span>
     <ol class="compression-order" aria-label="压缩执行顺序">
       <li
         v-for="(strategy, index) in modelValue"
@@ -14,25 +15,27 @@
         @dragend="clearDrag"
       >
         <button
+          :id="handleId(strategy)"
           type="button"
           class="compression-order-handle"
           :disabled="disabled"
           :aria-label="`拖动${strategyText(strategy)}调整顺序，也可使用方向键`"
           title="拖动调整顺序"
+          @click="$event.currentTarget.focus()"
           @pointerdown="startPointerDrag($event, strategy)"
           @pointermove="pointerMove"
           @pointerup="finishPointerDrag"
           @pointercancel="clearDrag"
-          @keydown.up.prevent="move(index, index - 1)"
-          @keydown.down.prevent="move(index, index + 1)"
+          @keydown.up.prevent="move(index, index - 1, $event)"
+          @keydown.down.prevent="move(index, index + 1, $event)"
         >{{ index + 1 }}</button>
         <span class="compression-order-content">
           <strong>{{ strategyText(strategy) }}</strong>
           <span>{{ strategyDescription(strategy) }}</span>
         </span>
         <span class="compression-order-actions">
-          <a-button size="small" :disabled="disabled || index === 0" :aria-label="`${strategyText(strategy)}上移`" @click="move(index, index - 1)">上移</a-button>
-          <a-button size="small" :disabled="disabled || index === modelValue.length - 1" :aria-label="`${strategyText(strategy)}下移`" @click="move(index, index + 1)">下移</a-button>
+          <a-button :id="`${controlPrefix}-${strategy}-up`" size="small" :disabled="disabled || index === 0" :aria-label="`${strategyText(strategy)}上移`" @click="move(index, index - 1, $event)">上移</a-button>
+          <a-button :id="`${controlPrefix}-${strategy}-down`" size="small" :disabled="disabled || index === modelValue.length - 1" :aria-label="`${strategyText(strategy)}下移`" @click="move(index, index + 1, $event)">下移</a-button>
         </span>
       </li>
     </ol>
@@ -42,7 +45,7 @@
 </template>
 
 <script>
-import { defineComponent, ref } from 'vue'
+import { computed, defineComponent, nextTick, onBeforeUnmount, ref, toRaw, useId } from 'vue'
 import { AI_CONTEXT_COMPRESSION_STRATEGIES, aiContextCompressionStrategyText, moveAIContextCompressionStrategy } from '@/utils/aiSearchConfigHelpers.mjs'
 
 export default defineComponent({
@@ -50,19 +53,36 @@ export default defineComponent({
   props: {
     modelValue: { type: Array, required: true },
     disabled: { type: Boolean, default: false },
+    idPrefix: { type: String, default: '' },
+    labelledBy: { type: String, default: '' },
   },
   emits: ['update:modelValue'],
   setup(props, { emit }) {
+    const fallbackPrefix = `ai-compression-order-${useId()}`
+    const controlPrefix = computed(() => props.idPrefix || fallbackPrefix)
+    // The server strategy is always present in normalized configuration. Its
+    // native handle remains the field's stable label/focus entry after sorting.
+    const handleId = strategy => `${controlPrefix.value}-${strategy === 'server' ? 'entry' : `${strategy}-handle`}`
+    let alive = true
+    onBeforeUnmount(() => { alive = false })
     const dragging = ref('')
     const dropTarget = ref('')
     const announcement = ref('')
     let pointerActive = false
     function clearDrag() { dragging.value = ''; dropTarget.value = ''; pointerActive = false }
-    function move(from, to) {
+    function move(from, to, event) {
       if (props.disabled || from === to || from < 0 || from >= props.modelValue.length || to < 0 || to >= props.modelValue.length) return
       const next = moveAIContextCompressionStrategy(props.modelValue, from, to)
+      const focusTarget = event?.currentTarget
+      const ownsFocus = focusTarget && document.activeElement === focusTarget
       emit('update:modelValue', next)
       announcement.value = `${aiContextCompressionStrategyText(props.modelValue[from])}已移到第 ${to + 1} 位`
+      if (ownsFocus) nextTick(() => {
+        // Only an accepted, still-current controlled update may restore focus.
+        // A retired/rejected parent update or a later focus choice wins.
+        if (!alive || props.disabled || toRaw(props.modelValue) !== next || !focusTarget.isConnected) return
+        if (document.activeElement === focusTarget || document.activeElement === document.body) focusTarget.focus()
+      })
     }
     function startDrag(event, strategy) {
       if (props.disabled) { event.preventDefault(); return }
@@ -101,7 +121,7 @@ export default defineComponent({
       else clearDrag()
     }
     function strategyDescription(strategy) { return AI_CONTEXT_COMPRESSION_STRATEGIES.find(item => item.value === strategy)?.description || '' }
-    return { dragging, dropTarget, announcement, move, startDrag, dragOver, drop, clearDrag, startPointerDrag, pointerMove, finishPointerDrag, strategyText: aiContextCompressionStrategyText, strategyDescription }
+    return { controlPrefix, handleId, dragging, dropTarget, announcement, move, startDrag, dragOver, drop, clearDrag, startPointerDrag, pointerMove, finishPointerDrag, strategyText: aiContextCompressionStrategyText, strategyDescription }
   },
 })
 </script>

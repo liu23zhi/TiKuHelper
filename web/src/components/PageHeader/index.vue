@@ -1,16 +1,18 @@
 <template>
   <header class="page-header">
     <div class="brand">
-      <ReadOutlined />
+      <ReadOutlined aria-hidden="true" />
       <span class="brand-text">{{ siteName }}</span>
+      <span class="source-version" :title="sourceRevision" aria-label="源码版本">{{ sourceRevision.slice(0, 8) }}</span>
     </div>
-    <div v-if="hasLogout" class="actions">
-      <a-tooltip placement="bottom">
+    <div class="actions">
+      <ThemeControl />
+      <a-tooltip v-if="hasLogout" placement="bottom">
         <template #title>
           <span>退出登录</span>
         </template>
         <a-button type="text" class="logout-btn" @click="logoutOut">
-          <LogoutOutlined />
+          <LogoutOutlined aria-hidden="true" />
           <span>退出</span>
         </a-button>
       </a-tooltip>
@@ -28,6 +30,7 @@ import { logout } from '../../api/TikuComponentApi.js'
 import { useRouter } from 'vue-router';
 import { defineComponent } from 'vue';
 import { siteName } from '../../utils/siteName.js'
+import ThemeControl from '../ThemeControl'
 
 export default defineComponent({
   name: 'PageHeader',
@@ -44,12 +47,14 @@ export default defineComponent({
     };
     return {
       siteName,
+      sourceRevision: process.env.VUE_APP_SOURCE_REVISION || 'development',
       navigateToImport
     }
   },
   components: {
     ReadOutlined,
-    LogoutOutlined
+    LogoutOutlined,
+    ThemeControl
   },
   methods: {
     logoutOut() {
@@ -77,11 +82,11 @@ export default defineComponent({
   padding: 0 24px;
   color: var(--console-text);
 }
-
 .brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--header-brand-gap);
+  min-width: 0;
   font-size: 20px;
   font-weight: 700;
   min-width: 0;
@@ -105,11 +110,11 @@ export default defineComponent({
   color: var(--console-text);
   border-radius: 6px;
 }
-
 .logout-btn:hover,
 .logout-btn:focus {
   color: var(--console-primary);
   background: var(--console-selected);
 }
 @media (max-width: 768px) { .page-header { padding: 0 16px; } .brand { font-size: 18px; } }
+.source-version { font-size: 11px; font-family: monospace; font-weight: 400; color: var(--console-muted); overflow-wrap: anywhere; }
 </style>

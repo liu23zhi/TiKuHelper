@@ -2,7 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import vm from 'node:vm'
-import { buildAuthFailureHandling, buildResponsePayload, isPublicWechatRegisterRequest } from './requestHelpers.mjs'
+import { onScopeDispose, readonly, shallowReadonly, shallowRef, triggerRef } from 'vue'
+import { buildAuthFailureHandling, buildResponsePayload, isPublicWechatRegisterRequest, captureTransportRequestError } from './requestHelpers.mjs'
 
 function deferred() {
   let resolve
@@ -14,12 +15,13 @@ async function loadRequest(send) {
   const source = await readFile(new URL('./request.js', import.meta.url), 'utf8')
   const currentUser = await readFile(new URL('./currentUser.js', import.meta.url), 'utf8')
   const storage = new Map([['adapter_current_user', JSON.stringify({ id: 1, nickname: 'old' })]])
-  const browser = {
+  const browser = Object.assign(new EventTarget(), {
     localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) },
     location: { href: '/adapter/profile' },
-  }
+  })
   const scope = {
     window: browser,
+    onScopeDispose, readonly, shallowReadonly, shallowRef, triggerRef, captureTransportRequestError,
     axios: { create: () => ({ request: send }) },
     executeWithRetry: (request, config) => request(config),
     toUserRequestError: (_config, error) => error,

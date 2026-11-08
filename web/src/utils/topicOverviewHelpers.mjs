@@ -14,6 +14,23 @@ export function buildQuestionBulkActionIds(values = []) {
   return ids;
 }
 
+export function buildQuestionBulkCourseUpdatePayload(values = [], courseName = '') {
+  const ids = buildQuestionBulkActionIds(values);
+  if (!ids.length) {
+    throw new Error('请先选择需要批量修改的题目');
+  }
+
+  const normalizedCourseName = String(courseName || '').trim();
+  if (!normalizedCourseName) {
+    throw new Error('请输入课程名称');
+  }
+
+  return {
+    ids,
+    courseName: normalizedCourseName,
+  };
+}
+
 export function normalizeQuestionTypeFilter(value) {
   if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) {
     return -1;

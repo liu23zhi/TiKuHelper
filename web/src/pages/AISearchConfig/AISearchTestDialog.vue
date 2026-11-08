@@ -5,8 +5,6 @@
     :ok-text="submitText"
     cancel-text="关闭"
     :confirm-loading="submitting"
-    :closable="!submitting"
-    :mask-closable="!submitting"
     width="920px"
     @ok="runTest"
     @cancel="close"
@@ -26,10 +24,11 @@
           <a-radio value="configured">按已保存顺序自动尝试</a-radio>
           <a-radio value="server">服务器自动压缩</a-radio>
           <a-radio value="remote">独立节点，失败回退本地</a-radio>
-          <a-radio value="local">本地压缩</a-radio>
+          <a-radio value="local">本地模型摘要（仍会外呼）</a-radio>
         </a-radio-group>
         <div v-if="form.compressionMode === 'configured'" class="hint">保存的顺序：{{ configuredCompressionOrder }}</div>
         <div class="hint">压缩测试会使用已保存的压缩尝试次数；AI 调用压缩测试默认仅验证历史是否保留。需要验证压缩后联网时，请显式选择工具并填写目标。实际模型和工具用量计入管理员账单。</div>
+        <div class="hint">本地模型摘要仍会请求当前模型，不是零外呼处理；远程与模型摘要均按实际 Token 计费。</div>
       </a-form-item>
       <a-form-item v-if="includesCompression" label="待压缩历史" required>
         <a-textarea v-model:value="form.history" :disabled="submitting" :auto-size="{ minRows: 6, maxRows: 14 }" placeholder="粘贴已有的搜索记录、网页内容或工具调用历史。压缩后将展示摘要、前后 Token 估算和执行轨迹。" />
@@ -138,7 +137,7 @@
 </template>
 
 <script>
-import { computed, defineComponent, reactive, ref, watch } from 'vue'
+import { computed, defineComponent, reactive, ref, watch, onBeforeUnmount } from 'vue'
 import { message } from 'ant-design-vue'
 import BillingDetailDialog from '@/components/BillingDetailDialog.vue'
 import AIToolTestResults from './AIToolTestResults.vue'
@@ -153,6 +152,7 @@ export default defineComponent({
     config: { type: Object, default: () => ({}) },
     modelOptions: { type: Array, default: () => [] },
     savedCompressionOrder: { type: Array, default: () => buildAIContextCompressionSettings().contextCompressionOrder },
+    actionContext: { type: Object, default: null },
   },
   emits: ['update:open'],
   setup(props, { emit }) {
@@ -165,6 +165,16 @@ export default defineComponent({
     const result = ref(null)
     const error = ref('')
     const billingOpen = ref(false)
+    let displayAlive = true
+    let displayGeneration = 0
+    const invalidateDisplay = () => {
+      displayGeneration += 1
+      submitting.value = false
+      billingOpen.value = false
+    }
+    const isActionCurrent = context => !context || context.isCurrent()
+    const canPublish = (ticket, context) => displayAlive && props.open && ticket === displayGeneration && isActionCurrent(context)
+    onBeforeUnmount(() => { displayAlive = false; invalidateDisplay() })
     const submitText = computed(() => testType.value === 'ai_compression' && form.tool === 'none' ? '压缩并验证历史' : ({ hello: '发送 hello 测试', direct: '测试工具', ai: '发起 AI 工具调用', compression: '执行压缩测试', ai_compression: '压缩并调用工具' }[testType.value]))
     const includesCompression = computed(() => ['compression', 'ai_compression'].includes(testType.value))
     const configuredCompressionOrder = computed(() => props.savedCompressionOrder.map(aiContextCompressionStrategyText).join(' → '))
@@ -197,6 +207,7 @@ export default defineComponent({
       billingOpen.value = false
     }
     watch(() => props.open, (open) => {
+      invalidateDisplay()
       if (!open) return
       const { history, compressionMode, ...connection } = buildAISearchTestForm(props.config)
       Object.assign(form, connection)
@@ -206,7 +217,7 @@ export default defineComponent({
         initialized = true
       }
       resetResult()
-    })
+    }, { flush: 'sync' })
     watch(testType, (mode, previous) => {
       if (previous === 'ai_compression') compressionTool = form.tool
       else if (previous === 'ai' || previous === 'direct') networkTool = form.tool
@@ -219,30 +230,36 @@ export default defineComponent({
       }
     })
     async function runTest() {
-      if (submitting.value) return
+      const actionContext = props.actionContext
+      if (!props.open || submitting.value || !isActionCurrent(actionContext)) return
+      const displayTicket = ++displayGeneration
+      const submittedType = testType.value
       let payload
       try {
         payload = testType.value === 'hello'
           ? buildAISearchTestPayload(form, props.config)
           : buildAIToolTestPayload({ ...form, mode: testType.value }, props.config)
       } catch (validationError) {
-        error.value = validationError.message
+        if (canPublish(displayTicket, actionContext)) error.value = validationError.message
         return
       }
+      if (!canPublish(displayTicket, actionContext)) return
       resetResult()
       submitting.value = true
       try {
-        const response = await (testType.value === 'hello' ? testAISearchConfig(payload) : testAIToolCall(payload))
+        const response = await (submittedType === 'hello' ? testAISearchConfig(payload) : testAIToolCall(payload))
+        if (!canPublish(displayTicket, actionContext)) return
         if (response?.status !== 200) throw new Error(response?.data?.message || response?.message || '测试失败')
-        result.value = testType.value === 'hello' ? buildAISearchTestResult(response) : buildAIToolTestResult(response)
-        if (testType.value === 'hello') message.success('AI 搜索测试完成')
+        result.value = submittedType === 'hello' ? buildAISearchTestResult(response) : buildAIToolTestResult(response)
+        if (submittedType === 'hello') message.success('AI 搜索测试完成')
       } catch (requestError) {
+        if (!canPublish(displayTicket, actionContext)) return
         error.value = requestError?.response?.data?.message || requestError?.message || '测试请求失败'
       } finally {
-        submitting.value = false
+        if (canPublish(displayTicket, actionContext)) submitting.value = false
       }
     }
-    function close() { if (!submitting.value) emit('update:open', false) }
+    function close() { invalidateDisplay(); emit('update:open', false) }
     return { testType, form, submitting, result, error, billingOpen, submitText, includesCompression, includesWebRead, includesOCR, toolTargetLabel, toolTargetPlaceholder, configuredCompressionOrder, toolTestDescription, testModeDescription, compressionStrategyText: aiContextCompressionStrategyText, promptPreview, diagnosticBlocks, resetResult, runTest, close }
   },
 })

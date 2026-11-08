@@ -1,30 +1,34 @@
 <template>
-  <div class="console-page tiku-page">
+  <div class="console-page tiku-page" :onInputCapture="questionEntry.guardNative"
+       :onChangeCapture="questionEntry.guardNative" :onClickCapture="questionEntry.guardNative">
     <ConsolePageHeading title="题库管理" description="管理本地题目、答案和导入记录。">
       <template #actions>
-      <a-button @click="fetchData" :loading="tabLoading">刷新</a-button>
-      <a-button @click="triggerJsonImport">JSON 导入</a-button>
-      <a-button @click="navigateToImport"><DownloadOutlined />智能导入</a-button>
-      <a-button @click="handleExportSelected">导出选中</a-button>
-      <a-button danger @click="handleDeleteSelected">批量删除</a-button>
-      <a-button type="primary" @click="showModal({ type: 0, question: '', options: '[]', answer: '[]' }, 2)"><FormOutlined />添加</a-button>
+      <a-button :disabled="!canUseQuestions()" :onClick="questionEntry.bind(fetchData)" :loading="tabLoading">刷新</a-button>
+      <a-button :disabled="!canUseQuestions()" :onClick="questionEntry.bind(triggerJsonImport)">JSON 导入</a-button>
+      <a-button :disabled="!canUseQuestions()" :onClick="questionEntry.bind(navigateToImport)"><DownloadOutlined />智能导入</a-button>
+      <a-button :disabled="!canUseQuestions() || !selectedRowKeys.length" :onClick="questionEntry.bind(handleExportSelected)">导出选中</a-button>
+      <a-button :disabled="!canUseQuestions() || !selectedRowKeys.length" :onClick="questionEntry.bind(openBulkCourseModal)">批量编辑课程名</a-button>
+      <a-button danger :disabled="!canUseQuestions() || !selectedRowKeys.length" :onClick="questionEntry.bind(handleDeleteSelected)">批量删除</a-button>
+      <a-button type="primary" :disabled="!canUseQuestions()" :onClick="questionEntry.bind(showModal, { type: 0, question: '', options: '[]', answer: '[]' }, 2)"><FormOutlined />添加</a-button>
       </template>
     </ConsolePageHeading>
+    <a-alert v-if="!canUseQuestions()" type="warning" show-icon
+             message="当前身份无题库管理权限，请使用管理员账号登录。" />
 
     <section class="console-panel filter-panel">
-      <a-form layout="inline" class="filter-form" @finish="onSearch">
-        <a-form-item label="类型">
-          <a-select v-model:value="typeValue" show-search allow-clear placeholder="请选择" :options="typeList"
-                    @change="onFilterChange" />
+      <a-form layout="inline" class="filter-form" :onFinish="questionEntry.bind(onSearch)">
+        <a-form-item label="类型" :html-for="fieldId('filter-type')">
+          <a-select :id="fieldId('filter-type')" :disabled="!canUseQuestions()" :value="typeValue" v-on="{ 'update:value': questionEntry.bind(value => typeValue = value) }" show-search allow-clear placeholder="请选择" :options="typeList"
+                    :onChange="questionEntry.bind(onFilterChange)" />
         </a-form-item>
-        <a-form-item label="问题">
-          <a-input v-model:value="searchValue.question" placeholder="搜索问题" @press-enter="onSearch" />
+        <a-form-item label="问题" :html-for="fieldId('filter-question')">
+          <a-input :id="fieldId('filter-question')" :disabled="!canUseQuestions()" :value="searchValue.question" v-on="{ 'update:value': questionEntry.bind(value => searchValue.question = value) }" placeholder="搜索问题" :onPressEnter="questionEntry.bind(onSearch)" />
         </a-form-item>
-        <a-form-item label="无答案">
-          <a-checkbox v-model:checked="searchValue.onlyShowEmptyAnswer" />
+        <a-form-item label="无答案" :html-for="fieldId('filter-empty-answer')">
+          <a-checkbox :id="fieldId('filter-empty-answer')" :disabled="!canUseQuestions()" :checked="searchValue.onlyShowEmptyAnswer" v-on="{ 'update:checked': questionEntry.bind(value => searchValue.onlyShowEmptyAnswer = value) }" />
         </a-form-item>
         <a-form-item>
-          <a-button type="primary" @click="onSearch" @keyup.enter="onSearch">
+          <a-button type="primary" :disabled="!canUseQuestions()" :onClick="questionEntry.bind(onSearch)" :onKeyup="questionEntry.bind(event => event.key === 'Enter' && onSearch())">
             <SearchOutlined />
             搜索
           </a-button>
@@ -43,6 +47,8 @@
               </div>
             </div>
           </template>
+          <RequestFailureAlert v-if="listFailure" :failure="listFailure" message="获取题目列表失败"
+            :retryable="true" :busy="tabLoading" :context-key="listFailureContext" :is-current="isCurrentListFailure" :onRetry="questionEntry.bind(guardedRetryListFailure)" />
           <a-alert
             v-if="page.total"
             type="info"
@@ -56,7 +62,7 @@
                   type="link"
                   size="small"
                   :disabled="allCurrentPageSelected"
-                  @click="handleSelectCurrentPage"
+                  :onClick="questionEntry.bind(handleSelectCurrentPage)"
                 >
                   全选本页
                 </a-button>
@@ -64,7 +70,7 @@
                   type="link"
                   size="small"
                   :disabled="!hasCurrentPageSelection"
-                  @click="handleClearCurrentPage"
+                  :onClick="questionEntry.bind(handleClearCurrentPage)"
                 >
                   取消本页选择
                 </a-button>
@@ -73,7 +79,7 @@
                   size="small"
                   :loading="selectAllLoading"
                   :disabled="allRowsSelected || selectAllLoading"
-                  @click="handleSelectAll"
+                  :onClick="questionEntry.bind(handleSelectAll)"
                 >
                   全选所有页
                 </a-button>
@@ -81,15 +87,18 @@
                   type="link"
                   size="small"
                   :disabled="!selectedRowKeys.length"
-                  @click="handleClearSelection"
+                  :onClick="questionEntry.bind(handleClearSelection)"
                 >
                   取消全部选择
                 </a-button>
               </div>
             </template>
           </a-alert>
+          <TableColumnSettings :model-value="selectedColumnKeys" :options="columnOptions"
+            :context-key="columnScopeKey" :priority-keys="columnPriorityKeys"
+            v-on="{ 'update:modelValue': questionEntry.bind(setSelectedColumnKeys), reset: questionEntry.bind(resetColumns) }" />
           <ConsoleTableShell label="题库管理">
-          <a-table :columns="columns" :data-source="data" :pagination="false" :row-key="record => record.id" table-layout="fixed"
+          <a-table :columns="visibleColumns" :data-source="data" :pagination="false" :row-key="record => record.id" table-layout="fixed"
                    :loading="tabLoading" :scroll="{ x: tableScrollX }" :row-selection="rowSelection">
             <template #bodyCell="{ column, record }">
               <a-tag v-if="column.key === 'type'" :color="record.type === 0 ? 'green' : record.type === 1 ? 'cyan' : 'orange'">
@@ -97,42 +106,120 @@
               </a-tag>
               <OverflowTableText v-else-if="['question', 'answer', 'extra'].includes(column.key)"
                 :text="column.key === 'answer' ? buildQuestionAnswerText(record) : record[column.key]"
-                :expanded="isExpanded(record, column.key)" @toggle="toggleExpanded(record, column.key)" />
+                :expanded="isExpanded(record, column.key)" :onToggle="questionEntry.bind(toggleExpanded, record, column.key)" />
               <span v-else-if="column.key === 'source_name'">{{ getSourceNameText(record.source_name) }}</span>
               <div v-else-if="column.key === 'action'" class="row-actions">
-                <a-button type="primary" ghost @click="showModal(record, 1)">编辑</a-button>
-                <a-button type="primary" ghost danger @click="deleteQuestion(record.id)">删除</a-button>
+                <a-button :disabled="!canViewQuestionDetail()" :onClick="questionDetailEntry.bind(openQuestionDetail, record)">详情</a-button>
+                <a-button type="primary" ghost :onClick="questionEntry.bind(showModal, record, 1)">编辑</a-button>
+                <a-button type="primary" ghost danger :onClick="questionEntry.bind(deleteQuestion, record.id)">删除</a-button>
               </div>
+            </template>
+            <template #emptyText>
+              <a-empty v-if="!tabLoading && !listFailure && canUseQuestions()" description="暂无数据" />
+              <p v-else class="hint" role="status">
+                {{ !canUseQuestions() ? '题目列表尚未确认，请使用管理员账号登录。' : tabLoading ? '正在读取题目列表，请稍候。' : '暂时无法读取题目列表，请使用上方重试。' }}
+              </p>
             </template>
           </a-table>
           </ConsoleTableShell>
-          <a-pagination @change="onChange" :current="page.pageNo" :total="page.total" show-size-changer
+          <a-pagination :onChange="questionEntry.bind(onChange)" :current="page.pageNo" :total="page.total" show-size-changer
                         :page-size-options="page.pageSizeOptions" :page-size="page.pageSize"
-                        @showSizeChange="onShowSizeChange"
+                        :onShowSizeChange="questionEntry.bind(onShowSizeChange)"
                         style="margin-top: 20px; text-align: right;"/>
       </a-card>
+      <a-drawer v-if="questionDetailOwner" :key="questionDetailKey" :open="questionDetailOpen"
+                :width="'min(720px, 100vw)'" :closable="false" :autofocus="false" :destroy-on-close="true"
+                :body-style="{ overflowY: 'auto', overflowX: 'hidden' }"
+                :onClose="questionDetailOwner.close" :onAfterOpenChange="questionDetailOwner.afterOpenChange">
+        <template #title><span :id="fieldId('detail-title-' + questionDetailKey)">题目详情</span></template>
+        <template #extra><a-button data-question-detail-close :onClick="questionDetailOwner.close">关闭详情</a-button></template>
+        <div ref="questionDetailBody" class="question-detail-content">
+          <p class="question-detail-hint">仅查看，不修改题目。</p>
+          <section v-for="field in questionDetailFields" :key="field.key" class="question-detail-field">
+            <h3>{{ field.label }}</h3>
+            <template v-if="field.values">
+              <ol v-if="field.values.length" class="question-detail-values">
+                <li v-for="(value, index) in field.values" :key="index">{{ formatQuestionDetailValue(value) }}</li>
+              </ol>
+              <p v-else class="question-detail-hint">暂无{{ field.label }}</p>
+              <details class="question-detail-raw">
+                <summary>原始内容</summary>
+                <pre>{{ field.text }}</pre>
+              </details>
+            </template>
+            <pre v-else>{{ field.text }}</pre>
+          </section>
+        </div>
+      </a-drawer>
+      <a-modal
+        :open="bulkCourseVisible"
+        :wrap-props="{ 'aria-modal': true }"
+        title="批量编辑课程名称"
+        ok-text="保存"
+        cancel-text="取消"
+        :focusTriggerAfterClose="false"
+        :afterClose="bulkCourseOwner && bulkCourseOwner.afterClose"
+        :onOk="bulkCourseOwner && bulkCourseOwner.bind(handleBulkCourseSubmit, bulkCourseOwner)"
+        :onCancel="bulkCourseOwner && bulkCourseOwner.bind(closeBulkCourseModal, bulkCourseOwner)"
+      >
+        <a-form ref="bulkCourseDialogForm" :onInputCapture="bulkCourseOwner && bulkCourseOwner.guardNative"
+                :onChangeCapture="bulkCourseOwner && bulkCourseOwner.guardNative">
+          <a-form-item label="已选题目">
+            <span>{{ selectedRowKeys.length }} 条</span>
+          </a-form-item>
+          <a-form-item label="课程名称" :html-for="fieldId('bulk-course')">
+            <a-auto-complete
+              :id="fieldId('bulk-course')"
+              :value="bulkCourseName" v-on="{ 'update:value': bulkCourseOwner && bulkCourseOwner.bind(value => bulkCourseName = value) }"
+              :options="bulkCourseCandidates"
+              placeholder="请输入新的课程名称"
+              style="width: 100%"
+            >
+              <a-input :aria-describedby="fieldId('bulk-course-hint')" />
+            </a-auto-complete>
+            <div :id="fieldId('bulk-course-hint')" class="bulk-course-hint">支持自由输入；若已存在相近课程名，会在下方显示候选项供快速填充。</div>
+          </a-form-item>
+        </a-form>
+      </a-modal>
       <input
-        ref="jsonImportInput"
+        :key="'json-input-' + questionEntry.epoch" ref="jsonImportInput"
         type="file"
         accept="application/json,.json"
         style="display: none"
-        @change="handleJsonImportChange"
+        :onChange="questionEntry.bind(handleJsonImportChange)"
       />
-      <a-modal :open="visible" title="详情内容" @ok="confirm" @cancel="visible = false" v-if="visible">
-        <a-form :model="formData">
-          <a-form-item label="类型">
-            <a-select v-model:value="formData.type">
+      <a-modal :key="questionDialogKey" :open="visible" title="详情内容" :wrap-props="{ 'aria-modal': true }" :onOk="questionDialogOwner && questionDialogOwner.bind(confirm, questionDialogOwner)"
+               :onCancel="questionDialogOwner && questionDialogOwner.bind(closeQuestionModal, questionDialogOwner)" v-if="questionDialogMounted"
+               :confirmLoading="questionSubmitLoading" :ok-button-props="{ disabled: questionWriteUnconfirmed }"
+               :focusTriggerAfterClose="false" :afterClose="questionDialogAfterClose">
+        <section v-if="questionWriteFailure" data-question-write-feedback>
+          <RequestFailureAlert :failure="questionWriteFailure" :message="questionWriteFailureMessage"
+            :context-key="questionWriteFailureContext" :is-current="isCurrentQuestionWriteFailure" />
+          <a-button html-type="button" data-question-write-check :onClick="questionWriteCheck"
+            :loading="tabLoading" :disabled="!isCurrentQuestionWriteFailure(questionWriteFailure, questionWriteFailureContext) || tabLoading">仅刷新列表核对</a-button>
+          <p v-if="questionWriteUnconfirmed" class="hint">这里只读取当前筛选的题目列表，不能确认完整写入结果。请关闭弹窗核对，勿直接重复提交；重新打开编辑是一次新的手动操作。</p>
+        </section>
+        <a-form ref="questionDialogForm" :model="formData"
+                :onInputCapture="questionDialogOwner && questionDialogOwner.guardNative"
+                :onChangeCapture="questionDialogOwner && questionDialogOwner.guardNative">
+          <a-form-item label="类型" :html-for="fieldId('editor-type-' + questionDialogKey)"
+                       :validate-status="questionTypeError ? 'error' : undefined">
+            <a-select ref="questionTypeControl" :id="fieldId('editor-type-' + questionDialogKey)" :value="formData.type"
+                      v-on="{ 'update:value': questionDialogOwner && questionDialogOwner.bind(value => formData.type = value) }">
               <a-select-option v-for="(value, key) in quesType" :key="key" :value="parseInt(key)">
                 {{ value }}
               </a-select-option>
             </a-select>
+            <template v-if="questionTypeError" #help>
+              <span :id="fieldId('editor-type-error-' + questionDialogKey)" role="alert">{{ questionTypeError }}</span>
+            </template>
           </a-form-item>
-          <a-form-item label="问题" class="margin_top">
-            <a-textarea v-model:value="formData.question"/>
+          <a-form-item label="问题" :html-for="fieldId('editor-question-' + questionDialogKey)" class="margin_top">
+            <a-textarea :id="fieldId('editor-question-' + questionDialogKey)" :value="formData.question" v-on="{ 'update:value': questionDialogOwner && questionDialogOwner.bind(value => formData.question = value) }"/>
           </a-form-item>
-          <div v-if="/[013]/.test(formData.type)" class="margin_top">
+          <div v-if="isObjectiveQuestionType(formData.type)" class="margin_top">
             <a-form-item label="选项">
-              <OptionBox :options="parseQuestionAnswerValues(formData.options)" :type="formData.type"
+              <OptionBox :options="parseQuestionAnswerValues(formData.options)" :type="normalizeEditorQuestionType(formData.type)"
                          :answer="answer" ref="optionBox"/>
             </a-form-item>
           </div>
@@ -145,7 +232,7 @@
                 <a-tab-pane tab="提交附件" key="2">
                   <div>
                     <a-upload-dragger name="file" multiple="true" show-upload-list="true"
-                                      action='/adapter-service/upload?parentDir=myword' @change="handleChange">
+                                      action='/adapter-service/upload?parentDir=myword' :before-upload="questionDialogOwner && questionDialogOwner.beforeUpload" :onChange="questionDialogOwner && questionDialogOwner.bind(handleChange)">
                       <p class="ant-upload-drag-icon">
                         <upload-outlined></upload-outlined>
                       </p>
@@ -168,14 +255,12 @@
 </template>
 
 <script>
-import {computed, defineComponent, ref} from 'vue';
+import {computed, defineComponent, onBeforeUnmount, ref, shallowRef, watch, useId} from 'vue';
 import {useRouter} from 'vue-router';
 import Swal from 'sweetalert2'
 import {
-  getQuestions,
   updateQuestions,
   delQuestions,
-  createQuestions,
   importQuestions,
 } from '@/api/TikuComponentApi'
 import {
@@ -186,68 +271,105 @@ import {
 } from '@ant-design/icons-vue';
 import OptionBox from '../../components/OptionBox/index.vue'
 import AnswerBox from '../../components/AnswerBox/index.vue'
+import {useQuestionDetail} from './useQuestionDetail.mjs'
+import {useQuestionSelection} from './useQuestionSelection.mjs'
+import {useQuestionReads} from './useQuestionReads.mjs'
+import {useQuestionEditor, questionEditorMethods} from './useQuestionEditor.mjs'
+import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
+import TableColumnSettings from '@/components/TableColumnSettings.vue'
+import { useTableColumnPreferences } from '@/composables/useTableColumnPreferences.mjs'
 import OverflowTableText from '@/components/OverflowTableText.vue'
+import { useCurrentUserDisplay, isAdminUser } from '@/utils/currentUser'
+import { currentUserIdentity } from '@/utils/currentUserScope'
 import { useTableExpansion } from '@/composables/useTableExpansion.mjs'
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
-import { buildQuestionAnswerText, parseQuestionAnswerValues } from '@/utils/questionAnswerDisplay.mjs'
+import { buildQuestionAnswerText, parseQuestionAnswerValues, isObjectiveQuestionType, normalizeEditorQuestionType } from '@/utils/questionAnswerDisplay.mjs'
 import {questionType} from "@/utils/uitls";
-import {message} from "ant-design-vue";
+import {message, Drawer} from "ant-design-vue";
 import {
   buildQuestionBulkActionIds,
+  buildQuestionBulkCourseUpdatePayload,
+  buildQuestionCourseNameCandidates,
   buildQuestionExportPayload,
   buildQuestionImportDryRunPayload,
   buildQuestionImportExecutePayload,
   buildQuestionImportSummary,
-  buildQuestionSelectionSummary,
   buildQuestionSourceLabel,
-  normalizeQuestionTypeFilter,
   parseQuestionImportText,
 } from '@/utils/topicOverviewHelpers.mjs';
 
 const style = {
   padding: "24px"
 }
-const fileList = ref([])
-const tabLoading = ref(true)
-const data = ref([])
-const page = ref({
-  pageSizeOptions: ['10', '20', '50', '100'],
-  pageNo: 1,
-  pageSize: 10,
-  total: 0
-})
-
-const typeValue = ref(null)
-const typeList = ref([])
-const formData = ref({})
-const answer = ref([])
-const visible = ref(false)
-const action = ref(2) // 1是编辑 2是添加
-const searchValue = ref({})
-const quesType = ref(questionType)
-const selectedRowKeys = ref([])
-const jsonImportInput = ref(null)
-const selectAllLoading = ref(false)
-const questionCache = new Map()
-
-const rememberQuestionRows = (items = []) => {
-  for (const item of items || []) {
-    const id = Number(item?.id || 0)
-    if (id > 0) {
-      questionCache.set(id, item)
-    }
-  }
-}
-
-const resetSelectionState = () => {
-  selectedRowKeys.value = []
-  questionCache.clear()
-}
-
 export default defineComponent({
   name: 'TikuComponent',
   setup() {
+    const fieldIdPrefix = 'tiku-fields-' + useId()
+    const fieldId = field => fieldIdPrefix + '-' + field
+    const tabLoading = ref(false)
+    const data = ref([])
+    const page = ref({
+      pageSizeOptions: ['10', '20', '50', '100'],
+      pageNo: 1,
+      pageSize: 10,
+      total: 0
+    })
+
+    const typeValue = ref(null)
+    const typeList = ref([])
+    const courses = ref([])
+    const bulkCourseVisible = ref(false)
+    const bulkCourseName = ref('')
+    const searchValue = ref({})
+    const quesType = ref(questionType)
+    const jsonImportInput = ref(null)
+
     const router = useRouter();
+    const { currentUser } = useCurrentUserDisplay()
+    const principal = () => currentUserIdentity(currentUser.value)
+    const role = () => String(currentUser.value?.role || '').trim().toLowerCase()
+    const canUseQuestions = () => Boolean(principal()) && isAdminUser(currentUser.value)
+    const questionRequestOwner = { active: true, epoch: 0, listVersion: 0, courseVersion: 0, selectionVersion: 0, reload: null }
+    const captureQuestionOwner = () => {
+      const epoch = questionRequestOwner.epoch
+      const identity = principal()
+      const privilege = role()
+      return () => questionRequestOwner.active && epoch === questionRequestOwner.epoch
+        && Boolean(identity) && identity === principal() && privilege === role() && canUseQuestions()
+    }
+    const makeEntry = () => {
+      const isCurrent = captureQuestionOwner()
+      return { epoch: questionRequestOwner.epoch, isCurrent,
+        guardNative: event => guardQuestionEvent(isCurrent, event),
+        bind: (fn, ...args) => (...events) => isCurrent() ? fn(...args, ...events) : undefined }
+    }
+    const guardQuestionEvent = (isCurrent, event) => {
+      if (isCurrent()) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+    }
+    // Each render closes over this entry, so a native event on old DOM in the same
+    // tick cannot borrow the next principal's authority before Vue patches it.
+    const questionEntry = shallowRef(makeEntry())
+    const {
+      resetSelectionState, rememberQuestionRows, selectedRowKeys, selectedQuestions,
+      rowSelection, selectionSummary, allRowsSelected, allCurrentPageSelected,
+      hasCurrentPageSelection, selectAllLoading, handleSelectCurrentPage,
+      handleClearCurrentPage, handleSelectAll, handleClearSelection,
+    } = useQuestionSelection({
+      data, page, typeValue, searchValue, questionEntry,
+      captureQuestionOwner, questionRequestOwner,
+    })
+    const bulkCourseOwner = shallowRef(null)
+    const jsonImportOwner = shallowRef(null)
+    const questionPrompts = new Set()
+    const {
+      getCourses, fetchData, listFailure, listFailureContext,
+      isCurrentListFailure,
+    } = useQuestionReads({
+      data, courses, tabLoading, page, typeValue, searchValue,
+      questionRequestOwner, captureQuestionOwner, questionEntry, rememberQuestionRows,
+    })
     const { isExpanded, toggle: toggleExpanded, columnWidth } = useTableExpansion(data)
     const columns = computed(() => [
       { title: 'ID', dataIndex: 'id', key: 'id', width: 90 },
@@ -256,126 +378,150 @@ export default defineComponent({
       { title: '答案', dataIndex: 'answer', key: 'answer', width: columnWidth('answer') },
       { title: '数据来源', dataIndex: 'source_name', key: 'source_name', width: 160 },
       { title: '拓展参数', dataIndex: 'extra', key: 'extra', width: columnWidth('extra') },
-      { title: '操作', key: 'action', fixed: 'right', width: 180 },
+      { title: '操作', key: 'action', fixed: 'right', width: 250 },
     ].map(column => ({ ...column, align: 'center' })))
-    const tableScrollX = computed(() => sumTableColumnWidths(columns.value, 48))
+    const columnPriorityKeys = ['id', 'type', 'question', 'answer', 'action']
+    const { visibleColumns, selectedKeys: selectedColumnKeys, columnOptions, scopeKey: columnScopeKey,
+      setSelectedKeys: setSelectedColumnKeys, resetColumns } = useTableColumnPreferences({
+      pageKey: 'TikuComponent', columns,
+      scope: () => currentUser.value?.id ? `id:${currentUser.value.id}:role:${currentUser.value.role}:view:questions` : '',
+      requiredKeys: ['id', 'question', 'answer', 'action'], priorityKeys: columnPriorityKeys,
+    })
+    const tableScrollX = computed(() => sumTableColumnWidths(visibleColumns.value, 48))
+    const {
+      fileList, formData, answer, visible, questionAction,
+      questionDialogOwner, questionSubmitLoading, questionUploads,
+      questionDialogKey, questionDialogMounted, questionDialogForm,
+      questionDialogAfterClose, questionDialogDraining, awaitQuestionDialogDrain,
+      captureQuestionDialogOpener, questionTypeControl, questionTypeError,
+      clearQuestionTypeError, showQuestionTypeError,
+      questionWriteFailure, questionWriteFailureContext, questionWriteFailureMessage,
+      questionWriteCheck, questionWriteUnconfirmed, isCurrentQuestionWriteFailure,
+      clearQuestionWriteFailure, recordQuestionWriteFailure,
+      retireQuestionEditorDialog, deactivateQuestionEditorFocus,
+    } = useQuestionEditor({ captureQuestionOwner, fieldId, fetchData, tabLoading })
+    const closeQuestionPrompts = () => {
+      for (const prompt of questionPrompts) {
+        // Never dismiss an unrelated page's later SweetAlert.
+        if (prompt.popup && Swal.getPopup?.() === prompt.popup) Swal.close()
+      }
+      questionPrompts.clear()
+    }
+    const showQuestionPrompt = async (options, isCurrent) => {
+      if (!isCurrent()) return null
+      const prompt = { popup: null }
+      questionPrompts.add(prompt)
+      try {
+        const result = Swal.fire({ ...options, returnFocus: false })
+        prompt.popup = Swal.getPopup?.()
+        const response = await result
+        return isCurrent() ? response : null
+      } finally {
+        questionPrompts.delete(prompt)
+      }
+    }
+    const retireQuestionScope = () => {
+      clearQuestionTypeError()
+      clearQuestionWriteFailure()
+      questionRequestOwner.epoch += 1
+      questionRequestOwner.listVersion += 1
+      questionRequestOwner.courseVersion += 1
+      listFailure.value = null
+      listFailureContext.value += 1
+      retireQuestionEditorDialog()
+      bulkCourseOwner.value = null
+      jsonImportOwner.value = null
+      questionDialogAfterClose.value = null
+      visible.value = false
+      bulkCourseVisible.value = false
+      bulkCourseName.value = ''
+      formData.value = {}
+      searchValue.value = {}
+      typeValue.value = null
+      answer.value = []
+      fileList.value = []
+      questionUploads.clear()
+      if (jsonImportInput.value) jsonImportInput.value.value = ''
+      data.value = []
+      courses.value = []
+      page.value.pageNo = 1
+      page.value.total = 0
+      tabLoading.value = false
+      resetSelectionState()
+      closeQuestionPrompts()
+      questionEntry.value = makeEntry()
+    }
+    watch(() => [principal(), role()], (next, previous) => {
+      if (next[0] === previous[0] && next[1] === previous[1]) return
+      retireQuestionScope()
+      if (canUseQuestions()) questionRequestOwner.reload?.()
+    }, { flush: 'sync' })
+    onBeforeUnmount(() => {
+      questionRequestOwner.active = false
+      questionRequestOwner.reload = null
+      deactivateQuestionEditorFocus()
+      retireQuestionScope()
+    })
+    const {
+      canViewQuestionDetail, questionDetailEntry, openQuestionDetail,
+      questionDetailOpen, questionDetailOwner, questionDetailBody, questionDetailKey,
+      questionDetailFields, formatQuestionDetailValue,
+    } = useQuestionDetail({
+      currentUser, principal, role, canUseQuestions, captureQuestionOwner,
+      guardQuestionEvent, fieldId, quesType,
+    })
     const navigateToImport = () => {
+      if (!questionEntry.value.isCurrent()) return
       router.push('/adapter/import');
     };
-    const buildQuestionQuery = (pageNo, pageSize) => ({
-      type: normalizeQuestionTypeFilter(typeValue.value),
-      pageSize,
-      pageNo,
-      question: searchValue.value.question || '',
-      source: parseInt(searchValue.value.source) || 0,
-      extra: searchValue.value.extra || '',
-      onlyShowEmptyAnswer: searchValue.value.onlyShowEmptyAnswer || false
-    })
-    const loadAllFilteredQuestions = async () => {
-      const batchSize = 100
-      const first = await getQuestions(buildQuestionQuery(0, batchSize))
-      if (first?.status !== 200) {
-        throw new Error(first?.message || '获取全部题目失败')
-      }
-      const total = Number(first?.data?.total || 0)
-      const items = Array.isArray(first?.data?.items) ? [...first.data.items] : []
-      const totalPages = Math.ceil(total / batchSize)
-      for (let pageNo = 1; pageNo < totalPages; pageNo += 1) {
-        const response = await getQuestions(buildQuestionQuery(pageNo, batchSize))
-        if (response?.status !== 200) {
-          throw new Error(response?.message || '获取全部题目失败')
-        }
-        if (Array.isArray(response?.data?.items)) {
-          items.push(...response.data.items)
-        }
-      }
-      return items.slice(0, total)
-    }
-    const selectedQuestions = computed(() => {
-      const selectedIds = buildQuestionBulkActionIds(selectedRowKeys.value)
-      if (!selectedIds.length) {
-        return []
-      }
-      return selectedIds.map(id => questionCache.get(id)).filter(Boolean)
-    })
-    const currentPageIds = computed(() => buildQuestionBulkActionIds(
-      (data.value || []).map(item => item?.id),
+    const bulkCourseCandidates = computed(() => buildQuestionCourseNameCandidates(
+      bulkCourseName.value,
+      courses.value,
     ))
-    const allCurrentPageSelected = computed(() => (
-      currentPageIds.value.length > 0
-      && currentPageIds.value.every(id => selectedRowKeys.value.includes(id))
-    ))
-    const hasCurrentPageSelection = computed(() => (
-      currentPageIds.value.some(id => selectedRowKeys.value.includes(id))
-    ))
-    const allRowsSelected = computed(() => {
-      const total = Number(page.value.total || 0)
-      return total > 0 && selectedRowKeys.value.length === total
-    })
-    const selectionSummary = computed(() => buildQuestionSelectionSummary(
-      selectedRowKeys.value.length,
-      page.value.total || 0,
-    ))
-    const handleSelectCurrentPage = () => {
-      rememberQuestionRows(data.value)
-      selectedRowKeys.value = buildQuestionBulkActionIds([
-        ...selectedRowKeys.value,
-        ...currentPageIds.value,
-      ])
-    }
-    const handleClearCurrentPage = () => {
-      const currentPageIdSet = new Set(currentPageIds.value)
-      selectedRowKeys.value = selectedRowKeys.value.filter(id => !currentPageIdSet.has(id))
-    }
-    const handleSelectAll = async () => {
-      if (allRowsSelected.value || selectAllLoading.value) {
-        return
-      }
-      selectAllLoading.value = true
-      try {
-        const rows = await loadAllFilteredQuestions()
-        rememberQuestionRows(rows)
-        selectedRowKeys.value = buildQuestionBulkActionIds(rows.map(item => item?.id))
-        if (!rows.length) {
-          resetSelectionState()
-        }
-      } catch (error) {
-        message.error(error?.message || '全选失败')
-      } finally {
-        selectAllLoading.value = false
-      }
-    }
-    const handleClearSelection = () => {
-      resetSelectionState()
-    }
-    const rowSelection = computed(() => ({
-      columnWidth: 48,
-      selectedRowKeys: selectedRowKeys.value,
-      preserveSelectedRowKeys: true,
-      onChange: (keys) => {
-        selectedRowKeys.value = buildQuestionBulkActionIds(keys)
-      },
-    }))
     return {
+      fieldId, questionTypeControl, questionTypeError, clearQuestionTypeError, showQuestionTypeError,
+      canViewQuestionDetail, questionDetailEntry, openQuestionDetail,
+      questionDetailOpen, questionDetailOwner, questionDetailBody, questionDetailKey,
+      questionDetailFields, formatQuestionDetailValue,
+      questionRequestOwner, questionEntry, captureQuestionOwner, canUseQuestions, guardQuestionEvent,
+      questionDialogOwner, questionSubmitLoading, bulkCourseOwner, jsonImportOwner, questionUploads,
+      showQuestionPrompt, resetSelectionState, rememberQuestionRows,
+      getCourses, fetchData,
+      listFailure, listFailureContext, isCurrentListFailure,
+      questionWriteFailure, questionWriteFailureContext, questionWriteFailureMessage,
+      questionWriteCheck, questionWriteUnconfirmed, isCurrentQuestionWriteFailure,
+      clearQuestionWriteFailure, recordQuestionWriteFailure,
+      questionDialogKey,
+      questionDialogMounted,
+      questionDialogForm,
+      questionDialogAfterClose,
+      questionDialogDraining, awaitQuestionDialogDrain,
+      captureQuestionDialogOpener,
       tabLoading,
       typeList,
       typeValue,
       answer,
       page,
       data,
-      columns,
+      columns, visibleColumns, selectedColumnKeys, columnOptions, columnScopeKey,
+      columnPriorityKeys, setSelectedColumnKeys, resetColumns,
       tableScrollX,
       isExpanded,
       toggleExpanded,
       buildQuestionAnswerText,
-      parseQuestionAnswerValues,
+      parseQuestionAnswerValues, isObjectiveQuestionType, normalizeEditorQuestionType,
       quesType,
       visible,
       formData,
+      questionAction,
       style,
       searchValue,
       selectedRowKeys,
       selectedQuestions,
+      courses,
+      bulkCourseVisible,
+      bulkCourseName,
+      bulkCourseCandidates,
       rowSelection,
       selectionSummary,
       allRowsSelected,
@@ -394,193 +540,261 @@ export default defineComponent({
     }
   },
   components: {
+    ADrawer: Drawer,
     UploadOutlined,
     OptionBox,
     AnswerBox,
     FormOutlined,
     SearchOutlined,
     DownloadOutlined,
-    OverflowTableText
+    RequestFailureAlert, TableColumnSettings, OverflowTableText
   },
   mounted() {
+    this.questionRequestOwner.reload = () => {
+      this.getCourses()
+      this.fetchData()
+    }
     this.getType()
-    this.fetchData()
+    this.questionRequestOwner.reload()
   },
   methods: {
+    guardedRetryListFailure(failure, contextKey) {
+      if (this.isCurrentListFailure(failure, contextKey)) this.fetchData()
+    },
     async onFilterChange() {
-      // Reset page number when any filter changes and fetch data
+      if (!this.questionEntry.isCurrent()) return
       this.page.pageNo = 1
-      resetSelectionState()
+      this.resetSelectionState()
       await this.fetchData()
     },
-    handleChange(info) {
-      const status = info.file.status;
-      if (status === 'done') {
-        message.success(`${info.file.name} 上传成功`);
-        fileList.value.push(info.file.response)
-        this.$refs.answerBox.pushAnswer(info.file.response)
-      } else if (status === 'error') {
-        // 处理上传失败
-        message.error(`${info.file.name} 上传失败`);
-      }
-    },
+    ...questionEditorMethods,
     typeObjects(types) {
-      return Object.entries(types).map(([key, value]) => ({
-        value: parseInt(key),
-        label: value
-      }));
+      return Object.entries(types).map(([key, value]) => ({ value: parseInt(key), label: value }))
     },
     getType() {
-      const arr = this.typeObjects(questionType)
-      typeList.value = arr
-    },
-    async fetchData() {
-      fileList.value = []
-      tabLoading.value = true
-      try {
-        const res = await getQuestions({
-          type: normalizeQuestionTypeFilter(typeValue.value),
-          pageSize: page.value.pageSize,
-          pageNo: page.value.pageNo - 1,
-          question: searchValue.value.question || '',
-          source: parseInt(searchValue.value.source) || 0,
-          extra: searchValue.value.extra || '',
-          onlyShowEmptyAnswer: searchValue.value.onlyShowEmptyAnswer || false
-        })
-        if (res?.status !== 200) throw new Error(res?.message || '获取题目列表失败')
-        data.value = Array.isArray(res?.data?.items) ? res.data.items : []
-        rememberQuestionRows(data.value)
-        this.page.total = res?.data?.total
-      } catch {
-        message.error('获取题目列表失败')
-      } finally {
-        tabLoading.value = false
-      }
+      this.typeList = this.typeObjects(questionType)
     },
     onSearch() {
-      // Reset page number when search filters change
+      if (!this.questionEntry.isCurrent()) return
       this.page.pageNo = 1
-      resetSelectionState()
+      this.resetSelectionState()
       this.fetchData()
     },
     onShowSizeChange(current, pageSize) {
+      if (!this.questionEntry.isCurrent()) return
       this.page.pageSize = pageSize
       this.page.pageNo = 1
       this.fetchData()
     },
-
     onChange(page) {
+      if (!this.questionEntry.isCurrent()) return
       this.page.pageNo = page
       this.fetchData()
     },
-
-    showModal(record, act) {
-      if (record.options === '[]' || record.options === '') {
-        record.options = '[]'
-      }
-      if (record.answer === '[]' || record.answer === '') {
-        record.answer = '[]'
-      }
-
-      formData.value = record
-      answer.value = parseQuestionAnswerValues(formData.value.answer)
-      action.value = act
-      fileList.value = []
-      visible.value = true
-    },
-
     async deleteQuestion(id) {
-      fileList.value = []
-      await delQuestions({id: id}).then(res => {
-        res.status == 200 ? message.success(`删除成功`) : message.error(`删除失败`)
-      })
-      visible.value = false
-      selectedRowKeys.value = selectedRowKeys.value.filter(item => Number(item) !== Number(id))
-      await this.fetchData()
+      const isCurrent = this.captureQuestionOwner()
+      if (!isCurrent()) return
+      const result = await this.showQuestionPrompt({
+        icon: 'warning', title: '删除题目', text: '确定删除这道题目？此操作不可撤销。',
+        showCancelButton: true, confirmButtonText: '确定删除', cancelButtonText: '取消',
+        heightAuto: false, scrollbarPadding: false,
+      }, isCurrent)
+      if (!isCurrent() || !result?.isConfirmed) return
+      try {
+        const res = await delQuestions({ id })
+        if (!isCurrent()) return
+        if (res?.status !== 200) {
+          message.error('删除失败')
+          return
+        }
+        message.success('删除成功')
+        this.selectedRowKeys = this.selectedRowKeys.filter(item => Number(item) !== Number(id))
+        await this.fetchData()
+      } catch {
+        if (isCurrent()) message.error('删除失败')
+      }
     },
-
     getSourceNameText(sourceName) {
       return buildQuestionSourceLabel(sourceName)
     },
-
     triggerJsonImport() {
+      const ownsPrincipal = this.captureQuestionOwner()
+      if (!ownsPrincipal()) return
       const input = this.$refs.jsonImportInput
-      if (input) {
-        input.click()
-      }
+      if (!input) return
+      const owner = { input, isCurrent: () => ownsPrincipal() && this.jsonImportOwner === owner }
+      this.jsonImportOwner = owner
+      input.value = ''
+      input.click()
     },
-
     async handleJsonImportChange(event) {
       const input = event?.target
       const file = input?.files?.[0]
-      if (!file) {
-        return
+      const ownsPrincipal = this.captureQuestionOwner()
+      if (!ownsPrincipal() || !file) return
+      // Native changes arrive through the captured render entry. The input owner
+      // additionally covers a late file picker and each subsequent async stage.
+      let owner = this.jsonImportOwner
+      if (!owner) {
+        owner = { input, isCurrent: () => ownsPrincipal() && this.jsonImportOwner === owner }
+        this.jsonImportOwner = owner
       }
-
+      if (owner.input !== input || !owner.isCurrent()) return
+      const isCurrent = owner.isCurrent
       try {
         const content = await file.text()
+        if (!isCurrent()) return
         const items = parseQuestionImportText(content)
         if (!items.length) {
           message.warning('JSON 文件中没有可导入的题目')
           return
         }
-
         const dryRunResponse = await importQuestions(buildQuestionImportDryRunPayload(items))
+        if (!isCurrent()) return
         if (dryRunResponse?.status !== 200) {
           message.error(dryRunResponse?.message || '导入预检失败')
           return
         }
-
         const dryRunResult = dryRunResponse?.data || {}
         let overwrite = false
-
         if (Array.isArray(dryRunResult.existingIds) && dryRunResult.existingIds.length) {
-          const confirmResult = await Swal.fire({
-            icon: 'warning',
-            title: '检测到重复题目',
-            text: buildQuestionImportSummary(dryRunResult),
-            showDenyButton: true,
-            showCancelButton: true,
-            confirmButtonText: '是，直接覆盖',
-            denyButtonText: '否，只导入不存在的数据',
-            cancelButtonText: '取消',
-            heightAuto: false,
-            scrollbarPadding: false,
-          })
-
-          if (confirmResult.isDismissed) {
-            return
-          }
+          const confirmResult = await this.showQuestionPrompt({
+            icon: 'warning', title: '检测到重复题目', text: buildQuestionImportSummary(dryRunResult),
+            showDenyButton: true, showCancelButton: true, confirmButtonText: '是，直接覆盖',
+            denyButtonText: '否，只导入不存在的数据', cancelButtonText: '取消',
+            heightAuto: false, scrollbarPadding: false,
+          }, isCurrent)
+          if (!isCurrent() || !confirmResult || confirmResult.isDismissed) return
           overwrite = Boolean(confirmResult.isConfirmed)
         }
-
+        if (!isCurrent()) return
         const executeResponse = await importQuestions(buildQuestionImportExecutePayload(items, overwrite))
+        if (!isCurrent()) return
         if (executeResponse?.status !== 200) {
           message.error(executeResponse?.message || '导入失败')
           return
         }
-
         const executeResult = executeResponse?.data || {}
         const summary = `导入完成：新增 ${Number(executeResult.created || 0)} 条，覆盖 ${Number(executeResult.updated || 0)} 条，跳过 ${Number(executeResult.skipped || 0)} 条。`
-        await Swal.fire({
-          icon: 'success',
-          title: 'JSON 导入成功',
-          text: summary,
-          confirmButtonText: '我知道了',
-          heightAuto: false,
-          scrollbarPadding: false,
-        })
-        await this.fetchData()
+        await this.showQuestionPrompt({
+          icon: 'success', title: 'JSON 导入成功', text: summary, confirmButtonText: '我知道了',
+          heightAuto: false, scrollbarPadding: false,
+        }, isCurrent)
+        if (isCurrent()) await this.fetchData()
       } catch (error) {
-        message.error(error?.message || 'JSON 导入失败')
+        if (isCurrent()) message.error(error?.message || 'JSON 导入失败')
       } finally {
-        if (input) {
-          input.value = ''
+        if (isCurrent()) {
+          if (input) input.value = ''
+          this.jsonImportOwner = null
         }
       }
     },
-
+    openBulkCourseModal(event) {
+      const ownsPrincipal = this.captureQuestionOwner()
+      if (!ownsPrincipal()) return
+      if (!this.selectedRowKeys.length) {
+        message.warning('请先选择需要批量修改的题目')
+        return
+      }
+      const owner = {
+        epoch: this.questionRequestOwner.epoch,
+        opener: event?.currentTarget || document.activeElement,
+        dialog: null,
+        isCurrent: () => ownsPrincipal() && this.bulkCourseOwner === owner && this.bulkCourseVisible,
+        bind: (fn, ...args) => (...events) => owner.isCurrent() ? fn(...args, ...events) : undefined,
+        guardNative: event => this.guardQuestionEvent(owner.isCurrent, event),
+        afterClose: () => {
+          if (!ownsPrincipal() || this.bulkCourseOwner !== owner || this.bulkCourseVisible) return
+          const opener = owner.opener
+          const active = document.activeElement
+          // A later portal may be opening before its enter transition takes focus.
+          if ([...document.querySelectorAll('[role="dialog"]')].some(dialog => {
+            if (dialog === owner.dialog) return false
+            for (let node = dialog; node; node = node.parentElement) {
+              const style = window.getComputedStyle(node)
+              if (node.hidden || node.inert || node.getAttribute('aria-hidden') === 'true'
+                || style.display === 'none' || style.visibility === 'hidden') return false
+            }
+            return true
+          })) return
+          if (!(opener instanceof HTMLElement) || !opener.isConnected || opener.tabIndex < 0
+            || opener.matches(':disabled, [aria-disabled="true"]')
+            || (active && active !== document.body && active !== opener && !owner.dialog?.contains(active))) return
+          for (let node = opener; node; node = node.parentElement) {
+            const style = window.getComputedStyle(node)
+            if (node.hidden || node.inert || node.getAttribute('aria-hidden') === 'true'
+              || style.display === 'none' || style.visibility === 'hidden') return
+          }
+          opener.focus({ preventScroll: true })
+        },
+      }
+      this.bulkCourseOwner = owner
+      this.bulkCourseName = ''
+      this.bulkCourseVisible = true
+      this.$nextTick(() => {
+        if (!owner.isCurrent()) return
+        const form = this.$refs.bulkCourseDialogForm?.$el
+        const dialog = form?.closest('[role="dialog"]')
+        owner.dialog = dialog
+        if (!form?.isConnected || !(dialog instanceof HTMLElement) || !dialog.isConnected
+          || !dialog.hasAttribute('tabindex') || dialog.matches(':disabled, [aria-disabled="true"]')) return
+        const isVisible = element => {
+          for (let node = element; node; node = node.parentElement) {
+            const style = window.getComputedStyle(node)
+            if (node.hidden || node.inert || node.getAttribute('aria-hidden') === 'true'
+              || style.display === 'none' || style.visibility === 'hidden') return false
+          }
+          return true
+        }
+        if (!isVisible(dialog) || [...document.querySelectorAll('[role="dialog"]')]
+          .some(other => other !== dialog && isVisible(other))) return
+        const active = document.activeElement
+        // Do not replace an existing own control or a later foreground action.
+        if (dialog.contains(active) || (active !== document.body && active !== owner.opener)) return
+        dialog.focus({ preventScroll: true })
+      })
+    },
+    closeBulkCourseModal(dialog = this.bulkCourseOwner) {
+      if (!dialog?.isCurrent()) return
+      this.bulkCourseVisible = false
+      this.bulkCourseName = ''
+    },
+    async handleBulkCourseSubmit(dialog = this.bulkCourseOwner) {
+      if (!dialog?.isCurrent()) return
+      const isCurrent = dialog.isCurrent
+      let payload
+      try {
+        payload = buildQuestionBulkCourseUpdatePayload(this.selectedRowKeys, this.bulkCourseName)
+      } catch (error) {
+        if (isCurrent()) message.warning(error?.message || '请输入课程名称')
+        return
+      }
+      const rows = this.selectedQuestions.map(item => ({ ...item }))
+      try {
+        for (const item of rows) {
+          if (!isCurrent()) return
+          const response = await updateQuestions({ ...item, course_name: payload.courseName })
+          if (!isCurrent()) return
+          if (response?.status !== 200) {
+            message.error(`题目 ${item.id} 更新课程名称失败`)
+            return
+          }
+        }
+        if (!isCurrent()) return
+        message.success(`成功更新 ${payload.ids.length} 条题目的课程名称`)
+        if (String(this.bulkCourseName || '').trim() === payload.courseName) {
+          this.closeBulkCourseModal(dialog)
+          this.resetSelectionState()
+        }
+        await this.fetchData()
+      } catch {
+        if (isCurrent()) message.error('批量更新课程名称失败')
+      }
+    },
     handleExportSelected() {
+      const isCurrent = this.captureQuestionOwner()
+      if (!isCurrent()) return
       const rows = this.selectedQuestions
       if (!rows.length) {
         message.warning('请先选择需要导出的题目')
@@ -588,63 +802,52 @@ export default defineComponent({
       }
       const payload = buildQuestionExportPayload(rows)
       const blob = new Blob([payload.content], { type: 'application/json;charset=utf-8' })
+      if (!isCurrent()) return
       const objectUrl = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
-      link.href = objectUrl
-      link.download = payload.filename
-      document.body.appendChild(link)
-      link.click()
-      document.body.removeChild(link)
-      window.URL.revokeObjectURL(objectUrl)
-      message.success(`已导出 ${rows.length} 条题目`)
+      try {
+        link.href = objectUrl
+        link.download = payload.filename
+        document.body.appendChild(link)
+        if (!isCurrent()) return
+        link.click()
+        if (isCurrent()) message.success(`已导出 ${rows.length} 条题目`)
+      } finally {
+        link.remove()
+        window.URL.revokeObjectURL(objectUrl)
+      }
     },
-
     async handleDeleteSelected() {
+      const isCurrent = this.captureQuestionOwner()
+      if (!isCurrent()) return
       const ids = buildQuestionBulkActionIds(this.selectedRowKeys)
       if (!ids.length) {
         message.warning('请先选择需要删除的题目')
         return
       }
-      for (const id of ids) {
-        const res = await delQuestions({ id })
-        if (res?.status !== 200) {
-          message.error(`题目 ${id} 删除失败`)
-          return
+      const result = await this.showQuestionPrompt({
+        icon: 'warning', title: '批量删除题目', text: `确定删除已选的 ${ids.length} 道题目？此操作不可撤销。`,
+        showCancelButton: true, confirmButtonText: '确定删除', cancelButtonText: '取消',
+        heightAuto: false, scrollbarPadding: false,
+      }, isCurrent)
+      if (!isCurrent() || !result?.isConfirmed) return
+      try {
+        for (const id of ids) {
+          if (!isCurrent()) return
+          const res = await delQuestions({ id })
+          if (!isCurrent()) return
+          if (res?.status !== 200) {
+            message.error(`题目 ${id} 删除失败`)
+            return
+          }
         }
+        if (!isCurrent()) return
+        message.success(`成功删除 ${ids.length} 条题目`)
+        this.resetSelectionState()
+        await this.fetchData()
+      } catch {
+        if (isCurrent()) message.error('批量删除失败')
       }
-      message.success(`成功删除 ${ids.length} 条题目`)
-      resetSelectionState()
-      await this.fetchData()
-    },
-
-
-    async confirm() {
-      formData.value.type = parseInt(formData.value.type)
-
-      if (/[0|1|3]/.test(formData.value.type)) {
-        const childComponentData = this.$refs.optionBox.getData()
-        Object.assign(formData.value, childComponentData)
-      } else {
-        const textAns = this.$refs.answerBox.getData()
-        console.log('textAns==>', textAns)
-        formData.value.answer = textAns
-      }
-      let response;
-      const successMessage = action.value === 1 ? '修改成功' : '创建成功';
-      const errorMessage = action.value === 1 ? '修改失败' : '创建失败';
-      if (action.value === 1) {
-        response = await updateQuestions(formData.value)
-      } else if (action.value === 2) {
-        response = await createQuestions([formData.value])
-      }
-      if (response.status === 200) {
-        message.success(successMessage);
-      } else {
-        message.error(errorMessage);
-      }
-      fileList.value = []
-      visible.value = false
-      await this.fetchData()
     },
   }
 })
@@ -682,12 +885,34 @@ export default defineComponent({
   flex-wrap: wrap;
 }
 
+.bulk-course-hint { margin-top: 8px; color: var(--console-muted); font-size: 12px; }
 .row-actions {
   display: flex;
   justify-content: center;
   flex-wrap: wrap;
   gap: 8px;
 }
+
+
+.question-detail-content,
+.question-detail-field { min-width: 0; }
+.question-detail-field + .question-detail-field { margin-top: 20px; }
+.question-detail-field h3 { margin: 0 0 8px; font-size: 14px; color: var(--console-text); }
+.question-detail-field pre,
+.question-detail-values li {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  color: var(--console-text);
+}
+.question-detail-values { margin: 0; padding-inline-start: 24px; }
+.question-detail-values li + li { margin-top: 8px; }
+.question-detail-hint,
+.question-detail-raw { color: var(--console-muted); font-size: 12px; }
+.question-detail-raw { margin-top: 12px; }
+.question-detail-raw summary { cursor: pointer; padding-block: 4px; }
+.question-detail-raw pre { margin-top: 8px; }
 
 @media (max-width: 640px) {
   .filter-form,

@@ -1,138 +1,56 @@
-import test from 'node:test'
+/* Fresh upstream lifecycle regressions adapted to the merged real Vue/Antd
+ * owner architecture. Only API/router/socket transports are synthetic. */
+import {test,afterEach} from 'node:test'
 import assert from 'node:assert/strict'
-import { readFile } from 'node:fs/promises'
-import vm from 'node:vm'
-import { parse, compileScript } from '@vue/compiler-sfc'
-
-function deferred() {
-  let resolve
-  const promise = new Promise((done) => { resolve = done })
-  return { promise, resolve }
-}
-
-function qr(token) {
-  return { status: 200, data: { loginToken: token, qrcodeImageData: `data:image/png;base64,${token}`, expireSeconds: 180 } }
-}
-
-async function loadWechatPage(page, overrides = {}) {
-  const source = await readFile(new URL(`../pages/${page}/index.vue`, import.meta.url), 'utf8')
-  const { descriptor } = parse(source)
-  const compiled = compileScript(descriptor, { id: 'wechat-lifecycle-regression' })
-  const options = compiled.scriptAst.find((node) => node.type === 'ExportDefaultDeclaration').declaration.arguments[0]
-  const setup = options.properties.find((property) => property.key?.name === 'setup')
-  const stored = []
-  const routes = []
-  const sessions = []
-  let lifecycle
-  let unmount
-  let nextToken = 0
-  const scope = {
-    ref: (value) => ({ value }),
-    reactive: (value) => value,
-    computed: (get) => ({ get value() { return get() } }),
-    useRouter: () => ({ push: (value) => routes.push(value) }),
-    useRoute: () => ({ query: {} }),
-    useSmsCooldown: () => ({ buttonText: '', active: false, start() {} }),
-    onMounted() {},
-    onBeforeUnmount(callback) { unmount = callback },
-    createWechatQrStatusController(options) {
-      lifecycle = options
-      return { stop() {}, start(session) { sessions.push(session) } }
-    },
-    createWechatLoginQRCode: async () => qr(`qr-${++nextToken}`),
-    getCurrentUser: async () => ({ status: 200, data: { id: 1 } }),
-    getWechatLoginStatus: async () => ({ status: 200, data: { status: 'pending' } }),
-    setStoredCurrentUser: (user) => stored.push(user),
-    resolveHomePath: () => '/adapter/profile',
-    normalizeSMSCodeInput: (value) => value,
-    buildRegisterSourceLabel: (value) => value,
-    ipLocations: {}, phoneLocations: {},
-    normalizeLocationKey: (value) => value,
-    formatValueWithLocation: (value) => value,
-    message: { success() {}, error() {}, warning() {} },
-    ...overrides,
-  }
-  const component = vm.runInNewContext(`({${descriptor.script.content.slice(setup.start, setup.end)}})`, scope).setup()
-  component.publicAuthSettings.value.wechatLoginEnabled = true
-  component.publicAuthSettings.value.wechatScanLoginEnabled = true
-  if (component.loginMode) component.loginMode.value = 'wechat'
-  return { component, lifecycle, unmount, stored, routes, sessions }
-}
-
-test('scan login cannot finish an old getCurrentUser request after refresh, mode change or unmount', async () => {
-  for (const action of ['refresh', 'mode-change', 'unmount']) {
-    const user = deferred()
-    const nextQRCode = deferred()
-    let creates = 0
-    const state = await loadWechatPage('Login', {
-      getCurrentUser: () => user.promise,
-      createWechatLoginQRCode: () => ++creates === 1 ? Promise.resolve(qr('old')) : nextQRCode.promise,
-    })
-    await state.component.startWechatLogin()
-    const completion = state.lifecycle.onStatus('success', { status: 'success', jwt: 'old-jwt' })
-    if (action === 'refresh') void state.component.startWechatLogin()
-    if (action === 'mode-change') {
-      state.component.loginMode.value = 'password'
-      state.component.handleLoginModeChange()
-    }
-    if (action === 'unmount') state.unmount()
-    user.resolve({ status: 200, data: { id: 1, username: 'old-user' } })
-    assert.equal(await completion, false, action)
-    assert.equal(state.stored.length, 0, action)
-    assert.equal(state.routes.length, 0, action)
-  }
+import {createRequire} from 'node:module'
+import path from 'node:path'
+import {fileURLToPath} from 'node:url'
+const require=createRequire(import.meta.url),Module=require('node:module')
+const here=path.dirname(fileURLToPath(import.meta.url)),web=process.env.TIKU_WEB_SOURCE||path.resolve(here,'../..')
+process.env.NODE_PATH=[path.join(web,'node_modules'),process.env.NODE_PATH].filter(Boolean).join(path.delimiter);Module._initPaths()
+require(process.env.UI_TEST_HELPER||path.join(web,'tests/helpers/vue-dom.cjs'))
+require.extensions['.css']=m=>{m.exports={}}
+for(const k of ['DOMParser','HTMLInputElement','HTMLDivElement','HTMLVideoElement','HTMLAudioElement','CustomEvent'])globalThis[k]=window[k]
+window.scrollTo=()=>{}
+const {mount,flushPromises}=require('@vue/test-utils'),{nextTick,reactive}=require('vue'),Antd=require('ant-design-vue'),Swal=require('sweetalert2'),user=require(path.join(web,'src/utils/currentUser.js'))
+const A={id:82701,role:'user',status:'enabled',username:'SYNTHETIC_WECHAT_A',wechatId:'',phone:''},B={...A,id:82702,username:'SYNTHETIC_WECHAT_B'}
+const PNG='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8xQAAAAASUVORK5CYII='
+const settings={siteName:'SYNTHETIC',registerEnabled:true,smsLoginEnabled:true,wechatLoginEnabled:true,wechatScanLoginEnabled:true,wechatCodeLoginEnabled:true,wechatDefaultLoginMode:'code',wechatCodeStaticQrcodeUrl:PNG,captchaProvider:'local'}
+const calls=Object.fromEntries(['qr','status','me','bind'].map(k=>[k,[]])),wrappers=[],sockets=[],routes=[],runtime=[],network=[]
+let activeRoute,pageKind='Login',profileRead=A
+function pending(name){let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no});const x={promise,done:false,resolve:v=>{x.done=true;resolve(v)},reject:e=>{x.done=true;reject(e)}};calls[name].push(x);return promise}
+function mock(name,exports){const m=new Module(name);m.loaded=true;m.exports=exports;require.cache[name]=m}
+mock(path.join(web,'src/api/TikuComponentApi.js'),{
+ getPublicRegisterStatus:()=>Promise.resolve({status:200,data:{...settings}}),
+ getCurrentUser:()=>pageKind==='Profile'?Promise.resolve({status:200,data:{...profileRead}}):pending('me'),
+ getMyLocations:()=>Promise.resolve({status:200,data:{}}),
+ createWechatLoginQRCode:()=>pending('qr'),getWechatLoginStatus:()=>pending('status'),bindCurrentUserWechat:()=>pending('bind'),
 })
+mock(require.resolve('vue-router'),{useRoute:()=>activeRoute,useRouter:()=>({currentRoute:{get value(){return activeRoute}},push:v=>{routes.push(v);return Promise.resolve()}}),onBeforeRouteLeave:()=>{}})
+function deny(k){network.push(k);throw new Error('FORBIDDEN_REAL_WECHAT_LIFECYCLE_IO')}
+window.XMLHttpRequest.prototype.open=()=>deny('XHR');globalThis.fetch=window.fetch=()=>deny('fetch')
+for(const k of ['node:http','node:https']){const m=require(k);m.request=()=>deny(k);m.get=()=>deny(k)}
+class Socket{constructor(url){this.url=url;this.closed=false;this.readyState=0;sockets.push(this)}send(){}close(){this.closed=true;this.readyState=3}open(){this.readyState=1;this.onopen?.({})}status(status){this.onmessage?.({data:JSON.stringify({type:'status',status})})}}
+globalThis.WebSocket=window.WebSocket=Socket
+const Login=require(path.join(web,'src/pages/Login/index.vue')),Profile=require(path.join(web,'src/pages/Profile/index.vue'))
+async function settle(){await nextTick();await flushPromises();await new Promise(r=>setTimeout(r,5));await nextTick();await flushPromises()}
+async function until(fn,label){const end=Date.now()+1800;do{if(fn())return;await settle()}while(Date.now()<end);assert.fail(label)}
+async function open(kind){pageKind=kind;profileRead=A;if(kind==='Profile')user.setStoredCurrentUser(A);else user.clearStoredCurrentUser();const p=kind==='Login'?'/login':'/adapter/profile';activeRoute=reactive({path:p,fullPath:p,query:{}});const w=mount(kind==='Login'?Login:Profile,{attachTo:document.body,global:{plugins:[Antd],config:{errorHandler:e=>runtime.push(String(e.message||e))}}});wrappers.push(w);await settle();return w}
+async function setMode(w,value){const radio=w.get('input[value="'+value+'"]');await radio.setValue(true);await settle()}
+function button(w,text){const label=pageKind==='Profile'&&text==='刷新二维码'?'刷新绑定二维码':text;const b=w.findAll('button').find(n=>n.text().replace(/\s/g,'')===label.replace(/\s/g,''));assert.ok(b,'actual native button '+label);b.element.click()}
+async function scan(w,kind){if(kind==='Login')await setMode(w,'wechat');await setMode(w,'scan');if(kind==='Profile')button(w,'刷新二维码');await until(()=>calls.qr.length===1,'one actual QR request from native mode');return calls.qr[0]}
+function qr(token){return{status:200,data:{loginToken:'SYNTHETIC_'+token,qrcodeImageData:PNG+'#'+token,expireSeconds:180}}}
+async function ready(w,kind){const request=await scan(w,kind);request.resolve(qr('old'));await until(()=>sockets.length===1,'actual QR controller creates synthetic socket');sockets[0].open();await settle();return sockets[0]}
+async function retireMode(w,kind){await setMode(w,kind==='Login'?'password':'code')}
+afterEach(async()=>{for(const w of wrappers.splice(0))if(w.exists())w.unmount();for(const rows of Object.values(calls))for(const p of rows)if(!p.done)p.resolve({status:503,message:'SYNTHETIC_CLEANUP'});await settle();Swal.close();Antd.Modal.destroyAll();Antd.message.destroy();user.clearStoredCurrentUser();document.body.replaceChildren();window.sessionStorage.clear();assert.deepEqual(runtime.splice(0),[],'no hidden Vue/Antd runtime errors');assert.deepEqual(network.splice(0),[],'no real HTTP/provider/database actions');console.log('WECHAT_NATIVE_SCENE '+JSON.stringify({calls:Object.fromEntries(Object.entries(calls).map(([k,v])=>[k,v.length])),sockets:sockets.length,allSocketsClosed:sockets.every(s=>s.closed),nativeDOM:true,physicalBrowser:false}));for(const rows of Object.values(calls))rows.length=0;sockets.length=routes.length=0})
 
-for (const page of ['Login', 'Profile']) {
-  test(`${page} discards a late QR creation response after a newer QR succeeds`, async () => {
-    const requests = []
-    const state = await loadWechatPage(page, { createWechatLoginQRCode: () => { const request = deferred(); requests.push(request); return request.promise } })
-    const start = page === 'Login' ? state.component.startWechatLogin : state.component.startWechatBind
-    const first = start()
-    const second = start()
-    requests[1].resolve(qr('new'))
-    await second
-    requests[0].resolve(qr('old'))
-    await first
-    assert.equal(state.component.wechatQrCodeImageData.value, 'data:image/png;base64,new')
-    assert.equal(state.sessions.length, 1)
-    assert.equal(state.sessions[0].loginToken, 'new')
-  })
-
-  test(`${page} does not activate a pending QR after switching to code mode or unmounting`, async () => {
-    for (const action of ['code-mode', 'unmount']) {
-      const request = deferred()
-      const state = await loadWechatPage(page, { createWechatLoginQRCode: () => request.promise })
-      const pending = page === 'Login' ? state.component.startWechatLogin() : state.component.startWechatBind()
-      if (action === 'unmount') state.unmount()
-      else if (page === 'Login') {
-        state.component.wechatLoginSubMode.value = 'code'
-        state.component.handleWechatSubModeChange()
-      } else {
-        state.component.wechatBindSubMode.value = 'code'
-        state.component.handleWechatBindSubModeChange()
-      }
-      request.resolve(qr('old'))
-      await pending
-      assert.equal(state.component.wechatQrCodeImageData.value, '', action)
-      assert.equal(state.sessions.length, 0, action)
-    }
-  })
-}
-
-test('profile binding response cannot overwrite a refreshed QR while its creation is pending', async () => {
-  const bind = deferred()
-  const nextQRCode = deferred()
-  let creates = 0
-  const state = await loadWechatPage('Profile', {
-    bindCurrentUserWechat: () => bind.promise,
-    createWechatLoginQRCode: () => ++creates === 1 ? Promise.resolve(qr('old')) : nextQRCode.promise,
-  })
-  await state.component.startWechatBind()
-  const completion = state.lifecycle.onStatus('need_bind', { status: 'need_bind', bindToken: 'old-bind' })
-  void state.component.startWechatBind()
-  bind.resolve({ status: 200, data: { id: 1, wechatId: 'old-wechat' } })
-  assert.equal(await completion, false)
-  assert.equal(state.stored.length, 0)
-  assert.equal(state.component.currentUser.wechatId, undefined)
+test('scan login cannot finish an old getCurrentUser request after native refresh, mode change or unmount',async()=>{
+ for(const action of ['refresh','mode-change','unmount']){const start={qr:calls.qr.length,status:calls.status.length,me:calls.me.length},w=await open('Login');await setMode(w,'wechat');await setMode(w,'scan');await until(()=>calls.qr.length===start.qr+1,'original QR request');calls.qr.at(-1).resolve(qr('old'));await settle();const socket=sockets.at(-1);socket.open();socket.status('success');await until(()=>calls.status.length===start.status+1,'HTTP credential status exchange after WS status');calls.status.at(-1).resolve({status:200,data:{status:'success'}});await until(()=>calls.me.length===start.me+1,'original getCurrentUser pending');if(action==='refresh')button(w,'刷新二维码');else if(action==='mode-change')await retireMode(w,'Login');else w.unmount();await settle();calls.me.at(-1).resolve({status:200,data:{...A}});await settle();assert.equal(user.getStoredCurrentUser(),null,action);assert.equal(routes.length,0,action);assert.equal(calls.me.length,start.me+1,action+' no extra identity request');if(w.exists())w.unmount();await settle()}
 })
+for(const kind of ['Login','Profile']){
+ test(kind+' ignores late QR after explicit native mode retirement/new QR; pending duplicate refresh remains deduplicated',async()=>{const w=await open(kind),old=await scan(w,kind);button(w,'刷新二维码');button(w,'刷新二维码');await settle();assert.equal(calls.qr.length,1,'in-flight doubleclick must not invent concurrent create');await setMode(w,'code');await setMode(w,'scan');if(kind==='Profile')button(w,'刷新二维码');await until(()=>calls.qr.length===2,'explicit new mode generation can create fresh QR');calls.qr[1].resolve(qr('new'));await settle();old.resolve(qr('old'));await settle();assert.equal(w.vm.wechatQrCodeImageData,PNG+'#new');assert.equal(sockets.length,1);assert.ok(sockets[0].url.includes('loginToken=SYNTHETIC_new'),'actual socket binds fresh token, not a nonexported vm ref')})
+ test(kind+' cannot activate a pending QR after native code-mode switch or actual unmount',async()=>{for(const action of ['code-mode','unmount']){const q=calls.qr.length,s=sockets.length,w=await open(kind);if(kind==='Login')await setMode(w,'wechat');await setMode(w,'scan');if(kind==='Profile')button(w,'刷新二维码');await until(()=>calls.qr.length===q+1,'actual pending QR creation');const old=calls.qr.at(-1);if(action==='unmount')w.unmount();else await setMode(w,'code');old.resolve(qr('late'));await settle();assert.equal(w.vm.wechatQrCodeImageData,'',action);assert.equal(sockets.length,s,action);if(w.exists())w.unmount();await settle()}})
+}
+test('issued profile bind cannot overwrite a freshly authorized actor QR while its new creation is pending',async()=>{const w=await open('Profile'),socket=await ready(w,'Profile');socket.status('need_bind');await until(()=>calls.status.length===1,'bind token fetched by actual HTTP status');calls.status[0].resolve({status:200,data:{status:'need_bind',bindToken:'SYNTHETIC_OLD_BIND'}});await until(()=>calls.bind.length===1,'one explicit terminal bind request issued');profileRead=B;user.setStoredCurrentUser(B);await settle();button(w,'刷新');await until(()=>w.vm.profileReady&&w.vm.currentUser.id===B.id,'explicit HTTP profile read confirms fresh actor before any mutation');button(w,'刷新二维码');await until(()=>calls.qr.length===2,'fresh authorized actor QR request pending');calls.bind[0].resolve({status:200,data:{...A,wechatId:'SYNTHETIC_OLD_WECHAT'}});await settle();assert.equal(user.getStoredCurrentUser()?.id,B.id);assert.notEqual(w.vm.currentUser.wechatId,'SYNTHETIC_OLD_WECHAT');assert.equal(w.vm.wechatQrCodeImageData,'');calls.qr[1].resolve(qr('fresh-actor'));await settle();assert.equal(w.vm.wechatQrCodeImageData,PNG+'#fresh-actor');assert.equal(calls.bind.length,1,'late old write never submits another bind')})
+test('login terminal HTTP failure remains retryable and does not fake completed login before current-user confirmation',async()=>{const w=await open('Login'),socket=await ready(w,'Login');socket.status('success');await until(()=>calls.status.length===1,'first real status exchange');calls.status[0].resolve({status:503,message:'SYNTHETIC_PRIVATE_ERROR_MUST_NOT_ECHO'});await until(()=>calls.status.length===2,'failed safe HTTP exchange falls back to actual polling');assert.equal(calls.me.length,0);assert.equal(user.getStoredCurrentUser(),null);calls.status[1].resolve({status:200,data:{status:'success',jwt:'SYNTHETIC_HTTP_ONLY'}});await until(()=>calls.me.length===1,'retry confirms current user over HTTP');calls.me[0].resolve({status:200,data:{...A}});await settle();assert.equal(user.getStoredCurrentUser()?.id,A.id);assert.equal(routes.at(-1),'/adapter/user-usage');assert.equal(calls.bind.length,0)})
+test('unknown outcome of an already-issued bind stops automatic write replay while preserving explicit read-only recovery',async()=>{const w=await open('Profile'),socket=await ready(w,'Profile'),oldMessage=socket.onmessage;socket.status('need_bind');await until(()=>calls.status.length===1,'real HTTP binding status exchange');calls.status[0].resolve({status:200,data:{status:'need_bind',bindToken:'SYNTHETIC_BIND'}});await until(()=>calls.bind.length===1,'one actual bind action');calls.bind[0].reject(Object.assign(new Error('SYNTHETIC_PRIVATE_UNKNOWN'),{code:'UNKNOWN_OUTCOME'}));await settle();assert.equal(calls.bind.length,1);assert.equal(socket.closed,true,'unknown write retires automatic QR controller');assert.equal(w.vm.wechatQrCodeImageData,'');oldMessage({data:JSON.stringify({type:'status',status:'need_bind'})});await settle();assert.equal(calls.bind.length,1,'retired callback never replays unknown write');assert.equal(calls.status.length,1);button(w,'刷新');await settle();assert.equal(calls.bind.length,1,'explicit profile refresh is read-only, not bind retry')})
