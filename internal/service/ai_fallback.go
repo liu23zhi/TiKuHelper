@@ -144,7 +144,14 @@ func SearchAIFallbackWithContext(ctx context.Context, db *gorm.DB, req model.Sea
 			return buildAIFallbackErrorResultWithUsage(AIFallbackErrorCodeNoAnswer, "未找到可用答案", usage, resolved.Config.Model)
 		}
 		result := buildAIFallbackErrorResultWithUsage(AIFallbackErrorCodeUpstreamError, "AI 上游请求失败", usage, resolved.Config.Model)
-		result.FailureDetail = logger.RedactSecrets(searchErr.Error(), resolved.Config.APIKey)
+		// 调用方取消时，真正的原因就是取消。上游可能在取消的同时恰好返回了
+		// HTTP 429/5xx，两者谁先到是竞态；把取消优先写进私有诊断，避免同一次
+		// 取消在 CI 里时而记成上游限流，让排障方向被带偏。
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			result.FailureDetail = ctxErr.Error()
+		} else {
+			result.FailureDetail = logger.RedactSecrets(searchErr.Error(), resolved.Config.APIKey)
+		}
 		return result
 	}
 
