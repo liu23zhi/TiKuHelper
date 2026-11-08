@@ -1,12 +1,13 @@
 <template>
   <div class="console-page log-page">
     <ConsolePageHeading title="操作日志" description="按关键词、模块和操作类型查看操作记录。">
-      <template #actions><a-button type="primary" :loading="tabLoading" @click="handleLogList">刷新</a-button></template>
+      <template #actions><a-button type="primary" :loading="tabLoading" :disabled="!isAdmin" @click="handleLogList">刷新</a-button></template>
     </ConsolePageHeading>
     <ConsolePanel class="filter-panel">
       <a-form layout="inline" class="filter-form">
-        <a-form-item label="关键词">
+        <a-form-item label="关键词" :html-for="filterFieldId('keyword')">
           <a-input-search
+            :id="filterFieldId('keyword')"
             v-model:value="keywordInput"
             placeholder="说明 / 用户名 / IP"
             allow-clear
@@ -15,8 +16,9 @@
             @press-enter="applyKeyword"
           />
         </a-form-item>
-        <a-form-item label="模块">
+        <a-form-item label="模块" :html-for="filterFieldId('module')">
           <a-select
+            :id="filterFieldId('module')"
             v-model:value="filters.module"
             allow-clear
             placeholder="全部模块"
@@ -25,8 +27,9 @@
             @change="onFilterChange"
           />
         </a-form-item>
-        <a-form-item label="操作类型">
+        <a-form-item label="操作类型" :html-for="filterFieldId('action')">
           <a-select
+            :id="filterFieldId('action')"
             v-model:value="filters.action"
             allow-clear
             placeholder="全部操作"
@@ -45,10 +48,10 @@
           <a-input v-model:value="filters.clientIp" allow-clear placeholder="精确 IP" style="width: 160px" @press-enter="onFilterChange" @blur="onFilterChange" />
         </a-form-item>
         <a-form-item label="开始日期">
-          <a-input v-model:value="filters.createdFrom" type="date" style="width: 160px" @change="onFilterChange" />
+          <a-input v-model:value="filters.createdFrom" type="date" style="width: 160px" @change="onFilterChange" aria-label="创建日期起始" />
         </a-form-item>
         <a-form-item label="结束日期">
-          <a-input v-model:value="filters.createdTo" type="date" style="width: 160px" @change="onFilterChange" />
+          <a-input v-model:value="filters.createdTo" type="date" style="width: 160px" @change="onFilterChange" aria-label="创建日期截止" />
         </a-form-item>
         <a-form-item>
           <a-space>
@@ -61,17 +64,24 @@
         type="info"
         show-icon
         class="page-alert"
-        :message="isAdmin ? '当前显示全站审计日志，可按关键词（说明 / 用户名 / 客户端 IP）、模块与操作类型筛选。搜题日志会拆分展示请求接口、请求参数、请求 ID、命中渠道及错误原因、计费渠道以及原始请求 / 响应快照。' : '当前仅显示你自己的操作日志，可按关键词（说明 / 用户名 / 客户端 IP）、模块与操作类型筛选。搜题日志会拆分展示请求接口、请求参数、请求 ID、命中渠道及错误原因、计费渠道以及原始请求 / 响应快照。'"
+        :message="isAdmin ? '当前显示全站审计日志，可按关键词（说明 / 用户名 / 客户端 IP）、模块与操作类型筛选。搜题日志会拆分展示请求接口、请求参数、请求 ID、命中渠道及错误原因、计费渠道以及原始请求 / 响应快照。' : '当前账号无日志管理权限。'"
       />
     </ConsolePanel>
 
     <ConsolePanel class="table-card">
+      <RequestFailureAlert v-if="listFailure" :failure="listFailure"
+        message="获取操作日志失败，请重试。" :retryable="true" :busy="tabLoading"
+        :context-key="listFailureContext" :is-current="isCurrentListFailure" @retry="guardedRetryListFailure" />
+      <a-alert v-else-if="loadError" class="log-read-error" type="error" show-icon :message="loadError" />
+      <TableColumnSettings :model-value="selectedColumnKeys" :options="columnOptions"
+        :context-key="columnScopeKey" :priority-keys="columnPriorityKeys"
+        @update:model-value="setSelectedColumnKeys" @reset="resetColumns" />
       <ConsoleTableShell label="操作日志记录">
         <a-table
           class="desktop-log-table"
           bordered
           :data-source="dataSource"
-          :columns="columns"
+          :columns="visibleColumns"
           :loading="tabLoading"
           :pagination="pagination"
           row-key="id"
@@ -156,6 +166,10 @@
             </template>
             <template v-else>{{ text }}</template>
           </template>
+          <template #emptyText>
+            <a-empty v-if="!tabLoading && !loadError" description="当前还没有日志记录" />
+            <span v-else>{{ loadError ? (isAdmin ? '加载未完成，请重试。' : '当前账号无日志管理权限。') : '正在加载操作日志…' }}</span>
+          </template>
         </a-table>
       </ConsoleTableShell>
       <div class="mobile-log-list">
@@ -172,7 +186,8 @@
           </dl>
           <p class="mobile-log-card__detail">{{ buildRowDetail(record) }}</p>
         </article>
-        <a-empty v-if="!dataSource.length" description="当前还没有日志记录" />
+        <p v-if="tabLoading" role="status">正在加载操作日志…</p>
+        <a-empty v-if="!dataSource.length && !tabLoading && !loadError" description="当前还没有日志记录" />
       </div>
       <div class="mobile-log-pagination">
         <a-pagination :current="pagination.current" :page-size="pagination.pageSize" :total="pagination.total" size="small" show-less-items @change="handleMobilePageChange" />
@@ -183,12 +198,16 @@
 
 <script>
 import { getLogList, getIpLocations } from '@/api/TikuComponentApi';
-import { message } from 'ant-design-vue';
-import { defineComponent, ref, reactive, computed } from 'vue';
+import { defineComponent, ref, reactive, computed, getCurrentInstance, shallowRef, markRaw, useId } from 'vue';
+import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
+import { ensureRequestFailure } from '@/utils/requestFailureView.mjs'
+import TableColumnSettings from '@/components/TableColumnSettings.vue'
+import { useTableColumnPreferences } from '@/composables/useTableColumnPreferences.mjs'
 import OverflowTableText from '@/components/OverflowTableText.vue';
 import { useTableExpansion } from '@/composables/useTableExpansion.mjs';
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs';
-import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser';
+import { useCurrentUserDisplay, isAdminUser } from '@/utils/currentUser';
+import { useCurrentUserRequestScope } from '@/utils/currentUserScope';
 import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@/utils/listSearchHelpers.mjs';
 import {
   collectLocationKeys,
@@ -210,54 +229,60 @@ import {
   buildLogStructuredFields,
   formatShanghaiLogDate,
 } from '@/utils/logListHelpers.mjs';
-const dataSource = ref([])
-const tabLoading = ref(true)
-const currentUser = ref(getStoredCurrentUser())
-
-// 归属地映射：key 为归一化后的 IP，value 为展示文本。
-// 渲染时按行取值，无需改写 dataSource 的行对象。
-const ipLocations = reactive({})
-
 function formatValueWithLocation(rawValue, address) {
   return formatValueWithLocationBase(rawValue, address)
 }
 
-// enrichClientIps 批量拉取本页来源 IP 的归属地。
-//
-// 失败静默：归属地只是展示增强，未配置密钥或上游异常时对应列退化为只显示原始 IP。
-function enrichClientIps(rows) {
-  const ips = collectLocationKeys(rows, 'clientIp')
-  if (!ips.length) {
-    return
-  }
-  lookupLocationAddresses('ip', ips, getIpLocations)
-    .then((addresses) => {
-      Object.keys(addresses).forEach((key) => {
-        ipLocations[normalizeLocationKey(key)] = addresses[key]
+// Live data and query state belong to one mounted log view, not the module cache.
+function createLogListState() {
+  const dataSource = ref([])
+  const tabLoading = ref(true)
+  const loadError = ref('')
+
+  // 归属地映射：key 为归一化后的 IP，value 为展示文本。
+  // 渲染时按行取值，无需改写 dataSource 的行对象。
+  const ipLocations = reactive({})
+
+  // enrichClientIps 批量拉取本页来源 IP 的归属地。
+  //
+  // 失败静默：归属地只是展示增强，未配置密钥或上游异常时对应列退化为只显示原始 IP。
+  function enrichClientIps(rows, owns = () => true) {
+    const ips = collectLocationKeys(rows, 'clientIp')
+    if (!ips.length) {
+      return
+    }
+    lookupLocationAddresses('ip', ips, getIpLocations)
+      .then((addresses) => {
+        if (!owns()) return
+        Object.keys(addresses).forEach((key) => {
+          ipLocations[normalizeLocationKey(key)] = addresses[key]
+        })
       })
-    })
+  }
+  const filters = reactive({
+    keyword: '',
+    module: undefined,
+    action: undefined,
+    userId: undefined,
+    qid: undefined,
+    clientIp: '',
+    createdFrom: '',
+    createdTo: '',
+  })
+  // 关键词输入框的即时值：只有点「搜索」或回车才生效，避免每敲一个字就请求一次。
+  const keywordInput = ref('')
+  const pagination = reactive({
+    current: 1,
+    pageSize: 10,
+    total: 0,
+    showSizeChanger: true,
+    showQuickJumper: true,
+    showTotal: (total) => `共 ${total} 条`,
+    pageSizeOptions: ['10', '20', '50', '100']
+  })
+  return { dataSource, tabLoading, loadError, ipLocations, filters, keywordInput, pagination, enrichClientIps }
 }
-const filters = reactive({
-  keyword: '',
-  module: undefined,
-  action: undefined,
-  userId: undefined,
-  qid: undefined,
-  clientIp: '',
-  createdFrom: '',
-  createdTo: '',
-})
-// 关键词输入框的即时值：只有点「搜索」或回车才生效，避免每敲一个字就请求一次。
-const keywordInput = ref('')
-const pagination = reactive({
-  current: 1,
-  pageSize: 10,
-  total: 0,
-  showSizeChanger: true,
-  showQuickJumper: true,
-  showTotal: (total) => `共 ${total} 条`,
-  pageSizeOptions: ['10', '20', '50', '100']
-})
+
 const moduleLabels = LOG_MODULE_OPTIONS.map((option) => option.label)
 const logColumnWidths = {
   createTime: 112, // 2026-10-25 plus cell padding
@@ -280,9 +305,48 @@ const logColumnWidths = {
 }
 export default defineComponent({
   name: 'LogList',
-  components: { OverflowTableText },
+  components: { RequestFailureAlert, TableColumnSettings, OverflowTableText },
   setup() {
+    const filterIdPrefix = 'log-list-' + useId()
+    const filterFieldId = field => filterIdPrefix + '-' + field
+    const logState = markRaw(createLogListState())
+    const { dataSource, tabLoading, loadError, ipLocations, filters, keywordInput, pagination } = logState
+    const { currentUser } = useCurrentUserDisplay()
     const snapshots = useTableExpansion(dataSource)
+    let listRequestVersion = 0
+    const listFailure = shallowRef(null)
+    const listFailureContext = ref(0)
+    const instance = getCurrentInstance()
+    const { captureDataOwner, canLoadForCurrentUser } = useCurrentUserRequestScope(currentUser, {
+      clear() {
+        listRequestVersion += 1
+        listFailure.value = null
+        listFailureContext.value += 1
+        dataSource.value = []
+        tabLoading.value = false
+        loadError.value = currentUser.value && !isAdminUser(currentUser.value) ? '当前账号无日志管理权限。' : ''
+        pagination.total = 0
+        Object.keys(ipLocations).forEach(key => { delete ipLocations[key] })
+        snapshots.clear()
+      },
+      reset() {
+        filters.keyword = ''
+        keywordInput.value = ''
+        filters.module = undefined
+        filters.action = undefined
+        pagination.current = 1
+      },
+      reload() { instance.proxy.handleLogList() },
+    })
+    const isCurrentListFailure = (failure, contextKey) => canLoadForCurrentUser()
+      && Boolean(failure) && failure === listFailure.value && contextKey === listFailureContext.value
+    const captureListRequest = () => {
+      const requestVersion = ++listRequestVersion
+      listFailure.value = null
+      listFailureContext.value += 1
+      const ownsData = captureDataOwner()
+      return () => ownsData() && requestVersion === listRequestVersion
+    }
     const expandedColumnWidth = (field) => snapshots.columnWidth(field, logColumnWidths[field], 236)
     const columns = computed(() => [
         {
@@ -390,9 +454,21 @@ export default defineComponent({
           width: expandedColumnWidth('responseSnapshot'),
         },
       ])
-    const tableScrollX = computed(() => sumTableColumnWidths(columns.value))
+    const columnPriorityKeys = ['createTime', 'module', 'status', 'username', 'summary', 'hitProvider', 'detail']
+    const { visibleColumns, selectedKeys: selectedColumnKeys, columnOptions, scopeKey: columnScopeKey,
+      setSelectedKeys: setSelectedColumnKeys, resetColumns } = useTableColumnPreferences({
+      pageKey: 'LogList', columns,
+      scope: () => currentUser.value?.id ? `id:${currentUser.value.id}:role:${currentUser.value.role}:view:logs` : '',
+      requiredKeys: ['createTime', 'status', 'summary', 'hitProvider'], priorityKeys: columnPriorityKeys,
+    })
+    const tableScrollX = computed(() => sumTableColumnWidths(visibleColumns.value))
 
     return {
+      filterFieldId,
+      logState,
+      captureListRequest, canLoadForCurrentUser,
+      listFailure, listFailureContext, isCurrentListFailure,
+      loadError,
       dataSource,
       // 归属地展示：映射 + 取值/格式化函数（模板按行取值）。
       ipLocations,
@@ -406,10 +482,11 @@ export default defineComponent({
       isSnapshotExpanded: snapshots.isExpanded,
       toggleSnapshotExpanded: snapshots.toggle,
       tableScrollX,
-      isAdmin: isAdminUser(currentUser.value),
+      isAdmin: computed(() => isAdminUser(currentUser.value)),
       moduleOptions: LOG_MODULE_OPTIONS,
       actionOptions: LOG_ACTION_OPTIONS,
-      columns,
+      columns, visibleColumns, selectedColumnKeys, columnOptions, columnScopeKey,
+      columnPriorityKeys, setSelectedColumnKeys, resetColumns,
 
     };
   },
@@ -417,6 +494,9 @@ export default defineComponent({
     this.handleLogList()
   },
   methods: {
+    guardedRetryListFailure(failure, contextKey) {
+      if (this.isCurrentListFailure(failure, contextKey)) this.handleLogList()
+    },
     buildLogUsername,
     buildModuleLabel(value) {
       return buildLogModuleLabel(value)
@@ -444,42 +524,53 @@ export default defineComponent({
     },
     // 点「搜索」或回车时才把输入框内容变成生效的筛选条件。
     applyKeyword() {
+      const { filters, keywordInput, pagination } = this.logState
       filters.keyword = normalizeSearchKeyword(keywordInput.value)
       keywordInput.value = filters.keyword
       pagination.current = 1
       this.handleLogList()
     },
     handleLogList() {
+      const { dataSource, tabLoading, loadError, filters, pagination, enrichClientIps } = this.logState
+      if (!this.canLoadForCurrentUser() || !this.isAdmin) return
+      const owns = this.captureListRequest()
+      loadError.value = ''
       tabLoading.value = true
-      getLogList(buildSearchParams({
-        keyword: filters.keyword,
-        module: filters.module,
-        action: filters.action === undefined ? undefined : filters.action,
-        userId: filters.userId,
-        qid: filters.qid,
-        clientIp: filters.clientIp,
-        createdFrom: filters.createdFrom,
-        createdTo: filters.createdTo,
-      }, pagination.current, pagination.pageSize)).then(res => {
+      getLogList(buildSearchParams({ keyword: filters.keyword, module: filters.module, action: filters.action, userId: filters.userId, qid: filters.qid, clientIp: filters.clientIp, createdFrom: filters.createdFrom, createdTo: filters.createdTo }, pagination.current, pagination.pageSize)).then(res => {
+        if (!owns()) return
         if (res?.status == 200) {
-          dataSource.value = res?.data?.data || []
+          dataSource.value = Array.isArray(res?.data?.data) ? res.data.data : []
           pagination.total = res?.data?.total || 0
           pagination.current = res?.data?.page || 1
           pagination.pageSize = res?.data?.pageSize || 10
           // 来源 IP 归属地单独批量拉取（失败静默）。
-          enrichClientIps(dataSource.value)
+          enrichClientIps(dataSource.value, owns)
+        } else {
+          // Keep the original object: transport diagnostics are held in a WeakMap.
+          dataSource.value = []
+          pagination.total = 0
+          this.listFailure = ensureRequestFailure(res)
+          loadError.value = '获取操作日志失败，请重试。'
         }
-      }).catch(() => {
-        message.error('获取操作日志失败')
+      }).catch((error) => {
+        if (!owns()) return
+        // Rows from a previous filter must not masquerade as this failed result.
+        dataSource.value = []
+        pagination.total = 0
+        loadError.value = '获取操作日志失败，请重试。'
+        this.listFailure = ensureRequestFailure(error)
       }).finally(() => {
+        if (!owns()) return
         tabLoading.value = false
       })
     },
     onFilterChange() {
+      const { pagination } = this.logState
       pagination.current = 1
       this.handleLogList()
     },
     resetFilters() {
+      const { filters, keywordInput, pagination } = this.logState
       filters.keyword = ''
       keywordInput.value = ''
       filters.module = undefined
@@ -493,11 +584,13 @@ export default defineComponent({
       this.handleLogList()
     },
     handleTableChange(paginationData) {
+      const { pagination } = this.logState
       pagination.current = paginationData.current
       pagination.pageSize = paginationData.pageSize
       this.handleLogList()
     },
     handleMobilePageChange(current, pageSize) {
+      const { pagination } = this.logState
       pagination.current = current
       pagination.pageSize = pageSize
       this.handleLogList()
@@ -511,6 +604,7 @@ export default defineComponent({
 </script>
 
 <style scoped>
+.log-read-error { margin-bottom: 16px; }
 .filter-form { display: flex; flex-wrap: wrap; gap: 12px 0; }
 .filter-form :deep(.ant-form-item) { margin-bottom: 0; }
 .filter-panel :deep(.ant-alert) { margin-top: 16px; }

@@ -34,7 +34,8 @@ func GetTicketWecomSettingsWithDB(db *gorm.DB) (TicketWecomSettings, error) {
 	}
 	return TicketWecomSettings{
 		Enabled: config.Enabled, Configured: strings.TrimSpace(config.WebhookURL) != "",
-		WebhookURL: config.WebhookURL,
+		// Never return the credential-bearing URL; blank updates retain it.
+		WebhookURL: "",
 		Preview:    maskTicketWebhookURL(config.WebhookURL), MentionedList: config.MentionedList,
 	}, nil
 }

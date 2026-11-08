@@ -174,6 +174,8 @@ func buildBillingRecordTypeLabel(recordType string) string {
 		return "脚本预扣"
 	case scriptRefundBillingRecordType:
 		return "脚本退款"
+	case ScriptActivationPurchaseBillingType:
+		return "脚本激活码购买"
 	case normalSearchBillingRecordType:
 		return "题目消费"
 	default:
@@ -300,6 +302,9 @@ func buildBillingRecordSubject(record BillingRecordListItem) string {
 		}
 		return "脚本退款"
 	}
+	if record.Type == ScriptActivationPurchaseBillingType {
+		return "脚本激活码购买"
+	}
 	if question := strings.TrimSpace(record.QuestionText); question != "" {
 		return buildSearchBillingSubject(question)
 	}
@@ -336,6 +341,9 @@ func buildBillingRecordDetail(record BillingRecordListItem) string {
 			return remark
 		}
 		return "脚本退款"
+	}
+	if record.Type == ScriptActivationPurchaseBillingType {
+		return "脚本激活码购买"
 	}
 	if source := strings.TrimSpace(record.AnswerSourceLabel); source != "" {
 		return source
@@ -1239,6 +1247,7 @@ func applyBillingRecordFilters(query *gorm.DB, filter BillingRecordListQuery, in
 		groupFilterParts = append(groupFilterParts, groupCondition)
 		groupFilterArgs = append(groupFilterArgs, keywordGroupArgs...)
 	}
+	// Sibling matching uses the same visible scope as list and totals.
 	if !includeHidden {
 		groupFilterParts = append(groupFilterParts, "matching_records.hidden_from_statement = ?")
 		groupFilterArgs = append(groupFilterArgs, false)

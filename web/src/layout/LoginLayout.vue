@@ -56,20 +56,20 @@ export default {
   border: 1px solid var(--console-border);
   border-top: 3px solid var(--console-primary);
   border-radius: var(--console-radius, 12px);
-  background: var(--console-selected);
+  background: var(--surface-subtle);
   overflow-wrap: anywhere;
 }
 
 .auth-main :deep(.hero-badge) {
   margin-bottom: 24px;
-  color: var(--console-primary, #2563eb);
+  color: var(--console-primary, var(--primary));
   font-size: 13px;
   font-weight: 600;
 }
 
 .auth-main :deep(.hero h1) {
   margin: 0;
-  color: var(--console-text, #1f2937);
+  color: var(--console-text, var(--text));
   font-size: 32px;
   font-weight: 700;
   line-height: 1.35;
@@ -78,7 +78,7 @@ export default {
 
 .auth-main :deep(.hero p) {
   margin: 16px 0 0;
-  color: var(--console-muted, #64748b);
+  color: var(--console-muted, var(--text-muted));
   font-size: 14px;
   line-height: 1.8;
 }
@@ -93,21 +93,21 @@ export default {
 
 .auth-main :deep(.auth-guide dt) {
   margin-bottom: 5px;
-  color: var(--console-text, #1f2937);
+  color: var(--console-text, var(--text));
   font-size: 14px;
   font-weight: 600;
 }
 
 .auth-main :deep(.auth-guide dd) {
   margin: 0;
-  color: var(--console-muted, #64748b);
+  color: var(--console-muted, var(--text-muted));
   font-size: 13px;
   line-height: 1.7;
 }
 
 .auth-main :deep(.form-card) {
   min-width: 0;
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   border-radius: var(--console-radius, 12px);
   background: var(--console-surface, #fff);
   box-shadow: none;
@@ -120,12 +120,12 @@ export default {
 .auth-main :deep(.form-header) {
   margin-bottom: 24px;
   padding-bottom: 20px;
-  border-bottom: 1px solid var(--console-border, #e5e7eb);
+  border-bottom: 1px solid var(--console-border, var(--border));
 }
 
 .auth-main :deep(.form-title) {
   margin: 0;
-  color: var(--console-text, #1f2937);
+  color: var(--console-text, var(--text));
   font-size: 23px;
   font-weight: 700;
   line-height: 1.4;
@@ -133,7 +133,7 @@ export default {
 
 .auth-main :deep(.form-subtitle) {
   margin-top: 8px;
-  color: var(--console-muted, #64748b);
+  color: var(--console-muted, var(--text-muted));
   font-size: 13px;
   line-height: 1.7;
 }
@@ -173,18 +173,18 @@ export default {
   display: grid;
   gap: 12px;
   padding-top: 20px;
-  border-top: 1px solid var(--console-border, #e5e7eb);
+  border-top: 1px solid var(--console-border, var(--border));
 }
 
 .auth-main :deep(.action-title) {
-  color: var(--console-text, #1f2937);
+  color: var(--console-text, var(--text));
   font-size: 14px;
   font-weight: 600;
 }
 
 .auth-main :deep(.action-subtitle) {
   margin: 0;
-  color: var(--console-muted, #64748b);
+  color: var(--console-muted, var(--text-muted));
   font-size: 13px;
   line-height: 1.7;
 }
@@ -197,9 +197,9 @@ export default {
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   border-radius: 8px;
-  background: #fff;
+  background: var(--surface);
 }
 
 .auth-main :deep(.wechat-qrcode-frame img) {
@@ -210,7 +210,7 @@ export default {
 
 .auth-main :deep(.wechat-qrcode-empty),
 .auth-main :deep(.wechat-status) {
-  color: var(--console-muted, #64748b);
+  color: var(--console-muted, var(--text-muted));
   font-size: 13px;
   text-align: center;
   line-height: 1.7;
@@ -219,7 +219,7 @@ export default {
 
 .auth-main :deep(.form-section-heading) {
   margin: 4px 0 16px;
-  color: var(--console-text, #1f2937);
+  color: var(--console-text, var(--text));
   font-size: 14px;
   font-weight: 600;
 }
@@ -258,7 +258,7 @@ export default {
 .auth-main :deep(.wechat-register-panel) {
   margin: 8px 0 20px;
   padding: 18px;
-  border: 1px solid var(--console-border, #e5e7eb);
+  border: 1px solid var(--console-border, var(--border));
   border-radius: 8px;
   background: var(--console-subtle);
 }
@@ -269,7 +269,7 @@ export default {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  color: var(--console-muted, #64748b);
+  color: var(--console-muted, var(--text-muted));
   font-size: 13px;
 }
 
@@ -283,7 +283,7 @@ export default {
 }
 
 .auth-main :deep(.wechat-register-staged) {
-  color: #15803d;
+  color: var(--success-fg);
 }
 
 .auth-main :deep(.register-alert),

@@ -23,8 +23,64 @@ test('script management is routed for both scopes and exposes admin upload contr
   assert.match(page, /accept="\.exe,application\/vnd\.microsoft\.portable-executable"/)
   assert.match(page, /显示全部脚本/)
   assert.match(page, /预置参数/)
-  assert.match(page, /跟随题库计费/)
-  assert.match(page, /独立答题倍率（X）/)
+  assert.match(page, /冻结金模式/)
+  assert.match(page, /一次性激活码/)
+  assert.doesNotMatch(page, /独立答题倍率（X）/)
   assert.match(page, /发布为最新版本/)
   assert.match(page, /PowerShell \+ \.NET WebClient/)
+})
+
+test('paid script creation sends exactly one stable idempotency header without changing the payload', async () => {
+  const api = await read('api/TikuComponentApi.js')
+  const start = api.indexOf('export function createScript(')
+  const end = api.indexOf('\n}', start)
+  assert.ok(start >= 0 && end > start)
+  const declaration = api.slice(start, end + 2).replace('export ', '')
+  const invoke = new Function('request', declaration + '; return createScript')(config => config)
+  const payload = { name: 'fixture script' }, key = 'script-create-' + '1'.repeat(32)
+  assert.deepEqual(invoke(payload, key), {
+    errorFeedback: 'local',
+    retryPolicy: 'single',
+    headers: { 'Idempotency-Key': key },
+    url: '/adapter-service/scripts',
+    method: 'post',
+    data: payload,
+  })
+  assert.equal(Object.hasOwn(invoke(payload), 'headers'), false)
+})
+
+test('script deletion retries only after explicit user action and carries the confirmed run as a decimal query string', async () => {
+  const api = await read('api/TikuComponentApi.js')
+  const start = api.indexOf('export function deleteScript(')
+  const end = api.indexOf('\n}', start)
+  assert.ok(start >= 0 && end > start)
+  const declaration = api.slice(start, end + 2).replace('export ', '')
+  const invoke = new Function('request', declaration + '; return deleteScript')(config => config)
+  const base = { errorFeedback: 'local', retryPolicy: 'single', url: '/adapter-service/scripts/7', method: 'delete' }
+  assert.deepEqual(invoke({ id: 7 }), base)
+  assert.deepEqual(invoke({ id: 7, confirmActiveSessionId: '9007199254740993' }), {
+    ...base, params: { confirmActiveSessionId: '9007199254740993' },
+  })
+  for (const invalid of [42, true, null, '', '00', '12&confirmActive=true']) {
+    assert.throws(() => invoke({ id: 7, confirmActiveSessionId: invalid }), TypeError)
+  }
+})
+
+
+test('activation purchase never sends the code or a wallet mutation without its idempotency key', async () => {
+  const api = await read('api/TikuComponentApi.js')
+  const start = api.indexOf('export function purchaseScriptActivationCode(')
+  const end = api.indexOf('\n}', start)
+  assert.ok(start >= 0 && end > start)
+  const declaration = api.slice(start, end + 2).replace('export ', '')
+  const invoke = new Function('request', declaration + '; return purchaseScriptActivationCode')(config => config)
+  const key = 'script-activation-purchase-' + '1'.repeat(32)
+  assert.deepEqual(invoke(key), {
+    errorFeedback: 'local',
+    retryPolicy: 'single',
+    headers: { 'Idempotency-Key': key },
+    url: '/adapter-service/script-activation-codes/purchase',
+    method: 'post',
+  })
+  assert.deepEqual(invoke(key, '12.345678').data, { quotedPrice: '12.345678' })
 })

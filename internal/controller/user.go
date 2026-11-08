@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -139,10 +141,12 @@ func validateBcryptPasswordLength(password string) error {
 func Auth(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	tokenValue := strings.TrimSpace(c.Request.Header.Get("Authorization"))
+	cookieCredential := false
 	if tokenValue == "" {
 		cookieValue, err := c.Cookie(authCookieName)
 		if err == nil {
 			tokenValue = strings.TrimSpace(cookieValue)
+			cookieCredential = tokenValue != ""
 		}
 	}
 	claims, err := util.ParseJwtWithClaims(tokenValue)
@@ -192,6 +196,10 @@ func Auth(c *gin.Context) {
 		c.AbortWithStatusJSON(401, gin.H{"message": "账号已在其他设备登录，请重新登录"})
 		return
 	}
+	if cookieCredential && !cookieRequestContextAllowed(c.Request) {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"message": "不支持跨源或跨站 Cookie 请求"})
+		return
+	}
 	c.Set("user", user)
 	c.Next()
 }
@@ -201,7 +209,7 @@ func Auth(c *gin.Context) {
 func AuthOrAccessToken(c *gin.Context) {
 	authorization := strings.TrimSpace(c.Request.Header.Get("Authorization"))
 	if identity := strings.TrimSpace(c.Request.Header.Get("X-Script-Identity")); identity != "" {
-		authCtx, _, err := service.ResolveScriptRunSessionWithDB(dao.User.UnderlyingDB(), authorization, identity)
+		authCtx, session, err := service.ResolveSearchTokenWithScriptIdentity(dao.User.UnderlyingDB(), authorization, identity, c.ClientIP())
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"message": "脚本运行会话无效或已过期"})
 			return
@@ -209,6 +217,7 @@ func AuthOrAccessToken(c *gin.Context) {
 		user := authCtx.User
 		c.Set("user", &user)
 		c.Set("access_token", &authCtx.AccessToken)
+		c.Set("script_session", session)
 		c.Next()
 		return
 	}
@@ -234,17 +243,7 @@ func AuthAccessToken(c *gin.Context) {
 		return
 	}
 
-	identity := strings.TrimSpace(c.Request.Header.Get("X-Script-Identity"))
-	var authCtx service.AccessTokenAuthContext
-	var err error
-	if identity != "" {
-		authCtx, _, err = service.ResolveScriptRunSessionWithDB(dao.User.UnderlyingDB(), authorization, identity)
-	} else {
-		authCtx, err = service.ResolveAccessTokenFromBasicAuth(dao.User.UnderlyingDB(), authorization)
-		if err == nil && authCtx.AccessToken.ScriptID > 0 {
-			err = service.ErrInvalidAccessTokenAuthorization
-		}
-	}
+	authCtx, session, err := service.ResolveSearchTokenWithScriptIdentity(dao.User.UnderlyingDB(), authorization, c.Request.Header.Get("X-Script-Identity"), c.ClientIP())
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"message": "请提供有效访问令牌"})
 		return
@@ -253,6 +252,9 @@ func AuthAccessToken(c *gin.Context) {
 	user := authCtx.User
 	c.Set("user", &user)
 	c.Set("access_token", &authCtx.AccessToken)
+	if session.ID > 0 {
+		c.Set("script_session", session)
+	}
 	c.Next()
 }
 
@@ -915,6 +917,15 @@ func UserSMSLogin(c *gin.Context) {
 
 func UserLogout(c *gin.Context) {
 	if user := optionalLogoutUser(c); user != nil {
+		// Public logout still clears anonymous/expired cookies, but a valid
+		// Cookie-selected session must obey the same origin boundary as Auth.
+		// Explicit Authorization retains precedence and extension compatibility.
+		if strings.TrimSpace(c.GetHeader("Authorization")) == "" {
+			if value, err := c.Cookie(authCookieName); err == nil && strings.TrimSpace(value) != "" && !cookieRequestContextAllowed(c.Request) {
+				c.JSON(http.StatusForbidden, gin.H{"message": "不支持跨源或跨站 Cookie 请求"})
+				return
+			}
+		}
 		if err := service.RevokeUserLoginSessionWithDB(dao.User.UnderlyingDB().WithContext(c.Request.Context()), user.ID, user.LoginSessionID); err != nil {
 			logger.SysError("退出登录会话失效失败: " + logger.RedactSecrets(err.Error()))
 		}
@@ -1375,4 +1386,114 @@ func tokenLoginSessionMatches(claims jwt.Claims, currentSessionID string) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(tokenSessionID), []byte(currentSessionID)) == 1
+}
+
+// cookieRequestContextAllowed applies only after actual Cookie credential selection
+// and existing authentication. Missing context keeps approved legacy compatibility.
+// Forwarded headers are intentionally ignored. Without direct TLS, public scheme
+// may be hidden by a TLS terminator: only host/port are established in that case.
+func cookieRequestContextAllowed(request *http.Request) bool {
+	if request == nil {
+		return false
+	}
+	for _, value := range request.Header.Values("Sec-Fetch-Site") {
+		for _, site := range strings.Split(value, ",") {
+			site = strings.TrimSpace(site)
+			if strings.EqualFold(site, "cross-site") || strings.EqualFold(site, "same-site") {
+				return false
+			}
+		}
+	}
+	origins := request.Header.Values("Origin")
+	if len(origins) == 0 || len(origins) == 1 && strings.TrimSpace(origins[0]) == "" {
+		return true
+	}
+	if len(origins) != 1 {
+		return false
+	}
+	originRaw := strings.TrimSpace(origins[0])
+	if strings.Contains(originRaw, "#") {
+		return false
+	}
+	origin, err := url.Parse(originRaw)
+	if err != nil || origin == nil || origin.Opaque != "" || origin.User != nil || origin.Host == "" || origin.Path != "" || origin.RawQuery != "" || origin.ForceQuery || origin.Fragment != "" {
+		return false
+	}
+	scheme := strings.ToLower(origin.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return false
+	}
+	originHost, originPort, ok := cookieContextHost(origin.Host)
+	if !ok {
+		return false
+	}
+	if originPort == "" {
+		if scheme == "https" {
+			originPort = "443"
+		} else {
+			originPort = "80"
+		}
+	}
+	targetHost, targetPort, ok := cookieContextHost(request.Host)
+	if !ok || originHost != targetHost {
+		return false
+	}
+	if request.TLS != nil {
+		if targetPort == "" {
+			targetPort = "443"
+		}
+		return scheme == "https" && originPort == targetPort
+	}
+	if targetPort != "" {
+		return originPort == targetPort
+	}
+	// A no-port Host behind a TLS terminator can represent either public default
+	// scheme. This compatibility allowance is not a complete cross-scheme defense.
+	return scheme == "http" && originPort == "80" || scheme == "https" && originPort == "443"
+}
+
+func cookieContextHost(authority string) (string, string, bool) {
+	if authority == "" || strings.TrimSpace(authority) != authority || strings.Contains(authority, "#") {
+		return "", "", false
+	}
+	parsed, err := url.Parse("//" + authority)
+	if err != nil || parsed.User != nil || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		return "", "", false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host == "" || strings.Contains(host, "%") {
+		return "", "", false
+	}
+	if strings.Contains(host, ":") || strings.HasPrefix(parsed.Host, "[") {
+		if !strings.HasPrefix(parsed.Host, "[") || !strings.Contains(host, ":") || net.ParseIP(host) == nil {
+			return "", "", false
+		}
+	} else {
+		dns := strings.TrimSuffix(host, ".")
+		if len(dns) == 0 || len(dns) > 253 {
+			return "", "", false
+		}
+		for _, label := range strings.Split(dns, ".") {
+			if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+				return "", "", false
+			}
+			for _, char := range label {
+				if !(char >= 'a' && char <= 'z' || char >= '0' && char <= '9' || char == '-') {
+					return "", "", false
+				}
+			}
+		}
+	}
+	port := parsed.Port()
+	if strings.HasSuffix(authority, ":") {
+		return "", "", false
+	}
+	if port != "" {
+		value, err := strconv.Atoi(port)
+		if err != nil || value < 1 || value > 65535 {
+			return "", "", false
+		}
+		port = strconv.Itoa(value)
+	}
+	return host, port, true
 }

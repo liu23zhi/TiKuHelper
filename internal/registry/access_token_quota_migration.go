@@ -1,91 +1,75 @@
 package registry
 
 import (
+	"errors"
 	"fmt"
-
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"gorm.io/gorm"
+	"strings"
 )
 
-const (
-	// Version 2 expands the repair scope from only DECIMAL overflow to every
-	// negative quota. A new marker makes already-migrated databases run this
-	// stricter historical-data pass once.
-	accessTokenQuotaLimitRepairedKey = "access_token_quota_limit_repaired_v2"
-	accessTokenQuotaRepairBatchSize  = 500
-)
+const accessTokenQuotaLimitRepairedKey = "access_token_quota_limit_repaired_v2"
 
-// ensureAccessTokenQuotaLimitData repairs historical negative quota values and
-// values that cannot fit decimal(18,6). Such rows become 0, which the UI defines
-// as unlimited. The repair is idempotent, bounded to 500 IDs per batch, and
-// retried on later starts unless the system_settings marker is written
-// successfully.
+var ErrAccessTokenQuotaLimitDataInvalid = errors.New("historical access token quota limit invalid; manual recovery required; original data preserved")
+
 func ensureAccessTokenQuotaLimitData(db *gorm.DB) error {
-	if db == nil || !db.Migrator().HasTable(entity.TableNameAccessToken) ||
-		!db.Migrator().HasColumn(entity.TableNameAccessToken, "total_quota_limit") {
-		return nil
-	}
-	if !db.Migrator().HasTable(entity.TableNameSystemSetting) || systemSettingFlagIsSet(db, accessTokenQuotaLimitRepairedKey) {
-		return nil
-	}
-
-	if err := safeRepairAccessTokenQuotaLimits(db); err != nil {
-		logger.SysLog(fmt.Sprintf("访问令牌总额度历史数据修复失败（不影响启动，将保留在下次启动重试）：%v", err))
-		return err
-	}
-	if err := setSystemSettingFlag(db, accessTokenQuotaLimitRepairedKey); err != nil {
-		logger.SysLog(fmt.Sprintf("写入访问令牌总额度修复标记失败（下次启动会重新检查）：%v", err))
-	}
-	return nil
+	_, err := inspectAccessTokenQuotaLimitData(db)
+	return err
 }
 
-func safeRepairAccessTokenQuotaLimits(db *gorm.DB) (err error) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("panic: %v", recovered)
+// The returned hold applies only to an observed, explicitly disabled invalid
+// historical quota. No rows or migration markers are written here.
+func inspectAccessTokenQuotaLimitData(db *gorm.DB) (bool, error) {
+	if db == nil {
+		return false, nil
+	}
+	if !db.Migrator().HasTable(entity.TableNameAccessToken) {
+		if err := db.Exec("SELECT 1").Error; err != nil {
+			return false, fmt.Errorf("inspect access token metadata: %w", err)
 		}
-	}()
-	return repairAccessTokenQuotaLimits(db)
-}
-
-type accessTokenQuotaRepairRow struct {
-	ID int32 `gorm:"column:id"`
-}
-
-// repairAccessTokenQuotaLimits uses a fixed-size ID page so memory remains
-// bounded regardless of the access_tokens table size.
-func repairAccessTokenQuotaLimits(db *gorm.DB) error {
-	for {
-		var rows []accessTokenQuotaRepairRow
-		if err := db.Table(entity.TableNameAccessToken).
-			Select("id").
-			Where("total_quota_limit < ? OR total_quota_limit >= ?", 0, entity.AccessTokenQuotaLimitMaxExclusive).
-			Order("id asc").
-			Limit(accessTokenQuotaRepairBatchSize).
-			Find(&rows).Error; err != nil {
-			return err
-		}
-		if len(rows) == 0 {
-			return nil
-		}
-
-		ids := make([]int32, 0, len(rows))
-		for _, row := range rows {
-			ids = append(ids, row.ID)
-		}
-		result := db.Table(entity.TableNameAccessToken).
-			Where("id IN ? AND (total_quota_limit < ? OR total_quota_limit >= ?)", ids,
-				0, entity.AccessTokenQuotaLimitMaxExclusive).
-			Update("total_quota_limit", 0)
-		if result.Error != nil {
-			return result.Error
-		}
-		if result.RowsAffected == 0 {
-			return fmt.Errorf("访问令牌总额度修复未更新待修复记录")
-		}
-		if len(rows) < accessTokenQuotaRepairBatchSize {
-			return nil
+		return false, nil
+	}
+	columns, err := db.Migrator().ColumnTypes(entity.TableNameAccessToken)
+	if err != nil {
+		return false, fmt.Errorf("inspect access token columns: %w", err)
+	}
+	hasQuota, hasStatus := false, false
+	for _, column := range columns {
+		switch strings.ToLower(column.Name()) {
+		case "total_quota_limit":
+			hasQuota = true
+		case "status":
+			hasStatus = true
 		}
 	}
+	if !hasQuota {
+		return false, nil
+	}
+	invalid := func() *gorm.DB {
+		return db.Table(entity.TableNameAccessToken).Where("total_quota_limit < ? OR total_quota_limit >= ?", 0, entity.AccessTokenQuotaLimitMaxExclusive)
+	}
+	active := invalid()
+	if hasStatus {
+		active = active.Where("LOWER(TRIM(COALESCE(status, ''))) <> ?", "disabled")
+	}
+	var rows []struct{ ID int32 }
+	if err := active.Select("id").Limit(1).Find(&rows).Error; err != nil {
+		return false, fmt.Errorf("inspect access token quota limits: %w", err)
+	}
+	if len(rows) > 0 {
+		return false, ErrAccessTokenQuotaLimitDataInvalid
+	}
+	if !hasStatus {
+		return false, nil
+	}
+	var disabledCount int64
+	if err := invalid().Where("LOWER(TRIM(COALESCE(status, ''))) = ?", "disabled").Count(&disabledCount).Error; err != nil {
+		return false, fmt.Errorf("inspect disabled access token quotas: %w", err)
+	}
+	if disabledCount > 0 {
+		logger.SysWarn(fmt.Sprintf("disabled_invalid_quota_preserved count=%d; token schema held; correct quota before enabling; stored limits and state unchanged", disabledCount))
+		return true, nil
+	}
+	return false, nil
 }

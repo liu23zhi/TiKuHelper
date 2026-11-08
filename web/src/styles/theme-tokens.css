@@ -1,0 +1,187 @@
+/* Root tokens also inherit into body portals. */
+:root,
+html[data-theme='light'] {
+  --bg: #F5F5F7;
+  --surface: #FFFFFF;
+  --surface-raised: #FFFFFF;
+  --surface-subtle: #F0F1F4;
+  --text: #1D1D1F;
+  --text-muted: #5F6368;
+  --border: #D8DADF;
+  --control-border: #7B7E85;
+  --primary: #0066CC;
+  --on-primary: #FFFFFF;
+  --primary-hover: #0055AA;
+  --primary-active: #00458A;
+  --link: #005CB8;
+  --focus: #0066CC;
+  --overlay: rgba(0, 0, 0, 0.45);
+  --selected: #E7F0FC;
+  --hover: #EFF3F8;
+  --disabled-text: #6B6F76;
+  --disabled-bg: #E9EAEE;
+  --disabled-border: #9A9DA4;
+  --placeholder: #62666D;
+  --table-header: #EEF0F3;
+  --table-stripe: #F8F9FB;
+  --table-selected: #E7F0FC;
+  --tooltip-fg: #FFFFFF;
+  --tooltip-bg: #252529;
+  --success-fg: #176B3A;
+  --success-bg: #EAF5EE;
+  --success-border: #5D9772;
+  --warning-fg: #854D0E;
+  --warning-bg: #FFF5DA;
+  --warning-border: #AD8235;
+  --danger-fg: #B42318;
+  --danger-bg: #FFF0EE;
+  --danger-border: #C66B62;
+  --info-fg: #005CB8;
+  --info-bg: #EAF2FC;
+  --info-border: #668FB8;
+  --shadow-color: rgba(0, 0, 0, 0.12);
+  --shadow-1: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --shadow-2: 0 14px 40px rgba(0, 0, 0, 0.16);
+  --focus-ring: 0 0 0 2px #0066CC;
+}
+
+html[data-theme='dark'] {
+  --bg: #111113;
+  --surface: #1C1C1E;
+  --surface-raised: #242426;
+  --surface-subtle: #252528;
+  --text: #F5F5F7;
+  --text-muted: #A1A1AA;
+  --border: #48484F;
+  --control-border: #777781;
+  --primary: #69A9FF;
+  --on-primary: #111113;
+  --primary-hover: #8BBDFF;
+  --primary-active: #4F99FF;
+  --link: #8BBDFF;
+  --focus: #69A9FF;
+  --overlay: rgba(0, 0, 0, 0.65);
+  --selected: #24334A;
+  --hover: #2A2A2E;
+  --disabled-text: #A1A1AA;
+  --disabled-bg: #2B2B30;
+  --disabled-border: #62626B;
+  --placeholder: #A1A1AA;
+  --table-header: #252528;
+  --table-stripe: #202023;
+  --table-selected: #24334A;
+  --tooltip-fg: #F5F5F7;
+  --tooltip-bg: #34343A;
+  --success-fg: #84D8A0;
+  --success-bg: #183525;
+  --success-border: #4E9365;
+  --warning-fg: #F4CF83;
+  --warning-bg: #3A2E17;
+  --warning-border: #A38A54;
+  --danger-fg: #FFABA3;
+  --danger-bg: #432320;
+  --danger-border: #B56F68;
+  --info-fg: #A0C8FF;
+  --info-bg: #20334D;
+  --info-border: #648EBD;
+  --shadow-color: rgba(0, 0, 0, 0.4);
+  --shadow-1: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-2: 0 14px 40px rgba(0, 0, 0, 0.5);
+  --focus-ring: 0 0 0 2px #69A9FF;
+}
+
+html[data-theme] body, html[data-theme] #app { background-color: var(--bg); color: var(--text); }
+html[data-theme] :where(#app) h1, html[data-theme] :where(#app) h2, html[data-theme] :where(#app) h3, html[data-theme] :where(#app) h4, html[data-theme] :where(#app) h5, html[data-theme] :where(#app) h6 { color: var(--text); }
+html[data-theme] :where(#app) a { color: var(--link); }
+
+/* Shell geometry aliases preserve the current authored values, not a normalized scale.
+   Keep shadow color at its consumer so local color overrides still resolve there. */
+:root {
+  --layout-header-height: 64px;
+  --layout-mobile-stack-height: 120px;
+  --layout-sider-width: 260px;
+  --layout-sider-collapsed-width: 80px;
+  --layout-content-padding-desktop: 24px;
+  --layout-content-padding-mobile: 16px;
+  --layout-divider-width: 1px;
+  --layout-sider-shadow-geometry: 0 8px 24px;
+  --skip-link-inset: 8px;
+  --skip-link-padding: 12px 16px;
+  --control-radius: 8px;
+  --control-touch-min: 44px;
+  --control-icon-label-gap: 6px;
+  --focus-outline-width: 2px;
+  --focus-outline-offset: 2px;
+  --focus-menu-outline-offset: -2px;
+  --mobile-navigation-gap: 12px;
+  --mobile-navigation-bar-height: 56px;
+  --mobile-navigation-bar-padding: 6px 16px;
+  --mobile-menu-gap: 8px;
+  --mobile-menu-radius: 10px;
+  --mobile-navigation-heading-padding: 8px 16px;
+  --header-gap: 8px 16px;
+  --header-padding: 8px 24px;
+  --header-brand-gap: 10px;
+  --header-actions-gap: 8px;
+  --header-logout-min-width: 60px;
+  --header-gap-mobile: 8px 12px;
+  --header-padding-mobile: 8px 12px;
+  --header-brand-basis-mobile: 112px;
+  --header-brand-gap-mobile: 8px;
+  --sider-menu-padding: 18px 14px 14px;
+  --sider-menu-subtitle-margin-top: 6px;
+  --sider-menu-subtitle-margin-bottom: 14px;
+  --sider-collapse-padding: 8px 4px;
+  --sider-collapse-padding-collapsed: 8px 0;
+  --theme-control-min-width: 104px;
+  --theme-control-padding: 8px;
+}
+
+/* Auth scaffold geometry: exact current values; keep shadow colors local. */
+:root {
+  --auth-shell-padding: 24px;
+  --auth-card-gap: 24px;
+  --auth-hero-radius: 28px;
+  --auth-hero-padding: 40px;
+  --auth-hero-padding-compact: 28px;
+  --auth-hero-shadow-geometry: 0 20px 45px;
+  --auth-badge-padding: 6px 12px;
+  --auth-badge-radius: 999px;
+  --auth-badge-margin-bottom: 18px;
+  --auth-hero-description-margin: 18px 0 0;
+  --auth-form-radius: 28px;
+  --auth-form-shadow-geometry: 0 18px 40px;
+  --auth-form-header-margin-bottom: 20px;
+  --auth-form-subtitle-margin-top: 6px;
+  --auth-form-margin-top: 8px;
+  --auth-action-radius: 12px;
+  --auth-actions-margin-top: 8px;
+  --auth-actions-padding-top: 8px;
+}
+
+/* Keep upstream console consumers without copying or deleting their business fields. */
+:root {
+  --console-canvas: var(--bg); --console-surface: var(--surface);
+  --console-primary: var(--primary); --console-border: var(--border);
+  --console-text: var(--text); --console-muted: var(--text-muted); --console-radius: 12px;
+  --g-zero: 0; --g-auto: auto;
+}
+html, body { margin: 0; min-width: 0; min-height: 100%; }
+*, *::before, *::after { box-sizing: border-box; }
+body { background: var(--bg); color: var(--text); }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+/* Invariant QR image mat; semantic UI surfaces still follow appearance. */
+:root { --qr-surface: #fff; }
+
+/* New upstream Console* components share the local light/dark/system controller.
+   Semantic aliases inherit into body portals; do not hard-code a light surface. */
+:root, html[data-theme] {
+  --console-canvas: var(--bg); --console-surface: var(--surface);
+  --console-subtle: var(--surface-subtle);
+  --console-surface-secondary: var(--surface-subtle); --console-surface-muted: var(--surface-subtle); --console-primary: var(--primary);
+  --console-primary-hover: var(--primary-hover); --console-selected: var(--selected);
+  --console-border: var(--border); --console-text: var(--text);
+  --console-muted: var(--text-muted); --console-success: var(--success-fg);
+  --console-danger: var(--danger-fg); --console-warning: var(--warning-fg);
+}

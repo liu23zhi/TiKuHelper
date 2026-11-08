@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/itihey/tikuAdapter/internal/entity"
 	"gorm.io/gorm"
 )
 
@@ -26,9 +27,17 @@ var (
 func GetScriptDomainSettingsWithDB(db *gorm.DB) (ScriptDomainSettings, error) {
 	settings := ScriptDomainSettings{AllowWildcard: true}
 	if db == nil {
+		return ScriptDomainSettings{}, errors.New("数据库未初始化")
+	}
+	var row entity.SystemSetting
+	err := db.Session(&gorm.Session{NewDB: true}).Where(&entity.SystemSetting{Key: ScriptDomainSettingsKey}).First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return settings, nil
 	}
-	raw := strings.TrimSpace(getSystemSettingStringWithDefault(db, ScriptDomainSettingsKey, ""))
+	if err != nil {
+		return ScriptDomainSettings{}, err
+	}
+	raw := strings.TrimSpace(row.Value)
 	if raw == "" {
 		return settings, nil
 	}
@@ -72,10 +81,13 @@ func ValidateScriptDomainWithDB(db *gorm.DB, domain string, wildcard bool) error
 	if wildcard && !settings.AllowWildcard {
 		return ErrScriptWildcardDisabled
 	}
+	normalized := normalizeScriptDomain(domain)
+	if normalized == "" {
+		return ErrScriptDomainUnavailable
+	}
 	if len(settings.Domains) == 0 {
 		return nil
 	}
-	normalized := normalizeScriptDomain(domain)
 	for _, allowed := range settings.Domains {
 		if strings.EqualFold(normalized, allowed) {
 			return nil

@@ -94,10 +94,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # 仅跳过需要访问真实题库服务的集成测试，其他测试仍正常执行。
-          mapfile -t packages < <(go list ./...)
-          go test "${packages[@]}" -count=1 \
-            -skip '^(TestSearchIcodefClient_SearchAnswer|TestSearchWannengClient_SearchAnswer|TestSearchEnncyClient_SearchAnswer|TestBuguake_SearchAnswer|TestAidian_SearchAnswer|TestSearchLemonClient_SearchAnswer|TestSearchTikuhaiClient_SearchAnswer)$'
+          # 真实服务测试显式 opt-in；同名题库回归已经改用本地传输 fixture，
+          # 保留它们，并串行包执行以避免短时的 SQLite 文件同步争用。
+          go test -short -p 1 ./... -count=1
 
   python:
     name: Python 工具测试

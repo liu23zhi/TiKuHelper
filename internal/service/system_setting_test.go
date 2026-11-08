@@ -201,7 +201,7 @@ func TestUpdateSystemSettingDetailWithDBPersistsAISearchBudgets(t *testing.T) {
 	}
 }
 
-func TestUpdateSystemSettingDetailWithDBPreservesLargeAISearchBudgets(t *testing.T) {
+func TestUpdateSystemSettingDetailWithDBCapsLargeAISearchBudgets(t *testing.T) {
 	db := newSystemSettingTestDB(t)
 
 	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
@@ -213,14 +213,14 @@ func TestUpdateSystemSettingDetailWithDBPreservesLargeAISearchBudgets(t *testing
 	if err != nil {
 		t.Fatalf("update oversized AI budgets: %v", err)
 	}
-	if updated.MaxAISearchModelCalls != 1000 || updated.MaxAISearches != 700 || updated.MaxAISearchRetries != 80 || updated.MaxAIWebReads != 600 {
+	if updated.MaxAISearchModelCalls != 20 || updated.MaxAISearches != 20 || updated.MaxAISearchRetries != 10 || updated.MaxAIWebReads != 20 {
 		t.Fatalf("large budgets were changed: %+v", updated)
 	}
 	reloaded, err := GetSystemSettingDetailWithDB(db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.MaxAISearchModelCalls != 1000 || reloaded.MaxAISearches != 700 || reloaded.MaxAISearchRetries != 80 || reloaded.MaxAIWebReads != 600 {
+	if reloaded.MaxAISearchModelCalls != 20 || reloaded.MaxAISearches != 20 || reloaded.MaxAISearchRetries != 10 || reloaded.MaxAIWebReads != 20 {
 		t.Fatalf("large saved budgets were changed on read: %+v", reloaded)
 	}
 }
@@ -264,7 +264,7 @@ func TestAISearchCountValidationRejectsInvalidValuesBeforeChangingSettings(t *te
 	}
 }
 
-func TestAISearchCountsSupportFullPreciselyRepresentableRange(t *testing.T) {
+func TestAISearchSafeIntegerCountsRetainApprovedExecutionCaps(t *testing.T) {
 	if strconv.IntSize != 64 {
 		t.Skip("Go int representation is smaller than browser safe integers")
 	}
@@ -278,7 +278,7 @@ func TestAISearchCountsSupportFullPreciselyRepresentableRange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view.MaxAISearchModelCalls != max || view.MaxAISearches != max || view.MaxAISearchRetries != max || view.MaxAIWebReads != max || view.ContextCompressionMaxAttempts != max {
+	if view.MaxAISearchModelCalls != 20 || view.MaxAISearches != 20 || view.MaxAISearchRetries != 10 || view.MaxAIWebReads != 20 || view.ContextCompressionMaxAttempts != max {
 		t.Fatalf("precisely representable counts did not round-trip: %+v", view)
 	}
 }

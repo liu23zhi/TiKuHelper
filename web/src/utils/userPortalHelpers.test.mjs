@@ -184,6 +184,7 @@ test('billing record helpers render recharge and search ledger rows', () => {
   assert.equal(buildBillingRecordTypeText({ type: 'normal_search' }), '题目消费');
   assert.equal(buildBillingRecordTypeText({ type: 'script_reservation' }), '脚本预扣');
   assert.equal(buildBillingRecordTypeText({ type: 'script_refund' }), '脚本退款');
+  assert.equal(buildBillingRecordTypeText({ type: 'script_activation_purchase' }), '脚本激活码购买');
   assert.equal(buildBillingRecordSubjectText(search), '搜索题目');
   assert.equal(buildBillingRecordSourceText(search), 'Icodef 题库');
   assert.equal(buildBillingRecordReferenceText(search), 'req-search');

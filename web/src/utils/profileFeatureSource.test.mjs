@@ -56,7 +56,8 @@ test('Profile page keeps scan QR manual while using realtime status lifecycle', 
 
   assert.match(content, /createWechatQrStatusController/)
   assert.doesNotMatch(content, /void startWechatBind\(\)/)
-  assert.match(content, /@click="startWechatBind"/)
+  assert.match(content, /@click="wechatHandlers\.startWechatBind"/)
+  assert.match(content, /startWechatBind: run\(startWechatBind\)/)
   assert.match(content, /onRemaining/)
   assert.match(content, /purpose: 'bind'/)
   assert.match(content, /实时连接/)
@@ -109,7 +110,7 @@ test('Register page keeps optional WeChat registration lazy and isolated per tab
   assert.match(registerContent, /markWechatQRCodeExpired/)
   assert.match(registerContent, /isWechatQRCodeError/)
   assert.match(registerContent, /isWechatFlowError/)
-  assert.match(registerContent, /isTerminalWechatRegisterStatus\(res\?\.status\) && isWechatFlowError\(res\)/)
+  assert.match(registerContent, /isTerminalWechatRegisterStatus\(res\?\.status\) && \(!sessionId \|\| isWechatFlowError\(res\)\)/)
   assert.match(registerContent, /wechatRegisterMode\.value === 'code'/)
   assert.match(registerContent, /wechatRegisterSessionId\.value = ''[\s\S]*wechatQrCodeImageData\.value = ''/)
   assert.match(apiContent, /url: `\/adapter-service\/public\/wechat-register\/session`/)
@@ -128,12 +129,14 @@ test('request interceptor preserves public registration flow 401 responses', asy
   assert.match(helperContent, /function isPublicWechatRegisterRequest/)
 })
 
-test('Topic overview removes the course name table column and bulk editing controls', async () => {
+test('Topic overview hides course table column while preserving approved local bulk editing and clearable filters', async () => {
   const content = await readSource(path.join('pages', 'TikuComponent', 'index.vue'))
 
   assert.doesNotMatch(content, /title: '课程名称'/)
-  assert.doesNotMatch(content, /批量编辑课程名称/)
-  assert.doesNotMatch(content, /buildQuestionBulkCourseUpdatePayload/)
+  assert.match(content, /批量编辑课程名称/)
+  assert.match(content, /buildQuestionBulkCourseUpdatePayload/)
   assert.match(content, /allow-clear/)
-  assert.match(content, /normalizeQuestionTypeFilter/)
+  assert.match(content, /useQuestionReads/)
+  const reads = await readSource(path.join('pages', 'TikuComponent', 'useQuestionReads.mjs'))
+  assert.match(reads, /type: normalizeQuestionTypeFilter\(typeValue\.value\)/)
 })

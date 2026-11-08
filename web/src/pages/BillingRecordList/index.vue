@@ -15,16 +15,18 @@
         <p class="summary-hint">仅统计第 {{ pagination.current }} 页 {{ summary.currentPageCount }} 条</p>
       </div>
       <div class="summary-card">
-        <a-statistic title="当前页缓存命中率" :value="formatBillingCacheHitRate(summary.currentPageCacheHitRate)" />
+        <a-statistic title="当前页缓存命中率" :value="formatBillingCacheHitRate(summary.currentPageCacheHitRate)" :formatter="() => formatBillingCacheHitRate(summary.currentPageCacheHitRate)" />
         <p class="summary-hint">缓存输入 Token / 总输入 Token</p>
       </div>
       <div class="summary-card">
-        <a-statistic :title="hasActiveFilters ? '综合缓存命中率（当前筛选，全部页）' : '综合缓存命中率（全部页）'" :value="formatBillingCacheHitRate(summary.totalCacheHitRate)" />
+        <a-statistic :title="hasActiveFilters ? '综合缓存命中率（当前筛选，全部页）' : '综合缓存命中率（全部页）'" :value="formatBillingCacheHitRate(summary.totalCacheHitRate)" :formatter="() => formatBillingCacheHitRate(summary.totalCacheHitRate)" />
         <p class="summary-hint">仅统计 AI 模型输入 Token</p>
       </div>
     </ConsoleSummaryGrid>
 
     <ConsolePanel class="page-card">
+      <RequestFailureAlert v-if="listFailure" :failure="listFailure" message="获取账单列表失败"
+        :retryable="true" :busy="tableLoading" :context-key="listFailureContext" :is-current="isCurrentListFailure" @retry="guardedRetryListFailure" />
       <a-alert
         type="info"
         show-icon
@@ -33,8 +35,9 @@
       />
 
       <a-form layout="inline" class="filter-form">
-        <a-form-item label="关键词">
+        <a-form-item label="关键词" :html-for="filterFieldId('keyword')">
           <a-input-search
+            :id="filterFieldId('keyword')"
             v-model:value="keywordInput"
             placeholder="题目 / 请求 ID / 用户 / 渠道"
             allow-clear
@@ -43,8 +46,9 @@
             @press-enter="applyKeyword"
           />
         </a-form-item>
-        <a-form-item label="类型">
+        <a-form-item label="类型" :html-for="filterFieldId('type')">
           <a-select
+            :id="filterFieldId('type')"
             v-model:value="filters.type"
             allow-clear
             placeholder="全部类型"
@@ -69,9 +73,9 @@
           <a-input v-model:value="filters.clientIp" allow-clear placeholder="精确 IP" style="width: 160px" @press-enter="onFilterChange" @blur="onFilterChange" />
         </a-form-item>
         <a-form-item label="创建日期">
-          <a-input v-model:value="filters.createdFrom" type="date" style="width: 155px" @change="onFilterChange" />
+          <a-input v-model:value="filters.createdFrom" type="date" style="width: 155px" @change="onFilterChange" aria-label="创建日期起始" />
           <span class="filter-range-separator">至</span>
-          <a-input v-model:value="filters.createdTo" type="date" style="width: 155px" @change="onFilterChange" />
+          <a-input v-model:value="filters.createdTo" type="date" style="width: 155px" @change="onFilterChange" aria-label="创建日期截止" />
         </a-form-item>
         <a-form-item>
           <a-space>
@@ -81,12 +85,15 @@
         </a-form-item>
       </a-form>
 
+      <TableColumnSettings :model-value="selectedColumnKeys" :options="columnOptions"
+        :context-key="columnScopeKey" :priority-keys="columnPriorityKeys"
+        @update:model-value="setSelectedColumnKeys" @reset="resetColumns" />
       <ConsoleTableShell label="账单记录">
         <a-table
           class="desktop-billing-table"
           bordered
           :data-source="dataSource"
-          :columns="columns"
+          :columns="visibleColumns"
           :loading="tableLoading"
           :pagination="pagination"
           @change="handleTableChange"
@@ -137,7 +144,8 @@
             <template v-else>{{ text }}</template>
           </template>
           <template #emptyText>
-            <a-empty description="当前还没有账单记录。" />
+            <a-empty v-if="!listQueryUnconfirmed" description="当前还没有账单记录。" />
+            <span v-else>{{ tableLoading ? '正在加载当前查询的账单记录…' : '当前查询的账单记录尚未读取成功，请重试读取。' }}</span>
           </template>
         </a-table>
       </ConsoleTableShell>
@@ -163,32 +171,50 @@
           </dl>
           <a-button block size="small" @click="handleShowFeeDetail(record)">查看详情</a-button>
         </article>
-        <a-empty v-if="!dataSource.length" description="当前还没有账单记录" />
+        <template v-if="!dataSource.length">
+          <a-empty v-if="!listQueryUnconfirmed" description="当前还没有账单记录" />
+          <span v-else>{{ tableLoading ? '正在加载当前查询的账单记录…' : '当前查询的账单记录尚未读取成功，请重试读取。' }}</span>
+        </template>
       </div>
       <div class="mobile-billing-pagination">
         <a-pagination :current="pagination.current" :page-size="pagination.pageSize" :total="pagination.total" size="small" show-less-items @change="handleMobilePageChange" />
       </div>
     </ConsolePanel>
     <BillingDetailDialog
+      v-if="selectedBillingRecord"
       v-model:open="billingDetailOpen"
       :record="selectedBillingRecord"
       :viewer-scope="isAdmin ? 'admin' : 'self'"
       :can-edit-statement="isAdmin"
       :statement-saving="!!visibilitySaving[selectedBillingRecord?.id]"
+      :statement-failure="statementFailure"
+      :statement-failure-context="statementFailureContext"
+      :statement-failure-message="statementFailureMessage"
+      :is-current-statement-failure="isCurrentStatementFailure"
+      :statement-reconcile-busy="statementReconciling"
+      :statement-reconcile-failure="statementReconcileFailure"
+      :is-current-statement-reconcile-failure="isCurrentStatementReconcileFailure"
+      :statement-reconcile-hint="statementReconciliation"
       @statement-visibility-change="handleStatementVisibilityChange"
+      @statement-visibility-reconcile="reconcileStatementVisibility"
     />
   </div>
 </template>
 
 <script>
-import { computed, defineComponent, reactive, ref } from 'vue'
+import { computed, defineComponent, getCurrentInstance, reactive, ref, shallowRef, watch, markRaw, useId } from 'vue'
 import { message } from 'ant-design-vue'
+import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
+import { ensureRequestFailure } from '@/utils/requestFailureView.mjs'
+import TableColumnSettings from '@/components/TableColumnSettings.vue'
+import { useTableColumnPreferences } from '@/composables/useTableColumnPreferences.mjs'
 import OverflowTableText from '@/components/OverflowTableText.vue'
 import BillingDetailDialog from '@/components/BillingDetailDialog.vue'
 import { useTableExpansion } from '@/composables/useTableExpansion.mjs'
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
 import { getBillingRecords, getIpLocations, getMyLocations, updateBillingStatementVisibility } from '@/api/TikuComponentApi'
-import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser'
+import { getStoredCurrentUser, getCurrentUserLogoutEpoch, useCurrentUserDisplay, isAdminUser } from '@/utils/currentUser'
+import { useCurrentUserRequestScope } from '@/utils/currentUserScope'
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
 import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@/utils/listSearchHelpers.mjs'
 import {
@@ -211,74 +237,272 @@ import {
   formatBillingCacheHitRate,
 } from '@/utils/userPortalHelpers.mjs'
 
-const dataSource = ref([])
-const tableLoading = ref(false)
-const visibilitySaving = reactive({})
-
-// 归属地映射：key 为归一化后的 IP，value 为展示文本。
-// 页面加载时按当前页的 clientIp 批量查询并落库（服务端持久化，之后翻页零消耗）。
-const ipLocations = reactive({})
+// Only exact public backend reasons are displayable. Keep the original response
+// or Error object separately so its transport diagnostic is not lost or echoed.
+function statementVisibilityFailureMessage(failure) {
+  try {
+    if (failure?.code === 'UNKNOWN_OUTCOME') return '网络中断，操作结果未确认。请先刷新核对，勿重复提交。'
+    const status = failure?.response?.status ?? failure?.status
+    const detail = failure?.response?.data?.message ?? failure?.data?.message ?? failure?.message
+    const publicReasons = {
+      400: ['账单参数错误', '请选择是否在账单流水显示'],
+      403: ['仅管理员可修改余额或账单流水可见性', '无权限执行该操作'],
+      404: ['用户或账单不存在'],
+      500: ['修改失败，未保存任何变更，请稍后重试'],
+    }
+    return publicReasons[status]?.find(reason => reason === detail) || '账单流水可见性请求未完成，请先核对当前状态，勿重复提交。'
+  } catch { return '账单流水可见性请求未完成，请先核对当前状态，勿重复提交。' }
+}
 
 function formatValueWithLocation(rawValue, address) {
   return formatValueWithLocationBase(rawValue, address)
 }
 
-// enrichClientIps 批量拉取本页来源 IP 的归属地。
-//
-// 失败静默：归属地只是展示增强，未配置密钥或上游异常时对应列退化为只显示原始 IP。
-function enrichClientIps(rows) {
-  const ips = collectLocationKeys(rows, 'clientIp')
-  if (!ips.length) {
-    return
-  }
-  const admin = isAdminUser(getStoredCurrentUser())
-  lookupLocationAddresses('ip', ips, admin ? getIpLocations : getMyLocations, admin ? '' : 'ip')
-    .then((addresses) => {
-      Object.keys(addresses).forEach((key) => {
-        ipLocations[normalizeLocationKey(key)] = addresses[key]
-      })
-    })
-}
+// Live billing rows, summaries and queries belong to one mounted view.
+function createBillingListState() {
+  const dataSource = ref([])
+  const tableLoading = ref(false)
 
-// 服务端统计覆盖完整筛选结果，缓存命中率按输入 Token 加权。
-const billingSummary = reactive({
-  totalAmount: 0,
-  currentPageAmount: 0,
-  currentPageCacheHitRate: null,
-  totalCacheHitRate: null,
-})
-// 已生效的筛选条件；keywordInput 只是输入框的即时值。
-const filters = reactive({
-  keyword: '',
-  type: undefined,
-  userId: undefined,
-  requestId: '',
-  provider: '',
-  searchMode: undefined,
-  clientIp: '',
-  createdFrom: '',
-  createdTo: '',
-})
-const keywordInput = ref('')
-const pagination = reactive({
-  current: 1,
-  pageSize: 10,
-  total: 0,
-  showSizeChanger: true,
-  showQuickJumper: true,
-  showTotal: (total) => `共 ${total} 条`,
-  pageSizeOptions: ['10', '20', '50', '100'],
-})
+  // 归属地映射：key 为归一化后的 IP，value 为展示文本。
+  // 页面加载时按当前页的 clientIp 批量查询并落库（服务端持久化，之后翻页零消耗）。
+  const ipLocations = reactive({})
+
+  // enrichClientIps 批量拉取本页来源 IP 的归属地。
+  //
+  // 失败静默：归属地只是展示增强，未配置密钥或上游异常时对应列退化为只显示原始 IP。
+  function enrichClientIps(rows, owns = () => true) {
+    const ips = collectLocationKeys(rows, 'clientIp')
+    if (!ips.length) {
+      return
+    }
+    const admin = isAdminUser(getStoredCurrentUser())
+    lookupLocationAddresses('ip', ips, admin ? getIpLocations : getMyLocations, admin ? '' : 'ip')
+      .then((addresses) => {
+        if (!owns()) return
+        Object.keys(addresses).forEach((key) => {
+          ipLocations[normalizeLocationKey(key)] = addresses[key]
+        })
+      })
+  }
+
+  // 服务端统计覆盖完整筛选结果，缓存命中率按输入 Token 加权。
+  const billingSummary = reactive({
+    totalAmount: 0,
+    currentPageAmount: 0,
+    currentPageCacheHitRate: null,
+    totalCacheHitRate: null,
+  })
+  // 已生效的筛选条件；keywordInput 只是输入框的即时值。
+  const filters = reactive({
+    keyword: '',
+    type: undefined,
+    userId: undefined,
+    requestId: '',
+    provider: '',
+    searchMode: undefined,
+    clientIp: '',
+    createdFrom: '',
+    createdTo: '',
+  })
+  const keywordInput = ref('')
+  const pagination = reactive({
+    current: 1,
+    pageSize: 10,
+    total: 0,
+    showSizeChanger: true,
+    showQuickJumper: true,
+    showTotal: (total) => `共 ${total} 条`,
+    pageSizeOptions: ['10', '20', '50', '100'],
+  })
+  return { dataSource, tableLoading, ipLocations, billingSummary, filters, keywordInput, pagination, enrichClientIps }
+}
 
 export default defineComponent({
   name: 'BillingRecordList',
-  components: { OverflowTableText, BillingDetailDialog },
+  components: { RequestFailureAlert, TableColumnSettings, OverflowTableText, BillingDetailDialog },
   setup() {
+    const filterIdPrefix = 'billing-list-' + useId()
+    const filterFieldId = field => filterIdPrefix + '-' + field
+    const billingState = markRaw(createBillingListState())
+    const { dataSource, tableLoading, ipLocations, billingSummary, filters, keywordInput, pagination } = billingState
     const subjectExpansion = useTableExpansion(dataSource)
     const selectedBillingRecord = ref(null)
     const billingDetailOpen = ref(false)
-    const currentUser = computed(() => getStoredCurrentUser())
+    const { currentUser } = useCurrentUserDisplay()
     const isAdmin = computed(() => isAdminUser(currentUser.value))
+    const instance = getCurrentInstance()
+    const closeScopePopup = () => { billingDetailOpen.value = false; selectedBillingRecord.value = null }
+    const visibilitySaving = reactive({})
+    const statementFailure = shallowRef(null)
+    const statementFailureContext = ref(0)
+    const statementFailureMessage = computed(() => statementVisibilityFailureMessage(statementFailure.value))
+    const statementReconciling = ref(false)
+    const statementReconcileFailure = shallowRef(null)
+    const statementReconciliation = ref('')
+    let statementEntry = {}, statementWriteEntry = {}, statementAttempt = 0, statementFailureTarget = null
+    let statementFailureOwner = () => false
+    const pendingStatementWrites = new Map()
+    function clearStatementFailure() {
+      statementFailure.value = null
+      statementFailureTarget = null
+      statementFailureOwner = () => false
+      statementFailureContext.value += 1
+      statementReconciling.value = false
+      statementReconcileFailure.value = null
+      statementReconciliation.value = ''
+    }
+    function retireStatementEntry() {
+      statementEntry = {}
+      statementAttempt += 1
+      clearStatementFailure()
+    }
+    function retireStatementPage() {
+      retireStatementEntry()
+      statementWriteEntry = {}
+      pendingStatementWrites.clear()
+      Object.keys(visibilitySaving).forEach(key => { delete visibilitySaving[key] })
+    }
+    let listRequestVersion = 0
+    const listFailure = shallowRef(null)
+    const listFailureContext = ref(0)
+    const publishedListQuery = ref(null)
+    const listQueryUnconfirmed = ref(false)
+    const prepareListQuery = (params) => {
+      const query = JSON.stringify(params)
+      if (publishedListQuery.value === null || publishedListQuery.value === query) return
+      // Only retire the displayed query result. An issued visibility write and
+      // an open record detail keep their independent lifetime and ownership.
+      dataSource.value = []
+      pagination.total = 0
+      billingSummary.totalAmount = 0
+      billingSummary.currentPageAmount = 0
+      billingSummary.currentPageCacheHitRate = null
+      billingSummary.totalCacheHitRate = null
+      listQueryUnconfirmed.value = true
+    }
+    const publishListQuery = (params) => {
+      // Bind to captured filters plus the server's effective page, not a later
+      // live filter value. Keep initial/retired-owner redaction defaults intact.
+      publishedListQuery.value = JSON.stringify({ ...params, page: pagination.current, pageSize: pagination.pageSize })
+      listQueryUnconfirmed.value = false
+    }
+    const { captureDataOwner, canLoadForCurrentUser } = useCurrentUserRequestScope(currentUser, {
+      clear() {
+        listRequestVersion += 1
+        listFailure.value = null
+        listFailureContext.value += 1
+        publishedListQuery.value = null
+        listQueryUnconfirmed.value = false
+        dataSource.value = []
+        tableLoading.value = false
+        pagination.total = 0
+        billingSummary.totalAmount = 0
+        billingSummary.currentPageAmount = 0
+        billingSummary.currentPageCacheHitRate = null
+        billingSummary.totalCacheHitRate = null
+        Object.keys(ipLocations).forEach(key => { delete ipLocations[key] })
+        subjectExpansion.clear()
+        retireStatementPage()
+        closeScopePopup()
+      },
+      reset() { filters.keyword = ''; keywordInput.value = ''; pagination.current = 1; filters.type = undefined },
+      reload() { instance.proxy.handleLoad() },
+    })
+    function captureStatementEntry() {
+      const entry = statementEntry, logout = getCurrentUserLogoutEpoch(), ownsData = captureDataOwner()
+      return () => ownsData() && canLoadForCurrentUser() && isAdmin.value
+        && entry === statementEntry && logout === getCurrentUserLogoutEpoch()
+    }
+    function beginStatementAttempt(id) {
+      const ownsEntry = captureStatementEntry(), attempt = ++statementAttempt, ticket = {}
+      const writeEntry = statementWriteEntry, logout = getCurrentUserLogoutEpoch(), ownsData = captureDataOwner()
+      const ownsWrite = () => ownsData() && canLoadForCurrentUser() && isAdmin.value
+        && writeEntry === statementWriteEntry && logout === getCurrentUserLogoutEpoch()
+      clearStatementFailure()
+      pendingStatementWrites.set(id, ticket)
+      visibilitySaving[id] = true
+      return {
+        owns: () => ownsEntry() && attempt === statementAttempt,
+        ownsWrite,
+        settle() {
+          // Neither query nor dialog changes release an issued record write;
+          // an old actor/page or pending ticket cannot release a later write.
+          if (ownsWrite() && pendingStatementWrites.get(id) === ticket) {
+            pendingStatementWrites.delete(id)
+            visibilitySaving[id] = false
+          }
+        },
+      }
+    }
+    function showStatementFailure(failure, id, owns) {
+      if (!owns()) return
+      statementFailureTarget = id
+      statementFailureOwner = owns
+      statementFailure.value = ensureRequestFailure(failure)
+    }
+    const isCurrentStatementFailure = (failure, context) => statementFailureOwner()
+      && Boolean(failure) && failure === statementFailure.value && context === statementFailureContext.value
+    const isCurrentStatementReconcileFailure = (failure, context) => isCurrentStatementFailure(statementFailure.value, context)
+      && Boolean(failure) && failure === statementReconcileFailure.value
+    watch(() => [billingDetailOpen.value, selectedBillingRecord.value?.id], retireStatementEntry, { flush: 'sync' })
+    watch(() => instance.proxy.$route?.fullPath, retireStatementPage, { flush: 'sync' })
+    let observedStatementLogoutEpoch = getCurrentUserLogoutEpoch()
+    watch(() => [currentUser.value, getCurrentUserLogoutEpoch()], () => {
+      const logout = getCurrentUserLogoutEpoch()
+      if (logout !== observedStatementLogoutEpoch) retireStatementPage()
+      observedStatementLogoutEpoch = logout
+    }, { flush: 'sync' })
+    const reconcileStatementVisibility = computed(() => {
+      const failure = statementFailure.value, context = statementFailureContext.value, target = statementFailureTarget
+      const owns = captureStatementEntry()
+      const isCurrent = () => owns() && isCurrentStatementFailure(failure, context)
+      return async (entryFailure = failure, entryContext = context) => {
+        if (entryFailure !== failure || entryContext !== context || !isCurrent()
+          || visibilitySaving[target] || statementReconciling.value) return
+        const currentParams = () => buildSearchParams({ keyword: filters.keyword, type: filters.type, userId: filters.userId, requestId: filters.requestId, provider: filters.provider, searchMode: filters.searchMode, clientIp: filters.clientIp, createdFrom: filters.createdFrom, createdTo: filters.createdTo }, pagination.current, pagination.pageSize)
+        const params = currentParams(), query = JSON.stringify(params)
+        const queryChanged = () => JSON.stringify(currentParams()) !== query
+        const changedQueryHint = '筛选或分页已变化，本次读取未用于账单核对，请重新读取。'
+        statementReconciling.value = true
+        statementReconcileFailure.value = null
+        statementReconciliation.value = ''
+        try {
+          // Explicit read only: no PUT, list latest-wins ticket, pagination or
+          // amount replacement, and never a receipt for the uncertain write.
+          const res = await getBillingRecords(params)
+          if (!isCurrent()) return
+          if (queryChanged()) { statementReconciliation.value = changedQueryHint; return }
+          if (res?.status !== 200 || !Array.isArray(res?.data?.data)) {
+            statementReconcileFailure.value = ensureRequestFailure(res)
+            return
+          }
+          const row = res.data.data.find(item => item && String(item.id) === String(target))
+          if (row && typeof row.showInStatement === 'boolean') {
+            if (selectedBillingRecord.value?.id === target) selectedBillingRecord.value.showInStatement = row.showInStatement
+            statementReconciliation.value = `已只读核对当前账单流水状态：${row.showInStatement ? '显示' : '隐藏'}。这不代表本次修改已生效，不能据此确认本次操作成功。`
+          } else {
+            statementReconciliation.value = '当前筛选和分页未返回目标账单的有效流水状态，尚未完成核对；不会据此确认本次操作成功。'
+          }
+        } catch (error) {
+          if (!isCurrent()) return
+          if (queryChanged()) statementReconciliation.value = changedQueryHint
+          else statementReconcileFailure.value = ensureRequestFailure(error)
+        } finally {
+          if (isCurrent()) statementReconciling.value = false
+        }
+      }
+    })
+    // Identity ownership and query ownership are separate: an old page must not
+    // repaint a later search (including its totals, loading state or IP enrichment).
+    const isCurrentListFailure = (failure, contextKey) => canLoadForCurrentUser()
+      && Boolean(failure) && failure === listFailure.value && contextKey === listFailureContext.value
+    const captureListRequest = () => {
+      const requestVersion = ++listRequestVersion
+      listFailure.value = null
+      listFailureContext.value += 1
+      const ownsData = captureDataOwner()
+      return () => ownsData() && requestVersion === listRequestVersion
+    }
     const activeFilterCount = computed(() => countActiveFilters({ keyword: filters.keyword, type: filters.type, userId: filters.userId, requestId: filters.requestId, provider: filters.provider, searchMode: filters.searchMode, clientIp: filters.clientIp, createdFrom: filters.createdFrom, createdTo: filters.createdTo }))
 
     const summary = computed(() => {
@@ -293,11 +517,11 @@ export default defineComponent({
         acc.providerCount = answerSources.size
         return acc
       }, {
-        total: Number(pagination.total || 0),
+        total: listQueryUnconfirmed.value ? '--' : Number(pagination.total || 0),
         currentPageCount: 0,
         // 金额一律用服务端口径：它能覆盖所有页，且已按请求去重、剔除充值等收入项。
-        totalAmount: Number(billingSummary.totalAmount || 0),
-        currentPageAmount: Number(billingSummary.currentPageAmount || 0),
+        totalAmount: listQueryUnconfirmed.value ? '--' : Number(billingSummary.totalAmount || 0),
+        currentPageAmount: listQueryUnconfirmed.value ? '--' : Number(billingSummary.currentPageAmount || 0),
         currentPageCacheHitRate: billingSummary.currentPageCacheHitRate,
         totalCacheHitRate: billingSummary.totalCacheHitRate,
         providerCount: 0,
@@ -305,17 +529,7 @@ export default defineComponent({
     })
 
     // 当前是否处于筛选状态：筛选会改变「累计消费金额」的口径，需要在界面上说明。
-    const hasActiveFilters = computed(() => countActiveFilters({
-      keyword: filters.keyword,
-      type: filters.type,
-      userId: filters.userId,
-      requestId: filters.requestId,
-      provider: filters.provider,
-      searchMode: filters.searchMode,
-      clientIp: filters.clientIp,
-      createdFrom: filters.createdFrom,
-      createdTo: filters.createdTo,
-    }) > 0)
+    const hasActiveFilters = computed(() => countActiveFilters({ keyword: filters.keyword, type: filters.type, userId: filters.userId, requestId: filters.requestId, provider: filters.provider, searchMode: filters.searchMode, clientIp: filters.clientIp, createdFrom: filters.createdFrom, createdTo: filters.createdTo }) > 0)
 
     const pageTitle = computed(() => (isAdmin.value ? '账单明细' : '我的账单'))
     const pageSubtitle = computed(() => (
@@ -427,9 +641,21 @@ export default defineComponent({
         ...baseColumns.slice(1),
       ]
     })
-    const tableScrollX = computed(() => sumTableColumnWidths(columns.value))
+    const columnPriorityKeys = ['typeLabel', 'subject', 'amount', 'source', 'createdAt', 'feeDetail']
+    const { visibleColumns, selectedKeys: selectedColumnKeys, columnOptions, scopeKey: columnScopeKey,
+      setSelectedKeys: setSelectedColumnKeys, resetColumns } = useTableColumnPreferences({
+      pageKey: 'BillingRecordList', columns,
+      scope: () => currentUser.value?.id ? `id:${currentUser.value.id}:role:${currentUser.value.role}:view:billing` : '',
+      requiredKeys: ['subject', 'amount', 'feeDetail'], priorityKeys: columnPriorityKeys,
+    })
+    const tableScrollX = computed(() => sumTableColumnWidths(visibleColumns.value))
 
     return {
+      filterFieldId,
+      billingState,
+      captureDataOwner, captureListRequest, canLoadForCurrentUser,
+      listFailure, listFailureContext, isCurrentListFailure,
+      publishedListQuery, listQueryUnconfirmed, prepareListQuery, publishListQuery,
       dataSource,
       // 归属地展示：映射 + 取值/格式化函数（模板按行取值）。
       ipLocations,
@@ -437,6 +663,10 @@ export default defineComponent({
       formatValueWithLocation,
       tableLoading,
       visibilitySaving,
+      statementFailure, statementFailureContext, statementFailureMessage,
+      statementReconciling, statementReconcileFailure, statementReconciliation,
+      isCurrentStatementFailure, isCurrentStatementReconcileFailure, reconcileStatementVisibility,
+      beginStatementAttempt, showStatementFailure, retireStatementEntry,
       isAdmin,
       pagination,
       summary,
@@ -459,7 +689,8 @@ export default defineComponent({
       pageTitle,
       pageSubtitle,
       alertMessage,
-      columns,
+      columns, visibleColumns, selectedColumnKeys, columnOptions, columnScopeKey,
+      columnPriorityKeys, setSelectedColumnKeys, resetColumns,
       tableScrollX,
       selectedBillingRecord,
       billingDetailOpen,
@@ -480,15 +711,26 @@ export default defineComponent({
     this.handleLoad()
   },
   methods: {
+    guardedRetryListFailure(failure, contextKey) {
+      if (this.isCurrentListFailure(failure, contextKey)) this.handleLoad()
+    },
     async handleStatementVisibilityChange({ id, showInStatement: show }) {
-      if (!this.isAdmin || visibilitySaving[id]) return false
+      const { dataSource } = this.billingState
+      if (!this.canLoadForCurrentUser() || !this.isAdmin || this.visibilitySaving[id] || typeof show !== 'boolean') return false
       const record = dataSource.value.find((item) => item.id === id)
         || (this.selectedBillingRecord?.id === id ? this.selectedBillingRecord : null)
       if (!record) return false
-      visibilitySaving[id] = true
+      const attempt = this.beginStatementAttempt(id)
+      const owns = attempt.owns
       try {
         const res = await updateBillingStatementVisibility(id, show)
-        if (res?.status !== 200) throw new Error(res?.message || '修改流水可见性失败')
+        if (!attempt.ownsWrite()) return false
+        if (res?.status !== 200) {
+          if (!owns()) return false
+          this.showStatementFailure(res, id, owns)
+          message.error(statementVisibilityFailureMessage(res))
+          return false
+        }
         record.showInStatement = show
         const currentRow = dataSource.value.find((item) => item.id === id)
         if (currentRow) currentRow.showInStatement = show
@@ -496,24 +738,29 @@ export default defineComponent({
         message.success(show ? '已在用户账单流水中显示' : '已从用户账单流水中隐藏，管理员明细仍保留')
         return true
       } catch (error) {
-        message.error(error?.response?.data?.message || error?.message || '修改流水可见性失败')
+        if (!owns()) return false
+        this.showStatementFailure(error, id, owns)
+        message.error(statementVisibilityFailureMessage(error))
         return false
       } finally {
-        visibilitySaving[id] = false
+        attempt.settle()
       }
     },
     // 点「搜索」或回车时才把输入框内容变成生效的筛选条件。
     applyKeyword() {
+      const { filters, keywordInput, pagination } = this.billingState
       filters.keyword = normalizeSearchKeyword(keywordInput.value)
       keywordInput.value = filters.keyword
       pagination.current = 1
       this.handleLoad()
     },
     onFilterChange() {
+      const { pagination } = this.billingState
       pagination.current = 1
       this.handleLoad()
     },
     resetFilters() {
+      const { filters, keywordInput, pagination } = this.billingState
       filters.keyword = ''
       keywordInput.value = ''
       filters.type = undefined
@@ -528,18 +775,14 @@ export default defineComponent({
       this.handleLoad()
     },
     handleLoad() {
+      const { dataSource, tableLoading, billingSummary, filters, pagination, enrichClientIps } = this.billingState
+      if (!this.canLoadForCurrentUser()) return
+      const params = buildSearchParams({ keyword: filters.keyword, type: filters.type, userId: filters.userId, requestId: filters.requestId, provider: filters.provider, searchMode: filters.searchMode, clientIp: filters.clientIp, createdFrom: filters.createdFrom, createdTo: filters.createdTo }, pagination.current, pagination.pageSize)
+      this.prepareListQuery(params)
+      const owns = this.captureListRequest()
       tableLoading.value = true
-      getBillingRecords(buildSearchParams({
-        keyword: filters.keyword,
-        type: filters.type,
-        userId: filters.userId,
-        requestId: filters.requestId,
-        provider: filters.provider,
-        searchMode: filters.searchMode,
-        clientIp: filters.clientIp,
-        createdFrom: filters.createdFrom,
-        createdTo: filters.createdTo,
-      }, pagination.current, pagination.pageSize)).then((res) => {
+      getBillingRecords(params).then((res) => {
+        if (!owns()) return
         if (res?.status === 200) {
           dataSource.value = Array.isArray(res?.data?.data) ? res.data.data : []
           pagination.total = Number(res?.data?.total || 0)
@@ -550,28 +793,36 @@ export default defineComponent({
           billingSummary.currentPageAmount = Number(res?.data?.summary?.currentPageAmount || 0)
           billingSummary.currentPageCacheHitRate = res?.data?.summary?.currentPageCacheHitRate ?? null
           billingSummary.totalCacheHitRate = res?.data?.summary?.totalCacheHitRate ?? null
+          this.publishListQuery(params)
           // 来源 IP 归属地：按当前页批量查询并落库（失败静默）。
-          enrichClientIps(dataSource.value)
+          enrichClientIps(dataSource.value, owns)
         } else {
-          message.error(res?.message || '获取账单列表失败')
+          this.listFailure = ensureRequestFailure(res)
         }
-      }).catch(() => {
-        message.error('获取账单列表失败')
+      }).catch((error) => {
+        if (!owns()) return
+        this.listFailure = ensureRequestFailure(error)
       }).finally(() => {
+        if (!owns()) return
         tableLoading.value = false
       })
     },
     handleTableChange(paginationData) {
+      const { pagination } = this.billingState
       pagination.current = paginationData.current
       pagination.pageSize = paginationData.pageSize
       this.handleLoad()
     },
     handleMobilePageChange(current, pageSize) {
+      const { pagination } = this.billingState
       pagination.current = current
       pagination.pageSize = pageSize
       this.handleLoad()
     },
     handleShowFeeDetail(record) {
+      const { dataSource } = this.billingState
+      if (!this.canLoadForCurrentUser() || !dataSource.value.includes(record)) return
+      this.retireStatementEntry()
       this.selectedBillingRecord = record
       this.billingDetailOpen = true
     },

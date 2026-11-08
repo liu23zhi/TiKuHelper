@@ -115,7 +115,7 @@ func (c *Client) SetIPInfoURL(url string) *Client {
 }
 
 // GetPhoneInfo 查询手机号归属地。
-// 密钥可选，未配置时使用上游访客额度且不发送 Authorization。
+// 所有手机号查询都必须配置密钥；不使用访客外呼。
 // 参数不合法时在本地直接返回错误，不发起 HTTP 请求、不消耗积分。
 func (c *Client) GetPhoneInfo(ctx context.Context, phone string) (PhoneInfo, error) {
 	if err := c.ensureInitialized(); err != nil {
@@ -123,6 +123,9 @@ func (c *Client) GetPhoneInfo(ctx context.Context, phone string) (PhoneInfo, err
 	}
 	normalized, err := NormalizePhone(phone)
 	if err != nil {
+		return PhoneInfo{}, err
+	}
+	if err := c.ensureReady(); err != nil {
 		return PhoneInfo{}, err
 	}
 	resp, err := c.getBillable(ctx, c.phoneInfoAddress(), map[string]string{"phone": normalized})
@@ -141,7 +144,7 @@ func (c *Client) GetPhoneInfo(ctx context.Context, phone string) (PhoneInfo, err
 
 // GetIPInfo 查询 IP 归属地。
 // source 为空时不下发该 query；唯一合法值为 "commercial"，其它取值在本地拒绝，
-// 不发起 HTTP 请求。普通来源允许不配置密钥，商业增强来源仍要求密钥。
+// 不发起 HTTP 请求。普通与商业增强来源均要求密钥，不使用访客外呼。
 func (c *Client) GetIPInfo(ctx context.Context, ip string, source string) (IPInfo, error) {
 	if err := c.ensureInitialized(); err != nil {
 		return IPInfo{}, err
@@ -154,10 +157,8 @@ func (c *Client) GetIPInfo(ctx context.Context, ip string, source string) (IPInf
 	if source != "" && source != SourceCommercial {
 		return IPInfo{}, fmt.Errorf("%w: source 唯一合法值为 %q", ErrInvalidArgument, SourceCommercial)
 	}
-	if source == SourceCommercial {
-		if err := c.ensureReady(); err != nil {
-			return IPInfo{}, err
-		}
+	if err := c.ensureReady(); err != nil {
+		return IPInfo{}, err
 	}
 	query := map[string]string{"ip": normalized}
 	if source != "" {

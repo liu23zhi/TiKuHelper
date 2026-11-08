@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"fmt"
 	"github.com/aliyun/aliyun-oss-go-sdk/oss"
 	"github.com/itihey/tikuAdapter/configs"
 	"github.com/itihey/tikuAdapter/internal/registry"
@@ -41,8 +42,14 @@ func CreateManager() (*Manager, error) {
 	if err := logger.SetupGinLog(); err != nil {
 		logger.SysError("文件日志初始化失败，继续输出控制台：" + err.Error())
 	}
-	config := registry.Config()
-	db := registry.RegisterDB(config)
+	config, err := registry.ConfigWithError()
+	if err != nil {
+		return nil, fmt.Errorf("load configuration: %w", err)
+	}
+	db, err := registry.RegisterDBWithError(config)
+	if err != nil {
+		return nil, fmt.Errorf("initialize database: %w", err)
+	}
 	if settings, err := service.GetSystemSettingDetailWithDB(db); err != nil {
 		logger.SysWarn("读取日志大小设置失败，继续使用当前限制：" + err.Error())
 	} else if err := logger.SetMaxTotalLogBytes(settings.MaxLogSizeBytes); err != nil {

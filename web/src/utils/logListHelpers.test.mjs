@@ -188,7 +188,9 @@ test('LogList uses fixed widths and horizontal scrolling while allowing wraps', 
   }
   assert.match(content, /:scroll="\{ x: tableScrollX \}"/);
   assert.match(content, /table-layout="fixed"/);
-  assert.match(content, /sumTableColumnWidths\(columns\.value\)/);
+  assert.match(content, /:columns="visibleColumns"/);
+  assert.match(content, /useTableColumnPreferences\(\{\s*pageKey: 'LogList', columns,/);
+  assert.match(content, /sumTableColumnWidths\(visibleColumns\.value\)/);
   assert.doesNotMatch(content, /log-cell-nowrap/);
 });
 

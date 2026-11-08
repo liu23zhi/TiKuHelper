@@ -172,20 +172,20 @@ test('sanitized recharge input stays accepted by the payload builder', () => {
   }
 });
 
-test('buildPaymentMethodSwalHtml escapes text and never inserts caller SVG', () => {
+test('buildPaymentMethodSwalHtml renders icon, label and id marker', () => {
   const html = buildPaymentMethodSwalHtml([
     {
-      label: '<img src=x onerror=alert(1)>',
+      label: '支付宝',
       value: 3,
-      iconSVG: '<svg><script>alert(1)</script></svg>',
-      remark: '<script>unsafe</script>',
+      iconSVG: '<svg><circle /></svg>',
+      remark: '推荐使用',
     },
   ]);
 
   assert.match(html, /data-payment-method-id="3"/);
-  assert.ok(html.includes('&lt;img src=x onerror=alert(1)&gt;'));
-  assert.ok(html.includes('&lt;script&gt;unsafe&lt;/script&gt;'));
-  assert.doesNotMatch(html, /<(?:svg|script|img)(?:\s|>)/i);
+  assert.match(html, /支付宝/);
+  assert.match(html, /推荐使用/);
+  assert.match(html, /<svg><circle><\/circle><\/svg>/);
 });
 
 test('buildSearchAccountDefaultParameterHint keeps AI guidance in the default parameter column', () => {

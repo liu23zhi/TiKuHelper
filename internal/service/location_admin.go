@@ -318,7 +318,7 @@ func RefreshLocationCacheBatchWithDB(db *gorm.DB, request LocationCacheBatchRefr
 	if err != nil {
 		return result, err
 	}
-	if strings.TrimSpace(options.UAPIKey) == "" && querySource != "" {
+	if strings.TrimSpace(options.UAPIKey) == "" {
 		return result, ErrLocationNotConfigured
 	}
 	if request.All && len(request.Items) > 0 {
@@ -478,9 +478,7 @@ func refreshLocationCacheRecordSourcesWithDB(db *gorm.DB, kind string, key strin
 	if err != nil {
 		return entity.LocationCache{}, err
 	}
-	if strings.TrimSpace(options.UAPIKey) == "" && options.Source != "" {
-		return entity.LocationCache{}, ErrLocationNotConfigured
-	}
+
 	oldSources := make([]string, 0, len(recordSources))
 	seenSources := make(map[string]bool, len(recordSources))
 	for _, source := range recordSources {
@@ -492,6 +490,9 @@ func refreshLocationCacheRecordSourcesWithDB(db *gorm.DB, kind string, key strin
 			seenSources[source] = true
 			oldSources = append(oldSources, source)
 		}
+	}
+	if strings.TrimSpace(options.UAPIKey) == "" {
+		return entity.LocationCache{}, ErrLocationNotConfigured
 	}
 	var persist func(entity.LocationCache, bool) error
 	if len(recordSources) > 0 {
@@ -531,7 +532,7 @@ func refreshLocationCacheRecordSourcesWithDB(db *gorm.DB, kind string, key strin
 // ManualLookupLocationCacheWithDB 查询一个管理员手动输入的 IP/手机号，并在成功后写入持久化缓存。
 //
 // 该函数复用显式刷新的校验和 upsert 语义：非法输入、私网 IP、历史来源不发起查询；
-// 手机号和普通 IP 来源可无密钥查询，商业增强需要密钥。成功才会替换同 kind/key/source 的记录。这样管理页手动添加和已有
+// 所有 IP/手机号查询均需要密钥。成功才会替换同 kind/key/source 的记录。这样管理页手动添加和已有
 // 「重新查询」不会形成两套容易漂移的安全规则。
 func ManualLookupLocationCacheWithDB(db *gorm.DB, kind string, key string, options LocationQueryOptions) (entity.LocationCache, error) {
 	return RefreshLocationCacheWithDB(db, kind, key, options)

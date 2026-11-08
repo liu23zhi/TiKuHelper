@@ -90,7 +90,7 @@ func (in *ChatGptClient) fallbackToMCPAfterNativeFailure(ctx context.Context, re
 		}
 	}
 
-	mcpAnswer, mcpDebug, mcpErr := in.searchAnswerWithMCP(ctx, req)
+	mcpAnswer, mcpDebug, mcpErr := in.searchAnswerWithMCP(ctx, req, nativeDebug.promptParts)
 	mcpDebug.Usage = mergeAISearchUsages(debug.Usage, mcpDebug.Usage)
 	mcpDebug.Usage.Route = AISearchRouteDeepMCP
 	mcpDebug.Trace = append([]AISearchTrace(nil), mcpDebug.Usage.Trace...)
@@ -285,14 +285,24 @@ func buildAIMCPActionJSONCandidates(content string) []string {
 	return candidates
 }
 
-func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.SearchRequest) ([][]string, AISearchDebugResult, error) {
+func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.SearchRequest, preparedPrompt ...[]openAIContentPart) ([][]string, AISearchDebugResult, error) {
 	debug := AISearchDebugResult{}
 	if parent == nil {
 		parent = context.Background()
 	}
-	ctx, cancel := context.WithCancel(parent)
+	ctx, cancel := withAITotalTimeout(parent)
 	defer cancel()
-	parts := buildAISearchToolPromptParts(ctx, req, in.getAttachmentHTTPClient().GetClient())
+	var parts []openAIContentPart
+	if len(preparedPrompt) > 0 {
+		parts = preparedPrompt[0]
+	}
+	if len(parts) == 0 {
+		var ocrCalls []AIOCRCallUsage
+		var diagnostics []AIAttachmentDiagnostic
+		parts, ocrCalls, diagnostics = in.buildAISearchToolPromptPartsWithOCRDetailed(ctx, req, in.getAttachmentHTTPClient().GetClient())
+		debug.Usage.OCRCalls = append(debug.Usage.OCRCalls, ocrCalls...)
+		debug.Usage.Attachments = append(debug.Usage.Attachments, diagnostics...)
+	}
 	input := []any{
 		buildAIResponsesMessage("system", effectiveAISearchPrompt(in.Prompt)+"\n"+aiMCPInstructions),
 		buildAIResponsesMessage("user", buildAIResponsesContentParts(parts)),
@@ -304,7 +314,9 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 	}
 	activeEndpoint := endpoints[0]
 	maxModelCalls, maxSearches, maxWebReads := in.aiSearchBudgets()
-	searches, tikuSearches, webReads := 0, 0, 0
+	compactor.modelBudget = maxModelCalls
+	compactor.reserveAnswer = true
+	searches, tikuSearches, webReads, toolContentBytes := 0, 0, 0, 0
 	results := make(map[string]string)
 	tikuResults := make(map[string]string)
 	webReadResults := make(map[string]string)
@@ -312,14 +324,15 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 	toolsDisabled := in.SearchTool == nil && in.TikuSearchTool == nil
 	modelName := strings.TrimSpace(in.Model)
 	backupUsed := false
-	for round := 0; round < maxModelCalls; round++ {
+	for round := 0; round+compactor.summaryRequests < maxModelCalls; round++ {
+		compactor.answerRounds = round
 		var compactErr error
 		input, compactErr = compactor.prepare(ctx, activeEndpoint, input, false, round+1)
 		if compactErr != nil {
 			return nil, debug, compactErr
 		}
-		finalRound := round == maxModelCalls-1 || toolsDisabled || (searches+tikuSearches >= maxSearches && (!webReaderAvailable || webReads >= maxWebReads))
-		remainingModelCalls := maxModelCalls - round - 1
+		finalRound := round+compactor.summaryRequests == maxModelCalls-1 || toolsDisabled || (searches+tikuSearches >= maxSearches && (!webReaderAvailable || webReads >= maxWebReads))
+		remainingModelCalls := maxModelCalls - round - compactor.summaryRequests - 1
 		remainingSearches := maxSearches - searches - tikuSearches
 		remainingWebReads := maxWebReads - webReads
 		if finalRound {
@@ -343,6 +356,7 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 				Store:             false,
 				Input:             roundInput,
 				ContextManagement: compactor.requestContextManagement(),
+				MaxOutputTokens:   aiToolMaxOutputTokens,
 			})
 		}
 		payload, err := buildRoundPayload()
@@ -355,13 +369,14 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 		var callErr error
 		attempts := in.aiSearchRetryAttempts()
 		attempted := 0
+		retryCtx := withAISearchRetryStart(ctx)
 		for retry := 0; retry < attempts; retry++ {
 			if retry > 0 {
 				if err := ctx.Err(); err != nil {
 					callErr = err
 					break
 				}
-				if !sleepAISearchRetryBackoff(ctx, retry, callErr) {
+				if !sleepAISearchRetryBackoff(retryCtx, retry, callErr) {
 					break
 				}
 			}
@@ -396,7 +411,7 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 						Status:              fmt.Sprintf("%d", status),
 						DurationMs:          time.Since(attemptStartedAt).Milliseconds(),
 						ContentPreview:      result.Content,
-						ModelCallCount:      round + 1,
+						ModelCallCount:      round + 1 + compactor.summaryRequests,
 						ModelCallIndex:      modelCallIndex,
 						ModelCallBudget:     maxModelCalls,
 						RemainingModelCalls: remainingModelCalls,
@@ -416,6 +431,12 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 						if compactErr != nil {
 							callErr = fmt.Errorf("MCP上下文恢复或压缩回退失败: %w", compactErr)
 							break
+						}
+						remainingModelCalls = maxModelCalls - round - compactor.summaryRequests - 1
+						if remainingModelCalls == 0 {
+							finalRound = true
+							requireInitialSearch = false
+							remainingSearches, remainingWebReads = 0, 0
 						}
 						payload, compactErr = buildRoundPayload()
 						if compactErr != nil {
@@ -479,16 +500,16 @@ func (in *ChatGptClient) searchAnswerWithMCP(parent context.Context, req model.S
 		switch action.Action {
 		case "web_search":
 			totalSearches := searches + tikuSearches
-			output, abort = in.executeAISearchTool(ctx, call, &totalSearches, maxSearches, results, nil, &debug.Usage, round+1, maxModelCalls)
+			output, abort = in.executeAISearchTool(ctx, call, &totalSearches, maxSearches, results, &toolContentBytes, &debug.Usage, round+1, maxModelCalls)
 			searches = totalSearches - tikuSearches
 		case "web_read":
-			output, abort = in.executeAIWebReadTool(ctx, call, &webReads, maxWebReads, webReadResults, nil, &debug.Usage, round+1, maxModelCalls, maxSearches)
+			output, abort = in.executeAIWebReadTool(ctx, call, &webReads, maxWebReads, webReadResults, &toolContentBytes, &debug.Usage, round+1, maxModelCalls, maxSearches)
 		case "tiku_search":
-			output, abort = in.executeAITikuSearchTool(ctx, call, &searches, &tikuSearches, maxSearches, tikuResults, &debug.Usage, round+1, maxModelCalls)
+			output, abort = in.executeAITikuSearchTool(ctx, call, &searches, &tikuSearches, maxSearches, tikuResults, &toolContentBytes, &debug.Usage, round+1, maxModelCalls)
 		default:
 			return nil, debug, fmt.Errorf("MCP动作不受支持: %s", action.Action)
 		}
-		in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "MCP工具完成", Model: modelName, Endpoint: endpoints[0], Query: string(arguments), DurationMs: time.Since(startedAt).Milliseconds(), Status: map[bool]string{true: "停止", false: "继续"}[abort], ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches + tikuSearches, SearchBudget: maxSearches, RemainingSearches: maxSearches - searches - tikuSearches, RemainingWebReads: maxWebReads - webReads})
+		in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "MCP工具完成", Model: modelName, Endpoint: endpoints[0], Query: string(arguments), DurationMs: time.Since(startedAt).Milliseconds(), Status: map[bool]string{true: "停止", false: "继续"}[abort], ModelCallCount: round + 1 + compactor.summaryRequests, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches + tikuSearches, SearchBudget: maxSearches, RemainingSearches: maxSearches - searches - tikuSearches, RemainingWebReads: maxWebReads - webReads})
 		input = append(input, buildAIResponsesMessage("user", fmt.Sprintf("本地MCP工具 %s 返回：\n%s", action.Action, output)))
 		toolsDisabled = toolsDisabled || abort
 	}

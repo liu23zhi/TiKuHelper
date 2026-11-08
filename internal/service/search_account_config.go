@@ -266,16 +266,12 @@ func ResolveAccessTokenFromBasicAuth(db *gorm.DB, authorization string) (AccessT
 	if !strings.EqualFold(strings.TrimSpace(accessToken.Status), "enabled") {
 		return AccessTokenAuthContext{}, fmt.Errorf("%w: 访问令牌已禁用", ErrInvalidAccessTokenAuthorization)
 	}
-	if accessToken.ScriptID > 0 {
-		var script entity.UserScript
-		if err := freshDB.Where("id = ? AND access_token_id = ? AND enabled = ? AND deleted_at IS NULL", accessToken.ScriptID, accessToken.ID, true).First(&script).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return AccessTokenAuthContext{}, fmt.Errorf("%w: 脚本已停用或删除", ErrInvalidAccessTokenAuthorization)
-			}
-			return AccessTokenAuthContext{}, err
-		}
+	if !AccessTokenQuotaLimitValid(accessToken.TotalQuotaLimit) {
+		return AccessTokenAuthContext{}, fmt.Errorf("%w: 访问令牌限额无效，请先修正", ErrInvalidAccessTokenAuthorization)
 	}
-
+	if accessToken.ScriptID > 0 {
+		return AccessTokenAuthContext{}, fmt.Errorf("%w: 脚本请求必须使用绑定身份码的运行会话", ErrInvalidAccessTokenAuthorization)
+	}
 	var user entity.User
 	if err := freshDB.Where("id = ?", accessToken.UserID).First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

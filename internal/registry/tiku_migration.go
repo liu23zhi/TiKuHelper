@@ -187,8 +187,23 @@ func ensureTikuPlatColumnDropped(db *gorm.DB) error {
 		return nil
 	}
 
-	// 列删除是结构性变更：失败要让人看见，但不能阻断启动（列留着不影响功能）。
+	// 只有 MySQL 删除失败且原生元数据确认残留 NOT NULL/无默认值旧列时，
+	// 才阻止启动；其它失败仍保留原来的只记录日志/下次重试行为。
 	if err := db.Exec("ALTER TABLE " + entity.TableNameTiku + " DROP COLUMN plat").Error; err != nil {
+		if db.Dialector != nil && db.Dialector.Name() == "mysql" {
+			var nullable, extra, generationExpression string
+			var defaultValue any
+			metadataErr := db.Raw("SELECT IS_NULLABLE, COLUMN_DEFAULT, EXTRA, GENERATION_EXPRESSION FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?", entity.TableNameTiku, "plat").Row().Scan(&nullable, &defaultValue, &extra, &generationExpression)
+			if tikuPlatDropRequiresStartupStop("mysql", err, nullable, defaultValue, extra, generationExpression, metadataErr) {
+				return &tikuPlatStartupGuardError{cause: err}
+			}
+			if metadataErr != nil {
+				logger.SysLog(fmt.Sprintf("tiku.plat 删除失败后的残留列元数据无法确认（沿用原启动规则）：drop=%v; metadata=%v", err, metadataErr))
+			} else if extra != "" || generationExpression != "" {
+				// auto_increment、VIRTUAL/STORED GENERATED 或其它未知 EXTRA 不确认为必填普通旧列。
+				logger.SysLog(fmt.Sprintf("tiku.plat 存在自动供值/其它非普通旧列元数据（沿用原启动规则）：extra=%q; generation_expression_present=%t; drop=%v", extra, generationExpression != "", err))
+			}
+		}
 		logger.SysLog(fmt.Sprintf("删除 tiku.plat 列失败（不影响启动，列将残留）：%v", err))
 		return nil
 	}
@@ -198,6 +213,26 @@ func ensureTikuPlatColumnDropped(db *gorm.DB) error {
 		logger.SysLog(fmt.Sprintf("写入 tiku.plat 删除标记失败：%v", err))
 	}
 	return nil
+}
+
+// tikuPlatStartupGuardError 只由已确认的 MySQL 必填旧列残留分支产生。
+// Unwrap 保留原始 DROP 错误；其它迁移错误不具有该阻断语义。
+type tikuPlatStartupGuardError struct {
+	cause error
+}
+
+func (err *tikuPlatStartupGuardError) Error() string {
+	return fmt.Sprintf("MySQL tiku.plat 删除失败且确认残留 NOT NULL/无默认值且非自动供值的必填旧列，停止启动以避免新题库写入失败: %v", err.cause)
+}
+
+func (err *tikuPlatStartupGuardError) Unwrap() error {
+	return err.cause
+}
+
+// tikuPlatDropRequiresStartupStop 是唯一新增的阻断判据；未知元数据不扩大原失败策略。
+func tikuPlatDropRequiresStartupStop(dialect string, dropErr error, nullable string, defaultValue any, extra, generationExpression string, metadataErr error) bool {
+	// 普通旧 plat 的原生 EXTRA/GENERATION_EXPRESSION 均为空；自动供值或未知标记不扩大阻断。
+	return dialect == "mysql" && dropErr != nil && metadataErr == nil && nullable == "NO" && defaultValue == nil && extra == "" && generationExpression == ""
 }
 
 // systemSettingFlagIsSet 读取 system_settings 里的一次性布尔标记。

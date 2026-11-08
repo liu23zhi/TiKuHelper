@@ -51,7 +51,7 @@ func TestAIOCRCacheStatusWithoutConfiguredProvider(t *testing.T) {
 	if err := db.AutoMigrate(&entity.SystemSetting{}); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"", "wrong-prefix", "uapi-"} {
+	for _, key := range []string{"", "wrong-prefix", "uapi-", "uapi-invalid key", "uapi-invalid\x01key"} {
 		if err := saveSystemSettingValue(db, UAPIAPIKeySettingKey, key, "test"); err != nil {
 			t.Fatal(err)
 		}

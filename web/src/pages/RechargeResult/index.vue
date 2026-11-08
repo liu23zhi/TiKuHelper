@@ -11,6 +11,7 @@
         <template #extra>
           <a-space wrap>
             <a-button type="primary" @click="goHome">返回首页</a-button>
+            <a-button @click="goRecords">查看充值记录</a-button>
             <a-button @click="refreshPage">刷新页面</a-button>
           </a-space>
         </template>
@@ -43,6 +44,7 @@
 
 <script>
 import { computed, defineComponent } from 'vue'
+import { Result } from 'ant-design-vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getStoredCurrentUser, resolveHomePath } from '../../utils/currentUser'
 
@@ -52,6 +54,7 @@ function normalizeValue(value) {
 
 export default defineComponent({
   name: 'RechargeResult',
+  components: { AResult: Result },
   setup() {
     const route = useRoute()
     const router = useRouter()
@@ -103,6 +106,8 @@ export default defineComponent({
       router.push(resolveHomePath(currentUser))
     }
 
+    const goRecords = () => router.push({ name: 'recharge-orders' })
+
     const refreshPage = () => {
       window.location.reload()
     }
@@ -116,6 +121,7 @@ export default defineComponent({
       subtitle,
       hasQuery,
       goHome,
+      goRecords,
       refreshPage,
     }
   },

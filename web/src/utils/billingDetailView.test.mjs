@@ -5,11 +5,17 @@ import { createRequire } from 'node:module'
 import * as Vue from 'vue'
 import * as billingHelpers from './userPortalHelpers.mjs'
 import { useTableExpansion } from '../composables/useTableExpansion.mjs'
+import { useTableColumnPreferences } from '../composables/useTableColumnPreferences.mjs'
 import { sumTableColumnWidths } from './tableLayout.mjs'
 import { buildSearchParams, countActiveFilters } from './listSearchHelpers.mjs'
+import { ensureRequestFailure } from './requestFailureView.mjs'
 
 const require = createRequire(import.meta.url)
 const { parse, compileScript, compileTemplate } = require('@vue/compiler-sfc')
+require('../../tests/helpers/vue-dom.cjs')
+const { useCurrentUserRequestScope } = require('./currentUserScope.js')
+const { getCurrentUserLogoutEpoch } = require('./currentUser.js')
+const RequestFailureAlert = require('../components/RequestFailureAlert.vue')
 const detailPath = new URL('../components/BillingDetailDialog.vue', import.meta.url)
 const adminPath = new URL('../pages/BillingRecordList/index.vue', import.meta.url)
 
@@ -103,12 +109,14 @@ test('detail dialog uses escaped Vue text, defaults to self, and only emits edit
   const script = parse(source).descriptor.script.content
     .replace(/import[^\n]+\n/g, '')
     .replace('export default', 'return')
-  const component = new Function('computed', 'defineComponent', 'buildBillingDetailViewModel', script)(
-    Vue.computed, Vue.defineComponent, billingHelpers.buildBillingDetailViewModel,
+  const component = new Function('computed', 'defineComponent', 'ref', 'watch', 'onBeforeUnmount', 'document', 'buildBillingDetailViewModel', 'RequestFailureAlert', script)(
+    Vue.computed, Vue.defineComponent, Vue.ref, Vue.watch, Vue.onBeforeUnmount, document, billingHelpers.buildBillingDetailViewModel, RequestFailureAlert,
   )
   assert.equal(component.props.viewerScope.default, 'self')
   assert.equal(component.props.canEditStatement.default, false)
-  assert.doesNotMatch(source, /v-html|document\.|addEventListener/)
+  assert.doesNotMatch(source, /v-html|innerHTML|insertAdjacentHTML|document\.write|addEventListener/, 'detail content remains escaped Vue text; focus ownership may inspect document')
+  assert.match(source, /:focus-trigger-after-close="false"/)
+  assert.match(source, /onBeforeUnmount\(\(\) => \{ alive = false;/)
   const props = Vue.reactive({ open: true, record: sample, viewerScope: 'self', canEditStatement: true, statementSaving: false })
   const events = []
   const state = component.setup(props, { emit: (...event) => events.push(event) })
@@ -138,18 +146,31 @@ async function loadBillingPage(role = 'admin', save = async () => ({ status: 200
     defineComponent: Vue.defineComponent,
     reactive: Vue.reactive,
     ref: Vue.ref,
+    shallowRef: Vue.shallowRef,
+    markRaw: Vue.markRaw,
+    useId: Vue.useId,
+    watch: Vue.watch,
+    getCurrentUserLogoutEpoch,
     ...billingHelpers,
     useTableExpansion,
+    // Exercise the real computed preferences; isolate only optional browser persistence.
+    useTableColumnPreferences: options => useTableColumnPreferences({ ...options, storage: null }),
     sumTableColumnWidths,
+    RequestFailureAlert,
+    TableColumnSettings: {},
     OverflowTableText: {},
     BillingDetailDialog: {},
-    getStoredCurrentUser: () => ({ role }),
+    getStoredCurrentUser: () => ({ id: 1, role }),
+    useCurrentUserDisplay: () => ({ currentUser: Vue.ref({ id: 1, role }) }),
+    useCurrentUserRequestScope,
+    getCurrentInstance: () => ({ proxy: { handleLoad() {} } }),
     isAdminUser: user => user.role === 'admin',
     normalizeLocationKey: value => String(value || '').trim(),
     formatValueWithLocationBase: value => value,
     formatMoneyValue: value => String(value),
     buildSearchParams,
     countActiveFilters,
+    ensureRequestFailure,
     normalizeSearchKeyword: value => String(value || '').trim(),
     getBillingRecords: load,
     collectLocationKeys: () => [],
@@ -175,6 +196,7 @@ test('billing columns keep admin metadata separate and expansion adjusts the who
     const page = await loadBillingPage(role)
     try {
       const keys = page.state.columns.value.map(column => column.key)
+      assert.deepEqual(page.state.visibleColumns.value.map(column => column.key), keys, 'default visible columns preserve every role-allowed source field in order')
       assert.equal(keys.includes('effectiveMultiplier'), role === 'admin')
       assert.equal(keys.includes('username'), role === 'admin')
       assert.equal(keys.includes('clientIp'), role === 'admin')
@@ -188,6 +210,18 @@ test('billing columns keep admin metadata separate and expansion adjusts the who
       page.state.toggleSubject(1)
       assert.equal(page.state.tableScrollX.value, collapsedWidth)
       assert.equal(page.state.isSubjectExpanded(2), false)
+      page.state.setSelectedColumnKeys(['subject', 'amount', 'feeDetail'])
+      assert.deepEqual(page.state.visibleColumns.value.map(column => column.key), ['subject', 'amount', 'feeDetail'])
+      assert.deepEqual(page.state.columns.value.map(column => column.key), keys, 'display selection does not shrink original role-scoped columns')
+      const selectedWidth = page.state.tableScrollX.value
+      assert.equal(selectedWidth, sumTableColumnWidths(page.state.visibleColumns.value))
+      assert.ok(selectedWidth < collapsedWidth, 'scroll width follows selected columns, not the full source')
+      page.state.toggleSubject(1)
+      assert.equal(page.state.tableScrollX.value, selectedWidth + 66, 'selected project column still expands by the original amount')
+      page.state.toggleSubject(1)
+      page.state.resetColumns()
+      assert.deepEqual(page.state.visibleColumns.value.map(column => column.key), keys)
+      assert.equal(page.state.tableScrollX.value, collapsedWidth)
     } finally { page.close() }
   }
 })

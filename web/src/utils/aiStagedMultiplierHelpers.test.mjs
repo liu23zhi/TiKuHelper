@@ -143,7 +143,7 @@ test('AI search config delegates staged editing to the shared helpers', () => {
   assert.match(source, /insertStagedMultiplierPoint/);
   assert.match(source, /createStagedPointRowKey/);
   assert.match(source, /:row-key="stagedPointRowKey"/);
-  assert.match(source, /#bodyCell="\{ column, record, index \}"[\s\S]*?<a-input v-if="column\.key === 'tokens'" v-model:value="record\.tokens" inputmode="numeric"/);
+  assert.match(source, /#bodyCell="\{ column, record, index \}"[\s\S]*?<a-input v-if="column\.key === 'tokens'" :value="record\.tokens" v-on="\{ 'update:value': aiEntry\.bind\(value => record\.tokens = value\) \}" inputmode="numeric"/);
   assert.match(source, /index === 0 \|\| formState\.stagedTokenMultiplierPoints\.length <= 1/);
 });
 
@@ -160,7 +160,7 @@ test('deep-thinking capability modal displays search capability details instead 
   ]) {
     assert.ok(dialog.includes(expected), 'missing search capability detail: ' + expected);
   }
-  assert.match(source, /v-model:open="capabilityModalVisible"/);
+  assert.match(source, /:open="capabilityModalVisible"\s+v-on="\{ 'update:open': capabilityEntry\.bind\(value => capabilityModalVisible = value\) \}"/);
   assert.match(source, /:detail="searchEngineDetail"/);
   assert.match(source, /features: Array\.isArray\(response\.engine\.features\)/);
   assert.doesNotMatch(dialog, /API 端点/);
@@ -172,6 +172,6 @@ test('AI pricing card header wraps long copy and actions instead of overlapping'
   const source = await readFile(new URL('../pages/AISearchConfig/index.vue', import.meta.url), 'utf8');
   const panel = await readFile(new URL('../components/ConsolePanel.vue', import.meta.url), 'utf8');
   assert.match(source, /\.sub-card-subtitle\s*\{[^}]*overflow-wrap:\s*anywhere/s);
-  assert.match(source, /<ConsolePanel title="模型价格表"/);
+  assert.match(source, /<ConsolePanel\b[^>]*class="pricing-grid"[^>]*>[\s\S]*?<template #heading>[\s\S]*?<h2\b[^>]*>模型价格表<\/h2>/);
   assert.match(panel, /flex-wrap:\s*wrap/);
 });

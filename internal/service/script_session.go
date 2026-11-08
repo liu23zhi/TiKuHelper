@@ -19,11 +19,16 @@ type ScriptRunSessionGrant struct {
 	ExpiresAt     time.Time `json:"expiresAt"`
 	ScriptID      int32     `json:"scriptId"`
 	AccessTokenID int32     `json:"accessTokenId"`
+	HeartbeatURL  string    `json:"heartbeatUrl,omitempty"`
 }
 
 // ActivateScriptRunSessionWithDB consumes the short-lived activation ticket
 // and binds a new 150-minute session to this executable identity.
 func ActivateScriptRunSessionWithDB(db *gorm.DB, shortCode, activationToken, identity string) (ScriptRunSessionGrant, error) {
+	return activateScriptRunSessionWithDB(db, shortCode, activationToken, identity, nil)
+}
+
+func activateScriptRunSessionWithDB(db *gorm.DB, shortCode, activationToken, identity string, lease *scriptRunLeaseRequest) (ScriptRunSessionGrant, error) {
 	shortCode = strings.TrimSpace(shortCode)
 	activationToken = strings.TrimSpace(activationToken)
 	identity = strings.TrimSpace(identity)
@@ -40,24 +45,32 @@ func ActivateScriptRunSessionWithDB(db *gorm.DB, shortCode, activationToken, ide
 		return ScriptRunSessionGrant{}, errors.New("数据库不可用")
 	}
 
-	plainSessionToken, err := randomScriptSecret(32)
-	if err != nil {
-		return ScriptRunSessionGrant{}, err
+	var plainSessionToken string
+	if lease != nil {
+		plainSessionToken = scriptLeaseToken(activationToken, identity)
+	} else {
+		secret, err := randomScriptSecret(32)
+		if err != nil {
+			return ScriptRunSessionGrant{}, err
+		}
+		plainSessionToken = "sr_" + secret
 	}
-	plainSessionToken = "sr_" + plainSessionToken
 	var result ScriptRunSessionGrant
-	err = db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
+	err := db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
 		var activation entity.ScriptExchangeToken
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("token_hash = ? AND purpose = ?", hashScriptSecret(activationToken), "activation").First(&activation).Error; err != nil {
 			return ErrScriptTokenInvalid
 		}
 		now := time.Now()
-		if activation.UsedAt != nil || !now.Before(activation.ExpiresAt) {
+		if !now.Before(activation.ExpiresAt) || (lease == nil && activation.UsedAt != nil) {
 			return ErrScriptTokenInvalid
 		}
 		var script entity.UserScript
-		if err := tx.Where("id = ? AND short_code = ? AND enabled = ? AND deleted_at IS NULL", activation.ScriptID, shortCode, true).First(&script).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND short_code = ? AND enabled = ? AND deleted_at IS NULL", activation.ScriptID, shortCode, true).First(&script).Error; err != nil {
 			return ErrScriptTokenInvalid
+		}
+		if err := ValidateScriptDomainWithDB(tx, script.BaseDomain, script.UseWildcardDomain); err != nil {
+			return err
 		}
 		if script.AccessTokenID <= 0 {
 			return ErrScriptTokenInvalid
@@ -66,14 +79,79 @@ func ActivateScriptRunSessionWithDB(db *gorm.DB, shortCode, activationToken, ide
 		if err := tx.Where("id = ? AND script_id = ? AND user_id = ? AND status = ?", script.AccessTokenID, script.ID, script.UserID, "enabled").First(&accessToken).Error; err != nil {
 			return ErrScriptTokenInvalid
 		}
+		if !AccessTokenQuotaLimitValid(accessToken.TotalQuotaLimit) {
+			return ErrScriptTokenInvalid
+		}
 		var user entity.User
 		if err := tx.Where("id = ? AND status = ?", script.UserID, "enabled").First(&user).Error; err != nil {
 			return ErrScriptTokenInvalid
 		}
-		if err := tx.Model(&activation).Update("used_at", now).Error; err != nil {
+		if script.BillingMode != "" && lease == nil {
+			return ErrScriptTokenInvalid
+		}
+		ttl := ScriptRunSessionTTL
+		var zoneHash string
+		if lease != nil {
+			ttl = lease.ttl
+			var err error
+			zoneHash, err = scriptSourceZoneHash(tx, lease.clientIP)
+			if err != nil {
+				return err
+			}
+			if activation.UsedAt != nil {
+				var prior entity.ScriptRunSession
+				if err := tx.Where("token_hash = ? AND script_id = ? AND access_token_id = ? AND user_id = ?",
+					hashScriptSecret(plainSessionToken), script.ID, accessToken.ID, user.ID).First(&prior).Error; err != nil ||
+					!ScriptRunSessionUsableAt(prior, now) || prior.LeaseSlot == nil ||
+					subtle.ConstantTimeCompare([]byte(prior.SourceZoneHash), []byte(zoneHash)) != 1 ||
+					subtle.ConstantTimeCompare([]byte(prior.IdentityHash), []byte(hashScriptSecret(identity))) != 1 {
+					return ErrScriptTokenInvalid
+				}
+				result = scriptRunLeaseGrant(prior, plainSessionToken, shortCode)
+				return nil
+			}
+			if err := claimScriptLeaseSlot(tx, script.ID, now); err != nil {
+				return err
+			}
+			if script.RunDurationMinutes > 0 {
+				configured := time.Duration(script.RunDurationMinutes) * time.Minute
+				if configured < ttl {
+					ttl = configured
+				}
+			}
+			switch script.BillingMode {
+			case entity.ScriptBillingModeEscrow:
+				var priorRuns int64
+				if err := tx.Model(&entity.ScriptRunSession{}).Where("script_id = ?", script.ID).Count(&priorRuns).Error; err != nil {
+					return err
+				}
+				if priorRuns > 0 {
+					if _, err := PrepareScriptEscrowLaunchInTx(tx, script.ID, user.ID, script.AutoTopUp, fmt.Sprint(activation.ID)); err != nil {
+						return err
+					}
+				}
+			case entity.ScriptBillingModeActivation:
+				if priorID, err := ResolveScriptActivationEntitlementRunInTx(tx, user.ID, script.ID, activation.ID); err != nil {
+					return err
+				} else if priorID != 0 {
+					return ErrScriptTokenInvalid
+				}
+			case "":
+			default:
+				return ErrScriptBillingModeInvalid
+			}
+		}
+		if err := consumeScriptExchangeTokenWithDB(tx, activation.ID, now); err != nil {
 			return err
 		}
-		expiresAt := now.Add(ScriptRunSessionTTL)
+		expiresAt := now.Add(ttl)
+		if lease != nil {
+			// The native client checks that heartbeat never moves the hard
+			// deadline. Match the database's existing local-clock convention
+			// and its stored precision before sending the first response.
+			// Mixing UTC and local timestamps also breaks SQLite ordering.
+			expiresAt = expiresAt.Truncate(time.Second)
+		}
 		session := entity.ScriptRunSession{
 			ScriptID:      script.ID,
 			UserID:        user.ID,
@@ -83,10 +161,25 @@ func ActivateScriptRunSessionWithDB(db *gorm.DB, shortCode, activationToken, ide
 			ActivatedAt:   now,
 			ExpiresAt:     expiresAt,
 		}
+		if lease != nil {
+			session.LeaseSlot = &session.ScriptID
+			session.SourceZoneHash = zoneHash
+			session.LastHeartbeatAt = &now
+		}
 		if err := tx.Create(&session).Error; err != nil {
 			return err
 		}
+		if script.BillingMode == entity.ScriptBillingModeActivation {
+			if id, err := ConsumeScriptActivationEntitlementRunInTx(tx, user.ID, script.ID, activation.ID, session.ID); err != nil {
+				return err
+			} else if id != session.ID {
+				return ErrScriptTokenInvalid
+			}
+		}
 		result = ScriptRunSessionGrant{Token: plainSessionToken, ExpiresAt: expiresAt, ScriptID: script.ID, AccessTokenID: accessToken.ID}
+		if lease != nil {
+			result = scriptRunLeaseGrant(session, plainSessionToken, shortCode)
+		}
 		return nil
 	})
 	return result, err
@@ -94,13 +187,13 @@ func ActivateScriptRunSessionWithDB(db *gorm.DB, shortCode, activationToken, ide
 
 // ResolveScriptRunSessionWithDB validates the bearer session and identity and
 // returns the bound user and dedicated access-token context for search billing.
-func ResolveScriptRunSessionWithDB(db *gorm.DB, authorization, identity string) (AccessTokenAuthContext, entity.ScriptRunSession, error) {
+func ResolveScriptRunSessionWithDB(db *gorm.DB, authorization, identity string, clientIP ...string) (AccessTokenAuthContext, entity.ScriptRunSession, error) {
 	tokenValue, err := parseBasicToken(authorization)
 	if err != nil {
 		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本运行会话令牌不能为空")
 	}
 	identity = strings.TrimSpace(identity)
-	if identity == "" {
+	if identity == "" || len(identity) > 256 {
 		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth(ErrScriptRunIdentityRequired.Error())
 	}
 	if db == nil {
@@ -116,26 +209,52 @@ func ResolveScriptRunSessionWithDB(db *gorm.DB, authorization, identity string) 
 		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, err
 	}
 	now := time.Now()
-	if session.RevokedAt != nil || !now.Before(session.ExpiresAt) {
+	if !ScriptRunSessionUsableAt(session, now) {
 		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本运行会话已过期或撤销")
 	}
 	identityHash := hashScriptSecret(identity)
 	if subtle.ConstantTimeCompare([]byte(session.IdentityHash), []byte(identityHash)) != 1 {
 		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本身份码不匹配")
 	}
+	if session.SourceZoneHash != "" {
+		if len(clientIP) != 1 || !validScriptLeaseIdentity(identity) {
+			return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本来源无效")
+		}
+		zone, err := scriptSourceZoneHash(freshDB, clientIP[0])
+		if err != nil || subtle.ConstantTimeCompare([]byte(session.SourceZoneHash), []byte(zone)) != 1 {
+			return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本来源不匹配")
+		}
+	}
 	var script entity.UserScript
 	if err := freshDB.Where("id = ? AND user_id = ? AND access_token_id = ? AND enabled = ? AND deleted_at IS NULL", session.ScriptID, session.UserID, session.AccessTokenID, true).First(&script).Error; err != nil {
 		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本已停用或删除")
 	}
+	if err := ValidateScriptDomainWithDB(freshDB, script.BaseDomain, script.UseWildcardDomain); err != nil {
+		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本域名不可用")
+	}
 	var accessToken entity.AccessToken
 	if err := freshDB.Where("id = ? AND script_id = ? AND user_id = ? AND status = ?", session.AccessTokenID, session.ScriptID, session.UserID, "enabled").First(&accessToken).Error; err != nil {
 		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本访问令牌已停用")
+	}
+	if !AccessTokenQuotaLimitValid(accessToken.TotalQuotaLimit) {
+		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本访问令牌限额无效")
 	}
 	var user entity.User
 	if err := freshDB.Where("id = ? AND status = ?", session.UserID, "enabled").First(&user).Error; err != nil {
 		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本所属用户已停用")
 	}
 	return AccessTokenAuthContext{User: user, AccessToken: accessToken}, session, nil
+}
+
+// ResolveSearchTokenWithScriptIdentity keeps credential selection uniform across
+// the sync, task and AI fallback routes. A supplied identity selects the
+// script-session credential explicitly; never fall back to a raw Key.
+func ResolveSearchTokenWithScriptIdentity(db *gorm.DB, authorization, identity string, clientIP ...string) (AccessTokenAuthContext, entity.ScriptRunSession, error) {
+	if strings.TrimSpace(identity) != "" {
+		return ResolveScriptRunSessionWithDB(db, authorization, identity, clientIP...)
+	}
+	auth, err := ResolveAccessTokenFromBasicAuth(db, authorization)
+	return auth, entity.ScriptRunSession{}, err
 }
 
 func DownloadScriptVersionByRunSessionWithDB(db *gorm.DB, shortCode, authorization, identity string) (entity.ScriptVersion, error) {
@@ -172,6 +291,9 @@ func DownloadScriptVersionByActivationTokenWithDB(db *gorm.DB, shortCode, activa
 	var script entity.UserScript
 	if err := db.Session(&gorm.Session{NewDB: true}).Where("id = ? AND short_code = ? AND enabled = ? AND deleted_at IS NULL", activation.ScriptID, shortCode, true).First(&script).Error; err != nil {
 		return entity.ScriptVersion{}, ErrScriptTokenInvalid
+	}
+	if err := validateScriptLaunchActorWithDB(db, script); err != nil {
+		return entity.ScriptVersion{}, err
 	}
 	versionID := activation.VersionID
 	if versionID <= 0 {

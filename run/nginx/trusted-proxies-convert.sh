@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+set -f
+LC_ALL=C
+export LC_ALL
 
 source_file=${1:-/app/trusted_proxies.txt}
 output_file=${2:-/tmp/trusted-proxies.generated.conf}
@@ -13,7 +16,7 @@ is_ipv4() {
   IFS=$old_ifs
   [ "$#" -eq 4 ] || return 1
   for octet in "$@"; do
-    case "$octet" in ''|*[!0-9]*) return 1 ;; esac
+    case "$octet" in ''|*[!0-9]*|0[0-9]*) return 1 ;; esac
     [ "$octet" -le 255 ] || return 1
   done
 }
@@ -113,7 +116,7 @@ trap 'rm -f "$candidate_file" "$seen_file"' EXIT HUP INT TERM
 if [ -f "$source_file" ]; then
 awk '
 {
-  sub(/\r$/, ""); sub(/^\xef\xbb\xbf/, "")
+  sub(/\r$/, ""); sub(/^\357\273\277/, "")
   sub(/#.*/, ""); sub(/\/\/.*/, "")
   gsub(/[{}\[\]"]/, " ")
   count = split($0, segments, /[,;]/)
@@ -134,12 +137,18 @@ fi
 : > "$seen_file"
 candidate_count=0
 valid_count=0
+invalid_count=0
+none_count=0
 while IFS= read -r candidate || [ -n "$candidate" ]; do
   [ -n "$candidate" ] || continue
   candidate_count=$((candidate_count + 1))
+  if [ "$(printf '%s' "$candidate" | tr '[:upper:]' '[:lower:]')" = none ]; then
+    none_count=$((none_count + 1))
+    continue
+  fi
   converted=$(convert_entry "$candidate" 2>/dev/null || true)
   if [ -z "$converted" ]; then
-    printf 'trusted-proxies: ignored invalid entry: %s\n' "$candidate" >&2
+    invalid_count=$((invalid_count + 1))
     continue
   fi
   while IFS= read -r entry || [ -n "$entry" ]; do
@@ -154,28 +163,71 @@ $converted
 EOF
 done < "$candidate_file"
 
-if [ "$candidate_count" -gt 0 ] && [ "$valid_count" -eq 0 ]; then
-  printf 'trusted-proxies: no valid proxy entries found\n' >&2
+if [ "$none_count" -eq 1 ] && [ "$candidate_count" -eq 1 ]; then
+  exit 0
+fi
+if [ "$invalid_count" -gt 0 ] || [ "$none_count" -gt 0 ] || { [ "$candidate_count" -gt 0 ] && [ "$valid_count" -eq 0 ]; }; then
+  : > "$output_file"
+  printf 'trusted-proxies: valid restricted entries or standalone none required\n' >&2
   exit 1
 fi
 
-add_directive() {
-  entry=$1
-  if ! grep -Fqx "$entry" "$seen_file"; then
-    printf '%s\n' "$entry" >> "$seen_file"
-    printf 'set_real_ip_from %s;\n' "$entry" >> "$output_file"
-  fi
+# Match the production application boundary: explicit entries only, no implicit
+# LAN ranges, wildcards, malformed mixtures or unions covering an entire family.
+# Binary strings avoid lossy 128-bit arithmetic in POSIX awk.
+ranges=$(awk '
+function digitbits(n, width, out, i) {
+  out=""; for(i=width-1;i>=0;i--) out=out int(n/(2^i))%2; return out
 }
-
-if [ "$candidate_count" -eq 0 ]; then
-  # Empty or comment-only input has the documented trust-all meaning.
-  add_directive '0.0.0.0/0'
-  add_directive '::/0'
-elif ! grep -Fqx '0.0.0.0/0' "$seen_file" && ! grep -Fqx '::/0' "$seen_file"; then
-  # Match the application parser: explicit entries also get LAN/local defaults.
-  for entry in \
-    '127.0.0.0/8' '::1/128' '10.0.0.0/8' '172.16.0.0/12' \
-    '192.168.0.0/16' '169.254.0.0/16' 'fc00::/7' 'fe80::/10'; do
-    add_directive "$entry"
-  done
+function ipv4(s, a,n,i,out) {
+  n=split(s,a,"."); if(n!=4)return ""; out=""
+  for(i=1;i<=4;i++){if(a[i]!~/^[0-9]+$/ || a[i]+0>255)return "";out=out digitbits(a[i]+0,8)}
+  return out
+}
+function hexpart(s, i,n,out,c) {
+  if(length(s)<1 || length(s)>4)return "";n=0
+  for(i=1;i<=length(s);i++){c=index("0123456789abcdef",tolower(substr(s,i,1)))-1;if(c<0)return "";n=n*16+c}
+  return digitbits(n,16)
+}
+function ipv6(s, halves,l,r,nh,nl,nr,i,out,pad,v) {
+  nh=split(s,halves,"::");if(nh>2)return ""
+  nl=halves[1]==""?0:split(halves[1],l,":")
+  nr=nh==2 && halves[2]!=""?split(halves[2],r,":"):0
+  if((nh==1 && nl!=8) || (nh==2 && nl+nr>=8))return ""
+  out="";for(i=1;i<=nl;i++){v=hexpart(l[i]);if(v=="")return "";out=out v}
+  if(nh==2)for(pad=nl+nr;pad<8;pad++)out=out "0000000000000000"
+  for(i=1;i<=nr;i++){v=hexpart(r[i]);if(v=="")return "";out=out v}
+  return out
+}
+{
+  n=split($0,p,"/");if(n>2){bad=1;next}
+  family=index(p[1],":")?6:4;width=family==6?128:32
+  bits=family==6?ipv6(p[1]):ipv4(p[1]);prefix=n==2?p[2]+0:width
+  if(bits=="" || (n==2 && p[2]!~/^[0-9]+$/) || prefix>width){bad=1;next}
+  low=substr(bits,1,prefix);high=low
+  for(i=prefix;i<width;i++){low=low "0";high=high "1"}
+  print family,"b" low,"b" high
+}
+END{if(bad)exit 1}
+' "$seen_file") || {
+  : > "$output_file"
+  printf 'trusted-proxies: invalid restricted address\n' >&2
+  exit 1
+}
+if [ -n "$ranges" ] && ! printf '%s\n' "$ranges" | LC_ALL=C sort -k1,1 -k2,2 | awk '
+function successor(s, i) {
+  for(i=length(s);i>1;i--)if(substr(s,i,1)=="0")return substr(s,1,i-1) "1" substr(s,i+1)
+    else s=substr(s,1,i-1) "0" substr(s,i+1)
+  return s
+}
+{
+ if($1!=family){family=$1;end=$3;fromzero=$2!~/1/}
+ else if($2<=successor(end)){if($3>end)end=$3}
+ else {fromzero=0;end=$3}
+ if(fromzero && end!~/0/)exit 1
+}
+'; then
+  : > "$output_file"
+  printf 'trusted-proxies: unrestricted address family is not allowed\n' >&2
+  exit 1
 fi

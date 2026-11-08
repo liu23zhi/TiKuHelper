@@ -384,7 +384,7 @@ func UpdateAISearchConfigWithDB(db *gorm.DB, input UpdateAISearchConfigInput) (A
 		}
 	}
 	if input.MaxAIWebReads > 0 {
-		if err := saveSystemSettingValue(db, MaxAIWebReadsSettingKey, strconv.Itoa(input.MaxAIWebReads), "AI 搜索网页读取最大次数"); err != nil {
+		if err := saveSystemSettingValue(db, MaxAIWebReadsSettingKey, strconv.Itoa(normalizeAISearchBudgetForKey(input.MaxAIWebReads, MaxAIWebReadsSettingKey)), "AI 搜索网页读取最大次数"); err != nil {
 			return AISearchConfigView{}, err
 		}
 	}

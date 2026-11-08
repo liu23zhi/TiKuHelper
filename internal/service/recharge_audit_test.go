@@ -89,42 +89,48 @@ func TestRechargeAuditConcurrentCallbacksSettleAndLogOnce(t *testing.T) {
 	}
 }
 
-func TestRechargeAuditFailureRollsBackSettlementAndCanRetry(t *testing.T) {
+func TestRechargeAuditFailureKeepsSettlementAndDoesNotReaudit(t *testing.T) {
 	db := newRechargeOrderTestDB(t)
 	user, order, values := seedRechargeAuditNotify(t, db)
 	const callbackName = "test:recharge_audit_failure"
+	attempts := 0
 	if err := db.Callback().Create().Before("gorm:create").Register(callbackName, func(tx *gorm.DB) {
 		if entry, ok := tx.Statement.Dest.(*entity.Log); ok && entry.Module == "recharge" && entry.Action == 41 {
+			attempts++
 			tx.AddError(errors.New("audit write failed"))
 		}
 	}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Callback().Create().Remove(callbackName) })
-	if acknowledged, err := HandleRechargePaymentNotifyWithDB(db, values); err == nil || acknowledged {
-		t.Fatalf("audit failure must fail the transaction: acknowledged=%v err=%v", acknowledged, err)
+	if acknowledged, err := HandleRechargePaymentNotifyWithDB(db, values); err != nil || !acknowledged {
+		t.Fatalf("audit failure must not block financial commit: acknowledged=%v err=%v", acknowledged, err)
 	}
 	var updated entity.User
 	var persisted entity.RechargeOrder
-	var billingCount int64
-	var auditCount int64
-	if err := db.First(&updated, user.ID).Error; err != nil {
-		t.Fatal(err)
+	var billingCount, auditCount int64
+	verify := func() {
+		t.Helper()
+		if err := db.First(&updated, user.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.First(&persisted, order.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		db.Model(&entity.BillingRecord{}).Where("related_order_id = ?", order.ID).Count(&billingCount)
+		db.Model(&entity.Log{}).Where("module = ? AND action = ?", "recharge", 41).Count(&auditCount)
+		if updated.Balance != order.Amount || persisted.Status != rechargeOrderStatusPaid || billingCount != 1 || auditCount != 0 || attempts != 1 {
+			t.Fatalf("financial result must remain exactly once despite missing audit: balance=%v status=%s bills=%d logs=%d attempts=%d", updated.Balance, persisted.Status, billingCount, auditCount, attempts)
+		}
 	}
-	if err := db.First(&persisted, order.ID).Error; err != nil {
-		t.Fatal(err)
-	}
-	db.Model(&entity.BillingRecord{}).Where("related_order_id = ?", order.ID).Count(&billingCount)
-	db.Model(&entity.Log{}).Where("module = ? AND action = ?", "recharge", 41).Count(&auditCount)
-	if updated.Balance != 0 || persisted.Status != rechargeOrderStatusPending || billingCount != 0 || auditCount != 0 {
-		t.Fatalf("settlement escaped rollback: balance=%v status=%s bills=%d logs=%d", updated.Balance, persisted.Status, billingCount, auditCount)
-	}
+	verify()
 	if err := db.Callback().Create().Remove(callbackName); err != nil {
 		t.Fatal(err)
 	}
 	if acknowledged, err := HandleRechargePaymentNotifyWithDB(db, values); err != nil || !acknowledged {
-		t.Fatalf("callback retry should succeed after audit recovery: acknowledged=%v err=%v", acknowledged, err)
+		t.Fatalf("repeat paid callback must acknowledge without credit/audit retry: acknowledged=%v err=%v", acknowledged, err)
 	}
+	verify()
 }
 
 func TestRechargeAuditUnknownGatewayResultDoesNotLeakOrRepeat(t *testing.T) {

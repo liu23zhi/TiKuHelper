@@ -29,7 +29,7 @@ func TestCreatePaymentMethodWithDBTrimsFieldsAndPersists(t *testing.T) {
 
 	created, err := CreatePaymentMethodWithDB(db, CreatePaymentMethodInput{
 		Name:     " 支付宝 ",
-		IconSVG:  " <svg>alipay</svg> ",
+		IconSVG:  " <svg><path d='M0 0h1'/></svg> ",
 		EPayType: " alipay ",
 		Enabled:  true,
 		Sort:     20,
@@ -42,7 +42,7 @@ func TestCreatePaymentMethodWithDBTrimsFieldsAndPersists(t *testing.T) {
 	if created.Name != "支付宝" {
 		t.Fatalf("expected trimmed name, got %q", created.Name)
 	}
-	if created.IconSVG != "<svg>alipay</svg>" {
+	if created.IconSVG != "<svg><path d='M0 0h1'/></svg>" {
 		t.Fatalf("expected trimmed icon svg, got %q", created.IconSVG)
 	}
 	if created.EPayType != "alipay" {
@@ -62,7 +62,7 @@ func TestCreatePaymentMethodWithDBTrimsFieldsAndPersists(t *testing.T) {
 	if err := db.Where("id = ?", created.ID).First(&stored).Error; err != nil {
 		t.Fatalf("load stored payment method: %v", err)
 	}
-	if stored.Name != "支付宝" || stored.EPayType != "alipay" || stored.IconSVG != "<svg>alipay</svg>" {
+	if stored.Name != "支付宝" || stored.EPayType != "alipay" || stored.IconSVG != "<svg><path d='M0 0h1'/></svg>" {
 		t.Fatalf("unexpected stored payment method: %+v", stored)
 	}
 }
@@ -75,6 +75,93 @@ func TestCreatePaymentMethodWithDBValidatesRequiredFields(t *testing.T) {
 	}
 	if _, err := CreatePaymentMethodWithDB(db, CreatePaymentMethodInput{Name: "支付宝", EPayType: ""}); err != ErrPaymentMethodEPayTypeRequired {
 		t.Fatalf("expected ErrPaymentMethodEPayTypeRequired, got %v", err)
+	}
+}
+
+func TestListPaymentMethodsWithDBFiltersDisabledAndSortsAscending(t *testing.T) {
+	db := newPaymentMethodTestDB(t)
+
+	items := []entity.PaymentMethod{
+		{Name: "微信支付", EPayType: "wxpay", Enabled: true, Sort: 30},
+		{Name: "银行卡", EPayType: "bank", Enabled: false, Sort: 10},
+		{Name: "支付宝", EPayType: "alipay", Enabled: true, Sort: 10},
+	}
+	for _, item := range items {
+		if err := db.Create(&item).Error; err != nil {
+			t.Fatalf("seed payment method: %v", err)
+		}
+	}
+
+	adminList, err := ListPaymentMethodsWithDB(db, true)
+	if err != nil {
+		t.Fatalf("list all payment methods: %v", err)
+	}
+	if len(adminList) != 3 {
+		t.Fatalf("expected 3 payment methods, got %d", len(adminList))
+	}
+	if adminList[0].Name != "银行卡" || adminList[1].Name != "支付宝" || adminList[2].Name != "微信支付" {
+		t.Fatalf("unexpected admin order: %+v", adminList)
+	}
+
+	enabledList, err := ListPaymentMethodsWithDB(db, false)
+	if err != nil {
+		t.Fatalf("list enabled payment methods: %v", err)
+	}
+	if len(enabledList) != 2 {
+		t.Fatalf("expected 2 enabled payment methods, got %d", len(enabledList))
+	}
+	if enabledList[0].Name != "支付宝" || enabledList[1].Name != "微信支付" {
+		t.Fatalf("unexpected enabled order: %+v", enabledList)
+	}
+}
+
+func TestUpdatePaymentMethodWithDBUpdatesFields(t *testing.T) {
+	db := newPaymentMethodTestDB(t)
+	created, err := CreatePaymentMethodWithDB(db, CreatePaymentMethodInput{Name: "支付宝", EPayType: "alipay", Enabled: true, Sort: 10})
+	if err != nil {
+		t.Fatalf("create payment method: %v", err)
+	}
+
+	updated, err := UpdatePaymentMethodWithDB(db, created.ID, UpdatePaymentMethodInput{
+		Name:     " 微信支付 ",
+		IconSVG:  " <svg><path d='M0 0v1'/></svg> ",
+		EPayType: " wxpay ",
+		Enabled:  false,
+		Sort:     99,
+		Remark:   " 已停用 ",
+	})
+	if err != nil {
+		t.Fatalf("update payment method: %v", err)
+	}
+
+	if updated.Name != "微信支付" || updated.EPayType != "wxpay" || updated.IconSVG != "<svg><path d='M0 0v1'/></svg>" {
+		t.Fatalf("unexpected updated payment method: %+v", updated)
+	}
+	if updated.Enabled {
+		t.Fatal("expected updated payment method disabled")
+	}
+	if updated.Sort != 99 || updated.Remark != "已停用" {
+		t.Fatalf("unexpected updated sort/remark: %+v", updated)
+	}
+}
+
+func TestDeletePaymentMethodWithDBRemovesRecord(t *testing.T) {
+	db := newPaymentMethodTestDB(t)
+	created, err := CreatePaymentMethodWithDB(db, CreatePaymentMethodInput{Name: "支付宝", EPayType: "alipay", Enabled: true})
+	if err != nil {
+		t.Fatalf("create payment method: %v", err)
+	}
+
+	if err := DeletePaymentMethodWithDB(db, created.ID); err != nil {
+		t.Fatalf("delete payment method: %v", err)
+	}
+
+	var count int64
+	if err := db.Model(&entity.PaymentMethod{}).Where("id = ?", created.ID).Count(&count).Error; err != nil {
+		t.Fatalf("count payment methods: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected payment method deleted, count=%d", count)
 	}
 }
 
@@ -159,92 +246,5 @@ func TestListPaymentMethodsWithDBHidesUnsafeLegacyIcons(t *testing.T) {
 	}
 	if len(methods) != 1 || methods[0].IconSVG != "" {
 		t.Fatalf("legacy unsafe SVG must be hidden from API responses, got %+v", methods)
-	}
-}
-
-func TestListPaymentMethodsWithDBFiltersDisabledAndSortsAscending(t *testing.T) {
-	db := newPaymentMethodTestDB(t)
-
-	items := []entity.PaymentMethod{
-		{Name: "微信支付", EPayType: "wxpay", Enabled: true, Sort: 30},
-		{Name: "银行卡", EPayType: "bank", Enabled: false, Sort: 10},
-		{Name: "支付宝", EPayType: "alipay", Enabled: true, Sort: 10},
-	}
-	for _, item := range items {
-		if err := db.Create(&item).Error; err != nil {
-			t.Fatalf("seed payment method: %v", err)
-		}
-	}
-
-	adminList, err := ListPaymentMethodsWithDB(db, true)
-	if err != nil {
-		t.Fatalf("list all payment methods: %v", err)
-	}
-	if len(adminList) != 3 {
-		t.Fatalf("expected 3 payment methods, got %d", len(adminList))
-	}
-	if adminList[0].Name != "银行卡" || adminList[1].Name != "支付宝" || adminList[2].Name != "微信支付" {
-		t.Fatalf("unexpected admin order: %+v", adminList)
-	}
-
-	enabledList, err := ListPaymentMethodsWithDB(db, false)
-	if err != nil {
-		t.Fatalf("list enabled payment methods: %v", err)
-	}
-	if len(enabledList) != 2 {
-		t.Fatalf("expected 2 enabled payment methods, got %d", len(enabledList))
-	}
-	if enabledList[0].Name != "支付宝" || enabledList[1].Name != "微信支付" {
-		t.Fatalf("unexpected enabled order: %+v", enabledList)
-	}
-}
-
-func TestUpdatePaymentMethodWithDBUpdatesFields(t *testing.T) {
-	db := newPaymentMethodTestDB(t)
-	created, err := CreatePaymentMethodWithDB(db, CreatePaymentMethodInput{Name: "支付宝", EPayType: "alipay", Enabled: true, Sort: 10})
-	if err != nil {
-		t.Fatalf("create payment method: %v", err)
-	}
-
-	updated, err := UpdatePaymentMethodWithDB(db, created.ID, UpdatePaymentMethodInput{
-		Name:     " 微信支付 ",
-		IconSVG:  " <svg>wx</svg> ",
-		EPayType: " wxpay ",
-		Enabled:  false,
-		Sort:     99,
-		Remark:   " 已停用 ",
-	})
-	if err != nil {
-		t.Fatalf("update payment method: %v", err)
-	}
-
-	if updated.Name != "微信支付" || updated.EPayType != "wxpay" || updated.IconSVG != "<svg>wx</svg>" {
-		t.Fatalf("unexpected updated payment method: %+v", updated)
-	}
-	if updated.Enabled {
-		t.Fatal("expected updated payment method disabled")
-	}
-	if updated.Sort != 99 || updated.Remark != "已停用" {
-		t.Fatalf("unexpected updated sort/remark: %+v", updated)
-	}
-}
-
-func TestDeletePaymentMethodWithDBRemovesRecord(t *testing.T) {
-	db := newPaymentMethodTestDB(t)
-	created, err := CreatePaymentMethodWithDB(db, CreatePaymentMethodInput{Name: "支付宝", EPayType: "alipay", Enabled: true})
-	if err != nil {
-		t.Fatalf("create payment method: %v", err)
-	}
-
-	if err := DeletePaymentMethodWithDB(db, created.ID); err != nil {
-		t.Fatalf("delete payment method: %v", err)
-	}
-
-	var count int64
-	if err := db.Model(&entity.PaymentMethod{}).Where("id = ?", created.ID).Count(&count).Error; err != nil {
-		t.Fatalf("count payment methods: %v", err)
-	}
-	if count != 0 {
-		t.Fatalf("expected payment method deleted, count=%d", count)
 	}
 }

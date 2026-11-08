@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/service"
 	"gorm.io/gorm"
 )
 
@@ -111,8 +112,68 @@ type imageRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn imageRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return fn(req) }
 
+func TestAIOCRCacheImageDisabledWithoutEffectiveUAPIKey(t *testing.T) {
+	db := newAIOCRCacheControllerTestDB(t)
+	hash := strings.Repeat("a", 64)
+	if err := db.Create(&entity.AIOCRCache{URLHash: hash, URL: "https://images.example.test/question.png",
+		ImageSHA256: "sha", OCRText: "stored synthetic OCR"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	factoryCalls, outboundCalls := 0, 0
+	original := newAIOCRCacheImageHTTPClient
+	t.Cleanup(func() { newAIOCRCacheImageHTTPClient = original })
+	newAIOCRCacheImageHTTPClient = func() *http.Client {
+		factoryCalls++
+		return &http.Client{Transport: imageRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			outboundCalls++
+			return nil, fmt.Errorf("synthetic fixture forbids image-source network")
+		})}
+	}
+
+	for _, fixture := range []struct {
+		name string
+		key  string
+	}{{"absent", ""}, {"wrong_prefix", "invalid"}, {"empty_suffix", "uapi-"},
+		{"internal_whitespace", "uapi-synthetic fixture"}, {"internal_control", "uapi-synthetic\x01fixture"}} {
+		t.Run(fixture.name, func(t *testing.T) {
+			if fixture.name != "absent" {
+				var setting entity.SystemSetting
+				if err := db.Where("key = ?", service.UAPIAPIKeySettingKey).Assign(entity.SystemSetting{Value: fixture.key}).FirstOrCreate(&setting, entity.SystemSetting{Key: service.UAPIAPIKeySettingKey}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			beforeFactory, beforeOutbound := factoryCalls, outboundCalls
+			response := callAIOCRCacheImage(t, hash, "admin")
+			if response.Code != http.StatusServiceUnavailable || response.Header().Get("Cache-Control") != "private, no-store" {
+				t.Errorf("preview must report unavailable without an effective key: status=%d cache-control=%q", response.Code, response.Header().Get("Cache-Control"))
+			}
+			if fixture.key != "" && strings.Contains(response.Body.String(), fixture.key) {
+				t.Error("preview response exposed key material")
+			}
+			list := callAIOCRCacheAdmin(t, AIOCRCacheList, "", "admin")
+			var data service.AIOCRCacheListResult
+			if err := json.Unmarshal(list.Body.Bytes(), &data); err != nil || list.Code != http.StatusOK ||
+				data.Configured || len(data.Data) != 1 || data.Data[0].OCRText != "stored synthetic OCR" {
+				t.Errorf("preview policy must match list capability without hiding stored text: status=%d configured=%t rows=%d err=%v",
+					list.Code, data.Configured, len(data.Data), err)
+			}
+			if factoryCalls != beforeFactory || outboundCalls != beforeOutbound {
+				t.Errorf("invalid key reached client or transport: factory=%d outbound=%d", factoryCalls-beforeFactory, outboundCalls-beforeOutbound)
+			}
+		})
+	}
+}
+
+func seedEffectiveUAPIKeyForImagePreview(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	if err := db.Create(&entity.SystemSetting{Key: service.UAPIAPIKeySettingKey, Value: "uapi-synthetic-preview-only"}).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAIOCRCacheImageServesStoredImageForAdmins(t *testing.T) {
 	db := newAIOCRCacheControllerTestDB(t)
+	seedEffectiveUAPIKeyForImagePreview(t, db)
 	const storedURL = "https://images.example.test/question.png?token=private%2Fvalue&x=1"
 	if err := db.Create(&entity.AIOCRCache{URLHash: strings.Repeat("a", 64), URL: storedURL, ImageSHA256: "sha", OCRText: "识别"}).Error; err != nil {
 		t.Fatal(err)
@@ -123,8 +184,14 @@ func TestAIOCRCacheImageServesStoredImageForAdmins(t *testing.T) {
 	}
 	original := newAIOCRCacheImageHTTPClient
 	t.Cleanup(func() { newAIOCRCacheImageHTTPClient = original })
+	factoryCalls, outboundCalls := 0, 0
 	newAIOCRCacheImageHTTPClient = func() *http.Client {
+		factoryCalls++
 		return &http.Client{Transport: imageRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			outboundCalls++
+			if req.Header.Get("Authorization") != "" || req.Header.Get("Cookie") != "" {
+				t.Error("image-source request forwarded a credential")
+			}
 			if req.URL.String() != storedURL {
 				t.Errorf("request URL=%q, want stored URL %q", req.URL, storedURL)
 			}
@@ -135,6 +202,9 @@ func TestAIOCRCacheImageServesStoredImageForAdmins(t *testing.T) {
 		})}
 	}
 	response := callAIOCRCacheImage(t, strings.Repeat("a", 64), "admin")
+	if factoryCalls != 1 || outboundCalls != 1 {
+		t.Fatalf("effective key should permit exactly one synthetic image read: factory=%d outbound=%d", factoryCalls, outboundCalls)
+	}
 	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "image/png" || response.Header().Get("X-Content-Type-Options") != "nosniff" || response.Header().Get("Cache-Control") != "private, no-store" || !bytes.Equal(response.Body.Bytes(), imageBytes.Bytes()) {
 		t.Fatalf("image response: status=%d headers=%v body=%d bytes", response.Code, response.Header(), response.Body.Len())
 	}
@@ -163,6 +233,7 @@ func TestAIOCRCacheImageRejectsMissingURLAndUnsafeURL(t *testing.T) {
 
 func TestAIOCRCacheImageRejectsNonImagesAndOversizedResponses(t *testing.T) {
 	db := newAIOCRCacheControllerTestDB(t)
+	seedEffectiveUAPIKeyForImagePreview(t, db)
 	for _, hash := range []string{strings.Repeat("b", 64), strings.Repeat("c", 64)} {
 		if err := db.Create(&entity.AIOCRCache{URLHash: hash, URL: "https://images.example.test/image", ImageSHA256: "sha", OCRText: "识别"}).Error; err != nil {
 			t.Fatal(err)

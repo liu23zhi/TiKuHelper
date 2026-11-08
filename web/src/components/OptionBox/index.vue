@@ -2,7 +2,8 @@
   <div v-if="data.length">
     <a-row v-for="(item, index) in data" :key="index" class="rowStyle">
       <a-col :span="2">
-        <div :class="item.check ? 'CheckStyle Check' : 'CheckStyle CheckNo'"
+        <button type="button" :class="item.check ? 'CheckStyle Check' : 'CheckStyle CheckNo'"
+             :aria-label="'切换选项 ' + item.key + ' 的答案状态'" :aria-pressed="item.check"
              @click="item.check = !item.check">
           <a-tooltip placement="top">
             <template #title>
@@ -10,18 +11,18 @@
             </template>
             {{ item.key }}
           </a-tooltip>
-        </div>
+        </button>
       </a-col>
       <a-col :span="17">
-        <a-input v-model:value="item.value"/>
+        <a-input v-model:value="item.value" :aria-label="'第 ' + (index + 1) + ' 项选项（' + item.key + '）内容'"/>
       </a-col>
       <a-col :span="4">
-        <a-button v-if="index >= 0" @click="addOption" type="link" primary>
+        <a-button v-if="index >= 0" @click="addOption" type="link" primary aria-label="在末尾添加选项">
           <template #icon>
             <PlusCircleOutlined/>
           </template>
         </a-button>
-        <a-button v-if="index >= 0" @click="data.splice(index, 1)" type="link" danger>
+        <a-button v-if="index >= 0" @click="data.splice(index, 1)" type="link" danger :aria-label="'删除第 ' + (index + 1) + ' 项选项（' + item.key + '）'">
           <template #icon>
             <MinusCircleOutlined/>
           </template>
@@ -30,9 +31,9 @@
     </a-row>
   </div>
   <div v-else>
-    <Button class="addBut" @click="addOption" style="width: 100%">
+    <a-button class="addBut" @click="addOption" html-type="button" style="width: 100%" aria-label="在末尾添加选项">
     添加
-    </Button>
+    </a-button>
   </div>
 
 </template>
@@ -121,22 +122,22 @@ export default ({
 
 /* 选中的样式 */
 .Check {
-  background-color: #1890ff;
-  color: #fff;
-  border: 1px solid #1890ff;
+  background-color: var(--primary);
+  color: var(--surface);
+  border: 1px solid var(--primary);
 }
 
 /* 未选中的样式 */
 .CheckNo {
-  background-color: #fff;
-  color: #1890ff;
-  border: 1px solid #1890ff;
+  background-color: var(--surface);
+  color: var(--primary);
+  border: 1px solid var(--primary);
   box-sizing: border-box;
 }
 
 .addBut {
   color: rgba(0,0,0,.65);
-  background-color: #fff;
+  background-color: var(--surface);
   border-color: #d9d9d9;
   border-style: dashed;
   padding: 0 15px;
@@ -147,14 +148,24 @@ export default ({
 
 .addBut:focus{
   color: #108ee9;
-  background-color: #fff;
+  background-color: var(--surface);
   border-color: #108ee9;
 }
 
 .addBut:hover{
   color: #108ee9;
-  background-color: #fff;
+  background-color: var(--surface);
   border-color: #108ee9;
 }
 
+.CheckStyle {
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  cursor: pointer;
+}
+.CheckStyle:focus-visible {
+  outline: var(--focus-outline-width, 2px) solid var(--focus, #0066CC);
+  outline-offset: var(--focus-outline-offset, 2px);
+}
 </style>

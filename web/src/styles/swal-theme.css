@@ -1,0 +1,8 @@
+/* SweetAlert is body-mounted outside Vue; inherited root tokens keep it in the chosen theme. */
+.swal2-popup { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+.swal2-title, .swal2-html-container, .swal2-close { color: var(--text); }
+.swal2-input, .swal2-textarea, .swal2-select { background: var(--surface); color: var(--text); border-color: var(--control-border); }
+.swal2-styled.swal2-confirm { background: var(--primary); color: var(--on-primary); }
+.swal2-styled.swal2-cancel { background: var(--surface-subtle); color: var(--text); }
+.swal2-validation-message { background: var(--danger-bg); color: var(--danger-fg); }
+.swal2-popup :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }

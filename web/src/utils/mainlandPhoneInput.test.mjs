@@ -36,7 +36,13 @@ async function createPhoneInput(value = '') {
 test('all phone-entry pages use the shared mainland input', async () => {
   for (const name of ['Register', 'Login', 'Profile', 'UserList']) {
     const page = await readFile(new URL(`../pages/${name}/index.vue`, import.meta.url), 'utf8')
-    assert.match(page, /<MainlandPhoneInput\s+v-model:value="(?:registerForm|smsLoginForm|phoneForm|formState)\.phone"/)
+    if (['Register', 'Login', 'Profile'].includes(name)) {
+      const form = { Register: 'registerForm', Login: 'smsLoginForm', Profile: 'phoneForm' }[name]
+      assert.match(page, new RegExp(`<MainlandPhoneInput\\b[^>]*:value="${form}\\.phone"\\s+@update:value="renderHandlers\\.setPhone"`))
+      assert.match(page, new RegExp(`setPhone: run\\(value => \\{ ${form}\\.phone = value \\}\\)`))
+    } else {
+      assert.match(page, /<MainlandPhoneInput\s+v-model:value="(?:registerForm|smsLoginForm|phoneForm|formState)\.phone"/)
+    }
     assert.doesNotMatch(page, /国际号码请带/)
   }
 })

@@ -37,6 +37,7 @@ var (
 type aiFallbackTask struct {
 	ID                 string
 	UserID             int32
+	ActorScope         string
 	Status             string
 	Result             service.AIFallbackResult
 	CreatedAt          time.Time
@@ -46,8 +47,9 @@ type aiFallbackTask struct {
 }
 
 type aiFallbackTaskIdempotencyIndex struct {
-	UserID int32
-	Key    string
+	UserID     int32
+	ActorScope string
+	Key        string
 }
 
 type aiFallbackTaskStore struct {
@@ -95,29 +97,29 @@ func (s *aiFallbackTaskStore) create(userID int32, run func(taskID string) servi
 	return taskID
 }
 
-func (s *aiFallbackTaskStore) findByIdempotency(userID int32, key, fingerprint string) (aiFallbackTask, bool, error) {
+func (s *aiFallbackTaskStore) findByIdempotency(userID int32, key, fingerprint string, actorScope ...string) (aiFallbackTask, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cleanupExpiredLocked(s.now())
-	if taskID := s.idempotency[aiFallbackTaskIdempotencyIndex{UserID: userID, Key: key}]; taskID != "" {
+	if taskID := s.idempotency[aiFallbackTaskIdempotencyIndex{UserID: userID, ActorScope: firstAIFallbackActorScope(actorScope), Key: key}]; taskID != "" {
 		if task, ok := s.tasks[taskID]; ok {
 			if task.RequestFingerprint != fingerprint {
 				return aiFallbackTask{}, false, errAIFallbackTaskIdempotencyConflict
 			}
 			return task, true, nil
 		}
-		delete(s.idempotency, aiFallbackTaskIdempotencyIndex{UserID: userID, Key: key})
+		delete(s.idempotency, aiFallbackTaskIdempotencyIndex{UserID: userID, ActorScope: firstAIFallbackActorScope(actorScope), Key: key})
 	}
 	return aiFallbackTask{}, false, nil
 }
 
-func (s *aiFallbackTaskStore) createIdempotent(userID int32, key, fingerprint string, run func(taskID string) service.AIFallbackResult) (string, bool, error) {
+func (s *aiFallbackTaskStore) createIdempotent(userID int32, key, fingerprint string, run func(taskID string) service.AIFallbackResult, actorScope ...string) (string, bool, error) {
 	now := s.now()
 
 	s.mu.Lock()
 	s.cleanupExpiredLocked(now)
 	if key != "" {
-		index := aiFallbackTaskIdempotencyIndex{UserID: userID, Key: key}
+		index := aiFallbackTaskIdempotencyIndex{UserID: userID, ActorScope: firstAIFallbackActorScope(actorScope), Key: key}
 		if existingID := s.idempotency[index]; existingID != "" {
 			if existing, ok := s.tasks[existingID]; ok {
 				s.mu.Unlock()
@@ -133,6 +135,7 @@ func (s *aiFallbackTaskStore) createIdempotent(userID int32, key, fingerprint st
 	s.tasks[taskID] = aiFallbackTask{
 		ID:                 taskID,
 		UserID:             userID,
+		ActorScope:         firstAIFallbackActorScope(actorScope),
 		Status:             aiFallbackTaskStatusRunning,
 		CreatedAt:          now,
 		UpdatedAt:          now,
@@ -140,11 +143,13 @@ func (s *aiFallbackTaskStore) createIdempotent(userID int32, key, fingerprint st
 		RequestFingerprint: fingerprint,
 	}
 	if key != "" {
-		s.idempotency[aiFallbackTaskIdempotencyIndex{UserID: userID, Key: key}] = taskID
+		s.idempotency[aiFallbackTaskIdempotencyIndex{UserID: userID, ActorScope: firstAIFallbackActorScope(actorScope), Key: key}] = taskID
 	}
 	s.mu.Unlock()
 
+	release := searchExecutionOwners.start()
 	go func() {
+		defer release()
 		s.complete(taskID, runAIFallbackTaskSafely(func() service.AIFallbackResult {
 			return run(taskID)
 		}))
@@ -153,7 +158,7 @@ func (s *aiFallbackTaskStore) createIdempotent(userID int32, key, fingerprint st
 	return taskID, false, nil
 }
 
-func (s *aiFallbackTaskStore) get(taskID string, userID int32) (aiFallbackTask, error) {
+func (s *aiFallbackTaskStore) get(taskID string, userID int32, actorScope ...string) (aiFallbackTask, error) {
 	now := s.now()
 
 	s.mu.Lock()
@@ -164,7 +169,10 @@ func (s *aiFallbackTaskStore) get(taskID string, userID int32) (aiFallbackTask, 
 	if !ok {
 		return aiFallbackTask{}, errAIFallbackTaskNotFound
 	}
-	if task.UserID != userID {
+	// The authenticated account owner may retrieve an already paid task.
+	// A narrower script capability may only retrieve its own work.
+	scope := firstAIFallbackActorScope(actorScope)
+	if task.UserID != userID || (scope != "" && task.ActorScope != scope) {
 		return aiFallbackTask{}, errAIFallbackTaskForbidden
 	}
 	return task, nil
@@ -199,7 +207,7 @@ func (s *aiFallbackTaskStore) cleanupExpiredLocked(now time.Time) {
 			delete(s.tasks, taskID)
 			delete(s.terminalTasks, taskID)
 			if task.IdempotencyKey != "" {
-				index := aiFallbackTaskIdempotencyIndex{UserID: task.UserID, Key: task.IdempotencyKey}
+				index := aiFallbackTaskIdempotencyIndex{UserID: task.UserID, ActorScope: task.ActorScope, Key: task.IdempotencyKey}
 				if s.idempotency[index] == taskID {
 					delete(s.idempotency, index)
 				}
@@ -233,6 +241,7 @@ func CreateAIFallbackTask(c *gin.Context) {
 		return
 	}
 	userID := currentAIFallbackUserID(c)
+	actorScope := scriptRunActorScope(c)
 	fingerprint := ""
 	if idempotencyKey != "" {
 		value := strings.Join([]string{c.Request.Method, c.Request.URL.EscapedPath(), c.Request.URL.RawQuery, rawBody}, "\n")
@@ -240,7 +249,7 @@ func CreateAIFallbackTask(c *gin.Context) {
 		fingerprint = hex.EncodeToString(digest[:])
 		defaultAIFallbackTaskStore.creationMu.Lock()
 		defer defaultAIFallbackTaskStore.creationMu.Unlock()
-		existing, found, err := defaultAIFallbackTaskStore.findByIdempotency(userID, idempotencyKey, fingerprint)
+		existing, found, err := defaultAIFallbackTaskStore.findByIdempotency(userID, idempotencyKey, fingerprint, actorScope)
 		if errors.Is(err, errAIFallbackTaskIdempotencyConflict) {
 			c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
 			return
@@ -268,7 +277,7 @@ func CreateAIFallbackTask(c *gin.Context) {
 	}
 	billingCtx, err := resolveAIFallbackBillingContext(c)
 	if err != nil {
-		result := service.BuildAIFallbackInsufficientBalanceResult(err.Error())
+		result := buildAIFallbackSpendingRejection(err)
 		writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), uuid.NewString(), "", "billing_precheck", "async", model.SearchRequest{
 			Question: strings.TrimSpace(input.Question),
 			Type:     input.Type,
@@ -280,12 +289,13 @@ func CreateAIFallbackTask(c *gin.Context) {
 
 	requestID := uuid.NewString()
 	auditIdentity := newAIFallbackAuditIdentity(c)
+	session := aIFallbackVerifiedScriptSession(c)
 	req := model.SearchRequest{
 		Question:         strings.TrimSpace(input.Question),
 		Type:             input.Type,
 		Options:          input.Options,
 		SkipCache:        input.SkipCache,
-		DeepThinking:     input.DeepThinking,
+		DeepThinking:     input.DeepThinking || billingCtx.ScriptBilling.managed(),
 		QuestionEvidence: input.QuestionEvidence,
 		RequestID:        requestID,
 	}
@@ -305,18 +315,26 @@ func CreateAIFallbackTask(c *gin.Context) {
 			}
 		}()
 		db := withDatabasePriority(resolveSearchPersistenceDB(), context.Background(), dbqueue.PriorityHigh)
-		currentBillingCtx, err := loadAIFallbackBillingContextWithDB(db, billingCtx.UserID, billingCtx.AccessTokenID)
+		currentBillingCtx, err := loadAIFallbackBillingContextWithDB(db, billingCtx.UserID, billingCtx.AccessTokenID, session)
 		if err != nil {
-			result := service.BuildAIFallbackInsufficientBalanceResult(err.Error())
+			result := buildAIFallbackSpendingRejection(err)
 			auditResult("billing_precheck", result)
 			return result
 		}
+		if currentBillingCtx.ScriptBilling.mode != billingCtx.ScriptBilling.mode {
+			result := buildAIFallbackSpendingRejection(service.ErrInvalidAccessTokenAuthorization)
+			auditResult("billing_precheck", result)
+			return result
+		}
+		// Validate the lease/funds again at worker start, but use the
+		// administrator multiplier captured for the already admitted task.
+		currentBillingCtx.ScriptBilling = billingCtx.ScriptBilling
 		currentBillingCtx.ClientIP = billingCtx.ClientIP
 
 		// 缓存命中：与搜题一致 —— 不再调用 AI、不再计费。
 		// 只有显式 skipCache:true 才跳过读取；跳过读仍会把新结果写回（刷新语义）。
 		if !shouldBypassFallbackResultCache(req) {
-			if cached, ok := loadCachedAIFallbackResult(billingCtx.UserID, req); ok {
+			if cached, ok := loadCachedAIFallbackResult(billingCtx.UserID, req, actorScope); ok {
 				logger.SysLog(fmt.Sprintf("AI 兜底缓存命中 taskId=%s requestId=%s", taskID, requestID))
 				auditResult("result", cached)
 				return cached
@@ -326,7 +344,7 @@ func CreateAIFallbackTask(c *gin.Context) {
 		// 并发合并：兜底同样是「一次上游调用 = 一次计费」，缓存写入又在上游返回之后，
 		// 因此并发提交完全相同题目的请求会各自调用一次 AI 并各自扣费。
 		// 只有「用户 + 题目 + 类型 + 选项」完全一致才合并。
-		flightKey := buildFallbackFlightKey(billingCtx.UserID, req)
+		flightKey := buildFallbackFlightKey(billingCtx.UserID, req, actorScope)
 		isLeader, borrowed, leader := beginFallbackFlight(flightKey)
 		if !isLeader && borrowed != nil {
 			// 搭车：复用他人结果，**不重复计费**（费用已由发起者结算）。
@@ -343,6 +361,15 @@ func CreateAIFallbackTask(c *gin.Context) {
 				finishFallbackFlight(flightKey, leader, nil)
 			}()
 		}
+
+		tracked, err := beginScriptEscrowExecution(context.Background(), currentBillingCtx.ScriptBilling,
+			currentBillingCtx.ScriptID, session.ID, requestID)
+		if err != nil {
+			failure := buildAIFallbackBillingFailureResult(err)
+			auditResult("billing_precheck", failure)
+			return failure
+		}
+		currentBillingCtx.escrowWorkTracked = tracked
 
 		result = runAIFallbackService(req)
 		if !result.Success {
@@ -378,13 +405,13 @@ func CreateAIFallbackTask(c *gin.Context) {
 		if strings.TrimSpace(warning) != "" {
 			result.Warnings = append(result.Warnings, warning)
 		}
-		storeCachedAIFallbackResult(billingCtx.UserID, req, result)
+		storeCachedAIFallbackResult(billingCtx.UserID, req, result, actorScope)
 		if isLeader {
 			finishFallbackFlight(flightKey, leader, &result)
 		}
 		auditResult("result", result)
 		return result
-	})
+	}, actorScope)
 	if err != nil {
 		if errors.Is(err, errAIFallbackTaskIdempotencyConflict) {
 			c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
@@ -413,7 +440,7 @@ func GetAIFallbackTaskStatus(c *gin.Context) {
 		return
 	}
 
-	task, err := defaultAIFallbackTaskStore.get(taskID, currentAIFallbackUserID(c))
+	task, err := defaultAIFallbackTaskStore.get(taskID, currentAIFallbackUserID(c), scriptRunActorScope(c))
 	if err != nil {
 		switch {
 		case errors.Is(err, errAIFallbackTaskForbidden):

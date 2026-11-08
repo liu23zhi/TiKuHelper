@@ -51,7 +51,7 @@ func TestResearchRequiresInitialSearchWhenBudgetAllowsIt(t *testing.T) {
 	}
 }
 
-func TestMCPFirstSearchThenFinalUsesUncappedRequests(t *testing.T) {
+func TestMCPFirstSearchThenFinalPreservesLocalOutputCap(t *testing.T) {
 	tool := &testAISearchTool{}
 	calls := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +60,7 @@ func TestMCPFirstSearchThenFinalUsesUncappedRequests(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
-		if _, exists := payload["max_output_tokens"]; exists {
+		if payload["max_output_tokens"] != float64(aiToolMaxOutputTokens) {
 			t.Error("MCP answer requests must not impose a fixed output limit")
 		}
 		if calls == 1 {

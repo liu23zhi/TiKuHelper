@@ -235,36 +235,35 @@ func TestNormalizePhoneLookupKeysDeduplicatesAndSkipsInvalid(t *testing.T) {
 	}
 }
 
-func TestLookupPhoneLocationsWithoutAPIKeyQueriesAndReusesCache(t *testing.T) {
+func TestLookupPhoneLocationsWithoutAPIKeyDeniesMissesButReusesCache(t *testing.T) {
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
-		if r.Header.Get("Authorization") != "" || r.URL.Query().Get("phone") != "13800138000" || r.URL.Query().Get("source") != "" {
-			t.Errorf("unexpected anonymous phone request: %s", r.URL)
-		}
-		_, _ = w.Write([]byte(`{"province":"广东","city":"深圳","sp":"移动","area_code":"0755"}`))
+		_, _ = w.Write([]byte(`{"province":"广东","city":"深圳","sp":"移动"}`))
 	}))
 	defer server.Close()
 	newDefaultLocationClient(t, server, "")
 	db := newLocationTestDB(t)
-
 	for i := 0; i < 2; i++ {
 		locations, err := LookupPhoneLocationsDetailedWithDB(db, []string{"13800138000"}, LocationQueryOptions{})
-		if err != nil || locations["13800138000"].Address != "广东深圳 移动" || locations["13800138000"].AreaCode != "0755" {
-			t.Fatalf("expected anonymous phone location and cached result, got %v err=%v", locations, err)
+		if err != ErrLocationNotConfigured || len(locations) != 0 {
+			t.Fatalf("uncached keyless query must fail locally: %v err=%v", locations, err)
 		}
 	}
-
 	var count int64
-	if err := db.Model(&entity.LocationCache{}).Count(&count).Error; err != nil {
-		t.Fatalf("count cache rows: %v", err)
+	db.Model(&entity.LocationCache{}).Count(&count)
+	if count != 0 || requests.Load() != 0 {
+		t.Fatalf("keyless query populated cache or called upstream: rows=%d requests=%d", count, requests.Load())
 	}
-	if count != 1 || requests.Load() != 1 {
-		t.Fatalf("expected one query and one persisted record, got requests=%d rows=%d", requests.Load(), count)
+	if err := storeLocationCacheRows(db, []entity.LocationCache{{Kind: "phone", LookupKey: "13800138000", Address: "广东深圳 移动"}}); err != nil {
+		t.Fatal(err)
+	}
+	locations, err := LookupPhoneLocationsDetailedWithDB(db, []string{"13800138000"}, LocationQueryOptions{})
+	if err != nil || locations["13800138000"].Address != "广东深圳 移动" || requests.Load() != 0 {
+		t.Fatalf("existing cache must remain readable without calls: %v err=%v requests=%d", locations, err, requests.Load())
 	}
 }
 
-// 非法号码同样不得触达上游。
 func TestLookupPhoneLocationsWithInvalidNumbersReturnsEmpty(t *testing.T) {
 	db := newLocationTestDB(t)
 

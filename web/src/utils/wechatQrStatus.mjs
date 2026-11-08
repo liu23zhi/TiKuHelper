@@ -36,6 +36,7 @@ export function createWechatQrStatusController({
   wsStatusTimeoutMs = 2000,
   maxReconnectAttempts = 3,
 } = {}) {
+  let generation = 0
   let stopped = true
   let session = null
   let socket = null
@@ -85,6 +86,7 @@ export function createWechatQrStatusController({
   }
 
   const stop = () => {
+    generation += 1
     stopped = true
     clearTimer(pollTimer)
     clearTimer(recoveryTimer)
@@ -110,7 +112,7 @@ export function createWechatQrStatusController({
 
   const handleStatus = (status, payload = {}) => {
     if (stopped || !session) return
-    const activeSession = session
+    const activeSession = session, ticket = generation
     if (resolvingTerminal === activeSession) return
     const normalized = String(status || '').trim()
     if (normalized === 'success' || normalized === 'need_bind') {
@@ -149,7 +151,7 @@ export function createWechatQrStatusController({
     }
     if (normalized === 'expired') {
       onExpired()
-      stop()
+      if (!stopped && ticket === generation) stop()
     }
   }
 
@@ -157,11 +159,11 @@ export function createWechatQrStatusController({
     if (stopped || !session || pollingSession === session || resolvingTerminal === session) {
       return
     }
-    const activeSession = session
+    const activeSession = session, ticket = generation
     pollingSession = activeSession
     try {
       const response = await checkStatus()
-      if (stopped || session !== activeSession) return
+      if (stopped || ticket !== generation || session !== activeSession) return
       if (response?.status !== 200) {
         onError(new Error(response?.message || '微信状态查询失败，正在重试'))
         return
@@ -186,6 +188,7 @@ export function createWechatQrStatusController({
       return
     }
     socket = nextSocket
+    const ticket = generation
     const resetStatusWatchdog = () => {
       stopStatusWatchdog()
       statusTimer = setIntervalFn(() => {
@@ -200,18 +203,16 @@ export function createWechatQrStatusController({
         stopHeartbeat()
         stopStatusWatchdog()
         startPolling()
-        handleSocketClosed(null)
+        if (!stopped && ticket === generation && !socket) handleSocketClosed(null)
       }, wsStatusTimeoutMs)
     }
     resetStatusWatchdog()
 
     nextSocket.onopen = () => {
-      if (stopped || socket !== nextSocket) {
-        return
-      }
-      nextSocket.send(JSON.stringify({ type: 'ping', timestamp: now() }))
-      lastHeartbeatAt = now()
+      if (stopped || ticket !== generation || socket !== nextSocket) return
       stopHeartbeat()
+      lastHeartbeatAt = now()
+      nextSocket.send(JSON.stringify({ type: 'ping', timestamp: lastHeartbeatAt }))
       heartbeatTimer = setIntervalFn(() => {
         if (socket === nextSocket && (nextSocket.readyState === undefined || nextSocket.readyState === 1)) {
           nextSocket.send(JSON.stringify({ type: 'ping', timestamp: now() }))
@@ -220,7 +221,7 @@ export function createWechatQrStatusController({
     }
 
     nextSocket.onmessage = (event) => {
-      if (stopped || socket !== nextSocket) return
+      if (stopped || ticket !== generation || socket !== nextSocket) return
       let message
       try {
         message = JSON.parse(event?.data || '{}')
@@ -233,6 +234,7 @@ export function createWechatQrStatusController({
       }
       stopPolling()
       onTransport('websocket')
+      if (stopped || ticket !== generation || socket !== nextSocket) return
       if (message.status === 'success' || message.status === 'need_bind') {
         handleStatus(message.status, message)
         return
@@ -242,6 +244,7 @@ export function createWechatQrStatusController({
         session.expiresAtUnix = now() + remainingSeconds * 1000
         updateCountdown()
       }
+      if (stopped || ticket !== generation || socket !== nextSocket) return
       handleStatus(message.status, message)
     }
 
@@ -253,11 +256,14 @@ export function createWechatQrStatusController({
     if (stopped || pollTimer !== null) {
       return
     }
+    const ticket = generation
+    const current = () => !stopped && ticket === generation
     onTransport('polling')
+    if (!current()) return
     void pollOnce()
-    pollTimer = setIntervalFn(() => void pollOnce(), pollIntervalMs)
+    pollTimer = setIntervalFn(() => { if (current()) void pollOnce() }, pollIntervalMs)
     recoveryTimer = setIntervalFn(() => {
-      if (stopped || socket) {
+      if (!current() || socket) {
         return
       }
       reconnectFailures = 0
@@ -317,7 +323,8 @@ export function createWechatQrStatusController({
     if (stopped) {
       return
     }
-    countdownTimer = setIntervalFn(updateCountdown, 1000)
+    const ticket = generation
+    countdownTimer = setIntervalFn(() => { if (!stopped && ticket === generation) updateCountdown() }, 1000)
   }
 
   return { start, stop }

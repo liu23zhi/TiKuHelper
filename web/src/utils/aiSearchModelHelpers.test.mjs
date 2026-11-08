@@ -37,10 +37,17 @@ test('model price payload keeps existing prices and explicit context token count
     ...input, modelName: 'deepseek-chat', contextWindowTokens: 131072,
   });
   assert.equal(input.contextWindowTokens, '131072');
-  for (const value of [undefined, null, '', '  ', 0, '0']) {
+  for (const value of [null, '', '  ', 0, '0']) {
     assert.equal(buildAIModelPriceSavePayload({ ...input, contextWindowTokens: value }).contextWindowTokens, 0);
   }
   assert.equal(buildAIModelPriceSavePayload({ ...input, contextWindowTokens: 1048576 }).contextWindowTokens, 1048576);
+});
+
+test('model price payload preserves omitted windows while explicit zero can clear a window', () => {
+  const legacy = { id: 8, modelName: 'deepseek-chat', outputPrice: 12 };
+  assert.equal(Object.hasOwn(buildAIModelPriceSavePayload(legacy), 'contextWindowTokens'), false);
+  assert.equal(Object.hasOwn(buildAIModelPriceSavePayload({ ...legacy, contextWindowTokens: undefined }), 'contextWindowTokens'), false);
+  assert.equal(buildAIModelPriceSavePayload({ ...legacy, contextWindowTokens: 0 }).contextWindowTokens, 0);
 });
 
 test('model price payload rejects invalid context windows before submission', () => {
@@ -57,6 +64,46 @@ test('model context windows display readable token counts and preserve unknown v
     assert.equal(formatAIModelContextWindowTokens(value), '未设置');
   }
 });
+// Support the original inline page and the equivalent split only when its actual
+// imports, registrations, props and event consumers prove the presentation path.
+async function readOptionalPriceComponent(name) {
+  try {
+    return await readFile(path.join(path.dirname(aiSearchConfigPagePath), `${name}.vue`), 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+async function readPriceTableSource(page) {
+  const table = await readOptionalPriceComponent('AIModelPriceTable');
+  if (table === null) {
+    assert.doesNotMatch(page, /AIModelPriceTable/, 'a referenced split table must exist');
+    return page;
+  }
+  assert.match(page, /import AIModelPriceTable from '\.\/AIModelPriceTable\.vue'/);
+  assert.match(page, /components:\s*\{[^}]*\bAIModelPriceTable\b/);
+  assert.match(page, /<AIModelPriceTable\s+:rows="priceRows"\s+:loading="priceLoading"\s+:read-failure="priceReadFailure"\s+:read-confirmed="priceReadConfirmed"\s+v-on="\{\s+'edit':\s+aiEntry\.bind\(openPriceModal\),\s+'delete':\s+aiEntry\.bind\(handleDeleteModelPrice\)\s+\}"\s+\/>/);
+  assert.match(table, /<a-table\b[^>]*:data-source="rows"[^>]*:columns="priceColumns"[^>]*:loading="loading"/);
+  return table;
+}
+
+async function readPriceEditorSource(page) {
+  const editor = await readOptionalPriceComponent('AIModelPriceEditorModal');
+  if (editor === null) {
+    assert.doesNotMatch(page, /AIModelPriceEditorModal/, 'a referenced split editor must exist');
+    return { content: page, controlled: false };
+  }
+  assert.match(page, /import AIModelPriceEditorModal from '\.\/AIModelPriceEditorModal\.vue'/);
+  assert.match(page, /components:\s*\{[^}]*\bAIModelPriceEditorModal\b/);
+  assert.match(page, /<AIModelPriceEditorModal\s+:key="priceDialogSession"\s+:id-prefix="`\$\{sectionIds\.pricing\}-editor`"\s+:open="priceModalVisible"\s+:form-value="priceForm"\s+:confirm-loading="priceSaving"\s+:label-col="modalLabelCol"\s+:wrapper-col="modalWrapperCol"\s+v-on="\{\s+'update:open':\s+priceDialogEntry\.bind\(setPriceModalOpen\),\s+'update:form-value':\s+priceDialogEntry\.bind\(updatePriceForm\),\s+submit:\s+priceDialogEntry\.bind\(handleSaveModelPrice\),\s+cancel:\s+priceDialogEntry\.bind\(closePriceModal\)\s+\}"\s+\/>/);
+  assert.match(page, /updatePriceForm\(nextValue\)\s*\{\s*if \(!this\.canUseAIPage\(\)\) return\s*Object\.assign\(this\.priceForm, nextValue\)/);
+  assert.match(editor, /updateField\(field, value\)\s*\{\s*this\.\$emit\('update:form-value', \{ \.\.\.this\.formValue, \[field\]: value \}\)/);
+  assert.match(editor, /@ok="\$emit\('submit'\)"/);
+  assert.match(editor, /@cancel="\$emit\('cancel'\)"/);
+  assert.match(editor, /@update:open="\$emit\('update:open', \$event\)"/);
+  return { content: editor, controlled: true };
+}
 
 test('splitModelNames handles commas newlines and trimming', () => {
   assert.deepEqual(
@@ -238,11 +285,15 @@ test('buildAISearchConfigSavePayload does not send legacy model pricing fields',
 
 test('AISearchConfig page bills from the model price table', async () => {
   const content = await readFile(aiSearchConfigPagePath, 'utf8');
+  const tableContent = await readPriceTableSource(content);
+  const { content: editorContent } = await readPriceEditorSource(content);
 
   assert.match(content, /buildModelNameOptions\(formState\.manualModelsText\)/);
-  assert.match(content, /formState\.manualModelsText = buildModelNameText\(data\.manualModels/);
-  assert.match(content, /formState\.backupModel = data\.backupModel/);
-  assert.match(content, /label="备用模型"/);
+  assert.match(content, /nextForm\.manualModelsText = buildModelNameText\(data\.manualModels/);
+  assert.match(content, /Object\.assign\(formState, nextForm\)/, 'normalized server values must still reach the complete upstream form');
+  assert.match(content, /nextForm\.backupModel = data\.backupModel/);
+  const connection = await readFile(new URL('../pages/AISearchConfig/AIConnectionModelSection.vue', import.meta.url), 'utf8');
+  assert.match(connection, /label="备用模型"/);
   assert.match(content, /openPriceModalForModel/);
   assert.match(content, /filterRemoteModelNames\(remoteModels\)/);
   assert.match(content, /formState\.manualModelsText = buildModelNameText\(filteredRemoteModels\)/);
@@ -250,37 +301,36 @@ test('AISearchConfig page bills from the model price table', async () => {
   // 价格表是唯一计费入口。
   assert.match(content, /模型价格表/);
   assert.match(content, /priceRows/);
-  assert.match(content, /priceColumns/);
+  assert.match(tableContent, /priceColumns/);
   assert.match(content, /loadAIModelPrices/);
   assert.match(content, /handleSaveModelPrice/);
   assert.match(content, /handleDeleteModelPrice/);
   assert.match(content, /handleResetModelPrices/);
   assert.match(content, /缓存输入/);
   // 新增的缓存写入单价列。
-  assert.match(content, /缓存写入（￥\/M）/);
+  assert.match(tableContent, /缓存写入（￥\/M）/);
   assert.match(content, /cacheWritePrice/);
 
   // 旧的「架构倍率 / 全局倍率 / 汇率」体系必须彻底消失。
-  assert.doesNotMatch(content, /formState\.exchangeRate/);
-  assert.doesNotMatch(content, /formState\.globalBillingMultiplier/);
-  assert.doesNotMatch(content, /formState\.useGlobalBillingMultiplier/);
-  assert.doesNotMatch(content, /billingMultiplier/);
-  assert.doesNotMatch(content, /单模型倍率/);
-  assert.doesNotMatch(content, /全局倍率/);
-  assert.doesNotMatch(content, /label="汇率"/);
+  for (const priceSource of new Set([content, tableContent, editorContent])) {
+    assert.doesNotMatch(priceSource, /formState\.exchangeRate/);
+    assert.doesNotMatch(priceSource, /formState\.globalBillingMultiplier/);
+    assert.doesNotMatch(priceSource, /formState\.useGlobalBillingMultiplier/);
+    assert.doesNotMatch(priceSource, /billingMultiplier/);
+    assert.doesNotMatch(priceSource, /单模型倍率/);
+    assert.doesNotMatch(priceSource, /全局倍率/);
+    assert.doesNotMatch(priceSource, /label="汇率"/);
+  }
 
   // 新的「模型价格表倍率」列：默认 1，可编辑。
-  assert.match(content, /title: '倍率'/);
-  assert.match(content, /dataIndex: 'multiplier'/);
+  assert.match(tableContent, /title: '倍率'/);
+  assert.match(tableContent, /dataIndex: 'multiplier'/);
   assert.match(content, /priceForm\.multiplier = 1/);
   assert.match(content, /buildAIModelPriceSavePayload\(this\.priceForm\)/);
-  assert.match(content, /formatMultiplier/);
+  assert.match(tableContent, /formatMultiplier/);
 
   // 价格表的排序列已移除。
-  const priceColumnsBlock = content.slice(
-    content.indexOf('const priceColumns = ['),
-    content.indexOf('const loadConfig'),
-  );
+  const priceColumnsBlock = tableContent.match(/\bpriceColumns\s*(?:=|:)\s*(\[[\s\S]*?\n\s*\])/)?.[1];
   assert.ok(priceColumnsBlock, 'expected priceColumns block to exist');
   assert.doesNotMatch(priceColumnsBlock, /sort/, '价格表不应再有排序列');
   assert.match(priceColumnsBlock, /dataIndex: 'multiplier'/);
@@ -289,66 +339,103 @@ test('AISearchConfig page bills from the model price table', async () => {
   assert.doesNotMatch(priceColumnsBlock, /status/, '价格表不应再有状态列');
   assert.doesNotMatch(content, /priceForm\.enabled/);
   assert.doesNotMatch(content, /label="状态"/);
+  assert.doesNotMatch(editorContent, /formValue\.enabled/);
+  assert.doesNotMatch(editorContent, /label="状态"/);
 
   // 模型 ID 与显示名称分别成列。
   assert.match(priceColumnsBlock, /title: '模型 ID'/);
   assert.match(priceColumnsBlock, /title: '显示名称'/);
 
   // 价格表必须用人民币符号，不能出现美元计价（列头 $/M 或 $数字；模板字面量里的 $ 不算）。
-  assert.doesNotMatch(content, /美元/);
-  assert.doesNotMatch(content, /\$\/M/, '价格表列头不应出现美元符号');
-  assert.doesNotMatch(content, /\$\d/, '价格展示不应出现美元符号');
-  assert.doesNotMatch(content, /return '\$/, '价格格式化不应返回美元符号');
-  assert.match(content, /输入（￥\/M）/);
-  assert.match(content, /缓存输入（￥\/M）/);
-  assert.match(content, /输出（￥\/M）/);
+  for (const priceSource of new Set([content, tableContent, editorContent])) {
+    assert.doesNotMatch(priceSource, /美元/);
+    assert.doesNotMatch(priceSource, /\$\/M/, '价格表列头不应出现美元符号');
+    assert.doesNotMatch(priceSource, /\$\d/, '价格展示不应出现美元符号');
+    assert.doesNotMatch(priceSource, /return '\$/, '价格格式化不应返回美元符号');
+  }
+  assert.match(tableContent, /输入（￥\/M）/);
+  assert.match(tableContent, /缓存输入（￥\/M）/);
+  assert.match(tableContent, /输出（￥\/M）/);
   // 金额格式化复用统一的 6 位精度模块，不再各页手写 toFixed。
-  assert.match(content, /import \{ formatMoneyCny, formatMoneyValue \} from '@\/utils\/moneyFormat\.mjs'/);
-  assert.match(content, /return formatMoneyCny\(amount\)/);
+  assert.match(tableContent, /import \{ formatMoneyCny, formatMoneyValue \} from '@\/utils\/moneyFormat\.mjs'/);
+  assert.match(tableContent, /return formatMoneyCny\(amount\)/);
   assert.doesNotMatch(content, /toFixed\(/);
+  assert.doesNotMatch(tableContent, /toFixed\(/);
 
   // 模型绑定已彻底移除：卡片、弹窗、接口与同步逻辑都不应残留。
-  assert.doesNotMatch(content, /模型绑定/);
-  assert.doesNotMatch(content, /architecture/i);
-  assert.doesNotMatch(content, /Architecture/);
-  assert.match(content, /<ConsoleTableShell label="模型价格表">/);
-  assert.match(content, /table-layout="fixed"[\s\S]*?:scroll="\{ x: sumTableColumnWidths\(priceColumns\) \}"/);
+  for (const priceSource of new Set([content, tableContent, editorContent])) {
+    assert.doesNotMatch(priceSource, /模型绑定/);
+    assert.doesNotMatch(priceSource, /architecture/i);
+    assert.doesNotMatch(priceSource, /Architecture/);
+  }
+  assert.match(tableContent, /price-table-wrap/);
+  assert.match(tableContent, /table-layout="fixed"[\s\S]*?:scroll="\{ x:/);
   assert.match(content, /@media \(max-width: 768px\)/);
 });
 
 test('AISearchConfig model price multiplier accepts positive fractional values below one', async () => {
   const content = await readFile(aiSearchConfigPagePath, 'utf8');
-  assert.match(content, /v-model:value="priceForm\.multiplier"[^>]*:min="0\.0001"/);
-  assert.match(content, /v-model:value="priceForm\.multiplier"[^>]*:precision="4"/);
+  const editor = await readPriceEditorSource(content);
+  if (editor.controlled) {
+    assert.match(editor.content, /:value="formValue\.multiplier"\s+@update:value="updateField\('multiplier', \$event\)"[^>]*:min="0\.0001"/);
+    assert.match(editor.content, /:value="formValue\.multiplier"[^>]*:precision="4"/);
+  } else {
+    assert.match(editor.content, /v-model:value="priceForm\.multiplier"[^>]*:min="0\.0001"/);
+    assert.match(editor.content, /v-model:value="priceForm\.multiplier"[^>]*:precision="4"/);
+  }
 });
 
 test('AISearchConfig page exposes configurable model and search budgets', async () => {
   const content = await readFile(aiSearchConfigPagePath, 'utf8');
   const helperContent = await readFile(path.join(__dirname, 'aiSearchModelHelpers.mjs'), 'utf8');
 
+  let advancedContent;
+  try {
+    advancedContent = await readFile(path.join(path.dirname(aiSearchConfigPagePath), 'AIAdvancedSettingsSection.vue'), 'utf8');
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    assert.doesNotMatch(content, /AIAdvancedSettingsSection/, 'a referenced controlled advanced section must exist');
+    advancedContent = content;
+  }
+  if (advancedContent !== content) {
+    assert.match(content, /import AIAdvancedSettingsSection from '\.\/AIAdvancedSettingsSection\.vue'/);
+    assert.match(content, /components:\s*\{[^}]*\bAIAdvancedSettingsSection\b/);
+    assert.match(content, /<AIAdvancedSettingsSection\s+:section-id="sectionIds\.advanced"\s+:form-value="formState"\s+:limits="advancedLimits"\s+:integer-parser="parseIntegerInput"\s+:search-engine-loading="searchEngineLoading"\s+v-on="\{\s+'update:form-value':\s+aiEntry\.bind\(updateAdvancedForm\),\s+'view-capability':\s+aiEntry\.bind\(loadSearchEngineInfo\)\s+\}"\s+\/>/);
+    assert.match(content, /updateAdvancedForm\(nextValue\)\s*\{\s*if \(!this\.canUseAIPage\(\)\) return\s*Object\.assign\(this\.formState, nextValue\)\s*\}/);
+    assert.match(content, /const advancedLimits = Object\.freeze\(\{\s*minModelCalls: MIN_AI_SEARCH_MODEL_CALLS,\s*maxBudget: MAX_AI_SEARCH_BUDGET,\s*minSearches: MIN_AI_SEARCHES,\s*minRetries: MIN_AI_SEARCH_RETRIES,\s*maxRetries: MAX_AI_SEARCH_RETRIES,\s*minWebReads: MIN_AI_WEB_READS,\s*maxWebReads: MAX_AI_WEB_READS,\s*\}\)/);
+    assert.match(advancedContent, /integerParser:\s*\{ type: Function, required: true \}/);
+    assert.equal((advancedContent.match(/:parser="integerParser"/g) || []).length, 5);
+    for (const field of ['maxAISearchModelCalls', 'maxAISearches', 'maxAISearchRetries', 'searchPricePerCall', 'tikuSearchPricePerCall', 'maxAIWebReads', 'webReadPricePerCall']) {
+      assert.ok(advancedContent.includes(`:value="formValue.${field}" @update:value="updateField('${field}', $event)"`), `controlled numeric field ${field}`);
+    }
+    assert.match(advancedContent, /this\.\$emit\('update:form-value', \{ \.\.\.this\.formValue, \[field\]: value \}\)/);
+    assert.match(advancedContent, /@click="\$emit\('view-capability'\)"\s+:loading="searchEngineLoading"/);
+  }
+
   assert.match(content, /maxAISearchModelCalls: DEFAULT_MAX_AI_SEARCH_MODEL_CALLS/);
   assert.match(content, /maxAISearches: DEFAULT_MAX_AI_SEARCHES/);
-  assert.match(content, /formState\.maxAISearchModelCalls = normalizeAISearchBudget\(data\.maxAISearchModelCalls/);
-  assert.match(content, /formState\.maxAISearches = normalizeAISearchBudget\(data\.maxAISearches/);
+  assert.match(content, /nextForm\.maxAISearchModelCalls = normalizeAISearchBudget\(data\.maxAISearchModelCalls/);
+  assert.match(content, /nextForm\.maxAISearches = normalizeAISearchBudget\(data\.maxAISearches/);
   assert.match(content, /maxAISearchRetries: DEFAULT_MAX_AI_SEARCH_RETRIES/);
-  assert.match(content, /formState\.maxAISearchRetries = normalizeAISearchRetries\(data\.maxAISearchRetries/);
+  assert.match(content, /nextForm\.maxAISearchRetries = normalizeAISearchRetries\(data\.maxAISearchRetries/);
   assert.match(content, /tikuSearchPricePerCall: 0/);
-  assert.match(content, /formState\.tikuSearchPricePerCall = Number\(data\.tiku_search_price_per_call/);
-  assert.match(content, /label="本地题库检索单价（元\/次）"/);
+  assert.match(content, /nextForm\.tikuSearchPricePerCall = Number\(data\.tiku_search_price_per_call/);
+  assert.match(advancedContent, /label="本地题库检索单价（元\/次）"/);
   assert.match(content, /本地题库检索单价必须是大于或等于 0 的有效金额/);
   assert.match(helperContent, /tiku_search_price_per_call: Number\(formState\?\.tikuSearchPricePerCall/);
   assert.match(content, /maxAIWebReads: DEFAULT_MAX_AI_WEB_READS/);
-  assert.match(content, /formState\.maxAIWebReads = normalizeAIWebReads\(data\.maxAIWebReads/);
+  assert.match(content, /nextForm\.maxAIWebReads = normalizeAIWebReads\(data\.maxAIWebReads/);
   assert.match(content, /webReadPricePerCall: 0/);
-  assert.match(content, /formState\.webReadPricePerCall = Number\(data\.webReadPricePerCall/);
-  assert.match(content, /网页读取次数/);
-  assert.match(content, /网页读取单价（元\/次）/);
+  assert.match(content, /nextForm\.webReadPricePerCall = Number\(data\.webReadPricePerCall/);
+  assert.match(advancedContent, /网页读取次数/);
+  assert.match(advancedContent, /网页读取单价（元\/次）/);
   assert.doesNotMatch(content, /网页读取工具（web_read）/);
-  assert.match(content, /label="模型最大调用次数"/);
-  assert.match(content, /label="最大搜索次数"/);
-  assert.match(content, /label="每轮重试次数"/);
-  assert.match(content, /每一轮提示中都会告知模型剩余调用次数/);
-  assert.match(content, /每一轮模型调用前都会告知剩余搜索次数/);
+  assert.doesNotMatch(advancedContent, /网页读取工具（web_read）/);
+  assert.match(advancedContent, /label="模型最大调用次数"/);
+  assert.match(advancedContent, /label="最大搜索次数"/);
+  assert.match(advancedContent, /label="每轮重试次数"/);
+  assert.match(advancedContent, /每一轮提示中都会告知模型剩余调用次数/);
+  assert.match(advancedContent, /每一轮模型调用前都会告知剩余搜索次数/);
   assert.match(content, /模型最大调用次数必须是/);
   assert.match(content, /最大搜索次数必须是/);
   assert.match(content, /每轮重试次数必须是/);
@@ -357,14 +444,14 @@ test('AISearchConfig page exposes configurable model and search budgets', async 
   assert.match(helperContent, /maxAISearchRetries: positiveCount\(formState\?\.maxAISearchRetries, 3/);
 });
 
-test('AISearchConfig count inputs and loading do not impose arbitrary upper bounds', async () => {
+test('AISearchConfig retains confirmed local budget limits until resource-policy approval', async () => {
   const content = await readFile(aiSearchConfigPagePath, 'utf8');
-  for (const field of ['maxAISearchModelCalls', 'maxAISearches', 'maxAISearchRetries', 'maxAIWebReads', 'contextCompressionMaxAttempts']) {
-    const input = content.match(new RegExp(`<a-input-number\\s+v-model:value="formState\\.${field}"[^>]*>`));
-    assert.ok(input, `missing ${field} input`);
-    assert.doesNotMatch(input[0], /:max=/);
-  }
-  assert.doesNotMatch(content, /MAX_AI_SEARCH_BUDGET|MAX_AI_SEARCH_RETRIES = 10|MAX_AI_WEB_READS = 20|Math\.min\(parsed/);
+  const advanced = await readOptionalPriceComponent('AIAdvancedSettingsSection');
+  assert.match(content, /MAX_AI_SEARCH_BUDGET = 20/);
+  assert.match(content, /MAX_AI_SEARCH_RETRIES = 10/);
+  assert.match(content, /MAX_AI_WEB_READS = 20/);
+  assert.equal((advanced.match(/:max="limits\./g) || []).length, 4);
+  assert.match(advanced, /contextCompressionMaxAttempts/);
 });
 
 test('AISearchConfig page loads and exposes staged billing toggles', async () => {
@@ -372,10 +459,10 @@ test('AISearchConfig page loads and exposes staged billing toggles', async () =>
 
   assert.match(content, /enableAIStagedTokenBilling: false/);
   assert.match(content, /smoothAIStagedTokenMultiplier: false/);
-  assert.match(content, /formState\.enableAIStagedTokenBilling = !!data\.enableAIStagedTokenBilling/);
-  assert.match(content, /formState\.smoothAIStagedTokenMultiplier = !!data\.smoothAIStagedTokenMultiplier/);
-  assert.match(content, /v-model:checked="formState\.enableAIStagedTokenBilling"/);
-  assert.match(content, /v-model:checked="formState\.smoothAIStagedTokenMultiplier"/);
+  assert.match(content, /nextForm\.enableAIStagedTokenBilling = !!data\.enableAIStagedTokenBilling/);
+  assert.match(content, /nextForm\.smoothAIStagedTokenMultiplier = !!data\.smoothAIStagedTokenMultiplier/);
+  assert.match(content, /:checked="formState\.enableAIStagedTokenBilling" v-on="\{ 'update:checked': aiEntry\.bind\(value => formState\.enableAIStagedTokenBilling = value\) \}"/);
+  assert.match(content, /:checked="formState\.smoothAIStagedTokenMultiplier" v-on="\{ 'update:checked': aiEntry\.bind\(value => formState\.smoothAIStagedTokenMultiplier = value\) \}"/);
   assert.match(content, /:disabled="!formState\.enableAIStagedTokenBilling"/);
   assert.match(content, /label="启用阶段计费"/);
   assert.match(content, /label="平滑变化倍率"/);
@@ -492,15 +579,29 @@ test('TikuComponentApi exposes the AI pricing-status endpoint', async () => {
   assert.match(content, /\/adapter-service\/ai-search-config\/pricing-status/);
 });
 
-test('TikuComponentApi exposes OCR cache status and management endpoints', async () => {
+test('TikuComponentApi exposes OCR cache status and clear endpoints', async () => {
   const apiPath = path.join(__dirname, '..', 'api', 'TikuComponentApi.js');
   const content = await readFile(apiPath, 'utf8');
-
-  assert.match(content, /export function getAIOCRCacheStatus\(\)/);
-  assert.match(content, /export function deleteAIOCRCacheBatch\(data\)/);
-  assert.match(content, /\/adapter-service\/ai-search-config\/ocr-cache/);
-  assert.match(content, /ocr-cache\/batch-delete/);
-  assert.match(content, /method: 'post'/);
+  const load = name => {
+    const start = content.indexOf(`export function ${name}(`);
+    const end = content.indexOf('\n}', start);
+    const declaration = start < 0 || end < 0 ? null : content.slice(start, end + 2);
+    assert.ok(declaration, `public API function ${name} exists`);
+    return new Function('request', declaration.replace('export ', '') + `; return ${name}`)(config => config);
+  };
+  const status = load('getAIOCRCacheStatus');
+  const entries = load('getAIOCRCacheEntries');
+  const clear = load('clearAIOCRCache');
+  const batch = load('deleteAIOCRCacheBatch');
+  const image = load('getAIOCRCacheImage');
+  assert.deepEqual(status(), { url: '/adapter-service/ai-search-config/ocr-cache', method: 'get' });
+  const params = { keyword: 'SYNTHETIC', page: 1, pageSize: 20 };
+  assert.deepEqual(entries(params), { url: '/adapter-service/ai-search-config/ocr-cache/entries', method: 'get', params });
+  assert.deepEqual(clear(params), { url: '/adapter-service/ai-search-config/ocr-cache', method: 'delete', params });
+  assert.deepEqual(status({ errorFeedback: 'local', method: 'post' }), { url: '/adapter-service/ai-search-config/ocr-cache', method: 'get', errorFeedback: 'local' });
+  assert.equal(clear(params, { errorFeedback: 'local' }).errorFeedback, 'local');
+  assert.deepEqual(batch({ items: ['a'] }), { errorFeedback: 'local', url: '/adapter-service/ai-search-config/ocr-cache/batch-delete', method: 'post', data: { items: ['a'] } });
+  assert.deepEqual(image('a/b'), { errorFeedback: 'local', retryPolicy: 'single', url: '/adapter-service/ai-search-config/ocr-cache/entries/a%2Fb/image', method: 'get', responseType: 'blob', timeout: 20000 });
 });
 
 test('AISearchConfig page exposes OCR cache management controls', async () => {
@@ -508,8 +609,7 @@ test('AISearchConfig page exposes OCR cache management controls', async () => {
 
   assert.match(content, /图片 OCR 缓存/);
   assert.match(content, /loadAIOCRCacheStatus/);
-  assert.doesNotMatch(content, /handleClearAIOCRCache/);
-  assert.doesNotMatch(content, /清空缓存/);
+  assert.doesNotMatch(content, /handleClearAIOCRCache|清空缓存/);
   assert.match(content, /管理缓存条目/);
 });
 
@@ -518,11 +618,26 @@ test('AI search config exposes the UAPI search engine capability endpoint', asyn
   const pageContent = await readFile(aiSearchConfigPagePath, 'utf8');
   const apiContent = await readFile(apiPath, 'utf8');
 
+  const advancedContent = await readOptionalPriceComponent('AIAdvancedSettingsSection');
+  let capabilitySource = pageContent;
+  if (advancedContent === null) {
+    assert.doesNotMatch(pageContent, /AIAdvancedSettingsSection/, 'a referenced controlled advanced section must exist');
+  } else {
+    assert.match(pageContent, /import AIAdvancedSettingsSection from '\.\/AIAdvancedSettingsSection\.vue'/);
+    assert.match(pageContent, /components:\s*\{[^}]*\bAIAdvancedSettingsSection\b/);
+    assert.match(pageContent, /<AIAdvancedSettingsSection\s+:section-id="sectionIds\.advanced"\s+:form-value="formState"\s+:limits="advancedLimits"\s+:integer-parser="parseIntegerInput"\s+:search-engine-loading="searchEngineLoading"\s+v-on="\{\s+'update:form-value':\s+aiEntry\.bind\(updateAdvancedForm\),\s+'view-capability':\s+aiEntry\.bind\(loadSearchEngineInfo\)\s+\}"\s+\/>/);
+    assert.match(pageContent, /updateAdvancedForm\(nextValue\)\s*\{\s*if \(!this\.canUseAIPage\(\)\) return\s*Object\.assign\(this\.formState, nextValue\)\s*\}/);
+    assert.match(advancedContent, /@click="\$emit\('view-capability'\)"\s+:loading="searchEngineLoading"/);
+    assert.doesNotMatch(advancedContent, /getUAPISearchEngines|getUAPIUsageStatus|onMounted/);
+    capabilitySource = advancedContent;
+  }
+
   assert.match(apiContent, /export function getUAPISearchEngines\(\)/);
   assert.match(apiContent, /\/adapter-service\/uapi\/search\/engines/);
   assert.match(pageContent, /getUAPISearchEngines/);
-  assert.match(pageContent, /查看深度思考能力/);
+  assert.match(capabilitySource, /查看深度思考能力/);
   assert.doesNotMatch(pageContent, /查看联网搜索能力/);
+  assert.doesNotMatch(capabilitySource, /查看联网搜索能力/);
   assert.match(pageContent, /getUAPIUsageStatus/);
   assert.match(apiContent, /export function getUAPIUsageStatus\(params\)/);
   assert.match(apiContent, /\/adapter-service\/uapi\/status\/usage/);

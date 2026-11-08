@@ -3,6 +3,7 @@ package service
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"math"
 	"strings"
@@ -13,6 +14,8 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+const AccessTokenQuotaExceededCode = "ACCESS_TOKEN_QUOTA_EXCEEDED"
 
 var ErrAccessTokenNameRequired = errors.New("令牌名称不能为空")
 var ErrAccessTokenNameInvalid = errors.New("令牌名称只能使用中文、英文、数字、下划线和@，且长度不能超过128个字符")
@@ -33,11 +36,58 @@ type CreateAccessTokenInput struct {
 }
 
 type UpdateAccessTokenInput struct {
-	Name            string  `json:"name"`
-	Status          string  `json:"status"`
-	Remark          string  `json:"remark"`
-	TotalQuotaLimit float64 `json:"totalQuotaLimit"`
-	ClientIP        string  `json:"-"`
+	Name                    string  `json:"name"`
+	Status                  string  `json:"status"`
+	Remark                  string  `json:"remark"`
+	TotalQuotaLimit         float64 `json:"totalQuotaLimit"`
+	ClientIP                string  `json:"-"`
+	TotalQuotaLimitProvided bool    `json:"-"`
+	fromJSON                bool
+	preserveMissingQuota    bool
+	preserveMissingStatus   bool
+}
+
+// UnmarshalJSON retains omission separately from an explicit legal zero.
+func (input *UpdateAccessTokenInput) UnmarshalJSON(data []byte) error {
+	type plain UpdateAccessTokenInput
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	quotaPresent, statusPresent := false, false
+	for key, value := range fields {
+		if strings.EqualFold(key, "totalQuotaLimit") {
+			if strings.TrimSpace(string(value)) == "null" {
+				return ErrAccessTokenQuotaLimitInvalid
+			}
+			if decoded.TotalQuotaLimit == 0 {
+				for _, digit := range value {
+					if digit == 'e' || digit == 'E' {
+						break
+					}
+					if digit >= '1' && digit <= '9' {
+						return ErrAccessTokenQuotaLimitInvalid
+					}
+				}
+			}
+			quotaPresent = true
+		}
+		if strings.EqualFold(key, "status") {
+			if strings.TrimSpace(string(value)) == "null" {
+				return errors.New("访问令牌状态无效")
+			}
+			statusPresent = true
+		}
+	}
+	*input = UpdateAccessTokenInput(decoded)
+	input.fromJSON = true
+	input.TotalQuotaLimitProvided = quotaPresent
+	input.preserveMissingQuota, input.preserveMissingStatus = !quotaPresent, !statusPresent
+	return nil
 }
 
 type CreatedAccessToken struct {
@@ -130,63 +180,99 @@ func UpdateAccessTokenWithDB(db *gorm.DB, operator entity.User, tokenID int32, i
 	if err := validateAccessTokenQuotaLimit(input.TotalQuotaLimit); err != nil {
 		return entity.AccessToken{}, err
 	}
-	var accessToken entity.AccessToken
-	err := db.Transaction(func(tx *gorm.DB) error {
-		var err error
-		accessToken, err = loadAccessibleAccessToken(tx.Clauses(clause.Locking{Strength: "UPDATE"}), operator, tokenID)
+	// Keep the initial admission read outside the write transaction: an independent
+	// SQLite billing/delete operation may finish before we acquire fresh mutation state.
+	initial, err := loadAccessibleAccessToken(db, operator, tokenID)
+	if err != nil {
+		return entity.AccessToken{}, err
+	}
+	name := strings.TrimSpace(input.Name)
+	if name == "" {
+		return entity.AccessToken{}, ErrAccessTokenNameRequired
+	}
+	if name != initial.Name {
+		if err := util.ValidateRestrictedName(name, util.AccessTokenNameMaxLength, "令牌名称"); err != nil {
+			return entity.AccessToken{}, ErrAccessTokenNameInvalid
+		}
+	}
+	err = db.Transaction(func(tx *gorm.DB) error {
+		accessToken, err := loadAccessibleAccessToken(tx.Clauses(clause.Locking{Strength: "UPDATE"}), operator, tokenID)
 		if err != nil {
 			return err
-		}
-
-		name := strings.TrimSpace(input.Name)
-		if name == "" {
-			return ErrAccessTokenNameRequired
 		}
 		if name != accessToken.Name {
 			if err := util.ValidateRestrictedName(name, util.AccessTokenNameMaxLength, "令牌名称"); err != nil {
 				return ErrAccessTokenNameInvalid
 			}
 		}
-
+		// Decide from the locked, fresh row, never the initial admission snapshot.
+		quotaProvided := input.TotalQuotaLimitProvided || (!input.fromJSON && input.TotalQuotaLimit != 0)
+		quota := input.TotalQuotaLimit
+		status := normalizeAccessTokenStatus(input.Status)
+		if !quotaProvided {
+			quota = accessToken.TotalQuotaLimit
+		}
+		if input.preserveMissingStatus || (!input.fromJSON && strings.TrimSpace(input.Status) == "") {
+			status = accessToken.Status
+		}
+		if !AccessTokenQuotaLimitValid(accessToken.TotalQuotaLimit) && !quotaProvided {
+			if !strings.EqualFold(strings.TrimSpace(accessToken.Status), accessTokenStatusDisabled) || !strings.EqualFold(strings.TrimSpace(status), accessTokenStatusDisabled) {
+				return ErrAccessTokenQuotaLimitInvalid
+			}
+			// Metadata-only edits preserve the exact disabled historical limit/state.
+			quota, status = accessToken.TotalQuotaLimit, accessToken.Status
+		} else if !AccessTokenQuotaLimitValid(quota) {
+			return ErrAccessTokenQuotaLimitInvalid
+		}
 		before := accessTokenAuditSnapshot(accessToken)
 		updates := make(map[string]any)
 		changedFields := make([]string, 0, 4)
 		if name != accessToken.Name {
 			updates["name"] = name
 			changedFields = append(changedFields, "name")
+			accessToken.Name = name
 		}
-		if status := normalizeAccessTokenStatus(input.Status); status != accessToken.Status {
+		if status != accessToken.Status {
 			updates["status"] = status
 			changedFields = append(changedFields, "status")
+			accessToken.Status = status
 		}
 		if remark := strings.TrimSpace(input.Remark); remark != accessToken.Remark {
 			updates["remark"] = remark
 			changedFields = append(changedFields, "remark")
+			accessToken.Remark = remark
 		}
-		if quota := normalizeQuotaLimit(input.TotalQuotaLimit); quota != accessToken.TotalQuotaLimit {
+		if quota != accessToken.TotalQuotaLimit {
 			updates["total_quota_limit"] = quota
 			changedFields = append(changedFields, "totalQuotaLimit")
+			accessToken.TotalQuotaLimit = quota
 		}
 		if len(updates) == 0 {
 			return nil
 		}
-		// Only editable fields are written so usage and credentials cannot be overwritten.
-		result := tx.Model(&entity.AccessToken{}).Where("id = ?", accessToken.ID).Updates(updates)
+		// Write only editable fields with ownership pinned; never Save a stale usage,
+		// last-use or credential snapshot over a concurrent billing update.
+		result := tx.Model(&entity.AccessToken{}).Where("id = ? AND user_id = ?", accessToken.ID, accessToken.UserID).Updates(updates)
 		if result.Error != nil {
 			return result.Error
 		}
 		if result.RowsAffected == 0 {
-			return ErrAccessTokenNotFound
-		}
-		if err := tx.First(&accessToken, accessToken.ID).Error; err != nil {
-			return err
+			var count int64
+			if err := tx.Model(&entity.AccessToken{}).Where("id = ? AND user_id = ?", accessToken.ID, accessToken.UserID).Count(&count).Error; err != nil {
+				return err
+			}
+			if count == 0 {
+				return ErrAccessTokenNotFound
+			}
 		}
 		return writeAccessTokenAudit(tx, operator, accessToken, 1, "更新访问令牌成功", input.ClientIP, before, accessTokenAuditSnapshot(accessToken), changedFields)
 	})
 	if err != nil {
 		return entity.AccessToken{}, err
 	}
-	return accessToken, nil
+	// Readback is deliberately after commit, including no-op edits. A read error
+	// must not pretend to roll back metadata+audit that already committed.
+	return loadAccessibleAccessToken(db, operator, tokenID)
 }
 
 func DeleteAccessTokenWithDB(db *gorm.DB, operator entity.User, tokenID int32) error {
@@ -238,7 +324,7 @@ func loadAccessibleAccessToken(db *gorm.DB, operator entity.User, tokenID int32)
 		}
 		return entity.AccessToken{}, err
 	}
-	if accessToken.UserID != operator.ID && !isAdminUser(operator) {
+	if accessToken.ScriptID > 0 || (accessToken.UserID != operator.ID && !isAdminUser(operator)) {
 		return entity.AccessToken{}, ErrAccessTokenForbidden
 	}
 	return accessToken, nil
@@ -262,8 +348,13 @@ func normalizeQuotaLimit(limit float64) float64 {
 	return limit
 }
 
+// AccessTokenQuotaLimitValid never rounds or normalizes an invalid limit to unlimited.
+func AccessTokenQuotaLimitValid(limit float64) bool {
+	return !math.IsNaN(limit) && !math.IsInf(limit, 0) && limit >= 0 && limit < entity.AccessTokenQuotaLimitMaxExclusive
+}
+
 func validateAccessTokenQuotaLimit(limit float64) error {
-	if math.IsNaN(limit) || math.IsInf(limit, 0) || limit < 0 || limit >= entity.AccessTokenQuotaLimitMaxExclusive {
+	if !AccessTokenQuotaLimitValid(limit) {
 		return ErrAccessTokenQuotaLimitInvalid
 	}
 	return nil

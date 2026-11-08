@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/itihey/tikuAdapter/internal/diagnostics"
 	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	internalsearch "github.com/itihey/tikuAdapter/internal/search"
@@ -33,6 +34,7 @@ var fallbackResultCache = newResultCache[fallbackCachedValue](defaultResultCache
 type fallbackResultCacheKey struct {
 	Epoch            uint64                  `json:"epoch"`
 	UserID           int32                   `json:"userId"`
+	ActorScope       string                  `json:"actorScope,omitempty"`
 	Question         string                  `json:"question"`
 	Type             int                     `json:"type"`
 	DeepThinking     bool                    `json:"deepThinking"`
@@ -42,12 +44,13 @@ type fallbackResultCacheKey struct {
 }
 
 // buildFallbackResultCacheKey 构造兜底缓存键，并返回当前代次。
-func buildFallbackResultCacheKey(userID int32, req model.SearchRequest) (string, uint64, bool) {
+func buildFallbackResultCacheKey(userID int32, req model.SearchRequest, actorScope ...string) (string, uint64, bool) {
 	epoch := fallbackResultCache.currentEpoch()
 
 	key, ok := marshalCacheKey(fallbackResultCacheKey{
 		Epoch:            epoch,
 		UserID:           userID,
+		ActorScope:       firstAIFallbackActorScope(actorScope),
 		Question:         strings.TrimSpace(req.Question),
 		Type:             req.Type,
 		DeepThinking:     req.DeepThinking,
@@ -88,6 +91,12 @@ func cloneAIFallbackResult(source service.AIFallbackResult) service.AIFallbackRe
 	if source.Warnings != nil {
 		cloned.Warnings = append([]string(nil), source.Warnings...)
 	}
+	if source.Usage.ModelCalls != nil {
+		cloned.Usage.ModelCalls = append([]internalsearch.AIModelCallUsage(nil), source.Usage.ModelCalls...)
+	}
+	if source.Usage.Trace != nil {
+		cloned.Usage.Trace = append([]internalsearch.AISearchTrace(nil), source.Usage.Trace...)
+	}
 	if source.Usage.SearchCalls != nil {
 		cloned.Usage.SearchCalls = append([]internalsearch.AISearchCallUsage(nil), source.Usage.SearchCalls...)
 	}
@@ -107,16 +116,18 @@ func cloneAIFallbackResult(source service.AIFallbackResult) service.AIFallbackRe
 }
 
 // loadCachedAIFallbackResult 读取兜底缓存。只返回可用的成功结果。
-func loadCachedAIFallbackResult(userID int32, req model.SearchRequest) (service.AIFallbackResult, bool) {
-	key, epoch, ok := buildFallbackResultCacheKey(userID, req)
+func loadCachedAIFallbackResult(userID int32, req model.SearchRequest, actorScope ...string) (service.AIFallbackResult, bool) {
+	key, epoch, ok := buildFallbackResultCacheKey(userID, req, actorScope...)
 	if !ok {
 		return service.AIFallbackResult{}, false
 	}
 
 	entry, found := fallbackResultCache.get(key, epoch)
 	if !found || !entry.result.Success {
+		diagnostics.Default.ObserveCache("fallback", "miss")
 		return service.AIFallbackResult{}, false
 	}
+	diagnostics.Default.ObserveCache("fallback", "hit")
 	return cloneAIFallbackResult(entry.result), true
 }
 
@@ -129,12 +140,12 @@ func fallbackCachedValueUsable(value fallbackCachedValue) bool {
 //
 // **只缓存成功结果**：失败（AI_UNAVAILABLE / NO_ANSWER / UPSTREAM_ERROR）不入缓存，
 // 否则一次网络抖动会被固化 10 分钟，用户在此期间怎么重试都拿不到答案。
-func storeCachedAIFallbackResult(userID int32, req model.SearchRequest, result service.AIFallbackResult) {
+func storeCachedAIFallbackResult(userID int32, req model.SearchRequest, result service.AIFallbackResult, actorScope ...string) {
 	if !result.Success {
 		return
 	}
 
-	key, epoch, ok := buildFallbackResultCacheKey(userID, req)
+	key, epoch, ok := buildFallbackResultCacheKey(userID, req, actorScope...)
 	if !ok {
 		return
 	}
@@ -146,4 +157,12 @@ func storeCachedAIFallbackResult(userID int32, req model.SearchRequest, result s
 // 与搜题一致：只有显式 `"skipCache": true` 才跳过；`false` 与缺省都正常使用缓存。
 func shouldBypassFallbackResultCache(req model.SearchRequest) bool {
 	return shouldBypassSearchResultCache(req)
+}
+
+// Ordinary account traffic keeps its historical owner-only key.
+func firstAIFallbackActorScope(scopes []string) string {
+	if len(scopes) == 0 {
+		return ""
+	}
+	return scopes[0]
 }

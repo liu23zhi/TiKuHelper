@@ -358,17 +358,35 @@ def convert_value(value: Any, declared_type: str) -> Any:
     return value
 
 
-def normalize_access_token_quota_limit(value: Any) -> tuple[Any, bool]:
-    """Map negative or unrepresentable quotas to the app's unlimited value."""
+def access_token_quota_is_representable(value: Any) -> bool:
+    """Only allow values MySQL DECIMAL(18,6) can store without altering quota."""
     if value is None:
-        return value, False
+        return True  # Legacy SQL NULL remains NULL, not an implicit zero.
     try:
         quota = Decimal(str(value))
-    except Exception:
-        return value, False
-    if not quota.is_finite() or quota < 0 or quota >= ACCESS_TOKEN_QUOTA_LIMIT_MAX_EXCLUSIVE:
-        return Decimal(0), True
-    return value, False
+        return (
+            quota.is_finite()
+            and 0 <= quota < ACCESS_TOKEN_QUOTA_LIMIT_MAX_EXCLUSIVE
+            and quota == quota.quantize(Decimal("0.000001"))
+        )
+    except (ArithmeticError, ValueError):
+        return False
+
+
+def validate_access_token_quotas(source: sqlite3.Connection, tables: Iterable[str]) -> None:
+    for table in tables:
+        if table.lower() != "access_tokens":
+            continue
+        for column in sqlite_columns(source, table):
+            if column["name"].lower() != "total_quota_limit":
+                continue
+            query = f"SELECT {quote_sqlite(column['name'])} FROM {quote_sqlite(table)}"
+            invalid = sum(not access_token_quota_is_representable(row[0]) for row in source.execute(query))
+            if invalid:
+                raise RuntimeError(
+                    f"access_tokens.total_quota_limit 有 {invalid} 个值不能无损迁移；"
+                    "保留源值和状态，拒绝将其归零为不限额，请人工修正后重试"
+                )
 
 
 def mysql_server_info(connection) -> tuple[tuple[int, int, int], str]:
@@ -469,7 +487,6 @@ def copy_table(source: sqlite3.Connection, target, table_name: str, staging_name
         f"VALUES ({', '.join(['%s'] * len(names))})"
     )
     count = 0
-    corrected_quotas = 0
     cursor = source.execute(source_sql)
     while True:
         rows = cursor.fetchmany(batch_size)
@@ -479,11 +496,10 @@ def copy_table(source: sqlite3.Connection, target, table_name: str, staging_name
         for row in rows:
             converted_row = []
             for value, column in zip(row, columns):
-                converted_value = convert_value(value, column["type"])
                 if table_name.lower() == "access_tokens" and column["name"].lower() == "total_quota_limit":
-                    converted_value, corrected = normalize_access_token_quota_limit(converted_value)
-                    corrected_quotas += int(corrected)
-                converted_row.append(converted_value)
+                    if not access_token_quota_is_representable(value):
+                        raise RuntimeError("access_tokens.total_quota_limit 不能无损迁移；已拒绝发布")
+                converted_row.append(convert_value(value, column["type"]))
             converted.append(tuple(converted_row))
         with target.cursor() as target_cursor:
             target_cursor.executemany(insert_sql, converted)
@@ -494,8 +510,6 @@ def copy_table(source: sqlite3.Connection, target, table_name: str, staging_name
         target.commit()
         count += len(rows)
         print(f"  {table_name}: {count} 行")
-    if corrected_quotas:
-        print(f"  {table_name}.total_quota_limit: {corrected_quotas} 个非法或超范围值已修正为 0（无限额）")
     return count
 
 
@@ -558,8 +572,6 @@ def migrate(args: argparse.Namespace) -> None:
         raise SystemExit("--batch-size 必须在 1 到 10000 之间")
     if not os.path.isfile(args.sqlite_path):
         raise SystemExit(f"SQLite 文件不存在：{args.sqlite_path}")
-    pymysql = load_pymysql(args.auto_install_deps)
-    options = mysql_options(args)
     source_uri = Path(args.sqlite_path).resolve().as_uri() + "?mode=ro"
     source = sqlite3.connect(source_uri, uri=True)
     source.row_factory = None
@@ -589,6 +601,9 @@ def migrate(args: argparse.Namespace) -> None:
                 raise RuntimeError(f"源表包含外键；为避免静默丢约束，本脚本拒绝迁移：{table_name}")
             if any(len(row) > 6 and row[6] != 0 for row in source.execute(f"PRAGMA table_xinfo({quote_sqlite(table_name)})").fetchall()):
                 raise RuntimeError(f"源表包含生成列或隐藏列：{table_name}")
+        validate_access_token_quotas(source, tables)
+        pymysql = load_pymysql(args.auto_install_deps)
+        options = mysql_options(args)
         print(f"发现 {len(tables)} 张业务表：{', '.join(tables)}")
         target = pymysql.connect(**options, charset="utf8mb4", autocommit=False, connect_timeout=10)
         configure_mysql_session(target)

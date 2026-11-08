@@ -10,7 +10,7 @@ function collect(directory) {
 }
 
 let failed = 0;
-const files = collect(path.resolve(__dirname, '../src'));
+const files = process.argv.length > 2 ? process.argv.slice(2) : collect(path.resolve(__dirname, '../src'));
 for (const filename of files) {
   const { descriptor, errors } = parse(fs.readFileSync(filename, 'utf8'), { filename });
   try {

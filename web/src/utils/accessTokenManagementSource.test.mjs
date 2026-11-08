@@ -4,11 +4,18 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import vm from 'node:vm';
+import { createRequire } from 'node:module';
 import { parse, compileScript } from '@vue/compiler-sfc';
-import { computed, effectScope, ref } from 'vue';
+import { computed, effectScope, ref, shallowRef, useId } from 'vue';
 import { useTableExpansion } from '../composables/useTableExpansion.mjs';
 import { sumTableColumnWidths } from './tableLayout.mjs';
+import { ensureRequestFailure } from './requestFailureView.mjs';
 
+const require = createRequire(import.meta.url);
+require('../../tests/helpers/vue-dom.cjs');
+const { currentUserIdentity, useCurrentUserRequestScope } = require('./currentUserScope.js');
+const { getCurrentUserLogoutEpoch } = require('./currentUser.js');
+const { useTableColumnPreferences } = require('../composables/useTableColumnPreferences.mjs');
 const testDir = dirname(fileURLToPath(import.meta.url));
 const pagePath = resolve(testDir, '../pages/AccessTokenManagement/index.vue');
 
@@ -41,8 +48,11 @@ test('AccessTokenManagement keeps fixed widths in both scopes and expands the re
   try {
     const setupSource = descriptor.script.content.slice(setup.start, setup.end);
     const state = scope.run(() => vm.runInNewContext(`({${setupSource}})`, {
-      computed, useTableExpansion, sumTableColumnWidths, dataSource, showAllTokens,
+      computed, ref, shallowRef, useId, ensureRequestFailure, getCurrentUserLogoutEpoch, watch: () => {}, Swal: { getPopup: () => null }, useTableExpansion, sumTableColumnWidths, dataSource, showAllTokens,
       getStoredCurrentUser: () => ({ role: 'admin' }),
+      useCurrentUserDisplay: () => ({ currentUser: ref({ id: 1, role: 'admin' }) }),
+      useCurrentUserRequestScope, currentUserIdentity, useTableColumnPreferences,
+      getCurrentInstance: () => ({ proxy: { handleLoad() {} } }),
       isAdminUser: () => true,
       buildAccessTokenBalanceAlert: () => null,
       tableLoading: ref(false), visible: ref(false), submitLoading: ref(false),
@@ -50,17 +60,18 @@ test('AccessTokenManagement keeps fixed widths in both scopes and expands the re
       limitAccessTokenNameInput: value => value,
     }).setup());
 
+    state.dataSource.value = [{ id: 17, remark: '长备注'.repeat(80) }];
     const widths = () => state.columns.value.map(column => column.width);
     assert.ok(widths().every(width => Number.isFinite(width) && width > 0));
     assert.equal(state.tableScrollX.value, widths().reduce((sum, width) => sum + width, 0));
     assert.equal(state.columns.value.some(column => column.key === 'username'), false);
     const collapsed = state.tableScrollX.value;
-    state.remarkExpansion.toggle(dataSource.value[0], 'remark');
+    state.remarkExpansion.toggle(state.dataSource.value[0], 'remark');
     assert.equal(state.columns.value.find(column => column.key === 'remark').width, 236);
     assert.equal(state.tableScrollX.value, collapsed + 66);
-    state.remarkExpansion.toggle(dataSource.value[0], 'remark');
+    state.remarkExpansion.toggle(state.dataSource.value[0], 'remark');
     assert.equal(state.tableScrollX.value, collapsed);
-    showAllTokens.value = true;
+    state.showAllTokens.value = true;
     assert.equal(state.columns.value[0].key, 'username');
     assert.equal(state.tableScrollX.value, collapsed + 160);
   } finally {
@@ -75,6 +86,6 @@ test('AccessTokenManagement page restricts the all-token view to admins and adds
   assert.match(content, /只看我的令牌/);
   assert.match(content, /v-if="isAdmin"/);
   assert.match(content, /showAllTokens/);
-  assert.match(content, /buildAccessTokenListParams\(showAllTokens\.value\)/);
+  assert.match(content, /buildAccessTokenListParams\(this\.showAllTokens\)/);
   assert.match(content, /title: '用户名'/);
 });

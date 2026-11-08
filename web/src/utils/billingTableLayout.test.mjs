@@ -29,7 +29,9 @@ test('both billing tables use shared centered, wrapping columns and conditional 
     const source = await readFile(page, 'utf8')
     assert.match(source, /table-layout="fixed"/)
     assert.match(source, /:scroll="\{ x: tableScrollX \}"/)
-    assert.match(source, /components: \{ OverflowTableText, BillingDetailDialog(?:, SafePaymentIcon)? \}/)
+    const registered = source.match(/components:\s*\{([^}]+)\}/)?.[1].split(',').map(name => name.trim()) || []
+    assert.ok(registered.includes('OverflowTableText'), 'wrapping text component remains registered')
+    assert.ok(registered.includes('BillingDetailDialog'), 'detail dialog remains registered')
     assert.match(source, /<OverflowTableText[\s\S]*?:text="buildBillingRecordListSubjectText\(record\)"/)
     assert.match(source, /:expanded="isSubjectExpanded\(record\.id\)"/)
     assert.match(source, /@toggle="toggleSubject\(record\.id\)"/)
@@ -37,7 +39,13 @@ test('both billing tables use shared centered, wrapping columns and conditional 
     assert.match(source, /title: '请求 ID'/)
     assert.match(source, /title: '时间'/)
     assert.match(source, /<ConsoleTableShell/)
-    assert.match(source, /sumTableColumnWidths\(columns\.value\)/)
+    const renderedColumns = page === pages[0] ? 'visibleColumns' : 'columns'
+    assert.match(source, new RegExp(`:columns="${renderedColumns}"`))
+    assert.match(source, new RegExp(`sumTableColumnWidths\\(${renderedColumns}\\.value\\)`))
+    if (page === pages[0]) {
+      assert.ok(registered.includes('TableColumnSettings'))
+      assert.match(source, /useTableColumnPreferences\(\{\s*pageKey: 'BillingRecordList', columns,/, 'preferences derive from the complete original role-scoped columns')
+    }
     assert.match(source, /useTableExpansion\(dataSource\)/)
     assert.match(source, /overflow-wrap: anywhere/)
   }

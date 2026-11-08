@@ -124,8 +124,40 @@ func TestTicketControllerOwnListAndAdminConfiguration(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &settingsResponse); err != nil {
 		t.Fatal(err)
 	}
-	if recorder.Code != http.StatusOK || settingsResponse.Data.WebhookURL != "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=private" || strings.Contains(settingsResponse.Data.Preview, "private") {
+	if recorder.Code != http.StatusOK || settingsResponse.Data.WebhookURL != "" || !settingsResponse.Data.Configured || settingsResponse.Data.Preview != "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=已配置" || strings.Contains(recorder.Body.String(), "private") {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	for _, value := range []string{"", service.SecretMask} {
+		payloadBytes, err := json.Marshal(map[string]any{"enabled": true, "webhookUrl": value})
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload := string(payloadBytes)
+		out := performTicketControllerRequest(t, &entity.User{ID: 3, Role: "admin"}, http.MethodPut, "/tickets/config", payload, nil, UpdateTicketWecomSettings)
+		var result struct {
+			Data service.TicketWecomSettings `json:"data"`
+		}
+		if err := json.Unmarshal(out.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if out.Code != http.StatusOK || !result.Data.Configured || result.Data.WebhookURL != "" || strings.Contains(out.Body.String(), "private") {
+			t.Fatal("blank/mask update exposed or cleared credential")
+		}
+		stored, err := service.GetTicketWecomConfigWithDB(db)
+		if err != nil || stored.WebhookURL != "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=private" {
+			t.Fatal("blank/mask update did not preserve stored credential")
+		}
+	}
+	out := performTicketControllerRequest(t, &entity.User{ID: 3, Role: "admin"}, http.MethodPut, "/tickets/config", `{"enabled":false,"clearWebhook":true}`, nil, UpdateTicketWecomSettings)
+	var cleared struct {
+		Data service.TicketWecomSettings `json:"data"`
+	}
+	if err := json.Unmarshal(out.Body.Bytes(), &cleared); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := service.GetTicketWecomConfigWithDB(db)
+	if out.Code != http.StatusOK || err != nil || cleared.Data.Configured || cleared.Data.WebhookURL != "" || stored.WebhookURL != "" || strings.Contains(out.Body.String(), "private") {
+		t.Fatal("explicit clear did not remove stored credential safely")
 	}
 }
 

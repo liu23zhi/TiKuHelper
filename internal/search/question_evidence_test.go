@@ -43,21 +43,21 @@ func TestLocalTikuSearchSharesBudgetCachesQueriesAndRecordsFailures(t *testing.T
 	cache := map[string]string{}
 	usage := AISearchUsage{}
 	call := openAIToolCall{Type: "function", Function: openAIToolFunction{Name: "tiku_search", Arguments: `{"question":"无命中题目","type":-1,"options":[]}`}}
-	first, abort := client.executeAITikuSearchTool(context.Background(), call, &web, &local, 2, cache, &usage)
+	first, abort := client.executeAITikuSearchTool(context.Background(), call, &web, &local, 2, cache, nil, &usage)
 	if abort || local != 1 || tool.calls != 1 || len(usage.TikuSearchCalls) != 1 || usage.TikuSearchCalls[0].Status != "success" {
 		t.Fatalf("successful no-hit query must be counted: %+v local=%d", usage, local)
 	}
-	second, abort := client.executeAITikuSearchTool(context.Background(), call, &web, &local, 2, cache, &usage)
+	second, abort := client.executeAITikuSearchTool(context.Background(), call, &web, &local, 2, cache, nil, &usage)
 	if abort || first != second || tool.calls != 1 || len(usage.TikuSearchCalls) != 1 || len(usage.Trace) != 1 {
 		t.Fatalf("cached query must not consume billing sequence: %+v", usage)
 	}
 	call.Function.Arguments = `{"question":"另一个题目","type":-1,"options":[]}`
-	_, abort = client.executeAITikuSearchTool(context.Background(), call, &web, &local, 2, cache, &usage)
+	_, abort = client.executeAITikuSearchTool(context.Background(), call, &web, &local, 2, cache, nil, &usage)
 	if !abort || tool.calls != 1 || local != 1 {
 		t.Fatal("web and local calls must share search budget")
 	}
 	tool.err = errors.New("isolated database error")
-	_, _ = client.executeAITikuSearchTool(context.Background(), call, &web, &local, 3, cache, &usage)
+	_, _ = client.executeAITikuSearchTool(context.Background(), call, &web, &local, 3, cache, nil, &usage)
 	if tool.calls != 2 || usage.TikuSearchCalls[len(usage.TikuSearchCalls)-1].Status != "error" {
 		t.Fatal("database failure must be recorded as nonbillable error")
 	}
@@ -77,7 +77,7 @@ func TestLocalTikuToolAcceptsLongStructuredArguments(t *testing.T) {
 	web, local := 1, 0
 	usage := AISearchUsage{}
 	call := openAIToolCall{Type: "function", Function: openAIToolFunction{Name: "tiku_search", Arguments: arguments}}
-	_, abort := client.executeAITikuSearchTool(context.Background(), call, &web, &local, 2, map[string]string{}, &usage)
+	_, abort := client.executeAITikuSearchTool(context.Background(), call, &web, &local, 2, map[string]string{}, nil, &usage)
 	if abort || tool.calls != 1 || usage.TikuSearchCalls[0].Status != "success" {
 		t.Fatalf("long local question was rejected: %+v", usage)
 	}

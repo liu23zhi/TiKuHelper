@@ -75,28 +75,37 @@ func TestIPLocationLookupDoesNotReuseUnknownLegacySource(t *testing.T) {
 	}
 }
 
-func TestOrdinaryIPLookupWithoutKeyQueriesOnceAndCachesResult(t *testing.T) {
+func TestOrdinaryIPLookupRequiresKeyAndCachesConfiguredResult(t *testing.T) {
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
-		if r.Header.Get("Authorization") != "" || r.URL.Query().Get("source") != "" {
-			t.Errorf("keyless ordinary lookup should not send authorization or source")
+		if r.Header.Get("Authorization") != "Bearer uapi-key" || r.URL.Query().Get("source") != "" {
+			t.Errorf("configured ordinary lookup should send the synthetic key without changing source")
 		}
 		_, _ = w.Write([]byte(`{"ip":"8.8.8.8","region":"普通来源地区"}`))
 	}))
 	defer server.Close()
 	newDefaultLocationClient(t, server, "")
 	db := newLocationTestDB(t)
-	for i := 0; i < 2; i++ {
-		result, err := LookupIPLocationsDetailedWithDB(db, []string{"8.8.8.8"}, LocationQueryOptions{})
-		if err != nil || result["8.8.8.8"].Address != "普通来源地区" {
-			t.Fatalf("ordinary lookup without key: %+v err=%v", result, err)
+	for _, source := range []string{"", "commercial"} {
+		for i := 0; i < 2; i++ {
+			result, err := LookupIPLocationsDetailedWithDB(db, []string{"8.8.8.8"}, LocationQueryOptions{Source: source})
+			if err != ErrLocationNotConfigured || len(result) != 0 {
+				t.Fatalf("missing-key source=%q must fail locally: result=%+v err=%v", source, result, err)
+			}
 		}
 	}
-	if _, err := LookupIPLocationsDetailedWithDB(db, []string{"8.8.8.8"}, LocationQueryOptions{Source: "commercial"}); err != ErrLocationNotConfigured {
-		t.Fatalf("commercial lookup without key must fail locally, got %v", err)
+	if requests.Load() != 0 {
+		t.Fatalf("missing-key ordinary/commercial lookup must not call upstream, got %d", requests.Load())
+	}
+	for i := 0; i < 2; i++ {
+		result, err := LookupIPLocationsDetailedWithDB(db, []string{"8.8.8.8"}, LocationQueryOptions{UAPIKey: "uapi-key"})
+		if err != nil || result["8.8.8.8"].Address != "普通来源地区" {
+			t.Fatalf("configured ordinary lookup: %+v err=%v", result, err)
+		}
 	}
 	if requests.Load() != 1 {
-		t.Fatalf("expected one ordinary query and no commercial query, got %d", requests.Load())
+		t.Fatalf("expected one configured ordinary query and a cache hit, got %d", requests.Load())
 	}
+	t.Log("APPROVED_IP_KEY_FIXTURE no_key_ordinary_commercial_calls=0 configured_two_lookups_calls=1 cache_preserved=true")
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
 	internalsearch "github.com/itihey/tikuAdapter/internal/search"
@@ -278,12 +279,15 @@ func FindMatchingAIOCRCacheEntryWithDB(db *gorm.DB, sourceURL string, image []by
 	return &entry, nil
 }
 
-func isAIOCRProviderConfigured(db *gorm.DB) bool {
+// IsAIOCRProviderConfiguredWithDB checks the effective stored UAPI key without
+// constructing a client, contacting a provider, or exposing the key.
+func IsAIOCRProviderConfiguredWithDB(db *gorm.DB) bool {
 	if db == nil {
 		return false
 	}
 	key := strings.TrimSpace(GetUAPIAPIKeyWithDB(db))
-	return strings.HasPrefix(key, "uapi-") && len(key) > len("uapi-")
+	return strings.HasPrefix(key, "uapi-") && len(key) > len("uapi-") &&
+		!strings.ContainsFunc(key, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
 }
 
 func GetAIOCRCacheStatusWithDB(db *gorm.DB) (AIOCRCacheStatus, error) {
@@ -294,7 +298,7 @@ func GetAIOCRCacheStatusWithDB(db *gorm.DB) (AIOCRCacheStatus, error) {
 	if err := db.Session(&gorm.Session{NewDB: true}).Exec("SELECT 1").Error; err != nil {
 		return status, err
 	}
-	status.Configured = isAIOCRProviderConfigured(db)
+	status.Configured = IsAIOCRProviderConfiguredWithDB(db)
 	hasTable := db.Migrator().HasTable(&entity.AIOCRCache{})
 	if !hasTable {
 		return status, nil
@@ -396,7 +400,7 @@ func ListAIOCRCacheWithDB(db *gorm.DB, filters AIOCRCacheListQuery, page, pageSi
 	if err := db.Session(&gorm.Session{NewDB: true}).Exec("SELECT 1").Error; err != nil {
 		return result, err
 	}
-	result.Configured = isAIOCRProviderConfigured(db)
+	result.Configured = IsAIOCRProviderConfiguredWithDB(db)
 	if !db.Migrator().HasTable(&entity.AIOCRCache{}) {
 		return result, nil
 	}

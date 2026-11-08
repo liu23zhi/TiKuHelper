@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import vm from 'node:vm'
 import { parse, compileScript } from '@vue/compiler-sfc'
+import { computed, ref, watch, nextTick, effectScope } from 'vue'
 
 function deferred() {
   let resolve
@@ -25,16 +26,21 @@ async function mountLayout({ visible = true, user = { id: 1 }, checkSession = as
   const unmounted = []
   const timers = new Map()
   const browser = new EventTarget()
-  browser.matchMedia = () => ({ matches: false })
+  browser.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} })
+  browser.setTimeout = setTimeout; browser.clearTimeout = clearTimeout
   browser.setInterval = (callback, delay) => { const id = Symbol(); timers.set(id, { callback, delay }); return id }
   browser.clearInterval = (id) => timers.delete(id)
   const document = new EventTarget()
   document.visibilityState = visible ? 'visible' : 'hidden'
+  document.querySelectorAll = () => []; document.activeElement = null
   const requests = []
   const routes = []
   const scope = {
-    computed: (get) => ({ get value() { return get() } }),
-    ref: (value) => ({ value }),
+    computed, ref, watch, nextTick,
+    useCurrentUserDisplay: () => ({ currentUser: ref(user) }),
+    currentUserIdentity: value => value?.id ? `id:${value.id}` : '',
+    getCurrentUserLogoutEpoch: () => 0,
+    message: { warning() {}, error() {} },
     onMounted: (callback) => mounted.push(callback),
     onBeforeUnmount: (callback) => unmounted.push(callback),
     useRouter: () => ({ currentRoute: { value: { path: '/adapter/profile' } }, push: (path) => routes.push(path) }),
@@ -46,9 +52,10 @@ async function mountLayout({ visible = true, user = { id: 1 }, checkSession = as
     document,
     AbortController,
   }
-  vm.runInNewContext(`({${descriptor.script.content.slice(setup.start, setup.end)}})`, scope).setup()
+  const vueScope = effectScope()
+  vueScope.run(() => vm.runInNewContext(`({${descriptor.script.content.slice(setup.start, setup.end)}})`, scope).setup())
   mounted.forEach((callback) => callback())
-  return { browser, document, requests, routes, timers, unmount: () => unmounted.forEach((callback) => callback()) }
+  return { browser, document, requests, routes, timers, unmount: () => { unmounted.forEach((callback) => callback()); vueScope.stop() } }
 }
 
 test('protected layout checks immediately, checks every 30 seconds, and stops after unmount', async () => {

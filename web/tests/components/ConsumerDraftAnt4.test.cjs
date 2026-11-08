@@ -1,0 +1,108 @@
+const { test, afterEach } = require('node:test')
+const assert = require('node:assert/strict')
+const path = require('node:path')
+const Module = require('node:module')
+const root = process.env.TIKU_WEB_SOURCE || path.resolve(__dirname,'../..')
+require(process.env.UI_TEST_HELPER || path.resolve(__dirname,'../helpers/vue-dom.cjs'))
+const { mount, flushPromises } = require('@vue/test-utils')
+const { h, nextTick, reactive } = require('vue')
+const { createRouter, createMemoryHistory, RouterView } = require('vue-router')
+const Antd = require('ant-design-vue')
+const user = require(path.join(root,'src/utils/currentUser.js'))
+const { useUnsavedDraft } = require(path.join(root,'src/utils/useUnsavedDraft.js'))
+let wrapper,router
+const pendingUser=[], pendingBilling=[], pendingProfile=[], pendingConfig=[]
+let deferBilling=false,deferConfig=false
+const calls=[]
+const admin={id:37,username:'fixture-admin',nickname:'Fixture',role:'admin',balance:9.876543,minRechargeAmount:1}
+const normal={...admin,id:38,username:'fixture-user',nickname:'Changed',role:'user',balance:1.234567}
+const config={enabled:false,baseUrl:'',apiKey:'',model:'fixture-model',manualModels:['fixture-model'],prompt:'saved prompt',remark:'upstream remark',temperature:0,topP:0,maxAISearchModelCalls:4,maxAISearches:3,maxAISearchRetries:3,searchPricePerCall:0.01,maxAIWebReads:5,webReadPricePerCall:0.02,enableAIStagedTokenBilling:true,smoothAIStagedTokenMultiplier:true,stagedTokenMultiplierPoints:[{tokens:0,multiplier:2},{tokens:1000,multiplier:1}]}
+const ok=data=>({status:200,data})
+const apiPath=path.join(root,'src/api/TikuComponentApi.js');const api=new Module(apiPath);api.loaded=true
+let ocrStatusReads=0
+function syntheticOCRStatus(feedback){assert.deepEqual(feedback,{errorFeedback:'local'});ocrStatusReads++;return Promise.resolve(ok({configured:false,entries:0}))}
+require('node:test').after(()=>console.log('AI_OCR_STATUS_READS '+JSON.stringify({fixture:__filename,method:'GET',count:ocrStatusReads})))
+api.exports={
+ getAIOCRCacheStatus:syntheticOCRStatus,
+ getCurrentUser:()=>new Promise(resolve=>pendingUser.push(resolve)),
+ getBillingRecords:params=>{calls.push(['billing',params]);return deferBilling?new Promise(resolve=>pendingBilling.push(resolve)):Promise.resolve(ok({data:[],total:0,page:1,pageSize:10,summary:{totalAmount:0,currentPageAmount:0}}))},
+ getRechargeOrders:()=>Promise.resolve(ok({data:[],total:0})),getAccessTokens:()=>Promise.resolve(ok([])),getLogList:()=>Promise.resolve(ok({data:[],total:0})),
+ getIpLocations:()=>Promise.resolve(ok({})),getMyLocations:()=>Promise.resolve(ok({})),getPaymentMethods:()=>Promise.resolve(ok([])),
+ getPublicRegisterStatus:()=>Promise.resolve(ok({siteName:'Fixture',captchaEnabled:false,captchaProvider:'local',wechatLoginEnabled:false,wechatScanLoginEnabled:false,wechatCodeLoginEnabled:false})),
+ getAISearchConfig:()=>deferConfig?new Promise(resolve=>pendingConfig.push(resolve)):Promise.resolve(ok({...config,stagedTokenMultiplierPoints:config.stagedTokenMultiplierPoints.map(x=>({...x}))})),
+ getAIModelPrices:()=>Promise.resolve(ok([])),getUAPISearchEngines:()=>Promise.resolve(ok({})),getUAPIUsageStatus:()=>Promise.resolve(ok({endpoints:[]})),
+ updateAISearchConfig:payload=>{calls.push(['save-config',payload]);return Promise.resolve(ok({}))},
+ updateCurrentUserProfile:payload=>{calls.push(['save-profile',payload]);return new Promise(resolve=>pendingProfile.push(resolve))},
+ logout:()=>Promise.resolve(ok({})),
+}
+require.cache[apiPath]=api
+async function settle(){await nextTick();await flushPromises();await nextTick();await flushPromises();await nextTick()}
+function page(name){return require(path.join(root,'src/pages',name,'index.vue'))}
+function login(account=admin){user.setStoredCurrentUser(account)}
+async function mountPage(name){const ocrReadStart=ocrStatusReads;
+ login();const Page=page(name),plugins=[Antd]
+ if(name==='Profile'){
+  router=createRouter({history:createMemoryHistory(),routes:[{path:'/adapter/profile',component:Page}]})
+  await router.push('/adapter/profile');await router.isReady();plugins.push(router)
+ }
+ wrapper=mount(Page,{attachTo:document.body,global:{plugins}});await settle();assert.equal(ocrStatusReads,ocrReadStart+(name==='AISearchConfig'?1:0),'only AI parent issues one initial readonly OCR GET');return wrapper
+}
+afterEach(async()=>{wrapper?.unmount();wrapper=undefined;Antd.Modal.destroyAll();Antd.message.destroy();await settle();router?.options.history.destroy();router=undefined;document.body.innerHTML='';window.localStorage.clear();pendingUser.length=pendingBilling.length=pendingProfile.length=pendingConfig.length=calls.length=0;deferBilling=deferConfig=false})
+test('AccessTokenManagement reacts to balance crossing zero and back without changing its helper policy',async()=>{await mountPage('AccessTokenManagement');const before=JSON.stringify(wrapper.vm.balanceAlert);user.setStoredCurrentUser({...normal,balance:0});await settle();assert.notEqual(JSON.stringify(wrapper.vm.balanceAlert),before);assert.equal(wrapper.vm.balanceAlert.type,'warning');assert.equal(wrapper.vm.isAdmin,false);user.setStoredCurrentUser(normal);await settle();assert.equal(wrapper.vm.balanceAlert,null)})
+test('BillingRecordList role change clears prior scope and refuses a late administrator response',async()=>{deferBilling=true;await mountPage('BillingRecordList');const first=pendingBilling.shift();assert.equal(wrapper.vm.isAdmin,true);user.setStoredCurrentUser({...admin,role:'user'});await settle();assert.equal(wrapper.vm.isAdmin,false);assert.equal(pendingBilling.length,1,'role change performs one newly scoped read');first(ok({data:[{id:900,username:'other-user-private',clientIp:'FIXTURE_IP',amount:99}],total:1,summary:{totalAmount:99,currentPageAmount:99}}));await settle();assert.equal(wrapper.vm.dataSource.length,0,'stale administrator rows stay cleared');pendingBilling.shift()(ok({data:[{id:901,amount:1.234567}],total:1,summary:{totalAmount:1.234567,currentPageAmount:1.234567}}));await settle();assert.equal(wrapper.vm.dataSource[0].id,901);assert.equal(wrapper.vm.summary.totalAmount,1.234567)})
+test('RechargeOrderList and LogList role projections react in the same mounted page',async()=>{for(const name of ['RechargeOrderList','LogList']){await mountPage(name);assert.equal(wrapper.vm.isAdmin,true);user.setStoredCurrentUser(normal);await settle();assert.equal(wrapper.vm.isAdmin,false,name);wrapper.unmount();wrapper=undefined;await settle()}})
+test('UserUsage rejects old-account results and accepts current server recharge floor and six-digit balance',async()=>{await mountPage('UserUsage');const old=pendingUser.shift();user.setStoredCurrentUser(normal);old(ok({...admin,balance:77,minRechargeAmount:100}));await settle();assert.equal(user.getStoredCurrentUser().id,38);assert.equal(wrapper.vm.currentUser.id,38);assert.equal(wrapper.vm.currentUser.balance,1.234567);assert.equal(wrapper.vm.minRechargeAmount,1);const refresh=wrapper.vm.handleRefreshCurrentUser();assert.equal(typeof refresh?.then,'function');pendingUser.shift()(ok({...normal,balance:2.345678,minRechargeAmount:5}));await refresh;await settle();assert.equal(wrapper.vm.currentUser.balance,2.345678);assert.equal(wrapper.vm.minRechargeAmount,5);assert.equal(wrapper.vm.rechargeAmount>=5,true)})
+async function confirmSelectedProfile(account){
+ // A local display selection is not the newly confirmed /me response. Exercise
+ // the real currentUser watcher and explicit owned refresh, never stub its guard.
+ const refresh=wrapper.findAll('button').find(button=>button.text().replace(/\s+/g,'')==='刷新');assert.ok(refresh,'selected actor retains the real Profile refresh action')
+ await refresh.trigger('click')
+ const read=pendingUser.shift();assert.equal(typeof read,'function','owned refresh starts a newly scoped /me read')
+ read(ok(account));await settle()
+}
+test('Profile old load cannot overwrite a changed principal or its upstream identity fields',async()=>{await mountPage('Profile');const old=pendingUser.shift();user.setStoredCurrentUser(normal);old(ok({...admin,balance:77,phone:'FIXTURE_OLD_PHONE'}));await settle();assert.equal(user.getStoredCurrentUser().id,38);assert.notEqual(wrapper.vm.currentUser.id,37,'retired old /me cannot restore administrator display');await confirmSelectedProfile(normal);assert.equal(wrapper.vm.currentUser.id,38);assert.equal(wrapper.vm.profileForm.username,'fixture-user');assert.equal(wrapper.vm.profileForm.nickname,'Changed')})
+test('Profile newly upstream username/nickname submit is preserved but stale response cannot restore an old account',async()=>{await mountPage('Profile');pendingUser.shift()(ok(admin));await settle();wrapper.vm.profileForm.username='fixture-renamed';wrapper.vm.profileForm.nickname='Renamed';const work=wrapper.vm.submitProfile();assert.deepEqual(calls.find(x=>x[0]==='save-profile')[1],{username:'fixture-renamed',nickname:'Renamed'});user.setStoredCurrentUser(normal);pendingProfile.shift()(ok({...admin,username:'fixture-renamed',nickname:'Renamed'}));await work;await settle();assert.equal(user.getStoredCurrentUser().id,38);assert.notEqual(wrapper.vm.currentUser.id,37,'retired save cannot restore administrator display');await confirmSelectedProfile(normal);assert.equal(wrapper.vm.currentUser.id,38)})
+async function mountAI(){login();router=createRouter({history:createMemoryHistory(),routes:[{path:'/adapter/ai-search-config',component:page('AISearchConfig')},{path:'/adapter/user-usage',component:{render:()=>h('p','Personal workspace')}},{path:'/login',component:{render:()=>h('p','Login')}}]});await router.push('/adapter/ai-search-config');await router.isReady();wrapper=mount({render:()=>h(RouterView)},{attachTo:document.body,global:{plugins:[router,Antd]}});await settle();return wrapper.findComponent(page('AISearchConfig'))}
+test('AI draft snapshot includes every upstream budget, pricing and staged-point field without removing them',async()=>{const ai=await mountAI();assert.equal(ai.vm.hasUnsavedChanges,false);for(const field of ['maxAISearchModelCalls','maxAISearches','maxAISearchRetries','searchPricePerCall','maxAIWebReads','webReadPricePerCall','smoothAIStagedTokenMultiplier','enableAIStagedTokenBilling'])assert.ok(Object.hasOwn(ai.vm.formState,field),field);ai.vm.formState.maxAIWebReads=6;await settle();assert.equal(ai.vm.hasUnsavedChanges,true);assert.ok(wrapper.findAll('.ant-alert-message').some(x=>x.text().includes('未保存')));ai.vm.formState.maxAIWebReads=5;ai.vm.formState.stagedTokenMultiplierPoints[1].multiplier=3;await settle();assert.equal(ai.vm.hasUnsavedChanges,true)})
+test('AI ordinary route leave has a real Antd4 confirmation; cancel retains native edit and confirm leaves',async()=>{const ai=await mountAI();await ai.find('textarea[placeholder="留空时将自动使用系统内置 Prompt"]').setValue('fixture-unsaved');const leaving=router.push('/adapter/user-usage');await settle();assert.equal(router.currentRoute.value.path,'/adapter/ai-search-config');let modal=[...document.querySelectorAll('.ant-modal-confirm')].at(-1);assert.ok(modal);[...modal.querySelectorAll('button')].find(x=>x.textContent.includes('保留编辑')).click();await leaving;await settle();assert.equal(router.currentRoute.value.path,'/adapter/ai-search-config');assert.equal(ai.vm.formState.prompt,'fixture-unsaved');const again=router.push('/adapter/user-usage');await settle();modal=[...document.querySelectorAll('.ant-modal-confirm')].at(-1);[...modal.querySelectorAll('button')].find(x=>x.textContent.includes('放弃并离开')).click();await again;await settle();assert.equal(router.currentRoute.value.path,'/adapter/user-usage')})
+test('AI successful save retains later edits while its fresh GET reconciles all upstream fields',async()=>{const ai=await mountAI();ai.vm.formState.maxAIWebReads=6;ai.vm.formState.prompt='submitted';deferConfig=true;ai.vm.submitSave('');await settle();const payload=calls.find(x=>x[0]==='save-config')[1];assert.equal(payload.maxAIWebReads,6);assert.equal(payload.smoothAIStagedTokenMultiplier,true);assert.equal(ai.vm.savedConfigSnapshot,null);ai.vm.formState.prompt='typed-after-save';pendingConfig.shift()(ok({...config,prompt:'submitted',maxAIWebReads:6}));await settle();assert.equal(ai.vm.formState.prompt,'typed-after-save');assert.equal(ai.vm.hasUnsavedChanges,true);assert.equal(ai.vm.formState.maxAIWebReads,6)})
+test('AI dirty logout reaches login directly without a discard dialog',async()=>{const ai=await mountAI();ai.vm.formState.prompt='fixture-unsaved';await settle();await router.push('/login');await settle();assert.equal(router.currentRoute.value.path,'/login');assert.equal(document.querySelectorAll('.ant-modal-confirm').length,0)})
+
+test('dirty actual AI administrator page unmounts on role downgrade without a discard confirmation',async()=>{login();const Shell=require(path.join(root,'src/layout/TikuAdapterLayout.vue'));router=createRouter({history:createMemoryHistory(),routes:[{path:'/adapter',component:Shell,children:[{path:'ai-search-config',component:page('AISearchConfig')},{path:'user-usage',component:{render:()=>h('p','Personal workspace')}}]}]});await router.push('/adapter/ai-search-config');await router.isReady();wrapper=mount({render:()=>h(RouterView)},{attachTo:document.body,global:{plugins:[router,Antd]}});await settle();const ai=wrapper.findComponent(page('AISearchConfig'));await ai.find('textarea[placeholder="留空时将自动使用系统内置 Prompt"]').setValue('fixture-dirty-downgrade');user.setStoredCurrentUser({...admin,role:'user'});await settle();assert.equal(router.currentRoute.value.path,'/adapter/user-usage');assert.equal(wrapper.findComponent(page('AISearchConfig')).exists(),false);assert.equal(document.querySelectorAll('.ant-modal-confirm').length,0);assert.ok([...document.querySelectorAll('.ant-message-notice')].some(x=>x.textContent.includes('管理权限已变更')))})
+
+
+test('useUnsavedDraft optional focusTriggerAfterClose preserves default and explicitly forwards false with real cancel behavior', async () => {
+  const originalConfirm = Antd.Modal.confirm
+  const confirmations = []
+  Antd.Modal.confirm = options => { confirmations.push(options); return originalConfirm(options) }
+  try {
+    for (const options of [undefined, { focusTriggerAfterClose: false }]) {
+      wrapper = mount({
+        setup() {
+          const formState = reactive({ value: 'SAVED' })
+          return { formState, ...useUnsavedDraft(formState, options) }
+        },
+        render() {
+          return h(Antd.Input, { value: this.formState.value, 'onUpdate:value': value => { this.formState.value = value }, placeholder: 'owned-helper-focus-option' })
+        },
+      }, { attachTo: document.body, global: { plugins: [Antd] } })
+      await settle()
+      await wrapper.get('input').setValue('UNSAVED')
+      const decision = wrapper.vm.requestRouteLeave({ path: '/outside' })
+      await settle()
+      assert.equal(confirmations.at(-1).focusTriggerAfterClose, options?.focusTriggerAfterClose, 'omitted option keeps Antd default; explicit false is passed unchanged')
+      const modal = [...document.querySelectorAll('.ant-modal-confirm')].at(-1)
+      assert.ok(modal, 'real owned Antd confirmation remains mounted')
+      const cancel = [...modal.querySelectorAll('button')].find(button => button.textContent.includes('保留编辑'))
+      assert.ok(cancel)
+      cancel.click()
+      assert.equal(await decision, false)
+      await settle()
+      assert.equal(wrapper.vm.formState.value, 'UNSAVED')
+      assert.equal(wrapper.vm.hasUnsavedChanges, true)
+      wrapper.unmount(); wrapper = undefined
+      Antd.Modal.destroyAll()
+      await settle()
+    }
+  } finally { Antd.Modal.confirm = originalConfirm }
+})

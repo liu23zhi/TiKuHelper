@@ -45,6 +45,8 @@ var searchResultCache = newResultCache[searchAnswerPayload](defaultResultCacheTT
 type searchResultCacheKey struct {
 	Epoch            uint64                  `json:"epoch"`
 	UserID           int32                   `json:"userId"`
+	ScriptID         int32                   `json:"scriptId,omitempty"`
+	ScriptIdentity   string                  `json:"scriptIdentity,omitempty"`
 	Question         string                  `json:"question"`
 	Options          []string                `json:"options"`
 	Type             int                     `json:"type"`
@@ -154,6 +156,8 @@ func buildSearchResultCacheKey(resolved resolvedSearchRequestContext, req model.
 	key, ok := marshalCacheKey(searchResultCacheKey{
 		Epoch:            epoch,
 		UserID:           resolved.UserID,
+		ScriptID:         resolved.ScriptID,
+		ScriptIdentity:   resolved.ScriptIdentityHash,
 		Question:         normalizeCacheKeyText(req.Question),
 		Options:          normalizeCacheKeyOptions(req.Options),
 		Type:             req.Type,

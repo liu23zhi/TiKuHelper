@@ -31,13 +31,38 @@
     </ConsoleSummaryGrid>
 
     <a-card :bordered="false" class="page-card">
-      <!-- <a-alert
+      <section v-if="deleteFailure" data-token-write-feedback="delete" class="page-alert">
+        <RequestFailureAlert
+          :key="deleteFailureContextKey"
+          :failure="deleteFailure"
+          :message="deleteFailureMessage"
+          :busy="tableLoading"
+          :context-key="deleteFailureContextKey"
+          :is-current="isCurrentDeleteFailure"
+        />
+        <p class="hint">刷新只重新读取列表，不会重新提交删除，也不会据此确认本次删除成功。</p>
+        <a-space wrap>
+          <a-button html-type="button" data-action="reconcile-token-write" :loading="tableLoading" @click="reconcileDeletedToken">刷新令牌核对</a-button>
+          <a-button html-type="button" data-action="dismiss-token-delete-failure" @click="clearDeleteFailure">关闭提示</a-button>
+        </a-space>
+      </section>
+      <RequestFailureAlert
+        v-if="listFailure"
+        :key="listFailureContextKey"
+        :failure="listFailure"
+        message="获取访问令牌失败"
+        retryable
+        :busy="tableLoading"
+        :context-key="listFailureContextKey"
+        :is-current="isCurrentListFailure"
+        @retry="retryTokenList"
+      />
+      <a-alert
         type="info"
         show-icon
         class="page-alert"
         message="令牌默认隐藏中间部分；如需核对完整值，可点击右侧按钮直接查看，也可直接复制。"
-      /> -->
-      
+      />
       <!-- 访问令牌用于 /adapter-service/search 的 Authorization: Basic xxxx 认证。 -->
 
       <a-alert
@@ -49,6 +74,16 @@
         :description="balanceAlert.description"
       />
 
+      <div class="table-preferences-actions">
+        <TableColumnSettings
+          :model-value="selectedColumnKeys"
+          :options="columnOptions"
+          :context-key="columnContextKey"
+          :priority-keys="priorityColumnKeys"
+          @update:model-value="setSelectedColumnKeys"
+          @reset="resetColumns"
+        />
+      </div>
       <ConsoleTableShell label="访问令牌列表">
       <a-table
         bordered
@@ -101,7 +136,10 @@
           <template v-else>{{ record[column.dataIndex] ?? '-' }}</template>
         </template>
         <template #emptyText>
-          <a-empty description="当前还没有访问令牌，可点击右上角新增令牌。" />
+          <a-empty v-if="!tableLoading && !listFailure && canLoadForCurrentUser()" description="当前还没有访问令牌，可点击右上角新增令牌。" />
+          <p v-else class="hint" role="status">
+            {{ !canLoadForCurrentUser() ? '访问令牌列表尚未确认，请登录后重试。' : tableLoading ? '正在读取访问令牌，请稍候。' : '暂时无法读取访问令牌，请使用上方重试。' }}
+          </p>
         </template>
       </a-table>
       </ConsoleTableShell>
@@ -109,22 +147,40 @@
 
     <a-modal
       v-model:open="visible"
+      :wrap-props="{ 'aria-modal': true }"
       :title="modalTitle"
       @ok="handleSubmit"
-      :afterClose="resetFormState"
+      :afterClose="handleModalAfterClose"
       ok-text="确定"
       cancel-text="取消"
       :confirm-loading="submitLoading"
     >
+      <section v-if="editorFailure" data-token-write-feedback="editor" class="page-alert">
+        <RequestFailureAlert
+          :key="editorFailureContextKey"
+          :failure="editorFailure"
+          :message="editorFailureMessage"
+          :busy="tableLoading || submitLoading"
+          :context-key="editorFailureContextKey"
+          :is-current="isCurrentEditorFailure"
+        />
+        <p class="hint">刷新只重新读取列表，不会重新提交当前草稿，也不会据此确认本次写入成功；同名令牌不能证明本次创建成功。</p>
+        <a-space wrap>
+          <a-button html-type="button" data-action="reconcile-token-write" :loading="tableLoading" :disabled="submitLoading" @click="reconcileEditorToken">刷新令牌核对</a-button>
+          <a-button html-type="button" data-action="dismiss-token-editor-failure" @click="clearEditorFailure">关闭提示</a-button>
+        </a-space>
+      </section>
       <a-form :model="formState" :label-col="labelCol" :wrapper-col="wrapperCol" layout="horizontal">
-        <a-form-item label="令牌名称" required>
-          <a-input v-model:value="formState.name" placeholder="请输入令牌名称" @input="formState.name = limitAccessTokenNameInput(formState.name)" />
+        <a-form-item label="令牌名称" :html-for="fieldId('name')" required :validate-status="nameError ? 'error' : undefined">
+          <a-input ref="nameInput" :id="fieldId('name')" v-model:value="formState.name" :aria-invalid="nameError ? 'true' : undefined" :aria-describedby="nameError ? fieldId('name-error') : undefined" placeholder="请输入令牌名称" @input="formState.name = limitAccessTokenNameInput(formState.name)" />
+          <template #help><span v-if="nameError" :id="fieldId('name-error')" role="alert">{{ nameError }}</span></template>
         </a-form-item>
-        <a-form-item v-if="isEditing" label="状态">
-          <a-select v-model:value="formState.status" :options="statusOptions" />
+        <a-form-item v-if="isEditing" label="状态" :html-for="fieldId('status')">
+          <a-select :id="fieldId('status')" v-model:value="formState.status" :options="statusOptions" />
         </a-form-item>
-        <a-form-item label="累计额度上限">
+        <a-form-item label="累计额度上限" :html-for="fieldId('quota')">
           <a-input-number
+            :id="fieldId('quota')"
             v-model:value="formState.totalQuotaLimit"
             :min="0"
             :precision="6"
@@ -133,8 +189,8 @@
           />
           <div class="hint">设置为 0 或留空时，表示不单独限制该令牌，消费直接受用户余额约束。金额最多支持 6 位小数。</div>
         </a-form-item>
-        <a-form-item label="备注">
-          <a-textarea v-model:value="formState.remark" :rows="4" placeholder="可选，例如调用来源、用途说明等" />
+        <a-form-item label="备注" :html-for="fieldId('remark')">
+          <a-textarea :id="fieldId('remark')" v-model:value="formState.remark" :rows="4" placeholder="可选，例如调用来源、用途说明等" />
         </a-form-item>
       </a-form>
     </a-modal>
@@ -142,8 +198,8 @@
 </template>
 
 <script>
-import { computed, defineComponent, ref } from 'vue';
-import { message } from 'ant-design-vue';
+import { getCurrentInstance, computed, defineComponent, ref, shallowRef, useId, watch, nextTick } from 'vue';
+import { message, TypographyParagraph } from 'ant-design-vue';
 import Swal from 'sweetalert2';
 import {
   getAccessTokens,
@@ -151,20 +207,75 @@ import {
   updateAccessToken,
   deleteAccessToken,
 } from '@/api/TikuComponentApi';
-import { getStoredCurrentUser, isAdminUser } from '@/utils/currentUser';
+import { useCurrentUserDisplay, isAdminUser, getCurrentUserLogoutEpoch } from '@/utils/currentUser';
 import {
   buildAccessTokenBalanceAlert,
   buildAccessTokenListParams,
   normalizeAccessTokenName,
   limitAccessTokenNameInput,
 } from '@/utils/accessTokenManagementHelpers.mjs';
+import { useCurrentUserRequestScope } from '@/utils/currentUserScope'
 import { formatMoneyValue, formatMoneyYuanWithSpace } from '@/utils/moneyFormat.mjs';
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs';
 import OverflowTableText from '@/components/OverflowTableText.vue';
+import TableColumnSettings from '@/components/TableColumnSettings.vue';
+import RequestFailureAlert from '@/components/RequestFailureAlert.vue';
+import { buildRequestFailureView, ensureRequestFailure } from '@/utils/requestFailureView.mjs';
+import { useTableColumnPreferences } from '@/composables/useTableColumnPreferences.mjs';
 import { useTableExpansion } from '@/composables/useTableExpansion.mjs';
 
+
+function normalizeMoneyInput(value) {
+  const amount = Number(value || 0)
+  if (!Number.isFinite(amount) || amount < 0) {
+    return 0
+  }
+  return amount
+}
+
+// CRUD currently returns these fixed messages without a business code. Only an
+// exact HTTP/message pair is public copy; arbitrary upstream text stays private.
+function tokenWriteFailureMessage(failure, operation) {
+  const fallback = `${operation}令牌请求未完成`
+  try {
+    if (buildRequestFailureView(failure)?.kind === 'unknown-outcome') return `${operation}令牌结果尚未确认`
+    const status = failure?.response?.status ?? failure?.status
+    const detail = failure?.response?.data?.message ?? failure?.data?.message ?? failure?.message
+    if (status === 400 && detail === '令牌名称不能为空') return '令牌名称不能为空，请填写后再提交。'
+    if (status === 400 && detail === '令牌名称只能使用中文、英文、数字、下划线和@，且长度不能超过128个字符') return '令牌名称仅支持中文、英文、数字、下划线和@，且不能超过128个字符，请检查后再提交。'
+    if (status === 404 && detail === '访问令牌不存在') return '访问令牌不存在，请刷新列表核对。'
+    if (status === 403 && detail === '无权限操作访问令牌') return '当前账号无权操作该访问令牌，请确认账号权限。'
+    if (status === 400 && detail === '参数错误') return '令牌参数不符合要求，请检查当前输入。'
+  } catch { /* malformed replies still receive fixed, persistent feedback */ }
+  return fallback
+}
+
+export default defineComponent({
+  name: 'AccessTokenManagement',
+  components: { OverflowTableText, TableColumnSettings, RequestFailureAlert, ATypographyParagraph: TypographyParagraph },
+  setup() {
+    const fieldIdPrefix = 'access-token-' + useId()
+    const fieldId = field => fieldIdPrefix + '-' + field
+    const nameInput = ref(null)
+    const nameError = ref('')
+    const clearNameError = () => { nameError.value = '' }
 const dataSource = ref([])
 const tableLoading = ref(true)
+// Do not proxy/clone failures: transport diagnostics are keyed by the original object.
+const listFailure = shallowRef(null)
+const listFailureContextKey = ref(0)
+const clearListFailure = () => { listFailure.value = null; listFailureContextKey.value += 1 }
+const editorFailure = shallowRef(null)
+const editorFailureContextKey = ref(0)
+const editorFailureLogoutEpoch = ref(null)
+const editorFailureMessage = ref('')
+const clearEditorFailure = () => { editorFailure.value = null; editorFailureLogoutEpoch.value = null; editorFailureContextKey.value += 1 }
+const deleteFailure = shallowRef(null)
+const deleteFailureContextKey = ref(0)
+const deleteFailureLogoutEpoch = ref(null)
+const deleteFailureMessage = computed(() => tokenWriteFailureMessage(deleteFailure.value, '删除'))
+let deleteFeedbackLease = {}
+const clearDeleteFailure = () => { deleteFailure.value = null; deleteFailureLogoutEpoch.value = null; deleteFailureContextKey.value += 1; deleteFeedbackLease = {} }
 const visible = ref(false)
 const submitLoading = ref(false)
 const isEditing = ref(false)
@@ -179,18 +290,43 @@ const formState = ref({
   remark: '',
 })
 
-function normalizeMoneyInput(value) {
-  const amount = Number(value || 0)
-  if (!Number.isFinite(amount) || amount < 0) {
-    return 0
-  }
-  return amount
-}
-
-export default defineComponent({
-  name: 'AccessTokenManagement',
-  components: { OverflowTableText },
-  setup() {
+    let viewLease = {}
+    let editorLease = {}
+    let draftLease = {}
+    let listReadLease = {}
+    let createdTokenDialog = null
+    const retireCreatedTokenDialog = () => {
+      const dialog = createdTokenDialog
+      createdTokenDialog = null
+      if (!dialog) return
+      dialog.scrub()
+      if (dialog.popup && Swal.getPopup() === dialog.popup) Swal.close()
+    }
+    const retireEditor = () => { editorLease = {}; submitLoading.value = false; clearEditorFailure(); clearNameError() }
+    watch(formState, () => { draftLease = {}; clearEditorFailure() }, { deep: true, flush: 'sync' })
+    watch(() => formState.value.name, () => {
+      if (!nameError.value) return
+      const rawName = String(formState.value.name || '').trim()
+      if (isEditing.value && rawName === String(formState.value.originalName || '').trim()) {
+        clearNameError()
+        return
+      }
+      try {
+        normalizeAccessTokenName(rawName)
+        clearNameError()
+      } catch (error) {
+        nameError.value = error?.message || '令牌名称不符合要求'
+      }
+    }, { flush: 'sync' })
+    watch(visible, open => { if (!open) retireEditor() }, { flush: 'sync' })
+    watch(showAllTokens, () => {
+      viewLease = {}
+      clearListFailure()
+      clearDeleteFailure()
+      retireCreatedTokenDialog()
+      dataSource.value = []; visibleTokenIds.value = []; tableLoading.value = false
+      visible.value = false; retireEditor()
+    }, { flush: 'sync' })
     const remarkExpansion = useTableExpansion(dataSource)
     const summary = computed(() => {
       const rows = Array.isArray(dataSource.value) ? dataSource.value : []
@@ -216,8 +352,55 @@ export default defineComponent({
     })
 
     const modalTitle = computed(() => isEditing.value ? '编辑令牌' : '新增令牌')
-    const currentUser = computed(() => getStoredCurrentUser())
+    const { currentUser } = useCurrentUserDisplay()
+    let observedLogoutEpoch = getCurrentUserLogoutEpoch()
+    const instance = getCurrentInstance()
+    const { captureDataOwner, canLoadForCurrentUser } = useCurrentUserRequestScope(currentUser, {
+      clear() {
+        clearListFailure()
+        clearDeleteFailure()
+        dataSource.value = []; tableLoading.value = false; visibleTokenIds.value = []
+        visible.value = false; showAllTokens.value = false; viewLease = {}; retireEditor(); retireCreatedTokenDialog()
+        formState.value = { id: undefined, name: '', originalName: '', status: 'enabled', totalQuotaLimit: 0, remark: '' }; isEditing.value = false
+      },
+      reset() {},
+      reload() { instance.proxy.handleLoad() },
+    })
+    // Explicit logout retires old entries even if storage removal was refused.
+    // New attempts after login capture their own epoch, without requiring remount.
+    watch(() => [currentUser.value, getCurrentUserLogoutEpoch()], () => {
+      const logout = getCurrentUserLogoutEpoch()
+      if (logout !== observedLogoutEpoch) { clearEditorFailure(); clearDeleteFailure(); clearNameError() }
+      observedLogoutEpoch = logout
+    }, { flush: 'sync' })
     const isAdmin = computed(() => isAdminUser(currentUser.value))
+    const isCurrentListFailure = (failure, context) => canLoadForCurrentUser()
+      && Boolean(failure) && failure === listFailure.value && context === listFailureContextKey.value
+    const isCurrentEditorFailure = (failure, context) => canLoadForCurrentUser() && getCurrentUserLogoutEpoch() === editorFailureLogoutEpoch.value && visible.value
+      && Boolean(failure) && failure === editorFailure.value && context === editorFailureContextKey.value
+    const isCurrentDeleteFailure = (failure, context) => canLoadForCurrentUser() && getCurrentUserLogoutEpoch() === deleteFailureLogoutEpoch.value
+      && Boolean(failure) && failure === deleteFailure.value && context === deleteFailureContextKey.value
+    const reconcileEditorToken = computed(() => {
+      const failure = editorFailure.value, context = editorFailureContextKey.value
+      const owns = captureDataOwner(), view = viewLease, editor = editorLease, draft = draftLease
+      const logout = getCurrentUserLogoutEpoch()
+      const isCurrent = () => owns() && logout === getCurrentUserLogoutEpoch() && view === viewLease && editor === editorLease && draft === draftLease && isCurrentEditorFailure(failure, context)
+      return () => { if (isCurrent() && !tableLoading.value && !submitLoading.value) return instance.proxy.handleLoad(isCurrent) }
+    })
+    const reconcileDeletedToken = computed(() => {
+      const failure = deleteFailure.value, context = deleteFailureContextKey.value
+      const owns = captureDataOwner(), view = viewLease, lease = deleteFeedbackLease
+      const logout = getCurrentUserLogoutEpoch()
+      const isCurrent = () => owns() && logout === getCurrentUserLogoutEpoch() && view === viewLease && lease === deleteFeedbackLease && isCurrentDeleteFailure(failure, context)
+      return () => { if (isCurrent() && !tableLoading.value) return instance.proxy.handleLoad(isCurrent) }
+    })
+    const retryTokenList = computed(() => {
+      const failure = listFailure.value, context = listFailureContextKey.value
+      const owns = captureDataOwner(), lease = viewLease
+      return (entryFailure = failure, entryContext = context) => {
+        if (owns() && lease === viewLease && entryFailure === failure && entryContext === context && isCurrentListFailure(entryFailure, entryContext)) instance.proxy.handleLoad()
+      }
+    })
     const balanceAlert = computed(() => buildAccessTokenBalanceAlert(currentUser.value))
     const baseColumns = [
       {
@@ -276,8 +459,8 @@ export default defineComponent({
         width: 120,
       },
     ]
-    const columns = computed(() => {
-      if (!showAllTokens.value) {
+    const allColumns = computed(() => {
+      if (!isAdmin.value || !showAllTokens.value) {
         return baseColumns.map(column => column.key === 'remark' ? { ...column, width: remarkExpansion.columnWidth('remark') } : column)
       }
       return [
@@ -291,13 +474,69 @@ export default defineComponent({
       ]
     })
 
+    const columnScope = computed(() => {
+      const identity = currentUser.value?.id ? 'id:' + currentUser.value.id : ''
+      return identity ? `${identity}:${isAdmin.value ? 'admin' : 'user'}:${isAdmin.value && showAllTokens.value ? 'all' : 'mine'}` : ''
+    })
+    const priorityColumnKeys = ['username', 'name', 'status', 'totalQuotaLimit', 'totalAmountUsed', 'operation']
+    const { visibleColumns: columns, selectedKeys, columnOptions, scopeKey: columnContextKey, setSelectedKeys, resetColumns } = useTableColumnPreferences({
+      pageKey: 'access-token-management', columns: allColumns, scope: columnScope, requiredKeys: ['name', 'username', 'operation'], priorityKeys: priorityColumnKeys,
+    })
     const tableScrollX = computed(() => sumTableColumnWidths(columns.value))
 
     return {
+      fieldId, nameInput, nameError,
+      captureDataOwner, canLoadForCurrentUser, retireEditor, retireCreatedTokenDialog,
+      ownCreatedTokenDialog(dialog) { createdTokenDialog = dialog },
+      isCreatedTokenDialogCurrent(dialog) { return createdTokenDialog === dialog },
+      releaseCreatedTokenDialog(dialog) { if (createdTokenDialog === dialog) createdTokenDialog = null },
+      captureViewOwner() {
+        const owns = captureDataOwner(), lease = viewLease
+        return () => owns() && lease === viewLease
+      },
+      captureListReadOwner() {
+        const owns = captureDataOwner(), view = viewLease, lease = {}
+        listReadLease = lease
+        return () => owns() && view === viewLease && lease === listReadLease
+      },
+      captureEditorOwner() {
+        const owns = captureDataOwner(), lease = editorLease
+        return () => owns() && lease === editorLease
+      },
+      captureEditorDraftOwner() {
+        const owns = captureDataOwner(), editor = editorLease, draft = draftLease
+        const logout = getCurrentUserLogoutEpoch()
+        return () => owns() && logout === getCurrentUserLogoutEpoch() && editor === editorLease && draft === draftLease
+      },
+      captureDeleteFeedbackOwner() {
+        clearDeleteFailure()
+        const owns = captureDataOwner(), view = viewLease, lease = deleteFeedbackLease
+        const logout = getCurrentUserLogoutEpoch()
+        return () => owns() && logout === getCurrentUserLogoutEpoch() && view === viewLease && lease === deleteFeedbackLease
+      },
       labelCol: { style: { width: '110px' } },
       wrapperCol: { span: 16 },
       dataSource,
       tableLoading,
+      listFailure,
+      listFailureContextKey,
+      clearListFailure,
+      retryTokenList,
+      isCurrentListFailure,
+      editorFailure,
+      editorFailureContextKey,
+      editorFailureLogoutEpoch,
+      editorFailureMessage,
+      clearEditorFailure,
+      isCurrentEditorFailure,
+      reconcileEditorToken,
+      deleteFailure,
+      deleteFailureContextKey,
+      deleteFailureLogoutEpoch,
+      deleteFailureMessage,
+      clearDeleteFailure,
+      isCurrentDeleteFailure,
+      reconcileDeletedToken,
       visible,
       submitLoading,
       isEditing,
@@ -313,6 +552,12 @@ export default defineComponent({
         { label: '禁用', value: 'disabled' },
       ],
       columns,
+      selectedColumnKeys: selectedKeys,
+      columnOptions,
+      columnContextKey,
+      priorityColumnKeys,
+      setSelectedColumnKeys: setSelectedKeys,
+      resetColumns,
       tableScrollX,
       remarkExpansion,
       limitAccessTokenNameInput,
@@ -339,14 +584,14 @@ export default defineComponent({
       return formatMoneyYuanWithSpace(amount)
     },
     isTokenVisible(tokenId) {
-      return visibleTokenIds.value.includes(tokenId)
+      return this.visibleTokenIds.includes(tokenId)
     },
     toggleTokenVisibility(tokenId) {
       if (this.isTokenVisible(tokenId)) {
-        visibleTokenIds.value = visibleTokenIds.value.filter(id => id !== tokenId)
+        this.visibleTokenIds = this.visibleTokenIds.filter(id => id !== tokenId)
         return
       }
-      visibleTokenIds.value = [...visibleTokenIds.value, tokenId]
+      this.visibleTokenIds = [...this.visibleTokenIds, tokenId]
     },
     displayTokenValue(record) {
       const rawValue = String(record?.tokenValue || '').trim()
@@ -362,12 +607,15 @@ export default defineComponent({
       return `${rawValue.slice(0, 8)}******${rawValue.slice(-6)}`
     },
     copyTokenValue(record) {
+      if (!this.canLoadForCurrentUser()) return
+      const owns = this.captureViewOwner()
       const rawValue = String(record?.tokenValue || '').trim()
       if (!rawValue) {
         message.warning('当前令牌为空，无法复制')
         return
       }
-      this.copyTokenText(rawValue).then((copied) => {
+      return this.copyTokenText(rawValue, owns).then((copied) => {
+        if (!owns()) return
         if (copied) {
           message.success('访问令牌已复制')
           return
@@ -375,20 +623,21 @@ export default defineComponent({
         message.error('复制访问令牌失败，请手动复制')
       })
     },
-    async copyTokenText(rawValue) {
+    async copyTokenText(rawValue, owns = () => true) {
       const value = String(rawValue || '').trim()
-      if (!value) {
+      if (!value || !owns()) {
         return false
       }
       if (navigator?.clipboard?.writeText) {
         try {
           await navigator.clipboard.writeText(value)
-          return true
+          return owns()
         } catch (error) {
           // Fall through to the legacy copy path for non-secure or restricted contexts.
         }
       }
 
+      if (!owns()) return false
       const textarea = document.createElement('textarea')
       textarea.value = value
       textarea.setAttribute('readonly', '')
@@ -408,7 +657,19 @@ export default defineComponent({
       }
     },
     showCreatedTokenDialog(plainToken) {
-      return Swal.fire({
+      if (!this.canLoadForCurrentUser()) return
+      this.retireCreatedTokenDialog()
+      const ownsView = this.captureViewOwner()
+      const dialog = {
+        popup: null,
+        scrub() {
+          plainToken = ''
+          dialog.popup?.querySelector('[data-token-value]')?.replaceChildren()
+        },
+      }
+      this.ownCreatedTokenDialog(dialog)
+      const owns = () => ownsView() && this.isCreatedTokenDialogCurrent(dialog) && Swal.getPopup() === dialog.popup
+      const result = Swal.fire({
         icon: 'success',
         title: '令牌创建成功',
         html: `
@@ -430,6 +691,7 @@ export default defineComponent({
         buttonsStyling: false,
         allowOutsideClick: false,
         focusConfirm: false,
+        returnFocus: false,
         heightAuto: false,
         scrollbarPadding: false,
         customClass: {
@@ -440,15 +702,31 @@ export default defineComponent({
           confirmButton: 'token-created-popup__confirm',
           denyButton: 'token-created-popup__copy',
         },
-        didOpen: () => {
-          const tokenElement = Swal.getHtmlContainer()?.querySelector('[data-token-value]')
+        didOpen: popup => {
+          dialog.popup = popup
+          if (!owns()) {
+            dialog.scrub()
+            if (Swal.getPopup() === popup) Swal.close()
+            return
+          }
+          const tokenElement = popup.querySelector('[data-token-value]')
           if (tokenElement) {
             tokenElement.textContent = plainToken
           }
         },
+        willClose: () => {
+          dialog.scrub()
+          this.releaseCreatedTokenDialog(dialog)
+        },
+        didDestroy: () => {
+          dialog.scrub()
+          this.releaseCreatedTokenDialog(dialog)
+        },
         preDeny: async () => {
-          const copied = await this.copyTokenText(plainToken)
-          const denyButton = Swal.getDenyButton()
+          if (!owns()) return false
+          const copied = await this.copyTokenText(plainToken, owns)
+          if (!owns()) return false
+          const denyButton = dialog.popup.querySelector('.swal2-deny')
           if (copied) {
             if (denyButton) {
               denyButton.textContent = '已复制'
@@ -463,6 +741,8 @@ export default defineComponent({
           return false
         },
       })
+      dialog.popup = Swal.getPopup()
+      return result
     },
     formatDateTime(value) {
       if (!value) {
@@ -474,35 +754,49 @@ export default defineComponent({
       }
       return date.toLocaleString()
     },
-    handleLoad() {
-      tableLoading.value = true
-      getAccessTokens(buildAccessTokenListParams(showAllTokens.value)).then(res => {
+    handleLoad(isReconciliationCurrent) {
+      if (!this.canLoadForCurrentUser()) return
+      const ownsView = this.captureViewOwner()
+      const ownsRead = this.captureListReadOwner()
+      const owns = () => ownsView() && (typeof isReconciliationCurrent !== 'function' || (ownsRead() && isReconciliationCurrent()))
+      this.clearListFailure()
+      this.tableLoading = true
+      return getAccessTokens(buildAccessTokenListParams(this.showAllTokens)).then(res => {
+        if (!owns()) return
         if (res?.status === 200) {
-          dataSource.value = Array.isArray(res?.data) ? res.data : []
+          this.clearListFailure()
+          this.dataSource = Array.isArray(res?.data) ? res.data : []
         } else {
-          message.error(res?.message || '获取访问令牌失败')
+          this.clearListFailure()
+          this.listFailure = ensureRequestFailure(res)
         }
-      }).catch(() => {
-        message.error('获取访问令牌失败')
+      }).catch(error => {
+        if (!owns()) return
+        this.clearListFailure()
+        this.listFailure = ensureRequestFailure(error)
       }).finally(() => {
-        tableLoading.value = false
+        if (!ownsRead()) return
+        this.tableLoading = false
       })
     },
     toggleAllTokens() {
       if (!this.isAdmin) {
         return
       }
-      showAllTokens.value = !showAllTokens.value
+      this.showAllTokens = !this.showAllTokens
       this.handleLoad()
     },
     openCreateModal() {
+      if (!this.canLoadForCurrentUser()) return
       this.resetFormState()
-      isEditing.value = false
-      visible.value = true
+      this.isEditing = false
+      this.visible = true
     },
     openEditModal(record) {
-      isEditing.value = true
-      formState.value = {
+      if (!this.canLoadForCurrentUser()) return
+      this.retireEditor()
+      this.isEditing = true
+      this.formState = {
         id: record.id,
         name: record.name || '',
         originalName: record.name || '',
@@ -510,32 +804,47 @@ export default defineComponent({
         totalQuotaLimit: Number(record.totalQuotaLimit || 0),
         remark: record.remark || '',
       }
-      visible.value = true
+      this.visible = true
     },
     handleSubmit() {
+      if (!this.canLoadForCurrentUser() || !this.visible || this.submitLoading) return
+      const owns = this.captureEditorOwner()
+      const ownsDraft = this.captureEditorDraftOwner()
+      const editing = this.isEditing
+      const submittedDraft = JSON.stringify(this.formState)
       let name
-      const rawName = String(formState.value.name || '').trim()
-      const unchangedLegacyName = isEditing.value && rawName === String(formState.value.originalName || '').trim()
+      const rawName = String(this.formState.name || '').trim()
+      const unchangedLegacyName = this.isEditing && rawName === String(this.formState.originalName || '').trim()
       if (unchangedLegacyName) {
         name = rawName
       } else {
         try {
           name = normalizeAccessTokenName(rawName)
         } catch (error) {
+          const validationMessage = error?.message || '令牌名称不符合要求'
+          const control = this.nameInput
+          this.nameError = validationMessage
+          nextTick(() => {
+            if (ownsDraft() && this.visible && this.nameError === validationMessage && this.nameInput === control) {
+              control?.focus?.({ preventScroll: true })
+            }
+          })
           message.warning(error?.message || '令牌名称不符合要求')
           return
         }
       }
+      this.nameError = ''
       const payload = {
-        id: formState.value.id,
+        id: this.formState.id,
         name,
-        status: String(formState.value.status || 'enabled').trim(),
-        totalQuotaLimit: normalizeMoneyInput(formState.value.totalQuotaLimit),
-        remark: String(formState.value.remark || '').trim(),
+        status: String(this.formState.status || 'enabled').trim(),
+        totalQuotaLimit: normalizeMoneyInput(this.formState.totalQuotaLimit),
+        remark: String(this.formState.remark || '').trim(),
       }
 
-      submitLoading.value = true
-      const submitter = isEditing.value
+      this.clearEditorFailure()
+      this.submitLoading = true
+      const submitter = editing
         ? updateAccessToken(payload)
         : createAccessToken({
           name: payload.name,
@@ -543,9 +852,10 @@ export default defineComponent({
           remark: payload.remark,
         })
 
-      submitter.then(res => {
+      return submitter.then(res => {
+        if (!owns()) return
         if (res?.status === 200) {
-          if (isEditing.value) {
+          if (editing) {
             message.success('更新令牌成功')
           } else {
             message.success('创建令牌成功')
@@ -555,30 +865,50 @@ export default defineComponent({
             }
           }
           this.handleLoad()
-          visible.value = false
+          if (JSON.stringify(this.formState) === submittedDraft) this.visible = false
         } else {
-          message.error(res?.message || (isEditing.value ? '更新令牌失败' : '创建令牌失败'))
+          if (!ownsDraft()) return
+          this.editorFailureMessage = tokenWriteFailureMessage(res, editing ? '更新' : '创建')
+          this.editorFailureLogoutEpoch = getCurrentUserLogoutEpoch()
+          this.editorFailure = ensureRequestFailure(res)
         }
-      }).catch(() => {
-        message.error(isEditing.value ? '更新令牌失败' : '创建令牌失败')
+      }).catch(error => {
+        if (!owns() || !ownsDraft()) return
+        this.editorFailureMessage = tokenWriteFailureMessage(error, editing ? '更新' : '创建')
+        this.editorFailureLogoutEpoch = getCurrentUserLogoutEpoch()
+        this.editorFailure = ensureRequestFailure(error)
       }).finally(() => {
-        submitLoading.value = false
+        if (!owns()) return
+        this.submitLoading = false
       })
     },
     handleDelete(id) {
-      deleteAccessToken({ id }).then(res => {
+      if (!this.canLoadForCurrentUser()) return
+      const owns = this.captureViewOwner()
+      const ownsFeedback = this.captureDeleteFeedbackOwner()
+      return deleteAccessToken({ id }).then(res => {
+        if (!owns()) return
         if (res?.status === 200) {
           message.success('删除令牌成功')
           this.handleLoad()
         } else {
-          message.error(res?.message || '删除令牌失败')
+          if (ownsFeedback()) {
+            this.deleteFailureLogoutEpoch = getCurrentUserLogoutEpoch()
+            this.deleteFailure = ensureRequestFailure(res)
+          }
         }
-      }).catch(() => {
-        message.error('删除令牌失败')
+      }).catch(error => {
+        if (!owns() || !ownsFeedback()) return
+        this.deleteFailureLogoutEpoch = getCurrentUserLogoutEpoch()
+        this.deleteFailure = ensureRequestFailure(error)
       })
     },
+    handleModalAfterClose() {
+      if (!this.visible) this.resetFormState()
+    },
     resetFormState() {
-      formState.value = {
+      this.retireEditor()
+      this.formState = {
         id: undefined,
         name: '',
         originalName: '',
@@ -586,13 +916,19 @@ export default defineComponent({
         totalQuotaLimit: 0,
         remark: '',
       }
-      isEditing.value = false
+      this.isEditing = false
     },
   },
 })
 </script>
 
 <style scoped>
+.table-preferences-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
 .token-page {
   display: flex;
   flex-direction: column;
@@ -697,7 +1033,7 @@ export default defineComponent({
   border: 1px solid #fde68a;
   border-radius: 8px;
   background: #fffbeb;
-  color: #92400e;
+  color: var(--warning-fg);
   font-size: 13px;
   line-height: 1.6;
 }
@@ -712,7 +1048,7 @@ export default defineComponent({
   margin-top: 1px;
   border-radius: 50%;
   background: #f59e0b;
-  color: #ffffff;
+  color: var(--surface);
   font-size: 12px;
   font-weight: 800;
 }

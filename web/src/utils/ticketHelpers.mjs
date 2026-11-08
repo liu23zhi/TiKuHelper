@@ -1,3 +1,6 @@
+import { inheritTransportRequestId } from "./requestHelpers.mjs";
+import { inheritRequestFailureView } from "./requestFailureView.mjs";
+
 export const TICKET_STATUS_OPTIONS = Object.freeze([
   { value: "open", label: "待处理", color: "blue" },
   { value: "pending", label: "等待回复", color: "gold" },
@@ -19,9 +22,12 @@ export function ticketStatusColor(value) {
 export function requireTicketResponse(response) {
   const status = Number(response?.status);
   if (!Number.isFinite(status) || status < 200 || status >= 300) {
-    throw new Error(
+    const error = new Error(
       String(response?.message || response?.data?.message || "工单请求失败")
     );
+    inheritTransportRequestId(error, response);
+    inheritRequestFailureView(error, response);
+    throw error;
   }
   return response;
 }
@@ -57,20 +63,24 @@ export function normalizeTicketText(value, maxLength = 10000) {
   return Array.from(text).slice(0, maxLength).join("");
 }
 
-export function validateTicketDraft(subject, body) {
+export function getTicketDraftValidation(subject, body) {
   const normalizedSubject = String(subject ?? "")
     .replace(/\r\n?/g, "\n")
     .trim();
   const normalizedBody = String(body ?? "")
     .replace(/\r\n?/g, "\n")
     .trim();
-  if (!normalizedSubject) return "请输入工单标题";
+  if (!normalizedSubject) return Object.freeze({ field: "subject", message: "请输入工单标题" });
   if (Array.from(normalizedSubject).length > 120)
-    return "工单标题不能超过 120 个字符";
-  if (!normalizedBody) return "请输入问题描述";
+    return Object.freeze({ field: "subject", message: "工单标题不能超过 120 个字符" });
+  if (!normalizedBody) return Object.freeze({ field: "body", message: "请输入问题描述" });
   if (Array.from(normalizedBody).length > 10000)
-    return "问题描述不能超过 10000 个字符";
-  return "";
+    return Object.freeze({ field: "body", message: "问题描述不能超过 10000 个字符" });
+  return Object.freeze({ field: "", message: "" });
+}
+
+export function validateTicketDraft(subject, body) {
+  return getTicketDraftValidation(subject, body).message;
 }
 
 export function buildTicketListParams(filters, page, pageSize) {

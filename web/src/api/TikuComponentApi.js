@@ -113,11 +113,14 @@ export function releaseWechatRegisterFlow(data) {
   })
 }
 
-export function createWechatLoginQRCode() {
-  return request({
+export function createWechatLoginQRCode(feedback) {
+  const config = {
     url: `/adapter-service/public/wechat-login/qrcode`,
     method: 'post'
-  })
+  }
+  // Only this narrow caller option is accepted; zero-argument consumers stay unchanged.
+  if (feedback?.errorFeedback === 'local') config.errorFeedback = 'local'
+  return request(config)
 }
 
 export function getWechatLoginStatus(params) {
@@ -316,11 +319,13 @@ export function importQuestions(data) {
   })
 }
 // 获取当前登录用户信息
-export function getCurrentUser() {
-  return request({
+export function getCurrentUser(feedback) {
+  const config = {
     url: `/adapter-service/user/info`,
     method: 'get'
-  })
+  }
+  if (feedback?.errorFeedback === 'local') config.errorFeedback = 'local'
+  return request(config)
 }
 
 export function updateCurrentUserProfile(data) {
@@ -365,6 +370,7 @@ export function bindCurrentUserWechatByCode(data) {
 
 export function resolveAdminWechatIDByScan(params) {
   return request({
+    errorFeedback: 'local',
     url: `/adapter-service/user/wechat/scan-id`,
     method: 'get',
     params
@@ -373,6 +379,7 @@ export function resolveAdminWechatIDByScan(params) {
 
 export function resolveAdminWechatIDByCode(data) {
   return request({
+    errorFeedback: 'local',
     url: `/adapter-service/user/wechat/code-id`,
     method: 'post',
     data
@@ -389,6 +396,7 @@ export function unbindCurrentUserWechat() {
 // 获取用户列表（支持关键词 / 角色 / 状态筛选与分页）
 export function getUserList(params) {
   return request({
+    errorFeedback: 'local',
     url: `/adapter-service/user`,
     method: 'get',
     params
@@ -397,6 +405,7 @@ export function getUserList(params) {
 // 删除用户
 export function delUser(data) {
   return request({
+    errorFeedback: 'local',
     url: `/adapter-service/user/${data.id}`,
     method: 'delete'
   })
@@ -405,6 +414,7 @@ export function delUser(data) {
 // 新增用户
 export function addUser(data) {
   return request({
+    errorFeedback: 'local',
     url: `/adapter-service/user`,
     method: 'post',
     data
@@ -414,6 +424,7 @@ export function addUser(data) {
 // 更新用户
 export function updateUser(data) {
   return request({
+    errorFeedback: 'local',
     url: `/adapter-service/user/${data.id}`,
     method: 'put',
     data
@@ -422,6 +433,7 @@ export function updateUser(data) {
 
 export function resetUserPassword(data) {
   return request({
+    errorFeedback: 'local',
     url: `/adapter-service/user/${data.id}/reset-password`,
     method: 'put',
     data: {
@@ -432,6 +444,7 @@ export function resetUserPassword(data) {
 
 export function adjustUserBalance(data) {
   return request({
+    errorFeedback: 'local',
     url: `/adapter-service/user/${data.id}/balance`,
     method: 'post',
     data: { mode: data.mode, amount: data.amount, showInStatement: data.showInStatement },
@@ -440,6 +453,7 @@ export function adjustUserBalance(data) {
 
 export function updateBillingStatementVisibility(id, showInStatement) {
   return request({
+    errorFeedback: 'local',
     url: `/adapter-service/billing-records/${id}/statement-visibility`,
     method: 'put',
     data: { showInStatement },
@@ -456,6 +470,7 @@ export function getLogList(params) {
 
 export function getBillingRecords(params) {
   return request({
+    errorFeedback: 'local',
     url: `/adapter-service/billing-records`,
     method: 'get',
     params
@@ -464,6 +479,7 @@ export function getBillingRecords(params) {
 
 export function createRechargeOrder(data) {
   return request({
+    errorFeedback: 'local',
     url: `/adapter-service/recharge-orders`,
     method: 'post',
     data
@@ -478,49 +494,61 @@ export function getRechargeOrders(params) {
   })
 }
 
-export function getPaymentMethods() {
-  return request({
+export function getPaymentMethods(feedback) {
+  const config = {
     url: `/adapter-service/payment-methods`,
     method: 'get'
-  })
+  }
+  if (feedback?.errorFeedback === 'local') config.errorFeedback = 'local'
+  return request(config)
 }
 
-export function createPaymentMethod(data) {
-  return request({
+export function createPaymentMethod(data, feedback) {
+  const config = {
     url: `/adapter-service/payment-methods`,
     method: 'post',
     data
-  })
+  }
+  if (feedback?.errorFeedback === 'local') config.errorFeedback = 'local'
+  return request(config)
 }
 
-export function updatePaymentMethod(data) {
-  return request({
+export function updatePaymentMethod(data, feedback) {
+  const config = {
     url: `/adapter-service/payment-methods/${data.id}`,
     method: 'put',
     data
-  })
+  }
+  if (feedback?.errorFeedback === 'local') config.errorFeedback = 'local'
+  return request(config)
 }
 
-export function deletePaymentMethod(data) {
-  return request({
+export function deletePaymentMethod(data, feedback) {
+  const config = {
     url: `/adapter-service/payment-methods/${data.id}`,
     method: 'delete'
-  })
+  }
+  if (feedback?.errorFeedback === 'local') config.errorFeedback = 'local'
+  return request(config)
 }
 
-export function getSearchAccountConfigs() {
-  return request({
+export function getSearchAccountConfigs(feedback) {
+  const config = {
     url: `/adapter-service/search-account-configs`,
     method: 'get'
-  })
+  }
+  if (feedback?.errorFeedback === 'local') config.errorFeedback = 'local'
+  return request(config)
 }
 
-export function updateSearchAccountConfig(provider, data) {
-  return request({
+export function updateSearchAccountConfig(provider, data, feedback) {
+  const config = {
     url: `/adapter-service/search-account-configs/${provider}`,
     method: 'put',
     data
-  })
+  }
+  if (feedback?.errorFeedback === 'local') config.errorFeedback = 'local'
+  return request(config)
 }
 
 export function getAISearchConfig() {
@@ -544,23 +572,29 @@ export function getAISearchConfigPricingStatus() {
   })
 }
 
-export function getAIOCRCacheStatus() {
-  return request({
+export function getAIOCRCacheStatus(feedback) {
+  const config = {
     url: `/adapter-service/ai-search-config/ocr-cache`,
     method: 'get'
-  })
+  }
+  if (feedback?.errorFeedback === 'local') config.errorFeedback = 'local'
+  return request(config)
 }
 
-export function getAIOCRCacheEntries(params) {
-  return request({
+export function getAIOCRCacheEntries(params, feedback) {
+  const config = {
     url: `/adapter-service/ai-search-config/ocr-cache/entries`,
     method: 'get',
     params,
-  })
+  }
+  if (feedback?.errorFeedback === 'local') config.errorFeedback = 'local'
+  return request(config)
 }
 
 export function getAIOCRCacheImage(urlHash) {
   return request({
+    errorFeedback: 'local',
+    retryPolicy: 'single',
     url: `/adapter-service/ai-search-config/ocr-cache/entries/${encodeURIComponent(urlHash)}/image`,
     method: 'get',
     responseType: 'blob',
@@ -568,16 +602,19 @@ export function getAIOCRCacheImage(urlHash) {
   })
 }
 
-export function clearAIOCRCache(params) {
-  return request({
+export function clearAIOCRCache(params, feedback) {
+  const config = {
     url: `/adapter-service/ai-search-config/ocr-cache`,
     method: 'delete',
     params,
-  })
+  }
+  if (feedback?.errorFeedback === 'local') config.errorFeedback = 'local'
+  return request(config)
 }
 
 export function deleteAIOCRCacheBatch(data) {
   return request({
+    errorFeedback: 'local',
     url: `/adapter-service/ai-search-config/ocr-cache/batch-delete`,
     method: 'post',
     data,
@@ -616,6 +653,7 @@ export function resetAIModelPrices() {
 
 export function getAccessTokens(params = {}) {
   return request({
+    errorFeedback: 'local',
     url: `/adapter-service/access-tokens`,
     method: 'get',
     params
@@ -624,6 +662,7 @@ export function getAccessTokens(params = {}) {
 
 export function createAccessToken(data) {
   return request({
+    errorFeedback: 'local',
     url: `/adapter-service/access-tokens`,
     method: 'post',
     data
@@ -632,6 +671,7 @@ export function createAccessToken(data) {
 
 export function updateAccessToken(data) {
   return request({
+    errorFeedback: 'local',
     url: `/adapter-service/access-tokens/${data.id}`,
     method: 'put',
     data
@@ -640,6 +680,7 @@ export function updateAccessToken(data) {
 
 export function deleteAccessToken(data) {
   return request({
+    errorFeedback: 'local',
     url: `/adapter-service/access-tokens/${data.id}`,
     method: 'delete'
   })
@@ -649,14 +690,18 @@ export function deleteAccessToken(data) {
 // applies the owner/admin scope; the UI only uses `scope=all` for admins.
 export function getScripts(params = {}) {
   return request({
+    errorFeedback: 'local',
     url: `/adapter-service/scripts`,
     method: 'get',
     params,
   })
 }
 
-export function createScript(data) {
+export function createScript(data, idempotencyKey) {
   return request({
+    errorFeedback: 'local',
+    retryPolicy: 'single',
+    ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
     url: `/adapter-service/scripts`,
     method: 'post',
     data,
@@ -665,6 +710,7 @@ export function createScript(data) {
 
 export function updateScript(data) {
   return request({
+    errorFeedback: 'local',
     url: `/adapter-service/scripts/${data.id}`,
     method: 'put',
     data,
@@ -672,33 +718,44 @@ export function updateScript(data) {
 }
 
 export function deleteScript(data) {
+  const sessionId = data.confirmActiveSessionId
+  if (sessionId !== undefined && (typeof sessionId !== 'string' || !/^[1-9][0-9]{0,18}$/.test(sessionId))) {
+    throw new TypeError('客户端会话确认无效，请刷新后重新确认。')
+  }
   return request({
+    errorFeedback: 'local',
+    retryPolicy: 'single',
     url: `/adapter-service/scripts/${data.id}`,
     method: 'delete',
+    ...(sessionId === undefined ? {} : { params: { confirmActiveSessionId: sessionId } }),
   })
 }
 
 export function getScriptVersions() {
   return request({
+    errorFeedback: 'local',
     url: `/adapter-service/script-versions`,
     method: 'get',
   })
 }
 
-export function uploadScriptVersion(file, version) {
+export function uploadScriptVersion(file, version, nativeLeaseProtocol = false) {
   const formData = new FormData()
   formData.append('version', String(version || ''))
   formData.append('file', file)
+  if (nativeLeaseProtocol === true) formData.append('nativeLeaseProtocol', 'true')
   return request({
+    errorFeedback: 'local',
     url: `/adapter-service/script-versions/upload`,
     method: 'post',
     data: formData,
-    timeout: 0,
+    timeout: 120 * 1000,
   })
 }
 
 export function getScriptDomainSettings() {
   return request({
+    errorFeedback: 'local',
     url: `/adapter-service/script-domain-settings`,
     method: 'get',
   })
@@ -706,25 +763,76 @@ export function getScriptDomainSettings() {
 
 export function updateScriptDomainSettings(data) {
   return request({
+    errorFeedback: 'local',
     url: `/adapter-service/script-domain-settings`,
     method: 'put',
     data,
   })
 }
 
-export function getSystemSettings() {
+export function getScriptEscrowPolicy() {
+  return request({ errorFeedback: 'local', url: `/adapter-service/script-escrow-policy`, method: 'get' })
+}
+
+export function updateScriptEscrowPolicy(data) {
+  return request({ errorFeedback: 'local', retryPolicy: 'single', url: `/adapter-service/script-escrow-policy`, method: 'put', data })
+}
+
+export function getScriptActivationCodePrice() {
+  return request({ errorFeedback: 'local', url: `/adapter-service/script-activation-code-price`, method: 'get' })
+}
+
+export function updateScriptActivationCodePrice(data) {
+  return request({ errorFeedback: 'local', retryPolicy: 'single', url: `/adapter-service/script-activation-code-price`, method: 'put', data })
+}
+
+export function purchaseScriptActivationCode(idempotencyKey, quotedPrice) {
   return request({
-    url: `/adapter-service/system-settings`,
-    method: 'get'
+    errorFeedback: 'local',
+    retryPolicy: 'single',
+    headers: { 'Idempotency-Key': idempotencyKey },
+    url: `/adapter-service/script-activation-codes/purchase`,
+    method: 'post',
+    ...(quotedPrice ? { data: { quotedPrice } } : {}),
   })
 }
 
-export function updateSystemSettings(data) {
+export function redeemScriptActivationCode(data) {
   return request({
+    errorFeedback: 'local',
+    retryPolicy: 'single',
+    url: `/adapter-service/script-activation-codes/redeem`,
+    method: 'post',
+    data,
+  })
+}
+
+// A diagnostic snapshot is explicit-only: one request per mount or manual refresh.
+export function getSystemMetrics() {
+  return request({
+    url: `/adapter-service/system-metrics`,
+    method: 'get',
+    retryPolicy: 'single',
+  })
+}
+
+export function getSystemSettings(feedback) {
+  const config = {
+    url: `/adapter-service/system-settings`,
+    method: 'get'
+  }
+  if (feedback?.errorFeedback === 'local') config.errorFeedback = 'local'
+  return request(config)
+}
+
+export function updateSystemSettings(data, feedback) {
+  const config = {
     url: `/adapter-service/system-settings`,
     method: 'put',
     data
-  })
+  }
+  if (feedback?.errorFeedback === 'local') config.errorFeedback = 'local'
+  return request(config)
 }
 
 export function getAISearchModels(params) {
@@ -744,13 +852,15 @@ export function testAISearchConfig(data) {
   })
 }
 
-export function testAIToolCall(data) {
-  return request({
+export function testAIToolCall(data, feedback) {
+  const config = {
     url: `/adapter-service/ai-search-config/tool-test`,
     method: 'post',
     data,
     timeout: 0
-  })
+  }
+  if (feedback?.errorFeedback === 'local') config.errorFeedback = 'local'
+  return request(config)
 }
 
 export function updateAISearchConfig(data) {

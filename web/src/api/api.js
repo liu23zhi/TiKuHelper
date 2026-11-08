@@ -9,19 +9,41 @@ const xmig6Instance = axios.create({
         return status >= 200 && status < 600
     }
 })
-const responseInterceptor = (response) => {
-    if (response.status !== 200) {
-        console.log(response.data?.message)
+// Keep only public error classification. Axios config/body/cause can contain
+// private document HTML, upload IDs or upstream connection details.
+const parserFailure = error => {
+    const failure = new Error('文档解析请求失败，请稍后重试。')
+    failure.name = 'RequestError'
+    const status = error?.response?.status
+    if (Number.isInteger(status) && status >= 100 && status <= 599) {
+        failure.code = 'PARSER_HTTP_ERROR'
+        failure.response = { status }
+    } else {
+        const allowed = ['ERR_NETWORK', 'ECONNRESET', 'ECONNABORTED', 'ETIMEDOUT', 'ERR_CANCELED', 'ERR_BAD_RESPONSE', 'ERR_BAD_REQUEST']
+        failure.code = allowed.includes(error?.code) ? error.code
+            : /^(Network Error|Failed to fetch)$/i.test(error?.message || '') ? 'ERR_NETWORK' : 'PARSER_ERROR'
+        if (error?.name === 'AbortError') {
+            failure.name = 'AbortError'
+            failure.code = 'ERR_CANCELED'
+        }
     }
-    return response.data;
-};
+    return failure
+}
+
+const responseInterceptor = response => {
+    if (response?.status !== 200) throw parserFailure({ response })
+    // The page owns paper validation; preserve the successful raw body identity.
+    return response.data
+}
 
 async function requestParser(config) {
     try {
-        const response = await executeWithRetry((attemptConfig) => xmig6Instance.request(attemptConfig), config)
+        const response = await executeWithRetry(attemptConfig => xmig6Instance.request(attemptConfig), config)
         return responseInterceptor(response)
     } catch (error) {
-        throw toUserRequestError(config, error)
+        // Preserve existing POST unknown-outcome semantics with a safe cause,
+        // never the original Axios error/config or an automatic replay.
+        throw toUserRequestError(config, parserFailure(error))
     }
 }
 

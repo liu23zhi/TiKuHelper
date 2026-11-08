@@ -30,13 +30,12 @@ import {
   Radio,
   Statistic,
   ConfigProvider,
-  Divider,
-  Result,
-  Typography,
 } from 'ant-design-vue'
 import router from './router/router'
 import 'ant-design-vue/dist/reset.css'
 import './styles/console.css'
+import './styles/theme-tokens.css'
+import './styles/swal-theme.css'
 import ConsolePageHeading from './components/ConsolePageHeading.vue'
 import ConsolePanel from './components/ConsolePanel.vue'
 import ConsoleSummaryGrid from './components/ConsoleSummaryGrid.vue'
@@ -73,9 +72,6 @@ app.use(Empty)
 app.use(Radio)
 app.use(Statistic)
 app.use(ConfigProvider)
-app.use(Divider)
-app.use(Result)
-app.use(Typography)
 app.component('ConsolePageHeading', ConsolePageHeading)
 app.component('ConsolePanel', ConsolePanel)
 app.component('ConsoleSummaryGrid', ConsoleSummaryGrid)

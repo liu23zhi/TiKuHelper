@@ -2,11 +2,13 @@ package controller
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -57,9 +59,11 @@ func AIFallback(c *gin.Context) {
 		return
 	}
 	clearAIResponseWriteDeadline(c)
-	billingCtx, err := resolveAIFallbackBillingContext(c)
+	// Preserve this synchronous admitted-work policy, not a global context override.
+	ownerContext := context.WithoutCancel(databaseRequestContext(c))
+	billingCtx, err := resolveAIFallbackBillingContextWithContext(c, ownerContext)
 	if err != nil {
-		result := service.BuildAIFallbackInsufficientBalanceResult(err.Error())
+		result := buildAIFallbackSpendingRejection(err)
 		writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), uuid.NewString(), "", "billing_precheck", "sync", model.SearchRequest{
 			Question: strings.TrimSpace(input.Question),
 			Type:     input.Type,
@@ -71,26 +75,38 @@ func AIFallback(c *gin.Context) {
 
 	requestID := uuid.NewString()
 	req := model.SearchRequest{
-		RequestContext:   c.Request.Context(),
+		RequestContext:   ownerContext,
 		Question:         strings.TrimSpace(input.Question),
 		Type:             input.Type,
 		Options:          input.Options,
 		SkipCache:        input.SkipCache,
-		DeepThinking:     input.DeepThinking,
+		DeepThinking:     input.DeepThinking || billingCtx.ScriptBilling.managed(),
 		QuestionEvidence: input.QuestionEvidence,
 		RequestID:        requestID,
 	}
 
+	actorScope := scriptRunActorScope(c)
+
 	// 缓存命中：与搜题一致 —— 不再调用 AI、不再计费。
 	// 只有显式 skipCache:true 才跳过读取；跳过读仍会把新结果写回（刷新语义）。
 	if !shouldBypassFallbackResultCache(req) {
-		if cached, ok := loadCachedAIFallbackResult(billingCtx.UserID, req); ok {
+		if cached, ok := loadCachedAIFallbackResult(billingCtx.UserID, req, actorScope); ok {
 			logger.SysLog(fmt.Sprintf("AI 兜底缓存命中 requestId=%s", requestID))
 			writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), requestID, "", "result", "sync", req, cached)
 			writeAIFallbackResult(c, cached)
 			return
 		}
 	}
+
+	tracked, err := beginScriptEscrowExecution(ownerContext, billingCtx.ScriptBilling,
+		billingCtx.ScriptID, aIFallbackVerifiedScriptSession(c).ID, requestID)
+	if err != nil {
+		failure := buildAIFallbackBillingFailureResult(err)
+		writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), requestID, "", "billing_precheck", "sync", req, failure)
+		writeAIFallbackResult(c, failure)
+		return
+	}
+	billingCtx.escrowWorkTracked = tracked
 
 	result := func() service.AIFallbackResult {
 		defer func() {
@@ -128,7 +144,7 @@ func AIFallback(c *gin.Context) {
 	if strings.TrimSpace(warning) != "" {
 		result.Warnings = append(result.Warnings, warning)
 	}
-	storeCachedAIFallbackResult(billingCtx.UserID, req, result)
+	storeCachedAIFallbackResult(billingCtx.UserID, req, result, actorScope)
 	writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), requestID, "", "result", "sync", req, result)
 	writeAIFallbackResult(c, result)
 }
@@ -257,13 +273,17 @@ func buildAIFallbackResultAuditSnapshot(result service.AIFallbackResult) string 
 }
 
 func resolveAIFallbackBillingContext(c *gin.Context) (searchBillingContext, error) {
+	return resolveAIFallbackBillingContextWithContext(c, databaseRequestContext(c))
+}
+
+func resolveAIFallbackBillingContextWithContext(c *gin.Context, requestContext context.Context) (searchBillingContext, error) {
 	userValue, exists := c.Get("user")
 	user, ok := userValue.(*entity.User)
 	if !exists || !ok || user == nil || user.ID <= 0 {
 		return searchBillingContext{}, errors.New("请重新登录后再使用 AI 兜底")
 	}
 
-	db := withDatabasePriority(resolveSearchPersistenceDB(), databaseRequestContext(c), dbqueue.PriorityHigh)
+	db := withDatabasePriority(resolveSearchPersistenceDB(), requestContext, dbqueue.PriorityHigh)
 	if db == nil {
 		return searchBillingContext{}, errors.New("AI 兜底计费校验失败，请稍后重试")
 	}
@@ -272,7 +292,8 @@ func resolveAIFallbackBillingContext(c *gin.Context) (searchBillingContext, erro
 	if err := db.Where("id = ?", user.ID).First(&freshUser).Error; err != nil {
 		return searchBillingContext{}, errors.New("AI 兜底计费校验失败，请稍后重试")
 	}
-	if freshUser.Balance <= 0 {
+	session := aIFallbackVerifiedScriptSession(c)
+	if freshUser.Balance <= 0 && session.ID <= 0 {
 		return searchBillingContext{}, errors.New("当前余额不足，AI 兜底已禁用，请充值后再使用")
 	}
 
@@ -283,16 +304,23 @@ func resolveAIFallbackBillingContext(c *gin.Context) (searchBillingContext, erro
 		if !ok || token == nil || token.ID <= 0 {
 			return searchBillingContext{}, errors.New("AI 兜底计费校验失败，请稍后重试")
 		}
-		// 令牌累计额度只做展示/统计，不再拦截请求：只要账号余额 > 0 就允许调用。
 		accessTokenID = token.ID
 	}
 
-	billingCtx, err := loadAIFallbackBillingContextWithDB(db, freshUser.ID, accessTokenID)
+	billingCtx, err := loadAIFallbackBillingContextWithDB(db, freshUser.ID, accessTokenID, session)
 	billingCtx.ClientIP = strings.TrimSpace(c.ClientIP())
 	return billingCtx, err
 }
 
-func loadAIFallbackBillingContextWithDB(db *gorm.DB, userID int32, accessTokenID int32) (searchBillingContext, error) {
+func aIFallbackVerifiedScriptSession(c *gin.Context) entity.ScriptRunSession {
+	value, _ := c.Get("script_session")
+	session, _ := value.(entity.ScriptRunSession)
+	// The queued task keeps the authenticated binding, never the credential.
+	session.TokenHash = ""
+	return session
+}
+
+func loadAIFallbackBillingContextWithDB(db *gorm.DB, userID int32, accessTokenID int32, session entity.ScriptRunSession) (searchBillingContext, error) {
 	if db == nil {
 		return searchBillingContext{}, errors.New("AI 兜底计费校验失败，请稍后重试")
 	}
@@ -301,7 +329,7 @@ func loadAIFallbackBillingContextWithDB(db *gorm.DB, userID int32, accessTokenID
 	if err := db.Where("id = ?", userID).First(&user).Error; err != nil {
 		return searchBillingContext{}, errors.New("AI 兜底计费校验失败，请稍后重试")
 	}
-	if user.Balance <= 0 {
+	if user.Balance <= 0 && session.ID <= 0 {
 		return searchBillingContext{}, errors.New("当前余额不足，AI 兜底已禁用，请充值后再使用")
 	}
 
@@ -313,10 +341,59 @@ func loadAIFallbackBillingContextWithDB(db *gorm.DB, userID int32, accessTokenID
 		Billable:           true,
 	}
 	if accessTokenID <= 0 {
+		if session.ID != 0 {
+			return searchBillingContext{}, service.ErrInvalidAccessTokenAuthorization
+		}
+		if !strings.EqualFold(strings.TrimSpace(user.Status), "enabled") {
+			return searchBillingContext{}, errors.New("用户已禁用")
+		}
 		return billingCtx, nil
 	}
-
+	var token entity.AccessToken
+	if err := db.Where("id = ? AND user_id = ?", accessTokenID, user.ID).First(&token).Error; err != nil {
+		return searchBillingContext{}, errors.New("访问令牌已失效")
+	}
+	if token.ScriptID != 0 || session.ID != 0 {
+		if err := validateAIFallbackScriptSessionWithDB(db, user.ID, token, session); err != nil {
+			return searchBillingContext{}, err
+		}
+		billingCtx.ScriptID = token.ScriptID
+	}
+	scriptPolicy, _, err := checkResolvedScriptSpendingAdmission(db, user, token, session)
+	if err != nil {
+		return searchBillingContext{}, err
+	}
+	billingCtx.ScriptBilling = scriptPolicy
 	return billingCtx, nil
+}
+
+// Revalidate a trusted run-session binding at admission, including when the
+// worker starts after queuing. Settlement of already executed work does not
+// depend on the session remaining active.
+func validateAIFallbackScriptSessionWithDB(db *gorm.DB, userID int32, token entity.AccessToken, session entity.ScriptRunSession) error {
+	rejected := fmt.Errorf("%w: 脚本运行会话无效或已过期", service.ErrInvalidAccessTokenAuthorization)
+	if token.ScriptID <= 0 || session.ID <= 0 || session.UserID != userID || session.ScriptID != token.ScriptID ||
+		session.AccessTokenID != token.ID || session.IdentityHash == "" {
+		return rejected
+	}
+	var current entity.ScriptRunSession
+	if err := db.Select("script_id", "identity_hash", "revoked_at", "expires_at", "lease_slot", "source_zone_hash", "last_heartbeat_at").
+		Where("id = ? AND script_id = ? AND user_id = ? AND access_token_id = ?",
+			session.ID, session.ScriptID, userID, token.ID).First(&current).Error; err != nil ||
+		!service.ScriptRunSessionUsableAt(current, time.Now()) ||
+		subtle.ConstantTimeCompare([]byte(session.IdentityHash), []byte(current.IdentityHash)) != 1 {
+		return rejected
+	}
+	var script entity.UserScript
+	if err := db.Select("base_domain", "use_wildcard_domain").
+		Where("id = ? AND user_id = ? AND access_token_id = ? AND enabled = ? AND deleted_at IS NULL",
+			session.ScriptID, userID, token.ID, true).First(&script).Error; err != nil {
+		return rejected
+	}
+	if err := service.ValidateScriptDomainWithDB(db, script.BaseDomain, script.UseWildcardDomain); err != nil {
+		return rejected
+	}
+	return nil
 }
 
 func persistAIFallbackBilling(billingCtx searchBillingContext, requestID string, req model.SearchRequest, result service.AIFallbackResult) error {
@@ -328,17 +405,14 @@ func persistAIFallbackBilling(billingCtx searchBillingContext, requestID string,
 // 未定价时按 0 计费，不阻断答案返回，只把提示交给调用方。
 func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, requestID string, req model.SearchRequest, result service.AIFallbackResult) (string, service.AIFallbackResult, error) {
 	usage := result.Usage
-	if !result.Success {
-		usage.InputTokens = 0
-		usage.CachedInputTokens = 0
-		usage.CacheWriteTokens = 0
-		usage.OutputTokens = 0
-		usage.TotalTokens = 0
-	}
-	if !hasAISearchUsage(usage) {
+	billingCtx.escrowWorkUncertain = aiFallbackEscrowOutcomeUncertain(result)
+	// Failed answers do not erase already executed model/summary usage.
+	// The existing atomic settlement retains Key limits and money precision.
+	if !hasAISearchUsage(usage) && (!billingCtx.escrowWorkTracked || billingCtx.escrowWorkUncertain) {
 		return "", result, nil
 	}
-	db := withDatabasePriority(resolveSearchPersistenceDB(), context.Background(), dbqueue.PriorityHigh)
+	db, cancel := escrowSettlementDB(context.Background(), billingCtx.escrowWorkTracked)
+	defer cancel()
 	if db == nil {
 		return "", result, errors.New("AI 兜底计费失败，请稍后重试")
 	}
@@ -346,6 +420,7 @@ func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, reques
 	billingCtx.RequestID = strings.TrimSpace(requestID)
 	billingCtx.DeepThinking = req.DeepThinking
 	billingCtx.AIRoute = strings.TrimSpace(result.Usage.Route)
+	billingCtx.captureScriptExecutionUsage(usage)
 	resolved := resolvedSearchRequestContext{
 		RequestID: billingCtx.RequestID,
 		AIConfig: service.AISearchRequestConfig{
@@ -354,21 +429,27 @@ func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, reques
 	}
 	warning := ""
 	charges := make([]searchBillingCharge, 0, 1+len(usage.SearchCalls)+len(usage.WebReadCalls)+len(usage.OCRCalls)+len(usage.TikuSearchCalls))
-	if result.Success && hasAIModelUsage(usage) {
+	if hasAIModelUsage(usage) {
 		resolvedCharge, err := resolveCompletedAIBillingCharge(db, resolved, req, usage)
 		if err != nil {
-			return "", result, err
+			if billingCtx.ScriptBilling.mode != entity.ScriptBillingModeActivation || !billingCtx.ScriptExecutionUsage.present() {
+				return "", result, err
+			}
+			logger.SysError(fmt.Sprintf("激活码脚本 AI 兜底价格读取失败 requestId=%s: %s", billingCtx.RequestID, logger.RedactSecrets(err.Error())))
+			billingCtx.ScriptExecutionUsage.CostUnavailable = true
+		} else {
+			// 调用方在计费完成后写审阅记录，因此把倍率信息写入返回结果，确保同步、异步兜底
+			// 与普通搜题的审阅快照包含相同的最终倍率信息。
+			result.Usage.Trace = resolvedCharge.Trace
+			if resolvedCharge.UnpricedModel {
+				warning = buildUnpricedAIModelWarning(resolvedCharge.Charge.ModelName)
+			}
+			charges = append(charges, resolvedCharge.Charge)
 		}
-		// 调用方在计费完成后写审阅记录，因此把倍率信息写入返回结果，确保同步、异步兜底
-		// 与普通搜题的审阅快照包含相同的最终倍率信息。
-		result.Usage.Trace = resolvedCharge.Trace
-		if resolvedCharge.UnpricedModel {
-			warning = buildUnpricedAIModelWarning(resolvedCharge.Charge.ModelName)
-		}
-		charges = append(charges, resolvedCharge.Charge)
 	}
 	charges = appendAIToolBillingCharges(charges, db, req, usage)
-	if len(charges) == 0 {
+	if len(charges) == 0 && !billingCtx.ScriptExecutionUsage.present() &&
+		(!billingCtx.escrowWorkTracked || billingCtx.escrowWorkUncertain) {
 		return warning, result, nil
 	}
 	queued, err := persistSearchBillingRecordsWithRetry(db, billingCtx, charges, searchBillingRetries)
@@ -382,6 +463,14 @@ func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, reques
 }
 
 func buildAIFallbackBillingFailureResult(err error) service.AIFallbackResult {
+	if errors.Is(err, errAccessTokenQuotaExceeded) || errors.Is(err, service.ErrInsufficientSearchBalance) {
+		return buildAIFallbackSpendingRejection(err)
+	}
+	if errors.Is(err, service.ErrInvalidAccessTokenAuthorization) {
+		return service.AIFallbackResult{Error: &service.AIFallbackError{
+			Code: service.AIFallbackErrorCodeAIUnavailable, Message: "脚本运行会话无效或已关停",
+		}}
+	}
 	return service.AIFallbackResult{
 		Success: false,
 		Error: &service.AIFallbackError{

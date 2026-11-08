@@ -7,6 +7,7 @@ import (
 
 // Config 所有的配置文件
 type Config struct {
+	SQPProxy          SQPProxyConfig       `yaml:"sqpProxy" mapstructure:"sqpProxy"`
 	Limit             LimitConfig          `yaml:"limit"`
 	API               []search.API         `yaml:"api"`
 	Elasticsearch     elasticsearch.Config `yaml:"elasticsearch"`
@@ -45,4 +46,13 @@ type OSSConfig struct {
 	AccessKeyID     string `yaml:"accessKeyID"`
 	AccessKeySecret string `yaml:"accessKeySecret"`
 	BucketName      string `yaml:"bucketName"`
+}
+
+// SQPProxyConfig bounds the fixed smart-import upstream independently of IP rate limits.
+// Missing values retain compatibility: enabled=true, timeoutSeconds=60, maxConcurrent=4.
+// Changes are loaded from config.yaml when the service starts; restart to apply them.
+type SQPProxyConfig struct {
+	Enabled        *bool `yaml:"enabled" mapstructure:"enabled"`
+	TimeoutSeconds int   `yaml:"timeoutSeconds" mapstructure:"timeoutSeconds"`
+	MaxConcurrent  int   `yaml:"maxConcurrent" mapstructure:"maxConcurrent"`
 }

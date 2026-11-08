@@ -2,10 +2,12 @@ package registry
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"github.com/itihey/tikuAdapter/configs"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/spf13/viper"
+	"io/fs"
 )
 
 var defaultConfig = []byte(`
@@ -34,4 +36,30 @@ func Config() configs.Config {
 		logger.SysError(fmt.Sprintf("配置文件语法错误: %v", err))
 	}
 	return config
+}
+
+// ConfigWithError keeps existing Viper setup and override/env precedence, but never
+// lets a read or decode error escape as a partial/stale configuration.
+func ConfigWithError() (configs.Config, error) {
+	viper.SetConfigName("config")
+	viper.SetConfigType("yaml")
+	viper.AddConfigPath(".")
+	return readConfigWithError(viper.GetViper(), defaultConfig)
+}
+
+func readConfigWithError(v *viper.Viper, defaults []byte) (configs.Config, error) {
+	if err := v.ReadInConfig(); err != nil {
+		var missing viper.ConfigFileNotFoundError
+		if !errors.As(err, &missing) && !errors.Is(err, fs.ErrNotExist) {
+			return configs.Config{}, err
+		}
+		if err := v.ReadConfig(bytes.NewReader(defaults)); err != nil {
+			return configs.Config{}, err
+		}
+	}
+	var config configs.Config
+	if err := v.Unmarshal(&config); err != nil {
+		return configs.Config{}, err
+	}
+	return config, nil
 }

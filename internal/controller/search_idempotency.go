@@ -1,9 +1,9 @@
 package controller
 
 import (
+	"context"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"time"
 
@@ -11,12 +11,13 @@ import (
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/service"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"gorm.io/gorm"
 )
 
 var searchIdempotencyWaitLimit = 30 * time.Second
 
-// SearchWithIdempotency leaves the legacy keyless endpoint untouched.
+// SearchWithIdempotency preserves keyless search semantics and durable keyed execution.
 func SearchWithIdempotency(c *gin.Context) {
 	key := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
 	if key == "" {
@@ -32,17 +33,7 @@ func SearchWithIdempotency(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "搜题服务暂不可用"})
 		return
 	}
-	var auth service.AccessTokenAuthContext
-	var err error
-	identity := strings.TrimSpace(c.GetHeader("X-Script-Identity"))
-	if identity != "" {
-		auth, _, err = service.ResolveScriptRunSessionWithDB(db, c.GetHeader("Authorization"), identity)
-	} else {
-		auth, err = service.ResolveAccessTokenFromBasicAuth(db, c.GetHeader("Authorization"))
-		if err == nil && auth.AccessToken.ScriptID > 0 {
-			err = service.ErrInvalidAccessTokenAuthorization
-		}
-	}
+	auth, session, err := service.ResolveSearchTokenWithScriptIdentity(db, c.GetHeader("Authorization"), c.GetHeader("X-Script-Identity"), c.ClientIP())
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "请提供有效访问令牌"})
 		return
@@ -51,6 +42,9 @@ func SearchWithIdempotency(c *gin.Context) {
 	path := c.Request.URL.EscapedPath()
 	requestFingerprint := []byte(strings.Join([]string{c.Request.Method, path, c.Request.URL.RawQuery, rawBody}, "\n"))
 	scope := fmt.Sprintf("sync-search:user:%d:token:%d", auth.User.ID, auth.AccessToken.ID)
+	if session.ID > 0 {
+		scope += ":script-identity:" + session.IdentityHash
+	}
 	record, created, err := service.ClaimIdempotencyWithDB(db, scope, "search", key, requestFingerprint)
 	if err != nil {
 		switch err {
@@ -68,26 +62,32 @@ func SearchWithIdempotency(c *gin.Context) {
 		return
 	}
 
-	completed := false
-	defer func() {
-		if !completed {
-			_ = service.MarkIdempotencyUnknownWithDB(db, record.ID)
-		}
-	}()
+	// Preserve the existing keyed deadline behavior on the real HTTP writer.
 	clearAIResponseWriteDeadline(c)
-	recorder := httptest.NewRecorder()
-	bufferContext, _ := gin.CreateTestContext(recorder)
-	searchContext := c.Copy()
-	searchContext.Writer = bufferContext.Writer
-	Search(searchContext)
-
-	status, body := recorder.Code, recorder.Body.Bytes()
-	if err := service.CompleteIdempotencyWithDB(db, record.ID, status, body); err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "搜题已执行，但结果暂无法确认，请勿重复提交"})
-		return
-	}
-	completed = true
-	writeIdempotentSearchResponse(c, status, body)
+	worker, recorder, _ := snapshotSearchExecution(c, rawBody, context.WithoutCancel(c.Request.Context()))
+	// The admitted producer must not inherit the observer-bound DB session.
+	executionDB := withDatabasePriority(db, worker.Request.Context(), dbqueue.PriorityHigh)
+	observeSearchExecution(c, nil, func() searchExecutionResult {
+		completed := false
+		defer func() {
+			if !completed {
+				if err := service.MarkIdempotencyUnknownWithDB(executionDB, record.ID); err != nil {
+					logger.SysError("搜题幂等结果待核对状态保存失败")
+				}
+			}
+		}()
+		executeSearch(worker)
+		result := bufferedSearchExecutionResult(recorder)
+		// A detached observer must never commit a recorder's empty default200.
+		if len(result.body) == 0 {
+			return unavailableSearchExecutionResult()
+		}
+		if err := service.CompleteIdempotencyWithDB(executionDB, record.ID, result.status, result.body); err != nil {
+			return unavailableSearchExecutionResult()
+		}
+		completed = true
+		return result
+	})
 }
 
 func waitForIdempotentSearchResult(c *gin.Context, db *gorm.DB, record entity.IdempotencyRecord) {

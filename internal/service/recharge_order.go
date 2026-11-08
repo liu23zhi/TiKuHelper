@@ -590,6 +590,7 @@ func HandleRechargePaymentNotifyWithDB(db *gorm.DB, values url.Values) (bool, er
 	tradeStatus := strings.TrimSpace(values.Get("trade_status"))
 	tradeNo := strings.TrimSpace(values.Get("trade_no"))
 	paidAmount := normalizeRechargeAmount(parseRechargeAmount(values.Get("money")))
+	var settledAudit *AccountAuditEvent
 
 	err = db.Transaction(func(tx *gorm.DB) error {
 		var order entity.RechargeOrder
@@ -656,7 +657,7 @@ func HandleRechargePaymentNotifyWithDB(db *gorm.DB, values url.Values) (bool, er
 			return err
 		}
 
-		return WriteAccountAuditWithDB(tx, AccountAuditEvent{
+		settledAudit = &AccountAuditEvent{
 			UserID: user.ID, Username: user.Username, Module: "recharge", Action: 41,
 			Description: "充值到账", CorrelationID: order.OrderNo,
 			Request: map[string]any{"orderNo": order.OrderNo, "amount": order.Amount, "paymentType": values.Get("type")},
@@ -665,12 +666,20 @@ func HandleRechargePaymentNotifyWithDB(db *gorm.DB, values url.Values) (bool, er
 				"amount": order.Amount, "provider": order.PaymentProvider,
 				"paymentType": values.Get("type"), "billingId": billingRecord.ID,
 			},
-		})
+		}
+		return nil
 	})
 	if err != nil {
 		return false, err
 	}
 
+	// Financial state is committed before this best-effort audit. A repeated paid
+	// callback creates no event and never credits or attempts the same audit twice.
+	if settledAudit != nil {
+		if auditErr := WriteAccountAuditWithDB(db, *settledAudit); auditErr != nil {
+			logger.SysWarn(fmt.Sprintf("充值到账审计写入失败 orderNo=%s: %v", orderNo, auditErr))
+		}
+	}
 	return acknowledged, nil
 }
 
