@@ -83,6 +83,44 @@ const ReferralRebateEnabledSettingKey = "referral_rebate_enabled"
 // 比例在产生返佣时快照进 referral_rebates.rate，改配置不回溯已产生的记录。
 const ReferralRebateRateSettingKey = "referral_rebate_rate"
 
+// 评价返现的四项配置。全部默认关闭/保守值：缺表、缺记录、值非法一律回落默认，
+// 其中 enabled 必须回落 false —— 配置读不出来绝不能变成「悄悄开活动」。
+//
+// 规则表本身**不塞进 system_settings**（条数不定），走 review_rebate_rules 表 + 管理页。
+const (
+	// ReviewRebateEnabledSettingKey 是评价返现总开关，默认 false。
+	//
+	// 关闭时：提交接口拒绝、Agent 打分拒绝、管理端决策接口拒绝。
+	// 关闭只影响「是否继续产生新数据」，已存在的 claim/award 行保持原样可查。
+	ReviewRebateEnabledSettingKey = "review_rebate_enabled"
+	// ReviewRebateMaxClaimsPerUserSettingKey 是每账号累计提交次数上限，默认 3。
+	ReviewRebateMaxClaimsPerUserSettingKey = "review_rebate_max_claims_per_user"
+	// ReviewRebateMaxAmountPerUserSettingKey 是每账号累计发放金额上限，默认 5.04。
+	ReviewRebateMaxAmountPerUserSettingKey = "review_rebate_max_amount_per_user"
+	// ReviewRebateMinAgentConfidenceSettingKey 是 Agent 置信度下限，默认 0.6。
+	//
+	// 低于此值 → 强制 pending_review，绝不自动发放（16-*.md §1.5）。
+	ReviewRebateMinAgentConfidenceSettingKey = "review_rebate_min_agent_confidence"
+)
+
+// 评价返现的默认值（16-*.md §1.7）。
+const (
+	// DefaultReviewRebateEnabled 默认关闭。
+	DefaultReviewRebateEnabled = false
+	// DefaultReviewRebateMaxClaimsPerUser 默认 3 次。
+	DefaultReviewRebateMaxClaimsPerUser = 3
+	// DefaultReviewRebateMaxAmountPerUser 默认 5.04 元（= 1.68 × 3，与 04 稿 10.4.2 对齐）。
+	DefaultReviewRebateMaxAmountPerUser = float64(5.04)
+	// DefaultReviewRebateMinAgentConfidence 默认 0.6。
+	DefaultReviewRebateMinAgentConfidence = float64(0.6)
+)
+
+// ReviewRebatePolicyVersion 是评价返现当前规则口径版本快照。
+//
+// 写进 review_rebate_awards.policy_version：基数额度、规则语义变化时必须换值，
+// 历史流水保持不变（改版不重算已发放）。
+const ReviewRebatePolicyVersion = "v1"
+
 // UAPIAPIKeySettingKey 是 UApiPro（uapis.cn）的 API 密钥。
 //
 // 用于查询手机号 / IP 归属地（用户管理、日志列表的归属地展示）。
@@ -182,6 +220,12 @@ type SystemSettingDetail struct {
 	// 邀请返佣：总开关默认关闭，比例默认 0（0%–100%，上界开区间）。
 	ReferralRebateEnabled bool    `json:"referralRebateEnabled"`
 	ReferralRebateRate    float64 `json:"referralRebateRate"`
+	// 评价返现：开关默认关闭，三条上限/门槛都有保守默认值。
+	// 规则表本身不在这里（条数不定），走 review_rebate_rules 独立表。
+	ReviewRebateEnabled            bool    `json:"reviewRebateEnabled"`
+	ReviewRebateMaxClaimsPerUser   int     `json:"reviewRebateMaxClaimsPerUser"`
+	ReviewRebateMaxAmountPerUser   float64 `json:"reviewRebateMaxAmountPerUser"`
+	ReviewRebateMinAgentConfidence float64 `json:"reviewRebateMinAgentConfidence"`
 }
 
 type UpdateSystemSettingInput struct {
@@ -232,12 +276,28 @@ type UpdateSystemSettingInput struct {
 	// 布尔一律用指针，避免老前端（不认识这两个字段）把开关静默关掉。
 	ReferralRebateEnabled *bool    `json:"referralRebateEnabled"`
 	ReferralRebateRate    *float64 `json:"referralRebateRate"`
+	// 评价返现：同样是指针语义。nil = 未提交 = 保持现值。
+	// 整数上限也用指针 —— 0 是合法输入（等于关闭该活动），不能拿来当「未提交」。
+	ReviewRebateEnabled            *bool    `json:"reviewRebateEnabled"`
+	ReviewRebateMaxClaimsPerUser   *int     `json:"reviewRebateMaxClaimsPerUser"`
+	ReviewRebateMaxAmountPerUser   *float64 `json:"reviewRebateMaxAmountPerUser"`
+	ReviewRebateMinAgentConfidence *float64 `json:"reviewRebateMinAgentConfidence"`
 }
 
 var ErrInvalidNewUserBonusAmount = errors.New("新用户赠送金额不能为负数")
 var ErrInvalidMinRechargeAmount = errors.New("最低充值金额必须是大于 0 的有效金额")
 var ErrInvalidAISearchCount = errors.New("AI 调用与工具次数必须是可精确表示的正整数")
 var ErrInvalidReferralRebateRate = errors.New("返佣比例必须在 0（含）到 1（不含）之间")
+
+// 评价返现配置的输入校验错误（都是 400，不是 500）。
+var (
+	// ErrInvalidReviewRebateAmount 金额为负或非有限数。
+	ErrInvalidReviewRebateAmount = errors.New("评价返现金额必须是不小于 0 的有效金额")
+	// ErrInvalidReviewRebateConfidence 置信度门槛不在 [0,1]。
+	ErrInvalidReviewRebateConfidence = errors.New("Agent 置信度门槛必须在 0 到 1 之间")
+	// ErrInvalidReviewRebateMaxClaims 次数上限为负。
+	ErrInvalidReviewRebateMaxClaims = errors.New("评价返现次数上限必须是不小于 0 的整数")
+)
 
 type PublicAuthSettings struct {
 	RegisterEnabled           bool   `json:"registerEnabled"`
@@ -347,48 +407,52 @@ func GetSystemSettingDetailWithDB(db *gorm.DB) (SystemSettingDetail, error) {
 	smsLoginEnabled := strings.EqualFold(strings.TrimSpace(getSystemSettingStringWithDefault(db, SMSLoginEnabledSettingKey, "false")), "true")
 	wechatSettings := getNormalizedWechatLoginSettingsWithDB(db)
 	detail := SystemSettingDetail{
-		RegisterEnabled:           registerEnabled,
-		NewUserBonusAmount:        DefaultNewUserBonusAmount,
-		SiteName:                  normalizeSiteName(getSystemSettingStringWithDefault(db, SiteNameSettingKey, DefaultSiteName)),
-		AlternativeLoginEnabled:   smsLoginEnabled || wechatSettings.WechatLoginEnabled,
-		EPayVersion:               DefaultEPayVersion,
-		EPayGatewayURL:            getSystemSettingStringWithDefault(db, EPayGatewayURLSettingKey, ""),
-		EPayPartnerID:             getSystemSettingStringWithDefault(db, EPayPartnerIDSettingKey, ""),
-		EPayPlatformPublicKey:     getSystemSettingStringWithDefault(db, EPayPlatformPublicKeySettingKey, ""),
-		EPayMerchantPrivateKey:    getSystemSettingStringWithDefault(db, EPayMerchantPrivateKeySettingKey, ""),
-		EPayNotifyURL:             getSystemSettingStringWithDefault(db, EPayNotifyURLSettingKey, ""),
-		EPayReturnURL:             getSystemSettingStringWithDefault(db, EPayReturnURLSettingKey, ""),
-		SMSProvider:               getSystemSettingStringWithDefault(db, SMSProviderSettingKey, DefaultSMSProvider),
-		SMSBaoUsername:            getSystemSettingStringWithDefault(db, SMSBaoUsernameSettingKey, ""),
-		SMSBaoSecret:              getSystemSettingStringWithDefault(db, SMSBaoSecretSettingKey, ""),
-		SMSCodeSignName:           getSystemSettingStringWithDefault(db, SMSCodeSignNameSettingKey, ""),
-		SMSCodeTemplate:           getSystemSettingStringWithDefault(db, SMSCodeTemplateSettingKey, DefaultSMSCodeTemplate),
-		SMSLoginEnabled:           smsLoginEnabled,
-		WechatLoginEnabled:        wechatSettings.WechatLoginEnabled,
-		WechatScanLoginEnabled:    wechatSettings.WechatScanLoginEnabled,
-		WechatCodeLoginEnabled:    wechatSettings.WechatCodeLoginEnabled,
-		WechatDefaultLoginMode:    wechatSettings.WechatDefaultLoginMode,
-		WechatCodeStaticQRCodeURL: wechatSettings.WechatCodeStaticQRCodeURL,
-		WechatAPIBaseURL:          trimTrailingSlash(getSystemSettingStringWithDefault(db, WechatAPIBaseURLSettingKey, "")),
-		WechatAPIBearerToken:      strings.TrimSpace(getSystemSettingStringWithDefault(db, WechatAPIBearerTokenSettingKey, "")),
-		CaptchaProvider:           normalizeCaptchaProvider(getSystemSettingStringWithDefault(db, CaptchaProviderSettingKey, DefaultCaptchaProvider)),
-		CaptchaAPIBaseURL:         trimTrailingSlash(getSystemSettingStringWithDefault(db, CaptchaAPIBaseURLSettingKey, DefaultCaptchaAPIBaseURL)),
-		CaptchaAPIKey:             strings.TrimSpace(getSystemSettingStringWithDefault(db, CaptchaAPIKeySettingKey, DefaultCaptchaAPIKey)),
-		CaptchaType:               normalizeCaptchaType(getSystemSettingStringWithDefault(db, CaptchaTypeSettingKey, DefaultCaptchaType)),
-		SMSBaoCredentialType:      normalizeSMSBaoCredentialType(getSystemSettingStringWithDefault(db, SMSBaoCredentialTypeSettingKey, DefaultSMSBaoCredentialType)),
-		SMSBaoRegionMode:          normalizeSMSBaoRegionMode(getSystemSettingStringWithDefault(db, SMSBaoRegionModeSettingKey, DefaultSMSBaoRegionMode)),
-		UAPIAPIKey:                strings.TrimSpace(getSystemSettingStringWithDefault(db, UAPIAPIKeySettingKey, "")),
-		MaxLogSizeBytes:           getPositiveInt64SystemSetting(db, MaxLogSizeBytesSettingKey, DefaultMaxLogSizeBytes),
-		MaxAISearchModelCalls:     getPositiveIntSystemSetting(db, MaxAISearchModelCallsSettingKey, DefaultMaxAISearchModelCalls),
-		MaxAISearches:             getPositiveIntSystemSetting(db, MaxAISearchesSettingKey, DefaultMaxAISearches),
-		MaxAISearchRetries:        getPositiveIntSystemSetting(db, MaxAISearchRetriesSettingKey, DefaultMaxAISearchRetries),
-		MaxAIWebReads:             getPositiveIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads),
-		WebReadPricePerCall:       GetWebReadPricePerCallWithDB(db),
-		MinRechargeAmount:         GetMinRechargeAmountWithDB(db),
-		RechargePromotionEnabled:  GetRechargePromotionEnabledWithDB(db),
-		DeviceLimitEnabled:        GetDeviceLimitEnabledWithDB(db),
-		ReferralRebateEnabled:     GetReferralRebateEnabledWithDB(db),
-		ReferralRebateRate:        GetReferralRebateRateWithDB(db),
+		RegisterEnabled:                registerEnabled,
+		NewUserBonusAmount:             DefaultNewUserBonusAmount,
+		SiteName:                       normalizeSiteName(getSystemSettingStringWithDefault(db, SiteNameSettingKey, DefaultSiteName)),
+		AlternativeLoginEnabled:        smsLoginEnabled || wechatSettings.WechatLoginEnabled,
+		EPayVersion:                    DefaultEPayVersion,
+		EPayGatewayURL:                 getSystemSettingStringWithDefault(db, EPayGatewayURLSettingKey, ""),
+		EPayPartnerID:                  getSystemSettingStringWithDefault(db, EPayPartnerIDSettingKey, ""),
+		EPayPlatformPublicKey:          getSystemSettingStringWithDefault(db, EPayPlatformPublicKeySettingKey, ""),
+		EPayMerchantPrivateKey:         getSystemSettingStringWithDefault(db, EPayMerchantPrivateKeySettingKey, ""),
+		EPayNotifyURL:                  getSystemSettingStringWithDefault(db, EPayNotifyURLSettingKey, ""),
+		EPayReturnURL:                  getSystemSettingStringWithDefault(db, EPayReturnURLSettingKey, ""),
+		SMSProvider:                    getSystemSettingStringWithDefault(db, SMSProviderSettingKey, DefaultSMSProvider),
+		SMSBaoUsername:                 getSystemSettingStringWithDefault(db, SMSBaoUsernameSettingKey, ""),
+		SMSBaoSecret:                   getSystemSettingStringWithDefault(db, SMSBaoSecretSettingKey, ""),
+		SMSCodeSignName:                getSystemSettingStringWithDefault(db, SMSCodeSignNameSettingKey, ""),
+		SMSCodeTemplate:                getSystemSettingStringWithDefault(db, SMSCodeTemplateSettingKey, DefaultSMSCodeTemplate),
+		SMSLoginEnabled:                smsLoginEnabled,
+		WechatLoginEnabled:             wechatSettings.WechatLoginEnabled,
+		WechatScanLoginEnabled:         wechatSettings.WechatScanLoginEnabled,
+		WechatCodeLoginEnabled:         wechatSettings.WechatCodeLoginEnabled,
+		WechatDefaultLoginMode:         wechatSettings.WechatDefaultLoginMode,
+		WechatCodeStaticQRCodeURL:      wechatSettings.WechatCodeStaticQRCodeURL,
+		WechatAPIBaseURL:               trimTrailingSlash(getSystemSettingStringWithDefault(db, WechatAPIBaseURLSettingKey, "")),
+		WechatAPIBearerToken:           strings.TrimSpace(getSystemSettingStringWithDefault(db, WechatAPIBearerTokenSettingKey, "")),
+		CaptchaProvider:                normalizeCaptchaProvider(getSystemSettingStringWithDefault(db, CaptchaProviderSettingKey, DefaultCaptchaProvider)),
+		CaptchaAPIBaseURL:              trimTrailingSlash(getSystemSettingStringWithDefault(db, CaptchaAPIBaseURLSettingKey, DefaultCaptchaAPIBaseURL)),
+		CaptchaAPIKey:                  strings.TrimSpace(getSystemSettingStringWithDefault(db, CaptchaAPIKeySettingKey, DefaultCaptchaAPIKey)),
+		CaptchaType:                    normalizeCaptchaType(getSystemSettingStringWithDefault(db, CaptchaTypeSettingKey, DefaultCaptchaType)),
+		SMSBaoCredentialType:           normalizeSMSBaoCredentialType(getSystemSettingStringWithDefault(db, SMSBaoCredentialTypeSettingKey, DefaultSMSBaoCredentialType)),
+		SMSBaoRegionMode:               normalizeSMSBaoRegionMode(getSystemSettingStringWithDefault(db, SMSBaoRegionModeSettingKey, DefaultSMSBaoRegionMode)),
+		UAPIAPIKey:                     strings.TrimSpace(getSystemSettingStringWithDefault(db, UAPIAPIKeySettingKey, "")),
+		MaxLogSizeBytes:                getPositiveInt64SystemSetting(db, MaxLogSizeBytesSettingKey, DefaultMaxLogSizeBytes),
+		MaxAISearchModelCalls:          getPositiveIntSystemSetting(db, MaxAISearchModelCallsSettingKey, DefaultMaxAISearchModelCalls),
+		MaxAISearches:                  getPositiveIntSystemSetting(db, MaxAISearchesSettingKey, DefaultMaxAISearches),
+		MaxAISearchRetries:             getPositiveIntSystemSetting(db, MaxAISearchRetriesSettingKey, DefaultMaxAISearchRetries),
+		MaxAIWebReads:                  getPositiveIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads),
+		WebReadPricePerCall:            GetWebReadPricePerCallWithDB(db),
+		MinRechargeAmount:              GetMinRechargeAmountWithDB(db),
+		RechargePromotionEnabled:       GetRechargePromotionEnabledWithDB(db),
+		DeviceLimitEnabled:             GetDeviceLimitEnabledWithDB(db),
+		ReferralRebateEnabled:          GetReferralRebateEnabledWithDB(db),
+		ReferralRebateRate:             GetReferralRebateRateWithDB(db),
+		ReviewRebateEnabled:            GetReviewRebateEnabledWithDB(db),
+		ReviewRebateMaxClaimsPerUser:   GetReviewRebateMaxClaimsPerUserWithDB(db),
+		ReviewRebateMaxAmountPerUser:   GetReviewRebateMaxAmountPerUserWithDB(db),
+		ReviewRebateMinAgentConfidence: GetReviewRebateMinAgentConfidenceWithDB(db),
 	}
 	bonusAmount, err := GetNewUserBonusAmountWithDB(db)
 	if err != nil {
@@ -414,6 +478,18 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		return SystemSettingDetail{}, err
 	}
 	referralRebateRate, err := resolveReferralRebateRate(db, input.ReferralRebateRate)
+	if err != nil {
+		return SystemSettingDetail{}, err
+	}
+	reviewRebateMaxClaims, err := resolveReviewRebateMaxClaims(db, input.ReviewRebateMaxClaimsPerUser)
+	if err != nil {
+		return SystemSettingDetail{}, err
+	}
+	reviewRebateMaxAmount, err := resolveReviewRebateMaxAmount(db, input.ReviewRebateMaxAmountPerUser)
+	if err != nil {
+		return SystemSettingDetail{}, err
+	}
+	reviewRebateMinConfidence, err := resolveReviewRebateMinConfidence(db, input.ReviewRebateMinAgentConfidence)
 	if err != nil {
 		return SystemSettingDetail{}, err
 	}
@@ -472,6 +548,11 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		// nil = 未提交 = 保持现值；读取失败一律 false / 0（不能让配置读错变成开活动）。
 		ReferralRebateEnabled: resolveBoolSettingInput(db, input.ReferralRebateEnabled, ReferralRebateEnabledSettingKey),
 		ReferralRebateRate:    referralRebateRate,
+		// 评价返现：同上，nil = 未提交 = 保持现值；读取失败一律回落保守默认（开关 false）。
+		ReviewRebateEnabled:            resolveBoolSettingInput(db, input.ReviewRebateEnabled, ReviewRebateEnabledSettingKey),
+		ReviewRebateMaxClaimsPerUser:   reviewRebateMaxClaims,
+		ReviewRebateMaxAmountPerUser:   reviewRebateMaxAmount,
+		ReviewRebateMinAgentConfidence: reviewRebateMinConfidence,
 	}
 	normalized.AlternativeLoginEnabled = normalized.SMSLoginEnabled || normalized.WechatLoginEnabled
 
@@ -521,6 +602,10 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		{DeviceLimitEnabledSettingKey, strconv.FormatBool(normalized.DeviceLimitEnabled), "启用账户设备池上限（默认关闭）"},
 		{ReferralRebateEnabledSettingKey, strconv.FormatBool(normalized.ReferralRebateEnabled), "启用邀请码与充值返佣（默认关闭）"},
 		{ReferralRebateRateSettingKey, strconv.FormatFloat(normalized.ReferralRebateRate, 'f', -1, 64), "返佣比例（0–1，不含 1）"},
+		{ReviewRebateEnabledSettingKey, strconv.FormatBool(normalized.ReviewRebateEnabled), "启用评价返现（默认关闭）"},
+		{ReviewRebateMaxClaimsPerUserSettingKey, strconv.Itoa(normalized.ReviewRebateMaxClaimsPerUser), "评价返现每账号累计次数上限"},
+		{ReviewRebateMaxAmountPerUserSettingKey, strconv.FormatFloat(normalized.ReviewRebateMaxAmountPerUser, 'f', -1, 64), "评价返现每账号累计金额上限（元）"},
+		{ReviewRebateMinAgentConfidenceSettingKey, strconv.FormatFloat(normalized.ReviewRebateMinAgentConfidence, 'f', -1, 64), "评价返现 Agent 置信度门槛（低于则强制人工）"},
 	}
 	for _, item := range settings {
 		if err := saveSystemSettingValue(db, item.key, item.value, item.remark); err != nil {
@@ -941,6 +1026,113 @@ func resolveBoolSettingInput(db *gorm.DB, requested *bool, key string) bool {
 		return *requested
 	}
 	return getBoolSystemSetting(db, key)
+}
+
+// GetReviewRebateEnabledWithDB 返回评价返现总开关，默认关闭。
+//
+// 缺表、缺记录、值非法一律按关闭处理：配置读不出来时绝不能变成「悄悄开活动」。
+func GetReviewRebateEnabledWithDB(db *gorm.DB) bool {
+	return getBoolSystemSetting(db, ReviewRebateEnabledSettingKey)
+}
+
+// GetReviewRebateMaxClaimsPerUserWithDB 返回每账号累计提交次数上限，默认 3。
+//
+// 0 是合法值（表示不允许提交），只有「解析失败 / 负数」才回落默认。
+func GetReviewRebateMaxClaimsPerUserWithDB(db *gorm.DB) int {
+	if db == nil || !db.Migrator().HasTable(&entity.SystemSetting{}) {
+		return DefaultReviewRebateMaxClaimsPerUser
+	}
+	raw := strings.TrimSpace(getSystemSettingStringWithDefault(db, ReviewRebateMaxClaimsPerUserSettingKey,
+		strconv.Itoa(DefaultReviewRebateMaxClaimsPerUser)))
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		return DefaultReviewRebateMaxClaimsPerUser
+	}
+	return value
+}
+
+// GetReviewRebateMaxAmountPerUserWithDB 返回每账号累计发放金额上限，默认 5.04。
+//
+// 负数、NaN、Inf 一律回落默认；0 是合法值（表示不发放）。
+func GetReviewRebateMaxAmountPerUserWithDB(db *gorm.DB) float64 {
+	if db == nil || !db.Migrator().HasTable(&entity.SystemSetting{}) {
+		return DefaultReviewRebateMaxAmountPerUser
+	}
+	raw := strings.TrimSpace(getSystemSettingStringWithDefault(db, ReviewRebateMaxAmountPerUserSettingKey,
+		strconv.FormatFloat(DefaultReviewRebateMaxAmountPerUser, 'f', -1, 64)))
+	amount, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return DefaultReviewRebateMaxAmountPerUser
+	}
+	normalized, err := normalizeReviewRebateAmount(amount)
+	if err != nil {
+		return DefaultReviewRebateMaxAmountPerUser
+	}
+	return normalized
+}
+
+// GetReviewRebateMinAgentConfidenceWithDB 返回 Agent 置信度下限，默认 0.6。
+//
+// 取值必须落在 [0,1]；越界或非数值回落 0.6 —— 这是「读不到就要求人工看」的保守方向：
+// 门槛被读成 0 等于关掉人工复核，而读成 1 只是让所有单子都进人工，后者更安全。
+func GetReviewRebateMinAgentConfidenceWithDB(db *gorm.DB) float64 {
+	if db == nil || !db.Migrator().HasTable(&entity.SystemSetting{}) {
+		return DefaultReviewRebateMinAgentConfidence
+	}
+	raw := strings.TrimSpace(getSystemSettingStringWithDefault(db, ReviewRebateMinAgentConfidenceSettingKey,
+		strconv.FormatFloat(DefaultReviewRebateMinAgentConfidence, 'f', -1, 64)))
+	confidence, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return DefaultReviewRebateMinAgentConfidence
+	}
+	normalized, err := normalizeReviewRebateConfidence(confidence)
+	if err != nil {
+		return DefaultReviewRebateMinAgentConfidence
+	}
+	return normalized
+}
+
+// normalizeReviewRebateAmount 校验并规范化赠金金额：必须非负且有限。
+func normalizeReviewRebateAmount(amount float64) (float64, error) {
+	if math.IsNaN(amount) || math.IsInf(amount, 0) || amount < 0 {
+		return 0, ErrInvalidReviewRebateAmount
+	}
+	return util.RoundMoney(amount), nil
+}
+
+// normalizeReviewRebateConfidence 校验置信度：必须落在 [0,1]。
+func normalizeReviewRebateConfidence(confidence float64) (float64, error) {
+	if math.IsNaN(confidence) || math.IsInf(confidence, 0) || confidence < 0 || confidence > 1 {
+		return 0, ErrInvalidReviewRebateConfidence
+	}
+	return util.RoundMoney(confidence), nil
+}
+
+// resolveReviewRebateMaxClaims 处理「省略 = 保持现值」的次数上限写入语义。
+func resolveReviewRebateMaxClaims(db *gorm.DB, requested *int) (int, error) {
+	if requested == nil {
+		return GetReviewRebateMaxClaimsPerUserWithDB(db), nil
+	}
+	if *requested < 0 {
+		return 0, ErrInvalidReviewRebateMaxClaims
+	}
+	return *requested, nil
+}
+
+// resolveReviewRebateMaxAmount 处理「省略 = 保持现值」的金额上限写入语义。
+func resolveReviewRebateMaxAmount(db *gorm.DB, requested *float64) (float64, error) {
+	if requested == nil {
+		return GetReviewRebateMaxAmountPerUserWithDB(db), nil
+	}
+	return normalizeReviewRebateAmount(*requested)
+}
+
+// resolveReviewRebateMinConfidence 处理「省略 = 保持现值」的置信度门槛写入语义。
+func resolveReviewRebateMinConfidence(db *gorm.DB, requested *float64) (float64, error) {
+	if requested == nil {
+		return GetReviewRebateMinAgentConfidenceWithDB(db), nil
+	}
+	return normalizeReviewRebateConfidence(*requested)
 }
 
 func resolveWebReadPrice(db *gorm.DB, requested float64) float64 {

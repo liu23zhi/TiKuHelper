@@ -799,6 +799,12 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		logger.FatalLog(fmt.Errorf("prepare referral schema fail: %w", err))
 	}
 
+	// 评价返现：建四张表，并给 users 补 gift_balance（赠金来源标记）。
+	// 结构性失败 FATAL（要让人看见）；标记写失败只记日志，下次启动幂等重跑。
+	if err := runStartupMigration("ensureReviewRebateSchema", func() error { return ensureReviewRebateSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare review rebate schema fail: %w", err))
+	}
+
 	// source-aware 归属地缓存使用新表，旧表保留以兼容 SQLite 和回滚；
 	// 回填失败只记日志，下一次启动会因未写标记而重试。
 	if err := runStartupMigration("ensureLocationCacheEntriesSchema", func() error { return ensureLocationCacheEntriesSchema(db) }); err != nil {

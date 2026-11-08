@@ -165,6 +165,21 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/user/referral", controller.Auth, controller.ReferralSummary)
 	apiRouter.GET("/admin/referral-rebates", controller.Auth, middleware.RequireAdmin, controller.ReferralRebateList)
 	apiRouter.POST("/admin/referral-rebates/:id/settle", controller.Auth, middleware.RequireAdmin, controller.SettleReferralRebate)
+	// 评价返现（16-*.md §1.8）。用户端只碰自己的数据（handler 内固定用当前账户），
+	// 管理端一律 Auth + RequireAdmin；开关默认关闭，关闭时入口返回 400。
+	apiRouter.GET("/user/review-rebate/program", controller.Auth, controller.ReviewRebateProgram)
+	apiRouter.POST("/user/review-rebate/claims", controller.Auth, controller.CreateReviewRebateClaim)
+	apiRouter.GET("/user/review-rebate/claims", controller.Auth, controller.MyReviewRebateClaims)
+	apiRouter.GET("/admin/review-rebate/programs", controller.Auth, middleware.RequireAdmin, controller.AdminReviewRebatePrograms)
+	apiRouter.PUT("/admin/review-rebate/programs/:id", controller.Auth, middleware.RequireAdmin, controller.AdminUpdateReviewRebateProgram)
+	apiRouter.GET("/admin/review-rebate/rules", controller.Auth, middleware.RequireAdmin, controller.AdminReviewRebateRules)
+	apiRouter.POST("/admin/review-rebate/rules", controller.Auth, middleware.RequireAdmin, controller.AdminCreateReviewRebateRule)
+	apiRouter.PUT("/admin/review-rebate/rules/:id", controller.Auth, middleware.RequireAdmin, controller.AdminUpdateReviewRebateRule)
+	apiRouter.DELETE("/admin/review-rebate/rules/:id", controller.Auth, middleware.RequireAdmin, controller.AdminDeleteReviewRebateRule)
+	apiRouter.GET("/admin/review-rebate/claims", controller.Auth, middleware.RequireAdmin, controller.AdminReviewRebateClaims)
+	apiRouter.POST("/admin/review-rebate/claims/:id/decision", controller.Auth, middleware.RequireAdmin, controller.AdminDecideReviewRebateClaim)
+	// Agent 打分重跑（占位打分器，不真的调模型）：只写 claim，不发放。
+	apiRouter.POST("/admin/review-rebate/claims/:id/score", controller.Auth, middleware.RequireAdmin, controller.AdminScoreReviewRebateClaim)
 	apiRouter.GET("/access-tokens", controller.Auth, controller.AccessTokenList)
 	apiRouter.POST("/access-tokens", controller.Auth, controller.CreateAccessToken)
 	apiRouter.PUT("/access-tokens/:id", controller.Auth, controller.UpdateAccessToken)

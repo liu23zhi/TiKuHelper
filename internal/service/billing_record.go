@@ -21,6 +21,12 @@ const registrationBonusBillingRecordType = "registration_bonus"
 const scriptReservationBillingRecordType = "script_reservation"
 const scriptRefundBillingRecordType = "script_refund"
 
+// ReviewRebateBillingRecordType 是评价返现赠金的账单类型。
+//
+// 语义上等同 registration_bonus：都是「送的钱」，都计入 balance 但不计入可退本金。
+// 单独一个 type 是为了让账单流水能按来源拆开看，也让用户知道这笔钱从哪来。
+const ReviewRebateBillingRecordType = "review_rebate"
+
 type BillingRecordFeeDetail struct {
 	Provider      string  `json:"provider"`
 	ProviderLabel string  `json:"providerLabel"`
@@ -168,6 +174,8 @@ func buildBillingRecordTypeLabel(recordType string) string {
 		return "充值入账"
 	case registrationBonusBillingRecordType:
 		return "新用户赠送"
+	case ReviewRebateBillingRecordType:
+		return "评价返现"
 	case balanceAdjustmentBillingRecordType:
 		return "管理员调整余额"
 	case scriptReservationBillingRecordType:
@@ -186,6 +194,7 @@ func buildBillingRecordTypeLabel(recordType string) string {
 func buildBillingRecordDirection(recordType string) string {
 	if strings.TrimSpace(recordType) == rechargeBillingRecordType ||
 		strings.TrimSpace(recordType) == registrationBonusBillingRecordType ||
+		strings.TrimSpace(recordType) == ReviewRebateBillingRecordType ||
 		strings.TrimSpace(recordType) == scriptRefundBillingRecordType {
 		return "income"
 	}
@@ -290,6 +299,12 @@ func buildBillingRecordSubject(record BillingRecordListItem) string {
 		}
 		return "新用户赠送"
 	}
+	if record.Type == ReviewRebateBillingRecordType {
+		if remark := strings.TrimSpace(record.Remark); remark != "" {
+			return remark
+		}
+		return "评价返现"
+	}
 	if record.Type == scriptReservationBillingRecordType {
 		if remark := strings.TrimSpace(record.Remark); remark != "" {
 			return remark
@@ -329,6 +344,12 @@ func buildBillingRecordDetail(record BillingRecordListItem) string {
 			return remark
 		}
 		return "新用户赠送"
+	}
+	if record.Type == ReviewRebateBillingRecordType {
+		if remark := strings.TrimSpace(record.Remark); remark != "" {
+			return remark
+		}
+		return "评价返现"
 	}
 	if record.Type == scriptReservationBillingRecordType {
 		if remark := strings.TrimSpace(record.Remark); remark != "" {
@@ -1106,7 +1127,7 @@ func loadBillingRecordSummary(db *gorm.DB, operator entity.User, filter BillingR
 			THEN CASE WHEN billing_records.cached_input_tokens > billing_records.input_tokens
 				THEN billing_records.input_tokens ELSE billing_records.cached_input_tokens END
 			ELSE 0 END) AS cached_input_tokens`, util.MoneyPrecision).
-		Where("TRIM(billing_records.type) NOT IN ?", []string{rechargeBillingRecordType, registrationBonusBillingRecordType, balanceAdjustmentBillingRecordType, scriptRefundBillingRecordType}).
+		Where("TRIM(billing_records.type) NOT IN ?", []string{rechargeBillingRecordType, registrationBonusBillingRecordType, ReviewRebateBillingRecordType, balanceAdjustmentBillingRecordType, scriptRefundBillingRecordType}).
 		Group(`billing_records.user_id, billing_records.type, billing_records.request_id,
 			CASE WHEN billing_records.type = 'normal_search' AND TRIM(COALESCE(billing_records.request_id, '')) <> ''
 				THEN 0 ELSE billing_records.id END`)

@@ -37,6 +37,18 @@ type User struct {
 	InvitedByUserID int32 `gorm:"column:invited_by_user_id;type:int(11);not null;default:0;index" json:"invitedByUserId"`
 	// InvitedAt 是归因写入时间（邀请码只在注册时生效）。
 	InvitedAt *time.Time `gorm:"column:invited_at" json:"invitedAt"`
+
+	// GiftBalance 是**赠金来源标记桶**：与 balance 同步增加，但单独记账。
+	//
+	// 口径（16-*.md §3 + 04 稿 10.4.5/10.4.2）：
+	//   - 赠金**计入 balance**，用户可以直接消费 —— 不新增第二个可用钱包，
+	//     避免「余额不够但赠金够」这种两段扣款带来的歧义；
+	//   - 赠金**不计入可退本金 / 净实付 / 返佣基数**：退款与邀请返佣只认充值实付本金，
+	//     否则「充值 1688 赠 3376 再退款」就能套出赠金；
+	//   - 该列只是来源标记，用于对账与「这些钱是送的」的展示。
+	//
+	// 由 registry.ensureReviewRebateSchema 补列（这里只声明，不改动既有字段）。
+	GiftBalance float64 `gorm:"column:gift_balance;type:decimal(18,6);not null;default:0" json:"giftBalance"`
 }
 
 // TableName User's table name
