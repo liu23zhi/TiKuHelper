@@ -100,6 +100,7 @@ func main() {
 		MaxHeaderBytes:    1 << 20,
 	}
 	notificationWorkerDone := service.StartTicketNotificationWorker(shutdownContext, mg.GetDB())
+	scriptEscrowWorkerDone := service.StartScriptEscrowCloseWorker(shutdownContext, mg.GetDB())
 	// Retry settlement stays alive until admitted producers finish within the same shutdown budget.
 	billingRetryContext, cancelBillingRetries := context.WithCancel(context.Background())
 	defer cancelBillingRetries()
@@ -116,6 +117,7 @@ func main() {
 	cancelBillingRetries()
 	<-extensionDone
 	<-notificationWorkerDone
+	<-scriptEscrowWorkerDone
 	<-billingRetryWorkerDone
 	logger.SysLog("Tiku 服务已停止")
 }

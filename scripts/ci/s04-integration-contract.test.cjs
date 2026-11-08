@@ -6,7 +6,7 @@ const root = path.resolve(__dirname, '../..')
 test('real main startup fixture gate is required after the actual static service binary without weakening existing gates', () => {
   const workflow = fs.readFileSync(path.join(root, '.github/workflows/pr-checks.yml'), 'utf8')
   const backend = workflow.split('  backend:')[1].split('  audit:')[0]
-  for (const gate of ['go build ./...', 'go vet ./...', 'go test -short ./... -count=1', 'go test -race ./internal/api ./internal/controller ./internal/service -count=1', 'test:integration:s02', 'test:integration:s03', 'python3 -B scripts/ci/http-smoke.py']) assert.ok(backend.includes(gate), gate)
+  for (const gate of ['go build ./...', 'go vet ./...', 'go test -short -p 1 ./... -count=1', 'go test -short -race -p 1 ./internal/api ./internal/controller ./internal/service ./internal/search -count=1', 'test:integration:s02', 'test:integration:s03', 'python3 -B scripts/ci/http-smoke.py']) assert.ok(backend.includes(gate), gate)
   assert.ok(backend.includes('CGO_ENABLED=0 go build -o ci-output/tiku-ci ./cmd/adapter-service'))
   assert.ok(backend.includes('python3 -B scripts/ci/run-s04-main-flow.py --binary ci-output/tiku-ci --evidence ci-output/s04-main-flow'))
   assert.ok(backend.indexOf('http-smoke.py') < backend.indexOf('run-s04-main-flow.py'))

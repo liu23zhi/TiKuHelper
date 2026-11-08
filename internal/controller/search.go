@@ -91,10 +91,12 @@ type resolvedSearchRequestContext struct {
 	UserID                     int32
 	AccessTokenID              int32
 	ScriptID                   int32
+	ScriptSessionID            int64
 	ScriptIdentityHash         string
 	ScriptTariff               *scriptAnswerTariff
 	ScriptBilling              searchScriptBillingPolicy
 	ScriptHadNormalAnswer      bool
+	escrowWorkTracked          bool
 	RequestID                  string
 	SearchMode                 string
 }
@@ -105,6 +107,8 @@ type searchBillingContext struct {
 	ScriptID             int32
 	ScriptBilling        searchScriptBillingPolicy
 	ScriptExecutionUsage scriptInternalExecutionUsage
+	escrowWorkTracked    bool
+	escrowWorkUncertain  bool
 	RequestID            string
 	SearchMode           string
 	UsedDefaultAccount   bool
@@ -448,6 +452,21 @@ func executeSearch(c *gin.Context) {
 		}
 		resolved.Context = executionContext
 		req.RequestContext = executionContext
+		// A cache hit or borrowed flight cannot create another charge. For
+		// an actual paid producer, acquire the durable execution claim before
+		// any local/model/tool/provider invocation can occur.
+		tracked, err := beginScriptEscrowExecution(executionContext, resolved.ScriptBilling,
+			resolved.ScriptID, resolved.ScriptSessionID, req.RequestID)
+		if err != nil {
+			if errors.Is(err, service.ErrInvalidAccessTokenAuthorization) {
+				writeSearchUnauthorized(c, err, rawBody)
+			} else {
+				logger.SysError(fmt.Sprintf("登记冻结金搜题失败 requestId=%s", req.RequestID))
+				c.JSON(http.StatusServiceUnavailable, gin.H{"message": "脚本搜题服务暂不可用"})
+			}
+			return
+		}
+		resolved.escrowWorkTracked = tracked
 	}
 
 	logSearchRoutingDecision(c, query, resolved, aiEnabled)
@@ -1057,12 +1076,13 @@ func didUseDefaultNormalSearchProvider(useQuery string, defaultProviders []strin
 
 func buildSearchBillingContext(resolved resolvedSearchRequestContext, useQuery string, aiEnabled bool, usedLocalSearch bool) searchBillingContext {
 	ctx := searchBillingContext{
-		UserID:        resolved.UserID,
-		AccessTokenID: resolved.AccessTokenID,
-		ScriptID:      resolved.ScriptID,
-		ScriptBilling: resolved.ScriptBilling,
-		RequestID:     resolved.RequestID,
-		SearchMode:    resolved.SearchMode,
+		UserID:            resolved.UserID,
+		AccessTokenID:     resolved.AccessTokenID,
+		ScriptID:          resolved.ScriptID,
+		ScriptBilling:     resolved.ScriptBilling,
+		RequestID:         resolved.RequestID,
+		SearchMode:        resolved.SearchMode,
+		escrowWorkTracked: resolved.escrowWorkTracked,
 	}
 	usedDefaultAI := aiEnabled && resolved.UsedDefaultAI
 
@@ -1123,19 +1143,29 @@ func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQue
 	ctx.DeepThinking = req.DeepThinking
 	ctx.AIRoute = strings.TrimSpace(aiUsage.Route)
 	ctx.captureScriptExecutionUsage(aiUsage)
-	if !ctx.Billable {
+	// Provider timeouts or malformed responses may not reveal the complete
+	// upstream outcome. Do not treat absent usage in those cases as proof
+	// of zero cost. Known charges may still settle without clearing the hold.
+	ctx.escrowWorkUncertain = len(audit.Failures) > 0
+	if !ctx.Billable && (!ctx.escrowWorkTracked || ctx.escrowWorkUncertain) {
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "", clientIP, audit)
 		return nil, ""
 	}
 
-	db := withDatabasePriority(resolveSearchPersistenceDB(), resolved.Context, dbqueue.PriorityHigh)
+	db, cancel := escrowSettlementDB(resolved.Context, ctx.escrowWorkTracked)
+	defer cancel()
 	if db == nil {
 		logger.SysError(fmt.Sprintf("搜索计费落账失败：数据库不可用 requestId=%s", resolved.RequestID))
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_db_unavailable", clientIP, audit)
 		return nil, ""
 	}
 
-	charges, warning, err := resolveCompletedSearchBillingCharges(db, resolved, useQuery, req, aiUsage, usedLocalSearch, len(result) > 0)
+	var charges []searchBillingCharge
+	var warning string
+	var err error
+	if ctx.Billable {
+		charges, warning, err = resolveCompletedSearchBillingCharges(db, resolved, useQuery, req, aiUsage, usedLocalSearch, len(result) > 0)
+	}
 	if err != nil {
 		logger.SysError(fmt.Sprintf("搜索计费落账失败：%s requestId=%s", err.Error(), resolved.RequestID))
 		if ctx.ScriptBilling.mode != entity.ScriptBillingModeActivation || !ctx.ScriptExecutionUsage.present() {
@@ -1147,7 +1177,7 @@ func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQue
 		charges = nil
 	}
 	applyAIStagedBillingToSearchAudit(&audit, aiUsage.Trace, charges)
-	if len(charges) == 0 && !ctx.ScriptExecutionUsage.present() {
+	if len(charges) == 0 && !ctx.ScriptExecutionUsage.present() && (!ctx.escrowWorkTracked || ctx.escrowWorkUncertain) {
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_zero_amount", clientIP, audit)
 		return nil, warning
 	}
@@ -1877,7 +1907,7 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 				return err
 			}
 			if alreadyPersisted {
-				return nil
+				return completeSettledEscrowExecution(tx, ctx)
 			}
 		}
 
@@ -1889,7 +1919,7 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 			totalCharged = 0
 		}
 		if len(charges) == 0 && !ctx.ScriptExecutionUsage.present() {
-			return nil
+			return completeSettledEscrowExecution(tx, ctx)
 		}
 		// Recheck authoritative rows inside the same transaction as every bill.
 		// MySQL row locks serialize writers; conditional updates also fail closed
@@ -1989,7 +2019,9 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 			}
 		}
 		if ctx.ScriptBilling.mode == entity.ScriptBillingModeEscrow {
-			return nil // Settled once, together with the escrow journal and these billing rows.
+			// Resolve the work atomically with the escrow journal, Key usage,
+			// and these billing rows. Refund remains outside this transaction.
+			return completeSettledEscrowExecution(tx, ctx)
 		}
 		balanceAfter := util.RoundMoney(exactBalance)
 		if balanceAfter == user.Balance {
@@ -2116,6 +2148,7 @@ func resolveSearchRequestContextWithDBAndIdentity(db *gorm.DB, authorization str
 		}
 		resolved.ScriptBilling = scriptPolicy
 		if scriptSession.ID > 0 {
+			resolved.ScriptSessionID = scriptSession.ID
 			resolved.ScriptIdentityHash = scriptSession.IdentityHash
 			if !scriptPolicy.managed() {
 				resolved.ScriptTariff, err = snapshotScriptAnswerTariff(db, script)

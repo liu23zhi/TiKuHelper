@@ -98,6 +98,16 @@ func AIFallback(c *gin.Context) {
 		}
 	}
 
+	tracked, err := beginScriptEscrowExecution(ownerContext, billingCtx.ScriptBilling,
+		billingCtx.ScriptID, aIFallbackVerifiedScriptSession(c).ID, requestID)
+	if err != nil {
+		failure := buildAIFallbackBillingFailureResult(err)
+		writeAIFallbackAuditLog(newAIFallbackAuditIdentity(c), requestID, "", "billing_precheck", "sync", req, failure)
+		writeAIFallbackResult(c, failure)
+		return
+	}
+	billingCtx.escrowWorkTracked = tracked
+
 	result := func() service.AIFallbackResult {
 		defer func() {
 			if recovered := recover(); recovered != nil {
@@ -395,12 +405,14 @@ func persistAIFallbackBilling(billingCtx searchBillingContext, requestID string,
 // 未定价时按 0 计费，不阻断答案返回，只把提示交给调用方。
 func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, requestID string, req model.SearchRequest, result service.AIFallbackResult) (string, service.AIFallbackResult, error) {
 	usage := result.Usage
+	billingCtx.escrowWorkUncertain = aiFallbackEscrowOutcomeUncertain(result)
 	// Failed answers do not erase already executed model/summary usage.
 	// The existing atomic settlement retains Key limits and money precision.
-	if !hasAISearchUsage(usage) {
+	if !hasAISearchUsage(usage) && (!billingCtx.escrowWorkTracked || billingCtx.escrowWorkUncertain) {
 		return "", result, nil
 	}
-	db := withDatabasePriority(resolveSearchPersistenceDB(), context.Background(), dbqueue.PriorityHigh)
+	db, cancel := escrowSettlementDB(context.Background(), billingCtx.escrowWorkTracked)
+	defer cancel()
 	if db == nil {
 		return "", result, errors.New("AI 兜底计费失败，请稍后重试")
 	}
@@ -436,7 +448,8 @@ func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, reques
 		}
 	}
 	charges = appendAIToolBillingCharges(charges, db, req, usage)
-	if len(charges) == 0 && !billingCtx.ScriptExecutionUsage.present() {
+	if len(charges) == 0 && !billingCtx.ScriptExecutionUsage.present() &&
+		(!billingCtx.escrowWorkTracked || billingCtx.escrowWorkUncertain) {
 		return warning, result, nil
 	}
 	queued, err := persistSearchBillingRecordsWithRetry(db, billingCtx, charges, searchBillingRetries)
@@ -452,6 +465,11 @@ func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, reques
 func buildAIFallbackBillingFailureResult(err error) service.AIFallbackResult {
 	if errors.Is(err, errAccessTokenQuotaExceeded) || errors.Is(err, service.ErrInsufficientSearchBalance) {
 		return buildAIFallbackSpendingRejection(err)
+	}
+	if errors.Is(err, service.ErrInvalidAccessTokenAuthorization) {
+		return service.AIFallbackResult{Error: &service.AIFallbackError{
+			Code: service.AIFallbackErrorCodeAIUnavailable, Message: "脚本运行会话无效或已关停",
+		}}
 	}
 	return service.AIFallbackResult{
 		Success: false,

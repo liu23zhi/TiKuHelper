@@ -49,6 +49,23 @@ test('paid script creation sends exactly one stable idempotency header without c
   assert.equal(Object.hasOwn(invoke(payload), 'headers'), false)
 })
 
+test('script deletion retries only after explicit user action and carries the confirmed run as a decimal query string', async () => {
+  const api = await read('api/TikuComponentApi.js')
+  const start = api.indexOf('export function deleteScript(')
+  const end = api.indexOf('\n}', start)
+  assert.ok(start >= 0 && end > start)
+  const declaration = api.slice(start, end + 2).replace('export ', '')
+  const invoke = new Function('request', declaration + '; return deleteScript')(config => config)
+  const base = { errorFeedback: 'local', retryPolicy: 'single', url: '/adapter-service/scripts/7', method: 'delete' }
+  assert.deepEqual(invoke({ id: 7 }), base)
+  assert.deepEqual(invoke({ id: 7, confirmActiveSessionId: '9007199254740993' }), {
+    ...base, params: { confirmActiveSessionId: '9007199254740993' },
+  })
+  for (const invalid of [42, true, null, '', '00', '12&confirmActive=true']) {
+    assert.throws(() => invoke({ id: 7, confirmActiveSessionId: invalid }), TypeError)
+  }
+})
+
 
 test('activation purchase never sends the code or a wallet mutation without its idempotency key', async () => {
   const api = await read('api/TikuComponentApi.js')

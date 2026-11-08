@@ -336,6 +336,7 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 		}
 		if mode != "" {
 			script.BillingMode = mode
+			script.EscrowWorkTracked = mode == entity.ScriptBillingModeEscrow
 			script.RunDurationMinutes = input.RunDurationMinutes
 			script.NotifyOnDenied = input.NotifyOnDenied
 			script.AutoTopUp = mode == entity.ScriptBillingModeEscrow && input.AutoTopUp
@@ -515,6 +516,9 @@ func UpdateUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32, i
 			}
 			return err
 		}
+		if script.EscrowClosingAt != nil {
+			return ErrScriptEscrowClosePending
+		}
 		baseDomain := normalizeScriptDomain(input.BaseDomain)
 		if baseDomain == "" {
 			return ErrScriptDomainRequired
@@ -614,58 +618,11 @@ func UpdateUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32, i
 }
 
 func DeleteUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32) error {
-	return db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
-		var script entity.UserScript
-		query := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", scriptID)
-		if !isAdminUser(operator) {
-			query = query.Where("user_id = ?", operator.ID)
-		}
-		if err := query.First(&script).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrScriptNotFound
-			}
-			return err
-		}
-		if script.DeletedAt != nil {
-			return nil
-		}
-		if script.BillingMode != "" && script.BillingMode != entity.ScriptBillingModeEscrow &&
-			script.BillingMode != entity.ScriptBillingModeActivation {
-			return ErrScriptBillingModeInvalid
-		}
-		now := time.Now()
-		if err := tx.Model(&script).Updates(map[string]any{"deleted_at": now}).Error; err != nil {
-			return err
-		}
-		if script.BillingMode == entity.ScriptBillingModeEscrow {
-			// A committed tombstone and the release use this same transaction.
-			// Any historically admitted run requires settlement verification.
-			if _, err := ReleaseNeverRunScriptEscrowInTx(tx, script.ID, script.UserID); err != nil {
-				return err
-			}
-		}
-		if script.AccessTokenID > 0 {
-			if err := tx.Model(&entity.AccessToken{}).Where("id = ?", script.AccessTokenID).Update("status", "disabled").Error; err != nil {
-				return err
-			}
-		}
-		if err := tx.Model(&entity.ScriptRunSession{}).Where("script_id = ? AND revoked_at IS NULL", script.ID).Update("revoked_at", now).Error; err != nil {
-			return err
-		}
-		if script.BillingMode != "" {
-			return nil
-		}
-		var user entity.User
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&user, script.UserID).Error; err != nil {
-			return err
-		}
-		before := util.RoundMoney(user.Balance)
-		after := util.RoundMoney(before + script.ReservedFee)
-		if err := tx.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", after).Error; err != nil {
-			return err
-		}
-		return tx.Create(&entity.BillingRecord{UserID: user.ID, Type: "script_refund", Provider: "script", Amount: script.ReservedFee, BalanceBefore: before, BalanceAfter: after, RequestID: fmt.Sprintf("script_delete_%d", script.ID), Remark: "删除脚本释放预扣费用"}).Error
-	})
+	_, err := CloseUserScriptWithDB(db, operator, scriptID, 0)
+	if errors.Is(err, ErrScriptActiveCloseConfirmationRequired) {
+		return ErrScriptEscrowClosePending
+	}
+	return err
 }
 
 func IssueScriptExchangeTokenWithDB(db *gorm.DB, operator entity.User, scriptID int32, ttl time.Duration) (ScriptExchangeGrant, error) {

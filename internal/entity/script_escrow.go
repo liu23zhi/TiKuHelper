@@ -33,3 +33,15 @@ type ScriptEscrowEntry struct {
 }
 
 func (*ScriptEscrowEntry) TableName() string { return "script_escrow_entries" }
+
+// ScriptEscrowWork is written before an admitted execution can call a provider.
+// It survives process loss; a missing outcome never implies a zero charge.
+type ScriptEscrowWork struct {
+	ScriptID  int32  `gorm:"column:script_id;primaryKey;autoIncrement:false;index:idx_script_escrow_pending,priority:1"`
+	RequestID string `gorm:"column:request_id;type:varchar(64);primaryKey"`
+	SessionID int64  `gorm:"column:session_id;not null"`
+	CreatedAt time.Time
+	DoneAt    *time.Time `gorm:"column:done_at;index:idx_script_escrow_pending,priority:2"`
+}
+
+func (*ScriptEscrowWork) TableName() string { return "script_escrow_work" }

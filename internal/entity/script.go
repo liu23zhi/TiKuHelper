@@ -49,14 +49,16 @@ type UserScript struct {
 	AnswerPriceMultiplier float64 `gorm:"column:answer_price_multiplier;type:decimal(18,6);not null;default:0" json:"answerPriceMultiplier"`
 	// AnswerPrice is retained for backwards-compatible reads of pre-multiplier
 	// rows. New scripts use AnswerPriceMultiplier against the current tiku price.
-	AnswerPrice   float64    `gorm:"column:answer_price;type:decimal(18,6);not null;default:0" json:"answerPrice"`
-	ShortCode     string     `gorm:"column:short_code;type:char(16);not null;uniqueIndex" json:"shortCode"`
-	AccessTokenID int32      `gorm:"column:access_token_id;not null;index" json:"accessTokenId"`
-	AccessKey     string     `gorm:"column:access_key;type:varchar(128);not null" json:"-"`
-	ReservedFee   float64    `gorm:"column:reserved_fee;type:decimal(18,6);not null;default:10" json:"reservedFee"`
-	DeletedAt     *time.Time `gorm:"column:deleted_at;index" json:"deletedAt,omitempty"`
-	CreatedAt     time.Time  `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
-	UpdatedAt     time.Time  `gorm:"column:updated_at;autoUpdateTime" json:"updatedAt"`
+	AnswerPrice       float64    `gorm:"column:answer_price;type:decimal(18,6);not null;default:0" json:"answerPrice"`
+	ShortCode         string     `gorm:"column:short_code;type:char(16);not null;uniqueIndex" json:"shortCode"`
+	AccessTokenID     int32      `gorm:"column:access_token_id;not null;index" json:"accessTokenId"`
+	AccessKey         string     `gorm:"column:access_key;type:varchar(128);not null" json:"-"`
+	ReservedFee       float64    `gorm:"column:reserved_fee;type:decimal(18,6);not null;default:10" json:"reservedFee"`
+	EscrowClosingAt   *time.Time `gorm:"column:escrow_closing_at;index" json:"escrowClosingAt,omitempty"`
+	EscrowWorkTracked bool       `gorm:"column:escrow_work_tracked;not null;default:false" json:"-"`
+	DeletedAt         *time.Time `gorm:"column:deleted_at;index" json:"deletedAt,omitempty"`
+	CreatedAt         time.Time  `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
+	UpdatedAt         time.Time  `gorm:"column:updated_at;autoUpdateTime" json:"updatedAt"`
 }
 
 func (*UserScript) TableName() string { return TableNameUserScript }

@@ -731,6 +731,7 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		&entity.ScriptRunSession{},
 		&entity.ScriptEscrow{},
 		&entity.ScriptEscrowEntry{},
+		&entity.ScriptEscrowWork{},
 		&entity.ScriptActivationEntitlement{},
 		&entity.ScriptSubsidizedUsage{},
 	}

@@ -80,7 +80,7 @@
         <a-table bordered table-layout="fixed" :data-source="rows" :columns="columns" :loading="loading" :pagination="false" row-key="id" :scroll="{ x: tableScrollX }">
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'name'">
-              <div class="script-name-cell"><strong>{{ record.name }}</strong><a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag></div>
+              <div class="script-name-cell"><strong>{{ record.name }}</strong><a-tag :color="isEscrowClosing(record) ? 'orange' : record.enabled ? 'green' : 'default'">{{ isEscrowClosing(record) ? '待结算' : record.enabled ? '启用' : '停用' }}</a-tag></div>
               <p v-if="record.description" class="table-hint">{{ record.description }}</p>
             </template>
             <span v-else-if="column.key === 'owner'">{{ record.ownerName || '-' }}</span>
@@ -96,9 +96,9 @@
             <span v-else-if="column.key === 'preset'">{{ Object.keys(record.presetParams || {}).length }} 个</span>
             <span v-else-if="column.key === 'updatedAt'">{{ formatDateTime(record.updatedAt) }}</span>
             <a-space v-else-if="column.key === 'operation'" wrap>
-              <a-button type="link" style="padding: 0" :onClick="pageEntry.bind(openEdit, record)">编辑</a-button>
-              <a-popconfirm title="删除此脚本？" :description="record.billingMode === 'escrow' ? '仅从未激活的脚本可删除并释放冻结金；已运行的脚本请先停用，待结算。' : '删除成功后无法继续启动；一次性资格不会重新发放。'" ok-text="删除" cancel-text="取消" :onConfirm="pageEntry.bind(handleDelete, record)">
-                <a-button type="link" danger style="padding: 0" :disabled="deleting || saving">删除</a-button>
+              <a-button type="link" style="padding: 0" :disabled="isEscrowClosing(record)" :onClick="pageEntry.bind(openEdit, record)">编辑</a-button>
+              <a-popconfirm title="删除此脚本？" :description="record.billingMode === 'escrow' ? '删除后停止受理新请求，已受理请求结算完成后返还剩余冻结金。' : '删除成功后无法继续启动；一次性资格不会重新发放。'" ok-text="删除" cancel-text="取消" :onConfirm="pageEntry.bind(handleDelete, record)">
+                <a-button type="link" danger style="padding: 0" :disabled="deleting || saving || !!activeCloseConfirmation || isEscrowClosing(record)">删除</a-button>
               </a-popconfirm>
             </a-space>
             <template v-else>{{ record[column.dataIndex] ?? '-' }}</template>
@@ -190,6 +190,9 @@
       </a-form>
       </div>
     </a-modal>
+    <a-modal v-if="activeCloseConfirmation" :open="true" title="客户端正在运行，仍要关闭脚本？" ok-text="确认关闭" cancel-text="取消" :ok-button-props="{ danger: true }" :mask-closable="false" :onOk="pageEntry.bind(confirmActiveScriptClose)" :onCancel="pageEntry.bind(cancelActiveScriptClose)" :wrap-props="{ 'aria-modal': true }">
+      <p>立即吊销令牌并通知客户端退出，等已受理请求结清后返还余额。</p>
+    </a-modal>
     </div>
   </div>
 </template>
@@ -212,6 +215,7 @@ const { currentUser } = useCurrentUserDisplay()
 const fieldPrefix = 'script-' + useId(), fieldId = field => fieldPrefix + '-' + field
 const pageSurface = ref(null), modalSurface = ref(null), frameKey = ref(0), editorKey = ref(0), draining = ref(false)
 const deleting = ref(false), listReady = ref(false), readError = ref('')
+const activeCloseConfirmation = shallowRef(null)
 const domainReady = ref(false)
 let alive = true, mounted = false, epoch = 0, readTicket = 0, domainRevision = 0, retry = null
 const principal = () => {
@@ -321,7 +325,7 @@ function setDomainText(value) { if (isAdmin.value && !domainSaving.value) { doma
 function setDomainWildcard(value) { if (isAdmin.value && !domainSaving.value) { domainRevision++; domainAllowWildcard.value = value } }
 
 function startEditor(record) {
-  if (!canAct() || modalOpen.value || saving.value || deleting.value) return
+  if (!canAct() || modalOpen.value || saving.value || deleting.value || activeCloseConfirmation.value || isEscrowClosing(record)) return
   editing.value = Boolean(record)
   resetForm(record)
   if (!record && currentNativeVersion.value?.id) form.versionId = currentNativeVersion.value.id
@@ -374,7 +378,7 @@ async function loadScripts() {
 }
 
 function toggleScope() {
-  if (!canAct() || !isAdmin.value || modalOpen.value || deleting.value) return
+  if (!canAct() || !isAdmin.value || modalOpen.value || deleting.value || activeCloseConfirmation.value) return
   showAll.value = !showAll.value
   rows.value = []; listReady.value = false
   Object.assign(summary, { total: 0, enabled: 0, reserved: 0 })
@@ -554,23 +558,66 @@ async function handleSubmit() {
   } finally { if (owns()) saving.value = false }
 }
 
-async function handleDelete(record) {
-  if (!canAct() || !rows.value.includes(record) || deleting.value || saving.value) return
-  const owns = captureOwner()
-  deleting.value = true
-  try {
-    const response = await deleteScript({ id: record.id })
-    if (!owns()) return
-    if (response?.status !== 200) {
-      message.error(scriptErrorCode(response) === 'SCRIPT_ESCROW_CLOSE_PENDING'
-        ? '此脚本已运行，冻结金需完成结算后再释放。可先停用。' : '删除脚本未完成，请刷新列表核对。')
+function isEscrowClosing(record) {
+  return record?.billingMode === 'escrow' && Boolean(record.escrowClosingAt)
+}
+
+function showScriptCloseFailure(record, response, owns) {
+  const failure = response?.response || response
+  const code = scriptErrorCode(response)
+  if (record.billingMode === 'escrow' && failure?.status === 409 && code === 'SCRIPT_ACTIVE_LEASE_CONFIRM_REQUIRED') {
+    const sessionId = failure.data?.activeRunSessionId
+    if (typeof sessionId === 'string' && /^[1-9][0-9]{0,18}$/.test(sessionId) && rows.value.includes(record)) {
+      activeCloseConfirmation.value = { record, sessionId, owns }
       return
     }
-    message.success('脚本已删除')
+    message.warning('客户端状态已变化，请刷新后重新确认删除。')
+    return
+  }
+  message.error(code === 'SCRIPT_ESCROW_CLOSE_PENDING'
+    ? '冻结金仍待结算，请刷新查看状态。' : '删除脚本结果未确认，请刷新列表核对。')
+}
+
+function handleDelete(record) {
+  if (!canAct() || !rows.value.includes(record) || deleting.value || saving.value || modalOpen.value || activeCloseConfirmation.value || isEscrowClosing(record)) return
+  return submitScriptClose(record, captureOwner())
+}
+
+function cancelActiveScriptClose() {
+  activeCloseConfirmation.value = null
+}
+
+function confirmActiveScriptClose() {
+  const confirmation = activeCloseConfirmation.value
+  if (!confirmation || !confirmation.owns() || deleting.value) return
+  cancelActiveScriptClose()
+  if (!rows.value.includes(confirmation.record) || isEscrowClosing(confirmation.record)) {
+    message.warning('脚本列表已变化，请重新确认删除。')
+    return
+  }
+  return submitScriptClose(confirmation.record, confirmation.owns, confirmation.sessionId)
+}
+
+async function submitScriptClose(record, owns, confirmActiveSessionId) {
+  deleting.value = true
+  try {
+    const response = await deleteScript({ id: record.id, ...(confirmActiveSessionId ? { confirmActiveSessionId } : {}) })
+    if (!owns()) return
+    const state = response?.data?.state
+    if (record.billingMode === 'escrow' && [200, 202].includes(response?.status) && state === 'settling') {
+      rows.value = rows.value.map(item => item.id === record.id
+        ? { ...item, enabled: false, escrowClosingAt: item.escrowClosingAt || true }
+        : item)
+      message.info('脚本已停止接单，冻结金待结算。')
+    } else if (response?.status === 200 && (record.billingMode !== 'escrow' || state === 'closed')) {
+      message.success(record.billingMode === 'escrow' ? '脚本已关闭，结算完成。' : '脚本已删除')
+    } else {
+      showScriptCloseFailure(record, response, owns)
+      return
+    }
     await loadScripts()
   } catch (error) {
-    if (owns()) message.error(scriptErrorCode(error) === 'SCRIPT_ESCROW_CLOSE_PENDING'
-      ? '此脚本已运行，冻结金需完成结算后再释放。可先停用。' : '删除脚本结果未确认，请刷新列表核对。')
+    if (owns()) showScriptCloseFailure(record, error, owns)
   } finally { if (owns()) deleting.value = false }
 }
 
@@ -600,7 +647,7 @@ async function copyText(value) {
 
 function mayCopyCommand(record) {
   return String(record.ownerId ?? '') === String(currentUser.value?.id ?? '')
-    && Boolean(currentUser.value?.id) && record.scheme === 'https' && Boolean(buildScriptCommand(record))
+    && Boolean(currentUser.value?.id) && !isEscrowClosing(record) && record.scheme === 'https' && Boolean(buildScriptCommand(record))
 }
 function copyCommand(record) {
   if (rows.value.includes(record) && mayCopyCommand(record)) return copyText(buildScriptCommand(record))
@@ -754,7 +801,7 @@ function startReads() {
 function retireScope() {
   const ticket = ++epoch
   readTicket += 1; domainRevision += 1; billingReadTicket += 1; policyRevision += 1; priceRevision += 1; retry = null; draining.value = true
-  hidePrivate(pageSurface.value); retireEditor()
+  hidePrivate(pageSurface.value); retireEditor(); cancelActiveScriptClose()
   showAll.value = false; rows.value = []; versions.value = []
   Object.assign(summary, { total: 0, enabled: 0, reserved: 0 })
   readError.value = ''; listReady.value = false; loading.value = false; deleting.value = false

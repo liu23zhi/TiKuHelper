@@ -718,10 +718,16 @@ export function updateScript(data) {
 }
 
 export function deleteScript(data) {
+  const sessionId = data.confirmActiveSessionId
+  if (sessionId !== undefined && (typeof sessionId !== 'string' || !/^[1-9][0-9]{0,18}$/.test(sessionId))) {
+    throw new TypeError('客户端会话确认无效，请刷新后重新确认。')
+  }
   return request({
     errorFeedback: 'local',
+    retryPolicy: 'single',
     url: `/adapter-service/scripts/${data.id}`,
     method: 'delete',
+    ...(sessionId === undefined ? {} : { params: { confirmActiveSessionId: sessionId } }),
   })
 }
 

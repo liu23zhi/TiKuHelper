@@ -258,6 +258,14 @@ func SettleScriptEscrowMicrosInTx(tx *gorm.DB, scriptID, ownerID int32, requestI
 		}
 		return movementFromEscrowEntry(*previous, true), nil
 	}
+	// A settlement replay is permitted above; a new charge must never debit
+	// the wallet after closure returned the held balance. Read current state
+	// even in an outer MySQL REPEATABLE READ billing transaction.
+	if released, err := currentScriptEscrowReleaseReceipt(tx, scriptID, ownerID); err != nil {
+		return ScriptEscrowMovement{}, err
+	} else if released != nil {
+		return ScriptEscrowMovement{}, ErrScriptEscrowClosePending
+	}
 	escrowDebit := min(row.AvailableMicros, micros)
 	walletAfter := wallet.micros - (micros - escrowDebit)
 	if walletAfter < -maxScriptEscrowMicros {
@@ -357,6 +365,62 @@ func ReleaseNeverRunScriptEscrowInTx(tx *gorm.DB, scriptID, ownerID int32) (Scri
 		EscrowBeforeMicros: row.AvailableMicros, EscrowAfterMicros: 0,
 		WalletAfterMicros: wallet.micros + row.AvailableMicros,
 	}, true)
+}
+
+// releaseTrackedScriptEscrowInTx is called only after the finalizer has locked
+// the owned script, checked the complete admission journal and tombstoned it.
+func releaseTrackedScriptEscrowInTx(tx *gorm.DB, scriptID, ownerID int32) (ScriptEscrowMovement, error) {
+	if err := requireScriptEscrowTx(tx, scriptID, ownerID); err != nil {
+		return ScriptEscrowMovement{}, err
+	}
+	wallet, row, err := lockScriptEscrowAndWallet(tx, scriptID, ownerID)
+	if err != nil {
+		return ScriptEscrowMovement{}, err
+	}
+	if previous, err := currentScriptEscrowReleaseReceipt(tx, scriptID, ownerID); err != nil {
+		return ScriptEscrowMovement{}, err
+	} else if previous != nil {
+		if row.AvailableMicros != 0 || previous.EscrowAfterMicros != 0 ||
+			previous.AmountMicros < 0 || previous.EscrowBeforeMicros != previous.AmountMicros ||
+			previous.WalletAfterMicros-previous.WalletBeforeMicros != previous.AmountMicros {
+			return ScriptEscrowMovement{}, ErrScriptEscrowConflict
+		}
+		return movementFromEscrowEntry(*previous, true), nil
+	}
+	var last entity.ScriptEscrowEntry
+	err = tx.Session(&gorm.Session{NewDB: true}).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("script_id = ? AND user_id = ?", scriptID, ownerID).Order("id DESC").Take(&last).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ScriptEscrowMovement{}, ErrScriptEscrowClosePending
+	}
+	if err != nil {
+		return ScriptEscrowMovement{}, err
+	}
+	if last.Kind == scriptEscrowRelease || last.EscrowAfterMicros != row.AvailableMicros ||
+		wallet.micros > maxScriptEscrowMicros-row.AvailableMicros {
+		return ScriptEscrowMovement{}, ErrScriptEscrowConflict
+	}
+	return storeScriptEscrowMovement(tx, row, wallet, entity.ScriptEscrowEntry{
+		OperationHash: hashScriptSecret(scriptEscrowRelease), Kind: scriptEscrowRelease, AmountMicros: row.AvailableMicros,
+		EscrowBeforeMicros: row.AvailableMicros, EscrowAfterMicros: 0,
+		WalletAfterMicros: wallet.micros + row.AvailableMicros,
+	}, row.AvailableMicros != 0)
+}
+
+func currentScriptEscrowReleaseReceipt(tx *gorm.DB, scriptID, ownerID int32) (*entity.ScriptEscrowEntry, error) {
+	var receipt entity.ScriptEscrowEntry
+	err := tx.Session(&gorm.Session{NewDB: true}).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("script_id = ? AND user_id = ? AND operation_hash = ?", scriptID, ownerID, hashScriptSecret(scriptEscrowRelease)).Take(&receipt).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if receipt.Kind != scriptEscrowRelease {
+		return nil, ErrScriptEscrowConflict
+	}
+	return &receipt, nil
 }
 
 func requireScriptEscrowTx(tx *gorm.DB, scriptID, ownerID int32) error {

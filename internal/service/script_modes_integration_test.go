@@ -13,7 +13,7 @@ import (
 func newManagedScriptFixture(t *testing.T, balance float64) (*gorm.DB, entity.User, entity.User, entity.ScriptVersion) {
 	t.Helper()
 	db := newScriptTestDB(t)
-	if err := db.AutoMigrate(&entity.ScriptEscrow{}, &entity.ScriptEscrowEntry{}, &entity.ScriptActivationEntitlement{}); err != nil {
+	if err := db.AutoMigrate(&entity.ScriptEscrow{}, &entity.ScriptEscrowEntry{}, &entity.ScriptEscrowWork{}, &entity.ScriptActivationEntitlement{}); err != nil {
 		t.Fatal(err)
 	}
 	owner := entity.User{Username: "mode-owner", Role: "user", Balance: balance}

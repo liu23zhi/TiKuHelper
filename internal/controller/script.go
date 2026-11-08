@@ -162,11 +162,36 @@ func DeleteScript(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "脚本参数错误"})
 		return
 	}
-	if err := service.DeleteUserScriptWithDB(scriptDB(), operator, int32(id)); err != nil {
+	var confirmedSessionID int64
+	if value, supplied := c.GetQuery("confirmActiveSessionId"); supplied {
+		confirmedSessionID, err = strconv.ParseInt(value, 10, 64)
+		if err != nil || confirmedSessionID <= 0 || strconv.FormatInt(confirmedSessionID, 10) != value {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "客户端确认参数错误"})
+			return
+		}
+	}
+	result, err := service.CloseUserScriptWithDB(scriptDB(), operator, int32(id), confirmedSessionID)
+	if errors.Is(err, service.ErrScriptActiveCloseConfirmationRequired) {
+		c.JSON(http.StatusConflict, gin.H{
+			"code":               "SCRIPT_ACTIVE_LEASE_CONFIRM_REQUIRED",
+			"message":            "原生客户端正在使用此脚本，需要再次确认关闭",
+			"activeRunSessionId": strconv.FormatInt(result.ActiveRunSessionID, 10),
+		})
+		return
+	}
+	if err != nil {
 		writeScriptError(c, err, "删除脚本失败")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "ok"})
+	if result.Status == service.ScriptCloseStatusSettling {
+		message := "Key 已吊销，正在等待在途请求结清"
+		if result.NeedsReconciliation {
+			message = "Key 已吊销；历史运行缺少完整结算记录，冻结金待核对"
+		}
+		c.JSON(http.StatusAccepted, gin.H{"state": "settling", "message": message, "needsReconciliation": result.NeedsReconciliation})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"state": "closed", "message": "脚本已关闭", "refundedMicros": result.RefundedMicros})
 }
 
 func UpdateScript(c *gin.Context) {

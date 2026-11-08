@@ -13,7 +13,7 @@ test('fixed proxy HTTP and page integration is required in the backend job witho
   assert.match(backend, /run: npm run --prefix web test:integration:s03/)
   assert.match(backend, /run: npm run --prefix web test:integration:s02/)
   assert.equal((backend.match(/run: npm ci --prefix web/g) || []).length, 1)
-  for (const gate of ['go build ./...', 'go vet ./...', 'go test -short ./... -count=1', 'go test -race ./internal/api ./internal/controller ./internal/service -count=1', 'python3 -B scripts/ci/http-smoke.py']) assert.ok(backend.includes(gate), gate)
+  for (const gate of ['go build ./...', 'go vet ./...', 'go test -short -p 1 ./... -count=1', 'go test -short -race -p 1 ./internal/api ./internal/controller ./internal/service ./internal/search -count=1', 'python3 -B scripts/ci/http-smoke.py']) assert.ok(backend.includes(gate), gate)
   assert.doesNotMatch(backend, /continue-on-error|\|\| true|push: true|secrets\./)
   const scripts = JSON.parse(fs.readFileSync(path.join(root, 'web/package.json'), 'utf8')).scripts
   assert.equal(scripts['test:integration:s03'], 'node scripts/run-s03-proxy-flow.cjs')

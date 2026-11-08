@@ -362,6 +362,15 @@ func CreateAIFallbackTask(c *gin.Context) {
 			}()
 		}
 
+		tracked, err := beginScriptEscrowExecution(context.Background(), currentBillingCtx.ScriptBilling,
+			currentBillingCtx.ScriptID, session.ID, requestID)
+		if err != nil {
+			failure := buildAIFallbackBillingFailureResult(err)
+			auditResult("billing_precheck", failure)
+			return failure
+		}
+		currentBillingCtx.escrowWorkTracked = tracked
+
 		result = runAIFallbackService(req)
 		if !result.Success {
 			warning, billedResult, err := persistAIFallbackBillingWithWarning(currentBillingCtx, requestID, req, result)
