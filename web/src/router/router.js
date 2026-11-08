@@ -28,6 +28,7 @@ const LocationCache = () => import(/* webpackChunkName: "route-location-cache" *
 const ExtensionUpdates = () => import(/* webpackChunkName: "route-extension-updates" */ '../pages/ExtensionUpdates/index.vue')
 const Tickets = () => import(/* webpackChunkName: "route-tickets" */ '../pages/Tickets/index.vue')
 const OCRCache = () => import(/* webpackChunkName: "route-o-c-r-cache" */ '../pages/OCRCache/index.vue')
+const UserExamTool = () => import(/* webpackChunkName: "route-user-exam-tool" */ '../pages/UserExamTool/index.vue')
 const routes = [
   {
     path: '/',
@@ -108,6 +109,11 @@ const routes = [
         component: OCRCache,
       },
       {
+        path: 'user-exam-tool',
+        name: 'user-exam-tool',
+        component: UserExamTool,
+      },
+      {
         path: 'extension-updates',
         name: 'extension-updates',
         component: ExtensionUpdates,
@@ -172,6 +178,7 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   'search-account-config',
   'ai-search-config',
   'ocr-cache',
+  'user-exam-tool',
   'system-settings',
   'extension-updates',
   'location-cache',

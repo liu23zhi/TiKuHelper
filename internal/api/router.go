@@ -193,6 +193,11 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/system-settings", controller.Auth, middleware.RequireAdmin, controller.SystemSettingDetail)
 	apiRouter.PUT("/system-settings", controller.Auth, middleware.RequireAdmin, controller.UpdateSystemSetting)
 
+	// 考试客户端本地库工具：仅管理员。服务端不解密，只发工具 + 只读预览明文库。
+	apiRouter.GET("/admin/userexam/tool/version", controller.Auth, middleware.RequireAdmin, controller.UserExamToolVersion)
+	apiRouter.GET("/admin/userexam/tool", controller.Auth, middleware.RequireAdmin, controller.UserExamToolDownload)
+	apiRouter.POST("/admin/userexam/inspect", middleware.BodyLimit(controller.MaxUserExamInspectUploadBytes), controller.Auth, middleware.RequireAdmin, controller.UserExamInspect)
+
 }
 
 type embedFileSystem struct {
