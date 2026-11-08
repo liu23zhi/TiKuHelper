@@ -621,13 +621,20 @@ func DeleteUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32) e
 		if script.DeletedAt != nil {
 			return nil
 		}
-		if script.BillingMode == entity.ScriptBillingModeEscrow {
-			// Do not release an escrow while executed work may still settle.
-			return ErrScriptEscrowClosePending
+		if script.BillingMode != "" && script.BillingMode != entity.ScriptBillingModeEscrow &&
+			script.BillingMode != entity.ScriptBillingModeActivation {
+			return ErrScriptBillingModeInvalid
 		}
 		now := time.Now()
 		if err := tx.Model(&script).Updates(map[string]any{"deleted_at": now}).Error; err != nil {
 			return err
+		}
+		if script.BillingMode == entity.ScriptBillingModeEscrow {
+			// A committed tombstone and the release use this same transaction.
+			// Any historically admitted run requires settlement verification.
+			if _, err := ReleaseNeverRunScriptEscrowInTx(tx, script.ID, script.UserID); err != nil {
+				return err
+			}
 		}
 		if script.AccessTokenID > 0 {
 			if err := tx.Model(&entity.AccessToken{}).Where("id = ?", script.AccessTokenID).Update("status", "disabled").Error; err != nil {
@@ -637,7 +644,7 @@ func DeleteUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32) e
 		if err := tx.Model(&entity.ScriptRunSession{}).Where("script_id = ? AND revoked_at IS NULL", script.ID).Update("revoked_at", now).Error; err != nil {
 			return err
 		}
-		if script.BillingMode == entity.ScriptBillingModeActivation {
+		if script.BillingMode != "" {
 			return nil
 		}
 		var user entity.User

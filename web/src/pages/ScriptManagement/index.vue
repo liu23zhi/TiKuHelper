@@ -96,8 +96,8 @@
             <span v-else-if="column.key === 'updatedAt'">{{ formatDateTime(record.updatedAt) }}</span>
             <a-space v-else-if="column.key === 'operation'" wrap>
               <a-button type="link" style="padding: 0" :onClick="pageEntry.bind(openEdit, record)">编辑</a-button>
-              <a-popconfirm title="删除此脚本？" description="删除成功后无法继续启动；一次性资格不会重新发放。" ok-text="删除" cancel-text="取消" :onConfirm="pageEntry.bind(handleDelete, record)">
-                <a-button type="link" danger style="padding: 0" :disabled="deleting || saving || record.billingMode === 'escrow'" :title="record.billingMode === 'escrow' ? '冻结金脚本暂不支持删除，可先停用' : undefined">删除</a-button>
+              <a-popconfirm title="删除此脚本？" :description="record.billingMode === 'escrow' ? '仅从未激活的脚本可删除并释放冻结金；已运行的脚本请先停用，待结算。' : '删除成功后无法继续启动；一次性资格不会重新发放。'" ok-text="删除" cancel-text="取消" :onConfirm="pageEntry.bind(handleDelete, record)">
+                <a-button type="link" danger style="padding: 0" :disabled="deleting || saving">删除</a-button>
               </a-popconfirm>
             </a-space>
             <template v-else>{{ record[column.dataIndex] ?? '-' }}</template>
@@ -546,17 +546,22 @@ async function handleSubmit() {
 }
 
 async function handleDelete(record) {
-  if (!canAct() || !rows.value.includes(record) || record.billingMode === 'escrow' || deleting.value || saving.value) return
+  if (!canAct() || !rows.value.includes(record) || deleting.value || saving.value) return
   const owns = captureOwner()
   deleting.value = true
   try {
     const response = await deleteScript({ id: record.id })
     if (!owns()) return
-    if (response?.status !== 200) { message.error('删除脚本未完成，请刷新列表核对。'); return }
+    if (response?.status !== 200) {
+      message.error(scriptErrorCode(response) === 'SCRIPT_ESCROW_CLOSE_PENDING'
+        ? '此脚本已运行，冻结金需完成结算后再释放。可先停用。' : '删除脚本未完成，请刷新列表核对。')
+      return
+    }
     message.success('脚本已删除')
     await loadScripts()
-  } catch {
-    if (owns()) message.error('删除脚本结果未确认，请刷新列表核对。')
+  } catch (error) {
+    if (owns()) message.error(scriptErrorCode(error) === 'SCRIPT_ESCROW_CLOSE_PENDING'
+      ? '此脚本已运行，冻结金需完成结算后再释放。可先停用。' : '删除脚本结果未确认，请刷新列表核对。')
   } finally { if (owns()) deleting.value = false }
 }
 

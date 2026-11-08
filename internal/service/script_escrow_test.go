@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"gorm.io/gorm"
@@ -220,4 +221,136 @@ func TestScriptEscrowDoesNotAdoptLegacyReservations(t *testing.T) {
 		t.Fatalf("legacy script should not be charged/funded: %v", err)
 	}
 	assertScriptEscrowState(t, db, user.ID, script.ID, 100_000_000, -1, 0)
+}
+
+func newFundedNeverRunEscrowFixture(t *testing.T) (*gorm.DB, entity.User, entity.UserScript) {
+	t.Helper()
+	db, user, script := newScriptEscrowFixture(t, "100.000001")
+	if err := db.Model(&script).Update("billing_mode", entity.ScriptBillingModeEscrow).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scriptEscrowTx(t, db, func(tx *gorm.DB) (ScriptEscrowMovement, error) {
+		return FreezeScriptEscrowOnCreateInTx(tx, script.ID, user.ID)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return db, user, script
+}
+
+func TestScriptEscrowNeverRunReleaseIsAtomicAndIdempotent(t *testing.T) {
+	db, user, script := newFundedNeverRunEscrowFixture(t)
+	if _, err := ReleaseNeverRunScriptEscrowInTx(db, script.ID, user.ID); !errors.Is(err, ErrScriptEscrowTransaction) {
+		t.Fatalf("release outside caller transaction = %v", err)
+	}
+	if _, err := scriptEscrowTx(t, db, func(tx *gorm.DB) (ScriptEscrowMovement, error) {
+		return ReleaseNeverRunScriptEscrowInTx(tx, script.ID, user.ID)
+	}); !errors.Is(err, ErrScriptEscrowClosePending) {
+		t.Fatalf("live script release = %v", err)
+	}
+	assertScriptEscrowState(t, db, user.ID, script.ID, 20_000_001, 80_000_000, 1)
+
+	mark := func(tx *gorm.DB) error {
+		return tx.Model(&entity.UserScript{}).Where("id = ?", script.ID).Update("deleted_at", time.Now()).Error
+	}
+	failAfter := errors.New("synthetic outer deletion failure")
+	err := db.Transaction(func(tx *gorm.DB) error {
+		if err := mark(tx); err != nil {
+			return err
+		}
+		if _, err := ReleaseNeverRunScriptEscrowInTx(tx, script.ID, user.ID); err != nil {
+			return err
+		}
+		return failAfter
+	})
+	if !errors.Is(err, failAfter) {
+		t.Fatalf("release must participate in outer deletion: %v", err)
+	}
+	assertScriptEscrowState(t, db, user.ID, script.ID, 20_000_001, 80_000_000, 1)
+	var after entity.UserScript
+	if err := db.First(&after, script.ID).Error; err != nil || after.DeletedAt != nil {
+		t.Fatalf("tombstone was not rolled back: %+v %v", after.DeletedAt, err)
+	}
+
+	release, err := scriptEscrowTx(t, db, func(tx *gorm.DB) (ScriptEscrowMovement, error) {
+		if err := mark(tx); err != nil {
+			return ScriptEscrowMovement{}, err
+		}
+		return ReleaseNeverRunScriptEscrowInTx(tx, script.ID, user.ID)
+	})
+	want := ScriptEscrowMovement{AmountMicros: 80_000_000, EscrowBeforeMicros: 80_000_000,
+		WalletBeforeMicros: 20_000_001, WalletAfterMicros: 100_000_001}
+	if err != nil || release != want {
+		t.Fatalf("release = %+v %v, want %+v", release, err, want)
+	}
+	replay, err := scriptEscrowTx(t, db, func(tx *gorm.DB) (ScriptEscrowMovement, error) {
+		return ReleaseNeverRunScriptEscrowInTx(tx, script.ID, user.ID)
+	})
+	want.Replayed = true
+	if err != nil || replay != want {
+		t.Fatalf("release retry = %+v %v, want %+v", replay, err, want)
+	}
+	assertScriptEscrowState(t, db, user.ID, script.ID, 100_000_001, 0, 2)
+}
+
+func TestScriptEscrowReleaseDeniesAnyCommittedRun(t *testing.T) {
+	for _, state := range []string{"active", "expired", "revoked"} {
+		t.Run(state, func(t *testing.T) {
+			db, user, script := newFundedNeverRunEscrowFixture(t)
+			now := time.Now()
+			run := entity.ScriptRunSession{
+				ScriptID: script.ID, UserID: user.ID, AccessTokenID: 1,
+				TokenHash: "synthetic-run-hash", IdentityHash: "synthetic-identity-hash",
+				ActivatedAt: now.Add(-time.Minute), ExpiresAt: now.Add(time.Minute),
+			}
+			if state == "expired" {
+				run.ExpiresAt = now.Add(-time.Second)
+			}
+			if state == "revoked" {
+				run.RevokedAt = &now
+			}
+			if err := db.Create(&run).Error; err != nil {
+				t.Fatal(err)
+			}
+			_, err := scriptEscrowTx(t, db, func(tx *gorm.DB) (ScriptEscrowMovement, error) {
+				if err := tx.Model(&entity.UserScript{}).Where("id = ?", script.ID).Update("deleted_at", now).Error; err != nil {
+					return ScriptEscrowMovement{}, err
+				}
+				return ReleaseNeverRunScriptEscrowInTx(tx, script.ID, user.ID)
+			})
+			if !errors.Is(err, ErrScriptEscrowClosePending) {
+				t.Fatalf("%s historical run release = %v", state, err)
+			}
+			assertScriptEscrowState(t, db, user.ID, script.ID, 20_000_001, 80_000_000, 1)
+			var fresh entity.UserScript
+			if err := db.First(&fresh, script.ID).Error; err != nil || fresh.DeletedAt != nil {
+				t.Fatalf("denial changed tombstone: %+v %v", fresh.DeletedAt, err)
+			}
+		})
+	}
+}
+
+func TestScriptEscrowReleaseRejectsAmbiguousFundsAndWrongOwner(t *testing.T) {
+	db, user, script := newFundedNeverRunEscrowFixture(t)
+	if _, err := scriptEscrowTx(t, db, func(tx *gorm.DB) (ScriptEscrowMovement, error) {
+		return ReleaseNeverRunScriptEscrowInTx(tx, script.ID, user.ID+1)
+	}); !errors.Is(err, ErrScriptEscrowMissing) {
+		t.Fatalf("wrong owner release = %v", err)
+	}
+	if _, err := scriptEscrowTx(t, db, func(tx *gorm.DB) (ScriptEscrowMovement, error) {
+		// Simulate a missing historical session without removing its
+		// settlement receipt; the escrow still cannot safely be released.
+		return SettleScriptEscrowMicrosInTx(tx, script.ID, user.ID, "fixture-historical-settlement", 1)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := scriptEscrowTx(t, db, func(tx *gorm.DB) (ScriptEscrowMovement, error) {
+		if err := tx.Model(&entity.UserScript{}).Where("id = ?", script.ID).Update("deleted_at", time.Now()).Error; err != nil {
+			return ScriptEscrowMovement{}, err
+		}
+		return ReleaseNeverRunScriptEscrowInTx(tx, script.ID, user.ID)
+	})
+	if !errors.Is(err, ErrScriptEscrowClosePending) {
+		t.Fatalf("ambiguous historical funding release = %v", err)
+	}
+	assertScriptEscrowState(t, db, user.ID, script.ID, 20_000_001, 79_999_999, 2)
 }

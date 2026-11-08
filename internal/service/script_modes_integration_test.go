@@ -86,6 +86,35 @@ func TestManagedEscrowScriptCreateAndRelaunchShareAtomicState(t *testing.T) {
 	if retry, err := ActivateLeasedScriptRunSessionWithDB(db, item.ShortCode, "managed-second", b, "127.0.0.1", 0); err != nil || retry.Token != second.Token {
 		t.Fatalf("retry must not require another transfer: %v", err)
 	}
+	if err := DeleteUserScriptWithDB(db, owner, item.ID); !errors.Is(err, ErrScriptEscrowClosePending) {
+		t.Fatalf("used script must not release funds before reconciliation: %v", err)
+	}
+	var unchanged entity.UserScript
+	if err := db.First(&unchanged, item.ID).Error; err != nil || unchanged.DeletedAt != nil {
+		t.Fatalf("pending close must roll back tombstone: %v", err)
+	}
+}
+
+func TestManagedEscrowUnusedDeleteReleasesOnce(t *testing.T) {
+	db, owner, _, version := newManagedScriptFixture(t, 100)
+	item, err := CreateUserScriptWithDB(db, owner, CreateUserScriptInput{
+		Name: "unused fixture", VersionID: version.ID, BaseDomain: "lease.example", BillingMode: entity.ScriptBillingModeEscrow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := DeleteUserScriptWithDB(db, owner, item.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var escrow entity.ScriptEscrow
+	if err := db.First(&escrow, item.ID).Error; err != nil || escrow.AvailableMicros != 0 {
+		t.Fatalf("never-run hold did not release: %d err=%v", escrow.AvailableMicros, err)
+	}
+	if err := db.First(&owner, owner.ID).Error; err != nil || owner.Balance != 100 {
+		t.Fatalf("expected a single exact restoration, wallet=%v err=%v", owner.Balance, err)
+	}
 }
 
 func TestManagedActivationCodeBindsOnlyOneScriptAndOneRun(t *testing.T) {
