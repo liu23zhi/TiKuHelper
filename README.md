@@ -6,6 +6,9 @@
 http://localhost:8060
 ```
 
+前端使用 `web/package-lock.json` 作为唯一受支持的锁文件。请在 `web` 中运行
+`npm ci` 和 `npm run build`；本地嵌入前端可运行 `sh buildweb.sh`。
+
 ## 日志
 
 启动时自动在工作目录的 `logs/` 中创建 UTF-8 TXT 日志，同时保留控制台输出：
