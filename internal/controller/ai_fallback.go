@@ -80,7 +80,7 @@ func AIFallback(c *gin.Context) {
 		Type:             input.Type,
 		Options:          input.Options,
 		SkipCache:        input.SkipCache,
-		DeepThinking:     input.DeepThinking,
+		DeepThinking:     input.DeepThinking || billingCtx.ScriptBilling.managed(),
 		QuestionEvidence: input.QuestionEvidence,
 		RequestID:        requestID,
 	}
@@ -282,7 +282,8 @@ func resolveAIFallbackBillingContextWithContext(c *gin.Context, requestContext c
 	if err := db.Where("id = ?", user.ID).First(&freshUser).Error; err != nil {
 		return searchBillingContext{}, errors.New("AI 兜底计费校验失败，请稍后重试")
 	}
-	if freshUser.Balance <= 0 {
+	session := aIFallbackVerifiedScriptSession(c)
+	if freshUser.Balance <= 0 && session.ID <= 0 {
 		return searchBillingContext{}, errors.New("当前余额不足，AI 兜底已禁用，请充值后再使用")
 	}
 
@@ -296,7 +297,7 @@ func resolveAIFallbackBillingContextWithContext(c *gin.Context, requestContext c
 		accessTokenID = token.ID
 	}
 
-	billingCtx, err := loadAIFallbackBillingContextWithDB(db, freshUser.ID, accessTokenID, aIFallbackVerifiedScriptSession(c))
+	billingCtx, err := loadAIFallbackBillingContextWithDB(db, freshUser.ID, accessTokenID, session)
 	billingCtx.ClientIP = strings.TrimSpace(c.ClientIP())
 	return billingCtx, err
 }
@@ -318,7 +319,7 @@ func loadAIFallbackBillingContextWithDB(db *gorm.DB, userID int32, accessTokenID
 	if err := db.Where("id = ?", userID).First(&user).Error; err != nil {
 		return searchBillingContext{}, errors.New("AI 兜底计费校验失败，请稍后重试")
 	}
-	if user.Balance <= 0 {
+	if user.Balance <= 0 && session.ID <= 0 {
 		return searchBillingContext{}, errors.New("当前余额不足，AI 兜底已禁用，请充值后再使用")
 	}
 
@@ -342,15 +343,17 @@ func loadAIFallbackBillingContextWithDB(db *gorm.DB, userID int32, accessTokenID
 	if err := db.Where("id = ? AND user_id = ?", accessTokenID, user.ID).First(&token).Error; err != nil {
 		return searchBillingContext{}, errors.New("访问令牌已失效")
 	}
-	if err := checkSearchSpendingAdmission(user, token); err != nil {
-		return searchBillingContext{}, err
-	}
 	if token.ScriptID != 0 || session.ID != 0 {
 		if err := validateAIFallbackScriptSessionWithDB(db, user.ID, token, session); err != nil {
 			return searchBillingContext{}, err
 		}
 		billingCtx.ScriptID = token.ScriptID
 	}
+	scriptPolicy, _, err := checkResolvedScriptSpendingAdmission(db, user, token, session)
+	if err != nil {
+		return searchBillingContext{}, err
+	}
+	billingCtx.ScriptBilling = scriptPolicy
 	return billingCtx, nil
 }
 
@@ -405,6 +408,7 @@ func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, reques
 	billingCtx.RequestID = strings.TrimSpace(requestID)
 	billingCtx.DeepThinking = req.DeepThinking
 	billingCtx.AIRoute = strings.TrimSpace(result.Usage.Route)
+	billingCtx.captureScriptExecutionUsage(usage)
 	resolved := resolvedSearchRequestContext{
 		RequestID: billingCtx.RequestID,
 		AIConfig: service.AISearchRequestConfig{
@@ -416,18 +420,23 @@ func persistAIFallbackBillingWithWarning(billingCtx searchBillingContext, reques
 	if hasAIModelUsage(usage) {
 		resolvedCharge, err := resolveCompletedAIBillingCharge(db, resolved, req, usage)
 		if err != nil {
-			return "", result, err
+			if billingCtx.ScriptBilling.mode != entity.ScriptBillingModeActivation || !billingCtx.ScriptExecutionUsage.present() {
+				return "", result, err
+			}
+			logger.SysError(fmt.Sprintf("激活码脚本 AI 兜底价格读取失败 requestId=%s: %s", billingCtx.RequestID, logger.RedactSecrets(err.Error())))
+			billingCtx.ScriptExecutionUsage.CostUnavailable = true
+		} else {
+			// 调用方在计费完成后写审阅记录，因此把倍率信息写入返回结果，确保同步、异步兜底
+			// 与普通搜题的审阅快照包含相同的最终倍率信息。
+			result.Usage.Trace = resolvedCharge.Trace
+			if resolvedCharge.UnpricedModel {
+				warning = buildUnpricedAIModelWarning(resolvedCharge.Charge.ModelName)
+			}
+			charges = append(charges, resolvedCharge.Charge)
 		}
-		// 调用方在计费完成后写审阅记录，因此把倍率信息写入返回结果，确保同步、异步兜底
-		// 与普通搜题的审阅快照包含相同的最终倍率信息。
-		result.Usage.Trace = resolvedCharge.Trace
-		if resolvedCharge.UnpricedModel {
-			warning = buildUnpricedAIModelWarning(resolvedCharge.Charge.ModelName)
-		}
-		charges = append(charges, resolvedCharge.Charge)
 	}
 	charges = appendAIToolBillingCharges(charges, db, req, usage)
-	if len(charges) == 0 {
+	if len(charges) == 0 && !billingCtx.ScriptExecutionUsage.present() {
 		return warning, result, nil
 	}
 	queued, err := persistSearchBillingRecordsWithRetry(db, billingCtx, charges, searchBillingRetries)

@@ -93,19 +93,22 @@ type resolvedSearchRequestContext struct {
 	ScriptID                   int32
 	ScriptIdentityHash         string
 	ScriptTariff               *scriptAnswerTariff
+	ScriptBilling              searchScriptBillingPolicy
 	ScriptHadNormalAnswer      bool
 	RequestID                  string
 	SearchMode                 string
 }
 
 type searchBillingContext struct {
-	UserID             int32
-	AccessTokenID      int32
-	ScriptID           int32
-	RequestID          string
-	SearchMode         string
-	UsedDefaultAccount bool
-	Billable           bool
+	UserID               int32
+	AccessTokenID        int32
+	ScriptID             int32
+	ScriptBilling        searchScriptBillingPolicy
+	ScriptExecutionUsage scriptInternalExecutionUsage
+	RequestID            string
+	SearchMode           string
+	UsedDefaultAccount   bool
+	Billable             bool
 	// DeepThinking 表示这次消费走的是深度思考（带工具的多轮）还是普通搜索，
 	// 落库到 billing_records.search_mode，供账单明细/账单流水展示。
 	DeepThinking bool
@@ -357,6 +360,7 @@ func executeSearch(c *gin.Context) {
 	// disappearing does not select a new cancellation policy.
 	resolved := resolveResult
 	req.RequestID = strings.TrimSpace(resolved.RequestID)
+	req.DeepThinking = req.DeepThinking || resolved.ScriptBilling.managed()
 
 	var result [][]string      // 最后所有的答案的二维数组
 	var localAnswer [][]string // 本地答案
@@ -1056,6 +1060,7 @@ func buildSearchBillingContext(resolved resolvedSearchRequestContext, useQuery s
 		UserID:        resolved.UserID,
 		AccessTokenID: resolved.AccessTokenID,
 		ScriptID:      resolved.ScriptID,
+		ScriptBilling: resolved.ScriptBilling,
 		RequestID:     resolved.RequestID,
 		SearchMode:    resolved.SearchMode,
 	}
@@ -1117,6 +1122,7 @@ func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQue
 	ctx.ClientIP = strings.TrimSpace(clientIP)
 	ctx.DeepThinking = req.DeepThinking
 	ctx.AIRoute = strings.TrimSpace(aiUsage.Route)
+	ctx.captureScriptExecutionUsage(aiUsage)
 	if !ctx.Billable {
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "", clientIP, audit)
 		return nil, ""
@@ -1132,11 +1138,16 @@ func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQue
 	charges, warning, err := resolveCompletedSearchBillingCharges(db, resolved, useQuery, req, aiUsage, usedLocalSearch, len(result) > 0)
 	if err != nil {
 		logger.SysError(fmt.Sprintf("搜索计费落账失败：%s requestId=%s", err.Error(), resolved.RequestID))
-		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_charge_resolve_failed", clientIP, audit)
-		return nil, warning
+		if ctx.ScriptBilling.mode != entity.ScriptBillingModeActivation || !ctx.ScriptExecutionUsage.present() {
+			writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_charge_resolve_failed", clientIP, audit)
+			return nil, warning
+		}
+		// Preserve executed usage even if a standard price cannot be read.
+		ctx.ScriptExecutionUsage.CostUnavailable = true
+		charges = nil
 	}
 	applyAIStagedBillingToSearchAudit(&audit, aiUsage.Trace, charges)
-	if len(charges) == 0 {
+	if len(charges) == 0 && !ctx.ScriptExecutionUsage.present() {
 		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_zero_amount", clientIP, audit)
 		return nil, warning
 	}
@@ -1188,7 +1199,7 @@ func resolveCompletedSearchBillingCharges(db *gorm.DB, resolved resolvedSearchRe
 
 	// The script's fixed normal-answer tariff never replaces actual model or
 	// tool charges, including usage that precedes a failed final response.
-	if resolved.ScriptID > 0 && resolved.ScriptTariff != nil && resolved.ScriptTariff.enabled && hasSearchAnswer && resolved.ScriptHadNormalAnswer {
+	if !resolved.ScriptBilling.managed() && resolved.ScriptID > 0 && resolved.ScriptTariff != nil && resolved.ScriptTariff.enabled && hasSearchAnswer && resolved.ScriptHadNormalAnswer {
 		charges = append(charges, resolved.ScriptTariff.charge(req))
 	} else if resolved.SearchMode == searchModeNormal && hasSearchAnswer && (resolved.ScriptID == 0 || resolved.ScriptHadNormalAnswer) {
 		provider := resolveCompletedSearchBillingProvider(useQuery, resolved.UsedDefaultSearchProviders, usedLocalSearch)
@@ -1831,9 +1842,21 @@ func billingSearchMode(deepThinking bool, routes ...string) string {
 
 func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, charges []searchBillingCharge) (err error) {
 	finished := false
-	if len(charges) > 0 {
+	if len(charges) > 0 || ctx.ScriptExecutionUsage.present() {
 		collector := diagnostics.Default
 		defer func() { collector.ObserveBilling(finished && err == nil) }()
+	}
+	if ctx.ScriptBilling.mode != "" && (!ctx.ScriptBilling.managed() || ctx.ScriptID <= 0 || ctx.AccessTokenID <= 0 ||
+		ctx.RequestID == "" || ctx.RequestID != strings.TrimSpace(ctx.RequestID) || len(ctx.RequestID) > 64) {
+		return service.ErrScriptEscrowInvalid
+	}
+	var escrowChargeMicros []int64
+	var escrowTotalMicros int64
+	if ctx.ScriptBilling.mode == entity.ScriptBillingModeEscrow {
+		charges, escrowChargeMicros, escrowTotalMicros, err = multiplyScriptEscrowCharges(charges, ctx.ScriptBilling.multiplierMicros)
+		if err != nil {
+			return err
+		}
 	}
 	err = db.Transaction(func(tx *gorm.DB) error {
 		var accessToken entity.AccessToken
@@ -1848,22 +1871,30 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 			return err
 		}
 
-		alreadyPersisted, err := searchBillingRetryBatchAlreadyPersisted(tx, ctx, charges)
-		if err != nil {
-			return err
-		}
-		if alreadyPersisted {
-			return nil
+		if ctx.ScriptBilling.mode != entity.ScriptBillingModeActivation {
+			alreadyPersisted, err := searchBillingRetryBatchAlreadyPersisted(tx, ctx, charges)
+			if err != nil {
+				return err
+			}
+			if alreadyPersisted {
+				return nil
+			}
 		}
 
 		totalCharged := completedSearchBillingAmount(charges)
-		if len(charges) == 0 {
+		if ctx.ScriptBilling.mode == entity.ScriptBillingModeEscrow {
+			totalCharged = service.ScriptEscrowYuan(escrowTotalMicros)
+		}
+		if ctx.ScriptBilling.mode == entity.ScriptBillingModeActivation {
+			totalCharged = 0
+		}
+		if len(charges) == 0 && !ctx.ScriptExecutionUsage.present() {
 			return nil
 		}
 		// Recheck authoritative rows inside the same transaction as every bill.
 		// MySQL row locks serialize writers; conditional updates also fail closed
 		// if another writer changes a snapshot on a dialect without row locks.
-		if !strings.EqualFold(strings.TrimSpace(user.Status), "enabled") {
+		if !ctx.ScriptBilling.managed() && !strings.EqualFold(strings.TrimSpace(user.Status), "enabled") {
 			return fmt.Errorf("%w: 用户已禁用", service.ErrInvalidAccessTokenAuthorization)
 		}
 		if ctx.AccessTokenID > 0 {
@@ -1880,6 +1911,25 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 				return errAccessTokenQuotaExceeded
 			}
 		}
+		if ctx.ScriptBilling.mode == entity.ScriptBillingModeActivation {
+			// Real model/tool execution stays auditable, but a redeemed free
+			// run never writes a user charge, wallet debit or Key usage.
+			return persistScriptSubsidizedUsageInTx(tx, ctx, charges)
+		}
+		var escrowLeftMicros, walletMicros int64
+		if ctx.ScriptBilling.mode == entity.ScriptBillingModeEscrow {
+			movement, err := service.SettleScriptEscrowMicrosInTx(tx, ctx.ScriptID, ctx.UserID, ctx.RequestID, escrowTotalMicros)
+			if err != nil {
+				return err
+			}
+			if movement.Replayed {
+				// A complete retry returned above. An escrow receipt without
+				// its billing rows cannot have been created by this transaction.
+				return errSearchBillingRetryConflict
+			}
+			escrowLeftMicros = movement.EscrowBeforeMicros
+			walletMicros = movement.WalletBeforeMicros
+		}
 		// Admission checks wallet positivity before a new provider execution.
 		// Settle already-called work even when its actual charge or another
 		// admitted request takes this authoritative wallet below zero.
@@ -1887,10 +1937,17 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 		// 若先按入账金额取整再相减，被丢弃的 1e-7 级差额无法靠再次取整挽回，
 		// 会让账单里的余额变化与实际消耗对不上。
 		exactBalance := user.Balance
-		for _, charge := range charges {
+		for index, charge := range charges {
 			balanceBefore := util.RoundMoney(exactBalance)
 			exactBalance -= charge.Amount
 			balanceAfter := util.RoundMoney(exactBalance)
+			if ctx.ScriptBilling.mode == entity.ScriptBillingModeEscrow {
+				fromEscrow := min(escrowLeftMicros, escrowChargeMicros[index])
+				balanceBefore = service.ScriptEscrowYuan(walletMicros)
+				escrowLeftMicros -= fromEscrow
+				walletMicros -= escrowChargeMicros[index] - fromEscrow
+				balanceAfter = service.ScriptEscrowYuan(walletMicros)
+			}
 			billingRecord := entity.BillingRecord{
 				UserID:             ctx.UserID,
 				AccessTokenID:      ctx.AccessTokenID,
@@ -1930,6 +1987,9 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 					return errSearchBillingCompareAndSwap
 				}
 			}
+		}
+		if ctx.ScriptBilling.mode == entity.ScriptBillingModeEscrow {
+			return nil // Settled once, together with the escrow journal and these billing rows.
 		}
 		balanceAfter := util.RoundMoney(exactBalance)
 		if balanceAfter == user.Balance {
@@ -2050,22 +2110,21 @@ func resolveSearchRequestContextWithDBAndIdentity(db *gorm.DB, authorization str
 		if err != nil {
 			return resolved, err
 		}
-		if err := checkSearchSpendingAdmission(authCtx.User, authCtx.AccessToken); err != nil {
+		scriptPolicy, script, err := checkResolvedScriptSpendingAdmission(db, authCtx.User, authCtx.AccessToken, scriptSession)
+		if err != nil {
 			return resolved, fmt.Errorf("%w: %w", service.ErrInvalidAccessTokenAuthorization, err)
 		}
+		resolved.ScriptBilling = scriptPolicy
 		if scriptSession.ID > 0 {
-			var script entity.UserScript
-			if err := db.Where("id = ? AND access_token_id = ? AND user_id = ? AND enabled = ? AND deleted_at IS NULL",
-				scriptSession.ScriptID, scriptSession.AccessTokenID, scriptSession.UserID, true).First(&script).Error; err != nil {
-				return resolved, fmt.Errorf("%w: 脚本已停用或删除", service.ErrInvalidAccessTokenAuthorization)
-			}
-			resolved.ScriptTariff, err = snapshotScriptAnswerTariff(db, script)
-			if err != nil {
-				return resolved, fmt.Errorf("%w: %w", service.ErrInvalidAccessTokenAuthorization, err)
-			}
 			resolved.ScriptIdentityHash = scriptSession.IdentityHash
-			if resolved.SearchMode != searchModeAI && accessTokenQuotaWouldExceed(authCtx.AccessToken, resolved.ScriptTariff.amount) {
-				return resolved, fmt.Errorf("%w: %w", service.ErrInvalidAccessTokenAuthorization, errAccessTokenQuotaExceeded)
+			if !scriptPolicy.managed() {
+				resolved.ScriptTariff, err = snapshotScriptAnswerTariff(db, script)
+				if err != nil {
+					return resolved, fmt.Errorf("%w: %w", service.ErrInvalidAccessTokenAuthorization, err)
+				}
+				if resolved.SearchMode != searchModeAI && accessTokenQuotaWouldExceed(authCtx.AccessToken, resolved.ScriptTariff.amount) {
+					return resolved, fmt.Errorf("%w: %w", service.ErrInvalidAccessTokenAuthorization, errAccessTokenQuotaExceeded)
+				}
 			}
 		}
 

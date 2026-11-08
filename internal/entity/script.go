@@ -7,6 +7,8 @@ const (
 	TableNameUserScript          = "user_scripts"
 	TableNameScriptExchangeToken = "script_exchange_tokens"
 	TableNameScriptRunSession    = "script_run_sessions"
+	ScriptBillingModeEscrow      = "escrow"
+	ScriptBillingModeActivation  = "activation_code"
 )
 
 // ScriptVersion is an administrator-uploaded, reusable executable release.
@@ -37,6 +39,10 @@ type UserScript struct {
 	Scheme                string  `gorm:"column:scheme;type:varchar(16);not null;default:https" json:"scheme"`
 	UseWildcardDomain     bool    `gorm:"column:use_wildcard_domain;not null;default:false" json:"useWildcardDomain"`
 	Enabled               bool    `gorm:"column:enabled;not null;index" json:"enabled"`
+	BillingMode           string  `gorm:"column:billing_mode;type:varchar(24);not null;default:''" json:"billingMode"`
+	AutoTopUp             bool    `gorm:"column:auto_top_up;not null;default:false" json:"autoTopUp"`
+	RunDurationMinutes    int     `gorm:"column:run_duration_minutes;not null;default:0" json:"runDurationMinutes"`
+	NotifyOnDenied        bool    `gorm:"column:notify_on_denied;not null;default:false" json:"notifyOnDenied"`
 	BillingEnabled        bool    `gorm:"column:billing_enabled;not null" json:"billingEnabled"`
 	UseTikuPrice          bool    `gorm:"column:use_tiku_price;not null" json:"useTikuPrice"`
 	AnswerPriceMultiplier float64 `gorm:"column:answer_price_multiplier;type:decimal(18,6);not null;default:0" json:"answerPriceMultiplier"`

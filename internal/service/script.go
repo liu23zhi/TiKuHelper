@@ -51,6 +51,8 @@ var (
 	ErrScriptTokenInvalid             = errors.New("脚本兑换令牌无效或已过期")
 	ErrScriptTokenRequired            = errors.New("脚本兑换令牌不能为空")
 	ErrScriptPriceInvalid             = errors.New("脚本答题计费金额超出可存储范围")
+	ErrScriptBillingModeInvalid       = errors.New("脚本计费模式无效")
+	ErrScriptEscrowClosePending       = errors.New("冻结金脚本尚需安全结算后关闭")
 )
 
 type CreateUserScriptInput struct {
@@ -72,6 +74,11 @@ type CreateUserScriptInput struct {
 	PriceMultiplier       *float64       `json:"priceMultiplier"`
 	AnswerPriceMultiplier *float64       `json:"answerPriceMultiplier"`
 	AnswerPrice           float64        `json:"answerPrice"`
+	BillingMode           string         `json:"billingMode,omitempty"`
+	EntitlementID         int64          `json:"entitlementId,omitempty"`
+	AutoTopUp             bool           `json:"autoTopUp,omitempty"`
+	RunDurationMinutes    int            `json:"runDurationMinutes,omitempty"`
+	NotifyOnDenied        bool           `json:"notifyOnDenied,omitempty"`
 }
 
 type UpdateUserScriptInput struct {
@@ -91,15 +98,19 @@ type UpdateUserScriptInput struct {
 	PriceMultiplier       *float64       `json:"priceMultiplier"`
 	AnswerPriceMultiplier *float64       `json:"answerPriceMultiplier"`
 	AnswerPrice           *float64       `json:"answerPrice"`
+	AutoTopUp             *bool          `json:"autoTopUp,omitempty"`
+	RunDurationMinutes    *int           `json:"runDurationMinutes,omitempty"`
+	NotifyOnDenied        *bool          `json:"notifyOnDenied,omitempty"`
 }
 
 type ScriptListItem struct {
 	entity.UserScript
-	Username      string `json:"username,omitempty"`
-	Version       string `json:"version"`
-	VersionSHA256 string `json:"versionSha256"`
-	Command       string `json:"command"`
-	DownloadURL   string `json:"downloadUrl"`
+	Username              string `json:"username,omitempty"`
+	Version               string `json:"version"`
+	VersionSHA256         string `json:"versionSha256"`
+	Command               string `json:"command"`
+	DownloadURL           string `json:"downloadUrl"`
+	EscrowAvailableMicros *int64 `json:"escrowAvailableMicros,omitempty"`
 }
 
 type ScriptExchangeGrant struct {
@@ -121,6 +132,9 @@ type ScriptExchangeResult struct {
 	CommandURL          string         `json:"commandUrl"`
 	BootstrapURL        string         `json:"bootstrapUrl"`
 	LaunchOrigin        string         `json:"-"`
+	ExecutableSHA256    string         `json:"-"`
+	BillingMode         string         `json:"-"`
+	NotifyOnDenied      bool           `json:"-"`
 }
 
 func ListScriptVersionsWithDB(db *gorm.DB) ([]entity.ScriptVersion, error) {
@@ -166,6 +180,19 @@ func UploadScriptVersionWithDB(db *gorm.DB, admin entity.User, version, filename
 func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserScriptInput) (ScriptListItem, error) {
 	if db == nil {
 		return ScriptListItem{}, errors.New("数据库不可用")
+	}
+	mode := input.BillingMode
+	if mode != "" && mode != entity.ScriptBillingModeEscrow && mode != entity.ScriptBillingModeActivation {
+		return ScriptListItem{}, ErrScriptBillingModeInvalid
+	}
+	if input.RunDurationMinutes < 0 || input.RunDurationMinutes > int(ScriptRunSessionTTL/time.Minute) {
+		return ScriptListItem{}, ErrScriptDurationInvalid
+	}
+	if mode != "" && normalizeScriptScheme(input.Scheme) != "https" {
+		return ScriptListItem{}, ErrScriptDomainUnavailable
+	}
+	if mode == entity.ScriptBillingModeActivation && input.EntitlementID <= 0 {
+		return ScriptListItem{}, ErrScriptBillingModeInvalid
 	}
 	name := strings.TrimSpace(input.Name)
 	if name == "" {
@@ -258,16 +285,19 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 			return ErrScriptVersionInvalid
 		}
 		before := util.RoundMoney(user.Balance)
-		if before < ScriptReservationFee {
-			return ErrScriptBalanceInsufficient
-		}
-		after := util.RoundMoney(before - ScriptReservationFee)
-		updated := tx.Model(&entity.User{}).Where("id = ? AND balance = ?", user.ID, user.Balance).Update("balance", after)
-		if updated.Error != nil {
-			return updated.Error
-		}
-		if updated.RowsAffected != 1 {
-			return errors.New("脚本预扣余额已变化，请重试")
+		after := before
+		if mode == "" {
+			if before < ScriptReservationFee {
+				return ErrScriptBalanceInsufficient
+			}
+			after = util.RoundMoney(before - ScriptReservationFee)
+			updated := tx.Model(&entity.User{}).Where("id = ? AND balance = ?", user.ID, user.Balance).Update("balance", after)
+			if updated.Error != nil {
+				return updated.Error
+			}
+			if updated.RowsAffected != 1 {
+				return errors.New("脚本预扣余额已变化，请重试")
+			}
 		}
 		key, err := randomScriptSecret(32)
 		if err != nil {
@@ -296,11 +326,38 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 		} else if input.BillingUseTikuPrice != nil {
 			script.UseTikuPrice = *input.BillingUseTikuPrice
 		}
+		if mode != "" {
+			script.BillingMode = mode
+			script.RunDurationMinutes = input.RunDurationMinutes
+			script.NotifyOnDenied = input.NotifyOnDenied
+			script.AutoTopUp = mode == entity.ScriptBillingModeEscrow && input.AutoTopUp
+			script.BillingEnabled = mode == entity.ScriptBillingModeEscrow
+			script.UseTikuPrice = false
+			script.AnswerPrice, script.AnswerPriceMultiplier = 0, 0
+		}
 		// Store only the locator. The owner view derives the purpose-separated
 		// launcher capability; a one-use exchange must never disclose it.
 		script.Instruction = BuildScriptCommandURL(script)
 		if err := tx.Create(&script).Error; err != nil {
 			return err
+		}
+		if mode != "" {
+			// GORM's legacy default is 10. Clear it explicitly before commit;
+			// the new holds are tracked only in the dedicated ledger.
+			if err := tx.Model(&script).UpdateColumn("reserved_fee", 0).Error; err != nil {
+				return err
+			}
+			script.ReservedFee = 0
+			switch mode {
+			case entity.ScriptBillingModeEscrow:
+				if _, err := FreezeScriptEscrowOnCreateInTx(tx, script.ID, user.ID); err != nil {
+					return err
+				}
+			case entity.ScriptBillingModeActivation:
+				if err := BindScriptActivationEntitlementInTx(tx, user.ID, input.EntitlementID, script.ID); err != nil {
+					return err
+				}
+			}
 		}
 		plainToken := "tk_" + key
 		tokenPrefix := plainToken
@@ -316,10 +373,17 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 		}
 		script.AccessTokenID = accessToken.ID
 		ledger := entity.BillingRecord{UserID: user.ID, Type: "script_reservation", Provider: "script", Amount: ScriptReservationFee, BalanceBefore: before, BalanceAfter: after, RequestID: fmt.Sprintf("script_create_%d", script.ID), Remark: "创建脚本预扣费用"}
-		if err := tx.Create(&ledger).Error; err != nil {
-			return err
+		if mode == "" {
+			if err := tx.Create(&ledger).Error; err != nil {
+				return err
+			}
 		}
 		result = decorateScriptItem(ScriptListItem{UserScript: script, Username: user.Username, Version: version.Version, VersionSHA256: version.SHA256})
+		if mode == entity.ScriptBillingModeEscrow {
+			if err := attachScriptEscrowBalanceWithDB(tx, &result); err != nil {
+				return err
+			}
+		}
 		if claimID > 0 {
 			return CompleteIdempotencyWithDB(tx, claimID, 200, []byte(fmt.Sprintf("{\"ID\":%d}", script.ID)))
 		}
@@ -368,7 +432,23 @@ func loadScriptListItemWithDB(db *gorm.DB, scriptID, userID int32) (ScriptListIt
 	if err != nil {
 		return ScriptListItem{}, err
 	}
+	if err := attachScriptEscrowBalanceWithDB(db, &item); err != nil {
+		return ScriptListItem{}, err
+	}
 	return decorateScriptItem(item), nil
+}
+
+func attachScriptEscrowBalanceWithDB(db *gorm.DB, item *ScriptListItem) error {
+	if item.BillingMode != entity.ScriptBillingModeEscrow {
+		return nil
+	}
+	var escrow entity.ScriptEscrow
+	if err := db.Session(&gorm.Session{NewDB: true}).Select("available_micros").
+		Where("script_id = ? AND user_id = ?", item.ID, item.UserID).Take(&escrow).Error; err != nil {
+		return err
+	}
+	item.EscrowAvailableMicros = &escrow.AvailableMicros
+	return nil
 }
 
 func ListUserScriptsWithDB(db *gorm.DB, operator entity.User, all bool) ([]ScriptListItem, error) {
@@ -384,8 +464,28 @@ func ListUserScriptsWithDB(db *gorm.DB, operator entity.User, all bool) ([]Scrip
 	if err := query.Find(&result).Error; err != nil {
 		return nil, err
 	}
+	escrowIDs := make([]int32, 0)
+	for _, item := range result {
+		if item.BillingMode == entity.ScriptBillingModeEscrow {
+			escrowIDs = append(escrowIDs, item.ID)
+		}
+	}
+	escrowByID := make(map[int32]entity.ScriptEscrow, len(escrowIDs))
+	if len(escrowIDs) > 0 {
+		var balances []entity.ScriptEscrow
+		if err := db.Session(&gorm.Session{NewDB: true}).Select("script_id", "user_id", "available_micros").
+			Where("script_id IN ?", escrowIDs).Find(&balances).Error; err != nil {
+			return nil, err
+		}
+		for _, balance := range balances {
+			escrowByID[balance.ScriptID] = balance
+		}
+	}
 	for i := range result {
 		result[i] = decorateScriptItem(result[i])
+		if balance, ok := escrowByID[result[i].ID]; ok && balance.UserID == result[i].UserID {
+			result[i].EscrowAvailableMicros = &balance.AvailableMicros
+		}
 		if result[i].UserID != operator.ID {
 			result[i].Command, result[i].Instruction = "", ""
 		}
@@ -412,6 +512,9 @@ func UpdateUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32, i
 			return ErrScriptDomainRequired
 		}
 		scheme := normalizeScriptScheme(input.Scheme)
+		if script.BillingMode != "" && scheme != "https" {
+			return ErrScriptDomainUnavailable
+		}
 		updates := map[string]any{"description": strings.TrimSpace(input.Description), "base_domain": baseDomain, "scheme": scheme}
 		if value := strings.TrimSpace(input.Name); value != "" {
 			updates["name"] = value
@@ -457,6 +560,23 @@ func UpdateUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32, i
 			}
 			updates["answer_price_multiplier"] = util.RoundMoney(*multiplier)
 		}
+		if script.BillingMode != "" {
+			for _, field := range []string{"billing_enabled", "use_tiku_price", "answer_price", "answer_price_multiplier"} {
+				delete(updates, field)
+			}
+			if input.RunDurationMinutes != nil {
+				if *input.RunDurationMinutes < 0 || *input.RunDurationMinutes > int(ScriptRunSessionTTL/time.Minute) {
+					return ErrScriptDurationInvalid
+				}
+				updates["run_duration_minutes"] = *input.RunDurationMinutes
+			}
+			if input.NotifyOnDenied != nil {
+				updates["notify_on_denied"] = *input.NotifyOnDenied
+			}
+			if script.BillingMode == entity.ScriptBillingModeEscrow && input.AutoTopUp != nil {
+				updates["auto_top_up"] = *input.AutoTopUp
+			}
+		}
 		updatedScript := script
 		updatedScript.BaseDomain = baseDomain
 		updatedScript.Scheme = scheme
@@ -474,6 +594,9 @@ func UpdateUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32, i
 			return err
 		}
 		item = decorateScriptItem(item)
+		if err := attachScriptEscrowBalanceWithDB(tx, &item); err != nil {
+			return err
+		}
 		if item.UserID != operator.ID {
 			item.Command, item.Instruction = "", ""
 		}
@@ -498,6 +621,10 @@ func DeleteUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32) e
 		if script.DeletedAt != nil {
 			return nil
 		}
+		if script.BillingMode == entity.ScriptBillingModeEscrow {
+			// Do not release an escrow while executed work may still settle.
+			return ErrScriptEscrowClosePending
+		}
 		now := time.Now()
 		if err := tx.Model(&script).Updates(map[string]any{"deleted_at": now}).Error; err != nil {
 			return err
@@ -509,6 +636,9 @@ func DeleteUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32) e
 		}
 		if err := tx.Model(&entity.ScriptRunSession{}).Where("script_id = ? AND revoked_at IS NULL", script.ID).Update("revoked_at", now).Error; err != nil {
 			return err
+		}
+		if script.BillingMode == entity.ScriptBillingModeActivation {
+			return nil
 		}
 		var user entity.User
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&user, script.UserID).Error; err != nil {
@@ -556,7 +686,10 @@ func IssueScriptExchangeTokenWithDB(db *gorm.DB, operator entity.User, scriptID 
 		if err := validateScriptLaunchKeyWithDB(tx, script); err != nil {
 			return err
 		}
-		if util.RoundMoney(user.Balance) < ScriptExchangeMinimumBalance {
+		if err := validateScriptEntitlementUnusedWithDB(tx, script); err != nil {
+			return err
+		}
+		if script.BillingMode == "" && util.RoundMoney(user.Balance) < ScriptExchangeMinimumBalance {
 			return ErrScriptTokenBalanceInsufficient
 		}
 		if err := deleteExpiredScriptExchangeTokens(tx, script.ID); err != nil {
@@ -606,7 +739,7 @@ func ExchangeScriptTokenWithDB(db *gorm.DB, shortCode, token string) (ScriptExch
 		var version entity.ScriptVersion
 		// The exchange response only needs release metadata. Avoid loading a
 		// potentially 64 MiB executable into memory before the actual download.
-		if err := tx.Select("id", "version", "filename").First(&version, versionID).Error; err != nil {
+		if err := tx.Select("id", "version", "filename", "sha256").First(&version, versionID).Error; err != nil {
 			return ErrScriptTokenInvalid
 		}
 		now := time.Now()
@@ -628,7 +761,7 @@ func ExchangeScriptTokenWithDB(db *gorm.DB, shortCode, token string) (ScriptExch
 		if err := tx.Create(&entity.ScriptExchangeToken{ScriptID: script.ID, VersionID: version.ID, Purpose: "activation", TokenHash: hashScriptSecret(activationToken), ExpiresAt: activationExpiresAt}).Error; err != nil {
 			return err
 		}
-		result = ScriptExchangeResult{ScriptID: script.ID, Name: script.Name, Instruction: BuildScriptCommandURL(script), Parameters: parameters, Version: version.Version, Filename: version.Filename, DownloadURL: "/adapter-service/script-command/" + script.ShortCode + "/file", ActivationToken: activationToken, ActivationExpiresAt: activationExpiresAt, CommandURL: BuildScriptCommandURL(script), BootstrapURL: "/adapter-service/script-command/" + script.ShortCode + "/bootstrap", LaunchOrigin: ScriptCommandOrigin(script)}
+		result = ScriptExchangeResult{ScriptID: script.ID, Name: script.Name, Instruction: BuildScriptCommandURL(script), Parameters: parameters, Version: version.Version, Filename: version.Filename, DownloadURL: "/adapter-service/script-command/" + script.ShortCode + "/file", ActivationToken: activationToken, ActivationExpiresAt: activationExpiresAt, CommandURL: BuildScriptCommandURL(script), BootstrapURL: "/adapter-service/script-command/" + script.ShortCode + "/bootstrap", LaunchOrigin: ScriptCommandOrigin(script), ExecutableSHA256: version.SHA256, BillingMode: script.BillingMode, NotifyOnDenied: script.NotifyOnDenied}
 		return nil
 	})
 	return result, err
@@ -655,6 +788,23 @@ func validateScriptLaunchActorWithDB(db *gorm.DB, script entity.UserScript) erro
 	var user entity.User
 	if err := db.Session(&gorm.Session{NewDB: true}).Where("id = ? AND status = ?", script.UserID, "enabled").First(&user).Error; err != nil {
 		return ErrScriptTokenInvalid
+	}
+	return validateScriptEntitlementUnusedWithDB(db, script)
+}
+
+func validateScriptEntitlementUnusedWithDB(db *gorm.DB, script entity.UserScript) error {
+	if script.BillingMode != entity.ScriptBillingModeActivation {
+		return nil
+	}
+	grant, found, err := GetScriptActivationEntitlementByScriptWithDB(db, script.UserID, script.ID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrScriptActivationEntitlementUnavailable
+	}
+	if grant.RunConsumedAt != nil {
+		return ErrScriptActivationRunConsumed
 	}
 	return nil
 }
@@ -745,12 +895,31 @@ func BuildScriptCommand(script entity.UserScript) string {
 	}
 	commandURL = strings.ReplaceAll(commandURL, "'", "''")
 	program := "$w=New-Object Net.WebClient;$w.Headers.Add('" + ScriptLauncherHeader + "','" + capability + "');iex ($w.DownloadString('" + commandURL + "'))"
+	if script.BillingMode != "" {
+		program = BuildManagedScriptTextLoader(commandURL, ScriptLauncherHeader, capability)
+		if program == "" {
+			return ""
+		}
+	}
 	units := utf16.Encode([]rune(program))
 	wire := make([]byte, len(units)*2)
 	for i, unit := range units {
 		binary.LittleEndian.PutUint16(wire[i*2:], unit)
 	}
 	return "powershell -EncodedCommand " + base64.StdEncoding.EncodeToString(wire)
+}
+
+// BuildManagedScriptTextLoader never carries a script credential across an
+// HTTP redirect, even if the configured origin returns one unexpectedly.
+func BuildManagedScriptTextLoader(address, header, credential string) string {
+	if !strings.HasPrefix(address, "https://") || credential == "" ||
+		(header != ScriptLauncherHeader && header != "X-Script-Token") {
+		return ""
+	}
+	quote := func(value string) string { return strings.ReplaceAll(value, "'", "''") }
+	return "$q=[Net.HttpWebRequest]::Create('" + quote(address) + "');$q.AllowAutoRedirect=$false;$q.Timeout=15000;$q.ReadWriteTimeout=15000;" +
+		"$q.Headers.Add('" + header + "','" + quote(credential) + "');$r=$q.GetResponse();" +
+		"try{if([int]$r.StatusCode -ne 200){throw 'Script response rejected'};$s=New-Object IO.StreamReader($r.GetResponseStream());try{$body=$s.ReadToEnd()}finally{$s.Close()}}finally{$r.Close()};iex $body"
 }
 
 func decorateScriptItem(item ScriptListItem) ScriptListItem {

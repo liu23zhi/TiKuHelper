@@ -86,6 +86,9 @@ func activateScriptRunSessionWithDB(db *gorm.DB, shortCode, activationToken, ide
 		if err := tx.Where("id = ? AND status = ?", script.UserID, "enabled").First(&user).Error; err != nil {
 			return ErrScriptTokenInvalid
 		}
+		if script.BillingMode != "" && lease == nil {
+			return ErrScriptTokenInvalid
+		}
 		ttl := ScriptRunSessionTTL
 		var zoneHash string
 		if lease != nil {
@@ -110,11 +113,45 @@ func activateScriptRunSessionWithDB(db *gorm.DB, shortCode, activationToken, ide
 			if err := claimScriptLeaseSlot(tx, script.ID, now); err != nil {
 				return err
 			}
+			if script.RunDurationMinutes > 0 {
+				configured := time.Duration(script.RunDurationMinutes) * time.Minute
+				if configured < ttl {
+					ttl = configured
+				}
+			}
+			switch script.BillingMode {
+			case entity.ScriptBillingModeEscrow:
+				var priorRuns int64
+				if err := tx.Model(&entity.ScriptRunSession{}).Where("script_id = ?", script.ID).Count(&priorRuns).Error; err != nil {
+					return err
+				}
+				if priorRuns > 0 {
+					if _, err := PrepareScriptEscrowLaunchInTx(tx, script.ID, user.ID, script.AutoTopUp, fmt.Sprint(activation.ID)); err != nil {
+						return err
+					}
+				}
+			case entity.ScriptBillingModeActivation:
+				if priorID, err := ResolveScriptActivationEntitlementRunInTx(tx, user.ID, script.ID, activation.ID); err != nil {
+					return err
+				} else if priorID != 0 {
+					return ErrScriptTokenInvalid
+				}
+			case "":
+			default:
+				return ErrScriptBillingModeInvalid
+			}
 		}
 		if err := consumeScriptExchangeTokenWithDB(tx, activation.ID, now); err != nil {
 			return err
 		}
 		expiresAt := now.Add(ttl)
+		if lease != nil {
+			// The native client checks that heartbeat never moves the hard
+			// deadline. Match the database's existing local-clock convention
+			// and its stored precision before sending the first response.
+			// Mixing UTC and local timestamps also breaks SQLite ordering.
+			expiresAt = expiresAt.Truncate(time.Second)
+		}
 		session := entity.ScriptRunSession{
 			ScriptID:      script.ID,
 			UserID:        user.ID,
@@ -131,6 +168,13 @@ func activateScriptRunSessionWithDB(db *gorm.DB, shortCode, activationToken, ide
 		}
 		if err := tx.Create(&session).Error; err != nil {
 			return err
+		}
+		if script.BillingMode == entity.ScriptBillingModeActivation {
+			if id, err := ConsumeScriptActivationEntitlementRunInTx(tx, user.ID, script.ID, activation.ID, session.ID); err != nil {
+				return err
+			} else if id != session.ID {
+				return ErrScriptTokenInvalid
+			}
 		}
 		result = ScriptRunSessionGrant{Token: plainSessionToken, ExpiresAt: expiresAt, ScriptID: script.ID, AccessTokenID: accessToken.ID}
 		if lease != nil {

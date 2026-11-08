@@ -30,14 +30,21 @@ func accessTokenQuotaWouldExceed(token entity.AccessToken, amount float64) bool 
 // Admission is for a NEW spending request, never owner-scoped paid-task delivery.
 // A zero configured limit remains unlimited, not a second wallet.
 func checkSearchSpendingAdmission(user entity.User, token entity.AccessToken) error {
-	if !strings.EqualFold(strings.TrimSpace(user.Status), "enabled") || !strings.EqualFold(strings.TrimSpace(token.Status), "enabled") || token.UserID != user.ID {
-		return fmt.Errorf("%w: 访问令牌或所属用户已失效", service.ErrInvalidAccessTokenAuthorization)
+	if err := checkSearchSpendingAccount(user, token); err != nil {
+		return err
 	}
 	if user.Balance <= 0 {
 		return service.ErrInsufficientSearchBalance
 	}
 	if accessTokenQuotaExhausted(token) {
 		return errAccessTokenQuotaExceeded
+	}
+	return nil
+}
+
+func checkSearchSpendingAccount(user entity.User, token entity.AccessToken) error {
+	if !strings.EqualFold(strings.TrimSpace(user.Status), "enabled") || !strings.EqualFold(strings.TrimSpace(token.Status), "enabled") || token.UserID != user.ID {
+		return fmt.Errorf("%w: 访问令牌或所属用户已失效", service.ErrInvalidAccessTokenAuthorization)
 	}
 	return nil
 }
@@ -51,11 +58,12 @@ func checkNewSearchTaskSpending(c *gin.Context) error {
 	if db == nil {
 		return errors.New("搜题服务暂不可用")
 	}
-	auth, _, err := service.ResolveSearchTokenWithScriptIdentity(db, authorization, c.GetHeader("X-Script-Identity"), c.ClientIP())
+	auth, session, err := service.ResolveSearchTokenWithScriptIdentity(db, authorization, c.GetHeader("X-Script-Identity"), c.ClientIP())
 	if err != nil {
 		return err
 	}
-	return checkSearchSpendingAdmission(auth.User, auth.AccessToken)
+	_, _, err = checkResolvedScriptSpendingAdmission(db, auth.User, auth.AccessToken, session)
+	return err
 }
 
 func buildAIFallbackSpendingRejection(err error) service.AIFallbackResult {

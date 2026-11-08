@@ -729,6 +729,10 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		&entity.UserScript{},
 		&entity.ScriptExchangeToken{},
 		&entity.ScriptRunSession{},
+		&entity.ScriptEscrow{},
+		&entity.ScriptEscrowEntry{},
+		&entity.ScriptActivationEntitlement{},
+		&entity.ScriptSubsidizedUsage{},
 	}
 	// Keep the historical quota column byte-for-byte when its disabled values
 	// cannot be converted. An additive column still lets ordinary Key queries

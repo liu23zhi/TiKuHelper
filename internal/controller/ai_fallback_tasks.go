@@ -295,7 +295,7 @@ func CreateAIFallbackTask(c *gin.Context) {
 		Type:             input.Type,
 		Options:          input.Options,
 		SkipCache:        input.SkipCache,
-		DeepThinking:     input.DeepThinking,
+		DeepThinking:     input.DeepThinking || billingCtx.ScriptBilling.managed(),
 		QuestionEvidence: input.QuestionEvidence,
 		RequestID:        requestID,
 	}
@@ -321,6 +321,14 @@ func CreateAIFallbackTask(c *gin.Context) {
 			auditResult("billing_precheck", result)
 			return result
 		}
+		if currentBillingCtx.ScriptBilling.mode != billingCtx.ScriptBilling.mode {
+			result := buildAIFallbackSpendingRejection(service.ErrInvalidAccessTokenAuthorization)
+			auditResult("billing_precheck", result)
+			return result
+		}
+		// Validate the lease/funds again at worker start, but use the
+		// administrator multiplier captured for the already admitted task.
+		currentBillingCtx.ScriptBilling = billingCtx.ScriptBilling
 		currentBillingCtx.ClientIP = billingCtx.ClientIP
 
 		// 缓存命中：与搜题一致 —— 不再调用 AI、不再计费。
