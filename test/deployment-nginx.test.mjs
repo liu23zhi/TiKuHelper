@@ -24,10 +24,15 @@ function successful(result) {
 }
 
 test('Compose keeps cache persistence and limits the backend to loopback', (t) => {
-  const result = execute('docker', ['compose', '-f', join(run, 'docker-compose.yml'), 'config', '--format', 'json']);
+  const result = execute('docker', ['compose', '-f', join(run, 'docker-compose.yml'), 'config', '--format', 'json'], { env: { ...process.env, TRUSTED_PROXIES: 'none', TRUSTED_PROXIES_FILE: '' } });
   if (result.error?.code === 'ENOENT') return t.skip('Docker Compose CLI is unavailable');
   successful(result);
-  const backend = JSON.parse(result.stdout).services['tiku-adapter'];
+  const compose = JSON.parse(result.stdout);
+  assert.equal(compose.name, 'tikuhelper');
+  const backend = compose.services.tikuhelper;
+  assert.equal(backend.container_name, 'tikuhelper');
+  assert.equal(compose.services.nginx.container_name, 'tikuhelper-nginx');
+  assert.ok(compose.services.nginx.depends_on.tikuhelper);
   assert.deepEqual(backend.ports.map(({ host_ip, target, published }) => ({ host_ip, target, published })), [
     { host_ip: '127.0.0.1', target: 8060, published: '8060' },
   ]);
@@ -35,8 +40,11 @@ test('Compose keeps cache persistence and limits the backend to loopback', (t) =
   const nginx = JSON.parse(result.stdout).services.nginx;
   assert.ok(nginx.volumes.some(({ source, target }) => target === '/app/trusted_proxies.txt' && resolve(source) === join(run, 'trusted_proxies.txt')));
   assert.ok(nginx.volumes.some(({ source, target }) => target === '/app/trusted-proxies-convert.sh' && resolve(source) === join(run, 'nginx/trusted-proxies-convert.sh')));
-  assert.ok(!backend.volumes.some(({ target }) => target === '/app/trusted_proxies.txt'));
-  assert.equal(Object.hasOwn(backend.environment, 'TRUSTED_PROXIES'), false);
+  // The approved local deployment accepts an explicit none/limited proxy
+  // choice or an explicitly selected file. A read-only mount alone never opts in.
+  assert.ok(backend.volumes.some(({ target, read_only }) => target === '/app/trusted_proxies.txt' && read_only));
+  assert.equal(backend.environment.TRUSTED_PROXIES, 'none');
+  assert.equal(backend.environment.TRUSTED_PROXIES_FILE, '');
   assert.ok(!Object.keys(backend.environment).some((key) => key.startsWith('EXTENSION_')));
 });
 
@@ -122,6 +130,7 @@ test('real Nginx cleans forwarded headers on HTTP/HTTPS and trusts only configur
     '-out', 'cert.pem', '-days', '1', '-subj', '/CN=localhost'], { cwd: directory,
     env: { ...process.env, MSYS_NO_PATHCONV: '1' } }));
   const actual = await readFile(join(run, 'nginx/conf.d/tiku-adapter.conf'), 'utf8');
+  assert.ok(actual.includes('server tikuhelper:8060;'), 'probe must replace the actual project service name');
   await writeFile(join(directory, 'tiku-proxy.inc'), await readFile(join(run, 'nginx/conf.d/tiku-proxy.inc')));
   await writeFile(join(directory, 'trusted-proxies.generated.conf'), '# generated probe\n');
 
@@ -129,7 +138,7 @@ test('real Nginx cleans forwarded headers on HTTP/HTTPS and trusts only configur
     nginxPort = await freePort();
     tlsPort = await freePort();
     const config = actual
-      .replace('server tiku-adapter:8060;', `server 127.0.0.1:${backendPort};`)
+      .replace('server tikuhelper:8060;', `server 127.0.0.1:${backendPort};`)
       .replace('listen 8680;', `listen 127.0.0.1:${nginxPort};`)
       .replace('listen 9043 ssl;', `listen 127.0.0.1:${tlsPort} ssl;`)
       .replaceAll('/etc/nginx/conf.d/tiku-proxy.inc', `${prefix}tiku-proxy.inc`)

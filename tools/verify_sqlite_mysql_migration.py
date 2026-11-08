@@ -15,7 +15,6 @@
 
 已知且可解释的差异需要用参数显式放行，否则一律算失败：
     --allow-truncation billing_records.question_text=512
-    --allow-quota-repair        # access_tokens.total_quota_limit 越界/为负 → 0（无限额）
 
 退出码：0 一致，1 有差异，2 参数/连接错误。
 """
@@ -61,7 +60,6 @@ def parse_args() -> argparse.Namespace:
         metavar="TABLE",
         help="允许目标库该表比源库多行（应用启动迁移会写 system_settings 标记），可重复",
     )
-    parser.add_argument("--allow-quota-repair", action="store_true", help="放行配额上限归一为 0 的差异")
     parser.add_argument(
         "--datetime-precision",
         type=int,
@@ -209,32 +207,12 @@ def canonical_row(
     return values
 
 
-def tolerated_difference(
-    table: str,
-    column: str,
-    source_value: str,
-    target_value: str,
-    allow_quota_repair: bool,
-) -> bool:
-    if not allow_quota_repair:
-        return False
-    if table.lower() != "access_tokens" or column.lower() != "total_quota_limit":
-        return False
-    try:
-        expected, corrected = migration.normalize_access_token_quota_limit(Decimal(source_value))
-        target_decimal = Decimal(target_value)
-    except Exception:
-        return False
-    return corrected and Decimal(str(expected)) == target_decimal
-
-
 def compare_rows(
     table: str,
     columns: list[dict[str, Any]],
     source_rows: list[tuple],
     target_rows: list[tuple],
     truncations: dict[tuple[str, str], int],
-    allow_quota_repair: bool,
     report: dict[str, Any],
     precisions: dict[str, int] | None = None,
     precision_override: int | None = None,
@@ -254,14 +232,6 @@ def compare_rows(
         ]
         if not column_diffs:
             # 归一化字符串不同但每个列都在容差内（例如只差微秒/毫秒），视为一致。
-            continue
-        if column_diffs and all(
-            tolerated_difference(table, name, source_value, target_value, allow_quota_repair)
-            for name, source_value, target_value in column_diffs
-        ):
-            report.setdefault("tolerated", []).append(
-                {"table": table, "columns": [item[0] for item in column_diffs], "reason": "quota_repair"}
-            )
             continue
         mismatches += 1
         if len(report.setdefault("differences", [])) < 20:
@@ -328,7 +298,6 @@ def compare_table(
                     [pair[0] for pair in pairs],
                     [pair[1] for pair in pairs],
                     truncations,
-                    args.allow_quota_repair,
                     report,
                     precisions=precision_map,
                     precision_override=args.datetime_precision,
@@ -364,7 +333,6 @@ def compare_table(
             source_rows,
             target_rows,
             truncations,
-            args.allow_quota_repair,
             report,
             precisions=precision_map,
             precision_override=args.datetime_precision,
@@ -421,7 +389,6 @@ def compare_table(
             source_ordered,
             target_rows,
             truncations,
-            args.allow_quota_repair,
             report,
             precisions=precision_map,
             precision_override=args.datetime_precision,
@@ -446,11 +413,14 @@ def main() -> int:
     args = parse_args()
     truncations = parse_truncation_specs(args.allow_truncation)
     source = open_sqlite_readonly(args.sqlite_path)
-    target, _ = common.connect(args)
+    target = None
     report: dict[str, Any] = {"tables": {}, "differences": []}
     failures: list[str] = []
     try:
-        for table in sqlite_tables(source):
+        tables = sqlite_tables(source)
+        migration.validate_access_token_quotas(source, tables)
+        target, _ = common.connect(args)
+        for table in tables:
             compare_table(source, target.cursor(), table, args, truncations, report)
             entry = report["tables"][table]
             if not entry["status"].startswith("OK"):
@@ -458,9 +428,13 @@ def main() -> int:
             if not args.quiet:
                 detail = "（%s）" % entry["mode"] if "mode" in entry else ""
                 print("%-30s %8d 行 %-8s %s" % (table, entry["rows"], detail, entry["status"]))
+    except RuntimeError as exc:
+        print(f"验证失败：{exc}", file=sys.stderr)
+        return 1
     finally:
         source.close()
-        target.close()
+        if target is not None:
+            target.close()
 
     if args.json:
         print(json.dumps({"report": report, "failures": failures}, ensure_ascii=False, indent=2))

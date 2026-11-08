@@ -39,25 +39,25 @@ class FakeTarget:
 
 
 class AccessTokenQuotaMigrationTests(unittest.TestCase):
-    def test_quota_normalization_repairs_invalid_values(self):
+    def test_quota_validation_rejects_lossy_values(self):
         cases = (
-            (Decimal("0"), Decimal("0"), False),
-            (Decimal("5.123456"), Decimal("5.123456"), False),
-            (Decimal("999999999999.999999"), Decimal("999999999999.999999"), False),
-            (Decimal("1.1111111111111111E+24"), Decimal(0), True),
-            (Decimal("-2"), Decimal(0), True),
-            (Decimal("-0.000001"), Decimal(0), True),
-            (Decimal("-1000000000000"), Decimal(0), True),
-            (Decimal("Infinity"), Decimal(0), True),
-            (None, None, False),
+            (Decimal("0"), True),
+            (Decimal("5.123456"), True),
+            (Decimal("999999999999.999999"), True),
+            (Decimal("1.1111111111111111E+24"), False),
+            (Decimal("-2"), False),
+            (Decimal("-0.000001"), False),
+            (Decimal("-1000000000000"), False),
+            (Decimal("Infinity"), False),
+            (Decimal("0.00000001"), False),
+            ("broken", False),
+            (None, True),
         )
-        for source, expected, corrected in cases:
+        for source, expected in cases:
             with self.subTest(source=source):
-                value, changed = migration.normalize_access_token_quota_limit(source)
-                self.assertEqual(value, expected)
-                self.assertEqual(changed, corrected)
+                self.assertEqual(migration.access_token_quota_is_representable(source), expected)
 
-    def test_copy_table_normalizes_overflowing_access_token_quota(self):
+    def test_copy_table_rejects_overflowing_access_token_quota_without_modifying_source(self):
         source = sqlite3.connect(":memory:")
         self.addCleanup(source.close)
         source.execute(
@@ -69,11 +69,24 @@ class AccessTokenQuotaMigrationTests(unittest.TestCase):
         )
         target = FakeTarget()
 
-        copied = migration.copy_table(source, target, "access_tokens", "stage_access_tokens", 10)
+        before = source.execute("SELECT *, typeof(total_quota_limit) FROM access_tokens ORDER BY id").fetchall()
+        with self.assertRaisesRegex(RuntimeError, "2 个值不能无损迁移"):
+            migration.validate_access_token_quotas(source, ["access_tokens"])
+        with self.assertRaisesRegex(RuntimeError, "不能无损迁移"):
+            migration.copy_table(source, target, "access_tokens", "stage_access_tokens", 10)
+        self.assertEqual(target.inserted, [])
+        self.assertEqual(target.commits, 0)
+        self.assertEqual(source.execute("SELECT *, typeof(total_quota_limit) FROM access_tokens ORDER BY id").fetchall(), before)
 
-        self.assertEqual(copied, 3)
-        self.assertEqual(target.inserted, [(1, Decimal(0)), (2, Decimal("5.25")), (3, Decimal(0))])
-        self.assertEqual(target.commits, 1)
+    def test_copy_table_preserves_valid_and_legacy_null_quotas(self):
+        source = sqlite3.connect(":memory:")
+        self.addCleanup(source.close)
+        source.execute("CREATE TABLE access_tokens (id INTEGER PRIMARY KEY, total_quota_limit DECIMAL(18,6))")
+        source.executemany("INSERT INTO access_tokens VALUES (?, ?)", [(1, 0), (2, 5.25), (3, None)])
+        target = FakeTarget()
+        migration.validate_access_token_quotas(source, ["access_tokens"])
+        self.assertEqual(migration.copy_table(source, target, "access_tokens", "stage_access_tokens", 10), 3)
+        self.assertEqual(target.inserted, [(1, Decimal(0)), (2, Decimal("5.25")), (3, None)])
 
     def test_other_columns_and_tables_are_not_normalized(self):
         source = sqlite3.connect(":memory:")

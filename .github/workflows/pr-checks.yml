@@ -1,0 +1,144 @@
+name: PR checks (no publish)
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_PATH: ${{ github.workspace }}/web/node_modules
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  frontend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7, verified official tag
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22.23.1'
+          package-manager-cache: false
+      - name: Install locked dependencies
+        run: npm ci
+      - name: CI contracts and audit parser behavior
+        run: node --test ../scripts/ci/*.test.cjs
+      - name: Lint without modifying source
+        run: npm run lint -- --no-fix
+      - name: Dependency compatibility consumers
+        run: npm run test:security
+      - name: Utilities
+        run: npm run test:unit
+      - name: Real components
+        run: npm run test:components
+      - name: All SFC parse and compile
+        run: npm run check:sfc
+      - name: Production frontend
+        run: npm run build
+      - name: Resource budgets
+        run: npm run check:bundle
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: frontend-dist
+          path: web/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  backend:
+    needs: frontend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: frontend-dist
+          path: web/dist
+      - name: Embed this run's frontend
+        run: |
+          mkdir -p cmd/adapter-service/dist ci-output
+          cp -R web/dist/. cmd/adapter-service/dist/
+      - name: HTTP gate behavior including deliberate failures
+        run: python3 -B -m unittest discover -s scripts/ci -p '*_test.py'
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Offline short tests
+        run: go test -short -p 1 ./... -count=1
+      - name: Core race
+        run: go test -short -race -p 1 ./internal/api ./internal/controller ./internal/service ./internal/search -count=1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22.23.1'
+          package-manager-cache: false
+      - name: Locked UI dependencies for persisted SVG integration
+        run: npm ci --prefix web
+      - name: Persisted SVG write read and native consumer integration
+        run: npm run --prefix web test:integration:s02
+      - name: Fixed parser proxy HTTP and native import page integration
+        run: npm run --prefix web test:integration:s03
+      - name: Actual metrics handler JSON and native API panel integration
+        run: npm run --prefix web test:integration:metrics
+      - name: Actual binary, API auth and embedded SPA integration
+        run: |
+          CGO_ENABLED=0 go build -o ci-output/tiku-ci ./cmd/adapter-service
+          python3 -B scripts/ci/http-smoke.py --binary ci-output/tiku-ci --dist web/dist --log-dir ci-output/http-smoke > ci-output/http-smoke.json
+      - name: Actual main safe defaults and synthetic database startup integration
+        run: python3 -B scripts/ci/run-s04-main-flow.py --binary ci-output/tiku-ci --evidence ci-output/s04-main-flow
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: http-smoke-evidence
+          path: ci-output/http-smoke.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '22.23.1'
+          package-manager-cache: false
+      - name: Audit locked graph; preserve npm failure and fail closed
+        run: |
+          mkdir -p ../ci-output
+          set +e
+          npm audit --json --registry https://registry.npmjs.org > ../ci-output/npm-audit.json
+          audit_status=$?
+          set -e
+          node ../scripts/ci/check-audit.cjs ../ci-output/npm-audit.json --npm-exit "$audit_status" --policy ../scripts/ci/audit-policy.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: dependency-audit
+          path: ci-output/npm-audit.json
+          if-no-files-found: error
+          retention-days: 7
