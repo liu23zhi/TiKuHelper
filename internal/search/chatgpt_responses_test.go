@@ -52,8 +52,8 @@ func TestChatGptClientUsesResponsesEndpointAndParsesOutputText(t *testing.T) {
 		if _, ok := payload["input"]; !ok {
 			t.Fatalf("expected Responses input, got %v", payload)
 		}
-		if _, exists := payload["max_output_tokens"]; exists {
-			t.Fatalf("ordinary answer requests must use the upstream output allowance: %v", payload["max_output_tokens"])
+		if payload["max_output_tokens"] != float64(aiToolMaxOutputTokens) {
+			t.Fatalf("ordinary answer requests must preserve local output allowance: %v", payload["max_output_tokens"])
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		writeResponsesEvent(w, "response.output_text.delta", map[string]any{"delta": `{"answers":["4"]}`})
@@ -79,7 +79,7 @@ func TestChatGptClientUsesResponsesEndpointAndParsesOutputText(t *testing.T) {
 	}
 }
 
-func TestReadAIResponsesStreamPreservesLongProjectAnswerSnapshots(t *testing.T) {
+func TestReadAIResponsesStreamRejectsOversizedProjectAnswerSnapshots(t *testing.T) {
 	answer := strings.Repeat("实现代码和验证步骤必须完整保留。\n", 50000)
 	content, err := json.Marshal(map[string]any{"answers": []string{answer}})
 	if err != nil {
@@ -88,14 +88,11 @@ func TestReadAIResponsesStreamPreservesLongProjectAnswerSnapshots(t *testing.T) 
 	var stream strings.Builder
 	writeAIResponsesTextStream(&stream, []string{string(content)}, map[string]any{"input_tokens": 100, "output_tokens": 50000, "total_tokens": 50100})
 	if stream.Len() <= 2*1024*1024 {
-		t.Fatal("fixture must exceed the former stream limit")
+		t.Fatal("fixture must exceed the approved stream limit")
 	}
 	result, err := readAIResponsesStream(strings.NewReader(stream.String()), nil)
-	if err != nil {
-		t.Fatalf("long valid answer and complete snapshot must be accepted: %v", err)
-	}
-	if result.Content != string(content) || result.Usage.OutputTokens != 50000 {
-		t.Fatalf("long answer was truncated or duplicated: length=%d want=%d usage=%+v", len(result.Content), len(content), result.Usage)
+	if err == nil || (!strings.Contains(err.Error(), "响应流超过大小限制") && !strings.Contains(err.Error(), "token too long")) {
+		t.Fatalf("oversized complete answer must fail explicitly: length=%d err=%v", len(result.Content), err)
 	}
 }
 
@@ -230,6 +227,33 @@ func TestReadAIResponsesStreamRetainsUsageOnFailureEvents(t *testing.T) {
 			}
 			if !strings.Contains(result.Raw, `"status":"failed"`) {
 				t.Fatalf("failed response raw stream must remain available: %q", result.Raw)
+			}
+		})
+	}
+}
+
+func TestReadAIResponsesStreamRejectsNinthToolCallAtBothCreationSites(t *testing.T) {
+	for _, branch := range []string{"completed_output", "arguments_delta"} {
+		t.Run(branch, func(t *testing.T) {
+			var stream strings.Builder
+			if branch == "arguments_delta" {
+				for index := 0; index < 9; index++ {
+					writeResponsesEvent(&stream, "response.function_call_arguments.delta", map[string]any{"item_id": fmt.Sprintf("item-%d", index), "delta": "{}"})
+				}
+				writeResponsesEvent(&stream, "response.completed", map[string]any{"response": map[string]any{"status": "completed"}})
+			} else {
+				output := make([]any, 0, 9)
+				for index := 0; index < 9; index++ {
+					output = append(output, map[string]any{"type": "function_call", "id": fmt.Sprintf("item-%d", index), "call_id": fmt.Sprintf("call-%d", index), "name": "web_search", "arguments": "{}"})
+				}
+				writeResponsesEvent(&stream, "response.completed", map[string]any{"response": map[string]any{"status": "completed", "output": output, "usage": map[string]any{"input_tokens": 12, "total_tokens": 12}}})
+			}
+			result, err := readAIResponsesStream(strings.NewReader(stream.String()), nil)
+			if err == nil || !strings.Contains(err.Error(), "单轮工具调用过多") {
+				t.Fatalf("ninth call must fail explicitly: branch=%s calls=%d err=%v", branch, len(result.Calls), err)
+			}
+			if branch == "completed_output" && result.Usage.TotalTokens != 12 {
+				t.Fatalf("already observed usage was lost: %+v", result.Usage)
 			}
 		})
 	}

@@ -59,6 +59,9 @@ func ActivateScriptRunSessionWithDB(db *gorm.DB, shortCode, activationToken, ide
 		if err := tx.Where("id = ? AND short_code = ? AND enabled = ? AND deleted_at IS NULL", activation.ScriptID, shortCode, true).First(&script).Error; err != nil {
 			return ErrScriptTokenInvalid
 		}
+		if err := ValidateScriptDomainWithDB(tx, script.BaseDomain, script.UseWildcardDomain); err != nil {
+			return err
+		}
 		if script.AccessTokenID <= 0 {
 			return ErrScriptTokenInvalid
 		}
@@ -66,11 +69,14 @@ func ActivateScriptRunSessionWithDB(db *gorm.DB, shortCode, activationToken, ide
 		if err := tx.Where("id = ? AND script_id = ? AND user_id = ? AND status = ?", script.AccessTokenID, script.ID, script.UserID, "enabled").First(&accessToken).Error; err != nil {
 			return ErrScriptTokenInvalid
 		}
+		if !AccessTokenQuotaLimitValid(accessToken.TotalQuotaLimit) {
+			return ErrScriptTokenInvalid
+		}
 		var user entity.User
 		if err := tx.Where("id = ? AND status = ?", script.UserID, "enabled").First(&user).Error; err != nil {
 			return ErrScriptTokenInvalid
 		}
-		if err := tx.Model(&activation).Update("used_at", now).Error; err != nil {
+		if err := consumeScriptExchangeTokenWithDB(tx, activation.ID, now); err != nil {
 			return err
 		}
 		expiresAt := now.Add(ScriptRunSessionTTL)
@@ -100,7 +106,7 @@ func ResolveScriptRunSessionWithDB(db *gorm.DB, authorization, identity string) 
 		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本运行会话令牌不能为空")
 	}
 	identity = strings.TrimSpace(identity)
-	if identity == "" {
+	if identity == "" || len(identity) > 256 {
 		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth(ErrScriptRunIdentityRequired.Error())
 	}
 	if db == nil {
@@ -127,15 +133,32 @@ func ResolveScriptRunSessionWithDB(db *gorm.DB, authorization, identity string) 
 	if err := freshDB.Where("id = ? AND user_id = ? AND access_token_id = ? AND enabled = ? AND deleted_at IS NULL", session.ScriptID, session.UserID, session.AccessTokenID, true).First(&script).Error; err != nil {
 		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本已停用或删除")
 	}
+	if err := ValidateScriptDomainWithDB(freshDB, script.BaseDomain, script.UseWildcardDomain); err != nil {
+		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本域名不可用")
+	}
 	var accessToken entity.AccessToken
 	if err := freshDB.Where("id = ? AND script_id = ? AND user_id = ? AND status = ?", session.AccessTokenID, session.ScriptID, session.UserID, "enabled").First(&accessToken).Error; err != nil {
 		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本访问令牌已停用")
+	}
+	if !AccessTokenQuotaLimitValid(accessToken.TotalQuotaLimit) {
+		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本访问令牌限额无效")
 	}
 	var user entity.User
 	if err := freshDB.Where("id = ? AND status = ?", session.UserID, "enabled").First(&user).Error; err != nil {
 		return AccessTokenAuthContext{}, entity.ScriptRunSession{}, invalidScriptSessionAuth("脚本所属用户已停用")
 	}
 	return AccessTokenAuthContext{User: user, AccessToken: accessToken}, session, nil
+}
+
+// ResolveSearchTokenWithScriptIdentity keeps credential selection uniform across
+// the sync, task and AI fallback routes. A supplied identity selects the
+// script-session credential explicitly; never fall back to a raw Key.
+func ResolveSearchTokenWithScriptIdentity(db *gorm.DB, authorization, identity string) (AccessTokenAuthContext, entity.ScriptRunSession, error) {
+	if strings.TrimSpace(identity) != "" {
+		return ResolveScriptRunSessionWithDB(db, authorization, identity)
+	}
+	auth, err := ResolveAccessTokenFromBasicAuth(db, authorization)
+	return auth, entity.ScriptRunSession{}, err
 }
 
 func DownloadScriptVersionByRunSessionWithDB(db *gorm.DB, shortCode, authorization, identity string) (entity.ScriptVersion, error) {
@@ -172,6 +195,9 @@ func DownloadScriptVersionByActivationTokenWithDB(db *gorm.DB, shortCode, activa
 	var script entity.UserScript
 	if err := db.Session(&gorm.Session{NewDB: true}).Where("id = ? AND short_code = ? AND enabled = ? AND deleted_at IS NULL", activation.ScriptID, shortCode, true).First(&script).Error; err != nil {
 		return entity.ScriptVersion{}, ErrScriptTokenInvalid
+	}
+	if err := validateScriptLaunchActorWithDB(db, script); err != nil {
+		return entity.ScriptVersion{}, err
 	}
 	versionID := activation.VersionID
 	if versionID <= 0 {

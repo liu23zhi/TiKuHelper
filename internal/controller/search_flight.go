@@ -1,8 +1,39 @@
 package controller
 
+import (
+	"context"
+	"time"
+
+	"github.com/itihey/tikuAdapter/internal/diagnostics"
+	"github.com/itihey/tikuAdapter/pkg/model"
+)
+
 // searchFlightPayload 是一次合并搜题的结果：答案 + 是否可用。
 type searchFlightPayload struct {
-	answers [][]string
+	answers  [][]string
+	terminal *searchFlightTerminal
+}
+
+// terminal is an already executed, recorded-usage no-answer outcome, not a
+// reusable answer cache entry. Its presence is independent of Error: a paid
+// model can legitimately return no answer without reporting an upstream error.
+// Only public response fields cross the cohort; no owner token/body/ID does.
+type searchFlightTerminal struct {
+	status      string
+	publicError *model.SearchError
+	warnings    []string
+}
+
+func cloneSearchFlightTerminal(value *searchFlightTerminal) *searchFlightTerminal {
+	if value == nil {
+		return nil
+	}
+	copy := &searchFlightTerminal{status: value.status, warnings: append([]string(nil), value.warnings...)}
+	if value.publicError != nil {
+		errorCopy := *value.publicError
+		copy.publicError = &errorCopy
+	}
+	return copy
 }
 
 // searchFlights 合并「同一用户 + 完全相同的题目与选项」的并发搜题请求。
@@ -17,23 +48,58 @@ var searchFlights = newFlightGroup[searchFlightPayload]()
 //   - isLeader=false 且 borrowed 非 nil：复用了他人结果（不应计费）。
 //   - isLeader=false 且 borrowed 为 nil：等待超时或发起者无答案，调用方自行继续。
 func beginSearchFlight(key string) (isLeader bool, borrowed [][]string, call *flightCall[searchFlightPayload]) {
+	isLeader, borrowed, call, _ = beginSearchFlightWithContext(context.Background(), key)
+	return
+}
+
+func beginSearchFlightWithContext(ctx context.Context, key string) (bool, [][]string, *flightCall[searchFlightPayload], error) {
+	leader, answers, _, call, err := beginSearchFlightOutcomeWithContext(ctx, key)
+	return leader, answers, call, err
+}
+
+func beginSearchFlightOutcomeWithContext(ctx context.Context, key string) (bool, [][]string, *searchFlightTerminal, *flightCall[searchFlightPayload], error) {
 	leader, shared := searchFlights.begin(key)
 	if leader != nil {
-		return true, nil, leader
+		return true, nil, nil, leader, nil
 	}
+	answers, terminal, err := waitSearchFlightOutcomeWithContext(ctx, key, shared, defaultFlightWaitTimeout)
+	return false, answers, terminal, nil, err
+}
 
-	payload, ok := searchFlights.wait(key, shared, defaultFlightWaitTimeout)
-	if !ok {
-		return false, nil, nil
+// waitSearchFlightResult records shared only after a usable result is borrowed,
+// never when joining a call, timing out, or receiving an empty result.
+func waitSearchFlightResult(key string, shared *flightCall[searchFlightPayload], timeout time.Duration) [][]string {
+	answers, _ := waitSearchFlightResultWithContext(context.Background(), key, shared, timeout)
+	return answers
+}
+
+func waitSearchFlightResultWithContext(ctx context.Context, key string, shared *flightCall[searchFlightPayload], timeout time.Duration) ([][]string, error) {
+	answers, _, err := waitSearchFlightOutcomeWithContext(ctx, key, shared, timeout)
+	return answers, err
+}
+
+func waitSearchFlightOutcomeWithContext(ctx context.Context, key string, shared *flightCall[searchFlightPayload], timeout time.Duration) ([][]string, *searchFlightTerminal, error) {
+	payload, ok, err := searchFlights.waitContext(ctx, key, shared, timeout)
+	if err != nil || !ok {
+		return nil, nil, err
 	}
 	if !hasUsableSearchAnswers(payload.answers) {
-		// 发起者没拿到可用答案。
-		return false, nil, nil
+		return nil, cloneSearchFlightTerminal(payload.terminal), nil
 	}
-	return false, cloneSearchAnswers(payload.answers), nil
+	// Executed no-answer delivery must not fabricate a usable/cache shared hit.
+	diagnostics.Default.ObserveCache("search", "shared")
+	return cloneSearchAnswers(payload.answers), nil, nil
 }
 
 // finishSearchFlight 广播搜题结果并释放 key。幂等，可安全地由 defer 兜底再调用一次。
 func finishSearchFlight(key string, call *flightCall[searchFlightPayload], answers [][]string) {
-	searchFlights.finish(key, call, searchFlightPayload{answers: cloneSearchAnswers(answers)}, hasUsableSearchAnswers(answers))
+	finishSearchFlightOutcome(key, call, answers, nil)
+}
+
+func finishSearchFlightOutcome(key string, call *flightCall[searchFlightPayload], answers [][]string, terminal *searchFlightTerminal) {
+	usable := hasUsableSearchAnswers(answers)
+	if usable {
+		terminal = nil
+	}
+	searchFlights.finish(key, call, searchFlightPayload{answers: cloneSearchAnswers(answers), terminal: cloneSearchFlightTerminal(terminal)}, usable || terminal != nil)
 }

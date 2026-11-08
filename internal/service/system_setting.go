@@ -91,6 +91,9 @@ const DefaultMinRechargeAmount = float64(1)
 
 // JSON numbers must round-trip through the browser without losing precision.
 const MaxAISearchCountSafeInteger int64 = 9007199254740991
+const MaxAllowedAISearchModelCalls = 20
+const MaxAllowedAISearches = 20
+const MaxAllowedAISearchRetries = 10
 
 const paymentMethodWXPay = "wxpay"
 const wechatLoginModeScan = "scan"
@@ -518,7 +521,7 @@ func getPositiveInt64SystemSetting(db *gorm.DB, key string, defaultValue int64) 
 
 func resolveMaxAISearchBudget(db *gorm.DB, requested int, key string, defaultValue int) int {
 	if requested > 0 {
-		return requested
+		return normalizeAISearchBudgetForKey(requested, key)
 	}
 	return getPositiveIntSystemSetting(db, key, defaultValue)
 }
@@ -546,7 +549,7 @@ func SetAISearchRetriesWithDB(db *gorm.DB, requested int) error {
 	}
 	retries := GetAISearchRetriesWithDB(db)
 	if requested > 0 {
-		retries = requested
+		retries = normalizeAISearchBudgetForKey(requested, MaxAISearchRetriesSettingKey)
 	}
 	return saveSystemSettingValue(db, MaxAISearchRetriesSettingKey, strconv.Itoa(retries), "AI 搜索每轮失败重试次数（含首次调用）")
 }
@@ -560,10 +563,10 @@ func SetAISearchBudgetsWithDB(db *gorm.DB, requestedModelCalls int, requestedSea
 	}
 	modelCalls, searches := GetAISearchBudgetsWithDB(db)
 	if requestedModelCalls > 0 {
-		modelCalls = requestedModelCalls
+		modelCalls = normalizeAISearchBudgetForKey(requestedModelCalls, MaxAISearchModelCallsSettingKey)
 	}
 	if requestedSearches > 0 {
-		searches = requestedSearches
+		searches = normalizeAISearchBudgetForKey(requestedSearches, MaxAISearchesSettingKey)
 	}
 	if err := saveSystemSettingValue(db, MaxAISearchModelCallsSettingKey, strconv.Itoa(modelCalls), "AI 搜索模型最大调用次数"); err != nil {
 		return err
@@ -814,6 +817,16 @@ func getPositiveIntSystemSetting(db *gorm.DB, key string, defaultValue int) int 
 	value, err := strconv.Atoi(raw)
 	if err != nil || !isValidAISearchCount(value) {
 		return defaultValue
+	}
+	return normalizeAISearchBudgetForKey(value, key)
+}
+
+func normalizeAISearchBudgetForKey(value int, key string) int {
+	switch key {
+	case MaxAISearchModelCallsSettingKey, MaxAISearchesSettingKey, MaxAIWebReadsSettingKey:
+		return min(value, MaxAllowedAISearchModelCalls)
+	case MaxAISearchRetriesSettingKey:
+		return min(value, MaxAllowedAISearchRetries)
 	}
 	return value
 }

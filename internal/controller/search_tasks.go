@@ -19,6 +19,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/model"
 )
@@ -40,6 +41,7 @@ var (
 type searchTask struct {
 	ID                 string
 	UserID             int32
+	ScriptScope        string
 	Status             string
 	Result             model.SearchResponse
 	Error              *model.SearchError
@@ -50,18 +52,25 @@ type searchTask struct {
 }
 
 type searchTaskIdempotencyIndex struct {
-	UserID int32
-	Key    string
+	UserID      int32
+	ScriptScope string
+	Key         string
+}
+
+type scriptSearchTaskActor struct {
+	userID int32
+	scope  string
 }
 
 type searchTaskStore struct {
-	mu            sync.RWMutex
-	tasks         map[string]searchTask
-	terminalTasks map[string]struct{}
-	idempotency   map[searchTaskIdempotencyIndex]string
-	healthTasks   map[int32]string
-	ttl           time.Duration
-	now           func() time.Time
+	mu                sync.RWMutex
+	tasks             map[string]searchTask
+	terminalTasks     map[string]struct{}
+	idempotency       map[searchTaskIdempotencyIndex]string
+	healthTasks       map[int32]string
+	scriptHealthTasks map[scriptSearchTaskActor]string
+	ttl               time.Duration
+	now               func() time.Time
 }
 
 type searchTaskResponse struct {
@@ -81,23 +90,34 @@ func newSearchTaskStore(ttl time.Duration, now func() time.Time) *searchTaskStor
 		now = time.Now
 	}
 	return &searchTaskStore{
-		tasks:         make(map[string]searchTask),
-		terminalTasks: make(map[string]struct{}),
-		idempotency:   make(map[searchTaskIdempotencyIndex]string),
-		healthTasks:   make(map[int32]string),
-		ttl:           ttl,
-		now:           now,
+		tasks:             make(map[string]searchTask),
+		terminalTasks:     make(map[string]struct{}),
+		idempotency:       make(map[searchTaskIdempotencyIndex]string),
+		healthTasks:       make(map[int32]string),
+		scriptHealthTasks: make(map[scriptSearchTaskActor]string),
+		ttl:               ttl,
+		now:               now,
 	}
 }
 
 var defaultSearchTaskStore = newSearchTaskStore(searchTaskDefaultTTL, time.Now)
 
 func (s *searchTaskStore) create(userID int32, idempotencyKey string, fingerprint string, run func() (model.SearchResponse, error)) (string, bool, error) {
+	return s.createWithAdmission(userID, idempotencyKey, fingerprint, nil, run)
+}
+
+// Replay and new-execution admission share one store lock: an existing original
+// operation can be delivered at zero budget without launching another worker.
+func (s *searchTaskStore) createWithAdmission(userID int32, idempotencyKey string, fingerprint string, admit func() error, run func() (model.SearchResponse, error)) (string, bool, error) {
+	return s.createWithActorAdmission(userID, "", idempotencyKey, fingerprint, admit, run)
+}
+
+func (s *searchTaskStore) createWithActorAdmission(userID int32, scriptScope, idempotencyKey, fingerprint string, admit func() error, run func() (model.SearchResponse, error)) (string, bool, error) {
 	now := s.now()
 	s.mu.Lock()
 	s.cleanupExpiredLocked(now)
 	if idempotencyKey != "" {
-		index := searchTaskIdempotencyIndex{UserID: userID, Key: idempotencyKey}
+		index := searchTaskIdempotencyIndex{UserID: userID, ScriptScope: scriptScope, Key: idempotencyKey}
 		if existingID, ok := s.idempotency[index]; ok {
 			existing, found := s.tasks[existingID]
 			if found {
@@ -112,10 +132,17 @@ func (s *searchTaskStore) create(userID int32, idempotencyKey string, fingerprin
 		}
 	}
 
+	if admit != nil {
+		if err := admit(); err != nil {
+			s.mu.Unlock()
+			return "", false, err
+		}
+	}
 	taskID := uuid.NewString()
 	task := searchTask{
 		ID:                 taskID,
 		UserID:             userID,
+		ScriptScope:        scriptScope,
 		Status:             searchTaskStatusRunning,
 		CreatedAt:          now,
 		UpdatedAt:          now,
@@ -124,11 +151,13 @@ func (s *searchTaskStore) create(userID int32, idempotencyKey string, fingerprin
 	}
 	s.tasks[taskID] = task
 	if idempotencyKey != "" {
-		s.idempotency[searchTaskIdempotencyIndex{UserID: userID, Key: idempotencyKey}] = taskID
+		s.idempotency[searchTaskIdempotencyIndex{UserID: userID, ScriptScope: scriptScope, Key: idempotencyKey}] = taskID
 	}
 	s.mu.Unlock()
 
+	release := searchExecutionOwners.start()
 	go func() {
+		defer release()
 		result, err := runSearchTaskSafely(run)
 		s.complete(taskID, result, err)
 	}()
@@ -136,6 +165,10 @@ func (s *searchTaskStore) create(userID int32, idempotencyKey string, fingerprin
 }
 
 func (s *searchTaskStore) get(taskID string, userID int32) (searchTask, error) {
+	return s.getWithActor(taskID, userID, "")
+}
+
+func (s *searchTaskStore) getWithActor(taskID string, userID int32, scriptScope string) (searchTask, error) {
 	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -144,33 +177,51 @@ func (s *searchTaskStore) get(taskID string, userID int32) (searchTask, error) {
 	if !ok {
 		return searchTask{}, errSearchTaskNotFound
 	}
-	if task.UserID != userID {
+	if task.UserID != userID || (scriptScope != "" && task.ScriptScope != scriptScope) {
 		return searchTask{}, errSearchTaskForbidden
 	}
 	return task, nil
 }
 
 func (s *searchTaskStore) healthProbe(userID int32) searchTask {
+	return s.healthProbeForActor(userID, "")
+}
+
+func (s *searchTaskStore) healthProbeForActor(userID int32, scriptScope string) searchTask {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.now()
 	s.cleanupExpiredLocked(now)
-	if taskID := s.healthTasks[userID]; taskID != "" {
+	actor := scriptSearchTaskActor{userID: userID, scope: scriptScope}
+	taskID := s.healthTasks[userID]
+	if scriptScope != "" {
+		taskID = s.scriptHealthTasks[actor]
+	}
+	if taskID != "" {
 		if task, ok := s.tasks[taskID]; ok {
 			return task
 		}
-		delete(s.healthTasks, userID)
+		if scriptScope == "" {
+			delete(s.healthTasks, userID)
+		} else {
+			delete(s.scriptHealthTasks, actor)
+		}
 	}
 	task := searchTask{
-		ID:        uuid.NewString(),
-		UserID:    userID,
-		Status:    searchTaskStatusSucceeded,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:          uuid.NewString(),
+		UserID:      userID,
+		ScriptScope: scriptScope,
+		Status:      searchTaskStatusSucceeded,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 	s.tasks[task.ID] = task
 	s.terminalTasks[task.ID] = struct{}{}
-	s.healthTasks[userID] = task.ID
+	if scriptScope == "" {
+		s.healthTasks[userID] = task.ID
+	} else {
+		s.scriptHealthTasks[actor] = task.ID
+	}
 	return task
 }
 
@@ -210,8 +261,12 @@ func (s *searchTaskStore) cleanupExpiredLocked(now time.Time) {
 		if s.healthTasks[task.UserID] == taskID {
 			delete(s.healthTasks, task.UserID)
 		}
+		actor := scriptSearchTaskActor{userID: task.UserID, scope: task.ScriptScope}
+		if task.ScriptScope != "" && s.scriptHealthTasks[actor] == taskID {
+			delete(s.scriptHealthTasks, actor)
+		}
 		if task.IdempotencyKey != "" {
-			index := searchTaskIdempotencyIndex{UserID: task.UserID, Key: task.IdempotencyKey}
+			index := searchTaskIdempotencyIndex{UserID: task.UserID, ScriptScope: task.ScriptScope, Key: task.IdempotencyKey}
 			if s.idempotency[index] == taskID {
 				delete(s.idempotency, index)
 			}
@@ -248,21 +303,26 @@ func CreateSearchTask(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "Idempotency-Key 长度不能超过 128 个字符"})
 		return
 	}
-	fingerprint := fingerprintSearchTaskRequest(c.Request, rawBody)
+	scope := scriptRunActorScope(c)
+	fingerprint := fingerprintSearchTaskRequestWithActor(c.Request, rawBody, scope)
 	requestSnapshot := cloneSearchTaskRequest(c.Request, rawBody)
 	userID := currentSearchTaskUserID(c)
-	taskID, _, err := defaultSearchTaskStore.create(userID, idempotencyKey, fingerprint, func() (model.SearchResponse, error) {
+	taskID, _, err := defaultSearchTaskStore.createWithActorAdmission(userID, scope, idempotencyKey, fingerprint, func() error { return checkNewSearchTaskSpending(c) }, func() (model.SearchResponse, error) {
 		return executeSearchTask(requestSnapshot)
 	})
 	if errors.Is(err, errSearchTaskIdempotencyConflict) {
 		c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
 		return
 	}
+	if errors.Is(err, errAccessTokenQuotaExceeded) || errors.Is(err, service.ErrInsufficientSearchBalance) || errors.Is(err, service.ErrInvalidAccessTokenAuthorization) {
+		writeSearchUnauthorized(c, err, rawBody)
+		return
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "无法创建搜题任务"})
 		return
 	}
-	task, err := defaultSearchTaskStore.get(taskID, userID)
+	task, err := defaultSearchTaskStore.getWithActor(taskID, userID, scope)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "搜题任务暂不可用"})
 		return
@@ -277,7 +337,7 @@ func GetSearchTaskHealth(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "请提供有效访问令牌"})
 		return
 	}
-	c.JSON(http.StatusOK, buildSearchTaskResponse(defaultSearchTaskStore.healthProbe(userID)))
+	c.JSON(http.StatusOK, buildSearchTaskResponse(defaultSearchTaskStore.healthProbeForActor(userID, scriptRunActorScope(c))))
 }
 
 // GetSearchTaskStatus returns a task snapshot without executing search work.
@@ -287,7 +347,7 @@ func GetSearchTaskStatus(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "taskId 不能为空"})
 		return
 	}
-	task, err := defaultSearchTaskStore.get(taskID, currentSearchTaskUserID(c))
+	task, err := defaultSearchTaskStore.getWithActor(taskID, currentSearchTaskUserID(c), scriptRunActorScope(c))
 	if err != nil {
 		if errors.Is(err, errSearchTaskForbidden) {
 			c.JSON(http.StatusForbidden, gin.H{"message": "无权限查看该任务"})
@@ -303,7 +363,7 @@ func executeSearchTask(request *http.Request) (model.SearchResponse, error) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = request
-	Search(ctx)
+	executeSearch(ctx)
 	if recorder.Code < http.StatusOK || recorder.Code >= http.StatusMultipleChoices {
 		var unauthorized searchUnauthorizedResponse
 		if err := json.Unmarshal(recorder.Body.Bytes(), &unauthorized); err == nil && strings.TrimSpace(unauthorized.Message) != "" {
@@ -331,11 +391,19 @@ func cloneSearchTaskRequest(request *http.Request, rawBody string) *http.Request
 }
 
 func fingerprintSearchTaskRequest(request *http.Request, rawBody string) string {
+	return fingerprintSearchTaskRequestWithActor(request, rawBody, "")
+}
+
+func fingerprintSearchTaskRequestWithActor(request *http.Request, rawBody string, scriptScope string) string {
 	path := request.URL.EscapedPath()
 	if path == "" {
 		path = request.URL.Path
 	}
-	value := strings.Join([]string{request.Method, path, request.URL.RawQuery, request.Header.Get("Authorization"), rawBody}, "\n")
+	authScope := scriptScope
+	if authScope == "" {
+		authScope = request.Header.Get("Authorization")
+	}
+	value := strings.Join([]string{request.Method, path, request.URL.RawQuery, authScope, rawBody}, "\n")
 	digest := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(digest[:])
 }

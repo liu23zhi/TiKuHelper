@@ -466,11 +466,20 @@ func TestCreateAIFallbackTaskBillsSuccessfulAIUsageOnce(t *testing.T) {
 	retryRequest.Header.Set("Idempotency-Key", "billed-ai-task-request")
 	router.ServeHTTP(retryRecorder, retryRequest)
 	if retryRecorder.Code != http.StatusAccepted {
-		t.Fatalf("retry must reuse completed task even after balance depletion, got %d: %s", retryRecorder.Code, retryRecorder.Body.String())
+		t.Fatalf("same completed operation must be delivered at zero balance: %d %s", retryRecorder.Code, retryRecorder.Body.String())
 	}
 	var retried aiFallbackTaskResponse
 	if err := json.Unmarshal(retryRecorder.Body.Bytes(), &retried); err != nil || retried.TaskID != created.TaskID {
-		t.Fatalf("retry returned different task: %+v, err=%v", retried, err)
+		t.Fatalf("paid retry lost task: %+v %v", retried, err)
+	}
+	// Existing paid result delivery is read-only and remains available at zero balance.
+	paidStatus := httptest.NewRecorder()
+	paidStatusRequest := httptest.NewRequest(http.MethodGet, "/adapter-service/ai-fallback/status?taskId="+created.TaskID, nil)
+	paidStatusRequest.Header.Set("Authorization", "Bearer "+token.TokenValue)
+	router.ServeHTTP(paidStatus, paidStatusRequest)
+	var delivered aiFallbackTaskResponse
+	if err := json.Unmarshal(paidStatus.Body.Bytes(), &delivered); err != nil || paidStatus.Code != http.StatusOK || !delivered.Success || delivered.TaskID != created.TaskID {
+		t.Fatalf("zero-balance paid delivery lost: %d %+v err=%v", paidStatus.Code, delivered, err)
 	}
 	conflictRecorder := httptest.NewRecorder()
 	conflictRequest := httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback/tasks", bytes.NewBufferString(`{"question":"different question","type":0}`))
@@ -483,7 +492,7 @@ func TestCreateAIFallbackTaskBillsSuccessfulAIUsageOnce(t *testing.T) {
 	}
 	var auditCount int64
 	if err := db.Model(&entity.Log{}).Where("module = ? AND action = ? AND user_id = ?", "ai_fallback", 11, user.ID).Count(&auditCount).Error; err != nil || auditCount != 1 {
-		t.Fatalf("retried task must retain one audit record: count=%d err=%v", auditCount, err)
+		t.Fatalf("paid replay must retain one original audit record: count=%d err=%v", auditCount, err)
 	}
 
 	statusAgain := httptest.NewRecorder()
@@ -501,7 +510,7 @@ func TestCreateAIFallbackTaskBillsSuccessfulAIUsageOnce(t *testing.T) {
 		t.Fatalf("expected repeated status polling not to double bill, got %d records", count)
 	}
 	var entry entity.Log
-	if err := db.Where("module = ? AND action = ?", "ai_fallback", 11).Order("id DESC").First(&entry).Error; err != nil {
+	if err := db.Where("module = ? AND action = ?", "ai_fallback", 11).Where("INSTR(description, ?) > 0", "taskId="+created.TaskID).Order("id DESC").First(&entry).Error; err != nil {
 		t.Fatalf("load AI fallback task success log: %v", err)
 	}
 	for _, check := range []string{"status=success", "billingProvider=ai", "taskId=" + created.TaskID} {

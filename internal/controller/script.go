@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -137,6 +138,7 @@ func CreateScript(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
 		return
 	}
+	input.IdempotencyKey = c.GetHeader("Idempotency-Key")
 	item, err := service.CreateUserScriptWithDB(scriptDB(), operator, input)
 	if err != nil {
 		writeScriptError(c, err, "创建脚本失败")
@@ -186,6 +188,7 @@ func UpdateScript(c *gin.Context) {
 }
 
 func IssueScriptExchangeToken(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	operator, ok := currentOperator(c)
 	if !ok {
 		return
@@ -210,6 +213,7 @@ func IssueScriptExchangeToken(c *gin.Context) {
 }
 
 func ExchangeScriptToken(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	token := strings.TrimSpace(c.GetHeader("X-Script-Token"))
 	if token == "" {
 		token = strings.TrimSpace(c.GetHeader("Authorization"))
@@ -234,6 +238,7 @@ func ExchangeScriptToken(c *gin.Context) {
 // ActivateScriptRunSession exchanges the short-lived launcher ticket for a
 // 150-minute session bound to the executable's generated identity code.
 func ActivateScriptRunSession(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	activationToken := strings.TrimSpace(c.GetHeader("X-Script-Activation"))
 	if activationToken == "" {
 		activationToken = strings.TrimSpace(c.GetHeader("X-Script-Token"))
@@ -258,7 +263,6 @@ func ActivateScriptRunSession(c *gin.Context) {
 		writeScriptError(c, err, "脚本运行会话激活失败")
 		return
 	}
-	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, grant)
 }
 
@@ -278,12 +282,12 @@ func ScriptBootstrap(c *gin.Context) {
 		writeScriptError(c, service.ErrScriptNotFound, "脚本不存在")
 		return
 	}
-	grant, err := service.IssuePublicScriptExchangeTokenWithDB(db, shortCode, service.ScriptExchangeTokenTTL)
+	grant, err := service.IssuePublicScriptExchangeTokenWithDB(db, shortCode, c.GetHeader(service.ScriptLauncherHeader), service.ScriptExchangeTokenTTL)
 	if err != nil {
 		writeScriptError(c, err, "生成脚本兑换令牌失败")
 		return
 	}
-	c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(buildScriptBootstrap(scriptPublicOrigin(c), shortCode, grant.Token)))
+	c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(buildScriptBootstrap(service.ScriptCommandOrigin(script), shortCode, grant.Token)))
 }
 
 // ScriptExchangeScript consumes a one-time exchange token and emits the final
@@ -306,10 +310,10 @@ func ScriptExchangeScript(c *gin.Context) {
 	for key, value := range result.Parameters {
 		settings[key] = value
 	}
-	settings["common.settings.tiku-adapter.baseurl"] = scriptPublicOrigin(c)
+	settings["common.settings.tiku-adapter.baseurl"] = result.LaunchOrigin
 	settings["common.settings.tiku-adapter.key"] = result.ActivationToken
 	settings["common.settings.tiku-adapter.script-activation-token"] = result.ActivationToken
-	settings["common.settings.tiku-adapter.script-session-url"] = strings.TrimRight(scriptPublicOrigin(c), "/") + "/adapter-service/script-command/" + shortCode + "/activate"
+	settings["common.settings.tiku-adapter.script-session-url"] = result.LaunchOrigin + "/adapter-service/script-command/" + shortCode + "/activate"
 	config, err := json.Marshal(map[string]any{
 		"settings":                     settings,
 		"noDiskWrite":                  true,
@@ -328,7 +332,7 @@ func ScriptExchangeScript(c *gin.Context) {
 		return
 	}
 	encodedConfig := base64.StdEncoding.EncodeToString(config)
-	content := buildScriptPayload(scriptPublicOrigin(c), shortCode, result.DownloadURL, result.ActivationToken, encodedConfig)
+	content := buildScriptPayload(result.LaunchOrigin, shortCode, result.DownloadURL, result.ActivationToken, encodedConfig)
 	c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(content))
 }
 
@@ -390,13 +394,23 @@ func servePublicScriptBootstrap(c *gin.Context) bool {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "脚本入口暂不可用"})
 		return true
 	}
-	grant, err := service.IssuePublicScriptExchangeTokenWithDB(db, script.ShortCode, service.ScriptExchangeTokenTTL)
+	grant, err := service.IssuePublicScriptExchangeTokenWithDB(db, script.ShortCode, c.GetHeader(service.ScriptLauncherHeader), service.ScriptExchangeTokenTTL)
+	c.Header("Cache-Control", "no-store")
 	if err != nil {
 		writeScriptError(c, err, "生成脚本兑换令牌失败")
 		return true
 	}
-	c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(buildScriptBootstrap(scriptPublicOrigin(c), script.ShortCode, grant.Token)))
+	c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(buildScriptBootstrap(service.ScriptCommandOrigin(script), script.ShortCode, grant.Token)))
 	return true
+}
+
+func scriptRunActorScope(c *gin.Context) string {
+	if value, ok := c.Get("script_session"); ok {
+		if session, ok := value.(entity.ScriptRunSession); ok && session.ID > 0 && session.IdentityHash != "" {
+			return fmt.Sprintf("script:%d:%d:%s", session.ScriptID, session.AccessTokenID, session.IdentityHash)
+		}
+	}
+	return ""
 }
 
 func buildScriptBootstrap(baseURL, shortCode, token string) string {
@@ -421,22 +435,6 @@ func scriptTokenFromRequest(c *gin.Context) string {
 		token = strings.TrimSpace(strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer "))
 	}
 	return token
-}
-
-func scriptPublicOrigin(c *gin.Context) string {
-	scheme := strings.TrimSpace(strings.Split(c.GetHeader("X-Forwarded-Proto"), ",")[0])
-	if scheme != "http" && scheme != "https" {
-		if c.Request.TLS != nil {
-			scheme = "https"
-		} else {
-			scheme = "http"
-		}
-	}
-	host := strings.TrimSpace(c.Request.Host)
-	if host == "" || strings.ContainsAny(host, "\r\n") {
-		host = "localhost"
-	}
-	return scheme + "://" + host
 }
 
 func escapePowerShellSingleQuoted(value string) string {
@@ -467,6 +465,10 @@ func DownloadScriptVersion(c *gin.Context) {
 func writeScriptError(c *gin.Context, err error, fallback string) {
 	status, message := http.StatusInternalServerError, fallback
 	switch {
+	case errors.Is(err, service.ErrIdempotencyConflict), errors.Is(err, service.ErrIdempotencyPending):
+		status, message = http.StatusConflict, err.Error()
+	case errors.Is(err, service.ErrIdempotencyKeyInvalid):
+		status, message = http.StatusBadRequest, err.Error()
 	case errors.Is(err, service.ErrScriptForbidden):
 		status, message = http.StatusForbidden, err.Error()
 	case errors.Is(err, service.ErrScriptNotFound), errors.Is(err, service.ErrScriptVersionNotFound):

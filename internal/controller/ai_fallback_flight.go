@@ -5,6 +5,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"strings"
+	"time"
+
+	"github.com/itihey/tikuAdapter/internal/diagnostics"
 
 	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/model"
@@ -26,14 +29,19 @@ type fallbackFlightPayload struct {
 // 与搜题一致，只有用户、题目、类型、选项**完全一致**才会合并。
 var fallbackFlights = newFlightGroup[fallbackFlightPayload]()
 
+// observeFallbackFlightFollower is nil in production; tests may observe a real
+// follower joining this exact shared call before releasing a synthetic provider.
+var observeFallbackFlightFollower func(string, *flightCall[fallbackFlightPayload])
+
 // buildFallbackFlightKey 构造兜底合并的 key。
 //
 // 用 SHA-256 而不是把原文直接当 key：兜底请求的 options 可能很长
 // （线上实测 55 条、含大量编辑器脚本），直接内联会让 map key 膨胀到数 KB。
 // 哈希只用于压缩 key，不影响「完全一致才合并」的语义。
-func buildFallbackFlightKey(userID int32, req model.SearchRequest) string {
+func buildFallbackFlightKey(userID int32, req model.SearchRequest, actorScope ...string) string {
 	payload, err := json.Marshal(struct {
 		UserID           int32                   `json:"userId"`
+		ActorScope       string                  `json:"actorScope,omitempty"`
 		Question         string                  `json:"question"`
 		Type             int                     `json:"type"`
 		DeepThinking     bool                    `json:"deepThinking"`
@@ -41,6 +49,7 @@ func buildFallbackFlightKey(userID int32, req model.SearchRequest) string {
 		QuestionEvidence *model.QuestionEvidence `json:"questionEvidence,omitempty"`
 	}{
 		UserID:           userID,
+		ActorScope:       firstAIFallbackActorScope(actorScope),
 		Question:         strings.TrimSpace(req.Question),
 		Type:             req.Type,
 		DeepThinking:     req.DeepThinking,
@@ -67,11 +76,23 @@ func beginFallbackFlight(key string) (isLeader bool, borrowed *service.AIFallbac
 		return true, nil, leader
 	}
 
-	payload, ok := fallbackFlights.wait(key, shared, defaultFlightWaitTimeout)
-	if !ok || payload.result == nil {
-		return false, nil, nil
+	if observeFallbackFlightFollower != nil {
+		observeFallbackFlightFollower(key, shared)
 	}
-	return false, payload.result, nil
+	return false, waitFallbackFlightResult(key, shared, defaultFlightWaitTimeout), nil
+}
+
+// waitFallbackFlightResult preserves the existing delivery decision while
+// recording shared only for a successfully borrowed result, not a failed one.
+func waitFallbackFlightResult(key string, shared *flightCall[fallbackFlightPayload], timeout time.Duration) *service.AIFallbackResult {
+	payload, ok := fallbackFlights.wait(key, shared, timeout)
+	if !ok || payload.result == nil {
+		return nil
+	}
+	if payload.result.Success {
+		diagnostics.Default.ObserveCache("fallback", "shared")
+	}
+	return payload.result
 }
 
 // finishFallbackFlight 广播兜底结果并释放 key。幂等，可安全地由 defer 兜底再调用一次。

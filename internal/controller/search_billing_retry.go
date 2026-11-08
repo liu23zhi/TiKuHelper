@@ -2,12 +2,15 @@ package controller
 
 import (
 	"context"
+	"database/sql/driver"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"time"
 
+	mysqldriver "github.com/go-sql-driver/mysql"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/service"
@@ -37,13 +40,54 @@ type searchBillingRetryJob struct {
 }
 
 type searchBillingRetryQueue struct {
-	mu   sync.Mutex
-	jobs []*searchBillingRetryJob
-	wake chan struct{}
+	mu     sync.Mutex
+	jobs   []*searchBillingRetryJob
+	wake   chan struct{}
+	active int
+	idle   chan struct{}
 }
 
 func newSearchBillingRetryQueue() *searchBillingRetryQueue {
-	return &searchBillingRetryQueue{wake: make(chan struct{}, 1)}
+	idle := make(chan struct{})
+	close(idle)
+	return &searchBillingRetryQueue{wake: make(chan struct{}, 1), idle: idle}
+}
+
+// Business/authorization/CAS failures are final, not a promise to debit later.
+func isSearchBillingTerminalError(err error) bool {
+	return errors.Is(err, errAccessTokenQuotaExceeded) ||
+		errors.Is(err, service.ErrInsufficientSearchBalance) ||
+		errors.Is(err, service.ErrInvalidAccessTokenAuthorization) ||
+		errors.Is(err, errSearchBillingCompareAndSwap) ||
+		errors.Is(err, errSearchBillingRetryConflict)
+}
+
+// Only recognized transient SQL/connection failures enter the retry queue.
+// An arbitrary error, schema/validation failure or canceled owner is not transient.
+func retryableSearchBillingPersistenceError(err error) bool {
+	if err == nil || isSearchBillingTerminalError(err) || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, driver.ErrBadConn) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var mysqlError *mysqldriver.MySQLError
+	if errors.As(err, &mysqlError) {
+		switch mysqlError.Number {
+		case 1205, 1213, 2006, 2013: // lock timeout/deadlock/server connection lost
+			return true
+		default:
+			return false
+		}
+	}
+	var sqliteError interface{ Code() int }
+	if errors.As(err, &sqliteError) {
+		// SQLite extended result codes retain the primary code in the low byte.
+		code := sqliteError.Code() & 0xff
+		return code == 5 || code == 6 // SQLITE_BUSY / SQLITE_LOCKED
+	}
+	var networkError net.Error
+	return errors.As(err, &networkError) && (networkError.Timeout() || networkError.Temporary())
 }
 
 func persistSearchBillingRecordsWithRetry(db *gorm.DB, ctx searchBillingContext, charges []searchBillingCharge, queue *searchBillingRetryQueue) (bool, error) {
@@ -51,7 +95,7 @@ func persistSearchBillingRecordsWithRetry(db *gorm.DB, ctx searchBillingContext,
 	if err == nil {
 		return false, nil
 	}
-	if queue == nil || db == nil || ctx.UserID <= 0 || strings.TrimSpace(ctx.RequestID) == "" {
+	if !retryableSearchBillingPersistenceError(err) || queue == nil || db == nil || ctx.UserID <= 0 || strings.TrimSpace(ctx.RequestID) == "" {
 		return false, err
 	}
 	job := &searchBillingRetryJob{
@@ -89,6 +133,9 @@ func (queue *searchBillingRetryQueue) enqueue(job *searchBillingRetryJob) {
 		return
 	}
 	queue.mu.Lock()
+	if len(queue.jobs) == 0 && queue.active == 0 {
+		queue.idle = make(chan struct{})
+	}
 	queue.jobs = append(queue.jobs, job)
 	queue.mu.Unlock()
 	select {
@@ -123,6 +170,7 @@ func (queue *searchBillingRetryQueue) takeDue(now time.Time) (*searchBillingRetr
 		return nil, wait
 	}
 	queue.jobs = append(queue.jobs[:index], queue.jobs[index+1:]...)
+	queue.active++ // Admission and drain state change under the same lock.
 	return job, 0
 }
 
@@ -131,6 +179,7 @@ func (queue *searchBillingRetryQueue) processDue(ctx context.Context, now time.T
 	if job == nil {
 		return false
 	}
+	defer queue.finishAttempt()
 	if ctx.Err() != nil {
 		queue.enqueue(job)
 		return true
@@ -144,7 +193,13 @@ func (queue *searchBillingRetryQueue) processDue(ctx context.Context, now time.T
 			strings.TrimSpace(job.ctx.RequestID), job.ctx.UserID, job.attempts+1))
 		return true
 	}
-	if errors.Is(err, errSearchBillingRetryConflict) {
+	if ctx.Err() != nil {
+		// Shutdown interrupted this attempt, not the business contract. Keep the
+		// job pending so run reports the volatile backlog rather than a false drain.
+		queue.enqueue(job)
+		return true
+	}
+	if !retryableSearchBillingPersistenceError(err) {
 		logger.SysError(fmt.Sprintf("search_billing_retry_abandoned requestId=%s userId=%d error=%s",
 			strings.TrimSpace(job.ctx.RequestID), job.ctx.UserID, logger.RedactSecrets(err.Error())))
 		return true
@@ -155,6 +210,39 @@ func (queue *searchBillingRetryQueue) processDue(ctx context.Context, now time.T
 	logger.SysWarn(fmt.Sprintf("search_billing_retry_failed requestId=%s userId=%d attempts=%d nextAttemptAt=%s pending=%d error=%s",
 		strings.TrimSpace(job.ctx.RequestID), job.ctx.UserID, job.attempts, job.nextAttemptAt.Format(time.RFC3339), queue.pendingCount(), logger.RedactSecrets(err.Error())))
 	return true
+}
+
+// finishAttempt keeps an idle signal closed only while no job is queued or
+// executing. Requeue occurs before this release, so shutdown cannot miss it.
+func (queue *searchBillingRetryQueue) finishAttempt() {
+	queue.mu.Lock()
+	defer queue.mu.Unlock()
+	queue.active--
+	if queue.active == 0 && len(queue.jobs) == 0 {
+		close(queue.idle)
+	}
+}
+
+func (queue *searchBillingRetryQueue) waitIdle(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	queue.mu.Lock()
+	idle := queue.idle
+	queue.mu.Unlock()
+	select {
+	case <-idle:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// WaitForSearchBillingRetries is a drain, not a stop or durable checkpoint.
+// The caller first drains producers, keeps the retry worker alive, and passes
+// the same shutdown budget. Canceling the worker before this wait cannot drain.
+func WaitForSearchBillingRetries(ctx context.Context) error {
+	return searchBillingRetries.waitIdle(ctx)
 }
 
 func (queue *searchBillingRetryQueue) nextWait(now time.Time) time.Duration {

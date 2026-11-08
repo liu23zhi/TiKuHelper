@@ -317,7 +317,7 @@ func TestAIContextCompactionLocalChunksCompleteToolGroups(t *testing.T) {
 	}))
 	defer server.Close()
 	usage := AISearchUsage{}
-	client := &ChatGptClient{ContextCompression: AIContextCompressionConfig{Enabled: true, ContextWindowTokens: 3000}}
+	client := &ChatGptClient{MaxAISearchModelCalls: 20, ContextCompression: AIContextCompressionConfig{Enabled: true, ContextWindowTokens: 3000}}
 	result, err := client.newAIContextCompactor(anchors, &usage).prepare(context.Background(), server.URL+"/responses", input, true, 2)
 	if err != nil || calls < 3 || len(usage.ModelCalls) != calls {
 		t.Fatalf("history must be summarized in bounded chunks, then merged: calls=%d err=%v", calls, err)

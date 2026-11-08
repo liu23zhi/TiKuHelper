@@ -340,7 +340,7 @@ func TestAIMCPServerContextLimitFallsBackToLocalWithoutReplayingTool(t *testing.
 	defer server.Close()
 	client := &ChatGptClient{
 		BaseURL: server.URL + "/v1", Model: "test-model", SearchTool: tool,
-		MaxAISearchModelCalls: 2, MaxAISearches: 1, MaxAIWebReads: 1, MaxAISearchRetries: 1,
+		MaxAISearchModelCalls: 3, MaxAISearches: 1, MaxAIWebReads: 1, MaxAISearchRetries: 1,
 		ContextCompression: AIContextCompressionConfig{Enabled: true, StrategyOrder: []string{"server", "local", "remote"}, ContextWindowTokens: 100000, MaxAttempts: 1},
 	}
 	answers, debug, err := client.searchAnswerWithMCP(t.Context(), model.SearchRequest{Question: "original-question-marker", Type: 4})
@@ -401,7 +401,7 @@ func TestAIMCPIgnoredServerCompactionFallsBackNextRoundWithoutReplayingTools(t *
 			defer server.Close()
 			client := &ChatGptClient{
 				BaseURL: server.URL + "/v1", Model: "test-model", Prompt: "Keep facts and return JSON.", SearchTool: tool,
-				MaxAISearchModelCalls: 3, MaxAISearches: 2, MaxAIWebReads: 1, MaxAISearchRetries: 1,
+				MaxAISearchModelCalls: 4, MaxAISearches: 2, MaxAIWebReads: 1, MaxAISearchRetries: 1,
 				ContextCompression: AIContextCompressionConfig{Enabled: true, StrategyOrder: []string{"server", "local", "remote"}, ContextWindowTokens: 20000, TriggerPercent: 50, TargetPercent: 30, MaxAttempts: 1},
 			}
 			answers, debug, err := client.searchAnswerWithMCP(t.Context(), model.SearchRequest{Question: "protected-question", Type: 4})

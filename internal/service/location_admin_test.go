@@ -405,54 +405,38 @@ func TestRefreshLocationCacheBatchAllKeepsSelectionSeparateFromQuerySource(t *te
 	}
 }
 
-func TestRefreshLocationCacheWithoutKeyAllowsPhoneAndOrdinaryIP(t *testing.T) {
+func TestRefreshLocationCacheWithoutKeyBlocksPhoneAndAllIPSources(t *testing.T) {
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
-		if r.Header.Get("Authorization") != "" || r.URL.Query().Get("source") != "" {
-			t.Errorf("ordinary anonymous lookup must omit credentials and source")
-		}
-		if r.URL.Query().Get("phone") != "" {
-			_, _ = w.Write([]byte(`{"province":"广东","city":"深圳","sp":"移动"}`))
-		} else {
-			_, _ = w.Write([]byte(`{"ip":"8.8.8.8","region":"普通地址"}`))
-		}
+		_, _ = w.Write([]byte(`{"region":"fake"}`))
 	}))
 	defer server.Close()
 	newDefaultLocationClient(t, server, "")
 	db := newLocationTestDB(t)
-	if _, err := RefreshLocationCacheWithDB(db, "ip", "8.8.8.8", LocationQueryOptions{}); err != nil {
-		t.Fatalf("ordinary single refresh should work without a key: %v", err)
+	for _, kind := range []string{"ip", "phone"} {
+		for _, source := range []string{"", "commercial"} {
+			if kind == "phone" && source != "" {
+				continue
+			}
+			key := "8.8.8.8"
+			if kind == "phone" {
+				key = "13800138000"
+			}
+			options := LocationQueryOptions{Source: source}
+			if _, err := RefreshLocationCacheWithDB(db, kind, key, options); err != ErrLocationNotConfigured {
+				t.Fatalf("single %s/%s must require key: %v", kind, source, err)
+			}
+			if _, err := ManualLookupLocationCacheWithDB(db, kind, key, options); err != ErrLocationNotConfigured {
+				t.Fatalf("manual %s/%s must require key: %v", kind, source, err)
+			}
+			if _, err := RefreshLocationCacheBatchWithDB(db, LocationCacheBatchRefreshRequest{Kind: kind, QuerySource: source, Items: []LocationCacheDeleteItem{{LookupKey: key}}}, options); err != ErrLocationNotConfigured {
+				t.Fatalf("batch %s/%s must require key: %v", kind, source, err)
+			}
+		}
 	}
-	result, err := RefreshLocationCacheBatchWithDB(db, LocationCacheBatchRefreshRequest{
-		Kind: "ip", Items: []LocationCacheDeleteItem{{LookupKey: "8.8.8.8"}},
-	}, LocationQueryOptions{})
-	if err != nil || result.Refreshed != 1 || requests.Load() != 2 {
-		t.Fatalf("ordinary batch refresh should work without a key: %+v calls=%d err=%v", result, requests.Load(), err)
-	}
-	if _, err := RefreshLocationCacheWithDB(db, "ip", "8.8.8.8", LocationQueryOptions{Source: "commercial"}); err != ErrLocationNotConfigured {
-		t.Fatalf("commercial refresh requires a key, got %v", err)
-	}
-	if _, err := RefreshLocationCacheBatchWithDB(db, LocationCacheBatchRefreshRequest{
-		Kind: "ip", QuerySource: "commercial", Items: []LocationCacheDeleteItem{{LookupKey: "8.8.8.8"}},
-	}, LocationQueryOptions{}); err != ErrLocationNotConfigured {
-		t.Fatalf("commercial batch refresh requires a key, got %v", err)
-	}
-	row, err := RefreshLocationCacheWithDB(db, "phone", "13800138000", LocationQueryOptions{})
-	if err != nil || row.Address != "广东深圳 移动" || row.Source != "" {
-		t.Fatalf("phone single refresh should work without a key: %+v err=%v", row, err)
-	}
-	result, err = RefreshLocationCacheBatchWithDB(db, LocationCacheBatchRefreshRequest{
-		Kind: "phone", Items: []LocationCacheDeleteItem{{LookupKey: "13800138000"}},
-	}, LocationQueryOptions{})
-	if err != nil || result.Refreshed != 1 {
-		t.Fatalf("phone batch refresh should work without a key: %+v err=%v", result, err)
-	}
-	if _, err := ManualLookupLocationCacheWithDB(db, "phone", "13900139000", LocationQueryOptions{}); err != nil {
-		t.Fatalf("manual phone lookup should work without a key: %v", err)
-	}
-	if requests.Load() != 5 {
-		t.Fatalf("expected ordinary queries only, got %d", requests.Load())
+	if requests.Load() != 0 {
+		t.Fatalf("missing key must never call upstream: %d", requests.Load())
 	}
 }
 
@@ -472,13 +456,10 @@ func TestRefreshLocationCacheBatchStopsOnCredentialFailure(t *testing.T) {
 	}
 }
 
-func TestPhoneLocationWithoutKeyStopsBatchWhenVisitorQuotaIsExhausted(t *testing.T) {
+func TestPhoneLocationWithoutKeyNeverContactsVisitorQuotaEndpoint(t *testing.T) {
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
-		if r.Header.Get("Authorization") != "" {
-			t.Error("visitor lookup must not send authorization")
-		}
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 	defer server.Close()
@@ -486,12 +467,12 @@ func TestPhoneLocationWithoutKeyStopsBatchWhenVisitorQuotaIsExhausted(t *testing
 	db := newLocationTestDB(t)
 	items := []LocationCacheDeleteItem{{LookupKey: "13800138000"}, {LookupKey: "13900139000"}}
 	result, err := RefreshLocationCacheBatchWithDB(db, LocationCacheBatchRefreshRequest{Kind: "phone", Items: items}, LocationQueryOptions{})
-	if err != nil || result.Failed != 2 || requests.Load() != 1 {
-		t.Fatalf("exhausted visitor quota must stop the remaining queries: %+v requests=%d err=%v", result, requests.Load(), err)
+	if err != ErrLocationNotConfigured || result.Requested != 0 || requests.Load() != 0 {
+		t.Fatalf("missing key must refuse before visitor quota request: %+v requests=%d err=%v", result, requests.Load(), err)
 	}
 	var count int64
 	if err := db.Model(&entity.LocationCache{}).Count(&count).Error; err != nil || count != 0 {
-		t.Fatalf("failed lookups must not populate the cache: count=%d err=%v", count, err)
+		t.Fatalf("failed lookups must not populate cache: count=%d err=%v", count, err)
 	}
 }
 

@@ -1,20 +1,25 @@
 package api
 
 import (
+	"crypto/sha256"
 	"embed"
+	"fmt"
 	"github.com/gin-contrib/static"
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/controller"
 	"github.com/itihey/tikuAdapter/internal/middleware"
+	"io"
 	"io/fs"
 	"net/http"
+	"regexp"
+	"strings"
 )
 
 // SetAPIRouter 设置API路由
 func SetAPIRouter(router *gin.Engine) {
-	router.Use(middleware.CORS, middleware.SecurityHeaders)
+	router.Use(middleware.RequestCorrelation, middleware.CORS, middleware.SecurityHeaders)
 
-	router.Any("/sqp/*path", middleware.BodyLimit(16<<20), controller.Proxy)
+	router.Any("/sqp/*path", middleware.BodyLimit(16<<20), controller.Auth, middleware.RequireAdmin, controller.Proxy)
 
 	apiRouter := router.Group("/adapter-service")
 
@@ -168,6 +173,7 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.POST("/ai-model-prices/reset", controller.Auth, middleware.RequireAdmin, controller.ResetAIModelPriceDefaults)
 	apiRouter.PUT("/ai-model-prices/:id", controller.Auth, middleware.RequireAdmin, controller.UpdateAIModelPrice)
 	apiRouter.DELETE("/ai-model-prices/:id", controller.Auth, middleware.RequireAdmin, controller.DeleteAIModelPrice)
+	apiRouter.GET("/system-metrics", controller.Auth, middleware.RequireAdmin, controller.GetSystemMetrics)
 	apiRouter.GET("/system-settings", controller.Auth, middleware.RequireAdmin, controller.SystemSettingDetail)
 	apiRouter.PUT("/system-settings", controller.Auth, middleware.RequireAdmin, controller.UpdateSystemSetting)
 
@@ -193,12 +199,89 @@ func embedFolder(fsEmbed embed.FS, targetPath string) static.ServeFileSystem {
 	}
 }
 
+// Only canonical Vue CLI content-hash JS/CSS names are immutable public assets.
+// Non-hashed bootstrap/HTML, missing paths, directories and non-GET/HEAD requests
+// continue through the original static/SPA/API handling below.
+var immutableWebAssetPath = regexp.MustCompile(`^/(?:js/[^/]+\.[0-9a-f]{8}\.js|css/[^/]+\.[0-9a-f]{8}\.css)$`)
+
+// The index is router-local and read-only after construction. Only the two
+// public flat Vue CLI asset directories are inspected; embedded bytes cannot
+// change during the process lifetime, so requests never need to rehash them.
+func serveImmutableWebAssets(files static.ServeFileSystem) gin.HandlerFunc {
+	etags := make(map[string]string)
+	for _, folder := range []string{"js", "css"} {
+		directory, err := files.Open("/" + folder)
+		if err != nil {
+			continue
+		}
+		entries, readErr := directory.Readdir(-1)
+		closeErr := directory.Close()
+		if readErr != nil || closeErr != nil {
+			continue
+		}
+		for _, entry := range entries {
+			assetPath := "/" + folder + "/" + entry.Name()
+			if !entry.Mode().IsRegular() || !immutableWebAssetPath.MatchString(assetPath) {
+				continue
+			}
+			file, err := files.Open(assetPath)
+			if err != nil {
+				continue
+			}
+			info, statErr := file.Stat()
+			if statErr != nil || !info.Mode().IsRegular() {
+				_ = file.Close()
+				continue
+			}
+			digest := sha256.New()
+			_, readErr := io.Copy(digest, file)
+			closeErr := file.Close()
+			if readErr == nil && closeErr == nil {
+				etags[assetPath] = fmt.Sprintf("\"%x\"", digest.Sum(nil))
+			}
+		}
+	}
+	fileServer := http.FileServer(files)
+	return func(c *gin.Context) {
+		req := c.Request
+		if (req.Method != http.MethodGet && req.Method != http.MethodHead) || req.URL.RawPath != "" {
+			return
+		}
+		etag, exists := etags[req.URL.Path]
+		if !exists {
+			return
+		}
+		c.Header("Cache-Control", "public, max-age=31536000, immutable")
+		c.Header("ETag", etag)
+		// Keep stdlib conditional/range processing. Only successful content or
+		// revalidation responses may retain the newly introduced cache policy.
+		fileServer.ServeHTTP(immutableWebAssetWriter{c.Writer}, req)
+		c.Abort()
+	}
+}
+
+type immutableWebAssetWriter struct{ http.ResponseWriter }
+
+func (w immutableWebAssetWriter) WriteHeader(status int) {
+	if status != http.StatusOK && status != http.StatusPartialContent && status != http.StatusNotModified {
+		w.Header().Del("Cache-Control")
+		w.Header().Del("ETag")
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
 // SetWebRouter 设置web路由
 func SetWebRouter(buildFS embed.FS, indexPage []byte, router *gin.Engine) {
 	router.Use(controller.ScriptPublicHostMiddleware)
-	router.Use(static.Serve("/", embedFolder(buildFS, "dist")))
+	files := embedFolder(buildFS, "dist")
+	router.Use(serveImmutableWebAssets(files), static.Serve("/", files))
 	router.NoRoute(func(c *gin.Context) {
 		if controller.ScriptPublicPath(c) {
+			return
+		}
+		path := c.Request.URL.Path
+		if path == "/adapter-service" || strings.HasPrefix(path, "/adapter-service/") {
+			c.JSON(http.StatusNotFound, gin.H{"code": "NOT_FOUND", "message": "接口不存在"})
 			return
 		}
 		c.Data(http.StatusOK, "text/html; charset=utf-8", indexPage)

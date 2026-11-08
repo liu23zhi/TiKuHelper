@@ -1239,6 +1239,7 @@ func applyBillingRecordFilters(query *gorm.DB, filter BillingRecordListQuery, in
 		groupFilterParts = append(groupFilterParts, groupCondition)
 		groupFilterArgs = append(groupFilterArgs, keywordGroupArgs...)
 	}
+	// Sibling matching uses the same visible scope as list and totals.
 	if !includeHidden {
 		groupFilterParts = append(groupFilterParts, "matching_records.hidden_from_statement = ?")
 		groupFilterArgs = append(groupFilterArgs, false)

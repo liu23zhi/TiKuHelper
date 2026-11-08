@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/itihey/tikuAdapter/pkg/model"
@@ -298,4 +299,114 @@ func makeBMPImage(width, height int) []byte {
 		data[i] = 0xFF
 	}
 	return data
+}
+
+func TestAISearchOCRPreservesSourceIndexAfterMissingImage(t *testing.T) {
+	client := &ChatGptClient{OCRProvider: func(_ context.Context, _, _, contentType string, _ []byte) (string, error) {
+		if contentType != "image/png" {
+			return "", fmt.Errorf("unexpected OCR content type: %s", contentType)
+		}
+		return "second-image", nil
+	}}
+	text, calls := client.runAISearchImageOCR(t.Context(), []downloadedAISearchAttachment{{
+		sourceIndex: 2, sourceURL: "https://example.invalid/second.png", imageName: "second.png", contentType: "image/png", body: []byte("synthetic-png"),
+	}})
+	if !strings.Contains(text, "图二 OCR：second-image") || strings.Contains(text, "图一 OCR：") {
+		t.Fatalf("OCR must retain original image 2 after image 1 failed, got %q", text)
+	}
+	if len(calls) != 1 || calls[0].ImageURL != "https://example.invalid/second.png" || calls[0].Status != "success" {
+		t.Fatalf("source numbering must not change executed OCR usage: %+v", calls)
+	}
+	t.Log("OCR_SOURCE_INDEX missing_first_image labels=2 executedOCR=1")
+}
+
+func TestAISearchOCRPreservesSourceIndexAcrossHTML(t *testing.T) {
+	client := &ChatGptClient{OCRProvider: func(_ context.Context, _, imageName, contentType string, _ []byte) (string, error) {
+		if contentType != "image/png" {
+			return "", fmt.Errorf("non-image reached OCR: %s", contentType)
+		}
+		return imageName, nil
+	}}
+	text, calls := client.runAISearchImageOCR(t.Context(), []downloadedAISearchAttachment{
+		{sourceIndex: 1, sourceURL: "https://example.invalid/first.png", imageName: "first.png", contentType: "image/png", body: []byte("synthetic-first")},
+		{sourceIndex: 2, sourceURL: "https://example.invalid/page", contentType: "text/html", body: []byte("<html>synthetic</html>")},
+		{sourceIndex: 3, sourceURL: "https://example.invalid/third.png", imageName: "third.png", contentType: "image/png", body: []byte("synthetic-third")},
+	})
+	if !strings.Contains(text, "图一 OCR：first.png") || !strings.Contains(text, "图三 OCR：third.png") || strings.Contains(text, "图二 OCR：") {
+		t.Fatalf("OCR must retain source indices 1 and 3 when HTML is skipped, got %q", text)
+	}
+	if len(calls) != 2 || calls[0].ImageURL != "https://example.invalid/first.png" || calls[1].ImageURL != "https://example.invalid/third.png" || calls[0].Status != "success" || calls[1].Status != "success" {
+		t.Fatalf("HTML filtering must preserve actual OCR call order and usage: %+v", calls)
+	}
+	t.Log("OCR_SOURCE_INDEX image_html_image labels=1,3 executedOCR=2")
+}
+
+func TestAISearchMCPFallbackReusesOCRPromptAndImageNumbers(t *testing.T) {
+	tool := &testAISearchTool{}
+	var imageDownloads, missingDownloads, ocrCalls, nativeCalls, mcpCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/missing.png":
+			missingDownloads.Add(1)
+			http.NotFound(w, r)
+			return
+		case "/second.png":
+			imageDownloads.Add(1)
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write(makeTransparentFormulaImage(16, 16))
+			return
+		case "/v1/responses":
+		default:
+			t.Errorf("unexpected synthetic endpoint: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("invalid synthetic model request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if tools, ok := payload["tools"].([]any); ok && len(tools) > 0 {
+			nativeCalls.Add(1)
+			writeAIResponsesCompleted(w, "", map[string]any{"input_tokens": 8, "output_tokens": 1, "total_tokens": 9})
+			return
+		}
+		call := mcpCalls.Add(1)
+		input, _ := json.Marshal(payload["input"])
+		if !strings.Contains(string(input), "图二 OCR：OCR-second-image") || !strings.Contains(string(input), "图一下载失败") || strings.Contains(string(input), "图一 OCR：") {
+			t.Errorf("MCP fallback lost native OCR evidence or original image numbers: %s", input)
+		}
+		if payload["max_output_tokens"] != float64(aiToolMaxOutputTokens) {
+			t.Errorf("MCP fallback lost local output cap: %v", payload["max_output_tokens"])
+		}
+		if call == 1 {
+			writeMCPTextStream(w, `{"action":"web_search","arguments":{"query":"OCR evidence"}}`, 10)
+			return
+		}
+		writeMCPTextStream(w, `{"answers":["4"]}`, 20)
+	}))
+	defer server.Close()
+	client := &ChatGptClient{
+		Enable: true, BaseURL: server.URL + "/v1", APIKey: "sk-synthetic", Model: "synthetic-model", SearchTool: tool,
+		MaxAISearchModelCalls: 3, MaxAISearches: 1, MaxAIWebReads: 1, MaxAISearchRetries: 1,
+		OCRProvider: func(_ context.Context, sourceURL, _, _ string, _ []byte) (string, error) {
+			ocrCalls.Add(1)
+			if sourceURL != server.URL+"/second.png" {
+				return "", fmt.Errorf("unexpected synthetic image: %s", sourceURL)
+			}
+			return "OCR-second-image", nil
+		},
+	}
+	answers, usage, err := client.SearchAnswerWithUsage(model.SearchRequest{Question: "Question " + server.URL + "/missing.png " + server.URL + "/second.png", DeepThinking: true})
+	if err != nil || len(answers) != 1 || len(answers[0]) != 1 || answers[0][0] != "4" {
+		t.Fatalf("MCP fallback must still deliver the answer: answers=%v err=%v", answers, err)
+	}
+	if imageDownloads.Load() != 1 || missingDownloads.Load() != 1 || ocrCalls.Load() != 1 || nativeCalls.Load() != 1 || mcpCalls.Load() != 2 {
+		t.Fatalf("fallback must reuse already prepared attachments/OCR, image=%d missing=%d OCR=%d native=%d MCP=%d", imageDownloads.Load(), missingDownloads.Load(), ocrCalls.Load(), nativeCalls.Load(), mcpCalls.Load())
+	}
+	if usage.Route != AISearchRouteDeepMCP || len(usage.OCRCalls) != 1 || len(usage.SearchCalls) != 1 || len(usage.ModelCalls) != 3 || usage.TotalTokens != 47 {
+		t.Fatalf("fallback must preserve executed usage exactly once: %+v", usage)
+	}
+	t.Log("MCP_OCR_REUSE imageDownloads=1 OCR=1 native=1 MCP=2 models=3 tokens=47 labels=2")
 }

@@ -272,8 +272,8 @@ func TestAIFallbackRejectsZeroBalanceBeforeCallingAI(t *testing.T) {
 	}
 }
 
-// 令牌累计额度不再拦截 AI 兜底：额度已用尽但余额 > 0 时照常调用。
-func TestAIFallbackAllowsExhaustedTokenQuotaWhenBalancePositive(t *testing.T) {
+// Wallet balance cannot bypass the user-confirmed Key hard limit.
+func TestAIFallbackRejectsExhaustedTokenQuotaWhenBalancePositive(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	fallbackResultCache.clear()
 	db := newSearchControllerTestDB(t)
@@ -316,11 +316,11 @@ func TestAIFallbackAllowsExhaustedTokenQuotaWhenBalancePositive(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
 		t.Fatalf("unmarshal response: %v", err)
 	}
-	if !got.Success {
-		t.Fatalf("expected quota-exhausted request to succeed when balance is positive, got %+v", got)
+	if got.Success || got.Error == nil || !strings.Contains(got.Error.Message, "额度") {
+		t.Fatalf("expected quota-exhausted request to be rejected, got %+v", got)
 	}
-	if aiCalls != 1 {
-		t.Fatalf("expected one AI call, got %d", aiCalls)
+	if aiCalls != 0 {
+		t.Fatalf("expected zero AI calls, got %d", aiCalls)
 	}
 }
 

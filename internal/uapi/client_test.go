@@ -231,24 +231,16 @@ func TestGetIPInfoSuccess(t *testing.T) {
 	}
 }
 
-func TestGetIPInfoDefaultSourceAllowsMissingAPIKey(t *testing.T) {
+func TestGetIPInfoDefaultSourceRejectsMissingAPIKey(t *testing.T) {
 	for _, key := range []string{"", "   "} {
 		t.Run("key="+key, func(t *testing.T) {
 			srv, rec := newServer(t, staticJSON(http.StatusOK, ipRaw))
 			client := NewClient(key).SetIPInfoURL(srv.URL + ipInfoPath)
-			info, err := client.GetIPInfo(context.Background(), " 8.8.8.8 ", "")
-			if err != nil {
-				t.Fatalf("普通来源无密钥查询失败: %v", err)
+			if _, err := client.GetIPInfo(context.Background(), " 8.8.8.8 ", ""); !errors.Is(err, ErrUnauthorized) {
+				t.Fatalf("ordinary IP must require key: %v", err)
 			}
-			if info.IP != "8.8.8.8" || info.RawJSON != ipRaw || rec.count() != 1 {
-				t.Fatalf("普通来源查询结果不完整: info=%+v requests=%d", info, rec.count())
-			}
-			request := rec.last(t)
-			if request.query.Has("source") || request.query.Get("ip") != "8.8.8.8" {
-				t.Fatalf("普通来源请求参数错误: %v", request.query)
-			}
-			if _, exists := request.header["Authorization"]; exists {
-				t.Fatalf("无密钥请求不能发送 Authorization: %v", request.header)
+			if rec.count() != 0 {
+				t.Fatalf("missing key must not call upstream: %d", rec.count())
 			}
 		})
 	}
@@ -950,22 +942,11 @@ func TestGetPhoneInfoWithoutAPIKey(t *testing.T) {
 		t.Run("key="+key, func(t *testing.T) {
 			srv, rec := newServer(t, staticJSON(http.StatusOK, phoneRaw))
 			client := NewClient(key).SetPhoneInfoURL(srv.URL + phoneInfoPath)
-			info, err := client.GetPhoneInfo(context.Background(), " 13800138000 ")
-			if err != nil {
-				t.Fatalf("无密钥手机号查询失败: %v", err)
+			if _, err := client.GetPhoneInfo(context.Background(), " 13800138000 "); !errors.Is(err, ErrUnauthorized) {
+				t.Fatalf("phone must require key: %v", err)
 			}
-			if rec.count() != 1 {
-				t.Fatalf("请求次数 = %d，期望 1", rec.count())
-			}
-			request := rec.last(t)
-			if request.method != http.MethodGet || request.path != phoneInfoPath || request.query.Get("phone") != "13800138000" {
-				t.Fatalf("手机号查询请求错误: %+v", request)
-			}
-			if _, exists := request.header["Authorization"]; exists {
-				t.Fatalf("无密钥查询不应发送 Authorization: %v", request.header)
-			}
-			if info.Province != "浙江省" || info.City != "杭州市" || info.SP != "中国移动" || info.RawJSON != phoneRaw {
-				t.Fatalf("无密钥查询结果错误: %+v", info)
+			if rec.count() != 0 {
+				t.Fatalf("missing key must not call upstream: %d", rec.count())
 			}
 		})
 	}

@@ -206,8 +206,8 @@ func TestAISearchToolsSearchTwiceAndAccumulateUsage(t *testing.T) {
 			t.Errorf("decode: %v", err)
 			return
 		}
-		if _, exists := payload["max_output_tokens"]; exists {
-			t.Errorf("tool answer requests must use the upstream output allowance: %v", payload["max_output_tokens"])
+		if payload["max_output_tokens"] != float64(aiToolMaxOutputTokens) {
+			t.Errorf("tool answer requests must preserve local output cap: %v", payload["max_output_tokens"])
 		}
 		round++
 		if round == 1 {

@@ -136,6 +136,7 @@ func TestComposeTrustedProxiesAddsLanAndLocalDefaults(t *testing.T) {
 }
 
 func TestLoadTrustedProxiesReadsFileAndStripsBOM(t *testing.T) {
+	t.Setenv("TIKU_APP_MODE", "development")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "trusted_proxies.txt")
 	// 模拟 Windows 记事本写入的 UTF-8 BOM，并混用 YAML 列表与说明文字。
@@ -164,6 +165,7 @@ func TestLoadTrustedProxiesReadsFileAndStripsBOM(t *testing.T) {
 }
 
 func TestLoadTrustedProxiesFallsBackToTrustAll(t *testing.T) {
+	t.Setenv("TIKU_APP_MODE", "development")
 	t.Setenv(trustedProxiesEnv, "")
 	t.Setenv(trustedProxiesFileEnv, filepath.Join(t.TempDir(), "missing.txt"))
 
@@ -181,6 +183,7 @@ func TestLoadTrustedProxiesFallsBackToTrustAll(t *testing.T) {
 
 // 文件里全是无法解析的内容时必须报错，不能静默降级成「信任所有来源」。
 func TestLoadTrustedProxiesRejectsUnparsableFile(t *testing.T) {
+	t.Setenv("TIKU_APP_MODE", "development")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "trusted_proxies.txt")
 	if err := os.WriteFile(path, []byte("反代容器\n172.26.0.300\n"), 0o644); err != nil {
@@ -199,6 +202,7 @@ func TestLoadTrustedProxiesRejectsUnparsableFile(t *testing.T) {
 
 // 部分条目写错时：有效的照常用（再补默认值），写错的报 warning（不阻断启动）。
 func TestLoadTrustedProxiesKeepsValidEntriesAndReportsInvalid(t *testing.T) {
+	t.Setenv("TIKU_APP_MODE", "development")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "trusted_proxies.txt")
 	if err := os.WriteFile(path, []byte("172.26.0.3\n172.26.0.300\n"), 0o644); err != nil {
@@ -220,6 +224,7 @@ func TestLoadTrustedProxiesKeepsValidEntriesAndReportsInvalid(t *testing.T) {
 
 // 环境变量里全是无效内容时报错，且不能悄悄改用文件里的配置。
 func TestLoadTrustedProxiesRejectsUnparsableEnv(t *testing.T) {
+	t.Setenv("TIKU_APP_MODE", "development")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "trusted_proxies.txt")
 	if err := os.WriteFile(path, []byte("172.26.0.3\n"), 0o644); err != nil {

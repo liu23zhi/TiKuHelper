@@ -53,8 +53,8 @@ func TestNativeServerCompressionPreservesToolPairAndBillsOnlyRealCalls(t *testin
 		calls++
 		var payload map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&payload)
-		if r.URL.Path != "/v1/responses" || payload["context_management"] == nil || payload["max_output_tokens"] != nil {
-			t.Errorf("automatic compression must share ordinary unbounded answer request: %+v", payload)
+		if r.URL.Path != "/v1/responses" || payload["context_management"] == nil || payload["max_output_tokens"] != float64(aiToolMaxOutputTokens) {
+			t.Errorf("automatic compression must share ordinary locally bounded answer request: %+v", payload)
 		}
 		if calls == 1 {
 			w.Header().Set("Content-Type", "text/event-stream")

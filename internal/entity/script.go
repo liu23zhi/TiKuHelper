@@ -39,7 +39,7 @@ type UserScript struct {
 	Enabled               bool    `gorm:"column:enabled;not null;index" json:"enabled"`
 	BillingEnabled        bool    `gorm:"column:billing_enabled;not null" json:"billingEnabled"`
 	UseTikuPrice          bool    `gorm:"column:use_tiku_price;not null" json:"useTikuPrice"`
-	AnswerPriceMultiplier float64 `gorm:"column:answer_price_multiplier;type:decimal(18,6);not null" json:"answerPriceMultiplier"`
+	AnswerPriceMultiplier float64 `gorm:"column:answer_price_multiplier;type:decimal(18,6);not null;default:0" json:"answerPriceMultiplier"`
 	// AnswerPrice is retained for backwards-compatible reads of pre-multiplier
 	// rows. New scripts use AnswerPriceMultiplier against the current tiku price.
 	AnswerPrice   float64    `gorm:"column:answer_price;type:decimal(18,6);not null;default:0" json:"answerPrice"`

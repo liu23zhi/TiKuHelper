@@ -42,7 +42,17 @@ func IssueUserLoginJWTWithDB(db *gorm.DB, user *entity.User, requestIP, password
 	err = db.Transaction(func(tx *gorm.DB) error {
 		// Do not issue a session from credentials checked before a concurrent
 		// password reset or account disable completed.
-		result := tx.Model(&entity.User{}).Where("id = ? AND password = ?", user.ID, user.Password).
+		// Preserve the local exact credential CAS across case-insensitive MySQL collations.
+		var passwordPredicate string
+		switch tx.Dialector.Name() {
+		case "sqlite":
+			passwordPredicate = "CAST(password AS BLOB) = CAST(? AS BLOB)"
+		case "mysql":
+			passwordPredicate = "CAST(password AS BINARY) = CAST(? AS BINARY)"
+		default:
+			return errors.New("unsupported exact login credential comparison driver")
+		}
+		result := tx.Model(&entity.User{}).Where("id = ?", user.ID).Where(passwordPredicate, user.Password).
 			Where("LOWER(TRIM(COALESCE(status, ''))) IN ?", []string{"", "enabled"}).Updates(updates)
 		if result.Error != nil {
 			return result.Error

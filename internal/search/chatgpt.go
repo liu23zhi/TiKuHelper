@@ -183,6 +183,9 @@ type AISearchDebugResult struct {
 	RawResponse string
 	Usage       AISearchUsage
 	Trace       []AISearchTrace `json:"trace,omitempty"`
+
+	// Reuse prepared images/OCR within this request on MCP fallback; never serialized.
+	promptParts []openAIContentPart
 }
 
 // AISearchTrace records the observable request/tool path. Full model output is
@@ -467,6 +470,10 @@ const maxAISearchAttachmentBytes = 8 * 1024 * 1024
 const aiSearchAttachmentTimeout = 60 * time.Second
 const aiSearchFirstTokenTimeout = 5 * time.Minute
 
+// Local policy: all model rounds, endpoint fallbacks, and compression share 180s.
+const aiSearchTotalTimeout = 180 * time.Second
+const aiSearchRetryBudget = 2 * time.Minute
+
 // 题库公式截图常见尺寸只有 40x22 左右，直接提交给模型时上下标几乎不可辨认，这里统一放大。
 const (
 	aiSearchImageMagnifyBelowWidth  = 320
@@ -491,6 +498,9 @@ const (
 func (in *ChatGptClient) aiSearchRetryAttempts() int {
 	if in.MaxAISearchRetries <= 0 {
 		return aiSearchRetryMaxAttempts
+	}
+	if in.MaxAISearchRetries > 10 {
+		return 10
 	}
 	return in.MaxAISearchRetries
 }
@@ -614,7 +624,7 @@ func (in *ChatGptClient) SearchAnswer(req model.SearchRequest) (answer [][]strin
 }
 
 func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]string, debug AISearchDebugResult, err error) {
-	ctx, cancel := context.WithCancel(in.requestContext())
+	ctx, cancel := withAITotalTimeout(in.requestContext())
 	defer cancel()
 	if req.DeepThinking && in.SearchTool != nil {
 		answer, debug, toolErr := in.searchAnswerWithTools(ctx, req)
@@ -668,7 +678,7 @@ func (in *ChatGptClient) SearchAnswerDebug(req model.SearchRequest) (answer [][]
 }
 
 func (in *ChatGptClient) SearchAnswerWithUsage(req model.SearchRequest) (answer [][]string, usage AISearchUsage, err error) {
-	ctx, cancel := context.WithCancel(in.requestContext())
+	ctx, cancel := withAITotalTimeout(in.requestContext())
 	defer cancel()
 	if req.DeepThinking && in.SearchTool != nil {
 		answer, debug, toolErr := in.searchAnswerWithTools(ctx, req)
@@ -830,11 +840,12 @@ func buildAISearchPromptParts(req model.SearchRequest, httpClient *http.Client) 
 		Text: buildAISearchPrompt(req),
 	}}
 	attachmentURLs := extractAISearchURLs(req)
-	parts = append(parts, downloadAISearchAttachmentParts(httpClient, attachmentURLs)...)
-	if len(attachmentURLs) > 0 {
+	attachmentParts, loadedImageURLs := downloadAISearchAttachmentPartsWithImageURLs(httpClient, attachmentURLs)
+	parts = append(parts, attachmentParts...)
+	if len(loadedImageURLs) > 0 {
 		var references strings.Builder
 		references.WriteString("图片对应关系（图片按出现顺序编号，请结合图号理解题目）：")
-		for index, attachmentURL := range attachmentURLs {
+		for index, attachmentURL := range loadedImageURLs {
 			fmt.Fprintf(&references, "\n图%s为：%s", formatAISearchImageIndex(index+1), attachmentURL)
 		}
 		parts = append(parts, openAIContentPart{Type: "text", Text: references.String()})
@@ -889,22 +900,32 @@ func buildAISearchAttachmentReferences(urls []string, attachments []downloadedAI
 	if len(urls) == 0 {
 		return ""
 	}
-	byURL := make(map[string]downloadedAISearchAttachment, len(attachments))
-	for index, attachment := range attachments {
+	imageURLs := make(map[string]bool, len(attachments))
+	textURLs := make(map[string]bool, len(attachments))
+	for _, attachment := range attachments {
 		if strings.TrimSpace(attachment.sourceURL) == "" {
 			continue
 		}
-		if attachment.sourceIndex <= 0 {
-			attachment.sourceIndex = index + 1
+		if attachment.part.Type == "image_url" && attachment.part.ImageURL != nil && strings.TrimSpace(attachment.part.ImageURL.URL) != "" {
+			imageURLs[attachment.sourceURL] = true
+		} else if attachment.part.Type == "text" && strings.TrimSpace(attachment.part.Text) != "" {
+			textURLs[attachment.sourceURL] = true
 		}
-		byURL[attachment.sourceURL] = attachment
 	}
 	var references strings.Builder
-	references.WriteString("图片对应关系（视觉图片按成功下载顺序提供，图号沿用原题顺序；缺失图片不应阻止作答）：")
+	if len(imageURLs) > 0 {
+		references.WriteString("图片对应关系（视觉图片按成功下载顺序提供，图号沿用原题顺序；缺失图片不应阻止作答）：")
+	} else {
+		references.WriteString("附件状态说明（未提供视觉图片；缺失图片不应阻止作答）：")
+	}
 	missing := 0
 	for index, address := range urls {
-		if _, ok := byURL[address]; ok {
+		if imageURLs[address] {
 			fmt.Fprintf(&references, "\n图%s为：%s", formatAISearchImageIndex(index+1), address)
+			continue
+		}
+		if textURLs[address] {
+			fmt.Fprintf(&references, "\n附件%s已作为文本提供：%s（不是视觉图片）", formatAISearchImageIndex(index+1), address)
 			continue
 		}
 		missing++
@@ -1050,8 +1071,14 @@ func (in *ChatGptClient) TestImageOCR(ctx context.Context, address string) (stri
 // downloadAISearchAttachmentParts 并发下载题目配图，同时保持原有顺序，
 // 避免多张公式图串行下载把单次搜题的耗时叠加到几十秒。
 func downloadAISearchAttachmentParts(httpClient *http.Client, attachmentURLs []string) []openAIContentPart {
+	parts, _ := downloadAISearchAttachmentPartsWithImageURLs(httpClient, attachmentURLs)
+	return parts
+}
+
+// Retain source URLs only for image parts actually delivered to the model.
+func downloadAISearchAttachmentPartsWithImageURLs(httpClient *http.Client, attachmentURLs []string) ([]openAIContentPart, []string) {
 	if httpClient == nil || len(attachmentURLs) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	type attachmentResult struct {
@@ -1085,13 +1112,17 @@ func downloadAISearchAttachmentParts(httpClient *http.Client, attachmentURLs []s
 	}
 
 	parts := make([]openAIContentPart, 0, len(attachmentURLs))
+	loadedImageURLs := make([]string, 0, len(attachmentURLs))
 	for _, result := range ordered {
 		if !result.ok {
 			continue
 		}
 		parts = append(parts, result.part)
+		if result.part.Type == "image_url" && result.part.ImageURL != nil && strings.TrimSpace(result.part.ImageURL.URL) != "" {
+			loadedImageURLs = append(loadedImageURLs, attachmentURLs[result.index])
+		}
 	}
-	return parts
+	return parts, loadedImageURLs
 }
 
 // downloadAISearchAttachmentResults keeps the successful source URL together
@@ -1498,6 +1529,7 @@ func buildAIResponsesContentParts(parts []openAIContentPart) []openAIResponsesCo
 }
 
 func (in *ChatGptClient) requestStreamAnswerDetailed(parentCtx context.Context, endpoints []string, systemPrompt string, userPromptParts []openAIContentPart, modelCalls *int, maxModelCalls int) (string, AISearchUsage, int, string, string, string, error) {
+	retryCtx := withAISearchRetryStart(parentCtx)
 	var (
 		requestBody     string
 		lastUsage       AISearchUsage
@@ -1525,7 +1557,7 @@ func (in *ChatGptClient) requestStreamAnswerDetailed(parentCtx context.Context, 
 		attempted := 0
 		for attempt := 0; attempt < in.aiSearchRetryAttempts(); attempt++ {
 			if attempt > 0 {
-				if !sleepAISearchRetryBackoff(parentCtx, attempt, lastErr) {
+				if !sleepAISearchRetryBackoff(retryCtx, attempt, lastErr) {
 					break
 				}
 			}
@@ -1539,6 +1571,7 @@ func (in *ChatGptClient) requestStreamAnswerDetailed(parentCtx context.Context, 
 					buildAIResponsesMessage("system", systemPrompt+"\n本轮不提供任何联网/读取工具，请直接输出最终答案 JSON。"),
 					buildAIResponsesMessage("user", buildAIResponsesContentParts(userPromptParts)),
 				},
+				MaxOutputTokens: aiToolMaxOutputTokens,
 			})
 			if err != nil {
 				return "", AISearchUsage{}, 0, "", "", "", errors.ErrParserJSON
@@ -1724,12 +1757,22 @@ func aiSearchRetryDelay(attempt int, retryErr error) time.Duration {
 	return delay
 }
 
-// Retry count comes from configuration; waits remain interruptible by the caller.
+// Retries remain interruptible, but cannot spend more than the approved 2m window.
 func sleepAISearchRetryBackoff(ctx context.Context, attempt int, retryErr error) bool {
 	if ctx.Err() != nil {
 		return false
 	}
+	elapsed := time.Duration(0)
+	if started, ok := ctx.Value(aiSearchRetryStartKey{}).(time.Time); ok {
+		elapsed = time.Since(started)
+	}
+	if elapsed >= aiSearchRetryBudget {
+		return false
+	}
 	delay := aiSearchRetryDelay(attempt, retryErr)
+	if delay > aiSearchRetryBudget-elapsed {
+		return false
+	}
 	if deadline, ok := ctx.Deadline(); ok && delay > time.Until(deadline) {
 		return false
 	}
@@ -2071,4 +2114,17 @@ func extractAISearchOptionIndex(answer string) int {
 	default:
 		return -1
 	}
+}
+
+type aiSearchRetryStartKey struct{}
+
+func withAITotalTimeout(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	return context.WithTimeout(parent, aiSearchTotalTimeout)
+}
+
+func withAISearchRetryStart(parent context.Context) context.Context {
+	return context.WithValue(parent, aiSearchRetryStartKey{}, time.Now())
 }

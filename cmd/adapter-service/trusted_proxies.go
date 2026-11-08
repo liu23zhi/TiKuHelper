@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/itihey/tikuAdapter/internal/registry"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 )
 
@@ -59,7 +60,7 @@ var trustedProxyKeyPrefixes = []string{
 	"set_real_ip_from", "real_ip_from", "allow", "deny", "from",
 }
 
-// loadTrustedProxies 读取可信代理配置。
+// loadTrustedProxiesLegacy 仅在显式 development 中保留上游兼容配置。
 //
 // 优先级：环境变量 TRUSTED_PROXIES > 文件（TRUSTED_PROXIES_FILE 指定的路径，
 // 或工作目录下的 trusted_proxies.txt）。
@@ -67,7 +68,7 @@ var trustedProxyKeyPrefixes = []string{
 //
 // 只有「来源写了内容、却一条都解析不出来」才返回错误 —— 这时静默降级成
 // 「信任所有来源」等于把管理员的安全设置悄悄关掉，必须让人看到。
-func loadTrustedProxies() (trustedProxyConfig, error) {
+func loadTrustedProxiesLegacy() (trustedProxyConfig, error) {
 	envValue := os.Getenv(trustedProxiesEnv)
 	path := strings.TrimSpace(os.Getenv(trustedProxiesFileEnv))
 	if path == "" {
@@ -90,6 +91,43 @@ func loadTrustedProxies() (trustedProxyConfig, error) {
 	default:
 		return trustedProxyConfig{List: []string{trustAllProxiesIPv4, trustAllProxiesIPv6}}, nil
 	}
+}
+
+// loadTrustedProxies keeps the rich upstream syntax, but production never trusts
+// missing/invalid/unrestricted proxy configuration or implicit private networks.
+func loadTrustedProxies() (trustedProxyConfig, error) {
+	mode, err := registry.ResolveApplicationMode(os.Getenv("TIKU_APP_MODE"))
+	if err != nil {
+		return trustedProxyConfig{}, err
+	}
+	if mode == "development" {
+		return loadTrustedProxiesLegacy()
+	}
+	raw := strings.TrimSpace(os.Getenv(trustedProxiesEnv))
+	source := trustedProxiesEnv
+	if raw == "" {
+		path := strings.TrimSpace(os.Getenv(trustedProxiesFileEnv))
+		if path == "" {
+			return trustedProxyConfig{}, fmt.Errorf("production requires explicit TRUSTED_PROXIES=none or restricted IP/CIDR entries")
+		}
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return trustedProxyConfig{}, fmt.Errorf("cannot read explicit TRUSTED_PROXIES_FILE: %w", readErr)
+		}
+		raw, source = strings.TrimSpace(string(content)), path
+	}
+	if strings.EqualFold(raw, "none") {
+		return trustedProxyConfig{Source: source}, nil
+	}
+	entries, invalid := parseTrustedProxyEntries(raw)
+	if len(invalid) != 0 || len(entries) == 0 {
+		return trustedProxyConfig{}, fmt.Errorf("production TRUSTED_PROXIES requires valid restricted entries only")
+	}
+	list, err := resolveStartupTrustedProxies(mode, strings.Join(entries, ","))
+	if err != nil {
+		return trustedProxyConfig{}, err
+	}
+	return trustedProxyConfig{List: list, Source: source, ConfiguredCount: len(list)}, nil
 }
 
 // newTrustedProxyConfig 组装最终配置：用户条目 + 「局域网/本地」默认值。
@@ -336,7 +374,8 @@ func expandIPv4Range(entry string) []string {
 	}
 
 	cidrs := make([]string, 0, 4)
-	for current := first; current <= last; {
+	for cursor := uint64(first); cursor <= uint64(last); {
+		current := uint32(cursor)
 		trailing := 32
 		if current != 0 {
 			trailing = bits.TrailingZeros32(current)
@@ -349,7 +388,7 @@ func expandIPv4Range(entry string) []string {
 			trailing = 0
 		}
 		cidrs = append(cidrs, fmt.Sprintf("%s/%d", uint32ToIPv4(current), 32-trailing))
-		current += uint32(1) << uint(trailing)
+		cursor += uint64(1) << uint(trailing)
 	}
 	return cidrs
 }

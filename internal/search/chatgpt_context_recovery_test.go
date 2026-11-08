@@ -73,7 +73,7 @@ func TestAnswerContextRecoveryRestoresAnchorsAndBillsSummaryWithoutRepeatingTool
 						t.Error(err)
 						return
 					}
-					if payload["max_output_tokens"] != nil {
+					if payload["stream"] != true {
 						summaryCalls++
 						writeCompactionTestSummary(w, "搜索证据已核验，继续完成全部小问。", "completed")
 						return
@@ -107,7 +107,7 @@ func TestAnswerContextRecoveryRestoresAnchorsAndBillsSummaryWithoutRepeatingTool
 				defer server.Close()
 				tool := &contextRecoverySearchTool{}
 				client := &ChatGptClient{Enable: true, BaseURL: server.URL + "/v1", APIKey: "test", Model: "test", Prompt: "PROTECTED output rules", SearchTool: tool,
-					MaxAISearchModelCalls: 2, MaxAISearchRetries: 3, ContextCompression: AIContextCompressionConfig{Enabled: true, MaxAttempts: 3}}
+					MaxAISearchModelCalls: 3, MaxAISearchRetries: 3, ContextCompression: AIContextCompressionConfig{Enabled: true, MaxAttempts: 3}}
 				req := model.SearchRequest{Question: "请回答全部问题，保留题目", Type: 2, Options: []string{"原始选项"}}
 				var answers [][]string
 				var debug AISearchDebugResult
@@ -142,7 +142,7 @@ func TestAnswerContextRecoveryRetainsFailedStreamUsage(t *testing.T) {
 					t.Error(err)
 					return
 				}
-				if payload["max_output_tokens"] != nil {
+				if payload["stream"] != true {
 					summaryCalls++
 					writeCompactionTestSummary(w, "Preserve the verified search evidence and finish the answer.", "completed")
 					return
@@ -173,7 +173,7 @@ func TestAnswerContextRecoveryRetainsFailedStreamUsage(t *testing.T) {
 			tool := &contextRecoverySearchTool{}
 			client := &ChatGptClient{
 				Enable: true, BaseURL: server.URL + "/v1", APIKey: "test", Model: "test", SearchTool: tool,
-				MaxAISearchModelCalls: 2, MaxAISearchRetries: 3,
+				MaxAISearchModelCalls: 3, MaxAISearchRetries: 3,
 				ContextCompression: AIContextCompressionConfig{Enabled: true, MaxAttempts: 3},
 			}
 			req := model.SearchRequest{Question: "Answer using verified evidence.", Type: 2}

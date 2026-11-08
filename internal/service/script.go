@@ -1,8 +1,12 @@
 package service
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,6 +16,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/pkg/util"
@@ -43,9 +48,11 @@ var (
 	ErrScriptTokenBalanceInsufficient = errors.New("可用余额不足 ¥9，暂不能下发脚本兑换令牌；请充值后重试")
 	ErrScriptTokenInvalid             = errors.New("脚本兑换令牌无效或已过期")
 	ErrScriptTokenRequired            = errors.New("脚本兑换令牌不能为空")
+	ErrScriptPriceInvalid             = errors.New("脚本答题计费金额超出可存储范围")
 )
 
 type CreateUserScriptInput struct {
+	IdempotencyKey        string         `json:"-"`
 	Name                  string         `json:"name"`
 	Instruction           string         `json:"instruction"`
 	Command               string         `json:"command"`
@@ -111,6 +118,7 @@ type ScriptExchangeResult struct {
 	ActivationExpiresAt time.Time      `json:"activationExpiresAt"`
 	CommandURL          string         `json:"commandUrl"`
 	BootstrapURL        string         `json:"bootstrapUrl"`
+	LaunchOrigin        string         `json:"-"`
 }
 
 func ListScriptVersionsWithDB(db *gorm.DB) ([]entity.ScriptVersion, error) {
@@ -154,6 +162,9 @@ func UploadScriptVersionWithDB(db *gorm.DB, admin entity.User, version, filename
 }
 
 func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserScriptInput) (ScriptListItem, error) {
+	if db == nil {
+		return ScriptListItem{}, errors.New("数据库不可用")
+	}
 	name := strings.TrimSpace(input.Name)
 	if name == "" {
 		return ScriptListItem{}, ErrScriptNameRequired
@@ -194,11 +205,40 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 	if err != nil {
 		return ScriptListItem{}, err
 	}
+	var requestFingerprint []byte
+	idempotencyKey := strings.TrimSpace(input.IdempotencyKey)
+	if idempotencyKey != "" {
+		requestFingerprint, err = json.Marshal(input)
+		if err != nil {
+			return ScriptListItem{}, err
+		}
+	}
 	var result ScriptListItem
 	err = db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
 		var user entity.User
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&user, operator.ID).Error; err != nil {
 			return err
+		}
+		if !strings.EqualFold(strings.TrimSpace(user.Status), "enabled") {
+			return ErrScriptForbidden
+		}
+		var claimID int64
+		if idempotencyKey != "" {
+			claim, created, err := ClaimIdempotencyWithDB(tx, fmt.Sprintf("script-create:user:%d", user.ID), "script-create", idempotencyKey, requestFingerprint)
+			if err != nil {
+				return err
+			}
+			if !created {
+				// Store only the object ID, not parameters or the launcher
+				// capability. Read the same owner's current object on replay.
+				var receipt struct{ ID int32 }
+				if claim.Status != IdempotencyStatusSucceeded || json.Unmarshal([]byte(claim.ResponseJSON), &receipt) != nil || receipt.ID <= 0 {
+					return ErrIdempotencyPending
+				}
+				result, err = loadScriptListItemWithDB(tx, receipt.ID, user.ID)
+				return err
+			}
+			claimID = claim.ID
 		}
 		var version entity.ScriptVersion
 		if err := tx.First(&version, input.VersionID).Error; err != nil {
@@ -249,7 +289,9 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 		} else if input.BillingUseTikuPrice != nil {
 			script.UseTikuPrice = *input.BillingUseTikuPrice
 		}
-		script.Instruction = BuildScriptCommand(script)
+		// Store only the locator. The owner view derives the purpose-separated
+		// launcher capability; a one-use exchange must never disclose it.
+		script.Instruction = BuildScriptCommandURL(script)
 		if err := tx.Create(&script).Error; err != nil {
 			return err
 		}
@@ -271,9 +313,28 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 			return err
 		}
 		result = decorateScriptItem(ScriptListItem{UserScript: script, Username: user.Username, Version: version.Version, VersionSHA256: version.SHA256})
+		if claimID > 0 {
+			return CompleteIdempotencyWithDB(tx, claimID, 200, []byte(fmt.Sprintf("{\"ID\":%d}", script.ID)))
+		}
 		return nil
 	})
 	return result, err
+}
+
+func loadScriptListItemWithDB(db *gorm.DB, scriptID, userID int32) (ScriptListItem, error) {
+	var item ScriptListItem
+	err := db.Session(&gorm.Session{NewDB: true}).Table(entity.TableNameUserScript+" AS user_scripts").
+		Select("user_scripts.*, users.username AS username, script_versions.version AS version, script_versions.sha256 AS version_sha256").
+		Joins("LEFT JOIN users ON users.id = user_scripts.user_id").
+		Joins("LEFT JOIN script_versions ON script_versions.id = user_scripts.version_id").
+		Where("user_scripts.id = ? AND user_scripts.user_id = ? AND user_scripts.deleted_at IS NULL", scriptID, userID).First(&item).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ScriptListItem{}, ErrScriptNotFound
+	}
+	if err != nil {
+		return ScriptListItem{}, err
+	}
+	return decorateScriptItem(item), nil
 }
 
 func ListUserScriptsWithDB(db *gorm.DB, operator entity.User, all bool) ([]ScriptListItem, error) {
@@ -291,6 +352,9 @@ func ListUserScriptsWithDB(db *gorm.DB, operator entity.User, all bool) ([]Scrip
 	}
 	for i := range result {
 		result[i] = decorateScriptItem(result[i])
+		if result[i].UserID != operator.ID {
+			result[i].Command, result[i].Instruction = "", ""
+		}
 	}
 	return result, nil
 }
@@ -368,7 +432,7 @@ func UpdateUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32, i
 		if err := ValidateScriptDomainWithDB(tx, baseDomain, updatedScript.UseWildcardDomain); err != nil {
 			return err
 		}
-		updates["instruction"] = BuildScriptCommand(updatedScript)
+		updates["instruction"] = BuildScriptCommandURL(updatedScript)
 		if err := tx.Model(&script).Updates(updates).Error; err != nil {
 			return err
 		}
@@ -376,6 +440,9 @@ func UpdateUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32, i
 			return err
 		}
 		item = decorateScriptItem(item)
+		if item.UserID != operator.ID {
+			item.Command, item.Instruction = "", ""
+		}
 		return nil
 	})
 	return item, err
@@ -434,10 +501,7 @@ func IssueScriptExchangeTokenWithDB(db *gorm.DB, operator entity.User, scriptID 
 	shortCode := ""
 	if err := db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
 		var script entity.UserScript
-		query := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND deleted_at IS NULL AND enabled = ?", scriptID, true)
-		if !isAdminUser(operator) {
-			query = query.Where("user_id = ?", operator.ID)
-		}
+		query := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND user_id = ? AND deleted_at IS NULL AND enabled = ?", scriptID, operator.ID, true)
 		if err := query.First(&script).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				return ErrScriptNotFound
@@ -452,6 +516,12 @@ func IssueScriptExchangeTokenWithDB(db *gorm.DB, operator entity.User, scriptID 
 		// A launcher ticket is a capability to consume the reserved script
 		// balance. Keep at least ¥9 available after prior script answers so a
 		// user cannot keep minting tickets while their account is overdrawn.
+		if !strings.EqualFold(strings.TrimSpace(user.Status), "enabled") {
+			return ErrScriptTokenInvalid
+		}
+		if err := validateScriptLaunchKeyWithDB(tx, script); err != nil {
+			return err
+		}
 		if util.RoundMoney(user.Balance) < ScriptExchangeMinimumBalance {
 			return ErrScriptTokenBalanceInsufficient
 		}
@@ -492,6 +562,9 @@ func ExchangeScriptTokenWithDB(db *gorm.DB, shortCode, token string) (ScriptExch
 		if err := tx.Where("id = ? AND short_code = ? AND deleted_at IS NULL AND enabled = ?", grant.ScriptID, shortCode, true).First(&script).Error; err != nil {
 			return ErrScriptTokenInvalid
 		}
+		if err := validateScriptLaunchActorWithDB(tx, script); err != nil {
+			return err
+		}
 		versionID := grant.VersionID
 		if versionID <= 0 {
 			versionID = script.VersionID
@@ -503,7 +576,7 @@ func ExchangeScriptTokenWithDB(db *gorm.DB, shortCode, token string) (ScriptExch
 			return ErrScriptTokenInvalid
 		}
 		now := time.Now()
-		if err := tx.Model(&grant).Update("used_at", now).Error; err != nil {
+		if err := consumeScriptExchangeTokenWithDB(tx, grant.ID, now); err != nil {
 			return err
 		}
 		var parameters map[string]any
@@ -521,10 +594,46 @@ func ExchangeScriptTokenWithDB(db *gorm.DB, shortCode, token string) (ScriptExch
 		if err := tx.Create(&entity.ScriptExchangeToken{ScriptID: script.ID, VersionID: version.ID, Purpose: "activation", TokenHash: hashScriptSecret(activationToken), ExpiresAt: activationExpiresAt}).Error; err != nil {
 			return err
 		}
-		result = ScriptExchangeResult{ScriptID: script.ID, Name: script.Name, Instruction: script.Instruction, Parameters: parameters, Version: version.Version, Filename: version.Filename, DownloadURL: "/adapter-service/script-command/" + script.ShortCode + "/file", ActivationToken: activationToken, ActivationExpiresAt: activationExpiresAt, CommandURL: BuildScriptCommandURL(script), BootstrapURL: "/adapter-service/script-command/" + script.ShortCode + "/bootstrap"}
+		result = ScriptExchangeResult{ScriptID: script.ID, Name: script.Name, Instruction: BuildScriptCommandURL(script), Parameters: parameters, Version: version.Version, Filename: version.Filename, DownloadURL: "/adapter-service/script-command/" + script.ShortCode + "/file", ActivationToken: activationToken, ActivationExpiresAt: activationExpiresAt, CommandURL: BuildScriptCommandURL(script), BootstrapURL: "/adapter-service/script-command/" + script.ShortCode + "/bootstrap", LaunchOrigin: ScriptCommandOrigin(script)}
 		return nil
 	})
 	return result, err
+}
+
+func validateScriptLaunchKeyWithDB(db *gorm.DB, script entity.UserScript) error {
+	if err := ValidateScriptDomainWithDB(db, script.BaseDomain, script.UseWildcardDomain); err != nil {
+		return err
+	}
+	var key entity.AccessToken
+	if err := db.Session(&gorm.Session{NewDB: true}).Where("id = ? AND script_id = ? AND user_id = ? AND status = ?", script.AccessTokenID, script.ID, script.UserID, "enabled").First(&key).Error; err != nil {
+		return ErrScriptTokenInvalid
+	}
+	if !AccessTokenQuotaLimitValid(key.TotalQuotaLimit) {
+		return ErrScriptTokenInvalid
+	}
+	return nil
+}
+
+func validateScriptLaunchActorWithDB(db *gorm.DB, script entity.UserScript) error {
+	if err := validateScriptLaunchKeyWithDB(db, script); err != nil {
+		return err
+	}
+	var user entity.User
+	if err := db.Session(&gorm.Session{NewDB: true}).Where("id = ? AND status = ?", script.UserID, "enabled").First(&user).Error; err != nil {
+		return ErrScriptTokenInvalid
+	}
+	return nil
+}
+
+func consumeScriptExchangeTokenWithDB(db *gorm.DB, tokenID int64, now time.Time) error {
+	used := db.Model(&entity.ScriptExchangeToken{}).Where("id = ? AND used_at IS NULL AND expires_at > ?", tokenID, now).Update("used_at", now)
+	if used.Error != nil {
+		return used.Error
+	}
+	if used.RowsAffected != 1 {
+		return ErrScriptTokenInvalid
+	}
+	return nil
 }
 
 func normalizeScriptDomain(value string) string {
@@ -558,32 +667,56 @@ func normalizeScriptScheme(value string) string {
 // Wildcard mode uses a short host; path mode keeps the host unchanged and
 // appends the short code as the only path segment.
 func BuildScriptCommandURL(script entity.UserScript) string {
-	domain := normalizeScriptDomain(script.BaseDomain)
-	if domain == "" {
+	origin := ScriptCommandOrigin(script)
+	if origin == "" {
 		return "/adapter-service/script-command/" + url.PathEscape(strings.TrimSpace(script.ShortCode)) + "/bootstrap"
 	}
-	shortCode := strings.TrimSpace(script.ShortCode)
-	if shortCode == "" {
-		return ""
-	}
-	scheme := normalizeScriptScheme(script.Scheme)
-	host := shortCode + "." + domain
 	if script.UseWildcardDomain {
-		return scheme + "://" + host
+		return origin
 	}
-	return scheme + "://" + host + "/" + shortCode
+	return origin + "/" + url.PathEscape(strings.TrimSpace(script.ShortCode))
 }
 
-// BuildScriptCommand emits a PowerShell 2 compatible one-liner. The URL is
-// deliberately the only value in the command; the exchange endpoint injects
-// the user's saved settings and short-lived access key later.
+// ScriptCommandOrigin only uses the validated stored script settings. Incoming
+// Host or X-Forwarded-Proto headers cannot redirect bearer tickets/downloads.
+func ScriptCommandOrigin(script entity.UserScript) string {
+	domain := normalizeScriptDomain(script.BaseDomain)
+	shortCode := strings.TrimSpace(script.ShortCode)
+	if domain == "" || shortCode == "" {
+		return ""
+	}
+	return normalizeScriptScheme(script.Scheme) + "://" + shortCode + "." + domain
+}
+
+const ScriptLauncherHeader = "X-Script-Launcher"
+
+func scriptLauncherCapability(script entity.UserScript) string {
+	if script.AccessKey == "" {
+		return ""
+	}
+	mac := hmac.New(sha256.New, []byte(script.AccessKey))
+	_, _ = mac.Write([]byte("tikuhelper/script-launcher/v1\x00" + script.ShortCode))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// BuildScriptCommand emits an owner-held, PowerShell 2 compatible command. The
+// purpose-specific launcher capability goes in a header, never the URL. The
+// encoded form works in Windows Run, cmd.exe and PowerShell without variable
+// interpolation by the parent shell; it is not encryption.
 func BuildScriptCommand(script entity.UserScript) string {
 	commandURL := BuildScriptCommandURL(script)
-	if commandURL == "" {
+	capability := scriptLauncherCapability(script)
+	if !strings.HasPrefix(commandURL, "https://") || capability == "" {
 		return ""
 	}
 	commandURL = strings.ReplaceAll(commandURL, "'", "''")
-	return `powershell -c "iex (New-Object Net.WebClient).DownloadString('` + commandURL + `')"`
+	program := "$w=New-Object Net.WebClient;$w.Headers.Add('" + ScriptLauncherHeader + "','" + capability + "');iex ($w.DownloadString('" + commandURL + "'))"
+	units := utf16.Encode([]rune(program))
+	wire := make([]byte, len(units)*2)
+	for i, unit := range units {
+		binary.LittleEndian.PutUint16(wire[i*2:], unit)
+	}
+	return "powershell -EncodedCommand " + base64.StdEncoding.EncodeToString(wire)
 }
 
 func decorateScriptItem(item ScriptListItem) ScriptListItem {
@@ -623,7 +756,7 @@ func ResolvePublicScriptWithDB(db *gorm.DB, requestHost, requestPath string) (en
 		return entity.UserScript{}, err
 	}
 	domain := normalizeScriptDomain(script.BaseDomain)
-	scriptHost := strings.ToLower(script.ShortCode) + "." + domain
+	scriptHost := normalizePublicScriptHost(strings.ToLower(script.ShortCode) + "." + domain)
 	if domain == "" || !strings.EqualFold(host, scriptHost) {
 		return entity.UserScript{}, ErrScriptNotFound
 	}
@@ -641,9 +774,9 @@ func normalizePublicScriptHost(value string) string {
 	return strings.TrimRight(strings.ToLower(strings.TrimSpace(value)), ".")
 }
 
-// IssuePublicScriptExchangeTokenWithDB is used by the short public launcher
-// entrypoint. It never returns a long-term access key and caps the token TTL.
-func IssuePublicScriptExchangeTokenWithDB(db *gorm.DB, shortCode string, ttl time.Duration) (ScriptExchangeGrant, error) {
+// IssuePublicScriptExchangeTokenWithDB requires an owner-held launcher
+// capability. Neither the short path nor the request Host is authentication.
+func IssuePublicScriptExchangeTokenWithDB(db *gorm.DB, shortCode, capability string, ttl time.Duration) (ScriptExchangeGrant, error) {
 	if ttl <= 0 || ttl > ScriptExchangeTokenTTL {
 		ttl = ScriptExchangeTokenTTL
 	}
@@ -661,9 +794,19 @@ func IssuePublicScriptExchangeTokenWithDB(db *gorm.DB, shortCode string, ttl tim
 			}
 			return err
 		}
+		expected := scriptLauncherCapability(script)
+		if normalizeScriptScheme(script.Scheme) != "https" || expected == "" || subtle.ConstantTimeCompare([]byte(expected), []byte(capability)) != 1 {
+			return ErrScriptNotFound
+		}
 		resolvedShortCode = script.ShortCode
 		var user entity.User
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&user, script.UserID).Error; err != nil {
+			return err
+		}
+		if !strings.EqualFold(strings.TrimSpace(user.Status), "enabled") {
+			return ErrScriptTokenInvalid
+		}
+		if err := validateScriptLaunchKeyWithDB(tx, script); err != nil {
 			return err
 		}
 		if util.RoundMoney(user.Balance) < ScriptExchangeMinimumBalance {

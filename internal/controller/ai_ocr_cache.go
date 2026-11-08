@@ -131,6 +131,13 @@ func AIOCRCacheImage(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "缓存中的图片 URL 不安全，无法读取"})
 		return
 	}
+	// A stored URL is not permission for a new external request while OCR
+	// is disabled. Listing, inspecting and deleting cached rows stay local.
+	if !service.IsAIOCRProviderConfiguredWithDB(db) {
+		c.Header("Cache-Control", "private, no-store")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "未配置有效的 UAPI 密钥，无法预览源图片"})
+		return
+	}
 	request, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, address, nil)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "缓存中的图片 URL 无效"})

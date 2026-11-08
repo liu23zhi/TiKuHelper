@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -209,7 +210,7 @@ func TestScriptExchangeTicketKeepsVersionAcrossUpload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldGrant, err := IssuePublicScriptExchangeTokenWithDB(db, item.ShortCode, 0)
+	oldGrant, err := IssuePublicScriptExchangeTokenWithDB(db, item.ShortCode, scriptLauncherCapability(item.UserScript), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +229,7 @@ func TestScriptExchangeTicketKeepsVersionAcrossUpload(t *testing.T) {
 	if err != nil || oldDownload.ID != first.ID {
 		t.Fatalf("old activation ticket did not keep v1: version=%d err=%v", oldDownload.ID, err)
 	}
-	newGrant, err := IssuePublicScriptExchangeTokenWithDB(db, item.ShortCode, 0)
+	newGrant, err := IssuePublicScriptExchangeTokenWithDB(db, item.ShortCode, scriptLauncherCapability(item.UserScript), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +261,7 @@ func TestScriptCommandsAllocateShortestCodesAndResolveBothDomainModes(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.ShortCode != "a" || first.Command != `powershell -c "iex (New-Object Net.WebClient).DownloadString('https://a.a.com')"` {
+	if first.ShortCode != "a" || first.DownloadURL != "https://a.a.com" || !strings.HasPrefix(first.Command, "powershell -EncodedCommand ") {
 		t.Fatalf("expected shortest wildcard command, got code=%q command=%q", first.ShortCode, first.Command)
 	}
 
@@ -269,7 +270,7 @@ func TestScriptCommandsAllocateShortestCodesAndResolveBothDomainModes(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.ShortCode != "b" || second.Command != `powershell -c "iex (New-Object Net.WebClient).DownloadString('https://b.a.com/b')"` {
+	if second.ShortCode != "b" || second.DownloadURL != "https://b.a.com/b" || !strings.HasPrefix(second.Command, "powershell -EncodedCommand ") {
 		t.Fatalf("expected shortest path command, got code=%q command=%q", second.ShortCode, second.Command)
 	}
 	if _, err := ResolvePublicScriptWithDB(db, "a.a.com:443", "/"); err != nil {
@@ -301,7 +302,7 @@ func TestPublicScriptExchangeTokenIsShortLivedAndOneTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	grant, err := IssuePublicScriptExchangeTokenWithDB(db, item.ShortCode, ScriptExchangeTokenTTL)
+	grant, err := IssuePublicScriptExchangeTokenWithDB(db, item.ShortCode, scriptLauncherCapability(item.UserScript), ScriptExchangeTokenTTL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,13 +336,13 @@ func TestScriptExchangeTokenRequiresNineAvailableBalance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := IssuePublicScriptExchangeTokenWithDB(db, item.ShortCode, ScriptExchangeTokenTTL); err != nil {
+	if _, err := IssuePublicScriptExchangeTokenWithDB(db, item.ShortCode, scriptLauncherCapability(item.UserScript), ScriptExchangeTokenTTL); err != nil {
 		t.Fatalf("balance exactly 9 should issue a token: %v", err)
 	}
 	if err := db.Model(&entity.User{}).Where("id = ?", owner.ID).Update("balance", 8.999999).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := IssuePublicScriptExchangeTokenWithDB(db, item.ShortCode, ScriptExchangeTokenTTL); !errors.Is(err, ErrScriptTokenBalanceInsufficient) {
+	if _, err := IssuePublicScriptExchangeTokenWithDB(db, item.ShortCode, scriptLauncherCapability(item.UserScript), ScriptExchangeTokenTTL); !errors.Is(err, ErrScriptTokenBalanceInsufficient) {
 		t.Fatalf("balance below 9 must reject token issuance, got %v", err)
 	}
 }
@@ -364,7 +365,7 @@ func TestScriptRunSessionIsIdentityBoundShortLivedAndStoresOnlyHashes(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	grant, err := IssuePublicScriptExchangeTokenWithDB(db, item.ShortCode, ScriptExchangeTokenTTL)
+	grant, err := IssuePublicScriptExchangeTokenWithDB(db, item.ShortCode, scriptLauncherCapability(item.UserScript), ScriptExchangeTokenTTL)
 	if err != nil {
 		t.Fatal(err)
 	}

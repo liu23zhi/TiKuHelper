@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -84,10 +85,24 @@ func (g *flightGroup[V]) finish(key string, call *flightCall[V], value V, ok boo
 
 // wait 等待发起者结束并返回其结果，ok=false 表示没等到可用结果。
 func (g *flightGroup[V]) wait(key string, call *flightCall[V], timeout time.Duration) (V, bool) {
+	value, ok, _ := g.waitContext(context.Background(), key, call, timeout)
+	return value, ok
+}
+
+// waitContext detaches only this observer; it never removes/cancels the shared
+// call. A context error is distinct from an unusable result or watchdog expiry,
+// so a retired observer cannot fall through into another charged execution.
+func (g *flightGroup[V]) waitContext(ctx context.Context, key string, call *flightCall[V], timeout time.Duration) (V, bool, error) {
 	var zero V
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	if call == nil {
-		return zero, false
+		return zero, false, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return zero, false, err
 	}
 	if timeout <= 0 {
 		timeout = defaultFlightWaitTimeout
@@ -97,15 +112,23 @@ func (g *flightGroup[V]) wait(key string, call *flightCall[V], timeout time.Dura
 	defer timer.Stop()
 
 	select {
+	case <-ctx.Done():
+		return zero, false, ctx.Err()
 	case <-call.done:
+		if err := ctx.Err(); err != nil {
+			return zero, false, err
+		}
 		if !call.ok {
 			// 发起者没拿到可用结果，搭车者自行继续。
-			return zero, false
+			return zero, false, nil
 		}
-		return call.value, true
+		return call.value, true, nil
 	case <-timer.C:
+		if err := ctx.Err(); err != nil {
+			return zero, false, err
+		}
 		logger.SysLog("等待并发相同请求的结果超时，改为自行查询")
-		return zero, false
+		return zero, false, nil
 	}
 }
 

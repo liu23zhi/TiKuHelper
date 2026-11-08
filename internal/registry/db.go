@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"errors"
 	"fmt"
 	"github.com/itihey/tikuAdapter/configs"
 	"github.com/itihey/tikuAdapter/internal/dao"
@@ -196,37 +197,73 @@ func ensureSMSVerificationSchemaForDriver(db *gorm.DB, driverName string) error 
 	if db == nil {
 		return nil
 	}
-	if !db.Migrator().HasTable(entity.TableNameSMSVerificationCode) {
-		return nil
-	}
-
 	normalizedDriver := strings.TrimSpace(strings.ToLower(driverName))
 	if normalizedDriver == "" {
 		normalizedDriver = strings.TrimSpace(strings.ToLower(db.Dialector.Name()))
 	}
 
-	if normalizedDriver == "sqlite" {
-		if !db.Migrator().HasColumn(entity.TableNameSMSVerificationCode, "scene") {
-			legacyTableName := entity.TableNameSMSVerificationCode + "__legacy_scene"
-			statements := []string{
-				"ALTER TABLE sms_verification_codes RENAME TO sms_verification_codes__legacy_scene",
-				"CREATE TABLE sms_verification_codes (`id` integer PRIMARY KEY AUTOINCREMENT,`phone` varchar(32) NOT NULL,`scene` varchar(32) NOT NULL DEFAULT '',`code_hash` char(64) NOT NULL,`status` varchar(32) NOT NULL,`expires_at` datetime NOT NULL,`consumed_at` datetime,`request_ip` varchar(64),`created_at` datetime,`updated_at` datetime)",
-				"INSERT INTO sms_verification_codes (`id`,`phone`,`scene`,`code_hash`,`status`,`expires_at`,`consumed_at`,`request_ip`,`created_at`,`updated_at`) SELECT `id`,`phone`,'' AS `scene`,`code_hash`,`status`,`expires_at`,`consumed_at`,`request_ip`,`created_at`,`updated_at` FROM sms_verification_codes__legacy_scene",
-				"DROP TABLE sms_verification_codes__legacy_scene",
+	if !db.Migrator().HasTable(entity.TableNameSMSVerificationCode) {
+		if normalizedDriver == "sqlite" {
+			var legacyExists bool
+			if err := db.Raw("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)", "sms_verification_codes__legacy_scene").Scan(&legacyExists).Error; err != nil {
+				return fmt.Errorf("inspect SMS migration shadow metadata: %w", err)
 			}
-			for _, statement := range statements {
-				if err := db.Exec(statement).Error; err != nil {
-					_ = db.Exec("ALTER TABLE " + legacyTableName + " RENAME TO " + entity.TableNameSMSVerificationCode).Error
-					return err
+			if legacyExists {
+				var legacyHasRows bool
+				if err := db.Raw("SELECT EXISTS(SELECT 1 FROM sms_verification_codes__legacy_scene LIMIT 1)").Scan(&legacyHasRows).Error; err != nil {
+					return fmt.Errorf("inspect SMS migration shadow records: %w", err)
+				}
+				if legacyHasRows {
+					return errors.New("unfinished SMS verification migration: primary is absent and legacy shadow retains records; manual recovery required; tables left unchanged")
 				}
 			}
 		}
-		if !db.Migrator().HasIndex(entity.TableNameSMSVerificationCode, "idx_sms_verification_codes_scene") {
-			if err := db.Exec("CREATE INDEX idx_sms_verification_codes_scene ON sms_verification_codes(scene)").Error; err != nil {
-				return err
-			}
-		}
 		return nil
+	}
+
+	if normalizedDriver == "sqlite" {
+		needsScene := !db.Migrator().HasColumn(entity.TableNameSMSVerificationCode, "scene")
+		needsIndex := !db.Migrator().HasIndex(entity.TableNameSMSVerificationCode, "idx_sms_verification_codes_scene")
+		if !needsScene && !needsIndex {
+			// An interrupted older rebuild can leave all records in the shadow.
+			// Inspect only; recovery must be explicit and must preserve both tables.
+			var legacyExists bool
+			if err := db.Raw("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?)", "sms_verification_codes__legacy_scene").Scan(&legacyExists).Error; err != nil {
+				return fmt.Errorf("inspect SMS migration shadow metadata: %w", err)
+			}
+			if legacyExists {
+				var rows struct {
+					PrimaryHasRows bool `gorm:"column:primary_has_rows"`
+					LegacyHasRows  bool `gorm:"column:legacy_has_rows"`
+				}
+				if err := db.Raw("SELECT EXISTS(SELECT 1 FROM sms_verification_codes LIMIT 1) AS primary_has_rows, EXISTS(SELECT 1 FROM sms_verification_codes__legacy_scene LIMIT 1) AS legacy_has_rows").Scan(&rows).Error; err != nil {
+					return fmt.Errorf("inspect SMS migration shadow records: %w", err)
+				}
+				if !rows.PrimaryHasRows && rows.LegacyHasRows {
+					return errors.New("unfinished SMS verification migration: primary is empty and legacy shadow retains records; manual recovery required; both tables preserved")
+				}
+			}
+			return nil
+		}
+		return withSQLiteSMSMigrationBoundary(db, func(tx *gorm.DB) error {
+			if !tx.Migrator().HasColumn(entity.TableNameSMSVerificationCode, "scene") {
+				statements := []string{
+					"ALTER TABLE sms_verification_codes RENAME TO sms_verification_codes__legacy_scene",
+					"CREATE TABLE sms_verification_codes (`id` integer PRIMARY KEY AUTOINCREMENT,`phone` varchar(32) NOT NULL,`scene` varchar(32) NOT NULL DEFAULT '',`code_hash` char(64) NOT NULL,`status` varchar(32) NOT NULL,`expires_at` datetime NOT NULL,`consumed_at` datetime,`request_ip` varchar(64),`created_at` datetime,`updated_at` datetime)",
+					"INSERT INTO sms_verification_codes (`id`,`phone`,`scene`,`code_hash`,`status`,`expires_at`,`consumed_at`,`request_ip`,`created_at`,`updated_at`) SELECT `id`,`phone`,'' AS `scene`,`code_hash`,`status`,`expires_at`,`consumed_at`,`request_ip`,`created_at`,`updated_at` FROM sms_verification_codes__legacy_scene",
+					"DROP TABLE sms_verification_codes__legacy_scene",
+				}
+				for _, statement := range statements {
+					if err := tx.Exec(statement).Error; err != nil {
+						return err
+					}
+				}
+			}
+			if !tx.Migrator().HasIndex(entity.TableNameSMSVerificationCode, "idx_sms_verification_codes_scene") {
+				return tx.Exec("CREATE INDEX idx_sms_verification_codes_scene ON sms_verification_codes(scene)").Error
+			}
+			return nil
+		})
 	}
 
 	if !db.Migrator().HasColumn(entity.TableNameSMSVerificationCode, "scene") {
@@ -533,7 +570,16 @@ func alterMoneyColumn(db *gorm.DB, item moneyColumn) error {
 }
 
 // RegisterDB 注册数据库
+// RegisterDB preserves the legacy entry while policy failures stop before migration.
 func RegisterDB(config configs.Config) *gorm.DB {
+	database, err := RegisterDBWithError(config)
+	if err != nil {
+		logger.FatalLog(err)
+	}
+	return database
+}
+
+func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB {
 	once.Do(func() {
 		var err error
 		var conn gorm.Dialector
@@ -600,6 +646,10 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		db.Statement.ConnPool = managedPool
 		dao.SetDefault(db)
 	})
+	if err := validateExistingSQLiteBillingLookupIndex(db); err != nil {
+		logger.FatalLog(err)
+	}
+
 	err := db.AutoMigrate(&entity.Tiku{})
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
@@ -642,16 +692,21 @@ func RegisterDB(config configs.Config) *gorm.DB {
 	if err := db.AutoMigrate(&entity.SystemSetting{}); err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate system settings fail: %w", err))
 	}
-	quotaRepairErr := runStartupMigration("ensureAccessTokenQuotaLimitData", func() error { return ensureAccessTokenQuotaLimitData(db) })
-	if quotaRepairErr != nil {
-		logger.SysLog(fmt.Sprintf("访问令牌总额度修复失败（不影响启动）：%v", quotaRepairErr))
+	// Historical invalid quota must never be silently converted to unlimited.
+	preserveDisabledInvalidQuota := false
+	if err := runStartupMigration("ensureAccessTokenQuotaLimitData", func() error {
+		var inspectErr error
+		preserveDisabledInvalidQuota, inspectErr = inspectAccessTokenQuotaLimitData(db)
+		return inspectErr
+	}); err != nil {
+		logger.FatalLog(fmt.Errorf("validate access token quota fail; preserve data for manual recovery: %w", err))
 	}
 
 	if err := ensureSMSVerificationSchema(db); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare sms verification schema fail: %w", err))
 	}
 
-	err = db.AutoMigrate(
+	accountDomainModels := []any{
 		&entity.SystemSetting{},
 		&entity.PriceRule{},
 		&entity.PaymentMethod{},
@@ -674,14 +729,18 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		&entity.UserScript{},
 		&entity.ScriptExchangeToken{},
 		&entity.ScriptRunSession{},
-	)
+	}
+	// Keep the historical quota column byte-for-byte when its disabled values
+	// cannot be converted. An additive column still lets ordinary Key queries
+	// and the new script Key path coexist on that older token schema.
+	if !preserveDisabledInvalidQuota {
+		accountDomainModels = append([]any{&entity.AccessToken{}}, accountDomainModels...)
+	} else if err := ensureScriptKeyLinkOnPreservedQuotaSchema(db); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare script Key link without changing quota: %w", err))
+	}
+	err = autoMigrateAccountDomainWithBillingLookupIndex(db, accountDomainModels)
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
-	}
-	if quotaRepairErr != nil {
-		logger.SysLog("访问令牌表结构迁移已跳过，避免超范围额度阻断启动；修复成功后将在下次启动重试")
-	} else if err := db.AutoMigrate(&entity.AccessToken{}); err != nil {
-		logger.FatalLog(fmt.Errorf("auto migrate access tokens fail: %w", err))
 	}
 	if err := runStartupMigration("ensureAIOCRCacheIDs", func() error { return ensureAIOCRCacheIDs(db) }); err != nil {
 		logger.SysLog(fmt.Sprintf("OCR 缓存 ID 回填失败（不影响启动，将在下次启动重试）：%v", err))
@@ -691,12 +750,16 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		logger.FatalLog(fmt.Errorf("prepare billing record indexes fail: %w", err))
 	}
 
+	if err := ensureSQLiteBillingLookupIndex(db); err != nil {
+		logger.FatalLog(err)
+	}
+
 	if err := runStartupMigration("ensureAuditCorrelationSchema", func() error { return ensureAuditCorrelationSchema(db) }); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare audit correlation schema fail: %w", err))
 	}
 
 	if err := runStartupMigration("ensureMoneyPrecisionSchema", func() error {
-		return ensureMoneyPrecisionSchemaWithOptions(db, quotaRepairErr != nil)
+		return ensureMoneyPrecisionSchemaWithOptions(db, preserveDisabledInvalidQuota)
 	}); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare money precision schema fail: %w", err))
 	}
@@ -719,7 +782,7 @@ func RegisterDB(config configs.Config) *gorm.DB {
 		logger.FatalLog(fmt.Errorf("prepare billing search mode schema fail: %w", err))
 	}
 	if err := runStartupMigration("ensureScriptPriceMultiplierSchema", func() error { return ensureScriptPriceMultiplierSchema(db) }); err != nil {
-		logger.SysLog(fmt.Sprintf("脚本答题倍率迁移失败（不影响启动）：%v", err))
+		logger.FatalLog(fmt.Errorf("prepare script answer price schema fail: %w", err))
 	}
 
 	// source-aware 归属地缓存使用新表，旧表保留以兼容 SQLite 和回滚；
@@ -730,27 +793,27 @@ func RegisterDB(config configs.Config) *gorm.DB {
 
 	// 题库 hash 迁移与 plat 列删除。两者都依赖 system_settings 表，
 	// 因此必须放在上面的 AutoMigrate（含 SystemSetting）之后。
-	// 失败只记日志、不阻断启动，标记未写入会在下次启动重试。
+	// hash 失败仍只记日志；plat 仅在确认 MySQL 危险残留列时阻断启动。
+	// 其它失败维持原来的日志/下次重试行为。
 	if err := runStartupMigration("ensureTikuHashWithoutPlatSchema", func() error { return ensureTikuHashWithoutPlatSchema(db) }); err != nil {
 		logger.SysLog(fmt.Sprintf("题库 hash 迁移失败（不影响启动）：%v", err))
 	}
 	if err := runStartupMigration("ensureTikuPlatColumnDropped", func() error { return ensureTikuPlatColumnDropped(db) }); err != nil {
+		var guardErr *tikuPlatStartupGuardError
+		if errors.As(err, &guardErr) && guardErr != nil {
+			logger.FatalLog(fmt.Errorf("prepare tiku.plat writable schema fail: %w", err))
+		}
+		// 非确认旧列的迁移错误（包括包装的 panic）维持原来的日志/继续策略。
 		logger.SysLog(fmt.Sprintf("tiku.plat 列删除失败（不影响启动）：%v", err))
 	}
 
 	ensureAccountDomainDefaults(db)
 
-	// 首先需要注册一个默认用户
-	bootstrapPassword := strings.TrimSpace(os.Getenv("TIKU_ADMIN_PASSWORD"))
-	if bootstrapPassword == "" {
-		bootstrapPassword = "123456"
-		logger.SysLog("未设置 TIKU_ADMIN_PASSWORD，管理员初始化密码使用 123456；请登录后立即修改密码")
+	// Apply only the preflighted credential plan. Environment never resets an existing account.
+	if err := applyAdminBootstrap(db, plan); err != nil {
+		logger.FatalLog(fmt.Errorf("apply admin bootstrap policy fail: %w", err))
 	}
-	hashedBootstrapPassword, err := util.HashPassword(bootstrapPassword)
-	if err != nil {
-		logger.FatalLog(fmt.Errorf("hash bootstrap admin password fail: %w", err))
-	}
-	bootstrapAdminAccount(db, hashedBootstrapPassword)
+
 	ensureAccountDomainDefaults(db)
 	if idempotencyCleanupStop == nil {
 		idempotencyCleanupStop = service.StartIdempotencyCleanup(db, time.Hour)

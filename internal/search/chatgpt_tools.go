@@ -31,19 +31,22 @@ type AIWebReadTool interface {
 }
 
 const (
-	aiToolSearchTimeout   = 30 * time.Second
-	aiToolWebReadTimeout  = 70 * time.Second
-	aiToolMaxSearches     = 3
-	aiToolMaxRounds       = 4
-	aiToolMaxQueryRunes   = 120
-	aiToolMaxResults      = 5
-	aiToolMaxSnippetRunes = 600
+	aiToolSearchTimeout       = 30 * time.Second
+	aiToolWebReadTimeout      = 70 * time.Second
+	aiToolMaxSearches         = 3
+	aiToolMaxRounds           = 4
+	aiToolMaxConfiguredBudget = 20
+	aiToolMaxOutputTokens     = 4096
+	aiToolMaxCallsPerRound    = 8
+	aiToolMaxQueryRunes       = 120
+	aiToolMaxResults          = 5
+	aiToolMaxSnippetRunes     = 600
 	// Bound a single tool result, not cumulative history; older evidence can be
 	// compressed and must not consume later configured tool-call opportunities.
-	aiToolMaxContentBytes = 16 * 1024 * 1024
-	// SSE includes per-token framing and repeated full snapshots. Bound transport
-	// memory separately from generation length, allowing long project answers.
-	aiToolMaxStreamBytes     = 32 * 1024 * 1024
+	aiToolMaxContentBytes = 16 * 1024
+	// Keep the approved transport cap even when SSE repeats full snapshots.
+	// Oversized answers must fail explicitly; compaction is not a stream bypass.
+	aiToolMaxStreamBytes     = 2 * 1024 * 1024
 	aiToolMaxArgumentBytes   = 4096
 	aiTikuMaxArgumentBytes   = 64 * 1024
 	aiToolMaxAttachmentURLs  = 4
@@ -374,7 +377,7 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 	if parent == nil {
 		parent = context.Background()
 	}
-	ctx, cancel := context.WithCancel(parent)
+	ctx, cancel := withAITotalTimeout(parent)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
 		return nil, debug, err
@@ -408,6 +411,7 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 		debug.Usage.OCRCalls = append(debug.Usage.OCRCalls, ocrCalls...)
 		debug.Usage.Attachments = append(debug.Usage.Attachments, diagnostics...)
 	}
+	debug.promptParts = parts
 	input := []any{
 		buildAIResponsesMessage("system", effectiveAISearchPrompt(in.Prompt)+"\n"+toolPrompt),
 		buildAIResponsesMessage("user", buildAIResponsesContentParts(parts)),
@@ -458,6 +462,13 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 			maxModelCalls, maxSearches, maxWebReads = 1, 0, 0
 		}
 	}
+	if compression != nil {
+		// Explicit compression diagnostics include their summary attempts in the
+		// same approved 20-opportunity envelope as the selected tool rounds.
+		maxModelCalls += min(compactor.config.MaxAttempts, aiToolMaxConfiguredBudget-maxModelCalls)
+	}
+	compactor.modelBudget = maxModelCalls
+	compactor.reserveAnswer = true
 	_, webReaderAvailable := in.SearchTool.(AIWebReadTool)
 	searchAvailable := in.SearchTool != nil
 	tikuSearchAvailable := in.TikuSearchTool != nil
@@ -467,6 +478,7 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 	hasModelResponse := false
 	combinedOCRTest := testTool == "image_ocr_and_tools"
 	toolsDisabled := testTool == "none" || testTool == "image_ocr" || !searchAvailable && !webReaderAvailable && !tikuSearchAvailable
+	toolContentBytes := 0
 	results := make(map[string]string)
 	webReadResults := make(map[string]string)
 	tikuResults := make(map[string]string)
@@ -474,7 +486,8 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 	var requestBodies, rawResponses []string
 	modelName := strings.TrimSpace(in.Model)
 	backupUsed := false
-	for round := 0; round < maxModelCalls; round++ {
+	for round := 0; round+compactor.summaryRequests < maxModelCalls; round++ {
+		compactor.answerRounds = round
 		if err := ctx.Err(); err != nil {
 			return nil, debug, fmt.Errorf("AI联网搜题请求已取消: %w", err)
 		}
@@ -490,8 +503,8 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 		}
 		testsComplete := testTool != "" && (testedTools[testTool] || (testTool == "both" && testedTools["web_search"] && testedTools["web_read"]) || (combinedOCRTest && testedTools["web_search"] && testedTools["web_read"]))
 		searchBudgetUsed := searches + tikuSearches
-		finalRound := round == maxModelCalls-1 || toolsDisabled || testsComplete || (searchBudgetUsed >= maxSearches && (!webReaderAvailable || webReads >= maxWebReads))
-		remainingModelCalls := maxModelCalls - round - 1
+		finalRound := round+compactor.summaryRequests == maxModelCalls-1 || toolsDisabled || testsComplete || (searchBudgetUsed >= maxSearches && (!webReaderAvailable || webReads >= maxWebReads))
+		remainingModelCalls := maxModelCalls - round - compactor.summaryRequests - 1
 		remainingSearches := maxSearches - searches - tikuSearches
 		if remainingSearches < 0 {
 			remainingSearches = 0
@@ -509,24 +522,25 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 		roundInput := append([]any(nil), input...)
 		roundInput = append(roundInput, buildAIResponsesMessage("system", buildAISearchBudgetPrompt(remainingModelCalls, remainingSearches, remainingWebReads, finalRound)))
 		payload := openAIResponsesRequest{
-			Model: modelName, Stream: true, Store: false, Input: roundInput,
+			MaxOutputTokens: aiToolMaxOutputTokens,
+			Model:           modelName, Stream: true, Store: false, Input: roundInput,
 			Include:           []string{"reasoning.encrypted_content"},
 			ContextManagement: compactor.requestContextManagement(),
 		}
+		tikuOffered := false
 		if finalRound {
 			payload.Input = roundInput
 		} else {
 			tools := []openAITool{}
-			if testTool == "" || ((testTool == "web_search" || testTool == "both" || combinedOCRTest) && !testedTools["web_search"]) {
-				if testTool != "" || searches+tikuSearches < maxSearches {
-					tools = append(tools, aiWebSearchToolDefinition())
-				}
+			if searchAvailable && searchBudgetUsed < maxSearches && (testTool == "" || ((testTool == "web_search" || testTool == "both" || combinedOCRTest) && !testedTools["web_search"])) {
+				tools = append(tools, aiWebSearchToolDefinition())
 			}
 			if webReaderAvailable && (testTool == "" || ((testTool == "web_read" || testTool == "both" || combinedOCRTest) && !testedTools["web_read"])) {
 				tools = append(tools, aiWebReadToolDefinition())
 			}
-			if testTool == "" && tikuSearchAvailable && hasModelResponse && searchBudgetUsed < maxSearches {
+			if testTool == "" && tikuSearchAvailable && (!searchAvailable || hasModelResponse) && searchBudgetUsed < maxSearches {
 				tools = append(tools, aiTikuSearchToolDefinition())
+				tikuOffered = true
 			}
 			payload.Tools = buildAIResponsesTools(tools)
 			payload.ToolChoice = "auto"
@@ -543,21 +557,22 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 		var callErr error
 		attempts := in.aiSearchRetryAttempts()
 		attempted := 0
+		retryCtx := withAISearchRetryStart(ctx)
 		for retry := 0; retry < attempts; retry++ {
-			if retry > 0 && !sleepAISearchRetryBackoff(ctx, retry, callErr) {
+			if retry > 0 && !sleepAISearchRetryBackoff(retryCtx, retry, callErr) {
 				break
 			}
 			attempted++
 			for _, candidateEndpoint := range endpoints {
 				endpoint = candidateEndpoint
 				for recovery := 0; ; recovery++ {
-					in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Attempt: retry + 1, AttemptBudget: attempts, Stage: "模型调用开始", Model: modelName, Endpoint: endpoint, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, RequestBody: string(encoded)})
+					in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Attempt: retry + 1, AttemptBudget: attempts, Stage: "模型调用开始", Model: modelName, Endpoint: endpoint, ModelCallCount: round + 1 + compactor.summaryRequests, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches + tikuSearches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, RequestBody: string(encoded)})
 					attemptStartedAt := time.Now()
 					result, status, callErr = in.requestAIToolRound(ctx, endpoint, encoded)
 					if callErr == nil && requireInitialSearch && (len(result.Calls) == 0 || result.Calls[0].Function.Name != "web_search") {
 						callErr = fmt.Errorf("AI联网搜题首次工具调用必须为 web_search，尚未执行搜索")
 					}
-					responseTrace := AISearchTrace{Round: round + 1, Attempt: retry + 1, AttemptBudget: attempts, Stage: "模型响应", Endpoint: endpoint, Model: modelName, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, Status: fmt.Sprintf("%d", status), DurationMs: time.Since(attemptStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, ReasoningChars: result.ReasoningChars, ContentPreview: result.Content, FullResponse: formatAIModelCompleteResponse(result), RawResponse: result.Raw, Error: errorString(callErr)}
+					responseTrace := AISearchTrace{Round: round + 1, Attempt: retry + 1, AttemptBudget: attempts, Stage: "模型响应", Endpoint: endpoint, Model: modelName, ModelCallCount: round + 1 + compactor.summaryRequests, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, Status: fmt.Sprintf("%d", status), DurationMs: time.Since(attemptStartedAt).Milliseconds(), SearchCount: searches + tikuSearches, SearchBudget: maxSearches, RemainingSearches: remainingSearches, ReasoningChars: result.ReasoningChars, ContentPreview: result.Content, FullResponse: formatAIModelCompleteResponse(result), RawResponse: result.Raw, Error: errorString(callErr)}
 					if call, ok := buildAIModelCallUsage(result.Usage, modelName, round+1, retry+1); ok {
 						appendAIModelCallUsage(&debug.Usage, call)
 						applyAIModelCallUsageToTrace(&responseTrace, debug.Usage.ModelCalls[len(debug.Usage.ModelCalls)-1])
@@ -577,6 +592,14 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 						if err != nil {
 							callErr = fmt.Errorf("上下文超限后压缩失败: %w", err)
 							break
+						}
+						remainingModelCalls = maxModelCalls - round - compactor.summaryRequests - 1
+						if remainingModelCalls == 0 {
+							finalRound = true
+							requireInitialSearch = false
+							payload.Tools = nil
+							payload.ToolChoice = nil
+							remainingSearches, remainingWebReads = 0, 0
 						}
 						payload.Input = append(append([]any(nil), input...), buildAIResponsesMessage("system", buildAISearchBudgetPrompt(remainingModelCalls, remainingSearches, remainingWebReads, finalRound)))
 						payload.ContextManagement = compactor.requestContextManagement()
@@ -668,28 +691,32 @@ func (in *ChatGptClient) searchAnswerWithToolModeWithOptions(parent context.Cont
 			}
 			if call.Function.Name == "web_read" {
 				toolURL := parseAISearchWebReadURL(call.Function.Arguments)
-				in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "网页读取工具调用开始", Query: toolURL, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: maxSearches - searches})
-				content, abort := in.executeAIWebReadTool(ctx, call, &webReads, maxWebReads, webReadResults, nil, &debug.Usage, round+1, maxModelCalls, maxSearches)
-				in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "网页读取工具完成", Query: toolURL, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, DurationMs: time.Since(toolStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: maxSearches - searches, Status: map[bool]string{true: "停止", false: "继续"}[abort], ResultCount: countAIWebReadResult(content)})
+				in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "网页读取工具调用开始", Query: toolURL, ModelCallCount: round + 1 + compactor.summaryRequests, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches + tikuSearches, SearchBudget: maxSearches, RemainingSearches: maxSearches - searches - tikuSearches})
+				content, abort := in.executeAIWebReadTool(ctx, call, &webReads, maxWebReads, webReadResults, &toolContentBytes, &debug.Usage, round+1, maxModelCalls, maxSearches)
+				in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "网页读取工具完成", Query: toolURL, ModelCallCount: round + 1 + compactor.summaryRequests, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, DurationMs: time.Since(toolStartedAt).Milliseconds(), SearchCount: searches + tikuSearches, SearchBudget: maxSearches, RemainingSearches: maxSearches - searches - tikuSearches, Status: map[bool]string{true: "停止", false: "继续"}[abort], ResultCount: countAIWebReadResult(content)})
 				toolOutput = content
 				input = append(input, map[string]any{"type": "function_call_output", "call_id": call.ID, "output": toolOutput})
 				toolsDisabled = toolsDisabled || abort
 				continue
 			}
 			if call.Function.Name == "tiku_search" {
+				if !tikuOffered {
+					input = append(input, map[string]any{"type": "function_call_output", "call_id": call.ID, "output": `{"error":"本轮未提供本地题库检索工具。"}`})
+					continue
+				}
 				toolQuery := parseAITikuSearchToolQuery(call.Function.Arguments)
-				toolOutput, abort := in.executeAITikuSearchTool(ctx, call, &searches, &tikuSearches, maxSearches, tikuResults, &debug.Usage, round+1, maxModelCalls)
-				in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "本地题库检索完成", Query: toolQuery, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches + tikuSearches, SearchBudget: maxSearches, RemainingSearches: maxSearches - searches - tikuSearches, Status: map[bool]string{true: "停止", false: "继续"}[abort], ResultCount: countAITikuSearchResults(toolOutput)})
+				toolOutput, abort := in.executeAITikuSearchTool(ctx, call, &searches, &tikuSearches, maxSearches, tikuResults, &toolContentBytes, &debug.Usage, round+1, maxModelCalls)
+				in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "本地题库检索完成", Query: toolQuery, ModelCallCount: round + 1 + compactor.summaryRequests, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches + tikuSearches, SearchBudget: maxSearches, RemainingSearches: maxSearches - searches - tikuSearches, Status: map[bool]string{true: "停止", false: "继续"}[abort], ResultCount: countAITikuSearchResults(toolOutput)})
 				input = append(input, map[string]any{"type": "function_call_output", "call_id": call.ID, "output": toolOutput})
 				toolsDisabled = toolsDisabled || abort
 				continue
 			}
 			toolQuery := parseAISearchToolQuery(call.Function.Arguments)
-			in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "搜索工具调用开始", Query: toolQuery, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches + tikuSearches, SearchBudget: maxSearches, RemainingSearches: maxSearches - searches - tikuSearches})
+			in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "搜索工具调用开始", Query: toolQuery, ModelCallCount: round + 1 + compactor.summaryRequests, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, SearchCount: searches + tikuSearches, SearchBudget: maxSearches, RemainingSearches: maxSearches - searches - tikuSearches})
 			totalSearches := searches + tikuSearches
-			content, abort := in.executeAISearchTool(ctx, call, &totalSearches, maxSearches, results, nil, &debug.Usage, round+1, maxModelCalls)
+			content, abort := in.executeAISearchTool(ctx, call, &totalSearches, maxSearches, results, &toolContentBytes, &debug.Usage, round+1, maxModelCalls)
 			searches = totalSearches - tikuSearches
-			in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "搜索工具完成", Query: toolQuery, ModelCallCount: round + 1, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, DurationMs: time.Since(toolStartedAt).Milliseconds(), SearchCount: searches, SearchBudget: maxSearches, RemainingSearches: maxSearches - searches, Status: map[bool]string{true: "停止", false: "继续"}[abort], ResultCount: countAISearchToolResults(content)})
+			in.appendAISearchTrace(&debug.Usage, AISearchTrace{Round: round + 1, Stage: "搜索工具完成", Query: toolQuery, ModelCallCount: round + 1 + compactor.summaryRequests, ModelCallBudget: maxModelCalls, RemainingModelCalls: remainingModelCalls, DurationMs: time.Since(toolStartedAt).Milliseconds(), SearchCount: searches + tikuSearches, SearchBudget: maxSearches, RemainingSearches: maxSearches - searches - tikuSearches, Status: map[bool]string{true: "停止", false: "继续"}[abort], ResultCount: countAISearchToolResults(content)})
 			toolOutput = content
 			input = append(input, map[string]any{"type": "function_call_output", "call_id": call.ID, "output": toolOutput})
 			toolsDisabled = toolsDisabled || abort
@@ -711,7 +738,7 @@ func (in *ChatGptClient) aiSearchBudgets() (modelCalls int, searches int, webRea
 	if webReads <= 0 {
 		webReads = 5
 	}
-	return modelCalls, searches, webReads
+	return min(modelCalls, aiToolMaxConfiguredBudget), min(searches, aiToolMaxConfiguredBudget), min(webReads, aiToolMaxConfiguredBudget)
 }
 
 func buildAISearchBudgetPrompt(remainingModelCalls int, remainingSearches int, remainingWebReads int, finalRound bool) string {
@@ -772,6 +799,7 @@ func buildAISearchToolPromptParts(ctx context.Context, req model.SearchRequest, 
 	if len(urls) > aiToolMaxAttachmentURLs {
 		urls = urls[:aiToolMaxAttachmentURLs]
 	}
+	var loadedImageURLs []string
 	if client != nil {
 		bounded := *client
 		transport := bounded.Transport
@@ -779,12 +807,14 @@ func buildAISearchToolPromptParts(ctx context.Context, req model.SearchRequest, 
 			transport = http.DefaultTransport
 		}
 		bounded.Transport = aiToolContextTransport{ctx: ctx, base: transport}
-		parts = append(parts, downloadAISearchAttachmentParts(&bounded, urls)...)
+		attachmentParts, loadedURLs := downloadAISearchAttachmentPartsWithImageURLs(&bounded, urls)
+		parts = append(parts, attachmentParts...)
+		loadedImageURLs = loadedURLs
 	}
-	if len(urls) > 0 {
+	if len(loadedImageURLs) > 0 {
 		var references strings.Builder
 		references.WriteString("图片对应关系（按出现顺序）：")
-		for i, address := range urls {
+		for i, address := range loadedImageURLs {
 			fmt.Fprintf(&references, "\n图%s为：%s", formatAISearchImageIndex(i+1), address)
 		}
 		parts = append(parts, openAIContentPart{Type: "text", Text: references.String()})
@@ -893,7 +923,7 @@ func readAIResponsesStream(body io.Reader, firstToken chan<- struct{}) (result a
 	completeContent := ""
 	defer func() { result.Raw = raw.String() }()
 	callsByItem := make(map[string]*openAIToolCall)
-	callOrder := make([]string, 0)
+	callOrder := make([]string, 0, aiToolMaxCallsPerRound)
 	completed := false
 	eventName := ""
 	addOutputItem := func(outputIndex int, encoded json.RawMessage, done bool) error {
@@ -923,6 +953,9 @@ func readAIResponsesStream(body io.Reader, firstToken chan<- struct{}) (result a
 		}
 		call, exists := callsByItem[key]
 		if !exists {
+			if len(callOrder) >= aiToolMaxCallsPerRound {
+				return fmt.Errorf("AI单轮工具调用过多")
+			}
 			call = &openAIToolCall{Type: "function"}
 			callsByItem[key] = call
 			callOrder = append(callOrder, key)
@@ -1006,6 +1039,9 @@ func readAIResponsesStream(body io.Reader, firstToken chan<- struct{}) (result a
 		case "response.function_call_arguments.delta":
 			call := callsByItem[event.ItemID]
 			if call == nil {
+				if len(callOrder) >= aiToolMaxCallsPerRound {
+					return result, fmt.Errorf("AI单轮工具调用过多")
+				}
 				call = &openAIToolCall{Type: "function"}
 				callsByItem[event.ItemID] = call
 				callOrder = append(callOrder, event.ItemID)
@@ -1196,9 +1232,12 @@ func (in *ChatGptClient) executeAIWebReadTool(ctx context.Context, call openAITo
 		return failure("url必须为1至2048个字符，请提供完整HTTP/HTTPS网页地址。", false)
 	}
 	if previous, exists := cache[input.URL]; exists {
+		if !consumeAIToolContentBudget(previous, contentBytes) {
+			return failure("网页正文超过累计资料预算，请根据已有资料直接作答。", true)
+		}
 		return previous, false
 	}
-	if *reads >= maxReads {
+	if *reads >= maxReads || (contentBytes != nil && *contentBytes >= aiToolMaxContentBytes) {
 		return failure("网页读取预算已用尽，请根据已有资料直接作答。", true)
 	}
 	*reads++
@@ -1228,14 +1267,18 @@ func (in *ChatGptClient) executeAIWebReadTool(ctx context.Context, call openAITo
 	}
 	content := map[string]string{"url": input.URL, "markdown": markdown}
 	encoded, _ := json.Marshal(content)
-	for len(encoded) > aiToolMaxContentBytes && len([]rune(markdown)) > 0 {
+	remaining := aiToolMaxContentBytes
+	if contentBytes != nil {
+		remaining -= *contentBytes
+	}
+	for len(encoded) > remaining && len([]rune(markdown)) > 0 {
 		runes := []rune(markdown)
 		markdown = string(runes[:len(runes)-max(1, len(runes)/10)])
 		content["markdown"] = markdown
 		encoded, _ = json.Marshal(content)
 	}
-	if len(encoded) > aiToolMaxContentBytes {
-		return failure("单次网页正文超过大小限制，请根据搜索摘要直接作答。", false)
+	if len(encoded) > remaining {
+		return failure("网页正文超过累计资料预算，请根据搜索摘要直接作答。", true)
 	}
 	if contentBytes != nil {
 		*contentBytes += len(encoded)
@@ -1250,7 +1293,7 @@ func (in *ChatGptClient) executeAISearchTool(ctx context.Context, call openAIToo
 		encoded, _ := json.Marshal(map[string]string{"error": message})
 		return string(encoded), abort
 	}
-	if call.Type != "function" || call.Function.Name != "web_search" {
+	if call.Type != "function" || call.Function.Name != "web_search" || in.SearchTool == nil {
 		return failure("只支持web_search，请直接作答。", true)
 	}
 	var req uapi.SearchAggregateRequest
@@ -1272,9 +1315,12 @@ func (in *ChatGptClient) executeAISearchTool(ctx context.Context, call openAIToo
 	encoded, _ := json.Marshal(req)
 	key := string(encoded)
 	if previous, ok := cache[key]; ok {
+		if !consumeAIToolContentBudget(previous, contentBytes) {
+			return failure("搜索资料超过累计资料预算，请直接作答。", true)
+		}
 		return previous, false
 	}
-	if *searches >= maxSearches {
+	if *searches >= maxSearches || (contentBytes != nil && *contentBytes >= aiToolMaxContentBytes) {
 		return failure("搜索预算已用尽，请根据已有资料直接作答。", true)
 	}
 	*searches++
@@ -1339,7 +1385,7 @@ func (in *ChatGptClient) executeAISearchTool(ctx context.Context, call openAIToo
 			break
 		}
 		if len(items) == 0 {
-			return failure("单次搜索资料超过大小限制，请改用更简短的关键词。", false)
+			return failure("搜索资料超过累计资料预算，请直接作答。", true)
 		}
 		items = items[:len(items)-1]
 	}
@@ -1348,6 +1394,22 @@ func (in *ChatGptClient) executeAISearchTool(ctx context.Context, call openAIToo
 	}
 	cache[key] = string(body)
 	return string(body), false
+}
+
+// Count evidence reinserted into a new model turn even when the underlying
+// tool result is served from cache. Cache hits still never run or bill the tool.
+func consumeAIToolContentBudget(content string, contentBytes *int) bool {
+	remaining := aiToolMaxContentBytes
+	if contentBytes != nil {
+		remaining -= *contentBytes
+	}
+	if len(content) > remaining {
+		return false
+	}
+	if contentBytes != nil {
+		*contentBytes += len(content)
+	}
+	return true
 }
 
 func truncateAIToolText(value string, max int) string {

@@ -411,7 +411,7 @@ func countAITikuSearchResults(content string) int {
 	return result.CandidateCount
 }
 
-func (in *ChatGptClient) executeAITikuSearchTool(ctx context.Context, call openAIToolCall, webSearches, localSearches *int, maxSearches int, cache map[string]string, usage *AISearchUsage, roundContext ...int) (string, bool) {
+func (in *ChatGptClient) executeAITikuSearchTool(ctx context.Context, call openAIToolCall, webSearches, localSearches *int, maxSearches int, cache map[string]string, contentBytes *int, usage *AISearchUsage, roundContext ...int) (string, bool) {
 	failure := func(message string) string {
 		encoded, _ := json.Marshal(map[string]string{"error": message})
 		return string(encoded)
@@ -424,7 +424,9 @@ func (in *ChatGptClient) executeAITikuSearchTool(ctx context.Context, call openA
 			in.appendAISearchTrace(usage, AISearchTrace{Stage: "本地题库检索未执行", Query: callUsage.Query, Error: callUsage.Error})
 		}
 		callUsage.DurationMs = time.Since(started).Milliseconds()
-		usage.TikuSearchCalls = append(usage.TikuSearchCalls, callUsage)
+		if usage != nil {
+			usage.TikuSearchCalls = append(usage.TikuSearchCalls, callUsage)
+		}
 	}
 	if call.Type != "function" || call.Function.Name != "tiku_search" || in.TikuSearchTool == nil {
 		callUsage.Error = "本地题库检索工具不可用"
@@ -468,8 +470,15 @@ func (in *ChatGptClient) executeAITikuSearchTool(ctx context.Context, call openA
 	}
 	encoded, _ := json.Marshal(input)
 	cacheKey := string(encoded)
+	budgetFailure := failure("本地题库结果超过累计资料预算，请根据已有资料直接作答。")
 	if previous, exists := cache[cacheKey]; exists {
+		if previous == budgetFailure || !consumeAIToolContentBudget(previous, contentBytes) {
+			return budgetFailure, true
+		}
 		return previous, false
+	}
+	if contentBytes != nil && *contentBytes >= aiToolMaxContentBytes {
+		return budgetFailure, true
 	}
 	if *webSearches+*localSearches >= maxSearches {
 		callUsage.Error = "搜索调用预算已用尽"
@@ -499,6 +508,8 @@ func (in *ChatGptClient) executeAITikuSearchTool(ctx context.Context, call openA
 	if len(result.Candidates) > aiTikuMaxCandidates {
 		result.Candidates = result.Candidates[:aiTikuMaxCandidates]
 	}
+	// Normalize a copy; the tool can return shared/cached DB results.
+	result.Candidates = append([]AITikuSearchCandidate{}, result.Candidates...)
 	for index := range result.Candidates {
 		candidate := &result.Candidates[index]
 		candidate.Question = truncateAITikuText(candidate.Question, 12000)
@@ -511,6 +522,8 @@ func (in *ChatGptClient) executeAITikuSearchTool(ctx context.Context, call openA
 		if len(candidate.Answers) > 100 {
 			candidate.Answers = candidate.Answers[:100]
 		}
+		candidate.Options = append([]string(nil), candidate.Options...)
+		candidate.Answers = append([]string(nil), candidate.Answers...)
 		for optionIndex := range candidate.Options {
 			candidate.Options[optionIndex] = truncateAITikuText(candidate.Options[optionIndex], 2048)
 		}
@@ -518,10 +531,25 @@ func (in *ChatGptClient) executeAITikuSearchTool(ctx context.Context, call openA
 			candidate.Answers[answerIndex] = truncateAITikuText(candidate.Answers[answerIndex], 2048)
 		}
 	}
+	// This completed query remains billable even if its evidence must be
+	// trimmed or omitted. Never represent omitted candidates as a real miss.
 	finish()
-	content := marshalAITikuSearchResult(result)
-	cache[cacheKey] = content
-	return content, false
+	for {
+		result.CandidateCount = len(result.Candidates)
+		content := marshalAITikuSearchResult(result)
+		if consumeAIToolContentBudget(content, contentBytes) {
+			cache[cacheKey] = content
+			return content, false
+		}
+		if len(result.Candidates) <= 1 {
+			break
+		}
+		result.Candidates = result.Candidates[:len(result.Candidates)-1]
+	}
+	// Do not repeat a real lookup if its full shortlist did not fit.
+	// Budget failures stop tool execution before the next model round.
+	cache[cacheKey] = budgetFailure
+	return budgetFailure, true
 }
 
 func truncateAITikuText(value string, maxRunes int) string {

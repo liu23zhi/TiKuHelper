@@ -38,7 +38,7 @@ func TestTicketWecomSettingsUpdateRedactsAndPreservesWebhook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !settings.Enabled || !settings.Configured || settings.WebhookURL != "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=secret" || settings.Preview != "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=已配置" {
+	if !settings.Enabled || !settings.Configured || settings.WebhookURL != "" || settings.Preview != "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=已配置" {
 		t.Fatalf("unexpected settings: %+v", settings)
 	}
 	if len(settings.MentionedList) != 2 {
@@ -47,6 +47,22 @@ func TestTicketWecomSettingsUpdateRedactsAndPreservesWebhook(t *testing.T) {
 	settings, err = UpdateTicketWecomSettingsWithDB(db, UpdateTicketWecomSettingsInput{Enabled: &enabled, WebhookURL: SecretMask})
 	if err != nil || !settings.Configured {
 		t.Fatalf("masked update must preserve URL: %+v %v", settings, err)
+	}
+	if settings.WebhookURL != "" {
+		t.Fatal("masked update returned a stored credential")
+	}
+	settings, err = UpdateTicketWecomSettingsWithDB(db, UpdateTicketWecomSettingsInput{Enabled: &enabled})
+	if err != nil || !settings.Configured || settings.WebhookURL != "" {
+		t.Fatalf("blank update must preserve without exposing URL: configured=%t error=%v", settings.Configured, err)
+	}
+	config, err := GetTicketWecomConfigWithDB(db)
+	if err != nil || config.WebhookURL != "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=secret" {
+		t.Fatal("mask/blank update changed the stored webhook")
+	}
+	disabled := false
+	settings, err = UpdateTicketWecomSettingsWithDB(db, UpdateTicketWecomSettingsInput{Enabled: &disabled, ClearWebhook: true})
+	if err != nil || settings.Configured || settings.WebhookURL != "" {
+		t.Fatal("explicit clear did not remove the stored webhook")
 	}
 }
 

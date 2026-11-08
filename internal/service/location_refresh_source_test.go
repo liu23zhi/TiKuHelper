@@ -172,7 +172,7 @@ func TestRefreshLocationCacheRecordFollowerConvertsItsOwnOriginalSource(t *testi
 		delete(locationLookupGroup.calls, flightKey)
 		locationLookupGroup.mu.Unlock()
 	})
-	row, err := RefreshLocationCacheRecordWithDB(db, "ip", "8.8.8.8", "legacy", LocationQueryOptions{})
+	row, err := RefreshLocationCacheRecordWithDB(db, "ip", "8.8.8.8", "legacy", LocationQueryOptions{UAPIKey: "uapi-key"})
 	if err != nil || row.Source != "" || row.Address != "后续刷新地址" || row.RawJSON != `{"version":2}` {
 		t.Fatalf("follower overwrote a newer target with the shared old result: %+v err=%v", row, err)
 	}
@@ -202,7 +202,7 @@ func TestRefreshLocationCacheRecordFollowerDoesNotRecreateDeletedTarget(t *testi
 		delete(locationLookupGroup.calls, flightKey)
 		locationLookupGroup.mu.Unlock()
 	})
-	if _, err := RefreshLocationCacheRecordWithDB(db, "ip", "8.8.8.8", "legacy", LocationQueryOptions{}); !errors.Is(err, gorm.ErrRecordNotFound) {
+	if _, err := RefreshLocationCacheRecordWithDB(db, "ip", "8.8.8.8", "legacy", LocationQueryOptions{UAPIKey: "uapi-key"}); !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Fatalf("missing target must fail without replaying a stale result, got %v", err)
 	}
 	var after []entity.LocationCache
@@ -216,12 +216,12 @@ func TestRefreshLocationCacheWithoutOriginalSourceKeepsCompatibility(t *testing.
 		_, _ = w.Write([]byte(`{"ip":"8.8.8.8","region":"新地址"}`))
 	}))
 	defer server.Close()
-	newDefaultLocationClient(t, server, "")
+	newDefaultLocationClient(t, server, "uapi-key")
 	db := newLocationTestDB(t)
 	if err := db.Create(&entity.LocationCache{Kind: "ip", LookupKey: "8.8.8.8", Source: "legacy", Address: "历史地址"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RefreshLocationCacheWithDB(db, "ip", "8.8.8.8", LocationQueryOptions{}); err != nil {
+	if _, err := RefreshLocationCacheWithDB(db, "ip", "8.8.8.8", LocationQueryOptions{UAPIKey: "uapi-key"}); err != nil {
 		t.Fatal(err)
 	}
 	var rows []entity.LocationCache

@@ -372,12 +372,13 @@ func TestDownloadAISearchAttachmentRetriesReadOnlyFailure(t *testing.T) {
 	}
 }
 
-func TestBuildAISearchPromptPartsReturnsNoAttachmentsWhenClientMissing(t *testing.T) {
-	parts := buildAISearchPromptParts(model.SearchRequest{Question: "题目 https://example.com/a.png"}, nil)
-	if len(parts) != 2 {
-		t.Fatalf("expected text plus reference text, got %d parts", len(parts))
+func TestBuildAISearchPromptPartsReturnsNoAttachmentsOrReferencesWhenClientMissing(t *testing.T) {
+	req := model.SearchRequest{Question: "题目 https://example.com/a.png"}
+	parts := buildAISearchPromptParts(req, nil)
+	if len(parts) != 1 {
+		t.Fatalf("expected original prompt only without delivered images, got %d parts", len(parts))
 	}
-	if parts[0].Type != "text" || parts[1].Type != "text" {
-		t.Fatalf("expected text-only parts, got %+v", parts)
+	if parts[0].Type != "text" || parts[0].Text != buildAISearchPrompt(req) {
+		t.Fatalf("expected unchanged prompt text only, got %+v", parts)
 	}
 }

@@ -101,6 +101,7 @@ func TestLocationCacheBatchRefreshValidatesSelectedSourceWithoutKey(t *testing.T
 	}{
 		{role: "user", source: "", status: http.StatusForbidden},
 		{role: "admin", source: "commercial", status: http.StatusServiceUnavailable},
+		{role: "admin", source: "", status: http.StatusServiceUnavailable},
 		{role: "admin", source: "legacy", status: http.StatusBadRequest},
 	} {
 		recorder := httptest.NewRecorder()
@@ -168,8 +169,8 @@ func TestUAPIIPInfoRejectsUnknownSource(t *testing.T) {
 	}
 }
 
-// 普通手机号查询允许不配置密钥，configured 只表示是否存在密钥。
-func TestUAPIPhoneInfoWithoutAPIKeyReturnsLocation(t *testing.T) {
+// 缺少密钥时只可返回已有缓存，configured 仍准确表示是否存在密钥。
+func TestUAPIPhoneInfoWithoutAPIKeyReturnsCachedLocation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	newUAPILocationTestDB(t)
 	originalLookup := lookupPhoneLocationsDetailed
@@ -196,7 +197,7 @@ func TestUAPIPhoneInfoWithoutAPIKeyReturnsLocation(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 	if calls != 1 || payload.Configured || payload.Data["13800138000"].Address != "广东深圳 移动" {
-		t.Fatalf("expected keyless ordinary location, got %+v calls=%d", payload, calls)
+		t.Fatalf("expected existing cached location without new external calls, got %+v calls=%d", payload, calls)
 	}
 	for _, testCase := range []struct {
 		role   string
@@ -213,7 +214,7 @@ func TestUAPIPhoneInfoWithoutAPIKeyReturnsLocation(t *testing.T) {
 	}
 }
 
-func TestLocationCacheLookupSuccessReportsActualKeyConfiguration(t *testing.T) {
+func TestLocationCacheLookupReportsKeyRequirementAndConfiguration(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	originalRefresh, originalManual := refreshLocationCache, manualLookupLocationCache
 	t.Cleanup(func() { refreshLocationCache, manualLookupLocationCache = originalRefresh, originalManual })
@@ -243,6 +244,9 @@ func TestLocationCacheLookupSuccessReportsActualKeyConfiguration(t *testing.T) {
 					if kind != "phone" || lookupKey != "13800138000" || options.UAPIKey != key || options.Source != "" {
 						t.Fatalf("unexpected lookup: kind=%s key=%s options=%+v", kind, lookupKey, options)
 					}
+					if key == "" {
+						return entity.LocationCache{}, service.ErrLocationNotConfigured
+					}
 					return entity.LocationCache{Kind: kind, LookupKey: lookupKey, Address: "广东深圳 移动"}, nil
 				}
 				if endpoint.manual {
@@ -267,7 +271,7 @@ func TestLocationCacheLookupSuccessReportsActualKeyConfiguration(t *testing.T) {
 				if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
 					t.Fatal(err)
 				}
-				if recorder.Code != http.StatusOK || payload.Configured != (key != "") || payload.Data.Address != "广东深圳 移动" || calls != 1 {
+				if (key == "" && (recorder.Code != http.StatusServiceUnavailable || payload.Configured || payload.Data.Address != "")) || (key != "" && (recorder.Code != http.StatusOK || !payload.Configured || payload.Data.Address != "广东深圳 移动")) || calls != 1 {
 					t.Fatalf("incorrect success response: status=%d payload=%+v calls=%d", recorder.Code, payload, calls)
 				}
 				if rejected := perform("user", body); rejected.Code != http.StatusForbidden || calls != 1 {
@@ -440,5 +444,22 @@ func TestUAPIMyLocationsAllowsOnlyOwnedIPs(t *testing.T) {
 	recorder = performUAPIRequest(t, "/adapter-service/uapi/my-locations?ips=9.9.9.9", "user", UAPIMyLocations)
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("expected arbitrary IP lookup to be forbidden, got %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestUAPIPhoneInfoWithoutAPIKeyCacheMissRequiresConfiguration(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	newUAPILocationTestDB(t)
+	original := lookupPhoneLocationsDetailed
+	t.Cleanup(func() { lookupPhoneLocationsDetailed = original })
+	lookupPhoneLocationsDetailed = func(_ *gorm.DB, _ []string, options service.LocationQueryOptions) (map[string]service.PhoneLocation, error) {
+		if options.UAPIKey != "" {
+			t.Fatal("expected missing key")
+		}
+		return map[string]service.PhoneLocation{}, service.ErrLocationNotConfigured
+	}
+	recorder := performUAPIRequest(t, "/adapter-service/uapi/phoneinfo?phone=13800138000", "admin", UAPIPhoneInfo)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"configured":false`) || !strings.Contains(recorder.Body.String(), service.LocationQueryErrorMessage(service.ErrLocationNotConfigured)) {
+		t.Fatalf("cache miss must preserve degraded200 with unconfigured/error message: %d %s", recorder.Code, recorder.Body.String())
 	}
 }

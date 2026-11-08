@@ -18,12 +18,13 @@ import (
 type AIFallbackErrorCode string
 
 const (
-	AIFallbackErrorCodeAIUnavailable       AIFallbackErrorCode = "AI_UNAVAILABLE"
-	AIFallbackErrorCodeNoAnswer            AIFallbackErrorCode = "NO_ANSWER"
-	AIFallbackErrorCodeUpstreamError       AIFallbackErrorCode = "UPSTREAM_ERROR"
-	AIFallbackErrorCodeInvalidInput        AIFallbackErrorCode = "INVALID_INPUT"
-	AIFallbackErrorCodeUnsafeToAnswer      AIFallbackErrorCode = "UNSAFE_TO_ANSWER"
-	AIFallbackErrorCodeInsufficientBalance AIFallbackErrorCode = "INSUFFICIENT_BALANCE"
+	AIFallbackErrorCodeAIUnavailable            AIFallbackErrorCode = "AI_UNAVAILABLE"
+	AIFallbackErrorCodeNoAnswer                 AIFallbackErrorCode = "NO_ANSWER"
+	AIFallbackErrorCodeUpstreamError            AIFallbackErrorCode = "UPSTREAM_ERROR"
+	AIFallbackErrorCodeInvalidInput             AIFallbackErrorCode = "INVALID_INPUT"
+	AIFallbackErrorCodeUnsafeToAnswer           AIFallbackErrorCode = "UNSAFE_TO_ANSWER"
+	AIFallbackErrorCodeInsufficientBalance      AIFallbackErrorCode = "INSUFFICIENT_BALANCE"
+	AIFallbackErrorCodeAccessTokenQuotaExceeded AIFallbackErrorCode = AccessTokenQuotaExceededCode
 )
 
 type AIFallbackResult struct {
@@ -72,6 +73,10 @@ func BuildAIFallbackInvalidInputResult(message string) AIFallbackResult {
 
 func BuildAIFallbackInsufficientBalanceResult(message string) AIFallbackResult {
 	return buildAIFallbackErrorResult(AIFallbackErrorCodeInsufficientBalance, message)
+}
+
+func BuildAIFallbackQuotaExceededResult(message string) AIFallbackResult {
+	return buildAIFallbackErrorResult(AIFallbackErrorCodeAccessTokenQuotaExceeded, message)
 }
 
 func SearchAIFallbackWithDB(db *gorm.DB, req model.SearchRequest) AIFallbackResult {
