@@ -449,6 +449,7 @@ func prepareRechargeOrderWithDB(db *gorm.DB, user entity.User, input CreateRecha
 		OrderNo:                   generateRechargeOrderNo(user, amount),
 		PaymentProvider:           DefaultPaymentProvider,
 		PaymentMethodNameSnapshot: strings.TrimSpace(paymentMethod.Name),
+		RefundChannelFingerprint:  refundChannelFingerprint(config.GatewayURL, config.PartnerID, config.PlatformPublicKey),
 		Amount:                    amount,
 		Status:                    rechargeOrderStatusPending,
 	}
@@ -569,6 +570,7 @@ func HandleRechargePaymentNotifyWithDB(db *gorm.DB, values url.Values) (bool, er
 
 	config := RechargePaymentConfig{
 		PaymentProvider:   DefaultPaymentProvider,
+		GatewayURL:        strings.TrimSpace(settings.EPayGatewayURL),
 		PartnerID:         strings.TrimSpace(settings.EPayPartnerID),
 		PlatformPublicKey: strings.TrimSpace(settings.EPayPlatformPublicKey),
 	}
@@ -597,6 +599,11 @@ func HandleRechargePaymentNotifyWithDB(db *gorm.DB, values url.Values) (bool, er
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("order_no = ?", orderNo).First(&order).Error; err != nil {
 			return err
 		}
+		// Paid is immutable. In particular a replay cannot replace the trade
+		// reference later used to prove the original refund channel.
+		if order.Status == rechargeOrderStatusPaid {
+			return nil
+		}
 
 		updates := map[string]any{
 			"callback_payload": callbackPayload,
@@ -608,9 +615,6 @@ func HandleRechargePaymentNotifyWithDB(db *gorm.DB, values url.Values) (bool, er
 			return err
 		}
 
-		if order.Status == rechargeOrderStatusPaid {
-			return nil
-		}
 		if tradeStatus != rechargeOrderTradeStatusSuccess {
 			return nil
 		}
@@ -628,12 +632,19 @@ func HandleRechargePaymentNotifyWithDB(db *gorm.DB, values url.Values) (bool, er
 		balanceAfter := normalizeWalletAmount(balanceBefore + order.Amount)
 		now := time.Now()
 
-		if err := tx.Model(&entity.RechargeOrder{}).Where("id = ?", order.ID).Updates(map[string]any{
+		paidUpdates := map[string]any{
 			"status":               rechargeOrderStatusPaid,
 			"third_party_order_no": tradeNo,
 			"callback_payload":     callbackPayload,
 			"paid_at":              &now,
-		}).Error; err != nil {
+		}
+		fingerprint := refundChannelFingerprint(config.GatewayURL, config.PartnerID, config.PlatformPublicKey)
+		paidCents, exact := parseRefundGatewayCents(values.Get("money"))
+		if exact && float64(paidCents)/100 == order.Amount && validRefundGatewayID(tradeNo) &&
+			values.Get("pid") == config.PartnerID && order.RefundChannelFingerprint != "" && order.RefundChannelFingerprint == fingerprint {
+			paidUpdates["refund_original_trade_no"] = tradeNo
+		}
+		if err := tx.Model(&entity.RechargeOrder{}).Where("id = ?", order.ID).Updates(paidUpdates).Error; err != nil {
 			return err
 		}
 

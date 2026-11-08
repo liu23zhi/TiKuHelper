@@ -12,9 +12,17 @@
         ><a-button :loading="listLoading" :disabled="!canUseTickets()" :onClick="pageEntry.bind(refreshPage)">刷新</a-button
         ><a-button v-if="canUseTickets() && !isAdmin" type="primary" :onClick="pageEntry.bind(openCreate)"
           >提交工单</a-button
+        ><a-button v-if="canUseTickets()" :aria-pressed="refundsVisible" :onClick="pageEntry.bind(toggleRefunds)"
+          >{{ refundsVisible ? "收起退款工单" : "退款工单" }}</a-button
         ></template
       >
     </ConsolePageHeading>
+    <TicketRefundPanel
+      v-if="refundsVisible && canUseTickets()"
+      :key="pageEpoch"
+      :is-admin="isAdmin"
+      :capture-owner="capturePage"
+    />
     <section v-if="actionFailures.pageRead.state.failure" data-ticket-page-read-feedback>
       <RequestFailureAlert :key="actionFailures.pageRead.state.context" :failure="actionFailures.pageRead.state.failure" :message="actionFailures.pageRead.state.message" :context-key="actionFailures.pageRead.state.context" :is-current="actionFailures.pageRead.isCurrent" closable :onClose="closePageReadFailure" />
     </section>
@@ -375,6 +383,7 @@ defineOptions({ name: "TicketsPage" });
 
 import {
   computed,
+  defineAsyncComponent,
   nextTick,
   onBeforeUnmount,
   onMounted,
@@ -415,6 +424,8 @@ import {
 } from "@/utils/ticketHelpers.mjs";
 
 const detailStatusId = `tickets-${useId()}-detail-status`;
+const TicketRefundPanel = defineAsyncComponent(() => import("./TicketRefundPanel.vue"));
+const refundsVisible = ref(false);
 const { currentUser } = useCurrentUserDisplay();
 const route = useRoute();
 const router = useRouter();
@@ -567,6 +578,7 @@ function canUseTickets() {
 }
 function canManage() { return canUseTickets() && isAdmin.value; }
 function clearOwned() {
+  refundsVisible.value = false;
   retireDetailFocus();
   retireCreateValidation();
   retireActionFailures();
@@ -586,6 +598,7 @@ function reloadOwned() {
   if (route.params.id) loadDetail(String(route.params.id));
 }
 function refreshPage() { loadTickets(); if (canManage()) loadNotificationConfig(); }
+function toggleRefunds() { if (canUseTickets()) refundsVisible.value = !refundsVisible.value; }
 const scope = useCurrentUserRequestScope(currentUser, { clear: clearOwned, reset() {}, reload: reloadOwned });
 function capturePage(admin = false) {
   const owns = scope.captureDataOwner(), epoch = pageEpoch.value;
