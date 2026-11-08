@@ -208,6 +208,9 @@ export function buildBillingRecordTypeText(record) {
   if (type === 'script_refund') {
     return '脚本退款'
   }
+  if (type === 'script_activation_purchase') {
+    return '脚本激活码购买'
+  }
   return type || '题目消费'
 }
 

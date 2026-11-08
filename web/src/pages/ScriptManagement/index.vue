@@ -8,7 +8,7 @@
           <a-button v-if="isAdmin" :type="showAll ? 'primary' : 'default'" :onClick="pageEntry.bind(toggleScope)">
             {{ showAll ? '只看我的脚本' : '显示全部脚本' }}
           </a-button>
-          <a-button :loading="loading" :onClick="pageEntry.bind(loadScripts)">刷新</a-button>
+          <a-button :loading="loading" :onClick="pageEntry.bind(refreshScripts)">刷新</a-button>
           <a-button type="primary" :onClick="pageEntry.bind(openCreate)">新建脚本指令</a-button>
         </a-space>
       </template>
@@ -18,8 +18,8 @@
       type="info"
       show-icon
       class="page-alert"
-      message="每条脚本指令创建时预扣 ¥10"
-      description="删除脚本时会幂等释放预扣金额；即使余额为负也允许删除，但欠费期间其它需要余额的功能可能会受限。普通答题可选择跟随题库或设置独立倍率；实际使用的 AI 模型与工具另行结算。"
+      message="创建脚本前须绑定手机号和微信"
+      description="冻结金模式可重复启动，每次使用新的运行令牌；一次性激活码只允许创建并运行一条脚本，不冻结余额。购买和兑换激活码不要求双绑定。"
     />
 
     <ConsolePanel v-if="isAdmin" title="管理员上传 EXE" description="上传后自动发布为最新版本；已有脚本会原子切换到新版本，正在下载的旧版本会继续完成。">
@@ -44,10 +44,33 @@
       </a-space>
     </ConsolePanel>
 
+    <ConsolePanel v-if="isAdmin" title="脚本计费政策" description="冻结金目标、重启最低额和倍率由管理员统一设置。">
+      <a-alert v-if="policyError" type="error" show-icon :message="policyError" class="page-alert" />
+      <a-form layout="vertical">
+        <div class="form-grid">
+          <a-form-item label="创建冻结额（元）" :html-for="fieldId('policyTarget')">
+            <a-input-number :id="fieldId('policyTarget')" string-mode :value="policyForm.target" :onUpdate:value="pageEntry.bind(setPolicyField, 'target')" :min="0" :precision="6" :disabled="!escrowPolicy || savingPolicy" />
+          </a-form-item>
+          <a-form-item label="再次启动最低额（元）" :html-for="fieldId('policyMinimum')">
+            <a-input-number :id="fieldId('policyMinimum')" string-mode :value="policyForm.minimum" :onUpdate:value="pageEntry.bind(setPolicyField, 'minimum')" :min="0" :precision="6" :disabled="!escrowPolicy || savingPolicy" />
+          </a-form-item>
+          <a-form-item label="冻结金脚本倍率（X）" :html-for="fieldId('policyMultiplier')">
+            <a-input-number :id="fieldId('policyMultiplier')" string-mode :value="policyForm.multiplier" :onUpdate:value="pageEntry.bind(setPolicyField, 'multiplier')" :min="0" :precision="6" :disabled="!escrowPolicy || savingPolicy" />
+          </a-form-item>
+        </div>
+        <a-button type="primary" :loading="savingPolicy" :disabled="!escrowPolicy" :onClick="pageEntry.bind(saveEscrowPolicy)">保存冻结金政策</a-button>
+        <a-form-item label="一次性激活码售价（元）" :html-for="fieldId('activationPrice')" class="billing-panel">
+          <a-input-number :id="fieldId('activationPrice')" string-mode :value="priceForm" :onUpdate:value="pageEntry.bind(setPriceForm)" :min="0" :precision="6" :disabled="!activationPrice || savingPrice" />
+          <div class="hint">使用账户钱包购买；设置为 0 时停售，不影响已购或已兑换的资格。</div>
+        </a-form-item>
+        <a-button type="primary" :loading="savingPrice" :disabled="!activationPrice" :onClick="pageEntry.bind(saveActivationPrice)">保存激活码售价</a-button>
+      </a-form>
+    </ConsolePanel>
+
     <ConsoleSummaryGrid>
       <a-card :bordered="false" class="summary-card"><a-statistic title="脚本数" :value="summary.total" /></a-card>
       <a-card :bordered="false" class="summary-card"><a-statistic title="启用脚本" :value="summary.enabled" /></a-card>
-      <a-card :bordered="false" class="summary-card"><a-statistic title="预扣金额" prefix="¥" :value="summary.reserved" :precision="6" /></a-card>
+      <a-card :bordered="false" class="summary-card"><a-statistic title="旧版预扣额" prefix="¥" :value="summary.reserved" :precision="6" /></a-card>
     </ConsoleSummaryGrid>
 
     <ConsolePanel title="脚本指令" :description="scopeDescription">
@@ -66,15 +89,15 @@
               <a-button size="small" :onClick="pageEntry.bind(copyCommand, record)" :disabled="!mayCopyCommand(record)">复制授权指令</a-button>
             </div>
             <div v-else-if="column.key === 'billing'">
-              <span>{{ buildScriptBillingText(record) }}</span>
-              <p class="table-hint">创建时预扣 ¥10，删除时释放</p>
+              <span>{{ scriptBillingText(record) }}</span>
+              <p v-if="record.billingMode === 'escrow' && record.escrowAvailableMicros != null && displayMicros(record.escrowAvailableMicros) !== ''" class="table-hint">当前冻结余额 ¥{{ displayMicros(record.escrowAvailableMicros) }}</p>
             </div>
             <span v-else-if="column.key === 'preset'">{{ Object.keys(record.presetParams || {}).length }} 个</span>
             <span v-else-if="column.key === 'updatedAt'">{{ formatDateTime(record.updatedAt) }}</span>
             <a-space v-else-if="column.key === 'operation'" wrap>
               <a-button type="link" style="padding: 0" :onClick="pageEntry.bind(openEdit, record)">编辑</a-button>
-              <a-popconfirm title="删除脚本并释放预扣金额？" description="欠费时仍允许删除；删除后会释放这条脚本的预扣。" ok-text="删除" cancel-text="取消" :onConfirm="pageEntry.bind(handleDelete, record)">
-                <a-button type="link" danger style="padding: 0" :disabled="deleting || saving">删除</a-button>
+              <a-popconfirm title="删除此脚本？" description="删除成功后无法继续启动；一次性资格不会重新发放。" ok-text="删除" cancel-text="取消" :onConfirm="pageEntry.bind(handleDelete, record)">
+                <a-button type="link" danger style="padding: 0" :disabled="deleting || saving || record.billingMode === 'escrow'" :title="record.billingMode === 'escrow' ? '冻结金脚本暂不支持删除，可先停用' : undefined">删除</a-button>
               </a-popconfirm>
             </a-space>
             <template v-else>{{ record[column.dataIndex] ?? '-' }}</template>
@@ -84,7 +107,7 @@
       </ConsoleTableShell>
     </ConsolePanel>
 
-    <a-modal v-if="modalOpen" :key="editorKey" :open="modalOpen" :title="editing ? '编辑脚本指令' : '新建脚本指令'" width="760px" ok-text="保存" cancel-text="取消" :confirm-loading="saving" :closable="!saving" :mask-closable="!saving" :keyboard="!saving" :cancel-button-props="{ disabled: saving }" :onOk="editorEntry.bind(handleSubmit)" :onCancel="editorEntry.bind(closeModal)" :wrap-props="{ 'aria-modal': true }">
+    <a-modal v-if="modalOpen" :key="editorKey" :open="modalOpen" :title="editing ? '编辑脚本指令' : '新建脚本指令'" width="760px" ok-text="保存" cancel-text="取消" :confirm-loading="saving" :closable="!saving && !activationBusy" :mask-closable="!saving && !activationBusy" :keyboard="!saving && !activationBusy" :cancel-button-props="{ disabled: saving || activationBusy }" :onOk="editorEntry.bind(handleSubmit)" :onCancel="editorEntry.bind(closeModal)" :wrap-props="{ 'aria-modal': true }">
       <div ref="modalSurface" :onInputCapture="editorEntry.guardNative" :onChangeCapture="editorEntry.guardNative" :onClickCapture="editorEntry.guardNative" :onKeydownCapture="editorEntry.guardNative">
       <a-form layout="vertical" :model="form" :disabled="saving">
         <div class="form-grid">
@@ -95,7 +118,7 @@
             <a-input :id="fieldId('baseDomain')" :value="form.baseDomain" :onUpdate:value="editorEntry.bind(setFormField, 'baseDomain')" placeholder="例如 example.com" />
           </a-form-item>
           <a-form-item label="协议" :html-for="fieldId('scheme')">
-            <a-select :id="fieldId('scheme')" :value="form.scheme" :onUpdate:value="editorEntry.bind(setFormField, 'scheme')"><a-select-option value="https">HTTPS</a-select-option><a-select-option value="http">HTTP（仅兼容旧环境）</a-select-option></a-select>
+            <a-select :id="fieldId('scheme')" :value="form.scheme" :disabled="form.billingMode !== 'legacy'" :onUpdate:value="editorEntry.bind(setFormField, 'scheme')"><a-select-option value="https">HTTPS</a-select-option><a-select-option v-if="form.billingMode === 'legacy'" value="http">HTTP（仅兼容旧环境）</a-select-option></a-select>
           </a-form-item>
         </div>
         <a-form-item label="泛域名模式" :html-for="fieldId('useWildcardDomain')">
@@ -117,19 +140,47 @@
           <div class="hint">参数由服务端在脚本执行入口注入；此处只保存键和值，不会写进 PowerShell 命令文本。</div>
         </a-form-item>
         <a-form-item label="启用状态" :html-for="fieldId('enabled')"><a-switch :id="fieldId('enabled')" :checked="form.enabled" :onUpdate:checked="editorEntry.bind(setFormField, 'enabled')" /></a-form-item>
-        <ConsolePanel title="脚本答题计费" description="此设置仅用于获得普通答案时的脚本费率，不减免实际使用的 AI 模型及工具费用。" class="billing-panel">
-          <a-form-item label="启用脚本答题计费" :html-for="fieldId('billingEnabled')">
-            <a-switch :id="fieldId('billingEnabled')" :checked="form.billingEnabled" :onUpdate:checked="editorEntry.bind(setFormField, 'billingEnabled')" />
-            <span class="switch-description">{{ form.billingEnabled ? '使用脚本费率' : '按原渠道费率' }}</span>
+        <ConsolePanel title="脚本计费与运行" description="创建后不能切换计费模式。新模式均要求 HTTPS。" class="billing-panel">
+          <a-form-item label="计费模式" :html-for="fieldId('billingMode')">
+            <a-select :id="fieldId('billingMode')" :value="form.billingMode" :disabled="editing || activationBusy" :onUpdate:value="editorEntry.bind(setFormField, 'billingMode')">
+              <a-select-option value="escrow">冻结金模式</a-select-option>
+              <a-select-option value="activation_code">一次性激活码</a-select-option>
+              <a-select-option v-if="form.billingMode === 'legacy'" value="legacy">旧版脚本</a-select-option>
+            </a-select>
           </a-form-item>
-          <a-form-item v-if="form.billingEnabled" label="跟随题库计费" :html-for="fieldId('billingUseTikuPrice')">
-            <a-switch :id="fieldId('billingUseTikuPrice')" :checked="form.billingUseTikuPrice" :onUpdate:checked="editorEntry.bind(setFormField, 'billingUseTikuPrice')" />
-            <span class="switch-description">{{ form.billingUseTikuPrice ? '使用题库当前标准（1X）' : '使用脚本独立倍率' }}</span>
-          </a-form-item>
-          <a-form-item v-if="form.billingEnabled && !form.billingUseTikuPrice" label="独立答题倍率（X）" :html-for="fieldId('priceMultiplier')">
-            <a-input-number :id="fieldId('priceMultiplier')" :value="form.priceMultiplier" :onUpdate:value="editorEntry.bind(setFormField, 'priceMultiplier')" :min="0" :precision="6" :step="0.1" style="width: 220px" />
-            <div class="hint">仅普通答题按题库当前标准乘以该倍率；0X 不影响 AI 模型和工具的实际费用。</div>
-          </a-form-item>
+          <template v-if="form.billingMode === 'escrow'">
+            <p v-if="escrowPolicy" class="hint">创建冻结 ¥{{ displayMicros(escrowPolicy.targetMicros) }}；再次启动最低 ¥{{ displayMicros(escrowPolicy.minimumMicros) }}；管理员倍率 {{ displayMicros(escrowPolicy.multiplierMicros) }}X。</p>
+            <p v-else class="hint">冻结金政策未读取成功，请刷新后再创建。</p>
+            <a-form-item label="再次启动时自动补足冻结金" :html-for="fieldId('autoTopUp')">
+              <a-switch :id="fieldId('autoTopUp')" :checked="form.autoTopUp" :onUpdate:checked="editorEntry.bind(setFormField, 'autoTopUp')" />
+            </a-form-item>
+          </template>
+          <template v-if="form.billingMode === 'activation_code'">
+            <p class="hint">一条脚本只允许成功运行一次，答题倍率为 0；不冻结钱包余额。</p>
+            <template v-if="!editing">
+              <p v-if="form.entitlementId" role="status">已兑换一次创建资格。</p>
+              <template v-else>
+                <a-space wrap class="domain-settings-actions">
+                  <a-popconfirm :title="purchaseUncertain ? '确认重试同一次购买？' : '确认从钱包购买一次性激活码？'" :description="purchaseUncertain ? '沿用同一个购买标识，不发起新购买。' : '将按显示价格扣除钱包余额。'" ok-text="确认" cancel-text="取消" :onConfirm="editorEntry.bind(buyActivationCode)">
+                    <a-button :loading="purchasingCode" :disabled="!canBuyActivationCode">{{ purchaseUncertain ? '重试同一次购买' : activationPrice?.enabled ? '钱包购买 ¥' + activationPrice.price : '购买暂未开放' }}</a-button>
+                  </a-popconfirm>
+                </a-space>
+                <a-form-item label="激活码" :html-for="fieldId('activationCode')" class="billing-panel">
+                  <a-input-password :id="fieldId('activationCode')" :value="activationCode" :visibility-toggle="false" autocomplete="off" :maxlength="68" :disabled="activationBusy || Boolean(purchasedCode)" :onUpdate:value="editorEntry.bind(setActivationCode)" placeholder="输入激活码" />
+                  <p v-if="purchasedCode" class="hint">本次购买的激活码已填入，可直接兑换；不会写入脚本参数。</p>
+                </a-form-item>
+                <a-button :loading="redeemingCode" :disabled="activationBusy || !activationCode" :onClick="editorEntry.bind(redeemActivationCode)">兑换创建资格</a-button>
+              </template>
+            </template>
+          </template>
+          <template v-if="form.billingMode !== 'legacy'">
+            <a-form-item label="运行令牌有效期（分钟）" :html-for="fieldId('runDurationMinutes')" class="billing-panel">
+              <a-input-number :id="fieldId('runDurationMinutes')" :value="form.runDurationMinutes" :onUpdate:value="editorEntry.bind(setFormField, 'runDurationMinutes')" :min="1" :max="150" :precision="0" />
+            </a-form-item>
+            <a-form-item label="启动被拒时在客户端提示" :html-for="fieldId('notifyOnDenied')">
+              <a-switch :id="fieldId('notifyOnDenied')" :checked="form.notifyOnDenied" :onUpdate:checked="editorEntry.bind(setFormField, 'notifyOnDenied')" />
+            </a-form-item>
+          </template>
         </ConsolePanel>
         <ConsolePanel title="指令预览" description="PowerShell + .NET WebClient 可覆盖 Windows 7 至 Windows 11。" class="preview-panel">
           <div class="command-preview"><code>{{ buildScriptDownloadURL(previewRecord) || '设置合法域名后生成' }}</code></div>
@@ -149,7 +200,7 @@ import { message } from 'ant-design-vue'
 import { UploadOutlined } from '@ant-design/icons-vue'
 import { getCurrentUserLogoutEpoch, getStoredCurrentUser, isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
 import { useUnsavedDraft } from '@/utils/useUnsavedDraft'
-import { createScript, deleteScript, getScripts, getScriptDomainSettings, getScriptVersions, updateScript, updateScriptDomainSettings, uploadScriptVersion } from '@/api/TikuComponentApi'
+import { createScript, deleteScript, getScripts, getScriptDomainSettings, getScriptVersions, updateScript, updateScriptDomainSettings, uploadScriptVersion, getScriptEscrowPolicy, updateScriptEscrowPolicy, getScriptActivationCodePrice, updateScriptActivationCodePrice, purchaseScriptActivationCode, redeemScriptActivationCode } from '@/api/TikuComponentApi'
 import { buildScriptBillingText, buildScriptCommand, buildScriptDownloadURL, buildScriptListParams, buildScriptSavePayload, formatPresetParams, normalizeScriptRecord, normalizeScriptRows } from '@/utils/scriptManagementHelpers.mjs'
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
 
@@ -211,8 +262,19 @@ const summary = reactive({ total: 0, enabled: 0, reserved: 0 })
 const domainText = ref('')
 const domainAllowWildcard = ref(true)
 const domainSaving = ref(false)
+const escrowPolicy = ref(null), activationPrice = ref(null), policyError = ref('')
+const policyForm = reactive({ target: '', minimum: '', multiplier: '' }), priceForm = ref('')
+const savingPolicy = ref(false), savingPrice = ref(false)
+let billingReadTicket = 0, policyRevision = 0, priceRevision = 0
+const activationCode = ref(''), purchasedCode = ref(false), purchaseUncertain = ref(false)
+const purchasingCode = ref(false), redeemingCode = ref(false)
+const activationBusy = computed(() => purchasingCode.value || redeemingCode.value)
+let purchaseIntentKey = '', purchaseIntentQuote = ''
+const canBuyActivationCode = computed(() => modalOpen.value && !editing.value && form.billingMode === 'activation_code'
+  && !saving.value && !activationBusy.value && !purchasedCode.value && !form.entitlementId
+  && (purchaseUncertain.value || activationPrice.value?.enabled === true))
 
-const emptyForm = () => ({ id: undefined, name: '', description: '', versionId: undefined, slug: 'a', scheme: 'https', baseDomain: '', useWildcardDomain: true, enabled: true, presetText: '', billingEnabled: true, billingUseTikuPrice: true, priceMultiplier: 1 })
+const emptyForm = () => ({ id: undefined, name: '', description: '', versionId: undefined, slug: 'a', scheme: 'https', baseDomain: '', useWildcardDomain: true, enabled: true, presetText: '', billingMode: 'escrow', entitlementId: undefined, autoTopUp: false, runDurationMinutes: 150, notifyOnDenied: false })
 const form = reactive(emptyForm())
 const draft = useUnsavedDraft(form, { focusTriggerAfterClose: false })
 const previewRecord = computed(() => normalizeScriptRecord({ ...form, presetParams: form.presetText }))
@@ -234,12 +296,22 @@ function resetForm(record) {
     const normalized = normalizeScriptRecord(record)
     for (const name of Object.keys(fields)) if (Object.hasOwn(normalized, name)) fields[name] = normalized[name]
     fields.presetText = formatPresetParams(normalized.presetParams)
+    fields.billingMode = ['escrow', 'activation_code'].includes(normalized.billingMode) ? normalized.billingMode : 'legacy'
+    if (!fields.runDurationMinutes) fields.runDurationMinutes = 150
   }
   Object.assign(form, fields)
   draft.savedConfigSnapshot.value = draft.currentConfigSnapshot.value
 }
 
-function setFormField(name, value) { if (modalOpen.value && !saving.value && Object.hasOwn(form, name)) form[name] = value }
+function setFormField(name, value) {
+  if (!editorEntry.value.isCurrent() || saving.value || !Object.hasOwn(form, name) || name === 'entitlementId') return
+  if (name === 'billingMode') {
+    if (editing.value || activationBusy.value || !['escrow', 'activation_code'].includes(value)) return
+    form.scheme = 'https'
+  }
+  if (name === 'scheme' && form.billingMode !== 'legacy') return
+  form[name] = value
+}
 function setUploadVersion(value) { if (isAdmin.value && !uploading.value) uploadVersion.value = value }
 function setDomainText(value) { if (isAdmin.value && !domainSaving.value) { domainRevision++; domainText.value = value } }
 function setDomainWildcard(value) { if (isAdmin.value && !domainSaving.value) { domainRevision++; domainAllowWildcard.value = value } }
@@ -258,11 +330,13 @@ function openCreate() { startEditor() }
 function openEdit(record) { if (rows.value.includes(record)) startEditor(record) }
 function retireEditor() {
   hidePrivate(modalSurface.value)
+  activationCode.value = ''; purchasedCode.value = false; purchaseUncertain.value = false; purchaseIntentKey = ''; purchaseIntentQuote = ''
+  purchasingCode.value = false; redeemingCode.value = false
   editorKey.value += 1; editorEntry.value = makeEntry(() => false); modalOpen.value = false; saving.value = false; editing.value = false
   draft.cancelPendingLeave(); resetForm()
 }
 async function closeModal() {
-  if (saving.value || !editorEntry.value.isCurrent()) return
+  if (saving.value || activationBusy.value || !editorEntry.value.isCurrent()) return
   const owns = editorEntry.value.isCurrent
   if (await draft.requestRouteLeave({ path: mountedPath }) && owns()) retireEditor()
 }
@@ -339,51 +413,147 @@ async function handleUpload({ file, onSuccess, onError }) {
   } finally { if (owns()) uploading.value = false }
 }
 
+function secureIntentKey(prefix) {
+  const bytes = new Uint8Array(16)
+  globalThis.crypto.getRandomValues(bytes)
+  return prefix + Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')
+}
 function createRetryKey(payload) {
   const signature = JSON.stringify(payload)
   if (retry?.signature === signature) return retry.key
-  const bytes = new Uint8Array(16)
-  globalThis.crypto.getRandomValues(bytes)
-  const key = 'script-create-' + Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')
+  const key = secureIntentKey('script-create-')
   retry = { signature, key }
   return key
+}
+function scriptErrorCode(error) {
+  return String(error?.response?.data?.code || error?.data?.code || '')
+}
+function setActivationCode(value) {
+  if (!editorEntry.value.isCurrent() || editing.value || activationBusy.value || purchasedCode.value || form.billingMode !== 'activation_code') return
+  activationCode.value = String(value ?? '').slice(0, 68)
+}
+function showActivationPurchaseFailure(error) {
+  const reason = scriptErrorCode(error)
+  if (reason === 'SCRIPT_ACTIVATION_PRICE_CHANGED') {
+    purchaseUncertain.value = false; purchaseIntentKey = ''; purchaseIntentQuote = ''
+    activationPrice.value = null
+    message.warning('激活码售价已变化，请确认最新售价后再购买。')
+    void loadBillingSettings()
+    return
+  }
+  purchaseUncertain.value = true
+  message.error(reason === 'SCRIPT_ACTIVATION_BALANCE_INSUFFICIENT' ? '钱包余额不足。补足后可重试同一次购买。' : '购买结果未确认，请在此重试同一次购买。')
+}
+async function buyActivationCode() {
+  const owns = editorEntry.value.isCurrent
+  if (!owns() || !canBuyActivationCode.value) return
+  purchasingCode.value = true
+  try {
+    if (!purchaseIntentKey) {
+      purchaseIntentQuote = activationPrice.value?.price || ''
+      if (!purchaseIntentQuote) return
+      purchaseIntentKey = secureIntentKey('script-activation-purchase-')
+    }
+    const response = await purchaseScriptActivationCode(purchaseIntentKey, purchaseIntentQuote)
+    if (!owns()) return
+    const code = response?.data?.code
+    if (response?.status !== 200 || typeof code !== 'string' || !/^sac_[a-f0-9]{64}$/.test(code) ||
+      decimalMicros(response.data?.price) !== decimalMicros(purchaseIntentQuote)) {
+      showActivationPurchaseFailure(response)
+      return
+    }
+    activationCode.value = code; purchasedCode.value = true; purchaseUncertain.value = false; purchaseIntentKey = ''; purchaseIntentQuote = ''
+    message.success('购买成功，请兑换创建资格。')
+  } catch (error) {
+    if (owns()) showActivationPurchaseFailure(error)
+  } finally {
+    if (owns()) purchasingCode.value = false
+  }
+}
+async function redeemActivationCode() {
+  const owns = editorEntry.value.isCurrent, code = activationCode.value.trim()
+  if (!owns() || editing.value || form.billingMode !== 'activation_code' || saving.value || activationBusy.value || form.entitlementId) return
+  if (!/^sac_[a-f0-9]{64}$/.test(code)) return message.warning('请输入有效激活码。')
+  redeemingCode.value = true
+  try {
+    const response = await redeemScriptActivationCode({ code })
+    if (!owns()) return
+    const id = Number(response?.data?.id)
+    if (response?.status !== 200 || !Number.isSafeInteger(id) || id <= 0 || response?.data?.scriptId) {
+      message.error('未取得可用的创建资格，请确认激活码状态。'); return
+    }
+    form.entitlementId = id; activationCode.value = ''; purchasedCode.value = false
+    message.success('已兑换一次脚本创建资格。')
+  } catch {
+    if (owns()) message.error('兑换未完成，请核对激活码或重试。')
+  } finally {
+    if (owns()) redeemingCode.value = false
+  }
+}
+function scriptBillingText(record) {
+  if (record.billingMode === 'escrow') return '冻结金模式'
+  if (record.billingMode === 'activation_code') return '一次性激活码（0X）'
+  return buildScriptBillingText(record)
 }
 
 async function handleSubmit() {
   const owns = editorEntry.value.isCurrent
-  if (!owns() || saving.value || deleting.value) return
+  if (!owns() || saving.value || deleting.value || activationBusy.value) return
   const payload = buildScriptSavePayload({ ...form, presetParams: form.presetText })
+  // Managed pricing is server-owned. Do not send legacy multiplier defaults
+  // (also preserves historical pricing on edits to existing legacy scripts).
+  for (const field of ['billingEnabled', 'billingUseTikuPrice', 'useTikuPrice', 'priceMultiplier', 'answerPriceMultiplier']) delete payload[field]
   if (!payload.name) return message.warning('请输入脚本名称')
   if (!payload.baseDomain || !buildScriptDownloadURL(payload)) return message.warning('请输入有效的脚本域名')
   if (!payload.versionId) return message.warning('请选择 EXE 版本')
-  const rawMultiplier = Number(form.priceMultiplier)
-  if (payload.billingEnabled && !payload.billingUseTikuPrice && (form.priceMultiplier === null || !Number.isFinite(rawMultiplier) || rawMultiplier < 0)) return message.warning('请输入有效的非负答题倍率')
   const isEditing = editing.value, sentSnapshot = draft.currentConfigSnapshot.value
+  if (form.billingMode !== 'legacy') {
+    const minutes = Number(form.runDurationMinutes)
+    if (form.runDurationMinutes === null || !Number.isSafeInteger(minutes) || minutes < 1 || minutes > 150) return message.warning('令牌有效期须为 1 至 150 分钟的整数')
+    payload.runDurationMinutes = minutes
+    payload.notifyOnDenied = form.notifyOnDenied === true
+    if (form.billingMode === 'escrow') {
+      if (!isEditing && !escrowPolicy.value) return message.warning('请刷新并确认当前冻结金政策。')
+      payload.autoTopUp = form.autoTopUp === true
+    }
+  }
+  if (!isEditing) {
+    payload.billingMode = form.billingMode
+    if (form.billingMode === 'activation_code') {
+      if (!form.entitlementId) return message.warning('请先兑换一次性脚本创建资格。')
+      payload.entitlementId = form.entitlementId
+    }
+  }
   saving.value = true
   try {
     const response = isEditing ? await updateScript(payload) : await createScript(payload, createRetryKey(payload))
     if (!owns()) return
-    if (response?.status !== 200) { message.error('保存脚本未完成，请刷新列表核对后重试。'); return }
+    if (response?.status !== 200) {
+      message.error(scriptErrorCode(response) === 'SCRIPT_BINDINGS_REQUIRED'
+        ? '创建脚本前请绑定手机号和微信。' : '保存脚本未完成，请刷新列表核对后重试。')
+      return
+    }
     if (!isEditing) retry = null
     draft.savedConfigSnapshot.value = sentSnapshot
     const sameDraft = draft.currentConfigSnapshot.value === sentSnapshot
     if (sameDraft) retireEditor()
-    message.success(isEditing ? '脚本已更新' : '脚本已创建，已预扣 ¥10')
+    message.success(isEditing ? '脚本已更新' : '脚本已创建')
     await loadScripts()
-  } catch {
-    if (owns()) message.error('保存结果未确认，请刷新核对；如重试，请保留原表单。')
+  } catch (error) {
+    if (owns()) message.error(scriptErrorCode(error) === 'SCRIPT_BINDINGS_REQUIRED'
+      ? '创建脚本前请绑定手机号和微信。' : '保存结果未确认，请刷新核对；如重试，请保留原表单。')
   } finally { if (owns()) saving.value = false }
 }
 
 async function handleDelete(record) {
-  if (!canAct() || !rows.value.includes(record) || deleting.value || saving.value) return
+  if (!canAct() || !rows.value.includes(record) || record.billingMode === 'escrow' || deleting.value || saving.value) return
   const owns = captureOwner()
   deleting.value = true
   try {
     const response = await deleteScript({ id: record.id })
     if (!owns()) return
     if (response?.status !== 200) { message.error('删除脚本未完成，请刷新列表核对。'); return }
-    message.success('脚本已删除，预扣金额已释放')
+    message.success('脚本已删除')
     await loadScripts()
   } catch {
     if (owns()) message.error('删除脚本结果未确认，请刷新列表核对。')
@@ -477,19 +647,107 @@ async function saveDomainSettings() {
   } finally { if (owns() && ticket === domainRevision) domainSaving.value = false }
 }
 
+function decimalMicros(value) {
+  const parts = /^(\d{1,12})(?:\.(\d{1,6}))?$/.exec(String(value ?? '').trim())
+  if (!parts) return null
+  const micros = Number(parts[1]) * 1000000 + Number((parts[2] ?? '').padEnd(6, '0'))
+  return Number.isSafeInteger(micros) ? micros : null
+}
+function displayMicros(value) {
+  const micros = Number(value)
+  if (!Number.isSafeInteger(micros) || micros < 0) return ''
+  const fraction = String(micros % 1000000).padStart(6, '0').replace(/0+$/, '')
+  return String(Math.floor(micros / 1000000)) + (fraction ? '.' + fraction : '')
+}
+function normalizeEscrowPolicy(data) {
+  const targetMicros = Number(data?.targetMicros), minimumMicros = Number(data?.minimumMicros), multiplierMicros = Number(data?.multiplierMicros)
+  if (![targetMicros, minimumMicros, multiplierMicros].every(value => Number.isSafeInteger(value) && value > 0) || minimumMicros > targetMicros) return null
+  return { targetMicros, minimumMicros, multiplierMicros }
+}
+function showEscrowPolicy(policy) {
+  escrowPolicy.value = policy
+  if (!policy) return
+  Object.assign(policyForm, {
+    target: displayMicros(policy.targetMicros), minimum: displayMicros(policy.minimumMicros), multiplier: displayMicros(policy.multiplierMicros),
+  })
+}
+function normalizeActivationPrice(data) {
+  const price = decimalMicros(data?.price)
+  if (price === null || data?.enabled !== (price > 0)) return null
+  return { enabled: price > 0, price: displayMicros(price) }
+}
+function showActivationPrice(price) {
+  activationPrice.value = price
+  if (price) priceForm.value = price.price
+}
+async function loadBillingSettings() {
+  if (!canAct()) return
+  const owns = captureOwner(), ticket = ++billingReadTicket, policyAt = policyRevision, priceAt = priceRevision
+  const [policy, price] = await Promise.allSettled([getScriptEscrowPolicy(), getScriptActivationCodePrice()])
+  if (!owns() || ticket !== billingReadTicket) return
+  if (policyAt === policyRevision) showEscrowPolicy(policy.value?.status === 200 ? normalizeEscrowPolicy(policy.value.data) : null)
+  if (priceAt === priceRevision) showActivationPrice(price.value?.status === 200 ? normalizeActivationPrice(price.value.data) : null)
+  policyError.value = !escrowPolicy.value || !activationPrice.value ? '部分计费设置未读取成功，请刷新后重试。' : ''
+}
+function setPolicyField(name, value) {
+  if (canAct() && isAdmin.value && escrowPolicy.value && !savingPolicy.value && Object.hasOwn(policyForm, name)) {
+    policyRevision++; policyForm[name] = value
+  }
+}
+function setPriceForm(value) {
+  if (canAct() && isAdmin.value && activationPrice.value && !savingPrice.value) { priceRevision++; priceForm.value = value }
+}
+async function saveEscrowPolicy() {
+  if (!canAct() || !isAdmin.value || !escrowPolicy.value || savingPolicy.value) return
+  const payload = normalizeEscrowPolicy({
+    targetMicros: decimalMicros(policyForm.target), minimumMicros: decimalMicros(policyForm.minimum), multiplierMicros: decimalMicros(policyForm.multiplier),
+  })
+  if (!payload) return message.warning('金额与倍率最多六位小数且必须大于零；最低额不能高于冻结目标。')
+  const owns = captureOwner(), revision = ++policyRevision
+  savingPolicy.value = true
+  try {
+    const response = await updateScriptEscrowPolicy(payload)
+    if (!owns() || revision !== policyRevision) return
+    if (response?.status !== 200) { message.error('保存结果未确认，请刷新核对。'); return }
+    showEscrowPolicy(normalizeEscrowPolicy(response.data) || payload)
+    message.success('冻结金政策已保存')
+  } catch {
+    if (owns() && revision === policyRevision) message.error('保存结果未确认，请刷新核对。')
+  } finally { if (owns() && revision === policyRevision) savingPolicy.value = false }
+}
+async function saveActivationPrice() {
+  if (!canAct() || !isAdmin.value || !activationPrice.value || savingPrice.value) return
+  const micros = decimalMicros(priceForm.value)
+  if (micros === null || micros >= 1000000000000000) return message.warning('请输入非负售价（最多六位小数）。')
+  const owns = captureOwner(), revision = ++priceRevision
+  savingPrice.value = true
+  try {
+    const response = await updateScriptActivationCodePrice({ price: displayMicros(micros) })
+    if (!owns() || revision !== priceRevision) return
+    const price = response?.status === 200 ? normalizeActivationPrice(response.data) : null
+    if (!price) { message.error('保存结果未确认，请刷新核对。'); return }
+    showActivationPrice(price)
+    message.success('激活码售价已保存')
+  } catch {
+    if (owns() && revision === priceRevision) message.error('保存结果未确认，请刷新核对。')
+  } finally { if (owns() && revision === priceRevision) savingPrice.value = false }
+}
+function refreshScripts() { void loadBillingSettings(); return loadScripts() }
 function startReads() {
   if (!canAct()) return
-  void loadVersions(); void loadDomainSettings(); void loadScripts()
+  void loadVersions(); void loadDomainSettings(); void loadBillingSettings(); void loadScripts()
 }
 function retireScope() {
   const ticket = ++epoch
-  readTicket += 1; domainRevision += 1; retry = null; draining.value = true
+  readTicket += 1; domainRevision += 1; billingReadTicket += 1; policyRevision += 1; priceRevision += 1; retry = null; draining.value = true
   hidePrivate(pageSurface.value); retireEditor()
   showAll.value = false; rows.value = []; versions.value = []
   Object.assign(summary, { total: 0, enabled: 0, reserved: 0 })
   readError.value = ''; listReady.value = false; loading.value = false; deleting.value = false
   domainText.value = ''; domainAllowWildcard.value = true; domainReady.value = false; domainSaving.value = false
   lastUploadKey.value = ''; uploadVersion.value = ''; uploading.value = false
+  escrowPolicy.value = null; activationPrice.value = null; policyError.value = ''; priceForm.value = ''
+  Object.assign(policyForm, { target: '', minimum: '', multiplier: '' }); savingPolicy.value = false; savingPrice.value = false
   void nextTick().then(() => nextTick()).then(() => {
     if (!alive || epoch !== ticket) return
     frameKey.value += 1; draining.value = false
@@ -504,7 +762,7 @@ watch(() => [principal(), getCurrentUserLogoutEpoch()], ([next, logout]) => {
   retireScope()
 }, { flush: 'sync' })
 watch(() => route.fullPath, retireScope, { flush: 'sync' })
-onBeforeRouteLeave(to => to.path === '/login' || !modalOpen.value || (!saving.value && draft.requestRouteLeave(to)))
+onBeforeRouteLeave(to => to.path === '/login' || !modalOpen.value || (!saving.value && !activationBusy.value && draft.requestRouteLeave(to)))
 onMounted(() => { mounted = true; startReads() })
 onBeforeUnmount(() => { alive = false; mounted = false; retireScope() })
 </script>

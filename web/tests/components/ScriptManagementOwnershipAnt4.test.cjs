@@ -14,8 +14,8 @@ const normal = { id: 222, role: 'user', username: 'fixture_user' }
 const ownerCommand = 'powershell -EncodedCommand ZgA='
 const row = (name, ownerId) => ({ id: 7, ownerId, name, scheme: 'https', baseDomain: 'example.test', shortCode: 'a', versionId: 5, command: ownerCommand })
 const okay = data => ({ status: 200, data })
-const reads = [], writes = [], mounts = []
-let holdReads = false, holdWrites = false
+const reads = [], writes = [], purchases = [], redemptions = [], updates = [], policyWrites = [], mounts = []
+let holdReads = false, holdWrites = false, activationPriceFixture = 12.345678
 
 const apiPath = path.resolve(__dirname, '../../src/api/TikuComponentApi.js')
 const api = new Module(apiPath); api.loaded = true
@@ -26,6 +26,15 @@ api.exports = {
   },
   getScriptVersions: async () => okay([{ id: 5, version: 'synthetic' }]),
   getScriptDomainSettings: async () => okay({ domains: ['example.test'], allowWildcard: true }),
+  getScriptEscrowPolicy: async () => okay({ targetMicros: 80000000, minimumMicros: 60000000, multiplierMicros: 1000000 }),
+  getScriptActivationCodePrice: async () => okay({ enabled: true, price: activationPriceFixture }),
+  updateScriptEscrowPolicy: async payload => { policyWrites.push(payload); return okay(payload) },
+  updateScriptActivationCodePrice: async payload => okay({ enabled: Number(payload.price) > 0, price: Number(payload.price) }),
+  purchaseScriptActivationCode(key, quote) {
+    return new Promise(resolve => purchases.push({ key, quote, resolve }))
+  },
+  async redeemScriptActivationCode(payload) { redemptions.push(payload); return okay({ id: 555 }) },
+  async updateScript(payload) { updates.push(payload); return okay({}) },
   createScript(payload, key) {
     if (!holdWrites) return Promise.resolve(okay({}))
     return new Promise(resolve => writes.push({ payload, key, resolve }))
@@ -55,7 +64,7 @@ afterEach(async () => {
   await settle()
   user.clearStoredCurrentUser()
   document.body.replaceChildren()
-  reads.length = writes.length = 0; holdReads = holdWrites = false
+  reads.length = writes.length = purchases.length = redemptions.length = updates.length = policyWrites.length = 0; holdReads = holdWrites = false; activationPriceFixture = 12.345678
 })
 
 test('script identity change clears rows and prevents late all-scope result publication', async () => {
@@ -158,4 +167,108 @@ test('native editor Cancel preserves dirty input until the user explicitly disca
   await settle()
   assert.equal(state.modalOpen, false)
   assert.equal(state.form.name, '')
+})
+
+
+test('wallet purchase retries one key per editor, and retiring the account clears the grant and ignores a late code', async () => {
+  const { state, page } = await open()
+  state.openCreate()
+  state.setFormField('billingMode', 'activation_code')
+  const pending = state.buyActivationCode()
+  state.buyActivationCode()
+  assert.equal(purchases.length, 1)
+  assert.match(purchases[0].key, /^script-activation-purchase-[0-9a-f]{32}$/)
+  purchases[0].resolve({ status: 503 })
+  await pending
+  const retry = state.buyActivationCode()
+  assert.equal(purchases.length, 2)
+  assert.equal(purchases[0].key, purchases[1].key)
+  assert.equal(purchases[0].quote, '12.345678')
+  assert.equal(purchases[1].quote, purchases[0].quote)
+  user.setStoredCurrentUser(normal)
+  purchases[1].resolve(okay({ entitlementId: 777, price: 12.345678, code: 'sac_' + 'a'.repeat(64) }))
+  await retry; await settle()
+  assert.equal(state.modalOpen, false)
+  assert.equal(state.activationCode, '')
+  assert.equal(state.form.entitlementId, undefined)
+  assert.doesNotMatch(page.text(), /sac_[a-f]{64}/)
+  state.openCreate()
+  state.setFormField('billingMode', 'activation_code')
+  const next = state.buyActivationCode()
+  assert.notEqual(purchases[1].key, purchases[2].key)
+  purchases[2].resolve({ status: 503 })
+  await next
+})
+
+test('redeeming sends code only to redemption; creation uses entitlement and edit does not mutate billing mode', async () => {
+  const { state, page } = await open()
+  holdWrites = true
+  state.openCreate()
+  state.setFormField('billingMode', 'activation_code')
+  state.setFormField('name', '一次合成脚本')
+  state.setFormField('baseDomain', 'example.test')
+  state.setFormField('runDurationMinutes', 35)
+  state.setFormField('notifyOnDenied', true)
+  await settle()
+  const code = 'sac_' + 'c'.repeat(64)
+  state.setActivationCode(code)
+  await state.redeemActivationCode()
+  assert.deepEqual(redemptions[0], { code })
+  assert.equal(state.activationCode, '')
+  assert.equal(state.form.entitlementId, 555)
+  page.findComponent(Antd.Modal).vm.$emit('ok')
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].payload.billingMode, 'activation_code')
+  assert.equal(writes[0].payload.entitlementId, 555)
+  assert.equal(writes[0].payload.runDurationMinutes, 35)
+  assert.equal(writes[0].payload.notifyOnDenied, true)
+  for (const field of ['billingEnabled', 'priceMultiplier', 'answerPriceMultiplier', 'billingUseTikuPrice', 'useTikuPrice', 'autoTopUp', 'code']) {
+    assert.equal(Object.hasOwn(writes[0].payload, field), false, field)
+  }
+  assert.equal(JSON.stringify(writes[0].payload).includes(code), false)
+  writes[0].resolve(okay({}))
+  await settle()
+  state.rows[0].billingMode = 'escrow'
+  state.openEdit(state.rows[0])
+  state.setFormField('billingMode', 'activation_code')
+  assert.equal(state.form.billingMode, 'escrow')
+  state.setFormField('autoTopUp', true)
+  await settle()
+  page.findComponent(Antd.Modal).vm.$emit('ok')
+  await settle()
+  assert.equal(updates[0].autoTopUp, true)
+  assert.equal(Object.hasOwn(updates[0], 'billingMode'), false)
+  assert.equal(Object.hasOwn(updates[0], 'entitlementId'), false)
+  assert.equal(Object.hasOwn(updates[0], 'answerPriceMultiplier'), false)
+})
+
+test('admin escrow fields are exact six decimals and reject a minimum above the target', async () => {
+  const { state } = await open()
+  state.setPolicyField('target', '80.000001')
+  state.setPolicyField('minimum', '90')
+  await state.saveEscrowPolicy()
+  assert.equal(policyWrites.length, 0)
+  state.setPolicyField('minimum', '60.100002')
+  state.setPolicyField('multiplier', '1.100005')
+  await state.saveEscrowPolicy()
+  assert.deepEqual(policyWrites[0], { targetMicros: 80000001, minimumMicros: 60100002, multiplierMicros: 1100005 })
+})
+
+
+test('a resolved HTTP stale-quote conflict refreshes the quote and requires a new purchase intent', async () => {
+  const { state } = await open()
+  state.openCreate()
+  state.setFormField('billingMode', 'activation_code')
+  const first = state.buyActivationCode()
+  assert.equal(purchases[0].quote, '12.345678')
+  activationPriceFixture = 13
+  purchases[0].resolve({ status: 409, data: { code: 'SCRIPT_ACTIVATION_PRICE_CHANGED' } })
+  await first; await settle()
+  assert.equal(state.purchaseUncertain, false)
+  assert.equal(state.activationPrice.price, '13')
+  const newIntent = state.buyActivationCode()
+  assert.equal(purchases[1].quote, '13')
+  assert.notEqual(purchases[1].key, purchases[0].key)
+  purchases[1].resolve({ status: 503 })
+  await newIntent
 })

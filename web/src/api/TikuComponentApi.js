@@ -763,6 +763,43 @@ export function updateScriptDomainSettings(data) {
   })
 }
 
+export function getScriptEscrowPolicy() {
+  return request({ errorFeedback: 'local', url: `/adapter-service/script-escrow-policy`, method: 'get' })
+}
+
+export function updateScriptEscrowPolicy(data) {
+  return request({ errorFeedback: 'local', retryPolicy: 'single', url: `/adapter-service/script-escrow-policy`, method: 'put', data })
+}
+
+export function getScriptActivationCodePrice() {
+  return request({ errorFeedback: 'local', url: `/adapter-service/script-activation-code-price`, method: 'get' })
+}
+
+export function updateScriptActivationCodePrice(data) {
+  return request({ errorFeedback: 'local', retryPolicy: 'single', url: `/adapter-service/script-activation-code-price`, method: 'put', data })
+}
+
+export function purchaseScriptActivationCode(idempotencyKey, quotedPrice) {
+  return request({
+    errorFeedback: 'local',
+    retryPolicy: 'single',
+    headers: { 'Idempotency-Key': idempotencyKey },
+    url: `/adapter-service/script-activation-codes/purchase`,
+    method: 'post',
+    ...(quotedPrice ? { data: { quotedPrice } } : {}),
+  })
+}
+
+export function redeemScriptActivationCode(data) {
+  return request({
+    errorFeedback: 'local',
+    retryPolicy: 'single',
+    url: `/adapter-service/script-activation-codes/redeem`,
+    method: 'post',
+    data,
+  })
+}
+
 // A diagnostic snapshot is explicit-only: one request per mount or manual refresh.
 export function getSystemMetrics() {
   return request({
