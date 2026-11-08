@@ -58,6 +58,18 @@ const SmoothAIStagedTokenMultiplierSettingKey = "smooth_ai_staged_token_multipli
 const AIStagedTokenMultiplierPointsSettingKey = "ai_staged_token_multiplier_points"
 const MinRechargeAmountSettingKey = "min_recharge_amount"
 
+// 商业化功能总开关。两者默认 false：未获批准的方案不得因为「代码已经写了」
+// 而自动生效。
+//
+//   - RechargePromotionEnabledSettingKey 控制充值阶梯赠送（六档 8.8/28/88/288/888/1688）。
+//     关闭时充值只按实付入账，不产生赠金，也不写赠送流水。
+//   - DeviceLimitEnabledSettingKey 控制账户设备池上限（1/2/3/5/10/20）。
+//     关闭时不登记设备、不校验安装，所有有效 Key 都按原逻辑可用。
+//
+// 缺记录、缺字段、解析失败一律按关闭处理：配置丢失不能等于悄悄开启。
+const RechargePromotionEnabledSettingKey = "recharge_promotion_enabled"
+const DeviceLimitEnabledSettingKey = "device_limit_enabled"
+
 // UAPIAPIKeySettingKey 是 UApiPro（uapis.cn）的 API 密钥。
 //
 // 用于查询手机号 / IP 归属地（用户管理、日志列表的归属地展示）。
@@ -139,6 +151,9 @@ type SystemSettingDetail struct {
 	MaxAIWebReads         int     `json:"maxAIWebReads"`
 	WebReadPricePerCall   float64 `json:"webReadPricePerCall"`
 	MinRechargeAmount     float64 `json:"minRechargeAmount"`
+	// 商业化总开关，默认关闭。语义见 RechargePromotionEnabledSettingKey 注释。
+	RechargePromotionEnabled bool `json:"rechargePromotionEnabled"`
+	DeviceLimitEnabled       bool `json:"deviceLimitEnabled"`
 }
 
 type UpdateSystemSettingInput struct {
@@ -181,6 +196,10 @@ type UpdateSystemSettingInput struct {
 	MaxAIWebReads         int     `json:"maxAIWebReads"`
 	WebReadPricePerCall   float64 `json:"webReadPricePerCall"`
 	MinRechargeAmount     float64 `json:"minRechargeAmount"`
+	// 指针语义：nil = 旧客户端未提交该字段，保持库中现值；非 nil 才覆盖。
+	// 若用裸 bool，任何省略字段的旧客户端都会把开关静默关掉。
+	RechargePromotionEnabled *bool `json:"rechargePromotionEnabled"`
+	DeviceLimitEnabled       *bool `json:"deviceLimitEnabled"`
 }
 
 var ErrInvalidNewUserBonusAmount = errors.New("新用户赠送金额不能为负数")
@@ -333,6 +352,8 @@ func GetSystemSettingDetailWithDB(db *gorm.DB) (SystemSettingDetail, error) {
 		MaxAIWebReads:             getPositiveIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads),
 		WebReadPricePerCall:       GetWebReadPricePerCallWithDB(db),
 		MinRechargeAmount:         GetMinRechargeAmountWithDB(db),
+		RechargePromotionEnabled:  GetRechargePromotionEnabledWithDB(db),
+		DeviceLimitEnabled:        GetDeviceLimitEnabledWithDB(db),
 	}
 	bonusAmount, err := GetNewUserBonusAmountWithDB(db)
 	if err != nil {
@@ -406,6 +427,9 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		MaxAIWebReads:         resolveMaxAISearchBudget(db, input.MaxAIWebReads, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads),
 		WebReadPricePerCall:   resolveWebReadPrice(db, input.WebReadPricePerCall),
 		MinRechargeAmount:     minRechargeAmount,
+		// 省略字段保持库中现值：旧客户端（或只改其它字段的请求）不会误关开关。
+		RechargePromotionEnabled: resolveBoolSettingInput(db, input.RechargePromotionEnabled, RechargePromotionEnabledSettingKey),
+		DeviceLimitEnabled:       resolveBoolSettingInput(db, input.DeviceLimitEnabled, DeviceLimitEnabledSettingKey),
 	}
 	normalized.AlternativeLoginEnabled = normalized.SMSLoginEnabled || normalized.WechatLoginEnabled
 
@@ -451,6 +475,8 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		{MaxAIWebReadsSettingKey, strconv.Itoa(normalized.MaxAIWebReads), "AI 搜索网页读取最大次数"},
 		{WebReadPricePerCallSettingKey, strconv.FormatFloat(normalized.WebReadPricePerCall, 'f', -1, 64), "网页读取单价（元/次）"},
 		{MinRechargeAmountSettingKey, formatRechargeSettingAmount(normalized.MinRechargeAmount), "充值最低金额（元）"},
+		{RechargePromotionEnabledSettingKey, strconv.FormatBool(normalized.RechargePromotionEnabled), "启用充值阶梯赠送（默认关闭）"},
+		{DeviceLimitEnabledSettingKey, strconv.FormatBool(normalized.DeviceLimitEnabled), "启用账户设备池上限（默认关闭）"},
 	}
 	for _, item := range settings {
 		if err := saveSystemSettingValue(db, item.key, item.value, item.remark); err != nil {
@@ -803,6 +829,27 @@ func getBoolSystemSetting(db *gorm.DB, key string) bool {
 	raw := strings.TrimSpace(getSystemSettingStringWithDefault(db, key, "false"))
 	value, err := strconv.ParseBool(raw)
 	return err == nil && value
+}
+
+// GetRechargePromotionEnabledWithDB 返回充值阶梯赠送开关。默认关闭：
+// 缺表、缺记录、值非法都按关闭处理，不能让配置问题变成「悄悄开活动」。
+func GetRechargePromotionEnabledWithDB(db *gorm.DB) bool {
+	return getBoolSystemSetting(db, RechargePromotionEnabledSettingKey)
+}
+
+// GetDeviceLimitEnabledWithDB 返回账户设备池开关。默认关闭：
+// 关闭时所有有效 Key 按原逻辑使用，不做设备登记与安装校验。
+func GetDeviceLimitEnabledWithDB(db *gorm.DB) bool {
+	return getBoolSystemSetting(db, DeviceLimitEnabledSettingKey)
+}
+
+// resolveBoolSettingInput 处理「省略 = 保持现值」的写入语义。
+// 指针为 nil 表示调用方没有提交该字段；此时读库现值，读不到就是 false。
+func resolveBoolSettingInput(db *gorm.DB, requested *bool, key string) bool {
+	if requested != nil {
+		return *requested
+	}
+	return getBoolSystemSetting(db, key)
 }
 
 func resolveWebReadPrice(db *gorm.DB, requested float64) float64 {

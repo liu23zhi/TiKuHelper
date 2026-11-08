@@ -68,6 +68,7 @@ function detail(tag = 'A') {
     wechatCodeStaticQrcodeUrl: 'https://synthetic-static.invalid/qr.png', wechatApiBaseUrl: 'https://synthetic-wechat.invalid', wechatApiBearerToken: `SYNTHETIC_BEARER_${tag}`,
     captchaProvider: 'remote', captchaApiBaseUrl: 'https://synthetic-captcha.invalid', captchaApiKey: `SYNTHETIC_CAPTCHA_${tag}`, captchaType: 'ROTATE',
     smsbaoCredentialType: 'password', smsbaoRegionMode: 'domestic', uapiApiKey: `SYNTHETIC_UAPI_${tag}`,
+    rechargePromotionEnabled: false, deviceLimitEnabled: false,
   }
 }
 function row(tag = 'A') { return { id: tag === 'A' ? 71011 : 71021, name: `SYNTHETIC_PAYMENT_${tag}`, iconSvg: '', epayType: 'alipay', enabled: true, sort: 3, remark: `SYNTHETIC_REMARK_${tag}` } }

@@ -29,7 +29,7 @@ const detail = {
 }
 const zero = { hits: 0, misses: 0, shared: 0 }
 const metrics = { schemaVersion: 1, startedAt: '2026-10-29T00:00:00Z', uptimeSeconds: 1, http: { total: 7, inFlight: 0, failed: 0, latencyCount: 0, latencyTotalMillis: 0, latencyMaxMillis: 0, buckets: [] }, cache: { search: zero, fallback: zero }, billing: { attempts: 0, successes: 0, failures: 0 } }
-const LABELS = ["网站名称", "最大日志大小", "允许公开注册", "新用户赠送金额", "充值最低金额", "开启短信登录", "开启微信登录", "微信扫描", "微信验证码", "默认微信方式", "微信 API 地址", "Bearer Token", "验证码二维码", "验证码提供方", "远程服务地址", "远程服务 Key", "验证码类型", "UApiPro API 密钥", "接口版本", "网关地址", "商户编号", "平台公钥", "商户私钥", "网站 Base 地址", "异步通知地址", "同步跳转地址", "短信提供方", "短信宝用户名", "短信宝密钥", "凭证类型", "发送区域", "短信签名", "验证码模板"]
+const LABELS = ["网站名称", "最大日志大小", "允许公开注册", "新用户赠送金额", "充值最低金额", "开启短信登录", "开启微信登录", "启用充值阶梯赠送", "启用账户设备池上限", "微信扫描", "微信验证码", "默认微信方式", "微信 API 地址", "Bearer Token", "验证码二维码", "验证码提供方", "远程服务地址", "远程服务 Key", "验证码类型", "UApiPro API 密钥", "接口版本", "网关地址", "商户编号", "平台公钥", "商户私钥", "网站 Base 地址", "异步通知地址", "同步跳转地址", "短信提供方", "短信宝用户名", "短信宝密钥", "凭证类型", "发送区域", "短信签名", "验证码模板"]
 const SECRET_LABELS = ['Bearer Token', '远程服务 Key', 'UApiPro API 密钥', '平台公钥', '商户私钥', '短信宝密钥']
 const wrappers = [], reads = [], mutations = [], network = [], runtimeErrors = []
 const clone = value => JSON.parse(JSON.stringify(value))
@@ -121,12 +121,12 @@ test('Settings original positives preserve 2 GB, six-decimal bonus, fixed/derive
   assert.equal(w.vm.hasUnsavedChanges, false)
   assert.deepEqual(reads.map(entry => entry.name).sort(), ['getPaymentMethods', 'getSystemMetrics', 'getSystemSettings'].sort())
 })
-test('Settings all 33 visible Chinese FormItem labels associate their own 34 actual controls', async () => {
+test('Settings all 35 visible Chinese FormItem labels associate their own 36 actual controls', async () => {
   const [w] = await mountPages(), entries = fields(w)
   assert.deepEqual(entries.map(entry => entry.text), LABELS)
-  assert.equal(entries.length, 33); assert.equal(entries.reduce((sum, entry) => sum + entry.controls.length, 0), 34)
+  assert.equal(entries.length, 35); assert.equal(entries.reduce((sum, entry) => sum + entry.controls.length, 0), 36)
   for (const entry of entries) for (const control of entry.controls) associated(entry, control)
-  assert.equal(new Set(ids(w)).size, 34, 'no duplicate actual control IDs')
+  assert.equal(new Set(ids(w)).size, 36, 'no duplicate actual control IDs')
 })
 test('Settings maximum log size has separately precise visible value/unit names and exact focus targets', async () => {
   const [w] = await mountPages(), entry = field(w, '最大日志大小')
@@ -157,7 +157,7 @@ test('Settings original single-control labels focus native enabled controls with
 })
 test('Settings two instances in one Vue app have distinct stable IDs, own focus and independent models', async () => {
   const [a, b] = await mountPages(2), aIds = ids(a), bIds = ids(b)
-  assert.equal(new Set([...aIds, ...bIds]).size, 68, 'same-app instance IDs never collide')
+  assert.equal(new Set([...aIds, ...bIds]).size, 72, 'same-app instance IDs never collide')
   const aa = field(a, '网站名称'), bb = field(b, '网站名称'); associated(aa, aa.controls[0]); associated(bb, bb.controls[0])
   bb.label.click(); await nextTick(); assert.equal(document.activeElement, bb.controls[0])
   type(aa.controls[0], '合成实例A独立草稿'); await settle()
@@ -170,7 +170,7 @@ test('Settings conditional remote-captcha controls reuse stable IDs after ordina
   const [w] = await mountPages(), before = ids(w), snapshot = clone(w.vm.formState)
   w.vm.$forceUpdate(); await settle(); assert.deepEqual(ids(w), before)
   w.vm.updateSetting('captchaProvider', 'local'); await settle()
-  assert.equal(fields(w).length, 30); assert.equal(field(w, '验证码提供方').controls[0].getAttribute('role'), 'combobox')
+  assert.equal(fields(w).length, 32); assert.equal(field(w, '验证码提供方').controls[0].getAttribute('role'), 'combobox')
   w.vm.updateSetting('captchaProvider', 'remote'); await settle()
   assert.deepEqual(ids(w), before); assert.deepEqual(clone(w.vm.formState), snapshot)
 })

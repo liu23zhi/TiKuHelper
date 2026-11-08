@@ -95,6 +95,18 @@
         </a-form-item>
         </ConsolePanel>
 
+        <ConsolePanel title="商业化开关" description="两项默认关闭；关闭时保持现有行为，不产生赠金、不限制设备。" class="settings-section">
+        <a-form-item label="启用充值阶梯赠送" :html-for="fieldId('rechargePromotionEnabled')">
+          <a-switch :id="fieldId('rechargePromotionEnabled')" :checked="formState.rechargePromotionEnabled" v-on="{ 'update:checked': settingsEntry.bind(updateSetting, 'rechargePromotionEnabled') }" />
+          <div class="hint">关闭（默认）：充值只按实付入账，不产生任何赠金与赠送流水。开启后才按六档门槛匹配赠比；方案本身仍未获批准上线。</div>
+        </a-form-item>
+
+        <a-form-item label="启用账户设备池上限" :html-for="fieldId('deviceLimitEnabled')">
+          <a-switch :id="fieldId('deviceLimitEnabled')" :checked="formState.deviceLimitEnabled" v-on="{ 'update:checked': settingsEntry.bind(updateSetting, 'deviceLimitEnabled') }" />
+          <div class="hint">关闭（默认）：不登记设备、不校验安装，所有有效 Key 按原逻辑使用。开启后才按等级上限（1/2/3/5/10/20）拒绝新登记。</div>
+        </a-form-item>
+        </ConsolePanel>
+
         <ConsolePanel title="微信登录与验证码" description="配置微信验证方式和验证码服务。" class="settings-section">
         <a-form-item label="微信扫描" :html-for="fieldId('wechatScanLoginEnabled')">
           <a-switch :id="fieldId('wechatScanLoginEnabled')" :checked="formState.wechatScanLoginEnabled" v-on="{ 'update:checked': settingsEntry.bind(updateSetting, 'wechatScanLoginEnabled') }" />
@@ -465,6 +477,9 @@ export default defineComponent({
       registerEnabled: false,
       newUserBonusAmount: 0,
       minRechargeAmount: DEFAULT_MIN_RECHARGE_AMOUNT,
+      // 商业化开关默认关闭，与后端缺省一致。
+      rechargePromotionEnabled: false,
+      deviceLimitEnabled: false,
       epayVersion: 'v2',
       epayGatewayUrl: '',
       epayPartnerId: '',
@@ -809,6 +824,9 @@ export default defineComponent({
       formState.registerEnabled = !!data.registerEnabled
       formState.newUserBonusAmount = Number(data.newUserBonusAmount || 0)
       formState.minRechargeAmount = normalizeMinRechargeAmount(data.minRechargeAmount)
+      // 布尔开关只认显式 true；缺字段或异常值一律视为关闭。
+      formState.rechargePromotionEnabled = data.rechargePromotionEnabled === true
+      formState.deviceLimitEnabled = data.deviceLimitEnabled === true
       formState.epayVersion = 'v2'
       formState.epayGatewayUrl = data.epayGatewayUrl || ''
       formState.epayPartnerId = data.epayPartnerId || ''
@@ -1007,6 +1025,9 @@ export default defineComponent({
         smsbaoRegionMode: normalizeString(formState.smsbaoRegionMode || 'auto'),
         // 明文提交；留空即为清空密钥（不做脱敏占位符的特殊处理）。
         uapiApiKey: normalizeString(formState.uapiApiKey),
+        // 显式提交布尔值：后端用指针区分「未提交」与「提交 false」。
+        rechargePromotionEnabled: !!formState.rechargePromotionEnabled,
+        deviceLimitEnabled: !!formState.deviceLimitEnabled,
       }
 
       const owns = captureOwner(), ticket = ++settingsWrite

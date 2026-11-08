@@ -687,3 +687,90 @@ func TestGetPublicAuthSettingsWithDBIncludesAlternativeLoginAndCaptcha(t *testin
 		t.Fatalf("unexpected captcha type %s", settings.CaptchaType)
 	}
 }
+
+// 两个商业化开关的默认值必须是 false：缺表、缺记录、值非法都算关闭。
+func TestCommercialSwitchesDefaultToDisabled(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+
+	detail, err := GetSystemSettingDetailWithDB(db)
+	if err != nil {
+		t.Fatalf("get detail: %v", err)
+	}
+	if detail.RechargePromotionEnabled {
+		t.Fatal("充值阶梯赠送必须默认关闭")
+	}
+	if detail.DeviceLimitEnabled {
+		t.Fatal("账户设备池上限必须默认关闭")
+	}
+	if GetRechargePromotionEnabledWithDB(db) || GetDeviceLimitEnabledWithDB(db) {
+		t.Fatal("缺记录时两个开关都必须是关闭")
+	}
+
+	for _, invalid := range []string{"", "yes", "1", "TRUE ", "enabled"} {
+		if err := db.Where("key = ?", RechargePromotionEnabledSettingKey).Delete(&entity.SystemSetting{}).Error; err != nil {
+			t.Fatalf("reset promotion switch: %v", err)
+		}
+		if err := db.Create(&entity.SystemSetting{Key: RechargePromotionEnabledSettingKey, Value: invalid}).Error; err != nil {
+			t.Fatalf("seed promotion switch %q: %v", invalid, err)
+		}
+		// strconv.ParseBool 接受 "1"/"TRUE"（大小写不敏感），"yes"/"enabled" 会被拒。
+		want := invalid == "1" || invalid == "TRUE "
+		if got := GetRechargePromotionEnabledWithDB(db); got != want {
+			t.Fatalf("value %q: got %t want %t", invalid, got, want)
+		}
+	}
+
+	// 表不存在时不能 panic，也要按关闭处理。
+	empty := newSystemSettingTestDB(t)
+	if err := empty.Migrator().DropTable(&entity.SystemSetting{}); err != nil {
+		t.Fatalf("drop settings table: %v", err)
+	}
+	if GetRechargePromotionEnabledWithDB(empty) || GetDeviceLimitEnabledWithDB(empty) {
+		t.Fatal("缺表时两个开关都必须是关闭")
+	}
+}
+
+func TestUpdateSystemSettingDetailWithDBPersistsCommercialSwitches(t *testing.T) {
+	db := newSystemSettingTestDB(t)
+
+	on := true
+	updated, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{
+		RechargePromotionEnabled: &on,
+		DeviceLimitEnabled:       &on,
+	})
+	if err != nil {
+		t.Fatalf("enable switches: %v", err)
+	}
+	if !updated.RechargePromotionEnabled || !updated.DeviceLimitEnabled {
+		t.Fatalf("switches not enabled: %+v", updated)
+	}
+	reloaded, err := GetSystemSettingDetailWithDB(db)
+	if err != nil {
+		t.Fatalf("reload switches: %v", err)
+	}
+	if !reloaded.RechargePromotionEnabled || !reloaded.DeviceLimitEnabled {
+		t.Fatalf("switches did not persist: %+v", reloaded)
+	}
+
+	// 省略字段必须保持现值，不能被旧客户端静默关掉。
+	kept, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{SiteName: "旧前端"})
+	if err != nil {
+		t.Fatalf("update legacy payload: %v", err)
+	}
+	if !kept.RechargePromotionEnabled || !kept.DeviceLimitEnabled {
+		t.Fatalf("省略字段不得改动开关: %+v", kept)
+	}
+
+	// 显式 false 才关闭。
+	off := false
+	closed, err := UpdateSystemSettingDetailWithDB(db, UpdateSystemSettingInput{RechargePromotionEnabled: &off})
+	if err != nil {
+		t.Fatalf("disable promotion: %v", err)
+	}
+	if closed.RechargePromotionEnabled {
+		t.Fatal("显式 false 必须关闭充值赠送")
+	}
+	if !closed.DeviceLimitEnabled {
+		t.Fatal("只提交一个开关时另一个必须保持开启")
+	}
+}
