@@ -29,6 +29,10 @@ const ExtensionUpdates = () => import(/* webpackChunkName: "route-extension-upda
 const Tickets = () => import(/* webpackChunkName: "route-tickets" */ '../pages/Tickets/index.vue')
 const OCRCache = () => import(/* webpackChunkName: "route-o-c-r-cache" */ '../pages/OCRCache/index.vue')
 const UserExamTool = () => import(/* webpackChunkName: "route-user-exam-tool" */ '../pages/UserExamTool/index.vue')
+const MyReferral = () => import(/* webpackChunkName: "route-my-referral" */ '../pages/MyReferral/index.vue')
+const ReferralRebates = () => import(/* webpackChunkName: "route-referral-rebates" */ '../pages/ReferralRebates/index.vue')
+const ReviewRebate = () => import(/* webpackChunkName: "route-review-rebate" */ '../pages/ReviewRebate/index.vue')
+const ReviewRebateAdmin = () => import(/* webpackChunkName: "route-review-rebate-admin" */ '../pages/ReviewRebateAdmin/index.vue')
 const routes = [
   {
     path: '/',
@@ -114,6 +118,26 @@ const routes = [
         component: UserExamTool,
       },
       {
+        path: 'my-referral',
+        name: 'my-referral',
+        component: MyReferral,
+      },
+      {
+        path: 'review-rebate',
+        name: 'review-rebate',
+        component: ReviewRebate,
+      },
+      {
+        path: 'referral-rebates',
+        name: 'referral-rebates',
+        component: ReferralRebates,
+      },
+      {
+        path: 'review-rebate-admin',
+        name: 'review-rebate-admin',
+        component: ReviewRebateAdmin,
+      },
+      {
         path: 'extension-updates',
         name: 'extension-updates',
         component: ExtensionUpdates,
@@ -184,6 +208,8 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   'location-cache',
   'ip-location-cache',
   'phone-location-cache',
+  'referral-rebates',
+  'review-rebate-admin',
 ])
 const PUBLIC_ADAPTER_ROUTE_NAMES = new Set([
   'recharge-result',

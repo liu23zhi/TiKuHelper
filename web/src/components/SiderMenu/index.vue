@@ -58,6 +58,9 @@ import {
   CreditCardOutlined,
   CodeOutlined,
   DatabaseOutlined,
+  GiftOutlined,
+  ShareAltOutlined,
+  StarOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
 } from '@ant-design/icons-vue';
@@ -79,6 +82,8 @@ const ADMIN_MENU_ITEMS = [
   { key: 'ai-search-config', label: 'AI 搜索配置', icon: RobotOutlined },
   { key: 'ocr-cache', label: 'OCR 缓存管理', icon: FileTextOutlined },
   { key: 'user-exam-tool', label: '客户端数据库工具', icon: DatabaseOutlined },
+  { key: 'referral-rebates', label: '返佣记录', icon: GiftOutlined },
+  { key: 'review-rebate-admin', label: '评价返现管理', icon: StarOutlined },
   { key: 'system-settings', label: '系统管理', icon: ToolOutlined },
   { key: 'extension-updates', label: '扩展更新', icon: DownloadOutlined },
   { key: 'access-tokens', label: '令牌管理', icon: SafetyCertificateOutlined },
@@ -93,6 +98,8 @@ const USER_MENU_ITEMS = [
   { key: 'scripts', label: '我的脚本', icon: CodeOutlined },
   { key: 'recharge-orders', label: '充值记录', icon: CreditCardOutlined },
   { key: 'billing-records', label: '我的账单', icon: AccountBookOutlined },
+  { key: 'my-referral', label: '我的邀请', icon: ShareAltOutlined },
+  { key: 'review-rebate', label: '评价返现', icon: StarOutlined },
   { key: 'tickets', label: '工单反馈', icon: FileTextOutlined },
 ]
 
