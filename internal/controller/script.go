@@ -244,12 +244,15 @@ func ActivateScriptRunSession(c *gin.Context) {
 		activationToken = strings.TrimSpace(c.GetHeader("X-Script-Token"))
 	}
 	identity := strings.TrimSpace(c.GetHeader("X-Script-Identity"))
-	if activationToken == "" || identity == "" {
+	durationMinutes := 0
+	if activationToken == "" || identity == "" || c.Request.ContentLength > 0 {
 		var body struct {
 			ActivationToken string `json:"activationToken"`
 			Identity        string `json:"identity"`
+			DurationMinutes int    `json:"durationMinutes"`
 		}
 		if c.ShouldBindJSON(&body) == nil {
+			durationMinutes = body.DurationMinutes
 			if activationToken == "" {
 				activationToken = strings.TrimSpace(body.ActivationToken)
 			}
@@ -258,12 +261,23 @@ func ActivateScriptRunSession(c *gin.Context) {
 			}
 		}
 	}
-	grant, err := service.ActivateScriptRunSessionWithDB(scriptDB(), c.Param("shortCode"), activationToken, identity)
+	grant, err := service.ActivateLeasedScriptRunSessionWithDB(scriptDB(), c.Param("shortCode"), activationToken, identity, c.ClientIP(), durationMinutes)
 	if err != nil {
 		writeScriptError(c, err, "脚本运行会话激活失败")
 		return
 	}
 	c.JSON(http.StatusOK, grant)
+}
+
+func HeartbeatScriptRunSession(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	expiresAt, err := service.HeartbeatScriptRunSessionWithDB(scriptDB(), c.Param("shortCode"),
+		c.GetHeader("Authorization"), c.GetHeader("X-Script-Identity"), c.ClientIP())
+	if err != nil {
+		writeScriptError(c, err, "脚本会话心跳失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"expiresAt": expiresAt})
 }
 
 // ScriptBootstrap returns a PowerShell 2 compatible launcher with a newly
@@ -472,6 +486,12 @@ func writeScriptError(c *gin.Context, err error, fallback string) {
 	case errors.Is(err, service.ErrScriptBindingsRequired):
 		c.JSON(http.StatusForbidden, gin.H{"code": "SCRIPT_BINDINGS_REQUIRED", "message": service.ErrScriptBindingsRequired.Error()})
 		return
+	case errors.Is(err, service.ErrScriptDeviceBusy):
+		c.JSON(http.StatusConflict, gin.H{"code": "SCRIPT_DEVICE_BUSY", "message": err.Error()})
+		return
+	case errors.Is(err, service.ErrScriptSourceUnavailable):
+		c.JSON(http.StatusServiceUnavailable, gin.H{"code": "SCRIPT_SOURCE_UNAVAILABLE", "message": err.Error()})
+		return
 	case errors.Is(err, service.ErrScriptForbidden):
 		status, message = http.StatusForbidden, err.Error()
 	case errors.Is(err, service.ErrScriptNotFound), errors.Is(err, service.ErrScriptVersionNotFound):
@@ -480,7 +500,9 @@ func writeScriptError(c *gin.Context, err error, fallback string) {
 		status, message = http.StatusBadRequest, err.Error()
 	case errors.Is(err, service.ErrScriptBalanceInsufficient), errors.Is(err, service.ErrScriptTokenBalanceInsufficient), errors.Is(err, service.ErrScriptExchangeAlreadyIssued):
 		status, message = http.StatusPaymentRequired, err.Error()
-	case errors.Is(err, service.ErrScriptTokenInvalid):
+	case errors.Is(err, service.ErrScriptDurationInvalid), errors.Is(err, service.ErrScriptRunIdentityRequired):
+		status, message = http.StatusBadRequest, err.Error()
+	case errors.Is(err, service.ErrScriptTokenInvalid), errors.Is(err, service.ErrInvalidAccessTokenAuthorization):
 		status, message = http.StatusUnauthorized, err.Error()
 	}
 	c.JSON(status, gin.H{"message": message})

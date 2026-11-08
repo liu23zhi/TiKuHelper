@@ -73,16 +73,21 @@ func (*ScriptExchangeToken) TableName() string { return TableNameScriptExchangeT
 // exchange ticket is redeemed. Only token and client identity digests are
 // persisted; plaintext secrets never reach the database.
 type ScriptRunSession struct {
-	ID            int64      `gorm:"primaryKey;autoIncrement" json:"id"`
-	ScriptID      int32      `gorm:"column:script_id;not null;index" json:"scriptId"`
-	UserID        int32      `gorm:"column:user_id;not null;index" json:"userId"`
-	AccessTokenID int32      `gorm:"column:access_token_id;not null;index" json:"accessTokenId"`
-	TokenHash     string     `gorm:"column:token_hash;type:char(64);not null;uniqueIndex" json:"-"`
-	IdentityHash  string     `gorm:"column:identity_hash;type:char(64);not null" json:"-"`
-	ActivatedAt   time.Time  `gorm:"column:activated_at;not null;index" json:"activatedAt"`
-	ExpiresAt     time.Time  `gorm:"column:expires_at;not null;index" json:"expiresAt"`
-	RevokedAt     *time.Time `gorm:"column:revoked_at;index" json:"revokedAt,omitempty"`
-	CreatedAt     time.Time  `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
+	ID            int64  `gorm:"primaryKey;autoIncrement" json:"id"`
+	ScriptID      int32  `gorm:"column:script_id;not null;index" json:"scriptId"`
+	UserID        int32  `gorm:"column:user_id;not null;index" json:"userId"`
+	AccessTokenID int32  `gorm:"column:access_token_id;not null;index" json:"accessTokenId"`
+	TokenHash     string `gorm:"column:token_hash;type:char(64);not null;uniqueIndex" json:"-"`
+	IdentityHash  string `gorm:"column:identity_hash;type:char(64);not null" json:"-"`
+	// LeaseSlot is unique while a managed run owns the script. NULL preserves
+	// retired and historical sessions without making the old rows exclusive.
+	LeaseSlot       *int32     `gorm:"column:lease_slot;uniqueIndex" json:"-"`
+	SourceZoneHash  string     `gorm:"column:source_zone_hash;type:char(64);not null;default:''" json:"-"`
+	LastHeartbeatAt *time.Time `gorm:"column:last_heartbeat_at" json:"-"`
+	ActivatedAt     time.Time  `gorm:"column:activated_at;not null;index" json:"activatedAt"`
+	ExpiresAt       time.Time  `gorm:"column:expires_at;not null;index" json:"expiresAt"`
+	RevokedAt       *time.Time `gorm:"column:revoked_at;index" json:"revokedAt,omitempty"`
+	CreatedAt       time.Time  `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
 }
 
 func (*ScriptRunSession) TableName() string { return TableNameScriptRunSession }

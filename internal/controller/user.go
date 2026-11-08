@@ -209,7 +209,7 @@ func Auth(c *gin.Context) {
 func AuthOrAccessToken(c *gin.Context) {
 	authorization := strings.TrimSpace(c.Request.Header.Get("Authorization"))
 	if identity := strings.TrimSpace(c.Request.Header.Get("X-Script-Identity")); identity != "" {
-		authCtx, session, err := service.ResolveSearchTokenWithScriptIdentity(dao.User.UnderlyingDB(), authorization, identity)
+		authCtx, session, err := service.ResolveSearchTokenWithScriptIdentity(dao.User.UnderlyingDB(), authorization, identity, c.ClientIP())
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"message": "脚本运行会话无效或已过期"})
 			return
@@ -243,7 +243,7 @@ func AuthAccessToken(c *gin.Context) {
 		return
 	}
 
-	authCtx, session, err := service.ResolveSearchTokenWithScriptIdentity(dao.User.UnderlyingDB(), authorization, c.Request.Header.Get("X-Script-Identity"))
+	authCtx, session, err := service.ResolveSearchTokenWithScriptIdentity(dao.User.UnderlyingDB(), authorization, c.Request.Header.Get("X-Script-Identity"), c.ClientIP())
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"message": "请提供有效访问令牌"})
 		return

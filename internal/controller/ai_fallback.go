@@ -364,10 +364,10 @@ func validateAIFallbackScriptSessionWithDB(db *gorm.DB, userID int32, token enti
 		return rejected
 	}
 	var current entity.ScriptRunSession
-	if err := db.Select("identity_hash", "revoked_at", "expires_at").
+	if err := db.Select("script_id", "identity_hash", "revoked_at", "expires_at", "lease_slot", "source_zone_hash", "last_heartbeat_at").
 		Where("id = ? AND script_id = ? AND user_id = ? AND access_token_id = ?",
 			session.ID, session.ScriptID, userID, token.ID).First(&current).Error; err != nil ||
-		current.RevokedAt != nil || !time.Now().Before(current.ExpiresAt) ||
+		!service.ScriptRunSessionUsableAt(current, time.Now()) ||
 		subtle.ConstantTimeCompare([]byte(session.IdentityHash), []byte(current.IdentityHash)) != 1 {
 		return rejected
 	}

@@ -2046,7 +2046,7 @@ func resolveSearchRequestContextWithDBAndIdentity(db *gorm.DB, authorization str
 	allowDefaultAccount := false
 
 	if strings.TrimSpace(authorization) != "" || strings.TrimSpace(identity) != "" {
-		authCtx, scriptSession, err := service.ResolveSearchTokenWithScriptIdentity(db, authorization, identity)
+		authCtx, scriptSession, err := service.ResolveSearchTokenWithScriptIdentity(db, authorization, identity, clientIP)
 		if err != nil {
 			return resolved, err
 		}

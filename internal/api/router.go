@@ -46,6 +46,7 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/script-command/:shortCode/bootstrap", controller.ScriptBootstrap)
 	apiRouter.GET("/script-command/:shortCode/exchange-script", controller.ScriptExchangeScript)
 	apiRouter.POST("/script-command/:shortCode/activate", controller.ActivateScriptRunSession)
+	apiRouter.POST("/script-command/:shortCode/heartbeat", controller.HeartbeatScriptRunSession)
 	apiRouter.GET("/script-command/:shortCode/file", controller.ScriptBinaryDownload)
 	apiRouter.GET("/scripts/:shortCode/bootstrap", controller.ScriptBootstrap)
 	apiRouter.POST("/scripts/command/:shortCode/exchange", controller.ExchangeScriptToken)

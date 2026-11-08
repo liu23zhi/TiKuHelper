@@ -51,7 +51,7 @@ func checkNewSearchTaskSpending(c *gin.Context) error {
 	if db == nil {
 		return errors.New("搜题服务暂不可用")
 	}
-	auth, _, err := service.ResolveSearchTokenWithScriptIdentity(db, authorization, c.GetHeader("X-Script-Identity"))
+	auth, _, err := service.ResolveSearchTokenWithScriptIdentity(db, authorization, c.GetHeader("X-Script-Identity"), c.ClientIP())
 	if err != nil {
 		return err
 	}

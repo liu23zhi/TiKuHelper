@@ -33,7 +33,7 @@ func SearchWithIdempotency(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "搜题服务暂不可用"})
 		return
 	}
-	auth, session, err := service.ResolveSearchTokenWithScriptIdentity(db, c.GetHeader("Authorization"), c.GetHeader("X-Script-Identity"))
+	auth, session, err := service.ResolveSearchTokenWithScriptIdentity(db, c.GetHeader("Authorization"), c.GetHeader("X-Script-Identity"), c.ClientIP())
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"message": "请提供有效访问令牌"})
 		return
