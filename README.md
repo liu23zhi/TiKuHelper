@@ -71,7 +71,7 @@ Edge/Chrome 商店 ID，并查看版本和手动刷新；检查间隔支持分�
 默认每 10 天检查，失败保留上一份可用包，Chrome 来源默认停用。设置逐字段按“环境变量 →
 数据库 → 内置默认值”读取；未设置环境变量的字段可在后台修改，已由环境变量覆盖的字段会标明来源
 并禁止编辑。移除覆盖变量并重启后恢复数据库保存值。完整接口、权限和校验规则见
-[`docs/extension-update-api.md`](docs/extension-update-api.md)。
+[`extension-update-api.md`](https://github.com/liu23zhi/TikuDoc/blob/main/tikuAdapter/docs/extension-update-api.md)。
 
 ```powershell
 $env:EXTENSION_UPDATE_ENABLED = "true"
