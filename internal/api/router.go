@@ -160,6 +160,11 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/recharge-orders", controller.Auth, controller.RechargeOrderList)
 	apiRouter.POST("/recharge-orders", controller.Auth, controller.CreateRechargeOrder)
 	apiRouter.Any("/payment/notify", controller.RechargePaymentNotify)
+	// 邀请码与充值返佣。本人只能看自己的汇总（handler 内固定用当前账户），
+	// 返佣列表与结算一律管理员（Auth + RequireAdmin）。
+	apiRouter.GET("/user/referral", controller.Auth, controller.ReferralSummary)
+	apiRouter.GET("/admin/referral-rebates", controller.Auth, middleware.RequireAdmin, controller.ReferralRebateList)
+	apiRouter.POST("/admin/referral-rebates/:id/settle", controller.Auth, middleware.RequireAdmin, controller.SettleReferralRebate)
 	apiRouter.GET("/access-tokens", controller.Auth, controller.AccessTokenList)
 	apiRouter.POST("/access-tokens", controller.Auth, controller.CreateAccessToken)
 	apiRouter.PUT("/access-tokens/:id", controller.Auth, controller.UpdateAccessToken)

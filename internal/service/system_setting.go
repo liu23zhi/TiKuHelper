@@ -70,6 +70,19 @@ const MinRechargeAmountSettingKey = "min_recharge_amount"
 const RechargePromotionEnabledSettingKey = "recharge_promotion_enabled"
 const DeviceLimitEnabledSettingKey = "device_limit_enabled"
 
+// ReferralRebateEnabledSettingKey 是邀请码与充值返佣的总开关。
+//
+// 默认 false（与其它商业化开关一致）：关闭时注册不生成邀请码、支付回调不产生返佣。
+// 关闭只影响「是否继续产生新数据」，已存在的邀请码与返佣账本行保持原样可查，
+// 不做删除也不改写状态 —— 账本一旦产生就只追加。
+const ReferralRebateEnabledSettingKey = "referral_rebate_enabled"
+
+// ReferralRebateRateSettingKey 是返佣比例，取值 [0, 1)，即 0%–100%。
+//
+// 返佣基数是被邀请账户的**已核验净实付本金，不含赠金**（1688 充值赠 3376 时基数为 1688）。
+// 比例在产生返佣时快照进 referral_rebates.rate，改配置不回溯已产生的记录。
+const ReferralRebateRateSettingKey = "referral_rebate_rate"
+
 // UAPIAPIKeySettingKey 是 UApiPro（uapis.cn）的 API 密钥。
 //
 // 用于查询手机号 / IP 归属地（用户管理、日志列表的归属地展示）。
@@ -100,6 +113,18 @@ const DefaultWebReadPricePerCall = float64(0)
 const DefaultImageOCRPricePerCall = float64(0)
 const DefaultTikuSearchPricePerCall = float64(0)
 const DefaultMinRechargeAmount = float64(1)
+
+// DefaultReferralRebateEnabled 是邀请返佣总开关的默认值（关闭）。
+const DefaultReferralRebateEnabled = false
+
+// DefaultReferralRebateRate 是返佣比例的默认值（0%，即不产生任何金额）。
+const DefaultReferralRebateRate = float64(0)
+
+// ReferralRebatePolicyVersion 是当前返佣规则版本快照标识。
+//
+// 写入 referral_rebates.policy_version，用于区分「按哪一版规则算出的金额」。
+// 规则（基数口径、比例来源）发生语义变化时必须换一个值，历史行保持不变。
+const ReferralRebatePolicyVersion = "v1"
 
 // JSON numbers must round-trip through the browser without losing precision.
 const MaxAISearchCountSafeInteger int64 = 9007199254740991
@@ -154,6 +179,9 @@ type SystemSettingDetail struct {
 	// 商业化总开关，默认关闭。语义见 RechargePromotionEnabledSettingKey 注释。
 	RechargePromotionEnabled bool `json:"rechargePromotionEnabled"`
 	DeviceLimitEnabled       bool `json:"deviceLimitEnabled"`
+	// 邀请返佣：总开关默认关闭，比例默认 0（0%–100%，上界开区间）。
+	ReferralRebateEnabled bool    `json:"referralRebateEnabled"`
+	ReferralRebateRate    float64 `json:"referralRebateRate"`
 }
 
 type UpdateSystemSettingInput struct {
@@ -200,11 +228,16 @@ type UpdateSystemSettingInput struct {
 	// 若用裸 bool，任何省略字段的旧客户端都会把开关静默关掉。
 	RechargePromotionEnabled *bool `json:"rechargePromotionEnabled"`
 	DeviceLimitEnabled       *bool `json:"deviceLimitEnabled"`
+	// 邀请返佣：nil = 本次没有提交该字段 = 保持现值。
+	// 布尔一律用指针，避免老前端（不认识这两个字段）把开关静默关掉。
+	ReferralRebateEnabled *bool    `json:"referralRebateEnabled"`
+	ReferralRebateRate    *float64 `json:"referralRebateRate"`
 }
 
 var ErrInvalidNewUserBonusAmount = errors.New("新用户赠送金额不能为负数")
 var ErrInvalidMinRechargeAmount = errors.New("最低充值金额必须是大于 0 的有效金额")
 var ErrInvalidAISearchCount = errors.New("AI 调用与工具次数必须是可精确表示的正整数")
+var ErrInvalidReferralRebateRate = errors.New("返佣比例必须在 0（含）到 1（不含）之间")
 
 type PublicAuthSettings struct {
 	RegisterEnabled           bool   `json:"registerEnabled"`
@@ -354,6 +387,8 @@ func GetSystemSettingDetailWithDB(db *gorm.DB) (SystemSettingDetail, error) {
 		MinRechargeAmount:         GetMinRechargeAmountWithDB(db),
 		RechargePromotionEnabled:  GetRechargePromotionEnabledWithDB(db),
 		DeviceLimitEnabled:        GetDeviceLimitEnabledWithDB(db),
+		ReferralRebateEnabled:     GetReferralRebateEnabledWithDB(db),
+		ReferralRebateRate:        GetReferralRebateRateWithDB(db),
 	}
 	bonusAmount, err := GetNewUserBonusAmountWithDB(db)
 	if err != nil {
@@ -375,6 +410,10 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		return SystemSettingDetail{}, err
 	}
 	minRechargeAmount, err := resolveMinRechargeAmount(db, input.MinRechargeAmount)
+	if err != nil {
+		return SystemSettingDetail{}, err
+	}
+	referralRebateRate, err := resolveReferralRebateRate(db, input.ReferralRebateRate)
 	if err != nil {
 		return SystemSettingDetail{}, err
 	}
@@ -430,6 +469,9 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		// 省略字段保持库中现值：旧客户端（或只改其它字段的请求）不会误关开关。
 		RechargePromotionEnabled: resolveBoolSettingInput(db, input.RechargePromotionEnabled, RechargePromotionEnabledSettingKey),
 		DeviceLimitEnabled:       resolveBoolSettingInput(db, input.DeviceLimitEnabled, DeviceLimitEnabledSettingKey),
+		// nil = 未提交 = 保持现值；读取失败一律 false / 0（不能让配置读错变成开活动）。
+		ReferralRebateEnabled: resolveBoolSettingInput(db, input.ReferralRebateEnabled, ReferralRebateEnabledSettingKey),
+		ReferralRebateRate:    referralRebateRate,
 	}
 	normalized.AlternativeLoginEnabled = normalized.SMSLoginEnabled || normalized.WechatLoginEnabled
 
@@ -477,6 +519,8 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		{MinRechargeAmountSettingKey, formatRechargeSettingAmount(normalized.MinRechargeAmount), "充值最低金额（元）"},
 		{RechargePromotionEnabledSettingKey, strconv.FormatBool(normalized.RechargePromotionEnabled), "启用充值阶梯赠送（默认关闭）"},
 		{DeviceLimitEnabledSettingKey, strconv.FormatBool(normalized.DeviceLimitEnabled), "启用账户设备池上限（默认关闭）"},
+		{ReferralRebateEnabledSettingKey, strconv.FormatBool(normalized.ReferralRebateEnabled), "启用邀请码与充值返佣（默认关闭）"},
+		{ReferralRebateRateSettingKey, strconv.FormatFloat(normalized.ReferralRebateRate, 'f', -1, 64), "返佣比例（0–1，不含 1）"},
 	}
 	for _, item := range settings {
 		if err := saveSystemSettingValue(db, item.key, item.value, item.remark); err != nil {
@@ -844,6 +888,53 @@ func GetDeviceLimitEnabledWithDB(db *gorm.DB) bool {
 }
 
 // resolveBoolSettingInput 处理「省略 = 保持现值」的写入语义。
+// GetReferralRebateEnabledWithDB 返回邀请返佣总开关，默认关闭。
+//
+// 缺表、缺记录、值非法都按关闭处理：配置读不出来时绝不能变成「悄悄开活动」。
+func GetReferralRebateEnabledWithDB(db *gorm.DB) bool {
+	return getBoolSystemSetting(db, ReferralRebateEnabledSettingKey)
+}
+
+// GetReferralRebateRateWithDB 返回返佣比例（0–1 之间的分数）。
+//
+// 默认 0；越界或非数值一律回落到 0，同样是为了「读不到就不要发钱」。
+func GetReferralRebateRateWithDB(db *gorm.DB) float64 {
+	if db == nil || !db.Migrator().HasTable(&entity.SystemSetting{}) {
+		return DefaultReferralRebateRate
+	}
+	raw := strings.TrimSpace(getSystemSettingStringWithDefault(db, ReferralRebateRateSettingKey, "0"))
+	rate, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return DefaultReferralRebateRate
+	}
+	normalized, err := normalizeReferralRebateRate(rate)
+	if err != nil {
+		return DefaultReferralRebateRate
+	}
+	return normalized
+}
+
+// normalizeReferralRebateRate 校验并规范化返佣比例：必须在 [0, 1) 内。
+//
+// 1（100%）不允许：返佣 100% 等于把实付本金原额返出，超出「佣金」语义，
+// 也更容易被刷单套利；上界是开区间。
+func normalizeReferralRebateRate(rate float64) (float64, error) {
+	if math.IsNaN(rate) || math.IsInf(rate, 0) || rate < 0 || rate >= 1 {
+		return 0, ErrInvalidReferralRebateRate
+	}
+	return rate, nil
+}
+
+// resolveReferralRebateRate 处理「省略 = 保持现值」的写入语义。
+// nil 表示调用方没有提交该字段，此时读库现值（读不到就是 0）。
+func resolveReferralRebateRate(db *gorm.DB, requested *float64) (float64, error) {
+	if requested == nil {
+		return GetReferralRebateRateWithDB(db), nil
+	}
+	return normalizeReferralRebateRate(*requested)
+}
+
+// resolveBoolSettingInput 处理「省略 = 保持现值」的布尔写入语义。
 // 指针为 nil 表示调用方没有提交该字段；此时读库现值，读不到就是 false。
 func resolveBoolSettingInput(db *gorm.DB, requested *bool, key string) bool {
 	if requested != nil {

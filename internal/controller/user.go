@@ -369,6 +369,9 @@ func UserRegister(c *gin.Context) {
 		SMSCode               string `json:"smsCode"`
 		CaptchaToken          string `json:"captchaToken"`
 		RegistrationFlowToken string `json:"registrationFlowToken"`
+		// InviteCode 是可选邀请码：只在注册时生效，注册后不可改绑。
+		// 总开关关闭时该字段被静默忽略（不报错），老客户端不带它也能注册。
+		InviteCode string `json:"inviteCode"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		c.JSON(400, gin.H{
@@ -413,6 +416,7 @@ func UserRegister(c *gin.Context) {
 		return
 	}
 	registrationFlowToken := strings.TrimSpace(payload.RegistrationFlowToken)
+	inviteCode := strings.TrimSpace(payload.InviteCode)
 	var smsEvidence service.SMSVerificationEvidence
 	if registrationFlowToken != "" {
 		hashedPassword, err := util.HashPassword(password)
@@ -453,11 +457,14 @@ func UserRegister(c *gin.Context) {
 				if err != nil {
 					return err
 				}
-				return service.CreateUserWithNewUserBonusInTx(tx, &user, service.NewUserBonusOptions{
+				if err := service.CreateUserWithNewUserBonusInTx(tx, &user, service.NewUserBonusOptions{
 					Enabled: true,
 					Amount:  bonusAmount,
 					Source:  service.RegistrationBonusSourcePublicRegister,
-				})
+				}); err != nil {
+					return err
+				}
+				return applyReferralOnRegister(tx, &user, inviteCode)
 			})
 		})
 		if err != nil {
@@ -537,8 +544,16 @@ func UserRegister(c *gin.Context) {
 		})
 		if isPhoneBindingError(err) {
 			failureMessage = err.Error()
+			return err
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		if err := applyReferralOnRegister(tx, &user, inviteCode); err != nil {
+			failureMessage = referralRegisterFailureMessage(err)
+			return err
+		}
+		return nil
 	})
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": failureMessage})
@@ -547,6 +562,52 @@ func UserRegister(c *gin.Context) {
 	bindSuccessfulVerification(user, payload.CaptchaToken, service.CaptchaSceneRegisterSubmit, smsEvidence)
 	recordAccountAudit(c, &user, "auth", 12, "用户注册成功", map[string]any{"status": "success", "message": "用户注册成功", "scene": "register"})
 	c.JSON(200, user)
+}
+
+// applyReferralOnRegister 在注册事务内完成邀请归因并生成新用户自己的邀请码。
+//
+// 语义（对应 04 稿 3.6 节）：
+//   - 总开关关闭：整段跳过，不生成邀请码、不绑定邀请人、也不因为带了
+//     inviteCode 而报错（老客户端可能带着历史码）；
+//   - inviteCode 为空：只生成自己的邀请码；
+//   - inviteCode 非法 / 自邀：返回业务错误，整个注册事务回滚（用户必须改输入重来）；
+//   - 生成邀请码失败：**不阻断注册** —— 邀请码是附加权益，下次可补发。
+//
+// 邀请码只在注册时生效，注册后不可改绑（绑定入口只有这里）。
+func applyReferralOnRegister(tx *gorm.DB, user *entity.User, inviteCode string) error {
+	if tx == nil || user == nil || user.ID <= 0 {
+		return nil
+	}
+	if !service.GetReferralRebateEnabledWithDB(tx) {
+		return nil
+	}
+	if code := strings.TrimSpace(inviteCode); code != "" {
+		invite, err := service.ResolveReferralInviterWithDB(tx, code)
+		if err != nil {
+			return err
+		}
+		if err := service.BindReferralInviterInTx(tx, user, invite); err != nil {
+			return err
+		}
+	}
+	// 生成自己的邀请码失败不影响注册结果：记录日志后继续。
+	if _, err := service.RegisterReferralInviteForNewUser(tx, user.ID); err != nil {
+		logger.SysWarn("新用户邀请码生成失败（不影响注册，可稍后补发）：" + logger.RedactSecrets(err.Error()))
+	}
+	return nil
+}
+
+// referralRegisterFailureMessage 把邀请相关错误翻成给用户看的注册失败原因。
+func referralRegisterFailureMessage(err error) string {
+	switch {
+	case errors.Is(err, service.ErrReferralCodeInvalid):
+		return "邀请码无效"
+	case errors.Is(err, service.ErrReferralSelfInvite):
+		return "不能使用自己的邀请码"
+	case errors.Is(err, service.ErrReferralAlreadyBound):
+		return "该账户已绑定邀请人，不能再次绑定"
+	}
+	return "注册失败"
 }
 
 func isUserRegisterConflictError(err error) bool {

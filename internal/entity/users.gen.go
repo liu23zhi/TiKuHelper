@@ -30,6 +30,13 @@ type User struct {
 	LoginSessionID string     `gorm:"column:login_session_id;type:varchar(128)" json:"-"`
 	// RegisterIP 是账号创建时的来源 IP（父/子账号由管理员创建时记录管理员当时的 IP）。
 	RegisterIP string `gorm:"column:register_ip;type:varchar(64)" json:"registerIp"`
+	// InvitedByUserID 是邀请人 user_id（0 = 无归因）。
+	//
+	// 只在注册时写入一次，注册后不可改绑；按账户计，不按 Key 或设备数。
+	// 由 ensureReferralSchema 负责补列（这里只声明，不改动既有字段）。
+	InvitedByUserID int32 `gorm:"column:invited_by_user_id;type:int(11);not null;default:0;index" json:"invitedByUserId"`
+	// InvitedAt 是归因写入时间（邀请码只在注册时生效）。
+	InvitedAt *time.Time `gorm:"column:invited_at" json:"invitedAt"`
 }
 
 // TableName User's table name

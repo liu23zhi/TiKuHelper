@@ -379,6 +379,14 @@ func finalizeTicketRefundInTx(tx *gorm.DB, row *entity.TicketRefund, operatorID 
 	if err := insertTicketRefundLedger(tx, *row, operatorID, kind, amountMicros, wallet.micros, after); err != nil {
 		return err
 	}
+	// 退款成功 → 冲回该订单产生的邀请返佣（同一事务，可追踪）。
+	// 只改 referral_rebates 的状态，不动任何钱包：返佣是独立账本，
+	// 已 settled 的记录也照样标记 reversed 并写 reversed_at。
+	if outcome == entity.TicketRefundStatusSucceeded && row.OrderID != nil && *row.OrderID > 0 {
+		if _, err := ReverseReferralRebateForOrderInTx(tx, *row.OrderID, "原订单退款，返佣已冲回"); err != nil {
+			return err
+		}
+	}
 	return updateTicketRefund(tx, row, map[string]any{
 		"status": outcome, "resolved_at": time.Now(), "resolved_by": operatorID, "outcome_reference": ref,
 	})

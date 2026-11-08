@@ -793,6 +793,12 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		logger.FatalLog(fmt.Errorf("prepare script answer price schema fail: %w", err))
 	}
 
+	// 邀请码与充值返佣：建 referral_invites / referral_rebates 表，并给 users 补归因两列。
+	// 结构性失败 FATAL（要让人看见）；标记写失败只记日志，下次启动幂等重跑。
+	if err := runStartupMigration("ensureReferralSchema", func() error { return ensureReferralSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare referral schema fail: %w", err))
+	}
+
 	// source-aware 归属地缓存使用新表，旧表保留以兼容 SQLite 和回滚；
 	// 回填失败只记日志，下一次启动会因未写标记而重试。
 	if err := runStartupMigration("ensureLocationCacheEntriesSchema", func() error { return ensureLocationCacheEntriesSchema(db) }); err != nil {
