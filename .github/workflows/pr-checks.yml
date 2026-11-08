@@ -18,7 +18,9 @@ env:
 jobs:
   frontend:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # 组件回归（1521 项真实组件测试）实测 14–15 分钟，15 分钟会在健康运行时
+    # 被取消并记成 failure。留出足够余量，让失败只来自真实回归。
+    timeout-minutes: 30
     defaults:
       run:
         shell: bash
@@ -59,7 +61,10 @@ jobs:
   backend:
     needs: frontend
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # 实测健康运行 16–17 分钟；负载高时（Offline short tests 5m47s、Core race 11m12s）
+    # 会摸到 20 分钟边界被取消并记成 cancelled。与 frontend 同理：超时预算属于
+    # 基础设施，不应该成为失败来源，留出余量让失败只来自真实回归。
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
