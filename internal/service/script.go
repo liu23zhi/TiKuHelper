@@ -33,10 +33,12 @@ const (
 	ScriptExchangeTokenTTL             = 5 * time.Minute
 	ScriptRunSessionTTL                = 150 * time.Minute
 	ScriptVersionMaxBytes        int64 = 64 << 20
+	scriptCreateOperation              = "script-create"
 )
 
 var (
 	ErrScriptForbidden                = errors.New("无权限操作脚本")
+	ErrScriptBindingsRequired         = errors.New("创建脚本前请绑定手机号和微信")
 	ErrScriptNotFound                 = errors.New("脚本不存在")
 	ErrScriptVersionNotFound          = errors.New("脚本版本不存在")
 	ErrScriptNameRequired             = errors.New("脚本名称不能为空")
@@ -222,20 +224,25 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 		if !strings.EqualFold(strings.TrimSpace(user.Status), "enabled") {
 			return ErrScriptForbidden
 		}
+		scope := fmt.Sprintf("script-create:user:%d", user.ID)
+		if user.Phone == nil || strings.TrimSpace(*user.Phone) == "" ||
+			user.WechatID == nil || strings.TrimSpace(*user.WechatID) == "" {
+			// A binding can change after authentication. A matching completed
+			// receipt is a read, but an expired/missing receipt cannot create a
+			// claim or mutate the wallet while the account is unbound.
+			result, err = readScriptCreationReceiptWithDB(tx, user.ID, scope, idempotencyKey, requestFingerprint)
+			return err
+		}
 		var claimID int64
 		if idempotencyKey != "" {
-			claim, created, err := ClaimIdempotencyWithDB(tx, fmt.Sprintf("script-create:user:%d", user.ID), "script-create", idempotencyKey, requestFingerprint)
+			claim, created, err := ClaimIdempotencyWithDB(tx, scope, scriptCreateOperation, idempotencyKey, requestFingerprint)
 			if err != nil {
 				return err
 			}
 			if !created {
 				// Store only the object ID, not parameters or the launcher
 				// capability. Read the same owner's current object on replay.
-				var receipt struct{ ID int32 }
-				if claim.Status != IdempotencyStatusSucceeded || json.Unmarshal([]byte(claim.ResponseJSON), &receipt) != nil || receipt.ID <= 0 {
-					return ErrIdempotencyPending
-				}
-				result, err = loadScriptListItemWithDB(tx, receipt.ID, user.ID)
+				result, err = replayScriptCreationReceiptWithDB(tx, user.ID, claim)
 				return err
 			}
 			claimID = claim.ID
@@ -319,6 +326,33 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 		return nil
 	})
 	return result, err
+}
+
+func readScriptCreationReceiptWithDB(db *gorm.DB, ownerID int32, scope, key string, request []byte) (ScriptListItem, error) {
+	if key == "" || len(key) > 256 {
+		return ScriptListItem{}, ErrScriptBindingsRequired
+	}
+	var receipt entity.IdempotencyRecord
+	err := db.Where("scope_hash = ? AND operation = ? AND key_hash = ? AND status = ? AND expires_at > ?",
+		hashIdempotencyValue(scope), scriptCreateOperation, hashIdempotencyValue(key), IdempotencyStatusSucceeded, time.Now()).First(&receipt).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ScriptListItem{}, ErrScriptBindingsRequired
+	}
+	if err != nil {
+		return ScriptListItem{}, err
+	}
+	if receipt.RequestHash != hashIdempotencyValue(string(request)) {
+		return ScriptListItem{}, ErrIdempotencyConflict
+	}
+	return replayScriptCreationReceiptWithDB(db, ownerID, receipt)
+}
+
+func replayScriptCreationReceiptWithDB(db *gorm.DB, ownerID int32, claim entity.IdempotencyRecord) (ScriptListItem, error) {
+	var receipt struct{ ID int32 }
+	if claim.Status != IdempotencyStatusSucceeded || json.Unmarshal([]byte(claim.ResponseJSON), &receipt) != nil || receipt.ID <= 0 {
+		return ScriptListItem{}, ErrIdempotencyPending
+	}
+	return loadScriptListItemWithDB(db, receipt.ID, ownerID)
 }
 
 func loadScriptListItemWithDB(db *gorm.DB, scriptID, userID int32) (ScriptListItem, error) {

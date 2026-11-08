@@ -469,6 +469,9 @@ func writeScriptError(c *gin.Context, err error, fallback string) {
 		status, message = http.StatusConflict, err.Error()
 	case errors.Is(err, service.ErrIdempotencyKeyInvalid):
 		status, message = http.StatusBadRequest, err.Error()
+	case errors.Is(err, service.ErrScriptBindingsRequired):
+		c.JSON(http.StatusForbidden, gin.H{"code": "SCRIPT_BINDINGS_REQUIRED", "message": service.ErrScriptBindingsRequired.Error()})
+		return
 	case errors.Is(err, service.ErrScriptForbidden):
 		status, message = http.StatusForbidden, err.Error()
 	case errors.Is(err, service.ErrScriptNotFound), errors.Is(err, service.ErrScriptVersionNotFound):

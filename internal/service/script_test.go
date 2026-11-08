@@ -27,6 +27,7 @@ func TestScriptCreateExchangeAndDeleteRefundAreTransactionalAndIdempotent(t *tes
 	db := newScriptTestDB(t)
 	owner := entity.User{Username: "student", Role: "user", Balance: 20}
 	admin := entity.User{Username: "admin", Role: "admin", Balance: 100}
+	bindSyntheticScriptOwner(&owner)
 	if err := db.Create(&owner).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -107,6 +108,7 @@ func TestScriptDeleteWorksWhenBalanceIsInsufficient(t *testing.T) {
 	if err := db.Create(&admin).Error; err != nil {
 		t.Fatal(err)
 	}
+	bindSyntheticScriptOwner(&owner)
 	if err := db.Create(&owner).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -140,6 +142,7 @@ func TestScriptRefundIsIncomeAndDoesNotIncreaseExpenseSummary(t *testing.T) {
 	if err := db.Create(&admin).Error; err != nil {
 		t.Fatal(err)
 	}
+	bindSyntheticScriptOwner(&owner)
 	if err := db.Create(&owner).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -199,6 +202,7 @@ func TestScriptExchangeTicketKeepsVersionAcrossUpload(t *testing.T) {
 	if err := db.Create(&admin).Error; err != nil {
 		t.Fatal(err)
 	}
+	bindSyntheticScriptOwner(&owner)
 	if err := db.Create(&owner).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -249,6 +253,7 @@ func TestScriptCommandsAllocateShortestCodesAndResolveBothDomainModes(t *testing
 	if err := db.Create(&admin).Error; err != nil {
 		t.Fatal(err)
 	}
+	bindSyntheticScriptOwner(&owner)
 	if err := db.Create(&owner).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -291,6 +296,7 @@ func TestPublicScriptExchangeTokenIsShortLivedAndOneTime(t *testing.T) {
 	if err := db.Create(&admin).Error; err != nil {
 		t.Fatal(err)
 	}
+	bindSyntheticScriptOwner(&owner)
 	if err := db.Create(&owner).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -325,6 +331,7 @@ func TestScriptExchangeTokenRequiresNineAvailableBalance(t *testing.T) {
 	if err := db.Create(&admin).Error; err != nil {
 		t.Fatal(err)
 	}
+	bindSyntheticScriptOwner(&owner)
 	if err := db.Create(&owner).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -354,6 +361,7 @@ func TestScriptRunSessionIsIdentityBoundShortLivedAndStoresOnlyHashes(t *testing
 	if err := db.Create(&admin).Error; err != nil {
 		t.Fatal(err)
 	}
+	bindSyntheticScriptOwner(&owner)
 	if err := db.Create(&owner).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -427,6 +435,7 @@ func TestScriptExchangeTokenRequiresNineBalanceAndRejectsDuplicateOutstandingGra
 	if err := db.Create(&admin).Error; err != nil {
 		t.Fatal(err)
 	}
+	bindSyntheticScriptOwner(&owner)
 	if err := db.Create(&owner).Error; err != nil {
 		t.Fatal(err)
 	}

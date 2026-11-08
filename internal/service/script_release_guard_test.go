@@ -13,6 +13,7 @@ func seedScriptReleaseGuard(t *testing.T) (*gorm.DB, entity.User, ScriptListItem
 	db := newScriptTestDB(t)
 	owner := entity.User{Username: "script-fixture-owner", Role: "user", Balance: 50}
 	admin := entity.User{Username: "script-fixture-admin", Role: "admin"}
+	bindSyntheticScriptOwner(&owner)
 	for _, user := range []*entity.User{&owner, &admin} {
 		if err := db.Create(user).Error; err != nil {
 			t.Fatal(err)

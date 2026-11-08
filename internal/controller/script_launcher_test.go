@@ -45,7 +45,7 @@ func TestScriptBootstrapUsesConfiguredHTTPSOriginAndHeaderCapability(t *testing.
 	db := newSearchControllerTestDB(t)
 	owner := seedControllerUser(t, db, 0, "launcher-http-fixture", "user")
 	admin := seedControllerUser(t, db, 0, "launcher-admin-fixture", "admin")
-	if err := db.Model(&owner).Update("balance", 20).Error; err != nil {
+	if err := db.Model(&owner).Updates(map[string]any{"balance": 20, "phone": "13800000000", "wechat_id": "synthetic-launcher-owner"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	version, err := service.UploadScriptVersionWithDB(db, admin, "fixture-v1", "fixture.exe", []byte("MZfixture"))
