@@ -24,7 +24,7 @@ api.exports = {
     if (!holdReads) return Promise.resolve(okay([row('现有脚本', 111)]))
     return new Promise(resolve => reads.push({ params, resolve }))
   },
-  getScriptVersions: async () => okay([{ id: 5, version: 'synthetic' }]),
+  getScriptVersions: async () => okay([{ id: 5, version: 'synthetic', nativeLeaseProtocol: true, isCurrent: true }]),
   getScriptDomainSettings: async () => okay({ domains: ['example.test'], allowWildcard: true }),
   getScriptEscrowPolicy: async () => okay({ targetMicros: 80000000, minimumMicros: 60000000, multiplierMicros: 1000000 }),
   getScriptActivationCodePrice: async () => okay({ enabled: true, price: activationPriceFixture }),

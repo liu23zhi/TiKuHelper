@@ -25,14 +25,15 @@
     <ConsolePanel v-if="isAdmin" title="管理员上传 EXE" description="上传后自动发布为最新版本；已有脚本会原子切换到新版本，正在下载的旧版本会继续完成。">
       <a-space wrap>
         <a-input :id="fieldId('uploadVersion')" :value="uploadVersion" :onUpdate:value="pageEntry.bind(setUploadVersion)" aria-label="EXE 版本号" placeholder="版本号，例如 1.0.0" style="width: 180px" :disabled="uploading" />
-        <a-upload :show-upload-list="false" accept=".exe,application/vnd.microsoft.portable-executable" :custom-request="pageEntry.bind(handleUpload)" :disabled="uploading">
+        <a-checkbox :checked="nativeLeaseConfirmed" :onUpdate:checked="pageEntry.bind(setNativeLeaseConfirmed)" :disabled="uploading">确认该原生 C 版本已验证新版租约</a-checkbox>
+        <a-upload :show-upload-list="false" accept=".exe,application/vnd.microsoft.portable-executable" :custom-request="pageEntry.bind(handleUpload)" :disabled="uploading || !nativeLeaseConfirmed">
           <a-button type="primary" :loading="uploading">
             <UploadOutlined />上传 EXE
           </a-button>
         </a-upload>
         <span v-if="lastUploadKey" class="upload-result">最近上传版本：<code>{{ lastUploadKey }}</code></span>
       </a-space>
-      <p class="hint">上传不会创建脚本。新建脚本默认引用当前版本；发布后所有未删除脚本都会自动使用最新 EXE。</p>
+      <p class="hint">仅发布已验证的原生 C EXE，不使用冻结的 Node 版本。上传不会创建脚本，也不会改动旧脚本的版本。</p>
     </ConsolePanel>
 
     <ConsolePanel v-if="isAdmin" title="脚本可用域名" description="管理员可以限制用户创建脚本时可选择的域名，并控制是否允许泛域名短地址。留空域名列表表示兼容旧配置，允许任意域名。">
@@ -269,6 +270,8 @@ let billingReadTicket = 0, policyRevision = 0, priceRevision = 0
 const activationCode = ref(''), purchasedCode = ref(false), purchaseUncertain = ref(false)
 const purchasingCode = ref(false), redeemingCode = ref(false)
 const activationBusy = computed(() => purchasingCode.value || redeemingCode.value)
+const nativeLeaseConfirmed = ref(false)
+const currentNativeVersion = computed(() => versions.value.find((item) => item.nativeLeaseProtocol === true && item.isCurrent === true))
 let purchaseIntentKey = '', purchaseIntentQuote = ''
 const canBuyActivationCode = computed(() => modalOpen.value && !editing.value && form.billingMode === 'activation_code'
   && !saving.value && !activationBusy.value && !purchasedCode.value && !form.entitlementId
@@ -313,6 +316,7 @@ function setFormField(name, value) {
   form[name] = value
 }
 function setUploadVersion(value) { if (isAdmin.value && !uploading.value) uploadVersion.value = value }
+function setNativeLeaseConfirmed(value) { if (isAdmin.value && !uploading.value) nativeLeaseConfirmed.value = value === true }
 function setDomainText(value) { if (isAdmin.value && !domainSaving.value) { domainRevision++; domainText.value = value } }
 function setDomainWildcard(value) { if (isAdmin.value && !domainSaving.value) { domainRevision++; domainAllowWildcard.value = value } }
 
@@ -320,7 +324,7 @@ function startEditor(record) {
   if (!canAct() || modalOpen.value || saving.value || deleting.value) return
   editing.value = Boolean(record)
   resetForm(record)
-  if (!record && versions.value[0]?.id) form.versionId = versions.value[0].id
+  if (!record && currentNativeVersion.value?.id) form.versionId = currentNativeVersion.value.id
   draft.savedConfigSnapshot.value = draft.currentConfigSnapshot.value
   const key = ++editorKey.value
   editorEntry.value = makeEntry(() => modalOpen.value && key === editorKey.value)
@@ -392,9 +396,14 @@ async function handleUpload({ file, onSuccess, onError }) {
     message.warning(error.message)
     return
   }
+  if (!nativeLeaseConfirmed.value) {
+    onError?.(new Error('请先确认客户端租约兼容性'))
+    return
+  }
+  nativeLeaseConfirmed.value = false
   uploading.value = true
   try {
-    const response = await uploadScriptVersion(file, uploadVersion.value)
+    const response = await uploadScriptVersion(file, uploadVersion.value, true)
     if (!owns()) return
     if (response?.status !== 200) throw new Error('上传 EXE 失败，请刷新核对版本。')
     const data = response.data || {}
@@ -610,9 +619,9 @@ async function loadVersions() {
     if (!owns()) return
     if (response?.status !== 200) { message.warning('EXE 版本未读取成功，请刷新页面。'); return }
     versions.value = Array.isArray(response.data) ? response.data : (response.data?.items || [])
-    if (modalOpen.value && !editing.value && !form.versionId && versions.value[0]?.id) {
+    if (modalOpen.value && !editing.value && !form.versionId && currentNativeVersion.value?.id) {
       const unchanged = !draft.hasUnsavedChanges.value
-      form.versionId = versions.value[0].id
+      form.versionId = currentNativeVersion.value.id
       if (unchanged) draft.savedConfigSnapshot.value = draft.currentConfigSnapshot.value
     }
   } catch {
@@ -750,7 +759,7 @@ function retireScope() {
   Object.assign(summary, { total: 0, enabled: 0, reserved: 0 })
   readError.value = ''; listReady.value = false; loading.value = false; deleting.value = false
   domainText.value = ''; domainAllowWildcard.value = true; domainReady.value = false; domainSaving.value = false
-  lastUploadKey.value = ''; uploadVersion.value = ''; uploading.value = false
+  lastUploadKey.value = ''; uploadVersion.value = ''; uploading.value = false; nativeLeaseConfirmed.value = false
   escrowPolicy.value = null; activationPrice.value = null; policyError.value = ''; priceForm.value = ''
   Object.assign(policyForm, { target: '', minimum: '', multiplier: '' }); savingPolicy.value = false; savingPrice.value = false
   void nextTick().then(() => nextTick()).then(() => {

@@ -45,6 +45,7 @@ var (
 	ErrScriptDomainRequired           = errors.New("脚本域名不能为空")
 	ErrScriptVersionRequired          = errors.New("脚本版本不能为空")
 	ErrScriptVersionInvalid           = errors.New("脚本版本无效")
+	ErrScriptNativeVersionRequired    = errors.New("请先发布已验证支持新版脚本租约的原生 C 客户端")
 	ErrScriptBalanceInsufficient      = errors.New("余额不足，创建脚本需要预扣 ¥10")
 	ErrScriptExchangeAlreadyIssued    = errors.New("该脚本已有未使用的兑换令牌，请先使用或等待令牌过期")
 	ErrScriptTokenBalanceInsufficient = errors.New("可用余额不足 ¥9，暂不能下发脚本兑换令牌；请充值后重试")
@@ -139,11 +140,11 @@ type ScriptExchangeResult struct {
 
 func ListScriptVersionsWithDB(db *gorm.DB) ([]entity.ScriptVersion, error) {
 	var versions []entity.ScriptVersion
-	err := db.Session(&gorm.Session{NewDB: true}).Select("id", "version", "filename", "sha256", "size_bytes", "is_current", "created_by", "created_at").Order("id desc").Find(&versions).Error
+	err := db.Session(&gorm.Session{NewDB: true}).Select("id", "version", "filename", "sha256", "size_bytes", "is_current", "native_lease_protocol", "created_by", "created_at").Order("id desc").Find(&versions).Error
 	return versions, err
 }
 
-func UploadScriptVersionWithDB(db *gorm.DB, admin entity.User, version, filename string, data []byte) (entity.ScriptVersion, error) {
+func UploadScriptVersionWithDB(db *gorm.DB, admin entity.User, version, filename string, data []byte, nativeLease ...bool) (entity.ScriptVersion, error) {
 	if !isAdminUser(admin) {
 		return entity.ScriptVersion{}, ErrScriptForbidden
 	}
@@ -159,20 +160,24 @@ func UploadScriptVersionWithDB(db *gorm.DB, admin entity.User, version, filename
 		return entity.ScriptVersion{}, ErrScriptVersionInvalid
 	}
 	sum := sha256.Sum256(data)
-	result := entity.ScriptVersion{Version: version, Filename: safeScriptFilename(filename), SHA256: hex.EncodeToString(sum[:]), SizeBytes: int64(len(data)), Data: append([]byte(nil), data...), IsCurrent: true, CreatedBy: admin.ID}
+	native := len(nativeLease) == 1 && nativeLease[0]
+	result := entity.ScriptVersion{Version: version, Filename: safeScriptFilename(filename), SHA256: hex.EncodeToString(sum[:]), SizeBytes: int64(len(data)), Data: append([]byte(nil), data...), IsCurrent: true, NativeLeaseProtocol: native, CreatedBy: admin.ID}
 	err := db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&entity.ScriptVersion{}).Where("is_current = ?", true).Update("is_current", false).Error; err != nil {
+		if err := tx.Model(&entity.ScriptVersion{}).Where("is_current = ? AND native_lease_protocol = ?", true, native).Update("is_current", false).Error; err != nil {
 			return err
 		}
 		if err := tx.Create(&result).Error; err != nil {
 			return err
 		}
-		// A script always follows the currently published executable. The update
-		// is transactional, so requests started before this commit keep reading
-		// their already selected version while new requests see the replacement.
-		return tx.Model(&entity.UserScript{}).
-			Where("deleted_at IS NULL").
-			Updates(map[string]any{"version_id": result.ID, "updated_at": time.Now()}).Error
+		// Only advance the compatible lane. Uploading a frozen/legacy binary
+		// cannot silently replace the native runtime for managed scripts.
+		target := tx.Model(&entity.UserScript{}).Where("deleted_at IS NULL")
+		if native {
+			target = target.Where("billing_mode IN ?", []string{entity.ScriptBillingModeEscrow, entity.ScriptBillingModeActivation})
+		} else {
+			target = target.Where("billing_mode = ?", "")
+		}
+		return target.Updates(map[string]any{"version_id": result.ID, "updated_at": time.Now()}).Error
 	})
 	return result, err
 }
@@ -283,6 +288,9 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 		}
 		if !version.IsCurrent {
 			return ErrScriptVersionInvalid
+		}
+		if mode != "" && !version.NativeLeaseProtocol {
+			return ErrScriptNativeVersionRequired
 		}
 		before := util.RoundMoney(user.Balance)
 		after := before
@@ -746,8 +754,11 @@ func ExchangeScriptTokenWithDB(db *gorm.DB, shortCode, token string) (ScriptExch
 		var version entity.ScriptVersion
 		// The exchange response only needs release metadata. Avoid loading a
 		// potentially 64 MiB executable into memory before the actual download.
-		if err := tx.Select("id", "version", "filename", "sha256").First(&version, versionID).Error; err != nil {
+		if err := tx.Select("id", "version", "filename", "sha256", "native_lease_protocol").First(&version, versionID).Error; err != nil {
 			return ErrScriptTokenInvalid
+		}
+		if script.BillingMode != "" && !version.NativeLeaseProtocol {
+			return ErrScriptNativeVersionRequired
 		}
 		now := time.Now()
 		if err := consumeScriptExchangeTokenWithDB(tx, grant.ID, now); err != nil {

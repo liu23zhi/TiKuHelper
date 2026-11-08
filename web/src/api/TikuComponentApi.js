@@ -733,10 +733,11 @@ export function getScriptVersions() {
   })
 }
 
-export function uploadScriptVersion(file, version) {
+export function uploadScriptVersion(file, version, nativeLeaseProtocol = false) {
   const formData = new FormData()
   formData.append('version', String(version || ''))
   formData.append('file', file)
+  if (nativeLeaseProtocol === true) formData.append('nativeLeaseProtocol', 'true')
   return request({
     errorFeedback: 'local',
     url: `/adapter-service/script-versions/upload`,

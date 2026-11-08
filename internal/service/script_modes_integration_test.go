@@ -24,7 +24,7 @@ func newManagedScriptFixture(t *testing.T, balance float64) (*gorm.DB, entity.Us
 			t.Fatal(err)
 		}
 	}
-	version, err := UploadScriptVersionWithDB(db, admin, "mode-fixture", "fixture.exe", []byte("MZsynthetic"))
+	version, err := UploadScriptVersionWithDB(db, admin, "mode-fixture", "fixture.exe", []byte("MZsynthetic"), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,6 +114,34 @@ func TestManagedEscrowUnusedDeleteReleasesOnce(t *testing.T) {
 	}
 	if err := db.First(&owner, owner.ID).Error; err != nil || owner.Balance != 100 {
 		t.Fatalf("expected a single exact restoration, wallet=%v err=%v", owner.Balance, err)
+	}
+}
+
+func TestManagedScriptRejectsLegacyRuntimeBeforeFreezing(t *testing.T) {
+	db, owner, admin, native := newManagedScriptFixture(t, 100)
+	legacy, err := UploadScriptVersionWithDB(db, admin, "legacy-fixture", "legacy.exe", []byte("MZlegacy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := CreateUserScriptInput{Name: "managed", VersionID: legacy.ID, BaseDomain: "lease.example",
+		BillingMode: entity.ScriptBillingModeEscrow}
+	if _, err := CreateUserScriptWithDB(db, owner, input); !errors.Is(err, ErrScriptNativeVersionRequired) {
+		t.Fatalf("legacy version must not reach the freeze: %v", err)
+	}
+	if err := db.First(&owner, owner.ID).Error; err != nil || owner.Balance != 100 {
+		t.Fatalf("legacy version rejection debited wallet: %v err=%v", owner.Balance, err)
+	}
+	input.VersionID = native.ID
+	item, err := CreateUserScriptWithDB(db, owner, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UploadScriptVersionWithDB(db, admin, "legacy-later", "legacy.exe", []byte("MZlegacy")); err != nil {
+		t.Fatal(err)
+	}
+	var stored entity.UserScript
+	if err := db.First(&stored, item.ID).Error; err != nil || stored.VersionID != native.ID {
+		t.Fatalf("legacy upload changed managed script version: %v", err)
 	}
 }
 

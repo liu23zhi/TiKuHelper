@@ -13,15 +13,16 @@ const (
 
 // ScriptVersion is an administrator-uploaded, reusable executable release.
 type ScriptVersion struct {
-	ID        int32     `gorm:"primaryKey;autoIncrement" json:"id"`
-	Version   string    `gorm:"column:version;type:varchar(64);not null;uniqueIndex" json:"version"`
-	Filename  string    `gorm:"column:filename;type:varchar(255);not null" json:"filename"`
-	SHA256    string    `gorm:"column:sha256;type:char(64);not null;index" json:"sha256"`
-	SizeBytes int64     `gorm:"column:size_bytes;not null" json:"sizeBytes"`
-	Data      []byte    `gorm:"column:data;type:longblob;not null" json:"-"`
-	IsCurrent bool      `gorm:"column:is_current;not null;default:false;index" json:"isCurrent"`
-	CreatedBy int32     `gorm:"column:created_by;not null;index" json:"createdBy"`
-	CreatedAt time.Time `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
+	ID                  int32     `gorm:"primaryKey;autoIncrement" json:"id"`
+	Version             string    `gorm:"column:version;type:varchar(64);not null;uniqueIndex" json:"version"`
+	Filename            string    `gorm:"column:filename;type:varchar(255);not null" json:"filename"`
+	SHA256              string    `gorm:"column:sha256;type:char(64);not null;index" json:"sha256"`
+	SizeBytes           int64     `gorm:"column:size_bytes;not null" json:"sizeBytes"`
+	Data                []byte    `gorm:"column:data;type:longblob;not null" json:"-"`
+	IsCurrent           bool      `gorm:"column:is_current;not null;default:false;index" json:"isCurrent"`
+	NativeLeaseProtocol bool      `gorm:"column:native_lease_protocol;not null;default:false;index" json:"nativeLeaseProtocol"`
+	CreatedBy           int32     `gorm:"column:created_by;not null;index" json:"createdBy"`
+	CreatedAt           time.Time `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
 }
 
 func (*ScriptVersion) TableName() string { return TableNameScriptVersion }

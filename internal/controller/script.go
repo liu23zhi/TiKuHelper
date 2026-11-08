@@ -104,7 +104,8 @@ func UploadScriptVersion(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "读取 EXE 文件失败"})
 		return
 	}
-	created, err := service.UploadScriptVersionWithDB(scriptDB(), operator, version, file.Filename, data)
+	created, err := service.UploadScriptVersionWithDB(scriptDB(), operator, version, file.Filename, data,
+		c.PostForm("nativeLeaseProtocol") == "true")
 	if err != nil {
 		writeScriptError(c, err, "上传脚本版本失败")
 		return
@@ -551,7 +552,7 @@ func writeScriptError(c *gin.Context, err error, fallback string) {
 		status, message = http.StatusBadRequest, err.Error()
 	case errors.Is(err, service.ErrScriptBalanceInsufficient), errors.Is(err, service.ErrScriptTokenBalanceInsufficient), errors.Is(err, service.ErrScriptExchangeAlreadyIssued):
 		status, message = http.StatusPaymentRequired, err.Error()
-	case errors.Is(err, service.ErrScriptDurationInvalid), errors.Is(err, service.ErrScriptRunIdentityRequired),
+	case errors.Is(err, service.ErrScriptDurationInvalid), errors.Is(err, service.ErrScriptRunIdentityRequired), errors.Is(err, service.ErrScriptNativeVersionRequired),
 		errors.Is(err, service.ErrScriptBillingModeInvalid), errors.Is(err, service.ErrScriptEscrowInvalid):
 		status, message = http.StatusBadRequest, err.Error()
 	case errors.Is(err, service.ErrScriptTokenInvalid), errors.Is(err, service.ErrInvalidAccessTokenAuthorization):
