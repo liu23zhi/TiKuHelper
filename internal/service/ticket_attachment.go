@@ -196,10 +196,11 @@ func ListTicketAttachmentsWithDB(db *gorm.DB, ticketID int64) ([]TicketAttachmen
 	return infos, nil
 }
 
-// StoreTicketAttachmentWithDB 校验 → 重新编码 → 加密 → 落库 → 标记待检测。
+// StoreTicketAttachmentWithDB 校验 → 重新编码 → （可选）同步内容审核 → 加密 → 落库。
 //
-// 它**不同步**调用外部检测接口：上传要快，且上游故障不该阻塞工单提交。
-// 检测由 ProcessPendingTicketAttachmentScans 后台消费（scan_state='pending'）。
+// 异步检测由 ProcessPendingTicketAttachmentScans 后台消费（scan_state='pending'）。
+// 内容审核开关打开时，上传路径上还会**同步**先判一次（见下面的三态处置）；
+// 同步判违规的图**照常落库**、只是直接置 sensitive，因此不会进入异步队列。
 //
 // ticketID == 0 表示「建单前先传图」的草稿态：这类附件 ticket_id=0，
 // 只有上传者能在建单时用 BindDraftTicketAttachmentsInTx 认领，其他人读不到
@@ -241,6 +242,32 @@ func StoreTicketAttachmentWithDB(db *gorm.DB, user *entity.User, ticketID int64,
 	if err != nil {
 		return TicketAttachmentInfo{}, err
 	}
+	// 内容审核：**同步**、在落库之前。开关默认关闭（零外呼）。
+	//
+	// 三态处置（见 TicketImageModerationState）：
+	//   pass        → 照常落库，scan_state=pending，异步扫描继续复核
+	//   flagged     → **照常落库**，scan_state 直接置 sensitive（用户端隐藏、管理端可见）
+	//   unavailable → 拒绝入库（fail-closed）
+	//
+	// flagged **不拒绝入库**是有意为之：工单系统必须允许用户上传敏感图片与敏感词，
+	// 误判时用户仍要能开单说明情况 —— 拦在上传层等于让人无法申辩。拦截的责任
+	// 交给展示层（ticketAttachmentVisible 只放行 approved）。
+	// 而 unavailable 必须拒绝：那是「审核没跑成」，放行等于把上游打挂就能绕过审核。
+	//
+	// 审核送的是重编码后的 safe 而不是原始 data：EXIF/尾部藏的东西在
+	// safeTicketAttachmentImage 里已经被剥掉，让上游看用户看不到的内容没有意义。
+	scanState := entity.TicketAttachmentScanPending
+	if TicketImageModerationEnabledWithDB(db) {
+		decision := moderateTicketAttachmentImage(context.Background(), db, safe, mimeType)
+		switch decision.State {
+		case TicketImageModerationFlagged:
+			// 落库即打标：不经过 pending，异步 worker 因此不会再来复核这张图
+			// （它的取数条件是 scan_state = pending），也就不会把 sensitive 改回 approved。
+			scanState = entity.TicketAttachmentScanSensitive
+		case TicketImageModerationUnavailable:
+			return TicketAttachmentInfo{}, decision.unavailableError()
+		}
+	}
 	digest := sha256.Sum256(safe)
 
 	var created entity.TicketAttachment
@@ -264,7 +291,7 @@ func StoreTicketAttachmentWithDB(db *gorm.DB, user *entity.User, ticketID int64,
 		created = entity.TicketAttachment{
 			TicketID: ticketID, UserID: user.ID, MediaType: mimeType,
 			ByteSize: int64(len(safe)), SHA256: hex.EncodeToString(digest[:]),
-			ScanState: entity.TicketAttachmentScanPending,
+			ScanState: scanState,
 		}
 		if err := tx.Create(&created).Error; err != nil {
 			return err
@@ -569,6 +596,13 @@ func decryptTicketAttachmentForScan(db *gorm.DB, row entity.TicketAttachment) ([
 //
 // failed 且还有重试额度 → 退回 pending 并按次数退避（1、2 分钟），
 // 这样「上游临时 500」不会把图片永久钉成隐藏；额度用尽才定格在 failed。
+//
+// **优先级规则（上传前同步审核 vs 异步扫描）**：上传路径若已同步判违规，
+// scan_state 在 INSERT 时就是 sensitive，异步 worker 的取数条件是
+// scan_state = pending，因此根本不会选中它。这里的 UPDATE 再收一道口子
+// （只在 scanning 状态上写）作为纵深防御：任何外部动作把行改成 sensitive 后，
+// 异步结果都不能把它**改回 approved** —— 同步审核的结论更贴近上传时刻，
+// 异步复核只允许「pending → approved/sensitive」，不允许放宽已有结论。
 func persistTicketAttachmentScanResult(db *gorm.DB, row entity.TicketAttachment, scan TicketAttachmentScanResult, now time.Time) error {
 	attempts := row.AttemptCount + 1
 	updates := map[string]interface{}{
@@ -595,7 +629,22 @@ func persistTicketAttachmentScanResult(db *gorm.DB, row entity.TicketAttachment,
 			updates["next_attempt_at"] = nil
 		}
 	}
-	return db.Model(&entity.TicketAttachment{}).Where("id = ?", row.ID).Updates(updates).Error
+	// 只在「本次 claim 成功占住的 scanning 行」上写：若这期间状态已被改成
+	// sensitive（上传前同步审核的结论），RowsAffected=0，异步结果被丢弃，
+	// sensitive 得以保持。
+	result := db.Model(&entity.TicketAttachment{}).
+		Where("id = ? AND scan_state = ?", row.ID, entity.TicketAttachmentScanScanning).
+		Updates(updates)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 && scan.State == entity.TicketAttachmentScanApproved {
+		// 正常情况（行仍是 scanning）不会走到这里；走到了说明状态在检测期间被
+		// 改成非 scanning（典型：上传前已判 sensitive），此时不能静默——留一条
+		// 可追溯的日志，说明为什么这张图没被改成 approved。
+		logger.SysLog(fmt.Sprintf("ticket_attachment_scan_result_discarded attachmentId=%d want=%s reason=state_changed", row.ID, scan.State))
+	}
+	return nil
 }
 
 // RecoverStaleTicketAttachmentScans 把卡在 scanning 的行放回 pending。
