@@ -412,6 +412,28 @@ export function buildLogDetailSections(record = {}) {
   return sections;
 }
 
+/**
+ * 操作日志「项目」列的展示文本。
+ *
+ * 口径只有一个来源：后端在列表响应里派生的 `project`（方案 B，读取时派生、不落库），
+ * 前端不再二次推导 —— 同一语义只允许一份实现（AGENTS.md 第 13 条），
+ * 否则口径一改就会两处不一致。
+ *
+ * 后端保证该字段永不为空字符串；这里仍做兜底，兼容尚未升级的后端与手工构造的行。
+ *
+ * @param {object} record
+ * @returns {string}
+ */
+export function buildLogProjectText(record = {}) {
+  const project = String(record?.project ?? '').trim();
+  if (project) {
+    return project;
+  }
+  // 旧后端没有 project 字段：只降级到行内已有的 qid，不复制完整派生表。
+  const qid = buildLogLocalQuestionId(record);
+  return qid === '-' ? '-' : `题目 #${qid}`;
+}
+
 export function buildLogQidLabel(value) {
   const normalized = Number(value);
   return Number.isFinite(normalized) && normalized > 0 ? String(normalized) : '-';

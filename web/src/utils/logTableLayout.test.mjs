@@ -10,7 +10,7 @@ test('log table has the requested columns, fixed layout, and wrapping centered c
   const titles = [...source.matchAll(/title: '([^']+)'/g)].map((match) => match[1]);
   assert.deepEqual(titles, [
     '时间', '模块', '状态', '用户', '来源 IP', '本地题库 ID', '账单 ID',
-    '说明', '命中渠道 / 错误原因', '计费渠道 / 耗时', '详情',
+    '说明', '项目', '命中渠道 / 错误原因', '计费渠道 / 耗时', '详情',
     '请求 ID', '请求参数', '请求接口', '答案数', '原始请求', '原始响应',
   ]);
   assert.match(source, /table-layout="fixed"/);
@@ -32,7 +32,7 @@ test('log widths account for the named samples and expand entire detail and snap
   assert.match(source, /module: Math\.max\(\.\.\.moduleLabels\.map/);
   for (const [key, width] of Object.entries({
     createTime: 112, username: 170, clientIp: 262, qid: 104,
-    billingIds: 104, summary: 156, hitProvider: 170,
+    billingIds: 104, summary: 156, project: 170, hitProvider: 170,
     billingProvider: 170, detail: 170, requestId: 310,
     mode: 160, requestSource: 124, answerCount: 76,
     requestSnapshot: 170, responseSnapshot: 170,
@@ -41,6 +41,7 @@ test('log widths account for the named samples and expand entire detail and snap
   }
   assert.match(source, /snapshots\.columnWidth\(field, logColumnWidths\[field\], 236\)/);
   assert.match(source, /expandedColumnWidth\('detail'\)/);
+  assert.match(source, /expandedColumnWidth\('project'\)/);
   assert.match(source, /expandedColumnWidth\('requestSnapshot'\)/);
   assert.match(source, /expandedColumnWidth\('responseSnapshot'\)/);
   assert.match(source, /expandedColumnWidth\('hitProvider'\)/);

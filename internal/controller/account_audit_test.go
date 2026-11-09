@@ -380,18 +380,24 @@ func TestRechargeAuditLinksBillsWithoutExposingOtherOrHiddenBills(t *testing.T) 
 	if err := db.Create(&bills).Error; err != nil {
 		t.Fatal(err)
 	}
-	self, err := logListItemsWithBillingIDs(db, &entity.User{ID: 1, Role: "user"}, entries)
+	self, selfBillingMeta, err := logListItemsWithBillingIDs(db, &entity.User{ID: 1, Role: "user"}, entries)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(self[0].BillingIDs) != 1 || self[0].BillingIDs[0] != bills[0].ID || len(self[1].BillingIDs) != 0 {
 		t.Fatalf("incorrect personal bill associations: %+v", self)
 	}
-	admin, err := logListItemsWithBillingIDs(db, &entity.User{ID: 3, Role: "admin"}, entries)
+	if len(selfBillingMeta) != 1 {
+		t.Fatalf("personal project metadata must only cover visible bills: %+v", selfBillingMeta)
+	}
+	admin, adminBillingMeta, err := logListItemsWithBillingIDs(db, &entity.User{ID: 3, Role: "admin"}, entries)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(admin[0].BillingIDs) != 2 || len(admin[1].BillingIDs) != 1 || admin[1].BillingIDs[0] != bills[2].ID {
 		t.Fatalf("incorrect admin bill associations: %+v", admin)
+	}
+	if len(adminBillingMeta) != len(bills) {
+		t.Fatalf("admin project metadata must cover every associated bill: %+v", adminBillingMeta)
 	}
 }

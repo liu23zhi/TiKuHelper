@@ -915,6 +915,14 @@ func appendUniqueBillingLabel(labels []string, label string) []string {
 	return append(labels, trimmed)
 }
 
+// BuildBillingSearchSubject 暴露账单「项目」的搜题口径，供操作日志「项目」列复用。
+//
+// 同一语义只能有一份实现（AGENTS.md 第 13 条）：操作日志的 search 分支必须与账单明细
+// 显示完全相同的项目名，包括工具测试题的归一化规则。
+func BuildBillingSearchSubject(questionText string) string {
+	return buildSearchBillingSubject(questionText)
+}
+
 func buildSearchBillingSubject(questionText string) string {
 	question := strings.TrimSpace(questionText)
 	if question == "" {

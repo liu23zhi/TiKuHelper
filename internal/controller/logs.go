@@ -122,11 +122,12 @@ func LogList(c *gin.Context) {
 		return
 	}
 	resolveLogUsernames(find)
-	items, err := logListItemsWithBillingIDs(readDB, currentUser, find)
+	items, billingMeta, err := logListItemsWithBillingIDs(readDB, currentUser, find)
 	if err != nil {
 		c.JSON(400, gin.H{"message": "查询失败"})
 		return
 	}
+	fillLogProjects(items, billingMeta)
 
 	c.JSON(200, gin.H{
 		"data":     items,
@@ -139,6 +140,9 @@ func LogList(c *gin.Context) {
 type logListItem struct {
 	*entity.Log
 	BillingIDs []int32 `json:"billingIds"`
+	// Project 是读取时派生的「项目」列（方案 B：不落库、不加列）。
+	// 永不为空字符串，兜底 "-"，口径见 buildLogProject。
+	Project string `json:"project"`
 }
 
 type logBillingKey struct {
@@ -146,8 +150,14 @@ type logBillingKey struct {
 	requestID string
 }
 
-func logListItemsWithBillingIDs(db *gorm.DB, currentUser *entity.User, logs []*entity.Log) ([]logListItem, error) {
+// logListItemsWithBillingIDs 一次性把整页日志与账单关联起来。
+//
+// 性能契约（AGENTS.md 第 18b 条）：一页只查一次 billing_records，绝不逐行查。
+// 返回的 billingMeta 供「项目」列派生使用，来自**同一次**查询（只多读四列），
+// 因此新增「项目」列不会增加任何查询次数。
+func logListItemsWithBillingIDs(db *gorm.DB, currentUser *entity.User, logs []*entity.Log) ([]logListItem, map[int32]logBillingProjectMeta, error) {
 	items := make([]logListItem, len(logs))
+	billingMeta := make(map[int32]logBillingProjectMeta)
 	keys := make([]logBillingKey, len(logs))
 	userIDs := make([]int32, 0, len(logs))
 	requestIDs := make([]string, 0, len(logs))
@@ -173,35 +183,43 @@ func logListItemsWithBillingIDs(db *gorm.DB, currentUser *entity.User, logs []*e
 		}
 	}
 	if len(requestIDs) == 0 {
-		return items, nil
+		return items, billingMeta, nil
 	}
 
 	var bills []struct {
-		ID        int32
-		UserID    int32
-		RequestID string
+		ID           int32
+		UserID       int32
+		RequestID    string
+		Type         string
+		QuestionText string
+		Remark       string
 	}
 	query := db.Session(&gorm.Session{NewDB: true}).Model(&entity.BillingRecord{}).
-		Select("id, user_id, request_id").
+		Select("id, user_id, request_id, type, question_text, remark").
 		Where("user_id IN ? AND request_id IN ?", userIDs, requestIDs)
 	if !isAdminUser(currentUser) {
 		query = query.Where("user_id = ? AND hidden_from_statement = ?", currentUser.ID, false)
 	}
 	if err := query.Order("id ASC").Find(&bills).Error; err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	billingIDs := make(map[logBillingKey][]int32, len(bills))
 	for _, bill := range bills {
 		key := logBillingKey{userID: bill.UserID, requestID: bill.RequestID}
 		billingIDs[key] = append(billingIDs[key], bill.ID)
+		billingMeta[bill.ID] = logBillingProjectMeta{
+			Type:         bill.Type,
+			QuestionText: bill.QuestionText,
+			Remark:       bill.Remark,
+		}
 	}
 	for i, key := range keys {
 		if ids := billingIDs[key]; len(ids) > 0 {
 			items[i].BillingIDs = ids
 		}
 	}
-	return items, nil
+	return items, billingMeta, nil
 }
 
 func logRequestID(description string) string {
