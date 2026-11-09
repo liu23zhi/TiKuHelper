@@ -668,10 +668,20 @@ func HandleRechargePaymentNotifyWithDB(db *gorm.DB, values url.Values) (bool, er
 			return err
 		}
 
+		// 充值阶梯赠送：充值入账落完之后，在同一事务里按档位产生赠金。
+		// 开关关闭 / 未达门槛 / 表未迁移 → 返回 nil（降级，不影响到账）。
+		// 幂等由 recharge_promotion_grants.recharge_order_id 唯一索引保证 ——
+		// 重复回调走不到这里（上面 paid 已提前 return），即使走到了也只会拿到既有记录。
+		promotion, err := GrantRechargePromotionInTx(tx, order, balanceAfter)
+		if err != nil {
+			return err
+		}
+
 		// 邀请返佣：充值账单写完后，在同一事务里产生一条待结算奖励。
 		// 幂等由 referral_rebates.recharge_order_id 的唯一索引保证 ——
 		// 重复回调走不到这里（上面 paid 已提前 return），即使走到了也只会拿到既有记录。
 		// 返佣**不写 users.balance**，只进独立账本。
+		// 也不读 gift_balance：返佣基数只认实付本金（referralRebateBaseAmount）。
 		rebate, err := CreateReferralRebateInTx(tx, order)
 		if err != nil {
 			return err
@@ -685,7 +695,9 @@ func HandleRechargePaymentNotifyWithDB(db *gorm.DB, values url.Values) (bool, er
 				"status": "success", "message": "充值已到账", "orderNo": order.OrderNo,
 				"amount": order.Amount, "provider": order.PaymentProvider,
 				"paymentType": values.Get("type"), "billingId": billingRecord.ID,
-				"referralRebateId": referralRebateAuditID(rebate),
+				"referralRebateId":    referralRebateAuditID(rebate),
+				"promotionGrantId":    rechargePromotionAuditID(promotion),
+				"promotionGiftAmount": rechargePromotionAuditGiftAmount(promotion),
 			},
 		}
 		return nil
@@ -712,6 +724,25 @@ func referralRebateAuditID(rebate *entity.ReferralRebate) int32 {
 		return 0
 	}
 	return rebate.ID
+}
+
+// rechargePromotionAuditID 把可能为 nil 的赠送记录转成审计里的 ID（0 = 本次未赠送）。
+func rechargePromotionAuditID(grant *entity.RechargePromotionGrant) int32 {
+	if grant == nil {
+		return 0
+	}
+	return grant.ID
+}
+
+// rechargePromotionAuditGiftAmount 是审计里记录的赠金金额（0 = 本次未赠送）。
+//
+// 只记赠金本身，不记到账总额：充值到账审计的 `amount` 字段保持「实付进了钱包多少」
+// 的口径，赠金单独一个字段，避免把「送的钱」混进实付统计。
+func rechargePromotionAuditGiftAmount(grant *entity.RechargePromotionGrant) float64 {
+	if grant == nil {
+		return 0
+	}
+	return grant.GiftAmount
 }
 
 func writeRechargeCreateAudit(db *gorm.DB, user entity.User, input CreateRechargeOrderInput, order entity.RechargeOrder, paymentType, status, code, message string) error {

@@ -805,6 +805,13 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		logger.FatalLog(fmt.Errorf("prepare review rebate schema fail: %w", err))
 	}
 
+	// 充值阶梯赠送：建 recharge_promotion_grants（赠送发放账本，recharge_order_id 唯一）。
+	// 与开关解耦：开关默认 false，表照建，运营打开开关时结构已就位。
+	// 必须排在 ensureReviewRebateSchema 之后 —— 它依赖 users.gift_balance 已存在。
+	if err := runStartupMigration("ensureRechargePromotionSchema", func() error { return ensureRechargePromotionSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare recharge promotion schema fail: %w", err))
+	}
+
 	// source-aware 归属地缓存使用新表，旧表保留以兼容 SQLite 和回滚；
 	// 回填失败只记日志，下一次启动会因未写标记而重试。
 	if err := runStartupMigration("ensureLocationCacheEntriesSchema", func() error { return ensureLocationCacheEntriesSchema(db) }); err != nil {

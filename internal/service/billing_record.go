@@ -174,6 +174,8 @@ func buildBillingRecordTypeLabel(recordType string) string {
 		return "充值入账"
 	case registrationBonusBillingRecordType:
 		return "新用户赠送"
+	case rechargePromotionBillingRecordType:
+		return "充值赠送"
 	case ReviewRebateBillingRecordType:
 		return "评价返现"
 	case balanceAdjustmentBillingRecordType:
@@ -194,6 +196,7 @@ func buildBillingRecordTypeLabel(recordType string) string {
 func buildBillingRecordDirection(recordType string) string {
 	if strings.TrimSpace(recordType) == rechargeBillingRecordType ||
 		strings.TrimSpace(recordType) == registrationBonusBillingRecordType ||
+		strings.TrimSpace(recordType) == rechargePromotionBillingRecordType ||
 		strings.TrimSpace(recordType) == ReviewRebateBillingRecordType ||
 		strings.TrimSpace(recordType) == scriptRefundBillingRecordType {
 		return "income"
@@ -299,6 +302,12 @@ func buildBillingRecordSubject(record BillingRecordListItem) string {
 		}
 		return "新用户赠送"
 	}
+	if record.Type == rechargePromotionBillingRecordType {
+		if remark := strings.TrimSpace(record.Remark); remark != "" {
+			return remark
+		}
+		return "充值赠送"
+	}
 	if record.Type == ReviewRebateBillingRecordType {
 		if remark := strings.TrimSpace(record.Remark); remark != "" {
 			return remark
@@ -344,6 +353,12 @@ func buildBillingRecordDetail(record BillingRecordListItem) string {
 			return remark
 		}
 		return "新用户赠送"
+	}
+	if record.Type == rechargePromotionBillingRecordType {
+		if remark := strings.TrimSpace(record.Remark); remark != "" {
+			return remark
+		}
+		return "充值赠送"
 	}
 	if record.Type == ReviewRebateBillingRecordType {
 		if remark := strings.TrimSpace(record.Remark); remark != "" {
@@ -1127,7 +1142,7 @@ func loadBillingRecordSummary(db *gorm.DB, operator entity.User, filter BillingR
 			THEN CASE WHEN billing_records.cached_input_tokens > billing_records.input_tokens
 				THEN billing_records.input_tokens ELSE billing_records.cached_input_tokens END
 			ELSE 0 END) AS cached_input_tokens`, util.MoneyPrecision).
-		Where("TRIM(billing_records.type) NOT IN ?", []string{rechargeBillingRecordType, registrationBonusBillingRecordType, ReviewRebateBillingRecordType, balanceAdjustmentBillingRecordType, scriptRefundBillingRecordType}).
+		Where("TRIM(billing_records.type) NOT IN ?", []string{rechargeBillingRecordType, registrationBonusBillingRecordType, rechargePromotionBillingRecordType, ReviewRebateBillingRecordType, balanceAdjustmentBillingRecordType, scriptRefundBillingRecordType}).
 		Group(`billing_records.user_id, billing_records.type, billing_records.request_id,
 			CASE WHEN billing_records.type = 'normal_search' AND TRIM(COALESCE(billing_records.request_id, '')) <> ''
 				THEN 0 ELSE billing_records.id END`)
