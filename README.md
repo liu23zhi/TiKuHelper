@@ -103,7 +103,7 @@ go build -o tiku-adapter ./cmd/adapter-service
 （包括允许默认密码），不要用它绕过生产启动保护。
 
 完整清单看 [`configs/config.yaml`](configs/config.yaml) 的注释（文件级配置）与
-`internal/service/system_setting.go` 的常量（后台配置）；设计文档见文末[文档导航](#文档导航)。
+`internal/service/system_setting.go` 的常量（后台配置）；按主题找代码见文末[代码导航](#代码导航)。
 
 ## 接口概览
 
@@ -118,7 +118,9 @@ Authorization: Bearer <access-token>
 ```
 
 `type` 决定答案判定方式：`0` 单选、`1` 多选、`3` 判断要求答案命中选项；`2` 填空/连线、
-`4` 简答/阅读允许自由文本。传错类型会直接导致答案错乱。
+`4` 简答/阅读、`-4` 阅读理解允许自由文本。传错类型会直接导致答案错乱。
+判定统一在 `pkg/util/find_answer.go` 的 `IsObjectiveQuestionType` / `AllowsRepeatedAnswers`，
+新增题型时改那里，不要各处各写一份。
 
 同一请求可命中多个渠道，各渠道单价分别落账，账单里合并展示。命中服务端缓存（10 分钟）不再计费。
 
@@ -151,7 +153,7 @@ Authorization: Bearer <access-token>
 ```bash
 go build ./...                 # 编译全部包
 go vet ./...                   # 静态检查
-go test -short -p 1 ./...      # 与 CI 相同的后端测试命令
+go test -short -p 1 ./... -count=1   # 与 CI 相同的后端测试命令
 python -m unittest discover -s tools -p 'test_*.py'   # SQLite→MySQL 迁移工具测试
 ```
 
@@ -168,26 +170,24 @@ npm run build
 
 健康检查：`/healthz` 看进程存活，`/readyz` 看数据库就绪。日志默认写 `logs/`。
 
-## 文档导航
+## 代码导航
 
-设计文档、验收记录和踩坑清单都在 **TikuDoc** 仓库，不在本仓库（`docs/`、`tasks/` 已迁出并从历史移除）。
+设计文档、验收记录和踩坑清单不在本仓库（已迁出并从历史移除），存放在一个**只有协作者能打开**的私有文档仓库。
+本仓库不提供指向它的链接 —— 对外部读者那是死链。想知道某块怎么实现的，按下表直接读代码，
+那里是同一份事实的权威来源，不会随文档漂移。
 
-> TikuDoc 是私有仓库，只有协作者能打开。没有访问权限时，请按右列位置直接读代码 ——
-> 那里是同一份事实的权威来源，不会随文档漂移。
-
-| 想了解 | TikuDoc | 仓库内位置 |
-|---|---|---|
-| 开发清单与当前进度 | [TASKLIST.md](https://github.com/liu23zhi/TikuDoc/blob/main/tikuAdapter/TASKLIST.md) | — |
-| 日志格式、轮转与归档 | [docs/logging.md](https://github.com/liu23zhi/TikuDoc/blob/main/tikuAdapter/docs/logging.md) | `pkg/logger/` |
-| 出站请求重试策略 | [docs/network-retry-policy.md](https://github.com/liu23zhi/TikuDoc/blob/main/tikuAdapter/docs/network-retry-policy.md) | `internal/uapi/`、`internal/service/location.go` |
-| 工单退款与凭证加密 | [docs/ticket-refunds.md](https://github.com/liu23zhi/TikuDoc/blob/main/tikuAdapter/docs/ticket-refunds.md) | `internal/controller/ticket_refund.go` |
-| 答案质量验收边界 | [docs/question-quality-validation.md](https://github.com/liu23zhi/TikuDoc/blob/main/tikuAdapter/docs/question-quality-validation.md) | `pkg/util/tiku_hash.go` |
-| 图片题 OCR 辅助 | [docs/image-ocr-integration.md](https://github.com/liu23zhi/TikuDoc/blob/main/tikuAdapter/docs/image-ocr-integration.md) | `internal/uapi/ocr.go`、`internal/service/ai_ocr_cache.go` |
-| 模型上下文窗口与压缩 | [docs/ai-model-context-windows.md](https://github.com/liu23zhi/TikuDoc/blob/main/tikuAdapter/docs/ai-model-context-windows.md) | `internal/service/ai_context_compression_config.go` |
-| 浏览器扩展更新接口 | [docs/extension-update-api.md](https://github.com/liu23zhi/TikuDoc/blob/main/tikuAdapter/docs/extension-update-api.md) | `internal/controller/extension.go` |
-| 纯图片题误答日志分析 | [docs/image-question-log-analysis.md](https://github.com/liu23zhi/TikuDoc/blob/main/tikuAdapter/docs/image-question-log-analysis.md) | — |
-| 前端重构设计与验收 | [docs/ui-refactor-design.md](https://github.com/liu23zhi/TikuDoc/blob/main/tikuAdapter/docs/ui-refactor-design.md) | `web/src/` |
-| 依赖升级兼容性实测 | [docs/web-toolchain-compatibility-2026-11-04.md](https://github.com/liu23zhi/TikuDoc/blob/main/tikuAdapter/docs/web-toolchain-compatibility-2026-11-04.md) | `web/package.json` |
+| 想了解 | 读哪里 |
+|---|---|
+| 日志格式、轮转与归档 | `pkg/logger/` |
+| 出站请求重试策略 | `internal/uapi/`、`internal/service/location.go` |
+| 工单退款与凭证加密 | `internal/controller/ticket_refund.go` |
+| 答案质量验收边界 | `pkg/util/tiku_hash.go` |
+| 图片题 OCR 辅助 | `internal/uapi/ocr.go`、`internal/service/ai_ocr_cache.go` |
+| 模型上下文窗口与压缩 | `internal/service/ai_context_compression_config.go` |
+| 浏览器扩展更新接口 | `internal/controller/extension.go` |
+| 接口与路由全表 | `internal/api/router.go` |
+| 后台配置项常量 | `internal/service/system_setting.go` |
+| 前端源码与工具链 | `web/src/`、`web/package.json` |
 
 改代码前值得先扫一遍 `AGENTS.md` —— 那里记着本项目踩过的坑与不可回退的约定
 （金额精度、缓存并发合并、启动迁移写法、答案判定等）。
