@@ -96,7 +96,46 @@ jobs:
           set -euo pipefail
           # 真实服务测试显式 opt-in；同名题库回归已经改用本地传输 fixture，
           # 保留它们，并串行包执行以避免短时的 SQLite 文件同步争用。
-          go test -short -p 1 ./... -count=1
+          #
+          # 同时产出覆盖率：-covermode=atomic 因为后面没有并发写 profile 的需求，
+          # 但 atomic 是唯一能安全合并多包 profile 的模式；测试输出 tee 到文件，
+          # 供下一步区分「[no test files]」/「[no statements]」/「测试二进制异常退出」。
+          # 注意：覆盖率是**产物**，不是判定条件 —— 这一步的成败仍然只由 go test 决定。
+          go test -short -p 1 ./... -count=1 \
+            -covermode=atomic -coverprofile=coverage.out 2>&1 | tee coverage-test.log
+
+      - name: 汇总 Go 覆盖率（只上报，不阻断）
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          # 口径：只统计真正链接进 cmd/adapter-service 的包（go list -deps），按语句加权。
+          # 与 PLUS 侧 scripts/ci/check-coverage.mjs 对齐：那边只统计真正进构建产物的 .ts，
+          # 不统计跑在 dist 里、Node 加载器看不到的 src/projects/**。
+          #
+          # 本轮刻意**不阻断**：TIKU 现有已知基线红（internal/api、internal/controller 的
+          # TestB01*/TestD03*、internal/registry 的 TestD02BillingIndexApprovedStartupPolicy
+          # 单条 428 秒与 TestStrictConfig*）。阈值一上来就盯总数会天天红，红久了就没人看。
+          # 基线稳定之后再给下面这条命令加 --strict（脚本已实现，退出码 1）。
+          if [[ ! -f coverage.out ]]; then
+            echo "::warning::coverage.out 未生成（测试步骤可能提前失败），跳过覆盖率汇总。"
+            exit 0
+          fi
+          python3 -B scripts/ci/coverage-report.py coverage.out \
+            --test-log coverage-test.log \
+            --baseline scripts/ci/coverage-baseline.json \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: 上传覆盖率产物
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: Go覆盖率-${{ github.sha }}
+          path: |
+            coverage.out
+            coverage-test.log
+          if-no-files-found: warn
+          retention-days: 14
 
   python:
     name: Python 工具测试

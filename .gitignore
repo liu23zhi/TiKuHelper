@@ -35,3 +35,12 @@ adapter-service.exe
 .claude/
 /run/nginx/logs
 */__pycache__
+
+# --- 覆盖率本地产物：CI 里是临时文件，不进仓库 ---
+# coverage.out 每次 go test 都会重写，且内容是整仓语句明细（上万行）；
+# coverage-test.log 是 go test 的完整输出（含 SQL 日志、fixture 证据）。
+# 两者都属于「某一次本地运行的快照」，提交它们只会制造无意义的 diff 与冲突。
+coverage.out
+coverage-test.log
+cov_full.log
+cov_run.log
