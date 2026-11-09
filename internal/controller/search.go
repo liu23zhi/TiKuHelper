@@ -568,15 +568,23 @@ func executeSearch(c *gin.Context) {
 	if len(failures) > 0 {
 		logger.SysError(fmt.Sprintf("%s requestId=%s userId=%d type=%d question=%s %s", searchAuditSummary(status), resolved.RequestID, resolved.UserID, req.Type, truncateForDebug(req.Question, 120), searchFailureSummary(failures)))
 	}
+	// 敏感词检测在**这里**启动：答题已经算完、响应体已经成型，
+	// 主链路只多做一次内存拷贝和一次 goroutine 启动，随后照常返回。
+	// 检测本身（读开关、查密钥、外呼 UAPI、回写 logs 四列）全部在旁路 goroutine 里，
+	// 因此既不会拖慢答案返回，也不会因为检测失败让答题失败。
+	sensitiveCheck := startSensitiveWordCheck(resolved, req, resp)
+	auditLogID := int32(0)
 	if usedSearchResultCache {
-		writeCompletedSearchAuditLog(resolved, useQuery, result, "", c.ClientIP(), audit)
+		auditLogID = writeCompletedSearchAuditLog(resolved, useQuery, result, "", c.ClientIP(), audit)
 	} else {
 		reportCompletedSearchBilling(resolved, useQuery, aiEnabled, result, hasAISearchUsage(aiUsage), usedLocalSearch)
 		// An executed model/summary can consume tokens even when no final answer
 		// survives. Preserve actual usage; normal providers still require an answer,
 		// and a request with no executed usage creates no model charge.
-		billingErr, warning := persistCompletedSearchBilling(resolved, useQuery, aiEnabled, req, result, aiUsage, usedLocalSearch, c.ClientIP(), audit)
+		billingErr, warning, writtenLogID := persistCompletedSearchBilling(resolved, useQuery, aiEnabled, req, result, aiUsage, usedLocalSearch, c.ClientIP(), audit)
+		auditLogID = writtenLogID
 		if billingErr != nil {
+			sensitiveCheck.attachLogID(auditLogID)
 			writeSearchUnauthorized(c, fmt.Errorf("%w: %w", service.ErrInvalidAccessTokenAuthorization, billingErr), rawBody)
 			return
 		}
@@ -589,6 +597,9 @@ func executeSearch(c *gin.Context) {
 			searchResultCache.put(cacheKey, searchAnswerPayload{answers: cloneSearchAnswers(result)}, cacheEpoch, searchAnswerPayloadUsable)
 		}
 	}
+	// 把审计行主键交给旁路任务（非阻塞）。日志写失败时投递 0，
+	// 旁路任务据此跳过回写，而不是一直等到超时。
+	sensitiveCheck.attachLogID(auditLogID)
 
 	if !usedSearchResultCache && len(localAnswer) == 0 && c.Query("noRecord") == "" {
 		if collected := middleware.CollectAnswer(resp, req.CourseName, req.Extra, audit.HitProvider); collected.ID > 0 {
@@ -1137,7 +1148,11 @@ func reportCompletedSearchBilling(resolved resolvedSearchRequestContext, useQuer
 	searchBillingReporter(buildCompletedSearchBillingContext(resolved, useQuery, aiEnabled, result, hasAIUsage, usedLocalSearch))
 }
 
-func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQuery string, aiEnabled bool, req model.SearchRequest, result [][]string, aiUsage search.AISearchUsage, usedLocalSearch bool, clientIP string, audit searchAuditMetadata) (error, string) {
+// persistCompletedSearchBilling 落账并写审计行。
+//
+// 第三个返回值是审计行主键，供敏感词打标旁路精确回写；它为 0 只表示
+// 「审计行没写成功」，与计费结果无关，调用方不得据此改变答题行为。
+func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQuery string, aiEnabled bool, req model.SearchRequest, result [][]string, aiUsage search.AISearchUsage, usedLocalSearch bool, clientIP string, audit searchAuditMetadata) (error, string, int32) {
 	ctx := buildCompletedSearchBillingContext(resolved, useQuery, aiEnabled, result, hasAISearchUsage(aiUsage), usedLocalSearch)
 	ctx.ClientIP = strings.TrimSpace(clientIP)
 	ctx.DeepThinking = req.DeepThinking
@@ -1148,16 +1163,14 @@ func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQue
 	// of zero cost. Known charges may still settle without clearing the hold.
 	ctx.escrowWorkUncertain = len(audit.Failures) > 0
 	if !ctx.Billable && (!ctx.escrowWorkTracked || ctx.escrowWorkUncertain) {
-		writeCompletedSearchAuditLog(resolved, useQuery, result, "", clientIP, audit)
-		return nil, ""
+		return nil, "", writeCompletedSearchAuditLog(resolved, useQuery, result, "", clientIP, audit)
 	}
 
 	db, cancel := escrowSettlementDB(resolved.Context, ctx.escrowWorkTracked)
 	defer cancel()
 	if db == nil {
 		logger.SysError(fmt.Sprintf("搜索计费落账失败：数据库不可用 requestId=%s", resolved.RequestID))
-		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_db_unavailable", clientIP, audit)
-		return nil, ""
+		return nil, "", writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_db_unavailable", clientIP, audit)
 	}
 
 	var charges []searchBillingCharge
@@ -1169,8 +1182,7 @@ func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQue
 	if err != nil {
 		logger.SysError(fmt.Sprintf("搜索计费落账失败：%s requestId=%s", err.Error(), resolved.RequestID))
 		if ctx.ScriptBilling.mode != entity.ScriptBillingModeActivation || !ctx.ScriptExecutionUsage.present() {
-			writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_charge_resolve_failed", clientIP, audit)
-			return nil, warning
+			return nil, warning, writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_charge_resolve_failed", clientIP, audit)
 		}
 		// Preserve executed usage even if a standard price cannot be read.
 		ctx.ScriptExecutionUsage.CostUnavailable = true
@@ -1178,16 +1190,14 @@ func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQue
 	}
 	applyAIStagedBillingToSearchAudit(&audit, aiUsage.Trace, charges)
 	if len(charges) == 0 && !ctx.ScriptExecutionUsage.present() && (!ctx.escrowWorkTracked || ctx.escrowWorkUncertain) {
-		writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_zero_amount", clientIP, audit)
-		return nil, warning
+		return nil, warning, writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_zero_amount", clientIP, audit)
 	}
 
 	queued, err := persistSearchBillingRecordsWithRetry(db, ctx, charges, searchBillingRetries)
 	if err != nil {
 		if isSearchBillingTerminalError(err) {
 			logger.SysWarn(fmt.Sprintf("搜索计费拒绝 requestId=%s", resolved.RequestID))
-			writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_rejected", clientIP, audit)
-			return err, warning
+			return err, warning, writeCompletedSearchAuditLog(resolved, useQuery, result, "billing_rejected", clientIP, audit)
 		}
 		logger.SysError(fmt.Sprintf("搜索计费落账失败：%s requestId=%s", err.Error(), resolved.RequestID))
 		status := "billing_persist_failed"
@@ -1195,12 +1205,10 @@ func persistCompletedSearchBilling(resolved resolvedSearchRequestContext, useQue
 			status = "billing_retry_pending"
 			warning = appendSearchBillingRetryWarning(warning)
 		}
-		writeCompletedSearchAuditLog(resolved, useQuery, result, status, clientIP, audit)
-		return nil, warning
+		return nil, warning, writeCompletedSearchAuditLog(resolved, useQuery, result, status, clientIP, audit)
 	}
 
-	writeCompletedSearchAuditLog(resolved, useQuery, result, completedSearchBillingProviderLabel(charges), clientIP, audit)
-	return nil, warning
+	return nil, warning, writeCompletedSearchAuditLog(resolved, useQuery, result, completedSearchBillingProviderLabel(charges), clientIP, audit)
 }
 
 func resolveSearchPersistenceDB() *gorm.DB {
@@ -2040,7 +2048,11 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 	return err
 }
 
-func writeCompletedSearchAuditLog(resolved resolvedSearchRequestContext, useQuery string, result [][]string, billingProvider string, clientIP string, audit searchAuditMetadata) {
+// writeCompletedSearchAuditLog 写本次搜题的审计行，并返回新行主键（写失败为 0）。
+//
+// 返回主键供敏感词打标精确回写同一行：logs 表没有 request_id 列，
+// 事后无法按请求关联，只能在写入时拿到 id。
+func writeCompletedSearchAuditLog(resolved resolvedSearchRequestContext, useQuery string, result [][]string, billingProvider string, clientIP string, audit searchAuditMetadata) int32 {
 	var user *entity.User
 	if resolved.AccessTokenCtx != nil {
 		user = &resolved.AccessTokenCtx.User
@@ -2071,7 +2083,7 @@ func writeCompletedSearchAuditLog(resolved resolvedSearchRequestContext, useQuer
 	if len(audit.Failures) > 0 {
 		descriptionParts = append(descriptionParts, searchFailureSummary(audit.Failures))
 	}
-	writeAuditLog(
+	return writeAuditLog(
 		user,
 		searchAuditModule,
 		logActionSearch,

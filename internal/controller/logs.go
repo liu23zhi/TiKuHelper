@@ -26,9 +26,14 @@ const (
 	logActionAIFallback = 11
 )
 
-func writeAuditLog(user *entity.User, module string, action int32, description string, clientIP string, qid int32, oldAnswer string, newAnswer string) {
+// writeAuditLog 写一条审计日志，并返回新行的主键（写不进去返回 0）。
+//
+// 返回主键是为了让「敏感词打标」这类**旁路结果**能精确回写到同一行：
+// logs 表没有 request_id 列（原始请求/响应在 old_answer / new_answer 里），
+// 按 requestId 模糊匹配会误更新同一秒的其它行。
+func writeAuditLog(user *entity.User, module string, action int32, description string, clientIP string, qid int32, oldAnswer string, newAnswer string) int32 {
 	if dao.Log == nil {
-		return
+		return 0
 	}
 
 	entry := entity.Log{
@@ -52,7 +57,9 @@ func writeAuditLog(user *entity.User, module string, action int32, description s
 	}
 	if err := dao.Log.Create(&entry); err != nil {
 		logger.SysError(fmt.Sprintf("审计日志写入失败 module=%s action=%d userId=%d error=%s", entry.Module, entry.Action, entry.UserID, logger.RedactSecrets(err.Error())))
+		return 0
 	}
+	return entry.ID
 }
 
 func truncateAuditDescription(value string) string {
@@ -137,12 +144,28 @@ func LogList(c *gin.Context) {
 	})
 }
 
+// logListItem 是日志列表的一行。
+//
+// BillingIDs 与敏感词四列都是**附加字段**：原有 *entity.Log 的字段一个不少、
+// 语义一个不改，因此老客户端（含 chaoxing 面板）继续按原样解析即可。
 type logListItem struct {
 	*entity.Log
 	BillingIDs []int32 `json:"billingIds"`
 	// Project 是读取时派生的「项目」列（方案 B：不落库、不加列）。
 	// 永不为空字符串，兜底 "-"，口径见 buildLogProject。
 	Project string `json:"project"`
+	// SensitiveFlag 任一检测对象命中即为 true。只打标记，答案原文不动。
+	//
+	// 用指针：nil 表示「该行从未检测过」（开关关闭 / 历史行），
+	// 与 false（检测通过）在语义上必须可区分 —— 否则前端会把
+	// 「没检测」误显示成「查过了，没问题」。
+	SensitiveFlag *bool `json:"sensitiveFlag,omitempty"`
+	// SensitiveWords 按 scope（question / answer）分组的命中明细（JSON 文本）。
+	SensitiveWords string `json:"sensitiveWords,omitempty"`
+	// SensitiveCheckedAt 检测完成时间；nil 表示从未检测。
+	SensitiveCheckedAt *time.Time `json:"sensitiveCheckedAt,omitempty"`
+	// SensitiveCheckError 检测失败原因；成功或未检测时为空。
+	SensitiveCheckError string `json:"sensitiveCheckError,omitempty"`
 }
 
 type logBillingKey struct {
@@ -154,7 +177,10 @@ type logBillingKey struct {
 //
 // 性能契约（AGENTS.md 第 18b 条）：一页只查一次 billing_records，绝不逐行查。
 // 返回的 billingMeta 供「项目」列派生使用，来自**同一次**查询（只多读四列），
-// 因此新增「项目」列不会增加任何查询次数。
+// 因此「项目」列不增加任何查询次数。
+//
+// 敏感词字段与账单关联彼此独立：先挂标记，再按 requestId 关联账单。
+// 这样「本页没有任何 requestId」时也不会漏掉打标展示。
 func logListItemsWithBillingIDs(db *gorm.DB, currentUser *entity.User, logs []*entity.Log) ([]logListItem, map[int32]logBillingProjectMeta, error) {
 	items := make([]logListItem, len(logs))
 	billingMeta := make(map[int32]logBillingProjectMeta)
@@ -182,6 +208,7 @@ func logListItemsWithBillingIDs(db *gorm.DB, currentUser *entity.User, logs []*e
 			requestIDs = append(requestIDs, requestID)
 		}
 	}
+	attachSensitiveWordFields(db, logs, items)
 	if len(requestIDs) == 0 {
 		return items, billingMeta, nil
 	}
@@ -220,6 +247,57 @@ func logListItemsWithBillingIDs(db *gorm.DB, currentUser *entity.User, logs []*e
 		}
 	}
 	return items, billingMeta, nil
+}
+
+// attachSensitiveWordFields 一次批量查询把敏感词标记挂到本页的日志行上。
+//
+// 性能契约（AGENTS.md 第 18b 条）：**一次 `WHERE id IN (...)`**，不按行查库；
+// 行数上限就是分页上限（100），内存与「本页行数」同量级。
+//
+// 失败静默：敏感词标记是展示增强，查不到就当作「未检测」，
+// 绝不能让日志列表本身报错（列表的首要用途是排障）。
+func attachSensitiveWordFields(db *gorm.DB, logs []*entity.Log, items []logListItem) {
+	if db == nil || len(logs) == 0 {
+		return
+	}
+	ids := make([]int32, 0, len(logs))
+	indexByID := make(map[int32]int, len(logs))
+	for i, entry := range logs {
+		if entry == nil || entry.ID <= 0 {
+			continue
+		}
+		if _, exists := indexByID[entry.ID]; exists {
+			continue
+		}
+		indexByID[entry.ID] = i
+		ids = append(ids, entry.ID)
+	}
+	if len(ids) == 0 {
+		return
+	}
+	var rows []entity.LogSensitive
+	if err := db.Session(&gorm.Session{NewDB: true}).
+		Where("id IN ?", ids).
+		Find(&rows).Error; err != nil {
+		return
+	}
+	for i := range rows {
+		row := rows[i]
+		index, exists := indexByID[row.LogID]
+		if !exists {
+			continue
+		}
+		// 只给「真的检测过」的行填标记：checked_at 为空 = 从未检测，
+		// 此时一个字段都不下发，前端据此显示「未检测」而不是「通过」。
+		if row.CheckedAt == nil {
+			continue
+		}
+		flag := row.Flag
+		items[index].SensitiveFlag = &flag
+		items[index].SensitiveWords = row.Words
+		items[index].SensitiveCheckedAt = row.CheckedAt
+		items[index].SensitiveCheckError = row.CheckError
+	}
 }
 
 func logRequestID(description string) string {

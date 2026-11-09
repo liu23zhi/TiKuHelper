@@ -107,6 +107,20 @@
         </a-form-item>
         </ConsolePanel>
 
+        <ConsolePanel title="敏感词检测" description="只给日志打标记，不改变答题结果。默认关闭。" class="settings-section">
+        <a-form-item label="启用敏感词检测" :html-for="fieldId('sensitiveWordCheckEnabled')">
+          <a-switch :id="fieldId('sensitiveWordCheckEnabled')" :checked="formState.sensitiveWordCheckEnabled" v-on="{ 'update:checked': settingsEntry.bind(updateSetting, 'sensitiveWordCheckEnabled') }" />
+          <div class="hint">关闭（默认）：完全不调用检测接口，不写任何敏感词字段。开启后，答题照常返回，题目与答案在后台异步检测并打标记；检测失败、超时或上游报错都不会影响答题。</div>
+        </a-form-item>
+        <a-alert
+          v-if="formState.sensitiveWordCheckEnabled && !formState.sensitiveWordCheckConfigured"
+          type="warning"
+          show-icon
+          message="已启用但未配置 UApiPro 密钥"
+          description="检测能力复用上面的「UApiPro API 密钥」。未配置有效密钥（需以 uapi- 开头）时不会外呼，日志也不会出现敏感词标记。"
+        />
+        </ConsolePanel>
+
         <ConsolePanel title="微信登录与验证码" description="配置微信验证方式和验证码服务。" class="settings-section">
         <a-form-item label="微信扫描" :html-for="fieldId('wechatScanLoginEnabled')">
           <a-switch :id="fieldId('wechatScanLoginEnabled')" :checked="formState.wechatScanLoginEnabled" v-on="{ 'update:checked': settingsEntry.bind(updateSetting, 'wechatScanLoginEnabled') }" />
@@ -480,6 +494,10 @@ export default defineComponent({
       // 商业化开关默认关闭，与后端缺省一致。
       rechargePromotionEnabled: false,
       deviceLimitEnabled: false,
+      // 敏感词检测默认关闭，与后端缺省一致。
+      sensitiveWordCheckEnabled: false,
+      // 只读派生值：开关开着但没有可用 UAPI 密钥时为 false，页面据此提示。
+      sensitiveWordCheckConfigured: false,
       epayVersion: 'v2',
       epayGatewayUrl: '',
       epayPartnerId: '',
@@ -827,6 +845,8 @@ export default defineComponent({
       // 布尔开关只认显式 true；缺字段或异常值一律视为关闭。
       formState.rechargePromotionEnabled = data.rechargePromotionEnabled === true
       formState.deviceLimitEnabled = data.deviceLimitEnabled === true
+      formState.sensitiveWordCheckEnabled = data.sensitiveWordCheckEnabled === true
+      formState.sensitiveWordCheckConfigured = data.sensitiveWordCheckConfigured === true
       formState.epayVersion = 'v2'
       formState.epayGatewayUrl = data.epayGatewayUrl || ''
       formState.epayPartnerId = data.epayPartnerId || ''
@@ -1028,6 +1048,7 @@ export default defineComponent({
         // 显式提交布尔值：后端用指针区分「未提交」与「提交 false」。
         rechargePromotionEnabled: !!formState.rechargePromotionEnabled,
         deviceLimitEnabled: !!formState.deviceLimitEnabled,
+        sensitiveWordCheckEnabled: !!formState.sensitiveWordCheckEnabled,
       }
 
       const owns = captureOwner(), ticket = ++settingsWrite

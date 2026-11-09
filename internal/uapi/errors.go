@@ -26,6 +26,16 @@ var (
 	ErrRateLimited = errors.New("uapi: 请求过于频繁")
 	// ErrUpstream 上游服务异常（HTTP 408/5xx，以及其它未列举状态码；可重试）
 	ErrUpstream = errors.New("uapi: 上游服务异常")
+	// ErrTextTooLong 送检文本超出上游长度限制（HTTP 413）。
+	//
+	// 单独成一个哨兵是为了**可区分**：413 落到 ErrUpstream 时，「文本太长」与
+	// 「上游挂了」在监控里长得一模一样，超长会一直被当成偶发故障。
+	// 实测该限制是 text 字段 262144 字节（见 internal/service/sensitive_words.go
+	// 的 sensitiveWordMaxTextBytes）。
+	//
+	// 注意：413 的错误**同时**满足 errors.Is(err, ErrUpstream)（见 newAPIError），
+	// 所以既有按 ErrUpstream 判定的调用方行为不变，只是多了一个更精确的判别入口。
+	ErrTextTooLong = errors.New("uapi: 送检文本超出上游长度限制")
 	// ErrTimeout 网络请求超时（可重试）
 	ErrTimeout = errors.New("uapi: 请求超时")
 	// ErrNetwork 网络层错误（DNS、连接失败、超时等，不含上游返回的错误响应）
@@ -149,6 +159,11 @@ func sentinelForStatus(status int, code string) error {
 		return ErrNotFound
 	case http.StatusRequestTimeout: // 408
 		return ErrUpstream
+	case http.StatusRequestEntityTooLarge: // 413
+		// 双哨兵：既要能区分「超长」（ErrTextTooLong），又要保持既有
+		// errors.Is(err, ErrUpstream) 判定不变（ocr/nsfw 等调用方已按 ErrUpstream 处理）。
+		// errors.Join 的 Unwrap() []error 让两个 errors.Is 同时成立。
+		return errors.Join(ErrTextTooLong, ErrUpstream)
 	case http.StatusTooManyRequests: // 429
 		if strings.Contains(strings.ToUpper(code), "VISITOR_MONTHLY_QUOTA_EXHAUSTED") {
 			return ErrInsufficientCredits

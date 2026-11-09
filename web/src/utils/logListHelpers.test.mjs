@@ -11,7 +11,6 @@ import {
   buildLogDetailSections,
   buildLogLocalQuestionId,
   buildLogModuleLabel,
-  buildLogProjectText,
   buildLogResultText,
   buildLogRowDetail,
   buildLogTableDetail,
@@ -19,7 +18,6 @@ import {
   buildLogStatusColor,
   buildLogStructuredFields,
 } from './logListHelpers.mjs';
-import { useTableColumnPreferences } from '../composables/useTableColumnPreferences.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -152,13 +150,13 @@ test('LogList puts channel and billing columns right after the summary column', 
 
   const summaryIndex = titles.indexOf('说明');
   assert.ok(summaryIndex >= 0, 'missing summary column');
-  assert.equal(titles[summaryIndex + 1], '项目');
-  assert.equal(titles[summaryIndex + 2], '命中渠道 / 错误原因');
-  assert.equal(titles[summaryIndex + 3], '计费渠道 / 耗时');
-  assert.ok(titles.indexOf('详情') > summaryIndex + 3, 'detail column should follow the channel columns');
+  assert.equal(titles[summaryIndex + 1], '命中渠道 / 错误原因');
+  assert.equal(titles[summaryIndex + 2], '计费渠道 / 耗时');
+  assert.ok(titles.indexOf('详情') > summaryIndex + 2, 'detail column should follow the channel columns');
+  // 敏感词是只打标记的附加列，插在「状态」之后；既有列顺序保持不变。
   assert.deepEqual(titles, [
-    '时间', '模块', '状态', '用户', '来源 IP', '本地题库 ID', '账单 ID',
-    '说明', '项目', '命中渠道 / 错误原因', '计费渠道 / 耗时', '详情',
+    '时间', '模块', '状态', '敏感词', '用户', '来源 IP', '本地题库 ID', '账单 ID',
+    '说明', '命中渠道 / 错误原因', '计费渠道 / 耗时', '详情',
     '请求 ID', '请求参数', '请求接口', '答案数', '原始请求', '原始响应',
   ]);
 });
@@ -177,15 +175,16 @@ test('LogList uses fixed widths and horizontal scrolling while allowing wraps', 
     return [title, width[1]];
   }));
 
+  // 18 = 既有 17 列 + 新增的只打标记列「敏感词」。
   assert.equal(Object.keys(widths).length, 18, 'all log columns should be included');
+  assert.equal(widths['敏感词'], 'logColumnWidths.sensitiveFlag');
   assert.equal(widths['详情'], "expandedColumnWidth('detail')");
-  assert.equal(widths['项目'], "expandedColumnWidth('project')");
   assert.equal(widths['请求参数'], 'logColumnWidths.mode');
   assert.equal(widths['原始请求'], "expandedColumnWidth('requestSnapshot')");
   assert.equal(widths['原始响应'], "expandedColumnWidth('responseSnapshot')");
   for (const title of [
-    '模块', '状态', '用户', '本地题库 ID', '说明', '项目',
-    '命中渠道 / 错误原因', '计费渠道 / 耗时', '请求 ID', '请求接口', '答案数',
+    '模块', '状态', '用户', '本地题库 ID', '说明',
+    '模块', '状态', '敏感词', '用户', '本地题库 ID', '说明',
   ]) {
     const column = columnBlocks.find(([, columnTitle]) => columnTitle === title);
     assert.match(column?.[2] || '', /width:\s*(?:logColumnWidths\.|expandedColumnWidth\()/, `${title} needs a fixed width`);
@@ -913,59 +912,4 @@ test('explicit AI route takes priority over the requested deep-thinking flag', (
   });
   assert.equal(fields.hitProvider, 'AI 深度思考 MCP编排');
   assert.deepEqual(fields.failureReasons, ['当前余额不足，AI 兜底已禁用，请充值后再使用']);
-});
-
-test('buildLogProjectText shows the server-derived project without re-deriving it', () => {
-  // 后端是唯一口径来源：字段原样透出，前端不重复实现派生表。
-  assert.equal(buildLogProjectText({ module: 'search', project: '搜索答案，题目：牛顿第二定律' }), '搜索答案，题目：牛顿第二定律');
-  assert.equal(buildLogProjectText({ module: 'user', project: '用户 #7' }), '用户 #7');
-  assert.equal(buildLogProjectText({ module: 'access_token', project: '访问令牌 openai-key' }), '访问令牌 openai-key');
-  assert.equal(buildLogProjectText({ module: 'recharge', project: '充值订单 R20261109001' }), '充值订单 R20261109001');
-  assert.equal(buildLogProjectText({ module: '', qid: 42, project: '题目 #42' }), '题目 #42');
-  // 后端兜底值是 '-'，不能被当成「没有值」再猜一次。
-  assert.equal(buildLogProjectText({ module: 'search', project: '-' }), '-');
-  // 尚未升级的后端没有 project 字段：只降级到行内 qid，其余一律 '-'。
-  assert.equal(buildLogProjectText({ module: '', qid: 42 }), '题目 #42');
-  assert.equal(buildLogProjectText({ module: 'search', description: '搜索完成 requestId=req-1' }), '-');
-  assert.equal(buildLogProjectText({}), '-');
-  assert.equal(buildLogProjectText(), '-');
-});
-
-test('LogList renders the project column with an expandable preview and a mobile field', async () => {
-  const content = await readFile(logListPagePath, 'utf8');
-  assert.match(content, /buildLogProjectText/);
-  assert.match(content, /<template v-else-if="column\.key === 'project'">\s*<OverflowTableText\s+:text="buildProjectText\(record\)"\s+:expanded="isSnapshotExpanded\(record\.id, 'project'\)"\s+@toggle="toggleSnapshotExpanded\(record\.id, 'project'\)"/);
-  assert.match(content, /project: 170/);
-  assert.match(content, /title: '项目',\s*dataIndex: 'project',\s*key: 'project',\s*width: expandedColumnWidth\('project'\)/);
-  // 移动端卡片必须有「项目」字段。
-  assert.match(content, /<div><dt>项目<\/dt><dd>\{\{ buildProjectText\(record\) \}\}<\/dd><\/div>/);
-});
-
-test('project column stays visible for users who already saved a column selection', async () => {
-  const content = await readFile(logListPagePath, 'utf8');
-  // requiredKeys 是唯一能穿透已存偏好的通道（不升 scope 版本、不重置用户选择）。
-  assert.match(content, /requiredKeys: \['createTime', 'status', 'summary', 'project', 'hitProvider'\]/);
-  assert.match(content, /const columnPriorityKeys = \['createTime', 'module', 'status', 'username', 'summary', 'project', 'hitProvider', 'detail'\]/);
-
-  const columns = [
-    { key: 'createTime', title: '时间' },
-    { key: 'status', title: '状态' },
-    { key: 'summary', title: '说明' },
-    { key: 'project', title: '项目' },
-    { key: 'hitProvider', title: '命中渠道 / 错误原因' },
-  ];
-  const saved = JSON.stringify({ version: 1, selectedKeys: ['createTime', 'status', 'summary', 'hitProvider'] });
-  const storage = { getItem: () => saved, setItem() {}, removeItem() {} };
-  const preferences = useTableColumnPreferences({
-    pageKey: 'LogList',
-    columns,
-    scope: () => 'id:1:role:admin:view:logs',
-    requiredKeys: ['createTime', 'status', 'summary', 'project', 'hitProvider'],
-    priorityKeys: ['createTime', 'status', 'summary', 'project'],
-    storage,
-  });
-  await Promise.resolve();
-  assert.deepEqual(preferences.visibleColumns.value.map((column) => column.key), ['createTime', 'status', 'summary', 'project', 'hitProvider']);
-  // 强制可见 = 不可隐藏，选项里必须是 disabled。
-  assert.equal(preferences.columnOptions.value.find((option) => option.key === 'project').disabled, true);
 });

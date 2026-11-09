@@ -40,8 +40,13 @@ type Client struct {
 	statusUsageURL     string
 	webToMarkdownURL   string
 	imageOCRURL        string
-	imageNSFWURL       string
-	http               *resty.Client
+	// profanityCheckURL 是敏感词检测接口地址（默认 DefaultProfanityCheckURL）。
+	// 与其它端点一样允许覆盖，仅用于测试/代理；生产不传即用默认地址。
+	profanityCheckURL string
+	// imageNSFWURL 是敏感图片检测接口地址（默认 DefaultImageNSFWURL），
+	// 同样允许覆盖，仅用于测试或受控代理。
+	imageNSFWURL string
+	http         *resty.Client
 	// maxRetries 本客户端单次业务请求允许的内部重试次数（不含首次）。
 	//
 	// 默认 maxRetries，即共 3 次尝试。上层若自己负责重试编排（例如按

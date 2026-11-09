@@ -226,6 +226,16 @@ type SystemSettingDetail struct {
 	ReviewRebateMaxClaimsPerUser   int     `json:"reviewRebateMaxClaimsPerUser"`
 	ReviewRebateMaxAmountPerUser   float64 `json:"reviewRebateMaxAmountPerUser"`
 	ReviewRebateMinAgentConfidence float64 `json:"reviewRebateMinAgentConfidence"`
+	// SensitiveWordCheckEnabled 是敏感词检测总开关，默认 false。
+	//
+	// 关闭时完全不调外部 API、不写 logs 的 sensitive_* 四列；
+	// 开启只影响「打标记」，答题流程与返回结构在任何取值下都完全一致。
+	SensitiveWordCheckEnabled bool `json:"sensitiveWordCheckEnabled"`
+	// SensitiveWordCheckConfigured 报告「开关已开 + 密钥可用」。
+	//
+	// 只读派生值：开关开着但没配 UAPI 密钥时它是 false，管理页据此提示
+	// 「已启用但未配置」，避免用户以为打开开关就生效了。
+	SensitiveWordCheckConfigured bool `json:"sensitiveWordCheckConfigured"`
 }
 
 type UpdateSystemSettingInput struct {
@@ -282,6 +292,10 @@ type UpdateSystemSettingInput struct {
 	ReviewRebateMaxClaimsPerUser   *int     `json:"reviewRebateMaxClaimsPerUser"`
 	ReviewRebateMaxAmountPerUser   *float64 `json:"reviewRebateMaxAmountPerUser"`
 	ReviewRebateMinAgentConfidence *float64 `json:"reviewRebateMinAgentConfidence"`
+	// 敏感词检测开关：指针语义，nil = 未提交 = 保持库中现值。
+	//
+	// 若用裸 bool，任何不认识该字段的旧客户端提交设置都会把开关静默关掉。
+	SensitiveWordCheckEnabled *bool `json:"sensitiveWordCheckEnabled"`
 }
 
 var ErrInvalidNewUserBonusAmount = errors.New("新用户赠送金额不能为负数")
@@ -453,6 +467,8 @@ func GetSystemSettingDetailWithDB(db *gorm.DB) (SystemSettingDetail, error) {
 		ReviewRebateMaxClaimsPerUser:   GetReviewRebateMaxClaimsPerUserWithDB(db),
 		ReviewRebateMaxAmountPerUser:   GetReviewRebateMaxAmountPerUserWithDB(db),
 		ReviewRebateMinAgentConfidence: GetReviewRebateMinAgentConfidenceWithDB(db),
+		SensitiveWordCheckEnabled:      GetSensitiveWordCheckEnabledWithDB(db),
+		SensitiveWordCheckConfigured:   IsSensitiveWordDetectorConfiguredWithDB(db),
 	}
 	bonusAmount, err := GetNewUserBonusAmountWithDB(db)
 	if err != nil {
@@ -553,6 +569,8 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		ReviewRebateMaxClaimsPerUser:   reviewRebateMaxClaims,
 		ReviewRebateMaxAmountPerUser:   reviewRebateMaxAmount,
 		ReviewRebateMinAgentConfidence: reviewRebateMinConfidence,
+		// 敏感词检测：nil = 未提交 = 保持现值；读取失败一律 false（不能悄悄开外呼）。
+		SensitiveWordCheckEnabled: ResolveSensitiveWordSettingInput(db, input.SensitiveWordCheckEnabled),
 	}
 	normalized.AlternativeLoginEnabled = normalized.SMSLoginEnabled || normalized.WechatLoginEnabled
 
@@ -606,6 +624,7 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		{ReviewRebateMaxClaimsPerUserSettingKey, strconv.Itoa(normalized.ReviewRebateMaxClaimsPerUser), "评价返现每账号累计次数上限"},
 		{ReviewRebateMaxAmountPerUserSettingKey, strconv.FormatFloat(normalized.ReviewRebateMaxAmountPerUser, 'f', -1, 64), "评价返现每账号累计金额上限（元）"},
 		{ReviewRebateMinAgentConfidenceSettingKey, strconv.FormatFloat(normalized.ReviewRebateMinAgentConfidence, 'f', -1, 64), "评价返现 Agent 置信度门槛（低于则强制人工）"},
+		{SensitiveWordCheckEnabledSettingKey, strconv.FormatBool(normalized.SensitiveWordCheckEnabled), "启用敏感词检测打标（默认关闭，不影响答题）"},
 	}
 	for _, item := range settings {
 		if err := saveSystemSettingValue(db, item.key, item.value, item.remark); err != nil {

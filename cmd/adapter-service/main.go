@@ -150,6 +150,11 @@ func shutdownHTTPServerOnCancel(shutdownContext context.Context, httpServer *htt
 		if err := controller.WaitForSearchExecutions(ctx); err != nil {
 			logger.SysError("搜题已接纳执行尚未完成，服务关闭预算已结束")
 		}
+		// 敏感词打标是旁路任务：它从不参与答题，但必须在日志/DB 关闭前排空，
+		// 否则最后几行标记会写到半个库上。同一份 10s 预算，失败只记日志。
+		if err := controller.WaitForSensitiveWordChecks(ctx); err != nil {
+			logger.SysError("敏感词打标任务尚未完成，服务关闭预算已结束")
+		}
 		if err := controller.WaitForSearchBillingRetries(ctx); err != nil {
 			logger.SysError("搜题待结算重试尚未排空，服务关闭预算已结束；内存队列不保证跨进程恢复")
 		}

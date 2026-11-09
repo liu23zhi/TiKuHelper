@@ -766,6 +766,13 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		logger.FatalLog(fmt.Errorf("prepare audit correlation schema fail: %w", err))
 	}
 
+	// 敏感词打标：给 logs 补四列（flag / words / checked_at / error）。
+	// 只建列不回填 —— 历史行没有检测结论，留空即「从未检测」，不能伪装成「检测通过」。
+	// 无回填 ⇒ 无大表扫描，不存在 AGENTS.md 第 18b 条的性能风险。
+	if err := runStartupMigration("ensureSensitiveWordSchema", func() error { return ensureSensitiveWordSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare sensitive word schema fail: %w", err))
+	}
+
 	if err := runStartupMigration("ensureMoneyPrecisionSchema", func() error {
 		return ensureMoneyPrecisionSchemaWithOptions(db, preserveDisabledInvalidQuota)
 	}); err != nil {

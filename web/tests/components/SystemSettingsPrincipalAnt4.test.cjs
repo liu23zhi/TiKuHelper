@@ -69,6 +69,9 @@ function detail(tag = 'A') {
     captchaProvider: 'remote', captchaApiBaseUrl: 'https://synthetic-captcha.invalid', captchaApiKey: `SYNTHETIC_CAPTCHA_${tag}`, captchaType: 'ROTATE',
     smsbaoCredentialType: 'password', smsbaoRegionMode: 'domestic', uapiApiKey: `SYNTHETIC_UAPI_${tag}`,
     rechargePromotionEnabled: false, deviceLimitEnabled: false,
+    // 敏感词检测开关：GET/PUT 双向字段（sensitiveWordCheckConfigured 是只读派生，
+    // 不进 payload，因此这里也不返回），保证精确 payload 契约覆盖它。
+    sensitiveWordCheckEnabled: false,
   }
 }
 function row(tag = 'A') { return { id: tag === 'A' ? 71011 : 71021, name: `SYNTHETIC_PAYMENT_${tag}`, iconSvg: '', epayType: 'alipay', enabled: true, sort: 3, remark: `SYNTHETIC_REMARK_${tag}` } }

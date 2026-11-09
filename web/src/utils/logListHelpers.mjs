@@ -36,6 +36,118 @@ export const LOG_ACTION_OPTIONS = [
 
 const ACCOUNT_AUDIT_MODULES = new Set(['auth', 'user', 'sms', 'recharge', 'access_token']);
 
+/**
+ * 解析敏感词打标字段，供列表徽章与详情使用。
+ *
+ * 语义（必须与后端一致，见 internal/controller/sensitive_words.go）：
+ * - `checkedAt` 为空 = **从未检测**（开关关闭 / 历史行）→ state = 'unchecked'
+ * - `flag === true` = 命中敏感词 → state = 'hit'
+ * - `flag === false` 且已检测 = 检测通过 → state = 'clean'
+ *
+ * 后端只在「检测过」的行下发这四个字段，因此缺字段一律按「未检测」处理，
+ * 不能把「没检测」显示成「查过了，没问题」。
+ *
+ * @param {object} record
+ * @returns {{state: 'unchecked'|'hit'|'clean', words: string[], scopes: Array, checkedAt: string, error: string}}
+ */
+export function buildSensitiveFields(record = {}) {
+  const checkedAt = String(record?.sensitiveCheckedAt || '').trim();
+  const error = String(record?.sensitiveCheckError || '').trim();
+  const parsed = parseSensitiveWords(record?.sensitiveWords);
+  if (!checkedAt) {
+    return { state: 'unchecked', words: [], scopes: [], checkedAt: '', error };
+  }
+  if (record?.sensitiveFlag === true) {
+    return { state: 'hit', words: parsed.words, scopes: parsed.scopes, checkedAt, error };
+  }
+  return { state: 'clean', words: [], scopes: parsed.scopes, checkedAt, error };
+}
+
+/**
+ * 解析按对象分组的命中明细。
+ *
+ * 后端存的是 `[{scope, status, forbidden, words}]` 的 JSON 文本；
+ * 历史行或异常内容解析失败时返回空结果而不是抛错 —— 列表不能因为
+ * 一个字段格式不对就整页报错。
+ *
+ * @param {string} raw
+ * @returns {{words: string[], scopes: Array<{scope: string, forbidden: boolean, words: string[]}>}}
+ */
+export function parseSensitiveWords(raw) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(raw || ''));
+  } catch {
+    return { words: [], scopes: [] };
+  }
+  if (!Array.isArray(parsed)) {
+    return { words: [], scopes: [] };
+  }
+  const scopes = [];
+  const words = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== 'object') continue;
+    const scope = String(item.scope || '').trim();
+    const hitWords = Array.isArray(item.words)
+      ? item.words.map((word) => String(word || '').trim()).filter(Boolean)
+      : [];
+    scopes.push({ scope, forbidden: item.forbidden === true, words: hitWords });
+    // 只汇总**命中**的词：未命中组的 words 本来就是空的，这里再判一次
+    // 是为了防止上游把词也回填到未命中的结果里。
+    if (item.forbidden === true) {
+      for (const word of hitWords) {
+        if (!words.includes(word)) words.push(word);
+      }
+    }
+  }
+  return { words, scopes };
+}
+
+/**
+ * 敏感词标记的展示文案与颜色（列表徽章 + 详情标题共用）。
+ *
+ * 只做标记展示：**不改写也不隐藏**答案原文，日志的首要用途是排障。
+ *
+ * @param {object} record
+ * @returns {{state: string, label: string, color: string, title: string, words: string[], error: string}}
+ */
+export function buildSensitiveBadge(record = {}) {
+  const fields = buildSensitiveFields(record);
+  const scopeLabel = (scope) => ({ question: '题目', answer: '答案' })[scope] || scope || '其他';
+  const detail = fields.scopes
+    .filter((item) => item.forbidden)
+    .map((item) => `${scopeLabel(item.scope)}：${item.words.join('、') || '（未返回命中词）'}`)
+    .join('；');
+  if (fields.state === 'hit') {
+    return {
+      state: 'hit',
+      label: '敏感词',
+      color: 'red',
+      title: detail || '检测到敏感词（上游未返回具体命中的词）',
+      words: fields.words,
+      error: fields.error,
+    };
+  }
+  if (fields.state === 'clean') {
+    return {
+      state: 'clean',
+      label: '已检测',
+      color: 'default',
+      title: fields.error ? `检测完成，但有部分对象失败：${fields.error}` : '检测通过，未命中敏感词',
+      words: [],
+      error: fields.error,
+    };
+  }
+  return {
+    state: 'unchecked',
+    label: '',
+    color: 'default',
+    title: fields.error ? `未完成检测：${fields.error}` : '未检测（敏感词检测未启用）',
+    words: [],
+    error: fields.error,
+  };
+}
+
 export function formatShanghaiLogDate(dateString, separator = ' ') {
   if (!dateString) return '-';
   const date = new Date(dateString);
@@ -406,6 +518,17 @@ export function buildLogDetailSections(record = {}) {
       key: 'response',
       label: '原始响应',
       value: response,
+    });
+  }
+
+  // 敏感词作为独立段落追加在最后：原文段落一个字不改，
+  // 只在末尾补一份可读的标记说明。
+  const sensitiveBadge = buildSensitiveBadge(record);
+  if (sensitiveBadge.state !== 'unchecked') {
+    sections.push({
+      key: 'sensitive',
+      label: '敏感词检测',
+      value: sensitiveBadge.title + (sensitiveBadge.error ? `（检测失败：${sensitiveBadge.error}）` : ''),
     });
   }
 
