@@ -6,6 +6,20 @@ const (
 	TableNameTicket             = "tickets"
 	TableNameTicketMessage      = "ticket_messages"
 	TableNameTicketNotification = "ticket_notifications"
+	TableNameTicketAttachment   = "ticket_attachments"
+)
+
+// 工单图片附件的检测状态。ScanState 是展示判据：只有 approved 显示图片，
+// 其余（含 pending / failed）一律按敏感处理，见 service 包的 fail-closed 判定。
+const (
+	TicketAttachmentScanPending   = "pending"
+	TicketAttachmentScanScanning  = "scanning"
+	TicketAttachmentScanApproved  = "approved"
+	TicketAttachmentScanSensitive = "sensitive"
+	// TicketAttachmentScanFailed 表示「检测没能得出结论」（无密钥 / 超时 / 上游错误
+	// 且重试耗尽）。名字刻意不是 rejected：它不是「判为正常」，而是「不知道」，
+	// 对外表现与 sensitive 相同（不显示），但保留独立状态便于运维区分。
+	TicketAttachmentScanFailed = "failed"
 )
 
 const (

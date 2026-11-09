@@ -805,6 +805,12 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		logger.FatalLog(fmt.Errorf("prepare review rebate schema fail: %w", err))
 	}
 
+	// 工单图片附件：只建新表 ticket_attachments，不动 tickets / ticket_messages，
+	// 也没有数据回填。结构性失败 FATAL；标记写失败只记日志，下次启动幂等重跑。
+	if err := runStartupMigration("ensureTicketAttachmentSchema", func() error { return ensureTicketAttachmentSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare ticket attachment schema fail: %w", err))
+	}
+
 	// 充值阶梯赠送：建 recharge_promotion_grants（赠送发放账本，recharge_order_id 唯一）。
 	// 与开关解耦：开关默认 false，表照建，运营打开开关时结构已就位。
 	// 必须排在 ensureReviewRebateSchema 之后 —— 它依赖 users.gift_balance 已存在。

@@ -86,6 +86,9 @@ type TicketDetail struct {
 	Ticket       entity.Ticket           `json:"ticket"`
 	Messages     []entity.TicketMessage  `json:"messages"`
 	Notification *TicketNotificationInfo `json:"notification,omitempty"`
+	// Attachments 是工单的全部图片（含「未通过检测」的条目，后者只有占位信息）。
+	// 敏感图**永远**只以占位条目出现，字节必须走单独的下载接口。
+	Attachments []TicketAttachmentInfo `json:"attachments"`
 }
 
 type TicketNotificationInfo struct {
@@ -99,11 +102,16 @@ type TicketNotificationInfo struct {
 type CreateTicketInput struct {
 	Subject string `json:"subject"`
 	Body    string `json:"body"`
+	// AttachmentIds 是「发工单时带图」：图片先通过上传接口落库（此时 ticket_id=0），
+	// 建单时在同一事务里认领到首条消息。未认领的草稿图不会被任何工单读到。
+	AttachmentIds []int64 `json:"attachmentIds,omitempty"`
 }
 
 type ReplyTicketInput struct {
 	Body   string  `json:"body"`
 	Status *string `json:"status,omitempty"`
+	// AttachmentIds 是本条回复要挂上的、已上传的附件（先上传后回复）。
+	AttachmentIds []int64 `json:"attachmentIds,omitempty"`
 }
 
 type UpdateTicketInput struct {
@@ -176,6 +184,9 @@ func CreateTicketWithDB(db *gorm.DB, user *entity.User, input CreateTicketInput)
 			Body: body, AuthorRole: "user", CreatedAt: now,
 		}
 		if err := tx.Create(&message).Error; err != nil {
+			return err
+		}
+		if err := BindDraftTicketAttachmentsInTx(tx, user, ticket.ID, message.ID, input.AttachmentIds); err != nil {
 			return err
 		}
 		if err := tx.Model(&entity.Ticket{}).Where("id = ?", ticket.ID).Updates(map[string]interface{}{
@@ -321,6 +332,11 @@ func GetTicketWithDB(db *gorm.DB, user *entity.User, id int64) (TicketDetail, er
 		return TicketDetail{}, err
 	}
 	detail := TicketDetail{Ticket: ticket, Messages: messages}
+	attachments, err := ListTicketAttachmentsWithDB(db, ticket.ID)
+	if err != nil {
+		return TicketDetail{}, err
+	}
+	detail.Attachments = attachments
 	if !isTicketAdmin(user) {
 		return detail, nil
 	}
@@ -366,6 +382,9 @@ func AddTicketMessageWithDB(db *gorm.DB, user *entity.User, id int64, input Repl
 		}
 		message := entity.TicketMessage{TicketID: ticket.ID, UserID: user.ID, AuthorName: ticketUserName(user), Body: body, AuthorRole: ticketAuthorRole(user), CreatedAt: now}
 		if err := tx.Create(&message).Error; err != nil {
+			return err
+		}
+		if err := BindTicketAttachmentsInTx(tx, user, ticket.ID, message.ID, input.AttachmentIds); err != nil {
 			return err
 		}
 		updates := map[string]interface{}{"status": status, "last_message_at": now, "updated_at": now}

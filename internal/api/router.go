@@ -143,6 +143,14 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/tickets/:id", controller.Auth, controller.TicketDetail)
 	apiRouter.POST("/tickets/:id/messages", controller.Auth, controller.AddTicketMessage)
 	apiRouter.PUT("/tickets/:id", controller.Auth, middleware.RequireAdmin, controller.UpdateTicket)
+	// 工单图片附件：先上传（本地校验 + 加密落库 + 标记待检测），再异步做敏感检测。
+	// 用户端读图只拿得到「非敏感」的字节；敏感图返回占位状态（403 + 明确 code）。
+	// 管理端读图单独一条路由，必须 RequireAdmin，且 handler 内写账户审计。
+	// 上传的 ticketId 走 query：不带 = 建单前上传的草稿图（建单时认领）。
+	apiRouter.POST("/ticket-attachments", middleware.BodyLimit((2<<20)+65536), controller.Auth, controller.UploadTicketAttachment)
+	apiRouter.GET("/tickets/:id/attachments", controller.Auth, controller.ListTicketAttachments)
+	apiRouter.GET("/ticket-attachments/:attachmentId", controller.Auth, controller.DownloadTicketAttachment)
+	apiRouter.GET("/ticket-attachments/:attachmentId/admin", controller.Auth, middleware.RequireAdmin, controller.AdminDownloadTicketAttachment)
 	apiRouter.POST("/tickets/:id/notifications/:notificationId/retry", controller.Auth, middleware.RequireAdmin, controller.RetryTicketNotification)
 	apiRouter.GET("/ticket-refunds/eligible-orders", controller.Auth, controller.EligibleTicketRefundOrders)
 	apiRouter.GET("/ticket-refunds", controller.Auth, controller.TicketRefundList)
