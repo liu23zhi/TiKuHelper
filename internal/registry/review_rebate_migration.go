@@ -41,6 +41,19 @@ func ensureReviewRebateSchema(db *gorm.DB) error {
 	if db == nil {
 		return nil
 	}
+	// 新增列**不受一次性标记约束**：标记只保证建表不复跑，而后来新增的列
+	// 在已经跑过标记的老库上永远等不到 AutoMigrate。HasColumn 是幂等的，
+	// 代价只有一次元数据查询，因此放在标记判断之前每次都核一次。
+	if db.Migrator().HasTable(entity.TableNameUser) {
+		if err := ensureUserGiftBalanceColumn(db); err != nil {
+			return err
+		}
+	}
+	if db.Migrator().HasTable(entity.TableNameReviewRebateClaim) {
+		if err := ensureReviewRebateClaimScorerColumn(db); err != nil {
+			return err
+		}
+	}
 	if systemSettingFlagIsSet(db, reviewRebateSchemaReadyKey) {
 		return nil
 	}
@@ -91,6 +104,9 @@ func applyReviewRebateSchema(db *gorm.DB) (bool, error) {
 	if err := db.AutoMigrate(&entity.ReviewRebateClaim{}); err != nil {
 		return false, fmt.Errorf("create review_rebate_claims fail: %w", err)
 	}
+	if err := ensureReviewRebateClaimScorerColumn(db); err != nil {
+		return false, fmt.Errorf("add review_rebate_claims.agent_scorer fail: %w", err)
+	}
 	if err := db.AutoMigrate(&entity.ReviewRebateAward{}); err != nil {
 		return false, fmt.Errorf("create review_rebate_awards fail: %w", err)
 	}
@@ -117,5 +133,30 @@ func ensureUserGiftBalanceColumn(db *gorm.DB) error {
 		return err
 	}
 	logger.SysLog("已为 users 补上 gift_balance 列（赠金来源标记，默认 0）")
+	return nil
+}
+
+// ensureReviewRebateClaimScorerColumn 为 review_rebate_claims 补上 agent_scorer 列。
+//
+// 背景：`agent_scorer` 是「打分器真实实现」落地时新增的列，它区分
+// agent（模型看过截图）与 stub（按截图摘要派生）。老库里这张表已经存在，
+// 一次性迁移标记也已写过，AutoMigrate 不会再跑 —— 必须在这里单独补。
+//
+// 历史行按空字符串保留（**不推测**它们是谁打的）：空 = 无法归因，
+// 管理端按「未标注来源」处理，不会把它误当成模型结论。
+func ensureReviewRebateClaimScorerColumn(db *gorm.DB) error {
+	if db.Migrator().HasColumn(entity.TableNameReviewRebateClaim, "agent_scorer") {
+		return nil
+	}
+	if strings.EqualFold(db.Dialector.Name(), "sqlite") {
+		// SQLite 走原生 ALTER（与 gift_balance 同因：驱动的 AddColumn 支持不如 MySQL 稳）。
+		if err := db.Exec("ALTER TABLE " + entity.TableNameReviewRebateClaim +
+			" ADD COLUMN agent_scorer varchar(16) NOT NULL DEFAULT ''").Error; err != nil {
+			return err
+		}
+	} else if err := db.Migrator().AddColumn(&entity.ReviewRebateClaim{}, "AgentScorer"); err != nil {
+		return err
+	}
+	logger.SysLog("已为 review_rebate_claims 补上 agent_scorer 列（打分来源标记，默认空）")
 	return nil
 }

@@ -164,3 +164,48 @@ func TestEnsureReviewRebateSchemaIsIdempotent(t *testing.T) {
 		t.Fatal("gift_balance must still exist after re-run")
 	}
 }
+
+// agent_scorer 是「真实打分器」落地时新增的列：已经跑过一次性标记的老库
+// 不会再走 AutoMigrate，必须由 ensureReviewRebateClaimScorerColumn 单独补上。
+//
+// 回归重点：不能因为标记已写就跳过补列 —— 那会让老库上的 claim 表永远缺这一列，
+// 写入时直接 SQL 报错（而不是静默丢字段）。
+func TestEnsureReviewRebateSchemaAddsScorerColumnToExistingTable(t *testing.T) {
+	db := newReviewRebateMigrationTestDB(t)
+	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}); err != nil {
+		t.Fatalf("migrate base: %v", err)
+	}
+	if err := ensureReviewRebateSchema(db); err != nil {
+		t.Fatalf("initial migrate: %v", err)
+	}
+	// 模拟老库：把新增列删掉，并保留一次性标记（标记已写 = 不会再 AutoMigrate）。
+	if db.Migrator().HasColumn(entity.TableNameReviewRebateClaim, "agent_scorer") {
+		if err := db.Exec("ALTER TABLE " + entity.TableNameReviewRebateClaim + " DROP COLUMN agent_scorer").Error; err != nil {
+			t.Skipf("this sqlite build cannot drop columns: %v", err)
+		}
+	}
+	if !systemSettingFlagIsSet(db, reviewRebateSchemaReadyKey) {
+		t.Fatal("precondition: the one-shot flag must already be written")
+	}
+
+	if err := ensureReviewRebateSchema(db); err != nil {
+		t.Fatalf("re-run must add the new column even when the flag is set: %v", err)
+	}
+	if !db.Migrator().HasColumn(entity.TableNameReviewRebateClaim, "agent_scorer") {
+		t.Fatal("expected review_rebate_claims.agent_scorer to be added")
+	}
+	// 历史行按空字符串保留（不推测是谁打的）。
+	if err := db.Create(&entity.ReviewRebateClaim{
+		ProgramID: 1, UserID: 1, ScreenshotSHA256: "abc", CanonicalClaimID: "c-scorer",
+		Status: entity.ReviewRebateStatusSubmitted,
+	}).Error; err != nil {
+		t.Fatalf("create claim: %v", err)
+	}
+	var stored entity.ReviewRebateClaim
+	if err := db.Where("canonical_claim_id = ?", "c-scorer").First(&stored).Error; err != nil {
+		t.Fatalf("load claim: %v", err)
+	}
+	if stored.AgentScorer != "" {
+		t.Fatalf("historical claim must keep an empty scorer marker, got %q", stored.AgentScorer)
+	}
+}

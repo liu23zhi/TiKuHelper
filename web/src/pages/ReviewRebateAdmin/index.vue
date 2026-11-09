@@ -140,7 +140,10 @@
                 >查看截图</a>
                 <span v-else class="action-disabled">无图</span>
               </span>
-              <span v-else-if="column.key === 'agentScore'">{{ buildAgentScore(record) }}</span>
+              <span v-else-if="column.key === 'agentScore'">
+                {{ buildAgentScore(record) }}
+                <a-tag v-if="scorerLabel(record)" color="default" class="scorer-tag">{{ scorerLabel(record) }}</a-tag>
+              </span>
               <span v-else-if="column.key === 'agentConfidence'" :class="{ 'is-low-confidence': isLowConfidence(record) }">
                 {{ formatConfidence(record.agentConfidence) }}
                 <a-tag v-if="isLowConfidence(record)" color="orange" class="low-tag">低于门槛</a-tag>
@@ -233,6 +236,9 @@
           <a-descriptions-item label="提交号">{{ decisionRecord.id ?? '—' }}</a-descriptions-item>
           <a-descriptions-item label="用户">{{ buildUserName(decisionRecord.username, decisionRecord.userId) }}</a-descriptions-item>
           <a-descriptions-item label="Agent 打分">{{ buildAgentScore(decisionRecord) }}</a-descriptions-item>
+          <a-descriptions-item label="打分理由">
+            <span class="note-cell">{{ decisionRecord.agentRationale || '—' }}</span>
+          </a-descriptions-item>
           <a-descriptions-item label="置信度">
             <span :class="{ 'is-low-confidence': isLowConfidence(decisionRecord) }">{{ formatConfidence(decisionRecord.agentConfidence) }}</span>
             <a-tag v-if="isLowConfidence(decisionRecord)" color="orange" class="low-tag">低于门槛</a-tag>
@@ -451,6 +457,14 @@ export default {
       if (stars === null && score === null) return '—'
       return `${stars === null ? '—' : stars} 星 / ${score === null ? '—' : score} 分`
     }
+    // 打分来源：agent=模型看过截图，stub=未配置模型时按截图摘要派生（不代表任何核验）。
+    // 空值 = 历史行或注入式打分器，无法归因。
+    const scorerLabel = record => {
+      const kind = String(record?.agentScorer || '').trim().toLowerCase()
+      if (kind === 'agent') return ''
+      if (kind === 'stub') return '占位'
+      return record?.agentStars ? '来源未知' : ''
+    }
     function claimStatusLabel(value) {
       const key = String(value || '').trim().toLowerCase()
       return CLAIM_STATUS[key]?.label || value || '-'
@@ -515,7 +529,13 @@ export default {
       programSaved.value = false
     }
     function applyProgram(data) {
-      const body = Array.isArray(data) ? data[0] : (data?.program || data)
+      // 后端 GET /admin/review-rebate/programs 返回 {data:[...]}（与 rules 一致的信封）；
+      // 直接把 {data:[...]} 当成活动对象会让整张表单变成空值 —— 看起来像「配置丢了」。
+      // 三种历史形状都兼容：裸对象 / 裸数组 / {data:[...]} / {program:{...}}。
+      const body = Array.isArray(data)
+        ? data[0]
+        : (data?.program
+          || (Array.isArray(data?.data) ? data.data[0] : (data?.data && typeof data.data === 'object' ? data.data : data)))
       if (!body || typeof body !== 'object') throw new Error('invalid program payload')
       loadedProgram.value = body
       programForm.name = String(body.name || '')
@@ -830,6 +850,7 @@ export default {
       ruleDialogOpen, ruleDialogKey, editingRuleId, ruleForm, ruleFormError,
       decisionDialogOpen, decisionDialogKey, decisionRecord, decisionForm, decisionValidation,
       rangeText, moneyText, formatConfidence, formatDateTime, buildUserName, buildAgentScore,
+      scorerLabel,
       claimStatusLabel, claimStatusColor, isReviewable, isLowConfidence,
       setProgramField, saveProgram, resetProgramForm, loadProgram, loadRules, loadClaims, loadAll,
       setRuleField, openRuleDialog, closeRuleDialog, saveRule, removeRule,
@@ -849,6 +870,7 @@ export default {
 .form-error { margin: 0 0 16px; color: var(--console-danger, #c13e41); font-size: 13px; }
 .money-cell, .time-cell { font-variant-numeric: tabular-nums; }
 .note-cell { overflow-wrap: anywhere; white-space: pre-wrap; }
+.scorer-tag { margin-inline-start: 6px; }
 .screenshot-link { overflow-wrap: anywhere; }
 .action-disabled { color: var(--console-muted); font-size: 13px; }
 .is-low-confidence { color: var(--console-danger, #c13e41); font-weight: 600; }

@@ -46,7 +46,12 @@ type ReviewRebateProgramView struct {
 
 // ReviewRebateProgramSummary 是活动的用户可见字段。
 type ReviewRebateProgramSummary struct {
-	ID                 int32   `json:"id"`
+	ID int32 `json:"id"`
+	// Enabled 是活动开关：用户端靠它决定「显示规则表与提交表单」还是「功能未开启」。
+	//
+	// 必须下发：总开关打开但活动行被禁用时，用户端若拿不到这个字段就会一直显示
+	// （或一直不显示）错误的状态，而入口本身是拒绝的 —— 界面与后端结论会打架。
+	Enabled            bool    `json:"enabled"`
 	Name               string  `json:"name"`
 	StoreURL           string  `json:"storeUrl"`
 	MaxClaimsPerUser   int     `json:"maxClaimsPerUser"`
@@ -73,10 +78,19 @@ type ReviewRebateRuleView struct {
 type ReviewRebateUsage struct {
 	// ClaimedCount 是**已批准**的条数（口径：只有批准才消耗次数）。
 	ClaimedCount int64 `json:"claimedCount"`
-	// ApprovedAmount 是已发放金额合计。
+	// ApprovedCount 与 ClaimedCount 同值。
+	//
+	// 为什么要两个名字：这个字段是「已通过条数」，管理端与用户端都按
+	// `approvedCount/approvedAmount` 这对名字读；而 ClaimedCount 是额度口径的
+	// 历史名字（"claimed" = 已领取）。两处各读一个名字会让同一份数据在
+	// 界面上显示成两套口径，所以**两个键都下发、值恒等**，谁读都对。
+	ApprovedCount int64 `json:"approvedCount"`
+	// ApprovedAmount 是已发放金额合计（口径：以 review_rebate_awards 为准）。
 	ApprovedAmount float64 `json:"approvedAmount"`
 	// PendingCount 是审核中的条数（不占额度，但展示出来避免用户以为没提交上）。
 	PendingCount int64 `json:"pendingCount"`
+	// RejectedCount 是被拒绝的条数（展示用，不占额度）。
+	RejectedCount int64 `json:"rejectedCount"`
 	// RemainingClaims/RemainingAmount 是剩余额度（负数截断为 0）。
 	RemainingClaims int     `json:"remainingClaims"`
 	RemainingAmount float64 `json:"remainingAmount"`
@@ -105,6 +119,7 @@ func GetReviewRebateProgramViewWithDB(db *gorm.DB, userID int32) (ReviewRebatePr
 	view := ReviewRebateProgramView{
 		Program: ReviewRebateProgramSummary{
 			ID:                 program.ID,
+			Enabled:            program.Enabled,
 			Name:               program.Name,
 			StoreURL:           program.StoreURL,
 			MaxClaimsPerUser:   program.MaxClaimsPerUser,
@@ -177,8 +192,12 @@ func GetReviewRebateUsageWithDB(db *gorm.DB, programID int32, userID int32) (Rev
 		case entity.ReviewRebateStatusSubmitted, entity.ReviewRebateStatusScraping,
 			entity.ReviewRebateStatusScored, entity.ReviewRebateStatusPendingReview:
 			usage.PendingCount += row.Rows
+		case entity.ReviewRebateStatusRejected:
+			usage.RejectedCount += row.Rows
 		}
 	}
+	// 两个键同值：ClaimedCount 是额度口径的历史名字，ApprovedCount 是界面读的名字。
+	usage.ApprovedCount = usage.ClaimedCount
 	// 金额以发放流水（review_rebate_awards）为准，而不是 claim 的候选金额：
 	// 只有 award 行代表钱真的进过钱包，这也是唯一能与账单对上的口径。
 	var awardTotal float64
@@ -350,12 +369,35 @@ type ReviewRebateClaimListQuery struct {
 	UserID int32
 	// Status 精确匹配状态（空 = 不限）。
 	Status string
+	// AdminView 决定是否下发只有复核人需要的字段（打分理由、截图取图地址）。
+	//
+	// 只有**管理员**列表置 true。理由：
+	//   - 打分理由里写着模型对截图的观察（「正文被裁掉」「截图里没有星级」），
+	//     给用户看等于把内部核对标准连同缺陷描述一起交出去；
+	//   - 截图取图地址虽然本身鉴权、非管理员拿到 403，但用户端根本用不到它，
+	//     下发只会多一个需要长期维护的契约面。
+	AdminView bool
 }
 
 // ReviewRebateClaimListItem 是列表的一行，带用户名便于管理员对账。
 type ReviewRebateClaimListItem struct {
 	entity.ReviewRebateClaim
 	Username string `json:"username"`
+	// AgentRationaleText 是打分理由（人类可读），**仅管理员列表下发**。
+	//
+	// 字段名刻意与实体里的 AgentRationale 不同：GORM 的 Scan 会把
+	// `agent_rationale` 列映射到同名字段，若这里也叫 AgentRationale
+	// 就会遮蔽嵌入字段、导致实体那份读不到（或读到空）。
+	// JSON 键仍是前端的 `agentRationale`，见 ReviewRebateClaimListQuery.IncludeRationale。
+	AgentRationaleText string `json:"agentRationale,omitempty"`
+	// ScreenshotURL 是**鉴权代理**地址，不是可直连的静态文件。
+	//
+	// 截图落盘在私有目录（0700/0600），上传入口刻意不返回任何可直连 URL。
+	// 这个字段只是告诉界面「去哪儿取图」：真正读取要带上管理员凭据，
+	// 非管理员访问会拿到 403，因此把地址放进列表不会泄露图片内容。
+	//
+	// 为空表示该行没有截图（历史行或落盘失败）。
+	ScreenshotURL string `json:"screenshotUrl"`
 }
 
 // ReviewRebateClaimListResult 是列表结果。
@@ -408,8 +450,28 @@ func ListReviewRebateClaimsWithDB(db *gorm.DB, filter ReviewRebateClaimListQuery
 	if result.Data == nil {
 		result.Data = []ReviewRebateClaimListItem{}
 	}
+	// ScreenshotURL 与 AgentRationaleText 只在 AdminView 下填充，见 ReviewRebateClaimListQuery.AdminView。
+	for index := range result.Data {
+		if filter.AdminView {
+			// 实体上是 json:"-"，这里显式透传一份给管理员列表。
+			result.Data[index].AgentRationaleText = result.Data[index].ReviewRebateClaim.AgentRationale
+			if strings.TrimSpace(result.Data[index].ScreenshotPath) != "" {
+				result.Data[index].ScreenshotURL = fmt.Sprintf("%s/admin/review-rebate/claims/%d/screenshot",
+					ReviewRebateAdminAPIPrefix, result.Data[index].ID)
+			}
+		}
+		// ScreenshotPath/SHA256 无论如何都不下发（实体上是 json:"-"）；
+		// 这里不清空内存字段，只保证序列化时不会出现。
+	}
 	return result, nil
 }
+
+// ReviewRebateAdminAPIPrefix 是管理端评价返现接口的路径前缀。
+//
+// 放在这里的理由：它是**前后端契约**的一部分（列表里的 screenshotUrl 要用它拼接，
+// 前端页面要按它取图），两处各写一份字符串迟早会漂移。
+// 前端 api/ReviewRebateApi.js 的 adminBase 必须与本值一致。
+const ReviewRebateAdminAPIPrefix = "/adapter-service"
 
 // GetReviewRebateClaimWithDB 按 ID 取一条提交单（管理员详情）。
 func GetReviewRebateClaimWithDB(db *gorm.DB, id int32) (entity.ReviewRebateClaim, error) {
@@ -431,11 +493,23 @@ func GetReviewRebateClaimWithDB(db *gorm.DB, id int32) (entity.ReviewRebateClaim
 // 语义（16-*.md §1.1 第 5/6 步 + §1.5）：
 //   - 打分只写 AgentStars/AgentContentScore/AgentConfidence/AgentRationale；
 //   - 再按规则表算出**候选**金额写进 AwardAmount + MatchedRuleID；
-//   - 置信度 < program.MinAgentConfidence → 状态强制 pending_review（人工必须看）；
+//   - 置信度 < program.MinAgentConfidence → 状态强制 pending_review，**且不算候选金额**；
 //   - 置信度达标但规则未命中 → below_threshold + 金额 0；
 //   - 置信度达标且规则命中 → scored（仍不发放，等管理员批准）。
 //
-// 幂等：已批准的行不再打分（否则会把已经入账的金额改掉，账就更乱了）。
+// 打分失败（超时/网络/模型报错/输出不可解析）→ 返回 ErrReviewRebateScoringFailed，
+// **不写入任何分数、不改状态**（保持 submitted）。理由：没有依据的分数比没有分数更危险，
+// 一个"恰好看起来及格"的默认分数会让运营直接点批准。调用方（controller）把它翻成 502，
+// 管理员可重试或直接人工判断。
+//
+// 为什么把打分调用放在事务**外面**（与早期实现不同）：
+//
+//	真实模型调用可能耗时到分钟级。在事务里调模型等于把 claim 的行锁 hold 住整段时间，
+//	并发复核（批准/拒绝）会被拖到超时。因此先在事务外读 claim + 打分，再在事务内
+//	**重新加锁并复核状态**后才写结果 —— 状态在这期间被别人改过（已批准/已拒绝）
+//	就丢弃这次打分结果，绝不覆盖终态行。
+//
+// 幂等：已批准/已拒绝的行不再打分（否则会把已经入账的金额改掉，账就更乱了）。
 func ScoreReviewRebateClaimWithDB(db *gorm.DB, id int32, scorer ReviewRebateScorer) (entity.ReviewRebateClaim, error) {
 	if !GetReviewRebateEnabledWithDB(db) {
 		return entity.ReviewRebateClaim{}, ErrReviewRebateDisabled
@@ -446,8 +520,44 @@ func ScoreReviewRebateClaimWithDB(db *gorm.DB, id int32, scorer ReviewRebateScor
 	if scorer == nil {
 		scorer = DefaultReviewRebateScorer
 	}
+
+	// 阶段一（事务外，可能很慢）：读快照 + 让打分器工作。
+	snapshot, err := GetReviewRebateClaimWithDB(db, id)
+	if err != nil {
+		return entity.ReviewRebateClaim{}, err
+	}
+	switch snapshot.Status {
+	case entity.ReviewRebateStatusApproved, entity.ReviewRebateStatusRejected:
+		return entity.ReviewRebateClaim{}, ErrReviewRebateClaimState
+	}
+	score, err := scorer.Score(snapshot)
+	if err != nil {
+		return entity.ReviewRebateClaim{}, err
+	}
+
+	// 打分结果先做取值域校验：越界即视为打分失败，绝不放宽成「夹到边界」。
+	stars, scoreErr := normalizeReviewRebateScoredStars(score.Stars)
+	if scoreErr != nil {
+		return entity.ReviewRebateClaim{}, scoreErr
+	}
+	contentScore, scoreErr := normalizeReviewRebateContentScore(score.ContentScore)
+	if scoreErr != nil {
+		return entity.ReviewRebateClaim{}, scoreErr
+	}
+	confidence, scoreErr := normalizeReviewRebateConfidence(score.Confidence)
+	if scoreErr != nil {
+		return entity.ReviewRebateClaim{}, scoreErr
+	}
+	rationale := strings.TrimSpace(score.Rationale)
+	if rationale == "" {
+		// 兜一句可读说明：管理员看到空白理由时无法判断分数怎么来的。
+		rationale = fmt.Sprintf("模型给出 %d 星 / %d 分（置信度 %.2f）；系统不核验评价作者归属，请结合截图判断。",
+			stars, contentScore, confidence)
+	}
+
+	// 阶段二（事务内，很快）：重新加锁 → 复核状态 → 写分数与候选金额。
 	var scored entity.ReviewRebateClaim
-	err := db.Transaction(func(tx *gorm.DB) error {
+	txErr := db.Transaction(func(tx *gorm.DB) error {
 		var claim entity.ReviewRebateClaim
 		if err := reviewRebateSession(tx).Model(&entity.ReviewRebateClaim{}).
 			Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).Take(&claim).Error; err != nil {
@@ -456,6 +566,7 @@ func ScoreReviewRebateClaimWithDB(db *gorm.DB, id int32, scorer ReviewRebateScor
 			}
 			return err
 		}
+		// 并发下别人可能刚好完成复核：终态行的分数与金额不可再改。
 		switch claim.Status {
 		case entity.ReviewRebateStatusApproved, entity.ReviewRebateStatusRejected:
 			return ErrReviewRebateClaimState
@@ -464,28 +575,15 @@ func ScoreReviewRebateClaimWithDB(db *gorm.DB, id int32, scorer ReviewRebateScor
 		if err != nil {
 			return err
 		}
-		score, err := scorer.Score(claim)
-		if err != nil {
-			return err
-		}
-		stars, scoreErr := normalizeReviewRebateScoredStars(score.Stars)
-		if scoreErr != nil {
-			return scoreErr
-		}
-		contentScore, scoreErr := normalizeReviewRebateContentScore(score.ContentScore)
-		if scoreErr != nil {
-			return scoreErr
-		}
-		confidence, scoreErr := normalizeReviewRebateConfidence(score.Confidence)
-		if scoreErr != nil {
-			return scoreErr
-		}
 
 		updates := map[string]any{
 			"agent_stars":         stars,
 			"agent_content_score": contentScore,
 			"agent_confidence":    confidence,
-			"agent_rationale":     strings.TrimSpace(score.Rationale),
+			"agent_rationale":     rationale,
+			// 来源标记必须与分数一起落库：只有写进去，管理端才能区分
+			// 「模型看过截图」与「占位实现按哈希派生」。
+			"agent_scorer": strings.TrimSpace(score.Scorer),
 		}
 		status := entity.ReviewRebateStatusScored
 		amount := 0.0
@@ -517,8 +615,8 @@ func ScoreReviewRebateClaimWithDB(db *gorm.DB, id int32, scorer ReviewRebateScor
 		}
 		return reviewRebateSession(tx).Model(&entity.ReviewRebateClaim{}).Where("id = ?", claim.ID).Take(&scored).Error
 	})
-	if err != nil {
-		return entity.ReviewRebateClaim{}, err
+	if txErr != nil {
+		return entity.ReviewRebateClaim{}, txErr
 	}
 	return scored, nil
 }

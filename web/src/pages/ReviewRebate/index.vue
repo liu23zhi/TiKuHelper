@@ -232,6 +232,13 @@ function readNonnegativeNumber(value) {
   return Number.isFinite(number) && number >= 0 ? number : null
 }
 
+// 后端在总开关关闭 / 活动被禁用时返回 400 + message「评价返现未启用」(service.ErrReviewRebateDisabled)。
+// 判据用 message 而不是状态码：400 也可能来自参数错误，那时应该显示失败态。
+function isReviewRebateDisabledResponse(res) {
+  const message = String(res?.message || res?.data?.message || '')
+  return message.includes('未启用')
+}
+
 export default {
   name: 'ReviewRebatePage',
   components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell, RequestFailureAlert },
@@ -286,15 +293,18 @@ export default {
     const claimUsage = computed(() => {
       const approvedCount = readNonnegativeNumber(usage.value.approvedCount)
       const approvedAmount = readNonnegativeNumber(usage.value.approvedAmount)
+      const rejectedCount = readNonnegativeNumber(usage.value.rejectedCount)
       const list = Array.isArray(claims.value) ? claims.value : []
       // 后端的 usage 是权威来源；缺失时才按本地列表兜底统计，避免把「已通过」的实际发放看漏。
       const approved = list.filter(item => String(item?.status || '').toLowerCase() === 'approved')
       const fallbackAmount = approved.reduce((total, item) => total + (readNonnegativeNumber(item?.awardAmount) || 0), 0)
+      // claimedCount 是额度口径的历史名字，approvedCount 是同一份数据的另一个键；两个都认。
+      const countFallback = readNonnegativeNumber(usage.value.claimedCount) ?? approved.length
       return {
-        count: approvedCount ?? approved.length,
+        count: approvedCount ?? countFallback,
         amount: approvedAmount ?? fallbackAmount,
         pending: list.filter(item => ['submitted', 'scraping', 'scored', 'pending_review'].includes(String(item?.status || '').toLowerCase())).length,
-        rejected: list.filter(item => String(item?.status || '').toLowerCase() === 'rejected').length,
+        rejected: rejectedCount ?? list.filter(item => String(item?.status || '').toLowerCase() === 'rejected').length,
       }
     })
     const amountLimited = computed(() => {
@@ -396,6 +406,18 @@ export default {
       try {
         const res = await getReviewRebateProgram()
         if (!ownsFailure()) return false
+        // 总开关关闭（或活动被禁用）时后端返回 400「评价返现未启用」。
+        // 这不是"加载失败"，而是**正常的未开放状态**：必须落成 enabled=false 的
+        // 「功能未开启」提示，否则用户看到的是一个红色失败告警 + 重试按钮，
+        // 点多少次都不会好 —— 那才是真的让人以为站点坏了。
+        if (res?.status === 400 && isReviewRebateDisabledResponse(res)) {
+          program.value = {}
+          usage.value = {}
+          rules.value = []
+          enabled.value = false
+          loaded.value = true
+          return true
+        }
         if (res?.status !== 200 || !res.data || typeof res.data !== 'object') {
           programFailureOwner = ownsFailure
           programFailure.value = ensureRequestFailure(res)

@@ -68,14 +68,23 @@ type ReviewRebateScore struct {
 	Stars        int     `json:"stars"`        // 1–5
 	ContentScore int     `json:"contentScore"` // 1=很差，10=很好
 	Confidence   float64 `json:"confidence"`   // 0–1，低于活动门槛 → 强制人工
-	Rationale    string  `json:"rationale"`    // 理由（JSON 或自然语言）
+	Rationale    string  `json:"rationale"`    // 理由（给管理员看的可读解释）
+	// Scorer 标记分数的来源：agent=真实模型，stub=未配置模型时的占位实现。
+	//
+	// 这个字段是给管理端看的：占位实现的分数由截图摘要派生，**不构成任何核验**，
+	// 界面上必须能与真实打分区分开，否则运营会把「哈希算出来的 5 星」当成模型结论。
+	Scorer string `json:"scorer,omitempty"`
 }
 
 // ReviewRebateScorer 是打分器接口。
 //
-// 一期**不真的调模型**：DeterministicReviewRebateScorer 是占位实现，
-// 真实打分需接入模型服务，见 04 稿 19.2 第 4 步。
-// 抽接口是为了让「接真模型」只改注入点，不动服务层与测试。
+// 两个实现：
+//   - agentReviewRebateScorer（review_rebate_scorer.go）：真实模型打分，读截图 + 活动配置
+//     调既有模型客户端，按配置的地址/密钥/模型运行；
+//   - deterministicReviewRebateScorer：未配置模型时的占位实现，分数由截图摘要派生。
+//
+// 用 NewReviewRebateScorerWithDB 按配置选择，不要直接引用某个实现：
+// 部署侧只改 AI 配置就该切换，不该改代码。
 type ReviewRebateScorer interface {
 	Score(claim entity.ReviewRebateClaim) (ReviewRebateScore, error)
 }
@@ -92,9 +101,9 @@ type ReviewRebateScorer interface {
 //   - 置信度固定 1.0：占位实现不假装有「把握」，真实模型才会给中间值
 //   - 摘要为空（历史行/未落盘）→ 返回无法判定，confidence=0，强制人工
 //
-// ⚠️ 这是占位实现，真实打分需接入模型服务（04 稿 19.2 第 4 步）：
-// 届时按「截图 OCR 星数 + 公开页面星数 + 正文相似度」打分并给出理由，
-// 本 doc 注释与 rationale 里的说明文字就是给运营看的边界提示。
+// ⚠️ 它的分数**不代表任何核验**：既没有读截图内容，也没有比对公开评价。
+// 因此每条输出都带 Scorer="stub"，rationale 里也写明是占位打分器 ——
+// 管理端据此判断「这条要不要真的看截图」，而不是直接信这个分数。
 type deterministicReviewRebateScorer struct{}
 
 // DefaultReviewRebateScorer 是未配置真实模型时使用的打分器。
@@ -111,7 +120,8 @@ func NewDeterministicReviewRebateScorer() ReviewRebateScorer {
 
 // deterministicReviewRebateScore 是占位打分的纯函数版本，便于单测直接断言。
 //
-// ⚠️ 占位实现：真实打分需接入模型服务，见 04 稿 19.2 第 4 步。
+// ⚠️ 占位实现：真实打分走 agentReviewRebateScorer（review_rebate_scorer.go）。
+// 输出带 Scorer="stub"，让管理端能区分「真打分」与「按哈希派生」。
 func deterministicReviewRebateScore(claim entity.ReviewRebateClaim) (ReviewRebateScore, error) {
 	digest := strings.ToLower(strings.TrimSpace(claim.ScreenshotSHA256))
 	raw, err := hex.DecodeString(digest)
@@ -121,6 +131,7 @@ func deterministicReviewRebateScore(claim entity.ReviewRebateClaim) (ReviewRebat
 			ContentScore: 0,
 			Confidence:   0,
 			Rationale:    "占位打分器：截图摘要不可用，无法判定（强制人工复核）",
+			Scorer:       ReviewRebateScorerKindStub,
 		}, nil
 	}
 	stars := reviewRebateStarsMin + int(raw[0])%reviewRebateStarsMax
@@ -130,9 +141,10 @@ func deterministicReviewRebateScore(claim entity.ReviewRebateClaim) (ReviewRebat
 		ContentScore: contentScore,
 		Confidence:   1,
 		Rationale: fmt.Sprintf(
-			"占位打分器（未接入模型服务）：按截图摘要派生 stars=%d contentScore=%d confidence=1；"+
-				"置信度只反映「打分过程可复现」，不代表已核验作者归属",
+			"占位打分器（未配置模型服务）：按截图摘要派生 stars=%d contentScore=%d confidence=1；"+
+				"未读取截图内容、未比对公开评价，不代表任何核验结论，请管理员以截图为准",
 			stars, contentScore),
+		Scorer: ReviewRebateScorerKindStub,
 	}, nil
 }
 

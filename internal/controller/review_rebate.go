@@ -101,7 +101,10 @@ var (
 		if err != nil {
 			return entity.ReviewRebateClaim{}, err
 		}
-		return service.ScoreReviewRebateClaimWithDB(db, id, service.DefaultReviewRebateScorer)
+		// 打分器按当前 AI 配置选择：配置可用 → 真实模型；不可用 → 占位实现（带 stub 标记）。
+		// 这里**不缓存**实例：管理员刚在设置页配好模型，下一次点「重新打分」就该生效，
+		// 缓存会让配置改动需要重启才起作用，是最容易误判成「配了没用」的坑。
+		return service.ScoreReviewRebateClaimWithDB(db, id, service.NewReviewRebateScorerWithDB(db))
 	}
 	decideReviewRebateClaim = func(reviewer entity.User, id int32, approve bool, note string) (entity.ReviewRebateClaim, error) {
 		db, err := requireReviewRebateDB()
@@ -248,7 +251,7 @@ func CreateReviewRebateClaim(c *gin.Context) {
 		ScreenshotPath:   relativePath,
 		ScreenshotSHA256: digestHex,
 		ClaimedStars:     claimedStars,
-		ClaimedReviewURL: strings.TrimSpace(c.PostForm("claimedReviewUrl")),
+		ClaimedReviewURL: reviewRebateClaimURLFromForm(c.PostForm("claimedReviewUrl"), c.PostForm("reviewUrl")),
 	})
 	if err != nil {
 		// 落盘成功但落账失败（重复/超限）：把刚写的文件删掉，避免私有目录被
@@ -519,6 +522,8 @@ func AdminReviewRebateClaims(c *gin.Context) {
 		ProgramID: programID,
 		UserID:    userID,
 		Status:    strings.TrimSpace(c.Query("status")),
+		// 管理员列表要拿到打分理由：复核人判断「该不该批准」靠的就是这句解释。
+		AdminView: true,
 	}, page, pageSize)
 	if err != nil {
 		writeReviewRebateError(c, err)
@@ -546,13 +551,23 @@ func AdminDecideReviewRebateClaim(c *gin.Context) {
 	}
 	var input struct {
 		Action string `json:"action"`
-		Note   string `json:"note"`
+		// Decision 是 action 的兼容别名。
+		//
+		// 前端已上线的调用把结论放在 `decision`（approve/reject），后端契约文档里叫 `action`。
+		// 只认一个名字的结果是：另一方发来的请求永远 400「action 只能是 approve 或 reject」，
+		// 而这种 400 看起来像「参数校验」，最容易被当成前端传错了事。
+		// 两个名字都收，规范名 `action` 优先。
+		Decision string `json:"decision"`
+		Note     string `json:"note"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "请求体格式无效"})
 		return
 	}
 	action := strings.ToLower(strings.TrimSpace(input.Action))
+	if action == "" {
+		action = strings.ToLower(strings.TrimSpace(input.Decision))
+	}
 	if action != "approve" && action != "reject" {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "action 只能是 approve 或 reject"})
 		return
@@ -590,6 +605,80 @@ func AdminScoreReviewRebateClaim(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, claim)
+}
+
+// AdminReviewRebateScreenshot 把某条提交的截图回给管理员（鉴权代理，不是公开静态文件）。
+//
+// 为什么需要它：截图落在 data/review-rebate/... 私有目录（0700/0600），**没有任何
+// 可直连的 URL** —— 这是上传入口刻意做的安全选择（截图里有用户账号信息，
+// 不能让人靠猜路径读到别人的图）。但管理员复核必须能看图，否则「人工复核」
+// 就是让人闭着眼点批准。
+//
+// 因此这里提供一个经 Auth + RequireAdmin 的读取入口：
+//   - 权限：只管理员；不区分归属（管理员本来就要看全部单子）；
+//   - 路径：由 claim.ScreenshotPath 拼出，service 侧已挡绝对路径与 `..`；
+//   - 响应：inline 图片流 + no-store，不带文件名猜测面（Content-Disposition 不含原文件名）。
+func AdminReviewRebateScreenshot(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !requireAdmin(c) {
+		return
+	}
+	id, ok := parseReviewRebateID(c)
+	if !ok {
+		return
+	}
+	db, err := requireReviewRebateDB()
+	if err != nil {
+		writeReviewRebateError(c, err)
+		return
+	}
+	claim, err := service.GetReviewRebateClaimWithDB(db, id)
+	if err != nil {
+		writeReviewRebateError(c, err)
+		return
+	}
+	absolute, err := service.ReviewRebateScreenshotAbsolutePath(claim.ScreenshotPath)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "该提交没有可查看的截图"})
+		return
+	}
+	info, statErr := os.Stat(absolute)
+	if statErr != nil || info.IsDir() || info.Size() <= 0 {
+		c.JSON(http.StatusNotFound, gin.H{"message": "截图文件已不存在"})
+		return
+	}
+	contentType, extErr := reviewRebateScreenshotContentType(absolute)
+	if extErr != nil {
+		// 落盘时已解码校验过；这里解不出来说明文件被替换/损坏，不回显内容。
+		logger.SysError("评价返现截图读取失败: " + logger.RedactSecrets(extErr.Error()))
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"message": "截图文件已损坏"})
+		return
+	}
+	c.Header("Content-Type", contentType)
+	c.Header("Content-Disposition", "inline")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.File(absolute)
+}
+
+// reviewRebateScreenshotContentType 由文件头判断类型（不信扩展名）。
+func reviewRebateScreenshotContentType(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	head := make([]byte, 512)
+	read, err := io.ReadFull(file, head)
+	if err != nil && read == 0 {
+		return "", err
+	}
+	detected := http.DetectContentType(head[:read])
+	switch detected {
+	case "image/png", "image/jpeg":
+		return detected, nil
+	default:
+		return "", fmt.Errorf("非 PNG/JPEG 内容: %s", detected)
+	}
 }
 
 // loadActiveReviewRebateProgram 取当前生效活动（提交时用来填 ProgramID）。
@@ -754,6 +843,22 @@ func parseReviewRebateClaimedStars(raw string) (int, error) {
 	return value, nil
 }
 
+// reviewRebateClaimURLFromForm 取评价链接，同时接受 claimedReviewUrl 与 reviewUrl 两个字段名。
+//
+// 为什么两个都收：实体字段叫 ClaimedReviewURL（json/DB 都是 claimedReviewUrl，
+// 因为要能区分"用户声称的链接"与将来可能存在的"系统抓到的链接"），
+// 而前端已经上线的提交函数用的是 `reviewUrl`。两边都在正常语义内，
+// 与其为了改一个字段名去动已合并的前端 pages，不如在后端把两个名字都认下来
+// —— 少一次回归面，也不会出现「前端填了链接、后端静默丢掉」这种最难查的错。
+//
+// 优先级：claimedReviewUrl > reviewUrl（前者是规范名）。两个都传且不一致时按规范名取。
+func reviewRebateClaimURLFromForm(claimedReviewURL, legacyReviewURL string) string {
+	if trimmed := strings.TrimSpace(claimedReviewURL); trimmed != "" {
+		return trimmed
+	}
+	return strings.TrimSpace(legacyReviewURL)
+}
+
 // writeReviewRebateError 把服务层哨兵错误翻成 HTTP 状态码。
 func writeReviewRebateError(c *gin.Context, err error) {
 	status := http.StatusInternalServerError
@@ -788,6 +893,12 @@ func writeReviewRebateError(c *gin.Context, err error) {
 	case errors.Is(err, service.ErrReviewRebateScreenshotInvalid):
 		status = http.StatusBadRequest
 		message = "只接受真实的 PNG/JPEG 图片（服务端已解码校验）"
+	case errors.Is(err, service.ErrReviewRebateScoringFailed):
+		// 自动打分失败是**上游/模型侧问题**，不是用户输入问题：502 让管理端知道
+		// 「可以重试」，且 claim 仍停在 submitted（分数与金额都没写），
+		// 不会出现「打分失败却已有一份看似及格的分数」。
+		status = http.StatusBadGateway
+		message = "自动打分暂不可用，该提交仍待处理；可稍后重试或直接人工判断"
 	case errors.Is(err, service.ErrReviewRebateInvalidInput),
 		errors.Is(err, service.ErrReviewRebateReviewerInvalid),
 		errors.Is(err, service.ErrInvalidReviewRebateAmount),
