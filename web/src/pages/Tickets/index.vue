@@ -354,7 +354,17 @@
                 }}</strong
                 ><span>{{ formatTicketTime(item.createdAt) }}</span>
               </header>
-              <p>{{ item.body }}</p>
+              <!-- 工单正文**只做展示遮挡**，绝不阻断提交（用户原话：工单系统要允许
+                   敏感词，避免因为误判而导致无法处理，只是用户端做隐藏）。
+                   后端未下发 sensitiveFlag 时本组件退化为纯文本，行为与今天一致。 -->
+              <p>
+                <SensitiveText
+                  :text="item.body"
+                  :is-sensitive="item.sensitiveFlag === true"
+                  :server-masked="item.sensitiveMasked === true"
+                  :can-reveal="isAdmin"
+                />
+              </p>
               <div
                 v-if="attachmentsForMessage(item.id).length"
                 class="message-attachments"
@@ -368,7 +378,12 @@
               </div>
             </article>
           </div>
-          <!-- 未绑定到某条消息的图片（历史数据 / 上传后未绑定）：单独一组展示。 -->
+          <!-- 未绑定到某条消息的图片（历史数据 / 上传后未绑定）：单独一组展示。
+               本组在 message-item 循环**之外**，没有对应正文，因此不涉及敏感词遮挡
+               （上面的 <SensitiveText> 只包 item.body，包裹关系是兄弟节点而非嵌套，
+               绝不会把附件一起遮掉）。
+               若将来为这一组加说明文字/标题，该文字必须同样用 <SensitiveText> 包裹，
+               否则会成为绕过遮挡的泄露通道。 -->
           <div
             v-if="attachmentsForMessage(null).length"
             class="message-attachments unbound-attachments"
@@ -468,6 +483,9 @@ import { useRoute, useRouter } from "vue-router";
 import { message } from "ant-design-vue";
 import RequestFailureAlert from "@/components/RequestFailureAlert.vue";
 import TicketAttachment from "@/components/TicketAttachment.vue";
+// 敏感文本遮挡：默认遮挡，仅管理员可点「显示原文」。
+// 工单正文**只做展示遮挡**，不参与任何提交校验 —— 误判不能让用户处理不了工单。
+import SensitiveText from "@/components/SensitiveText.vue";
 import { ensureRequestFailure } from "@/utils/requestFailureView.mjs";
 import {
   addTicketMessage,

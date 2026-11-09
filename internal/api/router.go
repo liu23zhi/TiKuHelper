@@ -206,6 +206,9 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/ticket-refunds/:id/proof", controller.Auth, controller.DownloadTicketRefundProof)
 
 	apiRouter.GET("/logs", controller.Auth, controller.LogList) // 日志列表
+	// 敏感原文：单独接口 + 显式管理员校验。列表接口对非管理员只下发遮挡文本，
+	// 原文只能从这里取（需求：「管理员有按钮可以显示原文」）。
+	apiRouter.GET("/logs/:id/sensitive-original", controller.Auth, middleware.RequireAdmin, controller.LogSensitiveOriginal)
 	apiRouter.GET("/billing-records", controller.Auth, controller.BillingRecordList)
 	apiRouter.PUT("/billing-records/:id/statement-visibility", controller.Auth, middleware.RequireAdmin, controller.UpdateBillingStatementVisibility)
 	apiRouter.GET("/recharge-orders", controller.Auth, controller.RechargeOrderList)

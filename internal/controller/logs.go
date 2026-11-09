@@ -12,6 +12,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
+	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
@@ -134,7 +135,19 @@ func LogList(c *gin.Context) {
 		c.JSON(400, gin.H{"message": "查询失败"})
 		return
 	}
+	// 顺序有语义，**不能交换**：
+	//
+	//  1) fillLogProjects 必须读**原文**——它从 description / old_answer / new_answer
+	//     里提取 requestId、orderNo、tokenId 等标识，以及账单的 question_text。
+	//     先遮挡就会让它从「（敏感内容已遮挡：共 N 字）」里提取，Project 列直接废掉。
+	//  2) applySensitiveMaskToLogItems 必须在 fillLogProjects **之后**，且它自己
+	//     也要处理 Project（见该函数内注释）：Project 的 search 分支是
+	//     "搜索答案，题目：" + question_text，含题目原文，是独立的泄露通道。
 	fillLogProjects(items, billingMeta)
+	// 非管理员只看遮挡后的内容：原文走 LogSensitiveOriginal（挂 RequireAdmin）。
+	if !isAdminUser(currentUser) {
+		applySensitiveMaskToLogItems(items)
+	}
 
 	c.JSON(200, gin.H{
 		"data":     items,
@@ -153,6 +166,10 @@ type logListItem struct {
 	BillingIDs []int32 `json:"billingIds"`
 	// Project 是读取时派生的「项目」列（方案 B：不落库、不加列）。
 	// 永不为空字符串，兜底 "-"，口径见 buildLogProject。
+	//
+	// 注意：search 分支的内容是 "搜索答案，题目：<billing_records.question_text>"，
+	// **含题目原文**。所以命中敏感词的行，本字段会被 applySensitiveMaskToLogItems
+	// 一并遮挡（非管理员视角），否则它就是绕过三列遮挡的泄露通道。
 	Project string `json:"project"`
 	// SensitiveFlag 任一检测对象命中即为 true。只打标记，答案原文不动。
 	//
@@ -166,6 +183,64 @@ type logListItem struct {
 	SensitiveCheckedAt *time.Time `json:"sensitiveCheckedAt,omitempty"`
 	// SensitiveCheckError 检测失败原因；成功或未检测时为空。
 	SensitiveCheckError string `json:"sensitiveCheckError,omitempty"`
+	// SensitiveMasked 报告本次下发的 description / oldAnswer / newAnswer 是否**已被遮挡**。
+	//
+	// 非管理员恒为 true（命中的行）；管理员恒为 false（拿到原文）。
+	// 前端据此决定要不要渲染「显示原文」按钮：服务端已遮挡时按钮无意义。
+	SensitiveMasked bool `json:"sensitiveMasked,omitempty"`
+}
+
+// applySensitiveMaskToLogItems 对**非管理员**读取的日志行施加内容遮挡。
+//
+// 需求原文：「所有页面都默认打标，只是管理员有按钮可以显示原文」。
+// 因此默认形态是**遮挡**，原文只走单独接口（LogSensitiveOriginal）且挂 RequireAdmin。
+//
+// 为什么改这几列而不是把整行换掉：
+//   - description / old_answer / new_answer 是原始快照列；
+//   - project 是**读取时派生**的列，但它同样能装原文（见下方 Project 段）；
+//   - 其余列（模块、状态、时间、渠道、计费）必须照常可读，否则日志列表
+//     对非管理员就彻底失去排障价值（AGENTS.md 第 3 / 4 条的同源问题）。
+//
+// 只处理 sensitive_flag = true 的行：未命中的行本来就不含敏感词，
+// 遮挡它们只会平白破坏可读性。
+//
+// 调用时机：必须在 fillLogProjects **之后**（见 LogList 里的顺序说明）。
+func applySensitiveMaskToLogItems(items []logListItem) {
+	for i := range items {
+		item := &items[i]
+		if item.SensitiveFlag == nil || !*item.SensitiveFlag {
+			continue
+		}
+		scopes := service.ParseSensitiveWordDetailJSON(item.SensitiveWords)
+		words := service.SensitiveWordListFromScopes(scopes)
+		// 命中明细不可用时**不猜测**：没有具体词就无法精确替换，
+		// 这时宁可把三段文本整段遮挡，也不能把原文原样下发。
+		item.Description = maskOrBlank(item.Description, words)
+		item.OldAnswer = maskOrBlank(item.OldAnswer, words)
+		item.NewAnswer = maskOrBlank(item.NewAnswer, words)
+		// Project 是第四条泄露通道，且很容易被漏掉：
+		// 它的 search 分支来自 billing_records.question_text（**数据库里的题目原文**，
+		// 不在上面三列之内），拼成 "搜索答案，题目：<题目原文>"。
+		// 只遮 description/oldAnswer/newAnswer 而不遮 Project，等于题目原文照常可读。
+		item.Project = maskOrBlank(item.Project, words)
+		// 命中词本身也是敏感内容：徽章不该成为「把敏感词读给所有人听」的通道。
+		// 长度保留（＊＊＊），前端仍能显示「命中了几组、每组几个字」。
+		item.SensitiveWords = service.MaskSensitiveWordDetailForDisplay(scopes)
+		item.SensitiveMasked = true
+	}
+}
+
+// maskOrBlank 优先按命中词精确替换；没有命中词时整段遮挡。
+//
+// 空字符串保持为空（没有内容可遮挡，前端显示 '-'）。
+func maskOrBlank(value string, words []string) string {
+	if strings.TrimSpace(value) == "" {
+		return value
+	}
+	if len(words) == 0 {
+		return service.BuildSensitiveMaskedContent(value).Masked
+	}
+	return service.MaskSensitiveWordsInJSON(value, words)
 }
 
 type logBillingKey struct {

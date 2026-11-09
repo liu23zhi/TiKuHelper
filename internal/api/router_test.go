@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/middleware"
 )
 
 func TestSetAPIRouterRegistersTicketRoutes(t *testing.T) {
@@ -40,6 +42,90 @@ func TestSetAPIRouterRegistersTicketRoutes(t *testing.T) {
 		if !found {
 			t.Fatalf("missing route %s", route)
 		}
+	}
+}
+
+func TestSetAPIRouterRegistersSensitiveOriginalRoute(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	router := gin.New()
+	SetAPIRouter(router)
+
+	// 原文接口是「管理员有按钮可以显示原文」的唯一入口，路由必须存在。
+	const want = "GET /adapter-service/logs/:id/sensitive-original"
+	found := false
+	for _, route := range router.Routes() {
+		if route.Method+" "+route.Path == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected route %s to be registered", want)
+	}
+}
+
+func TestSensitiveOriginalRouteRejectsNonAdminBeforeHandler(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// 用真实中间件组装一条同构路由，只挂探针 handler：断言的是**权限链**，
+	// 不牵扯数据库与业务逻辑（控制器内的二次校验另有 controller 包测试覆盖）。
+	for _, testCase := range []struct {
+		name       string
+		user       *entity.User
+		wantStatus int
+		wantReach  bool
+	}{
+		{
+			name:       "admin reaches handler",
+			user:       &entity.User{ID: 1, Username: "admin-route", Role: "admin"},
+			wantStatus: http.StatusOK,
+			wantReach:  true,
+		},
+		{
+			name:       "role case and surrounding spaces are normalized",
+			user:       &entity.User{ID: 3, Username: "admin-spaced", Role: "  ADMIN  "},
+			wantStatus: http.StatusOK,
+			wantReach:  true,
+		},
+		{
+			name:       "member is forbidden",
+			user:       &entity.User{ID: 2, Username: "member-route", Role: "user"},
+			wantStatus: http.StatusForbidden,
+			wantReach:  false,
+		},
+		{
+			name:       "anonymous is forbidden",
+			user:       nil,
+			wantStatus: http.StatusForbidden,
+			wantReach:  false,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			reached := false
+			router := gin.New()
+			// 第一个中间件模拟 controller.Auth 已把 user 放进上下文（匿名时什么都不放）。
+			router.GET("/adapter-service/logs/:id/sensitive-original",
+				func(c *gin.Context) {
+					if testCase.user != nil {
+						c.Set("user", testCase.user)
+					}
+				},
+				middleware.RequireAdmin,
+				func(c *gin.Context) {
+					reached = true
+					c.Status(http.StatusOK)
+				})
+
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/adapter-service/logs/1/sensitive-original", nil))
+
+			if recorder.Code != testCase.wantStatus {
+				t.Fatalf("status=%d want=%d body=%s", recorder.Code, testCase.wantStatus, recorder.Body.String())
+			}
+			if reached != testCase.wantReach {
+				t.Fatalf("handler reached=%t want=%t", reached, testCase.wantReach)
+			}
+		})
 	}
 }
 

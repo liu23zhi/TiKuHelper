@@ -53,7 +53,14 @@ test('log widths account for the named samples and expand entire detail and snap
 
 test('log detail previews use measured overflow and preserve expand/collapse state per row', async () => {
   const source = await readFile(pagePath, 'utf8');
-  assert.match(source, /<template v-else-if="column.key === 'detail'">\s*<OverflowTableText\s+:text="buildTableDetail\(record\)"\s+:expanded="isSnapshotExpanded\(record\.id, 'detail'\)"\s+@toggle="toggleSnapshotExpanded\(record\.id, 'detail'\)"/);
+  // 详情列现在分两支：未命中敏感词的行走 OverflowTableText（测量溢出 + 逐行展开），
+  // 命中行走 SensitiveText（默认遮挡，管理员可展开原文）。
+  // 两个分支都必须存在：只断言其中一支会让「所有日志都被当敏感处理」这种回归溜过去。
+  assert.match(source, /<template v-else-if="column.key === 'detail'">/);
+  assert.match(source, /<OverflowTableText\s+v-else\s+:text="buildTableDetail\(record\)"\s+:expanded="isSnapshotExpanded\(record\.id, 'detail'\)"\s+@toggle="toggleSnapshotExpanded\(record\.id, 'detail'\)"/);
+  assert.match(source, /<SensitiveText\s+v-if="isSensitiveRow\(record\)"\s+:text="sensitiveTextFor\(record\.id, 'detail', buildTableDetail\(record\)\)"/);
+  // 未命中行不能被 SensitiveText 无条件包住：那会让普通日志也走进敏感分支。
+  assert.doesNotMatch(source, /<SensitiveText\s+v-if="true"/);
 
   const componentSource = await readFile(new URL('../components/OverflowTableText.vue', import.meta.url), 'utf8');
   const script = componentSource.match(/<script>([\s\S]*?)<\/script>/)[1]

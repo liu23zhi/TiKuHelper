@@ -110,10 +110,29 @@
               <span>{{ buildLogUsername(record) }}</span>
             </template>
             <template v-else-if="column.key === 'summary'">
-              <span>{{ buildStructuredFields(record).summary }}</span>
+              <SensitiveText
+                :text="sensitiveTextFor(record.id, 'summary', buildStructuredFields(record).summary)"
+                :is-sensitive="isSensitiveRow(record)"
+                :server-masked="isServerMaskedRow(record)"
+                :can-reveal="isAdmin"
+                :revealed="isRevealed(record.id, 'summary')"
+                v-on="{ 'update:revealed': (value) => setRevealed(record.id, 'summary', value) }"
+              />
             </template>
             <template v-else-if="column.key === 'detail'">
+              <!-- 详情列是**派生结果**（答案文本）：服务端已遮挡时它就是占位，
+                   不能再交给 OverflowTableText 当原文处理。 -->
+              <SensitiveText
+                v-if="isSensitiveRow(record)"
+                :text="sensitiveTextFor(record.id, 'detail', buildTableDetail(record))"
+                :is-sensitive="true"
+                :server-masked="isServerMaskedRow(record)"
+                :can-reveal="isAdmin"
+                :revealed="isRevealed(record.id, 'detail')"
+                v-on="{ 'update:revealed': (value) => setRevealed(record.id, 'detail', value) }"
+              />
               <OverflowTableText
+                v-else
                 :text="buildTableDetail(record)"
                 :expanded="isSnapshotExpanded(record.id, 'detail')"
                 @toggle="toggleSnapshotExpanded(record.id, 'detail')"
@@ -147,14 +166,34 @@
               <span>{{ buildStructuredFields(record).billingProvider }}</span>
             </template>
             <template v-else-if="column.key === 'requestSnapshot'">
+              <SensitiveText
+                v-if="isSensitiveRow(record)"
+                :text="sensitiveTextFor(record.id, 'requestSnapshot', buildStructuredFields(record).requestSnapshot)"
+                :is-sensitive="true"
+                :server-masked="isServerMaskedRow(record)"
+                :can-reveal="isAdmin"
+                :revealed="isRevealed(record.id, 'requestSnapshot')"
+                v-on="{ 'update:revealed': (value) => setRevealed(record.id, 'requestSnapshot', value) }"
+              />
               <OverflowTableText
+                v-else
                 :text="buildStructuredFields(record).requestSnapshot"
                 :expanded="isSnapshotExpanded(record.id, 'requestSnapshot')"
                 @toggle="toggleSnapshotExpanded(record.id, 'requestSnapshot')"
               />
             </template>
             <template v-else-if="column.key === 'responseSnapshot'">
+              <SensitiveText
+                v-if="isSensitiveRow(record)"
+                :text="sensitiveTextFor(record.id, 'responseSnapshot', buildStructuredFields(record).responseSnapshot)"
+                :is-sensitive="true"
+                :server-masked="isServerMaskedRow(record)"
+                :can-reveal="isAdmin"
+                :revealed="isRevealed(record.id, 'responseSnapshot')"
+                v-on="{ 'update:revealed': (value) => setRevealed(record.id, 'responseSnapshot', value) }"
+              />
               <OverflowTableText
+                v-else
                 :text="buildStructuredFields(record).responseSnapshot"
                 :expanded="isSnapshotExpanded(record.id, 'responseSnapshot')"
                 @toggle="toggleSnapshotExpanded(record.id, 'responseSnapshot')"
@@ -192,7 +231,16 @@
             <div><dt>时间</dt><dd class="mobile-log-time">{{ formatDateForTable(record.createTime) }}</dd></div>
             <div><dt>IP</dt><dd>{{ record.clientIp || '-' }}</dd></div>
           </dl>
-          <p class="mobile-log-card__detail">{{ buildRowDetail(record) }}</p>
+          <p class="mobile-log-card__detail">
+            <SensitiveText
+              :text="sensitiveTextFor(record.id, 'mobileDetail', buildRowDetail(record))"
+              :is-sensitive="isSensitiveRow(record)"
+              :server-masked="isServerMaskedRow(record)"
+              :can-reveal="isAdmin"
+              :revealed="isRevealed(record.id, 'mobileDetail')"
+              v-on="{ 'update:revealed': (value) => setRevealed(record.id, 'mobileDetail', value) }"
+            />
+          </p>
           <p v-if="buildSensitiveBadge(record).label" class="mobile-log-card__sensitive">
             <a-tag :color="buildSensitiveBadge(record).color">{{ buildSensitiveBadge(record).label }}</a-tag>
             <span>{{ buildSensitiveBadge(record).title }}</span>
@@ -209,13 +257,14 @@
 </template>
 
 <script>
-import { getLogList, getIpLocations } from '@/api/TikuComponentApi';
+import { getLogList, getIpLocations, getLogSensitiveOriginal } from '@/api/TikuComponentApi';
 import { defineComponent, ref, reactive, computed, getCurrentInstance, shallowRef, markRaw, useId } from 'vue';
 import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
 import { ensureRequestFailure } from '@/utils/requestFailureView.mjs'
 import TableColumnSettings from '@/components/TableColumnSettings.vue'
 import { useTableColumnPreferences } from '@/composables/useTableColumnPreferences.mjs'
 import OverflowTableText from '@/components/OverflowTableText.vue';
+import SensitiveText from '@/components/SensitiveText.vue';
 import { useTableExpansion } from '@/composables/useTableExpansion.mjs';
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs';
 import { useCurrentUserDisplay, isAdminUser } from '@/utils/currentUser';
@@ -244,6 +293,60 @@ import {
 } from '@/utils/logListHelpers.mjs';
 function formatValueWithLocation(rawValue, address) {
   return formatValueWithLocationBase(rawValue, address)
+}
+
+/**
+ * 展开状态的键：一条日志的某个字段。
+ *
+ * 用「:」分隔而不是只按 id，是因为同一条日志有 5 个可展开字段
+ * （说明 / 详情 / 原始请求 / 原始响应 / 移动端详情），
+ * 只按 id 会让「展开详情」顺带把「原始响应」也展开。
+ */
+function revealKey(id, field) {
+  return `${id}:${field}`
+}
+
+/** 行是否命中敏感词。判据只有后端下发的 sensitiveFlag。 */
+function isSensitiveRow(record) {
+  return record?.sensitiveFlag === true
+}
+
+/** 后端是否已经遮挡了这行（此时拿到的 text 本身就是占位）。 */
+function isServerMaskedRow(record) {
+  return record?.sensitiveMasked === true
+}
+
+/**
+ * 该字段当前该显示的文本。
+ *
+ * 展开且原文已取回 → 原文；否则 → 列表接口给的值（服务端已遮挡，或占位）。
+ * 这样模板不必关心「展开后从哪拿」，只需一处集中判断。
+ */
+function revealedTextFor(state, id, field, fallback) {
+  const key = revealKey(id, field)
+  if (state?.revealedFields?.[key] !== true) {
+    return fallback
+  }
+  const original = state?.revealedOriginals?.[key]
+  return typeof original === 'string' && original !== '' ? original : fallback
+}
+
+/**
+ * 从原文接口响应里挑出该字段的原文。
+ *
+ * 原文接口一次返回全部三段（description / oldAnswer / newAnswer），
+ * 这里按字段映射，避免每个字段都发一次请求。
+ */
+function pickOriginalField(payload, field) {
+  const mapping = {
+    summary: payload.originalDescription,
+    mobileDetail: payload.originalNewAnswer || payload.originalDescription,
+    detail: payload.originalNewAnswer,
+    requestSnapshot: payload.originalOldAnswer,
+    responseSnapshot: payload.originalNewAnswer,
+  }
+  const value = mapping[field]
+  return typeof value === 'string' ? value : ''
 }
 
 // Live data and query state belong to one mounted log view, not the module cache.
@@ -284,6 +387,14 @@ function createLogListState() {
   })
   // 关键词输入框的即时值：只有点「搜索」或回车才生效，避免每敲一个字就请求一次。
   const keywordInput = ref('')
+  // 敏感原文的展开状态与已取回的原文（按 `${id}:${field}` 索引）。
+  //
+  // 默认空 = 全部遮挡。管理员点「显示原文」才会往这里写，
+  // 换个筛选或换页时由 resetRevealed 清空 —— 否则上一页展开过的行
+  // 会在新结果里「继承」展开状态（同一个 id 复用时尤其危险）。
+  const revealedFields = reactive({})
+  const revealedOriginals = reactive({})
+  const revealLoading = reactive({})
   const pagination = reactive({
     current: 1,
     pageSize: 10,
@@ -293,7 +404,15 @@ function createLogListState() {
     showTotal: (total) => `共 ${total} 条`,
     pageSizeOptions: ['10', '20', '50', '100']
   })
-  return { dataSource, tabLoading, loadError, ipLocations, filters, keywordInput, pagination, enrichClientIps }
+  function resetRevealed() {
+    Object.keys(revealedFields).forEach((key) => { delete revealedFields[key] })
+    Object.keys(revealedOriginals).forEach((key) => { delete revealedOriginals[key] })
+    Object.keys(revealLoading).forEach((key) => { delete revealLoading[key] })
+  }
+  return {
+    dataSource, tabLoading, loadError, ipLocations, filters, keywordInput, pagination, enrichClientIps,
+    revealedFields, revealedOriginals, revealLoading, resetRevealed,
+  }
 }
 
 const moduleLabels = LOG_MODULE_OPTIONS.map((option) => option.label)
@@ -320,7 +439,7 @@ const logColumnWidths = {
 }
 export default defineComponent({
   name: 'LogList',
-  components: { RequestFailureAlert, TableColumnSettings, OverflowTableText },
+  components: { RequestFailureAlert, TableColumnSettings, OverflowTableText, SensitiveText },
   setup() {
     const filterIdPrefix = 'log-list-' + useId()
     const filterFieldId = field => filterIdPrefix + '-' + field
@@ -342,6 +461,7 @@ export default defineComponent({
         loadError.value = currentUser.value && !isAdminUser(currentUser.value) ? '当前账号无日志管理权限。' : ''
         pagination.total = 0
         Object.keys(ipLocations).forEach(key => { delete ipLocations[key] })
+        logState.resetRevealed()
         snapshots.clear()
       },
       reset() {
@@ -363,6 +483,27 @@ export default defineComponent({
       return () => ownsData() && requestVersion === listRequestVersion
     }
     const expandedColumnWidth = (field) => snapshots.columnWidth(field, logColumnWidths[field], 236)
+
+    // fetchOriginal 按需取一条日志的原文（仅管理员；服务端还有 RequireAdmin）。
+    //
+    // 失败静默保留遮挡：拿不到原文就维持现状是最安全的方向 ——
+    // 反过来「请求失败就显示原文」等于把权限判断交给网络。
+    const fetchOriginal = (id, field) => {
+      const key = revealKey(id, field)
+      logState.revealLoading[key] = true
+      getLogSensitiveOriginal(id).then((res) => {
+        delete logState.revealLoading[key]
+        // 请求期间可能已收起或换页：只在仍处于展开态时回填。
+        if (logState.revealedFields[key] !== true) return
+        if (res?.status !== 200 || !res?.data) return
+        const original = pickOriginalField(res.data, field)
+        if (original) {
+          logState.revealedOriginals[key] = original
+        }
+      }).catch(() => {
+        delete logState.revealLoading[key]
+      })
+    }
     const columns = computed(() => [
         {
           title: '时间',
@@ -504,6 +645,40 @@ export default defineComponent({
       activeFilterCount: computed(() => countActiveFilters({ keyword: filters.keyword, module: filters.module, action: filters.action, userId: filters.userId, qid: filters.qid, clientIp: filters.clientIp, createdFrom: filters.createdFrom, createdTo: filters.createdTo })),
       isSnapshotExpanded: snapshots.isExpanded,
       toggleSnapshotExpanded: snapshots.toggle,
+      // 敏感文本：默认遮挡，管理员点按钮才展开（取原文走单独的管理员接口）。
+      isSensitiveRow,
+      isServerMaskedRow,
+      isRevealed(id, field) {
+        return logState.revealedFields[revealKey(id, field)] === true
+      },
+      revealLoadingFor(id, field) {
+        return logState.revealLoading[revealKey(id, field)] === true
+      },
+      revealedOriginalFor(id, field) {
+        const value = logState.revealedOriginals[revealKey(id, field)]
+        return typeof value === 'string' ? value : ''
+      },
+      // 该字段当前该显示的文本：展开且原文已到 → 原文，否则 → 列表值。
+      sensitiveTextFor(id, field, fallback) {
+        return revealedTextFor(logState, id, field, fallback)
+      },
+      setRevealed(id, field, next) {
+        if (!next) {
+          // 收起：连取回的原文一起丢掉，避免它在内存里留到下一次展开。
+          delete logState.revealedFields[revealKey(id, field)]
+          delete logState.revealedOriginals[revealKey(id, field)]
+          return
+        }
+        if (!isAdminUser(currentUser.value)) {
+          // 非管理员即使误触发也不会请求原文接口（服务端还会再拦一次）。
+          return
+        }
+        logState.revealedFields[revealKey(id, field)] = true
+        if (logState.revealedOriginals[revealKey(id, field)]) {
+          return
+        }
+        fetchOriginal(id, field)
+      },
       tableScrollX,
       isAdmin: computed(() => isAdminUser(currentUser.value)),
       moduleOptions: LOG_MODULE_OPTIONS,

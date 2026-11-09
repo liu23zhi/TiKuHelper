@@ -468,6 +468,26 @@ export function getLogList(params) {
   })
 }
 
+/**
+ * 取单条日志的敏感原文（仅管理员；路由挂 Auth + RequireAdmin）。
+ *
+ * 列表接口对非管理员只下发遮挡文本，原文只能走这里 ——
+ * 「管理员有按钮可以显示原文」对应的就是这个请求。
+ *
+ * 响应：{ id, sensitiveFlag, sensitiveWords, sensitiveCheckedAt,
+ *        originalDescription, originalOldAnswer, originalNewAnswer,
+ *        maskedDescription, maskedOldAnswer, maskedNewAnswer }
+ */
+export function getLogSensitiveOriginal(id, signal) {
+  return request({
+    errorFeedback: 'local',
+    url: `/adapter-service/logs/${encodeURIComponent(id)}/sensitive-original`,
+    method: 'get',
+    timeout: 15_000,
+    signal,
+  })
+}
+
 export function getBillingRecords(params) {
   return request({
     errorFeedback: 'local',
