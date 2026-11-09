@@ -811,6 +811,13 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		logger.FatalLog(fmt.Errorf("prepare ticket attachment schema fail: %w", err))
 	}
 
+	// 额度周期（P14）：只建叠加层 access_token_quota_epochs（含唯一 (token_id, epoch)）。
+	// 不动 access_tokens.total_amount_used —— 它是历史累计，永不清零。
+	// 没有 epoch 行的老令牌天然是「从未重置」，无需回填。
+	if err := runStartupMigration("ensureAccessTokenQuotaEpochSchema", func() error { return ensureAccessTokenQuotaEpochSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare access token quota epoch schema fail: %w", err))
+	}
+
 	// 充值阶梯赠送：建 recharge_promotion_grants（赠送发放账本，recharge_order_id 唯一）。
 	// 与开关解耦：开关默认 false，表照建，运营打开开关时结构已就位。
 	// 必须排在 ensureReviewRebateSchema 之后 —— 它依赖 users.gift_balance 已存在。

@@ -3,6 +3,7 @@ package registry
 import (
 	"strings"
 
+	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 )
 
@@ -36,27 +37,18 @@ func resolveDatabaseDSN(mysqlConfig, sqlDSN string) (string, string) {
 // sqliteProductionDSN adds connection-local pragmas supported by glebarez's
 // SQLite driver. In-memory databases cannot use WAL, so test DSNs are kept
 // untouched apart from the driver's own defaults.
+//
+// 参数定义已下沉到 pkg/util（SQLiteConcurrentDSN / SQLiteProductionDSN）：
+// 并发测试与生产必须共用同一份定义，否则会悄悄漂移 —— 手写 DSN 的测试
+// 在被锁挡下时断言照样是绿的，覆盖的却是错误分支（见
+// task_doc/47-并发测试SQLite-DSN必须与生产一致.md）。这里只做委托，
+// 保留函数名与既有调用点不变。
 func sqliteProductionDSN(path string) string {
-	trimmed := strings.TrimSpace(path)
-	if trimmed == "" || isSQLiteMemoryPath(trimmed) {
-		return trimmed
-	}
-	separator := "?"
-	if strings.Contains(trimmed, "?") {
-		separator = "&"
-	}
-	// BEGIN IMMEDIATE reserves the write lock when a write transaction starts.
-	// With SQLite's default deferred mode, a transaction that first reads and
-	// then writes can fail immediately with SQLITE_BUSY_SNAPSHOT while upgrading
-	// its read snapshot; busy_timeout cannot help that upgrade. Reserving the
-	// lock at BEGIN makes the configured busy timeout effective and keeps the
-	// whole transaction retryable at its boundary.
-	return trimmed + separator + "_txlock=immediate&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
+	return util.SQLiteProductionDSN(path)
 }
 
 func isSQLiteMemoryPath(path string) bool {
-	lower := strings.ToLower(strings.TrimSpace(path))
-	return strings.Contains(lower, ":memory:") || strings.Contains(lower, "mode=memory")
+	return util.IsSQLiteMemoryDSN(path)
 }
 
 func configureSQLiteConnection(db *gorm.DB, path string) error {

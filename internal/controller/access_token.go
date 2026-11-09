@@ -33,6 +33,11 @@ var deleteAccessToken = func(user entity.User, tokenID int32, clientIP string) e
 	return service.DeleteAccessTokenWithAuditWithDB(manager.GetManager().GetDB(), user, tokenID, clientIP)
 }
 
+// resetAccessTokenQuotaWindow 是重置额度周期的取库点（与其它 CRUD 同构，便于测试替换）。
+var resetAccessTokenQuotaWindow = func(user entity.User, tokenID int32, clientIP string) (service.ResetAccessTokenQuotaWindowResult, error) {
+	return service.ResetAccessTokenQuotaWindowWithDB(manager.GetManager().GetDB(), user, tokenID, clientIP)
+}
+
 func AccessTokenList(c *gin.Context) {
 	operator, ok := currentOperator(c)
 	if !ok {
@@ -131,6 +136,34 @@ func DeleteAccessToken(c *gin.Context) {
 	})
 }
 
+// ResetAccessTokenQuotaWindow 重置访问令牌的额度周期（P14）。
+//
+// 语义：本轮已用 = total_amount_used - baseline_amount。
+// 重置只追加一条 epoch 行，**不清零 total_amount_used**（历史累计保留），
+// 也不动钱包（users.balance 与 billing_records 全都不碰）。
+func ResetAccessTokenQuotaWindow(c *gin.Context) {
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+
+	tokenID, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "参数错误",
+		})
+		return
+	}
+
+	result, err := resetAccessTokenQuotaWindow(operator, int32(tokenID), strings.TrimSpace(c.ClientIP()))
+	if err != nil {
+		writeAccessTokenError(c, err, "重置额度周期失败")
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
 func currentOperator(c *gin.Context) (entity.User, bool) {
 	value, exists := c.Get("user")
 	if !exists || value == nil {
@@ -170,6 +203,15 @@ func writeAccessTokenError(c *gin.Context, err error, fallback string) {
 		message = err.Error()
 	case errors.Is(err, service.ErrAccessTokenForbidden):
 		status = http.StatusForbidden
+		message = err.Error()
+	case errors.Is(err, service.ErrAccessTokenQuotaEpochAdminRequired):
+		status = http.StatusForbidden
+		message = err.Error()
+	case errors.Is(err, service.ErrAccessTokenQuotaEpochConflict):
+		status = http.StatusConflict
+		message = err.Error()
+	case errors.Is(err, service.ErrAccessTokenQuotaWindowEmpty):
+		status = http.StatusConflict
 		message = err.Error()
 	}
 

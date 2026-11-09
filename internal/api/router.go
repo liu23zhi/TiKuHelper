@@ -194,6 +194,9 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.POST("/access-tokens", controller.Auth, controller.CreateAccessToken)
 	apiRouter.PUT("/access-tokens/:id", controller.Auth, controller.UpdateAccessToken)
 	apiRouter.DELETE("/access-tokens/:id", controller.Auth, controller.DeleteAccessToken)
+	// 额度周期重置（P14）：只追加一条 epoch 叠加层，不清零 total_amount_used、不动钱包。
+	// 管理员接口必须同时挂 Auth 与 RequireAdmin。
+	apiRouter.POST("/access-tokens/:id/reset-quota-window", controller.Auth, middleware.RequireAdmin, controller.ResetAccessTokenQuotaWindow)
 	apiRouter.GET("/payment-methods", controller.Auth, controller.PaymentMethodList)
 	apiRouter.POST("/payment-methods", controller.Auth, controller.CreatePaymentMethod)
 	apiRouter.PUT("/payment-methods/:id", controller.Auth, controller.UpdatePaymentMethod)
