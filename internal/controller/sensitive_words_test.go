@@ -689,3 +689,83 @@ func TestAttachSensitiveWordFieldsUsesSingleBatchQuery(t *testing.T) {
 		t.Fatalf("必须只查一次（行数不放大查询次数），实际 %d 次", got)
 	}
 }
+
+// TestSensitiveWordCheckReusesCacheAcrossRequests 是这次需求的**集成证据**：
+// 同一道题被两个不同请求搜到，上游只该被外呼一次（题目 + 答案各一次），
+// 第二次完全命中缓存。
+//
+// 为什么必须在 controller 层测：缓存是否接通取决于 startSensitiveWordCheck
+// 有没有把 db 传进 service。漏传不会报错，只会静默退化回「每次都外呼」——
+// 单测（service 层直接给 db）看不出来，只有这里能守住。
+func TestSensitiveWordCheckReusesCacheAcrossRequests(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newSearchControllerTestDB(t)
+	seedSensitiveLogColumns(t, db)
+	enableSensitiveWordCheck(t, db)
+
+	server, calls := sensitiveStubServer(t, 0, http.StatusOK,
+		`{"status":"forbidden","forbidden_words":["敏感"]}`)
+	restore := service.SetSensitiveWordCheckURLForTesting(server.URL)
+	defer restore()
+
+	user, token := sensitiveSeed(t, db, 441, "sensitive-cache-user")
+
+	// 两个请求的题目与答案完全相同（同一道题被搜两次）。
+	for _, requestID := range []string{"req-cache-first", "req-cache-second"} {
+		id := requestID
+		withStubSearchDependencies(t,
+			(&stubSearchClient{}).SearchAnswer,
+			func(string, string, url.Values) (resolvedSearchRequestContext, error) {
+				return resolvedSearchRequestContext{
+					SearchMode:             searchModeNormal,
+					EnabledSearchProviders: []string{"wanneng"},
+					Tokens:                 map[string]string{"wanneng": "stub-token"},
+					UserID:                 user.ID,
+					AccessTokenID:          token.ID,
+					RequestID:              id,
+					AccessTokenCtx:         &service.AccessTokenAuthContext{User: user, AccessToken: token},
+				}, nil
+			},
+			func(resolvedSearchRequestContext, string) []func(model.SearchRequest) ([][]string, error) {
+				return []func(model.SearchRequest) ([][]string, error){
+					(&stubSearchClient{enable: true, answer: [][]string{{"A"}}}).SearchAnswer,
+				}
+			},
+			nil,
+			func() {
+				recorder := httptest.NewRecorder()
+				ctx, _ := gin.CreateTestContext(recorder)
+				request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=wanneng&noRecord=1",
+					bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+				request.Header.Set("Content-Type", "application/json")
+				ctx.Request = request
+				Search(ctx)
+				if recorder.Code != http.StatusOK {
+					t.Fatalf("答题必须成功：status=%d body=%s", recorder.Code, recorder.Body.String())
+				}
+			})
+		if err := WaitForSensitiveWordChecks(context.Background()); err != nil {
+			t.Fatalf("等待旁路任务结束失败：%v", err)
+		}
+	}
+
+	// 两个请求各含题目 + 答案，但文本只有两段 → 只该外呼两次。
+	if got := atomic.LoadInt32(calls); got != 2 {
+		t.Fatalf("同一道题被搜两次时上游只该外呼 2 次（题目+答案），实际 %d 次", got)
+	}
+	// 两条审计行都要打上标记：缓存命中不能丢掉命中结论。
+	for _, requestID := range []string{"req-cache-first", "req-cache-second"} {
+		var entry entity.Log
+		if err := db.Where("module = ? AND description LIKE ?", "search", "%"+requestID+"%").
+			Order("id DESC").First(&entry).Error; err != nil {
+			t.Fatalf("load audit log %s: %v", requestID, err)
+		}
+		preview, err := loadSensitiveWordPreview(db, entry.ID)
+		if err != nil {
+			t.Fatalf("load sensitive preview %s: %v", requestID, err)
+		}
+		if !preview.Flag {
+			t.Fatalf("%s 命中敏感词却未打标（缓存命中丢结论）：%+v", requestID, preview)
+		}
+	}
+}

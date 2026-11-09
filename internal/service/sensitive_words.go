@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,9 +12,11 @@ import (
 	"unicode/utf8"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/uapi"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // SensitiveWordCheckEnabledSettingKey 是敏感词检测总开关，默认 **false**。
@@ -217,11 +221,307 @@ func BuildSensitiveWordOutcome(results []SensitiveWordScopeResult) SensitiveWord
 	return outcome
 }
 
+// 缓存参数。
+const (
+	// sensitiveWordCacheMaxAttempts 是同一文本允许的**失败**次数上限。
+	//
+	// 达到上限后不再重试，直接把上次的失败原因返回：上游抖动不该被固化成
+	// 永远失败（所以允许重试），但也不能无限重试白烧 API 额度（所以有上限）。
+	// 成功一次即把 AttemptCount 归零，语义是「连续失败次数」。
+	sensitiveWordCacheMaxAttempts = 3
+
+	// sensitiveWordCacheProfile 是哈希域分隔前缀。
+	//
+	// 换判定口径（例如改用不同的检测端点/参数）时改这个值，等于整体换一套键，
+	// 避免新旧语义混用同一批缓存行。
+	sensitiveWordCacheProfile = "uapi-profanity-plain-v1"
+)
+
+// sensitiveWordCachePayload 是一个文本的检测结论（与 scope 无关）。
+//
+// 题目与答案是两个 scope，但**同一段文本的检测结论只有一个**；
+// 用这个结构承载结论，让「同文本只处理一次」与「按 scope 分组落库」分开。
+type sensitiveWordCachePayload struct {
+	Status    string
+	Forbidden bool
+	Words     []string
+	Error     string
+}
+
+// hashSensitiveWordText 计算缓存主键：sha256(profile + NUL + 送检文本) 的 hex。
+//
+// 主键用哈希而不是原文：原文可能上千字且是题库内容，直接当主键会膨胀索引；
+// 哈希只压缩表示，不改变相等语义（同一文本 ↔ 同一 hash）。
+func hashSensitiveWordText(text string) string {
+	sum := sha256.Sum256([]byte(sensitiveWordCacheProfile + "\x00" + text))
+	return hex.EncodeToString(sum[:])
+}
+
+// sensitiveWordCacheDB 派生一个**低优先级**的缓存访问会话。
+//
+// 缓存是旁路加速，绝不能和答题/计费抢数据库准入名额 —— 与 controller 层
+// withDatabasePriority(..., dbqueue.PriorityLow) 的做法同源。
+//
+// ⚠️ NewDB + Context 必须写在**同一次** Session 调用里：
+// 分开写（先 NewDB 再 WithContext）会让新会话继承上一层残留的 Statement.Model。
+// 生产路径的 db 来自 dao.Log.UnderlyingDB()，它自带 logs 模型，
+// 继承下来就会把缓存查询渲染成 `SELECT logs.text_hash ... FROM logs`。
+// 调用方另外还会显式 .Model(&entity.SensitiveWordCache{})，双保险。
+func sensitiveWordCacheDB(db *gorm.DB, ctx context.Context) *gorm.DB {
+	if db == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return db.Session(&gorm.Session{
+		Context: dbqueue.WithPriority(ctx, dbqueue.PriorityLow),
+		NewDB:   true,
+	})
+}
+
+// loadSensitiveWordCacheWithDB 读取一个文本的缓存行。
+//
+// **fail-open**：db 为空、表不存在、查询报错，一律返回未命中，
+// 让调用方照常外呼。缓存是纯加速结构，绝不能因为它坏了就阻断检测。
+func loadSensitiveWordCacheWithDB(ctx context.Context, db *gorm.DB, textHash string) (*entity.SensitiveWordCache, bool) {
+	session := sensitiveWordCacheDB(db, ctx)
+	if session == nil || textHash == "" {
+		return nil, false
+	}
+	var row entity.SensitiveWordCache
+	result := session.Model(&entity.SensitiveWordCache{}).
+		Where("text_hash = ?", textHash).
+		Limit(1).
+		Find(&row)
+	if result.Error != nil {
+		// 缺表是最常见的「还没迁移」场景，不该刷 warning；只有表在、查询却失败
+		// 才是真异常。判定方式：再问一次 HasTable，把两种情况分开记。
+		if !db.Migrator().HasTable(entity.TableNameSensitiveWordCache) {
+			logger.SysLog("敏感词缓存表不存在，本次按未命中处理（不影响答题）")
+		} else {
+			logger.SysWarn(fmt.Sprintf("敏感词缓存查询失败，本次按未命中处理：%s",
+				logger.RedactSecrets(result.Error.Error())))
+		}
+		return nil, false
+	}
+	if result.RowsAffected == 0 {
+		return nil, false
+	}
+	return &row, true
+}
+
+// saveSensitiveWordCacheWithDB 写入/覆盖一个文本的检测结论。
+//
+// 成功与失败都写：成功写结论，失败写 Error + AttemptCount+1（供上限判定）。
+// **fail-open**：写失败只记日志，检测结果照常返回给调用方。
+func saveSensitiveWordCacheWithDB(ctx context.Context, db *gorm.DB, row entity.SensitiveWordCache) {
+	session := sensitiveWordCacheDB(db, ctx)
+	if session == nil {
+		return
+	}
+	row.CheckedAt = time.Now()
+	err := session.Model(&entity.SensitiveWordCache{}).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "text_hash"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"sensitive", "words", "masked_text", "api_status", "error", "attempt_count", "checked_at",
+		}),
+	}).Create(&row).Error
+	if err != nil {
+		logger.SysLog(fmt.Sprintf("敏感词缓存写入失败，检测结果照常使用：%s", logger.RedactSecrets(err.Error())))
+	}
+}
+
+// decodeSensitiveWordCacheWords 把缓存里的命中词 JSON 还原成切片。
+//
+// 解析失败按空切片处理：命中明细只是取证信息，不能因为它坏了就否认命中结论。
+func decodeSensitiveWordCacheWords(payload string) []string {
+	trimmed := strings.TrimSpace(payload)
+	if trimmed == "" || trimmed == "[]" {
+		return []string{}
+	}
+	var words []string
+	if err := json.Unmarshal([]byte(trimmed), &words); err != nil {
+		return []string{}
+	}
+	return normalizeSensitiveWordList(words)
+}
+
+// truncateSensitiveWordCacheStatus 把上游 status 收进 api_status 的宽度（varchar(32)）。
+func truncateSensitiveWordCacheStatus(status string) string {
+	const limit = 32
+	trimmed := strings.TrimSpace(status)
+	runes := []rune(trimmed)
+	if len(runes) <= limit {
+		return trimmed
+	}
+	return string(runes[:limit])
+}
+
+// resolveSensitiveWordPayloadWithDB 取一个文本的检测结论：先查缓存，未命中才外呼。
+//
+// 决策表（与需求逐条对应）：
+//
+//	命中 且 Error == ""                → 直接用，零外呼
+//	命中 且 Error != "" 且 Attempt < 3 → 重试外呼
+//	命中 且 Error != "" 且 Attempt >= 3 → 按失败处理，不再外呼
+//	未命中 / 缓存不可用                → 外呼，然后写缓存（成功失败都写）
+//
+// memo 是**单次调用内**的 memo：题目与答案文本相同时 hash 相同，直接复用，
+// 既不重复查库也不重复外呼（需求第 4 条）。
+//
+// ⚠️ 截断在**这里**做，不在调用方：缓存键必须基于截断后的送检文本，
+// 而截断规则是按**字节**预算（sensitiveWordMaxTextBytes，见 truncateSensitiveWordText）。
+// 若在调用方截断后再传进来，键的语义会随调用方是否记得截断而漂移。
+func resolveSensitiveWordPayloadWithDB(ctx context.Context,
+	db *gorm.DB,
+	detector SensitiveWordDetector,
+	scope string,
+	rawText string,
+	maxBytes int,
+	memo map[string]sensitiveWordCachePayload,
+) sensitiveWordCachePayload {
+	// 先截断，再算键：键对应「真正送给上游的那段文本」。
+	submitted := truncateSensitiveWordText(scope, rawText, maxBytes)
+	textHash := hashSensitiveWordText(submitted)
+	// memo 允许为 nil（一次性调用方只关心结论，不需要单次调用内复用）。
+	// 这里补一个本地 map 而不是在写回处判空：写回点分散在四个分支，
+	// 判空很容易漏一处 → nil map 赋值 panic，且 panic 发生在旁路 goroutine 里。
+	if memo == nil {
+		memo = make(map[string]sensitiveWordCachePayload, 1)
+	}
+	if payload, ok := memo[textHash]; ok {
+		return payload
+	}
+
+	row, hit := loadSensitiveWordCacheWithDB(ctx, db, textHash)
+	attempts := 0
+	if hit {
+		attempts = row.AttemptCount
+		if strings.TrimSpace(row.Error) == "" {
+			payload := sensitiveWordCachePayload{
+				Status:    row.APIStatus,
+				Forbidden: row.Sensitive,
+				Words:     decodeSensitiveWordCacheWords(row.Words),
+			}
+			memo[textHash] = payload
+			return payload
+		}
+		if attempts >= sensitiveWordCacheMaxAttempts {
+			// 已知失败且已达上限：按失败返回，不再为同一文本花钱。
+			payload := sensitiveWordCachePayload{
+				Status: "error",
+				Words:  []string{},
+				Error:  truncateSensitiveWordError(row.Error),
+			}
+			memo[textHash] = payload
+			return payload
+		}
+	}
+
+	response, err := detector(ctx, submitted)
+	if err != nil {
+		// 超长是**可区分**的失败，不能与「上游挂了」混在一条错误里：
+		// 前者说明我们的字节预算算错了（或上游改了限制），要立刻被人看见；
+		// 后者是偶发故障，重试可能自愈。
+		// 注意：413 同时满足 errors.Is(err, uapi.ErrUpstream)，所以这里用
+		// ErrTextTooLong 优先判定，不影响其它错误的归类。
+		//
+		// 超长**不写缓存**：它不是「这段文本的结论」，而是「我们的预算算错了」。
+		// 固化进缓存会让同一文本在预算修好之后仍然拿不到结果，而且会白白占掉
+		// AttemptCount 的重试额度 —— 预算修正属于代码变更，不该由缓存行来记。
+		if errors.Is(err, uapi.ErrTextTooLong) {
+			message := truncateSensitiveWordError(
+				fmt.Sprintf("%s: 送检文本 %d 字节超出上游长度限制（预算 %d 字节）：%s",
+					SensitiveWordErrorTextTooLong, len(rawText), maxBytes, err.Error()))
+			payload := sensitiveWordCachePayload{Status: "error", Words: []string{}, Error: message}
+			memo[textHash] = payload
+			return payload
+		}
+		message := truncateSensitiveWordError(err.Error())
+		saveSensitiveWordCacheWithDB(ctx, db, entity.SensitiveWordCache{
+			TextHash:     textHash,
+			Sensitive:    false,
+			Words:        "[]",
+			APIStatus:    "",
+			Error:        message,
+			AttemptCount: attempts + 1,
+		})
+		payload := sensitiveWordCachePayload{Status: "error", Words: []string{}, Error: message}
+		memo[textHash] = payload
+		return payload
+	}
+
+	status := strings.TrimSpace(response.Status)
+	forbidden := response.Forbidden()
+	words := []string{}
+	if forbidden {
+		words = normalizeSensitiveWordList(response.ForbiddenWords)
+	}
+	encodedWords := "[]"
+	if payload, marshalErr := json.Marshal(words); marshalErr == nil {
+		encodedWords = string(payload)
+	}
+	cacheError := ""
+	if !forbidden && !isTrustworthySensitiveWordStatus(status) {
+		// 关键：这里**不能**当成「判定为干净」写进缓存。
+		//
+		// 上游 200 但不给 status（或给未知 status）是「结论不可知」，不是「干净」。
+		// 不缓存它的坏处是同一文本再外呼一次；缓存它的坏处却是永久的——
+		// 一行 status 空、error 空、sensitive=false 的缓存，会命中「命中 且 Error == ""」
+		// 分支被无限复用，等于把一次上游异常固化成「这段文本永远干净」
+		// （AGENTS.md 第 16.6 条：写入必须带可用性判据，空结果不能进缓存）。
+		// 走失败语义：Error 非空 + AttemptCount 递增，AttemptCount 到上限后自然停止重试。
+		cacheError = fmt.Sprintf("上游未给出可判定状态 status=%q", status)
+		if cacheError = truncateSensitiveWordError(cacheError); cacheError == "" {
+			cacheError = "上游未给出可判定状态"
+		}
+	}
+	saveSensitiveWordCacheWithDB(ctx, db, entity.SensitiveWordCache{
+		TextHash:     textHash,
+		Sensitive:    forbidden,
+		Words:        encodedWords,
+		MaskedText:   response.MaskedText,
+		APIStatus:    truncateSensitiveWordCacheStatus(status),
+		Error:        cacheError,
+		AttemptCount: 0,
+	})
+	// 注意：缓存侧的失败**不影响**本次返回的结论。本次响应是上游真实给的，
+	// 该怎样就怎样返回，只是「不予缓存」。
+	payload := sensitiveWordCachePayload{Status: status, Forbidden: forbidden, Words: words}
+	memo[textHash] = payload
+	return payload
+}
+
+// isTrustworthySensitiveWordStatus 判断上游 status 是否给出**可复用的确定结论**。
+//
+// 只有明确表示「查过了」的状态才允许进缓存：未命中（clean/ok/pass）与命中。
+// 其余（空串、pending、failed、未知枚举）都是「不知道」，不能固化成缓存。
+func isTrustworthySensitiveWordStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "clean", "ok", "pass", "passed", "normal", "safe", "forbidden", "blocked", "rejected", "hit", "sensitive":
+		return true
+	}
+	return false
+}
+
 // RunSensitiveWordCheck 依次检测题目与答案，返回可落库的结论。
 //
 // 空文本直接跳过（不发请求、不计积分），并在结果里标注 skipped。
 // 任何单个对象的失败都被收敛进该对象的 Error，**不会**中断另一个对象的检测。
+//
+// 无 db 时退化为「不用缓存」：这是纯函数路径，测试与一次性调用方用它。
+// 生产路径用 RunSensitiveWordCheckWithDB 才会读写缓存表。
 func RunSensitiveWordCheck(ctx context.Context, detector SensitiveWordDetector, question string, answer string) SensitiveWordCheckOutcome {
+	return RunSensitiveWordCheckWithDB(ctx, nil, detector, question, answer)
+}
+
+// RunSensitiveWordCheckWithDB 是带缓存去重的版本。
+//
+// db 用于读写 sensitive_word_cache（调用方应传低优先级会话）：
+// 同一段文本只外呼一次，之后所有请求（不限用户、不限题目）都复用结论，
+// 避免「同一题被 100 人搜 = 200 次 uapis 调用」。
+func RunSensitiveWordCheckWithDB(ctx context.Context, db *gorm.DB, detector SensitiveWordDetector, question string, answer string) SensitiveWordCheckOutcome {
 	scopes := []struct {
 		scope    string
 		text     string
@@ -231,44 +531,37 @@ func RunSensitiveWordCheck(ctx context.Context, detector SensitiveWordDetector, 
 		{scope: SensitiveWordScopeAnswer, text: strings.TrimSpace(answer), maxBytes: sensitiveWordAnswerMaxBytes},
 	}
 	results := make([]SensitiveWordScopeResult, 0, len(scopes))
+	// 题目与答案文本相同时共用同一份结论，因此 memo 在本次调用的所有 scope 间共享。
+	memo := make(map[string]sensitiveWordCachePayload, len(scopes))
 	for _, item := range scopes {
-		results = append(results, checkSensitiveWordScope(ctx, detector, item.scope, item.text, item.maxBytes))
+		results = append(results, checkSensitiveWordScope(ctx, db, detector, item.scope, item.text, item.maxBytes, memo))
 	}
 	return BuildSensitiveWordOutcome(results)
 }
 
-func checkSensitiveWordScope(ctx context.Context, detector SensitiveWordDetector, scope string, text string, maxBytes int) SensitiveWordScopeResult {
+func checkSensitiveWordScope(ctx context.Context, db *gorm.DB, detector SensitiveWordDetector, scope string, text string, maxBytes int, memo map[string]sensitiveWordCachePayload) SensitiveWordScopeResult {
 	result := SensitiveWordScopeResult{Scope: scope, Words: []string{}}
 	if text == "" {
+		// 空文本既不查缓存也不外呼：没有可判定的内容。
 		result.Status = "skipped_empty"
 		return result
 	}
 	if detector == nil {
+		// 没有检测通道（无密钥）时不做任何缓存读写：缓存里也不该有它的结论。
 		result.Status = "skipped_unconfigured"
 		result.Error = ErrSensitiveWordNotConfigured.Error()
 		return result
 	}
-	response, err := detector(ctx, truncateSensitiveWordText(scope, text, maxBytes))
-	if err != nil {
-		result.Status = "error"
-		// 超长是**可区分**的失败，不能与「上游挂了」混在一条错误里：
-		// 前者说明我们的字节预算算错了（或上游改了限制），要立刻被人看见；
-		// 后者是偶发故障，重试可能自愈。
-		// 注意：413 同时满足 errors.Is(err, uapi.ErrUpstream)，所以这里用
-		// ErrTextTooLong 优先判定，不影响其它错误的归类。
-		if errors.Is(err, uapi.ErrTextTooLong) {
-			result.Error = truncateSensitiveWordError(
-				fmt.Sprintf("%s: 送检文本 %d 字节超出上游长度限制（预算 %d 字节）：%s",
-					SensitiveWordErrorTextTooLong, len(text), maxBytes, err.Error()))
-			return result
-		}
-		result.Error = truncateSensitiveWordError(err.Error())
-		return result
+	// 截断在 resolve 内部做（按**字节**预算，见 truncateSensitiveWordText），
+	// 因为缓存键必须基于**截断后**的文本计算 —— 与真正送给上游的内容严格一致。
+	payload := resolveSensitiveWordPayloadWithDB(ctx, db, detector, scope, text, maxBytes, memo)
+	result.Status = payload.Status
+	result.Forbidden = payload.Forbidden
+	if len(payload.Words) > 0 {
+		result.Words = payload.Words
 	}
-	result.Status = strings.TrimSpace(response.Status)
-	result.Forbidden = response.Forbidden()
-	if result.Forbidden {
-		result.Words = normalizeSensitiveWordList(response.ForbiddenWords)
+	if strings.TrimSpace(payload.Error) != "" {
+		result.Error = truncateSensitiveWordError(payload.Error)
 	}
 	return result
 }

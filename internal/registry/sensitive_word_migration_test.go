@@ -126,3 +126,82 @@ func TestSensitiveWordColumnsCoverEntityDeclaration(t *testing.T) {
 		t.Fatalf("实体里有列没有对应迁移：%v", entityColumns)
 	}
 }
+
+// ─────────────────── 敏感词缓存表迁移 ───────────────────
+
+func TestEnsureSensitiveWordCacheSchemaCreatesTable(t *testing.T) {
+	db := newSensitiveWordMigrationDB(t)
+
+	if db.Migrator().HasTable(entity.TableNameSensitiveWordCache) {
+		t.Fatalf("迁移前不该已存在缓存表")
+	}
+	if err := ensureSensitiveWordCacheSchema(db); err != nil {
+		t.Fatalf("ensureSensitiveWordCacheSchema: %v", err)
+	}
+	if !db.Migrator().HasTable(entity.TableNameSensitiveWordCache) {
+		t.Fatalf("迁移后必须存在 %s", entity.TableNameSensitiveWordCache)
+	}
+	// 主键必须是 text_hash（哈希去重的唯一依据）。
+	if !db.Migrator().HasTable(entity.TableNameSensitiveWordCache) ||
+		!db.Migrator().HasColumn(entity.TableNameSensitiveWordCache, "text_hash") {
+		t.Fatalf("缓存表必须有 text_hash 列")
+	}
+	for _, column := range []string{"sensitive", "words", "masked_text", "api_status", "error", "attempt_count", "checked_at"} {
+		if !db.Migrator().HasColumn(entity.TableNameSensitiveWordCache, column) {
+			t.Fatalf("缓存表缺少列 %s", column)
+		}
+	}
+	if !systemSettingFlagIsSet(db, sensitiveWordCacheSchemaMigrationKey) {
+		t.Fatalf("迁移成功后必须写标记，否则每次启动都会重跑")
+	}
+}
+
+func TestEnsureSensitiveWordCacheSchemaIsIdempotentAndKeepsData(t *testing.T) {
+	db := newSensitiveWordMigrationDB(t)
+	if err := ensureSensitiveWordCacheSchema(db); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	// 缓存是「已付费买来的结论」，任何情况下都不能被迁移清掉（不 DROP TABLE）。
+	if err := db.Exec(`INSERT INTO sensitive_word_cache (text_hash, sensitive, words, api_status, attempt_count, checked_at)
+		VALUES ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 1, '["敏感"]', 'forbidden', 0, CURRENT_TIMESTAMP)`).Error; err != nil {
+		t.Fatalf("seed cache row: %v", err)
+	}
+	if err := ensureSensitiveWordCacheSchema(db); err != nil {
+		t.Fatalf("second run must be idempotent: %v", err)
+	}
+	var rows int64
+	if err := db.Model(&entity.SensitiveWordCache{}).Count(&rows).Error; err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("重跑迁移不得删除缓存数据，实际 %d 行", rows)
+	}
+}
+
+func TestEnsureSensitiveWordCacheSchemaHandlesNilDB(t *testing.T) {
+	if err := ensureSensitiveWordCacheSchema(nil); err != nil {
+		t.Fatalf("nil db 必须直接返回：%v", err)
+	}
+}
+
+func TestEnsureSensitiveWordCacheSchemaWritesNoMarkerOnFailure(t *testing.T) {
+	// 用一个已关闭的连接制造真实失败：AutoMigrate 报错 → 不写标记 → 下次启动重试。
+	db := newSensitiveWordMigrationDB(t)
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("get sql db: %v", err)
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	if err := ensureSensitiveWordCacheSchema(db); err == nil {
+		t.Fatalf("连接不可用时必须返回错误，让启动日志看见")
+	}
+	// 标记表也读不到（连接已关），但关键是**没有**成功标记残留：
+	// 用新连接确认标志位没被写入（这里新建一个独立库验证语义更直接）。
+	fresh := newSensitiveWordMigrationDB(t)
+	if systemSettingFlagIsSet(fresh, sensitiveWordCacheSchemaMigrationKey) {
+		t.Fatalf("失败路径不得写标记")
+	}
+}

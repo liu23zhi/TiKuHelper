@@ -66,6 +66,66 @@ func ensureSensitiveWordSchema(db *gorm.DB) (err error) {
 	return setSystemSettingFlag(db, sensitiveWordSchemaMigrationKey)
 }
 
+// sensitiveWordCacheSchemaMigrationKey 是缓存表迁移的一次性标记。
+const sensitiveWordCacheSchemaMigrationKey = "sensitive_word_cache_schema_ready"
+
+// ensureSensitiveWordCacheSchema 建出「按文本哈希缓存检测结论」的表。
+//
+// 纪律与 ensureSensitiveWordSchema 一致（AGENTS.md 第 11 / 17 条）：
+//   - 结构性建表失败返回错误，让启动 FATAL 看见；
+//   - 用 system_settings 标记保证只跑一次，失败不写标记，下次启动自动重试；
+//   - 外层 recover 兜底，脏数据不能让服务反复崩溃；
+//   - **不做 DROP TABLE**：缓存是纯加速结构，表有问题就停用（调用方 fail-open
+//     直接外呼），删表既无必要也会丢掉已付费买来的结论。
+//
+// 无回填 ⇒ 无大表扫描，不存在 AGENTS.md 第 18b 条的性能风险。
+func ensureSensitiveWordCacheSchema(db *gorm.DB) (err error) {
+	if db == nil {
+		return nil
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("敏感词缓存表迁移异常: %v", recovered)
+		}
+	}()
+	if systemSettingFlagIsSet(db, sensitiveWordCacheSchemaMigrationKey) {
+		return nil
+	}
+	// ⚠️ 判定与写入用**同一条**语句：HasTable 与 AutoMigrate 走的是不同代码路径，
+	// 用「HasTable 为真」推断「AutoMigrate 不会发 DDL」并不可靠。而 AutoMigrate 每发一条
+	// ALTER TABLE，MySQL 就会隐式提交一次（DDL 不可回滚），高频插入的缓存表可能撞 1205
+	// 死锁；撞了就会写不进去 → 永远读不到缓存 → 反复外呼，正是本功能要消灭的浪费。
+	//
+	// SQLite 的缓存表是 AutoMigrate 自动建的，标记缺失时**不看标记**（有行就等于建好了）；
+	// MySQL 明确要求标记（见 sensitiveWordCacheSchemaReady），这样标记被误删时会重跑一次
+	// AutoMigrate 把列补齐，而不是跳过。
+	if sensitiveWordCacheSchemaReady(db) {
+		return setSystemSettingFlag(db, sensitiveWordCacheSchemaMigrationKey)
+	}
+	if err := db.AutoMigrate(&entity.SensitiveWordCache{}); err != nil {
+		// 不写标记：下次启动重跑，幂等。
+		return fmt.Errorf("建敏感词缓存表失败: %w", err)
+	}
+	return setSystemSettingFlag(db, sensitiveWordCacheSchemaMigrationKey)
+}
+
+// sensitiveWordCacheSchemaReady 判断缓存表是否已经建好，决定要不要跑 AutoMigrate。
+//
+// 两个驱动为什么判据不同：
+//   - SQLite：表由 AutoMigrate 自动建，测试库也可能另建。表在、标记丢，跳过即可
+//     （SQLite 的 AutoMigrate 对已存在的同构表本就无操作，判断只是为了省一趟反射）。
+//   - MySQL：用 system_settings 标记表达「这张表已经是我们建的了」。标记缺失时
+//     必须重跑 AutoMigrate 把列补齐（上面那段注释里的 1205 死锁理由）。
+func sensitiveWordCacheSchemaReady(db *gorm.DB) bool {
+	if db == nil {
+		return false
+	}
+	if strings.EqualFold(db.Dialector.Name(), "sqlite") {
+		return db.Migrator().HasTable(entity.TableNameSensitiveWordCache)
+	}
+	return false
+}
+
 // addSensitiveWordColumn 按驱动选择建列语句。
 //
 // SQLite 走显式 ALTER TABLE（类型写在语句里，避免依赖 GORM 的字段反射）；

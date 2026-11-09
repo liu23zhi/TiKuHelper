@@ -773,6 +773,12 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		logger.FatalLog(fmt.Errorf("prepare sensitive word schema fail: %w", err))
 	}
 
+	// 敏感词缓存表：按文本哈希复用检测结论，避免同一文本反复外呼消耗 API 额度。
+	// 只建表不迁移数据；表不可用时调用方 fail-open（直接外呼），不阻断答题。
+	if err := runStartupMigration("ensureSensitiveWordCacheSchema", func() error { return ensureSensitiveWordCacheSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare sensitive word cache schema fail: %w", err))
+	}
+
 	if err := runStartupMigration("ensureMoneyPrecisionSchema", func() error {
 		return ensureMoneyPrecisionSchemaWithOptions(db, preserveDisabledInvalidQuota)
 	}); err != nil {

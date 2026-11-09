@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -486,7 +487,8 @@ func TestCheckSensitiveWordScopeMarksTextTooLongDistinctly(t *testing.T) {
 		return uapi.ProfanityCheckResponse{}, fmt.Errorf("%w: HTTP 502: boom", uapi.ErrUpstream)
 	}
 
-	result := checkSensitiveWordScope(context.Background(), tooLong, SensitiveWordScopeQuestion, "题目", sensitiveWordQuestionMaxBytes)
+	// db=nil / memo=nil：本条只验 413 的错误分类，缓存路径由缓存用例单独覆盖。
+	result := checkSensitiveWordScope(context.Background(), nil, tooLong, SensitiveWordScopeQuestion, "题目", sensitiveWordQuestionMaxBytes, nil)
 	if result.Status != "error" {
 		t.Fatalf("超长应归为 error，实际 %q", result.Status)
 	}
@@ -498,7 +500,7 @@ func TestCheckSensitiveWordScopeMarksTextTooLongDistinctly(t *testing.T) {
 	}
 
 	// 对照：普通上游故障不得带超长前缀（否则运维无法区分）。
-	other := checkSensitiveWordScope(context.Background(), upstreamDown, SensitiveWordScopeQuestion, "题目", sensitiveWordQuestionMaxBytes)
+	other := checkSensitiveWordScope(context.Background(), nil, upstreamDown, SensitiveWordScopeQuestion, "题目", sensitiveWordQuestionMaxBytes, nil)
 	if other.Status != "error" {
 		t.Fatalf("上游故障应归为 error，实际 %q", other.Status)
 	}
@@ -739,5 +741,412 @@ func TestSaveSensitiveWordOutcomeWithDBRejectsMissingLogID(t *testing.T) {
 	}
 	if err := SaveSensitiveWordOutcomeWithDB(nil, 1, outcome, time.Now()); err == nil {
 		t.Fatalf("数据库不可用必须报错")
+	}
+}
+
+// ───────────────────────── 缓存去重 ─────────────────────────
+//
+// 需求原文：「请同步修改数据库，避免反复检测，浪费API」。
+// 下面每条测试都用**可数的检测器**断言「实际外呼次数」，而不是只看结果 ——
+// 结果对但外呼了两次，正是这个功能要消灭的浪费（AGENTS.md 第 21 条）。
+
+// countingDetector 返回检测器 + 计数读取函数。计数用指针而不是返回值快照，
+// 因为检测器会被多次调用，快照会读到过期的 0。
+func countingDetector(t *testing.T, response uapi.ProfanityCheckResponse, err error) (SensitiveWordDetector, func() int32) {
+	t.Helper()
+	var calls int32
+	detector := func(context.Context, string) (uapi.ProfanityCheckResponse, error) {
+		atomic.AddInt32(&calls, 1)
+		if err != nil {
+			return uapi.ProfanityCheckResponse{}, err
+		}
+		return response, nil
+	}
+	return detector, func() int32 { return atomic.LoadInt32(&calls) }
+}
+
+// newSensitiveWordCacheDB 建出带缓存表的测试库。
+//
+// 表结构由 entity 决定（与生产 AutoMigrate 一致），不手写 DDL：
+// 列名/类型是持久化契约，测试手写一份就可能与迁移漂移。
+func newSensitiveWordCacheDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	db := newSensitiveWordTestDB(t)
+	if err := db.AutoMigrate(&entity.SensitiveWordCache{}); err != nil {
+		t.Fatalf("migrate sensitive word cache: %v", err)
+	}
+	return db
+}
+
+func countSensitiveWordCacheRows(t *testing.T, db *gorm.DB) int64 {
+	t.Helper()
+	var rows int64
+	if err := db.Model(&entity.SensitiveWordCache{}).Count(&rows).Error; err != nil {
+		t.Fatalf("count cache rows: %v", err)
+	}
+	return rows
+}
+
+// 需求测试 1：同一文本第二次 → API 计数 == 1。
+func TestSensitiveWordCacheDeduplicatesRepeatedText(t *testing.T) {
+	db := newSensitiveWordCacheDB(t)
+	detector, calls := countingDetector(t, forbiddenResponse("敏感"), nil)
+
+	first := RunSensitiveWordCheckWithDB(context.Background(), db, detector, "重复的题目文本", "第一次的答案")
+	if !first.Flag {
+		t.Fatalf("首次检测应命中：%+v", first)
+	}
+	if got := calls(); got != 2 {
+		t.Fatalf("首次检测题目与答案各外呼一次，实际 %d 次", got)
+	}
+
+	// 第二次：题目命中缓存；答案文本不同，仍然外呼一次。
+	second := RunSensitiveWordCheckWithDB(context.Background(), db, detector, "重复的题目文本", "第二次的答案")
+	if got := calls(); got != 3 {
+		t.Fatalf("第二次只该为**新**答案外呼一次，累计应为 3，实际 %d", got)
+	}
+	if !second.Results[0].Forbidden {
+		t.Fatalf("缓存命中也必须保住命中结论：%+v", second.Results[0])
+	}
+
+	// 第三次：题目与答案都与库里已有的一致 → 零外呼。
+	third := RunSensitiveWordCheckWithDB(context.Background(), db, detector, "重复的题目文本", "第一次的答案")
+	if got := calls(); got != 3 {
+		t.Fatalf("全部命中缓存时不得再外呼，累计应仍为 3，实际 %d", got)
+	}
+	if !third.Flag {
+		t.Fatalf("缓存结果必须完整还原命中：%+v", third)
+	}
+	if len(third.Results[0].Words) != 1 || third.Results[0].Words[0] != "敏感" {
+		t.Fatalf("命中词必须从缓存还原：%+v", third.Results[0])
+	}
+	// 三次调用共涉及三段不同文本：题目 + 两条不同答案 → 3 行缓存。
+	// （断言在这里写错很容易：题目被复用不会新增行，只有**新**答案才新增。）
+	if got := countSensitiveWordCacheRows(t, db); got != 3 {
+		t.Fatalf("题目 + 两条不同答案应共 3 行缓存，实际 %d", got)
+	}
+}
+
+// 需求测试 2：题目与答案文本相同 → 只调一次。
+func TestSensitiveWordCacheSendsIdenticalQuestionAndAnswerOnce(t *testing.T) {
+	db := newSensitiveWordCacheDB(t)
+	detector, calls := countingDetector(t, uapi.ProfanityCheckResponse{Status: "clean"}, nil)
+
+	outcome := RunSensitiveWordCheckWithDB(context.Background(), db, detector, "同一段文本", "同一段文本")
+
+	if got := calls(); got != 1 {
+		t.Fatalf("题目与答案相同必须只外呼一次，实际 %d 次", got)
+	}
+	if len(outcome.Results) != 2 {
+		t.Fatalf("两个 scope 的结果都要保留（落库按 scope 分组），实际 %d", len(outcome.Results))
+	}
+	if got := countSensitiveWordCacheRows(t, db); got != 1 {
+		t.Fatalf("同一文本只该有一行缓存，实际 %d", got)
+	}
+	// 跨次调用也必须只查一次库就够：第二次零外呼。
+	RunSensitiveWordCheckWithDB(context.Background(), db, detector, "同一段文本", "同一段文本")
+	if got := calls(); got != 1 {
+		t.Fatalf("第二次必须完全命中缓存，实际累计 %d 次", got)
+	}
+}
+
+// 需求测试 3：Error != "" 且 AttemptCount < 3 → 重试。
+func TestSensitiveWordCacheRetriesKnownFailureBelowLimit(t *testing.T) {
+	db := newSensitiveWordCacheDB(t)
+	if err := db.Create(&entity.SensitiveWordCache{
+		TextHash:     hashSensitiveWordText("曾失败的文本"),
+		Sensitive:    false,
+		Words:        "[]",
+		Error:        "uapi: HTTP 500",
+		AttemptCount: sensitiveWordCacheMaxAttempts - 1,
+	}).Error; err != nil {
+		t.Fatalf("seed cache row: %v", err)
+	}
+
+	detector, calls := countingDetector(t, forbiddenResponse("敏感"), nil)
+	outcome := RunSensitiveWordCheckWithDB(context.Background(), db, detector, "曾失败的文本", "")
+
+	if got := calls(); got != 1 {
+		t.Fatalf("未达上限必须重试（外呼一次），实际 %d 次", got)
+	}
+	if !outcome.Flag {
+		t.Fatalf("重试成功后必须采用新结论：%+v", outcome)
+	}
+
+	var row entity.SensitiveWordCache
+	if err := db.Where("text_hash = ?", hashSensitiveWordText("曾失败的文本")).Take(&row).Error; err != nil {
+		t.Fatalf("load cache row: %v", err)
+	}
+	if strings.TrimSpace(row.Error) != "" {
+		t.Fatalf("成功后必须清掉失败原因，否则下次仍会被当成失败：%q", row.Error)
+	}
+	if row.AttemptCount != 0 {
+		t.Fatalf("成功后必须把失败计数归零，实际 %d", row.AttemptCount)
+	}
+	if !row.Sensitive {
+		t.Fatalf("成功结论必须落库：%+v", row)
+	}
+}
+
+// 需求测试 4：AttemptCount >= 3 → 不重试。
+func TestSensitiveWordCacheStopsRetryingAtLimit(t *testing.T) {
+	db := newSensitiveWordCacheDB(t)
+	if err := db.Create(&entity.SensitiveWordCache{
+		TextHash:     hashSensitiveWordText("反复失败的文本"),
+		Sensitive:    false,
+		Words:        "[]",
+		Error:        "uapi: HTTP 503",
+		AttemptCount: sensitiveWordCacheMaxAttempts,
+	}).Error; err != nil {
+		t.Fatalf("seed cache row: %v", err)
+	}
+
+	detector, calls := countingDetector(t, forbiddenResponse("敏感"), nil)
+	outcome := RunSensitiveWordCheckWithDB(context.Background(), db, detector, "反复失败的文本", "")
+
+	if got := calls(); got != 0 {
+		t.Fatalf("达到上限后不得再外呼，实际 %d 次", got)
+	}
+	if outcome.Flag {
+		t.Fatalf("已知失败不得判为命中：%+v", outcome)
+	}
+	if !strings.Contains(outcome.Error, "503") {
+		t.Fatalf("必须保留上次失败原因供排障：%q", outcome.Error)
+	}
+	if outcome.Results[0].Status != "error" {
+		t.Fatalf("达上限时应报告 error 状态，实际 %q", outcome.Results[0].Status)
+	}
+}
+
+// 需求测试 5：表不存在 → fail-open，答题照常。
+func TestSensitiveWordCacheFailsOpenWhenTableMissing(t *testing.T) {
+	// 只建系统设置表，**不建** sensitive_word_cache。
+	db := newSensitiveWordTestDB(t)
+	detector, calls := countingDetector(t, forbiddenResponse("敏感"), nil)
+
+	outcome := RunSensitiveWordCheckWithDB(context.Background(), db, detector, "题目文本", "答案文本")
+
+	if got := calls(); got != 2 {
+		t.Fatalf("缺表时必须照常外呼（fail-open），实际 %d 次", got)
+	}
+	if !outcome.Flag {
+		t.Fatalf("缺表不得影响判定结果：%+v", outcome)
+	}
+	if strings.TrimSpace(outcome.Error) != "" {
+		t.Fatalf("缺表是缓存不可用，不应记成检测失败：%q", outcome.Error)
+	}
+	// 确认确实没有建表（测试自己没偷偷建）。
+	if db.Migrator().HasTable(entity.TableNameSensitiveWordCache) {
+		t.Fatalf("这个用例的前提是缓存表不存在")
+	}
+}
+
+// 需求测试 6：开关关闭 → 零外呼零写入。
+//
+// 开关判断在 controller 层（BuildSensitiveWordDetectorWithDB 返回 nil）。
+// 这里断言两条独立的保证：① nil 检测器不外呼、不写缓存；
+// ② 真实开关关闭时构建出的检测器就是 nil。
+func TestSensitiveWordCacheZeroWorkWhenDisabled(t *testing.T) {
+	db := newSensitiveWordCacheDB(t)
+	detector, calls := countingDetector(t, forbiddenResponse("敏感"), nil)
+
+	outcome := RunSensitiveWordCheckWithDB(context.Background(), db, detector, "", "")
+	if got := calls(); got != 0 {
+		t.Fatalf("空文本不得外呼，实际 %d 次", got)
+	}
+	for _, result := range outcome.Results {
+		if result.Status != "skipped_empty" {
+			t.Fatalf("空文本应为 skipped_empty：%+v", result)
+		}
+	}
+
+	// nil 检测器：无检测通道，既不外呼也不写缓存。
+	unconfigured := RunSensitiveWordCheckWithDB(context.Background(), db, nil, "题目", "答案")
+	if !strings.Contains(unconfigured.Error, SensitiveWordScopeQuestion) {
+		t.Fatalf("无检测通道必须报告未配置：%q", unconfigured.Error)
+	}
+	if got := countSensitiveWordCacheRows(t, db); got != 0 {
+		t.Fatalf("无检测通道时不得写缓存，实际 %d 行", got)
+	}
+
+	// 真实开关关闭：BuildSensitiveWordDetectorWithDB 必须返回 nil（controller 据此零动作）。
+	if err := db.Create(&entity.SystemSetting{Key: UAPIAPIKeySettingKey, Value: "uapi-synthetic"}).Error; err != nil {
+		t.Fatalf("seed key: %v", err)
+	}
+	if built := BuildSensitiveWordDetectorWithDB(db); built != nil {
+		t.Fatalf("开关关闭时必须返回 nil，否则会出现外呼")
+	}
+}
+
+// 缓存写入失败也必须照常返回结论（fail-open 的写侧）。
+func TestSensitiveWordCacheWriteFailureKeepsOutcome(t *testing.T) {
+	// 缓存表不存在 → Create 会失败，但结论必须完好。
+	db := newSensitiveWordTestDB(t)
+	detector, calls := countingDetector(t, forbiddenResponse("敏感"), nil)
+
+	outcome := RunSensitiveWordCheckWithDB(context.Background(), db, detector, "题目文本", "")
+	if got := calls(); got != 1 {
+		t.Fatalf("应照常外呼一次，实际 %d 次", got)
+	}
+	if !outcome.Flag || len(outcome.Results[0].Words) != 1 {
+		t.Fatalf("缓存写失败不得损坏检测结论：%+v", outcome)
+	}
+}
+
+// 失败也要落缓存（否则同一坏文本每次都会重试到底）。
+func TestSensitiveWordCacheRecordsFailureWithAttemptCount(t *testing.T) {
+	db := newSensitiveWordCacheDB(t)
+	detector, calls := countingDetector(t, uapi.ProfanityCheckResponse{}, errors.New("uapi: HTTP 500"))
+
+	outcome := RunSensitiveWordCheckWithDB(context.Background(), db, detector, "会失败的文本", "")
+	if got := calls(); got != 1 {
+		t.Fatalf("首次失败应外呼一次，实际 %d 次", got)
+	}
+	if outcome.Flag {
+		t.Fatalf("失败不得判为命中：%+v", outcome)
+	}
+
+	var row entity.SensitiveWordCache
+	if err := db.Where("text_hash = ?", hashSensitiveWordText("会失败的文本")).Take(&row).Error; err != nil {
+		t.Fatalf("失败也必须写缓存行（供上限与重试判定）：%v", err)
+	}
+	if row.AttemptCount != 1 {
+		t.Fatalf("失败后 AttemptCount 必须为 1，实际 %d", row.AttemptCount)
+	}
+	if !strings.Contains(row.Error, "500") {
+		t.Fatalf("失败原因必须落库：%q", row.Error)
+	}
+	if row.Sensitive {
+		t.Fatalf("失败不得被记成命中：%+v", row)
+	}
+
+	// 再失败一次 → 计数递增（连续失败累计）。
+	RunSensitiveWordCheckWithDB(context.Background(), db, detector, "会失败的文本", "")
+	if err := db.Where("text_hash = ?", hashSensitiveWordText("会失败的文本")).Take(&row).Error; err != nil {
+		t.Fatalf("reload cache row: %v", err)
+	}
+	if row.AttemptCount != 2 {
+		t.Fatalf("第二次失败后应为 2，实际 %d", row.AttemptCount)
+	}
+	if got := calls(); got != 2 {
+		t.Fatalf("两次调用各外呼一次，累计 2，实际 %d", got)
+	}
+}
+
+// 缓存只在「送检文本」层面共享，跨 scope 通用：答案文本恰好等于另一题的题目文本时也能命中。
+func TestSensitiveWordCacheIsKeyedByTextNotScope(t *testing.T) {
+	db := newSensitiveWordCacheDB(t)
+	detector, calls := countingDetector(t, uapi.ProfanityCheckResponse{Status: "clean"}, nil)
+
+	RunSensitiveWordCheckWithDB(context.Background(), db, detector, "公共文本", "")
+	if got := calls(); got != 1 {
+		t.Fatalf("首次外呼一次，实际 %d", got)
+	}
+	// 同一文本这次出现在答案位 → 仍是同一段文本，同一结论，零外呼。
+	RunSensitiveWordCheckWithDB(context.Background(), db, detector, "别的题目", "公共文本")
+	if got := calls(); got != 2 {
+		t.Fatalf("只该为新题目外呼一次（公共文本命中缓存），累计应为 2，实际 %d", got)
+	}
+}
+
+// 缓存键必须把「送检后」的文本作为输入：超长文本按**字节**预算截断后，同一前缀共享一行。
+func TestSensitiveWordCacheHashesTruncatedSubmittedText(t *testing.T) {
+	db := newSensitiveWordCacheDB(t)
+	detector, calls := countingDetector(t, uapi.ProfanityCheckResponse{Status: "clean"}, nil)
+
+	// 按字节预算算「多少个中文恰好填满」，不写死字符数：预算单位若变回 rune，
+	// 这里的前缀长度就不再等于预算，下面的「只有一行缓存」会立刻不成立。
+	chinese := "敏" // 3 字节
+	prefix := strings.Repeat(chinese, sensitiveWordQuestionMaxBytes/len(chinese))
+	if len(prefix) > sensitiveWordQuestionMaxBytes {
+		t.Fatalf("前缀 %d 字节不该超过预算 %d", len(prefix), sensitiveWordQuestionMaxBytes)
+	}
+	RunSensitiveWordCheckWithDB(context.Background(), db, detector, prefix+"尾部一", "")
+	firstCalls := calls()
+	RunSensitiveWordCheckWithDB(context.Background(), db, detector, prefix+"尾部二", "")
+	if got := calls(); got != firstCalls {
+		t.Fatalf("截断后送检文本相同必须复用缓存，实际从 %d 增到 %d", firstCalls, got)
+	}
+	if got := countSensitiveWordCacheRows(t, db); got != 1 {
+		t.Fatalf("截断后同前缀只该有一行缓存，实际 %d", got)
+	}
+}
+
+// TestSensitiveWordCacheKeyUsesByteBudgetNotRuneBudget 是**防回退钉子**。
+//
+// 历史事故：上限曾用 rune 语义（先 2000 后 1000 字符），而上游真实限制是
+// text 字段 262144 **字节**。rune 预算比真实上限小两个数量级，导致「题目被砍掉
+// 大半、后半段敏感词全部漏检」且没有任何报错 —— 过度保守比直接报错更难被发现。
+//
+// 这条测试用**纯 ASCII**（1 字节 = 1 rune）与**中文**（3 字节 = 1 rune）两组文本，
+// 断言送检长度由**字节预算**决定：
+//   - 若有人把上限改回 rune 语义（即重新引入「按字符数」的常量），中文组送检字节数
+//     会变成预算的 3 倍 → 超上游硬限制 → 本测试红；
+//   - 若有人把预算调回 1000 这类小数，ASCII 组的送检字节数会远小于预算 → 本测试红。
+//
+// 已实测：把 truncateSensitiveWordText 的 `len(text)` 改成 utf8.RuneCountInString
+// 后本测试立刻变红（中文送检 251760 字节 > 预算 245760），恢复后转绿。
+func TestSensitiveWordCacheKeyUsesByteBudgetNotRuneBudget(t *testing.T) {
+	db := newSensitiveWordCacheDB(t)
+
+	// 记录每次真正送检的文本，直接断言**字节数**，而不是只数调用次数。
+	var submitted []string
+	detector := func(_ context.Context, text string) (uapi.ProfanityCheckResponse, error) {
+		submitted = append(submitted, text)
+		return uapi.ProfanityCheckResponse{Status: "clean"}, nil
+	}
+
+	// ① 纯 ASCII：超预算 → 必须截到**恰好** sensitiveWordMaxTextBytes 字节。
+	asciiOver := strings.Repeat("a", sensitiveWordMaxTextBytes+4096)
+	RunSensitiveWordCheckWithDB(context.Background(), db, detector, asciiOver, "")
+	if len(submitted) != 1 {
+		t.Fatalf("应有 1 次外呼，实际 %d", len(submitted))
+	}
+	if got := len(submitted[0]); got != sensitiveWordMaxTextBytes {
+		t.Fatalf("ASCII 超长应截到字节预算 %d，实际 %d 字节"+
+			"（若上限被改回 rune 语义或改成小数值，这里就会不等）",
+			sensitiveWordMaxTextBytes, got)
+	}
+
+	// ② 中文：字符数只有 ASCII 的 1/3，但**字节数**同样必须落在预算内。
+	//    这一步是 rune→byte 的关键判别：rune 语义下会按 245760 个中文字符截断
+	//    = 737280 字节，远超上游硬限制 262144，本断言立刻失败。
+	chinese := "敏"
+	chineseOver := strings.Repeat(chinese, sensitiveWordMaxTextBytes/len(chinese)+2000)
+	submitted = nil
+	RunSensitiveWordCheckWithDB(context.Background(), db, detector, chineseOver, "")
+	if len(submitted) != 1 {
+		t.Fatalf("应有 1 次外呼，实际 %d", len(submitted))
+	}
+	gotBytes := len(submitted[0])
+	if gotBytes > sensitiveWordMaxTextBytes {
+		t.Fatalf("中文送检 %d 字节超出字节预算 %d —— 上限疑似退回 rune 语义",
+			gotBytes, sensitiveWordMaxTextBytes)
+	}
+	// 截断必须回退到完整 rune 边界，不能把某个汉字切成两半。
+	if !utf8.ValidString(submitted[0]) {
+		t.Fatalf("截断后文本必须是合法 UTF-8（回退到 rune 边界），实际被切断")
+	}
+	if gotBytes < sensitiveWordMaxTextBytes-len(chinese)+1 {
+		t.Fatalf("中文送检只用了 %d 字节，远低于预算 %d —— 预算疑似被改小（如 1000）",
+			gotBytes, sensitiveWordMaxTextBytes)
+	}
+	// 上游硬限制是 262144 字节，预算必须留余量。
+	if gotBytes >= 262144 {
+		t.Fatalf("送检 %d 字节贴着/超过上游硬限制 262144，没有安全余量", gotBytes)
+	}
+}
+
+func TestHashSensitiveWordTextIsStableAndDomainSeparated(t *testing.T) {
+	a := hashSensitiveWordText("文本")
+	b := hashSensitiveWordText("文本")
+	if a != b {
+		t.Fatalf("同一文本必须得到同一 hash")
+	}
+	if len(a) != 64 {
+		t.Fatalf("hash 必须是 64 位 hex（char(64) 主键），实际 %d: %q", len(a), a)
+	}
+	if a == hashSensitiveWordText("文本 ") {
+		t.Fatalf("不同文本必须得到不同 hash")
 	}
 }

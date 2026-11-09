@@ -96,7 +96,9 @@ func startSensitiveWordCheck(resolved resolvedSearchRequestContext, req model.Se
 
 		checkContext, cancel := context.WithTimeout(context.Background(), sensitiveWordCheckTimeout)
 		defer cancel()
-		outcome := service.RunSensitiveWordCheck(checkContext, detector, question, answer)
+		// 传 db 才会读写 sensitive_word_cache：同一段文本只外呼一次。
+		// 表不可用时 service 层 fail-open（直接外呼），不阻断答题。
+		outcome := service.RunSensitiveWordCheckWithDB(checkContext, db, detector, question, answer)
 
 		logID := task.awaitLogID()
 		if logID <= 0 {

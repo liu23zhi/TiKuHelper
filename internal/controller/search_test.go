@@ -43,7 +43,9 @@ func newSearchControllerTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open test db: %v", err)
 	}
 
-	if err := db.AutoMigrate(&entity.SearchAccountConfig{}, &entity.AISearchConfig{}, &entity.AIModelPrice{}, &entity.SystemSetting{}, &entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}, &entity.Log{}, &entity.Tiku{}, &entity.TikuAnswerEvidence{}, &entity.ScriptVersion{}, &entity.UserScript{}, &entity.ScriptExchangeToken{}, &entity.ScriptRunSession{}); err != nil {
+	// &entity.SensitiveWordCache{}：生产启动迁移会建出这张表，测试库同样建出来，
+	// 否则「缓存去重」路径在 controller 测试里永远是 fail-open（走不到真正的读写）。
+	if err := db.AutoMigrate(&entity.SearchAccountConfig{}, &entity.AISearchConfig{}, &entity.AIModelPrice{}, &entity.SystemSetting{}, &entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}, &entity.Log{}, &entity.Tiku{}, &entity.TikuAnswerEvidence{}, &entity.ScriptVersion{}, &entity.UserScript{}, &entity.ScriptExchangeToken{}, &entity.ScriptRunSession{}, &entity.SensitiveWordCache{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 
