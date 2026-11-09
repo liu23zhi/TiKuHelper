@@ -122,8 +122,27 @@ func SetAPIRouter(router *gin.Engine) {
 
 	apiRouter.POST("/user/login", controller.UserLogin)        // 登录接口
 	apiRouter.POST("/user/login/sms", controller.UserSMSLogin) // 短信登录接口
-	apiRouter.POST("/user/logout", controller.UserLogout)      // 清理浏览器会话
-	apiRouter.POST("/user/register", controller.UserRegister)  // 公开注册接口
+	// 管理员专用登录入口（45-*.md §0.1.2 Q63 定稿）。
+	//
+	// 为什么需要它：按 Q63，普通登录现在**会被 IP 黑名单拦** —— 被拉黑 IP 打开网页
+	// 只能看到拉黑页面。若没有这个入口，管理员一旦把自己的 CIDR 拉黑就再也进不来。
+	//
+	// 三条约束（详见 controller.AdminLogin 的注释）：
+	//   1. 仅账号密码 + 强制人机验证（不提供短信/微信，否则「要登录先发短信、
+	//      发短信被拦」形成死锁）
+	//   2. 只放行管理员（否则它就成了绕过黑名单的通用登录入口）
+	//   3. 失败锁定（该路径豁免黑名单，是唯一暴露面，必须自带防爆破）
+	//
+	// 该路径已加入 middleware.BlacklistExemptPath 的豁免表；连同人机验证的
+	// /public/captcha/* 一起豁免 —— 否则管理员会卡在验证码上。
+	apiRouter.POST("/admin-login", controller.AdminLogin)
+	// 登录锁定管理（管理端「解除锁定」）。失败锁定本身是 DoS 面：
+	// 攻击者知道路径/用户名就能故意失败把真人挡在门外，必须给运营兜底出口。
+	// 两套限流各自可解（45-*.md §0.1.4 五-8：「解除账号锁定」与「解除 IP 锁定」两个操作）。
+	apiRouter.GET("/admin/login-lockouts", controller.Auth, middleware.RequireAdmin, controller.LoginLockoutList)
+	apiRouter.DELETE("/admin/login-lockout/:scope/:key", controller.Auth, middleware.RequireAdmin, controller.ClearLoginLockout)
+	apiRouter.POST("/user/logout", controller.UserLogout)     // 清理浏览器会话
+	apiRouter.POST("/user/register", controller.UserRegister) // 公开注册接口
 	apiRouter.POST("/public/captcha/challenge", controller.CreateCaptchaChallenge)
 	apiRouter.POST("/public/captcha/verify", controller.VerifyCaptchaChallenge)
 	apiRouter.Any("/public/captcha/remote-gen", controller.ProxyRemoteCaptchaGenerate)

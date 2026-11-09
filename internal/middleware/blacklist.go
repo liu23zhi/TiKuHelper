@@ -105,7 +105,19 @@ func blacklistHandler(deps blacklistDeps) gin.HandlerFunc {
 			Action:      service.BlacklistActionBlocked,
 		})
 
-		// 响应体严格按 46-*.md §3.2：不泄漏规则细节（不含 kind / pattern / 网段）。
+		// 按请求类型分叉（45-*.md §0.1.1 Q63）：
+		//
+		//   浏览器打开网页 → 拉黑**页面**（显示 reason + 管理员登录入口）
+		//   API / 脚本调用 → 仍然 403 **JSON**（固定文案）
+		//
+		// 两条分支都**不泄漏规则细节**：页面只显示 reason（运营写给用户的话），
+		// JSON 里连 reason 都没有。
+		if WantsBlacklistHTML(c) {
+			RenderBlacklistPage(c, match.Reason)
+			return
+		}
+
+		// 响应体严格按 46-*.md §3.2：不泄漏规则细节（不含 kind / pattern / 网段 / reason）。
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 			"code":    http.StatusForbidden,
 			"message": "当前访问受限，如有疑问请联系管理员",
@@ -187,9 +199,36 @@ func BlacklistExemptPath(path string) bool {
 		return true
 	}
 
-	// 2) 登录入口：管理员被自己的 CIDR 规则命中后必须还能登进来。
-	switch trimmed {
-	case "/adapter-service/user/login", "/adapter-service/user/login/sms":
+	// 2) 管理员专用登录入口（45-*.md §0.1.2）：**必须**豁免，否则被拉黑 IP 的管理员
+	//    连这个入口都进不去，等于锁死。
+	//    它替代了 PR #42 里对 /user/login 的豁免 —— 按 Q63 定稿，普通登录**要拦**
+	//    （用户原话「无法登录等」），只给管理员留这一个专用入口。
+	if isAdminLoginExemptPath(trimmed) {
+		return true
+	}
+	return false
+}
+
+// isAdminLoginExemptPath 判断路径是否是管理员专用登录入口（含其前端路由与 API）。
+//
+// 三个形态都要豁免，漏任何一个都会让管理员进不来：
+//
+//	/admin-login                       前端页面（SPA 路由）
+//	/adapter-service/admin-login       登录 API（本 PR 新增）
+//	/adapter-service/public/captcha/*  人机验证挑战/校验（登录前置，必须可达）
+//
+// 最后一条容易被忽略：人机验证接口若被拦，管理员点「登录」时会先卡在验证码上，
+// 表现成「页面能打开但登录永远失败」—— 比完全进不去更难排查。
+func isAdminLoginExemptPath(path string) bool {
+	switch path {
+	case AdminLoginPagePath,
+		"/adapter-service/admin-login",
+		// 人机验证：站内图片验证码的挑战与校验、远程验证码的三个端点。
+		"/adapter-service/public/captcha/challenge",
+		"/adapter-service/public/captcha/verify",
+		"/adapter-service/public/captcha/remote-gen",
+		"/adapter-service/public/captcha/remote-check",
+		"/adapter-service/public/captcha/remote-token":
 		return true
 	}
 	return false

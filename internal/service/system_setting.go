@@ -233,6 +233,19 @@ type SystemSettingDetail struct {
 	ReviewRebateMinAgentConfidence float64 `json:"reviewRebateMinAgentConfidence"`
 	// 黑名单总开关，默认关闭（46-黑名单设计.md）。关闭时中间件零查询、零写日志。
 	BlacklistEnabled bool `json:"blacklistEnabled"`
+	// 两套登录限流（45-*.md §0.1.4）。普通模式按账号、可关闭；
+	// 被拉黑 IP 的管理员入口按 IP、**不可关闭**（没有 enabled 键，见 login_rate_limit.go）。
+	LoginRateLimitEnabled             bool `json:"loginRateLimitEnabled"`
+	LoginMaxAttempts                  int  `json:"loginMaxAttempts"`
+	LoginAttemptWindowMinutes         int  `json:"loginAttemptWindowMinutes"`
+	LoginLockoutMinutes               int  `json:"loginLockoutMinutes"`
+	BlacklistAdminLoginWindowMinutes  int  `json:"blacklistAdminLoginWindowMinutes"`
+	BlacklistAdminLoginMaxAttempts    int  `json:"blacklistAdminLoginMaxAttempts"`
+	BlacklistAdminLoginLockoutMinutes int  `json:"blacklistAdminLoginLockoutMinutes"`
+	// 普通模式 IP 维度阈值（默认 20）与 IP 白名单（CIDR 列表，默认空）。
+	// 见 45-*.md Q67：账号维度拦不住 password spraying，需 IP 维度兜底。
+	LoginIPMaxAttempts      int    `json:"loginIPMaxAttempts"`
+	LoginRateLimitExemptIPs string `json:"loginRateLimitExemptIPs"`
 	// SensitiveWordCheckEnabled 是敏感词检测总开关，默认 false。
 	//
 	// 关闭时完全不调外部 API、不写 logs 的 sensitive_* 四列；
@@ -302,6 +315,19 @@ type UpdateSystemSettingInput struct {
 	// 黑名单总开关：同样是指针语义，nil = 未提交 = 保持现值。
 	// 旧客户端（不带该字段）不会因为一次「只改站点名」的 PUT 把黑名单打开或关掉。
 	BlacklistEnabled *bool `json:"blacklistEnabled"`
+	// 两套登录限流：指针语义，nil = 未提交 = 保持现值。
+	// ⚠️ 刻意**没有** BlacklistAdminLoginEnabled —— 「不允许关闭」是结构性保证，
+	// 不接受该键，也不存在对应的 system_settings 键（见 login_rate_limit.go）。
+	LoginRateLimitEnabled             *bool `json:"loginRateLimitEnabled"`
+	LoginMaxAttempts                  *int  `json:"loginMaxAttempts"`
+	LoginAttemptWindowMinutes         *int  `json:"loginAttemptWindowMinutes"`
+	LoginLockoutMinutes               *int  `json:"loginLockoutMinutes"`
+	BlacklistAdminLoginWindowMinutes  *int  `json:"blacklistAdminLoginWindowMinutes"`
+	BlacklistAdminLoginMaxAttempts    *int  `json:"blacklistAdminLoginMaxAttempts"`
+	BlacklistAdminLoginLockoutMinutes *int  `json:"blacklistAdminLoginLockoutMinutes"`
+	// 普通模式 IP 维度阈值 + IP 白名单：指针语义，nil = 未提交 = 保持现值。
+	LoginIPMaxAttempts      *int    `json:"loginIPMaxAttempts"`
+	LoginRateLimitExemptIPs *string `json:"loginRateLimitExemptIPs"`
 	// 敏感词检测开关：指针语义，nil = 未提交 = 保持库中现值。
 	//
 	// 若用裸 bool，任何不认识该字段的旧客户端提交设置都会把开关静默关掉。
@@ -431,55 +457,64 @@ func GetSystemSettingDetailWithDB(db *gorm.DB) (SystemSettingDetail, error) {
 	smsLoginEnabled := strings.EqualFold(strings.TrimSpace(getSystemSettingStringWithDefault(db, SMSLoginEnabledSettingKey, "false")), "true")
 	wechatSettings := getNormalizedWechatLoginSettingsWithDB(db)
 	detail := SystemSettingDetail{
-		RegisterEnabled:                registerEnabled,
-		NewUserBonusAmount:             DefaultNewUserBonusAmount,
-		SiteName:                       normalizeSiteName(getSystemSettingStringWithDefault(db, SiteNameSettingKey, DefaultSiteName)),
-		AlternativeLoginEnabled:        smsLoginEnabled || wechatSettings.WechatLoginEnabled,
-		EPayVersion:                    DefaultEPayVersion,
-		EPayGatewayURL:                 getSystemSettingStringWithDefault(db, EPayGatewayURLSettingKey, ""),
-		EPayPartnerID:                  getSystemSettingStringWithDefault(db, EPayPartnerIDSettingKey, ""),
-		EPayPlatformPublicKey:          getSystemSettingStringWithDefault(db, EPayPlatformPublicKeySettingKey, ""),
-		EPayMerchantPrivateKey:         getSystemSettingStringWithDefault(db, EPayMerchantPrivateKeySettingKey, ""),
-		EPayNotifyURL:                  getSystemSettingStringWithDefault(db, EPayNotifyURLSettingKey, ""),
-		EPayReturnURL:                  getSystemSettingStringWithDefault(db, EPayReturnURLSettingKey, ""),
-		SMSProvider:                    getSystemSettingStringWithDefault(db, SMSProviderSettingKey, DefaultSMSProvider),
-		SMSBaoUsername:                 getSystemSettingStringWithDefault(db, SMSBaoUsernameSettingKey, ""),
-		SMSBaoSecret:                   getSystemSettingStringWithDefault(db, SMSBaoSecretSettingKey, ""),
-		SMSCodeSignName:                getSystemSettingStringWithDefault(db, SMSCodeSignNameSettingKey, ""),
-		SMSCodeTemplate:                getSystemSettingStringWithDefault(db, SMSCodeTemplateSettingKey, DefaultSMSCodeTemplate),
-		SMSLoginEnabled:                smsLoginEnabled,
-		WechatLoginEnabled:             wechatSettings.WechatLoginEnabled,
-		WechatScanLoginEnabled:         wechatSettings.WechatScanLoginEnabled,
-		WechatCodeLoginEnabled:         wechatSettings.WechatCodeLoginEnabled,
-		WechatDefaultLoginMode:         wechatSettings.WechatDefaultLoginMode,
-		WechatCodeStaticQRCodeURL:      wechatSettings.WechatCodeStaticQRCodeURL,
-		WechatAPIBaseURL:               trimTrailingSlash(getSystemSettingStringWithDefault(db, WechatAPIBaseURLSettingKey, "")),
-		WechatAPIBearerToken:           strings.TrimSpace(getSystemSettingStringWithDefault(db, WechatAPIBearerTokenSettingKey, "")),
-		CaptchaProvider:                normalizeCaptchaProvider(getSystemSettingStringWithDefault(db, CaptchaProviderSettingKey, DefaultCaptchaProvider)),
-		CaptchaAPIBaseURL:              trimTrailingSlash(getSystemSettingStringWithDefault(db, CaptchaAPIBaseURLSettingKey, DefaultCaptchaAPIBaseURL)),
-		CaptchaAPIKey:                  strings.TrimSpace(getSystemSettingStringWithDefault(db, CaptchaAPIKeySettingKey, DefaultCaptchaAPIKey)),
-		CaptchaType:                    normalizeCaptchaType(getSystemSettingStringWithDefault(db, CaptchaTypeSettingKey, DefaultCaptchaType)),
-		SMSBaoCredentialType:           normalizeSMSBaoCredentialType(getSystemSettingStringWithDefault(db, SMSBaoCredentialTypeSettingKey, DefaultSMSBaoCredentialType)),
-		SMSBaoRegionMode:               normalizeSMSBaoRegionMode(getSystemSettingStringWithDefault(db, SMSBaoRegionModeSettingKey, DefaultSMSBaoRegionMode)),
-		UAPIAPIKey:                     strings.TrimSpace(getSystemSettingStringWithDefault(db, UAPIAPIKeySettingKey, "")),
-		MaxLogSizeBytes:                getPositiveInt64SystemSetting(db, MaxLogSizeBytesSettingKey, DefaultMaxLogSizeBytes),
-		MaxAISearchModelCalls:          getPositiveIntSystemSetting(db, MaxAISearchModelCallsSettingKey, DefaultMaxAISearchModelCalls),
-		MaxAISearches:                  getPositiveIntSystemSetting(db, MaxAISearchesSettingKey, DefaultMaxAISearches),
-		MaxAISearchRetries:             getPositiveIntSystemSetting(db, MaxAISearchRetriesSettingKey, DefaultMaxAISearchRetries),
-		MaxAIWebReads:                  getPositiveIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads),
-		WebReadPricePerCall:            GetWebReadPricePerCallWithDB(db),
-		MinRechargeAmount:              GetMinRechargeAmountWithDB(db),
-		RechargePromotionEnabled:       GetRechargePromotionEnabledWithDB(db),
-		DeviceLimitEnabled:             GetDeviceLimitEnabledWithDB(db),
-		ReferralRebateEnabled:          GetReferralRebateEnabledWithDB(db),
-		ReferralRebateRate:             GetReferralRebateRateWithDB(db),
-		ReviewRebateEnabled:            GetReviewRebateEnabledWithDB(db),
-		ReviewRebateMaxClaimsPerUser:   GetReviewRebateMaxClaimsPerUserWithDB(db),
-		ReviewRebateMaxAmountPerUser:   GetReviewRebateMaxAmountPerUserWithDB(db),
-		ReviewRebateMinAgentConfidence: GetReviewRebateMinAgentConfidenceWithDB(db),
-		BlacklistEnabled:               GetBlacklistEnabledWithDB(db),
-		SensitiveWordCheckEnabled:      GetSensitiveWordCheckEnabledWithDB(db),
-		SensitiveWordCheckConfigured:   IsSensitiveWordDetectorConfiguredWithDB(db),
+		RegisterEnabled:                   registerEnabled,
+		NewUserBonusAmount:                DefaultNewUserBonusAmount,
+		SiteName:                          normalizeSiteName(getSystemSettingStringWithDefault(db, SiteNameSettingKey, DefaultSiteName)),
+		AlternativeLoginEnabled:           smsLoginEnabled || wechatSettings.WechatLoginEnabled,
+		EPayVersion:                       DefaultEPayVersion,
+		EPayGatewayURL:                    getSystemSettingStringWithDefault(db, EPayGatewayURLSettingKey, ""),
+		EPayPartnerID:                     getSystemSettingStringWithDefault(db, EPayPartnerIDSettingKey, ""),
+		EPayPlatformPublicKey:             getSystemSettingStringWithDefault(db, EPayPlatformPublicKeySettingKey, ""),
+		EPayMerchantPrivateKey:            getSystemSettingStringWithDefault(db, EPayMerchantPrivateKeySettingKey, ""),
+		EPayNotifyURL:                     getSystemSettingStringWithDefault(db, EPayNotifyURLSettingKey, ""),
+		EPayReturnURL:                     getSystemSettingStringWithDefault(db, EPayReturnURLSettingKey, ""),
+		SMSProvider:                       getSystemSettingStringWithDefault(db, SMSProviderSettingKey, DefaultSMSProvider),
+		SMSBaoUsername:                    getSystemSettingStringWithDefault(db, SMSBaoUsernameSettingKey, ""),
+		SMSBaoSecret:                      getSystemSettingStringWithDefault(db, SMSBaoSecretSettingKey, ""),
+		SMSCodeSignName:                   getSystemSettingStringWithDefault(db, SMSCodeSignNameSettingKey, ""),
+		SMSCodeTemplate:                   getSystemSettingStringWithDefault(db, SMSCodeTemplateSettingKey, DefaultSMSCodeTemplate),
+		SMSLoginEnabled:                   smsLoginEnabled,
+		WechatLoginEnabled:                wechatSettings.WechatLoginEnabled,
+		WechatScanLoginEnabled:            wechatSettings.WechatScanLoginEnabled,
+		WechatCodeLoginEnabled:            wechatSettings.WechatCodeLoginEnabled,
+		WechatDefaultLoginMode:            wechatSettings.WechatDefaultLoginMode,
+		WechatCodeStaticQRCodeURL:         wechatSettings.WechatCodeStaticQRCodeURL,
+		WechatAPIBaseURL:                  trimTrailingSlash(getSystemSettingStringWithDefault(db, WechatAPIBaseURLSettingKey, "")),
+		WechatAPIBearerToken:              strings.TrimSpace(getSystemSettingStringWithDefault(db, WechatAPIBearerTokenSettingKey, "")),
+		CaptchaProvider:                   normalizeCaptchaProvider(getSystemSettingStringWithDefault(db, CaptchaProviderSettingKey, DefaultCaptchaProvider)),
+		CaptchaAPIBaseURL:                 trimTrailingSlash(getSystemSettingStringWithDefault(db, CaptchaAPIBaseURLSettingKey, DefaultCaptchaAPIBaseURL)),
+		CaptchaAPIKey:                     strings.TrimSpace(getSystemSettingStringWithDefault(db, CaptchaAPIKeySettingKey, DefaultCaptchaAPIKey)),
+		CaptchaType:                       normalizeCaptchaType(getSystemSettingStringWithDefault(db, CaptchaTypeSettingKey, DefaultCaptchaType)),
+		SMSBaoCredentialType:              normalizeSMSBaoCredentialType(getSystemSettingStringWithDefault(db, SMSBaoCredentialTypeSettingKey, DefaultSMSBaoCredentialType)),
+		SMSBaoRegionMode:                  normalizeSMSBaoRegionMode(getSystemSettingStringWithDefault(db, SMSBaoRegionModeSettingKey, DefaultSMSBaoRegionMode)),
+		UAPIAPIKey:                        strings.TrimSpace(getSystemSettingStringWithDefault(db, UAPIAPIKeySettingKey, "")),
+		MaxLogSizeBytes:                   getPositiveInt64SystemSetting(db, MaxLogSizeBytesSettingKey, DefaultMaxLogSizeBytes),
+		MaxAISearchModelCalls:             getPositiveIntSystemSetting(db, MaxAISearchModelCallsSettingKey, DefaultMaxAISearchModelCalls),
+		MaxAISearches:                     getPositiveIntSystemSetting(db, MaxAISearchesSettingKey, DefaultMaxAISearches),
+		MaxAISearchRetries:                getPositiveIntSystemSetting(db, MaxAISearchRetriesSettingKey, DefaultMaxAISearchRetries),
+		MaxAIWebReads:                     getPositiveIntSystemSetting(db, MaxAIWebReadsSettingKey, DefaultMaxAIWebReads),
+		WebReadPricePerCall:               GetWebReadPricePerCallWithDB(db),
+		MinRechargeAmount:                 GetMinRechargeAmountWithDB(db),
+		RechargePromotionEnabled:          GetRechargePromotionEnabledWithDB(db),
+		DeviceLimitEnabled:                GetDeviceLimitEnabledWithDB(db),
+		ReferralRebateEnabled:             GetReferralRebateEnabledWithDB(db),
+		ReferralRebateRate:                GetReferralRebateRateWithDB(db),
+		ReviewRebateEnabled:               GetReviewRebateEnabledWithDB(db),
+		ReviewRebateMaxClaimsPerUser:      GetReviewRebateMaxClaimsPerUserWithDB(db),
+		ReviewRebateMaxAmountPerUser:      GetReviewRebateMaxAmountPerUserWithDB(db),
+		ReviewRebateMinAgentConfidence:    GetReviewRebateMinAgentConfidenceWithDB(db),
+		BlacklistEnabled:                  GetBlacklistEnabledWithDB(db),
+		LoginRateLimitEnabled:             GetLoginRateLimitEnabledWithDB(db),
+		LoginMaxAttempts:                  GetLoginMaxAttemptsWithDB(db),
+		LoginAttemptWindowMinutes:         GetLoginAttemptWindowMinutesWithDB(db),
+		LoginLockoutMinutes:               GetLoginLockoutMinutesWithDB(db),
+		BlacklistAdminLoginWindowMinutes:  GetBlacklistAdminLoginWindowMinutesWithDB(db),
+		BlacklistAdminLoginMaxAttempts:    GetBlacklistAdminLoginMaxAttemptsWithDB(db),
+		BlacklistAdminLoginLockoutMinutes: GetBlacklistAdminLoginLockoutMinutesWithDB(db),
+		LoginIPMaxAttempts:                GetLoginIPMaxAttemptsWithDB(db),
+		LoginRateLimitExemptIPs:           GetLoginRateLimitExemptIPsWithDB(db),
+		SensitiveWordCheckEnabled:         GetSensitiveWordCheckEnabledWithDB(db),
+		SensitiveWordCheckConfigured:      IsSensitiveWordDetectorConfiguredWithDB(db),
 	}
 	bonusAmount, err := GetNewUserBonusAmountWithDB(db)
 	if err != nil {
@@ -518,6 +553,10 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 	}
 	reviewRebateMinConfidence, err := resolveReviewRebateMinConfidence(db, input.ReviewRebateMinAgentConfidence)
 	if err != nil {
+		return SystemSettingDetail{}, err
+	}
+	// 两套登录限流：边界校验**必须在写库之前**（越界拒绝保存，不静默 clamp）。
+	if err := ValidateLoginRateLimitInput(input); err != nil {
 		return SystemSettingDetail{}, err
 	}
 
@@ -582,6 +621,24 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		ReviewRebateMinAgentConfidence: reviewRebateMinConfidence,
 		// 黑名单：nil = 未提交 = 保持现值；读取失败一律 false（不能让配置读错变成开始拦人）。
 		BlacklistEnabled: resolveBoolSettingInput(db, input.BlacklistEnabled, BlacklistEnabledSettingKey),
+		// 两套登录限流：越界**拒绝保存**（ValidateLoginRateLimitInput 已在函数入口校验）。
+		// nil = 未提交 = 保持现值。
+		LoginRateLimitEnabled: resolveBoolSettingInput(db, input.LoginRateLimitEnabled, LoginRateLimitEnabledSettingKey),
+		LoginMaxAttempts: resolveLoginRateLimitInt(db, input.LoginMaxAttempts,
+			GetLoginMaxAttemptsWithDB(db)),
+		LoginAttemptWindowMinutes: resolveLoginRateLimitInt(db, input.LoginAttemptWindowMinutes,
+			GetLoginAttemptWindowMinutesWithDB(db)),
+		LoginLockoutMinutes: resolveLoginRateLimitInt(db, input.LoginLockoutMinutes,
+			GetLoginLockoutMinutesWithDB(db)),
+		BlacklistAdminLoginWindowMinutes: resolveLoginRateLimitInt(db, input.BlacklistAdminLoginWindowMinutes,
+			GetBlacklistAdminLoginWindowMinutesWithDB(db)),
+		BlacklistAdminLoginMaxAttempts: resolveLoginRateLimitInt(db, input.BlacklistAdminLoginMaxAttempts,
+			GetBlacklistAdminLoginMaxAttemptsWithDB(db)),
+		BlacklistAdminLoginLockoutMinutes: resolveLoginRateLimitInt(db, input.BlacklistAdminLoginLockoutMinutes,
+			GetBlacklistAdminLoginLockoutMinutesWithDB(db)),
+		LoginIPMaxAttempts: resolveLoginRateLimitInt(db, input.LoginIPMaxAttempts,
+			GetLoginIPMaxAttemptsWithDB(db)),
+		LoginRateLimitExemptIPs: resolveLoginRateLimitExemptIPs(db, input.LoginRateLimitExemptIPs),
 		// 敏感词检测：nil = 未提交 = 保持现值；读取失败一律 false（不能悄悄开外呼）。
 		SensitiveWordCheckEnabled: ResolveSensitiveWordSettingInput(db, input.SensitiveWordCheckEnabled),
 	}
@@ -638,6 +695,16 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		{ReviewRebateMaxAmountPerUserSettingKey, strconv.FormatFloat(normalized.ReviewRebateMaxAmountPerUser, 'f', -1, 64), "评价返现每账号累计金额上限（元）"},
 		{ReviewRebateMinAgentConfidenceSettingKey, strconv.FormatFloat(normalized.ReviewRebateMinAgentConfidence, 'f', -1, 64), "评价返现 Agent 置信度门槛（低于则强制人工）"},
 		{BlacklistEnabledSettingKey, strconv.FormatBool(normalized.BlacklistEnabled), "启用黑名单（默认关闭）"},
+		{LoginRateLimitEnabledSettingKey, strconv.FormatBool(normalized.LoginRateLimitEnabled), "启用普通登录限流（默认开启，可关闭）"},
+		{LoginMaxAttemptsSettingKey, strconv.Itoa(normalized.LoginMaxAttempts), "普通登录连续失败阈值（次，默认 10，无上限）"},
+		{LoginAttemptWindowMinutesSettingKey, strconv.Itoa(normalized.LoginAttemptWindowMinutes), "普通登录失败计数窗口（分钟，默认 15，无上限）"},
+		{LoginLockoutMinutesSettingKey, strconv.Itoa(normalized.LoginLockoutMinutes), "普通登录锁定时长（分钟，默认 15）"},
+		// ⚠️ 以下三键**没有**对应的 enabled 键：「不允许关闭」是结构性保证。
+		{BlacklistAdminLoginWindowMinutesSettingKey, strconv.Itoa(normalized.BlacklistAdminLoginWindowMinutes), "被拉黑 IP 的管理员登录计数窗口（分钟，默认 15，最低 15）"},
+		{BlacklistAdminLoginMaxAttemptsSettingKey, strconv.Itoa(normalized.BlacklistAdminLoginMaxAttempts), "被拉黑 IP 的管理员登录连续失败阈值（次，默认 5，最高 10）"},
+		{BlacklistAdminLoginLockoutMinutesSettingKey, strconv.Itoa(normalized.BlacklistAdminLoginLockoutMinutes), "被拉黑 IP 的管理员登录锁定时长（分钟，默认 30）"},
+		{LoginIPMaxAttemptsSettingKey, strconv.Itoa(normalized.LoginIPMaxAttempts), "普通登录 IP 维度连续失败阈值（次，默认 20，无上限）"},
+		{LoginRateLimitExemptIPsSettingKey, normalized.LoginRateLimitExemptIPs, "登录限流 IP 白名单（IP/CIDR，逗号或换行分隔；白名单不参与 IP 维度限流）"},
 		{SensitiveWordCheckEnabledSettingKey, strconv.FormatBool(normalized.SensitiveWordCheckEnabled), "启用敏感词检测打标（默认关闭，不影响答题）"},
 	}
 	for _, item := range settings {
@@ -1062,7 +1129,6 @@ func resolveBoolSettingInput(db *gorm.DB, requested *bool, key string) bool {
 }
 
 // GetReviewRebateEnabledWithDB 返回评价返现总开关，默认关闭。
-//
 // 缺表、缺记录、值非法一律按关闭处理：配置读不出来时绝不能变成「悄悄开活动」。
 func GetReviewRebateEnabledWithDB(db *gorm.DB) bool {
 	return getBoolSystemSetting(db, ReviewRebateEnabledSettingKey)

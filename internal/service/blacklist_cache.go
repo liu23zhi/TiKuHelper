@@ -51,6 +51,12 @@ type BlacklistRule struct {
 	MatchType string
 	// ValueMasked 是展示用脱敏值，写命中日志时用。
 	ValueMasked string
+	// Reason 是运营填写的拉黑原因（人类可读文本，如「请求过于频繁」）。
+	//
+	// 45-*.md §0.1.1 明确要求拉黑页面**显示 reason**，但**只显示 reason**：
+	// reason 是运营写给用户看的话，而 Pattern 是规则边界 ——
+	// 泄漏 Pattern 等于告诉攻击者精确的绕过边界。
+	Reason string
 	// ExpiresAt 为 nil 表示永久；进缓存前已过滤掉过期条目。
 	ExpiresAt *time.Time
 }
@@ -102,6 +108,12 @@ type BlacklistMatch struct {
 	Kind        string
 	MatchType   string
 	ValueMasked string
+	// Reason 是命中规则的拉黑原因，供拉黑页面展示（45-*.md §0.1.1）。
+	//
+	// ⚠️ 它**只能**用于「给被拦用户看的解释」，绝不能被拼进 JSON API 响应体：
+	// API 响应里出现 reason 就等于告诉攻击者规则边界（46-*.md §3.2）。
+	// 中间件里 HTML 页面走 reason，JSON 分支仍然只回固定文案。
+	Reason string
 }
 
 func newBlacklistSnapshot(now time.Time, enabled bool) *BlacklistSnapshot {
@@ -183,6 +195,7 @@ func (r *BlacklistRule) toMatch() BlacklistMatch {
 		Kind:        r.Kind,
 		MatchType:   r.MatchType,
 		ValueMasked: r.ValueMasked,
+		Reason:      r.Reason,
 	}
 }
 
@@ -241,6 +254,7 @@ func LoadBlacklistSnapshot(db *gorm.DB, now time.Time) (*BlacklistSnapshot, erro
 			Pattern:     row.Pattern,
 			MatchType:   strings.ToLower(strings.TrimSpace(row.MatchType)),
 			ValueMasked: row.ValueMasked,
+			Reason:      row.Reason,
 			ExpiresAt:   row.ExpiresAt,
 		}
 		if rule.ValueMasked == "" {

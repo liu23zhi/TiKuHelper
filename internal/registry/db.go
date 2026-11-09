@@ -35,12 +35,17 @@ var db *gorm.DB
 var databaseScheduler *dbqueue.Scheduler
 var once sync.Once
 var idempotencyCleanupStop func()
+var loginAttemptCleanupStop func()
 
 // CloseDB close db
 func CloseDB() error {
 	if idempotencyCleanupStop != nil {
 		idempotencyCleanupStop()
 		idempotencyCleanupStop = nil
+	}
+	if loginAttemptCleanupStop != nil {
+		loginAttemptCleanupStop()
+		loginAttemptCleanupStop = nil
 	}
 	if databaseScheduler != nil {
 		databaseScheduler.Close()
@@ -852,6 +857,13 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		logger.FatalLog(fmt.Errorf("prepare blacklist schema fail: %w", err))
 	}
 
+	// 两套登录限流（45-*.md §0.1.4）：建 login_attempts（scope+subject_key 复合主键）。
+	// 与开关解耦：login_rate_limit_enabled 默认 true，但普通模式可关闭；表照建。
+	// 管理员入口（ip 维度）不可关闭，也没有对应的 enabled 键。
+	if err := runStartupMigration("ensureLoginAttemptSchema", func() error { return ensureLoginAttemptSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare login attempt schema fail: %w", err))
+	}
+
 	// source-aware 归属地缓存使用新表，旧表保留以兼容 SQLite 和回滚；
 	// 回填失败只记日志，下一次启动会因未写标记而重试。
 	if err := runStartupMigration("ensureLocationCacheEntriesSchema", func() error { return ensureLocationCacheEntriesSchema(db) }); err != nil {
@@ -884,6 +896,12 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 	ensureAccountDomainDefaults(db)
 	if idempotencyCleanupStop == nil {
 		idempotencyCleanupStop = service.StartIdempotencyCleanup(db, time.Hour)
+	}
+	// 登录限流表清理：过期且无生效锁定的行每 10 分钟删一次，防止撞库把表灌爆。
+	// 判定不依赖清理（RecordLoginFailure 自己会重置过期窗口），
+	// 所以清理任务挂了只会让表变大，不会让限流失效。
+	if loginAttemptCleanupStop == nil {
+		loginAttemptCleanupStop = service.StartLoginAttemptCleanup(db, service.LoginAttemptCleanupInterval)
 	}
 	return db
 }

@@ -292,38 +292,52 @@ func UserLogin(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
 		return
 	}
+
+	// 两套登录限流的前置检查（45-*.md §0.1.4 四-1）。
+	//
+	// 普通登录**同时受两个维度约束**：
+	//   account —— 按 username 计数，可被管理员关闭（login_rate_limit_enabled）
+	//   ip      —— **仅当该 IP 在黑名单中**时生效，按 IP 计数，不可关闭
+	//
+	// 为什么被拉黑 IP 从普通入口也要受 IP 维度约束：否则攻击者被拉黑后
+	// 换普通登录入口继续爆破，就绕过了管理员入口的那层防护。
+	// 两套任一超限即拒绝。
+	loginGate := beginLoginRateLimit(c)
+	if loginGate == nil {
+		return
+	}
+	// 账号维度的前置锁定检查**必须在验证凭据之前**：否则已锁定的账号
+	// 只要提交正确密码就能登录，锁定形同虚设（实测发现的第一版缺陷）。
+	if loginGate.checkAccountLocked(payload.Username) {
+		return
+	}
+
 	if err := util.ValidateBcryptPasswordBytes(payload.Password); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "用户名或密码错误"})
+		loginGate.failAccount(payload.Username, "用户名或密码错误")
 		return
 	}
 
 	captchaToken := strings.TrimSpace(payload.CaptchaToken)
 	if err := consumeCaptchaTokenWithDB(captchaToken, service.CaptchaSceneLoginPassword, strings.TrimSpace(c.ClientIP())); err != nil {
-		c.JSON(400, gin.H{
-			"message": err.Error(),
-		})
+		loginGate.failAccount(payload.Username, err.Error())
 		return
 	}
 
 	us := dao.User
 	user, err := us.Where(us.Username.Eq(strings.TrimSpace(payload.Username))).First()
 	if err != nil {
-		c.JSON(400, gin.H{
-			"message": "用户名或密码错误",
-		})
+		// 账号不存在**也计数**：key 用输入的 username（归一化后），**不查库** ——
+		// 否则可以靠「是否被锁」反推账号是否存在。
+		loginGate.failAccount(payload.Username, "用户名或密码错误")
 		return
 	}
 	passwordMatches, needsUpgrade := util.VerifyPassword(user.Password, payload.Password)
 	if !passwordMatches {
-		c.JSON(400, gin.H{
-			"message": "用户名或密码错误",
-		})
+		loginGate.failAccount(payload.Username, "用户名或密码错误")
 		return
 	}
 	if !isUserEnabled(user) {
-		c.JSON(400, gin.H{
-			"message": "用户已被禁用",
-		})
+		loginGate.failAccount(payload.Username, "用户已被禁用")
 		return
 	}
 	passwordUpgrade := ""
@@ -339,6 +353,8 @@ func UserLogin(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "登录信息更新失败"})
 		return
 	}
+	// 成功：两个维度都清零（含 window_start 重置，「连续」语义）。
+	loginGate.succeed(payload.Username)
 	bindSuccessfulVerification(*user, captchaToken, service.CaptchaSceneLoginPassword, service.SMSVerificationEvidence{})
 	recordAccountAudit(c, user, "auth", logActionLogin, "用户登录成功", map[string]any{"status": "success", "message": "用户登录成功", "scene": "password"})
 	setAuthCookie(c, token)
@@ -938,8 +954,18 @@ func UserSMSLogin(c *gin.Context) {
 		c.JSON(400, gin.H{"message": err.Error()})
 		return
 	}
+	// 短信登录**也要计数**（45-*.md §0.1.4 五-3）：它同样能撞号，
+	// 且与密码登录共用同一个账号维度 key（手机号归一化后作为 username 的替代）。
+	loginGate := beginLoginRateLimit(c)
+	if loginGate == nil {
+		return
+	}
+	// 账号维度前置检查（key 用归一化手机号，与密码登录共用同一维度）。
+	if loginGate.checkAccountLocked(phone) {
+		return
+	}
 	if err := consumeCaptchaTokenWithDB(strings.TrimSpace(payload.CaptchaToken), service.CaptchaSceneLoginSMS, strings.TrimSpace(c.ClientIP())); err != nil {
-		c.JSON(400, gin.H{"message": err.Error()})
+		loginGate.failAccount(phone, err.Error())
 		return
 	}
 	users, err := service.FindUsersByPhoneAliases(dao.User.UnderlyingDB(), phone)
@@ -952,17 +978,17 @@ func UserSMSLogin(c *gin.Context) {
 		return
 	}
 	if len(users) == 0 {
-		c.JSON(400, gin.H{"message": "该手机号未绑定账号，请先注册"})
+		loginGate.failAccount(phone, "该手机号未绑定账号，请先注册")
 		return
 	}
 	user := users[0]
 	if !isUserEnabled(&user) {
-		c.JSON(400, gin.H{"message": "用户已被禁用"})
+		loginGate.failAccount(phone, "用户已被禁用")
 		return
 	}
 	smsEvidence, err := verifySMSCodeWithDB(phone, service.SMSSceneLogin, payload.SMSCode)
 	if err != nil {
-		c.JSON(400, gin.H{"message": err.Error()})
+		loginGate.failAccount(phone, err.Error())
 		return
 	}
 	token, err := service.IssueUserLoginJWTWithDB(dao.User.UnderlyingDB().WithContext(c.Request.Context()), &user, c.ClientIP(), "")
@@ -970,6 +996,7 @@ func UserSMSLogin(c *gin.Context) {
 		c.JSON(400, gin.H{"message": "登录信息更新失败"})
 		return
 	}
+	loginGate.succeed(phone)
 	bindSuccessfulVerification(user, payload.CaptchaToken, service.CaptchaSceneLoginSMS, smsEvidence)
 	recordAccountAudit(c, &user, "auth", logActionLogin, "用户短信登录成功", map[string]any{"status": "success", "message": "用户短信登录成功", "scene": "sms"})
 	setAuthCookie(c, token)

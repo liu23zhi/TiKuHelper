@@ -340,15 +340,20 @@ func TestBlacklistMiddlewareAdminAndLoginExemptPaths(t *testing.T) {
 	cache := loadBlacklistCache(t, db)
 	router := newBlacklistTestRouter(BlacklistIPWith(cache, service.NewBlacklistHitRecorder(), db))
 
+	// 豁免：管理接口 + **管理员专用登录入口** + 它依赖的人机验证端点。
 	exempt := []string{
 		"/adapter-service/admin/referral-rebates",
 		"/adapter-service/admin",
 		"/adapter-service/admin/userexam/inspect",
-		"/adapter-service/user/login",
-		"/adapter-service/user/login/sms",
+		"/adapter-service/admin-login",
+		"/adapter-service/public/captcha/challenge",
+		"/adapter-service/public/captcha/verify",
+		"/adapter-service/public/captcha/remote-gen",
+		"/adapter-service/public/captcha/remote-check",
+		"/adapter-service/public/captcha/remote-token",
 		// query / 结尾斜杠不能绕过豁免表。
-		"/adapter-service/user/login?next=/x",
-		"/adapter-service/user/login/",
+		"/adapter-service/admin-login?next=/x",
+		"/adapter-service/admin-login/",
 	}
 	for _, path := range exempt {
 		if response := doBlacklistRequest(router, http.MethodPost, path, "203.0.113.7:1234"); response.Code != http.StatusOK {
@@ -356,8 +361,11 @@ func TestBlacklistMiddlewareAdminAndLoginExemptPaths(t *testing.T) {
 		}
 	}
 
-	// 业务路径仍然拦（豁免只覆盖管理接口与登录入口）。
+	// **普通登录现在要拦**（45-*.md §0.1.1 Q63：「打开网页即显示拉黑原因，无法登录等」）。
+	// 这是相对 PR #42 的行为变更：普通登录不再豁免，只留管理员专用入口。
 	blocked := []string{
+		"/adapter-service/user/login",
+		"/adapter-service/user/login/sms",
 		"/adapter-service/search",
 		"/adapter-service/user/register",
 		"/adapter-service/billing-records",
@@ -365,31 +373,47 @@ func TestBlacklistMiddlewareAdminAndLoginExemptPaths(t *testing.T) {
 	}
 	for _, path := range blocked {
 		if response := doBlacklistRequest(router, http.MethodPost, path, "203.0.113.7:1234"); response.Code != http.StatusForbidden {
-			t.Fatalf("business path %s status = %d, want 403", path, response.Code)
+			t.Fatalf("path %s status = %d, want 403", path, response.Code)
 		}
 	}
 }
 
 func TestBlacklistExemptPathTable(t *testing.T) {
 	cases := map[string]bool{
+		// 管理接口。
 		"/adapter-service/admin/referral-rebates":    true,
 		"/adapter-service/admin/review-rebate/rules": true,
 		"/adapter-service/admin":                     true,
 		"/adapter-service/admin/userexam/tool":       true,
-		"/adapter-service/user/login":                true,
-		"/adapter-service/user/login/sms":            true,
-		"/adapter-service/user/login?x=1":            true,
-		"/adapter-service/user/login/":               true,
-		"/adapter-service/search":                    false,
-		"/adapter-service/user/register":             false,
-		"/adapter-service/user/login-extra":          false,
-		"/adapter-service/administrator":             false,
-		"/sqp/anything":                              false,
-		"/":                                          false,
-		"":                                           false,
-		"  ":                                         false,
-		"/adapter-service/user/logout":               false,
-		"/adapter-service/public/captcha/challenge":  false,
+		// 管理员专用登录入口（Q63）：API 与前端路由都豁免。
+		"/adapter-service/admin-login":     true,
+		"/adapter-service/admin-login?x=1": true,
+		"/adapter-service/admin-login/":    true,
+		"/admin-login":                     true,
+		"/admin-login/":                    true,
+		// 人机验证端点必须可达，否则管理员卡在验证码上（比进不去更难排查）。
+		"/adapter-service/public/captcha/challenge":    true,
+		"/adapter-service/public/captcha/verify":       true,
+		"/adapter-service/public/captcha/remote-gen":   true,
+		"/adapter-service/public/captcha/remote-check": true,
+		"/adapter-service/public/captcha/remote-token": true,
+
+		// **普通登录不再豁免**（Q63 行为变更）。
+		"/adapter-service/user/login":     false,
+		"/adapter-service/user/login/sms": false,
+		"/adapter-service/search":         false,
+		"/adapter-service/user/register":  false,
+		"/adapter-service/user/logout":    false,
+		// 其他公开接口不豁免（只有验证码例外）。
+		"/adapter-service/public/sms-code":        false,
+		"/adapter-service/public/register-status": false,
+		// 前缀陷阱：administrator / admin-login-extra 都不是豁免路径。
+		"/adapter-service/administrator":     false,
+		"/adapter-service/admin-login-extra": false,
+		"/sqp/anything":                      false,
+		"/":                                  false,
+		"":                                   false,
+		"  ":                                 false,
 	}
 	for path, want := range cases {
 		if got := BlacklistExemptPath(path); got != want {
