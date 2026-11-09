@@ -52,6 +52,8 @@ export function normalizeTicketDetailResponse(response) {
   return {
     ticket: ticket && typeof ticket === "object" ? ticket : null,
     messages: Array.isArray(payload?.messages) ? payload.messages : [],
+    // 附件可能是占位条目（visible=false），前端只按 visible 决定是否拉图。
+    attachments: Array.isArray(payload?.attachments) ? payload.attachments : [],
     notification: payload?.notification || null,
   };
 }

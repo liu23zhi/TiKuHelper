@@ -278,7 +278,32 @@
             :maxlength="10000"
             show-count
             :rows="8"
-            placeholder="请提供复现步骤、错误提示和期望结果" /><template #help><span v-if="createValidationMessage('body')" :id="createValidationErrorId('body')" role="alert">{{ createValidationMessage('body') }}</span></template></a-form-item></a-form
+            placeholder="请提供复现步骤、错误提示和期望结果" /><template #help><span v-if="createValidationMessage('body')" :id="createValidationErrorId('body')" role="alert">{{ createValidationMessage('body') }}</span></template></a-form-item
+        ><a-form-item
+          label="截图（可选）"
+          help="支持 PNG / JPEG，单张不超过 2 MiB。图片上传后先做安全检测，检测未通过时只显示提示。"
+          ><label class="ticket-attachment-input">
+            <span>选择图片（最多 {{ TICKET_ATTACHMENT_MAX_PER_MESSAGE }} 张）</span>
+            <input
+              type="file"
+              :accept="TICKET_ATTACHMENT_ACCEPT"
+              :disabled="createLoading || uploadBusy"
+              multiple
+              @change="onPickDraftImages"
+            /></label>
+          <div v-if="draftAttachments.length" class="ticket-attachment-selected">
+            <span v-for="item in draftAttachments" :key="item.id" class="ticket-attachment-chip"
+              >#{{ item.id }}
+              <a-button
+                type="link"
+                size="small"
+                danger
+                :onClick="createEntry.bind(removeDraftImage, item.id)"
+                >移除</a-button
+              ></span
+            >
+          </div>
+        </a-form-item></a-form
     ></a-modal>
     <a-modal
       :key="pageEpoch + ':' + detailRequestVersion" :open="detailVisible" :onUpdate:open="detailEntry.bind(setDetailVisible)"
@@ -330,7 +355,30 @@
                 ><span>{{ formatTicketTime(item.createdAt) }}</span>
               </header>
               <p>{{ item.body }}</p>
+              <div
+                v-if="attachmentsForMessage(item.id).length"
+                class="message-attachments"
+              >
+                <TicketAttachment
+                  v-for="attachment in attachmentsForMessage(item.id)"
+                  :key="attachment.id"
+                  :attachment="attachment"
+                  :admin="isAdmin"
+                />
+              </div>
             </article>
+          </div>
+          <!-- 未绑定到某条消息的图片（历史数据 / 上传后未绑定）：单独一组展示。 -->
+          <div
+            v-if="attachmentsForMessage(null).length"
+            class="message-attachments unbound-attachments"
+          >
+            <TicketAttachment
+              v-for="attachment in attachmentsForMessage(null)"
+              :key="attachment.id"
+              :attachment="attachment"
+              :admin="isAdmin"
+            />
           </div>
           <section v-if="actionFailures.retry.state.failure" data-ticket-notification-retry-feedback>
       <RequestFailureAlert :key="actionFailures.retry.state.context" :failure="actionFailures.retry.state.failure" :message="actionFailures.retry.state.message" :context-key="actionFailures.retry.state.context" :is-current="actionFailures.retry.isCurrent" :busy="retryLoading" closable :onClose="actionFailures.retry.close" />
@@ -364,10 +412,32 @@
                 show-count
                 :rows="5"
                 placeholder="请输入回复内容" /></a-form-item
+            ><a-form-item label="截图（可选）"
+              ><label class="ticket-attachment-input">
+                <span>选择图片（最多 {{ TICKET_ATTACHMENT_MAX_PER_MESSAGE }} 张）</span>
+                <input
+                  type="file"
+                  :accept="TICKET_ATTACHMENT_ACCEPT"
+                  :disabled="replyLoading || uploadBusy || !detailTicket"
+                  multiple
+                  @change="onPickReplyImages"
+                /></label>
+              <div v-if="replyAttachments.length" class="ticket-attachment-selected">
+                <span v-for="item in replyAttachments" :key="item.id" class="ticket-attachment-chip"
+                  >#{{ item.id }}
+                  <a-button
+                    type="link"
+                    size="small"
+                    danger
+                    :onClick="detailEntry.bind(removeReplyImage, item.id)"
+                    >移除</a-button
+                  ></span
+                >
+              </div></a-form-item
             ><a-button
               type="primary"
               :loading="replyLoading"
-              :disabled="!replyBody.trim()"
+              :disabled="!replyBody.trim() || uploadBusy"
               :onClick="detailEntry.bind(submitReply)"
               >发送回复</a-button
             ></a-form
@@ -397,6 +467,7 @@ import {
 import { useRoute, useRouter } from "vue-router";
 import { message } from "ant-design-vue";
 import RequestFailureAlert from "@/components/RequestFailureAlert.vue";
+import TicketAttachment from "@/components/TicketAttachment.vue";
 import { ensureRequestFailure } from "@/utils/requestFailureView.mjs";
 import {
   addTicketMessage,
@@ -408,7 +479,16 @@ import {
   saveTicketNotificationConfig,
   testTicketNotification,
   updateTicket,
+  uploadTicketAttachment,
+  listTicketAttachments,
 } from "@/api/TicketApi";
+import {
+  groupTicketAttachmentsByMessage,
+  pickTicketAttachmentIds,
+  validateTicketAttachmentFile,
+  TICKET_ATTACHMENT_ACCEPT,
+  TICKET_ATTACHMENT_MAX_PER_MESSAGE,
+} from "@/utils/ticketAttachmentHelpers.mjs";
 import { useCurrentUserDisplay, isAdminUser } from "@/utils/currentUser";
 import { useCurrentUserRequestScope } from "@/utils/currentUserScope";
 import {
@@ -495,9 +575,15 @@ const detailVisible = ref(false);
 const detailLoading = ref(false);
 const detailTicket = ref(null);
 const messages = ref([]);
+const attachments = ref([]);
 const notification = ref(null);
 const replyBody = ref("");
 const replyLoading = ref(false);
+// 待提交的图片：创建工单时上传的草稿图 / 回复时上传的图。
+// 只保留 { id, visible, hiddenReason, scanState }，不保留本地文件对象。
+const draftAttachments = ref([]);
+const replyAttachments = ref([]);
+const uploadBusy = ref(false);
 const replyFailure = shallowRef(null);
 const replyFailureContextKey = ref(0);
 let replyDraftLease = {}, replyFailureOwner = () => false;
@@ -587,8 +673,9 @@ function clearOwned() {
   tickets.value = []; pagination.total = 0; pagination.current = 1;
   listLoading.value = detailLoading.value = createLoading.value = replyLoading.value = statusSaving.value = configSaving.value = configTesting.value = retryLoading.value = configLoading.value = false;
   createVisible.value = detailVisible.value = configLoaded.value = createSaved.value = configDirty.value = false;
-  detailTicket.value = null; messages.value = []; notification.value = null; replyBody.value = ""; detailStatus.value = ""; statusWasChosen.value = false;
+  detailTicket.value = null; messages.value = []; attachments.value = []; notification.value = null; replyBody.value = ""; detailStatus.value = ""; statusWasChosen.value = false;
   draft.subject = ""; draft.body = ""; errorMessage.value = "";
+  draftAttachments.value = []; replyAttachments.value = []; uploadBusy.value = false;
   Object.assign(notificationConfig, { enabled: false, webhookUrl: "", mentionedList: "", configured: false, clearWebhook: false });
   keywordInput.value = ""; Object.assign(filters, { keyword: "", status: "", createdFrom: "", createdTo: "", updatedFrom: "", updatedTo: "" });
 }
@@ -652,6 +739,14 @@ onBeforeUnmount(() => { active = false; retireReplyDraft(); });
 onBeforeUnmount(retireActionFailures);
 onBeforeUnmount(retireCreateValidation);
 const detailTitle = computed(() => detailTicket.value?.subject || "工单详情");
+const attachmentGroups = computed(() =>
+  groupTicketAttachmentsByMessage(attachments.value)
+);
+// attachmentsForMessage 返回某条消息的图片；传 null / undefined 得到「未绑定到消息」的一组。
+function attachmentsForMessage(messageId) {
+  const key = messageId == null ? "ticket" : String(messageId);
+  return attachmentGroups.value.get(key) || [];
+}
 const notificationText = computed(() =>
   notificationStatusText(notification.value)
 );
@@ -719,17 +814,93 @@ async function submitTicket() {
   retireCreateValidation();
   const owns = captureCreate(), subject = draft.subject, body = draft.body;
   const failureDraft = createFailureDraft, ownsFailure = () => owns() && failureDraft === createFailureDraft;
+  const attachmentIds = pickTicketAttachmentIds(draftAttachments.value);
   actionFailures.create.clear();
   createLoading.value = true; createSaved.value = false;
   try {
-    await createTicket({ subject: subject.trim(), body: body.trim() });
+    // 没有图片时**不**带 attachmentIds：保持「无附件建单」的请求体与历史完全一致
+    // （既有契约测试断言 payload 恰好是 {body, subject}）。
+    const payload = { subject: subject.trim(), body: body.trim() };
+    if (attachmentIds.length) payload.attachmentIds = attachmentIds;
+    await createTicket(payload);
     if (!owns()) return;
     message.success("工单已提交");
+    draftAttachments.value = [];
     if (draft.subject === subject && draft.body === body) createVisible.value = false;
     else createSaved.value = true;
     pagination.current = 1; await loadTickets();
   } catch (error) { if (owns()) { actionFailures.create.show(error, ownsFailure); message.error(responseMessage(error, "工单提交失败")); } }
   finally { if (owns()) createLoading.value = false; }
+}
+
+// ---- 图片上传 ----
+//
+// 统一入口：本地预检 → 上传（服务端校验 + 加密 + pending）→ 记录附件 ID。
+// 上传**不等待**敏感检测：服务端返回时 scan_state 一定是 pending，
+// 因此刚上传的图片在提交前一律按「未通过」展示，提交后在详情里按真实状态显示。
+async function uploadImages(fileList, ticketId, target) {
+  if (uploadBusy.value) return;
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  const current = target === "reply" ? replyAttachments.value : draftAttachments.value;
+  const remaining = TICKET_ATTACHMENT_MAX_PER_MESSAGE - current.length;
+  if (remaining <= 0) {
+    message.warning(`最多添加 ${TICKET_ATTACHMENT_MAX_PER_MESSAGE} 张图片`);
+    return;
+  }
+  uploadBusy.value = true;
+  try {
+    for (const file of files.slice(0, remaining)) {
+      const invalid = validateTicketAttachmentFile(file);
+      if (invalid) { message.warning(`${file.name || "图片"}：${invalid}`); continue; }
+      const response = await uploadTicketAttachment(file, ticketId);
+      const created = response?.data?.data;
+      if (!created || !Number.isInteger(Number(created.id))) {
+        message.error("图片上传返回格式异常");
+        continue;
+      }
+      if (target === "reply") replyAttachments.value = [...replyAttachments.value, created];
+      else draftAttachments.value = [...draftAttachments.value, created];
+    }
+  } catch (error) {
+    message.error(responseMessage(error, "图片上传失败"));
+  } finally {
+    uploadBusy.value = false;
+  }
+}
+
+function onPickDraftImages(event) {  const input = event?.target;
+  const files = input?.files;
+  if (input) input.value = "";
+  if (!createVisible.value) return;
+  uploadImages(files, null, "create");
+}
+
+function onPickReplyImages(event) {
+  const input = event?.target;
+  const files = input?.files;
+  if (input) input.value = "";
+  const ticketId = detailTicket.value?.id;
+  if (!detailVisible.value || !ticketId) return;
+  uploadImages(files, ticketId, "reply");
+}
+
+function removeDraftImage(id) {
+  if (!createVisible.value) return;
+  draftAttachments.value = draftAttachments.value.filter(item => item.id !== id);
+}function removeReplyImage(id) {
+  if (!detailVisible.value) return;
+  replyAttachments.value = replyAttachments.value.filter(item => item.id !== id);
+}
+
+// refreshAttachments 在「回复返回体里没有 attachments」时补齐一次列表。
+// 失败静默：图片是附属信息，不该打断回复成功的提示。
+async function refreshAttachments(ticketId) {
+  try {
+    const response = await listTicketAttachments(ticketId);
+    const rows = response?.data?.data;
+    if (Array.isArray(rows) && detailTicket.value?.id === ticketId) attachments.value = rows;
+  } catch { /* 静默降级 */ }
 }
 function openDetail(id, event) {
   if (!canUseTickets()) return;
@@ -760,14 +931,17 @@ async function loadDetail(id) {
   detailLoading.value = true;
   detailTicket.value = null;
   messages.value = [];
+  attachments.value = [];
   notification.value = null;
   replyBody.value = "";
+  replyAttachments.value = [];
   statusWasChosen.value = false;
   try {
     const result = normalizeTicketDetailResponse(await getTicket(id));
     if (!owns() || version !== detailRequestVersion) return;
     detailTicket.value = result.ticket;
     messages.value = result.messages;
+    attachments.value = result.attachments;
     notification.value = result.notification;
     detailStatus.value = result.ticket?.status || "";
   } catch (error) {
@@ -788,7 +962,7 @@ function closeDetail() {
   retireReplyDraft();
   ++detailRequestVersion;
   replyLoading.value = statusSaving.value = retryLoading.value = false;
-  replyBody.value = ""; messages.value = []; notification.value = null;
+  replyBody.value = ""; replyAttachments.value = []; messages.value = []; attachments.value = []; notification.value = null;
   detailVisible.value = false;
   detailTicket.value = null;
   // The original key/version retirement unmounts the old Modal before afterClose.
@@ -826,10 +1000,12 @@ async function submitReply() {
   const version = detailRequestVersion;
   if (!ticketId) return;
   const ownsDraft = captureReplyDraftOwner();
+  const attachmentIds = pickTicketAttachmentIds(replyAttachments.value);
   clearReplyFailure();
   replyLoading.value = true;
   try {
     const payload = { body };
+    if (attachmentIds.length) payload.attachmentIds = attachmentIds;
     if (isAdmin.value && statusWasChosen.value)
       payload.status = detailStatus.value;
     const result = normalizeTicketDetailResponse(
@@ -854,6 +1030,10 @@ async function submitReply() {
               id: `local-${Date.now()}`,
             },
           ];
+      // 服务端在绑定成功时会给回最新附件列表（含刚绑定到本条消息的图片）。
+      if (Array.isArray(result.attachments)) attachments.value = result.attachments;
+      else await refreshAttachments(ticketId);
+      replyAttachments.value = [];
       notification.value = result.notification || notification.value;
       if (detailStatus.value === submittedStatus) {
         detailStatus.value = detailTicket.value.status;
@@ -873,8 +1053,7 @@ async function submitReply() {
     if (owns()) replyLoading.value = false;
   }
 }
-async function saveStatus() {
-  if (!canManage() || statusSaving.value || !detailVisible.value) return;
+async function saveStatus() {  if (!canManage() || statusSaving.value || !detailVisible.value) return;
   const owns = captureDetail();
   if (!detailTicket.value || !detailStatus.value) return;
   const ticketId = detailTicket.value.id;
@@ -1120,6 +1299,42 @@ watch(
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.75;
+}
+.message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+.unbound-attachments {
+  margin: 0 0 20px;
+}
+.ticket-attachment-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  color: var(--console-muted);
+  font-size: 13px;
+}
+.ticket-attachment-input input[type="file"] {
+  max-width: 100%;
+}
+.ticket-attachment-selected {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.ticket-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 10px;
+  border: 1px solid var(--console-border);
+  border-radius: 999px;
+  background: var(--console-subtle);
+  font-size: 12px;
 }
 .detail-actions {
   display: flex;

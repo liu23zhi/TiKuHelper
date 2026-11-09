@@ -24,6 +24,11 @@ func TestSetAPIRouterRegistersTicketRoutes(t *testing.T) {
 		"POST /adapter-service/tickets/:id/messages":                            false,
 		"PUT /adapter-service/tickets/:id":                                      false,
 		"POST /adapter-service/tickets/:id/notifications/:notificationId/retry": false,
+		// 工单图片附件（上传 / 列表 / 用户端读图 / 管理端读图）。
+		"POST /adapter-service/ticket-attachments":                    false,
+		"GET /adapter-service/tickets/:id/attachments":                false,
+		"GET /adapter-service/ticket-attachments/:attachmentId":       false,
+		"GET /adapter-service/ticket-attachments/:attachmentId/admin": false,
 	}
 	for _, route := range router.Routes() {
 		key := route.Method + " " + route.Path

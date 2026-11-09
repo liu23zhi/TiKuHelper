@@ -100,6 +100,8 @@ func main() {
 		MaxHeaderBytes:    1 << 20,
 	}
 	notificationWorkerDone := service.StartTicketNotificationWorker(shutdownContext, mg.GetDB())
+	// 工单图片的敏感检测：上传只标 pending，检测在此异步完成（上游故障/无密钥 → fail-closed）。
+	ticketAttachmentWorkerDone := service.StartTicketAttachmentScanWorker(shutdownContext, mg.GetDB())
 	scriptEscrowWorkerDone := service.StartScriptEscrowCloseWorker(shutdownContext, mg.GetDB())
 	// Retry settlement stays alive until admitted producers finish within the same shutdown budget.
 	billingRetryContext, cancelBillingRetries := context.WithCancel(context.Background())
@@ -117,6 +119,7 @@ func main() {
 	cancelBillingRetries()
 	<-extensionDone
 	<-notificationWorkerDone
+	<-ticketAttachmentWorkerDone
 	<-scriptEscrowWorkerDone
 	<-billingRetryWorkerDone
 	logger.SysLog("Tiku 服务已停止")

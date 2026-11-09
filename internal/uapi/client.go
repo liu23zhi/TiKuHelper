@@ -40,6 +40,7 @@ type Client struct {
 	statusUsageURL     string
 	webToMarkdownURL   string
 	imageOCRURL        string
+	imageNSFWURL       string
 	http               *resty.Client
 	// maxRetries 本客户端单次业务请求允许的内部重试次数（不含首次）。
 	//

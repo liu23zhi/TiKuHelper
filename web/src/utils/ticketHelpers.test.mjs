@@ -12,6 +12,7 @@ import {
   validateTicketDraft,
 } from "./ticketHelpers.mjs";
 import * as ticketHelpers from "./ticketHelpers.mjs";
+import * as ticketAttachmentHelpers from "./ticketAttachmentHelpers.mjs";
 import { isAdminUser, getCurrentUserLogoutEpoch } from "./currentUser.js";
 import { ensureRequestFailure } from "./requestFailureView.mjs";
 
@@ -80,6 +81,12 @@ async function loadTicketPage(overrides = {}) {
     addTicketMessage: async () => ({}),
     updateTicket: async () => ({}),
     createTicket: async () => ({}),
+    // 工单图片附件：上传/列表/读图。测试里默认不产生任何网络行为。
+    uploadTicketAttachment: async () => ({ data: { data: { id: 1 } } }),
+    listTicketAttachments: async () => ({ data: { data: [] } }),
+    getTicketAttachment: async () => ({ data: new Blob([]) }),
+    getTicketAttachmentAsAdmin: async () => ({ data: new Blob([]) }),
+    ...ticketAttachmentHelpers,
     getTicketNotificationConfig: async () => ({}),
     retryTicketNotification: async () => ({}),
     saveTicketNotificationConfig: async () => ({}),
