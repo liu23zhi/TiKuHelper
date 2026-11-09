@@ -845,6 +845,13 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		logger.FatalLog(fmt.Errorf("prepare payment event schema fail: %w", err))
 	}
 
+	// 黑名单（46-黑名单设计.md §2.3）：建 blacklist_entries / blacklist_hits 两张表 + 索引。
+	// 与开关解耦：blacklist_enabled 默认 false，表照建，运营打开开关时结构已就位。
+	// 没有数据回填，也不 DROP TABLE。结构性失败 FATAL；标记写失败只记日志（下次幂等重跑）。
+	if err := runStartupMigration("ensureBlacklistSchema", func() error { return ensureBlacklistSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare blacklist schema fail: %w", err))
+	}
+
 	// source-aware 归属地缓存使用新表，旧表保留以兼容 SQLite 和回滚；
 	// 回填失败只记日志，下一次启动会因未写标记而重试。
 	if err := runStartupMigration("ensureLocationCacheEntriesSchema", func() error { return ensureLocationCacheEntriesSchema(db) }); err != nil {

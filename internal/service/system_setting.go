@@ -70,6 +70,11 @@ const MinRechargeAmountSettingKey = "min_recharge_amount"
 const RechargePromotionEnabledSettingKey = "recharge_promotion_enabled"
 const DeviceLimitEnabledSettingKey = "device_limit_enabled"
 
+// BlacklistEnabledSettingKey / DefaultBlacklistEnabled / GetBlacklistEnabledWithDB
+// 定义在 blacklist.go（黑名单规格的唯一落点），这里只把它接进系统设置读写。
+//
+// 默认 false：接口上线后未显式打开时，中间件零查询、零写日志，全站行为不变。
+
 // ReferralRebateEnabledSettingKey 是邀请码与充值返佣的总开关。
 //
 // 默认 false（与其它商业化开关一致）：关闭时注册不生成邀请码、支付回调不产生返佣。
@@ -226,6 +231,8 @@ type SystemSettingDetail struct {
 	ReviewRebateMaxClaimsPerUser   int     `json:"reviewRebateMaxClaimsPerUser"`
 	ReviewRebateMaxAmountPerUser   float64 `json:"reviewRebateMaxAmountPerUser"`
 	ReviewRebateMinAgentConfidence float64 `json:"reviewRebateMinAgentConfidence"`
+	// 黑名单总开关，默认关闭（46-黑名单设计.md）。关闭时中间件零查询、零写日志。
+	BlacklistEnabled bool `json:"blacklistEnabled"`
 	// SensitiveWordCheckEnabled 是敏感词检测总开关，默认 false。
 	//
 	// 关闭时完全不调外部 API、不写 logs 的 sensitive_* 四列；
@@ -292,6 +299,9 @@ type UpdateSystemSettingInput struct {
 	ReviewRebateMaxClaimsPerUser   *int     `json:"reviewRebateMaxClaimsPerUser"`
 	ReviewRebateMaxAmountPerUser   *float64 `json:"reviewRebateMaxAmountPerUser"`
 	ReviewRebateMinAgentConfidence *float64 `json:"reviewRebateMinAgentConfidence"`
+	// 黑名单总开关：同样是指针语义，nil = 未提交 = 保持现值。
+	// 旧客户端（不带该字段）不会因为一次「只改站点名」的 PUT 把黑名单打开或关掉。
+	BlacklistEnabled *bool `json:"blacklistEnabled"`
 	// 敏感词检测开关：指针语义，nil = 未提交 = 保持库中现值。
 	//
 	// 若用裸 bool，任何不认识该字段的旧客户端提交设置都会把开关静默关掉。
@@ -467,6 +477,7 @@ func GetSystemSettingDetailWithDB(db *gorm.DB) (SystemSettingDetail, error) {
 		ReviewRebateMaxClaimsPerUser:   GetReviewRebateMaxClaimsPerUserWithDB(db),
 		ReviewRebateMaxAmountPerUser:   GetReviewRebateMaxAmountPerUserWithDB(db),
 		ReviewRebateMinAgentConfidence: GetReviewRebateMinAgentConfidenceWithDB(db),
+		BlacklistEnabled:               GetBlacklistEnabledWithDB(db),
 		SensitiveWordCheckEnabled:      GetSensitiveWordCheckEnabledWithDB(db),
 		SensitiveWordCheckConfigured:   IsSensitiveWordDetectorConfiguredWithDB(db),
 	}
@@ -569,6 +580,8 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		ReviewRebateMaxClaimsPerUser:   reviewRebateMaxClaims,
 		ReviewRebateMaxAmountPerUser:   reviewRebateMaxAmount,
 		ReviewRebateMinAgentConfidence: reviewRebateMinConfidence,
+		// 黑名单：nil = 未提交 = 保持现值；读取失败一律 false（不能让配置读错变成开始拦人）。
+		BlacklistEnabled: resolveBoolSettingInput(db, input.BlacklistEnabled, BlacklistEnabledSettingKey),
 		// 敏感词检测：nil = 未提交 = 保持现值；读取失败一律 false（不能悄悄开外呼）。
 		SensitiveWordCheckEnabled: ResolveSensitiveWordSettingInput(db, input.SensitiveWordCheckEnabled),
 	}
@@ -624,6 +637,7 @@ func UpdateSystemSettingDetailWithDB(db *gorm.DB, input UpdateSystemSettingInput
 		{ReviewRebateMaxClaimsPerUserSettingKey, strconv.Itoa(normalized.ReviewRebateMaxClaimsPerUser), "评价返现每账号累计次数上限"},
 		{ReviewRebateMaxAmountPerUserSettingKey, strconv.FormatFloat(normalized.ReviewRebateMaxAmountPerUser, 'f', -1, 64), "评价返现每账号累计金额上限（元）"},
 		{ReviewRebateMinAgentConfidenceSettingKey, strconv.FormatFloat(normalized.ReviewRebateMinAgentConfidence, 'f', -1, 64), "评价返现 Agent 置信度门槛（低于则强制人工）"},
+		{BlacklistEnabledSettingKey, strconv.FormatBool(normalized.BlacklistEnabled), "启用黑名单（默认关闭）"},
 		{SensitiveWordCheckEnabledSettingKey, strconv.FormatBool(normalized.SensitiveWordCheckEnabled), "启用敏感词检测打标（默认关闭，不影响答题）"},
 	}
 	for _, item := range settings {

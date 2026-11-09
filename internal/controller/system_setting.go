@@ -79,6 +79,13 @@ func UpdateSystemSetting(c *gin.Context) {
 	}
 	// UAPI 密钥控制 AI 联网搜索能力；设置变化后不能继续复用旧的无搜索答案。
 	invalidateSearchResultCaches("update_system_settings")
+	// 黑名单开关/规则改动必须立即生效（46-*.md §4「管理员增删改 → 立即失效并重载」）。
+	// 刷新失败不影响保存结果：旧快照仍然生效，不会出现「规则整批失效」的窗口。
+	if mgr := manager.GetManager(); mgr != nil {
+		if err := service.ReloadDefaultBlacklistCache(mgr.GetDB()); err != nil {
+			logger.SysWarn("重载黑名单缓存失败（沿用旧快照，规则未失效）：" + err.Error())
+		}
+	}
 
 	c.JSON(http.StatusOK, service.RedactSystemSettingDetail(detail))
 }

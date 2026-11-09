@@ -8,6 +8,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/controller"
 	"github.com/itihey/tikuAdapter/internal/middleware"
+	"github.com/itihey/tikuAdapter/internal/registry/manager"
+	"github.com/itihey/tikuAdapter/internal/service"
 	"io"
 	"io/fs"
 	"net/http"
@@ -24,6 +26,28 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter := router.Group("/adapter-service")
 
 	apiRouter.Use(middleware.GlobalAPIRateLimit, middleware.BodyLimit(16<<20)) // 全局限流
+
+	// IP 黑名单（46-黑名单设计.md §3）。开关 blacklist_enabled **默认 false**：
+	// 关闭时中间件零查询零写日志，全站行为与引入前完全一致。
+	//
+	// 挂 API 链而不是全局链，理由：
+	//  1. 全局链会连静态资源（SPA 的 index.html / js / css）一起拦，于是被拉黑的
+	//     管理员连登录页都加载不出来 —— 这正是 §3.3 要防的自锁；
+	//  2. 全局链还覆盖 /sqp/* 代理与扩展下载，那些路径的处置不在本期验收范围。
+	//
+	// 顺序：本行位于 GlobalAPIRateLimit / BodyLimit 之后（先限流后判定，被限流的请求
+	// 不记黑名单命中，见 §8），并且**先于每条路由的 controller.Auth**。gin 的组级
+	// 中间件必然跑在按路由注册的 handler 之前，这一点无法用组链改成「Auth 之后」；
+	// 之所以可以放在 Auth 之前，是因为本次选了**路径豁免**而不是 isAdminUser 豁免
+	// （见 middleware.BlacklistExemptPath），判定完全不读 c.Get("user")，
+	// 因而不需要 owner 信息；反过来，在 Auth 之前拒绝还省掉了对恶意 IP 的
+	// JWT 解析与用户查询开销。若将来改成 owner 维度（BL-3 手机号/微信）判定，
+	// 必须把对应判定挂到各路由 Auth 之后。
+	if mgr := manager.GetManager(); mgr != nil {
+		// 启动时同步加载一次快照并起 60s 后台重载（多实例收敛）。
+		service.EnsureDefaultBlacklistCacheStarted(mgr.GetDB())
+	}
+	apiRouter.Use(middleware.BlacklistIP())
 
 	apiRouter.POST("/upload", controller.Auth, middleware.RequireAdmin, controller.UploadFile)
 	// EXE uploads need a larger multipart envelope than ordinary API requests.
