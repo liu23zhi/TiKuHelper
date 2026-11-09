@@ -818,6 +818,13 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		logger.FatalLog(fmt.Errorf("prepare recharge promotion schema fail: %w", err))
 	}
 
+	// 支付已入账唯一事件：建 payment_events（order_no 唯一），并按 paid_at 回填历史订单。
+	// 这是充值加款幂等的锚点 —— 订单被改成 refunded 后，旧成功回调也不会再加款。
+	// 结构性失败 FATAL；回填失败只记日志、不写标记，下次启动重试。
+	if err := runStartupMigration("ensurePaymentEventSchema", func() error { return ensurePaymentEventSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare payment event schema fail: %w", err))
+	}
+
 	// source-aware 归属地缓存使用新表，旧表保留以兼容 SQLite 和回滚；
 	// 回填失败只记日志，下一次启动会因未写标记而重试。
 	if err := runStartupMigration("ensureLocationCacheEntriesSchema", func() error { return ensureLocationCacheEntriesSchema(db) }); err != nil {

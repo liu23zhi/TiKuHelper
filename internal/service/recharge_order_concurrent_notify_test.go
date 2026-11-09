@@ -83,7 +83,7 @@ func TestHandleRechargePaymentNotifyWithDBConcurrentDuplicateChild(t *testing.T)
 		t.Fatal(err)
 	}
 	if err = a.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.PaymentMethod{},
-		&entity.RechargeOrder{}, &entity.BillingRecord{}); err != nil {
+		&entity.RechargeOrder{}, &entity.BillingRecord{}, &entity.PaymentEvent{}); err != nil {
 		t.Fatal(err)
 	}
 	b, err := gorm.Open(sqlite.Open(path), &gorm.Config{})

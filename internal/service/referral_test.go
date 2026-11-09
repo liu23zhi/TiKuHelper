@@ -25,6 +25,7 @@ func newReferralTestDB(t *testing.T) *gorm.DB {
 		&entity.User{},
 		&entity.SystemSetting{},
 		&entity.RechargeOrder{},
+		&entity.PaymentEvent{},
 		&entity.BillingRecord{},
 		&entity.PaymentMethod{},
 		&entity.IdempotencyRecord{},

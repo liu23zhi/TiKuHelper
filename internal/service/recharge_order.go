@@ -42,6 +42,13 @@ var ErrRechargePaymentCreateFailed = errors.New("支付下单失败")
 
 const rechargeOrderStatusPending = "pending"
 const rechargeOrderStatusPaid = "paid"
+
+// rechargeOrderStatusRefunded 是订单被运营改成「已退款」后的状态。
+//
+// 它**不参与**加款幂等判定：status 是可变的运营字段，用它当唯一判据正是
+// 「订单退款后旧成功回调重复加款」这个漏洞的成因。幂等锚点是 payment_events
+// 的 order_no 唯一事件（见 internal/entity/payment_event.go）。
+const rechargeOrderStatusRefunded = "refunded"
 const rechargeOrderTradeStatusSuccess = "TRADE_SUCCESS"
 const rechargeBillingRecordType = "recharge"
 const rechargeOrderName = "账户充值"
@@ -601,7 +608,20 @@ func HandleRechargePaymentNotifyWithDB(db *gorm.DB, values url.Values) (bool, er
 		}
 		// Paid is immutable. In particular a replay cannot replace the trade
 		// reference later used to prove the original refund channel.
+		//
+		// 这只是「已结算」的快速通道，**不是**加款幂等的唯一判据：status 会被运营
+		// 改成 refunded，此时同一条回调会绕过这个判断。真正的锚点是下面的
+		// payment_events 唯一事件（见该处的注释）。
 		if order.Status == rechargeOrderStatusPaid {
+			// 顺带补记事件：覆盖「历史回填尚未成功 / 回填后被漏掉」的订单。
+			// 已 paid 说明钱已经到账，这里只补锚点、绝不加款；补记失败也只记日志，
+			// 不能因为事件表缺失就把一个正确的「已结算」回调判成失败。
+			if tradeStatus == rechargeOrderTradeStatusSuccess {
+				if _, claimErr := claimRechargePaymentEventInTx(tx, order, tradeNo, tradeStatus); claimErr != nil {
+					logger.SysWarn(fmt.Sprintf("已结算充值订单补记支付事件失败（不影响本次 ACK）orderNo=%s: %v",
+						order.OrderNo, claimErr))
+				}
+			}
 			return nil
 		}
 
@@ -611,15 +631,31 @@ func HandleRechargePaymentNotifyWithDB(db *gorm.DB, values url.Values) (bool, er
 		if tradeNo != "" {
 			updates["third_party_order_no"] = tradeNo
 		}
-		if err := tx.Model(&entity.RechargeOrder{}).Where("id = ?", order.ID).Updates(updates).Error; err != nil {
-			return err
-		}
-
 		if tradeStatus != rechargeOrderTradeStatusSuccess {
+			// 非成功状态只留痕，不入账、也不占事件（同一订单后面还可能来成功回调）。
+			if err := tx.Model(&entity.RechargeOrder{}).Where("id = ?", order.ID).Updates(updates).Error; err != nil {
+				return err
+			}
 			return nil
 		}
 		if paidAmount <= 0 || normalizeRechargeAmount(order.Amount) != paidAmount {
 			return ErrRechargeNotifyAmountMismatch
+		}
+
+		// 加款幂等的**唯一分岔判据**：先尝试记入「支付已入账」唯一事件。
+		//
+		// 插入成功（firstCredit=true）= 这笔网关订单的首次入账，继续加款；
+		// 插入被 OnConflict{DoNothing} 忽略 = 早已入过账，本次是重复回调，
+		// 直接 ACK 且**一行都不改、一分钱都不加**。
+		//
+		// 这一段必须挡在钱包/账单之前：上面的 `status == paid` 只是快速通道，
+		// 管理员把订单改成 refunded 后它就不再成立，届时只有这里能拦住重复加款。
+		firstCredit, err := claimRechargePaymentEventInTx(tx, order, tradeNo, tradeStatus)
+		if err != nil {
+			return err
+		}
+		if !firstCredit {
+			return nil
 		}
 
 		var user entity.User
