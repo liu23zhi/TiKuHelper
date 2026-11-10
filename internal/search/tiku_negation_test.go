@@ -99,6 +99,19 @@ func TestTikuNegationGuardKeepsSamePolarity(t *testing.T) {
 		{"不等式是构词", "不等式求解", "不等式求解"},
 		// 补充：「不确定性」同理。
 		{"不确定性是构词", "不确定性与风险度量", "不确定性与风险度量"},
+		// 补充（关键）：**长题干 + 真否定词在句首**。
+		//
+		// 上面两条题干短（5-9 字），整句都落在 12 字句尾窗口内，
+		// 「全文匹配」的错误实现也能通过 —— 它们是假钉子。
+		//
+		// 这一条把**真否定词**（「不属于」，在白名单里）放到句首，
+		// 题干拉到远超 12 字，且**句尾是正向表述**。此时：
+		//   - 正确实现（只看句尾 12 字）→ false
+		//   - 错误实现（全文找）→ true
+		// 两侧对同一题干都给出各自一致的布尔值，compatibleNegation 仍会
+		// 返回 true（都等），所以本组**断言不到**这个差异 —— 它由下面
+		// TestTikuNegationWindowIsSuffixOnly 用函数级断言钉住。
+		{"句首否定但句尾正向的长题干", "不属于任何一个已知类别的样本，请根据题干描述选出以下正确的表述", "不属于任何一个已知类别的样本，请根据题干描述选出以下正确的表述"},
 		// 补充：两侧都无否定 —— 常规题目必须匹配。
 		{"常规题面", "下列关于细胞呼吸的叙述正确的是", "下列关于细胞呼吸的叙述正确的是"},
 	} {
@@ -160,6 +173,51 @@ func TestTikuQuestionNegated(t *testing.T) {
 		t.Run(tt.question, func(t *testing.T) {
 			if got := tikuQuestionNegated(tt.question); got != tt.want {
 				t.Fatalf("tikuQuestionNegated(%q) = %v, want %v", tt.question, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestTikuNegationWindowIsSuffixOnly 用函数级断言钉住「只在句尾窗口判定」。
+//
+// 为什么要单列：**端到端测不出这个语义**。
+// `compatibleNegation` 比较的是两侧布尔值是否**相等**，所以当查询与库内题干
+// 是同一句话时，无论实现是「只看句尾」还是「全文匹配」，两侧都会得到相同的
+// 布尔值 → compatibleNegation 一律返回 true → 端到端用例照样绿。
+//
+// 这是端到端的固有盲区（比较相等，两侧同错也相等）。只有直接断言
+// tikuQuestionNegated 的返回值才能区分两种实现。
+//
+// 判别样本：真否定词（在白名单里）在句首 + 句尾是正向表述 + 题干远超 12 字。
+//
+//	"不属于" 在句首        → 全文实现会返回 true
+//	句尾「正确的表述」无否定 → 句尾窗口实现返回 false  ← 正解
+func TestTikuNegationWindowIsSuffixOnly(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		question string
+		want     bool
+	}{
+		{
+			name:     "否定词在句首、句尾正向",
+			question: "不属于任何一个已知类别的样本，请根据题干描述选出以下正确的表述",
+			want:     false,
+		},
+		{
+			name:     "否定词在句尾、句首正向",
+			question: "请根据题干描述选出以下不正确的表述",
+			want:     true,
+		},
+		{
+			name:     "否定词在句中、句尾正向",
+			question: "下列关于不属于同一类的样本的说法中，请选出正确的表述",
+			want:     false,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tikuQuestionNegated(tt.question); got != tt.want {
+				t.Fatalf("tikuQuestionNegated(%q) = %v, want %v（否定判定必须只看句尾 %d 字窗口；"+
+					"若改为全文匹配，本条会红）", tt.question, got, tt.want, tikuNegationSuffixWindow)
 			}
 		})
 	}
