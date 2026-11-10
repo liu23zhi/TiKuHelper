@@ -155,6 +155,25 @@ jobs:
       - name: 测试 SQLite 到 MySQL 迁移工具
         run: python -m unittest discover -s tools -p 'test_*.py' -v
 
+      # tools/userexam-crypto 的目录名带连字符，不是合法的模块名，也没有
+      # __init__.py，所以 `unittest discover -s tools` 从不递归进去 ——
+      # 上面那一步从来没跑过它的任何一条用例。这里显式进入目录执行。
+      #
+      # CI 是 ubuntu-24.04 + CPython 3.13，apsw-sqlite3mc 提供
+      # cp313-manylinux_2_28_x86_64 的 wheel，所以真能把 SQLite3MC 装上、
+      # 让加解密往返真跑（不是 skip）。
+      - name: 安装 SQLite3MC 运行库（考试客户端 DB 工具）
+        working-directory: tools/userexam-crypto
+        run: python -m pip install --quiet --target ./_vendor apsw-sqlite3mc==3.54.0.0
+
+      - name: 测试考试客户端 DB 脱机工具（含加解密往返）
+        working-directory: tools/userexam-crypto
+        env:
+          # 缺 _vendor 时直接失败而不是 skip：本工具的核心能力就是加解密，
+          # 允许它静默跳过等于这条 CI 恒绿而无意义。
+          USEREXAM_REQUIRE_CRYPTO: '1'
+        run: python -m unittest test_userexam_crypto -v
+
   release-build:
     name: 跨平台发布构建（${{ matrix.goos }}/${{ matrix.goarch }}）
     runs-on: ubuntu-24.04

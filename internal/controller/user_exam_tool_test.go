@@ -476,3 +476,74 @@ func TestUserExamServerHoldsNoCiphercapability(t *testing.T) {
 		}
 	}
 }
+
+// 三个 userexam 路由的**源码级**鉴权断言。
+//
+// 为什么行为测试不够：TestUserExamToolEndpointsRejectNonAdmin 用的是本文件里
+// 自建的 router（newUserExamToolRouter），中间件链是测试自己写的，不是
+// internal/api/router.go 里的那一份；而三个 handler 内部又各有一道
+// requireAdmin（纵深防御）。两条叠加的结果是——把 router.go 里三条
+// middleware.RequireAdmin 全删掉，行为测试**依然全绿**（已实测确认）。
+//
+// 所以这里直接读 router.go 源码，断言「注册行里确实有 RequireAdmin，且顺序在
+// handler 之前、在 controller.Auth 之后」。删掉任何一条中间件都会变红。
+func TestUserExamRoutesMountRequireAdminInRouterSource(t *testing.T) {
+	routerSource, err := os.ReadFile(filepath.Join("..", "api", "router.go"))
+	if err != nil {
+		t.Fatalf("读取 router.go 失败: %v", err)
+	}
+	lines := strings.Split(string(routerSource), "\n")
+
+	// 逐条路由断言：方法、路径、中间件顺序。
+	cases := []struct {
+		method string
+		path   string
+		handle string
+	}{
+		{http.MethodGet, "/admin/userexam/tool/version", "controller.UserExamToolVersion"},
+		{http.MethodGet, "/admin/userexam/tool", "controller.UserExamToolDownload"},
+		{http.MethodPost, "/admin/userexam/inspect", "controller.UserExamInspect"},
+	}
+
+	for _, testCase := range cases {
+		marker := `"` + testCase.path + `"`
+		var matched []string
+		for _, line := range lines {
+			if strings.Contains(line, testCase.method+"(") && strings.Contains(line, marker) {
+				matched = append(matched, line)
+			}
+		}
+		if len(matched) != 1 {
+			t.Fatalf("%s %s 应恰好注册 1 条，实际 %d 条：%v",
+				testCase.method, testCase.path, len(matched), matched)
+		}
+		line := matched[0]
+
+		// ① 必须挂 controller.Auth
+		if !strings.Contains(line, "controller.Auth") {
+			t.Fatalf("%s 未挂 controller.Auth：%s", testCase.path, strings.TrimSpace(line))
+		}
+		// ② 必须挂 middleware.RequireAdmin
+		authIndex := strings.Index(line, "middleware.RequireAdmin")
+		if authIndex < 0 {
+			t.Fatalf("%s 未挂 middleware.RequireAdmin：%s", testCase.path, strings.TrimSpace(line))
+		}
+		// ③ RequireAdmin 必须排在 handler 之前（否则中间件不生效，只是把符号写在后面）
+		handlerIndex := strings.Index(line, testCase.handle)
+		if handlerIndex < 0 {
+			t.Fatalf("%s 未指向 %s：%s", testCase.path, testCase.handle, strings.TrimSpace(line))
+		}
+		if authIndex > handlerIndex {
+			t.Fatalf("%s 的 RequireAdmin 排在 handler 之后，不会生效：%s", testCase.path, strings.TrimSpace(line))
+		}
+		// ④ Auth 必须在 RequireAdmin 之前：RequireAdmin 依赖 Auth 写入的 user
+		if strings.Index(line, "controller.Auth") > authIndex {
+			t.Fatalf("%s 的 controller.Auth 排在 RequireAdmin 之后，RequireAdmin 拿不到身份：%s",
+				testCase.path, strings.TrimSpace(line))
+		}
+		// ⑤ 注册在 apiRouter 上（与同文件其它 /admin/* 一致）
+		if !strings.Contains(line, "apiRouter.") {
+			t.Fatalf("%s 未注册在 apiRouter 上：%s", testCase.path, strings.TrimSpace(line))
+		}
+	}
+}
