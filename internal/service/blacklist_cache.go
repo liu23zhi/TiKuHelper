@@ -27,7 +27,7 @@ import (
 //	ipCIDR    []cidrRule             // CIDR 段（数量少，线性扫可接受）
 //	phone     map[[32]byte]*entry    // sha256(11 位手机号)
 //	wechat    map[[32]byte]*entry    // sha256(TrimSpace 后的 OpenID)
-//	region    []regionRule           // 地区前缀/结构化规则（BL-4 才接入判定）
+//	region    []regionRule           // 地区结构化规则（BL-4 起参与判定）
 //
 // 刷新策略：
 //   - 管理员增删改 → Invalidate/Reload 立即失效重载（同进程）
@@ -67,14 +67,22 @@ type BlacklistCIDRRule struct {
 	Rule    *BlacklistRule
 }
 
-// BlacklistRegionRule 是地区规则的结构占位（46-*.md §4 的 `region []regionRule`）。
+// BlacklistRegionRule 是一条地区规则（46-*.md §4 的 `region []regionRule`）。
 //
-// ⚠️ 本期（BL-2）它**永远为空**：加载时遇到 kind='region' 的行会跳过并告警，
-// 不往这里塞（见 addRule 的 region 分支）。保留这个类型与字段是为了让 BL-4
-// 落地时只改 addRule 一处，不必再动快照结构。
+// BL-4 起它**不再为空**：addRule 的 region 分支会把 pattern 解析成
+// 地区 / 城市 / 运营商三级条件（空 = 该级别不限，见 blacklist_region.go 的
+// ParseBlacklistRegionPattern），解析失败才跳过并告警。
+//
+// 为什么存解析后的字段而不是留原始 prefix：§2.4 的结论就是「不做字符串前缀匹配」——
+// 前缀匹配会把「云南XXX」这类脏值一起命中，也无法把「省」与「同名的市」区分开。
 type BlacklistRegionRule struct {
-	Prefix string
-	Rule   *BlacklistRule
+	// Geo 是地区段（国家 / 省 / 市 任一层级比较）；空 = 不限。
+	Geo string
+	// City 是市级段；空 = 不限。
+	City string
+	// Operator 是运营商段（llc 优先、isp 回退）；空 = 不限。
+	Operator string
+	Rule     *BlacklistRule
 }
 
 // BlacklistSnapshot 是一次全量加载的结果。
@@ -311,18 +319,27 @@ func (s *BlacklistSnapshot) addRule(rule *BlacklistRule) bool {
 		s.wechat[BlacklistPatternHashBytes(normalized)] = rule
 		return true
 	case BlacklistKindRegion:
-		// 地区规则**不参与判定**（BL-4 未接入）。
+		// BL-4：地区规则**参与判定**（改自 BL-2 的「跳过 + 告警」）。
 		//
-		// 处置：**跳过 + 告警**，不静默接受。
-		// 为什么不静默收进 region 切片：那样一条手工插入的 kind='region' 行会
-		// 看起来「已加载」，运营以为规则生效了，而实际上永远不命中 ——
-		// 这与 NormalizeBlacklistValue 拒绝 region 输入是同一个原则：
-		// 静默无效比明确失败更糟。
+		// 为什么现在收进 region 切片：46-*.md §2.4 的歧义已经按 45-*.md §0.4 的
+		// Q-B3 结论解决 —— 不做字符串前缀匹配，改存结构化三级条件（Geo / City / Operator），
+		// 判定走 MatchRegionLocation。BL-2 之所以跳过，是因为当时没有这套解析，
+		// 收进来只会「看起来已加载、实际永不命中」，那比明确失败更糟。
 		//
-		// 注意这里仍然只是 return false（跳过这一条），**不会**让整次加载失败：
-		// 单条脏数据绝不能让整个黑名单瘫痪（否则一条脏行 = 全站放开）。
-		logger.SysWarn(fmt.Sprintf("黑名单规则 %d 的类型是 region，但地区匹配（BL-4）尚未接入判定，已跳过该条", rule.EntryID))
-		return false
+		// 保留「解析失败就跳过这一条」的性质：一条拼错的地名规则绝不能让整次加载失败
+		// （一条脏行 = 全站放开，是 fail-open 的反面）。
+		regionPattern, err := ParseBlacklistRegionPattern(rule.Pattern)
+		if err != nil {
+			logger.SysWarn(fmt.Sprintf("黑名单规则 %d 的地区模式 %q 无法解析，已跳过：%v", rule.EntryID, rule.Pattern, err))
+			return false
+		}
+		s.region = append(s.region, BlacklistRegionRule{
+			Geo:      regionPattern.Geo,
+			City:     regionPattern.City,
+			Operator: regionPattern.Operator,
+			Rule:     rule,
+		})
+		return true
 	default:
 		logger.SysWarn(fmt.Sprintf("黑名单规则 %d 的类型 %q 未知，已跳过", rule.EntryID, rule.Kind))
 		return false

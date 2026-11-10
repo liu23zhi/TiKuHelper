@@ -17,8 +17,8 @@ import (
 
 // 黑名单的四类粒度（46-黑名单设计.md §1）。
 //
-// 本期（BL-1 / BL-2）只落地 ip；phone / wechat 的归一化与存储就位但**不接入判定**，
-// region 既不归一化也不判定（BL-4 待 Q-B3 拍板）。
+// 四类都已接入：ip 在 BL-2（中间件）、phone / wechat 在 BL-3（注册/登录/换绑）、
+// region 在 BL-4（结构化三级匹配，见 blacklist_region.go）。
 const (
 	BlacklistKindIP     = "ip"
 	BlacklistKindPhone  = "phone"
@@ -83,11 +83,14 @@ var (
 	ErrInvalidBlacklistMatchType = errors.New("黑名单匹配方式必须是 exact / cidr / prefix")
 	// ErrInvalidBlacklistPattern 模式为空、超长、或无法解析成对应类型的规范形式。
 	ErrInvalidBlacklistPattern = errors.New("黑名单匹配模式不合法")
-	// ErrBlacklistRegionNotImplemented 地区规则本期不接入判定。
+	// ErrBlacklistRegionNotImplemented 已废弃：BL-4 起地区规则正常入库并参与判定。
 	//
-	// 明确报错而不是「静默存下来但不生效」：后者会让运营以为规则已经生效，
-	// 是最糟的失败方式。地区匹配等到 BL-4 按 Q-B3 的结论落地。
-	ErrBlacklistRegionNotImplemented = errors.New("地区黑名单（BL-4）尚未接入判定，本期不接受地区规则")
+	// 保留这个符号只为两件事：① 外部（含尚未同步的调用方/客户端）引用它时不至于编译不过；
+	// ② 让「这里曾经拒绝过 region」在代码历史里可查。
+	// 新的非法地区模式一律返回 ErrInvalidBlacklistPattern（400），见 ParseBlacklistRegionPattern。
+	//
+	// Deprecated: 地区规则已接入判定，不再返回这个错误。
+	ErrBlacklistRegionNotImplemented = errors.New("地区黑名单（BL-4）已接入判定，该错误不再返回")
 )
 
 // NormalizedBlacklistValue 是一条规则归一化后的全部落库字段。
@@ -106,10 +109,10 @@ type NormalizedBlacklistValue struct {
 //	ip     → net.ParseIP / net.ParseCIDR 校验并规范化（**不写字符串前缀比较**）
 //	phone  → NormalizeMainlandPhoneInput，得到 11 位大陆号码
 //	wechat → strings.TrimSpace，**不转小写**（OpenID 大小写敏感）
-//	region → 本期拒绝（BL-4 未接入）
+//	region → ParseBlacklistRegionPattern，得到结构化的「地区 城市 运营商」规范写法
 //
 // matchType 为空时按类型给默认值：ip 含 "/" 或 prefix 写法 → cidr，否则 exact；
-// phone / wechat 恒为 exact。
+// phone / wechat 恒为 exact；region 恒为 prefix。
 func NormalizeBlacklistValue(kind string, raw string, matchType string) (NormalizedBlacklistValue, error) {
 	kind = strings.ToLower(strings.TrimSpace(kind))
 	matchType = strings.ToLower(strings.TrimSpace(matchType))
@@ -121,8 +124,14 @@ func NormalizeBlacklistValue(kind string, raw string, matchType string) (Normali
 	case BlacklistKindWechat:
 		return normalizeBlacklistWechat(raw, matchType)
 	case BlacklistKindRegion:
-		// 不清洗、不落库：见 ErrBlacklistRegionNotImplemented 的注释。
-		return NormalizedBlacklistValue{}, ErrBlacklistRegionNotImplemented
+		// BL-4：地区规则**接受落库**（改自 BL-1/BL-2 的「一口拒绝」）。
+		//
+		// 为什么现在可以接受：46-*.md §2.4 的地区匹配歧义已按 45-*.md §0.4 的
+		// Q-B3 结论解决 —— 不做字符串前缀匹配，改为结构化三级条件
+		// （地区 / 城市 / 运营商，见 blacklist_region.go 的 ParseBlacklistRegionPattern）。
+		// 当时一口拒绝的理由是「静默存下来但不生效比明确失败更糟」；
+		// 现在判定已接入（MatchRegionLocation），落库即生效，那条理由不再成立。
+		return normalizeBlacklistRegion(raw, matchType)
 	default:
 		return NormalizedBlacklistValue{}, ErrInvalidBlacklistKind
 	}
@@ -249,6 +258,27 @@ func normalizeBlacklistWechat(raw string, matchType string) (NormalizedBlacklist
 	}, nil
 }
 
+// normalizeBlacklistRegion 归一化地区规则（BL-4）。
+//
+// 只支持 prefix 一种 match_type（与 46-*.md §2.1 的「region 固定 prefix」一致）：
+// 地区规则的本质就是「按层级前缀收窄」，不存在 exact/CIDR 的对应物。
+func normalizeBlacklistRegion(raw string, matchType string) (NormalizedBlacklistValue, error) {
+	if matchType != "" && matchType != BlacklistMatchPrefix {
+		return NormalizedBlacklistValue{}, fmt.Errorf("%w：地区只支持 prefix", ErrInvalidBlacklistMatchType)
+	}
+	parsed, err := ParseBlacklistRegionPattern(raw)
+	if err != nil {
+		return NormalizedBlacklistValue{}, err
+	}
+	return NormalizedBlacklistValue{
+		Kind:        BlacklistKindRegion,
+		Pattern:     parsed.Canonical,
+		MatchType:   BlacklistMatchPrefix,
+		ValueHash:   BlacklistPatternHashHex(parsed.Canonical),
+		ValueMasked: MaskBlacklistValue(BlacklistKindRegion, parsed.Canonical, BlacklistMatchPrefix),
+	}, nil
+}
+
 // BlacklistPatternHashHex 返回 sha256(归一化模式) 的小写十六进制串。
 //
 // 查询与唯一索引都走 value_hash：黑名单是运营数据，比绑定记录更不该被明文扫出来；
@@ -311,6 +341,15 @@ func MaskBlacklistValue(kind string, pattern string, matchType string) string {
 			return "***"
 		}
 	case BlacklistKindRegion:
+		// 地区规则不是个人标识，不需要像手机号那样遮中间；保留原样的可读性
+		// 对运营更有用（他要能一眼看出是「云南」还是「云南 玉溪 移动」）。
+		//
+		// 末尾补 `*` 表示「前缀收窄」，但两种已有写法不再重复补：
+		//   - 已以 `*` 结尾的（`云南 *`）；
+		//   - 纯运营商规则（`*移动`），它本身就以通配开头，再补一个会让展示变噪音。
+		if pattern == "" || strings.HasSuffix(pattern, "*") || strings.HasPrefix(pattern, "*") {
+			return pattern
+		}
 		return pattern + "*"
 	default:
 		return "***"
@@ -332,8 +371,8 @@ type CreateBlacklistEntryInput struct {
 //
 // 它做三件事，缺一不可：
 //
-//  1. 归一化 + 校验（NormalizeBlacklistValue）：拒绝非法 IP/CIDR/手机号，
-//     拒绝 kind=region（BL-4 未接入）。运营填错不会变成一条永不生效的脏规则。
+//  1. 归一化 + 校验（NormalizeBlacklistValue）：拒绝非法 IP/CIDR/手机号/地区模式。
+//     运营填错不会变成一条永不生效的脏规则。
 //  2. **绕开 GORM 的 default:true 零值陷阱**。`enabled` 列带 `default:true` 标签，
 //     GORM 在 ConvertToCreateValues 阶段会把**等于默认值的字段从 INSERT 省略**，
 //     于是 `db.Create(&entry{Enabled: false})` 会被静默写成 true ——

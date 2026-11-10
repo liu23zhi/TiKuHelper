@@ -207,10 +207,27 @@ func TestBlacklistNormalizeWechatKeepsCaseAndTrimsSpace(t *testing.T) {
 	}
 }
 
-func TestBlacklistNormalizeRejectsRegionAndUnknownKind(t *testing.T) {
-	// 地区规则本期不接入判定：明确报错，而不是静默存下来但不生效。
-	if _, err := NormalizeBlacklistValue(BlacklistKindRegion, "云南", BlacklistMatchPrefix); !errors.Is(err, ErrBlacklistRegionNotImplemented) {
-		t.Fatalf("region must return ErrBlacklistRegionNotImplemented, got %v", err)
+// BL-4：地区规则**从「一口拒绝」改为「结构化归一化后入库」**。
+//
+// 这条断言的方向变了（旧版断言的是 ErrBlacklistRegionNotImplemented），不是为了让测试变绿：
+// 46-*.md §2.4 的歧义已按 45-*.md §0.4 的 Q-B3 结论解决（结构化三级匹配，不做字符串前缀），
+// 判定也已在 blacklist_region.go 里接入，于是「拒绝 region」的立论前提消失了。
+// 新增的行为断言见 blacklist_region_test.go。
+func TestBlacklistNormalizeRegionAndUnknownKind(t *testing.T) {
+	normalized, err := NormalizeBlacklistValue(BlacklistKindRegion, "云南", "")
+	if err != nil {
+		t.Fatalf("region must be accepted now, got %v", err)
+	}
+	if normalized.Pattern != "云南" || normalized.MatchType != BlacklistMatchPrefix {
+		t.Fatalf("normalized region = %+v, want pattern 云南 / prefix", normalized)
+	}
+	// 段内通配（§2.4 明确要避免的字符串前缀匹配）必须被拒。
+	if _, err := NormalizeBlacklistValue(BlacklistKindRegion, "云*南", ""); !errors.Is(err, ErrInvalidBlacklistPattern) {
+		t.Fatalf("in-segment wildcard must be rejected, got %v", err)
+	}
+	// 全通配等于全站拉黑，不该由地区规则表达。
+	if _, err := NormalizeBlacklistValue(BlacklistKindRegion, "*", ""); !errors.Is(err, ErrInvalidBlacklistPattern) {
+		t.Fatalf("all-wildcard region must be rejected, got %v", err)
 	}
 	if _, err := NormalizeBlacklistValue("email", "a@b.c", ""); !errors.Is(err, ErrInvalidBlacklistKind) {
 		t.Fatalf("unknown kind must return ErrInvalidBlacklistKind, got %v", err)
@@ -662,7 +679,11 @@ func TestCreateBlacklistEntryWithDBNormalizesInput(t *testing.T) {
 	}
 }
 
-// 封装拒绝非法输入与 region：运营填错不会变成一条永不生效的脏规则。
+// 封装拒绝非法输入：运营填错不会变成一条永不生效的脏规则。
+//
+// BL-4 起 region **不再被拒**（见 TestBlacklistNormalizeRegionAndUnknownKind），
+// 这里换成「非法的地区模式仍被拒」，保持这条用例原本要守的性质：
+// 坏输入一条都不落库。
 func TestCreateBlacklistEntryWithDBRejectsInvalidInput(t *testing.T) {
 	db := newBlacklistTestDB(t)
 	cases := []struct {
@@ -675,7 +696,9 @@ func TestCreateBlacklistEntryWithDBRejectsInvalidInput(t *testing.T) {
 		{"bad phone", CreateBlacklistEntryInput{Kind: BlacklistKindPhone, Pattern: "1380000", Reason: "x", Enabled: true}, ErrInvalidBlacklistPattern},
 		{"empty wechat", CreateBlacklistEntryInput{Kind: BlacklistKindWechat, Pattern: "   ", Reason: "x", Enabled: true}, ErrInvalidBlacklistPattern},
 		{"unknown kind", CreateBlacklistEntryInput{Kind: "email", Pattern: "a@b.c", Reason: "x", Enabled: true}, ErrInvalidBlacklistKind},
-		{"region rejected", CreateBlacklistEntryInput{Kind: BlacklistKindRegion, Pattern: "云南", Reason: "x", Enabled: true}, ErrBlacklistRegionNotImplemented},
+		{"bad region wildcard", CreateBlacklistEntryInput{Kind: BlacklistKindRegion, Pattern: "云*南", Reason: "x", Enabled: true}, ErrInvalidBlacklistPattern},
+		{"region too many segments", CreateBlacklistEntryInput{Kind: BlacklistKindRegion, Pattern: "云南 玉溪 移动 额外", Reason: "x", Enabled: true}, ErrInvalidBlacklistPattern},
+		{"region wrong match type", CreateBlacklistEntryInput{Kind: BlacklistKindRegion, Pattern: "云南", MatchType: BlacklistMatchCIDR, Reason: "x", Enabled: true}, ErrInvalidBlacklistMatchType},
 		// 46-*.md §2.1：拉黑原因必填。
 		{"empty reason", CreateBlacklistEntryInput{Kind: BlacklistKindIP, Pattern: "203.0.113.7", Reason: "   ", Enabled: true}, ErrInvalidBlacklistPattern},
 	}
@@ -715,17 +738,21 @@ func TestCreateBlacklistEntryWithDBRejectsDuplicate(t *testing.T) {
 	}
 }
 
-// 手工插入一条 kind='region' 的脏行（绕过 service 层）：
+// 手工插入一条**无法解析**的地区脏行（绕过 service 层）：
 //   - 必须被**跳过 + 告警**，不能静默接受（否则运营以为规则生效了）
 //   - 更不能让整次加载失败（一条脏行 = 全站放开是最坏结果）
-func TestBlacklistCacheSkipsHandInsertedRegionRow(t *testing.T) {
+//
+// BL-4 起「合法的 region 行」会被正常加载（旧版这条用例用 `云南` 作脏行，
+// 现在它不是脏行了）。这里换成段内通配 `云*南` —— 正是 §2.4 要避免的字符串前缀写法，
+// 解析必然失败。用例守的性质没变：坏行只跳过自己，好规则照常生效。
+func TestBlacklistCacheSkipsUnparsableRegionRow(t *testing.T) {
 	db := newBlacklistTestDB(t)
 	setBlacklistEnabled(t, db, "true")
 	good := seedBlacklistEntry(t, db, entity.BlacklistEntry{Pattern: "203.0.113.7", Enabled: true})
 	// 直接写库，模拟运营手工 INSERT。
 	if err := db.Create(&entity.BlacklistEntry{
-		Kind: BlacklistKindRegion, Pattern: "云南", MatchType: BlacklistMatchPrefix,
-		ValueHash: BlacklistPatternHashHex("云南"), ValueMasked: "云南*",
+		Kind: BlacklistKindRegion, Pattern: "云*南", MatchType: BlacklistMatchPrefix,
+		ValueHash: BlacklistPatternHashHex("云*南"), ValueMasked: "云*南*",
 		Reason: "手工插入", Enabled: true,
 	}).Error; err != nil {
 		t.Fatalf("insert region row: %v", err)
@@ -751,8 +778,8 @@ func TestBlacklistCacheSkipsHandInsertedRegionRow(t *testing.T) {
 	if match, hit := snapshot.MatchIP("203.0.113.7"); !hit || match.EntryID != good.ID {
 		t.Fatalf("good rule must still work: match=%+v hit=%v", match, hit)
 	}
-	if !strings.Contains(logBuf.String(), "region") {
-		t.Fatalf("skipping a region row must warn, log=%q", logBuf.String())
+	if !strings.Contains(logBuf.String(), "地区模式") {
+		t.Fatalf("skipping an unparsable region row must warn, log=%q", logBuf.String())
 	}
 }
 

@@ -49,11 +49,26 @@ func BlacklistIPWith(cache *service.BlacklistCache, recorder *service.BlacklistH
 	return blacklistHandler(blacklistDeps{cache: cache, recorder: recorder, db: db})
 }
 
+// BlacklistIPWithRegionLooker 与 BlacklistIPWith 相同，但可注入地区归属地查表器（BL-4）。
+//
+// 生产路径用 service.NewBlacklistRegionCacheLooker(db)（只读归属地缓存）；
+// 测试用它来断言「开关关闭 / 没有地区规则时一次归属地读都没有」。
+func BlacklistIPWithRegionLooker(cache *service.BlacklistCache, recorder *service.BlacklistHitRecorder, db *gorm.DB, regionLooker service.BlacklistRegionLooker) gin.HandlerFunc {
+	return blacklistHandler(blacklistDeps{
+		cache:        cache,
+		recorder:     recorder,
+		db:           db,
+		regionLooker: regionLooker,
+	})
+}
+
 type blacklistDeps struct {
 	cache    *service.BlacklistCache
 	recorder *service.BlacklistHitRecorder
 	// db 为 nil 时回落到 manager 单例（生产路径）。
 	db *gorm.DB
+	// regionLooker 为 nil 时按 db 构造一个只读归属地缓存的查表器（BL-4）。
+	regionLooker service.BlacklistRegionLooker
 }
 
 func (d blacklistDeps) database() *gorm.DB {
@@ -65,6 +80,17 @@ func (d blacklistDeps) database() *gorm.DB {
 		return nil
 	}
 	return mgr.GetDB()
+}
+
+// regionLookup 返回地区判定要用的归属地查表器。
+//
+// **懒构造**：只在真的需要判定（开关开 + 有地区规则）时才构造，
+// 保证「开关关闭时零查询」不被一个提前 new 出来的闭包破坏语义。
+func (d blacklistDeps) regionLookup() service.BlacklistRegionLooker {
+	if d.regionLooker != nil {
+		return d.regionLooker
+	}
+	return service.NewBlacklistRegionCacheLooker(d.database())
 }
 
 func blacklistHandler(deps blacklistDeps) gin.HandlerFunc {
@@ -90,6 +116,37 @@ func blacklistHandler(deps blacklistDeps) gin.HandlerFunc {
 
 		match, hit := snapshot.MatchIP(clientIP)
 		if !hit {
+			// 地区判定（BL-4）挂在 IP 判定**之后**：IP 规则是精确匹配、代价为零，
+			// 先判它能让「IP 已被拦」的请求不再去读归属地缓存。
+			//
+			// fail-open 分支复用同一条留痕骨架（blacklistFailOpen），
+			// 于是「快照缺失要留痕」只有一处实现。
+			regionMatch, outcome := service.EvaluateBlacklistRegion(deps.cache, deps.regionLookup(), clientIP)
+			switch outcome {
+			case service.BlacklistRegionFailOpen:
+				blacklistFailOpen(c, deps, clientIP, "黑名单缓存快照缺失")
+				c.Next()
+				return
+			case service.BlacklistRegionHit:
+				regionMatch.Kind = service.BlacklistKindRegion
+				recordBlacklistHit(deps, entity.BlacklistHit{
+					EntryID:     regionMatch.EntryID,
+					Kind:        service.BlacklistKindRegion,
+					ValueMasked: regionMatch.ValueMasked,
+					ClientIP:    clientIP,
+					Path:        c.Request.URL.Path,
+					Action:      service.BlacklistActionBlocked,
+				})
+				if WantsBlacklistHTML(c) {
+					RenderBlacklistPage(c, regionMatch.Reason)
+					return
+				}
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+					"code":    http.StatusForbidden,
+					"message": "当前访问受限，如有疑问请联系管理员",
+				})
+				return
+			}
 			c.Next()
 			return
 		}
