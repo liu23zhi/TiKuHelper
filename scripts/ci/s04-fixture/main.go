@@ -321,7 +321,23 @@ func unixStatValue(info os.FileInfo, name string) (uint64, error) {
 	return field.Uint(), nil
 }
 func managedFixtureLog(name string) bool {
-	for _, prefix := range []string{"Tiku", "Tiku-warning", "Tiku-error", "Tiku-thinking"} {
+	// ⚠️ 本清单必须与 pkg/logger/logger.go 实际打开的专用文件逐项对齐。
+	//
+	// logger.go 目前开 6 个（:109 主文件三件套 + :121 thinking + :131 ai-payload +
+	// :144 review-rebate）。早期这里只列了 4 个，缺 Tiku-ai-payload 与
+	// Tiku-review-rebate —— 而服务一启动就会创建这两个文件。
+	//
+	// 为什么长期没暴露：S04 的 default_production_missing_proxy 原本期望
+	// exit=1（拒绝启动），服务从未真正跑起来，fixture 树里不会出现这两个文件。
+	// task_doc/67 的语义变更（留空 = 信任所有 → 正常启动）让该 case 开始真正运行
+	// 服务，本清单的缺项才暴露为 `fixture tree contains unexpected path`。
+	//
+	// 加新日志文件时：logger.go 的 openRotatingFile 调用与本清单必须同时改，
+	// 否则会在「服务真的启动」的用例里炸。
+	for _, prefix := range []string{
+		"Tiku", "Tiku-warning", "Tiku-error", "Tiku-thinking",
+		"Tiku-ai-payload", "Tiku-review-rebate",
+	} {
 		if name == prefix+".txt" {
 			return true
 		}
