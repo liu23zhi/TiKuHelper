@@ -929,13 +929,13 @@ func decorateScriptItem(item ScriptListItem) ScriptListItem {
 //
 // 匹配顺序（顺序本身就是安全边界，改顺序前先读 45-*.md §0.25.3）：
 //
-//	1. 请求路径规范化：`..` 段直接判不匹配（不做「Clean 后放行」）；
-//	2. **保留前缀优先**：`/adapter-service/...` `/sqp/...` `/assets/...` 等命中即返回
-//	   ErrScriptNotFound —— 即使管理员配了 `*/*` 也不交给脚本入口；
-//	3. 推导 shortCode：根路径用 host 首段（泛域名模式），否则用路径**最后一段**
-//	   （段级 glob 允许 `a.com/a/*` 这类更深的公开路径）；
-//	4. 命中 shortCode 的脚本再校验 host == `<shortCode>.<baseDomain>`；
-//	5. 最后过管理员域名规则（含路径 glob）——多段路径必须有显式规则才放行。
+//  1. 请求路径规范化：`..` 段直接判不匹配（不做「Clean 后放行」）；
+//  2. **保留前缀优先**：`/adapter-service/...` `/sqp/...` `/assets/...` 等命中即返回
+//     ErrScriptNotFound —— 即使管理员配了 `*/*` 也不交给脚本入口；
+//  3. 推导 shortCode：根路径用 host 首段（泛域名模式），否则用路径**最后一段**
+//     （段级 glob 允许 `a.com/a/*` 这类更深的公开路径）；
+//  4. 命中 shortCode 的脚本再校验 host == `<shortCode>.<baseDomain>`；
+//  5. 最后过管理员域名规则（含路径 glob）——多段路径必须有显式规则才放行。
 func ResolvePublicScriptWithDB(db *gorm.DB, requestHost, requestPath string) (entity.UserScript, error) {
 	host := normalizePublicScriptHost(requestHost)
 	cleanPath, pathErr := cleanScriptRequestPath(requestPath)
