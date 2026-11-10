@@ -93,8 +93,21 @@ func loadTrustedProxiesLegacy() (trustedProxyConfig, error) {
 	}
 }
 
-// loadTrustedProxies keeps the rich upstream syntax, but production never trusts
-// missing/invalid/unrestricted proxy configuration or implicit private networks.
+// loadTrustedProxies 计算生产环境实际生效的可信代理配置。
+//
+// 语义（2026-11-10 按用户口径重定）：
+//
+//	① 值为空，或值为 none
+//	     → 视为「没有输入」→ 信任所有来源（0.0.0.0/0 + ::/0）。
+//	       none 不再是「完全不信任」的特殊开关，它只是「我没配」的另一种写法，
+//	       与留空等价。这样 compose 里 TRUSTED_PROXIES: "" 或 "none" 都不会拒绝启动。
+//	② 值为具体 IP/CIDR
+//	     → 用户条目 + 前置「局域网 / 本地」默认段（见 defaultTrustedProxies）。
+//	       宿主机反代、Docker 网关、内网 Nginx 免配即通，
+//	       同时公网来源仍需显式列出才被信任。
+//
+// 仍然报错的只有「来源写了内容、却一条都解析不出来」（例如写了 garbage）——
+// 那时静默降级成「信任所有」等于把管理员的安全设置悄悄关掉，必须让人看到。
 func loadTrustedProxies() (trustedProxyConfig, error) {
 	mode, err := registry.ResolveApplicationMode(os.Getenv("TIKU_APP_MODE"))
 	if err != nil {
@@ -106,9 +119,16 @@ func loadTrustedProxies() (trustedProxyConfig, error) {
 	raw := strings.TrimSpace(os.Getenv(trustedProxiesEnv))
 	source := trustedProxiesEnv
 	if raw == "" {
+		// 只有显式指定了 TRUSTED_PROXIES_FILE 才去读文件；
+		// 生产模式不隐式读取工作目录下的 trusted_proxies.txt。
 		path := strings.TrimSpace(os.Getenv(trustedProxiesFileEnv))
 		if path == "" {
-			return trustedProxyConfig{}, fmt.Errorf("production requires explicit TRUSTED_PROXIES=none or restricted IP/CIDR entries")
+			// ①-a 两个来源都空 → 信任所有来源。
+			return trustedProxyConfig{
+				List:            []string{trustAllProxiesIPv4, trustAllProxiesIPv6},
+				Source:          "",
+				ConfiguredCount: 0,
+			}, nil
 		}
 		content, readErr := os.ReadFile(path)
 		if readErr != nil {
@@ -116,18 +136,33 @@ func loadTrustedProxies() (trustedProxyConfig, error) {
 		}
 		raw, source = strings.TrimSpace(string(content)), path
 	}
-	if strings.EqualFold(raw, "none") {
-		return trustedProxyConfig{Source: source}, nil
+	if raw == "" || strings.EqualFold(raw, "none") {
+		// ①-b 值为 none（或文件里只有空白）→ 同样视为「没有输入」，信任所有来源。
+		return trustedProxyConfig{
+			List:            []string{trustAllProxiesIPv4, trustAllProxiesIPv6},
+			Source:          source,
+			ConfiguredCount: 0,
+		}, nil
 	}
 	entries, invalid := parseTrustedProxyEntries(raw)
 	if len(invalid) != 0 || len(entries) == 0 {
-		return trustedProxyConfig{}, fmt.Errorf("production TRUSTED_PROXIES requires valid restricted entries only")
+		return trustedProxyConfig{}, fmt.Errorf("TRUSTED_PROXIES requires valid IP/CIDR entries, \"none\", or empty (both mean trust all)")
 	}
+	// ② 用户条目 + 前置局域网/本地默认段。
+	//
+	// 这里仍走 resolveStartupTrustedProxies 做逐条校验（非法条目、整族信任、
+	// IPv4-mapped 区间等），但传的是「用户条目」，校验通过后再用
+	// composeTrustedProxies 补默认段 —— 顺序不能反：默认段本身含 /8、/12
+	// 这类宽段，混进去会被「整族信任」检查误判。
 	list, err := resolveStartupTrustedProxies(mode, strings.Join(entries, ","))
 	if err != nil {
 		return trustedProxyConfig{}, err
 	}
-	return trustedProxyConfig{List: list, Source: source, ConfiguredCount: len(list)}, nil
+	return trustedProxyConfig{
+		List:            composeTrustedProxies(list),
+		Source:          source,
+		ConfiguredCount: len(list),
+	}, nil
 }
 
 // newTrustedProxyConfig 组装最终配置：用户条目 + 「局域网/本地」默认值。

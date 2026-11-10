@@ -15,19 +15,35 @@ import (
 	"time"
 )
 
+// 语义以 task_doc/67-TRUSTED_PROXIES语义定义.md 为准：
+//
+//	空 或 none       → 信任所有（0.0.0.0/0 + ::/0）
+//	具体 IP/CIDR     → 用户条目 + 前置「局域网/本地」默认段
+//	写了但解析不出   → 报错
 func TestIntegrationStrictProxyPolicy(t *testing.T) {
+	// withLocal 是「用户条目 + 局域网默认段」的期望值。
+	withLocal := func(entries ...string) []string {
+		out := append([]string{}, entries...)
+		return append(out, defaultTrustedProxies...)
+	}
 	cases := []struct {
 		name, raw string
 		want      []string
 		fail      bool
 	}{
-		{name: "missing", fail: true}, {name: "none", raw: "none"}, {name: "exact_ip", raw: "192.0.2.9", want: []string{"192.0.2.9"}},
+		// ① 空 / none → 信任所有（不再报错）
+		{name: "missing", want: []string{trustAllProxiesIPv4, trustAllProxiesIPv6}},
+		{name: "none", raw: "none", want: []string{trustAllProxiesIPv4, trustAllProxiesIPv6}},
+		{name: "none_with_spaces", raw: "  none  ", want: []string{trustAllProxiesIPv4, trustAllProxiesIPv6}},
+		// ② 具体条目 → 条目 + 局域网默认段
+		{name: "exact_ip", raw: "192.0.2.9", want: withLocal("192.0.2.9")},
+		{name: "netmask", raw: "192.0.2.0/255.255.255.0", want: withLocal("192.0.2.0/24")},
+		{name: "rich_list", raw: "trusted_proxies: [192.0.2.9, 198.51.100.0/24]", want: withLocal("192.0.2.9", "198.51.100.0/24")},
+		// ③ 写了但无效 → 报错
 		{name: "partial_invalid", raw: "192.0.2.9,not-an-ip", fail: true}, {name: "wildcard", raw: "*", fail: true},
 		{name: "whole_v4", raw: "0.0.0.0/0", fail: true}, {name: "whole_v6", raw: "::/0", fail: true},
 		{name: "whole_v4_union", raw: "0.0.0.0/1,128.0.0.0/1", fail: true},
 		{name: "mapped_whole_v4", raw: "::ffff:0.0.0.0/96", fail: true},
-		{name: "netmask", raw: "192.0.2.0/255.255.255.0", want: []string{"192.0.2.0/24"}},
-		{name: "rich_list", raw: "trusted_proxies: [192.0.2.9, 198.51.100.0/24]", want: []string{"192.0.2.9", "198.51.100.0/24"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -39,7 +55,7 @@ func TestIntegrationStrictProxyPolicy(t *testing.T) {
 				t.Fatalf("expected failure=%v got=%v config=%v", c.fail, err, got)
 			}
 			if !c.fail && !reflect.DeepEqual(got.List, c.want) {
-				t.Fatalf("explicit list changed: got %v want %v", got.List, c.want)
+				t.Fatalf("list changed: got %v want %v", got.List, c.want)
 			}
 		})
 	}
@@ -52,8 +68,22 @@ func TestIntegrationStrictProxyPolicy(t *testing.T) {
 		}
 		t.Setenv(trustedProxiesFileEnv, p)
 		got, err := loadTrustedProxies()
-		if err != nil || !reflect.DeepEqual(got.List, []string{"192.0.2.9"}) {
+		want := append([]string{"192.0.2.9"}, defaultTrustedProxies...)
+		if err != nil || !reflect.DeepEqual(got.List, want) {
 			t.Fatalf("explicit file failed: %v %+v", err, got)
+		}
+	})
+	t.Run("explicit_file_none_trusts_all", func(t *testing.T) {
+		t.Setenv("TIKU_APP_MODE", "production")
+		t.Setenv(trustedProxiesEnv, "")
+		p := filepath.Join(t.TempDir(), "proxy.txt")
+		if err := os.WriteFile(p, []byte("none\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv(trustedProxiesFileEnv, p)
+		got, err := loadTrustedProxies()
+		if err != nil || !reflect.DeepEqual(got.List, []string{trustAllProxiesIPv4, trustAllProxiesIPv6}) {
+			t.Fatalf("file with none must trust all: %v %+v", err, got)
 		}
 	})
 	t.Run("missing_explicit_file", func(t *testing.T) {

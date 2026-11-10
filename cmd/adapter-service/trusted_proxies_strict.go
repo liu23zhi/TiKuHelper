@@ -49,13 +49,21 @@ func proxyRangesTrustAll(ranges []proxyRange, bits uint) bool {
 	}
 	return false
 }
+// resolveStartupTrustedProxies 校验并规范化「用户显式填写的」可信代理条目。
+//
+// 语义以 task_doc/67-TRUSTED_PROXIES语义定义.md 为准：
+//
+//	空 或 none  → 视为「没有输入」，返回全信任（0.0.0.0/0 + ::/0）
+//	具体 IP/CIDR → 逐条校验后返回规范化条目
+//
+// 注意：本函数只处理**用户条目**，不负责前置「局域网/本地」默认段 ——
+// 那是调用方（loadTrustedProxies）用 composeTrustedProxies 补的。
+// 顺序不能反：默认段本身含 /8、/12 这类宽段，混进来会被整族信任检查误判。
 func resolveStartupTrustedProxies(mode, configured string) ([]string, error) {
 	value := strings.TrimSpace(configured)
-	if strings.EqualFold(value, "none") {
-		return nil, nil
-	}
-	if value == "" {
-		return nil, errors.New("startup requires explicit TRUSTED_PROXIES=none or restricted IP/CIDR entries")
+	if value == "" || strings.EqualFold(value, "none") {
+		// 定义一个口径：空与 none 等价，都视为「没有输入」→ 信任所有来源。
+		return []string{trustAllProxiesIPv4, trustAllProxiesIPv6}, nil
 	}
 	var values []string
 	var ipv4, ipv6 []proxyRange
