@@ -51,6 +51,14 @@ html[data-theme='light'] {
   --radius-card: 20px;
   --radius-control: 12px;
   --radius-chip: 8px;
+  /* Decorative accents (78 §6.6). Separate token family from the semantic set
+     (success/warning/danger/info): these must never express status, and neither
+     family may be aliased to the other. For icon, label and chart-series use only.
+     Measured >=4.5:1 against #F5F5F7 and #FFFFFF. */
+  --accent-teal: #0F766E;
+  --accent-amber: #B45309;
+  --accent-violet: #7C3AED;
+  --accent-rose: #B91C1C;
 }
 
 html[data-theme='dark'] {
@@ -107,6 +115,14 @@ html[data-theme='dark'] {
   --radius-card: 20px;
   --radius-control: 12px;
   --radius-chip: 8px;
+  /* Decorative accents (78 §6.6). Separate token family from the semantic set
+     (success/warning/danger/info): these must never express status, and neither
+     family may be aliased to the other. For icon, label and chart-series use only.
+     Measured >=4.5:1 against #1C1C1E and #242426. */
+  --accent-teal: #2DD4BF;
+  --accent-amber: #FBBF24;
+  --accent-violet: #A78BFA;
+  --accent-rose: #F87171;
 }
 
 html[data-theme] body, html[data-theme] #app { background-color: var(--bg); color: var(--text); }
@@ -189,6 +205,29 @@ html, body { margin: 0; min-width: 0; min-height: 100%; }
 *, *::before, *::after { box-sizing: border-box; }
 body { background: var(--bg); color: var(--text); }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+/* Motion preference (45 §0.27.4 / 78 §6.3). One attribute on <html>, three
+   levels: auto (follow the OS), on (force motion), off (force stillness).
+   `data-motion` always carries the *stored choice*, so the prefers-reduced-motion
+   block below can still see an explicit 'on' and override it. */
+html[data-motion='off'] *,
+html[data-motion='off'] *::before,
+html[data-motion='off'] *::after {
+  animation-duration: .01ms !important;
+  transition-duration: .01ms !important;
+}
+
+/* Accessibility outranks the in-app switch: a system-level reduced-motion
+   preference usually exists for medical reasons (vestibular disorders), so an
+   explicit application 'on' must not force motion back on. */
+@media (prefers-reduced-motion: reduce) {
+  html[data-motion='on'] *,
+  html[data-motion='on'] *::before,
+  html[data-motion='on'] *::after {
+    animation-duration: .01ms !important;
+    transition-duration: .01ms !important;
+  }
+}
 
 /* Invariant QR image mat; semantic UI surfaces still follow appearance. */
 :root { --qr-surface: #fff; }

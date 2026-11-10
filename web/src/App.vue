@@ -7,7 +7,7 @@
 </template>
 
 <script>
-import { computed, onBeforeUnmount, onMounted, provide, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
 import { ConfigProvider, theme } from 'ant-design-vue'
 import zhCN from 'ant-design-vue/lib/locale/zh_CN'
 import { createThemeController, THEME_CONTROLLER_KEY } from './utils/themeMode.mjs'
@@ -24,6 +24,15 @@ export default {
     provide(THEME_CONTROLLER_KEY, controller)
     const themeState = ref(controller.getState())
     const stopTheme = controller.subscribe(state => { themeState.value = state })
+    const motionState = ref(controller.getMotionState())
+    const stopMotion = controller.subscribeMotion(state => { motionState.value = state })
+    // data-motion is written by the controller itself on every apply() so the
+    // attribute, the stored choice, and the OS signal can never drift apart;
+    // App.vue only owns the controller lifetime and its reactive mirror.
+    watch(motionState, next => {
+      if (typeof document === 'undefined') return
+      document.documentElement.dataset.motion = next.mode
+    }, { immediate: true, deep: true })
     const antdTheme = computed(() => {
       const dark = themeState.value.resolved === 'dark'
       return {
@@ -40,7 +49,7 @@ export default {
         },
       }
     })
-    onBeforeUnmount(() => { stopLegacyForms(); stopTheme(); controller.dispose() })
+    onBeforeUnmount(() => { stopLegacyForms(); stopTheme(); stopMotion(); controller.dispose() })
     onMounted(() => {
       if (typeof document !== 'undefined') stopLegacyForms = installLegacyFormFallback(document.body)
       getPublicRegisterStatus().then((res) => {
