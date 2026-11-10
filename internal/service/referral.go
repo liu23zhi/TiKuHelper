@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,6 +32,11 @@ var (
 	ErrReferralRebateState = errors.New("返佣记录状态不允许该操作")
 	// ErrReferralRebateDisabled 总开关关闭时管理员接口不可用。
 	ErrReferralRebateDisabled = errors.New("邀请返佣功能未启用")
+	// ErrReferralRebateSchemaUnavailable 结算/冲回需要的表或列还没迁移到位。
+	//
+	// 与创建返佣时的「静默降级」不同：结算是管理员显式发钱的动作，
+	// 结构没准备好时必须明确报错（503），不能假装成功。
+	ErrReferralRebateSchemaUnavailable = errors.New("邀请返佣结算所需的表结构未就绪")
 )
 
 // referralCodeLength 是邀请码长度。
@@ -307,10 +313,13 @@ func RegisterReferralInviteForNewUser(tx *gorm.DB, userID int32) (entity.Referra
 
 // referralRebateBaseAmount 计算返佣基数。
 //
-// **基数 = 订单实付本金，不含赠金**：1688 充值赠 3376、到账 5064，
-// 返佣基数仍然是 1688 而不是 5064。当前充值链路只有 users.balance 一个钱包，
-// 赠金没有单独入账字段，因此 order.Amount 就是实付本金 —— 这个函数存在的意义
-// 是把「口径」写在一个地方，将来引入 gift_balance 时只改这里。
+// **基数 = 订单实付本金，不含赠金/返现**：1688 充值赠 3376、到账 5064，
+// 返佣基数仍然是 1688 而不是 5064。`order.Amount` 就是实付本金（充值链路只把
+// 实付额写进订单，赠金走 recharge_promotion_grants 与 gift_balance）—— 这个函数
+// 存在的意义是把「口径」写在一个地方，将来口径变了只改这里。
+//
+// 双桶模型下这条口径更关键：返佣的钱进 gift_balance，而 gift_balance **不参与**
+// 这里的计算，否则 A 邀 B、B 邀 C 就能靠赠金层层放大返佣。
 func referralRebateBaseAmount(order entity.RechargeOrder) float64 {
 	return util.RoundMoneyToDecimals(order.Amount, util.RechargePrecision)
 }
@@ -401,11 +410,19 @@ func CreateReferralRebateInTx(tx *gorm.DB, order entity.RechargeOrder) (*entity.
 
 // ReverseReferralRebateForOrderInTx 在退款成功的事务内冲回对应返佣。
 //
-// 语义（对应 04 稿 3.6 节「退款按同一来源可追踪冲回」）：
-//   - 找到原订单的返佣记录 → 状态置 reversed + reversed_at；
-//   - 已经 settled 的也照样标记（只改状态，不动任何钱包 —— 返佣是独立账本）；
-//   - 已经是 reversed → 幂等返回，不重复写时间戳；
+// 语义（对应 16-*.md §2.5「退款冲回」+ 2026-11-09 双桶模型）：
+//   - 找到原订单的返佣记录 → 状态置 reversed + reversed_at，**不删行**；
+//   - **已 settled 的记录要把钱从邀请人赠送余额里扣回来**（结算入 gift_balance，冲回自然从
+//     同一桶出）：gift_balance 扣回，**clamp 到 0 永不为负**，并写一条冲回流水；
+//   - 扣不足额（赠金已被消费）时**差额留在流水备注里**，不静默吞掉；
+//   - **不动 users.balance**：本金桶从来没收到过返佣；
+//   - 未 settled（仍 pending）→ 只改状态，没有钱要退；
+//   - 已经是 reversed → 幂等返回，不重复扣钱、不覆盖首次时间戳；
 //   - 没有对应返佣（没开活动 / 没被邀请）→ 什么都不做。
+//
+// 锁顺序：退款链路已经持有 users 行锁，这里再锁 referral_rebates 行 ——
+// 与 SettleReferralRebateWithDB 保持 **users → referral_rebates** 的同一顺序，
+// 避免「结算持 rebate 等 user、退款持 user 等 rebate」的交叉死锁。
 func ReverseReferralRebateForOrderInTx(tx *gorm.DB, orderID int32, remark string) (*entity.ReferralRebate, error) {
 	if tx == nil || orderID <= 0 {
 		return nil, nil
@@ -426,28 +443,74 @@ func ReverseReferralRebateForOrderInTx(tx *gorm.DB, orderID int32, remark string
 		return &rebate, nil
 	}
 	now := time.Now()
+	trimmedRemark := strings.TrimSpace(remark)
 	updates := map[string]any{
 		"status":      entity.ReferralRebateStatusReversed,
 		"reversed_at": &now,
 	}
-	if trimmed := strings.TrimSpace(remark); trimmed != "" {
-		updates["remark"] = trimmed
+	if trimmedRemark != "" {
+		updates["remark"] = trimmedRemark
 	}
+
+	// 只有「钱真的进过邀请人余额」的结算记录才需要扣回。
+	if rebate.Status == entity.ReferralRebateStatusSettled {
+		deducted, err := debitReferralRebateWalletInTx(tx, rebate)
+		if err != nil {
+			return nil, err
+		}
+		if trimmedRemark == "" {
+			updates["remark"] = buildReferralReversalRemark(rebate, deducted)
+		}
+	}
+
 	if err := referralSession(tx).Model(&entity.ReferralRebate{}).Where("id = ?", rebate.ID).Updates(updates).Error; err != nil {
 		return nil, err
 	}
 	rebate.Status = entity.ReferralRebateStatusReversed
 	rebate.ReversedAt = &now
-	if trimmed := strings.TrimSpace(remark); trimmed != "" {
-		rebate.Remark = trimmed
+	if value, ok := updates["remark"]; ok {
+		rebate.Remark, _ = value.(string)
 	}
 	return &rebate, nil
 }
 
-// SettleReferralRebateWithDB 把一条 pending 返佣置为 settled。
+// buildReferralReversalRemark 生成冲回备注；赠金不足（clamp 到 0）时把差额如实写出来。
 //
-// **只改状态，不写任何钱包**：返佣是独立账本，入账需要另开接口（本期不做）。
-// 已经 settled → 幂等返回；reversed → 状态冲突（不允许把冲回的记录再结算）。
+// 差额留痕是硬要求：应冲回 X 但只扣到 Y 时，不能静默吞掉 X-Y，
+// 否则「这笔返佣作废了，钱却还在用户手上」这件事在对账里查不到。
+func buildReferralReversalRemark(rebate entity.ReferralRebate, deducted float64) string {
+	amount := util.RoundMoney(rebate.Amount)
+	actual := util.RoundMoney(deducted)
+	if actual >= amount {
+		return "原订单退款，返佣已冲回"
+	}
+	return fmt.Sprintf("原订单退款，返佣已冲回（应冲回 ¥%s，赠金余额不足实际冲回 ¥%s，差额 ¥%s 记为不可回收）",
+		moneyTextForReferral(amount), moneyTextForReferral(actual), moneyTextForReferral(util.RoundMoney(amount-actual)))
+}
+
+// moneyTextForReferral 把金额格式化成不带多余零的十进制文本（仅用于备注/日志）。
+func moneyTextForReferral(amount float64) string {
+	return strconv.FormatFloat(util.RoundMoney(amount), 'f', -1, 64)
+}
+
+// SettleReferralRebateWithDB 结算一条 pending 返佣：**改状态 + 入赠送余额，同一个事务**。
+//
+// 结算即入余额（16-*.md §2.5 / 用户 2026-11-09 两次修正）：
+//  1. 锁 rebate 行（FOR UPDATE），校验 status ∈ {pending}；
+//  2. **users.gift_balance += rebate.Amount**（赠送余额桶：可消费、不可退）；
+//  3. billing_records 一条 type=referral_rebate，含本金桶 balanceBefore/balanceAfter
+//     （结算不动本金桶，因此两者相等）与赠送桶前后快照；
+//  4. rebate.status=settled、settled_at=now。
+//
+// **users.balance 一个字节都不动**：balance 是充值本金、可退款，返佣进这里
+// 就等于把「送的钱」变成可退现金（A 邀 B、B 邀 C 层层套现）。
+//
+// 幂等（三道闸，任一命中都不会重复加钱）：
+//   - 行锁（SELECT ... FOR UPDATE）串行化同一 rebate 的并发结算；
+//   - 状态判断：已 settled → 直接返回成功，不再加钱；
+//   - 流水兜底：request_id = referral_rebate_<id> 的结算流水已存在 → 只补状态，不加钱。
+//
+// 口径红线：返佣基数 BaseAmount 不动（只认实付本金，不含赠金/返现）。
 func SettleReferralRebateWithDB(db *gorm.DB, admin entity.User, id int32) (entity.ReferralRebate, error) {
 	if db == nil || id <= 0 {
 		return entity.ReferralRebate{}, ErrReferralRebateNotFound
@@ -455,8 +518,26 @@ func SettleReferralRebateWithDB(db *gorm.DB, admin entity.User, id int32) (entit
 	if !GetReferralRebateEnabledWithDB(db) {
 		return entity.ReferralRebate{}, ErrReferralRebateDisabled
 	}
+	if !referralSettlementSchemaAvailable(db) {
+		return entity.ReferralRebate{}, ErrReferralRebateSchemaUnavailable
+	}
 	var rebate entity.ReferralRebate
 	err := db.Transaction(func(tx *gorm.DB) error {
+		// 先无锁读一次只为拿到受益人 ID：锁顺序必须是 users → referral_rebates
+		// （与退款冲回链路一致，见 ReverseReferralRebateForOrderInTx 的说明）。
+		var head entity.ReferralRebate
+		if err := referralSession(tx).Model(&entity.ReferralRebate{}).
+			Select("id", "inviter_user_id").Where("id = ?", id).Take(&head).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrReferralRebateNotFound
+			}
+			return err
+		}
+		wallet, err := lockReferralWalletInTx(tx, head.InviterUserID)
+		if err != nil {
+			return err
+		}
+
 		if err := referralSession(tx).Model(&entity.ReferralRebate{}).Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("id = ?", id).Take(&rebate).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -466,8 +547,19 @@ func SettleReferralRebateWithDB(db *gorm.DB, admin entity.User, id int32) (entit
 		}
 		switch rebate.Status {
 		case entity.ReferralRebateStatusSettled:
+			// 幂等：已经结算过，直接返回，**不重复加钱**。
 			return nil
 		case entity.ReferralRebateStatusReversed:
+			// 冲回后不得再结算：钱已经退回去了，再结算等于凭空发钱。
+			return ErrReferralRebateState
+		case entity.ReferralRebateStatusPending:
+		default:
+			// 未知状态（历史脏数据 / 未来新状态）一律拒绝，不猜语义。
+			return ErrReferralRebateState
+		}
+
+		amount := util.RoundMoney(rebate.Amount)
+		if amount < 0 {
 			return ErrReferralRebateState
 		}
 		now := time.Now()
@@ -475,6 +567,13 @@ func SettleReferralRebateWithDB(db *gorm.DB, admin entity.User, id int32) (entit
 		if admin.Username != "" {
 			remark = "管理员结算：" + admin.Username
 		}
+
+		if amount > 0 {
+			if err := creditReferralRebateWalletInTx(tx, wallet, rebate, amount, remark); err != nil {
+				return err
+			}
+		}
+
 		if err := referralSession(tx).Model(&entity.ReferralRebate{}).Where("id = ?", rebate.ID).Updates(map[string]any{
 			"status":     entity.ReferralRebateStatusSettled,
 			"settled_at": &now,
@@ -491,6 +590,218 @@ func SettleReferralRebateWithDB(db *gorm.DB, admin entity.User, id int32) (entit
 		return entity.ReferralRebate{}, err
 	}
 	return rebate, nil
+}
+
+// referralSettlementSchemaAvailable 判断「结算/冲回」需要的表与列是否就绪。
+//
+// 比 referralSchemaAvailable 更严：结算要写钱包与账单，所以还要
+// users.gift_balance 与 billing_records。缺任何一项都明确报错（503），
+// 不能像「创建返佣」那样静默降级 —— 那会让管理员以为钱已经发了。
+func referralSettlementSchemaAvailable(db *gorm.DB) bool {
+	if !referralSchemaAvailable(db) {
+		return false
+	}
+	if !db.Migrator().HasColumn(entity.TableNameUser, "gift_balance") {
+		return false
+	}
+	return db.Migrator().HasTable(entity.TableNameBillingRecord)
+}
+
+// lockReferralWalletInTx 锁住账户行并返回锁内读到的钱包快照。
+func lockReferralWalletInTx(tx *gorm.DB, userID int32) (entity.User, error) {
+	var user entity.User
+	if err := referralSession(tx).Model(&entity.User{}).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id = ?", userID).Take(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return entity.User{}, ErrReferralRebateNotFound
+		}
+		return entity.User{}, err
+	}
+	return user, nil
+}
+
+// creditReferralRebateWalletInTx 把结算金额加进邀请人的**赠送余额**，并写一条结算流水。
+//
+// 钱包口径（2026-11-09 用户修正后的双桶模型）：
+//   - `balance`      = **仅充值本金**，可退；返佣**不进**这一桶；
+//   - `gift_balance` = 赠送金额，**可消费但不可退**；返佣进这里；
+//   - 消费顺序：先扣 gift_balance，扣完再扣 balance（见消费链路）。
+//
+// 因此结算只写 gift_balance，balance 一个字节都不动 —— 否则「邀请返佣」会被算成
+// 可退本金，A 邀请 B、B 邀请 C 就能层层套出现金。
+//
+// 流水：type=referral_rebate。billing_records 只有 balance_before/after 两列，
+// 记的是**本金桶**的前后值（结算时不变），赠送桶的前后值写进 unit_price_snapshot
+// （沿用既有的快照键值约定），这样对账时两边都能看到。
+//
+// 幂等兜底：request_id = referral_rebate_<rebateID> 的流水已存在 → 只当已加过钱，
+// 直接返回（行锁 + 状态判断之外的最后一道闸）。
+func creditReferralRebateWalletInTx(tx *gorm.DB, wallet entity.User, rebate entity.ReferralRebate, amount float64, remark string) error {
+	requestID := referralRebateBillingRequestID(rebate.ID)
+	exists, err := referralBillingRecordExists(tx, requestID)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	balanceBefore := util.RoundMoney(wallet.Balance)
+	giftBefore := util.RoundMoney(wallet.GiftBalance)
+	// 赠送入账按规则 3：先抵欠款（balance 可能为负），剩余才进赠金桶。
+	// 直接用 gift += amount 会让「欠款 1 元 + 返佣 2 元」变成 balance=-1 gift=2，
+	// 而正确结果是 balance=0 gift=1（43-*.md 算例 B）。
+	newBalance, giftAfter := CreditGiftBuckets(wallet.Balance, wallet.GiftBalance, amount)
+	if err := referralSession(tx).Model(&entity.User{}).Where("id = ?", wallet.ID).Updates(map[string]any{
+		"balance":      newBalance,
+		"gift_balance": giftAfter,
+	}).Error; err != nil {
+		return err
+	}
+	record := entity.BillingRecord{
+		UserID:            wallet.ID,
+		Type:              ReferralRebateBillingRecordType,
+		Provider:          "system",
+		Amount:            amount,
+		BalanceBefore:     balanceBefore,
+		BalanceAfter:      newBalance,
+		UnitPriceSnapshot: referralGiftSnapshot(giftBefore, giftAfter),
+		RequestID:         requestID,
+		RelatedOrderID:    rebate.RechargeOrderID,
+		Remark:            referralBillingRemark("邀请返佣（入赠送余额）", rebate, joinReferralNotes(remark, referralDebtOffsetNote(balanceBefore, newBalance))),
+	}
+	return referralSession(tx).Create(&record).Error
+}
+
+// joinReferralNotes 把两段说明拼成一句，空段自动跳过。
+func joinReferralNotes(notes ...string) string {
+	parts := make([]string, 0, len(notes))
+	for _, note := range notes {
+		if trimmed := strings.TrimSpace(note); trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+	}
+	return strings.Join(parts, "，")
+}
+
+// referralDebtOffsetNote 在本次赠送用于抵欠款时给出一句说明。
+//
+// 用户体验要求（43-*.md §6 最后一条）：算例 B 的用户会看到「我获得了 2 元赠送，
+// 但余额只涨了 1 元」，不解释会被当成 bug。这句话进账单备注，用户能自己看懂。
+func referralDebtOffsetNote(balanceBefore, balanceAfter float64) string {
+	if util.RoundMoney(balanceBefore) >= 0 {
+		return ""
+	}
+	offset := util.RoundMoney(util.RoundMoney(balanceAfter) - util.RoundMoney(balanceBefore))
+	if offset <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("其中 ¥%s 用于抵扣欠款", moneyTextForReferral(offset))
+}
+
+// referralGiftSnapshot 把赠送余额桶的前后值写进账单快照。
+//
+// billing_records 没有 gift 列（加列要走迁移，见 t20），而结算流水必须能对账
+// 「赠送余额从多少变成多少」。沿用既有的 key=value 快照约定，读取端用
+// ExtractBillingSnapshotField 取，不需要改表。
+func referralGiftSnapshot(giftBefore, giftAfter float64) string {
+	return fmt.Sprintf("giftBalanceBefore=%s giftBalanceAfter=%s",
+		moneyTextForReferral(giftBefore), moneyTextForReferral(giftAfter))
+}
+
+// debitReferralRebateWalletInTx 把已结算的返佣从邀请人**赠送余额**里扣回，并写一条冲回流水。
+//
+// 扣减策略（2026-11-09 双桶模型 + 用户明确要求「赠送金额只能为 0，不能为负数」）：
+//   - 只扣 gift_balance，**不动 balance** —— balance 是充值本金，返佣从来没进过它；
+//   - **clamp 到 0**：赠金可能已被消费，能扣多少扣多少，gift_balance 永不为负；
+//   - **差额必须留痕**：应冲回 X、实际只扣到 Y（Y < X）时，流水 amount 记**实际扣减额 Y**，
+//     remark 里写明「应冲回 X，赠金余额不足，实际冲回 Y，差额 X-Y 记为不可回收」。
+//     静默吞掉差额等于对账时凭空少一笔，绝不允许；
+//   - 业务上这笔返佣**照样作废**（status=reversed）—— 扣不到钱不等于记录还能用；
+//   - 不删行：原 rebate 记录保留。
+//
+// 返回实际扣减金额（可能小于应扣金额，见上）。
+func debitReferralRebateWalletInTx(tx *gorm.DB, rebate entity.ReferralRebate) (float64, error) {
+	amount := util.RoundMoney(rebate.Amount)
+	if amount <= 0 {
+		return 0, nil
+	}
+	requestID := referralRebateReversalBillingRequestID(rebate.ID)
+	exists, err := referralBillingRecordExists(tx, requestID)
+	if err != nil {
+		return 0, err
+	}
+	if exists {
+		// 冲回流水已存在 → 已经扣过，绝不重复扣。
+		return amount, nil
+	}
+	wallet, err := lockReferralWalletInTx(tx, rebate.InviterUserID)
+	if err != nil {
+		return 0, err
+	}
+	balanceBefore := util.RoundMoney(wallet.Balance)
+	giftBefore := util.RoundMoney(wallet.GiftBalance)
+	// 冲回只扣赠金桶，clamp 到 0；实际扣减额写进流水，差额在 remark 里留痕。
+	deducted, giftAfter := DeductGiftBucket(wallet.GiftBalance, amount)
+	if err := referralSession(tx).Model(&entity.User{}).Where("id = ?", wallet.ID).Updates(map[string]any{
+		"gift_balance": giftAfter,
+	}).Error; err != nil {
+		return 0, err
+	}
+	record := entity.BillingRecord{
+		UserID:            wallet.ID,
+		Type:              ReferralRebateReversalBillingRecordType,
+		Provider:          "system",
+		Amount:            deducted,
+		BalanceBefore:     balanceBefore,
+		BalanceAfter:      balanceBefore,
+		UnitPriceSnapshot: referralGiftSnapshot(giftBefore, giftAfter),
+		RequestID:         requestID,
+		RelatedOrderID:    rebate.RechargeOrderID,
+		Remark:            referralBillingRemark("邀请返佣冲回（扣赠送余额）", rebate, buildReferralReversalRemark(rebate, deducted)),
+	}
+	if err := referralSession(tx).Create(&record).Error; err != nil {
+		return 0, err
+	}
+	return deducted, nil
+}
+
+// clampWalletDeduction 已并入 DeductGiftBucket（见 wallet_bucket.go）：
+// 「应扣多少、桶里有多少、实际能扣多少」是双桶模型的公共判定，
+// 统一放在那里，避免返佣冲回与管理员减赠金各写一份。
+
+// referralBillingRecordExists 判断某条流水（按 request_id）是否已存在。
+func referralBillingRecordExists(tx *gorm.DB, requestID string) (bool, error) {
+	var count int64
+	if err := referralSession(tx).Model(&entity.BillingRecord{}).
+		Where("request_id = ?", requestID).Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// referralRebateBillingRequestID 是结算流水的 request_id，同时充当幂等锚点。
+func referralRebateBillingRequestID(rebateID int32) string {
+	return fmt.Sprintf("%s_%d", ReferralRebateBillingRecordType, rebateID)
+}
+
+// referralRebateReversalBillingRequestID 是冲回流水的 request_id。
+func referralRebateReversalBillingRequestID(rebateID int32) string {
+	return fmt.Sprintf("%s_%d", ReferralRebateReversalBillingRecordType, rebateID)
+}
+
+// referralBillingRemark 拼出账单备注：默认标签 + 原充值订单号 + 附加说明。
+//
+// 订单号进备注是为了对账时能一眼看出「这笔钱来自哪一笔充值」，
+// 而不是只看到一个孤零零的返佣 ID。
+func referralBillingRemark(label string, rebate entity.ReferralRebate, extra string) string {
+	parts := []string{label}
+	if orderNo := strings.TrimSpace(rebate.OrderNo); orderNo != "" {
+		parts = append(parts, "订单 "+orderNo)
+	}
+	if note := strings.TrimSpace(extra); note != "" {
+		parts = append(parts, note)
+	}
+	return strings.Join(parts, "；")
 }
 
 // GetReferralSummaryWithDB 汇总「我的邀请」数据。

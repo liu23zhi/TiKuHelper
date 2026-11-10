@@ -843,6 +843,22 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		logger.FatalLog(fmt.Errorf("prepare recharge promotion schema fail: %w", err))
 	}
 
+	// 双桶钱包拆账（用户 2026-11-09 选方案 A）：把旧模型累加出来的 gift_balance 清零。
+	// 旧模型下 gift_balance 是「累计发放额」（只增不减），新模型下它是**可用余额**，
+	// 不清零等于让用户凭历史计数器重复消费。balance（充值本金）不动。
+	// 必须排在 ensureReviewRebateSchema 之后（依赖 gift_balance 列已存在）；
+	// 数据类失败只记日志不阻断启动，一次性标记保证只跑一次。
+	if err := runStartupMigration("ensureWalletBucketSplitSchema", func() error { return ensureWalletBucketSplitSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare wallet bucket split fail: %w", err))
+	}
+
+	// 账单分桶列：gift_charged / principal_charged。
+	// 双桶模型下「可退金额」只能由已消耗本金决定，这两列是唯一可靠来源。
+	// 只建列不回填（历史行没有分桶信息，无法还原）。
+	if err := runStartupMigration("ensureBillingWalletSplitSchema", func() error { return ensureBillingWalletSplitSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare billing wallet split fail: %w", err))
+	}
+
 	// 支付已入账唯一事件：建 payment_events（order_no 唯一），并按 paid_at 回填历史订单。
 	// 这是充值加款幂等的锚点 —— 订单被改成 refunded 后，旧成功回调也不会再加款。
 	// 结构性失败 FATAL；回填失败只记日志、不写标记，下次启动重试。

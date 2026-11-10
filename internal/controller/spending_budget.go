@@ -29,11 +29,15 @@ func accessTokenQuotaWouldExceed(token entity.AccessToken, amount float64) bool 
 
 // Admission is for a NEW spending request, never owner-scoped paid-task delivery.
 // A zero configured limit remains unlimited, not a second wallet.
+//
+// 双桶模型（43-*.md §2）：可花费的额度 = 本金 + 赠金。旧判据只看 Balance，
+// 在「本金 0、赠金 1」时会把有钱的账户误拒；而本金可能为负（欠款），
+// 只看 Balance 又会在「本金 −1、赠金 2」时错判 —— 两处都必须用合计。
 func checkSearchSpendingAdmission(user entity.User, token entity.AccessToken) error {
 	if err := checkSearchSpendingAccount(user, token); err != nil {
 		return err
 	}
-	if user.Balance <= 0 {
+	if service.WalletAvailableTotal(user.Balance, user.GiftBalance) <= 0 {
 		return service.ErrInsufficientSearchBalance
 	}
 	if accessTokenQuotaExhausted(token) {

@@ -416,13 +416,16 @@ func TestReviewRebateHTTPDecisionFlow(t *testing.T) {
 		t.Fatalf("unexpected approved claim: %+v", approved)
 	}
 
-	// 钱包：balance 与 gift_balance 同步 +1。
+	// 钱包：返现只进赠送余额（可消费、不可退），可退本金不动。
 	var wallet entity.User
 	if err := db.Where("id = ?", member.ID).First(&wallet).Error; err != nil {
 		t.Fatalf("reload member: %v", err)
 	}
-	if wallet.Balance != 1 || wallet.GiftBalance != 1 {
-		t.Fatalf("wallet must be credited, got balance=%v gift=%v", wallet.Balance, wallet.GiftBalance)
+	if wallet.GiftBalance != 1 {
+		t.Fatalf("review rebate must credit the gift bucket, got %v", wallet.GiftBalance)
+	}
+	if wallet.Balance != 0 {
+		t.Fatalf("review rebate must not enter the refundable principal, got %v", wallet.Balance)
 	}
 	// 账单：一条 review_rebate。
 	var records int64
@@ -450,7 +453,7 @@ func TestReviewRebateHTTPDecisionFlow(t *testing.T) {
 	if err := db.Where("id = ?", member.ID).First(&wallet).Error; err != nil {
 		t.Fatalf("reload member again: %v", err)
 	}
-	if wallet.Balance != 1 || wallet.GiftBalance != 1 {
+	if wallet.GiftBalance != 1 || wallet.Balance != 0 {
 		t.Fatalf("repeat approve must not credit twice, got balance=%v gift=%v", wallet.Balance, wallet.GiftBalance)
 	}
 

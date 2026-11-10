@@ -447,7 +447,9 @@ export function adjustUserBalance(data) {
     errorFeedback: 'local',
     url: `/adapter-service/user/${data.id}/balance`,
     method: 'post',
-    data: { mode: data.mode, amount: data.amount, showInStatement: data.showInStatement },
+    // bucket 必须透传：管理员可选「充值本金 / 赠送金额」两个桶，
+    // 漏掉它会让后端永远按默认本金桶处理（选赠金也不生效）。
+    data: { mode: data.mode, amount: data.amount, bucket: data.bucket, showInStatement: data.showInStatement },
   })
 }
 

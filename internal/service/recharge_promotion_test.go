@@ -178,7 +178,7 @@ func TestRechargePromotionDisabledCreditsPaidAmountOnly(t *testing.T) {
 }
 
 // TestRechargePromotionEnabledGrantsByTier 覆盖必做测试 2：
-// 开关开启时充值 → 按档位赠送、有流水、balance 与 gift_balance 同步增。
+// 开关开启时充值 → 按档位赠送、有流水，赠金只进 gift_balance（双桶模型）。
 func TestRechargePromotionEnabledGrantsByTier(t *testing.T) {
 	db := newRechargePromotionTestDB(t)
 	user := seedRechargeOrderUser(t, db, 202, "user")
@@ -191,11 +191,16 @@ func TestRechargePromotionEnabledGrantsByTier(t *testing.T) {
 
 	updated, records, grants := loadRechargePromotionWallet(t, db, user.ID)
 	const wantGift = 3376.0
-	if updated.Balance != 1688+wantGift {
-		t.Fatalf("balance = %v, want %v (paid + gift)", updated.Balance, 1688+wantGift)
+	// 双桶模型：balance 只收实付本金（可退），赠金单独进 gift_balance（不可退）。
+	if updated.Balance != 1688 {
+		t.Fatalf("balance = %v, want 1688 (paid principal only; gift must not enter it)", updated.Balance)
 	}
 	if updated.GiftBalance != wantGift {
 		t.Fatalf("gift_balance = %v, want %v", updated.GiftBalance, wantGift)
+	}
+	// 可用额度是两者合计，用户仍能消费 5064。
+	if total := WalletAvailableTotal(updated.Balance, updated.GiftBalance); total != 1688+wantGift {
+		t.Fatalf("available total = %v, want %v", total, 1688+wantGift)
 	}
 	if len(grants) != 1 {
 		t.Fatalf("expected 1 promotion grant, got %d: %+v", len(grants), grants)
@@ -269,8 +274,8 @@ func TestRechargePromotionRepeatCallbackGrantsOnce(t *testing.T) {
 	}
 
 	updated, records, grants := loadRechargePromotionWallet(t, db, user.ID)
-	if updated.Balance != 88+44 {
-		t.Fatalf("balance = %v, want 132 after repeated callbacks", updated.Balance)
+	if updated.Balance != 88 {
+		t.Fatalf("balance = %v, want 88 (paid principal only) after repeated callbacks", updated.Balance)
 	}
 	if updated.GiftBalance != 44 {
 		t.Fatalf("gift_balance = %v, want 44 after repeated callbacks", updated.GiftBalance)
@@ -451,8 +456,9 @@ func TestRechargePromotionEnabledButLedgerConflictIsSwallowed(t *testing.T) {
 	}
 
 	updated, records, grants := loadRechargePromotionWallet(t, db, user.ID)
-	if updated.Balance != 288+288 {
-		t.Fatalf("balance = %v, want 576 (granted once)", updated.Balance)
+	// 双桶模型：本金只保留实付 288，赠金单独 288（只发一次）。
+	if updated.Balance != 288 {
+		t.Fatalf("balance = %v, want 288 (paid principal only, granted once)", updated.Balance)
 	}
 	if updated.GiftBalance != 288 {
 		t.Fatalf("gift_balance = %v, want 288 (granted once)", updated.GiftBalance)
@@ -468,6 +474,53 @@ func TestRechargePromotionEnabledButLedgerConflictIsSwallowed(t *testing.T) {
 	}
 	if promotionRows != 1 {
 		t.Fatalf("expected exactly 1 promotion billing row, got %d", promotionRows)
+	}
+}
+
+// TestRechargePromotionOffsetsDebtBeforeGiftBucket 守住规则 3（43-*.md）：
+// 赠送入账时若账户仍欠款（balance<0），**先抵欠款**，剩余才进赠金桶。
+//
+// 若直接 gift += 赠金，欠款用户会得到 balance<0 且 gift>0，违反不变量 I3。
+func TestRechargePromotionOffsetsDebtBeforeGiftBucket(t *testing.T) {
+	db := newRechargePromotionTestDB(t)
+	user := seedRechargeOrderUser(t, db, 206, "user")
+	setRechargePromotionEnabled(t, db, "true")
+
+	// 造一笔已支付的 288 订单，但把钱包做成欠款 100（模拟此前消费透支）。
+	order, _ := seedRechargePromotionOrder(t, db, user.ID, "rcg_promo_debt", 288)
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).
+		Updates(map[string]any{"balance": -100.0, "gift_balance": 0.0}).Error; err != nil {
+		t.Fatalf("seed debt: %v", err)
+	}
+	if err := db.Model(&entity.RechargeOrder{}).Where("id = ?", order.ID).
+		Update("status", rechargeOrderStatusPaid).Error; err != nil {
+		t.Fatalf("mark order paid: %v", err)
+	}
+
+	// 赠金 288 到账时本金仍是 -100 → 先抵 100 欠款，剩 188 进赠金桶。
+	grant, err := GrantRechargePromotionInTx(db, order, -100)
+	if err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	if grant == nil {
+		t.Fatal("288 order must produce a grant")
+	}
+	var wallet entity.User
+	if err := db.Where("id = ?", user.ID).First(&wallet).Error; err != nil {
+		t.Fatalf("reload wallet: %v", err)
+	}
+	if wallet.Balance != 0 {
+		t.Fatalf("gift must offset the debt first: balance = %v, want 0", wallet.Balance)
+	}
+	if wallet.GiftBalance != 188 {
+		t.Fatalf("remainder must enter the gift bucket: gift = %v, want 188", wallet.GiftBalance)
+	}
+	// 不变量 I1 / I3：赠金非负，且欠款状态下不可能还有赠金。
+	if wallet.GiftBalance < 0 {
+		t.Fatalf("gift_balance must never be negative, got %v", wallet.GiftBalance)
+	}
+	if wallet.Balance < 0 && wallet.GiftBalance > 0 {
+		t.Fatalf("I3 violated: balance=%v gift=%v", wallet.Balance, wallet.GiftBalance)
 	}
 }
 

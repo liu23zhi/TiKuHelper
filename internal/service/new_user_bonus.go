@@ -66,11 +66,19 @@ func CreateUserWithNewUserBonusInTx(db *gorm.DB, user *entity.User, options NewU
 	}
 
 	balanceBefore := util.RoundMoney(user.Balance)
-	balanceAfter := util.RoundMoney(balanceBefore + bonusAmount)
-	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("balance", balanceAfter).Error; err != nil {
+	giftBefore := util.RoundMoney(user.GiftBalance)
+	// 注册赠送是「送的钱」，按双桶模型进**赠送余额** gift_balance（可消费、不可退），
+	// 不进可退本金 balance —— 否则新号注册就能立刻退款套现。
+	// 入账按规则 3：先抵欠款，剩余才进赠金桶（43-*.md）。
+	newBalance, giftAfter := CreditGiftBuckets(user.Balance, user.GiftBalance, bonusAmount)
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Updates(map[string]any{
+		"balance":      newBalance,
+		"gift_balance": giftAfter,
+	}).Error; err != nil {
 		return err
 	}
-	user.Balance = balanceAfter
+	user.Balance = newBalance
+	user.GiftBalance = giftAfter
 
 	record := entity.BillingRecord{
 		UserID:            user.ID,
@@ -78,9 +86,9 @@ func CreateUserWithNewUserBonusInTx(db *gorm.DB, user *entity.User, options NewU
 		Provider:          "system",
 		Amount:            bonusAmount,
 		BalanceBefore:     balanceBefore,
-		BalanceAfter:      balanceAfter,
+		BalanceAfter:      newBalance,
 		RequestID:         fmt.Sprintf("registration_bonus_%d", user.ID),
-		UnitPriceSnapshot: fmt.Sprintf("source=%s", options.Source),
+		UnitPriceSnapshot: fmt.Sprintf("source=%s giftBalanceBefore=%s giftBalanceAfter=%s", options.Source, moneyTextForReferral(giftBefore), moneyTextForReferral(giftAfter)),
 		Remark:            "新用户赠送",
 	}
 	return db.Session(&gorm.Session{NewDB: true}).Create(&record).Error

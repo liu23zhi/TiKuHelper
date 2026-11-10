@@ -323,15 +323,20 @@
         </a-form-item>
         <a-form-item label="当前余额" :html-for="fieldId('balance-current-balance')">
           <a-input :id="fieldId('balance-current-balance')" :value="formatBalance(formState.balance)" readonly prefix="¥" />
+          <div class="form-hint">可退本金（充值余额）。赠送金额单独记账，可消费但不可退款。</div>
+        </a-form-item>
+        <a-form-item label="钱包类型" required :html-for="fieldId('balance-bucket')">
+          <a-select :id="fieldId('balance-bucket')" v-model:value="balanceForm.bucket" :options="balanceBucketOptions" :disabled="balanceSubmitting" />
+          <div class="form-hint">{{ balanceForm.bucket === 'gift' ? '赠送金额：用户可消费，不可退款，最低为 0。' : '充值本金：可退款，允许为负数（欠款）。' }}</div>
         </a-form-item>
         <a-form-item label="修改模式" required :html-for="fieldId('balance-mode')">
           <a-select :id="fieldId('balance-mode')" v-model:value="balanceForm.mode" :options="balanceModeOptions" :disabled="balanceSubmitting" />
         </a-form-item>
-        <a-form-item :label="balanceForm.mode === 'override' ? '覆盖后的余额' : '调整金额'" required :html-for="fieldId('balance-amount')">
+        <a-form-item :label="balanceForm.mode === 'override' ? '覆盖后的金额' : '调整金额'" required :html-for="fieldId('balance-amount')">
           <a-input-number
             :id="fieldId('balance-amount')"
             v-model:value="balanceForm.amount"
-            :min="balanceForm.mode === 'override' ? undefined : 0"
+            :min="balanceForm.mode === 'override' && balanceForm.bucket === 'gift' ? 0 : (balanceForm.mode === 'override' ? undefined : 0)"
             :precision="6"
             :step="1"
             :disabled="balanceSubmitting"
@@ -673,7 +678,7 @@ const submitLoading = ref(false)
 const passwordConfirmationPending = ref(false)
 const balanceVisible = ref(false)
 const balanceSubmitting = ref(false)
-const balanceForm = reactive({ mode: 'increase', amount: null, showInStatement: true })
+const balanceForm = reactive({ mode: 'increase', amount: null, bucket: 'principal', showInStatement: true })
 const balanceFailure = shallowRef(null)
 const balanceFailureContextKey = ref(0)
 const balanceFailureLogoutEpoch = ref(null)
@@ -831,7 +836,7 @@ function clearPrincipalState() {
   submitLoading.value = balanceSubmitting.value = resetPasswordLoading.value = passwordConfirmationPending.value = false
   formState.value = emptyUserForm()
   resetPasswordForm.value = { id: undefined, username: '', password: '' }
-  Object.assign(balanceForm, { mode: 'increase', amount: null, showInStatement: true })
+  Object.assign(balanceForm, { mode: 'increase', amount: null, bucket: 'principal', showInStatement: true })
   systemNewUserBonusAmount.value = 0
   isEditing.value = false
   filters.keyword = ''; keywordInput.value = ''
@@ -906,7 +911,7 @@ function resetWechatResolveState() {
   }, { flush: 'sync' })
   // Draft/target retirement clears feedback, not an already-issued write's busy
   // state. Its dialog/principal owner alone releases that state in finally.
-  watch(() => [balanceForm.mode, balanceForm.amount, balanceForm.showInStatement, formState.value.id], retireBalanceDraft, { flush: 'sync' })
+  watch(() => [balanceForm.mode, balanceForm.amount, balanceForm.bucket, balanceForm.showInStatement, formState.value.id], retireBalanceDraft, { flush: 'sync' })
   watch(() => formState.value.id, () => {
     owner.invalidateWechatFlow()
     resetWechatResolveState()
@@ -1264,6 +1269,11 @@ export default defineComponent({
         { label: '减少', value: 'decrease' },
         { label: '覆盖', value: 'override' },
       ],
+      // 钱包桶：本金可退可为负，赠金不可退且下限 0（用户 2026-11-09 明确要求）。
+      balanceBucketOptions: [
+        { label: '充值本金（可退款）', value: 'principal' },
+        { label: '赠送金额（不可退款）', value: 'gift' },
+      ],
       columns: visibleColumns,
       selectedColumnKeys: selectedKeys,
       columnOptions,
@@ -1547,6 +1557,7 @@ export default defineComponent({
 
       this.userListContext.balanceForm.mode = 'increase'
       this.userListContext.balanceForm.amount = null
+      this.userListContext.balanceForm.bucket = 'principal'
       this.userListContext.balanceForm.showInStatement = true
       this.userListContext.balanceVisible.value = true
     },

@@ -69,7 +69,7 @@ function assertRequest(entry, count = 1) {
       assert.equal(config.data, undefined, 'reconciliation never becomes a mutation')
       assert.equal(config.headers.get('Idempotency-Key'), undefined)
     } else {
-      assert.deepEqual(JSON.parse(config.data), { mode: 'override', amount: -0.000062, showInStatement: false }, 'real helper and API retain the exact six-decimal negative override and hidden bool, without profile fields')
+      assert.deepEqual(JSON.parse(config.data), { mode: 'override', amount: -0.000062, bucket: 'principal', showInStatement: false }, 'real helper and API retain the exact six-decimal negative override and hidden bool, without profile fields')
       assert.equal(typeof config.headers.get('Idempotency-Key'), 'string')
       assert.ok(config.headers.get('Idempotency-Key').length > 0)
     }
@@ -136,7 +136,7 @@ for (const status of [200, 202]) {
     assertRequest(methods[1])
     assertPayload(value, status, body)
     assertOneKey()
-    assert.deepEqual(balancePayload(), { id: 71, mode: 'override', amount: -0.000062, showInStatement: false })
+    assert.deepEqual(balancePayload(), { id: 71, mode: 'override', amount: -0.000062, bucket: 'principal', showInStatement: false })
     assert.deepEqual(toasts, [])
     assert.deepEqual(user.getStoredCurrentUser(), A, 'transport does not fabricate an account balance update')
     witness('POST-' + status, { payloadIdentity: value.data === body, diagnostic: getTransportRequestId(value) === ID, pending: value.data.status === 'pending' })
@@ -226,3 +226,18 @@ for (const status of [401, 403]) {
     witness('default-' + status, { logout: user.getStoredCurrentUser() === null, unchangedDefault: true })
   })
 }
+
+// 覆盖盲区钉子：**必须有一条断言 bucket === 'gift'**。
+//
+// 为什么需要它：其余所有 balance 断言都只覆盖 `bucket: 'principal'`（默认值）。
+// 若有人把 API 层的 bucket 硬编码成 'principal'、或再次漏透传，
+// 「期望 principal / 实际 principal」仍然相等 —— 测试全绿但功能已坏。
+// 只有用非默认值（gift）才能证明 bucket 真的被透传，而不是被写死成默认值。
+test('BALANCE_TRANSPORT gift bucket reaches the request body instead of collapsing to the default principal bucket', async () => {
+  respond = config => result(config, 200, { id: 71, balance: 1.234567 })
+  await api.adjustUserBalance({ id: 71, mode: 'increase', amount: 5, bucket: 'gift', showInStatement: true })
+  assert.equal(requests.length, 1)
+  const body = JSON.parse(requests[0].data)
+  assert.equal(body.bucket, 'gift', 'gift bucket must survive the API layer, not be rewritten to principal')
+  assert.deepEqual(body, { mode: 'increase', amount: 5, bucket: 'gift', showInStatement: true })
+})

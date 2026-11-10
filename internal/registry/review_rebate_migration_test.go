@@ -209,3 +209,71 @@ func TestEnsureReviewRebateSchemaAddsScorerColumnToExistingTable(t *testing.T) {
 		t.Fatalf("historical claim must keep an empty scorer marker, got %q", stored.AgentScorer)
 	}
 }
+
+// gift_balance 下限是 0（用户明确要求「赠送金额只能为 0，不能为负数」）。
+// 应用层每条扣减路径都 clamp，但漏一条就会在库里留下负值 ——
+// 启动自检必须把它纠正掉，且**不能因为纠正失败就阻断启动**。
+func TestEnsureReviewRebateSchemaClampsNegativeGiftBalance(t *testing.T) {
+	db := newReviewRebateMigrationTestDB(t)
+	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}); err != nil {
+		t.Fatalf("migrate base: %v", err)
+	}
+	// 造两条脏数据：负赠金与正常值。
+	if err := db.Create(&entity.User{ID: 1, Username: "neg", Balance: 5, GiftBalance: -3}).Error; err != nil {
+		t.Fatalf("create negative gift user: %v", err)
+	}
+	if err := db.Create(&entity.User{ID: 2, Username: "ok", Balance: 2, GiftBalance: 4}).Error; err != nil {
+		t.Fatalf("create normal user: %v", err)
+	}
+
+	if err := ensureReviewRebateSchema(db); err != nil {
+		t.Fatalf("migration must not fail on dirty wallet data: %v", err)
+	}
+
+	var fixed entity.User
+	if err := db.Where("id = ?", 1).First(&fixed).Error; err != nil {
+		t.Fatalf("reload user: %v", err)
+	}
+	if fixed.GiftBalance != 0 {
+		t.Fatalf("negative gift_balance must be clamped to 0, got %v", fixed.GiftBalance)
+	}
+	// 本金不受影响（它是欠款载体，允许为负）。
+	if fixed.Balance != 5 {
+		t.Fatalf("clamping the gift bucket must not touch the principal, got %v", fixed.Balance)
+	}
+	var untouched entity.User
+	if err := db.Where("id = ?", 2).First(&untouched).Error; err != nil {
+		t.Fatalf("reload user: %v", err)
+	}
+	if untouched.GiftBalance != 4 {
+		t.Fatalf("positive gift_balance must be left alone, got %v", untouched.GiftBalance)
+	}
+}
+
+// 自检每次启动都跑（不受一次性标记约束）：标记已写时新增的负值也要被纠正。
+func TestClampNegativeGiftBalanceRunsDespiteOneShotFlag(t *testing.T) {
+	db := newReviewRebateMigrationTestDB(t)
+	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}); err != nil {
+		t.Fatalf("migrate base: %v", err)
+	}
+	if err := ensureReviewRebateSchema(db); err != nil {
+		t.Fatalf("initial migrate: %v", err)
+	}
+	if !systemSettingFlagIsSet(db, reviewRebateSchemaReadyKey) {
+		t.Fatal("precondition: the one-shot flag must be written")
+	}
+	// 标记已写之后再写入脏数据。
+	if err := db.Create(&entity.User{ID: 3, Username: "late-neg", Balance: 1, GiftBalance: -1}).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := ensureReviewRebateSchema(db); err != nil {
+		t.Fatalf("re-run: %v", err)
+	}
+	var stored entity.User
+	if err := db.Where("id = ?", 3).First(&stored).Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if stored.GiftBalance != 0 {
+		t.Fatalf("self-check must run even when the flag is set, got %v", stored.GiftBalance)
+	}
+}

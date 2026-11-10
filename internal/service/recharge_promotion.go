@@ -132,16 +132,17 @@ func rechargePromotionSession(db *gorm.DB) *gorm.DB {
 // 因此 balanceAfter 参数是**充值入账后**的余额，赠金累加在它上面。
 //
 // 落账三件事（这是「赠金归口」的全部落点，与评价返现 creditReviewRebateGiftInTx 一致）：
-//  1. users.balance += gift        —— 可消费余额，用户能直接拿去搜题；
-//  2. users.gift_balance += gift   —— 来源标记桶，**只增不减**（消费不扣这里），
-//     用于对账与「这些钱是送的」的展示；将来若要判「赠金不可退」，判据已经在这里；
+//  1. users.gift_balance += gift   —— 赠送金额桶：**可消费、不可退款**，下限 0；
+//  2. users.balance **不动**       —— balance 是充值本金、可退款；赠金进这里
+//     等于「充值赠金可退现」。唯一例外是账户本来欠款（balance<0）：
+//     按规则 3 先抵欠款，抵完的余额才是 balance 的最终值；
 //  3. billing_records 一条 type=recharge_promotion —— 账单流水，让用户在「账单流水」
 //     里看得见这笔收入，也让管理员能按 type 汇总。
 //  4. recharge_promotion_grants 一条 —— 独立发放账本，幂等锚点 + 档位快照。
 //
 // 口径（写在注释里，因为这是最容易走样的地方）：
 //
-//	赠金**计入 balance 可消费**，但**不计入可退本金 / 净实付 / 返佣基数**。
+//	赠金**计入可用额度（本金 + 赠金）可消费**，但**不计入可退本金 / 净实付 / 返佣基数**。
 //	退款与邀请返佣只认充值实付本金（referralRebateBaseAmount 用 order.Amount），
 //	两者都不读 gift_balance —— 否则「充值 1688 赠 3376 再退款」就能套出赠金。
 //
@@ -189,11 +190,14 @@ func GrantRechargePromotionInTx(tx *gorm.DB, order entity.RechargeOrder, balance
 		return nil, err
 	}
 
+	// 双桶模型（43-*.md）：赠金只进 gift_balance，**不再加进 balance** ——
+	// balance 是充值本金、可退款，赠金进这里就等于「充值赠金可退现」。
+	// 入账按规则 3：账户若仍有欠款（balanceAfter 为负），先抵欠款，剩余才进赠金桶。
+	//
 	// 余额口径是 6 位，必须用钱包口径。before 取入参（充值入账后）而不是
 	// user.Balance —— 后者可能被并发会话读成入账前的值。
 	before := util.RoundMoney(balanceAfter)
-	after := util.RoundMoney(before + gift)
-	giftAfter := util.RoundMoney(util.RoundMoney(user.GiftBalance) + gift)
+	after, giftAfter := CreditGiftBuckets(before, user.GiftBalance, gift)
 
 	// 先插发放账本（幂等锚点），再写钱包与流水。
 	// 顺序很重要：唯一键冲突时要能在**没有动过钱包**的前提下直接返回，

@@ -241,6 +241,45 @@ func TestScriptRuntimePaidAdmissionUsesEscrowButDeniesNewDebt(t *testing.T) {
 	}
 }
 
+// 双桶模型下脚本链路的准入判据：**本金 0 + 赠金 > 0 必须放行**。
+//
+// 这条钉住的是一个真实的行为变化：旧判据只看 `Balance`，`balance=0 && escrow=0`
+// 会被拒 —— 但新模型下用户还有赠金可花，拒绝就是「有钱不让用」。
+// 本用例同时固定「合计为 0 且无托管仍拒绝」（不能因为改成合计就把零额度放过去）。
+func TestScriptRuntimeAdmissionCountsGiftBucket(t *testing.T) {
+	db, user, token, session := newScriptRuntimeBillingFixture(t, entity.ScriptBillingModeEscrow, 0)
+	// 托管可用额为 0：这样「放行/拒绝」只由钱包合计决定，不被托管额掩盖。
+	row := entity.ScriptEscrow{ScriptID: token.ScriptID, UserID: user.ID, AvailableMicros: 0, Revision: 1}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// 无本金、无赠金、无托管 → 拒绝（合计 0）。
+	if _, _, err := checkResolvedScriptSpendingAdmission(db, user, token, session); !errors.Is(err, service.ErrInsufficientSearchBalance) {
+		t.Fatalf("empty wallet with no escrow must be rejected, got %v", err)
+	}
+
+	// 只有赠金 → 必须放行（旧判据在这里会误拒）。
+	user.GiftBalance = 1
+	if _, _, err := checkResolvedScriptSpendingAdmission(db, user, token, session); err != nil {
+		t.Fatalf("gift-only wallet must be admitted, got %v", err)
+	}
+
+	// 本金为负但合计仍为正 → 放行（规则 3 下这种状态不该出现，但判据必须与合计一致）。
+	user.Balance = -0.5
+	user.GiftBalance = 1
+	if _, _, err := checkResolvedScriptSpendingAdmission(db, user, token, session); err != nil {
+		t.Fatalf("negative principal offset by gift must be admitted, got %v", err)
+	}
+
+	// 合计为负 → 拒绝（欠款）。
+	user.Balance = -2
+	user.GiftBalance = 1
+	if _, _, err := checkResolvedScriptSpendingAdmission(db, user, token, session); !errors.Is(err, service.ErrInsufficientSearchBalance) {
+		t.Fatalf("net debt must be rejected, got %v", err)
+	}
+}
+
 func TestScriptRuntimeActivationRecordsExecutedToolWithoutPricedLine(t *testing.T) {
 	db, user, token, session := newScriptRuntimeBillingFixture(t, entity.ScriptBillingModeActivation, 0)
 	ctx, err := loadAIFallbackBillingContextWithDB(db, user.ID, token.ID, session)

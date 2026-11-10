@@ -208,7 +208,7 @@ func TestReferralAdminEndpointsRejectNonAdmin(t *testing.T) {
 		t.Fatalf("own referral summary must be 200, got %d %s", out.Code, out.Body.String())
 	}
 
-	// 管理员：列表 200、结算 200，且结算只改状态不写钱包。
+	// 管理员：列表 200、结算 200，且结算把钱加进**赠送余额**（不动可退本金）。
 	actor = admin
 	out := send(http.MethodGet, "/admin/referral-rebates?status=pending")
 	if out.Code != http.StatusOK || !strings.Contains(out.Body.String(), `"total":1`) {
@@ -225,12 +225,27 @@ func TestReferralAdminEndpointsRejectNonAdmin(t *testing.T) {
 	if stored.Status != entity.ReferralRebateStatusSettled || stored.SettledAt == nil {
 		t.Fatalf("settle must mark status/time: %+v", stored)
 	}
-	var adminWallet entity.User
-	if err := db.Where("id = ?", admin.ID).First(&adminWallet).Error; err != nil {
-		t.Fatalf("reload admin: %v", err)
+	// 受益人（admin 本人）的赠送余额 +10；可退本金一个字节都不动。
+	var beneficiaryWallet entity.User
+	if err := db.Where("id = ?", admin.ID).First(&beneficiaryWallet).Error; err != nil {
+		t.Fatalf("reload beneficiary: %v", err)
 	}
-	if adminWallet.Balance != 0 {
-		t.Fatalf("settling must not write any wallet, got %v", adminWallet.Balance)
+	if beneficiaryWallet.GiftBalance != 10 {
+		t.Fatalf("settling must credit gift_balance with 10, got %v", beneficiaryWallet.GiftBalance)
+	}
+	if beneficiaryWallet.Balance != 0 {
+		t.Fatalf("settling must not touch the refundable principal, got %v", beneficiaryWallet.Balance)
+	}
+	// 重复点结算：200 幂等，余额只加一次。
+	out = send(http.MethodPost, "/admin/referral-rebates/1/settle")
+	if out.Code != http.StatusOK {
+		t.Fatalf("duplicate settle must be idempotent 200, got %d %s", out.Code, out.Body.String())
+	}
+	if err := db.Where("id = ?", admin.ID).First(&beneficiaryWallet).Error; err != nil {
+		t.Fatalf("reload beneficiary: %v", err)
+	}
+	if beneficiaryWallet.GiftBalance != 10 {
+		t.Fatalf("duplicate settle must credit only once, got %v", beneficiaryWallet.GiftBalance)
 	}
 }
 

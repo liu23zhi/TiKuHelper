@@ -716,7 +716,8 @@ func HandleRechargePaymentNotifyWithDB(db *gorm.DB, values url.Values) (bool, er
 		// 邀请返佣：充值账单写完后，在同一事务里产生一条待结算奖励。
 		// 幂等由 referral_rebates.recharge_order_id 的唯一索引保证 ——
 		// 重复回调走不到这里（上面 paid 已提前 return），即使走到了也只会拿到既有记录。
-		// 返佣**不写 users.balance**，只进独立账本。
+		// 返佣**不写 users.balance / gift_balance**，只进返佣账本（settled 时才入
+		// 受益人赠送余额，见 SettleReferralRebateWithDB）。
 		// 也不读 gift_balance：返佣基数只认实付本金（referralRebateBaseAmount）。
 		rebate, err := CreateReferralRebateInTx(tx, order)
 		if err != nil {
@@ -754,7 +755,8 @@ func HandleRechargePaymentNotifyWithDB(db *gorm.DB, values url.Values) (bool, er
 
 // referralRebateAuditID 把可能为 nil 的返佣记录转成审计里的 ID（0 = 本次未产生返佣）。
 //
-// 只记 ID，不记比例/金额：返佣金额属于独立账本，充值到账审计保持「钱进了钱包多少」的口径。
+// 只记 ID，不记比例/金额：返佣金额在结算时才进受益人赠送余额，充值到账审计
+// 保持「本次充值让钱包增加了多少」的口径。
 func referralRebateAuditID(rebate *entity.ReferralRebate) int32 {
 	if rebate == nil {
 		return 0

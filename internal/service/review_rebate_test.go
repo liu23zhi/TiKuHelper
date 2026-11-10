@@ -703,8 +703,12 @@ func TestReviewRebateApproveCreditsWalletAndBilling(t *testing.T) {
 	if err := db.Where("id = ?", user.ID).First(&wallet).Error; err != nil {
 		t.Fatalf("reload user: %v", err)
 	}
-	if wallet.Balance != 1 || wallet.GiftBalance != 1 {
-		t.Fatalf("wallet must be credited on both buckets, got balance=%v gift=%v", wallet.Balance, wallet.GiftBalance)
+	if wallet.GiftBalance != 1 {
+		t.Fatalf("review rebate must credit the gift bucket with 1, got %v", wallet.GiftBalance)
+	}
+	// 双桶模型：返现进赠送余额（可消费、不可退），可退本金不动。
+	if wallet.Balance != 0 {
+		t.Fatalf("review rebate must not enter the refundable principal, got %v", wallet.Balance)
 	}
 
 	// 3) billing_records 一条 type=review_rebate。
@@ -715,8 +719,12 @@ func TestReviewRebateApproveCreditsWalletAndBilling(t *testing.T) {
 	if len(records) != 1 {
 		t.Fatalf("expected exactly 1 review_rebate billing record, got %d", len(records))
 	}
-	if records[0].Amount != 1 || records[0].BalanceBefore != 0 || records[0].BalanceAfter != 1 {
+	// 本金桶没动（前后都是 0），赠送桶 0 → 1 写进快照。
+	if records[0].Amount != 1 || records[0].BalanceBefore != 0 || records[0].BalanceAfter != 0 {
 		t.Fatalf("billing record amounts wrong: %+v", records[0])
+	}
+	if after := ExtractBillingSnapshotField(records[0].UnitPriceSnapshot, "giftBalanceAfter"); after != "1" {
+		t.Fatalf("snapshot giftBalanceAfter = %q, want 1", after)
 	}
 	if direction := buildBillingRecordDirection(records[0].Type); direction != "income" {
 		t.Fatalf("review_rebate must be income direction, got %q", direction)
@@ -771,8 +779,11 @@ func TestReviewRebateDoubleApproveKeepsSingleAward(t *testing.T) {
 	if err := db.Where("id = ?", user.ID).First(&wallet).Error; err != nil {
 		t.Fatalf("reload user: %v", err)
 	}
-	if wallet.Balance != 0.5 || wallet.GiftBalance != 0.5 {
-		t.Fatalf("wallet must be credited only once, got balance=%v gift=%v", wallet.Balance, wallet.GiftBalance)
+	if wallet.GiftBalance != 0.5 {
+		t.Fatalf("duplicate approve must credit the gift bucket only once, got %v", wallet.GiftBalance)
+	}
+	if wallet.Balance != 0 {
+		t.Fatalf("review rebate must not enter the refundable principal, got %v", wallet.Balance)
 	}
 	var records int64
 	if err := db.Model(&entity.BillingRecord{}).Where("user_id = ? AND type = ?", user.ID, ReviewRebateBillingRecordType).
@@ -1163,7 +1174,10 @@ func TestReviewRebateSmallAmountPrecision(t *testing.T) {
 	if err := db.Where("id = ?", user.ID).First(&wallet).Error; err != nil {
 		t.Fatalf("reload user: %v", err)
 	}
-	if wallet.Balance != 0.001 || wallet.GiftBalance != 0.001 {
-		t.Fatalf("0.001 must survive to the wallet: balance=%v gift=%v", wallet.Balance, wallet.GiftBalance)
+	if wallet.GiftBalance != 0.001 {
+		t.Fatalf("0.001 must survive to the gift bucket: %v", wallet.GiftBalance)
+	}
+	if wallet.Balance != 0 {
+		t.Fatalf("review rebate must not enter the refundable principal: %v", wallet.Balance)
 	}
 }

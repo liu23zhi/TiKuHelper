@@ -188,7 +188,8 @@ func TestAIToolCall(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "获取测试账户失败"})
 		return
 	}
-	if account.Balance <= 0 {
+	// 双桶模型：可用额度 = 本金 + 赠金（本金可为负，只看 Balance 会错判）。
+	if service.WalletAvailableTotal(account.Balance, account.GiftBalance) <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "当前管理员余额不足，请充值后测试"})
 		return
 	}

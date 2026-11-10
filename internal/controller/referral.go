@@ -105,9 +105,11 @@ func ReferralRebateList(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// SettleReferralRebate 把一条 pending 返佣置为 settled。
+// SettleReferralRebate 结算一条 pending 返佣：**改状态 + 入余额，同一个事务**。
 //
-// 只改状态，不写任何钱包：返佣是独立账本，入账需要另开接口（本期不做）。
+// 结算会把返佣金额加进邀请人的 users.balance / users.gift_balance 并写一条
+// type=referral_rebate 的账单流水（16-*.md §2.5）。重复结算幂等，不会重复加钱；
+// 已冲回（reversed）的记录返回 409。
 func SettleReferralRebate(c *gin.Context) {
 	if !requireAdmin(c) {
 		return
@@ -142,6 +144,11 @@ func writeReferralRebateError(c *gin.Context, err error) {
 	case errors.Is(err, service.ErrReferralRebateDisabled):
 		status = http.StatusBadRequest
 		message = err.Error()
+	case errors.Is(err, service.ErrReferralRebateSchemaUnavailable):
+		// 结构没就绪时**不能**假装成功：结算要真的发钱，降级成功会让管理员
+		// 以为已经入账，事后对不上账。
+		status = http.StatusServiceUnavailable
+		message = "邀请返佣结算暂不可用，请稍后再试"
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		status = http.StatusNotFound
 		message = service.ErrReferralRebateNotFound.Error()

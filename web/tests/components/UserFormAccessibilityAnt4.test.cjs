@@ -44,7 +44,7 @@ window.addEventListener('error', event => runtimeErrors.push(String(event.error?
 window.addEventListener('unhandledrejection', event => runtimeErrors.push(String(event.reason?.stack || event.reason)))
 const Page = require(path.join(web, 'src/pages/UserList/index.vue'))
 const EDIT_LABELS = ['用户名', '昵称', '角色', '状态', '当前余额', '手机号', '重指派同号', '微信 ID', '重指派微信', '创建来源']
-const BALANCE_LABELS = ['目标用户', '当前余额', '修改模式', '调整金额']
+const BALANCE_LABELS = ['目标用户', '当前余额', '钱包类型', '修改模式', '调整金额']
 const controlSelector = 'input:not([type="hidden"]),textarea,select,button[role="switch"]'
 const compact = value => String(value || '').replace(/\s+/g, ' ').trim()
 async function settle() { await nextTick(); await flushPromises(); await nextTick(); await flushPromises() }
@@ -216,7 +216,7 @@ test('native balance mode selection keeps the same amount ID while the visible C
   const option = await until(() => [...document.querySelectorAll('.ant-select-item-option')].find(node => visible(node) && compact(node.textContent) === '覆盖'), 'native override option')
   option.click(); await settle()
   assert.equal(w.vm.balanceForm.mode, 'override')
-  const changed = associated(bal, '覆盖后的余额')
+  const changed = associated(bal, '覆盖后的金额')
   assert.equal(changed.control.id, amountId); assert.equal(changed.control.getAttribute('role'), 'spinbutton')
   type(changed.control, '-0.000062'); await settle()
   assert.equal(w.vm.balanceForm.amount, -0.000062); assert.equal(changed.control.value, '-0.000062')

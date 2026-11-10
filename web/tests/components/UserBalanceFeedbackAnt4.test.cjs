@@ -104,7 +104,15 @@ async function prepare(w, mode = 'increase', amount = '0.000062', show = false) 
   await until(() => w.vm.balanceVisible && [...document.querySelectorAll('.ant-modal-title')].some(n => n.textContent === '修改用户余额'), 'native balance modal opens')
   const dialog = modal('修改用户余额')
   if (mode !== 'increase') {
-    dialog.querySelector('.ant-select-selector').dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); await settle()
+    // 按「修改模式」的 form-item 精确定位，不能再用 `dialog.querySelector('.ant-select-selector')` ——
+    // 该弹窗现在有两个下拉（钱包类型 / 修改模式），querySelector 拿的是第一个（钱包类型），
+    // 点开后自然找不到「覆盖」「减少」选项。这里用 label 文本反查所属 form-item。
+    const modeItem = [...dialog.querySelectorAll('.ant-form-item')].find(node => {
+      const label = node.querySelector('.ant-form-item-label label')
+      return label && label.textContent.replace(/\s+/g, '') === '修改模式'
+    })
+    assert.ok(modeItem, 'balance modal must expose a 修改模式 form item')
+    modeItem.querySelector('.ant-select-selector').dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); await settle()
     const option = await until(() => [...document.querySelectorAll('.ant-select-item-option')].find(node => node.getAttribute('title') === (mode === 'override' ? '覆盖' : '减少')), 'native balance mode option')
     option.click(); await settle()
   }
@@ -189,7 +197,7 @@ test('native legal increase/decrease/signed override preserve six-place payload 
   const w = await page()
   for (const [mode, amount, show, result] of [['increase', '0.000062', false, 1.234629], ['decrease', '0.000062', true, 1.234505], ['override', '-0.000062', false, -0.000062], ['override', '0', true, 0]]) {
     await prepare(w, mode, amount, show); const call = await issue()
-    assert.deepEqual(call.payload, { id: 81, mode, amount: Number(amount), showInStatement: show })
+    assert.deepEqual(call.payload, { id: 81, mode, amount: Number(amount), bucket: 'principal', showInStatement: show })
     const reads = readCount(); call.resolve(ok({ balance: result })); await settle()
     assert.equal(w.vm.formState.balance, result); assert.equal(w.vm.balanceVisible, false); assert.equal(w.vm.balanceSubmitting, false); assert.equal(readCount(), reads + 1)
     assert.equal(region(), null)

@@ -1974,17 +1974,40 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 		// 余额扣的是精确消耗额，只在每个记录边界取整：
 		// 若先按入账金额取整再相减，被丢弃的 1e-7 级差额无法靠再次取整挽回，
 		// 会让账单里的余额变化与实际消耗对不上。
+		//
+		// 双桶模型（43-*.md 规则 2）：先扣赠送余额 gift_balance，扣光再扣本金 balance；
+		// gift_balance 永不为负，balance 允许变负（欠款载体）。两个桶都保留精确值。
 		exactBalance := user.Balance
+		exactGift := util.RoundMoney(user.GiftBalance)
+		if exactGift < 0 {
+			// 历史脏数据：负赠金不可消费，也不追讨，按 0 处理。
+			exactGift = 0
+		}
 		for index, charge := range charges {
 			balanceBefore := util.RoundMoney(exactBalance)
-			exactBalance -= charge.Amount
+			giftBeforeExact := exactGift
+			fromGift, fromBalance := service.SplitWalletCharge(exactBalance, exactGift, charge.Amount)
+			exactGift -= fromGift
+			exactBalance -= fromBalance
 			balanceAfter := util.RoundMoney(exactBalance)
+			// 分桶记录（可退金额的基础）：**必须按两个桶各自的实际变动记账**，
+			// 不能直接写 fromGift / fromBalance。
+			//
+			// 为什么：exactBalance / exactGift 是跨笔累减的精确值，而写入钱包的是
+			// 每笔边界取整后的值。若分桶列记 fromBalance（未取整的份额），
+			// 多次消费后 Σprincipal_charged 会与「本金实际减少额」逐渐偏离
+			// （实测 7 笔各 0.0000007 后偏差 0.000002），可退额就会算错。
+			// 这里用「本笔取整后余额的差值」作为实际扣减额，两者天然自洽。
+			giftChargedForRecord := util.RoundMoney(util.RoundMoney(giftBeforeExact) - util.RoundMoney(exactGift))
+			principalChargedForRecord := util.RoundMoney(balanceBefore - balanceAfter)
 			if ctx.ScriptBilling.mode == entity.ScriptBillingModeEscrow {
 				fromEscrow := min(escrowLeftMicros, escrowChargeMicros[index])
 				balanceBefore = service.ScriptEscrowYuan(walletMicros)
 				escrowLeftMicros -= fromEscrow
 				walletMicros -= escrowChargeMicros[index] - fromEscrow
 				balanceAfter = service.ScriptEscrowYuan(walletMicros)
+				giftChargedForRecord = 0
+				principalChargedForRecord = 0
 			}
 			billingRecord := entity.BillingRecord{
 				UserID:             ctx.UserID,
@@ -2000,8 +2023,12 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 				Amount:             charge.Amount,
 				BalanceBefore:      balanceBefore,
 				BalanceAfter:       balanceAfter,
-				RequestID:          ctx.RequestID,
-				UnitPriceSnapshot:  charge.Snapshot,
+				// 分桶记录：这一笔从赠金扣了多少、从本金扣了多少。
+				// 托管模式（escrow）的钱来自冻结金而不是钱包桶，两列留 0。
+				GiftCharged:       giftChargedForRecord,
+				PrincipalCharged:  principalChargedForRecord,
+				RequestID:         ctx.RequestID,
+				UnitPriceSnapshot: charge.Snapshot,
 				// 题目原文单独落一列，供账单列表按关键词搜索。
 				// 快照里已经是 URL 编码的 question=，这里解码后存明文。
 				QuestionText: service.ExtractBillingSnapshotField(charge.Snapshot, "question"),
@@ -2031,11 +2058,23 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 			// and these billing rows. Refund remains outside this transaction.
 			return completeSettledEscrowExecution(tx, ctx)
 		}
+		// 双桶模型：两个桶分别落库。赠金 clamp 到 0（不可能为负），本金允许变负。
 		balanceAfter := util.RoundMoney(exactBalance)
-		if balanceAfter == user.Balance {
+		giftAfter := util.RoundMoney(exactGift)
+		if giftAfter < 0 {
+			giftAfter = 0
+		}
+		if balanceAfter == user.Balance && giftAfter == util.RoundMoney(user.GiftBalance) {
 			return nil
 		}
-		updated := tx.Model(&user).Where("id = ? AND balance = ? AND status = ?", user.ID, user.Balance, user.Status).Update("balance", balanceAfter)
+		updates := map[string]any{"balance": balanceAfter}
+		if giftAfter != util.RoundMoney(user.GiftBalance) {
+			updates["gift_balance"] = giftAfter
+		}
+		// CAS 条件带上两个桶的快照：任一桶被并发改动都必须重试，
+		// 否则会覆盖掉别人刚写进去的赠金/本金。
+		updated := tx.Model(&user).Where("id = ? AND balance = ? AND gift_balance = ? AND status = ?",
+			user.ID, user.Balance, util.RoundMoney(user.GiftBalance), user.Status).Updates(updates)
 		if updated.Error != nil {
 			return updated.Error
 		}

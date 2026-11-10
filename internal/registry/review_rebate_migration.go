@@ -48,6 +48,12 @@ func ensureReviewRebateSchema(db *gorm.DB) error {
 		if err := ensureUserGiftBalanceColumn(db); err != nil {
 			return err
 		}
+		// 兜底自检：赠金桶下限是 0（用户 2026-11-09 明确要求「赠送金额只能为 0，
+		// 不能为负数」），应用层每条扣减路径都 clamp，但漏一条就会在库里留下负值。
+		// 这里在启动时扫一次并纠正，抓住的是**代码 bug**，不是用户行为。
+		if err := clampNegativeGiftBalance(db); err != nil {
+			return err
+		}
 	}
 	if db.Migrator().HasTable(entity.TableNameReviewRebateClaim) {
 		if err := ensureReviewRebateClaimScorerColumn(db); err != nil {
@@ -133,6 +139,35 @@ func ensureUserGiftBalanceColumn(db *gorm.DB) error {
 		return err
 	}
 	logger.SysLog("已为 users 补上 gift_balance 列（赠金来源标记，默认 0）")
+	return nil
+}
+
+// clampNegativeGiftBalance 在启动时把 `gift_balance < 0` 的行纠正为 0。
+//
+// 这不是数据库约束（SQLite / MySQL 加 CHECK 都要重建表，成本高于收益），
+// 而是一条**代码 bug 的兜底探针**：赠金桶的下限是 0，应用层每条扣减路径
+// （返佣冲回、管理员减赠金、消费两段扣款）都走 clamp，但漏一条就会在库里
+// 留下负值 —— 而这种负值一旦被后续消费当成「可用额度」，会直接放大透支。
+//
+// 纪律（AGENTS.md 第 11 / 17 条）：
+//   - 每次启动都跑（不受一次性标记约束）：它是自检，不是迁移；
+//   - **纠正失败只记日志、不阻断启动**：钱包数据问题不该让服务起不来；
+//   - 有负值时打日志，便于从日志里反查是哪条路径漏了 clamp；
+//   - **只用一条 UPDATE**：先 COUNT 再 UPDATE 会扫两遍 users 表。
+//     RowsAffected 直接给出被纠正的行数，一次扫描同时完成「探测 + 纠正」。
+//
+// 成本：users 表上一次全表扫描（gift_balance 无索引）。正常库里命中 0 行，
+// 属于启动期可接受的一次性开销；不要为了它给 users 加索引 ——
+// 这条路径每秒最多跑一次（每次启动一次），索引收益远小于写入代价。
+func clampNegativeGiftBalance(db *gorm.DB) error {
+	result := db.Model(&entity.User{}).Where("gift_balance < 0").Update("gift_balance", 0)
+	if result.Error != nil {
+		logger.SysLog(fmt.Sprintf("纠正 users.gift_balance 负值失败（下次启动会重试，不影响启动）：%v", result.Error))
+		return nil
+	}
+	if result.RowsAffected > 0 {
+		logger.SysLog(fmt.Sprintf("已把 %d 个账户的负值 gift_balance 纠正为 0 —— 赠金下限应为 0，出现负值说明某条扣减路径漏了 clamp，请按此告警反查", result.RowsAffected))
+	}
 	return nil
 }
 

@@ -1,6 +1,6 @@
 <template>
   <div class="console-page referral-rebates-page">
-    <ConsolePageHeading title="返佣记录" description="邀请返佣的独立账本。结算只改状态，不写用户钱包。">
+    <ConsolePageHeading title="返佣记录" description="邀请返佣账本。结算会把金额计入受益人的赠送余额（可消费、不可退款），可退本金不受影响。">
       <template #actions>
         <a-button :loading="loading" :disabled="!canManage() || loading || settling" @click="load">刷新</a-button>
       </template>
@@ -387,7 +387,7 @@ export default {
       const owns = () => canManage()
       const result = await Swal.fire({
         title: '确认结算这条返佣？',
-        text: `受益人 ${buildUserName(record.inviterUsername, record.inviterUserId)}，金额 ${moneyText(record.amount)}。结算只把状态改为已结算，不会写入用户余额，且不可撤销。`,
+        text: `受益人 ${buildUserName(record.inviterUsername, record.inviterUserId)}，金额 ${moneyText(record.amount)}。结算会把该金额计入受益人的赠送余额（可消费、不可退款），可退本金不变，且不可撤销。`,
         icon: 'warning',
         showCancelButton: true,
         confirmButtonText: '确认结算',

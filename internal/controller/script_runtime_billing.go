@@ -80,7 +80,12 @@ func checkResolvedScriptSpendingAdmission(db *gorm.DB, user entity.User, token e
 	if escrow.AvailableMicros < 0 {
 		return policy, script, service.ErrScriptEscrowInvalid
 	}
-	if user.Balance < 0 || (user.Balance == 0 && escrow.AvailableMicros == 0) {
+	// 双桶模型：脚本链路可用额 = 本金 + 赠金 + 托管可用额。
+	// 原判据 `balance < 0 || (balance == 0 && escrow == 0)` 在旧模型下等价于
+	// 「合计 <= 0 且无托管」，这里换成合计表达式以保持同一语义：
+	// 合计为负（欠款）拒绝；合计为 0 且托管也为 0 同样拒绝。
+	available := service.WalletAvailableTotal(user.Balance, user.GiftBalance)
+	if available < 0 || (available == 0 && escrow.AvailableMicros == 0) {
 		return policy, script, service.ErrInsufficientSearchBalance
 	}
 	setting, err := service.GetScriptEscrowPolicyWithDB(db)

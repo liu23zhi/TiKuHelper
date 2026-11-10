@@ -27,13 +27,17 @@ func UpdateUserBalance(c *gin.Context) {
 		Mode            string   `json:"mode"`
 		Amount          *float64 `json:"amount"`
 		ShowInStatement *bool    `json:"showInStatement"`
+		// Bucket 选择调整哪个钱包桶：principal=充值本金（可退，默认）/ gift=赠送金额（不可退）。
+		// 不传等价于 principal，保证既有客户端行为不变。
+		Bucket string `json:"bucket"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil || payload.Amount == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "请输入余额调整金额"})
 		return
 	}
 	input := service.UserBalanceAdjustmentInput{
-		Mode: payload.Mode, Amount: *payload.Amount, ShowInStatement: payload.ShowInStatement, ClientIP: c.ClientIP(),
+		Mode: payload.Mode, Amount: *payload.Amount, ShowInStatement: payload.ShowInStatement,
+		Bucket: payload.Bucket, ClientIP: c.ClientIP(),
 	}
 	var user entity.User
 	if key := c.GetHeader("Idempotency-Key"); key != "" {
@@ -45,7 +49,11 @@ func UpdateUserBalance(c *gin.Context) {
 		writeBalanceOperationError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"id": user.ID, "balance": user.Balance})
+	// 同时返回两个桶：只回 balance 会让管理员以为「加了钱但没到账」（加的是赠金）。
+	c.JSON(http.StatusOK, gin.H{
+		"id": user.ID, "balance": user.Balance, "giftBalance": user.GiftBalance,
+		"bucket": service.NormalizeWalletBucket(input.Bucket),
+	})
 }
 
 func UpdateBillingStatementVisibility(c *gin.Context) {

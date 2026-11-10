@@ -1031,16 +1031,27 @@ func TestUserRegisterAppliesNewUserBonusAndWritesBillingDetail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load bonus user: %v", err)
 	}
-	if stored.Balance != 12.5 {
-		t.Fatalf("expected public registration bonus balance 12.5, got %v", stored.Balance)
+	// 双桶模型：注册赠送进赠送余额（可消费、不可退），可退本金保持 0。
+	if stored.GiftBalance != 12.5 {
+		t.Fatalf("expected public registration bonus gift_balance 12.5, got %v", stored.GiftBalance)
+	}
+	if stored.Balance != 0 {
+		t.Fatalf("registration bonus must not enter the refundable principal, got %v", stored.Balance)
 	}
 
 	var record entity.BillingRecord
 	if err := db.Where("user_id = ? AND type = ?", stored.ID, "registration_bonus").First(&record).Error; err != nil {
 		t.Fatalf("load registration bonus billing: %v", err)
 	}
-	if record.Amount != 12.5 || record.BalanceBefore != 0 || record.BalanceAfter != 12.5 {
+	if record.Amount != 12.5 || record.BalanceBefore != 0 || record.BalanceAfter != 0 {
 		t.Fatalf("unexpected bonus billing record: %+v", record)
+	}
+	// 赠送桶前后值写进快照，账单可对账。
+	if before := service.ExtractBillingSnapshotField(record.UnitPriceSnapshot, "giftBalanceBefore"); before != "0" {
+		t.Fatalf("snapshot giftBalanceBefore = %q, want 0", before)
+	}
+	if after := service.ExtractBillingSnapshotField(record.UnitPriceSnapshot, "giftBalanceAfter"); after != "12.5" {
+		t.Fatalf("snapshot giftBalanceAfter = %q, want 12.5", after)
 	}
 	if record.Remark != "新用户赠送" {
 		t.Fatalf("expected bonus remark, got %+v", record)
@@ -1888,14 +1899,18 @@ func TestCreateUserAppliesEditableNewUserBonus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load created bonus user: %v", err)
 	}
-	if stored.Balance != 8.75 {
-		t.Fatalf("expected editable bonus balance 8.75, got %v", stored.Balance)
+	// 双桶模型：管理员创建用户时的赠送同样进赠送余额，不进可退本金。
+	if stored.GiftBalance != 8.75 {
+		t.Fatalf("expected editable bonus gift_balance 8.75, got %v", stored.GiftBalance)
+	}
+	if stored.Balance != 0 {
+		t.Fatalf("editable bonus must not enter the refundable principal, got %v", stored.Balance)
 	}
 	var record entity.BillingRecord
 	if err := db.Where("user_id = ? AND type = ?", stored.ID, "registration_bonus").First(&record).Error; err != nil {
 		t.Fatalf("load admin-created bonus billing: %v", err)
 	}
-	if record.Amount != 8.75 || record.BalanceAfter != 8.75 {
+	if record.Amount != 8.75 || record.BalanceAfter != 0 {
 		t.Fatalf("unexpected admin-created bonus billing: %+v", record)
 	}
 }

@@ -293,7 +293,8 @@ func resolveAIFallbackBillingContextWithContext(c *gin.Context, requestContext c
 		return searchBillingContext{}, errors.New("AI 兜底计费校验失败，请稍后重试")
 	}
 	session := aIFallbackVerifiedScriptSession(c)
-	if freshUser.Balance <= 0 && session.ID <= 0 {
+	// 双桶模型：可用额度是本金 + 赠金，单看 Balance 会误拒「本金 0、赠金 1」的账户。
+	if service.WalletAvailableTotal(freshUser.Balance, freshUser.GiftBalance) <= 0 && session.ID <= 0 {
 		return searchBillingContext{}, errors.New("当前余额不足，AI 兜底已禁用，请充值后再使用")
 	}
 
@@ -329,7 +330,8 @@ func loadAIFallbackBillingContextWithDB(db *gorm.DB, userID int32, accessTokenID
 	if err := db.Where("id = ?", userID).First(&user).Error; err != nil {
 		return searchBillingContext{}, errors.New("AI 兜底计费校验失败，请稍后重试")
 	}
-	if user.Balance <= 0 && session.ID <= 0 {
+	// 双桶模型：同上，判据必须是本金 + 赠金的合计。
+	if service.WalletAvailableTotal(user.Balance, user.GiftBalance) <= 0 && session.ID <= 0 {
 		return searchBillingContext{}, errors.New("当前余额不足，AI 兜底已禁用，请充值后再使用")
 	}
 

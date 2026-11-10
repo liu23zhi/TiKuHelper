@@ -27,6 +27,19 @@ const scriptRefundBillingRecordType = "script_refund"
 // 单独一个 type 是为了让账单流水能按来源拆开看，也让用户知道这笔钱从哪来。
 const ReviewRebateBillingRecordType = "review_rebate"
 
+// ReferralRebateBillingRecordType 是邀请返佣**结算入余额**的账单类型。
+//
+// 与 ReviewRebateBillingRecordType 同为「送的钱」：计入 balance、不计入可退本金 /
+// 净实付 / 返佣基数。单独一个 type 是为了让「邀请来的返佣」与「评价返现」在
+// 账单流水里分得开，也让管理员能按 type 对账。
+const ReferralRebateBillingRecordType = "referral_rebate"
+
+// ReferralRebateReversalBillingRecordType 是邀请返佣**退款冲回**的账单类型。
+//
+// 冲回是一条独立的支出流水（金额为正、direction=expense），而不是把原结算行删掉或改小：
+// 删行会丢掉「曾经发过钱」的事实，改小会让 balance_before/after 与真实钱包对不上。
+const ReferralRebateReversalBillingRecordType = "referral_rebate_reversal"
+
 type BillingRecordFeeDetail struct {
 	Provider      string  `json:"provider"`
 	ProviderLabel string  `json:"providerLabel"`
@@ -178,6 +191,10 @@ func buildBillingRecordTypeLabel(recordType string) string {
 		return "充值赠送"
 	case ReviewRebateBillingRecordType:
 		return "评价返现"
+	case ReferralRebateBillingRecordType:
+		return "邀请返佣"
+	case ReferralRebateReversalBillingRecordType:
+		return "邀请返佣冲回"
 	case balanceAdjustmentBillingRecordType:
 		return "管理员调整余额"
 	case scriptReservationBillingRecordType:
@@ -198,6 +215,7 @@ func buildBillingRecordDirection(recordType string) string {
 		strings.TrimSpace(recordType) == registrationBonusBillingRecordType ||
 		strings.TrimSpace(recordType) == rechargePromotionBillingRecordType ||
 		strings.TrimSpace(recordType) == ReviewRebateBillingRecordType ||
+		strings.TrimSpace(recordType) == ReferralRebateBillingRecordType ||
 		strings.TrimSpace(recordType) == scriptRefundBillingRecordType {
 		return "income"
 	}
@@ -314,6 +332,18 @@ func buildBillingRecordSubject(record BillingRecordListItem) string {
 		}
 		return "评价返现"
 	}
+	if record.Type == ReferralRebateBillingRecordType {
+		if remark := strings.TrimSpace(record.Remark); remark != "" {
+			return remark
+		}
+		return "邀请返佣"
+	}
+	if record.Type == ReferralRebateReversalBillingRecordType {
+		if remark := strings.TrimSpace(record.Remark); remark != "" {
+			return remark
+		}
+		return "邀请返佣冲回"
+	}
 	if record.Type == scriptReservationBillingRecordType {
 		if remark := strings.TrimSpace(record.Remark); remark != "" {
 			return remark
@@ -365,6 +395,18 @@ func buildBillingRecordDetail(record BillingRecordListItem) string {
 			return remark
 		}
 		return "评价返现"
+	}
+	if record.Type == ReferralRebateBillingRecordType {
+		if remark := strings.TrimSpace(record.Remark); remark != "" {
+			return remark
+		}
+		return "邀请返佣"
+	}
+	if record.Type == ReferralRebateReversalBillingRecordType {
+		if remark := strings.TrimSpace(record.Remark); remark != "" {
+			return remark
+		}
+		return "邀请返佣冲回"
 	}
 	if record.Type == scriptReservationBillingRecordType {
 		if remark := strings.TrimSpace(record.Remark); remark != "" {
@@ -1150,7 +1192,7 @@ func loadBillingRecordSummary(db *gorm.DB, operator entity.User, filter BillingR
 			THEN CASE WHEN billing_records.cached_input_tokens > billing_records.input_tokens
 				THEN billing_records.input_tokens ELSE billing_records.cached_input_tokens END
 			ELSE 0 END) AS cached_input_tokens`, util.MoneyPrecision).
-		Where("TRIM(billing_records.type) NOT IN ?", []string{rechargeBillingRecordType, registrationBonusBillingRecordType, rechargePromotionBillingRecordType, ReviewRebateBillingRecordType, balanceAdjustmentBillingRecordType, scriptRefundBillingRecordType}).
+		Where("TRIM(billing_records.type) NOT IN ?", []string{rechargeBillingRecordType, registrationBonusBillingRecordType, rechargePromotionBillingRecordType, ReviewRebateBillingRecordType, ReferralRebateBillingRecordType, ReferralRebateReversalBillingRecordType, balanceAdjustmentBillingRecordType, scriptRefundBillingRecordType}).
 		Group(`billing_records.user_id, billing_records.type, billing_records.request_id,
 			CASE WHEN billing_records.type = 'normal_search' AND TRIM(COALESCE(billing_records.request_id, '')) <> ''
 				THEN 0 ELSE billing_records.id END`)

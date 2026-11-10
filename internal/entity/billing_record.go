@@ -23,6 +23,16 @@ type BillingRecord struct {
 	Amount        float64 `gorm:"column:amount;type:decimal(18,8);not null;default:0" json:"amount"`
 	BalanceBefore float64 `gorm:"column:balance_before;type:decimal(18,6);not null;default:0" json:"balanceBefore"`
 	BalanceAfter  float64 `gorm:"column:balance_after;type:decimal(18,6);not null;default:0" json:"balanceAfter"`
+	// GiftCharged / PrincipalCharged 记录这一笔消费**分别从哪个桶扣了多少**。
+	//
+	// 双桶模型（43-*.md 规则 2）：消费先扣 gift_balance，扣光再扣 balance。
+	// 这两列是「已消耗本金」的唯一可靠来源 —— 退款可退额 = 充值实付本金 −
+	// 已消耗本金（赠金消耗不影响可退额），没有它们就只能靠猜。
+	//
+	// 历史行（加列之前落账的）两列都是 0，读侧必须按「未知」处理而不是「没扣本金」：
+	// 旧模型下 balance 是总可用，无法还原分桶，任何推断都会写错钱包口径。
+	GiftCharged      float64 `gorm:"column:gift_charged;type:decimal(18,8);not null;default:0" json:"giftCharged"`
+	PrincipalCharged float64 `gorm:"column:principal_charged;type:decimal(18,8);not null;default:0" json:"principalCharged"`
 	// The default keeps historical records visible without a data backfill.
 	HiddenFromStatement bool   `gorm:"column:hidden_from_statement;not null;default:false" json:"-"`
 	OperatorID          int32  `gorm:"column:operator_id;type:int(11);not null;default:0" json:"operatorId"`

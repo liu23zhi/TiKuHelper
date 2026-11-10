@@ -640,6 +640,13 @@ export function buildUserBalanceAdjustmentPayload(formValue) {
   if (!['increase', 'decrease', 'override'].includes(mode)) {
     throw new Error('请选择有效的余额修改模式')
   }
+  // 钱包桶：principal=充值本金（可退、可为负）/ gift=赠送金额（不可退、下限 0）。
+  // 不传或空值等价于 principal，保持既有调用方行为不变。
+  const rawBucket = String(formValue?.bucket ?? '').trim()
+  if (rawBucket && !['principal', 'gift'].includes(rawBucket)) {
+    throw new Error('请选择有效的钱包类型')
+  }
+  const bucket = rawBucket || 'principal'
   const rawAmount = String(formValue?.amount ?? '').trim()
   const amount = Number(rawAmount)
   if (!/^[+-]?(?:\d+(?:\.\d{0,6})?|\.\d{1,6})$/.test(rawAmount) || !Number.isFinite(amount) || Math.abs(amount) >= 1e12) {
@@ -648,7 +655,11 @@ export function buildUserBalanceAdjustmentPayload(formValue) {
   if (mode !== 'override' && amount < 0) {
     throw new Error('添加或减少金额不能为负数')
   }
-  return { id: formValue?.id, mode, amount, showInStatement: formValue?.showInStatement !== false }
+  // 赠送金额永不为负：override 成负数在提交前就拦下，别等后端 400。
+  if (bucket === 'gift' && mode === 'override' && amount < 0) {
+    throw new Error('赠送金额不能为负数')
+  }
+  return { id: formValue?.id, mode, amount, bucket, showInStatement: formValue?.showInStatement !== false }
 }
 
 function escapeHtmlText(value) {

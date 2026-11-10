@@ -8,9 +8,10 @@ const (
 
 	// ReferralRebateStatusPending 表示支付成功已产生待结算奖励。
 	ReferralRebateStatusPending = "pending"
-	// ReferralRebateStatusSettled 表示管理员已确认结算（只改状态，不入钱包）。
+	// ReferralRebateStatusSettled 表示管理员已确认结算：金额已计入受益人**赠送余额**
+	// （gift_balance，可消费、不可退），可退本金（balance）不受影响。
 	ReferralRebateStatusSettled = "settled"
-	// ReferralRebateStatusReversed 表示原订单退款，奖励已冲回。
+	// ReferralRebateStatusReversed 表示原订单退款，奖励已冲回（从赠送余额扣回，clamp 到 0）。
 	ReferralRebateStatusReversed = "reversed"
 )
 
@@ -28,10 +29,11 @@ type ReferralInvite struct {
 
 func (*ReferralInvite) TableName() string { return TableNameReferralInvite }
 
-// ReferralRebate 是邀请返佣的独立账本。
+// ReferralRebate 是邀请返佣账本。
 //
 // 关键约束：
-//   - 不写 users.balance：返佣既不是消费余额也不是赠金，只进这张账本；
+//   - 结算（settled）时金额进受益人 **gift_balance**（赠送余额，可消费不可退），
+//     不进 balance —— balance 是可退款本金，返佣进这里就能被层层套现；
 //   - recharge_order_id 唯一：一笔充值订单最多一条返佣，重复支付回调不会重复发放；
 //   - BaseAmount 只取订单实付本金（不含赠金）：1688 充值赠 3376 时基数仍是 1688；
 //   - Rate / PolicyVersion 是结算时快照，改配置不回溯已产生的记录。

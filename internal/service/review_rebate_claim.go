@@ -777,16 +777,18 @@ func DecideReviewRebateClaimWithDB(db *gorm.DB, reviewer entity.User, id int32, 
 
 // creditReviewRebateGiftInTx 在事务内给账户加赠金并写一条账单流水。
 //
-// 三者关系（这是「赠金归口」的全部落点）：
-//   - users.balance += amount       —— 可消费余额，用户能直接拿去搜题；
-//   - users.gift_balance += amount  —— 来源标记桶，**只增不减**（消费不扣这里），
-//     用于对账与「这些钱是送的」的展示；
+// 三者关系（这是「赠金归口」的全部落点，2026-11-09 双桶模型）：
+//   - users.gift_balance += amount  —— 赠送金额桶：**可消费、不可退款**，下限 0；
+//   - users.balance 不动            —— balance 是充值本金、可退款，返现进这里
+//     就等于把「送的钱」变成可退现金；
 //   - billing_records 一条 type=review_rebate —— 账单流水，让用户在「账单流水」
 //     里看得见这笔收入，也让管理员能按 type 汇总。
 //
-// 钱包口径：赠金**计入 balance 但不计入可退本金/净实付/返佣基数**。
-// 退款与邀请返佣只认充值实付本金，所以两者都不读 gift_balance —— 这正是
-// 把它单独记一列的原因：将来若要「赠金不可退」，判据已经在那里了。
+// 入账按规则 3（43-*.md）：账户若有欠款（balance<0），**先抵欠款**，剩余才进赠金桶。
+// 否则会出现「balance<0 且 gift>0」这种违反不变量 I3 的状态。
+//
+// 钱包口径：赠金计入可用额度（本金 + 赠金）但不计入可退本金/净实付/返佣基数。
+// 退款与邀请返佣只认充值实付本金，两者都不读 gift_balance —— 这正是把它单独记一列的原因。
 func creditReviewRebateGiftInTx(tx *gorm.DB, userID int32, amount float64) error {
 	amount = util.RoundMoney(amount)
 	if amount <= 0 {
@@ -801,23 +803,24 @@ func creditReviewRebateGiftInTx(tx *gorm.DB, userID int32, amount float64) error
 		return err
 	}
 	balanceBefore := util.RoundMoney(user.Balance)
-	balanceAfter := util.RoundMoney(balanceBefore + amount)
-	giftAfter := util.RoundMoney(util.RoundMoney(user.GiftBalance) + amount)
+	giftBefore := util.RoundMoney(user.GiftBalance)
+	newBalance, giftAfter := CreditGiftBuckets(user.Balance, user.GiftBalance, amount)
 	if err := reviewRebateSession(tx).Model(&entity.User{}).Where("id = ?", userID).Updates(map[string]any{
-		"balance":      balanceAfter,
+		"balance":      newBalance,
 		"gift_balance": giftAfter,
 	}).Error; err != nil {
 		return err
 	}
 	record := entity.BillingRecord{
-		UserID:        userID,
-		Type:          ReviewRebateBillingRecordType,
-		Provider:      "system",
-		Amount:        amount,
-		BalanceBefore: balanceBefore,
-		BalanceAfter:  balanceAfter,
-		RequestID:     fmt.Sprintf("review_rebate_%d", userID),
-		Remark:        "评价返现",
+		UserID:            userID,
+		Type:              ReviewRebateBillingRecordType,
+		Provider:          "system",
+		Amount:            amount,
+		BalanceBefore:     balanceBefore,
+		BalanceAfter:      newBalance,
+		UnitPriceSnapshot: referralGiftSnapshot(giftBefore, giftAfter),
+		RequestID:         fmt.Sprintf("review_rebate_%d", userID),
+		Remark:            joinReferralNotes("评价返现", referralDebtOffsetNote(balanceBefore, newBalance)),
 	}
 	return reviewRebateSession(tx).Create(&record).Error
 }

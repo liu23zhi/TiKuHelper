@@ -141,6 +141,113 @@ func TestBalanceAdjustmentRejectsInvalidInputsAndNonAdmins(t *testing.T) {
 	}
 }
 
+// 管理员选桶（用户 2026-11-09 明确要求「可以给用户新增赠送金额还是普通金额」）。
+func TestBalanceAdjustmentSelectsWalletBucket(t *testing.T) {
+	db, admin, user := newBalanceAdjustmentTestDB(t)
+
+	// 默认（不传 bucket）仍是本金桶，保证既有客户端行为不变。
+	updated, err := AdjustUserBalanceWithDB(db, admin, user.ID, UserBalanceAdjustmentInput{Mode: "increase", Amount: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Balance != 12 || updated.GiftBalance != 0 {
+		t.Fatalf("default bucket must be principal: balance=%v gift=%v", updated.Balance, updated.GiftBalance)
+	}
+
+	// 选赠金桶：只有 gift_balance 变，可退本金一动不动。
+	updated, err = AdjustUserBalanceWithDB(db, admin, user.ID, UserBalanceAdjustmentInput{
+		Mode: "increase", Amount: 5, Bucket: WalletBucketGift,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.GiftBalance != 5 || updated.Balance != 12 {
+		t.Fatalf("gift bucket must move gift only: balance=%v gift=%v", updated.Balance, updated.GiftBalance)
+	}
+
+	var stored entity.User
+	if err := db.First(&stored, user.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.GiftBalance != 5 || stored.Balance != 12 {
+		t.Fatalf("persisted buckets wrong: balance=%v gift=%v", stored.Balance, stored.GiftBalance)
+	}
+
+	// 账单流水要能看出调整的是哪一桶：本金前后值不变，赠金前后值在快照里。
+	var rows []entity.BillingRecord
+	if err := db.Where("type = ?", balanceAdjustmentBillingRecordType).Order("id asc").Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 adjustment rows, got %d", len(rows))
+	}
+	giftRow := rows[1]
+	if giftRow.Amount != 5 || giftRow.BalanceBefore != 12 || giftRow.BalanceAfter != 12 {
+		t.Fatalf("gift row must keep principal fields unchanged: %+v", giftRow)
+	}
+	if before := ExtractBillingSnapshotField(giftRow.UnitPriceSnapshot, "giftBalanceBefore"); before != "0" {
+		t.Fatalf("gift row snapshot before = %q, want 0", before)
+	}
+	if after := ExtractBillingSnapshotField(giftRow.UnitPriceSnapshot, "giftBalanceAfter"); after != "5" {
+		t.Fatalf("gift row snapshot after = %q, want 5", after)
+	}
+	if !strings.Contains(giftRow.Remark, "赠送金额") {
+		t.Fatalf("gift row remark must name the bucket: %q", giftRow.Remark)
+	}
+}
+
+// 赠送桶下限 0（用户明确要求「赠送金额只能为 0，不能为负数」）：减到 0 为止。
+func TestBalanceAdjustmentClampsGiftBucketAtZero(t *testing.T) {
+	db, admin, user := newBalanceAdjustmentTestDB(t)
+	if _, err := AdjustUserBalanceWithDB(db, admin, user.ID, UserBalanceAdjustmentInput{
+		Mode: "increase", Amount: 3, Bucket: WalletBucketGift,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 减 10，但只有 3 → 停在 0，不是 −7。
+	updated, err := AdjustUserBalanceWithDB(db, admin, user.ID, UserBalanceAdjustmentInput{
+		Mode: "decrease", Amount: 10, Bucket: WalletBucketGift,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.GiftBalance != 0 {
+		t.Fatalf("gift bucket must clamp to 0, got %v", updated.GiftBalance)
+	}
+	if updated.Balance != 10 {
+		t.Fatalf("principal must stay untouched, got %v", updated.Balance)
+	}
+	// override 成负数直接被拒（不制造负赠金）。
+	if _, err := AdjustUserBalanceWithDB(db, admin, user.ID, UserBalanceAdjustmentInput{
+		Mode: "override", Amount: -1, Bucket: WalletBucketGift,
+	}); !errors.Is(err, ErrInvalidBalanceAdjustment) {
+		t.Fatalf("negative gift override must be rejected, got %v", err)
+	}
+	// 未知桶名同样拒绝，不静默当成本金桶。
+	if _, err := AdjustUserBalanceWithDB(db, admin, user.ID, UserBalanceAdjustmentInput{
+		Mode: "increase", Amount: 1, Bucket: "vip",
+	}); !errors.Is(err, ErrInvalidBalanceAdjustment) {
+		t.Fatalf("unknown bucket must be rejected, got %v", err)
+	}
+}
+
+// 本金桶**不 clamp**：它是欠款载体，管理员可以把余额调成负数（43-*.md 规则 1）。
+func TestBalanceAdjustmentAllowsNegativePrincipal(t *testing.T) {
+	db, admin, user := newBalanceAdjustmentTestDB(t)
+	updated, err := AdjustUserBalanceWithDB(db, admin, user.ID, UserBalanceAdjustmentInput{
+		Mode: "decrease", Amount: 15, Bucket: WalletBucketPrincipal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Balance != -5 {
+		t.Fatalf("principal must be allowed to go negative (debt carrier), got %v", updated.Balance)
+	}
+	if updated.GiftBalance != 0 {
+		t.Fatalf("gift bucket must stay 0, got %v", updated.GiftBalance)
+	}
+}
+
 func TestStatementVisibilityEditsPreserveMoneyAndAuditActor(t *testing.T) {
 	db, admin, user := newBalanceAdjustmentTestDB(t)
 	if _, err := AdjustUserBalanceWithDB(db, admin, user.ID, UserBalanceAdjustmentInput{Mode: "increase", Amount: 5}); err != nil {

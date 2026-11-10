@@ -69,8 +69,12 @@ func TestRegisterTxComposesCredentialConsumptionAndUserBonus(t *testing.T) {
 	if err := db.First(&stored, user.ID).Error; err != nil {
 		t.Fatalf("load user: %v", err)
 	}
-	if stored.Balance != 1.25 {
-		t.Fatalf("expected bonus balance 1.25, got %v", stored.Balance)
+	if stored.GiftBalance != 1.25 {
+		t.Fatalf("expected bonus in gift_balance 1.25, got %v", stored.GiftBalance)
+	}
+	// 双桶模型：注册赠送进赠送余额（可消费、不可退），不进可退本金。
+	if stored.Balance != 0 {
+		t.Fatalf("registration bonus must not enter the refundable principal, got %v", stored.Balance)
 	}
 	var count int64
 	if err := db.Model(&entity.BillingRecord{}).Where("user_id = ? AND type = ?", user.ID, registrationBonusBillingRecordType).Count(&count).Error; err != nil {
