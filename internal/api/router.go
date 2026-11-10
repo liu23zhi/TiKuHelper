@@ -10,10 +10,12 @@ import (
 	"github.com/itihey/tikuAdapter/internal/middleware"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"io"
 	"io/fs"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -301,6 +303,68 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/admin/userexam/tool", controller.Auth, middleware.RequireAdmin, controller.UserExamToolDownload)
 	apiRouter.POST("/admin/userexam/inspect", middleware.BodyLimit(controller.MaxUserExamInspectUploadBytes), controller.Auth, middleware.RequireAdmin, controller.UserExamInspect)
 
+	// ── 脚本公开入口的「保留前缀」自动枚举（45-*.md §0.25.2，Q72-2）────────────
+	//
+	// 必须放在**函数最末尾**（所有路由注册完之后）：
+	// 放到中途只会扫到一半前缀，表现为「某些公开路径今天能通配、明天不能」，
+	// 是那种上线后极难排查的偶发缺口。
+	//
+	// 前提：本仓路由都是**静态注册**（main 里 SetAPIRouter / SetWebRouter 各调用一次），
+	// 因此这里得到的是「启动时快照」；将来若有运行期动态注册的路由，
+	// 必须重新调用一次 collectReservedPrefixes + service.SetReservedScriptPrefixes。
+	//
+	// 为什么按「路由第一段」枚举：脚本公开入口只可能出现在任意 host 的根路径下，
+	// 保留判定也是按第一段做的（`/adapter-service/...` → `adapter-service`）。
+	prefixes, scannedRoutes := collectReservedPrefixes(router)
+	service.SetReservedScriptPrefixes(prefixes)
+	if scannedRoutes < scriptReservedPrefixWarnBelow {
+		logger.SysWarn(fmt.Sprintf(
+			"脚本保留前缀自检：Routes() 只扫到 %d 条路由（阈值 %d），疑似在路由注册中途调用了 collectReservedPrefixes；已枚举 %d 个第一段前缀",
+			scannedRoutes, scriptReservedPrefixWarnBelow, len(prefixes)))
+	}
+}
+
+// scriptReservedPrefixWarnBelow 低于这个路由条数就说明枚举时机不对（本仓约 200 条）。
+// 阈值取 20：远小于真实路由数，又足以在「只注册了几条路由就枚举」时报警。
+const scriptReservedPrefixWarnBelow = 20
+
+// collectReservedPrefixes 枚举路由表里出现过的**第一段路径**，返回 (前缀集合, 路由条数)。
+//
+// 路由条数是判断「调用时机是否正确」的唯一可靠信号：前缀集合本身很小
+// （本仓所有 /adapter-service/* 路由共享同一个第一段），单看条数会误判。
+// 首段是参数（`:id`）或通配（`*filepath`）的路由不产生保留前缀 —— 那不是
+// 一个稳定的固定路径段，拦它只会误伤。
+func collectReservedPrefixes(router *gin.Engine) ([]string, int) {
+	if router == nil {
+		return nil, 0
+	}
+	routes := router.Routes()
+	seen := make(map[string]struct{}, len(routes))
+	for _, route := range routes {
+		if segment := firstRouteSegment(route.Path); segment != "" {
+			seen[segment] = struct{}{}
+		}
+	}
+	prefixes := make([]string, 0, len(seen))
+	for segment := range seen {
+		prefixes = append(prefixes, segment)
+	}
+	sort.Strings(prefixes)
+	return prefixes, len(routes)
+}
+
+// firstRouteSegment 取路由第一段；首段是 gin 参数/通配则返回空串。
+func firstRouteSegment(routePath string) string {
+	for _, part := range strings.Split(strings.TrimPrefix(routePath, "/"), "/") {
+		if part == "" {
+			continue
+		}
+		if strings.HasPrefix(part, ":") || strings.HasPrefix(part, "*") {
+			return ""
+		}
+		return strings.ToLower(part)
+	}
+	return ""
 }
 
 type embedFileSystem struct {

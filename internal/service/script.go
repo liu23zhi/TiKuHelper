@@ -207,6 +207,14 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 	if baseDomain == "" {
 		return ScriptListItem{}, ErrScriptDomainRequired
 	}
+	// Q72-3：脚本自身的域名必须是具体主机名，`a.*.a.com` / `*.a.com` 在创建时拒绝，
+	// 而不是等匹配阶段悄悄不生效。通配符属于管理员允许的域名列表。
+	if err := validateScriptBaseDomain(baseDomain); err != nil {
+		return ScriptListItem{}, err
+	}
+	if err := ensureScriptDomainRulePrefixAvailable(db, baseDomain); err != nil {
+		return ScriptListItem{}, err
+	}
 	if input.VersionID <= 0 {
 		return ScriptListItem{}, ErrScriptVersionNotFound
 	}
@@ -523,6 +531,12 @@ func UpdateUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32, i
 		if baseDomain == "" {
 			return ErrScriptDomainRequired
 		}
+		if err := validateScriptBaseDomain(baseDomain); err != nil {
+			return err
+		}
+		if err := ensureScriptDomainRulePrefixAvailable(tx, baseDomain); err != nil {
+			return err
+		}
 		scheme := normalizeScriptScheme(input.Scheme)
 		if script.BillingMode != "" && scheme != "https" {
 			return ErrScriptDomainUnavailable
@@ -808,7 +822,12 @@ func normalizeScriptDomain(value string) string {
 		return ""
 	}
 	host := strings.TrimRight(strings.TrimSpace(parsed.Host), ".")
-	host = strings.TrimPrefix(strings.ToLower(host), "*.")
+	// ⚠️ 不要在这里剥 `*.`：旧实现 `strings.TrimPrefix(strings.ToLower(host), "*.")`
+	// 会把 `*.a.zelly.cn` 归一化成 `a.zelly.cn`，于是「管理员允许泛域名」在入库时
+	// 就退化成「只允许该精确域名」，通配语义永远无法生效
+	// （45-*.md §0.25.2 / 72-*.md 三·红线 1）。`*` 的位置合法性由
+	// validateScriptDomainWildcardPlacement 单独判定，这里只做小写与去空格。
+	host = strings.ToLower(host)
 	if host == "" || strings.ContainsAny(host, "'\"\\\r\n/?# \t") {
 		return ""
 	}
@@ -907,24 +926,42 @@ func decorateScriptItem(item ScriptListItem) ScriptListItem {
 // ResolvePublicScriptWithDB maps a request host/path to an enabled script.
 // It intentionally compares normalized values in Go so wildcard and regular
 // domain behavior remains identical on SQLite and MySQL.
+//
+// 匹配顺序（顺序本身就是安全边界，改顺序前先读 45-*.md §0.25.3）：
+//
+//  1. 请求路径规范化：`..` 段直接判不匹配（不做「Clean 后放行」）；
+//  2. **保留前缀优先**：`/adapter-service/...` `/sqp/...` `/assets/...` 等命中即返回
+//     ErrScriptNotFound —— 即使管理员配了 `*/*` 也不交给脚本入口；
+//  3. 推导 shortCode：根路径用 host 首段（泛域名模式），否则用路径**最后一段**
+//     （段级 glob 允许 `a.com/a/*` 这类更深的公开路径）；
+//  4. 命中 shortCode 的脚本再校验 host == `<shortCode>.<baseDomain>`；
+//  5. 最后过管理员域名规则（含路径 glob）——多段路径必须有显式规则才放行。
 func ResolvePublicScriptWithDB(db *gorm.DB, requestHost, requestPath string) (entity.UserScript, error) {
 	host := normalizePublicScriptHost(requestHost)
-	path := strings.TrimSpace(requestPath)
-	if path == "/" {
-		path = ""
+	cleanPath, pathErr := cleanScriptRequestPath(requestPath)
+	if pathErr != nil {
+		// 含 `..` 或非绝对路径：一律当作「不是脚本入口」，不给穿越任何机会。
+		return entity.UserScript{}, ErrScriptNotFound
+	}
+	// 保留前缀判定必须在任何通配匹配之前：`/a/**` 不能吞掉 `/adapter-service`。
+	if segment := scriptFirstPathSegment(cleanPath); segment != "" && scriptReservedPrefix(segment) {
+		return entity.UserScript{}, ErrScriptNotFound
 	}
 	shortCode, wildcard := "", false
-	if path == "" {
+	if cleanPath == "" {
 		separator := strings.IndexByte(host, '.')
 		if separator <= 0 || separator == len(host)-1 {
 			return entity.UserScript{}, ErrScriptNotFound
 		}
 		shortCode, wildcard = host[:separator], true
 	} else {
-		if !strings.HasPrefix(path, "/") || strings.Count(path, "/") != 1 {
+		segments := scriptPathSegments(cleanPath)
+		shortCode = segments[len(segments)-1]
+		// 短码只可能是字母数字（uniqueScriptShortCode 的字母表是 a-z0-9），
+		// 这里顺手挡掉 `/a/b/`、`/a/%2e%2e` 之类的畸形末段。
+		if !isScriptShortCodeSegment(shortCode) {
 			return entity.UserScript{}, ErrScriptNotFound
 		}
-		shortCode = strings.TrimPrefix(path, "/")
 	}
 	var script entity.UserScript
 	if err := db.Session(&gorm.Session{NewDB: true}).Where("short_code = ? AND use_wildcard_domain = ? AND deleted_at IS NULL AND enabled = ?", shortCode, wildcard, true).First(&script).Error; err != nil {
@@ -938,7 +975,29 @@ func ResolvePublicScriptWithDB(db *gorm.DB, requestHost, requestPath string) (en
 	if domain == "" || !strings.EqualFold(host, scriptHost) {
 		return entity.UserScript{}, ErrScriptNotFound
 	}
+	rules, err := scriptDomainRulesWithDB(db)
+	if err != nil {
+		return entity.UserScript{}, err
+	}
+	if !authorizeScriptPublicPath(rules, domain, cleanPath) {
+		return entity.UserScript{}, ErrScriptNotFound
+	}
 	return script, nil
+}
+
+// isScriptShortCodeSegment 判断路径末段能否充当 shortCode。
+// 与 uniqueScriptShortCode 的字母表保持一致（a-z0-9，最长 12 位）。
+func isScriptShortCodeSegment(segment string) bool {
+	if segment == "" || len(segment) > 16 {
+		return false
+	}
+	for _, char := range segment {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func normalizePublicScriptHost(value string) string {
