@@ -49,6 +49,7 @@ func proxyRangesTrustAll(ranges []proxyRange, bits uint) bool {
 	}
 	return false
 }
+
 // resolveStartupTrustedProxies 校验并规范化「用户显式填写的」可信代理条目。
 //
 // 语义以 task_doc/67-TRUSTED_PROXIES语义定义.md 为准：
