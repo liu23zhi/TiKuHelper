@@ -303,6 +303,14 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/admin/userexam/tool", controller.Auth, middleware.RequireAdmin, controller.UserExamToolDownload)
 	apiRouter.POST("/admin/userexam/inspect", middleware.BodyLimit(controller.MaxUserExamInspectUploadBytes), controller.Auth, middleware.RequireAdmin, controller.UserExamInspect)
 
+	// 管理员账号安全状态：仅管理员，只读，只回布尔。
+	//
+	// 存在原因（68-默认管理员密码处理设定.md）：库里仍是默认密码 123456 时
+	// **不再拒绝启动**（那会造成「进不去后台改密码」的死锁），
+	// 改由本接口把事实告诉前端，让管理台显示告警引导管理员自行修改。
+	// 一条不可协商的性质：只回布尔，不回任何凭据内容（含 hash）。
+	apiRouter.GET("/admin/security-status", controller.Auth, middleware.RequireAdmin, controller.AdminSecurityStatus)
+
 	// ── 脚本公开入口的「保留前缀」自动枚举（45-*.md §0.25.2，Q72-2）────────────
 	//
 	// 必须放在**函数最末尾**（所有路由注册完之后）：

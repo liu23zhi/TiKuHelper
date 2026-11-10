@@ -31,6 +31,13 @@ func ResolveApplicationMode(configured string) (string, error) {
 type adminBootstrapPlan struct {
 	exists             bool
 	original, password string
+	// defaultCredential 表示「库里仍是已知默认密码 123456」。
+	//
+	// 2026-11-10 用户拍板：这不再是启动拒绝条件，只是**提示条件** ——
+	// 启动照常进行，由 WebUI 显示「请在后台修改默认密码」的告警。
+	// 早期实现会在 production 直接 errors.New 拒绝启动，导致
+	// 用默认库一键起 docker 的用户完全无法进入后台改密码（死锁）。
+	defaultCredential bool
 }
 
 // Keep the same 8-rune/ASCII four-category policy as account password changes.
@@ -61,8 +68,12 @@ func validateBootstrapPassword(password string) error {
 	return nil
 }
 
-// This function only reads. Even existing default plaintext is rejected before
-// any migration/account-default write in production; environment never resets it.
+// 本函数只读。2026-11-10 用户拍板：生产环境**不再**因为「库里仍是已知默认密码
+// 123456」而拒绝启动 —— 那会让用默认库一键起 docker 的人进不去后台改密码。
+// 现在的处置是：照常启动 + 打一条醒目日志 + 通过 WebUI 展示告警（见
+// plan.defaultCredential 的消费方），让管理员自行去后台改。
+//
+// 环境变量 TIKU_ADMIN_PASSWORD 仍然**不会**重置已有凭据 —— 这点不变。
 func resolveAdminBootstrap(database *gorm.DB, mode, environment string) (adminBootstrapPlan, error) {
 	var plan adminBootstrapPlan
 	if database != nil && database.Migrator().HasTable(entity.TableNameUser) {
@@ -75,8 +86,9 @@ func resolveAdminBootstrap(database *gorm.DB, mode, environment string) (adminBo
 		plan.original = row.Password
 	}
 	if plan.exists && plan.original != "" {
-		if matched, _ := util.VerifyPassword(plan.original, "123456"); mode == "production" && matched {
-			return plan, errors.New("production refuses the known default admin credential; change it through the existing account workflow")
+		// 只记录「仍是默认密码」这个事实，供 WebUI 告警用；不阻断启动。
+		if matched, _ := util.VerifyPassword(plan.original, "123456"); matched {
+			plan.defaultCredential = true
 		}
 		if strings.HasPrefix(plan.original, "$2a$") || strings.HasPrefix(plan.original, "$2b$") || strings.HasPrefix(plan.original, "$2y$") {
 			return plan, nil
