@@ -148,12 +148,12 @@ var (
 		}
 		return service.UpdateReviewRebateRuleWithDB(db, id, update)
 	}
-	deleteReviewRebateRule = func(id int32) error {
+	deleteReviewRebateRule = func(id int32, operator entity.User, reason, clientIP string) error {
 		db, err := requireReviewRebateDB()
 		if err != nil {
 			return err
 		}
-		return service.DeleteReviewRebateRuleWithDB(db, id)
+		return deleteReviewRebateRuleWithSnapshot(db, id, operator, reason, clientIP)
 	}
 )
 
@@ -482,16 +482,27 @@ func AdminUpdateReviewRebateRule(c *gin.Context) {
 }
 
 // AdminDeleteReviewRebateRule 删除规则（管理员）。
+//
+// 物理删除 + 删除前完整快照（同事务），`?reason=` 必填。见 rule_audit.go：
+// 「查 → 同事务写快照 → 物理删除」——顺序不可颠倒，删完就查不到快照了。
 func AdminDeleteReviewRebateRule(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	if !requireAdmin(c) {
+		return
+	}
+	operator, ok := currentOperator(c)
+	if !ok {
 		return
 	}
 	id, ok := parseReviewRebateID(c)
 	if !ok {
 		return
 	}
-	if err := deleteReviewRebateRule(id); err != nil {
+	reason, ok := requireRuleDeleteReason(c)
+	if !ok {
+		return
+	}
+	if err := deleteReviewRebateRule(id, operator, reason, c.ClientIP()); err != nil {
 		writeReviewRebateError(c, err)
 		return
 	}

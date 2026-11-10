@@ -262,9 +262,11 @@ func BlacklistEntryToggle(c *gin.Context) {
 
 // BlacklistEntryDelete 删除一条规则（管理员）。
 //
-// 硬删除：实体没有 DeletedAt 列，46-*.md 也只提示了「删了就丢审计」这个风险，
-// 没有要求软删。命中记录（blacklist_hits）保留，因此「这条规则当时拦了多少次」
-// 仍然可查。
+// 硬删除：实体没有 DeletedAt 列；用户对 Q77-2 明确回答「否」（规则类不做软删除），
+// 但要求**删除前把完整快照写进日志**。实现见 rule_audit.go：
+// 「查 → 同事务写快照 → 物理删除」，并且 `?reason=` 必填（Q77-6 选 C）。
+//
+// 命中记录（blacklist_hits）保留，因此「这条规则当时拦了多少次」仍然可查。
 func BlacklistEntryDelete(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	if !requireAdmin(c) {
@@ -278,12 +280,16 @@ func BlacklistEntryDelete(c *gin.Context) {
 	if !ok {
 		return
 	}
+	reason, ok := requireRuleDeleteReason(c)
+	if !ok {
+		return
+	}
 	db, err := requireBlacklistDB()
 	if err != nil {
 		writeBlacklistAdminError(c, err)
 		return
 	}
-	entry, err := service.DeleteBlacklistEntryWithDB(db, id)
+	entry, err := deleteBlacklistEntryWithSnapshot(db, id, operator, reason, c.ClientIP())
 	if err != nil {
 		writeBlacklistAdminError(c, err)
 		return

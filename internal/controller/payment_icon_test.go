@@ -95,7 +95,10 @@ func TestPaymentIconAPIAnonymousAndNonAdminNeverWrite(t *testing.T) {
 		writes++
 		return service.UpdatePaymentMethodWithDB(db, id, in)
 	}
-	deletePaymentMethod = func(_ entity.User, id int32) error { writes++; return service.DeletePaymentMethodWithDB(db, id) }
+	deletePaymentMethod = func(_ entity.User, id int32, _, _ string) error {
+		writes++
+		return service.DeletePaymentMethodWithDB(db, id)
+	}
 	for _, anonymous := range []bool{true, false} {
 		for _, verb := range []string{"POST", "PUT", "DELETE"} {
 			r := httptest.NewRecorder()

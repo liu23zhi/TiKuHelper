@@ -229,14 +229,16 @@ func TestReviewRebateHTTPRuleCrudSemantics(t *testing.T) {
 		t.Fatalf("rule amount = %v, want 1.2", amount)
 	}
 
-	// 删除 → 200
-	deletion := send(http.MethodDelete, fmt.Sprintf("/admin/review-rebate/rules/%d", ruleID), "")
+	// 删除 → 200。Q77-6 起 `?reason=` 必填（后端独立校验，见 rule_audit.go）；
+	// 原因不是本用例的断言对象，「缺 reason 必须 400」由 rule_audit_test.go 覆盖。
+	deletion := send(http.MethodDelete, fmt.Sprintf("/admin/review-rebate/rules/%d?reason=%s", ruleID, ruleDeleteTestReasonQuery), "")
 	if deletion.Code != http.StatusOK {
 		t.Fatalf("delete rule must be 200, got %d %s", deletion.Code, deletion.Body.String())
 	}
 
-	// 重复删除 → 404（不是 409：没有引用保护这回事）
-	again := send(http.MethodDelete, fmt.Sprintf("/admin/review-rebate/rules/%d", ruleID), "")
+	// 重复删除 → 404（不是 409：没有引用保护这回事）。
+	// 仍带 reason：否则会先被 400 拦下，测不到「规则不存在」这条分支。
+	again := send(http.MethodDelete, fmt.Sprintf("/admin/review-rebate/rules/%d?reason=%s", ruleID, ruleDeleteTestReasonQuery), "")
 	if again.Code != http.StatusNotFound {
 		t.Fatalf("deleting a missing rule must be 404, got %d %s", again.Code, again.Body.String())
 	}
