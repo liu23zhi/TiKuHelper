@@ -576,3 +576,77 @@ func TestReviewRebateTraceFileIsManaged(t *testing.T) {
 		}
 	}
 }
+
+// 三档并两档（task_doc/45 §0.26.1）之后，两份保留文件的**轮转归档**
+// 必须仍然被 isManagedLogArchive 认出来，而被取消的 Tiku-ai-payload 必须不再被认。
+//
+// 为什么这条断言必须存在：只删 ai-payload 却顺手把 Tiku-thinking 从
+// 归档白名单里漏掉时，一切编译通过、一切运行正常，只有「轮转出的
+// Tiku-thinking01.txt 永远不被 prune 清理」这一条在悄悄失效 ——
+// 磁盘会无限增长（task_doc/73 记录过同一个坑）。
+// 这里逐条断言 isManagedLogArchive 的返回值，正是为了让那种残缺实现变红。
+func TestManagedLogArchiveWhitelistAfterConsolidation(t *testing.T) {
+	for _, name := range []string{
+		"Tiku-thinking01.txt",
+		"Tiku-thinking01.txt.gz",
+		"Tiku-review-rebate01.txt",
+		"Tiku-review-rebate01.txt.gz",
+		"Tiku01.txt",
+	} {
+		if !isManagedLogArchive(name) {
+			t.Fatalf("%s must stay recognized as a managed log archive", name)
+		}
+	}
+	// Tiku-ai-payload 已取消：不再登记，也不再清理（历史遗留文件需人工删一次）。
+	for _, name := range []string{
+		"Tiku-ai-payload.txt",
+		"Tiku-ai-payload.txt.gz",
+		"Tiku-ai-payload01.txt",
+		"Tiku-ai-payload01.txt.gz",
+	} {
+		if isManagedLogFile(name) || isManagedLogArchive(name) {
+			t.Fatalf("%s must no longer be a managed log file after consolidation", name)
+		}
+	}
+}
+
+// 合并 ai-payload 后 Tiku-thinking.txt 体积涨一到两个数量级，
+// 这一档的单文件上限必须比常规日志大一档，且**不能**顺带放大其它文件。
+func TestThinkingLogUsesLargerFileLimit(t *testing.T) {
+	// 生产常量本身不允许被改：只放宽 thinking 这一档。
+	if MaxLogFileBytes != 10*1024*1024 {
+		t.Fatalf("MaxLogFileBytes must stay 10 MiB, got %d", MaxLogFileBytes)
+	}
+	if limit := thinkingFileLimit(MaxLogFileBytes); limit < 32*1024*1024 {
+		t.Fatalf("thinking log limit = %d bytes, want >= 32 MiB (task_doc/45 §0.26.1)", limit)
+	}
+
+	dir := t.TempDir()
+	base := int64(1024)
+	if err := setupLogger(dir, base); err != nil {
+		t.Fatalf("setup logger: %v", err)
+	}
+	t.Cleanup(func() { _ = closeLogger() })
+
+	stateMu.Lock()
+	thinkingLimit := active.thinking.maxBytes
+	generalLimit := active.files[0].maxBytes
+	stateMu.Unlock()
+	if thinkingLimit != thinkingFileLimit(base) || thinkingLimit <= base {
+		t.Fatalf("thinking file limit = %d, want %d (> base %d)", thinkingLimit, thinkingFileLimit(base), base)
+	}
+	if generalLimit != base {
+		t.Fatalf("general log limit = %d, want untouched base %d", generalLimit, base)
+	}
+
+	// 行为验证：写入量已超过**常规档**上限、但仍在 thinking 上限内 → 不许轮转。
+	AIThinking(strings.Repeat("a", int(base)+1024))
+	if _, err := os.Stat(filepath.Join(dir, "Tiku-thinking01.txt")); !os.IsNotExist(err) {
+		t.Fatalf("thinking log rotated below its own limit: %v", err)
+	}
+	// 再写一批超过 thinking 上限 → 必须轮转（证明上限是生效的，不是被无限放大）。
+	AIThinking(strings.Repeat("b", int(thinkingLimit)))
+	if _, err := os.Stat(filepath.Join(dir, "Tiku-thinking01.txt")); err != nil {
+		t.Fatalf("thinking log did not rotate at its limit: %v", err)
+	}
+}

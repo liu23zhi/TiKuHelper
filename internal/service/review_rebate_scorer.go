@@ -177,6 +177,9 @@ func (s *agentReviewRebateScorer) Score(claim entity.ReviewRebateClaim) (ReviewR
 	if err != nil {
 		return ReviewRebateScore{}, fmt.Errorf("%w: 活动配置不可读", ErrReviewRebateScoringFailed)
 	}
+	// attempt 在本次打分开始时定一次：同一条记录里的 4 个分支写的是同一个序号，
+	// 重跑一次才 +1（见 reviewRebateTraceRecord.Attempt）。
+	attempt := nextReviewRebateScoreAttempt(claim)
 	image, err := loadReviewRebateScreenshot(claim.ScreenshotPath)
 	if err != nil {
 		// 截图读不出来就**不打分**：没有依据的分数会诱使运营直接批准。
@@ -185,6 +188,7 @@ func (s *agentReviewRebateScorer) Score(claim entity.ReviewRebateClaim) (ReviewR
 		// 唯一能回答「为什么」的地方就是这份日志。
 		traceReviewRebateScoring(reviewRebateTraceRecord{
 			Claim: claim, Scorer: ReviewRebateScorerKindAgent, Model: s.model,
+			Attempt: attempt, SystemPrompt: ReviewRebateAgentSystemPrompt,
 			Outcome: "no_screenshot", Error: err.Error(),
 		})
 		return ReviewRebateScore{}, err
@@ -200,6 +204,7 @@ func (s *agentReviewRebateScorer) Score(claim entity.ReviewRebateClaim) (ReviewR
 	if err != nil {
 		traceReviewRebateScoring(reviewRebateTraceRecord{
 			Claim: claim, Scorer: ReviewRebateScorerKindAgent, Model: s.model,
+			Attempt: attempt, SystemPrompt: ReviewRebateAgentSystemPrompt,
 			DurationMs: durationMs, UserPrompt: userPrompt,
 			Outcome: "error", Error: err.Error(),
 		})
@@ -218,6 +223,7 @@ func (s *agentReviewRebateScorer) Score(claim entity.ReviewRebateClaim) (ReviewR
 		// 否则「模型返回了什么导致解析不出 JSON」永远查不到。
 		traceReviewRebateScoring(reviewRebateTraceRecord{
 			Claim: claim, Scorer: ReviewRebateScorerKindAgent, Model: s.model,
+			Attempt: attempt, SystemPrompt: ReviewRebateAgentSystemPrompt,
 			DurationMs: durationMs, UserPrompt: userPrompt,
 			RawResponse: raw, Outcome: "parse_error", Error: err.Error(),
 		})
@@ -226,6 +232,7 @@ func (s *agentReviewRebateScorer) Score(claim entity.ReviewRebateClaim) (ReviewR
 	score.Scorer = ReviewRebateScorerKindAgent
 	traceReviewRebateScoring(reviewRebateTraceRecord{
 		Claim: claim, Scorer: ReviewRebateScorerKindAgent, Model: s.model,
+		Attempt: attempt, SystemPrompt: ReviewRebateAgentSystemPrompt,
 		DurationMs: durationMs, UserPrompt: userPrompt, RawResponse: raw,
 		Parsed: &score, Outcome: "ok",
 	})

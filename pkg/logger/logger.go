@@ -33,6 +33,33 @@ const (
 const MaxLogFileBytes int64 = 10 * 1024 * 1024
 const DefaultMaxTotalLogBytes int64 = 5 * 1024 * 1024 * 1024
 
+// ThinkingLogSizeFactor 是 Tiku-thinking.txt 相对常规日志的单文件上限倍数。
+//
+// 为什么单独放宽（task_doc/45 §0.26.1、task_doc/77 §11.1）：
+// 2026-11-11 三档并两档后，Tiku-thinking.txt 除了几百字节的编排轨迹，
+// 还要装完整提示词与完整响应 —— 一轮搜题可能几十 KB，体积比拆分时
+// 涨一到两个数量级。若仍用 10 MiB，一天就能滚出几十个归档文件，
+// 排查「某轮到底发了什么」时要在多个 .gz 里翻。
+//
+// 取 6 倍 = 生产 60 MiB（落在 45 号文档建议的 32~64 MiB 区间）。
+// **不动 MaxLogFileBytes 常量本身**：那会同时放大 Tiku / Tiku-error /
+// Tiku-review-rebate，属于误伤；只有这一档需要更大。
+// 用倍数而不是绝对字节数还有第二个好处：单测传小额度（如 1 KiB）时，
+// 上限按同一比例放大，「写满即轮转」的行为仍可复现。
+const ThinkingLogSizeFactor int64 = 6
+
+// thinkingFileLimit 返回 Tiku-thinking.txt 的单文件上限。
+func thinkingFileLimit(maxBytes int64) int64 {
+	if maxBytes <= 0 {
+		// setupLoggerWithLimits 会在更早处拒绝非正数，这里只做溢出防护。
+		return maxBytes
+	}
+	if maxBytes > (1<<62)/ThinkingLogSizeFactor {
+		return maxBytes
+	}
+	return maxBytes * ThinkingLogSizeFactor
+}
+
 var LogDir = flag.String("log-dir", "logs", "specify the log directory")
 
 var (
@@ -47,16 +74,15 @@ var (
 type loggerState struct {
 	mu    sync.Mutex
 	files [3]*rotatingFile
-	// thinking 是 AI **搜题的检索编排轨迹**（每轮每 attempt 一行，结构化字段）。
-	// 拆分自原本混在一起的 Tiku-thinking.txt，见 task_doc/76。
-	thinking *rotatingFile
-	// aiPayload 是 AI 搜题的**完整报文**（请求体 / 响应体 / 来源 / 结果摘要）。
+	// thinking 是 AI 搜题通道：**编排轨迹 + 完整提示词 + 完整响应**。
 	//
-	// 单独一档的理由：这一档体量比编排轨迹大一到两个数量级（含完整 JSON），
-	// 混在同一文件里会让「看某轮发生了什么」被大段正文淹掉，
-	// 也会让轮转把编排轨迹过早挤出去。
-	aiPayload     *rotatingFile
-	reviewRebate  *rotatingFile
+	// 原本完整报文单独写 Tiku-ai-payload.txt，用户 2026-11-11 定案「只要
+	// Tiku-review-rebate.txt 与 Tiku-thinking.txt 两个，都保留完整提示词、
+	// 回复记录等」（task_doc/45 §0.26.1、task_doc/77 §11.1），因此这一档
+	// 现在既装结构化轨迹，也装完整请求体 / 响应体 / 来源 / 结果摘要。
+	thinking *rotatingFile
+	// reviewRebate 是评价返现打分的专用追踪（task_doc/73）。
+	reviewRebate *rotatingFile
 	stdout        io.Writer
 	stderr        io.Writer
 	standard      io.Writer
@@ -118,7 +144,7 @@ func setupLoggerWithLimits(dir string, maxBytes int64, maxTotalBytes int64) erro
 		}
 		s.files[index] = file
 	}
-	thinkingFile, err := openRotatingFile(dir, "Tiku-thinking", maxBytes)
+	thinkingFile, err := openRotatingFile(dir, "Tiku-thinking", thinkingFileLimit(maxBytes))
 	if err != nil {
 		for _, opened := range s.files {
 			if opened != nil {
@@ -128,19 +154,6 @@ func setupLoggerWithLimits(dir string, maxBytes int64, maxTotalBytes int64) erro
 		return fmt.Errorf("open Tiku-thinking log: %w", err)
 	}
 	s.thinking = thinkingFile
-	aiPayloadFile, err := openRotatingFile(dir, "Tiku-ai-payload", maxBytes)
-	if err != nil {
-		for _, opened := range s.files {
-			if opened != nil {
-				_ = opened.close()
-			}
-		}
-		if s.thinking != nil {
-			_ = s.thinking.close()
-		}
-		return fmt.Errorf("open Tiku-ai-payload log: %w", err)
-	}
-	s.aiPayload = aiPayloadFile
 	reviewRebateFile, err := openRotatingFile(dir, "Tiku-review-rebate", maxBytes)
 	if err != nil {
 		for _, opened := range s.files {
@@ -150,9 +163,6 @@ func setupLoggerWithLimits(dir string, maxBytes int64, maxTotalBytes int64) erro
 		}
 		if s.thinking != nil {
 			_ = s.thinking.close()
-		}
-		if s.aiPayload != nil {
-			_ = s.aiPayload.close()
 		}
 		return fmt.Errorf("open Tiku-review-rebate log: %w", err)
 	}
@@ -217,9 +227,6 @@ func (s *loggerState) close() error {
 	}
 	if s.thinking != nil {
 		errs = append(errs, s.thinking.close())
-	}
-	if s.aiPayload != nil {
-		errs = append(errs, s.aiPayload.close())
 	}
 	if s.reviewRebate != nil {
 		errs = append(errs, s.reviewRebate.close())
@@ -331,24 +338,15 @@ func AIThinking(text string) {
 	AIThinkingWithSecrets(text)
 }
 
-// AIPayloadWithSecrets 把 AI 搜题的**完整报文**写进 Tiku-ai-payload.txt。
+// AIThinkingWithSecrets 把 AI 搜题通道的一条记录写进 Tiku-thinking.txt。
 //
-// 为什么与 AIThinking 分开（task_doc/76）：
-// 原本两者都写 Tiku-thinking.txt，导致三个问题 ——
-//  1. 体积差两个数量级：一条编排轨迹是几百字节，一份完整请求/响应是几十 KB，
-//     混排后「看某轮发生了什么」被大段 JSON 淹掉；
-//  2. 轮转不公平：大报文把编排轨迹过早挤进归档，排查时要在多个 .gz 里翻；
-//  3. 传输日志与编排轨迹的读者不同 —— 前者查「模型到底收到了什么」，
-//     后者查「这一轮走了哪些步骤」。
+// 这一档同时承载**编排轨迹**（阶段/耗时/模型/状态等结构化字段）与
+// **完整报文**（完整提示词 RequestBody、完整响应 FullResponse、来源、结果摘要）。
+// 2026-11-11 用户定案取消 Tiku-ai-payload.txt，把完整报文并入本文件
+// （task_doc/45 §0.26.1、task_doc/77 §11.1）；合并的代价是这一档体积
+// 涨一到两个数量级，因此它的单文件上限由 thinkingFileLimit 单独放宽。
 //
-// 与 AIThinkingWithSecrets 一样的语义：只写文件、必过 RedactSecrets、
-// 写完立即 prune。secrets 用于抹掉调用方已知的具体凭据（如 APIKey）。
-func AIPayloadWithSecrets(text string, secrets ...string) {
-	writeDedicatedFile("aiPayload", "Tiku-ai-payload", "[AI-PAYLOAD]", text, secrets...)
-}
-
-// AIThinkingWithSecrets writes a detailed AI trace while also redacting
-// request-specific credentials that cannot be recognized by generic patterns.
+// secrets 用于抹掉调用方已知的具体凭据（如 APIKey）。
 func AIThinkingWithSecrets(text string, secrets ...string) {
 	writeDedicatedFile("thinking", "Tiku-thinking", "[AI-THINKING]", text, secrets...)
 }
@@ -401,8 +399,6 @@ func dedicatedFileOf(s *loggerState, field string) *rotatingFile {
 	switch field {
 	case "thinking":
 		return s.thinking
-	case "aiPayload":
-		return s.aiPayload
 	case "reviewRebate":
 		return s.reviewRebate
 	default:
@@ -625,8 +621,20 @@ func pruneLogFiles(dir string, maxTotalBytes int64) error {
 	return nil
 }
 
+// managedLogPrefixes 是全部独立日志文件的名字前缀。
+//
+// ⚠️ 增删任何一个前缀都必须同步 isManagedLogFile 与 isManagedLogArchive
+// **两处**（后者由前者调用，但两处都用这个切片，所以只改一处会漏）：
+// 只在一个函数里登记，轮转出的 .txtN / .txtN.gz 归档就不再被 pruneLogFiles
+// 识别，磁盘会无限增长（task_doc/73 记录过这个坑）。
+//
+// Tiku-ai-payload 已删除（2026-11-11 用户定案三档并两档，
+// 完整报文并入 Tiku-thinking，见 task_doc/45 §0.26.1）。历史上轮转出的
+// Tiku-ai-payload*.txt 因此不再被清理，需要人工删一次。
+var managedLogPrefixes = []string{"Tiku", "Tiku-warning", "Tiku-error", "Tiku-thinking", "Tiku-review-rebate"}
+
 func isManagedLogFile(name string) bool {
-	for _, prefix := range []string{"Tiku", "Tiku-warning", "Tiku-error", "Tiku-thinking", "Tiku-ai-payload", "Tiku-review-rebate"} {
+	for _, prefix := range managedLogPrefixes {
 		if name == prefix+".txt" || name == prefix+".txt.gz" || isManagedLogArchive(name) {
 			return true
 		}
@@ -635,7 +643,7 @@ func isManagedLogFile(name string) bool {
 }
 
 func isManagedLogArchive(name string) bool {
-	for _, prefix := range []string{"Tiku", "Tiku-warning", "Tiku-error", "Tiku-thinking", "Tiku-ai-payload", "Tiku-review-rebate"} {
+	for _, prefix := range managedLogPrefixes {
 		if !strings.HasPrefix(name, prefix) {
 			continue
 		}

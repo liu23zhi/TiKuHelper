@@ -314,23 +314,23 @@ func (in *ChatGptClient) logAISearchTrace(trace AISearchTrace) {
 	}
 	logger.AIThinkingWithSecrets(fmt.Sprintf("AI搜索轨迹 requestId=%s round=%d attempt=%d/%d stage=%s model=%s endpoint=%s searchAPI=%s query=%s status=%s durationMs=%d modelCalls=%d/%d%s remainingModelCalls=%d searches=%d/%d remainingSearches=%d remainingWebReads=%d results=%d cacheHit=%t sources=%s resultSummary=%s reasoningChars=%d contentPreview=%s error=%s", requestID, structuredTrace.Round, structuredTrace.Attempt, structuredTrace.AttemptBudget, structuredTrace.Stage, strings.TrimSpace(structuredTrace.Model), structuredTrace.Endpoint, structuredTrace.SearchAPI, structuredTrace.Query, structuredTrace.Status, structuredTrace.DurationMs, structuredTrace.ModelCallCount, structuredTrace.ModelCallBudget, tokenDetails, structuredTrace.RemainingModelCalls, structuredTrace.SearchCount, structuredTrace.SearchBudget, structuredTrace.RemainingSearches, structuredTrace.RemainingWebReads, structuredTrace.ResultCount, structuredTrace.CacheHit, structuredTrace.SourceDetails, structuredTrace.ResultSummary, structuredTrace.ReasoningChars, structuredTrace.ContentPreview, structuredTrace.Error), in.APIKey)
 	if trace.SourceDetails != "" {
-		logger.AIPayloadWithSecrets(fmt.Sprintf("AI搜索完整来源 requestId=%s round=%d stage=%s\n%s", requestID, trace.Round, trace.Stage, trace.SourceDetails), in.APIKey)
+		logger.AIThinkingWithSecrets(fmt.Sprintf("AI搜索完整来源 requestId=%s round=%d stage=%s\n%s", requestID, trace.Round, trace.Stage, trace.SourceDetails), in.APIKey)
 	}
 	if trace.ResultSummary != "" {
-		logger.AIPayloadWithSecrets(fmt.Sprintf("AI搜索完整结果摘要 requestId=%s round=%d stage=%s\n%s", requestID, trace.Round, trace.Stage, trace.ResultSummary), in.APIKey)
+		logger.AIThinkingWithSecrets(fmt.Sprintf("AI搜索完整结果摘要 requestId=%s round=%d stage=%s\n%s", requestID, trace.Round, trace.Stage, trace.ResultSummary), in.APIKey)
 	}
 	if trace.RequestBody != "" {
-		logger.AIPayloadWithSecrets(fmt.Sprintf("AI模型完整请求 requestId=%s round=%d stage=%s\n%s", requestID, trace.Round, trace.Stage, trace.RequestBody), in.APIKey)
+		logger.AIThinkingWithSecrets(fmt.Sprintf("AI模型完整请求 requestId=%s round=%d stage=%s\n%s", requestID, trace.Round, trace.Stage, trace.RequestBody), in.APIKey)
 	}
 	if trace.FullResponse != "" {
-		logger.AIPayloadWithSecrets(fmt.Sprintf("AI模型完整响应 requestId=%s round=%d stage=%s\n%s", requestID, trace.Round, trace.Stage, trace.FullResponse), in.APIKey)
+		logger.AIThinkingWithSecrets(fmt.Sprintf("AI模型完整响应 requestId=%s round=%d stage=%s\n%s", requestID, trace.Round, trace.Stage, trace.FullResponse), in.APIKey)
 	}
 	// RawResponse for model calls is the wire-level SSE body. It is useful to
 	// callers of SearchAnswerDebug, but logging it would emit every `data:`
 	// chunk and make the thinking log noisy. Search/web API responses are normal
 	// complete payloads, so retain those in the detailed trace.
 	if trace.RawResponse != "" && strings.TrimSpace(trace.SearchAPI) != "" {
-		logger.AIPayloadWithSecrets(fmt.Sprintf("AI搜索API完整响应 requestId=%s round=%d stage=%s\n%s", requestID, trace.Round, trace.Stage, trace.RawResponse), in.APIKey)
+		logger.AIThinkingWithSecrets(fmt.Sprintf("AI搜索API完整响应 requestId=%s round=%d stage=%s\n%s", requestID, trace.Round, trace.Stage, trace.RawResponse), in.APIKey)
 	}
 }
 

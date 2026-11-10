@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"gorm.io/gorm"
 )
 
@@ -791,4 +792,129 @@ func sortedReviewRebateKeys(set map[string]struct{}) []string {
 		}
 	}
 	return keys
+}
+
+// ── trace 内容契约：系统提示词全文 + attempt 顺序（task_doc/45 §0.26.1、77 §11.1）──
+
+// resetReviewRebateAttemptCounters 清空进程内的打分次数计数器。
+//
+// 不同测试各自建库，claim 主键都从 1 开始，会与上一个测试的计数撞键；
+// 清空后 attempt 断言才是确定的（计数器本身是纯内存 best-effort，见 trace.go）。
+func resetReviewRebateAttemptCounters() {
+	reviewRebateAttemptMu.Lock()
+	reviewRebateAttemptSeq = map[int32]int{}
+	reviewRebateAttemptMu.Unlock()
+}
+
+// readReviewRebateTraceRecords 读出 Tiku-review-rebate.txt 的所有 JSON Lines。
+func readReviewRebateTraceRecords(t *testing.T, dir string) []map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(dir, "Tiku-review-rebate.txt"))
+	if err != nil {
+		t.Fatalf("read review-rebate trace: %v", err)
+	}
+	var records []map[string]any
+	for _, line := range strings.Split(string(raw), "\n") {
+		start := strings.Index(line, "{")
+		if start < 0 {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line[start:]), &record); err != nil {
+			t.Fatalf("unmarshal trace line %q: %v", line, err)
+		}
+		records = append(records, record)
+	}
+	return records
+}
+
+// 用户 2026-11-11 定案「都保留完整提示词，回复记录等」：
+// 系统提示词必须记**全文**（不是 sha256），且同一 claim 的多次打分要能看出先后。
+func TestReviewRebateTraceRecordsSystemPromptAndAttempt(t *testing.T) {
+	t.Chdir(t.TempDir())
+	oldLogDir := *logger.LogDir
+	*logger.LogDir = t.TempDir()
+	if err := logger.SetupGinLog(); err != nil {
+		t.Fatalf("setup logger: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = logger.Close()
+		*logger.LogDir = oldLogDir
+	})
+	logDir := *logger.LogDir
+
+	db := newReviewRebateScorerTestDB(t)
+	setReviewRebateSwitch(t, db, true)
+	user := seedReviewRebateUser(t, db, 83, "rr-trace", "user")
+	program := seedReviewRebateProgram(t, db, true, 3, 5.04, 0.6)
+	seedReviewRebateRule(t, db, entity.ReviewRebateRule{
+		ProgramID: program.ID, MinStars: 5, MaxStars: 5, MinContentScore: 8, MaxContentScore: 10,
+		Amount: 0.8, Priority: 20, Enabled: true,
+	})
+	digest := reviewRebateFixtureDigest("trace-1")
+	claim, err := CreateReviewRebateClaimWithDB(db, ReviewRebateClaimCreateInput{
+		ProgramID:        program.ID,
+		UserID:           user.ID,
+		ScreenshotPath:   writeReviewRebateTestScreenshot(t, user.ID, digest),
+		ScreenshotSHA256: digest,
+	})
+	if err != nil {
+		t.Fatalf("create claim: %v", err)
+	}
+
+	resetReviewRebateAttemptCounters()
+	completer := &fakeReviewRebateCompleter{
+		response: agentJSON(5, 9, 0.87, "截图清晰显示 5 星，正文写了具体使用体验。"),
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := ScoreReviewRebateClaimWithDB(db, claim.ID, NewReviewRebateAgentScorer(db, completer)); err != nil {
+			t.Fatalf("score #%d: %v", i+1, err)
+		}
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatalf("close logger: %v", err)
+	}
+
+	records := readReviewRebateTraceRecords(t, logDir)
+	if len(records) != 2 {
+		t.Fatalf("trace records = %d, want 2 (first run + rerun)", len(records))
+	}
+
+	// ① attempt 必须能区分先后：首次 1、重跑 2。
+	for index, want := range []float64{1, 2} {
+		got, ok := records[index]["attempt"].(float64)
+		if !ok {
+			t.Fatalf("record #%d has no attempt field: %v", index+1, records[index])
+		}
+		if got != want {
+			t.Fatalf("record #%d attempt = %v, want %v", index+1, got, want)
+		}
+	}
+
+	// ② 系统提示词必须是**全文**，不是摘要，也不是 sha256。
+	prompt, ok := records[0]["systemPrompt"].(string)
+	if !ok || prompt == "" {
+		t.Fatalf("record has no systemPrompt text: %v", records[0])
+	}
+	if prompt != strings.TrimSpace(ReviewRebateAgentSystemPrompt) {
+		t.Fatalf("systemPrompt must be the full prompt text, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "你绝对不做的事") {
+		t.Fatalf("systemPrompt looks truncated: %q", prompt)
+	}
+	if digestValue, _ := records[0]["systemPromptSha256"].(string); len(digestValue) != 16 {
+		t.Fatalf("systemPromptSha256 = %q, want the 16-char digest kept for version compare", digestValue)
+	}
+	if digestValue, _ := records[0]["systemPromptSha256"].(string); digestValue == prompt {
+		t.Fatal("systemPromptSha256 must stay a digest, not the prompt text")
+	}
+
+	// ③ 脱敏仍然生效：完整提示词/模型输出不得带出密钥。
+	raw, err := os.ReadFile(filepath.Join(logDir, "Tiku-review-rebate.txt"))
+	if err != nil {
+		t.Fatalf("read trace file: %v", err)
+	}
+	if strings.Contains(string(raw), "sk-") && !strings.Contains(string(raw), "sk-***") {
+		t.Fatalf("trace leaked an api key: %s", string(raw))
+	}
 }
