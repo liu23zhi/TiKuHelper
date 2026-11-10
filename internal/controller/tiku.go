@@ -2,12 +2,14 @@ package controller
 
 import (
 	"encoding/json"
+	"errors"
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/dao"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/middleware"
 	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/pkg/logger"
+	"gorm.io/gorm"
 	"net/http"
 	"strconv"
 	"strings"
@@ -104,6 +106,17 @@ func importQuestionsWithOverwrite(items []*entity.Tiku, overwrite bool, dryRun b
 				return result, err
 			}
 			result.Updated++
+			continue
+		}
+
+		// 「归档 = 不存在」的口径同样适用于导入（Q77-1 影响面 2）：
+		// 已归档的同键题（hash + course_name）不会再出现在上面的 existing 判定里，
+		// 但它仍占着唯一索引 hash_course_idx。这里先复活该行，
+		// 避免直接 Create 撞唯一键把整个导入打成 500。
+		if revived, reviveErr := reviveArchivedTikuForImport(item); reviveErr != nil {
+			return result, reviveErr
+		} else if revived {
+			result.Created++
 			continue
 		}
 
@@ -268,36 +281,70 @@ func UpdateQuestions(c *gin.Context) {
 	})
 }
 
-// DeleteQuestion 删除题目
+// DeleteQuestion 删除题目 —— 自本轮起改为**归档（软删除）**，不再物理删除。
+//
+// 口径（Q77-1，77-*.md §11.3）：
+//   - deleted_at 置为非 NULL，题目在所有业务路径上「等于不存在」（搜题/导入/导出/统计）；
+//   - archived_reason / archived_at / archived_by_user_id 记录归档来源、时点与操作者；
+//   - 同一事务内先写 logs（Action = TikuActionArchive = 59，OldAnswer 存完整题库快照）
+//     再置归档标记，并在提交后补写 AccountAuditEvent；
+//   - 删除原因强制填（§11.8）：Query 参数 reason 去空格后长度 ≥ 2，否则 400。
+//
+// 恢复见 RestoreArchivedTiku，归档查看见 ListArchivedTikus。
 func DeleteQuestion(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
-	if err != nil {
-		c.JSON(400, gin.H{
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
 			"message": "参数错误",
 		})
 		return
 	}
 
-	// 记录删除日志
-	oldTiku, err := dao.Tiku.Where(dao.Tiku.ID.Eq(int32(id))).First()
-	marshal, _ := json.Marshal(oldTiku)
-	user, _ := c.Get("user")
-	currentUser := user.(*entity.User)
-	l := entity.Log{
-		Qid:        oldTiku.ID,
-		Action:     2,
-		UserID:     currentUser.ID,
-		Username:   currentUser.Username,
-		CreateTime: time.Now(),
-		OldAnswer:  string(marshal),
+	reason := c.Query("reason")
+	if archivedReasonRuneLength(reason) < archiveReasonMinLength {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"message": "请填写删除原因（至少 2 个字符）",
+		})
+		return
 	}
-	dao.Log.Create(&l)
+	reason = strings.TrimSpace(reason)
 
-	dao.Tiku.Where(dao.Tiku.ID.Eq(int32(id))).Delete()
-	// 题目被删除，之前基于它建立的搜题结果缓存必须作废。
+	user, _ := c.Get("user")
+	currentUser, _ := user.(*entity.User)
+	if currentUser == nil || currentUser.ID <= 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"message": "未登录",
+		})
+		return
+	}
+
+	archived, err := archiveTikuQuestion(currentUser, int32(id), reason)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{
+				"message": "题目不存在或已归档",
+			})
+			return
+		}
+		logger.SysError("归档题库失败: " + logger.RedactSecrets(err.Error()))
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"message": "服务器错误",
+		})
+		return
+	}
+
+	// 双通道审计：logs 已随事务提交，这里补账户审计流（§3.2.1）。
+	recordAccountAudit(c, currentUser, "tiku", TikuActionArchive, "归档题库："+reason, map[string]any{
+		"tikuId": archived.ID,
+		"reason": reason,
+	})
+
+	// 题目被归档，之前基于它建立的搜题结果缓存必须作废。
 	invalidateSearchResultCaches("delete_question")
-	c.JSON(200, gin.H{
-		"message": "删除成功",
+	c.JSON(http.StatusOK, gin.H{
+		"message": "已归档",
+		"id":      archived.ID,
+		"reason":  reason,
 	})
 }
 

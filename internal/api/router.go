@@ -120,6 +120,15 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.PUT("/questions/:id", controller.Auth, middleware.RequireAdmin, controller.UpdateQuestions)
 	apiRouter.DELETE("/questions/:id", controller.Auth, middleware.RequireAdmin, controller.DeleteQuestion)
 
+	// 题库归档（Q77-1，见 77-*.md §11.3）：
+	//   GET  /admin/tikus/archived       归档查看（唯一允许读出已归档题库的视图，
+	//                                    实现里必须用 Unscoped/裸表查询，否则 total 恒 0）
+	//   POST /admin/tikus/:id/restore    从归档恢复
+	// 两条都挂 Auth + RequireAdmin：归档里可能含被下架的违规内容，
+	// 不能让普通账号通过该视图绕过「已删除」的事实。
+	apiRouter.GET("/admin/tikus/archived", controller.Auth, middleware.RequireAdmin, controller.ListArchivedTikus)
+	apiRouter.POST("/admin/tikus/:id/restore", controller.Auth, middleware.RequireAdmin, controller.RestoreArchivedTiku)
+
 	apiRouter.POST("/user/login", controller.UserLogin)        // 登录接口
 	apiRouter.POST("/user/login/sms", controller.UserSMSLogin) // 短信登录接口
 	// 管理员专用登录入口（45-*.md §0.1.2 Q63 定稿）。

@@ -4,6 +4,8 @@
 
 package entity
 
+import "gorm.io/gorm"
+
 const TableNameTiku = "tiku"
 
 // Tiku mapped from table <tiku>
@@ -17,6 +19,17 @@ type Tiku struct {
 	CourseName string `gorm:"column:course_name;type:varchar(255);uniqueIndex:hash_course_idx,priority:2;comment:课程名称" json:"course_name"`  // 课程名称
 	Extra      string `gorm:"column:extra;type:text;comment:扩展字段,多用于tag" json:"extra"`                                                      // 扩展字段,多用于tag
 	SourceName string `gorm:"column:source_name;type:varchar(255);comment:数据来源" json:"source_name"`
+
+	// DeletedAt 是题库的软删除（归档）标记：非 NULL 表示该题已归档。
+	//
+	// ⚠️ 必须声明在这个结构体上，因为 dao.Tiku 绑定的是它。
+	// 只声明在扩展结构体（entity.TikuArchive）上时 GORM 的软删除作用域不生效，
+	// 表现为「删了但还在」——所有 dao.Tiku 查询仍会返回归档行。
+	//
+	// 索引由 registry.ensureTikuArchiveSchema 显式创建（idx_tikus_deleted_at）：
+	// 软删除会给每条题库查询都带上 deleted_at IS NULL，没有索引就是全表扫描。
+	// 这里刻意不加 gorm:"index" 标签，避免 AutoMigrate 与显式迁移各建一个索引。
+	DeletedAt gorm.DeletedAt `gorm:"column:deleted_at" json:"deletedAt"`
 }
 
 // TableName Tiku's table name
