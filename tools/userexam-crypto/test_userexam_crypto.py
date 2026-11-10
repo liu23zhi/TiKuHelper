@@ -17,6 +17,7 @@ The round-trip tests need the SQLite3MC runtime and a real key, so they skip
 unless USEREXAM_PASSWORD is set and _vendor is present.
 """
 
+import hashlib
 import os
 from pathlib import Path
 import sqlite3
@@ -231,13 +232,35 @@ class InspectTests(unittest.TestCase):
 
 
 class RoundTripTests(unittest.TestCase):
-    """Needs the SQLite3MC runtime plus a real key; skipped otherwise."""
+    """真实加解密往返：这是本工具唯一的核心能力，必须真跑而不是静默 skip。
+
+    自检用**任意**口令即可：`transform_database` 在 encrypt 与 decrypt 两条路径上
+    都调用同一个 `_load_password()`（见 userexam_crypto.py 的 156/318/330 行），
+    所以往返不需要「客户端那个真实口令」。真实口令只在解密**外部既有**样本时才需要，
+    那是另一条用例（需要 _vendor + 真实口令，缺任一条才 skip）。
+
+    `USEREXAM_REQUIRE_CRYPTO=1` 时缺 _vendor 会直接失败而不是 skip —— CI 用它
+    把「环境没装运行库」从 warning 变成 red。
+    """
+
+    SELFTEST_KEY = "userexam-unit-selftest-key"
 
     def setUp(self):
+        self._saved_key = os.environ.get(tool.PASSWORD_ENV)
+        os.environ[tool.PASSWORD_ENV] = self.SELFTEST_KEY
         if not _vendor_ready():
+            if os.environ.get("USEREXAM_REQUIRE_CRYPTO") == "1":
+                self.fail(
+                    "_vendor 缺失但 USEREXAM_REQUIRE_CRYPTO=1：加解密往返必须真跑。"
+                    "先执行 py -3.11 -m pip install --target .\\_vendor apsw-sqlite3mc==3.54.0.0"
+                )
             self.skipTest("_vendor SQLite3MC runtime not installed")
-        if not os.environ.get(tool.PASSWORD_ENV):
-            self.skipTest(f"{tool.PASSWORD_ENV} not set")
+
+    def tearDown(self):
+        if self._saved_key is None:
+            os.environ.pop(tool.PASSWORD_ENV, None)
+        else:
+            os.environ[tool.PASSWORD_ENV] = self._saved_key
 
     def _build_plaintext(self, directory):
         path = Path(directory) / "UserExamInfo.decrypted.db"
@@ -288,6 +311,42 @@ class RoundTripTests(unittest.TestCase):
                 [name for name in after if name.endswith(".partial")],
                 "failed conversion left a staging file behind",
             )
+
+    def test_source_file_is_left_byte_identical(self):
+        """源文件必须逐字节不变 —— 这是 README 明确承诺的「源文件全程只读」。
+
+        用 sha256 比对而不是「文件还在」：后者对「被原地 rekey 过」照样通过。
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            plain = self._build_plaintext(directory)
+            before = hashlib.sha256(plain.read_bytes()).hexdigest()
+
+            encrypted = tool.transform_database(plain)
+
+            self.assertEqual(hashlib.sha256(plain.read_bytes()).hexdigest(), before)
+            self.assertEqual(plain.read_bytes()[:16], tool.SQLITE_HEADER)
+            self.assertNotEqual(encrypted.output_path, plain)
+            self.assertNotEqual(hashlib.sha256(encrypted.output_path.read_bytes()).hexdigest(), before)
+
+    def test_existing_output_is_not_overwritten(self):
+        """目标已存在时必须另取名字，不能覆盖。
+
+        只测 `_output_path()` 的取名是不够的：真正危险的是 `transform_database`
+        落盘那一步（os.rename 在 Windows 上会直接覆盖）。这里先放一个同名占位文件，
+        确认它的内容在转换后原封不动。
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            plain = self._build_plaintext(directory)
+            occupied = Path(directory) / "UserExamInfo.decrypted.encrypted.db"
+            sentinel = b"pre-existing output must survive"
+            occupied.write_bytes(sentinel)
+
+            result = tool.transform_database(plain)
+
+            self.assertNotEqual(result.output_path, occupied)
+            self.assertEqual(occupied.read_bytes(), sentinel, "转换覆盖了已存在的输出文件")
+            self.assertEqual(result.output_path.name, "UserExamInfo.decrypted.encrypted (1).db")
+            self.assertTrue(result.output_path.is_file())
 
 
 if __name__ == "__main__":
