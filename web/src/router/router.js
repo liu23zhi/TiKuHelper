@@ -33,6 +33,7 @@ const MyReferral = () => import(/* webpackChunkName: "route-my-referral" */ '../
 const ReferralRebates = () => import(/* webpackChunkName: "route-referral-rebates" */ '../pages/ReferralRebates/index.vue')
 const ReviewRebate = () => import(/* webpackChunkName: "route-review-rebate" */ '../pages/ReviewRebate/index.vue')
 const ReviewRebateAdmin = () => import(/* webpackChunkName: "route-review-rebate-admin" */ '../pages/ReviewRebateAdmin/index.vue')
+const Blacklist = () => import(/* webpackChunkName: "route-blacklist" */ '../pages/Blacklist/index.vue')
 const routes = [
   {
     path: '/',
@@ -138,6 +139,12 @@ const routes = [
         component: ReviewRebateAdmin,
       },
       {
+        // 黑名单管理（BL-5，46-黑名单设计.md §6）。
+        path: 'blacklist',
+        name: 'blacklist',
+        component: Blacklist,
+      },
+      {
         path: 'extension-updates',
         name: 'extension-updates',
         component: ExtensionUpdates,
@@ -210,6 +217,7 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   'phone-location-cache',
   'referral-rebates',
   'review-rebate-admin',
+  'blacklist',
 ])
 const PUBLIC_ADAPTER_ROUTE_NAMES = new Set([
   'recharge-result',

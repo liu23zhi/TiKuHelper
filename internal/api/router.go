@@ -272,6 +272,30 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/system-settings", controller.Auth, middleware.RequireAdmin, controller.SystemSettingDetail)
 	apiRouter.PUT("/system-settings", controller.Auth, middleware.RequireAdmin, controller.UpdateSystemSetting)
 
+	// 黑名单管理页（BL-5，46-黑名单设计.md §6）。全部 Auth + RequireAdmin：
+	// 规则原文（pattern）是「攻击者换 IP 的边界」，只有管理员能看。
+	//
+	// ⚠️ 为什么这五条**单独用一个 group**、而不是挂在 apiRouter 上：
+	// apiRouter 上有 middleware.BlacklistIP()，而这些接口恰恰必须是「被拉黑也能打通的」——
+	// 管理员误把自己所在 CIDR 拉黑后，他仍要能打开管理页把规则停用，
+	// 否则就是 46-*.md §3.3 的自锁（页面能进、接口 403，比完全进不去更难排查）。
+	//
+	// 豁免做成**结构性**的（这一组不挂 BlacklistIP），而不是往 BlacklistExemptPath
+	// 里加字符串：豁免表的变化只影响这一处挂载点，读 router.go 就能看到全貌，
+	// 也不会与同时在改 middleware/blacklist.go 的分支冲突。
+	// 代价是这里必须显式重挂 GlobalAPIRateLimit 与 BodyLimit —— 不能因为「反正管理员用」
+	// 就省掉限流，那会让这一组成为无速率上限的鉴权暴力面。
+	//
+	// 方法/路径不冲突：:id 只出现在 PUT /blacklist/:id/enabled 与 DELETE /blacklist/:id，
+	// GET /blacklist/hits 是 GET 树上的独立静态路径，gin 按方法分树，不会互相抢占。
+	blacklistAdminRouter := router.Group("/adapter-service")
+	blacklistAdminRouter.Use(middleware.GlobalAPIRateLimit, middleware.BodyLimit(16<<20))
+	blacklistAdminRouter.GET("/blacklist", controller.Auth, middleware.RequireAdmin, controller.BlacklistEntryList)
+	blacklistAdminRouter.POST("/blacklist", controller.Auth, middleware.RequireAdmin, controller.BlacklistEntryCreate)
+	blacklistAdminRouter.PUT("/blacklist/:id/enabled", controller.Auth, middleware.RequireAdmin, controller.BlacklistEntryToggle)
+	blacklistAdminRouter.DELETE("/blacklist/:id", controller.Auth, middleware.RequireAdmin, controller.BlacklistEntryDelete)
+	blacklistAdminRouter.GET("/blacklist/hits", controller.Auth, middleware.RequireAdmin, controller.BlacklistHitList)
+
 	// 考试客户端本地库工具：仅管理员。服务端不解密，只发工具 + 只读预览明文库。
 	apiRouter.GET("/admin/userexam/tool/version", controller.Auth, middleware.RequireAdmin, controller.UserExamToolVersion)
 	apiRouter.GET("/admin/userexam/tool", controller.Auth, middleware.RequireAdmin, controller.UserExamToolDownload)

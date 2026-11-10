@@ -12,6 +12,7 @@ import (
 
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/pkg/logger"
+	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 )
 
@@ -429,4 +430,257 @@ func CreateBlacklistEntryWithDB(db *gorm.DB, input CreateBlacklistEntryInput) (e
 		entry.Enabled = false
 	}
 	return entry, nil
+}
+
+// ErrBlacklistEntryNotFound 表示规则不存在（404，不是 500）。
+var ErrBlacklistEntryNotFound = errors.New("黑名单规则不存在")
+
+// 分页边界：与其它管理端列表保持一致（默认 20、上限 100）。
+const (
+	blacklistDefaultPageSize = 20
+	blacklistMaxPageSize     = 100
+)
+
+// BlacklistEntryListQuery 是管理页列表的筛选条件（BL-5）。
+//
+// 全部字段都是可选的；空值表示不筛选。
+// Enabled 用指针是为了区分「不筛选」与「只看停用」—— 裸 bool 的 false
+// 会退化成「只看停用」，这正是 GORM 零值陷阱的另一种形态。
+type BlacklistEntryListQuery struct {
+	// Kind 取 ip / phone / wechat / region 之一；空 = 全部类型。
+	Kind string
+	// Enabled 为 nil = 全部；true = 只在生效；false = 只看已停用。
+	Enabled *bool
+	// Keyword 同时匹配 ValueMasked 与 Reason（**不匹配 Pattern**）。
+	//
+	// 只匹配脱敏值与原因的理由：Pattern 是规则边界（46-*.md §3.2），
+	// 管理页上它能被看到已经是「管理员本来就该知道」的例外，
+	// 再让它参与模糊搜索只会让「搜前缀能否命中」成为一条侧信道。
+	Keyword string
+}
+
+// BlacklistEntryListResult 是列表结果（data / total / page / pageSize）。
+//
+// data 用非 nil 切片初始化：前端把 null 与 [] 当两种状态处理，
+// 空列表必须是 []（与账单、返佣列表的约定一致）。
+type BlacklistEntryListResult struct {
+	Data     []entity.BlacklistEntry `json:"data"`
+	Total    int64                   `json:"total"`
+	Page     int                     `json:"page"`
+	PageSize int                     `json:"pageSize"`
+}
+
+// normalizeBlacklistPage 归一化分页参数（非法值回落到默认，不是报错）。
+func normalizeBlacklistPage(page int, pageSize int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > blacklistMaxPageSize {
+		pageSize = blacklistDefaultPageSize
+	}
+	return page, pageSize
+}
+
+// validateBlacklistKindFilter 校验 kind 筛选值（空串合法 = 不筛选）。
+//
+// 用常量集判定而不是「让 SQL 查不到就返回空」：一个拼错的 kind 在管理页上
+// 表现为「没有记录」，运营会以为规则丢了；明确 400 才能让他发现是自己填错。
+func validateBlacklistKindFilter(kind string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(kind))
+	switch normalized {
+	case "", BlacklistKindIP, BlacklistKindPhone, BlacklistKindWechat, BlacklistKindRegion:
+		return normalized, nil
+	default:
+		return "", ErrInvalidBlacklistKind
+	}
+}
+
+// ListBlacklistEntriesWithDB 返回黑名单规则列表（BL-5 管理页，分页 + 筛选）。
+//
+// 排序固定 created_at desc, id desc：运营刚加的规则必须出现在第一行，
+// 否则「加完没看到」会被当成没加成功。
+//
+// 表不存在（迁移没跑 / 回滚到旧版本）时返回**空列表**而不是错误：
+// 管理页在旧库上显示「暂无规则」比整页 500 更有用，写操作仍会如实报错。
+func ListBlacklistEntriesWithDB(db *gorm.DB, query BlacklistEntryListQuery, page int, pageSize int) (BlacklistEntryListResult, error) {
+	if db == nil {
+		return BlacklistEntryListResult{}, ErrBlacklistCacheNoDatabase
+	}
+	kind, err := validateBlacklistKindFilter(query.Kind)
+	if err != nil {
+		return BlacklistEntryListResult{}, err
+	}
+	page, pageSize = normalizeBlacklistPage(page, pageSize)
+	result := BlacklistEntryListResult{Data: []entity.BlacklistEntry{}, Page: page, PageSize: pageSize}
+	if !db.Migrator().HasTable(entity.TableNameBlacklistEntry) {
+		return result, nil
+	}
+
+	// 基础查询：Count 与 Find 必须共用同一套筛选构造器（JOIN 也要在 Count 之前）。
+	base := db.Model(&entity.BlacklistEntry{})
+	if kind != "" {
+		base = base.Where("kind = ?", kind)
+	}
+	if query.Enabled != nil {
+		base = base.Where("enabled = ?", *query.Enabled)
+	}
+	// 关键词用 INSTR 子串匹配，不用 LIKE：SQLite 下 `LIKE ... ESCAPE` 会静默失效
+	// （GORM 把转义符渲染成双引号，而 SQLite 里双引号是标识符），输入 "_" 会匹配到全部规则。
+	if condition, args := util.BuildInstrCondition(query.Keyword,
+		"COALESCE(value_masked, '')", "COALESCE(reason, '')"); condition != "" {
+		base = base.Where(condition, args...)
+	}
+
+	if err := base.Session(&gorm.Session{}).Count(&result.Total).Error; err != nil {
+		return BlacklistEntryListResult{}, fmt.Errorf("统计黑名单规则失败：%w", err)
+	}
+	if err := base.Session(&gorm.Session{}).
+		Order("created_at desc").Order("id desc").
+		Limit(pageSize).Offset((page - 1) * pageSize).
+		Find(&result.Data).Error; err != nil {
+		return BlacklistEntryListResult{}, fmt.Errorf("查询黑名单规则失败：%w", err)
+	}
+	if result.Data == nil {
+		result.Data = []entity.BlacklistEntry{}
+	}
+	return result, nil
+}
+
+// UpdateBlacklistEntryEnabledWithDB 启停一条规则（BL-5 管理页）。
+//
+// ⚠️ 必须用 `Update` 而不是 `Save`（实体注释里的 GORM 零值陷阱）：
+// `Save(&entity.BlacklistEntry{ID: id, Enabled: false})` 会带上 default:true 标签的
+// 零值语义，写库结果与调用方意图不一致；`Update("enabled", false)` 才是确定的单列写。
+//
+// 返回更新后的实体，调用方据此回显；行不存在时返回 ErrBlacklistEntryNotFound（404）。
+func UpdateBlacklistEntryEnabledWithDB(db *gorm.DB, id int64, enabled bool) (entity.BlacklistEntry, error) {
+	if db == nil {
+		return entity.BlacklistEntry{}, ErrBlacklistCacheNoDatabase
+	}
+	if id <= 0 {
+		return entity.BlacklistEntry{}, ErrBlacklistEntryNotFound
+	}
+	if !db.Migrator().HasTable(entity.TableNameBlacklistEntry) {
+		return entity.BlacklistEntry{}, ErrBlacklistEntryNotFound
+	}
+	var entry entity.BlacklistEntry
+	if err := db.Where("id = ?", id).Take(&entry).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return entity.BlacklistEntry{}, ErrBlacklistEntryNotFound
+		}
+		return entity.BlacklistEntry{}, fmt.Errorf("读取黑名单规则失败：%w", err)
+	}
+	if entry.Enabled == enabled {
+		// 幂等：已是目标状态时不写库，但仍刷新缓存（多实例下别的实例可能刚改过）。
+		return entry, nil
+	}
+	if err := db.Model(&entity.BlacklistEntry{}).Where("id = ?", id).
+		Update("enabled", enabled).Error; err != nil {
+		return entity.BlacklistEntry{}, fmt.Errorf("更新黑名单规则状态失败：%w", err)
+	}
+	entry.Enabled = enabled
+	return entry, nil
+}
+
+// DeleteBlacklistEntryWithDB 删除一条规则（BL-5 管理页）。
+//
+// **硬删除**：46-*.md §2.1 只写了「删了就丢审计」这句风险提示，没有要求软删；
+// 实体里也没有 DeletedAt 列。所以这里就是物理删除 —— 但**命中记录不跟着删**
+// （blacklist_hits.entry_id 保留原值），否则「这条规则当时拦了多少次」会一起消失。
+//
+// 返回被删掉的实体（调用方回显脱敏值），行不存在时返回 ErrBlacklistEntryNotFound。
+func DeleteBlacklistEntryWithDB(db *gorm.DB, id int64) (entity.BlacklistEntry, error) {
+	if db == nil {
+		return entity.BlacklistEntry{}, ErrBlacklistCacheNoDatabase
+	}
+	if id <= 0 {
+		return entity.BlacklistEntry{}, ErrBlacklistEntryNotFound
+	}
+	if !db.Migrator().HasTable(entity.TableNameBlacklistEntry) {
+		return entity.BlacklistEntry{}, ErrBlacklistEntryNotFound
+	}
+	var entry entity.BlacklistEntry
+	if err := db.Where("id = ?", id).Take(&entry).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return entity.BlacklistEntry{}, ErrBlacklistEntryNotFound
+		}
+		return entity.BlacklistEntry{}, fmt.Errorf("读取黑名单规则失败：%w", err)
+	}
+	if err := db.Delete(&entity.BlacklistEntry{}, id).Error; err != nil {
+		return entity.BlacklistEntry{}, fmt.Errorf("删除黑名单规则失败：%w", err)
+	}
+	return entry, nil
+}
+
+// BlacklistHitListQuery 是命中记录列表的筛选条件（BL-5 管理页）。
+type BlacklistHitListQuery struct {
+	// EntryID > 0 时只看该规则的命中。
+	EntryID int64
+	// Kind 取四类粒度之一；空 = 全部。
+	Kind string
+	// ClientIP 精确匹配（IP 不做模糊匹配：模糊匹配会把一个 /8 全捞出来）。
+	ClientIP string
+	// Action 取 blocked / logged_only；空 = 全部。
+	Action string
+}
+
+// BlacklistHitListResult 是命中记录的分页结果。
+type BlacklistHitListResult struct {
+	Data     []entity.BlacklistHit `json:"data"`
+	Total    int64                 `json:"total"`
+	Page     int                   `json:"page"`
+	PageSize int                   `json:"pageSize"`
+}
+
+// ListBlacklistHitsWithDB 返回命中记录（BL-5 管理页，created_at 倒序）。
+//
+// 排序 created_at desc, id desc：聚合窗口内 hit_count 会累加，
+// 用 id 做次级排序保证同一毫秒内的多行顺序稳定（否则分页会重复/漏行）。
+func ListBlacklistHitsWithDB(db *gorm.DB, query BlacklistHitListQuery, page int, pageSize int) (BlacklistHitListResult, error) {
+	if db == nil {
+		return BlacklistHitListResult{}, ErrBlacklistCacheNoDatabase
+	}
+	kind, err := validateBlacklistKindFilter(query.Kind)
+	if err != nil {
+		return BlacklistHitListResult{}, err
+	}
+	action := strings.ToLower(strings.TrimSpace(query.Action))
+	switch action {
+	case "", BlacklistActionBlocked, BlacklistActionLoggedOnly:
+	default:
+		return BlacklistHitListResult{}, fmt.Errorf("%w：命中动作必须是 blocked / logged_only", ErrInvalidBlacklistPattern)
+	}
+	page, pageSize = normalizeBlacklistPage(page, pageSize)
+	result := BlacklistHitListResult{Data: []entity.BlacklistHit{}, Page: page, PageSize: pageSize}
+	if !db.Migrator().HasTable(entity.TableNameBlacklistHit) {
+		return result, nil
+	}
+
+	base := db.Model(&entity.BlacklistHit{})
+	if query.EntryID > 0 {
+		base = base.Where("entry_id = ?", query.EntryID)
+	}
+	if kind != "" {
+		base = base.Where("kind = ?", kind)
+	}
+	if ip := strings.TrimSpace(query.ClientIP); ip != "" {
+		base = base.Where("client_ip = ?", ip)
+	}
+	if action != "" {
+		base = base.Where("action = ?", action)
+	}
+
+	if err := base.Session(&gorm.Session{}).Count(&result.Total).Error; err != nil {
+		return BlacklistHitListResult{}, fmt.Errorf("统计黑名单命中记录失败：%w", err)
+	}
+	if err := base.Session(&gorm.Session{}).
+		Order("created_at desc").Order("id desc").
+		Limit(pageSize).Offset((page - 1) * pageSize).
+		Find(&result.Data).Error; err != nil {
+		return BlacklistHitListResult{}, fmt.Errorf("查询黑名单命中记录失败：%w", err)
+	}
+	if result.Data == nil {
+		result.Data = []entity.BlacklistHit{}
+	}
+	return result, nil
 }

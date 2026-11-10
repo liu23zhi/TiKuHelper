@@ -61,6 +61,7 @@ import {
   GiftOutlined,
   ShareAltOutlined,
   StarOutlined,
+  StopOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
 } from '@ant-design/icons-vue';
@@ -84,6 +85,7 @@ const ADMIN_MENU_ITEMS = [
   { key: 'user-exam-tool', label: '客户端数据库工具', icon: DatabaseOutlined },
   { key: 'referral-rebates', label: '返佣记录', icon: GiftOutlined },
   { key: 'review-rebate-admin', label: '评价返现管理', icon: StarOutlined },
+  { key: 'blacklist', label: '黑名单管理', icon: StopOutlined },
   { key: 'system-settings', label: '系统管理', icon: ToolOutlined },
   { key: 'extension-updates', label: '扩展更新', icon: DownloadOutlined },
   { key: 'access-tokens', label: '令牌管理', icon: SafetyCertificateOutlined },
