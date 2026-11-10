@@ -20,6 +20,14 @@ func openUserArchiveTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open db: %v", err)
 	}
 	// 建出最小的 users 表（只有迁移关心的列之外的主键即可）。
+	//
+	// ⚠️ 这里是 **createLegacyUsersTable 的正当例外**，不要「统一改成 helper」：
+	// 本文件测的正是 ensureUserArchiveSchema 补 deleted_at 这件事，
+	// 表里预置 deleted_at 就等于把被测行为做完了（测试恒绿、测不出任何东西）。
+	// 其它 schema 测试预置 deleted_at 是因为它属于「机制列」而非被测产物。
+	//
+	// 代价：这里的查询一律用 raw SQL / Migrator，不能用 entity.User 走 GORM
+	// （软删除条件会撞上还不存在的 deleted_at）。见下方断言。
 	if err := db.Exec("CREATE TABLE " + entity.TableNameUser + " (id integer primary key, username varchar(255))").Error; err != nil {
 		t.Fatalf("create users: %v", err)
 	}

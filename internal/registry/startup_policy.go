@@ -216,7 +216,7 @@ func preflightAdminBootstrap(config configs.Config, mode, environment string) (a
 		if err != nil {
 			return adminBootstrapPlan{}, errors.New("invalid SQLite database path")
 		}
-		readonly := (&url.URL{Scheme: "file", Path: absolute}).String() + "?mode=ro"
+		readonly := sqliteReadOnlyFileURI(absolute)
 		conn = sqlite.Open(readonly)
 	}
 	inspection, err := gorm.Open(conn, &gorm.Config{Logger: newDatabaseLogger()})
@@ -242,4 +242,46 @@ func RegisterDBWithError(config configs.Config) (*gorm.DB, error) {
 		return nil, err
 	}
 	return registerPreparedDB(config, plan), nil
+}
+
+// sqliteReadOnlyFileURI 把绝对文件路径转成 SQLite 能打开的只读 file: URI。
+//
+// 为什么不能用 `(&url.URL{Scheme:"file", Path: absolute}).String()`：
+// 那个写法在 **Windows 上产出非法 URI**。实测（2026-11-11）：
+//
+//	absolute = `C:\Users\me\run\data\tiku.db`
+//	url.URL{...}.String() = `file://C:%5CUsers%5Cme%5Crun%5Cdata%5Ctiku.db`
+//
+// 两个问题叠加：
+//
+//	① 反斜杠被转义成 %5C，而 SQLite 只认 `/`
+//	② 盘符写成 `file://C:` —— 正确形式是 `file:///C:/...`（三个斜杠：authority 为空 + 绝对路径）
+//
+// 后果不是「降级」而是**硬失败**：SQLite 报 `invalid SQLite database URI`
+// 或 `out of memory`，`preflightAdminBootstrap` 拿不到 inspection ⇒ 生产跑 Windows
+// 时启动直接 FATAL。CI 全是 Linux，所以这个 bug 从未在 CI 暴露，
+// 只在 Windows 开发者本机表现为「一堆与代码无关的测试假红」。
+//
+// 正确形式（SQLite 官方要求的 file URI 形态）：
+//
+//	Linux/macOS:  file:///home/u/data/tiku.db?mode=ro
+//	Windows:      file:///C:/Users/u/data/tiku.db?mode=ro
+//
+// 实现要点：先把路径的分隔符统一成 `/`，再按需补前导 `/` 到「绝对路径」形态，
+// 最后一次性交给 url.URL{Scheme:"file", Path: ...} 做百分号转义
+// （此时 Path 已是 `/C:/...` 形式，转义后不会出现 %5C）。
+func sqliteReadOnlyFileURI(absolute string) string {
+	return sqliteFileURI(absolute).String() + "?mode=ro"
+}
+
+// sqliteFileURI 返回不带 query 的 file: URI 对象，供需要自行追加参数的调用方复用。
+func sqliteFileURI(absolute string) *url.URL {
+	slashed := filepath.ToSlash(absolute)
+	// Windows 盘符形态 `C:/...`：url.URL 会把它当成相对路径（Path 不以 / 开头），
+	// 于是 String() 产出 `file:C:/...` —— 少了 authority 分隔的斜杠。
+	// 补成 `/C:/...` 才会得到 `file:///C:/...`。
+	if !strings.HasPrefix(slashed, "/") {
+		slashed = "/" + slashed
+	}
+	return &url.URL{Scheme: "file", Path: slashed}
 }

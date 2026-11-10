@@ -33,7 +33,11 @@ func TestIntegrationBootstrapByteCAS(t *testing.T) {
 				t.Fatal(e)
 			}
 			defer sql.Close()
-			if e := d.Exec("CREATE TABLE users(id INTEGER PRIMARY KEY,password TEXT COLLATE NOCASE)").Error; e != nil {
+			// 这张表要配合 applyAdminBootstrap 的 CAS 语义（password 用
+			// COLLATE NOCASE 才有「字节身份 vs 排序规则」的对照），
+			// 因此不能直接用 createMinimalUsersTable；但同样必须带机制列
+			// deleted_at，否则后续任何 entity.User 查询会被软删除条件打挂。
+			if e := d.Exec("CREATE TABLE users(id INTEGER PRIMARY KEY,password TEXT COLLATE NOCASE,deleted_at datetime)").Error; e != nil {
 				t.Fatal(e)
 			}
 			if e := d.Exec("INSERT INTO users(id,password) VALUES(1,?)", c.old).Error; e != nil {

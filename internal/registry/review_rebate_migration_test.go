@@ -24,18 +24,8 @@ func TestEnsureReviewRebateSchemaAddsTablesAndColumns(t *testing.T) {
 	db := newReviewRebateMigrationTestDB(t)
 
 	// 模拟加列之前的老 users 表（故意不带 gift_balance）。
-	if err := db.Exec(`CREATE TABLE users (
-		id integer PRIMARY KEY AUTOINCREMENT,
-		username varchar(255),
-		password varchar(255),
-		role varchar(32) NOT NULL DEFAULT 'user',
-		status varchar(32) NOT NULL DEFAULT 'enabled',
-		balance decimal(18,6) NOT NULL DEFAULT 0,
-		register_source varchar(32) NOT NULL DEFAULT 'legacy',
-		created_at datetime
-	)`).Error; err != nil {
-		t.Fatalf("create legacy users: %v", err)
-	}
+	// 机制列 deleted_at 由 helper 带上（否则 GORM 软删除条件会报 no such column）。
+	createLegacyUsersTable(t, db)
 	if err := db.Exec(`INSERT INTO users (username, password, balance) VALUES ('legacy-user', '123456', 12.5)`).Error; err != nil {
 		t.Fatalf("seed legacy user: %v", err)
 	}

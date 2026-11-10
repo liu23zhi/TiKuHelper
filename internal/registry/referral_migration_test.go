@@ -23,18 +23,9 @@ func TestEnsureReferralSchemaAddsTablesAndColumns(t *testing.T) {
 	db := newReferralMigrationTestDB(t)
 
 	// 模拟加列之前的老 users 表（故意不带 invited_by_user_id / invited_at）。
-	if err := db.Exec(`CREATE TABLE users (
-		id integer PRIMARY KEY AUTOINCREMENT,
-		username varchar(255),
-		password varchar(255),
-		role varchar(32) NOT NULL DEFAULT 'user',
-		status varchar(32) NOT NULL DEFAULT 'enabled',
-		balance decimal(18,6) NOT NULL DEFAULT 0,
-		register_source varchar(32) NOT NULL DEFAULT 'legacy',
-		created_at datetime
-	)`).Error; err != nil {
-		t.Fatalf("create legacy users: %v", err)
-	}
+	// 机制列 deleted_at 由 helper 带上 —— 不带的话下面 First(&legacy) 会被
+	// GORM 的软删除条件打成 no such column: users.deleted_at。
+	createLegacyUsersTable(t, db)
 	if err := db.Exec(`INSERT INTO users (username, password) VALUES ('legacy-user', '123456')`).Error; err != nil {
 		t.Fatalf("seed legacy user: %v", err)
 	}
