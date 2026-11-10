@@ -74,9 +74,23 @@ services:
       - /bin/sh
       - -c
       - >-
-        sed 's/\r$//' /app/trusted-proxies-convert.sh > /tmp/trusted-proxies-convert.sh
-        && /bin/sh /tmp/trusted-proxies-convert.sh /app/trusted_proxies.txt /tmp/trusted-proxies.generated.conf
-        && exec nginx -g 'daemon off;'
+        set -e;
+        sed 's/\r$//' /app/trusted-proxies-convert.sh > /tmp/trusted-proxies-convert.sh;
+        sh /tmp/trusted-proxies-convert.sh /app/trusted_proxies.txt /tmp/trusted-proxies.generated.conf;
+        nginx -g 'daemon off;' &
+        sleep 2;
+        last='';
+        while true; do
+        cur=$(sha256sum /etc/nginx/conf.d/*.conf /etc/nginx/conf.d/*.inc /app/trusted_proxies.txt /app/trusted-proxies-convert.sh 2>/dev/null | sha256sum | cut -d' ' -f1);
+        if [ -n "$$last" ] && [ "$$cur" != "$$last" ]; then
+        sed 's/\r$//' /app/trusted-proxies-convert.sh > /tmp/trusted-proxies-convert.sh;
+        sh /tmp/trusted-proxies-convert.sh /app/trusted_proxies.txt /tmp/trusted-proxies.generated.conf.next 2>/dev/null || true;
+        if [ -s /tmp/trusted-proxies.generated.conf.next ]; then cp /tmp/trusted-proxies.generated.conf.next /tmp/trusted-proxies.generated.conf; fi;
+        if nginx -t 2>&1; then nginx -s reload && echo 'reloaded: config changed'; else echo 'reload skipped: nginx -t failed'; fi;
+        fi;
+        last="$$cur";
+        sleep 3;
+        done
     healthcheck:
       test: ["CMD", "nginx", "-t"]
       interval: 30s
