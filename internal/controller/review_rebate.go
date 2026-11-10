@@ -278,6 +278,13 @@ func CreateReviewRebateClaim(c *gin.Context) {
 }
 
 // MyReviewRebateClaims 返回本人的提交列表（分页）。
+//
+// **所有角色（含管理员）都只看自己的**：查询条件固定 `UserID = operator.ID`，
+// 不因调用者是管理员而放开（45-*.md §8.4 / Q73-4）。管理员看全部走
+// AdminReviewRebateClaims（独立管理页），那是另一个页面。
+//
+// 响应走 myReviewRebateClaimDTO：类型里没有 agentRationale，因此「管理员的
+// 自己的提交也不含判断理由」是编译期就成立的，不依赖任何运行期清空动作。
 func MyReviewRebateClaims(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	operator, ok := currentOperator(c)
@@ -296,7 +303,12 @@ func MyReviewRebateClaims(c *gin.Context) {
 		writeReviewRebateError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, result)
+	c.JSON(http.StatusOK, myReviewRebateClaimList{
+		Data:     toMyReviewRebateClaimDTOs(result.Data),
+		Total:    result.Total,
+		Page:     result.Page,
+		PageSize: result.PageSize,
+	})
 }
 
 // AdminReviewRebatePrograms 返回全部活动（管理员）。
@@ -498,7 +510,16 @@ func AdminDeleteReviewRebateRule(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "ok"})
 }
 
-// AdminReviewRebateClaims 返回待审/全部提交单（管理员，分页 + 筛选）。
+// AdminReviewRebateClaims 返回全部提交单（管理员独立管理页，分页 + 筛选）。
+//
+// 这是唯一能看到**全站**提交与 agentRationale 的入口（45-*.md §8.4）。
+// 与「我的提交」是两个不同的页面、两套不同的 DTO：
+//   - 这里响应 adminReviewRebateClaimDTO，agentRationale 是**正式字段**，
+//     不再靠 AdminView 把值塞进同一个结构体（那种写法要求调用方记得清空，
+//     漏了不会有任何报错）；
+//   - 「我的提交」响应 myReviewRebateClaimDTO，类型里没有该字段。
+//
+// 筛选：programId / userId / status / 创建时间范围（createdFrom、createdTo）。
 func AdminReviewRebateClaims(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	if !requireAdmin(c) {
@@ -518,18 +539,41 @@ func AdminReviewRebateClaims(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "筛选参数格式无效"})
 		return
 	}
+	// 上界用 endOfDay=true：日期形态会加到次日零点，与 service 侧的开区间
+	// 上界（<）配合，使「查 11-10 当天」覆盖整天而不是只有零点那一刻。
+	createdFrom, err := parseListFilterTime(c.Query("createdFrom"), false)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "筛选参数格式无效"})
+		return
+	}
+	createdTo, err := parseListFilterTime(c.Query("createdTo"), true)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "筛选参数格式无效"})
+		return
+	}
+	if err := validateListFilterTimeRange(createdFrom, createdTo, "提交时间"); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
 	result, err := listReviewRebateClaims(service.ReviewRebateClaimListQuery{
 		ProgramID: programID,
 		UserID:    userID,
 		Status:    strings.TrimSpace(c.Query("status")),
 		// 管理员列表要拿到打分理由：复核人判断「该不该批准」靠的就是这句解释。
-		AdminView: true,
+		AdminView:   true,
+		CreatedFrom: createdFrom,
+		CreatedTo:   createdTo,
 	}, page, pageSize)
 	if err != nil {
 		writeReviewRebateError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, result)
+	c.JSON(http.StatusOK, adminReviewRebateClaimList{
+		Data:     toAdminReviewRebateClaimDTOs(result.Data),
+		Total:    result.Total,
+		Page:     result.Page,
+		PageSize: result.PageSize,
+	})
 }
 
 // AdminDecideReviewRebateClaim 批准/拒绝一条提交单（管理员）。

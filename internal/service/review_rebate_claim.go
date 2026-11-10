@@ -369,6 +369,18 @@ type ReviewRebateClaimListQuery struct {
 	UserID int32
 	// Status 精确匹配状态（空 = 不限）。
 	Status string
+	// CreatedFrom / CreatedTo 是提交时间范围（nil = 不限）。
+	//
+	// 边界语义与仓内其它列表**完全一致**（见 controller.parseListFilterTime 与
+	// service.ticket.go:236-241）：CreatedFrom 是**闭**下界（>=），
+	// CreatedTo 是**开**上界（<）。选开区间而不是 <=23:59:59 的理由：
+	//   - created_at 是带毫秒/微秒的 datetime，`<= 23:59:59` 会把
+	//     23:59:59.500 这类行漏掉 —— 「查今天」少一条，是最难被发现的那种错；
+	//   - 日期形态的上界（2006-01-02）在 controller 侧已被 parseListFilterTime
+	//     加到**次日零点**，因此「查 11-10 当天」实际传的是 11-11 00:00 的开上界，
+	//     刚好覆盖整天。
+	CreatedFrom *time.Time
+	CreatedTo   *time.Time
 	// AdminView 决定是否下发只有复核人需要的字段（打分理由、截图取图地址）。
 	//
 	// 只有**管理员**列表置 true。理由：
@@ -435,6 +447,14 @@ func ListReviewRebateClaimsWithDB(db *gorm.DB, filter ReviewRebateClaimListQuery
 	}
 	if status := strings.TrimSpace(filter.Status); status != "" {
 		base = base.Where("review_rebate_claims.status = ?", status)
+	}
+	// 时间范围：下界闭、上界开。放在 Count 之前，确保 Count 与 Find 用同一套条件
+	// （否则会出现「共 3 条」但只列出 1 条的自相矛盾分页）。
+	if filter.CreatedFrom != nil {
+		base = base.Where("review_rebate_claims.created_at >= ?", *filter.CreatedFrom)
+	}
+	if filter.CreatedTo != nil {
+		base = base.Where("review_rebate_claims.created_at < ?", *filter.CreatedTo)
 	}
 
 	if err := base.Session(&gorm.Session{}).Count(&result.Total).Error; err != nil {
