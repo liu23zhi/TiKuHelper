@@ -1,4 +1,5 @@
 import request from '../utils/request'
+import { buildDeleteQuestionParams } from '../utils/questionArchiveReason.mjs'
 
 
 export function login(params) {
@@ -296,10 +297,21 @@ export function updateQuestions(data) {
   })
 }
 
-export function delQuestions(data) {
+// delQuestions 删除（= 归档）一道题目。
+//
+// ⚠️ reason 走 **query 参数**，必须放在 config 的 `params` 里：
+// 后端是 `reason := c.Query("reason")`（internal/controller/tiku.go:303），
+// 而 axios 的 delete 第二个参数是 **config** ——
+// 写成 `{ reason }` 会被当成未知 config 键静默丢弃，请求到后端 reason 为空 → 400，
+// 症状是「管理员点了删除，前端只显示删除失败」，且没有任何网络层报错。
+//
+// reason 必填是 Q77-1 §11.8 的定案（后端 archiveReasonMinLength = 2），
+// 缺省时这里不抛错、让后端统一回 400 —— 校验提示由页面提前拦截。
+export function delQuestions(data, reason) {
   return request({
     url: `/adapter-service/questions/${data.id}`,
-    method: 'delete'
+    method: 'delete',
+    params: buildDeleteQuestionParams(reason)
   })
 }
 
