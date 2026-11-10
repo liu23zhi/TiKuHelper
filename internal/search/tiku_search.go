@@ -84,7 +84,17 @@ func (tool *DBTikuSearchTool) SearchTiku(ctx context.Context, req model.SearchRe
 		return result, err
 	}
 	kind := "exact"
-	if len(rows) == 0 {
+	// exact 池非空**不代表**有可用候选：题库里可能存在
+	//   - Answer 为空数组（导入时参考答案缺失）
+	//   - Type 与请求不兼容（题型被标错）
+	//   - 选项集合冲突
+	// 这类行会在下面的过滤里被逐个 continue 掉。旧实现只判 `len(rows) == 0`
+	// 就决定要不要跑 fuzzy，于是「exact 池全是不可用行」时会直接返回
+	// MatchKind="none" —— 相似度达标的 fuzzy 候选**根本没被查过**。
+	// 这是真实的漏答（t74 实测：同一 fuzzy 候选，有污染行时 none、无污染行时 fuzzy）。
+	//
+	// 因此这里多一道「池里是否有可用行」的判定：不可用行不算命中，允许降级。
+	if !hasUsableTikuRow(rows, req) {
 		rows, err = tool.fuzzyRows(db, question)
 		if err != nil {
 			return result, err
@@ -250,6 +260,49 @@ func (tool *DBTikuSearchTool) fuzzyRows(db *gorm.DB, question string) ([]tikuCan
 		rows = append(rows, evidence...)
 	}
 	return rows, nil
+}
+
+// hasUsableTikuRow 判断一批候选行里是否存在**至少一条可用行**。
+//
+// 用途：决定 exact 路径要不要降级去跑 fuzzy（见 SearchTiku 的调用点）。
+//
+// 判定口径必须与下面主过滤循环里的条件**保持一致**，否则会出现
+// 「这里说可用、那里被 continue 掉」的分裂 —— 那正是本函数要修的缺陷形态
+// （旧实现用 `len(rows) == 0` 粗判，与逐行过滤条件不对应）。
+//
+// 与主循环的对应关系：
+//   - compatibleQuestionType / compatibleMathOperators ↔ 主循环第一个 continue
+//   - compatibleTikuOptions                          ↔ 第二个 continue
+//   - len(answers) == 0                              ↔ 第三个 continue
+//
+// 刻意**不**在这里重复相似度阈值判断：那是 fuzzy 分支的语义，
+// exact 行本来就不做打分（score 恒 1.0）。
+//
+// 也刻意**不**引用 compatibleNegation：那个函数属于另一个未合并的 PR
+// （否定题保护），本分支上不存在。等它合入后，这里与主循环需要同步补上
+// —— 两处条件漂移正是本函数要防的形态，届时必须一起改。
+func hasUsableTikuRow(rows []tikuCandidateRow, req model.SearchRequest) bool {
+	question := strings.TrimSpace(req.Question)
+	for _, row := range rows {
+		// ⚠️ 这三行必须与 SearchTiku 主过滤循环的条件**逐条一致**（当前对应 L109-111）。
+		// 本函数的存在意义就是消除「判定可用性」与「实际采用」两处的漂移，
+		// 因此任何一边加条件，另一边必须同步 —— 否则本函数自己就成了漂移源。
+		// P0-1（#14）合入时主循环新增了 compatibleNegation，这里同步补上。
+		if !compatibleQuestionType(req.Type, row.Type) ||
+			!compatibleMathOperators(question, row.Question) ||
+			!compatibleNegation(question, row.Question) {
+			continue
+		}
+		options := decodeTikuStrings(row.Options)
+		if !compatibleTikuOptions(req.Options, options) {
+			continue
+		}
+		if len(decodeTikuStrings(row.Answer)) == 0 {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func decodeTikuStrings(value string) []string {
