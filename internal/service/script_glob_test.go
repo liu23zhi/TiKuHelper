@@ -128,7 +128,7 @@ func TestScriptGlobPathDoubleStarMatchesMultipleSegments(t *testing.T) {
 	}{
 		{"/a/**/c", "/a/b/c", true},
 		{"/a/**/c", "/a/b/x/c", true}, // ** 吞多段
-		{"/a/**/c", "/a/c", true},      // ** 也能吞零段
+		{"/a/**/c", "/a/c", true},     // ** 也能吞零段
 		{"/a/**", "/a", true},
 		{"/a/**", "/a/b/x/y", true},
 		{"/**/c", "/c", true},
@@ -285,9 +285,10 @@ func TestScriptGlobReservedPrefixOutranksWildcardRules(t *testing.T) {
 // internal/api/router.go 的 scannedRoutes（阈值 scriptReservedPrefixWarnBelow=20），
 // 它在 internal/api 包里，service 不能反向 import（会形成循环）。
 // 于是这里守住三件 service 侧能守的事：
-//   a. baseline 清单本身完整且无重复（兜底不会被悄悄删条）；
-//   b. 合并语义是 merge 而不是 replace —— 枚举不完整时兜底不会丢；
-//   c. 快照与查询结果一致（诊断接口不会骗人）。
+//
+//	a. baseline 清单本身完整且无重复（兜底不会被悄悄删条）；
+//	b. 合并语义是 merge 而不是 replace —— 枚举不完整时兜底不会丢；
+//	c. 快照与查询结果一致（诊断接口不会骗人）。
 func TestScriptGlobReservedPrefixEnumerationStaysComplete(t *testing.T) {
 	t.Cleanup(func() { SetReservedScriptPrefixes(nil) })
 
