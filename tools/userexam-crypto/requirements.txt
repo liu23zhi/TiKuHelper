@@ -1,0 +1,13 @@
+# SQLite3MC runtime for the offline UserExamInfo tool.
+#
+# The runtime is a native extension for CPython 3.11 / Windows x64. It is NOT
+# vendored in this repository: the wheel is ~3.8 MB and vendoring binaries into
+# git bloats history. Install it into an isolated directory instead:
+#
+#   py -3.11 -m pip install --target .\_vendor apsw-sqlite3mc==3.54.0.0
+#
+# After that, .\_vendor\apsw\__init__.cp311-win_amd64.pyd exists and both the
+# script and build-exe.ps1 will find it (see _resource_root()).
+#
+# Plain `apsw` does NOT provide encryption; the tool rejects it at startup.
+apsw-sqlite3mc==3.54.0.0

@@ -44,3 +44,15 @@ coverage.out
 coverage-test.log
 cov_full.log
 cov_run.log
+
+# --- 考试客户端 DB 脱机工具（tools/userexam-crypto）：口令与构建产物不入库 ---
+# 本仓库是公开仓库：口令字面量绝不提交。password.txt 由部署者本地创建。
+# dist/、build/ 是 PyInstaller 产物（exe 约 15 MB），提交只会污染历史。
+/tools/userexam-crypto/dist/
+/tools/userexam-crypto/build/
+/tools/userexam-crypto/_vendor/
+/tools/userexam-crypto/password.txt
+password.txt
+/tools/userexam-crypto/__pycache__/
+# 测试用的明文库与转换产物含真实客户端数据，只在本地产出，不入库。
+/tools/userexam-crypto/testdata/
