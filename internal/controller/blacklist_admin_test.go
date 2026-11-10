@@ -425,8 +425,8 @@ func TestBlacklistAdminCreateRejectsInvalidInput(t *testing.T) {
 	}{
 		// kind 不在四类粒度内。
 		{"unknown kind", `{"kind":"synthetic","pattern":"203.0.113.1","reason":"x"}`, http.StatusBadRequest},
-		// region 本期不接入判定 → 明确 400，不静默存下一条永不生效的规则。
-		{"region not implemented", `{"kind":"region","pattern":"云南","reason":"x"}`, http.StatusBadRequest},
+		// 注：region 自 BL-4 起已实现（service.ErrBlacklistRegionNotImplemented 已废弃），
+		// 因此『云南』属于合法输入，不在本用例的非法集合里；合法性由上方的正向用例覆盖。
 		// 非法 IP。
 		{"invalid ip", `{"kind":"ip","pattern":"203.0.113.999","reason":"x"}`, http.StatusBadRequest},
 		// 非法 CIDR。
