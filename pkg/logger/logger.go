@@ -45,9 +45,18 @@ var (
 )
 
 type loggerState struct {
-	mu            sync.Mutex
-	files         [3]*rotatingFile
-	thinking      *rotatingFile
+	mu    sync.Mutex
+	files [3]*rotatingFile
+	// thinking 是 AI **搜题的检索编排轨迹**（每轮每 attempt 一行，结构化字段）。
+	// 拆分自原本混在一起的 Tiku-thinking.txt，见 task_doc/76。
+	thinking *rotatingFile
+	// aiPayload 是 AI 搜题的**完整报文**（请求体 / 响应体 / 来源 / 结果摘要）。
+	//
+	// 单独一档的理由：这一档体量比编排轨迹大一到两个数量级（含完整 JSON），
+	// 混在同一文件里会让「看某轮发生了什么」被大段正文淹掉，
+	// 也会让轮转把编排轨迹过早挤出去。
+	aiPayload     *rotatingFile
+	reviewRebate  *rotatingFile
 	stdout        io.Writer
 	stderr        io.Writer
 	standard      io.Writer
@@ -119,6 +128,35 @@ func setupLoggerWithLimits(dir string, maxBytes int64, maxTotalBytes int64) erro
 		return fmt.Errorf("open Tiku-thinking log: %w", err)
 	}
 	s.thinking = thinkingFile
+	aiPayloadFile, err := openRotatingFile(dir, "Tiku-ai-payload", maxBytes)
+	if err != nil {
+		for _, opened := range s.files {
+			if opened != nil {
+				_ = opened.close()
+			}
+		}
+		if s.thinking != nil {
+			_ = s.thinking.close()
+		}
+		return fmt.Errorf("open Tiku-ai-payload log: %w", err)
+	}
+	s.aiPayload = aiPayloadFile
+	reviewRebateFile, err := openRotatingFile(dir, "Tiku-review-rebate", maxBytes)
+	if err != nil {
+		for _, opened := range s.files {
+			if opened != nil {
+				_ = opened.close()
+			}
+		}
+		if s.thinking != nil {
+			_ = s.thinking.close()
+		}
+		if s.aiPayload != nil {
+			_ = s.aiPayload.close()
+		}
+		return fmt.Errorf("open Tiku-review-rebate log: %w", err)
+	}
+	s.reviewRebate = reviewRebateFile
 	if err := pruneLogFiles(dir, maxTotalBytes); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "清理超限日志失败 directory=%s error=%v\n", dir, err)
 	}
@@ -179,6 +217,12 @@ func (s *loggerState) close() error {
 	}
 	if s.thinking != nil {
 		errs = append(errs, s.thinking.close())
+	}
+	if s.aiPayload != nil {
+		errs = append(errs, s.aiPayload.close())
+	}
+	if s.reviewRebate != nil {
+		errs = append(errs, s.reviewRebate.close())
 	}
 	s.mu.Unlock()
 	if gin.DefaultWriter == s.out {
@@ -287,9 +331,40 @@ func AIThinking(text string) {
 	AIThinkingWithSecrets(text)
 }
 
+// AIPayloadWithSecrets 把 AI 搜题的**完整报文**写进 Tiku-ai-payload.txt。
+//
+// 为什么与 AIThinking 分开（task_doc/76）：
+// 原本两者都写 Tiku-thinking.txt，导致三个问题 ——
+//  1. 体积差两个数量级：一条编排轨迹是几百字节，一份完整请求/响应是几十 KB，
+//     混排后「看某轮发生了什么」被大段 JSON 淹掉；
+//  2. 轮转不公平：大报文把编排轨迹过早挤进归档，排查时要在多个 .gz 里翻；
+//  3. 传输日志与编排轨迹的读者不同 —— 前者查「模型到底收到了什么」，
+//     后者查「这一轮走了哪些步骤」。
+//
+// 与 AIThinkingWithSecrets 一样的语义：只写文件、必过 RedactSecrets、
+// 写完立即 prune。secrets 用于抹掉调用方已知的具体凭据（如 APIKey）。
+func AIPayloadWithSecrets(text string, secrets ...string) {
+	writeDedicatedFile("aiPayload", "Tiku-ai-payload", "[AI-PAYLOAD]", text, secrets...)
+}
+
 // AIThinkingWithSecrets writes a detailed AI trace while also redacting
 // request-specific credentials that cannot be recognized by generic patterns.
 func AIThinkingWithSecrets(text string, secrets ...string) {
+	writeDedicatedFile("thinking", "Tiku-thinking", "[AI-THINKING]", text, secrets...)
+}
+
+// writeDedicatedFile 是三类「独立日志文件」通道的共用写入路径。
+//
+// field 是 loggerState 上的字段名（便于错误信息定位是哪一档写失败），
+// file 是文件名前缀，tag 是行首标记，text 是正文，secrets 用于定向脱敏。
+//
+// 三条不可协商的性质（三档共用）：
+//   - 只写文件，不镜像到控制台或常规日志；
+//   - 必过 RedactSecrets —— 调用方的错误/报文里可能带供应商地址与密钥；
+//   - 写完立即 pruneLogFiles，避免这一档绕过总量上限。
+//
+// 拿不到 state 时静默返回：日志初始化失败不该让业务路径 panic。
+func writeDedicatedFile(field, file, tag, text string, secrets ...string) {
 	stateMu.Lock()
 	s := active
 	stateMu.Unlock()
@@ -297,18 +372,61 @@ func AIThinkingWithSecrets(text string, secrets ...string) {
 		return
 	}
 
-	line := fmt.Sprintf("[AI-THINKING] %s | %s\n", time.Now().In(ShanghaiLocation()).Format("2006/01/02 - 15:04:05"), strings.TrimRight(RedactSecrets(text, secrets...), "\r\n"))
+	line := fmt.Sprintf("%s %s | %s\n", tag,
+		time.Now().In(ShanghaiLocation()).Format("2006/01/02 - 15:04:05"),
+		strings.TrimRight(RedactSecrets(text, secrets...), "\r\n"))
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed || s.thinking == nil {
+	if s.closed {
 		return
 	}
-	if err := s.thinking.write([]byte(line)); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "write AI thinking log: %v\n", err)
+	target := dedicatedFileOf(s, field)
+	if target == nil {
+		return
+	}
+	if err := target.write([]byte(line)); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "write %s log: %v\n", file, err)
 	}
 	if err := pruneLogFiles(s.logDir, s.maxTotalBytes); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "清理超限日志失败 directory=%s error=%v\n", s.logDir, err)
 	}
+}
+
+// dedicatedFileOf 按字段名取对应的轮转文件句柄。
+//
+// 用字符串分派而不是传 *rotatingFile：调用方在拿 state 之前
+// 无法安全地解引用字段（state 可能为 nil，且字段本身可能尚未初始化）。
+func dedicatedFileOf(s *loggerState, field string) *rotatingFile {
+	switch field {
+	case "thinking":
+		return s.thinking
+	case "aiPayload":
+		return s.aiPayload
+	case "reviewRebate":
+		return s.reviewRebate
+	default:
+		return nil
+	}
+}
+
+// ReviewRebateTrace writes the review-rebate Agent scoring trace to its own
+// dedicated file (Tiku-review-rebate.txt), task_doc/73.
+//
+// 为什么不复用 AIThinking：
+// AIThinking 写的是 Tiku-thinking.txt，那是 AI **搜题**的通道。评价返现的
+// 判断过程混进去之后，两类日志都无法按主题检索 —— 排查「某条评价为什么被判
+// 0.8 元」时要在整份搜题 trace 里翻。
+//
+// 与 AIThinking 一致的三条性质：
+//   - 只写文件，不镜像到控制台或常规日志（trace 体量大，且含提示词全文）；
+//   - 必过 RedactSecrets —— 模型错误里可能带供应商地址与密钥；
+//   - 写完立即 pruneLogFiles，避免这个文件绕过总量上限。
+//
+// ⚠️ 新增本文件时必须同时改 isManagedLogFile 与 isManagedLogArchive 两处白名单，
+// 否则轮转出的 .txt.N / .txt.gz 归档不再被 pruneLogFiles 识别，磁盘会无限增长。
+func ReviewRebateTrace(text string, secrets ...string) {
+	writeDedicatedFile("reviewRebate", "Tiku-review-rebate", "[REVIEW-REBATE]", text, secrets...)
 }
 
 var shanghaiLocation = func() *time.Location {
@@ -508,7 +626,7 @@ func pruneLogFiles(dir string, maxTotalBytes int64) error {
 }
 
 func isManagedLogFile(name string) bool {
-	for _, prefix := range []string{"Tiku", "Tiku-warning", "Tiku-error", "Tiku-thinking"} {
+	for _, prefix := range []string{"Tiku", "Tiku-warning", "Tiku-error", "Tiku-thinking", "Tiku-ai-payload", "Tiku-review-rebate"} {
 		if name == prefix+".txt" || name == prefix+".txt.gz" || isManagedLogArchive(name) {
 			return true
 		}
@@ -517,7 +635,7 @@ func isManagedLogFile(name string) bool {
 }
 
 func isManagedLogArchive(name string) bool {
-	for _, prefix := range []string{"Tiku", "Tiku-warning", "Tiku-error", "Tiku-thinking"} {
+	for _, prefix := range []string{"Tiku", "Tiku-warning", "Tiku-error", "Tiku-thinking", "Tiku-ai-payload", "Tiku-review-rebate"} {
 		if !strings.HasPrefix(name, prefix) {
 			continue
 		}

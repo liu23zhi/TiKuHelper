@@ -4,7 +4,11 @@
 
 package entity
 
-import "time"
+import (
+	"time"
+
+	"gorm.io/gorm"
+)
 
 const TableNameUser = "users"
 
@@ -49,6 +53,20 @@ type User struct {
 	//
 	// 由 registry.ensureReviewRebateSchema 补列（这里只声明，不改动既有字段）。
 	GiftBalance float64 `gorm:"column:gift_balance;type:decimal(18,6);not null;default:0" json:"giftBalance"`
+
+	// DeletedAt 非空 = 已归档（task_doc/76 §3.2.2 / task_doc/77）。
+	//
+	// ⚠️ 这一列必须声明在**这个**结构体上，不能只放在 entity.UserArchive 里。
+	// 原因：dao.User 绑定的是 entity.User（users.gen.go:26 的 UseModel），
+	// GORM 的软删除机制只认模型上的 gorm.DeletedAt 字段。
+	// 只声明在 UserArchive 上的话，`dao.User.Where(...)` 完全不会加
+	// `WHERE deleted_at IS NULL`，已归档用户仍会出现在用户列表里 ——
+	// 表现为「删了但还在」。
+	//
+	// 由 registry.ensureUserArchiveSchema 用显式 ALTER 补列（与 GiftBalance 同一做法）。
+	// 归档原因 / 归档时点 / 操作者三列仍是 entity.UserArchive 的职责
+	// （那是元数据，只有归档管理页需要，不必让每条 User 查询都带上）。
+	DeletedAt gorm.DeletedAt `gorm:"column:deleted_at;index" json:"-"`
 }
 
 // TableName User's table name

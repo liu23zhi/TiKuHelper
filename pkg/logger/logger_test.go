@@ -531,3 +531,48 @@ func TestFatalLogFlushesBeforeExit(t *testing.T) {
 		}
 	}
 }
+
+// task_doc/73 §3.2：评价返现 trace 必须写进**独立的**文件，
+// 不混进 Tiku-thinking.txt（那是 AI 搜题通道），也不进常规日志。
+func TestReviewRebateTraceUsesDedicatedFileAndRedactsSecrets(t *testing.T) {
+	dir := t.TempDir()
+	if err := setupLogger(dir, 1024*1024); err != nil {
+		t.Fatalf("setup logger: %v", err)
+	}
+	t.Cleanup(func() { _ = closeLogger() })
+
+	ReviewRebateTrace(`{"claimId":7,"outcome":"ok"} Authorization: Bearer review-secret`)
+	if err := closeLogger(); err != nil {
+		t.Fatalf("close logger: %v", err)
+	}
+
+	trace := readLoggerFile(t, dir, "Tiku-review-rebate.txt")
+	if !strings.Contains(trace, `"claimId":7`) || !strings.Contains(trace, "[REVIEW-REBATE]") {
+		t.Fatalf("dedicated review-rebate log is missing the trace: %s", trace)
+	}
+	if strings.Contains(trace, "review-secret") {
+		t.Fatalf("review-rebate trace leaked a secret: %s", trace)
+	}
+	// 三条隔离断言：不能写进搜题通道、不能写进常规日志。
+	if strings.Contains(readLoggerFile(t, dir, "Tiku-thinking.txt"), "claimId") {
+		t.Fatal("review-rebate trace must not enter Tiku-thinking.txt")
+	}
+	if strings.Contains(readLoggerFile(t, dir, "Tiku.txt"), "claimId") {
+		t.Fatal("review-rebate trace must not enter the general log")
+	}
+}
+
+// 新日志文件必须被 pruneLogFiles 识别（两处白名单都要加），
+// 否则它的轮转归档永远不会被清理，磁盘会无限增长。
+func TestReviewRebateTraceFileIsManaged(t *testing.T) {
+	for _, name := range []string{
+		"Tiku-review-rebate.txt",
+		"Tiku-review-rebate.txt.gz",
+		"Tiku-review-rebate01.txt",
+		"Tiku-review-rebate01.txt.gz",
+	} {
+		if !isManagedLogFile(name) {
+			t.Fatalf("%s must be recognized as a managed log file", name)
+		}
+	}
+}

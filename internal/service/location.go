@@ -526,6 +526,31 @@ func LookupIPLocationsDetailedWithDB(db *gorm.DB, ips []string, options Location
 		return result, nil
 	}
 
+	// IP 段命中（task_doc/71 §3.2）：精确缓存未命中的地址，先看它落在哪一段。
+	//
+	// 这是「每个 IP 都查会浪费调用」的解法：上游一次返回 beginip/endip，
+	// 说明一次查询覆盖一整段，段内后续 IP 可以直接用段信息回答，零调用。
+	//
+	// 顺序纪律：**精确缓存在本节之前**（上面的 cached 循环）。反过来先查段，
+	// 会让管理员刚刷新过的单 IP 结果被旧段覆盖。
+	//
+	// 失败静默：段表查询出错不影响主流程（归属地是辅助信息）。
+	if segmentHits := lookupIPLocationFromSegments(db, missing); len(segmentHits) > 0 {
+		for key, location := range segmentHits {
+			result[key] = location
+		}
+		remaining := make([]string, 0, len(missing))
+		for _, key := range missing {
+			if _, hit := segmentHits[key]; !hit {
+				remaining = append(remaining, key)
+			}
+		}
+		missing = remaining
+		if len(missing) == 0 {
+			return result, nil
+		}
+	}
+
 	// 回环/私有 IP 由本地合成并持久化，不需要密钥，也不应因未配置密钥而
 	// 让日志列表退化为空。公网地址再走 UApiPro，并保持原有错误语义。
 	syntheticKeys, upstreamKeys := splitSyntheticIPKeys(missing)
@@ -686,6 +711,11 @@ func queryLocationRowsWithPersistence(db *gorm.DB, client *uapi.Client, kind str
 						fetched.err = persist(row, true)
 					} else {
 						fetched.err = storeLocationCacheRows(db, []entity.LocationCache{row})
+					}
+					// IP 段归属（task_doc/71）：从同一次上游响应里提取段信息落库，
+					// 让段内后续 IP 零调用命中。失败只记 SysWarn，不影响本次返回。
+					if kind == entity.LocationKindIP && fetched.err == nil {
+						PersistIPSegmentsFromCacheRows(db, []entity.LocationCache{row})
 					}
 					return fetched
 				}

@@ -38,6 +38,12 @@ func newUserControllerTestDB(t *testing.T) *gorm.DB {
 	if err := db.AutoMigrate(&entity.User{}, &entity.SystemSetting{}, &entity.Log{}, &entity.BillingRecord{}, &entity.CaptchaToken{}, &entity.SMSVerificationCode{}, &entity.IdempotencyRecord{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
+	// 归档四列由 entity.UserArchive 声明（非生成结构体，见 task_doc/76 §3.2.2）。
+	// 生产环境由 ensureUserArchiveSchema 用显式 ALTER 补齐；测试库直接 AutoMigrate
+	// 同一张表，让「归档 / 软删除」相关代码在单测里也走真实列。
+	if err := db.AutoMigrate(&entity.UserArchive{}); err != nil {
+		t.Fatalf("migrate user archive columns: %v", err)
+	}
 
 	dao.SetDefault(db)
 	return db
@@ -2192,8 +2198,29 @@ func TestDeleteUserAdminCanDeleteAnyUser(t *testing.T) {
 	if err != nil {
 		t.Fatalf("count target user: %v", err)
 	}
+	// 行为变更（task_doc/76 §3.2 / task_doc/77）：删除改为**归档**（软删除），
+	// 行不再物理消失。默认查询看不到它（count=0），Unscoped 仍能查到，
+	// 且 archived_reason 记录归档原因。
+	//
+	// 这条断言同时守住两件事：
+	//   1. 默认查询确实排除了已归档用户（否则已删用户会重新出现在列表里）；
+	//   2. 数据仍然存在（否则「不可真删除」这条需求没落实）。
 	if count != 0 {
-		t.Fatalf("expected target user deleted, got count %d", count)
+		t.Fatalf("expected archived target hidden from default query, got count %d", count)
+	}
+	var archived entity.UserArchive
+	if err := db.Unscoped().Where("id = ?", 56).Take(&archived).Error; err != nil {
+		t.Fatalf("archived user row must still exist: %v", err)
+	}
+	if archived.ArchivedReason != entity.UserArchivedReasonAdminDelete {
+		t.Fatalf("expected archived reason %q, got %q", entity.UserArchivedReasonAdminDelete, archived.ArchivedReason)
+	}
+	if !archived.DeletedAt.Valid {
+		t.Fatal("archived user must carry a non-null deleted_at")
+	}
+	// 操作者必须是执行删除的管理员，而不是被删用户。
+	if archived.ArchivedByUserID != admin.ID {
+		t.Fatalf("expected archived by %d, got %d", admin.ID, archived.ArchivedByUserID)
 	}
 }
 

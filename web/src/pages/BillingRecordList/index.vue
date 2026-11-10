@@ -679,6 +679,12 @@ export default defineComponent({
         { label: '充值入账', value: 'recharge' },
         { label: '新用户赠送', value: 'registration_bonus' },
         { label: '管理员调整余额', value: 'balance_adjustment' },
+        // 邀请返佣（task_doc/70 需求 2）：结算入赠送余额、原订单退款时冲回。
+        { label: '邀请返佣', value: 'referral_rebate' },
+        { label: '邀请返佣冲回', value: 'referral_rebate_reversal' },
+        { label: '评价返现', value: 'review_rebate' },
+        { label: '脚本预扣', value: 'script_reservation' },
+        { label: '脚本退款', value: 'script_refund' },
       ],
       searchModeOptions: [
         { label: '普通搜索', value: 'normal' },

@@ -13,6 +13,16 @@ const (
 	ReferralRebateStatusSettled = "settled"
 	// ReferralRebateStatusReversed 表示原订单退款，奖励已冲回（从赠送余额扣回，clamp 到 0）。
 	ReferralRebateStatusReversed = "reversed"
+
+	// 返佣记录的来源（task_doc/70 需求 1）。管理员可以手动补录记录，
+	// 手动记录没有对应的充值订单，因此 RechargeOrderID 必须可空。
+	//
+	// 为什么需要这个维度而不是靠「recharge_order_id 是否为 0」推断：
+	//   - 它是真实业务维度（自动结算 vs 人工补发），统计「人工补发占比」要用；
+	//   - MySQL 的复合唯一索引里 NULL 不参与判定，auto 的唯一性靠
+	//     (source, recharge_order_id) 天然成立；SQLite 同理。
+	ReferralRebateSourceAuto   = "auto"
+	ReferralRebateSourceManual = "manual"
 )
 
 // ReferralInvite 是账户的邀请码与归因来源。
@@ -38,10 +48,14 @@ func (*ReferralInvite) TableName() string { return TableNameReferralInvite }
 //   - BaseAmount 只取订单实付本金（不含赠金）：1688 充值赠 3376 时基数仍是 1688；
 //   - Rate / PolicyVersion 是结算时快照，改配置不回溯已产生的记录。
 type ReferralRebate struct {
-	ID              int32      `gorm:"primaryKey;autoIncrement" json:"id"`
+	ID int32 `gorm:"primaryKey;autoIncrement" json:"id"`
+	// Source 区分 auto（充值订单自动产生）与 manual（管理员手动补录）。
+	// 与 RechargeOrderID 组成复合唯一索引：auto 的一单一条靠它保证，
+	// manual 的 recharge_order_id 为 NULL（NULL 不参与唯一性判定）。
+	Source          string     `gorm:"column:source;type:varchar(16);not null;default:auto" json:"source"`
 	InviterUserID   int32      `gorm:"column:inviter_user_id;not null;index" json:"inviterUserId"`
 	InvitedUserID   int32      `gorm:"column:invited_user_id;not null;index" json:"invitedUserId"`
-	RechargeOrderID int32      `gorm:"column:recharge_order_id;not null;uniqueIndex" json:"rechargeOrderId"`
+	RechargeOrderID *int32     `gorm:"column:recharge_order_id;uniqueIndex:idx_referral_rebate_source_order" json:"rechargeOrderId,omitempty"`
 	OrderNo         string     `gorm:"column:order_no;type:varchar(64);not null;default:''" json:"orderNo"`
 	BaseAmount      float64    `gorm:"column:base_amount;type:decimal(18,6);not null;default:0" json:"baseAmount"`
 	Rate            float64    `gorm:"column:rate;type:decimal(18,8);not null;default:0" json:"rate"`

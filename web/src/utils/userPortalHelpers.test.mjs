@@ -185,6 +185,11 @@ test('billing record helpers render recharge and search ledger rows', () => {
   assert.equal(buildBillingRecordTypeText({ type: 'script_reservation' }), '脚本预扣');
   assert.equal(buildBillingRecordTypeText({ type: 'script_refund' }), '脚本退款');
   assert.equal(buildBillingRecordTypeText({ type: 'script_activation_purchase' }), '脚本激活码购买');
+  // 邀请返佣（task_doc/70 需求 2）：结算入赠送余额、原订单退款时冲回。
+  // 这两条必须有自己的中文名，否则会落到兜底 `return type` 直接显示英文类型。
+  assert.equal(buildBillingRecordTypeText({ type: 'referral_rebate' }), '邀请返佣（入赠送余额）');
+  assert.equal(buildBillingRecordTypeText({ type: 'referral_rebate_reversal' }), '邀请返佣冲回');
+  assert.equal(buildBillingRecordTypeText({ type: 'review_rebate' }), '评价返现');
   assert.equal(buildBillingRecordSubjectText(search), '搜索题目');
   assert.equal(buildBillingRecordSourceText(search), 'Icodef 题库');
   assert.equal(buildBillingRecordReferenceText(search), 'req-search');

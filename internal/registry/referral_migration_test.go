@@ -99,7 +99,7 @@ func TestReferralSchemaUniqueIndexes(t *testing.T) {
 	}
 
 	rebate := entity.ReferralRebate{
-		InviterUserID: 1, InvitedUserID: 2, RechargeOrderID: 77,
+		InviterUserID: 1, InvitedUserID: 2, Source: entity.ReferralRebateSourceAuto, RechargeOrderID: referralOrderIDPtr(77),
 		OrderNo: "rcg_unique", BaseAmount: 100, Rate: 0.1, Amount: 10,
 		Status: entity.ReferralRebateStatusPending, PolicyVersion: "v1",
 	}
@@ -108,7 +108,7 @@ func TestReferralSchemaUniqueIndexes(t *testing.T) {
 	}
 	duplicate := rebate
 	duplicate.ID = 0
-	duplicate.RechargeOrderID = 77
+	duplicate.RechargeOrderID = referralOrderIDPtr(77)
 	if err := db.Create(&duplicate).Error; err == nil {
 		t.Fatal("duplicate recharge_order_id must be rejected by the unique index")
 	}
@@ -127,3 +127,9 @@ func TestEnsureReferralSchemaSkipsWhenUsersMissing(t *testing.T) {
 		t.Fatal("must not create referral tables before users exists")
 	}
 }
+
+// referralOrderIDPtr 返回充值订单 ID 的指针。
+//
+// entity.ReferralRebate.RechargeOrderID 自 task_doc/70 起可为 nil：
+// 管理员手动补录的记录（source=manual）没有对应充值订单。
+func referralOrderIDPtr(id int32) *int32 { return &id }

@@ -180,6 +180,13 @@ func (s *agentReviewRebateScorer) Score(claim entity.ReviewRebateClaim) (ReviewR
 	image, err := loadReviewRebateScreenshot(claim.ScreenshotPath)
 	if err != nil {
 		// 截图读不出来就**不打分**：没有依据的分数会诱使运营直接批准。
+		//
+		// 这条也要记 trace（task_doc/73 §3.2.3）：运营看到「这条没分数」时，
+		// 唯一能回答「为什么」的地方就是这份日志。
+		traceReviewRebateScoring(reviewRebateTraceRecord{
+			Claim: claim, Scorer: ReviewRebateScorerKindAgent, Model: s.model,
+			Outcome: "no_screenshot", Error: err.Error(),
+		})
 		return ReviewRebateScore{}, err
 	}
 
@@ -187,8 +194,15 @@ func (s *agentReviewRebateScorer) Score(claim entity.ReviewRebateClaim) (ReviewR
 	ctx, cancel := context.WithTimeout(context.Background(), ReviewRebateScoringTimeout)
 	defer cancel()
 
+	started := time.Now()
 	raw, err := s.completer.Complete(ctx, ReviewRebateAgentSystemPrompt, userPrompt, []ReviewRebateScoringImage{image})
+	durationMs := time.Since(started).Milliseconds()
 	if err != nil {
+		traceReviewRebateScoring(reviewRebateTraceRecord{
+			Claim: claim, Scorer: ReviewRebateScorerKindAgent, Model: s.model,
+			DurationMs: durationMs, UserPrompt: userPrompt,
+			Outcome: "error", Error: err.Error(),
+		})
 		if errors.Is(err, ErrReviewRebateScoringFailed) {
 			return ReviewRebateScore{}, err
 		}
@@ -200,9 +214,21 @@ func (s *agentReviewRebateScorer) Score(claim entity.ReviewRebateClaim) (ReviewR
 	}
 	score, err := ParseReviewRebateAgentScore(raw)
 	if err != nil {
+		// 解析失败是最需要复盘的场景：把模型原始输出完整记下来，
+		// 否则「模型返回了什么导致解析不出 JSON」永远查不到。
+		traceReviewRebateScoring(reviewRebateTraceRecord{
+			Claim: claim, Scorer: ReviewRebateScorerKindAgent, Model: s.model,
+			DurationMs: durationMs, UserPrompt: userPrompt,
+			RawResponse: raw, Outcome: "parse_error", Error: err.Error(),
+		})
 		return ReviewRebateScore{}, err
 	}
 	score.Scorer = ReviewRebateScorerKindAgent
+	traceReviewRebateScoring(reviewRebateTraceRecord{
+		Claim: claim, Scorer: ReviewRebateScorerKindAgent, Model: s.model,
+		DurationMs: durationMs, UserPrompt: userPrompt, RawResponse: raw,
+		Parsed: &score, Outcome: "ok",
+	})
 	return score, nil
 }
 

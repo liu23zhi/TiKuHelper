@@ -1041,7 +1041,7 @@ func TestReferralSettleRequiresSchema(t *testing.T) {
 	invited := seedReferralUser(t, db, 182, "referral-schema-invited", inviter.ID)
 	order := seedReferralPaidOrder(t, db, "rcg_referral_schema", invited.ID, 100)
 	rebate := entity.ReferralRebate{
-		InviterUserID: inviter.ID, InvitedUserID: invited.ID, RechargeOrderID: order.ID,
+		InviterUserID: inviter.ID, InvitedUserID: invited.ID, Source: entity.ReferralRebateSourceAuto, RechargeOrderID: referralOrderIDPtr(order.ID),
 		OrderNo: order.OrderNo, BaseAmount: 100, Rate: 0.1, Amount: 10,
 		Status: entity.ReferralRebateStatusPending, PolicyVersion: ReferralRebatePolicyVersion,
 	}
@@ -1071,3 +1071,9 @@ func TestReferralSettleRequiresSchema(t *testing.T) {
 		t.Fatalf("refused settle must not write billing rows, got %d", records)
 	}
 }
+
+// referralOrderIDPtr 返回充值订单 ID 的指针。
+//
+// entity.ReferralRebate.RechargeOrderID 自 task_doc/70 起可为 nil：
+// 管理员手动补录的记录（source=manual）没有对应充值订单。
+func referralOrderIDPtr(id int32) *int32 { return &id }
