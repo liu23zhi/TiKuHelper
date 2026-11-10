@@ -101,6 +101,13 @@ func UpdateUserPhoneWithDB(db *gorm.DB, targetUserID int32, rawPhone string, for
 
 		trimmed := strings.TrimSpace(rawPhone)
 		if trimmed == "" {
+			// 用户主动解绑：先把当前活跃绑定翻成 released，再清 users 列。
+			// 顺序不能反 —— 清完 users 就取不到原值，历史会永久丢失（18-*.md §4.2）。
+			if err := releaseBindingForUser(tx, updated.ID, entity.BindingKindPhone,
+				entity.BindingReleaseReasonRebind, entity.BindingReleaseSourceUserUnbind,
+				updated, 0); err != nil {
+				return err
+			}
 			updated.Phone = nil
 			updated.PhoneBoundAt = nil
 			return tx.Model(&entity.User{}).Where("id = ?", targetUserID).
@@ -136,6 +143,13 @@ func UpdateUserPhoneWithDB(db *gorm.DB, targetUserID int32, rawPhone string, for
 			return ErrPhoneAlreadyBound
 		}
 		if len(occupied) == 1 && forceReassign {
+			// 抢号：先把被抢账号的活跃绑定翻成 released（二分类 rebind → 归 history_*），
+			// 再清它的 users 列。这也正是 44-*.md 情形 1/2 里「A 换绑时释放 BB/CC」的真实来源。
+			if err := releaseBindingForUser(tx, occupied[0].ID, entity.BindingKindPhone,
+				entity.BindingReleaseReasonRebind, entity.BindingReleaseSourceForceReassign,
+				occupied[0], 0); err != nil {
+				return err
+			}
 			if err := tx.Model(&entity.User{}).Where("id = ?", occupied[0].ID).Updates(map[string]any{
 				"phone":          nil,
 				"phone_bound_at": nil,
@@ -145,10 +159,30 @@ func UpdateUserPhoneWithDB(db *gorm.DB, targetUserID int32, rawPhone string, for
 		}
 
 		now := time.Now()
+		// 换绑：**先把本账号的旧值释放**（二分类 rebind → 归 history_*），
+		// 再把新值写成 active 绑定记录，最后才更新 users 列。
+		//
+		// 顺序很关键：users.phone 是唯一索引，先写 users 再释放绑定记录虽然也能过，
+		// 但「旧值没有被释放」时新值若恰好等于旧值的兄弟别名会漏记 —— 统一按
+		// 「先释放旧、再占新」处理，任何时刻都只有一条 active。
+		if err := releaseBindingForUser(tx, targetUserID, entity.BindingKindPhone,
+			entity.BindingReleaseReasonRebind, entity.BindingReleaseSourceUserUnbind,
+			updated, 0); err != nil {
+			return err
+		}
 		updated.Phone = &phone
 		updated.PhoneBoundAt = &now
-		return tx.Model(&entity.User{}).Where("id = ?", targetUserID).
-			Select("phone", "phone_bound_at").Updates(&updated).Error
+		if err := tx.Model(&entity.User{}).Where("id = ?", targetUserID).
+			Select("phone", "phone_bound_at").Updates(&updated).Error; err != nil {
+			return err
+		}
+		if err := recordActivePhoneBinding(tx, updated, phone, now); err != nil {
+			return err
+		}
+		// 换绑追缴（44-*.md §3.1 / §5.2）：新值若是别人释放过、且对方曾获赠的号，
+		// 追回本账号当初拿到的新用户赠送。开关默认关闭 → 这里零查询直接返回。
+		_, err = clawbackAfterRebindInTx(tx, targetUserID, entity.BindingKindPhone, phone)
+		return err
 	})
 	return updated, err
 }

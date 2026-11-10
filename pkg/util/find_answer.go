@@ -286,7 +286,7 @@ func matchObjectiveAnswerGroup(answers []string, req *model.SearchRequest, allow
 // 硬猜会把 "AB" 这种答案误映射成选项 A。
 //
 // 越界（下标 >= optionCount）返回 false，由调用方按「无法映射」处理，
-// 避免把越界标号当成某个真实选项（AGENTS.md §12 的「唯一例外」）。
+// 避免把越界标号当成某个真实选项（「唯一例外」：越界标号不得回落到任何真实选项）。
 func optionLabelIndex(answer string, optionCount int) (int, bool) {
 	trimmed := strings.TrimSpace(answer)
 	if trimmed == "" || optionCount <= 0 {

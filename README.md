@@ -1,4 +1,4 @@
-# Tiku Adapter
+# Tiku Helper
 
 [![持续集成](https://github.com/liu23zhi/tikuHelper/actions/workflows/ci.yml/badge.svg)](https://github.com/liu23zhi/tikuHelper/actions/workflows/ci.yml)
 

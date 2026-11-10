@@ -880,6 +880,16 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		logger.FatalLog(fmt.Errorf("prepare login attempt schema fail: %w", err))
 	}
 
+	// 绑定记录表（18-*.md §7.2 / 44-*.md §1.2）：建 user_binding_records。
+	// 这张表是「注销保留区 + 二次注册判定 + 换绑追缴」三者的共同前置。
+	// 关键列 release_reason（rebind/closure/admin 二分类）与 release_source（操作来源）
+	// 是两个字段，不能合并 —— 合并会让 19 号的四个开关静默退化成一个。
+	// 结构性失败 FATAL（缺列等于核心需求静默失效）；数据类回填失败只记日志。
+	// 必须排在 users AutoMigrate 之后：它要读 users.phone / wechat_id 做活跃绑定回填。
+	if err := runStartupMigration("ensureUserBindingRecordSchema", func() error { return ensureUserBindingRecordSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare user binding record schema fail: %w", err))
+	}
+
 	// source-aware 归属地缓存使用新表，旧表保留以兼容 SQLite 和回滚；
 	// 回填失败只记日志，下一次启动会因未写标记而重试。
 	if err := runStartupMigration("ensureLocationCacheEntriesSchema", func() error { return ensureLocationCacheEntriesSchema(db) }); err != nil {

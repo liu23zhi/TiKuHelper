@@ -187,6 +187,14 @@ func buildBillingRecordTypeLabel(recordType string) string {
 		return "充值入账"
 	case registrationBonusBillingRecordType:
 		return "新用户赠送"
+	case RegistrationBonusClawbackBillingRecordType:
+		// 追缴是**支出**方向的独立流水（不是把赠送行改小，也不是删行）：
+		// 44-*.md §3.4 要求「追缴也留一条独立可读的账」，账面上必须能单独看到它。
+		return "新用户赠送追回"
+	case registrationBonusRevokedBillingRecordType:
+		// 42-*.md 的注册时即时扣减（注册事务内先发再扣）。本分支尚未写入这类行，
+		// 但展示层先认它：将来实现落地时账单不会显示成原始 type 字符串。
+		return "新用户赠送扣回"
 	case rechargePromotionBillingRecordType:
 		return "充值赠送"
 	case ReviewRebateBillingRecordType:
@@ -383,6 +391,14 @@ func buildBillingRecordDetail(record BillingRecordListItem) string {
 			return remark
 		}
 		return "新用户赠送"
+	}
+	if record.Type == RegistrationBonusClawbackBillingRecordType || record.Type == registrationBonusRevokedBillingRecordType {
+		// 追缴与注册时扣回的 remark 都自带完整原因（换绑到哪个值、赠金/本金各扣多少），
+		// 直接用 remark 作为摘要，用户不必展开就能看懂为什么被扣钱。
+		if remark := strings.TrimSpace(record.Remark); remark != "" {
+			return remark
+		}
+		return "新用户赠送追回"
 	}
 	if record.Type == rechargePromotionBillingRecordType {
 		if remark := strings.TrimSpace(record.Remark); remark != "" {
@@ -1192,7 +1208,7 @@ func loadBillingRecordSummary(db *gorm.DB, operator entity.User, filter BillingR
 			THEN CASE WHEN billing_records.cached_input_tokens > billing_records.input_tokens
 				THEN billing_records.input_tokens ELSE billing_records.cached_input_tokens END
 			ELSE 0 END) AS cached_input_tokens`, util.MoneyPrecision).
-		Where("TRIM(billing_records.type) NOT IN ?", []string{rechargeBillingRecordType, registrationBonusBillingRecordType, rechargePromotionBillingRecordType, ReviewRebateBillingRecordType, ReferralRebateBillingRecordType, ReferralRebateReversalBillingRecordType, balanceAdjustmentBillingRecordType, scriptRefundBillingRecordType}).
+		Where("TRIM(billing_records.type) NOT IN ?", []string{rechargeBillingRecordType, registrationBonusBillingRecordType, rechargePromotionBillingRecordType, ReviewRebateBillingRecordType, ReferralRebateBillingRecordType, ReferralRebateReversalBillingRecordType, balanceAdjustmentBillingRecordType, scriptRefundBillingRecordType, RegistrationBonusClawbackBillingRecordType, registrationBonusRevokedBillingRecordType}).
 		Group(`billing_records.user_id, billing_records.type, billing_records.request_id,
 			CASE WHEN billing_records.type = 'normal_search' AND TRIM(COALESCE(billing_records.request_id, '')) <> ''
 				THEN 0 ELSE billing_records.id END`)
@@ -1225,10 +1241,17 @@ func findBillingRecordPage(baseQuery *gorm.DB, page, pageSize int) ([]BillingRec
 }
 
 // sumBillingExpenseAmount 累加「支出」金额；充值入账与新用户赠送属于收入，不计入消费。
+//
+// `registration_bonus_clawback` / `registration_bonus_revoked` 方向是支出（钱离开钱包），
+// 但它们是**钱包口径修正**而不是消费，与 `balance_adjustment` 同类：
+// 计入「累计消费金额」会让用户看到「我这一页消费了 X 元」，而其中 X 其实是被追回的赠送。
 func sumBillingExpenseAmount(rows []BillingRecordListItem) float64 {
 	total := 0.0
 	for _, row := range rows {
 		if row.Direction == "income" || row.Type == balanceAdjustmentBillingRecordType {
+			continue
+		}
+		if row.Type == RegistrationBonusClawbackBillingRecordType || row.Type == registrationBonusRevokedBillingRecordType {
 			continue
 		}
 		if amount := row.Amount; amount > 0 {
