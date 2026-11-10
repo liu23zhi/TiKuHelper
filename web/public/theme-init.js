@@ -13,4 +13,12 @@
   root.setAttribute('data-theme', resolved)
   root.style.colorScheme = resolved
   root.style.backgroundColor = resolved === 'dark' ? '#111113' : '#F5F5F7'
+  /* Motion choice is set early too, so a stored 'off' never flashes one frame of
+     animation before the controller mounts. 'auto' is left implicit. */
+  var motion = 'auto'
+  try {
+    var savedMotion = window.localStorage.getItem('tiku.motion-mode.v1')
+    if (savedMotion === 'on' || savedMotion === 'off') motion = savedMotion
+  } catch (error) { /* Defaults to following the system. */ }
+  root.setAttribute('data-motion', motion)
 })()
