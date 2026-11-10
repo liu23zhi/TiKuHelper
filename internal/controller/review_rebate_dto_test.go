@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/middleware"
 	"gorm.io/gorm"
 )
 
@@ -91,6 +94,10 @@ func decodeClaimList(t *testing.T, body []byte) (rows []map[string]any, total in
 }
 
 // reviewRebateDTORouter 与 router.go 一致（这两条是本文件要测的唯一两条）。
+//
+// 管理页挂**真实的** middleware.RequireAdmin 而不是本文件里复刻一份：
+// 403 这条契约属于权限链，用复刻版测等于「自己实现一遍再测自己对不对」——
+// 一旦有人把 router.go 里的 RequireAdmin 摘掉，复刻版会继续绿。
 func reviewRebateDTORouter(actor *entity.User) *gin.Engine {
 	router := gin.New()
 	auth := func(c *gin.Context) {
@@ -99,21 +106,12 @@ func reviewRebateDTORouter(actor *entity.User) *gin.Engine {
 		}
 	}
 	router.GET("/user/review-rebate/claims", auth, MyReviewRebateClaims)
-	router.GET("/admin/review-rebate/claims", auth, requireAdminForDTOFixture, AdminReviewRebateClaims)
+	router.GET("/admin/review-rebate/claims", auth, middleware.RequireAdmin, AdminReviewRebateClaims)
 	return router
 }
 
-// requireAdminForDTOFixture 复刻 middleware.RequireAdmin 的行为（403 + abort），
-// 让「非管理员 403」这条断言覆盖真实的权限链而不是只覆盖 handler 内的二次校验。
-func requireAdminForDTOFixture(c *gin.Context) {
-	value, exists := c.Get("user")
-	user, ok := value.(*entity.User)
-	if !exists || !ok || user == nil || !strings.EqualFold(strings.TrimSpace(user.Role), "admin") {
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"message": "无权限执行该操作"})
-		return
-	}
-	c.Next()
-}
+// requireAdminForDTOFixture 已移除：管理页改挂真实的 middleware.RequireAdmin，
+// 复刻版会让「router.go 摘掉 RequireAdmin」这类回归继续绿（测的是自己写的副本）。
 
 // Test 1（核心）：管理员调「我的提交」→ 响应**不含** agentRationale 键。
 //
@@ -359,7 +357,13 @@ func TestReviewRebateAdminClaimsDTOFiltersByCreatedRange(t *testing.T) {
 	}
 }
 
-// Test 5：非管理员调「提交管理」→ 403（权限链，不是 handler 内二次校验漏掉）。
+// Test 5：非管理员调「提交管理」→ 403。
+//
+// ⚠️ 这条**只证明行为对，不证明路由挂了 RequireAdmin**：handler 内部还有一道
+// requireAdmin(c) 二次校验（纵深防御），所以即使 router.go 把
+// middleware.RequireAdmin 摘掉，非管理员照样拿 403、这条照样绿。
+// 「路由真的挂了中间件」由下面的 TestReviewRebateAdminClaimsRouteMountsRequireAdmin
+// 用源码断言单独钉住 —— 两条缺一不可，不能互相替代。
 func TestReviewRebateAdminClaimsDTORejectsNonAdmin(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newReviewRebateControllerTestDB(t)
@@ -377,5 +381,50 @@ func TestReviewRebateAdminClaimsDTORejectsNonAdmin(t *testing.T) {
 	}
 	if strings.Contains(recorder.Body.String(), "agentRationale") {
 		t.Fatalf("403 响应不得带出任何列表内容: %s", recorder.Body.String())
+	}
+}
+
+// Test 6：router.go 里管理页那条路由**确实**挂了 middleware.RequireAdmin。
+//
+// 为什么必须是源码断言而不是行为断言：AdminReviewRebateClaims 内部有
+// requireAdmin(c) 二次校验，所以「摘掉中间件」在行为层面完全看不出来
+// （实测：把测试路由的 RequireAdmin 短路成放行，403 用例仍然 PASS）。
+// 这是本轮唯一无法用行为测到的契约，只能读注册语句。
+//
+// 断言方式：逐行找同时含该路径与该 handler 的注册行，要求同一行里
+// 同时出现 `middleware.RequireAdmin` 且它位于 handler 之前（gin 按注册顺序
+// 执行，顺序错了等于没挂）。
+func TestReviewRebateAdminClaimsRouteMountsRequireAdmin(t *testing.T) {
+	routerSource, err := os.ReadFile(filepath.Join("..", "api", "router.go"))
+	if err != nil {
+		t.Fatalf("read router.go: %v", err)
+	}
+
+	const routePath = `"/admin/review-rebate/claims"`
+	const handler = "controller.AdminReviewRebateClaims"
+	var mounted []string
+	for _, line := range strings.Split(string(routerSource), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.Contains(trimmed, routePath) || !strings.Contains(trimmed, handler) {
+			continue
+		}
+		mounted = append(mounted, trimmed)
+	}
+	if len(mounted) != 1 {
+		t.Fatalf("expected exactly 1 registration of GET %s, got %d: %v", routePath, len(mounted), mounted)
+	}
+	registration := mounted[0]
+
+	guardIndex := strings.Index(registration, "middleware.RequireAdmin")
+	handlerIndex := strings.Index(registration, handler)
+	if guardIndex < 0 {
+		t.Fatalf("管理页路由必须挂 middleware.RequireAdmin（handler 内的二次校验不能替代路由级鉴权）: %s", registration)
+	}
+	if handlerIndex < 0 || guardIndex > handlerIndex {
+		t.Fatalf("middleware.RequireAdmin 必须位于 handler 之前（gin 按注册顺序执行，放在后面等于没挂）: %s", registration)
+	}
+	// 反向钉子：确认这条真的是 GET（用 POST 之类的动词挂上去会让前端 405）。
+	if !strings.Contains(registration, "apiRouter.GET(") {
+		t.Fatalf("管理页列表必须是 GET 注册: %s", registration)
 	}
 }
