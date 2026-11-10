@@ -1,29 +1,29 @@
 module github.com/itihey/tikuAdapter
 
-go 1.26.6
+go 1.26.10
 
 require (
 	code.sajari.com/docconv/v2 v2.0.0-pre.4
 	github.com/aliyun/aliyun-oss-go-sdk v3.0.2+incompatible
 	github.com/antlabs/strsim v0.0.4
 	github.com/elastic/go-elasticsearch/v8 v8.19.7
-	github.com/gin-contrib/static v1.1.8
+	github.com/gin-contrib/static v1.1.9
 	github.com/gin-gonic/gin v1.12.0
+	github.com/glebarez/go-sqlite v1.21.2
 	github.com/glebarez/sqlite v1.11.0
 	github.com/go-resty/resty/v2 v2.17.2
-	github.com/go-sql-driver/mysql v1.8.1
+	github.com/go-sql-driver/mysql v1.10.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/gookit/goutil v0.8.6
 	github.com/gorilla/websocket v1.5.3
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/spf13/viper v1.21.0
-	github.com/tidwall/gjson v1.20.0
+	github.com/tidwall/gjson v1.20.1
 	github.com/xuri/excelize/v2 v2.11.1
 	golang.org/x/crypto v0.58.0
 	golang.org/x/image v0.47.0
-	golang.org/x/net v0.62.0
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 	golang.org/x/time v0.16.0
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/gen v0.3.29
@@ -32,7 +32,7 @@ require (
 )
 
 require (
-	filippo.io/edwards25519 v1.1.0 // indirect
+	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/JalfResi/justext v0.0.0-20221106200834-be571e3e3052 // indirect
 	github.com/PuerkitoBio/goquery v1.5.1 // indirect
 	github.com/advancedlogic/GoOse v0.0.0-20191112112754-e742535969c1 // indirect
@@ -49,7 +49,6 @@ require (
 	github.com/gabriel-vasile/mimetype v1.4.13 // indirect
 	github.com/gigawattio/window v0.0.0-20180317192513-0f5467e35573 // indirect
 	github.com/gin-contrib/sse v1.1.1 // indirect
-	github.com/glebarez/go-sqlite v1.21.2 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
@@ -101,6 +100,7 @@ require (
 	golang.org/x/arch v0.29.0 // indirect
 	golang.org/x/exp v0.0.0-20240112132812-db7319d0e0e3 // indirect
 	golang.org/x/mod v0.41.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/tools v0.51.0 // indirect
