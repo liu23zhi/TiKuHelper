@@ -477,6 +477,16 @@ class MainFlow:
             output = logs.stdout + logs.stderr
             assert output, 'actual process stdio capture must not be missing/empty'
             if name == 'default_production_missing_proxy':
+                # 2026-11-10 语义变更（task_doc/67 §1.1 / §1.3）：
+                # TRUSTED_PROXIES 与 TRUSTED_PROXIES_FILE 都为空 = 「没有输入」
+                # → 信任所有来源、**正常启动**。生产环境同样适用，
+                # 「留空 → 拒绝启动」的旧行为已废止。
+                #
+                # 所以本 case 现在测的是「缺 proxy 时启动成功、且留下了
+                # 可追溯的信任所有告警」，不再是「被拒绝」。
+                # 告警由 trusted_proxies.go:453 的 logTrustedProxies 在
+                # config.Source == '' 时打印，文案含 TRUSTED_PROXIES，
+                # 因此下面的断言在新语义下依然成立（已用真实二进制实测）。
                 assert b'TRUSTED_PROXIES' in output
             elif name == 'production_missing_initial_secret':
                 assert b'admin bootstrap password' in output
@@ -588,11 +598,19 @@ def main(argv=None):
     try:
         flow.build()
         result['ownerPortabilityObservation'] = flow.owner_portability_observation()
-        cases = [('default_production_missing_proxy', None, None, NEW_PASSWORD, 1, False),
+        cases = [('default_production_missing_proxy', None, None, NEW_PASSWORD, 0, False),
                  ('production_missing_initial_secret', 'production', 'none', None, 1, False),
                  ('default_production_strong_new_database', None, 'none', NEW_PASSWORD, 0, False),
                  ('existing_legacy_admin_not_reset', 'production', 'none', NEW_PASSWORD, 0, True),
                  ('explicit_development_compatibility', 'development', None, NEW_PASSWORD, 0, False)]
+        # cases 的 5 元组是 (name, TIKU_APP_MODE, TRUSTED_PROXIES, TIKU_ADMIN_PASSWORD,
+        # expected_exit, legacy)。proxies=None 表示**不注入** TRUSTED_PROXIES 环境变量
+        # （见 branch() 里 `if value is not None`），也就是「两个来源都为空」。
+        #
+        # ⚠️ 2026-11-10 语义变更（task_doc/67 §1.1 / §1.3）：
+        # `default_production_missing_proxy` 的 expected_exit 由 1 改为 0。
+        # 旧语义「生产环境留空 → 拒绝启动」已废止，现在留空 = 信任所有来源、
+        # 照常启动。仍保持 exit=1 会让容器一直运行到 `docker wait` 超时（exit 124）。
         for case in cases:
             observed = flow.branch(*case)
             assert observed['status'] == 'PASS' and observed['forcedKill'] is False
