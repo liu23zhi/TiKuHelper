@@ -204,7 +204,14 @@ func matchObjectiveAnswerGroup(answers []string, req *model.SearchRequest, allow
 	}
 	selected := make(map[int]bool)
 	for _, rawAnswer := range answers {
-		answer := stripAnswerLabelPrefix(rawAnswer)
+		// 统一清洗：全角转半角、「答案：」类前缀、选项标签前缀、首尾分隔符。
+		// 旧实现只有 stripAnswerLabelPrefix 一道，处理不了 "答案：还原反应"
+		// 与 "【答案】A" 这类形态，会让本来有答案的题返回空。详见 answer_token.go。
+		answer := normalizeAnswerToken(rawAnswer)
+		// cleanedAnswer 保留「标签前缀」，只做全角/「答案：」/首尾分隔符清洗。
+		// 多标号判定必须用它：`A、D` 若先剥标签前缀会退化成 `D`（少选一个），
+		// 那是静默错答。详见 answer_token.go 里 answerLabelIndexes 的注释。
+		cleanedAnswer := cleanAnswerToken(rawAnswer)
 		if req.Type == 3 {
 			if polarity, ok := JudgementPolarity(answer); ok {
 				matchedIndex, matchedCount := -1, 0
@@ -252,6 +259,21 @@ func matchObjectiveAnswerGroup(answers []string, req *model.SearchRequest, allow
 			if req.Type == 3 && len(req.Options) == 2 {
 				if labelIndex, ok := optionLabelIndex(answer, len(req.Options)); ok {
 					selected[labelIndex] = true
+					continue
+				}
+			}
+			// 多选题的字母答案扩展到多标号形态（"A,B" / "A、B" / "ABD"）。
+			// 依据 chaoxing-exam/SKILL.md:272-278 陷阱 4：客户端填写时必须用
+			// 「显示字母」匹配选项，题库存储的也常是字母串。
+			//
+			// 只放开 type=1（多选）：
+			//   - type=0（单选）保持「单个纯字母不映射」的既有边界（见上）；
+			//   - type=3（判断）只有两个选项，多标号在该题型上是脏数据，不猜。
+			if req.Type == 1 {
+				if labelIndexes, ok := answerLabelIndexes(cleanedAnswer, len(req.Options)); ok && len(labelIndexes) > 1 {
+					for _, labelIndex := range labelIndexes {
+						selected[labelIndex] = true
+					}
 					continue
 				}
 			}

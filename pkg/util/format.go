@@ -6,12 +6,23 @@ import (
 	"strings"
 )
 
-// IsTrue 判断字符串是否是正确
+// IsTrue 判断字符串是否是正确。
+//
+// ⚠️ 本函数是**选项侧的格式化开关**（FormatOptions / 题库导入 parse_xls 使用），
+// 它的取值集合被既有测试精确钉住（"yes"/"TRUE" 必须保持原样、不得归一化），
+// 因此**刻意**保持大小写敏感、且不接受小写之外的英文变体。
+//
+// 与答案侧的 JudgementPolarity 是两个不同职责：
+//   - IsTrue/IsFalse：决定「选项文本要不要改写成 正确/错误」，只在选项侧调用；
+//   - JudgementPolarity：决定「这段文本表达对还是错」，答案与选项两侧都用。
+//
+// 想扩充判断题的同义词，请改 polarity.go 的 judgementPolarityTable，
+// 不要在这里加 —— 那会让选项被意外改写、破坏客户端看到的原文。
 func IsTrue(s string) bool {
 	return regexp.MustCompile(`^(正确|是|对|√|T|ri|true|A)$`).MatchString(s)
 }
 
-// IsFalse 判断字符串是否是错误
+// IsFalse 判断字符串是否是错误。取值集合同样被既有测试钉住，见 IsTrue 的说明。
 func IsFalse(s string) bool {
 	return regexp.MustCompile(`^(错误|否|错|×|F|fa|false|B)$`).MatchString(s)
 }
@@ -67,22 +78,6 @@ func FormatString(src string) string {
 	})
 
 	return strings.TrimSpace(src)
-}
-
-// JudgementPolarity 判断一个答案/选项是否表达「对/错」，返回 (polarity, ok)。
-//
-// 判断题的模型输出并不稳定：正确/错误、对/错、√/×、true/false、yes/no 都出现过。
-// 搜题链路与 AI 兜底链路必须用**同一套**判定，否则会出现「/search 能答、兜底判无答案」。
-func JudgementPolarity(value string) (bool, bool) {
-	normalized := strings.ToLower(strings.TrimSpace(value))
-	switch normalized {
-	case "正确", "对", "是", "√", "true", "t", "yes", "y":
-		return true, true
-	case "错误", "错", "否", "×", "false", "f", "no", "n":
-		return false, true
-	default:
-		return false, false
-	}
 }
 
 // FullWidthStrToHalfWidthStr 全角转半角
