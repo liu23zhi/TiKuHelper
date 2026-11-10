@@ -212,7 +212,7 @@ func TestEnsureTikuHashWithoutPlatSchemaKeepsUniqueRows(t *testing.T) {
 //
 // 线上事故复现：同一道题既有一行旧公式、又有一行已经写成新公式，
 // 回填旧行时会撞 UNIQUE(hash, course_name) —— 旧实现直接 return err，
-// 标记永远写不上，于是每次启动都重跑（见 AGENTS.md 第 18 条）。
+// 标记永远写不上，于是每次启动都重跑。
 func TestEnsureTikuHashWithoutPlatSchemaSkipsConflictingRowAndCompletes(t *testing.T) {
 	db := newTikuMigrationTestDB(t)
 

@@ -28,7 +28,7 @@ func TestTrustedProxyClientIP(t *testing.T) {
 		want         string
 	}{
 		{
-			// 空配置 = 信任所有来源的转发头（产品约定，见 AGENTS.md 第 26 条）。
+			// 空配置 = 信任所有来源的转发头（产品约定）。
 			name:       "empty configuration trusts forwarded for",
 			remoteAddr: "198.51.100.10:32100", forwardedFor: "203.0.113.99", want: "203.0.113.99",
 		},

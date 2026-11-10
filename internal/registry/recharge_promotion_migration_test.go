@@ -38,7 +38,7 @@ func TestEnsureRechargePromotionSchemaAddsLedgerTable(t *testing.T) {
 		t.Fatal("expected the one-shot migration marker to be written")
 	}
 
-	// 一单一条：recharge_order_id 必须有唯一索引（幂等靠它，AGENTS.md §26.4）。
+	// 一单一条：recharge_order_id 必须有唯一索引（幂等靠它：重复回调撞键即跳过）。
 	var count int64
 	if err := db.Raw(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql LIKE '%recharge_order_id%' AND sql LIKE '%UNIQUE%'`,
 		entity.TableNameRechargePromotionGrant).Scan(&count).Error; err != nil {

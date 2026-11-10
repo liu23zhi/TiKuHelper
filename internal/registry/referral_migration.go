@@ -21,7 +21,7 @@ const (
 //   - referral_rebates（返佣账本，recharge_order_id 唯一保证一单一条）
 //   - users.invited_by_user_id / users.invited_at（归因快照列）
 //
-// 纪律（AGENTS.md 第 11 / 17 条）：
+// 纪律：
 //   - 结构性建表/建列失败 → 返回错误，让启动 FATAL 看见；
 //   - 数据回填失败 → 只记日志、不阻断启动，下次启动重试（本迁移没有回填，
 //     只建结构，但保留同样的失败分层）；

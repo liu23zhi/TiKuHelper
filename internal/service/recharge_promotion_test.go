@@ -425,7 +425,7 @@ func TestRechargePromotionBelowThresholdGrantsNothing(t *testing.T) {
 }
 
 // TestRechargePromotionEnabledButLedgerConflictIsSwallowed 直接验证唯一键冲突被吞掉：
-// 同一订单重复调用 GrantRechargePromotionInTx 只加一次钱（AGENTS.md §26.4）。
+// 同一订单重复调用 GrantRechargePromotionInTx 只加一次钱（唯一键冲突被吞掉）。
 func TestRechargePromotionEnabledButLedgerConflictIsSwallowed(t *testing.T) {
 	db := newRechargePromotionTestDB(t)
 	user := seedRechargeOrderUser(t, db, 209, "user")

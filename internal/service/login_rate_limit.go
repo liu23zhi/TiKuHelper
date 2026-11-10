@@ -133,7 +133,7 @@ var (
 // LoginRateLimitPolicy 是一套限流的完整参数。
 //
 // 两套限流的差异只体现在这个结构体的取值上，判定逻辑完全共用
-// （避免「同一语义两份实现」，AGENTS.md 第 13 条）。
+// （避免「同一语义两份实现」）。
 type LoginRateLimitPolicy struct {
 	// Scope 取 account / ip。
 	Scope string
@@ -521,7 +521,7 @@ func NormalizeLoginAccountKey(username string) string {
 	if trimmed == "" {
 		return ""
 	}
-	// 按字符截断到 128（与 varchar(128) 对齐，AGENTS.md 第 1 条）。
+	// 按字符截断到 128（与 varchar(128) 对齐）。
 	runes := []rune(trimmed)
 	if len(runes) > 128 {
 		return string(runes[:128])

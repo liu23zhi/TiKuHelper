@@ -16,7 +16,7 @@ import (
 // newQuotaEpochTestDB 建一个带 users / access_tokens / logs / quota_epochs 的内存库。
 //
 // 库名带 t.Name()：`file:xxx?mode=memory&cache=shared` 在同一个测试进程内
-// 同名库是共享的，跨用例会互相污染（AGENTS.md 第 9 条）。
+// 同名库是共享的，跨用例会互相污染。
 //
 // DSN 的并发参数**不手写**，直接调 pkg/util.SQLiteConcurrentDSN —— 与生产
 // internal/registry.sqliteProductionDSN 共用同一份定义，因此「生产改了测试没跟着改」

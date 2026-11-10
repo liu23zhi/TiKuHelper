@@ -19,7 +19,7 @@ const (
 // 覆盖：login_attempts(scope, subject_key, fail_count, window_start, locked_until, updated_at)
 // 主键 (scope, subject_key) 即规格要求的「唯一索引 (scope, subject_key)」。
 //
-// 纪律（AGENTS.md 第 11 / 17 条）：
+// 纪律：
 //   - 结构性建表失败 → 返回错误，让启动 FATAL 看见；
 //   - 没有数据回填，**不做任何 DROP TABLE**；
 //   - 用 system_settings 标记保证只跑一次，失败不写标记，下次启动幂等重跑；

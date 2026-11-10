@@ -10,7 +10,7 @@ import (
 // startupMigrationSlowThreshold 是启动迁移「算慢」的阈值。
 //
 // 启动迁移是串行的，任何一步超标都会让容器启动肉眼可见地变慢。这里主动记一条日志，
-// 避免下次又要靠「感觉启动好慢」才发现问题（见 AGENTS.md 第 18b 条）。
+// 避免下次又要靠「感觉启动好慢」才发现问题。
 const startupMigrationSlowThreshold = 1 * time.Second
 
 // runStartupMigration 执行一个启动迁移并记录耗时。
@@ -34,6 +34,6 @@ func startupMigrationSlowLog(name string, elapsed, threshold time.Duration) (str
 	if threshold <= 0 || elapsed < threshold {
 		return "", false
 	}
-	return fmt.Sprintf("启动迁移 %s 耗时 %dms（超过 %dms，检查是否退化成逐行扫表，见 AGENTS.md 第 18b 条）",
+	return fmt.Sprintf("启动迁移 %s 耗时 %dms（超过 %dms，检查是否退化成逐行扫表）",
 		name, elapsed.Milliseconds(), threshold.Milliseconds()), true
 }

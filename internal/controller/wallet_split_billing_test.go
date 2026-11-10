@@ -15,7 +15,7 @@ import (
 // newWalletSplitBillingFixture 建一个能直接驱动扣费落账的最小库。
 //
 // 与 priceHistory / runtime 的 fixture 同构：只迁移本用例真正会用到的表，
-// 库名按 t.Name() 隔离（AGENTS.md 第 9 条：内存库同名会跨用例污染）。
+// 库名按 t.Name() 隔离（内存库同名会跨用例污染）。
 func newWalletSplitBillingFixture(t *testing.T, balance, gift float64) (*gorm.DB, entity.User, entity.AccessToken) {
 	t.Helper()
 

@@ -13,7 +13,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// newReferralTestDB 建一个独立的内存 SQLite（按 t.Name() 隔离，见 AGENTS.md 第 9 条）。
+// newReferralTestDB 建一个独立的内存 SQLite（按 t.Name() 隔离）。
 func newReferralTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 

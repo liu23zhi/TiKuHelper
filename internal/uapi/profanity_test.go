@@ -128,7 +128,7 @@ func TestCheckProfanityMapsHTTPErrorsToSentinels(t *testing.T) {
 			if !errors.Is(err, tc.expected) {
 				t.Fatalf("status=%d 期望 %v，实际 %v", tc.status, tc.expected, err)
 			}
-			// 提交型 POST 不重放（AGENTS.md 第 19 条）。
+			// 提交型 POST 不重放。
 			if got := atomic.LoadInt32(&calls); got != 1 {
 				t.Fatalf("status=%d 应只请求 1 次，实际 %d 次（提交型 POST 不重放）", tc.status, got)
 			}

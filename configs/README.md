@@ -1,31 +1,24 @@
 ## 自定义配置
-您可以在您的程序运行的`根目录创建此文件`，程序会自动读取。
-完整参数详见本目录的`config.yaml` 文件。
 
-### 限流配置
-您可以对您的搜题接口针对IP进行限流，防止恶意请求。默认已开启。
-```yaml
-limit:
-  enable: true
-  duration: 60 # 时间窗口为60秒
-  requests: 120 # 每个来源IP在窗口内最多120个请求
-```
+在程序运行的**根目录**创建 `config.yaml`，程序会自动读取。全部字段与默认值见本目录的
+`config.yaml`。
 
-### JWT 配置
-`JWT_SECRET` 环境变量符合要求时优先使用并写入数据库，至少32字节，用于签发带过期时间的登录令牌。环境变量为空时，程序会复用数据库中的密钥；没有有效密钥时自动生成并保存。
+### 限流
 
-```bash
-export JWT_SECRET="使用密码管理器生成的至少32字节随机值"
-```
+按来源 IP 限流，默认开启：60 秒窗口内每个 IP 最多 120 次请求（`limit.enable` /
+`duration` / `requests`）。
 
-`TRUSTED_PROXIES` 为空时信任所有代理转发头，设置后仅信任逗号分隔的代理 IP/CIDR。
+### JWT 与代理
 
-### 数据库配置
-您可以对您的数据库配置，默认使用sqlite3，您可以指定mysql为您的数据库。
-一种是在配置文件中指定，另外一种是在指定环境变量`SQL_DSN`。
-```yaml
-mysql: "tiku:tiku@tcp(127.0.0.1:3306)/tiku?charset=utf8mb4&parseTime=True&loc=Local"
-```
+`JWT_SECRET` 至少 32 字节，环境变量优先并写入数据库；为空时复用数据库密钥，没有有效密钥时
+自动生成保存。
+
+`TRUSTED_PROXIES` 为空时**信任所有代理转发头**；设置后仅信任逗号分隔的代理 IP/CIDR。
+反代部署时这个方向不能配错。
+
+### 数据库
+
+默认 SQLite3，也支持 MySQL（配置文件 `mysql` 字段或 `SQL_DSN` 环境变量）。
 
 **优先级（环境变量最高）**：
 
@@ -33,76 +26,20 @@ mysql: "tiku:tiku@tcp(127.0.0.1:3306)/tiku?charset=utf8mb4&parseTime=True&loc=Lo
 SQL_DSN 环境变量  >  config.yaml 的 mysql 字段  >  SQLite（database.path，默认 tiku.db）
 ```
 
-- 两者都配置时**以环境变量为准**，并在启动日志里提示两者不一致（不会打印 DSN 本体，里面含密码）。
-- 容器部署建议只用 `SQL_DSN`：改镜像不必动配置文件，也不会出现「改了环境变量却仍然连旧库」。
-- 启动日志会打印 `数据库连接来源：SQL_DSN 环境变量 / config.yaml 的 mysql 字段 / SQLite`，可据此确认实际生效的是哪一份。
+两者都配置时以环境变量为准，启动日志会提示不一致（不打印 DSN 本体）。建议 MySQL 8.0 +
+InnoDB；项目含多个 utf8mb4 复合索引，旧版需确认大索引前缀与 `DYNAMIC` 行格式已启用，
+否则迁移可能建不出索引。
 
-建议使用 MySQL 8.0 和 InnoDB。项目包含多个 utf8mb4 复合索引，旧版 MySQL 需确认大索引前缀与 `DYNAMIC` 行格式已启用，否则启动迁移可能无法创建索引。
+连接池由 `database.mysqlPool` 控制（默认 `maxOpenConns: 32`、`maxIdleConns: 8`、连接最长
+30 分钟、空闲 5 分钟），`maxOpenConns` 同时是优先级调度器并发上限。DSN 参数会在建连前自动
+补齐 `parseTime=true`、`loc=Asia/Shanghai`、`charset=utf8mb4`（缺 `parseTime` 会启动即崩）。
 
-MySQL 使用 `database.mysqlPool` 控制 Go 进程内的连接池。默认最多打开 32 个连接、保留 8 个空闲连接，连接最长存活 30 分钟、空闲 5 分钟；`maxOpenConns` 同时控制优先级调度器的并发上限。按 MySQL 服务端连接数、应用实例数和实际负载调低或调高，避免多个实例的连接池总量超过数据库容量。
+### 自定义外部题库
 
-```yaml
-database:
-  mysqlPool:
-    maxOpenConns: 32
-    maxIdleConns: 8
-    connMaxLifetimeSeconds: 1800
-    connMaxIdleTimeSeconds: 300
-```
+字段含义：`url` 接口地址、`method` 请求方法、`headers` 请求头（`Content-Type` 必须正确）、
+`body` 请求体（支持占位符 `${question}`、`${type}`）、`answer` 用 jsonpath 取答案的路径。
+`enable: false` 时不生效。内置样例渠道已集成，无需重复配置。
 
-连接池用于连接复用和限制并发，不会缩短单条慢 SQL。查询延迟仍应结合 `SLOW SQL` 日志、MySQL 慢查询日志和 `EXPLAIN` 检查筛选、排序、JOIN 与索引使用情况；不要仅为提高并发盲目增大连接数。
+### 自动录入题库
 
-**DSN 参数会自动补齐**：程序建连前补 `parseTime=true`（缺它则时间列无法扫描，
-`system_settings` 读取失败会让服务启动即崩）、未显式指定时的 `loc=Asia/Shanghai` 与
-`charset=utf8mb4`，并在启动日志打印 `MySQL DSN 已补齐参数：…`。
-最省心的写法仍然是把参数写全：
-```
-user:password@tcp(host:3306)/db?charset=utf8mb4&parseTime=True&loc=Local
-```
-
-
-### 自定义外部题库配置
-当然您也可以接入外部的第三方题库，通过简单的配置，如下给出两个demo。
-其中需要注意的是：
-- `url`字段是您的题库的接口地址。
-- `method`字段是您的题库的请求方法。
-- `headers`字段是您的题库的请求头，您可以通过`key`和`value`来设置。必须设置正确`Content-Type`，否则可能无法正常请求。
-- `body`字段是您的题库的请求体，您可以通过`${question}`来获取用户的问题。支持的占位符有 `${question}`，`${type}`。
-- `answer`字段是您的题库返回的答案的路径，您可以通过`jsonpath`语法来获取。
-
-以下为您提供两个开箱即用的demo，您可以直接复制到您的`config.yaml`中，然后修改`enable`为`true`即可测试。但是您需要注意，以下两个题库均已经集成到tikuAdapter中，所以您无需再次配置它，当您测试完毕，将`enable`改为`false`即可。
-
-```yaml
-api:
-  - name: '样例接口 json 请求'
-    enable: false
-    url: http://lyck6.cn/scriptService/api/autoFreeAnswer
-    method: POST
-    headers:
-      - key: Content-Type
-        value: application/json
-    body: '{"question":"${question}"}'
-    answer: 'result.answers.0.0'
-
-  - name: '样例接口 表单请求'
-    enable: false
-    url: https://cx.icodef.com/wyn-nb?v=4
-    method: POST
-    headers:
-      - key: Content-Type
-        value: application/x-www-form-urlencoded
-    body: 'question=${question}'
-    answer: 'data'
-```
-
-### 自动录入题库功能
-使用脚本答题或者请求API接口，将会自动记录您的问题和答案，可以通过 `recordEmptyAnswer` 来控制是否记录空答案。
-```yaml
-recordEmptyAnswer: true # 设置为 true 将会记录空答案否则只会记录已有答案
-```
-
-### 持久化到数据库
-您可以将您的题库数据持久化到数据库，目前支持的数据库有`mysql`和`sqlite`，您可以通过`mysql`来设置。如果不配置，默认使用`sqlite`。
-```yaml
-mysql: username:password@tcp(localhost:3306)/databasename
-```
+脚本答题或调 API 时会自动记录问题与答案；`recordEmptyAnswer: true` 时连空答案也记录。

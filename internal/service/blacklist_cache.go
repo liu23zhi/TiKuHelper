@@ -689,7 +689,7 @@ func (r *BlacklistHitRecorder) purgeExpiredLocked(now time.Time) {
 	}
 }
 
-// truncateBlacklistRunes 按**字符**截断（AGENTS.md 第 1 条：判定与切片同单位）。
+// truncateBlacklistRunes 按**字符**截断（判定与切片同单位）。
 func truncateBlacklistRunes(value string, maxRunes int) string {
 	if utf8.RuneCountInString(value) <= maxRunes {
 		return value

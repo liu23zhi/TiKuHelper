@@ -79,7 +79,7 @@ func CollectAnswer(resp model.SearchResponse, courseName, extra, provider string
 		// 历史实现是「先 Create，失败再查库补空字段」，于是每搜到一道重复题，
 		// 数据库日志都会记一条 `UNIQUE constraint failed: tiku.hash, tiku.course_name`
 		// 的 ERROR（线上 8 次收录里刷了 3 条），既误导排障、也浪费一次失败写入。
-		// 见 AGENTS.md 第 26 条。
+		// 冲突行保留原值、不覆盖已有答案：这就是「写入遇唯一键冲突跳过并完成」的既定行为。
 		result := dao.Tiku.UnderlyingDB().Clauses(clause.OnConflict{DoNothing: true}).Create(&t)
 		if result.Error != nil {
 			return resultInfo

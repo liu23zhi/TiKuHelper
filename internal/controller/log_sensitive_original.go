@@ -35,7 +35,7 @@ const sensitiveOriginalTimeLayout = "2006-01-02T15:04:05Z07:00"
 //
 // 同时返回遮挡形态：让调用方（含 PLUS 的 chaoxing 面板）在同一响应里拿到
 // 「默认该显示什么」与「展开后显示什么」，不必自己再遮挡一遍，
-// 避免两端实现漂移（AGENTS.md 第 13 条）。
+// 避免两端实现漂移（同一语义只允许一份实现）。
 type logSensitiveOriginalResponse struct {
 	ID int32 `json:"id"`
 	// SensitiveFlag 该行是否命中敏感词；false 时其余字段与普通日志读取一致。

@@ -8,7 +8,7 @@ import "time"
 //   - logs.gen.go 由 gorm.io/gen 生成，文件头写着 DO NOT EDIT；
 //   - 本项目已有的先例（CorrelationID）是手改生成文件，但那样每跑一次
 //     生成器就会把新字段抹掉，改的人未必知道；
-//   - AGENTS.md 第 26.3 条要求「新列由显式 ensure*Schema 迁移补」，
+//   - 本项目约定「新列由显式 ensure*Schema 迁移补」（AutoMigrate 不参与建列），
 //     生成结构体本身不参与建表。
 //
 // 因此把四列声明成同一张表的第二个结构体：列的物理定义由

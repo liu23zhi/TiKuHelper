@@ -71,7 +71,7 @@ type BlacklistHit struct {
 	// ValueMasked 是命中的请求值（脱敏），不是规则原文。
 	ValueMasked string `gorm:"column:value_masked;type:varchar(191);not null;default:''" json:"valueMasked"`
 	ClientIP    string `gorm:"column:client_ip;type:varchar(64);not null;default:''" json:"clientIp"`
-	// Path 是请求路径（截断到 255 字符，按字符而不是字节，见 AGENTS.md 第 1 条）。
+	// Path 是请求路径（截断到 255 字符，按字符而不是字节）。
 	Path string `gorm:"column:path;type:varchar(255);not null;default:''" json:"path"`
 	// Action 取 blocked / logged_only（logged_only = fail-open 时只留痕不拦）。
 	Action string `gorm:"column:action;type:varchar(16);not null;default:''" json:"action"`

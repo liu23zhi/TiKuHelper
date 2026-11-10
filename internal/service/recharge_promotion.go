@@ -81,7 +81,7 @@ func SelectRechargePromotionTier(paidAmount float64) (RechargePromotionTier, boo
 
 // ComputeRechargePromotionGiftAmount 计算某笔充值的赠金金额（6 位口径）。
 //
-// 金额精度分层（AGENTS.md §6）：
+// 金额精度分层（余额/账务 6 位，充值实付 2 位）：
 //   - **入参**是充值实付金额，2 位口径；
 //   - **出参**是赠金，属于钱包/账务，6 位口径；
 //   - 全程用 util.RoundMoney* 收敛，不自己写四舍五入。
@@ -149,7 +149,7 @@ func rechargePromotionSession(db *gorm.DB) *gorm.DB {
 // 幂等：由 recharge_promotion_grants.recharge_order_id 的唯一索引保证。
 // 重复支付回调在 HandleRechargePaymentNotifyWithDB 里已被 paid 状态提前 return，
 // 即使极端并发走到了这里，第二笔插入会撞唯一键 —— 用 OnConflict{DoNothing} +
-// RowsAffected==0 静默跳过（AGENTS.md §26.4），**绝不把已提交的到账事务打回滚**。
+// RowsAffected==0 静默跳过（唯一键冲突跳过并完成），**绝不把已提交的到账事务打回滚**。
 //
 // 返回 nil 的三种情况（都属于正常降级，不是错误）：
 //   - 开关关闭；

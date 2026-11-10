@@ -8,7 +8,7 @@ const TableNameLoginAttempt = "login_attempts"
 //
 // 用一张表 + scope 区分两套限流，而不是两张表：两者的「连续失败计数 + 窗口 +
 // 锁定」逻辑完全相同，只有配置来源与是否可关闭不同。分两张表会把同一段
-// 计数逻辑抄两遍，而这类「同一语义两份实现」正是本项目踩坑高发区（AGENTS.md 第 13 条）。
+// 计数逻辑抄两遍，而这类「同一语义两份实现」正是本项目踩坑高发区。
 const (
 	// LoginAttemptScopeAccount 是**普通模式**：按账号（username）计数。
 	// 可被管理员通过 login_rate_limit_enabled 完全关闭。

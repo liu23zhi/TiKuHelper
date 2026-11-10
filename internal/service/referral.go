@@ -179,7 +179,7 @@ func EnsureReferralInviteWithDB(db *gorm.DB, userID int32) (entity.ReferralInvit
 		}
 		invite := entity.ReferralInvite{UserID: userID, Code: code}
 		// DoNothing + RowsAffected==0：并发注册同一用户时不会因为唯一键冲突
-		// 把整个注册事务打回滚（见 AGENTS.md 第 26.4 条）。
+		// 把整个注册事务打回滚（唯一键冲突跳过并完成）。
 		result := referralSession(db).Clauses(clause.OnConflict{DoNothing: true}).Create(&invite)
 		if result.Error != nil {
 			return entity.ReferralInvite{}, result.Error
@@ -866,7 +866,7 @@ func GetReferralSummaryWithDB(db *gorm.DB, userID int32) (ReferralSummary, error
 // buildReferralRebateQuery 构造列表与统计共用的基础查询（含权限范围）。
 //
 // JOIN 放在这里而不是取数据时才加：Count 与 Find 必须共用同一套条件，
-// 否则会出现「列表 1 行、合计却是全量」的口径漂移（AGENTS.md 第 3 条）。
+// 否则会出现「列表 1 行、合计却是全量」的口径漂移。
 func buildReferralRebateQuery(db *gorm.DB) *gorm.DB {
 	return db.Session(&gorm.Session{NewDB: true}).Model(&entity.ReferralRebate{}).
 		Joins("LEFT JOIN users AS inviter ON inviter.id = referral_rebates.inviter_user_id").

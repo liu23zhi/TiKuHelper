@@ -9,7 +9,7 @@ const TableNameRechargePromotionGrant = "recharge_promotion_grants"
 // 为什么需要独立表（而不是只写一条 billing_records）：
 //   - 幂等需要一个**结构性**唯一键。billing_records 没有 (type, related_order_id)
 //     唯一索引，也没法在不影响历史行的前提下加上；
-//   - 充值回调是核心支付路径，唯一键冲突必须被吞掉（AGENTS.md §26.4），
+//   - 充值回调是核心支付路径，唯一键冲突必须被吞掉（跳过冲突行、不中止重跑），
 //     不能把已经提交的到账事务打回滚。`recharge_order_id` 唯一 + OnConflict
 //     DoNothing 正好给出这个语义；
 //   - 档位/比例/门槛要在产生时快照，改配置不回溯已发放（与 referral_rebates 同构）。

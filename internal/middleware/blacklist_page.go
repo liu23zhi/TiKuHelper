@@ -191,7 +191,7 @@ h1 { font-size: 19px; margin: 0 0 10px; font-weight: 600; }
 `
 }
 
-// truncateRunes 按**字符**截断（AGENTS.md 第 1 条：判定与切片必须同单位）。
+// truncateRunes 按**字符**截断（判定与切片必须同单位）。
 func truncateRunes(value string, maxRunes int) string {
 	if maxRunes <= 0 {
 		return ""

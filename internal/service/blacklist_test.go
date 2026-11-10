@@ -16,7 +16,7 @@ import (
 // newBlacklistTestDB 建一个隔离的黑名单测试库。
 //
 // 库名带 t.Name()：SQLite 的 file:...?mode=memory&cache=shared 在同一进程内
-// 同名库是共享的，跨用例会互相污染（AGENTS.md 第 9 条）。
+// 同名库是共享的，跨用例会互相污染。
 func newBlacklistTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	name := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())

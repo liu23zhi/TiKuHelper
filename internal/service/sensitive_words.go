@@ -140,7 +140,7 @@ func GetSensitiveWordCheckStatusWithDB(db *gorm.DB) SensitiveWordCheckStatus {
 //
 // 生产恒为空（用 uapi.DefaultProfanityCheckURL）。存在的唯一理由：让
 // 「开关关闭时到底有没有外呼」这类断言可以用本地 httptest 计数来证明，
-// 而不是靠「结果为空」猜测 —— 空结果和「没发请求」看起来一样（AGENTS.md 第 21 条）。
+// 而不是靠「结果为空」猜测 —— 空结果和「没发请求」看起来一样。
 var sensitiveWordCheckURL string
 
 // SetSensitiveWordCheckURLForTesting 覆盖检测端点，返回恢复函数。
@@ -166,7 +166,7 @@ func BuildSensitiveWordDetectorWithDB(db *gorm.DB) SensitiveWordDetector {
 	if !hasUsableUAPIKey(key) {
 		return nil
 	}
-	// SetMaxRetries(0)：提交型 POST 不重放（AGENTS.md 第 19 / 21 条），
+	// SetMaxRetries(0)：提交型 POST 不重放，
 	// 重试次数只保留客户端内部那一层，避免上层再叠加导致相乘。
 	client := uapi.NewClient(key).SetMaxRetries(0)
 	if override := strings.TrimSpace(sensitiveWordCheckURL); override != "" {
@@ -470,7 +470,7 @@ func resolveSensitiveWordPayloadWithDB(ctx context.Context,
 		// 不缓存它的坏处是同一文本再外呼一次；缓存它的坏处却是永久的——
 		// 一行 status 空、error 空、sensitive=false 的缓存，会命中「命中 且 Error == ""」
 		// 分支被无限复用，等于把一次上游异常固化成「这段文本永远干净」
-		// （AGENTS.md 第 16.6 条：写入必须带可用性判据，空结果不能进缓存）。
+		// （写入必须带可用性判据，空结果不能进缓存）。
 		// 走失败语义：Error 非空 + AttemptCount 递增，AttemptCount 到上限后自然停止重试。
 		cacheError = fmt.Sprintf("上游未给出可判定状态 status=%q", status)
 		if cacheError = truncateSensitiveWordError(cacheError); cacheError == "" {
@@ -639,7 +639,7 @@ func truncateSensitiveWordError(message string) string {
 // ResolveSensitiveWordSettingInput 处理开关的「省略 = 保持现值」写入语义。
 //
 // requested 为 nil 表示调用方没有提交该字段：读库现值，读不到就是 false。
-// 与 RechargePromotionEnabled / ReviewRebateEnabled 完全一致（AGENTS.md 第 22 条上下文）。
+// 与 RechargePromotionEnabled / ReviewRebateEnabled 完全一致（都是「省略 = 保持现值」的设置语义）。
 func ResolveSensitiveWordSettingInput(db *gorm.DB, requested *bool) bool {
 	return resolveBoolSettingInput(db, requested, SensitiveWordCheckEnabledSettingKey)
 }
@@ -660,7 +660,7 @@ func SensitiveWordLogColumns() []string {
 //   - 用 map 而不是结构体，避免 GORM 把零值（Flag=false）当成「未赋值」跳过，
 //     否则「检测通过」会与「从未检测」在库里无法区分；
 //   - logID <= 0 直接放弃：logs 表没有 request_id 列，按 requestId 模糊匹配
-//     会误更新同一秒的其它行（AGENTS.md 第 18b 条的同源教训）；
+//     会误更新同一秒的其它行；
 //   - 失败只返回错误给调用方记日志，绝不向上冒泡成答题失败。
 func SaveSensitiveWordOutcomeWithDB(db *gorm.DB, logID int32, outcome SensitiveWordCheckOutcome, checkedAt time.Time) error {
 	if db == nil {

@@ -748,7 +748,7 @@ func TestSaveSensitiveWordOutcomeWithDBRejectsMissingLogID(t *testing.T) {
 //
 // 需求原文：「请同步修改数据库，避免反复检测，浪费API」。
 // 下面每条测试都用**可数的检测器**断言「实际外呼次数」，而不是只看结果 ——
-// 结果对但外呼了两次，正是这个功能要消灭的浪费（AGENTS.md 第 21 条）。
+// 结果对但外呼了两次，正是这个功能要消灭的浪费。
 
 // countingDetector 返回检测器 + 计数读取函数。计数用指针而不是返回值快照，
 // 因为检测器会被多次调用，快照会读到过期的 0。

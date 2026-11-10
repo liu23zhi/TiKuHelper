@@ -24,8 +24,8 @@ import (
 // billing_records 4406 行重建 6 次、tiku 3 次…），数据量越大越慢。
 //
 // 因此这里只拦掉「改列」：建表、补列（AddColumn）、建索引、建约束全部保留，
-// 结构性变更继续由各 ensure*Schema 显式迁移负责 —— 这也是本项目既有的约定
-// （见 AGENTS.md 第 26 条）。
+// 结构性变更继续由各 ensure*Schema 显式迁移负责 —— 这是本项目既有的约定：
+// 迁移不再依赖 AutoMigrate 改列。
 type sqliteQuietMigrator struct {
 	gorm.Migrator
 }

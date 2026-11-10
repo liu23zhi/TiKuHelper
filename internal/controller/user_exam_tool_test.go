@@ -266,7 +266,7 @@ func writePlaintextUserExamFixture(t *testing.T) []byte {
 			t.Fatalf("seed %q: %v", statement, err)
 		}
 	}
-	// Windows 上必须先关闭句柄，否则 TempDir 清理会失败（AGENTS.md 第 9 条）。
+	// Windows 上必须先关闭句柄，否则 TempDir 清理会失败。
 	if err := db.Close(); err != nil {
 		t.Fatalf("close fixture: %v", err)
 	}

@@ -76,7 +76,7 @@ export function resolveSensitiveDisplayText(record, text, options = {}) {
  *
  * 用 rune（码点）计数而不是 `String.length`（UTF-16 码元）：
  * 后端按 rune 报「共 N 字」，两边数字必须一致，否则用户会看到
- * 同一条日志在列表里「共 12 字」、在详情里「共 14 字」（AGENTS.md 第 1 条）。
+ * 同一条日志在列表里「共 12 字」、在详情里「共 14 字」。
  *
  * @param {string} text
  * @returns {string}

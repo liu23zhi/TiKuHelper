@@ -199,7 +199,7 @@ type logListItem struct {
 //   - description / old_answer / new_answer 是原始快照列；
 //   - project 是**读取时派生**的列，但它同样能装原文（见下方 Project 段）；
 //   - 其余列（模块、状态、时间、渠道、计费）必须照常可读，否则日志列表
-//     对非管理员就彻底失去排障价值（AGENTS.md 第 3 / 4 条的同源问题）。
+//     对非管理员就彻底失去排障价值（同源问题：整段替换会把无关列一并打空）。
 //
 // 只处理 sensitive_flag = true 的行：未命中的行本来就不含敏感词，
 // 遮挡它们只会平白破坏可读性。
@@ -250,7 +250,7 @@ type logBillingKey struct {
 
 // logListItemsWithBillingIDs 一次性把整页日志与账单关联起来。
 //
-// 性能契约（AGENTS.md 第 18b 条）：一页只查一次 billing_records，绝不逐行查。
+// 性能契约：一页只查一次 billing_records，绝不逐行查。
 // 返回的 billingMeta 供「项目」列派生使用，来自**同一次**查询（只多读四列），
 // 因此「项目」列不增加任何查询次数。
 //
@@ -326,7 +326,7 @@ func logListItemsWithBillingIDs(db *gorm.DB, currentUser *entity.User, logs []*e
 
 // attachSensitiveWordFields 一次批量查询把敏感词标记挂到本页的日志行上。
 //
-// 性能契约（AGENTS.md 第 18b 条）：**一次 `WHERE id IN (...)`**，不按行查库；
+// 性能契约：**一次 `WHERE id IN (...)`**，不按行查库；
 // 行数上限就是分页上限（100），内存与「本页行数」同量级。
 //
 // 失败静默：敏感词标记是展示增强，查不到就当作「未检测」，

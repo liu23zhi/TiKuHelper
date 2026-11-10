@@ -193,3 +193,195 @@ func TestFillAnswerResponseValidatesWholeObjectiveAnswerGroups(t *testing.T) {
 		})
 	}
 }
+
+// 填空题/连线题（type=2）与简答题/阅读理解（type=4/-4）同属非客观题，
+// 答案正文必须原样返回：这些题的答案是用户要填进空里的原文，
+// 改写标点或全角字符会让填进去的答案与被考答案不一致。
+//
+// 参考依据（chaoxingexam/subjective_answers.py）：
+//   - :13  SUBJECTIVE_TYPES 明确包含「填空题」
+//   - :136-149 clean_html_tags 只清 HTML 标签、保留标点，不做标点归一化
+func TestFillAnswerResponsePreservesBlankQuestionAnswerTextVerbatim(t *testing.T) {
+	rawAnswers := []string{
+		"这是答案。",   // 句号
+		"因为：所以",   // 全角冒号
+		"为什么？",    // 问号
+		"他说：“好的”", // 中文引号
+		"ＡＢＣ",     // 全角字母
+		"1.5",     // 小数点（必须不被去尾)
+		"《红楼梦》",   // 书名号
+	}
+	for _, raw := range rawAnswers {
+		t.Run(raw, func(t *testing.T) {
+			resp := FillAnswerResponse([][]string{{raw}}, &model.SearchRequest{
+				Question: "请填空",
+				Type:     2,
+			})
+			if !reflect.DeepEqual(resp.Answer.BestAnswer, []string{raw}) {
+				t.Fatalf("type=2 答案必须原样保留：want %q, got %q", raw, resp.Answer.BestAnswer)
+			}
+			if resp.Answer.AnswerText != raw {
+				t.Fatalf("type=2 answerText 必须原样保留：want %q, got %q", raw, resp.Answer.AnswerText)
+			}
+		})
+	}
+}
+
+// 同一份答案文本在 type=2 与 type=4 下必须得到相同结果（对称性钉子）：
+// 两者都是非客观题，不该因为题型编号不同而改写正文。
+func TestFillAnswerResponseTreatsBlankAndEssayTypesSymmetrically(t *testing.T) {
+	const raw = "因为：所以。"
+	type2 := FillAnswerResponse([][]string{{raw}}, &model.SearchRequest{Question: "q", Type: 2})
+	type4 := FillAnswerResponse([][]string{{raw}}, &model.SearchRequest{Question: "q", Type: 4})
+	typeNeg4 := FillAnswerResponse([][]string{{raw}}, &model.SearchRequest{Question: "q", Type: -4})
+	if type2.Answer.AnswerText != type4.Answer.AnswerText || type4.Answer.AnswerText != typeNeg4.Answer.AnswerText {
+		t.Fatalf("非客观题答案正文处理必须一致：type=2 %q, type=4 %q, type=-4 %q",
+			type2.Answer.AnswerText, type4.Answer.AnswerText, typeNeg4.Answer.AnswerText)
+	}
+}
+
+// 判断题的选项常常就是 A/B 两值（题库普遍用 A=正确、B=错误），
+// 因此纯字母答案必须在**判断题**上映射到对应选项。
+//
+// 依据（chaoxing-exam 参考项目）：
+//   - references/answer-json-format.md:14「判断题的 answer 值是 true/false，
+//     不是 A/B」→ 字母与选项值是两套表示，服务端必须能解析字母；
+//   - SKILL.md:272-278 陷阱 4「填写答案时必须用显示字母匹配」。
+//
+// 范围刻意收窄：只在 type=3 且选项**没有**对错语义（如 A/B）时按标号解析。
+// 单选/多选保持既有语义 —— 那里「B」既可能是标号也可能是某个选项正文，
+// 既有测试 TestFillAnswerResponseStripsOptionLabelRepeatedByProvider 的
+// "letter-only answer stays unmapped" 子用例有意钉住了该行为（commit 0b171b6）。
+func TestFillAnswerResponseResolvesOptionLabelForJudgementQuestions(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		answer   string
+		options  []string
+		wantBest []string
+		wantKey  string
+	}{
+		{"A映射到正确", "A", []string{"正确", "错误"}, []string{"正确"}, "A"},
+		{"B映射到错误", "B", []string{"正确", "错误"}, []string{"错误"}, "B"},
+		{"小写a", "a", []string{"正确", "错误"}, []string{"正确"}, "A"},
+		{"带点号", "B.", []string{"正确", "错误"}, []string{"错误"}, "B"},
+		{"括号", "(A)", []string{"正确", "错误"}, []string{"正确"}, "A"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := FillAnswerResponse([][]string{{tt.answer}}, &model.SearchRequest{
+				Question: "判断",
+				Options:  append([]string(nil), tt.options...),
+				Type:     3,
+			})
+			if !reflect.DeepEqual(resp.Answer.BestAnswer, tt.wantBest) {
+				t.Fatalf("best answer: want %v, got %v", tt.wantBest, resp.Answer.BestAnswer)
+			}
+			if resp.Answer.AnswerKeyText != tt.wantKey {
+				t.Fatalf("answer key: want %q, got %q", tt.wantKey, resp.Answer.AnswerKeyText)
+			}
+		})
+	}
+}
+
+// 判断题用 对/错、√/× 等语义值作答时，既有极性映射必须仍然优先，
+// 不能被新增的标号解析抢走。
+func TestFillAnswerResponseKeepsPolarityMappingBeforeLabelResolution(t *testing.T) {
+	for _, tt := range []struct {
+		answer   string
+		wantBest string
+		wantKey  string
+	}{
+		{"对", "正确", "A"},
+		{"错", "错误", "B"},
+		{"√", "正确", "A"},
+		{"×", "错误", "B"},
+		{"true", "正确", "A"},
+		{"false", "错误", "B"},
+	} {
+		t.Run(tt.answer, func(t *testing.T) {
+			resp := FillAnswerResponse([][]string{{tt.answer}}, &model.SearchRequest{
+				Question: "判断",
+				Options:  []string{"正确", "错误"},
+				Type:     3,
+			})
+			if !reflect.DeepEqual(resp.Answer.BestAnswer, []string{tt.wantBest}) {
+				t.Fatalf("want %v, got %v", tt.wantBest, resp.Answer.BestAnswer)
+			}
+			if resp.Answer.AnswerKeyText != tt.wantKey {
+				t.Fatalf("want key %q, got %q", tt.wantKey, resp.Answer.AnswerKeyText)
+			}
+		})
+	}
+}
+
+// 判断题选项本身带对错语义时，不该再走标号解析：
+// ["正确","错误"] 上答 "A" 仍按标号（选项无极性），
+// 但 ["对","错"] 上答 "A" 也一样 —— 关键是越界标号必须被拒绝。
+func TestFillAnswerResponseRejectsOutOfRangeOptionLabelForJudgement(t *testing.T) {
+	resp := FillAnswerResponse([][]string{{"C"}}, &model.SearchRequest{
+		Question: "判断",
+		Options:  []string{"正确", "错误"},
+		Type:     3,
+	})
+	if len(resp.Answer.BestAnswer) != 0 {
+		t.Fatalf("越界标号必须被拒绝，got %v", resp.Answer.BestAnswer)
+	}
+}
+
+// 单选/多选的纯字母答案维持既有语义（不映射），这是刻意保留的边界：
+// 该行为由 TestFillAnswerResponseStripsOptionLabelRepeatedByProvider 的
+// "letter-only answer stays unmapped" 子用例锁定，此处再显式钉一次，
+// 防止将来有人顺手把标号解析扩到全部客观题。
+func TestFillAnswerResponseDoesNotResolveOptionLabelForChoiceQuestions(t *testing.T) {
+	options := []string{"甲", "乙", "丙"}
+	for _, qType := range []int{0, 1} {
+		resp := FillAnswerResponse([][]string{{"B"}}, &model.SearchRequest{
+			Question: "选择",
+			Options:  append([]string(nil), options...),
+			Type:     qType,
+		})
+		if len(resp.Answer.BestAnswer) != 0 {
+			t.Fatalf("type=%d 的纯字母答案维持既有语义（不映射），got %v", qType, resp.Answer.BestAnswer)
+		}
+	}
+}
+
+// captain 提出的「条件 3：选项内容不是单个字母」在 type=3 上**结构性成立**，
+// 无需额外分支 —— 因为 FormatOptions(type=3) 会用 IsTrue/IsFalse 把 A/B 改写掉：
+//
+//	IsTrue("A")=true  -> "正确"
+//	IsFalse("B")=true -> "错误"
+//
+// 而答案侧 JudgementPolarity **不认** A/B（只有选项侧认）。
+// 这条不对称正是「答案 A 在判断题上拿不到答案」的根因：
+// 选项被改写成了 正确/错误，答案却停在字母 A，两侧对不上。
+//
+// 本用例把这个不对称钉住，防止有人「顺手」把选项侧的 A/B 支持删掉
+// （那会让 [正确,错误] 与 [A,B] 两种写法的题库表现不一致）。
+func TestFormatOptionsNormalizesLetterOptionsForJudgementButPolarityDoesNot(t *testing.T) {
+	// 选项侧：A/B 被归一化成 正确/错误
+	if got := FormatOptions([]string{"A", "B"}, 3); !reflect.DeepEqual(got, []string{"正确", "错误"}) {
+		t.Fatalf("判断题选项侧应把 A/B 归一化为 正确/错误，got %v", got)
+	}
+	// 答案侧：A/B 不被极性识别（所以必须靠标号解析兜底）
+	for _, letter := range []string{"A", "B", "a", "b"} {
+		if _, ok := JudgementPolarity(letter); ok {
+			t.Fatalf("JudgementPolarity 不应识别字母 %q —— 若改为识别，需同步删除 optionLabelIndex 并重测全部答案形态", letter)
+		}
+	}
+}
+
+// 选项字面就是 A/B 的判断题：归一化后仍是 正确/错误，
+// 答案 "B" 映射到「错误」是自洽的（选项语义上就是 [正确,错误]）。
+func TestFillAnswerResponseHandlesLetterOptionsForJudgement(t *testing.T) {
+	resp := FillAnswerResponse([][]string{{"B"}}, &model.SearchRequest{
+		Question: "判断",
+		Options:  []string{"A", "B"},
+		Type:     3,
+	})
+	if !reflect.DeepEqual(resp.Answer.BestAnswer, []string{"错误"}) {
+		t.Fatalf("want [错误], got %v", resp.Answer.BestAnswer)
+	}
+	if resp.Answer.AnswerKeyText != "B" {
+		t.Fatalf("want key B, got %q", resp.Answer.AnswerKeyText)
+	}
+}

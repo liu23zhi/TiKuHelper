@@ -773,7 +773,7 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 
 	// 敏感词打标：给 logs 补四列（flag / words / checked_at / error）。
 	// 只建列不回填 —— 历史行没有检测结论，留空即「从未检测」，不能伪装成「检测通过」。
-	// 无回填 ⇒ 无大表扫描，不存在 AGENTS.md 第 18b 条的性能风险。
+	// 无回填 ⇒ 无大表扫描，不存在「逐行扫大表」的性能风险。
 	if err := runStartupMigration("ensureSensitiveWordSchema", func() error { return ensureSensitiveWordSchema(db) }); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare sensitive word schema fail: %w", err))
 	}
@@ -927,7 +927,7 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 // 不存在 → 创建；已存在且密码仍是空或明文 123456 → 升级为新哈希；
 // **已存在时绝不再次插入** —— 历史实现是无条件 Create，管理员已存在时
 // 每次启动都会撞 `users.id` 唯一键，被数据库日志记成一条 ERROR
-// （线上每次启动都能看到，见 AGENTS.md 第 26 条）。
+// （线上每次启动都能看到）。
 func bootstrapAdminAccount(db *gorm.DB, hashedPassword string) {
 	if db == nil {
 		return

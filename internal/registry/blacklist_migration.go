@@ -20,7 +20,7 @@ const (
 //   - blacklist_entries（规则主表，唯一索引 (kind,value_hash,match_type)）
 //   - blacklist_hits（命中日志，含 hit_count 聚合列）
 //
-// 纪律（AGENTS.md 第 11 / 17 条）：
+// 纪律：
 //   - 结构性建表/建索引失败 → 返回错误，让启动 FATAL 看见；
 //   - 没有数据回填，**不做任何 DROP TABLE**：黑名单是运营数据，删了就没有审计；
 //   - 用 system_settings 标记保证只跑一次，失败不写标记，下次启动幂等重跑；

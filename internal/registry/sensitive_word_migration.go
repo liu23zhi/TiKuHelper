@@ -30,14 +30,14 @@ var sensitiveWordColumns = []struct {
 
 // ensureSensitiveWordSchema 给 logs 表补上敏感词打标的四列。
 //
-// 纪律与其它 ensure* 迁移一致（AGENTS.md 第 11 / 17 条）：
+// 纪律与其它 ensure* 迁移一致：
 //   - 结构性建列失败返回错误，让启动 FATAL 看见；
 //   - 用 system_settings 标记保证只跑一次，失败不写标记，下次启动自动重试；
 //   - 外层 recover 兜底，脏数据不能让服务反复崩溃；
 //   - 只建列不回填：历史行没有检测结果，保持空值即「从未检测」，
 //     不回填成 false（那会把「没检测」伪装成「检测通过」）。
 //
-// 无回填 ⇒ 无大表扫描，不存在 AGENTS.md 第 18b 条的性能风险。
+// 无回填 ⇒ 无大表扫描，不存在「逐行扫大表」的性能风险。
 func ensureSensitiveWordSchema(db *gorm.DB) (err error) {
 	if db == nil {
 		return nil
@@ -71,14 +71,14 @@ const sensitiveWordCacheSchemaMigrationKey = "sensitive_word_cache_schema_ready"
 
 // ensureSensitiveWordCacheSchema 建出「按文本哈希缓存检测结论」的表。
 //
-// 纪律与 ensureSensitiveWordSchema 一致（AGENTS.md 第 11 / 17 条）：
+// 纪律与 ensureSensitiveWordSchema 一致：
 //   - 结构性建表失败返回错误，让启动 FATAL 看见；
 //   - 用 system_settings 标记保证只跑一次，失败不写标记，下次启动自动重试；
 //   - 外层 recover 兜底，脏数据不能让服务反复崩溃；
 //   - **不做 DROP TABLE**：缓存是纯加速结构，表有问题就停用（调用方 fail-open
 //     直接外呼），删表既无必要也会丢掉已付费买来的结论。
 //
-// 无回填 ⇒ 无大表扫描，不存在 AGENTS.md 第 18b 条的性能风险。
+// 无回填 ⇒ 无大表扫描，不存在「逐行扫大表」的性能风险。
 func ensureSensitiveWordCacheSchema(db *gorm.DB) (err error) {
 	if db == nil {
 		return nil

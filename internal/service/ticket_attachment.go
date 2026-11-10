@@ -82,8 +82,8 @@ func ticketAttachmentAAD(id int64, userID int32, mediaType string) []byte {
 	return []byte(fmt.Sprintf("tikuhelper-ticket-attachment-v1:%d:%d:%s", id, userID, mediaType))
 }
 
-// judgeTicketAttachmentScan 是**唯一的**判定入口（判定规则表见 AGENTS 记录与
-// 本文件底部注释）。任何新增的上游字段都必须汇总到这里，不要各写一份。
+// judgeTicketAttachmentScan 是**唯一的**判定入口（判定规则表见本文件底部注释，
+// 下方也为完整规则）。任何新增的上游字段都必须汇总到这里，不要各写一份。
 //
 // 规则（任一命中即敏感）：
 //
@@ -175,7 +175,7 @@ func newTicketAttachmentInfo(attachment entity.TicketAttachment) TicketAttachmen
 
 // ListTicketAttachmentsWithDB 返回一张工单的附件（按创建顺序），并已算好展示许可。
 //
-// 表不存在时返回空列表而不是报错（AGENTS.md 第 11 条：表/列可能不存在时先探测再操作）。
+// 表不存在时返回空列表而不是报错（表/列可能不存在时先探测再操作）。
 // 这让「迁移还没跑」或「老库尚未升级」不至于把工单详情的读取整条打挂 ——
 // 附件是附属信息，缺表时等价于「没有附件」。
 func ListTicketAttachmentsWithDB(db *gorm.DB, ticketID int64) ([]TicketAttachmentInfo, error) {

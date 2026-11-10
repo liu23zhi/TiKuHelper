@@ -37,7 +37,7 @@
  *
  * 抽成组件而不是内联进 TicketAttachment.vue 的理由：
  *   1. 同一个图标还要给 PLUS 的 chaoxing 面板与将来的工单详情复用，
- *      内联会让三处各自维护一份 path（AGENTS.md 第 13 条的同源问题）；
+ *      内联会让三处各自维护一份 path（同一语义两份实现的同源问题）；
  *   2. 原文件带 DOCTYPE，抽取过程容易出错，集中在一处便于测试守住
  *      「viewBox 是 1271 1024」「fill 是 currentColor」「只有一条 path」。
  *

@@ -13,7 +13,7 @@ import (
 // logBillingProjectMeta 是「项目」列派生需要的那几个账单字段。
 //
 // 只在 logListItemsWithBillingIDs 的那**一次**批量查询里填充：
-// buildLogProject 是纯函数，禁止任何 DB 调用（AGENTS.md 第 18b 条）。
+// buildLogProject 是纯函数，禁止任何 DB 调用。
 type logBillingProjectMeta struct {
 	Type         string
 	QuestionText string

@@ -72,7 +72,7 @@ const BlacklistHitAggregateWindow = 60 * time.Second
 // blacklistPatternMaxRunes 与 blacklist_entries.pattern 的 varchar(191) 对齐。
 //
 // MySQL 的 varchar(n) 按**字符**计数、SQLite 不强制长度，因此这里统一按 rune 校验
-// 并在两侧都成立（AGENTS.md 第 1 条：判定与切片的单位必须一致）。
+// 并在两侧都成立（判定与切片的单位必须一致）。
 const blacklistPatternMaxRunes = 191
 
 // 黑名单归一化 / 校验错误（都是 400，不是 500）。

@@ -424,7 +424,7 @@ func ListReviewRebateClaimsWithDB(db *gorm.DB, filter ReviewRebateClaimListQuery
 	}
 	result := ReviewRebateClaimListResult{Page: page, PageSize: pageSize, Data: []ReviewRebateClaimListItem{}}
 
-	// JOIN 放进基础查询构造器：Count 与 Find 必须共用同一套条件（AGENTS.md 第 3 条）。
+	// JOIN 放进基础查询构造器：Count 与 Find 必须共用同一套条件。
 	base := reviewRebateSession(db).Model(&entity.ReviewRebateClaim{}).
 		Joins("LEFT JOIN users AS claim_users ON claim_users.id = review_rebate_claims.user_id")
 	if filter.ProgramID > 0 {

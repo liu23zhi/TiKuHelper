@@ -30,7 +30,7 @@ var indexPage []byte
 
 func main() {
 	flag.Parse()
-	// 时间一律固定上海（见 timezone.go 与 AGENTS.md 第 26 条）。
+	// 时间一律固定上海（见 timezone.go）。
 	useShanghaiTime()
 	// Initialize once after timezone setup, before manager/server goroutines.
 	diagnostics.Default = diagnostics.NewCollector(nil)

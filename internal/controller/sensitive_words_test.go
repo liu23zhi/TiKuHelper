@@ -60,7 +60,7 @@ func seedSensitiveLogColumns(t *testing.T, db *gorm.DB) {
 		{"sensitive_check_error", "ALTER TABLE logs ADD COLUMN sensitive_check_error varchar(255)"},
 	} {
 		// 先查后建：同一进程里 `file:...?mode=memory&cache=shared` 的同名库共享，
-		// 子测试会重复执行到这里（AGENTS.md 第 9 条）。
+		// 子测试会重复执行到这里。
 		if db.Migrator().HasColumn("logs", column.name) {
 			continue
 		}

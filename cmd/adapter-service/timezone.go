@@ -17,7 +17,7 @@ import (
 //   - Gin 访问日志、GORM 自动时间戳（created_at 等）、任何 time.Now() 都变成 +8；
 //   - 历史行里已写入的时间自带偏移（东八区或 UTC 标记），读取时按原偏移解析，
 //     因此不会因为这次改动发生位移；
-//   - 不要再把它改回 UTC，也不要依赖容器 TZ。见 AGENTS.md 第 26 条。
+//   - 不要再把它改回 UTC，也不要依赖容器 TZ。
 func useShanghaiTime() {
 	time.Local = logger.ShanghaiLocation()
 }

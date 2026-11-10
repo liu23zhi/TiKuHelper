@@ -90,9 +90,9 @@ func CreditGiftBuckets(balance, gift, amount float64) (newBalance, newGift float
 // SplitWalletCharge 是 ConsumeWalletBuckets 的**精确**版本：不做任何取整，
 // 只决定「这笔钱从哪个桶出多少」。
 //
-// 为什么需要它：计费链路必须保留 1e-7 级的精确消耗额（AGENTS.md 第 6/7 条：
-// 只在记录边界取整）。若先用 ConsumeWalletBuckets 取整，被丢弃的尾差无法靠
-// 再次取整挽回，账单里的余额变化会与实际消耗对不上。
+// 为什么需要它：计费链路必须保留 1e-7 级的精确消耗额（金额只在记录边界取整）。
+// 若先用 ConsumeWalletBuckets 取整，被丢弃的尾差无法靠再次取整挽回，
+// 账单里的余额变化会与实际消耗对不上。
 //
 // 规则与 ConsumeWalletBuckets 完全一致（先赠金、再本金），只是不取整。
 func SplitWalletCharge(balance, gift, amount float64) (fromGift, fromBalance float64) {

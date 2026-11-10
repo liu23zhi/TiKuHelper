@@ -13,7 +13,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// newReviewRebateTestDB 建一个独立的内存 SQLite（按 t.Name() 隔离，AGENTS.md 第 9 条）。
+// newReviewRebateTestDB 建一个独立的内存 SQLite（按 t.Name() 隔离）。
 func newReviewRebateTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 
