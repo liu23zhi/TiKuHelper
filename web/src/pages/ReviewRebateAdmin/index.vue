@@ -110,6 +110,67 @@
           <a-button :loading="loadingClaims" :disabled="loading || busy" @click="loadClaims">刷新提交</a-button>
         </template>
 
+        <!-- 筛选。时间控件**追加在末尾**（在状态、用户 ID 之后）：
+             位置选择器（querySelector 取第一个同类元素）在新增同级控件时会选错，
+             保持既有控件顺序不变可以避免整类误点。 -->
+        <a-form layout="inline" class="claim-filter-form" :onFinish="reloadClaims">
+          <a-form-item label="状态" :html-for="fieldId('claimStatusFilter')">
+            <a-select
+              :id="fieldId('claimStatusFilter')"
+              :value="claimFilters.status"
+              :options="claimStatusOptions"
+              allow-clear
+              placeholder="全部状态"
+              class="filter-status"
+              :disabled="loading || busy"
+              @update:value="value => setClaimFilter('status', value)"
+              @change="reloadClaims"
+            />
+          </a-form-item>
+          <a-form-item label="用户 ID" :html-for="fieldId('claimUserIdFilter')">
+            <a-input
+              :id="fieldId('claimUserIdFilter')"
+              :value="claimFilters.userId"
+              inputmode="numeric"
+              allow-clear
+              placeholder="精确账户 ID"
+              class="filter-id"
+              :disabled="loading || busy"
+              @update:value="value => setClaimFilter('userId', value)"
+              @press-enter="reloadClaims"
+            />
+          </a-form-item>
+          <a-form-item label="提交起始日" :html-for="fieldId('claimCreatedFromFilter')">
+            <a-input
+              :id="fieldId('claimCreatedFromFilter')"
+              :value="claimFilters.createdFrom"
+              type="date"
+              class="filter-date"
+              :disabled="loading || busy"
+              @update:value="value => setClaimFilter('createdFrom', value)"
+              @change="reloadClaims"
+            />
+          </a-form-item>
+          <a-form-item label="提交截止日" :html-for="fieldId('claimCreatedToFilter')">
+            <a-input
+              :id="fieldId('claimCreatedToFilter')"
+              :value="claimFilters.createdTo"
+              type="date"
+              class="filter-date"
+              :disabled="loading || busy"
+              @update:value="value => setClaimFilter('createdTo', value)"
+              @change="reloadClaims"
+            />
+          </a-form-item>
+          <a-form-item>
+            <a-space wrap>
+              <a-button type="primary" html-type="submit" :loading="loadingClaims" :disabled="loading || busy">查询</a-button>
+              <a-button :disabled="loading || busy" @click="resetClaimFilters">重置筛选</a-button>
+            </a-space>
+          </a-form-item>
+        </a-form>
+        <p v-if="claimFilterError" class="form-error" role="alert">{{ claimFilterError }}</p>
+
         <section v-if="claimsFailure" class="status-alert">
           <RequestFailureAlert
             :key="claimsFailureContextKey"
@@ -326,6 +387,8 @@ const emptyRuleForm = () => ({
   minStars: 5, maxStars: 5, minContentScore: 1, maxContentScore: 10,
   amount: 0, priority: 0, enabled: true, remark: '',
 })
+// 提交列表筛选的初值。status 用 undefined 让 a-select 显示 placeholder。
+const emptyClaimFilters = () => ({ status: undefined, userId: '', createdFrom: '', createdTo: '' })
 
 export default {
   name: 'ReviewRebateAdminPage',
@@ -354,6 +417,11 @@ export default {
     const loadingClaims = ref(false)
     const deciding = ref(false)
     const decisionWarning = ref('')
+    // 提交列表筛选。与既有页面（LogList / RechargeOrderList）同一约定：
+    // 日期用原生 <input type="date"> 的 YYYY-MM-DD，后端按「起始日 00:00 起、
+    // 截止日次日 00:00 止」解释，因此「查 11-10」覆盖整天。
+    const claimFilters = reactive(emptyClaimFilters())
+    const claimFilterError = ref('')
 
     const ruleDialogOpen = ref(false)
     const ruleDialogKey = ref(0)
@@ -418,6 +486,52 @@ export default {
       { title: '提交时间', dataIndex: 'createdAt', key: 'createdAt', width: 175 },
       { title: '操作', key: 'action', width: 140 },
     ]
+
+    // 提交列表的状态筛选项：与 CLAIM_STATUS 同源，避免文案漂移。
+    const claimStatusOptions = Object.keys(CLAIM_STATUS).map(value => ({
+      value,
+      label: CLAIM_STATUS[value].label,
+    }))
+
+    function setClaimFilter(field, value) {
+      if (!Object.hasOwn(claimFilters, field)) return
+      claimFilters[field] = value
+      claimFilterError.value = ''
+    }
+
+    // 前端先自检一次区间：后端也会校验并返回 400，但在这里拦下能立刻给出
+    // 「起始日晚于截止日」这种具体提示，而不是一句「筛选参数格式无效」。
+    const claimFilterParams = () => {
+      const params = {}
+      const status = String(claimFilters.status || '').trim()
+      if (status) params.status = status
+      const userId = String(claimFilters.userId || '').trim()
+      if (userId) params.userId = userId
+      const createdFrom = String(claimFilters.createdFrom || '').trim()
+      if (createdFrom) params.createdFrom = createdFrom
+      const createdTo = String(claimFilters.createdTo || '').trim()
+      if (createdTo) params.createdTo = createdTo
+      return params
+    }
+
+    const resetClaimFilters = () => {
+      if (loading.value || busy.value) return
+      Object.assign(claimFilters, emptyClaimFilters())
+      claimFilterError.value = ''
+      loadClaims()
+    }
+
+    const reloadClaims = () => {
+      if (loading.value || busy.value) return
+      const from = String(claimFilters.createdFrom || '').trim()
+      const to = String(claimFilters.createdTo || '').trim()
+      if (from && to && from > to) {
+        claimFilterError.value = '提交时间范围无效：起始日不能晚于截止日。'
+        return
+      }
+      claimFilterError.value = ''
+      loadClaims()
+    }
 
     const rangeText = (min, max) => {
       const low = readNonnegativeNumber(min)
@@ -603,7 +717,7 @@ export default {
       const ownsFailure = () => owns() && context === claimsFailureContextKey.value
       loadingClaims.value = true
       try {
-        const res = await getReviewRebateClaims()
+        const res = await getReviewRebateClaims(claimFilterParams())
         if (!ownsFailure()) return false
         const body = res?.data
         const list = Array.isArray(body) ? body : body?.data
@@ -844,6 +958,7 @@ export default {
       programForm, programLoaded, savingProgram, programSaved, programValidation,
       rules, rulesLoaded, savingRule, ruleWarning, ruleColumns,
       claims, claimsLoaded, loadingClaims, deciding, decisionWarning, claimColumns,
+      claimFilters, claimFilterError, claimStatusOptions, setClaimFilter, reloadClaims, resetClaimFilters,
       programFailure, programFailureContextKey, isCurrentProgramFailure,
       rulesFailure, rulesFailureContextKey, isCurrentRulesFailure,
       claimsFailure, claimsFailureContextKey, isCurrentClaimsFailure,
@@ -868,6 +983,9 @@ export default {
 .rule-form-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 175px), 1fr)); }
 .hint { margin: 8px 0 0; color: var(--console-muted); font-size: 12px; line-height: 1.7; }
 .form-error { margin: 0 0 16px; color: var(--console-danger, #c13e41); font-size: 13px; }
+.claim-filter-form { margin-bottom: 12px; }
+.filter-status { width: 150px; }
+.filter-id, .filter-date { width: 160px; }
 .money-cell, .time-cell { font-variant-numeric: tabular-nums; }
 .note-cell { overflow-wrap: anywhere; white-space: pre-wrap; }
 .scorer-tag { margin-inline-start: 6px; }
