@@ -119,6 +119,13 @@
                 v-on="{ 'update:revealed': (value) => setRevealed(record.id, 'summary', value) }"
               />
             </template>
+            <template v-else-if="column.key === 'project'">
+              <OverflowTableText
+                :text="buildProjectText(record)"
+                :expanded="isSnapshotExpanded(record.id, 'project')"
+                @toggle="toggleSnapshotExpanded(record.id, 'project')"
+              />
+            </template>
             <template v-else-if="column.key === 'detail'">
               <!-- 详情列是**派生结果**（答案文本）：服务端已遮挡时它就是占位，
                    不能再交给 OverflowTableText 当原文处理。 -->
@@ -227,6 +234,7 @@
           </header>
           <strong>{{ buildStructuredFields(record).summary }}</strong>
           <dl class="mobile-log-card__meta">
+            <div><dt>项目</dt><dd>{{ buildProjectText(record) }}</dd></div>
             <div><dt>操作人</dt><dd>{{ buildLogUsername(record) }}</dd></div>
             <div><dt>时间</dt><dd class="mobile-log-time">{{ formatDateForTable(record.createTime) }}</dd></div>
             <div><dt>IP</dt><dd>{{ record.clientIp || '-' }}</dd></div>
@@ -288,6 +296,7 @@ import {
   buildLogStatusColor,
   buildLogStatusLabel,
   buildLogStructuredFields,
+  buildLogProjectText,
   buildSensitiveBadge,
   formatShanghaiLogDate,
 } from '@/utils/logListHelpers.mjs';
@@ -427,6 +436,7 @@ const logColumnWidths = {
   qid: 104,
   billingIds: 104,
   summary: 156, // 远程验证码二验成功
+  project: 170, // 「搜索答案，题目：…」等派生文本，超长走 OverflowTableText 展开
   hitProvider: 170,
   billingProvider: 170,
   detail: 170,
@@ -562,6 +572,13 @@ export default defineComponent({
           width: logColumnWidths.summary,
         },
         {
+          // 紧跟「说明」：值由后端读取时派生（不落库），前端只负责渲染。
+          title: '项目',
+          dataIndex: 'project',
+          key: 'project',
+          width: expandedColumnWidth('project'),
+        },
+        {
           // 紧跟「说明」：搜题失败时的原因必须第一眼看到（详见 logListHelpers 的 buildHitProviderFields）。
           title: '命中渠道 / 错误原因',
           dataIndex: 'hitProvider',
@@ -618,12 +635,14 @@ export default defineComponent({
           width: expandedColumnWidth('responseSnapshot'),
         },
       ])
-    const columnPriorityKeys = ['createTime', 'module', 'status', 'sensitiveFlag', 'username', 'summary', 'hitProvider', 'detail']
+    const columnPriorityKeys = ['createTime', 'module', 'status', 'sensitiveFlag', 'username', 'summary', 'project', 'hitProvider', 'detail']
     const { visibleColumns, selectedKeys: selectedColumnKeys, columnOptions, scopeKey: columnScopeKey,
       setSelectedKeys: setSelectedColumnKeys, resetColumns } = useTableColumnPreferences({
       pageKey: 'LogList', columns,
       scope: () => currentUser.value?.id ? `id:${currentUser.value.id}:role:${currentUser.value.role}:view:logs` : '',
-      requiredKeys: ['createTime', 'status', 'summary', 'hitProvider'], priorityKeys: columnPriorityKeys,
+      // 「项目」进 requiredKeys 而不是升 scope 版本：老用户已存的列偏好会立刻带上新列，
+      // 又不重置任何人的自定义列（代价是该列不可隐藏，见规格 §5.5 第 3 条审阅补充）。
+      requiredKeys: ['createTime', 'status', 'summary', 'project', 'hitProvider'], priorityKeys: columnPriorityKeys,
     })
     const tableScrollX = computed(() => sumTableColumnWidths(visibleColumns.value))
 
@@ -717,6 +736,9 @@ export default defineComponent({
     },
     buildTableDetail(record) {
       return buildLogTableDetail(record)
+    },
+    buildProjectText(record) {
+      return buildLogProjectText(record)
     },
     buildLogQidLabel(value) {
       return buildLogQidLabel(value)

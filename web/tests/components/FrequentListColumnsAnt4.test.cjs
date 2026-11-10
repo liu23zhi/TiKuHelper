@@ -31,7 +31,10 @@ require.cache[apiPath] = api
 const cases = [
   { page: 'TikuComponent', keys: ['id','type','question','answer','source_name','extra','action'], optional: '拓展参数', optionalKey: 'extra', required: ['问题','答案','操作'] },
   { page: 'BillingRecordList', keys: ['id','username','typeLabel','subject','amount','source','searchMode','referenceNo','effectiveMultiplier','cacheHitRate','accessTokenName','createdAt','clientIp','feeDetail'], optional: '访问令牌名称', optionalKey: 'accessTokenName', required: ['项目','金额','操作'], mobile: '.mobile-billing-card' },
-  { page: 'LogList', keys: ['createTime','module','status','sensitiveFlag','username','clientIp','qid','billingIds','summary','hitProvider','billingProvider','detail','requestId','mode','requestSource','answerCount','requestSnapshot','responseSnapshot'], optional: '原始请求', optionalKey: 'requestSnapshot', required: ['时间','状态','说明','命中渠道 / 错误原因'], mobile: '.mobile-log-card' },
+  // LogList：'project'（#36 项目列）与 'sensitiveFlag'（#31 敏感词列）必须同时存在。
+  // #31 的 squash 曾整体覆盖 index.vue，把 #36 加的项目列连同它在 requiredKeys 的槽位一起删掉；
+  // 这里两个都钉住，避免任一方再被整体覆盖时静默丢失。
+  { page: 'LogList', keys: ['createTime','module','status','sensitiveFlag','username','clientIp','qid','billingIds','summary','project','hitProvider','billingProvider','detail','requestId','mode','requestSource','answerCount','requestSnapshot','responseSnapshot'], optional: '原始请求', optionalKey: 'requestSnapshot', required: ['时间','状态','说明','项目','命中渠道 / 错误原因'], mobile: '.mobile-log-card' },
 ]
 let wrapper
 async function settle() { await nextTick(); await flushPromises(); await new Promise(resolve => setTimeout(resolve, 30)); await nextTick() }
