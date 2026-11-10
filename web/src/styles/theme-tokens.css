@@ -43,6 +43,14 @@ html[data-theme='light'] {
   --shadow-1: 0 2px 8px rgba(0, 0, 0, 0.08);
   --shadow-2: 0 14px 40px rgba(0, 0, 0, 0.16);
   --focus-ring: 0 0 0 2px #0066CC;
+  /* Claymorphism (78-UI §3.2.3): purely additive. Every token declared above keeps its name and value. */
+  --clay-shadow-light: -4px -4px 8px rgba(255, 255, 255, 0.9);
+  --clay-shadow-dark: 4px 4px 8px rgba(0, 0, 0, 0.08);
+  --clay-shadow: var(--clay-shadow-light), var(--clay-shadow-dark);
+  --clay-shadow-inset: inset 2px 2px 6px rgba(0, 0, 0, 0.06);
+  --radius-card: 20px;
+  --radius-control: 12px;
+  --radius-chip: 8px;
 }
 
 html[data-theme='dark'] {
@@ -88,6 +96,17 @@ html[data-theme='dark'] {
   --shadow-1: 0 2px 8px rgba(0, 0, 0, 0.3);
   --shadow-2: 0 14px 40px rgba(0, 0, 0, 0.5);
   --focus-ring: 0 0 0 2px #69A9FF;
+  /* Clay shadows are redefined for dark on purpose (78-UI §3.2.2): the light formula puts a
+     90% white highlight on a #1C1C1E surface and renders as a bright dirty block. Here the
+     highlight drops to 4% and the shade deepens to 50%. */
+  --clay-shadow-light: -4px -4px 8px rgba(255, 255, 255, 0.04);
+  --clay-shadow-dark: 4px 4px 8px rgba(0, 0, 0, 0.5);
+  --clay-shadow: var(--clay-shadow-light), var(--clay-shadow-dark);
+  --clay-shadow-inset: inset 2px 2px 6px rgba(0, 0, 0, 0.4);
+  /* Radii are theme independent; repeated so both appearance blocks declare the same 7 names. */
+  --radius-card: 20px;
+  --radius-control: 12px;
+  --radius-chip: 8px;
 }
 
 html[data-theme] body, html[data-theme] #app { background-color: var(--bg); color: var(--text); }
@@ -184,4 +203,16 @@ body { background: var(--bg); color: var(--text); }
   --console-border: var(--border); --console-text: var(--text);
   --console-muted: var(--text-muted); --console-success: var(--success-fg);
   --console-danger: var(--danger-fg); --console-warning: var(--warning-fg);
+}
+
+/* Clay surfaces rely on soft shadows and short transitions to read as clay. Both are
+   decorative, so the OS reduced-motion preference collapses them instead of animating
+   them (78-UI §3.5, accessibility audit item). */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
