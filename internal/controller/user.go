@@ -431,6 +431,12 @@ func UserRegister(c *gin.Context) {
 		c.JSON(400, gin.H{"message": err.Error()})
 		return
 	}
+	// 手机号黑名单（46-*.md §3.1，BL-3）：**必须在消费图形/短信验证码与建用户之前**。
+	// 放到事务里判定就晚了 —— 那一步已经消耗掉一条短信验证码，命中后回滚也退不回来。
+	// 判定只读进程内缓存快照（开关关闭时连读都没有），不产生业务库写。
+	if rejectBlacklistedPhone(c, phone) {
+		return
+	}
 	registrationFlowToken := strings.TrimSpace(payload.RegistrationFlowToken)
 	inviteCode := strings.TrimSpace(payload.InviteCode)
 	var smsEvidence service.SMSVerificationEvidence
@@ -457,6 +463,18 @@ func UserRegister(c *gin.Context) {
 		}
 		db := dao.User.UnderlyingDB()
 		err = wechatRegisterFlowStore.Consume(registrationFlowToken, time.Now(), func(wechatID string) error {
+			// 微信黑名单（46-*.md §3.1，BL-3）：微信注册同样要拦。
+			//
+			// 判定放在 consume 回调的**最前面**：此时 OpenID 刚从扫码/验证码流程
+			// 里取到，而图形验证码与短信验证码还没被消耗、用户也还没建 ——
+			// 被拉黑的人不会因此白烧一条短信。
+			//
+			// 命中后由外层统一 Release 掉这个注册流程（与手机号冲突分支一致）：
+			// Consume 在回调返回错误时不会置 released，留着它只会让用户反复重试
+			// 同一个被拉黑的扫码结果。
+			if match, hit := service.BlacklistWechatGate(db, wechatID, blacklistGateMeta(c)); hit {
+				return service.NewBlacklistBlockedError(match)
+			}
 			boundAt := time.Now()
 			user.WechatID = &wechatID
 			user.WechatBoundAt = &boundAt
@@ -484,6 +502,14 @@ func UserRegister(c *gin.Context) {
 			})
 		})
 		if err != nil {
+			// 微信黑名单命中：403（只回 reason），并释放注册流程。
+			// 必须先于通用 400 分支判断，否则被拦的人看到的是 400 + reason，
+			// 客户端会当成「参数错误」而不会当成「被封禁」。
+			if match, blocked := service.ResolveBlacklistBlocked(err); blocked {
+				_ = wechatRegisterFlowStore.Release(registrationFlowToken)
+				respondBlacklistBlocked(c, match)
+				return
+			}
 			status := http.StatusBadRequest
 			message := err.Error()
 			if errors.Is(err, service.ErrWechatRegisterFlowInvalid) {
@@ -804,6 +830,12 @@ func UpdateCurrentUserPhone(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
+	// 手机号黑名单（46-*.md §3.1，BL-3）：换绑判定的是**新手机号**，不是旧号。
+	// 判定在 verifySMSCodeWithDB **之前**：被拉黑的新号不该消耗一条验证码，
+	// 也不该让「该号已被拉黑」以外的分支先报错（否则运营无法解释拦在哪一步）。
+	if rejectBlacklistedPhone(c, phone) {
+		return
+	}
 	updated, err := updateUserPhoneWithVerificationWithDB(currentUser.ID, phone, strings.TrimSpace(payload.SMSCode))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
@@ -879,6 +911,10 @@ func BindCurrentUserWechat(c *gin.Context) {
 	}
 	updated, err := bindCurrentUserWechatWithDB(strings.TrimSpace(payload.BindToken), currentUser.ID)
 	if err != nil {
+		// 微信黑名单命中（46-*.md §3.1，BL-3）：403 而不是 400。
+		if respondBlacklistBlockedError(c, err) {
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
@@ -914,6 +950,10 @@ func BindCurrentUserWechatByCode(c *gin.Context) {
 		UserID: currentUser.ID,
 	})
 	if err != nil {
+		// 微信黑名单命中（46-*.md §3.1，BL-3）：403 而不是 400。
+		if respondBlacklistBlockedError(c, err) {
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
@@ -952,6 +992,16 @@ func UserSMSLogin(c *gin.Context) {
 	phone, err := service.NormalizeMainlandPhoneInput(payload.Phone)
 	if err != nil {
 		c.JSON(400, gin.H{"message": err.Error()})
+		return
+	}
+	// 手机号黑名单（46-*.md §3.1，BL-3）。
+	//
+	// 位置：**在图形验证码与短信验证码之前**，也在 loginGate 计数之前。
+	//   - 在验证码之前：被拉黑的号码不该消耗验证码（短信要花钱）；
+	//   - 在 loginGate 之前：黑名单命中是**拒绝**而不是「一次登录失败」，
+	//     不该记进爆破计数 —— 否则被拉黑者反复重试会把整个出口 IP 锁死，
+	//     误伤同 NAT 后的正常用户（45-*.md §0.1.4 的分层语义）。
+	if rejectBlacklistedPhone(c, phone) {
 		return
 	}
 	// 短信登录**也要计数**（45-*.md §0.1.4 五-3）：它同样能撞号，

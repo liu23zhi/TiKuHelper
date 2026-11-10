@@ -260,6 +260,14 @@ func LoginWechatByCode(c *gin.Context) {
 		RequestIP: strings.TrimSpace(c.ClientIP()),
 	})
 	if err != nil {
+		// 微信黑名单命中（46-*.md §3.1，BL-3）：403 而不是 400。
+		//
+		// 命中发生在 service 层（OpenID 要等上游解析才知道），那边返回
+		// *service.BlacklistBlockedError —— 这里只做状态码映射，
+		// 文案仍只含 reason、不含 Pattern。
+		if respondBlacklistBlockedError(c, err) {
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
@@ -339,6 +347,10 @@ func BindWechatLogin(c *gin.Context) {
 		RequestIP: strings.TrimSpace(c.ClientIP()),
 	})
 	if err != nil {
+		// 微信黑名单命中（46-*.md §3.1，BL-3）：403 而不是 400。
+		if respondBlacklistBlockedError(c, err) {
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}

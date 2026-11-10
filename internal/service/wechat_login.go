@@ -499,6 +499,21 @@ func resolveWechatStatusResultByID(db *gorm.DB, store *WechatBindTokenStore, wec
 	if wechatID == "" {
 		return WechatLoginStatusResult{}, fmt.Errorf("微信用户 ID 为空")
 	}
+	// 微信黑名单（46-*.md §3.1，BL-3）：扫码登录、验证码登录、绑定扫码三条路径
+	// 都在这里汇合，因此判定只写一处。
+	//
+	// 位置选择：**在查库找用户与签发 JWT 之前**。放到之后意味着被拉黑的微信
+	// 仍会走完用户查询与 token 签发，只是最后一步被拦 —— 既浪费一次签名，
+	// 也让「未登录成功」的原因更难解释。
+	//
+	// 判定用的是 OpenID（大小写敏感），不是昵称；命中返回 *BlacklistBlockedError，
+	// 控制器用 respondBlacklistBlockedError 映射成 403（只回 reason）。
+	if match, hit := BlacklistWechatGate(db, wechatID, BlacklistGateMeta{
+		ClientIP: strings.TrimSpace(requestIP),
+		Path:     BlacklistGatePathWechatLogin,
+	}); hit {
+		return WechatLoginStatusResult{}, NewBlacklistBlockedError(match)
+	}
 	var user entity.User
 	if err := db.Where("wechat_id = ?", wechatID).First(&user).Error; err == nil {
 		if !isServiceUserEnabled(&user) {
@@ -532,6 +547,15 @@ func BindWechatLoginWithDB(db *gorm.DB, input WechatBindInput) (WechatBindResult
 	wechatID, err := store.Resolve(input.BindToken, now)
 	if err != nil {
 		return WechatBindResult{}, err
+	}
+	// 微信黑名单（46-*.md §3.1，BL-3）：「用已有账号密码把被拉黑的微信绑上去」
+	// 也必须拦。放在**校验用户名密码之前**：被拉黑的 OpenID 不该有机会
+	// 触发一次密码校验（那是免费的口令试探通道）。
+	if match, hit := BlacklistWechatGate(db, wechatID, BlacklistGateMeta{
+		ClientIP: strings.TrimSpace(input.RequestIP),
+		Path:     BlacklistGatePathWechatBind,
+	}); hit {
+		return WechatBindResult{}, NewBlacklistBlockedError(match)
 	}
 
 	var user entity.User
@@ -622,6 +646,17 @@ func BindWechatCodeToUserWithDB(db *gorm.DB, client WechatLoginClient, code stri
 }
 
 func bindWechatIDToUserWithDB(db *gorm.DB, wechatID string, userID int32, now time.Time) (entity.User, error) {
+	// 微信黑名单（46-*.md §3.1，BL-3）：「把被拉黑的微信绑到当前账号」必须拦。
+	//
+	// 判定放在最前面（读当前用户之前）：这是唯一的绑定写入口，
+	// BindWechatToUserWithDB / BindWechatCodeToUserWithDB 两条路径都汇合到这里，
+	// 因此只需要一处判定。此处没有 requestIP 可传（service 层签名不带），
+	// ClientIP 留空 —— 命中留痕仍有 EntryID / 脱敏值 / 路径，够运营定位。
+	if match, hit := BlacklistWechatGate(db, wechatID, BlacklistGateMeta{
+		Path: BlacklistGatePathUserWechat,
+	}); hit {
+		return entity.User{}, NewBlacklistBlockedError(match)
+	}
 	var user entity.User
 	if err := db.Where("id = ?", userID).First(&user).Error; err != nil {
 		return entity.User{}, err
