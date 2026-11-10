@@ -9,7 +9,7 @@
 口令在运行时提供，**不得写进仓库或提交**：
 
 1. 环境变量 `USEREXAM_PASSWORD`
-2. 脚本（打包后是 exe）同目录的 `password.txt`
+2. exe（或脚本）同目录的 `password.txt`
 3. 当前工作目录的 `password.txt`
 
 ```powershell
@@ -18,11 +18,20 @@ $env:USEREXAM_PASSWORD = "<向管理员索取>"
 
 ## 运行
 
-需要 Python 3.11 x64；`_vendor` 运行库随包提供。
+**单文件 exe（推荐，目标机器无需安装 Python）**
 
 ```powershell
-py -3.11 userexam_crypto.py                      # 无参数 → GUI
-py -3.11 userexam_crypto.py -i ".\UserExamInfo.db" -o ".\out"
+.\userexam-crypto.exe                             # 无参数 → 图形界面
+.\userexam-crypto.exe -i ".\UserExamInfo.db" --json
+.\userexam-crypto.exe --inspect -i ".\UserExamInfo.decrypted.db"
+.\userexam-crypto.exe --selftest                  # 验证随包 SQLite3MC 可加载并完成往返
+```
+
+**Python 脚本（需要 64 位 CPython 3.11 + `_vendor` 运行库）**
+
+```powershell
+py -3.11 userexam_crypto.py
+py -3.11 -m unittest test_userexam_crypto -v
 ```
 
 Windows 也可直接双击 `run.cmd`。
@@ -33,5 +42,10 @@ Windows 也可直接双击 `run.cmd`。
 pwsh -File .\build-exe.ps1
 ```
 
-产物在 `dist\userexam-crypto.exe`（不进 git）。exe 同样不含口令，部署时把 `password.txt`
-放在 exe 同目录或设环境变量。
+产物是 `dist\userexam-crypto.exe`（约 15 MB，不进 git）。构建脚本除了打包，还会**实际运行**
+这个 exe 两次：一次在把 PATH 去掉 Python 的情况下跑 `--selftest`（证明随包的 apsw /
+SQLite3MC 原生扩展能在解包目录里加载并完成加密→解密往返），一次把它单独复制到空目录里跑，
+证明它是真单文件、不需要同目录的 `_vendor`。再加 `-RealSample <真实加密库> -Password <口令>`
+还会用真实样本做一次 decrypt → inspect → encrypt。
+
+exe 同样不含口令：部署时把 `password.txt` 放在 exe 同目录，或设环境变量。

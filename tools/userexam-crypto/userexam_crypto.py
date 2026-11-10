@@ -34,6 +34,9 @@ PASSWORD_ENV = "USEREXAM_PASSWORD"
 PASSWORD_FILENAME = "password.txt"
 
 
+TOOL_VERSION = "1.1.0"
+
+
 class UserExamError(Exception):
     """An expected, user-facing database conversion error."""
 
@@ -45,7 +48,7 @@ class ConversionResult:
 
 
 def _resource_root():
-    """Return the directory that holds ``_vendor`` and ``password.txt``.
+    """Return the directory that holds ``_vendor``.
 
     PyInstaller one-file builds unpack data into ``sys._MEIPASS`` and leave
     ``__file__`` pointing at a path inside the archive, so a plain
@@ -55,6 +58,27 @@ def _resource_root():
     if bundled:
         return Path(bundled)
     return Path(__file__).resolve().parent
+
+
+def _password_search_dirs():
+    """Directories searched for ``password.txt``, in priority order.
+
+    The exe's own directory comes first: in a one-file build ``_MEIPASS`` points
+    at a throw-away extraction directory, so ``password.txt`` placed next to the
+    exe — which is what the README tells operators to do — would otherwise never
+    be found.
+    """
+    directories = []
+    if getattr(sys, "frozen", False):
+        directories.append(Path(sys.executable).resolve().parent)
+    directories.append(_resource_root())
+    directories.append(Path.cwd())
+
+    unique = []
+    for directory in directories:
+        if directory not in unique:
+            unique.append(directory)
+    return unique
 
 
 def _load_password():
@@ -68,7 +92,7 @@ def _load_password():
     if configured:
         return configured
 
-    for directory in (_resource_root(), Path.cwd()):
+    for directory in _password_search_dirs():
         candidate = directory / PASSWORD_FILENAME
         try:
             if not candidate.is_file():
@@ -81,7 +105,7 @@ def _load_password():
 
     raise UserExamError(
         f"未配置数据库口令。请设置环境变量 {PASSWORD_ENV}，"
-        f"或把口令写入脚本同目录的 {PASSWORD_FILENAME}（该文件不得提交到仓库）。"
+        f"或把口令写入 exe 同目录的 {PASSWORD_FILENAME}（该文件不得提交到仓库）。"
     )
 
 
@@ -386,6 +410,80 @@ def inspect_database(path):
         connection.close()
 
 
+SELFTEST_ROWS = ("self-test-token", "196586", "自检大学", 0)
+
+
+def run_selftest(keep_dir=None):
+    """End-to-end self test: plain -> encrypted -> plain, inside a temp directory.
+
+    This is the only check that proves the *packaged* runtime works: it must
+    load the SQLite3MC extension, key the database, rekey it back and read the
+    rows through the plain sqlite3 module afterwards. Used by build-exe.ps1 to
+    verify the produced exe instead of trusting that PyInstaller exited 0.
+    """
+    backend = _load_backend()
+    information = {
+        "tool_version": TOOL_VERSION,
+        "cipher": "aes256cbc",
+        "kdf_iter": 4001,
+        "apsw_module": str(getattr(backend, "__file__", "?")),
+        "sqlite3mc": str(getattr(backend, "mc_version", "")),
+        "sqlite": str(backend.sqlitelibversion()),
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "meipass": str(getattr(sys, "_MEIPASS", "")),
+    }
+
+    workdir = Path(keep_dir) if keep_dir else Path(tempfile.mkdtemp(prefix="userexam-selftest-"))
+    workdir.mkdir(parents=True, exist_ok=True)
+    plain = workdir / "UserExamInfo.decrypted.db"
+    try:
+        connection = sqlite3.connect(str(plain))
+        try:
+            connection.execute(
+                "CREATE TABLE baseInfo(Token TEXT, schoolId TEXT, schoolName TEXT, thirdFild INTEGER)"
+            )
+            connection.execute("CREATE TABLE macAddress(Address TEXT, Flag TEXT)")
+            connection.execute("INSERT INTO baseInfo VALUES(?,?,?,?)", SELFTEST_ROWS)
+            connection.execute("INSERT INTO macAddress VALUES('','wsh')")
+            connection.commit()
+        finally:
+            connection.close()
+
+        encrypted = transform_database(plain)
+        if encrypted.operation != "encrypt":
+            raise UserExamError(f"自检失败：明文库应被判为加密方向，实际 {encrypted.operation}")
+        if infer_operation(encrypted.output_path) != "decrypt":
+            raise UserExamError("自检失败：加密后的文件头仍是明文 SQLite 头。")
+
+        decrypted = transform_database(encrypted.output_path)
+        if decrypted.operation != "decrypt":
+            raise UserExamError(f"自检失败：加密库应被判为解密方向，实际 {decrypted.operation}")
+
+        report = inspect_database(decrypted.output_path)
+        rows = report["tables"]["baseInfo"]["rows"]
+        if len(rows) != 1 or str(rows[0]["schoolId"]) != SELFTEST_ROWS[1]:
+            raise UserExamError(f"自检失败：往返后数据不一致，实际 {rows}")
+        if report["other_tables"]:
+            raise UserExamError(f"自检失败：往返后出现多余表 {report['other_tables']}")
+
+        # The plaintext copy produced by the exe must also be readable by the
+        # stock sqlite3 module: no SQLite3MC dependency in the result.
+        connection = sqlite3.connect(str(decrypted.output_path))
+        try:
+            row = connection.execute("SELECT schoolId FROM baseInfo").fetchone()
+        finally:
+            connection.close()
+        if not row or str(row[0]) != SELFTEST_ROWS[1]:
+            raise UserExamError("自检失败：标准库 sqlite3 无法读取往返后的明文库。")
+
+        information["roundtrip"] = "encrypt->decrypt OK"
+        information["row"] = row[0]
+        return information
+    finally:
+        if not keep_dir:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+
 def _hide_own_console():
     """Hide the console window that the console bootloader always allocates.
 
@@ -494,7 +592,22 @@ def _run_cli(argv):
         help="只读查看已解密的库，输出 baseInfo / macAddress 的 JSON",
     )
     parser.add_argument("--json", action="store_true", help="以 JSON 输出结果")
+    parser.add_argument("--version", action="version", version=f"userexam-crypto {TOOL_VERSION}")
+    parser.add_argument(
+        "--selftest",
+        action="store_true",
+        help="自检：在临时目录做一次 明文→加密→解密 往返，验证随包 SQLite3MC 可加载",
+    )
     args = parser.parse_args(argv)
+
+    if args.selftest:
+        try:
+            report = run_selftest()
+        except UserExamError as exc:
+            print(f"自检失败：{exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        return 0
 
     if not args.input:
         parser.error("需要 --input 指定数据库文件")

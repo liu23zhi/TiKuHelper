@@ -36,17 +36,50 @@
         </template>
       </ConsolePanel>
 
+      <ConsolePanel title="使用说明" description="加解密全程在你自己的电脑上完成；本站只发工具、只读明文预览，不接触口令。">
+        <ol class="usage-steps">
+          <li>
+            下载上面的 <code>userexam-crypto.exe</code>（单文件，约 15 MB，目标机器<strong>无需</strong>安装 Python）。
+          </li>
+          <li>
+            把口令写进 exe 同目录的 <code>password.txt</code>（一行），或设置环境变量
+            <code>USEREXAM_PASSWORD</code>。口令不随 exe 分发，本站也不保存。
+          </li>
+          <li>
+            双击 exe 打开图形界面，选择考试客户端的 <code>UserExamInfo.db</code>：普通库自动加密，加密库自动解密；
+            转换结果写成同目录的 <code>*.decrypted.db</code> / <code>*.encrypted.db</code>，源文件保持只读不被修改。
+          </li>
+          <li>
+            需要批量或无人值守时用命令行：
+            <code>userexam-crypto.exe -i ".\UserExamInfo.db" --json</code>；
+            只查内容用 <code>--inspect -i ".\UserExamInfo.decrypted.db"</code>；
+            验证随包运行库是否可用用 <code>--selftest</code>。
+          </li>
+          <li>
+            想在这里看清库里的 <code>baseInfo</code> / <code>macAddress</code>，把<strong>已解密</strong>的那份上传到下面的只读预览。
+          </li>
+        </ol>
+        <p class="hint">
+          加密参数固定为 wxSQLite3 AES-256-CBC（legacy=0 / kdf_iter=4001）。工具不是通用解密器：
+          口令或格式不匹配时会报错并取消输出，不会生成半成品文件。
+        </p>
+      </ConsolePanel>
+
       <ConsolePanel title="只读预览" description="上传已解密的 UserExamInfo.db；服务端只读解析 baseInfo 与 macAddress，不落盘留存。">
-        <a-form layout="vertical" :onFinish="submit">
-          <a-form-item label="已解密的数据库文件" :html-for="fieldId('file')">
+        <!-- 原生 form，不用 a-form：ant-design-vue 4 的 Form 只在存在 :model 时才
+             在提交时 emit('finish')，而本页只有一个文件控件、没有字段级校验，
+             用 a-form + :onFinish 会让「解析」按钮被 preventDefault 后什么都不发生。 -->
+        <form class="upload-form" @submit.prevent="submit">
+          <div class="field">
+            <label :for="fieldId('file')">已解密的数据库文件</label>
             <input :id="fieldId('file')" type="file" accept=".db,.sqlite,.sqlite3" :disabled="uploading" @change="onFileChange" />
             <div class="hint">仍是加密库时会直接拒绝；请先用上面的工具解密。</div>
-          </a-form-item>
+          </div>
           <a-space wrap>
             <a-button type="primary" html-type="submit" :loading="uploading" :disabled="!selectedFile">解析</a-button>
             <a-button :disabled="uploading || !result" :onClick="reset">清空结果</a-button>
           </a-space>
-        </a-form>
+        </form>
 
         <a-alert v-if="errorMessage" type="error" show-icon :message="errorMessage" class="page-alert" />
 
@@ -223,4 +256,8 @@ export default {
 .table-title { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
 .row-count { font-weight: 400; color: rgba(0, 0, 0, 0.45); }
 .hint { color: rgba(0, 0, 0, 0.45); font-size: 12px; }
+.usage-steps { margin: 0 0 12px; padding-left: 20px; color: var(--console-text); font-size: 13px; line-height: 1.9; }
+.usage-steps code { padding: 1px 4px; border-radius: 3px; background: rgba(0, 0, 0, 0.05); font-size: 12px; word-break: break-all; }
+.upload-form .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+.upload-form label { font-size: 13px; color: var(--console-text); }
 </style>

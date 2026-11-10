@@ -28,12 +28,17 @@ datas = [
     (str(VENDOR_PYD), "_vendor/apsw"),
 ]
 
+# NOTE: "apsw" is deliberately NOT in hiddenimports. It is a single-file native
+# extension (no apsw/__init__.py anywhere), so PyInstaller's import scanner can
+# only report "Hidden import 'apsw' not found" and would not add anything worth
+# adding. The runtime reaches it through sys.path — see _load_backend(), which
+# inserts <_MEIPASS>/_vendor before importing apsw.
 a = Analysis(
     [str(PROJECT / "userexam_crypto.py")],
     pathex=[str(PROJECT)],
     binaries=[],
     datas=datas,
-    hiddenimports=["apsw"] + collect_submodules("tkinter"),
+    hiddenimports=collect_submodules("tkinter"),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

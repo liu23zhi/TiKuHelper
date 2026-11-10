@@ -16,16 +16,20 @@ import (
 
 // 管理员专用的「考试客户端本地库」工具。
 //
-// 边界：
+// 边界（路径 A：加解密只在管理员本机发生）：
 //   - 三个接口全部要求管理员（Auth + RequireAdmin），普通用户一律 403；
-//   - 服务端**不做** SQLite3MC 解密，加密能力只留在脱机工具里；
+//   - 服务端**不持有口令、不含 SQLite3MC**，只把已构建好的 exe 原样发出去；
 //   - 只接受已解密的明文库，且只在临时文件上只读解析，不落盘留存。
 //
-// 工具本体不进仓库（单文件 exe 约 15 MB，放进 Git 会污染历史）。
-// 由 USEREXAM_TOOL_PATH 指向一个已构建好的 exe；未配置时下载接口返回 503，
-// 版本接口返回 available=false，管理台据此显示「未部署」。
+// 之所以不做服务端代加解密：那需要把内置口令放进服务端进程、把上传的密文库
+// 落地到服务器临时目录并解出明文，等于把「离线工具」变成一个远程解密服务。
+// 现有实现里连口令常量都不存在（在 internal/、pkg/、cmd/ 下搜 aes256cbc 只能
+// 命中本文件的参数自描述），保持这一点。
 
-const userExamToolName = "userexam_crypto.exe"
+// userExamToolName 必须与 tools/userexam-crypto/ 构建产物同名，否则下发给
+// 管理员的文件名与 pyinstaller 实际生成的文件不一致（下载后双击即报错）。
+// 该一致性由 TestUserExamToolNameMatchesBuildArtifact 守着。
+const userExamToolName = "userexam-crypto.exe"
 
 var userExamToolPath = func() string {
 	if configured := strings.TrimSpace(os.Getenv("USEREXAM_TOOL_PATH")); configured != "" {
@@ -49,7 +53,9 @@ type userExamToolVersion struct {
 }
 
 const (
-	userExamToolVersionLabel = "1.0.0"
+	// userExamToolVersionLabel 必须与 tools/userexam-crypto/userexam_crypto.py
+	// 的 TOOL_VERSION 一致（管理台按它判断手上那份 exe 是不是最新）。
+	userExamToolVersionLabel = "1.1.0"
 	userExamToolCipher       = "aes256cbc"
 	userExamToolLegacy       = "0"
 	userExamToolKDFIter      = 4001

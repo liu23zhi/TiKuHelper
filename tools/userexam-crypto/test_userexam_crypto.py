@@ -110,6 +110,48 @@ class KeyHandlingTests(unittest.TestCase):
                 if previous is not None:
                     os.environ[tool.PASSWORD_ENV] = previous
 
+    def test_frozen_build_finds_password_next_to_the_exe(self):
+        """password.txt beside the exe must win over _MEIPASS and the cwd.
+
+        In a one-file build ``_MEIPASS`` is a throw-away extraction directory,
+        so searching it first (the pre-fix order) made the documented
+        "drop password.txt next to the exe" deployment silently fail. This test
+        simulates a frozen run: it is the only place that behaviour is checked.
+        """
+        previous = os.environ.pop(tool.PASSWORD_ENV, None)
+        cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as exe_dir, tempfile.TemporaryDirectory() as meipass:
+            try:
+                exe_path = Path(exe_dir) / "userexam-crypto.exe"
+                exe_path.write_bytes(b"MZ")
+                (Path(exe_dir) / tool.PASSWORD_FILENAME).write_text("beside-exe-key", encoding="utf-8")
+                # A decoy inside the bundle must NOT win: it is regenerated on
+                # every run and would make the shipped file authoritative.
+                (Path(meipass) / tool.PASSWORD_FILENAME).write_text("bundled-key", encoding="utf-8")
+                os.chdir(meipass)
+
+                saved_frozen = getattr(sys, "frozen", None)
+                saved_meipass = getattr(sys, "_MEIPASS", None)
+                saved_executable = sys.executable
+                sys.frozen = True
+                sys._MEIPASS = meipass
+                sys.executable = str(exe_path)
+                try:
+                    self.assertEqual(tool._load_password(), "beside-exe-key")
+                    self.assertEqual(tool._password_search_dirs()[0], Path(exe_dir))
+                finally:
+                    sys.executable = saved_executable
+                    for name, value in (("frozen", saved_frozen), ("_MEIPASS", saved_meipass)):
+                        if value is None:
+                            if hasattr(sys, name):
+                                delattr(sys, name)
+                        else:
+                            setattr(sys, name, value)
+            finally:
+                os.chdir(cwd)
+                if previous is not None:
+                    os.environ[tool.PASSWORD_ENV] = previous
+
 
 class OutputNamingTests(unittest.TestCase):
     def test_deduplicates_with_index_suffix(self):

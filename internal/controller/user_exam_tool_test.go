@@ -336,3 +336,143 @@ func TestUserExamInspectRejectsNonSQLiteUpload(t *testing.T) {
 		t.Fatal("拒绝时必须给出可读原因")
 	}
 }
+
+// 下载文件名必须与构建脚本实际产出的文件名一致。
+//
+// 这条钉子守的是行为而不是字面量：spec 里 name 写成 userexam-crypto、下载头却写
+// userexam_crypto，管理员保存下来的文件名对不上文档和 run.cmd，双击就找不到东西。
+// 所以直接读 spec 的 name= 与 build-exe.ps1 里的 dist 路径，两边都得和常量相等。
+func TestUserExamToolNameMatchesBuildArtifact(t *testing.T) {
+	toolDir := filepath.Join("..", "..", "tools", "userexam-crypto")
+
+	spec, err := os.ReadFile(filepath.Join(toolDir, "userexam_crypto.spec"))
+	if err != nil {
+		t.Fatalf("读取 spec 失败: %v", err)
+	}
+	specName := specExecutableName(t, string(spec))
+	if specName+".exe" != userExamToolName {
+		t.Fatalf("spec 的 EXE name=%q 与下发文件名 %q 不一致", specName, userExamToolName)
+	}
+
+	build, err := os.ReadFile(filepath.Join(toolDir, "build-exe.ps1"))
+	if err != nil {
+		t.Fatalf("读取 build-exe.ps1 失败: %v", err)
+	}
+	wantPath := `dist\` + userExamToolName
+	if !strings.Contains(string(build), wantPath) {
+		t.Fatalf("build-exe.ps1 未产出 %s（下发文件名会与构建产物不符）", wantPath)
+	}
+}
+
+// specExecutableName 取 EXE(name="...") 里的名字；取不到就让用例失败。
+func specExecutableName(t *testing.T, spec string) string {
+	t.Helper()
+	const marker = `name="`
+	index := strings.Index(spec, marker)
+	if index < 0 {
+		t.Fatal("spec 里找不到 EXE(name=...)")
+	}
+	rest := spec[index+len(marker):]
+	end := strings.Index(rest, `"`)
+	if end < 0 {
+		t.Fatal("spec 的 name= 没有闭合引号")
+	}
+	return rest[:end]
+}
+
+// 自描述版本号必须与 Python 工具本身一致，否则管理台显示的版本是假的。
+func TestUserExamToolVersionMatchesPythonTool(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "tools", "userexam-crypto", "userexam_crypto.py"))
+	if err != nil {
+		t.Fatalf("读取工具源码失败: %v", err)
+	}
+	if !strings.Contains(string(source), `TOOL_VERSION = "`+userExamToolVersionLabel+`"`) {
+		t.Fatalf("工具源码的 TOOL_VERSION 与后端自描述 %q 不一致", userExamToolVersionLabel)
+	}
+}
+
+// 路径 A 的硬边界：服务端不得持有解密能力。
+//
+// 一旦有人把口令或 SQLite3MC 绑定塞进服务端，这个工具就变成了远程解密服务，
+// 上传的密文库会以明文落在服务器上。检查的是**能力**而不是出现过的字眼：
+// 注释里提到 SQLite3MC 不算能力，能真正解密的依赖/运行库/密钥才算。
+func TestUserExamServerHoldsNoCiphercapability(t *testing.T) {
+	root := filepath.Join("..", "..")
+
+	// 1) 依赖层：Go 模块图里不许出现 SQLite 加密绑定。
+	for _, name := range []string{"go.mod", "go.sum"} {
+		content, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			t.Fatalf("读取 %s 失败: %v", name, err)
+		}
+		lower := strings.ToLower(string(content))
+		for _, needle := range []string{"sqlite3mc", "wxsqlite3", "sqlcipher"} {
+			if strings.Contains(lower, needle) {
+				t.Fatalf("%s 引入了服务端不该有的加密依赖 %q", name, needle)
+			}
+		}
+	}
+
+	// 2) 运行库层：服务端源码树里不许出现 SQLite3MC 的原生扩展。
+	// tools/userexam-crypto/_vendor 属于脱机工具（不进 exe 之外的分发），
+	// 不是服务端构建输入，所以不在扫描范围。
+	for _, directory := range []string{"internal", "pkg", "cmd"} {
+		walkRoot := filepath.Join(root, directory)
+		walkErr := filepath.WalkDir(walkRoot, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			name := strings.ToLower(entry.Name())
+			if strings.HasSuffix(name, ".pyd") || strings.HasSuffix(name, ".dll") || strings.Contains(name, "sqlite3mc") {
+				relative, relErr := filepath.Rel(root, path)
+				if relErr != nil {
+					return relErr
+				}
+				t.Fatalf("服务端源码树里出现了原生加密运行库：%s", relative)
+			}
+			return nil
+		})
+		if walkErr != nil {
+			t.Fatalf("扫描 %s 的运行库失败: %v", directory, walkErr)
+		}
+	}
+
+	// 3) 密钥层：历史口令的两种常见编码都不许出现在非测试 Go 源码里。
+	// 这里只比对「明文口令的字节序列」，不写出可读形式，避免测试自己泄漏。
+	forbiddenLiterals := []string{
+		"mimayrlshenme",
+		"6d696d6179726c7368656e6d65",
+	}
+	for _, directory := range []string{"internal", "pkg", "cmd"} {
+		walkRoot := filepath.Join(root, directory)
+		walkErr := filepath.WalkDir(walkRoot, func(path string, entry os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if entry.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			lower := strings.ToLower(string(content))
+			relative, relErr := filepath.Rel(root, path)
+			if relErr != nil {
+				return relErr
+			}
+			for _, needle := range forbiddenLiterals {
+				if strings.Contains(lower, needle) {
+					t.Fatalf("%s 出现了服务端不该持有的口令字面量", relative)
+				}
+			}
+			return nil
+		})
+		if walkErr != nil {
+			t.Fatalf("扫描 %s 失败: %v", directory, walkErr)
+		}
+	}
+}
