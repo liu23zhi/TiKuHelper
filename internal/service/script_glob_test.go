@@ -281,6 +281,11 @@ func TestScriptGlobReservedPrefixOutranksWildcardRules(t *testing.T) {
 // 合并后仍是 9 —— 因为「前缀」按第一段聚合，200 多条 /adapter-service/* 只算一个。
 // 因此「前缀数 ≥ 20」本仓永远不可能成立，写成硬断言只会得到一个恒红的假钉子。
 //
+// ⚠️ 不要「修正」成 >= 20：数字 20 属于 internal/api 的 scriptReservedPrefixWarnBelow，
+// 它比的是 **scannedRoutes（路由条数）**，不是前缀数；前缀集合按第一段聚合后天然很小，
+// router.go 的注释原文就写了「前缀集合本身很小 …… 单看条数会误判」。
+// 「≥20 前缀」在 service 侧不可达，且在语义上从来不是那条断言的判据。
+//
 // 该断言的真实意图是「枚举时机不对时能被发现」。仓里真正用于这件事的信号是
 // internal/api/router.go 的 scannedRoutes（阈值 scriptReservedPrefixWarnBelow=20），
 // 它在 internal/api 包里，service 不能反向 import（会形成循环）。
