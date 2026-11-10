@@ -384,8 +384,13 @@ func TestBlacklistAdminToggleAndDeleteBothDropTheRuleFromCache(t *testing.T) {
 	}
 
 	// 删除：缓存不再命中，且库里没有这行了；命中记录保留。
+	//
+	// Q77-6 起删除必须带 `?reason=`（后端独立校验，见 rule_audit.go）。
+	// 这条用例测的是「删除后缓存/库的状态」，原因只是必须提供的入参；
+	// 「缺 reason 必须 400 且规则仍在」由 rule_audit_test.go 专门覆盖。
 	deletePath := "/adapter-service/blacklist/" + strconv.FormatInt(entry.ID, 10)
-	if recorder := blacklistRequest(router, http.MethodDelete, deletePath, ""); recorder.Code != http.StatusOK {
+	deleteWithReason := deletePath + "?reason=" + ruleDeleteTestReasonQuery
+	if recorder := blacklistRequest(router, http.MethodDelete, deleteWithReason, ""); recorder.Code != http.StatusOK {
 		t.Fatalf("delete: %d %s", recorder.Code, recorder.Body.String())
 	}
 	if _, hit := service.DefaultBlacklistCache().Snapshot().MatchIP("198.51.100.77"); hit {
@@ -400,7 +405,8 @@ func TestBlacklistAdminToggleAndDeleteBothDropTheRuleFromCache(t *testing.T) {
 	}
 
 	// 再次删除同一 id → 404（不是 200 也不是 500）。
-	if recorder := blacklistRequest(router, http.MethodDelete, deletePath, ""); recorder.Code != http.StatusNotFound {
+	// 仍带 reason：否则会先被 400 拦下，测不到「规则不存在」这条分支。
+	if recorder := blacklistRequest(router, http.MethodDelete, deleteWithReason, ""); recorder.Code != http.StatusNotFound {
 		t.Fatalf("second delete should be 404, got %d (%s)", recorder.Code, recorder.Body.String())
 	}
 	// 启停不存在的 id → 404。

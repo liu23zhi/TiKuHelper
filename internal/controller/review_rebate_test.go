@@ -523,10 +523,12 @@ func TestReviewRebateHTTPRuleValidation(t *testing.T) {
 		t.Fatalf("update rule failed: %d %s", out.Code, out.Body.String())
 	}
 	// 删除 → 200；再删 → 404。
-	if out := send(http.MethodDelete, fmt.Sprintf("/admin/review-rebate/rules/%d", created.ID), ""); out.Code != http.StatusOK {
+	// Q77-6 起 `?reason=` 必填（后端独立校验，见 rule_audit.go）；两次都带，
+	// 否则第二次会被 400 先拦下，测不到「规则不存在」这条分支。
+	if out := send(http.MethodDelete, fmt.Sprintf("/admin/review-rebate/rules/%d?reason=%s", created.ID, ruleDeleteTestReasonQuery), ""); out.Code != http.StatusOK {
 		t.Fatalf("delete rule failed: %d %s", out.Code, out.Body.String())
 	}
-	if out := send(http.MethodDelete, fmt.Sprintf("/admin/review-rebate/rules/%d", created.ID), ""); out.Code != http.StatusNotFound {
+	if out := send(http.MethodDelete, fmt.Sprintf("/admin/review-rebate/rules/%d?reason=%s", created.ID, ruleDeleteTestReasonQuery), ""); out.Code != http.StatusNotFound {
 		t.Fatalf("deleting missing rule must be 404, got %d %s", out.Code, out.Body.String())
 	}
 	// 原规则还在，活动配置可读。

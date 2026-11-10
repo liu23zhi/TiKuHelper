@@ -166,7 +166,7 @@ func TestDeletePaymentMethodDeletesItemForAdmin(t *testing.T) {
 	}()
 
 	called := false
-	deletePaymentMethod = func(user entity.User, paymentMethodID int32) error {
+	deletePaymentMethod = func(user entity.User, paymentMethodID int32, _, _ string) error {
 		called = true
 		if user.ID != 1 || user.Role != "admin" {
 			t.Fatalf("unexpected user: %+v", user)
@@ -179,7 +179,11 @@ func TestDeletePaymentMethodDeletesItemForAdmin(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodDelete, "/adapter-service/payment-methods/13", nil)
+	// Q77-6 起删除必须带 `?reason=`（后端独立校验，见 rule_audit.go）。
+	// 本用例测的是「seam 被调用 + 200」，原因只是必须提供的入参；
+	// 「缺 reason 必须 400 且规则仍在」由 rule_audit_test.go 覆盖。
+	ctx.Request = httptest.NewRequest(http.MethodDelete,
+		"/adapter-service/payment-methods/13?reason="+ruleDeleteTestReasonQuery, nil)
 	ctx.Params = gin.Params{{Key: "id", Value: "13"}}
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 

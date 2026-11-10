@@ -160,7 +160,7 @@ func newS02PaymentIconBridge(t *testing.T) *s02PaymentIconBridge {
 		b.called("update")
 		return service.UpdatePaymentMethodWithDB(db, id, input)
 	}
-	deletePaymentMethod = func(_ entity.User, id int32) error {
+	deletePaymentMethod = func(_ entity.User, id int32, _, _ string) error {
 		b.called("delete")
 		return service.DeletePaymentMethodWithDB(db, id)
 	}
@@ -399,7 +399,10 @@ func s02PaymentIconBackendSelfchecks(t *testing.T) {
 	if row := snapshot().Rows[3]; row.Name != updated.Name || row.IconSVG != s02SafeIcon {
 		t.Fatal("safe update did not persist")
 	}
-	request("admin", http.MethodDelete, path, nil, 200)
+	// Q77-6 起删除必须带 `?reason=`（后端独立校验，见 rule_audit.go）。
+	// 上面那批 user/anonymous 的 DELETE 不带 reason 仍然 403/401 —— 鉴权在
+	// requireRuleDeleteReason 之前拦截，本用例正是在钉这个顺序。
+	request("admin", http.MethodDelete, path+"?reason="+ruleDeleteTestReasonQuery, nil, 200)
 	if snapshot().SHA256 != initial.SHA256 {
 		t.Fatal("delete did not restore original three fixture rows")
 	}

@@ -25,8 +25,12 @@ var updatePaymentMethod = func(user entity.User, paymentMethodID int32, input se
 	return service.UpdatePaymentMethodWithDB(manager.GetManager().GetDB(), paymentMethodID, input)
 }
 
-var deletePaymentMethod = func(user entity.User, paymentMethodID int32) error {
-	return service.DeletePaymentMethodWithDB(manager.GetManager().GetDB(), paymentMethodID)
+// deletePaymentMethod 是删除支付方式的注入点（单测替换它）。
+//
+// reason / clientIP 一起传：删除必须留「谁、为什么删」的可重建快照（Q77-2 / Q77-6），
+// 见 rule_audit.go 的 deletePaymentMethodWithSnapshot。
+var deletePaymentMethod = func(user entity.User, paymentMethodID int32, reason, clientIP string) error {
+	return deletePaymentMethodWithSnapshot(manager.GetManager().GetDB(), paymentMethodID, user, reason, clientIP)
 }
 
 func PaymentMethodList(c *gin.Context) {
@@ -116,7 +120,14 @@ func DeletePaymentMethod(c *gin.Context) {
 		return
 	}
 
-	if err := deletePaymentMethod(operator, int32(paymentMethodID)); err != nil {
+	// 删除必须填原因（Q77-6 选项 C：下拉预设 + 可自由填写）。
+	// 后端独立校验，不依赖前端 required —— 直接调 API 绕不过。
+	reason, ok := requireRuleDeleteReason(c)
+	if !ok {
+		return
+	}
+
+	if err := deletePaymentMethod(operator, int32(paymentMethodID), reason, c.ClientIP()); err != nil {
 		writePaymentMethodError(c, err, "删除支付方式失败")
 		return
 	}
