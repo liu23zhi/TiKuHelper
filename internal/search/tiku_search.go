@@ -208,6 +208,12 @@ func (tool *DBTikuSearchTool) fuzzyRows(db *gorm.DB, question string) ([]tikuCan
 		orderArgs = append(orderArgs, args...)
 		orderArgs = append(orderArgs, len([]rune(question)))
 		shortlist := db.Table(table).Where(condition.String(), args...).Clauses(clause.OrderBy{Expression: clause.Expr{SQL: orderSQL, Vars: orderArgs}}).Limit(200)
+		if !evidence {
+			// ⚠️ 题库归档（软删除）后，已归档题**不得参与搜题匹配**（Q77-1 影响面 1）。
+			// 这里是 Table(...) 裸查询：即使 GORM 会按目标结构体的 gorm.DeletedAt 自动加条件，
+			// 也显式写上 —— 匹配路径的排除条件不能依赖「结构体是否带软删除字段」这种隐式约定。
+			shortlist = shortlist.Where("deleted_at IS NULL")
+		}
 		if evidence {
 			var found []entity.TikuAnswerEvidence
 			err := shortlist.Find(&found).Error

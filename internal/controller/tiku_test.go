@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -30,6 +31,15 @@ func newTikuControllerTestDB(t *testing.T) *gorm.DB {
 
 	if err := db.AutoMigrate(&entity.Tiku{}, &entity.User{}, &entity.Log{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
+	}
+	// 归档四列（deleted_at / archived_reason / archived_at / archived_by_user_id）在生产由
+	// registry.ensureTikuArchiveSchema 用显式 ALTER 补齐；那是包内私有函数，测试无法直接调，
+	// 这里用 entity.TikuArchive 声明同一张表的四列做等价补列（与 openTikuArchiveTestDB 同款做法）。
+	//
+	// ⚠️ 不补这一步，任何走「删除 = 归档」的用例都会在 UPDATE 时炸
+	// `no such column: archived_at` —— 看起来像实现坏了，其实是测试库缺列。
+	if err := db.AutoMigrate(&entity.TikuArchive{}); err != nil {
+		t.Fatalf("migrate tiku archive columns: %v", err)
 	}
 
 	dao.SetDefault(db)
@@ -134,6 +144,15 @@ func TestUpdateQuestionInvalidatesSearchResultCache(t *testing.T) {
 }
 
 // 回归：题目被删除后同样必须作废缓存。
+//
+// 本用例随「删除 = 归档（软删除）」口径一并更新（Q77-1），两处变化都是**语义变更**，
+// 不是为了让测试变绿而放宽断言：
+//
+//  1. 请求必须带 `reason` —— §11.8 规定删除原因强制填写（去空格后 ≥ archiveReasonMinLength）。
+//     旧请求不带 reason，在新接口下必然 400；这本身是「接口契约变了」而非「实现坏了」。
+//  2. 断言从「行没了」改成「默认查询查不到 + Unscoped 仍可见」两件事同时成立。
+//     只断言「Unscoped 里还在」会把「归档后仍参与搜题」这种真实缺陷一起放过去；
+//     只断言「默认查不到」则无法区分「软删除」与「物理删除」，软删除口径就守不住了。
 func TestDeleteQuestionInvalidatesSearchResultCache(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newTikuControllerTestDB(t)
@@ -143,9 +162,12 @@ func TestDeleteQuestionInvalidatesSearchResultCache(t *testing.T) {
 	seedSearchResultCacheEntry(t, "待删除题目")
 	defer invalidateSearchResultCaches("")
 
+	const reason = "题目重复导入"
+
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodDelete, "/adapter-service/questions/12", nil)
+	ctx.Request = httptest.NewRequest(http.MethodDelete,
+		"/adapter-service/questions/12?reason="+url.QueryEscape(reason), nil)
 	ctx.Params = gin.Params{{Key: "id", Value: "12"}}
 	ctx.Set("user", &user)
 
@@ -156,6 +178,50 @@ func TestDeleteQuestionInvalidatesSearchResultCache(t *testing.T) {
 	}
 	if got := cacheEntryCount(); got != 0 {
 		t.Fatalf("expected the cache to be invalidated after deleting a question, still %d entries", got)
+	}
+
+	// ① 业务路径视角：默认查询（走 dao.Tiku，带 gorm.DeletedAt 自动过滤）必须查不到。
+	var visible int64
+	if err := db.Model(&entity.Tiku{}).Where("id = ?", 12).Count(&visible).Error; err != nil {
+		t.Fatalf("count visible rows: %v", err)
+	}
+	if visible != 0 {
+		t.Fatalf("archived question must be invisible to default queries, still %d visible rows", visible)
+	}
+
+	// ② 归档视角：行必须还在（软删除而非物理删除），且归档元数据与原因已落库。
+	//
+	// ⚠️ 归档四列（deleted_at / archived_reason / archived_at / archived_by_user_id）
+	// 只声明在 entity.TikuArchive 上，entity.Tiku 只有 DeletedAt —— 读归档元数据必须用前者。
+	var archived entity.TikuArchive
+	if err := db.Where("id = ?", 12).Take(&archived).Error; err != nil {
+		t.Fatalf("archived row must still exist: %v", err)
+	}
+	if archived.DeletedAt == nil {
+		t.Fatal("archived row must have deleted_at set")
+	}
+	if archived.ArchivedAt == nil {
+		t.Fatal("archived_at must be recorded")
+	}
+	if archived.ArchivedByUserID == nil || *archived.ArchivedByUserID != user.ID {
+		t.Fatalf("archived_by_user_id = %v, want %d", archived.ArchivedByUserID, user.ID)
+	}
+	// 归档来源分类（不是自由文本原因，后者在 logs.Description 里）。
+	if archived.ArchivedReason == nil || *archived.ArchivedReason != entity.TikuArchivedReasonAdminDelete {
+		t.Fatalf("archived_reason = %v, want %q", archived.ArchivedReason, entity.TikuArchivedReasonAdminDelete)
+	}
+
+	// ③ 删除原因必须真的落进审计日志（§11.8 要求「强制填」的意义就在这里：
+	//    填了不写等于没填）。自由文本原因写 logs.Description，完整快照写 logs.OldAnswer。
+	var auditLog entity.Log
+	if err := db.Where("qid = ? AND action = ?", 12, TikuActionArchive).Take(&auditLog).Error; err != nil {
+		t.Fatalf("archive must write an audit log row: %v", err)
+	}
+	if !strings.Contains(auditLog.Description, reason) {
+		t.Fatalf("audit log description must carry the reason %q, got %q", reason, auditLog.Description)
+	}
+	if strings.TrimSpace(auditLog.OldAnswer) == "" {
+		t.Fatal("audit log must keep the full snapshot in OldAnswer")
 	}
 }
 

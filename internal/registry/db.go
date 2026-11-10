@@ -912,6 +912,18 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		logger.SysLog(fmt.Sprintf("tiku.plat 列删除失败（不影响启动）：%v", err))
 	}
 
+	// 题库软删除（归档）：补 deleted_at / archived_reason / archived_at / archived_by_user_id
+	// 四列 + idx_tikus_deleted_at 索引（Q77-1，见 77-*.md §3.1 §11.3）。
+	//
+	// 结构性失败必须阻断启动：缺 deleted_at 列时 dao.Tiku 的每一条查询都会报错，
+	// 等于题库整体不可用，带病启动只会在运行期变成一堆找不到原因的 500。
+	// 本函数返回 *gorm.DB 而不是 error，因此照既有写法 FatalLog 后 return nil
+	// （FatalLog 内部 os.Exit(1)，return nil 只是让控制流对编译器/静态检查成立）。
+	if err := runStartupMigration("ensureTikuArchiveSchema", func() error { return ensureTikuArchiveSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare tiku archive schema fail: %w", err))
+		return nil
+	}
+
 	ensureAccountDomainDefaults(db)
 
 	// Apply only the preflighted credential plan. Environment never resets an existing account.

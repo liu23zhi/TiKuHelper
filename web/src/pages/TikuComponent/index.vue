@@ -284,6 +284,7 @@ import { currentUserIdentity } from '@/utils/currentUserScope'
 import { useTableExpansion } from '@/composables/useTableExpansion.mjs'
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
 import { buildQuestionAnswerText, parseQuestionAnswerValues, isObjectiveQuestionType, normalizeEditorQuestionType } from '@/utils/questionAnswerDisplay.mjs'
+import { ARCHIVE_REASON_PRESETS, normalizeArchiveReason, validateArchiveReason } from '@/utils/questionArchiveReason.mjs'
 import {questionType} from "@/utils/uitls";
 import {message, Drawer} from "ant-design-vue";
 import {
@@ -594,20 +595,44 @@ export default defineComponent({
     async deleteQuestion(id) {
       const isCurrent = this.captureQuestionOwner()
       if (!isCurrent()) return
+      // 删除原因（Q77-6 定案 C：预设下拉 + 可自定义输入）。
+      //
+      // 用 Swal 原生的 input + inputOptions 做「下拉可选、也能手填」，
+      // 而不是在页面里另插 a-select：① 本仓没有 dayjs/DatePicker 那套依赖；
+      // ② 弹窗是 Swal 的 DOM，混入 AntD 控件需要额外挂载与卸载逻辑；
+      // ③ 追加独立的 form-item 会踩「位置选择器取第一个」的既有陷阱。
+      //
+      // 校验放在 preConfirm 里（按**字符**数，与后端 archiveReasonMinLength 一致），
+      // 不合法时 Swal 保持打开并显示同一句文案 —— 不发请求。
       const result = await this.showQuestionPrompt({
-        icon: 'warning', title: '删除题目', text: '确定删除这道题目？此操作不可撤销。',
-        showCancelButton: true, confirmButtonText: '确定删除', cancelButtonText: '取消',
-        heightAuto: false, scrollbarPadding: false,
+        icon: 'warning',
+        title: '删除题目',
+        text: '确定删除这道题目？归档后可在归档列表恢复。',
+        input: 'text',
+        inputOptions: {
+          // 预设与后端 archiveReasonCode（tiku_archive.go:33-45）逐字对齐。
+          presets: ARCHIVE_REASON_PRESETS,
+        },
+        inputPlaceholder: '请填写删除原因（至少 2 个字符），或从下拉中选择',
+        inputValidator: value => validateArchiveReason(value),
+        showCancelButton: true,
+        confirmButtonText: '确定删除',
+        cancelButtonText: '取消',
+        heightAuto: false,
+        scrollbarPadding: false,
       }, isCurrent)
       if (!isCurrent() || !result?.isConfirmed) return
+      const reason = normalizeArchiveReason(result.value)
       try {
-        const res = await delQuestions({ id })
+        const res = await delQuestions({ id }, reason)
         if (!isCurrent()) return
         if (res?.status !== 200) {
+          // 固定文案，不回显后端的 message：既有 TF02 用例钉的就是这一条
+          // （「失败时页面必须出现『删除失败』」），且后端 message 可能含原因校验细节。
           message.error('删除失败')
           return
         }
-        message.success('删除成功')
+        message.success('已归档')
         this.selectedRowKeys = this.selectedRowKeys.filter(item => Number(item) !== Number(id))
         await this.fetchData()
       } catch {

@@ -1799,7 +1799,12 @@ func resolveLocalSearchMatchRows(db *gorm.DB, req model.SearchRequest) []localSe
 	hashCandidates := util.BuildTikuHashCandidates(req.Question, req.Options, req.Type)
 
 	rows := make([]localSearchMatchRow, 0)
-	query := db.Table(entity.TableNameTiku).Select("id, source_name").Where("hash IN ?", hashCandidates)
+	// ⚠️ 这是裸表查询（Table + 目标结构体不是 entity.Tiku），
+	// GORM 的软删除作用域**不会**自动附加，必须手写 deleted_at IS NULL。
+	// 漏了就出现「已归档题库仍参与匹配/仍被回填 Qid」——等于没删（Q77-1 影响面 1）。
+	query := db.Table(entity.TableNameTiku).Select("id, source_name").
+		Where("deleted_at IS NULL").
+		Where("hash IN ?", hashCandidates)
 	if strings.TrimSpace(req.CourseName) != "" {
 		query = query.Where("course_name = ?", strings.TrimSpace(req.CourseName))
 	}
