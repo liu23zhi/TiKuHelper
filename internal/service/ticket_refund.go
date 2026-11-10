@@ -23,6 +23,9 @@ var (
 	ErrTicketRefundState               = errors.New("当前退款状态不允许执行该操作")
 	ErrTicketRefundAmount              = errors.New("退款金额不合法或超出授权上限")
 	ErrTicketRefundInsufficientBalance = errors.New("可用钱包余额不足，未冻结退款")
+	// ErrTicketRefundExceedsRefundablePrincipal 可退本金不足：
+	// 用户已用赠送金额消费掉的服务价值超过了剩余充值本金，超出部分不能退成现金。
+	ErrTicketRefundExceedsRefundablePrincipal = errors.New("可退本金不足（赠送金额已消费的部分不能退成现金）")
 )
 
 const (
@@ -168,6 +171,8 @@ func CreateTicketRefundWithDB(db *gorm.DB, actor entity.User, input CreateTicket
 			if err != nil || order.PaidAt.After(now) {
 				return ErrTicketRefundOrderUnavailable
 			}
+			// 申请时只做「不超过本笔实付」的粗校验；真正的可退额在审批冻结时
+			// 用权威钱包快照重算（见 ReviewTicketRefundWithDB）。
 			if input.RequestedCents > paid {
 				return ErrTicketRefundAmount
 			}
@@ -254,6 +259,23 @@ func ReviewTicketRefundWithDB(db *gorm.DB, admin entity.User, id int64, approve 
 		if !wallet.enabled {
 			return ErrTicketRefundForbidden
 		}
+		// 可退本金上限：用户只能退回「自己充值的、且还没被消费掉的本金」。
+		//
+		// 这一道闸堵的是 21-*.md §7.1 意图 (b) 的漏洞：
+		// 充 100 → 赠 20 → 花掉 20 赠金 → 余额仍是 100 → 退 100 → 平台白送 20 元服务。
+		// 口径推导与「为什么用 balance − 已消耗赠金」见 ticket_refund_refundable.go 顶部注释。
+		//
+		// 用**锁内**的权威钱包快照（wallet.micros）配账单聚合，避免读到过期余额。
+		giftConsumed, err := giftConsumedMicrosWithDB(tx, row.UserID)
+		if err != nil {
+			return err
+		}
+		orderPaidMicros := row.OrderPaidCents * ticketRefundMicrosPerCent
+		breakdown := computeRefundablePrincipal(wallet.micros, giftConsumed, orderPaidMicros)
+		refundableCents := microsToCents(breakdown.RefundableMicros)
+		if amountCents > refundableCents {
+			return ErrTicketRefundExceedsRefundablePrincipal
+		}
 		amountMicros := amountCents * ticketRefundMicrosPerCent
 		if wallet.micros < amountMicros {
 			return ErrTicketRefundInsufficientBalance
@@ -267,6 +289,9 @@ func ReviewTicketRefundWithDB(db *gorm.DB, admin entity.User, id int64, approve 
 		}
 		return updateTicketRefund(tx, row, map[string]any{
 			"status": entity.TicketRefundStatusFrozen, "approved_cents": amountCents, "reviewed_at": now, "reviewed_by": admin.ID,
+			// 审计：把「因已消耗赠金而扣掉的可退额度」写进申请单，事后可对账。
+			// 没有它，用户只会看到「我充了 100 却只能退 80」，无法解释。
+			"reason": appendTicketRefundPrincipalAudit(row.Reason, breakdown, refundableCents),
 		})
 	})
 }
