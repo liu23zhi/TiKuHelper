@@ -42,8 +42,8 @@ type reviewRebateTraceRecord struct {
 	// 为什么必须记（task_doc/45 §8.2 的缺口）：claim 表没有 attempt 列，
 	// 管理员对同一条评价反复重跑后，日志里几条记录无法区分先后 ——
 	// 「先给 0.3 后给 0.8」与「先给 0.8 后给 0.3」是完全不同的故事。
-	Attempt     int
-	DurationMs  int64
+	Attempt    int
+	DurationMs int64
 	// SystemPrompt 是系统提示词**全文**。
 	//
 	// 2026-11-11 用户要求「都保留完整提示词，回复记录等」（task_doc/45 §0.26.1、

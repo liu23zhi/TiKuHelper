@@ -82,7 +82,7 @@ type loggerState struct {
 	// 现在既装结构化轨迹，也装完整请求体 / 响应体 / 来源 / 结果摘要。
 	thinking *rotatingFile
 	// reviewRebate 是评价返现打分的专用追踪（task_doc/73）。
-	reviewRebate *rotatingFile
+	reviewRebate  *rotatingFile
 	stdout        io.Writer
 	stderr        io.Writer
 	standard      io.Writer
