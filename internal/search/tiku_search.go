@@ -96,7 +96,9 @@ func (tool *DBTikuSearchTool) SearchTiku(ctx context.Context, req model.SearchRe
 	}
 	ranked := make([]AITikuSearchCandidate, 0, len(rows))
 	for _, row := range rows {
-		if !compatibleQuestionType(req.Type, row.Type) || !compatibleMathOperators(question, row.Question) {
+		if !compatibleQuestionType(req.Type, row.Type) ||
+			!compatibleMathOperators(question, row.Question) ||
+			!compatibleNegation(question, row.Question) {
 			continue
 		}
 		options := decodeTikuStrings(row.Options)
@@ -374,6 +376,87 @@ func tikuSearchTerms(question string) []string {
 func compatibleMathOperators(left, right string) bool {
 	leftOps, rightOps := tikuMathOperators(left), tikuMathOperators(right)
 	return leftOps == rightOps && strings.Join(tikuNumberPattern.FindAllString(left, -1), "|") == strings.Join(tikuNumberPattern.FindAllString(right, -1), "|")
+}
+
+// tikuNegationSuffixes 是题干里「否定问法」的收尾模式。
+//
+// 观察到的真实问法都集中在句尾：`不正确的是`、`不属于…的是`、`错误的是`、
+// `不能…的是`、`无法…的是`。把判定锚在**句尾窗口**而不是全文任意位置，
+// 是为了避开「不等式」「不确定性」「不同」这类把「不」当构词成分的正常题面
+// ——它们不会出现在句尾的 `…的是` 结构里。
+var tikuNegationSuffixes = []string{
+	"不正确的是", "不正确的有", "不正确的",
+	"错误的是", "错误的有", "错误的",
+	"不属于",
+	"不包括",
+	"不符合",
+	"不正确",
+	"不对",
+	"不能",
+	"不会",
+	"不可",
+	"无法",
+	"没有",
+	"并非",
+	"不是",
+	"不应",
+	"不该",
+	"不需要",
+	"不可能",
+	"不一定",
+}
+
+// tikuNegationSuffixWindow 是句尾判定窗口的长度（rune 数）。
+//
+// 取 12 是因为最长需要覆盖的模式是「下列不属于生物的是」这类收尾
+// （`不属于生物的是` 共 7 字），留一倍余量。
+const tikuNegationSuffixWindow = 12
+
+// tikuQuestionNegated 判断题干是否为否定问法。
+//
+// 只在**句尾窗口**里找否定模式，找到任一即认定是否定问法。
+func tikuQuestionNegated(question string) bool {
+	trimmed := strings.TrimSpace(question)
+	if trimmed == "" {
+		return false
+	}
+	runes := []rune(trimmed)
+	start := len(runes) - tikuNegationSuffixWindow
+	if start < 0 {
+		start = 0
+	}
+	tail := string(runes[start:])
+	for _, suffix := range tikuNegationSuffixes {
+		if strings.Contains(tail, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// compatibleNegation 要求两侧题干在「是否否定问法」这一点上一致。
+//
+// 为什么必须有这一层（线上实测，见 t67 审查）：
+//
+//	sim("...叙述正确的是", "...不正确的是") = 0.8966
+//	sim("以下说法正确",   "以下说法不正确")  = 0.7273
+//	sim("可以发生反应",   "不可以发生反应")  = 0.9091
+//
+// 全部高于 aiTikuMinScore=0.72 —— bigram 把「不」稀释进二十来个 bigram 里
+// 几乎无影响。而这是**唯一会主动返回错误答案**的匹配缺陷（其余都是漏答，
+// 用户能感知「没答案」，感知不到「答错了」）。
+//
+// 与 compatibleMathOperators 同一范式：抽关键特征集合，不等则拒。
+// **刻意不做降分**：降分需要重新标定 0.72，会连带影响所有正常题目的召回；
+// 否定是强区分信号，只有「一致」与「不一致」两种状态。
+//
+// 注意「两侧都否定」必须判为兼容：
+//
+//	"下列说法不正确的是" vs "下列说法不正确的是" → 同一题，必须匹配
+//
+// 因此比较的是**布尔值是否相等**，不是「任一侧含否定就拒」。
+func compatibleNegation(left, right string) bool {
+	return tikuQuestionNegated(left) == tikuQuestionNegated(right)
 }
 
 func tikuMathOperators(value string) string {
