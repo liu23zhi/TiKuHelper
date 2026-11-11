@@ -175,6 +175,14 @@ type AITikuSearchCallUsage struct {
 	MatchKind      string `json:"matchKind,omitempty"`
 	CandidateCount int    `json:"candidateCount"`
 	Error          string `json:"error,omitempty"`
+	// Ambiguous 刻意**不用** omitempty：false 是有意义的取值（「判过，不模糊」），
+	// 与「这条记录没参与过判定」是两件事。用 omitempty 会让运维无法区分，
+	// 而这正是本字段存在的理由 —— 统计模糊命中率来决定 aiTikuMinScore /
+	// aiTikuAmbiguityGap 该不该调。日志多一个 `"ambiguous":false` 是值得的。
+	//
+	// 同结构里的 MatchKind / Error 用 omitempty 是因为它们是字符串、空串本就无意义；
+	// 布尔零值不同，不能照搬那套惯例。
+	Ambiguous bool `json:"ambiguous"`
 }
 
 type AISearchDebugResult struct {
