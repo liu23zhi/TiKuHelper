@@ -348,7 +348,8 @@ func BindDraftTicketAttachmentsInTx(tx *gorm.DB, user *entity.User, ticketID, me
 }
 
 // ticketForAttachmentWithDB 复用工单的可见性规则：普通用户只能给自己名下的工单
-// 加图，管理员可以替任何工单加图（代客处理）。
+// 加图（含系统自动创建给他的那张，45-*.md §0.23.2），管理员可以替任何工单加图（代客处理）。
+// 隔离维度只有 user_id —— 不要在这里补 origin 过滤。
 //
 // ticketID == 0（尚未建单的草稿图）在这里一律视为不存在：草稿图只能由上传者
 // 在建单事务里认领，不能通过读取接口访问。
@@ -358,6 +359,8 @@ func ticketForAttachmentWithDB(db *gorm.DB, user *entity.User, ticketID int64) (
 	}
 	query := db.Where("id = ?", ticketID)
 	if !isTicketAdmin(user) {
+		// 隔离只靠 user_id：系统单对被涉及用户可见（45-*.md §0.23.2），
+		// 因此这里**不加** origin 过滤 —— 加了用户就看不到自己那张系统单的图。
 		query = query.Where("user_id = ?", user.ID)
 	}
 	var ticket entity.Ticket

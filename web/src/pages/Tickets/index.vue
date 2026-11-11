@@ -177,6 +177,17 @@
             aria-label="更新日期截止"
             :onChange="pageEntry.bind(applyFilters)"
         /></a-form-item>
+        <!-- 分类筛选放在状态/日期之后：前面插入同级控件会让「取第一个 .ant-select」
+             这类位置选择器失效（历史坑），新控件一律追加在末尾。 -->
+        <a-form-item v-if="isAdmin" label="分类"
+          ><a-select
+            :value="filters.category" :onUpdate:value="pageEntry.bind(setFilter, 'category')"
+            allow-clear
+            placeholder="全部类别"
+            style="width: 150px"
+            :options="categoryOptions"
+            :onChange="pageEntry.bind(applyFilters)"
+        /></a-form-item>
         <a-form-item
           ><a-button :onClick="pageEntry.bind(resetFilters)">重置</a-button></a-form-item
         >
@@ -190,9 +201,15 @@
           :onClick="pageEntry.bind(openDetail, ticket.id)"
           ><div class="ticket-card-heading">
             <strong>{{ ticket.subject || `工单 #${ticket.id}` }}</strong
-            ><a-tag :color="ticketStatusColor(ticket.status)">{{
-              ticketStatusLabel(ticket.status)
-            }}</a-tag>
+            ><span class="ticket-card-tags"
+              ><a-tag v-if="ticketCategoryLabel(ticket.category)" :color="ticketCategoryColor(ticket.category)">{{
+                ticketCategoryLabel(ticket.category)
+              }}</a-tag
+              ><a-tag v-if="isSystemTicket(ticket)" color="geekblue">{{ TICKET_SYSTEM_ORIGIN_LABEL }}</a-tag
+              ><a-tag :color="ticketStatusColor(ticket.status)">{{
+                ticketStatusLabel(ticket.status)
+              }}</a-tag></span
+            >
           </div>
           <dl class="ticket-card-meta">
             <div v-if="isAdmin">
@@ -228,14 +245,17 @@
           :columns="columns"
           :loading="listLoading"
           :pagination="pagination"
-          :scroll="{ x: isAdmin ? 760 : 620 }"
+          :scroll="{ x: isAdmin ? 900 : 760 }"
           :onChange="pageEntry.bind(handleTableChange)"
           ><template #bodyCell="{ column, record }"
-            ><span v-if="column.key === 'subject'" class="ticket-subject">{{
-              record.subject || `工单 #${record.id}`
-            }}</span
+            ><span v-if="column.key === 'subject'" class="ticket-subject"
+              ><a-tag v-if="isSystemTicket(record)" color="geekblue">{{ TICKET_SYSTEM_ORIGIN_LABEL }}</a-tag
+              >{{ record.subject || `工单 #${record.id}` }}</span
             ><span v-else-if="column.key === 'userName'">{{
               record.userName || `用户 #${record.userId || "-"}`
+            }}</span
+            ><span v-else-if="column.key === 'category'">{{
+              ticketCategoryLabel(record.category) || "—"
             }}</span
             ><a-tag
               v-else-if="column.key === 'status'"
@@ -319,6 +339,12 @@
             <a-tag :color="ticketStatusColor(detailTicket.status)">{{
               ticketStatusLabel(detailTicket.status)
             }}</a-tag
+            ><a-tag
+              v-if="ticketCategoryLabel(detailTicket.category)"
+              :color="ticketCategoryColor(detailTicket.category)"
+              >{{ ticketCategoryLabel(detailTicket.category) }}</a-tag
+            ><a-tag v-if="isSystemTicket(detailTicket)" color="geekblue"
+              >{{ TICKET_SYSTEM_ORIGIN_LABEL }}</a-tag
             ><span v-if="isAdmin">{{
               detailTicket.userName || `用户 #${detailTicket.userId || "-"}`
             }}</span
@@ -512,12 +538,17 @@ import { useCurrentUserRequestScope } from "@/utils/currentUserScope";
 import {
   buildTicketListParams,
   formatTicketTime,
+  isSystemTicket,
   normalizeTicketDetailResponse,
   normalizeTicketListResponse,
   notificationStatusText,
+  ticketCategoryColor,
+  ticketCategoryLabel,
   ticketStatusColor,
   ticketStatusLabel,
+  TICKET_CATEGORY_OPTIONS,
   TICKET_STATUS_OPTIONS,
+  TICKET_SYSTEM_ORIGIN_LABEL,
   getTicketDraftValidation,
 } from "@/utils/ticketHelpers.mjs";
 
@@ -538,6 +569,7 @@ const errorMessage = ref("");
 const filters = reactive({
   keyword: "",
   status: "",
+  category: "",
   createdFrom: "",
   createdTo: "",
   updatedFrom: "",
@@ -557,6 +589,12 @@ const statusOptions = TICKET_STATUS_OPTIONS.map(({ value, label }) => ({
   value,
   label,
 }));
+// 分类筛选/展示用；建单**不**透传 category（服务端按来源强制赋值，
+// 用户自选只会变成「挑能一键补发」的套利口子）。
+const categoryOptions = TICKET_CATEGORY_OPTIONS.map(({ value, label }) => ({
+  value,
+  label,
+}));
 const columns = computed(() => {
   const base = [
     { title: "编号", dataIndex: "id", key: "id", width: 90 },
@@ -570,6 +608,7 @@ const columns = computed(() => {
       width: 160,
     });
   base.push(
+    { title: "分类", dataIndex: "category", key: "category", width: 130 },
     { title: "状态", dataIndex: "status", key: "status", width: 120 },
     { title: "最近更新", dataIndex: "updatedAt", key: "updatedAt", width: 180 },
     { title: "操作", key: "action", width: 100 }
@@ -695,7 +734,7 @@ function clearOwned() {
   draft.subject = ""; draft.body = ""; errorMessage.value = "";
   draftAttachments.value = []; replyAttachments.value = []; uploadBusy.value = false;
   Object.assign(notificationConfig, { enabled: false, webhookUrl: "", mentionedList: "", configured: false, clearWebhook: false });
-  keywordInput.value = ""; Object.assign(filters, { keyword: "", status: "", createdFrom: "", createdTo: "", updatedFrom: "", updatedTo: "" });
+  keywordInput.value = ""; Object.assign(filters, { keyword: "", status: "", category: "", createdFrom: "", createdTo: "", updatedFrom: "", updatedTo: "" });
 }
 function reloadOwned() {
   if (!canUseTickets()) return;
@@ -800,6 +839,7 @@ function resetFilters() {
   keywordInput.value = "";
   filters.keyword = "";
   filters.status = "";
+  filters.category = "";
   filters.createdFrom = "";
   filters.createdTo = "";
   filters.updatedFrom = "";
@@ -1381,6 +1421,13 @@ watch(
 .ticket-card-heading strong {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+/* 分类 / 系统来源 / 状态三枚标签：换行时靠右收拢，避免把标题挤成一列。 */
+.ticket-card-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  justify-content: flex-end;
 }
 .ticket-card-meta {
   display: flex;

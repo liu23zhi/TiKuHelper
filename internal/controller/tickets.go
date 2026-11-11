@@ -42,7 +42,16 @@ func TicketList(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
-	query := service.TicketListQuery{Status: strings.TrimSpace(c.Query("status")), Keyword: strings.TrimSpace(c.Query("keyword")), CreatedFrom: createdFrom, CreatedTo: createdTo, UpdatedFrom: updatedFrom, UpdatedTo: updatedTo}
+	// origin / category 是多类型工单的筛选维度：空串表示不过滤。
+	// category 对普通用户也生效（他们只看得到自己的、非系统单）；
+	// origin 由 service 侧只对管理员应用。
+	query := service.TicketListQuery{
+		Status:      strings.TrimSpace(c.Query("status")),
+		Keyword:     strings.TrimSpace(c.Query("keyword")),
+		Origin:      strings.TrimSpace(c.Query("origin")),
+		Category:    strings.TrimSpace(c.Query("category")),
+		CreatedFrom: createdFrom, CreatedTo: createdTo, UpdatedFrom: updatedFrom, UpdatedTo: updatedTo,
+	}
 	result, err := service.ListTicketsWithDB(withDatabasePriority(ticketControllerDB(), databaseRequestContext(c), dbqueue.PriorityLow), &user, query, page, pageSize)
 	if err != nil {
 		writeTicketError(c, err, "获取工单列表失败")
@@ -251,6 +260,8 @@ func writeTicketError(c *gin.Context, err error, fallback string) {
 	switch {
 	case errors.Is(err, service.ErrTicketSubjectRequired), errors.Is(err, service.ErrTicketBodyRequired),
 		errors.Is(err, service.ErrTicketInvalidStatus), errors.Is(err, service.ErrTicketInvalidPriority),
+		errors.Is(err, service.ErrTicketInvalidOrigin), errors.Is(err, service.ErrTicketInvalidCategory),
+		errors.Is(err, service.ErrTicketSystemUserRequired), errors.Is(err, service.ErrTicketContextTooLarge),
 		errors.Is(err, service.ErrTicketWebhookInvalid), errors.Is(err, service.ErrTicketWebhookNotConfigured), errors.Is(err, service.ErrTicketTextTooLong):
 		status, message = http.StatusBadRequest, err.Error()
 	case errors.Is(err, service.ErrTicketNotFound):

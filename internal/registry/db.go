@@ -829,6 +829,14 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		logger.FatalLog(fmt.Errorf("prepare ticket attachment schema fail: %w", err))
 	}
 
+	// 工单多类型（69-*.md §3）：给 tickets 补 origin / category / context 三列。
+	// 关键是**存量回填 origin='user'** —— 列的 default 只作用于插入，已有行会落空串，
+	// 不回填则按 origin 过滤会漏掉全部历史工单。结构性失败 FATAL（缺列=静默漏单）；
+	// 数据类回填失败只记日志、不写标记，下次启动重试。
+	if err := runStartupMigration("ensureTicketTypeSchema", func() error { return ensureTicketTypeSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare ticket type schema fail: %w", err))
+	}
+
 	// 额度周期（P14）：只建叠加层 access_token_quota_epochs（含唯一 (token_id, epoch)）。
 	// 不动 access_tokens.total_amount_used —— 它是历史累计，永不清零。
 	// 没有 epoch 行的老令牌天然是「从未重置」，无需回填。

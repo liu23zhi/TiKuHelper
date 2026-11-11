@@ -19,6 +19,49 @@ export function ticketStatusColor(value) {
   return TICKET_STATUS_MAP[String(value || "").trim()]?.color || "default";
 }
 
+// ---- 多类型工单（69-*.md）：category（业务分类）+ origin（发起方）----
+//
+// category 由**服务端按来源强制赋值**，前端只做展示与筛选，绝不参与建单透传
+// （用户自选 category 会变成「挑能一键补发的类别」套利）。
+export const TICKET_CATEGORY_OPTIONS = Object.freeze([
+  { value: "general", label: "一般问题", color: "default" },
+  { value: "registration_bonus", label: "注册赠金", color: "volcano" },
+  { value: "blacklist_appeal", label: "封禁申诉", color: "red" },
+  { value: "account_rebind", label: "换绑手机", color: "geekblue" },
+  { value: "account_closure", label: "账号注销", color: "purple" },
+  { value: "refund", label: "退款申请", color: "gold" },
+]);
+
+export const TICKET_CATEGORY_MAP = Object.freeze(
+  Object.fromEntries(TICKET_CATEGORY_OPTIONS.map((item) => [item.value, item]))
+);
+
+// 空值/未知分类返回空串：历史工单（迁移前）没有分类，展示成「未知分类」是噪声。
+export function ticketCategoryLabel(value) {
+  return TICKET_CATEGORY_MAP[String(value || "").trim().toLowerCase()]?.label || "";
+}
+export function ticketCategoryColor(value) {
+  return (
+    TICKET_CATEGORY_MAP[String(value || "").trim().toLowerCase()]?.color ||
+    "default"
+  );
+}
+
+export const TICKET_ORIGIN_SYSTEM = "system";
+
+// 系统单是**用户可见**的（45-*.md §0.23.2 Q69-2：隔离靠 user_id，不靠 origin）。
+// 所以这枚徽标是给用户看的，文案要用日常说法「系统自动创建」，不能出现
+// 「origin」「系统工单」「自动建单」这类只有内部看得懂的术语。
+export const TICKET_SYSTEM_ORIGIN_LABEL = "系统自动创建";
+
+export function isSystemTicket(ticket) {
+  return (
+    String(ticket?.origin || "")
+      .trim()
+      .toLowerCase() === TICKET_ORIGIN_SYSTEM
+  );
+}
+
 export function requireTicketResponse(response) {
   const status = Number(response?.status);
   if (!Number.isFinite(status) || status < 200 || status >= 300) {
@@ -94,6 +137,12 @@ export function buildTicketListParams(filters, page, pageSize) {
   if (keyword) params.keyword = keyword;
   const status = String(filters?.status || "").trim();
   if (status) params.status = status;
+  // 分类筛选对普通用户也生效（他们只看得到自己的、非系统单）；
+  // origin 筛选只由管理台使用，后端对普通用户忽略该参数。
+  const category = String(filters?.category || "").trim().toLowerCase();
+  if (category) params.category = category;
+  const origin = String(filters?.origin || "").trim().toLowerCase();
+  if (origin) params.origin = origin;
   for (const key of ["createdFrom", "createdTo", "updatedFrom", "updatedTo"]) {
     const value = String(filters?.[key] || "").trim();
     if (value) params[key] = value;

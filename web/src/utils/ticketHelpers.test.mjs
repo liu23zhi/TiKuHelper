@@ -459,3 +459,72 @@ test("ticket page is wired for users and administrators with pre-wrapped text", 
   assert.match(page, /route\.params\.id/);
   assert.match(page, /mobile-ticket-pagination/);
 });
+
+test("ticket category helpers cover the six server-side categories", () => {
+  const expected = {
+    general: "一般问题",
+    registration_bonus: "注册赠金",
+    blacklist_appeal: "封禁申诉",
+    account_rebind: "换绑手机",
+    account_closure: "账号注销",
+    refund: "退款申请",
+  };
+  // 6 类必须都有可读标签，否则管理台列表会出现空白的「分类」列。
+  assert.equal(ticketHelpers.TICKET_CATEGORY_OPTIONS.length, 6);
+  for (const [value, label] of Object.entries(expected)) {
+    assert.equal(ticketHelpers.ticketCategoryLabel(value), label);
+    // 大小写/空格无关（后端返回的是小写，但别假设得太死）。
+    assert.equal(ticketHelpers.ticketCategoryLabel(` ${value.toUpperCase()} `), label);
+  }
+  // 历史工单（迁移前没有分类）不能显示成「未知分类」噪声。
+  assert.equal(ticketHelpers.ticketCategoryLabel(""), "");
+  assert.equal(ticketHelpers.ticketCategoryLabel(undefined), "");
+  assert.equal(ticketHelpers.ticketCategoryLabel("not_a_category"), "");
+});
+
+test("system-origin tickets are identified so users can see a plain-Chinese badge", () => {
+  assert.equal(ticketHelpers.isSystemTicket({ origin: "system" }), true);
+  assert.equal(ticketHelpers.isSystemTicket({ origin: " SYSTEM " }), true);
+  assert.equal(ticketHelpers.isSystemTicket({ origin: "user" }), false);
+  assert.equal(ticketHelpers.isSystemTicket({ origin: "appeal" }), false);
+  assert.equal(ticketHelpers.isSystemTicket({}), false);
+  assert.equal(ticketHelpers.isSystemTicket(null), false);
+  // 徽标是给**用户**看的（45-*.md §0.23.2 Q69-2：系统单对被涉及用户可见），
+  // 文案必须是日常说法，不能出现 origin / 系统工单 / 自动建单这类内部术语。
+  assert.equal(ticketHelpers.TICKET_SYSTEM_ORIGIN_LABEL, "系统自动创建");
+  assert.doesNotMatch(ticketHelpers.TICKET_SYSTEM_ORIGIN_LABEL, /origin|建单|工单/);
+});
+
+test("ticket list params carry category/origin filters only when set", () => {
+  const base = buildTicketListParams({}, 1, 20);
+  assert.deepEqual(Object.keys(base).sort(), ["page", "pageSize"]);
+  // 空串不能变成 category= 空值（后端会当成非法值 400）。
+  const blank = buildTicketListParams({ category: "  ", origin: "" }, 1, 20);
+  assert.equal("category" in blank, false);
+  assert.equal("origin" in blank, false);
+  const filtered = buildTicketListParams(
+    { category: "Registration_Bonus", origin: "SYSTEM", status: "open" },
+    2,
+    50
+  );
+  assert.equal(filtered.category, "registration_bonus");
+  assert.equal(filtered.origin, "system");
+  assert.equal(filtered.status, "open");
+  assert.equal(filtered.page, 2);
+});
+
+test("tickets page exposes category filter and system-origin badge", async () => {
+  const page = await readFile(
+    new URL("../pages/Tickets/index.vue", import.meta.url),
+    "utf8"
+  );
+  // 分类筛选（管理台）+ 分类展示列 + 系统单标识，三件事都要真的在页面里。
+  assert.match(page, /label="分类"/);
+  assert.match(page, /:options="categoryOptions"/);
+  assert.match(page, /title: "分类"/);
+  assert.match(page, /TICKET_SYSTEM_ORIGIN_LABEL/);
+  assert.match(page, /isSystemTicket/);
+  // 建单请求体仍然只有 subject/body(+attachmentIds)：category 不得由前端透传。
+  assert.doesNotMatch(page, /payload\.category/);
+  assert.doesNotMatch(page, /category:\s*filters\.category/);
+});
