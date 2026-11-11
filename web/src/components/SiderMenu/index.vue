@@ -58,6 +58,7 @@ import {
   CreditCardOutlined,
   CodeOutlined,
   DatabaseOutlined,
+  InboxOutlined,
   GiftOutlined,
   ShareAltOutlined,
   StarOutlined,
@@ -75,6 +76,8 @@ const ADMIN_MENU_ITEMS = [
   { key: 'import', label: '智能导入', icon: DownloadOutlined },
   { key: 'user-usage', label: '个人使用', icon: CreditCardOutlined },
   { key: 'userlist', label: '用户管理', icon: TeamOutlined },
+  // 已归档账号管理（task_doc/76 §3.2.3）：管理员删除与用户注销的账号都归到这里。
+  { key: 'archived-users', label: '已归档账号', icon: InboxOutlined },
   { key: 'loglist', label: '日志列表', icon: FileTextOutlined },
   { key: 'recharge-orders', label: '充值记录', icon: CreditCardOutlined },
   { key: 'billing-records', label: '账单明细', icon: AccountBookOutlined },

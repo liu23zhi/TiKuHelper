@@ -47,7 +47,7 @@ func checkSearchSpendingAdmission(user entity.User, token entity.AccessToken) er
 }
 
 func checkSearchSpendingAccount(user entity.User, token entity.AccessToken) error {
-	if !strings.EqualFold(strings.TrimSpace(user.Status), "enabled") || !strings.EqualFold(strings.TrimSpace(token.Status), "enabled") || token.UserID != user.ID {
+	if !isUserSpendable(&user) || !strings.EqualFold(strings.TrimSpace(token.Status), "enabled") || token.UserID != user.ID {
 		return fmt.Errorf("%w: 访问令牌或所属用户已失效", service.ErrInvalidAccessTokenAuthorization)
 	}
 	return nil

@@ -73,6 +73,9 @@ export default {
     const isAdmin = computed(() => isAdminUser(currentUser.value))
     const adminOnlyPrefixes = [
       '/adapter/component', '/adapter/import', '/adapter/userlist', '/adapter/loglist',
+      // 已归档账号管理（task_doc/76 §3.2.3）：非管理员不仅看不到菜单项，
+      // 直接敲 URL 也进不来（canAccessRoute 在这里就 false）。
+      '/adapter/archived-users',
       '/adapter/search-account-config', '/adapter/ai-search-config', '/adapter/ocr-cache', '/adapter/system-settings', '/adapter/extension-updates',
       '/adapter/ip-location-cache', '/adapter/phone-location-cache',
     ]

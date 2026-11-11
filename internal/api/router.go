@@ -197,7 +197,22 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.PUT("/user/:id", controller.Auth, controller.UpdateUser) // 更新用户
 	apiRouter.POST("/user/:id/balance", controller.Auth, middleware.RequireAdmin, controller.UpdateUserBalance)
 	apiRouter.PUT("/user/:id/reset-password", controller.Auth, controller.ResetUserPassword) // 重置密码
-	apiRouter.DELETE("/user/:id", controller.Auth, controller.DeleteUser)                    // 删除用户
+	apiRouter.DELETE("/user/:id", controller.Auth, controller.DeleteUser)                    // 删除用户（归档，task_doc/76 §3.2）
+
+	// 注销申请（task_doc/76 §3.3.5）。三条都是**用户本人**接口，Auth 即可：
+	// 目标账号一律取「当前登录用户」，不接受前端传 userID（否则可替别人申请注销）。
+	// 申请/撤销是写操作，handler 内复用登录失败计数做限流（防反复试探密码）。
+	apiRouter.POST("/user/closure-request", controller.Auth, controller.ClosureRequest)
+	apiRouter.POST("/user/closure-cancel", controller.Auth, controller.ClosureCancel)
+	apiRouter.GET("/user/closure-status", controller.Auth, controller.ClosureStatus)
+
+	// 已归档账号管理（task_doc/76 §3.2.3）。管理员专属：
+	// 列表/详情/恢复三条都要 Auth + RequireAdmin，恢复还会二次确认用户名冲突。
+	// ⚠️ handler 内部一律用 Unscoped 查（users.deleted_at 是 GORM 软删除列，
+	// 默认查询会把这些行过滤掉，列表永远是空的）。
+	apiRouter.GET("/admin/archived-users", controller.Auth, middleware.RequireAdmin, controller.ArchivedUserList)
+	apiRouter.GET("/admin/archived-users/:id", controller.Auth, middleware.RequireAdmin, controller.ArchivedUserDetail)
+	apiRouter.POST("/admin/archived-users/:id/restore", controller.Auth, middleware.RequireAdmin, controller.ArchivedUserRestore)
 
 	apiRouter.GET("/tickets", controller.Auth, controller.TicketList)
 	apiRouter.POST("/tickets", controller.Auth, controller.CreateTicket)

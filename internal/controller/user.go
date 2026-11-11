@@ -65,9 +65,50 @@ var verifyRegisterSMSCodeInTx = func(tx *gorm.DB, phone string, scene string, sm
 	return service.VerifySMSCodeDetailedInTx(tx, phone, scene, smsCode)
 }
 
+// isUserEnabled 是**访问判据的原语义**：只有显式 enabled、或空串（历史行）。
+//
+// ⚠️ 它回答「这个账号是不是正常状态」，**不是**「能不能持有会话」，
+// 也**不是**「能不能消费」—— 那两件事各有自己的判据：
+//   - 会话可否存在   → isUserSessionAllowed（多认 closure_pending）
+//   - 消费准入       → isUserSpendable（严格 enabled，钱的路上一律从严）
+//
+// 一个布尔承载三种意图，是这类权限 bug 的常见来源：把 closure_pending 塞进这里
+// 会让「可消费」和「可登录」同时被放开。
 func isUserEnabled(user *entity.User) bool {
+	if user == nil {
+		return false
+	}
 	status := strings.TrimSpace(user.Status)
 	return status == "" || strings.EqualFold(status, "enabled")
+}
+
+// isUserSessionAllowed 是**会话判据**：允许持有会话、允许重新登录。
+//
+// 比 isUserEnabled 多认 closure_pending —— task_doc/76 §3.3.3 要求注销等待期内
+// 「可以登录、必须能撤销注销」。若会话判据只认 enabled，用户申请完注销，
+// 下一个请求就会被 401「用户已被禁用」踢出去，撤销入口根本点不到（误点无救）。
+//
+// ⚠️ 它**不**代表可消费：等待期内消费由 isUserSpendable 拦（见该函数注释）。
+// 调用点必须限定在「会话是否存在」这一件事上：Auth、optionalLogoutUser、
+// UserLogin、UserSMSLogin。不要在收费/扣费路径上用它。
+//
+// isUserClosurePending 定义在 closure.go（与本文件同包）。
+func isUserSessionAllowed(user *entity.User) bool {
+	if user == nil {
+		return false
+	}
+	return isUserEnabled(user) || isUserClosurePending(user)
+}
+
+// isUserSpendable 是**消费准入**判据：必须显式 enabled，空串不算。
+//
+// 沿用计费路径既有口径（spending_budget.go / ai_fallback.go / search.go 的扣费前
+// 复核都是 `status == "enabled"`）：钱的路上一律从严，不引入「空串也算正常」
+// 这种在 isUserEnabled 里成立、但在扣费时不该成立的历史兼容。
+//
+// 注销等待期（closure_pending）在这里被拒 ⇒ 与 task_doc/76 §3.3.3「等待期内不可消费」一致。
+func isUserSpendable(user *entity.User) bool {
+	return user != nil && strings.EqualFold(strings.TrimSpace(user.Status), "enabled")
 }
 
 func isAdminUser(user *entity.User) bool {
@@ -81,11 +122,22 @@ func normalizeUserRole(role string) string {
 	return "user"
 }
 
+// normalizeUserStatus 归一化账号状态。
+//
+// ⚠️ 必须认 closure_pending（task_doc/76 §3.3.2 红线 4）。
+// 原来只有 enabled / disabled 两个分支、其它值一律落回 enabled，
+// 于是「用户申请注销」写进库的 closure_pending 会被这条归一化静默改回
+// enabled —— 界面提示申请成功，实际等待期根本没生效（这是本功能最容易
+// 出现的假成功）。新增状态时必须同步加进白名单，否则同样被吞。
 func normalizeUserStatus(status string) string {
-	if strings.EqualFold(strings.TrimSpace(status), "disabled") {
+	switch {
+	case strings.EqualFold(strings.TrimSpace(status), "disabled"):
 		return "disabled"
+	case strings.EqualFold(strings.TrimSpace(status), userStatusClosurePending):
+		return userStatusClosurePending
+	default:
+		return "enabled"
 	}
-	return "enabled"
 }
 
 func validatePasswordComplexity(password string) error {
@@ -182,7 +234,7 @@ func Auth(c *gin.Context) {
 		})
 		return
 	}
-	if !isUserEnabled(user) {
+	if !isUserSessionAllowed(user) {
 		c.AbortWithStatusJSON(401, gin.H{
 			"message": "用户已被禁用",
 		})
@@ -336,7 +388,7 @@ func UserLogin(c *gin.Context) {
 		loginGate.failAccount(payload.Username, "用户名或密码错误")
 		return
 	}
-	if !isUserEnabled(user) {
+	if !isUserSessionAllowed(user) {
 		loginGate.failAccount(payload.Username, "用户已被禁用")
 		return
 	}
@@ -1032,7 +1084,7 @@ func UserSMSLogin(c *gin.Context) {
 		return
 	}
 	user := users[0]
-	if !isUserEnabled(&user) {
+	if !isUserSessionAllowed(&user) {
 		loginGate.failAccount(phone, "用户已被禁用")
 		return
 	}

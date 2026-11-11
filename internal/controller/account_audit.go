@@ -71,7 +71,7 @@ func optionalLogoutUser(c *gin.Context) *entity.User {
 		return nil
 	}
 	user, err := dao.User.Where(dao.User.ID.Eq(int32(id))).First()
-	if err != nil || !isUserEnabled(user) || !tokenCredentialVersionMatches(claims, user.Password) || !tokenLoginSessionMatches(claims, user.LoginSessionID) {
+	if err != nil || !isUserSessionAllowed(user) || !tokenCredentialVersionMatches(claims, user.Password) || !tokenLoginSessionMatches(claims, user.LoginSessionID) {
 		return nil
 	}
 	return user
