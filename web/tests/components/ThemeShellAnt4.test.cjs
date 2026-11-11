@@ -15,7 +15,7 @@ const user = require(path.join(root, 'src/utils/currentUser.js'))
 let wrapper, router
 const OLD_ADMIN_HREFS = ['profile','component','import','user-usage','userlist','loglist','recharge-orders','billing-records','ip-location-cache','phone-location-cache','search-account-config','ai-search-config','system-settings','access-tokens'].map(path => '/adapter/' + path)
 const OLD_USER_HREFS = ['profile','user-usage','access-tokens','recharge-orders','billing-records'].map(path => '/adapter/' + path)
-const NEW_ADMIN_HREFS = ['/adapter/ip-segments', '/adapter/archived-users', '/adapter/ocr-cache', '/adapter/user-exam-tool', '/adapter/referral-rebates', '/adapter/review-rebate-admin', '/adapter/blacklist', '/adapter/extension-updates', '/adapter/scripts', '/adapter/tickets']
+const NEW_ADMIN_HREFS = ['/adapter/archived-users', '/adapter/ip-segments', '/adapter/ocr-cache', '/adapter/user-exam-tool', '/adapter/referral-rebates', '/adapter/review-rebate-admin', '/adapter/blacklist', '/adapter/extension-updates', '/adapter/scripts', '/adapter/tickets']
 const NEW_USER_HREFS = ['/adapter/scripts', '/adapter/my-referral', '/adapter/review-rebate', '/adapter/tickets']
 function menuHrefs() { return wrapper.findAll('#portal-navigation [role="menuitem"]').map(item => item.get('a').attributes('href')) }
 function exactNavigation(oldHrefs, addedHrefs) {
@@ -34,7 +34,7 @@ async function open(route = '/login', width = 1440, role = 'admin') {
  const Layout = require(path.join(root, 'src/layout/TikuAdapterLayout.vue'))
  const Login = require(path.join(root, 'src/layout/LoginLayout.vue'))
  const App = require(path.join(root, 'src/App.vue'))
- router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: Login, children: [{ path: 'login', component: Leaf }] }, { path: '/adapter', component: Layout, children: [...OLD_ADMIN_HREFS.map(href => href.slice('/adapter/'.length)), 'ip-segments', 'archived-users', 'ocr-cache', 'user-exam-tool', 'referral-rebates', 'review-rebate-admin', 'blacklist', 'my-referral', 'review-rebate', 'extension-updates', 'scripts', 'tickets/:id?'].map(path => ({ path, name: path.startsWith('tickets') ? 'tickets' : path, component: Leaf })) }] })
+ router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: Login, children: [{ path: 'login', component: Leaf }] }, { path: '/adapter', component: Layout, children: [...OLD_ADMIN_HREFS.map(href => href.slice('/adapter/'.length)), 'archived-users', 'ip-segments', 'ocr-cache', 'user-exam-tool', 'referral-rebates', 'review-rebate-admin', 'blacklist', 'my-referral', 'review-rebate', 'extension-updates', 'scripts', 'tickets/:id?'].map(path => ({ path, name: path.startsWith('tickets') ? 'tickets' : path, component: Leaf })) }] })
  await router.push(route); await router.isReady()
  wrapper = mount(App, { attachTo: document.body, global: { plugins: [router, Antd] } }); await settle()
  return { Layout, App }
