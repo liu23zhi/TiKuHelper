@@ -324,7 +324,34 @@ func compatibleQuestionType(requested, stored int) bool {
 	return requested == -1 || stored == -1 || requested == stored
 }
 
-var tikuOptionLabelPattern = regexp.MustCompile(`^[A-Z][.．:：、)]\s*`)
+// tikuOptionLabelPattern 剥掉选项开头的「标号」，让两侧选项可以逐条比对。
+//
+// 覆盖的标号形态（题库实际出现过的）：
+//
+//	A.甲   A．甲   A、甲   A:甲   A：甲   A)甲   A）甲   ← 大写 + 分隔符
+//	a.甲   a)甲    a、甲                              ← 小写（题库混用）
+//	(A)甲  （A）甲 [A]甲   【A】甲   （a）甲          ← 成对括号包裹
+//
+// ⚠️ 设计约束：**标号后必须有分隔符或闭合括号**。
+// 这是不误删正当内容的关键 ——
+//
+//	"A类物质"    → 不动（A 后是「类」，不是分隔符）
+//	"AB两项"     → 不动（两个字母不构成单个标号）
+//	"A"          → 不动（只有字母，没有分隔符）
+//
+// 若放宽成 `^[A-Za-z]` 一律删，上述三种正常选项都会被削掉首字母，
+// 后果是 compatibleTikuOptions 判不等 → 整条候选被丢弃（比漏标号更糟）。
+//
+// 改动依据（t67 实测 + t82 复核）：旧正则 `^[A-Z][.．:：、)]\s*` 只认大写，
+// 且不认成对括号，导致 `a.甲` / `（A）甲` / `【A】甲` 全部剥不掉 →
+// 与 `A.甲` 形式的同一选项判为不同 → 整条候选被丢。
+var tikuOptionLabelPattern = regexp.MustCompile(
+	// 形态一：字母 + 分隔符（大写/小写都认）
+	`^(?:[A-Za-z][.．:：、)）]\s*` +
+		// 形态二：成对括号包裹的单字母（半角/全角方括号与圆括号）
+		`|[（(][A-Za-z][）)]\s*` +
+		`|[【\[](?:[A-Za-z]|[A-Za-z]、)[】\]]\s*)`,
+)
 var tikuNumberPattern = regexp.MustCompile(`[0-9]+(?:\.[0-9]+)?`)
 
 func normalizedTikuOptions(options []string) []string {
