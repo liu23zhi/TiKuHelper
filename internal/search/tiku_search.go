@@ -352,7 +352,33 @@ func compatibleTikuOptions(requested, stored []string) bool {
 	return true
 }
 
+// normalizeTikuText 把题干/选项归一成「可比较」的形式，供相似度与召回使用。
+//
+// 做三件事：全角转半角（借 util.FullWidthStrToHalfWidthStr）、
+// 小写化、把连续空白折叠成单个空格。
+//
+// ⚠️ 为什么**不**直接调 util.FormatString：
+//
+//	FormatString 末尾有 `TrimRightFunc(",.?:!;")`，会把「1+1=?」裁成「1+1=」，
+//	把「3!=」裁成「3=」—— 数学表达式的结尾被吃掉，相似度与 operator 比对都会失真。
+//	实测（t82）：FormatString("1+1=?") == "1+1="，而正确答案应保留问号。
+//	所以这里只借它的**全角转半角**这一段，不借它裁尾标点的副作用。
+//
+// ⚠️ 为什么**不**裁末尾标点：
+//
+//	「下列哪个是质数」与「下列哪个是质数？」在全角转半角后 sim=0.9231，
+//	已远高于 aiTikuMinScore=0.72，不需要靠裁标点来命中。
+//	裁标点只会引入「数学表达式被破坏」的风险而不带来额外召回。
+//
+// ⚠️ 本函数**不参与**题库 hash 计算（hash 走 pkg/util/normalize.go 的
+// NormalizeCacheKeyText → FormatString）。本函数的 4 个调用方全部在
+// internal/search 包内：normalizedTikuOptions、tikuQuestionSimilarity（×2）、
+// tikuSearchTerms。因此修改本函数**不会**让存量题库的 hash 失效。
 func normalizeTikuText(value string) string {
+	// 全角转半角：`ＡＢＣ` → `ABC`、`３＋５` → `3+5`、全角空格 → 半角空格。
+	// 不借用 FormatString 的其余步骤（见上方说明）。
+	value = util.FullWidthStrToHalfWidthStr(value)
+
 	var out strings.Builder
 	space := true
 	for _, r := range strings.ToLower(strings.TrimSpace(value)) {
@@ -432,7 +458,22 @@ func tikuSearchTerms(question string) []string {
 	return terms
 }
 
+// compatibleMathOperators 要求两侧的「运算符序列」与「数字序列」都一致。
+//
+// 用途：防止「x < 4」被匹配到「x > 5」这类语义相反的题目。
+//
+// ⚠️ 两侧必须先做全角转半角，否则全角写法的运算符与数字会被漏掉：
+//
+//	tikuMathOperators 逐 rune 匹配 ASCII 运算符集，全角 ＋ 不在集合里 → 抽不出来；
+//	tikuNumberPattern 是 `[0-9]+`，全角 ３５ 也抽不出来。
+//	实测（t82）：compatibleMathOperators("计算3+5", "计算３＋５") 在未归一前 = false，
+//	会让全角写法的题干被整条丢弃（即使相似度已达 1.0）。
+//
+// 只借 FullWidthStrToHalfWidthStr，不借 FormatString —— 后者裁尾标点，
+// 会把「1+1=?」变成「1+1=」，改变数字/运算符序列的语义。
 func compatibleMathOperators(left, right string) bool {
+	left = util.FullWidthStrToHalfWidthStr(left)
+	right = util.FullWidthStrToHalfWidthStr(right)
 	leftOps, rightOps := tikuMathOperators(left), tikuMathOperators(right)
 	return leftOps == rightOps && strings.Join(tikuNumberPattern.FindAllString(left, -1), "|") == strings.Join(tikuNumberPattern.FindAllString(right, -1), "|")
 }
