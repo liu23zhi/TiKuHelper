@@ -47,14 +47,22 @@ var (
 	ErrTicketForbidden                = errors.New("无权访问该工单")
 	ErrTicketInvalidStatus            = errors.New("工单状态无效")
 	ErrTicketInvalidPriority          = errors.New("工单优先级无效")
+	ErrTicketInvalidOrigin            = errors.New("工单来源无效")
+	ErrTicketInvalidCategory          = errors.New("工单分类无效")
+	ErrTicketSystemUserRequired       = errors.New("系统工单必须记录被涉及用户")
+	ErrTicketContextTooLarge          = errors.New("工单上下文快照过大")
 	ErrTicketWebhookInvalid           = errors.New("企业微信机器人 Webhook 必须是 HTTPS 地址")
 	ErrTicketWebhookNotConfigured     = errors.New("企业微信工单通知未启用或未配置有效 Webhook")
 	ErrTicketNotificationNotRetryable = errors.New("该提醒当前不可重试")
 )
 
+// TicketListQuery 是列表筛选。Origin / Category 只做**精确匹配**，
+// 空串表示不过滤（与 Status 同构）。
 type TicketListQuery struct {
 	Status      string
 	Keyword     string
+	Origin      string
+	Category    string
 	CreatedFrom *time.Time
 	CreatedTo   *time.Time
 	UpdatedFrom *time.Time
@@ -75,6 +83,8 @@ type TicketListItem struct {
 	Subject       string     `json:"subject"`
 	Status        string     `json:"status"`
 	Priority      string     `json:"priority"`
+	Origin        string     `json:"origin"`
+	Category      string     `json:"category"`
 	LastMessageAt time.Time  `json:"lastMessageAt"`
 	ClosedAt      *time.Time `json:"closedAt,omitempty"`
 	CreatedAt     time.Time  `json:"createdAt"`
@@ -140,15 +150,77 @@ func normalizeTicketStatus(value string) (string, error) {
 	}
 }
 
-func normalizeTicketPriority(value string) (string, error) {
+// normalizeTicketPriority 放行 low / normal / high / urgent 四档（69-*.md §2.3）。
+//
+// allowUrgent 是**权限闸门**而不是取值校验：urgent 只给管理员手设。
+// 系统建单与用户建单都传 false，因此它们即使要求 urgent 也会被拒成普通档。
+func normalizeTicketPriority(value string, allowUrgent bool) (string, error) {
 	value = strings.ToLower(strings.TrimSpace(value))
 	if value == "" {
 		return entity.TicketPriorityNormal, nil
 	}
-	if value != entity.TicketPriorityNormal {
+	switch value {
+	case entity.TicketPriorityLow, entity.TicketPriorityNormal, entity.TicketPriorityHigh:
+		return value, nil
+	case entity.TicketPriorityUrgent:
+		if allowUrgent {
+			return value, nil
+		}
+		return "", ErrTicketInvalidPriority
+	default:
 		return "", ErrTicketInvalidPriority
 	}
-	return value, nil
+}
+
+// normalizeTicketOrigin 只用于**筛选条件**：空串表示「不过滤」。
+// 它不接受任何自由文本，非法值直接报错而不是静默忽略（静默忽略会让
+// 前端以为筛了、后端给出全量，是最难查的一类错）。
+func normalizeTicketOrigin(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return "", nil
+	}
+	switch value {
+	case entity.TicketOriginUser, entity.TicketOriginSystem, entity.TicketOriginAppeal:
+		return value, nil
+	default:
+		return "", ErrTicketInvalidOrigin
+	}
+}
+
+func normalizeTicketCategory(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return "", nil
+	}
+	switch value {
+	case entity.TicketCategoryGeneral, entity.TicketCategoryRegistrationBonus,
+		entity.TicketCategoryBlacklistAppeal, entity.TicketCategoryAccountRebind,
+		entity.TicketCategoryAccountClosure, entity.TicketCategoryRefund:
+		return value, nil
+	default:
+		return "", ErrTicketInvalidCategory
+	}
+}
+
+// ticketDefaultPriorityByCategory 是各类工单的默认优先级（69-*.md §2.3）。
+//
+// 为什么 blacklist_appeal 与 registration_bonus 是 high：前者用户完全无法使用产品，
+// 后者涉及钱且有重试窗口。其余常规业务给 normal。
+var ticketDefaultPriorityByCategory = map[string]string{
+	entity.TicketCategoryGeneral:           entity.TicketPriorityNormal,
+	entity.TicketCategoryRegistrationBonus: entity.TicketPriorityHigh,
+	entity.TicketCategoryBlacklistAppeal:   entity.TicketPriorityHigh,
+	entity.TicketCategoryAccountRebind:     entity.TicketPriorityNormal,
+	entity.TicketCategoryAccountClosure:    entity.TicketPriorityNormal,
+	entity.TicketCategoryRefund:            entity.TicketPriorityNormal,
+}
+
+func defaultTicketPriorityForCategory(category string) string {
+	if priority, ok := ticketDefaultPriorityByCategory[strings.ToLower(strings.TrimSpace(category))]; ok {
+		return priority
+	}
+	return entity.TicketPriorityNormal
 }
 
 func isTicketAdmin(user *entity.User) bool {
@@ -173,7 +245,14 @@ func CreateTicketWithDB(db *gorm.DB, user *entity.User, input CreateTicketInput)
 	err = db.Transaction(func(tx *gorm.DB) error {
 		ticket = entity.Ticket{
 			UserID: user.ID, UserName: ticketUserName(user), Subject: subject,
-			Status: entity.TicketStatusOpen, Priority: entity.TicketPriorityNormal,
+			Status: entity.TicketStatusOpen,
+			// 用户建单一律 user / general / normal：category 由服务端按来源强制赋值，
+			// **不接受客户端自选**（否则用户会挑「能一键补发」的类别套利）。
+			// CreateTicketInput 里刻意没有这些字段，客户端多传的同名字段会被 JSON
+			// 反序列化直接丢弃。
+			Origin:        entity.TicketOriginUser,
+			Category:      entity.TicketCategoryGeneral,
+			Priority:      entity.TicketPriorityNormal,
 			LastMessageAt: now,
 		}
 		if err := tx.Create(&ticket).Error; err != nil {
@@ -203,6 +282,406 @@ func CreateTicketWithDB(db *gorm.DB, user *entity.User, input CreateTicketInput)
 	return GetTicketWithDB(db, user, ticket.ID)
 }
 
+// CreateSystemTicketInput 是「系统自动建单」的入参。
+//
+// ⚠️ UserID 是**被涉及用户**的 ID，必须 > 0：它是唯一隔离维度（45-*.md §0.23.2 定案
+// 「系统单对被涉及用户可见，隔离靠 user_id」）。用 0 会让「按用户查工单」整体失效，
+// 也会让系统单变成孤儿单（管理员查不到这张单是给谁的）。
+type CreateSystemTicketInput struct {
+	UserID   int32
+	UserName string
+	Subject  string
+	Body     string
+	Category string
+	// Priority 留空表示按 category 取默认档（见 ticketDefaultPriorityByCategory）。
+	// 系统建单不允许 elevated 到 urgent：urgent 只给管理员手设。
+	Priority string
+	// Context 是类别上下文快照。落库前会过 redactTicketContext：
+	// 手机号只留后四位，验证码 / token / password / 密钥一律抹掉。
+	Context map[string]interface{}
+}
+
+// SystemTicketResult 是系统建单结果。Created=false 表示命中幂等规则，
+// Ticket 是既有的那张「同一用户 + 同一 category 且未关闭」的工单。
+type SystemTicketResult struct {
+	Ticket  TicketDetail `json:"ticket"`
+	Created bool         `json:"created"`
+}
+
+// ticketSystemAuthorName 是系统消息/系统单在用户可见文本里的署名。
+const ticketSystemAuthorName = "系统自动创建"
+
+// CreateSystemTicketWithDB 建一张系统工单（Q26 注册赠金判定失败等场景的后台直调入口）。
+//
+// 幂等判据：**同一用户 + 同一 category 只允许一张 status != closed 的单**
+// （45-*.md §0.23.2 已裁决系统单对被涉及用户可见，幂等仍按「未关闭单」计算）。
+// 命中时返回既有工单且 Created=false，调用方（后台重试任务）可以安全重复调用。
+//
+// 为什么幂等键里只有 userID + category，没有失败时间/重试次数：
+// 这些是**每次触发都不同**的字段，放进去等于每次都生成新键，幂等直接失效。
+// 它们只进 Context 快照（供管理员看「重试了几次、首末失败时间」）。
+//
+// 并发窗口：判重与写入在同一个事务里，SQLite（生产 DSN 为 _txlock=immediate）下
+// 写事务串行化因而严格成立；MySQL 在默认隔离级别下理论上仍可能双开一张，
+// 因此这里不加唯一索引（部分唯一索引在两种方言上不可移植），
+// 由「后台任务串行重试」+ 事务内判重共同保证。
+func CreateSystemTicketWithDB(db *gorm.DB, input CreateSystemTicketInput) (SystemTicketResult, error) {
+	if db == nil {
+		return SystemTicketResult{}, ErrTicketForbidden
+	}
+	if input.UserID <= 0 {
+		return SystemTicketResult{}, ErrTicketSystemUserRequired
+	}
+	category, err := normalizeTicketCategory(input.Category)
+	if err != nil {
+		return SystemTicketResult{}, err
+	}
+	if category == "" {
+		// 系统单必须有明确分类：general 是「用户自由提问」的兜底，系统单挂 general
+		// 会让「按 category 一键动作」无从判断，因此缺省不是 general 而是报错。
+		return SystemTicketResult{}, ErrTicketInvalidCategory
+	}
+	priorityValue := strings.TrimSpace(input.Priority)
+	if priorityValue == "" {
+		priorityValue = defaultTicketPriorityForCategory(category)
+	}
+	priority, err := normalizeTicketPriority(priorityValue, false)
+	if err != nil {
+		return SystemTicketResult{}, err
+	}
+	subject, err := normalizeTicketText(input.Subject, TicketSubjectMaxLength, ErrTicketSubjectRequired)
+	if err != nil {
+		return SystemTicketResult{}, err
+	}
+	body, err := normalizeTicketText(input.Body, TicketBodyMaxLength, ErrTicketBodyRequired)
+	if err != nil {
+		return SystemTicketResult{}, err
+	}
+	contextJSON, err := marshalTicketContext(input.Context)
+	if err != nil {
+		return SystemTicketResult{}, err
+	}
+	userName := strings.TrimSpace(input.UserName)
+	if userName == "" {
+		userName = lookupTicketUserName(db, input.UserID)
+	}
+
+	now := time.Now()
+	var ticket entity.Ticket
+	created := false
+	err = db.Transaction(func(tx *gorm.DB) error {
+		var existing entity.Ticket
+		findErr := tx.Where("user_id = ? AND category = ? AND origin = ? AND status <> ?",
+			input.UserID, category, entity.TicketOriginSystem, entity.TicketStatusClosed).
+			Order("id DESC").First(&existing).Error
+		if findErr == nil {
+			ticket = existing
+			return nil
+		}
+		if !errors.Is(findErr, gorm.ErrRecordNotFound) {
+			return findErr
+		}
+		ticket = entity.Ticket{
+			UserID:   input.UserID,
+			UserName: userName,
+			Subject:  subject,
+			Status:   entity.TicketStatusOpen,
+			// origin=system 是唯一的可见性判据；category 由服务端按调用来源强制赋值。
+			Origin:        entity.TicketOriginSystem,
+			Category:      category,
+			Priority:      priority,
+			Context:       contextJSON,
+			LastMessageAt: now,
+		}
+		if err := tx.Create(&ticket).Error; err != nil {
+			return err
+		}
+		// 首条消息由系统署名：AuthorRole=system 让前端显示「系统自动创建」标识。
+		// UserID 仍记被涉及用户，管理员按用户筛消息链路才不会断。
+		message := entity.TicketMessage{
+			TicketID: ticket.ID, UserID: input.UserID, AuthorName: ticketSystemAuthorName,
+			Body: body, AuthorRole: entity.TicketAuthorRoleSystem, CreatedAt: now,
+		}
+		if err := tx.Create(&message).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&entity.Ticket{}).Where("id = ?", ticket.ID).Updates(map[string]interface{}{
+			"last_message_at": now,
+			"updated_at":      now,
+		}).Error; err != nil {
+			return err
+		}
+		created = true
+		// 系统单同样进企业微信提醒队列：管理员在 IM 侧就能看到，不依赖进后台刷新。
+		return enqueueTicketNotificationInTx(tx, ticket, body, "new_ticket")
+	})
+	if err != nil {
+		return SystemTicketResult{}, err
+	}
+	detail, err := loadTicketDetailForSystemWithDB(db, ticket.ID)
+	if err != nil {
+		return SystemTicketResult{}, err
+	}
+	return SystemTicketResult{Ticket: detail, Created: created}, nil
+}
+
+// lookupTicketUserName 取用户显示名；查不到时退化成「用户 #id」而不是空串
+// （企业微信提醒里空白的「用户：」等于没有信息）。
+func lookupTicketUserName(db *gorm.DB, userID int32) string {
+	var user entity.User
+	if err := db.Select("id", "username", "nickname").Where("id = ?", userID).First(&user).Error; err == nil {
+		if name := ticketUserName(&user); name != "" {
+			return name
+		}
+	}
+	return fmt.Sprintf("用户 #%d", userID)
+}
+
+// loadTicketDetailForSystemWithDB 读系统工单详情。
+//
+// 不复用 GetTicketWithDB：那里要求传一个 entity.User，而系统建单没有「当前操作人」。
+// 这里也不返回 notification（管理员才需要的投递状态），只给工单本体 + 消息。
+func loadTicketDetailForSystemWithDB(db *gorm.DB, id int64) (TicketDetail, error) {
+	var ticket entity.Ticket
+	if err := db.Where("id = ?", id).First(&ticket).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return TicketDetail{}, ErrTicketNotFound
+		}
+		return TicketDetail{}, err
+	}
+	var messages []entity.TicketMessage
+	if err := db.Where("ticket_id = ?", ticket.ID).Order("created_at ASC, id ASC").Find(&messages).Error; err != nil {
+		return TicketDetail{}, err
+	}
+	return TicketDetail{Ticket: ticket, Messages: messages, Attachments: []TicketAttachmentInfo{}}, nil
+}
+
+// ticketContextMaxBytes 限制上下文快照体积：它只用于人工查看，不是日志仓库。
+const ticketContextMaxBytes = 16 * 1024
+
+// ticketContextRedacted 是凭据类字段的替换值。
+const ticketContextRedacted = "[已隐藏]"
+
+// 凭据类字段的键名片段（小写子串匹配，中英双语都覆盖）。
+// 命中即整段替换，不做「保留后四位」——验证码/token 的后四位同样是凭据。
+//
+// ⚠️ 这里**刻意不含裸 "code"**：子串匹配下 "code" 会命中
+// error_code / status_code / area_code / payment_code / country_code / trace_code …，
+// 而这些是**排查系统单最需要看的编码字段**，不是凭据。
+// 「凭据 code」改用精确键匹配，见 ticketContextSecretExactKeys。
+var ticketContextSecretKeyFragments = []string{
+	"password", "passwd", "secret", "token", "credential", "cookie", "authorization",
+	"captcha", "otp", "verification",
+	"密码", "口令", "验证码", "校验码", "密钥", "令牌",
+}
+
+// 凭据类字段的**精确键**（小写、去首尾空格后全等匹配）。
+//
+// 为什么这些不能留在子串列表里：它们的名字都以 code 结尾，但 code 这个子串
+// 同时也是「编码类」字段的结尾（error_code / status_code / …）。
+// 用子串判会把两类混为一谈；用精确键则各自成立、互不牵连。
+//
+// 收录判据：这个名字指的是**一次性、可作为身份凭证的短串**（验证码/短信码/动态口令）。
+// 反例（明确不收）：error_code / status_code / area_code / payment_code / country_code /
+// trace_code / return_code —— 它们是分类与状态标记，公开可见，抹掉只会让快照失去意义。
+var ticketContextSecretExactKeys = []string{
+	"code",              // 裸 code：绝大多数回调/表单里就是验证码本身
+	"sms_code",          // 短信验证码
+	"verify_code",       // 校验码
+	"verification_code", // 校验码（全称）
+	"captcha_code",      // 图形验证码
+	"backup_code",       // 两步验证备用码：一次性凭据
+	"recovery_code",     // 恢复码：一次性凭据
+	"auth_code",         // 授权码
+	"access_code",       // 访问码
+	"otp",               // 动态口令
+}
+
+// ticketContextErrorScopeKeys 是「其子树里的 code 属于错误码而非凭据」的父键。
+//
+// 为什么需要它：redactTicketContextEntry 会递归进嵌套 map，而嵌套里的键名
+// 只有 code 本身，看不出它在这层是不是凭据。但父键给了语义：
+//   - {"error": {"code": "UAPI_TIMEOUT"}} → 这是错误码，必须保留
+//   - {"wechat": {"code": "081Abc..."}}   → 这是授权码，必须脱敏
+//
+// 因此只对**明确的错误/响应容器**放行 code，其余嵌套里的 code 仍按凭据处理。
+// 这个方向是刻意选的安全侧：漏脱敏的代价（把凭据写进长期保留的日志）远高于
+// 多脱敏一个错误码。
+var ticketContextErrorScopeKeys = []string{
+	"error", "err", "errors", "failure", "exception", "resp", "response",
+	"错误", "异常", "失败",
+}
+
+// 手机号/号码类字段：只留后四位，满足「管理员能核对是哪个号」又不落全集。
+var ticketContextPhoneKeyFragments = []string{"phone", "mobile", "tel", "手机号", "手机", "电话", "号码"}
+
+// marshalTicketContext 把类别上下文序列化成落库 JSON，**先脱敏再序列化**。
+//
+// 红线（69-*.md §3.1 / §七.3）：Context 不得存凭据 —— 手机号只存后四位，
+// 不存验证码 / token / password。脱敏放在服务端统一入口，调用方不需要记得。
+func marshalTicketContext(raw map[string]interface{}) (string, error) {
+	if len(raw) == 0 {
+		return "", nil
+	}
+	payload, err := json.Marshal(redactTicketContextValue(raw))
+	if err != nil {
+		return "", err
+	}
+	if len(payload) > ticketContextMaxBytes {
+		return "", ErrTicketContextTooLarge
+	}
+	return string(payload), nil
+}
+
+func redactTicketContextValue(value interface{}) interface{} {
+	return redactTicketContextValueIn(value, "")
+}
+
+// redactTicketContextValueIn 是带父键上下文的递归入口。
+//
+// parentKey 只用于一处判断：嵌套 map 里的裸 code 是「错误码」还是「凭据码」
+// （见 ticketContextErrorScopeKeys）。其余键的判定与父键无关。
+func redactTicketContextValueIn(value interface{}, parentKey string) interface{} {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(typed))
+		for key, item := range typed {
+			out[key] = redactTicketContextEntryIn(key, item, parentKey)
+		}
+		return out
+	case map[string]string:
+		out := make(map[string]string, len(typed))
+		for key, item := range typed {
+			redacted := redactTicketContextEntryIn(key, item, parentKey)
+			if text, ok := redacted.(string); ok {
+				out[key] = text
+				continue
+			}
+			out[key] = ticketContextRedacted
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, 0, len(typed))
+		for _, item := range typed {
+			// 数组里的元素沿用外层父键：{"error":[{...},{...}]} 里每个元素的 code
+			// 仍然处于错误上下文。
+			out = append(out, redactTicketContextValueIn(item, parentKey))
+		}
+		return out
+	case []string:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, renderTicketContextScalar(redactTicketContextEntryIn("", item, parentKey)))
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+// redactTicketContextEntryIn 是带父键上下文的单条处理内核。
+//
+// 判定顺序（顺序即语义，不要调换）：
+//  1. 键名命中**精确凭据键**（code / sms_code / otp …）→ 整段替换。
+//     例外：父键属于错误/响应容器时，「裸 code」按错误码保留（见下）。
+//  2. 键名命中**凭据子串**（password / token / captcha …）→ 整段替换。
+//  3. 键名命中**手机号片段** → 只留后四位。
+//  4. 否则递归处理值，并把当前键当作子树的父键。
+func redactTicketContextEntryIn(key string, value interface{}, parentKey string) interface{} {
+	lower := strings.ToLower(strings.TrimSpace(key))
+	if lower != "" {
+		if isTicketContextSecretExactKey(lower, parentKey) {
+			return ticketContextRedacted
+		}
+		if containsAnyFragment(lower, ticketContextSecretKeyFragments) {
+			return ticketContextRedacted
+		}
+		if containsAnyFragment(lower, ticketContextPhoneKeyFragments) {
+			return maskTicketPhone(renderTicketContextScalar(value))
+		}
+	}
+	return redactTicketContextValueIn(value, lower)
+}
+
+// isTicketContextSecretExactKey 判断精确键是否属于凭据。
+//
+// 唯一的例外是「裸 code」在错误上下文里：
+//
+//	{"code": "123456"}                      → 凭据（默认，安全侧）
+//	{"error": {"code": "UAPI_TIMEOUT"}}     → 错误码（父键 error，保留）
+//
+// 注意这个例外**只对裸 code 生效**：{"error": {"sms_code": "123456"}} 里的
+// sms_code 仍然脱敏 —— 错误容器里也可能夹带用户输入，不能因为父键就整片放行。
+func isTicketContextSecretExactKey(lowerKey string, parentKey string) bool {
+	if !containsExactKey(lowerKey, ticketContextSecretExactKeys) {
+		return false
+	}
+	if lowerKey == "code" && containsExactKey(parentKey, ticketContextErrorScopeKeys) {
+		return false
+	}
+	return true
+}
+
+// containsExactKey 判断 value 是否与列表中某一项**完全相等**（不是子串）。
+func containsExactKey(value string, keys []string) bool {
+	if value == "" {
+		return false
+	}
+	for _, key := range keys {
+		if value == key {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAnyFragment(value string, fragments []string) bool {
+	for _, fragment := range fragments {
+		if strings.Contains(value, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+// renderTicketContextScalar 把任意标量渲染成字符串（数字型手机号也要能脱敏）。
+func renderTicketContextScalar(value interface{}) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return typed
+	case float64:
+		return strconv.FormatFloat(typed, 'f', -1, 64)
+	case int:
+		return strconv.Itoa(typed)
+	case int64:
+		return strconv.FormatInt(typed, 10)
+	default:
+		return fmt.Sprint(value)
+	}
+}
+
+// maskTicketPhone 只保留后四位：13800001234 → ****1234。
+// 短于等于 4 位的值直接整体隐藏（4 位以内没有「后四位」可供核对）。
+func maskTicketPhone(value string) string {
+	trimmed := strings.TrimSpace(value)
+	runes := []rune(trimmed)
+	if len(runes) <= 4 {
+		if trimmed == "" {
+			return ""
+		}
+		return ticketContextRedacted
+	}
+	return "****" + string(runes[len(runes)-4:])
+}
+
+// ListTicketsWithDB 列出工单。
+//
+// 可见性规则（45-*.md §0.23.2 Q69-2 定案，覆盖 69-*.md 的旧建议）：
+//   - 普通用户：`user_id = ?`（**唯一**隔离维度；系统自动建给他的单同样可见，
+//     别人的单——无论 origin——都看不到）；
+//   - 管理员：可见全部，可按 origin / category 精确筛选。
 func ListTicketsWithDB(db *gorm.DB, user *entity.User, query TicketListQuery, page, pageSize int) (TicketListResult, error) {
 	if db == nil || user == nil {
 		return TicketListResult{}, ErrTicketForbidden
@@ -219,6 +698,11 @@ func ListTicketsWithDB(db *gorm.DB, user *entity.User, query TicketListQuery, pa
 	}
 	base := db.Model(&entity.Ticket{})
 	if !isTicketAdmin(user) {
+		// 隔离**只靠 user_id**（45-*.md §0.23.2 / Q69-2：被涉及用户**可见**发给自己的
+		// 系统单，原「保密」建议已被用户推翻）。因此这里**不加** `origin <> 'system'`：
+		// 加了会把 Q26 自动建的赠金核对单从用户视野里彻底抹掉，
+		// 用户只会觉得「我的赠金为什么没到账、也没人跟我说」。
+		// 别人的系统单靠 user_id 天然看不到。
 		base = base.Where("tickets.user_id = ?", user.ID)
 	}
 	status := strings.TrimSpace(query.Status)
@@ -229,6 +713,23 @@ func ListTicketsWithDB(db *gorm.DB, user *entity.User, query TicketListQuery, pa
 			return TicketListResult{}, err
 		}
 		base = base.Where("tickets.status = ?", status)
+	}
+	category, err := normalizeTicketCategory(query.Category)
+	if err != nil {
+		return TicketListResult{}, err
+	}
+	if category != "" {
+		base = base.Where("tickets.category = ?", category)
+	}
+	// origin 参数**先校验再决定是否应用**：非法值一律报错（静默忽略会让前端以为
+	// 筛了、后端给出全量，是最难查的一类错）；但只对管理员应用 ——
+	// 普通用户已经被上面钉死为「自己的、非系统单」，再叠加 origin 只会让语义混乱。
+	origin, err := normalizeTicketOrigin(query.Origin)
+	if err != nil {
+		return TicketListResult{}, err
+	}
+	if origin != "" && isTicketAdmin(user) {
+		base = base.Where("tickets.origin = ?", origin)
 	}
 	if condition, args := ticketKeywordCondition(query.Keyword); condition != "" {
 		base = base.Where(condition, args...)
@@ -270,8 +771,10 @@ func ListTicketsWithDB(db *gorm.DB, user *entity.User, query TicketListQuery, pa
 	items := make([]TicketListItem, 0, len(tickets))
 	for _, ticket := range tickets {
 		items = append(items, TicketListItem{ID: ticket.ID, UserID: ticket.UserID, UserName: ticket.UserName,
-			Subject: ticket.Subject, Status: ticket.Status, Priority: ticket.Priority, LastMessageAt: ticket.LastMessageAt,
-			ClosedAt: ticket.ClosedAt, CreatedAt: ticket.CreatedAt, UpdatedAt: ticket.UpdatedAt, MessageCount: counts[ticket.ID]})
+			Subject: ticket.Subject, Status: ticket.Status, Priority: ticket.Priority,
+			Origin: ticket.Origin, Category: ticket.Category,
+			LastMessageAt: ticket.LastMessageAt,
+			ClosedAt:      ticket.ClosedAt, CreatedAt: ticket.CreatedAt, UpdatedAt: ticket.UpdatedAt, MessageCount: counts[ticket.ID]})
 	}
 	return TicketListResult{Items: items, Total: total, Page: page, PageSize: pageSize}, nil
 }
@@ -318,6 +821,7 @@ func GetTicketWithDB(db *gorm.DB, user *entity.User, id int64) (TicketDetail, er
 	}
 	query := db.Where("id = ?", id)
 	if !isTicketAdmin(user) {
+		// 同列表：隔离只靠 user_id（系统单对被涉及用户可见，45-*.md §0.23.2）。
 		query = query.Where("user_id = ?", user.ID)
 	}
 	var ticket entity.Ticket
@@ -362,6 +866,8 @@ func AddTicketMessageWithDB(db *gorm.DB, user *entity.User, id int64, input Repl
 	err = db.Transaction(func(tx *gorm.DB) error {
 		query := tx.Where("id = ?", id)
 		if !isTicketAdmin(user) {
+			// 隔离只靠 user_id：系统单可见 **且可回复**（45-*.md §0.23.2 的
+			// 「可见 ≠ 可回复」补充结论是「可回复」，但不能改 category / priority）。
 			query = query.Where("user_id = ?", user.ID)
 		}
 		if err := query.First(&ticket).Error; err != nil {
@@ -435,7 +941,8 @@ func UpdateTicketWithDB(db *gorm.DB, user *entity.User, id int64, input UpdateTi
 		}
 	}
 	if strings.TrimSpace(input.Priority) != "" {
-		priority, err := normalizeTicketPriority(input.Priority)
+		// 这条路径本身已经被 isTicketAdmin 挡住，因此 urgent 在这里合法。
+		priority, err := normalizeTicketPriority(input.Priority, true)
 		if err != nil {
 			return TicketDetail{}, err
 		}
@@ -463,9 +970,9 @@ func ticketUserName(user *entity.User) string {
 
 func ticketAuthorRole(user *entity.User) string {
 	if isTicketAdmin(user) {
-		return "admin"
+		return entity.TicketAuthorRoleAdmin
 	}
-	return "user"
+	return entity.TicketAuthorRoleUser
 }
 
 // TicketWecomConfig is read from system_settings by the notification worker.
