@@ -21,5 +21,10 @@ proxy_read_timeout    3600s;
 proxy_buffering         off;
 proxy_request_buffering off;
 
-# 题面/选项极端情况下请求体可能偏大（nginx 默认 1m，超限会返回 413）
-client_max_body_size 8m;
+# 工单图片单张 20 MB（Q35 定案），但这里限制的是**整个请求体**，不是单张。
+# 多图走 multipart 时总大小会叠加，所以不能设成 20m —— 那意味着多图必然 413。
+# 200m 是给「数量不限制」留的总量余量，实际单张仍由后端校验 20 MB。
+#
+# ⚠️ 本值必须 ≥ 后端 BodyLimit（internal/api/router.go 的全局 BodyLimit），
+# 否则 nginx 会先返回 413，应用层那条更友好的错误提示永远出不来。
+client_max_body_size 200m;

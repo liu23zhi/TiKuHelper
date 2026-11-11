@@ -47,7 +47,15 @@ func TestIntegrationAdminBootstrap(t *testing.T) {
 		{name: "explicit_development_compat", mode: "development", expected: "123456"},
 		{name: "strong_production_bootstrap", password: "Create#123", expected: "Create#123"},
 		{name: "legacy_same_secret_upgrade_not_environment_reset", password: "Replace#456", seed: "Original#123", expected: "Original#123"},
-		{name: "known_default_existing_refused_not_reset", password: "Replace#456", seed: "123456", reject: true},
+		// 2026-11-10 用户拍板：production 下「库里仍是已知默认密码 123456」
+		// **不再拒绝启动**，改为启动 + WebUI 告警。因此 reject 由 true 改 false，
+		// 校验点平移到 defaultCredential —— 见下方对 row 的断言与此处的 wanted 注释。
+		//
+		// 注意：这里是**子进程**跑真实 RegisterDB，拿不到 plan.defaultCredential，
+		// 所以本用例的语义改为「启动成功且不重置已有凭据」；
+		// defaultCredential 的识别由 s04_startup_policy_test.go 的
+		// TestS04ProductionAdminPlan 直接断言（那里能拿到 plan）。
+		{name: "known_default_existing_accepted_not_reset", password: "Replace#456", seed: "123456", expected: "123456"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

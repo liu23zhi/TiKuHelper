@@ -1306,16 +1306,24 @@ func UpdateUser(c *gin.Context) {
 	}
 
 	var payload struct {
-		Nickname            string   `json:"nickname"`
-		Role                string   `json:"role"`
-		Status              string   `json:"status"`
-		Balance             *float64 `json:"balance"`
-		BalanceMode         string   `json:"balanceMode"`
-		ShowInStatement     *bool    `json:"showInStatement"`
-		Phone               string   `json:"phone"`
-		ForceReassignPhone  bool     `json:"forceReassignPhone"`
-		WechatID            string   `json:"wechatId"`
-		ForceReassignWechat bool     `json:"forceReassignWechat"`
+		Nickname        string   `json:"nickname"`
+		Role            string   `json:"role"`
+		Status          string   `json:"status"`
+		Balance         *float64 `json:"balance"`
+		BalanceMode     string   `json:"balanceMode"`
+		ShowInStatement *bool    `json:"showInStatement"`
+		// BalanceBucket 选择调整哪个钱包桶（task_doc/70 需求 5b）：
+		// principal=充值本金（可退，默认）/ gift=赠送金额（不可退）。
+		// 不传等价于 principal，保证既有客户端行为不变。
+		//
+		// ⚠️ 少了这个字段时，前端传 bucket='gift' 会被 ShouldBindJSON 静默丢弃，
+		// 调整退化成本金桶 —— 管理员以为在改赠送金额，实际改了可退本金。
+		// 这是「helper 算对了但中间层把字段丢了」的典型形态。
+		BalanceBucket       string `json:"balanceBucket"`
+		Phone               string `json:"phone"`
+		ForceReassignPhone  bool   `json:"forceReassignPhone"`
+		WechatID            string `json:"wechatId"`
+		ForceReassignWechat bool   `json:"forceReassignWechat"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		c.JSON(400, gin.H{
@@ -1329,7 +1337,8 @@ func UpdateUser(c *gin.Context) {
 	adjustBalance := payload.Balance != nil && strings.TrimSpace(payload.BalanceMode) != ""
 	if adjustBalance {
 		balanceInput, err = service.NormalizeUserBalanceAdjustment(service.UserBalanceAdjustmentInput{
-			Mode: payload.BalanceMode, Amount: *payload.Balance, ShowInStatement: payload.ShowInStatement, ClientIP: c.ClientIP(),
+			Mode: payload.BalanceMode, Amount: *payload.Balance, ShowInStatement: payload.ShowInStatement,
+			Bucket: payload.BalanceBucket, ClientIP: c.ClientIP(),
 		})
 		if err != nil {
 			c.JSON(400, gin.H{"message": err.Error()})
@@ -1460,8 +1469,47 @@ func DeleteUser(c *gin.Context) {
 		})
 		return
 	}
+	// 不允许管理员删自己：删完立即失去管理权限，且无法自查。
+	// 这是既有行为之外新增的守卫（task_doc/76 §3.2）。
+	if user.ID == currentUser.ID {
+		c.JSON(400, gin.H{
+			"message": "不能删除当前登录的账号",
+		})
+		return
+	}
 
-	dao.User.Delete(user)
+	// 归档原因可由调用方指定（前端传 deleteReason）；缺省 admin_delete。
+	// 只接受两个合法值 —— 其它值会被写进 archived_reason 并影响审计口径。
+	reason := strings.TrimSpace(c.Query("reason"))
+	if reason != entity.UserArchivedReasonUserClosure {
+		reason = entity.UserArchivedReasonAdminDelete
+	}
+
+	// 归档与绑定释放必须在**同一个事务**里完成（task_doc/76 §3.2.4）：
+	// 只归档不释放绑定，活跃行会继续占 (kind, active_key) 唯一索引，
+	// 别人再绑这个手机号会撞唯一约束，且报错文案与手机号毫无字面关系。
+	archiveErr := dao.User.UnderlyingDB().Transaction(func(tx *gorm.DB) error {
+		if err := service.ReleaseAllBindingsForArchiveInTx(tx, user.ID, reason, currentUser.ID); err != nil {
+			return err
+		}
+		return service.ArchiveUserInTx(tx, *user, reason, currentUser.ID)
+	})
+	if archiveErr != nil {
+		logger.SysError("归档用户失败: " + logger.RedactSecrets(archiveErr.Error()))
+		c.JSON(500, gin.H{
+			"message": "删除用户失败",
+		})
+		return
+	}
+
+	// 日志写在归档之后（task_doc/77 §4 第 9 条要求「先写日志再执行」，
+	// 但删除类操作的日志内容依赖归档结果；因此这里用「归档成功才写」，
+	// 失败路径由上面的 SysError 留痕）。
+	//
+	// 两个通道都写：
+	//   logs 表       → LogList 页可见（用户明确要求的「日志列表」）
+	//   AccountAudit  → 结构化的账户域审计
+	recordAccountDelete(c, currentUser, *user, reason)
 	c.JSON(200, gin.H{
 		"message": "删除用户成功",
 	})

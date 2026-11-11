@@ -896,6 +896,32 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		logger.SysLog(fmt.Sprintf("归属地缓存迁移失败（不影响启动）：%v", err))
 	}
 
+	// IP 段归属表（task_doc/71）。它让「一次上游查询覆盖一整段」真正生效：
+	// 段内后续 IP 由区间查询命中，不再各自调一次计费接口。
+	//
+	// 与归属地缓存不同，这里失败**不静默**：表缺失会让段命中永久失效，
+	// 表现为「每个 IP 都重新计费」，是很难从日志看出来的慢性成本问题。
+	if err := runStartupMigration("ensureIPSegmentSchema", func() error { return ensureIPSegmentSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("initialize IP 段归属: %w", err))
+		return nil
+	}
+
+	// 用户归档字段（task_doc/76 §3.2.2 / task_doc/77）：软删除 + 归档原因。
+	// 与 IP 段同理，失败不静默 —— users 加不上 deleted_at 会让「删除用户」
+	// 仍然物理删，而这正是本需求要消灭的行为。
+	//
+	// ⚠️ 这一块必须**独立**于上面的 IP 段迁移，不能写在它的 error 分支里。
+	// 历史 bug（2026-11-11 由 CI 根因排查发现）：它曾被误放在
+	// `if err := runStartupMigration("ensureIPSegmentSchema", ...); err != nil {` 的
+	// 大括号内部，导致只有 IP 段迁移**失败**时才补 users 归档列。
+	// 生产上 IP 段迁移通常成功 ⇒ deleted_at 列永不创建 ⇒ 用户软删除失效
+	// （dao.User 查询不会附 deleted_at IS NULL，删了但还在列表里），
+	// 而 ensureIPSegmentSchema 的成功静默掩盖了这一点，极难察觉。
+	if err := runStartupMigration("ensureUserArchiveSchema", func() error { return ensureUserArchiveSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("initialize user archive: %w", err))
+		return nil
+	}
+
 	// 题库 hash 迁移与 plat 列删除。两者都依赖 system_settings 表，
 	// 因此必须放在上面的 AutoMigrate（含 SystemSetting）之后。
 	// hash 失败仍只记日志；plat 仅在确认 MySQL 危险残留列时阻断启动。

@@ -31,6 +31,13 @@ func ResolveApplicationMode(configured string) (string, error) {
 type adminBootstrapPlan struct {
 	exists             bool
 	original, password string
+	// defaultCredential 表示「库里仍是已知默认密码 123456」。
+	//
+	// 2026-11-10 用户拍板：这不再是启动拒绝条件，只是**提示条件** ——
+	// 启动照常进行，由 WebUI 显示「请在后台修改默认密码」的告警。
+	// 早期实现会在 production 直接 errors.New 拒绝启动，导致
+	// 用默认库一键起 docker 的用户完全无法进入后台改密码（死锁）。
+	defaultCredential bool
 }
 
 // Keep the same 8-rune/ASCII four-category policy as account password changes.
@@ -61,8 +68,12 @@ func validateBootstrapPassword(password string) error {
 	return nil
 }
 
-// This function only reads. Even existing default plaintext is rejected before
-// any migration/account-default write in production; environment never resets it.
+// 本函数只读。2026-11-10 用户拍板：生产环境**不再**因为「库里仍是已知默认密码
+// 123456」而拒绝启动 —— 那会让用默认库一键起 docker 的人进不去后台改密码。
+// 现在的处置是：照常启动 + 打一条醒目日志 + 通过 WebUI 展示告警（见
+// plan.defaultCredential 的消费方），让管理员自行去后台改。
+//
+// 环境变量 TIKU_ADMIN_PASSWORD 仍然**不会**重置已有凭据 —— 这点不变。
 func resolveAdminBootstrap(database *gorm.DB, mode, environment string) (adminBootstrapPlan, error) {
 	var plan adminBootstrapPlan
 	if database != nil && database.Migrator().HasTable(entity.TableNameUser) {
@@ -75,8 +86,9 @@ func resolveAdminBootstrap(database *gorm.DB, mode, environment string) (adminBo
 		plan.original = row.Password
 	}
 	if plan.exists && plan.original != "" {
-		if matched, _ := util.VerifyPassword(plan.original, "123456"); mode == "production" && matched {
-			return plan, errors.New("production refuses the known default admin credential; change it through the existing account workflow")
+		// 只记录「仍是默认密码」这个事实，供 WebUI 告警用；不阻断启动。
+		if matched, _ := util.VerifyPassword(plan.original, "123456"); matched {
+			plan.defaultCredential = true
 		}
 		if strings.HasPrefix(plan.original, "$2a$") || strings.HasPrefix(plan.original, "$2b$") || strings.HasPrefix(plan.original, "$2y$") {
 			return plan, nil
@@ -204,7 +216,7 @@ func preflightAdminBootstrap(config configs.Config, mode, environment string) (a
 		if err != nil {
 			return adminBootstrapPlan{}, errors.New("invalid SQLite database path")
 		}
-		readonly := (&url.URL{Scheme: "file", Path: absolute}).String() + "?mode=ro"
+		readonly := sqliteReadOnlyFileURI(absolute)
 		conn = sqlite.Open(readonly)
 	}
 	inspection, err := gorm.Open(conn, &gorm.Config{Logger: newDatabaseLogger()})
@@ -230,4 +242,46 @@ func RegisterDBWithError(config configs.Config) (*gorm.DB, error) {
 		return nil, err
 	}
 	return registerPreparedDB(config, plan), nil
+}
+
+// sqliteReadOnlyFileURI 把绝对文件路径转成 SQLite 能打开的只读 file: URI。
+//
+// 为什么不能用 `(&url.URL{Scheme:"file", Path: absolute}).String()`：
+// 那个写法在 **Windows 上产出非法 URI**。实测（2026-11-11）：
+//
+//	absolute = `C:\Users\me\run\data\tiku.db`
+//	url.URL{...}.String() = `file://C:%5CUsers%5Cme%5Crun%5Cdata%5Ctiku.db`
+//
+// 两个问题叠加：
+//
+//	① 反斜杠被转义成 %5C，而 SQLite 只认 `/`
+//	② 盘符写成 `file://C:` —— 正确形式是 `file:///C:/...`（三个斜杠：authority 为空 + 绝对路径）
+//
+// 后果不是「降级」而是**硬失败**：SQLite 报 `invalid SQLite database URI`
+// 或 `out of memory`，`preflightAdminBootstrap` 拿不到 inspection ⇒ 生产跑 Windows
+// 时启动直接 FATAL。CI 全是 Linux，所以这个 bug 从未在 CI 暴露，
+// 只在 Windows 开发者本机表现为「一堆与代码无关的测试假红」。
+//
+// 正确形式（SQLite 官方要求的 file URI 形态）：
+//
+//	Linux/macOS:  file:///home/u/data/tiku.db?mode=ro
+//	Windows:      file:///C:/Users/u/data/tiku.db?mode=ro
+//
+// 实现要点：先把路径的分隔符统一成 `/`，再按需补前导 `/` 到「绝对路径」形态，
+// 最后一次性交给 url.URL{Scheme:"file", Path: ...} 做百分号转义
+// （此时 Path 已是 `/C:/...` 形式，转义后不会出现 %5C）。
+func sqliteReadOnlyFileURI(absolute string) string {
+	return sqliteFileURI(absolute).String() + "?mode=ro"
+}
+
+// sqliteFileURI 返回不带 query 的 file: URI 对象，供需要自行追加参数的调用方复用。
+func sqliteFileURI(absolute string) *url.URL {
+	slashed := filepath.ToSlash(absolute)
+	// Windows 盘符形态 `C:/...`：url.URL 会把它当成相对路径（Path 不以 / 开头），
+	// 于是 String() 产出 `file:C:/...` —— 少了 authority 分隔的斜杠。
+	// 补成 `/C:/...` 才会得到 `file:///C:/...`。
+	if !strings.HasPrefix(slashed, "/") {
+		slashed = "/" + slashed
+	}
+	return &url.URL{Scheme: "file", Path: slashed}
 }

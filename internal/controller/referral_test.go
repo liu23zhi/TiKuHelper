@@ -171,7 +171,7 @@ func TestReferralAdminEndpointsRejectNonAdmin(t *testing.T) {
 	admin := seedReferralControllerUser(t, db, 601, "referral-admin", "admin", 0)
 	member := seedReferralControllerUser(t, db, 602, "referral-member", "user", 0)
 	rebate := entity.ReferralRebate{
-		InviterUserID: admin.ID, InvitedUserID: member.ID, RechargeOrderID: 9001,
+		InviterUserID: admin.ID, InvitedUserID: member.ID, Source: entity.ReferralRebateSourceAuto, RechargeOrderID: referralOrderIDPtr(9001),
 		OrderNo: "rcg_admin_guard", BaseAmount: 100, Rate: 0.1, Amount: 10,
 		Status: entity.ReferralRebateStatusPending, PolicyVersion: service.ReferralRebatePolicyVersion,
 	}
@@ -296,3 +296,9 @@ func TestReferralRegisterHTTPGeneratesNothingWhenDisabled(t *testing.T) {
 		t.Fatalf("disabled switch must not bind attribution, got %d", created.InvitedByUserID)
 	}
 }
+
+// referralOrderIDPtr 返回充值订单 ID 的指针。
+//
+// entity.ReferralRebate.RechargeOrderID 自 task_doc/70 起可为 nil：
+// 管理员手动补录的记录（source=manual）没有对应充值订单。
+func referralOrderIDPtr(id int32) *int32 { return &id }

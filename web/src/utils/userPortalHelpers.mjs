@@ -211,6 +211,21 @@ export function buildBillingRecordTypeText(record) {
   if (type === 'script_activation_purchase') {
     return '脚本激活码购买'
   }
+  // 邀请返佣（task_doc/70 需求 2）。
+  // 返佣入的是 gift_balance（赠送余额，可消费不可退），不是可退本金 balance。
+  // 冲回是原订单退款时的反向记账（从赠送余额扣回，clamp 到 0）。
+  if (type === 'referral_rebate') {
+    return '邀请返佣（入赠送余额）'
+  }
+  if (type === 'referral_rebate_reversal') {
+    return '邀请返佣冲回'
+  }
+  if (type === 'review_rebate') {
+    return '评价返现'
+  }
+  if (type === 'registration_bonus_clawback') {
+    return '新用户赠送追缴'
+  }
   return type || '题目消费'
 }
 

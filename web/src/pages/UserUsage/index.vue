@@ -6,6 +6,12 @@
 
     <ConsoleSummaryGrid>
       <div class="summary-card"><a-statistic title="当前余额" prefix="¥" :value="currentUserBalance" :precision="6" /></div>
+      <!-- 赠送金额（task_doc/70 需求 3）：紧跟「当前余额」之后。
+           注意口径：gift_balance 是**赠金来源标记桶**，赠金已计入 balance
+           （见 entity/users.gen.go:41-51「与 balance 同步增加，但单独记账」
+           「赠金计入 balance，用户可以直接消费 —— 不新增第二个可用钱包」）。
+           所以这里展示的是「余额里有多少来自赠送」，**不是**可分页叠加的第二笔钱。 -->
+      <div class="summary-card"><a-statistic title="赠送金额" prefix="¥" :value="currentUserGiftBalance" :precision="6" /></div>
       <div class="summary-card"><a-statistic title="账单总数" :value="summary.total" /></div>
       <div class="summary-card"><a-statistic title="当前页条数" :value="summary.currentPageCount" /></div>
       <div class="summary-card"><a-statistic title="当前页消费金额" prefix="¥" :value="summary.totalAmount" :precision="6" /></div>
@@ -426,6 +432,13 @@ export default defineComponent({
       return Number.isFinite(balance) ? balance : 0
     })
 
+    // 赠送金额（task_doc/70 需求 3）。口径见模板注释：gift_balance 是
+    // 「余额中来自赠送的部分」，已包含在 balance 内，不是可叠加的第二笔钱。
+    const currentUserGiftBalance = computed(() => {
+      const gift = Number(currentUser.value?.giftBalance || 0)
+      return Number.isFinite(gift) ? gift : 0
+    })
+
     const pageRefreshing = computed(() => currentUserLoading.value || tableLoading.value || paymentMethodLoading.value)
 
     // 充值金额输入约束：输入阶段就挡住超出 2 位的金额。
@@ -531,6 +544,7 @@ export default defineComponent({
       toggleSubject: (id) => subjectExpansion.toggle(id, 'subject'),
       summary,
       currentUserBalance,
+      currentUserGiftBalance,
       pageRefreshing,
       formatMoneyValue,
       buildBillingRecordAmountText,

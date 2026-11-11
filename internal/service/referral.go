@@ -379,9 +379,10 @@ func CreateReferralRebateInTx(tx *gorm.DB, order entity.RechargeOrder) (*entity.
 	base := referralRebateBaseAmount(order)
 	amount := util.RoundMoney(base * rate)
 	rebate := entity.ReferralRebate{
+		Source:          entity.ReferralRebateSourceAuto,
 		InviterUserID:   invited.InvitedByUserID,
 		InvitedUserID:   invited.ID,
-		RechargeOrderID: order.ID,
+		RechargeOrderID: &order.ID,
 		OrderNo:         order.OrderNo,
 		BaseAmount:      base,
 		Rate:            rate,
@@ -666,10 +667,22 @@ func creditReferralRebateWalletInTx(tx *gorm.DB, wallet entity.User, rebate enti
 		BalanceAfter:      newBalance,
 		UnitPriceSnapshot: referralGiftSnapshot(giftBefore, giftAfter),
 		RequestID:         requestID,
-		RelatedOrderID:    rebate.RechargeOrderID,
+		RelatedOrderID:    referralRebateRelatedOrderID(rebate),
 		Remark:            referralBillingRemark("邀请返佣（入赠送余额）", rebate, joinReferralNotes(remark, referralDebtOffsetNote(balanceBefore, newBalance))),
 	}
 	return referralSession(tx).Create(&record).Error
+}
+
+// referralRebateRelatedOrderID 取返佣记录关联的充值订单 ID。
+//
+// 自动记录（source=auto）一定有关联订单；管理员手动补录（source=manual）
+// 没有订单，此时返回 0 —— 不能拿 nil 去写 BillingRecord.RelatedOrderID
+// （该列是 int32，语义上 0 表示「无关联订单」）。
+func referralRebateRelatedOrderID(rebate entity.ReferralRebate) int32 {
+	if rebate.RechargeOrderID == nil {
+		return 0
+	}
+	return *rebate.RechargeOrderID
 }
 
 // joinReferralNotes 把两段说明拼成一句，空段自动跳过。
@@ -756,7 +769,7 @@ func debitReferralRebateWalletInTx(tx *gorm.DB, rebate entity.ReferralRebate) (f
 		BalanceAfter:      balanceBefore,
 		UnitPriceSnapshot: referralGiftSnapshot(giftBefore, giftAfter),
 		RequestID:         requestID,
-		RelatedOrderID:    rebate.RechargeOrderID,
+		RelatedOrderID:    referralRebateRelatedOrderID(rebate),
 		Remark:            referralBillingRemark("邀请返佣冲回（扣赠送余额）", rebate, buildReferralReversalRemark(rebate, deducted)),
 	}
 	if err := referralSession(tx).Create(&record).Error; err != nil {
