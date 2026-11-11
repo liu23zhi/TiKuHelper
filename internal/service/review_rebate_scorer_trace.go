@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"strings"
+	"sync"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/pkg/logger"
@@ -33,16 +34,61 @@ import (
 
 // reviewRebateTraceRecord 是写入 trace 的一条记录。
 type reviewRebateTraceRecord struct {
-	Claim       entity.ReviewRebateClaim
-	Scorer      string
-	Model       string
-	DurationMs  int64
-	UserPrompt  string
-	RawResponse string
-	Parsed      *ReviewRebateScore
+	Claim  entity.ReviewRebateClaim
+	Scorer string
+	Model  string
+	// Attempt 是**同一个 claim 的第几次打分**（首次 = 1）。
+	//
+	// 为什么必须记（task_doc/45 §8.2 的缺口）：claim 表没有 attempt 列，
+	// 管理员对同一条评价反复重跑后，日志里几条记录无法区分先后 ——
+	// 「先给 0.3 后给 0.8」与「先给 0.8 后给 0.3」是完全不同的故事。
+	Attempt    int
+	DurationMs int64
+	// SystemPrompt 是系统提示词**全文**。
+	//
+	// 2026-11-11 用户要求「都保留完整提示词，回复记录等」（task_doc/45 §0.26.1、
+	// task_doc/77 §11.1），覆盖了 §8.3「只记 sha256」的旧口径：
+	// 排查「模型是不是被提示词带偏了」必须能看到原文，sha256 只能判断版本变没变。
+	// 全文仍然保留 sha256 字段作快速比对，成本几乎为零。
+	SystemPrompt string
+	UserPrompt   string
+	RawResponse  string
+	Parsed       *ReviewRebateScore
 	// Outcome 取值：ok / error / parse_error / no_screenshot。
 	Outcome string
 	Error   string
+}
+
+// 同一 claim 的打分次数计数器（进程内）。
+//
+// 口径：首次打分 = 1；同一 claim 每再打一次 +1。
+// 进程重启后如果 claim 上已经有打分痕迹（AgentScorer / AgentStars / 置信度），
+// 本次从 2 起计 —— 精确到「第几次」需要落库（claim 表无计数列，
+// 改表属 task_doc/45 §8.2 的后续项），但「首次 vs 重跑」以及
+// 「同一进程内前后顺序」都能区分。
+//
+// 每个 claim 只存一个 int，量级与被打分过的 claim 数同级（低频操作），不做淘汰。
+var (
+	reviewRebateAttemptMu  sync.Mutex
+	reviewRebateAttemptSeq = map[int32]int{}
+)
+
+// nextReviewRebateScoreAttempt 返回本次打分应记的 attempt 序号。
+func nextReviewRebateScoreAttempt(claim entity.ReviewRebateClaim) int {
+	reviewRebateAttemptMu.Lock()
+	defer reviewRebateAttemptMu.Unlock()
+	current, seen := reviewRebateAttemptSeq[claim.ID]
+	if !seen && reviewRebateWasScoredBefore(claim) {
+		current = 1
+	}
+	next := current + 1
+	reviewRebateAttemptSeq[claim.ID] = next
+	return next
+}
+
+// reviewRebateWasScoredBefore 判断这条 claim 在本进程之前是否已经拿过分数。
+func reviewRebateWasScoredBefore(claim entity.ReviewRebateClaim) bool {
+	return strings.TrimSpace(claim.AgentScorer) != "" || claim.AgentStars > 0 || claim.AgentConfidence > 0
 }
 
 // traceReviewRebateScoring 把一条打分记录序列化成 JSON Lines 写进独立日志。
@@ -52,6 +98,12 @@ type reviewRebateTraceRecord struct {
 //
 // 本函数**不得**返回错误或 panic —— 追踪失败绝不能影响打分主流程。
 func traceReviewRebateScoring(record reviewRebateTraceRecord) {
+	// 系统提示词按全文记录（用户 2026-11-11 要求「都保留完整提示词」）；
+	// 调用方偶尔不传时退回本仓唯一的那份常量，保证每条记录都能自解释。
+	systemPrompt := strings.TrimSpace(record.SystemPrompt)
+	if systemPrompt == "" {
+		systemPrompt = ReviewRebateAgentSystemPrompt
+	}
 	payload := map[string]any{
 		"claimId":   record.Claim.ID,
 		"userId":    record.Claim.UserID,
@@ -59,9 +111,12 @@ func traceReviewRebateScoring(record reviewRebateTraceRecord) {
 		"scorer":    record.Scorer,
 		"model":     record.Model,
 		"outcome":   record.Outcome,
-		// 系统提示词只记 sha256，不记全文：它是固定资产，全文重复写入纯浪费，
-		// 而 sha256 足以判断「版本变没变」。
-		"systemPromptSha256": reviewRebatePromptDigest(ReviewRebateAgentSystemPrompt),
+		// attempt：同一 claim 的第几次打分，用于区分重跑先后（见 reviewRebateTraceRecord）。
+		"attempt": record.Attempt,
+		// 系统提示词**全文** + sha256：全文供复盘提示词是否被带偏，
+		// sha256 供快速比对「换没换版本」（16 位足够）。
+		"systemPrompt":       systemPrompt,
+		"systemPromptSha256": reviewRebatePromptDigest(systemPrompt),
 		"durationMs":         record.DurationMs,
 		"claimedStars":       record.Claim.ClaimedStars,
 		"claimedReviewUrl":   strings.TrimSpace(record.Claim.ClaimedReviewURL),
