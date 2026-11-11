@@ -715,6 +715,17 @@ func (in *ChatGptClient) executeAITikuSearchTool(ctx context.Context, call openA
 	callUsage.Status = "success"
 	callUsage.MatchKind = result.MatchKind
 	callUsage.CandidateCount = result.CandidateCount
+	// 同步模糊命中标记，让运维能看到「这条查询是模糊命中且有歧义」。
+	//
+	// 位置很关键：这一行必须在 `SearchTiku` 返回成功之后、`finish()` 之前。
+	//   · SearchTiku 失败时上面的 err 分支已经 return，走不到这里 ——
+	//     所以错误路径上的 callUsage.Ambiguous 保持零值 false，
+	//     不会被误读成「查过且不模糊」。
+	//   · finish() 会把这个结构体按值追加进 usage.TikuSearchCalls，
+	//     所以必须在 finish() 之前赋值，之后再改就只改到局部副本。
+	// Ambiguous 由 SearchTiku 在成功路径上计算（tiku_search.go 的 fuzzy 分支），
+	// 这里只做透传，不重新判定 —— 判据只有一处，避免两侧口径漂移。
+	callUsage.Ambiguous = result.Ambiguous
 	if len(result.Candidates) > aiTikuMaxCandidates {
 		result.Candidates = result.Candidates[:aiTikuMaxCandidates]
 	}
