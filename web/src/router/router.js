@@ -34,6 +34,7 @@ const ReferralRebates = () => import(/* webpackChunkName: "route-referral-rebate
 const ReviewRebate = () => import(/* webpackChunkName: "route-review-rebate" */ '../pages/ReviewRebate/index.vue')
 const ReviewRebateAdmin = () => import(/* webpackChunkName: "route-review-rebate-admin" */ '../pages/ReviewRebateAdmin/index.vue')
 const Blacklist = () => import(/* webpackChunkName: "route-blacklist" */ '../pages/Blacklist/index.vue')
+const IPSegment = () => import(/* webpackChunkName: "route-ip-segment" */ '../pages/IpSegment/index.vue')
 const routes = [
   {
     path: '/',
@@ -181,6 +182,13 @@ const routes = [
         meta: { locationKind: 'ip' },
       },
       {
+        // IP 段归属管理（task_doc/71 §3.5）。路径用复数 ip-segments，
+        // 与上面的单 IP 归属地缓存 ip-location-cache 区分。
+        path: 'ip-segments',
+        name: 'ip-segments',
+        component: IPSegment,
+      },
+      {
         path: 'phone-location-cache',
         name: 'phone-location-cache',
         component: LocationCache,
@@ -214,6 +222,7 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   'extension-updates',
   'location-cache',
   'ip-location-cache',
+  'ip-segments',
   'phone-location-cache',
   'referral-rebates',
   'review-rebate-admin',

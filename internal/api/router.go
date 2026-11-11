@@ -94,6 +94,16 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.POST("/location-cache/batch-refresh", controller.Auth, middleware.RequireAdmin, controller.LocationCacheBatchRefresh)
 	apiRouter.POST("/location-cache/refresh", controller.Auth, middleware.RequireAdmin, controller.LocationCacheRefresh)
 	apiRouter.POST("/location-cache/manual", controller.Auth, middleware.RequireAdmin, controller.LocationCacheManualLookup)
+	// IP 段归属信息管理（task_doc/71 §3.5）。与 location-cache 的区别：
+	// 后者是「查过这个键」的单 IP 缓存，前者是「这个网段属于谁」的段表，
+	// 一次上游查询可覆盖整段，段内后续 IP 零调用命中。
+	// 路径必须是复数 ip-segments，避免与单 IP 的 ip-location-cache 混淆。
+	// 五条全部 Auth + RequireAdmin（列表也含原始段数据与样本 IP，不对普通用户开放）。
+	apiRouter.GET("/admin/ip-segments", controller.Auth, middleware.RequireAdmin, controller.IPSegmentList)
+	apiRouter.GET("/admin/ip-segments/lookup", controller.Auth, middleware.RequireAdmin, controller.IPSegmentLookup)
+	apiRouter.POST("/admin/ip-segments/batch-delete", controller.Auth, middleware.RequireAdmin, controller.IPSegmentBatchDelete)
+	apiRouter.DELETE("/admin/ip-segments/:id", controller.Auth, middleware.RequireAdmin, controller.IPSegmentDelete)
+	apiRouter.POST("/admin/ip-segments/:id/refresh", controller.Auth, middleware.RequireAdmin, controller.IPSegmentRefresh)
 	apiRouter.GET("/uapi/search/engines", controller.Auth, middleware.RequireAdmin, controller.UAPISearchEngines)
 	apiRouter.GET("/uapi/status/usage", controller.Auth, middleware.RequireAdmin, controller.UAPIStatusUsage)
 	apiRouter.POST("/uapi/search/aggregate", controller.Auth, middleware.RequireAdmin, controller.UAPISearchAggregate)

@@ -62,6 +62,7 @@ import {
   ShareAltOutlined,
   StarOutlined,
   StopOutlined,
+  ApartmentOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
 } from '@ant-design/icons-vue';
@@ -78,6 +79,7 @@ const ADMIN_MENU_ITEMS = [
   { key: 'recharge-orders', label: '充值记录', icon: CreditCardOutlined },
   { key: 'billing-records', label: '账单明细', icon: AccountBookOutlined },
   { key: 'ip-location-cache', label: 'IP 归属地信息管理', icon: GlobalOutlined },
+  { key: 'ip-segments', label: 'IP 段归属管理', icon: ApartmentOutlined },
   { key: 'phone-location-cache', label: '手机号归属地信息管理', icon: PhoneOutlined },
   { key: 'search-account-config', label: '默认账号配置', icon: SettingOutlined },
   { key: 'ai-search-config', label: 'AI 搜索配置', icon: RobotOutlined },
