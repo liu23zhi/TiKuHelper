@@ -492,8 +492,25 @@ class MainFlow:
                 assert b'admin bootstrap password' in output
             else:
                 assert 'Tiku 服务已停止'.encode() in output, 'actual graceful shutdown marker absent'
-                expected_ip = '203.0.113.7' if mode == 'development' else '127.0.0.1'
+                # ⚠️ 2026-11-10 语义变更（task_doc/67 §1.1 / §2）：
+                # 「信任所有来源」有两个触发条件，不是只有 development：
+                #   ① mode == 'development'  → 走 loadTrustedProxiesLegacy（历史行为，信任所有）
+                #   ② TRUSTED_PROXIES 为空 或 none → 按 §2「none 与留空完全等价，都信任所有来源」
+                #
+                # 两者都会采信 X-Forwarded-For，Gin 的 ClientIP 因此是探针注入的
+                # 203.0.113.7，而非真实对端 127.0.0.1。
+                #
+                # 只按 mode 判断是旧语义（那时 none 对应「List 为空 = 不信任任何转发头」）。
+                # 67 号 §2 明确废止了那个理解，所以这里必须同时看 proxies。
+                trusted_all = (
+                    mode == 'development'
+                    or proxies is None
+                    or str(proxies).strip() == ''
+                    or str(proxies).strip().lower() == 'none'
+                )
+                expected_ip = '203.0.113.7' if trusted_all else '127.0.0.1'
                 result['actualGinClientIP'] = actual_gin_client_ips(logs.stdout, expected_ip)
+                result['trustedAllSources'] = trusted_all
                 assert any(p.stat().st_size > 0 for p in (fixture / 'logs').glob('Tiku*.txt')), 'real log files were not written'
                 operation = 'verify-legacy' if legacy else 'verify-development' if mode == 'development' else 'verify-new'
                 verified = self.recorder.run(name + '-' + operation, [str(self.probe), operation, '--db', str(db)])
