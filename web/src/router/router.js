@@ -14,6 +14,8 @@ const TikuAdapterLayout = () => import(/* webpackChunkName: "route-tiku-adapter-
 const TikuComponent = () => import(/* webpackChunkName: "route-tiku-component" */ '../pages/TikuComponent/index.vue')
 const IntelligentImport = () => import(/* webpackChunkName: "route-intelligent-import" */ '../pages/IntelligentImport/index.vue')
 const UserList = () => import(/* webpackChunkName: "route-user-list" */ '../pages/UserList/index.vue')
+// 已归档账号管理（task_doc/76 §3.2.3）。管理员专属：纳入 adminOnlyRouteNames。
+const ArchivedUsers = () => import(/* webpackChunkName: "route-archived-users" */ '../pages/ArchivedUsers/index.vue')
 const UserUsagePage = () => import(/* webpackChunkName: "route-user-usage-page" */ '../pages/UserUsage/index.vue')
 const LogList = () => import(/* webpackChunkName: "route-log-list" */ '../pages/LogList/index.vue')
 const SearchAccountConfig = () => import(/* webpackChunkName: "route-search-account-config" */ '../pages/SearchAccountConfig/index.vue')
@@ -88,6 +90,12 @@ const routes = [
         path: 'userlist',
         name: 'userlist',
         component: UserList,
+      },
+      {
+        // 已归档账号管理（task_doc/76 §3.2.3）:管理员删除与用户注销的账号都在这里。
+        path: 'archived-users',
+        name: 'archived-users',
+        component: ArchivedUsers,
       },
       {
         path: 'user-usage',
@@ -213,6 +221,8 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   'component',
   'import',
   'userlist',
+  // 已归档账号：列表里有账号快照与绑定记录，只能管理员看（task_doc/76 §3.2.3）。
+  'archived-users',
   'loglist',
   'search-account-config',
   'ai-search-config',
