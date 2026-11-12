@@ -22,3 +22,23 @@ test('upstream prop spelling uses bounded SVG geometry with a fixed-size trusted
   assert.equal(wrapper.element.style.width,'28px')
   assert.equal(wrapper.find('svg').element.style.width,'100%')
 })
+
+// 防漂移：paymentIconContract.json 在仓库里被声明为 `-text`（见根 .gitattributes）。
+// 一旦有人把它改成 `text`（或删掉那条规则），在 core.autocrlf=true 的 Windows 上
+// 检出就会被转成 CRLF，上面那条 sha256 断言随即红 —— 但它的报错只会说
+// 「a67ac51c… != 508d6a5a…」，看的人完全不知道是换行被转换了。
+// 这条用例把「字节里不能有 CR」单独钉出来，让失败信息直接指向根因。
+//
+// 为什么不能只写 assert(!raw.includes('\r\n'))：那样文件若变成空 / 单行，
+// 断言会因为「压根没有换行」而白通过（假钉子）。所以先断言 lfCount > 0。
+test('paymentIconContract.json is LF-only on disk (guards the -text rule in .gitattributes)',()=>{
+  const file=path.join(root,'src/utils/paymentIconContract.json')
+  const raw=fs.readFileSync(file)
+  let crCount=0,lfCount=0
+  for(const byte of raw){if(byte===13)crCount++;else if(byte===10)lfCount++}
+  assert.ok(lfCount>0,'fixture must contain newlines, otherwise the CR assertion below is vacuous (lf='+lfCount+')')
+  assert.equal(crCount,0,
+    'paymentIconContract.json has '+crCount+' CR bytes on disk. Either its `-text` rule was '+
+    'dropped from .gitattributes (so core.autocrlf=true rewrote it to CRLF on checkout), or the '+
+    'file was committed with CRLF. Keep it `-text`; its sha256 is pinned by the assertion above.')
+})
