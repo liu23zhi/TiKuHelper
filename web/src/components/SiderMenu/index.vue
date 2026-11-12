@@ -64,6 +64,7 @@ import {
   StarOutlined,
   StopOutlined,
   ApartmentOutlined,
+  TrophyOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
 } from '@ant-design/icons-vue';
@@ -93,6 +94,8 @@ const ADMIN_MENU_ITEMS = [
   { key: 'referral-rebates', label: '赠送记录', icon: GiftOutlined },
   { key: 'review-rebate-admin', label: '评价返现管理', icon: StarOutlined },
   { key: 'blacklist', label: '黑名单管理', icon: StopOutlined },
+  // 等级与充值阶梯（94-*.md §2 C1/C2）：等级门槛 + 补贴档位都在这一页。
+  { key: 'user-levels', label: '等级与充值阶梯', icon: TrophyOutlined },
   { key: 'system-settings', label: '系统管理', icon: ToolOutlined },
   { key: 'extension-updates', label: '扩展更新', icon: DownloadOutlined },
   { key: 'access-tokens', label: '令牌管理', icon: SafetyCertificateOutlined },

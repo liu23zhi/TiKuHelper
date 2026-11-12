@@ -104,6 +104,34 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.POST("/admin/ip-segments/batch-delete", controller.Auth, middleware.RequireAdmin, controller.IPSegmentBatchDelete)
 	apiRouter.DELETE("/admin/ip-segments/:id", controller.Auth, middleware.RequireAdmin, controller.IPSegmentDelete)
 	apiRouter.POST("/admin/ip-segments/:id/refresh", controller.Auth, middleware.RequireAdmin, controller.IPSegmentRefresh)
+
+	// 等级体系（Q75-3 / Q75-6 / Q75-7，94-*.md §2 C1）。
+	//
+	// 六条管理员接口一律 Auth + RequireAdmin：等级定义决定谁能拿到什么设备上限
+	// （C3 会读 user_levels.device_limit），不能对普通用户开放（读也不行 ——
+	// 列表里含门槛配置，等于把「怎么刷级」写出来）。
+	//
+	// 用户侧只有一条只读接口 /user/level（返回自己的等级与两个口径值），
+	// 因为它非管理员专属，所以挂在 /user 前缀下、只要求 Auth。
+	apiRouter.GET("/admin/user-levels", controller.Auth, middleware.RequireAdmin, controller.UserLevelList)
+	apiRouter.POST("/admin/user-levels", controller.Auth, middleware.RequireAdmin, controller.UserLevelCreate)
+	// reevaluate 必须注册在 /:id 之前？不需要 —— gin 按方法分树，
+	// POST /admin/user-levels/reevaluate 与 PUT/DELETE /admin/user-levels/:id
+	// 方法不同不会抢节点。
+	apiRouter.POST("/admin/user-levels/reevaluate", controller.Auth, middleware.RequireAdmin, controller.UserLevelReevaluate)
+	apiRouter.PUT("/admin/user-levels/:id", controller.Auth, middleware.RequireAdmin, controller.UserLevelUpdate)
+	apiRouter.DELETE("/admin/user-levels/:id", controller.Auth, middleware.RequireAdmin, controller.UserLevelDelete)
+	apiRouter.GET("/user/level", controller.Auth, controller.UserLevelCurrent)
+
+	// 充值阶梯赠送的可配置档位（Q75-2，94-*.md §2 C2）。
+	//
+	// 表空时服务层回退到 DefaultRechargePromotionTiers，因此本接口先上线不影响发放。
+	// 整体替换（PUT）而不是逐条增删改：档位是一张阶梯，「同门槛不同比例」的中间态
+	// 在选档语义上不合法，必须让「校验通过」与「生效」是同一瞬间。
+	apiRouter.GET("/admin/recharge-promotion-tiers", controller.Auth, middleware.RequireAdmin, controller.RechargePromotionTierList)
+	apiRouter.PUT("/admin/recharge-promotion-tiers", controller.Auth, middleware.RequireAdmin, controller.RechargePromotionTierReplace)
+	apiRouter.POST("/admin/recharge-promotion-tiers/preview", controller.Auth, middleware.RequireAdmin, controller.RechargePromotionTierPreview)
+
 	apiRouter.GET("/uapi/search/engines", controller.Auth, middleware.RequireAdmin, controller.UAPISearchEngines)
 	apiRouter.GET("/uapi/status/usage", controller.Auth, middleware.RequireAdmin, controller.UAPIStatusUsage)
 	apiRouter.POST("/uapi/search/aggregate", controller.Auth, middleware.RequireAdmin, controller.UAPISearchAggregate)
