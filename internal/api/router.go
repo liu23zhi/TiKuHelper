@@ -255,6 +255,11 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/user/referral", controller.Auth, controller.ReferralSummary)
 	apiRouter.GET("/admin/referral-rebates", controller.Auth, middleware.RequireAdmin, controller.ReferralRebateList)
 	apiRouter.POST("/admin/referral-rebates/:id/settle", controller.Auth, middleware.RequireAdmin, controller.SettleReferralRebate)
+	// 管理员手动补录返佣（无需充值订单的一笔），与结算同为管理员权限。
+	apiRouter.POST("/admin/referral-rebates", controller.Auth, middleware.RequireAdmin, controller.CreateReferralRebate)
+	// 赠送记录：注册赠送 / 评价返现 / 邀请返佣 / 充值赠金 四类聚合账本（Q75-1：仅管理员）。
+	apiRouter.GET("/admin/gift-records", controller.Auth, middleware.RequireAdmin, controller.GiftRecordList)
+	apiRouter.GET("/admin/gift-records/sources", controller.Auth, middleware.RequireAdmin, controller.GiftRecordSourceList)
 	// 评价返现（16-*.md §1.8）。用户端只碰自己的数据（handler 内固定用当前账户），
 	// 管理端一律 Auth + RequireAdmin；开关默认关闭，关闭时入口返回 400。
 	apiRouter.GET("/user/review-rebate/program", controller.Auth, controller.ReviewRebateProgram)

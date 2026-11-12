@@ -30,6 +30,13 @@ var (
 	ErrReferralRebateNotFound = errors.New("返佣记录不存在")
 	// ErrReferralRebateState 返佣记录当前状态不允许该操作。
 	ErrReferralRebateState = errors.New("返佣记录状态不允许该操作")
+	// ErrReferralRebateDuplicate 同一受益人、同一金额、同一补录日期的手动记录已存在。
+	//
+	// 这是**幂等闸**而不是数据损坏：管理员重复点提交时必须明确告知「这笔已经记过」，
+	// 而不是静默返回一条旧记录 —— 后者会让管理员以为刚记的是另一笔，接着去核对钱包。
+	ErrReferralRebateDuplicate = errors.New("该受益人在该日期已有同金额的手动返佣记录")
+	// ErrReferralRebateManualInvalid 手动补录的入参不合法（金额/日期）。
+	ErrReferralRebateManualInvalid = errors.New("返佣补录参数无效")
 	// ErrReferralRebateDisabled 总开关关闭时管理员接口不可用。
 	ErrReferralRebateDisabled = errors.New("邀请返佣功能未启用")
 	// ErrReferralRebateSchemaUnavailable 结算/冲回需要的表或列还没迁移到位。
@@ -638,7 +645,24 @@ func lockReferralWalletInTx(tx *gorm.DB, userID int32) (entity.User, error) {
 // 幂等兜底：request_id = referral_rebate_<rebateID> 的流水已存在 → 只当已加过钱，
 // 直接返回（行锁 + 状态判断之外的最后一道闸）。
 func creditReferralRebateWalletInTx(tx *gorm.DB, wallet entity.User, rebate entity.ReferralRebate, amount float64, remark string) error {
-	requestID := referralRebateBillingRequestID(rebate.ID)
+	return creditReferralGiftInTx(tx, wallet, amount,
+		referralRebateBillingRequestID(rebate.ID),
+		referralRebateRelatedOrderID(rebate),
+		referralBillingRemark("邀请返佣（入赠送余额）", rebate, remark))
+}
+
+// creditReferralGiftInTx 是「返佣类赠送入账」的唯一实现：写赠金桶 + 写一条 billing_records。
+//
+// requestID 是幂等锚点（billing_records.request_id 已存在就不再加钱）：
+//   - 结算路径用 referral_rebate_<rebateID>（rebate 行本身就是持久锚点）；
+//   - 管理员手动补录的 rebate 行是**在同一个事务里新建**的，入账前还拿不到 ID，
+//     因此用 (受益人, 金额, 日期) 派生的稳定键，见 manualReferralRebateRequestID。
+//
+// ⚠️ 手动补录的幂等为什么必须在 billing 层做：referral_rebates 的唯一索引是
+// (source, recharge_order_id)，而 manual 行的 recharge_order_id 为 NULL，
+// **NULL 不参与唯一性判定** —— 表层面拦不住重复，只能靠这个 request_id 前置查询，
+// 并用 users 行锁把并发提交串行化（见 CreateManualReferralRebateWithDB）。
+func creditReferralGiftInTx(tx *gorm.DB, wallet entity.User, amount float64, requestID string, relatedOrderID int32, remark string) error {
 	exists, err := referralBillingRecordExists(tx, requestID)
 	if err != nil {
 		return err
@@ -662,13 +686,15 @@ func creditReferralRebateWalletInTx(tx *gorm.DB, wallet entity.User, rebate enti
 		UserID:            wallet.ID,
 		Type:              ReferralRebateBillingRecordType,
 		Provider:          "system",
-		Amount:            amount,
+		Amount:            util.RoundMoney(amount),
 		BalanceBefore:     balanceBefore,
 		BalanceAfter:      newBalance,
 		UnitPriceSnapshot: referralGiftSnapshot(giftBefore, giftAfter),
 		RequestID:         requestID,
-		RelatedOrderID:    referralRebateRelatedOrderID(rebate),
-		Remark:            referralBillingRemark("邀请返佣（入赠送余额）", rebate, joinReferralNotes(remark, referralDebtOffsetNote(balanceBefore, newBalance))),
+		RelatedOrderID:    relatedOrderID,
+		// 抵欠款说明放在这里而不是调用方：调用方拿不到 balanceBefore/newBalance，
+		// 而「我得到 2 元但余额只涨 1 元」必须能被用户自己看懂（43-*.md §6）。
+		Remark: joinReferralNotes(remark, referralDebtOffsetNote(balanceBefore, newBalance)),
 	}
 	return referralSession(tx).Create(&record).Error
 }
@@ -803,7 +829,6 @@ func referralRebateReversalBillingRequestID(rebateID int32) string {
 }
 
 // referralBillingRemark 拼出账单备注：默认标签 + 原充值订单号 + 附加说明。
-//
 // 订单号进备注是为了对账时能一眼看出「这笔钱来自哪一笔充值」，
 // 而不是只看到一个孤零零的返佣 ID。
 func referralBillingRemark(label string, rebate entity.ReferralRebate, extra string) string {
@@ -815,6 +840,154 @@ func referralBillingRemark(label string, rebate entity.ReferralRebate, extra str
 		parts = append(parts, note)
 	}
 	return strings.Join(parts, "；")
+}
+
+// ManualReferralRebateInput 是管理员手动补录一笔返佣的入参。
+type ManualReferralRebateInput struct {
+	// BeneficiaryUserID 是**受益人**（拿钱的一方），不是「下单人」。
+	// 手动补录没有订单，因此没有受邀人可言 —— InvitedUserID 记 0。
+	BeneficiaryUserID int32
+	// Amount 是本笔返佣金额（6 位小数口径）。
+	Amount float64
+	// Day 是补录归属日（YYYY-MM-DD，本地时区；空 = 今天）。
+	//
+	// 它同时是幂等键的一部分：同一受益人 + 同一金额 + 同一日期只允许一条。
+	// 用「日期」而不是精确时间戳，是为了让「管理员手抖点两次提交」与
+	// 「隔天真的想再补一笔同额」能够区分开。
+	Day string
+	// Remark 是附言，写进返佣记录与账单备注。
+	Remark string
+	// OperatorUsername 只用于留痕（写进备注），不参与任何判定。
+	OperatorUsername string
+}
+
+const (
+	// manualReferralRebateMaxAmount 是单笔手动补录上限（防误输多一个零）。
+	// 真正需要更大金额时应拆成多笔或改配置走自动路径，而不是把闸门抬掉。
+	manualReferralRebateMaxAmount = 1000000.0
+	// manualReferralRebateDayLayout 是补录日期的格式。
+	manualReferralRebateDayLayout = "2006-01-02"
+)
+
+// CreateManualReferralRebateWithDB 管理员手动补录一笔返佣，**创建即入账**（source=manual）。
+//
+// 与自动路径（CreateReferralRebateInTx，pending 等结算）的区别：
+//   - 自动路径是「充值产生了应付奖励」，所以落 pending，等管理员结算才动钱包；
+//   - 手动补录是「管理员现在就要给这个人补一笔」，语义上等同于「建单 + 立即结算」，
+//     因此直接落 settled 并在同一事务内入账 —— 否则界面上会出现一条要再点一次
+//     结算的手动记录，与「补录」的意图相反。
+//
+// 入账口径（与自动结算**完全一致**，复用同一条 creditReferralGiftInTx）：
+//   - 金额进 gift_balance（可消费、不可退款），**不进** balance 本金；
+//   - 欠款状态下先抵欠款再进赠金桶（43-*.md 规则 3）；
+//   - 写一条 billing_records(type=referral_rebate)，用户可见的账单明细与赠送记录都能对上。
+//
+// 幂等（两道闸，任一命中都不会重复入账）：
+//  1. referral_rebates 的唯一索引管不到 manual 行（recharge_order_id 为 NULL，
+//     NULL 不参与唯一性判定），所以锚点放 billing_records.request_id：
+//     键 = referral_rebate_manual_<受益人>_<金额>_<日期>；
+//  2. 事务内先锁 users 行（与结算同一锁序 users → referral_rebates），
+//     并发的两次提交在这里串行化，第二个进来时一定看得到第一条的账单行。
+func CreateManualReferralRebateWithDB(db *gorm.DB, input ManualReferralRebateInput) (entity.ReferralRebate, error) {
+	if db == nil || input.BeneficiaryUserID <= 0 {
+		return entity.ReferralRebate{}, fmt.Errorf("%w: 受益人必须是正整数账户 ID", ErrReferralRebateManualInvalid)
+	}
+	amount := util.RoundMoney(input.Amount)
+	if amount <= 0 || amount > manualReferralRebateMaxAmount {
+		return entity.ReferralRebate{}, fmt.Errorf("%w: 金额必须大于 0 且不超过 %s",
+			ErrReferralRebateManualInvalid, moneyTextForReferral(manualReferralRebateMaxAmount))
+	}
+	day, err := parseManualReferralRebateDay(input.Day)
+	if err != nil {
+		return entity.ReferralRebate{}, err
+	}
+	// 总开关关闭时不允许新增返佣（与自动路径一致：关闭就不产生返佣）。
+	if !GetReferralRebateEnabledWithDB(db) {
+		return entity.ReferralRebate{}, ErrReferralRebateDisabled
+	}
+	// 入账要写钱包与账单，结构没就绪必须明确报错（不能假装成功）。
+	if !referralSettlementSchemaAvailable(db) {
+		return entity.ReferralRebate{}, ErrReferralRebateSchemaUnavailable
+	}
+
+	remark := "管理员手动补录返佣"
+	if note := strings.TrimSpace(input.Remark); note != "" {
+		remark = remark + "：" + note
+	}
+	if operator := strings.TrimSpace(input.OperatorUsername); operator != "" {
+		remark = joinReferralNotes(remark, "操作人 "+operator)
+	}
+	requestID := manualReferralRebateRequestID(input.BeneficiaryUserID, amount, day)
+
+	var created entity.ReferralRebate
+	err = db.Transaction(func(tx *gorm.DB) error {
+		wallet, lockErr := lockReferralWalletInTx(tx, input.BeneficiaryUserID)
+		if lockErr != nil {
+			return lockErr
+		}
+		exists, existsErr := referralBillingRecordExists(tx, requestID)
+		if existsErr != nil {
+			return existsErr
+		}
+		if exists {
+			return ErrReferralRebateDuplicate
+		}
+		now := time.Now()
+		rebate := entity.ReferralRebate{
+			Source:        entity.ReferralRebateSourceManual,
+			InviterUserID: input.BeneficiaryUserID,
+			// 手动补录没有受邀人：0 表示「无注册归因」，不是「用户 0」。
+			InvitedUserID:   0,
+			RechargeOrderID: nil,
+			OrderNo:         "",
+			// BaseAmount = Amount、Rate = 1 让列表上的「基数 × 比例 = 金额」自洽，
+			// 而不是留一个 0 让运营以为数据缺了。
+			BaseAmount:    amount,
+			Rate:          1,
+			Amount:        amount,
+			Status:        entity.ReferralRebateStatusSettled,
+			PolicyVersion: ReferralRebatePolicyVersion,
+			Remark:        remark,
+			SettledAt:     &now,
+		}
+		if createErr := referralSession(tx).Create(&rebate).Error; createErr != nil {
+			return createErr
+		}
+		if creditErr := creditReferralGiftInTx(tx, wallet, amount, requestID, 0,
+			referralBillingRemark("邀请返佣手动补录（入赠送余额）", rebate, "")); creditErr != nil {
+			return creditErr
+		}
+		created = rebate
+		return nil
+	})
+	if err != nil {
+		return entity.ReferralRebate{}, err
+	}
+	return created, nil
+}
+
+// parseManualReferralRebateDay 解析补录日期（空 = 今天零点，本地时区）。
+func parseManualReferralRebateDay(value string) (time.Time, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		now := time.Now()
+		return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()), nil
+	}
+	parsed, err := time.ParseInLocation(manualReferralRebateDayLayout, trimmed, time.Local)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%w: 日期必须是 %s 格式", ErrReferralRebateManualInvalid, manualReferralRebateDayLayout)
+	}
+	return parsed, nil
+}
+
+// manualReferralRebateRequestID 是手动补录的幂等键（同时写进 billing_records.request_id）。
+//
+// 三个维度都必须进键：只放 userID 会让「同一个人当天两笔不同金额」被当成重复；
+// 只放 userID+金额会让「隔天再补同额」被永久挡住。
+// 审计字段（操作人、备注）**不进键** —— 每次都不同，进键等于让幂等失效。
+func manualReferralRebateRequestID(userID int32, amount float64, day time.Time) string {
+	return fmt.Sprintf("referral_rebate_manual_%d_%s_%s",
+		userID, moneyTextForReferral(amount), day.Format(manualReferralRebateDayLayout))
 }
 
 // GetReferralSummaryWithDB 汇总「我的邀请」数据。
