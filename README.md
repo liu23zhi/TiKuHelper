@@ -9,3 +9,14 @@
 ```bash
 go build ./...
 ```
+
+## 本地 gofmt 检查
+
+Windows 上 `core.autocrlf=true` 会让工作树是 CRLF，`gofmt -l` 因此误报「未格式化」，
+而 CI 在 LF 下通过。用下面这条区分「真格式问题」与「CRLF 假阳性」：
+
+```powershell
+.\scripts\local-gofmt.ps1        # REAL=须修 / CRLF-ONLY=无需修 / CLEAN=合规
+.\scripts\local-gofmt.ps1 -Fix   # 修 REAL，写回 LF
+```
+
