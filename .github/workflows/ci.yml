@@ -351,10 +351,82 @@ jobs:
             printf '[查看完整运行日志](%s)\n' "$RUN_URL"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # build-exe.ps1 的 Python 探测回归保护。
+  #
+  # 为什么必须是 Windows：那个 bug 只存在于 **Windows PowerShell 5.1** 的双引号
+  # 插值语义里（`-c "... struct.calcsize(""P"") ..."` 被 PowerShell 吃掉引号，
+  # 下发给 Python 的代码变成 NameError: name 'P' is not defined）。pwsh 7 恰好
+  # 容忍那种写法，所以在 ubuntu 或 pwsh 下跑这条测试会在坏代码上保持绿色，
+  # 等于没测。只有 windows-latest 才有 powershell.exe 5.1。
+  #
+  # 成本：runner 自带 Windows PowerShell 5.1，不需要额外装；只需要装 CPython
+  # 3.11（脚本硬要求 3.11 x64）—— setup-python 有缓存，约 10s。不装 PyInstaller，
+  # 不构建 exe（那条路径要 ~20s + vendored 原生扩展，不是本 job 要守的东西）。
+  probe-windows:
+    name: build-exe.ps1 探测回归（PowerShell 5.1）
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: 检出仓库代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 配置 Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+          # 脚本用 `py -3.11` 调用，Windows runner 需要 py 启动器。
+          # setup-python 在 Windows 上会同时装好 py launcher。
+          architecture: 'x64'
+
+      - name: 确认 py 启动器可用（脚本硬编码调用 py -3.11）
+        shell: pwsh
+        run: |
+          # 脚本第 43-44 行硬编码 `$python = 'py'; $pythonArgs = @('-3.11')`。
+          # setup-python 不保证在 Windows 上放 py.exe；没有它，本 job 会因为
+          # 环境缺失而红，看起来却像「代码回归」——那是最误导的一种失败。
+          # 所以这里先单独探测，把环境问题和代码问题分开报。
+          $py = Get-Command py -ErrorAction SilentlyContinue
+          if (-not $py) {
+            Write-Host "::error title=环境缺失::runner 上没有 py 启动器。本 job 无法验证脚本（脚本第 43 行硬编码 py -3.11）。这不是代码回归。"
+            exit 1
+          }
+          py -0p
+          py -3.11 -c "import sys, struct; print('probe-python', sys.version.split()[0], struct.calcsize('P') * 8)"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error title=环境缺失::py -3.11 不可用。这不是代码回归，请检查 setup-python 的架构/版本。"
+            exit 1
+          }
+
+      - name: 确认 powershell.exe 是 5.1
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          if (-not (Test-Path $exe)) { throw "powershell.exe 不存在：$exe" }
+          $ver = & $exe -NoProfile -Command '$PSVersionTable.PSVersion.Major'
+          Write-Host "powershell.exe major = $ver"
+          if ($ver -ne 5) { throw "期望 Windows PowerShell 5.x，实际 $ver；本测试的前提不成立" }
+
+      - name: build-exe.ps1 -ProbeOnly 冒烟（PowerShell 5.1）
+        working-directory: tools/userexam-crypto
+        shell: pwsh
+        run: |
+          $exe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          & $exe -NoProfile -ExecutionPolicy Bypass -File .\build-exe.ps1 -ProbeOnly -ProbeMachineReadable
+          if ($LASTEXITCODE -ne 0) { throw "build-exe.ps1 -ProbeOnly 在 PowerShell 5.1 下失败（exit $LASTEXITCODE）" }
+
+      - name: 测试 build-exe.ps1 探测回归
+        working-directory: tools/userexam-crypto
+        shell: pwsh
+        run: |
+          py -3.11 -m unittest test_build_exe -v
+          if ($LASTEXITCODE -ne 0) { throw "test_build_exe 失败" }
+
   summary:
     name: 持续集成摘要
     runs-on: ubuntu-24.04
-    needs: [backend, frontend, docker, python, release-build]
+    needs: [backend, frontend, docker, python, release-build, probe-windows]
     if: always()
     steps:
       - name: 输出构建结果与产物链接
@@ -363,6 +435,7 @@ jobs:
           FRONTEND_RESULT: ${{ needs.frontend.result }}
           DOCKER_RESULT: ${{ needs.docker.result }}
           PYTHON_RESULT: ${{ needs.python.result }}
+          PROBE_WINDOWS_RESULT: ${{ needs.probe-windows.result }}
           RELEASE_BUILD_RESULT: ${{ needs.release-build.result }}
           BACKEND_ARTIFACT_URL: ${{ needs.backend.outputs.artifact-url }}
           FRONTEND_ARTIFACT_URL: ${{ needs.frontend.outputs.artifact-url }}
@@ -388,6 +461,7 @@ jobs:
             echo '| --- | --- |'
             printf '| Go 后端检查 | %s |\n' "$(result_label "$BACKEND_RESULT")"
             printf '| Python 工具测试 | %s |\n' "$(result_label "$PYTHON_RESULT")"
+            printf '| build-exe.ps1 探测回归（PowerShell 5.1） | %s |\n' "$(result_label "$PROBE_WINDOWS_RESULT")"
             printf '| 跨平台发布构建 | %s |\n' "$(result_label "$RELEASE_BUILD_RESULT")"
             printf '| Vue 前端检查 | %s |\n' "$(result_label "$FRONTEND_RESULT")"
             printf '| Docker 镜像构建 | %s |\n' "$(result_label "$DOCKER_RESULT")"
