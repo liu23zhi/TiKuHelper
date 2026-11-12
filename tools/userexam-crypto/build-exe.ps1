@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Build the single-file userexam-crypto.exe (administrator offline tool).
 
@@ -46,7 +46,13 @@ $exePath = Join-Path $PSScriptRoot 'dist\userexam-crypto.exe'
 $totalSteps = 5
 
 Write-Host "[1/$totalSteps] Checking Python 3.11 x64 ..."
-$version = & $python @pythonArgs -c "import sys, struct; print(f'{sys.version_info.major}.{sys.version_info.minor} {struct.calcsize(""P"") * 8} {sys.implementation.name}')"
+    $pyProbe = Join-Path ([System.IO.Path]::GetTempPath()) ("cx-py-probe-" + [guid]::NewGuid().ToString("N") + ".py")
+    try {
+        Set-Content -LiteralPath $pyProbe -Encoding ascii -Value @('import sys, struct', 'v = chr(46).join([str(sys.version_info.major), str(sys.version_info.minor)]); print(v, struct.calcsize("P") * 8, sys.implementation.name)')
+        $version = & $python @pythonArgs $pyProbe
+    } finally {
+        Remove-Item -LiteralPath $pyProbe -Force -ErrorAction SilentlyContinue
+    }
 if ($LASTEXITCODE -ne 0) {
     throw "py -3.11 is unavailable. Install 64-bit CPython 3.11 (with Tkinter)."
 }
