@@ -380,6 +380,25 @@ jobs:
           # setup-python 在 Windows 上会同时装好 py launcher。
           architecture: 'x64'
 
+      - name: 确认 py 启动器可用（脚本硬编码调用 py -3.11）
+        shell: pwsh
+        run: |
+          # 脚本第 43-44 行硬编码 `$python = 'py'; $pythonArgs = @('-3.11')`。
+          # setup-python 不保证在 Windows 上放 py.exe；没有它，本 job 会因为
+          # 环境缺失而红，看起来却像「代码回归」——那是最误导的一种失败。
+          # 所以这里先单独探测，把环境问题和代码问题分开报。
+          $py = Get-Command py -ErrorAction SilentlyContinue
+          if (-not $py) {
+            Write-Host "::error title=环境缺失::runner 上没有 py 启动器。本 job 无法验证脚本（脚本第 43 行硬编码 py -3.11）。这不是代码回归。"
+            exit 1
+          }
+          py -0p
+          py -3.11 -c "import sys, struct; print('probe-python', sys.version.split()[0], struct.calcsize('P') * 8)"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error title=环境缺失::py -3.11 不可用。这不是代码回归，请检查 setup-python 的架构/版本。"
+            exit 1
+          }
+
       - name: 确认 powershell.exe 是 5.1
         shell: pwsh
         run: |
@@ -388,13 +407,6 @@ jobs:
           $ver = & $exe -NoProfile -Command '$PSVersionTable.PSVersion.Major'
           Write-Host "powershell.exe major = $ver"
           if ($ver -ne 5) { throw "期望 Windows PowerShell 5.x，实际 $ver；本测试的前提不成立" }
-
-      - name: 确认 py -3.11 可用
-        working-directory: tools/userexam-crypto
-        shell: pwsh
-        run: |
-          py -3.11 -c "import sys; print(sys.version)"
-          if ($LASTEXITCODE -ne 0) { throw "py -3.11 不可用" }
 
       - name: build-exe.ps1 -ProbeOnly 冒烟（PowerShell 5.1）
         working-directory: tools/userexam-crypto
