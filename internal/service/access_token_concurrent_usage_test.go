@@ -13,6 +13,7 @@ import (
 
 	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 )
 
@@ -164,7 +165,12 @@ func TestUpdateAccessTokenWithDBPreservesConcurrentUsageChild(t *testing.T) {
 func newAccessTokenMetadataUsagePair(t *testing.T) (*gorm.DB, *gorm.DB) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "metadata-usage.db")
-	a, err := gorm.Open(sqlite.Open(path), &gorm.Config{})
+	// DSN 走 pkg/util.SQLiteConcurrentDSN，与生产 internal/registry.sqliteProductionDSN
+	// 共用同一份并发参数定义（task_doc/47）。少了 _txlock=immediate + busy_timeout，
+	// 并发写里落败的那条会被 "database table is locked" 挡下 ——
+	// 「usage 没有被元数据更新覆盖」的断言照样绿，但覆盖的是锁行为而不是业务语义。
+	dsn := util.SQLiteConcurrentDSN(path)
+	a, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +186,7 @@ func newAccessTokenMetadataUsagePair(t *testing.T) (*gorm.DB, *gorm.DB) {
 	if err = a.AutoMigrate(&entity.User{}, &entity.AccessToken{}, &entity.Log{}); err != nil {
 		t.Fatal(err)
 	}
-	b, err := gorm.Open(sqlite.Open(path), &gorm.Config{})
+	b, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}

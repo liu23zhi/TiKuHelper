@@ -203,7 +203,7 @@
               </span>
               <span v-else-if="column.key === 'agentScore'">
                 {{ buildAgentScore(record) }}
-                <a-tag v-if="scorerLabel(record)" color="default" class="scorer-tag">{{ scorerLabel(record) }}</a-tag>
+                <a-tag v-if="scorerLabel(record)" :color="scorerColor(record)" class="scorer-tag">{{ scorerLabel(record) }}</a-tag>
               </span>
               <span v-else-if="column.key === 'agentConfidence'" :class="{ 'is-low-confidence': isLowConfidence(record) }">
                 {{ formatConfidence(record.agentConfidence) }}
@@ -573,11 +573,27 @@ export default {
     }
     // 打分来源：agent=模型看过截图，stub=未配置模型时按截图摘要派生（不代表任何核验）。
     // 空值 = 历史行或注入式打分器，无法归因。
+    //
+    // stub 的文案必须**明确说清「不可作为核验依据」**，不能只写「占位」：
+    // 「占位」在中文语境里太温和，运营容易读成「暂时没填，回头会补」，
+    // 于是照样点批准。这里的分数是由截图 SHA-256 哈希派生出来的 5 星，
+    // 模型从未看过截图，把它当核验结论等于凭空发钱。
     const scorerLabel = record => {
       const kind = String(record?.agentScorer || '').trim().toLowerCase()
       if (kind === 'agent') return ''
-      if (kind === 'stub') return '占位'
+      if (kind === 'stub') return '占位分数 · 非模型产出，不可作为核验依据'
       return record?.agentStars ? '来源未知' : ''
+    }
+    // 只有 stub 走警告色：它必须与「低于门槛」（orange）同档，
+    // 因为两者是同一类风险 —— 都会让运营在错误前提下做决定。
+    // agent（返回空串不渲染）与「来源未知」保持 default，避免整列都在报警。
+    //
+    // 取 'orange' 而不是自定义色值：同文件与 ReviewRebate 页的
+    // 「低于门槛」标签用的就是 Ant Design 的 orange（warning 语义），
+    // 自造新色值会让同一页出现两个不同的警告色。
+    function scorerColor(record) {
+      const kind = String(record?.agentScorer || '').trim().toLowerCase()
+      return kind === 'stub' ? 'orange' : 'default'
     }
     function claimStatusLabel(value) {
       const key = String(value || '').trim().toLowerCase()
@@ -965,7 +981,7 @@ export default {
       ruleDialogOpen, ruleDialogKey, editingRuleId, ruleForm, ruleFormError,
       decisionDialogOpen, decisionDialogKey, decisionRecord, decisionForm, decisionValidation,
       rangeText, moneyText, formatConfidence, formatDateTime, buildUserName, buildAgentScore,
-      scorerLabel,
+      scorerLabel, scorerColor,
       claimStatusLabel, claimStatusColor, isReviewable, isLowConfidence,
       setProgramField, saveProgram, resetProgramForm, loadProgram, loadRules, loadClaims, loadAll,
       setRuleField, openRuleDialog, closeRuleDialog, saveRule, removeRule,

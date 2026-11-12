@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/pkg/logger"
@@ -916,5 +917,135 @@ func TestReviewRebateTraceRecordsSystemPromptAndAttempt(t *testing.T) {
 	}
 	if strings.Contains(string(raw), "sk-") && !strings.Contains(string(raw), "sk-***") {
 		t.Fatalf("trace leaked an api key: %s", string(raw))
+	}
+}
+
+// trace payload 必须带 ts / sanitized / matchedRuleId / awardAmount 四个字段，
+// 且四个值都必须有真实来源 —— 不能是占位常量。
+//
+// task_doc/73 §3.2.2 的规格表列了这四个；此前实现里它们全缺
+// （grep '"ts"' / sanitized / matchedRuleId / awardAmount 在 trace 文件里 0 命中），
+// 后果是「这条为什么给 0.8 元」这个最常被问的问题在日志里答不出来：
+// 有分数、有理由，但没有「命中哪条规则、算出的候选金额是多少」。
+//
+// # 每个字段的判据都必须是「非默认值」
+//
+// 只断言字段存在，会漏掉「写死 0 / false / 空串」的实现 —— 那正是假钉子。
+// 所以：
+//   - ts 断言格式可解析且落在本次测试的时间窗内（不是 0001-01-01）；
+//   - sanitized 断言为 true，且**换一条不含密钥的记录断言为 false**
+//     （单侧断言无法区分「恒 true」「恒 false」与「真的算出来了」）；
+//   - matchedRuleId 断言等于种子规则的 ID（非 0）；
+//   - awardAmount 断言等于种子规则的金额 0.8（非 0）。
+func TestReviewRebateTraceRecordsTsSanitizedRuleAndAmount(t *testing.T) {
+	t.Chdir(t.TempDir())
+	oldLogDir := *logger.LogDir
+	*logger.LogDir = t.TempDir()
+	if err := logger.SetupGinLog(); err != nil {
+		t.Fatalf("setup logger: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = logger.Close()
+		*logger.LogDir = oldLogDir
+	})
+	logDir := *logger.LogDir
+
+	db := newReviewRebateScorerTestDB(t)
+	setReviewRebateSwitch(t, db, true)
+	user := seedReviewRebateUser(t, db, 84, "rr-trace-fields", "user")
+	program := seedReviewRebateProgram(t, db, true, 3, 5.04, 0.6)
+	rule := entity.ReviewRebateRule{
+		ProgramID: program.ID, MinStars: 5, MaxStars: 5, MinContentScore: 8, MaxContentScore: 10,
+		Amount: 0.8, Priority: 20, Enabled: true,
+	}
+	// 必须接返回值：Create 回填的自增 ID 在返回的结构体里，
+	// 不看返回值常量那条 rule.ID 仍是 0，断言会退化成「等于 0」的假钉子。
+	rule = seedReviewRebateRule(t, db, rule)
+	if rule.ID == 0 {
+		t.Fatal("seeded rule must carry a non-zero id")
+	}
+	digest := reviewRebateFixtureDigest("trace-fields-1")
+	claim, err := CreateReviewRebateClaimWithDB(db, ReviewRebateClaimCreateInput{
+		ProgramID:        program.ID,
+		UserID:           user.ID,
+		ScreenshotPath:   writeReviewRebateTestScreenshot(t, user.ID, digest),
+		ScreenshotSHA256: digest,
+	})
+	if err != nil {
+		t.Fatalf("create claim: %v", err)
+	}
+
+	resetReviewRebateAttemptCounters()
+	// 这一组响应故意**不含**任何密钥字样，因此 sanitized 必须是 false。
+	before := time.Now().Add(-2 * time.Second)
+	completer := &fakeReviewRebateCompleter{
+		response: agentJSON(5, 9, 0.87, "截图清晰显示 5 星，正文写了具体使用体验。"),
+	}
+	if _, err := ScoreReviewRebateClaimWithDB(db, claim.ID, NewReviewRebateAgentScorer(db, completer)); err != nil {
+		t.Fatalf("score: %v", err)
+	}
+	after := time.Now().Add(2 * time.Second)
+	if err := logger.Close(); err != nil {
+		t.Fatalf("close logger: %v", err)
+	}
+
+	records := readReviewRebateTraceRecords(t, logDir)
+	if len(records) == 0 {
+		t.Fatal("no trace records written")
+	}
+	last := records[len(records)-1]
+
+	// ① ts：格式与日志行首一致，且落在本次测试的时间窗内。
+	tsValue, ok := last["ts"].(string)
+	if !ok || tsValue == "" {
+		t.Fatalf("record has no ts field: %v", last)
+	}
+	parsed, err := time.ParseInLocation("2006/01/02 - 15:04:05", tsValue, logger.ShanghaiLocation())
+	if err != nil {
+		t.Fatalf("ts %q is not in the log-line format: %v", tsValue, err)
+	}
+	if parsed.Before(before) || parsed.After(after) {
+		t.Fatalf("ts %q outside this test's window [%v, %v]", tsValue, before, after)
+	}
+
+	// ② sanitized：这条记录不含密钥 → 必须是 false（真实判定，不是恒 true）。
+	sanitized, ok := last["sanitized"].(bool)
+	if !ok {
+		t.Fatalf("record has no sanitized field: %v", last)
+	}
+	if sanitized {
+		t.Fatalf("sanitized must be false for a record without secrets: %v", last)
+	}
+
+	// ③ matchedRuleId / ④ awardAmount：命中规则后的真实快照，非 0 且等于种子值。
+	matched, ok := last["matchedRuleId"].(float64)
+	if !ok {
+		t.Fatalf("record has no matchedRuleId field: %v", last)
+	}
+	if int32(matched) != rule.ID {
+		t.Fatalf("matchedRuleId = %v, want %d", matched, rule.ID)
+	}
+	amount, ok := last["awardAmount"].(float64)
+	if !ok {
+		t.Fatalf("record has no awardAmount field: %v", last)
+	}
+	if amount != 0.8 {
+		t.Fatalf("awardAmount = %v, want 0.8", amount)
+	}
+}
+
+// sanitized 必须是**真判定**：含密钥的记录为 true，不含的为 false。
+//
+// 这条与上一条分开写，是为了让「恒 true」和「恒 false」两种假实现分别变红：
+// 上一条只断言 false 侧，这一条断言 true 侧。两条都过才说明它是算出来的。
+func TestReviewRebateTraceSanitizedFlagReflectsRealRedaction(t *testing.T) {
+	// 直接测判定函数：它是 sanitized 位的唯一来源。
+	// 用 logger.RedactSecrets 认得的密钥形态，保证「含密钥」侧真的会被改写。
+	const secretLike = "Authorization: Bearer sk-live-abcdefghijklmnop"
+	if !reviewRebateTraceWasSanitized(`{"rawResponse":"` + secretLike + `"}`) {
+		t.Fatal("text carrying a live-looking API key must be reported as sanitized")
+	}
+	if reviewRebateTraceWasSanitized(`{"rawResponse":"plain model output, no credentials here"}`) {
+		t.Fatal("plain text must not be reported as sanitized")
 	}
 }

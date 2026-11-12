@@ -650,3 +650,193 @@ func TestThinkingLogUsesLargerFileLimit(t *testing.T) {
 		t.Fatalf("thinking log did not rotate at its limit: %v", err)
 	}
 }
+
+// 按年龄清理：两个 mtime 不同、内容大小相同的归档，一个超龄一个不超龄，
+// 断言只删超龄的那一个。
+//
+// # 为什么必须放一个「不超龄」的对照文件
+//
+// 只造一个超龄归档时，「无脑删掉目录下所有归档」的实现也能过 ——
+// 那条用例根本区分不出「按 mtime 判定」与「全删」。必须同时放对照文件，
+// 且**两者大小相同**：这样「不超龄的必须还在且内容逐字节未变」这条断言
+// 就不可能被「删了再写个空文件」蒙过去。
+//
+// # 为什么两个白名单各造一对
+//
+// 轮转归档（isManagedLogArchive，Tiku01.txt.gz）在日志目录下，
+// 批量包（isManagedLogBatchArchive，20260101_000000.zip）在 archive/ 子目录下。
+// 只扫其中一个的实现能过「只测另一个位置」的用例 —— 所以这里两个位置
+// 各造一对（超龄 + 不超龄），并断言四个文件的最终存活状态。
+func TestPruneLogFilesByAgeDeletesOnlyExpiredArchives(t *testing.T) {
+	dir := t.TempDir()
+	archiveDir := filepath.Join(dir, "archive")
+	if err := os.MkdirAll(archiveDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// 两份内容长度完全相同（32 字节），避免「按大小猜」的实现混过断言。
+	expiredBody := strings.Repeat("A", 32)
+	freshBody := strings.Repeat("B", 32)
+
+	// ① 日志目录下的轮转归档（isManagedLogArchive）。
+	expiredRotated := filepath.Join(dir, "Tiku01.txt.gz")
+	freshRotated := filepath.Join(dir, "Tiku02.txt.gz")
+	// ② archive/ 下的批量包（isManagedLogBatchArchive）。
+	expiredBatch := filepath.Join(archiveDir, "20260101_000000.zip")
+	freshBatch := filepath.Join(archiveDir, "20260102_000000.zip")
+
+	now := time.Now()
+	old := now.Add(-10 * 24 * time.Hour) // 10 天前
+	recent := now.Add(-1 * 24 * time.Hour)
+	for _, item := range []struct {
+		path string
+		body string
+		when time.Time
+	}{
+		{expiredRotated, expiredBody, old},
+		{expiredBatch, expiredBody, old},
+		{freshRotated, freshBody, recent},
+		{freshBatch, freshBody, recent},
+	} {
+		if err := os.WriteFile(item.path, []byte(item.body), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(item.path, item.when, item.when); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 保留 3 天：10 天前的两份超龄，1 天前的两份不超龄。
+	//
+	// 这里直接调 pruneLogFilesByAge 而不是走 setupLoggerWithRetention：
+	// setup 会先跑 archiveExistingLogs，把日志目录下的 .txt.gz 打包进
+	// archive/，本轮测试的前置文件会被提前搬走，断言就失去意义。
+	// 「setup 是否真的会调这个函数」由下面单独的接线用例负责
+	// （TestStartupRetentionPrunesExpiredBatchArchives）——
+	// 两件事分开测，各自的目的才清楚。
+	if err := pruneLogFilesByAge(dir, 3); err != nil {
+		t.Fatalf("prune by age: %v", err)
+	}
+
+	// 超龄的两份必须被删 —— 这一对同时覆盖两个白名单。
+	for _, path := range []string{expiredRotated, expiredBatch} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("expired archive should be removed: %s err=%v", filepath.Base(path), err)
+		}
+	}
+	// 不超龄的两份必须还在，且内容逐字节未变。
+	for _, path := range []string{freshRotated, freshBatch} {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("fresh archive should be kept: %s err=%v", filepath.Base(path), err)
+		}
+		if string(got) != freshBody {
+			t.Fatalf("fresh archive content changed: %s got=%d bytes", filepath.Base(path), len(got))
+		}
+	}
+}
+
+// 0 天 = 关闭，而不是「删光」。
+//
+// 这是不可逆操作的口径约定：一次误配把 0 理解成「零天保留」，
+// 会让升级后第一次清理就把全部历史归档删掉，且无法恢复。
+func TestPruneLogFilesByAgeDisabledKeepsEverything(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "Tiku01.txt.gz")
+	if err := os.WriteFile(path, []byte("keep-me"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ancient := time.Now().Add(-365 * 24 * time.Hour)
+	if err := os.Chtimes(path, ancient, ancient); err != nil {
+		t.Fatal(err)
+	}
+	for _, days := range []int{0, -1} {
+		if err := pruneLogFilesByAge(dir, days); err != nil {
+			t.Fatalf("prune by age %d: %v", days, err)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("retention=%d must not delete anything: %v", days, err)
+		}
+	}
+}
+
+// 启动路径真的会按年龄清理 —— 这是**接线**断言，不是函数单元断言。
+//
+// 为什么必须单独有这一条：上面 TestPruneLogFilesByAgeDeletesOnlyExpiredArchives
+// 直接调 pruneLogFilesByAge，它只能证明「这个函数能删超龄文件」，
+// 证明不了「setupLoggerWithRetention 会调它」。实测把 setup 里那次调用删掉，
+// 直接调函数的用例照样全绿 —— 那就是假钉子。
+//
+// 用 archive/ 下的批量包做探针而不是日志目录下的 .txt.gz：
+// setupLoggerWithRetention 会先调 archiveExistingLogs 把日志目录下的
+// 受管文件打包搬进 archive/，放在日志目录的前置文件会被提前搬走。
+// archive/ 里已经存在的 .zip 不会被 archiveExistingLogs 碰，是干净的探针。
+func TestStartupRetentionPrunesExpiredBatchArchives(t *testing.T) {
+	dir := t.TempDir()
+	archiveDir := filepath.Join(dir, "archive")
+	if err := os.MkdirAll(archiveDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	expired := filepath.Join(archiveDir, "20250101_000000.zip")
+	fresh := filepath.Join(archiveDir, "20260102_000000.zip")
+	now := time.Now()
+	for _, item := range []struct {
+		path string
+		when time.Time
+	}{
+		{expired, now.Add(-40 * 24 * time.Hour)},
+		{fresh, now.Add(-1 * 24 * time.Hour)},
+	} {
+		if err := os.WriteFile(item.path, []byte("archive-body"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(item.path, item.when, item.when); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 保留 7 天；总量上限给足，确保「删掉的只可能是按年龄那条路径删的」。
+	if err := setupLoggerWithRetention(dir, 1024*1024, 64*1024*1024, 7); err != nil {
+		t.Fatalf("setup logger with retention: %v", err)
+	}
+	t.Cleanup(func() { _ = closeLogger() })
+
+	if _, err := os.Stat(expired); !os.IsNotExist(err) {
+		t.Fatalf("startup retention must delete the 40-day-old batch archive, err=%v", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("startup retention must keep the 1-day-old batch archive: %v", err)
+	}
+}
+
+// 白名单之外的旧文件不许被按年龄清理碰到。//
+// Tiku-ai-payload 已停止管理（2026-11-11 三档并两档），历史遗留文件需要
+// 人工处置。按年龄清理如果放宽成「目录下所有文件」，会把这些悄悄删掉。
+func TestPruneLogFilesByAgeIgnoresUnmanagedFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "archive"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	unmanaged := []string{
+		filepath.Join(dir, "Tiku-ai-payload01.txt.gz"),
+		filepath.Join(dir, "notes.txt"),
+		filepath.Join(dir, "archive", "handwritten.zip"),
+	}
+	ancient := time.Now().Add(-365 * 24 * time.Hour)
+	for _, path := range unmanaged {
+		if err := os.WriteFile(path, []byte("unmanaged"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, ancient, ancient); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := pruneLogFilesByAge(dir, 1); err != nil {
+		t.Fatalf("prune by age: %v", err)
+	}
+	for _, path := range unmanaged {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("unmanaged file must not be pruned by age: %s err=%v", filepath.Base(path), err)
+		}
+	}
+}

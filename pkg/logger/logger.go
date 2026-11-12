@@ -62,6 +62,14 @@ func thinkingFileLimit(maxBytes int64) int64 {
 
 var LogDir = flag.String("log-dir", "logs", "specify the log directory")
 
+// DefaultMaxLogAgeDays 是日志归档的默认保留天数（0 = 不按年龄清理）。
+//
+// 为什么默认 0（关闭）而不是给一个「看起来合理」的 30 天：
+// 总量上限（DefaultMaxTotalLogBytes）已经是主策略，年龄清理只是**追加**的
+// 第二道闸。默认打开会改变既有部署的可见行为（升级即开始删历史归档），
+// 而删日志是不可逆的。要按年龄清理必须显式配置。
+const DefaultMaxLogAgeDays = 0
+
 var (
 	stateMu                sync.Mutex
 	active                 *loggerState
@@ -92,6 +100,12 @@ type loggerState struct {
 	closed        bool
 	logDir        string
 	maxTotalBytes int64
+	// maxLogAgeDays 是归档的保留天数（0 = 关闭按年龄清理）。
+	//
+	// 与 maxTotalBytes 是**两条独立策略**，不是替代关系：
+	// 总量上限保证磁盘不被撑爆，年龄上限保证「三个月前的日志不再占位」。
+	// 两者都必须扫同样两份白名单（见 pruneLogFilesByAge）。
+	maxLogAgeDays int
 }
 
 type outputWriter struct {
@@ -108,6 +122,15 @@ func setupLogger(dir string, maxBytes int64) error {
 }
 
 func setupLoggerWithLimits(dir string, maxBytes int64, maxTotalBytes int64) error {
+	return setupLoggerWithRetention(dir, maxBytes, maxTotalBytes, DefaultMaxLogAgeDays)
+}
+
+// setupLoggerWithRetention 是 setupLoggerWithLimits 的完整形态，额外接受保留天数。
+//
+// 拆成两个函数而不是给 setupLoggerWithLimits 加第四个参数：
+// 那条签名有 20 多处调用方（含大量既有测试），加参数等于全量改签名；
+// 而按年龄清理是**新增**能力，只有需要它的调用方走这条入口。
+func setupLoggerWithRetention(dir string, maxBytes int64, maxTotalBytes int64, maxLogAgeDays int) error {
 	if strings.TrimSpace(dir) == "" {
 		return errors.New("log directory must not be empty")
 	}
@@ -116,6 +139,9 @@ func setupLoggerWithLimits(dir string, maxBytes int64, maxTotalBytes int64) erro
 	}
 	if maxTotalBytes < 0 {
 		return errors.New("total log size limit must not be negative")
+	}
+	if maxLogAgeDays < 0 {
+		return errors.New("log retention days must not be negative")
 	}
 	stateMu.Lock()
 	defer stateMu.Unlock()
@@ -131,7 +157,7 @@ func setupLoggerWithLimits(dir string, maxBytes int64, maxTotalBytes int64) erro
 	if err := archiveExistingLogs(dir); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "归档旧日志失败 directory=%s error=%v\n", dir, err)
 	}
-	s := &loggerState{stdout: gin.DefaultWriter, stderr: gin.DefaultErrorWriter, standard: log.Writer(), standardFlags: log.Flags(), logDir: dir, maxTotalBytes: maxTotalBytes}
+	s := &loggerState{stdout: gin.DefaultWriter, stderr: gin.DefaultErrorWriter, standard: log.Writer(), standardFlags: log.Flags(), logDir: dir, maxTotalBytes: maxTotalBytes, maxLogAgeDays: maxLogAgeDays}
 	for index, name := range []string{"Tiku", "Tiku-warning", "Tiku-error"} {
 		file, err := openRotatingFile(dir, name, maxBytes)
 		if err != nil {
@@ -167,6 +193,15 @@ func setupLoggerWithLimits(dir string, maxBytes int64, maxTotalBytes int64) erro
 		return fmt.Errorf("open Tiku-review-rebate log: %w", err)
 	}
 	s.reviewRebate = reviewRebateFile
+	// 顺序固定：先按年龄删超龄归档，再按总量删最旧。
+	//
+	// 反过来也能收敛（总量那次会把年龄该删的也删掉一部分），但**日志无法区分
+	// 是谁删的**：排查「某个归档为什么不见了」时，先年龄后总量能让
+	// 「超龄」这个明确原因优先命中。而且年龄是硬条件、总量是软条件，
+	// 硬条件先执行更符合直觉。
+	if err := pruneLogFilesByAge(dir, maxLogAgeDays); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "清理超龄日志失败 directory=%s error=%v\n", dir, err)
+	}
 	if err := pruneLogFiles(dir, maxTotalBytes); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "清理超限日志失败 directory=%s error=%v\n", dir, err)
 	}
@@ -193,7 +228,33 @@ func SetMaxTotalLogBytes(maxTotalBytes int64) error {
 	active.mu.Lock()
 	defer active.mu.Unlock()
 	active.maxTotalBytes = maxTotalBytes
+	if err := pruneLogFilesByAge(active.logDir, active.maxLogAgeDays); err != nil {
+		return err
+	}
 	if err := pruneLogFiles(active.logDir, maxTotalBytes); err != nil {
+		return err
+	}
+	return nil
+}
+
+// SetMaxLogAgeDays 应用保留天数设置，不重启进程。
+//
+// 传 0 表示关闭按年龄清理（不删任何归档）。负数是无效输入。
+// 与 SetMaxTotalLogBytes 同构：都是「设置变了立刻生效」，
+// 因为管理员在系统设置页点保存时不会重启进程。
+func SetMaxLogAgeDays(maxLogAgeDays int) error {
+	if maxLogAgeDays < 0 {
+		return errors.New("log retention days must not be negative")
+	}
+	stateMu.Lock()
+	defer stateMu.Unlock()
+	if active == nil {
+		return errors.New("logger is not initialized")
+	}
+	active.mu.Lock()
+	defer active.mu.Unlock()
+	active.maxLogAgeDays = maxLogAgeDays
+	if err := pruneLogFilesByAge(active.logDir, maxLogAgeDays); err != nil {
 		return err
 	}
 	return nil
@@ -615,6 +676,87 @@ func pruneLogFiles(dir string, maxTotalBytes int64) error {
 			total -= info.Size()
 		}
 		if err := os.Remove(oldest.path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+// pruneLogFilesByAge 删除**超龄**的归档文件，与总量上限无关。
+//
+// maxLogAgeDays <= 0 时直接返回：0 是「关闭」而不是「全部删光」。
+// 这个取值约定必须与 DefaultMaxLogAgeDays 一致 —— 把 0 当成「零天保留」
+// 会让一次误配清空全部历史日志，且不可恢复。
+//
+// # 必须同时遍历两个白名单
+//
+// 本仓有两处不同位置的归档，两处都要扫（漏一处就是「删不干净」）：
+//
+//	① 日志目录下的轮转归档 —— isManagedLogArchive，如 Tiku01.txt.gz
+//	② 归档子目录里的批量包 —— isManagedLogBatchArchive（logBatchArchivePattern），
+//	   即 archive/20260101_000000.zip
+//
+// 这两处是**不同的命名规则、不同的目录、不同的判定函数**，只扫其中一个
+// 会出现「按年龄删完之后磁盘还在涨」，而且在总量上限宽松的部署里完全看不出来。
+//
+// 反过来也不能放宽成「扫目录下所有文件」：archive/ 之外的用户自建文件、
+// 以及历史上已停止管理的 Tiku-ai-payload*.txt 都不能被这里误删 ——
+// 后者需要人工处置，让清理逻辑碰它就是把「已废弃但仍可能有价值」的数据删掉。
+//
+// 判据用 ModTime 而不是文件名里的时间戳：批量包名里有时间戳，轮转归档名里
+// 只有序号（Tiku01.txt.gz），两套格式无法统一解析。ModTime 是两者共有的、
+// 且与「这个文件多久没更新」语义一致的口径。
+func pruneLogFilesByAge(dir string, maxLogAgeDays int) error {
+	if maxLogAgeDays <= 0 {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	// 毫秒级截断：文件时间精度与 time.Duration 的纳秒精度不一致，
+	// 直接用 cutoff 比较会让「恰好等于 N 天」的文件在边界上抖动。
+	expiredBefore := time.Now().Add(-time.Duration(maxLogAgeDays) * 24 * time.Hour)
+	var expired []logFileCandidate
+	for _, entry := range entries {
+		if entry.IsDir() || !isManagedLogArchive(entry.Name()) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.ModTime().Before(expiredBefore) {
+			expired = append(expired, logFileCandidate{path: filepath.Join(dir, entry.Name()), modTime: info.ModTime()})
+		}
+	}
+	archiveDir := filepath.Join(dir, "archive")
+	archiveEntries, archiveErr := os.ReadDir(archiveDir)
+	if archiveErr == nil {
+		for _, entry := range archiveEntries {
+			if entry.IsDir() || !isManagedLogBatchArchive(entry.Name()) {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if info.ModTime().Before(expiredBefore) {
+				expired = append(expired, logFileCandidate{path: filepath.Join(archiveDir, entry.Name()), modTime: info.ModTime()})
+			}
+		}
+	} else if !os.IsNotExist(archiveErr) {
+		return archiveErr
+	}
+	// 稳定排序只为让「同一批删哪些」在多机/多日志间可复现，不影响正确性。
+	sort.SliceStable(expired, func(i, j int) bool {
+		if expired[i].modTime.Equal(expired[j].modTime) {
+			return expired[i].path < expired[j].path
+		}
+		return expired[i].modTime.Before(expired[j].modTime)
+	})
+	for _, item := range expired {
+		if err := os.Remove(item.path); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}

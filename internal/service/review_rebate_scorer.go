@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -112,6 +113,13 @@ type agentReviewRebateScorer struct {
 	completer ReviewRebateModelCompleter
 	// model 仅用于日志与 rationale 溯源，不参与判定。
 	model string
+	// traceMu 保护 lastTrace。
+	//
+	// 单个 scorer 实例可能被多次 Score 调用复用（controller 每次请求新建，
+	// 但测试与自定义注入方会复用）。这里只保存**最近一次**打分的过程信息，
+	// 供 ScoreReviewRebateClaimWithDB 在写库后补写 ok 路径 trace。
+	traceMu   sync.Mutex
+	lastTrace reviewRebateTraceContext
 }
 
 // NewReviewRebateScorerWithDB 按当前配置选择打分器实现。
@@ -180,15 +188,25 @@ func (s *agentReviewRebateScorer) Score(claim entity.ReviewRebateClaim) (ReviewR
 	// attempt 在本次打分开始时定一次：同一条记录里的 4 个分支写的是同一个序号，
 	// 重跑一次才 +1（见 reviewRebateTraceRecord.Attempt）。
 	attempt := nextReviewRebateScoreAttempt(claim)
+	// startedAt 在打分一开始就固定：4 条 trace 分支共用同一个发生时刻，
+	// 于是「同一次打分的四条互斥结果」在日志里ts 完全相同，按 ts 分组
+	// 就能还原一次打分。
+	startedAt := time.Now()
 	image, err := loadReviewRebateScreenshot(claim.ScreenshotPath)
 	if err != nil {
 		// 截图读不出来就**不打分**：没有依据的分数会诱使运营直接批准。
 		//
 		// 这条也要记 trace（task_doc/73 §3.2.3）：运营看到「这条没分数」时，
 		// 唯一能回答「为什么」的地方就是这份日志。
+		//
+		// MatchedRuleID / AwardAmount 传 claim 上的**当前快照**：
+		// 这条分支没有走到算规则那一步，所以它们如实反映「上一次打分留下的值」
+		// （首次打分时就是 0）。配着 outcome=no_screenshot 读语义才不歧义。
 		traceReviewRebateScoring(reviewRebateTraceRecord{
 			Claim: claim, Scorer: ReviewRebateScorerKindAgent, Model: s.model,
 			Attempt: attempt, SystemPrompt: ReviewRebateAgentSystemPrompt,
+			StartedAt:     startedAt,
+			MatchedRuleID: claim.MatchedRuleID, AwardAmount: claim.AwardAmount,
 			Outcome: "no_screenshot", Error: err.Error(),
 		})
 		return ReviewRebateScore{}, err
@@ -205,7 +223,9 @@ func (s *agentReviewRebateScorer) Score(claim entity.ReviewRebateClaim) (ReviewR
 		traceReviewRebateScoring(reviewRebateTraceRecord{
 			Claim: claim, Scorer: ReviewRebateScorerKindAgent, Model: s.model,
 			Attempt: attempt, SystemPrompt: ReviewRebateAgentSystemPrompt,
+			StartedAt:  startedAt,
 			DurationMs: durationMs, UserPrompt: userPrompt,
+			MatchedRuleID: claim.MatchedRuleID, AwardAmount: claim.AwardAmount,
 			Outcome: "error", Error: err.Error(),
 		})
 		if errors.Is(err, ErrReviewRebateScoringFailed) {
@@ -224,19 +244,68 @@ func (s *agentReviewRebateScorer) Score(claim entity.ReviewRebateClaim) (ReviewR
 		traceReviewRebateScoring(reviewRebateTraceRecord{
 			Claim: claim, Scorer: ReviewRebateScorerKindAgent, Model: s.model,
 			Attempt: attempt, SystemPrompt: ReviewRebateAgentSystemPrompt,
+			StartedAt:  startedAt,
 			DurationMs: durationMs, UserPrompt: userPrompt,
+			MatchedRuleID: claim.MatchedRuleID, AwardAmount: claim.AwardAmount,
 			RawResponse: raw, Outcome: "parse_error", Error: err.Error(),
 		})
 		return ReviewRebateScore{}, err
 	}
 	score.Scorer = ReviewRebateScorerKindAgent
+	// 把本次打分的过程信息暂存，供 ScoreReviewRebateClaimWithDB 在
+	// 算完规则、写库之后补写 ok 路径的 trace（那里才有真实的
+	// matchedRuleId / awardAmount）。
+	//
+	// 为什么不在这一层直接写 trace：见下面 finalizeReviewRebateScoringTrace 的注释。
+	s.traceMu.Lock()
+	s.lastTrace = reviewRebateTraceContext{
+		Model:        s.model,
+		Attempt:      attempt,
+		SystemPrompt: ReviewRebateAgentSystemPrompt,
+		UserPrompt:   userPrompt,
+		RawResponse:  raw,
+		DurationMs:   durationMs,
+		StartedAt:    startedAt,
+	}
+	s.traceMu.Unlock()
+	return score, nil
+}
+
+// reviewRebateTraceFor 取回最近一次打分的过程信息（供写库后补写 ok 路径 trace）。
+//
+// 返回 false 表示「本次没有可写的过程信息」：要么还没打过分，
+// 要么打得是 error/parse_error/no_screenshot 分支（那些分支已经各自写过 trace）。
+func (s *agentReviewRebateScorer) reviewRebateTraceFor() (reviewRebateTraceContext, bool) {
+	s.traceMu.Lock()
+	defer s.traceMu.Unlock()
+	if s.lastTrace.StartedAt.IsZero() {
+		return reviewRebateTraceContext{}, false
+	}
+	// 取走即清空：同一次打分只该补写一条 ok trace，
+	// 重复的 ScoreReviewRebateClaimWithDB 调用不能让上一条的上下文复活。
+	ctx := s.lastTrace
+	s.lastTrace = reviewRebateTraceContext{}
+	return ctx, true
+}
+
+// finalizeReviewRebateScoringTrace 在打分结果**落库之后**写成功路径的 trace。
+//
+// 为什么必须延后到事务提交后：matchedRuleId / awardAmount 是
+// ScoreReviewRebateClaimWithDB 事务内算出来的（选规则 + 算候选金额），
+// 打分器本身不参与那段计算。要让 payload 里这两个字段是**本次**的真实值，
+// 只能在写库之后从落库结果里取。
+//
+// scored 必须是事务内回读的那一行（不是入参 claim 的旧快照）——
+// 旧快照里的这两个字段是上一次打分留下的，写进日志就是假数据。
+func finalizeReviewRebateScoringTrace(ctx reviewRebateTraceContext, scored entity.ReviewRebateClaim, score ReviewRebateScore) {
 	traceReviewRebateScoring(reviewRebateTraceRecord{
-		Claim: claim, Scorer: ReviewRebateScorerKindAgent, Model: s.model,
-		Attempt: attempt, SystemPrompt: ReviewRebateAgentSystemPrompt,
-		DurationMs: durationMs, UserPrompt: userPrompt, RawResponse: raw,
+		Claim: scored, Scorer: score.Scorer, Model: ctx.Model,
+		Attempt: ctx.Attempt, SystemPrompt: ctx.SystemPrompt,
+		StartedAt:  ctx.StartedAt,
+		DurationMs: ctx.DurationMs, UserPrompt: ctx.UserPrompt, RawResponse: ctx.RawResponse,
+		MatchedRuleID: scored.MatchedRuleID, AwardAmount: scored.AwardAmount,
 		Parsed: &score, Outcome: "ok",
 	})
-	return score, nil
 }
 
 // buildReviewRebateAgentUserPrompt 组装用户消息（活动配置 + 用户自填信息）。

@@ -638,6 +638,19 @@ func ScoreReviewRebateClaimWithDB(db *gorm.DB, id int32, scorer ReviewRebateScor
 	if txErr != nil {
 		return entity.ReviewRebateClaim{}, txErr
 	}
+	// 成功路径的 trace 在这里写：此刻事务已提交，scored 是回读的落库行，
+	// matchedRuleId / awardAmount 是**本次**算出来的真实值。
+	//
+	// 只有 agent 打分器有过程信息可写（占位打分器不发报告）；
+	// 非 agent 实现（测试注入的假打分器）没有 lastTrace，不写 trace 是对的 ——
+	// 伪造一条「没有提示词、没有耗时」的 ok 记录只会污染日志。
+	if tracer, ok := scorer.(interface {
+		reviewRebateTraceFor() (reviewRebateTraceContext, bool)
+	}); ok {
+		if ctx, has := tracer.reviewRebateTraceFor(); has {
+			finalizeReviewRebateScoringTrace(ctx, scored, score)
+		}
+	}
 	return scored, nil
 }
 
