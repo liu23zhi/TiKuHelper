@@ -1,0 +1,58 @@
+# 换行归一与二进制保护
+#
+# 本机全局 core.autocrlf=true（C:/Program Files/Git/etc/gitconfig）。没有本文件时：
+# 索引里是 LF，检出到工作树却被转成 CRLF（实测 paymentIconContract.json 97858 B → 98290 B，
+# 432 个 LF 全变 CRLF）。因此任何「按字节断言」的测试都会 Windows 红、Linux 绿。
+# 这里在仓库内解决，不动全局配置。
+#
+# 权威依据：task_doc/94-第10轮-待办真伪核查与执行清单.md E5（V4 质量债）。
+
+# ── 默认：文本一律 LF ────────────────────────────────────────────────────
+# text=auto 让 git 自行判定文本/二进制；eol=lf 保证任何平台的**工作树**都是 LF，
+# 于是源码字节跨平台一致，字节哈希断言不再依赖开发机的 git 配置。
+* text=auto eol=lf
+
+# ── 字节即契约：完全禁止转换 ────────────────────────────────────────────
+# web/src/utils/paymentIconContract.json 的 sha256 被
+# web/tests/components/PaymentAndStylesAnt4.test.cjs:12 硬断言为
+#   508d6a5a62939ddc94734c0ad3bc2588b854577e3313f62a1912065d2c9a2e0b
+# 该值是 LF 形态的哈希。归入上一行 text=auto eol=lf 虽然也会得到 LF，但
+# -text 更硬：明确声明「这不是文本」，git 提交与检出都不做任何归一，
+# 索引 blob 与工作树字节恒等。这样结论不依赖 core.autocrlf / core.eol 的取值。
+web/src/utils/paymentIconContract.json -text
+# -diff 只是副产品：这文件不适合按行 diff（一整行长数组），但 diff 规则与
+# 换行转换无关，所以单独一行写清楚，避免以后有人以为 -diff 顺带管了换行。
+web/src/utils/paymentIconContract.json -diff
+
+# ── 二进制：显式 binary（等价 -text -diff）──────────────────────────────
+# 分类依据是**实测**，不是照抄模板。
+# `git ls-files` 全仓 1140 个文件，逐文件读前 8KB 扫 NUL 字节，真二进制仅 2 个：
+#   test/test.docx  312584 B
+#   test/test.pdf   731881 B
+# 下面把这两个的扩展名标 binary，并把常见的同类家族一并声明 ——
+# 它们当前 0 命中，但一旦有人提交，git 不得尝试换行转换或做文本 diff
+# （否则文件损坏、diff 无意义）。这是「防未来」而非「修现在」。
+
+*.docx   binary
+*.pdf    binary
+
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.ico    binary
+*.webp   binary
+
+*.exe    binary
+*.dll    binary
+*.zip    binary
+*.7z     binary
+*.gz     binary
+
+*.db      binary
+*.sqlite  binary
+*.sqlite3 binary
+
+*.woff   binary
+*.woff2  binary
+*.ttf    binary
