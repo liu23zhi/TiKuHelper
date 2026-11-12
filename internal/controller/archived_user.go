@@ -291,8 +291,11 @@ func loadArchivedUserBindings(db *gorm.DB, userID int32) ([]archivedUserBindingV
 		return views, nil
 	}
 	var rows []entity.UserBindingRecord
+	// 保留区回看也要排除作废行（需求 7 / 70 §3.7.1）：
+	// 作废的语义是「这条记录不该算数」，回看视图若还展示它，
+	// 管理员会以为该值仍属于这个账号，与判定结果相反。
 	if err := db.Session(&gorm.Session{NewDB: true}).
-		Where("user_id = ?", userID).Order("id desc").Find(&rows).Error; err != nil {
+		Where("user_id = ? AND state != 'voided'", userID).Order("id desc").Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	for _, row := range rows {

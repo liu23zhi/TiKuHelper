@@ -227,6 +227,21 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.PUT("/user/:id/reset-password", controller.Auth, controller.ResetUserPassword) // 重置密码
 	apiRouter.DELETE("/user/:id", controller.Auth, controller.DeleteUser)                    // 删除用户（归档，task_doc/76 §3.2）
 
+	// 绑定历史（task_doc/70 §3.6 / §3.7）。管理员专属，四条全部 Auth + RequireAdmin。
+	//
+	// 三个「读」入口是需求 5a/6 的分工：
+	//   - /admin/users/:id/bindings 单用户弹窗（用户管理操作列「查看」）；
+	//   - /admin/bindings?kind= 侧边栏两个页面共用的列表（70 §3.6 明确不写两份）；
+	//   - kind 只允许 wechat / phone，服务层做白名单校验，不接受任意字符串。
+	//
+	// 两个「写」入口是需求 7：作废（state='voided'）与手工补录。
+	// ⚠️ 作废会同时把 active_key 置 NULL —— 只改 state 会让该行继续占唯一索引，
+	// 表现为「别人再绑同值时报唯一约束冲突」，而报错文案与手机号毫无字面关系。
+	apiRouter.GET("/admin/users/:id/bindings", controller.Auth, middleware.RequireAdmin, controller.GetAdminUserBindings)
+	apiRouter.GET("/admin/bindings", controller.Auth, middleware.RequireAdmin, controller.ListAdminBindings)
+	apiRouter.POST("/admin/bindings", controller.Auth, middleware.RequireAdmin, controller.CreateAdminBindingHistory)
+	apiRouter.POST("/admin/bindings/:id/void", controller.Auth, middleware.RequireAdmin, controller.VoidAdminBinding)
+
 	// 注销申请（task_doc/76 §3.3.5）。三条都是**用户本人**接口，Auth 即可：
 	// 目标账号一律取「当前登录用户」，不接受前端传 userID（否则可替别人申请注销）。
 	// 申请/撤销是写操作，handler 内复用登录失败计数做限流（防反复试探密码）。

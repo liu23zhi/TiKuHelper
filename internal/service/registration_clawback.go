@@ -443,7 +443,18 @@ func ClawbackTriggerBindingForRebindWithDB(db *gorm.DB, kind, value string) (*en
 	if !GetRegistrationBonusClawbackEnabledWithDB(db) {
 		return nil, nil
 	}
-	return FindReleasedBindingByValueWithDB(db, kind, value)
+	trigger, err := FindReleasedBindingByValueWithDB(db, kind, value)
+	if err != nil || trigger == nil {
+		return nil, err
+	}
+	// 显式再挡一次作废行（需求 7 / task_doc/70 §3.7.1）：
+	// 追缴的依据必须是「真实发生过的释放」。虽然 FindReleasedBindingByValueWithDB
+	// 已带 `state != 'voided'`，但这里是**钱**的入口，多一道判断的成本是一次字符串比较 ——
+	// 一旦上面的查询将来被人改成「不限 state」，这条守卫仍然成立。
+	if trigger.State == entity.BindingStateVoided {
+		return nil, nil
+	}
+	return trigger, nil
 }
 
 // BindingRecordTimestamp 是「绑定写入时间」的统一取法：优先用 users 上的 bound_at，

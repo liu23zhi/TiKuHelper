@@ -127,8 +127,10 @@ func ReleaseAllBindingsForArchiveInTx(tx *gorm.DB, userID int32, archivedReason 
 	}
 
 	var rows []entity.UserBindingRecord
+	// `state != 'voided'` 显式写出（需求 7）：归档只释放 active 行，
+	// 但作废行的隔离必须是可 grep 的约定，不能靠「另一个条件刚好排除了它」。
 	if err := tx.Session(&gorm.Session{NewDB: true}).
-		Where("user_id = ? AND state = ?", userID, entity.BindingStateActive).
+		Where("user_id = ? AND state = ? AND state != 'voided'", userID, entity.BindingStateActive).
 		Order("id asc").Find(&rows).Error; err != nil {
 		return fmt.Errorf("读取活跃绑定失败: %w", err)
 	}

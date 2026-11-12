@@ -47,7 +47,17 @@ type UserBindingRecord struct {
 	Value string `gorm:"column:value;type:varchar(191);not null" json:"value"`
 	// ValueHash = sha256(Value)，判定查询只走哈希，不必比对明文。
 	ValueHash string `gorm:"column:value_hash;type:char(64);not null;index:idx_binding_lookup,priority:2" json:"valueHash"`
-	// State 只有 active / released。
+	// State 有四个取值：active / released / voided。
+	//
+	//	'active'   —— 当前生效的绑定（唯一索引只约束这一态）
+	//	'released' —— 正常释放（换绑/注销/管理员释放），**仍参与判定**
+	//	'voided'   —— 管理员作废（需求 7，task_doc/70 §3.7.1 方案 A），**不参与任何判定**
+	//
+	// ⚠️ 'voided' 与 'released' 的区别不是措辞：released 行是 19 号文档四个开关
+	// （history_* / current_*）与 44 号追缴的判定依据；voided 行是「管理员认为这条
+	// 记录不该算数」，因此**所有判定查询都必须排除它**（service/user_binding_record.go
+	// 里 4 处 `state != 'voided'`）。漏掉一处就会把作废记录当成有效绑定，
+	// 后果是「删了一条历史，判定上却还在」，且不报错。
 	State string `gorm:"column:state;type:varchar(16);not null;default:'active';index:idx_binding_lookup,priority:3" json:"state"`
 	// ActiveKey 只在 state='active' 时等于 ValueHash，released 时为 NULL。
 	//
@@ -70,9 +80,17 @@ type UserBindingRecord struct {
 	// account_close / admin_delete。见类型注释。
 	ReleaseSource string `gorm:"column:release_source;type:varchar(32);not null;default:''" json:"releaseSource"`
 	// OperatorUserID 是触发本次变更的管理员（自助操作为 0）。
-	OperatorUserID int32     `gorm:"column:operator_user_id;type:int(11);not null;default:0" json:"operatorUserId"`
-	CreatedAt      time.Time `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
-	UpdatedAt      time.Time `gorm:"column:updated_at;autoUpdateTime" json:"updatedAt"`
+	OperatorUserID int32 `gorm:"column:operator_user_id;type:int(11);not null;default:0" json:"operatorUserId"`
+	// 以下三列只在 state='voided' 时有值（需求 7 作废留痕，task_doc/70 §3.7.1）。
+	//
+	// 为什么不做物理删除：这张表是二次注册判定与追缴的数据源，
+	// 删一行等于静默改变判定结果，且事后无从追查（70 §3.7 两条直接后果）。
+	// 作废保留「谁在什么时候、以什么理由作废」，判定查询统一排除它。
+	VoidReason     string     `gorm:"column:void_reason;type:varchar(255)" json:"voidReason"`
+	VoidedByUserID int32      `gorm:"column:voided_by_user_id;type:int(11);not null;default:0" json:"voidedByUserId"`
+	VoidedAt       *time.Time `gorm:"column:voided_at" json:"voidedAt"`
+	CreatedAt      time.Time  `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
+	UpdatedAt      time.Time  `gorm:"column:updated_at;autoUpdateTime" json:"updatedAt"`
 }
 
 func (*UserBindingRecord) TableName() string {
@@ -89,6 +107,11 @@ const (
 const (
 	BindingStateActive   = "active"
 	BindingStateReleased = "released"
+	// BindingStateVoided 是管理员作废（需求 7）。
+	//
+	// 与 released 一样**不占** (kind, active_key) 唯一索引（必须同时置 active_key=NULL），
+	// 但 released 参与二次注册判定、voided **不参与** —— 见 State 字段注释。
+	BindingStateVoided = "voided"
 )
 
 // ReleaseReason 的判定二分类取值（44-*.md §1.2 / §5.1）。
@@ -108,6 +131,12 @@ const (
 	BindingReleaseSourceForceReassign = "force_reassign"
 	BindingReleaseSourceAccountClose  = "account_close"
 	BindingReleaseSourceAdminDelete   = "admin_delete"
+	// BindingReleaseSourceManualBackfill 是管理员手工补录历史时的操作来源（需求 7）。
+	//
+	// 与 BindingSourceAdminManualBackfill 分开命名，是因为这里的语义是
+	// 「释放是怎么发生的」而不是「这条记录是怎么来的」—— 补录的行没有真实释放动作，
+	// 记成这个值等于声明「这是人工补录，不是系统换绑」。
+	BindingReleaseSourceManualBackfill = "admin_manual_backfill"
 )
 
 // 绑定写入来源取值。
@@ -119,4 +148,9 @@ const (
 	BindingSourceAdminForceReassign = "admin_force_reassign"
 	BindingSourceAccountClose       = "account_close"
 	BindingSourceAdminDelete        = "admin_delete"
+	// BindingSourceAdminManualBackfill 是管理员手工补录的历史行（需求 7，70 §3.7.2）。
+	//
+	// 必须与真实换绑产生的行**可区分**：手输的值可能并不属于该账号，
+	// 事后统计「人工补录」与「真实历史」要能分开（70 §3.7.2 建议）。
+	BindingSourceAdminManualBackfill = "admin_manual_backfill"
 )

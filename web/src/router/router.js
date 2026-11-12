@@ -27,6 +27,8 @@ const BillingRecordList = () => import(/* webpackChunkName: "route-billing-recor
 const RechargeOrderList = () => import(/* webpackChunkName: "route-recharge-order-list" */ '../pages/RechargeOrderList/index.vue')
 const RechargeResult = () => import(/* webpackChunkName: "route-recharge-result" */ '../pages/RechargeResult/index.vue')
 const LocationCache = () => import(/* webpackChunkName: "route-location-cache" */ '../pages/LocationCache/index.vue')
+// 微信 / 手机号绑定历史共用一个 chunk：两页是同一组件，拆成两个 chunk 只会重复打一份。
+const BindingHistory = () => import(/* webpackChunkName: "route-binding-history" */ '../pages/BindingHistory/index.vue')
 const ExtensionUpdates = () => import(/* webpackChunkName: "route-extension-updates" */ '../pages/ExtensionUpdates/index.vue')
 const Tickets = () => import(/* webpackChunkName: "route-tickets" */ '../pages/Tickets/index.vue')
 const OCRCache = () => import(/* webpackChunkName: "route-o-c-r-cache" */ '../pages/OCRCache/index.vue')
@@ -203,6 +205,21 @@ const routes = [
         component: LocationCache,
         meta: { locationKind: 'phone' },
       },
+      // 绑定历史（task_doc/70 §3.6）：微信 / 手机号两页**共用同一个组件**，
+      // 只用 meta.bindingKind 区分。写成两个 component 会出现两套文案与两处
+      // 待修的重复逻辑 —— 这是 70 号文档点名要避免的。
+      {
+        path: 'wechat-bindings',
+        name: 'wechat-bindings',
+        component: BindingHistory,
+        meta: { bindingKind: 'wechat' },
+      },
+      {
+        path: 'phone-bindings',
+        name: 'phone-bindings',
+        component: BindingHistory,
+        meta: { bindingKind: 'phone' },
+      },
       {
         // 等级与充值阶梯（94-*.md §2 C1/C2）。管理员专属：等级门槛决定谁能拿到
         // 什么设备上限（C3 会读 user_levels.device_limit），不对普通用户开放。
@@ -242,6 +259,9 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   'ip-location-cache',
   'ip-segments',
   'phone-location-cache',
+  // 绑定历史两页（task_doc/70 §3.6）：同一组件的两个入口，两个 name 都要列。
+  'wechat-bindings',
+  'phone-bindings',
   'referral-rebates',
   'review-rebate-admin',
   'blacklist',

@@ -125,6 +125,8 @@
           <span v-else-if="['lastLoginIp', 'registerIp'].includes(column.key)" class="location-value">{{ formatValueWithLocation(record[column.key], ipLocations[normalizeLocationKey(record[column.key])]) || '-' }}</span>
           <a-space v-else-if="column.key === 'operation'" size="small" wrap class="user-operation-actions">
             <a-button type="link" style="padding: 0" @click="openEditModal(record)">编辑</a-button>
+            <!-- 绑定历史（需求 5a / task_doc/70 §3.6）：管理员查某账号的换绑轨迹。 -->
+            <a-button type="link" style="padding: 0" @click="openBindingsModal(record)">查看</a-button>
             <a-button type="link" style="padding: 0" @click="openResetPasswordModal(record)">重置密码</a-button>
             <a-popconfirm
               :key="actionContextKey + ':' + record.id"
@@ -377,6 +379,55 @@
         </a-form-item>
       </a-form>
     </a-modal>
+
+    <!-- ── 绑定历史弹窗（需求 5a） ───────────────────────────────── -->
+    <!-- 只读：增改走去侧边栏的微信/手机号绑定历史页，这里只回答「这个账号换过几次绑」。 -->
+    <a-modal
+      v-if="bindingsVisible"
+      :key="bindingsModalKey"
+      :open="bindingsVisible"
+      :wrap-props="{ 'aria-modal': true }"
+      :title="bindingsTitle"
+      :footer="null"
+      :closable="!bindingsLoading"
+      @cancel="closeBindingsModal"
+    >
+      <section v-if="bindingsFailure" class="page-alert">
+        <RequestFailureAlert
+          :key="bindingsFailureContextKey"
+          :failure="bindingsFailure"
+          message="绑定历史请求未完成，请重试。"
+          :retryable="true"
+          :busy="bindingsLoading"
+          :context-key="bindingsFailureContextKey"
+          :is-current="isCurrentBindingsFailure"
+          @retry="reloadBindings"
+        />
+      </section>
+      <a-spin :spinning="bindingsLoading">
+        <a-table
+          v-if="bindingsActive.length || bindingsHistory.length"
+          :data-source="bindingsRows"
+          :columns="bindingsColumns"
+          :pagination="false"
+          row-key="id"
+          size="small"
+          table-layout="fixed"
+          :scroll="{ x: 640 }"
+        >
+          <template #bodyCell="{ column, record }">
+            <span v-if="column.key === 'kind'">{{ bindingKindLabel(record.kind) }}</span>
+            <span v-else-if="column.key === 'valueMasked'" class="binding-masked-cell">{{ record.valueMasked || '—' }}</span>
+            <a-tag v-else-if="column.key === 'state'" :color="bindingStateColor(record.state)">{{ bindingStateLabel(record.state) }}</a-tag>
+            <span v-else-if="column.key === 'releaseReason'">{{ bindingReleaseReasonLabel(record.releaseReason) }}</span>
+            <span v-else-if="column.key === 'boundAt'" class="user-time-cell">{{ formatDateTime(record.boundAt) }}</span>
+            <span v-else-if="column.key === 'releasedAt'" class="user-time-cell">{{ formatDateTime(record.releasedAt) }}</span>
+            <template v-else>{{ record[column.dataIndex] ?? '—' }}</template>
+          </template>
+        </a-table>
+        <a-empty v-else-if="!bindingsLoading" description="该账号还没有任何绑定记录" />
+      </a-spin>
+    </a-modal>
   </div>
 </template>
 
@@ -395,6 +446,7 @@ import {
   getPhoneLocations,
   getIpLocations,
 } from '@/api/TikuComponentApi';
+import { getAdminUserBindings } from '@/api/UserBindingApi';
 import { buildAdminCreateUserPayload, buildRegisterSourceLabel, buildResetPasswordPayload, buildUserProfileUpdatePayload, buildUserBalanceAdjustmentPayload, formatBillingRecordTime, limitUsernameInput, runAdminPasswordAction } from '@/utils/userPortalHelpers.mjs';
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs';
 import { ensurePhoneBeforeSMSCaptcha, normalizePhonePaste } from '@/utils/captchaHelpers.mjs';
@@ -452,6 +504,39 @@ function hasBalanceReadback(value) {
     : typeof value === 'string' && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value.trim()) && Number.isFinite(Number(value))
 }
 
+// ── 绑定历史弹窗（需求 5a / task_doc/70 §3.6） ──────────────────────
+// 只读：增改走去侧边栏的微信/手机号绑定历史页。这里只回答
+// 「这个账号换过几次绑、每次是换绑还是注销释放」。
+//
+// 纯展示映射放模块级（无状态、可被模板与方法共用）；有状态的 ref 必须放进
+// createUserListState()，否则 setup 的 return 与 methods 都取不到它们。
+const BINDING_KIND_LABELS = { wechat: '微信', phone: '手机号' }
+const BINDING_STATE_LABELS = { active: '生效中', released: '已释放', voided: '已作废' }
+const BINDING_STATE_COLORS = { active: 'green', released: 'blue', voided: 'default' }
+const BINDING_RELEASE_LABELS = { rebind: '换绑释放', closure: '注销释放', admin: '管理员释放' }
+function bindingKindLabel(value) {
+  const key = String(value || '').trim().toLowerCase()
+  return BINDING_KIND_LABELS[key] || value || '—'
+}
+function bindingStateLabel(value) {
+  const key = String(value || '').trim().toLowerCase()
+  return BINDING_STATE_LABELS[key] || value || '-'
+}
+function bindingStateColor(value) {
+  return BINDING_STATE_COLORS[String(value || '').trim().toLowerCase()] || 'default'
+}
+function bindingReleaseReasonLabel(value) {
+  const key = String(value || '').trim().toLowerCase()
+  return BINDING_RELEASE_LABELS[key] || value || '—'
+}
+const bindingsColumns = [
+  { title: '类型', dataIndex: 'kind', key: 'kind', width: 80 },
+  { title: '绑定值（脱敏）', dataIndex: 'valueMasked', key: 'valueMasked', width: 170 },
+  { title: '状态', dataIndex: 'state', key: 'state', width: 90 },
+  { title: '释放原因', dataIndex: 'releaseReason', key: 'releaseReason', width: 105 },
+  { title: '绑定时间', dataIndex: 'boundAt', key: 'boundAt', width: 165 },
+  { title: '释放时间', dataIndex: 'releasedAt', key: 'releasedAt', width: 165 },
+]
 function createUserListState() {
   const usernameError = ref('')
   const usernameInput = ref(null)
@@ -786,6 +871,36 @@ const resetPasswordForm = ref({
   username: '',
   password: '',
 })
+// 绑定历史弹窗的状态（需求 5a）。放在这里而不是模块顶层，
+// 是因为 setup 的 return 与 methods 都通过本函数的返回值取它们。
+const bindingsVisible = ref(false)
+const bindingsModalKey = ref(0)
+const bindingsLoading = ref(false)
+const bindingsRows = ref([])
+const bindingsTarget = ref({})
+const bindingsFailure = shallowRef(null)
+const bindingsFailureContextKey = ref(0)
+let bindingsFailureOwner = () => false
+// 请求票号：弹窗关闭或换用户时让在途响应失效，避免「切了用户但列表是上一个的」。
+let bindingsRequestVersion = 0
+const bindingsActive = computed(() => bindingsRows.value.filter(row => String(row?.state).toLowerCase() === 'active'))
+const bindingsHistory = computed(() => bindingsRows.value.filter(row => String(row?.state).toLowerCase() !== 'active'))
+const bindingsTitle = computed(() => {
+  const name = String(bindingsTarget.value?.username || '').trim()
+  const id = Number(bindingsTarget.value?.id)
+  const who = name && Number.isSafeInteger(id) && id > 0 ? `${name}（#${id}）` : (name || (id > 0 ? `#${id}` : ''))
+  return who ? `${who} 的绑定历史` : '绑定历史'
+})
+const isCurrentBindingsFailure = (source, context) => bindingsFailureOwner() && Boolean(source)
+  && source === bindingsFailure.value && context === bindingsFailureContextKey.value
+// 生效行排前面：管理员打开弹窗第一眼要看的是「现在绑的是什么」。
+watch(bindingsRows, rows => {
+  if (!Array.isArray(rows)) return
+  const rank = row => (String(row?.state).toLowerCase() === 'active' ? 0 : 1)
+  rows.sort((left, right) => rank(left) - rank(right) || (Number(right?.id) || 0) - (Number(left?.id) || 0))
+}, { deep: false })
+
+
 const tabLoading = ref(true)
 const actionContextKey = ref(0)
 // Keep the original transport object: its validated diagnostic ID lives in a WeakMap.
@@ -916,7 +1031,17 @@ function resetWechatResolveState() {
     owner.invalidateWechatFlow()
     resetWechatResolveState()
   }, { flush: 'sync' })
-  return { owner, usernameError, usernameInput, clearUsernameError, showUsernameError, savedEditSnapshot, hasUnsubmittedSavedEdit, clearSavedEditSnapshot, editFailure, editFailureAction, editFailureContextKey, clearEditFailure, retireEditDraft, captureEditDraftOwner, captureCreateDraftOwner, showEditFailure, isCurrentEditFailure, passwordFailure, passwordFailureContextKey, clearPasswordFailure, capturePasswordDraftOwner, showPasswordFailure, isCurrentPasswordFailure, hasUnsubmittedSavedPassword, capturePasswordSnapshot, rememberSavedPasswordSnapshot, clearSavedPasswordSnapshot, balanceFailure, balanceFailureContextKey, balanceFailureMessage, balanceReconciling, balanceReconcileFailure, balanceReconciliation, clearBalanceFailure, retireBalanceDraft, captureBalanceDialogOwner, captureBalanceDraftOwner, showBalanceFailure, isCurrentBalanceFailure, isCurrentBalanceReconcileFailure, actionContextKey, listFailure, listFailureContextKey, clearListFailure, deleteFailure, deleteFailureContextKey, clearDeleteFailure, showDeleteFailure, isCurrentDeleteFailure, clearLocations, clearPrincipalState, dataSource, phoneLocations, ipLocations, formatValueWithLocation, mergeLocations, enrichColumns, filters, keywordInput, pagination, visible, submitLoading, passwordConfirmationPending, balanceVisible, balanceSubmitting, balanceForm, isEditing, resetPasswordVisible, resetPasswordLoading, wechatFailure, wechatFailureContextKey, wechatFailureMessage, clearWechatFailure, captureWechatFailureOwner, showWechatFailure, isCurrentWechatFailure, wechatScanVisible, wechatScanLoading, wechatScanQrCodeImageData, wechatScanLoginToken, wechatScanStatusText, wechatCodeVisible, wechatCode, wechatCodeLoading, systemNewUserBonusAmount, wechatScanTimer, formState, resetPasswordForm, tabLoading, userTableColumnWidths, userTableScrollX, stopWechatScanTimer, resetWechatResolveState }
+  return { owner, usernameError, usernameInput, clearUsernameError, showUsernameError, savedEditSnapshot, hasUnsubmittedSavedEdit, clearSavedEditSnapshot, editFailure, editFailureAction, editFailureContextKey, clearEditFailure, retireEditDraft, captureEditDraftOwner, captureCreateDraftOwner, showEditFailure, isCurrentEditFailure, passwordFailure, passwordFailureContextKey, clearPasswordFailure, capturePasswordDraftOwner, showPasswordFailure, isCurrentPasswordFailure, hasUnsubmittedSavedPassword, capturePasswordSnapshot, rememberSavedPasswordSnapshot, clearSavedPasswordSnapshot, balanceFailure, balanceFailureContextKey, balanceFailureMessage, balanceReconciling, balanceReconcileFailure, balanceReconciliation, clearBalanceFailure, retireBalanceDraft, captureBalanceDialogOwner, captureBalanceDraftOwner, showBalanceFailure, isCurrentBalanceFailure, isCurrentBalanceReconcileFailure, actionContextKey, listFailure, listFailureContextKey, clearListFailure, deleteFailure, deleteFailureContextKey, clearDeleteFailure, showDeleteFailure, isCurrentDeleteFailure, clearLocations, clearPrincipalState, dataSource, phoneLocations, ipLocations, formatValueWithLocation, mergeLocations, enrichColumns, filters, keywordInput, pagination, visible, submitLoading, passwordConfirmationPending, balanceVisible, balanceSubmitting, balanceForm, isEditing, resetPasswordVisible, resetPasswordLoading, wechatFailure, wechatFailureContextKey, wechatFailureMessage, clearWechatFailure, captureWechatFailureOwner, showWechatFailure, isCurrentWechatFailure, wechatScanVisible, wechatScanLoading, wechatScanQrCodeImageData, wechatScanLoginToken, wechatScanStatusText, wechatCodeVisible, wechatCode, wechatCodeLoading, systemNewUserBonusAmount, wechatScanTimer, formState, resetPasswordForm, tabLoading, userTableColumnWidths, userTableScrollX, stopWechatScanTimer, resetWechatResolveState,
+    // 绑定历史弹窗（需求 5a）：状态挂在同一个 context 上，方法才能通过
+    // this.userListContext 取到 ref；放在模块顶层的作用域对 methods 不可见。
+    bindingsVisible, bindingsModalKey, bindingsLoading, bindingsRows, bindingsTarget,
+    bindingsActive, bindingsHistory, bindingsTitle,
+    bindingsFailure, bindingsFailureContextKey, isCurrentBindingsFailure,
+    captureBindingsOwner: () => { const ticket = ++bindingsRequestVersion; return () => bindingsVisible.value && ticket === bindingsRequestVersion },
+    bindingsFailureOwnerRef: { set: fn => { bindingsFailureOwner = fn }, get: () => bindingsFailureOwner },
+    clearBindingsFailure: () => { bindingsFailure.value = null; bindingsFailureOwner = () => false; bindingsFailureContextKey.value += 1 },
+    invalidateBindings: () => { bindingsRequestVersion += 1 },
+  }
 }
 
 export default defineComponent({
@@ -1231,6 +1356,24 @@ export default defineComponent({
       resetPasswordForm,
       visible,
       resetPasswordVisible,
+      // 绑定历史弹窗（需求 5a）：只读，数据来自 /admin/users/:id/bindings。
+      // 状态来自 userListContext（与 resetPasswordVisible 同一处），因此这里
+      // 解构出来再下发；方法里一律走 this.userListContext。xxx，不用这些本地名。
+      bindingsVisible: userListContext.bindingsVisible,
+      bindingsModalKey: userListContext.bindingsModalKey,
+      bindingsLoading: userListContext.bindingsLoading,
+      bindingsRows: userListContext.bindingsRows,
+      bindingsTitle: userListContext.bindingsTitle,
+      bindingsActive: userListContext.bindingsActive,
+      bindingsHistory: userListContext.bindingsHistory,
+      bindingsColumns,
+      bindingsFailure: userListContext.bindingsFailure,
+      bindingsFailureContextKey: userListContext.bindingsFailureContextKey,
+      isCurrentBindingsFailure: userListContext.isCurrentBindingsFailure,
+      bindingKindLabel,
+      bindingStateLabel,
+      bindingStateColor,
+      bindingReleaseReasonLabel,
       dataSource,
       // 归属地展示：映射 + 取值/格式化函数（模板按行取值，不改写行对象）。
       phoneLocations,
@@ -1576,6 +1719,59 @@ export default defineComponent({
         password: '',
       }
       this.userListContext.resetPasswordVisible.value = true
+    },
+    // ── 绑定历史弹窗（需求 5a） ────────────────────────────────
+    // 只读；数据来自 GET /admin/users/:id/bindings（管理员 + 脱敏）。
+    async openBindingsModal(record) {
+      const target = record || {}
+      const id = Number(target.id)
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        message.warning('用户参数错误')
+        return
+      }
+      const ctx = this.userListContext
+      ctx.bindingsTarget.value = { id, username: String(target.username || '') }
+      ctx.bindingsRows.value = []
+      ctx.clearBindingsFailure()
+      ctx.bindingsModalKey.value += 1
+      ctx.bindingsVisible.value = true
+      await this.reloadBindings()
+    },
+    async reloadBindings() {
+      const ctx = this.userListContext
+      if (!ctx.bindingsVisible.value) return
+      const id = Number(ctx.bindingsTarget.value?.id)
+      if (!Number.isSafeInteger(id) || id <= 0) return
+      const owns = ctx.captureBindingsOwner()
+      const ownsFailure = () => owns() && ctx.bindingsFailureContextKey.value === context
+      const context = ctx.bindingsFailureContextKey.value
+      const setOwner = fn => { ctx.bindingsFailureOwnerRef.set(fn) }
+      ctx.bindingsLoading.value = true
+      try {
+        const res = await getAdminUserBindings(id, { page: 1, pageSize: 100 })
+        if (!ownsFailure()) return
+        const body = res?.data
+        const list = Array.isArray(body?.items) ? body.items : (Array.isArray(body) ? body : null)
+        if (res?.status !== 200 || !Array.isArray(list)) {
+          setOwner(ownsFailure)
+          ctx.bindingsFailure.value = ensureRequestFailure(res)
+          return
+        }
+        ctx.bindingsRows.value = list.filter(item => item && typeof item === 'object').map(item => ({ ...item }))
+      } catch (error) {
+        if (ownsFailure()) {
+          setOwner(ownsFailure)
+          ctx.bindingsFailure.value = ensureRequestFailure(error)
+        }
+      } finally {
+        if (owns()) ctx.bindingsLoading.value = false
+      }
+    },
+    closeBindingsModal() {
+      const ctx = this.userListContext
+      ctx.bindingsVisible.value = false
+      ctx.invalidateBindings()
+      ctx.bindingsRows.value = []
     },
     openBalanceModal() {
       const owner = this.userListContext.owner.capture()
