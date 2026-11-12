@@ -24,6 +24,23 @@
 
 .NOTES
     Requires 64-bit CPython 3.11 and PyInstaller 6.x on the build machine.
+
+.PARAMETER ProbeOnly
+    Run only step 1 (the Python 3.11 x64 probe) and exit. Used by
+    test_build_exe.py as a regression guard.
+
+    The probe must be exercised under Windows PowerShell 5.1, not just pwsh:
+    the original implementation passed Python code inline via -c "..." and
+    PowerShell double quotes interpolate, so the code reaching Python was
+    mangled (NameError: name 'P' is not defined) and the script wrongly
+    reported "py -3.11 is unavailable". Windows PowerShell 5.1 is where that
+    interpolation bites; pwsh 7 happens to survive it. A test that only runs
+    under pwsh would go green on broken code.
+
+.PARAMETER ProbeMachineReadable
+    With -ProbeOnly, print the probe result on one line as
+        USEREXAM_PROBE version=<ver> bits=<bits> impl=<impl>
+    so a test can assert the exact triple instead of grepping human prose.
 #>
 [CmdletBinding()]
 param(
@@ -34,7 +51,11 @@ param(
     # Optional real encrypted UserExamInfo.db used for the end-to-end check.
     [string]$RealSample,
     # Password for $RealSample; only needed when the sample is converted.
-    [string]$Password
+    [string]$Password,
+    # Run only the Python probe (step 1) and exit. Regression-guard hook.
+    [switch]$ProbeOnly,
+    # With -ProbeOnly, emit a single machine-readable result line.
+    [switch]$ProbeMachineReadable
 )
 
 $ErrorActionPreference = 'Stop'
@@ -61,6 +82,17 @@ if ($parts[0] -ne '3.11' -or $parts[1] -ne '64') {
     throw "Need CPython 3.11 x64, found '$($version.Trim())'."
 }
 Write-Host "      Python $($version.Trim()) OK"
+
+if ($ProbeOnly) {
+    # Regression hook for test_build_exe.py. Exit 0 only when the probe produced
+    # a version triple the rest of the script can actually parse; anything else
+    # must be a non-zero exit so CI turns red instead of silently continuing.
+    if ($ProbeMachineReadable) {
+        Write-Output ("USEREXAM_PROBE version={0} bits={1} impl={2}" -f $parts[0], $parts[1], $(if ($parts.Count -ge 3) { $parts[2] } else { '' }))
+    }
+    Write-Host "[1/$totalSteps] Probe-only mode: Python probe passed, exiting."
+    exit 0
+}
 
 Write-Host "[2/$totalSteps] Checking PyInstaller ..."
 & $python @pythonArgs -m PyInstaller --version *> $null
