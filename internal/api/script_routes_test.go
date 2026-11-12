@@ -12,7 +12,7 @@ func TestSetAPIRouterRegistersPublicScriptExchangeRoutes(t *testing.T) {
 	SetAPIRouter(router)
 	want := map[string]bool{
 		"GET /adapter-service/script-command/:shortCode/exchange-script": false,
-		"GET /adapter-service/script-command/:shortCode/file":           false,
+		"GET /adapter-service/script-command/:shortCode/file":            false,
 	}
 	for _, route := range router.Routes() {
 		if _, ok := want[route.Method+" "+route.Path]; ok {
