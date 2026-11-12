@@ -95,7 +95,28 @@ func TestB01HTTPObserverDetach(t *testing.T) {
 			home := t.TempDir()
 			command := exec.CommandContext(ctx, executable, "-test.run=^TestB01HTTPObserverDetach$", "-test.parallel=1", "-test.timeout=12s", "-test.v")
 			command.Dir = home
-			command.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + home, "TMPDIR=" + home, "LANG=C.UTF-8", "LC_ALL=C.UTF-8", "TZ=UTC", "GOMAXPROCS=2", "B01_OBSERVER_CHILD=" + vector}
+			// 子进程环境必须按平台构造：原来写死 Linux 路径（PATH=/usr/bin:/bin、
+			// TMPDIR=home）在 Windows 上会让子进程完全丢失 TEMP/TMP，于是 Go 的
+			// t.TempDir() 回退到 C:\WINDOWS 并因权限被拒 —— 那不是被测行为，是夹具缺陷。
+			// 注意：这里必须**整体替换** Env（不能追加），否则子进程会继承父测试的
+			// 全局状态；但两组变量都要给全，覆盖各自平台的必需项。
+			childEnv := []string{
+				"HOME=" + home, "TZ=UTC", "GOMAXPROCS=2", "B01_OBSERVER_CHILD=" + vector,
+			}
+			if runtime.GOOS == "windows" {
+				childEnv = append(childEnv,
+					"TEMP="+home, "TMP="+home,
+					"PATH="+os.Getenv("PATH"),
+					"SystemRoot="+os.Getenv("SystemRoot"),
+					"USERPROFILE="+home,
+				)
+			} else {
+				childEnv = append(childEnv,
+					"PATH=/usr/bin:/bin", "TMPDIR="+home,
+					"LANG=C.UTF-8", "LC_ALL=C.UTF-8",
+				)
+			}
+			command.Env = childEnv
 			if dir := os.Getenv("B01_NATIVE_LEDGER_DIR"); dir != "" {
 				if !filepath.IsAbs(dir) {
 					t.Fatal("SETUP_INCONCLUSIVE: ledger directory must be absolute")
