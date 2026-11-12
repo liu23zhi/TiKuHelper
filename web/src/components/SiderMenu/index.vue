@@ -88,7 +88,9 @@ const ADMIN_MENU_ITEMS = [
   { key: 'ai-search-config', label: 'AI 搜索配置', icon: RobotOutlined },
   { key: 'ocr-cache', label: 'OCR 缓存管理', icon: FileTextOutlined },
   { key: 'user-exam-tool', label: '客户端数据库工具', icon: DatabaseOutlined },
-  { key: 'referral-rebates', label: '返佣记录', icon: GiftOutlined },
+  // 「赠送记录」= 注册赠送 / 评价返现 / 邀请返佣 / 充值赠金 四类聚合（Q75-1）。
+  // 路由 key 仍是 referral-rebates：改名只动用户可见文案，不动路由名与权限注册。
+  { key: 'referral-rebates', label: '赠送记录', icon: GiftOutlined },
   { key: 'review-rebate-admin', label: '评价返现管理', icon: StarOutlined },
   { key: 'blacklist', label: '黑名单管理', icon: StopOutlined },
   { key: 'system-settings', label: '系统管理', icon: ToolOutlined },
