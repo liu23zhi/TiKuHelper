@@ -46,6 +46,20 @@ const (
 	userStatusClosurePending = "closure_pending"
 	userStatusEnabled        = "enabled"
 
+	// userStatusBanned 是「已封禁」的状态值。
+	//
+	// ⚠️ 必须同步登记在 normalizeUserStatus 里，否则会被改回 enabled ——
+	// 管理员点「封禁」界面提示成功、实际没封，且全程不报错。
+	// 封禁是风控动作，静默失败比报错严重得多：运营以为已拦住，对方照常使用。
+	//
+	// 与 disabled 的区别：disabled 是「账号功能禁用」（业务层判断），
+	// banned 是「风控封禁」（可由黑名单/违规触发）。两者在准入谓词上
+	// 目前都是全拒（isUserEnabled / isUserSessionAllowed / isUserSpendable
+	// 都不认），区别在语义与展示，以及将来 banned 可能需要单独的申诉流程。
+	//
+	// 本期只做「这个取值能否落库」，不新建 user_bans 表（见任务边界）。
+	userStatusBanned = "banned"
+
 	// closureWaitingDays 是注销等待期天数。
 	//
 	// 45 号文档 Q76-2 定「7 天，可配」；本轮固定 7 天：做成可配需要在系统管理页

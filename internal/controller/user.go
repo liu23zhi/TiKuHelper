@@ -124,17 +124,37 @@ func normalizeUserRole(role string) string {
 
 // normalizeUserStatus 归一化账号状态。
 //
-// ⚠️ 必须认 closure_pending（task_doc/76 §3.3.2 红线 4）。
-// 原来只有 enabled / disabled 两个分支、其它值一律落回 enabled，
-// 于是「用户申请注销」写进库的 closure_pending 会被这条归一化静默改回
-// enabled —— 界面提示申请成功，实际等待期根本没生效（这是本功能最容易
-// 出现的假成功）。新增状态时必须同步加进白名单，否则同样被吞。
+// 合法取值**只有下面全部 4 个**，其它任何输入（含拼错、未知值）都落回 enabled：
+//
+//	enabled          正常
+//	disabled         已禁用
+//	closure_pending  已申请注销，等待期（task_doc/76 §3.3.2）
+//	banned           已封禁
+//
+// ⚠️ **新增状态必须同步登记在此，否则会被改回 enabled（静默失效）。**
+// 这个坑已经踩了两次，两次的症状完全一样：界面提示操作成功、实际没生效、且不报错。
+//
+//  1. closure_pending（task_doc/76 §3.3.2 红线 4）—— 用户点完注销申请，
+//     状态被静默改回 enabled，等待期根本没生效。
+//  2. banned —— 管理员点「封禁」，状态被静默改回 enabled，**实际没封**。
+//     封禁是风控动作，静默失败比报错严重得多：运营以为已拦住，其实对方照常使用。
+//
+// 两个写路径都经过本函数，漏登记就是漏改全部入口：
+//
+//	CreateUser（user.go）—— 创建用户时归一化入参
+//	UpdateUser（user.go）—— 管理员手动改状态的**唯一**入口
+//
+// 对应回归：closure_test.go 的 TestClosurePendingStatusSurvivesAdminProfileUpdate、
+// user_status_banned_test.go 的 TestBannedStatusSurvivesAdminProfileUpdate。
+// 两者都是「把这个状态从白名单删掉就会变红」的尺子。
 func normalizeUserStatus(status string) string {
 	switch {
 	case strings.EqualFold(strings.TrimSpace(status), "disabled"):
 		return "disabled"
 	case strings.EqualFold(strings.TrimSpace(status), userStatusClosurePending):
 		return userStatusClosurePending
+	case strings.EqualFold(strings.TrimSpace(status), userStatusBanned):
+		return userStatusBanned
 	default:
 		return "enabled"
 	}
