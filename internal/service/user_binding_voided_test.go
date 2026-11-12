@@ -228,6 +228,5 @@ func TestVoidedBindingKeepsActiveKeyNil(t *testing.T) {
 	}
 }
 
-
 // timePtr 返回时间指针（本文件的 fixture 需要指针字段）。
 func timePtr(value time.Time) *time.Time { return &value }

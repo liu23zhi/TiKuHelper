@@ -179,7 +179,7 @@ type BindingListFilter struct {
 	// Value 可选：**精确匹配**（内部转 value_hash），不做明文模糊搜索。
 	Value string
 	// UserID 可选：按用户过滤。
-	UserID int32
+	UserID   int32
 	Page     int
 	PageSize int
 }
