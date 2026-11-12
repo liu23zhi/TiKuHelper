@@ -947,6 +947,11 @@ export default defineComponent({
         }
         if (status === 'disabled') {
           acc.disabledCount += 1
+        } else if (status === 'banned') {
+          // 已封禁账号单独计数。**不能并进 enabledCount** ——
+          // 否则「当前页启用账号」这个数字会包含被封禁的人，
+          // 运营看统计时会以为这些人还能用。
+          acc.bannedCount += 1
         } else {
           acc.enabledCount += 1
         }
@@ -961,6 +966,7 @@ export default defineComponent({
         adminCount: 0,
         enabledCount: 0,
         disabledCount: 0,
+        bannedCount: 0,
         totalBalance: 0,
       })
     })
@@ -1166,7 +1172,9 @@ export default defineComponent({
       pageKey: 'user-list', scope: columnScope,
       fields: {
         role: { get: () => filters.role, set: value => { filters.role = value }, validate: value => ['user', 'admin'].includes(value) },
-        status: { get: () => filters.status, set: value => { filters.status = value }, validate: value => ['enabled', 'disabled'].includes(value) },
+        // 筛选值白名单。必须与 statusOptions 的取值集合一致 ——
+        // 少一项会导致「选了该状态但刷新后被静默丢掉」，筛选看起来没生效。
+        status: { get: () => filters.status, set: value => { filters.status = value }, validate: value => ['enabled', 'disabled', 'banned'].includes(value) },
         pageSize: { get: () => pagination.pageSize, set: value => { pagination.pageSize = value }, validate: value => [10, 20, 50, 100].includes(value) },
       },
     })
@@ -1260,9 +1268,17 @@ export default defineComponent({
         { label: '普通用户', value: 'user' },
         { label: '管理员', value: 'admin' },
       ],
+      // 状态选项。**新增状态必须与后端 normalizeUserStatus 的白名单同步**：
+      // 这里加了、后端没加 → 写入被静默改回 enabled（界面提示成功、实际没生效）；
+      // 后端加了、这里没有 → 管理员选不到，能力等于不存在。
+      // 后端白名单见 internal/controller/user.go 的 normalizeUserStatus。
+      //
+      // closure_pending 刻意不在这里：它是用户自己申请注销后由系统写入的，
+      // 管理员不该通过这个下拉手动把人置为「注销等待期」。
       statusOptions: [
         { label: '启用', value: 'enabled' },
         { label: '禁用', value: 'disabled' },
+        { label: '已封禁', value: 'banned' },
       ],
       balanceModeOptions: [
         { label: '添加', value: 'increase' },
@@ -1322,13 +1338,26 @@ export default defineComponent({
       const owner = this.userListContext.owner.capture()
       if (!owner.isAlive()) return
 
-      return String(value || '').toLowerCase() === 'disabled' ? '禁用' : '启用'
+      // 三态显式映射。不要写成「不是 disabled 就是启用」——
+      // 那样 banned 会被显示成「启用」，正是后端那个静默失效缺陷的镜像版本
+      // （后端把人改回 enabled、前端把人显示成 enabled，两边一起骗运营）。
+      switch (String(value || '').toLowerCase()) {
+        case 'disabled': return '禁用'
+        case 'banned': return '已封禁'
+        case 'closure_pending': return '注销等待期'
+        default: return '启用'
+      }
     },
     statusBadge(value) {
       const owner = this.userListContext.owner.capture()
       if (!owner.isAlive()) return
 
-      return String(value || '').toLowerCase() === 'disabled' ? 'error' : 'success'
+      switch (String(value || '').toLowerCase()) {
+        case 'disabled': return 'error'
+        case 'banned': return 'error'
+        case 'closure_pending': return 'warning'
+        default: return 'success'
+      }
     },
     registerSourceText(value) {
       const owner = this.userListContext.owner.capture()
