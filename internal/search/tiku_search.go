@@ -106,25 +106,19 @@ func (tool *DBTikuSearchTool) SearchTiku(ctx context.Context, req model.SearchRe
 	}
 	ranked := make([]AITikuSearchCandidate, 0, len(rows))
 	for _, row := range rows {
-		if !compatibleQuestionType(req.Type, row.Type) ||
-			!compatibleMathOperators(question, row.Question) ||
-			!compatibleNegation(question, row.Question) {
+		if !compatibleTikuRow(req, question, row) {
 			continue
 		}
 		options := decodeTikuStrings(row.Options)
-		if !compatibleTikuOptions(req.Options, options) {
-			continue
-		}
 		answers := decodeTikuStrings(row.Answer)
-		if len(answers) == 0 {
-			continue
-		}
 		score := 1.0
 		if kind == "fuzzy" {
 			score = tikuQuestionSimilarity(question, row.Question)
 			if len(req.Options) > 0 && len(options) > 0 {
 				score = score*0.8 + 0.2 // Compatible nonempty option sets agree after labels/ordering.
 			}
+			// 相似度阈值是 fuzzy 分支独有的条件，不属于「行本身是否可用」，
+			// 因此刻意不放进 compatibleTikuRow（见该函数的注释）。
 			if score < aiTikuMinScore {
 				continue
 			}
@@ -262,45 +256,52 @@ func (tool *DBTikuSearchTool) fuzzyRows(db *gorm.DB, question string) ([]tikuCan
 	return rows, nil
 }
 
+// compatibleTikuRow 判断一条候选行在**题干/题型/选项/答案**四个维度上是否可用。
+//
+// 这是「行是否可用」的**唯一权威判定**，两个调用方：
+//   - SearchTiku 的主过滤循环（决定哪些行进入 ranked）
+//   - hasUsableTikuRow（决定 exact 池里有没有可用行、要不要降级跑 fuzzy）
+//
+// 为什么必须抽成一个函数（t126 重构，替代原先的两份复制）：
+//
+//	此前主循环与 hasUsableTikuRow 各写一遍同样的三个 if。
+//	P0-1 给主循环加了 compatibleNegation 时，hasUsableTikuRow 就漏了，
+//	造成「判定可用性」与「实际采用」两处漂移 —— 而那正是 hasUsableTikuRow
+//	存在意义所要防的事，结果它自己成了漂移源。
+//	抽成单一谓词后，**新增条件只需要改这一处**，结构上杜绝再次漂移。
+//
+// ⚠️ 刻意**不**包含相似度阈值（aiTikuMinScore）判定：
+//
+//	那是 fuzzy 分支独有的语义 —— exact 命中本来就不打分（score 恒 1.0），
+//	若把阈值塞进来，会让「exact 池有一行低相似度」被误判为「池不可用」，
+//	从而在根本不需要 fuzzy 的场景下多做一次全表 INSTR 查询。
+//	主循环里该判定保留在 kind=="fuzzy" 分支内（见 SearchTiku）。
+func compatibleTikuRow(req model.SearchRequest, question string, row tikuCandidateRow) bool {
+	if !compatibleQuestionType(req.Type, row.Type) ||
+		!compatibleMathOperators(question, row.Question) ||
+		!compatibleNegation(question, row.Question) {
+		return false
+	}
+	if !compatibleTikuOptions(req.Options, decodeTikuStrings(row.Options)) {
+		return false
+	}
+	if len(decodeTikuStrings(row.Answer)) == 0 {
+		return false
+	}
+	return true
+}
+
 // hasUsableTikuRow 判断一批候选行里是否存在**至少一条可用行**。
 //
 // 用途：决定 exact 路径要不要降级去跑 fuzzy（见 SearchTiku 的调用点）。
 //
-// 判定口径必须与下面主过滤循环里的条件**保持一致**，否则会出现
-// 「这里说可用、那里被 continue 掉」的分裂 —— 那正是本函数要修的缺陷形态
-// （旧实现用 `len(rows) == 0` 粗判，与逐行过滤条件不对应）。
-//
-// 与主循环的对应关系：
-//   - compatibleQuestionType / compatibleMathOperators ↔ 主循环第一个 continue
-//   - compatibleTikuOptions                          ↔ 第二个 continue
-//   - len(answers) == 0                              ↔ 第三个 continue
-//
-// 刻意**不**在这里重复相似度阈值判断：那是 fuzzy 分支的语义，
-// exact 行本来就不做打分（score 恒 1.0）。
-//
-// 也刻意**不**引用 compatibleNegation：那个函数属于另一个未合并的 PR
-// （否定题保护），本分支上不存在。等它合入后，这里与主循环需要同步补上
-// —— 两处条件漂移正是本函数要防的形态，届时必须一起改。
+// 判定口径由 compatibleTikuRow 统一提供，本函数只负责「任一行可用」的量词。
 func hasUsableTikuRow(rows []tikuCandidateRow, req model.SearchRequest) bool {
 	question := strings.TrimSpace(req.Question)
 	for _, row := range rows {
-		// ⚠️ 这三行必须与 SearchTiku 主过滤循环的条件**逐条一致**（当前对应 L109-111）。
-		// 本函数的存在意义就是消除「判定可用性」与「实际采用」两处的漂移，
-		// 因此任何一边加条件，另一边必须同步 —— 否则本函数自己就成了漂移源。
-		// P0-1（#14）合入时主循环新增了 compatibleNegation，这里同步补上。
-		if !compatibleQuestionType(req.Type, row.Type) ||
-			!compatibleMathOperators(question, row.Question) ||
-			!compatibleNegation(question, row.Question) {
-			continue
+		if compatibleTikuRow(req, question, row) {
+			return true
 		}
-		options := decodeTikuStrings(row.Options)
-		if !compatibleTikuOptions(req.Options, options) {
-			continue
-		}
-		if len(decodeTikuStrings(row.Answer)) == 0 {
-			continue
-		}
-		return true
 	}
 	return false
 }
