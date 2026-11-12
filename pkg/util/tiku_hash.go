@@ -98,9 +98,27 @@ func BuildTikuHashCandidates(question string, options []string, questionType int
 		BuildTikuHash(normalizedQuestion, normalizedOptions, questionType),
 	}
 
-	seen := make(map[string]struct{}, len(raw)+len(normalized))
-	candidates := make([]string, 0, len(raw)+len(normalized))
-	for _, hash := range append(raw, normalized...) {
+	// 第 5 类：**括号内空白无关**的变体（2026-11-13 实测补）。
+	//
+	// 线上题库里「以下属于指示剂的有( )」与「...有()」是同一道题，
+	// 但 FormatString 不动内部空白 → hash 不同 → 漏答。
+	// 本地开发库 348 行中 46 行（13.2%）含 `( )` 形式。
+	//
+	// 只加**查询侧候选**，写入公式（FillHash → BuildTikuHash）一字不动，
+	// 因此存量题库 hash 完全不受影响，是纯粹的召回增强。
+	//
+	// 注意：这里对「题面」和「选项」都套用空白无关归一 ——
+	// 选项里同样常见 `( )` 形式的填空占位。
+	spaceInsensitiveQuestion := NormalizeSpaceInsensitiveText(question)
+	spaceInsensitiveOptions := normalizeSpaceInsensitiveOptions(options)
+	spaceInsensitive := []string{
+		BuildTikuHash(spaceInsensitiveQuestion, spaceInsensitiveOptions, questionType),
+		BuildLegacyTikuHash(spaceInsensitiveQuestion, spaceInsensitiveOptions, questionType),
+	}
+
+	seen := make(map[string]struct{}, len(raw)+len(normalized)+len(spaceInsensitive))
+	candidates := make([]string, 0, len(raw)+len(normalized)+len(spaceInsensitive))
+	for _, hash := range append(append(raw, normalized...), spaceInsensitive...) {
 		if _, exists := seen[hash]; exists {
 			continue
 		}
@@ -108,4 +126,19 @@ func BuildTikuHashCandidates(question string, options []string, questionType int
 		candidates = append(candidates, hash)
 	}
 	return candidates
+}
+
+// normalizeSpaceInsensitiveOptions 对每个选项套用空白无关归一，**保持原顺序**。
+//
+// 与 NormalizeCacheKeyOptions 的差别只有一处：额外折叠括号内空白。
+// 顺序必须保留（选项顺序是题目身份的一部分）。
+func normalizeSpaceInsensitiveOptions(options []string) []string {
+	if len(options) == 0 {
+		return nil
+	}
+	normalized := make([]string, len(options))
+	for i, option := range options {
+		normalized[i] = NormalizeSpaceInsensitiveText(option)
+	}
+	return normalized
 }
