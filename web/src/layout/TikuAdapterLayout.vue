@@ -78,6 +78,8 @@ export default {
       '/adapter/archived-users',
       '/adapter/search-account-config', '/adapter/ai-search-config', '/adapter/ocr-cache', '/adapter/system-settings', '/adapter/extension-updates',
       '/adapter/ip-location-cache', '/adapter/phone-location-cache',
+      // 等级与充值阶梯（94-*.md §2 C1/C2）：门槛配置即设备上限口径，仅管理员可进。
+      '/adapter/user-levels',
     ]
     const isAdminOnlyCurrentRoute = computed(() => (router.currentRoute.value?.matched || [])
       .some(record => adminOnlyPrefixes.includes(record.aliasOf?.path || record.path)))

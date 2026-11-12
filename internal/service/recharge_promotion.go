@@ -172,7 +172,10 @@ func GrantRechargePromotionInTx(tx *gorm.DB, order entity.RechargeOrder, balance
 	}
 
 	paid := util.RoundMoneyToDecimals(order.Amount, util.RechargePrecision)
-	tier, matched := SelectRechargePromotionTier(paid)
+	// 档位来源：优先读 recharge_promotion_tiers 表（Q75-2 可配置化）；
+	// 表空/未迁移/全部停用时回退到 DefaultRechargePromotionTiers，
+	// 因此表空时的发放行为与改动前逐条一致（数值一个都没动）。
+	tier, matched := SelectRechargePromotionTierWithDB(tx, paid)
 	if !matched {
 		return nil, nil
 	}

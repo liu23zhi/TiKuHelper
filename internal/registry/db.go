@@ -958,6 +958,27 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		return nil
 	}
 
+	// 等级体系（Q75-3 / Q75-6 / Q75-7，94-*.md §2 C1）：
+	// 建 user_levels / user_level_histories 两张表 + 给 users 补 level_id 列。
+	//
+	// 必须排在 users 的 AutoMigrate 之后：本迁移要先确认 users 存在才加列，
+	// 否则空库首次启动会「建了等级表但没有落点」，而标记一旦写上就再也不会重跑。
+	//
+	// 结构性失败阻断启动：level_id 缺失时每一次等级评估都会静默降级，
+	// 表现为「等级功能上线了但谁都不升级」，比直接启动失败更难发现。
+	if err := runStartupMigration("ensureUserLevelSchema", func() error { return ensureUserLevelSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare user level schema fail: %w", err))
+		return nil
+	}
+
+	// 充值阶梯赠送的可配置档位表（Q75-2，94-*.md §2 C2）。
+	// 只建表、不写数据：表空时服务层回退到 DefaultRechargePromotionTiers，
+	// 因此本迁移对既有发放行为零影响，可安全先上。
+	if err := runStartupMigration("ensureRechargePromotionTierSchema", func() error { return ensureRechargePromotionTierSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare recharge promotion tier schema fail: %w", err))
+		return nil
+	}
+
 	ensureAccountDomainDefaults(db)
 
 	// Apply only the preflighted credential plan. Environment never resets an existing account.

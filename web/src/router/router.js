@@ -37,6 +37,7 @@ const ReviewRebate = () => import(/* webpackChunkName: "route-review-rebate" */ 
 const ReviewRebateAdmin = () => import(/* webpackChunkName: "route-review-rebate-admin" */ '../pages/ReviewRebateAdmin/index.vue')
 const Blacklist = () => import(/* webpackChunkName: "route-blacklist" */ '../pages/Blacklist/index.vue')
 const IPSegment = () => import(/* webpackChunkName: "route-ip-segment" */ '../pages/IpSegment/index.vue')
+const UserLevel = () => import(/* webpackChunkName: "route-user-level" */ '../pages/UserLevel/index.vue')
 const routes = [
   {
     path: '/',
@@ -203,6 +204,13 @@ const routes = [
         meta: { locationKind: 'phone' },
       },
       {
+        // 等级与充值阶梯（94-*.md §2 C1/C2）。管理员专属：等级门槛决定谁能拿到
+        // 什么设备上限（C3 会读 user_levels.device_limit），不对普通用户开放。
+        path: 'user-levels',
+        name: 'user-levels',
+        component: UserLevel,
+      },
+      {
         path: 'billing-records',
         name: 'billing-records',
         component: BillingRecordList,
@@ -237,6 +245,9 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   'referral-rebates',
   'review-rebate-admin',
   'blacklist',
+  // 等级与充值阶梯：等级门槛 = 谁能拿什么设备上限（C3 会读 device_limit），
+  // 阶梯档位 = 平台补贴口径。两者都是运营配置，非管理员直接敲 URL 也要挡住。
+  'user-levels',
 ])
 const PUBLIC_ADAPTER_ROUTE_NAMES = new Set([
   'recharge-result',
@@ -299,5 +310,4 @@ router.onError((error) => {
 })
 
 export default router;
-
 

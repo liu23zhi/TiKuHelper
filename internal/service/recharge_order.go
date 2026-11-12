@@ -724,6 +724,17 @@ func HandleRechargePaymentNotifyWithDB(db *gorm.DB, values url.Values) (bool, er
 			return err
 		}
 
+		// 等级重评（Q75-3 / Q75-6，94-*.md §2 C1）：充值到账后按新的累计充值额重评。
+		//
+		// 与上面两步的关键差异：**等级评估失败绝不能回滚到账**。
+		// 等级是运营侧展示与（将来的）设备上限口径，充值的钱已经收了，
+		// 因为等级表配置错就把一笔真实支付打回去，代价远大于收益。
+		// 所以这里只记 warn，不 return —— 下一次任意触发会重新算准。
+		if _, evalErr := EvaluateUserLevelWithDB(tx, order.UserID, entity.UserLevelTriggerRecharge); evalErr != nil {
+			logger.SysWarn(fmt.Sprintf("充值后等级重评失败（不影响到账）userId=%d orderNo=%s: %v",
+				order.UserID, order.OrderNo, evalErr))
+		}
+
 		settledAudit = &AccountAuditEvent{
 			UserID: user.ID, Username: user.Username, Module: "recharge", Action: 41,
 			Description: "充值到账", CorrelationID: order.OrderNo,
