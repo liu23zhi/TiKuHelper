@@ -102,9 +102,9 @@ func TestNormalizeUserStatusKeepsBanned(t *testing.T) {
 	cases := map[string]string{
 		// 输入 → 期望输出。大小写与首尾空格都不应影响结果
 		// （与 closure_pending / disabled 的既有处理保持一致）。
-		"banned":    userStatusBanned,
-		"BANNED":    userStatusBanned,
-		" Banned  ": userStatusBanned,
+		"banned":     userStatusBanned,
+		"BANNED":     userStatusBanned,
+		" Banned  ":  userStatusBanned,
 		"  BANNED  ": userStatusBanned,
 	}
 	for input, want := range cases {
