@@ -80,6 +80,9 @@ export default {
       '/adapter/ip-location-cache', '/adapter/phone-location-cache',
       // 等级与充值阶梯（94-*.md §2 C1/C2）：门槛配置即设备上限口径，仅管理员可进。
       '/adapter/user-levels',
+      // 绑定历史两页（task_doc/70 §3.6）：含手机号/微信的历史值（已脱敏），
+      // 非管理员不得通过直接敲 URL 进入。
+      '/adapter/wechat-bindings', '/adapter/phone-bindings',
     ]
     const isAdminOnlyCurrentRoute = computed(() => (router.currentRoute.value?.matched || [])
       .some(record => adminOnlyPrefixes.includes(record.aliasOf?.path || record.path)))

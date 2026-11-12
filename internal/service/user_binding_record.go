@@ -117,10 +117,14 @@ func RecordBindingActiveWithDB(tx *gorm.DB, record entity.UserBindingRecord) (en
 }
 
 // findActiveBindingByValue 按 (kind, value_hash, state='active') 找活跃绑定。
+//
+// `state != 'voided'` 是显式冗余：本查询已经用 state='active' 收窄，
+// 作废行本来就不在其中。写上它是为了 **grep 可验证**——
+// 判定查询与「作废」的隔离必须是能一眼查到的约定，而不是「因为另一处写了 active」。
 func findActiveBindingByValue(tx *gorm.DB, kind, valueHash string) (*entity.UserBindingRecord, error) {
 	var rows []entity.UserBindingRecord
 	if err := tx.Session(&gorm.Session{NewDB: true}).
-		Where("kind = ? AND value_hash = ? AND state = ?", kind, valueHash, entity.BindingStateActive).
+		Where("kind = ? AND value_hash = ? AND state = ? AND state != 'voided'", kind, valueHash, entity.BindingStateActive).
 		Order("id asc").Limit(1).Find(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -158,7 +162,7 @@ func ReleaseBindingInTx(tx *gorm.DB, userID int32, kind, releaseReason, releaseS
 	}
 	var rows []entity.UserBindingRecord
 	if err := tx.Session(&gorm.Session{NewDB: true}).
-		Where("user_id = ? AND kind = ? AND state = ?", userID, kind, entity.BindingStateActive).
+		Where("user_id = ? AND kind = ? AND state = ? AND state != 'voided'", userID, kind, entity.BindingStateActive).
 		Order("id asc").Find(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -292,7 +296,7 @@ func lookupBindingByValue(db *gorm.DB, kind, valueHash string) (history bool, cu
 func bindingReleasedExists(db *gorm.DB, kind, valueHash string, reasons []string) (bool, error) {
 	var count int64
 	if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.UserBindingRecord{}).
-		Where("kind = ? AND value_hash = ? AND state = ? AND release_reason IN ?",
+		Where("kind = ? AND value_hash = ? AND state = ? AND state != 'voided' AND release_reason IN ?",
 			kind, valueHash, entity.BindingStateReleased, reasons).
 		Limit(1).Count(&count).Error; err != nil {
 		return false, err
@@ -318,7 +322,7 @@ func FindReleasedBindingByValueWithDB(db *gorm.DB, kind, value string) (*entity.
 	}
 	var rows []entity.UserBindingRecord
 	if err := db.Session(&gorm.Session{NewDB: true}).
-		Where("kind = ? AND value_hash = ? AND state = ?", kind, BindingValueHash(value), entity.BindingStateReleased).
+		Where("kind = ? AND value_hash = ? AND state = ? AND state != 'voided'", kind, BindingValueHash(value), entity.BindingStateReleased).
 		Order("id desc").Limit(1).Find(&rows).Error; err != nil {
 		return nil, err
 	}

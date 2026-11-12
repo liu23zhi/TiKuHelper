@@ -100,10 +100,50 @@ func applyUserBindingRecordSchema(db *gorm.DB) (bool, error) {
 	if err := ensureUserBindingRecordColumns(db); err != nil {
 		return false, err
 	}
+	// 作废三列（需求 7）：显式 ALTER 而不是只靠 AutoMigrate —— 老库上
+	// sqliteQuietDialector 会跳过部分改写，缺列时「作废」动作会在运行期报错，
+	// 而那时记录已经读出来了，报错文案与「缺列」毫无字面关系。
+	if err := ensureUserBindingRecordVoidColumns(db); err != nil {
+		return false, err
+	}
 	if err := ensureUserBindingRecordIndexes(db); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// ensureUserBindingRecordVoidColumns 补齐「作废」三列（幂等）。
+//
+// 需求 7（task_doc/70 §3.7.1 方案 A）用 state='voided' 代替物理删除，
+// 需要留痕三件事：作废理由、作废人、作废时间。
+func ensureUserBindingRecordVoidColumns(db *gorm.DB) error {
+	if db == nil {
+		return nil
+	}
+	type columnSpec struct {
+		name string
+		ddl  string
+	}
+	specs := []columnSpec{
+		{name: "void_reason", ddl: "varchar(255)"},
+		{name: "voided_by_user_id", ddl: "int NOT NULL DEFAULT 0"},
+		{name: "voided_at", ddl: "datetime"},
+	}
+	for _, spec := range specs {
+		if db.Migrator().HasColumn(entity.TableNameUserBindingRecord, spec.name) {
+			continue
+		}
+		statement := "ALTER TABLE " + entity.TableNameUserBindingRecord +
+			" ADD COLUMN " + spec.name + " " + spec.ddl
+		if err := db.Exec(statement).Error; err != nil {
+			// 并发启动的另一实例可能刚好补上：复查一次再决定是否真失败。
+			if db.Migrator().HasColumn(entity.TableNameUserBindingRecord, spec.name) {
+				continue
+			}
+			return fmt.Errorf("补 %s.%s 列失败: %w", entity.TableNameUserBindingRecord, spec.name, err)
+		}
+	}
+	return nil
 }
 
 // ensureUserBindingRecordColumns 显式核对关键列存在（尤其是 release_reason）。

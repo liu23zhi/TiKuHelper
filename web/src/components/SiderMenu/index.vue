@@ -65,6 +65,7 @@ import {
   StopOutlined,
   ApartmentOutlined,
   TrophyOutlined,
+  WechatOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
 } from '@ant-design/icons-vue';
@@ -85,6 +86,9 @@ const ADMIN_MENU_ITEMS = [
   { key: 'ip-location-cache', label: 'IP 归属地信息管理', icon: GlobalOutlined },
   { key: 'ip-segments', label: 'IP 段归属管理', icon: ApartmentOutlined },
   { key: 'phone-location-cache', label: '手机号归属地信息管理', icon: PhoneOutlined },
+  // 绑定历史两页（task_doc/70 §3.6）：同一组件的两个入口，只差 route.meta.bindingKind。
+  { key: 'wechat-bindings', label: '微信绑定历史', icon: WechatOutlined },
+  { key: 'phone-bindings', label: '手机号绑定历史', icon: PhoneOutlined },
   { key: 'search-account-config', label: '默认账号配置', icon: SettingOutlined },
   { key: 'ai-search-config', label: 'AI 搜索配置', icon: RobotOutlined },
   { key: 'ocr-cache', label: 'OCR 缓存管理', icon: FileTextOutlined },
