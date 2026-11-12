@@ -42,14 +42,33 @@ type User struct {
 	// InvitedAt 是归因写入时间（邀请码只在注册时生效）。
 	InvitedAt *time.Time `gorm:"column:invited_at" json:"invitedAt"`
 
-	// GiftBalance 是**赠金来源标记桶**：与 balance 同步增加，但单独记账。
+	// GiftBalance 是**独立的赠金桶**，与 balance 是两个并列的可用额度。
 	//
-	// 口径（16-*.md §3 + 04 稿 10.4.5/10.4.2）：
-	//   - 赠金**计入 balance**，用户可以直接消费 —— 不新增第二个可用钱包，
-	//     避免「余额不够但赠金够」这种两段扣款带来的歧义；
+	// ⚠️ 2026-11-12 更正：此注释原写「赠金**计入** balance，不新增第二个可用钱包」，
+	// 那是 2026-11-09 双桶改造（43-*.md）**之前**的旧口径，与现有代码不符。
+	// 实测（tikuAdapter@3db1075）现有实现是**双桶独立**：
+	//
+	//   - wallet_bucket.go:8-10 明确定义：
+	//       balance      = 仅充值本金，可退款，**可以为负**（欠款载体）
+	//       gift_balance = 赠送金额，可消费但**不可退**，**下限 0 永不为负**
+	//   - wallet_bucket.go:22 WalletAvailableTotal(balance, gift) = balance + gift，
+	//     注释原文「旧模型下 balance 就是合计，新模型下**必须相加** —— 否则
+	//     balance=0 但 gift=1 的账户会被误拒（43-*.md §2）」
+	//   - 5 处消费准入全部用它：spending_budget.go:40 / ai_fallback.go:297,334 /
+	//     ai_tool_diagnostics.go:192 / script_runtime_billing.go:87
+	//   - wallet_bucket.go:37 ConsumeWalletBuckets 按「先扣赠金、扣光再扣本金」
+	//   - user_test.go:1041 断言注册赠送后 gift_balance=12.5（balance 不因此增加）
+	//
+	// 权威口径以 `43-双桶扣减与欠款抵补的精确定义.md` 为准（含用户给的两个算例：
+	// gift=2/balance=1 消耗 4 → gift=0/balance=-1；balance=-1 获赠 2 → balance=0/gift=1）。
+	//
+	// 仍然成立的旧口径部分（这两条与双桶不冲突）：
 	//   - 赠金**不计入可退本金 / 净实付 / 返佣基数**：退款与邀请返佣只认充值实付本金，
 	//     否则「充值 1688 赠 3376 再退款」就能套出赠金；
-	//   - 该列只是来源标记，用于对账与「这些钱是送的」的展示。
+	//   - 该列用于对账与「这些钱是送的」的展示。
+	//
+	// ⚠️ 判断「还能不能用服务」时必须用 balance + gift_balance 合计，
+	// 只看 balance 会把「本金 0、赠金 1」的账户误判为无钱。
 	//
 	// 由 registry.ensureReviewRebateSchema 补列（这里只声明，不改动既有字段）。
 	GiftBalance float64 `gorm:"column:gift_balance;type:decimal(18,6);not null;default:0" json:"giftBalance"`
