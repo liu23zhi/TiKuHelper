@@ -47,6 +47,8 @@ const SensitiveImage = () => import(/* webpackChunkName: "route-sensitive-image"
 const SensitiveWord = () => import(/* webpackChunkName: "route-sensitive-word" */ '../pages/SensitiveWord/index.vue')
 const TicketImageCache = () => import(/* webpackChunkName: "route-ticket-image-cache" */ '../pages/TicketImageCache/index.vue')
 const Whitelist = () => import(/* webpackChunkName: "route-whitelist" */ '../pages/Whitelist/index.vue')
+// 账号封禁（121 §4.8 / 121 决策 6）。管理员专属，已登记进 ADMIN_ONLY_ROUTE_NAMES。
+const UserBan = () => import(/* webpackChunkName: "route-user-ban" */ '../pages/UserBan/index.vue')
 const routes = [
   {
     path: '/',
@@ -138,6 +140,13 @@ const routes = [
         path: 'whitelist',
         name: 'whitelist',
         component: Whitelist,
+      },
+      {
+        // 账号封禁（121 §4.8 / 121 决策 6）。与黑名单/白名单相邻：三者都是风控入口，
+        // 但语义不同 —— 黑/白名单按 IP/手机号/微信，封禁按**账号**。
+        path: 'user-bans',
+        name: 'user-bans',
+        component: UserBan,
       },
       {
         // 已归档账号管理（task_doc/76 §3.2.3）:管理员删除与用户注销的账号都在这里。
@@ -312,6 +321,9 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   'blacklist',
   // 白名单：能编辑白名单等于能决定谁不被拦截，普通用户可改就等于关掉黑名单（T-04）。
   'whitelist',
+  // 账号封禁：能封禁等于能拒绝任何账号使用服务，是最高危的运营动作之一。
+  // 必须挡住「直接敲 URL」—— 页面上的 canManage() 只是体验层，权限边界在 router 与后端。
+  'user-bans',
   // 第 8 轮新增五个管理页。逐项说明为什么必须挡住「直接敲 URL」：
   //   user-portrait     —— 全站用户行为聚合，98 §0 明确仅管理员（四层权限的第 ④ 层）。
   //   risk-admin        —— 告警里带触发证据快照（IP / 用户 / 规则），属敏感运营数据。

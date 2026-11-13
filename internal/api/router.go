@@ -416,6 +416,34 @@ func SetAPIRouter(router *gin.Engine) {
 	blacklistAdminRouter.GET("/whitelist/exempt-ips", controller.Auth, middleware.RequireAdmin, controller.WhitelistExemptIPsGet)
 	blacklistAdminRouter.PUT("/whitelist/exempt-ips", controller.Auth, middleware.RequireAdmin, controller.WhitelistExemptIPsPut)
 
+	// 账号封禁管理（121 §4.8 / 121 决策 6）。
+	//
+	// ⚠️ 挂在这个「不挂 IP 判定」的管理员组上，而不是 apiRouter —— 理由与黑名单
+	// **完全相同、但更硬**：
+	//
+	//	apiRouter 上挂了 middleware.WhitelistIP()（内部持有黑名单判定闭包）。
+	//	封禁是**按账号**的，而被拦截是按 IP 的，两者本可以各自独立；
+	//	但一旦把封禁页也挂到 apiRouter，就会出现这样的死锁：
+	//	某个管理员所在的 IP 段被误加入黑名单 → 他连封禁页都打不开 →
+	//	无法给自己解封，也无法解封别人 → 只能等另一个「没被封的」管理员来救。
+	//	如果全站只有他一个管理员，那就是**永久锁死**。
+	//
+	//	挂在不带 IP 判定的组上，这一点变成**结构性保证**：读 router.go 就能看到
+	//	「这一组不挂 IP 判定」，而不是依赖 middleware.BlacklistExemptPath 里
+	//	某个字符串常量恰好包含了这条路径（那种豁免很容易在下一次改路径时悄悄失效）。
+	//
+	// 代价与黑名单组相同：必须显式重挂 GlobalAPIRateLimit 与 BodyLimit，
+	// 不能因为「反正管理员用」就省掉限流。
+	//
+	// 方法/路径不冲突：`/admin/user-bans` 与 `/blacklist`、`/whitelist` 是不同静态前缀；
+	// DELETE 的 `:userId` 只出现在 DELETE 树上，gin 按方法分树，不会与 GET 抢占。
+	blacklistAdminRouter.GET("/admin/user-bans", controller.Auth, middleware.RequireAdmin, controller.UserBanAdminList)
+	blacklistAdminRouter.POST("/admin/user-bans", controller.Auth, middleware.RequireAdmin, controller.UserBanAdminCreate)
+	// 解封路径用 :userId（不是 user_bans 主键 id）：service.Unban 的语义是
+	// 「解除这个用户的封禁」（处理该用户全部未到期行），不是「作废某一条记录」。
+	// 按记录 id 解封会让调用方误以为只解了一条，且传错 id 会解封到另一个账号。
+	blacklistAdminRouter.DELETE("/admin/user-bans/:userId", controller.Auth, middleware.RequireAdmin, controller.UserBanAdminRevoke)
+
 	// 考试客户端本地库工具：仅管理员。服务端不解密，只发工具 + 只读预览明文库。
 	apiRouter.GET("/admin/userexam/tool/version", controller.Auth, middleware.RequireAdmin, controller.UserExamToolVersion)
 	apiRouter.GET("/admin/userexam/tool", controller.Auth, middleware.RequireAdmin, controller.UserExamToolDownload)
@@ -487,6 +515,17 @@ func SetAPIRouter(router *gin.Engine) {
 
 	// 服务状态（T-18）。纯内存环形缓冲，1440 槽，重启归零。
 	apiRouter.GET("/admin/service-status", controller.Auth, middleware.RequireAdmin, controller.GetServiceStatus)
+	// 非管理员的服务健康**摘要**（PLUS 面板的状态 Tab 用这个）。
+	//
+	// 为什么不直接放宽上面那条：那条返回逐分钟 points，能反推出「什么时段有多少请求」，
+	// 属运维可见信息（见 controller.GetServiceStatus 的注释）。本条**根本不返回 points**，
+	// 只给「现在好不好」——前端想画明细也拿不到数据。
+	//
+	// 鉴权用 AuthOrAccessToken 而不是 Auth：PLUS 只持 adapter key（access_tokens 表里
+	// 存的是 sha256(token) 的 hex，不是 JWT），走 Auth 会拿到 401「请重新登录」，
+	// 表现为状态页恒显「暂无采样数据」——既不报错也不显示无权限，是那种「看起来在工作、
+	// 实际一次没成功」的形态。
+	apiRouter.GET("/service-status/summary", controller.AuthOrAccessToken, controller.GetServiceStatusSummary)
 
 	// 工单附件删除（T-13 的配套入口）。删除与 blob ref_count 递减在同一事务里，
 	// 漏挂这条路由会让「上传能传、删不掉」—— 用户只能看着自己的图片占着配额。

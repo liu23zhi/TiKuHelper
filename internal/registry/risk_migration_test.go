@@ -51,27 +51,34 @@ func TestEnsureRiskSchemaCreatesTablesIndexesAndSeeds(t *testing.T) {
 	if !systemSettingFlagIsSet(db, riskWarningsSchemaReadyKey) {
 		t.Fatal("expected risk_warnings flag to be written")
 	}
-	// 3 条欠款规则种子，阈值必须是 100 / 1000 / 5000（118 §2.4 / §2.5）。
+	// 种子 = 欠款 3 条 + 行为规则（R1 multi_account_ip），阈值必须是字面量。
 	//
 	// ⚠️ 断言用**字面量**，不能写成「与 entity.DefaultRiskDebtRules 相等」——
 	// 那是拿被测数据和它自己的来源比，改默认值时两边一起变、永远绿（自我指涉断言）。
+	// rule_id 也写字面量（不引用常量）：常量漂移时这里必须红。
 	var rules []entity.RiskRule
 	if err := db.Order("id ASC").Find(&rules).Error; err != nil {
 		t.Fatalf("load rules: %v", err)
 	}
-	if len(rules) != 3 {
-		t.Fatalf("expected 3 seeded rules, got %d: %+v", len(rules), rules)
-	}
 	want := map[string]float64{
-		entity.RiskRuleIDDebtUser:   100,
-		entity.RiskRuleIDDebtBatch:  1000,
-		entity.RiskRuleIDDebtSystem: 5000,
+		"debt_user":        100,
+		"debt_batch":       1000,
+		"debt_system":      5000,
+		"multi_account_ip": 5,
 	}
+	if len(rules) != len(want) {
+		t.Fatalf("expected %d seeded rules, got %d: %+v", len(want), len(rules), rules)
+	}
+	seenSeed := make(map[string]bool, len(rules))
 	for _, rule := range rules {
 		expected, ok := want[rule.RuleID]
 		if !ok {
 			t.Fatalf("unexpected rule id %q", rule.RuleID)
 		}
+		if seenSeed[rule.RuleID] {
+			t.Fatalf("rule %s seeded twice", rule.RuleID)
+		}
+		seenSeed[rule.RuleID] = true
 		if rule.Threshold != expected {
 			t.Fatalf("rule %s threshold = %v, want %v", rule.RuleID, rule.Threshold, expected)
 		}
@@ -80,6 +87,11 @@ func TestEnsureRiskSchemaCreatesTablesIndexesAndSeeds(t *testing.T) {
 		}
 		if rule.Name == "" || rule.Severity == "" {
 			t.Fatalf("rule %s missing name/severity: %+v", rule.RuleID, rule)
+		}
+	}
+	for ruleID := range want {
+		if !seenSeed[ruleID] {
+			t.Fatalf("种子缺少规则 %q（实际：%+v）", ruleID, rules)
 		}
 	}
 	// 频控语义必须与 118 §2.4 一致：user 24h、batch 一次（0 = 永不重复）、system 6h。
@@ -104,8 +116,8 @@ func TestEnsureRiskSchemaCreatesTablesIndexesAndSeeds(t *testing.T) {
 	if err := db.Model(&entity.RiskRule{}).Count(&count).Error; err != nil {
 		t.Fatalf("count rules: %v", err)
 	}
-	if count != 3 {
-		t.Fatalf("second run duplicated seeds: count=%d", count)
+	if count != int64(len(want)) {
+		t.Fatalf("second run duplicated seeds: count=%d, want %d", count, len(want))
 	}
 }
 

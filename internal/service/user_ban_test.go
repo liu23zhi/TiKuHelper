@@ -211,27 +211,105 @@ func TestUserBanDoubleReadExpiredRowIsNotBanned(t *testing.T) {
 	}
 }
 
-// 混合场景：status=banned + 只有过期行 → **仍然封禁**（status 那一路命中）。
+// 存量封禁（决策 6 选 A：不回填）—— status=banned 且**完全没有 user_bans 行** → 仍然封禁。
 //
-// 这一条是上面三条的交叉校验：它证明两路是**独立**的，
-// 不是「user_bans 到期就把 status 也视为解除」这种耦合实现。
-func TestUserBanDoubleReadStatusWinsOverExpiredRow(t *testing.T) {
+// ⚠️ 这条断言的对象在 2026-11-14 被收窄过。原文是
+// 「status=banned + 只有过期行 → 仍然封禁」，注释理由是「证明两路互相独立，
+// 不是 user_bans 到期就把 status 也视为解除这种耦合实现」。
+//
+// 但那个版本把**一个真实生产缺陷当成了期望值**：
+// 实测 `Ban(expiresAt=now+1h)` 之后 `IsBannedAt(now+2h)` 仍返回 true ——
+// 即「临时封禁」实际是永久的。根因是 users.status 只在 Ban/Unban 两处被写，
+// **自然到期没有任何复位机制**（全仓无到期清理任务）。
+// 而 user_ban.go:384 的注释自己写着「提前置到期……与『到期自然失效』同一条路径」——
+// 说明设计意图里**本来就有**自然失效这条路径，只是从未实现。
+//
+// 所以现在把两类场景分开：
+//
+//	存量（无 user_bans 行）      → 按 status 判封禁  ← 本条，保「两路独立」的意图
+//	临时封禁到期（有行且全过期） → 视为已解除        ← TestUserBanTemporaryBanExpiresNaturally
+//
+// 这样既没有「status 被 user_bans 耦合」的问题（没有行时不看 user_bans），
+// 也没有「临时封禁永久化」的缺陷。
+func TestUserBanStatusWinsWhenNoBanRowsAtAll(t *testing.T) {
 	db := newUserBanTestDB(t)
-	userID := seedUserBanUser(t, db, "mixed", "banned")
-	now := time.Now()
-	if err := db.Create(&entity.UserBan{
-		UserID: userID, Reason: "历史临时封禁", BannedAt: now.Add(-3 * time.Hour),
-		ExpiresAt: ptrTime(now.Add(-time.Hour)), BannedBy: 1,
-	}).Error; err != nil {
-		t.Fatalf("create expired row: %v", err)
-	}
+	// 决策 6 选 A 的存量用户：只有 status，没有任何 user_bans 行。
+	userID := seedUserBanUser(t, db, "legacy-banned", "banned")
 
 	banned, err := IsBanned(db, userID)
 	if err != nil {
 		t.Fatalf("IsBanned: %v", err)
 	}
 	if !banned {
-		t.Fatal("users.status='banned' MUST keep the user banned even when all user_bans rows have expired")
+		t.Fatal("存量封禁（status=banned 且无任何 user_bans 行）必须判封禁 —— " +
+			"决策 6 选 A 不回填，这批用户只有 status 这一个信息源")
+	}
+}
+
+// 临时封禁**自然到期**后必须解除 —— 这是 2026-11-14 修掉的真实缺陷的回归钉。
+//
+// 修前实测：Ban(expiresAt=now+1h) → IsBannedAt(now+2h) == true，users.status 仍是 banned。
+// 运营设 1 小时临时封禁 = 实际永久，界面上写着到期时间，判定永不到期，且不报错。
+func TestUserBanTemporaryBanExpiresNaturally(t *testing.T) {
+	db := newUserBanTestDB(t)
+	userID := seedUserBanUser(t, db, "temp-ban", "enabled")
+	now := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)
+	expires := now.Add(time.Hour)
+
+	if _, err := Ban(db, UserBanRequest{
+		UserID: userID, Reason: "临时封禁 1 小时", ExpiresAt: &expires, OperatorUserID: 1,
+	}); err != nil {
+		t.Fatalf("Ban: %v", err)
+	}
+
+	// 封禁期间：必须 true（防止实现无条件返回 false）
+	during, err := IsBannedAt(db, userID, now)
+	if err != nil {
+		t.Fatalf("IsBannedAt(during): %v", err)
+	}
+	if !during {
+		t.Fatal("封禁期间必须判封禁")
+	}
+
+	// 到期后：必须 false。这一条就是修前不成立的那条。
+	after, err := IsBannedAt(db, userID, now.Add(2*time.Hour))
+	if err != nil {
+		t.Fatalf("IsBannedAt(after): %v", err)
+	}
+	if after {
+		t.Fatal("临时封禁在到期 2 小时后仍判封禁 —— 「临时封禁」实际是永久的，这是真实生产缺陷")
+	}
+
+	// user_bans 行必须保留（到期不等于删记录，审计要能查到当初封过）。
+	var rows []entity.UserBan
+	if err := db.Session(&gorm.Session{NewDB: true}).
+		Where("user_id = ?", userID).Find(&rows).Error; err != nil {
+		t.Fatalf("read rows: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("到期后 user_bans 行必须保留（审计需要），期望 1 行，实际 %d", len(rows))
+	}
+}
+
+// 永久封禁（expires_at IS NULL）不受到期逻辑影响 —— 对照组。
+func TestUserBanPermanentBanNeverExpires(t *testing.T) {
+	db := newUserBanTestDB(t)
+	userID := seedUserBanUser(t, db, "perm-ban", "enabled")
+	now := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)
+
+	if _, err := Ban(db, UserBanRequest{
+		UserID: userID, Reason: "永久封禁", ExpiresAt: nil, OperatorUserID: 1,
+	}); err != nil {
+		t.Fatalf("Ban: %v", err)
+	}
+
+	// 十年后仍然是封禁。
+	after, err := IsBannedAt(db, userID, now.AddDate(10, 0, 0))
+	if err != nil {
+		t.Fatalf("IsBannedAt: %v", err)
+	}
+	if !after {
+		t.Fatal("永久封禁（expires_at IS NULL）十年后仍必须判封禁")
 	}
 }
 

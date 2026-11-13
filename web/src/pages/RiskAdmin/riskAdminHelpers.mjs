@@ -31,6 +31,9 @@ export const RISK_RULE_OPTIONS = Object.freeze([
   { value: 'debt_user', label: '单用户欠款超阈值' },
   { value: 'debt_batch', label: '单批次欠款超阈值' },
   { value: 'debt_system', label: '系统总欠款突增' },
+  // 96 §2.1 的 R1（18 条行为规则里第一条落地的）。
+  // 后端 rule_id 是 `multi_account_ip`，阈值键 `risk_rule_multi_account_ip_threshold`。
+  { value: 'multi_account_ip', label: '同 IP 多账号' },
 ])
 
 const RISK_RULE_LABELS = Object.freeze(

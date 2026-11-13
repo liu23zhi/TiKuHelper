@@ -407,7 +407,7 @@ const riskAlertDetailPathPrefix = "/admin/risk/alerts/"
 
 // riskRuleDisplayName 返回规则的中文名（告警消息与列表都用它）。
 func riskRuleDisplayName(ruleID string) string {
-	for _, item := range entity.DefaultRiskDebtRules {
+	for _, item := range entity.DefaultRiskRules() {
 		if item.RuleID == ruleID {
 			return item.Name
 		}
@@ -449,14 +449,18 @@ func riskRuleThreshold(db *gorm.DB, rule entity.RiskRule, fallback float64) floa
 
 // loadRiskRules 读取规则行并按默认值补齐缺失的规则。
 //
-// 缺失规则（表还没建/行被删）**不能**被静默跳过：欠款告警是「欠款不设上限」的唯一
-// 安全阀（118 §2.9），少一条规则等于少一道闸。所以这里用代码默认值补齐，
-// 并把「行不存在」当成「用默认值、按默认启用」处理。
+// 缺失规则（表还没建/行被删）**不能**被静默跳过：少一条规则等于少一道闸，
+// 而且不会有任何报错。所以这里用代码默认值补齐，并把「行不存在」当成
+// 「用默认值、按默认启用」处理。
+//
+// 遍历 entity.DefaultRiskRules()（欠款 + 行为）：任何新规则只要登记在默认值里，
+// 判定链就自动拿到它，不需要再改这个函数 —— 这是 R1 范式的一部分。
 func loadRiskRules(db *gorm.DB) ([]entity.RiskRule, error) {
-	rows := make([]entity.RiskRule, 0, len(entity.DefaultRiskDebtRules))
+	defaults := entity.DefaultRiskRules()
+	rows := make([]entity.RiskRule, 0, len(defaults))
 	if db != nil && db.Migrator().HasTable(entity.TableNameRiskRule) {
 		var stored []entity.RiskRule
-		if err := db.Find(&stored).Error; err != nil {
+		if err := db.Session(&gorm.Session{NewDB: true}).Find(&stored).Error; err != nil {
 			return nil, err
 		}
 		rows = append(rows, stored...)
@@ -465,8 +469,8 @@ func loadRiskRules(db *gorm.DB) ([]entity.RiskRule, error) {
 	for _, row := range rows {
 		byID[row.RuleID] = row
 	}
-	result := make([]entity.RiskRule, 0, len(entity.DefaultRiskDebtRules))
-	for _, item := range entity.DefaultRiskDebtRules {
+	result := make([]entity.RiskRule, 0, len(defaults))
+	for _, item := range defaults {
 		if row, ok := byID[item.RuleID]; ok {
 			result = append(result, row)
 			continue
@@ -521,7 +525,7 @@ func EvaluateDebtAlerts(db *gorm.DB, now time.Time) (RiskAlertEvaluation, error)
 		return result, nil
 	}
 
-	candidates := make([]riskWarningCandidate, 0, riskIndebtedUserScanLimit+len(entity.DefaultRiskDebtRules))
+	candidates := make([]riskWarningCandidate, 0, riskIndebtedUserScanLimit+len(entity.DefaultRiskRules()))
 	if rule, ok := enabledRules[entity.RiskRuleIDDebtUser]; ok {
 		found, scanErr := collectUserDebtCandidates(db, rule, now)
 		if scanErr != nil {
@@ -538,6 +542,15 @@ func EvaluateDebtAlerts(db *gorm.DB, now time.Time) (RiskAlertEvaluation, error)
 	}
 	if rule, ok := enabledRules[entity.RiskRuleIDDebtSystem]; ok {
 		found, scanErr := collectSystemDebtCandidates(db, rule, now)
+		if scanErr != nil {
+			return result, scanErr
+		}
+		candidates = append(candidates, found...)
+	}
+	// R1 行为规则（96 §2.1）：接在同一条判定链上而不是另起一个 Evaluate 函数 ——
+	// 后台 worker 只调这一个入口，新增规则不需要改第二处。
+	if rule, ok := enabledRules[entity.RiskRuleIDMultiAccountIP]; ok {
+		found, scanErr := collectMultiAccountIPCandidates(db, rule, now)
 		if scanErr != nil {
 			return result, scanErr
 		}
@@ -585,6 +598,9 @@ type riskWarningCandidate struct {
 	UserID   *int32
 	Severity string
 	Detail   string
+	// IP 是证据里的来源 IP（96 §2.3 的 RiskAlert.IP 列）。
+	// 目前只有行为规则填它（R1 是纯 IP 维度）；欠款三条留空。
+	IP string
 }
 
 // createRiskWarningIfNeeded 按规则的节流语义决定是否新建告警行。
@@ -622,13 +638,83 @@ func createRiskWarningIfNeeded(db *gorm.DB, candidate riskWarningCandidate, now 
 		SubjectKey: candidate.Subject,
 		Severity:   candidate.Severity,
 		UserID:     candidate.UserID,
+		IP:         candidate.IP,
 		Detail:     candidate.Detail,
 		CreatedAt:  now,
 	}
-	if err := db.Session(&gorm.Session{NewDB: true}).Create(&warning).Error; err != nil {
+	// ⚠️ 插入必须是**原子语句**，不能是「上面查完就无条件 Create」。
+	//
+	// 上面那次查询只是快速路径（命中就省掉一次写），它**不提供并发保证**：
+	// 两个 goroutine 同时查不到就会各插一行 —— 实测 8 并发在同一窗口内
+	// 得到 2 行（debt_* 同样复现）。
+	//
+	// 这里用 `INSERT ... SELECT ... WHERE NOT EXISTS`：判重与插入在**同一条语句**里，
+	// 由数据库一次执行完。既不需要唯一索引（见 entity.RiskWarning.SubjectKey 的注释：
+	// 唯一索引会废掉「隔一个窗口后再告警」），也不依赖隔离级别。
+	inserted, err := insertRiskWarningIfAbsent(db, warning, candidate.Rule.ThrottleSeconds, now)
+	if err != nil {
+		return false, nil, err
+	}
+	if !inserted {
+		// 另一个 goroutine 先插了（或上面查询时还没提交的那一条刚提交）：
+		// 语义与「查到了已有行」相同 → 不新建、不重复推送。
+		var existing entity.RiskWarning
+		lookup := db.Session(&gorm.Session{NewDB: true}).Model(&entity.RiskWarning{}).
+			Where("rule_id = ? AND subject_key = ?", candidate.Rule.RuleID, candidate.Subject)
+		if found, findErr := riskWarningExists(lookup, &existing); findErr == nil && found {
+			return false, &existing, nil
+		}
+		return false, nil, nil
+	}
+	// 回读刚插入的行（拿到自增 ID，推送与调用方都要用）。
+	if err := db.Session(&gorm.Session{NewDB: true}).
+		Where("rule_id = ? AND subject_key = ?", candidate.Rule.RuleID, candidate.Subject).
+		Order("id DESC").First(&warning).Error; err != nil {
 		return false, nil, err
 	}
 	return true, &warning, nil
+}
+
+// insertRiskWarningIfAbsent 用单条 INSERT ... SELECT ... WHERE NOT EXISTS 完成
+// 「不存在才插入」，返回是否真的插入了行。
+//
+// 为什么不是 `Create` + 唯一索引：
+//   - 唯一索引 (rule_id, subject_key) 会让窗口节流的规则（debt_user 24h /
+//     debt_system 6h）**永远只能有一行**，直接废掉「隔一个窗口后再告警」。
+//   - 要两者兼得，必须把「窗口标识」独立成一列 —— 那是表结构变更，超出 R1 范围。
+//
+// 为什么这条语句是原子的：
+//
+//	条件判断与写入在同一个 statement 内，数据库要么整体执行要么不执行。
+//	SQLite 在 `_txlock=immediate`（生产 DSN）下写事务串行化；
+//	MySQL 对 INSERT...SELECT WHERE NOT EXISTS 在同一语句内持有必要的锁。
+//	两种方言都支持这个语法（不用 ON CONFLICT / ON DUPLICATE KEY，那些是方言专属）。
+//
+// 兜底：万一某方言的行为退化，最坏结果是**多一行重复告警**（噪音），
+// 不会漏报，也不影响任何处置（风控不处置）。这一点写在 SubjectKey 的注释里。
+func insertRiskWarningIfAbsent(db *gorm.DB, warning entity.RiskWarning, throttleSeconds int, now time.Time) (bool, error) {
+	statement := "INSERT INTO " + entity.TableNameRiskWarning +
+		" (rule_id, subject_key, severity, user_id, ip, detail, notified, created_at)" +
+		" SELECT ?, ?, ?, ?, ?, ?, ?, ?" +
+		" WHERE NOT EXISTS (SELECT 1 FROM " + entity.TableNameRiskWarning +
+		" WHERE rule_id = ? AND subject_key = ?"
+	args := []any{
+		warning.RuleID, warning.SubjectKey, warning.Severity, warning.UserID, warning.IP,
+		warning.Detail, false, now,
+		warning.RuleID, warning.SubjectKey,
+	}
+	if throttleSeconds > 0 {
+		// 窗口节流：窗口内已有行才阻止插入；窗口外允许再写一条。
+		statement += " AND created_at > ?"
+		args = append(args, now.Add(-time.Duration(throttleSeconds)*time.Second))
+	}
+	statement += ")"
+
+	result := db.Session(&gorm.Session{NewDB: true}).Exec(statement, args...)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
 }
 
 // riskWarningExists 是「该主体是否已有告警」的判定。
@@ -648,6 +734,166 @@ func riskWarningExists(query *gorm.DB, out *entity.RiskWarning) (bool, error) {
 		*out = row
 	}
 	return true, nil
+}
+
+// collectMultiAccountIPCandidates 收集「同一 IP 在窗口内登录了 ≥N 个不同账号」的命中
+// （96 §2.1 R1）。
+//
+// # 这是 18 条行为规则的**范式**，R2–R18 照抄这个骨架
+//
+// 四条纪律（每一条都有对应的踩坑理由）：
+//
+//  1. **数据源先读代码确认，不假定**。R1 用的是 `logs` 表：
+//     成功登录由 controller 的 recordAccountAudit → WriteAccountAuditWithDB 写入
+//     （user.go:431 密码登录 / :1123 短信登录 / admin_login.go:151 管理员入口），
+//     action=logActionLogin(10)，client_ip 是来源 IP，user_id 是账号。
+//     **不是** `login_attempts` —— 那张表只记「连续失败计数 + 锁定」，
+//     成功登录时走的是 ClearLoginAttemptsOnSuccessWithDB（清零+重置窗口起点），
+//     从不落一行成功流水。用错表的表现是「永远查不到多账号」而不报错。
+//
+//  2. **阈值走 riskRuleThreshold**（三层兜底），键 `risk_rule_<rule_id>_threshold`。
+//     不要在这里写死数字：写死 = 运营改配置无效，且不会有任何提示。
+//
+//  3. **节流靠 SubjectKey 里编进窗口起点**，不靠「查有没有同类告警」。
+//     key = `multi_account_ip:<ip>:<窗口起点 RFC3339>`。
+//     同一窗口内 key 完全相同 → createRiskWarningIfNeeded 的
+//     (rule_id, subject_key) 查询命中已有行 → 不写第二行；
+//     窗口滚动后 key 变化 → 自然产生新的一条。
+//     而「查有没有同类告警」是**先读后写**，两个 goroutine 同时读不到就会各写一行，
+//     且没有唯一索引兜底 —— 并发下必然重复（见 TestRiskMultiAccountIPConcurrentEvaluationWritesOnce）。
+//
+//  4. **只读不写**（96 C1）：本函数不 UPDATE users、不碰 blacklist_entries、不 Abort 请求。
+//
+// 已知取舍（如实记录，不掩盖）：
+//
+//   - 按**自然日 24h 窗口**（上海时区 00:00 切日）切分，不是滑动窗口。
+//     自然日窗口的好处是 key 稳定可复现（同一 IP 同一天只有一个 key）；
+//     96 §2.1 写的是「24h 内」，严格说滑动窗口更贴合，但滑动窗口的 key 会随
+//     now 漂移（每次评估一个不同的窗口起点），等于没有节流 —— 那会退化成
+//     「每次评估都写一条」。这里优先保证节流正确。
+//
+//     ⚠️ **排障时最有用的一句话（用户可见后果）**：
+//     跨零点的两次行为**不计入同一窗口**。
+//     例：某 IP 在 23:59 登录了 4 个账号、次日 00:01 又登录了 4 个，阈值 5 →
+//     **不会告警**，因为 4 和 4 分属两个窗口，各自都没达到 5。
+//     排查「明明超过阈值为什么不报」时，先看是不是被零点切开了。
+//
+//   - 共享出口（校园网/公司 NAT/运营商 CGNAT）会误报。这是 R1 固有的误报面，
+//     96 §2.1 把它定为「中」级别并**只告警不处置**正是为此。阈值默认 5 也是
+//     为了避开「一家人/一个宿舍共用一个 IP」的常见情况。
+//
+//   - ⚠️ **后续规则纪律（R2–R18 必读）**：`logs.action = 10` **不能单独作判据**。
+//     成功登录与「非管理员尝试管理员入口」（admin_login.go:127）都写 action=10，
+//     后者 status=denied。任何按 action 过滤的规则都必须同时看 status，
+//     否则会把「一个人反复试管理员入口」误判成「同 IP 多账号」这类假信号。
+func collectMultiAccountIPCandidates(db *gorm.DB, rule entity.RiskRule, now time.Time) ([]riskWarningCandidate, error) {
+	threshold := riskRuleThreshold(db, rule, riskDefaultThreshold(rule.RuleID))
+	if threshold <= 0 {
+		return nil, nil
+	}
+	if !db.Migrator().HasTable(entity.TableNameLog) {
+		// logs 表不存在（极简单测 schema）→ 不判定。不报错：行为规则依赖业务表，
+		// 缺表时告警系统不该让启动/评估失败。
+		return nil, nil
+	}
+	windowStart, windowEnd := riskLoginWindow(now)
+	var rows []riskIPAccountGroup
+	if err := db.Session(&gorm.Session{NewDB: true}).
+		Model(&entity.Log{}).
+		Select("client_ip AS client_ip, COUNT(DISTINCT user_id) AS accounts").
+		Where("action = ?", riskLoginAuditAction).
+		Where("module = ?", riskLoginAuditModule).
+		Where("client_ip <> ''").
+		Where("user_id > 0").
+		// 只认成功登录：拒绝/失败行也带 action=10（例如「非管理员尝试使用
+		// 管理员入口登录」写的是 status=denied），把它们算进账号数会把
+		// 「一个人反复试管理员入口」误判成「同 IP 多账号」。
+		Where("new_answer LIKE ?", `%"status":"success"%`).
+		Where("create_time >= ? AND create_time < ?", windowStart, windowEnd).
+		Group("client_ip").
+		// 阈值判断留在 Go 侧（不在 HAVING 里）：SQL 里写 HAVING 会让「阈值恰好相等」
+		// 的边界判定随方言变化（不同 DB 的 COUNT 类型比较规则不一致），
+		// 而这条边界正是判据①要钉的东西。
+		Order("client_ip ASC").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	candidates := make([]riskWarningCandidate, 0, len(rows))
+	for _, row := range rows {
+		ip := strings.TrimSpace(row.ClientIP)
+		if ip == "" {
+			continue
+		}
+		accounts := row.Accounts
+		// 「≥ 阈值」：2 个账号 + 阈值 3 → 不告警；3 个账号 + 阈值 3 → 告警。
+		// 写成 > 会让「恰好达到阈值」漏报，这是判据①要钉住的边界。
+		if float64(accounts) < threshold {
+			continue
+		}
+		subject := riskMultiAccountIPSubject(ip, windowStart)
+		detail, err := json.Marshal(map[string]any{
+			"ruleId":      rule.RuleID,
+			"subjectKey":  subject,
+			"ip":          ip,
+			"threshold":   threshold,
+			"value":       accounts,
+			"accounts":    accounts,
+			"windowStart": windowStart.Format(time.RFC3339),
+			"windowEnd":   windowEnd.Format(time.RFC3339),
+			"evaluatedAt": now.Format(time.RFC3339),
+			"evidenceNote": "按 logs 表中 status=success 的登录审计行统计不同 user_id 数量；" +
+				"窗口为自然日 24h（窗口起点编进 subjectKey 以保证节流可复现）",
+		})
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, riskWarningCandidate{
+			Rule:     rule,
+			Subject:  subject,
+			Severity: rule.Severity,
+			Detail:   string(detail),
+			IP:       ip,
+		})
+	}
+	return candidates, nil
+}
+
+// riskIPAccountGroup 是 R1 的聚合行。
+type riskIPAccountGroup struct {
+	ClientIP string
+	Accounts int64
+}
+
+// 登录审计行的三个判定值（与 controller/logs.go 的 logActionLogin、
+// account_audit.go 的 module 字面量对齐）。
+//
+// 刻意写字面量而不是 import controller 里的常量：service 不能依赖 controller
+// （会形成 import 环），而这两处字面值必须一致。测试
+// TestRiskLoginAuditPredicateMatchesControllerConstants 用源码断言把两者钉住 ——
+// 这是「跨层字面量」唯一可行的防漂移手段。
+const (
+	riskLoginAuditAction int32  = 10
+	riskLoginAuditModule string = "auth"
+)
+
+// riskLoginWindow 返回 now 所在的自然日 24h 窗口 [start, end)。
+//
+// 用固定时区（Asia/Shanghai）而不是 UTC：审计行的 create_time 由
+// WriteAccountAuditWithDB 写成 time.Now().In(ShanghaiLocation())，
+// 若窗口按 UTC 切分，国内凌晨 0-8 点的登录会落到「前一天」的窗口里，
+// 与运营看到的日期对不上。
+func riskLoginWindow(now time.Time) (time.Time, time.Time) {
+	local := now.In(logger.ShanghaiLocation())
+	start := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, local.Location())
+	return start, start.Add(24 * time.Hour)
+}
+
+// riskMultiAccountIPSubject 生成 R1 的节流主体。
+//
+// 形如 `multi_account_ip:203.0.113.9:2026-11-14T00:00:00+08:00`。
+// 窗口起点编进 key 是节流机制的核心（见 collectMultiAccountIPCandidates 纪律 3）。
+func riskMultiAccountIPSubject(ip string, windowStart time.Time) string {
+	return entity.RiskRuleIDMultiAccountIP + ":" + strings.TrimSpace(ip) + ":" + windowStart.Format(time.RFC3339)
 }
 
 // collectUserDebtCandidates 收集「单用户 |balance| >= 阈值」的命中（118 §2.4 触发 1）。
@@ -864,7 +1110,7 @@ func saveRiskSystemDebtBaseline(db *gorm.DB, total float64, now time.Time) error
 
 // riskDefaultThreshold 返回代码默认阈值（表与设置都缺失时的最后兜底）。
 func riskDefaultThreshold(ruleID string) float64 {
-	for _, item := range entity.DefaultRiskDebtRules {
+	for _, item := range entity.DefaultRiskRules() {
 		if item.RuleID == ruleID {
 			return item.Threshold
 		}

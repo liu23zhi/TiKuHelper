@@ -19,15 +19,24 @@ const (
 	RiskSeverityLow    = "low"
 )
 
-// 三条欠款规则的 rule_id（118-决策记录第十二轮-欠款与风控告警.md §2.4）。
+// 规则 rule_id 常量。
 //
-// 命名刻意与 96 §2.2 的配置键风格对齐（`risk_rule_<rule_id>_threshold`），
-// 因此这里用短名而不是 96 §2.1 里 `multi_account_ip` 那种完整描述名 ——
-// 阈值键越长越容易写错，而键名是运营要手工改的东西。
+// 命名刻意与 96 §2.2 的配置键风格对齐（`risk_rule_<rule_id>_threshold`）。
+// 欠款三条（118 号决策）用短名；行为规则沿用 96 §2.1 的原始描述名
+// （`multi_account_ip`），因为它们是 96/97 号文档里已有的公开标识，
+// 改名会让「文档—代码」对照失效，而对照正是后续 17 条规则派工的依据。
 const (
 	RiskRuleIDDebtUser   = "debt_user"
 	RiskRuleIDDebtBatch  = "debt_batch"
 	RiskRuleIDDebtSystem = "debt_system"
+	// RiskRuleIDMultiAccountIP 是 96 §2.1 的 R1「同 IP 多账号」——
+	// 18 条行为规则里**第一条落地**的（范式见 service/risk_alert.go
+	// collectMultiAccountIPCandidates 的注释）。
+	//
+	// ⚠️ 它的一条老注释曾经把 multi_account_ip 写成「命名反例」（说明为什么
+	// debt_* 用短名）。现在它已经是**真规则**，那条注释已随之改写 ——
+	// 否则后面的人 grep 到的仍是「这是个反例」，会误判成未实现。
+	RiskRuleIDMultiAccountIP = "multi_account_ip"
 )
 
 // RiskRuleDefault 是一条规则的**代码内默认值**。
@@ -86,6 +95,44 @@ var DefaultRiskDebtRules = []RiskRuleDefault{
 	},
 }
 
+// DefaultRiskBehaviorRules 是 96 §2.1 那批**行为**规则的代码默认值。
+//
+// 与 DefaultRiskDebtRules 分开两个切片，不是审美选择：
+//
+//  1. 两者的开关默认相反 —— 欠款规则默认 true（118 §2.9：欠款不设上限的唯一安全阀），
+//     行为规则按 96 §7 默认也 true 但**误报代价完全不同**（行为规则靠阈值+窗口压制误报，
+//     欠款规则靠金额）。混在一个切片里，将来「行为规则默认关」的决策会连带关掉安全阀。
+//  2. 测试与运维都需要一个「只要欠款三条」的稳定集合（既有用例断言 len==3）。
+//
+// 当前只有 R1（multi_account_ip）。R2–R18 落地时往这里追加，判定函数各写一个
+// collectXxxCandidates，其余全复用（范式见 service/risk_alert.go 的同名注释）。
+var DefaultRiskBehaviorRules = []RiskRuleDefault{
+	{
+		RuleID:   RiskRuleIDMultiAccountIP,
+		Name:     "同 IP 多账号",
+		Severity: RiskSeverityMedium,
+		// 96 §2.1 R1：同一 IP 在 24h 内出现 ≥N 个不同 user_id 登录成功，N 默认 5。
+		Threshold: 5,
+		// 0 = 同一 SubjectKey 永不重复。R1 的 SubjectKey 已经把**窗口起点**编进去
+		// （`multi_account_ip:<ip>:<窗口起点>`），所以「同一窗口内只一条、下一个窗口
+		// 再一条」是由 key 本身保证的，不需要额外的窗口节流 —— 再加时间窗反而会让
+		// 『隔一个窗口后再告警』在边界上失效（两条判据互相打架）。
+		ThrottleSeconds: 0,
+		Description:     "同一 IP 在 24 小时窗口内登录了达到阈值的不同账号数。常见于共享出口（校园网/公司 NAT）与养号群体，只告警不处置。",
+	},
+}
+
+// DefaultRiskRules 返回**全部**代码默认规则（欠款 + 行为）。
+//
+// 判定、种子、兜底三处都必须走这个函数而不是直接遍历某一个切片：
+// 漏掉任何一条 = 少一道闸，而且不会有任何报错（规则就是静默不生效）。
+func DefaultRiskRules() []RiskRuleDefault {
+	all := make([]RiskRuleDefault, 0, len(DefaultRiskDebtRules)+len(DefaultRiskBehaviorRules))
+	all = append(all, DefaultRiskDebtRules...)
+	all = append(all, DefaultRiskBehaviorRules...)
+	return all
+}
+
 // RiskRule 是一条风控规则的可配置行（risk_rules）。
 //
 // 规则行只承载**运营可调的部分**：是否启用、级别、节流、阈值。
@@ -138,10 +185,36 @@ type RiskWarning struct {
 	ID int64 `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
 	// RuleID 关联 risk_rules.rule_id（debt_user / debt_batch / debt_system）。
 	RuleID string `gorm:"column:rule_id;type:varchar(64);not null;default:'';index:idx_risk_warning_rule_created,priority:1;index:idx_risk_warning_subject,priority:1" json:"ruleId"`
-	// SubjectKey 是节流主体：user:12345 / batch:batch-7f3a / system:。
+	// SubjectKey 是节流主体：user:12345 / batch:batch-7f3a / system:debt /
+	// multi_account_ip:<ip>:<窗口起点>。
 	//
 	// 它必须存在，否则「同一用户 24h 只告警一次」无法判定 ——
 	// 靠 Detail 里的 JSON 反查既慢又不可靠（Detail 是给人看的快照，不承诺结构稳定）。
+	//
+	// ⚠️ **已知并发缺口（如实记录，本轮决策为「不修」，理由见下）**：
+	// 节流用的是「先查 (rule_id, subject_key) 再插入」。缺口本身已由
+	// service.insertRiskWarningIfAbsent 用单条 `INSERT ... SELECT ... WHERE NOT EXISTS`
+	// 补上（判重与写入同一 statement，不依赖隔离级别）；这里记录的是
+	// **为什么没有加唯一索引这层额外兜底**。
+	//
+	// 不能加 `UNIQUE(rule_id, subject_key)` 的原因（实测，不是推断）：
+	// 加上之后 TestRiskEvaluateDebtAlertsUserRuleThresholdAndThrottle 立刻红
+	// （"after the throttle window the same users must alert again, created=0"）——
+	// 窗口节流的规则（debt_user 24h / debt_system 6h）需要在**下一个窗口**
+	// 为**同一 SubjectKey** 再写一行，唯一索引让它永远只能有一行，
+	// 直接废掉「隔一个窗口后再告警」。
+	//
+	// 这是**数据模型层面的互斥**，不是实现问题：要让两者兼得，必须把
+	// 「窗口标识」独立成一列（表结构变更 + 迁移兼容 + 存量回填）。评估后不做，因为：
+	//   - 语义上原子性已由单条 INSERT 拿到，唯一索引只是多一层兜底，不是唯一正确性来源；
+	//   - 唯一索引方案真正的代价不是变更本身，而是它会**把「同一 SubjectKey 在不同窗口
+	//     各写一行」这个正确行为判成违规**。任何绕过它的写法（例如写时给 subject_key
+	//     拼时间后缀）都会污染 SubjectKey 的语义 —— 而 SubjectKey 是排障时唯一的稳定键。
+	// 若将来确需唯一约束，正确方向是加 `subject_window_start` 列并以其入索引。
+	//
+	// 影响面（供决策参考）：并发窗口极窄（同一瞬间两个 worker 判定同一主体），
+	// 后果是**多一条重复告警**（噪音），不是漏报，也不影响任何处置（风控不处置）。
+	// 回归钉：TestRiskWarningDedupIsAtomicAcrossAllRules（四条规则 × 16 并发）。
 	SubjectKey string `gorm:"column:subject_key;type:varchar(191);not null;default:'';index:idx_risk_warning_subject,priority:2" json:"subjectKey"`
 	// Severity 是触发时的级别快照（规则后来被改级也不影响历史记录）。
 	Severity string `gorm:"column:severity;type:varchar(16);not null;default:'medium'" json:"severity"`

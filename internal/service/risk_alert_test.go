@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -12,8 +13,11 @@ import (
 
 	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
+	// gormlogger 别名：本文件同时要用 pkg/logger（ShanghaiLocation）与
+	// gorm 的 logger（Default/Silent），两个包同名必须分开。
+	gormlogger "gorm.io/gorm/logger"
 )
 
 const (
@@ -23,9 +27,19 @@ const (
 
 func newRiskAlertTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
-	name := strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
+	return newRiskAlertTestDBNamed(t, t.Name())
+}
+
+// newRiskAlertTestDBNamed 用指定名字建一个**独立**内存库。
+//
+// 名字必须唯一：`mode=memory&cache=shared` 下同名就是同一个库。
+// 需要一个用例内多轮跑的场景（并发稳定性）必须每轮换名，否则后一轮会看到
+// 前一轮残留的行 —— 表现为「已创建 0 个」的假红（实测踩到）。
+func newRiskAlertTestDBNamed(t *testing.T, rawName string) *gorm.DB {
+	t.Helper()
+	name := strings.NewReplacer("/", "_", " ", "_").Replace(rawName)
 	db, err := gorm.Open(sqlite.Open("file:risk-alert-"+name+"?mode=memory&cache=shared"), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
+		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
 	})
 	if err != nil {
 		t.Fatalf("open test db: %v", err)
@@ -43,6 +57,8 @@ func newRiskAlertTestDB(t *testing.T) *gorm.DB {
 		&entity.RiskRule{},
 		&entity.RiskWarning{},
 		&entity.TicketNotification{},
+		// Log 是 R1（multi_account_ip）的数据源：成功登录的审计行落在 logs 表。
+		&entity.Log{},
 	} {
 		if err := db.AutoMigrate(model); err != nil {
 			t.Fatalf("migrate %T: %v", model, err)
@@ -56,10 +72,14 @@ func newRiskAlertTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-// seedRiskRules 写入 3 条规则（与 registry 的种子同值，避免依赖 registry 包）。
+// seedRiskRules 写入**全部**代码默认规则（欠款 3 条 + 行为规则），与 registry 种子同值。
+//
+// ⚠️ 必须用 entity.DefaultRiskRules() 而不是只写欠款三条：R1（multi_account_ip）
+// 落地后，写死三条会让所有涉及行为规则的用例在「规则行不存在」的兜底路径上跑 ——
+// 那样测的是兜底而不是真实行，且用例名会指向错误的被测对象。
 func seedRiskRules(t *testing.T, db *gorm.DB) {
 	t.Helper()
-	for _, item := range entity.DefaultRiskDebtRules {
+	for _, item := range entity.DefaultRiskRules() {
 		row := entity.RiskRule{
 			RuleID:          item.RuleID,
 			Name:            item.Name,
@@ -919,27 +939,35 @@ func TestRiskEvaluateDebtAlertsRespectsDisabledRules(t *testing.T) {
 	}
 }
 
-// 规则行被删光时用代码默认值兜底：少一条规则等于少一道安全阀（118 §2.9）。
+// 规则行被删光时用代码默认值兜底：少一条规则等于少一道闸。
 //
-// ⚠️ 这里的阈值断言必须写**字面量 100 / 1000 / 5000**，不能写成
+// ⚠️ 这里的阈值断言必须写**字面量 100 / 1000 / 5000 / 5**，不能写成
 // `rule.Threshold != riskDefaultThreshold(rule.RuleID)` —— 那是拿函数输出和它自己比，
 // 默认值从 100 改成 10000 时等式两边一起变，**永远绿**（自我指涉断言）。
 // 实测过：旧写法下把 100 变异成 10000，本条用例仍然通过。
+//
+// ⚠️ 期望集合必须用**字面量 rule_id**，且必须**逐个覆盖**（不是只数个数）：
+// 只断 len==4 的话，「删掉 debt_user、加一条乱 id」也能过。
+// R1（multi_account_ip）落地时本用例曾因「只数个数」而红得毫无信息量
+// （expected 3, got 4），改成逐个 rule_id 后新增规则会被精确指出。
 func TestLoadRiskRulesFallsBackToCodeDefaults(t *testing.T) {
 	db := newRiskAlertTestDB(t)
 	rules, err := loadRiskRules(db)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if len(rules) != 3 {
-		t.Fatalf("expected 3 fallback rules, got %d", len(rules))
-	}
-	// 配置完全缺失时的默认阈值（118 §2.5 用户拍板的 100 / 1000 / 5000）。
+	// 配置完全缺失时的默认阈值（字面量，故意不引用 entity 常量：
+	// 常量漂移时这里必须红）。
 	wantThreshold := map[string]float64{
-		entity.RiskRuleIDDebtUser:   100,
-		entity.RiskRuleIDDebtBatch:  1000,
-		entity.RiskRuleIDDebtSystem: 5000,
+		"debt_user":        100,
+		"debt_batch":       1000,
+		"debt_system":      5000,
+		"multi_account_ip": 5,
 	}
+	if len(rules) != len(wantThreshold) {
+		t.Fatalf("fallback rule count = %d, want %d（实际：%v）", len(rules), len(wantThreshold), ruleIDsOf(rules))
+	}
+	seen := make(map[string]bool, len(rules))
 	for _, rule := range rules {
 		if !rule.Enabled {
 			t.Fatalf("fallback rule %s must be enabled", rule.RuleID)
@@ -948,8 +976,18 @@ func TestLoadRiskRulesFallsBackToCodeDefaults(t *testing.T) {
 		if !ok {
 			t.Fatalf("unexpected fallback rule id %q", rule.RuleID)
 		}
+		if seen[rule.RuleID] {
+			t.Fatalf("rule %s 在兜底集合里出现了两次", rule.RuleID)
+		}
+		seen[rule.RuleID] = true
 		if rule.Threshold != want {
 			t.Fatalf("fallback rule %s threshold = %v, want %v（默认值被改动会漏报）", rule.RuleID, rule.Threshold, want)
+		}
+	}
+	// 反向对照：四条都必须真的出现（防「少一条但个数凑够」）。
+	for ruleID := range wantThreshold {
+		if !seen[ruleID] {
+			t.Fatalf("兜底集合缺少规则 %q，实际：%v", ruleID, ruleIDsOf(rules))
 		}
 	}
 	// 对照：riskDefaultThreshold 也必须与同一批字面量一致
@@ -1407,8 +1445,17 @@ func TestRiskAndTicketWebhookShareValueButStayIndependent(t *testing.T) {
 // 判定规则（刻意写得窄，避免误伤读取路径）：
 //   - 出现 `entity.User` 的行，若同时出现 Update / Updates / Delete / Save，
 //     视为对 users 的写操作 → 红；
-//   - 出现非注释行里的 "status" 字面量 → 红（风控没有理由写这个字段）；
+//   - 出现 `"status"` 字面量**且同时出现写标记**的行 → 红（风控没有理由写这个字段）；
 //   - `Model(&entity.User{}).Where("balance < 0").Select/Count` 这类读是允许的。
+//
+// ⚠️ 2026-11-14 收窄（R1 落地时）：原判据是「**任何**非注释行出现 `"status"`
+// 就红」。R1 需要读 `logs` 表里登录审计行的 JSON 快照
+// （`new_answer LIKE '%"status":"success"%'`），它是**跨表的只读筛选**，
+// 与「写 users.status」无关，却会被原判据误伤。
+//
+// 收窄方式是「加写标记限定」，不是删掉这条断言 —— 并且下面配了
+// `assertStatusGuardStillCatchesRealWrite`，用真实写形态回测，
+// 保证收窄后仍能抓到 `Update("status", "banned")` 这类真正的处置写。
 func TestRiskAlertSourceNeverMutatesUserStatus(t *testing.T) {
 	raw, err := os.ReadFile("risk_alert.go")
 	if err != nil {
@@ -1418,14 +1465,20 @@ func TestRiskAlertSourceNeverMutatesUserStatus(t *testing.T) {
 	if !strings.Contains(source, "func EvaluateDebtAlerts(") {
 		t.Fatal("读到的不是 risk_alert.go（缺少 EvaluateDebtAlerts）：路径假设已失效，本用例不能静默通过")
 	}
-	writes := []string{"Update(", "Updates(", "UpdateColumn", "Delete(", "Save("}
+	writes := []string{"Update(", "Updates(", "UpdateColumn", "Delete(", "Save(", "Exec("}
 	for _, line := range strings.Split(source, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") {
 			continue
 		}
-		if strings.Contains(trimmed, `"status"`) {
-			t.Fatalf("C1：风控路径不得出现 status 字面量：%s", trimmed)
+		if strings.Contains(trimmed, `"status"`) && containsAnyMarker(trimmed, writes) {
+			t.Fatalf("C1：风控路径不得写 status：%s", trimmed)
+		}
+		// raw SQL 里的 SET status / status = 'banned' 也算写（不经 GORM 的 Update）。
+		lowered := strings.ToLower(trimmed)
+		if strings.Contains(lowered, "set status") || strings.Contains(lowered, "status = 'banned'") ||
+			strings.Contains(lowered, `status = "banned"`) {
+			t.Fatalf("C1：风控路径不得用原生 SQL 写 status：%s", trimmed)
 		}
 		if !strings.Contains(trimmed, "entity.User") {
 			continue
@@ -1440,7 +1493,644 @@ func TestRiskAlertSourceNeverMutatesUserStatus(t *testing.T) {
 	if !strings.Contains(source, "Model(&entity.User{})") {
 		t.Fatal("对照失效：risk_alert.go 里应有只读的 Model(&entity.User{}) 查询")
 	}
+	// 收窄后的回测：真正的处置写形态必须仍被抓到（防止收窄收过头变成空断言）。
+	assertStatusGuardStillCatchesRealWrite(t)
 }
 
-// 注：`itoa(int32) string` 已由同包的 registration_clawback_test.go:112 提供，
-// 这里不再重复定义（重复声明会编译失败）。int64 场景用 strconv.FormatInt 直接转。
+// containsAnyMarker 判断行内是否出现任一写标记。
+func containsAnyMarker(line string, markers []string) bool {
+	for _, marker := range markers {
+		if strings.Contains(line, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// assertStatusGuardStillCatchesRealWrite 用真实写形态回测收窄后的 status 判据。
+//
+// 这是「收窄断言」时的必备对照：只收窄不回测，很容易把守卫收成永远为真的空断言
+// （本仓 t150 / t143 都吃过这个亏）。
+func assertStatusGuardStillCatchesRealWrite(t *testing.T) {
+	t.Helper()
+	writeMarkers := []string{"Update(", "Updates(", "UpdateColumn", "Delete(", "Save(", "Exec("}
+	// 这些是「真的在改用户状态」的形态，必须全部被判定为违规。
+	mustCatch := []string{
+		`db.Model(&entity.User{}).Where("id = ?", id).Update("status", "banned")`,
+		`db.Model(&entity.User{}).Updates(map[string]any{"status": "banned"})`,
+		`db.Exec("UPDATE users SET status = 'banned' WHERE id = ?", id)`,
+		`db.Model(&entity.User{}).UpdateColumn("status", "disabled")`,
+	}
+	for _, line := range mustCatch {
+		caught := (strings.Contains(line, `"status"`) && containsAnyMarker(line, writeMarkers)) ||
+			strings.Contains(strings.ToLower(line), "set status") ||
+			strings.Contains(strings.ToLower(line), "status = 'banned'")
+		if !caught {
+			t.Fatalf("C1 守卫已失效：这种真实处置写没有被判定为违规：%s", line)
+		}
+	}
+	// 反向对照：R1 真实在用的只读筛选不得被误判（否则守卫会挡住正当读路径）。
+	readOnly := `Where("new_answer LIKE ?", ` + "`" + `%"status":"success"%` + "`" + `)`
+	if strings.Contains(readOnly, `"status"`) && containsAnyMarker(readOnly, writeMarkers) {
+		t.Fatalf("只读筛选被误判为写操作：%s", readOnly)
+	}
+}
+
+// note: itoa 定义见文件末尾注释
+
+// ruleIDsOf 收集规则 id（失败信息用，避免只报个数时无从定位）。
+func ruleIDsOf(rules []entity.RiskRule) []string {
+	out := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		out = append(out, rule.RuleID)
+	}
+	return out
+}
+
+// ════════════════════════════════════════════════════════════════════
+// R1 · multi_account_ip（96 §2.1）—— 18 条行为规则的**范式**与判据
+//
+// 数据源：logs 表里 action=10 / module=auth / status=success 的登录审计行。
+// 六条判据与任务书一一对应（①阈值边界 ②节流 ③窗口滚动 ④阈值可配
+// ⑤不处置 ⑥规则停用）。
+// ════════════════════════════════════════════════════════════════════
+
+const (
+	riskR1TestIP      = "203.0.113.9"
+	riskR1TestOtherIP = "198.51.100.7"
+	riskR1TestDay     = "2026-11-14"
+)
+
+// seedRiskLoginAudit 写一条真实的登录审计行（走生产同一个写入函数）。
+//
+// 走 WriteAccountAuditWithDB 而不是手搓 entity.Log：手搓会漏掉
+// 「结果 JSON 的 status 字段由 accountAuditFields 白名单过滤」这一层，
+// 而 R1 的筛选条件恰好依赖那个字段的真实序列化形态。
+func seedRiskLoginAudit(t *testing.T, db *gorm.DB, userID int32, username, clientIP string, at time.Time, status string) {
+	t.Helper()
+	event := AccountAuditEvent{
+		UserID: userID, Username: username, Module: "auth", Action: 10,
+		Description: "用户登录成功", ClientIP: clientIP,
+		Result: map[string]any{"status": status, "message": "登录", "scene": "password"},
+	}
+	if err := WriteAccountAuditWithDB(db, event); err != nil {
+		t.Fatalf("seed login audit: %v", err)
+	}
+	// WriteAccountAuditWithDB 用 time.Now()，这里回写目标时间以便控制窗口。
+	if err := db.Model(&entity.Log{}).Where("user_id = ? AND client_ip = ?", userID, clientIP).
+		Update("create_time", at).Error; err != nil {
+		t.Fatalf("backdate audit row: %v", err)
+	}
+}
+
+// riskR1TestTime 返回判据用的固定时刻（当天中午，远离窗口边界）。
+func riskR1TestTime() time.Time {
+	return time.Date(2026, 11, 14, 12, 0, 0, 0, logger.ShanghaiLocation())
+}
+
+// countRuleWarnings 数某规则写了几条告警。
+func countRuleWarnings(t *testing.T, db *gorm.DB, ruleID string) int64 {
+	t.Helper()
+	var count int64
+	if err := db.Model(&entity.RiskWarning{}).Where("rule_id = ?", ruleID).Count(&count).Error; err != nil {
+		t.Fatalf("count %s: %v", ruleID, err)
+	}
+	return count
+}
+
+// 判据①：同 IP 2 个账号、阈值=3 → 不告警；3 个账号 → 告警 1 条。
+//
+// 这条把「≥ vs >」的边界钉死：变异成 > 时 3 个账号不告警 → 本用例红。
+func TestRiskMultiAccountIPThresholdBoundary(t *testing.T) {
+	t.Run("two_accounts_below_threshold", func(t *testing.T) {
+		db := newRiskAlertTestDB(t)
+		seedRiskRules(t, db)
+		// 判据写的是「阈值=3」：种子默认是 5（96 §2.1 的 N 默认 5），必须显式设定。
+		putRiskSetting(t, db, "risk_rule_multi_account_ip_threshold", "3")
+		now := riskR1TestTime()
+		seedRiskLoginAudit(t, db, 1, "a", riskR1TestIP, now.Add(-time.Hour), "success")
+		seedRiskLoginAudit(t, db, 2, "b", riskR1TestIP, now.Add(-2*time.Hour), "success")
+
+		if _, err := EvaluateDebtAlerts(db, now); err != nil {
+			t.Fatalf("evaluate: %v", err)
+		}
+		if got := countRuleWarnings(t, db, "multi_account_ip"); got != 0 {
+			t.Fatalf("2 个账号 < 阈值 3 必须不告警，实际写了 %d 条", got)
+		}
+	})
+
+	t.Run("three_accounts_meets_threshold", func(t *testing.T) {
+		db := newRiskAlertTestDB(t)
+		seedRiskRules(t, db)
+		// 判据写的是「阈值=3」：种子默认是 5（96 §2.1 的 N 默认 5），必须显式设定。
+		putRiskSetting(t, db, "risk_rule_multi_account_ip_threshold", "3")
+		now := riskR1TestTime()
+		for i := int32(1); i <= 3; i++ {
+			seedRiskLoginAudit(t, db, i, "u", riskR1TestIP, now.Add(-time.Duration(i)*time.Minute), "success")
+		}
+		// ⚠️ 同一个 user 登录 3 次不算 3 个账号（判据是**不同** user_id）。
+		seedRiskLoginAudit(t, db, 1, "u", riskR1TestIP, now.Add(-10*time.Minute), "success")
+
+		if _, err := EvaluateDebtAlerts(db, now); err != nil {
+			t.Fatalf("evaluate: %v", err)
+		}
+		if got := countRuleWarnings(t, db, "multi_account_ip"); got != 1 {
+			t.Fatalf("3 个账号 = 阈值 3 必须告警且只 1 条，实际 %d 条", got)
+		}
+		var warning entity.RiskWarning
+		if err := db.Where("rule_id = ?", "multi_account_ip").First(&warning).Error; err != nil {
+			t.Fatalf("load warning: %v", err)
+		}
+		if warning.IP != riskR1TestIP {
+			t.Fatalf("告警必须记录来源 IP，实际 %q", warning.IP)
+		}
+		var detail map[string]any
+		if err := json.Unmarshal([]byte(warning.Detail), &detail); err != nil {
+			t.Fatalf("detail 必须是 JSON 证据快照: %v (%s)", err, warning.Detail)
+		}
+		// 证据里的账号数必须是 3（去重后），不是 4（含重复登录）。
+		if got, _ := detail["accounts"].(float64); got != 3 {
+			t.Fatalf("detail.accounts = %v, want 3（同一账号多次登录不得重复计数）", detail["accounts"])
+		}
+	})
+
+	t.Run("other_ip_isolated", func(t *testing.T) {
+		db := newRiskAlertTestDB(t)
+		seedRiskRules(t, db)
+		// 判据写的是「阈值=3」：种子默认是 5（96 §2.1 的 N 默认 5），必须显式设定。
+		putRiskSetting(t, db, "risk_rule_multi_account_ip_threshold", "3")
+		now := riskR1TestTime()
+		// 主 IP 2 个账号、另一 IP 2 个账号：各自都不到阈值 → 都不告警。
+		seedRiskLoginAudit(t, db, 1, "a", riskR1TestIP, now.Add(-time.Hour), "success")
+		seedRiskLoginAudit(t, db, 2, "b", riskR1TestIP, now.Add(-time.Hour), "success")
+		seedRiskLoginAudit(t, db, 3, "c", riskR1TestOtherIP, now.Add(-time.Hour), "success")
+		seedRiskLoginAudit(t, db, 4, "d", riskR1TestOtherIP, now.Add(-time.Hour), "success")
+		if _, err := EvaluateDebtAlerts(db, now); err != nil {
+			t.Fatalf("evaluate: %v", err)
+		}
+		if got := countRuleWarnings(t, db, "multi_account_ip"); got != 0 {
+			t.Fatalf("两个 IP 各自 2 账号都不到阈值，必须都不告警，实际 %d 条", got)
+		}
+	})
+
+	t.Run("failed_logins_not_counted", func(t *testing.T) {
+		db := newRiskAlertTestDB(t)
+		seedRiskRules(t, db)
+		// 判据写的是「阈值=3」：种子默认是 5（96 §2.1 的 N 默认 5），必须显式设定。
+		putRiskSetting(t, db, "risk_rule_multi_account_ip_threshold", "3")
+		now := riskR1TestTime()
+		// status=denied 的登录尝试不得计入账号数：
+		// 否则「一个人反复试管理员入口」会被误判成「同 IP 多账号」。
+		for i := int32(1); i <= 5; i++ {
+			seedRiskLoginAudit(t, db, i, "u", riskR1TestIP, now.Add(-time.Hour), "denied")
+		}
+		if _, err := EvaluateDebtAlerts(db, now); err != nil {
+			t.Fatalf("evaluate: %v", err)
+		}
+		if got := countRuleWarnings(t, db, "multi_account_ip"); got != 0 {
+			t.Fatalf("只有 denied 行时不得告警，实际 %d 条", got)
+		}
+	})
+}
+
+// 判据②：同一次评估跑两遍 → 只写 1 条（SubjectKey 节流生效）。
+func TestRiskMultiAccountIPThrottlesWithinWindow(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	// 判据写的是「阈值=3」：种子默认是 5（96 §2.1 的 N 默认 5），必须显式设定。
+	putRiskSetting(t, db, "risk_rule_multi_account_ip_threshold", "3")
+	now := riskR1TestTime()
+	for i := int32(1); i <= 3; i++ {
+		seedRiskLoginAudit(t, db, i, "u", riskR1TestIP, now.Add(-time.Duration(i)*time.Minute), "success")
+	}
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("first evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "multi_account_ip"); got != 1 {
+		t.Fatalf("首次评估必须写 1 条，实际 %d", got)
+	}
+	// 同一窗口内再跑两次（模拟每 6h 一轮的 worker）。
+	for _, offset := range []time.Duration{time.Hour, 5 * time.Hour} {
+		if _, err := EvaluateDebtAlerts(db, now.Add(offset)); err != nil {
+			t.Fatalf("evaluate at +%v: %v", offset, err)
+		}
+	}
+	if got := countRuleWarnings(t, db, "multi_account_ip"); got != 1 {
+		t.Fatalf("同一窗口内重复评估必须只 1 条（SubjectKey 节流），实际 %d", got)
+	}
+	// subject 里必须编进窗口起点（这是节流机制本身，不是实现细节）。
+	var warning entity.RiskWarning
+	if err := db.Where("rule_id = ?", "multi_account_ip").First(&warning).Error; err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !strings.HasPrefix(warning.SubjectKey, "multi_account_ip:"+riskR1TestIP+":") {
+		t.Fatalf("subjectKey 形态错误：%q（期望 multi_account_ip:<ip>:<窗口起点>）", warning.SubjectKey)
+	}
+}
+
+// 判据③：隔一个窗口后再跑 → 再写 1 条（不是永久去重）。
+func TestRiskMultiAccountIPAlertsAgainNextWindow(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	// 判据写的是「阈值=3」：种子默认是 5（96 §2.1 的 N 默认 5），必须显式设定。
+	putRiskSetting(t, db, "risk_rule_multi_account_ip_threshold", "3")
+	now := riskR1TestTime()
+	for i := int32(1); i <= 3; i++ {
+		seedRiskLoginAudit(t, db, i, "u", riskR1TestIP, now.Add(-time.Duration(i)*time.Minute), "success")
+	}
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("day 1: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "multi_account_ip"); got != 1 {
+		t.Fatalf("day 1 必须 1 条，实际 %d", got)
+	}
+	// 次日：同一个 IP 又登录 3 个账号 → 窗口起点变化 → 必须再写一条。
+	nextDay := now.Add(24 * time.Hour)
+	for i := int32(1); i <= 3; i++ {
+		seedRiskLoginAudit(t, db, i, "u", riskR1TestIP, nextDay.Add(-time.Duration(i)*time.Minute), "success")
+	}
+	if _, err := EvaluateDebtAlerts(db, nextDay); err != nil {
+		t.Fatalf("day 2: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "multi_account_ip"); got != 2 {
+		t.Fatalf("隔一个窗口后必须再告警（不是永久去重），实际 %d 条", got)
+	}
+	// 两条的 subjectKey 必须不同（窗口起点不同），这是「不是永久去重」的机制证据。
+	var rows []entity.RiskWarning
+	if err := db.Where("rule_id = ?", "multi_account_ip").Order("id ASC").Find(&rows).Error; err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if rows[0].SubjectKey == rows[1].SubjectKey {
+		t.Fatalf("两个窗口的 subjectKey 相同（%q）—— 窗口起点没编进 key，节流会退化成永久去重", rows[0].SubjectKey)
+	}
+}
+
+// 判据④：阈值可配 —— 改成 5 后 3 个账号不告警。
+func TestRiskMultiAccountIPThresholdIsConfigurable(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	// 判据写的是「阈值=3」：种子默认是 5（96 §2.1 的 N 默认 5），必须显式设定。
+	putRiskSetting(t, db, "risk_rule_multi_account_ip_threshold", "3")
+	now := riskR1TestTime()
+	for i := int32(1); i <= 3; i++ {
+		seedRiskLoginAudit(t, db, i, "u", riskR1TestIP, now.Add(-time.Duration(i)*time.Minute), "success")
+	}
+	// 阈值调到 5：3 个账号不足 → 不告警。
+	putRiskSetting(t, db, "risk_rule_multi_account_ip_threshold", "5")
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "multi_account_ip"); got != 0 {
+		t.Fatalf("阈值 5 时 3 个账号必须不告警，实际 %d 条", got)
+	}
+	// 阈值调到 3：同一批数据必须告警（双向断言 —— 只测单向时硬编码小常量也能过）。
+	putRiskSetting(t, db, "risk_rule_multi_account_ip_threshold", "3")
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "multi_account_ip"); got != 1 {
+		t.Fatalf("阈值 3 时 3 个账号必须告警，实际 %d 条", got)
+	}
+}
+
+// 判据⑤：只告警不处置（96 C1）。
+//
+// 参照 TestRiskEvaluateDebtAlertsNeverMutatesUsers 的写法，但覆盖面更宽：
+//   - users.status 逐字段未变；
+//   - blacklist_entries 行数未变（不得顺手拉黑这个 IP）；
+//   - 用户余额未变。
+func TestRiskMultiAccountIPNeverTakesAction(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	if err := db.AutoMigrate(&entity.BlacklistEntry{}); err != nil {
+		t.Fatalf("migrate blacklist: %v", err)
+	}
+	seedRiskRules(t, db)
+	// 判据写的是「阈值=3」：种子默认是 5（96 §2.1 的 N 默认 5），必须显式设定。
+	putRiskSetting(t, db, "risk_rule_multi_account_ip_threshold", "3")
+	now := riskR1TestTime()
+	users := make([]entity.User, 0, 3)
+	for i := int32(1); i <= 3; i++ {
+		user := entity.User{Username: "u" + strconv.Itoa(int(i)), Balance: 10, Status: "enabled", Role: "user"}
+		if err := db.Create(&user).Error; err != nil {
+			t.Fatalf("create user: %v", err)
+		}
+		users = append(users, user)
+		seedRiskLoginAudit(t, db, user.ID, user.Username, riskR1TestIP, now.Add(-time.Duration(i)*time.Minute), "success")
+	}
+	// 预置一条黑名单规则，用于证明「跑完之后没有新增」。
+	existing := entity.BlacklistEntry{Kind: "ip", Pattern: "192.0.2.1", ValueHash: "seed", MatchType: "exact", Reason: "已有规则", Enabled: true}
+	if err := db.Create(&existing).Error; err != nil {
+		t.Fatalf("seed blacklist: %v", err)
+	}
+
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	// 确认真的命中了（否则下面的「未变」全是因为没跑）。
+	if got := countRuleWarnings(t, db, "multi_account_ip"); got != 1 {
+		t.Fatalf("前置条件：必须已产生告警，实际 %d 条", got)
+	}
+
+	for _, user := range users {
+		var after entity.User
+		if err := db.First(&after, user.ID).Error; err != nil {
+			t.Fatalf("reload user: %v", err)
+		}
+		if after.Status != "enabled" {
+			t.Fatalf("C1：风控不得改用户状态，user %d status=%q", user.ID, after.Status)
+		}
+		if after.Balance != user.Balance {
+			t.Fatalf("C1：风控不得改余额，user %d balance %v -> %v", user.ID, user.Balance, after.Balance)
+		}
+	}
+	// 黑名单：行数与内容都不得变化（尤其不得把这个 IP 拉黑）。
+	var blacklistRows []entity.BlacklistEntry
+	if err := db.Order("id ASC").Find(&blacklistRows).Error; err != nil {
+		t.Fatalf("load blacklist: %v", err)
+	}
+	if len(blacklistRows) != 1 || blacklistRows[0].ID != existing.ID {
+		t.Fatalf("C1：风控不得写黑名单，实际 %d 行", len(blacklistRows))
+	}
+	var blocked int64
+	if err := db.Model(&entity.BlacklistEntry{}).Where("pattern = ?", riskR1TestIP).Count(&blocked).Error; err != nil {
+		t.Fatalf("count blocked: %v", err)
+	}
+	if blocked != 0 {
+		t.Fatalf("C1：告警的 IP 不得被自动拉黑，实际 %d 行", blocked)
+	}
+}
+
+// 判据⑥：规则被停用（risk_rules.enabled=false）时不告警。
+func TestRiskMultiAccountIPDisabledRuleDoesNotFire(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	now := riskR1TestTime()
+	for i := int32(1); i <= 5; i++ {
+		seedRiskLoginAudit(t, db, i, "u", riskR1TestIP, now.Add(-time.Duration(i)*time.Minute), "success")
+	}
+	if err := db.Model(&entity.RiskRule{}).Where("rule_id = ?", "multi_account_ip").
+		Update("enabled", false).Error; err != nil {
+		t.Fatalf("disable rule: %v", err)
+	}
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "multi_account_ip"); got != 0 {
+		t.Fatalf("规则停用时不得告警，实际 %d 条", got)
+	}
+	// 反向对照：重新启用后必须能告警（证明上面的 0 是因为停用，不是因为数据不足）。
+	if err := db.Model(&entity.RiskRule{}).Where("rule_id = ?", "multi_account_ip").
+		Update("enabled", true).Error; err != nil {
+		t.Fatalf("enable rule: %v", err)
+	}
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "multi_account_ip"); got != 1 {
+		t.Fatalf("重新启用后必须告警，实际 %d 条（若为 0 说明上面的 0 与 enabled 无关）", got)
+	}
+}
+
+// 并发去重：多个 goroutine 同时判定同一主体，同一窗口只允许 1 条。
+//
+// 这是「原子插入」与「先查后写」的分水岭。
+//
+// ⚠️ 本用例**直接打临界区** createRiskWarningIfNeeded，而不是走 EvaluateDebtAlerts。
+// 这是实测踩出来的（必须记下）：走整个 EvaluateDebtAlerts 时，SQLite 的写锁会把
+// goroutine 串行化，8 并发里往往只有 1~2 个真正同时到达插入点，于是
+// 「先查后写」的实现也能侥幸只写 1 行 —— 那条用例是**假钉子**：
+// 把插入换成无条件 Create 后它仍然 3/3 全绿（实测）。
+//
+// 直接打临界区 + start barrier + 16 并发才能真复现：
+// 实测「先查后写」形态 16 并发写出 8 行，原子实现稳定 1 行。
+func TestRiskMultiAccountIPConcurrentEvaluationWritesOnce(t *testing.T) {
+	// 连跑 3 轮：单轮有偶然性，多轮同时通过才算稳定。
+	//
+	// ⚠️ 每轮必须**换一个 DB 名字**：newRiskAlertTestDB 用 t.Name() 命名，而
+	// `mode=memory&cache=shared` 下同名 = 同一个库（连接池按名字共享）。
+	// 不换名时第 1 轮拿到的是第 0 轮残留的行 → 「已创建 0 个」的假红（实测踩到）。
+	for round := 0; round < 3; round++ {
+		db := newRiskAlertTestDBNamed(t, "concurrent-round-"+strconv.Itoa(round))
+		now := riskR1TestTime()
+		rule := entity.RiskRule{
+			RuleID: entity.RiskRuleIDMultiAccountIP, Enabled: true,
+			Threshold: 3, Severity: entity.RiskSeverityMedium,
+		}
+		windowStart, _ := riskLoginWindow(now)
+		candidate := riskWarningCandidate{
+			Rule: rule, Subject: riskMultiAccountIPSubject(riskR1TestIP, windowStart),
+			Severity: rule.Severity, IP: riskR1TestIP, Detail: `{"accounts":3}`,
+		}
+		const workers = 16
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		createdFlags := make([]bool, workers)
+		for i := 0; i < workers; i++ {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				// barrier：所有 goroutine 在同一时刻冲进临界区。
+				<-start
+				created, _, _ := createRiskWarningIfNeeded(db, candidate, now)
+				createdFlags[idx] = created
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+
+		if got := countRuleWarnings(t, db, entity.RiskRuleIDMultiAccountIP); got != 1 {
+			t.Fatalf("round %d：%d 并发下必须只写 1 行，实际 %d 行（>1 = 去重不是原子的）", round, workers, got)
+		}
+		// 反向对照：必须恰好 1 个 goroutine 报告「自己创建了」。
+		// 若 0 个，说明插入根本没发生（用例会假绿地满足「只有 1 行」的另一种情形）。
+		createdCount := 0
+		for _, created := range createdFlags {
+			if created {
+				createdCount++
+			}
+		}
+		if createdCount != 1 {
+			t.Fatalf("round %d：应恰好 1 个 goroutine 报告「已创建」，实际 %d", round, createdCount)
+		}
+	}
+}
+
+// TestRiskWarningDedupIsAtomicAcrossAllRules 是**共享临界区的回归钉**。
+//
+// ⚠️⚠️ 这条用例存在的原因，比它测什么更重要，务必读完再改：
+//
+// 「告警去重」只有一个实现点 —— createRiskWarningIfNeeded → insertRiskWarningIfAbsent。
+// debt_user / debt_batch / debt_system / multi_account_ip **四条规则全部共用它**，
+// 它们之间没有任何独立的去重代码。也就是说：
+//
+//   - 只改 debt_* 的调用路径（例如给它们加一层包装、换一个查询构造方式）时，
+//     看起来「与 R1 无关」，实际上动的是同一个临界区；
+//   - 反之，只给 R1 写并发用例也**不足以**证明 debt_* 安全 —— 它们走的是同一个函数，
+//     但历史上 debt_* 从未被并发覆盖过（实测修复前 8 并发评估 debt_user 会写出 2 行）。
+//
+// 所以这里对四条规则**逐一**跑 16 并发，断言每组恰好 1 行。
+// 变异方向：把 insertRiskWarningIfAbsent 退回「先查后写」→ **四条必须全红**
+// （修复前只有 R1 那条会红，这条覆盖其余三条）。
+//
+// 复用 R1 用例踩出来的三个坑（照抄即可，别重新踩）：
+//  1. 必须**直接打临界区**，不能包在 EvaluateDebtAlerts 外层 —— SQLite 写锁会把
+//     goroutine 串行化，外层调用下「先查后写」也能侥幸只写 1 行（假钉子）。
+//  2. start barrier 让所有 goroutine 同时冲进临界区，否则并发窗口太窄。
+//  3. `mode=memory&cache=shared` 下**同名即同一个库** —— 每条规则必须换 DB 名，
+//     否则后一条规则看到前一条的残留行，报「已创建 0 个」的假红。
+func TestRiskWarningDedupIsAtomicAcrossAllRules(t *testing.T) {
+	// 四条规则各自的节流语义都要覆盖：debt_user 24h、debt_system 6h、
+	// debt_batch 0（永不重复）、multi_account_ip 0（窗口起点在 key 里）。
+	cases := []struct {
+		ruleID          string
+		throttleSeconds int
+		subjectKey      string
+	}{
+		{ruleID: "debt_user", throttleSeconds: 24 * 60 * 60, subjectKey: "user:12345"},
+		{ruleID: "debt_batch", throttleSeconds: 0, subjectKey: "batch:batch-7f3a"},
+		{ruleID: "debt_system", throttleSeconds: 6 * 60 * 60, subjectKey: "system:debt"},
+		{ruleID: "multi_account_ip", throttleSeconds: 0, subjectKey: "multi_account_ip:203.0.113.9:2026-11-14T00:00:00+08:00"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.ruleID, func(t *testing.T) {
+			// 每条规则独立 DB 名（见注释 3）。
+			db := newRiskAlertTestDBNamed(t, "dedup-atomic-"+tc.ruleID)
+			widenRiskCreateRaceWindow(t, db)
+			now := riskR1TestTime()
+			rule := entity.RiskRule{
+				RuleID: tc.ruleID, Enabled: true, Severity: entity.RiskSeverityMedium,
+				ThrottleSeconds: tc.throttleSeconds, Threshold: 1,
+			}
+			candidate := riskWarningCandidate{
+				Rule: rule, Subject: tc.subjectKey, Severity: rule.Severity,
+				Detail: `{"ruleId":"` + tc.ruleID + `"}`,
+			}
+			const workers = 16
+			var wg sync.WaitGroup
+			start := make(chan struct{})
+			createdFlags := make([]bool, workers)
+			for i := 0; i < workers; i++ {
+				wg.Add(1)
+				go func(idx int) {
+					defer wg.Done()
+					<-start // barrier
+					created, _, _ := createRiskWarningIfNeeded(db, candidate, now)
+					createdFlags[idx] = created
+				}(i)
+			}
+			close(start)
+			wg.Wait()
+
+			if got := countRuleWarnings(t, db, tc.ruleID); got != 1 {
+				t.Fatalf("%s：%d 并发下必须只写 1 行，实际 %d 行（>1 = 共享临界区的去重不是原子的）",
+					tc.ruleID, workers, got)
+			}
+			// 反向对照：必须恰好 1 个 goroutine 报告「已创建」。
+			// 若 0 个，说明插入根本没发生 —— 那样「只有 1 行」也可能成立（一行都没有）。
+			createdCount := 0
+			for _, created := range createdFlags {
+				if created {
+					createdCount++
+				}
+			}
+			if createdCount != 1 {
+				t.Fatalf("%s：应恰好 1 个 goroutine 报告「已创建」，实际 %d", tc.ruleID, createdCount)
+			}
+		})
+	}
+}
+
+// widenRiskCreateRaceWindow 把「先查后写」的竞态窗口**确定性地**撑开。
+//
+// 为什么需要它（实测数据，不是推测）：
+//
+//	直接跑 16 并发，「先查后写」的实现并不是每次都写出多行 —— 实测 8 轮里有 4 轮
+//	debt_batch 只有 1 行（漏检）。原因是 goroutine 的调度顺序偶然让某个 goroutine
+//	先完成插入、其余再查询时就命中了。这种依赖调度的用例是**假钉子**：
+//	它碰巧能抓到缺陷，但也会碰巧放过。
+//
+// 做法：在 gorm 的 create 回调里加一次短暂等待，让「所有 goroutine 都完成 SELECT
+// 之后才有人开始 INSERT」。这放大的正是「判重与写入不是同一条语句」这个缺陷本身 ——
+// 原子实现（INSERT ... WHERE NOT EXISTS）不受影响，因为它压根不依赖那次 SELECT；
+// 而「先查后写」会在等待后各插一行。
+//
+// 只影响本测试进程内的这个 db 句柄，不改生产代码路径。
+func widenRiskCreateRaceWindow(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	const callbackName = "test:risk_dedup_widen_race_window"
+	err := db.Callback().Create().Before("gorm:create").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement == nil || tx.Statement.Schema == nil {
+			return
+		}
+		if tx.Statement.Schema.Table != entity.TableNameRiskWarning {
+			return
+		}
+		// 20ms 足以让 16 个 goroutine 全部越过各自的 SELECT。
+		time.Sleep(20 * time.Millisecond)
+	})
+	if err != nil {
+		t.Fatalf("register race-window callback: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Callback().Create().Remove(callbackName) })
+}
+
+// R1 数据源判据：筛选条件必须与 controller 的 logActionLogin / module 字面量一致。
+//
+// 跨层字面量（service 不能 import controller）唯一可行的防漂移手段是源码断言。
+func TestRiskLoginAuditPredicateMatchesControllerConstants(t *testing.T) {
+	// 后端常量
+	if riskLoginAuditAction != 10 {
+		t.Fatalf("riskLoginAuditAction = %d，必须与 controller/logs.go 的 logActionLogin(10) 一致", riskLoginAuditAction)
+	}
+	if riskLoginAuditModule != "auth" {
+		t.Fatalf("riskLoginAuditModule = %q，必须与 account_audit 写入方使用的 module 一致", riskLoginAuditModule)
+	}
+	// 源码侧：controller 里 logActionLogin 必须仍是 10（防有人改号）。
+	raw, err := os.ReadFile("../controller/logs.go")
+	if err != nil {
+		t.Fatalf("read controller/logs.go: %v", err)
+	}
+	if !strings.Contains(string(raw), "logActionLogin      = 10") {
+		t.Fatal("controller/logs.go 的 logActionLogin 不再是 10 —— R1 的日志筛选会静默失效")
+	}
+	// 三个成功登录写入点必须仍用 logActionLogin 且 module="auth"。
+	userRaw, err := os.ReadFile("../controller/user.go")
+	if err != nil {
+		t.Fatalf("read controller/user.go: %v", err)
+	}
+	if got := strings.Count(string(userRaw), `recordAccountAudit(c, user, "auth", logActionLogin`); got < 1 {
+		t.Fatal("user.go 里找不到密码登录的审计写入点（module=auth, action=logActionLogin）")
+	}
+	if got := strings.Count(string(userRaw), `recordAccountAudit(c, &user, "auth", logActionLogin`); got < 1 {
+		t.Fatal("user.go 里找不到短信登录的审计写入点")
+	}
+}
+
+// riskLoginWindow 的窗口语义：上海时区自然日，跨月/跨年正确。
+func TestRiskLoginWindowUsesShanghaiNaturalDay(t *testing.T) {
+	// 2026-11-14 00:30 +08:00 属于 14 日窗口（不是 UTC 的 13 日）。
+	loc := logger.ShanghaiLocation()
+	early := time.Date(2026, 11, 14, 0, 30, 0, 0, loc)
+	start, end := riskLoginWindow(early)
+	if start.Format("2006-01-02T15:04:05") != "2026-11-14T00:00:00" {
+		t.Fatalf("窗口起点 = %v，want 2026-11-14T00:00:00（必须按上海时区切日）", start)
+	}
+	if end.Sub(start) != 24*time.Hour {
+		t.Fatalf("窗口长度 = %v，want 24h", end.Sub(start))
+	}
+	// 月末与年末滚动。
+	for _, tc := range []struct {
+		at   time.Time
+		want string
+	}{
+		{time.Date(2026, 11, 30, 23, 59, 0, 0, loc), "2026-11-30T00:00:00"},
+		{time.Date(2026, 12, 31, 12, 0, 0, 0, loc), "2026-12-31T00:00:00"},
+		{time.Date(2027, 1, 1, 0, 0, 0, 0, loc), "2027-01-01T00:00:00"},
+	} {
+		got, _ := riskLoginWindow(tc.at)
+		if got.Format("2006-01-02T15:04:05") != tc.want {
+			t.Fatalf("riskLoginWindow(%v) = %v, want %s", tc.at, got, tc.want)
+		}
+	}
+}

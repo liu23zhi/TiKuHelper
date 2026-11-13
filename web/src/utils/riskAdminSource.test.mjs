@@ -318,11 +318,41 @@ test('规则名与级别：未知值回落而不是抛错', () => {
   assert.equal(riskRuleLabel('debt_user'), '单用户欠款超阈值')
   assert.equal(riskRuleLabel('debt_batch'), '单批次欠款超阈值')
   assert.equal(riskRuleLabel('debt_system'), '系统总欠款突增')
+  // R1（96 §2.1）：后端 rule_id 必须与这里逐字一致，否则筛选下拉选中后查不到数据。
+  assert.equal(riskRuleLabel('multi_account_ip'), '同 IP 多账号')
   assert.equal(riskRuleLabel(''), '未知规则')
   assert.equal(riskRuleLabel('future_rule'), 'future_rule', '未知规则要原样显示，便于排错')
   assert.equal(riskSeverityMeta('high').label, '高')
   assert.equal(riskSeverityMeta('MEDIUM').label, '中')
   assert.equal(riskSeverityMeta('weird').color, 'default')
+})
+
+// 页面必须能展示**任意** ruleId 的告警，而不只是下拉清单里那几个。
+//
+// 这是 R1 落地时的实际要求：后端现在会写 rule_id=multi_account_ip 的告警，
+// 而后续 17 条规则（R2–R18）落地时**不应该**每次都要改前端才能看到。
+// 判据分两层：
+//   ① riskRuleLabel 对未登记的 ruleId 原样返回（不返回「未知规则」）；
+//   ② 表格列走 riskRuleLabel 派生，而不是渲染一张硬编码的规则清单。
+// 变异「把 riskRuleLabel 的兜底改成 return '未知规则'」时 ① 会红。
+test('规则展示对任意 ruleId 通用（新规则不必改前端）', () => {
+  for (const unregistered of ['login_bruteforce', 'impossible_travel', 'bonus_abuse', 'r99_future']) {
+    assert.equal(
+      riskRuleLabel(unregistered),
+      unregistered,
+      `未登记的规则 ${unregistered} 必须原样显示（后端新增规则时前端不应变成「未知规则」）`,
+    )
+  }
+})
+
+test('规则展示：列表列与详情都经 riskRuleLabel 派生，不是硬编码清单', async () => {
+  const page = await readSource('pages/RiskAdmin/index.vue')
+  // 表格列与详情都必须经 riskRuleLabel 渲染（这样任何 ruleId 都能显示）。
+  assert.match(page, /column\.key === 'ruleId'.*riskRuleLabel\(record\.ruleId\)/, '表格列必须经 riskRuleLabel 派生')
+  assert.match(page, /riskRuleLabel\(detail\.ruleId\)/, '详情必须经 riskRuleLabel 派生')
+  // 不得在页面里内联一份规则名映射（会与 helpers 的那份漂移）。
+  const stripped = stripComments(page)
+  assert.doesNotMatch(stripped, /debt_user\s*:\s*['"]/, '页面不得内联规则名映射')
 })
 
 test('列表响应解析：失败与「真的为空」必须区分开', () => {

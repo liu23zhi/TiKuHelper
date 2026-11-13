@@ -138,9 +138,60 @@ func IsBannedAt(db *gorm.DB, userID int32, now time.Time) (bool, error) {
 		return false, err
 	}
 	if bannedByStatus {
-		return true, nil
+		// ⚠️ status=banned 不能直接返回 true —— 必须再看 user_bans 有没有未过期行。
+		//
+		// 这里原本是 `if bannedByStatus { return true, nil }`，造成一个**真实生产缺陷**：
+		// 「临时封禁」设了 1 小时，1 小时后判定仍然是封禁（实测：Ban(now+1h) 之后
+		// IsBannedAt(now+2h) 仍 true、users.status 仍是 "banned"）。根因是
+		// `users.status` 只在 Ban / Unban 两处被写，**自然到期没有任何复位机制** ——
+		// 于是运营设的临时封禁实际是永久的，界面上写着到期时间，判定永不到期，
+		// 而且不报错。
+		//
+		// 为什么不用「加个到期清理任务」修：那需要一个后台 goroutine + 幂等保护，
+		// 而且复位与 Unban 会抢同一行；更重要的是**判定不该依赖某个任务是否跑过** ——
+		// 任务没起 / 跑失败 / 时钟漂移都会让缺陷复活，且同样不报错。
+		// 判定本身读得出真相，就不要靠外部状态同步。
+		//
+		// 为什么不会误判「管理员手工把 status 改成 banned」：
+		// 只有**存在 user_bans 行**时才走这段降级判定。管理员手工改 status 不会建
+		// user_bans 行 ⇒ hasAnyUserBan 为 false ⇒ 仍然按 status 判封禁（保持原语义）。
+		return userBanStatusStillActive(db, userID, now)
 	}
 	return hasUnexpiredUserBan(db, userID, now)
+}
+
+// userBanStatusStillActive 处理「users.status = banned」这一路的到期判定。
+//
+// 三态：
+//
+//	没有 user_bans 行         → 按 status 判封禁（管理员手工封禁，保持原语义）
+//	有未过期行                → 封禁（正常临时/永久封禁中）
+//	有行但全部已到期          → **视为已解除**（临时封禁自然到期）
+//
+// 失败一律 fail-closed（返回 true = 仍封禁）：判定读不到时宁可多关一会儿，
+// 也不能因为一次查询失败把正在封禁的人放进来。
+func userBanStatusStillActive(db *gorm.DB, userID int32, now time.Time) (bool, error) {
+	if !db.Migrator().HasTable(entity.TableNameUserBan) {
+		// 表不存在 = 迁移缺注册行，此时 status 是唯一信息源（hasUnexpiredUserBan
+		// 已经在另一路打过一次告警，这里不重复打）。
+		return true, nil
+	}
+	var total int64
+	if err := db.Session(&gorm.Session{NewDB: true}).
+		Model(&entity.UserBan{}).
+		Where("user_id = ?", userID).
+		Count(&total).Error; err != nil {
+		return true, nil
+	}
+	if total == 0 {
+		// 没有任何封禁记录 ⇒ status 不是封禁服务写的（管理员手工改的）。
+		return true, nil
+	}
+	unexpired, err := hasUnexpiredUserBan(db, userID, now)
+	if err != nil {
+		return true, nil
+	}
+	return unexpired, nil
 }
 
 // userStatusIsBanned 读 users.status 并判断是否等于 banned（大小写无关）。

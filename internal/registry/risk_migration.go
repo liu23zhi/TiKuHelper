@@ -161,15 +161,19 @@ func applyRiskWarningsSchema(db *gorm.DB) (bool, error) {
 	return true, nil
 }
 
-// seedDefaultRiskRules 只在空表时写入 3 条欠款规则。
+// seedDefaultRiskRules 只在空表时写入全部代码默认规则（欠款 3 条 + 行为规则）。
 //
 // 幂等判定用 COUNT：它准确回答「有没有人配过」这个原始问题，
 // 而 First 会因任何残留行改变行为。失败只记日志 —— 种子不是结构性依赖。
 //
-// ⚠️ 阈值在这里只写**代码默认值**（100 / 1000 / 5000）。
+// ⚠️ 阈值在这里只写**代码默认值**。
 // 96 §2.2 要求「默认值写在代码里，不在 DB 里」：DB 缺 key ≠ 阈值 0。
 // 服务层读阈值时以系统设置优先、回落 RiskRule 行、再回落代码默认值，
 // 三层兜底保证「阈值被人删空」不会静默退化成 0（否则每条记录都会告警）。
+//
+// ⚠️ 遍历 entity.DefaultRiskRules()（欠款 + 行为）而不是只遍历欠款那一个切片：
+// 漏掉一条 = 那条规则在 risk_rules 里没有行，运营在后台看不到也改不了它
+// （判定仍会按代码默认值跑，但「看不到却生效」是最难排查的形态）。
 func seedDefaultRiskRules(db *gorm.DB) {
 	var count int64
 	if err := db.Model(&entity.RiskRule{}).Count(&count).Error; err != nil {
@@ -179,8 +183,9 @@ func seedDefaultRiskRules(db *gorm.DB) {
 	if count > 0 {
 		return
 	}
-	rows := make([]entity.RiskRule, 0, len(entity.DefaultRiskDebtRules))
-	for _, item := range entity.DefaultRiskDebtRules {
+	defaults := entity.DefaultRiskRules()
+	rows := make([]entity.RiskRule, 0, len(defaults))
+	for _, item := range defaults {
 		rows = append(rows, entity.RiskRule{
 			RuleID:          item.RuleID,
 			Name:            item.Name,
@@ -195,7 +200,7 @@ func seedDefaultRiskRules(db *gorm.DB) {
 		logger.SysLog(fmt.Sprintf("写入风控规则种子失败（管理员可在后台补）：%v", err))
 		return
 	}
-	logger.SysLog(fmt.Sprintf("已写入 %d 条风控欠款规则种子", len(rows)))
+	logger.SysLog(fmt.Sprintf("已写入 %d 条风控规则种子", len(rows)))
 }
 
 // ensureRiskRuleIndexes 保证 risk_rules 的 rule_id 唯一索引存在。
@@ -215,12 +220,13 @@ func ensureRiskRuleIndexes(db *gorm.DB) error {
 
 // ensureRiskWarningIndexes 保证告警记录的三个查询索引存在。
 //
-//   - idx_risk_warning_rule_created (rule_id, created_at)：按规则回看告警（列表页默认视图）
-//   - idx_risk_warning_subject (rule_id, subject_key, created_at)：**节流判定专用**
-//     它是「同一用户 24h 只告警一次」的查询路径，缺索引时每次判定都全表扫
-//   - idx_risk_warning_created (created_at)：清理任务/时间范围筛选
+
+// - idx_risk_warning_rule_created (rule_id, created_at)：按规则回看告警（列表页默认视图）
+// - idx_risk_warning_subject (rule_id, subject_key, created_at)：窗口节流的查询路径
+// - idx_risk_warning_created (created_at)：清理任务/时间范围筛选
 func ensureRiskWarningIndexes(db *gorm.DB) error {
 	return ensureRiskIndexes(db, []riskIndexSpec{
+
 		{
 			name:    "idx_risk_warning_rule_created",
 			table:   entity.TableNameRiskWarning,

@@ -122,6 +122,11 @@ const ADMIN_MENU_ITEMS = [
   { key: 'blacklist', label: '黑名单管理', icon: StopOutlined },
   // 白名单（T-04 / T-05）。紧跟黑名单：两者规则结构相同，管理员要能并排看。
   { key: 'whitelist', label: '白名单管理', icon: SafetyCertificateOutlined },
+  // 账号封禁（121 §4.8 / 121 决策 6）。与黑/白名单并列：三者都是风控入口，
+  // 但封禁按**账号**，前两者按 IP/手机号/微信。
+  // ⚠️ 只登记在 ADMIN_MENU_ITEMS，**绝不加进 USER_MENU_ITEMS**：
+  // 普通用户能看到「账号封禁」入口本身就是信息泄漏（暴露了封禁机制的存在与入口）。
+  { key: 'user-bans', label: '账号封禁', icon: StopOutlined },
   // 敏感图片检测（Q1）与工单图片缓存（T-12）相邻：前者判违规、后者管存储，
   // 是同一份附件的两个视角。
   { key: 'sensitive-image', label: '敏感图片检测', icon: FileTextOutlined },

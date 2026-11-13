@@ -429,6 +429,16 @@ func UserLogin(c *gin.Context) {
 	loginGate.succeed(payload.Username)
 	bindSuccessfulVerification(*user, captchaToken, service.CaptchaSceneLoginPassword, service.SMSVerificationEvidence{})
 	recordAccountAudit(c, user, "auth", logActionLogin, "用户登录成功", map[string]any{"status": "success", "message": "用户登录成功", "scene": "password"})
+	// 设备池准入（T-25 判定侧）：同步、且在 setAuthCookie 之前 ——
+	// 异步判定的结论写不进已经发出的响应，用户已经拿到 cookie 再判「该拒绝」
+	// 就只是事后通知。被拒时本函数已写好 403，直接 return。
+	if !enforceAccountDeviceLimit(c, user.ID) {
+		return
+	}
+	// 设备指纹登记（T-25 采集侧）：异步 + fail-open，失败只记 SysLog。
+	// 位置：凭据已验过、token 已签发之后 —— 失败登录不该在设备表里留痕，
+	// 否则撞库会顺带把账号的设备额度打满（DoS 一个用户只需试错几次）。
+	_ = recordAccountDeviceBinding(c, user.ID)
 	setAuthCookie(c, token)
 	c.JSON(http.StatusOK, gin.H{"message": "user login", "jwt": token})
 }
@@ -990,6 +1000,10 @@ func BindCurrentUserWechat(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
+	// 换绑成功后的设备指纹登记（T-25 采集侧）：异步 + fail-open。
+	// 为什么换绑也要记：换绑常发生在**新设备**上（旧设备丢了/换手机），
+	// 那恰恰是「第一次见到这台设备」的时刻；漏记它会让设备池永远学不到新设备。
+	_ = recordAccountDeviceBinding(c, currentUser.ID)
 	c.JSON(http.StatusOK, updated)
 }
 
@@ -1029,6 +1043,8 @@ func BindCurrentUserWechatByCode(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
+	// 换绑成功（验证码路径）后的设备指纹登记，与 bindToken 路径同源同理。
+	_ = recordAccountDeviceBinding(c, currentUser.ID)
 	c.JSON(http.StatusOK, updated)
 }
 
@@ -1121,6 +1137,15 @@ func UserSMSLogin(c *gin.Context) {
 	loginGate.succeed(phone)
 	bindSuccessfulVerification(user, payload.CaptchaToken, service.CaptchaSceneLoginSMS, smsEvidence)
 	recordAccountAudit(c, &user, "auth", logActionLogin, "用户短信登录成功", map[string]any{"status": "success", "message": "用户短信登录成功", "scene": "sms"})
+	// 设备指纹登记（T-25 采集侧）：短信登录走同一个账号维度，也要记设备。
+	// 漏掉这一处会让「只用短信登录」的用户永远不产生设备行 —— 而移动端用户
+	// 恰恰是最依赖短信登录的那批人。
+	//
+	// 准入判定与密码登录同源：短信登录同样是「获得访问权」的入口，不能绕过设备上限。
+	if !enforceAccountDeviceLimit(c, user.ID) {
+		return
+	}
+	_ = recordAccountDeviceBinding(c, user.ID)
 	setAuthCookie(c, token)
 	c.JSON(200, gin.H{"message": "user login", "jwt": token})
 }
