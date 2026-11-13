@@ -258,12 +258,26 @@ def mysql_type(column: dict[str, Any], primary_key_columns: set[str]) -> str:
         return "LONGTEXT"
     if declared.startswith("VARCHAR"):
         if re.search(r"\(\s*\d+", declared):
-            length = int(re.search(r"\(\s*(\d+)", declared).group(1))
-            if length > 255:
-                # SQLite does not enforce VARCHAR(n). Widen larger declared
-                # strings so historical rows cannot fail strict MySQL writes.
-                return "LONGTEXT"
+            # 保留声明的长度，**不要**因为 >255 就放大成 LONGTEXT。
+            #
+            # 原实现把 varchar(n>255) 一律改成 LONGTEXT，理由是「SQLite 不强制
+            # VARCHAR(n)，放大后历史行才不会在严格写入时失败」。但那个理由只在
+            # 「有历史行真的超长」时成立，而放大的真实副作用是**丢掉默认值**：
+            # MySQL/MariaDB 的规则里 LONGTEXT 属于大字段，而 sqlite_default_sql()
+            # （见下方）对 LONGTEXT 一律拒绝 —— 于是 async_tasks.source_path、
+            # review_rebate_programs.store_url 等 7 个 `varchar(512|1024) NOT NULL
+            # DEFAULT ''` 的列会让整个迁移在预检阶段直接失败。
+            #
+            # 实测（MariaDB 11.4.13）：varchar(512)/1024/4096 NOT NULL DEFAULT ''
+            # 全部建表成功且默认值生效；varchar(16383) 才因 65535 行宽上限失败。
+            # 真实 schema 里最宽的是 varchar(1024)，离上限很远。
+            #
+            # 因此改成：有长度就照抄。SQLite 不强制长度这件事由「原样保留玩家声明的
+            # 长度」处理 —— 如果历史数据真的超长，那是 schema 与实际数据不一致，
+            # 应该在校验阶段报出来（见 verify 工具的逐行比对），而不是静默换成
+            # 一个大字段类型并因此丢掉默认值。
             return declared
+        # 无长度（裸 `varchar`）：SQLite 不限制，MySQL 必须有长度，只能放大。
         return "LONGTEXT"
     if declared.startswith("DATE") and not declared.startswith("DATETIME"):
         return "DATE"

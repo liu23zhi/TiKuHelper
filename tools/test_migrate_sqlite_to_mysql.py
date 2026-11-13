@@ -125,9 +125,33 @@ class AccessTokenQuotaMigrationTests(unittest.TestCase):
                 expected = (1, *(Decimal(str(value)) for value in balances))
                 self.assertEqual(target.inserted, [expected])
 
+    def test_bounded_sqlite_varchar_keeps_its_declared_length(self):
+        # varchar(n) 在 MySQL/MariaDB 上本来就合法，照抄即可。
+        #
+        # 这条用例以前断言 varchar(512) → LONGTEXT（名字叫 "unbounded ... widened"，
+        # 但 varchar(512) 明明是有界的）。那个断言把**错误映射固化成期望值**，
+        # 于是真实缺陷被测试保护了起来：放大成 LONGTEXT 会让
+        # sqlite_default_sql() 拒绝该列的默认值，直接把整个迁移闸掉。
+        #
+        # 实测（MariaDB 11.4.13）：
+        #   varchar(512)/1024/4096 NOT NULL DEFAULT ''  建表成功且默认值生效
+        #   varchar(16383)                              因 65535 行宽上限失败
+        # 真实 schema 最宽是 varchar(1024)，离上限很远。
+        for declared in ("varchar(512)", "varchar(1024)", "varchar(255)", "char(64)"):
+            with self.subTest(declared=declared):
+                self.assertEqual(
+                    migration.mysql_type({"name": "question_text", "type": declared, "pk": 0}, set()),
+                    declared.upper(),
+                )
+
     def test_unbounded_sqlite_varchar_is_widened_for_mysql(self):
+        # 只有裸 `varchar`（无长度）才需要放大：SQLite 允许，MySQL 必须有长度。
         self.assertEqual(
-            migration.mysql_type({"name": "question_text", "type": "varchar(512)", "pk": 0}, set()),
+            migration.mysql_type({"name": "question_text", "type": "varchar", "pk": 0}, set()),
+            "LONGTEXT",
+        )
+        self.assertEqual(
+            migration.mysql_type({"name": "question_text", "type": "text", "pk": 0}, set()),
             "LONGTEXT",
         )
 
