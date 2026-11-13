@@ -33,6 +33,18 @@
           <div class="summary-label">上次登录</div>
           <div data-profile-private class="summary-value summary-value--small">{{ formatDateTime(currentUser.lastLoginAt) }}</div>
         </a-card>
+        <!-- 可用设备数量（123 号 T-24）。
+             ⚠️ 这里只显示**上限**，没有「已用设备数」—— 那个数据当前不存在：
+             ① user_levels.device_limit 的业务消费点是 0 处（entity/user_level.go:46
+                自称「契约占位」）；
+             ② account_device_bindings 表尚未建。
+             所以不要在这里补一个 0 或"已用 0 台"占位（63 号 U-03 红线）。
+             数据源是已存在的 GET /adapter-service/user/level，不新造接口。 -->
+        <a-card :bordered="false" class="summary-card">
+          <div class="summary-label">可用设备数量</div>
+          <div data-profile-private data-profile-device-limit class="summary-value">{{ deviceLimitText }}</div>
+          <div class="summary-hint">{{ deviceLimitHint }}</div>
+        </a-card>
     </ConsoleSummaryGrid>
 
     <a-card :bordered="false" class="page-card" :loading="loading">
@@ -267,6 +279,8 @@ import { ensureAuthCaptchaToken } from '@/utils/captchaDialog.mjs'
 import { normalizeSMSCodeInput, ensurePhoneBeforeSMSCaptcha } from '@/utils/captchaHelpers.mjs'
 import MainlandPhoneInput from '@/components/MainlandPhoneInput.vue'
 import { buildRegisterSourceLabel } from '@/utils/userPortalHelpers.mjs'
+import { buildDeviceLimitHint, buildDeviceLimitText } from '@/utils/userLevelHelpers.mjs'
+import { getMyUserLevel } from '@/api/UserLevelApi'
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
 import { captureCurrentUserLease, getCurrentUserLogoutEpoch, getStoredCurrentUser, setStoredCurrentUser, useCurrentUserDisplay } from '@/utils/currentUser.js'
 import { currentUserIdentity } from '@/utils/currentUserScope'
@@ -345,6 +359,10 @@ export default defineComponent({
     const phoneForm = reactive({ phone: '', smsCode: '', captchaToken: '' })
     const wechatCodeForm = reactive({ code: '' })
     const ipLocations = reactive({}), phoneLocations = reactive({})
+    // 等级摘要（123 号 T-24）。null = 尚未读到，**不等于**「不限」。
+    // 只用 shallowRef 存服务端下发的快照，不在本地推导设备上限：
+    // 设备上限的口径唯一来源是 user_levels.device_limit。
+    const userLevelSummary = shallowRef(null)
     const publicAuthSettings = ref({
       captchaProvider: 'remote', captchaApiBaseUrl: 'https://captcha.api.zelly.cn', captchaType: 'RANDOM',
       smsLoginEnabled: false, wechatLoginEnabled: false, wechatScanLoginEnabled: false,
@@ -470,6 +488,9 @@ export default defineComponent({
         profileUser.value = null; profileReady.value = false; profileDraftDirty = false
         profileError.value = '账号上下文已变化，请刷新个人信息后继续操作'
         clearLocationMap(ipLocations); clearLocationMap(phoneLocations)
+        // 等级摘要与 IP/手机号归属地同属"账号私有数据"，账号上下文变化必须清空。
+        // 清成 null ⇒ 界面回到「—」（未读到），而不是残留上一个账号的设备上限。
+        userLevelSummary.value = null
         dataGeneration += 1; locationLoadGeneration += 1
         smsCooldown.stop(); smsCooldown.remaining.value = 0
         wechatStatusText.value = '请使用微信扫码完成绑定'
@@ -576,6 +597,30 @@ export default defineComponent({
       } catch { /* Optional display enhancement; keep the original IP/phone. */ }
       finally { closeAttempt(owner) }
     }
+    // loadUserLevel 读取当前用户的等级摘要（GET /adapter-service/user/level）。
+    //
+    // 只读、只用于展示「可用设备数量」的上限。它是**可选展示增强**：
+    // 失败时不覆盖任何已确认资料、不弹全局错误（errorFeedback: 'local'），
+    // 保持「—」这个"未读到"的语义 —— 绝不能因为读不到就退化成「不限」
+    // （那会把一次网络失败说成"你没有任何设备限制"）。
+    //
+    // 走与 profile-read / locations 相同的 owner 机制（beginAttempt/isCurrent），
+    // 这样账号上下文切换、路由切走、组件卸载都会自动作废本次读取。
+    const loadUserLevel = async () => {
+      closeAttempt(attempts.get('user-level'))
+      const owner = beginAttempt('user-level')
+      if (!owner) return
+      try {
+        if (!isCurrent(owner)) return
+        const res = await getMyUserLevel()
+        if (!isCurrent(owner) || owner.data !== dataGeneration) return
+        // 后端把摘要包在 {"data": {...}} 里（controller/user_level.go:146）。
+        const summary = res?.status === 200 ? res?.data?.data : null
+        if (!summary || typeof summary !== 'object' || Array.isArray(summary)) return
+        userLevelSummary.value = summary
+      } catch { /* 设备上限读不到就显示「—」，不影响个人中心其它功能。 */ }
+      finally { closeAttempt(owner) }
+    }
     const loadProfile = async () => {
       closeAttempt(attempts.get('profile-read'))
       const owner = beginAttempt('profile-read')
@@ -599,7 +644,7 @@ export default defineComponent({
           reportError(owner, res, '获取个人状态失败，请稍后刷新重试')
           return
         }
-        if (applyCurrentUser(res.data, owner)) void loadProfileLocations()
+        if (applyCurrentUser(res.data, owner)) { void loadProfileLocations(); void loadUserLevel() }
       } catch (error) {
         if (!isCurrent(owner)) return
         profileError.value = '获取个人状态失败，已确认的资料与未保存内容保持不变，请刷新重试'
@@ -869,6 +914,10 @@ export default defineComponent({
       const date = new Date(value)
       return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
     }
+    // 可用设备数量（123 号 T-24）：只渲染上限，且 0 必须显示为「不限」。
+    // 未读到等级摘要时 buildDeviceLimitText(null) 返回 '—'，与「不限」严格区分。
+    const deviceLimitText = computed(() => buildDeviceLimitText(userLevelSummary.value?.deviceLimit))
+    const deviceLimitHint = computed(() => buildDeviceLimitHint(userLevelSummary.value?.deviceLimit))
     const formatBalance = value => formatMoneyValue(value || 0)
     const roleText = value => String(value || '').toLowerCase() === 'admin' ? '管理员' : '普通用户'
     const statusText = value => String(value || '').toLowerCase() === 'disabled' ? '已禁用' : '正常'
@@ -961,6 +1010,7 @@ export default defineComponent({
       sendPhoneChangeCode, submitPhoneChange, submitProfile, startWechatBind, handleWechatBindSubModeChange,
       submitWechatCodeBind, unbindWechat, loadProfile, normalizeSMSCodeInput, normalizeWechatCodeInput,
       registerSourceText: buildRegisterSourceLabel, formatDateTime, formatBalance,
+      deviceLimitText, deviceLimitHint,
       ipLocations, phoneLocations, normalizeLocationKey, formatValueWithLocation, roleText, statusText,
     }
   },
@@ -1014,6 +1064,15 @@ export default defineComponent({
 .summary-value--small {
   font-size: 16px;
   line-height: 1.5;
+}
+
+/* 设备上限说明：必须能看到「已用设备数暂不可用」这句，否则用户会以为漏显示。 */
+.summary-hint {
+  margin-top: 6px;
+  color: var(--console-muted, #62766e);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 
 .page-title {
