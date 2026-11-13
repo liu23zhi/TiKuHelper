@@ -191,6 +191,15 @@
             <p v-if="tab.key === QUOTA_TAB" class="field-hint" data-testid="quota-tab-limitation">
               这一 Tab 列出的是「未得出可信结论」的检测记录。因额度耗尽而<span class="emphasis">从未写入缓存</span>的图片不在其中 —— 后端目前没有按 scan_state 反查这类图片的接口，本页不假装能列出来。
             </p>
+            <!--
+              sensitive 结论的歧义提示（captain 在验收时从后端源码确认）：
+              额度耗尽时 sensitive_image_detect.go:305-307 会把 scan_state 也写成
+              "sensitive"，与真违规同值，且表里没有列能区分。不提示的话管理员会
+              把「没检测就按敏感处理」当成真违规去封禁。
+            -->
+            <p v-else class="field-hint" data-testid="records-tab-sensitive-caveat">
+              本表里的<span class="emphasis">敏感</span>有两种来源：上游真的判定为敏感，以及<span class="emphasis">额度耗尽时的默认按敏感处理</span>。后端目前没有列能区分这两者 —— 请结合「判定来源」与「原因」两列人工判断，不要只看结论列就下处置。
+            </p>
 
             <p v-if="currentError" class="filter-error" role="alert">{{ currentError }}</p>
 

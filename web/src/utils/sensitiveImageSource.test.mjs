@@ -523,6 +523,43 @@ test('判据④：帧数未知时必须如实说明，且帧数必须来自记�
   assert.equal(ctrl.frameLabel, '2 / 12');
 });
 
+test('records Tab 不带 status 是刻意的：任何 status（含空串）都会让它退化成筛选视图', () => {
+  // 这条守的是「两个 Tab 的数据源差异」：records = 缓存表全量，quota = 未决子集。
+  const records = buildEntryQuery(SENSITIVE_IMAGE_TAB_RECORDS, { page: 1, pageSize: 20 });
+  assert.equal(Object.hasOwn(records, 'status'), false, 'records Tab 必须完全没有 status 键');
+
+  // 即使调用方传了 status，records Tab 也不得采纳 ——
+  // 一旦采纳，它就变成「某状态的记录」，而「全部」的意义是不做结论筛选。
+  for (const value of ['clean', 'sensitive', 'error', '', '   ']) {
+    const query = buildEntryQuery(SENSITIVE_IMAGE_TAB_RECORDS, { status: value });
+    assert.equal(Object.hasOwn(query, 'status'), false, `records Tab 不得采纳 status=${JSON.stringify(value)}`);
+  }
+
+  // quota Tab 相反：必须带 status，且缺省是 error。
+  assert.equal(buildEntryQuery(SENSITIVE_IMAGE_TAB_QUOTA, {}).status, 'error');
+  assert.equal(buildEntryQuery(SENSITIVE_IMAGE_TAB_QUOTA, { status: 'pending' }).status, 'pending');
+  // 空串/空白回落到缺省值，而不是发出 status=（空筛选）。
+  for (const blank of ['', '   ', null, undefined]) {
+    assert.equal(buildEntryQuery(SENSITIVE_IMAGE_TAB_QUOTA, { status: blank }).status, 'error');
+  }
+});
+
+test('records Tab 必须提示 sensitive 结论的歧义（额度耗尽与真违规同值且无法区分）', () => {
+  // 事实依据：sensitive_image_detect.go:305-307 在额度耗尽时把 ScanState 也写成
+  // "sensitive"，与真违规同值；entity 表里没有列能区分。
+  // 不提示的话管理员会把「没检测就按敏感处理」当成真违规去封禁，处置动作完全相反。
+  assert.match(pageSource, /records-tab-sensitive-caveat/, '缺少 sensitive 歧义提示的锚点');
+  assert.match(pageSource, /额度耗尽时的默认按敏感处理|额度耗尽时的默认标记/, '必须说明「额度耗尽」这一来源');
+  assert.match(pageSource, /没有列能区分/, '必须说明后端无法区分两者');
+  // 提示必须只说「人工判断」，不得暗示页面提供了按来源筛选的能力。
+  assert.match(pageSource, /人工判断/, '必须引导人工判断');
+  assert.doesNotMatch(
+    pageSource,
+    /按来源筛选|只看真违规|仅显示真违规/,
+    '不得暗示页面能按来源筛选（后端没有区分列，那样的筛选恒等于全部）',
+  );
+});
+
 console.log(
   'SENSITIVE_IMAGE_PAGE 判据①②③④ 全部覆盖：两 Tab 独立分页 / 涉及行数不可退化为 0 / 字节与上游原文白名单净化 / 两 Tab key + GIF 控制器',
 );

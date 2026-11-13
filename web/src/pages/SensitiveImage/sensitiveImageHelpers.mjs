@@ -40,6 +40,24 @@ export const SENSITIVE_IMAGE_TABS = Object.freeze([
   }),
 ]);
 
+// ⚠️ 上面 records Tab 里的 `sensitive` 结论有**两种来源，当前后端无法区分**：
+//
+//   1. 上游真的判定为敏感（provider=uapi，reason 是上游给的可解释结论）；
+//   2. **额度耗尽时的默认标记** —— sensitive_image_detect.go:305-307 在把
+//      State 设成 sensitive_by_quota 的同时，把 ScanState 也设成 "sensitive"，
+//      与真违规的 scan_state 是**同一个值**；entity/ticket_attachment.go 里
+//      没有任何列（Quota / Reason 均不存在）能区分这两者。
+//
+// 后果：管理员在「全部检测记录」看到一批 sensitive，分不清哪些是真违规、
+// 哪些只是「没检测就按敏感处理」。而两者的处置动作**完全相反**：
+// 前者要封禁/下架，后者补额度重检即可。
+//
+// 本页的处置：用 reason 与 provider 两列辅助人工判断，但**不宣称能精确区分**，
+// 也不提供「按来源批量筛选」的假功能 —— 那需要后端新增列，不在前端范围。
+// 这条注释留在 helper 里而不是只写在页面：将来有人想加「只 show 真违规」的
+// 筛选器时，必须先看到这一段，否则会做出一个恒等于「全部」的筛选。
+
+
 // TAB_QUOTA 的默认子状态：error 表示「上次外呼没跑成」，即最需要人工复核的一类。
 export const SENSITIVE_IMAGE_QUOTA_TAB_STATUS = 'error';
 export const SENSITIVE_IMAGE_QUOTA_TAB_STATUS_OPTIONS = Object.freeze([
@@ -72,6 +90,25 @@ export function normalizeSha256(value) {
 // 两个 Tab **各自独立分页**：调用方必须分别持有自己的 {page,pageSize}，
 // 本函数不会在两个 Tab 之间共享或推断页码（共享页码会让「在 A Tab 翻到第 3 页、
 // 切到 B Tab 后仍在第 3 页」这种串页行为出现）。
+//
+// ⚠️ 两个 Tab 不只参数不同，**语义与数据完整性都不同**，不要把它们当成
+// 「同一份数据的两个筛选视图」：
+//
+//   - 「超额未检测」是**残差视图**：它只装得下 status=error / pending 这两类
+//     「未得出可信结论」的记录。它的名字对应的是一个前端**装不满**的集合 ——
+//     因额度耗尽而从未写进缓存表的图片（sensitive_image_detect.go:302-309
+//     早退，不写 cache）根本不在这张表里，后端也没有按 scan_state 反查它们的接口。
+//     所以这个 Tab 是「能查到的未决记录」，不是「全部超额记录」。页面必须
+//     如实标注这个边界（见 index.vue 的 data-testid="quota-tab-limitation"）。
+//
+//   - 「全部检测记录」**刻意不带 status**：那才是「全部」。任何一个 status 值
+//     （含空串）都会让它退化成筛选视图，而「全部」的意义就是不做任何结论筛选。
+//     带 status='' 虽然会被后端 TrimSpace 成空串（等价不带），但显式不带的意图
+//     更清楚 —— 也让「有人给它补了默认 status」这种改动在 diff 里一眼可见。
+//
+// 两者共用同一条 GET /sensitive-image/entries，但**不能因此认为它们的口径一致**：
+// records 是「缓存表全量」，quota 是「缓存表里的未决子集」，而「额度耗尽」这一类
+// 恰恰不在缓存表里。这也是为什么本页不提供「把 quota Tab 当成超额全量」的按钮。
 export function buildEntryQuery(tabKey, options = {}) {
   const page = readPositiveInt(options.page) ?? 1;
   const rawSize = readPositiveInt(options.pageSize) ?? 20;
@@ -82,8 +119,8 @@ export function buildEntryQuery(tabKey, options = {}) {
   if (tabKey === SENSITIVE_IMAGE_TAB_QUOTA) {
     params.status = String(options.status ?? '').trim() || SENSITIVE_IMAGE_QUOTA_TAB_STATUS;
   }
-  // 全部检测记录 Tab 刻意**不带 status**：那才是「全部」。
-  // 带 status='' 会被后端 TrimSpace 成空串（等价不带），但显式不带的意图更清楚。
+  // 全部检测记录 Tab：这里**故意没有 else 分支**。缺了 else 才是对的，
+  // 补一个 `params.status = ''` 会让「全部」带上一个空的筛选键。
   return params;
 }
 
