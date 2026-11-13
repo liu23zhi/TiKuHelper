@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -1185,6 +1186,259 @@ func TestBuildRiskWarningMarkdownToleratesBrokenDetail(t *testing.T) {
 	}
 	if riskRuleDisplayName("") != "未知规则" || riskRuleDisplayName("debt_user") == "debt_user" {
 		t.Fatalf("display name fallback wrong: %q / %q", riskRuleDisplayName(""), riskRuleDisplayName("debt_user"))
+	}
+}
+
+// ============================================================
+// C3 三条判据的独立钉子（t165 追加）
+// ============================================================
+//
+// 96 §0 C3 给了三条可跑判据，前两条各有一个方向、第三条是「同值不同记录」。
+// 已有的 TestRiskAlertDoesNotFallBackToTicketWebhook / TestRiskWecomSettingsAreIndependentFromTicketSettings
+// 覆盖了判据 ① 与 ③ 的一部分，但**判据 ② 的反向**（只配风控、工单留空 → 工单通知不发）
+// 此前只有读取侧断言、没有走「入队策略」这条真实路径。
+//
+// 三条用例的写法约定（为了让变异真的会红）：
+//   - 断言落在**动作层**（sender 是否被调用、入队策略返回什么），不是「字段读出来是什么」；
+//   - 每条都带一个**反向对照**（另一条通道确实可用），否则「两边都不发」的空实现也能过；
+//   - 期望值一律写**字面量**（`riskNotifyWebhookEmpty` 是枚举语义，可以引用；
+//     但 URL 与「是否为空」的判据必须看到真实字符串），避免与实现共享常量导致恒真。
+
+// 判据 ①（独立钉子）：只配工单、风控留空 → 风控告警一发都不推。
+//
+// 与已存在用例的差异：这里**同时**把工单配成「启用 + URL + @成员」三件齐全，
+// 并断言 sender 收到 0 次调用、riskNotifyWebhookEmpty 有多态、数据库里
+// wecom_ticket_webhook_url 一个字节都没被写动。加一行
+// `if risk == "" { risk = ticket }` 的变异会让本用例在**第一处**（pushed）就红。
+func TestRiskAlertNeverBorrowsTicketWebhookWhenRiskIsEmpty(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	putRiskSetting(t, db, TicketWecomEnabledSettingKey, "true")
+	putRiskSetting(t, db, TicketWecomWebhookURLSettingKey, riskTestTicketWebhook)
+	putRiskSetting(t, db, TicketWecomMentionedListSettingKey, `["ticket-owner"]`)
+
+	// 对照：工单配置本身必须**可用**，否则「工单也没配」时本用例证明不了任何事。
+	ticketConfig, err := GetTicketWecomConfigWithDB(db)
+	if err != nil {
+		t.Fatalf("read ticket config: %v", err)
+	}
+	if !ticketConfig.Enabled || ticketConfig.WebhookURL != riskTestTicketWebhook {
+		t.Fatalf("对照失效：工单配置应可用，实际 %+v", ticketConfig)
+	}
+	// 风控配置必须真的是空的（不是「配了但没启用」）。
+	riskConfig, err := RiskAlertConfig(db)
+	if err != nil {
+		t.Fatalf("read risk config: %v", err)
+	}
+	if riskConfig.WebhookURL != "" || riskConfig.Enabled {
+		t.Fatalf("前置失效：风控配置必须全空，实际 %+v", riskConfig)
+	}
+
+	recorder := &riskSenderRecorder{}
+	recorder.install(t)
+	warning := entity.RiskWarning{
+		RuleID: entity.RiskRuleIDDebtUser, SubjectKey: "user:11",
+		Severity: entity.RiskSeverityMedium, Detail: `{"value":150,"threshold":100}`, CreatedAt: time.Now(),
+	}
+	if err := db.Create(&warning).Error; err != nil {
+		t.Fatalf("create warning: %v", err)
+	}
+	pushed, reason, notifyErr := notifyRiskWebhook(context.Background(), db, &warning, time.Now())
+	if notifyErr != nil {
+		t.Fatalf("notify: %v", notifyErr)
+	}
+	if pushed {
+		t.Fatal("C3 判据 1：风控 webhook 为空时绝不允许推送（不得借用工单通道）")
+	}
+	if reason != riskNotifyWebhookEmpty {
+		t.Fatalf("reason = %q, want %q（「未配置」与「被节流」的可操作结论相反）", reason, riskNotifyWebhookEmpty)
+	}
+	if calls := recorder.snapshot(); len(calls) != 0 {
+		t.Fatalf("C3 判据 1：sender 一次都不该被调用，实际 %d 次，首次发往 %q", len(calls), calls[0].Config.WebhookURL)
+	}
+	// 反向断言：工单配置必须原封不动（回退实现常伴随「顺手把工单键写成风控的」）。
+	afterConfig, err := GetTicketWecomConfigWithDB(db)
+	if err != nil {
+		t.Fatalf("re-read ticket config: %v", err)
+	}
+	if afterConfig.WebhookURL != riskTestTicketWebhook || !afterConfig.Enabled {
+		t.Fatalf("C3 判据 1：风控路径改动了工单配置 %+v", afterConfig)
+	}
+}
+
+// 判据 ②：只配风控、工单留空 → 工单通知**不发**。
+//
+// 走的是入队策略 ticketNotificationStatusForConfig（enqueueTicketNotificationInTx
+// 与 QueueTicketNotificationWithDB 都调它），所以这条断言与「真实建单会不会推送」
+// 是同一条路径，而不是读字段的近似。
+//
+// 变异性：把工单配置的读取改成「为空则回退风控」时，这里会拿到非空 URL →
+// 策略返回 pending 而不是 skipped → 本用例第一处断言即红。
+func TestTicketNotificationNeverBorrowsRiskWebhookWhenTicketIsEmpty(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	enabled := true
+	if _, err := UpdateRiskWecomSettings(db, UpdateRiskWecomSettingsInput{
+		Enabled: &enabled, WebhookURL: riskTestRiskWebhook, MentionedList: []string{"risk-owner"},
+	}); err != nil {
+		t.Fatalf("seed risk settings: %v", err)
+	}
+
+	// 对照：风控配置必须**可用**（否则「风控也没配」时本用例证明不了任何事）。
+	riskConfig, err := RiskAlertConfig(db)
+	if err != nil {
+		t.Fatalf("read risk config: %v", err)
+	}
+	if riskConfig.WebhookURL != riskTestRiskWebhook || !riskConfig.Enabled {
+		t.Fatalf("对照失效：风控配置应可用，实际 %+v", riskConfig)
+	}
+
+	ticketConfig, err := GetTicketWecomConfigWithDB(db)
+	if err != nil {
+		t.Fatalf("read ticket config: %v", err)
+	}
+	if ticketConfig.WebhookURL != "" || ticketConfig.Enabled {
+		t.Fatalf("C3 判据 2：工单配置必须仍为空，实际 %+v（风控配置被写进了工单键？）", ticketConfig)
+	}
+	status, reason := ticketNotificationStatusForConfig(ticketConfig)
+	if status != ticketNotificationSkipped {
+		t.Fatalf("C3 判据 2：工单未配置时必须入队为 skipped，实际 %q（reason=%q）", status, reason)
+	}
+	if reason == "" {
+		t.Fatal("C3 判据 2：skipped 必须带原因，否则线上无法区分「没配」与「配错」")
+	}
+	// 反向：风控侧仍然能发（判据 2 不是「两边都死」）。
+	recorder := &riskSenderRecorder{}
+	recorder.install(t)
+	warning := entity.RiskWarning{
+		RuleID: entity.RiskRuleIDDebtSystem, SubjectKey: "system:debt",
+		Severity: entity.RiskSeverityHigh, Detail: `{"value":9000,"threshold":5000}`, CreatedAt: time.Now(),
+	}
+	if err := db.Create(&warning).Error; err != nil {
+		t.Fatalf("create warning: %v", err)
+	}
+	pushed, notifyReason, notifyErr := notifyRiskWebhook(context.Background(), db, &warning, time.Now())
+	if notifyErr != nil || !pushed || notifyReason != riskNotifySent {
+		t.Fatalf("对照失效：只配风控时风控必须能发，pushed=%v reason=%q err=%v", pushed, notifyReason, notifyErr)
+	}
+	calls := recorder.snapshot()
+	if len(calls) != 1 || calls[0].Config.WebhookURL != riskTestRiskWebhook {
+		t.Fatalf("对照失效：风控应发往 %q，实际 %+v", riskTestRiskWebhook, calls)
+	}
+}
+
+// 判据 ③：两个填**同一个 URL** → 两条独立记录，清零其中一个不影响另一个。
+//
+// 双侧都必须验：只清一侧的用例抓不到「清 A 时顺手也清了 B」的实现
+// （那是最常见的错误写法 —— 用同一个 helper 顺手 save 两组键）。
+func TestRiskAndTicketWebhookShareValueButStayIndependent(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	enabled := true
+	// 两个框填**完全相同**的 URL（用户明确允许值相同）。
+	if _, err := UpdateTicketWecomSettingsWithDB(db, UpdateTicketWecomSettingsInput{
+		Enabled: &enabled, WebhookURL: riskTestRiskWebhook, MentionedList: []string{"shared-owner"},
+	}); err != nil {
+		t.Fatalf("seed ticket: %v", err)
+	}
+	if _, err := UpdateRiskWecomSettings(db, UpdateRiskWecomSettingsInput{
+		Enabled: &enabled, WebhookURL: riskTestRiskWebhook, MentionedList: []string{"shared-owner"},
+	}); err != nil {
+		t.Fatalf("seed risk: %v", err)
+	}
+
+	// 前提：DB 里必须是**两行**不同的 key，指向同一个值。
+	var rows []entity.SystemSetting
+	if err := db.Where("`key` IN ?", []string{
+		RiskWecomWebhookURLSettingKey, TicketWecomWebhookURLSettingKey,
+	}).Find(&rows).Error; err != nil {
+		t.Fatalf("load rows: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("C3 判据 3：应是两条独立记录，实际 %d 行", len(rows))
+	}
+	for _, row := range rows {
+		if row.Value != riskTestRiskWebhook {
+			t.Fatalf("C3 判据 3：两条记录的值都应是同一个 URL，%s = %q", row.Key, row.Value)
+		}
+	}
+
+	// 清风控 → 工单完好。
+	if _, err := UpdateRiskWecomSettings(db, UpdateRiskWecomSettingsInput{ClearWebhook: true}); err != nil {
+		t.Fatalf("clear risk: %v", err)
+	}
+	ticketConfig, err := GetTicketWecomConfigWithDB(db)
+	if err != nil {
+		t.Fatalf("read ticket: %v", err)
+	}
+	if ticketConfig.WebhookURL != riskTestRiskWebhook {
+		t.Fatalf("C3 判据 3：清风控不得动工单，实际 %q", ticketConfig.WebhookURL)
+	}
+	if len(ticketConfig.MentionedList) != 1 || ticketConfig.MentionedList[0] != "shared-owner" {
+		t.Fatalf("C3 判据 3：清风控不得动工单的 @成员，实际 %v", ticketConfig.MentionedList)
+	}
+
+	// 反过来：先恢复风控，再清工单 → 风控完好。
+	if _, err := UpdateRiskWecomSettings(db, UpdateRiskWecomSettingsInput{
+		Enabled: &enabled, WebhookURL: riskTestRiskWebhook,
+	}); err != nil {
+		t.Fatalf("restore risk: %v", err)
+	}
+	if _, err := UpdateTicketWecomSettingsWithDB(db, UpdateTicketWecomSettingsInput{ClearWebhook: true}); err != nil {
+		t.Fatalf("clear ticket: %v", err)
+	}
+	riskConfig, err := RiskAlertConfig(db)
+	if err != nil {
+		t.Fatalf("read risk: %v", err)
+	}
+	if riskConfig.WebhookURL != riskTestRiskWebhook || !riskConfig.Enabled {
+		t.Fatalf("C3 判据 3：清工单不得动风控，实际 %+v", riskConfig)
+	}
+	if len(riskConfig.MentionedList) != 1 || riskConfig.MentionedList[0] != "shared-owner" {
+		t.Fatalf("C3 判据 3：清工单不得动风控的 @成员，实际 %v", riskConfig.MentionedList)
+	}
+}
+
+// C1 的**源码级**判据（96 §0 C1）：风控判定路径不得改用户状态。
+//
+// 行为级判据已有 TestRiskEvaluateDebtAlertsNeverMutatesUsers，但它只覆盖
+// 「当前这 3 条规则跑一遍」。源码级断言补的是另一半：**将来**有人往
+// risk_alert.go 里加一句 `Update("status", "banned")`，本用例会立刻红，
+// 而行为级用例只有在新增分支被触发时才红（可能永远不触发）。
+//
+// 判定规则（刻意写得窄，避免误伤读取路径）：
+//   - 出现 `entity.User` 的行，若同时出现 Update / Updates / Delete / Save，
+//     视为对 users 的写操作 → 红；
+//   - 出现非注释行里的 "status" 字面量 → 红（风控没有理由写这个字段）；
+//   - `Model(&entity.User{}).Where("balance < 0").Select/Count` 这类读是允许的。
+func TestRiskAlertSourceNeverMutatesUserStatus(t *testing.T) {
+	raw, err := os.ReadFile("risk_alert.go")
+	if err != nil {
+		t.Fatalf("read risk_alert.go: %v（本用例依赖包目录作为工作目录）", err)
+	}
+	source := string(raw)
+	if !strings.Contains(source, "func EvaluateDebtAlerts(") {
+		t.Fatal("读到的不是 risk_alert.go（缺少 EvaluateDebtAlerts）：路径假设已失效，本用例不能静默通过")
+	}
+	writes := []string{"Update(", "Updates(", "UpdateColumn", "Delete(", "Save("}
+	for _, line := range strings.Split(source, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "*") {
+			continue
+		}
+		if strings.Contains(trimmed, `"status"`) {
+			t.Fatalf("C1：风控路径不得出现 status 字面量：%s", trimmed)
+		}
+		if !strings.Contains(trimmed, "entity.User") {
+			continue
+		}
+		for _, marker := range writes {
+			if strings.Contains(trimmed, marker) {
+				t.Fatalf("C1：风控路径不得对 entity.User 执行 %q：%s", marker, trimmed)
+			}
+		}
+	}
+	// 正向对照：本文件确实**读**用户表（否则上面的循环可能一条都没扫到而假通过）。
+	if !strings.Contains(source, "Model(&entity.User{})") {
+		t.Fatal("对照失效：risk_alert.go 里应有只读的 Model(&entity.User{}) 查询")
 	}
 }
 
