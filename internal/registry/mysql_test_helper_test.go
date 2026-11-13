@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	gl "gorm.io/gorm/logger"
 )
@@ -273,13 +272,25 @@ func runMariaDBHarnessChild(t *testing.T, ci, required string, short bool) (int,
 // 而那种失败看起来像「迁移写坏了」，实际是 DSN 少了参数。
 // 连接池固定 1 条：本文件里的用例会 DROP TABLE / 改 schema，
 // 多连接会让「清库」与「建表」互相干扰。
+//
+// ⚠️ **必须用生产同一个 dialector 构造函数**（openMySQLDialector），不能用 mysql.Open：
+//
+// 用 mysql.Open 时真库上的 `clause.OnConflict{DoNothing:true}` 会因 MariaDB 的
+// `... ON DUPLICATE KEY UPDATE id=id RETURNING id` 撞键也返回一行，被 gorm 记成
+// RowsAffected=1。于是本文件里那些「二次加款」探针（TestMariaDBPaymentEventOnConflictIsRealUpsert
+// / TestMariaDBPaymentEventReplayDoesNotCreditTwice）测的是**修复前的形态**，
+// 不管生产改没改都恒定红 —— 那不是钉子，是永远红死的探针。
+//
+// 用生产构造函数之后，这批探针的含义变成：「生产 dialector 在真库上行为正确」。
+// 想验证「退回 mysql.Open 会坏」的变异，靠的是 TestMariaDBProductionDialectorEmitsNoReturning
+// 里对 DSN/构造函数的断言（那条不经过本 helper）。
 func openMariaDBTestDB(t *testing.T, dsn string) *gorm.DB {
 	t.Helper()
 	normalized, fixes := normalizeMySQLDSN(dsn)
 	if len(fixes) > 0 {
 		t.Logf("测试 DSN 已补齐参数：%s", strings.Join(fixes, ", "))
 	}
-	database, err := gorm.Open(mysql.Open(normalized), &gorm.Config{
+	database, err := gorm.Open(openMySQLDialector(normalized), &gorm.Config{
 		Logger: gl.Default.LogMode(gl.Silent),
 	})
 	if err != nil {
