@@ -1,6 +1,18 @@
 <template>
   <div class="console-page user-usage-page">
-    <ConsolePageHeading title="账户使用" description="管理账户余额，并查看个人消费与充值流水。">
+    <!-- 标题必须与侧边栏入口同名（T-COPY）。
+         两侧菜单里这个 key（user-usage）都叫「个人使用」，页面标题原为「账户使用」，
+         于是用户从「个人使用」点进来看到的却是「账户使用」—— 会以为自己点错了。
+         选「改标题」而不是「改菜单」的理由：
+           ① 菜单文案在两个角色下**本来就相同**（都叫「个人使用」），改菜单要动两处，
+              改标题只动一处，且菜单是用户记住的入口名，不宜反向迁就页面；
+           ② 用户侧菜单已有「个人中心 / 个人使用」这一族命名，改成「账户使用」会与它断开，
+              而另一族是「我的账单 / 我的脚本」的「我的」前缀 —— 「账户使用」两头都不靠；
+           ③ 本页不只是「账户」：第二个 Tab 是「等级提升」，等级是身份属性不是账户属性，
+              叫「账户使用」反而比「个人使用」更窄。
+         description 保留原话，它已经把「余额 + 消费/充值流水」讲清楚了。
+         由 roleCopyConsistency.test.mjs 钉住：共用 key 的静态标题必须等于两侧共同文案。 -->
+    <ConsolePageHeading title="个人使用" description="管理账户余额，并查看个人消费与充值流水。">
       <template #actions><a-button @click="handleRefreshAll" :loading="pageRefreshing">刷新</a-button></template>
     </ConsolePageHeading>
 
