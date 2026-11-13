@@ -2,6 +2,19 @@ package entity
 
 import "time"
 
+// TicketAttachmentScanMarkedBy 的取值集合：谁写下了 scan_state。
+//
+// 两个字面量刻意**互不相同**且都不是空串 —— 空串会让「这一列到底有没有被写过」
+// 与「写了个不认识的值」混成一件事。
+const (
+	// TicketAttachmentMarkedByUpstream 表示 scan_state 来自真实检测结论
+	// （上游外呼 / 缓存命中复用 / 管理员手动重判）。
+	TicketAttachmentMarkedByUpstream = "upstream"
+	// TicketAttachmentMarkedByQuota 表示 scan_state 只是额度耗尽时的兜底标记，
+	// **这张图从未被检测过**。补额度后重检即可，不该当违规证据。
+	TicketAttachmentMarkedByQuota = "quota"
+)
+
 // TableNameTicketAttachment 是工单图片附件表。
 //
 // 它与 ticket_refund_proofs **刻意分开**：退款凭证是「人工退款审核前必须核验」的
@@ -34,6 +47,27 @@ type TicketAttachment struct {
 	// ScanState 是**唯一**的展示判据（fail-closed）：
 	// pending / scanning / sensitive / failed 一律不显示，只有 approved 才显示。
 	ScanState string `gorm:"column:scan_state;type:varchar(16);not null;index" json:"scanState"`
+	// ScanMarkedBy 记录 scan_state 这个值**是谁写下的**，用来区分两类处置方向
+	// **完全相反**的 sensitive（这是本列存在的唯一理由）：
+	//
+	//   - "upstream"：上游真的对这张图给出了结论（含缓存命中复用的历史结论、
+	//     管理员手动重判）。此时 sensitive = 违规证据，不该放行，也不该被
+	//     「再检一次」的理由抹掉。
+	//   - "quota"：额度耗尽 + 缓存未命中，**根本没有检测**，只是按敏感兜底隐藏
+	//     （见 service.runSensitiveImageDetection 的额度分支）。补额度后重检即可，
+	//     它本该是一张正常图片。
+	//
+	// 没有这一列时两者 scan_state 同为 "sensitive"，管理员在「全部检测记录」里
+	// 无法分辨「该封」与「该补额度后重检」，而这两类误判方向相反：要么误封正常
+	// 工单图片，要么漏掉真违规。
+	//
+	// 默认值 "upstream" 是**保守侧**：迁移前写入的存量行若 scan_state 已是
+	// sensitive，只能按「上游判定」对待 —— 反过来默认成 quota，等于把历史真违规
+	// 一律降级成「未检测」，那是证据丢失。
+	//
+	// ⚠️ NOT NULL + DEFAULT 是硬要求（121 决策 5）：旧代码 INSERT 不带这一列，
+	// 无默认值时 MySQL 严格模式直接失败。
+	ScanMarkedBy string `gorm:"column:scan_marked_by;type:varchar(32);not null;default:upstream" json:"scanMarkedBy"`
 	// 敏感检测结果。分数用指针，便于区分「未检测」与「检测为 0」。
 	NSFWScore    *float64   `gorm:"column:nsfw_score" json:"nsfwScore,omitempty"`
 	RiskLevel    string     `gorm:"column:risk_level;type:varchar(16)" json:"riskLevel,omitempty"`
