@@ -89,7 +89,27 @@ func TestB01ExecutedNoAnswerSupport(t *testing.T) {
 			home := t.TempDir()
 			cmd := exec.CommandContext(ctx, exe, "-test.run=^TestB01ExecutedNoAnswerSupport$", "-test.parallel=1", "-test.timeout=12s", "-test.v")
 			cmd.Dir = home
-			cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=" + home, "TMPDIR=" + home, "LANG=C.UTF-8", "LC_ALL=C.UTF-8", "TZ=UTC", "GOMAXPROCS=2", "B01_EXECUTED_NOANSWER_CHILD=" + vector}
+			// ⚠️ 整体替换 Env，所以平台必需项要给全。
+			//
+			// Windows 的 GetTempPath 只认 TMP → TEMP → USERPROFILE，**不看 TMPDIR**
+			// （那是 POSIX 的名字）。只给 TMPDIR 时子进程的 t.TempDir() 会退化成
+			// `mkdir C:\WINDOWS\...: Access is denied`，那不是被测行为而是夹具缺陷。
+			// 实测：只设 TMPDIR 时 os.TempDir() = "C:\Users\<user>"。
+			childEnv := []string{"HOME=" + home, "TZ=UTC", "GOMAXPROCS=2", "B01_EXECUTED_NOANSWER_CHILD=" + vector}
+			if runtime.GOOS == "windows" {
+				childEnv = append(childEnv,
+					"TEMP="+home, "TMP="+home,
+					"PATH="+os.Getenv("PATH"),
+					"SystemRoot="+os.Getenv("SystemRoot"),
+					"USERPROFILE="+home,
+				)
+			} else {
+				childEnv = append(childEnv,
+					"PATH=/usr/bin:/bin", "TMPDIR="+home,
+					"LANG=C.UTF-8", "LC_ALL=C.UTF-8",
+				)
+			}
+			cmd.Env = childEnv
 			if dir := os.Getenv("B01_EXECUTED_NOANSWER_LEDGER_DIR"); dir != "" {
 				if !filepath.IsAbs(dir) {
 					t.Fatal("absolute owned ledger directory required")

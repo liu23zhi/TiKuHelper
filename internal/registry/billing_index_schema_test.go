@@ -644,6 +644,16 @@ func d02nStartup(t *testing.T) (configs.Config, *gorm.DB, *bytes.Buffer) {
 	if e != nil || d == nil {
 		t.Fatal("D02_APPROVED_FIXTURE_INFRA: first genuine startup")
 	}
+	// ⚠️ 关连接必须**在此处**再注册一次（函数开头那条不够）。
+	//
+	// t.Cleanup 是 LIFO：开头那条 resetRegistryDBState 注册得最早，所以**最后**才跑；
+	// 而 t.TempDir() 的删除清理注册得比它晚，会**先**跑。于是「先删目录、后关连接」，
+	// Windows 上 sqlite 句柄还开着 ⇒ `TempDir RemoveAll cleanup: unlinkat … startup.sqlite:
+	// The process cannot access the file`，表现为用例本身断言全过却判 FAIL。
+	//
+	// 这里再注册一条（注册点晚于 t.TempDir()）让关闭排在删除之前。两条都保留：
+	// 开头那条覆盖「注册 DB 之前就 t.Fatal」的路径。
+	t.Cleanup(func() { resetRegistryDBState(t) })
 	d02nSeedRows(t, d)
 	logs.Reset()
 	return c, d, &logs
@@ -931,7 +941,15 @@ func TestD02BillingIndexApprovedFatalChild(t *testing.T) {
 		if _, e := os.Lstat(filepath.Join(q, ".git")); e == nil || !os.IsNotExist(e) {
 			t.Fatal("D02_APPROVED_FIXTURE_INFRA: no Git ancestor")
 		}
-		if q == "/" {
+		// 到达文件系统根就停。
+		//
+		// ⚠️ 这里**不能**写 `if q == "/"`：那是 POSIX 的根，Windows 上永远不成立。
+		// Windows 的 `filepath.Dir("C:\\")` 返回 `"C:\\"`（不动点），于是上一版
+		// 循环会在这台机器上**永不退出** —— 实测跑满 328 秒仍未结束，靠 -test.timeout
+		// 才拿到 goroutine dump 定位到本行。
+		//
+		// 判据必须用「Dir 不再变化」这个跨平台事实，而不是某个平台的根字面量。
+		if parent := filepath.Dir(q); parent == q {
 			break
 		}
 	}

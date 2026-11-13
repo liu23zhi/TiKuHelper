@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -104,9 +105,24 @@ func TestTasklistAPIHealthRecoveryWithRealPublicBusiness(t *testing.T) {
 	child := exec.CommandContext(ctx, executable, "-test.run=^"+t.Name()+"$", "-test.v")
 	child.Dir = dir
 	child.Env = []string{
-		"PATH=" + os.Getenv("PATH"), "HOME=" + filepath.Join(dir, "home"),
-		"TMPDIR=" + filepath.Join(dir, "tmp"), "LANG=C.UTF-8", "TZ=UTC",
+		"PATH=" + os.Getenv("PATH"), "HOME=" + filepath.Join(dir, "home"), "LANG=C.UTF-8", "TZ=UTC",
 		b03RecoveryChildKey + "=" + t.Name(), b03RecoveryRootKey + "=" + dir,
+	}
+	// ⚠️ 整体替换 Env，所以平台必需项要给全。
+	//
+	// Windows 的 GetTempPath 只认 TMP → TEMP → USERPROFILE，**不看 TMPDIR**
+	// （那是 POSIX 的名字）。本行原来只给 TMPDIR，于是子进程的 t.TempDir()
+	// 退化成 `mkdir C:\WINDOWS\...: Access is denied`，子进程在 owned_setup
+	// 阶段就失败（观测里 loggerClosed:true、probeCalls:0）—— 那不是被测行为，
+	// 是夹具缺陷。实测：只设 TMPDIR 时 os.TempDir() = "C:\Users\<user>"。
+	if runtime.GOOS == "windows" {
+		child.Env = append(child.Env,
+			"TEMP="+filepath.Join(dir, "tmp"), "TMP="+filepath.Join(dir, "tmp"),
+			"SystemRoot="+os.Getenv("SystemRoot"),
+			"USERPROFILE="+filepath.Join(dir, "home"),
+		)
+	} else {
+		child.Env = append(child.Env, "TMPDIR="+filepath.Join(dir, "tmp"))
 	}
 	var stdout, stderr bytes.Buffer
 	child.Stdout, child.Stderr = &stdout, &stderr
@@ -173,7 +189,24 @@ func b03RecoveryRunChild(t *testing.T) {
 	if err != nil || string(marker) != "B03_OWNED_ONLY\n" {
 		t.Fatal("owned marker is missing")
 	}
-	allowed := map[string]bool{"PATH": true, "HOME": true, "TMPDIR": true, "LANG": true, "TZ": true, b03RecoveryChildKey: true, b03RecoveryRootKey: true}
+	// ⚠️ 白名单必须与父侧实际下发的 env **逐项对齐**。
+	//
+	// Windows 那几项不是可有可无：整体替换 Env 之后，Windows 的 GetTempPath
+	// 只认 TMP → TEMP → USERPROFILE（不看 TMPDIR），缺了它们子进程的
+	// t.TempDir() 会退化成 `mkdir C:\WINDOWS\...: Access is denied`；
+	// SystemRoot 缺失还会让一些系统调用找不到 DLL。
+	//
+	// 但这不削弱本用例的判据：白名单仍然是**封闭集合**，任何一项多出来的
+	// 环境变量（真实配置、凭据、父测试的全局状态）依旧会被拒绝。
+	allowed := map[string]bool{
+		"PATH": true, "HOME": true, "TMPDIR": true, "LANG": true, "TZ": true,
+		b03RecoveryChildKey: true, b03RecoveryRootKey: true,
+	}
+	if runtime.GOOS == "windows" {
+		for _, name := range []string{"TEMP", "TMP", "SystemRoot", "USERPROFILE"} {
+			allowed[name] = true
+		}
+	}
 	for _, pair := range os.Environ() {
 		name, _, _ := strings.Cut(pair, "=")
 		if !allowed[name] {

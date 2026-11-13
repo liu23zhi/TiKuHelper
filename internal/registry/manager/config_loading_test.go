@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -55,6 +56,17 @@ func TestStrictConfigLoadBeforeDatabasePreservesError(t *testing.T) {
 	}
 	for _, branch := range []string{"read_error", "valid_config_database_error"} {
 		t.Run(branch, func(t *testing.T) {
+			if branch == "read_error" && runtime.GOOS == "windows" {
+				// 同 internal/registry/config_loading_test.go 的 permission 子用例：
+				// Windows 不实现 POSIX 权限位，`os.Chmod(p, 0000)` 之后子进程仍然
+				// 能读到 config.yaml，于是「读取失败 → 错误链里带 fs.ErrPermission」
+				// 这一格在本平台根本构造不出来。
+				//
+				// 要在这里表达「读不了」必须用 ACL，那是与 viper 错误链无关的另一套
+				// API。显式 Skip（并把原因写清）而不是让它静默 pass —— 否则
+				// 「Windows 上权限错误链真的坏了」将永久不可见。
+				t.Skip("Windows 不实现 POSIX 权限位，chmod 0000 不阻止子进程读取（平台语义差异，非被测缺陷）")
+			}
 			dir := t.TempDir()
 			p := filepath.Join(dir, "config.yaml")
 			if err := os.WriteFile(p, []byte("database:\n  path: 'file:%ZZ'\n"), 0600); err != nil {

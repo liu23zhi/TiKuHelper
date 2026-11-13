@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -55,7 +56,25 @@ func TestWalletSettlementAdmittedFallbackTasksDeliverAndReplayOnce(t *testing.T)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, binary, "-test.run=^TestWalletSettlementAdmittedFallbackTasksDeliverAndReplayOnce$", "-test.v", "-test.timeout=35s")
 		cmd.Dir = t.TempDir()
-		cmd.Env = []string{"WALLET_SETTLEMENT_HANDLER_CHILD=1", "TIKU_RUN_PROVIDER_NETWORK_TESTS=0", "GOMAXPROCS=2", "HOME=" + t.TempDir(), "TMPDIR=" + t.TempDir()}
+		// ⚠️ 整体替换 Env，所以平台必需项要给全。
+		//
+		// Windows 的 GetTempPath 只认 TMP → TEMP → USERPROFILE，**不看 TMPDIR**
+		// （那是 POSIX 的名字）。只给 TMPDIR 时子进程的 t.TempDir() 会退化成
+		// `mkdir C:\WINDOWS\...: Access is denied`，那不是被测行为而是夹具缺陷。
+		// 实测：只设 TMPDIR 时 os.TempDir() = "C:\Users\<user>"。
+		childHome := t.TempDir()
+		childEnv := []string{"WALLET_SETTLEMENT_HANDLER_CHILD=1", "TIKU_RUN_PROVIDER_NETWORK_TESTS=0", "GOMAXPROCS=2", "HOME=" + childHome}
+		if runtime.GOOS == "windows" {
+			childEnv = append(childEnv,
+				"TEMP="+childHome, "TMP="+childHome,
+				"PATH="+os.Getenv("PATH"),
+				"SystemRoot="+os.Getenv("SystemRoot"),
+				"USERPROFILE="+childHome,
+			)
+		} else {
+			childEnv = append(childEnv, "TMPDIR="+childHome)
+		}
+		cmd.Env = childEnv
 		var out, errout bytes.Buffer
 		cmd.Stdout = &out
 		cmd.Stderr = &errout

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -119,6 +120,19 @@ func TestStrictConfigMissingAndReadErrorBranches(t *testing.T) {
 		permission bool
 	}{{"malformed", bad, false}, {"permission", denied, true}, {"directory-io", directory, false}} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.permission && runtime.GOOS == "windows" {
+				// Windows 不实现 POSIX 权限位：`os.Chmod(f, 0000)` 之后
+				// `os.ReadFile` 仍然成功（实测读到的就是文件内容），
+				// 于是这里既没有 ErrPermission 也没有任何 error。
+				//
+				// 这不是被测量的缺陷，是平台语义差异 —— 要在这个平台表达
+				// 「读不了」必须用 ACL（icacls / SetNamedSecurityInfo），
+				// 那是另一套 API，与 viper 的错误链无关。
+				//
+				// 所以只在本平台跳过这一格，并**显式说明跳过的原因**：
+				// 静默 pass 会让「Windows 上权限错误链真的坏了」永久不可见。
+				t.Skip("Windows 不实现 POSIX 权限位，chmod 0000 不阻止读取（平台语义差异，非被测缺陷）")
+			}
 			v := viper.New()
 			v.SetConfigFile(tc.path)
 			v.SetConfigType("yaml")

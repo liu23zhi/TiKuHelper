@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,7 +55,28 @@ func TestD03FallbackSharedFlightBillsOnce(t *testing.T) {
 		defer cancel()
 		cmd := exec.CommandContext(ctx, binary, "-test.run=^TestD03FallbackSharedFlightBillsOnce$", "-test.v", "-test.timeout=25s")
 		cmd.Dir = t.TempDir()
-		cmd.Env = []string{"D03_FOLLOWER_CHILD=1", "TIKU_RUN_PROVIDER_NETWORK_TESTS=0", "HOME=" + t.TempDir(), "TMPDIR=" + t.TempDir()}
+		// ⚠️ 这里是**整体替换** Env（不是追加），所以必须把平台必需项给全。
+		//
+		// Windows 的 GetTempPath 按 TMP → TEMP → USERPROFILE 顺序取临时目录，
+		// **完全不看 TMPDIR**（TMPDIR 是 POSIX 的名字）。只给 TMPDIR 时子进程的
+		// os.TempDir() 退化成 C:\Users\<user> 甚至 C:\WINDOWS，于是 t.TempDir()
+		// 报 mkdir C:\WINDOWS\...: Access is denied —— 那不是被测行为，是夹具缺陷。
+		// 实测：只设 TMPDIR 时 os.TempDir() = "C:\Users\Zelly"，TMPDIR 被完全忽略。
+		childHome := t.TempDir()
+		childEnv := []string{
+			"D03_FOLLOWER_CHILD=1", "TIKU_RUN_PROVIDER_NETWORK_TESTS=0", "HOME=" + childHome,
+		}
+		if runtime.GOOS == "windows" {
+			childEnv = append(childEnv,
+				"TEMP="+childHome, "TMP="+childHome,
+				"PATH="+os.Getenv("PATH"),
+				"SystemRoot="+os.Getenv("SystemRoot"),
+				"USERPROFILE="+childHome,
+			)
+		} else {
+			childEnv = append(childEnv, "TMPDIR="+childHome)
+		}
+		cmd.Env = childEnv
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &stdout, &stderr
 		err = cmd.Run()
