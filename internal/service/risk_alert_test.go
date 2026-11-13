@@ -63,6 +63,8 @@ func newRiskAlertTestDBNamed(t *testing.T, rawName string) *gorm.DB {
 		&entity.Ticket{},
 		// AccessToken 是 R12（token_abuse）的数据源：配额消耗 + 多 IP 漂移。
 		&entity.AccessToken{},
+		// UserBindingRecord 是 R14（binding_churn）与 R18（wechat_phone_share）的数据源。
+		&entity.UserBindingRecord{},
 	} {
 		if err := db.AutoMigrate(model); err != nil {
 			t.Fatalf("migrate %T: %v", model, err)
@@ -971,6 +973,8 @@ func TestLoadRiskRulesFallsBackToCodeDefaults(t *testing.T) {
 		"abnormal_register_pattern": 3,
 		"token_abuse":               3,
 		"offhours_activity":         3,
+		"binding_churn":             2,
+		"wechat_phone_share":        3,
 	}
 	if len(rules) != len(wantThreshold) {
 		t.Fatalf("fallback rule count = %d, want %d（实际：%v）", len(rules), len(wantThreshold), ruleIDsOf(rules))
@@ -3257,6 +3261,9 @@ func TestRiskWarningDedupIsAtomicAcrossAllRules(t *testing.T) {
 		{ruleID: "abnormal_register_pattern", throttleSeconds: 24 * 60 * 60, subjectKey: "abnormal_register_pattern:prefix:abc:2026-11-14T00:00:00+08:00"},
 		{ruleID: "token_abuse", throttleSeconds: 24 * 60 * 60, subjectKey: "token_abuse:token:7:2026-11-14T00:00:00+08:00"},
 		{ruleID: "offhours_activity", throttleSeconds: 24 * 60 * 60, subjectKey: "offhours_activity:day:2026-11-14:2026-11-14T00:00:00+08:00"},
+		// R14 / R18（新增规则必须进这张表，否则没有并发回归钉）。
+		{ruleID: "binding_churn", throttleSeconds: 24 * 60 * 60, subjectKey: "binding_churn:user:42:2026-11-14T00:00:00+08:00"},
+		{ruleID: "wechat_phone_share", throttleSeconds: 24 * 60 * 60, subjectKey: "wechat_phone_share:phone:13800138000:2026-11-14T00:00:00+08:00"},
 	}
 	for _, tc := range cases {
 		tc := tc

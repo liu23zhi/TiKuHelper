@@ -335,6 +335,9 @@ test('规则名与级别：未知值回落而不是抛错', () => {
   // R12 / R16：后端 rule_id 必须与这里逐字一致。
   assert.equal(riskRuleLabel('token_abuse'), 'access token 滥用')
   assert.equal(riskRuleLabel('offhours_activity'), '凌晨作息异常（需 3 天历史）')
+  // R14 / R18：后端 rule_id 必须与这里逐字一致。
+  assert.equal(riskRuleLabel('binding_churn'), '频繁换绑')
+  assert.equal(riskRuleLabel('wechat_phone_share'), '封禁账号共用号（仅当前绑定）')
   assert.equal(riskRuleLabel(''), '未知规则')
   assert.equal(riskRuleLabel('future_rule'), 'future_rule', '未知规则要原样显示，便于排错')
   assert.equal(riskSeverityMeta('high').label, '高')

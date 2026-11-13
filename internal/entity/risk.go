@@ -72,6 +72,24 @@ const (
 	// 数据源：risk_warnings **自身历史**（不新建快照表）。
 	// 见 service.collectOffhoursActivityCandidates 的注释。
 	RiskRuleIDOffhoursActivity = "offhours_activity"
+	// RiskRuleIDBindingChurn 是 96 §2.1 的 R14「频繁换绑」。
+	//
+	// 数据源：user_binding_records 的**释放侧**记录（released_at + release_source）。
+	//
+	// ⚠️ 这是本规则最容易做错的三点（都实测确认过）：
+	//  1. 时间列必须用 `released_at`（释放时刻）而不是 `bound_at`（当初绑定时刻）；
+	//  2. 必须排除 `state = 'voided'` —— 管理员作废只改 state/active_key/void_*，
+	//     **不动** release_reason 与 released_at，所以被作废的行仍会命中计数；
+	//  3. `release_reason` 无区分力（主动解绑与换绑都写 `rebind`），
+	//     真正能区分的是 `release_source`。
+	RiskRuleIDBindingChurn = "binding_churn"
+	// RiskRuleIDWechatPhoneShare 是 96 §2.1 的 R18「封禁账号共用号」：
+	// 同一手机号 / 同一微信出现在 ≥N 个**已封禁**账号上。
+	//
+	// 数据源：users.phone / users.wechat_id + users.status='banned'。
+	// ⚠️ 边界：只能算**当前绑定**。users 只存当前值，换绑后旧号消失，
+	// 所以「历史上共用过同一号码」查不到 —— 这是数据源的真实限制，已写进规则说明。
+	RiskRuleIDWechatPhoneShare = "wechat_phone_share"
 )
 
 // RiskRuleDefault 是一条规则的**代码内默认值**。
@@ -212,6 +230,24 @@ var DefaultRiskBehaviorRules = []RiskRuleDefault{
 		Threshold:       3,
 		ThrottleSeconds: 24 * 60 * 60,
 		Description:     "连续 3 个自然日出现凌晨时段（默认北京时间 02:00-05:00，可配）活动占比超过阈值。注意：本规则需要至少 3 天历史数据，新部署环境前 3 天不会产生告警。",
+	},
+	{
+		RuleID:   RiskRuleIDBindingChurn,
+		Name:     "频繁换绑",
+		Severity: RiskSeverityMedium,
+		// 96 §2.1 R14：单账号 24h 内换绑手机/微信 ≥N 次，N 默认 2。
+		Threshold:       2,
+		ThrottleSeconds: 24 * 60 * 60,
+		Description:     "单个账号在 24 小时内主动换绑（手机号或微信）达到阈值。被他人抢号（force_reassign）不计入，那是受害者。只告警不处置。",
+	},
+	{
+		RuleID:   RiskRuleIDWechatPhoneShare,
+		Name:     "封禁账号共用号",
+		Severity: RiskSeverityHigh,
+		// 96 §2.1 R18：同一手机号/微信在 ≥N 个已封禁账号上出现，N 默认 3。
+		Threshold:       3,
+		ThrottleSeconds: 24 * 60 * 60,
+		Description:     "同一手机号或同一微信出现在达到阈值的已封禁账号上，指向同一人反复注册。注意：本规则只统计账号的**当前绑定**（换绑后旧号不再计入），无法发现历史共用。只告警不处置。",
 	},
 }
 

@@ -138,6 +138,10 @@ func riskThresholdSpecs() []riskThresholdSpec {
 			Label: "配额倍数 / 多 IP 数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 3, Unit: "倍/个", SyncRuleColumn: true},
 		{Key: "risk_rule_offhours_activity_threshold", RuleID: entity.RiskRuleIDOffhoursActivity,
 			Label: "连续天数阈值", Kind: RiskThresholdKindInteger, DefaultValue: 3, Unit: "天", SyncRuleColumn: true},
+		{Key: "risk_rule_binding_churn_threshold", RuleID: entity.RiskRuleIDBindingChurn,
+			Label: "24h 主动换绑次数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 2, Unit: "次", SyncRuleColumn: true},
+		{Key: "risk_rule_wechat_phone_share_threshold", RuleID: entity.RiskRuleIDWechatPhoneShare,
+			Label: "同号关联账号数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 3, Unit: "个", SyncRuleColumn: true},
 		// 占比项：**不**同步 risk_rules.threshold（见 SyncRuleColumn 的注释）。
 		{Key: RiskThresholdSettingKeyOffhoursShare, RuleID: entity.RiskRuleIDOffhoursActivity,
 			Label: "凌晨活动占比阈值", Kind: RiskThresholdKindRatio, DefaultValue: 0.8, Unit: "比例", SyncRuleColumn: false},

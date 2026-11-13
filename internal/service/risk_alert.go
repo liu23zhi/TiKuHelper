@@ -589,6 +589,20 @@ func EvaluateDebtAlerts(db *gorm.DB, now time.Time) (RiskAlertEvaluation, error)
 		}
 		candidates = append(candidates, found...)
 	}
+	if rule, ok := enabledRules[entity.RiskRuleIDBindingChurn]; ok {
+		found, scanErr := collectBindingChurnCandidates(db, rule, now)
+		if scanErr != nil {
+			return result, scanErr
+		}
+		candidates = append(candidates, found...)
+	}
+	if rule, ok := enabledRules[entity.RiskRuleIDWechatPhoneShare]; ok {
+		found, scanErr := collectWechatPhoneShareCandidates(db, rule, now)
+		if scanErr != nil {
+			return result, scanErr
+		}
+		candidates = append(candidates, found...)
+	}
 
 	seenRules := map[string]struct{}{}
 	for _, candidate := range candidates {
@@ -1775,6 +1789,321 @@ func riskOffhoursHourExpr(db *gorm.DB, column string) string {
 		return "CAST(strftime('%H', " + riskWindowColumnExpr(db, column) + ") AS INTEGER)"
 	}
 	return "HOUR(" + column + ")"
+}
+
+// riskBindingChurnSources 是 R14 计入「用户主动换绑」的 release_source 白名单。
+//
+// # 为什么是「白名单」而不是黑名单
+//
+// 六个取值里只有一个是「用户自己主动做的绑定变更」，其余都是**别人/系统**对他的操作。
+// 用白名单能保证「将来新增一个 source 时默认不计入」，避免悄悄把受害者算成惯犯。
+//
+// # 逐个取值说明（全部实测确认过写入点）
+//
+//   - `user_unbind`（**计入**）：用户主动解绑或换绑。这是唯一真正属于「本人行为」的
+//     source —— `phone_binding.go:107`（主动解绑）/`:169`（换绑）、
+//     `wechat_binding.go:23`/`:62` 都写它。R14 要抓的就是这种反复操作。
+//
+//   - `force_reassign`（**排除**）：**被别人抢号**。写点在 `phone_binding.go:149` /
+//     `wechat_binding.go:44`，语义是「新人占了号，旧持有人被动释放」。
+//     把他算进「频繁换绑」等于**惩罚受害者** —— 这是本规则最容易犯的误报，
+//     任务书也专门点了这条。
+//
+//   - `admin_clear`（**排除**）：管理员清理。**全仓当前无写入点**（只有常量定义），
+//     预留给未来的管理端清理功能。排除理由：不是用户行为。
+//
+//   - `account_close`（**排除**）：注销账号（`user_archive.go:156`）。一个人注销一次
+//     不该算「频繁换绑」，且注销后账号已不可用，再告警没有处置意义。
+//
+//   - `admin_delete`（**排除**）：管理员删除账号（`user_archive.go:154`）。同 account_close。
+//
+//   - `admin_manual_backfill`（**排除**）：管理员手工补录历史（`user_binding_record_admin.go:449`）。
+//     这是数据修复动作，时间戳是**补录时填写的历史时刻**，与「最近 24h 是否频繁换绑」无关；
+//     计入会让一次补录批量产出一堆假告警。
+//
+// ⚠️ 注意这里**不能**用 `release_reason`：主动解绑（`phone_binding.go:106`）与换绑（`:168`）
+// 都写 `rebind`，用它数「换绑次数」会把纯解绑也算进去，无法区分。
+var riskBindingChurnSources = []string{
+	entity.BindingReleaseSourceUserUnbind,
+}
+
+// collectBindingChurnCandidates 收集「单账号 24h 内主动换绑 ≥N 次」的命中（96 §2.1 R14）。
+//
+// # 窗口：滚动 24h，不是自然日
+//
+// R1（multi_account_ip）用的是自然日窗口，但那是因为它按「一天内登录了几个账号」算，
+// 跨零点就该重新计数。R14 不同：它抓的是**短时间内的连续操作**（换绑折腾），
+// 自然日窗口会让「23:59 换一次 + 00:01 换一次」被拆到两天从而漏报 —— 而那恰恰是
+// 最典型的刷号形态。所以这里用**滚动 24h**（`[now-24h, now)`）。
+//
+// 代价：SubjectKey 不能编「窗口起点」（滚动窗口每秒都在变），改为编**日期**
+// （`day:<YYYY-MM-DD>`）—— 这样同一自然日内最多告警一次（节流语义），
+// 但判据本身仍是滚动 24h。这个组合是刻意的：
+//
+//	· 判据用滚动窗口 → 不因跨零点漏报；
+//	· 节流用自然日   → 不会每次评估都重复告警。
+//
+// # 数据源的三个坑（都实测确认过）
+//
+//  1. 时间列用 `released_at`（释放时刻），**不是** `bound_at`（当初绑定时刻）。
+//     用 bound_at 会把「很久以前绑的、今天才释放」的行算到绑定时间那一侧。
+//  2. 必须排除 `state = 'voided'`：管理员作废只改 `state/active_key/void_*`
+//     （`user_binding_record_admin.go:315-323`），**不动** `release_reason` 与
+//     `released_at` —— 被作废的行仍带着原来的释放时间，不排除就会被当成一次换绑。
+//  3. `release_source` 白名单见风险 riskBindingChurnSources 的注释。
+func collectBindingChurnCandidates(db *gorm.DB, rule entity.RiskRule, now time.Time) ([]riskWarningCandidate, error) {
+	threshold := riskRuleThreshold(db, rule, riskDefaultThreshold(rule.RuleID))
+	if threshold <= 0 {
+		return nil, nil
+	}
+	if !db.Migrator().HasTable(entity.TableNameUserBindingRecord) {
+		return nil, nil
+	}
+	// 滚动 24h 窗口。
+	since := now.Add(-24 * time.Hour)
+	releasedExpr := riskWindowColumnExpr(db, "released_at")
+	sinceText := since.Format("2006-01-02 15:04:05")
+	nowText := now.Format("2006-01-02 15:04:05")
+
+	var groups []RiskBindingChurnGroup
+	query := db.Session(&gorm.Session{NewDB: true}).Model(&entity.UserBindingRecord{}).
+		Select("user_id AS user_id, COUNT(*) AS churn, GROUP_CONCAT(DISTINCT kind) AS kinds").
+		Where("state <> ?", entity.BindingStateVoided).
+		Where("release_source IN ?", riskBindingChurnSources).
+		Where(releasedExpr+" IS NOT NULL").
+		Where(releasedExpr+" >= ? AND "+releasedExpr+" < ?", sinceText, nowText).
+		Group("user_id").
+		Order("user_id ASC")
+	if err := query.Scan(&groups).Error; err != nil {
+		return nil, err
+	}
+	windowStart, _ := riskLoginWindow(now)
+	today := windowStart.Format("2006-01-02")
+	candidates := make([]riskWarningCandidate, 0, len(groups))
+	usernames := riskUsernamesByID(db, riskChurnUserIDs(groups))
+	for _, group := range groups {
+		// 「≥ 阈值」：1 次 + 阈值 2 → 不告警；2 次 → 告警。
+		if float64(group.Churn) < threshold {
+			continue
+		}
+		userID := group.UserID
+		subject := riskBehaviorSubject(rule.RuleID, "user:"+strconv.FormatInt(int64(userID), 10), windowStart)
+		detail, err := json.Marshal(map[string]any{
+			"ruleId":          rule.RuleID,
+			"subjectKey":      subject,
+			"userId":          userID,
+			"username":        usernames[userID],
+			"threshold":       threshold,
+			"value":           group.Churn,
+			"churnCount":      group.Churn,
+			"kinds":           group.Kinds,
+			"windowHours":     24,
+			"windowKind":      "rolling",
+			"day":             today,
+			"evaluatedAt":     now.Format(time.RFC3339),
+			"includedSources": riskBindingChurnSources,
+			"evidenceNote": "滚动 24h 内 release_source=user_unbind 的释放次数；" +
+				"已排除 state=voided（管理员作废）与 force_reassign（被抢号=受害者）",
+		})
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, riskWarningCandidate{
+			Rule:     rule,
+			Subject:  subject,
+			UserID:   &userID,
+			Severity: rule.Severity,
+			Detail:   string(detail),
+		})
+	}
+	return candidates, nil
+}
+
+// RiskBindingChurnGroup 是 R14 的聚合行（用户 → 滚动 24h 内主动释放次数）。
+type RiskBindingChurnGroup struct {
+	UserID int32
+	Churn  int64
+	Kinds  string
+}
+
+// riskChurnUserIDs 抽出用户 id 列表（一次性查用户名，避免 N+1）。
+func riskChurnUserIDs(groups []RiskBindingChurnGroup) []int32 {
+	out := make([]int32, 0, len(groups))
+	for _, group := range groups {
+		out = append(out, group.UserID)
+	}
+	return out
+}
+
+// collectWechatPhoneShareCandidates 收集「同一手机号/微信出现在多个已封禁账号上」的命中
+// （96 §2.1 R18）。
+//
+// # ⚠️ 数据源真实边界：users 上是 UNIQUE 索引，同号**不可能**同时挂在两个账号上
+//
+// 实测（探针 TestProbePhoneUniqueConstraint）：
+//
+//	第二个账号用同一 phone → constraint failed: UNIQUE constraint failed: users.phone
+//
+// `users.phone` 与 `users.wechat_id` 都是 UNIQUE INDEX（`users.gen.go` 的 uniqueIndex tag，
+// 实际生成 `CREATE UNIQUE INDEX idx_users_phone`）。这意味着任务书给的那句
+//
+//	SELECT phone, COUNT(*) FROM users WHERE status='banned' GROUP BY phone HAVING c>=3
+//
+// 在当前 schema 下**恒为 0 条** —— 直接照做会得到一条永不告警的规则。
+//
+// # 所以这里改成「同一个号 → 曾被多少个账号占用过」，用 binding 历史
+//
+// 真正能捕捉「一个人用同一个号反复注册」的信号在 `user_binding_records`：
+// 释放行里保留了**历史占用**（released 行仍带着 value），而 users 只保留当前值。
+// 判据：
+//
+//	同一 (kind, value_hash) 出现过 ≥N 个**不同 user_id**，且其中至少一个账号当前是 banned
+//
+// 「至少一个 banned」是必要的收窄：否则「一个号被 3 个正常用户先后用过」
+// （正常的换号流转）也会告警。
+//
+// 同时保留「当前值的直接分组」作为**补充证据**：虽然 UNIQUE 保证单号只挂一个账号，
+// 但如果将来那个 UNIQUE 被去掉（例如允许多账号共用家庭号），这条分支会自动开始工作。
+//
+// # 双维度（phone / wechat）必须分开
+//
+// SubjectKey 里带 kind（`phone:` / `wechat:`），否则同一个值在两个维度上会互相覆盖节流。
+func collectWechatPhoneShareCandidates(db *gorm.DB, rule entity.RiskRule, now time.Time) ([]riskWarningCandidate, error) {
+	threshold := riskRuleThreshold(db, rule, riskDefaultThreshold(rule.RuleID))
+	if threshold <= 0 {
+		return nil, nil
+	}
+	windowStart, _ := riskLoginWindow(now)
+	candidates := make([]riskWarningCandidate, 0, 4)
+	seen := map[string]struct{}{}
+
+	// ① 主判据：binding 历史里同一 (kind,value) 被 ≥N 个不同账号占用，且含封禁账号。
+	if db.Migrator().HasTable(entity.TableNameUserBindingRecord) &&
+		db.Migrator().HasTable(entity.TableNameUser) {
+		type shareGroup struct {
+			Kind       string
+			Value      string
+			UserCount  int64
+			Banned     int64
+			SampleUser string
+		}
+		var groups []shareGroup
+		// 用 JOIN users 取「其中有多少个账号当前是 banned」。
+		// 注意 value_hash 是 (kind,value) 的稳定指纹，比直接比 value 更可靠
+		// （value 可能有格式差异，hash 已归一）。
+		query := db.Session(&gorm.Session{NewDB: true}).
+			Table(entity.TableNameUserBindingRecord+" AS b").
+			Select("b.kind AS kind, MAX(b.value) AS value, "+
+				"COUNT(DISTINCT b.user_id) AS user_count, "+
+				"SUM(CASE WHEN u.status = ? THEN 1 ELSE 0 END) AS banned, "+
+				"MAX(b.username_snapshot) AS sample_user", "banned").
+			Joins("JOIN " + entity.TableNameUser + " AS u ON u.id = b.user_id").
+			Where("b.value_hash <> ''").
+			Group("b.kind, b.value_hash").
+			Order("user_count DESC")
+		if err := query.Scan(&groups).Error; err != nil {
+			return nil, err
+		}
+		for _, group := range groups {
+			// 「≥ 阈值」且至少有一个封禁账号。
+			if float64(group.UserCount) < threshold || group.Banned <= 0 {
+				continue
+			}
+			subject := riskBehaviorSubject(rule.RuleID,
+				group.Kind+":"+group.Value, windowStart)
+			seen[group.Kind+":"+group.Value] = struct{}{}
+			var userID int32
+			detail, err := json.Marshal(map[string]any{
+				"ruleId":       rule.RuleID,
+				"subjectKey":   subject,
+				"kind":         group.Kind,
+				"value":        group.Value,
+				"accountCount": group.UserCount,
+				"bannedCount":  group.Banned,
+				"sampleUser":   group.SampleUser,
+				// ⚠️ 这里必须是**阈值**，不是实际计数。
+				// 原实现写的是 group.UserCount（实际值），会让排障的人看到
+				// 「threshold 恰好等于 accountCount」而以为「刚好卡在阈值上」——
+				// 实际可能远超阈值。其余 9 条规则都写 `threshold` 这个变量，
+				// 这两处是笔误，已修正。
+				"threshold":   threshold,
+				"signal":      "binding_history",
+				"windowStart": windowStart.Format(time.RFC3339),
+				"evaluatedAt": now.Format(time.RFC3339),
+				"evidenceNote": "同一号码/微信历史上被多个账号占用（含封禁账号）；" +
+					"users 上是 UNIQUE 索引，所以只能从 binding 历史看出「曾被多人占用」",
+			})
+			if err != nil {
+				return nil, err
+			}
+			candidates = append(candidates, riskWarningCandidate{
+				Rule:     rule,
+				Subject:  subject,
+				UserID:   &userID,
+				Severity: rule.Severity,
+				Detail:   string(detail),
+			})
+		}
+	}
+
+	// ② 补充分支：当前值直接分组（UNIQUE 存在时恒 0；去掉 UNIQUE 后自动生效）。
+	if db.Migrator().HasTable(entity.TableNameUser) {
+		for _, dimension := range []struct {
+			kind   string
+			column string
+		}{
+			{entity.BindingKindPhone, "phone"},
+			{entity.BindingKindWechat, "wechat_id"},
+		} {
+			type currentGroup struct {
+				Value string
+				Count int64
+			}
+			var rows []currentGroup
+			if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.User{}).
+				Select(dimension.column+" AS value, COUNT(*) AS count").
+				Where("status = ?", "banned").
+				Where(dimension.column+" IS NOT NULL AND "+dimension.column+" <> ''").
+				Group(dimension.column).
+				Having("COUNT(*) >= ?", int(threshold)).
+				Scan(&rows).Error; err != nil {
+				return nil, err
+			}
+			for _, row := range rows {
+				key := dimension.kind + ":" + row.Value
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				subject := riskBehaviorSubject(rule.RuleID, key, windowStart)
+				var userID int32
+				detail, err := json.Marshal(map[string]any{
+					"ruleId":      rule.RuleID,
+					"subjectKey":  subject,
+					"kind":        dimension.kind,
+					"value":       row.Value,
+					"bannedCount": row.Count,
+					// 与主判据同理：threshold 是阈值，不是 row.Count。
+					"threshold":   threshold,
+					"signal":      "current_binding",
+					"windowStart": windowStart.Format(time.RFC3339),
+					"evaluatedAt": now.Format(time.RFC3339),
+					"evidenceNote": "按 users 当前值分组；users.phone/wechat_id 有 UNIQUE 索引，" +
+						"所以本分支当前恒为 0（保留是为 schema 变更后能自动生效）",
+				})
+				if err != nil {
+					return nil, err
+				}
+				candidates = append(candidates, riskWarningCandidate{
+					Rule:     rule,
+					Subject:  subject,
+					UserID:   &userID,
+					Severity: rule.Severity,
+					Detail:   string(detail),
+				})
+			}
+		}
+	}
+	return candidates, nil
 }
 
 // RiskTicketFloodGroup 是 R8 的聚合行（用户 → 窗口内建单数）。

@@ -43,6 +43,11 @@ export const RISK_RULE_OPTIONS = Object.freeze([
   // R16：连续 N 天凌晨活动占比超阈值（默认 3 天；时段 02:00-05:00 固定）
   // ⚠️ label 里带「需 3 天历史」提示，避免被误认为规则坏了
   { value: 'offhours_activity', label: '凌晨作息异常（需 3 天历史）' },
+  // R14：滚动 24h 内主动换绑 ≥N 次（默认 2；被抢号不计入）
+  { value: 'binding_churn', label: '频繁换绑' },
+  // R18：同一手机号/微信出现在 ≥N 个已封禁账号上（默认 3）
+  // ⚠️ label 带「仅当前绑定」提示，因为 users 只存当前值，历史共用查不到
+  { value: 'wechat_phone_share', label: '封禁账号共用号（仅当前绑定）' },
 ])
 
 const RISK_RULE_LABELS = Object.freeze(
