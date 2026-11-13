@@ -1070,6 +1070,16 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		logger.SysLog(fmt.Sprintf("工单图片保留策略列迁移失败（清理任务会重跑，幂等）：%v", err))
 	}
 
+	// 工单附件扫描来源列 scan_marked_by（区分「上游真判敏感」与「额度耗尽兜底」）。
+	//
+	// 缺这一列时两类图片的 scan_state 同为 "sensitive"，而处置动作完全相反
+	// （封禁/下架 vs 补额度后重检）。所以结构性失败必须 FATAL —— 静默降级会让
+	// 管理员按错误的证据处置。迁移本身是列检测型，重复执行只是一次 HasColumn。
+	if err := runStartupMigration("ensureTicketAttachmentScanMarkedBySchema", func() error { return EnsureTicketAttachmentScanMarkedBySchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare ticket attachment scan marked by schema fail: %w", err))
+		return nil
+	}
+
 	// IP 段归属的**存量回填**（71 号补口，T-28）。
 	//
 	// 上面 ensureIPSegmentSchema 只建表、不写数据；新发生的查询由 service/location.go
