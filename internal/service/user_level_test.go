@@ -400,39 +400,68 @@ func TestUserLevelDeleteFallsBackReferencingUsers(t *testing.T) {
 
 // ─────────────────────── C2：档位表 ───────────────────────
 
-// TestRechargePromotionTiersFallBackToConstantsWhenTableEmpty 钉住「表空回退常量」。
+// TestRechargePromotionTiersFallBackOnlyWhenTableMissing 钉住「**只有**表不存在才回退常量」。
 //
-// 这是 C2 可安全上线的前提：表空时的行为必须与改动前**逐条一致**。
-func TestRechargePromotionTiersFallBackToConstantsWhenTableEmpty(t *testing.T) {
-	db := newUserLevelTestDB(t)
+// 原用例名为 FallBackToConstantsWhenTableEmpty，把「表空」与「表不存在」写成同一件事，
+// 正是 T-30 要修的反向语义。现在拆成两个阶段：
+//   - 表不存在（未迁移）→ 回退常量六档（新库首启不能停发）；
+//   - 表存在但为空     → 空列表 = 不赠送（清空表 = 关闭赠送，不是「恢复默认六档」）。
+//
+// 三态与完整端到端覆盖见 recharge_promotion_tier_test.go。
+func TestRechargePromotionTiersFallBackOnlyWhenTableMissing(t *testing.T) {
+	// 阶段 1：表不存在 → 回退常量，与改动前逐条一致。
+	missing := newUserLevelTestDB(t)
+	if err := missing.Migrator().DropTable(entity.TableNameRechargePromotionTierRule); err != nil {
+		t.Fatalf("drop tier table: %v", err)
+	}
 
-	tiers := RechargePromotionTiersWithDB(db)
+	tiers := RechargePromotionTiersWithDB(missing)
 	if len(tiers) != len(DefaultRechargePromotionTiers) {
-		t.Fatalf("table empty must fall back to %d constants, got %d", len(DefaultRechargePromotionTiers), len(tiers))
+		t.Fatalf("missing table must fall back to %d constants, got %d", len(DefaultRechargePromotionTiers), len(tiers))
 	}
 	for index, want := range DefaultRechargePromotionTiers {
 		if tiers[index].Threshold != want.Threshold || tiers[index].Rate != want.Rate {
 			t.Fatalf("fallback tier[%d] = %+v, want %+v", index, tiers[index], want)
 		}
 	}
-	list, err := ListRechargePromotionTierRulesWithDB(db)
+	missingList, err := ListRechargePromotionTierRulesWithDB(missing)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if list.Source != "default" {
-		t.Fatalf("source = %q, want default", list.Source)
+	if missingList.Source != "default" {
+		t.Fatalf("missing table: source = %q, want default", missingList.Source)
 	}
-	if len(list.Rows) != 0 {
-		t.Fatalf("rows = %d, want 0", len(list.Rows))
+	if len(missingList.Rows) != 0 {
+		t.Fatalf("missing table: rows = %d, want 0", len(missingList.Rows))
 	}
-
 	// 也验证「选档结果与常量版一致」——不只是表长得一样。
 	for _, amount := range []float64{8.8, 28, 100, 288, 500, 888, 1688, 2000} {
 		wantTier, wantOK := SelectRechargePromotionTier(amount)
-		gotTier, gotOK := SelectRechargePromotionTierWithDB(db, amount)
+		gotTier, gotOK := SelectRechargePromotionTierWithDB(missing, amount)
 		if wantOK != gotOK || wantTier != gotTier {
 			t.Fatalf("amount %v: db fallback %+v/%v != constant %+v/%v", amount, gotTier, gotOK, wantTier, wantOK)
 		}
+	}
+
+	// 阶段 2：表存在但为空 → **不回退**，返回空档位（不赠送）。
+	empty := newUserLevelTestDB(t)
+	if got := RechargePromotionTiersWithDB(empty); len(got) != 0 {
+		t.Fatalf("existing empty table must yield 0 tiers (not %d constants), got %+v",
+			len(DefaultRechargePromotionTiers), got)
+	}
+	if tier, ok := SelectRechargePromotionTierWithDB(empty, 1688); ok {
+		t.Fatalf("existing empty table must not select any tier, got %+v", tier)
+	}
+	emptyList, err := ListRechargePromotionTierRulesWithDB(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// source 必须是 empty 而不是 default —— 否则界面会谎称「正在用系统默认六档」。
+	if emptyList.Source != "empty" {
+		t.Fatalf("existing empty table: source = %q, want empty", emptyList.Source)
+	}
+	if len(emptyList.Rows) != 0 || len(emptyList.Effective) != 0 {
+		t.Fatalf("existing empty table: rows=%d effective=%d, want 0/0", len(emptyList.Rows), len(emptyList.Effective))
 	}
 }
 
@@ -454,13 +483,14 @@ func TestRechargePromotionTierTableOverridesConstants(t *testing.T) {
 	if !ok || tier.Threshold != 200 || tier.Rate != 0.5 {
 		t.Fatalf("configured table must win over constants, got %+v ok=%v", tier, ok)
 	}
-	// 清空表 → 回退常量（明确定义的行为）。
-	if _, err := ReplaceRechargePromotionTierRulesWithDB(db, nil); err != nil {
+	// 清空表 → **不赠送**（不是回退常量）。888 在常量表里是 150%，这里必须一档都不命中。
+	if cleared, err := ReplaceRechargePromotionTierRulesWithDB(db, nil); err != nil {
 		t.Fatal(err)
+	} else if cleared.Source != "empty" {
+		t.Fatalf("after clearing: source = %q, want empty", cleared.Source)
 	}
-	tier, ok = SelectRechargePromotionTierWithDB(db, 888)
-	if !ok || tier.Rate != 1.5 {
-		t.Fatalf("clearing the table must fall back to constants (888 -> 150%%), got %+v ok=%v", tier, ok)
+	if tier, ok := SelectRechargePromotionTierWithDB(db, 888); ok {
+		t.Fatalf("clearing the table must disable the promotion (no fallback to constants), got %+v", tier)
 	}
 }
 
