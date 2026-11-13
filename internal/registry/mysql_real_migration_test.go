@@ -1,14 +1,22 @@
 package registry
 
 import (
+	"crypto"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"net/url"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/service"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -352,47 +360,221 @@ func TestMariaDBPaymentEventMigrationRunsForReal(t *testing.T) {
 }
 
 // TestMariaDBPaymentEventOnConflictIsRealUpsert 证明 `clause.OnConflict{DoNothing}`
-// 在真库上真的走 ON DUPLICATE KEY，且 RowsAffected 语义正确。
+// 在真库上真的走 ON DUPLICATE KEY，且「首次 / 非首次」能否被 RowsAffected 区分。
 //
-// 假驱动把 RowsAffected 直接写死成 1，所以「DoNothing 时返回 0」这条
-// 幂等判据（见 entity.PaymentEvent 注释：RowsAffected==1 才算首次入账）
-// 在假驱动下**完全没被验证**。这条用例是真库才能给的证据。
+// 这条用例钉的是**业务契约**（见 entity.PaymentEvent 注释与
+// service/payment_event.go:80）：`RowsAffected == 1` 才算首次入账，重投必须
+// 落到「非首次」。它不钉具体数值 0 —— 驱动换计数口径不该让用例误红。
+//
+// 真库实测（mariadb 11.4.13 + gorm.io/driver/mysql v1.6.0 + gorm v1.31.2）：
+//
+//	                                 首行 | 重投
+//	裸 SQL: ON DUPLICATE KEY UPDATE     1  |  0
+//	裸 SQL: 同上 + RETURNING id         0  |  0
+//	gorm 默认（RETURNING 开启）          1  |  1     ← 重投返回 1，与首次无法区分
+//	gorm DisableWithReturning=true       1  |  0
+//
+// 根因是 **RETURNING 结果集**，不是「ON DUPLICATE KEY 按被更新的行计数」：
+// v1.6.0 的 mysql.go:128-181 在服务器版本 >= 10.5 时给 Create 回调追加
+// RETURNING 子句；MariaDB 的 `ON DUPLICATE KEY UPDATE pk=pk RETURNING pk`
+// 在撞键时**仍返回一行**（实测 `SELECT id` 能看到既有 id）。gorm 走
+// QueryContext + gorm.Scan（callbacks/create.go:80-106），把「扫描到的行数」
+// 记账成 RowsAffected，于是撞键也记 1；批量两行重投则记 2。
+// 裸 SQL 的 Exec RowsAffected 在同样语句上是 0，可见差异全部来自驱动这条路径。
+//
+// 因此本用例在**当前配置下应当变红**：它是「二次加款」红线的探针，不是钉子写错。
 func TestMariaDBPaymentEventOnConflictIsRealUpsert(t *testing.T) {
 	database := mysqlTestFreshDB(t)
 	mustAutoMigrate(t, database, &entity.PaymentEvent{})
 
-	first := []entity.PaymentEvent{
-		{OrderNo: "MARIA-UPSERT-1", RechargeOrderID: 1, UserID: 1, Amount: 8, Source: "notify"},
-		{OrderNo: "MARIA-UPSERT-2", RechargeOrderID: 2, UserID: 2, Amount: 9, Source: "notify"},
-	}
+	// 单行首次：真插入 = 1，这是 production 判「首次入账」的唯一取值。
+	first := entity.PaymentEvent{OrderNo: "MARIA-UPSERT-1", RechargeOrderID: 1, UserID: 1, Amount: 8, Source: "notify"}
 	result := database.Clauses(clause.OnConflict{DoNothing: true}).Create(&first)
 	if result.Error != nil {
 		t.Fatalf("首次 upsert 失败：%v", result.Error)
 	}
-	if result.RowsAffected != 2 {
-		t.Fatalf("首次 upsert RowsAffected = %d, want 2", result.RowsAffected)
+	if result.RowsAffected != 1 {
+		t.Fatalf("首次单行 upsert RowsAffected = %d, want 1（只有真插入才是首次入账）", result.RowsAffected)
 	}
 
-	replayed := []entity.PaymentEvent{
-		{OrderNo: "MARIA-UPSERT-1", RechargeOrderID: 1, UserID: 1, Amount: 8, Source: "notify"},
-		{OrderNo: "MARIA-UPSERT-2", RechargeOrderID: 2, UserID: 2, Amount: 9, Source: "notify"},
-	}
+	// 单行重投：必须**不是** 1，否则网关重投会被判成首次入账并二次加款。
+	replayed := entity.PaymentEvent{OrderNo: "MARIA-UPSERT-1", RechargeOrderID: 1, UserID: 1, Amount: 8, Source: "notify"}
 	result = database.Clauses(clause.OnConflict{DoNothing: true}).Create(&replayed)
 	if result.Error != nil {
 		t.Fatalf("重复 upsert 失败（DoNothing 不应报错）：%v", result.Error)
 	}
-	// 这是加款幂等的**核心判据**：RowsAffected==0 表示「已入过账」。
-	if result.RowsAffected != 0 {
-		t.Fatalf("重复 upsert RowsAffected = %d, want 0（网关重投会被误判成首次入账并二次加款）", result.RowsAffected)
+	t.Logf("单行重投 RowsAffected = %d（非 1 才算「已入过账」）", result.RowsAffected)
+	if result.RowsAffected == 1 {
+		t.Fatalf("单行重投 RowsAffected = 1，与首次插入无法区分：service/payment_event.go:80 的 " +
+			"`RowsAffected == 1` 会把网关重投判成首次入账并二次加款。\n" +
+			"实测根因是 MariaDB RETURNING 结果集被 gorm 记成 RowsAffected（见本函数注释的对照表）；" +
+			"驱动侧规避手段是 mysql.New(mysql.Config{DSN: ..., DisableWithReturning: true})。\n" +
+			"注：本用例**不是**把期望写成 want 2，而是要求重投与首次可区分。")
 	}
 
+	// 第二条独立断言：重投**不新增行**。它与 RowsAffected 的取值无关，
+	// 所以即使驱动换了计数口径（1 / 2 / 0）这条也不会跟着漂。
+	var countAfterFirst int64
+	if err := database.Model(&entity.PaymentEvent{}).Count(&countAfterFirst).Error; err != nil {
+		t.Fatalf("统计事件行数失败：%v", err)
+	}
+	second := entity.PaymentEvent{OrderNo: "MARIA-UPSERT-2", RechargeOrderID: 2, UserID: 2, Amount: 9, Source: "notify"}
+	if err := database.Clauses(clause.OnConflict{DoNothing: true}).Create(&second).Error; err != nil {
+		t.Fatalf("插入第二条事件失败：%v", err)
+	}
+	replayedTwo := []entity.PaymentEvent{
+		{OrderNo: "MARIA-UPSERT-1", RechargeOrderID: 1, UserID: 1, Amount: 8, Source: "notify"},
+		{OrderNo: "MARIA-UPSERT-2", RechargeOrderID: 2, UserID: 2, Amount: 9, Source: "notify"},
+	}
+	result = database.Clauses(clause.OnConflict{DoNothing: true}).Create(&replayedTwo)
+	if result.Error != nil {
+		t.Fatalf("重复 upsert 两条失败（DoNothing 不应报错）：%v", result.Error)
+	}
 	var count int64
 	if err := database.Model(&entity.PaymentEvent{}).Count(&count).Error; err != nil {
 		t.Fatalf("统计事件行数失败：%v", err)
 	}
 	if count != 2 {
-		t.Fatalf("事件行数 = %d, want 2（DoNothing 不应插入新行）", count)
+		t.Fatalf("事件行数 = %d, want 2（重投不应插入新行；首次后 %d 行）", count, countAfterFirst)
 	}
+}
+
+// TestMariaDBPaymentEventReplayDoesNotCreditTwice 把「二次加款」红线钉在**生产代码**上。
+//
+// 上一条用例只证明 clause 的 RowsAffected 语义，不经过 service 的分支判断。
+// 而真正的资金风险在 service/payment_event.go:80 的 `result.RowsAffected == 1`。
+//
+// 这里走真实的 `HandleRechargePaymentNotifyWithDB`，并且**先把订单状态改成
+// refunded** 才能绕开 status==paid 的快速通道、真正落到 claim 分支：
+//
+//	首次回调 → 加款 8；把订单改成 refunded；再次回调 → 余额必须仍是 8。
+//
+// 实测（mariadb 11.4.13）：本用例在**未做任何生产改动**时就会红，余额变成 16。
+// 原因同 TestMariaDBPaymentEventOnConflictIsRealUpsert 的注释 —— 撞键的
+// `... RETURNING id` 会返回一行，gorm 把它记成 RowsAffected=1，于是
+// `claimRechargePaymentEventInTx` 在重投时返回 firstCredit=true。
+// 也就是说「2 与 0 都落进非首次」这个前提在 MariaDB + RETURNING 下不成立：
+// 单行重投返回的是 **1**，正好等于「首次」。
+//
+// 变异 `== 1` → `>= 1` 时本用例同样红（余额 16），说明它确实覆盖了这条分支。
+func TestMariaDBPaymentEventReplayDoesNotCreditTwice(t *testing.T) {
+	database := mysqlTestFreshDB(t)
+	mustAutoMigrate(t, database,
+		&entity.SystemSetting{}, &entity.User{}, &entity.RechargeOrder{},
+		&entity.BillingRecord{}, &entity.Log{}, &entity.PaymentEvent{})
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("生成 RSA 密钥失败：%v", err)
+	}
+	publicDER, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatalf("序列化公钥失败：%v", err)
+	}
+	// 直接写 system_settings 行而不是走 UpdateSystemSettingDetailWithDB：
+	// 后者会顺带校验/归一化几十个无关配置项，任何一个失败都会让本用例
+	// 因为与本缺陷无关的原因变红。
+	for _, setting := range []entity.SystemSetting{
+		{Key: service.EPayGatewayURLSettingKey, Value: "https://pay.example.com"},
+		{Key: service.EPayPartnerIDSettingKey, Value: "10001"},
+		{Key: service.EPayPlatformPublicKeySettingKey, Value: base64.StdEncoding.EncodeToString(publicDER)},
+	} {
+		if err := database.Create(&setting).Error; err != nil {
+			t.Fatalf("种入 system_settings 失败：%v", err)
+		}
+	}
+
+	user := entity.User{Username: "maria-credit-once", Password: "x", Role: "user", Status: "enabled", RegisterSource: "admin"}
+	if err := database.Create(&user).Error; err != nil {
+		t.Fatalf("种入用户失败：%v", err)
+	}
+	order := entity.RechargeOrder{
+		UserID: user.ID, OrderNo: "MARIA-CREDIT-ONCE-1", PaymentProvider: "epay",
+		Amount: 8, Status: "pending",
+	}
+	if err := database.Create(&order).Error; err != nil {
+		t.Fatalf("种入充值订单失败：%v", err)
+	}
+	if err := ensurePaymentEventSchema(database); err != nil {
+		t.Fatalf("迁移支付事件表失败：%v", err)
+	}
+
+	notify := func() {
+		t.Helper()
+		values := url.Values{}
+		values.Set("pid", "10001")
+		values.Set("type", "alipay")
+		values.Set("out_trade_no", order.OrderNo)
+		values.Set("trade_no", "maria-trade-1")
+		values.Set("trade_status", "TRADE_SUCCESS")
+		values.Set("money", "8.00")
+		mariaDBSignNotifyValues(t, values, privateKey)
+		if acknowledged, err := service.HandleRechargePaymentNotifyWithDB(database, values); err != nil || !acknowledged {
+			t.Fatalf("处理充值回调失败：ack=%v err=%v", acknowledged, err)
+		}
+	}
+
+	balance := func() float64 {
+		t.Helper()
+		var reloaded entity.User
+		if err := database.Where("id = ?", user.ID).First(&reloaded).Error; err != nil {
+			t.Fatalf("回读用户失败：%v", err)
+		}
+		return reloaded.Balance
+	}
+
+	notify()
+	if got := balance(); got != 8 {
+		t.Fatalf("首次回调后余额 = %v, want 8", got)
+	}
+
+	// 关键前置：绕开 status==paid 的快速通道，让第二次回调真的走到 claim 分支。
+	if err := database.Model(&entity.RechargeOrder{}).Where("id = ?", order.ID).
+		Update("status", "refunded").Error; err != nil {
+		t.Fatalf("把订单状态改成 refunded 失败：%v", err)
+	}
+	notify()
+	if got := balance(); got != 8 {
+		t.Fatalf("订单改为 refunded 后重投回调，余额 = %v, want 8（真实加款两次 = 二次加款漏洞）", got)
+	}
+
+	var events int64
+	if err := database.Model(&entity.PaymentEvent{}).Count(&events).Error; err != nil {
+		t.Fatalf("统计事件行数失败：%v", err)
+	}
+	if events != 1 {
+		t.Fatalf("事件行数 = %d, want 1（一笔网关订单最多一条入账事件）", events)
+	}
+}
+
+// mariaDBSignNotifyValues 按 service.buildRechargeSignContent 的口径签名。
+//
+// 不复用测试内的同名 helper：签名串的构成（排序、跳过 sign/sign_type、跳过空值）
+// 就是网关协议本身，写在这里才能让「签名口径被改动」在本用例里也能被发现。
+func mariaDBSignNotifyValues(t *testing.T, values url.Values, privateKey *rsa.PrivateKey) {
+	t.Helper()
+	keys := make([]string, 0, len(values))
+	for key, list := range values {
+		if key == "sign" || key == "sign_type" {
+			continue
+		}
+		if len(list) == 0 || strings.TrimSpace(list[0]) == "" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+values.Get(key))
+	}
+	hash := sha256.Sum256([]byte(strings.Join(parts, "&")))
+	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hash[:])
+	if err != nil {
+		t.Fatalf("签名失败：%v", err)
+	}
+	values.Set("sign", base64.StdEncoding.EncodeToString(signature))
+	values.Set("sign_type", "RSA")
 }
 
 // TestMariaDBPaymentEventMigrationIsNoOpOnSecondStartup 证明第二次启动是纯 no-op。

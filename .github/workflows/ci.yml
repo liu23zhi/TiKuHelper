@@ -53,9 +53,20 @@ jobs:
             base="origin/$DEFAULT_BRANCH"
           fi
 
+          # base 不可达 ≠ 代码有问题。force-push / 历史重写（filter-repo）之后，
+          # `github.event.before` 指向的那些提交在远端已经不存在了，此时按不可达
+          # 判红等于让「历史被重写」永久毒化这条作业：每一次 push 都红，且红的原因
+          # 与本次改动无关（实测 run 43408442506 就是这样红的）。
+          # 所以不可达时退化为与默认分支比较，并留一条 ::warning 保留可诊断性。
+          # 只有**退化目标本身也不可达**才是真错误（fetch 不完整 / 分支名写错）。
           if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
-            echo "::error::找不到格式检查的基准提交：$base"
-            exit 1
+            fallback="origin/$DEFAULT_BRANCH"
+            echo "::warning::找不到格式检查的基准提交：$base（可能已被历史重写淘汰），退化到 $fallback 比较"
+            base="$fallback"
+            if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+              echo "::error::退化的基准提交也不可达：$base（检查 checkout 的 fetch-depth 与默认分支名）"
+              exit 1
+            fi
           fi
 
           mapfile -t files < <(git diff --diff-filter=ACMRT --name-only "$base" "$SHA" -- '*.go')
