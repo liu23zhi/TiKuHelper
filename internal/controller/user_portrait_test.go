@@ -213,7 +213,7 @@ func TestPortraitOverviewReturnsBothScopesFromSameShape(t *testing.T) {
 	if err := db.Create(&entity.User{ID: 5, Username: "subject", Password: "x", Role: "user", Status: "enabled"}).Error; err != nil {
 		t.Fatalf("seed subject: %v", err)
 	}
-	at := time.Date(2026, 11, 13, 13, 0, 0, 0, time.Local)
+	at := time.Date(2026, 11, 13, 13, 0, 0, 0, portraitTestLocation(t))
 	if err := db.Create(&entity.BillingRecord{UserID: 5, Type: "normal_search", Provider: "ai", Amount: 1.25, RequestID: "portrait-shape", CreatedAt: at}).Error; err != nil {
 		t.Fatalf("seed billing: %v", err)
 	}
@@ -356,4 +356,25 @@ func portraitJSONKeys(t *testing.T, body []byte) []string {
 		t.Fatalf("响应没有任何顶层字段，body=%s", string(body))
 	}
 	return keys
+}
+
+// portraitTestLocation 返回画像测试专用的**显式时区**（上海）。
+//
+// ⚠️ 为什么不能用 time.Local（这是 CI 上抓出来的真实缺陷）：
+//
+// 画像的时段/星期桶按 `datetime(created_at,'+8 hours')` 换算到上海时区。
+// 旧测试用 `time.Date(..., time.Local)` 起种子 —— GORM 按**进程本地时区**序列化：
+//
+//	开发机 CST：种出 `2026-11-13 14:00:00+08:00` → +8 后仍是 14 点 → 断言过
+//	CI   UTC ：种出 `2026-11-13 14:00:00+00:00` → +8 后变成 22 点 → 断言红
+//
+// 也就是说这些用例的**期望值会随运行环境漂移**，本地永远绿、CI 才会露出来。
+// 显式指定上海时区后，种子与断言在两种环境里都一致。
+func portraitTestLocation(t *testing.T) *time.Location {
+	t.Helper()
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("load Asia/Shanghai: %v", err)
+	}
+	return loc
 }

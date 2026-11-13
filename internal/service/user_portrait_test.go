@@ -107,8 +107,8 @@ func TestPortraitHourBucketsUseWallClockHour(t *testing.T) {
 	user := portraitSeedUser(t, db, 11, "portrait-hour")
 
 	// 刻意取 14:00（UTC 6 点）与 23:00（UTC 15 点）：两者在 UTC 下都不等于自身。
-	afternoon := time.Date(2026, 11, 13, 14, 0, 0, 0, time.Local)
-	lateNight := time.Date(2026, 11, 13, 23, 0, 0, 0, time.Local)
+	afternoon := time.Date(2026, 11, 13, 14, 0, 0, 0, portraitTestLocation(t))
+	lateNight := time.Date(2026, 11, 13, 23, 0, 0, 0, portraitTestLocation(t))
 	portraitSeedBilling(t, db, entity.BillingRecord{UserID: user.ID, Type: portraitTestNormalSearchType, Amount: 1, CreatedAt: afternoon})
 	portraitSeedBilling(t, db, entity.BillingRecord{UserID: user.ID, Type: portraitTestNormalSearchType, Amount: 2, CreatedAt: afternoon.Add(time.Minute)})
 	portraitSeedBilling(t, db, entity.BillingRecord{UserID: user.ID, Type: portraitTestNormalSearchType, Amount: 4, CreatedAt: lateNight})
@@ -159,7 +159,7 @@ func TestPortraitWeekdayBucketsMatchCalendarWeekday(t *testing.T) {
 	db := newPortraitTestDB(t)
 	user := portraitSeedUser(t, db, 12, "portrait-weekday")
 
-	friday := time.Date(2026, 11, 13, 10, 0, 0, 0, time.Local)
+	friday := time.Date(2026, 11, 13, 10, 0, 0, 0, portraitTestLocation(t))
 	if friday.Weekday() != time.Friday {
 		t.Fatalf("前置假设错误：2026-11-13 应为周五，实际 %s", friday.Weekday())
 	}
@@ -187,7 +187,7 @@ func TestPortraitWeekdayBucketsMatchCalendarWeekday(t *testing.T) {
 func TestPortraitBillingTypesFollowSharedDirectionHelper(t *testing.T) {
 	db := newPortraitTestDB(t)
 	user := portraitSeedUser(t, db, 13, "portrait-type")
-	at := time.Date(2026, 11, 13, 9, 0, 0, 0, time.Local)
+	at := time.Date(2026, 11, 13, 9, 0, 0, 0, portraitTestLocation(t))
 
 	portraitSeedBilling(t, db, entity.BillingRecord{UserID: user.ID, Type: portraitTestNormalSearchType, Amount: 2, CreatedAt: at})
 	portraitSeedBilling(t, db, entity.BillingRecord{UserID: user.ID, Type: portraitTestNormalSearchType, Amount: 3, CreatedAt: at})
@@ -251,7 +251,7 @@ func portraitTypeKeys(items []PortraitTypeSlice) []string {
 func TestPortraitRegionsResolveFromLocalLocationTables(t *testing.T) {
 	db := newPortraitTestDB(t)
 	user := portraitSeedUser(t, db, 14, "portrait-region")
-	at := time.Date(2026, 11, 13, 9, 0, 0, 0, time.Local)
+	at := time.Date(2026, 11, 13, 9, 0, 0, 0, portraitTestLocation(t))
 
 	// ① 单 IP 缓存：中国 广东 中山 移动。
 	cached := entity.LocationCache{
@@ -341,7 +341,7 @@ func TestPortraitTicketsAndRegisterSources(t *testing.T) {
 	db := newPortraitTestDB(t)
 	user := portraitSeedUser(t, db, 15, "portrait-ticket")
 	other := portraitSeedUser(t, db, 16, "portrait-ticket-other")
-	at := time.Date(2026, 11, 13, 9, 0, 0, 0, time.Local)
+	at := time.Date(2026, 11, 13, 9, 0, 0, 0, portraitTestLocation(t))
 
 	tickets := []entity.Ticket{
 		{UserID: user.ID, UserName: user.Username, Subject: "a", Status: entity.TicketStatusOpen, Priority: "normal", LastMessageAt: at},
@@ -497,7 +497,7 @@ func TestPortraitOverallEqualsSumOfUsers(t *testing.T) {
 	first := portraitSeedUser(t, db, 31, "portrait-sum-a")
 	second := portraitSeedUser(t, db, 32, "portrait-sum-b")
 
-	at := time.Date(2026, 11, 13, 15, 0, 0, 0, time.Local)
+	at := time.Date(2026, 11, 13, 15, 0, 0, 0, portraitTestLocation(t))
 	// 两个用户、两个不同小时、两种不同类型，保证任何「少算某一维」都会破坏守恒。
 	portraitSeedBilling(t, db, entity.BillingRecord{UserID: first.ID, Type: portraitTestNormalSearchType, Amount: 1.5, ClientIP: "120.239.173.110", CreatedAt: at})
 	portraitSeedBilling(t, db, entity.BillingRecord{UserID: first.ID, Type: portraitTestNormalSearchType, Amount: 2.5, ClientIP: "120.239.173.110", CreatedAt: at})
@@ -668,4 +668,25 @@ func portraitFloat(value *float64) string {
 		return "null"
 	}
 	return strconv.FormatFloat(*value, 'f', -1, 64)
+}
+
+// portraitTestLocation 返回画像测试专用的**显式时区**（上海）。
+//
+// ⚠️ 为什么不能用 time.Local（这是 CI 上抓出来的真实缺陷）：
+//
+// 画像的时段/星期桶按 `datetime(created_at,'+8 hours')` 换算到上海时区。
+// 旧测试用 `time.Date(..., time.Local)` 起种子 —— GORM 按**进程本地时区**序列化：
+//
+//	开发机 CST：种出 `2026-11-13 14:00:00+08:00` → +8 后仍是 14 点 → 断言过
+//	CI   UTC ：种出 `2026-11-13 14:00:00+00:00` → +8 后变成 22 点 → 断言红
+//
+// 也就是说这些用例的**期望值会随运行环境漂移**，本地永远绿、CI 才会露出来。
+// 显式指定上海时区后，种子与断言在两种环境里都一致。
+func portraitTestLocation(t *testing.T) *time.Location {
+	t.Helper()
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("load Asia/Shanghai: %v", err)
+	}
+	return loc
 }
