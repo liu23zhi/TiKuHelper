@@ -24,12 +24,29 @@ import (
 	"gorm.io/gorm"
 	"net/url"
 	"sync"
+	"sync/atomic"
 )
+
+// userControllerTestDBSeq 让每个测试库实例拿到唯一名字。
+//
+// ⚠️ 为什么必须有它：DSN 用 `cache=shared` 时，**同名即同一个内存库**，而且
+// 连接会跨 gorm.Open 保留。只用 t.Name() 做名字时，同一个用例在
+// `go test -count=N`（N>1）下第二轮会连上第一轮留下的库：
+//
+//	· 硬编码 ID 的 seed 函数（如 seedUserBanAdminActor 用 ID:9304）撞主键
+//	  → "UNIQUE constraint failed: users.id"
+//	· 更隐蔽的是**不报错**的情形：第二轮读到第一轮残留的行，让「空表」类断言变绿或变红。
+//
+// CI 上表现为「本地绿、CI 红」且失败信息只有一行 `--- FAIL: <用例名>`，
+// 因为原始 constraint 错误打在 t.Logf 而非 t.Fatalf 之前。实测复现方式：
+// `go test -count=5 -run <用例>` —— 第 2 次起必红。
+var userControllerTestDBSeq atomic.Uint64
 
 func newUserControllerTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 
-	dsn := fmt.Sprintf("file:user-controller-%s?mode=memory&cache=shared", t.Name())
+	dsn := fmt.Sprintf("file:user-controller-%s-%d?mode=memory&cache=shared",
+		t.Name(), userControllerTestDBSeq.Add(1))
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open test db: %v", err)

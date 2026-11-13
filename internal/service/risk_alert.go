@@ -556,6 +556,13 @@ func EvaluateDebtAlerts(db *gorm.DB, now time.Time) (RiskAlertEvaluation, error)
 		}
 		candidates = append(candidates, found...)
 	}
+	if rule, ok := enabledRules[entity.RiskRuleIDTicketFlood]; ok {
+		found, scanErr := collectTicketFloodCandidates(db, rule, now)
+		if scanErr != nil {
+			return result, scanErr
+		}
+		candidates = append(candidates, found...)
+	}
 
 	seenRules := map[string]struct{}{}
 	for _, candidate := range candidates {
@@ -894,6 +901,150 @@ func riskLoginWindow(now time.Time) (time.Time, time.Time) {
 // 窗口起点编进 key 是节流机制的核心（见 collectMultiAccountIPCandidates 纪律 3）。
 func riskMultiAccountIPSubject(ip string, windowStart time.Time) string {
 	return entity.RiskRuleIDMultiAccountIP + ":" + strings.TrimSpace(ip) + ":" + windowStart.Format(time.RFC3339)
+}
+
+// riskBehaviorSubject 生成行为规则的节流主体：`<rule_id>:<scope>:<窗口起点>`。
+//
+// R1 之后的规则统一走这个函数，不要各写一份（键形态漂移会让节流静默失效）。
+func riskBehaviorSubject(ruleID, scope string, windowStart time.Time) string {
+	return strings.TrimSpace(ruleID) + ":" + strings.TrimSpace(scope) + ":" + windowStart.Format(time.RFC3339)
+}
+
+// riskWindowStartExpr 返回「把列截到秒」的方言表达式，供窗口过滤用。
+//
+// ⚠️ 为什么需要它（本仓实测踩过的坑）：
+// SQLite 里时间列存的是**带偏移的文本**（`2026-11-13 14:00:00+08:00`），
+// 直接拿它和 Go 传进来的 time.Time 比，驱动会做字符串比较 —— 碰上带 `+08:00`
+// 后缀的值就与 `2026-11-14 00:00:00` 对不齐，窗口边界会**静默偏移**。
+// 统一用 substr(col,1,19) 截成 `YYYY-MM-DD HH:MM:SS` 再比，两边口径一致。
+//
+// MySQL 的时间列是真 DATETIME（无偏移后缀），不需要也不应该 substr（会退化成字符串比较）。
+// 因此按方言返回不同的表达式。
+func riskWindowColumnExpr(db *gorm.DB, column string) string {
+	if strings.EqualFold(db.Dialector.Name(), "sqlite") {
+		return "substr(" + column + ", 1, 19)"
+	}
+	return column
+}
+
+// riskWindowBounds 把一个时刻收敛成自然日窗口（上海时区）并返回用于 SQL 的值。
+//
+// 返回值是**格式化后的字符串**而不是 time.Time：见 riskWindowColumnExpr 的注释，
+// SQLite 下两边都按 `YYYY-MM-DD HH:MM:SS` 文本比较才不会有偏移问题。
+// MySQL 下驱动会把字符串正确转成 DATETIME，接口一致。
+func riskWindowBounds(now time.Time) (start string, end string) {
+	windowStart, windowEnd := riskLoginWindow(now)
+	return windowStart.Format("2006-01-02 15:04:05"), windowEnd.Format("2006-01-02 15:04:05")
+}
+
+// collectTicketFloodCandidates 收集「单用户 24h 建单 ≥N 张」的命中（96 §2.1 R8）。
+//
+// # 判据与数据源
+//
+// 数据源是 **tickets 主表**（不是 ticket_messages）：R8 数的是「建单」，
+// 用户在已有工单里的回复不算新建工单 —— 把回复算进去会让一个正常沟通的用户
+// 被误判成刷屏。
+//
+// excluded 掉系统/管理员自动建的工单：Q26 的「注册赠送失败自动建单」由系统
+// 在用户无过错时触发，把那些算到用户头上属于误报。判据用 origin 列
+// （entity.Ticket origin 取值见 ticket.go）；这里用「user_id > 0」+
+// 「origin 不是 system」双重保护。
+func collectTicketFloodCandidates(db *gorm.DB, rule entity.RiskRule, now time.Time) ([]riskWarningCandidate, error) {
+	threshold := riskRuleThreshold(db, rule, riskDefaultThreshold(rule.RuleID))
+	if threshold <= 0 {
+		return nil, nil
+	}
+	if !db.Migrator().HasTable(entity.TableNameTicket) {
+		return nil, nil
+	}
+	start, end := riskWindowBounds(now)
+	windowStart, _ := riskLoginWindow(now)
+	timeExpr := riskWindowColumnExpr(db, "created_at")
+
+	type floodGroup = RiskTicketFloodGroup
+	var groups []floodGroup
+	query := db.Session(&gorm.Session{NewDB: true}).Model(&entity.Ticket{}).
+		Select("user_id AS user_id, COUNT(*) AS ticket").
+		Where("user_id > 0").
+		Where(timeExpr+" >= ? AND "+timeExpr+" < ?", start, end)
+	// 系统自动建的工单不算用户刷屏。origin 列存在时才加这个条件（老库可能没有）。
+	if db.Migrator().HasColumn(entity.TableNameTicket, "origin") {
+		query = query.Where("origin IS NULL OR origin <> ?", entity.TicketOriginSystem)
+	}
+	if err := query.Group("user_id").Order("user_id ASC").Scan(&groups).Error; err != nil {
+		return nil, err
+	}
+	candidates := make([]riskWarningCandidate, 0, len(groups))
+	usernames := riskUsernamesByID(db, riskTicketFloodUserIDs(groups))
+	for _, group := range groups {
+		// 「≥ 阈值」：4 张 + 阈值 5 → 不告警；5 张 → 告警。
+		if float64(group.Ticket) < threshold {
+			continue
+		}
+		userID := group.UserID
+		subject := riskBehaviorSubject(rule.RuleID, "user:"+strconv.FormatInt(int64(userID), 10), windowStart)
+		detail, err := json.Marshal(map[string]any{
+			"ruleId":       rule.RuleID,
+			"subjectKey":   subject,
+			"userId":       userID,
+			"username":     usernames[userID],
+			"threshold":    threshold,
+			"value":        group.Ticket,
+			"ticketCount":  group.Ticket,
+			"windowStart":  windowStart.Format(time.RFC3339),
+			"evaluatedAt":  now.Format(time.RFC3339),
+			"evidenceNote": "按 tickets 主表统计 24h 内新建工单数；不含 ticket_messages 回复，不含系统自动建单",
+		})
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, riskWarningCandidate{
+			Rule:     rule,
+			Subject:  subject,
+			UserID:   &userID,
+			Severity: rule.Severity,
+			Detail:   string(detail),
+		})
+	}
+	return candidates, nil
+}
+
+// RiskTicketFloodGroup 是 R8 的聚合行（用户 → 窗口内建单数）。
+type RiskTicketFloodGroup struct {
+	UserID int32
+	Ticket int64
+}
+
+// riskTicketFloodUserIDs 抽出用户 id 列表（用于一次性查用户名，避免 N+1）。
+func riskTicketFloodUserIDs(groups []RiskTicketFloodGroup) []int32 {
+	out := make([]int32, 0, len(groups))
+	for _, group := range groups {
+		out = append(out, group.UserID)
+	}
+	return out
+}
+
+// riskUsernamesByID 批量取用户名（证据快照里带上用户名，排障时比纯 id 好用）。
+//
+// 查不到不算错误：用户可能已被归档，告警仍然要发（证据里留空即可）。
+func riskUsernamesByID(db *gorm.DB, ids []int32) map[int32]string {
+	result := make(map[int32]string, len(ids))
+	if len(ids) == 0 || !db.Migrator().HasTable(entity.TableNameUser) {
+		return result
+	}
+	type row struct {
+		ID       int32
+		Username string
+	}
+	var rows []row
+	if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.User{}).
+		Select("id, username").Where("id IN ?", ids).Scan(&rows).Error; err != nil {
+		return result
+	}
+	for _, item := range rows {
+		result[item.ID] = item.Username
+	}
+	return result
 }
 
 // collectUserDebtCandidates 收集「单用户 |balance| >= 阈值」的命中（118 §2.4 触发 1）。

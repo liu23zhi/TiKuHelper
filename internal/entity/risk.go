@@ -37,6 +37,12 @@ const (
 	// debt_* 用短名）。现在它已经是**真规则**，那条注释已随之改写 ——
 	// 否则后面的人 grep 到的仍是「这是个反例」，会误判成未实现。
 	RiskRuleIDMultiAccountIP = "multi_account_ip"
+	// RiskRuleIDTicketFlood 是 96 §2.1 的 R8「工单刷屏」：
+	// 单用户 24h 内建单 ≥N 张（N 默认 5）。
+	//
+	// 数据源：tickets 主表（user_id + created_at，两列都有索引）。
+	// 只数「建单」，不数 ticket_messages —— 回复不是新建工单。
+	RiskRuleIDTicketFlood = "ticket_flood"
 )
 
 // RiskRuleDefault 是一条规则的**代码内默认值**。
@@ -119,6 +125,15 @@ var DefaultRiskBehaviorRules = []RiskRuleDefault{
 		// 『隔一个窗口后再告警』在边界上失效（两条判据互相打架）。
 		ThrottleSeconds: 0,
 		Description:     "同一 IP 在 24 小时窗口内登录了达到阈值的不同账号数。常见于共享出口（校园网/公司 NAT）与养号群体，只告警不处置。",
+	},
+	{
+		RuleID:   RiskRuleIDTicketFlood,
+		Name:     "工单刷屏",
+		Severity: RiskSeverityLow,
+		// 96 §2.1 R8：单用户 24h 内建单 ≥N 张，N 默认 5，每用户 24h 一次。
+		Threshold:       5,
+		ThrottleSeconds: 24 * 60 * 60,
+		Description:     "单用户在 24 小时窗口内新建工单数达到阈值。多为反复提交同一问题或滥用客服通道，只告警不处置。",
 	},
 }
 

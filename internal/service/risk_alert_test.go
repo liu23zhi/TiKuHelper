@@ -59,6 +59,8 @@ func newRiskAlertTestDBNamed(t *testing.T, rawName string) *gorm.DB {
 		&entity.TicketNotification{},
 		// Log 是 R1（multi_account_ip）的数据源：成功登录的审计行落在 logs 表。
 		&entity.Log{},
+		// Ticket 是 R8（ticket_flood）的数据源：统计窗口内新建工单数。
+		&entity.Ticket{},
 	} {
 		if err := db.AutoMigrate(model); err != nil {
 			t.Fatalf("migrate %T: %v", model, err)
@@ -963,6 +965,7 @@ func TestLoadRiskRulesFallsBackToCodeDefaults(t *testing.T) {
 		"debt_batch":       1000,
 		"debt_system":      5000,
 		"multi_account_ip": 5,
+		"ticket_flood":     5,
 	}
 	if len(rules) != len(wantThreshold) {
 		t.Fatalf("fallback rule count = %d, want %d（实际：%v）", len(rules), len(wantThreshold), ruleIDsOf(rules))
