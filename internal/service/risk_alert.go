@@ -427,9 +427,14 @@ func riskRuleThresholdSettingKey(ruleID string) string {
 //
 // 三层兜底，顺序固定（96 §2.2：默认值写在代码里，DB 缺 key ≠ 阈值 0）：
 //
-//  1. `risk_rule_<id>_threshold` 系统设置（运营最常调的地方）；
-//  2. risk_rules.threshold 列（表里改）；
-//  3. entity.DefaultRiskDebtRules 的代码默认值。
+//  1. `risk_rule_<id>_threshold` 系统设置 —— 由管理页「规则阈值」区块写入
+//     （service.UpdateRiskThresholdWithDB / 路由 PUT /risk/thresholds/:key）。
+//     本任务的注释修正记录：**在写入路径补齐之前**，这一层永远读不到值
+//     （raw 恒为 "" ⇒ ParseFloat 恒 err ⇒ 恒落第二层），
+//     而当时第二层的 risk_rules.threshold 列也没有写接口 ⇒ 实际只有第三层生效。
+//     旧注释把它写成「运营最常调的地方」是**不属实的**，已改正。
+//  2. risk_rules.threshold 列 —— 同一写入路径会同步这一列（见 risk_threshold.go）。
+//  3. entity.DefaultRiskRules 的代码默认值 —— 未显式配置时实际生效的那一层。
 //
 // ⚠️ 三层里任何一层出现「解析不出正数」都继续往下走。
 // 一旦把无效值当成 0，`|balance| >= 0` 会让**每个**用户都告警 —— 这是本文件里
@@ -1539,8 +1544,14 @@ func collectTokenAbuseCandidates(db *gorm.DB, rule entity.RiskRule, now time.Tim
 // 那昨天那条告警的含义就变了）。而「连续 3 天」正好依赖历史可比性。
 // ⇒ 时段是**判据的一部分**，不是运营可调的运营参数。真要可配，必须先迁移历史。
 //
-// 运营仍可调的是**占比阈值**（risk_rule_offhours_activity_threshold 是「连续天数」，
-// 占比阈值走 risk_offhours_share_threshold）。
+// 运营可调的两项（都通过管理页「规则阈值」区块写入，见 risk_threshold.go）：
+//   - `risk_rule_offhours_activity_threshold`：连续天数（整数，≥1）
+//   - `risk_offhours_share_threshold`：凌晨占比（0~1，默认 0.8）
+//
+// ⚠️ 这两项**语义不同、校验规则也不同**（整数 vs 占比），且只有前者会同步
+// risk_rules.threshold 列 —— 占比项若也去写那一列，会把「连续天数」覆盖成
+// 例如 0.9，而 `consecutiveDays < 1` 会让 R16 直接短路永不告警。
+// 见 riskThresholdSpec.SyncRuleColumn。
 const (
 	riskOffhoursStartHour = 2 // 02:00（含）
 	riskOffhoursEndHour   = 5 // 05:00（不含）
@@ -1549,7 +1560,7 @@ const (
 	// riskOffhoursDefaultShare 默认 80%（96 §2.1 R16 原文「>80%」）。
 	riskOffhoursDefaultShare = 0.8
 	// riskOffhoursConsecutiveDays 是「连续几天才算命中」的代码默认值。
-	// 与规则行的阈值列同义（那条是运营可调的「连续天数」）。
+	// 与规则行的阈值列同义（那一项通过管理页调整）。
 	riskOffhoursConsecutiveDays = 3
 )
 

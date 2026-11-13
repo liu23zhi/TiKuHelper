@@ -203,25 +203,34 @@ test('C3 页面把「两套独立」提示与配置卡片放在一起（漏渲�
   assert.match(page, /testRiskWebhook\(/, '必须有独立的「发送测试消息」按钮')
 })
 
-test('判据 ②（改阈值落库）刻意未实现：前端不得提供打向不存在路由的阈值控件', async () => {
-  // 实测：controller/risk_admin.go 只有 5 个 handler，**没有任何** risk_rules 读写接口；
-  // 阈值 risk_rule_<id>_threshold 是 system_settings 键，而 UpdateSystemSettingInput 是
-  // 固定 struct，既没有该字段也没有通用 key/value 透传口。
-  // 所以页面如果放一个阈值输入框，表现是「能填、能点保存、毫无反应」——
-  // 比缺失更难排查。这条用例把「不许加这种控件」钉住，防止下一个人补 UI 不补后端。
+test('判据 ②（改阈值落库）已实现：前端必须提供阈值读写调用，且打在真实存在的路由上', async () => {
+  // ⚠️ 这条用例曾经是**反向**的（断言「不得出现 threshold」）。
+  //
+  // 原因：当时 controller/risk_admin.go 只有 5 个 handler，没有任何 risk_rules
+  // 读写接口；阈值 risk_rule_<id>_threshold 是 system_settings 键，而
+  // UpdateSystemSettingInput 是固定 struct，既没有该字段也没有通用 key/value 透传口。
+  // 页面放输入框会「能填、能点保存、毫无反应」，比缺失更难排查，
+  // 所以当时故意不做 UI 并把它钉住。
+  //
+  // 现在后端补了 GET/PUT/DELETE /risk/thresholds[/:key]，
+  // 阈值这条判据从「刻意未实现」变成「必须实现」，用例随之翻转。
   const api = stripComments(await readSource('api/RiskAdminApi.js'))
+  // 三个动作缺一不可：读、写、重置。
+  assert.match(api, /export function getRiskThresholds\(/, '必须有读取阈值的 API')
+  assert.match(api, /export function updateRiskThreshold\(/, '必须有写入阈值的 API')
+  assert.match(api, /export function resetRiskThreshold\(/, '必须有重置为默认的 API（否则设错了无法回退）')
+  // 路由必须与后端挂的一致（router.go：/risk/thresholds 与 /risk/thresholds/:key）。
+  assert.match(api, /RISK_BASE \+ '\/thresholds'/, '读取路由必须是 /risk/thresholds')
+  assert.match(api, /RISK_BASE \+ '\/thresholds\/'/, '写入/重置路由必须是 /risk/thresholds/:key')
+  // 不得写成后端不存在的 /risk/rules（那是另一个资源名，挂上去只会 404）。
   assert.doesNotMatch(api, /\/risk\/rules/, '不得声明后端不存在的 /risk/rules 路由')
-  assert.doesNotMatch(api, /threshold/i, '风控 API 模块不得出现阈值相关调用')
-  const page = stripComments(await readSource('pages/RiskAdmin/index.vue'))
-  assert.doesNotMatch(page, /threshold/i, '页面不得提供阈值输入框（后端没有落库接口）')
-  // 只允许 5 条路由：多一条就意味着多一个未接线的死调用。
-  // `/alerts/` 是详情路径的拼接前缀（RISK_BASE + '/alerts/' + value），
-  // 与列表 `/alerts` 是同一条 REST 资源，单列出来避免把拼接式误判成新路由。
+
+  // 路由白名单同步扩展（服务端实际挂的就是这些）。
   const routes = [...api.matchAll(/RISK_BASE \+ '(\/[\w/]+)'/g)].map(m => m[1])
   assert.deepEqual(
     [...new Set(routes)].sort(),
-    ['/alerts', '/alerts/', '/webhook', '/webhook/test'],
-    '风控 API 模块只允许列表 / 详情 / 配置读写 / 测试发送这几条路径',
+    ['/alerts', '/alerts/', '/thresholds', '/thresholds/', '/webhook', '/webhook/test'],
+    '风控 API 模块只允许列表 / 详情 / 配置读写 / 测试发送 / 阈值读写重置这几条路径',
   )
   assert.match(api, /RISK_BASE \+ '\/alerts\/' \+ value/, '详情路径必须是拼接形式（不能写成模板字面量绕过上面的统计）')
 })

@@ -81,6 +81,12 @@ func writeRiskAdminError(c *gin.Context, err error, fallback string) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"message": errRiskDBUnavailable.Error()})
 	case errors.Is(err, service.ErrInvalidRiskWecomWebhook):
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+	// 阈值类错误必须回 400 且原文可见：管理员要知道「为什么这个数不合法」
+	// （尤其是占比填成 3 这种「看着像数其实越界」的情况）。
+	case errors.Is(err, service.ErrRiskThresholdInvalid),
+		errors.Is(err, service.ErrRiskThresholdUnknown),
+		errors.Is(err, service.ErrRiskRuleUnknown):
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"message": "风控告警不存在"})
 	default:
@@ -290,4 +296,157 @@ func TestRiskWecomWebhook(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "测试通知已发送"})
+}
+
+// ════════════════════════════════════════════════════════════════════
+// 风控阈值读写（本次新增的第 6/7 条路由）
+//
+// 背景：在此之前 `risk_rule_<ruleId>_threshold` 这些 system_settings 键
+// **没有任何写入路径**（`UpdateSystemSettingInput` 是固定 struct、没有 risk_rules
+// 写接口、前端故意不做输入框）。而 `riskRuleThreshold` 的三层兜底第一层读的就是
+// 这些键 ⇒ 那一层永远读不到值，实际生效的永远是代码默认值。
+// 这是「配置项存在但没有任何 UI/API 能写」的形态：运营以为能调，改了不生效，且不报错。
+//
+//	GET  /adapter-service/risk/thresholds               全部可调阈值 + 当前生效值
+//	PUT  /adapter-service/risk/thresholds/:key          设置某个阈值
+//	DELETE /adapter-service/risk/thresholds/:key        重置为代码默认值
+//
+// `:key` 走**白名单**（service.riskThresholdSpecs），不接受任意字符串 ——
+// 否则一个手滑的请求就能往 system_settings 写任意键。
+// ════════════════════════════════════════════════════════════════════
+
+// RiskThresholdList 返回全部可调阈值及其当前生效值。
+func RiskThresholdList(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !requireAdmin(c) {
+		return
+	}
+	db, err := requireRiskAdminDB(c)
+	if err != nil {
+		writeRiskAdminError(c, err, "获取风控阈值失败")
+		return
+	}
+	items, err := service.RiskThresholds(db)
+	if err != nil {
+		writeRiskAdminError(c, err, "获取风控阈值失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+// updateRiskThresholdRequest 是设置阈值的请求体。
+//
+// 用指针是为了区分「没传」与「传了 0」：传 0 必须回 400（不能当成没传而静默忽略），
+// 否则管理员把阈值填成 0 会看到「保存成功但值没变」。
+type updateRiskThresholdRequest struct {
+	Value *float64 `json:"value"`
+}
+
+// UpdateRiskThreshold 设置某个阈值的显式值。
+func UpdateRiskThreshold(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !requireAdmin(c) {
+		return
+	}
+	db, err := requireRiskAdminDB(c)
+	if err != nil {
+		writeRiskAdminError(c, err, "保存风控阈值失败")
+		return
+	}
+	var input updateRiskThresholdRequest
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误：value 必须是数字"})
+		return
+	}
+	if input.Value == nil {
+		// 「非数字」在这里就会被 ShouldBindJSON 挡下；「缺字段」落到这里。
+		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误：必须提供 value"})
+		return
+	}
+	result, err := service.UpdateRiskThresholdWithDB(db, c.Param("key"), *input.Value)
+	if err != nil {
+		writeRiskAdminError(c, err, "保存风控阈值失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"message": "已保存",
+		"item":    result.Item,
+	})
+}
+
+// ResetRiskThreshold 把阈值重置为代码默认值（删除显式配置的行）。
+func ResetRiskThreshold(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !requireAdmin(c) {
+		return
+	}
+	db, err := requireRiskAdminDB(c)
+	if err != nil {
+		writeRiskAdminError(c, err, "重置风控阈值失败")
+		return
+	}
+	result, err := service.ResetRiskThresholdWithDB(db, c.Param("key"))
+	if err != nil {
+		writeRiskAdminError(c, err, "重置风控阈值失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"message": "已重置为默认值",
+		"item":    result.Item,
+	})
+}
+
+// RiskRuleStateList 返回全部规则的启用状态与生效阈值。
+//
+// 与 RiskThresholdList 的分工：这里回答「这条规则开没开」，
+// 那里回答「这条规则的阈值是多少」。两者都改 risk_rules，但可调列不同。
+func RiskRuleStateList(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !requireAdmin(c) {
+		return
+	}
+	db, err := requireRiskAdminDB(c)
+	if err != nil {
+		writeRiskAdminError(c, err, "获取风控规则状态失败")
+		return
+	}
+	states, err := service.RiskRuleStates(db)
+	if err != nil {
+		writeRiskAdminError(c, err, "获取风控规则状态失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": states})
+}
+
+// setRiskRuleEnabledRequest 用指针区分「没传」与「传 false」（停用是最常见操作）。
+type setRiskRuleEnabledRequest struct {
+	Enabled *bool `json:"enabled"`
+}
+
+// SetRiskRuleEnabled 启用/停用某条规则。
+func SetRiskRuleEnabled(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !requireAdmin(c) {
+		return
+	}
+	db, err := requireRiskAdminDB(c)
+	if err != nil {
+		writeRiskAdminError(c, err, "保存风控规则状态失败")
+		return
+	}
+	var input setRiskRuleEnabledRequest
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误：enabled 必须是布尔值"})
+		return
+	}
+	if input.Enabled == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误：必须提供 enabled"})
+		return
+	}
+	state, err := service.SetRiskRuleEnabledWithDB(db, c.Param("ruleId"), *input.Enabled)
+	if err != nil {
+		writeRiskAdminError(c, err, "保存风控规则状态失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "已保存", "item": state})
 }

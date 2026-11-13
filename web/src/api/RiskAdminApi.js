@@ -99,3 +99,55 @@ export function testRiskWebhook() {
     timeout: 30_000,
   })
 }
+
+// ════════════════════════════════════════════════════════════════════
+// 风控阈值读写
+//
+// ⚠️ 这三条接口在**本次改动之前不存在**。此前 `risk_rule_<ruleId>_threshold`
+// 这些 system_settings 键没有任何写入路径（UpdateSystemSettingInput 是固定 struct、
+// 没有 risk_rules 写接口），所以页面**故意不做**阈值输入框 —— 因为做了也打不到后端，
+// 表现为「能填、能点保存、毫无反应」，比缺失更难排查。
+//
+// 现在后端补齐了 GET/PUT/DELETE /risk/thresholds[/:key]，页面可以正式提供输入框。
+// `:key` 走服务端白名单校验，前端不做二次推断（只做基础类型/范围提示，
+// 最终裁决权在后端 —— 两边各写一套校验必然会漂移）。
+// ════════════════════════════════════════════════════════════════════
+
+// getRiskThresholds 读取全部可调阈值及其当前生效值。
+//
+// 响应：{ items: [{ key, ruleId, label, kind, value, defaultValue, source, configured, unit }] }
+// `source` 说明当前值来自哪一层（system_settings / risk_rules / code），
+// `configured` 区分「读不到走了默认值」与「显式配置成默认值」。
+export function getRiskThresholds() {
+  return localRequest({
+    url: RISK_BASE + '/thresholds',
+    method: 'get',
+  })
+}
+
+// updateRiskThreshold 设置某个阈值的显式值。
+//
+// 入参只做「是不是有限数」这一层类型守卫；**范围校验交给后端**（占比 0~1、
+// 绝对数 >0、连续天数为正整数这三套规则只在 service.ValidateRiskThresholdValue
+// 里写一份）。前端若再写一套，改一处忘另一处就会让「页面允许但后端拒绝」。
+export function updateRiskThreshold(key, value) {
+  const name = String(key ?? '').trim()
+  if (!name) throw new Error('阈值键参数错误')
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) throw new Error('阈值必须是数字')
+  return localRequest({
+    url: RISK_BASE + '/thresholds/' + encodeURIComponent(name),
+    method: 'put',
+    data: { value: parsed },
+  })
+}
+
+// resetRiskThreshold 把阈值重置为代码默认值（服务端删除显式配置的行）。
+export function resetRiskThreshold(key) {
+  const name = String(key ?? '').trim()
+  if (!name) throw new Error('阈值键参数错误')
+  return localRequest({
+    url: RISK_BASE + '/thresholds/' + encodeURIComponent(name),
+    method: 'delete',
+  })
+}

@@ -484,6 +484,17 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/risk/webhook", controller.Auth, middleware.RequireAdmin, controller.RiskWecomSettings)
 	apiRouter.PUT("/risk/webhook", controller.Auth, middleware.RequireAdmin, controller.UpdateRiskWecomSettings)
 	apiRouter.POST("/risk/webhook/test", controller.Auth, middleware.RequireAdmin, controller.TestRiskWecomWebhook)
+	// 风控阈值读写。此前 `risk_rule_<ruleId>_threshold` 这些键**没有任何写入路径**，
+	// 而 riskRuleThreshold 的三层兜底第一层读的就是它们 ⇒ 那一层永远读不到值。
+	// 路由必须挂上，否则又是一批「handler 已实现但 router 未接线」的死代码。
+	// `:key` 在 service 层走白名单校验，不接受任意 system_settings 键。
+	apiRouter.GET("/risk/thresholds", controller.Auth, middleware.RequireAdmin, controller.RiskThresholdList)
+	apiRouter.PUT("/risk/thresholds/:key", controller.Auth, middleware.RequireAdmin, controller.UpdateRiskThreshold)
+	apiRouter.DELETE("/risk/thresholds/:key", controller.Auth, middleware.RequireAdmin, controller.ResetRiskThreshold)
+	// 规则的启用/停用（risk_rules.enabled）。此前这一列同样没有写接口。
+	// 接线点：EvaluateDebtAlerts 的 enabledRules 过滤 `if !rule.Enabled { continue }`。
+	apiRouter.GET("/risk/rules", controller.Auth, middleware.RequireAdmin, controller.RiskRuleStateList)
+	apiRouter.PUT("/risk/rules/:ruleId/enabled", controller.Auth, middleware.RequireAdmin, controller.SetRiskRuleEnabled)
 
 	// 用户画像（98 §0 四层权限的第 ① 层）。第 ② 层在 handler 内的 requirePortraitAdmin。
 	// 两条入口共用同一个响应结构，前端只写一份渲染。

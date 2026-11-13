@@ -136,6 +136,55 @@
         <p v-if="configSuccess" class="config-success" role="status">{{ configSuccess }}</p>
       </ConsolePanel>
 
+      <!-- ============ 规则阈值（可写，落库后立即生效） ============ -->
+      <!--
+        这些输入框在本次改动之前**故意不存在**：后端没有写入路径，
+        放了输入框会「能填、能点保存、毫无反应」，比缺失更难排查。
+        现在后端补了 GET/PUT/DELETE /risk/thresholds[/:key]，页面可以正式提供。
+        范围校验以后端为准（service.ValidateRiskThresholdValue 一份），
+        前端只做「是不是有限数」这一层类型守卫，不重复实现范围规则。
+      -->
+      <ConsolePanel class="risk-threshold-panel" title="规则阈值">
+        <p v-if="thresholdError" class="filter-error" role="alert">{{ thresholdError }}</p>
+        <p v-if="thresholdSuccess" class="config-success" role="status">{{ thresholdSuccess }}</p>
+        <div v-if="!thresholds.length" class="field-hint">
+          {{ thresholdsLoading ? '正在读取阈值…' : '暂无可调阈值' }}
+        </div>
+        <a-form v-else layout="vertical" class="risk-threshold-form">
+          <div class="config-grid">
+            <a-form-item
+              v-for="item in thresholds"
+              :key="item.key"
+              :label="item.label"
+              :help="describeThresholdSource(item)"
+            >
+              <a-input-group compact>
+                <a-input-number
+                  class="threshold-input"
+                  :value="thresholdDraft[item.key]"
+                  :min="0"
+                  :disabled="thresholdWriting"
+                  @update:value="value => setThresholdDraft(item.key, value)"
+                />
+                <span class="threshold-unit">{{ item.unit }}</span>
+                <a-button
+                  type="primary"
+                  size="small"
+                  :loading="thresholdWriting"
+                  @click="saveThreshold(item)"
+                >保存</a-button>
+                <a-button
+                  v-if="item.configured"
+                  size="small"
+                  :disabled="thresholdWriting"
+                  @click="resetThreshold(item)"
+                >重置</a-button>
+              </a-input-group>
+            </a-form-item>
+          </div>
+        </a-form>
+      </ConsolePanel>
+
       <!-- ============ 告警列表（只读） ============ -->
       <ConsoleSummaryGrid class="risk-summary">
         <div>
@@ -320,8 +369,11 @@ import ConsoleTableShell from '@/components/ConsoleTableShell.vue'
 import {
   getRiskAlertDetail,
   getRiskAlerts,
+  getRiskThresholds,
   getRiskWebhookSettings,
+  resetRiskThreshold,
   testRiskWebhook,
+  updateRiskThreshold,
   updateRiskWebhookSettings,
 } from '@/api/RiskAdminApi'
 import {
@@ -384,6 +436,18 @@ export default {
     const writing = ref(false)
     const configError = ref('')
     const configSuccess = ref('')
+
+    // 规则阈值（可写，落库后判定立即生效）
+    //
+    // thresholds 是服务端返回的**权威列表**（含每项的 kind/value/defaultValue/source），
+    // thresholdDraft 只是编辑中的副本：不在 thresholds 上直接改，否则「保存失败」
+    // 与「已生效」在界面上无法区分。
+    const thresholds = ref([])
+    const thresholdDraft = reactive({})
+    const thresholdsLoading = ref(false)
+    const thresholdWriting = ref(false)
+    const thresholdError = ref('')
+    const thresholdSuccess = ref('')
 
     const alertPagination = reactive({
       current: 1, pageSize: 20, total: 0,
@@ -582,6 +646,105 @@ export default {
       configError.value = ''
       configSuccess.value = ''
     }
+
+    // ---- 规则阈值 ----
+    //
+    // 语义要点：
+    //  · 保存成功后**用服务端返回值回填** thresholds，而不是把输入值写进去 ——
+    //    否则「后端夹紧/拒绝后的真实值」与界面显示会不一致。
+    //  · thresholdDraft 只承载编辑中的值；保存失败时它保持用户输入，
+    //    但 thresholds 仍是权威值，界面能看出「没生效」。
+    const applyThresholdItems = items => {
+      const list = Array.isArray(items) ? items : []
+      thresholds.value = list
+      for (const key of Object.keys(thresholdDraft)) delete thresholdDraft[key]
+      for (const item of list) {
+        if (item && item.key) thresholdDraft[item.key] = Number(item.value)
+      }
+    }
+    const loadThresholds = async () => {
+      if (!canManage()) return false
+      thresholdsLoading.value = true
+      thresholdError.value = ''
+      try {
+        const res = await getRiskThresholds()
+        if (!canManage()) return false
+        if (Number(res?.status) !== 200) {
+          thresholdError.value = readRiskMessage(res, '读取规则阈值失败')
+          return false
+        }
+        applyThresholdItems(res?.data?.data?.items)
+        return true
+      } catch (error) {
+        if (canManage()) thresholdError.value = readRiskThrownMessage(error, '读取规则阈值失败')
+        return false
+      } finally {
+        if (canManage()) thresholdsLoading.value = false
+      }
+    }
+    const setThresholdDraft = (key, value) => {
+      if (!canManage() || thresholdWriting.value) return
+      if (!Object.hasOwn(thresholdDraft, key)) return
+      thresholdDraft[key] = value
+      thresholdError.value = ''
+      thresholdSuccess.value = ''
+    }
+    // describeThresholdSource 说明当前值的来源，避免「以为在调、其实读的是代码默认值」。
+    const describeThresholdSource = item => {
+      if (!item) return ''
+      const unit = item.unit ? `（单位：${item.unit}）` : ''
+      if (!item.configured) {
+        return `当前生效：${item.value}${unit} 默认值：${item.defaultValue} 未显式配置（读的是代码默认值）`
+      }
+      const source = item.source === 'system_settings' ? '管理页配置' : (item.source === 'risk_rules' ? '规则表列值' : '代码默认值')
+      return `当前生效：${item.value}${unit} 来源：${source} 默认值：${item.defaultValue}`
+    }
+    const saveThreshold = async item => {
+      if (!canManage() || thresholdWriting.value || !item?.key) return
+      const value = Number(thresholdDraft[item.key])
+      thresholdWriting.value = true
+      thresholdError.value = ''
+      thresholdSuccess.value = ''
+      try {
+        const res = await updateRiskThreshold(item.key, value)
+        if (!canManage()) return
+        if (Number(res?.status) !== 200) {
+          // 400 的文案由后端给出（占比越界/必须大于 0 等），直接展示。
+          thresholdError.value = readRiskMessage(res, '保存阈值失败')
+          return
+        }
+        const saved = res?.data?.data?.item
+        if (saved && saved.key) thresholdDraft[saved.key] = Number(saved.value)
+        thresholdSuccess.value = `${item.label} 已保存为 ${saved?.value ?? value}，判定立即生效`
+        // 重新拉一次，保证整张表与服务端一致（含 source/configured）。
+        await loadThresholds()
+      } catch (error) {
+        if (canManage()) thresholdError.value = readRiskThrownMessage(error, '保存阈值失败')
+      } finally {
+        if (canManage()) thresholdWriting.value = false
+      }
+    }
+    const resetThreshold = async item => {
+      if (!canManage() || thresholdWriting.value || !item?.key) return
+      thresholdWriting.value = true
+      thresholdError.value = ''
+      thresholdSuccess.value = ''
+      try {
+        const res = await resetRiskThreshold(item.key)
+        if (!canManage()) return
+        if (Number(res?.status) !== 200) {
+          thresholdError.value = readRiskMessage(res, '重置阈值失败')
+          return
+        }
+        thresholdSuccess.value = `${item.label} 已重置为默认值 ${item.defaultValue}`
+        await loadThresholds()
+      } catch (error) {
+        if (canManage()) thresholdError.value = readRiskThrownMessage(error, '重置阈值失败')
+      } finally {
+        if (canManage()) thresholdWriting.value = false
+      }
+    }
+
     const toggleConfigEnabled = next => {
       // 开关本身只改本地状态，必须点「保存」才落库 —— 避免误触把风控通道关掉。
       if (!canManage() || writing.value) return
@@ -664,7 +827,7 @@ export default {
       configLoaded.value = false
       settings.value = emptySettings()
       Object.assign(config, emptyConfig())
-      if (mounted && canManage()) { void loadAlerts(); void loadConfig() }
+      if (mounted && canManage()) { void loadAlerts(); void loadConfig(); void loadThresholds() }
     }, { flush: 'sync' })
     watch(() => getCurrentUserLogoutEpoch(), value => {
       if (value === observedLogout) return
@@ -705,6 +868,8 @@ export default {
       setFilter, reloadAlerts, resetFilters, onTableChange, loadAlerts,
       openDetail, closeDetail,
       setConfig, toggleConfigEnabled, clearSavedWebhook, keepSavedWebhook, saveSettings, sendTest, loadConfig,
+      thresholds, thresholdDraft, thresholdsLoading, thresholdWriting, thresholdError, thresholdSuccess,
+      loadThresholds, setThresholdDraft, saveThreshold, resetThreshold, describeThresholdSource,
       riskRuleLabel, riskSeverityMeta, formatRiskDateTime, describeRiskWebhookState,
       sumTableColumnWidths,
     }
