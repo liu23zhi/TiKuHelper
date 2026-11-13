@@ -1037,6 +1037,51 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		return nil
 	}
 
+	// 账号封禁表（97 §0/§2.3，T-03）。
+	//
+	// ⚠️ **不注册这张表的后果是静默的**：service/user_ban.go 的 hasUnexpiredUserBan 在
+	// HasTable 为假时返回 false, nil，只打一条 SysWarn。于是「临时封禁」100% 失效，
+	// 而「永久封禁」因还读 users.status 看起来一切正常 —— 这种「一半活着」的状态
+	// 没有任何报错，只能靠启动日志里的那一条 warn 发现。所以建表失败必须 FATAL。
+	if err := runStartupMigration("ensureUserBansSchema", func() error { return EnsureUserBansSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare user bans schema fail: %w", err))
+		return nil
+	}
+
+	// 白名单表（T-04）。与黑名单共用同一套判定链：白名单命中时根本不进黑名单判定。
+	// 建表失败 FATAL —— 缺表时白名单中间件恒不命中，被误封的管理员将无法自救。
+	if err := runStartupMigration("ensureWhitelistSchema", func() error { return EnsureWhitelistSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare whitelist schema fail: %w", err))
+		return nil
+	}
+
+	// 账号设备绑定（T-25 设备池）。缺表时设备上限判定降级为「不限制」，
+	// 属于放开而非收紧，故失败只记 SysLog 不阻断启动（与 user_bans 相反）。
+	if err := runStartupMigration("ensureAccountDeviceBindingsSchema", func() error { return ensureAccountDeviceBindingsSchema(db) }); err != nil {
+		logger.SysLog(fmt.Sprintf("账号设备绑定表迁移失败（设备上限暂不生效，下次启动会重试）：%v", err))
+	}
+
+	// 工单图片保留策略的 purged_at 列（T-11 按时间 + 按大小清理）。
+	//
+	// 必须排在 ensureTicketAttachmentSchema（更早处）之后 —— 它要先确认附件表存在。
+	// 失败只记 SysLog：列缺失让清理任务跳过「已清理」标记（重复清理同一批），
+	// 不会误删数据，属可降级。
+	if err := runStartupMigration("ensureTicketAttachmentRetentionSchema", func() error { return EnsureTicketAttachmentRetentionSchema(db) }); err != nil {
+		logger.SysLog(fmt.Sprintf("工单图片保留策略列迁移失败（清理任务会重跑，幂等）：%v", err))
+	}
+
+	// IP 段归属的**存量回填**（71 号补口，T-28）。
+	//
+	// 上面 ensureIPSegmentSchema 只建表、不写数据；新发生的查询由 service/location.go
+	// 的两条路径自动沉淀（上游成功 → 实时写入；缓存命中 → 读时补写）。唯独
+	// 「先查过 IP、后来才上线段表」的那批历史行两条路径都走不到，必须靠这里补一次。
+	//
+	// 失败**不 FATAL**：段表结构已就位，缺的只是存量数据；回填失败不写标记，
+	// 下次启动重跑（Upsert 幂等）。与段表建表本身失败必须 FATAL 不同类。
+	if err := runStartupMigration("ensureIPSegmentBackfill", func() error { return EnsureIPSegmentBackfill(db) }); err != nil {
+		logger.SysLog(fmt.Sprintf("IP 段归属存量回填失败（不影响启动，下次启动会重试）：%v", err))
+	}
+
 	ensureAccountDomainDefaults(db)
 
 	// Apply only the preflighted credential plan. Environment never resets an existing account.

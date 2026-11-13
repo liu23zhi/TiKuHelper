@@ -94,6 +94,10 @@ const ADMIN_MENU_ITEMS = [
   { key: 'import', label: '智能导入', icon: DownloadOutlined },
   { key: 'user-usage', label: '个人使用', icon: CreditCardOutlined },
   { key: 'userlist', label: '用户管理', icon: TeamOutlined },
+  // 用户画像（98 §0）。仅管理员：全站行为聚合，普通用户直接敲 URL 会被 router 跳回首页。
+  { key: 'user-portrait', label: '用户画像', icon: PieChartOutlined },
+  // 风控告警（96 / 118 §2）。只读页，处置仍去黑名单/封禁。
+  { key: 'risk-admin', label: '风控告警', icon: StopOutlined },
   // 已归档账号管理（task_doc/76 §3.2.3）：管理员删除与用户注销的账号都归到这里。
   { key: 'archived-users', label: '已归档账号', icon: InboxOutlined },
   { key: 'loglist', label: '日志列表', icon: FileTextOutlined },
@@ -108,12 +112,20 @@ const ADMIN_MENU_ITEMS = [
   { key: 'search-account-config', label: '默认账号配置', icon: SettingOutlined },
   { key: 'ai-search-config', label: 'AI 搜索配置', icon: RobotOutlined },
   { key: 'ocr-cache', label: 'OCR 缓存管理', icon: FileTextOutlined },
+  // 敏感词检测记录（T-27）。紧跟 ocr-cache：两者都是「缓存命中情况」类只读页。
+  { key: 'sensitive-word', label: '敏感词检测记录', icon: FileTextOutlined },
   { key: 'user-exam-tool', label: '客户端数据库工具', icon: DatabaseOutlined },
   // 「赠送记录」= 注册赠送 / 评价返现 / 邀请返佣 / 充值赠金 四类聚合（Q75-1）。
   // 路由 key 仍是 referral-rebates：改名只动用户可见文案，不动路由名与权限注册。
   { key: 'referral-rebates', label: '赠送记录', icon: GiftOutlined },
   { key: 'review-rebate-admin', label: '评价返现管理', icon: StarOutlined },
   { key: 'blacklist', label: '黑名单管理', icon: StopOutlined },
+  // 白名单（T-04 / T-05）。紧跟黑名单：两者规则结构相同，管理员要能并排看。
+  { key: 'whitelist', label: '白名单管理', icon: SafetyCertificateOutlined },
+  // 敏感图片检测（Q1）与工单图片缓存（T-12）相邻：前者判违规、后者管存储，
+  // 是同一份附件的两个视角。
+  { key: 'sensitive-image', label: '敏感图片检测', icon: FileTextOutlined },
+  { key: 'ticket-image-cache', label: '工单图片缓存', icon: DatabaseOutlined },
   // 等级与充值阶梯（94-*.md §2 C1/C2）：等级门槛 + 补贴档位都在这一页。
   { key: 'user-levels', label: '等级与充值阶梯', icon: TrophyOutlined },
   { key: 'system-settings', label: '系统管理', icon: ToolOutlined },

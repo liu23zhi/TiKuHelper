@@ -27,7 +27,11 @@ func SetAPIRouter(router *gin.Engine) {
 
 	apiRouter := router.Group("/adapter-service")
 
-	apiRouter.Use(middleware.GlobalAPIRateLimit, middleware.BodyLimit(16<<20)) // 全局限流
+	// 全局请求体上限必须**大于**单张工单图片的上限（20 MiB）再加 multipart 信封开销，
+	// 否则单条路由上的 BodyLimit((20<<20)+65536) 永远走不到就被这里拦下 —— 症状是
+	// 「传 8 MiB 图正常、传 12 MiB 图 413，但错误信息指向路由而非全局」。
+	// 加 envelope 余量而不是正好相等：multipart 的 boundary/头部不可忽略。
+	apiRouter.Use(middleware.GlobalAPIRateLimit, middleware.BodyLimit((24<<20)+65536)) // 全局限流
 
 	// IP 黑名单（46-黑名单设计.md §3）。开关 blacklist_enabled **默认 false**：
 	// 关闭时中间件零查询零写日志，全站行为与引入前完全一致。
@@ -48,8 +52,21 @@ func SetAPIRouter(router *gin.Engine) {
 	if mgr := manager.GetManager(); mgr != nil {
 		// 启动时同步加载一次快照并起 60s 后台重载（多实例收敛）。
 		service.EnsureDefaultBlacklistCacheStarted(mgr.GetDB())
+		// 白名单同理：首次同步加载一次，之后 60s 重载。
+		// 不加载的后果是 WhitelistIP() 永远拿到 nil 快照 → 按「零白名单」处理 →
+		// 功能静默失效（判定仍走黑名单，看起来一切正常）。
+		service.EnsureDefaultWhitelistCacheStarted(mgr.GetDB())
 	}
-	apiRouter.Use(middleware.BlacklistIP())
+	// ⚠️ 这里挂的是 WhitelistIP() 而**不是** BlacklistIP()。
+	//
+	// 两者不能并列挂：gin 的 c.Abort() 会把路由 handler 一起停掉，无法表达
+	// 「命中白名单就跳过后面那个中间件但继续执行 handler」。所以白名单中间件
+	// **内部持有**黑名单判定闭包 —— 命中白名单时根本不调用它（不写 blacklist_hits、
+	// 不查地区归属、不碰聚合器），未命中时逐字交给黑名单，行为与只挂 BlacklistIP() 完全一致。
+	//
+	// 白名单本身没有开关：快照拿不到时按「零白名单」处理（不放行任何人），
+	// 方向与黑名单的 fail-open 相反 —— 拿不到规则时凭空给出豁免是错的。
+	apiRouter.Use(middleware.WhitelistIP())
 
 	apiRouter.POST("/upload", controller.Auth, middleware.RequireAdmin, controller.UploadFile)
 	// EXE uploads need a larger multipart envelope than ordinary API requests.
@@ -269,7 +286,11 @@ func SetAPIRouter(router *gin.Engine) {
 	// 用户端读图只拿得到「非敏感」的字节；敏感图返回占位状态（403 + 明确 code）。
 	// 管理端读图单独一条路由，必须 RequireAdmin，且 handler 内写账户审计。
 	// 上传的 ticketId 走 query：不带 = 建单前上传的草稿图（建单时认领）。
-	apiRouter.POST("/ticket-attachments", middleware.BodyLimit((2<<20)+65536), controller.Auth, controller.UploadTicketAttachment)
+	//
+	// 单请求体上限 = 单张图上限（20 MiB，service.MaxTicketAttachmentBytes）+ multipart 信封余量。
+	// 加余量而不是正好相等：boundary 与 part 头部约几百字节，正好相等会让「恰好 20 MiB 的图」
+	// 在 MaxBytesReader 上先被截断，报错发生在解析而非校验，文案与真实原因无关。
+	apiRouter.POST("/ticket-attachments", middleware.BodyLimit((20<<20)+65536), controller.Auth, controller.UploadTicketAttachment)
 	apiRouter.GET("/tickets/:id/attachments", controller.Auth, controller.ListTicketAttachments)
 	apiRouter.GET("/ticket-attachments/:attachmentId", controller.Auth, controller.DownloadTicketAttachment)
 	apiRouter.GET("/ticket-attachments/:attachmentId/admin", controller.Auth, middleware.RequireAdmin, controller.AdminDownloadTicketAttachment)
@@ -380,6 +401,21 @@ func SetAPIRouter(router *gin.Engine) {
 	blacklistAdminRouter.DELETE("/blacklist/:id", controller.Auth, middleware.RequireAdmin, controller.BlacklistEntryDelete)
 	blacklistAdminRouter.GET("/blacklist/hits", controller.Auth, middleware.RequireAdmin, controller.BlacklistHitList)
 
+	// 白名单管理（T-04 / T-05）。与黑名单**同一套结构**：单独 group、不挂 WhitelistIP/BlacklistIP。
+	//
+	// 理由与黑名单组完全相同 —— 被误封的管理员必须能打开白名单页把自己加进去自救。
+	// 若这一组也挂 IP 判定，就变成「只有已经在白名单里的人才能编辑白名单」，
+	// 那是比黑名单更硬的死锁：白名单没有开关，没有任何旁路。
+	//
+	// 写操作之后 handler 内部会调 service.ReloadDefaultWhitelistCache，
+	// 否则会「页面显示已启用、中间件还按旧快照判定」。
+	blacklistAdminRouter.GET("/whitelist", controller.Auth, middleware.RequireAdmin, controller.WhitelistEntryList)
+	blacklistAdminRouter.POST("/whitelist", controller.Auth, middleware.RequireAdmin, controller.WhitelistEntryCreate)
+	blacklistAdminRouter.PUT("/whitelist/:id/enabled", controller.Auth, middleware.RequireAdmin, controller.WhitelistEntryToggle)
+	blacklistAdminRouter.DELETE("/whitelist/:id", controller.Auth, middleware.RequireAdmin, controller.WhitelistEntryDelete)
+	blacklistAdminRouter.GET("/whitelist/exempt-ips", controller.Auth, middleware.RequireAdmin, controller.WhitelistExemptIPsGet)
+	blacklistAdminRouter.PUT("/whitelist/exempt-ips", controller.Auth, middleware.RequireAdmin, controller.WhitelistExemptIPsPut)
+
 	// 考试客户端本地库工具：仅管理员。服务端不解密，只发工具 + 只读预览明文库。
 	apiRouter.GET("/admin/userexam/tool/version", controller.Auth, middleware.RequireAdmin, controller.UserExamToolVersion)
 	apiRouter.GET("/admin/userexam/tool", controller.Auth, middleware.RequireAdmin, controller.UserExamToolDownload)
@@ -392,6 +428,96 @@ func SetAPIRouter(router *gin.Engine) {
 	// 改由本接口把事实告诉前端，让管理台显示告警引导管理员自行修改。
 	// 一条不可协商的性质：只回布尔，不回任何凭据内容（含 hash）。
 	apiRouter.GET("/admin/security-status", controller.Auth, middleware.RequireAdmin, controller.AdminSecurityStatus)
+
+	// ── 第 8 轮落地模块的管理端接线 ────────────────────────────────────────────
+	//
+	// 这一整段都是「handler 已实现、service 已有测试、只差把路由挂上」的模块。
+	// 不挂的后果分两类，都很隐蔽：
+	//   · 页面能打开但所有请求 404（风控 / 画像 / 敏感词 / 图片缓存 / 白名单）；
+	//   · 后台 goroutine 起了却没人能配置它（日志清理 / 工单图片清理）。
+	// 本项目此前已有 33 个 handler 处于「实现了但未挂」的状态，所以这一段刻意集中
+	// 放一起并逐条注明数据源，便于下次核对「到底还有没有漏的」。
+
+	// 公告管理（N4，112 §4.3）。五条全部 Auth + RequireAdmin。
+	// 管理员可发故障公告；公告本身通过搜题响应下发（见 controller/search.go 的 attachSearchAnnouncements），
+	// 因此这里只有写入口 —— 用户端不存在「拉公告列表」的接口，避免多一份口径。
+	apiRouter.GET("/admin/announcements", controller.Auth, middleware.RequireAdmin, controller.AnnouncementAdminList)
+	apiRouter.POST("/admin/announcements", controller.Auth, middleware.RequireAdmin, controller.AnnouncementAdminCreate)
+	apiRouter.PUT("/admin/announcements/:id", controller.Auth, middleware.RequireAdmin, controller.AnnouncementAdminUpdate)
+	apiRouter.PUT("/admin/announcements/:id/enabled", controller.Auth, middleware.RequireAdmin, controller.AnnouncementAdminToggle)
+	apiRouter.DELETE("/admin/announcements/:id", controller.Auth, middleware.RequireAdmin, controller.AnnouncementAdminDelete)
+
+	// 风控告警（96 / 118 §2）。**只读告警**：列表与详情没有任何写路径，
+	// 处置动作一律走黑名单/封禁自己的接口，人工再确认一次（96 C1）。
+	// 路径用 /risk/* 而不是 /admin/risk/*：前端 api/RiskAdminApi.js 的 RISK_BASE
+	// 就是 '/adapter-service/risk'，改名会让已写好的页面全部 404。
+	apiRouter.GET("/risk/alerts", controller.Auth, middleware.RequireAdmin, controller.RiskWarningList)
+	apiRouter.GET("/risk/alerts/:id", controller.Auth, middleware.RequireAdmin, controller.RiskWarningDetail)
+	apiRouter.GET("/risk/webhook", controller.Auth, middleware.RequireAdmin, controller.RiskWecomSettings)
+	apiRouter.PUT("/risk/webhook", controller.Auth, middleware.RequireAdmin, controller.UpdateRiskWecomSettings)
+	apiRouter.POST("/risk/webhook/test", controller.Auth, middleware.RequireAdmin, controller.TestRiskWecomWebhook)
+
+	// 用户画像（98 §0 四层权限的第 ① 层）。第 ② 层在 handler 内的 requirePortraitAdmin。
+	// 两条入口共用同一个响应结构，前端只写一份渲染。
+	apiRouter.GET("/admin/portrait/overview", controller.Auth, middleware.RequireAdmin, controller.AdminUserPortraitOverview)
+	apiRouter.GET("/admin/users/:id/portrait", controller.Auth, middleware.RequireAdmin, controller.AdminUserPortrait)
+
+	// 敏感图片检测管理页（Q1）。手动触发**不经过额度闸门** —— 复核是运营动作。
+	apiRouter.GET("/sensitive-image/entries", controller.Auth, middleware.RequireAdmin, controller.SensitiveImageEntryList)
+	apiRouter.GET("/sensitive-image/quota", controller.Auth, middleware.RequireAdmin, controller.SensitiveImageQuotaStatus)
+	apiRouter.POST("/sensitive-image/quota", controller.Auth, middleware.RequireAdmin, controller.SensitiveImageQuotaUpdateHandler)
+	apiRouter.POST("/sensitive-image/detect", controller.Auth, middleware.RequireAdmin, controller.SensitiveImageManualDetect)
+
+	// 敏感词检测记录（T-27）。只读三态筛选，不写、不清空、不重试缓存行。
+	apiRouter.GET("/admin/sensitive-word-cache", controller.Auth, middleware.RequireAdmin, controller.SensitiveWordCacheList)
+	apiRouter.GET("/admin/sensitive-word-cache/status", controller.Auth, middleware.RequireAdmin, controller.SensitiveWordCacheStatus)
+
+	// 工单图片缓存管理（T-12）。删除受 ref_count 保护：仍被引用的 blob 拒绝删除。
+	apiRouter.GET("/admin/ticket-image-cache", controller.Auth, middleware.RequireAdmin, controller.TicketImageCacheList)
+	apiRouter.DELETE("/admin/ticket-image-cache/:sha256", controller.Auth, middleware.RequireAdmin, controller.TicketImageCacheDelete)
+	apiRouter.POST("/admin/ticket-image-cache/batch-delete", controller.Auth, middleware.RequireAdmin, controller.TicketImageCacheBatchDelete)
+	apiRouter.POST("/admin/ticket-image-cache/clean", controller.Auth, middleware.RequireAdmin, controller.TicketImageCacheCleanNow)
+
+	// 日志保留策略（Q14）。三条：读现状 / 改配置 / 立即清理一次。
+	// GET 用的是**无副作用**的 DescribeLogRetentionCapability —— 会被人手刷新、
+	// 浏览器预取、监控探针调用，若它顺手清理日志，一次 GET 就等于删审计日志。
+	apiRouter.GET("/admin/log-settings", controller.Auth, middleware.RequireAdmin, controller.LogRetentionSettingsDetail)
+	apiRouter.PUT("/admin/log-settings", controller.Auth, middleware.RequireAdmin, controller.UpdateLogRetentionSettings)
+	apiRouter.POST("/admin/log-settings/clean", controller.Auth, middleware.RequireAdmin, controller.CleanLogRetentionNow)
+
+	// 服务状态（T-18）。纯内存环形缓冲，1440 槽，重启归零。
+	apiRouter.GET("/admin/service-status", controller.Auth, middleware.RequireAdmin, controller.GetServiceStatus)
+
+	// 工单附件删除（T-13 的配套入口）。删除与 blob ref_count 递减在同一事务里，
+	// 漏挂这条路由会让「上传能传、删不掉」—— 用户只能看着自己的图片占着配额。
+	apiRouter.DELETE("/ticket-attachments/:attachmentId", controller.Auth, controller.DeleteTicketAttachment)
+
+	// 异步任务导入导出（Q12 / N3）。七个 handler 全部 RequireAdmin。
+	// 收尾判定必须处理「一个任务都没执行」：提交在未注入 manager 时返回 503，
+	// 而不是假装成功（见 controller/async_task.go:199 的注释）。
+	apiRouter.POST("/export/tasks", controller.Auth, middleware.RequireAdmin, controller.ExportTaskCreate)
+	apiRouter.POST("/import/tasks", controller.Auth, middleware.RequireAdmin, controller.ImportTaskCreate)
+	apiRouter.GET("/export/tasks", controller.Auth, middleware.RequireAdmin, controller.ExportTaskList)
+	apiRouter.GET("/export/tasks/:taskId", controller.Auth, middleware.RequireAdmin, controller.ExportTaskDetail)
+	apiRouter.GET("/export/tasks/:taskId/download", controller.Auth, middleware.RequireAdmin, controller.ExportTaskDownload)
+	apiRouter.GET("/export/tasks/:taskId/errors", controller.Auth, middleware.RequireAdmin, controller.ExportTaskErrorReport)
+	apiRouter.GET("/import/template", controller.Auth, middleware.RequireAdmin, controller.ImportTemplate)
+
+	// 管理员赠送 / 批量赠送 / 追缴式回滚（44 / T-30 的前置）。九个 handler 全部
+	// 先过 requireAdmin：赠送是直接产生钱的入口，漏一个等于开了印钞机。
+	//
+	// ⚠️ 静态段必须能压过参数段：gin 按段数分树，`/admin/user/:id/grant` 只吃 4 段，
+	// `/admin/user/grant/batch` 也是 4 段但第三段是字面量 'grant' —— 实测两者共存时
+	// 静态优先，`/admin/user/grant/batch` 不会被当成 id='grant'（已用探针验证 6 条路径）。
+	apiRouter.POST("/admin/user/:id/grant", controller.Auth, middleware.RequireAdmin, controller.AdminGrant)
+	apiRouter.POST("/admin/user/:id/grant-reversal", controller.Auth, middleware.RequireAdmin, controller.AdminGrantReverse)
+	apiRouter.POST("/admin/user/grant/batch/preview", controller.Auth, middleware.RequireAdmin, controller.AdminGrantBatchPreview)
+	apiRouter.POST("/admin/user/grant/batch", controller.Auth, middleware.RequireAdmin, controller.AdminGrantBatchExecute)
+	apiRouter.POST("/admin/user/grant/batch/:batchId/rollback", controller.Auth, middleware.RequireAdmin, controller.AdminGrantBatchRollback)
+	apiRouter.GET("/admin/user/grant/batch/:batchId", controller.Auth, middleware.RequireAdmin, controller.AdminGrantBatchProgress)
+	apiRouter.POST("/admin/user/grant/batch/:batchId/pause", controller.Auth, middleware.RequireAdmin, controller.AdminGrantBatchPause)
+	apiRouter.POST("/admin/user/grant/batch/:batchId/abort", controller.Auth, middleware.RequireAdmin, controller.AdminGrantBatchAbort)
+	apiRouter.GET("/admin/grant/confirm-threshold", controller.Auth, middleware.RequireAdmin, controller.AdminGrantConfirmThreshold)
 
 	// ── 脚本公开入口的「保留前缀」自动枚举（45-*.md §0.25.2，Q72-2）────────────
 	//

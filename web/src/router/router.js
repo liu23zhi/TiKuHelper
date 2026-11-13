@@ -40,6 +40,13 @@ const ReviewRebateAdmin = () => import(/* webpackChunkName: "route-review-rebate
 const Blacklist = () => import(/* webpackChunkName: "route-blacklist" */ '../pages/Blacklist/index.vue')
 const IPSegment = () => import(/* webpackChunkName: "route-ip-segment" */ '../pages/IpSegment/index.vue')
 const UserLevel = () => import(/* webpackChunkName: "route-user-level" */ '../pages/UserLevel/index.vue')
+// 第 8 轮新增页面。三个都是管理员专属，均已登记进 ADMIN_ONLY_ROUTE_NAMES。
+const UserPortrait = () => import(/* webpackChunkName: "route-user-portrait" */ '../pages/UserPortrait/index.vue')
+const RiskAdmin = () => import(/* webpackChunkName: "route-risk-admin" */ '../pages/RiskAdmin/index.vue')
+const SensitiveImage = () => import(/* webpackChunkName: "route-sensitive-image" */ '../pages/SensitiveImage/index.vue')
+const SensitiveWord = () => import(/* webpackChunkName: "route-sensitive-word" */ '../pages/SensitiveWord/index.vue')
+const TicketImageCache = () => import(/* webpackChunkName: "route-ticket-image-cache" */ '../pages/TicketImageCache/index.vue')
+const Whitelist = () => import(/* webpackChunkName: "route-whitelist" */ '../pages/Whitelist/index.vue')
 const routes = [
   {
     path: '/',
@@ -93,6 +100,44 @@ const routes = [
         path: 'userlist',
         name: 'userlist',
         component: UserList,
+      },
+      {
+        // 用户画像（98 §0）。一个页面的两种视角：不带 query = 全站整体，
+        // ?userId= = 单个用户。用户管理操作列的「画像」按钮跳到同一个 name。
+        path: 'user-portrait',
+        name: 'user-portrait',
+        component: UserPortrait,
+      },
+      {
+        // 风控告警（96 / 118 §2）。只读：本页没有任何处置动作，
+        // 处置必须去黑名单/封禁页人工再确认一次（96 C1）。
+        path: 'risk-admin',
+        name: 'risk-admin',
+        component: RiskAdmin,
+      },
+      {
+        // 敏感图片检测（Q1）。两个 Tab：检测记录 / 超额未检测。
+        path: 'sensitive-image',
+        name: 'sensitive-image',
+        component: SensitiveImage,
+      },
+      {
+        // 敏感词检测记录（T-27）。只读三态筛选。
+        path: 'sensitive-word',
+        name: 'sensitive-word',
+        component: SensitiveWord,
+      },
+      {
+        // 工单图片缓存（T-12）。删除受 ref_count 保护。
+        path: 'ticket-image-cache',
+        name: 'ticket-image-cache',
+        component: TicketImageCache,
+      },
+      {
+        // 白名单（T-04 / T-05）。与黑名单分开一页，规则结构相同。
+        path: 'whitelist',
+        name: 'whitelist',
+        component: Whitelist,
       },
       {
         // 已归档账号管理（task_doc/76 §3.2.3）:管理员删除与用户注销的账号都在这里。
@@ -265,6 +310,19 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   'referral-rebates',
   'review-rebate-admin',
   'blacklist',
+  // 白名单：能编辑白名单等于能决定谁不被拦截，普通用户可改就等于关掉黑名单（T-04）。
+  'whitelist',
+  // 第 8 轮新增五个管理页。逐项说明为什么必须挡住「直接敲 URL」：
+  //   user-portrait     —— 全站用户行为聚合，98 §0 明确仅管理员（四层权限的第 ④ 层）。
+  //   risk-admin        —— 告警里带触发证据快照（IP / 用户 / 规则），属敏感运营数据。
+  //   sensitive-image   —— 缩略图即违规内容本身，且带工单归属。
+  //   sensitive-word    —— 记录里有 maskedText（原文部分可见）与判定来源。
+  //   ticket-image-cache —— 能删 blob，误操作会影响所有引用它的工单。
+  'user-portrait',
+  'risk-admin',
+  'sensitive-image',
+  'sensitive-word',
+  'ticket-image-cache',
   // 等级与充值阶梯：等级门槛 = 谁能拿什么设备上限（C3 会读 device_limit），
   // 阶梯档位 = 平台补贴口径。两者都是运营配置，非管理员直接敲 URL 也要挡住。
   'user-levels',
