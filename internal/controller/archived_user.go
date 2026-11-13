@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/dao"
@@ -48,20 +47,27 @@ import (
 const (
 	archivedUserDefaultPageSize = 10
 	archivedUserMaxPageSize     = 100
-	// archivedUserRestoreMaxAttempts 是随机用户名后缀的尝试上限（76 §3.4.4）。
+	// archivedUserRestoreMaxAttempts 是随机用户名后缀的尝试上限。
 	//
-	// 100 次仍冲突说明数据异常，必须返回 500 让人介入 ——
-	// 静默用一个可能重复的名字会把「谁是谁」的问题留给客服。
-	archivedUserRestoreMaxAttempts = 100
+	// 值已统一到 service.UsernameReleaseMaxAttempts（task_doc/106 Q4 落地时
+	// 从 100 收到 10）：候选名是「原名_restored_N」的确定性递增序列，
+	// 连续 10 个都被占意味着词干已被批量占用或数据被污染，再试只是把一次
+	// 注定失败的恢复拖长（每次都要真实查库）。
+	//
+	// 保留这个别名而不是直接删：archived_user_test.go 用它构造「占满所有候选」
+	// 的场景，两处必须同源，否则测试会与实现漂移。
+	archivedUserRestoreMaxAttempts = service.UsernameReleaseMaxAttempts
 	// archivedUserRestoredNameBase 是原用户名为空时的兜底词干。
-	archivedUserRestoredNameBase = "user"
-	// archivedUserRestoredNameMark 是改名标记。沿用 76 §3.4.4 的
-	// 「原名_restored_N」格式：客服能口述，用户也能看出「是被恢复的旧号」。
-	archivedUserRestoredNameMark = "_restored_"
+	archivedUserRestoredNameBase = service.UsernameRestoredFallbackStem
+	// archivedUserRestoredNameMark 是改名标记（「原名_restored_N」）。
+	archivedUserRestoredNameMark = service.UsernameRestoredMark
 )
 
-// errArchivedUserUsernameExhausted 表示 100 次随机用户名全部被占用。
-var errArchivedUserUsernameExhausted = errors.New("用户名冲突无法自动解决")
+// errArchivedUserUsernameExhausted 表示候选用户名在重试上限内全部被占用。
+//
+// 与 service.ErrUsernameReleaseExhausted 是同一个错误值（不另造一个）：
+// 调用方用 errors.Is 判定，两个不同实例会让判定失效。
+var errArchivedUserUsernameExhausted = service.ErrUsernameReleaseExhausted
 
 // archivedUserRow 是列表 / 详情的投影：users 的全部可见字段 + 归档三列。
 //
@@ -380,37 +386,38 @@ func ArchivedUserRestore(c *gin.Context) {
 	}
 
 	// 主动检查用户名占用 —— 不能等数据库报错（username 无唯一索引）。
-	occupiedBy, err := usernameOccupiedBy(db, target.Username, target.ID)
+	//
+	// 判定逻辑已下沉到 service.ResolveRestoreUsernameWithDB（task_doc/106 Q4）：
+	// 归档时释放用户名、恢复时冲突改名是同一套规则的两端，放在一起才能保证
+	// 「释放后能注册」与「恢复时判冲突」用的是同一条查询。
+	decision, err := service.ResolveRestoreUsernameWithDB(db, target.ID, target.Username)
 	if err != nil {
+		if errors.Is(err, service.ErrUsernameReleaseExhausted) {
+			logger.SysError(fmt.Sprintf("恢复账号 %d 时用户名冲突无法自动解决（已尝试 %d 次）：%s",
+				target.ID, decision.Attempts, logger.RedactSecrets(err.Error())))
+			c.JSON(500, gin.H{"message": "用户名冲突无法自动解决，请先手动修改"})
+			return
+		}
 		logger.SysError("检查用户名占用失败: " + logger.RedactSecrets(err.Error()))
 		c.JSON(500, gin.H{"message": "恢复账号失败"})
 		return
 	}
-	newUsername := target.Username
-	renamed := false
-	if occupiedBy > 0 {
-		suggested, suggestErr := nextAvailableRestoredUsername(db, target.Username, target.ID)
-		if suggestErr != nil {
-			// 100 次仍冲突：数据异常，交给人处理。
-			logger.SysError(fmt.Sprintf("恢复账号 %d 时用户名冲突无法自动解决: %s",
-				target.ID, logger.RedactSecrets(suggestErr.Error())))
-			c.JSON(500, gin.H{"message": "用户名冲突无法自动解决，请先手动修改"})
-			return
-		}
-		if !payload.ConfirmRename {
-			// 409 必须带**已校验不重复**的建议名：让管理员在确认框里就看到
-			// 「会变成什么」，而不是确认后再撞一次。
-			c.JSON(409, gin.H{
-				"conflict":          "username",
-				"message":           "原用户名已被其他账号使用，需要二次确认后改用建议用户名",
-				"currentUsername":   target.Username,
-				"occupiedByUserId":  occupiedBy,
-				"suggestedUsername": suggested,
-			})
-			return
-		}
-		newUsername = suggested
-		renamed = true
+	// Final 为空串时有明确语义：归档行的用户名为空（历史脏数据），
+	// 此时**不动** username 列，也不做冲突判断 —— 凭空造一个名字会让用户
+	// 看到一个从未属于他的账号名。其余字段照常恢复。
+	newUsername := decision.Final
+	renamed := decision.Renamed
+	if decision.OccupiedByUserID > 0 && !payload.ConfirmRename {
+		// 409 必须带**已校验不重复**的建议名：让管理员在确认框里就看到
+		// 「会变成什么」，而不是确认后再撞一次。
+		c.JSON(409, gin.H{
+			"conflict":          "username",
+			"message":           "原用户名已被其他账号使用，需要二次确认后改用建议用户名",
+			"currentUsername":   decision.Original,
+			"occupiedByUserId":  decision.OccupiedByUserID,
+			"suggestedUsername": decision.Final,
+		})
+		return
 	}
 
 	if err := db.Transaction(func(tx *gorm.DB) error {
@@ -486,63 +493,27 @@ func restoreArchivedUserInTx(tx *gorm.DB, target archivedUserRow, newUsername st
 // ⚠️ 必须主动检查（76 §3.4.1 / 红线 10）：users.username **没有**唯一索引，
 // 两个同名用户可以共存，数据库不会替我们报错。
 //
-// 查询走 entity.User（带 GORM 软删除过滤）⇒ 已归档账号不挡路。
-// 这正是 76 §3.4.6「归档时保留原用户名」的直接结果：别人可以注册同名，
-// 恢复时才需要处理冲突。
+// 实现已下沉到 service.UsernameOccupiedBy：归档时的「释放」与恢复时的
+// 「冲突判定」必须是**同一条查询**，否则会出现「归档说释放了、恢复说被占」。
+// 这里保留薄封装只是为了让既有的包内调用点与测试继续可用。
 func usernameOccupiedBy(db *gorm.DB, username string, selfID int32) (int32, error) {
-	name := strings.TrimSpace(username)
-	if db == nil || name == "" {
-		return 0, nil
-	}
-	var occupied entity.User
-	err := db.Session(&gorm.Session{NewDB: true}).
-		Where("username = ? AND id <> ?", name, selfID).Take(&occupied).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return 0, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	return occupied.ID, nil
+	return service.UsernameOccupiedBy(db, username, selfID)
 }
 
 // nextAvailableRestoredUsername 生成「原名_restored_N」并逐个校验占用。
 //
-// 1..100 每次都在真实库上查一次：候选名必须**当场确认可用**，
-// 否则前端确认后仍可能再撞一次（红线 12）。
+// 下沉到 service.NextAvailableRestoredUsernameWithDB（同一套生成规则与重试上限）。
 func nextAvailableRestoredUsername(db *gorm.DB, original string, selfID int32) (string, error) {
-	for attempt := 1; attempt <= archivedUserRestoreMaxAttempts; attempt++ {
-		candidate := buildRestoredUsername(original, attempt)
-		occupiedBy, err := usernameOccupiedBy(db, candidate, selfID)
-		if err != nil {
-			return "", err
-		}
-		if occupiedBy == 0 {
-			return candidate, nil
-		}
-	}
-	return "", errArchivedUserUsernameExhausted
+	candidate, _, err := service.NextAvailableRestoredUsernameWithDB(db, original, selfID)
+	return candidate, err
 }
 
 // buildRestoredUsername 拼「原名_restored_N」，原名超长时按字符截断。
 //
-// 长度按 **rune** 计（与 util.UsernameMaxLength / varchar(255) 的口径一致）；
-// 后缀只含小写字母、下划线与数字，符合既有用户名规则（中文/英文/数字/下划线/@）。
+// 实现下沉到 service.BuildRestoredUsername（长度按 rune、字符集按
+// util.ValidateRestrictedName），此处只做转发，避免两处分头维护同一规则。
 func buildRestoredUsername(original string, attempt int) string {
-	suffix := fmt.Sprintf("%s%d", archivedUserRestoredNameMark, attempt)
-	base := strings.TrimSpace(original)
-	if base == "" {
-		base = archivedUserRestoredNameBase
-	}
-	limit := util.UsernameMaxLength - utf8.RuneCountInString(suffix)
-	if limit < 1 {
-		limit = 1
-	}
-	runes := []rune(base)
-	if len(runes) > limit {
-		runes = runes[:limit]
-	}
-	return string(runes) + suffix
+	return service.BuildRestoredUsername(original, attempt)
 }
 
 // loadActiveUser 读一个**未归档**账号（恢复后回读用）。
