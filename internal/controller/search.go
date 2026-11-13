@@ -429,6 +429,9 @@ func executeSearch(c *gin.Context) {
 			response := util.FillAnswerResponse(nil, &req)
 			response.Error = terminal.publicError
 			response.Warnings = terminal.warnings
+			// 搭车者拿到的同样是「一次真实的搜题响应」，故障公告必须一起送达，
+			// 否则两个用户同时搜同一道题时，只有一个能看到「服务已经坏了」。
+			attachSearchAnnouncements(c, &response)
 			audit := buildSearchAuditMetadata(c, resolved, query, rawBody, useQuery, nil, false, aiEnabled, "", req, response)
 			audit = addSearchFailuresToAudit(audit, terminal.status, nil, response)
 			writeCompletedSearchAuditLog(resolved, useQuery, nil, "", c.ClientIP(), audit)
@@ -556,6 +559,9 @@ func executeSearch(c *gin.Context) {
 	}
 	resolved.ScriptHadNormalAnswer = hadNormalAnswer
 	resp := util.FillAnswerResponse(result, &req)
+	// 故障公告在这里挂载：答案已经算完、响应体已经成型，本步骤只多一次
+	// 轻量查询（最多 10 行），且查不到就当作没有（ActiveIncidentsOrEmpty）。
+	attachSearchAnnouncements(c, &resp)
 	logger.SysLog(fmt.Sprintf("搜题响应摘要 requestId=%s hitProvider=%s usedLocal=%t usedCache=%t aiEnabled=%t %s", strings.TrimSpace(resolved.RequestID), strings.TrimSpace(auditHitProvider), usedLocalSearch, usedSearchResultCache, aiEnabled, buildSearchResponseDebugSummary(resp)))
 	audit := buildSearchAuditMetadata(c, resolved, query, rawBody, useQuery, result, usedLocalSearch, aiEnabled, auditHitProvider, req, resp)
 	audit.AISearchTrace = append([]search.AISearchTrace(nil), aiUsage.Trace...)
@@ -784,6 +790,75 @@ func buildSearchResponseDebugSummary(resp model.SearchResponse) string {
 		fmt.Sprintf("allAnswerGroups=%d", len(resp.Answer.AllAnswer)),
 		fmt.Sprintf("answerText=%s", truncateForDebug(strings.TrimSpace(resp.Answer.AnswerText), 160)),
 	}, " ")
+}
+
+// attachSearchAnnouncements 把「当前生效的故障公告」挂到搜题响应上（N4 / T-08）。
+//
+// 三条硬约束，每一条都对应一个真实会发生的故障：
+//
+//  1. **必须用 ActiveIncidentsOrEmpty（fail-open）**，不能用 ActiveIncidents。
+//     公告表还没迁移好、数据库抖动、SQL 出错 —— 这些都只该让「这一次没有公告」，
+//     绝不能让用户因为「一条通知没查到」而搜不了题（113 §4）。
+//     这里连 error 的返回值都不接：一旦有人把它换成会返回 error 的版本，
+//     编译期就会在这里暴露（少一个返回值），而不是运行期静默把错误丢进主链路。
+//
+//  2. **只下发 incident**。过滤不在本函数做 —— service.ActiveIncidents 的
+//     WHERE 里已经有 `kind = 'incident'`，重复写一遍会形成「两处过滤」，
+//     将来改一处忘另一处会得到「有时正常有时不正常」的诡异现象。
+//     本函数只负责投影，不负责筛选。
+//
+//  3. **db 为 nil 时不要自己做判断**。ActiveIncidentsOrEmpty 内部已经有
+//     `db == nil → 返回 nil` 的短路，调用方再判一次只是重复逻辑；
+//     更糟的是将来 OrEmpty 的 nil 语义若变化（比如改成回落到默认库），
+//     调用方的多余判断会让那次变化静默失效。
+//
+// 时机：只加一次内存投影，不发起额外 goroutine、不阻塞响应写回。
+// 若将来这里要做网络/慢查询，必须改成旁路（像 startSensitiveWordCheck 那样）。
+func attachSearchAnnouncements(c *gin.Context, resp *model.SearchResponse) {
+	if resp == nil {
+		return
+	}
+	db := resolveSearchPersistenceDBForAnnouncements(c)
+	// 直接调 ActiveIncidentsOrEmpty：它只返回切片，没有 error 可接。
+	// 这不是「忘了处理错误」，而是刻意的接口设计 —— 一旦有人换成
+	// service.ActiveIncidents（两个返回值），这里会在编译期报
+	// "assignment mismatch"，而不是运行期把错误静默丢进主链路。
+	incidentRows := service.ActiveIncidentsOrEmpty(db, time.Now())
+	if len(incidentRows) == 0 {
+		return
+	}
+	resp.Announcements = buildAnnouncementPayloads(incidentRows)
+}
+
+// resolveSearchPersistenceDBForAnnouncements 取公告查询用的数据库句柄。
+//
+// 与 resolveSearchPersistenceDB 同一来源，但**额外加高优先级**：
+// 这一步在答案算完之后、响应写回之前执行，属于用户正在等待的路径。
+// 用 Low 会让它在队列里排到后台任务后面 —— 故障期间队列越忙，公告越晚到，
+// 而「服务已经坏了」这条信息恰恰在最忙的时候最需要送达。
+func resolveSearchPersistenceDBForAnnouncements(c *gin.Context) *gorm.DB {
+	return withDatabasePriority(resolveSearchPersistenceDB(), databaseRequestContext(c), dbqueue.PriorityHigh)
+}
+
+// buildAnnouncementPayloads 把实体投影成对外结构。
+//
+// 只挑对外字段（id/kind/title/content/severity/startsAt/endsAt），
+// CreatedBy / CreatedAt / UpdatedAt / Enabled 一律不下发：
+// 它们是内部审计与筛选字段，泄漏给客户端没有用途（见 model.AnnouncementPayload 注释）。
+func buildAnnouncementPayloads(rows []entity.Announcement) []model.AnnouncementPayload {
+	payloads := make([]model.AnnouncementPayload, 0, len(rows))
+	for _, row := range rows {
+		payloads = append(payloads, model.AnnouncementPayload{
+			ID:       row.ID,
+			Kind:     row.Kind,
+			Title:    row.Title,
+			Content:  row.Content,
+			Severity: row.Severity,
+			StartsAt: row.StartsAt,
+			EndsAt:   row.EndsAt,
+		})
+	}
+	return payloads
 }
 
 func readAndRestoreRequestBody(c *gin.Context) string {
