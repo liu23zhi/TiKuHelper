@@ -54,6 +54,9 @@ export const RISK_RULE_OPTIONS = Object.freeze([
   //    ② 只回溯 7 天（超 7 天未登录的用户，那一对不会被比较）
   // 只写其一会让运营按错误的边界理解告警行为。
   { value: 'impossible_travel', label: '异地瞬移（仅公网 IP · 回溯 7 天）' },
+  // R9：同一 IP 在 30 分钟滑动窗口内试了 ≥20 个不同账号名
+  // ⚠️ label 写明「只看失败」+「30 分钟」，因为前端不展示 Description
+  { value: 'credential_stuffing', label: '撞库（仅失败登录 · 30 分钟）' },
 ])
 
 const RISK_RULE_LABELS = Object.freeze(

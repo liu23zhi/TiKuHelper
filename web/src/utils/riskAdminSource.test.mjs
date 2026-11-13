@@ -339,6 +339,13 @@ test('规则名与级别：未知值回落而不是抛错', () => {
   assert.equal(riskRuleLabel('binding_churn'), '频繁换绑')
   assert.equal(riskRuleLabel('wechat_phone_share'), '封禁账号共用号（仅当前绑定）')
   assert.equal(riskRuleLabel('impossible_travel'), '异地瞬移（仅公网 IP · 回溯 7 天）')
+  assert.equal(riskRuleLabel('credential_stuffing'), '撞库（仅失败登录 · 30 分钟）')
+  // R9 的两条边界必须同时出现在 label 里（前端不展示 Description）。
+  {
+    const r9 = riskRuleLabel('credential_stuffing')
+    assert.match(r9, /失败登录/, 'R9 label 必须写明「仅失败登录」限制')
+    assert.match(r9, /30 分钟/, 'R9 label 必须写明 30 分钟窗口')
+  }
   // R3 的两条限制必须同时出现在 label 里（前端不展示 Description，
   // 只写其一 = 运营按错误边界理解告警行为）。
   {

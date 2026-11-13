@@ -96,6 +96,14 @@ const (
 	// 数据源：logs（action=10 + status=success）+ ip_segments（经纬度）。
 	// 依赖 idx_logs_user_time 复合索引（registry.ensureLogsUserTimeIndex）。
 	RiskRuleIDImpossibleTravel = "impossible_travel"
+	// RiskRuleIDCredentialStuffing 是 96 §2.1 的 R9「撞库」：
+	// 同一 IP 在 30 分钟滑动窗口内试了 ≥N 个**不同账号名**。
+	//
+	// 数据源：login_failure_events（每次登录失败一行）。
+	// **账号不存在（user_id=0）与密码错误同等计入** —— 撞库的定义就是「用密码列表
+	// 试大量不同账号」，其中绝大多数账号名可能根本不存在。只统计真实存在的账号
+	// 检测的就是「定向爆破」而非撞库（那是 R2 的范畴）。
+	RiskRuleIDCredentialStuffing = "credential_stuffing"
 )
 
 // RiskRuleDefault 是一条规则的**代码内默认值**。
@@ -264,6 +272,16 @@ var DefaultRiskBehaviorRules = []RiskRuleDefault{
 		Threshold:       900,
 		ThrottleSeconds: 24 * 60 * 60,
 		Description:     "同一账号相邻两次成功登录之间的移动速度超过民航客机上限（默认 900 km/h），通常意味着凭据已泄露或被多人共用。两条已知限制：① 只统计能查到经纬度的公网 IP（私网 IP、归属地缺失的登录会被跳过）；② 只回溯最近 7 天的登录记录 —— 若用户超过 7 天没登录，他与上次登录这一对不会被比较（长期不活跃后再被盗用可能漏报）。只告警不处置。",
+	},
+	{
+		RuleID:   RiskRuleIDCredentialStuffing,
+		Name:     "撞库",
+		Severity: RiskSeverityHigh,
+		// 96 §2.1 R9：阈值语义 = **不同账号名个数**（30 分钟滑动窗口内）。
+		// 20 与 30 分钟两个数字都没有本仓实测依据，来自 96 号文档。
+		Threshold:       20,
+		ThrottleSeconds: 24 * 60 * 60,
+		Description:     "同一 IP 在 30 分钟滑动窗口内登录失败并涉及达到阈值的**不同账号名**（默认 20 个），是撞库的典型特征。三条边界：① 只看**失败登录**（成功登录不属于本规则输入）；② 窗口是 30 分钟**滑动**窗口，不是自然日；③ 统计的是**不同账号名个数**，不是失败次数 —— 且账号不存在（攻击者随手编的假账号名）与密码错误同等计入，因为撞库的定义就是用密码列表试大量不同账号，其中绝大多数可能根本不存在。只告警不处置。",
 	},
 }
 

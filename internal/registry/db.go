@@ -1077,6 +1077,20 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 			"logs 复合索引创建失败（R3 判定仍可运行，但时间序列查询会变慢，下次启动重试）：%v", err))
 	}
 
+	// 失败登录流水表（R9 credential_stuffing，task_doc/125 设计稿）。
+	//
+	// ⚠️ 与 R3 的索引不同，这里是**建表**，失败必须 FATAL：
+	// 表不存在时 R9 会静默失效（`HasTable` 为假 → collector 直接返回 nil，
+	// 不报错也不告警）。而「静默失效的安全规则」正是 121 §4.7 要求 FATAL 的情形。
+	//
+	// 注意本表的写入是**旁路**（写失败不影响登录响应），所以「表不存在」不会
+	// 让任何人登录失败 —— 它只让 R9 无声无息地不工作。这恰恰更需要 FATAL。
+	if err := runStartupMigration("ensureLoginFailureEventSchema",
+		func() error { return EnsureLoginFailureEventSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare login failure event schema fail: %w", err))
+		return nil
+	}
+
 	// 账号封禁表（97 §0/§2.3，T-03）。
 	//
 	// ⚠️ **不注册这张表的后果是静默的**：service/user_ban.go 的 hasUnexpiredUserBan 在

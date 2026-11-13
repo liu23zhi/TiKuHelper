@@ -168,8 +168,22 @@ func (g *loginGate) failAccount(username string, message string) {
 		return
 	}
 	if g.lockedAccount(username) {
+		// ⚠️ 这条早退**在正常情况下走不到**：controller 层（`user.go:383`）已经先用
+		// `checkAccountLocked` 拦过一次，锁定后的请求根本不会进入凭据校验流程。
+		// 保留它是防御「调用方忘了前置检查」。
+		//
+		// **仍然记录一条失败事件**：这是本函数唯一能观察到「锁定后又来一次」的机会。
+		// 虽然当前调用链到不了这里，但一旦有新的调用方绕过 `checkAccountLocked`，
+		// 这里就是最后的审计点 —— 与「撞库最密集阶段发生在锁定之后」的判断一致。
+		g.recordLoginFailureEvent(username, message, true)
 		return
 	}
+	// 在最开头记录：**必须在任何 return 之前**。
+	//
+	// 理由：本次失败可能因为「触发锁定」而在下面提前 return（`recordIPFailure`
+	// 或 `recordAccountFailureLocked` 返回 locked=true）。若把审计写在 return 之后，
+	// 那些**恰好触发锁定的失败**就一条记录都没有 —— 而它们恰恰是撞库的峰值。
+	g.recordLoginFailureEvent(username, message, false)
 	// IP 维度先记：它可能触发锁定并写出 429（终止性响应）。
 	var ipLockout *service.LoginLockout
 	if g.ipApplies {
@@ -196,11 +210,126 @@ func (g *loginGate) failAccount(username string, message string) {
 }
 
 // failIPOnly 记一次 IP 维度失败（/admin-login 用）。
+//
+// ⚠️ 这条路径**不知道 username**（/admin-login 的失败可能发生在账号查不到之前），
+// 所以审计里 username 写空串 —— 空串的语义是「本次失败与某个具体账号名无关」，
+// 不是「漏填」。
 func (g *loginGate) failIPOnly(message string) {
 	if g == nil {
 		return
 	}
+	// 必须在 failIP 之前记录：failIP 触发锁定时会提前 return，
+	// 写在它后面会让「恰好触发锁定」的那次失败没有记录。
+	g.recordLoginFailureEvent("", message, false)
 	g.failIP(message)
+}
+
+// recordLoginFailureEvent 把一次登录失败写进 login_failure_events（R9 的数据源）。
+//
+// # 这是旁路审计：任何失败都不得影响登录响应
+//
+// 三个原则：
+//  1. **不改变响应**：写失败只进 SysWarn（service 层负责），本函数不 return error、
+//     不影响后续的 respondFailure/429。
+//  2. **不 panic**：g.c 或 g.db 为 nil 时直接返回（beginLoginRateLimit 在 DB 不可用
+//     时会返回一个只有 c/now 的 gate，那种情形必须容忍）。
+//  3. **reason 从 message 近似推断**：准确做法是让 9 个调用点各自传 reason，但那要改
+//     9 处 controller 分支（任务书要求「一个都不动」）。已知局限写在 mapLoginFailureReason。
+func (g *loginGate) recordLoginFailureEvent(username, message string, locked bool) {
+	if g == nil || g.db == nil || g.c == nil {
+		return
+	}
+	clientIP := strings.TrimSpace(g.c.ClientIP())
+	if clientIP == "" {
+		return
+	}
+	// user_id：能查到就是真实用户，查不到就是 0（= 账号不存在）。
+	//
+	// ⚠️ 这里的查询**必须容忍失败**：它是审计的附加信息，不能因为它出错就让登录受影响。
+	//
+	// ⚠️ 这里用 `Pluck("id", &userID)` 而不是 `Select("id").Scan(&found)`：
+	// 后者在本仓实测报 `unsupported data type: <nil>`（GORM 的 Scan 对「只选一列
+	// 到一个完整实体」的形态支持不佳），错误被吞掉后 userID 恒为 0 ——
+	// 后果是**所有真实用户的失败都被记成「账号不存在」**，R9 的 user_id 维度全错。
+	// `Pluck` 是 GORM 里取单列的标准做法。
+	var userID int32
+	if trimmedUsername := strings.TrimSpace(username); trimmedUsername != "" {
+		if err := g.db.Session(&gorm.Session{NewDB: true}).
+			Model(&entity.User{}).
+			Where("username = ?", trimmedUsername).
+			Limit(1).Pluck("id", &userID).Error; err != nil {
+			userID = 0
+		}
+	}
+	event := entity.LoginFailureEvent{
+		CreatedAt: g.now,
+		ClientIP:  clientIP,
+		UserID:    userID,
+		Username:  strings.TrimSpace(username),
+		Scene:     g.failureScene(),
+		Reason:    mapLoginFailureReason(message, userID),
+		Locked:    locked,
+	}
+	// 返回值刻意丢弃：旁路契约要求「写失败不影响响应」。
+	_ = service.RecordLoginFailureEventWithDB(g.db, event)
+}
+
+// failureScene 推断当前失败属于哪个登录场景。
+//
+// 依据请求路径而不是调用方传参（同样是为了不改 9 处 controller 分支）：
+//   - /admin-login → admin_password
+//   - 短信登录路径（URL 含 sms）→ sms
+//   - 其余 → password
+func (g *loginGate) failureScene() string {
+	if g == nil || g.c == nil || g.c.Request == nil || g.c.Request.URL == nil {
+		return entity.LoginFailureScenePassword
+	}
+	path := strings.ToLower(g.c.Request.URL.Path)
+	switch {
+	case strings.Contains(path, "admin-login"):
+		return entity.LoginFailureSceneAdminPassword
+	case strings.Contains(path, "sms"):
+		return entity.LoginFailureSceneSMS
+	default:
+		return entity.LoginFailureScenePassword
+	}
+}
+
+// mapLoginFailureReason 把失败文案近似映射成原因码。
+//
+// ⚠️ **已知局限（必须如实记录）**：
+// 这是「从中文文案反推原因」，文案一改映射就失效。但这**不影响 R9 的判据** ——
+// R9 的计数不区分原因（所有失败同等计入，见 entity.LoginFailureEvent 的注释），
+// reason 只用于人工排查。所以这里的映射偏差不会造成漏报或误报，
+// 只会让排障时看到的分类标签不够精确。
+//
+// 准确的解法是让 9 个 controller 调用点各自传 reason（`failAccount(username, message, reason)`），
+// 那要改 9 处分支 —— 按任务书要求本轮不做，已在汇报里标为「将来可改进项」。
+//
+// userID 参与判断：username 查不到用户（userID==0）时，「用户名或密码错误」
+// 一定属于账号不存在（user_not_found）而不是密码错 —— 这是 R9 区分撞库与
+// 定向爆破的关键，不能糊成 bad_password。
+func mapLoginFailureReason(message string, userID int32) string {
+	text := strings.TrimSpace(message)
+	switch {
+	case strings.Contains(text, "已被禁用"):
+		return entity.LoginFailureReasonAccountDisabled
+	case strings.Contains(text, "未绑定"):
+		return entity.LoginFailureReasonPhoneNotBound
+	case strings.Contains(text, "非管理员") || strings.Contains(text, "仅限管理员"):
+		return entity.LoginFailureReasonNotAdmin
+	case strings.Contains(text, "验证码"):
+		return entity.LoginFailureReasonCaptchaFailed
+	case strings.Contains(text, "用户名或密码错误"):
+		// 这一句同时覆盖「账号不存在」与「密码错误」。用 userID 区分：
+		// 查不到用户 ⇒ 账号不存在（撞库特征）；查得到 ⇒ 密码错。
+		if userID == 0 {
+			return entity.LoginFailureReasonUserNotFound
+		}
+		return entity.LoginFailureReasonBadPassword
+	default:
+		return entity.LoginFailureReasonOther
+	}
 }
 
 // failIP 记一次 IP 维度失败；**只在触发锁定时写响应**（429），否则返回统计供调用方写。

@@ -611,6 +611,13 @@ func EvaluateDebtAlerts(db *gorm.DB, now time.Time) (RiskAlertEvaluation, error)
 		}
 		candidates = append(candidates, found...)
 	}
+	if rule, ok := enabledRules[entity.RiskRuleIDCredentialStuffing]; ok {
+		found, scanErr := collectCredentialStuffingCandidates(db, rule, now)
+		if scanErr != nil {
+			return result, scanErr
+		}
+		candidates = append(candidates, found...)
+	}
 
 	seenRules := map[string]struct{}{}
 	for _, candidate := range candidates {
@@ -869,9 +876,21 @@ func collectMultiAccountIPCandidates(db *gorm.DB, rule entity.RiskRule, now time
 		Where("module = ?", riskLoginAuditModule).
 		Where("client_ip <> ''").
 		Where("user_id > 0").
-		// 只认成功登录：拒绝/失败行也带 action=10（例如「非管理员尝试使用
-		// 管理员入口登录」写的是 status=denied），把它们算进账号数会把
-		// 「一个人反复试管理员入口」误判成「同 IP 多账号」。
+		// 只认成功登录。这个过滤有两个**独立**作用，缺一个都会出错：
+		//
+		//  ① 排除「带 action=10 但不是登录成功」的行 —— 例如
+		//     「非管理员尝试使用管理员入口登录」写的是 status=denied。
+		//     把它们算进账号数会把「一个人反复试管理员入口」误判成「同 IP 多账号」。
+		//
+		//  ② **自动跳过历史不可判定行**。实测本机库：module='auth' 且 action=10
+		//     共 32 行，其中只有 4 行带 status=success，另 28 行的 new_answer
+		//     **是空串**（早期 recordAccountAudit 未写 Result 的历史遗留）。
+		//     时间范围也不重叠：空值集中在 2026-05-22~10-25，带 success 的在
+		//     10-26 之后 —— 证实是版本演进而非随机缺失。
+		//
+		//     ⚠️ 这 28 行**既不是成功也不是失败，是「无法判定」**。不做这个过滤
+		//     就会把不可判定数据当成有效登录，让「同 IP 多账号」的分子虚高。
+		//     ⇒ 「有 N 行 auth 日志」≠「有 N 次可用登录」，这个区别必须记住。
 		Where("new_answer LIKE ?", `%"status":"success"%`).
 		Where("create_time >= ? AND create_time < ?", windowStart, windowEnd).
 		Group("client_ip").
@@ -2369,6 +2388,143 @@ func riskHaversineKm(from, to riskGeoPoint) float64 {
 		math.Cos(lat1)*math.Cos(lat2)*math.Sin(dLon/2)*math.Sin(dLon/2)
 	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
 	return riskImpossibleTravelEarthRadiusKm * c
+}
+
+// riskCredentialStuffingWindow 是 R9 的判定窗口（30 分钟**滑动**窗口，不是自然日）。
+//
+// ⚠️ **这个数字没有本仓实测依据**，来自 96 号文档的规格。
+// 选滑动窗口而不是自然日的理由：撞库是「几十秒到几分钟内打完一批账号」的短时爆发，
+// 自然日窗口会把 23:59 与 00:01 的两次爆发拆到两天，各自都不到阈值 —— 双双漏报。
+// 这与 R14（binding_churn）选滚动 24h 是同一个道理。
+const riskCredentialStuffingWindow = 30 * time.Minute
+
+// collectCredentialStuffingCandidates 收集「同 IP 在 30 分钟内试了 ≥N 个不同账号」的命中
+// （96 §2.1 R9）。
+//
+// # 数据源
+//
+// `login_failure_events`（entity.LoginFailureEvent）—— 每次登录失败一行。
+// **只看失败登录**：撞库必然以大量失败告终；成功的登录属于正常登录，不是本规则的输入。
+//
+// # 判据
+//
+// 按 `client_ip` 分组，在每个滑动 30 分钟窗口内数**不同账号名**的个数：
+//
+//	COUNT(DISTINCT username) >= 阈值  → 命中
+//
+// # ⚠️ 「账号不存在」必须与「密码错误」同等计入（这是 R9 与 R2 的分界线）
+//
+// 撞库的**定义**就是「用一个密码列表去试大量不同账号」，其中绝大多数账号名可能
+// 根本不存在（`user_id = 0`）。若只统计真实存在的账号，检测的就不是撞库，
+// 而是「对已知账号的暴力破解」—— 那是 R2 的范畴。
+// 所以本查询**不带任何 user_id 过滤**，连 `user_id = 0` 的行一起数。
+//
+// # 为什么不按 username 建索引
+//
+// `username` 是攻击者完全控制的任意字符串（撞库时每请求不同），
+// 建索引会在长度维度被撑爆且选择性极差。查询只按 `(client_ip, created_at)`
+// 过滤（该复合索引已建），username 只参与 `COUNT(DISTINCT)` 的内存聚合。
+func collectCredentialStuffingCandidates(db *gorm.DB, rule entity.RiskRule, now time.Time) ([]riskWarningCandidate, error) {
+	threshold := riskRuleThreshold(db, rule, riskDefaultThreshold(rule.RuleID))
+	if threshold <= 0 {
+		return nil, nil
+	}
+	if !db.Migrator().HasTable(entity.TableNameLoginFailureEvent) {
+		return nil, nil
+	}
+	windowStart, windowEnd := now.Add(-riskCredentialStuffingWindow), now
+	timeExpr := riskWindowColumnExpr(db, "created_at")
+
+	// 先按 IP 拉出窗口内的明细（IP + username），在 Go 侧做滑动窗口聚合。
+	//
+	// 为什么不直接在 SQL 里 GROUP BY：滑动窗口需要「每个 IP 的每 30 分钟片段」，
+	// SQL 表达要么用自连接（慢且方言差异大），要么用窗口函数（SQLite < 3.25 不支持）。
+	// 30 分钟窗口内的失败量在单 IP 上至多几百行，Go 侧排序聚合完全够用。
+	type failureRow struct {
+		ClientIP string
+		Username string
+	}
+	var rows []failureRow
+	if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.LoginFailureEvent{}).
+		Select("client_ip, username").
+		Where("client_ip <> ''").
+		Where(timeExpr+" >= ? AND "+timeExpr+" < ?",
+			windowStart.Format("2006-01-02 15:04:05"), windowEnd.Format("2006-01-02 15:04:05")).
+		Order("client_ip ASC").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+
+	// 按 IP 聚合不同账号名。
+	byIP := make(map[string]map[string]struct{}, 16)
+	order := make([]string, 0, 16)
+	for _, row := range rows {
+		ip := strings.TrimSpace(row.ClientIP)
+		if ip == "" {
+			continue
+		}
+		usernames, ok := byIP[ip]
+		if !ok {
+			usernames = make(map[string]struct{}, 8)
+			byIP[ip] = usernames
+			order = append(order, ip)
+		}
+		// 空 username 不计入「不同账号」：`failIPOnly` 路径（/admin-login）
+		// 拿不到账号名，把它算成一个「账号」会让该入口的几次失败被误判成撞库。
+		username := strings.TrimSpace(row.Username)
+		if username == "" {
+			continue
+		}
+		usernames[username] = struct{}{}
+	}
+
+	candidates := make([]riskWarningCandidate, 0, 4)
+	for _, ip := range order {
+		accounts := len(byIP[ip])
+		if float64(accounts) < threshold {
+			continue
+		}
+		sample := make([]string, 0, 3)
+		for username := range byIP[ip] {
+			if len(sample) >= 3 {
+				break
+			}
+			sample = append(sample, username)
+		}
+		sort.Strings(sample)
+		subject := riskBehaviorSubject(rule.RuleID, "ip:"+ip, windowStart)
+		detail, err := json.Marshal(map[string]any{
+			"ruleId":        rule.RuleID,
+			"subjectKey":    subject,
+			"ip":            ip,
+			"threshold":     threshold,
+			"value":         accounts,
+			"accountCount":  accounts,
+			"sampleUser":    sample,
+			"windowMinutes": int(riskCredentialStuffingWindow / time.Minute),
+			"windowKind":    "rolling",
+			"windowStart":   windowStart.Format(time.RFC3339),
+			"windowEnd":     windowEnd.Format(time.RFC3339),
+			"evaluatedAt":   now.Format(time.RFC3339),
+			"evidenceNote": "同一 IP 在 30 分钟滑动窗口内失败的**不同账号名**个数；" +
+				"账号不存在（user_id=0）与密码错误同等计入（撞库的定义如此）；" +
+				"username 为空的行不计入（/admin-login 路径拿不到账号名）",
+		})
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, riskWarningCandidate{
+			Rule:     rule,
+			Subject:  subject,
+			Severity: rule.Severity,
+			Detail:   string(detail),
+			IP:       ip,
+		})
+	}
+	return candidates, nil
 }
 
 // RiskTicketFloodGroup 是 R8 的聚合行（用户 → 窗口内建单数）。

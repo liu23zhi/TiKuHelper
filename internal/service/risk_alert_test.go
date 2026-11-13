@@ -67,6 +67,8 @@ func newRiskAlertTestDBNamed(t *testing.T, rawName string) *gorm.DB {
 		&entity.UserBindingRecord{},
 		// IPSegment 是 R3（impossible_travel）的经纬度来源。
 		&entity.IPSegment{},
+		// LoginFailureEvent 是 R9（credential_stuffing）的数据源。
+		&entity.LoginFailureEvent{},
 	} {
 		if err := db.AutoMigrate(model); err != nil {
 			t.Fatalf("migrate %T: %v", model, err)
@@ -978,6 +980,7 @@ func TestLoadRiskRulesFallsBackToCodeDefaults(t *testing.T) {
 		"binding_churn":             2,
 		"wechat_phone_share":        3,
 		"impossible_travel":         900,
+		"credential_stuffing":       20,
 	}
 	if len(rules) != len(wantThreshold) {
 		t.Fatalf("fallback rule count = %d, want %d（实际：%v）", len(rules), len(wantThreshold), ruleIDsOf(rules))
@@ -3268,6 +3271,8 @@ func TestRiskWarningDedupIsAtomicAcrossAllRules(t *testing.T) {
 		{ruleID: "binding_churn", throttleSeconds: 24 * 60 * 60, subjectKey: "binding_churn:user:42:2026-11-14T00:00:00+08:00"},
 		{ruleID: "wechat_phone_share", throttleSeconds: 24 * 60 * 60, subjectKey: "wechat_phone_share:phone:13800138000:2026-11-14T00:00:00+08:00"},
 		{ruleID: "impossible_travel", throttleSeconds: 24 * 60 * 60, subjectKey: "impossible_travel:user:99:2026-11-14T00:00:00+08:00"},
+		{ruleID: "credential_stuffing", throttleSeconds: 24 * 60 * 60, subjectKey: "credential_stuffing:ip:203.0.113.7:2026-11-14T00:00:00+08:00"},
+		{ruleID: "credential_stuffing", throttleSeconds: 24 * 60 * 60, subjectKey: "credential_stuffing:ip:203.0.113.7:2026-11-14T00:00:00+08:00"},
 	}
 	for _, tc := range cases {
 		tc := tc

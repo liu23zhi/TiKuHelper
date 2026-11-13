@@ -123,6 +123,16 @@ func main() {
 	stopTicketImageRetention := service.StartTicketAttachmentRetentionCleanup(mg.GetDB(), 0)
 	defer stopTicketImageRetention()
 
+	// 失败登录流水清理（R9 credential_stuffing，task_doc/125 设计稿 §5）。
+	//
+	// 双闸：先按时间删超 90 天的，再按行数删超 500 万的最老行。
+	// ⚠️ **两个数字都是拍的**（无实测依据），但双闸这个形态是硬的：
+	// 只按时间删时被撞库攻击会在 90 天内写入天文数字、先把磁盘打满；
+	// 只按行数删时一次大规模攻击会把正常审计挤掉、历史静默消失。
+	// interval 传 0 = 每轮重新解析（与上面两个清理任务同语义）。
+	stopLoginFailureRetention := service.StartLoginFailureEventRetentionCleanup(mg.GetDB(), 0)
+	defer stopLoginFailureRetention()
+
 	// 工单图片 blob 的延迟删除（T-13）：ref_count 归零的行先留着，过了宽限期才真删。
 	// 不跑这个 worker 的后果是 blob 只增不减（上传能成功、删除只递减计数），
 	// 磁盘会缓慢占满而没有任何报错。
