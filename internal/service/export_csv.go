@@ -51,8 +51,21 @@ import (
 // 需要有一个能被测试直接盯住、被评审一眼看到的位置。
 const DefaultExportMasked = true
 
-// ExportMaxRows 是单次导出任务的默认行数上限（111 §4.7：10 万行）。
+// ExportMaxRows 是单次导出任务的**通用**行数上限（111 §4.7：10 万行）。
+//
+// 它是兜底值，不是所有资源的上限：个别资源有更严的单资源上限
+// （见 exportResourceSpec.maxRows 与 QuestionExportMaxRows）。
 const ExportMaxRows = 100_000
+
+// QuestionExportMaxRows 是**题库异步导出的单任务行数上限（1 万行）**。
+//
+// 为什么题库比通用上限更严：题库是唯一「导出 → 改 → 重新导入」闭环的资源，
+// 而导入侧的单批上限是 5000 行（QuestionImportMaxRows）。导出 10 万行却只能
+// 分 20 批导回来，中间任何一批失败都要重新对账 —— 上限错配本身就是故障源。
+//
+// 1 万 = 导入上限的 2 倍：留出「导全量 + 追加新题」的余量，又保证一个导出文件
+// 拆成两批必然能导完。
+const QuestionExportMaxRows = 10_000
 
 // 导出资源标识（111 §4.4 的 8 个页面 + access_tokens）。
 //
@@ -223,7 +236,8 @@ func exportCell(column ExportColumn, value string, masked bool) string {
 // 语义：
 //   - 只读，不写库、不改任何状态（调用方是异步任务的执行器）；
 //   - 列顺序与 exportResourceSpecs 里登记的顺序一致，导出 → 导入可原样还原（Q12-i）；
-//   - 行数上限默认 ExportMaxRows（10 万），超出的部分**不静默截断成完整文件**：
+//   - 行数上限按资源决定：默认通用 ExportMaxRows（10 万），题库是
+//     QuestionExportMaxRows（1 万，见该常量的说明）。超出的部分**不静默截断成完整文件**：
 //     截断后 Rows 会小于库里的总数，调用方据此给出「已截断」的提示。
 //
 // 返回错误时 Content 为空 —— 绝不允许「一半的 CSV」被当成完整结果落盘。
@@ -237,10 +251,7 @@ func ExportCSVWithDB(db *gorm.DB, opts ExportDataOptions) (ExportResult, error) 
 		return ExportResult{}, fmt.Errorf("%w: %q", ErrExportResourceUnsupported, opts.Resource)
 	}
 	masked := resolveExportMasked(opts.Masked)
-	limit := opts.Limit
-	if limit == 0 {
-		limit = ExportMaxRows
-	}
+	limit := exportResolveLimit(resource, opts.Limit)
 	rows, err := spec.load(db, limit)
 	if err != nil {
 		return ExportResult{}, fmt.Errorf("读取 %s 数据失败: %w", resource, err)
@@ -282,9 +293,61 @@ type exportResourceSpec struct {
 	resource string
 	// columns 决定 CSV 的列顺序与每列是否脱敏。
 	columns []ExportColumn
+	// maxRows 是该资源**专属**的行数上限；0 表示用通用 ExportMaxRows。
+	//
+	// 挂在这里而不是在 ExportCSVWithDB 里写 `if resource == "questions"`：
+	// 上限是资源自身的属性，与列定义、取数函数放在一起才能「改资源时一眼看到」。
+	// 分散的条件判断会在新增资源时被漏掉。
+	maxRows int
 	// load 按列顺序返回原始值（未脱敏）。脱敏由 ExportCSVWithDB 统一做，
 	// 取数函数里**不许**再各自打码 —— 否则「勾选不脱敏」时拿到的是已经打码的值。
 	load func(db *gorm.DB, limit int) ([][]string, error)
+}
+
+// exportRowLimit 返回某资源实际生效的行数上限（resource 不在清单内时返回 0）。
+//
+// 单一实现点：调用方（HTTP 层校验、异步执行器、测试）都从这里取，
+// 不要在别处再拼一次 `if resource == questions { 10000 }`。
+func exportRowLimit(resource string) int {
+	spec, ok := exportResourceSpecs[strings.ToLower(strings.TrimSpace(resource))]
+	if !ok {
+		return 0
+	}
+	if spec.maxRows > 0 {
+		return spec.maxRows
+	}
+	return ExportMaxRows
+}
+
+// ExportRowLimitOf 返回某资源的行数上限（供 HTTP 层与前端提示「最多导出 N 行」）。
+//
+// 资源不支持时返回通用上限：这里不是校验入口（校验在 ExportColumnsOf），
+// 不给报错是为了让调用方能先查上限、再查列。
+func ExportRowLimitOf(resource string) int {
+	if limit := exportRowLimit(resource); limit > 0 {
+		return limit
+	}
+	return ExportMaxRows
+}
+
+// exportResolveLimit 把「调用方请求的 limit」解析成「实际生效的 limit」。
+//
+// 三条规则，顺序不能变：
+//  1. requested == 0 → 资源上限（不传就用默认）；
+//  2. requested < 0  → 资源上限（负数表示"不限制"，但**不限制只能到上限**，
+//     否则「传 -1 就能导全库」等于上限不存在）；
+//  3. requested > 上限 → 上限（显式传大值同样不许突破）。
+//
+// 唯一出口是这里：不要在 ExportCSVWithDB 里再写一遍比较，也不要让各 spec 自己夹。
+func exportResolveLimit(resource string, requested int) int {
+	ceiling := exportRowLimit(resource)
+	if ceiling <= 0 {
+		ceiling = ExportMaxRows
+	}
+	if requested <= 0 || requested > ceiling {
+		return ceiling
+	}
+	return requested
 }
 
 // exportLimit 把「不限制」翻译成 GORM 的 Limit(-1)。
@@ -333,9 +396,29 @@ func formatExportBool(value bool) string {
 var exportResourceSpecs = map[string]exportResourceSpec{
 	ExportResourceQuestions: {
 		resource: ExportResourceQuestions,
+		// 题库导出上限 1 万行（不是通用 10 万）：见 QuestionExportMaxRows 的说明。
+		// 它与导入侧 QuestionImportMaxRows（5000）构成固定 2 倍关系，
+		// 由 TestQuestionImportExportLimitsAreConsistent 钉住。
+		maxRows: QuestionExportMaxRows,
 		// Q12-i 的关键：CSV 列 = JSON 里全部可导入字段，options / answer 以 JSON 字符串
 		// 放单格（111 §4.6）。这样「CSV 导出 → CSV 导入」不会丢选项，
 		// 否则选择题会变成无选项的题，导入后无法使用。
+		//
+		// 与 entity.Tiku 的字段对应关系（9 列 ↔ 9 字段，逐一对齐核验见
+		// TestQuestionExportColumnsMatchTikuEntity）：
+		//
+		//	id          → Tiku.ID          （导出可读，导入**不采信**：主键由库生成）
+		//	question    → Tiku.Question
+		//	type        → Tiku.Type
+		//	options     → Tiku.Options     （JSON 字符串单格）
+		//	answer      → Tiku.Answer      （JSON 字符串单格）
+		//	course_name → Tiku.CourseName  （去重键第二段）
+		//	extra       → Tiku.Extra
+		//	source_name → Tiku.SourceName  （导入时空值归一为「人工导入」）
+		//	hash        → Tiku.Hash        （导出供对账，导入时**重算不采信**）
+		//
+		// DeletedAt（归档标记）刻意不在列里：归档题不属于「存在」的题，
+		// 导出它等于把已删除题目卖给运营。
 		columns: []ExportColumn{
 			exportColumn("id"),
 			exportColumn("question"),

@@ -49,6 +49,18 @@ import (
 // DefaultImportMaxRows 是单次导入的行数上限（107 Q13d：5000）。
 const DefaultImportMaxRows = 5000
 
+// QuestionImportMaxRows 是**题库**导入的单批行数上限，与默认上限同值。
+//
+// 单独命名而不是各处直接写 DefaultImportMaxRows：
+// 题库是唯一「导出 → 改 → 重新导入」闭环的资源，它必须和 QuestionExportMaxRows
+// （1 万，见 export_csv.go）保持固定倍数关系。两处各写一个字面量的话，
+// 将来只改一边就会出现「导出 1 万、导入 5 千」，运营拿到文件要先手工拆批。
+// 契约测试 TestQuestionImportExportLimitsAreConsistent 钉住这个关系。
+//
+// 这个上限对**所有格式**生效：CSV / JSON / xlsx / xls 都走 ImportDataWithDB
+// 的第 621-628 行（同一处行数闸），不存在「JSON 能导 5 万、CSV 只能 5 千」。
+const QuestionImportMaxRows = DefaultImportMaxRows
+
 // 导入资源标识。与导出共用同一套命名（题库 questions / 黑名单 blacklist / 用户 users）。
 const (
 	ImportResourceQuestions = ExportResourceQuestions
@@ -618,10 +630,7 @@ func ImportDataWithDB(db *gorm.DB, opts ImportDataOptions) (ImportResult, error)
 	if err != nil {
 		return ImportResult{}, err
 	}
-	limit := opts.Limit
-	if limit == 0 {
-		limit = DefaultImportMaxRows
-	}
+	limit := importResolveLimit(resource, opts.Limit)
 	if limit > 0 && len(rows) > limit {
 		return ImportResult{}, fmt.Errorf("%w：单次最多 %d 行，当前 %d 行，请分批导入",
 			ErrImportRowLimitExceeded, limit, len(rows))
@@ -811,10 +820,62 @@ func parseImportExpiresAt(value string) (*time.Time, error) {
 	return nil, fmt.Errorf("过期时间格式无效（应为 YYYY-MM-DD）")
 }
 
+// QuestionImportDedupeKey 返回题库去重键 —— 与 entity.Tiku 的唯一索引
+// hash_course_idx（hash + course_name）**逐字对应**。
+//
+// 这是「JSON 导入与 CSV 导入口径一致」的唯一实现点：
+//
+//   - JSON 路径（controller.ImportQuestions）最终也落到同一个唯一索引上；
+//   - CSV 路径（本文件的 importQuestionRows）用本函数判定「库内已存在」与「本批内重复」。
+//
+// 因此键里**必须同时有 hash 和 course_name**。只用 hash 会把「同一道题挂在不同课程下」
+// 误判成重复 —— 那是唯一索引允许存的两种行，跳过它就等于导入静默丢题。
+//
+// 分隔符用 NUL：hash 是 32 位十六进制、课程名是任意文本，NUL 是唯一不可能
+// 自然出现在两者拼接边界上的字符（用 "|" 之类的可打印符时，"a|b"+"c" 与 "a"+"b|c"
+// 会撞成同一个键）。
+func QuestionImportDedupeKey(hash, courseName string) string {
+	return hash + "\x00" + courseName
+}
+
+// ImportRowLimitOf 返回某资源的导入行数上限（供 HTTP 层与前端显示「最多 N 行」）。
+//
+// 与导出侧 ExportRowLimitOf 对称：两侧上限必须能被同一段代码问出来，
+// 否则前端只能各自硬编码数字，改一处漏一处。
+func ImportRowLimitOf(resource string) int {
+	switch strings.ToLower(strings.TrimSpace(resource)) {
+	case ImportResourceQuestions:
+		return QuestionImportMaxRows
+	default:
+		return DefaultImportMaxRows
+	}
+}
+
+// importResolveLimit 把「调用方请求的 limit」解析成「实际生效的 limit」。
+//
+// 规则与导出侧 exportResolveLimit 完全对称（同一套语义，不该有两套）：
+//  1. requested == 0 → 资源上限；
+//  2. requested < 0  → 资源上限（"不限制"只能到上限，不能变成无上限）；
+//  3. requested > 上限 → 上限。
+//
+// 唯一的例外是**收紧**：requested 小于上限时按 requested 走（测试里 Limit:5 就是靠这条）。
+func importResolveLimit(resource string, requested int) int {
+	ceiling := ImportRowLimitOf(resource)
+	if requested <= 0 || requested > ceiling {
+		return ceiling
+	}
+	return requested
+}
+
 // importQuestionRows 导入题库（列与导出一致，Q12-i「导出列 = 可导入字段」）。
 //
 // 去重口径与 /questions/import 完全一致：唯一键是 (hash, course_name)，
 // hash 由 util.BuildTikuHash 算（写入与查询必须同一个公式，见 FillHash 的注释）。
+// 键的构造只允许走 QuestionImportDedupeKey，不要在循环里另写一遍拼接。
+//
+// 关于 CSV 的 hash 列：它是**导出用的核对列**，导入时一律重算、绝不采信文件里的值。
+// 采信它等于把「文件里写的 hash」当成唯一索引的依据 —— 一个手改过的 CSV 可以让
+// 两条不同题目落到同一个 hash 上，或者让同一道题绕过去重。
 func importQuestionRows(db *gorm.DB, opts ImportDataOptions, index map[string]int, rows [][]string) (ImportResult, error) {
 	if err := requireImportColumns(index, []string{"question"}); err != nil {
 		return ImportResult{}, err
@@ -877,7 +938,7 @@ func importQuestionRows(db *gorm.DB, opts ImportDataOptions, index map[string]in
 		}
 		hash := util.BuildTikuHash(question, options, questionType)
 
-		seenKey := hash + "\x00" + courseName
+		seenKey := QuestionImportDedupeKey(hash, courseName)
 		if firstRow, duplicated := seen[seenKey]; duplicated {
 			entry.Result = ImportRowSkipped
 			entry.Reason = fmt.Sprintf("本批内重复（第 %d 行已处理）", firstRow)

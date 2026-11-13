@@ -101,6 +101,56 @@
 
     </ConsolePanel>
   </main>
+
+  <!--
+    异步任务通道（CSV / XLSX / XLS，服务端执行，可下载结果文件）。
+    它与上方的「文档识别 → 校对 → 确认导入」是**并列的两条路**，不是替换：
+      · 上方：浏览器侧解析 .docx → 人工校对 → createQuestions 同步写库；
+      · 这里：整份表格交给服务端异步任务，完成后下载结果 / 失败行报告。
+    两条通道的题库去重口径相同（hash + course_name），所以同一个文件
+    无论走哪条，落库后的题库条数与内容一致（由后端契约测试钉住）。
+  -->
+  <ConsolePanel v-if="canImport()" class="asyncTaskPanel" title="表格导入 / 导出（异步任务）"
+    description="上传 CSV / XLSX 由服务端异步处理，或提交一份题库 CSV 导出；任务完成后可下载结果文件。">
+    <div class="asyncTaskRow">
+      <a-upload name="file" :customRequest="pageEntry.bind(submitAsyncImport)" :showUploadList="false"
+        :beforeUpload="pageEntry.bind(beforeAsyncImport)" :disabled="asyncBusy"
+        accept=".csv,.json,.xlsx,.xls">
+        <a-button :disabled="asyncBusy">上传表格并异步导入</a-button>
+      </a-upload>
+      <a-button :onClick="pageEntry.bind(submitAsyncExport)" :loading="asyncBusy" :disabled="asyncBusy">
+        异步导出题库 CSV
+      </a-button>
+      <a-button :onClick="pageEntry.bind(refreshAsyncTasks)" :disabled="asyncBusy">刷新任务列表</a-button>
+      <label class="asyncTaskDryRun">
+        <input type="checkbox" :checked="asyncDryRun" :disabled="asyncBusy"
+          :onChange="pageEntry.bind(setAsyncDryRun)" />
+        <span>仅预览（dryRun：只校验不写库）</span>
+      </label>
+    </div>
+    <p class="asyncTaskLimit">
+      单批导入上限 {{ asyncImportLimit }} 行，单次导出上限 {{ asyncExportLimit }} 行（以后端校验为准）。
+    </p>
+    <a-alert v-if="asyncNotice" type="info" show-icon class="asyncTaskAlert" :message="asyncNotice" />
+    <a-alert v-if="asyncError" type="error" show-icon class="asyncTaskAlert" :message="asyncError" />
+    <table v-if="asyncTasks.length" class="asyncTaskTable" aria-label="异步任务列表">
+      <thead>
+        <tr><th scope="col">任务</th><th scope="col">资源</th><th scope="col">状态</th><th scope="col">结果</th></tr>
+      </thead>
+      <tbody>
+        <tr v-for="task in asyncTasks" :key="task.taskId">
+          <td class="asyncTaskId">{{ task.taskId }}</td>
+          <td>{{ task.resource }}</td>
+          <td>{{ describeAsyncTask(task) }}</td>
+          <td>
+            <a v-if="asyncDownloadUrl(task)" :href="asyncDownloadUrl(task)">下载结果</a>
+            <a v-if="asyncErrorUrl(task)" :href="asyncErrorUrl(task)" class="asyncTaskErrorLink">失败行报告</a>
+            <span v-if="!asyncDownloadUrl(task) && !asyncErrorUrl(task)">—</span>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </ConsolePanel>
   </div>
 </template>
 
@@ -111,6 +161,13 @@ import { UploadOutlined } from '@ant-design/icons-vue';
 import { computed, defineComponent, nextTick, onBeforeUnmount, reactive, ref, shallowRef, watch } from 'vue';
 import { parseFile, reParseFile } from '@/api/api';
 import { createQuestions } from '@/api/TikuComponentApi';
+// 异步任务通道（CSV / XLSX，服务端执行）。与上面的 parseFile / createQuestions
+// （浏览器侧同步识别 .docx）是**并列的两条路**，不是替换关系。
+import {
+  QUESTION_IMPORT_MAX_ROWS, QUESTION_EXPORT_MAX_ROWS,
+  submitImportTask, submitExportTask, listAsyncTasks,
+  describeTask, taskDownloadUrl, taskErrorReportUrl, pollAsyncTask,
+} from './asyncTaskApi.mjs';
 import { getQuestionTypeByName } from '@/utils/uitls';
 import { isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser';
 import { useUnsavedDraft } from '@/utils/useUnsavedDraft';
@@ -382,6 +439,134 @@ export default defineComponent({
       if (!canImport() || loading.value || submitLoading.value || !missingAnswerCount.value) return;
       skipMissingAnswers.value = Boolean(event?.target?.checked); importError.value = '';
     };
+    // ─────────── 异步任务通道（CSV / XLSX / XLS，服务端执行） ───────────
+    //
+    // 与下面那段（.docx 识别 → 校对 → createQuestions）**并列**：
+    // 这段不碰 data / showProblemArr / parseReady 那套「校对稿」状态，
+    // 也不写 importError / importNotice —— 两条通道的失败提示必须分开，
+    // 否则「表格导出失败了」会显示成「题目识别失败」，用户会去重传 docx。
+    const asyncBusy = ref(false), asyncDryRun = ref(false);
+    const asyncTasks = ref([]), asyncNotice = ref(''), asyncError = ref('');
+    const asyncImportLimit = QUESTION_IMPORT_MAX_ROWS, asyncExportLimit = QUESTION_EXPORT_MAX_ROWS;
+    let asyncTaskVersion = 0;
+
+    const describeAsyncTask = task => describeTask(task);
+    const asyncDownloadUrl = task => taskDownloadUrl(task);
+    const asyncErrorUrl = task => taskErrorReportUrl(task);
+    const setAsyncDryRun = event => {
+      if (!canImport() || asyncBusy.value) return;
+      asyncDryRun.value = Boolean(event?.target?.checked); asyncError.value = ''; asyncNotice.value = '';
+    };
+    // 把任务并进列表（去重 + 只保留最近 40 条，避免长时间使用后列表无限增长）。
+    const mergeAsyncTask = task => {
+      if (!task?.taskId) return;
+      asyncTasks.value = [task, ...asyncTasks.value.filter(item => item.taskId !== task.taskId)].slice(0, 40);
+    };
+    // 任务列表刷新：导入与导出共用同一个查询接口，按 type 各取一页。
+    const refreshAsyncTasks = async () => {
+      if (!canImport()) return;
+      const owns = captureOwner(), ticket = asyncTaskVersion;
+      try {
+        const [importRes, exportRes] = await Promise.all([
+          listAsyncTasks({ type: 'import', pageSize: 20 }),
+          listAsyncTasks({ type: 'export', pageSize: 20 }),
+        ]);
+        if (!owns() || ticket !== asyncTaskVersion) return;
+        const readRows = response => (Array.isArray(response?.data?.data) ? response.data.data : []);
+        asyncTasks.value = [...readRows(importRes), ...readRows(exportRes)].slice(0, 40);
+        asyncError.value = '';
+      } catch {
+        if (!owns() || ticket !== asyncTaskVersion) return;
+        asyncError.value = '任务列表读取失败，请稍后重试。';
+      }
+    };
+    // 提交后的公共收尾：失败任务要额外给出 errorMessage，不能只说「完成」。
+    const settleAsyncTask = (task, fallback) => {
+      mergeAsyncTask(task);
+      if (!task) { asyncNotice.value = fallback; return; }
+      if (String(task.status || '').toLowerCase() === 'failed') {
+        asyncNotice.value = '';
+        asyncError.value = task.errorMessage || '任务执行失败，请下载失败行报告核对。';
+        return;
+      }
+      asyncNotice.value = describeTask(task);
+    };
+    // 提交一份题库 CSV 导出。
+    const submitAsyncExport = async () => {
+      if (!canImport() || asyncBusy.value) return;
+      const owns = captureOwner(), ticket = ++asyncTaskVersion;
+      asyncBusy.value = true; asyncError.value = ''; asyncNotice.value = '';
+      try {
+        if (!owns()) return;
+        const res = await submitExportTask({ resource: 'questions' });
+        if (!owns() || ticket !== asyncTaskVersion) return;
+        const taskId = res?.data?.taskId;
+        if (!taskId) throw new Error('missing task id');
+        asyncNotice.value = '导出任务已提交，正在处理…';
+        const polled = await pollAsyncTask(taskId, { shouldStop: () => !owns() || ticket !== asyncTaskVersion });
+        if (!owns() || ticket !== asyncTaskVersion) return;
+        settleAsyncTask(polled.task, '导出任务已提交，请稍后刷新任务列表查看结果。');
+      } catch (error) {
+        if (owns() && ticket === asyncTaskVersion) {
+          asyncError.value = error?.code === 'UNKNOWN_OUTCOME'
+            ? '导出任务提交结果未确认，请先刷新任务列表，勿重复提交。'
+            : '导出任务提交失败，请稍后重试。';
+        }
+      } finally {
+        if (owns() && ticket === asyncTaskVersion) asyncBusy.value = false;
+      }
+    };
+    // beforeUpload：先拦明显不合规的文件（类型 / 大小）。返回 false 让 a-upload 不自己发请求。
+    const beforeAsyncImport = file => {
+      if (!canImport() || asyncBusy.value || !file) return false;
+      if (typeof file.name !== 'string' || !/\.(csv|json|xlsx|xls)$/i.test(file.name)) {
+        asyncError.value = '仅支持 .csv / .json / .xlsx / .xls 表格文件。'; return false;
+      }
+      if (file.size !== undefined && (typeof file.size !== 'number' || !Number.isFinite(file.size) || file.size <= 0 || file.size > 16 * 1024 * 1024)) {
+        asyncError.value = '表格文件需大于 0 且不超过 16 MiB。'; return false;
+      }
+      return true;
+    };
+    // customRequest：自己发 multipart（要带 resource / dryRun），
+    // 所以不用 a-upload 的 action（它只会把裸文件 PUT 到固定地址）。
+    const submitAsyncImport = async request => {
+      const file = request?.file;
+      if (!canImport() || asyncBusy.value) { request?.onError?.(new Error('blocked')); return; }
+      const owns = captureOwner(), ticket = ++asyncTaskVersion, dryRun = asyncDryRun.value;
+      asyncBusy.value = true; asyncError.value = ''; asyncNotice.value = '';
+      try {
+        if (!owns()) { request?.onError?.(new Error('retired')); return; }
+        const res = await submitImportTask({ resource: 'questions', file, dryRun });
+        if (!owns() || ticket !== asyncTaskVersion) { request?.onSuccess?.(res); return; }
+        const taskId = res?.data?.taskId;
+        if (!taskId) throw new Error('missing task id');
+        request?.onSuccess?.(res);
+        asyncNotice.value = dryRun ? '预览任务已提交，正在处理…' : '导入任务已提交，正在处理…';
+        const polled = await pollAsyncTask(taskId, { shouldStop: () => !owns() || ticket !== asyncTaskVersion });
+        if (!owns() || ticket !== asyncTaskVersion) return;
+        // dryRun 的结论措辞必须与真导入区分：预览说「完成」会让人以为已经写库了。
+        if (dryRun && polled.task && String(polled.task.status || '').toLowerCase() === 'succeeded') {
+          mergeAsyncTask(polled.task);
+          asyncNotice.value = '预览完成：未写入题库（dryRun）。';
+          return;
+        }
+        settleAsyncTask(polled.task, '导入任务已提交，请稍后刷新任务列表查看结果。');
+      } catch (error) {
+        if (owns() && ticket === asyncTaskVersion) {
+          request?.onError?.(error);
+          // 409 = 弱密码需二次确认：文案必须点出「确认后重新提交」，
+          // 否则用户会以为文件坏了，去改密码再传一遍。
+          asyncError.value = error?.response?.status === 409
+            ? '文件包含弱密码，需要确认后才能导入；请核对后重新上传。'
+            : error?.code === 'UNKNOWN_OUTCOME'
+              ? '导入任务提交结果未确认，请先刷新任务列表，勿重复提交。'
+              : '导入任务提交失败，请核对文件后重试。';
+        }
+      } finally {
+        if (owns() && ticket === asyncTaskVersion) asyncBusy.value = false;
+      }
+    };
+
     const upload = async () => {
       if (!canImport() || submitLoading.value || loading.value) return;
       if (editorDirty.value) { message.warning('校对内容已修改，请先点击“重新识别”，再确认导入。'); return; }
@@ -457,6 +642,10 @@ export default defineComponent({
     };
     const retireScope = () => {
       epoch += 1; parseVersion += 1; importVersion += 1;
+      // 异步任务的轮询必须一起作废：asyncTaskVersion 递增后，
+      // 进行中的 pollAsyncTask 的 shouldStop() 立即为真而停下。
+      // 不递增的话，切身份后旧轮询会把「上一个管理员的任务结果」写进新身份的界面。
+      asyncTaskVersion += 1;
       closeDiscardPrompt(); requestDraftLeave({ path: '/login' });
       // Erase private pixels synchronously; never return focus to a retired actor.
       const surface = pageSurface.value;
@@ -475,6 +664,9 @@ export default defineComponent({
       }
       lastImportedPayload = ''; parseReady.value = false; importNotice.value = ''; skipMissingAnswers.value = false;
       activeUpload = null; busyOwner = null; loading.value = false; submitLoading.value = false;
+      // 异步任务面板的私有状态同样要清：任务 ID 与结果文件地址属于上一个操作者。
+      asyncTasks.value = []; asyncNotice.value = ''; asyncError.value = '';
+      asyncBusy.value = false; asyncDryRun.value = false;
       UploadId.value = ''; problemArr.value = []; showProblemArr.value = []; data.value = [];
       type.value = '全部'; domRevision.value = 0; editorDirty.value = false; importError.value = ''; importedSnapshot.value = '';
       savedConfigSnapshot.value = currentConfigSnapshot.value;
@@ -495,6 +687,10 @@ export default defineComponent({
       pageSurface, pageMounted, pageKey, paperKey, pageEntry, canImport, hasUnsavedChanges, requestRouteLeave,
       navigateToHome, getParseFile, reParseFile: reParse, processPaperData, handleChange, beforeUpload,
       handleScroll, handleEditorInput, handleInput, clearQuestions, setType, upload,
+      // 异步任务通道（与上面的浏览器侧 .docx 通道并列，互不替换）
+      asyncBusy, asyncDryRun, asyncTasks, asyncNotice, asyncError, asyncImportLimit, asyncExportLimit,
+      describeAsyncTask, asyncDownloadUrl, asyncErrorUrl, setAsyncDryRun, refreshAsyncTasks,
+      submitAsyncExport, beforeAsyncImport, submitAsyncImport,
     };
   },
 });
@@ -523,5 +719,17 @@ export default defineComponent({
 .explain p { color: var(--console-muted); font-size: 13px; line-height: 1.9; }
 .region { margin: 32px 0 0; text-align: center; font-size: 24px !important; color: var(--console-muted); }
 .display { display: none; }
+/* 异步任务面板：与上方「校对工作区」视觉分区（它不参与校对稿状态）。 */
+.asyncTaskPanel { margin-top: 16px; }
+.asyncTaskRow { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.asyncTaskDryRun { display: inline-flex; align-items: center; gap: 8px; color: var(--console-muted); font-size: 13px; }
+.asyncTaskDryRun input { accent-color: var(--console-primary); }
+.asyncTaskLimit { margin: 12px 0 0; color: var(--console-muted); font-size: 13px; line-height: 1.7; }
+.asyncTaskAlert { margin-top: 12px; }
+.asyncTaskTable { width: 100%; margin-top: 12px; border-collapse: collapse; font-size: 13px; }
+.asyncTaskTable th, .asyncTaskTable td { padding: 8px; text-align: left; border-bottom: 1px solid var(--console-border); }
+.asyncTaskTable th { color: var(--console-muted); font-weight: 600; }
+.asyncTaskId { font-family: monospace; overflow-wrap: anywhere; }
+.asyncTaskErrorLink { margin-left: 8px; }
 @media (max-width: 1024px) { .import-workspace { grid-template-columns: minmax(0, 1fr); } .handleBox { flex-direction: row; justify-content: flex-start; flex-wrap: wrap; } .compileContent, .previewContent { min-height: 280px; max-height: 50vh; } .explain { min-height: 240px; } }
 </style>
