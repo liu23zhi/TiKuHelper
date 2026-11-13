@@ -15,12 +15,28 @@
       @click="handleSelect"
       class="menu"
     >
-      <a-menu-item v-for="item in visibleMenuItems" :key="item.key">
-        <template #icon>
-          <component :is="item.icon" />
+      <template v-for="section in menuSections" :key="section.key">
+        <!-- 管理员看到两个带标题的分区；普通用户只有一个不带标题的扁平列表。 -->
+        <a-menu-item-group v-if="section.title" :data-menu-section="section.key">
+          <template #title>
+            <span class="menu-section-title">{{ section.title }}</span>
+          </template>
+          <a-menu-item v-for="item in section.items" :key="item.key">
+            <template #icon>
+              <component :is="item.icon" />
+            </template>
+            <span class="menu-label"><a class="navigation-link" :href="'/adapter/' + item.key" @click="handleLinkClick">{{ item.label }}</a></span>
+          </a-menu-item>
+        </a-menu-item-group>
+        <template v-else>
+          <a-menu-item v-for="item in section.items" :key="item.key">
+            <template #icon>
+              <component :is="item.icon" />
+            </template>
+            <span class="menu-label"><a class="navigation-link" :href="'/adapter/' + item.key" @click="handleLinkClick">{{ item.label }}</a></span>
+          </a-menu-item>
         </template>
-        <span class="menu-label"><a class="navigation-link" :href="'/adapter/' + item.key" @click="handleLinkClick">{{ item.label }}</a></span>
-      </a-menu-item>
+      </template>
     </a-menu>
     <a-button
       v-if="showCollapse"
@@ -119,6 +135,36 @@ const USER_MENU_ITEMS = [
   { key: 'tickets', label: '工单反馈', icon: FileTextOutlined },
 ]
 
+// 普通用户可见组从 USER_MENU_ITEMS 派生：手抄一份清单会在新增页面时漂移，
+// 所以只用 USER_MENU_ITEMS 的 key 集合做过滤，key 是唯一判据。
+// >>> sidebar-section-derivation (sidebarSectionSource.test.mjs 依赖此段原文执行，改动请同步该测试)
+const USER_MENU_KEYS = new Set(USER_MENU_ITEMS.map((item) => item.key))
+
+// 分区标题（task_doc/123：普通用户可见区 / 仅管理员可见区）。
+const ADMIN_SECTION_TITLES = {
+  shared: '普通用户可见',
+  adminOnly: '仅管理员可见',
+}
+
+// 管理员侧边栏两个分区：shared 由 USER_MENU_ITEMS 派生，adminOnly 是管理员独有的剩余项。
+// 两组合计必须与 ADMIN_MENU_ITEMS 完全一致（不增不减、不重复），由 sidebarSectionSource.test.mjs 钉住。
+const ADMIN_MENU_SECTIONS = [
+  {
+    key: 'shared',
+    title: ADMIN_SECTION_TITLES.shared,
+    items: ADMIN_MENU_ITEMS.filter((item) => USER_MENU_KEYS.has(item.key)),
+  },
+  {
+    key: 'admin-only',
+    title: ADMIN_SECTION_TITLES.adminOnly,
+    items: ADMIN_MENU_ITEMS.filter((item) => !USER_MENU_KEYS.has(item.key)),
+  },
+]
+
+// 普通用户仍然只有一个无标题的扁平列表：不出现任何分区标题。
+const USER_MENU_SECTIONS = [{ key: 'user', title: '', items: USER_MENU_ITEMS }]
+// <<< sidebar-section-derivation
+
 export default defineComponent({
   name: 'SiderMenu',
   props: {
@@ -151,6 +197,8 @@ export default defineComponent({
     });
     const isAdmin = computed(() => isAdminUser(props.currentUser));
     const visibleMenuItems = computed(() => (isAdmin.value ? ADMIN_MENU_ITEMS : USER_MENU_ITEMS));
+    // 分区只影响渲染分组，不影响权限判定与选中/跳转逻辑：两者都仍以 visibleMenuItems 为准。
+    const menuSections = computed(() => (isAdmin.value ? ADMIN_MENU_SECTIONS : USER_MENU_SECTIONS));
 
     const syncSelectedKeys = () => {
       const pathSegments = String(route.path || '').split('/');
@@ -200,6 +248,7 @@ export default defineComponent({
       selectedKeys,
       resolvedTheme,
       visibleMenuItems,
+      menuSections,
       isAdmin,
       handleSelect,
       handleLinkClick,
@@ -295,9 +344,26 @@ export default defineComponent({
 }
 .menu :deep(.ant-menu-item) { min-height: 44px; height: auto; line-height: 1.5; padding-block: 12px; border-radius: 6px; }
 .menu :deep(.ant-menu-title-content) { white-space: normal; }
+/* 分区标题：两组之间用标题 + 一条细分隔线区分，不改变菜单项本身的排版。 */
+.menu :deep(.ant-menu-item-group-title) {
+  padding: 10px 12px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--console-muted);
+  white-space: normal;
+}
+.menu :deep(.ant-menu-item-group:not(:first-child) .ant-menu-item-group-title) {
+  margin-top: 4px;
+  border-top: 1px solid var(--console-border, rgba(0, 0, 0, 0.06));
+  padding-top: 10px;
+}
 .menu.ant-menu-inline-collapsed { width: 64px; }
 .menu.ant-menu-inline-collapsed :deep(.ant-menu-item) { padding-inline: 24px; }
 .menu.ant-menu-inline-collapsed :deep(.ant-menu-title-content) { display: none; }
+/* 折叠态只留图标，分区标题没有可读空间，直接隐藏（否则会撑坏 64px 宽度）。 */
+.menu.ant-menu-inline-collapsed :deep(.ant-menu-item-group-title) { display: none; }
+.menu.ant-menu-inline-collapsed :deep(.ant-menu-item-group:not(:first-child)) { border-top: 1px solid var(--console-border, rgba(0, 0, 0, 0.06)); margin-top: 8px; padding-top: 8px; }
 
 .sider-menu-wrap.is-mobile { min-height: 0; }
 .navigation-link { color: inherit; text-decoration: none; }
