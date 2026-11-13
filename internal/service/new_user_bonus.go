@@ -35,6 +35,9 @@ func CreateUserWithNewUserBonusInTx(tx *gorm.DB, user *entity.User, options NewU
 		return err
 	}
 	if user.Phone != nil && *user.Phone != "" {
+		// ⚠️ 注意：phone 有下面的唯一性检查，但 **wechat 没有对等检查**
+		// （见 recordActiveBindingsForNewUser 里 wechat 分支的缺口说明）。
+		// 读到这里不要顺推「wechat 也应该校验过了」—— 它没有。
 		phone, err := NormalizeMainlandPhoneInput(*user.Phone)
 		if err != nil {
 			return err
@@ -147,6 +150,24 @@ func recordActiveBindingsForNewUser(tx *gorm.DB, user *entity.User) error {
 		}
 	}
 	if user.WechatID != nil && strings.TrimSpace(*user.WechatID) != "" {
+		// ⚠️ 既有缺口（本轮未处理，如实留痕，勿误以为已校验）：
+		//
+		// **wechat 当前没有任何唯一性检查，与 phone 不对称。**
+		// phone 在函数上方有 `FindUsersByPhoneAliases` + `ErrPhoneAlreadyBound`
+		// 两道闸；wechat 侧全仓零命中（2026-11 实测）。
+		//
+		// 后果（真实存在，不是理论风险）：
+		// `recordActiveWechatBinding` 内部走 `RecordBindingActiveWithDB`
+		// → `findActiveBindingByValue(kind, valueHash)`。若该 wechat 已被**别人**
+		// 绑着，它会直接 `return *existing`（返回别人的那行），于是：
+		//   · 新建用户**静默拿不到自己的绑定行**（查询时少一行）；
+		//   · 不会覆盖别人的行（active_key 唯一索引挡住了重复插入），
+		//     所以是「漏」而不是「错」，也不会静默破坏他人数据。
+		//
+		// 为什么本轮不补：补它要先定产品语义 —— 「wechat 已被绑定」该返回什么错误码、
+		// 是否允许换绑、是否影响存量用户。那是产品决策，不是接线修复。
+		// 登记在这里是为了让下一个人 grep 时看到「这是已知缺口」，
+		// 而不是以为「phone 有检查 → wechat 应该也有」。
 		wechatID := strings.TrimSpace(*user.WechatID)
 		boundAt := riskBindingTimeOrNow(user.WechatBoundAt)
 		if err := recordActiveWechatBinding(tx, *user, wechatID, boundAt); err != nil {
