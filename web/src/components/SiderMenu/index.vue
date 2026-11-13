@@ -160,11 +160,31 @@ const ADMIN_SECTION_TITLES = {
 
 // 管理员侧边栏两个分区：shared 由 USER_MENU_ITEMS 派生，adminOnly 是管理员独有的剩余项。
 // 两组合计必须与 ADMIN_MENU_ITEMS 完全一致（不增不减、不重复），由 sidebarSectionSource.test.mjs 钉住。
+//
+// ⚠️ shared 分区里每一项的**文案必须取 USER_MENU_ITEMS 的**，不能直接用
+// ADMIN_MENU_ITEMS 里的对象。同一个 key 在两侧的文案是不同的（这正是这个分区
+// 存在的意义：告诉管理员「普通用户看到的这个入口叫什么」）：
+//
+//   tickets        管理端「工单管理」   用户端「工单反馈」
+//   billing-records 管理端「账单明细」   用户端「我的账单」
+//   scripts        管理端「脚本管理」   用户端「我的脚本」
+//
+// 直接用管理端对象会让「普通用户可见」分区里出现「工单管理」——管理员看到的是
+// 自己的视角，分区标题就成了假话。**顺序**仍按 ADMIN_MENU_ITEMS（管理端的排列
+// 是运营习惯），只把 label / icon 换成用户端的值。
+const USER_MENU_BY_KEY = new Map(USER_MENU_ITEMS.map((item) => [item.key, item]))
+/** sharedSectionItem 取管理端顺序 + 用户端文案，两者都不丢。 */
+const sharedSectionItem = (adminItem) => {
+  const userItem = USER_MENU_BY_KEY.get(adminItem.key)
+  // 理论上 shared 组里每一项都必然在 USER_MENU_ITEMS 里（filter 保证），
+  // 这里仍做兜底而不是断言：渲染期抛错会让整个侧边栏白屏。
+  return userItem ? { ...adminItem, label: userItem.label } : adminItem
+}
 const ADMIN_MENU_SECTIONS = [
   {
     key: 'shared',
     title: ADMIN_SECTION_TITLES.shared,
-    items: ADMIN_MENU_ITEMS.filter((item) => USER_MENU_KEYS.has(item.key)),
+    items: ADMIN_MENU_ITEMS.filter((item) => USER_MENU_KEYS.has(item.key)).map(sharedSectionItem),
   },
   {
     key: 'admin-only',

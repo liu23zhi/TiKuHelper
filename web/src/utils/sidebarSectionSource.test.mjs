@@ -200,15 +200,38 @@ test('「普通用户可见」组与 USER_MENU_ITEMS 集合相等（不是子集
     assert.ok(!adminKeys.includes(exclusive), `ADMIN_MENU_ITEMS 不该包含普通用户专属路由 ${exclusive}`);
   }
 
-  // 派生而非手抄：shared 里的每一项必须是 ADMIN_MENU_ITEMS 中的同一个对象。
-  // 手抄一份清单（新对象）会让这条失败，从而防止「加页面后两组漂移」。
+  // 派生而非手抄：shared 组的 key 与顺序都必须来自 ADMIN_MENU_ITEMS。
+  //
+  // ⚠️ 这里**不能**再断言「item 是 ADMIN_MENU_ITEMS 里的同一个对象引用」。
+  // shared 组的语义是「普通用户可见」，所以文案必须取 USER_MENU_ITEMS 的；
+  // 用管理端对象会让分区里出现「工单管理」「账单明细」「脚本管理」——管理员看到的
+  // 是自己的视角，而分区标题却写着「普通用户可见」，标题就成了假话。
+  // （这是用户实测报出的缺陷，2026-11-13 修。）
+  //
+  // 「防手抄」这条防线改为断言下列三条，强度不减：
+  //   a) key 顺序与 ADMIN_MENU_ITEMS 过滤结果逐项相同（不能重排、不能增删）；
+  //   b) 除 label 外其余字段（icon 等）仍来自管理端原对象；
+  //   c) label 必须逐项等于 USER_MENU_ITEMS 的文案。
+  const expectedSharedOrder = ADMIN_MENU_ITEMS.filter((item) => userKeys.includes(item.key));
+  assert.deepEqual(keysOf(sharedSection.items), keysOf(expectedSharedOrder), 'shared 组的 key 顺序必须与管理端过滤结果一致');
+  const USER_BY_KEY = new Map(USER_MENU_ITEMS.map((item) => [item.key, item]));
   for (const item of sharedSection.items) {
-    const original = ADMIN_MENU_ITEMS.find((candidate) => candidate.key === item.key);
-    assert.equal(item, original, `shared 组的 ${item.key} 不是 ADMIN_MENU_ITEMS 里的原对象（说明是手抄的）`);
+    const adminItem = ADMIN_MENU_ITEMS.find((candidate) => candidate.key === item.key);
+    assert.equal(item.icon, adminItem.icon, `shared 组的 ${item.key} 图标必须来自 ADMIN_MENU_ITEMS 原对象`);
+    assert.equal(
+      item.label,
+      USER_BY_KEY.get(item.key).label,
+      `shared 组的 ${item.key} 文案必须是普通用户看到的那个（${USER_BY_KEY.get(item.key).label}），不是管理端的（${adminItem.label}）`,
+    );
   }
-  // 标签必须沿用管理员自己的文案（如 scripts 在两边分别叫「脚本管理」/「我的脚本」）。
-  const scriptsInShared = sharedSection.items.find((item) => item.key === 'scripts');
-  assert.equal(scriptsInShared.label, '脚本管理');
+  // 逐条钉住三处已知的双文案，防止有人把它改回管理端措辞。
+  const labelOf = (key) => sharedSection.items.find((item) => item.key === key).label;
+  assert.equal(labelOf('tickets'), '工单反馈');
+  assert.equal(labelOf('billing-records'), '我的账单');
+  assert.equal(labelOf('scripts'), '我的脚本');
+  // 对照组：只有这三处不同，其余文案两侧本来就相同，不得被顺手改掉。
+  assert.equal(labelOf('profile'), '个人中心');
+  assert.equal(labelOf('access-tokens'), '令牌管理');
 });
 
 test('「仅管理员可见」组是剩余项，且不含任何普通用户可见项', () => {

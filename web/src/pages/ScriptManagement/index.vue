@@ -2,7 +2,10 @@
   <div class="console-page script-page">
     <a-alert v-if="!canUse()" type="warning" show-icon message="当前身份无法管理脚本，请重新登录。" />
     <div v-else :key="frameKey" ref="pageSurface" :onInputCapture="pageEntry.guardNative" :onChangeCapture="pageEntry.guardNative" :onClickCapture="pageEntry.guardNative" :onKeydownCapture="pageEntry.guardNative">
-    <ConsolePageHeading title="脚本管理" description="为账号生成短指令；管理员负责上传 EXE，用户可维护自己的脚本参数。">
+    <!-- 标题按角色切换：普通用户菜单里这个入口叫「我的脚本」（123 号侧边栏分区），
+         页面却写「脚本管理」会让用户以为进错了地方。与 Tickets（工单管理/工单反馈）、
+         BillingRecordList（账单明细/我的账单）保持同一口径。 -->
+    <ConsolePageHeading :title="isAdmin ? '脚本管理' : '我的脚本'" description="为账号生成短指令；管理员负责上传 EXE，用户可维护自己的脚本参数。">
       <template #actions>
         <a-space wrap class="section-actions">
           <a-button v-if="isAdmin" :type="showAll ? 'primary' : 'default'" :onClick="pageEntry.bind(toggleScope)">
