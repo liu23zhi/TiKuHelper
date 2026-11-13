@@ -354,12 +354,13 @@ func TestRiskWechatPhoneShareThresholdBoundary(t *testing.T) {
 		}
 		// ⚠️ detail.threshold 必须是**阈值**，不能是实际计数。
 		//
-		// 这条判据是 captain 复核时发现的笔误补丁：原实现写的是
+		// 这条断言是 captain 复核时发现的笔误补丁：原实现写的是
 		// `"threshold": group.UserCount`（实际值 3），而不是 `threshold`（配置值 3）。
-		// 表面看两个数字一样所以测试不会红 —— 但把阈值改成 5 之后，
-		// 实际值仍是 3，排障的人会看到「threshold=3 却告警了」而无法理解。
 		//
-		// 所以断言必须**让阈值与计数不同**才能拷动这个缺陷。
+		// ⚠️ 但**本条用例拷不动那个笔误**：这里阈值 3、accountCount 也是 3，
+		// 两者恰好相等，写成哪个都一样。真正能拷动的是本文件末尾的
+		// `TestRiskDetailThresholdIsConfiguredValue`（阈值 1、实际 4 个账号）。
+		// 本条只作为「Detail 里有 threshold 字段且不为 0」的浅层冒烟。
 		if got, _ := detail["threshold"].(float64); got != 3 {
 			t.Fatalf("detail.threshold 应为阈值 3，实际 %v（写成 accountCount 会让阈值与计数混淆）", detail["threshold"])
 		}
