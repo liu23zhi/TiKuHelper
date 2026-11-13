@@ -99,7 +99,16 @@ type RiskRuleDefault struct {
 // ⚠️ 三条规则默认 Enabled=true，这与 96 §7「风控规则默认关闭」不一致，是有意的：
 // 96 §7 说的是 R1–R8 那批**行为**规则（撞库、刷单等，误报会打扰运营）；
 // 而欠款告警是「欠款不设上限」的唯一安全阀（118 §2.9），默认关掉等于没有安全阀。
-// 每条规则仍可在 risk_rules 行里单独停用（Enabled 列），也可以改阈值。
+//
+// 每条规则都可在管理页单独停用（PUT /risk/rules/:ruleId/enabled）与改阈值
+// （PUT /risk/thresholds/:key，见 service/risk_threshold.go）。
+//
+// ⚠️ 补充事实：`RiskRuleDefault` **没有 Enabled 字段** —— 启用与否不由代码默认值
+// 决定，而是由 `service.loadRiskRules` 在补齐全缺失行时统一写 `Enabled: true`
+// （risk_alert.go 的补齐分支）。因此 `DefaultRiskBehaviorRules` 里的行为规则
+// （R1/R8/R11/R12/R16 等）**当前也全部默认启用**，与 96 §7
+// 「行为规则默认关闭」仍有出入。
+// 这是待定项（未拍板）：真实取值需按生产误报率决定，不该由代码猜。
 var DefaultRiskDebtRules = []RiskRuleDefault{
 	{
 		RuleID:   RiskRuleIDDebtUser,
@@ -219,7 +228,21 @@ func DefaultRiskRules() []RiskRuleDefault {
 
 // RiskRule 是一条风控规则的可配置行（risk_rules）。
 //
-// 规则行只承载**运营可调的部分**：是否启用、级别、节流、阈值。
+// # 哪几列真的可调（如实描述，勿再宣称「四列都运营可调」）
+//
+//   - **Enabled**：可通过管理页调整（PUT /risk/rules/:ruleId/enabled）。
+//     接线点：EvaluateDebtAlerts 的 enabledRules 过滤 `if !rule.Enabled { continue }`。
+//   - **Threshold**：可通过管理页调整（PUT /risk/thresholds/:key）。
+//     写入时会同步 system_settings 的 `risk_rule_<id>_threshold` 键，两处一致，
+//     见 service/risk_threshold.go。
+//   - **Severity / ThrottleSeconds**：**当前仅代码默认值**，没有写接口。
+//     为什么不打通（2026-11 决策）：
+//     · severity 改错只影响告警展示分级，不影响判定正确性（代价小）；
+//     · throttle_seconds 改错代价大 —— 设 0 会让同一事件每次评估都新建一行（刷屏），
+//     负数语义完全不同（`< 0` = 每次都新建）。而它没有任何校验逻辑，
+//     要开放必须先设计「合法区间」。
+//     · 这两个都不是运营日常会调的，enabled 与 threshold 才是。
+//
 // 判定逻辑本身在代码里（service/risk_alert.go），不做可编程规则引擎 ——
 // 119 §5.2 已把「可配置规则引擎」划到完整风控（后续），本期只做最小集。
 type RiskRule struct {
