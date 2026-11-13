@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -436,6 +437,43 @@ func TestRiskHaversineKm(t *testing.T) {
 	b := riskGeoPoint{Latitude: 0, Longitude: 1}
 	if got := riskHaversineKm(a, b); got < 111 || got > 112 {
 		t.Fatalf("赤道 1 度经度 = %.2f km，应约 111.19", got)
+	}
+}
+
+// 判据⑫：规则说明里的「7 天」必须与代码常量一致（防漂移）。
+//
+// ⚠️ 这条钉的是一类真实缺陷：说明写「只回溯 7 天」而代码改成 5 天，
+// 比不写说明更糟 —— 运营会按错误的边界理解告警行为。
+//
+// entity 层不能引用 service 常量（会形成 import 环），所以说明里是字面量「7」。
+// 本用例用源码断言把两者钉住：改了常量不改文案（或反之）都会红。
+func TestRiskImpossibleTravelDescriptionMatchesLookbackDays(t *testing.T) {
+	// 常量侧：必须是 7（字面量，不引用被测常量本身，避免恒真）。
+	if riskImpossibleTravelLookbackDays != 7 {
+		t.Fatalf("回溯天数 = %d，若确实要改，必须同步改 R3 的 Description 文案与本断言",
+			riskImpossibleTravelLookbackDays)
+	}
+	// 说明侧：Description 必须同时提到「7 天」与它是一条限制。
+	var found bool
+	for _, rule := range entity.DefaultRiskRules() {
+		if rule.RuleID != entity.RiskRuleIDImpossibleTravel {
+			continue
+		}
+		found = true
+		if !strings.Contains(rule.Description, "7 天") {
+			t.Fatalf("R3 的 Description 必须写明「7 天」回溯窗口，实际：%s", rule.Description)
+		}
+		if !strings.Contains(rule.Description, "只回溯") {
+			t.Fatalf("R3 的 Description 必须把回溯窗口写成一条**限制**（含「只回溯」），实际：%s",
+				rule.Description)
+		}
+		// 另一条限制必须同时存在（公网 IP），否则运营只看到一半边界。
+		if !strings.Contains(rule.Description, "公网 IP") {
+			t.Fatalf("R3 的 Description 必须同时写明「仅公网 IP」限制，实际：%s", rule.Description)
+		}
+	}
+	if !found {
+		t.Fatalf("DefaultRiskRules 里找不到 %s", entity.RiskRuleIDImpossibleTravel)
 	}
 }
 

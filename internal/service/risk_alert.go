@@ -2142,6 +2142,28 @@ const riskImpossibleTravelMinIntervalMinutes = 30
 // riskImpossibleTravelEarthRadiusKm 是球面距离公式用的地球半径。
 const riskImpossibleTravelEarthRadiusKm = 6371.0
 
+// riskImpossibleTravelLookbackDays 是 R3 回溯登录序列的天数。
+//
+// # 为什么是 7 天（这是**实现侧的选择，不是需求给定**）
+//
+// R3 只需要「相邻两次登录」，所以理论上只看最近一次之前的记录就够。选 7 天是折中：
+//   - 远大于「相邻两次」的需要 —— 覆盖「今天之前的最后一次」绰绰有余；
+//   - 远小于 `logs` 的 30 天保留期 —— 不必扫全表（这是性能考虑，不是语义考虑）。
+//
+// # ⚠️ 这是一条真实的**漏报边界**（不要当成无遗漏）
+//
+// 如果某用户**超过 7 天没有登录**，那么他「7 天前那次」与「今天这次」这一对
+// **不会被比较**。例如：用户在北京登录后出差两周，回程前账号在广州被人登录 ——
+// 中间隔了 14 天，两条都不在同一个 7 天窗口里，R3 **不会告警**。
+//
+// 为什么接受这个漏报：拉长窗口会让每次评估扫描的登录行数线性增长，而真实盗号
+// 的「瞬移」几乎都发生在小时级间隔内（人的移动需要时间，超过一天的跨度里
+// 「物理不可能」这个判据本身就失效了 —— 24 小时足够飞到地球任何地方）。
+//
+// 之所以写成常量而不是字面量：它需要出现在**规则说明**里（让运营知道边界），
+// 两处引用同一个值才不会漂移 —— 说明里写「7 天」而代码是 5 天，比不说更糟。
+const riskImpossibleTravelLookbackDays = 7
+
 // collectImpossibleTravelCandidates 收集「单账号相邻两次成功登录的移动速度物理不可能」的命中
 // （96 §2.1 R3）。
 //
@@ -2183,9 +2205,8 @@ func collectImpossibleTravelCandidates(db *gorm.DB, rule entity.RiskRule, now ti
 		return nil, nil
 	}
 	windowStart, _ := riskLoginWindow(now)
-	// 取最近 7 天的登录序列（R3 只需要相邻两次，7 天足够覆盖「今天之前的最后一次」，
-	// 又不会因为扫全表而变慢；30 天保留期是上界，这里取更小值是为了性能）。
-	since := now.Add(-7 * 24 * time.Hour)
+	// 取最近 riskImpossibleTravelLookbackDays 天的登录序列。
+	since := now.Add(-time.Duration(riskImpossibleTravelLookbackDays) * 24 * time.Hour)
 	timeExpr := riskWindowColumnExpr(db, "create_time")
 
 	type loginRow struct {

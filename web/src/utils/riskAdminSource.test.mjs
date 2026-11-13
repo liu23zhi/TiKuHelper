@@ -338,7 +338,14 @@ test('规则名与级别：未知值回落而不是抛错', () => {
   // R14 / R18：后端 rule_id 必须与这里逐字一致。
   assert.equal(riskRuleLabel('binding_churn'), '频繁换绑')
   assert.equal(riskRuleLabel('wechat_phone_share'), '封禁账号共用号（仅当前绑定）')
-  assert.equal(riskRuleLabel('impossible_travel'), '异地瞬移（仅公网 IP）')
+  assert.equal(riskRuleLabel('impossible_travel'), '异地瞬移（仅公网 IP · 回溯 7 天）')
+  // R3 的两条限制必须同时出现在 label 里（前端不展示 Description，
+  // 只写其一 = 运营按错误边界理解告警行为）。
+  {
+    const r3 = riskRuleLabel('impossible_travel')
+    assert.match(r3, /公网 IP/, 'R3 label 必须写明「仅公网 IP」限制')
+    assert.match(r3, /7 天/, 'R3 label 必须写明「回溯 7 天」限制')
+  }
   assert.equal(riskRuleLabel(''), '未知规则')
   assert.equal(riskRuleLabel('future_rule'), 'future_rule', '未知规则要原样显示，便于排错')
   assert.equal(riskSeverityMeta('high').label, '高')

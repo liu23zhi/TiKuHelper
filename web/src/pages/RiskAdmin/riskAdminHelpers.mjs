@@ -49,8 +49,11 @@ export const RISK_RULE_OPTIONS = Object.freeze([
   // ⚠️ label 带「仅当前绑定」提示，因为 users 只存当前值，历史共用查不到
   { value: 'wechat_phone_share', label: '封禁账号共用号（仅当前绑定）' },
   // R3：相邻两次成功登录的移动速度超过民航上限（默认 900 km/h）
-  // ⚠️ label 带「仅公网 IP」提示，因为私网/缺归属地的登录会被跳过
-  { value: 'impossible_travel', label: '异地瞬移（仅公网 IP）' },
+  // ⚠️ label 必须写明**两条限制**，因为前端不展示 Description：
+  //    ① 仅公网 IP（私网/缺归属地的登录被跳过）
+  //    ② 只回溯 7 天（超 7 天未登录的用户，那一对不会被比较）
+  // 只写其一会让运营按错误的边界理解告警行为。
+  { value: 'impossible_travel', label: '异地瞬移（仅公网 IP · 回溯 7 天）' },
 ])
 
 const RISK_RULE_LABELS = Object.freeze(
