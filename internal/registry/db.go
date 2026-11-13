@@ -979,6 +979,64 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		return nil
 	}
 
+	// ─────────────────────────────────────────────────────────────────────
+	// 2026-11-13 批量落地的九张新表（task_doc 121 §4 / 122）。
+	//
+	// 顺序按依赖排，不按编号：
+	//   1. 客户来源列（logs / access_tokens）—— 无依赖，最轻
+	//   2. 公告 —— 无依赖，且失败可降级（见下）
+	//   3. 异步任务 —— u-grant 的批次进度可选消费它，先建表
+	//   4. 工单图片 blob —— 依赖 ticket_attachments 已存在（AutoMigrate 在更早处）
+	//   5. 敏感图片双表 —— 额度表依赖 users，users 的 AutoMigrate 在更早处
+	//   6. 风控双表 —— 无依赖；risk_rules 的种子数据在迁移内部写
+	//
+	// 失败策略严格按 121 §5 决策 2：
+	//   - 结构性失败（建表/加列失败）→ FatalLog（缺表等于功能 100% 失效且无报错）
+	//   - 唯一例外是公告：113 §4 要求「公告读不出来也不能影响搜题」，
+	//     所以它用 SysLog 降级，与 ensureLocationCacheEntriesSchema 同类。
+	// ─────────────────────────────────────────────────────────────────────
+
+	// 调用来源 client_kind：logs 与 access_tokens 各加一列（107 Q11）。
+	// 列检测型迁移：结构存在即完成，不写 system_settings 标记（121 决策 1 的 A 规则）。
+	// 结构性失败必须 FATAL：缺列时「调用来源」判定会静默退化成恒 unknown。
+	if err := runStartupMigration("ensureClientKindSchema", func() error { return EnsureClientKindSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare client kind schema fail: %w", err))
+		return nil
+	}
+
+	// 公告（112 §4.3 / 113）。**这是九张表里唯一 fail-open 的**：
+	// 公告读不出来时搜题必须照常，所以迁移失败只降级记日志，不阻断启动。
+	if err := runStartupMigration("ensureAnnouncementSchema", func() error { return EnsureAnnouncementSchema(db) }); err != nil {
+		logger.SysLog(fmt.Sprintf("公告表迁移失败（已按无公告降级，不影响搜题；下次启动会重试）：%v", err))
+	}
+
+	// 异步任务（Q12 / N3 共用表，121 §4.10）。
+	if err := runStartupMigration("ensureAsyncTaskSchema", func() error { return EnsureAsyncTaskSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare async task schema fail: %w", err))
+		return nil
+	}
+
+	// 工单图片去重（112 N1 → 117，121 §4.4 说明这是唯一含数据回填的一张）。
+	// 迁移内部已区分：结构失败返回 error（这里 FATAL），回填失败只 SysLog 且不写标记。
+	if err := runStartupMigration("ensureTicketAttachmentBlobSchema", func() error { return EnsureTicketAttachmentBlobSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare ticket attachment blob schema fail: %w", err))
+		return nil
+	}
+
+	// 敏感图片检测缓存 + 每日额度（107 Q1 → 111 Q1-g，121 §4.1/§4.2）。
+	// 额度表依赖 users 存在（外键语义），必须排在 users 的 AutoMigrate 之后 —— 本处已满足。
+	if err := runStartupMigration("ensureSensitiveImageSchema", func() error { return EnsureSensitiveImageSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare sensitive image schema fail: %w", err))
+		return nil
+	}
+
+	// 风控告警记录与规则（96 / 118 §2，121 §4.6/§4.7）。
+	// 建表失败 FATAL；3 条欠款规则的种子写入失败在迁移内部只记 SysLog（表已建好，管理员可后台补）。
+	if err := runStartupMigration("ensureRiskSchema", func() error { return EnsureRiskSchema(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare risk schema fail: %w", err))
+		return nil
+	}
+
 	ensureAccountDomainDefaults(db)
 
 	// Apply only the preflighted credential plan. Environment never resets an existing account.

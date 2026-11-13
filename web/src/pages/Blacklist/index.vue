@@ -28,8 +28,21 @@
           <div class="summary-value">{{ hasLoadedHits ? hitsTotal : '--' }} 条</div>
         </div>
         <div>
-          <div class="summary-label">黑名单总开关</div>
-          <div class="summary-value">由「系统管理」控制</div>
+          <div class="summary-label">
+            <label :id="fieldId('blacklistEnabledLabel')" :for="fieldId('blacklistEnabled')">黑名单总开关</label>
+          </div>
+          <div class="summary-value">
+            <a-switch
+              :id="fieldId('blacklistEnabled')"
+              :checked="blacklistEnabled"
+              :loading="loadingSwitch"
+              :disabled="!canManage()"
+              :aria-labelledby="fieldId('blacklistEnabledLabel')"
+              v-on="{ 'update:checked': toggleSwitch }"
+            />
+            <span class="summary-switch-state">{{ blacklistEnabled ? '已开启' : '已关闭' }}</span>
+          </div>
+          <div v-if="switchError" class="summary-switch-error" role="alert">{{ switchError }}</div>
         </div>
       </ConsoleSummaryGrid>
 
@@ -299,6 +312,7 @@ import {
   getBlacklistHits,
   setBlacklistEntryEnabled,
 } from '@/api/BlacklistApi'
+import { getSystemSettings, updateSystemSettings } from '@/api/TikuComponentApi'
 import { getCurrentUserLogoutEpoch, isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
 import { currentUserIdentity } from '@/utils/currentUserScope'
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
@@ -337,6 +351,11 @@ export default {
     const writing = ref(false)
     const hasLoadedEntries = ref(false)
     const hasLoadedHits = ref(false)
+    // 黑名单总开关（system_settings.blacklist_enabled）。
+    // 这一页与「系统管理」页读写同一个配置，任一处切换另一处刷新后同步。
+    const blacklistEnabled = ref(false)
+    const loadingSwitch = ref(false)
+    const switchError = ref('')
     const entriesTotal = ref(0)
     const hitsTotal = ref(0)
     const entryError = ref('')
@@ -811,9 +830,57 @@ export default {
       if (key === 'hits' && canManage() && !hasLoadedHits.value && !loadingHits.value) void loadHits()
     })
 
+    // loadSwitch 读取总开关当前值。失败不覆盖已有值、不让页面变红：
+    // 开关读不到时最危险的方向是「误显示为已开启」，所以保持上一次已知值并给出提示。
+    async function loadSwitch() {
+      if (!canManage()) return
+      loadingSwitch.value = true
+      switchError.value = ''
+      try {
+        const data = await getSystemSettings({ errorFeedback: 'local' })
+        blacklistEnabled.value = data?.blacklistEnabled === true
+      } catch (error) {
+        switchError.value = '总开关状态读取失败，请刷新重试'
+        void error
+      } finally {
+        loadingSwitch.value = false
+      }
+    }
+
+    // toggleSwitch 写回总开关。
+    //
+    // 只提交 blacklistEnabled 一个字段：后端 UpdateSystemSettingInput 用 *bool，
+    // nil 表示「未提交 = 保持现值」，所以这里不会顺带改动本页无关的任何配置。
+    async function toggleSwitch(next) {
+      if (!canManage() || loadingSwitch.value) return
+      const previous = blacklistEnabled.value
+      blacklistEnabled.value = next === true
+      loadingSwitch.value = true
+      switchError.value = ''
+      try {
+        const data = await updateSystemSettings(
+          { blacklistEnabled: next === true },
+          { errorFeedback: 'local' },
+        )
+        // 以后端回传为准：避免「本地改了但没落库」显示成已生效。
+        blacklistEnabled.value = data?.blacklistEnabled === true
+        message.success(blacklistEnabled.value ? '黑名单已开启' : '黑名单已关闭')
+      } catch (error) {
+        // 回滚到切换前的值，否则界面会显示一个并未生效的状态。
+        blacklistEnabled.value = previous
+        switchError.value = '总开关保存失败，已回滚到原状态'
+        void error
+      } finally {
+        loadingSwitch.value = false
+      }
+    }
+
     onMounted(() => {
       mounted = true
-      if (canManage()) void loadEntries()
+      if (canManage()) {
+        void loadEntries()
+        void loadSwitch()
+      }
     })
     onBeforeUnmount(() => {
       alive = false
@@ -823,6 +890,7 @@ export default {
 
     return {
       fieldId, canManage, activeTab,
+      blacklistEnabled, loadingSwitch, switchError, toggleSwitch, loadSwitch,
       entries, hits, loadingEntries, loadingHits, writing,
       hasLoadedEntries, hasLoadedHits, entriesTotal, hitsTotal,
       entryError, hitError, entryFilterError, hitFilterError, createError,
@@ -852,6 +920,9 @@ export default {
 .filter-keyword, .filter-ip, .filter-id { width: 200px; }
 .filter-action { width: 150px; }
 .filter-error { margin: 0 0 16px; color: var(--console-danger, #c13e41); font-size: 13px; }
+/* 总开关：与 summary-value 的数值排版解耦（开关不是数字，不需要 tabular-nums/大字号）。 */
+.summary-switch-state { margin-left: 10px; color: var(--console-muted); font-size: 13px; font-weight: 400; font-variant-numeric: normal; }
+.summary-switch-error { margin-top: 6px; color: var(--console-danger, #c13e41); font-size: 12px; line-height: 1.4; }
 .field-hint { margin: 6px 0 0; color: var(--console-muted); font-size: 12px; line-height: 1.6; }
 .masked-cell, .time-cell, .count-cell { font-variant-numeric: tabular-nums; }
 .reason-cell, .path-cell { overflow-wrap: anywhere; }

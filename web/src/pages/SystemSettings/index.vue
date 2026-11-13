@@ -107,6 +107,14 @@
         </a-form-item>
         </ConsolePanel>
 
+        <ConsolePanel title="黑名单" description="请求进站即拦截，先于登录鉴权。默认关闭。" class="settings-section">
+        <a-form-item label="启用黑名单" :html-for="fieldId('blacklistEnabled')">
+          <a-switch :id="fieldId('blacklistEnabled')" :checked="formState.blacklistEnabled" v-on="{ 'update:checked': settingsEntry.bind(updateSetting, 'blacklistEnabled') }" />
+          <div class="hint">关闭（默认）：完全不做黑名单查询，不拦任何请求，也不写命中日志。开启后才按 IP / 手机号 / 微信 / 地区四类规则拦截。</div>
+        </a-form-item>
+        <div class="hint">黑名单页也能切换同一个开关，两处读写的是同一个配置（system_settings.blacklist_enabled），改任意一处另一处刷新后即同步。</div>
+        </ConsolePanel>
+
         <ConsolePanel title="敏感词检测" description="只给日志打标记，不改变答题结果。默认关闭。" class="settings-section">
         <a-form-item label="启用敏感词检测" :html-for="fieldId('sensitiveWordCheckEnabled')">
           <a-switch :id="fieldId('sensitiveWordCheckEnabled')" :checked="formState.sensitiveWordCheckEnabled" v-on="{ 'update:checked': settingsEntry.bind(updateSetting, 'sensitiveWordCheckEnabled') }" />
@@ -494,6 +502,9 @@ export default defineComponent({
       // 商业化开关默认关闭，与后端缺省一致。
       rechargePromotionEnabled: false,
       deviceLimitEnabled: false,
+      // 黑名单总开关默认关闭，与后端缺省一致（46-黑名单设计.md 红线：
+      // blacklist_enabled 读不到一律按 false，不能让配置读错变成开始拦人）。
+      blacklistEnabled: false,
       // 敏感词检测默认关闭，与后端缺省一致。
       sensitiveWordCheckEnabled: false,
       // 只读派生值：开关开着但没有可用 UAPI 密钥时为 false，页面据此提示。
@@ -845,6 +856,9 @@ export default defineComponent({
       // 布尔开关只认显式 true；缺字段或异常值一律视为关闭。
       formState.rechargePromotionEnabled = data.rechargePromotionEnabled === true
       formState.deviceLimitEnabled = data.deviceLimitEnabled === true
+      // 黑名单总开关：与其它布尔开关同规则 —— 只认显式 true。
+      // 后端 resolveBoolSettingInput 对 nil 保持现值，这里读回的是落库后的真实值。
+      formState.blacklistEnabled = data.blacklistEnabled === true
       formState.sensitiveWordCheckEnabled = data.sensitiveWordCheckEnabled === true
       formState.sensitiveWordCheckConfigured = data.sensitiveWordCheckConfigured === true
       formState.epayVersion = 'v2'
@@ -1048,6 +1062,8 @@ export default defineComponent({
         // 显式提交布尔值：后端用指针区分「未提交」与「提交 false」。
         rechargePromotionEnabled: !!formState.rechargePromotionEnabled,
         deviceLimitEnabled: !!formState.deviceLimitEnabled,
+        // 显式提交布尔值：后端用 *bool 区分「未提交」与「提交 false」。
+        blacklistEnabled: !!formState.blacklistEnabled,
         sensitiveWordCheckEnabled: !!formState.sensitiveWordCheckEnabled,
       }
 
