@@ -36,6 +36,8 @@ var (
 	loadLogRetentionSettings   = service.GetLogRetentionSettingsWithDB
 	updateLogRetentionSettings = service.UpdateLogRetentionSettingsWithDB
 	applyLogRetentionSettings  = service.ApplyLogRetentionWithDB
+	// describeLogRetentionCapability 是无副作用的能力报告（GET 用）。
+	describeLogRetentionCapability = service.DescribeLogRetentionCapability
 	// resolveLogRetentionDB 是可替换的取库入口。
 	//
 	// 单独抽一个 var 而不是让测试替换 resolveSearchPersistenceDB：
@@ -63,8 +65,18 @@ type logRetentionResponse struct {
 	// Units 显式下发单位口径，避免前端把 maxTotalGiB 当 byte 用。
 	// 字节单位选 GiB / MiB（二进制单位），换算成字节分别是 1<<30 与 1<<20。
 	Units string `json:"units"`
-	// Apply 只在本次请求真的尝试应用时有值（GET 时不应用，故为 nil）。
-	Apply *service.LogRetentionApplyResult `json:"apply,omitempty"`
+	// Apply 是**每条路径都必有**的能力报告，不是「本次请求的应用结果」。
+	//
+	// ⚠️ 早先它只在 PUT / clean 上有值（GET 是 nil），于是页面刚打开时
+	// 「单文件上限要重启才生效」这个事实完全看不到，只有点一次保存才出现 ——
+	// 管理员会以为打开时就已经一切正常。这类「helper 算对了但传输层丢了」
+	// 的缺陷在本仓有过先例，所以这里把 GET 也填满。
+	//
+	// GET 的语义是「按库中当前配置，各项能力现在能不能生效」，
+	// 因此它会调用 ApplyLogRetentionConfig 但**不写库**；
+	// 它的两个 setter 会顺手做一次清理，这与「打开设置页」的期望并不冲突
+	// （清理是幂等的，且本来就有后台任务在做）。
+	Apply service.LogRetentionApplyResult `json:"apply"`
 	// Warning 是「配置已保存但未能完全生效」的人话说明，永不导致 5xx。
 	Warning string `json:"warning,omitempty"`
 }
@@ -72,18 +84,24 @@ type logRetentionResponse struct {
 // logRetentionUnits 是人类可读的单位口径说明（Q14⑧：字节单位选 GiB 并在代码里注明）。
 const logRetentionUnits = "MiB=1048576B, GiB=1073741824B"
 
-// LogRetentionSettingsDetail 读取日志清理配置。
+// LogRetentionSettingsDetail 读取日志清理配置**与各项能力的当前状态**。
 //
 //	GET /adapter-service/admin/log-settings
 //
 // 读取失败一律回落默认值（service 层保证），因此这里不会因缺记录返回错误。
+//
+// Apply 字段用无副作用的 DescribeLogRetentionCapability 填充，**不调 apply**：
+// GET 会被人手刷新、浏览器预取、监控探针调用，若它顺手清理日志，
+// 就变成「一个 GET 删文件」——删的还是审计日志，事后无法复原。
 func LogRetentionSettingsDetail(c *gin.Context) {
 	if !requireAdmin(c) {
 		return
 	}
+	settings := loadLogRetentionSettings(logRetentionDB(c))
 	c.JSON(http.StatusOK, logRetentionResponse{
-		Settings: loadLogRetentionSettings(logRetentionDB(c)),
+		Settings: settings,
 		Units:    logRetentionUnits,
+		Apply:    describeLogRetentionCapability(settings),
 	})
 }
 
@@ -136,9 +154,14 @@ func CleanLogRetentionNow(c *gin.Context) {
 //
 // applyErr 不为 nil 时**不改状态码**：见 UpdateLogRetentionSettings 的注释。
 func writeLogRetentionApplied(c *gin.Context, settings service.LogRetentionSettings, result service.LogRetentionApplyResult, applyErr error) {
-	response := logRetentionResponse{Settings: settings, Units: logRetentionUnits, Apply: &result}
+	response := logRetentionResponse{Settings: settings, Units: logRetentionUnits, Apply: result}
+	// Warning 只装**本次请求**的问题，不装常驻的能力限制。
+	//
+	// 两者语义不同，混在一个字段里会让前端无法区分「刚才保存失败了」
+	// 与「这个功能本来就不支持」——前者要重试，后者要去找开发。
+	// 常驻限制走 Apply.FileSizeUnsupportedReason（三条路径都必填）。
 	if applyErr != nil {
-		response.Warning = "配置已保存，但立即清理未完全生效（下个周期或重启后会重试）：" + applyErr.Error()
+		response.Warning = "配置已保存，但立即清理未完全生效（下个周期会重试）：" + applyErr.Error()
 		logger.SysWarn(response.Warning)
 	}
 	c.JSON(http.StatusOK, response)

@@ -46,31 +46,27 @@ func installLogSettingsTestDB(t *testing.T, db *gorm.DB) *int {
 	previousLoad := loadLogRetentionSettings
 	previousUpdate := updateLogRetentionSettings
 	previousApply := applyLogRetentionSettings
+	previousDescribe := describeLogRetentionCapability
 	applyCalls := 0
 	resolveLogRetentionDB = func() *gorm.DB { return db }
 	loadLogRetentionSettings = service.GetLogRetentionSettingsWithDB
 	updateLogRetentionSettings = service.UpdateLogRetentionSettingsWithDB
+	describeLogRetentionCapability = service.DescribeLogRetentionCapability
 	applyLogRetentionSettings = func(target *gorm.DB) (service.LogRetentionApplyResult, error) {
 		applyCalls++
-		// 调用真实的「读配置」但不碰 logger：把结果原样回报，
-		// 让断言能确认 handler 传的是**库里的**配置而不是请求里的。
+		// 用**真实的** ApplyLogRetentionConfig 语义构造结果，但不碰真实 logger：
+		// 这样「单文件上限用不了」这条常驻事实会原样出现在响应里，
+		// 断言才有意义（若这里手搓一个干净结果，就测不出传输层有没有丢字段）。
 		settings := service.GetLogRetentionSettingsWithDB(target)
-		return service.LogRetentionApplyResult{
-			Enabled:                settings.Enabled,
-			Applied:                true,
-			MaxAgeDays:             settings.MaxAgeDays,
-			MaxTotalBytes:          settings.MaxTotalBytes,
-			MaxFileBytes:           settings.MaxFileBytes,
-			AgeApplied:             true,
-			TotalSizeApplied:       true,
-			FileSizePendingRestart: true,
-		}, nil
+		result := service.DescribeLogRetentionCapability(settings)
+		return result, nil
 	}
 	t.Cleanup(func() {
 		resolveLogRetentionDB = previousDB
 		loadLogRetentionSettings = previousLoad
 		updateLogRetentionSettings = previousUpdate
 		applyLogRetentionSettings = previousApply
+		describeLogRetentionCapability = previousDescribe
 	})
 	return &applyCalls
 }
@@ -115,7 +111,7 @@ func decodeLogSettingsResponse(t *testing.T, recorder *httptest.ResponseRecorder
 // 默认值必须是 30 天 / 10 GiB / 100 MiB，且响应里带单位口径（Q14⑧）。
 func TestLogSettingsDetailReturnsDefaults(t *testing.T) {
 	db := newLogSettingsControllerTestDB(t)
-	installLogSettingsTestDB(t, db)
+	applyCalls := installLogSettingsTestDB(t, db)
 	router := logSettingsRouter(&entity.User{ID: 1, Role: "admin"})
 
 	recorder := logSettingsRequest(router, http.MethodGet, "/adapter-service/admin/log-settings", "")
@@ -136,9 +132,25 @@ func TestLogSettingsDetailReturnsDefaults(t *testing.T) {
 	if !strings.Contains(response.Units, "GiB") || !strings.Contains(response.Units, "MiB") {
 		t.Fatalf("units must be spelled out, got %q", response.Units)
 	}
-	// GET 不应用配置：Apply 必须为空，否则前端会以为「打开页面就清理了一次」。
-	if response.Apply != nil {
-		t.Fatalf("GET must not apply the config, got %+v", response.Apply)
+	// GET 的 Apply 是「能力报告」，不是「本次请求应用了」。它必须**有值**：
+	// 否则页面刚打开时看不到「单文件上限用不了」，只有点过保存才出现。
+	if response.Apply.MaxAgeDays != 30 || response.Apply.MaxTotalBytes != 10*(1<<30) {
+		t.Fatalf("GET must carry a capability report for the current settings, got %+v", response.Apply)
+	}
+	if response.Apply.FileSizeApplied {
+		t.Fatal("GET must still report the file size limit as not applied")
+	}
+	if response.Apply.FileSizeUnsupportedReason == "" {
+		t.Fatal("GET must explain why the file size limit cannot be applied")
+	}
+	// warning 只装本次请求的问题：GET 没有应用动作，所以必须为空。
+	// 常驻限制走 Apply.FileSizeUnsupportedReason，两者不能混。
+	if response.Warning != "" {
+		t.Fatalf("GET has no per-request failure, warning must be empty, got %q", response.Warning)
+	}
+	// 但仍然必须**不触发 apply**（否则一个 GET 会删日志文件）。
+	if *applyCalls != 0 {
+		t.Fatalf("GET must not apply anything, got %d calls", *applyCalls)
 	}
 }
 
@@ -160,11 +172,11 @@ func TestLogSettingsUpdatePersistsAndReportsApply(t *testing.T) {
 	if response.Settings.MaxAgeDays != 45 || response.Settings.MaxTotalGiB != 20 || response.Settings.MaxFileMiB != 50 {
 		t.Fatalf("response must echo persisted values: %+v", response.Settings)
 	}
-	if response.Apply == nil {
-		t.Fatal("PUT must report the apply result")
+	if response.Apply.FileSizeApplied {
+		t.Fatal("file size limit has no setter AND no startup path — it must never report applied")
 	}
-	if !response.Apply.FileSizePendingRestart {
-		t.Fatal("file size limit has no runtime setter and must be reported as pending restart")
+	if response.Apply.FileSizeUnsupportedReason == "" {
+		t.Fatal("PUT must explain why the file size limit cannot be applied")
 	}
 	if response.Warning != "" {
 		t.Fatalf("successful apply must not carry a warning, got %q", response.Warning)
@@ -262,8 +274,11 @@ func TestLogSettingsCleanUsesPersistedConfigAndIgnoresBody(t *testing.T) {
 		t.Fatalf("expected 200, got %d body=%s", recorder.Code, recorder.Body.String())
 	}
 	response := decodeLogSettingsResponse(t, recorder)
-	if response.Apply == nil || response.Apply.MaxAgeDays != 77 {
+	if response.Apply.MaxAgeDays != 77 {
 		t.Fatalf("clean must use the persisted age (77), got %+v", response.Apply)
+	}
+	if response.Apply.FileSizeUnsupportedReason == "" {
+		t.Fatal("clean response must carry the file size limitation too (all three paths)")
 	}
 	// 请求体里的 1 绝不能落库。
 	stored := service.GetLogRetentionSettingsWithDB(db)
@@ -280,7 +295,11 @@ func TestLogSettingsUpdateSucceedsWithWarningWhenApplyFails(t *testing.T) {
 	db := newLogSettingsControllerTestDB(t)
 	installLogSettingsTestDB(t, db)
 	applyLogRetentionSettings = func(*gorm.DB) (service.LogRetentionApplyResult, error) {
-		return service.LogRetentionApplyResult{Enabled: true}, fmt.Errorf("logger is not initialized")
+		// 只注入**本次失败**；其余字段仍由真实能力报告生成，
+		// 否则这个桩会让「常驻的单文件上限限制」凭空消失，
+		// 用例就变成在测一个现实中不存在的结果形态。
+		result := service.DescribeLogRetentionCapability(service.GetLogRetentionSettingsWithDB(db))
+		return result, fmt.Errorf("logger is not initialized")
 	}
 	router := logSettingsRouter(&entity.User{ID: 1, Role: "admin"})
 
@@ -295,6 +314,13 @@ func TestLogSettingsUpdateSucceedsWithWarningWhenApplyFails(t *testing.T) {
 	}
 	if !strings.Contains(response.Warning, "logger is not initialized") {
 		t.Fatalf("warning must carry the underlying cause, got %q", response.Warning)
+	}
+	// 两条信息必须**同时**可读，但在不同字段里：
+	//   - warning：本次请求的偶发失败（要重试）；
+	//   - apply.fileSizeUnsupportedReason：常驻的能力限制（要去找开发）。
+	// 若实现把常驻限制塞进 warning 或反之，前端就分不清该重试还是该报障。
+	if response.Apply.FileSizeUnsupportedReason == "" {
+		t.Fatal("PUT response must still carry the standing file size limitation in apply")
 	}
 	stored := service.GetLogRetentionSettingsWithDB(db)
 	if stored.MaxAgeDays != 31 {

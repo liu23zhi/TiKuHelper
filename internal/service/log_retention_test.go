@@ -357,8 +357,15 @@ func TestApplyLogRetentionConfigWithoutLoggerReportsError(t *testing.T) {
 	}
 }
 
-// 单文件上限没有运行期 setter，必须如实报告「待重启」而不是假装已生效。
-func TestApplyLogRetentionConfigMarksFileSizePendingRestart(t *testing.T) {
+// 单文件上限当前**完全无法生效（重启也不行）**，必须如实报告而不是假装。
+//
+// 这条用例同时防两种退化：
+//   - 有人把 FileSizeApplied 改成 true（假装生效）；
+//   - 有人把原因文案清空（管理员看不到要去哪解决）。
+//
+// 事实依据：SetupGinLog 是 setupLoggerWithLimits(*LogDir, MaxLogFileBytes, ...)，
+// maxBytes 吃常量；全仓没有把设置值传给 setupLoggerWithRetention 的代码。
+func TestApplyLogRetentionConfigReportsFileSizeUnsupported(t *testing.T) {
 	dir := setupLogRetentionTestLogger(t)
 	_ = dir
 	result, err := ApplyLogRetentionConfig(LogRetentionConfig{
@@ -374,8 +381,70 @@ func TestApplyLogRetentionConfigMarksFileSizePendingRestart(t *testing.T) {
 	if !result.AgeApplied || !result.TotalSizeApplied || !result.Applied {
 		t.Fatalf("both runtime setters must succeed, got %+v", result)
 	}
-	if !result.FileSizePendingRestart {
-		t.Fatal("file size limit has no runtime setter and must be reported as pending restart")
+	if result.FileSizeApplied {
+		t.Fatal("file size limit has no setter AND no startup path — it must never report applied")
+	}
+	if result.FileSizeUnsupportedReason == "" {
+		t.Fatal("unsupported file size must carry a human-readable reason")
+	}
+	// 文案不能让管理员以为「重启就好」——重启不会生效。
+	if strings.Contains(result.FileSizeUnsupportedReason, "重启") &&
+		!strings.Contains(result.FileSizeUnsupportedReason, "重启也不会生效") {
+		t.Fatalf("reason must not imply that restarting fixes it: %q", result.FileSizeUnsupportedReason)
+	}
+}
+
+// DescribeLogRetentionCapability 必须**无副作用**：不删任何文件。
+//
+// GET 用它填 Apply 字段。若它内部去调 setter（setter 会顺手清理），
+// 就变成「一个 GET 删日志文件」——浏览器的预取、监控探针都会触发。
+func TestDescribeLogRetentionCapabilityHasNoSideEffects(t *testing.T) {
+	dir := setupLogRetentionTestLogger(t)
+	now := time.Now()
+	// 造一份按配置「该被删」的超龄归档：40 天前，配置保留 30 天。
+	expired := writeLogRetentionArchive(t, dir, "20260101_000000.zip", 128, now.Add(-40*24*time.Hour))
+
+	settings := LogRetentionSettings{
+		Enabled:                true,
+		MaxAgeDays:             30,
+		MaxTotalGiB:            1,
+		MaxFileMiB:             100,
+		CleanupIntervalMinutes: 60,
+		MaxTotalBytes:          1 << 30,
+		MaxFileBytes:           100 << 20,
+	}
+	result := DescribeLogRetentionCapability(settings)
+
+	if _, err := os.Stat(expired); err != nil {
+		t.Fatalf("describe must not delete anything, expired archive was removed: %v", err)
+	}
+	if !result.AgeApplied || !result.TotalSizeApplied || !result.Applied {
+		t.Fatalf("enabled config should report both setters as capable, got %+v", result)
+	}
+	if result.FileSizeApplied || result.FileSizeUnsupportedReason == "" {
+		t.Fatalf("capability report must carry the file size limitation, got %+v", result)
+	}
+	if result.MaxAgeDays != 30 || result.MaxTotalBytes != 1<<30 || result.MaxFileBytes != 100<<20 {
+		t.Fatalf("capability report must echo the config, got %+v", result)
+	}
+}
+
+// 关闭状态下能力报告不谎称「已生效」。
+func TestDescribeLogRetentionCapabilityWhenDisabled(t *testing.T) {
+	result := DescribeLogRetentionCapability(LogRetentionSettings{
+		Enabled:                false,
+		MaxAgeDays:             30,
+		MaxTotalGiB:            10,
+		MaxFileMiB:             100,
+		CleanupIntervalMinutes: 60,
+		MaxTotalBytes:          10 << 30,
+		MaxFileBytes:           100 << 20,
+	})
+	if result.Enabled || result.Applied || result.AgeApplied || result.TotalSizeApplied {
+		t.Fatalf("disabled config must report nothing applied, got %+v", result)
+	}
+	if result.FileSizeUnsupportedReason == "" {
+		t.Fatal("the file size limitation exists regardless of the enabled switch")
 	}
 }
 

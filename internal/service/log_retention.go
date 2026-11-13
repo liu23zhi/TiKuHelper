@@ -219,12 +219,24 @@ type LogRetentionApplyResult struct {
 	MaxFileBytes     int64 `json:"maxFileBytes"`
 	AgeApplied       bool  `json:"ageApplied"`
 	TotalSizeApplied bool  `json:"totalSizeApplied"`
-	// FileSizePendingRestart 表示单文件上限要等进程重启才生效。
+	// FileSizeApplied 恒为 false，且**重启也不会变成 true**。
 	//
-	// 为什么：rotatingFile.maxBytes 在 openRotatingFile 时绑定，pkg/logger 只导出了
-	// SetMaxTotalLogBytes 与 SetMaxLogAgeDays 两个运行期 setter，没有改 maxBytes 的入口。
-	// 本次任务明确「logger 包只准读」，所以这里如实报告「待重启」而不是假装已生效。
-	FileSizePendingRestart bool `json:"fileSizePendingRestart"`
+	// 实测依据（不要凭直觉改这个字段）：
+	//   - pkg/logger 只导出 SetMaxTotalLogBytes 与 SetMaxLogAgeDays 两个运行期 setter，
+	//     没有改 maxBytes 的入口；
+	//   - SetupGinLog 是 `setupLoggerWithLimits(*LogDir, MaxLogFileBytes, DefaultMaxTotalLogBytes)`，
+	//     maxBytes 直接吃**常量** MaxLogFileBytes（10 MiB），全仓没有任何代码把
+	//     设置里的单文件上限传给 setupLoggerWithRetention。
+	//
+	// 所以单文件上限目前是「存得进去、完全没生效」，连重启都不行。
+	// 早期版本的字段名叫 fileSizePendingRestart（暗示重启即生效）——那是在撒谎，
+	// 已改名并加本注释，避免管理员按界面提示重启后以为好了。
+	FileSizeApplied bool `json:"fileSizeApplied"`
+	// FileSizeUnsupportedReason 非空表示单文件上限当前无法生效，值是原因（人话）。
+	//
+	// 用字符串而不是布尔：管理员需要知道「为什么」以及「要不要去找开发」。
+	// 只说 false 会让人反复重启或反复保存。
+	FileSizeUnsupportedReason string `json:"fileSizeUnsupportedReason,omitempty"`
 }
 
 // GetLogRetentionSettingsWithDB 读取日志清理配置。
@@ -330,6 +342,34 @@ func validateLogRetentionSettings(settings LogRetentionSettings) error {
 	return nil
 }
 
+// DescribeLogRetentionCapability 是**无副作用**的能力报告：只描述「按这份配置，
+// 各项参数现在能不能生效」，不调用任何 setter、不删任何文件。
+//
+// 为什么必须有它、而不能让 GET 直接调 ApplyLogRetentionConfig：
+// GET 是幂等只读语义，会被人手刷新、浏览器预取、监控探针调用。
+// 让它顺手清理一次日志等于「一个 GET 会删文件」——那是真正的 bug，
+// 而且删的是审计日志，事后无法复原。
+func DescribeLogRetentionCapability(settings LogRetentionSettings) LogRetentionApplyResult {
+	cfg := settings.Config()
+	result := LogRetentionApplyResult{
+		Enabled:                   cfg.Enabled,
+		MaxAgeDays:                cfg.MaxAgeDays,
+		MaxTotalBytes:             cfg.MaxTotalBytes,
+		MaxFileBytes:              cfg.MaxFileBytes,
+		FileSizeApplied:           false,
+		FileSizeUnsupportedReason: LogRetentionFileSizeUnsupportedReason,
+	}
+	if !cfg.Enabled {
+		// 关闭时 age / total 两项「不生效」是被关闭策略否掉的，不是能力缺失，
+		// 因此报 false，但原因由 Enabled 字段本身表达，不重复给文案。
+		return result
+	}
+	result.AgeApplied = true
+	result.TotalSizeApplied = true
+	result.Applied = true
+	return result
+}
+
 // ApplyLogRetentionConfig 把一份已换算好的配置应用到运行中的 logger。
 //
 // 两个 setter 都会在应用后立刻做一次清理（logger.SetMaxTotalLogBytes 内部调
@@ -341,12 +381,16 @@ func validateLogRetentionSettings(settings LogRetentionSettings) error {
 // 管理员会以为「另一个参数也没问题」。
 func ApplyLogRetentionConfig(cfg LogRetentionConfig) (LogRetentionApplyResult, error) {
 	result := LogRetentionApplyResult{
-		Enabled:                cfg.Enabled,
-		MaxAgeDays:             cfg.MaxAgeDays,
-		MaxTotalBytes:          cfg.MaxTotalBytes,
-		MaxFileBytes:           cfg.MaxFileBytes,
-		FileSizePendingRestart: true,
+		Enabled:       cfg.Enabled,
+		MaxAgeDays:    cfg.MaxAgeDays,
+		MaxTotalBytes: cfg.MaxTotalBytes,
+		MaxFileBytes:  cfg.MaxFileBytes,
 	}
+	// 单文件上限：无论启用与否、无论成败，当前都应用不上（见字段注释）。
+	// 放在函数最前面赋值而不是写在某个分支里 —— 分支里赋值最容易出现
+	// 「关闭状态下这个字段是空字符串」这种不一致，而它是每次响应都要显示的。
+	result.FileSizeApplied = false
+	result.FileSizeUnsupportedReason = LogRetentionFileSizeUnsupportedReason
 	if !cfg.Enabled {
 		// 关闭：一次 setter 都不调。
 		//
@@ -370,9 +414,18 @@ func ApplyLogRetentionConfig(cfg LogRetentionConfig) (LogRetentionApplyResult, e
 	} else {
 		result.TotalSizeApplied = true
 	}
+	// Applied 只表示「已经能生效的那两项都生效了」，**不含单文件上限**。
+	// 把单文件上限也算进来会让 Applied 永远 false，反而掩盖真实故障。
 	result.Applied = result.AgeApplied && result.TotalSizeApplied
 	return result, errors.Join(errs...)
 }
+
+// LogRetentionFileSizeUnsupportedReason 说明单文件上限为什么当前无法生效。
+//
+// 这段文字直接进 API 响应，是要给管理员看的，所以写成「结论 + 现状 + 影响」，
+// 不含代码符号。改这段文案时不要把它写成含糊的「暂不支持」——
+// 管理员需要据此判断「要不要重启、要不要找开发」。
+const LogRetentionFileSizeUnsupportedReason = "当前版本无法应用：日志文件的单文件大小上限在进程启动时按常量 10 MiB 固定（pkg/logger 未提供运行期修改入口），重启也不会生效。其余两项（保留天数、总体积上限）已正常生效。"
 
 // ValidateLogRetentionConfigBytes 校验生效形态（字节 / Duration），
 // 供直接调用 ApplyLogRetentionConfig 的入口与测试使用。
