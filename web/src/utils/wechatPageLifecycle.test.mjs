@@ -26,6 +26,19 @@ mock(path.join(web,'src/api/TikuComponentApi.js'),{
  getMyLocations:()=>Promise.resolve({status:200,data:{}}),
  createWechatLoginQRCode:()=>pending('qr'),getWechatLoginStatus:()=>pending('status'),bindCurrentUserWechat:()=>pending('bind'),
 })
+// Profile 页的 loadUserLevel 会调 getMyUserLevel（123 号 T-24「可用设备数量」），
+// 它来自 UserLevelApi.js 而不是上面那个模块。不 mock 它，请求就会穿过所有
+// 拦截器落到真实 axios —— 于是 afterEach 的 `no real HTTP/provider/database actions`
+// 在 Profile 侧 5 条用例上全红（Login 页不调 loadUserLevel，所以 Login 侧一直是绿的，
+// 这也是为什么这个缺口只在一半用例上暴露）。
+//
+// 返回 403 是刻意的：T-24 的实现把等级摘要当**可选展示增强**，读不到就显示「—」。
+// 用 403 能让「读失败也不会退化成『不限』、也不会让整页报错」这条语义继续被覆盖，
+// 同时保持本文件的核心判据（不得有任何真实网络 IO）不动。
+mock(path.join(web,'src/api/UserLevelApi.js'),{
+ getMyUserLevel:()=>Promise.resolve({status:403,message:'SYNTHETIC_NO_LEVEL_PERMISSION'}),
+ getUserLevels:()=>Promise.resolve({status:403,message:'SYNTHETIC_NO_LEVEL_PERMISSION'}),
+})
 mock(require.resolve('vue-router'),{useRoute:()=>activeRoute,useRouter:()=>({currentRoute:{get value(){return activeRoute}},push:v=>{routes.push(v);return Promise.resolve()}}),onBeforeRouteLeave:()=>{}})
 function deny(k){network.push(k);throw new Error('FORBIDDEN_REAL_WECHAT_LIFECYCLE_IO')}
 window.XMLHttpRequest.prototype.open=()=>deny('XHR');globalThis.fetch=window.fetch=()=>deny('fetch')
