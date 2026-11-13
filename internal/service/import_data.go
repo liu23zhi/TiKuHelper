@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"github.com/xuri/excelize/v2"
 	"gorm.io/gorm"
@@ -1192,6 +1193,22 @@ func importUserRows(db *gorm.DB, opts ImportDataOptions, index map[string]int, r
 		entry.Result = ImportRowCreated
 		result.Details = append(result.Details, entry)
 		result.Succeeded++
+
+		// 导入用户也要写 active 绑定记录（T-25 采集侧的第 4 条入口）。
+		//
+		// 为什么必须补：导入是**唯一绕过** CreateUserWithNewUserBonusInTx 的建号
+		// 路径，它直接 db.Create 却带着 Phone + PhoneBoundAt。不补的话，导入的
+		// 用户在 user_binding_records 里没有任何行 —— 而 R14 binding_churn、
+		// 44 号追缴的 history_phone_no_bonus、19 号四个开关的 Current* 分支
+		// 全都依赖这张表。
+		//
+		// 失败只记日志、不回滚整行导入：绑定记录是**旁路审计**，写不进去不该让
+		// 「用户已建成」被撤销（那会让导入结果与实际数据不一致）。这与注册路径
+		// 的取舍不同 —— 那里在事务内、失败应整体回滚；这里是逐行导入，单行审计
+		// 失败不影响主记录的正确性。
+		if err := recordActiveBindingsForNewUser(db, &user); err != nil {
+			logger.SysWarn(fmt.Sprintf("导入用户 %q 后写绑定记录失败（不影响导入结果）：%v", username, err))
+		}
 	}
 	result.ErrorReport = buildImportErrorReport(result.Details)
 	return result, nil
