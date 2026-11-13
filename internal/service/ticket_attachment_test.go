@@ -694,8 +694,17 @@ func TestTicketAttachmentDetailIncludesPlaceholders(t *testing.T) {
 	}
 }
 
-// TestTicketAttachmentPerTicketLimit 限制单工单图片数量。
-func TestTicketAttachmentPerTicketLimit(t *testing.T) {
+// TestTicketAttachmentPerTicketCountIsUnlimited 覆盖判据 ④：
+// 单工单**没有**图片张数上限 —— 连续上传 20 张（> 旧上限 9）必须全部成功。
+//
+// 这条用例替换了原来的 TestTicketAttachmentPerTicketLimit。
+// 变更说明（不是「把期望改松了」，是需求变了）：
+// 用户 2026-11-13 拍板「工单图片数量不限制」，改为限制单个工单的图片**总占用**
+// （见 TestTicketAttachmentTicketQuota）。旧用例断言的 9 张上限已被显式删除，
+// 它的防回归价值转移到「总占用」这条闸门上。
+//
+// 变异：把 TicketAttachmentMaxPerTicket = 9 与两处 count 判定恢复 → 本用例在第 10 张变红。
+func TestTicketAttachmentPerTicketCountIsUnlimited(t *testing.T) {
 	db := newTicketAttachmentTestDB(t)
 	user := &entity.User{ID: 1, Username: "alice", Role: "user", Status: "enabled"}
 	if err := db.Create(user).Error; err != nil {
@@ -703,13 +712,280 @@ func TestTicketAttachmentPerTicketLimit(t *testing.T) {
 	}
 	ticket := seedTicketAttachmentTicket(t, db, user.ID)
 	image := ticketAttachmentTestPNG(t, 8, 8)
-	for i := 0; i < TicketAttachmentMaxPerTicket; i++ {
+	// 20 > 旧上限 9：只要张数闸门还活着，第 10 张必然失败。
+	const uploads = 20
+	for i := 0; i < uploads; i++ {
 		if _, err := StoreTicketAttachmentWithDB(db, user, ticket.ID, image); err != nil {
-			t.Fatalf("upload %d: %v", i, err)
+			t.Fatalf("第 %d 张上传失败，单工单张数必须不限：%v", i+1, err)
 		}
 	}
-	if _, err := StoreTicketAttachmentWithDB(db, user, ticket.ID, image); !errors.Is(err, ErrTicketAttachmentLimit) {
-		t.Fatalf("expected limit error, got %v", err)
+	var count int64
+	if err := db.Model(&entity.TicketAttachment{}).Where("ticket_id = ?", ticket.ID).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != uploads {
+		t.Fatalf("落库张数 = %d, want %d", count, uploads)
+	}
+}
+
+// TestTicketAttachmentTicketQuotaSettingDefault 断言默认值的**字面量**。
+//
+// 写字面量 200<<20 而不是引用 DefaultTicketAttachmentMaxTicketBytes：
+// 期望值与被测常量共享同一符号时，常量漂移测试仍然绿（自证式断言）。
+func TestTicketAttachmentTicketQuotaSettingDefault(t *testing.T) {
+	db := newTicketAttachmentTestDB(t)
+	// 没写 settings 行 → 必须回落到 200 MiB。
+	if got := GetTicketAttachmentMaxTicketBytesWithDB(db); got != 209715200 {
+		t.Fatalf("default quota = %d, want 209715200 (200 MiB)", got)
+	}
+	// 非法值（非数字 / 0 / 负数）同样回落，不能把上传路径打成「一律拒绝」。
+	for _, bad := range []string{"not-a-number", "0", "-1", " "} {
+		if err := saveSystemSettingValue(db, TicketAttachmentMaxTicketBytesSettingKey, bad, "test"); err != nil {
+			t.Fatal(err)
+		}
+		if got := GetTicketAttachmentMaxTicketBytesWithDB(db); got != 209715200 {
+			t.Fatalf("invalid setting %q must fall back to 209715200, got %d", bad, got)
+		}
+	}
+	// 合法值必须生效（否则「不硬编码」就是假的）。
+	if err := saveSystemSettingValue(db, TicketAttachmentMaxTicketBytesSettingKey, "1048576", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if got := GetTicketAttachmentMaxTicketBytesWithDB(db); got != 1048576 {
+		t.Fatalf("configured quota = %d, want 1048576", got)
+	}
+}
+
+// TestTicketAttachmentTicketQuota 覆盖判据 ⑤：
+// 同一工单累计到上限 + 1 字节被拒，且**已成功的部分不被回滚**。
+//
+// 把上限调小（1 MiB）而不是真的传 200 MiB：200 MiB 的文件在测试里既不快也不稳，
+// 而这条用例要验证的是「累计判定 + 不回滚」，与阈值绝对值无关。
+// 剩下的「默认就是 200 MiB」由 TestTicketAttachmentTicketQuotaSettingDefault 钉住。
+func TestTicketAttachmentTicketQuota(t *testing.T) {
+	db := newTicketAttachmentTestDB(t)
+	user := &entity.User{ID: 1, Username: "alice", Role: "user", Status: "enabled"}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	ticket := seedTicketAttachmentTicket(t, db, user.ID)
+	// 上限调成 8 KiB：占用判定与阈值绝对值无关，调小只是让用例跑得快
+	// （默认 200 MiB 要传上千张才满）。「默认值就是 200 MiB」由
+	// TestTicketAttachmentTicketQuotaSettingDefault 单独钉住。
+	const quota int64 = 8 << 10 // 8 KiB
+	if err := saveSystemSettingValue(db, TicketAttachmentMaxTicketBytesSettingKey, "8192", "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	image := ticketAttachmentTestPNG(t, 256, 256)
+	stored := int64(len(image))
+	if stored <= 0 || stored >= quota {
+		t.Fatalf("用例前提不成立：单张 %d 字节，quota %d", stored, quota)
+	}
+
+	// 先传满：直到再加一张就会超限。
+	var accepted []int64
+	var used int64
+	for used+stored <= quota {
+		info, err := StoreTicketAttachmentWithDB(db, user, ticket.ID, image)
+		if err != nil {
+			t.Fatalf("第 %d 张上传失败：%v", len(accepted)+1, err)
+		}
+		accepted = append(accepted, info.ID)
+		used += stored
+	}
+	if len(accepted) == 0 {
+		t.Fatal("至少要有一张成功，否则「已成功的部分不被回滚」无从验证")
+	}
+	if used != quota {
+		// 允许 used < quota（除不尽），但必须已接近上限，否则说明闸门没按配置走。
+		if quota-used >= stored {
+			t.Fatalf("累计用量 %d 距上限 %d 还有一整张的余量，闸门未生效", used, quota)
+		}
+	}
+
+	// 第 N+1 张：累计会超过 quota + 1 字节 → 必须被拒。
+	if _, err := StoreTicketAttachmentWithDB(db, user, ticket.ID, image); !errors.Is(err, ErrTicketAttachmentQuota) {
+		t.Fatalf("超限上传必须返回 ErrTicketAttachmentQuota，got %v", err)
+	}
+
+	// 已成功的部分必须原样留在库里（不被回滚），且用量统计与之一致。
+	var rows []entity.TicketAttachment
+	if err := db.Where("ticket_id = ?", ticket.ID).Order("id ASC").Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if int64(len(rows)) != int64(len(accepted)) {
+		t.Fatalf("落库 %d 行，已成功 %d 行 —— 超限失败不得回滚既有行", len(rows), len(accepted))
+	}
+	var sum int64
+	for i, row := range rows {
+		if row.ID != accepted[i] {
+			t.Fatalf("第 %d 行 ID = %d, want %d", i, row.ID, accepted[i])
+		}
+		sum += row.ByteSize
+	}
+	if sum != used {
+		t.Fatalf("SUM(byte_size) = %d, 预期 %d", sum, used)
+	}
+
+	// 上限调到 2 倍后必须又能上传（证明闸门读的是配置，不是常量）。
+	if err := saveSystemSettingValue(db, TicketAttachmentMaxTicketBytesSettingKey, "16384", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := StoreTicketAttachmentWithDB(db, user, ticket.ID, image); err != nil {
+		t.Fatalf("提高上限后必须可以继续上传，got %v", err)
+	}
+}
+
+// TestTicketAttachmentQuotaCountsLogicalUsageNotDistinct 是三处口径钉子：
+// 同一张图被上传多次时，占用按**行**累加（逻辑占用），不按去重后的字节累加。
+//
+// 若有人把 ticketAttachmentUsageBytes 改成 SUM(DISTINCT sha256)（或接上 blob 去重后
+// 顺手改成「只算一份」），本用例必红 —— 否则用户拿同一张图重复引用一千次就不受任何限制。
+func TestTicketAttachmentQuotaCountsLogicalUsageNotDistinct(t *testing.T) {
+	db := newTicketAttachmentTestDB(t)
+	user := &entity.User{ID: 1, Username: "alice", Role: "user", Status: "enabled"}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	ticket := seedTicketAttachmentTicket(t, db, user.ID)
+	const quota int64 = 4096
+	if err := saveSystemSettingValue(db, TicketAttachmentMaxTicketBytesSettingKey, "4096", "test"); err != nil {
+		t.Fatal(err)
+	}
+	image := ticketAttachmentTestPNG(t, 256, 256)
+	perRow := int64(len(image))
+	if perRow <= 0 || perRow >= quota {
+		t.Fatalf("用例前提不成立：单张 %d 字节，quota %d", perRow, quota)
+	}
+	storeUntilFull := func() int {
+		n := 0
+		for {
+			if _, err := StoreTicketAttachmentWithDB(db, user, ticket.ID, image); err != nil {
+				if errors.Is(err, ErrTicketAttachmentQuota) {
+					return n
+				}
+				t.Fatalf("unexpected error: %v", err)
+			}
+			n++
+			if n > 1000 {
+				t.Fatal("闸门没有生效")
+			}
+		}
+	}
+	got := storeUntilFull()
+	want := int(quota / perRow)
+	if got != want {
+		t.Fatalf("同内容重复上传落库 %d 行，按逻辑占用应为 %d 行（去重口径会把额度放大 N 倍）", got, want)
+	}
+	// 另一侧边界：去重口径下额度会被放大 N 倍，落库行数会明显多于 want。
+	if got > want*2 {
+		t.Fatalf("落库 %d 行远超逻辑占用允许的 %d 行：占用被按去重口径计算了", got, want)
+	}
+	// 一次真正相同的字节进来 N 次，库里的 sha256 字段必然全相同 —— 证明这确实是「同一张图」。
+	var distinct int64
+	if err := db.Model(&entity.TicketAttachment{}).Where("ticket_id = ?", ticket.ID).
+		Distinct("sha256").Count(&distinct).Error; err != nil {
+		t.Fatal(err)
+	}
+	if distinct != 1 {
+		t.Fatalf("用例前提不成立：期望同一张图有 1 个 distinct sha256，实际 %d", distinct)
+	}
+	// 直接钉占用函数的返回值：必须等于「行数 × 单行字节」，不是「去重后一份」。
+	//
+	// 这条比上面的行数断言更早暴露问题：若把它改成 GROUP BY sha256 / SUM(DISTINCT ...)，
+	// 单次 Scan 只会取到一行的字节数，这里立刻不等（行数断言那侧反而可能因为
+	// 闸门被绕过后仍能收敛到同样的行数而侥幸通过 —— 实测确实如此）。
+	used, err := ticketAttachmentUsageBytes(db, ticket.ID, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := int64(got) * perRow; used != want {
+		t.Fatalf("逻辑占用 = %d, want %d（%d 行 × %d 字节）；去重口径会把它压成 %d", used, want, got, perRow, perRow)
+	}
+}
+
+// TestTicketAttachmentTicketQuotaDefaultIs200MiB 是判据 ⑤ 的**字面**版本：
+// 默认配置下，同一工单累计到 200 MiB 后再传一张（哪怕只有几百字节）必须被拒。
+//
+// 为了不真的上传 200 MiB 数据，这里按「逻辑占用」的口径直接把 byte_size 写进库里 ——
+// 闸门判的是 SUM(byte_size)，与这些行当初是怎么来的无关（见 ticketAttachmentUsageBytes 的注释）。
+// 这也顺带证明闸门不依赖 blob 去重表：这些行没有任何 blob 关联。
+func TestTicketAttachmentTicketQuotaDefaultIs200MiB(t *testing.T) {
+	db := newTicketAttachmentTestDB(t)
+	user := &entity.User{ID: 1, Username: "alice", Role: "user", Status: "enabled"}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	ticket := seedTicketAttachmentTicket(t, db, user.ID)
+
+	const quota = int64(200 << 20) // 209715200，与默认值同值但**写字面量**（防常量漂移自证）
+	// 先铺到 quota - 1 字节。
+	if err := db.Create(&entity.TicketAttachment{
+		TicketID: ticket.ID, UserID: user.ID, MediaType: "image/png",
+		ByteSize: quota - 1, SHA256: strings.Repeat("a", 64),
+		ScanState: entity.TicketAttachmentScanPending,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	// 再传一张真实小图（几百字节）：累计 = quota - 1 + n > quota → 必拒。
+	//
+	// 注意这里**没有**「+1 字节」的精确构造：单张图的大小由编码决定，无法精确等于 1 字节。
+	// 边界精确性（恰好等于上限通过 / 上限 + 1 字节失败）由
+	// TestTicketAttachmentImageAcceptsExactlySizeLimit 在单张层面钉住；
+	// 本用例负责的是「累计闸门用的是同一把尺」。
+	small := ticketAttachmentTestPNG(t, 256, 256)
+	if _, err := StoreTicketAttachmentWithDB(db, user, ticket.ID, small); !errors.Is(err, ErrTicketAttachmentQuota) {
+		t.Fatalf("默认 200 MiB 累计上限必须生效，got %v", err)
+	}
+	// 既有行不得被回滚，且字节口径就是 SUM(byte_size)。
+	var sum int64
+	if err := db.Model(&entity.TicketAttachment{}).Where("ticket_id = ?", ticket.ID).
+		Select("COALESCE(SUM(byte_size), 0)").Scan(&sum).Error; err != nil {
+		t.Fatal(err)
+	}
+	if sum != quota-1 {
+		t.Fatalf("SUM(byte_size) = %d, want %d（被拒的上传不得留下任何行）", sum, quota-1)
+	}
+}
+
+// TestTicketAttachmentDraftQuotaIsScopedPerUploader 是草稿态（ticket_id=0）的隔离钉子：
+// 额度必须按上传者分别统计，否则 A 传满就会把 B 一起锁死。
+func TestTicketAttachmentDraftQuotaIsScopedPerUploader(t *testing.T) {
+	db := newTicketAttachmentTestDB(t)
+	alice := &entity.User{ID: 1, Username: "alice", Role: "user", Status: "enabled"}
+	bob := &entity.User{ID: 2, Username: "bob", Role: "user", Status: "enabled"}
+	for _, u := range []*entity.User{alice, bob} {
+		if err := db.Create(u).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	const quota int64 = 4096
+	if err := saveSystemSettingValue(db, TicketAttachmentMaxTicketBytesSettingKey, "4096", "test"); err != nil {
+		t.Fatal(err)
+	}
+	image := ticketAttachmentTestPNG(t, 256, 256)
+	// 有界循环：闸门失效时**必须**以失败结束，不能挂起（挂起会把 CI 拖成超时，
+	// 掩盖真正的原因；实测在「闸门短路」变异下无限循环）。
+	filled := 0
+	for {
+		if _, err := StoreTicketAttachmentWithDB(db, alice, 0, image); err != nil {
+			if !errors.Is(err, ErrTicketAttachmentQuota) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			break
+		}
+		filled++
+		if filled > 1000 {
+			t.Fatal("闸门没有生效：草稿额度填了 1000 张仍未报超限")
+		}
+	}
+	if filled == 0 {
+		t.Fatal("至少要有一张成功，否则「按上传者隔离」无从验证")
+	}
+	// alice 的草稿额度已满，bob 必须还能传。
+	if _, err := StoreTicketAttachmentWithDB(db, bob, 0, image); err != nil {
+		t.Fatalf("草稿额度必须按上传者隔离，bob 不该被 alice 的占用锁死：%v", err)
 	}
 }
 

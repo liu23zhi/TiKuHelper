@@ -22,10 +22,19 @@ import (
 )
 
 const (
-	// TicketAttachmentMaxPerTicket 限制单个工单的图片数量，避免把工单表撑成图床。
-	TicketAttachmentMaxPerTicket = 9
 	// TicketAttachmentMaxPerMessage 限制单次回复携带的图片数量。
+	//
+	// 注意：**没有**「单工单图片张数上限」。用户已拍板（2026-11-13）工单图片数量不限制，
+	// 改为限制「单个工单图片总占用」（见 TicketAttachmentMaxTicketBytesSettingKey）。
+	// 单条消息的张数上限保留：它限制的是**一次请求**的规模，与工单累计无关。
 	TicketAttachmentMaxPerMessage = 6
+	// TicketAttachmentMaxTicketBytesSettingKey 是「单个工单图片总占用」上限的 system_settings 键。
+	//
+	// 走配置而不是常量，是因为这个数取决于部署的存储规模：200 MiB 对自建 SQLite 是合理的，
+	// 对成品 SaaS 可能偏小。改一行 settings 就能调，不用发版。
+	TicketAttachmentMaxTicketBytesSettingKey = "ticket_attachment_max_ticket_bytes"
+	// DefaultTicketAttachmentMaxTicketBytes 是上面的默认值（200 MiB）。
+	DefaultTicketAttachmentMaxTicketBytes int64 = 200 << 20
 	// TicketAttachmentScanMaxAttempts 与工单提醒同构：含首次共 3 次尝试。
 	TicketAttachmentScanMaxAttempts = 3
 	// ticketAttachmentScanTimeout 单次检测外呼的超时。上传路径不同步调用它，
@@ -37,8 +46,48 @@ var (
 	// ErrTicketAttachmentDisabled 表示加密密钥未配置。加密是落库的前置条件：
 	// 没有密钥就不该把用户图片写到磁盘上，因此上传直接失败而不是明文降级。
 	ErrTicketAttachmentDisabled = errors.New("工单图片加密未配置")
-	ErrTicketAttachmentLimit    = errors.New("图片数量超出限制")
+	ErrTicketAttachmentLimit    = errors.New("单条消息携带的图片数量超出限制")
+	// ErrTicketAttachmentQuota 是「工单图片总占用超限」。
+	//
+	// 与 ErrTicketAttachmentLimit 分开：前者是我传的这张图太大，后者是这个工单里
+	// 的图片已经攒到上限；前端需要给出的提示完全不同（换一张更小的图 vs 无法再加图）。
+	ErrTicketAttachmentQuota = errors.New("该工单的图片总占用已达上限")
 )
+
+// GetTicketAttachmentMaxTicketBytesWithDB 返回单个工单图片总占用上限（字节）。
+//
+// 读取形态与 DeviceLimitEnabled 那类设置一致：走 system_settings，缺失/非法/非正数
+// 时回落到默认值，绝不让一条坏配置把上传路径整条打挂。
+func GetTicketAttachmentMaxTicketBytesWithDB(db *gorm.DB) int64 {
+	if db == nil {
+		return DefaultTicketAttachmentMaxTicketBytes
+	}
+	return getPositiveInt64SystemSetting(db, TicketAttachmentMaxTicketBytesSettingKey, DefaultTicketAttachmentMaxTicketBytes)
+}
+
+// ticketAttachmentUsageBytes 统计「逻辑占用」：SUM(byte_size)。
+//
+// ⚠️ **口径：按逻辑占用计，每行都算全文**。
+// 即使将来接上 blob 去重（ticket_attachment_blobs，同一张图只存一份密文），
+// 这里也必须继续按行累加 byte_size —— 否则用户可以把同一张图在上千个工单/上千条
+// 消息里重复引用而不受任何限制，去重省下的只是磁盘，不是「这个工单用了多少配额」。
+// 反过来说：去重不会让这里的数字变小，这是**有意的**，不要「优化」成 SUM(DISTINCT sha256)。
+//
+// ticketID > 0 统计该工单的占用；ticketID == 0（建单前的草稿图）按上传者统计：
+// 草稿图还没有归属工单，若不限就等于开了一个无上限的个人图床。
+func ticketAttachmentUsageBytes(db *gorm.DB, ticketID int64, userID int32) (int64, error) {
+	scope := db.Model(&entity.TicketAttachment{})
+	if ticketID > 0 {
+		scope = scope.Where("ticket_id = ?", ticketID)
+	} else {
+		scope = scope.Where("ticket_id = ? AND user_id = ?", 0, userID)
+	}
+	var used int64
+	if err := scope.Select("COALESCE(SUM(byte_size), 0)").Scan(&used).Error; err != nil {
+		return 0, err
+	}
+	return used, nil
+}
 
 // ticketAttachmentCipher 返回附件加密用的 AEAD。
 //
@@ -223,24 +272,25 @@ func StoreTicketAttachmentWithDB(db *gorm.DB, user *entity.User, ticketID int64,
 	if err != nil {
 		return TicketAttachmentInfo{}, err
 	}
-	// 便宜的检查（数量上限）先做，再解码 PNG/JPEG。
-	var count int64
-	scope := db.Model(&entity.TicketAttachment{})
-	if ticketID > 0 {
-		scope = scope.Where("ticket_id = ?", ticketID)
-	} else {
-		// 草稿区按上传者限额，避免有人把表当图床。
-		scope = scope.Where("ticket_id = ? AND user_id = ?", 0, user.ID)
-	}
-	if err := scope.Count(&count).Error; err != nil {
+	// 便宜的检查（占用上限）先做，再解码 PNG/JPEG/GIF/WebP。
+	//
+	// 这里只是**提前出局**：用量已经顶到上限时不必解码。真正决定是否放行的是
+	// 下面事务里的复查（那时才知道这一张图片编码后到底占多少字节）。
+	maxTicketBytes := GetTicketAttachmentMaxTicketBytesWithDB(db)
+	usedBytes, err := ticketAttachmentUsageBytes(db, ticketID, user.ID)
+	if err != nil {
 		return TicketAttachmentInfo{}, err
 	}
-	if count >= TicketAttachmentMaxPerTicket {
-		return TicketAttachmentInfo{}, ErrTicketAttachmentLimit
+	if usedBytes >= maxTicketBytes {
+		return TicketAttachmentInfo{}, ErrTicketAttachmentQuota
 	}
 	mimeType, safe, err := safeTicketAttachmentImage(data)
 	if err != nil {
 		return TicketAttachmentInfo{}, err
+	}
+	// 单张图自己就超过整张工单的额度时，直接拒绝：否则要先把前面的图攒满才发现这张放不进去。
+	if int64(len(safe)) > maxTicketBytes {
+		return TicketAttachmentInfo{}, ErrTicketAttachmentQuota
 	}
 	// 内容审核：**同步**、在落库之前。开关默认关闭（零外呼）。
 	//
@@ -272,19 +322,16 @@ func StoreTicketAttachmentWithDB(db *gorm.DB, user *entity.User, ticketID int64,
 
 	var created entity.TicketAttachment
 	err = db.Transaction(func(tx *gorm.DB) error {
-		// 在同一事务里复查数量，避免两个并发上传都通过前置检查后超限。
-		var inTx int64
-		recheck := tx.Model(&entity.TicketAttachment{})
-		if ticketID > 0 {
-			recheck = recheck.Where("ticket_id = ?", ticketID)
-		} else {
-			recheck = recheck.Where("ticket_id = ? AND user_id = ?", 0, user.ID)
-		}
-		if err := recheck.Count(&inTx).Error; err != nil {
+		// 在同一事务里复查占用，避免两个并发上传都通过前置检查后一起越界。
+		//
+		// 口径照抄 ticketAttachmentUsageBytes：SUM(byte_size) 按行累加（逻辑占用），
+		// 不是 SUM(DISTINCT sha256) —— 同一张图重复引用也要算钱。
+		inTxUsed, err := ticketAttachmentUsageBytes(tx, ticketID, user.ID)
+		if err != nil {
 			return err
 		}
-		if inTx >= TicketAttachmentMaxPerTicket {
-			return ErrTicketAttachmentLimit
+		if inTxUsed+int64(len(safe)) > maxTicketBytes {
+			return ErrTicketAttachmentQuota
 		}
 		// 先插入拿到自增 ID，再用它作为 AAD 加密 —— ID 因此被绑定进密文，
 		// 把一行密文搬到另一行必然解密失败。
@@ -441,7 +488,9 @@ func ReadTicketAttachmentWithDB(db *gorm.DB, user *entity.User, attachmentID int
 	if cipherErr != nil {
 		return "", nil, false, cipherErr
 	}
-	if attachment.MediaType != "image/png" && attachment.MediaType != "image/jpeg" {
+	// media_type 走白名单而不是「png 或 jpeg」的硬编码：新增格式（gif/webp）时
+	// 只改 ticketAttachmentMediaTypeAllowed 一处，读取路径不会漏掉。
+	if !ticketAttachmentMediaTypeAllowed(attachment.MediaType) {
 		return "", nil, false, ErrTicketAttachmentInvalid
 	}
 	if len(attachment.Nonce) != aead.NonceSize() ||
