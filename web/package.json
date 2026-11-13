@@ -20,6 +20,7 @@
     "ant-design-vue": "^4.2.6",
     "axios": "^1.21.0",
     "core-js": "^3.51.0",
+    "echarts": "^6.1.0",
     "qrcode": "^1.5.4",
     "sweetalert2": "^11.22.0",
     "vue": "^3.5.44",
