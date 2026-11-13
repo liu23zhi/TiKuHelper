@@ -43,6 +43,13 @@ const (
 	// 数据源：tickets 主表（user_id + created_at，两列都有索引）。
 	// 只数「建单」，不数 ticket_messages —— 回复不是新建工单。
 	RiskRuleIDTicketFlood = "ticket_flood"
+	// RiskRuleIDAbnormalRegisterPattern 是 96 §2.1 的 R11「注册名高度模板化」：
+	// 同一时间窗内出现 ≥N 个「同前缀 + 连续递增数字」的用户名。
+	//
+	// 数据源：users.username + users.created_at。
+	// ⚠️ 这两列**都没有索引**（见 service.collectAbnormalRegisterPatternCandidates
+	// 的性能说明），因此按时间窗先过滤缩小候选集是必要的。
+	RiskRuleIDAbnormalRegisterPattern = "abnormal_register_pattern"
 )
 
 // RiskRuleDefault 是一条规则的**代码内默认值**。
@@ -134,6 +141,15 @@ var DefaultRiskBehaviorRules = []RiskRuleDefault{
 		Threshold:       5,
 		ThrottleSeconds: 24 * 60 * 60,
 		Description:     "单用户在 24 小时窗口内新建工单数达到阈值。多为反复提交同一问题或滥用客服通道，只告警不处置。",
+	},
+	{
+		RuleID:   RiskRuleIDAbnormalRegisterPattern,
+		Name:     "注册名高度模板化",
+		Severity: RiskSeverityMedium,
+		// 96 §2.1 R11：同前缀 + 递增数字的用户名 ≥N 个，N 默认 3。
+		Threshold:       3,
+		ThrottleSeconds: 24 * 60 * 60,
+		Description:     "同一自然日窗口内出现达到阈值的「同前缀（≥3 字符）+ 连续递增数字」用户名，常见于批量注册养号，只告警不处置。",
 	},
 }
 

@@ -320,6 +320,9 @@ test('规则名与级别：未知值回落而不是抛错', () => {
   assert.equal(riskRuleLabel('debt_system'), '系统总欠款突增')
   // R1（96 §2.1）：后端 rule_id 必须与这里逐字一致，否则筛选下拉选中后查不到数据。
   assert.equal(riskRuleLabel('multi_account_ip'), '同 IP 多账号')
+  // R8 / R11：后端 rule_id 必须与这里逐字一致，否则筛选下拉选中后查不到数据。
+  assert.equal(riskRuleLabel('ticket_flood'), '工单刷屏')
+  assert.equal(riskRuleLabel('abnormal_register_pattern'), '注册名高度模板化')
   assert.equal(riskRuleLabel(''), '未知规则')
   assert.equal(riskRuleLabel('future_rule'), 'future_rule', '未知规则要原样显示，便于排错')
   assert.equal(riskSeverityMeta('high').label, '高')

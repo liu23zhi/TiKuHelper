@@ -34,6 +34,10 @@ export const RISK_RULE_OPTIONS = Object.freeze([
   // 96 §2.1 的 R1（18 条行为规则里第一条落地的）。
   // 后端 rule_id 是 `multi_account_ip`，阈值键 `risk_rule_multi_account_ip_threshold`。
   { value: 'multi_account_ip', label: '同 IP 多账号' },
+  // R8：单用户 24h 建单 ≥N（默认 5）
+  { value: 'ticket_flood', label: '工单刷屏' },
+  // R11：同前缀 + 连续递增数字用户名 ≥N（默认 3）
+  { value: 'abnormal_register_pattern', label: '注册名高度模板化' },
 ])
 
 const RISK_RULE_LABELS = Object.freeze(

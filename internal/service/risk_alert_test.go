@@ -961,11 +961,12 @@ func TestLoadRiskRulesFallsBackToCodeDefaults(t *testing.T) {
 	// 配置完全缺失时的默认阈值（字面量，故意不引用 entity 常量：
 	// 常量漂移时这里必须红）。
 	wantThreshold := map[string]float64{
-		"debt_user":        100,
-		"debt_batch":       1000,
-		"debt_system":      5000,
-		"multi_account_ip": 5,
-		"ticket_flood":     5,
+		"debt_user":                 100,
+		"debt_batch":                1000,
+		"debt_system":               5000,
+		"multi_account_ip":          5,
+		"ticket_flood":              5,
+		"abnormal_register_pattern": 3,
 	}
 	if len(rules) != len(wantThreshold) {
 		t.Fatalf("fallback rule count = %d, want %d（实际：%v）", len(rules), len(wantThreshold), ruleIDsOf(rules))
@@ -1541,6 +1542,668 @@ func assertStatusGuardStillCatchesRealWrite(t *testing.T) {
 
 // note: itoa 定义见文件末尾注释
 
+// ════════════════════════════════════════════════════════════════════
+// R8 · ticket_flood（96 §2.1）—— 单用户 24h 建单 ≥N 张
+//
+// 数据源：tickets **主表**（user_id + created_at）。
+// 两条关键取舍（都有对应用例钉住）：
+//   1. 不数 ticket_messages 回复 —— 数是「新建工单」不是「沟通过程」；
+//   2. 不数系统的自动建单（origin=system，Q26 赠送判定失败自动建单）——
+//      那是用户无过错时系统建的，算到用户头上属于误报。
+// ════════════════════════════════════════════════════════════════════
+
+const riskR8TestUserID = int32(4242)
+
+// seedRiskTicket 造一张工单（走真实实体，让 NOT NULL 约束与默认值都生效）。
+func seedRiskTicket(t *testing.T, db *gorm.DB, userID int32, origin string, at time.Time) {
+	t.Helper()
+	ticket := entity.Ticket{
+		UserID: userID, UserName: "u" + strconv.Itoa(int(userID)),
+		Subject: "测试工单", Status: "open", Priority: "normal",
+		Origin: origin, Category: "general", LastMessageAt: at,
+	}
+	if err := db.Create(&ticket).Error; err != nil {
+		t.Fatalf("create ticket: %v", err)
+	}
+	// created_at 是 autoCreateTime，必须回写目标时刻才能控制窗口。
+	if err := db.Model(&entity.Ticket{}).Where("id = ?", ticket.ID).Update("created_at", at).Error; err != nil {
+		t.Fatalf("backdate ticket: %v", err)
+	}
+}
+
+// 判据①：阈值边界 —— 4 张不告警，5 张告警 1 条（阈值默认 5）。
+func TestRiskTicketFloodThresholdBoundary(t *testing.T) {
+	t.Run("four_tickets_below_threshold", func(t *testing.T) {
+		db := newRiskAlertTestDB(t)
+		seedRiskRules(t, db)
+		now := riskR1TestTime()
+		for i := 0; i < 4; i++ {
+			seedRiskTicket(t, db, riskR8TestUserID, entity.TicketOriginUser, now.Add(-time.Duration(i)*time.Minute))
+		}
+		if _, err := EvaluateDebtAlerts(db, now); err != nil {
+			t.Fatalf("evaluate: %v", err)
+		}
+		if got := countRuleWarnings(t, db, "ticket_flood"); got != 0 {
+			t.Fatalf("4 张 < 阈值 5 必须不告警，实际 %d 条", got)
+		}
+	})
+
+	t.Run("five_tickets_meets_threshold", func(t *testing.T) {
+		db := newRiskAlertTestDB(t)
+		seedRiskRules(t, db)
+		now := riskR1TestTime()
+		for i := 0; i < 5; i++ {
+			seedRiskTicket(t, db, riskR8TestUserID, entity.TicketOriginUser, now.Add(-time.Duration(i)*time.Minute))
+		}
+		if _, err := EvaluateDebtAlerts(db, now); err != nil {
+			t.Fatalf("evaluate: %v", err)
+		}
+		if got := countRuleWarnings(t, db, "ticket_flood"); got != 1 {
+			t.Fatalf("5 张 = 阈值 5 必须告警且只 1 条，实际 %d 条", got)
+		}
+		var warning entity.RiskWarning
+		if err := db.Where("rule_id = ?", "ticket_flood").First(&warning).Error; err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if warning.UserID == nil || *warning.UserID != riskR8TestUserID {
+			t.Fatalf("告警必须归属到该用户，实际 %+v", warning.UserID)
+		}
+		var detail map[string]any
+		if err := json.Unmarshal([]byte(warning.Detail), &detail); err != nil {
+			t.Fatalf("detail 必须是 JSON: %v (%s)", err, warning.Detail)
+		}
+		if got, _ := detail["ticketCount"].(float64); got != 5 {
+			t.Fatalf("detail.ticketCount = %v, want 5", detail["ticketCount"])
+		}
+	})
+
+	t.Run("different_users_isolated", func(t *testing.T) {
+		db := newRiskAlertTestDB(t)
+		seedRiskRules(t, db)
+		now := riskR1TestTime()
+		// 两个用户各 4 张：各自都不到阈值 → 都不告警。
+		for userID := int32(100); userID < 102; userID++ {
+			for i := 0; i < 4; i++ {
+				seedRiskTicket(t, db, userID, entity.TicketOriginUser, now.Add(-time.Duration(i)*time.Minute))
+			}
+		}
+		if _, err := EvaluateDebtAlerts(db, now); err != nil {
+			t.Fatalf("evaluate: %v", err)
+		}
+		if got := countRuleWarnings(t, db, "ticket_flood"); got != 0 {
+			t.Fatalf("两个用户各 4 张都不到阈值，必须都不告警，实际 %d 条", got)
+		}
+	})
+}
+
+// 判据②：系统自动建的工单不算用户刷屏（origin=system 排除）。
+//
+// 变异方向：去掉 origin 过滤 → 本用例红（5 张系统单会被算成刷屏）。
+func TestRiskTicketFloodExcludesSystemTickets(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	now := riskR1TestTime()
+	// 5 张全部来自系统自动建单（Q26 赠送判定失败）。
+	for i := 0; i < 5; i++ {
+		seedRiskTicket(t, db, riskR8TestUserID, entity.TicketOriginSystem, now.Add(-time.Duration(i)*time.Minute))
+	}
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "ticket_flood"); got != 0 {
+		t.Fatalf("5 张系统自动建单不得算作用户刷屏，实际 %d 条", got)
+	}
+	// 反向对照：同样 5 张但 origin=user 时必须告警（证明上面的 0 是过滤生效，不是数据不足）。
+	for i := 0; i < 5; i++ {
+		seedRiskTicket(t, db, 9999, entity.TicketOriginUser, now.Add(-time.Duration(i)*time.Minute))
+	}
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "ticket_flood"); got != 1 {
+		t.Fatalf("同样的 5 张但 origin=user 必须告警，实际 %d 条（若为 0 说明上面的 0 与过滤无关）", got)
+	}
+}
+
+// 判据③：窗口生效 —— 昨天的工单不算进今天的窗口。
+//
+// 变异方向：去掉窗口条件 → 本用例红（6 张跨两天会被算成 6 张）。
+func TestRiskTicketFloodRespectsWindow(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	now := riskR1TestTime()
+	// 今天 2 张（不到阈值 5）+ 昨天 5 张（若跨窗口累加会是 7）。
+	for i := 0; i < 2; i++ {
+		seedRiskTicket(t, db, riskR8TestUserID, entity.TicketOriginUser, now.Add(-time.Duration(i)*time.Minute))
+	}
+	yesterday := now.Add(-24 * time.Hour)
+	for i := 0; i < 5; i++ {
+		seedRiskTicket(t, db, riskR8TestUserID, entity.TicketOriginUser, yesterday.Add(-time.Duration(i)*time.Minute))
+	}
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "ticket_flood"); got != 0 {
+		t.Fatalf("今天只 2 张（昨天的 5 张不在窗口内）必须不告警，实际 %d 条", got)
+	}
+	// 反向对照：把评估时刻挪到昨天，则昨天那 5 张必须命中。
+	if _, err := EvaluateDebtAlerts(db, yesterday); err != nil {
+		t.Fatalf("evaluate yesterday: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "ticket_flood"); got != 1 {
+		t.Fatalf("昨天的窗口里 5 张必须告警，实际 %d 条（若为 0 说明窗口条件写反了）", got)
+	}
+}
+
+// 判据④：阈值可配（双向）。
+func TestRiskTicketFloodThresholdIsConfigurable(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	now := riskR1TestTime()
+	for i := 0; i < 3; i++ {
+		seedRiskTicket(t, db, riskR8TestUserID, entity.TicketOriginUser, now.Add(-time.Duration(i)*time.Minute))
+	}
+	// 阈值调到 10：3 张不足 → 不告警。
+	putRiskSetting(t, db, "risk_rule_ticket_flood_threshold", "10")
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "ticket_flood"); got != 0 {
+		t.Fatalf("阈值 10 时 3 张必须不告警，实际 %d 条", got)
+	}
+	// 阈值调到 3：同一批数据必须告警（双向断言，防止硬编码也能过）。
+	putRiskSetting(t, db, "risk_rule_ticket_flood_threshold", "3")
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "ticket_flood"); got != 1 {
+		t.Fatalf("阈值 3 时 3 张必须告警，实际 %d 条", got)
+	}
+}
+
+// 判据⑤：同一窗口重复评估只写 1 条（SubjectKey 节流）。
+func TestRiskTicketFloodThrottlesWithinWindow(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	now := riskR1TestTime()
+	for i := 0; i < 5; i++ {
+		seedRiskTicket(t, db, riskR8TestUserID, entity.TicketOriginUser, now.Add(-time.Duration(i)*time.Minute))
+	}
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "ticket_flood"); got != 1 {
+		t.Fatalf("首次必须 1 条，实际 %d", got)
+	}
+	for _, offset := range []time.Duration{time.Hour, 6 * time.Hour} {
+		if _, err := EvaluateDebtAlerts(db, now.Add(offset)); err != nil {
+			t.Fatalf("evaluate +%v: %v", offset, err)
+		}
+	}
+	if got := countRuleWarnings(t, db, "ticket_flood"); got != 1 {
+		t.Fatalf("同一窗口内重复评估必须只 1 条，实际 %d", got)
+	}
+	var warning entity.RiskWarning
+	if err := db.Where("rule_id = ?", "ticket_flood").First(&warning).Error; err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	wantPrefix := "ticket_flood:user:" + strconv.Itoa(int(riskR8TestUserID)) + ":"
+	if !strings.HasPrefix(warning.SubjectKey, wantPrefix) {
+		t.Fatalf("subjectKey 形态错误：%q（期望前缀 %q）", warning.SubjectKey, wantPrefix)
+	}
+}
+
+// 判据⑥：只告警不处置 —— 工单状态、用户状态、黑名单都不得被改。
+func TestRiskTicketFloodNeverTakesAction(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	if err := db.AutoMigrate(&entity.BlacklistEntry{}); err != nil {
+		t.Fatalf("migrate blacklist: %v", err)
+	}
+	seedRiskRules(t, db)
+	now := riskR1TestTime()
+	user := entity.User{Username: "flooder", Status: "enabled", Role: "user", Balance: 10}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	for i := 0; i < 6; i++ {
+		seedRiskTicket(t, db, user.ID, entity.TicketOriginUser, now.Add(-time.Duration(i)*time.Minute))
+	}
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	// 前置条件：必须真的告警了（否则下面的「未变」全是因为没跑）。
+	if got := countRuleWarnings(t, db, "ticket_flood"); got != 1 {
+		t.Fatalf("前置条件：必须已产生告警，实际 %d 条", got)
+	}
+	// 用户状态/余额未变。
+	var after entity.User
+	if err := db.First(&after, user.ID).Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if after.Status != "enabled" || after.Balance != user.Balance {
+		t.Fatalf("C1：风控不得改用户状态/余额，得到 %+v", after)
+	}
+	// 工单状态未被改（不得「自动关闭刷屏工单」）。
+	var tickets []entity.Ticket
+	if err := db.Where("user_id = ?", user.ID).Find(&tickets).Error; err != nil {
+		t.Fatalf("load tickets: %v", err)
+	}
+	for _, ticket := range tickets {
+		if ticket.Status != "open" {
+			t.Fatalf("C1：风控不得改工单状态，ticket %d status=%q", ticket.ID, ticket.Status)
+		}
+	}
+	// 黑名单未新增。
+	var blacklistCount int64
+	if err := db.Model(&entity.BlacklistEntry{}).Count(&blacklistCount).Error; err != nil {
+		t.Fatalf("count blacklist: %v", err)
+	}
+	if blacklistCount != 0 {
+		t.Fatalf("C1：风控不得写黑名单，实际 %d 行", blacklistCount)
+	}
+}
+
+// 判据⑦：规则停用时不计告警（含反向对照）。
+func TestRiskTicketFloodDisabledRuleDoesNotFire(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	now := riskR1TestTime()
+	for i := 0; i < 6; i++ {
+		seedRiskTicket(t, db, riskR8TestUserID, entity.TicketOriginUser, now.Add(-time.Duration(i)*time.Minute))
+	}
+	if err := db.Model(&entity.RiskRule{}).Where("rule_id = ?", "ticket_flood").
+		Update("enabled", false).Error; err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "ticket_flood"); got != 0 {
+		t.Fatalf("停用时不得告警，实际 %d 条", got)
+	}
+	if err := db.Model(&entity.RiskRule{}).Where("rule_id = ?", "ticket_flood").
+		Update("enabled", true).Error; err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "ticket_flood"); got != 1 {
+		t.Fatalf("重新启用后必须告警，实际 %d 条", got)
+	}
+}
+
+// ════════════════════════════════════════════════════════════════════
+// R11 · abnormal_register_pattern（96 §2.1）
+// 同一自然日窗口内出现 ≥N 个「同前缀（≥3 字母）+ 连续递增数字」的用户名
+//
+// 本规则唯一的风险是**大面积误报**：写成 `^[a-z]+\d+$` 会把
+// `user2024` / `test123` / `abc999` 这类普通用户名全算进去。
+// 因此下面专门有一条「正常用户不误报」的对照用例，
+// 变异「把连续递增放宽成任意数字」时它必须红。
+// ════════════════════════════════════════════════════════════════════
+
+// seedRiskRegisterUser 造一个指定注册时刻的用户（username + created_at 都受控）。
+func seedRiskRegisterUser(t *testing.T, db *gorm.DB, username string, at time.Time) {
+	t.Helper()
+	user := entity.User{Username: username, Status: "enabled", Role: "user"}
+	if err := db.Create(&user).Error; err != nil {
+		t.Fatalf("create user %q: %v", username, err)
+	}
+	// created_at 是 autoCreateTime，必须回写目标时刻才能控制窗口。
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Update("created_at", at).Error; err != nil {
+		t.Fatalf("backdate user %q: %v", username, err)
+	}
+}
+
+// 判据①：阈值边界 —— 连续 2 个不告警，连续 3 个告警 1 条（阈值默认 3）。
+func TestRiskAbnormalRegisterPatternThresholdBoundary(t *testing.T) {
+	t.Run("two_consecutive_below_threshold", func(t *testing.T) {
+		db := newRiskAlertTestDB(t)
+		seedRiskRules(t, db)
+		now := riskR1TestTime()
+		for _, name := range []string{"batchone1", "batchone2"} {
+			seedRiskRegisterUser(t, db, name, now.Add(-time.Minute))
+		}
+		if _, err := EvaluateDebtAlerts(db, now); err != nil {
+			t.Fatalf("evaluate: %v", err)
+		}
+		if got := countRuleWarnings(t, db, "abnormal_register_pattern"); got != 0 {
+			t.Fatalf("连续 2 个 < 阈值 3 必须不告警，实际 %d 条", got)
+		}
+	})
+
+	t.Run("three_consecutive_meets_threshold", func(t *testing.T) {
+		db := newRiskAlertTestDB(t)
+		seedRiskRules(t, db)
+		now := riskR1TestTime()
+		for _, name := range []string{"batchone1", "batchone2", "batchone3"} {
+			seedRiskRegisterUser(t, db, name, now.Add(-time.Minute))
+		}
+		if _, err := EvaluateDebtAlerts(db, now); err != nil {
+			t.Fatalf("evaluate: %v", err)
+		}
+		if got := countRuleWarnings(t, db, "abnormal_register_pattern"); got != 1 {
+			t.Fatalf("连续 3 个 = 阈值 3 必须告警且只 1 条，实际 %d 条", got)
+		}
+		var warning entity.RiskWarning
+		if err := db.Where("rule_id = ?", "abnormal_register_pattern").First(&warning).Error; err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		var detail map[string]any
+		if err := json.Unmarshal([]byte(warning.Detail), &detail); err != nil {
+			t.Fatalf("detail 必须是 JSON: %v", err)
+		}
+		if got, _ := detail["sequenceLen"].(float64); got != 3 {
+			t.Fatalf("detail.sequenceLen = %v, want 3", detail["sequenceLen"])
+		}
+		if got, _ := detail["sequenceFrom"].(float64); got != 1 {
+			t.Fatalf("detail.sequenceFrom = %v, want 1", detail["sequenceFrom"])
+		}
+	})
+}
+
+// 判据②（关键）：正常用户名不误报。
+//
+// 变异方向：把 riskLongestConsecutiveRun 放宽成「只数集合大小」（任意数字）
+// → 本用例必须红。
+//
+// ⚠️ 这里有两组样本，缺第二组就抓不到变异（实测踩过）：
+//
+//	A 组：user2024 / test123 / abc999 —— 三个**不同前缀**。
+//	  它们各自前缀下只有 1 个成员，所以「按前缀分组」这一步就已经把它们拆开了，
+//	  即使把「连续递增」放宽成「任意数字」，每组仍然只有 1 个 → **不会误报**。
+//	  也就是说：只写 A 组的话，这个用例在放宽变异下**依然全绿**（是空断言）。
+//
+//	B 组：normaluser100 / normaluser500 / normaluser900 —— **同一前缀、数字不连续**。
+//	  这一组才是真正检验「连续递增」的样本：放宽后同前缀下 3 个成员会被算成 3 个，
+//	  立刻误报 → 用例红。
+//
+// 两组都保留：A 组钉「不同前缀要拆开」，B 组钉「同前缀但不连续不能算」。
+func TestRiskAbnormalRegisterPatternDoesNotFlagNormalUsernames(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	now := riskR1TestTime()
+	// A 组：三个互不同前缀的正常用户名（年份/编号各不相同）。
+	for _, name := range []string{"user2024", "test123", "abc999"} {
+		seedRiskRegisterUser(t, db, name, now.Add(-time.Minute))
+	}
+	// B 组：同一前缀、数字不连续 —— 必须也不告警。
+	for _, name := range []string{"normaluser100", "normaluser500", "normaluser900"} {
+		seedRiskRegisterUser(t, db, name, now.Add(-time.Minute))
+	}
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "abnormal_register_pattern"); got != 0 {
+		t.Fatalf("user2024/test123/abc999 与 normaluser100/500/900 都不是连续递增，必须不告警，实际 %d 条（误报）", got)
+	}
+	// 反向对照：同样三个前缀（用第三个做连续样本），数字**连续**时必须有告警 ——
+	// 否则上面的 0 可能只是因为整个规则没跑（假绿）。
+	for _, name := range []string{"seqcheck1", "seqcheck2", "seqcheck3"} {
+		seedRiskRegisterUser(t, db, name, now.Add(-time.Minute))
+	}
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "abnormal_register_pattern"); got != 1 {
+		t.Fatalf("seqcheck1/2/3 连续递增必须告警，实际 %d 条（若为 0 说明上面的 0 与连续性无关）", got)
+	}
+	// 证据里不得包含 B 组的前缀（证明它真的被连续性判据挡掉了，不是被别的原因漏掉）。
+	var warning entity.RiskWarning
+	if err := db.Where("rule_id = ?", "abnormal_register_pattern").First(&warning).Error; err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if strings.Contains(warning.Detail, "normaluser") {
+		t.Fatalf("B 组（同前缀不连续）不得进入告警证据：%s", warning.Detail)
+	}
+}
+
+// 判据③：非连续数字即使同前缀也不告警（a1/a5/a9 那种）。
+//
+// 与判据② 的区别：这里前缀相同、只是数字跳跃 —— 钉的是「同前缀不等于连续」。
+func TestRiskAbnormalRegisterPatternRequiresConsecutiveNumbers(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	now := riskR1TestTime()
+	for _, name := range []string{"skipy1", "skipy5", "skipy9"} {
+		seedRiskRegisterUser(t, db, name, now.Add(-time.Minute))
+	}
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "abnormal_register_pattern"); got != 0 {
+		t.Fatalf("skipy1/skipy5/skipy9 数字不连续，必须不告警，实际 %d 条", got)
+	}
+}
+
+// 判据④：前缀至少 3 字符 —— a1/a2/a3 这种 1 字符前缀不告警。
+//
+// 变异方向：把 riskAbnormalRegisterPrefixMinLength 改成 1 → 本用例红。
+func TestRiskAbnormalRegisterPatternRequiresMinPrefixLength(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	now := riskR1TestTime()
+	// 1 字符前缀 + 连续数字：形态上「像编号」，但前缀太短，
+	// 正常用户名撞前缀的概率太高（大量用户就叫 a1/b2）。
+	for _, name := range []string{"a1", "a2", "a3", "a4"} {
+		seedRiskRegisterUser(t, db, name, now.Add(-time.Minute))
+	}
+	// 2 字符前缀同样不算。
+	for _, name := range []string{"ab1", "ab2", "ab3", "ab4"} {
+		seedRiskRegisterUser(t, db, name, now.Add(-time.Minute))
+	}
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "abnormal_register_pattern"); got != 0 {
+		t.Fatalf("前缀只有 1~2 字符必须不告警（易误报），实际 %d 条", got)
+	}
+	// 反向对照：3 字符前缀 + 连续数字必须告警。
+	for _, name := range []string{"abc1", "abc2", "abc3"} {
+		seedRiskRegisterUser(t, db, name, now.Add(-time.Minute))
+	}
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "abnormal_register_pattern"); got != 1 {
+		t.Fatalf("3 字符前缀 + 连续数字必须告警，实际 %d 条", got)
+	}
+}
+
+// 判据⑤：窗口生效 —— 昨天的账号不算进今天。
+func TestRiskAbnormalRegisterPatternRespectsWindow(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	now := riskR1TestTime()
+	// 今天 2 个 + 昨天 3 个（若跨窗口累加会是 5 个连续）。
+	seedRiskRegisterUser(t, db, "windowe1", now.Add(-time.Minute))
+	seedRiskRegisterUser(t, db, "windowe2", now.Add(-time.Minute))
+	yesterday := now.Add(-24 * time.Hour)
+	for _, name := range []string{"windowe3", "windowe4", "windowe5"} {
+		seedRiskRegisterUser(t, db, name, yesterday.Add(-time.Minute))
+	}
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "abnormal_register_pattern"); got != 0 {
+		t.Fatalf("今天只 2 个（昨天的 3 个不在窗口内）必须不告警，实际 %d 条", got)
+	}
+	// 反向对照：挪到昨天，昨天的 1~3 不连续（windowE3/4/5），但今天不会混入。
+	// 直接断言「昨天窗口里至少能算到 userseq 那批」不好构造，
+	// 改为验证今天窗口的 2 个加上昨天 3 个**不会**凑成 5 连续（已在上面断言）。
+}
+
+// 判据⑥：阈值可配（双向）。
+func TestRiskAbnormalRegisterPatternThresholdIsConfigurable(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	now := riskR1TestTime()
+	for _, name := range []string{"config1", "config2", "config3"} {
+		seedRiskRegisterUser(t, db, name, now.Add(-time.Minute))
+	}
+	// 阈值调到 5：3 个不足 → 不告警。
+	putRiskSetting(t, db, "risk_rule_abnormal_register_pattern_threshold", "5")
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "abnormal_register_pattern"); got != 0 {
+		t.Fatalf("阈值 5 时 3 个必须不告警，实际 %d 条", got)
+	}
+	// 阈值调到 3：同一批数据必须告警。
+	putRiskSetting(t, db, "risk_rule_abnormal_register_pattern_threshold", "3")
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "abnormal_register_pattern"); got != 1 {
+		t.Fatalf("阈值 3 时 3 个必须告警，实际 %d 条", got)
+	}
+}
+
+// 判据⑦：只告警不处置 —— 用户状态不得被改、不得自动拉黑。
+func TestRiskAbnormalRegisterPatternNeverTakesAction(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	if err := db.AutoMigrate(&entity.BlacklistEntry{}); err != nil {
+		t.Fatalf("migrate blacklist: %v", err)
+	}
+	seedRiskRules(t, db)
+	now := riskR1TestTime()
+	for _, name := range []string{"action1", "action2", "action3"} {
+		seedRiskRegisterUser(t, db, name, now.Add(-time.Minute))
+	}
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "abnormal_register_pattern"); got != 1 {
+		t.Fatalf("前置条件：必须已产生告警，实际 %d 条", got)
+	}
+	var users []entity.User
+	if err := db.Where("username IN ?", []string{"action1", "action2", "action3"}).Find(&users).Error; err != nil {
+		t.Fatalf("load users: %v", err)
+	}
+	if len(users) != 3 {
+		t.Fatalf("load users: 期望 3 个，实际 %d", len(users))
+	}
+	for _, user := range users {
+		if user.Status != "enabled" {
+			t.Fatalf("C1：风控不得改用户状态，%s status=%q", user.Username, user.Status)
+		}
+	}
+	var blacklistCount int64
+	if err := db.Model(&entity.BlacklistEntry{}).Count(&blacklistCount).Error; err != nil {
+		t.Fatalf("count blacklist: %v", err)
+	}
+	if blacklistCount != 0 {
+		t.Fatalf("C1：风控不得写黑名单，实际 %d 行", blacklistCount)
+	}
+}
+
+// 判据⑧：规则停用时不告警（含反向对照）。
+func TestRiskAbnormalRegisterPatternDisabledRuleDoesNotFire(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	now := riskR1TestTime()
+	for _, name := range []string{"disable1", "disable2", "disable3"} {
+		seedRiskRegisterUser(t, db, name, now.Add(-time.Minute))
+	}
+	if err := db.Model(&entity.RiskRule{}).Where("rule_id = ?", "abnormal_register_pattern").
+		Update("enabled", false).Error; err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "abnormal_register_pattern"); got != 0 {
+		t.Fatalf("停用时不得告警，实际 %d 条", got)
+	}
+	if err := db.Model(&entity.RiskRule{}).Where("rule_id = ?", "abnormal_register_pattern").
+		Update("enabled", true).Error; err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "abnormal_register_pattern"); got != 1 {
+		t.Fatalf("重新启用后必须告警，实际 %d 条", got)
+	}
+}
+
+// 判据⑨：用户名解析的单元级真值表（形态收窄的核心）。
+//
+// 期望值一律写字面量（不引用被测常量），常量漂移时这里必须红。
+func TestRiskSplitSequentialUsernameTruthTable(t *testing.T) {
+	cases := []struct {
+		username   string
+		wantPrefix string
+		wantNumber int
+		wantOK     bool
+	}{
+		// 合法形态：≥3 字母 + 1..9 位数字
+		{"abc1", "abc", 1, true},
+		{"batchone123", "batchone", 123, true},
+		{"ABC42", "abc", 42, true},   // 大小写归一
+		{"  abc7  ", "abc", 7, true}, // 两端空白容忍
+		// 前缀不足 3 字符 → 拒绝
+		{"a1", "", 0, false},
+		{"ab1", "", 0, false},
+		// 纯字母无编号 → 拒绝
+		{"alice", "", 0, false},
+		// 含非字母非数字字符 → 拒绝
+		{"ab_c1", "", 0, false},
+		{"ab-c1", "", 0, false},
+		{"张三1", "", 0, false},
+		// 字母夹数字（不是纯前缀+纯后缀）→ 拒绝
+		{"a1bc2", "", 0, false},
+		// 纯数字 → 拒绝
+		{"12345", "", 0, false},
+		// 数字超 9 位 → 拒绝
+		{"abc1234567890", "", 0, false},
+		// 空串
+		{"", "", 0, false},
+	}
+	for _, tc := range cases {
+		prefix, number, ok := riskSplitSequentialUsername(tc.username)
+		if ok != tc.wantOK {
+			t.Fatalf("riskSplitSequentialUsername(%q) ok = %v, want %v", tc.username, ok, tc.wantOK)
+		}
+		if !ok {
+			continue
+		}
+		if prefix != tc.wantPrefix || number != tc.wantNumber {
+			t.Fatalf("riskSplitSequentialUsername(%q) = (%q, %d), want (%q, %d)",
+				tc.username, prefix, number, tc.wantPrefix, tc.wantNumber)
+		}
+	}
+}
+
+// 判据⑩：最长连续段计算的真值表。
+func TestRiskLongestConsecutiveRun(t *testing.T) {
+	cases := []struct {
+		numbers   []int
+		wantLen   int
+		wantStart int
+	}{
+		{[]int{1, 2, 3}, 3, 1},
+		{[]int{1, 5, 9}, 1, 1},          // 全不连续
+		{[]int{2024, 123, 999}, 1, 123}, // 正常用户名的数字
+		{[]int{7, 8, 10, 11, 12}, 3, 10},
+		{[]int{5, 6, 7, 8}, 4, 5},
+		{[]int{3}, 1, 3},
+		{[]int{}, 0, 0},
+	}
+	for _, tc := range cases {
+		set := make(map[int]struct{}, len(tc.numbers))
+		for _, number := range tc.numbers {
+			set[number] = struct{}{}
+		}
+		gotLen, gotStart := riskLongestConsecutiveRun(set)
+		if gotLen != tc.wantLen || gotStart != tc.wantStart {
+			t.Fatalf("riskLongestConsecutiveRun(%v) = (%d, %d), want (%d, %d)",
+				tc.numbers, gotLen, gotStart, tc.wantLen, tc.wantStart)
+		}
+	}
+}
+
 // ruleIDsOf 收集规则 id（失败信息用，避免只报个数时无从定位）。
 func ruleIDsOf(rules []entity.RiskRule) []string {
 	out := make([]string, 0, len(rules))
@@ -1993,6 +2656,9 @@ func TestRiskWarningDedupIsAtomicAcrossAllRules(t *testing.T) {
 		{ruleID: "debt_batch", throttleSeconds: 0, subjectKey: "batch:batch-7f3a"},
 		{ruleID: "debt_system", throttleSeconds: 6 * 60 * 60, subjectKey: "system:debt"},
 		{ruleID: "multi_account_ip", throttleSeconds: 0, subjectKey: "multi_account_ip:203.0.113.9:2026-11-14T00:00:00+08:00"},
+		// 每条新增的行为/欠款规则都必须在此登记 —— 否则它只是「碰巧」走了同一个
+		// 临界区，没有回归钉。R8（ticket_flood）落地时补入。
+		{ruleID: "ticket_flood", throttleSeconds: 24 * 60 * 60, subjectKey: "ticket_flood:user:4242:2026-11-14T00:00:00+08:00"},
 	}
 	for _, tc := range cases {
 		tc := tc

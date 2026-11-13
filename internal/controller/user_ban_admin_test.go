@@ -313,6 +313,18 @@ func TestUserBanAdminRevokeKeepsRowAndLiftsBan(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("revoke: status = %d, want 200 (%s)", recorder.Code, recorder.Body.String())
 	}
+	// 关键：上界必须在**请求返回之后**取。
+	//
+	// 这里原本只取了 beforeRevoke（请求前），断言 expires_at <= beforeRevoke ——
+	// 但 Unban 用的是它自己内部的 time.Now()，比 beforeRevoke 晚几微秒是正常的。
+	// 于是这条断言在快机器上偶尔失败（实测 CI：expires_at 比 beforeRevoke 晚 11µs，
+	// 报 `expires_at = ...213067554 +0000 UTC, want <= ...213056468 +0000 UTC`），
+	// 而本地几乎不复现 —— 典型的「用外部时间戳卡内部实现」缺陷。
+	//
+	// 改成 [beforeRevoke, afterRevoke] 这个区间：只要 expires_at 落在解封调用
+	// 发生的时间窗内就算正确，与机器快慢无关，且仍然能抓住真正的缺陷
+	// （比如「解封根本没写 expires_at」或「写成了远未来的值」）。
+	afterRevoke := time.Now()
 
 	// ① 行仍在（不得物理删除）。
 	var rows []entity.UserBan
@@ -322,12 +334,19 @@ func TestUserBanAdminRevokeKeepsRowAndLiftsBan(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("revoke must keep the audit row, got %d rows", len(rows))
 	}
-	// ② expires_at 已到期（非空且不晚于解封时刻）。
+	// ② expires_at 已到期：必须落在 [beforeRevoke, afterRevoke] 区间内。
+	//
+	// 下界同样要判：只判上界会让「解封把 expires_at 写成 1970」这种明显错误通过。
 	if rows[0].ExpiresAt == nil {
 		t.Fatal("revoke must set expires_at (NULL means permanent, i.e. still banned)")
 	}
-	if rows[0].ExpiresAt.After(beforeRevoke) {
-		t.Fatalf("expires_at = %v, want <= %v", *rows[0].ExpiresAt, beforeRevoke)
+	if rows[0].ExpiresAt.Before(beforeRevoke) {
+		t.Fatalf("expires_at = %v, want >= %v（写成远过去说明不是本次解封写的）",
+			*rows[0].ExpiresAt, beforeRevoke)
+	}
+	if rows[0].ExpiresAt.After(afterRevoke) {
+		t.Fatalf("expires_at = %v, want <= %v（晚于请求返回说明不是解封时刻）",
+			*rows[0].ExpiresAt, afterRevoke)
 	}
 	// ③ users.status 复位为 enabled（字面量断言，不引用常量）。
 	var status string

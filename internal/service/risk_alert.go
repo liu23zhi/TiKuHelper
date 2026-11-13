@@ -563,6 +563,13 @@ func EvaluateDebtAlerts(db *gorm.DB, now time.Time) (RiskAlertEvaluation, error)
 		}
 		candidates = append(candidates, found...)
 	}
+	if rule, ok := enabledRules[entity.RiskRuleIDAbnormalRegisterPattern]; ok {
+		found, scanErr := collectAbnormalRegisterPatternCandidates(db, rule, now)
+		if scanErr != nil {
+			return result, scanErr
+		}
+		candidates = append(candidates, found...)
+	}
 
 	seenRules := map[string]struct{}{}
 	for _, candidate := range candidates {
@@ -1007,6 +1014,218 @@ func collectTicketFloodCandidates(db *gorm.DB, rule entity.RiskRule, now time.Ti
 		})
 	}
 	return candidates, nil
+}
+
+// riskAbnormalRegisterPrefixMinLength 是 R11 的最小前缀长度。
+//
+// 为什么是 3 而不是 1（这是本规则最关键的收窄）：
+// 前缀只有 1~2 字符时，正常用户名撞前缀的概率极高 —— `a1`/`b2` 这种
+// 短前缀会把大量互不相关的用户归到同一组。3 字符是「看起来像人为编号」
+// 与「普通用户名巧合」之间的经验分界（`abc1`/`abc2`/`abc3` 才像批量注册）。
+const riskAbnormalRegisterPrefixMinLength = 3
+
+// riskAbnormalRegisterSequenceMaxDigits 限制数字部分长度。
+//
+// 不设上限时 `user1000000000` 这类含大数的名字会参与配对，而「连续递增」
+// 在数字位数不同时极易误判（`abc9` → `abc10` 在字典序上不连续但在数值上连续，
+// 两种口径都可能有争议）。限制 9 位覆盖所有现实场景，避免边界争议。
+const riskAbnormalRegisterSequenceMaxDigits = 9
+
+// collectAbnormalRegisterPatternCandidates 收集「同前缀 + 连续递增数字用户名 ≥N 个」的命中
+// （96 §2.1 R11）。
+//
+// # 判据定义（务必与实现逐条对照）
+//
+// 把窗口内新建用户的用户名拆成 (前缀, 数字) 两段：`abc123` → ("abc", 123)。
+// 要求：
+//   - 前缀是 ≥3 个字符的**字母**（不含数字/符号），大小写归一化后比较；
+//   - 数字部分 1..9 位；
+//   - 同一前缀下，数字集合里存在一条**连续递增序列**，长度 ≥ 阈值；
+//   - 整组必须落在同一自然日窗口内（窗口在 SQL 里已过滤）。
+//
+// # 为什么必须要求「连续递增」而不是「任意数字」
+//
+// 这是本规则唯一能避免大面积误报的约束。反例（真实场景）：
+//
+//	user2024 / test123 / abc999 —— 都是「字母+数字」的普通用户名，
+//	数字 2024/123/999 互不连续，必须**不告警**。
+//
+// 只写 `^[a-z]+\d+$` 会把它们全算进去。判据③ 的对照用例钉的就是这一点。
+//
+// # 性能说明（如实记录）
+//
+// `users.username` 与 `users.created_at` **都没有索引**（实测 entity/users.gen.go:
+// Username/CreatedAt 均无 index tag）。因此本查询是一次带时间窗的全表扫。
+// 用时间窗先过滤是正确的缓解手段（窗口内新增用户通常远小于全表），
+// 但**大表上仍会偏慢**。若将来成为瓶颈，正确方向是给 users.created_at 加索引
+// （那是表结构变更，超出本规则范围）。
+func collectAbnormalRegisterPatternCandidates(db *gorm.DB, rule entity.RiskRule, now time.Time) ([]riskWarningCandidate, error) {
+	threshold := riskRuleThreshold(db, rule, riskDefaultThreshold(rule.RuleID))
+	if threshold <= 0 {
+		return nil, nil
+	}
+	if !db.Migrator().HasTable(entity.TableNameUser) {
+		return nil, nil
+	}
+	start, end := riskWindowBounds(now)
+	windowStart, _ := riskLoginWindow(now)
+	timeExpr := riskWindowColumnExpr(db, "created_at")
+
+	type newUser struct {
+		ID       int32
+		Username string
+	}
+	var users []newUser
+	if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.User{}).
+		Select("id, username").
+		Where(timeExpr+" >= ? AND "+timeExpr+" < ?", start, end).
+		Order("id ASC").
+		Scan(&users).Error; err != nil {
+		return nil, err
+	}
+
+	// 按前缀归组：prefix → 该前缀下出现过的数字集合。
+	//
+	// 同前缀下可能混入不连续的数字（abc1/abc5），所以不能「计数 ≥ N 就告警」，
+	// 必须找出**最长连续段**再与阈值比。
+	type prefixGroup struct {
+		numbers map[int]struct{}
+		// samples 只用于证据快照（保留前若干个用户名，便于人工复核）。
+		samples []string
+	}
+	groups := map[string]*prefixGroup{}
+	for _, user := range users {
+		prefix, number, ok := riskSplitSequentialUsername(user.Username)
+		if !ok {
+			continue
+		}
+		group := groups[prefix]
+		if group == nil {
+			group = &prefixGroup{numbers: map[int]struct{}{}}
+			groups[prefix] = group
+		}
+		group.numbers[number] = struct{}{}
+		if len(group.samples) < riskWarningDetailMaxSampleUsers {
+			group.samples = append(group.samples, user.Username)
+		}
+	}
+
+	// 固定输出顺序：map 迭代随机，不排序会让「先告警哪个前缀」不可复现。
+	prefixes := make([]string, 0, len(groups))
+	for prefix := range groups {
+		prefixes = append(prefixes, prefix)
+	}
+	sort.Strings(prefixes)
+
+	candidates := make([]riskWarningCandidate, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		group := groups[prefix]
+		runLength, runStart := riskLongestConsecutiveRun(group.numbers)
+		// 「≥ 阈值」：连续段长度 2 + 阈值 3 → 不告警；3 → 告警。
+		if float64(runLength) < threshold {
+			continue
+		}
+		subject := riskBehaviorSubject(rule.RuleID, "prefix:"+prefix, windowStart)
+		detail, err := json.Marshal(map[string]any{
+			"ruleId":       rule.RuleID,
+			"subjectKey":   subject,
+			"prefix":       prefix,
+			"threshold":    threshold,
+			"value":        runLength,
+			"sequenceLen":  runLength,
+			"sequenceFrom": runStart,
+			"sequenceTo":   runStart + runLength - 1,
+			"sampleUsers":  group.samples,
+			"windowStart":  windowStart.Format(time.RFC3339),
+			"evaluatedAt":  now.Format(time.RFC3339),
+			"evidenceNote": "同前缀（≥3 字母）+ 连续递增数字的用户名，按连续段长度判定；非连续数字不计入",
+		})
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, riskWarningCandidate{
+			Rule:     rule,
+			Subject:  subject,
+			Severity: rule.Severity,
+			Detail:   string(detail),
+		})
+	}
+	return candidates, nil
+}
+
+// riskWarningDetailMaxSampleUsers 是证据快照里保留的用户名样本数上限。
+const riskWarningDetailMaxSampleUsers = 10
+
+// riskSplitSequentialUsername 把用户名拆成 (前缀小写, 数字) 。
+//
+// 只接受「纯字母前缀 + 纯数字后缀」，且前缀长度 ≥ riskAbnormalRegisterPrefixMinLength、
+// 数字 1..9 位。任何不符合形态的（含符号、纯数字、字母夹数字）都返回 false，
+// 直接不参与 R11 判定 —— 这是收窄的第一道闸。
+func riskSplitSequentialUsername(username string) (string, int, bool) {
+	trimmed := strings.ToLower(strings.TrimSpace(username))
+	if trimmed == "" {
+		return "", 0, false
+	}
+	splitAt := -1
+	for i, r := range trimmed {
+		if r >= '0' && r <= '9' {
+			splitAt = i
+			break
+		}
+		if r < 'a' || r > 'z' {
+			// 出现数字以外的非字母字符（含 _ / - / 中文）→ 不是本规则的目标形态。
+			return "", 0, false
+		}
+	}
+	if splitAt < 0 {
+		return "", 0, false // 纯字母，没有编号
+	}
+	prefix := trimmed[:splitAt]
+	digits := trimmed[splitAt:]
+	if len(prefix) < riskAbnormalRegisterPrefixMinLength {
+		return "", 0, false
+	}
+	if len(digits) > riskAbnormalRegisterSequenceMaxDigits {
+		return "", 0, false
+	}
+	// 数字段必须全是数字（上面已 loop 到首个数字就 break，这里再确认尾巴）。
+	number := 0
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return "", 0, false
+		}
+		number = number*10 + int(r-'0')
+	}
+	return prefix, number, true
+}
+
+// riskLongestConsecutiveRun 在数字集合里找**最长连续递增段**，返回长度与起点。
+//
+// 例：{1,2,3} → (3, 1)；{1,5,9} → (1, 1)；{7,8,10,11,12} → (3, 10)。
+// 这是「连续递增」判据的唯一实现点 —— 放宽成「任意数字」（只数集合大小）
+// 会让 user2024/test123/abc999 这类正常用户名误报。
+func riskLongestConsecutiveRun(numbers map[int]struct{}) (int, int) {
+	if len(numbers) == 0 {
+		return 0, 0
+	}
+	ordered := make([]int, 0, len(numbers))
+	for number := range numbers {
+		ordered = append(ordered, number)
+	}
+	sort.Ints(ordered)
+	bestLen, bestStart := 1, ordered[0]
+	currentLen, currentStart := 1, ordered[0]
+	for i := 1; i < len(ordered); i++ {
+		if ordered[i] == ordered[i-1]+1 {
+			currentLen++
+		} else {
+			currentLen, currentStart = 1, ordered[i]
+		}
+		if currentLen > bestLen {
+			bestLen, bestStart = currentLen, currentStart
+		}
+	}
+	return bestLen, bestStart
 }
 
 // RiskTicketFloodGroup 是 R8 的聚合行（用户 → 窗口内建单数）。

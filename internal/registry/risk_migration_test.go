@@ -61,11 +61,12 @@ func TestEnsureRiskSchemaCreatesTablesIndexesAndSeeds(t *testing.T) {
 		t.Fatalf("load rules: %v", err)
 	}
 	want := map[string]float64{
-		"debt_user":        100,
-		"debt_batch":       1000,
-		"debt_system":      5000,
-		"multi_account_ip": 5,
-		"ticket_flood":     5,
+		"debt_user":                 100,
+		"debt_batch":                1000,
+		"debt_system":               5000,
+		"multi_account_ip":          5,
+		"ticket_flood":              5,
+		"abnormal_register_pattern": 3,
 	}
 	if len(rules) != len(want) {
 		t.Fatalf("expected %d seeded rules, got %d: %+v", len(want), len(rules), rules)
