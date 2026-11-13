@@ -2,6 +2,7 @@ package controller
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/service"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 )
 
 // UploadTicketAttachment 接收一张工单图片。
@@ -51,6 +53,17 @@ func UploadTicketAttachment(c *gin.Context) {
 	if err != nil {
 		writeTicketAttachmentError(c, err)
 		return
+	}
+	// blob 去重接线（task_doc/121 §4.4）：附件行已经落库，这里把它挂到 blobs 表。
+	//
+	// ⚠️ 刻意**不让失败影响上传结果**：blobs 表在迁移未跑的老库上不存在，
+	// 旧列一个版本内不删，所以「没去重」只是省不下空间，不是数据丢失。
+	// 反过来若让它回滚整个上传，一次迁移疏漏就会让功能整体不可用。
+	// 失败的信号进日志（含 attachmentId），而不是静默吞掉。
+	if refCount, linked, linkErr := service.LinkUploadedTicketAttachmentBlobWithDB(db, info.ID); linkErr != nil {
+		logger.SysWarn(fmt.Sprintf("ticket_attachment_blob_link_failed attachmentId=%d error=%v", info.ID, linkErr))
+	} else if linked {
+		logger.SysLog(fmt.Sprintf("ticket_attachment_blob_linked attachmentId=%d refCount=%d", info.ID, refCount))
 	}
 	c.JSON(http.StatusCreated, gin.H{"data": info})
 }
@@ -168,6 +181,45 @@ func ListTicketAttachments(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": rows})
 }
 
+// DeleteTicketAttachment 删除一张工单图片，并**原子地**收敛 blob 引用计数。
+//
+// 权限与读图同构（服务层判一次、路由层 Auth 一次）：
+//   - 上传者本人可以删自己的图；
+//   - 管理员可以删任何图（走管理端语义，但仍留痕）。
+//
+// 删除不是「改个状态」而是真的删行：这是用户「撤回自己发的图」的语义，
+// 也是 blob 引用计数能归零的唯一入口。为保证两件事原子，
+// 实际删除 + 递减 ref_count 都在 service.DeleteTicketAttachmentWithDB 的**同一个事务**里。
+//
+// 返回 404 的两种情况刻意不区分：不存在、或不属于调用者 —— 不泄露「这张图是否存在」。
+func DeleteTicketAttachment(c *gin.Context) {
+	user, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	id, ok := parseTicketAttachmentID(c)
+	if !ok {
+		return
+	}
+	db := withDatabasePriority(ticketControllerDB(), databaseRequestContext(c), dbqueue.PriorityLow)
+	if db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "工单附件暂不可用"})
+		return
+	}
+	// 「谁能删」的判定在 service 层（与读图共用 isTicketAdmin），这里不重复实现。
+	deleted, err := service.DeleteTicketAttachmentForUserWithDB(db, &user, id)
+	if err != nil {
+		writeTicketAttachmentError(c, err)
+		return
+	}
+	if !deleted {
+		c.JSON(http.StatusNotFound, gin.H{"message": service.ErrTicketAttachmentNotFound.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"id": id, "deleted": true}})
+}
+
+// parseTicketAttachmentID 从路径参数取附件 ID。
 func parseTicketAttachmentID(c *gin.Context) (int64, bool) {
 	id, err := strconv.ParseInt(c.Param("attachmentId"), 10, 64)
 	if err != nil || id <= 0 {

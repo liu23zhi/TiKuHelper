@@ -1,7 +1,10 @@
 package service
 
 import (
+	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -436,4 +439,415 @@ func ReadTicketAttachmentBlobWithDB(db *gorm.DB, sha256Hex string) (string, []by
 		return "", nil, err
 	}
 	return blob.MediaType, plain, nil
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 接线层（task_doc/121 §4.4）：上传 / 删除 / 定时清理三处把 blob 去重真正用起来。
+//
+// 分成三个「一次性、自洽」的入口，供上层调用：
+//
+//	LinkUploadedTicketAttachmentBlobWithDB   —— 上传路径（新建附件行之后）
+//	ReleaseDeletedTicketAttachmentBlobWithDB —— 删除路径（删掉附件行之后）
+//	RunTicketAttachmentBlobPurgeWorker       —— 定时任务（延迟删除）
+//
+// 三者共同的不变式：**ref_count 恒等于引用行数**。做法统一是「写完指向之后
+// 在同一事务内 COUNT 重算」，不做「+1/-1」的增量猜测。
+// ────────────────────────────────────────────────────────────────────────────
+
+// TicketAttachmentBlobUploadLink 描述一次上传要去重写入的字节。
+//
+// Plain 是**重编码之后**的字节（与 ticket_attachments.ciphertext 里的明文完全一致），
+// 不是原始上传字节 —— 否则同一张图只因 EXIF 不同就会被算成两份 sha256，
+// 去重彻底失效。
+type TicketAttachmentBlobUploadLink struct {
+	// AttachmentID 是刚建好的 ticket_attachments.id。
+	AttachmentID int64
+	// SHA256 是 Plain 的小写十六进制指纹；为空时由 Plain 现算。
+	SHA256 string
+	// MediaType 是重编码得到的 image/png 或 image/jpeg。
+	MediaType string
+	// Plain 是重编码后的明文；写入 blobs 表时会被独立加密一次。
+	Plain []byte
+}
+
+// ticketAttachmentBlobSHA256Of 算明文指纹（小写 hex）。
+//
+// 单独抽出来是为了让「上传路径」与「回填路径」用同一个算法：
+// 回填用的是 ticket_attachments.sha256 列（历史值），上传用的是重编码后的字节，
+// 两者必须是同一种算法，否则同一张图会被当成两份。
+func ticketAttachmentBlobSHA256Of(plain []byte) string {
+	sum := sha256.Sum256(plain)
+	return hex.EncodeToString(sum[:])
+}
+
+// LinkUploadedTicketAttachmentBlobWithDB 是**上传路径的接线点（按附件 ID）**。
+//
+// 这是 controller 唯一需要调用的函数：上传时 service 已经把明文重编码并加密写进
+// ticket_attachments.nonce/ciphertext，controller 手里**没有**那份重编码后的明文
+// （拿原始上传字节去算 sha256 会因 EXIF 差异把同一张图算成两份）。
+// 因此这里反过来：读回该附件行 → 用它自己的 AAD 解密 → 得到与落库逐字节一致的明文
+// → 算 sha256 → 去重写入 blobs → 回填指向 → 重算 ref_count，全部在一个事务里。
+//
+// 返回 linked=false 表示「本次没有参与去重」（缺表/缺列，或行残缺），此时**不报错**：
+// 旧列一个版本内不删（121 §4.4 第 4 点），没有去重不等于上传失败。
+func LinkUploadedTicketAttachmentBlobWithDB(db *gorm.DB, attachmentID int64) (refCount int32, linked bool, err error) {
+	if db == nil {
+		return 0, false, errors.New("数据库未初始化")
+	}
+	if attachmentID <= 0 {
+		return 0, false, ErrTicketAttachmentNotFound
+	}
+	if !ticketAttachmentBlobReady(db) || !ticketAttachmentBlobLinkReady(db) {
+		return 0, false, nil
+	}
+	err = db.Transaction(func(tx *gorm.DB) error {
+		var row entity.TicketAttachment
+		if readErr := tx.Session(&gorm.Session{NewDB: true}).
+			Where("id = ?", attachmentID).First(&row).Error; readErr != nil {
+			if errors.Is(readErr, gorm.ErrRecordNotFound) {
+				return ErrTicketAttachmentNotFound
+			}
+			return readErr
+		}
+		plain, openErr := openTicketAttachmentPlain(row)
+		if openErr != nil {
+			// 残缺行（旧版「先插占位行、再 UPDATE 密文」崩在中间的产物）：
+			// 不搬进 blobs 表 —— 放一份解不开的密文只会让人以为「已经搬过去了」。
+			logger.SysWarn(fmt.Sprintf("ticket_attachment_blob_link_skipped attachmentId=%d reason=%v", attachmentID, openErr))
+			return nil
+		}
+		sha := ticketAttachmentBlobSHA256Of(plain)
+		// 与票面 sha256 列核对：不一致说明这行的 sha256 列与实际字节脱钩。
+		// 以**实际字节**为准（去重判据是内容），并留下可追溯的日志。
+		if recorded := NormalizeTicketAttachmentBlobSHA256(row.SHA256); recorded != "" && recorded != sha {
+			logger.SysWarn(fmt.Sprintf(
+				"ticket_attachment_blob_sha_mismatch attachmentId=%d recorded=%s computed=%s（以实际字节为准）",
+				attachmentID, recorded, sha))
+		}
+		nonce, ciphertext, sealErr := sealTicketAttachmentBlob(plain, sha)
+		if sealErr != nil {
+			return sealErr
+		}
+		_, created, storeErr := StoreTicketAttachmentBlobInTx(tx, sha, row.MediaType, int64(len(plain)), nonce, ciphertext)
+		if storeErr != nil {
+			return storeErr
+		}
+		if created {
+			logger.SysLog(fmt.Sprintf("ticket_attachment_blob_created sha256=%s byteSize=%d", sha, len(plain)))
+		}
+		count, linkErr := LinkTicketAttachmentBlobInTx(tx, attachmentID, sha)
+		if linkErr != nil {
+			return linkErr
+		}
+		refCount, linked = count, true
+		return nil
+	})
+	if err != nil {
+		return 0, false, err
+	}
+	return refCount, linked, nil
+}
+
+// openTicketAttachmentPlain 用**附件自身的 AAD** 解出该行的明文。
+//
+// 单独抽出来是因为解密参数（id + userID + mediaType）只有这里能拼出来，
+// 且上传路径与后续可能的补齐路径都要用它。
+func openTicketAttachmentPlain(row entity.TicketAttachment) ([]byte, error) {
+	aead, err := ticketAttachmentCipher()
+	if err != nil {
+		return nil, err
+	}
+	if row.ID <= 0 || len(row.Nonce) != aead.NonceSize() || len(row.Ciphertext) == 0 {
+		return nil, ErrTicketAttachmentInvalid
+	}
+	plain, openErr := aead.Open(nil, row.Nonce, row.Ciphertext,
+		ticketAttachmentAAD(row.ID, row.UserID, row.MediaType))
+	if openErr != nil {
+		return nil, ErrTicketAttachmentInvalid
+	}
+	return plain, nil
+}
+
+// LinkUploadedTicketAttachmentBlobWithContentWithDB 是上传路径的**显式内容变体**：
+// 调用方手里已经有一份「与落库逐字节一致」的重编码明文时用它（例如批量导入、
+// 或测试里直接构造场景）。
+//
+// 语义（对应判据 ①：同一张图上传两次 → blobs 1 行、attachments 2 行、ref_count=2）：
+//  1. 按 sha256 去重写入 blobs（同内容只落一份密文）；
+//  2. 把附件行的 blob_sha256 指向它；
+//  3. 在同一事务内用 COUNT 重算 ref_count。
+//
+// ⚠️ 为什么是一个事务而不是三段：ref_count 与「写指向」必须原子地一起变。
+// 先写指向、后重算若中途崩了，ref_count 会偏小 → 24 小时延迟删除会删掉仍被引用的 blob。
+//
+// ⚠️ 为什么每个 sha256 一个事务：几万张图放进一个大事务会把整张表锁住。
+// 本函数只处理**一个**附件（一张图），事务边界天然是单图的。
+func LinkUploadedTicketAttachmentBlobWithContentWithDB(db *gorm.DB, link TicketAttachmentBlobUploadLink) (refCount int32, linked bool, err error) {
+	if db == nil {
+		return 0, false, errors.New("数据库未初始化")
+	}
+	if link.AttachmentID <= 0 {
+		return 0, false, ErrTicketAttachmentNotFound
+	}
+	if len(link.Plain) == 0 {
+		return 0, false, ErrTicketAttachmentBlobInvalid
+	}
+	computed := ticketAttachmentBlobSHA256Of(link.Plain)
+	sha := NormalizeTicketAttachmentBlobSHA256(link.SHA256)
+	if sha == "" {
+		sha = computed
+	}
+	// 自检：调用方给的指纹与字节必须一致。不一致就意味着「去重判据与实际内容脱钩」，
+	// 那会让两张不同的图被当成同一份（或被当成两份）。
+	if sha != computed {
+		return 0, false, fmt.Errorf("%w: sha256 与明文不匹配（给定 %s，实际 %s）",
+			ErrTicketAttachmentBlobInvalid, sha, computed)
+	}
+	if !ticketAttachmentBlobReady(db) || !ticketAttachmentBlobLinkReady(db) {
+		return 0, false, nil
+	}
+	err = db.Transaction(func(tx *gorm.DB) error {
+		// 加密在这里做（而不是让 controller 做）：blob 的 AAD 域前缀是 blob 自己的，
+		// 与附件侧 AAD 不同，两套密文不可互换解密。
+		nonce, ciphertext, sealErr := sealTicketAttachmentBlob(link.Plain, sha)
+		if sealErr != nil {
+			return sealErr
+		}
+		_, created, storeErr := StoreTicketAttachmentBlobInTx(tx, sha, link.MediaType, int64(len(link.Plain)), nonce, ciphertext)
+		if storeErr != nil {
+			return storeErr
+		}
+		if created {
+			logger.SysLog(fmt.Sprintf("ticket_attachment_blob_created sha256=%s byteSize=%d", sha, len(link.Plain)))
+		}
+		count, linkErr := LinkTicketAttachmentBlobInTx(tx, link.AttachmentID, sha)
+		if linkErr != nil {
+			return linkErr
+		}
+		refCount, linked = count, true
+		return nil
+	})
+	if err != nil {
+		return 0, false, err
+	}
+	return refCount, linked, nil
+}
+
+// ReleaseDeletedTicketAttachmentBlobWithDB 是**删除路径的独立接线点**
+// （调用方自己没有事务、或已经把行删掉了时用）。
+//
+// 前提（必须由调用方保证）：引用该 blob 的 ticket_attachments 行**已经被删掉**了。
+// 本函数只负责把计数收敛到事实值：先 Decrease（含归零刷新 updated_at），
+// 再 Recompute（真值覆盖，消掉历史漂移）—— 两步都有的理由见 releaseBlobRefCountInTx。
+//
+// 返回 released=false 表示「没有可释放的」（缺表/缺列，或该附件没有 blob 指向）。
+//
+// ⚠️ 与清理任务的接缝：**递减 ref_count 的责任在删除附件的那个事务里**，
+// 由本函数承担；定时清理（RunTicketAttachmentBlobPurge）只读 ref_count，
+// 绝不自己递减。两者顺序必须是「先删引用行并收敛计数，再让清理按 ref_count<=0 判龄」。
+func ReleaseDeletedTicketAttachmentBlobWithDB(db *gorm.DB, sha256Hex string) (refCount int32, released bool, err error) {
+	if db == nil {
+		return 0, false, errors.New("数据库未初始化")
+	}
+	sha := NormalizeTicketAttachmentBlobSHA256(sha256Hex)
+	if sha == "" {
+		// 空指向 = 这张附件从未参与去重（迁移前的行、或迁移没跑），没什么可释放的。
+		return 0, false, nil
+	}
+	if !ticketAttachmentBlobReady(db) || !ticketAttachmentBlobLinkReady(db) {
+		return 0, false, nil
+	}
+	err = db.Transaction(func(tx *gorm.DB) error {
+		count, ok, releaseErr := releaseBlobRefCountInTx(tx, sha)
+		if releaseErr != nil {
+			return releaseErr
+		}
+		refCount, released = count, ok
+		return nil
+	})
+	if err != nil {
+		return 0, false, err
+	}
+	return refCount, released, nil
+}
+
+// DeleteTicketAttachmentForUserWithDB 按**调用者身份**删除一张附件。
+//
+// 这是 controller 唯一需要调用的删除入口：把「谁能删」的规则收在 service 层，
+// 与读图路径共用同一条判定（isTicketAdmin），避免 handler 与 service 各写一份。
+//
+//   - 管理员：可以删任何附件；
+//   - 普通用户：只能删自己的（按 user_id 收窄，删不到时返回 deleted=false）。
+//
+// deleted=false 对两种情况都返回 false 且不报错：不存在、或不属于调用者 ——
+// 由 controller 统一翻成 404，不泄露「这张图是否存在」。
+func DeleteTicketAttachmentForUserWithDB(db *gorm.DB, user *entity.User, attachmentID int64) (bool, error) {
+	if user == nil {
+		return false, ErrTicketForbidden
+	}
+	admin := isTicketAdmin(user)
+	return DeleteTicketAttachmentWithDB(db, attachmentID, func(tx *gorm.DB) *gorm.DB {
+		if admin {
+			return tx
+		}
+		return tx.Where("user_id = ?", user.ID)
+	})
+}
+
+// DeleteTicketAttachmentWithDB 删除一张附件并同步收敛 blob 引用计数。
+//
+// # 为什么放在 service 层而不是让 handler 直接 Delete
+//
+// 「删附件行」与「递减 ref_count」必须原子：分两步做而中间崩溃，ref_count 就会
+// 永久多算这一次引用 → 该 blob **永远不会归零** → 永久占空间（泄漏）。
+// 反过来先递减再删行，中途崩溃会让 ref_count 偏小 → 清理误删仍在被引用的字节。
+//
+// 参数 scope 是**额外的归属条件**（如 `user_id = ? AND message_id IS NULL`），
+// 由调用方给出；本函数只保证「删掉的行数」与「计数变化」一致。
+//
+// 返回 deleted=false 表示没有匹配的行（无权删 / 已删）。
+func DeleteTicketAttachmentWithDB(db *gorm.DB, attachmentID int64, scope func(*gorm.DB) *gorm.DB) (bool, error) {
+	if db == nil {
+		return false, errors.New("数据库未初始化")
+	}
+	if attachmentID <= 0 {
+		return false, ErrTicketAttachmentNotFound
+	}
+	deleted := false
+	err := db.Transaction(func(tx *gorm.DB) error {
+		// 先读出指向：删行之后就查不到 sha 了。
+		var blobSHA string
+		if ticketAttachmentBlobLinkReady(tx) {
+			var row struct {
+				BlobSHA256 string `gorm:"column:blob_sha256"`
+			}
+			if err := tx.Session(&gorm.Session{NewDB: true}).
+				Table(entity.TableNameTicketAttachment).
+				Select("COALESCE(blob_sha256, '') AS blob_sha256").
+				Where("id = ?", attachmentID).
+				Take(&row).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return nil
+				}
+				return err
+			}
+			blobSHA = NormalizeTicketAttachmentBlobSHA256(row.BlobSHA256)
+		}
+		query := tx.Session(&gorm.Session{NewDB: true}).Where("id = ?", attachmentID)
+		if scope != nil {
+			query = scope(query)
+		}
+		result := query.Delete(&entity.TicketAttachment{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return nil
+		}
+		deleted = true
+		// 引用行已删，再收敛计数（同一事务）——见本函数注释里的顺序理由。
+		_, _, releaseErr := releaseBlobRefCountInTx(tx, blobSHA)
+		return releaseErr
+	})
+	return deleted, err
+}
+
+// releaseBlobRefCountInTx 是事务内的收敛实现，供 DeleteTicketAttachmentWithDB 调用。
+//
+// # 为什么既 Decrease 又 Recompute
+//
+// 两步都必须有，各管一件事：
+//
+//	Decrease  —— 增量递减（下限 0），归零时刷新 updated_at（延迟删除的判龄起点）。
+//	             这是「一条引用消失」的直接表达，也保证 updated_at 一定被刷新。
+//	Recompute —— 用 COUNT 真值覆盖，防止历史上任何一次增量漂移被 24 小时延迟删除
+//	             放大成数据丢失（121 §4.4 第 1 点：ref_count 必须恒等于引用行数）。
+//
+// 只做 Decrease 会累积漂移；只做 Recompute 则失去「归零刷新 updated_at」这一步
+// （Recompute 在同值时故意不写库，避免乱动 updated_at）。
+func releaseBlobRefCountInTx(tx *gorm.DB, sha256Hex string) (int32, bool, error) {
+	sha := NormalizeTicketAttachmentBlobSHA256(sha256Hex)
+	if sha == "" {
+		return 0, false, nil
+	}
+	if !ticketAttachmentBlobReady(tx) || !ticketAttachmentBlobLinkReady(tx) {
+		return 0, false, nil
+	}
+	if _, err := DecreaseTicketAttachmentBlobRefCountInTx(tx, sha); err != nil {
+		return 0, false, err
+	}
+	count, err := RecomputeTicketAttachmentBlobRefCountInTx(tx, sha)
+	if err != nil {
+		return 0, false, err
+	}
+	return count, true, nil
+}
+
+// 定时清理的默认参数。
+const (
+	// TicketAttachmentBlobPurgeInterval 是延迟删除的轮询周期。
+	//
+	// 与 log retention 同一取向：间隔不必短（判据是 24 小时缓冲期），
+	// 但必须存在 —— 没有定时任务，ref_count 归零的 blob 会永久占着盘。
+	TicketAttachmentBlobPurgeInterval = time.Hour
+	// ticketAttachmentBlobPurgeMaxBatches 是单轮最多扫的批数，防止异常状态下无限循环。
+	ticketAttachmentBlobPurgeMaxBatches = 50
+)
+
+// RunTicketAttachmentBlobPurgeWorker 是**定时任务的唯一接线点**。
+//
+// 每轮：RunTicketAttachmentBlobPurge（分批删除 ref_count<=0 且超过缓冲期的 blob）。
+// 轮询用 time.Timer 而不是 Ticker，并每轮检查 ctx：Ticker 在长事务下会把
+// 未处理的 tick 堆积起来（连续触发多轮删除）。
+//
+// interval <= 0 时用 TicketAttachmentBlobPurgeInterval。
+func RunTicketAttachmentBlobPurgeWorker(ctx context.Context, db *gorm.DB, interval time.Duration) {
+	if db == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = TicketAttachmentBlobPurgeInterval
+	}
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		if deleted, err := RunTicketAttachmentBlobPurge(db, time.Now(), ticketAttachmentBlobPurgeMaxBatches); err != nil {
+			logger.SysWarn(fmt.Sprintf("ticket_attachment_blob_purge_failed error=%v", err))
+		} else if deleted > 0 {
+			logger.SysLog(fmt.Sprintf("ticket_attachment_blob_purge_done deleted=%d", deleted))
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+// StartTicketAttachmentBlobPurgeWorker 起后台协程并返回「退出后关闭」的 channel。
+//
+// 与 StartTicketAttachmentScanWorker 同构，便于 main 里统一等待；
+// db 为 nil 时立即关闭，不泄漏协程。
+func StartTicketAttachmentBlobPurgeWorker(ctx context.Context, db *gorm.DB) <-chan struct{} {
+	done := make(chan struct{})
+	if db == nil {
+		close(done)
+		return done
+	}
+	go func() {
+		defer close(done)
+		RunTicketAttachmentBlobPurgeWorker(ctx, db, TicketAttachmentBlobPurgeInterval)
+	}()
+	return done
+}
+
+// RunTicketAttachmentBlobPurgeOnce 执行**一轮**延迟删除（供注册/一次启动补跑用）。
+//
+// 与 worker 的区别：不循环、不看 ctx。启动时先跑一次能让「上次进程退出后
+// 归零的 blob」不必等满一个周期才被清掉。
+func RunTicketAttachmentBlobPurgeOnce(db *gorm.DB) (int64, error) {
+	return RunTicketAttachmentBlobPurge(db, time.Now(), ticketAttachmentBlobPurgeMaxBatches)
 }
