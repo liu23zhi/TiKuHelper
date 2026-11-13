@@ -45,6 +45,26 @@ type TicketAttachment struct {
 	// NextAttemptAt 与 ticket_notifications 的重试列同构：失败的检测按退避重排。
 	NextAttemptAt *time.Time `gorm:"column:next_attempt_at;index" json:"-"`
 
+	// PurgedAt 非空表示这张图片的**密文已按保留策略清理**（service 包的
+	// ticket_attachment_retention.go），值即清理时刻。
+	//
+	// # 为什么是「留行置空」而不是物理删行
+	//
+	// 这一行同时是「某工单/某条回复上的某张图」这条业务关系，message_id 是唯一绑定。
+	// 物理删行会让历史消息出现无法解释的空洞（前端拿到 n 条消息却只有 n-1 条带图，
+	// 且无法区分「当时没发图」与「图被清理了」）。所以清理只做内容降级：
+	// ciphertext / nonce 置空，byte_size / media_type / sha256 / message_id 原样保留，
+	// 前端据此显示「图片已按保留策略清理」。
+	//
+	// # 三态语义（读取路径不要混为一谈）
+	//
+	//	nil        → 正常图片
+	//	非 nil     → 已按策略清理（可解释的占位，不是数据损坏）
+	//	密文为空且 nil → **残缺行**（加密事务崩在中间），不得当成已清理
+	//
+	// 因此判「是否已清理」只能看本列，不要用「ciphertext 为空」推断。
+	PurgedAt *time.Time `gorm:"column:purged_at" json:"purgedAt,omitempty"`
+
 	CreatedAt time.Time `gorm:"column:created_at;autoCreateTime;index" json:"createdAt"`
 	UpdatedAt time.Time `gorm:"column:updated_at;autoUpdateTime" json:"updatedAt"`
 }
