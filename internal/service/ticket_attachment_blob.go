@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -850,4 +851,475 @@ func StartTicketAttachmentBlobPurgeWorker(ctx context.Context, db *gorm.DB) <-ch
 // 归零的 blob」不必等满一个周期才被清掉。
 func RunTicketAttachmentBlobPurgeOnce(db *gorm.DB) (int64, error) {
 	return RunTicketAttachmentBlobPurge(db, time.Now(), ticketAttachmentBlobPurgeMaxBatches)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 工单图片缓存管理页的查询能力（T-12）
+//
+// 本段**只新增**，不改上面任何既有函数。分工：
+//
+//	ListTicketImageCacheWithDB    分页列表 + 四个必须显示的数字（总量/待清理/scан_state 分组/保留策略）
+//	DeleteTicketImageCacheWithDB  单条删除，ref_count>0 必须拒绝
+//	DeleteTicketImageCachesBatchWithDB 批量删除，同样遵守 ref_count 保护
+//
+// ⚠️ 清理逻辑不在本文件：按时间/按大小清理属于 T-11（ticket_attachment_retention.go）。
+// 本文件只负责「读现状」与「删单条/批量」。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TicketImageCacheRefFilter 是列表页的引用计数筛选（按 ref_count 过滤）。
+const (
+	// TicketImageCacheRefAll 不按引用计数过滤。
+	TicketImageCacheRefAll = ""
+	// TicketImageCacheRefZero 只看 ref_count = 0 的待清理项。
+	TicketImageCacheRefZero = "zero"
+	// TicketImageCacheRefReferenced 只看 ref_count > 0 的仍在被引用的项。
+	TicketImageCacheRefReferenced = "referenced"
+)
+
+// 保留策略的三个默认值（与 T-11 的 ticket_attachment_retention.go 保持一致）。
+//
+// ⚠️ 为什么要在这里重复一份：T-11 的 service.GetTicketAttachmentRetentionSettingsWithDB
+// 尚未落地（本分支上 ticket_attachment_retention.go 不存在）。页面必须显示
+// 「当前生效的三个保留策略值」，所以这里按**同一份键名与默认值**只读地读一遍。
+// T-11 落地后应把 resolveTicketImageCacheRetention 替换成
+// service.GetTicketAttachmentRetentionSettingsWithDB，并删掉本段的常量与解析函数。
+//
+// 常量名刻意加了 ticketImageCache 前缀而不是复用 T-11 的
+// TicketAttachmentRetentionMaxAgeDaysSettingKey：本包同属 service，
+// 名字撞车会让两个 PR 合并时直接编译失败。
+const (
+	ticketImageCacheRetentionMaxAgeDaysSettingKey                   = "ticket_attachment_retention_max_age_days"
+	ticketImageCacheRetentionMaxTotalGiBSettingKey                  = "ticket_attachment_retention_max_total_gib"
+	ticketImageCacheRetentionCleanupIntervalMinutesSettingKey       = "ticket_attachment_retention_cleanup_interval_minutes"
+	defaultTicketImageCacheRetentionMaxAgeDays                int64 = 180
+	defaultTicketImageCacheRetentionMaxTotalGiB               int64 = 20
+	defaultTicketImageCacheRetentionCleanupIntervalMinutes    int64 = 60
+	ticketImageCacheRetentionGiB                              int64 = 1 << 30
+	// 上限只挡明显离谱的输入，与 T-11 的同名上限一致。
+	maxTicketImageCacheRetentionAgeDays               int64 = 3650
+	maxTicketImageCacheRetentionTotalGiB              int64 = 1024
+	maxTicketImageCacheRetentionCleanupIntervalMinute int64 = 1440
+)
+
+// TicketImageCacheRetention 是页面显示的「当前生效的三个保留策略值」。
+type TicketImageCacheRetention struct {
+	// MaxAgeDays 是按时间清理的天数。
+	MaxAgeDays int `json:"maxAgeDays"`
+	// MaxTotalGiB 是总量上限，单位 GiB。
+	MaxTotalGiB int64 `json:"maxTotalGiB"`
+	// CleanupIntervalMinutes 是后台清理间隔，单位分钟。
+	CleanupIntervalMinutes int `json:"cleanupIntervalMinutes"`
+	// MaxTotalBytes 是 MaxTotalGiB 的字节形态（只读派生，供页面算占比）。
+	MaxTotalBytes int64 `json:"maxTotalBytes"`
+}
+
+// TicketImageCacheScanCounts 是按 scan_state 分组的分项计数。
+//
+// 五个字段各自独立而不是一个 map：页面要固定显示 pending / approved /
+// sensitive / failed 四项，用结构体让「漏掉某一项」在编译期就被发现。
+// Scanning 是 pending 与结果之间的中间态（检测中的行），单列出来是为了让
+// 四个固定项之和与总数不一致时能解释清楚差在哪。
+type TicketImageCacheScanCounts struct {
+	Pending   int64 `json:"pending"`
+	Scanning  int64 `json:"scanning"`
+	Approved  int64 `json:"approved"`
+	Sensitive int64 `json:"sensitive"`
+	Failed    int64 `json:"failed"`
+	// Other 是**兜底**：库里出现未知 scan_state（历史数据、手工改库、未来新增状态）
+	// 时必须被计数而不是被静默丢掉 —— 否则「分项之和 != 总数」会变成一个无法解释的缺口。
+	Other int64 `json:"other"`
+}
+
+// Total 返回五项之和（含 Other）。
+func (c TicketImageCacheScanCounts) Total() int64 {
+	return c.Pending + c.Scanning + c.Approved + c.Sensitive + c.Failed + c.Other
+}
+
+// TicketImageCacheSummary 是列表页的汇总卡片。
+//
+// 全部字段都在**整个筛选范围**上统计，不随翻页变化 —— 只统计当前页会让
+// 「总占用」在翻页时跳动，管理员无法用它判断该不该清理。
+type TicketImageCacheSummary struct {
+	// TotalCount 是筛选范围内的 blob 行数。
+	TotalCount int64 `json:"totalCount"`
+	// TotalBytes 是筛选范围内 byte_size 之和（**明文字节**，与 T-11 的
+	// ticketAttachmentLiveBytes 同口径：判定与统计都用 byte_size，不含加密开销）。
+	TotalBytes int64 `json:"totalBytes"`
+	// ZeroRefCount 是 ref_count = 0 的待清理行数（延迟删除的候选集大小）。
+	ZeroRefCount int64 `json:"zeroRefCount"`
+	// ScanStates 是按 scan_state 分组的分项计数。
+	ScanStates TicketImageCacheScanCounts `json:"scanStates"`
+	// Retention 是当前生效的三个保留策略值。
+	Retention TicketImageCacheRetention `json:"retention"`
+}
+
+// TicketImageCacheItem 是列表的一行。
+//
+// ⚠️ 刻意**不是** entity.TicketAttachmentBlob：那个实体带 Nonce / Ciphertext
+// （json:"-" 只是挡住序列化，长度仍会进内存），也带 CheckError。
+// 列表一次 20 行、每行密文可达 20 MB，把整行读出来会平白拉几百 MB 内存。
+// 这里只 SELECT 展示需要的列，密文一列都不碰。
+type TicketImageCacheItem struct {
+	SHA256 string `json:"sha256"`
+	// ByteSize 是明文字节数（同一份图去重后只有一行，这是它一次的占用）。
+	ByteSize      int64      `json:"byteSize"`
+	MediaType     string     `json:"mediaType"`
+	RefCount      int32      `json:"refCount"`
+	ScanState     string     `json:"scanState"`
+	NSFWScore     *float64   `json:"nsfwScore,omitempty"`
+	RiskLevel     string     `json:"riskLevel,omitempty"`
+	Suggestion    string     `json:"suggestion,omitempty"`
+	Label         string     `json:"label,omitempty"`
+	CheckedAt     *time.Time `json:"checkedAt,omitempty"`
+	AttemptCount  int        `json:"attemptCount"`
+	NextAttemptAt *time.Time `json:"nextAttemptAt,omitempty"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	UpdatedAt     time.Time  `json:"updatedAt"`
+	// Referenced 是派生字段：refCount > 0。页面据此直接禁用删除按钮，
+	// 不必在前端重复「> 0」这个判据（两处判据必然漂移）。
+	Referenced bool `json:"referenced"`
+}
+
+// TicketImageCacheListQuery 是列表筛选条件。
+type TicketImageCacheListQuery struct {
+	// MediaType 精确匹配（image/png、image/jpeg …）。
+	MediaType string
+	// ScanState 精确匹配（pending / scanning / approved / sensitive / failed）。
+	ScanState string
+	// RefFilter 取 TicketImageCacheRef* 之一。
+	RefFilter string
+	// Keyword 只做 sha256 前缀匹配：blob 的「内容」是密文，没有可全文搜索的文本列，
+	// 而 sha256 是排查某张图时唯一可用的外部标识。
+	Keyword string
+}
+
+// TicketImageCacheListResult 是分页结果。
+type TicketImageCacheListResult struct {
+	Items    []TicketImageCacheItem  `json:"items"`
+	Total    int64                   `json:"total"`
+	Page     int                     `json:"page"`
+	PageSize int                     `json:"pageSize"`
+	Summary  TicketImageCacheSummary `json:"summary"`
+}
+
+// TicketImageCacheBlockedRef 是「这条 blob 删不掉，因为还在被引用」。
+type TicketImageCacheBlockedRef struct {
+	SHA256 string `json:"sha256"`
+	// RefCount 是被多少个附件行（工单图片）引用。
+	RefCount int32 `json:"refCount"`
+	// Message 是给管理员看的人话，含具体数量（判据 ① 要求「说明被几张工单引用」）。
+	Message string `json:"message"`
+}
+
+// errTicketImageCacheNoDatabase 与既有函数的「数据库未初始化」保持同一文案。
+var errTicketImageCacheNoDatabase = errors.New("数据库未初始化")
+
+// ticketImageCacheReady 判断 blobs 表是否已就绪。
+//
+// 未就绪时**所有查询返回空结果而不报错**（判据 ④：空库/未迁移时各项显示 0）：
+// 管理页把一个「迁移没跑」的状态显示成红色报错，只会误导管理员去查业务问题。
+func ticketImageCacheReady(db *gorm.DB) bool {
+	return ticketAttachmentBlobReady(db)
+}
+
+// resolveTicketImageCacheRetention 读取三个保留策略值（缺记录/越界回落默认值）。
+func resolveTicketImageCacheRetention(db *gorm.DB) TicketImageCacheRetention {
+	settings := TicketImageCacheRetention{
+		MaxAgeDays:             int(defaultTicketImageCacheRetentionMaxAgeDays),
+		MaxTotalGiB:            defaultTicketImageCacheRetentionMaxTotalGiB,
+		CleanupIntervalMinutes: int(defaultTicketImageCacheRetentionCleanupIntervalMinutes),
+	}
+	if db != nil {
+		settings.MaxAgeDays = int(readTicketImageCacheRetentionInt64(
+			db, ticketImageCacheRetentionMaxAgeDaysSettingKey,
+			defaultTicketImageCacheRetentionMaxAgeDays, maxTicketImageCacheRetentionAgeDays))
+		settings.MaxTotalGiB = readTicketImageCacheRetentionInt64(
+			db, ticketImageCacheRetentionMaxTotalGiBSettingKey,
+			defaultTicketImageCacheRetentionMaxTotalGiB, maxTicketImageCacheRetentionTotalGiB)
+		settings.CleanupIntervalMinutes = int(readTicketImageCacheRetentionInt64(
+			db, ticketImageCacheRetentionCleanupIntervalMinutesSettingKey,
+			defaultTicketImageCacheRetentionCleanupIntervalMinutes,
+			maxTicketImageCacheRetentionCleanupIntervalMinute))
+	}
+	settings.MaxTotalBytes = settings.MaxTotalGiB * ticketImageCacheRetentionGiB
+	return settings
+}
+
+// readTicketImageCacheRetentionInt64 读一个正整数设置，越界或解析失败回落默认值。
+//
+// 回落而不是返回 0：0 在保留策略里是**非法值**而不是「不限制」，
+// 把读失败当 0 会让页面显示「总量上限 0 字节」（看起来像「已经该删光」）。
+func readTicketImageCacheRetentionInt64(db *gorm.DB, key string, defaultValue int64, maxValue int64) int64 {
+	raw := strings.TrimSpace(getSystemSettingStringWithDefault(db, key, strconv.FormatInt(defaultValue, 10)))
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value <= 0 || value > maxValue {
+		return defaultValue
+	}
+	return value
+}
+
+// applyTicketImageCacheFilters 把筛选条件套到查询上。
+func applyTicketImageCacheFilters(query *gorm.DB, filter TicketImageCacheListQuery) *gorm.DB {
+	if mediaType := strings.TrimSpace(filter.MediaType); mediaType != "" {
+		query = query.Where("media_type = ?", mediaType)
+	}
+	if scanState := strings.TrimSpace(filter.ScanState); scanState != "" {
+		query = query.Where("scan_state = ?", scanState)
+	}
+	switch filter.RefFilter {
+	case TicketImageCacheRefZero:
+		query = query.Where("ref_count <= 0")
+	case TicketImageCacheRefReferenced:
+		query = query.Where("ref_count > 0")
+	}
+	if keyword := strings.TrimSpace(filter.Keyword); keyword != "" {
+		// 前缀匹配而不是 %kw%：sha256 是定长十六进制串，LIKE 'abc%' 才能用上主键索引；
+		// 两侧通配会让每次输入都全表扫描。
+		query = query.Where("sha256 LIKE ?", NormalizeTicketAttachmentBlobSHA256(keyword)+"%")
+	}
+	return query
+}
+
+// ListTicketImageCacheWithDB 分页列出工单图片缓存。
+//
+// 返回的四组数字（对应页面四个必须显示的项，全部跨整个筛选范围）：
+//
+//	① TotalBytes            总占用字节（页面转人类可读）
+//	② ZeroRefCount          ref_count = 0 的待清理数
+//	③ ScanStates            按 scan_state 分组（pending/scanning/approved/sensitive/failed/other）
+//	④ Retention             当前生效的三个保留策略值
+func ListTicketImageCacheWithDB(db *gorm.DB, filter TicketImageCacheListQuery, page int, pageSize int) (TicketImageCacheListResult, error) {
+	result := TicketImageCacheListResult{Items: []TicketImageCacheItem{}, Summary: TicketImageCacheSummary{}}
+	if db == nil {
+		return result, errTicketImageCacheNoDatabase
+	}
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 200 {
+		pageSize = 20
+	}
+	result.Page, result.PageSize = page, pageSize
+
+	// 保留策略的读取与表是否存在无关：即使 blobs 表还没建，页面也要能显示配置值。
+	result.Summary.Retention = resolveTicketImageCacheRetention(db)
+
+	if !ticketImageCacheReady(db) {
+		// 判据 ④：未就绪 = 空结果 + 全 0 + 无错误。
+		return result, nil
+	}
+
+	base := db.Session(&gorm.Session{NewDB: true}).Model(&entity.TicketAttachmentBlob{})
+	base = applyTicketImageCacheFilters(base, filter)
+	if err := base.Count(&result.Total).Error; err != nil {
+		return result, err
+	}
+
+	// 列表只 SELECT 展示列，**不碰 nonce / ciphertext / check_error**。
+	rows := make([]TicketImageCacheItem, 0, pageSize)
+	if err := applyTicketImageCacheFilters(
+		db.Session(&gorm.Session{NewDB: true}).Model(&entity.TicketAttachmentBlob{}), filter).
+		Select("sha256, byte_size, media_type, ref_count, scan_state, nsfw_score, risk_level, " +
+			"suggestion, label, checked_at, attempt_count, next_attempt_at, created_at, updated_at").
+		Order("created_at DESC, sha256 ASC").
+		Limit(pageSize).Offset((page - 1) * pageSize).
+		Scan(&rows).Error; err != nil {
+		return result, err
+	}
+	for index := range rows {
+		rows[index].Referenced = rows[index].RefCount > 0
+	}
+	result.Items = rows
+
+	// 汇总独立算一次：只统计当前页会让「总占用」随翻页跳动。
+	if err := buildTicketImageCacheSummary(db, filter, &result.Summary); err != nil {
+		// 汇总失败不影响列表可用性（与 IPSegmentList 同口径）：页面仍能删单条。
+		return result, nil
+	}
+	return result, nil
+}
+
+// buildTicketImageCacheSummary 在**整个筛选范围**上算四组数字。
+func buildTicketImageCacheSummary(db *gorm.DB, filter TicketImageCacheListQuery, summary *TicketImageCacheSummary) error {
+	summarize := func() *gorm.DB {
+		return applyTicketImageCacheFilters(
+			db.Session(&gorm.Session{NewDB: true}).Model(&entity.TicketAttachmentBlob{}), filter)
+	}
+
+	if err := summarize().Count(&summary.TotalCount).Error; err != nil {
+		return err
+	}
+
+	var bytesRow struct {
+		Total *int64 `gorm:"column:total"`
+	}
+	if err := summarize().
+		Select("COALESCE(SUM(byte_size), 0) AS total").
+		Scan(&bytesRow).Error; err != nil {
+		return err
+	}
+	if bytesRow.Total != nil {
+		summary.TotalBytes = *bytesRow.Total
+	}
+
+	var zeroRow struct {
+		Total int64 `gorm:"column:total"`
+	}
+	if err := summarize().
+		Where("ref_count <= 0").
+		Select("COUNT(*) AS total").
+		Scan(&zeroRow).Error; err != nil {
+		return err
+	}
+	summary.ZeroRefCount = zeroRow.Total
+
+	// 分组统计必须在**未加 scan_state 过滤**的同一筛选范围上算，否则选了
+	// 「只看 approved」时分项就只剩 approved 一项，页面等于什么都没说。
+	// 因此这里刻意用「除 scan_state 之外的条件」重建查询。
+	groupFilter := filter
+	groupFilter.ScanState = ""
+	var groupRows []struct {
+		State string `gorm:"column:state"`
+		Total int64  `gorm:"column:total"`
+	}
+	if err := applyTicketImageCacheFilters(
+		db.Session(&gorm.Session{NewDB: true}).Model(&entity.TicketAttachmentBlob{}), groupFilter).
+		Select("scan_state AS state, COUNT(*) AS total").
+		Group("scan_state").
+		Scan(&groupRows).Error; err != nil {
+		return err
+	}
+	counts := TicketImageCacheScanCounts{}
+	for _, row := range groupRows {
+		switch row.State {
+		case entity.TicketAttachmentScanPending:
+			counts.Pending = row.Total
+		case entity.TicketAttachmentScanScanning:
+			counts.Scanning = row.Total
+		case entity.TicketAttachmentScanApproved:
+			counts.Approved = row.Total
+		case entity.TicketAttachmentScanSensitive:
+			counts.Sensitive = row.Total
+		case entity.TicketAttachmentScanFailed:
+			counts.Failed = row.Total
+		default:
+			counts.Other += row.Total
+		}
+	}
+	summary.ScanStates = counts
+	return nil
+}
+
+// TicketImageCacheRefStateWithDB 返回一份 blob 的真实引用情况（事实值 + 缓存值取大）。
+//
+// # 为什么要取 max 而不是直接用 ref_count 列
+//
+// ref_count 是缓存，事实来源是 COUNT(*) WHERE blob_sha256 = ?（见
+// TicketAttachmentBlobRefCountWithDB 的注释）。两者可能因为并发/崩溃而偏离。
+// 删除是不可逆操作，所以这里取**较大者**：只要有一侧认为还被引用就拒绝删。
+// 反过来（取较小者）会在计数少算时删掉仍在被工单引用的图 → 用户看到图片永久 404。
+//
+// 第二个返回值是事实计数（COUNT），便于把「列值漂移」显示出来排查。
+func TicketImageCacheRefStateWithDB(db *gorm.DB, sha256Hex string) (effective int32, truth int32, err error) {
+	if db == nil {
+		return 0, 0, errTicketImageCacheNoDatabase
+	}
+	sha := NormalizeTicketAttachmentBlobSHA256(sha256Hex)
+	if sha == "" {
+		return 0, 0, ErrTicketAttachmentBlobInvalid
+	}
+	if !ticketImageCacheReady(db) {
+		return 0, 0, nil
+	}
+	truth, err = TicketAttachmentBlobRefCountWithDB(db, sha)
+	if err != nil {
+		return 0, 0, err
+	}
+	var stored struct {
+		RefCount int32 `gorm:"column:ref_count"`
+	}
+	found := false
+	if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.TicketAttachmentBlob{}).
+		Select("ref_count").
+		Where("sha256 = ?", sha).
+		Take(&stored).Error; err == nil {
+		found = true
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, 0, err
+	}
+	effective = truth
+	if found && stored.RefCount > effective {
+		effective = stored.RefCount
+	}
+	return effective, truth, nil
+}
+
+// DeleteTicketImageCacheWithDB 删除**一条** blob，ref_count > 0 时拒绝。
+//
+// 判据 ①：拒绝时 blocked 带回被多少个附件行（工单图片）引用，controller 据此
+// 返回 409 + 说明。**不允许强删**：一份 blob 被多个附件行共享，删掉字节会让
+// 那些工单的图片全部变成 404，且不可恢复（密文已丢）。
+//
+// 返回 (deleted, blocked, err)：
+//   - 删除成功：deleted=1, blocked=nil；
+//   - 被引用：deleted=0, blocked 一条，err=nil（「拒绝」是正常业务结果，不是故障）；
+//   - 不存在：deleted=0, blocked=nil, err=nil（幂等：重复点删除不该报错）。
+func DeleteTicketImageCacheWithDB(db *gorm.DB, sha256Hex string) (int64, []TicketImageCacheBlockedRef, error) {
+	return DeleteTicketImageCachesBatchWithDB(db, []string{sha256Hex})
+}
+
+// DeleteTicketImageCachesBatchWithDB 批量删除 blob，**逐条**遵守 ref_count 保护。
+//
+// 判据 ②：批量删除与单条删除走同一套保护。若批量走「不检查引用直接 DELETE」，
+// 那么「单条删不掉的东西用批量就能删掉」，保护形同虚设。
+//
+// # 为什么逐条而不是一条 IN (...) DELETE
+//
+// 引用计数是**每一行**的，一条大 DELETE 无法表达「跳过还有引用的行」，
+// 只能在应用层逐条判定。批量上限取 TicketAttachmentBlobPurgeBatchSize（200），
+// 与延迟删除同口径：一次批量删除最多 200 条，避免长事务持写锁。
+//
+// 返回 (deleted, blocked, err)。blocked 逐条给出原因，页面据此展示「哪几条没删掉、为什么」。
+func DeleteTicketImageCachesBatchWithDB(db *gorm.DB, sha256Hexes []string) (int64, []TicketImageCacheBlockedRef, error) {
+	if db == nil {
+		return 0, nil, errTicketImageCacheNoDatabase
+	}
+	var deleted int64
+	blocked := make([]TicketImageCacheBlockedRef, 0)
+	seen := make(map[string]struct{}, len(sha256Hexes))
+	for _, raw := range sha256Hexes {
+		sha := NormalizeTicketAttachmentBlobSHA256(raw)
+		if sha == "" {
+			return deleted, blocked, ErrTicketAttachmentBlobInvalid
+		}
+		if _, exists := seen[sha]; exists {
+			continue
+		}
+		seen[sha] = struct{}{}
+
+		effective, _, err := TicketImageCacheRefStateWithDB(db, sha)
+		if err != nil {
+			return deleted, blocked, err
+		}
+		if effective > 0 {
+			// 判据 ① 的核心分支：**不删**，并带上「被几个引用」。
+			blocked = append(blocked, TicketImageCacheBlockedRef{
+				SHA256:   sha,
+				RefCount: effective,
+				Message: fmt.Sprintf("该图片仍被 %d 个工单图片引用，不能删除；请先删除对应工单图片或等待其过期",
+					effective),
+			})
+			continue
+		}
+		// 删除条件里**再次**带上 ref_count <= 0：判定与删除之间可能有新上传把计数加回去，
+		// 只按主键删会把刚被引用的字节删掉。
+		result := db.Session(&gorm.Session{NewDB: true}).
+			Where("sha256 = ? AND ref_count <= 0", sha).
+			Delete(&entity.TicketAttachmentBlob{})
+		if result.Error != nil {
+			return deleted, blocked, result.Error
+		}
+		deleted += result.RowsAffected
+	}
+	return deleted, blocked, nil
 }
