@@ -127,6 +127,15 @@
             <a-button type="link" style="padding: 0" @click="openEditModal(record)">编辑</a-button>
             <!-- 绑定历史（需求 5a / task_doc/70 §3.6）：管理员查某账号的换绑轨迹。 -->
             <a-button type="link" style="padding: 0" @click="openBindingsModal(record)">查看</a-button>
+            <!--
+              用户画像（T-17 / task_doc/98，用户 2026-11-13 决策）。
+              ⚠️ 这是**并列新增**的独立入口，不是替换上面的「查看」：
+              那个「查看」是绑定历史弹窗（GET /admin/users/:id/bindings），
+              语义与画像完全不同，不得合并也不得挪位。
+              画像本身是「一个页面的两种视角」（侧边栏页默认整体、可切单用户），
+              所以这里跳转到同一页面并带 ?userId=，不另开弹窗。
+            -->
+            <a-button type="link" style="padding: 0" @click="openPortrait(record)">画像</a-button>
             <a-button type="link" style="padding: 0" @click="openResetPasswordModal(record)">重置密码</a-button>
             <a-popconfirm
               :key="actionContextKey + ':' + record.id"
@@ -1719,6 +1728,30 @@ export default defineComponent({
         password: '',
       }
       this.userListContext.resetPasswordVisible.value = true
+    },
+    // ── 用户画像（T-17 / task_doc/98） ────────────────────────
+    // 跳转到侧边栏「用户画像」页并带 ?userId=，而不是另开一个弹窗。
+    //
+    // 为什么是跳转而不是弹窗：用户 2026-11-13 的决策是「一个页面的两种视角」——
+    // 侧边栏页默认展示整体画像（主要用途），选中用户后切到该用户。
+    // 若这里再开一个弹窗，就会出现「同一份画像渲染两份」，两处口径迟早不一致。
+    //
+    // ⚠️ 这里**不动** openBindingsModal：上面的「查看」按钮仍然是绑定历史弹窗
+    // （GET /admin/users/:id/bindings），两者是并列的独立入口。
+    openPortrait(record) {
+      const target = record || {}
+      const id = Number(target.id)
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        message.warning('用户参数错误')
+        return
+      }
+      this.$router.push({ name: 'user-portrait', query: { userId: String(id) } })
+        .catch(error => {
+          // 重复导航（NavigationDuplicated）不是错误；其余才提示。
+          if (error?.name !== 'NavigationDuplicated') {
+            message.error('页面暂时无法打开，请稍后重试。')
+          }
+        })
     },
     // ── 绑定历史弹窗（需求 5a） ────────────────────────────────
     // 只读；数据来自 GET /admin/users/:id/bindings（管理员 + 脱敏）。
