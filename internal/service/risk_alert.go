@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -598,6 +599,13 @@ func EvaluateDebtAlerts(db *gorm.DB, now time.Time) (RiskAlertEvaluation, error)
 	}
 	if rule, ok := enabledRules[entity.RiskRuleIDWechatPhoneShare]; ok {
 		found, scanErr := collectWechatPhoneShareCandidates(db, rule, now)
+		if scanErr != nil {
+			return result, scanErr
+		}
+		candidates = append(candidates, found...)
+	}
+	if rule, ok := enabledRules[entity.RiskRuleIDImpossibleTravel]; ok {
+		found, scanErr := collectImpossibleTravelCandidates(db, rule, now)
 		if scanErr != nil {
 			return result, scanErr
 		}
@@ -2104,6 +2112,242 @@ func collectWechatPhoneShareCandidates(db *gorm.DB, rule entity.RiskRule, now ti
 		}
 	}
 	return candidates, nil
+}
+
+// riskImpossibleTravelMaxSpeedKmh 是「物理不可能」的速度上限（km/h）。
+//
+// # 为什么是 900
+//
+// 900 km/h 是**民航客机的巡航上限**（约 Mach 0.85，常见机型 800–900）。
+// 取民航而不是「战斗机/火箭」是有意的保守选择：我们要抓的是「同一个账号在两地
+// 之间瞬移」，而两地的**最快现实交通方式**就是民航。用更高的上限（如协和式的
+// 2000 km/h）会把大量真实异常放走；用更低（如高铁 350）会把「同一天内北京→上海
+// 坐飞机」这种正常出差误判成异常。
+//
+// ⚠️ 这个数字是**行业常识值，不是本仓实测值**。它作为**代码默认值**给出，
+// 运营可通过 risk_rule_impossible_travel_threshold 调整（见 riskThresholdSpecs）。
+const riskImpossibleTravelMaxSpeedKmh = 900.0
+
+// riskImpossibleTravelMinIntervalMinutes 是「最小判定间隔」（分钟）。
+//
+// 物理上：distance / 900km/h 得到「最快到达时间」。但为了抗**定位误差**，
+// 实际判据还要求「时间间隔 ≥ 本值」才进入比较 —— 否则两个相邻城区的 IP
+// （坐标差 20km、间隔 30 秒）会被算成「45000 km/h」而误报。
+//
+// 30 分钟的来源：同城跨区通勤的现实下限。**这是拍的**（没有权威数据支撑），
+// 但它只在「距离很近」时才起作用 —— 城市间的真实瞬移（如北京→广州 1900km）
+// 需要 2.1 小时的飞行时间，远超这个下限，不会被它挡掉。
+const riskImpossibleTravelMinIntervalMinutes = 30
+
+// riskImpossibleTravelEarthRadiusKm 是球面距离公式用的地球半径。
+const riskImpossibleTravelEarthRadiusKm = 6371.0
+
+// collectImpossibleTravelCandidates 收集「单账号相邻两次成功登录的移动速度物理不可能」的命中
+// （96 §2.1 R3）。
+//
+// # 数据源
+//
+// `logs` 表里 `module='auth'` + `action=10` + `new_answer LIKE '%"status":"success"%'`
+// 的成功登录行（与 R1 同一谓词，见 riskLoginAuditAction / riskLoginAuditModule）。
+// **只看成功登录**：攻击者拿到密码后异地登录本身就是成功登录；失败尝试由 R9
+// 另建表处理（`login_attempts` 只有累计计数，无逐次流水）。
+//
+// # 判据
+//
+// 对同一 user_id 的登录序列按 create_time 排序，逐对比较相邻两条：
+//
+//	速度 = 球面距离(上一条 IP, 本条 IP) / 时间间隔
+//	若 速度 > riskImpossibleTravelMaxSpeedKmh（且时间间隔 ≥ 最小间隔）→ 命中
+//
+// # 边界处理（每条都有用例）
+//
+//   - **同一 IP 连续两次** → 距离 0 → 速度 0 → 不告警。
+//   - **时间倒序/相同时间**（脏数据）→ 间隔 ≤ 0 → 跳过该对（不能算出负速度）。
+//   - **归属地查不到**（私网 IP / 段表未覆盖 / 上游没给坐标）→ 跳过该对，不告警。
+//     ⚠️ 这条最重要：把「未知」当成「异地」会让所有内网 IP 都告警
+//     （本机实测生产库 logs 里全是 172.x 私网地址）。
+//   - **首次登录**（没有上一条）→ 自然跳过。
+//   - **30 天前的行已被清理** → 只能看到保留期内的序列；清理后的第一次登录
+//     没有前一条，自然不告警（不会误判成「从无到有」）。
+//
+// # 性能
+//
+// 依赖 `idx_logs_user_time(user_id, create_time)` 复合索引（见
+// registry.ensureLogsUserTimeIndex）。没有它也能跑，但会退化成内存排序。
+func collectImpossibleTravelCandidates(db *gorm.DB, rule entity.RiskRule, now time.Time) ([]riskWarningCandidate, error) {
+	threshold := riskRuleThreshold(db, rule, riskDefaultThreshold(rule.RuleID))
+	if threshold <= 0 {
+		return nil, nil
+	}
+	if !db.Migrator().HasTable(entity.TableNameLog) {
+		return nil, nil
+	}
+	windowStart, _ := riskLoginWindow(now)
+	// 取最近 7 天的登录序列（R3 只需要相邻两次，7 天足够覆盖「今天之前的最后一次」，
+	// 又不会因为扫全表而变慢；30 天保留期是上界，这里取更小值是为了性能）。
+	since := now.Add(-7 * 24 * time.Hour)
+	timeExpr := riskWindowColumnExpr(db, "create_time")
+
+	type loginRow struct {
+		UserID    int32
+		ClientIP  string
+		CreatedAt time.Time
+	}
+	var rows []loginRow
+	if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.Log{}).
+		Select("user_id, client_ip, create_time AS created_at").
+		Where("action = ?", riskLoginAuditAction).
+		Where("module = ?", riskLoginAuditModule).
+		Where("client_ip <> ''").
+		Where("user_id > 0").
+		Where("new_answer LIKE ?", `%"status":"success"%`).
+		Where(timeExpr+" >= ?", since.Format("2006-01-02 15:04:05")).
+		Order("user_id ASC, create_time ASC").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	if len(rows) < 2 {
+		return nil, nil
+	}
+
+	// 坐标为空的 IP 只查一次（同一 IP 会在多行里重复出现）。
+	coordCache := map[string]*riskGeoPoint{}
+	geoFor := func(ip string) *riskGeoPoint {
+		if point, ok := coordCache[ip]; ok {
+			return point
+		}
+		point := riskLookupIPGeoPoint(db, ip)
+		coordCache[ip] = point
+		return point
+	}
+
+	// 按 user_id 分组逐对比较（rows 已按 user_id, create_time 排序）。
+	candidates := make([]riskWarningCandidate, 0, 8)
+	minInterval := time.Duration(riskImpossibleTravelMinIntervalMinutes) * time.Minute
+	for i := 1; i < len(rows); i++ {
+		prev, current := rows[i-1], rows[i]
+		if prev.UserID != current.UserID {
+			continue // 换用户了，本对无意义
+		}
+		// 同一 IP → 距离 0，绝不可能告警（显式短路，省掉坐标查询）。
+		if strings.TrimSpace(prev.ClientIP) == strings.TrimSpace(current.ClientIP) {
+			continue
+		}
+		interval := current.CreatedAt.Sub(prev.CreatedAt)
+		// 时间倒序 / 相同时间（脏数据）→ 跳过。不能算出负速度。
+		if interval <= 0 {
+			continue
+		}
+		// 时间间隔太小 → 定位误差主导，不判（见 riskImpossibleTravelMinIntervalMinutes）。
+		if interval < minInterval {
+			continue
+		}
+		from, to := geoFor(prev.ClientIP), geoFor(current.ClientIP)
+		// 任一端查不到坐标 → 跳过。**不能**把未知当异地。
+		if from == nil || to == nil {
+			continue
+		}
+		distanceKm := riskHaversineKm(*from, *to)
+		// 同一点（坐标相同）→ 距离 0 → 不告警。
+		if distanceKm < 1 {
+			continue
+		}
+		hours := interval.Hours()
+		speedKmh := distanceKm / hours
+		// 「≥ 阈值」：速度恰等于阈值算命中。
+		if speedKmh < threshold {
+			continue
+		}
+		userID := current.UserID
+		subject := riskBehaviorSubject(rule.RuleID,
+			"user:"+strconv.FormatInt(int64(userID), 10), windowStart)
+		detail, err := json.Marshal(map[string]any{
+			"ruleId":          rule.RuleID,
+			"subjectKey":      subject,
+			"userId":          userID,
+			"username":        riskUsernamesByID(db, []int32{userID})[userID],
+			"threshold":       threshold,
+			"value":           roundRiskAmount(speedKmh),
+			"speedKmh":        roundRiskAmount(speedKmh),
+			"distanceKm":      roundRiskAmount(distanceKm),
+			"intervalMinutes": roundRiskAmount(interval.Minutes()),
+			"fromIp":          prev.ClientIP,
+			"toIp":            current.ClientIP,
+			"fromRegion":      from.Label,
+			"toRegion":        to.Label,
+			"fromAt":          prev.CreatedAt.Format(time.RFC3339),
+			"toAt":            current.CreatedAt.Format(time.RFC3339),
+			"maxSpeedKmh":     riskImpossibleTravelMaxSpeedKmh,
+			"windowStart":     windowStart.Format(time.RFC3339),
+			"evaluatedAt":     now.Format(time.RFC3339),
+			"evidenceNote": "相邻两次成功登录的球面距离 / 时间间隔；" +
+				"已跳过同 IP、时间倒序、坐标未知、间隔小于最小判定阈值的对",
+		})
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, riskWarningCandidate{
+			Rule:     rule,
+			Subject:  subject,
+			UserID:   &userID,
+			Severity: rule.Severity,
+			Detail:   string(detail),
+		})
+	}
+	return candidates, nil
+}
+
+// riskGeoPoint 是一次 IP 归属地查询的结果（坐标 + 展示用地区名）。
+type riskGeoPoint struct {
+	Latitude  float64
+	Longitude float64
+	Label     string
+}
+
+// riskLookupIPGeoPoint 查某 IP 的经纬度。返回 nil 表示**查不到**（不是「在原点」）。
+//
+// 三层跳过，顺序重要：
+//  1. 私网/保留地址 → nil（它们永远不在公网段表里，查也是白查；
+//     且把「内网 IP」当异地会让所有容器/内网部署全量误报）；
+//  2. 段表未覆盖 → nil；
+//  3. 段记录存在但上游没给坐标（Latitude/Longitude 为 nil）→ nil。
+//
+// ⇒ 调用方必须把 nil 当作「跳过这一对」，不能当作「距离 0」或「距离无穷」。
+func riskLookupIPGeoPoint(db *gorm.DB, ip string) *riskGeoPoint {
+	trimmed := strings.TrimSpace(ip)
+	if trimmed == "" || IsPrivateOrReservedIP(trimmed) {
+		return nil
+	}
+	if !db.Migrator().HasTable(entity.TableNameIPSegment) {
+		return nil
+	}
+	segment, err := FindIPSegmentWithDB(db, trimmed)
+	if err != nil || segment == nil {
+		return nil
+	}
+	if segment.Latitude == nil || segment.Longitude == nil {
+		return nil
+	}
+	return &riskGeoPoint{
+		Latitude:  *segment.Latitude,
+		Longitude: *segment.Longitude,
+		Label:     strings.TrimSpace(segment.Region),
+	}
+}
+
+// riskHaversineKm 计算两点间的球面距离（大圆距离，单位 km）。
+//
+// 用 haversine 而不是简单欧氏距离：后者在跨纬度时误差极大
+// （高纬度地区经度 1 度的实际距离远小于赤道）。
+func riskHaversineKm(from, to riskGeoPoint) float64 {
+	lat1 := from.Latitude * math.Pi / 180
+	lat2 := to.Latitude * math.Pi / 180
+	dLat := (to.Latitude - from.Latitude) * math.Pi / 180
+	dLon := (to.Longitude - from.Longitude) * math.Pi / 180
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(lat1)*math.Cos(lat2)*math.Sin(dLon/2)*math.Sin(dLon/2)
+	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+	return riskImpossibleTravelEarthRadiusKm * c
 }
 
 // RiskTicketFloodGroup 是 R8 的聚合行（用户 → 窗口内建单数）。

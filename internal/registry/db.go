@@ -1067,6 +1067,16 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		return nil
 	}
 
+	// logs 的 (user_id, create_time) 复合索引 —— R3 impossible_travel 的时间序列前提。
+	//
+	// ⚠️ 与上面的建表迁移**失败语义不同**：索引缺失不会让功能失效（R3 仍能跑，
+	// 只是退化成「取出全部行 + 内存排序」），所以这里**不 FATAL**，只把错误记进 SysLog。
+	// 理由是「索引是性能优化，不该让服务起不来」；而表缺失会让功能静默消失，必须 FATAL。
+	if err := ensureLogsUserTimeIndex(db); err != nil {
+		logger.SysLog(fmt.Sprintf(
+			"logs 复合索引创建失败（R3 判定仍可运行，但时间序列查询会变慢，下次启动重试）：%v", err))
+	}
+
 	// 账号封禁表（97 §0/§2.3，T-03）。
 	//
 	// ⚠️ **不注册这张表的后果是静默的**：service/user_ban.go 的 hasUnexpiredUserBan 在

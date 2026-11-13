@@ -48,6 +48,9 @@ export const RISK_RULE_OPTIONS = Object.freeze([
   // R18：同一手机号/微信出现在 ≥N 个已封禁账号上（默认 3）
   // ⚠️ label 带「仅当前绑定」提示，因为 users 只存当前值，历史共用查不到
   { value: 'wechat_phone_share', label: '封禁账号共用号（仅当前绑定）' },
+  // R3：相邻两次成功登录的移动速度超过民航上限（默认 900 km/h）
+  // ⚠️ label 带「仅公网 IP」提示，因为私网/缺归属地的登录会被跳过
+  { value: 'impossible_travel', label: '异地瞬移（仅公网 IP）' },
 ])
 
 const RISK_RULE_LABELS = Object.freeze(

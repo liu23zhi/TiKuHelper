@@ -90,6 +90,12 @@ const (
 	// ⚠️ 边界：只能算**当前绑定**。users 只存当前值，换绑后旧号消失，
 	// 所以「历史上共用过同一号码」查不到 —— 这是数据源的真实限制，已写进规则说明。
 	RiskRuleIDWechatPhoneShare = "wechat_phone_share"
+	// RiskRuleIDImpossibleTravel 是 96 §2.1 的 R3「异地瞬移」：
+	// 同一账号相邻两次成功登录的移动速度超过民航上限。
+	//
+	// 数据源：logs（action=10 + status=success）+ ip_segments（经纬度）。
+	// 依赖 idx_logs_user_time 复合索引（registry.ensureLogsUserTimeIndex）。
+	RiskRuleIDImpossibleTravel = "impossible_travel"
 )
 
 // RiskRuleDefault 是一条规则的**代码内默认值**。
@@ -248,6 +254,16 @@ var DefaultRiskBehaviorRules = []RiskRuleDefault{
 		Threshold:       3,
 		ThrottleSeconds: 24 * 60 * 60,
 		Description:     "同一手机号或同一微信出现在达到阈值的已封禁账号上，指向同一人反复注册。注意：本规则只统计账号的**当前绑定**（换绑后旧号不再计入），无法发现历史共用。只告警不处置。",
+	},
+	{
+		RuleID:   RiskRuleIDImpossibleTravel,
+		Name:     "异地瞬移",
+		Severity: RiskSeverityHigh,
+		// 96 §2.1 R3：同一账号相邻两次成功登录的移动速度 > 民航上限（900 km/h）。
+		// 阈值语义 = **速度上限 km/h**，不是次数。
+		Threshold:       900,
+		ThrottleSeconds: 24 * 60 * 60,
+		Description:     "同一账号相邻两次成功登录之间的移动速度超过民航客机上限（默认 900 km/h），通常意味着凭据已泄露或被多人共用。只统计能查到经纬度的公网 IP：私网 IP、归属地缺失的登录会被跳过。只告警不处置。",
 	},
 }
 

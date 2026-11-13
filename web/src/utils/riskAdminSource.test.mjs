@@ -338,6 +338,7 @@ test('规则名与级别：未知值回落而不是抛错', () => {
   // R14 / R18：后端 rule_id 必须与这里逐字一致。
   assert.equal(riskRuleLabel('binding_churn'), '频繁换绑')
   assert.equal(riskRuleLabel('wechat_phone_share'), '封禁账号共用号（仅当前绑定）')
+  assert.equal(riskRuleLabel('impossible_travel'), '异地瞬移（仅公网 IP）')
   assert.equal(riskRuleLabel(''), '未知规则')
   assert.equal(riskRuleLabel('future_rule'), 'future_rule', '未知规则要原样显示，便于排错')
   assert.equal(riskSeverityMeta('high').label, '高')
@@ -368,7 +369,9 @@ test('R16 的「需 3 天历史」必须在用户可见的规则名里', () => {
 })
 
 test('规则展示对任意 ruleId 通用（新规则不必改前端）', () => {
-  for (const unregistered of ['login_bruteforce', 'impossible_travel', 'bonus_abuse', 'r99_future']) {
+  // 注意：这里只能列**当前未登记**的 ruleId。若某条规则后来登记了（如 impossible_travel
+  // 已在 R3 落地时登记），必须从本列表移除，否则断言会红 —— 这不是测试变弱，是它在正确报警。
+  for (const unregistered of ['login_bruteforce', 'answer_script', 'bonus_abuse', 'r99_future']) {
     assert.equal(
       riskRuleLabel(unregistered),
       unregistered,
