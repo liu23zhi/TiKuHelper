@@ -28,6 +28,17 @@
         <a-card :bordered="false" class="summary-card">
           <a-statistic title="累计已消费" prefix="¥" :value="summary.totalAmountUsed" :precision="6" />
         </a-card>
+        <!-- 可用设备数量（123 号 T-24）。
+             ⚠️ 只显示**上限**，没有「已用设备数」—— 后者数据当前不存在：
+             ① user_levels.device_limit 全仓业务消费点 0 处（entity/user_level.go:46
+                自称「契约占位」）；
+             ② account_device_bindings 表尚未建。
+             所以不要补 0 / "已用 0 台" 之类的假数据（63 号 U-03 红线）。
+             数据源是已存在的 GET /adapter-service/user/level。 -->
+        <a-card :bordered="false" class="summary-card">
+          <a-statistic title="可用设备数量" :value="deviceLimitText" />
+          <p class="device-limit-hint">{{ deviceLimitHint }}</p>
+        </a-card>
     </ConsoleSummaryGrid>
 
     <a-card :bordered="false" class="page-card">
@@ -215,6 +226,8 @@ import {
   limitAccessTokenNameInput,
 } from '@/utils/accessTokenManagementHelpers.mjs';
 import { useCurrentUserRequestScope } from '@/utils/currentUserScope'
+import { buildDeviceLimitHint, buildDeviceLimitText } from '@/utils/userLevelHelpers.mjs'
+import { getMyUserLevel } from '@/api/UserLevelApi'
 import { formatMoneyValue, formatMoneyYuanWithSpace } from '@/utils/moneyFormat.mjs';
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs';
 import OverflowTableText from '@/components/OverflowTableText.vue';
@@ -352,6 +365,14 @@ const formState = ref({
     })
 
     const modalTitle = computed(() => isEditing.value ? '编辑令牌' : '新增令牌')
+    // 等级摘要 → 可用设备数量上限（123 号 T-24）。
+    //
+    // 与 Profile 页共用同一套 helper 与同一个接口，不新造数据源。
+    // null 表示"未读到"，渲染成 '—'，**不能**退化成「不限」：
+    // 把一次读取失败说成"你没有任何设备限制"是错的语义。
+    const userLevelSummary = shallowRef(null)
+    const deviceLimitText = computed(() => buildDeviceLimitText(userLevelSummary.value?.deviceLimit))
+    const deviceLimitHint = computed(() => buildDeviceLimitHint(userLevelSummary.value?.deviceLimit))
     const { currentUser } = useCurrentUserDisplay()
     let observedLogoutEpoch = getCurrentUserLogoutEpoch()
     const instance = getCurrentInstance()
@@ -361,6 +382,8 @@ const formState = ref({
         clearDeleteFailure()
         dataSource.value = []; tableLoading.value = false; visibleTokenIds.value = []
         visible.value = false; showAllTokens.value = false; viewLease = {}; retireEditor(); retireCreatedTokenDialog()
+        // 设备上限是账号私有数据，账号上下文变化必须清空回「—」。
+        userLevelSummary.value = null
         formState.value = { id: undefined, name: '', originalName: '', status: 'enabled', totalQuotaLimit: 0, remark: '' }; isEditing.value = false
       },
       reset() {},
@@ -544,6 +567,10 @@ const formState = ref({
       showAllTokens,
       formState,
       summary,
+      // 可用设备数量（T-24）：上限文案 + 说明文案，数据来自 GET /adapter-service/user/level。
+      userLevelSummary,
+      deviceLimitText,
+      deviceLimitHint,
       modalTitle,
       isAdmin,
       balanceAlert,
@@ -766,6 +793,9 @@ const formState = ref({
         if (res?.status === 200) {
           this.clearListFailure()
           this.dataSource = Array.isArray(res?.data) ? res.data : []
+          // 令牌列表读到之后顺带读一次等级上限（T-24）。
+          // 单独一条请求、单独吞错：设备上限读失败绝不能影响令牌列表本身。
+          void this.loadDeviceLimit(owns)
         } else {
           this.clearListFailure()
           this.listFailure = ensureRequestFailure(res)
@@ -778,6 +808,20 @@ const formState = ref({
         if (!ownsRead()) return
         this.tableLoading = false
       })
+    },
+    // loadDeviceLimit 读取当前用户的等级摘要，只取 deviceLimit 用于展示。
+    //
+    // 独立的 owner（owns 由调用方传入）：它与令牌列表读取共享生命周期，
+    // 但失败互不影响。任何失败都保持 null → 界面显示「—」，绝不退化成「不限」。
+    loadDeviceLimit(owns) {
+      const current = () => (typeof owns === 'function' ? owns() : this.canLoadForCurrentUser())
+      if (!current()) return Promise.resolve()
+      return getMyUserLevel().then(res => {
+        if (!current()) return
+        const summary = res?.status === 200 ? res?.data?.data : null
+        if (!summary || typeof summary !== 'object' || Array.isArray(summary)) return
+        this.userLevelSummary = summary
+      }).catch(() => { /* 设备上限读不到就显示「—」，不影响令牌管理其它功能。 */ })
     },
     toggleAllTokens() {
       if (!this.isAdmin) {
@@ -943,6 +987,15 @@ const formState = ref({
 
 .page-alert {
   margin-bottom: 16px;
+}
+
+/* 设备上限说明：说明里必须能看到「已用设备数暂不可用」，否则用户会以为漏显示。 */
+.device-limit-hint {
+  margin: 6px 0 0;
+  color: var(--console-muted, #62766e);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 
 .token-page :deep(.ant-table) {

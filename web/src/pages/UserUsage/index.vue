@@ -17,6 +17,15 @@
       <div class="summary-card"><a-statistic title="当前页消费金额" prefix="¥" :value="summary.totalAmount" :precision="6" /></div>
     </ConsoleSummaryGrid>
 
+    <!-- 账户使用页改成 Tab 结构（123 号 T-26）。
+         Tab 顺序是契约：**充值在上，等级提升在下**（与 USER_USAGE_TAB_ORDER 一致）。
+
+         ⚠️ 面板必须**显式手写**两个 a-tab-pane、不要用 v-for 生成：
+         v-for 会把顺序藏进数组，模板顺序被对调时测试看不出差别。手写之后
+         userUsageTabSource.test.mjs 直接按出现顺序抽取 pane，顺序错位必红。 -->
+    <a-tabs v-model:activeKey="activeUsageTab" :destroy-inactive-tab-pane="false" class="usage-tabs">
+      <!-- ① 充值（第一个 pane，顺序不可动） -->
+      <a-tab-pane key="recharge" tab="充值">
     <ConsolePanel title="账户余额与充值" description="选择金额和支付方式，创建充值订单。" class="recharge-card">
       <a-row :gutter="16" class="recharge-summary-row">
         <a-col :xs="24" :lg="10">
@@ -173,6 +182,95 @@
         </a-table>
       </ConsoleTableShell>
     </ConsolePanel>
+      </a-tab-pane>
+
+      <!-- ② 等级提升（第二个 pane）。放在充值下面（123 号原话）。 -->
+      <a-tab-pane key="level" tab="等级提升">
+        <ConsolePanel title="等级提升" description="查看当前等级、两个口径的累计值，以及下一档的门槛与差额。" class="level-card">
+          <a-alert v-if="levelLoadError" type="warning" show-icon class="page-alert" :message="levelLoadError">
+            <template #action>
+              <a-button size="small" :loading="levelLoading" @click="handleLoadUserLevel">重试等级读取</a-button>
+            </template>
+          </a-alert>
+          <a-spin v-if="levelLoading && !levelLoaded" tip="正在读取等级信息" />
+
+          <template v-else>
+            <a-row :gutter="[16, 16]" class="level-summary-row">
+              <a-col :xs="24" :md="12" :lg="6">
+                <div class="level-metric">
+                  <div class="level-metric-label">当前等级</div>
+                  <!-- 无等级时给明确文案（helper 保证），不留空白。 -->
+                  <div data-user-usage-current-level class="level-metric-value">{{ currentLevelText }}</div>
+                  <div class="level-metric-hint">等级由累计充值与累计消费共同决定。</div>
+                </div>
+              </a-col>
+              <a-col :xs="24" :md="12" :lg="9">
+                <div class="level-metric">
+                  <div class="level-metric-label">{{ levelRechargeMetric.label }}</div>
+                  <div data-user-usage-recharge-total class="level-metric-value">
+                    ¥ {{ formatLevelMetric(levelRechargeMetric.value) }}
+                  </div>
+                  <div class="level-metric-hint">已成功支付且未退款的充值金额合计。</div>
+                </div>
+              </a-col>
+              <a-col :xs="24" :md="12" :lg="9">
+                <div class="level-metric">
+                  <div class="level-metric-label">{{ levelConsumptionMetric.label }}</div>
+                  <div data-user-usage-consumption-total class="level-metric-value">
+                    ¥ {{ formatLevelMetric(levelConsumptionMetric.value) }}
+                  </div>
+                  <div class="level-metric-hint">账单里支出类金额合计。</div>
+                </div>
+              </a-col>
+            </a-row>
+
+            <!-- 下一档门槛与差额。
+                 没有档位数据时 nextLevelRequirement.available === false，
+                 这里如实显示原因，**不编造门槛数字**（63 号 U-03 红线）。 -->
+            <div class="level-next">
+              <template v-if="nextLevelRequirement.available">
+                <div class="level-next-title">
+                  下一档：<span data-user-usage-next-level>{{ nextLevelRequirement.levelName }}</span>
+                </div>
+                <a-row :gutter="[16, 16]" class="level-next-row">
+                  <a-col :xs="24" :md="12">
+                    <div class="level-next-metric">
+                      <span class="level-next-label">累计充值门槛</span>
+                      <span data-user-usage-next-recharge class="level-next-value">
+                        ¥ {{ formatLevelMetric(nextLevelRequirement.minRechargeTotal) }}
+                      </span>
+                      <span data-user-usage-recharge-gap class="level-next-gap">
+                        还差 ¥ {{ formatLevelMetric(nextLevelRequirement.rechargeGap) }}
+                      </span>
+                    </div>
+                  </a-col>
+                  <a-col :xs="24" :md="12">
+                    <div class="level-next-metric">
+                      <span class="level-next-label">累计消费门槛</span>
+                      <span data-user-usage-next-consumption class="level-next-value">
+                        ¥ {{ formatLevelMetric(nextLevelRequirement.minConsumptionTotal) }}
+                      </span>
+                      <span data-user-usage-consumption-gap class="level-next-gap">
+                        还差 ¥ {{ formatLevelMetric(nextLevelRequirement.consumptionGap) }}
+                      </span>
+                    </div>
+                  </a-col>
+                </a-row>
+                <div v-if="nextLevelRequirement.satisfied" class="level-next-satisfied">
+                  两个门槛都已达标，等级将在下次评估时更新。
+                </div>
+                <div v-else class="level-next-hint">
+                  两个门槛**同时**满足才会升级（与后端判定口径一致）。
+                </div>
+              </template>
+              <div v-else data-user-usage-level-requirement-empty class="level-next-hint">
+                {{ nextLevelRequirement.reason }}
+              </div>
+            </div>
+          </template>
+        </ConsolePanel>
+      </a-tab-pane>
+    </a-tabs>
 
     <BillingDetailDialog v-if="selectedBillingRecord" v-model:open="billingDetailOpen" :record="selectedBillingRecord" viewer-scope="self" />
 
@@ -245,6 +343,15 @@ import {
 import { useCurrentUserDisplay, setStoredCurrentUser } from '@/utils/currentUser'
 import { useCurrentUserRequestScope } from '@/utils/currentUserScope'
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
+import {
+  USER_USAGE_DEFAULT_TAB,
+  USER_USAGE_TAB_ORDER,
+  buildCurrentLevelText,
+  buildLevelMetricText,
+  buildNextLevelRequirement,
+  buildUserUsageTabs,
+} from '@/utils/userLevelHelpers.mjs'
+import { getMyUserLevel, getUserLevels } from '@/api/UserLevelApi'
 
 
 function normalizeMinRechargeAmount(value) {
@@ -259,6 +366,70 @@ export default defineComponent({
   components: { OverflowTableText, BillingDetailDialog, SafePaymentIcon, RequestFailureAlert },
   setup() {
     const rechargeAmountId = 'user-usage-' + useId() + '-recharge-amount'
+    // ── 等级提升 Tab（123 号 T-26）───────────────────────────────
+    //
+    // Tab 顺序来自 USER_USAGE_TAB_ORDER（充值在前），默认选中充值 ——
+    // 保持重构前的首屏行为，不让用户一进页面就看不到充值表单。
+    const usageTabs = buildUserUsageTabs()
+    const activeUsageTab = ref(USER_USAGE_DEFAULT_TAB)
+    const userLevelSummary = shallowRef(null)
+    const userLevelRows = ref([])
+    const levelLoading = ref(false)
+    const levelLoaded = ref(false)
+    const levelLoadError = ref('')
+    let levelLoadSequence = 0
+    const currentLevelText = computed(() => buildCurrentLevelText(userLevelSummary.value))
+    const levelRechargeMetric = computed(() => buildLevelMetricText(userLevelSummary.value, 'recharge'))
+    const levelConsumptionMetric = computed(() => buildLevelMetricText(userLevelSummary.value, 'consumption'))
+    // 没有档位数据时 buildNextLevelRequirement 返回 available:false + 原因，
+    // 界面上如实说明，**不编造门槛数字**（63 号 U-03 红线）。
+    const nextLevelRequirement = computed(() => buildNextLevelRequirement(userLevelRows.value, userLevelSummary.value))
+    // 金额展示：'—' 原样透出（未读到），数字走统一的 6 位小数格式。
+    const formatLevelMetric = (value) => value === '—' || value === null || value === undefined
+      ? '—'
+      : formatMoneyValue(value)
+    // loadUserLevel 读当前等级（GET /user/level）与档位表（GET /admin/user-levels）。
+    //
+    // 两条数据作用不同，失败处理也不同：
+    //   ① /user/level 人人可读 → 拿当前等级 + 两个口径值；
+    //   ② /admin/user-levels 是**管理员专属** → 普通用户必然 403。
+    //      拿不到档位就算不出下一档门槛，此时 nextLevelRequirement 返回
+    //      available:false + 原因，界面如实说明「未下发档位」，
+    //      **绝不编造门槛数字**（63 号 U-03 红线）。
+    //
+    // 放在 setup 闭包里（而不是 methods）有两个理由：
+    //   ① 能直接用 `active` 这个卸载标记判断存活；
+    //   ② 充值相关的既有用例把 handleRefreshAll 的方法集合钉死了，
+    //      等级读取不该出现在那条链路里。
+    let levelLoadEpoch = 0
+    const loadUserLevel = () => {
+      const sequence = ++levelLoadEpoch
+      const current = () => active && sequence === levelLoadEpoch
+      levelLoadError.value = ''
+      levelLoading.value = true
+      const readLevel = getMyUserLevel().then(res => {
+        if (!current()) return
+        if (res?.status !== 200) throw new Error(res?.message || '读取等级信息失败')
+        const summary = res?.data?.data
+        if (!summary || typeof summary !== 'object' || Array.isArray(summary)) {
+          throw new Error('等级信息格式不正确')
+        }
+        userLevelSummary.value = summary
+        levelLoaded.value = true
+      })
+      // 档位表是可选用数据：403（普通用户）与其它失败都不报错，只是拿不到门槛。
+      const readRows = getUserLevels().then(res => {
+        if (!current()) return
+        const rows = Array.isArray(res?.data?.data) ? res.data.data : Array.isArray(res?.data) ? res.data : []
+        userLevelRows.value = Array.isArray(rows) ? rows : []
+      }).catch(() => { /* 无权限 / 不可用：保持空档位，界面显示「无法计算」。 */ })
+      return Promise.all([readLevel, readRows]).catch(error => {
+        if (!current()) return
+        levelLoadError.value = error?.message || '读取等级信息失败，请重试。'
+      }).finally(() => {
+        if (current()) levelLoading.value = false
+      })
+    }
     const dataSource = ref([])
     const paymentMethods = ref([])
     const rechargeSubmitting = ref(false)
@@ -373,6 +544,12 @@ export default defineComponent({
       reload() { instance.proxy.handleLoadBillingRecords(); instance.proxy.handleLoadPaymentMethods() },
     })
     onBeforeUnmount(() => { active = false; billingDetailOpen.value = false; selectedBillingRecord.value = null; clearBalanceFailure(); clearOrderFailure() })
+    // 等级信息改为「切到等级 Tab 时按需加载」：
+    //   ① 充值仍是默认 Tab，首屏不额外发请求（重构前行为不变）；
+    //   ② 每次切到等级 Tab 都重读两个口径值，避免充值后回来看到旧累计值。
+    watch(activeUsageTab, (tab) => {
+      if (tab === 'level') void loadUserLevel()
+    }, { flush: 'post' })
     const handleRefreshCurrentUser = () => {
       if (!canLoadForCurrentUser()) return Promise.resolve()
       const isCurrentDisplay = captureUpdateGuard()
@@ -546,6 +723,11 @@ export default defineComponent({
       currentUserBalance,
       currentUserGiftBalance,
       pageRefreshing,
+      // 等级提升 Tab（T-26）
+      usageTabs, activeUsageTab, levelLoading, levelLoaded, levelLoadError,
+      currentLevelText, levelRechargeMetric, levelConsumptionMetric, nextLevelRequirement, formatLevelMetric,
+      // 供模板"重试等级读取"与 methods.handleLoadUserLevel 调用。
+      loadUserLevel,
       formatMoneyValue,
       buildBillingRecordAmountText,
       buildBillingRecordListSubjectText,
@@ -568,11 +750,29 @@ export default defineComponent({
       this.billingDetailOpen = true
     },
     handleRefreshAll() {
+      // ⚠️ 这里**只**保留重构前的三个调用，不要加等级读取。
+      // 既有用例 loginAndRechargePageSource.test.mjs:244-257 用 deepEqual 钉死了
+      // 这个调用序列（充值回归钉子）。等级改由「切到等级 Tab 时按需加载」触发
+      // （见 setup 里的 watch(activeUsageTab)），这样充值链路的可观察行为
+      // 与重构前逐项一致。
       return Promise.all([
         this.handleRefreshCurrentUser(),
         this.handleLoadBillingRecords(),
         this.handleLoadPaymentMethods(),
       ])
+    },
+    // handleLoadUserLevel 读当前等级（GET /user/level）与档位表（GET /admin/user-levels）。
+    //
+    // 两条数据的作用不同，失败处理也不同：
+    //   ① /user/level 人人可读 → 拿当前等级 + 两个口径值；
+    //   ② /admin/user-levels 是**管理员专属** → 普通用户一定 403。
+    //      拿不到档位就**算不出**下一档门槛，此时 nextLevelRequirement 返回
+    //      available:false 并给出原因，界面上如实说明「未下发档位」，
+    //      绝不编造门槛数字（63 号 U-03 红线）。
+    //
+    // 返回的 Promise 永远 resolve：等级读取失败不该阻塞充值/账单的刷新。
+    handleLoadUserLevel() {
+      return this.loadUserLevel()
     },
     handleLoadBillingRecords() {
       if (!this.canLoadForCurrentUser()) return Promise.resolve()
@@ -760,6 +960,30 @@ export default defineComponent({
 .payment-result-title { font-size: 16px; font-weight: 600; }
 .payment-result-meta { color: var(--console-muted); line-height: 1.6; }
 .payment-result-actions { display: grid; gap: 12px; }
+/* ── 等级提升 Tab（T-26）───────────────────────────────── */
+.usage-tabs :deep(.ant-tabs-nav) { margin-bottom: 16px; }
+.level-summary-row { row-gap: 16px; }
+.level-metric {
+  display: flex; flex-direction: column; gap: 8px; height: 100%;
+  padding: 20px; border-radius: 10px;
+  background: var(--console-surface); border: 1px solid var(--console-border);
+}
+.level-metric-label { color: var(--console-muted); font-size: 13px; }
+.level-metric-value { color: var(--console-text); font-size: clamp(18px, 2.2vw, 24px); font-weight: 600; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.level-metric-hint { color: var(--console-muted); font-size: 12px; line-height: 1.6; }
+.level-next {
+  display: flex; flex-direction: column; gap: 12px;
+  margin-top: 20px; padding: 20px; border-radius: 10px;
+  background: var(--console-surface-secondary, #f8faf9); border: 1px solid var(--console-border);
+}
+.level-next-title { color: var(--console-text); font-size: 15px; font-weight: 600; }
+.level-next-row { row-gap: 12px; }
+.level-next-metric { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; min-width: 0; }
+.level-next-label { color: var(--console-muted); font-size: 13px; }
+.level-next-value { color: var(--console-text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.level-next-gap { color: var(--console-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.level-next-hint { color: var(--console-muted); font-size: 12px; line-height: 1.6; }
+.level-next-satisfied { color: var(--console-success, #15803d); font-size: 13px; }
 @media (max-width: 640px) {
   .summary-card { padding: 16px; }
   .balance-panel { min-height: 150px; padding: 20px; }
