@@ -162,10 +162,104 @@ func lookupIPLocationFromSegments(db *gorm.DB, keys []string) map[string]IPLocat
 	return hits
 }
 
+// 缓存行解析失败/不适用的原因取值。
+//
+// 为什么要分成可区分的分项，而不是一个 skipped++：回填（
+// internal/registry/ip_segment_backfill.go）需要把「跳过」按原因分别计数 ——
+// 「IPv6 / 上游没给 beginip」是**正常**数据（占比很高），而
+// 「raw_json 不可解析」是**数据异常指示器**。两者糊成一个数字后就无法判断
+// 「跳过 3000 行」到底是健康存量还是库坏了。
+const (
+	// IPSegmentSkipNotIP 该行不是 IP 归属地（手机号行）。
+	IPSegmentSkipNotIP = "not_ip"
+	// IPSegmentSkipRawJSONEmpty raw_json 为空串 —— 历史行可能是「先插占位行、再补 raw_json」
+	// 崩在中间留下的产物。
+	IPSegmentSkipRawJSONEmpty = "raw_json_empty"
+	// IPSegmentSkipRawJSONUnparsable raw_json 不是合法的 JSON 对象。
+	IPSegmentSkipRawJSONUnparsable = "raw_json_unparsable"
+	// IPSegmentSkipNoUsableRange 解析成功但没有可用的 beginip/endip（缺字段 / IPv6 / begin > end）。
+	IPSegmentSkipNoUsableRange = "no_usable_range"
+)
+
+// ParseIPSegmentFromCacheRow 从一条归属地缓存行解析出段记录。
+//
+// 返回 (segment, "", true) 表示可以写段表；(_, reason, false) 表示这条行不产生段，
+// reason 是上面 IPSegmentSkip* 之一，调用方据此分项计数。
+//
+// 这是「实时路径」（PersistIPSegmentsFromCacheRows）、「缓存命中补写」
+// （PersistMissingIPSegmentsFromCacheRows）与「存量回填」三处**共用的唯一解析入口** ——
+// 三处各写一份解析必然漂移（改了一处另两处不变，段表里就会出现两套口径的行）。
+func ParseIPSegmentFromCacheRow(row entity.LocationCache) (entity.IPSegment, string, bool) {
+	if row.Kind != entity.LocationKindIP {
+		return entity.IPSegment{}, IPSegmentSkipNotIP, false
+	}
+	if strings.TrimSpace(row.RawJSON) == "" {
+		return entity.IPSegment{}, IPSegmentSkipRawJSONEmpty, false
+	}
+	info, err := uapi.ParseIPInfo([]byte(row.RawJSON))
+	if err != nil {
+		return entity.IPSegment{}, IPSegmentSkipRawJSONUnparsable, false
+	}
+	segment, ok := ParseIPSegmentFromInfo(row.LookupKey, info, row.Source, row.RawJSON)
+	if !ok {
+		return entity.IPSegment{}, IPSegmentSkipNoUsableRange, false
+	}
+	return segment, "", true
+}
+
+// ipSegmentUniqueKey 是段表唯一键 (begin_ip, end_ip, source) 的进程内表示。
+//
+// 入参可以是「已解析的段」或「待查询的三元组」，所以只取这三个字段。
+func ipSegmentUniqueKey(beginIP, endIP uint32, source string) string {
+	return fmt.Sprintf("%d|%d|%s", beginIP, endIP, source)
+}
+
+// IPSegmentUniqueKey 导出 ipSegmentUniqueKey，供 registry 侧的回填复用同一口径。
+//
+// 为什么要共用而不是各自拼一遍：回填的「已存在则跳过」判据必须与
+// UpsertIPSegmentsWithDB 的 ON CONFLICT 列**完全一致**，否则会出现
+// 「判定为已存在却插入失败」或「判定为缺失却什么也没插」。
+func IPSegmentUniqueKey(beginIP, endIP uint32, source string) string {
+	return ipSegmentUniqueKey(beginIP, endIP, source)
+}
+
+// collectIPSegmentsFromCacheRows 把一批缓存行解析成段记录，并按唯一键去重。
+//
+// 去重不是可选优化：上游对不同 IP 常常返回**同一个段**（一次查询覆盖整段），
+// 一批里出现两条同段 key 时，单条 INSERT ... ON CONFLICT 语句里含重复键
+// 在部分方言上会直接报错（PostgreSQL 报 "ON CONFLICT DO UPDATE command
+// cannot affect row a second time"），整批写入失败。
+//
+// 同时保证判据「一个 IP 只产出一个段」：一条缓存行最多贡献一个段，
+// 多条落在同一段的行合并成一条。
+func collectIPSegmentsFromCacheRows(rows []entity.LocationCache) ([]entity.IPSegment, map[string]int) {
+	segments := make([]entity.IPSegment, 0, len(rows))
+	skipped := make(map[string]int)
+	seen := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		segment, reason, ok := ParseIPSegmentFromCacheRow(row)
+		if !ok {
+			skipped[reason]++
+			continue
+		}
+		key := ipSegmentUniqueKey(segment.BeginIP, segment.EndIP, segment.Source)
+		if _, duplicate := seen[key]; duplicate {
+			continue
+		}
+		seen[key] = struct{}{}
+		segments = append(segments, segment)
+	}
+	return segments, skipped
+}
+
 // PersistIPSegmentsFromCacheRows 从「刚刚查到的缓存行」里提取段信息并写段表。
 //
 // 调用时机：上游查询成功、缓存行已经落库之后。这样段表与单 IP 缓存来自
 // 同一份上游响应，不会出现两者不一致。
+//
+// 语义是「以这次上游响应为准」：已存在的段也会被 Upsert 更新（刷新 region/llc/
+// fetched_at）。**读路径不要用这个函数** —— 读路径用
+// PersistMissingIPSegmentsFromCacheRows，否则每次读都会 UPDATE 一遍段表。
 //
 // 失败只记 SysWarn：段表是优化项，写入失败不该让本次查询失败。
 func PersistIPSegmentsFromCacheRows(db *gorm.DB, rows []entity.LocationCache) {
@@ -175,24 +269,103 @@ func PersistIPSegmentsFromCacheRows(db *gorm.DB, rows []entity.LocationCache) {
 	if !db.Migrator().HasTable(entity.TableNameIPSegment) {
 		return
 	}
-	segments := make([]entity.IPSegment, 0, len(rows))
-	for _, row := range rows {
-		if row.Kind != entity.LocationKindIP {
-			continue
-		}
-		info := parseIPInfoRawJSON(row.RawJSON)
-		segment, ok := ParseIPSegmentFromInfo(row.LookupKey, info, row.Source, row.RawJSON)
-		if !ok {
-			continue
-		}
-		segments = append(segments, segment)
-	}
+	segments, _ := collectIPSegmentsFromCacheRows(rows)
 	if len(segments) == 0 {
 		return
 	}
 	if err := UpsertIPSegmentsWithDB(db, segments); err != nil {
 		logger.SysWarn("写入 IP 段归属失败（不影响归属地查询）: " + err.Error())
 	}
+}
+
+// PersistMissingIPSegmentsFromCacheRows 是**缓存命中路径**专用的补写：
+// 只写「段表里还没有」的段，已有的段完全不碰。
+//
+// # 为什么需要它（这是 task_doc/71 的真缺口）
+//
+// 「先查过 IP（已落缓存）、后来才上线段表」的那批数据，永远不会经过上游成功分支，
+// 因此只靠 PersistIPSegmentsFromCacheRows 永远补不进段表 —— 那批 IP 每次都要
+// 按「单 IP」回答，段命中永久失效，而这种退化在日志里看不出来（只是每月多付费）。
+//
+// # 为什么不能直接用 PersistIPSegmentsFromCacheRows
+//
+// 它会对已存在的段执行 UPDATE（刷新 fetched_at/updated_at 等）。缓存命中是
+// **读路径**，日志列表每翻一页都会走一次，把读变成写等于给每次翻页加一次全段表写入，
+// 且 fetched_at 会被无意义地刷新成「刚刚」（丢掉「这条归属地是什么时候查的」语义）。
+// 所以这里先做一次存在性判断，全部存在就直接返回 —— 代价就是那一次查段表。
+//
+// 返回本次真正补写的段数（0 表示「都已在段表里」或「无可解析段」）。
+// 失败同样只记 SysWarn，不影响本次归属地读取。
+func PersistMissingIPSegmentsFromCacheRows(db *gorm.DB, rows []entity.LocationCache) int {
+	if db == nil || len(rows) == 0 {
+		return 0
+	}
+	if !db.Migrator().HasTable(entity.TableNameIPSegment) {
+		// 迁移还没跑过（老库首次启动的顺序差异）：静默跳过，等段表就绪后自然生效。
+		return 0
+	}
+	segments, _ := collectIPSegmentsFromCacheRows(rows)
+	if len(segments) == 0 {
+		return 0
+	}
+	missing, err := MissingIPSegmentsWithDB(db, segments)
+	if err != nil {
+		logger.SysWarn("查询已有 IP 段失败（本次不补写，不影响归属地读取）: " + err.Error())
+		return 0
+	}
+	if len(missing) == 0 {
+		return 0
+	}
+	if err := UpsertIPSegmentsWithDB(db, missing); err != nil {
+		logger.SysWarn("补写缺失的 IP 段失败（不影响归属地读取）: " + err.Error())
+		return 0
+	}
+	return len(missing)
+}
+
+// MissingIPSegmentsWithDB 返回 candidates 里「段表还没有」的那些。
+//
+// 判据是唯一键 (begin_ip, end_ip, source)，与 UpsertIPSegmentsWithDB 的
+// ON CONFLICT 口径完全一致 —— 两处口径必须一致，否则会出现「判定为已存在却
+// 插入失败」或「判定为缺失却什么也没插」。
+//
+// 一次批量查（按 begin_ip IN，走 idx_ip_segment_range）而不是逐段 SELECT：
+// 一批最多 500 段，逐段查就是 500 次往返。
+//
+// 导出给 registry 侧启动回填用：回填要报出「新增 N 段」这个幂等判据字段，
+// 而它必须先知道哪些段已存在。
+func MissingIPSegmentsWithDB(db *gorm.DB, candidates []entity.IPSegment) ([]entity.IPSegment, error) {
+	if db == nil || len(candidates) == 0 {
+		return nil, nil
+	}
+	begins := make([]uint32, 0, len(candidates))
+	seenBegin := make(map[uint32]struct{}, len(candidates))
+	for _, segment := range candidates {
+		if _, ok := seenBegin[segment.BeginIP]; ok {
+			continue
+		}
+		seenBegin[segment.BeginIP] = struct{}{}
+		begins = append(begins, segment.BeginIP)
+	}
+	var existing []entity.IPSegment
+	if err := db.Session(&gorm.Session{NewDB: true}).
+		Select("begin_ip, end_ip, source").
+		Where("begin_ip IN ?", begins).
+		Find(&existing).Error; err != nil {
+		return nil, err
+	}
+	have := make(map[string]struct{}, len(existing))
+	for _, segment := range existing {
+		have[ipSegmentUniqueKey(segment.BeginIP, segment.EndIP, segment.Source)] = struct{}{}
+	}
+	missing := make([]entity.IPSegment, 0, len(candidates))
+	for _, segment := range candidates {
+		if _, ok := have[ipSegmentUniqueKey(segment.BeginIP, segment.EndIP, segment.Source)]; ok {
+			continue
+		}
+		missing = append(missing, segment)
+	}
+	return missing, nil
 }
 
 // 返回 nil 表示未命中（调用方应回落到上游查询）。
