@@ -316,6 +316,12 @@ func TestLogRetentionReadFallsBackOnCorruptValues(t *testing.T) {
 }
 
 // 关闭状态：不调用任何 setter，也不因为「关闭」而拿到一个错误。
+//
+// ⚠️ 这条只断言返回值（结构体字段），**不证明文件没被删**。
+// 「关闭后文件真的还在」由下面 TestLogRetentionDisabledKeepsFilesOnDisk 负责，
+// 两条必须都在：只留这一条的话，实现即使把 guard 删掉、照样调 setter
+// （于是真的清理了日志）也只会让这里的字段断言变红，而字段断言很容易
+// 被「顺手改成总是 false」糊过去 —— 那才是真正的假钉子。
 func TestLogRetentionDisabledSkipsApply(t *testing.T) {
 	cfg := LogRetentionConfig{
 		Enabled:         false,
@@ -330,6 +336,49 @@ func TestLogRetentionDisabledSkipsApply(t *testing.T) {
 	}
 	if result.Applied || result.AgeApplied || result.TotalSizeApplied {
 		t.Fatalf("disabled config must apply nothing, got %+v", result)
+	}
+}
+
+// 关闭开关后，磁盘上**该被删的归档必须还在**。
+//
+// 这是「关闭开关」是否有意义的行为级断言。上面那条只读返回值，
+// 换成断言字段的话，实现把 guard 删掉（照常调 setter）也能让字段变红 ——
+// 但如果有人顺手把返回值写死成「关闭就不 applied」，字段断言就永久绿，
+// 而**文件其实被删了**。这条用例直接看磁盘，糊不过去。
+//
+// 造的是「按配置必然该删」的文件：40 天前、保留 30 天，单文件超限。
+func TestLogRetentionDisabledKeepsFilesOnDisk(t *testing.T) {
+	dir := setupLogRetentionTestLogger(t)
+	now := time.Now()
+	// 超龄归档（保留 30 天，它是 40 天前）——开启时必删。
+	expired := writeLogRetentionArchive(t, dir, "20260101_000000.zip", 256, now.Add(-40*24*time.Hour))
+	// 活动文件也写满，让总量超限（上限设很小）。
+	activePath := writeLogRetentionActiveFile(t, dir, "Tiku.txt", 4096)
+
+	result, applyErr := ApplyLogRetentionConfig(LogRetentionConfig{
+		Enabled:         false, // 关闭
+		MaxAgeDays:      30,
+		MaxTotalBytes:   1024, // 远小于总量，开启时必删
+		MaxFileBytes:    512,
+		CleanupInterval: time.Hour,
+	})
+	// ⚠️ 顺序刻意为「先看磁盘、再看返回值」。
+	//
+	// 若先断返回值，一旦有人把返回值写死成「关闭就不 applied」，
+	// 断言会在字段处就红/绿，永远走不到文件检查 —— 那就退化成薄断言了。
+	// 把磁盘断言放最前，保证「文件到底有没有被删」是这条用例的第一判据。
+	if got, err := os.ReadFile(expired); err != nil || len(got) != 256 {
+		t.Fatalf("disabled retention must not delete the expired archive, err=%v len=%d", err, len(got))
+	}
+	if got, err := os.ReadFile(activePath); err != nil || len(got) != 4096 {
+		t.Fatalf("active log must remain untouched, err=%v len=%d", err, len(got))
+	}
+
+	if applyErr != nil {
+		t.Fatalf("disabled config must not error: %v", applyErr)
+	}
+	if result.Applied || result.AgeApplied || result.TotalSizeApplied {
+		t.Fatalf("disabled config must report nothing applied, got %+v", result)
 	}
 }
 
