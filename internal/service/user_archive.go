@@ -36,12 +36,25 @@ import (
 // ⚠️ 该方法**不释放绑定** —— 调用方必须先在**同一个事务**里调用
 // ReleaseAllBindingsForArchiveInTx，否则活跃绑定会继续占
 // (kind, active_key) 唯一索引，别人再绑同一个手机号会撞唯一约束。
+//
+// 用户名释放（task_doc/106 Q4）在本方法**内部**完成，调用方不需要额外调用
+// —— 见 ReleaseUsernameForArchiveInTx 的注释说明为什么必须在这里而不是外面。
 func ArchiveUserInTx(tx *gorm.DB, user entity.User, reason string, operatorUserID int32) error {
+	_, err := ArchiveUserInTxWithRelease(tx, user, reason, operatorUserID)
+	return err
+}
+
+// ArchiveUserInTxWithRelease 与 ArchiveUserInTx 相同，但把用户名释放的结论返回给调用方。
+//
+// 保留 ArchiveUserInTx 的签名不变（user.go:1567 与测试都用它），
+// 需要拿到「该用户名现在能不能被新账号注册」的调用方走这个变体。
+func ArchiveUserInTxWithRelease(tx *gorm.DB, user entity.User, reason string, operatorUserID int32) (UsernameRelease, error) {
+	var release UsernameRelease
 	if tx == nil {
-		return fmt.Errorf("数据库不可用")
+		return release, fmt.Errorf("数据库不可用")
 	}
 	if user.ID <= 0 {
-		return fmt.Errorf("归档用户缺少用户 ID")
+		return release, fmt.Errorf("归档用户缺少用户 ID")
 	}
 	reason = strings.TrimSpace(reason)
 	switch reason {
@@ -49,7 +62,7 @@ func ArchiveUserInTx(tx *gorm.DB, user entity.User, reason string, operatorUserI
 	default:
 		// 拒绝未知原因：archived_reason 直接决定审计口径与 release_source，
 		// 随便写一个值会让事后统计失效且无从修复。
-		return fmt.Errorf("归档原因非法：%s", reason)
+		return release, fmt.Errorf("归档原因非法：%s", reason)
 	}
 
 	now := time.Now()
@@ -75,7 +88,7 @@ func ArchiveUserInTx(tx *gorm.DB, user entity.User, reason string, operatorUserI
 			Select("id", "archived_at").
 			Where("id = ?", user.ID).Take(&existing).Error
 		if err != nil {
-			return fmt.Errorf("读取用户归档状态失败: %w", err)
+			return release, fmt.Errorf("读取用户归档状态失败: %w", err)
 		}
 		if existing.ArchivedAt == nil {
 			updates["archived_at"] = now
@@ -87,12 +100,29 @@ func ArchiveUserInTx(tx *gorm.DB, user entity.User, reason string, operatorUserI
 		Where("id = ?", user.ID).
 		Updates(updates)
 	if result.Error != nil {
-		return fmt.Errorf("归档用户失败: %w", result.Error)
+		return release, fmt.Errorf("归档用户失败: %w", result.Error)
 	}
 	if result.RowsAffected == 0 {
-		return fmt.Errorf("归档用户失败：用户不存在")
+		return release, fmt.Errorf("归档用户失败：用户不存在")
 	}
-	return nil
+
+	// 用户名释放放在**归档写完之后、同一个事务里**（task_doc/106 Q4）。
+	//
+	// 顺序不能颠倒：释放的判据是「归档行的 deleted_at 非空」，deleted_at 还没写
+	// 时归档行仍是活跃行，占用探测会把自己查出来（虽然 selfID 排除挡住了，
+	// 但那条排除是防御性的，不该被当成释放机制本身）。
+	//
+	// 放在这个函数内部而不是让调用方在外部补一次：user.go:1567 与
+	// archived_user_test.go:72 都调 ArchiveUserInTx，外部补等于要求每个调用点
+	// 都记得做一次 —— 漏一处就是「归档了但名字没释放」，且不报错。
+	//
+	// ⚠️ 释放失败（读库失败）会让整个归档回滚。这是有意的：无法确认释放状态时
+	// 继续归档，等于在未知状态下对外宣称「这个名字可以注册了」。
+	released, err := ReleaseUsernameForArchiveInTx(tx, user, reason, operatorUserID)
+	if err != nil {
+		return release, err
+	}
+	return released, nil
 }
 
 // ReleaseAllBindingsForArchiveInTx 释放某用户当前所有活跃绑定。
