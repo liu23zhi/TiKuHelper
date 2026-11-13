@@ -40,7 +40,18 @@ const (
 	// RiskRuleIDTicketFlood 是 96 §2.1 的 R8「工单刷屏」：
 	// 单用户 24h 内建单 ≥N 张（N 默认 5）。
 	//
-	// 数据源：tickets 主表（user_id + created_at，两列都有索引）。
+	// 数据源：tickets 主表（user_id + created_at）。
+	//
+	// ⚠️ 索引实情（实测 EXPLAIN，别被「两列都有索引」误导）：
+	// 只有 `idx_tickets_user_id` 与 `idx_tickets_created_at` 两条**独立单列**索引，
+	// **没有 (user_id, created_at) 复合索引**。而且窗口过滤用的是
+	// `datetime(created_at,'+8 hours')`（时区换算，见 risk_alert.go 的
+	// riskWindowColumnExpr），**函数调用会让 created_at 索引失效**，EXPLAIN 实际走
+	// `SEARCH tickets USING INDEX idx_tickets_user_id (user_id>?)`。
+	// 也就是说这个查询**没有被 created_at 索引覆盖**，只是靠 user_id 索引缩小了范围。
+	// 当前规模（实测 tickets 0 行）可接受；若 tickets 长大后本规则变慢，
+	// 正确处理是**加复合索引**，而不是去掉时区换算（去掉会错 8 小时）。
+	//
 	// 只数「建单」，不数 ticket_messages —— 回复不是新建工单。
 	RiskRuleIDTicketFlood = "ticket_flood"
 	// RiskRuleIDAbnormalRegisterPattern 是 96 §2.1 的 R11「注册名高度模板化」：

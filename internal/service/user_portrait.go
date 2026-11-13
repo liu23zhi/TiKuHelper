@@ -219,23 +219,46 @@ func portraitDialect(db *gorm.DB) string {
 
 // portraitHourExpr 返回「本地墙钟小时」的 SQL 表达式（0–23）。
 //
-// ⚠️ SQLite 分支的 `substr(created_at, 1, 19)` 不是可选优化：created_at 存的是
-// `2026-11-13 14:00:00+08:00` 这种带偏移的文本，直接 strftime 会按 UTC 解析
-// （实测 14 点返回 6）。截掉偏移后再取小时，才是写入时的本地时间。
+// ⚠️ SQLite 分支必须做**真正的时区换算**，不能靠 substr 截偏移。
+//
+// 原实现是 `substr(created_at, 1, 19)`，理由是「created_at 存的是
+// `2026-11-13 14:00:00+08:00` 这种带偏移的文本，截掉偏移后再取小时才是本地时间」。
+// 那个理由只在**所有行都恰好是 +08:00** 时才成立 —— 而实测本机库
+// `billing_records.created_at` 是 `2026-05-08 13:15:29.939932211+00:00`（**UTC**）。
+//
+// 实测伤害（真实库 53 行）：
+//
+//	现实现 substr        0:1, 1:11, 5:9, 8:2, 13:11, 15:18, 16:1
+//	正确 datetime(+8h)   0:2, 9:11, 13:9, 16:2, 21:11, 23:18
+//	→ 52/53 行的小时取值错误，1/53 行的星期错误
+//
+// 用户可见后果：管理员在画像页看到峰值是「下午 15 点」，真实是「晚上 23 点」。
+// 整张时段分布左移 8 小时，而且**形状看起来完全合理**，肉眼发现不了。
+//
+// 为什么 `strftime('%H', created_at)` 不行：SQLite 把带偏移的文本按 UTC 解析
+// （原注释实测「14 点返回 6」是对的）。所以要么先归一化时区（本修法），
+// 要么砍掉偏移（原实现，但只能是 UTC 行被砍成 UTC 小时 = 错 8 小时）。
+//
+// 为什么用固定 '+8 hours' 而不是 'localtime'：后者依赖进程所在机器的时区。
+// CI 跑 UTC、开发机跑 CST，同一份数据得出不同分布 —— 比偏移更难查。
+// 固定 +8 让结果与部署环境无关（画像的时段定义本身就是用户所在时区）。
 func portraitHourExpr(db *gorm.DB) string {
 	if portraitDialect(db) == "mysql" {
 		return "HOUR(created_at)"
 	}
-	return "CAST(strftime('%H', substr(created_at, 1, 19)) AS INTEGER)"
+	return "CAST(strftime('%H', datetime(created_at, '+8 hours')) AS INTEGER)"
 }
 
 // portraitWeekdayExpr 返回「本地墙钟星期」的 SQL 表达式（0=周日 … 6=周六）。
+//
+// 与 portraitHourExpr 同源同理：星期也会因 8 小时偏移在**跨日界**的行上算错
+// （实测 1/53 行）。修法一致。
 func portraitWeekdayExpr(db *gorm.DB) string {
 	if portraitDialect(db) == "mysql" {
 		// MySQL 的 DAYOFWEEK 是 1=周日 … 7=周六，减 1 对齐 SQLite 的 %w。
 		return "(DAYOFWEEK(created_at) - 1)"
 	}
-	return "CAST(strftime('%w', substr(created_at, 1, 19)) AS INTEGER)"
+	return "CAST(strftime('%w', datetime(created_at, '+8 hours')) AS INTEGER)"
 }
 
 // portraitBillingScope 是**唯一**的账单范围起点：整体 / 单用户只差这一个 WHERE。

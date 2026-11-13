@@ -2,6 +2,8 @@ package service
 
 import (
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -97,12 +99,33 @@ func StartRiskAlertEvaluationWorker(db *gorm.DB, interval time.Duration) func() 
 func resolveRiskEvaluateInterval(db *gorm.DB) time.Duration {
 	if db != nil {
 		raw := getSystemSettingStringWithDefault(db, RiskEvaluateIntervalSettingKey, "")
-		if minutes, err := parsePositiveIntSetting(raw); err == nil {
-			return time.Duration(minutes) * time.Minute
+		if strings.TrimSpace(raw) != "" {
+			// 只有「配了但解析不出」才告警。空值 = 没配 = 用默认值，是正常状态，
+			// 不能刷日志（每轮评估都会走到这里）。
+			if minutes, err := parsePositiveIntSetting(raw); err == nil {
+				return time.Duration(minutes) * time.Minute
+			}
+			// 配置无效必须**可见**：否则「把评估间隔调低」这个操作会静默反向生效
+			// （填 2880 想两天一次，实际落回 10 分钟 = 频率高 288 倍）。
+			// riskSettingWarnOnce 保证同一条无效值只告警一次，不刷爆日志。
+			riskSettingWarnOnce.Do(func() {
+				logger.SysWarn(fmt.Sprintf(
+					"风控评估间隔配置无效（%s=%q，要求 1–1440 的整数分钟），已回落到默认 %d 分钟。"+
+						"请注意：填超过 1440 的值会让评估**比预期更频繁**，不是更少。",
+					RiskEvaluateIntervalSettingKey, strings.TrimSpace(raw),
+					DefaultRiskEvaluateIntervalMinutes))
+			})
 		}
 	}
 	return time.Duration(DefaultRiskEvaluateIntervalMinutes) * time.Minute
 }
+
+// riskSettingWarnOnce 保证「配置无效」只告警一次。
+//
+// 为什么：resolveRiskEvaluateInterval 每轮评估都会调用（interval<=0 时），
+// 无效配置如果不节流，会在日志里刷出一次/10 分钟 × 常年累积。
+// 一次告警足够让运维发现，重复告警只会淹没其它信息。
+var riskSettingWarnOnce sync.Once
 
 // parsePositiveIntSetting 解析设置值，非正整数一律报错（由调用方兜底默认值）。
 func parsePositiveIntSetting(raw string) (int, error) {
@@ -117,7 +140,12 @@ func parsePositiveIntSetting(raw string) (int, error) {
 		}
 		value = value*10 + int(r-'0')
 		if value > 1440 {
-			// 上限一天：超过就不像是「评估间隔」了，多半是填错单位。
+			// 上限一天。
+			//
+			// ⚠️ 这个拒绝必须**可见**：运营填 2880（想两天评估一次）时，
+			// 静默落回默认 10 分钟意味着实际频率比配置值高 **288 倍** ——
+			// 「调低评估频率」这个操作会反向生效，而且没有任何提示。
+			// 所以调用方 resolveRiskEvaluateInterval 在这里会打一条 SysWarn。
 			return 0, errRiskSettingUnparsable
 		}
 	}
