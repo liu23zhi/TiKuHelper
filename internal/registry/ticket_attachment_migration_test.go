@@ -64,7 +64,76 @@ func TestEnsureTicketAttachmentSchemaIsIdempotentAndMarked(t *testing.T) {
 	}
 }
 
-// TestEnsureTicketAttachmentSchemaPreservesExistingRows 断言迁移不会破坏既有工单数据。
+// TestEnsureTicketAttachmentRetentionSchemaAddsPurgedAt 验证保留策略的加列迁移。
+//
+// 三条断言，各自对应一个真会坏掉的实现点：
+//   - 列真的被补上（缺列 = 清理任务每轮静默跳过，功能上线却一张图都不清）；
+//   - 标记真的被写（缺标记会每次启动重跑，虽然幂等但会刷日志）；
+//   - 对**已有行**加列不报错（老库 ALTER 的典型失败点：NOT NULL 无默认值）。
+func TestEnsureTicketAttachmentRetentionSchemaAddsPurgedAt(t *testing.T) {
+	db := newTicketAttachmentMigrationDB(t)
+	// 先建出「老库」形态的附件表：用实体直接 AutoMigrate 会带上 purged_at，
+	// 所以这里先建表再删列，模拟「本迁移之前就已存在的库」。
+	if err := db.AutoMigrate(&entity.TicketAttachment{}); err != nil {
+		t.Fatalf("migrate attachment: %v", err)
+	}
+	if err := db.Exec("ALTER TABLE " + entity.TableNameTicketAttachment + " DROP COLUMN `purged_at`").Error; err != nil {
+		t.Skipf("当前 SQLite 不支持 DROP COLUMN，跳过老库形态用例: %v", err)
+	}
+	if db.Migrator().HasColumn(entity.TableNameTicketAttachment, "purged_at") {
+		t.Fatal("前提失败：purged_at 应当已不存在")
+	}
+	// 造一行既有数据：给已有行加列时若有 NOT NULL 而无默认值，ALTER 会失败。
+	if err := db.Exec("INSERT INTO " + entity.TableNameTicketAttachment +
+		" (ticket_id, user_id, media_type, byte_size, sha256, scan_state, attempt_count, created_at, updated_at)" +
+		" VALUES (1, 1, 'image/png', 100, 'deadbeef', 'approved', 0, datetime('now'), datetime('now'))").Error; err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+
+	if err := EnsureTicketAttachmentRetentionSchema(db); err != nil {
+		t.Fatalf("migration must succeed on a table with existing rows: %v", err)
+	}
+	if !db.Migrator().HasColumn(entity.TableNameTicketAttachment, "purged_at") {
+		t.Fatal("purged_at 列必须被补上")
+	}
+	if !systemSettingFlagIsSet(db, ticketAttachmentRetentionColumnReadyKey) {
+		t.Fatal("迁移标记必须被写入")
+	}
+	// 既有行的 purged_at 必须是 NULL（三态语义里「未清理」的权威初值，
+	// 用零值/空串当哨兵会和「残缺行」混在一起）。
+	var purged int64
+	if err := db.Model(&entity.TicketAttachment{}).Where("purged_at IS NOT NULL").Count(&purged).Error; err != nil {
+		t.Fatalf("count purged: %v", err)
+	}
+	if purged != 0 {
+		t.Fatalf("存量行不得被误标为已清理，got %d 行", purged)
+	}
+	// 幂等：再跑一次不报错、标记仍只有一行。
+	if err := EnsureTicketAttachmentRetentionSchema(db); err != nil {
+		t.Fatalf("second run must be a no-op: %v", err)
+	}
+	var markers int64
+	if err := db.Model(&entity.SystemSetting{}).
+		Where(map[string]any{"key": ticketAttachmentRetentionColumnReadyKey}).Count(&markers).Error; err != nil {
+		t.Fatal(err)
+	}
+	if markers != 1 {
+		t.Fatalf("标记只应有一行，got %d", markers)
+	}
+}
+
+// TestEnsureTicketAttachmentRetentionSchemaSkipsMissingTable 断言附件表还不存在时
+// 迁移什么都不做也不报错（空库首次启动的正常路径）。
+func TestEnsureTicketAttachmentRetentionSchemaSkipsMissingTable(t *testing.T) {
+	db := newTicketAttachmentMigrationDB(t)
+	if err := EnsureTicketAttachmentRetentionSchema(db); err != nil {
+		t.Fatalf("missing table must be a silent no-op: %v", err)
+	}
+	if err := EnsureTicketAttachmentRetentionSchema(nil); err != nil {
+		t.Fatalf("nil db must be a silent no-op: %v", err)
+	}
+}
+
 func TestEnsureTicketAttachmentSchemaPreservesExistingRows(t *testing.T) {
 	db := newTicketAttachmentMigrationDB(t)
 	if err := db.AutoMigrate(&entity.Ticket{}, &entity.TicketMessage{}); err != nil {
