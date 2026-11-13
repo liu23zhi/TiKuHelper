@@ -584,6 +584,36 @@ func RegisterDB(config configs.Config) *gorm.DB {
 	return database
 }
 
+// openMySQLDialector 是生产唯一的 MySQL/MariaDB dialector 构造点。
+//
+// 为什么必须显式 DisableWithReturning —— 一个真实的重复加款漏洞：
+//
+// gorm.io/driver/mysql@v1.6.0 在 `SELECT VERSION()` 含 "MariaDB" 且版本 ≥10.5 时
+// 会给 Create/Update/Delete 子句追加 `RETURNING`（mysql.go:135-183）。MariaDB 的
+// `INSERT ... ON DUPLICATE KEY UPDATE pk=pk RETURNING pk` **撞键时仍然返回一行**，
+// 而 gorm 一旦发现子句里有 RETURNING 就走 `QueryContext + Scan`
+// （gorm callbacks/create.go:80-106），把「扫描到的行数」当成 RowsAffected。
+//
+// 后果落在资金路径上：`clause.OnConflict{DoNothing: true}` 的幂等判据本来是
+// 「RowsAffected==1 才算首次入账」，而 MariaDB 上**重投也能拿到 1**
+// （实测 11.4.13：单行 first=1 replay=1）⇒ 网关重投会被判成首次入账 ⇒ 二次加款。
+// 关掉 RETURNING 后回到服务器原生语义（原生 ROW_COUNT() = 1 / 0），判定恢复正确。
+//
+// 影响面核实（实测，非推断）：
+//   - 全仓没有任何 `clause.Returning` / `Returning{...}` 使用者，dao 生成代码里的
+//     `Returning()` 方法零调用方 ⇒ 关掉不会让谁拿不到返回值。
+//   - 自增主键改走 `LastInsertId()` 回填（callbacks/create.go:142-151），首次插入
+//     照常拿到 ID。
+//   - MySQL 8.0 **不受影响**：`checkVersion(..., "10.5")` 只在
+//     `strings.Contains(ServerVersion, "MariaDB")` 分支里被调用，8.0.46 实测
+//     dry-run SQL 不含 RETURNING。
+func openMySQLDialector(normalizedDSN string) gorm.Dialector {
+	return mysql.New(mysql.Config{
+		DSN:                  normalizedDSN,
+		DisableWithReturning: true,
+	})
+}
+
 func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB {
 	once.Do(func() {
 		var err error
@@ -594,7 +624,7 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		if mysqlDSN != "" {
 			// 补齐 parseTime/loc/charset，避免时间列扫描失败引发启动即崩（见 dsn.go）。
 			normalizedDSN, dsnFixes := normalizeMySQLDSN(mysqlDSN)
-			conn = mysql.Open(normalizedDSN)
+			conn = openMySQLDialector(normalizedDSN)
 			logger.SysLog("数据库连接来源：" + dsnSource)
 			if len(dsnFixes) > 0 {
 				logger.SysLog("MySQL DSN 已补齐参数：" + strings.Join(dsnFixes, ", ") +
