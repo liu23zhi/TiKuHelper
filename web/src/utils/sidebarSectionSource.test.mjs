@@ -98,7 +98,7 @@ function evaluateDerivation(adminItems, userItems) {
 
 const ADMIN_MENU_ITEMS = evaluateItems('ADMIN_MENU_ITEMS');
 const USER_MENU_ITEMS = evaluateItems('USER_MENU_ITEMS');
-const { USER_MENU_KEYS, ADMIN_SECTION_TITLES, ADMIN_MENU_SECTIONS, USER_MENU_SECTIONS } =
+const { ADMIN_SECTION_TITLES, ADMIN_MENU_SECTIONS, USER_MENU_SECTIONS } =
   evaluateDerivation(ADMIN_MENU_ITEMS, USER_MENU_ITEMS);
 
 const keysOf = (items) => items.map((item) => item.key);

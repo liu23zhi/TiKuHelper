@@ -113,7 +113,7 @@ test('recharge refresh keeps its original three-call sequence', async () => {
   // 「handleRefreshAll 恰好调用这三个方法、且顺序不变」。
   // 那个文件在本地因缺 @vue/compiler-sfc 跑不起来，所以这里用文本级
   // 断言兜住同一件事：一旦往这个链里塞了第四个调用（例如等级读取），必红。
-  const body = source.match(/handleRefreshAll\(\) \{([\s\S]*?)\n    \},/)
+  const body = source.match(/handleRefreshAll\(\) \{([\s\S]*?)\n {4}\},/)
   assert.ok(body, 'handleRefreshAll 必须存在')
   const calls = [...body[1].matchAll(/this\.(handle[A-Za-z]+)\(/g)].map(match => match[1])
   assert.deepEqual(calls, ['handleRefreshCurrentUser', 'handleLoadBillingRecords', 'handleLoadPaymentMethods'])
@@ -147,6 +147,6 @@ test('level loading is lazy and never joins the recharge refresh chain', async (
   // 这样充值链路的可观察行为与重构前逐项一致。
   assert.match(source, /watch\(activeUsageTab, \(tab\) => \{\n\s+if \(tab === 'level'\) void loadUserLevel\(\)/)
   // handleRefreshAll 里不得出现等级读取。
-  const body = source.match(/handleRefreshAll\(\) \{([\s\S]*?)\n    \},/)
+  const body = source.match(/handleRefreshAll\(\) \{([\s\S]*?)\n {4}\},/)
   assert.doesNotMatch(body[1], /loadUserLevel|handleLoadUserLevel/)
 })

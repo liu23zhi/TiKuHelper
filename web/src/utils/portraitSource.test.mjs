@@ -332,7 +332,7 @@ test('用户管理：「查看」按钮仍是绑定历史弹窗，画像按钮�
 test('用户管理：画像入口跳转到同一页面并带 userId（不另开弹窗）', async () => {
   const source = await readFile(userListPath, 'utf8');
 
-  const method = source.match(/openPortrait\(record\)\s*\{([\s\S]*?)\n    \},/);
+  const method = source.match(/openPortrait\(record\)\s*\{([\s\S]*?)\n {4}\},/);
   assert.notEqual(method, null, 'openPortrait 方法必须存在');
   // 必须跳转到 user-portrait 路由并带 userId 查询参数（一个页面的两种视角）。
   assert.match(method[1], /name:\s*'user-portrait'/, '必须跳到 user-portrait 路由');

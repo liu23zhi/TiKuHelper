@@ -9,9 +9,9 @@
       </ConsolePageHeading>
 
       <ConsoleSummaryGrid>
-        <a-statistic title="命中" :value="hasLoaded ? counts.hit : '--'" suffix="条" />
-        <a-statistic title="未命中" :value="hasLoaded ? counts.clean : '--'" suffix="条" />
-        <a-statistic title="失败" :value="hasLoaded ? counts.failed : '--'" suffix="条" />
+        <a-statistic title="命中（全库）" :value="hasLoaded ? counts.hit : '--'" suffix="条" />
+        <a-statistic title="未命中（全库）" :value="hasLoaded ? counts.clean : '--'" suffix="条" />
+        <a-statistic title="失败（全库）" :value="hasLoaded ? counts.failed : '--'" suffix="条" />
         <a-statistic title="筛选结果" :value="hasLoaded ? total : '--'" suffix="条" />
       </ConsoleSummaryGrid>
 
@@ -115,7 +115,7 @@
 </template>
 
 <script>
-import { computed, defineComponent, getCurrentInstance, reactive, ref, useId } from 'vue'
+import { computed, defineComponent, reactive, ref, useId } from 'vue'
 import {
   SENSITIVE_WORD_CACHE_STATES,
   SENSITIVE_WORD_CACHE_STATE_LABELS,
@@ -138,7 +138,6 @@ export default defineComponent({
   setup() {
     const fieldIdPrefix = 'sensitive-word-' + useId()
     const fieldId = field => fieldIdPrefix + '-' + field
-    const instance = getCurrentInstance()
     const { currentUser } = useCurrentUserDisplay()
     const rows = ref([])
     const loading = ref(false)
@@ -215,12 +214,28 @@ export default defineComponent({
         pagination.total = total.value
         if (Number.isInteger(data.page) && data.page > 0) pagination.current = data.page
         if (Number.isInteger(data.pageSize) && data.pageSize > 0) pagination.pageSize = data.pageSize
-        const states = data.states || {}
-        counts.hit = Number(states.hit || 0)
-        counts.clean = Number(states.clean || 0)
-        counts.failed = Number(states.failed || 0)
         appliedFilters.value = { ...filters }
         hasLoaded.value = true
+        // 三个统计卡片是**全库分布**，数据源是 status 接口而不是 entries。
+        //
+        // entries 响应里的 data.states 是**当前筛选条件下**的计数：一旦 state=hit，
+        // 它就变成 hit=筛选命中数 / clean=0 / failed=0，三个数字失去「分布」语义。
+        // 而「筛选结果」那张卡片已经用 total 表达了同一件事，所以这里刻意分开：
+        // counts 取全库（status），total 取筛选（entries）。
+        //
+        // status 是旁路统计，失败**不能**让整页报错 —— 列表已经拿到了，只是三个
+        // 数字暂时不准；保留上一次的值比清成 0 更诚实。
+        try {
+          const statusRes = await getSensitiveWordCacheStatus({ errorFeedback: 'local' })
+          if (current() && statusRes?.status === 200) {
+            const states = statusRes?.data?.states || {}
+            counts.hit = Number(states.hit || 0)
+            counts.clean = Number(states.clean || 0)
+            counts.failed = Number(states.failed || 0)
+          }
+        } catch (statusError) {
+          // 静默：统计失败不影响列表可用性。
+        }
       } catch (error) {
         if (!current()) return
         errorMessage.value = error?.message || '获取敏感词检测记录失败，请重试。'

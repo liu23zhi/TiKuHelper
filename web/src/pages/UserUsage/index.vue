@@ -345,7 +345,6 @@ import { useCurrentUserRequestScope } from '@/utils/currentUserScope'
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
 import {
   USER_USAGE_DEFAULT_TAB,
-  USER_USAGE_TAB_ORDER,
   buildCurrentLevelText,
   buildLevelMetricText,
   buildNextLevelRequirement,
@@ -377,7 +376,6 @@ export default defineComponent({
     const levelLoading = ref(false)
     const levelLoaded = ref(false)
     const levelLoadError = ref('')
-    let levelLoadSequence = 0
     const currentLevelText = computed(() => buildCurrentLevelText(userLevelSummary.value))
     const levelRechargeMetric = computed(() => buildLevelMetricText(userLevelSummary.value, 'recharge'))
     const levelConsumptionMetric = computed(() => buildLevelMetricText(userLevelSummary.value, 'consumption'))
