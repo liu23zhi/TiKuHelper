@@ -124,6 +124,14 @@ type SensitiveImageDetectResult struct {
 	// ScanState 是可直接写进 ticket_attachments.scan_state 的值。
 	// 复用既有的 fail-closed 展示判据（只有 approved 才显示），不另造一套状态。
 	ScanState string `json:"scanState"`
+	// ScanMarkedBy 是可直接写进 ticket_attachments.scan_marked_by 的值，
+	// 说明这个 ScanState **是谁写下的**：entity.TicketAttachmentMarkedByQuota
+	// 表示「额度耗尽兜底、这张图从未被检测」，Upstream 表示来自真实检测结论。
+	//
+	// 为什么必须由编排层给出来而不是留给调用方猜：扫描状态由本函数算出，
+	// 谁写下的它也只有本函数知道。调用方（上传路径 / 管理页）拿到值直接落库，
+	// 就不会出现「同一次判定在两个调用点被贴上不同来源」的漂移。
+	ScanMarkedBy string `json:"scanMarkedBy"`
 }
 
 // HashSensitiveImage 返回图片二进制内容的 SHA256 十六进制串（缓存主键）。
@@ -172,6 +180,10 @@ func DetectSensitiveImageWithDB(
 	result := SensitiveImageDetectResult{
 		ImageSHA256:         imageSHA,
 		TicketSubmitAllowed: true,
+		// 缺省 conservative 值：本函数除额度耗尽分支外的所有出口都是**真实检测结论**
+		// （缓存命中复用历史结论 / 外呼得出 clean 或 sensitive）。额度分支会显式
+		// 改写成 quota —— 只有那里是「没检测过」。
+		ScanMarkedBy: entity.TicketAttachmentMarkedByUpstream,
 	}
 	policy := LoadSensitiveImageQuotaPolicyWithDB(db)
 	result.DailyLimit = policy.DailyUserLimit
@@ -302,9 +314,24 @@ func runSensitiveImageDetection(
 	if charge && !reservation.Allowed {
 		// 额度耗尽 + 缓存未命中：标 sensitive_by_quota，**不外呼**。
 		// 图片照存、工单照提（TicketSubmitAllowed 恒 true）。
+		//
+		// ⚠️ ScanState 用的是 entity.TicketAttachmentScanSensitive —— 与上游真判定
+		// **同值**（复用既有 fail-closed 展示判据，不另造状态）。因此必须同时给出
+		// ScanMarkedBy=quota 并落库，否则「上游判违规」与「额度耗尽兜底」在
+		// ticket_attachments 里完全同形，管理员无法分辨该封还是该补额度后重检。
 		result.State = SensitiveImageDetectByQuota
 		result.ScanState = entity.TicketAttachmentScanSensitive
+		result.ScanMarkedBy = entity.TicketAttachmentMarkedByQuota
 		result.Reason = reservation.Reason
+		// 写库**复用** SyncSensitiveImageScanStateWithDB，而不是另写一条 UPDATE：
+		// 同一列的写路径只有一条，标记与 scan_state 永远在同一个 UPDATE 里，
+		// 不会出现「状态更新了标记没跟上」的漂移。
+		//
+		// 失败只记日志（与缓存写入失败同一取向）：额度判定本身是对的，
+		// 把整条上传链路因为一次标记写失败而中断，代价远大于「标记暂时缺失」。
+		if _, syncErr := SyncSensitiveImageScanStateWithDB(db, imageSHA, string(result.State)); syncErr != nil {
+			logger.SysWarn(fmt.Sprintf("额度耗尽标记写入附件失败 sha256=%s error=%v", imageSHA, syncErr))
+		}
 		return result, nil
 	}
 	result.Charged = reservation.Charged
@@ -560,7 +587,14 @@ func ManualDetectSensitiveImageWithDB(
 		now = time.Now()
 	}
 	imageSHA := HashSensitiveImage(data)
-	result := SensitiveImageDetectResult{ImageSHA256: imageSHA, TicketSubmitAllowed: true}
+	result := SensitiveImageDetectResult{
+		ImageSHA256:         imageSHA,
+		TicketSubmitAllowed: true,
+		// 手动重判必然是真实外呼结论（本函数本来就绕过额度闸门），
+		// 所以来源恒为 upstream；写在这里是为了让「结果结构自带落库值」这条
+		// 契约在两个入口上一致，调用方不必各自补。
+		ScanMarkedBy: entity.TicketAttachmentMarkedByUpstream,
+	}
 
 	detector := sensitiveImageDetectorWithDB(db)
 	if detector == nil {
@@ -656,8 +690,13 @@ func LoadSensitiveImageBytesWithDB(db *gorm.DB, imageSHA256 string) ([]byte, str
 // （同一张图被不同工单、不同用户上传）。只改缓存不改附件，表现就是
 // 「管理页说已重判为 clean，用户看到的图还是隐藏」—— 这类不一致极难排查。
 //
-// 只改 scan_state / checked_at，不动 attempt_count / next_attempt_at：
+// 只改 scan_state / scan_marked_by / checked_at，不动 attempt_count / next_attempt_at：
 // 手动重判不是异步重试，改动重试计数会让后台 worker 的行为凭空变化。
+//
+// ⚠️ scan_marked_by 与 scan_state **必须在同一个 UPDATE 里**写：两条路径分开写
+// 就会出现「状态已改成 sensitive、标记还停在旧值」的中间态，而管理员正是在
+// 这个中间态里读库做处置决策。标记值的来源只有 state 一个入参，
+// 所以「一次 UPDATE 两个列」是唯一不会漂移的写法。
 func SyncSensitiveImageScanStateWithDB(db *gorm.DB, imageSHA256, state string) (int64, error) {
 	if db == nil {
 		return 0, errSensitiveImageQuotaNoDatabase
@@ -666,18 +705,44 @@ func SyncSensitiveImageScanStateWithDB(db *gorm.DB, imageSHA256, state string) (
 	if imageSHA256 == "" {
 		return 0, ErrSensitiveImageBytesUnavailable
 	}
-	scanState := entity.TicketAttachmentScanSensitive
-	if strings.EqualFold(strings.TrimSpace(state), string(SensitiveImageDetectClean)) {
-		scanState = entity.TicketAttachmentScanApproved
-	}
+	scanState, markedBy := sensitiveImageScanStateAndMarkOfState(state)
 	now := SensitiveImageQuotaNow()
 	update := db.Model(&entity.TicketAttachment{}).
 		Where(map[string]any{"sha256": imageSHA256}).
-		Updates(map[string]any{"scan_state": scanState, "checked_at": now, "updated_at": now})
+		Updates(map[string]any{
+			"scan_state":     scanState,
+			"scan_marked_by": markedBy,
+			"checked_at":     now,
+			"updated_at":     now,
+		})
 	if update.Error != nil {
 		return 0, update.Error
 	}
 	return update.RowsAffected, nil
+}
+
+// sensitiveImageScanStateAndMarkOfState 把编排层结论（SensitiveImageDetectState）
+// 映射成 (scan_state, scan_marked_by) 这一对落库值。
+//
+// 三条映射缺一不可：
+//
+//	clean             → (approved,  upstream)  真结论：可显示
+//	sensitive         → (sensitive, upstream)  真结论：违规证据
+//	sensitive_by_quota → (sensitive, quota)    **从未检测**，只是额度兜底
+//
+// 其余（pending / scanning / failed / 空串）一律按 sensitive + upstream 处理：
+// 它们是 fail-closed 的隐藏态，且不是「额度耗尽」—— 把未知状态默认成 quota
+// 会让「上游失败」被误读成「没检测过」，那是把真实故障伪装成额度问题。
+func sensitiveImageScanStateAndMarkOfState(state string) (scanState string, markedBy string) {
+	trimmed := strings.TrimSpace(state)
+	switch {
+	case strings.EqualFold(trimmed, string(SensitiveImageDetectClean)):
+		return entity.TicketAttachmentScanApproved, entity.TicketAttachmentMarkedByUpstream
+	case strings.EqualFold(trimmed, string(SensitiveImageDetectByQuota)):
+		return entity.TicketAttachmentScanSensitive, entity.TicketAttachmentMarkedByQuota
+	default:
+		return entity.TicketAttachmentScanSensitive, entity.TicketAttachmentMarkedByUpstream
+	}
 }
 
 // SensitiveImageTicketDetectResult 是按工单批量触发的结果（107 Q1 ③）。
