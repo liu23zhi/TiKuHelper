@@ -423,10 +423,277 @@ jobs:
           py -3.11 -m unittest test_build_exe -v
           if ($LASTEXITCODE -ne 0) { throw "test_build_exe 失败" }
 
+  # SQLite → MariaDB 迁移链路与「真实数据库」迁移测试。
+  #
+  # 为什么需要这个作业（task_doc/121 决策 10 + 122 号方案）：
+  # 仓库里 17 个 Test*MySQL* 有 3 个是**假驱动**（自写 driver.Connector +
+  # 手写 information_schema 回复），它们能断言「生成的 SQL 长什么样」，
+  # 但证明不了「这条 SQL 服务器真的接受」。真库作业补的正是这一层。
+  #
+  # 四个必须做对的细节（写错都不报错，只静默失效）：
+  #   ① 镜像钉 mariadb:11.4 —— 项目有 37 处 int(11) 显示宽度，MySQL 8.0.19
+  #      起弃用它；MariaDB 完整保留，所以这里的结论才适用于目标库。
+  #   ② 环境变量必须 MARIADB_* 前缀 —— 写成 MYSQL_* 时镜像照样启动，
+  #      但库/用户不会被创建，表现为「连得上但库不存在」，极易误判成 DSN 写错。
+  #   ③ 健康检查用 mariadb-admin（mysqladmin 是兼容软链，不留技术债）。
+  #   ④ 覆盖率基线不动：本作业用不同的 -run 参数，混进汇总会让漂移检测失真
+  #      （122 决策 8）。
+  mariadb-integration:
+    name: MariaDB 集成与 SQLite 迁移
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      mariadb:
+        image: mariadb:11.4
+        env:
+          MARIADB_ROOT_PASSWORD: root
+          # 漏掉 MARIADB_DATABASE 时镜像不会创建 MARIADB_USER，
+          # 表现为 Access denied for user 'tiku'@'%'。
+          MARIADB_DATABASE: tiku_ci
+          MARIADB_USER: tiku
+          MARIADB_PASSWORD: tiku
+        ports:
+          # GitHub Actions 的 service container 不走 docker network，
+          # 必须显式映射到 localhost，否则 127.0.0.1:3306 连不上。
+          - 3306:3306
+        # options 里的引号不能省：折叠多行时不加引号，GHA 会把 ping / -uroot
+        # 当独立参数传给容器，健康检查恒失败。
+        options: >-
+          --health-cmd="mariadb-admin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      # 唯一必须保留 MYSQL_ 前缀的地方：它不是容器变量，而是
+      # tools/mysql_migration_common.py:resolve_password 读的应用侧变量名。
+      # 改错的表现是工具弹出交互式密码提示 → 挂到超时。
+      MYSQL_PASSWORD: tiku
+      TIKU_TEST_MYSQL_DSN: "tiku:tiku@tcp(127.0.0.1:3306)/tiku_ci?charset=utf8mb4&parseTime=true&loc=Local"
+      # 声明「本作业必须有真库」：internal/registry/mysql_test_helper_test.go 的
+      # mysqlTestDSN 会据此把「DSN 缺失」判成配置错误（t.Fatal）而不是跳过，
+      # 否则 workflow 少写一个 env 会让真库覆盖悄悄归零而 CI 全绿。
+      TIKU_TEST_MYSQL_REQUIRED: "1"
+    steps:
+      - name: 检出仓库代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 配置 Go 环境
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # 用 setup-python 而不是系统 python3：ubuntu-24.04 的系统解释器带
+      # PEP 668 的 externally-managed 标记，pip install 会被拒绝。
+      - name: 配置 Python 环境
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: 安装 PyMySQL
+        run: |
+          python -m pip install --quiet PyMySQL
+          python -c "import pymysql; print('PyMySQL', pymysql.__version__)"
+
+      # 探测用 PyMySQL 而不是宿主机 mariadb-admin：runner 上不保证装了 MariaDB
+      # 客户端，缺它的失败会被误读成「数据库没起来」。
+      - name: 等待 MariaDB 就绪
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import sys, time
+          import pymysql
+
+          deadline = time.time() + 180
+          last = None
+          while time.time() < deadline:
+              try:
+                  conn = pymysql.connect(host="127.0.0.1", port=3306, user="tiku",
+                                         password="tiku", database="tiku_ci",
+                                         connect_timeout=5)
+                  with conn.cursor() as cur:
+                      cur.execute("SELECT VERSION(), DATABASE(), CURRENT_USER()")
+                      print("MariaDB 已就绪：", cur.fetchone())
+                  conn.close()
+                  sys.exit(0)
+              except Exception as exc:  # noqa: BLE001 - 就绪探测需要吞掉全部异常
+                  last = exc
+                  time.sleep(3)
+          print("::error::MariaDB 未在 180 秒内就绪，最后一次错误：%r" % (last,))
+          sys.exit(1)
+          PY
+
+      - name: 运行真实 MariaDB 迁移测试
+        run: |
+          set -euo pipefail
+          # 不传 -short：mysqlTestDSN 用「CI + 非 short」判定本作业承诺了真库。
+          # 传 -short 会让 DSN 缺失退化成跳过，即使 TIKU_TEST_MYSQL_REQUIRED 被人误删。
+          go test -count=1 -p 1 -v ./internal/registry/... -run 'MariaDB|MySQL' 2>&1 | tee maria-test.log
+
+      - name: 构造 SQLite 源库与种子数据
+        env:
+          TIKU_E2E_SQLITE_OUT: ${{ runner.temp }}/e2e-source.db
+        run: |
+          set -euo pipefail
+          go test -count=1 -v ./internal/registry \
+            -run 'TestMariaDBMigrationE2EPrepare|TestMariaDBMigrationE2ESourceIsReadable|TestMariaDBSourceSeedsCoverBoundaries' \
+            2>&1 | tee maria-e2e-prepare.log
+          test -s "$RUNNER_TEMP/e2e-source.db"
+
+      # 前一步的真库测试会 DROP/CREATE 各种表，migrate 工具要求目标库为空库，
+      # 所以必须显式清一遍。库名保持固定（便于排查），清理交给工具而不是换库名。
+      - name: 清空目标库（migrate 要求空库）
+        run: |
+          set -euo pipefail
+          python tools/mysql_clear.py \
+            --mysql-host 127.0.0.1 --mysql-port 3306 \
+            --mysql-user tiku --mysql-database tiku_ci \
+            --backup-schema "$RUNNER_TEMP/schema-before-clear.sql" --yes
+
+      - name: 执行 SQLite → MariaDB 迁移
+        run: |
+          set -euo pipefail
+          python tools/migrate_sqlite_to_mysql.py \
+            --sqlite-path "$RUNNER_TEMP/e2e-source.db" \
+            --mysql-host 127.0.0.1 --mysql-port 3306 \
+            --mysql-user tiku --mysql-database tiku_ci --yes 2>&1 | tee maria-migrate.log
+
+      # 只跑 migrate 不跑 verify 等于只验「行数对得上」，验不出内容错：
+      # verify 会逐行比对（≤50000 行）、按声明精度归一时间、校验 DECIMAL 定标。
+      - name: 逐行校验迁移结果
+        run: |
+          set -euo pipefail
+          python tools/verify_sqlite_mysql_migration.py \
+            --sqlite-path "$RUNNER_TEMP/e2e-source.db" \
+            --mysql-host 127.0.0.1 --mysql-port 3306 \
+            --mysql-user tiku --mysql-database tiku_ci --json 2>&1 | tee maria-verify.log
+
+      # 负面用例：没有这条，工具被改成「覆盖已有数据」也测不出来。
+      # 两个判据缺一不可 —— 只看退出码会在「因为别的原因失败」时也算通过。
+      - name: 断言「目标库非空必须被拒绝」
+        run: |
+          set -uo pipefail
+          python tools/migrate_sqlite_to_mysql.py \
+            --sqlite-path "$RUNNER_TEMP/e2e-source.db" \
+            --mysql-host 127.0.0.1 --mysql-port 3306 \
+            --mysql-user tiku --mysql-database tiku_ci --yes > maria-second.log 2>&1
+          rc=$?
+          set -e
+          cat maria-second.log
+          if [[ $rc -eq 0 ]]; then
+            echo "::error::第二次迁移竟然成功：目标库非空必须被拒绝，否则工具会静默覆盖现有数据"
+            exit 1
+          fi
+          if ! grep -q '目标数据库不是空库' maria-second.log; then
+            echo "::error::失败原因不是「目标库非空」（退出码 $rc），实际输出见上"
+            exit 1
+          fi
+          echo "✅ 目标库非空被正确拒绝"
+
+      # 迁移后的库行为观测：把「MariaDB 特有行为」变成可观测证据。
+      # DSN 一旦指错库，前面所有断言仍会全绿，而结论与目标库无关。
+      #
+      # 注意这里**不断言 int(11)**：migrate 工具把 SQLite 的 INT 统一映射成
+      # BIGINT（tools/migrate_sqlite_to_mysql.py:mysql_type），迁移产物里本就不该
+      # 出现 int(11)。「显示宽度原样保留」是 GORM AutoMigrate 路径的属性，
+      # 由下一步的 Go 真库测试断言 —— 放在这里会因为断言对象不存在而恒假。
+      - name: 观测迁移后目标库的 MariaDB 行为
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import re
+          import sys
+          import pymysql
+
+          conn = pymysql.connect(host="127.0.0.1", port=3306, user="tiku",
+                                 password="tiku", database="tiku_ci")
+          failures = []
+          try:
+              with conn.cursor() as cur:
+                  cur.execute("SELECT VERSION()")
+                  version = cur.fetchone()[0]
+                  print("目标库版本：", version)
+                  if "MariaDB" not in version:
+                      failures.append("版本 %r 不含 MariaDB：本作业的结论只对 MariaDB 成立" % (version,))
+                  match = re.match(r"(\d+)\.(\d+)\.(\d+)", version)
+                  if not match:
+                      failures.append("无法解析版本号 %r" % (version,))
+                  else:
+                      parsed = tuple(int(part) for part in match.groups())
+                      print("解析后版本：", parsed)
+                      if parsed < (10, 2, 2):
+                          failures.append(
+                              "MariaDB %s 低于迁移工具门槛 10.2.2（会走 767 字节索引上限分支）" % (parsed,))
+
+                  cur.execute("SELECT @@innodb_page_size, @@character_set_database, @@collation_database")
+                  page_size, charset, collation = cur.fetchone()
+                  print("innodb_page_size=%s character_set_database=%s collation_database=%s"
+                        % (page_size, charset, collation))
+                  if str(charset).lower() != "utf8mb4":
+                      failures.append("库字符集为 %r，want utf8mb4（四字节字符会被截断）" % (charset,))
+                  if int(page_size) < 16384:
+                      failures.append("innodb_page_size=%s 小于 16384：大索引前缀判定会走保守分支" % (page_size,))
+
+                  cur.execute(
+                      "SELECT COLUMN_NAME, COLUMN_TYPE FROM information_schema.COLUMNS "
+                      "WHERE TABLE_SCHEMA = 'tiku_ci' AND TABLE_NAME = 'users' "
+                      "AND COLUMN_NAME IN ('id', 'balance', 'gift_balance', 'parent_id') "
+                      "ORDER BY COLUMN_NAME"
+                  )
+                  print("迁移后 users 关键列类型：", cur.fetchall())
+                  cur.execute(
+                      "SELECT COUNT(*) FROM information_schema.STATISTICS "
+                      "WHERE TABLE_SCHEMA = 'tiku_ci' AND TABLE_NAME = 'blacklist_entries' "
+                      "AND INDEX_NAME = 'uk_blacklist_entry_pattern'"
+                  )
+                  composite = cur.fetchone()[0]
+                  print("blacklist_entries 唯一复合索引列数：", composite)
+                  if composite != 3:
+                      failures.append("uk_blacklist_entry_pattern 只有 %d 列，want 3" % (composite,))
+          finally:
+              conn.close()
+
+          if failures:
+              for item in failures:
+                  print("::error::" + item)
+              sys.exit(1)
+          print("✅ 迁移产物运行在 MariaDB 11.x + utf8mb4 上")
+          PY
+
+      # 最后一步：把「真的在测 MariaDB」与「int(11) 显示宽度原样保留」变成
+      # 可失败的断言，而不是靠人工看日志。
+      #
+      # 为什么用 Go 而不是 SQL：显示宽度是 GORM AutoMigrate 建表路径的属性，
+      # 必须在真库上建出实体表才能观测。这一步会清库（mysqlTestFreshDB），
+      # 所以刻意放在所有迁移/校验之后 —— 前面几步的证据已落日志与 artifact。
+      - name: 断言确为 MariaDB 且 int(11) 显示宽度原样保留
+        run: |
+          set -euo pipefail
+          go test -count=1 -v ./internal/registry \
+            -run 'TestMariaDBServerIsActuallyMariaDB|TestMariaDBPreservesIntegerDisplayWidth' \
+            2>&1 | tee maria-display-width.log
+
+      - name: 上传 MariaDB 测试日志
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: MariaDB集成日志-${{ github.sha }}
+          path: |
+            maria-test.log
+            maria-e2e-prepare.log
+            maria-migrate.log
+            maria-verify.log
+            maria-second.log
+            maria-display-width.log
+          if-no-files-found: warn
+          retention-days: 14
+
   summary:
     name: 持续集成摘要
     runs-on: ubuntu-24.04
-    needs: [backend, frontend, docker, python, release-build, probe-windows]
+    needs: [backend, frontend, docker, python, release-build, probe-windows, mariadb-integration]
     if: always()
     steps:
       - name: 输出构建结果与产物链接
@@ -437,6 +704,7 @@ jobs:
           PYTHON_RESULT: ${{ needs.python.result }}
           PROBE_WINDOWS_RESULT: ${{ needs.probe-windows.result }}
           RELEASE_BUILD_RESULT: ${{ needs.release-build.result }}
+          MARIADB_RESULT: ${{ needs.mariadb-integration.result }}
           BACKEND_ARTIFACT_URL: ${{ needs.backend.outputs.artifact-url }}
           FRONTEND_ARTIFACT_URL: ${{ needs.frontend.outputs.artifact-url }}
           DOCKER_ARTIFACT_URL: ${{ needs.docker.outputs.artifact-url }}
@@ -465,6 +733,7 @@ jobs:
             printf '| 跨平台发布构建 | %s |\n' "$(result_label "$RELEASE_BUILD_RESULT")"
             printf '| Vue 前端检查 | %s |\n' "$(result_label "$FRONTEND_RESULT")"
             printf '| Docker 镜像构建 | %s |\n' "$(result_label "$DOCKER_RESULT")"
+            printf '| MariaDB 集成与 SQLite 迁移 | %s |\n' "$(result_label "$MARIADB_RESULT")"
             echo
             echo '## 构建产物'
             echo
