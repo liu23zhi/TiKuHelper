@@ -984,6 +984,18 @@ func riskWindowBounds(now time.Time) (start string, end string) {
 	return windowStart.Format("2006-01-02 15:04:05"), windowEnd.Format("2006-01-02 15:04:05")
 }
 
+// loadAccessTokenForRisk 按 id 重新读一次令牌行（供额度周期换算用）。
+//
+// 为什么不复用上面 Scan 出来的 tokenQuota 结构：LoadAccessTokenQuotaWindowWithDB
+// 的签名要完整的 entity.AccessToken，而上面的扫描只取了 6 列（省 IO）。
+// 多读一次的代价可接受：候选量受 `total_amount_used > 0` 与配额下限双重过滤，
+// 通常是个位数量级。
+func loadAccessTokenForRisk(db *gorm.DB, id int32) (entity.AccessToken, error) {
+	var token entity.AccessToken
+	err := db.Session(&gorm.Session{NewDB: true}).First(&token, id).Error
+	return token, err
+}
+
 // collectTicketFloodCandidates 收集「单用户 24h 建单 ≥N 张」的命中（96 §2.1 R8）。
 //
 // # 判据与数据源
@@ -1396,7 +1408,35 @@ func collectTokenAbuseCandidates(db *gorm.DB, rule entity.RiskRule, now time.Tim
 		if row.TotalQuotaLimit <= riskTokenAbuseMinQuota {
 			continue
 		}
-		ratio := row.TotalAmountUsed / row.TotalQuotaLimit
+		// ⚠️ 必须用「本轮已用」而不是 total_amount_used（历史累计）。
+		//
+		// 本仓的额度周期是**叠加层**设计（entity/access_token_quota_epoch.go 的注释
+		// 明确把它列为「本设计的红线」）：
+		//
+		//	本轮已用 = total_amount_used - baseline_amount（当前 epoch 的基线）
+		//	total_amount_used 永不清零（账单/对账/审计都以它为据）
+		//
+		// 原实现直接读 total_amount_used 原始列，完全没看 epoch baseline ⇒
+		// 管理员点「重置额度周期」（POST /access-tokens/:id/reset-quota-window）
+		// 之后，该 token 的「本轮已用」在前端显示 0，但**风控照样按历史累计
+		// 达到 3 倍继续每天告警，且用户没有任何操作能消除**（累计只增不减）。
+		// 这是**永久误报**，不是漏报。
+		//
+		// 实测（探针）：quota=100 / used=300 / epoch baseline=300 时，
+		// 正确口径 windowUsed=0，而原实现仍命中 1 条告警。
+		//
+		// 用 LoadAccessTokenQuotaWindowWithDB 而不是自己算：
+		// 它是本仓「本轮已用」的唯一计算入口（access_token_quota_epoch.go:74 的注释
+		// 原话），自己再算一遍必然与准入判定漂移。
+		windowUsed := row.TotalAmountUsed
+		if token, err := loadAccessTokenForRisk(db, row.ID); err == nil {
+			if window, err := LoadAccessTokenQuotaWindowWithDB(db, token); err == nil {
+				windowUsed = window.WindowUsed
+			}
+			// 读失败时保守回落到历史累计：宁可多报一次，也不要因为一次查询失败
+			// 就漏掉真正在滥用的令牌（fail-closed）。
+		}
+		ratio := windowUsed / row.TotalQuotaLimit
 		// 「≥ 阈值」：3.0 恰等于阈值 3 → 告警。
 		if ratio < threshold {
 			continue
@@ -1628,7 +1668,21 @@ func collectOffhoursActivityCandidates(db *gorm.DB, rule entity.RiskRule, now ti
 			}
 		}
 	}
-	// 「连续 N 天」= 昨天也在 且 （历史不同日期数 + 今天）≥ N。
+	// 「连续 N 天」= 昨天也在 且 （窗口内历史不同日期数 + 今天）≥ N。
+	//
+	// ⚠️ 这里的 `+1` 是**必需的**，不是在补一个 off-by-one。
+	//
+	// 原因：本函数是「先算 → 再返回候选 → 调用方写库」的顺序，
+	// 因此查询 historyDates 时**今天这一行还没落库**，窗口 [today-(N-1), tomorrow)
+	// 里实际只有过去 (N-1) 天的记录。今天由 `+1` 补上。
+	//
+	// 实测（探针，连续 12/13/14 三天各评估一次）：
+	//
+	//	评估 11-14 时 historyDates=2（11-12、11-13），+1 后 = 3 → 达标，推送 1 次 ✓
+	//	Detail 里 consecutiveFound 也必须是 2+1=3，否则排障时会看到「找到 2 天却达标」
+	//
+	// 反例（把 +1 去掉）：上面那次评估 historyDates=2 < 3 ⇒ **永远凑不满**，
+	// 连续规则永不触发 —— 这是「改掉一个看似 off-by-one 的 +1 反而弄坏功能」的实例。
 	consecutiveMet := consecutiveDays <= 1
 	if consecutiveDays > 1 {
 		consecutiveMet = yesterdayExists > 0 && historyDates+1 >= int64(consecutiveDays)
@@ -1645,11 +1699,14 @@ func collectOffhoursActivityCandidates(db *gorm.DB, rule entity.RiskRule, now ti
 		"offhourShare":        roundRiskAmount(share),
 		"shareThreshold":      shareThreshold,
 		"consecutiveRequired": consecutiveDays,
-		"consecutiveFound":    historyDates + 1,
-		"consecutiveMet":      consecutiveMet,
-		"value":               roundRiskAmount(share),
-		"windowStart":         windowStart.Format(time.RFC3339),
-		"evaluatedAt":         now.Format(time.RFC3339),
+		// consecutiveFound 必须与 consecutiveMet 的口径一致：historyDates 是
+		// **库里的**过去日期数（不含今天，因为今天还没写），再加 1 补今天。
+		// 两者不一致的话，排障时会看到「找到 2 天却判达标」这种自相矛盾的证据。
+		"consecutiveFound": historyDates + 1,
+		"consecutiveMet":   consecutiveMet,
+		"value":            roundRiskAmount(share),
+		"windowStart":      windowStart.Format(time.RFC3339),
+		"evaluatedAt":      now.Format(time.RFC3339),
 		"evidenceNote": "当天凌晨（北京时间 02:00-05:00）计费笔数占比 + 历史连续天数；" +
 			"未凑满连续天数时只留当日记录、不推送（新部署环境前 N-1 天不会产生告警）",
 	})
