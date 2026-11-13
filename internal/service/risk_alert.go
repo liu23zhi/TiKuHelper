@@ -917,19 +917,36 @@ func riskBehaviorSubject(ruleID, scope string, windowStart time.Time) string {
 	return strings.TrimSpace(ruleID) + ":" + strings.TrimSpace(scope) + ":" + windowStart.Format(time.RFC3339)
 }
 
-// riskWindowStartExpr 返回「把列截到秒」的方言表达式，供窗口过滤用。
+// riskWindowStartExpr 返回「把列换算到上海时区并按秒截断」的方言表达式，供窗口过滤用。
 //
 // ⚠️ 为什么需要它（本仓实测踩过的坑）：
-// SQLite 里时间列存的是**带偏移的文本**（`2026-11-13 14:00:00+08:00`），
-// 直接拿它和 Go 传进来的 time.Time 比，驱动会做字符串比较 —— 碰上带 `+08:00`
-// 后缀的值就与 `2026-11-14 00:00:00` 对不齐，窗口边界会**静默偏移**。
-// 统一用 substr(col,1,19) 截成 `YYYY-MM-DD HH:MM:SS` 再比，两边口径一致。
+// SQLite 里时间列存的是**带偏移的文本**，而偏移**不一定是 +08:00**：
+// 实测本机库 `users.created_at` = `2026-05-08 13:10:30.573137548+00:00`，
+// `logs.create_time` 999 行里 923 行是 `+00:00` —— **是 UTC，不是本地时间**。
 //
-// MySQL 的时间列是真 DATETIME（无偏移后缀），不需要也不应该 substr（会退化成字符串比较）。
+// 原实现用裸 `substr(col,1,19)` 截成 `YYYY-MM-DD HH:MM:SS` 再与上海时区窗口比，
+// 那只在所有行都恰好是本地时间偏移时才成立。碰上 `+00:00` 的行，截出来的
+// 是 **UTC 时刻**，与 CST 窗口直接差 8 小时。
+//
+// 实测影响面（本机库）：`logs` 表 923 条 `+00:00` 行按 CST 口径比对，
+// **923/923 全部落在错误的自然日**（SQL：`substr(create_time,1,19) <> datetime(create_time,'+8 hours')`
+// 命中 923）。R1（logs）、R11（users）都受此影响 —— 这类偏移不会报错，
+// 只会让「自然日窗口」静默错位，表现为「明明超了阈值却不告警」或反之。
+//
+// 修法：不靠 substr 猜，改用 SQLite 的 `datetime()` 做**真正的时区换算**。
+// `datetime(col)` 会把带偏移的文本归一成 UTC 的 `YYYY-MM-DD HH:MM:SS`，
+// 再 `datetime(col,'+8 hours')` 就得到上海本地时刻的同一格式，最后与
+// riskWindowBounds 用同一时区格式化的边界比较，口径完全一致。
+//
+// 为什么不用 `datetime(col,'localtime')`：那依赖**进程所在机器的时区**。
+// CI 跑在 UTC、开发机跑在 CST，同一份数据会得出不同窗口 —— 比偏移更难查。
+// 固定 '+8 hours' 让判定结果与部署环境无关（96 §2 的窗口定义本身就是上海时区）。
+//
+// MySQL 的时间列是真 DATETIME（无偏移后缀），不需要也不应该做文本换算。
 // 因此按方言返回不同的表达式。
 func riskWindowColumnExpr(db *gorm.DB, column string) string {
 	if strings.EqualFold(db.Dialector.Name(), "sqlite") {
-		return "substr(" + column + ", 1, 19)"
+		return "datetime(" + column + ", '+8 hours')"
 	}
 	return column
 }
@@ -1052,13 +1069,41 @@ const riskAbnormalRegisterSequenceMaxDigits = 9
 //
 // 只写 `^[a-z]+\d+$` 会把它们全算进去。判据③ 的对照用例钉的就是这一点。
 //
-// # 性能说明（如实记录）
+// # 性能说明（如实记录，决策依据）
 //
 // `users.username` 与 `users.created_at` **都没有索引**（实测 entity/users.gen.go:
 // Username/CreatedAt 均无 index tag）。因此本查询是一次带时间窗的全表扫。
-// 用时间窗先过滤是正确的缓解手段（窗口内新增用户通常远小于全表），
-// 但**大表上仍会偏慢**。若将来成为瓶颈，正确方向是给 users.created_at 加索引
-// （那是表结构变更，超出本规则范围）。
+// 用时间窗先过滤是正确的缓解手段（窗口内新增用户通常远小于全表）。
+//
+// **当前接受这个开销**（决策，不是遗漏）：本查询带自然日窗口 + 前缀分组，
+// 在 users 规模到**十万行以内**不构成瓶颈；而加索引要走表结构变更 + 迁移兼容 +
+// 存量回填，与「一条风控规则」的收益不成比例。
+//
+// ⚠️ 触发放缓条件：如果 users 表 **超过 10 万行** 且本规则让 EvaluateDebtAlerts
+// 变慢（实测方式：给本函数加计时日志，看单轮耗时），则给 users.created_at 加索引。
+// 届时只需一条 `CREATE INDEX idx_users_created_at ON users(created_at)`，
+// 不需改动本函数逻辑 —— 下面的 SQL 已经是「按 created_at 过滤」的标准形态。
+//
+// # 语义取舍（严口径，不放宽 —— 附放宽点与代价）
+//
+// 本规则**只认**「纯字母前缀 + 纯数字后缀」。因此下面这些**不参与判定**：
+//
+//	user_1 / user_2      —— 前缀含分隔符
+//	张三1 / 张三2         —— 中文前缀
+//	a1bc2                —— 字母夹数字
+//
+// 为什么选严的一侧：**漏报的代价 << 误报的代价**。风控误报会打扰正常用户、
+// 消耗管理员工时；漏报只是少抓一个养号群体。另外中文前缀在编码上无法可靠判
+// 「递增」（UTF-8 码点顺序 ≠ 用户直觉的编号顺序）。
+//
+// ⚠️ 若实测发现**真实批量注册确实用分隔符**（例如 `user_1`/`user_2`/`user_3`
+// 成批出现），放宽点就是唯一的：`riskSplitSequentialUsername` 里「出现非字母字符
+// 即拒绝」那个分支 —— 允许可选的前导分隔符（`_`/`-`）。
+//
+// 放宽的代价（务必权衡后再改）：`user_1`/`user_2` 与 `user1`/`user2` 会混成
+// **同一个前缀族**，同族成员数直接翻倍，误报面显著上升；而且一旦放宽，
+// 「前缀里允许哪些分隔符」会变成一组难收敛的规则（`_`/`-`/`.`/空格？）。
+// 真要放宽，建议先只允许 `_` 并单独跑一轮实测对比误报率，不要一次放多个。
 func collectAbnormalRegisterPatternCandidates(db *gorm.DB, rule entity.RiskRule, now time.Time) ([]riskWarningCandidate, error) {
 	threshold := riskRuleThreshold(db, rule, riskDefaultThreshold(rule.RuleID))
 	if threshold <= 0 {
@@ -1161,6 +1206,12 @@ const riskWarningDetailMaxSampleUsers = 10
 // 只接受「纯字母前缀 + 纯数字后缀」，且前缀长度 ≥ riskAbnormalRegisterPrefixMinLength、
 // 数字 1..9 位。任何不符合形态的（含符号、纯数字、字母夹数字）都返回 false，
 // 直接不参与 R11 判定 —— 这是收窄的第一道闸。
+//
+// ⚠️ **这是「放宽分隔符」的唯一修改点**（见 collectAbnormalRegisterPatternCandidates
+// 的「语义取舍」段）：若实测发现真实批量注册用 `user_1`/`user_2` 这种带分隔符的形态，
+// 就在下面「出现非字母字符即拒绝」那个分支允许可选的前导 `_`。
+// 放宽前请先读那一段的代价分析（同族成员数翻倍 → 误报面上升），
+// 并且只放一种分隔符、单独跑一轮误报率对比，不要一次放多个。
 func riskSplitSequentialUsername(username string) (string, int, bool) {
 	trimmed := strings.ToLower(strings.TrimSpace(username))
 	if trimmed == "" {

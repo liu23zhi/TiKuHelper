@@ -133,6 +133,26 @@ func main() {
 	// 界面上看是「暂无数据」而不是异常，容易长期不被发现。
 	service.StartServiceStatusSampling(controller.ServiceStatusSampler(), shutdownContext.Done())
 
+	// 风控判定定时任务（96 §2 / 118 §2.4 的全部行为与欠款规则）。
+	//
+	// ⚠️ 这一行是整条风控链路的**唯一驱动器**。在它出现之前，
+	// service.EvaluateDebtAlerts 有完整实现、有 58 条单测，但**零生产调用方** ——
+	// 全仓 `git grep EvaluateDebtAlerts` 排除 _test.go 后只剩定义行与注释。
+	// 后果是静默且彻底的：
+	//   · risk_warnings 表永远为空 ⇒ 管理页恒显示「暂无告警」
+	//   · R1 multi_account_ip / R8 ticket_flood / R11 abnormal_register_pattern /
+	//     debt_user / debt_batch / debt_system **一条规则都不会触发**
+	//   · 单测全绿、编译通过、启动无报错、日志无异常
+	//
+	// 判据纪律：**判断某功能是否完成，查调用方，不查定义。** 这个仓已经在这上面
+	// 栽过两次（router.go 一次积压 33 个未挂 handler；三个后台组件各只有 2 处命中
+	// 且都在注释里）。
+	//
+	// interval 传 0 = 每轮从 system_settings 重新读间隔，运营改完不用重启
+	// （与日志清理同一条取舍，用 Timer 而非 Ticker 的全部理由）。
+	stopRiskEvaluation := service.StartRiskAlertEvaluationWorker(mg.GetDB(), 0)
+	defer stopRiskEvaluation()
+
 	// 异步任务管理器（Q12 / N3，导入导出）：必须同时 Start() 与注入 controller，
 	// 否则 /export/tasks 提交接口返回 503（刻意不假装成功）。
 	// BaseDir 用系统临时目录下的固定子目录：结果文件是可下载的临时产物，
