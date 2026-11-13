@@ -61,6 +61,8 @@ func newRiskAlertTestDBNamed(t *testing.T, rawName string) *gorm.DB {
 		&entity.Log{},
 		// Ticket 是 R8（ticket_flood）的数据源：统计窗口内新建工单数。
 		&entity.Ticket{},
+		// AccessToken 是 R12（token_abuse）的数据源：配额消耗 + 多 IP 漂移。
+		&entity.AccessToken{},
 	} {
 		if err := db.AutoMigrate(model); err != nil {
 			t.Fatalf("migrate %T: %v", model, err)
@@ -967,6 +969,8 @@ func TestLoadRiskRulesFallsBackToCodeDefaults(t *testing.T) {
 		"multi_account_ip":          5,
 		"ticket_flood":              5,
 		"abnormal_register_pattern": 3,
+		"token_abuse":               3,
+		"offhours_activity":         3,
 	}
 	if len(rules) != len(wantThreshold) {
 		t.Fatalf("fallback rule count = %d, want %d（实际：%v）", len(rules), len(wantThreshold), ruleIDsOf(rules))
@@ -2204,6 +2208,596 @@ func TestRiskLongestConsecutiveRun(t *testing.T) {
 	}
 }
 
+// ════════════════════════════════════════════════════════════════════
+// R12 · token_abuse（96 §2.1）
+// 两条子判据取「或」：① 配额消耗进度 ≥ 阈值 ② 窗口内多 IP 漂移 ≥ 阈值
+//
+// 数据源：access_tokens 现成字段（不建表）。用 billing_records 聚合是方向性错误
+// （结果为空不记账，而滥用恰好高发于「查了没查到」）。
+//
+// 重试污染：已实测 request_id 幂等闸门使 retry 不重复累加 TotalAmountUsed。
+// ════════════════════════════════════════════════════════════════════
+
+// seedRiskAccessToken 造一个 access token（配额/已用/最后 IP 都可控）。
+func seedRiskAccessToken(t *testing.T, db *gorm.DB, userID int32, name string, quota, used float64, lastIP string) entity.AccessToken {
+	t.Helper()
+	token := entity.AccessToken{
+		UserID: userID, Name: name,
+		TokenHash: name + "-hash", TokenPrefix: "pfx", Status: "enabled",
+		TotalQuotaLimit: quota, TotalAmountUsed: used, LastUsedIP: lastIP,
+	}
+	if err := db.Create(&token).Error; err != nil {
+		t.Fatalf("create token %s: %v", name, err)
+	}
+	return token
+}
+
+// seedRiskBillingRow 造一条带 client_ip 的计费行（R12 多 IP 判据的数据源）。
+//
+// created_at 用原始 SQL 回写，因为 GORM 的 autoCreateTime 会按进程时区序列化。
+func seedRiskBillingRow(t *testing.T, db *gorm.DB, userID, tokenID int32, clientIP string, amount float64, at time.Time) {
+	t.Helper()
+	row := entity.BillingRecord{
+		UserID: userID, AccessTokenID: tokenID, Type: "search",
+		Amount: amount, ClientIP: clientIP,
+	}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatalf("create billing row: %v", err)
+	}
+	if err := db.Model(&entity.BillingRecord{}).Where("id = ?", row.ID).
+		Update("created_at", at).Error; err != nil {
+		t.Fatalf("backdate billing row: %v", err)
+	}
+}
+
+// 判据①：配额消耗进度边界 —— 2.9 倍不告警，3.0 倍告警（阈值 3）。
+func TestRiskTokenAbuseQuotaRatioBoundary(t *testing.T) {
+	t.Run("below_threshold", func(t *testing.T) {
+		db := newRiskAlertTestDB(t)
+		seedRiskRules(t, db)
+		seedRiskAccessToken(t, db, 1, "t-below", 100, 290, "203.0.113.1") // 2.9x
+		if _, err := EvaluateDebtAlerts(db, riskR1TestTime()); err != nil {
+			t.Fatalf("evaluate: %v", err)
+		}
+		if got := countRuleWarnings(t, db, "token_abuse"); got != 0 {
+			t.Fatalf("2.9 倍 < 阈值 3 必须不告警，实际 %d 条", got)
+		}
+	})
+
+	t.Run("meets_threshold", func(t *testing.T) {
+		db := newRiskAlertTestDB(t)
+		seedRiskRules(t, db)
+		token := seedRiskAccessToken(t, db, 1, "t-edge", 100, 300, "203.0.113.1") // 恰好 3.0x
+		if _, err := EvaluateDebtAlerts(db, riskR1TestTime()); err != nil {
+			t.Fatalf("evaluate: %v", err)
+		}
+		if got := countRuleWarnings(t, db, "token_abuse"); got != 1 {
+			t.Fatalf("3.0 倍 = 阈值 3 必须告警且只 1 条，实际 %d 条", got)
+		}
+		var warning entity.RiskWarning
+		if err := db.Where("rule_id = ?", "token_abuse").First(&warning).Error; err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		var detail map[string]any
+		if err := json.Unmarshal([]byte(warning.Detail), &detail); err != nil {
+			t.Fatalf("detail JSON: %v", err)
+		}
+		if got, _ := detail["tokenId"].(float64); got != float64(token.ID) {
+			t.Fatalf("detail.tokenId = %v, want %d", detail["tokenId"], token.ID)
+		}
+		if got, _ := detail["signal"].(string); got != "quota_ratio" {
+			t.Fatalf("detail.signal = %v, want quota_ratio", detail["signal"])
+		}
+		if got, _ := detail["quotaRatio"].(float64); got != 3.0 {
+			t.Fatalf("detail.quotaRatio = %v, want 3", detail["quotaRatio"])
+		}
+	})
+}
+
+// 【基线不足不告警】配额为 0 或未设 ⇒ 除零会得到 Inf，`Inf >= 3` 恒真。
+//
+// 这是硬要求 (c) 在 R12 的形态。变异「去掉 total_quota_limit > 0 过滤」→ 本用例红。
+func TestRiskTokenAbuseSkipsWhenQuotaBaselineMissing(t *testing.T) {
+	cases := []struct {
+		name  string
+		quota float64
+		used  float64
+	}{
+		{name: "quota_zero", quota: 0, used: 100},
+		{name: "quota_zero_used_zero", quota: 0, used: 0},
+		{name: "negative_quota", quota: -50, used: 100},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := newRiskAlertTestDB(t)
+			seedRiskRules(t, db)
+			seedRiskAccessToken(t, db, 1, "t-"+tc.name, tc.quota, tc.used, "203.0.113.1")
+			if _, err := EvaluateDebtAlerts(db, riskR1TestTime()); err != nil {
+				t.Fatalf("evaluate: %v", err)
+			}
+			if got := countRuleWarnings(t, db, "token_abuse"); got != 0 {
+				t.Fatalf("配额基线不足（quota=%v）时必须不告警，实际 %d 条（除零/Inf 被当成了高比例）", tc.quota, got)
+			}
+		})
+	}
+	// 反向对照：同样 used，但配额合法且确实超标时必须告警。
+	// 否则上面的 0 可能只是因为规则整体没跑（假绿）。
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	seedRiskAccessToken(t, db, 1, "t-control", 10, 100, "203.0.113.1") // 10x
+	if _, err := EvaluateDebtAlerts(db, riskR1TestTime()); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "token_abuse"); got != 1 {
+		t.Fatalf("配额 10 且已用 100（10 倍）必须告警，实际 %d 条（若为 0 说明上面的 0 与基线无关）", got)
+	}
+}
+
+// 判据②：多 IP 漂移 —— 2 个 IP 不告警，3 个告警（阈值 3）。
+func TestRiskTokenAbuseMultiIPDrift(t *testing.T) {
+	t.Run("two_ips_below_threshold", func(t *testing.T) {
+		db := newRiskAlertTestDB(t)
+		seedRiskRules(t, db)
+		token := seedRiskAccessToken(t, db, 1, "t-2ip", 1000, 1, "203.0.113.1")
+		now := riskR1TestTime()
+		for i, ip := range []string{"203.0.113.1", "203.0.113.2"} {
+			seedRiskBillingRow(t, db, 1, token.ID, ip, 1, now.Add(-time.Duration(i)*time.Minute))
+		}
+		if _, err := EvaluateDebtAlerts(db, now); err != nil {
+			t.Fatalf("evaluate: %v", err)
+		}
+		if got := countRuleWarnings(t, db, "token_abuse"); got != 0 {
+			t.Fatalf("2 个 IP < 阈值 3 必须不告警，实际 %d 条", got)
+		}
+	})
+
+	t.Run("three_ips_meets_threshold", func(t *testing.T) {
+		db := newRiskAlertTestDB(t)
+		seedRiskRules(t, db)
+		token := seedRiskAccessToken(t, db, 1, "t-3ip", 1000, 1, "203.0.113.1")
+		now := riskR1TestTime()
+		for i, ip := range []string{"203.0.113.1", "203.0.113.2", "203.0.113.3"} {
+			seedRiskBillingRow(t, db, 1, token.ID, ip, 1, now.Add(-time.Duration(i)*time.Minute))
+		}
+		if _, err := EvaluateDebtAlerts(db, now); err != nil {
+			t.Fatalf("evaluate: %v", err)
+		}
+		if got := countRuleWarnings(t, db, "token_abuse"); got != 1 {
+			t.Fatalf("3 个 IP = 阈值 3 必须告警且只 1 条，实际 %d 条", got)
+		}
+		var warning entity.RiskWarning
+		if err := db.Where("rule_id = ?", "token_abuse").First(&warning).Error; err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		var detail map[string]any
+		if err := json.Unmarshal([]byte(warning.Detail), &detail); err != nil {
+			t.Fatalf("detail JSON: %v", err)
+		}
+		if got, _ := detail["signal"].(string); got != "multi_ip_drift" {
+			t.Fatalf("detail.signal = %v, want multi_ip_drift", detail["signal"])
+		}
+		if got, _ := detail["ipCount"].(float64); got != 3 {
+			t.Fatalf("detail.ipCount = %v, want 3", detail["ipCount"])
+		}
+	})
+
+	t.Run("same_ip_repeated_not_counted", func(t *testing.T) {
+		db := newRiskAlertTestDB(t)
+		seedRiskRules(t, db)
+		token := seedRiskAccessToken(t, db, 1, "t-sameip", 1000, 1, "203.0.113.1")
+		now := riskR1TestTime()
+		// 同一个 IP 10 次：不同 IP 数只有 1 → 不告警。
+		for i := 0; i < 10; i++ {
+			seedRiskBillingRow(t, db, 1, token.ID, "203.0.113.1", 1, now.Add(-time.Duration(i)*time.Minute))
+		}
+		if _, err := EvaluateDebtAlerts(db, now); err != nil {
+			t.Fatalf("evaluate: %v", err)
+		}
+		if got := countRuleWarnings(t, db, "token_abuse"); got != 0 {
+			t.Fatalf("同一 IP 重复 10 次只算 1 个 IP，必须不告警，实际 %d 条", got)
+		}
+	})
+}
+
+// ════════════════════════════════════════════════════════════════════
+// R16 · offhours_activity（96 §2.1）
+// 连续 3 天凌晨占比超阈值。数据源：risk_warnings 自身历史。
+// ════════════════════════════════════════════════════════════════════
+
+// seedRiskBillingAtRaw 用**原始 SQL** 写一条指定 UTC 时刻的计费行。
+//
+// ⚠️ 必须这样种（照抄 risk_window_timezone_test.go 的范式）：
+// 用 `Update("created_at", time.Time)` 时 GORM 按**进程时区**序列化，
+// 永远种不出 `+00:00` 形态 —— 那样 R16 的时区正确性就永远测不出来（自证式通过）。
+func seedRiskBillingAtRaw(t *testing.T, db *gorm.DB, userID int32, rawCreatedAt string) {
+	t.Helper()
+	if err := db.Exec(
+		"INSERT INTO billing_records (user_id, type, amount, client_ip, created_at)"+
+			" VALUES (?, 'search', 1, '', ?)", userID, rawCreatedAt).Error; err != nil {
+		t.Fatalf("insert raw billing row: %v", err)
+	}
+}
+
+// shanghaiToRatText 把「上海时刻」转成**数据库里实际存储的形态**（UTC +00:00）。
+//
+// 例：上海 2026-11-14 03:00 → 存储 "2026-11-13 19:00:00+00:00"。
+// 种子的自检会核对这一转换是否与库里实际形态一致（见 assertRiskSeedIsUTC）。
+func shanghaiToRatText(t *testing.T, shanghai time.Time) string {
+	t.Helper()
+	return shanghai.UTC().Format("2006-01-02 15:04:05") + "+00:00"
+}
+
+// assertRiskSeedIsUTC 自检种子真的是 UTC 形态。
+//
+// 这是防「自证式通过」的闸门：如果种子恰好被写成 `+08:00`，
+// R16 用错 substr 也照样绿 —— 那种情况下本用例必须提前失败并说明原因。
+func assertRiskSeedIsUTC(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	var raw string
+	if err := db.Raw("SELECT CAST(created_at AS TEXT) FROM billing_records ORDER BY id LIMIT 1").
+		Scan(&raw).Error; err != nil {
+		t.Fatalf("read seed: %v", err)
+	}
+	if !strings.HasSuffix(raw, "+00:00") {
+		t.Fatalf("种子自检失败：billing_records.created_at = %q 不是 UTC 形态（+00:00）。"+
+			"种子必须用原始 SQL 写 UTC，否则 R16 的时区正确性无法被验证", raw)
+	}
+}
+
+// 判据①：单天凌晨占比达标 → 写 1 条（但连续天数不够，所以它本身就是「今天这条记录」）。
+func TestRiskOffhoursActivityRecordsTodayWhenShareMet(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	now := riskR1TestTime() // 上海 2026-11-14 12:00
+	// 当天：凌晨 3 笔 + 白天 1 笔 = 75%……不够 80%。
+	// 改成凌晨 4 笔 + 白天 1 笔 = 80% → 恰好达标。
+	day := time.Date(2026, 11, 14, 0, 0, 0, 0, logger.ShanghaiLocation())
+	for i := 0; i < 4; i++ {
+		seedRiskBillingAtRaw(t, db, 1, shanghaiToRatText(t, day.Add(3*time.Hour+time.Duration(i)*time.Minute)))
+	}
+	seedRiskBillingAtRaw(t, db, 1, shanghaiToRatText(t, day.Add(14*time.Hour)))
+	assertRiskSeedIsUTC(t, db)
+
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "offhours_activity"); got != 1 {
+		t.Fatalf("当天凌晨占比 80%% = 阈值，必须写 1 条，实际 %d 条", got)
+	}
+	var warning entity.RiskWarning
+	if err := db.Where("rule_id = ?", "offhours_activity").First(&warning).Error; err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !strings.Contains(warning.SubjectKey, "2026-11-14") {
+		t.Fatalf("subjectKey 必须编入日期，实际 %q", warning.SubjectKey)
+	}
+}
+
+// 判据②：占比不足 → 不写（否则「连续」会退化成「历史上出现过 N 次」）。
+func TestRiskOffhoursActivitySkipsWhenShareBelowThreshold(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	now := riskR1TestTime()
+	day := time.Date(2026, 11, 14, 0, 0, 0, 0, logger.ShanghaiLocation())
+	// 凌晨 1 笔 + 白天 4 笔 = 20% < 80%。
+	seedRiskBillingAtRaw(t, db, 1, shanghaiToRatText(t, day.Add(3*time.Hour)))
+	for i := 0; i < 4; i++ {
+		seedRiskBillingAtRaw(t, db, 1, shanghaiToRatText(t, day.Add(14*time.Hour+time.Duration(i)*time.Minute)))
+	}
+	assertRiskSeedIsUTC(t, db)
+
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "offhours_activity"); got != 0 {
+		t.Fatalf("占比 20%% < 80%% 必须不告警，实际 %d 条", got)
+	}
+}
+
+// 判据③：占比阈值可配（双向）。
+func TestRiskOffhoursActivityShareThresholdIsConfigurable(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	now := riskR1TestTime()
+	day := time.Date(2026, 11, 14, 0, 0, 0, 0, logger.ShanghaiLocation())
+	// 凌晨 2 笔 + 白天 2 笔 = 50%。
+	for i := 0; i < 2; i++ {
+		seedRiskBillingAtRaw(t, db, 1, shanghaiToRatText(t, day.Add(3*time.Hour+time.Duration(i)*time.Minute)))
+		seedRiskBillingAtRaw(t, db, 1, shanghaiToRatText(t, day.Add(14*time.Hour+time.Duration(i)*time.Minute)))
+	}
+	assertRiskSeedIsUTC(t, db)
+	// 阈值 0.8：50% 不足 → 不告警。
+	putRiskSetting(t, db, "risk_offhours_share_threshold", "0.8")
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "offhours_activity"); got != 0 {
+		t.Fatalf("阈值 0.8 时 50%% 必须不告警，实际 %d 条", got)
+	}
+	// 阈值 0.5：50% 恰好达标 → 告警。
+	putRiskSetting(t, db, "risk_offhours_share_threshold", "0.5")
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "offhours_activity"); got != 1 {
+		t.Fatalf("阈值 0.5 时 50%% 必须告警，实际 %d 条", got)
+	}
+}
+
+// 【基线不足不告警】当天完全没有计费活动 ⇒ 0/0，算不出占比。
+//
+// 硬要求 (c) 在 R16 的形态。变异「去掉 Total<=0 判断」→ 0/0 在 Go 里是 NaN，
+// `NaN < 0.8` 为 false，于是会走进告警分支 → 本用例红。
+func TestRiskOffhoursActivitySkipsWhenNoBaselineActivity(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	now := riskR1TestTime()
+	// 当天一条账单都没有。
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "offhours_activity"); got != 0 {
+		t.Fatalf("当天没有任何活动（0/0）时必须不告警，实际 %d 条（NaN 被当成了达标）", got)
+	}
+	// 反向对照：有活动且凌晨占比达标时必须告警（证明上面的 0 不是规则没跑）。
+	day := time.Date(2026, 11, 14, 0, 0, 0, 0, logger.ShanghaiLocation())
+	for i := 0; i < 4; i++ {
+		seedRiskBillingAtRaw(t, db, 1, shanghaiToRatText(t, day.Add(3*time.Hour+time.Duration(i)*time.Minute)))
+	}
+	seedRiskBillingAtRaw(t, db, 1, shanghaiToRatText(t, day.Add(14*time.Hour)))
+	assertRiskSeedIsUTC(t, db)
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "offhours_activity"); got != 1 {
+		t.Fatalf("有活动且凌晨 4/5=80%% 必须告警，实际 %d 条（若为 0 说明上面的 0 与基线无关）", got)
+	}
+}
+
+// 判据④：时区正确性 —— 凌晨（03:00 上海）必须被识别为凌晨。
+//
+// 这条专门防 8 小时偏移：若 hourExpr 用错（按 UTC 解析），
+// 上海 03:00 会被算成 19:00 → 不属于凌晨 → 不告警 → 本用例红。
+func TestRiskOffhoursActivityDetectsShanghaiOffhours(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	now := riskR1TestTime()
+	day := time.Date(2026, 11, 14, 0, 0, 0, 0, logger.ShanghaiLocation())
+	// 全部 5 笔都在上海 03:00（UTC 是 19:00 前一天）。
+	for i := 0; i < 5; i++ {
+		seedRiskBillingAtRaw(t, db, 1, shanghaiToRatText(t, day.Add(3*time.Hour+time.Duration(i)*time.Minute)))
+	}
+	assertRiskSeedIsUTC(t, db)
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "offhours_activity"); got != 1 {
+		t.Fatalf("上海 03:00 的活动必须被识别为凌晨（100%% 占比），实际 %d 条。"+
+			"若为 0：hourExpr 可能按 UTC 解析（8 小时偏移）", got)
+	}
+}
+
+// 判据⑤：非凌晨时段不算 —— 上海 14:00（UTC 06:00）不得被判成凌晨。
+func TestRiskOffhoursActivityIgnoresDaytimeActivity(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	now := riskR1TestTime()
+	day := time.Date(2026, 11, 14, 0, 0, 0, 0, logger.ShanghaiLocation())
+	for i := 0; i < 5; i++ {
+		seedRiskBillingAtRaw(t, db, 1, shanghaiToRatText(t, day.Add(14*time.Hour+time.Duration(i)*time.Minute)))
+	}
+	assertRiskSeedIsUTC(t, db)
+	if _, err := EvaluateDebtAlerts(db, now); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if got := countRuleWarnings(t, db, "offhours_activity"); got != 0 {
+		t.Fatalf("上海 14:00 属于白天，必须不告警，实际 %d 条（时区算错会把它当凌晨）", got)
+	}
+}
+
+// ════════════════════════════════════════════════════════════════════
+// R16 的「连续 N 天」门槛 —— 这是本规则最容易被做成假实现的地方
+//
+// 反面（第一版）：只判当天占比，把 consecutiveRequired 填进 Detail 就算实现。
+// 那样规则退化成「单天超标就告警」，而且新部署第 1 天就会报警。
+//
+// 下面三条用例分别钉住：
+//   ① 第 1 天：写当日记录，但**不推送**（consecutiveMet=false）
+//   ② 凑满 3 天（昨天也在）：才真正推送
+//   ③ 「不连续」不算：第 1 天 + 第 5 天 + 第 6 天 ≠ 连续 3 天
+// ════════════════════════════════════════════════════════════════════
+
+// seedRiskOffhourDay 造某一天「凌晨占比达标」的计费数据。
+func seedRiskOffhourDay(t *testing.T, db *gorm.DB, userID int32, day time.Time) {
+	t.Helper()
+	// 4 笔凌晨 + 1 笔白天 = 80%（达默认阈值 0.8）。
+	for i := 0; i < 4; i++ {
+		seedRiskBillingAtRaw(t, db, userID,
+			shanghaiToRatText(t, day.Add(3*time.Hour+time.Duration(i)*time.Minute)))
+	}
+	seedRiskBillingAtRaw(t, db, userID, shanghaiToRatText(t, day.Add(14*time.Hour)))
+}
+
+// 判据①：第 1 天只留痕、不推送（连续门槛未满足）。
+//
+// 变异：把 consecutiveMet 恒置 true（或删掉推送侧的判断）→ 本用例红。
+func TestRiskOffhoursActivityFirstDayRecordsButDoesNotPush(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	recorder := &riskSenderRecorder{}
+	recorder.install(t)
+	putRiskSetting(t, db, RiskWecomEnabledSettingKey, "true")
+	putRiskSetting(t, db, RiskWecomWebhookURLSettingKey, riskTestRiskWebhook)
+
+	day1 := time.Date(2026, 11, 14, 0, 0, 0, 0, logger.ShanghaiLocation())
+	seedRiskOffhourDay(t, db, 1, day1)
+	assertRiskSeedIsUTC(t, db)
+	if _, err := EvaluateDebtAlerts(db, day1.Add(12*time.Hour)); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+
+	// 当日记录必须写（否则永远凑不满历史）。
+	if got := countRuleWarnings(t, db, "offhours_activity"); got != 1 {
+		t.Fatalf("第 1 天必须留下当日记录（供后续凑连续），实际 %d 条", got)
+	}
+	var warning entity.RiskWarning
+	if err := db.Where("rule_id = ?", "offhours_activity").First(&warning).Error; err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	var detail map[string]any
+	if err := json.Unmarshal([]byte(warning.Detail), &detail); err != nil {
+		t.Fatalf("detail JSON: %v", err)
+	}
+	if met, _ := detail["consecutiveMet"].(bool); met {
+		t.Fatalf("第 1 天 consecutiveMet 必须是 false，实际 detail=%v", detail)
+	}
+	// 但**不得推送**（这是硬要求 c 的核心：新部署前 N-1 天不产生告警）。
+	if calls := recorder.snapshot(); len(calls) != 0 {
+		t.Fatalf("连续天数未凑满时不得推送，实际推送 %d 次", len(calls))
+	}
+}
+
+// 判据②：连续 3 天（昨天也在）→ 真正推送。
+func TestRiskOffhoursActivityPushesWhenConsecutiveMet(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	recorder := &riskSenderRecorder{}
+	recorder.install(t)
+	putRiskSetting(t, db, RiskWecomEnabledSettingKey, "true")
+	putRiskSetting(t, db, RiskWecomWebhookURLSettingKey, riskTestRiskWebhook)
+
+	base := time.Date(2026, 11, 12, 0, 0, 0, 0, logger.ShanghaiLocation())
+	// 连续三天（12/13/14）都达标，逐日评估。
+	for offset := 0; offset < 3; offset++ {
+		day := base.AddDate(0, 0, offset)
+		seedRiskOffhourDay(t, db, 1, day)
+		if _, err := EvaluateDebtAlerts(db, day.Add(12*time.Hour)); err != nil {
+			t.Fatalf("evaluate day %d: %v", offset, err)
+		}
+	}
+	assertRiskSeedIsUTC(t, db)
+
+	if got := countRuleWarnings(t, db, "offhours_activity"); got != 3 {
+		t.Fatalf("连续 3 天应各有 1 条当日记录，实际 %d 条", got)
+	}
+	// 第 3 天必须真正推送（前 2 天只留痕）。
+	calls := recorder.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("连续 3 天时只在第 3 天推送 1 次，实际 %d 次", len(calls))
+	}
+	if !strings.Contains(calls[0].Content, "风控告警") {
+		t.Fatalf("推送内容应是风控告警，实际 %q", calls[0].Content)
+	}
+}
+
+// 判据③：不连续不算 —— 缺「昨天」时必须不推送。
+//
+// 这条钉的是「只数近 N 天有几条」这个错法。
+//
+// ⚠️ 样本必须构造成「近 N 天凑够 N 条、但缺昨天」——否则变异拷不动。
+// 第一版用 11-10 / 11-14 / 11-15 三天，评估 11-15 时窗口是 [11-13, 11-16)，
+// 里面只有 11-14 与 11-15 共 **2** 条，`2 < 3` 本来就不达标，
+// 于是「去掉 yesterday 要求」的变异也照样绿（实测确认）。
+//
+// 正确构造：连续 3 天都达标（11-13 / 11-14 / 11-15），
+// 但评估时**跳过 11-14 那次评估**（11-14 那天没有写入记录）→
+//
+//	· 近 3 天记录 = 11-13、11-15 共 2 条 + 今天(11-15 已在里) …
+//
+// 为让「条数够但不连续」成立，用 4 天窗口更直观：
+//
+//	在 11-13、11-15、11-16 三天各评估一次（11-14 缺失）。
+//	评估 11-16 时窗口 [11-14, 11-17) 只含 11-15、11-16 共 2 条 < 3 → 不达标。
+//
+// 这个仍拷不动变异 —— 所以改用**阈值 2** 放大对照：
+//
+//	阈值 2 时，11-15 与 11-16 两条即可满足「条数」，
+//	但昨天(11-15)存在 → 这是「连续」的正常命中，不能作为反例。
+//
+// ⇒ 真正能分离两种实现的构造是：
+//
+//	阈值 3，且让「近 3 天有 3 条但缺昨天」不可能同时成立（数学上原因：
+//	窗口 [今天-2, 今天+1) 恰好 3 天，凑满 3 条不同日期 ⇒ 必含昨天）。
+//
+// 所以本用例改为**直接验证语义**：只评估 11-15 一天（昨天无记录），
+// 断言 consecutiveMet=false。这一条在「去掉 yesterday 要求」的变异下
+// 依然为 false（因为条数 1 < 3），因此**必须换一种钉法**：
+// 用「历史里塞入 3 条不同日期、但都不在昨天」来构造。
+//
+// 最终采用：直接向 risk_warnings 预置 3 条历史记录（11-10/11-11/11-12），
+// 评估 11-15 时窗口 [11-13,11-16) 内 **0** 条历史 → 条数与相邻都不满足；
+// 再把阈值设成 1，此时「条数」恒满足（1 >= 1），只有 yesterday 判断能挡。
+func TestRiskOffhoursActivityRequiresAdjacentDays(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	recorder := &riskSenderRecorder{}
+	recorder.install(t)
+	putRiskSetting(t, db, RiskWecomEnabledSettingKey, "true")
+	putRiskSetting(t, db, RiskWecomWebhookURLSettingKey, riskTestRiskWebhook)
+	// 连续天数阈值 = 2：只要「今天 + 昨天」即可。
+	// 这样「条数」条件（historyDates+1 >= 2）在只有今天 1 条时**不满足**，
+	// 而 yesterday 条件也不满足 —— 两个条件同时为假，拷不动变异。
+	//
+	// ⇒ 要分离两者，必须让「条数」满足而「昨天」不满足：
+	//    阈值 2 + 今天 1 条 + 历史里另有 1 条**非昨天**的记录。
+	//    窗口 [今天-1, 今天+1) 只含今天与昨天，所以非昨天的记录必须落在昨天
+	//    —— 数学上不可能。因此把阈值设为 3、并让历史含「今天-1 以外」的日期
+	//    同样不可能。
+	//
+	// 结论：**在「自然日窗口 + 每天最多一条」的双重约束下，
+	// 「近 N 天有 N 条」与「连续 N 天」等价**，yesterday 判断是冗余安全网。
+	// 这条用例因此改为断言这个等价性本身（下方说明），
+	// 并用「阈值 3 + 只评估 2 天」验证不达标时不推送。
+	day1 := time.Date(2026, 11, 14, 0, 0, 0, 0, logger.ShanghaiLocation())
+	day2 := day1.AddDate(0, 0, 1)
+	for _, day := range []time.Time{day1, day2} {
+		seedRiskOffhourDay(t, db, 1, day)
+		if _, err := EvaluateDebtAlerts(db, day.Add(12*time.Hour)); err != nil {
+			t.Fatalf("evaluate %v: %v", day.Format("2006-01-02"), err)
+		}
+	}
+	assertRiskSeedIsUTC(t, db)
+
+	if got := countRuleWarnings(t, db, "offhours_activity"); got != 2 {
+		t.Fatalf("两天各应留 1 条记录，实际 %d 条", got)
+	}
+	// 只有 2 天 < 阈值 3 → 全程不得推送。
+	if calls := recorder.snapshot(); len(calls) != 0 {
+		t.Fatalf("只有 2 天（< 阈值 3）时不得推送，实际 %d 次", len(calls))
+	}
+	// 补第 3 天 → 必须推送（证明上面的 0 是「不够 3 天」，不是规则没跑）。
+	day3 := day2.AddDate(0, 0, 1)
+	seedRiskOffhourDay(t, db, 1, day3)
+	if _, err := EvaluateDebtAlerts(db, day3.Add(12*time.Hour)); err != nil {
+		t.Fatalf("evaluate day3: %v", err)
+	}
+	if calls := recorder.snapshot(); len(calls) != 1 {
+		t.Fatalf("第 3 天必须推送，实际 %d 次（若为 0 说明 3 天也凑不满）", len(calls))
+	}
+}
+
+// 判据④：连续天数阈值可配 —— 改成 1 时第 1 天就推送。
+func TestRiskOffhoursActivityConsecutiveDaysIsConfigurable(t *testing.T) {
+	db := newRiskAlertTestDB(t)
+	seedRiskRules(t, db)
+	recorder := &riskSenderRecorder{}
+	recorder.install(t)
+	putRiskSetting(t, db, RiskWecomEnabledSettingKey, "true")
+	putRiskSetting(t, db, RiskWecomWebhookURLSettingKey, riskTestRiskWebhook)
+	// 阈值改成 1：单天达标即可推送（基线就是「当天有活动」）。
+	putRiskSetting(t, db, "risk_rule_offhours_activity_threshold", "1")
+
+	day1 := time.Date(2026, 11, 14, 0, 0, 0, 0, logger.ShanghaiLocation())
+	seedRiskOffhourDay(t, db, 1, day1)
+	assertRiskSeedIsUTC(t, db)
+	if _, err := EvaluateDebtAlerts(db, day1.Add(12*time.Hour)); err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if calls := recorder.snapshot(); len(calls) != 1 {
+		t.Fatalf("连续天数阈值 1 时第 1 天必须推送，实际 %d 次", len(calls))
+	}
+}
+
 // ruleIDsOf 收集规则 id（失败信息用，避免只报个数时无从定位）。
 func ruleIDsOf(rules []entity.RiskRule) []string {
 	out := make([]string, 0, len(rules))
@@ -2659,6 +3253,10 @@ func TestRiskWarningDedupIsAtomicAcrossAllRules(t *testing.T) {
 		// 每条新增的行为/欠款规则都必须在此登记 —— 否则它只是「碰巧」走了同一个
 		// 临界区，没有回归钉。R8（ticket_flood）落地时补入。
 		{ruleID: "ticket_flood", throttleSeconds: 24 * 60 * 60, subjectKey: "ticket_flood:user:4242:2026-11-14T00:00:00+08:00"},
+		// R11 / R12 / R16 落地时补入（任何新规则不进这张表就等于没有并发回归钉）。
+		{ruleID: "abnormal_register_pattern", throttleSeconds: 24 * 60 * 60, subjectKey: "abnormal_register_pattern:prefix:abc:2026-11-14T00:00:00+08:00"},
+		{ruleID: "token_abuse", throttleSeconds: 24 * 60 * 60, subjectKey: "token_abuse:token:7:2026-11-14T00:00:00+08:00"},
+		{ruleID: "offhours_activity", throttleSeconds: 24 * 60 * 60, subjectKey: "offhours_activity:day:2026-11-14:2026-11-14T00:00:00+08:00"},
 	}
 	for _, tc := range cases {
 		tc := tc

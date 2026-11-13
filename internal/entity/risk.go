@@ -61,6 +61,17 @@ const (
 	// ⚠️ 这两列**都没有索引**（见 service.collectAbnormalRegisterPatternCandidates
 	// 的性能说明），因此按时间窗先过滤缩小候选集是必要的。
 	RiskRuleIDAbnormalRegisterPattern = "abnormal_register_pattern"
+	// RiskRuleIDTokenAbuse 是 96 §2.1 的 R12「access token 滥用」。
+	//
+	// 数据源：access_tokens 的现成字段（**不新建调用日志表**）。
+	// 见 service.collectTokenAbuseCandidates 的注释：用 billing_records 聚合是
+	// 方向性错误（结果为空不记账，而滥用恰好高发于「查了没查到」）。
+	RiskRuleIDTokenAbuse = "token_abuse"
+	// RiskRuleIDOffhoursActivity 是 96 §2.1 的 R16「凌晨作息异常」。
+	//
+	// 数据源：risk_warnings **自身历史**（不新建快照表）。
+	// 见 service.collectOffhoursActivityCandidates 的注释。
+	RiskRuleIDOffhoursActivity = "offhours_activity"
 )
 
 // RiskRuleDefault 是一条规则的**代码内默认值**。
@@ -161,6 +172,37 @@ var DefaultRiskBehaviorRules = []RiskRuleDefault{
 		Threshold:       3,
 		ThrottleSeconds: 24 * 60 * 60,
 		Description:     "同一自然日窗口内出现达到阈值的「同前缀（≥3 字符）+ 连续递增数字」用户名，常见于批量注册养号，只告警不处置。",
+	},
+	{
+		RuleID:   RiskRuleIDTokenAbuse,
+		Name:     "access token 滥用",
+		Severity: RiskSeverityMedium,
+		// 96 §2.1 R12：单个 access_token 调用量 > 其配额 3 倍（或被多 IP 并发使用）。
+		//
+		// 本实现把它落成两条子判据（见 collectTokenAbuseCandidates）：
+		//   ① 配额消耗进度 TotalAmountUsed/TotalQuotaLimit ≥ 阈值（默认 3.0 = 300%）
+		//   ② 多 IP 漂移：同一 token 在窗口内被 ≥ 阈值个不同 IP 使用
+		// 两者取「或」——任一条命中即告警。阈值默认 3 对两条都成立（3 倍配额 / 3 个 IP）。
+		Threshold:       3,
+		ThrottleSeconds: 24 * 60 * 60,
+		Description:     "单个 access token 的配额消耗达到配额数倍，或在同一窗口内被多个不同 IP 使用（疑似令牌外泄/共享）。只告警不处置。",
+	},
+	{
+		RuleID:   RiskRuleIDOffhoursActivity,
+		Name:     "凌晨作息异常",
+		Severity: RiskSeverityLow,
+		// 96 §2.1 R16：凌晨 2-5 点答题量占全天 >80% 且连续 3 天。
+		//
+		// ⚠️ 本规则的「连续 3 天」用的是**告警历史**，不是答题日志：
+		// 每次判定若当天凌晨活动占比超阈值就写一条（SubjectKey 编日期），
+		// 「连续 3 天」= 近 3 天能找到 3 条不同日期的记录。
+		//
+		// ⇒ **新部署的环境首 3 天不会产生告警**（没有历史就没有连续证据）。
+		// 这不是缺陷，是设计取舍：宁可延迟发现，也不要因为「第 1 天就报警」而误报。
+		// 阈值 3 = 连续 3 天。
+		Threshold:       3,
+		ThrottleSeconds: 24 * 60 * 60,
+		Description:     "连续 3 个自然日出现凌晨时段（默认北京时间 02:00-05:00，可配）活动占比超过阈值。注意：本规则需要至少 3 天历史数据，新部署环境前 3 天不会产生告警。",
 	},
 }
 

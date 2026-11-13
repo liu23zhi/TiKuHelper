@@ -38,6 +38,11 @@ export const RISK_RULE_OPTIONS = Object.freeze([
   { value: 'ticket_flood', label: '工单刷屏' },
   // R11：同前缀 + 连续递增数字用户名 ≥N（默认 3）
   { value: 'abnormal_register_pattern', label: '注册名高度模板化' },
+  // R12：配额消耗倍数 或 窗口内多 IP 漂移（默认阈值 3）
+  { value: 'token_abuse', label: 'access token 滥用' },
+  // R16：连续 N 天凌晨活动占比超阈值（默认 3 天；时段 02:00-05:00 固定）
+  // ⚠️ label 里带「需 3 天历史」提示，避免被误认为规则坏了
+  { value: 'offhours_activity', label: '凌晨作息异常（需 3 天历史）' },
 ])
 
 const RISK_RULE_LABELS = Object.freeze(

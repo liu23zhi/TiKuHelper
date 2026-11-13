@@ -570,6 +570,20 @@ func EvaluateDebtAlerts(db *gorm.DB, now time.Time) (RiskAlertEvaluation, error)
 		}
 		candidates = append(candidates, found...)
 	}
+	if rule, ok := enabledRules[entity.RiskRuleIDTokenAbuse]; ok {
+		found, scanErr := collectTokenAbuseCandidates(db, rule, now)
+		if scanErr != nil {
+			return result, scanErr
+		}
+		candidates = append(candidates, found...)
+	}
+	if rule, ok := enabledRules[entity.RiskRuleIDOffhoursActivity]; ok {
+		found, scanErr := collectOffhoursActivityCandidates(db, rule, now)
+		if scanErr != nil {
+			return result, scanErr
+		}
+		candidates = append(candidates, found...)
+	}
 
 	seenRules := map[string]struct{}{}
 	for _, candidate := range candidates {
@@ -588,6 +602,15 @@ func EvaluateDebtAlerts(db *gorm.DB, now time.Time) (RiskAlertEvaluation, error)
 		if !created {
 			// 未新建行时也要尝试推送吗？不。未新建意味着「同一事件已经记过」，
 			// 再推一次就是重复告警（118 §2.7 例 5 明确：24h 内不重复告警）。
+			result.Suppressed++
+			continue
+		}
+		// 规则可以自己声明「这一条只留痕、先别推送」（96 §2.1 R16 的连续天数门槛）。
+		//
+		// 为什么这个判断放在推送侧而不是 collector 侧：collector 必须**写入**
+		// 当日记录，否则「连续 N 天」永远凑不满（没有历史）。所以不能靠
+		// 「不产出候选」来抑制 —— 那样规则永远不响。正确做法是「写记录、晚推送」。
+		if candidate.Rule.RuleID == entity.RiskRuleIDOffhoursActivity && !riskOffhoursConsecutiveMet(candidate.Detail) {
 			result.Suppressed++
 			continue
 		}
@@ -1277,6 +1300,413 @@ func riskLongestConsecutiveRun(numbers map[int]struct{}) (int, int) {
 		}
 	}
 	return bestLen, bestStart
+}
+
+// riskTokenAbuseMinQuota 是计算「配额消耗比例」所需的最小配额。
+//
+// 配额 ≤ 0（或 NULL）时**算不出比例**，必须跳过而不是当成「比例很高」——
+// 除零会得到 ±Inf/NaN，而 `Inf >= 3` 恒真 ⇒ 每个未设配额的新 token 一创建就告警。
+// 这是「基线不足时不告警」在 R12 的具体形态。
+const riskTokenAbuseMinQuota = 0.0
+
+// collectTokenAbuseCandidates 收集 access token 滥用命中（96 §2.1 R12）。
+//
+// # 为什么不用 billing_records 聚合（前一版的错法）
+//
+// controller/search.go 的 shouldBillCompletedSearch 在「结果为空且无 AI 用量」时
+// **不记账**（`:1199`）—— 而「高频请求但查不到」恰好是滥用高发场景。
+// 用账单聚合会把最该抓的那批请求完全漏掉，方向是错的（不是保守）。
+//
+// # 数据源：access_tokens 的现成字段
+//
+//   - ① 配额消耗进度 = TotalAmountUsed / TotalQuotaLimit ≥ 阈值
+//   - ② 多 IP 漂移  = 同一 token 在窗口内被 ≥ 阈值 个不同 IP 使用
+//
+// 两者取「或」：任一命中即告警。
+//
+// # 重试污染核实结论（本规则最关键的前提，已实测）
+//
+// `controller.StartSearchBillingRetryWorker` 确实复用**同一条**记账入口
+// `persistSearchBillingRecordsWithDB`，但该函数内部有幂等闸门：
+//
+//	persistSearchBillingRecordsWithDB (search.go:1961)
+//	  → searchBillingRetryBatchAlreadyPersisted (search.go:1993)
+//	    → 命中即 `return completeSettledEscrowExecution(...)`（早退，不进扣费段）
+//	  → total_amount_used 的 UPDATE 在 :2127（在闸门**之后**）
+//
+// 闸门判据：`(user_id, request_id, type=normal)` 的账单行与本次 charges 逐字段全等
+// （billingRecordMatchesSearchCharge 比 12 个字段）。retry 重放同一 requestID+charges
+// 时必然命中 ⇒ **不重复扣费**。
+//
+// 实测（探针，同一 requestID 连续 persist 两次）：
+//
+//	after 1st  TotalAmountUsed=1.5
+//	after 2nd  TotalAmountUsed=1.5   ← 未翻倍
+//	billing rows=1
+//
+// ⇒ **TotalAmountUsed 不会被系统自动重试污染**，可以安全用作判据。
+// 唯一前提：requestID 非空（`searchBillingRetryBatchAlreadyPersisted` 在
+// requestID 为空时返回 false，即跳过闸门）。实测真实请求路径都会赋值
+// （search.go:346 / :2266 用 uuid.NewString()，:366 再 TrimSpace 一次）。
+// ⚠️ 若将来出现「requestID 为空」的请求路径，这条幂等保证会失效 ——
+// 届时 R12 的配额判据会被重试污染，需重新评估。
+//
+// # 基线不足：什么时候「算不出」而不是「很高」
+//
+// 下列任一成立即**跳过该 token 的配额判据**（不影响多 IP 判据）：
+//   - TotalQuotaLimit ≤ 0 或为 NULL（未设配额 → 无基线）
+//   - LastUsedAt 为空（从未使用过 → 消耗必然是 0，无意义）
+//
+// 多 IP 判据的「基线」不同：需要窗口内至少 2 个不同 IP 才可能达到阈值，
+// 因此新 token（0~1 个 IP）天然不会命中，不需要额外判断。
+func collectTokenAbuseCandidates(db *gorm.DB, rule entity.RiskRule, now time.Time) ([]riskWarningCandidate, error) {
+	threshold := riskRuleThreshold(db, rule, riskDefaultThreshold(rule.RuleID))
+	if threshold <= 0 {
+		return nil, nil
+	}
+	if !db.Migrator().HasTable(entity.TableNameAccessToken) {
+		return nil, nil
+	}
+	start, end := riskWindowBounds(now)
+	windowStart, _ := riskLoginWindow(now)
+	timeExpr := riskWindowColumnExpr(db, "created_at")
+
+	// ① 配额消耗进度。
+	type tokenQuota struct {
+		ID              int32
+		UserID          int32
+		Name            string
+		TotalQuotaLimit float64
+		TotalAmountUsed float64
+		LastUsedIP      string
+	}
+	var quotaRows []tokenQuota
+	if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.AccessToken{}).
+		Select("id, user_id, name, total_quota_limit, total_amount_used, last_used_ip").
+		Where("total_quota_limit > ?", riskTokenAbuseMinQuota).
+		Where("total_amount_used > 0").
+		Scan(&quotaRows).Error; err != nil {
+		return nil, err
+	}
+
+	candidates := make([]riskWarningCandidate, 0, len(quotaRows))
+	seen := map[int32]struct{}{}
+	for _, row := range quotaRows {
+		// 基线不足：配额 ≤ 0 已在 SQL 过滤，这里再挡一次（防 NULL 扫描成 0 后漏网）。
+		if row.TotalQuotaLimit <= riskTokenAbuseMinQuota {
+			continue
+		}
+		ratio := row.TotalAmountUsed / row.TotalQuotaLimit
+		// 「≥ 阈值」：3.0 恰等于阈值 3 → 告警。
+		if ratio < threshold {
+			continue
+		}
+		subject := riskBehaviorSubject(rule.RuleID, "token:"+strconv.FormatInt(int64(row.ID), 10), windowStart)
+		detail, err := json.Marshal(map[string]any{
+			"ruleId":      rule.RuleID,
+			"subjectKey":  subject,
+			"tokenId":     row.ID,
+			"userId":      row.UserID,
+			"tokenName":   row.Name,
+			"quotaLimit":  roundRiskAmount(row.TotalQuotaLimit),
+			"quotaUsed":   roundRiskAmount(row.TotalAmountUsed),
+			"quotaRatio":  roundRiskAmount(ratio),
+			"threshold":   threshold,
+			"value":       roundRiskAmount(ratio),
+			"signal":      "quota_ratio",
+			"windowStart": windowStart.Format(time.RFC3339),
+			"evaluatedAt": now.Format(time.RFC3339),
+			"evidenceNote": "配额消耗 = access_tokens.total_amount_used / total_quota_limit；" +
+				"已实测系统自动重试不会重复累加（request_id 幂等闸门）",
+		})
+		if err != nil {
+			return nil, err
+		}
+		seen[row.ID] = struct{}{}
+		candidates = append(candidates, riskWarningCandidate{
+			Rule:     rule,
+			Subject:  subject,
+			Severity: rule.Severity,
+			Detail:   string(detail),
+		})
+	}
+
+	// ② 多 IP 漂移：窗口内同一 token 被多少个不同 IP 使用。
+	//
+	// 数据源仍是 billing_records（这里用它是**对的**）：IP 只记在账单行上，
+	// 而「同一 token 短时间内从多个 IP 发起」即使全是「查不到结果」的请求，
+	// 只要产生了计费行就能看到 IP。查不到结果的请求虽不记账，但
+	// **能刷出多 IP 的滥用者通常也有成功请求**，因此这条判据的漏报面可接受
+	// （比配额判据小得多，因为配额判据完全不依赖账单）。
+	type tokenIP struct {
+		AccessTokenID int32
+		UserID        int32
+		IPs           int64
+	}
+	var ipRows []tokenIP
+	if db.Migrator().HasTable(entity.TableNameBillingRecord) {
+		if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.BillingRecord{}).
+			Select("access_token_id, MAX(user_id) AS user_id, COUNT(DISTINCT client_ip) AS ips").
+			Where("access_token_id > 0").
+			Where("client_ip <> ''").
+			Where(timeExpr+" >= ? AND "+timeExpr+" < ?", start, end).
+			Group("access_token_id").
+			Order("access_token_id ASC").
+			Scan(&ipRows).Error; err != nil {
+			return nil, err
+		}
+	}
+	for _, row := range ipRows {
+		// 「≥ 阈值」：2 个 IP + 阈值 3 → 不告警；3 个 → 告警。
+		if float64(row.IPs) < threshold {
+			continue
+		}
+		// 配额判据已为这个 token 产出候选时不再重复产出（一个 token 一个窗口一条）。
+		if _, ok := seen[row.AccessTokenID]; ok {
+			continue
+		}
+		subject := riskBehaviorSubject(rule.RuleID, "token:"+strconv.FormatInt(int64(row.AccessTokenID), 10), windowStart)
+		detail, err := json.Marshal(map[string]any{
+			"ruleId":       rule.RuleID,
+			"subjectKey":   subject,
+			"tokenId":      row.AccessTokenID,
+			"userId":       row.UserID,
+			"ipCount":      row.IPs,
+			"threshold":    threshold,
+			"value":        row.IPs,
+			"signal":       "multi_ip_drift",
+			"windowStart":  windowStart.Format(time.RFC3339),
+			"evaluatedAt":  now.Format(time.RFC3339),
+			"evidenceNote": "窗口内该 token 出现过的不同 client_ip 数（按 billing_records 去重）",
+		})
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, riskWarningCandidate{
+			Rule:     rule,
+			Subject:  subject,
+			Severity: rule.Severity,
+			Detail:   string(detail),
+		})
+	}
+	return candidates, nil
+}
+
+// riskOffhoursStartHour / riskOffhoursEndHour 是夜间时段（北京时间）。
+//
+// 为什么硬编码而不是走 system_settings：R16 的判据形状是「时段内占比」，
+// 改时段会让历史记录的语义漂移（昨天的「凌晨」是 2-5 点，今天改成 3-6 点，
+// 那昨天那条告警的含义就变了）。而「连续 3 天」正好依赖历史可比性。
+// ⇒ 时段是**判据的一部分**，不是运营可调的运营参数。真要可配，必须先迁移历史。
+//
+// 运营仍可调的是**占比阈值**（risk_rule_offhours_activity_threshold 是「连续天数」，
+// 占比阈值走 risk_offhours_share_threshold）。
+const (
+	riskOffhoursStartHour = 2 // 02:00（含）
+	riskOffhoursEndHour   = 5 // 05:00（不含）
+	// riskOffhoursShareSettingKey 是「凌晨占比阈值」（0-1 之间，默认 0.8）。
+	riskOffhoursShareSettingKey = "risk_offhours_share_threshold"
+	// riskOffhoursDefaultShare 默认 80%（96 §2.1 R16 原文「>80%」）。
+	riskOffhoursDefaultShare = 0.8
+	// riskOffhoursConsecutiveDays 是「连续几天才算命中」的代码默认值。
+	// 与规则行的阈值列同义（那条是运营可调的「连续天数」）。
+	riskOffhoursConsecutiveDays = 3
+)
+
+// collectOffhoursActivityCandidates 收集「连续 N 天凌晨活动占比超阈值」的命中（96 §2.1 R16）。
+//
+// # 用 risk_warnings 自身历史，不建快照表
+//
+// 理由：跨天状态本来就是告警系统自己的产物；risk_warnings 已有
+// (rule_id, subject_key, created_at) 与 idx_risk_warning_subject 索引，
+// 按天查是一次索引扫。新建快照表要额外迁移 + 清理任务 + 承担「0 行表」风险
+// （R14 的 user_binding_records 就是建了但从未写入，导致规则永远不响）。
+//
+// # 两阶段判定
+//
+//  1. **今天**：算当天凌晨（02:00-05:00）的计费笔数占全天比例，≥ 占比阈值 →
+//     产出候选（SubjectKey 编入日期，一天一条，天然节流）。
+//  2. **历史**：查近 N 天是否已有 N 条**不同日期**的同规则告警。
+//     只有凑满 N 天才真正告警 —— 这就是「连续」的实现。
+//
+// 第 1 阶段「不够」时也要**写一条**吗？不写。写了会让「连续」退化成
+// 「只要历史上出现过 N 次就报警」，中间的断档就看不见了。
+// 正确做法：只有当天的占比达标才写，然后由历史条数决定是否够「连续」。
+//
+// ⚠️ **首次上线要等 N 天**：新部署环境没有历史，前 N-1 天永远凑不满连续，
+// 因此不会告警。这是设计取舍（宁可延迟发现，不要靠单天误报），
+// 已在规则 Description 与前端 label 里写明，避免被误认为规则坏了。
+//
+// # 时区（这是本规则最容易错的地方）
+//
+// 查历史必须用 riskWindowColumnExpr(db, "created_at")，**不要另写 substr**：
+// risk_warnings.created_at 实测存 `+08:00`，而 logs/users 存 `+00:00`；
+// `datetime(col,'+8 hours')` 对两种形态都正确（依赖 SQLite datetime() 先解析偏移
+// 再归一），而 substr 会对 `+00:00` 的列错 8 小时。
+func collectOffhoursActivityCandidates(db *gorm.DB, rule entity.RiskRule, now time.Time) ([]riskWarningCandidate, error) {
+	consecutiveDays := riskRuleThreshold(db, rule, riskDefaultThreshold(rule.RuleID))
+	if consecutiveDays < 1 {
+		return nil, nil
+	}
+	shareThreshold := riskOffhoursShareThreshold(db)
+	if !db.Migrator().HasTable(entity.TableNameBillingRecord) {
+		return nil, nil
+	}
+	windowStart, windowEnd := riskLoginWindow(now)
+	startText := windowStart.Format("2006-01-02 15:04:05")
+	endText := windowEnd.Format("2006-01-02 15:04:05")
+	timeExpr := riskWindowColumnExpr(db, "created_at")
+
+	// 当天总笔数与凌晨笔数（一次查询里用 CASE 同时算）。
+	type dayStat struct {
+		Total   int64
+		Offhour int64
+	}
+	var stat dayStat
+	offhourExpr := "CASE WHEN " + riskOffhoursHourExpr(db, "created_at") +
+		" >= " + strconv.Itoa(riskOffhoursStartHour) +
+		" AND " + riskOffhoursHourExpr(db, "created_at") +
+		" < " + strconv.Itoa(riskOffhoursEndHour) + " THEN 1 ELSE 0 END"
+	if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.BillingRecord{}).
+		Select("COUNT(*) AS total, COALESCE(SUM("+offhourExpr+"), 0) AS offhour").
+		Where(timeExpr+" >= ? AND "+timeExpr+" < ?", startText, endText).
+		Scan(&stat).Error; err != nil {
+		return nil, err
+	}
+	// 基线不足：当天没有任何计费活动 → 算不出占比（0/0），直接跳过。
+	// **不能**把 0/0 当成「占比 0」以外的任何值，更不能当成 1.0。
+	if stat.Total <= 0 {
+		return nil, nil
+	}
+	share := float64(stat.Offhour) / float64(stat.Total)
+	// 「≥ 占比阈值」：恰等于阈值算命中。
+	if share < shareThreshold {
+		return nil, nil
+	}
+
+	// 当天达标 → 先算「连续天数是否凑满」，再决定产出「告警」还是「仅当日记录」。
+	//
+	// ⚠️ 本实现第一版在这里犯错（必须记下）：只判当天占比，把 consecutiveDays
+	// 填进 Detail 就当实现了「连续 3 天」。那等于规则退化成「单天超标就告警」，
+	// 与 96 §2.1 R16「**连续** 3 天」不符，而且新部署环境第 1 天就会告警 ——
+	// 与本规则自己声明的「前 3 天不告警」直接矛盾。
+	//
+	// 正确做法两步：
+	//  1. 查近 N 天（含今天）有几个**不同日期**的同规则记录；
+	//  2. 额外要求「昨天那条必须存在」——只数「近 N 天有几条」会把
+	//     「第 1 天、第 5 天、第 6 天」也算成 3 条，那不是连续。
+	today := windowStart.Format("2006-01-02")
+	subject := riskBehaviorSubject(rule.RuleID, "day:"+today, windowStart)
+
+	// 查历史必须用 riskWindowColumnExpr：risk_warnings.created_at 实测存 `+08:00`，
+	// 而 logs/users 存 `+00:00`；datetime(col,'+8 hours') 对两种形态都正确，
+	// substr 会对 `+00:00` 的列错 8 小时（本仓踩过两次）。
+	historyExpr := riskWindowColumnExpr(db, "created_at")
+	historyFrom := windowStart.AddDate(0, 0, -int(consecutiveDays)+1)
+	historyUntil := windowStart.AddDate(0, 0, 1)
+
+	var historyDates int64
+	yesterdayExists := int64(0)
+	if db.Migrator().HasTable(entity.TableNameRiskWarning) {
+		if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.RiskWarning{}).
+			Where("rule_id = ?", rule.RuleID).
+			Where("subject_key LIKE ?", rule.RuleID+":day:%").
+			Where(historyExpr+" >= ? AND "+historyExpr+" < ?",
+				historyFrom.Format("2006-01-02 15:04:05"), historyUntil.Format("2006-01-02 15:04:05")).
+			Distinct("subject_key").
+			Count(&historyDates).Error; err != nil {
+			return nil, err
+		}
+		if consecutiveDays > 1 {
+			yesterdayStart := windowStart.AddDate(0, 0, -1)
+			yesterdaySubject := riskBehaviorSubject(rule.RuleID,
+				"day:"+yesterdayStart.Format("2006-01-02"), yesterdayStart)
+			if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.RiskWarning{}).
+				Where("rule_id = ? AND subject_key = ?", rule.RuleID, yesterdaySubject).
+				Count(&yesterdayExists).Error; err != nil {
+				return nil, err
+			}
+		}
+	}
+	// 「连续 N 天」= 昨天也在 且 （历史不同日期数 + 今天）≥ N。
+	consecutiveMet := consecutiveDays <= 1
+	if consecutiveDays > 1 {
+		consecutiveMet = yesterdayExists > 0 && historyDates+1 >= int64(consecutiveDays)
+	}
+
+	detail, err := json.Marshal(map[string]any{
+		"ruleId":              rule.RuleID,
+		"subjectKey":          subject,
+		"date":                today,
+		"offhourStart":        riskOffhoursStartHour,
+		"offhourEnd":          riskOffhoursEndHour,
+		"totalBills":          stat.Total,
+		"offhourBills":        stat.Offhour,
+		"offhourShare":        roundRiskAmount(share),
+		"shareThreshold":      shareThreshold,
+		"consecutiveRequired": consecutiveDays,
+		"consecutiveFound":    historyDates + 1,
+		"consecutiveMet":      consecutiveMet,
+		"value":               roundRiskAmount(share),
+		"windowStart":         windowStart.Format(time.RFC3339),
+		"evaluatedAt":         now.Format(time.RFC3339),
+		"evidenceNote": "当天凌晨（北京时间 02:00-05:00）计费笔数占比 + 历史连续天数；" +
+			"未凑满连续天数时只留当日记录、不推送（新部署环境前 N-1 天不会产生告警）",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return []riskWarningCandidate{{
+		Rule:     rule,
+		Subject:  subject,
+		Severity: rule.Severity,
+		Detail:   string(detail),
+	}}, nil
+}
+
+// riskOffhoursConsecutiveMet 从证据快照里读「连续天数是否凑满」。
+//
+// 为什么不另外传参数：Detail 已经是这条命中的权威快照（含 consecutiveMet），
+// 再传一个布尔会形成两处真相，将来必然漂移。解析失败时**保守地返回 false**
+// （宁可少推送一次，也不要因为解析错误而在第 1 天就报警 —— 那正是本规则
+// 要避免的误报形态）。
+func riskOffhoursConsecutiveMet(detail string) bool {
+	if strings.TrimSpace(detail) == "" {
+		return false
+	}
+	var parsed struct {
+		ConsecutiveMet bool `json:"consecutiveMet"`
+	}
+	if err := json.Unmarshal([]byte(detail), &parsed); err != nil {
+		return false
+	}
+	return parsed.ConsecutiveMet
+}
+
+// riskOffhoursShareThreshold 读取夜间占比阈值（0-1）。非法值回落默认 0.8。
+//
+// 三层兜底与 riskRuleThreshold 同构：非法值**不能**退化成 0
+// （0 会让每一天都「达标」→ 连续 N 天后必然告警，等于规则失效变噪音）。
+func riskOffhoursShareThreshold(db *gorm.DB) float64 {
+	if db != nil {
+		raw := getSystemSettingStringWithDefault(db, riskOffhoursShareSettingKey, "")
+		if value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64); err == nil && value > 0 && value <= 1 {
+			return value
+		}
+	}
+	return riskOffhoursDefaultShare
+}
+
+// riskOffhoursHourExpr 返回「取小时」的方言表达式。
+//
+// SQLite 必须先用 datetime(col,'+8 hours') 转成北京时间再取小时；
+// 直接用 strftime('%H', col) 会按 UTC 解析，凌晨判据整体偏 8 小时
+// （本仓 user_portrait 就踩过这个：峰值 15 点 vs 正确 23 点）。
+func riskOffhoursHourExpr(db *gorm.DB, column string) string {
+	if strings.EqualFold(db.Dialector.Name(), "sqlite") {
+		return "CAST(strftime('%H', " + riskWindowColumnExpr(db, column) + ") AS INTEGER)"
+	}
+	return "HOUR(" + column + ")"
 }
 
 // RiskTicketFloodGroup 是 R8 的聚合行（用户 → 窗口内建单数）。

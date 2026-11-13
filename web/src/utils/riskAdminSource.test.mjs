@@ -323,6 +323,9 @@ test('规则名与级别：未知值回落而不是抛错', () => {
   // R8 / R11：后端 rule_id 必须与这里逐字一致，否则筛选下拉选中后查不到数据。
   assert.equal(riskRuleLabel('ticket_flood'), '工单刷屏')
   assert.equal(riskRuleLabel('abnormal_register_pattern'), '注册名高度模板化')
+  // R12 / R16：后端 rule_id 必须与这里逐字一致。
+  assert.equal(riskRuleLabel('token_abuse'), 'access token 滥用')
+  assert.equal(riskRuleLabel('offhours_activity'), '凌晨作息异常（需 3 天历史）')
   assert.equal(riskRuleLabel(''), '未知规则')
   assert.equal(riskRuleLabel('future_rule'), 'future_rule', '未知规则要原样显示，便于排错')
   assert.equal(riskSeverityMeta('high').label, '高')
@@ -338,6 +341,20 @@ test('规则名与级别：未知值回落而不是抛错', () => {
 //   ① riskRuleLabel 对未登记的 ruleId 原样返回（不返回「未知规则」）；
 //   ② 表格列走 riskRuleLabel 派生，而不是渲染一张硬编码的规则清单。
 // 变异「把 riskRuleLabel 的兜底改成 return '未知规则'」时 ① 会红。
+// R16 的取舍必须在**用户可见文案**里说明，否则会被当成规则坏了。
+//
+// 判据来源：任务书硬要求 —— 「本规则需要至少 3 天历史数据，新部署的环境首 3 天
+// 不会产生告警」。这条只写在代码注释里不算，必须出现在管理员能看到的文案上。
+test('R16 的「需 3 天历史」必须在用户可见的规则名里', () => {
+  const label = riskRuleLabel('offhours_activity')
+  assert.match(label, /3 天/, '规则名必须写明需要 3 天历史，实际：' + label)
+  assert.match(label, /历史/, '规则名必须出现「历史」字样，实际：' + label)
+  // 反向对照：其它规则名不得带这个提示（否则提示失去定位作用）。
+  for (const other of ['debt_user', 'ticket_flood', 'token_abuse']) {
+    assert.doesNotMatch(riskRuleLabel(other), /需 3 天历史/, other + ' 不应带 3 天历史提示')
+  }
+})
+
 test('规则展示对任意 ruleId 通用（新规则不必改前端）', () => {
   for (const unregistered of ['login_bruteforce', 'impossible_travel', 'bonus_abuse', 'r99_future']) {
     assert.equal(
