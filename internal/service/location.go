@@ -513,12 +513,31 @@ func LookupIPLocationsDetailedWithDB(db *gorm.DB, ips []string, options Location
 	}
 
 	cached := loadLocationCacheRows(db, entity.LocationKindIP, source, normalizedKeys)
+	cachedRows := make([]entity.LocationCache, 0, len(cached))
 	for _, rawKey := range normalizedKeys {
 		row, ok := cached[locationCacheLookupKey(rawKey)]
 		if !ok {
 			continue
 		}
 		result[rawKey] = ipLocationFromCacheRow(row)
+		cachedRows = append(cachedRows, row)
+	}
+
+	// 缓存命中路径也要沉淀段归属（task_doc/71 的真缺口修复）。
+	//
+	// 背景：上游成功分支（queryLocationRowsWithPersistence 里那次）只在**本次真的
+	// 调用了上游**时执行，所以「先查过这个 IP（已落缓存）、后来才上线段表」的那批
+	// 历史数据永远不会进段表 —— 它们每次都被当单 IP 回答，段命中对该批永久失效，
+	// 而这种退化在日志里看不出来（只是上游账单变高）。
+	//
+	// 用 PersistMissingIPSegmentsFromCacheRows 而不是 PersistIPSegmentsFromCacheRows：
+	// 这里是**读路径**（日志列表每翻一页都走），后者会对已存在的段执行 UPDATE
+	// （刷新 fetched_at），把每次翻页变成一次段表写入。前者只补缺、全部存在时
+	// 零写入，代价只有一次段表存在性查询。
+	//
+	// 失败只记 SysWarn，绝不影响归属地读取。
+	if len(cachedRows) > 0 {
+		PersistMissingIPSegmentsFromCacheRows(db, cachedRows)
 	}
 
 	missing := missingIPKeys(normalizedKeys, cached)
@@ -699,6 +718,13 @@ func queryLocationRowsWithPersistence(db *gorm.DB, client *uapi.Client, kind str
 			executed = true
 			if !refresh {
 				if row, ok := loadLocationCacheRows(db, kind, normalizedSource, []string{lookupKey})[lookupKey]; ok {
+					// 并发合并窗口里的缓存命中同样要沉淀段归属：这条分支与
+					// LookupIPLocationsDetailedWithDB 的缓存命中分支是**两条独立入口**
+					// （并发搭车者/多实例场景会走到这里而不经过前者），
+					// 只补一处会留下「同一份缓存行，有时沉淀有时不沉淀」的不一致。
+					if kind == entity.LocationKindIP {
+						PersistMissingIPSegmentsFromCacheRows(db, []entity.LocationCache{row})
+					}
 					return locationFlightResult{address: row.Address, rawJSON: row.RawJSON, ok: true}
 				}
 			}
