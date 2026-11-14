@@ -142,9 +142,14 @@ Write-Host "[4/$totalSteps] Building single-file exe ..."
 if ($LASTEXITCODE -ne 0) { throw 'PyInstaller build failed.' }
 if (-not (Test-Path -LiteralPath $exePath)) { throw "Build produced no exe at $exePath" }
 
-# A true one-file build leaves exactly one file in dist\. Anything else means the
-# spec silently produced a folder build and the "no install" promise is a lie.
-$distEntries = @(Get-ChildItem -LiteralPath (Split-Path -Parent $exePath) -Force)
+# 真正的 one-file 构建在 dist\ 里只留 exe。出现别的**构建产物**说明 spec 退化成了文件夹式，
+# 「无需安装」的承诺就是假的。
+#
+# ⚠️ 必须排除 `.gitkeep`：dist\ 被 .gitignore 整体排除，加一个 .gitkeep 是为了让空目录能入库
+# （否则 `!/dist/.gitkeep` 那条取反规则永远不会生效 —— git 不会进入被整体排除的目录）。
+# 它是**占位文件**，不是构建产物。之前断言写成 `Count -ne 1`，本地有 exe 时恰好通过，
+# CI 从干净 checkout 构建时就是 `.gitkeep + exe` 两个 ⇒ 恒失败。
+$distEntries = @(Get-ChildItem -LiteralPath (Split-Path -Parent $exePath) -Force | Where-Object { $_.Name -ne '.gitkeep' })
 if ($distEntries.Count -ne 1 -or $distEntries[0].Name -ne 'userexam-crypto.exe') {
     throw "dist\ is not single-file: $($distEntries.Name -join ', ')"
 }
