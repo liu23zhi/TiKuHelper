@@ -47,8 +47,17 @@ func TestNormalizeMySQLDSNFillsRequiredParameters(t *testing.T) {
 	if config.Loc == nil || config.Loc.String() != time.Local.String() {
 		t.Fatalf("loc = %v, want process local %v", config.Loc, time.Local)
 	}
-	if config.Params["charset"] != "utf8mb4" {
-		t.Fatalf("charset = %q, want utf8mb4", config.Params["charset"])
+	// ⚠️ 断言 FormatDSN() 的输出，不要断言 config.Params["charset"]。
+	//
+	// go-sql-driver/mysql 1.10 起把 charset 从公开的 Params map 挪进了私有字段
+	// （`charsets []string`），于是 `config.Params["charset"]` 恒为空串 ——
+	// 断言会红，但**服务端实际收到的 DSN 完全没变**（实测 FormatDSN 仍输出
+	// `charset=utf8mb4`）。这是「测试耦合了依赖的内部数据结构」，不是功能回归。
+	//
+	// 判据用 FormatDSN 的输出串：那才是真正交给驱动的东西，换驱动版本也不会误报。
+	if !strings.Contains(config.FormatDSN(), "charset=utf8mb4") {
+		t.Fatalf("FormatDSN = %q, want it to contain charset=utf8mb4",
+			config.FormatDSN())
 	}
 	if config.DBName != "TikuHelper" {
 		t.Fatalf("db = %q, want TikuHelper", config.DBName)
@@ -82,8 +91,9 @@ func TestNormalizeMySQLDSNRespectsExplicitLoc(t *testing.T) {
 	if config.Loc.String() != "UTC" {
 		t.Fatalf("loc = %v, want explicit UTC kept", config.Loc)
 	}
-	if !config.ParseTime || config.Params["charset"] != "utf8mb4" {
-		t.Fatalf("missing parameters must still be filled, got %+v", config)
+	// 同上：用 FormatDSN 的输出判断 charset，不读驱动的内部 Params。
+	if !config.ParseTime || !strings.Contains(config.FormatDSN(), "charset=utf8mb4") {
+		t.Fatalf("missing parameters must still be filled, got %s", config.FormatDSN())
 	}
 	if containsFix(fixes, "loc="+time.Local.String()) {
 		t.Fatalf("fixes = %v, should not overwrite explicit loc", fixes)
