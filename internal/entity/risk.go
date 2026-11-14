@@ -143,6 +143,17 @@ const (
 	// **操作者**的地址（entity/users.gen.go 的字段注释原话），不是注册者来源。
 	// 算进去会让「管理员批量建号」直接触发。
 	RiskRuleIDRegisterBurst = "register_burst"
+	// RiskRuleIDAnswerPatternRepeat 是 97 §5.1 L326 的 R17「同题重复」：
+	// 同一用户对**同一道题**在窗口内重复到阈值次数。
+	//
+	// ⚠️ **与 97 号原文有语义偏差，必须记明**：
+	// 97 号写的是「同一用户对同一题重复**提交** ≥20 次（刷题库特征）」，
+	// 数据源写「答题日志」——**那张表不存在**。
+	// 实际数据源是 billing_records.question_text，而 billing_records.type
+	// 实测取值是 normal_search（51/53 行）⇒ 这是**搜题**记录，不是「提交答案」。
+	// 所以本规则的真实语义是「同一用户反复**搜**同一题」，
+	// 它同时覆盖两种情形：正常用户反复核对答案、以及脚本批量抓题库。
+	RiskRuleIDAnswerPatternRepeat = "answer_pattern_repeat"
 )
 
 // RiskRuleDefault 是一条规则的**代码内默认值**。
@@ -361,6 +372,19 @@ var DefaultRiskBehaviorRules = []RiskRuleDefault{
 		Threshold:       3,
 		ThrottleSeconds: 6 * 60 * 60,
 		Description:     "同一 /24 IP 段在 1 小时滑动窗口内**自助注册**（register_source=public）达到阈值个账号（默认 3 个），常见于批量注册养号。五条已知限制：① 段粒度是 **/24**（256 个地址）——公司、学校、园区的出口占一个 /24 是常见情形，正常情况下同段多人注册也会命中，所以本规则更适合作为「排查线索」而非「确凿证据」；② 只统计**自助注册**，管理员与系统建号不计入（它们的 register_ip 记的是操作者地址，算进去会让后台批量建号直接触发）；③ 私网与保留地址一律跳过（如 Docker 的 172.18.0.1）——否则同一台宿主机上的账号会天然同段；④ **IPv6 不参与**（/24 对 IPv6 无意义，按 /64 聚合会把同一个人的多设备当成多人）；⑤ 同一段 6 小时内只告警一次。只告警不处置。",
+	},
+	{
+		RuleID:   RiskRuleIDAnswerPatternRepeat,
+		Name:     "同题重复",
+		Severity: RiskSeverityLow,
+		// 97 号 L326 给了「≥20 次」但那是「提交」口径；本仓实际是「搜题」。
+		// 20 保畕（不自行调低）：搜题场景下 20 次/天已是明确异常，
+		// 而调低会让「反复核对答案」的正常用户大量误报。详见 risk_answer_repeat.go。
+		Threshold:       20,
+		ThrottleSeconds: 24 * 60 * 60,
+		// ⚠️ 这条 Description 必须写明「搜题」而非「提交答案」：97 号原文是
+		// 「重复提交（刷题库特征）」+ 数据源「答题日志」，两者与本仓实际都不符。
+		Description: "同一用户在 7 天滑动窗口内对**同一道题**重复发起达到阈值次数的**搜题**（默认 20 次），指向题库批量抓取或答案核对脚本。四条已知限制：① **本规则统计的是「搜题」不是「提交答案」** —— 数据源是 billing_records.question_text，而 billing_records.type 实测为 normal_search；97 号原文写的是「重复提交」与「答题日志」，那两类数据本仓没有，此处按实际数据口径实现；② 因此它也会命中「正常用户反复核对同一道题」的情形 —— 20 次是刻意留高的阈值，运营若觉得误报可上调；③ 题干按「去首尾空白 + 折叠连续空白」归一化后精确匹配（与 search.normalizeTikuText 同口径），**不做**模糊匹配/哈希 —— 因此**只差一个空格或一个标点的两道题会被算成不同的题**（已知漏报面；生产库 53 行实测无中间空白，暂未观察到该抖动）；题干为空或归一化后短于 8 个字符的不参与（「1+1」这类短题干容易把不同题误合成同一道）；④ 只统计 type=normal_search 且未被隐藏（hidden_from_statement=false）的行 —— 余额调整与充值流水不参与。只告警不处置。",
 	},
 }
 

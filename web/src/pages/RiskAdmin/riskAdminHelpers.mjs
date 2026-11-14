@@ -68,6 +68,9 @@ export const RISK_RULE_OPTIONS = Object.freeze([
   // R5：同一 /24 段 1h 内自助注册 ≥3 个账号
   // ⚠️ label 写明「仅自助注册」与「/24」，因为管理员建号不计入、段粒度是 /24
   { value: 'register_burst', label: '注册突增（同 /24 段 · 仅自助注册）' },
+  // R17：同一用户 7 天内对同一道题反复搜题
+  // ⚠️ label 写明「搜题」而非「提交」——本仓数据源是 billing_records（搜题计费）
+  { value: 'answer_pattern_repeat', label: '同题重复（搜题 · 7 天）' },
 ])
 
 const RISK_RULE_LABELS = Object.freeze(

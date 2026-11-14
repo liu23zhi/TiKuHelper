@@ -357,6 +357,9 @@ test('规则名与级别：未知值回落而不是抛错', () => {
   assert.equal(riskRuleLabel('refund_abuse'), '退款滥用（仅成功退款 · 近满额）')
   assert.equal(riskRuleLabel('proxy_ip_login'), '代理IP登录（需配 ASN 名单）')
   assert.equal(riskRuleLabel('register_burst'), '注册突增（同 /24 段 · 仅自助注册）')
+  assert.equal(riskRuleLabel('answer_pattern_repeat'), '同题重复（搜题 · 7 天）')
+  // R17 label 必须写「搜题」而不是「提交」——两者语义不同（见 Description）。
+  assert.match(riskRuleLabel('answer_pattern_repeat'), /搜题/, 'R17 label 必须写明是搜题口径')
   // R5 的 label 必须写明「仅自助注册」——管理员建号不计入，不提示会让运营
   // 在后台批量建号后奇怪「为什么没告警」。
   assert.match(riskRuleLabel('register_burst'), /仅自助注册/, 'R5 label 必须写明只统计自助注册')

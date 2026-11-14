@@ -76,6 +76,7 @@ func TestEnsureRiskSchemaCreatesTablesIndexesAndSeeds(t *testing.T) {
 		"login_bruteforce":          10,
 		"refund_abuse":              3,
 		"register_burst":            3,
+		"answer_pattern_repeat":     20,
 		"proxy_ip_login":            1,
 	}
 	if len(rules) != len(want) {

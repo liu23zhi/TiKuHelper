@@ -204,6 +204,8 @@ func riskThresholdSpecs() []riskThresholdSpec {
 			Label: "30 天内成功退款次数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 3, Unit: "次", SyncRuleColumn: true, MaxValue: 1_000},
 		{Key: "risk_rule_register_burst_threshold", RuleID: entity.RiskRuleIDRegisterBurst,
 			Label: "同 /24 段 1h 注册账号数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 3, Unit: "个", SyncRuleColumn: true, MaxValue: 10_000},
+		{Key: "risk_rule_answer_pattern_repeat_threshold", RuleID: entity.RiskRuleIDAnswerPatternRepeat,
+			Label: "7 天内同题搜题次数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 20, Unit: "次", SyncRuleColumn: true, MaxValue: 10_000},
 		// R10 proxy_ip_login **没有数值阈值**（它的判据是「ASN 是否在名单里」），
 		// 所以不在这张表里。它的名单项由 RiskThresholdSettingKeyProxyASNList 单独管理。
 		//

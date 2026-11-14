@@ -646,6 +646,13 @@ func EvaluateDebtAlerts(db *gorm.DB, now time.Time) (RiskAlertEvaluation, error)
 		}
 		candidates = append(candidates, found...)
 	}
+	if rule, ok := enabledRules[entity.RiskRuleIDAnswerPatternRepeat]; ok {
+		found, scanErr := collectAnswerPatternRepeatCandidates(db, rule, now)
+		if scanErr != nil {
+			return result, scanErr
+		}
+		candidates = append(candidates, found...)
+	}
 
 	seenRules := map[string]struct{}{}
 	for _, candidate := range candidates {
