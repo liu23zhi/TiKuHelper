@@ -48,7 +48,13 @@ cov_run.log
 # --- 考试客户端 DB 脱机工具（tools/userexam-crypto）：口令与构建产物不入库 ---
 # 本仓库是公开仓库：口令字面量绝不提交。password.txt 由部署者本地创建。
 # dist/、build/ 是 PyInstaller 产物（exe 约 15 MB），提交只会污染历史。
-/tools/userexam-crypto/dist/
+# dist/ 内的构建产物不入库，但保留占位文件：Docker 构建需要一个存在的目录，
+# 且 .gitkeep 让「目录存在但还没构建」这个状态可被 git 表达。
+#
+# 必须写成 `/dist/*` 而不是 `/dist/`：Git 不会进入已被整体排除的目录，
+# 所以 `/dist/` + `!/dist/.gitkeep` 的取反永远不生效（实测）。
+/tools/userexam-crypto/dist/*
+!/tools/userexam-crypto/dist/.gitkeep
 /tools/userexam-crypto/build/
 /tools/userexam-crypto/_vendor/
 /tools/userexam-crypto/password.txt

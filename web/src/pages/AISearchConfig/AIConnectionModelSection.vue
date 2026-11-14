@@ -112,6 +112,50 @@ export default {
 </script>
 
 <style scoped>
+/* 布局类必须自带定义，不能指望父组件 index.vue 的 scoped 规则 ——
+ * 父 scoped 规则带 data-v-父，子组件元素带 data-v-子，匹配不到。
+ * 详见 AIAdvancedSettingsSection.vue 同名注释（那次错位就是这条引起的）。 */
+.ai-section-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--console-border);
+}
+
+.ai-section-heading h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--console-text);
+}
+
+.section-description {
+  margin: 4px 0 0;
+  color: var(--console-muted);
+  font-size: 13px;
+}
+
+.console-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 32px;
+  row-gap: 8px;
+  min-width: 0;
+  /* 不加 padding：外层 ConsolePanel__body 已有 24px。 */
+}
+
+.full-width {
+  grid-column: 1 / -1;
+}
+
+.switch-description {
+  margin-left: 12px;
+  color: var(--console-muted);
+}
+
 .hint {
   margin-top: 6px;
   color: #8c8c8c;
@@ -142,6 +186,14 @@ export default {
 }
 
 @media (max-width: 768px) {
+  .ai-section-heading {
+    padding: 16px;
+  }
+
+  .console-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .model-editor {
     display: grid;
   }

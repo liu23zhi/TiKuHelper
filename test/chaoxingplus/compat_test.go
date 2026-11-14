@@ -641,7 +641,7 @@ func TestChaoxingPlusReaderQuestionKeepsFullAnswer(t *testing.T) {
 func TestChaoxingPlusAIFallbackTaskFlow(t *testing.T) {
 	harness := newCompatHarness(t)
 
-	recorder := harness.post(t, "/adapter-service/ai-fallback/tasks",
+	recorder := harness.post(t, "/api/ai-fallback/tasks",
 		buildAIFallbackBody(t, singleChoiceQuestion, 0, choiceOptions))
 
 	if recorder.Code != http.StatusAccepted {
@@ -699,7 +699,7 @@ type fallbackPollResult struct {
 func TestChaoxingPlusSyncAIFallbackEndpointKeepsResponseShape(t *testing.T) {
 	harness := newCompatHarness(t)
 
-	recorder := harness.post(t, "/adapter-service/ai-fallback",
+	recorder := harness.post(t, "/api/ai-fallback",
 		buildAIFallbackBody(t, singleChoiceQuestion, 0, choiceOptions))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d with body %s", recorder.Code, recorder.Body.String())

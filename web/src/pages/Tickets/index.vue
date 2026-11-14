@@ -8,21 +8,48 @@
           : '提交问题、补充说明并跟进处理进度。'
       "
     >
+      <!-- 顶部操作区只有「刷新」与「提交工单」。
+           ⚠️ 这里**不再**有「退款工单」这类按类型切换的独立入口按钮
+           （用户 2026-11-14 明确要求：所有工单都在同一个工单列表里看，
+           不要为某一种类型单独提供显示按钮）。退款区块现在常驻在列表页内，
+           见下方 TicketRefundPanel —— 功能一个没少，只是不再需要一个"入口按钮"。 -->
       <template #actions
         ><a-button :loading="listLoading" :disabled="!canUseTickets()" :onClick="pageEntry.bind(refreshPage)">刷新</a-button
         ><a-button v-if="canUseTickets() && !isAdmin" type="primary" :onClick="pageEntry.bind(openCreate)"
           >提交工单</a-button
-        ><a-button v-if="canUseTickets()" :aria-pressed="refundsVisible" :onClick="pageEntry.bind(toggleRefunds)"
-          >{{ refundsVisible ? "收起退款工单" : "退款工单" }}</a-button
         ></template
       >
     </ConsolePageHeading>
-    <TicketRefundPanel
-      v-if="refundsVisible && canUseTickets()"
-      :key="pageEpoch"
-      :is-admin="isAdmin"
-      :capture-owner="capturePage"
-    />
+    <!-- 退款区块常驻（不再是"点按钮才展开"的独立入口）。
+         保留它是因为它是全站**唯一**的退款申请/审核入口：
+           · 用户侧：选可退款订单、提交原路/人工退款申请、上传凭证、查看进度
+           · 管理侧：审核通过/驳回（冻结余额）、提交原路退款、撤销解冻、对账打款
+         退款记录在独立表 ticket_refunds（entity/ticket_refund.go:17 注释
+         「separate from general-purpose tickets」，无 ticket_id 外键），
+         所以它无法并进 /tickets 列表；能做的、也正是用户要的，是
+         去掉那个「要点一下才看得到」的按类型入口按钮。
+         权限沿用 canUseTickets()：未登录/禁用账号不会渲染该区块。
+
+         ⚠️ 必须有**明确的分界**：它直接铺在工单列表页里，用户会分不清
+         「这是工单还是退款」。所以外面套一层带标题 + 说明的区块容器，
+         并用 data-section 打稳定标记（测试与将来迁移都靠它定位）。
+         **不要静默铺一块面板在列表下面。** -->
+    <section
+      v-if="canUseTickets()"
+      data-section="ticket-refund"
+      class="refund-section"
+      aria-labelledby="ticket-refund-heading"
+    >
+      <header class="refund-section-heading">
+        <h2 id="ticket-refund-heading" class="refund-section-title">退款申请与审核</h2>
+        <p class="refund-section-lead">退款走独立流程，不进入上方工单列表。</p>
+      </header>
+      <TicketRefundPanel
+        :key="pageEpoch"
+        :is-admin="isAdmin"
+        :capture-owner="capturePage"
+      />
+    </section>
     <section v-if="actionFailures.pageRead.state.failure" data-ticket-page-read-feedback>
       <RequestFailureAlert :key="actionFailures.pageRead.state.context" :failure="actionFailures.pageRead.state.failure" :message="actionFailures.pageRead.state.message" :context-key="actionFailures.pageRead.state.context" :is-current="actionFailures.pageRead.isCurrent" closable :onClose="closePageReadFailure" />
     </section>
@@ -554,7 +581,6 @@ import {
 
 const detailStatusId = `tickets-${useId()}-detail-status`;
 const TicketRefundPanel = defineAsyncComponent(() => import("./TicketRefundPanel.vue"));
-const refundsVisible = ref(false);
 const { currentUser } = useCurrentUserDisplay();
 const route = useRoute();
 const router = useRouter();
@@ -748,7 +774,6 @@ function canUseTickets() {
 }
 function canManage() { return canUseTickets() && isAdmin.value; }
 function clearOwned() {
-  refundsVisible.value = false;
   retireDetailFocus();
   retireCreateValidation();
   retireActionFailures();
@@ -769,7 +794,6 @@ function reloadOwned() {
   if (route.params.id) loadDetail(String(route.params.id));
 }
 function refreshPage() { loadTickets(); if (canManage()) loadNotificationConfig(); }
-function toggleRefunds() { if (canUseTickets()) refundsVisible.value = !refundsVisible.value; }
 const scope = useCurrentUserRequestScope(currentUser, { clear: clearOwned, reset() {}, reload: reloadOwned });
 function capturePage(admin = false) {
   const owns = scope.captureDataOwner(), epoch = pageEpoch.value;
@@ -1303,6 +1327,32 @@ watch(
   flex-direction: column;
   gap: 18px;
   min-width: 0;
+}
+/* 退款区块的视觉分界：它和工单列表是两条独立流程，不能看起来像同一份数据。
+   左侧色条 + 独立标题，让用户一眼看出「这块不是工单列表」。 */
+.refund-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-left: 14px;
+  border-left: 3px solid var(--console-accent);
+}
+.refund-section-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.refund-section-title {
+  margin: 0;
+  color: var(--console-text);
+  font-size: 16px;
+  font-weight: 600;
+}
+.refund-section-lead {
+  margin: 0;
+  color: var(--console-muted);
+  font-size: 13px;
+  line-height: 1.6;
 }
 .config-grid {
   display: grid;

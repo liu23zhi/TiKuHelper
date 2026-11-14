@@ -228,8 +228,84 @@
         <a-form-item label="角色" :html-for="fieldId('editor-role')">
           <a-select :id="fieldId('editor-role')" v-model:value="formState.role" :options="roleOptions" />
         </a-form-item>
-        <a-form-item label="状态" :html-for="fieldId('editor-status')">
-          <a-select :id="fieldId('editor-status')" v-model:value="formState.status" :options="statusOptions" />
+        <!-- 封禁（t203）：原「状态」下拉替换为封禁控件。
+             用户诉求原话：「替换成封禁，可以永久封禁，也可以自定义时长封禁」。
+
+             ⚠️ 为什么不再用 status 下拉表达封禁：status 只有一个布尔态，
+             表达不了「封到什么时候」与「为什么封」。选 banned 只写用户状态，
+             不写 user_bans 行 ⇒ 到期时间与原因都无处存放，判定也读不到。
+             现在封禁走 POST /api/admin/user-bans（写 user_bans + 到期时间 + 原因），
+             解封走 DELETE，两者都由 service 层统一维护 users.status。 -->
+        <a-form-item label="封禁" :html-for="fieldId('editor-ban-mode')">
+          <a-select
+            :id="fieldId('editor-ban-mode')"
+            v-model:value="formState.banMode"
+            :options="banModeOptions"
+            :disabled="!isEditing"
+          />
+          <div class="form-hint">
+            <template v-if="!isEditing">新增用户时不可封禁：先创建账号，再在编辑里封禁。</template>
+            <template v-else-if="formState.banMode === 'none'">当前不封禁。保存资料不会改变封禁状态。</template>
+            <template v-else>封禁与资料修改分开提交：保存资料不会自动封禁，需点下方「应用封禁」。</template>
+          </div>
+        </a-form-item>
+        <template v-if="isEditing && formState.banMode !== 'none'">
+          <a-form-item label="封禁时长" :html-for="fieldId('editor-ban-duration')">
+            <a-select
+              v-model:value="formState.banDurationPreset"
+              :options="banDurationPresetOptions"
+              :disabled="submittingBan"
+            />
+            <div v-if="formState.banDurationPreset === 'custom'" class="ban-custom-duration">
+              <a-input-number
+                v-model:value="formState.banDurationAmount"
+                :min="1"
+                :precision="0"
+                :disabled="submittingBan"
+                class="ban-duration-amount"
+              />
+              <a-select
+                v-model:value="formState.banDurationUnit"
+                :options="banDurationUnitOptions"
+                :disabled="submittingBan"
+                class="ban-duration-unit"
+              />
+              <!-- 不设上限（用户 2026-11-14 指令：「封禁时间不要有限制」）。
+                   上一版有 :max="365" 与「最长 365 天」，已删除。
+                   「更长时间请选永久封禁」保留 —— 那是**引导**而不是硬拦：
+                   永久封禁是独立选项，本就该在这里提示它更省事。 -->
+              <span class="form-hint">时长不限；若需永不解除，请改选「永久封禁」。</span>
+            </div>
+            <div v-else-if="formState.banDurationPreset !== 'permanent'" class="form-hint">
+              {{ banExpiryPreview }}
+            </div>
+          </a-form-item>
+          <a-form-item label="封禁原因" required :html-for="fieldId('editor-ban-reason')" :validate-status="banReasonError ? 'error' : undefined">
+            <a-input
+              :id="fieldId('editor-ban-reason')"
+              v-model:value="formState.banReason"
+              :disabled="submittingBan"
+              placeholder="必填，会写入审计与封禁记录"
+              @input="banReasonError = ''"
+            />
+            <template #help><span v-if="banReasonError" role="alert">{{ banReasonError }}</span></template>
+          </a-form-item>
+          <a-form-item>
+            <a-space wrap>
+              <a-button type="primary" danger :loading="submittingBan" @click="applyBan">应用封禁</a-button>
+              <span v-if="banFeedback" class="form-hint" role="status">{{ banFeedback }}</span>
+            </a-space>
+          </a-form-item>
+        </template>
+        <a-form-item v-if="isEditing && formState.banMode === 'none' && currentBanActive" label="解除封禁" :html-for="fieldId('editor-unban-reason')">
+          <a-input
+            :id="fieldId('editor-unban-reason')"
+            v-model:value="formState.unbanReason"
+            :disabled="submittingBan"
+            placeholder="解封原因（可选，仅记日志）"
+          />
+          <div class="form-hint">该账号当前处于封禁中。解封是软撤销：封禁记录会保留。</div>
+          <a-button danger :loading="submittingBan" @click="applyUnban">解除封禁</a-button>
         </a-form-item>
         <a-form-item v-if="isEditing" label="当前余额" :html-for="fieldId('editor-current-balance')">
           <a-input :id="fieldId('editor-current-balance')" :value="formatBalance(formState.balance)" readonly prefix="¥" />
@@ -456,6 +532,9 @@ import {
   getIpLocations,
 } from '@/api/TikuComponentApi';
 import { getAdminUserBindings } from '@/api/UserBindingApi';
+// 封禁（t203）：与「封禁管理」页共用同一套 API（POST 封禁 / DELETE 解封）。
+// 不在本文件里手写请求，避免出现「两处各写一份封禁逻辑」的漂移。
+import { createUserBan, getUserBans, revokeUserBan } from '@/api/UserBanApi';
 import { buildAdminCreateUserPayload, buildRegisterSourceLabel, buildResetPasswordPayload, buildUserProfileUpdatePayload, buildUserBalanceAdjustmentPayload, formatBillingRecordTime, limitUsernameInput, runAdminPasswordAction } from '@/utils/userPortalHelpers.mjs';
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs';
 import { ensurePhoneBeforeSMSCaptcha, normalizePhonePaste } from '@/utils/captchaHelpers.mjs';
@@ -485,7 +564,10 @@ const userListKeywordSessions = new Map()
 let userListKeywordEpoch = getCurrentUserLogoutEpoch()
 const maxKeywordSessions = 8
 function emptyUserForm() {
-  return { id: undefined, username: '', password: '', nickname: '', perms: '', role: 'user', status: 'enabled', balance: '', registerSource: 'admin', phone: '', phoneBoundAt: '', forceReassignPhone: false, wechatId: '', wechatBoundAt: '', forceReassignWechat: false, giftEnabled: true, giftAmount: '' }
+  // banMode/banReason/... 是封禁控件（t203）的独立字段，**不进** profile payload：
+  // 封禁走单独的 POST /api/admin/user-bans，与资料更新是两个事务。
+  // 把它们混进 buildUserProfileUpdatePayload 会让「保存资料」意外触发封禁。
+  return { id: undefined, username: '', password: '', nickname: '', perms: '', role: 'user', status: 'enabled', balance: '', registerSource: 'admin', phone: '', phoneBoundAt: '', forceReassignPhone: false, wechatId: '', wechatBoundAt: '', forceReassignWechat: false, giftEnabled: true, giftAmount: '', banMode: 'none', banDurationPreset: 'permanent', banDurationAmount: 1, banDurationUnit: 'day', banReason: '', unbanReason: '' }
 }
 
 // Only fixed, exact backend rejection pairs are public copy; never echo arbitrary
@@ -769,6 +851,15 @@ const pagination = reactive({
 })
 const visible = ref(false)
 const submitLoading = ref(false)
+// 封禁（t203）：与资料提交分开的独立状态 —— 封禁走 POST /api/admin/user-bans，
+// 与「保存资料」（PUT /api/user/:id）是两个事务，不能共用一个 loading。
+const submittingBan = ref(false)
+const banReasonError = ref('')
+const banFeedback = ref('')
+// currentBanActive 表示**当前编辑的用户**是否有生效中的封禁记录。
+// 它读的是封禁表（getUserBans?userId=X&active=true），不是 users.status ——
+// 用户诉求要的是「封禁」语义，而 status 只有一个布尔态、说不出到期时间。
+const currentBanActive = ref(false)
 const passwordConfirmationPending = ref(false)
 const balanceVisible = ref(false)
 const balanceSubmitting = ref(false)
@@ -1040,7 +1131,7 @@ function resetWechatResolveState() {
     owner.invalidateWechatFlow()
     resetWechatResolveState()
   }, { flush: 'sync' })
-  return { owner, usernameError, usernameInput, clearUsernameError, showUsernameError, savedEditSnapshot, hasUnsubmittedSavedEdit, clearSavedEditSnapshot, editFailure, editFailureAction, editFailureContextKey, clearEditFailure, retireEditDraft, captureEditDraftOwner, captureCreateDraftOwner, showEditFailure, isCurrentEditFailure, passwordFailure, passwordFailureContextKey, clearPasswordFailure, capturePasswordDraftOwner, showPasswordFailure, isCurrentPasswordFailure, hasUnsubmittedSavedPassword, capturePasswordSnapshot, rememberSavedPasswordSnapshot, clearSavedPasswordSnapshot, balanceFailure, balanceFailureContextKey, balanceFailureMessage, balanceReconciling, balanceReconcileFailure, balanceReconciliation, clearBalanceFailure, retireBalanceDraft, captureBalanceDialogOwner, captureBalanceDraftOwner, showBalanceFailure, isCurrentBalanceFailure, isCurrentBalanceReconcileFailure, actionContextKey, listFailure, listFailureContextKey, clearListFailure, deleteFailure, deleteFailureContextKey, clearDeleteFailure, showDeleteFailure, isCurrentDeleteFailure, clearLocations, clearPrincipalState, dataSource, phoneLocations, ipLocations, formatValueWithLocation, mergeLocations, enrichColumns, filters, keywordInput, pagination, visible, submitLoading, passwordConfirmationPending, balanceVisible, balanceSubmitting, balanceForm, isEditing, resetPasswordVisible, resetPasswordLoading, wechatFailure, wechatFailureContextKey, wechatFailureMessage, clearWechatFailure, captureWechatFailureOwner, showWechatFailure, isCurrentWechatFailure, wechatScanVisible, wechatScanLoading, wechatScanQrCodeImageData, wechatScanLoginToken, wechatScanStatusText, wechatCodeVisible, wechatCode, wechatCodeLoading, systemNewUserBonusAmount, wechatScanTimer, formState, resetPasswordForm, tabLoading, userTableColumnWidths, userTableScrollX, stopWechatScanTimer, resetWechatResolveState,
+  return { owner, usernameError, usernameInput, clearUsernameError, showUsernameError, savedEditSnapshot, hasUnsubmittedSavedEdit, clearSavedEditSnapshot, editFailure, editFailureAction, editFailureContextKey, clearEditFailure, retireEditDraft, captureEditDraftOwner, captureCreateDraftOwner, showEditFailure, isCurrentEditFailure, passwordFailure, passwordFailureContextKey, clearPasswordFailure, capturePasswordDraftOwner, showPasswordFailure, isCurrentPasswordFailure, hasUnsubmittedSavedPassword, capturePasswordSnapshot, rememberSavedPasswordSnapshot, clearSavedPasswordSnapshot, balanceFailure, balanceFailureContextKey, balanceFailureMessage, balanceReconciling, balanceReconcileFailure, balanceReconciliation, clearBalanceFailure, retireBalanceDraft, captureBalanceDialogOwner, captureBalanceDraftOwner, showBalanceFailure, isCurrentBalanceFailure, isCurrentBalanceReconcileFailure, actionContextKey, listFailure, listFailureContextKey, clearListFailure, deleteFailure, deleteFailureContextKey, clearDeleteFailure, showDeleteFailure, isCurrentDeleteFailure, clearLocations, clearPrincipalState, dataSource, phoneLocations, ipLocations, formatValueWithLocation, mergeLocations, enrichColumns, filters, keywordInput, pagination, visible, submitLoading, submittingBan, banReasonError, banFeedback, currentBanActive, passwordConfirmationPending, balanceVisible, balanceSubmitting, balanceForm, isEditing, resetPasswordVisible, resetPasswordLoading, wechatFailure, wechatFailureContextKey, wechatFailureMessage, clearWechatFailure, captureWechatFailureOwner, showWechatFailure, isCurrentWechatFailure, wechatScanVisible, wechatScanLoading, wechatScanQrCodeImageData, wechatScanLoginToken, wechatScanStatusText, wechatCodeVisible, wechatCode, wechatCodeLoading, systemNewUserBonusAmount, wechatScanTimer, formState, resetPasswordForm, tabLoading, userTableColumnWidths, userTableScrollX, stopWechatScanTimer, resetWechatResolveState,
     // 绑定历史弹窗（需求 5a）：状态挂在同一个 context 上，方法才能通过
     // this.userListContext 取到 ref；放在模块顶层的作用域对 methods 不可见。
     bindingsVisible, bindingsModalKey, bindingsLoading, bindingsRows, bindingsTarget,
@@ -1065,7 +1156,7 @@ export default defineComponent({
       userListKeywordEpoch = getCurrentUserLogoutEpoch()
     }
     const userListContext = markRaw(createUserListState())
-    const { dataSource, pagination, isEditing, formState, resetPasswordForm, visible, resetPasswordVisible, phoneLocations, ipLocations, formatValueWithLocation, tabLoading, filters, keywordInput, submitLoading, balanceVisible, balanceSubmitting, balanceForm, resetPasswordLoading, wechatScanVisible, wechatScanLoading, wechatScanQrCodeImageData, wechatScanLoginToken, wechatScanStatusText, wechatCodeVisible, wechatCode, wechatCodeLoading, systemNewUserBonusAmount, userTableColumnWidths } = userListContext
+    const { dataSource, pagination, isEditing, formState, resetPasswordForm, visible, resetPasswordVisible, phoneLocations, ipLocations, formatValueWithLocation, tabLoading, filters, keywordInput, submitLoading, submittingBan, banReasonError, banFeedback, currentBanActive, balanceVisible, balanceSubmitting, balanceForm, resetPasswordLoading, wechatScanVisible, wechatScanLoading, wechatScanQrCodeImageData, wechatScanLoginToken, wechatScanStatusText, wechatCodeVisible, wechatCode, wechatCodeLoading, systemNewUserBonusAmount, userTableColumnWidths } = userListContext
 
     // 用户列表改为服务端分页后，这里的统计只覆盖「当前页」，
     // 因此标题里明确标注范围，避免被误读成全站合计。
@@ -1105,7 +1196,7 @@ export default defineComponent({
       })
     })
 
-    const modalTitle = computed(() => isEditing.value ? '编辑用户' : '新增用户')
+
     const allColumns = computed(() => [
         {
           title: 'ID',
@@ -1207,6 +1298,187 @@ export default defineComponent({
     ])
     const { currentUser } = useCurrentUserDisplay()
     const instance = getCurrentInstance()
+
+    // requestListRefresh 是「刷新用户列表」的注入点。
+    //
+    // setup 闭包里拿不到 methods 的 handleUserList（它定义在别处、且通过
+    // getCurrentInstance().proxy 调用 —— 那个 instance 在本文件后段才赋值，
+    // 在 setup 早段用会拿到 undefined）。这里用一个可替换的空实现，
+    // 由 methods 侧在合适的时机替换成真正的刷新函数。
+    // 默认空实现保证「封禁成功但刷新回调还没接上」时不会抛错。
+    let requestListRefresh = () => {}
+    // 这里 instance 已可用（上一行就是 getCurrentInstance），可以直接绑定真实刷新。
+    // 用 try 兜住：getCurrentInstance 在某些测试/SSR 环境下返回 null。
+    try {
+      const proxy = instance?.proxy
+      if (proxy && typeof proxy.handleUserList === 'function') {
+        requestListRefresh = () => proxy.handleUserList()
+      }
+    } catch (error) {
+      // 绑定失败保持空实现：封禁本身已成功，刷新失败只影响列表即时性。
+    }
+
+    const modalTitle = computed(() => isEditing.value ? '编辑用户' : '新增用户')
+
+    // ---- 封禁控件（t203） ----
+    //
+    // 三个模式与用户诉求一一对应：正常 / 临时封禁（含预设与时按时长自定义）/ 永久封禁。
+    // 「正常」与「解除封禁」是两件事：前者只是不改封禁状态，后者会真的撤销封禁记录。
+    const banModeOptions = [
+      { label: '不封禁（正常）', value: 'none' },
+      { label: '临时封禁', value: 'temporary' },
+      { label: '永久封禁', value: 'permanent' },
+    ]
+    const banDurationPresetOptions = [
+      { label: '1 小时', value: '1h' },
+      { label: '1 天', value: '1d' },
+      { label: '7 天', value: '7d' },
+      { label: '30 天', value: '30d' },
+      { label: '自定义', value: 'custom' },
+      // 「永久」在模式里已经选过了；这里保留一项是防止用户从临时切到永久时
+      // 忘了改模式 —— 选项在两种模式间都能选到，语义不歧义。
+      { label: '永久（同上）', value: 'permanent' },
+    ]
+    const banDurationUnitOptions = [
+      { label: '小时', value: 'hour' },
+      { label: '天', value: 'day' },
+    ]
+    // 预设 → [数量, 单位]。抽成纯映射而不是散落在模板里：
+    // 模板里写条件表达式会让「7 天」与「7d」两处语义各写一遍，漂移后无人发现。
+    const BAN_PRESETS = { '1h': [1, 'hour'], '1d': [1, 'day'], '7d': [7, 'day'], '30d': [30, 'day'] }
+
+    // banRequestSpec 把表单状态翻译成 createUserBan 的入参。
+    //
+    // 三条语义在这里收口（模板只负责展示）：
+    //   permanent → 不传时长（服务端落 expires_at=NULL）
+    //   预设      → 换算成数量+单位
+    //   custom    → 直接用管理员填的数量+单位
+    //
+    // 返回 null 表示「当前模式不该提交封禁」（none）。
+    function banRequestSpec(form) {
+      if (!form || form.banMode === 'none') return null
+      if (form.banMode === 'permanent' || form.banDurationPreset === 'permanent') {
+        return { permanent: true }
+      }
+      if (form.banDurationPreset === 'custom') {
+        const amount = Number(form.banDurationAmount)
+        return { permanent: false, durationAmount: amount, durationUnit: form.banDurationUnit }
+      }
+      const preset = BAN_PRESETS[form.banDurationPreset]
+      if (!preset) return { permanent: true }
+      return { permanent: false, durationAmount: preset[0], durationUnit: preset[1] }
+    }
+
+    // banExpiryPreview 给运营一个「点下去会发生什么」的可读预告。
+    // 不做时间格式化（服务端才算时间），只描述相对时长 —— 避免浏览器时钟参与。
+    const banExpiryPreview = computed(() => {
+      const spec = banRequestSpec(formState.value)
+      if (!spec || spec.permanent) return '永久封禁：不会自动解除，只能手动解封。'
+      const unitLabel = spec.durationUnit === 'day' ? '天' : '小时'
+      return `将在 ${spec.durationAmount} ${unitLabel}后自动解除。`
+    })
+
+    // loadCurrentBanState 读该用户当前是否有生效中的封禁。
+    //
+    // 读封禁表而不是 users.status：status 无法区分「永久/临时」，
+    // 而这个控件要展示的正是「当前是哪种封禁」。
+    async function loadCurrentBanState(userId) {
+      currentBanActive.value = false
+      const id = Number(userId)
+      if (!Number.isInteger(id) || id <= 0) return
+      try {
+        const res = await getUserBans({ userId: id, active: 'true', page: 1, pageSize: 1 })
+        if (res?.status !== 200) return
+        const rows = res?.data?.data
+        currentBanActive.value = Array.isArray(rows) && rows.length > 0
+      } catch (error) {
+        // 读取失败不阻塞编辑：这只影响「是否显示解除封禁入口」，
+        // 而封禁本身仍可提交（服务端会自己校验）。
+        currentBanActive.value = false
+      }
+    }
+
+    async function applyBan() {
+      if (submittingBan.value) return
+      const form = formState.value
+      const userId = Number(form?.id)
+      if (!Number.isInteger(userId) || userId <= 0) {
+        banReasonError.value = '请先保存用户资料，再对该用户应用封禁。'
+        return
+      }
+      const spec = banRequestSpec(form)
+      if (!spec) return
+      // 原因必填：与封禁管理页同口径。前端先拦是为了立刻指出字段，
+      // 不是替代后端校验（后端同样会 400）。
+      const reason = String(form.banReason || '').trim()
+      if (!reason) {
+        banReasonError.value = '封禁原因不能为空。'
+        return
+      }
+      if (!spec.permanent && !(Number.isInteger(spec.durationAmount) && spec.durationAmount > 0)) {
+        banReasonError.value = '自定义时长必须是正整数。'
+        return
+      }
+      banReasonError.value = ''
+      banFeedback.value = ''
+      submittingBan.value = true
+      try {
+        const payload = { userId, reason }
+        if (!spec.permanent) {
+          payload.durationAmount = spec.durationAmount
+          payload.durationUnit = spec.durationUnit
+        }
+        const res = await createUserBan(payload)
+        if (res?.status !== 201) {
+          banReasonError.value = String(res?.data?.message || '').trim() || '封禁失败'
+          return
+        }
+        message.success(spec.permanent ? '已永久封禁该账号' : '已临时封禁该账号')
+        banFeedback.value = '封禁已生效。'
+        form.banMode = 'none'
+        form.banReason = ''
+        await loadCurrentBanState(userId)
+        // 刷新列表：封禁后 status 列会变（服务端同时写了 users.status）。
+        // 通过 setup 内注入的回调刷新，不用 instance.proxy —— 后者在 setup 早段
+        // 还不可用（getCurrentInstance 在文件后段才赋值），依赖执行顺序太脆弱。
+        requestListRefresh()
+      } catch (error) {
+        banReasonError.value = String(error?.response?.data?.message || '').trim() || '封禁失败'
+      } finally {
+        submittingBan.value = false
+      }
+    }
+
+    async function applyUnban() {
+      if (submittingBan.value) return
+      const form = formState.value
+      const userId = Number(form?.id)
+      if (!Number.isInteger(userId) || userId <= 0) {
+        message.warning('请先选择用户')
+        return
+      }
+      submittingBan.value = true
+      banFeedback.value = ''
+      try {
+        const res = await revokeUserBan(userId, form.unbanReason)
+        if (res?.status !== 200) {
+          message.error(String(res?.data?.message || '').trim() || '解封失败')
+          return
+        }
+        message.success('已解除该账号的封禁（记录已保留）')
+        banFeedback.value = '封禁已解除。'
+        form.unbanReason = ''
+        await loadCurrentBanState(userId)
+        // 刷新列表：封禁后 status 列会变（服务端同时写了 users.status）。
+        // 通过 setup 内注入的回调刷新，不用 instance.proxy —— 后者在 setup 早段
+        // 还不可用（getCurrentInstance 在文件后段才赋值），依赖执行顺序太脆弱。
+        requestListRefresh()
+      } catch (error) {
+        message.error(String(error?.response?.data?.message || '').trim() || '解封失败')
+      } finally {
+        submittingBan.value = false
+      }
+    }
     const canManageUsers = computed(() => Boolean(currentUserIdentity(currentUser.value)) && isAdminUser(currentUser.value))
     const principalScope = computed(() => {
       const identity = currentUserIdentity(currentUser.value)
@@ -1416,6 +1688,18 @@ export default defineComponent({
       summary,
       isEditing,
       modalTitle,
+      // 封禁控件（t203）
+      banModeOptions,
+      banDurationPresetOptions,
+      banDurationUnitOptions,
+      banExpiryPreview,
+      submittingBan,
+      banReasonError,
+      banFeedback,
+      currentBanActive,
+      applyBan,
+      applyUnban,
+      loadCurrentBanState,
       roleOptions: [
         { label: '普通用户', value: 'user' },
         { label: '管理员', value: 'admin' },
@@ -1712,8 +1996,19 @@ export default defineComponent({
         wechatId: record.wechatId || '',
         wechatBoundAt: record.wechatBoundAt || '',
         forceReassignWechat: false,
+        // 封禁控件（t203）：每次打开编辑都重置成「不封禁」。
+        // 绝不能预填成「永久封禁」—— 那会让「保存资料」顺带把用户封了。
+        banMode: 'none',
+        banDurationPreset: 'permanent',
+        banDurationAmount: 1,
+        banDurationUnit: 'day',
+        banReason: '',
+        unbanReason: '',
       }
       this.userListContext.visible.value = true
+      // 异步读该用户当前的封禁状态（决定是否显示「解除封禁」入口）。
+      // 不 await：弹窗先渲染，封禁状态后到 —— 与「列表/详情分步加载」同策略。
+      this.userListContext.loadCurrentBanState(record.id)
     },
     openResetPasswordModal(record) {
       const owner = this.userListContext.owner.capture()

@@ -1,0 +1,1 @@
+# 构建产物目录（exe 本身被 .gitignore 排除）。Docker 构建前需先跑 build-exe.ps1。

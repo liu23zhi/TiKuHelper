@@ -24,6 +24,26 @@
 
       <!-- ── 活动配置 ────────────────────────────────────────────── -->
       <ConsolePanel title="活动配置" description="修改后立即生效。关闭开关后用户端整页显示「功能未开启」。">
+        <!-- 零活动是正常状态，不是读取失败：全新部署第一次进来就是这里。
+             用 info（不是 warning/error）告诉管理员「还没建过」，而不是让他以为系统坏了。 -->
+        <a-alert
+          v-if="programMissing"
+          type="info"
+          show-icon
+          class="status-alert"
+          message="尚未创建评价返现活动"
+          description="填写下面的配置并保存即可创建。保存前用户端会一直显示「功能未开启」。"
+        />
+        <!-- 「保存被拒」的原因如果是功能缺口（而不是网络/后端故障），
+             必须单独说清，否则管理员会反复重试并以为是偶发故障。 -->
+        <a-alert
+          v-if="programWarning"
+          :key="programWarningContextKey"
+          type="warning"
+          show-icon
+          class="status-alert"
+          :message="programWarning"
+        />
         <a-form layout="vertical" class="config-form" :disabled="loading || savingProgram">
           <div class="config-grid">
             <a-form-item label="活动名称" :html-for="fieldId('programName')">
@@ -404,6 +424,17 @@ export default {
     const loadedProgram = ref(null)
     const programForm = reactive(emptyProgramForm())
     const programLoaded = ref(false)
+    // programMissing 与 programLoaded 是两个不同的概念，不能合并：
+    //   programLoaded  = 「这份数据读到了」（控「读取失败」红色告警）
+    //   programMissing = 「读到了，但没有活动」（控「尚未创建」引导 + 禁用保存）
+    // 合并的后果：要么零活动时显示假失败告警（用户看到的正是这个），
+    // 要么真的读取失败时被当成「没有活动」而静默。
+    const programMissing = ref(false)
+    // programWarning 承载「保存被拒但原因不在页面上」的解释（当前只有
+    // 「零活动 + 后端无创建接口」这一种）。与 programFailure 分开：
+    // failure 是「请求失败」，warning 是「功能缺口」，处置方式不同。
+    const programWarning = ref('')
+    const programWarningContextKey = ref(0)
     const savingProgram = ref(false)
     const programSaved = ref(false)
 
@@ -658,15 +689,45 @@ export default {
       programForm[field] = value
       programSaved.value = false
     }
+    // emptyProgram 表示「这家部署还没有任何评价返现活动」。
+    //
+    // ⚠️ 这不是错误。GET /admin/review-rebate/programs 在表为空时**合法返回**
+    // `{data:[]}` + 200（service.ListReviewRebateProgramsWithDB 用 make(...,0)
+    // 初始化，注释写明「空列表必须是 []，不是 null」）。把空数组当成解析失败
+    // 会让全新部署一进页面就显示「活动配置尚未加载成功」——**配置明明没错，
+    // 只是还没建过活动**，管理员因此找不到创建入口，陷入死循环。
+    //
+    // 因此这里把「零活动」渲染成一份空表单 + 明确的「尚未创建」提示，
+    // 而不是抛错。programLoaded 仍然置 true：数据确实读到了，只是内容为空，
+    // 页面不应该显示「读取失败」的红色告警。
+    const isProgramMissing = (payload) => {
+      if (Array.isArray(payload)) return payload.length === 0
+      const list = payload?.data
+      return Array.isArray(list) && list.length === 0
+    }
+
     function applyProgram(data) {
       // 后端 GET /admin/review-rebate/programs 返回 {data:[...]}（与 rules 一致的信封）；
       // 直接把 {data:[...]} 当成活动对象会让整张表单变成空值 —— 看起来像「配置丢了」。
-      // 三种历史形状都兼容：裸对象 / 裸数组 / {data:[...]} / {program:{...}}。
-      const body = Array.isArray(data)
-        ? data[0]
-        : (data?.program
-          || (Array.isArray(data?.data) ? data.data[0] : (data?.data && typeof data.data === 'object' ? data.data : data)))
-      if (!body || typeof body !== 'object') throw new Error('invalid program payload')
+      // 多种历史形状都兼容：裸对象 / 裸数组 / {data:[...]} / {program:{...}}。
+      const empty = isProgramMissing(data)
+      const body = empty
+        ? null
+        : (Array.isArray(data)
+          ? data[0]
+          : (data?.program
+            || (Array.isArray(data?.data) ? data.data[0] : (data?.data && typeof data.data === 'object' ? data.data : data))))
+      if (!empty && (!body || typeof body !== 'object')) throw new Error('invalid program payload')
+      programMissing.value = empty
+      if (empty) {
+        // 没有活动：清空表单并把 id 置空，避免「保存」带着上一家的 id 去 PUT。
+        // 这不是失败态 —— programLoaded 必须置 true，否则页面会一直显示
+        // 「尚未加载成功」并挡住创建入口。
+        loadedProgram.value = null
+        Object.assign(programForm, emptyProgramForm())
+        programLoaded.value = true
+        return
+      }
       loadedProgram.value = body
       programForm.name = String(body.name || '')
       programForm.storeUrl = String(body.storeUrl || '')
@@ -676,6 +737,7 @@ export default {
       programForm.maxAmountPerUser = readNonnegativeNumber(body.maxAmountPerUser) ?? 5.04
       programForm.minAgentConfidence = readNonnegativeNumber(body.minAgentConfidence) ?? 0.6
       programForm.policyVersion = String(body.policyVersion || '')
+      programMissing.value = false
       programLoaded.value = true
     }
     const loadProgram = async () => {
@@ -765,7 +827,17 @@ export default {
     const saveProgram = async () => {
       if (!canManage() || savingProgram.value || programValidation.value) return
       const id = readPositiveInt(loadedProgram.value?.id)
-      if (!id) { programFailure.value = ensureRequestFailure({ code: 'MALFORMED_RESPONSE' }); programFailureOwner = canManage; programFailureContextKey.value += 1; return }
+      if (!id) {
+        // 零活动时没有 id 可 PUT。**这不是数据格式错误**（原来的
+        // MALFORMED_RESPONSE 会让管理员以为后端坏了），而是后端**没有
+        // 创建活动的 HTTP 接口** —— service.CreateReviewRebateProgramWithDB
+        // 全仓零调用方，router.go 只有 GET/PUT。这里如实说明缺口，
+        // 并给出可执行的绕过方式，而不是把责任推给网络。
+        programWarning.value = '当前没有任何评价返现活动，且后端尚未提供「创建活动」接口，因此无法在此页新建。'
+          + '请先在数据库中插入一条 review_rebate_programs 记录（id 会自动生成），刷新后即可在此编辑。'
+        programWarningContextKey.value += 1
+        return
+      }
       const ticket = ++writeVersion
       const owns = () => canManage() && ticket === writeVersion
       clearProgramFailure()
@@ -972,6 +1044,7 @@ export default {
     return {
       fieldId, canManage, busy, loading,
       programForm, programLoaded, savingProgram, programSaved, programValidation,
+      programMissing, programWarning, programWarningContextKey,
       rules, rulesLoaded, savingRule, ruleWarning, ruleColumns,
       claims, claimsLoaded, loadingClaims, deciding, decisionWarning, claimColumns,
       claimFilters, claimFilterError, claimStatusOptions, setClaimFilter, reloadClaims, resetClaimFilters,

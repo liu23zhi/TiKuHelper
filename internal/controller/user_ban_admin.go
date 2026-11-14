@@ -221,7 +221,7 @@ func UserBanAdminList(c *gin.Context) {
 	// 「列表说生效中、判定说没封」这类两边不一致的状态。
 	onlyActive := activeArg == nil || *activeArg
 	if onlyActive {
-		query = query.Where("expires_at IS NULL OR expires_at > ?", now)
+		query = query.Where("expires_at IS NULL OR expires_at > ?", now.UTC())
 	}
 	// keyword 同时匹配 reason 与用户名。
 	//
@@ -368,9 +368,22 @@ func UserBanAdminCreate(c *gin.Context) {
 		return
 	}
 	var input struct {
-		UserID    int32   `json:"userId"`
-		Reason    string  `json:"reason"`
+		UserID int32  `json:"userId"`
+		Reason string `json:"reason"`
+		// ExpiresAt 是**绝对**到期时间（RFC3339 或 YYYY-MM-DD）。留空 = 永久。
 		ExpiresAt *string `json:"expiresAt"`
+		// DurationAmount + DurationUnit 是**相对**时长（「自定义时长封禁」）。
+		//
+		// 与 ExpiresAt 二选一，**DurationAmount 优先**：前端封禁弹窗用时长表达
+		// （「封 7 天」），精确到具体时刻的诉求才用 ExpiresAt。
+		// DurationAmount 为 0 且 ExpiresAt 为空 ⇒ 永久封禁。
+		//
+		// ⚠️ 为什么要这一层而不是让前端自己算好绝对时间再传 ExpiresAt：
+		// 前端算时间会吃到浏览器本地时区与时钟偏差，而「封 7 天」是**服务端语义**
+		// （用户的封禁时长不该取决于管理员电脑的时钟）。让服务端按时长自己算，
+		// 浏览器时钟偏 10 分钟也不会让封禁时长偏 10 分钟。
+		DurationAmount int    `json:"durationAmount"`
+		DurationUnit   string `json:"durationUnit"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "请求体格式无效"})
@@ -386,10 +399,29 @@ func UserBanAdminCreate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "封禁原因不能为空"})
 		return
 	}
-	expiresAt, expiresErr := parseUserBanExpiresAt(input.ExpiresAt)
-	if expiresErr != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": expiresErr.Error()})
+	// 时长优先于绝对时间：两者同时给出时按时长算（页面只会给时长）。
+	//
+	// 负数必须显式拒绝而不是当成「永久」：`durationAmount: -1` 是明显的调用方 bug，
+	// 而把它静默解读成永久封禁会让一次误操作变成不可撤销的处置。
+	if input.DurationAmount < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "封禁时长不能为负数"})
 		return
+	}
+	var expiresAt *time.Time
+	if input.DurationAmount > 0 {
+		resolved, durationErr := service.ResolveUserBanExpiresAt(input.DurationAmount, input.DurationUnit, time.Now())
+		if durationErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": durationErr.Error()})
+			return
+		}
+		expiresAt = resolved
+	} else {
+		parsed, expiresErr := parseUserBanExpiresAt(input.ExpiresAt)
+		if expiresErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": expiresErr.Error()})
+			return
+		}
+		expiresAt = parsed
 	}
 	// 过去时间必须在 controller 层就拒掉，给出明确的字段级文案；
 	// service 层也有一份同样的校验（作为最后防线），但它的错误是英文哨兵包装，
@@ -414,16 +446,23 @@ func UserBanAdminCreate(c *gin.Context) {
 		return
 	}
 	recordAccountAudit(c, &operator, "user_ban", 1, "封禁账号", map[string]any{
-		"userId":    record.UserID,
-		"reason":    record.Reason,
-		"expiresAt": record.ExpiresAt,
+		"userId":         record.UserID,
+		"reason":         record.Reason,
+		"expiresAt":      record.ExpiresAt,
+		"durationAmount": input.DurationAmount,
+		"durationUnit":   input.DurationUnit,
 	})
 	c.JSON(http.StatusCreated, gin.H{
-		"id":        record.ID,
-		"userId":    record.UserID,
-		"reason":    record.Reason,
-		"expiresAt": record.ExpiresAt,
-		"bannedAt":  record.BannedAt,
+		"id":             record.ID,
+		"userId":         record.UserID,
+		"reason":         record.Reason,
+		"expiresAt":      record.ExpiresAt,
+		"bannedAt":       record.BannedAt,
+		"durationAmount": input.DurationAmount,
+		"durationUnit":   input.DurationUnit,
+		// permanent 是**派生**的便利字段（expiresAt 为 null 即永久）。
+		// 前端据此决定显示「永久」还是具体时刻，不必自己再判一次 null。
+		"permanent": record.ExpiresAt == nil,
 	})
 }
 

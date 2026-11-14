@@ -30,9 +30,11 @@ const user = require(path.join(root, 'src/utils/currentUser.js'))
 const ADMIN = { id: 91601, role: 'admin', username: 'SYNTHETIC_EXAM_ADMIN', status: 'enabled' }
 const PLAIN = { id: 91602, role: 'user', username: 'SYNTHETIC_EXAM_USER', status: 'enabled' }
 
-const calls = { version: [], inspect: [], downloadURL: [] }
+const calls = { version: [], inspect: [], downloadURL: [], decryptKey: [], updateKey: [] }
 let versionPayload = null
 let inspectHandler = null
+let decryptKeyHandler = null
+let updateKeyHandler = null
 const wrappers = []
 const notices = []
 
@@ -53,6 +55,19 @@ api.exports = {
   inspectUserExamDatabase(file) {
     calls.inspect.push(file)
     return inspectHandler ? inspectHandler(file) : Promise.resolve(ok({ tables: {}, otherTables: [], rowCounts: {} }))
+  },
+  // 2026-11-14 新增：服务端现在会解密加密库，页面多了密钥状态/更新两个调用。
+  getUserExamDecryptKey() {
+    calls.decryptKey.push(true)
+    return decryptKeyHandler ? decryptKeyHandler() : Promise.resolve(ok({
+      configured: false, usingDefault: true, keyHint: 'aaaaaaaa', defaultKeyHint: 'aaaaaaaa', message: '',
+    }))
+  },
+  updateUserExamDecryptKey(key) {
+    calls.updateKey.push(key)
+    return updateKeyHandler ? updateKeyHandler(key) : Promise.resolve(ok({
+      configured: true, usingDefault: false, keyHint: 'bbbbbbbb', defaultKeyHint: 'aaaaaaaa', message: '',
+    }))
   },
 }
 require.cache[apiPath] = api
@@ -93,9 +108,13 @@ afterEach(async () => {
   calls.version.length = 0
   calls.inspect.length = 0
   calls.downloadURL.length = 0
+  calls.decryptKey.length = 0
+  calls.updateKey.length = 0
   notices.length = 0
   versionPayload = null
   inspectHandler = null
+  decryptKeyHandler = null
+  updateKeyHandler = null
   user.clearStoredCurrentUser()
   Antd.message.destroy()
   document.body.innerHTML = ''
@@ -197,21 +216,38 @@ test('server rejections map to actionable messages instead of a generic failure'
   await settle()
   assert.match(errorText(), /超过只读预览允许的大小/)
 
-  // A 400 must reach the operator verbatim: the old code fell through to
-  // 「解析失败，请重试」for everything except 413, which hides the actual fix
-  // (decrypt the file with the offline tool first).
-  inspectHandler = () => Promise.resolve({ status: 400, data: { status: 400, message: '该文件不是已解密的 SQLite 数据库；请先用脱机工具解密' } })
+  // ⚠️ 2026-11-14 语义变更：服务端现在**会**解密加密库，所以「加密库 → 叫用户去用脱机工具」
+  // 这条旧断言已经反转。这段原本断言「400 必须原样透出 message 并指向脱机工具」；
+  // 现在断言的是**四种 reason 各有不同指引**（这才是用户真正需要的可操作性）。
+  inspectHandler = () => Promise.resolve({ status: 400, data: { status: 400, message: '该数据库是加密的，但用当前密钥解密失败（密钥不正确）。', reason: 'wrong-key' } })
   await wrapper.find('form').trigger('submit')
   await settle()
-  assert.match(errorText(), /请先用脱机工具解密/, 'the encrypted-upload rejection must point at the offline tool')
+  assert.match(errorText(), /密钥不正确/, 'the server message must surface verbatim')
+  assert.match(errorText(), /解密密钥/, 'wrong-key must point at the key panel, not the offline tool')
+  assert.doesNotMatch(errorText(), /脱机工具/, '服务端已支持解密，wrong-key 不应再推给脱机工具')
   assert.doesNotMatch(errorText(), /解析失败，请重试/, 'a 400 must not degrade into the generic message')
+
+  // 四种 reason 的「下一步动作」必须彼此不同 —— 合并了用户就不知道该干什么。
+  const actions = []
+  for (const [reason, message] of [
+    ['wrong-key', '密钥不正确'],
+    ['key-missing', '尚未配置解密密钥'],
+    ['unsupported-cipher', '加密方案不在支持范围内'],
+    ['not-database', '不是有效的 SQLite 数据库'],
+  ]) {
+    inspectHandler = () => Promise.resolve({ status: 400, data: { message, reason } })
+    await wrapper.find('form').trigger('submit')
+    await settle()
+    actions.push(errorText())
+  }
+  assert.equal(new Set(actions).size, actions.length, '四种失败原因的提示必须各不相同')
 
   // A body without a message must still not crash and must stay generic.
   inspectHandler = () => Promise.resolve({ status: 400, data: {} })
   await wrapper.find('form').trigger('submit')
   await settle()
-  assert.match(errorText(), /不是已解密的 SQLite 数据库/)
-  console.log('EXAM_TOOL_ERROR_MAP_OK 413 and 400 both surface the server message verbatim; bare 400 falls back safely')
+  assert.match(errorText(), /无法解析/)
+  console.log('EXAM_TOOL_ERROR_MAP_OK 413 and 400 both surface the server message verbatim; 4 reasons give 4 distinct actions; bare 400 falls back safely')
 })
 
 test('previewing a plaintext database renders both known tables and names unknown ones', async () => {

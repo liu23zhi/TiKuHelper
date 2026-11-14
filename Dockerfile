@@ -30,6 +30,49 @@ ENV TZ=Asia/Shanghai
 
 COPY --from=builder2 /build/tiku-adapter /app/tiku-adapter
 
+# --- 考试客户端 DB 脱机工具（管理员专用）内嵌到镜像 -------------------------
+#
+# 这个 exe 是 PyInstaller 打的**单文件 Windows PE**（约 14.8 MB，自带 Python
+# 运行时与 SQLite3MC 原生扩展），管理员下载到本机双击即可用，无需装 Python。
+# 服务端从不执行它，只把它原样发出去（controller/user_exam_tool.go:137
+# `http.ServeContent`），所以宿主是 alpine/Linux 也不影响。
+#
+# 它**不进 git**：.gitignore:56 排除 tools/userexam-crypto/dist/*（15 MB 的
+# 二进制放进去会永久污染历史，且每次重建都产生新 blob）。因此镜像构建前必须
+# 先在宿主机跑一次 `tools/userexam-crypto/build-exe.ps1` 产出该文件。
+#
+# 缺失时**构建直接失败**，而不是静默产出一个「管理台显示未部署」的镜像 ——
+# 后者看起来构建成功、运行时才发现功能不可用，正是要避免的假成功。
+COPY tools/userexam-crypto/dist/userexam-crypto.exe /app/userexam-crypto.exe
+RUN test -s /app/userexam-crypto.exe \
+    && chmod 0755 /app/userexam-crypto.exe \
+    || { echo "缺少脱机工具：请先运行 tools/userexam-crypto/build-exe.ps1 生成 dist/userexam-crypto.exe" >&2; exit 1; }
+
+# USEREXAM_TOOL_PATH 指向镜像内路径后，管理台「未部署脱机工具（未配置
+# USEREXAM_TOOL_PATH）」的提示消失，变为「已部署 + 版本号 + SHA-256」。
+# 运维仍可用 `-e USEREXAM_TOOL_PATH=/…` 覆盖成自己构建的 exe
+# （controller/user_exam_tool.go:35 里 os.Getenv 优先，环境变量覆盖有效）。
+ENV USEREXAM_TOOL_PATH=/app/userexam-crypto.exe
+
+# --- favicon：默认用前端内嵌版本，外部覆盖需显式启用 ------------------------
+#
+# web/public/favicon.ico 经 `npm run build` → web/dist/favicon.ico →
+# builder2 的 `//go:embed dist` 编进二进制。运行时读的是**嵌入树**，所以
+# 单纯把文件挂进容器（-v）或在这里 COPY 都**不会**生效。
+#
+# 真正的覆盖通道是环境变量 FAVICON_PATH：服务端启动时读它，若文件可读就
+# 优先返回磁盘版本（internal/api/router.go 的 serveFavicon）。默认不设置
+# = 使用内嵌 favicon.ico，与「默认注释掉」的要求一致。
+#
+# 启用方式（取消下面两行注释并重新构建）：
+#   COPY favicon.ico /app/data/favicon.ico
+#   ENV FAVICON_PATH=/app/data/favicon.ico
+#
+# 或在运行时挂载（无需重建镜像）：
+#   docker run -v /host/my-favicon.ico:/app/data/favicon.ico \
+#              -e FAVICON_PATH=/app/data/favicon.ico ...
+# ENV FAVICON_PATH=/app/data/favicon.ico
+
 # 创建数据目录用于持久化数据库文件
 RUN mkdir -p /app/data
 

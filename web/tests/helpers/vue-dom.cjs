@@ -6,7 +6,11 @@ const { parse, compileScript, compileTemplate } = require('@vue/compiler-sfc')
 const { transformSync } = require('@babel/core')
 
 const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost', pretendToBeVisual: true })
-for (const key of ['window', 'document', 'navigator', 'history', 'location', 'open', 'Node', 'Element', 'HTMLElement', 'SVGElement', 'ShadowRoot', 'Event', 'KeyboardEvent', 'MouseEvent', 'MutationObserver', 'localStorage']) {
+// `Document` / `Text` / `Comment` / `DocumentFragment` 是 Vue runtime-dom 的 v-model
+// 指令在 beforeUpdate 里做 instanceof 判断时需要的构造函数。只注入 `document`
+// 实例不够：此时 `instanceof Document` 会抛 "Document is not defined"，
+// 表现为「v-model 输入框在保存后不回显新值」这种与实现无关的假失败。
+for (const key of ['window', 'document', 'navigator', 'history', 'location', 'open', 'Node', 'Element', 'HTMLElement', 'SVGElement', 'ShadowRoot', 'Event', 'KeyboardEvent', 'MouseEvent', 'MutationObserver', 'localStorage', 'Document', 'Text', 'Comment', 'DocumentFragment', 'NodeList', 'HTMLInputElement', 'CSSStyleDeclaration']) {
   Object.defineProperty(globalThis, key, { configurable: true, writable: true, value: dom.window[key] })
 }
 globalThis.getComputedStyle = dom.window.getComputedStyle.bind(dom.window)

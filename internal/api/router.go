@@ -14,6 +14,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -471,6 +472,10 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/admin/userexam/tool/version", controller.Auth, middleware.RequireAdmin, controller.UserExamToolVersion)
 	apiRouter.GET("/admin/userexam/tool", controller.Auth, middleware.RequireAdmin, controller.UserExamToolDownload)
 	apiRouter.POST("/admin/userexam/inspect", middleware.BodyLimit(controller.MaxUserExamInspectUploadBytes), controller.Auth, middleware.RequireAdmin, controller.UserExamInspect)
+	// 解密密钥配置（2026-11-14 新增：服务器现在会解加密库，需可配密钥）。
+	// 两条都 Auth + RequireAdmin：读只回「是否已配置 + 弱指纹」，写可改密钥。
+	apiRouter.GET("/admin/userexam/decrypt-key", controller.Auth, middleware.RequireAdmin, controller.UserExamDecryptKeyDetail)
+	apiRouter.PUT("/admin/userexam/decrypt-key", controller.Auth, middleware.RequireAdmin, controller.UserExamDecryptKeyUpdate)
 
 	// 管理员账号安全状态：仅管理员，只读，只回布尔。
 	//
@@ -747,10 +752,62 @@ func (w immutableWebAssetWriter) WriteHeader(status int) {
 	w.ResponseWriter.WriteHeader(status)
 }
 
+// faviconDiskPathEnv 指定一个磁盘上的 favicon.ico，用于覆盖二进制内嵌的那份。
+//
+// 为什么需要它：`//go:embed dist` 把前端产物编进可执行文件，**运行时挂载的文件
+// 默认读不到** —— 在 Dockerfile 里加 `COPY favicon.ico .../dist/favicon.ico`
+// 或 `-v ./favicon.ico:/app/.../dist/favicon.ico` 都不会生效，因为 http.FS 只
+// 看嵌入树。所以覆盖必须走显式的磁盘分支。
+//
+// 默认空 = 使用内嵌版本（与用户要求「默认注释掉，使用内嵌 favicon.ico」一致）：
+// 外部覆盖必须显式设置该环境变量才生效。
+const faviconDiskPathEnv = "FAVICON_PATH"
+
+// faviconDiskPath 返回生效的磁盘 favicon 路径；空表示不覆盖。
+var faviconDiskPath = func() string {
+	if configured := strings.TrimSpace(os.Getenv(faviconDiskPathEnv)); configured != "" {
+		return configured
+	}
+	return ""
+}
+
+// serveFavicon 处理 GET /favicon.ico：磁盘覆盖优先，否则回落到内嵌版本。
+//
+// 三态：
+//   - 设置了覆盖且文件可读 → 200 + 磁盘内容；
+//   - 未设置覆盖（或设置的文件不可读）→ 200 + 内嵌内容；
+//   - 两者都没有 → 404（不能 500：图标缺失不该让页面报错）。
+func serveFavicon(embedded static.ServeFileSystem) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("Cache-Control", "no-cache")
+		if path := faviconDiskPath(); path != "" {
+			if content, err := os.ReadFile(path); err == nil && len(content) > 0 {
+				c.Data(http.StatusOK, "image/x-icon", content)
+				return
+			}
+			// 配了路径但读不到：按「覆盖未生效」回落内嵌版本，不让页面丢图标。
+		}
+		if embedded != nil && embedded.Exists("", "/favicon.ico") {
+			if file, err := embedded.Open("/favicon.ico"); err == nil {
+				content, readErr := io.ReadAll(file)
+				_ = file.Close()
+				if readErr == nil && len(content) > 0 {
+					c.Data(http.StatusOK, "image/x-icon", content)
+					return
+				}
+			}
+		}
+		c.Status(http.StatusNotFound)
+	}
+}
+
 // SetWebRouter 设置web路由
 func SetWebRouter(buildFS embed.FS, indexPage []byte, router *gin.Engine) {
 	router.Use(controller.ScriptPublicHostMiddleware)
 	files := embedFolder(buildFS, "dist")
+	// favicon 必须先于 static/SPA 注册：否则命中不到 embed 里的图标时会落到下面的
+	// NoRoute 返回 index.html（200 + HTML），浏览器把 HTML 当图标解码失败。
+	router.GET("/favicon.ico", serveFavicon(files))
 	router.Use(serveImmutableWebAssets(files), static.Serve("/", files))
 	router.NoRoute(func(c *gin.Context) {
 		if controller.ScriptPublicPath(c) {

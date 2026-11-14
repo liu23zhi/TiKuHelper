@@ -213,7 +213,37 @@ import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
 
 defineOptions({ name: 'ScriptManagement' })
 
-const route = useRoute(), mountedPath = route.path
+const route = useRoute()
+
+// ── 为什么不能用 route.path === mountedPath 做授权判据（2026-11-14 实测缺陷）──────
+//
+// 本页被 **两条路由共用同一个组件**：
+//     scripts        (meta.viewMode='self')  → 普通用户菜单「我的脚本」
+//     script-admin   (meta.viewMode='admin') → 管理员菜单「脚本管理」
+// 两条路由指向同一个 component，所以 Vue 在两者之间切换时**复用同一个实例、不会重跑 setup**
+// （实测 uid 不变：3 → 3）。于是 setup 期间固化的 `mountedPath` 永远停在挂载时那条路径上，
+// 换到另一条后 `route.path === mountedPath` 恒为 false ⇒ canUse() 恒 false ⇒ 顶部出现
+// 「当前身份无法管理脚本，请重新登录。」并且所有操作被静默拦掉。用户看到的是"权限没了"，
+// 实际是判据把自己判成了外人。
+//
+// 正确判据是「**当前路由是否仍是本页自己的路由之一**」，而不是「路径有没有变」：
+// 路径相等只能表达"还停在同一处"，而本页合法地拥有两个地址。用 route.name 白名单表达
+// 「属于本页」既覆盖两条路由，又不会因为换 URL 而误判；路由改名时这里会跟着名字一起改，
+// 不会像 mountedPath 那样悄悄失效。
+//
+// 若同一个组件被复制出第三条路由，必须把它的 name 也加进这个集合 —— 否则那条路由会
+// 重新踩同一个坑。sidebarSectionSource 那类"拆路由引入的坑"都源于此：拆路由时只想着
+// 侧边栏能单独选中，忘了组件内任何"挂载时快照"都会变成一次性快照。
+const OWN_ROUTE_NAMES = Object.freeze(['scripts', 'script-admin'])
+
+// 用 route.name 判「是否仍属本页」。route.name 为空（未命名路由/初次解析中）时
+// 退回 matched 比对：当前匹配链里是否还挂着本页组件的路由记录。
+const stillOwnRoute = () => {
+  const name = String(route?.name || '')
+  if (name) return OWN_ROUTE_NAMES.includes(name)
+  const matched = route?.matched || []
+  return matched.some(record => OWN_ROUTE_NAMES.includes(String(record?.name || '')))
+}
 const { currentUser } = useCurrentUserDisplay()
 const fieldPrefix = 'script-' + useId(), fieldId = field => fieldPrefix + '-' + field
 const pageSurface = ref(null), modalSurface = ref(null), frameKey = ref(0), editorKey = ref(0), draining = ref(false)
@@ -227,7 +257,7 @@ const principal = () => {
     ? JSON.stringify([id, String(user.role || '').trim().toLowerCase(), user.status ?? '']) : ''
 }
 let observedPrincipal = principal(), observedLogout = getCurrentUserLogoutEpoch(), authorizedLogout = observedLogout
-const canUse = () => alive && route.path === mountedPath && authorizedLogout === getCurrentUserLogoutEpoch() && Boolean(principal())
+const canUse = () => alive && stillOwnRoute() && authorizedLogout === getCurrentUserLogoutEpoch() && Boolean(principal())
 const canAct = () => canUse() && !draining.value
 function captureOwner() {
   const ticket = epoch, identity = principal(), logout = getCurrentUserLogoutEpoch()
@@ -366,7 +396,9 @@ function retireEditor() {
 async function closeModal() {
   if (saving.value || activationBusy.value || !editorEntry.value.isCurrent()) return
   const owns = editorEntry.value.isCurrent
-  if (await draft.requestRouteLeave({ path: mountedPath }) && owns()) retireEditor()
+  // 传给 requestRouteLeave 的只是「是否登录页」的判据（它内部只比 to.path === '/login'）。
+  // 这里用活的 route.path 而不是挂载快照：本页有两个地址，快照会指向另一条路由。
+  if (await draft.requestRouteLeave({ path: route.path }) && owns()) retireEditor()
 }
 
 function extractSummary(response, dataRows) {

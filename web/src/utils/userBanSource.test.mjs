@@ -22,6 +22,11 @@ const web = process.env.TIKU_WEB_SOURCE || path.resolve(path.dirname(fileURLToPa
 const read = relative => readFileSync(path.join(web, relative), 'utf8')
 
 const page = () => read('src/pages/UserBan/index.vue')
+// userListPage 是「用户管理」页（t203：把「状态」换成封禁控件的那一页）。
+// 单独一个读取器：本文件的 page() 指**封禁管理页**，两者是不同文件，
+// 合成一个会让断言悄悄测错对象（我第一版就踩了这个：断言 :max 时测的是封禁页，
+// 而 :max 在用户管理页，于是「改对了却红、改错了却绿」）。
+const userListPage = () => read('src/pages/UserList/index.vue')
 const api = () => read('src/api/UserBanApi.js')
 const routerSource = () => read('src/router/router.js')
 const siderSource = () => read('src/components/SiderMenu/index.vue')
@@ -88,11 +93,43 @@ test('API 覆盖三个端点且路径正确（列表 / 封禁 / 按 userId 解�
     '解封不得用记录 id —— 后端按 userId 处理，传记录 id 会解封到另一个账号')
 })
 
+// 自定义时长**无上限**（用户 2026-11-14 指令：「封禁时间不要有限制」）。
+//
+// 为什么必须正向钉住「没有 max」：删掉一个约束时，如果只断言「365 以内能用」，
+// 那么把 :max="365" 加回去也照样通过 —— 约束的存在与否不可观测。
+//
+// ⚠️ 断言前必须**剥掉注释**：本页把「上一版有 :max="365" 与最长 365 天，已删除」
+// 写成了注释（保留历史理由），不剥注释会让 doesNotMatch 命中那段说明文字而假红。
+// 这与 TIKU 另一处「对 Go 源码断言前必须剥注释」是同一类陷阱：
+// 注释里解释**为什么不能这么写**时，必然包含被禁止的那种写法。
+const stripComments = source => source
+  .replace(/<!--[\s\S]*?-->/g, '')
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/^\s*\/\/[^\n]*$/gm, '')
+
+test('自定义时长没有上限，但保留「用永久封禁」的引导', () => {
+  // ⚠️ 读的是**用户管理页**（UserList），不是封禁管理页（page()）。
+  const source = stripComments(userListPage())
+
+  // ① 输入框不得再有 :max（有 :min="1" 是对的，那是「正整数」校验不是上限）。
+  assert.doesNotMatch(source, /:max="\d+"/,
+    '自定义时长输入框不得有 :max 上限（用户明确要求封禁时间不要有限制）')
+  assert.match(source, /:min="1"/, '仍必须有 :min="1"（正整数校验，不是上限）')
+  // ② 页面文案不得再声明「最长 N 天」。
+  assert.doesNotMatch(source, /最长\s*\d+\s*天/, '文案不得再写「最长 N 天」')
+  // ③ 但「永久封禁」的引导必须留着：那是引导不是硬拦。
+  assert.ok(source.includes('永久封禁'),
+    '必须保留「更长时间请选永久封禁」这类引导（永久是独立选项）')
+})
+
 test('封禁必须同时提交 userId 与 reason，且不替调用方猜 expiresAt 的默认值', () => {
   const source = api()
 
-  assert.match(source, /data: \{ userId, reason, expiresAt \}/,
+  // t203 起请求体改由变量 data 组装（因为要按需追加 durationAmount/durationUnit），
+  // 所以断言「data 里含这三个字段」而不是旧的字面量写法。
+  assert.match(source, /const data = \{ userId, reason, expiresAt \}/,
     '封禁请求体必须含 userId / reason / expiresAt 三个字段')
+  assert.match(source, /data,\s*\n\s*\}\)/, '请求必须提交组装好的 data')
   // reason 必须先 trim 再判空：纯空白也算空（后端同样口径）。
   assert.match(source, /const reason = String\(payload\.reason == null \? '' : payload\.reason\)\.trim\(\)/,
     'reason 必须 trim 后判空')
@@ -101,6 +138,23 @@ test('封禁必须同时提交 userId 与 reason，且不替调用方猜 expires
   // expiresAt 不得给默认值兜底：默认成永久会让「只想封 1 小时」变成永久。
   assert.doesNotMatch(source, /expiresAt:\s*expiresAt\s*\|\|/,
     '不得为 expiresAt 提供默认值兜底（永久/临时必须由调用方明确）')
+})
+
+test('自定义时长（t203）：传了时长才带 duration 字段，且由服务端算到期时间', () => {
+  const source = api()
+
+  // 时长两个字段只在 durationAmount > 0 时追加。
+  // 恒带 durationAmount:0 会让「永久封禁」与「封 0 小时」在请求体上无法区分。
+  assert.match(source, /if \(durationAmount > 0\) \{/, '时长字段必须条件追加')
+  assert.match(source, /data\.durationAmount = durationAmount/, '必须提交 durationAmount')
+  assert.match(source, /data\.durationUnit = String\(payload\.durationUnit \|\| 'hour'\)/,
+    '必须提交 durationUnit，缺省按小时')
+  // 负数/小数必须拒绝（不能静默退化成永久）。
+  assert.match(source, /if \(!Number\.isInteger\(durationAmount\) \|\| durationAmount < 0\)/,
+    '时长必须是非负整数')
+  // 前端不得自己把时长换算成绝对时间：那会把浏览器时区/时钟偏差带进封禁时长。
+  assert.doesNotMatch(source, /Date\.now\(\)\s*\+/, '前端不得自行换算到期时间戳')
+  assert.doesNotMatch(source, /new Date\(\).*durationAmount/, '前端不得用本地时钟换算时长')
 })
 
 test('页面「永久」显示：expiresAt 为空必须是「永久」而不是「—」或空', () => {

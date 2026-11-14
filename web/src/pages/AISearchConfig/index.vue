@@ -1292,18 +1292,21 @@ export default defineComponent({
 }
 
 .ai-config-form { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-.console-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 32px; row-gap: 8px; }
-.full-width { grid-column: 1 / -1; }
-.switch-description { margin-left: 12px; color: var(--console-muted); }
-.unit-label { margin-left: 8px; color: var(--console-muted); }
+/* 注意：.console-form-grid / .full-width / .model-editor / .fetch-btn /
+ * .model-tags / .unit-label / .switch-description 这七条**已移出本文件**。
+ *
+ * 原因：这些类只出现在三个子 section（AIConnectionModelSection /
+ * AIAdvancedSettingsSection / AIPromptSettingsSection）的模板里，
+ * 而本文件是 <style scoped> —— scoped 规则会编译成 `.x[data-v-本组件]`，
+ * 子组件模板里的元素带的是各自的 data-v，永远匹配不到，等于一行都没生效。
+ * 当初正是「以为父组件样式能兜住子组件」，才导致 .full-width 失效、
+ * .console-form-grid 没有 display:grid，整页两列布局塌成单列 —— 即用户报的 UI 错位。
+ * 现在这些规则各自跟着自己的组件走（见各 section 的 <style scoped>）。
+ * 本文件模板里一次都没用到它们（已 grep 确认），所以删掉不留死代码。 */
+.sub-card-title { color: var(--console-text); font-size: 15px; font-weight: 600; }
 .hint { margin-top: 8px; color: var(--console-muted); font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; }
 .hint-warning, .multiplier-cell--custom { color: var(--console-warning); }
 .multiplier-cell--custom { font-weight: 600; }
-.model-editor { display: flex; gap: 12px; align-items: flex-start; }
-.model-editor :deep(.ant-input-textarea) { min-width: 0; flex: 1; }
-.fetch-btn { flex-shrink: 0; }
-.model-tags { margin-top: 12px; }
-.model-tags :deep(.ant-tag) { padding: 4px 8px; border-radius: 6px; }
 .pricing-grid { display: grid; gap: 16px; min-width: 0; }
 .ocr-cache-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }
 .ocr-cache-stat { display: flex; align-items: center; gap: 10px; min-width: 0; }
@@ -1315,5 +1318,5 @@ export default defineComponent({
 .staged-points-editor__header :deep(.ant-space) { flex-wrap: wrap; }
 .sub-card-title { color: var(--console-text); font-size: 15px; font-weight: 600; }
 .sub-card-subtitle { margin-top: 6px; color: var(--console-muted); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
-@media (max-width: 768px) { .console-form-grid { grid-template-columns: minmax(0, 1fr); } .ocr-cache-grid { grid-template-columns: minmax(0, 1fr); } .model-editor { display: grid; } .fetch-btn { width: 100%; } .staged-billing-settings :deep(.ant-form-item) { display: block; } .staged-billing-settings :deep(.ant-form-item-label) { width: 100% !important; text-align: left; } .staged-billing-settings :deep(.ant-form-item-control) { max-width: 100%; } }
+@media (max-width: 768px) { .ocr-cache-grid { grid-template-columns: minmax(0, 1fr); } .staged-billing-settings :deep(.ant-form-item) { display: block; } .staged-billing-settings :deep(.ant-form-item-label) { width: 100% !important; text-align: left; } .staged-billing-settings :deep(.ant-form-item-control) { max-width: 100%; } }
 </style>

@@ -1102,6 +1102,23 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		return nil
 	}
 
+	// 历史禁用账号迁移成封禁记录（用户需求：「原先旧的禁用的账号要迁移到封禁账号」）。
+	//
+	// 必须排在 EnsureUserBansSchema **之后**：本迁移要往 user_bans 写行，
+	// 表还没建就是空转。
+	//
+	// 与上面建表不同，这里**数据类失败只记日志、不 FATAL**：
+	//   - 迁移没跑完不影响任何准入判定（disabled 本来就已经拦住了这批人），
+	//     所以不该让整个服务起不来；
+	//   - 迁移是幂等收敛的，下次启动会只补没登记过的部分。
+	//
+	// 不迁移的后果同样是**静默的**：这批账号在封禁管理页里完全看不到，
+	// 运营无法回答「他们为什么被禁」也无法走正规解封流程 —— 只有把
+	// users.status 与 user_bans 对照着看才会发现少了人。
+	if migrated, err := EnsureLegacyDisabledUsersMigratedToBan(db); err != nil {
+		logger.SysLog(fmt.Sprintf("历史禁用账号迁移失败（下次启动会重试，已迁移 %d 条）：%v", migrated, err))
+	}
+
 	// 白名单表（T-04）。与黑名单共用同一套判定链：白名单命中时根本不进黑名单判定。
 	// 建表失败 FATAL —— 缺表时白名单中间件恒不命中，被误封的管理员将无法自救。
 	if err := runStartupMigration("ensureWhitelistSchema", func() error { return EnsureWhitelistSchema(db) }); err != nil {

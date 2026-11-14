@@ -103,6 +103,53 @@ func TestUserExamToolVersionReportsUnavailableWithoutDeployment(t *testing.T) {
 	}
 }
 
+// Docker 内嵌工具的语义：镜像里给了默认路径，但环境变量必须能覆盖它。
+//
+// 为什么单独钉这一条：镜像用 `ENV USEREXAM_TOOL_PATH=/app/userexam-crypto.exe`
+// 提供默认值，运维要用自己的 exe 时靠 `-e USEREXAM_TOOL_PATH=…` 覆盖。这条
+// 「env 优先」的语义如果坏了，容器里就会永远用镜像内那份，运维的替换静默失效。
+//
+// 注意这里测的是 **默认实现**（userExamToolPath 的原始闭包），不是被 stub 的版本
+// —— 所以不能像其它用例那样整体替换 var，只能临时改环境变量。
+func TestUserExamToolPathEnvOverrideDrivesDeployment(t *testing.T) {
+	customPath := filepath.Join(t.TempDir(), "custom-userexam.exe")
+	if err := os.WriteFile(customPath, []byte("MZ custom build"), 0o600); err != nil {
+		t.Fatalf("写自定义工具失败: %v", err)
+	}
+
+	// 保存原始闭包并还原环境变量，避免污染同包其它用例。
+	t.Setenv("USEREXAM_TOOL_PATH", customPath)
+	resolved := originalUserExamToolPath()
+	if resolved != customPath {
+		t.Fatalf("环境变量应覆盖默认路径，got %q want %q", resolved, customPath)
+	}
+
+	// 用真实解析结果跑一次 handler，确认管理台看到的是「已部署 + 版本号」。
+	original := userExamToolPath
+	userExamToolPath = originalUserExamToolPath
+	t.Cleanup(func() { userExamToolPath = original })
+
+	router := newUserExamToolRouter(adminUser())
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/userexam/tool/version", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("unexpected status %d", response.Code)
+	}
+	var payload userExamToolVersion
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !payload.Available {
+		t.Fatalf("配置了可读的 USEREXAM_TOOL_PATH 后必须显示已部署，实际 reason=%q", payload.Reason)
+	}
+	if payload.Version != userExamToolVersionLabel {
+		t.Fatalf("已部署时必须带版本号，got %q", payload.Version)
+	}
+	if payload.SizeBytes != int64(len("MZ custom build")) {
+		t.Fatalf("sizeBytes 应反映被覆盖的那个文件，got %d", payload.SizeBytes)
+	}
+}
+
 func TestUserExamToolDownloadServesConfiguredBinary(t *testing.T) {
 	directory := t.TempDir()
 	toolPath := filepath.Join(directory, "userexam_crypto.exe")
@@ -182,23 +229,42 @@ func TestUserExamInspectRejectsMissingFile(t *testing.T) {
 	}
 }
 
-func TestUserExamInspectRejectsEncryptedUpload(t *testing.T) {
+// 非法的「假加密」内容必须给出可读错误，且**不能再指向脱机工具**。
+//
+// ⚠️ 本用例原名 TestUserExamInspectRejectsEncryptedUpload，原来断言
+// 「加密库必须给出『先用脱机工具解密』的指引」—— 那是 2026-11-14 之前的口径。
+// 用户拍板「允许上传加密数据库，使用服务器进行解密」后，服务端**自己会解密**，
+// 再让用户去用脱机工具就是错的指引（用户会白跑一趟本机解密）。
+//
+// 现在这条用例守的是新语义：一段**结构上不是 aes256cbc 库**的密文，
+// 仍要被拒，但错误必须落到「不是有效数据库」或「算法不支持」分支，
+// 并且**绝不能**再把「脱机工具」当成推荐动作。
+func TestUserExamInspectRejectsMalformedCiphertext(t *testing.T) {
 	router := newUserExamToolRouter(adminUser())
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, buildInspectRequest(t, "UserExamInfo.db", []byte("SQLite format 4\x00ciphertext")))
 	if response.Code != http.StatusBadRequest {
-		t.Fatalf("加密库应返回 400，实际 %d", response.Code)
+		t.Fatalf("无法识别的密文应返回 400，实际 %d", response.Code)
 	}
-	var payload map[string]string
+	var payload map[string]any
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if payload["message"] == "" {
+	message, _ := payload["message"].(string)
+	if message == "" {
 		t.Fatal("拒绝时必须给出可读原因")
 	}
-	// 加密库必须给出「先用脱机工具解密」的可操作指引，而不是笼统失败。
-	if !strings.Contains(payload["message"], "脱机工具") {
-		t.Fatalf("加密库的拒绝原因应指向脱机工具，实际 %q", payload["message"])
+	reason, _ := payload["reason"].(string)
+	if reason != "not-database" && reason != "unsupported-cipher" {
+		t.Fatalf("reason = %q, want not-database 或 unsupported-cipher", reason)
+	}
+	// 反向断言：新口径下不应再让用户去用脱机工具解密。
+	if strings.Contains(message, "脱机工具") {
+		t.Fatalf("服务端已支持解密，不应再把用户推给脱机工具：%q", message)
+	}
+	// 四种分流必须有 machine-readable 的 reason（前端据此给不同引导）。
+	if reason == "" {
+		t.Fatal("错误响应必须带 reason 字段，供前端做差异化引导")
 	}
 }
 
@@ -328,12 +394,17 @@ func TestUserExamInspectRejectsNonSQLiteUpload(t *testing.T) {
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("非 SQLite 文件应返回 400，实际 %d", response.Code)
 	}
-	var payload map[string]string
+	var payload map[string]any
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if payload["message"] == "" {
+	message, _ := payload["message"].(string)
+	if message == "" {
 		t.Fatal("拒绝时必须给出可读原因")
+	}
+	// 用户传错文件与密钥问题必须可区分：这一支必须是 not-database。
+	if reason, _ := payload["reason"].(string); reason != "not-database" {
+		t.Fatalf("reason = %q, want not-database", reason)
 	}
 }
 

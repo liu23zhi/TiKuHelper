@@ -277,8 +277,33 @@ export default {
     const route = useRoute()
     const prefix = 'binding-history-' + useId()
     const fieldId = field => `${prefix}-${field}`
-    const mountedPath = route.path
     const { currentUser } = useCurrentUserDisplay()
+
+    // ── 为什么不能用 route.path === mountedPath 做授权判据（2026-11-14 实测缺陷）──────
+    //
+    // 本页被 **两条路由共用同一个组件**（见 router.js，70 号文档点名要求共用，
+    // 避免两套文案与两处重复逻辑）：
+    //     wechat-bindings  (meta.bindingKind='wechat')
+    //     phone-bindings   (meta.bindingKind='phone')
+    // 共用 component 意味着 Vue 在两者间切换时**复用同一实例、不重跑 setup**
+    // （实测 uid 不变：11 → 11）。setup 期间固化的 mountedPath 永远停在首次挂载的那条路径，
+    // 换到另一条后 `route.path === mountedPath` 恒 false ⇒ canManage() 恒 false ⇒
+    // 页面顶部出现「当前身份无绑定历史管理权限，请使用管理员账号登录。」
+    // 管理员明明已登录，却被判成无权限。
+    //
+    // 正确判据是「当前路由是否仍是本页自己的路由之一」，用 route.name 白名单表达。
+    // 注意这里**不能**用 route.meta.bindingKind 来判断：那个字段回答的是"显示哪一类数据"，
+    // 不是"我还在不在本页" —— 反例是把两条路由的 meta 都写错时它照样"通过"。
+    //
+    // 新增第三条绑定类路由（如 qq-bindings）时必须把 name 加进这个集合。
+    const OWN_ROUTE_NAMES = Object.freeze(['wechat-bindings', 'phone-bindings'])
+
+    const stillOwnRoute = () => {
+      const name = String(route?.name || '')
+      if (name) return OWN_ROUTE_NAMES.includes(name)
+      const matched = route?.matched || []
+      return matched.some(record => OWN_ROUTE_NAMES.includes(String(record?.name || '')))
+    }
 
     // kind 从路由 meta 取，且必须是白名单内的值 —— 取不到就当作 wechat 会让
     // 「手机号页显示微信数据」这种最坏情况静默发生，所以退化成空串并在
@@ -338,7 +363,7 @@ export default {
       return Number.isSafeInteger(id) && id > 0 && id <= 2147483647 && isAdminUser(user)
         && !['disabled', '0'].includes(String(user?.status ?? 'enabled'))
     }
-    const canManage = () => alive && route.path === mountedPath
+    const canManage = () => alive && stillOwnRoute()
       && getCurrentUserLogoutEpoch() === mountedLogoutEpoch && validAdmin() && Boolean(kind.value)
 
     const stateOptions = Object.keys(STATE_LABELS).map(value => ({ value, label: STATE_LABELS[value] }))

@@ -54,13 +54,18 @@ export default {
 </script>
 
 <style scoped>
-.ai-section-heading { padding: 16px 24px; border-bottom: 1px solid var(--console-border); }
-.ai-section-heading h2 { margin: 0; font-size: 16px; color: var(--console-text); }
+/* 布局类必须自带定义（父组件 scoped 规则对子组件不生效，见
+ * AIAdvancedSettingsSection.vue 的说明）。 */
+.ai-section-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; padding: 16px 24px; border-bottom: 1px solid var(--console-border); }
+.ai-section-heading h2 { margin: 0; font-size: 16px; font-weight: 600; color: var(--console-text); }
 .section-description { margin: 4px 0 0; color: var(--console-muted); font-size: 13px; }
-.console-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 32px; min-width: 0; padding: 24px; }
+/* ⚠️ 这里**不能有 padding**：外层 ConsolePanel__body 已经给 24px，
+ * 叠加后本卡片内容比相邻卡片多缩进一倍（用户报的横向错位之一）。
+ * 之前写的是 `gap: 8px 32px; padding: 24px`，padding 已删。 */
+.console-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 32px; min-width: 0; }
 .full-width { grid-column: 1 / -1; }
 @media (max-width: 768px) {
-  .ai-section-heading, .console-form-grid { padding: 16px; }
+  .ai-section-heading { padding: 16px; }
   .console-form-grid { grid-template-columns: minmax(0, 1fr); }
 }
 .hint {

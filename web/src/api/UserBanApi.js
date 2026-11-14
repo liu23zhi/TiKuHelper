@@ -34,17 +34,33 @@ export function getUserBans(params) {
 //
 // 这里**不**为 expiresAt 提供默认值兜底：默认成永久会让「只想封 1 小时」
 // 的运营不小心封成永久，而封禁是风控动作，宁可让调用方显式传。
+//
+// durationAmount / durationUnit（t203）是「自定义时长封禁」的入口：
+// 传了时长就由**服务端**按时长算到期时间（`durationAmount>0` 时优先于 expiresAt）。
+// 为什么不让前端自己算好绝对时间再传 expiresAt：前端算时间会吃到浏览器时区与
+// 时钟偏差，而「封 7 天」是服务端语义 —— 管理员电脑时钟偏 10 分钟不该让封禁时长偏 10 分钟。
 export function createUserBan(payload) {
   const userId = Number(payload.userId)
   if (!Number.isInteger(userId) || userId <= 0) throw new Error('请选择要封禁的用户')
   const reason = String(payload.reason == null ? '' : payload.reason).trim()
   if (!reason) throw new Error('封禁原因不能为空')
   const expiresAt = String(payload.expiresAt == null ? '' : payload.expiresAt).trim()
+  const durationAmount = Number(payload.durationAmount || 0)
+  if (!Number.isInteger(durationAmount) || durationAmount < 0) {
+    throw new Error('封禁时长必须是正整数')
+  }
+  const data = { userId, reason, expiresAt }
+  // 只在真的传了时长时才带上这两个字段：带上 durationAmount:0 语义上等于
+  // 「永久」，但让请求体看起来和永久封禁一样，排查时无法区分两种意图。
+  if (durationAmount > 0) {
+    data.durationAmount = durationAmount
+    data.durationUnit = String(payload.durationUnit || 'hour').trim() || 'hour'
+  }
   return request({
     errorFeedback: 'local',
     url: '/api/admin/user-bans',
     method: 'post',
-    data: { userId, reason, expiresAt },
+    data,
   })
 }
 

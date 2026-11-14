@@ -79,28 +79,40 @@
           <a-descriptions-item label="最近登录 IP">{{ base.lastLoginIp || '-' }} {{ base.lastLoginRegion ? `（${base.lastLoginRegion}）` : '' }}</a-descriptions-item>
         </a-descriptions>
 
+        <!--
+          三张图（t200 用户诉求「请添加图表等，这样会直观一些」）：
+            ① 24 小时时段分布（柱）② 题目类型分布（环）③ 消费趋势（折线）
+          空数据由 PortraitChart 统一渲染「暂无数据」占位 —— 三处判据同源，
+          不存在「某个图忘了判断」就画出全 0 图的情况。
+        -->
         <div class="portrait-charts">
-          <section v-for="chart in chartList" :key="chart.key" class="portrait-chart">
-            <h3 class="portrait-chart__title">{{ chart.title }}</h3>
-            <!--
-              空态：后端无数据时返回空数组，这里显示「暂无数据」。
-              不画 0 值扇区 —— 那会让「从没发生过」看起来像「发生过但次数为 0」。
-            -->
-            <a-empty v-if="chart.empty" :description="PORTRAIT_EMPTY_HINT" />
-            <!--
-              图表容器：真实 echarts 实例在拥有构建环境时挂载到该节点。
-              本仓 web/node_modules 为空，无法验证渲染，因此这里只预留容器 + 数据表回退。
-              数据表回退也让无图表库的环境仍然可读（不是「白屏」）。
-            -->
+          <PortraitChart
+            v-for="chart in chartList"
+            :key="chart.key"
+            :title="chart.title"
+            :hint="chart.hint"
+            :options="chart.options"
+            :aria-label="chart.ariaLabel"
+          />
+        </div>
+
+        <!--
+          其余维度（区域 / 星期 / 工单 / 来源）仍用表格：
+          它们的基数不稳定（区域可达几十项），表格比图更便于逐条核对。
+        -->
+        <div v-if="tableViewList.length" class="portrait-tables">
+          <section v-for="table in tableViewList" :key="table.key" class="portrait-chart">
+            <h3 class="portrait-chart__title">{{ table.title }}</h3>
+            <a-empty v-if="table.empty" :description="PORTRAIT_EMPTY_HINT" />
             <div v-else class="portrait-chart__body">
               <table class="portrait-chart__table">
                 <thead>
                   <tr><th scope="col">分类</th><th scope="col">数量</th></tr>
                 </thead>
                 <tbody>
-                  <tr v-for="(label, index) in chart.labels" :key="label + index">
+                  <tr v-for="(label, index) in table.labels" :key="label + index">
                     <td>{{ label }}</td>
-                    <td>{{ chart.values[index] }}</td>
+                    <td>{{ table.values[index] }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -140,16 +152,18 @@
 // router.js 的 ADMIN_ONLY_ROUTE_NAMES 跳走。**但这只是可见性，不是安全边界** ——
 // 真正的闸门在后端（Auth + RequireAdmin + handler 内二次校验）。
 // 因此本页即使被绕过也只可能拿到 403，不会拿到数据。
-import { computed, defineComponent, onMounted, ref, shallowRef, useId, watch } from 'vue'
+import { computed, defineComponent, inject, onBeforeUnmount, onMounted, ref, shallowRef, useId, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from 'ant-design-vue'
 
 import { getPortraitOverview, getUserPortrait } from '@/api/UserPortraitApi'
 import { getUserList } from '@/api/TikuComponentApi'
 import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
+import PortraitChart from './PortraitChart.vue'
 import { ensureRequestFailure } from '@/utils/requestFailureView.mjs'
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
 import { useCurrentUserDisplay, isAdminUser } from '@/utils/currentUser'
+import { THEME_CONTROLLER_KEY } from '@/utils/themeMode.mjs'
 import {
   PORTRAIT_EMPTY_HINT,
   PORTRAIT_SCOPE_OVERALL,
@@ -159,10 +173,24 @@ import {
   normalizePortraitUserId,
   portraitScopeHint,
 } from '@/utils/portraitCharts.mjs'
+import {
+  PORTRAIT_HOURS_TITLE,
+  PORTRAIT_TREND_TITLE,
+  PORTRAIT_TYPES_TITLE,
+  buildPortraitAllOptions,
+  readPortraitPalette,
+} from './portraitChartOptions.mjs'
+
+// 趋势图的横轴口径说明。
+//
+// ⚠️ 后端当前**没有**按天的趋势字段（user_portrait.go 全文无 trend / daily / by_date）。
+// 任务书红线是「不改后端字段，缺字段写进报告」—— 所以这里如实降级为
+// 「用后端确实提供的小时桶作横轴」，并在页面上标注，不臆造「今日 vs 昨日」。
+const PORTRAIT_TREND_HINT = '横轴为后端提供的时间桶（按小时）。后端暂无按天聚合字段，因此这不是「今日 vs 昨日」对比。'
 
 export default defineComponent({
   name: 'UserPortrait',
-  components: { RequestFailureAlert },
+  components: { RequestFailureAlert, PortraitChart },
   setup() {
     const route = useRoute()
     const router = useRouter()
@@ -170,6 +198,26 @@ export default defineComponent({
     const selectorId = `portrait-user-${useId()}`
 
     const canViewPortrait = computed(() => isAdminUser(currentUser.value))
+
+    // 主题：ECharts 是 canvas，CSS 变量对它无效，必须把变量值读出来传进 option。
+    // 因此主题切换时要重建 option —— 否则深色模式下图仍是浅色文字/浅色分隔线。
+    const themeController = inject(THEME_CONTROLLER_KEY, null)
+    const themeResolved = ref(themeController?.getState().resolved || 'light')
+    const unsubscribeTheme = themeController?.subscribe(state => { themeResolved.value = state.resolved })
+    onBeforeUnmount(() => { unsubscribeTheme?.() })
+
+    // 从 DOM 实际取值读主题色。读的是页面根节点，它继承 html[data-theme] 的变量。
+    const palette = computed(() => {
+      // 依赖 themeResolved：主题变化时触发重算（getComputedStyle 本身不可响应）。
+      void themeResolved.value
+      if (typeof window === 'undefined' || typeof window.getComputedStyle !== 'function') {
+        return readPortraitPalette({ element: null })
+      }
+      return readPortraitPalette({
+        element: document.documentElement,
+        readStyle: (el, prop) => window.getComputedStyle(el).getPropertyValue(prop),
+      })
+    })
 
     // 视角：'' = 整体；正整数 = 该用户。
     const activeUserId = ref(normalizePortraitUserId(route.query.userId))
@@ -197,13 +245,45 @@ export default defineComponent({
       money: value => formatMoneyValue(value),
       count: value => value,
     }))
+    const portraitCharts = computed(() => buildPortraitCharts(portrait.value || {}))
+
+    // 三张图（t200）：option 为 null 表示空数据 → PortraitChart 渲染「暂无数据」。
+    // 空态判断只在 buildPortraitAllOptions 一处，页面不重复判断。
+    const chartOptions = computed(() => buildPortraitAllOptions(portraitCharts.value, palette.value))
+
     const chartList = computed(() => {
-      const charts = buildPortraitCharts(portrait.value || {})
+      const options = chartOptions.value
       return [
-        { key: 'hours', ...charts.hours },
+        {
+          key: 'hours',
+          title: PORTRAIT_HOURS_TITLE,
+          hint: '横轴只列有数据的小时，不补齐 24 格（补齐会把「没发生过」画成「0 次」）。',
+          ariaLabel: '24 小时时段分布柱状图',
+          options: options.hours,
+        },
+        {
+          key: 'types',
+          title: PORTRAIT_TYPES_TITLE,
+          hint: '按账单类型聚合，与账单明细页同口径。',
+          ariaLabel: '题目类型分布环形图',
+          options: options.types,
+        },
+        {
+          key: 'trend',
+          title: PORTRAIT_TREND_TITLE,
+          hint: PORTRAIT_TREND_HINT,
+          ariaLabel: '消费趋势折线图',
+          options: options.trend,
+        },
+      ]
+    })
+
+    // 其余维度仍用表格：基数不稳定（区域可达几十项），表格比图更便于逐条核对。
+    const tableViewList = computed(() => {
+      const charts = portraitCharts.value
+      return [
         { key: 'weekdays', ...charts.weekdays },
         { key: 'regions', ...charts.regions },
-        { key: 'billingTypes', ...charts.billingTypes },
       ]
     })
 
@@ -326,6 +406,7 @@ export default defineComponent({
       notes,
       tiles,
       chartList,
+      tableViewList,
       reload,
       switchToOverall,
       onUserChange,

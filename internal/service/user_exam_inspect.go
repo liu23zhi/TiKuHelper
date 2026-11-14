@@ -15,8 +15,14 @@ import (
 
 // UserExamInfo 是考试客户端本地库的两张已知表。
 //
-// 该库默认用 SQLite3MC 加密，服务端**不做**解密：加密能力只留在管理员
-// 下载的脱机工具里。这里只读取管理员已经解密并上传的明文副本。
+// ⚠️ 2026-11-14 方向变更：此注释原文为「该库默认用 SQLite3MC 加密，服务端**不做**
+// 解密：加密能力只留在管理员下载的脱机工具里。这里只读取管理员已经解密并上传的
+// 明文副本。」—— 用户拍板后（原话「允许上传加密数据库，使用服务器进行解密」），
+// 服务端**现在会**解密，见 service/user_exam_decrypt.go。
+//
+// 本文件仍只负责「读明文库」这一层，是解密之后的下一段；
+// InspectUserExamDatabase 的契约（只读、只认已知两表、只接受明文）保持不变 ——
+// 解密由调用方（controller）在调它之前完成。
 const (
 	userExamBaseInfoTable   = "baseInfo"
 	userExamMacAddressTable = "macAddress"
@@ -45,6 +51,13 @@ type UserExamInspectResult struct {
 	Tables      map[string]UserExamTable `json:"tables"`
 	OtherTables []string                 `json:"otherTables"`
 	RowCounts   map[string]int           `json:"rowCounts"`
+	// Decrypted 表示这次上传的库**是否需要并成功被服务器解密**。
+	//
+	// 指针：nil 表示调用方没设置（例如纯读明文的单元测试），
+	// 序列化时省略；非 nil 时前端据它显示「已自动解密」。
+	// 用指针而不是裸 bool，是为了区分「没解密」与「不知道」——
+	// 裸 bool 的零值会把「未设置」显示成「未解密」。
+	Decrypted *bool `json:"decrypted,omitempty"`
 }
 
 // InspectUserExamDatabase 只读解析一个**已解密**的 UserExamInfo 库。

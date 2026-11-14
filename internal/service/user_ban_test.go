@@ -742,6 +742,15 @@ func TestUserBanOperationsLogWithoutPanic(t *testing.T) {
 }
 
 // ptrTime 是取 *time.Time 的小工具（多处用例需要造到期时间）。
+//
+// ⚠️ 一律返回 **UTC**（2026-11-14 补）。本文件的用例多数**直接插库**造数据
+// （绕过 service.Ban 的时区归一化），而 `user_bans.expires_at` 在 SQLite 里
+// 按文本比较。若这里给本地时间（+08:00），与生产写入的 UTC（"…Z"）格式混在一起，
+// `expires_at > nowUTC` 会按字符串比大小 —— `'…T06:53:28Z'` vs `'…T14:23:00+08:00'`
+// 比较时前者更小 ⇒ 已过期的行被当成「还没到期」，用例会以「实现坏了」的假象失败。
+//
+// 让测试数据与生产同格式，测的才是 SQL 语义而不是构造错误。
 func ptrTime(value time.Time) *time.Time {
-	return &value
+	utc := value.UTC()
+	return &utc
 }

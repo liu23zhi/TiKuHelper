@@ -685,4 +685,142 @@ func TestUserBanAdminRevokeValidation(t *testing.T) {
 }
 
 // timePtr 取 *time.Time 的小工具。
-func timePtr(value time.Time) *time.Time { return &value }
+//
+// ⚠️ 一律返回 **UTC**：本用例组直接插库构造数据（绕过了 service.Ban 的时区归一化），
+// 而 `user_bans.expires_at` 在 SQLite 里按文本比较。若这里给本地时间（+08:00），
+// 与生产写入的 UTC（Z）格式混在一起，`expires_at > nowUTC` 会按字符串比大小而错判 ——
+// 表现为「生效中的封禁在列表里消失」。
+// 让测试数据与生产同格式，才能保证「列表判定」测的是 SQL 语义而不是构造错误。
+func timePtr(value time.Time) *time.Time {
+	utc := value.UTC()
+	return &utc
+}
+
+// 「自定义时长封禁」（t203）：POST 带 durationAmount/durationUnit 时必须按时长算出到期时间。
+//
+// # 这条用例是为覆盖 duration 分支而补的，**不是**过期路径的重复
+//
+// 本文件其它封禁用例全部走 `expiresAt`（绝对时间）路径；`TestUserBanAdminCreateExpiresAtSemantics`
+// 测的是「过去时间 400 / 空=永久 / 未来保留」，也属同一条路径。duration 分支（`durationAmount>0`）
+// 在加它之前**零覆盖**。
+//
+// # 空覆盖的实测证据（2026-11-14，这是它存在的理由）
+//
+// 把 controller 里的 `expiresAt = resolved` 改成 `expiresAt = nil`（= 临时封禁被写成永久），
+// 在补本用例之前：**既有 12 条封禁用例全部 PASS** —— 删掉整个功能没有任何告警。
+// 补上之后，同一变异精确命中本用例 1 条，且不连带其它用例：
+//
+//	user_ban_admin_test.go:744: 1 小时: duration ban must persist expires_at
+//	    —— 写成 nil 会把它变永久封禁（这正是变异验证要抓的缺陷）
+//
+// # 判据为什么是「落库的绝对到期时间」而不是「响应 201」
+//
+// 后者在「写 nil」的实现下**同样成立**（永久封禁也是 201）。只有读回 `user_bans.expires_at`
+// 并比较它与 now 的差值，才能区分「真的按时长算了」与「静默变成永久」。
+func TestUserBanAdminCreateWithDurationPersistsExpiry(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserBanAdminTestDB(t)
+	installUserBanAdminTestDB(t, db)
+	admin := seedUserBanAdminActor(t, db, 9320, "SYNTHETIC_DURATION_ADMIN")
+	router := userBanAdminTestRouter(&admin)
+
+	cases := []struct {
+		name     string
+		amount   int
+		unit     string
+		expected time.Duration
+	}{
+		{"1 小时", 1, "hour", time.Hour},
+		{"7 天", 7, "day", 7 * 24 * time.Hour},
+		{"自定义 3 小时", 3, "hour", 3 * time.Hour},
+		{"自定义 30 天", 30, "day", 30 * 24 * time.Hour},
+	}
+	for index, testCase := range cases {
+		target := seedUserBanTarget(t, db, "SYNTHETIC_DURATION_"+strconv.Itoa(index), "enabled")
+		before := time.Now()
+		body := `{"userId":` + strconv.Itoa(int(target.ID)) +
+			`,"reason":"时长封禁","durationAmount":` + strconv.Itoa(testCase.amount) +
+			`,"durationUnit":"` + testCase.unit + `"}`
+		recorder := userBanAdminRequest(router, http.MethodPost, "/api/admin/user-bans", body)
+		if recorder.Code != http.StatusCreated {
+			t.Fatalf("%s: status = %d, want 201 (%s)", testCase.name, recorder.Code, recorder.Body.String())
+		}
+
+		// ① 落库的 expires_at 必须约等于 before + 时长（容差 2 分钟，覆盖迁移与执行耗时）。
+		var row entity.UserBan
+		if err := db.Where("user_id = ?", target.ID).First(&row).Error; err != nil {
+			t.Fatalf("%s: load ban row: %v", testCase.name, err)
+		}
+		if row.ExpiresAt == nil {
+			t.Fatalf("%s: duration ban must persist expires_at —— "+
+				"写成 nil 会把它变永久封禁（这正是变异验证要抓的缺陷）", testCase.name)
+		}
+		delta := row.ExpiresAt.Sub(before)
+		if delta < testCase.expected-time.Minute*2 || delta > testCase.expected+time.Minute*2 {
+			t.Fatalf("%s: expires_at is %v after now, want ~%v", testCase.name, delta, testCase.expected)
+		}
+
+		// ② 到期前判封禁（否则「写了个过去的时间」也能过第 ① 条）。
+		//
+		// ⚠️ 探针时刻必须落在**封禁生效之后、到期之前**：用 before+expected/2 会在
+		// 测试时长较短（如 1 小时）时落到封禁生效前的窗口里 —— 那时 user_bans 行
+		// 的 banned_at 还没到，判定按「未生效」返回 false，用例会以「实现坏了」的
+		// 假象失败（我第一版就是这么错的）。正确做法是显式取 [生效, 到期) 的中点。
+		effectiveFrom := time.Now()
+		probeAt := effectiveFrom.Add(testCase.expected / 2)
+		if banned, err := service.IsBannedAt(db, target.ID, probeAt); err != nil || !banned {
+			t.Fatalf("%s: must be banned before expiry at %v (banned=%v err=%v, expires_at=%v)",
+				testCase.name, probeAt, banned, err, *row.ExpiresAt)
+		}
+	}
+
+	// 永久封禁（不传时长）必须落 NULL，与前面对照。
+	permanent := seedUserBanTarget(t, db, "SYNTHETIC_DURATION_PERMANENT", "enabled")
+	if recorder := userBanAdminRequest(router, http.MethodPost, "/api/admin/user-bans",
+		`{"userId":`+strconv.Itoa(int(permanent.ID))+`,"reason":"永久"}`); recorder.Code != http.StatusCreated {
+		t.Fatalf("permanent ban: status = %d (%s)", recorder.Code, recorder.Body.String())
+	}
+	var permanentRow entity.UserBan
+	if err := db.Where("user_id = ?", permanent.ID).First(&permanentRow).Error; err != nil {
+		t.Fatalf("load permanent row: %v", err)
+	}
+	if permanentRow.ExpiresAt != nil {
+		t.Fatalf("permanent ban must persist NULL expires_at, got %v", *permanentRow.ExpiresAt)
+	}
+}
+
+// 时长参数的三条非法输入必须 400，不能静默退化成永久。
+func TestUserBanAdminCreateWithInvalidDuration(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserBanAdminTestDB(t)
+	installUserBanAdminTestDB(t, db)
+	admin := seedUserBanAdminActor(t, db, 9321, "SYNTHETIC_DURATION_INVALID")
+	router := userBanAdminTestRouter(&admin)
+	target := seedUserBanTarget(t, db, "SYNTHETIC_DURATION_INVALID_TARGET", "enabled")
+	userID := strconv.Itoa(int(target.ID))
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		// 负数：明显的调用方 bug，静默解读成永久会让误操作变成不可撤销的处置。
+		{"负时长", `{"userId":` + userID + `,"reason":"负","durationAmount":-5,"durationUnit":"day"}`},
+		// 未知单位：不能默认按小时（「填了 3 周」会变成 3 小时）。
+		{"未知单位", `{"userId":` + userID + `,"reason":"周","durationAmount":3,"durationUnit":"week"}`},
+		// 超上限：应引导用永久封禁。
+		{"超过 365 天", `{"userId":` + userID + `,"reason":"太久","durationAmount":400,"durationUnit":"day"}`},
+	}
+	for _, testCase := range cases {
+		recorder := userBanAdminRequest(router, http.MethodPost, "/api/admin/user-bans", testCase.body)
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400 (%s)", testCase.name, recorder.Code, recorder.Body.String())
+		}
+	}
+	var rows int64
+	if err := db.Model(&entity.UserBan{}).Count(&rows).Error; err != nil {
+		t.Fatalf("count bans: %v", err)
+	}
+	if rows != 0 {
+		t.Fatalf("rejected duration bans must not persist rows, got %d", rows)
+	}
+}

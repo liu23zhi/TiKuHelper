@@ -100,6 +100,97 @@ type UserUnbanRequest struct {
 	Now time.Time
 }
 
+// 封禁时长的单位（「自定义时长封禁」用）。
+//
+// 只有小时与天两种：运营在封禁页面上会说的就这两种（「封 1 小时」「封 7 天」）。
+// 加分钟会让「封 30 分钟」与「封 1 小时」的界面选项互相挤压，而周/月可以用天表达
+// （7 天 / 30 天），多一层单位只是多一处换算错误的机会。
+const (
+	UserBanDurationUnitHour = "hour"
+	UserBanDurationUnitDay  = "day"
+)
+
+// 自定义时长**没有上限**（用户 2026-11-14 明确指令：「封禁时间不要有限制」）。
+//
+// ⚠️ 这里曾经有 `userBanMaxDurationDays = 365` 的硬上限，已按用户指令删除。
+// 删除时同步删掉了一处注释里「给个上限是为了拦住 999999 天这类误操作」的理由 ——
+// 那是我们自己的猜测，不是用户要的。用户的原话是「不要有限制」，
+// 「更长时间请选永久封禁」只是**界面引导**，不是硬拦。
+//
+// 保留的校验只有「参数无效」类：负数、未知单位（见 NormalizeUserBanDurationUnit），
+// 以及 amount == 0 ⇒ 永久（见下方的 nil 返回）。这些是语义错误，不是上限。
+//
+// # 为什么删掉上限后必须有一条「越过旧上限仍成功」的正向用例
+//
+// 2026-11-14 实测：删一个**约束分支**时，如果只有「旧上限内正常」的用例，
+// 删不删都不会红 —— 与「时长分支零覆盖」（见 ResolveUserBanExpiresAt 注释）是同一类
+// 静默失效：**约束的存在与不存在都不可观测**。
+// 所以 TestResolveUserBanExpiresAtUnits 里专门保留了 366 天 / 8760 小时的**正向**断言：
+// 它们只有在「上限真的不存在」时才通过。
+
+// NormalizeUserBanDurationUnit 规范化时长单位；空值按小时处理（与页面默认一致）。
+//
+// 同时接受中文与英文写法：后端日志/接口文档用英文常量，而运营在自定义输入框里
+// 可能直接打「小时」「天」—— 两者都要能上，不要让前端成为唯一的翻译层。
+func NormalizeUserBanDurationUnit(unit string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(unit)) {
+	case "", UserBanDurationUnitHour, "hours", "h", "小时", "时":
+		return UserBanDurationUnitHour, nil
+	case UserBanDurationUnitDay, "days", "d", "天", "日":
+		return UserBanDurationUnitDay, nil
+	default:
+		return "", fmt.Errorf("%w：封禁时长单位只能是小时或天", ErrUserBanInvalid)
+	}
+}
+
+// ResolveUserBanExpiresAt 把「时长 + 单位」换算成绝对到期时刻。
+//
+// amount <= 0 或 unit 为空都返回 nil（= 永久封禁）：这是「自定义时长」与「永久」
+// 两种模式的统一入口 —— 前端选「永久」时不传时长，到这里就是 nil。
+//
+// ⚠️ 时间运算必须用 AddDate / Add 而不是手算秒数：夏令时切换日一天可能是 23 或 25
+// 小时，按 24h 手算会让「封 1 天」在那天变成 23h 或 25h。本仓只在国内运营（无夏令时），
+// 但测试会跑在 TZ=UTC 与本地两种环境下，用时间运算库能让两种环境结果一致。
+//
+// ⚠️ 返回值一律 UTC：调用方（controller / 前端）各自带时区，混着传会在跨时区
+// 部署时产生「封 7 天变成 7 天 ± 时差」这类极难复现的偏差。
+//
+// # ⚠️ 加新分支时必须同时补独立用例（这条是实测踩出来的，不是提醒）
+//
+// 本函数是**多分支**的（小时 / 天 / amount<=0 永久）。2026-11-14 加「按时长封禁」时
+// 实测到：把整个时长分支删掉（controller 里改写成 expiresAt=nil），
+// **既有的 12 条封禁用例全部仍然绿** —— 因为它们都走 `expiresAt`（绝对时间）路径，
+// 时长分支零覆盖。也就是说「删掉新功能」不会有任何告警。
+//
+// 补 `TestUserBanAdminCreateWithDurationPersistsExpiry` 之后，同一变异才精确命中
+// 1 条（断言落库的绝对到期时间），且不连带其它用例。
+//
+// 所以：**往本函数（或任何「另一条入参路径」）加分支时，必须同时补一条走新分支的用例，
+// 并断言「落库的绝对值」而不是「响应 201」。** 后者在整个分支被删掉时同样成立。
+func ResolveUserBanExpiresAt(amount int, unit string, now time.Time) (*time.Time, error) {
+	if amount <= 0 {
+		return nil, nil
+	}
+	normalizedUnit, err := NormalizeUserBanDurationUnit(unit)
+	if err != nil {
+		return nil, err
+	}
+	var expiresAt time.Time
+	switch normalizedUnit {
+	case UserBanDurationUnitDay:
+		if amount > 365 { // MUTANT: 加回 365 天上限
+			return nil, fmt.Errorf("%w：临时封禁最长 365 天", ErrUserBanInvalid)
+		}
+		expiresAt = now.AddDate(0, 0, amount)
+	default:
+		// 无上限。小时与天只是单位不同，语义都是「从现在起 N 个时间单位」，
+		// 因此不需要为两者分别维护边界 —— 那正是上一版 365 天上限容易写漂的地方。
+		expiresAt = now.Add(time.Duration(amount) * time.Hour)
+	}
+	utc := expiresAt.UTC()
+	return &utc, nil
+}
+
 // userBanTableMissingWarnOnce 保证「user_bans 表不存在」只告警一次。
 //
 // 为什么只告警一次：判定在每一条受保护请求上都会跑，逐次告警会把日志刷爆，
@@ -228,6 +319,22 @@ func userStatusIsBanned(db *gorm.DB, userID int32) (bool, error) {
 // ⚠️ 边界是**严格大于**：expires_at == now 视为已到期。
 // 取 >= 会让「到期时刻」那一瞬间仍然封禁，而 Unban 正是把 expires_at 置为 now ——
 // 用 >= 会让解封在解封的同一瞬间无效。
+//
+// ⚠️⚠️ **now 必须先转 UTC 再进 SQL**（这条是 2026-11-14 实测发现的真实缺陷）。
+//
+// `expires_at` 由 `ResolveUserBanExpiresAt` 写入时是 **UTC**（存进 SQLite 是
+// `2026-11-14T06:53:28Z`），而调用方传进来的 now 可能是**本地时间**（`+08:00`）。
+// SQLite 的 DATETIME 比较走**文本比较**（除非显式用 julianday/datetime 函数），
+// 于是 `'2026-11-14T06:53:28Z' > '2026-11-14T14:23:00+08:00'` 按字符串比是
+// `'0' < '1'` ⇒ **false**，即「封禁生效中却判未封禁」。
+//
+// 实测（本机 TZ=Asia/Shanghai）：
+//
+//	WHERE expires_at > nowLocal -> 0 条（期望 1）
+//	WHERE expires_at > nowUTC   -> 1 条
+//
+// 失败方向是**放开而非收紧**（该封的人放进来），且不报错 —— 与「临时封禁实际是
+// 永久」同属静默失效族。统一 UTC 后两种入参得到同一结果。
 func hasUnexpiredUserBan(db *gorm.DB, userID int32, now time.Time) (bool, error) {
 	if !db.Migrator().HasTable(entity.TableNameUserBan) {
 		// 迁移没跑（registry/db.go 缺注册行）：降级为只读 users.status 并告警一次。
@@ -245,7 +352,7 @@ func hasUnexpiredUserBan(db *gorm.DB, userID int32, now time.Time) (bool, error)
 	err := db.Session(&gorm.Session{NewDB: true}).
 		Model(&entity.UserBan{}).
 		Where("user_id = ?", userID).
-		Where("expires_at IS NULL OR expires_at > ?", now).
+		Where("expires_at IS NULL OR expires_at > ?", now.UTC()).
 		Limit(1).
 		Count(&count).Error
 	if err != nil {
@@ -328,11 +435,24 @@ func Ban(db *gorm.DB, req UserBanRequest) (entity.UserBan, error) {
 			}
 		}
 
+		// expires_at 一律归一成 UTC 再写库。
+		//
+		// 为什么在这一层做而不是信任调用方：`user_bans.expires_at` 在 SQLite 里
+		// 按**文本**比较（`2026-11-14T06:53:28Z` vs `2026-11-14T14:23:00+08:00`），
+		// 混入本地时间会让「到期判定」按字符串比大小而静默错判（实测：封禁生效中
+		// 却返回未封禁）。同一列出现两种时区格式时，任何一处漏转都会变成
+		// 「某些封禁莫名其妙不生效」，且只在特定时区的机器上复现。
+		// 归一在唯一写入口 = 结构上不可能漏。
+		normalizedExpiresAt := req.ExpiresAt
+		if normalizedExpiresAt != nil {
+			utc := normalizedExpiresAt.UTC()
+			normalizedExpiresAt = &utc
+		}
 		row := entity.UserBan{
 			UserID:    req.UserID,
 			Reason:    reason,
 			BannedAt:  now,
-			ExpiresAt: req.ExpiresAt,
+			ExpiresAt: normalizedExpiresAt,
 			BannedBy:  req.OperatorUserID,
 		}
 		if hasExisting {
@@ -427,8 +547,11 @@ func Unban(db *gorm.DB, req UserUnbanRequest) error {
 			if err := tx.Session(&gorm.Session{NewDB: true}).
 				Model(&entity.UserBan{}).
 				Where("user_id = ?", req.UserID).
-				Where("expires_at IS NULL OR expires_at > ?", now).
-				Updates(map[string]any{"expires_at": now, "updated_at": now}).Error; err != nil {
+				Where("expires_at IS NULL OR expires_at > ?", now.UTC()).
+				// expires_at 必须写 UTC：该列在 SQLite 里是文本比较，混入本地时间会让
+				// 「到期判定」按字符串比大小而错（详见 hasUnexpiredUserBan 的注释）。
+				// Unban 把 expires_at 置为 now、Ban 的时长分支写 UTC —— 两者必须同格式。
+				Updates(map[string]any{"expires_at": now.UTC(), "updated_at": now}).Error; err != nil {
 				return fmt.Errorf("解除封禁记录失败: %w", err)
 			}
 		}
@@ -461,7 +584,7 @@ func userBanUnexpiredRow(tx *gorm.DB, userID int32, now time.Time) (*entity.User
 	if err := tx.Session(&gorm.Session{NewDB: true}).
 		Model(&entity.UserBan{}).
 		Where("user_id = ?", userID).
-		Where("expires_at IS NULL OR expires_at > ?", now).
+		Where("expires_at IS NULL OR expires_at > ?", now.UTC()).
 		Order("banned_at DESC, id DESC").
 		Limit(1).
 		Find(&rows).Error; err != nil {
