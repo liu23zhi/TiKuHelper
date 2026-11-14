@@ -23,6 +23,9 @@
 /** 服务状态端点路径。普通用户可访问（后端走 AuthOrAccessToken）。 */
 export const SERVICE_STATUS_SUMMARY_PATH = '/api/service-status/summary'
 
+/** 脱敏逐分钟序列端点。同样走 AuthOrAccessToken，普通用户可访问。 */
+export const SERVICE_STATUS_SERIES_PATH = '/api/service-status/series'
+
 /** 管理员端点。**本页不得请求**：普通用户 403，且那是运维级逐分钟明细。 */
 export const SERVICE_STATUS_ADMIN_PATH = '/api/admin/service-status'
 
@@ -235,4 +238,115 @@ export async function loadServiceStatusSummary(fetchSummary) {
     return { ok: false, status, message: '服务状态数据格式暂不受支持，请稍后重试。', data: null }
   }
   return { ok: true, status, message: '', data }
+}
+
+/* ───────────────────────── 逐分钟序列（脱敏） ───────────────────────── */
+
+/** 单个序列点允许的字段（与后端 controller.publicStatusPoint 对齐的白名单）。 */
+const SERIES_POINT_FIELDS = ['minute', 'totalRequests', 'successRequests', 'avgLatencyMs']
+
+/**
+ * 校验一份 series 响应体。
+ *
+ * 刻意**不**接受 failedRequests / 四个失败分类 —— 后端已经不给，
+ * 这里再挡一遍是为了「万一后端有一天加回来」，前端也不会渲染它。
+ * 这条与后端白名单测试是同一个判据的两端。
+ */
+export function isSupportedServiceStatusSeries(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  if (readFiniteNumber(value.schemaVersion) !== 1) return false
+  if (!Array.isArray(value.points)) return false
+  return value.points.every((point) => {
+    if (!point || typeof point !== 'object' || Array.isArray(point)) return false
+    return SERIES_POINT_FIELDS.every((field) => readNonNegativeInteger(point[field]) !== null)
+  })
+}
+
+/**
+ * 把 series 响应体转成可渲染的曲线数据；不支持则返回 null（页面退回摘要视图）。
+ *
+ * 返回 null 而不是空数组：调用方要能区分「端点失败/格式不认」（不画曲线）
+ * 与「端点正常但窗口内确实没有点」（画一条空态说明）。混成空数组会让
+ * 后者被当成前者，用户看不出「服务刚重启还没采样」。
+ */
+export function buildServiceStatusSeriesView(payload) {
+  if (!isSupportedServiceStatusSeries(payload)) return null
+
+  const points = payload.points.map((point) => {
+    const total = readNonNegativeInteger(point.totalRequests)
+    const success = readNonNegativeInteger(point.successRequests)
+    const minute = readNonNegativeInteger(point.minute)
+    // 成功率按点重算：后端不传 failedRequests，这里也不需要它。
+    // total=0 的点不该出现（后端跳过空分钟），真出现就按「无请求」处理，不当成 0%。
+    const rate = total > 0 ? success / total : null
+    return {
+      minute,
+      totalRequests: total,
+      successRequests: success,
+      avgLatencyMs: readNonNegativeInteger(point.avgLatencyMs),
+      successRate: rate,
+      rateText: rate === null ? '--' : formatSuccessRate(rate),
+      timeText: minute === null ? '--' : formatMinuteLabel(minute),
+      latencyText: formatLatency(point.avgLatencyMs),
+      totalText: formatCount(total),
+      // 柱高按「该点请求数 / 本序列最大请求数」，便于画色带；
+      // 全为 0 时没有可比较的基准，统一给 0。
+      barHeight: 0,
+    }
+  })
+
+  const peak = points.reduce((max, point) => Math.max(max, point.totalRequests), 0)
+  for (const point of points) {
+    point.barHeight = peak > 0 ? Math.round((point.totalRequests / peak) * 100) : 0
+  }
+
+  return {
+    points,
+    capacityText: formatCount(payload.capacity),
+    retainedText: formatCount(payload.retained),
+    restartedAtText: formatRestartedAt(payload.restartedAt),
+    // 空序列用真实标志，不用 points.length 猜 —— 调用方据此显示「刚重启、还没采样」。
+    isEmpty: points.length === 0,
+  }
+}
+
+/** Unix 分钟数 → HH:MM（上海时区）。非法值返回 '--'。 */
+export function formatMinuteLabel(minute) {
+  const parsed = readFiniteNumber(minute)
+  if (parsed === null || parsed < 0) return '--'
+  const date = new Date(parsed * 60 * 1000)
+  if (!Number.isFinite(date.getTime())) return '--'
+  return date.toLocaleTimeString('zh-CN', {
+    hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Shanghai',
+  })
+}
+
+/**
+ * 请求 series 的唯一入口。
+ *
+ * 失败一律返回 ok:false 且 series:null，**不抛异常** ——
+ * 页面必须在「曲线拿不到」时仍然显示摘要，不能整页崩。
+ * 这里也**不** fallback 到 admin 端点（普通用户 403）。
+ */
+export async function loadServiceStatusSeries(fetchSeries) {
+  if (typeof fetchSeries !== 'function') {
+    return { ok: false, status: 0, message: describeServiceStatusFailure(0), series: null }
+  }
+  let response
+  try {
+    response = await fetchSeries(SERVICE_STATUS_SERIES_PATH)
+  } catch (error) {
+    const status = resolveFailureStatus(error)
+    return { ok: false, status, message: describeServiceStatusFailure(status), series: null }
+  }
+  const status = resolveFailureStatus(response)
+  if (status !== 200) {
+    return { ok: false, status, message: describeServiceStatusFailure(status), series: null }
+  }
+  const data = response?.data ?? null
+  const series = buildServiceStatusSeriesView(data)
+  if (!series) {
+    return { ok: false, status, message: '服务状态曲线数据格式暂不受支持。', series: null }
+  }
+  return { ok: true, status, message: '', series }
 }

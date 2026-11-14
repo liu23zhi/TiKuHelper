@@ -135,9 +135,11 @@ test('页面不请求管理员端点（普通用户会 403）', () => {
   assert.ok(!apiCode.includes('/api/admin/service-status'), 'API 封装不得提供 admin 端点')
   // 也不允许换一种拼法绕过：任何 admin 路径片段都不该出现在页面代码里。
   assert.ok(!pageCode.includes('admin/service-status'), '页面不得以任何形式拼 admin 路径')
+  assert.ok(!apiCode.includes('admin/service-status'), 'API 封装不得以任何形式拼 admin 路径')
 
-  // 只允许请求 summary。
+  // 允许的两个端点：summary 与 series，都走 AuthOrAccessToken。
   assert.match(apiSource, /url: '\/api\/service-status\/summary'/)
+  assert.match(apiSource, /url: '\/api\/service-status\/series'/)
 })
 
 test('页面空数据分支按 dataState 判定，不用 successRate 数值反推', () => {
@@ -178,11 +180,30 @@ test('页面在挂载时自动读一次，并有手动刷新按钮', () => {
   assert.match(pageSource, /data-action="refresh-service-status"/)
 })
 
-test('页面不渲染逐分钟色带（summary 无 points，不臆造数据）', () => {
-  // 没有 points 字段可用，就不该有渲染 points 的代码（注释里说明"不返回 points"是允许的，已剥）。
-  assert.ok(!pageCode.includes('points'), '页面不得引用 points（summary 端点不返回）')
-  // 也不得出现请求管理员端点的代码路径。
+test('页面渲染逐分钟曲线，且曲线来自 series 端点而非 admin 端点', () => {
+  // 曲线区块必须真的挂在模板里（色带 + 分钟明细表）。
+  assert.ok(pageSource.includes('data-series-strip'), '页面缺少色带元素')
+  assert.ok(pageSource.includes('data-series-table'), '页面缺少分钟明细表')
+  assert.ok(pageSource.includes('data-series-empty'), '页面缺少「刚重启、还没采样」空态')
+
+  // 曲线数据只能来自 loadServiceStatusSeries（series 端点）。
+  assert.match(pageSource, /loadServiceStatusSeries/)
+  assert.match(pageSource, /getServiceStatusSeries/)
+  // 仍然不得出现 admin 端点（曲线不能用 admin 那条换）。
   assert.ok(!pageCode.includes('admin'), '页面代码不得包含 admin 字样（会诱导后来者接 admin 端点）')
+  // 不得把 points 直接当 summary 的字段用（summary 端点不返回 points）。
+  assert.doesNotMatch(pageCode, /view\.points/, 'summary 视图没有 points —— 曲线必须走 seriesView')
+})
+
+test('曲线是增强区块：series 失败时整块不渲染，摘要照常显示（不整页崩）', () => {
+  // 曲线面板必须受 seriesView 守卫 —— seriesView 为 null（端点失败）时不渲染。
+  assert.match(pageCode, /v-if="seriesView"/, '曲线面板必须由 seriesView 守卫，否则端点失败会渲染半截')
+  // series 失败只允许影响 seriesView，不得把 errorMessage 也置上（那会让整页变成错误态）。
+  const loadRegion = pageCode.slice(pageCode.indexOf('const load = async'), pageCode.indexOf('const retire'))
+  assert.ok(loadRegion.includes('loadServiceStatusSeries'), 'load 里必须请求 series')
+  assert.match(loadRegion, /series\.ok/, 'series 失败必须被判定，不能假定总是成功')
+  // 失败分支只写 seriesView（或什么都不写），不得写 errorMessage。
+  assert.doesNotMatch(loadRegion, /series[\s\S]{0,120}errorMessage\.value\s*=/, 'series 失败不得污染整页错误态')
 })
 
 test('路由只新增了 service-status 那一条，未重排既有路由', () => {
