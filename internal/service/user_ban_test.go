@@ -253,7 +253,15 @@ func TestUserBanStatusWinsWhenNoBanRowsAtAll(t *testing.T) {
 func TestUserBanTemporaryBanExpiresNaturally(t *testing.T) {
 	db := newUserBanTestDB(t)
 	userID := seedUserBanUser(t, db, "temp-ban", "enabled")
-	now := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)
+	// ⚠️ 这个基准时刻必须**跟着真实时钟走**，不能硬编码。
+	//
+	// 原实现是 `time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)`（当时写这条用例的「今天」）。
+	// Ban() 会用**真实 time.Now()** 校验 `ExpiresAt` 必须晚于当前时间，于是这条用例
+	// 在 2026-11-14 11:00 UTC 之后必然失败：
+	//   Ban: 封禁参数无效：到期时间必须晚于当前时间
+	// 更坏的是它**不会立刻红**——写完当天是绿的，几小时后才开始红，看起来像随机失败。
+	// 判据：凡是用「具体时刻」当基准的用例，都要问「这个时刻会不会在将来变成过去」。
+	now := time.Now().UTC().Truncate(time.Second)
 	expires := now.Add(time.Hour)
 
 	if _, err := Ban(db, UserBanRequest{
