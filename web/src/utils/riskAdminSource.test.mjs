@@ -222,14 +222,27 @@ test('判据 ②（改阈值落库）已实现：前端必须提供阈值读写�
   // 路由必须与后端挂的一致（router.go：/risk/thresholds 与 /risk/thresholds/:key）。
   assert.match(api, /RISK_BASE \+ '\/thresholds'/, '读取路由必须是 /risk/thresholds')
   assert.match(api, /RISK_BASE \+ '\/thresholds\/'/, '写入/重置路由必须是 /risk/thresholds/:key')
-  // 不得写成后端不存在的 /risk/rules（那是另一个资源名，挂上去只会 404）。
-  assert.doesNotMatch(api, /\/risk\/rules/, '不得声明后端不存在的 /risk/rules 路由')
+  // ⚠️ 这里原来有一条 `assert.doesNotMatch(api, /\/risk\/rules/)`，理由写的是
+  // 「不得声明后端不存在的 /risk/rules 路由」。**那条断言的理由已经过期**：
+  // 路由已于 internal/api/router.go:496-497 挂上（GET /risk/rules +
+  // PUT /risk/rules/:ruleId/enabled），handler 在 controller/risk_admin.go。
+  // 保留它等于**禁止任何人接这个能力** —— 而且报错会把人引向「后端不存在」
+  // 的错误结论。已删除，改为下面的正向断言。
+  assert.match(api, /export function getRiskRules\(/, '必须有读取规则状态的 API（否则 Description 与启停到不了用户）')
+  assert.match(api, /export function setRiskRuleEnabled\(/, '必须有启停规则的 API')
+  // 路由必须与后端挂的一致（router.go:496-497）。
+  assert.match(api, /RISK_BASE \+ '\/rules'/, '读取规则路由必须是 /risk/rules')
+  assert.match(api, /RISK_BASE \+ '\/rules\/'/, '启停路由必须是 /risk/rules/:ruleId/enabled')
+
+  // 单位必须来自后端 RiskRuleState.Unit，**不得**在页面里内联一份映射。
+  // 内联映射是「第二份真相」，与 riskThresholdSpecs 的 Unit 必然漂移。
+  assert.doesNotMatch(api, /RULE_THRESHOLD_UNIT/, '不得在前端内联 ruleId → 单位的映射，单位由后端给')
 
   // 路由白名单同步扩展（服务端实际挂的就是这些）。
   const routes = [...api.matchAll(/RISK_BASE \+ '(\/[\w/]+)'/g)].map(m => m[1])
   assert.deepEqual(
     [...new Set(routes)].sort(),
-    ['/alerts', '/alerts/', '/thresholds', '/thresholds/', '/webhook', '/webhook/test'],
+    ['/alerts', '/alerts/', '/rules', '/rules/', '/thresholds', '/thresholds/', '/webhook', '/webhook/test'],
     '风控 API 模块只允许列表 / 详情 / 配置读写 / 测试发送 / 阈值读写重置这几条路径',
   )
   assert.match(api, /RISK_BASE \+ '\/alerts\/' \+ value/, '详情路径必须是拼接形式（不能写成模板字面量绕过上面的统计）')

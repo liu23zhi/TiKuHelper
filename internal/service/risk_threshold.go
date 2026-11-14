@@ -113,6 +113,18 @@ type riskThresholdSpec struct {
 	//
 	// 所以：只有 `risk_rule_<id>_threshold` 形态的项才同步列；占比项不碰它。
 	SyncRuleColumn bool
+	// MaxValue 是该阈值的**上界**（0 = 不设上界，仅用于理论上无上限的项）。
+	//
+	// # 为什么必须有上界（t193 审计实测的缺陷）
+	//
+	// 原始实现只有下界（>0 / ≥1 / (0,1]），没有上界。实测把 R16 的连续天数
+	// 填成 1440（两年）→ 规则**静默失效**（0 告警、评估耗时 2ms），而管理页
+	// 显示的「阈值 = 1440」看起来完全正常 —— 运营会以为风控在工作。
+	//
+	// ⇒ 「填得进去」不等于「填得有意义」。上界的职责是把「必然让规则失效的
+	// 极端值」挡在写入之前，而不是限制运营的正当调整空间。所以上界要**明显
+	// 宽松于任何现实配置**（见各项注释里的依据），只拦「一眼就是打错」的值。
+	MaxValue float64
 }
 
 // riskThresholdSpecs 按「欠款 → 行为 R1/R8/R11/R12 → R16 两项」顺序返回。
@@ -123,34 +135,34 @@ type riskThresholdSpec struct {
 func riskThresholdSpecs() []riskThresholdSpec {
 	return []riskThresholdSpec{
 		{Key: "risk_rule_debt_user_threshold", RuleID: entity.RiskRuleIDDebtUser,
-			Label: "单用户欠款阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 100, Unit: "元", SyncRuleColumn: true},
+			Label: "单用户欠款阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 100, Unit: "元", SyncRuleColumn: true, MaxValue: 1_000_000},
 		{Key: "risk_rule_debt_batch_threshold", RuleID: entity.RiskRuleIDDebtBatch,
-			Label: "单批次欠款阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 1000, Unit: "元", SyncRuleColumn: true},
+			Label: "单批次欠款阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 1000, Unit: "元", SyncRuleColumn: true, MaxValue: 10_000_000},
 		{Key: "risk_rule_debt_system_threshold", RuleID: entity.RiskRuleIDDebtSystem,
-			Label: "系统总欠款突增阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 5000, Unit: "元", SyncRuleColumn: true},
+			Label: "系统总欠款突增阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 5000, Unit: "元", SyncRuleColumn: true, MaxValue: 10_000_000},
 		{Key: "risk_rule_multi_account_ip_threshold", RuleID: entity.RiskRuleIDMultiAccountIP,
-			Label: "同 IP 账号数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 5, Unit: "个", SyncRuleColumn: true},
+			Label: "同 IP 账号数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 5, Unit: "个", SyncRuleColumn: true, MaxValue: 10_000},
 		{Key: "risk_rule_ticket_flood_threshold", RuleID: entity.RiskRuleIDTicketFlood,
-			Label: "24h 建单数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 5, Unit: "张", SyncRuleColumn: true},
+			Label: "24h 建单数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 5, Unit: "张", SyncRuleColumn: true, MaxValue: 10_000},
 		{Key: "risk_rule_abnormal_register_pattern_threshold", RuleID: entity.RiskRuleIDAbnormalRegisterPattern,
-			Label: "同前缀连续用户名阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 3, Unit: "个", SyncRuleColumn: true},
+			Label: "同前缀连续用户名阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 3, Unit: "个", SyncRuleColumn: true, MaxValue: 10_000},
 		{Key: "risk_rule_token_abuse_threshold", RuleID: entity.RiskRuleIDTokenAbuse,
-			Label: "配额倍数 / 多 IP 数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 3, Unit: "倍/个", SyncRuleColumn: true},
+			Label: "配额倍数 / 多 IP 数阈值（账号维度与 IP 维度共用此值）", Kind: RiskThresholdKindAbsolute, DefaultValue: 3, Unit: "倍/个", SyncRuleColumn: true, MaxValue: 1_000},
 		{Key: "risk_rule_offhours_activity_threshold", RuleID: entity.RiskRuleIDOffhoursActivity,
-			Label: "连续天数阈值", Kind: RiskThresholdKindInteger, DefaultValue: 3, Unit: "天", SyncRuleColumn: true},
+			Label: "连续天数阈值", Kind: RiskThresholdKindInteger, DefaultValue: 3, Unit: "天", SyncRuleColumn: true, MaxValue: 365},
 		{Key: "risk_rule_binding_churn_threshold", RuleID: entity.RiskRuleIDBindingChurn,
-			Label: "24h 主动换绑次数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 2, Unit: "次", SyncRuleColumn: true},
+			Label: "24h 主动换绑次数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 2, Unit: "次", SyncRuleColumn: true, MaxValue: 1_000},
 		{Key: "risk_rule_wechat_phone_share_threshold", RuleID: entity.RiskRuleIDWechatPhoneShare,
-			Label: "同号关联账号数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 3, Unit: "个", SyncRuleColumn: true},
+			Label: "同号关联账号数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 3, Unit: "个", SyncRuleColumn: true, MaxValue: 10_000},
 		{Key: "risk_rule_impossible_travel_threshold", RuleID: entity.RiskRuleIDImpossibleTravel,
-			Label: "异地瞬移速度上限", Kind: RiskThresholdKindAbsolute, DefaultValue: 900, Unit: "km/h", SyncRuleColumn: true},
+			Label: "异地瞬移速度上限", Kind: RiskThresholdKindAbsolute, DefaultValue: 900, Unit: "km/h", SyncRuleColumn: true, MaxValue: 40_000},
 		{Key: "risk_rule_credential_stuffing_threshold", RuleID: entity.RiskRuleIDCredentialStuffing,
-			Label: "30 分钟内不同账号数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 20, Unit: "个", SyncRuleColumn: true},
+			Label: "30 分钟内不同账号数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 20, Unit: "个", SyncRuleColumn: true, MaxValue: 10_000},
 		{Key: "risk_rule_login_bruteforce_threshold", RuleID: entity.RiskRuleIDLoginBruteforce,
-			Label: "10 分钟内失败次数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 10, Unit: "次", SyncRuleColumn: true},
+			Label: "10 分钟内失败次数阈值（账号维度与 IP 维度共用此值）", Kind: RiskThresholdKindAbsolute, DefaultValue: 10, Unit: "次", SyncRuleColumn: true, MaxValue: 10_000},
 		// 占比项：**不**同步 risk_rules.threshold（见 SyncRuleColumn 的注释）。
 		{Key: RiskThresholdSettingKeyOffhoursShare, RuleID: entity.RiskRuleIDOffhoursActivity,
-			Label: "凌晨活动占比阈值", Kind: RiskThresholdKindRatio, DefaultValue: 0.8, Unit: "比例", SyncRuleColumn: false},
+			Label: "凌晨活动占比阈值", Kind: RiskThresholdKindRatio, DefaultValue: 0.8, Unit: "比例", SyncRuleColumn: false, MaxValue: 1},
 	}
 }
 
@@ -170,6 +182,31 @@ func riskThresholdSpecByKey(key string) (riskThresholdSpec, bool) {
 // 这是本功能最关键的一道闸：`riskRuleThreshold` 的注释写明「一旦把无效值当成 0，
 // `|balance| >= 0` 会让每个用户都告警」。所以非法值必须**拒绝**，不能静默夹紧。
 func ValidateRiskThresholdValue(kind string, value float64) error {
+	return ValidateRiskThresholdValueForKey("", kind, value)
+}
+
+// ValidateRiskThresholdValueForKey 是带键的完整校验：类型规则 + 该项的**上界**。
+//
+// # 为什么需要上界（t193 审计实测的缺陷）
+//
+// 原实现只有下界。实测把 R16 的连续天数填成 1440（两年）→ 规则**静默失效**
+// （0 告警、评估 2ms），而管理页显示的「阈值 = 1440」看起来完全正常。
+// 填得进去 ≠ 填得有意义，所以上界是把「必然让规则失效的极端值」挡在写入之前。
+//
+// # 上界怎么定的（原则：明显宽松于任何现实配置）
+//
+// 只拦「一眼就是打错」的值，不限制正当调整空间：
+//   - 计数量（账号数 / 次数 / 建单数）：10000。风控规则的含义是「超过就该看」，
+//     阈值调到一万以上等于关掉这条规则 —— 而关规则有专门的启停开关，不必用阈值。
+//   - 连续天数：365。超过一年不可能有运营意义，且历史扫描量会失控。
+//   - 占比：1（硬上限，(0,1] 本就如此）。
+//   - 速度：40000 km/h。这是**临近地球逃逸速度量级**的荒谬值上界（民航 900、
+//     战斗机 3000、洲际导弹 25000）。只挡住「把 km/h 当成 m/s 手滑多打三个零」。
+//   - 金额：单用户 100 万、单批次/系统 1000 万。超出这个量级的欠款说明数据已损坏。
+//
+// ⚠️ 上界**不写进数据库**，它是代码里的规格（`riskThresholdSpec.MaxValue`）。
+// 改上界不需要迁移，与「默认值写在代码里」是同一套理由（96 §2.2）。
+func ValidateRiskThresholdValueForKey(key, kind string, value float64) error {
 	if math.IsNaN(value) || math.IsInf(value, 0) {
 		return fmt.Errorf("%w：必须是有限数", ErrRiskThresholdInvalid)
 	}
@@ -189,6 +226,15 @@ func ValidateRiskThresholdValue(kind string, value float64) error {
 		if value <= 0 {
 			return fmt.Errorf("%w：阈值必须大于 0（当前 %v）", ErrRiskThresholdInvalid, value)
 		}
+	}
+	// 上界：只在**能查到规格**时检查。
+	//
+	// 不认识的 key 不加额外限制（保持向后兼容：ValidateRiskThresholdValue 的
+	// 单参数版本传空 key，老调用方的行为一字不变）。
+	if spec, ok := riskThresholdSpecByKey(key); ok && spec.MaxValue > 0 && value > spec.MaxValue {
+		return fmt.Errorf("%w：%s 不能超过 %v（当前 %v）。"+
+			"阈值调到这个量级会让规则实际失效 —— 若要停用规则请用启停开关",
+			ErrRiskThresholdInvalid, spec.Label, spec.MaxValue, value)
 	}
 	return nil
 }
@@ -258,7 +304,7 @@ func UpdateRiskThresholdWithDB(db *gorm.DB, key string, value float64) (RiskThre
 	if !ok {
 		return RiskThresholdUpdateResult{}, fmt.Errorf("%w：%s", ErrRiskThresholdUnknown, key)
 	}
-	if err := ValidateRiskThresholdValue(spec.Kind, value); err != nil {
+	if err := ValidateRiskThresholdValueForKey(spec.Key, spec.Kind, value); err != nil {
 		return RiskThresholdUpdateResult{}, err
 	}
 	encoded := formatRiskThresholdValue(value)
@@ -366,6 +412,32 @@ type RiskRuleState struct {
 	Exists bool `json:"exists"`
 	// Description 给运营看的说明（含「需 3 天历史」这类重要前提）。
 	Description string `json:"description"`
+	// Unit 是生效阈值的单位（次 / 个 / 天 / 元 / km/h / 倍·个 / 比例；空串 = 该项无可调阈值）。
+	//
+	// ⚠️ 为什么由后端给而不是前端映射：
+	// `GET /risk/rules` 原本只返回 threshold 数值，前端要显示「生效阈值：10 次」
+	// 就得自己写一份 ruleId → 单位的映射表 —— 那是**第二份真相**，与
+	// riskThresholdSpecs 的 Unit 必然漂移（新增规则时忘改前端就会出现错单位）。
+	// 所以这里直接从规格表取：同一个 Unit 字段，只有一个来源。
+	Unit string `json:"unit"`
+}
+
+// riskThresholdUnitForRule 按 RuleID 取该规则的阈值单位（供 GET /risk/rules 展示用）。
+//
+// 返回第一个匹配项的 Unit。同一规则有多个可调项时（R16 的「连续天数」与「占比」），
+// 取到的会是**规格表里排在前面**的那个 —— 当前是「连续天数（天）」，
+// 这与 RiskRuleState.Threshold 的口径一致（Threshold 也取 `riskRuleThreshold`，
+// 即 `risk_rule_<id>_threshold` 那一项，不是占比项）。
+//
+// 找不到返回空串（表示这条规则没有可调阈值，或规格表漏登记 —— 后者由
+// TestRiskRuleAndThresholdSpecsCoverSameRuleIDs 兜住）。
+func riskThresholdUnitForRule(ruleID string) string {
+	for _, spec := range riskThresholdSpecs() {
+		if spec.RuleID == ruleID {
+			return spec.Unit
+		}
+	}
+	return ""
 }
 
 // RiskRuleStates 返回全部规则的当前状态（含未在表里建行的）。
@@ -404,6 +476,7 @@ func RiskRuleStates(db *gorm.DB) ([]RiskRuleState, error) {
 			Threshold:   riskRuleThreshold(db, rule, riskDefaultThreshold(rule.RuleID)),
 			Exists:      existing[rule.RuleID],
 			Description: rule.Description,
+			Unit:        riskThresholdUnitForRule(rule.RuleID),
 		}
 		if d, ok := defaults[rule.RuleID]; ok && state.Description == "" {
 			state.Description = d.Description

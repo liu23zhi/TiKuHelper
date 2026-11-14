@@ -136,6 +136,61 @@
         <p v-if="configSuccess" class="config-success" role="status">{{ configSuccess }}</p>
       </ConsolePanel>
 
+      <!-- ============ 规则清单（启停 + 说明） ============ -->
+      <!--
+        本区块在 t193 审计之前**不存在**，原因是一个历史遗留的坏断言：
+        riskAdminSource.test.mjs 里曾写「不得声明后端不存在的 /risk/rules」，
+        而该路由其实早已挂上（internal/api/router.go:496-497）。
+        结果：10 条规则的 Description（含「需 3 天历史」「被抢号不计入」这类
+        关键限制）与全部启停能力在页面上完全不可见。
+
+        现在接上 GET /risk/rules 与 PUT /risk/rules/:ruleId/enabled。
+        停用的规则**仍然显示**（灰化 + 「已停用」标签），因为：
+          · 消失会让人以为规则被删了
+          · 停用是临时状态，需要能随时看到并重新启用
+      -->
+      <ConsolePanel class="risk-rules-panel" title="规则清单">
+        <p v-if="rulesError" class="filter-error" role="alert">{{ rulesError }}</p>
+        <p v-if="rulesSuccess" class="config-success" role="status">{{ rulesSuccess }}</p>
+        <div v-if="!rules.length" class="field-hint">
+          {{ rulesLoading ? '正在读取规则…' : '暂无可读规则' }}
+        </div>
+        <div v-else class="risk-rule-list">
+          <div
+            v-for="rule in rules"
+            :key="rule.ruleId"
+            class="risk-rule-row"
+            :class="{ 'risk-rule-row-disabled': !rule.enabled }"
+          >
+            <div class="risk-rule-main">
+              <div class="risk-rule-title">
+                <span class="risk-rule-name">{{ rule.name }}</span>
+                <a-tag :color="riskSeverityMeta(rule.severity).color">
+                  {{ riskSeverityMeta(rule.severity).label }}
+                </a-tag>
+                <a-tag v-if="!rule.enabled" color="default">已停用</a-tag>
+              </div>
+              <div class="risk-rule-meta">
+                <code class="risk-rule-id">{{ rule.ruleId }}</code>
+                <span class="risk-rule-threshold">
+                  生效阈值：{{ rule.threshold }}{{ ruleUnit(rule) }}
+                </span>
+              </div>
+              <p class="risk-rule-desc">{{ rule.description || '（无说明）' }}</p>
+            </div>
+            <div class="risk-rule-switch">
+              <a-switch
+                :checked="rule.enabled"
+                :loading="ruleToggling[rule.ruleId]"
+                checked-children="启用"
+                un-checked-children="停用"
+                @change="checked => toggleRule(rule, checked)"
+              />
+            </div>
+          </div>
+        </div>
+      </ConsolePanel>
+
       <!-- ============ 规则阈值（可写，落库后立即生效） ============ -->
       <!--
         这些输入框在本次改动之前**故意不存在**：后端没有写入路径，
@@ -369,9 +424,11 @@ import ConsoleTableShell from '@/components/ConsoleTableShell.vue'
 import {
   getRiskAlertDetail,
   getRiskAlerts,
+  getRiskRules,
   getRiskThresholds,
   getRiskWebhookSettings,
   resetRiskThreshold,
+  setRiskRuleEnabled,
   testRiskWebhook,
   updateRiskThreshold,
   updateRiskWebhookSettings,
@@ -448,6 +505,15 @@ export default {
     const thresholdWriting = ref(false)
     const thresholdError = ref('')
     const thresholdSuccess = ref('')
+    // ---- 规则清单（启停 + 说明）----
+    // rules 是 GET /risk/rules 的权威列表：每项含 ruleId / name / enabled /
+    // severity / threshold / exists / description。
+    // ruleToggling 按 ruleId 记录「正在保存」，避免整页 spinner 让其他行不可操作。
+    const rules = ref([])
+    const rulesLoading = ref(false)
+    const rulesError = ref('')
+    const rulesSuccess = ref('')
+    const ruleToggling = reactive({})
 
     const alertPagination = reactive({
       current: 1, pageSize: 20, total: 0,
@@ -662,6 +728,97 @@ export default {
         if (item && item.key) thresholdDraft[item.key] = Number(item.value)
       }
     }
+    // ruleUnit 给规则行里的「生效阈值」补单位。
+    //
+    // ⚠️ 单位来自**后端** `RiskRuleState.Unit`（2026-11 补齐），不在前端映射。
+    // 原因：前端自己写一份 ruleId → 单位的表就是「第二份真相」，与
+    // riskThresholdSpecs 的 Unit 必然漂移（新增规则忘改前端就显示错单位）。
+    // 那份内联映射本来写过，被 riskAdminSource.test.mjs 的
+    // 「页面不得内联规则名映射」断言拦下了 —— 拦得对，改由后端给更彻底。
+    const ruleUnit = rule => (rule && rule.unit ? ' ' + rule.unit : '')
+
+    const applyRuleItems = items => {
+      const list = Array.isArray(items) ? items : []
+      rules.value = list
+        .filter(item => item && typeof item.ruleId === 'string' && item.ruleId)
+        .map(item => ({
+          ruleId: item.ruleId,
+          name: String(item.name ?? item.ruleId),
+          enabled: item.enabled === true,
+          severity: String(item.severity ?? ''),
+          threshold: Number(item.threshold ?? 0),
+          exists: item.exists === true,
+          description: String(item.description ?? ''),
+          unit: String(item.unit ?? ''),
+        }))
+    }
+
+    const loadRules = async () => {
+      if (!canManage()) return false
+      rulesLoading.value = true
+      rulesError.value = ''
+      try {
+        const res = await getRiskRules()
+        if (!canManage()) return false
+        if (Number(res?.status) !== 200) {
+          rulesError.value = readRiskMessage(res, '读取规则清单失败')
+          return false
+        }
+        applyRuleItems(res?.data?.data?.items)
+        return true
+      } catch (error) {
+        if (canManage()) rulesError.value = readRiskThrownMessage(error, '读取规则清单失败')
+        return false
+      } finally {
+        if (canManage()) rulesLoading.value = false
+      }
+    }
+
+    // toggleRule 切换一条规则的启用状态。
+    //
+    // 成功后**就地更新**该行（不整表重载）：整表重载会让所有行闪一下，
+    // 管理员刚点的那一行反而看不出来变了没有。
+    // 失败时保持原状态并报错 —— 不能乐观更新，否则「以为停用了其实没停」。
+    const toggleRule = async (rule, nextEnabled) => {
+      if (!canManage() || !rule) return
+      const ruleId = rule.ruleId
+      if (ruleToggling[ruleId]) return
+      ruleToggling[ruleId] = true
+      rulesError.value = ''
+      rulesSuccess.value = ''
+      try {
+        const res = await setRiskRuleEnabled(ruleId, nextEnabled === true)
+        if (!canManage()) return
+        if (Number(res?.status) !== 200) {
+          rulesError.value = readRiskMessage(res, '保存规则状态失败')
+          return
+        }
+        // 以服务端返回的 item 为准（后端可能规范化过），拿不到才用本地值。
+        const saved = res?.data?.data?.item
+        if (saved && typeof saved.ruleId === 'string') {
+          const index = rules.value.findIndex(item => item.ruleId === saved.ruleId)
+          if (index >= 0) {
+            rules.value.splice(index, 1, {
+              ...rules.value[index],
+              enabled: saved.enabled === true,
+              description: String(saved.description ?? rules.value[index].description),
+              threshold: Number(saved.threshold ?? rules.value[index].threshold),
+              unit: String(saved.unit ?? rules.value[index].unit),
+            })
+          }
+        } else {
+          rule.enabled = nextEnabled === true
+        }
+        rulesSuccess.value = nextEnabled === true
+          ? `已启用「${rule.name}」`
+          : `已停用「${rule.name}」——历史告警保留，只是不再产生新告警`
+      } catch (error) {
+        if (canManage()) rulesError.value = readRiskThrownMessage(error, '保存规则状态失败')
+      } finally {
+        if (canManage()) ruleToggling[ruleId] = false
+      }
+    }
+
     const loadThresholds = async () => {
       if (!canManage()) return false
       thresholdsLoading.value = true
@@ -827,7 +984,7 @@ export default {
       configLoaded.value = false
       settings.value = emptySettings()
       Object.assign(config, emptyConfig())
-      if (mounted && canManage()) { void loadAlerts(); void loadConfig(); void loadThresholds() }
+      if (mounted && canManage()) { void loadAlerts(); void loadConfig(); void loadThresholds(); void loadRules() }
     }, { flush: 'sync' })
     watch(() => getCurrentUserLogoutEpoch(), value => {
       if (value === observedLogout) return
@@ -848,6 +1005,11 @@ export default {
       if (canManage()) {
         void loadAlerts()
         void loadConfig()
+        // ⚠️ loadThresholds 原本只挂在 watch（用户身份变化）上，首次进入页面
+        // **不会加载**阈值 —— 表现是「规则阈值面板一直显示『暂无可调阈值』，
+        // 刷新页面才出来」。本次一并补上，否则新加的规则清单会有同样问题。
+        void loadThresholds()
+        void loadRules()
       }
     })
     onBeforeUnmount(() => {
@@ -870,6 +1032,8 @@ export default {
       setConfig, toggleConfigEnabled, clearSavedWebhook, keepSavedWebhook, saveSettings, sendTest, loadConfig,
       thresholds, thresholdDraft, thresholdsLoading, thresholdWriting, thresholdError, thresholdSuccess,
       loadThresholds, setThresholdDraft, saveThreshold, resetThreshold, describeThresholdSource,
+      rules, rulesLoading, rulesError, rulesSuccess, ruleToggling,
+      loadRules, toggleRule, ruleUnit,
       riskRuleLabel, riskSeverityMeta, formatRiskDateTime, describeRiskWebhookState,
       sumTableColumnWidths,
     }
@@ -904,4 +1068,33 @@ export default {
   .filter-form :deep(.ant-form-item) { width: 100%; margin-inline-end: 0; }
   .filter-rule, .filter-notified, .filter-user, .filter-date { width: 100%; }
 }
+/* ============ 规则清单（启停 + 说明） ============ */
+.risk-rule-list { display: flex; flex-direction: column; gap: 10px; }
+.risk-rule-row {
+  display: flex; gap: 12px; align-items: flex-start; justify-content: space-between;
+  padding: 12px 14px; border: 1px solid var(--console-border); border-radius: 8px;
+  background: var(--console-surface);
+}
+/* 停用行的视觉状态：整行降低不透明度 + 左侧灰条。
+   不能只靠开关的位置变化 —— 扫一眼列表时要能立刻看出哪条是关着的。 */
+.risk-rule-row-disabled {
+  opacity: 0.62;
+  border-left: 3px solid var(--console-muted);
+}
+.risk-rule-main { min-width: 0; flex: 1; }
+.risk-rule-title { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.risk-rule-name { font-size: 14px; font-weight: 600; color: var(--console-text); }
+.risk-rule-meta { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
+.risk-rule-id {
+  font-family: var(--console-mono, monospace); font-size: 12px;
+  color: var(--console-muted); overflow-wrap: anywhere;
+}
+.risk-rule-threshold { font-size: 12px; color: var(--console-muted); }
+/* 说明文字是本次接线的核心目的：它是运营判断「这条规则什么时候不该信」的唯一来源，
+   所以不能折成一行省略号 —— 允许换行、限制最大宽度保证可读。 */
+.risk-rule-desc {
+  margin: 6px 0 0; font-size: 12.5px; line-height: 1.6;
+  color: var(--console-muted); max-width: 78ch; overflow-wrap: anywhere;
+}
+.risk-rule-switch { flex-shrink: 0; padding-top: 2px; }
 </style>

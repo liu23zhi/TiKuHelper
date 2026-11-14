@@ -151,3 +151,44 @@ export function resetRiskThreshold(key) {
     method: 'delete',
   })
 }
+// ════════════════════════════════════════════════════════════════════
+// 规则状态（GET /risk/rules + PUT /risk/rules/:ruleId/enabled）
+//
+// 后端：internal/controller/risk_admin.go 的 RiskRuleStateList / SetRiskRuleEnabled，
+// 路由：internal/api/router.go:496-497。
+//
+// ⚠️ 为什么需要这两个函数（历史原因必须记下）：
+// 这两个接口**早就实现了**，但前端一直没接。原因之一是 riskAdminSource.test.mjs
+// 里曾有一条 `assert.doesNotMatch(api, /\/risk\/rules/)`，理由写的是「后端不存在
+// 该路由」—— 那条理由在路由挂上之后就过期了，却一直拦着不让接。
+// 后果：10 条规则的 Description（含「需 3 天历史」「被抢号不计入」这类关键限制）
+// 与全部启停能力，在管理页上完全不可见。
+// ════════════════════════════════════════════════════════════════════
+
+// getRiskRules 读取全部规则的当前状态（启用与否 + 生效阈值 + 描述）。
+//
+// 响应：{ items: [{ ruleId, name, enabled, severity, threshold, exists, description }] }
+// `exists` 区分「表里有这一行」与「用代码默认值补齐」——两者都可用，
+// 但排障时需要知道「我改过的」和「没改过的」。
+export function getRiskRules() {
+  return localRequest({
+    url: RISK_BASE + '/rules',
+    method: 'get',
+  })
+}
+
+// setRiskRuleEnabled 启用/停用一条规则。
+//
+// enabled 必须是布尔值：后端用 `*bool` 区分「没传」与「传 false」（停用是最常见的
+// 操作，用零值判断会把停用当成没传）。所以这里**不做真值转换**（不把 'false' 当 false），
+// 传进来不是布尔就直接报错，避免「以为停用了、其实发了个字符串」。
+export function setRiskRuleEnabled(ruleId, enabled) {
+  const id = String(ruleId ?? '').trim()
+  if (!id) throw new Error('规则 ID 参数错误')
+  if (typeof enabled !== 'boolean') throw new Error('规则启用状态必须是布尔值')
+  return localRequest({
+    url: RISK_BASE + '/rules/' + encodeURIComponent(id) + '/enabled',
+    method: 'put',
+    data: { enabled },
+  })
+}
