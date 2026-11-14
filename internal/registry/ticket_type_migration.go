@@ -3,8 +3,10 @@ package registry
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"gorm.io/gorm"
 )
@@ -17,6 +19,13 @@ const (
 	// 与结构标记分开的原因：结构建好不等于数据回填完。回填失败时不能写这个标记，
 	// 只能下次启动重试 —— 否则「旧单全部漏出用户列表」会永久固化。
 	ticketTypeOriginBackfilledKey = "ticket_type_origin_backfilled"
+	// ticketRefundTicketIDReadyKey 标记「ticket_refunds.ticket_id 关联列已就位」。
+	ticketRefundTicketIDReadyKey = "ticket_refund_ticket_id_schema_ready"
+	// ticketRefundBackfilledKey 标记「存量退款已补出壳工单并建立关联」。
+	//
+	// 与结构标记分开：结构建好不等于历史退款都能在工单列表里看到。
+	// 回填失败时不写标记，下次启动重试。
+	ticketRefundBackfilledKey = "ticket_refund_ticket_backfilled"
 )
 
 // ensureTicketTypeSchema 给 tickets 补上多类型三维度所需的 origin / category / context 三列，
@@ -76,6 +85,167 @@ func ensureTicketTypeSchema(db *gorm.DB) error {
 		// 标记写失败不算迁移失败：列已经建好，下次启动重跑是幂等的。
 		logger.SysLog(fmt.Sprintf("写入工单多类型迁移标记失败（下次启动会重跑，幂等）：%v", err))
 	}
+	return nil
+}
+
+// ensureTicketRefundTicketSchema 给 ticket_refunds 补上指向壳工单的 ticket_id，
+// 并给**存量退款**补建壳工单（T-209：退款工单合并进工单列表）。
+//
+// # 为什么必须回填存量
+//
+// 用户要求「退款工单也显示在工单列表」。只加列不回填的话，历史退款在列表里
+// 一条都看不到 —— 那正是本次要消除的现象。回填把每一笔**还没有壳工单**的退款
+// 补成一张 `category=refund` 的工单并写回 ticket_id。
+//
+// # 纪律（与 applyTicketTypeSchema 一致）
+//
+//   - 结构失败 → 返回错误（缺列会让退款全部不出现在列表里，属静默漏单）；
+//   - 回填失败 → 只记日志、**不写标记**，下次启动重试（回填是幂等的：
+//     只处理 ticket_id IS NULL 的行）；
+//   - 只做 ADD COLUMN 与 INSERT，**不删不改任何退款业务字段** ——
+//     退款状态机、金额、ledger 一律不动，所以回滚只需 DROP 这一列与停用壳工单；
+//   - 不回填 `tickets` 的 origin/category 已有数据的行（那属于上一个迁移）。
+func ensureTicketRefundTicketSchema(db *gorm.DB) error {
+	if db == nil {
+		return nil
+	}
+	if !db.Migrator().HasTable("ticket_refunds") || !db.Migrator().HasTable(entity.TableNameTicket) {
+		// 空库首次启动：表还没建出来，交给后续 AutoMigrate，下次启动重试。
+		return nil
+	}
+
+	applied, err := safeEnsureTicketRefundTicketSchema(db)
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return nil
+	}
+
+	if !systemSettingFlagIsSet(db, ticketRefundBackfilledKey) {
+		if err := backfillTicketRefundTickets(db); err != nil {
+			logger.SysLog(fmt.Sprintf("退款壳工单存量回填失败（下次启动会重试）：%v", err))
+			return nil
+		}
+		if err := setSystemSettingFlag(db, ticketRefundBackfilledKey); err != nil {
+			logger.SysLog(fmt.Sprintf("写入退款壳工单回填标记失败（下次启动会重跑，幂等）：%v", err))
+		}
+	}
+
+	if systemSettingFlagIsSet(db, ticketRefundTicketIDReadyKey) {
+		return nil
+	}
+	if err := setSystemSettingFlag(db, ticketRefundTicketIDReadyKey); err != nil {
+		logger.SysLog(fmt.Sprintf("写入退款关联列迁移标记失败（下次启动会重跑，幂等）：%v", err))
+	}
+	return nil
+}
+
+// safeEnsureTicketRefundTicketSchema 外层兜 recover：脏数据不能让服务反复崩溃。
+func safeEnsureTicketRefundTicketSchema(db *gorm.DB) (applied bool, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			applied, err = false, fmt.Errorf("panic: %v", recovered)
+		}
+	}()
+	return applyTicketRefundTicketSchema(db)
+}
+
+// applyTicketRefundTicketSchema 用显式 ALTER 补 ticket_id 列 + 唯一索引。
+//
+// 列定义必须与 entity.TicketRefund 的 gorm tag 一致（bigint + 可空 + 唯一索引），
+// 否则 AutoMigrate 每次启动都会尝试改列。可空是刻意的：未关联的退款可以有多个
+// （唯一索引允许多个 NULL），已关联的保证一笔退款只挂一张单。
+func applyTicketRefundTicketSchema(db *gorm.DB) (bool, error) {
+	const table = "ticket_refunds"
+	if !db.Migrator().HasColumn(table, "ticket_id") {
+		// 不带 NOT NULL / DEFAULT：老行在补列瞬间是 NULL，正是「未关联」这个语义。
+		statement := "ALTER TABLE `" + table + "` ADD COLUMN `ticket_id` bigint"
+		if err := db.Exec(statement).Error; err != nil {
+			if !db.Migrator().HasColumn(table, "ticket_id") {
+				return false, fmt.Errorf("add %s.ticket_id fail: %w", table, err)
+			}
+		} else {
+			logger.SysLog(fmt.Sprintf("已为 %s 补上 ticket_id 列", table))
+		}
+	}
+	if err := ensureTicketRefundTicketIndex(db); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ensureTicketRefundTicketIndex 补建 ticket_id 的唯一索引（与 GORM 从 tag 推导的名字一致）。
+func ensureTicketRefundTicketIndex(db *gorm.DB) error {
+	const (
+		table = "ticket_refunds"
+		name  = "idx_ticket_refunds_ticket_id"
+	)
+	if db.Migrator().HasIndex(table, name) {
+		return nil
+	}
+	dialect := strings.ToLower(strings.TrimSpace(db.Dialector.Name()))
+	var statement string
+	switch dialect {
+	case "sqlite":
+		statement = fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS `%s` ON `%s` (`ticket_id`)", name, table)
+	case "mysql":
+		statement = fmt.Sprintf("CREATE UNIQUE INDEX `%s` ON `%s` (`ticket_id`)", name, table)
+	default:
+		logger.SysLog(fmt.Sprintf("未知数据库方言 %q，跳过 %s 索引 %s", db.Dialector.Name(), table, name))
+		return nil
+	}
+	if err := db.Exec(statement).Error; err != nil {
+		if db.Migrator().HasIndex(table, name) {
+			return nil
+		}
+		return fmt.Errorf("create index %s on %s fail: %w", name, table, err)
+	}
+	return nil
+}
+
+// backfillTicketRefundTickets 给「还没有壳工单」的存量退款补建工单并建立关联。
+//
+// # 幂等判据是 `ticket_id IS NULL`，不是「全部退款」
+//
+// 每轮只处理未关联的行，所以重跑安全（上一次中途崩了，下一次接着做）。
+//
+// # 为什么逐条而不是一条 INSERT ... SELECT
+//
+// 一致性优先：一条批量插入无法把新生成的 tickets.id 写回对应的 refunds 行
+// （不同方言回填自增 ID 的语法不一致）。逐条在一个事务里
+// 「插工单 → 更新 refunds.ticket_id」是最稳的，且回填量本来就不大
+// （只影响迁移前的老数据）。
+//
+// # 壳工单的字段口径
+//
+//   - status 按退款当前状态映射成工单 4 态（见 ticketRefundShellStatus）；
+//     映射是**展示口径**，退款真状态仍在 ticket_refunds.status；
+//   - origin=user（发起人是用户本人），category=refund，
+//     priority=normal（与 69-*.md §2.3 对 refund 的建议一致：常规业务）；
+//   - subject 用可读中文，正文写一句来源说明 —— 管理员在列表里点开就知道
+//     真正的操作要去退款详情做。
+func backfillTicketRefundTickets(db *gorm.DB) error {
+	var pending []entity.TicketRefund
+	if err := db.Session(&gorm.Session{NewDB: true}).
+		Where("ticket_id IS NULL").
+		Order("id ASC").
+		Find(&pending).Error; err != nil {
+		return err
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+	var created int
+	for _, refund := range pending {
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			return service.CreateTicketRefundShellInTx(tx, refund, time.Time{})
+		}); err != nil {
+			return err
+		}
+		created++
+	}
+	logger.SysLog(fmt.Sprintf("退款壳工单存量回填：为 %d 笔历史退款补建了工单", created))
 	return nil
 }
 

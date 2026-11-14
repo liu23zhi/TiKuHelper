@@ -21,74 +21,34 @@ import (
 
 // ─────────────────────── 1) 域名通配按带点后缀匹配（关键安全面） ───────────────────────
 
-func TestScriptGlobDomainWildcardMatchesDottedSuffixOnly(t *testing.T) {
-	// 正例：`*.a.zelly.cn` 覆盖 `x.a.zelly.cn`（以及更深层的子域）。
-	for _, host := range []string{"x.a.zelly.cn", "deep.x.a.zelly.cn", "X.A.ZELLY.CN", "x.a.zelly.cn."} {
-		if !scriptDomainHostMatch("*.a.zelly.cn", host) {
-			t.Fatalf("wildcard should match %q", host)
+// ⚠️ 2026-11-14 域名语法重写（`*.a.com` / `a.com/*`，旧格式全部舍弃）。
+//
+// 原本这里有两个用例：
+//   TestScriptGlobDomainWildcardMatchesDottedSuffixOnly      → 测 scriptDomainHostMatch
+//   TestScriptGlobRejectsNonLeadingDomainWildcardAtCompileTime → 测 compileScriptDomainRule
+// 那两个函数随旧语法一起被移除（通配符现在由 ScriptDomainFormat 表达，不再是「域名 + 布尔开关」）。
+//
+// **不是简单删掉**：「通配符只匹配子域、不匹配裸域」与「`*` 只允许最左侧」这两条语义仍然存在，
+// 只是搬到了新实现里。它们现在由 script_domain_format_test.go 覆盖：
+//   TestScriptDomainWildcardMatchesSubdomainsButNotTheBareDomain  ← 对应上面第一条
+//   TestScriptDomainFormatRejectsMalformedStarSyntax              ← 对应上面第二条
+// 这条留痕是为了让下一个人知道「覆盖没丢，只是换了文件」，而不是以为被谁删了。
+
+// validateScriptBaseDomain 的语义仍然有效（脚本自身域名不能含通配符），单独钉住。
+func TestValidateScriptBaseDomainRejectsWildcardOnScriptItself(t *testing.T) {
+	for _, domain := range []string{"*.a.zelly.cn", "a.*.a.com", "*", "*.a.*.b.com"} {
+		err := validateScriptBaseDomain(domain)
+		if !errors.Is(err, ErrScriptDomainWildcardOnScript) && !errors.Is(err, ErrScriptDomainWildcardPlacement) {
+			t.Fatalf("validateScriptBaseDomain(%q) = %v, want wildcard rejection", domain, err)
 		}
 	}
-	// 反例：**这是本测试最重要的一条**。
-	// 若实现写成 strings.HasSuffix(host, "a.zelly.cn")（掉了一个点），
-	// `evila.zelly.cn` 会命中 —— 一个外部注册者只要买下 evila.zelly.cn 就能冒充
-	// `*.a.zelly.cn` 下的脚本公开入口。带点后缀（`.a.zelly.cn`）才能挡住它。
-	for _, host := range []string{"evila.zelly.cn", "fooa.zelly.cn", "zelly.cn"} {
-		if scriptDomainHostMatch("*.a.zelly.cn", host) {
-			t.Fatalf("wildcard must NOT match %q: dotted-suffix boundary was bypassed", host)
+	// 具体主机名必须放行 —— 否则正常脚本建不出来。
+	for _, domain := range []string{"a.zelly.cn", "x.y.zelly.cn", "localhost"} {
+		if err := validateScriptBaseDomain(domain); err != nil {
+			t.Fatalf("validateScriptBaseDomain(%q) = %v, want nil", domain, err)
 		}
-	}
-	// 通配本身不覆盖「点前没有段」的裸域：`a.zelly.cn` 比后缀 `.a.zelly.cn` 还短。
-	if scriptDomainHostMatch("*.a.zelly.cn", "a.zelly.cn") {
-		t.Fatal("wildcard must not match its own suffix without a leading label")
-	}
-	// 精确域名只做全等（大小写不敏感），不得退化成后缀匹配。
-	if !scriptDomainHostMatch("a.zelly.cn", "A.Zelly.CN") {
-		t.Fatal("exact host compare should be case-insensitive")
-	}
-	if scriptDomainHostMatch("a.zelly.cn", "x.a.zelly.cn") {
-		t.Fatal("exact host must not match a subdomain")
-	}
-	// 空值不匹配（防止空规则把一切放行）。
-	if scriptDomainHostMatch("", "a.zelly.cn") || scriptDomainHostMatch("*.a.zelly.cn", "") {
-		t.Fatal("empty pattern or host must not match")
 	}
 }
-
-// ─────────────────────── 2) 域名 `*` 不允许在中间（录入期拒绝） ───────────────────────
-
-func TestScriptGlobRejectsNonLeadingDomainWildcardAtCompileTime(t *testing.T) {
-	// `a.*.a.com` 必须在**规则编译阶段**被拒绝，而不是「匹配时匹配不上」——
-	// 后者会让管理员以为规则保存成功、实际永远不生效。
-	if _, err := compileScriptDomainRule("a.*.a.com"); !errors.Is(err, ErrScriptDomainWildcardPlacement) {
-		t.Fatalf("compileScriptDomainRule(a.*.a.com) = %v, want ErrScriptDomainWildcardPlacement", err)
-	}
-	for _, host := range []string{"a.*.a.com", "a.*.zelly.cn", "*.a.*.com", "*a.zelly.cn", "a.zelly.*.cn", "*."} {
-		if err := validateScriptDomainWildcardPlacement(host); !errors.Is(err, ErrScriptDomainWildcardPlacement) {
-			t.Fatalf("validateScriptDomainWildcardPlacement(%q) = %v, want ErrScriptDomainWildcardPlacement", host, err)
-		}
-	}
-	// 合法的最左形态必须放行，否则上面那些断言只是在验证「什么都拒绝」。
-	for _, host := range []string{"a.zelly.cn", "*.zelly.cn", "*.a.zelly.cn"} {
-		if err := validateScriptDomainWildcardPlacement(host); err != nil {
-			t.Fatalf("validateScriptDomainWildcardPlacement(%q) unexpected error: %v", host, err)
-		}
-	}
-	// 脚本自身的域名不能是通配（通配属于管理员的「允许域名列表」）。
-	if err := validateScriptBaseDomain("*.a.zelly.cn"); !errors.Is(err, ErrScriptDomainWildcardOnScript) {
-		t.Fatalf("validateScriptBaseDomain(wildcard) = %v, want ErrScriptDomainWildcardOnScript", err)
-	}
-	// 保存配置时（validateScriptDomainEntry → compileScriptDomainRule）也要当场报错。
-	if err := validateScriptDomainEntry("a.*.a.com"); !errors.Is(err, ErrScriptDomainWildcardPlacement) {
-		t.Fatalf("validateScriptDomainEntry(a.*.a.com) = %v, want ErrScriptDomainWildcardPlacement", err)
-	}
-	// 真正走一次落库入口，确认拒绝发生在写库之前。
-	db := newScriptTestDB(t)
-	if _, err := UpdateScriptDomainSettingsWithDB(db, ScriptDomainSettings{Domains: []string{"a.*.a.com"}, AllowWildcard: true}); !errors.Is(err, ErrScriptDomainWildcardPlacement) {
-		t.Fatalf("UpdateScriptDomainSettingsWithDB accepted a mid-domain wildcard: %v", err)
-	}
-}
-
-// ─────────────────────── 3) 路径 `*` = 恰好一段 ───────────────────────
 
 func TestScriptGlobPathStarMatchesExactlyOneSegment(t *testing.T) {
 	cases := []struct {
@@ -205,50 +165,25 @@ func TestScriptGlobRejectsPathTraversalBeforeCleaning(t *testing.T) {
 
 // ─────────────────────── 6) 保留前缀优先于一切通配 ───────────────────────
 
-func TestScriptGlobReservedPrefixOutranksWildcardRules(t *testing.T) {
-	if !scriptReservedPrefix("adapter-service") {
-		t.Fatal("adapter-service must be reserved")
-	}
-	for _, value := range []string{"ADAPTER-SERVICE", " adapter-service ", "/api/", "sqp", "assets"} {
-		if !scriptReservedPrefix(value) {
-			t.Fatalf("%q should normalize to a reserved prefix", value)
-		}
-	}
-	// 多段值不当作前缀（调用方负责先取第一段）。这是有意的「宁可漏判非法输入」。
-	if scriptReservedPrefix("adapter-service/x") || scriptReservedPrefix("") {
-		t.Fatal("multi-segment or empty values must not be treated as a prefix")
-	}
-
-	// 配置期：首段是 `*`/`**` 或直接命中保留前缀的规则一律拒绝，
-	// 否则 `a.com/**` 会吞掉整站 API。
-	for _, entry := range []string{"a.com/**", "a.com/*/*", "a.com/api/*", "a.com/sqp/**"} {
-		if err := validateScriptDomainEntry(entry); !errors.Is(err, ErrScriptReservedPrefix) {
-			t.Fatalf("validateScriptDomainEntry(%q) = %v, want ErrScriptReservedPrefix", entry, err)
-		}
-	}
-	// 合法规则不能被误杀。
-	for _, entry := range []string{"a.com", "a.com/a/*", "a.com/a/**"} {
-		if err := validateScriptDomainEntry(entry); err != nil {
-			t.Fatalf("validateScriptDomainEntry(%q) unexpected error: %v", entry, err)
-		}
-	}
-
-	// 运行期：即使库里有「存量脏数据」`a.com/**`（compileScriptDomainRule 不拦保留前缀，
-	// validateScriptDomainEntry 才拦），保留前缀也必须先挡住。
+func TestScriptGlobReservedPrefixOutranksDomainFormat(t *testing.T) {
+	// ⚠️ 2026-11-14 域名语法重写后本用例被重写（原 TestScriptGlobReservedPrefixOutranksWildcardRules）。
+	//
+	// 旧版用 `a.com/**` 造「脏数据」并断言 PathPattern，而用户明确要求「旧格式全部舍弃，
+	// 不做兼容」—— 那个前提已被推翻（新语法里 `/**` 根本不是合法形态，PathPattern 字段也删了）。
+	//
+	// 现在要守的语义**没变**：保留前缀必须优先于域名/路径规则。只是改用新语法表达。
 	db := newScriptTestDB(t)
-	seed := entity.SystemSetting{Key: ScriptDomainSettingsKey, Value: `{"domains":["a.com/**"],"allowWildcard":true}`}
+	seed := entity.SystemSetting{Key: ScriptDomainSettingsKey, Value: `{"domains":["a.com/*"]}`}
 	if err := db.Create(&seed).Error; err != nil {
 		t.Fatal(err)
 	}
-	rules, err := scriptDomainRulesWithDB(db)
+	formats, err := scriptDomainRulesWithDB(db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rules) != 1 || rules[0].PathPattern != "/**" {
-		t.Fatalf("dirty wildcard rule should compile, got %+v", rules)
+	if len(formats) != 1 || formats[0].Kind != ScriptDomainFormatPath || formats[0].Host != "a.com" {
+		t.Fatalf("path format should parse to Kind=path Host=a.com, got %+v", formats)
 	}
-	// 非根路径的 shortCode 取**路径最后一段**（见 ResolvePublicScriptWithDB 第 3 步），
-	// 所以 fixture 的 short_code 必须等于请求路径末段，否则测的就不是规则这一层了。
 	script := entity.UserScript{
 		UserID: 1, VersionID: 1, Name: "fixture", Instruction: "fixture", Parameters: "{}",
 		BaseDomain: "a.com", Scheme: "https", UseWildcardDomain: false, Enabled: true,
@@ -257,43 +192,23 @@ func TestScriptGlobReservedPrefixOutranksWildcardRules(t *testing.T) {
 	if err := db.Create(&script).Error; err != nil {
 		t.Fatal(err)
 	}
-	// 规则允许 /a/sc（`**` 吞两段），保留前缀则必须挡下 /api/x。
-	if _, err := ResolvePublicScriptWithDB(db, "sc.a.com", "/a/sc"); err != nil {
-		t.Fatalf("wildcard rule should allow /a/sc, got %v", err)
+	// 非保留路径必须放行 —— 证明保留前缀不是「一刀切全拒」。
+	if _, err := ResolvePublicScriptWithDB(db, "sc.a.com", "/sc"); err != nil {
+		t.Fatalf("wildcard format should allow /sc, got %v", err)
 	}
-	if _, err := ResolvePublicScriptWithDB(db, "sc.a.com", "/api/sc"); !errors.Is(err, ErrScriptNotFound) {
-		t.Fatalf("reserved prefix must outrank ** rule, got %v", err)
+	// 保留前缀必须挡下。
+	// 用 baseline 清单里确实存在的段（login 在生产由路由表动态注入，测试环境没有）。
+	for _, reserved := range []string{"/api/sc", "/adapter-service/sc", "/static/sc"} {
+		if _, err := ResolvePublicScriptWithDB(db, "sc.a.com", reserved); !errors.Is(err, ErrScriptNotFound) {
+			t.Fatalf("reserved prefix %q must be refused, got %v", reserved, err)
+		}
 	}
-	if _, err := ResolvePublicScriptWithDB(db, "sc.a.com", "/a/../api/sc"); !errors.Is(err, ErrScriptNotFound) {
+	// 路径穿越进保留前缀同样必须拒 —— 否则 `..` 能绕过前缀判定。
+	if _, err := ResolvePublicScriptWithDB(db, "sc.a.com", "/x/../api/sc"); !errors.Is(err, ErrScriptNotFound) {
 		t.Fatalf("traversal into a reserved prefix must be refused, got %v", err)
-	}
-	// 同一台 host 上，规则没覆盖的路径必须被拒 —— 证明放行来自 glob 而不是「配了规则就全通」。
-	if _, err := ResolvePublicScriptWithDB(db, "sc.a.com", "/b/sc"); err != nil {
-		t.Fatalf("`/**` should cover /b/sc too, got %v", err)
 	}
 }
 
-// ─────────────────────── 7) 保留前缀枚举的完整性 ───────────────────────
-
-// 说明（实测偏差，已在交付报告中标注）：任务书要求「枚举数 ≥ 20」，
-// 但实测 buildReservedScriptPrefixes(nil) 只有 baseline 的 9 条，
-// 而真实路由表（208 条路由）只贡献 2 个第一段（adapter-service / sqp），
-// 合并后仍是 9 —— 因为「前缀」按第一段聚合，200 多条 /api/* 只算一个。
-// 因此「前缀数 ≥ 20」本仓永远不可能成立，写成硬断言只会得到一个恒红的假钉子。
-//
-// ⚠️ 不要「修正」成 >= 20：数字 20 属于 internal/api 的 scriptReservedPrefixWarnBelow，
-// 它比的是 **scannedRoutes（路由条数）**，不是前缀数；前缀集合按第一段聚合后天然很小，
-// router.go 的注释原文就写了「前缀集合本身很小 …… 单看条数会误判」。
-// 「≥20 前缀」在 service 侧不可达，且在语义上从来不是那条断言的判据。
-//
-// 该断言的真实意图是「枚举时机不对时能被发现」。仓里真正用于这件事的信号是
-// internal/api/router.go 的 scannedRoutes（阈值 scriptReservedPrefixWarnBelow=20），
-// 它在 internal/api 包里，service 不能反向 import（会形成循环）。
-// 于是这里守住三件 service 侧能守的事：
-//
-//	a. baseline 清单本身完整且无重复（兜底不会被悄悄删条）；
-//	b. 合并语义是 merge 而不是 replace —— 枚举不完整时兜底不会丢；
-//	c. 快照与查询结果一致（诊断接口不会骗人）。
 func TestScriptGlobReservedPrefixEnumerationStaysComplete(t *testing.T) {
 	t.Cleanup(func() { SetReservedScriptPrefixes(nil) })
 

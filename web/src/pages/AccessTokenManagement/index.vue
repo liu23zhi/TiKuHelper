@@ -1,6 +1,10 @@
 <template>
   <div class="console-page token-page">
-    <ConsolePageHeading title="令牌管理" description="为当前账号创建多个访问令牌，并按令牌维度维护状态、备注与累计额度上限。">
+    <!-- 标题与说明按入口切换（与 scripts「我的脚本」/「脚本管理」同一口径）：
+         用户从「我的令牌」进来时看到的应当是"自己的令牌"，而不是"管理全站"。
+         写成固定「令牌管理」会让普通用户以为自己进错了地方，也让管理员
+         在「我的令牌」入口下看到"管理"字样而误以为当前是全站视图。 -->
+    <ConsolePageHeading :title="pageTitle" :description="pageDescription">
       <template #actions>
       <a-space wrap class="section-actions">
         <a-button
@@ -268,6 +272,7 @@ export default defineComponent({
   name: 'AccessTokenManagement',
   components: { OverflowTableText, TableColumnSettings, RequestFailureAlert, ATypographyParagraph: TypographyParagraph },
   setup() {
+    const route = useRoute()
     const fieldIdPrefix = 'access-token-' + useId()
     const fieldId = field => fieldIdPrefix + '-' + field
     const nameInput = ref(null)
@@ -412,6 +417,12 @@ const formState = ref({
     // 这里**不做授权**：能否拿到全站数据由后端 scope=all + isAdminUser 决定
     // （service.ListAllAccessTokensWithDB 内部还会再判一次），
     // 前端 viewMode 只决定「看哪个视图」。
+    // 页面标题/说明按入口切换。管理侧说「全站」，用户侧说「当前账号」——
+    // 两句话都必须点明数据范围，否则用户无法从文案判断自己看到的是全部还是自己的。
+    const pageTitle = computed(() => (isAdmin.value ? '令牌管理' : '我的令牌'))
+    const pageDescription = computed(() => (isAdmin.value
+      ? '管理全站访问令牌：可切换查看全部用户或只看自己，并按令牌维度维护状态、备注与累计额度上限。'
+      : '为当前账号创建多个访问令牌，并按令牌维度维护状态、备注与累计额度上限。此处只显示你自己的令牌。'))
     const routeViewMode = computed(() => {
       const mode = route?.meta?.viewMode
       return typeof mode === 'string' ? mode : ''
@@ -421,6 +432,19 @@ const formState = ref({
       if (routeViewMode.value === 'admin') return true
       return isAdminUser(currentUser.value)
     })
+    // 入口切换（my-tokens ↔ token-admin）必须把「显示全部」复位。
+    //
+    // 两条路由共用同一组件实例，Vue 在切换时**不会重跑 setup**（与
+    // scripts/script-admin 同一坑），所以 showAllTokens 会跨入口残留：
+    // 管理员在「令牌管理」勾了「显示全部令牌」再点「我的令牌」，若不复位就会
+    // 带着 scope='all' 去请求 ⇒「我的令牌」显示全站数据，正好违反本次诉求
+    // （「我的令牌只显示当前账号的令牌」）。
+    //
+    // isAdmin 由 viewMode 派生，所以 isAdmin 变 false 就是"切到用户入口"的信号。
+    // 只在变成非管理员视图时强制复位；管理员之间切换不受影响。
+    watch(isAdmin, adminNow => {
+      if (!adminNow && showAllTokens.value) showAllTokens.value = false
+    }, { flush: 'sync' })
     const isCurrentListFailure = (failure, context) => canLoadForCurrentUser()
       && Boolean(failure) && failure === listFailure.value && context === listFailureContextKey.value
     const isCurrentEditorFailure = (failure, context) => canLoadForCurrentUser() && getCurrentUserLogoutEpoch() === editorFailureLogoutEpoch.value && visible.value
@@ -597,6 +621,9 @@ const formState = ref({
       deviceLimitHint,
       modalTitle,
       isAdmin,
+      pageTitle,
+      pageDescription,
+      routeViewMode,
       balanceAlert,
       statusOptions: [
         { label: '启用', value: 'enabled' },

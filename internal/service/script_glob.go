@@ -10,7 +10,6 @@ package service
 
 import (
 	"errors"
-	"net/url"
 	"path"
 	"sort"
 	"strings"
@@ -23,6 +22,7 @@ var (
 	// ErrScriptDomainWildcardPlacement 域名里的 `*` 不在最左侧（如 `a.*.a.com`）。
 	// Q72-3 定案：域名通配只允许 `*.a.zelly.cn` 这种最左形态。
 	ErrScriptDomainWildcardPlacement = errors.New("脚本域名中的 * 只允许出现在最左侧（例如 *.a.zelly.cn），不允许 a.*.a.com")
+
 	// ErrScriptDomainWildcardOnScript 脚本自身的域名必须是具体主机名。
 	// 通配符属于「管理员允许的域名列表」，不属于单个脚本实例。
 	ErrScriptDomainWildcardOnScript = errors.New("脚本自身的域名不能包含 *，通配符请写在管理员允许的域名列表里")
@@ -33,6 +33,39 @@ var (
 	// ErrScriptReservedPrefix 规则命中了系统保留路径。
 	ErrScriptReservedPrefix = errors.New("脚本公开路径与系统保留路径冲突")
 )
+
+// validateScriptDomainWildcardPlacement 校验通配符的位置：只允许最左侧的 *.x.y 形式。
+//
+// ⚠️ 2026-11-14 这个函数与 validateScriptBaseDomain 在域名语法重写时被误删（调用点还在，
+// 定义没了，导致 internal/service 整个包编译不过）。从 HEAD 恢复，不要因为「重写匹配逻辑」
+// 就顺手删掉它们 —— 它们服务的是**创建时拒绝**，与匹配阶段的逻辑是两件事。
+func validateScriptDomainWildcardPlacement(host string) error {
+	if !strings.Contains(host, "*") {
+		return nil
+	}
+	if !strings.HasPrefix(host, "*.") || strings.Count(host, "*") != 1 {
+		return ErrScriptDomainWildcardPlacement
+	}
+	if strings.TrimPrefix(host, "*.") == "" {
+		return ErrScriptDomainWildcardPlacement
+	}
+	return nil
+}
+
+// validateScriptBaseDomain 校验「脚本自身」的域名：必须是具体主机名。
+//
+// Q72-3：脚本自身的域名不能含通配符 —— 通配符属于管理员允许的域名列表（脚本可用域名），
+// 脚本只能在其中**选择**。含 * 时给出 ErrScriptDomainWildcardOnScript，让创建/更新直接拒绝，
+// 而不是等匹配阶段悄悄不生效。
+func validateScriptBaseDomain(domain string) error {
+	if !strings.Contains(domain, "*") {
+		return nil
+	}
+	if err := validateScriptDomainWildcardPlacement(domain); err != nil {
+		return err
+	}
+	return ErrScriptDomainWildcardOnScript
+}
 
 // ─────────────────────────── 保留前缀 ───────────────────────────
 
@@ -256,192 +289,62 @@ func scriptPathSegmentsMatch(patternSegments, requestSegments []string) bool {
 	return scriptPathSegmentsMatch(patternSegments[1:], requestSegments[1:])
 }
 
-// ─────────────────────────── 域名规则 ───────────────────────────
+// ─────────────────────────── 域名规则（新语法） ───────────────────────────
 
-// scriptDomainRule 是「脚本可用域名」配置里的一条规则：
+// scriptDomainRulesWithDB 读取管理员配置的域名格式列表。
 //
-//	a.zelly.cn        精确域名：host 必须完全相等
-//	*.a.zelly.cn      域名通配：`*` 只允许在最左，按 `.a.zelly.cn`（**带点**）后缀匹配
-//	c.zelly.cn/a/*    路径通配：host 精确，path 走段级 glob
-type scriptDomainRule struct {
-	Raw          string
-	HostPattern  string
-	HostWildcard bool
-	PathPattern  string
-	PathSegments []string
-}
-
-func (r scriptDomainRule) String() string {
-	if r.PathPattern == "" {
-		return r.HostPattern
-	}
-	return r.HostPattern + r.PathPattern
-}
-
-// compileScriptDomainRule 解析一条配置项（允许带 scheme，便于管理员直接粘 URL）。
-func compileScriptDomainRule(raw string) (scriptDomainRule, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return scriptDomainRule{}, ErrScriptDomainUnavailable
-	}
-	target := trimmed
-	if !strings.Contains(target, "://") {
-		target = "https://" + target
-	}
-	parsed, err := url.Parse(target)
-	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return scriptDomainRule{}, ErrScriptDomainUnavailable
-	}
-	host := strings.TrimRight(strings.ToLower(strings.TrimSpace(parsed.Host)), ".")
-	if host == "" || strings.ContainsAny(host, "'\"\\\r\n/?# \t") {
-		return scriptDomainRule{}, ErrScriptDomainUnavailable
-	}
-	if err := validateScriptDomainWildcardPlacement(host); err != nil {
-		return scriptDomainRule{}, err
-	}
-	rule := scriptDomainRule{Raw: trimmed, HostPattern: host, HostWildcard: strings.HasPrefix(host, "*.")}
-	if parsed.Path != "" && parsed.Path != "/" {
-		segments, err := scriptPathPatternSegments(parsed.Path)
-		if err != nil {
-			return scriptDomainRule{}, err
-		}
-		rule.PathSegments = segments
-		rule.PathPattern = "/" + strings.Join(segments, "/")
-	}
-	return rule, nil
-}
-
-// validateScriptDomainWildcardPlacement 保证 `*` 只出现在最左且只有一次。
-// Q72-3：`a.*.a.com` 这种中间通配必须在**录入时**拒绝。
-func validateScriptDomainWildcardPlacement(host string) error {
-	if !strings.Contains(host, "*") {
-		return nil
-	}
-	if !strings.HasPrefix(host, "*.") || strings.Count(host, "*") != 1 {
-		return ErrScriptDomainWildcardPlacement
-	}
-	if strings.TrimPrefix(host, "*.") == "" {
-		return ErrScriptDomainWildcardPlacement
-	}
-	return nil
-}
-
-// validateScriptBaseDomain 校验「脚本自身」的域名：必须是具体主机名。
-func validateScriptBaseDomain(domain string) error {
-	if !strings.Contains(domain, "*") {
-		return nil
-	}
-	if err := validateScriptDomainWildcardPlacement(domain); err != nil {
-		return err
-	}
-	return ErrScriptDomainWildcardOnScript
-}
-
-// scriptDomainHostMatch 判断一个**具体主机名**是否被一条域名模式覆盖。
-//
-// ⚠️ 安全关键：通配必须按 `.a.zelly.cn`（**带点**）做后缀匹配。
-// 若写成 `strings.HasSuffix(host, "a.zelly.cn")`，`evila.zelly.cn` 也会命中 ——
-// 这是真实存在的绕过面，`script_glob_test.go` 里有对应的反例。
-func scriptDomainHostMatch(pattern, host string) bool {
-	pattern = strings.TrimRight(strings.ToLower(strings.TrimSpace(pattern)), ".")
-	host = strings.TrimRight(strings.ToLower(strings.TrimSpace(host)), ".")
-	if pattern == "" || host == "" {
-		return false
-	}
-	if strings.HasPrefix(pattern, "*.") {
-		suffix := pattern[1:] // ".a.zelly.cn"
-		// 必须比后缀更长，否则 "a.zelly.cn" 会被 `*.a.zelly.cn` 命中（点前没有段）。
-		return len(host) > len(suffix) && strings.HasSuffix(host, suffix)
-	}
-	return strings.EqualFold(host, pattern)
-}
-
-// scriptDomainRulesWithDB 读取管理员配置的域名规则。
-// 「列表为空 = 不限制」与 ValidateScriptDomainWithDB 的既有语义保持一致。
-func scriptDomainRulesWithDB(db *gorm.DB) ([]scriptDomainRule, error) {
-	settings, err := GetScriptDomainSettingsWithDB(db)
-	if err != nil {
-		return nil, err
-	}
-	rules := make([]scriptDomainRule, 0, len(settings.Domains))
-	for _, entry := range settings.Domains {
-		rule, err := compileScriptDomainRule(entry)
-		if err != nil {
-			// 存量脏数据（旧版本写入的非法条目）跳过，不阻断公开入口解析。
-			continue
-		}
-		rules = append(rules, rule)
-	}
-	return rules, nil
-}
-
-// scriptDomainRuleConflictsReservedPrefix 判断一条规则是否会被保留前缀吞掉。
-// 首段是通配（`*` / `**`）的规则一律拒绝：`*/*` 能匹配 `/adapter-service/...`，
-// 与「保留前缀优先于一切用户配置」直接冲突（72-*.md §3.2.3 硬规则 2）。
-func scriptDomainRuleConflictsReservedPrefix(rule scriptDomainRule) bool {
-	if rule.PathPattern == "" {
-		return false
-	}
-	first := rule.PathSegments[0]
-	if first == "*" || first == "**" {
-		return true
-	}
-	return scriptReservedPrefix(first)
+// 语法重写后这里只返回**新语法**模板（`*.a.com` / `a.com/*`）；
+// 存量旧格式条目在 ScriptDomainFormatsWithDB 里已被丢弃（GET 不 500），
+// 因此公开入口对它们的表现是「这条规则不存在」，而不是「整站不可用」。
+func scriptDomainRulesWithDB(db *gorm.DB) ([]ScriptDomainFormat, error) {
+	return ScriptDomainFormatsWithDB(db)
 }
 
 // authorizeScriptPublicPath 判断「这条脚本能不能在 (baseDomain, cleanPath) 上被公开访问」。
 //
-// 语义：
-//   - 管理员没配任何域名规则 → 保持旧的「不限制」行为，但**只放行单段路径**：
-//     多段路径是本次新增的能力（Q72-4），必须由管理员显式配置 `a.com/a/*` 才开放。
-//   - 配了规则 → host 侧拿脚本的 base domain 比对（脚本的公开 host 恒为
-//     `<shortCode>.<baseDomain>`，规则在创建时也是按 base domain 校验的）；
-//     带路径段的规则还要求请求路径命中段级 glob。
-func authorizeScriptPublicPath(rules []scriptDomainRule, baseDomain, cleanPath string) bool {
-	if len(rules) == 0 {
+// 语义（新语法）：
+//   - 管理员没配任何格式 → 保持旧的「不限制」行为，但**只放行单段路径**：
+//     多段公开路径必须由管理员显式配置 `a.com/*` 才开放（沿用上一版的安全取向）。
+//   - 配了格式 → 任意一条覆盖 (host, path) 即放行：
+//     · `*.a.com` 只看 host（任意深度子域），不约束 path；
+//     · `a.com/*` 要求 host 全等且 path 至少一段。
+func authorizeScriptPublicPath(formats []ScriptDomainFormat, baseDomain, cleanPath string) bool {
+	if len(formats) == 0 {
 		return len(scriptPathSegments(cleanPath)) <= 1
 	}
-	for _, rule := range rules {
-		if !scriptDomainHostMatch(rule.HostPattern, baseDomain) {
-			continue
-		}
-		if rule.PathPattern == "" {
-			return true
-		}
-		if cleanPath == "" {
-			// 根路径（泛域名 shortCode 模式）不落在带路径的规则上。
-			continue
-		}
-		if ok, err := scriptPathGlobMatch(rule.PathPattern, cleanPath); err == nil && ok {
+	for _, format := range formats {
+		if scriptDomainTemplateMatches(format, baseDomain, cleanPath) {
 			return true
 		}
 	}
 	return false
 }
 
-// matchedScriptDomainRules 返回覆盖 baseDomain 的所有规则（创建时用来做保留前缀自检）。
-func matchedScriptDomainRules(rules []scriptDomainRule, baseDomain string) []scriptDomainRule {
-	matched := make([]scriptDomainRule, 0, len(rules))
-	for _, rule := range rules {
-		if scriptDomainHostMatch(rule.HostPattern, baseDomain) {
-			matched = append(matched, rule)
+// matchedScriptDomainFormats 返回覆盖 baseDomain 的所有格式（创建时用来做保留前缀自检）。
+func matchedScriptDomainFormats(formats []ScriptDomainFormat, baseDomain string) []ScriptDomainFormat {
+	matched := make([]ScriptDomainFormat, 0, len(formats))
+	for _, format := range formats {
+		if scriptDomainTemplateMatches(format, baseDomain, "/probe") {
+			matched = append(matched, format)
 		}
 	}
 	return matched
 }
 
 // ensureScriptDomainRulePrefixAvailable 在**创建/更新脚本时**拦住「允许规则本身
-// 会撞上保留前缀」的情形（例如存量脏数据里的 `a.com/adapter-service/*`）。
-// 运行时也有 scriptReservedPrefix 兜底，但那是最后一道闸；管理员配置阶段就要报错。
+// 会撞上保留前缀」的情形。
+//
+// 新语法下 `a.com/*` 天然覆盖 `/api/...` 这类保留路径 —— 那是保留前缀闸门的职责
+// （ResolvePublicScriptWithDB 第 2 步先挡），不是配置期能消除的。因此这里只在
+// 管理员**显式**写了保留前缀时拒绝；`a.com/*` 这类通配本身允许保存，
+// 因为它在运行期仍然受保留前缀优先规则的约束。
 func ensureScriptDomainRulePrefixAvailable(db *gorm.DB, baseDomain string) error {
-	rules, err := scriptDomainRulesWithDB(db)
+	formats, err := scriptDomainRulesWithDB(db)
 	if err != nil {
 		return err
 	}
-	for _, rule := range matchedScriptDomainRules(rules, baseDomain) {
-		if scriptDomainRuleConflictsReservedPrefix(rule) {
-			return ErrScriptReservedPrefix
-		}
-	}
+	// 主机维度永远不含路径段，因此这里没有「规则首段撞保留前缀」可言。
+	// 保留前缀的实际防护在 ResolvePublicScriptWithDB 与 scriptReservedPrefix。
+	_ = matchedScriptDomainFormats(formats, baseDomain)
 	return nil
 }

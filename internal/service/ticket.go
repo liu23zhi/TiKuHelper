@@ -90,6 +90,12 @@ type TicketListItem struct {
 	CreatedAt     time.Time  `json:"createdAt"`
 	UpdatedAt     time.Time  `json:"updatedAt"`
 	MessageCount  int64      `json:"messageCount"`
+	// Refund 只在 category=refund 的行上有值（T-209 退款工单合并）。
+	//
+	// 为什么必须单独下发退款真实状态：列表的 `Status` 是**映射出来的展示口径**
+	// （退款 7 态 → 工单 4 态），管理员真正要看的「冻结中 / 处理中 / 结果待核对」
+	// 只能从后端拿。前端据此显示退款徽标并给出「去处理退款」入口。
+	Refund *TicketRefundSummary `json:"refund,omitempty"`
 }
 
 type TicketDetail struct {
@@ -115,6 +121,57 @@ type CreateTicketInput struct {
 	// AttachmentIds 是「发工单时带图」：图片先通过上传接口落库（此时 ticket_id=0），
 	// 建单时在同一事务里认领到首条消息。未认领的草稿图不会被任何工单读到。
 	AttachmentIds []int64 `json:"attachmentIds,omitempty"`
+	// TicketType 是**用户在新建表单里选的工单类型**（T-209）。
+	//
+	// # 为什么它叫 TicketType 而不是 Category
+	//
+	// 69-*.md §七.1 的红线是「category 不得由用户自选」——那条红线的理由是套利：
+	// 用户挑 `registration_bonus` 就能诱导管理员点「一键补发赠金」，
+	// 挑 `blacklist_appeal` 就能绕过短信验证进入解封流程。
+	//
+	// 用户现在明确要求「新建工单的时候让用户选择工单类型」。两者并不矛盾：
+	// 把「用户能选什么」收窄成一份**白名单**（见 UserSelectableTicketTypes），
+	// 只有 general 与 refund 两项，且两项都不带任何「一键动作」。
+	// 归因类（registration_bonus / blacklist_appeal / account_*）仍然只能由
+	// 服务端按来源强制赋值，客户端传了也不认 —— 那条安全用例
+	// （TestTicketCategoryCannotBeChosenByUser）因此依旧成立。
+	TicketType string `json:"ticketType,omitempty"`
+	// 以下三个字段只在 TicketType=refund 时有意义，其余类型必须留空。
+	//
+	// 它们是**退款流程的入参**，不是工单字段：选了退款就走
+	// service.CreateTicketRefundWithDB（真实落 ticket_refunds 行 + 冻结/打款状态机），
+	// 而不是把 category 改个字符串了事。
+	RefundOrderID        *int32 `json:"refundOrderId,omitempty"`
+	RefundRequestedCents int64  `json:"refundRequestedCents,omitempty"`
+	RefundReason         string `json:"refundReason,omitempty"`
+}
+
+// 用户可自选的工单类型（T-209）。
+//
+// 收窄到两项是刻意的：这两项都**没有**「一键动作」，用户选它们不会给自己
+// 换来特权（general 无动作；refund 的审核/打款只有管理员能点）。
+// 任何将来要加进来的类型，判据是「用户自选后能不能触发一个管理员侧的一键动作」——
+// 能，就不许加。
+const (
+	TicketTypeGeneral = entity.TicketCategoryGeneral
+	TicketTypeRefund  = entity.TicketCategoryRefund
+)
+
+// UserSelectableTicketTypes 是新建表单允许出现、且服务端认可的取值。
+//
+// 空串等价于 general（老客户端不发这个字段，行为必须与改造前一致）。
+func normalizeUserTicketType(value string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case "", TicketTypeGeneral:
+		return TicketTypeGeneral, nil
+	case TicketTypeRefund:
+		return TicketTypeRefund, nil
+	default:
+		// 明确报错而不是静默降级：用户选了一个不存在的类型却拿到普通工单，
+		// 会让他以为「退款申请已提交」，而实际上什么都没发生。
+		return "", ErrTicketInvalidCategory
+	}
 }
 
 type ReplyTicketInput struct {
@@ -230,6 +287,21 @@ func isTicketAdmin(user *entity.User) bool {
 func CreateTicketWithDB(db *gorm.DB, user *entity.User, input CreateTicketInput) (TicketDetail, error) {
 	if db == nil || user == nil {
 		return TicketDetail{}, ErrTicketForbidden
+	}
+	// T-209：先解析用户选的类型。非法值直接报错（不静默降级成 general ——
+	// 用户以为提交了退款、实际只是一张普通工单，是最坏的一种「成功」）。
+	ticketType, err := normalizeUserTicketType(input.TicketType)
+	if err != nil {
+		return TicketDetail{}, err
+	}
+	if ticketType == TicketTypeRefund {
+		// 选了「退款」就必须真的走退款流程：落 ticket_refunds 行、进 7 态状态机，
+		// 而不是只把工单的 category 改成 refund。
+		return createRefundTicketWithDB(db, user, input)
+	}
+	// 选了退款却带了退款字段（或反之）：视作参数错，避免「提交了但字段被忽略」。
+	if input.RefundOrderID != nil || input.RefundRequestedCents != 0 || strings.TrimSpace(input.RefundReason) != "" {
+		return TicketDetail{}, ErrTicketInvalidCategory
 	}
 	subject, err := normalizeTicketText(input.Subject, TicketSubjectMaxLength, ErrTicketSubjectRequired)
 	if err != nil {
@@ -769,12 +841,38 @@ func ListTicketsWithDB(db *gorm.DB, user *entity.User, query TicketListQuery, pa
 		}
 	}
 	items := make([]TicketListItem, 0, len(tickets))
+	// T-209：一次性反查本页里 category=refund 的壳工单对应的退款，
+	// 避免逐行反查变成 N+1（管理台「全部工单」视图一页 100 行就是 100 次查询）。
+	refundsByTicket := map[int64]entity.TicketRefund{}
+	var refundTicketIDs []int64
 	for _, ticket := range tickets {
-		items = append(items, TicketListItem{ID: ticket.ID, UserID: ticket.UserID, UserName: ticket.UserName,
+		if strings.EqualFold(strings.TrimSpace(ticket.Category), entity.TicketCategoryRefund) {
+			refundTicketIDs = append(refundTicketIDs, ticket.ID)
+		}
+	}
+	if len(refundTicketIDs) > 0 {
+		var refundRows []entity.TicketRefund
+		if err := db.Session(&gorm.Session{NewDB: true}).
+			Where("ticket_id IN ?", refundTicketIDs).Find(&refundRows).Error; err == nil {
+			for _, row := range refundRows {
+				if row.TicketID != nil {
+					refundsByTicket[*row.TicketID] = row
+				}
+			}
+		}
+		// 反查失败不影响列表可用性：退款摘要缺失时前端只少一个徽标，
+		// 列表本身仍然完整（判据是「退款出现在列表里」，靠 category 已保证）。
+	}
+	for _, ticket := range tickets {
+		item := TicketListItem{ID: ticket.ID, UserID: ticket.UserID, UserName: ticket.UserName,
 			Subject: ticket.Subject, Status: ticket.Status, Priority: ticket.Priority,
 			Origin: ticket.Origin, Category: ticket.Category,
 			LastMessageAt: ticket.LastMessageAt,
-			ClosedAt:      ticket.ClosedAt, CreatedAt: ticket.CreatedAt, UpdatedAt: ticket.UpdatedAt, MessageCount: counts[ticket.ID]})
+			ClosedAt:      ticket.ClosedAt, CreatedAt: ticket.CreatedAt, UpdatedAt: ticket.UpdatedAt, MessageCount: counts[ticket.ID]}
+		if refund, ok := refundsByTicket[ticket.ID]; ok {
+			item.Refund = refundSummaryOf(refund)
+		}
+		items = append(items, item)
 	}
 	return TicketListResult{Items: items, Total: total, Page: page, PageSize: pageSize}, nil
 }

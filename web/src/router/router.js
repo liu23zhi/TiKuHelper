@@ -49,6 +49,15 @@ const TicketImageCache = () => import(/* webpackChunkName: "route-ticket-image-c
 const Whitelist = () => import(/* webpackChunkName: "route-whitelist" */ '../pages/Whitelist/index.vue')
 // 账号封禁（121 §4.8 / 121 决策 6）。管理员专属，已登记进 ADMIN_ONLY_ROUTE_NAMES。
 const UserBan = () => import(/* webpackChunkName: "route-user-ban" */ '../pages/UserBan/index.vue')
+// 服务器状态（用户诉求：「请在侧边栏新增服务器状态，权限为普通用户可见」）。
+// ⚠️ 普通用户可见，**不得**登记进 ADMIN_ONLY_ROUTE_NAMES。
+// 数据源是 /api/service-status/summary（后端走 AuthOrAccessToken）——
+// 它只返回聚合数字，不返回逐分钟明细；明细留在管理员的 /api/admin/service-status。
+const ServiceStatus = () => import(/* webpackChunkName: "route-service-status" */ '../pages/ServiceStatus/index.vue')
+// 脚本一次性激活码管理（用户诉求：「在侧边栏仅管理员可见添加一个脚本一次性
+// 激活码管理，用于查看，修改和创建」，并能看换取令牌/下载脚本等使用情况）。
+// 管理员专属，已登记进 ADMIN_ONLY_ROUTE_NAMES。
+const ScriptActivationCode = () => import(/* webpackChunkName: "route-script-activation-code" */ '../pages/ScriptActivationCode/index.vue')
 const routes = [
   {
     path: '/',
@@ -158,6 +167,13 @@ const routes = [
         path: 'archived-users',
         name: 'archived-users',
         component: ArchivedUsers,
+      },
+      {
+        // 脚本一次性激活码管理。管理员预生成、可批量、可查看使用情况
+        // （换取令牌 / 下载脚本 / 运行），供客服处理工单时核对用户报上来的码。
+        path: 'script-activation-codes',
+        name: 'script-activation-codes',
+        component: ScriptActivationCode,
       },
       {
         path: 'user-usage',
@@ -349,6 +365,22 @@ const routes = [
         name: 'ticket-admin',
         component: Tickets,
         meta: { viewMode: 'admin' },
+      },
+      {
+        // 服务器状态（普通用户可见区）。
+        //
+        // 用户原话：「请在侧边栏新增服务器状态，权限为普通用户可见。」
+        //
+        // ⚠️ 这个 name **绝不能**加进 ADMIN_ONLY_ROUTE_NAMES：
+        // 页面只读 /api/service-status/summary（后端 AuthOrAccessToken），
+        // 返回的是聚合健康度，不含逐分钟明细、不含任何用户或题目数据。
+        // 把它锁成管理员专属等于让用户看不到「现在能不能用」。
+        //
+        // 逐分钟明细仍留在 /api/admin/service-status（RequireAdmin），
+        // 本页不会去请求它 —— 普通用户拿 403，且那是运维数据。
+        path: 'service-status',
+        name: 'service-status',
+        component: ServiceStatus,
       }
     ]
   }
@@ -408,6 +440,10 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   // 等级与充值阶梯：等级门槛 = 谁能拿什么设备上限（C3 会读 device_limit），
   // 阶梯档位 = 平台补贴口径。两者都是运营配置，非管理员直接敲 URL 也要挡住。
   'user-levels',
+  // 脚本一次性激活码：码本身就是可直接兑换的凭据，列表里还能看到使用者。
+  // 普通用户直敲 /script-activation-codes 必须被挡住 —— 页面上的 canManage()
+  // 只是体验层，权限边界在 router 与后端（四条接口都要 RequireAdmin）。
+  'script-activation-codes',
 ])
 const PUBLIC_ADAPTER_ROUTE_NAMES = new Set([
   // 支付回跳：下单后浏览器跳回来时会话可能尚未建立。

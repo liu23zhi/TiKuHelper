@@ -661,6 +661,13 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 			logger.FatalLog(fmt.Errorf("open db fail: %w", err))
 		}
 		maxActive := 1
+		// SQLite 启动警告（task_doc/108:297、109:474）。
+		//
+		// 位置在这里而不是 registerPreparedDB 的开头：必须等 gorm.Open 成功、
+		// Dialector 已确定之后判定 —— 用连接事实（Dialector.Name()）而不是
+		// 「mysqlDSN 是否为空」推断，否则 SQL_DSN 与 config.yaml 互相覆盖时会判错。
+		// 放在连接池配置**之前**：先告知风险，再做后续动作，日志顺序符合阅读直觉。
+		WarnIfSQLiteStorage(db)
 		if db.Dialector.Name() == "sqlite" {
 			if err := configureSQLiteConnection(db, config.Database.Path); err != nil {
 				logger.FatalLog(fmt.Errorf("configure sqlite connection fail: %w", err))
@@ -865,6 +872,15 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 	// 数据类回填失败只记日志、不写标记，下次启动重试。
 	if err := runStartupMigration("ensureTicketTypeSchema", func() error { return ensureTicketTypeSchema(db) }); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare ticket type schema fail: %w", err))
+	}
+
+	// 退款工单合并（T-209）：给 ticket_refunds 补 ticket_id 关联列，
+	// 并给存量退款补建壳工单，让历史退款也出现在工单列表里。
+	// 必须在 ensureTicketTypeSchema 之后 —— 壳工单要用 category/origin 两列。
+	if err := runStartupMigration("ensureTicketRefundTicketSchema", func() error {
+		return ensureTicketRefundTicketSchema(db)
+	}); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare ticket refund ticket schema fail: %w", err))
 	}
 
 	// 额度周期（P14）：只建叠加层 access_token_quota_epochs（含唯一 (token_id, epoch)）。
@@ -1161,6 +1177,17 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 	// 下次启动重跑（Upsert 幂等）。与段表建表本身失败必须 FATAL 不同类。
 	if err := runStartupMigration("ensureIPSegmentBackfill", func() error { return EnsureIPSegmentBackfill(db) }); err != nil {
 		logger.SysLog(fmt.Sprintf("IP 段归属存量回填失败（不影响启动，下次启动会重试）：%v", err))
+	}
+
+	// 管理员预生成的一次性脚本激活码。
+	//
+	// 建表失败必须 FATAL：这张表的 code 唯一索引就是「一次性」的物理保障，
+	// 表/索引缺失时兑换会退化成非原子（同一码可能被兑换两次），属于
+	// 必须让运维立刻看见的结构性问题，不能像回填那样只记日志。
+	if err := runStartupMigration("ensureAdminScriptActivationCodeSchema", func() error {
+		return EnsureAdminScriptActivationCodeSchema(db)
+	}); err != nil {
+		logger.FatalLog(fmt.Errorf("ensure admin script activation code schema fail: %w", err))
 	}
 
 	ensureAccountDomainDefaults(db)

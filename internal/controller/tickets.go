@@ -70,7 +70,12 @@ func CreateTicket(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
 		return
 	}
-	detail, err := service.CreateTicketWithDB(ticketControllerDB(), &user, input)
+	// T-209：选了「退款」类型的建单必须真的走退款流程（落 ticket_refunds 行），
+	// 而退款渠道校验器只在 controller 层能拿到（它要读 EPAY 配置）。
+	// 所以这里显式分流，而不是让 service 自己合成一个「永远通过」的桩 ——
+	// 那会让原路退回在拿不到渠道信息时也建单成功，等于绕过 fail-closed。
+	db := ticketControllerDB()
+	detail, err := service.CreateTicketForUserWithDB(db, &user, input, ticketRefundVerifier(db))
 	if err != nil {
 		writeTicketError(c, err, "创建工单失败")
 		return

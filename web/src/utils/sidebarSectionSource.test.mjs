@@ -235,28 +235,34 @@ test('「普通用户可见」组与 USER_MENU_ITEMS 集合相等（不是子集
   // 钉住「普通用户可见」组的文案必须是用户端的。
   const labelOf = (key) => sharedSection.items.find((item) => item.key === key)?.label;
   assert.equal(labelOf('profile'), '个人中心');
-  assert.equal(labelOf('access-tokens'), '令牌管理');
+  assert.equal(labelOf('my-tokens'), '我的令牌');
 
-  // ⚠️ tickets / scripts / billing-records 三处双文案，现在**不在 shared 组里**：
-  // 它们各自拆成了两个路由（tickets ↔ ticket-admin 等），管理端那一侧用独立 key
+  // ⚠️ tickets / scripts / billing-records / my-tokens 四处双文案，现在**不在 shared 组里**：
+  // 它们各自拆成了两个路由（tickets ↔ ticket-admin、scripts ↔ script-admin、
+  // billing-records ↔ billing-admin、my-tokens ↔ token-admin），管理端那一侧用独立 key
   // 落在 admin-only 组。所以这里断言的是「user 端 key 只在 shared、admin 端 key
   // 只在 admin-only」，而不是「同一个 key 在两个组各有一份文案」。
-  for (const key of ['tickets', 'scripts', 'billing-records']) {
+  for (const key of ['tickets', 'scripts', 'billing-records', 'my-tokens']) {
     assert.ok(USER_BY_KEY.has(key), `前置失效：${key} 应当仍在 USER_MENU_ITEMS 里`);
     assert.equal(labelOf(key), USER_BY_KEY.get(key).label,
       `${key} 在 shared 组的文案必须是用户端的`);
   }
-  for (const key of ['ticket-admin', 'script-admin', 'billing-admin']) {
+  for (const key of ['ticket-admin', 'script-admin', 'billing-admin', 'token-admin']) {
     assert.ok(adminOnlySection.items.some((item) => item.key === key),
       `${key}（管理端入口）必须落在「仅管理员可见」组`);
     assert.ok(!sharedSection.items.some((item) => item.key === key),
       `${key} 不得出现在「普通用户可见」组`);
   }
-  // 三个管理端入口的文案是对的（用户端那侧用的是另一个 key，不会串）。
+  // 四个管理端入口的文案是对的（用户端那侧用的是另一个 key，不会串）。
   const adminLabelOf = (key) => adminOnlySection.items.find((item) => item.key === key)?.label;
   assert.equal(adminLabelOf('ticket-admin'), '工单管理');
   assert.equal(adminLabelOf('script-admin'), '脚本管理');
   assert.equal(adminLabelOf('billing-admin'), '账单明细');
+  assert.equal(adminLabelOf('token-admin'), '令牌管理');
+  // 旧的合并 key 必须彻底退出菜单：留着它会让「我的令牌」和「令牌管理」
+  // 共用同一个 selectedKey，侧边栏两个入口无法分别高亮。
+  assert.ok(!USER_BY_KEY.has('access-tokens'), 'access-tokens 已拆成 my-tokens / token-admin，不得再现在用户菜单里');
+  assert.ok(!adminKeys.includes('access-tokens'), 'access-tokens 不得再现在管理员菜单里');
 });
 
 test('「仅管理员可见」组是剩余项，且不含任何普通用户可见项', () => {

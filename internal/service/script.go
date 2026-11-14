@@ -327,7 +327,7 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 		if input.UseWildcardDomain != nil {
 			useWildcard = *input.UseWildcardDomain
 		}
-		if err := ValidateScriptDomainWithDB(tx, baseDomain, useWildcard); err != nil {
+		if err := ValidateScriptDomainWithDB(tx, baseDomain); err != nil {
 			return err
 		}
 		script := entity.UserScript{UserID: user.ID, VersionID: version.ID, Name: name, Parameters: string(parameters), Description: strings.TrimSpace(input.Description), BaseDomain: baseDomain, Scheme: normalizeScriptScheme(input.Scheme), UseWildcardDomain: useWildcard, Enabled: true, BillingEnabled: true, UseTikuPrice: true, AnswerPriceMultiplier: util.RoundMoney(multiplier), AnswerPrice: util.RoundMoney(input.AnswerPrice), ShortCode: shortCode, AccessKey: key, ReservedFee: ScriptReservationFee}
@@ -609,7 +609,7 @@ func UpdateUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32, i
 		if input.UseWildcardDomain != nil {
 			updatedScript.UseWildcardDomain = *input.UseWildcardDomain
 		}
-		if err := ValidateScriptDomainWithDB(tx, baseDomain, updatedScript.UseWildcardDomain); err != nil {
+		if err := ValidateScriptDomainWithDB(tx, baseDomain); err != nil {
 			return err
 		}
 		updates["instruction"] = BuildScriptCommandURL(updatedScript)
@@ -757,7 +757,7 @@ func ExchangeScriptTokenWithDB(db *gorm.DB, shortCode, token string) (ScriptExch
 }
 
 func validateScriptLaunchKeyWithDB(db *gorm.DB, script entity.UserScript) error {
-	if err := ValidateScriptDomainWithDB(db, script.BaseDomain, script.UseWildcardDomain); err != nil {
+	if err := ValidateScriptDomainWithDB(db, script.BaseDomain); err != nil {
 		return err
 	}
 	var key entity.AccessToken

@@ -218,10 +218,10 @@ function readPageHeading(key) {
 
 // 每个 key 的页面标题信息只算一次。
 //
-// ⚠️ 覆盖 SHARED_KEYS ∪ 三个管理端拆出来的 key（ticket-admin / script-admin /
-// billing-admin）。后者不在 shared 分区里（设计如此：它们属于「仅管理员可见」），
+// ⚠️ 覆盖 SHARED_KEYS ∪ 四个管理端拆出来的 key（ticket-admin / script-admin /
+// billing-admin / token-admin）。后者不在 shared 分区里（设计如此：它们属于「仅管理员可见」），
 // 但标题同样要审计 —— 否则「管理端入口点进去标题对不对」没有任何判据。
-const AUDIT_KEYS = [...new Set([...SHARED_KEYS, 'ticket-admin', 'script-admin', 'billing-admin'])];
+const AUDIT_KEYS = [...new Set([...SHARED_KEYS, 'ticket-admin', 'script-admin', 'billing-admin', 'token-admin'])];
 const HEADINGS = new Map(AUDIT_KEYS.map((key) => [key, readPageHeading(key)]));
 
 const labelOf = (item) => String(item?.label ?? '').trim();
@@ -325,6 +325,8 @@ test('判据③（反向防线）：拆开后的双入口，两侧 key 各自单
     ['tickets', 'ticket-admin', '工单反馈', '工单管理'],
     ['scripts', 'script-admin', '我的脚本', '脚本管理'],
     ['billing-records', 'billing-admin', '我的账单', '账单明细'],
+    // 令牌：用户侧只列自己的（我的令牌），管理侧列全站（令牌管理）。
+    ['my-tokens', 'token-admin', '我的令牌', '令牌管理'],
   ];
 
   for (const [userKey, adminKey, userLabel, adminLabel] of pairs) {
@@ -377,7 +379,9 @@ test('四个同名入口的当前状态被显式钉住', () => {
     // user-usage 是第 8 轮修的：标题从「账户使用」改成与菜单一致的「个人使用」。
     'user-usage': '个人使用',
     'recharge-orders': '充值记录',
-    'access-tokens': '令牌管理',
+    // access-tokens 原来在这里（两侧同名「令牌管理」）。2026-11-14 按用户诉求
+    // 拆成 my-tokens（我的令牌）/ token-admin（令牌管理）双入口后，它不再
+    // 「两侧同名」，改由下面的双入口用例断言 —— 继续留在这里会互相矛盾。
   };
   for (const [key, label] of Object.entries(sameName)) {
     assert.equal(labelOf(ADMIN_BY_KEY.get(key)), label, `${key} 管理员文案漂移`);

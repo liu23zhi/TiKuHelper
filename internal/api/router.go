@@ -85,6 +85,20 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.PUT("/script-activation-code-price", controller.Auth, middleware.RequireAdmin, controller.PutScriptActivationCodePrice)
 	apiRouter.POST("/script-activation-codes/purchase", controller.Auth, controller.PurchaseScriptActivationCode)
 	apiRouter.POST("/script-activation-codes/redeem", controller.Auth, controller.RedeemScriptActivationCode)
+
+	// 管理员预生成一次性脚本激活码（用户诉求：侧边栏仅管理员可见的
+	// 「脚本一次性激活码管理」，用于查看 / 修改 / 创建，并能看换取令牌、
+	// 下载脚本等使用情况，方便客服处理工单）。
+	//
+	// 与上面四条的区别：那四条是**用户侧**（自购、兑换、查价），
+	// 这四条是**管理员侧**。每条都挂 controller.Auth + middleware.RequireAdmin，
+	// 且 handler 内还有一次 requireAdmin（纵深防御）。注意二次判权会让
+	// 「路由少挂中间件」的行为测试测不出来，所以另有一条读 router.go 源码的
+	// 断言（TestScriptActivationCodeRoutesMountRequireAdmin）。
+	apiRouter.POST("/admin/script-activation-codes", controller.Auth, middleware.RequireAdmin, controller.ScriptActivationCodeCreate)
+	apiRouter.GET("/admin/script-activation-codes", controller.Auth, middleware.RequireAdmin, controller.ScriptActivationCodeList)
+	apiRouter.GET("/admin/script-activation-codes/:id", controller.Auth, middleware.RequireAdmin, controller.ScriptActivationCodeDetail)
+	apiRouter.PUT("/admin/script-activation-codes/:id", controller.Auth, middleware.RequireAdmin, controller.ScriptActivationCodeUpdate)
 	apiRouter.GET("/script-versions/:id/download", controller.Auth, controller.DownloadScriptVersion)
 	apiRouter.GET("/scripts", controller.Auth, controller.ScriptList)
 	apiRouter.POST("/scripts", controller.Auth, controller.CreateScript)
@@ -398,6 +412,22 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.PUT("/ai-model-prices/:id", controller.Auth, middleware.RequireAdmin, controller.UpdateAIModelPrice)
 	apiRouter.DELETE("/ai-model-prices/:id", controller.Auth, middleware.RequireAdmin, controller.DeleteAIModelPrice)
 	apiRouter.GET("/system-metrics", controller.Auth, middleware.RequireAdmin, controller.GetSystemMetrics)
+	// 存储状态（task_doc/108:297、109:474/486）。
+	//
+	// ⚠️ 这条**只挂 controller.Auth，不挂 middleware.RequireAdmin**，与相邻的
+	// system-metrics / system-settings 不同 —— 这不是漏写。
+	//
+	// 108:297 的要求是「当使用 Sqlite 启动时候，需要给与警告」，警告对象是所有人。
+	// 挂 RequireAdmin 会让普通用户永远看不到那条悬浮警告，需求只兑现给管理员。
+	// 响应体已做白名单（只回 driver / warning / production），不含 DSN、
+	// 数据库路径或账号，所以对普通用户暴露是安全的。
+	//
+	// 之所以仍然要 Auth：横幅挂在已登录布局里，未登录没有承载位置；
+	// 且「这台实例用 SQLite」对匿名访客只是一条免费指纹。
+	//
+	// 反向钉子见 internal/api/storage_status_router_test.go —— 那里断言本行
+	// **不含** RequireAdmin，防止「顺手补一个管理员校验」把它修回不可用。
+	apiRouter.GET("/system/storage-status", controller.Auth, controller.StorageStatus)
 	apiRouter.GET("/system-settings", controller.Auth, middleware.RequireAdmin, controller.SystemSettingDetail)
 	apiRouter.PUT("/system-settings", controller.Auth, middleware.RequireAdmin, controller.UpdateSystemSetting)
 

@@ -392,7 +392,7 @@ func validateAIFallbackScriptSessionWithDB(db *gorm.DB, userID int32, token enti
 			session.ScriptID, userID, token.ID, true).First(&script).Error; err != nil {
 		return rejected
 	}
-	if err := service.ValidateScriptDomainWithDB(db, script.BaseDomain, script.UseWildcardDomain); err != nil {
+	if err := service.ValidateScriptDomainWithDB(db, script.BaseDomain); err != nil {
 		return rejected
 	}
 	return nil

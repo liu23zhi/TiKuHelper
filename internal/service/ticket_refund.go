@@ -200,12 +200,34 @@ func CreateTicketRefundWithDB(db *gorm.DB, actor entity.User, input CreateTicket
 			}
 			return err
 		}
-		return nil
+		// T-209：同一事务里建壳工单，让这笔退款立刻出现在工单列表里。
+		// 与退款落库同事务是硬要求：退款成功但壳工单没建 = 该退款在列表里永久消失。
+		return CreateTicketRefundShellInTx(tx, row, now)
 	})
 	if err != nil {
 		return entity.TicketRefund{}, err
 	}
+	// 回读刚写入的 ticket_id（CreateTicketRefundShellInTx 用的是 UpdateColumn，
+	// 只改库不影响内存里的 row）。
+	if linked, err := readTicketRefundTicketID(db, row.ID); err == nil {
+		row.TicketID = linked
+	}
 	return row, nil
+}
+
+// readTicketRefundTicketID 读回某笔退款的壳工单 ID（未关联返回 nil）。
+func readTicketRefundTicketID(db *gorm.DB, refundID int64) (*int64, error) {
+	if db == nil || refundID <= 0 {
+		return nil, ErrTicketRefundInvalid
+	}
+	var row struct {
+		TicketID *int64 `gorm:"column:ticket_id"`
+	}
+	if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.TicketRefund{}).
+		Select("ticket_id").Where("id = ?", refundID).Take(&row).Error; err != nil {
+		return nil, err
+	}
+	return row.TicketID, nil
 }
 
 // ReviewTicketRefundWithDB takes an atomic wallet hold. For an orderless
@@ -591,6 +613,11 @@ func changeTicketRefundWithDB(db *gorm.DB, admin entity.User, id int64, mutate f
 	if err != nil {
 		return entity.TicketRefund{}, err
 	}
+	// T-209：退款状态迁移成功后，把展示口径同步到壳工单。
+	// **在事务之外**做：退款事务里已经在写钱包 hold 与 ledger，再塞一次 tickets 更新
+	// 会把账务事务的失败面扩大（壳工单写失败会让打款回滚，那是最不该发生的事）。
+	// 因此这里尽力而为，失败只记日志，下一次迁移或回填会修正。
+	syncTicketRefundShellStatusInTx(db, row)
 	return row, nil
 }
 

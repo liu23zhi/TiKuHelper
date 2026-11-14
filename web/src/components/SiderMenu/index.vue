@@ -94,6 +94,8 @@ import {
   WechatOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
+  KeyOutlined,
+  CloudServerOutlined,
 } from '@ant-design/icons-vue';
 import { isAdminUser } from '../../utils/currentUser';
 import { THEME_CONTROLLER_KEY } from '../../utils/themeMode.mjs';
@@ -153,10 +155,18 @@ const ADMIN_MENU_ITEMS = [
   { key: 'user-levels', label: '等级与充值阶梯', icon: TrophyOutlined },
   { key: 'system-settings', label: '系统管理', icon: ToolOutlined },
   { key: 'extension-updates', label: '扩展更新', icon: DownloadOutlined },
-  { key: 'access-tokens', label: '令牌管理', icon: SafetyCertificateOutlined },
+  // 令牌管理是独立路由 token-admin（见 router 的 viewMode 说明），不是 my-tokens 的别名。
+  // 「我的令牌」= 当前账号自己的令牌（viewMode='self'）；
+  // 「令牌管理」= 全站令牌（viewMode='admin'，登记在 ADMIN_ONLY_ROUTE_NAMES）。
+  { key: 'my-tokens', label: '我的令牌', icon: SafetyCertificateOutlined },
+  { key: 'token-admin', label: '令牌管理', icon: SafetyCertificateOutlined },
   // 脚本管理是独立路由 script-admin（见 router 的 viewMode 说明），不是 scripts 的别名。
   { key: 'scripts', label: '我的脚本', icon: CodeOutlined },
   { key: 'script-admin', label: '脚本管理', icon: CodeOutlined },
+  // 脚本一次性激活码：与「脚本管理」相邻 —— 都是脚本运营入口。
+  // 只进 ADMIN_MENU_ITEMS，**不进** USER_MENU_ITEMS（用户侧看到的是
+  // 「我的脚本」里的购买/兑换，不是管理员预生成的这批码）。
+  { key: 'script-activation-codes', label: '脚本激活码', icon: KeyOutlined },
   // 「工单管理」是**独立路由**（ticket-admin），不是 tickets 的别名。
   //
   // 为什么必须独立路由（2026-11-14 用户实测报出）：
@@ -166,18 +176,27 @@ const ADMIN_MENU_ITEMS = [
   // 现在 `tickets` → meta.viewMode='self'（用户视图），
   // `ticket-admin` → meta.viewMode='admin'（管理视图），两个 name、两个 key。
   { key: 'ticket-admin', label: '工单管理', icon: FileTextOutlined },
+  // 服务器状态（用户诉求：「请在侧边栏新增服务器状态，权限为普通用户可见」）。
+  // 同时登记在 USER_MENU_ITEMS 与 ADMIN_MENU_ITEMS：这是**同一条路由的两侧入口**
+  // （普通用户的「普通用户可见」组 + 管理员侧的共享组），而不是 ticket-admin 那种
+  // 「两个路由、两个视图」的成对关系 —— 本页没有管理员专属视图，两侧看到同一份摘要。
+  // ⚠️ 因此它**不是** ADMIN_ONLY_ROUTE_NAMES 的成员。
+  { key: 'service-status', label: '服务器状态', icon: CloudServerOutlined },
 ]
 
 const USER_MENU_ITEMS = [
   { key: 'profile', label: '个人中心', icon: UserOutlined },
   { key: 'user-usage', label: '个人使用', icon: CreditCardOutlined },
-  { key: 'access-tokens', label: '令牌管理', icon: SafetyCertificateOutlined },
+  { key: 'my-tokens', label: '我的令牌', icon: SafetyCertificateOutlined },
   { key: 'scripts', label: '我的脚本', icon: CodeOutlined },
   { key: 'recharge-orders', label: '充值记录', icon: CreditCardOutlined },
   { key: 'billing-records', label: '我的账单', icon: AccountBookOutlined },
   { key: 'my-referral', label: '我的邀请', icon: ShareAltOutlined },
   { key: 'review-rebate', label: '评价返现', icon: StarOutlined },
   { key: 'tickets', label: '工单反馈', icon: FileTextOutlined },
+  // 服务器状态：普通用户可见（用户诉求原文）。
+  // 与 ADMIN_MENU_ITEMS 里同 key 的那一项构成 shared 组，文案必须与这里一致。
+  { key: 'service-status', label: '服务器状态', icon: CloudServerOutlined },
 ]
 
 // 普通用户可见组从 USER_MENU_ITEMS 派生：手抄一份清单会在新增页面时漂移，

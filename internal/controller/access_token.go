@@ -44,6 +44,21 @@ func AccessTokenList(c *gin.Context) {
 		return
 	}
 
+	// 数据范围**只由服务端决定**，不接受前端指定「查谁」。
+	//
+	// 双入口（2026-11-14，用户诉求「我的令牌只显示当前账号的令牌 / 令牌管理显示所有」）：
+	//   my-tokens   前端不发 scope      → includeAll=false → 只查 operator.ID 自己的
+	//   token-admin 前端发 scope=all    → 管理员才生效    → 查全站
+	//
+	// ⚠️ 越权防线：本 handler **刻意不读** userId / user_id 之类的「查谁」参数。
+	// 用户身份只能来自会话（currentOperator），任何「按请求参数指定目标用户」的
+	// 实现都等于把越权入口开在查询串上。若将来确实需要管理员按用户过滤，
+	// 必须写成「管理员 + 显式白名单字段」并在 service 层再校验一次，
+	// 不能直接把 c.Query("userId") 透传进 SQL。
+	//
+	// 非管理员即使手工构造 ?scope=all 也只会拿到自己的令牌 —— 因为这里的
+	// && isAdminUser(&operator) 是硬与，且 service.ListAllAccessTokensWithDB
+	// 内部对非管理员会退化成 ListAccessTokensWithDB（双重防线）。
 	includeAll := strings.EqualFold(strings.TrimSpace(c.Query("scope")), "all") && isAdminUser(&operator)
 	tokens, err := listAccessTokens(operator, includeAll)
 	if err != nil {

@@ -581,7 +581,7 @@ func writeScriptError(c *gin.Context, err error, fallback string) {
 		status, message = http.StatusForbidden, err.Error()
 	case errors.Is(err, service.ErrScriptNotFound), errors.Is(err, service.ErrScriptVersionNotFound):
 		status, message = http.StatusNotFound, err.Error()
-	case errors.Is(err, service.ErrScriptNameRequired), errors.Is(err, service.ErrScriptDomainRequired), errors.Is(err, service.ErrScriptVersionRequired), errors.Is(err, service.ErrScriptVersionInvalid), errors.Is(err, service.ErrScriptTokenRequired), errors.Is(err, service.ErrScriptDomainUnavailable), errors.Is(err, service.ErrScriptWildcardDisabled):
+	case errors.Is(err, service.ErrScriptNameRequired), errors.Is(err, service.ErrScriptDomainRequired), errors.Is(err, service.ErrScriptVersionRequired), errors.Is(err, service.ErrScriptVersionInvalid), errors.Is(err, service.ErrScriptTokenRequired), errors.Is(err, service.ErrScriptDomainUnavailable):
 		status, message = http.StatusBadRequest, err.Error()
 	case errors.Is(err, service.ErrScriptBalanceInsufficient), errors.Is(err, service.ErrScriptTokenBalanceInsufficient), errors.Is(err, service.ErrScriptExchangeAlreadyIssued):
 		status, message = http.StatusPaymentRequired, err.Error()

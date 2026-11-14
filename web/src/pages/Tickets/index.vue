@@ -288,6 +288,14 @@
               v-else-if="column.key === 'status'"
               :color="ticketStatusColor(record.status)"
               >{{ ticketStatusLabel(record.status) }}</a-tag
+            ><!-- T-209：退款行必须显示**退款真实状态**（7 态），
+                 而不是工单那 4 态的映射结果 —— 「冻结中 / 处理中 / 结果待核对」
+                 才是管理员判断该不该重试打款的依据。 -->
+            <span v-else-if="column.key === 'refundStatus'" class="refund-status-cell"
+              ><a-tag v-if="isRefundTicketRow(record) && ticketRowRefundStatus(record)" color="gold">{{
+                refundStatusLabel(ticketRowRefundStatus(record))
+              }}</a-tag
+              ><span v-else>—</span></span
             ><span v-else-if="column.key === 'updatedAt'" class="time-cell">{{
               formatTicketTime(record.lastMessageAt || record.updatedAt)
             }}</span
@@ -311,7 +319,61 @@
       ><section v-if="actionFailures.create.state.failure" data-ticket-create-feedback>
       <RequestFailureAlert :key="actionFailures.create.state.context" :failure="actionFailures.create.state.failure" :message="actionFailures.create.state.message" :context-key="actionFailures.create.state.context" :is-current="actionFailures.create.isCurrent" :busy="createLoading" closable :onClose="actionFailures.create.close" />
     </section><a-form layout="vertical"
-        ><a-alert v-if="createSaved" type="info" show-icon message="提交的工单已保存，当前修改尚未提交。" /><a-form-item label="标题" required :validate-status="createValidationMessage('subject') ? 'error' : undefined"
+        ><a-alert v-if="createSaved" type="info" show-icon message="提交的工单已保存，当前修改尚未提交。" />
+      <!-- T-209：新建时先选工单类型。只有两项可选（都不带管理员侧一键动作），
+           规则与理由见 utils/ticketHelpers.mjs 的 TICKET_CREATE_TYPE_OPTIONS。 -->
+      <a-form-item label="工单类型" required :html-for="createFieldId('type')"
+        ><a-select
+          :id="createFieldId('type')"
+          :value="draft.ticketType"
+          :options="createTypeOptions"
+          :disabled="createLoading"
+          @update:value="createEntry.bind(setDraft, 'ticketType')" />
+        <template #help
+          ><span>{{ createTypeHint }}</span></template
+        ></a-form-item
+      >
+      <!-- 退款类型：字段整体切换成退款需要的（订单 / 金额 / 理由），
+           而不是只把分类字符串改一下。 -->
+      <template v-if="createNeedsRefundFields">
+        <a-form-item label="退款订单" :html-for="createFieldId('order')">
+          <a-select
+            :id="createFieldId('order')"
+            :value="draft.refundOrderId"
+            :options="refundOrderOptions"
+            allow-clear
+            show-search
+            option-filter-prop="label"
+            :loading="refundOrdersLoading"
+            :disabled="createLoading"
+            placeholder="不选表示无订单的人工退款"
+            @update:value="createEntry.bind(setDraft, 'refundOrderId')" />
+          <template #help
+            ><span>选择一笔已支付的充值订单可原路退回；不选则按人工打款处理，需管理员核对凭证。</span></template
+          >
+        </a-form-item>
+        <a-form-item label="退款金额（元）" required :validate-status="createValidationMessage('requestedYuan') ? 'error' : undefined"
+          ><a-input
+            :id="createFieldId('amount')"
+            :value="draft.requestedYuan" :onUpdate:value="createEntry.bind(setDraft, 'requestedYuan')"
+            :aria-invalid="createValidationMessage('requestedYuan') ? 'true' : undefined"
+            placeholder="例如 25.50"
+            :disabled="createLoading" /><template #help><span v-if="createValidationMessage('requestedYuan')" role="alert">{{ createValidationMessage('requestedYuan') }}</span><span v-else>最多两位小数</span></template></a-form-item
+        >
+        <a-form-item label="退款理由" required :validate-status="createValidationMessage('reason') ? 'error' : undefined"
+          ><a-textarea
+            :id="createFieldId('reason')"
+            :value="draft.reason" :onUpdate:value="createEntry.bind(setDraft, 'reason')"
+            :aria-invalid="createValidationMessage('reason') ? 'true' : undefined"
+            :maxlength="500"
+            show-count
+            :rows="4"
+            :disabled="createLoading"
+            placeholder="请说明退款原因" /><template #help><span v-if="createValidationMessage('reason')" role="alert">{{ createValidationMessage('reason') }}</span></template></a-form-item
+        >
+      </template>
+      <template v-else
+        ><a-form-item label="标题" required :validate-status="createValidationMessage('subject') ? 'error' : undefined"
           ><a-input
             :value="draft.subject" :onUpdate:value="createEntry.bind(setDraft, 'subject')"
             :aria-invalid="createValidationMessage('subject') ? 'true' : undefined" :aria-describedby="createValidationMessage('subject') ? createValidationErrorId('subject') : undefined"
@@ -350,7 +412,8 @@
               ></span
             >
           </div>
-        </a-form-item></a-form
+        </a-form-item></template
+      ></a-form
     ></a-modal>
     <a-modal
       :key="pageEpoch + ':' + detailRequestVersion" :open="detailVisible" :onUpdate:open="detailEntry.bind(setDetailVisible)"
@@ -578,8 +641,23 @@ import {
   TICKET_SYSTEM_ORIGIN_LABEL,
   getTicketDraftValidation,
 } from "@/utils/ticketHelpers.mjs";
+// 退款 7 态的中文文案、金额格式化与可退订单列表都与退款面板共用同一份实现，
+// 避免列表与面板对同一状态/金额给出不同说法。
+import { formatRefundCents, refundStatusLabel } from "./refundTicketHelpers.mjs";
+// 新建工单时选类型的纯函数（T-209）：类型清单、校验、payload 构造。
+import {
+  buildTicketCreatePayload,
+  getRefundDraftValidation,
+  isRefundTicketRow,
+  ticketCreateTypeNeedsRefundFields,
+  ticketRowRefundStatus,
+  TICKET_CREATE_TYPE_OPTIONS,
+} from "./createTicketTypeHelpers.mjs";
+import { getEligibleTicketRefundOrders } from "@/api/TikuComponentApi";
 
 const detailStatusId = `tickets-${useId()}-detail-status`;
+// 退款 7 态的中文文案与退款面板同一份（refundStatusLabel 在上方 import），
+// 避免列表与面板对同一状态给出不同说法。
 const TicketRefundPanel = defineAsyncComponent(() => import("./TicketRefundPanel.vue"));
 const { currentUser } = useCurrentUserDisplay();
 const route = useRoute();
@@ -663,6 +741,10 @@ const columns = computed(() => {
   base.push(
     { title: "分类", dataIndex: "category", key: "category", width: 130 },
     { title: "状态", dataIndex: "status", key: "status", width: 120 },
+    // T-209：退款专属列。普通工单这里显示「—」；退款行显示 7 态真实状态。
+    // 单开一列而不是塞进「状态」列：两者含义不同（工单状态 vs 资金状态），
+    // 合成一格会让管理员以为「工单 closed 就代表钱退了」。
+    { title: "退款状态", key: "refundStatus", width: 150 },
     { title: "最近更新", dataIndex: "updatedAt", key: "updatedAt", width: 180 },
     { title: "操作", key: "action", width: 100 }
   );
@@ -670,15 +752,67 @@ const columns = computed(() => {
 });
 const createVisible = ref(false);
 const createLoading = ref(false);
-const draft = reactive({ subject: "", body: "" });
+// draft 是新建工单表单。T-209 增加了「工单类型」以及退款专属字段。
+//
+// 退款字段与普通字段**并存**在同一个对象里，但提交时由 buildTicketCreatePayload
+// 按类型只挑该传的那些（普通类型绝不带退款字段，反之亦然 —— 后端会对
+// 参数矛盾报错，这是有意的检测）。
+const draft = reactive({
+  ticketType: "general",
+  subject: "",
+  body: "",
+  requestedYuan: "",
+  reason: "",
+  refundOrderId: undefined,
+});
 const createValidation = shallowRef(null);
 const createValidationErrorId = field => `${detailStatusId}-create-${field}-error`;
+// 表单控件的 id（用于 label 的 html-for 与 aria 关联），与错误提示 id 分开。
+const createFieldId = field => `${detailStatusId}-create-field-${field}`;
+// 当前类型是否需要退款专属字段（任务书：不能只换个 category 字符串）。
+const createNeedsRefundFields = computed(() => ticketCreateTypeNeedsRefundFields(draft.ticketType));
+const createTypeOptions = TICKET_CREATE_TYPE_OPTIONS.map(({ value, label }) => ({ value, label }));
+const createTypeHint = computed(() => {
+  const matched = TICKET_CREATE_TYPE_OPTIONS.find((item) => item.value === draft.ticketType);
+  return matched ? matched.hint : "";
+});
+// 可退订单列表：切到退款类型时才拉一次（普通工单不该触发这个请求）。
+const refundOrderOptions = ref([]);
+const refundOrdersLoading = ref(false);
+let refundOrdersLoaded = false;
+async function loadRefundOrders() {
+  if (refundOrdersLoaded || refundOrdersLoading.value) return;
+  refundOrdersLoading.value = true;
+  try {
+    const response = await getEligibleTicketRefundOrders();
+    const rows = Array.isArray(response?.data) ? response.data : [];
+    refundOrderOptions.value = rows
+      .filter((row) => row && Number.isSafeInteger(Number(row.id)))
+      .map((row) => ({
+        value: Number(row.id),
+        label: `${row.orderNo || "#" + row.id} · 实付 ${formatRefundCents(row.paidCents)} 元`,
+      }));
+    refundOrdersLoaded = true;
+  } catch {
+    // 拉取失败不阻断建单：用户仍可提交「无订单的人工退款」，
+    // 只是不能选原路退回。错误由消息提示，不把整个弹窗卡住。
+    refundOrderOptions.value = [];
+  } finally {
+    refundOrdersLoading.value = false;
+  }
+}
 function createValidationMessage(field) { return createValidation.value?.field === field ? createValidation.value.message : ""; }
 function retireCreateValidation() { createValidation.value = null; }
+// 当前表单用的是哪一套校验：随类型切换（退款 / 普通）。
+function currentDraftValidation() {
+  return ticketCreateTypeNeedsRefundFields(draft.ticketType)
+    ? getRefundDraftValidation({ requestedYuan: draft.requestedYuan, reason: draft.reason })
+    : getTicketDraftValidation(draft.subject, draft.body);
+}
 function retireStaleCreateValidation() {
   const previous = createValidation.value;
   if (!previous) return;
-  const current = getTicketDraftValidation(draft.subject, draft.body);
+  const current = currentDraftValidation();
   if (current.field !== previous.field || current.message !== previous.message) retireCreateValidation();
 }
 const detailVisible = ref(false);
@@ -783,7 +917,7 @@ function clearOwned() {
   listLoading.value = detailLoading.value = createLoading.value = replyLoading.value = statusSaving.value = configSaving.value = configTesting.value = retryLoading.value = configLoading.value = false;
   createVisible.value = detailVisible.value = configLoaded.value = createSaved.value = configDirty.value = false;
   detailTicket.value = null; messages.value = []; attachments.value = []; notification.value = null; replyBody.value = ""; detailStatus.value = ""; statusWasChosen.value = false;
-  draft.subject = ""; draft.body = ""; errorMessage.value = "";
+  draft.ticketType = "general"; draft.subject = ""; draft.body = ""; draft.requestedYuan = ""; draft.reason = ""; draft.refundOrderId = undefined; errorMessage.value = "";
   draftAttachments.value = []; replyAttachments.value = []; uploadBusy.value = false;
   Object.assign(notificationConfig, { enabled: false, webhookUrl: "", mentionedList: "", configured: false, clearWebhook: false });
   keywordInput.value = ""; Object.assign(filters, { keyword: "", status: "", category: "", createdFrom: "", createdTo: "", updatedFrom: "", updatedTo: "" });
@@ -835,8 +969,10 @@ watch([() => detailTicket.value?.id, detailStatus], () => { statusFailureDraft =
 watch([() => detailTicket.value?.id, () => notification.value?.id, () => notification.value?.status], () => { retryFailureDraft = {}; actionFailures.retry.clear(); }, { flush: "sync" });
 // Compare raw inputs only, without serializing reply text or affecting issued-write busy state.
 watch([replyBody, () => detailTicket.value?.id, () => isAdmin.value && statusWasChosen.value ? detailStatus.value : undefined], retireReplyDraft, { flush: "sync" });
-watch([() => draft.subject, () => draft.body], retireStaleCreateValidation, { flush: "sync" });
-watch(createVisible, next => { if (!next) { retireCreateValidation(); createVersion += 1; createLoading.value = false; createSaved.value = false; draft.subject = ""; draft.body = ""; } }, { flush: "sync" });
+watch([() => draft.subject, () => draft.body, () => draft.requestedYuan, () => draft.reason], retireStaleCreateValidation, { flush: "sync" });
+// 切到退款类型时才拉可退订单（普通工单不触发这个请求）。
+watch(createNeedsRefundFields, needs => { if (needs) void loadRefundOrders(); }, { flush: "sync" });
+watch(createVisible, next => { if (!next) { retireCreateValidation(); createVersion += 1; createLoading.value = false; createSaved.value = false; draft.ticketType = "general"; draft.subject = ""; draft.body = ""; draft.requestedYuan = ""; draft.reason = ""; draft.refundOrderId = undefined; } }, { flush: "sync" });
 // Focus leases also retire for same-id non-admin role ABA and unexpected routes.
 watch(() => String(currentUser.value?.role ?? ""), retireDetailFocus, { flush: "sync" });
 watch(() => route.fullPath, path => {
@@ -912,13 +1048,22 @@ function openCreate() {
   retireCreateValidation();
   actionFailures.create.clear(); createFailureDraft = {};
   createVersion += 1; createLoading.value = false; createSaved.value = false;
+  draft.ticketType = "general";
   draft.subject = "";
   draft.body = "";
+  draft.requestedYuan = "";
+  draft.reason = "";
+  draft.refundOrderId = undefined;
   createVisible.value = true;
 }
 async function submitTicket() {
   if (!canUseTickets() || !createVisible.value || createLoading.value) return;
-  const validation = getTicketDraftValidation(draft.subject, draft.body);
+  // 两种类型是**两套字段与两套校验**（任务书明确要求：不能只换个 category 字符串）。
+  // 校验在这里统一做一次，失败就停，不发请求。
+  const refundMode = ticketCreateTypeNeedsRefundFields(draft.ticketType);
+  const validation = refundMode
+    ? getRefundDraftValidation({ requestedYuan: draft.requestedYuan, reason: draft.reason })
+    : getTicketDraftValidation(draft.subject, draft.body);
   if (validation.message) { createValidation.value = validation; message.warning(validation.message); return; }
   retireCreateValidation();
   const owns = captureCreate(), subject = draft.subject, body = draft.body;
@@ -929,11 +1074,25 @@ async function submitTicket() {
   try {
     // 没有图片时**不**带 attachmentIds：保持「无附件建单」的请求体与历史完全一致
     // （既有契约测试断言 payload 恰好是 {body, subject}）。
-    const payload = { subject: subject.trim(), body: body.trim() };
-    if (attachmentIds.length) payload.attachmentIds = attachmentIds;
+    //
+    // 退款类型走 buildTicketCreatePayload 的另一条分支：带 refundRequestedCents /
+    // refundReason / refundOrderId，不带 subject/body。
+    const built = buildTicketCreatePayload({
+      ticketType: draft.ticketType,
+      subject, body,
+      requestedYuan: draft.requestedYuan,
+      reason: draft.reason,
+      refundOrderId: draft.refundOrderId,
+      attachmentIds,
+    });
+    const payload = { ...built.payload };
+    if (refundMode) {
+      // 退款不带草稿附件（退款证据走退款自己的凭证上传，与工单附件是两套）。
+      delete payload.attachmentIds;
+    }
     await createTicket(payload);
     if (!owns()) return;
-    message.success("工单已提交");
+    message.success(refundMode ? "退款申请已提交，可在工单列表跟踪进度" : "工单已提交");
     draftAttachments.value = [];
     if (draft.subject === subject && draft.body === body) createVisible.value = false;
     else createSaved.value = true;

@@ -13,6 +13,10 @@ import {
 } from "./ticketHelpers.mjs";
 import * as ticketHelpers from "./ticketHelpers.mjs";
 import * as ticketAttachmentHelpers from "./ticketAttachmentHelpers.mjs";
+// 页面 script 现在也从 ../pages/Tickets/createTicketTypeHelpers.mjs 引入创建类型的纯函数；
+// 这里是把它注入到被执行的 script 作用域里（与 ticketHelpers 同样的注入方式）。
+import * as ticketCreateTypeHelpers from "../pages/Tickets/createTicketTypeHelpers.mjs";
+import * as refundTicketHelpers from "../pages/Tickets/refundTicketHelpers.mjs";
 import { isAdminUser, getCurrentUserLogoutEpoch } from "./currentUser.js";
 import { ensureRequestFailure } from "./requestFailureView.mjs";
 
@@ -87,6 +91,9 @@ async function loadTicketPage(overrides = {}) {
     getTicketAttachment: async () => ({ data: new Blob([]) }),
     getTicketAttachmentAsAdmin: async () => ({ data: new Blob([]) }),
     ...ticketAttachmentHelpers,
+    ...ticketCreateTypeHelpers,
+    ...refundTicketHelpers,
+    getEligibleTicketRefundOrders: async () => ({ data: [] }),
     getTicketNotificationConfig: async () => ({}),
     retryTicketNotification: async () => ({}),
     saveTicketNotificationConfig: async () => ({}),

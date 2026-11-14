@@ -69,7 +69,7 @@ func TestScriptTicketsFailClosedWhenOwnerOrDomainWasRevoked(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := UpdateScriptDomainSettingsWithDB(db, ScriptDomainSettings{Domains: []string{"other.test"}, AllowWildcard: true}); err != nil {
+		if _, err := UpdateScriptDomainSettingsWithDB(db, ScriptDomainSettings{Domains: []string{"*.other.test"}}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := ExchangeScriptTokenWithDB(db, item.ShortCode, grant.Token); !errors.Is(err, ErrScriptDomainUnavailable) {
@@ -123,7 +123,7 @@ func TestScriptDomainPolicyReadFailureDoesNotAllowAll(t *testing.T) {
 	if err := db.Migrator().DropTable(&entity.SystemSetting{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidateScriptDomainWithDB(db, "example.test", true); err == nil {
+	if err := ValidateScriptDomainWithDB(db, "example.test"); err == nil {
 		t.Fatal("cannot treat a failed policy read as allow-all")
 	}
 }

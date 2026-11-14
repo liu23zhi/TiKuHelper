@@ -51,6 +51,9 @@ test('AccessTokenManagement keeps fixed widths in both scopes and expands the re
       computed, ref, shallowRef, useId, ensureRequestFailure, getCurrentUserLogoutEpoch, watch: () => {}, Swal: { getPopup: () => null }, useTableExpansion, sumTableColumnWidths, dataSource, showAllTokens,
       getStoredCurrentUser: () => ({ role: 'admin' }),
       useCurrentUserDisplay: () => ({ currentUser: ref({ id: 1, role: 'admin' }) }),
+      // 组件现在用 route.meta.viewMode 决定视图（my-tokens / token-admin 双入口）。
+      // 这里喂 token-admin 的 meta：管理员视图，username 列才会出现 —— 正是本用例要断言的。
+      useRoute: () => ({ meta: { viewMode: 'admin' }, path: '/adapter/token-admin', name: 'token-admin' }),
       useCurrentUserRequestScope, currentUserIdentity, useTableColumnPreferences,
       getCurrentInstance: () => ({ proxy: { handleLoad() {} } }),
       isAdminUser: () => true,

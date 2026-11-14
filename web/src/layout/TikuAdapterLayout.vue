@@ -1,6 +1,14 @@
 <template>
   <div class="layout-shell">
     <a class="skip-link" href="#portal-main-content" @click.prevent="focusContent">跳至主要内容</a>
+    <!--
+      SQLite 悬浮警告（task_doc/108:297、109:474/486）。
+      只挂这一个组件、不改本文件其它结构：警告自己取数、自己判定可见性、
+      自己处理「本次登录内关闭」。挂在 PageHeader 之前是为了让它浮在最上层
+      且不参与页头的 flex 布局（它本身 position: fixed）。
+    -->
+    <StorageWarning :status="storageStatus" :session-revision="storageWarningRevision"
+                    @dismiss="onStorageWarningDismissed" />
     <PageHeader :hasLogout="true" />
     <div v-if="isMobile" class="mobile-navigation-bar">
       <a-button ref="mobileMenuButton" class="mobile-menu-button" aria-label="打开导航"
@@ -44,6 +52,8 @@ import { Drawer, message } from 'ant-design-vue'
 import { CloseOutlined, MenuOutlined } from '@ant-design/icons-vue'
 import PageHeader from '../components/PageHeader'
 import SiderMenu from '../components/SiderMenu'
+import StorageWarning from '../components/StorageWarning'
+import { getStorageStatus } from '../api/SystemStatusApi'
 import { useRouter } from 'vue-router'
 import { useCurrentUserDisplay, isAdminUser, resolveHomePath, getCurrentUserLogoutEpoch, getCurrentSessionRevision } from '../utils/currentUser'
 import { currentUserIdentity } from '../utils/currentUserScope'
@@ -51,7 +61,7 @@ import { checkUserSession } from '../api/TikuComponentApi'
 
 export default {
   name: 'AdapterLayout',
-  components: { PageHeader, SiderMenu, ADrawer: Drawer, MenuOutlined, CloseOutlined },
+  components: { PageHeader, SiderMenu, StorageWarning, ADrawer: Drawer, MenuOutlined, CloseOutlined },
   setup() {
     const router = useRouter()
     const phoneQuery = window.matchMedia('(max-width: 767px)')
@@ -71,6 +81,33 @@ export default {
     const desktopNavigation = ref(null)
     const { currentUser } = useCurrentUserDisplay()
     const isAdmin = computed(() => isAdminUser(currentUser.value))
+
+    // ── SQLite 悬浮警告（task_doc/108:297、109:474/486）──
+    //
+    // 取一次存储状态即可：驱动由启动配置决定，运行期不变。失败（网络/401）时
+    // 保持 null → 组件判定不可见，**不弹任何提示**。理由是「拿不到就别乱说」：
+    // 这时既无法确认是 SQLite，也无法确认不是。
+    //
+    // sessionRevision 用 getCurrentSessionRevision()：它在登录成功（响应带 jwt）
+    // 与登出时被推进，所以「重新登录 → 悬浮条重现」是代次比较的自然结果，
+    // 不依赖任何时间戳。
+    const storageStatus = ref(null)
+    const storageWarningRevision = ref(getCurrentSessionRevision())
+    // 代次在同一个布局实例里也可能变（Profile 改资料会 setStoredCurrentUser），
+    // 但那种变化不是「重新登录」，不该让已关闭的警告重现 —— 所以这里只在
+    // 用户身份变化时同步代次，而不是 watch 全局 revision。
+    watch(() => currentUserIdentity(currentUser.value), (identity, previous) => {
+      if (!identity || identity === previous) return
+      storageWarningRevision.value = getCurrentSessionRevision()
+    })
+    const onStorageWarningDismissed = () => { /* 关闭状态由组件按 localStorage 自行维护 */ }
+    if (currentUser.value) {
+      // 失败静默：这条警告是「补充信息」，不能因为它取不到就影响布局。
+      Promise.resolve()
+        .then(() => getStorageStatus())
+        .then(payload => { if (mounted && currentUser.value) storageStatus.value = payload })
+        .catch(() => { /* 保持 null，组件不显示 */ })
+    }
     const adminOnlyPrefixes = [
       '/component', '/import', '/userlist', '/loglist',
       // 已归档账号管理（task_doc/76 §3.2.3）：非管理员不仅看不到菜单项，
@@ -373,6 +410,7 @@ export default {
       mobileDrawerEntry, mobileDrawerAfterChange,
       openMobileMenu, closeMobileMenu, handleMobileNavigate, handleNavigationKeydown,
       afterDrawerVisibilityChange, focusContent, desktopNavigation, captureDesktopNavigation, settleDesktopNavigation,
+      storageStatus, storageWarningRevision, onStorageWarningDismissed,
     }
   },
 }

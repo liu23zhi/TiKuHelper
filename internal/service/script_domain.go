@@ -12,20 +12,30 @@ import (
 
 const ScriptDomainSettingsKey = "script_domain_settings"
 
+// ScriptDomainSettings 是管理员配置的**域名格式列表**（2026-11-14 语法重写）。
+//
+// 与上一版的差别（破坏性，不做兼容）：
+//   - 去掉了 AllowWildcard：泛域名能否使用不再是一个独立开关，而是由「列表里有没有
+//     `*.a.com` 这一条」直接表达。两个开关表达同一件事必然会出现互相矛盾的状态
+//     （列表里有 `*.a.com` 但开关关着），那种状态在 UI 上无法解释。
+//   - Domains 里的每一条都必须是新语法（`*.a.com` 或 `a.com/*`），旧格式显式报错。
+//
+// 列表为空 = 不限制（保持既有语义：没配置过就不阻塞脚本创建）。
 type ScriptDomainSettings struct {
-	// Domains is empty for backwards-compatible allow-all behavior. Once an
-	// administrator configures it, script creation is limited to these roots.
-	Domains       []string `json:"domains"`
-	AllowWildcard bool     `json:"allowWildcard"`
+	Domains []string `json:"domains"`
 }
 
 var (
 	ErrScriptDomainUnavailable = errors.New("脚本域名不在管理员允许的列表中")
-	ErrScriptWildcardDisabled  = errors.New("管理员未启用泛域名脚本")
 )
 
+// GetScriptDomainSettingsWithDB 读取配置。
+//
+// ⚠️ 旧格式在这里**不报错**，只是读不出来 —— 调用方（管理员保存 / 脚本创建）
+// 才负责报错。原因：GET 是纯读接口，若它因为存量脏数据返回 500，管理员连
+// 「看到问题、改掉它」的入口都没有。真正的拦截点是写入与脚本创建。
 func GetScriptDomainSettingsWithDB(db *gorm.DB) (ScriptDomainSettings, error) {
-	settings := ScriptDomainSettings{AllowWildcard: true}
+	settings := ScriptDomainSettings{Domains: []string{}}
 	if db == nil {
 		return ScriptDomainSettings{}, errors.New("数据库未初始化")
 	}
@@ -42,28 +52,23 @@ func GetScriptDomainSettingsWithDB(db *gorm.DB) (ScriptDomainSettings, error) {
 		return settings, nil
 	}
 	var stored struct {
-		Domains       []string `json:"domains"`
-		AllowWildcard *bool    `json:"allowWildcard"`
+		Domains []string `json:"domains"`
 	}
 	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
 		return ScriptDomainSettings{}, err
 	}
-	settings.Domains = stored.Domains
-	// Older settings may omit allowWildcard; preserve the backwards-compatible
-	// default instead of interpreting an omitted JSON bool as false.
-	if stored.AllowWildcard != nil {
-		settings.AllowWildcard = *stored.AllowWildcard
-	}
-	settings.Domains = normalizeScriptDomainList(settings.Domains)
+	settings.Domains = normalizeScriptDomainList(stored.Domains)
 	return settings, nil
 }
 
+// UpdateScriptDomainSettingsWithDB 保存配置。
+//
+// 逐条硬校验：任何一条是旧格式或不合法，整批拒绝并返回**指向新语法的**错误。
+// 不做「跳过坏条目继续保存」——那会让管理员以为规则生效了，实际少了一条。
 func UpdateScriptDomainSettingsWithDB(db *gorm.DB, input ScriptDomainSettings) (ScriptDomainSettings, error) {
 	if db == nil {
 		return ScriptDomainSettings{}, errors.New("数据库未初始化")
 	}
-	// 逐条校验后再归一化：非法条目（`a.*.a.com`、`x.com/adapter-service/*` …）
-	// 必须当场报错，而不是被 normalizeScriptDomainList 静默丢掉。
 	for _, value := range input.Domains {
 		if strings.TrimSpace(value) == "" {
 			continue
@@ -77,74 +82,39 @@ func UpdateScriptDomainSettingsWithDB(db *gorm.DB, input ScriptDomainSettings) (
 	if err != nil {
 		return ScriptDomainSettings{}, err
 	}
-	if err := saveSystemSettingValue(db, ScriptDomainSettingsKey, string(encoded), "脚本可用域名与泛域名开关"); err != nil {
+	if err := saveSystemSettingValue(db, ScriptDomainSettingsKey, string(encoded), "脚本可用域名格式列表"); err != nil {
 		return ScriptDomainSettings{}, err
 	}
 	return GetScriptDomainSettingsWithDB(db)
 }
 
-// ValidateScriptDomainWithDB 校验「脚本自身」的 base domain 是否被管理员允许。
-//
-// 这里的 `wildcard` 是 `UseWildcardDomain`（短码做子域）开关，与域名里的 `*`
-// 是两个不同的概念：域名 `*` 由 ScriptDomainSettings.Domains 的条目形态表达。
-func ValidateScriptDomainWithDB(db *gorm.DB, domain string, wildcard bool) error {
+// ScriptDomainFormatsWithDB 把配置解析成结构化模板，供控制器直接返回给前端。
+func ScriptDomainFormatsWithDB(db *gorm.DB) ([]ScriptDomainFormat, error) {
 	settings, err := GetScriptDomainSettingsWithDB(db)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if wildcard && !settings.AllowWildcard {
-		return ErrScriptWildcardDisabled
-	}
-	normalized := normalizeScriptDomain(domain)
-	if normalized == "" {
-		return ErrScriptDomainUnavailable
-	}
-	// Q72-3：域名里的 `*` 只允许最左。中间形态在这里当场拒绝，不留到匹配阶段。
-	if err := validateScriptDomainWildcardPlacement(normalized); err != nil {
-		return err
-	}
-	if len(settings.Domains) == 0 {
-		return nil
-	}
-	// 通配匹配：`*.a.zelly.cn` 允许 base domain `x.a.zelly.cn`，
-	// 但**不允许** `a.zelly.cn`（点前必须有段），也不允许 `evila.zelly.cn`。
+	formats := make([]ScriptDomainFormat, 0, len(settings.Domains))
 	for _, entry := range settings.Domains {
-		rule, err := compileScriptDomainRule(entry)
-		if err != nil {
+		format, ok, err := parseScriptDomainFormat(entry)
+		if err != nil || !ok {
+			// 存量脏数据（旧语法）读不出来就跳过：GET 不该因为脏数据 500，
+			// 详见 GetScriptDomainSettingsWithDB 的注释。
 			continue
 		}
-		if scriptDomainHostMatch(rule.HostPattern, normalized) {
-			return nil
-		}
+		formats = append(formats, format)
 	}
-	return ErrScriptDomainUnavailable
+	return formats, nil
 }
 
-// normalizeScriptDomainEntry 归一化「一条配置项」：可以只写域名，也可以带路径段
-// （`c.zelly.cn/a/*`）。返回空串表示该条目不合法，由调用方决定跳过还是报错。
-func normalizeScriptDomainEntry(value string) string {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return ""
-	}
-	rule, err := compileScriptDomainRule(trimmed)
-	if err != nil {
-		return ""
-	}
-	return rule.String()
-}
-
-// validateScriptDomainEntry 用于**保存配置时**的校验：非法条目必须当场报错，
-// 否则管理员会以为规则生效了，实际在读取阶段被静默跳过。
+// validateScriptDomainEntry 保存配置时的逐条校验。
 func validateScriptDomainEntry(value string) error {
-	rule, err := compileScriptDomainRule(value)
+	_, ok, err := parseScriptDomainFormat(value)
 	if err != nil {
 		return err
 	}
-	// 保留前缀必须在**配置创建时**拒绝（45-*.md §0.25.2 要点 3）：
-	// 运行时再判定的话，管理员保存成功、上线才发现路径被系统入口吞掉。
-	if scriptDomainRuleConflictsReservedPrefix(rule) {
-		return ErrScriptReservedPrefix
+	if !ok {
+		return ErrScriptDomainFormatInvalid
 	}
 	return nil
 }
@@ -153,11 +123,13 @@ func normalizeScriptDomainList(values []string) []string {
 	seen := make(map[string]struct{}, len(values))
 	result := make([]string, 0, len(values))
 	for _, value := range values {
-		normalized := normalizeScriptDomainEntry(value)
-		if normalized == "" {
+		format, ok, err := parseScriptDomainFormat(value)
+		if err != nil || !ok {
+			// 非法条目在写入路径已被拒绝；这里是读路径，跳过以保持列表可用。
 			continue
 		}
-		if _, ok := seen[normalized]; ok {
+		normalized := format.String()
+		if _, exists := seen[normalized]; exists {
 			continue
 		}
 		seen[normalized] = struct{}{}
@@ -165,4 +137,39 @@ func normalizeScriptDomainList(values []string) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+// ValidateScriptDomainWithDB 校验**脚本自身的具体域名**是否被某条格式覆盖。
+//
+// 语义（新语法下重新定义）：
+//   - 列表为空 → 放行（保持「没配置就不限制」的既有行为）；
+//   - `*.a.com` 覆盖 `x.a.com`（任意深度子域），**不覆盖** `a.com` 本身；
+//   - `a.com/*` 覆盖主机恰好是 `a.com` 的脚本（路径部分由脚本绑定决定，
+//     不在这里判定 —— 创建脚本时还没分配具体路径）。
+func ValidateScriptDomainWithDB(db *gorm.DB, domain string) error {
+	formats, err := ScriptDomainFormatsWithDB(db)
+	if err != nil {
+		return err
+	}
+	if len(formats) == 0 {
+		return nil
+	}
+	host := normalizeScriptDomain(domain)
+	if host == "" {
+		return ErrScriptDomainUnavailable
+	}
+	for _, format := range formats {
+		switch format.Kind {
+		case ScriptDomainFormatWildcard:
+			suffix := "." + format.Host
+			if len(host) > len(suffix) && strings.HasSuffix(host, suffix) {
+				return nil
+			}
+		case ScriptDomainFormatPath:
+			if strings.EqualFold(host, format.Host) {
+				return nil
+			}
+		}
+	}
+	return ErrScriptDomainUnavailable
 }
