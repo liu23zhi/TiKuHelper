@@ -750,7 +750,7 @@ func ExchangeScriptTokenWithDB(db *gorm.DB, shortCode, token string) (ScriptExch
 		if err := tx.Create(&entity.ScriptExchangeToken{ScriptID: script.ID, VersionID: version.ID, Purpose: "activation", TokenHash: hashScriptSecret(activationToken), ExpiresAt: activationExpiresAt}).Error; err != nil {
 			return err
 		}
-		result = ScriptExchangeResult{ScriptID: script.ID, Name: script.Name, Instruction: BuildScriptCommandURL(script), Parameters: parameters, Version: version.Version, Filename: version.Filename, DownloadURL: "/adapter-service/script-command/" + script.ShortCode + "/file", ActivationToken: activationToken, ActivationExpiresAt: activationExpiresAt, CommandURL: BuildScriptCommandURL(script), BootstrapURL: "/adapter-service/script-command/" + script.ShortCode + "/bootstrap", LaunchOrigin: ScriptCommandOrigin(script), ExecutableSHA256: version.SHA256, BillingMode: script.BillingMode, NotifyOnDenied: script.NotifyOnDenied}
+		result = ScriptExchangeResult{ScriptID: script.ID, Name: script.Name, Instruction: BuildScriptCommandURL(script), Parameters: parameters, Version: version.Version, Filename: version.Filename, DownloadURL: "/api/script-command/" + script.ShortCode + "/file", ActivationToken: activationToken, ActivationExpiresAt: activationExpiresAt, CommandURL: BuildScriptCommandURL(script), BootstrapURL: "/api/script-command/" + script.ShortCode + "/bootstrap", LaunchOrigin: ScriptCommandOrigin(script), ExecutableSHA256: version.SHA256, BillingMode: script.BillingMode, NotifyOnDenied: script.NotifyOnDenied}
 		return nil
 	})
 	return result, err
@@ -847,7 +847,7 @@ func normalizeScriptScheme(value string) string {
 func BuildScriptCommandURL(script entity.UserScript) string {
 	origin := ScriptCommandOrigin(script)
 	if origin == "" {
-		return "/adapter-service/script-command/" + url.PathEscape(strings.TrimSpace(script.ShortCode)) + "/bootstrap"
+		return "/api/script-command/" + url.PathEscape(strings.TrimSpace(script.ShortCode)) + "/bootstrap"
 	}
 	if script.UseWildcardDomain {
 		return origin

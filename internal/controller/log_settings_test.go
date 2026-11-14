@@ -80,9 +80,9 @@ func logSettingsRouter(actor *entity.User) *gin.Engine {
 			c.Set("user", actor)
 		}
 	}
-	router.GET("/adapter-service/admin/log-settings", auth, middleware.RequireAdmin, LogRetentionSettingsDetail)
-	router.PUT("/adapter-service/admin/log-settings", auth, middleware.RequireAdmin, UpdateLogRetentionSettings)
-	router.POST("/adapter-service/admin/log-settings/clean", auth, middleware.RequireAdmin, CleanLogRetentionNow)
+	router.GET("/api/admin/log-settings", auth, middleware.RequireAdmin, LogRetentionSettingsDetail)
+	router.PUT("/api/admin/log-settings", auth, middleware.RequireAdmin, UpdateLogRetentionSettings)
+	router.POST("/api/admin/log-settings/clean", auth, middleware.RequireAdmin, CleanLogRetentionNow)
 	return router
 }
 
@@ -114,7 +114,7 @@ func TestLogSettingsDetailReturnsDefaults(t *testing.T) {
 	applyCalls := installLogSettingsTestDB(t, db)
 	router := logSettingsRouter(&entity.User{ID: 1, Role: "admin"})
 
-	recorder := logSettingsRequest(router, http.MethodGet, "/adapter-service/admin/log-settings", "")
+	recorder := logSettingsRequest(router, http.MethodGet, "/api/admin/log-settings", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -160,7 +160,7 @@ func TestLogSettingsUpdatePersistsAndReportsApply(t *testing.T) {
 	applyCalls := installLogSettingsTestDB(t, db)
 	router := logSettingsRouter(&entity.User{ID: 1, Role: "admin"})
 
-	recorder := logSettingsRequest(router, http.MethodPut, "/adapter-service/admin/log-settings",
+	recorder := logSettingsRequest(router, http.MethodPut, "/api/admin/log-settings",
 		`{"maxAgeDays":45,"maxTotalGiB":20,"maxFileMiB":50,"cleanupIntervalMinutes":15}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", recorder.Code, recorder.Body.String())
@@ -215,7 +215,7 @@ func TestLogSettingsUpdateRejectsInvalidValues(t *testing.T) {
 			applyCalls := installLogSettingsTestDB(t, db)
 			router := logSettingsRouter(&entity.User{ID: 1, Role: "admin"})
 
-			recorder := logSettingsRequest(router, http.MethodPut, "/adapter-service/admin/log-settings", item.body)
+			recorder := logSettingsRequest(router, http.MethodPut, "/api/admin/log-settings", item.body)
 			if recorder.Code != http.StatusBadRequest {
 				t.Fatalf("expected 400, got %d body=%s", recorder.Code, recorder.Body.String())
 			}
@@ -245,7 +245,7 @@ func TestLogSettingsUpdateRejectsTotalBelowTwoFiles(t *testing.T) {
 	applyCalls := installLogSettingsTestDB(t, db)
 	router := logSettingsRouter(&entity.User{ID: 1, Role: "admin"})
 
-	recorder := logSettingsRequest(router, http.MethodPut, "/adapter-service/admin/log-settings",
+	recorder := logSettingsRequest(router, http.MethodPut, "/api/admin/log-settings",
 		`{"maxTotalGiB":1,"maxFileMiB":600}`)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d body=%s", recorder.Code, recorder.Body.String())
@@ -268,7 +268,7 @@ func TestLogSettingsCleanUsesPersistedConfigAndIgnoresBody(t *testing.T) {
 	}
 	router := logSettingsRouter(&entity.User{ID: 1, Role: "admin"})
 
-	recorder := logSettingsRequest(router, http.MethodPost, "/adapter-service/admin/log-settings/clean",
+	recorder := logSettingsRequest(router, http.MethodPost, "/api/admin/log-settings/clean",
 		`{"maxAgeDays":1}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", recorder.Code, recorder.Body.String())
@@ -303,7 +303,7 @@ func TestLogSettingsUpdateSucceedsWithWarningWhenApplyFails(t *testing.T) {
 	}
 	router := logSettingsRouter(&entity.User{ID: 1, Role: "admin"})
 
-	recorder := logSettingsRequest(router, http.MethodPut, "/adapter-service/admin/log-settings",
+	recorder := logSettingsRequest(router, http.MethodPut, "/api/admin/log-settings",
 		`{"maxAgeDays":31}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("apply failure must not fail the save, got %d body=%s", recorder.Code, recorder.Body.String())
@@ -335,9 +335,9 @@ func TestLogSettingsRequiresAdmin(t *testing.T) {
 		path   string
 		body   string
 	}{
-		{http.MethodGet, "/adapter-service/admin/log-settings", ""},
-		{http.MethodPut, "/adapter-service/admin/log-settings", `{"maxAgeDays":31}`},
-		{http.MethodPost, "/adapter-service/admin/log-settings/clean", ""},
+		{http.MethodGet, "/api/admin/log-settings", ""},
+		{http.MethodPut, "/api/admin/log-settings", `{"maxAgeDays":31}`},
+		{http.MethodPost, "/api/admin/log-settings/clean", ""},
 	}
 	for _, item := range paths {
 		t.Run(item.method, func(t *testing.T) {
@@ -376,7 +376,7 @@ func TestLogSettingsUpdateRejectsMalformedBody(t *testing.T) {
 	applyCalls := installLogSettingsTestDB(t, db)
 	router := logSettingsRouter(&entity.User{ID: 1, Role: "admin"})
 
-	recorder := logSettingsRequest(router, http.MethodPut, "/adapter-service/admin/log-settings", `{"maxAgeDays":`)
+	recorder := logSettingsRequest(router, http.MethodPut, "/api/admin/log-settings", `{"maxAgeDays":`)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for malformed json, got %d body=%s", recorder.Code, recorder.Body.String())
 	}

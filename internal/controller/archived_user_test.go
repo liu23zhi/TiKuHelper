@@ -153,7 +153,7 @@ func TestArchivedUserListRequiresUnscopedAndFilters(t *testing.T) {
 	}
 
 	list := func(query string) map[string]any {
-		recorder := doArchiveRequest(t, ArchivedUserList, http.MethodGet, "/adapter-service/admin/archived-users"+query, nil, admin, nil)
+		recorder := doArchiveRequest(t, ArchivedUserList, http.MethodGet, "/api/admin/archived-users"+query, nil, admin, nil)
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("list %q expected 200, got %d with body %s", query, recorder.Code, recorder.Body.String())
 		}
@@ -202,7 +202,7 @@ func TestArchivedUserListRequiresUnscopedAndFilters(t *testing.T) {
 	if err := db.Create(plain).Error; err != nil {
 		t.Fatalf("create plain user: %v", err)
 	}
-	if recorder := doArchiveRequest(t, ArchivedUserList, http.MethodGet, "/adapter-service/admin/archived-users", nil, plain, nil); recorder.Code != http.StatusForbidden {
+	if recorder := doArchiveRequest(t, ArchivedUserList, http.MethodGet, "/api/admin/archived-users", nil, plain, nil); recorder.Code != http.StatusForbidden {
 		t.Fatalf("non-admin must be rejected with 403, got %d", recorder.Code)
 	}
 }
@@ -246,7 +246,7 @@ func TestArchivedUserDetailReturnsBindingHistory(t *testing.T) {
 		t.Fatalf("create binding record: %v", err)
 	}
 
-	recorder := doArchiveRequest(t, ArchivedUserDetail, http.MethodGet, "/adapter-service/admin/archived-users/911", nil, admin,
+	recorder := doArchiveRequest(t, ArchivedUserDetail, http.MethodGet, "/api/admin/archived-users/911", nil, admin,
 		gin.Params{{Key: "id", Value: "911"}})
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d with body %s", recorder.Code, recorder.Body.String())
@@ -273,7 +273,7 @@ func TestArchivedUserDetailReturnsBindingHistory(t *testing.T) {
 	}
 
 	// 活跃账号（未归档）不能通过这个接口读到：否则恢复接口会变成任意账号写入口。
-	if recorder := doArchiveRequest(t, ArchivedUserDetail, http.MethodGet, "/adapter-service/admin/archived-users/910", nil, admin,
+	if recorder := doArchiveRequest(t, ArchivedUserDetail, http.MethodGet, "/api/admin/archived-users/910", nil, admin,
 		gin.Params{{Key: "id", Value: "910"}}); recorder.Code != http.StatusNotFound {
 		t.Fatalf("active account must be 404 on archive detail, got %d", recorder.Code)
 	}
@@ -287,7 +287,7 @@ func TestArchivedUserRestoreWithoutConflictRestoresRow(t *testing.T) {
 	admin := seedArchiveAdmin(t, db, 920, "restore-admin")
 	seedArchivedUser(t, db, 921, "restore-me", entity.UserArchivedReasonAdminDelete, time.Now())
 
-	recorder := doArchiveRequest(t, ArchivedUserRestore, http.MethodPost, "/adapter-service/admin/archived-users/921/restore",
+	recorder := doArchiveRequest(t, ArchivedUserRestore, http.MethodPost, "/api/admin/archived-users/921/restore",
 		[]byte(`{"confirmRename":false}`), admin, gin.Params{{Key: "id", Value: "921"}})
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d with body %s", recorder.Code, recorder.Body.String())
@@ -343,7 +343,7 @@ func TestArchivedUserRestoreUsernameConflictReturns409WithoutConfirm(t *testing.
 		t.Fatalf("create occupying user: %v", err)
 	}
 
-	recorder := doArchiveRequest(t, ArchivedUserRestore, http.MethodPost, "/adapter-service/admin/archived-users/931/restore",
+	recorder := doArchiveRequest(t, ArchivedUserRestore, http.MethodPost, "/api/admin/archived-users/931/restore",
 		[]byte(`{"confirmRename":false}`), admin, gin.Params{{Key: "id", Value: "931"}})
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("expected 409, got %d with body %s", recorder.Code, recorder.Body.String())
@@ -393,7 +393,7 @@ func TestArchivedUserRestoreConfirmRenameUsesRestoredSuffix(t *testing.T) {
 		}
 	}
 
-	recorder := doArchiveRequest(t, ArchivedUserRestore, http.MethodPost, "/adapter-service/admin/archived-users/941/restore",
+	recorder := doArchiveRequest(t, ArchivedUserRestore, http.MethodPost, "/api/admin/archived-users/941/restore",
 		[]byte(`{"confirmRename":true}`), admin, gin.Params{{Key: "id", Value: "941"}})
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d with body %s", recorder.Code, recorder.Body.String())
@@ -441,7 +441,7 @@ func TestArchivedUserRestoreGivesUpAfter100Attempts(t *testing.T) {
 		}
 	}
 
-	recorder := doArchiveRequest(t, ArchivedUserRestore, http.MethodPost, "/adapter-service/admin/archived-users/951/restore",
+	recorder := doArchiveRequest(t, ArchivedUserRestore, http.MethodPost, "/api/admin/archived-users/951/restore",
 		[]byte(`{"confirmRename":true}`), admin, gin.Params{{Key: "id", Value: "951"}})
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500 when all 100 candidates are taken, got %d with body %s", recorder.Code, recorder.Body.String())
@@ -468,7 +468,7 @@ func TestArchivedUserRestoreRejectsNonAdmin(t *testing.T) {
 		t.Fatalf("create plain user: %v", err)
 	}
 
-	recorder := doArchiveRequest(t, ArchivedUserRestore, http.MethodPost, "/adapter-service/admin/archived-users/960/restore",
+	recorder := doArchiveRequest(t, ArchivedUserRestore, http.MethodPost, "/api/admin/archived-users/960/restore",
 		[]byte(`{"confirmRename":true}`), plain, gin.Params{{Key: "id", Value: "960"}})
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for non-admin, got %d", recorder.Code)
@@ -495,7 +495,7 @@ func TestArchivedUserRestoreUnfreezesClosurePending(t *testing.T) {
 		t.Fatalf("pin closure_pending status: %v", err)
 	}
 
-	recorder := doArchiveRequest(t, ArchivedUserRestore, http.MethodPost, "/adapter-service/admin/archived-users/971/restore",
+	recorder := doArchiveRequest(t, ArchivedUserRestore, http.MethodPost, "/api/admin/archived-users/971/restore",
 		[]byte(`{}`), admin, gin.Params{{Key: "id", Value: "971"}})
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d with body %s", recorder.Code, recorder.Body.String())

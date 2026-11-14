@@ -44,7 +44,7 @@ func TestWechatBindStatusPreservesExistingLoginSession(t *testing.T) {
 	service.DefaultWechatLoginSessionStore.Create("bind-status-token", time.Now(), time.Now().Add(time.Minute))
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/public/wechat-login/status?loginToken=bind-status-token&purpose=bind", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/public/wechat-login/status?loginToken=bind-status-token&purpose=bind", nil)
 	CheckWechatLoginStatus(ctx)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())

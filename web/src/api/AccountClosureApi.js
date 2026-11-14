@@ -3,9 +3,9 @@ import request from '../utils/request'
 // 注销申请（task_doc/76 §3.3.5）。三条都是「本人」接口，后端一律用当前登录用户，
 // 不接受前端传 userID。
 //
-//   GET  /adapter-service/user/closure-status    当前状态、剩余天数、是否可自助注销
-//   POST /adapter-service/user/closure-request   申请：需当前密码 + 知情确认 + 有手机号
-//   POST /adapter-service/user/closure-cancel    撤销：等待期内随时可撤销
+//   GET  /api/user/closure-status    当前状态、剩余天数、是否可自助注销
+//   POST /api/user/closure-request   申请：需当前密码 + 知情确认 + 有手机号
+//   POST /api/user/closure-cancel    撤销：等待期内随时可撤销
 //
 // 全部使用 errorFeedback: 'local'：Profile 页自己有失败态展示，
 // 不在被页面接管的请求上再弹一次全局错误。
@@ -13,7 +13,7 @@ import request from '../utils/request'
 export function getClosureStatus() {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/user/closure-status',
+    url: '/api/user/closure-status',
     method: 'get',
   })
 }
@@ -24,7 +24,7 @@ export function getClosureStatus() {
 export function requestAccountClosure(password, acknowledge) {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/user/closure-request',
+    url: '/api/user/closure-request',
     method: 'post',
     data: { password, acknowledge: acknowledge === true },
   })
@@ -33,7 +33,7 @@ export function requestAccountClosure(password, acknowledge) {
 export function cancelAccountClosure() {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/user/closure-cancel',
+    url: '/api/user/closure-cancel',
     method: 'post',
   })
 }

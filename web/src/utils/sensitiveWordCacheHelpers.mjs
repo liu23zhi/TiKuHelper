@@ -5,7 +5,7 @@
  * （本仓 `web/node_modules` 是空壳）。
  *
  * 后端契约（internal/controller/sensitive_word_cache.go）：
- *   GET /adapter-service/admin/sensitive-word-cache?keyword=&state=&checkedFrom=&checkedTo=&page=&pageSize=
+ *   GET /api/admin/sensitive-word-cache?keyword=&state=&checkedFrom=&checkedTo=&page=&pageSize=
  *   三态：hit（命中）/ clean（未命中）/ failed（失败）
  */
 

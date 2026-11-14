@@ -2,19 +2,19 @@ import request from '../utils/request'
 
 // 评价返现：用户端「评价返现」+ 管理端「评价返现管理」。
 // 后端契约（设计定稿 16-评价返现与邀请返现 §1.8）：
-//   GET    /adapter-service/user/review-rebate/program                 当前活动、规则表（脱敏）、我的已领
-//   POST   /adapter-service/user/review-rebate/claims                  multipart 提交截图（字段名 file）
-//   GET    /adapter-service/user/review-rebate/claims                  我的提交列表
-//   GET    /adapter-service/admin/review-rebate/programs               活动列表（{data:[...]}，与规则表一致）
-//   PUT    /adapter-service/admin/review-rebate/programs/:id           改活动配置
-//   GET    /adapter-service/admin/review-rebate/rules[/:id]            规则表读取
-//   POST   /adapter-service/admin/review-rebate/rules                  新建规则（201）
-//   PUT    /adapter-service/admin/review-rebate/rules/:id              改规则
-//   DELETE /adapter-service/admin/review-rebate/rules/:id              删规则（200）
-//   GET    /adapter-service/admin/review-rebate/claims                 待审列表
-//   POST   /adapter-service/admin/review-rebate/claims/:id/decision    批准/拒绝（body 用 action）
-//   POST   /adapter-service/admin/review-rebate/claims/:id/score       触发/重跑 Agent 打分
-//   GET    /adapter-service/admin/review-rebate/claims/:id/screenshot  截图回显（需管理员凭据）
+//   GET    /api/user/review-rebate/program                 当前活动、规则表（脱敏）、我的已领
+//   POST   /api/user/review-rebate/claims                  multipart 提交截图（字段名 file）
+//   GET    /api/user/review-rebate/claims                  我的提交列表
+//   GET    /api/admin/review-rebate/programs               活动列表（{data:[...]}，与规则表一致）
+//   PUT    /api/admin/review-rebate/programs/:id           改活动配置
+//   GET    /api/admin/review-rebate/rules[/:id]            规则表读取
+//   POST   /api/admin/review-rebate/rules                  新建规则（201）
+//   PUT    /api/admin/review-rebate/rules/:id              改规则
+//   DELETE /api/admin/review-rebate/rules/:id              删规则（200）
+//   GET    /api/admin/review-rebate/claims                 待审列表
+//   POST   /api/admin/review-rebate/claims/:id/decision    批准/拒绝（body 用 action）
+//   POST   /api/admin/review-rebate/claims/:id/score       触发/重跑 Agent 打分
+//   GET    /api/admin/review-rebate/claims/:id/screenshot  截图回显（需管理员凭据）
 //
 // 字段名以**后端实体为准**：评价链接是 `claimedReviewUrl`（实体叫 ClaimedReviewURL，
 // 用来区分「用户声称的链接」与将来可能存在的「系统抓到的链接」）；审核结论是 `action`。
@@ -22,8 +22,8 @@ import request from '../utils/request'
 // 避免两套名字长期并存、改一处漏一处的老问题。
 // 全部 errorFeedback: 'local' —— 页面自己有持久失败态与重试入口。
 
-const userBase = '/adapter-service/user/review-rebate'
-const adminBase = '/adapter-service/admin/review-rebate'
+const userBase = '/api/user/review-rebate'
+const adminBase = '/api/admin/review-rebate'
 
 // 截图上传：原生 FormData，不引入上传组件。
 // 前端已校验 PNG/JPEG 与 ≤5 MB，服务端仍会自行解码校验（双重保险）。

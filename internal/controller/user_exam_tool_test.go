@@ -33,7 +33,7 @@ func stubUser(user *entity.User) gin.HandlerFunc {
 func newUserExamToolRouter(user *entity.User) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	group := router.Group("/adapter-service/admin/userexam")
+	group := router.Group("/api/admin/userexam")
 	group.Use(stubUser(user), middleware.RequireAdmin)
 	group.GET("/tool/version", UserExamToolVersion)
 	group.GET("/tool", UserExamToolDownload)
@@ -56,9 +56,9 @@ func TestUserExamToolEndpointsRejectNonAdmin(t *testing.T) {
 			method, path string
 			body         *bytes.Buffer
 		}{
-			{http.MethodGet, "/adapter-service/admin/userexam/tool/version", nil},
-			{http.MethodGet, "/adapter-service/admin/userexam/tool", nil},
-			{http.MethodPost, "/adapter-service/admin/userexam/inspect", bytes.NewBufferString("")},
+			{http.MethodGet, "/api/admin/userexam/tool/version", nil},
+			{http.MethodGet, "/api/admin/userexam/tool", nil},
+			{http.MethodPost, "/api/admin/userexam/inspect", bytes.NewBufferString("")},
 		}
 		for _, testCase := range cases {
 			var request *http.Request
@@ -83,7 +83,7 @@ func TestUserExamToolVersionReportsUnavailableWithoutDeployment(t *testing.T) {
 
 	router := newUserExamToolRouter(adminUser())
 	response := httptest.NewRecorder()
-	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/adapter-service/admin/userexam/tool/version", nil))
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/userexam/tool/version", nil))
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("unexpected status %d", response.Code)
@@ -117,7 +117,7 @@ func TestUserExamToolDownloadServesConfiguredBinary(t *testing.T) {
 	router := newUserExamToolRouter(adminUser())
 
 	versionResponse := httptest.NewRecorder()
-	router.ServeHTTP(versionResponse, httptest.NewRequest(http.MethodGet, "/adapter-service/admin/userexam/tool/version", nil))
+	router.ServeHTTP(versionResponse, httptest.NewRequest(http.MethodGet, "/api/admin/userexam/tool/version", nil))
 	var version userExamToolVersion
 	if err := json.Unmarshal(versionResponse.Body.Bytes(), &version); err != nil {
 		t.Fatalf("decode version: %v", err)
@@ -127,7 +127,7 @@ func TestUserExamToolDownloadServesConfiguredBinary(t *testing.T) {
 	}
 
 	downloadResponse := httptest.NewRecorder()
-	router.ServeHTTP(downloadResponse, httptest.NewRequest(http.MethodGet, "/adapter-service/admin/userexam/tool", nil))
+	router.ServeHTTP(downloadResponse, httptest.NewRequest(http.MethodGet, "/api/admin/userexam/tool", nil))
 	if downloadResponse.Code != http.StatusOK {
 		t.Fatalf("下载失败: %d", downloadResponse.Code)
 	}
@@ -146,7 +146,7 @@ func TestUserExamToolDownloadUnavailableWhenNotDeployed(t *testing.T) {
 
 	router := newUserExamToolRouter(adminUser())
 	response := httptest.NewRecorder()
-	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/adapter-service/admin/userexam/tool", nil))
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/admin/userexam/tool", nil))
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("未部署时应返回 503，实际 %d", response.Code)
 	}
@@ -166,14 +166,14 @@ func buildInspectRequest(t *testing.T, filename string, content []byte) *http.Re
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close writer: %v", err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/admin/userexam/inspect", body)
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/userexam/inspect", body)
 	request.Header.Set("Content-Type", writer.FormDataContentType())
 	return request
 }
 
 func TestUserExamInspectRejectsMissingFile(t *testing.T) {
 	router := newUserExamToolRouter(adminUser())
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/admin/userexam/inspect", bytes.NewBufferString(""))
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/userexam/inspect", bytes.NewBufferString(""))
 	request.Header.Set("Content-Type", "multipart/form-data; boundary=none")
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
@@ -208,7 +208,7 @@ func TestUserExamInspectRejectsEncryptedUpload(t *testing.T) {
 func TestUserExamToolEndpointsRejectUnauthenticated(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	group := router.Group("/adapter-service/admin/userexam")
+	group := router.Group("/api/admin/userexam")
 	group.Use(Auth, middleware.RequireAdmin)
 	group.GET("/tool/version", UserExamToolVersion)
 	group.GET("/tool", UserExamToolDownload)
@@ -218,9 +218,9 @@ func TestUserExamToolEndpointsRejectUnauthenticated(t *testing.T) {
 		method, path string
 		body         *bytes.Buffer
 	}{
-		{http.MethodGet, "/adapter-service/admin/userexam/tool/version", nil},
-		{http.MethodGet, "/adapter-service/admin/userexam/tool", nil},
-		{http.MethodPost, "/adapter-service/admin/userexam/inspect", bytes.NewBufferString("")},
+		{http.MethodGet, "/api/admin/userexam/tool/version", nil},
+		{http.MethodGet, "/api/admin/userexam/tool", nil},
+		{http.MethodPost, "/api/admin/userexam/inspect", bytes.NewBufferString("")},
 	}
 	for _, testCase := range cases {
 		var request *http.Request

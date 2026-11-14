@@ -41,7 +41,7 @@ func TestLocationCacheRefreshDistinguishesRecordAndQuerySource(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
 			body := fmt.Sprintf(`{"kind":"ip","lookupKey":"8.8.8.8","source":"","recordSource":%q}`, tc.source)
-			ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/location-cache/refresh", strings.NewReader(body))
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/api/location-cache/refresh", strings.NewReader(body))
 			ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 			before := recordCalls
 			LocationCacheRefresh(ctx)
@@ -59,7 +59,7 @@ func TestLocationCacheRefreshDistinguishesRecordAndQuerySource(t *testing.T) {
 	// Old callers do not identify an original row and retain the old contract.
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/location-cache/refresh", strings.NewReader(`{"kind":"ip","lookupKey":"8.8.8.8","source":""}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/location-cache/refresh", strings.NewReader(`{"kind":"ip","lookupKey":"8.8.8.8","source":""}`))
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 	LocationCacheRefresh(ctx)
 	if recorder.Code != http.StatusOK || legacyCalls != 1 || recordCalls != 3 {
@@ -77,7 +77,7 @@ func TestLocationCacheRefreshRecordRejectsInvalidSourceBeforeLookup(t *testing.T
 	} {
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
-		ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/location-cache/refresh", strings.NewReader(body))
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/api/location-cache/refresh", strings.NewReader(body))
 		ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 		LocationCacheRefresh(ctx)
 		if recorder.Code != http.StatusBadRequest {

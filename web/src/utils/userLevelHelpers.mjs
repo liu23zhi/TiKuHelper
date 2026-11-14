@@ -5,8 +5,8 @@
  * （本仓 `web/node_modules` 是空壳，任何 import vue 的测试都跑不起来）。
  *
  * 后端契约（internal/api/router.go）：
- *   GET /adapter-service/user/level          当前登录用户自己的等级摘要
- *   GET /adapter-service/admin/user-levels   全部等级（含停用级，管理员专属）
+ *   GET /api/user/level          当前登录用户自己的等级摘要
+ *   GET /api/admin/user-levels   全部等级（含停用级，管理员专属）
  *
  * `UserLevelSummary`（internal/service/user_level.go:638）字段：
  *   levelId / name / rank / deviceLimit /

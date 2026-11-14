@@ -28,7 +28,7 @@ func TestAICompressionOrderConfigHandlerPersistsAndPreservesLegacyUpdates(t *tes
 		t.Helper()
 		recorder := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(recorder)
-		c.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/ai-search-config", bytes.NewBufferString(body))
+		c.Request = httptest.NewRequest(http.MethodPut, "/api/ai-search-config", bytes.NewBufferString(body))
 		c.Request.Header.Set("Content-Type", "application/json")
 		c.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 		UpdateAISearchConfig(c)
@@ -165,7 +165,7 @@ func TestAICompressionOrderAndServerDiagnosticRemainAdminOnly(t *testing.T) {
 	for _, handler := range []gin.HandlerFunc{AISearchConfigDetail, UpdateAISearchConfig} {
 		recorder := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(recorder)
-		c.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/ai-search-config", bytes.NewBufferString(`{"contextCompressionOrder":["local","remote","server"]}`))
+		c.Request = httptest.NewRequest(http.MethodPut, "/api/ai-search-config", bytes.NewBufferString(`{"contextCompressionOrder":["local","remote","server"]}`))
 		c.Request.Header.Set("Content-Type", "application/json")
 		c.Set("user", &user)
 		handler(c)

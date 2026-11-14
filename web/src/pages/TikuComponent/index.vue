@@ -232,7 +232,7 @@
                 <a-tab-pane tab="提交附件" key="2">
                   <div>
                     <a-upload-dragger name="file" multiple="true" show-upload-list="true"
-                                      action='/adapter-service/upload?parentDir=myword' :before-upload="questionDialogOwner && questionDialogOwner.beforeUpload" :onChange="questionDialogOwner && questionDialogOwner.bind(handleChange)">
+                                      action='/api/upload?parentDir=myword' :before-upload="questionDialogOwner && questionDialogOwner.beforeUpload" :onChange="questionDialogOwner && questionDialogOwner.bind(handleChange)">
                       <p class="ant-upload-drag-icon">
                         <upload-outlined></upload-outlined>
                       </p>
@@ -473,7 +473,7 @@ export default defineComponent({
     })
     const navigateToImport = () => {
       if (!questionEntry.value.isCurrent()) return
-      router.push('/adapter/import');
+      router.push('/import');
     };
     const bulkCourseCandidates = computed(() => buildQuestionCourseNameCandidates(
       bulkCourseName.value,

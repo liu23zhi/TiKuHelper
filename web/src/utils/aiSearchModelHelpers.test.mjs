@@ -576,7 +576,7 @@ test('TikuComponentApi exposes the AI pricing-status endpoint', async () => {
   const content = await readFile(apiPath, 'utf8');
 
   assert.match(content, /export function getAISearchConfigPricingStatus\(\)/);
-  assert.match(content, /\/adapter-service\/ai-search-config\/pricing-status/);
+  assert.match(content, /\/api\/ai-search-config\/pricing-status/);
 });
 
 test('TikuComponentApi exposes OCR cache status and clear endpoints', async () => {
@@ -594,14 +594,14 @@ test('TikuComponentApi exposes OCR cache status and clear endpoints', async () =
   const clear = load('clearAIOCRCache');
   const batch = load('deleteAIOCRCacheBatch');
   const image = load('getAIOCRCacheImage');
-  assert.deepEqual(status(), { url: '/adapter-service/ai-search-config/ocr-cache', method: 'get' });
+  assert.deepEqual(status(), { url: '/api/ai-search-config/ocr-cache', method: 'get' });
   const params = { keyword: 'SYNTHETIC', page: 1, pageSize: 20 };
-  assert.deepEqual(entries(params), { url: '/adapter-service/ai-search-config/ocr-cache/entries', method: 'get', params });
-  assert.deepEqual(clear(params), { url: '/adapter-service/ai-search-config/ocr-cache', method: 'delete', params });
-  assert.deepEqual(status({ errorFeedback: 'local', method: 'post' }), { url: '/adapter-service/ai-search-config/ocr-cache', method: 'get', errorFeedback: 'local' });
+  assert.deepEqual(entries(params), { url: '/api/ai-search-config/ocr-cache/entries', method: 'get', params });
+  assert.deepEqual(clear(params), { url: '/api/ai-search-config/ocr-cache', method: 'delete', params });
+  assert.deepEqual(status({ errorFeedback: 'local', method: 'post' }), { url: '/api/ai-search-config/ocr-cache', method: 'get', errorFeedback: 'local' });
   assert.equal(clear(params, { errorFeedback: 'local' }).errorFeedback, 'local');
-  assert.deepEqual(batch({ items: ['a'] }), { errorFeedback: 'local', url: '/adapter-service/ai-search-config/ocr-cache/batch-delete', method: 'post', data: { items: ['a'] } });
-  assert.deepEqual(image('a/b'), { errorFeedback: 'local', retryPolicy: 'single', url: '/adapter-service/ai-search-config/ocr-cache/entries/a%2Fb/image', method: 'get', responseType: 'blob', timeout: 20000 });
+  assert.deepEqual(batch({ items: ['a'] }), { errorFeedback: 'local', url: '/api/ai-search-config/ocr-cache/batch-delete', method: 'post', data: { items: ['a'] } });
+  assert.deepEqual(image('a/b'), { errorFeedback: 'local', retryPolicy: 'single', url: '/api/ai-search-config/ocr-cache/entries/a%2Fb/image', method: 'get', responseType: 'blob', timeout: 20000 });
 });
 
 test('AISearchConfig page exposes OCR cache management controls', async () => {
@@ -633,14 +633,14 @@ test('AI search config exposes the UAPI search engine capability endpoint', asyn
   }
 
   assert.match(apiContent, /export function getUAPISearchEngines\(\)/);
-  assert.match(apiContent, /\/adapter-service\/uapi\/search\/engines/);
+  assert.match(apiContent, /\/api\/uapi\/search\/engines/);
   assert.match(pageContent, /getUAPISearchEngines/);
   assert.match(capabilitySource, /查看深度思考能力/);
   assert.doesNotMatch(pageContent, /查看联网搜索能力/);
   assert.doesNotMatch(capabilitySource, /查看联网搜索能力/);
   assert.match(pageContent, /getUAPIUsageStatus/);
   assert.match(apiContent, /export function getUAPIUsageStatus\(params\)/);
-  assert.match(apiContent, /\/adapter-service\/uapi\/status\/usage/);
+  assert.match(apiContent, /\/api\/uapi\/status\/usage/);
 });
 
 test('capability usage is clearly labeled as provider endpoint statistics', async () => {

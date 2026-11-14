@@ -45,7 +45,7 @@ func callAIOCRCacheAdmin(t *testing.T, handler gin.HandlerFunc, query string, ro
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/ai-search-config/ocr-cache"+query, nil)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/ai-search-config/ocr-cache"+query, nil)
 	if role != "" {
 		c.Set("user", &entity.User{ID: 1, Role: role, Status: "enabled"})
 	}
@@ -62,7 +62,7 @@ func callAIOCRCacheBatchDelete(t *testing.T, payload any, role string) *httptest
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-search-config/ocr-cache/batch-delete", bytes.NewReader(body))
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/ai-search-config/ocr-cache/batch-delete", bytes.NewReader(body))
 	c.Request.Header.Set("Content-Type", "application/json")
 	if role != "" {
 		c.Set("user", &entity.User{ID: 1, Role: role, Status: "enabled"})
@@ -99,7 +99,7 @@ func callAIOCRCacheImage(t *testing.T, hash string, role string) *httptest.Respo
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/ai-search-config/ocr-cache/entries/"+hash+"/image", nil)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/ai-search-config/ocr-cache/entries/"+hash+"/image", nil)
 	if role != "" {
 		c.Set("user", &entity.User{ID: 1, Role: role, Status: "enabled"})
 	}

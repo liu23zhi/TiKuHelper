@@ -27,7 +27,7 @@ func requestLogProjectRows(t *testing.T, user *entity.User, query string) []logP
 	t.Helper()
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/logs?page=1&pageSize=50"+query, nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/logs?page=1&pageSize=50"+query, nil)
 	ctx.Set("user", user)
 	LogList(ctx)
 	if recorder.Code != http.StatusOK {

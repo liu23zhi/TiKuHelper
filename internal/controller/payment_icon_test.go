@@ -43,7 +43,7 @@ func TestPaymentIconAPIRejects400BeforePersistence(t *testing.T) {
 		body, _ := json.Marshal(map[string]any{"name": "changed", "epayType": "fixture", "iconSvg": legacy.IconSVG, "enabled": false})
 		r := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(r)
-		c.Request = httptest.NewRequest(method, "/adapter-service/payment-methods/1", bytes.NewReader(body))
+		c.Request = httptest.NewRequest(method, "/api/payment-methods/1", bytes.NewReader(body))
 		c.Request.Header.Set("Content-Type", "application/json")
 		c.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 		c.Params = gin.Params{{Key: "id", Value: "1"}}
@@ -103,7 +103,7 @@ func TestPaymentIconAPIAnonymousAndNonAdminNeverWrite(t *testing.T) {
 		for _, verb := range []string{"POST", "PUT", "DELETE"} {
 			r := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(r)
-			c.Request = httptest.NewRequest(verb, "/adapter-service/payment-methods/1", bytes.NewBufferString(`{"name":"changed","epayType":"fixture","iconSvg":"<svg/>"}`))
+			c.Request = httptest.NewRequest(verb, "/api/payment-methods/1", bytes.NewBufferString(`{"name":"changed","epayType":"fixture","iconSvg":"<svg/>"}`))
 			c.Request.Header.Set("Content-Type", "application/json")
 			c.Params = gin.Params{{Key: "id", Value: "1"}}
 			want := 401

@@ -146,12 +146,12 @@ func TestWalletSettlementAdmittedFallbackTasksDeliverAndReplayOnce(t *testing.T)
 		return service.AIFallbackResult{Success: true, Result: &service.AIFallbackAnswer{Question: req.Question, Answer: "wallet-answer-" + req.Question}, Model: "wallet_settlement_model", Usage: searchpkg.AISearchUsage{InputTokens: 1000000, TotalTokens: 1000000}}
 	}
 	router := gin.New()
-	router.POST("/adapter-service/ai-fallback/tasks", AuthOrAccessToken, CreateAIFallbackTask)
-	router.GET("/adapter-service/ai-fallback/status", AuthOrAccessToken, GetAIFallbackTaskStatus)
+	router.POST("/api/ai-fallback/tasks", AuthOrAccessToken, CreateAIFallbackTask)
+	router.GET("/api/ai-fallback/status", AuthOrAccessToken, GetAIFallbackTaskStatus)
 	submit := func(q, idem string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
 		body := fmt.Sprintf(`{"question":%q,"type":4}`, q)
-		req := httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback/tasks", strings.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, "/api/ai-fallback/tasks", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+key.TokenValue)
 		req.Header.Set("Idempotency-Key", idem)
@@ -237,7 +237,7 @@ func TestWalletSettlementAdmittedFallbackTasksDeliverAndReplayOnce(t *testing.T)
 	}
 	for _, item := range []struct{ id, answer string }{{ca.TaskID, "wallet-answer-wallet_A"}, {cb.TaskID, "wallet-answer-wallet_B"}} {
 		w := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/adapter-service/ai-fallback/status?taskId="+item.id, nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/ai-fallback/status?taskId="+item.id, nil)
 		req.Header.Set("Authorization", "Bearer "+key.TokenValue)
 		router.ServeHTTP(w, req)
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), item.answer) {

@@ -19,7 +19,7 @@ import (
 
 // 管理员账号安全状态接口（admin_security_status.go）的回归测试。
 //
-// 背景：`GET /adapter-service/admin/security-status` 此前**全仓零覆盖**
+// 背景：`GET /api/admin/security-status` 此前**全仓零覆盖**
 // （`git grep -ln 'SecurityStatus' -- '*_test.go'` 零命中），而它承担一条
 // 不可协商的性质（实现文件 L26-28）：
 //
@@ -34,7 +34,7 @@ import (
 //
 // # 第 1 组为什么同时做「源码级」和「行为级」
 //
-// 行为级用例必须在测试里自行组装路由：router.go 的 /adapter-service 组链首位是
+// 行为级用例必须在测试里自行组装路由：router.go 的 /api 组链首位是
 // middleware.GlobalAPIRateLimit，它直接解引用 manager.GetManager()，单测无
 // manager 时 nil panic（本仓已在 ip_segment_middleware_test.go 与
 // archive_routes_middleware_test.go 的注释里实测确认过这一点）。
@@ -51,7 +51,7 @@ import (
 // （review_rebate_dto_test.go:398、user_exam_tool_test.go:491）。
 
 const (
-	adminSecurityStatusRoutePath = "/adapter-service/admin/security-status"
+	adminSecurityStatusRoutePath = "/api/admin/security-status"
 
 	// adminSecurityStatusRouterSource 是 router.go 相对 internal/controller 包的路径。
 	adminSecurityStatusRouterSource = "router.go"

@@ -55,7 +55,7 @@ func callSensitiveWordCache(t *testing.T, handler gin.HandlerFunc, query string,
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/admin/sensitive-word-cache"+query, nil)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/admin/sensitive-word-cache"+query, nil)
 	if role != "" {
 		c.Set("user", &entity.User{ID: 1, Role: role, Status: "enabled"})
 	}

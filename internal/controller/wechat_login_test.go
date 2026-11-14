@@ -44,7 +44,7 @@ func TestCreateWechatLoginQRCodeControllerReturnsQRCodePayload(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/public/wechat-login/qrcode", nil)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/public/wechat-login/qrcode", nil)
 
 	CreateWechatLoginQRCode(ctx)
 
@@ -81,7 +81,7 @@ func TestCheckWechatLoginStatusControllerReturnsNeedBind(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/public/wechat-login/status?loginToken=login-token-1", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/public/wechat-login/status?loginToken=login-token-1", nil)
 
 	CheckWechatLoginStatus(ctx)
 
@@ -118,7 +118,7 @@ func TestCheckWechatLoginStatusControllerBindPurposeDoesNotSetAuthCookie(t *test
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/public/wechat-login/status?loginToken=login-token-1&purpose=bind", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/public/wechat-login/status?loginToken=login-token-1&purpose=bind", nil)
 
 	CheckWechatLoginStatus(ctx)
 
@@ -161,7 +161,7 @@ func TestLoginWechatByCodeControllerReturnsNeedBind(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/public/wechat-login/code", bytes.NewBufferString(`{"code":"104014"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/public/wechat-login/code", bytes.NewBufferString(`{"code":"104014"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
 	LoginWechatByCode(ctx)
@@ -200,7 +200,7 @@ func TestResolveAdminWechatIDByScanReturnsWechatID(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/user/wechat/scan-id?loginToken=login-token-1", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/user/wechat/scan-id?loginToken=login-token-1", nil)
 
 	ResolveAdminWechatIDByScan(ctx)
 
@@ -238,7 +238,7 @@ func TestResolveAdminWechatIDByCodeReturnsWechatID(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/wechat/code-id", bytes.NewBufferString(`{"code":"104014"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/wechat/code-id", bytes.NewBufferString(`{"code":"104014"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
 	ResolveAdminWechatIDByCode(ctx)
@@ -266,7 +266,7 @@ func TestBindWechatLoginControllerReturnsJWT(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/public/wechat-login/bind", bytes.NewBufferString(`{"bindToken":"bind-token-1","username":"existing","password":"Abc12345!"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/public/wechat-login/bind", bytes.NewBufferString(`{"bindToken":"bind-token-1","username":"existing","password":"Abc12345!"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
 	BindWechatLogin(ctx)

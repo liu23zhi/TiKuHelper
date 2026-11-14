@@ -67,7 +67,7 @@ func seedLocationRow(t *testing.T, db *gorm.DB, kind string, lookupKey string, a
 func TestUAPIPhoneInfoRejectsNonAdmin(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	recorder := performUAPIRequest(t, "/adapter-service/uapi/phoneinfo?phone=13800138000", "user", UAPIPhoneInfo)
+	recorder := performUAPIRequest(t, "/api/uapi/phoneinfo?phone=13800138000", "user", UAPIPhoneInfo)
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for non-admin, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
@@ -76,7 +76,7 @@ func TestUAPIPhoneInfoRejectsNonAdmin(t *testing.T) {
 func TestLocationCacheManualLookupRejectsInvalidInput(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	newUAPILocationTestDB(t)
-	recorder := performUAPIRequest(t, "/adapter-service/location-cache/manual", "admin", LocationCacheManualLookup)
+	recorder := performUAPIRequest(t, "/api/location-cache/manual", "admin", LocationCacheManualLookup)
 	// GET 没有 JSON body，ShouldBindJSON 必须稳定返回 400，而不能触发上游调用。
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for invalid manual lookup body, got %d", recorder.Code)
@@ -85,7 +85,7 @@ func TestLocationCacheManualLookupRejectsInvalidInput(t *testing.T) {
 
 func TestLocationCacheManualLookupRequiresAdmin(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	recorder := performUAPIRequest(t, "/adapter-service/location-cache/manual", "user", LocationCacheManualLookup)
+	recorder := performUAPIRequest(t, "/api/location-cache/manual", "user", LocationCacheManualLookup)
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for non-admin manual lookup, got %d", recorder.Code)
 	}
@@ -107,7 +107,7 @@ func TestLocationCacheBatchRefreshValidatesSelectedSourceWithoutKey(t *testing.T
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
 		body := fmt.Sprintf(`{"kind":"ip","items":[{"lookupKey":"8.8.8.8","source":"legacy"}],"querySource":%q}`, testCase.source)
-		ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/location-cache/batch-refresh", strings.NewReader(body))
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/api/location-cache/batch-refresh", strings.NewReader(body))
 		ctx.Set("user", &entity.User{ID: 1, Role: testCase.role, Status: "enabled"})
 		LocationCacheBatchRefresh(ctx)
 		if recorder.Code != testCase.status {
@@ -119,7 +119,7 @@ func TestLocationCacheBatchRefreshValidatesSelectedSourceWithoutKey(t *testing.T
 func TestUAPIIPInfoRejectsNonAdmin(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	recorder := performUAPIRequest(t, "/adapter-service/uapi/ipinfo?ip=8.8.8.8", "user", UAPIIPInfo)
+	recorder := performUAPIRequest(t, "/api/uapi/ipinfo?ip=8.8.8.8", "user", UAPIIPInfo)
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for non-admin, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
@@ -129,7 +129,7 @@ func TestUAPIIPInfoRejectsNonAdmin(t *testing.T) {
 func TestUAPIPhoneInfoRequiresParameter(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	recorder := performUAPIRequest(t, "/adapter-service/uapi/phoneinfo", "admin", UAPIPhoneInfo)
+	recorder := performUAPIRequest(t, "/api/uapi/phoneinfo", "admin", UAPIPhoneInfo)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 when the parameter is missing, got %d", recorder.Code)
 	}
@@ -138,7 +138,7 @@ func TestUAPIPhoneInfoRequiresParameter(t *testing.T) {
 func TestUAPIIPInfoRequiresParameter(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	recorder := performUAPIRequest(t, "/adapter-service/uapi/ipinfo", "admin", UAPIIPInfo)
+	recorder := performUAPIRequest(t, "/api/uapi/ipinfo", "admin", UAPIIPInfo)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 when the parameter is missing, got %d", recorder.Code)
 	}
@@ -153,7 +153,7 @@ func TestUAPIPhoneInfoRejectsTooManyKeys(t *testing.T) {
 		phones = append(phones, "13800138000")
 	}
 
-	recorder := performUAPIRequest(t, "/adapter-service/uapi/phoneinfo?phones="+strings.Join(phones, ","), "admin", UAPIPhoneInfo)
+	recorder := performUAPIRequest(t, "/api/uapi/phoneinfo?phones="+strings.Join(phones, ","), "admin", UAPIPhoneInfo)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 when exceeding the key limit, got %d", recorder.Code)
 	}
@@ -163,7 +163,7 @@ func TestUAPIPhoneInfoRejectsTooManyKeys(t *testing.T) {
 func TestUAPIIPInfoRejectsUnknownSource(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	recorder := performUAPIRequest(t, "/adapter-service/uapi/ipinfo?ip=8.8.8.8&source=standard", "admin", UAPIIPInfo)
+	recorder := performUAPIRequest(t, "/api/uapi/ipinfo?ip=8.8.8.8&source=standard", "admin", UAPIIPInfo)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for an unsupported source, got %d", recorder.Code)
 	}
@@ -184,7 +184,7 @@ func TestUAPIPhoneInfoWithoutAPIKeyReturnsCachedLocation(t *testing.T) {
 		return map[string]service.PhoneLocation{"13800138000": {Address: "广东深圳 移动"}}, nil
 	}
 
-	recorder := performUAPIRequest(t, "/adapter-service/uapi/phoneinfo?phone=13800138000", "admin", UAPIPhoneInfo)
+	recorder := performUAPIRequest(t, "/api/uapi/phoneinfo?phone=13800138000", "admin", UAPIPhoneInfo)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
@@ -204,8 +204,8 @@ func TestUAPIPhoneInfoWithoutAPIKeyReturnsCachedLocation(t *testing.T) {
 		target string
 		status int
 	}{
-		{role: "user", target: "/adapter-service/uapi/phoneinfo?phone=13800138000", status: http.StatusForbidden},
-		{role: "admin", target: "/adapter-service/uapi/phoneinfo", status: http.StatusBadRequest},
+		{role: "user", target: "/api/uapi/phoneinfo?phone=13800138000", status: http.StatusForbidden},
+		{role: "admin", target: "/api/uapi/phoneinfo", status: http.StatusBadRequest},
 	} {
 		rejected := performUAPIRequest(t, testCase.target, testCase.role, UAPIPhoneInfo)
 		if rejected.Code != testCase.status || calls != 1 {
@@ -257,7 +257,7 @@ func TestLocationCacheLookupReportsKeyRequirementAndConfiguration(t *testing.T) 
 				perform := func(role, body string) *httptest.ResponseRecorder {
 					recorder := httptest.NewRecorder()
 					ctx, _ := gin.CreateTestContext(recorder)
-					ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/location-cache/"+endpoint.name, strings.NewReader(body))
+					ctx.Request = httptest.NewRequest(http.MethodPost, "/api/location-cache/"+endpoint.name, strings.NewReader(body))
 					ctx.Set("user", &entity.User{ID: 1, Role: role, Status: "enabled"})
 					endpoint.handler(ctx)
 					return recorder
@@ -293,7 +293,7 @@ func TestUAPIPhoneInfoReturnsPersistedLocation(t *testing.T) {
 	seedLocationRow(t, db, entity.LocationKindPhone, "18287719599", "云南玉溪 移动",
 		`{"province":"云南","city":"玉溪","sp":"移动","area_code":"0877"}`)
 
-	recorder := performUAPIRequest(t, "/adapter-service/uapi/phoneinfo?phone=18287719599", "admin", UAPIPhoneInfo)
+	recorder := performUAPIRequest(t, "/api/uapi/phoneinfo?phone=18287719599", "admin", UAPIPhoneInfo)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
@@ -333,7 +333,7 @@ func TestUAPIIPInfoReturnsPersistedLocation(t *testing.T) {
 	seedLocationRow(t, db, entity.LocationKindIP, "8.8.8.8", "美国",
 		`{"ip":"8.8.8.8","region":"美国","isp":"GOOGLE","llc":"GOOGLE","asn":"AS15169"}`)
 
-	recorder := performUAPIRequest(t, "/adapter-service/uapi/ipinfo?ip=8.8.8.8", "admin", UAPIIPInfo)
+	recorder := performUAPIRequest(t, "/api/uapi/ipinfo?ip=8.8.8.8", "admin", UAPIIPInfo)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
@@ -365,7 +365,7 @@ func TestUAPIPhoneInfoAcceptsBulkParameter(t *testing.T) {
 	seedLocationRow(t, db, entity.LocationKindPhone, "13800138000", "广东深圳 移动", `{}`)
 	seedLocationRow(t, db, entity.LocationKindPhone, "13900139000", "北京 联通", `{}`)
 
-	recorder := performUAPIRequest(t, "/adapter-service/uapi/phoneinfo?phones=13800138000,13900139000", "admin", UAPIPhoneInfo)
+	recorder := performUAPIRequest(t, "/api/uapi/phoneinfo?phones=13800138000,13900139000", "admin", UAPIPhoneInfo)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
@@ -391,7 +391,7 @@ func TestUAPIIPInfoLabelsPrivateAddresses(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	newUAPILocationTestDB(t)
 
-	recorder := performUAPIRequest(t, "/adapter-service/uapi/ipinfo?ips=192.168.1.1,127.0.0.1", "admin", UAPIIPInfo)
+	recorder := performUAPIRequest(t, "/api/uapi/ipinfo?ips=192.168.1.1,127.0.0.1", "admin", UAPIIPInfo)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
@@ -431,7 +431,7 @@ func TestUAPIMyLocationsAllowsOnlyOwnedIPs(t *testing.T) {
 	seedLocationRow(t, db, entity.LocationKindIP, "8.8.8.8", "账单来源", `{}`)
 	seedLocationRow(t, db, entity.LocationKindIP, "1.1.1.1", "日志来源", `{}`)
 	seedLocationRow(t, db, entity.LocationKindIP, "9.9.9.9", "其他用户", `{}`)
-	recorder := performUAPIRequest(t, "/adapter-service/uapi/my-locations?ips=8.8.8.8,1.1.1.1", "user", UAPIMyLocations)
+	recorder := performUAPIRequest(t, "/api/uapi/my-locations?ips=8.8.8.8,1.1.1.1", "user", UAPIMyLocations)
 	var payload struct {
 		IP map[string]any `json:"ip"`
 	}
@@ -441,7 +441,7 @@ func TestUAPIMyLocationsAllowsOnlyOwnedIPs(t *testing.T) {
 	if recorder.Code != http.StatusOK || len(payload.IP) != 2 {
 		t.Fatalf("expected own billing and audit IPs, got %d %s", recorder.Code, recorder.Body.String())
 	}
-	recorder = performUAPIRequest(t, "/adapter-service/uapi/my-locations?ips=9.9.9.9", "user", UAPIMyLocations)
+	recorder = performUAPIRequest(t, "/api/uapi/my-locations?ips=9.9.9.9", "user", UAPIMyLocations)
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("expected arbitrary IP lookup to be forbidden, got %d %s", recorder.Code, recorder.Body.String())
 	}
@@ -458,7 +458,7 @@ func TestUAPIPhoneInfoWithoutAPIKeyCacheMissRequiresConfiguration(t *testing.T) 
 		}
 		return map[string]service.PhoneLocation{}, service.ErrLocationNotConfigured
 	}
-	recorder := performUAPIRequest(t, "/adapter-service/uapi/phoneinfo?phone=13800138000", "admin", UAPIPhoneInfo)
+	recorder := performUAPIRequest(t, "/api/uapi/phoneinfo?phone=13800138000", "admin", UAPIPhoneInfo)
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"configured":false`) || !strings.Contains(recorder.Body.String(), service.LocationQueryErrorMessage(service.ErrLocationNotConfigured)) {
 		t.Fatalf("cache miss must preserve degraded200 with unconfigured/error message: %d %s", recorder.Code, recorder.Body.String())
 	}

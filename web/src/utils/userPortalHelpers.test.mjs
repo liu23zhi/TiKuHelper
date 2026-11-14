@@ -53,9 +53,9 @@ test('buildBillingRecordModeText renders deep thinking and ordinary search', () 
 })
 
 test('resolveAdapterHomePath sends admins to component and users to usage page', () => {
-  assert.equal(resolveAdapterHomePath({ role: 'admin' }), '/adapter/component');
-  assert.equal(resolveAdapterHomePath({ role: 'user' }), '/adapter/user-usage');
-  assert.equal(resolveAdapterHomePath(null), '/adapter/user-usage');
+  assert.equal(resolveAdapterHomePath({ role: 'admin' }), '/component');
+  assert.equal(resolveAdapterHomePath({ role: 'user' }), '/user-usage');
+  assert.equal(resolveAdapterHomePath(null), '/user-usage');
 });
 
 test('buildRegisterSourceLabel maps system registrations to initialization wording', () => {

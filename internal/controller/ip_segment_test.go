@@ -57,11 +57,11 @@ func ipSegmentRouter(actor *entity.User) *gin.Engine {
 			c.Set("user", actor)
 		}
 	}
-	router.GET("/adapter-service/admin/ip-segments", auth, middleware.RequireAdmin, IPSegmentList)
-	router.GET("/adapter-service/admin/ip-segments/lookup", auth, middleware.RequireAdmin, IPSegmentLookup)
-	router.POST("/adapter-service/admin/ip-segments/batch-delete", auth, middleware.RequireAdmin, IPSegmentBatchDelete)
-	router.DELETE("/adapter-service/admin/ip-segments/:id", auth, middleware.RequireAdmin, IPSegmentDelete)
-	router.POST("/adapter-service/admin/ip-segments/:id/refresh", auth, middleware.RequireAdmin, IPSegmentRefresh)
+	router.GET("/api/admin/ip-segments", auth, middleware.RequireAdmin, IPSegmentList)
+	router.GET("/api/admin/ip-segments/lookup", auth, middleware.RequireAdmin, IPSegmentLookup)
+	router.POST("/api/admin/ip-segments/batch-delete", auth, middleware.RequireAdmin, IPSegmentBatchDelete)
+	router.DELETE("/api/admin/ip-segments/:id", auth, middleware.RequireAdmin, IPSegmentDelete)
+	router.POST("/api/admin/ip-segments/:id/refresh", auth, middleware.RequireAdmin, IPSegmentRefresh)
 	return router
 }
 
@@ -118,11 +118,11 @@ func TestIPSegmentAdminRejectsNonAdminOnEveryRoute(t *testing.T) {
 			path   string
 			body   string
 		}{
-			{http.MethodGet, "/adapter-service/admin/ip-segments", ""},
-			{http.MethodGet, "/adapter-service/admin/ip-segments/lookup?ip=120.239.173.110", ""},
-			{http.MethodDelete, "/adapter-service/admin/ip-segments/" + idText, ""},
-			{http.MethodPost, "/adapter-service/admin/ip-segments/batch-delete", `{"asn":"AS9808"}`},
-			{http.MethodPost, "/adapter-service/admin/ip-segments/" + idText + "/refresh", ""},
+			{http.MethodGet, "/api/admin/ip-segments", ""},
+			{http.MethodGet, "/api/admin/ip-segments/lookup?ip=120.239.173.110", ""},
+			{http.MethodDelete, "/api/admin/ip-segments/" + idText, ""},
+			{http.MethodPost, "/api/admin/ip-segments/batch-delete", `{"asn":"AS9808"}`},
+			{http.MethodPost, "/api/admin/ip-segments/" + idText + "/refresh", ""},
 		}
 		for _, item := range cases {
 			recorder := ipSegmentRequest(router, item.method, item.path, item.body)
@@ -157,7 +157,7 @@ func TestIPSegmentListReturnsFilteredPageWithSummary(t *testing.T) {
 		"182.48.98.0", "182.48.98.255", "182.48.98.61", "中国 北京", "中国联通", "联通", "AS4808", "standard")
 
 	router := ipSegmentRouter(&admin)
-	recorder := ipSegmentRequest(router, http.MethodGet, "/adapter-service/admin/ip-segments?asn=AS9808&page=1&pageSize=1", "")
+	recorder := ipSegmentRequest(router, http.MethodGet, "/api/admin/ip-segments?asn=AS9808&page=1&pageSize=1", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d (%s)", recorder.Code, recorder.Body.String())
 	}
@@ -202,7 +202,7 @@ func TestIPSegmentLookupReportsMatchAndMiss(t *testing.T) {
 		"120.239.173.0", "120.239.173.255", "120.239.173.110", "中国 广东 中山", "中国移动", "移动", "AS9808", "commercial")
 
 	router := ipSegmentRouter(&admin)
-	recorder := ipSegmentRequest(router, http.MethodGet, "/adapter-service/admin/ip-segments/lookup?ip=120.239.173.110", "")
+	recorder := ipSegmentRequest(router, http.MethodGet, "/api/admin/ip-segments/lookup?ip=120.239.173.110", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("want 200 for hit, got %d (%s)", recorder.Code, recorder.Body.String())
 	}
@@ -219,7 +219,7 @@ func TestIPSegmentLookupReportsMatchAndMiss(t *testing.T) {
 	}
 
 	// 未命中：200 + matched=false + reason（不是 404，管理页要显示原因）。
-	missRecorder := ipSegmentRequest(router, http.MethodGet, "/adapter-service/admin/ip-segments/lookup?ip=203.0.113.9", "")
+	missRecorder := ipSegmentRequest(router, http.MethodGet, "/api/admin/ip-segments/lookup?ip=203.0.113.9", "")
 	if missRecorder.Code != http.StatusOK {
 		t.Fatalf("want 200 for miss, got %d (%s)", missRecorder.Code, missRecorder.Body.String())
 	}
@@ -241,7 +241,7 @@ func TestIPSegmentDeleteRemovesRowThenReportsNotFound(t *testing.T) {
 		"203.0.113.0", "203.0.113.255", "203.0.113.7", "中国 云南 玉溪", "中国移动", "移动", "AS9808", "standard")
 
 	router := ipSegmentRouter(&admin)
-	path := "/adapter-service/admin/ip-segments/" + strconv.FormatInt(target.ID, 10)
+	path := "/api/admin/ip-segments/" + strconv.FormatInt(target.ID, 10)
 	recorder := ipSegmentRequest(router, http.MethodDelete, path, "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("want 200 for delete, got %d (%s)", recorder.Code, recorder.Body.String())
@@ -272,13 +272,13 @@ func TestIPSegmentBatchDeleteRequiresFilterAndDeletesMatches(t *testing.T) {
 
 	router := ipSegmentRouter(&admin)
 	for _, body := range []string{`{}`, `{"keyword":"   "}`, `{"asn":"","llc":"","source":"","keyword":""}`} {
-		recorder := ipSegmentRequest(router, http.MethodPost, "/adapter-service/admin/ip-segments/batch-delete", body)
+		recorder := ipSegmentRequest(router, http.MethodPost, "/api/admin/ip-segments/batch-delete", body)
 		if recorder.Code != http.StatusBadRequest {
 			t.Fatalf("empty filter %s must be 400, got %d (%s)", body, recorder.Code, recorder.Body.String())
 		}
 	}
 
-	recorder := ipSegmentRequest(router, http.MethodPost, "/adapter-service/admin/ip-segments/batch-delete", `{"asn":"AS9808"}`)
+	recorder := ipSegmentRequest(router, http.MethodPost, "/api/admin/ip-segments/batch-delete", `{"asn":"AS9808"}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d (%s)", recorder.Code, recorder.Body.String())
 	}
@@ -323,7 +323,7 @@ func TestIPSegmentRefreshPassesIDAndReturnsUpdatedSegment(t *testing.T) {
 
 	router := ipSegmentRouter(&admin)
 	recorder := ipSegmentRequest(router, http.MethodPost,
-		"/adapter-service/admin/ip-segments/"+strconv.FormatInt(target.ID, 10)+"/refresh", "")
+		"/api/admin/ip-segments/"+strconv.FormatInt(target.ID, 10)+"/refresh", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d (%s)", recorder.Code, recorder.Body.String())
 	}
@@ -371,11 +371,11 @@ func TestIPSegmentHandlersRejectNonAdminWithoutRouteMiddleware(t *testing.T) {
 		params  gin.Params
 		handler gin.HandlerFunc
 	}{
-		{"list", http.MethodGet, "/adapter-service/admin/ip-segments", "", nil, IPSegmentList},
-		{"lookup", http.MethodGet, "/adapter-service/admin/ip-segments/lookup?ip=203.0.113.7", "", nil, IPSegmentLookup},
-		{"delete", http.MethodDelete, "/adapter-service/admin/ip-segments/" + idText, "", gin.Params{{Key: "id", Value: idText}}, IPSegmentDelete},
-		{"batch-delete", http.MethodPost, "/adapter-service/admin/ip-segments/batch-delete", `{"asn":"AS9808"}`, nil, IPSegmentBatchDelete},
-		{"refresh", http.MethodPost, "/adapter-service/admin/ip-segments/" + idText + "/refresh", "", gin.Params{{Key: "id", Value: idText}}, IPSegmentRefresh},
+		{"list", http.MethodGet, "/api/admin/ip-segments", "", nil, IPSegmentList},
+		{"lookup", http.MethodGet, "/api/admin/ip-segments/lookup?ip=203.0.113.7", "", nil, IPSegmentLookup},
+		{"delete", http.MethodDelete, "/api/admin/ip-segments/" + idText, "", gin.Params{{Key: "id", Value: idText}}, IPSegmentDelete},
+		{"batch-delete", http.MethodPost, "/api/admin/ip-segments/batch-delete", `{"asn":"AS9808"}`, nil, IPSegmentBatchDelete},
+		{"refresh", http.MethodPost, "/api/admin/ip-segments/" + idText + "/refresh", "", gin.Params{{Key: "id", Value: idText}}, IPSegmentRefresh},
 	}
 	for _, item := range handlerCases {
 		recorder := httptest.NewRecorder()
@@ -416,7 +416,7 @@ func TestIPSegmentRefreshMapsSchemaUnavailableTo503(t *testing.T) {
 	}
 
 	router := ipSegmentRouter(&admin)
-	recorder := ipSegmentRequest(router, http.MethodPost, "/adapter-service/admin/ip-segments/7/refresh", "")
+	recorder := ipSegmentRequest(router, http.MethodPost, "/api/admin/ip-segments/7/refresh", "")
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("schema unavailable must be 503, got %d (%s)", recorder.Code, recorder.Body.String())
 	}

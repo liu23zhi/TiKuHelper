@@ -60,7 +60,7 @@ func scriptLeaseToken(ticket, identity string) string {
 func scriptRunLeaseGrant(session entity.ScriptRunSession, token, shortCode string) ScriptRunSessionGrant {
 	return ScriptRunSessionGrant{
 		Token: token, ExpiresAt: session.ExpiresAt, ScriptID: session.ScriptID, AccessTokenID: session.AccessTokenID,
-		HeartbeatURL: "/adapter-service/script-command/" + shortCode + "/heartbeat",
+		HeartbeatURL: "/api/script-command/" + shortCode + "/heartbeat",
 	}
 }
 

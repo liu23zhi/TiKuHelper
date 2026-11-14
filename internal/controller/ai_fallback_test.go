@@ -22,7 +22,7 @@ func TestAIFallbackReturnsInvalidInputWhenQuestionMissing(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback", bytes.NewBufferString(`{"question":"   ","type":0,"options":["A","B"]}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/ai-fallback", bytes.NewBufferString(`{"question":"   ","type":0,"options":["A","B"]}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
 	AIFallback(ctx)
@@ -50,7 +50,7 @@ func TestResolveAIFallbackBillingContextPreservesClientIP(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback", nil)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/ai-fallback", nil)
 	ctx.Request.RemoteAddr = "8.8.8.8:1234"
 	ctx.Set("user", &user)
 	billing, err := resolveAIFallbackBillingContext(ctx)
@@ -65,7 +65,7 @@ func TestAIFallbackReturnsInvalidInputWhenJSONMalformed(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback", bytes.NewBufferString(`{"question":`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/ai-fallback", bytes.NewBufferString(`{"question":`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
 	AIFallback(ctx)
@@ -106,7 +106,7 @@ func TestAIFallbackReturnsAIUnavailableWhenServiceUnavailable(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Set("user", &user)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"],"deepThinking":true}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/ai-fallback", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"],"deepThinking":true}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
 	AIFallback(ctx)
@@ -149,10 +149,10 @@ func TestAIFallbackAcceptsAccessTokenAuthorization(t *testing.T) {
 	}
 
 	router := gin.New()
-	router.POST("/adapter-service/ai-fallback", AuthOrAccessToken, AIFallback)
+	router.POST("/api/ai-fallback", AuthOrAccessToken, AIFallback)
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/ai-fallback", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+token.TokenValue)
 	router.ServeHTTP(recorder, request)
@@ -189,10 +189,10 @@ func TestAIFallbackAcceptsLoginJWTAndContinuesHandlerChain(t *testing.T) {
 	}
 
 	router := gin.New()
-	router.POST("/adapter-service/ai-fallback", AuthOrAccessToken, AIFallback)
+	router.POST("/api/ai-fallback", AuthOrAccessToken, AIFallback)
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/ai-fallback", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", jwtToken)
 	router.ServeHTTP(recorder, request)
@@ -231,10 +231,10 @@ func TestAIFallbackRejectsZeroBalanceBeforeCallingAI(t *testing.T) {
 	}
 
 	router := gin.New()
-	router.POST("/adapter-service/ai-fallback", AuthOrAccessToken, AIFallback)
+	router.POST("/api/ai-fallback", AuthOrAccessToken, AIFallback)
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/ai-fallback", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+token.TokenValue)
 	router.ServeHTTP(recorder, request)
@@ -301,10 +301,10 @@ func TestAIFallbackRejectsExhaustedTokenQuotaWhenBalancePositive(t *testing.T) {
 	}
 
 	router := gin.New()
-	router.POST("/adapter-service/ai-fallback", AuthOrAccessToken, AIFallback)
+	router.POST("/api/ai-fallback", AuthOrAccessToken, AIFallback)
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/ai-fallback", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+token.TokenValue)
 	router.ServeHTTP(recorder, request)
@@ -374,10 +374,10 @@ func TestAIFallbackBillsSuccessfulAIUsage(t *testing.T) {
 	}
 
 	router := gin.New()
-	router.POST("/adapter-service/ai-fallback", AuthOrAccessToken, AIFallback)
+	router.POST("/api/ai-fallback", AuthOrAccessToken, AIFallback)
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/ai-fallback", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+token.TokenValue)
 	router.ServeHTTP(recorder, request)
@@ -439,10 +439,10 @@ func TestAIFallbackWritesFailureAuditLogWhenAIUnavailable(t *testing.T) {
 	}
 
 	router := gin.New()
-	router.POST("/adapter-service/ai-fallback", AuthOrAccessToken, AIFallback)
+	router.POST("/api/ai-fallback", AuthOrAccessToken, AIFallback)
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/ai-fallback", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+token.TokenValue)
 	router.ServeHTTP(recorder, request)
@@ -472,10 +472,10 @@ func TestAIFallbackWritesFailureAuditLogForInvalidInput(t *testing.T) {
 	token := seedControllerTokenForUser(t, db, user, "invalid-input-ai-fallback-token", 0)
 
 	router := gin.New()
-	router.POST("/adapter-service/ai-fallback", AuthOrAccessToken, AIFallback)
+	router.POST("/api/ai-fallback", AuthOrAccessToken, AIFallback)
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback", bytes.NewBufferString(`{"question":"   ","type":0,"options":["1","2"]}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/ai-fallback", bytes.NewBufferString(`{"question":"   ","type":0,"options":["1","2"]}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+token.TokenValue)
 	router.ServeHTTP(recorder, request)

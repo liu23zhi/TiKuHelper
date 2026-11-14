@@ -38,7 +38,7 @@ test('Profile page displays account status, phone change, and wechat bind/unbind
   assert.match(content, /value="code"/)
   assert.match(content, /submitWechatCodeBind/)
   assert.match(apiContent, /export function bindCurrentUserWechatByCode/)
-  assert.match(apiContent, /url: `\/adapter-service\/user\/wechat\/bind-code`/)
+  assert.match(apiContent, /url: `\/api\/user\/wechat\/bind-code`/)
 })
 
 test('Profile route and menu are available to both admins and regular users', async () => {
@@ -113,11 +113,11 @@ test('Register page keeps optional WeChat registration lazy and isolated per tab
   assert.match(registerContent, /isTerminalWechatRegisterStatus\(res\?\.status\) && \(!sessionId \|\| isWechatFlowError\(res\)\)/)
   assert.match(registerContent, /wechatRegisterMode\.value === 'code'/)
   assert.match(registerContent, /wechatRegisterSessionId\.value = ''[\s\S]*wechatQrCodeImageData\.value = ''/)
-  assert.match(apiContent, /url: `\/adapter-service\/public\/wechat-register\/session`/)
-  assert.match(apiContent, /url: `\/adapter-service\/public\/wechat-register\/qrcode`/)
-  assert.match(apiContent, /url: `\/adapter-service\/public\/wechat-register\/status`/)
-  assert.match(apiContent, /url: `\/adapter-service\/public\/wechat-register\/code`/)
-  assert.match(apiContent, /url: `\/adapter-service\/public\/wechat-register\/release`/)
+  assert.match(apiContent, /url: `\/api\/public\/wechat-register\/session`/)
+  assert.match(apiContent, /url: `\/api\/public\/wechat-register\/qrcode`/)
+  assert.match(apiContent, /url: `\/api\/public\/wechat-register\/status`/)
+  assert.match(apiContent, /url: `\/api\/public\/wechat-register\/code`/)
+  assert.match(apiContent, /url: `\/api\/public\/wechat-register\/release`/)
 })
 
 test('request interceptor preserves public registration flow 401 responses', async () => {

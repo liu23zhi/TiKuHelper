@@ -126,7 +126,7 @@ func TestUpdateQuestionInvalidatesSearchResultCache(t *testing.T) {
 	payload := []byte(`{"question":"待修正题目","type":0,"options":"[\"A\",\"B\"]","answer":"[\"新答案\"]","plat":1}`)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodPut, "/adapter-service/questions/11", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPut, "/api/questions/11", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	// 路径参数需要显式注入，httptest 不会解析 :id。
@@ -167,7 +167,7 @@ func TestDeleteQuestionInvalidatesSearchResultCache(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodDelete,
-		"/adapter-service/questions/12?reason="+url.QueryEscape(reason), nil)
+		"/api/questions/12?reason="+url.QueryEscape(reason), nil)
 	ctx.Params = gin.Params{{Key: "id", Value: "12"}}
 	ctx.Set("user", &user)
 
@@ -237,7 +237,7 @@ func TestCreateQuestionInvalidatesSearchResultCache(t *testing.T) {
 	payload := []byte(`[{"question":"新导入题目","type":0,"options":"[\"A\",\"B\"]","answer":"[\"答案\"]","plat":1}]`)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/questions", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPost, "/api/questions", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Set("user", &user)
@@ -263,7 +263,7 @@ func TestImportQuestionsDryRunKeepsSearchResultCache(t *testing.T) {
 	payload := []byte(`{"dryRun":true,"items":[{"question":"预演题目","type":0,"options":"[\"A\",\"B\"]","answer":"[\"答案\"]","plat":1}]}`)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/questions/import", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPost, "/api/questions/import", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 
@@ -286,7 +286,7 @@ func TestCreateQuestionDefaultsSourceNameToManualImport(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`[{"question":"人工导入题目","type":0,"options":"[\"A\",\"B\"]","answer":"[\"答案\"]","plat":1}]`)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/questions", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPost, "/api/questions", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Set("user", &user)
@@ -315,7 +315,7 @@ func TestGetQuestionsAuditLogStoresUsername(t *testing.T) {
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(
 		http.MethodPost,
-		"/adapter-service/questions/search",
+		"/api/questions/search",
 		bytes.NewReader([]byte(`{"pageNo":0,"pageSize":11}`)),
 	)
 	ctx.Request.Header.Set("Content-Type", "application/json")
@@ -346,7 +346,7 @@ func TestImportQuestionsDryRunReturnsExistingIDs(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"dryRun":true,"items":[{"id":7,"question":"已存在题目","type":0,"options":"[\"A\"]","answer":"[\"答案\"]","plat":1},{"id":9,"question":"新增题目","type":0,"options":"[\"A\"]","answer":"[\"答案\"]","plat":1}]}`)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/questions/import", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPost, "/api/questions/import", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Set("user", &user)
@@ -371,7 +371,7 @@ func TestImportQuestionsAddsOnlyMissingRowsWhenOverwriteDisabled(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"overwrite":false,"items":[{"id":7,"question":"覆盖失败题目","type":0,"options":"[\"A\"]","answer":"[\"新答案\"]","plat":1,"source_name":"人工导入"},{"id":9,"question":"新增题目","type":0,"options":"[\"A\"]","answer":"[\"新增答案\"]","plat":1}]}`)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/questions/import", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPost, "/api/questions/import", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Set("user", &user)
@@ -413,7 +413,7 @@ func TestImportQuestionsOverwritesExistingRowsWhenRequested(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"overwrite":true,"items":[{"id":7,"question":"覆盖后的题目","type":0,"options":"[\"A\"]","answer":"[\"覆盖答案\"]","plat":1,"source_name":"人工导入"}]}`)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/questions/import", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPost, "/api/questions/import", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Set("user", &user)
@@ -446,7 +446,7 @@ func TestImportQuestionsNormalizesBlankSourceNameToManualImport(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"items":[{"id":11,"question":"空来源题目","type":0,"options":"[\"A\"]","answer":"[\"答案\"]","plat":1,"source_name":"   "}]}`)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/questions/import", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPost, "/api/questions/import", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Set("user", &user)

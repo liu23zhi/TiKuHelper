@@ -15,7 +15,7 @@ func TestTasklistAPIUnknownRoutesReturnJSON404(t *testing.T) {
 	router := gin.New()
 	SetWebRouter(embed.FS{}, []byte("<html>spa-fixture</html>"), router)
 	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete} {
-		for _, path := range []string{"/adapter-service", "/adapter-service/__missing__", "/adapter-service/questions/unknown/path"} {
+		for _, path := range []string{"/api", "/api/__missing__", "/api/questions/unknown/path"} {
 			t.Run(method+path, func(t *testing.T) {
 				response := httptest.NewRecorder()
 				router.ServeHTTP(response, httptest.NewRequest(method, path, nil))
@@ -41,7 +41,7 @@ func TestTasklistAPISPAFallbackPreservesClientRoutes(t *testing.T) {
 	router := gin.New()
 	index := "<html>spa-fixture</html>"
 	SetWebRouter(embed.FS{}, []byte(index), router)
-	for _, path := range []string{"/login", "/adapter/user-usage", "/adapter/tiku", "/adapter-service-preview"} {
+	for _, path := range []string{"/login", "/adapter/user-usage", "/adapter/tiku", "/api-preview"} {
 		t.Run(path, func(t *testing.T) {
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))

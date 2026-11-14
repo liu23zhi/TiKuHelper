@@ -75,7 +75,7 @@ func TestSearchAuditPreservesFailureDetailsAndDistinguishesNoAnswer(t *testing.T
 				}, nil, func() {
 					recorder := httptest.NewRecorder()
 					ctx, _ := gin.CreateTestContext(recorder)
-					ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=wanneng&noRecord=1", bytes.NewBufferString(`{"question":"完整失败详情","type":0,"options":["答案A","答案B"]}`))
+					ctx.Request = httptest.NewRequest(http.MethodPost, "/api/search?use=wanneng&noRecord=1", bytes.NewBufferString(`{"question":"完整失败详情","type":0,"options":["答案A","答案B"]}`))
 					ctx.Request.Header.Set("Content-Type", "application/json")
 					Search(ctx)
 					if recorder.Code != http.StatusOK {
@@ -168,7 +168,7 @@ func TestSearchPartialFailurePreservesBillingAndSuccessfulCache(t *testing.T) {
 			for i := 0; i < 2; i++ {
 				recorder := httptest.NewRecorder()
 				ctx, _ := gin.CreateTestContext(recorder)
-				ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=wanneng&noRecord=1", bytes.NewBufferString(`{"question":"部分渠道失败计费","type":4}`))
+				ctx.Request = httptest.NewRequest(http.MethodPost, "/api/search?use=wanneng&noRecord=1", bytes.NewBufferString(`{"question":"部分渠道失败计费","type":4}`))
 				ctx.Request.Header.Set("Content-Type", "application/json")
 				Search(ctx)
 				var response model.SearchResponse
@@ -215,7 +215,7 @@ func TestSearchAIExclusiveFailureAuditRedactsKey(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=ai&noRecord=1", bytes.NewBufferString(`{"question":"AI错误题目"}`))
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/api/search?use=ai&noRecord=1", bytes.NewBufferString(`{"question":"AI错误题目"}`))
 			ctx.Request.Header.Set("Content-Type", "application/json")
 			Search(ctx)
 		})

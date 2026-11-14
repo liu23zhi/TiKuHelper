@@ -470,7 +470,7 @@ func buildAIFallbackTaskResponse(task aiFallbackTask) aiFallbackTaskResponse {
 }
 
 func aiFallbackStatusURL(taskID string) string {
-	return "/adapter-service/ai-fallback/status?taskId=" + url.QueryEscape(taskID)
+	return "/api/ai-fallback/status?taskId=" + url.QueryEscape(taskID)
 }
 
 func currentAIFallbackUserID(c *gin.Context) int32 {

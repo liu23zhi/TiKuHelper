@@ -67,10 +67,10 @@ func TestManagedScriptCloseConfirmsRevokesThenSettles(t *testing.T) {
 	if err := r.SetTrustedProxies(nil); err != nil {
 		t.Fatal(err)
 	}
-	r.DELETE("/adapter-service/scripts/:id", func(c *gin.Context) { c.Set("user", &owner) }, DeleteScript)
-	r.POST("/adapter-service/script-command/:shortCode/heartbeat", HeartbeatScriptRunSession)
+	r.DELETE("/api/scripts/:id", func(c *gin.Context) { c.Set("user", &owner) }, DeleteScript)
+	r.POST("/api/script-command/:shortCode/heartbeat", HeartbeatScriptRunSession)
 	closeScript := func(confirmation string) *httptest.ResponseRecorder {
-		target := fmt.Sprintf("/adapter-service/scripts/%d", script.ID)
+		target := fmt.Sprintf("/api/scripts/%d", script.ID)
 		if confirmation != "" {
 			target += "?confirmActiveSessionId=" + confirmation
 		}

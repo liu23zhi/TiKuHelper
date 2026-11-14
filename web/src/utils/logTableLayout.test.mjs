@@ -114,7 +114,7 @@ test('log detail previews use measured overflow and preserve expand/collapse sta
 });
 
 test('log request parameters can be rendered one per line without changing detail text', () => {
-  const row = { oldAnswer: 'method=POST path=/adapter-service/search query=use=ai contentType=application/json body={"deepThinking":true,"skipCache":false}' };
+  const row = { oldAnswer: 'method=POST path=/api/search query=use=ai contentType=application/json body={"deepThinking":true,"skipCache":false}' };
   assert.equal(buildLogStructuredFields(row).mode, 'use=ai deepThinking=true skipCache=false');
   assert.equal(buildLogStructuredFields(row, '\n').mode, 'use=ai\ndeepThinking=true\nskipCache=false');
 });

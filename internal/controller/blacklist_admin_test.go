@@ -97,11 +97,11 @@ func blacklistAdminRouter(actor *entity.User) *gin.Engine {
 			c.Set("user", actor)
 		}
 	}
-	router.GET("/adapter-service/blacklist", auth, middleware.RequireAdmin, BlacklistEntryList)
-	router.POST("/adapter-service/blacklist", auth, middleware.RequireAdmin, BlacklistEntryCreate)
-	router.PUT("/adapter-service/blacklist/:id/enabled", auth, middleware.RequireAdmin, BlacklistEntryToggle)
-	router.DELETE("/adapter-service/blacklist/:id", auth, middleware.RequireAdmin, BlacklistEntryDelete)
-	router.GET("/adapter-service/blacklist/hits", auth, middleware.RequireAdmin, BlacklistHitList)
+	router.GET("/api/blacklist", auth, middleware.RequireAdmin, BlacklistEntryList)
+	router.POST("/api/blacklist", auth, middleware.RequireAdmin, BlacklistEntryCreate)
+	router.PUT("/api/blacklist/:id/enabled", auth, middleware.RequireAdmin, BlacklistEntryToggle)
+	router.DELETE("/api/blacklist/:id", auth, middleware.RequireAdmin, BlacklistEntryDelete)
+	router.GET("/api/blacklist/hits", auth, middleware.RequireAdmin, BlacklistHitList)
 	return router
 }
 
@@ -163,11 +163,11 @@ func TestBlacklistAdminRejectsNonAdminOnEveryRoute(t *testing.T) {
 			path   string
 			body   string
 		}{
-			{http.MethodGet, "/adapter-service/blacklist", ""},
-			{http.MethodPost, "/adapter-service/blacklist", `{"kind":"ip","pattern":"203.0.113.9","reason":"x"}`},
-			{http.MethodPut, "/adapter-service/blacklist/1/enabled", `{"enabled":false}`},
-			{http.MethodDelete, "/adapter-service/blacklist/1", ""},
-			{http.MethodGet, "/adapter-service/blacklist/hits", ""},
+			{http.MethodGet, "/api/blacklist", ""},
+			{http.MethodPost, "/api/blacklist", `{"kind":"ip","pattern":"203.0.113.9","reason":"x"}`},
+			{http.MethodPut, "/api/blacklist/1/enabled", `{"enabled":false}`},
+			{http.MethodDelete, "/api/blacklist/1", ""},
+			{http.MethodGet, "/api/blacklist/hits", ""},
 		}
 		for _, item := range cases {
 			recorder := blacklistRequest(router, item.method, item.path, item.body)
@@ -196,20 +196,20 @@ func TestBlacklistAdminListPaginatesAndFilters(t *testing.T) {
 	router := blacklistAdminRouter(&admin)
 
 	// 三条规则：IP 精确（生效）、IP CIDR（停用）、手机号（生效）。
-	if recorder := blacklistRequest(router, http.MethodPost, "/adapter-service/blacklist",
+	if recorder := blacklistRequest(router, http.MethodPost, "/api/blacklist",
 		`{"kind":"ip","pattern":"203.0.113.10","reason":"SYNTHETIC_REASON_IP","enabled":true}`); recorder.Code != http.StatusCreated {
 		t.Fatalf("create ip exact: %d %s", recorder.Code, recorder.Body.String())
 	}
-	if recorder := blacklistRequest(router, http.MethodPost, "/adapter-service/blacklist",
+	if recorder := blacklistRequest(router, http.MethodPost, "/api/blacklist",
 		`{"kind":"ip","pattern":"198.51.100.0/24","reason":"SYNTHETIC_REASON_CIDR","enabled":false}`); recorder.Code != http.StatusCreated {
 		t.Fatalf("create ip cidr: %d %s", recorder.Code, recorder.Body.String())
 	}
-	if recorder := blacklistRequest(router, http.MethodPost, "/adapter-service/blacklist",
+	if recorder := blacklistRequest(router, http.MethodPost, "/api/blacklist",
 		`{"kind":"phone","pattern":"13800001111","reason":"SYNTHETIC_REASON_PHONE","enabled":true}`); recorder.Code != http.StatusCreated {
 		t.Fatalf("create phone: %d %s", recorder.Code, recorder.Body.String())
 	}
 
-	all := decodeBlacklistEntryList(t, blacklistRequest(router, http.MethodGet, "/adapter-service/blacklist", ""))
+	all := decodeBlacklistEntryList(t, blacklistRequest(router, http.MethodGet, "/api/blacklist", ""))
 	if all.Total != 3 || len(all.Data) != 3 {
 		t.Fatalf("want 3 entries, got total=%d len=%d", all.Total, len(all.Data))
 	}
@@ -224,47 +224,47 @@ func TestBlacklistAdminListPaginatesAndFilters(t *testing.T) {
 
 	// 分页：pageSize=2 → 第一页 2 条、total 仍是 3；第二页 1 条。
 	firstPage := decodeBlacklistEntryList(t, blacklistRequest(router, http.MethodGet,
-		"/adapter-service/blacklist?page=1&pageSize=2", ""))
+		"/api/blacklist?page=1&pageSize=2", ""))
 	if firstPage.Total != 3 || len(firstPage.Data) != 2 || firstPage.Page != 1 || firstPage.PageSize != 2 {
 		t.Fatalf("page 1 of size 2 wrong: total=%d len=%d page=%d size=%d",
 			firstPage.Total, len(firstPage.Data), firstPage.Page, firstPage.PageSize)
 	}
 	secondPage := decodeBlacklistEntryList(t, blacklistRequest(router, http.MethodGet,
-		"/adapter-service/blacklist?page=2&pageSize=2", ""))
+		"/api/blacklist?page=2&pageSize=2", ""))
 	if len(secondPage.Data) != 1 {
 		t.Fatalf("page 2 should hold the remaining row, got %d", len(secondPage.Data))
 	}
 
 	// kind 筛选。
 	ips := decodeBlacklistEntryList(t, blacklistRequest(router, http.MethodGet,
-		"/adapter-service/blacklist?kind=ip", ""))
+		"/api/blacklist?kind=ip", ""))
 	if ips.Total != 2 {
 		t.Fatalf("kind=ip should match 2, got %d", ips.Total)
 	}
 	// enabled 筛选：false 必须只返回停用那条（裸 bool 零值会退化成「不筛选」，这里钉住）。
 	disabled := decodeBlacklistEntryList(t, blacklistRequest(router, http.MethodGet,
-		"/adapter-service/blacklist?enabled=false", ""))
+		"/api/blacklist?enabled=false", ""))
 	if disabled.Total != 1 || disabled.Data[0].MatchType != service.BlacklistMatchCIDR {
 		t.Fatalf("enabled=false should return the cidr row only, got total=%d data=%+v", disabled.Total, disabled.Data)
 	}
 	// 关键词同时匹配 valueMasked 与 reason。
 	byReason := decodeBlacklistEntryList(t, blacklistRequest(router, http.MethodGet,
-		"/adapter-service/blacklist?keyword=SYNTHETIC_REASON_PHONE", ""))
+		"/api/blacklist?keyword=SYNTHETIC_REASON_PHONE", ""))
 	if byReason.Total != 1 || byReason.Data[0].Kind != service.BlacklistKindPhone {
 		t.Fatalf("keyword on reason should match the phone row, got total=%d", byReason.Total)
 	}
 	// 关键词匹配 valueMasked（脱敏值 203.0.113.*）。
 	byMasked := decodeBlacklistEntryList(t, blacklistRequest(router, http.MethodGet,
-		"/adapter-service/blacklist?keyword=203.0.113", ""))
+		"/api/blacklist?keyword=203.0.113", ""))
 	if byMasked.Total != 1 {
 		t.Fatalf("keyword on masked value should match 1, got %d", byMasked.Total)
 	}
 	// 非法 kind 筛选必须 400，而不是「查不到 → 空列表」（运营会以为规则丢了）。
-	if recorder := blacklistRequest(router, http.MethodGet, "/adapter-service/blacklist?kind=synthetic", ""); recorder.Code != http.StatusBadRequest {
+	if recorder := blacklistRequest(router, http.MethodGet, "/api/blacklist?kind=synthetic", ""); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("invalid kind filter should be 400, got %d", recorder.Code)
 	}
 	// 非法 enabled 同样 400。
-	if recorder := blacklistRequest(router, http.MethodGet, "/adapter-service/blacklist?enabled=Synthetic", ""); recorder.Code != http.StatusBadRequest {
+	if recorder := blacklistRequest(router, http.MethodGet, "/api/blacklist?enabled=Synthetic", ""); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("invalid enabled filter should be 400, got %d", recorder.Code)
 	}
 }
@@ -282,7 +282,7 @@ func TestBlacklistAdminCreateTakesEffectInCacheImmediately(t *testing.T) {
 		t.Fatalf("ip must not be blacklisted before creation")
 	}
 
-	recorder := blacklistRequest(router, http.MethodPost, "/adapter-service/blacklist",
+	recorder := blacklistRequest(router, http.MethodPost, "/api/blacklist",
 		`{"kind":"ip","pattern":"203.0.113.42","reason":"SYNTHETIC_IMMEDIATE","enabled":true}`)
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("create: %d %s", recorder.Code, recorder.Body.String())
@@ -308,7 +308,7 @@ func TestBlacklistAdminCreateTakesEffectInCacheImmediately(t *testing.T) {
 	}
 
 	// 手机号规则同理（归一化 + hash 路径）。
-	phoneRecorder := blacklistRequest(router, http.MethodPost, "/adapter-service/blacklist",
+	phoneRecorder := blacklistRequest(router, http.MethodPost, "/api/blacklist",
 		`{"kind":"phone","pattern":"138 0000 2222","reason":"SYNTHETIC_PHONE"}`)
 	if phoneRecorder.Code != http.StatusCreated {
 		t.Fatalf("create phone: %d %s", phoneRecorder.Code, phoneRecorder.Body.String())
@@ -319,7 +319,7 @@ func TestBlacklistAdminCreateTakesEffectInCacheImmediately(t *testing.T) {
 
 	// 过期时间：显式设成过去 → 建成功但**不进缓存**（46-*.md §7「到期自动失效」）。
 	past := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
-	expiredRecorder := blacklistRequest(router, http.MethodPost, "/adapter-service/blacklist",
+	expiredRecorder := blacklistRequest(router, http.MethodPost, "/api/blacklist",
 		fmt.Sprintf(`{"kind":"ip","pattern":"203.0.113.43","reason":"SYNTHETIC_EXPIRED","expiresAt":%q}`, past))
 	if expiredRecorder.Code != http.StatusCreated {
 		t.Fatalf("create expired: %d %s", expiredRecorder.Code, expiredRecorder.Body.String())
@@ -337,7 +337,7 @@ func TestBlacklistAdminToggleAndDeleteBothDropTheRuleFromCache(t *testing.T) {
 	setBlacklistAdminSwitch(t, db, true)
 	router := blacklistAdminRouter(&admin)
 
-	create := blacklistRequest(router, http.MethodPost, "/adapter-service/blacklist",
+	create := blacklistRequest(router, http.MethodPost, "/api/blacklist",
 		`{"kind":"ip","pattern":"198.51.100.77","reason":"SYNTHETIC_TOGGLE"}`)
 	if create.Code != http.StatusCreated {
 		t.Fatalf("create: %d %s", create.Code, create.Body.String())
@@ -351,7 +351,7 @@ func TestBlacklistAdminToggleAndDeleteBothDropTheRuleFromCache(t *testing.T) {
 	}
 
 	// 停用：缓存必须立刻不再命中。
-	togglePath := "/adapter-service/blacklist/" + strconv.FormatInt(entry.ID, 10) + "/enabled"
+	togglePath := "/api/blacklist/" + strconv.FormatInt(entry.ID, 10) + "/enabled"
 	toggle := blacklistRequest(router, http.MethodPut, togglePath, `{"enabled":false}`)
 	if toggle.Code != http.StatusOK {
 		t.Fatalf("disable: %d %s", toggle.Code, toggle.Body.String())
@@ -388,7 +388,7 @@ func TestBlacklistAdminToggleAndDeleteBothDropTheRuleFromCache(t *testing.T) {
 	// Q77-6 起删除必须带 `?reason=`（后端独立校验，见 rule_audit.go）。
 	// 这条用例测的是「删除后缓存/库的状态」，原因只是必须提供的入参；
 	// 「缺 reason 必须 400 且规则仍在」由 rule_audit_test.go 专门覆盖。
-	deletePath := "/adapter-service/blacklist/" + strconv.FormatInt(entry.ID, 10)
+	deletePath := "/api/blacklist/" + strconv.FormatInt(entry.ID, 10)
 	deleteWithReason := deletePath + "?reason=" + ruleDeleteTestReasonQuery
 	if recorder := blacklistRequest(router, http.MethodDelete, deleteWithReason, ""); recorder.Code != http.StatusOK {
 		t.Fatalf("delete: %d %s", recorder.Code, recorder.Body.String())
@@ -411,7 +411,7 @@ func TestBlacklistAdminToggleAndDeleteBothDropTheRuleFromCache(t *testing.T) {
 	}
 	// 启停不存在的 id → 404。
 	if recorder := blacklistRequest(router, http.MethodPut,
-		"/adapter-service/blacklist/999999/enabled", `{"enabled":false}`); recorder.Code != http.StatusNotFound {
+		"/api/blacklist/999999/enabled", `{"enabled":false}`); recorder.Code != http.StatusNotFound {
 		t.Fatalf("toggle missing entry should be 404, got %d", recorder.Code)
 	}
 }
@@ -447,14 +447,14 @@ func TestBlacklistAdminCreateRejectsInvalidInput(t *testing.T) {
 		{"bad expiresAt", `{"kind":"ip","pattern":"203.0.113.12","reason":"x","expiresAt":"tomorrow"}`, http.StatusBadRequest},
 	}
 	for _, item := range cases {
-		recorder := blacklistRequest(router, http.MethodPost, "/adapter-service/blacklist", item.body)
+		recorder := blacklistRequest(router, http.MethodPost, "/api/blacklist", item.body)
 		if recorder.Code != item.want {
 			t.Fatalf("%s: want %d, got %d (%s)", item.name, item.want, recorder.Code, recorder.Body.String())
 		}
 	}
 
 	// 启停缺 enabled 字段 → 400（不猜方向）。
-	create := blacklistRequest(router, http.MethodPost, "/adapter-service/blacklist",
+	create := blacklistRequest(router, http.MethodPost, "/api/blacklist",
 		`{"kind":"ip","pattern":"203.0.113.13","reason":"SYNTHETIC_KEEP"}`)
 	if create.Code != http.StatusCreated {
 		t.Fatalf("seed entry: %d %s", create.Code, create.Body.String())
@@ -464,7 +464,7 @@ func TestBlacklistAdminCreateRejectsInvalidInput(t *testing.T) {
 		t.Fatalf("decode entry: %v", err)
 	}
 	if recorder := blacklistRequest(router, http.MethodPut,
-		"/adapter-service/blacklist/"+strconv.FormatInt(entry.ID, 10)+"/enabled", `{}`); recorder.Code != http.StatusBadRequest {
+		"/api/blacklist/"+strconv.FormatInt(entry.ID, 10)+"/enabled", `{}`); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("toggle without enabled should be 400, got %d (%s)", recorder.Code, recorder.Body.String())
 	}
 
@@ -489,13 +489,13 @@ func TestBlacklistAdminHitsListOrdersNewestFirstAndFilters(t *testing.T) {
 	now := time.Now().UTC()
 	hits := []entity.BlacklistHit{
 		{EntryID: 11, Kind: service.BlacklistKindIP, ValueMasked: "203.0.113.*", ClientIP: "203.0.113.5",
-			Path: "/adapter-service/search", Action: service.BlacklistActionBlocked, HitCount: 1,
+			Path: "/api/search", Action: service.BlacklistActionBlocked, HitCount: 1,
 			CreatedAt: now.Add(-2 * time.Hour)},
 		{EntryID: 11, Kind: service.BlacklistKindIP, ValueMasked: "203.0.113.*", ClientIP: "203.0.113.5",
-			Path: "/adapter-service/user/login", Action: service.BlacklistActionBlocked, HitCount: 7,
+			Path: "/api/user/login", Action: service.BlacklistActionBlocked, HitCount: 7,
 			CreatedAt: now.Add(-time.Minute)},
 		{EntryID: 22, Kind: service.BlacklistKindPhone, ValueMasked: "138****2222", ClientIP: "198.51.100.9",
-			Path: "/adapter-service/user/register", Action: service.BlacklistActionLoggedOnly, HitCount: 1,
+			Path: "/api/user/register", Action: service.BlacklistActionLoggedOnly, HitCount: 1,
 			CreatedAt: now.Add(-time.Hour)},
 	}
 	for index := range hits {
@@ -504,7 +504,7 @@ func TestBlacklistAdminHitsListOrdersNewestFirstAndFilters(t *testing.T) {
 		}
 	}
 
-	all := blacklistRequest(router, http.MethodGet, "/adapter-service/blacklist/hits", "")
+	all := blacklistRequest(router, http.MethodGet, "/api/blacklist/hits", "")
 	if all.Code != http.StatusOK {
 		t.Fatalf("hits list: %d %s", all.Code, all.Body.String())
 	}
@@ -524,7 +524,7 @@ func TestBlacklistAdminHitsListOrdersNewestFirstAndFilters(t *testing.T) {
 	}
 
 	// entryId 筛选。
-	byEntry := blacklistRequest(router, http.MethodGet, "/adapter-service/blacklist/hits?entryId=11", "")
+	byEntry := blacklistRequest(router, http.MethodGet, "/api/blacklist/hits?entryId=11", "")
 	var entryResult service.BlacklistHitListResult
 	if err := json.Unmarshal(byEntry.Body.Bytes(), &entryResult); err != nil {
 		t.Fatalf("decode entry hits: %v", err)
@@ -534,7 +534,7 @@ func TestBlacklistAdminHitsListOrdersNewestFirstAndFilters(t *testing.T) {
 	}
 	// action 筛选。
 	byAction := blacklistRequest(router, http.MethodGet,
-		"/adapter-service/blacklist/hits?action=logged_only", "")
+		"/api/blacklist/hits?action=logged_only", "")
 	var actionResult service.BlacklistHitListResult
 	if err := json.Unmarshal(byAction.Body.Bytes(), &actionResult); err != nil {
 		t.Fatalf("decode action hits: %v", err)
@@ -544,7 +544,7 @@ func TestBlacklistAdminHitsListOrdersNewestFirstAndFilters(t *testing.T) {
 	}
 	// clientIp 精确匹配。
 	byIP := blacklistRequest(router, http.MethodGet,
-		"/adapter-service/blacklist/hits?clientIp=198.51.100.9", "")
+		"/api/blacklist/hits?clientIp=198.51.100.9", "")
 	var ipResult service.BlacklistHitListResult
 	if err := json.Unmarshal(byIP.Body.Bytes(), &ipResult); err != nil {
 		t.Fatalf("decode ip hits: %v", err)
@@ -553,7 +553,7 @@ func TestBlacklistAdminHitsListOrdersNewestFirstAndFilters(t *testing.T) {
 		t.Fatalf("clientIp filter should match 1, got %d", ipResult.Total)
 	}
 	// 分页。
-	paged := blacklistRequest(router, http.MethodGet, "/adapter-service/blacklist/hits?page=2&pageSize=2", "")
+	paged := blacklistRequest(router, http.MethodGet, "/api/blacklist/hits?page=2&pageSize=2", "")
 	var pagedResult service.BlacklistHitListResult
 	if err := json.Unmarshal(paged.Body.Bytes(), &pagedResult); err != nil {
 		t.Fatalf("decode paged hits: %v", err)
@@ -563,15 +563,15 @@ func TestBlacklistAdminHitsListOrdersNewestFirstAndFilters(t *testing.T) {
 	}
 	// 非法 action / kind → 400。
 	if recorder := blacklistRequest(router, http.MethodGet,
-		"/adapter-service/blacklist/hits?action=synthetic", ""); recorder.Code != http.StatusBadRequest {
+		"/api/blacklist/hits?action=synthetic", ""); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("invalid action should be 400, got %d", recorder.Code)
 	}
 	if recorder := blacklistRequest(router, http.MethodGet,
-		"/adapter-service/blacklist/hits?kind=synthetic", ""); recorder.Code != http.StatusBadRequest {
+		"/api/blacklist/hits?kind=synthetic", ""); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("invalid kind should be 400, got %d", recorder.Code)
 	}
 	if recorder := blacklistRequest(router, http.MethodGet,
-		"/adapter-service/blacklist/hits?entryId=synthetic", ""); recorder.Code != http.StatusBadRequest {
+		"/api/blacklist/hits?entryId=synthetic", ""); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("invalid entryId should be 400, got %d", recorder.Code)
 	}
 }

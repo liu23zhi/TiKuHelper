@@ -254,7 +254,7 @@ func b01RunDetachVector(t *testing.T, vector string) {
 			// The synthetic provider answer must be an actual option: strict
 			// objective matching correctly rejects an unrelated string.
 			body := `{"question":"synthetic-` + vector + `","options":["` + b01DetachSyntheticAnswer + `","synthetic-distractor"]}`
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1", strings.NewReader(body)).WithContext(ctx)
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=icodef&noRecord=1", strings.NewReader(body)).WithContext(ctx)
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("Authorization", "Bearer "+plainToken)
 			if keyed {

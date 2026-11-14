@@ -52,8 +52,8 @@ func TestSearchDoesNotCacheEmptyResultWithoutEnabledProvider(t *testing.T) {
 
 	upstream := 0
 	searchCacheHarness(t,
-		"/adapter-service/search?noRecord=1",
-		"/adapter-service/search?noRecord=1",
+		"/api/search?noRecord=1",
+		"/api/search?noRecord=1",
 		&upstream)
 
 	if upstream != 0 {
@@ -70,8 +70,8 @@ func TestSearchCachesRequestWithProviderUse(t *testing.T) {
 
 	upstream := 0
 	searchCacheHarness(t,
-		"/adapter-service/search?use=icodef&noRecord=1",
-		"/adapter-service/search?use=icodef&noRecord=1",
+		"/api/search?use=icodef&noRecord=1",
+		"/api/search?use=icodef&noRecord=1",
 		&upstream)
 
 	if upstream != 1 {
@@ -91,8 +91,8 @@ func TestSearchDoesNotReuseCacheAcrossDifferentUse(t *testing.T) {
 
 	upstream := 0
 	searchCacheHarness(t,
-		"/adapter-service/search?use=icodef&noRecord=1",
-		"/adapter-service/search?use=wanneng&noRecord=1",
+		"/api/search?use=icodef&noRecord=1",
+		"/api/search?use=wanneng&noRecord=1",
 		&upstream)
 
 	// 上游被调用两次 == 第二次没有命中第一次的缓存，即两个渠道各自成键。
@@ -156,8 +156,8 @@ func TestSearchDoesNotReuseCacheAcrossDifferentType(t *testing.T) {
 		},
 		nil,
 		func() {
-			performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"],"type":0}`, "Basic token-a")
-			performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"],"type":3}`, "Basic token-a")
+			performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"],"type":0}`, "Basic token-a")
+			performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"],"type":3}`, "Basic token-a")
 		})
 
 	if upstream != 2 {
@@ -171,8 +171,8 @@ func TestSearchUseKeyIsOrderInsensitive(t *testing.T) {
 
 	upstream := 0
 	searchCacheHarness(t,
-		"/adapter-service/search?use=icodef,wanneng&noRecord=1",
-		"/adapter-service/search?use=wanneng,icodef&noRecord=1",
+		"/api/search?use=icodef,wanneng&noRecord=1",
+		"/api/search?use=wanneng,icodef&noRecord=1",
 		&upstream)
 
 	if upstream != 1 {
@@ -227,8 +227,8 @@ func TestSearchCacheKeyIgnoresSurroundingWhitespace(t *testing.T) {
 		},
 		nil,
 		func() {
-			performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
-			performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"  同一道题  ","options":["A","B"]}`, "Basic token-a")
+			performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
+			performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"  同一道题  ","options":["A","B"]}`, "Basic token-a")
 		})
 
 	if upstream != 1 {
@@ -260,8 +260,8 @@ func TestSkipCacheFalseStillUsesCache(t *testing.T) {
 		},
 		nil,
 		func() {
-			performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
-			performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"],"skipCache":false}`, "Basic token-a")
+			performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
+			performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"],"skipCache":false}`, "Basic token-a")
 		})
 
 	if upstream != 1 {
@@ -429,7 +429,7 @@ func TestSearchReusesCacheAcrossPunctuationDriftEndToEnd(t *testing.T) {
 			halfWidth := `{"question":"` + question + `","options":["我列举的常见科技发明有电话、电视和机器人.我课后可以认真学习相关内容,及时复习","}else if ((max > 0 && count > max) || (min > 0 && min > count)) {"],"type":2}`
 			fullWidth := `{"question":"` + question + `","options":["我列举的常见科技发明有电话、电视和机器人。我课后可以认真学习相关内容，及时复习。","}else if ((max > 0 && count > max) || (min > 0 && min > count)) {"],"type":2}`
 
-			target := "/adapter-service/search?use=icodef&noRecord=1&recordEmptyAnswer=1"
+			target := "/api/search?use=icodef&noRecord=1&recordEmptyAnswer=1"
 			performSearchRequest(t, target, halfWidth, "Basic token-a")
 			performSearchRequest(t, target, fullWidth, "Basic token-a")
 			performSearchRequest(t, target, halfWidth, "Basic token-a")

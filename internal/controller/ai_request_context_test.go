@@ -76,7 +76,7 @@ func TestSearchKeepsAdmittedWorkContextPolicy(t *testing.T) {
 			}
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=ai&noRecord=1", bytes.NewBufferString(`{"question":"question","type":2}`)).WithContext(requestContext)
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/api/search?use=ai&noRecord=1", bytes.NewBufferString(`{"question":"question","type":2}`)).WithContext(requestContext)
 			ctx.Request.Header.Set("Content-Type", "application/json")
 			Search(ctx)
 			select {
@@ -89,7 +89,7 @@ func TestSearchKeepsAdmittedWorkContextPolicy(t *testing.T) {
 			}
 			live := httptest.NewRecorder()
 			liveContext, _ := gin.CreateTestContext(live)
-			liveContext.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=ai&noRecord=1", bytes.NewBufferString(`{"question":"question","type":2}`))
+			liveContext.Request = httptest.NewRequest(http.MethodPost, "/api/search?use=ai&noRecord=1", bytes.NewBufferString(`{"question":"question","type":2}`))
 			liveContext.Request.Header.Set("Content-Type", "application/json")
 			liveDone := make(chan struct{})
 			go func() { defer close(liveDone); Search(liveContext) }()
@@ -131,7 +131,7 @@ func TestAdminAISearchTestPassesHTTPRequestContext(t *testing.T) {
 	}
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-search-config/test", bytes.NewBufferString(`{"model":"test","requestContext":{}}`)).WithContext(requestContext)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/ai-search-config/test", bytes.NewBufferString(`{"model":"test","requestContext":{}}`)).WithContext(requestContext)
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 	TestAISearchConfig(ctx)
@@ -167,7 +167,7 @@ func TestFallbackKeepsAdmittedWorkContextPolicy(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
 			ctx.Set("user", &user)
-			ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback", bytes.NewBufferString(`{"question":"new context question","type":2,"requestContext":{}}`)).WithContext(requestContext)
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/api/ai-fallback", bytes.NewBufferString(`{"question":"new context question","type":2,"requestContext":{}}`)).WithContext(requestContext)
 			ctx.Request.Header.Set("Content-Type", "application/json")
 			if async {
 				CreateAIFallbackTask(ctx)

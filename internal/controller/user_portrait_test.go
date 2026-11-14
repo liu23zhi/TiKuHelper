@@ -58,8 +58,8 @@ func portraitTestRouter(actor *entity.User) *gin.Engine {
 			c.Set("user", actor)
 		}
 	}
-	router.GET("/adapter-service/admin/portrait/overview", auth, middleware.RequireAdmin, AdminUserPortraitOverview)
-	router.GET("/adapter-service/admin/users/:id/portrait", auth, middleware.RequireAdmin, AdminUserPortrait)
+	router.GET("/api/admin/portrait/overview", auth, middleware.RequireAdmin, AdminUserPortraitOverview)
+	router.GET("/api/admin/users/:id/portrait", auth, middleware.RequireAdmin, AdminUserPortrait)
 	return router
 }
 
@@ -166,12 +166,12 @@ func TestPortraitHandlersRecheckRoleInsideHandler(t *testing.T) {
 	router := gin.New()
 	// 只挂假 Auth（不挂 RequireAdmin）：把「handler 是否自己校验」单独隔离出来。
 	router.Use(func(c *gin.Context) { c.Set("user", ordinary) })
-	router.GET("/adapter-service/admin/portrait/overview", AdminUserPortraitOverview)
-	router.GET("/adapter-service/admin/users/:id/portrait", AdminUserPortrait)
+	router.GET("/api/admin/portrait/overview", AdminUserPortraitOverview)
+	router.GET("/api/admin/users/:id/portrait", AdminUserPortrait)
 
 	for _, path := range []string{
-		"/adapter-service/admin/portrait/overview",
-		"/adapter-service/admin/users/1/portrait",
+		"/api/admin/portrait/overview",
+		"/api/admin/users/1/portrait",
 	} {
 		recorder := portraitRequest(router, path)
 		if recorder.Code != http.StatusForbidden {
@@ -193,9 +193,9 @@ func TestPortraitHandlersRejectAnonymous(t *testing.T) {
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	router.GET("/adapter-service/admin/portrait/overview", AdminUserPortraitOverview)
+	router.GET("/api/admin/portrait/overview", AdminUserPortraitOverview)
 
-	recorder := portraitRequest(router, "/adapter-service/admin/portrait/overview")
+	recorder := portraitRequest(router, "/api/admin/portrait/overview")
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("未登录时必须 401，实际 %d", recorder.Code)
 	}
@@ -220,11 +220,11 @@ func TestPortraitOverviewReturnsBothScopesFromSameShape(t *testing.T) {
 
 	router := portraitTestRouter(admin)
 
-	overviewRecorder := portraitRequest(router, "/adapter-service/admin/portrait/overview")
+	overviewRecorder := portraitRequest(router, "/api/admin/portrait/overview")
 	if overviewRecorder.Code != http.StatusOK {
 		t.Fatalf("整体画像应 200，实际 %d，body=%s", overviewRecorder.Code, overviewRecorder.Body.String())
 	}
-	singleRecorder := portraitRequest(router, "/adapter-service/admin/users/5/portrait")
+	singleRecorder := portraitRequest(router, "/api/admin/users/5/portrait")
 	if singleRecorder.Code != http.StatusOK {
 		t.Fatalf("单用户画像应 200，实际 %d，body=%s", singleRecorder.Code, singleRecorder.Body.String())
 	}
@@ -267,7 +267,7 @@ func TestPortraitSingleUserReturns404ForMissingTarget(t *testing.T) {
 	admin := portraitAdmin(9, "portrait-admin")
 
 	router := portraitTestRouter(admin)
-	recorder := portraitRequest(router, "/adapter-service/admin/users/4242/portrait")
+	recorder := portraitRequest(router, "/api/admin/users/4242/portrait")
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("不存在的目标用户必须 404（不能返回空画像），实际 %d，body=%s",
 			recorder.Code, recorder.Body.String())
@@ -282,9 +282,9 @@ func TestPortraitSingleUserRejectsInvalidID(t *testing.T) {
 	router := portraitTestRouter(admin)
 
 	for _, path := range []string{
-		"/adapter-service/admin/users/0/portrait",
-		"/adapter-service/admin/users/abc/portrait",
-		"/adapter-service/admin/users/-1/portrait",
+		"/api/admin/users/0/portrait",
+		"/api/admin/users/abc/portrait",
+		"/api/admin/users/-1/portrait",
 	} {
 		recorder := portraitRequest(router, path)
 		if recorder.Code != http.StatusBadRequest {
@@ -311,7 +311,7 @@ func TestPortraitAdminCanReadOtherUserNotOnlySelf(t *testing.T) {
 	}
 
 	router := portraitTestRouter(admin)
-	recorder := portraitRequest(router, "/adapter-service/admin/users/8/portrait")
+	recorder := portraitRequest(router, "/api/admin/users/8/portrait")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("应 200，实际 %d，body=%s", recorder.Code, recorder.Body.String())
 	}

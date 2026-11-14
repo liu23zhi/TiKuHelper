@@ -17,7 +17,7 @@ async function loadRequest(send) {
   const storage = new Map([['adapter_current_user', JSON.stringify({ id: 1, nickname: 'old' })]])
   const browser = Object.assign(new EventTarget(), {
     localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) },
-    location: { href: '/adapter/profile' },
+    location: { href: '/profile' },
   })
   const scope = {
     window: browser,
@@ -41,18 +41,18 @@ test('a late 401 from the previous session cannot clear a successful new login',
   const state = await loadRequest((config) => config.url.endsWith('/login')
     ? Promise.resolve({ status: 200, data: { jwt: 'new-session' }, config })
     : oldRequest.promise)
-  const old = state.request({ url: '/adapter-service/user', method: 'get' })
-  await state.request({ url: '/adapter-service/user/login', method: 'post' })
+  const old = state.request({ url: '/api/user', method: 'get' })
+  await state.request({ url: '/api/user/login', method: 'post' })
   state.storage.set('adapter_current_user', JSON.stringify({ id: 1, nickname: 'new' }))
   oldRequest.resolve({ status: 401, data: { message: '账号已在其他设备登录，请重新登录' } })
   await old
-  assert.equal(state.browser.location.href, '/adapter/profile')
+  assert.equal(state.browser.location.href, '/profile')
   assert.equal(JSON.parse(state.storage.get('adapter_current_user')).nickname, 'new')
 })
 
 test('a current-session 401 still clears user state and returns to login', async () => {
   const state = await loadRequest(async (config) => ({ status: 401, data: { message: '账号已在其他设备登录，请重新登录' }, config }))
-  await state.request({ url: '/adapter-service/user/session', method: 'get' })
+  await state.request({ url: '/api/user/session', method: 'get' })
   assert.equal(state.storage.has('adapter_current_user'), false)
   assert.equal(state.browser.location.href, '/login')
 })
@@ -69,16 +69,16 @@ for (const failure of ['SecurityError', 'QuotaExceededError']) {
     } else {
       state.browser.localStorage.setItem = () => { throw new DOMException('Storage full', failure) }
     }
-    const old = state.request({ url: '/adapter-service/user', method: 'get' }).then(
+    const old = state.request({ url: '/api/user', method: 'get' }).then(
       (response) => ({ response }),
       (error) => ({ error }),
     )
-    await assert.doesNotReject(state.request({ url: '/adapter-service/user/login', method: 'post' }))
+    await assert.doesNotReject(state.request({ url: '/api/user/login', method: 'post' }))
     oldRequest.resolve({ status: 401, data: { message: '账号已在其他设备登录，请重新登录' } })
     const result = await old
     assert.equal(result.error, undefined)
     assert.equal(result.response.status, 401)
-    assert.equal(state.browser.location.href, '/adapter/profile')
+    assert.equal(state.browser.location.href, '/profile')
     assert.equal(state.storage.has('adapter_current_user'), true)
   })
 }

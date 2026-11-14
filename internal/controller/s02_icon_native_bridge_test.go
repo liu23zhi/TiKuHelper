@@ -181,10 +181,10 @@ func newS02PaymentIconBridge(t *testing.T) *s02PaymentIconBridge {
 		b.events = append(b.events, s02BridgeEvent{c.Request.Method, c.Request.URL.Path, actor, c.Writer.Status()})
 		b.mu.Unlock()
 	})
-	router.GET("/adapter-service/payment-methods", PaymentMethodList)
-	router.POST("/adapter-service/payment-methods", CreatePaymentMethod)
-	router.PUT("/adapter-service/payment-methods/:id", UpdatePaymentMethod)
-	router.DELETE("/adapter-service/payment-methods/:id", DeletePaymentMethod)
+	router.GET("/api/payment-methods", PaymentMethodList)
+	router.POST("/api/payment-methods", CreatePaymentMethod)
+	router.PUT("/api/payment-methods/:id", UpdatePaymentMethod)
+	router.DELETE("/api/payment-methods/:id", DeletePaymentMethod)
 	fixture := router.Group("/__fixture__")
 	fixture.Use(func(c *gin.Context) {
 		if c.GetHeader("X-S02-Nonce") != b.nonce {
@@ -306,7 +306,7 @@ func s02PaymentIconBackendSelfchecks(t *testing.T) {
 	list := func(actor string, wantCount int) []entity.PaymentMethod {
 		t.Helper()
 		var rows []entity.PaymentMethod
-		if err := json.Unmarshal(request(actor, http.MethodGet, "/adapter-service/payment-methods", nil, 200), &rows); err != nil {
+		if err := json.Unmarshal(request(actor, http.MethodGet, "/api/payment-methods", nil, 200), &rows); err != nil {
 			t.Fatal(err)
 		}
 		if len(rows) != wantCount {
@@ -332,7 +332,7 @@ func s02PaymentIconBackendSelfchecks(t *testing.T) {
 			}
 		}
 	}
-	request("anonymous", http.MethodGet, "/adapter-service/payment-methods", nil, 401)
+	request("anonymous", http.MethodGet, "/api/payment-methods", nil, 401)
 	if snapshot().SHA256 != initial.SHA256 {
 		t.Fatal("list projection mutated raw DB")
 	}
@@ -340,13 +340,13 @@ func s02PaymentIconBackendSelfchecks(t *testing.T) {
 		Name: "native-safe-icon", EPayType: "alipay", IconSVG: s02SafeIcon, Enabled: true, Sort: 40, Remark: "isolated fixture",
 	}
 	var created entity.PaymentMethod
-	if err := json.Unmarshal(request("admin", http.MethodPost, "/adapter-service/payment-methods", input, 200), &created); err != nil {
+	if err := json.Unmarshal(request("admin", http.MethodPost, "/api/payment-methods", input, 200), &created); err != nil {
 		t.Fatal(err)
 	}
 	if created.ID <= 3 || created.IconSVG != s02SafeIcon {
 		t.Fatalf("create did not return persisted safe icon: %+v", created)
 	}
-	path := "/adapter-service/payment-methods/" + strconv.Itoa(int(created.ID))
+	path := "/api/payment-methods/" + strconv.Itoa(int(created.ID))
 	if rows := list("user", 3); rows[len(rows)-1].IconSVG != s02SafeIcon {
 		t.Fatal("safe SVG failed actual HTTP read-after-write")
 	}
@@ -362,7 +362,7 @@ func s02PaymentIconBackendSelfchecks(t *testing.T) {
 		bad := input
 		bad.IconSVG = unsafe
 		for _, verb := range []string{http.MethodPost, http.MethodPut} {
-			target := "/adapter-service/payment-methods"
+			target := "/api/payment-methods"
 			if verb == http.MethodPut {
 				target = path
 			}
@@ -381,7 +381,7 @@ func s02PaymentIconBackendSelfchecks(t *testing.T) {
 		for _, verb := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
 			target := path
 			if verb == http.MethodPost {
-				target = "/adapter-service/payment-methods"
+				target = "/api/payment-methods"
 			}
 			request(actor, verb, target, input, want)
 		}
@@ -437,7 +437,7 @@ func s02PaymentIconBackendSelfchecks(t *testing.T) {
 			t.Fatal("disable-all changed a field other than enabled")
 		}
 	}
-	request("admin", http.MethodPost, "/adapter-service/recharge/orders", nil, http.StatusTeapot)
+	request("admin", http.MethodPost, "/api/recharge/orders", nil, http.StatusTeapot)
 	request("admin", http.MethodGet, "/__fixture__/snapshot", nil, 200)
 	request("admin", http.MethodPost, "/__fixture__/shutdown", nil, 200)
 	select {

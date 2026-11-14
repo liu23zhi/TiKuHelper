@@ -43,7 +43,7 @@ async function mountLayout({ visible = true, user = { id: 1 }, checkSession = as
     message: { warning() {}, error() {} },
     onMounted: (callback) => mounted.push(callback),
     onBeforeUnmount: (callback) => unmounted.push(callback),
-    useRouter: () => ({ currentRoute: { value: { path: '/adapter/profile' } }, push: (path) => routes.push(path) }),
+    useRouter: () => ({ currentRoute: { value: { path: '/profile' } }, push: (path) => routes.push(path) }),
     getStoredCurrentUser: () => user,
     getCurrentSessionRevision: sessionRevision,
     isAdminUser: () => true,

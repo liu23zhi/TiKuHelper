@@ -3,7 +3,7 @@ function trimText(value) {
 }
 
 export function isPublicWechatRegisterRequest(url) {
-  return typeof url === 'string' && url.includes('/adapter-service/public/wechat-register/')
+  return typeof url === 'string' && url.includes('/api/public/wechat-register/')
 }
 
 export function buildAuthFailureHandling(response) {

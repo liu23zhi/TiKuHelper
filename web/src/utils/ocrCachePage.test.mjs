@@ -46,8 +46,8 @@ async function createPage(overrides = {}) {
   const component = new Function(...Object.keys(dependencies), script)(...Object.values(dependencies))
   let page
   const fixturePage = defineComponent({ setup() { page = component.setup(); return () => null } })
-  const history = createMemoryHistory(), router = createRouter({ history, routes: [{ path: '/adapter/ocr-cache', component: fixturePage }] })
-  await router.push('/adapter/ocr-cache'); await router.isReady()
+  const history = createMemoryHistory(), router = createRouter({ history, routes: [{ path: '/ocr-cache', component: fixturePage }] })
+  await router.push('/ocr-cache'); await router.isReady()
   const app = renderer.createApp({ render: () => h(RouterView) }); app.use(router); app.mount(document.createElement('div')); fixtures.push({ app, history })
   await Promise.resolve(); await nextTick(); await Promise.resolve(); await nextTick(); bootstrapping = false
   return page

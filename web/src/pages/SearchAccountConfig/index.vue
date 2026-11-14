@@ -285,7 +285,7 @@ export default defineComponent({
       }
     }
     const goToAIConfig = () => {
-      if (canManageConfigs() && !accountDraining.value) router.push('/adapter/ai-search-config')
+      if (canManageConfigs() && !accountDraining.value) router.push('/ai-search-config')
     }
     const onSaveAll = async () => {
       if (!canManageConfigs() || accountDraining.value || !configsLoaded.value || tabLoading.value || savingAll.value) return

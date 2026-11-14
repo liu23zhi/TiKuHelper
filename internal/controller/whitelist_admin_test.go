@@ -59,12 +59,12 @@ func whitelistAdminRouter(actor *entity.User) *gin.Engine {
 			c.Set("user", actor)
 		}
 	}
-	router.GET("/adapter-service/whitelist", auth, middleware.RequireAdmin, WhitelistEntryList)
-	router.POST("/adapter-service/whitelist", auth, middleware.RequireAdmin, WhitelistEntryCreate)
-	router.PUT("/adapter-service/whitelist/:id/enabled", auth, middleware.RequireAdmin, WhitelistEntryToggle)
-	router.DELETE("/adapter-service/whitelist/:id", auth, middleware.RequireAdmin, WhitelistEntryDelete)
-	router.GET("/adapter-service/whitelist/exempt-ips", auth, middleware.RequireAdmin, WhitelistExemptIPsGet)
-	router.PUT("/adapter-service/whitelist/exempt-ips", auth, middleware.RequireAdmin, WhitelistExemptIPsPut)
+	router.GET("/api/whitelist", auth, middleware.RequireAdmin, WhitelistEntryList)
+	router.POST("/api/whitelist", auth, middleware.RequireAdmin, WhitelistEntryCreate)
+	router.PUT("/api/whitelist/:id/enabled", auth, middleware.RequireAdmin, WhitelistEntryToggle)
+	router.DELETE("/api/whitelist/:id", auth, middleware.RequireAdmin, WhitelistEntryDelete)
+	router.GET("/api/whitelist/exempt-ips", auth, middleware.RequireAdmin, WhitelistExemptIPsGet)
+	router.PUT("/api/whitelist/exempt-ips", auth, middleware.RequireAdmin, WhitelistExemptIPsPut)
 	return router
 }
 
@@ -122,12 +122,12 @@ func TestWhitelistAdminRejectsNonAdminOnEveryRoute(t *testing.T) {
 			path   string
 			body   string
 		}{
-			{http.MethodGet, "/adapter-service/whitelist", ""},
-			{http.MethodPost, "/adapter-service/whitelist", `{"kind":"ip","pattern":"203.0.113.9","reason":"x"}`},
-			{http.MethodPut, "/adapter-service/whitelist/1/enabled", `{"enabled":false}`},
-			{http.MethodDelete, "/adapter-service/whitelist/1", ""},
-			{http.MethodGet, "/adapter-service/whitelist/exempt-ips", ""},
-			{http.MethodPut, "/adapter-service/whitelist/exempt-ips", `{"value":"203.0.113.9"}`},
+			{http.MethodGet, "/api/whitelist", ""},
+			{http.MethodPost, "/api/whitelist", `{"kind":"ip","pattern":"203.0.113.9","reason":"x"}`},
+			{http.MethodPut, "/api/whitelist/1/enabled", `{"enabled":false}`},
+			{http.MethodDelete, "/api/whitelist/1", ""},
+			{http.MethodGet, "/api/whitelist/exempt-ips", ""},
+			{http.MethodPut, "/api/whitelist/exempt-ips", `{"value":"203.0.113.9"}`},
 		}
 		for _, item := range cases {
 			recorder := whitelistRequest(router, item.method, item.path, item.body)
@@ -163,7 +163,7 @@ func TestWhitelistAdminCreateTakesEffectInCacheImmediately(t *testing.T) {
 		t.Fatal("前置条件：空表不应命中")
 	}
 
-	recorder := whitelistRequest(router, http.MethodPost, "/adapter-service/whitelist",
+	recorder := whitelistRequest(router, http.MethodPost, "/api/whitelist",
 		`{"kind":"ip","pattern":"203.0.113.7","reason":"办公出口"}`)
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("create status = %d, want 201 (%s)", recorder.Code, recorder.Body.String())
@@ -190,7 +190,7 @@ func TestWhitelistAdminCreateTakesEffectInCacheImmediately(t *testing.T) {
 	}
 
 	// 列表能查到。
-	list := decodeWhitelistEntryList(t, whitelistRequest(router, http.MethodGet, "/adapter-service/whitelist", ""))
+	list := decodeWhitelistEntryList(t, whitelistRequest(router, http.MethodGet, "/api/whitelist", ""))
 	if list.Total != 1 || len(list.Data) != 1 || list.Data[0].ID != created.ID {
 		t.Fatalf("list = %+v", list)
 	}
@@ -204,7 +204,7 @@ func TestWhitelistAdminToggleAndDeleteBothAffectCache(t *testing.T) {
 	admin := whitelistSeedAdmin(t, db)
 	router := whitelistAdminRouter(&admin)
 
-	recorder := whitelistRequest(router, http.MethodPost, "/adapter-service/whitelist",
+	recorder := whitelistRequest(router, http.MethodPost, "/api/whitelist",
 		`{"kind":"ip","pattern":"203.0.113.7","reason":"办公出口"}`)
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("create status = %d (%s)", recorder.Code, recorder.Body.String())
@@ -219,7 +219,7 @@ func TestWhitelistAdminToggleAndDeleteBothAffectCache(t *testing.T) {
 
 	// 停用 → 不再放行。
 	recorder = whitelistRequest(router, http.MethodPut,
-		"/adapter-service/whitelist/"+itoa(created.ID)+"/enabled", `{"enabled":false}`)
+		"/api/whitelist/"+itoa(created.ID)+"/enabled", `{"enabled":false}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("toggle status = %d (%s)", recorder.Code, recorder.Body.String())
 	}
@@ -229,7 +229,7 @@ func TestWhitelistAdminToggleAndDeleteBothAffectCache(t *testing.T) {
 
 	// 重新启用 → 又放行。
 	recorder = whitelistRequest(router, http.MethodPut,
-		"/adapter-service/whitelist/"+itoa(created.ID)+"/enabled", `{"enabled":true}`)
+		"/api/whitelist/"+itoa(created.ID)+"/enabled", `{"enabled":true}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("toggle back status = %d (%s)", recorder.Code, recorder.Body.String())
 	}
@@ -239,12 +239,12 @@ func TestWhitelistAdminToggleAndDeleteBothAffectCache(t *testing.T) {
 
 	// 删除（?reason= 必填）→ 不再放行。
 	recorder = whitelistRequest(router, http.MethodDelete,
-		"/adapter-service/whitelist/"+itoa(created.ID), "")
+		"/api/whitelist/"+itoa(created.ID), "")
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("缺少 reason 的删除 status = %d, want 400", recorder.Code)
 	}
 	recorder = whitelistRequest(router, http.MethodDelete,
-		"/adapter-service/whitelist/"+itoa(created.ID)+"?reason=测试删除", "")
+		"/api/whitelist/"+itoa(created.ID)+"?reason=测试删除", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("delete status = %d (%s)", recorder.Code, recorder.Body.String())
 	}
@@ -293,7 +293,7 @@ func TestWhitelistAdminCreateRejectsInvalidInput(t *testing.T) {
 		{"非法过期时间", `{"kind":"ip","pattern":"203.0.113.7","reason":"x","expiresAt":"not-a-date"}`},
 	}
 	for _, tc := range cases {
-		recorder := whitelistRequest(router, http.MethodPost, "/adapter-service/whitelist", tc.body)
+		recorder := whitelistRequest(router, http.MethodPost, "/api/whitelist", tc.body)
 		if recorder.Code != http.StatusBadRequest {
 			t.Fatalf("%s: status = %d, want 400 (%s)", tc.name, recorder.Code, recorder.Body.String())
 		}
@@ -307,12 +307,12 @@ func TestWhitelistAdminCreateRejectsInvalidInput(t *testing.T) {
 	}
 	// 不存在的 id：404（不是 500）。
 	if recorder := whitelistRequest(router, http.MethodPut,
-		"/adapter-service/whitelist/999999/enabled", `{"enabled":false}`); recorder.Code != http.StatusNotFound {
+		"/api/whitelist/999999/enabled", `{"enabled":false}`); recorder.Code != http.StatusNotFound {
 		t.Fatalf("不存在的 id status = %d, want 404 (%s)", recorder.Code, recorder.Body.String())
 	}
 	// 缺 enabled 字段：400（不猜方向）。
 	if recorder := whitelistRequest(router, http.MethodPut,
-		"/adapter-service/whitelist/1/enabled", `{}`); recorder.Code != http.StatusBadRequest {
+		"/api/whitelist/1/enabled", `{}`); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("缺 enabled status = %d, want 400", recorder.Code)
 	}
 }
@@ -326,7 +326,7 @@ func TestWhitelistAdminExemptIPsGetPutAndTakeEffect(t *testing.T) {
 	router := whitelistAdminRouter(&admin)
 
 	// 初始为空。
-	recorder := whitelistRequest(router, http.MethodGet, "/adapter-service/whitelist/exempt-ips", "")
+	recorder := whitelistRequest(router, http.MethodGet, "/api/whitelist/exempt-ips", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("get status = %d (%s)", recorder.Code, recorder.Body.String())
 	}
@@ -343,7 +343,7 @@ func TestWhitelistAdminExemptIPsGetPutAndTakeEffect(t *testing.T) {
 	}
 
 	// 写入：单 IP + CIDR + 换行分隔。
-	recorder = whitelistRequest(router, http.MethodPut, "/adapter-service/whitelist/exempt-ips",
+	recorder = whitelistRequest(router, http.MethodPut, "/api/whitelist/exempt-ips",
 		`{"value":"203.0.113.7\n198.51.100.0/24"}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("put status = %d (%s)", recorder.Code, recorder.Body.String())
@@ -361,7 +361,7 @@ func TestWhitelistAdminExemptIPsGetPutAndTakeEffect(t *testing.T) {
 	}
 
 	// 读回：count / items 必须反映实际解析结果。
-	recorder = whitelistRequest(router, http.MethodGet, "/adapter-service/whitelist/exempt-ips", "")
+	recorder = whitelistRequest(router, http.MethodGet, "/api/whitelist/exempt-ips", "")
 	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -370,7 +370,7 @@ func TestWhitelistAdminExemptIPsGetPutAndTakeEffect(t *testing.T) {
 	}
 
 	// 非法项必须 400，且旧值不被覆盖。
-	recorder = whitelistRequest(router, http.MethodPut, "/adapter-service/whitelist/exempt-ips",
+	recorder = whitelistRequest(router, http.MethodPut, "/api/whitelist/exempt-ips",
 		`{"value":"203.0.113.7, not-an-ip"}`)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("非法项 status = %d, want 400 (%s)", recorder.Code, recorder.Body.String())
@@ -381,7 +381,7 @@ func TestWhitelistAdminExemptIPsGetPutAndTakeEffect(t *testing.T) {
 
 	// 缺 value 字段：400。
 	if recorder := whitelistRequest(router, http.MethodPut,
-		"/adapter-service/whitelist/exempt-ips", `{}`); recorder.Code != http.StatusBadRequest {
+		"/api/whitelist/exempt-ips", `{}`); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("缺 value status = %d, want 400", recorder.Code)
 	}
 }
@@ -394,20 +394,20 @@ func TestWhitelistAdminListKeywordDoesNotMatchPattern(t *testing.T) {
 	admin := whitelistSeedAdmin(t, db)
 	router := whitelistAdminRouter(&admin)
 
-	if recorder := whitelistRequest(router, http.MethodPost, "/adapter-service/whitelist",
+	if recorder := whitelistRequest(router, http.MethodPost, "/api/whitelist",
 		`{"kind":"ip","pattern":"203.0.113.7","reason":"办公出口"}`); recorder.Code != http.StatusCreated {
 		t.Fatalf("create status = %d (%s)", recorder.Code, recorder.Body.String())
 	}
 	// 脱敏值是 203.0.113.*，原文 .7 的前缀检索仍会命中脱敏值，所以这里用
 	// 「只存在于原文、不在脱敏值里」的片段来区分：'113.7'。
 	list := decodeWhitelistEntryList(t, whitelistRequest(router,
-		http.MethodGet, "/adapter-service/whitelist?keyword=113.7", ""))
+		http.MethodGet, "/api/whitelist?keyword=113.7", ""))
 	if list.Total != 0 {
 		t.Fatalf("关键词不得匹配 pattern 原文，got total=%d", list.Total)
 	}
 	// 原因可搜到。
 	list = decodeWhitelistEntryList(t, whitelistRequest(router,
-		http.MethodGet, "/adapter-service/whitelist?keyword=办公", ""))
+		http.MethodGet, "/api/whitelist?keyword=办公", ""))
 	if list.Total != 1 {
 		t.Fatalf("关键词应匹配 reason，got total=%d", list.Total)
 	}

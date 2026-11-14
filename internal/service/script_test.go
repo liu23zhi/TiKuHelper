@@ -316,7 +316,7 @@ func TestPublicScriptExchangeTokenIsShortLivedAndOneTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ActivationToken == "" || result.DownloadURL != "/adapter-service/script-command/a/file" {
+	if result.ActivationToken == "" || result.DownloadURL != "/api/script-command/a/file" {
 		t.Fatalf("unexpected public exchange result: %+v", result)
 	}
 	if _, err := ExchangeScriptTokenWithDB(db, item.ShortCode, grant.Token); !errors.Is(err, ErrScriptTokenInvalid) {

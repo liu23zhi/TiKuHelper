@@ -126,7 +126,7 @@ func TestBlacklistPhoneGatePassesWithoutWritingWhenSwitchOff(t *testing.T) {
 
 	recorder := NewBlacklistHitRecorder()
 	match, hit := BlacklistPhoneGateWith(cache, recorder, db, "13800001111", BlacklistGateMeta{
-		ClientIP: "203.0.113.7", Path: "/adapter-service/user/register",
+		ClientIP: "203.0.113.7", Path: "/api/user/register",
 	})
 	if hit {
 		t.Fatalf("开关关闭时必须放行，却命中 %+v", match)
@@ -158,7 +158,7 @@ func TestBlacklistPhoneGateBlocksAndRecordsBlockedHit(t *testing.T) {
 	// 输入故意用 +86 与空格：判定必须走 NormalizeMainlandPhoneInput，
 	// 否则「换个写法就绕过」。
 	match, hit := BlacklistPhoneGateWith(cache, NewBlacklistHitRecorder(), db, " +86 13800001111 ", BlacklistGateMeta{
-		ClientIP: "203.0.113.7", Path: "/adapter-service/user/register",
+		ClientIP: "203.0.113.7", Path: "/api/user/register",
 	})
 	if !hit {
 		t.Fatal("黑名单内的手机号必须命中")
@@ -182,7 +182,7 @@ func TestBlacklistPhoneGateBlocksAndRecordsBlockedHit(t *testing.T) {
 	if row.Action != BlacklistActionBlocked || row.EntryID != entry.ID || row.Kind != BlacklistKindPhone {
 		t.Fatalf("留痕行不符合预期：%+v", row)
 	}
-	if row.ClientIP != "203.0.113.7" || row.Path != "/adapter-service/user/register" {
+	if row.ClientIP != "203.0.113.7" || row.Path != "/api/user/register" {
 		t.Fatalf("留痕行缺请求上下文：ip=%q path=%q", row.ClientIP, row.Path)
 	}
 	if row.ValueMasked != "138****1111" {
@@ -227,7 +227,7 @@ func TestBlacklistPhoneGateFailsOpenAndLogsOnlyWhenSnapshotMissing(t *testing.T)
 	}
 
 	match, hit := BlacklistPhoneGateWith(cache, NewBlacklistHitRecorder(), db, "13800001111", BlacklistGateMeta{
-		ClientIP: "203.0.113.9", Path: "/adapter-service/user/login/sms",
+		ClientIP: "203.0.113.9", Path: "/api/user/login/sms",
 	})
 	if hit {
 		t.Fatalf("快照不可用时必须 fail-open 放行，却命中 %+v", match)

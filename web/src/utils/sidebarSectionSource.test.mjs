@@ -310,7 +310,7 @@ test('模板按标题决定是否渲染分区标题（缺标题即退化为扁�
   // 所以不能用 `v-for="item in section.items"` 后紧跟 `>` 的严格形式匹配。
   const itemOccurrences = (template.match(/<a-menu-item\s+v-for="item in section\.items"/g) || []).length;
   assert.equal(itemOccurrences, 2, '两个分支各渲染一次菜单项');
-  assert.match(template, /:href="'\/adapter\/' \+ item\.key"/);
+  assert.match(template, /:href="'\/' \+ item\.key"/, '菜单链接不应再带 /adapter 段');
 
   // 分区标题有样式（标题不是裸文本，且折叠态隐藏）。
   const style = source.slice(source.indexOf('<style'));
@@ -342,7 +342,7 @@ test('分区不影响权限判定与选中态：仍以 visibleMenuItems 为准',
   const clickHandler = source.slice(source.indexOf('const handleSelect'), source.indexOf('const handleLinkClick'));
   assert.match(clickHandler, /visibleMenuItems\.value\.some/);
   // 跳转必须用还原后的真实 key，不能把带分区前缀的 key 拼进 URL。
-  assert.match(clickHandler, /router\.push\('\/adapter\/' \+ realKey\)/, '跳转必须用 realKey 而非带前缀的 key');
+  assert.match(clickHandler, /router\.push\('\/' \+ realKey\)/, '跳转必须用 realKey 而非带分区前缀的 key');
 
   // 普通用户的可见项集合 = 分区渲染出来的项集合；管理员的可见项集合 = 两个分区的并集。
   const userRendered = USER_MENU_SECTIONS.flatMap((section) => keysOf(section.items));
@@ -350,4 +350,5 @@ test('分区不影响权限判定与选中态：仍以 visibleMenuItems 为准',
   // 分区严格互斥（见「不重」用例），所以直接比数组即可 —— 顺序由「组内相对顺序」用例钉住。
   const adminRendered = ADMIN_MENU_SECTIONS.flatMap((section) => keysOf(section.items));
   assert.deepEqual(sorted(adminRendered), sorted(adminKeys));
+  assert.match(clickHandler, /router\.push\('\/' \+ realKey\)/, '跳转必须用 realKey 而非带分区前缀的 key');
 });

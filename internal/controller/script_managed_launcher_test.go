@@ -10,7 +10,7 @@ import (
 
 func TestManagedScriptLauncherLimitsCredentialsAndVerifiesEXE(t *testing.T) {
 	const origin = "https://fixture.invalid"
-	const path = "/adapter-service/script-command/fixture/file"
+	const path = "/api/script-command/fixture/file"
 	ticket := "synthetic-ticket"
 	hash := strings.Repeat("a1", 32)
 	payload, err := buildManagedScriptPayload(origin, path, hash, ticket, "fixture-config")

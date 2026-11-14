@@ -34,7 +34,7 @@ func TestAccessTokenListReturnsScopedTokens(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/access-tokens", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/access-tokens", nil)
 	ctx.Set("user", &entity.User{ID: 7, Role: "user", Status: "enabled"})
 
 	AccessTokenList(ctx)
@@ -75,7 +75,7 @@ func TestAccessTokenListAllowsAdminAllScopeWithUsernames(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/access-tokens?scope=all", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/access-tokens?scope=all", nil)
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 
 	AccessTokenList(ctx)
@@ -115,7 +115,7 @@ func TestAccessTokenListIgnoresAllScopeForNonAdmin(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/access-tokens?scope=all", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/access-tokens?scope=all", nil)
 	ctx.Set("user", &entity.User{ID: 7, Role: "user", Status: "enabled"})
 
 	AccessTokenList(ctx)
@@ -152,7 +152,7 @@ func TestCreateAccessTokenReturnsPlainTokenOnce(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"name":"demo-token","remark":"hello","totalQuotaLimit":6.5,"clientIP":"spoofed"}`)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/access-tokens", bytes.NewReader(payload))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/access-tokens", bytes.NewReader(payload))
 	ctx.Request.RemoteAddr = "192.0.2.9:12345"
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("user", &entity.User{ID: 9, Role: "user", Status: "enabled"})
@@ -183,7 +183,7 @@ func TestCreateAccessTokenReturnsBadRequestForOutOfRangeQuota(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/access-tokens", bytes.NewBufferString(`{"name":"demo-token","totalQuotaLimit":1000000000000}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/access-tokens", bytes.NewBufferString(`{"name":"demo-token","totalQuotaLimit":1000000000000}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("user", &entity.User{ID: 9, Role: "user", Status: "enabled"})
 
@@ -202,7 +202,7 @@ func TestUpdateAccessTokenRejectsInvalidPayload(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/access-tokens/3", bytes.NewBufferString("not-json"))
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/api/access-tokens/3", bytes.NewBufferString("not-json"))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Params = gin.Params{{Key: "id", Value: "3"}}
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
@@ -228,7 +228,7 @@ func TestUpdateAccessTokenPassesOnlyServerClientIPToAudit(t *testing.T) {
 	}
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/access-tokens/3", bytes.NewBufferString(`{"name":"已修改","clientIP":"spoofed"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/api/access-tokens/3", bytes.NewBufferString(`{"name":"已修改","clientIP":"spoofed"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Request.RemoteAddr = "192.0.2.10:12345"
 	ctx.Params = gin.Params{{Key: "id", Value: "3"}}
@@ -264,7 +264,7 @@ func TestDeleteAccessTokenDeletesOwnedToken(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodDelete, "/adapter-service/access-tokens/13", nil)
+	ctx.Request = httptest.NewRequest(http.MethodDelete, "/api/access-tokens/13", nil)
 	ctx.Request.RemoteAddr = "192.0.2.11:12345"
 	ctx.Params = gin.Params{{Key: "id", Value: "13"}}
 	ctx.Set("user", &entity.User{ID: 5, Role: "user", Status: "enabled"})

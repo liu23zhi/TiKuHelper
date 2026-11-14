@@ -72,10 +72,10 @@ func sensitiveImageAdminRouter(actor *entity.User) *gin.Engine {
 			c.Set("user", actor)
 		}
 	}
-	router.GET("/adapter-service/sensitive-image/entries", auth, middleware.RequireAdmin, SensitiveImageEntryList)
-	router.GET("/adapter-service/sensitive-image/quota", auth, middleware.RequireAdmin, SensitiveImageQuotaStatus)
-	router.POST("/adapter-service/sensitive-image/quota", auth, middleware.RequireAdmin, SensitiveImageQuotaUpdateHandler)
-	router.POST("/adapter-service/sensitive-image/detect", auth, middleware.RequireAdmin, SensitiveImageManualDetect)
+	router.GET("/api/sensitive-image/entries", auth, middleware.RequireAdmin, SensitiveImageEntryList)
+	router.GET("/api/sensitive-image/quota", auth, middleware.RequireAdmin, SensitiveImageQuotaStatus)
+	router.POST("/api/sensitive-image/quota", auth, middleware.RequireAdmin, SensitiveImageQuotaUpdateHandler)
+	router.POST("/api/sensitive-image/detect", auth, middleware.RequireAdmin, SensitiveImageManualDetect)
 	return router
 }
 
@@ -116,10 +116,10 @@ func TestSensitiveImageAdminRejectsNonAdminOnEveryRoute(t *testing.T) {
 		path   string
 		body   string
 	}{
-		{"list", http.MethodGet, "/adapter-service/sensitive-image/entries", ""},
-		{"quota", http.MethodGet, "/adapter-service/sensitive-image/quota?userId=9201", ""},
-		{"update", http.MethodPost, "/adapter-service/sensitive-image/quota", `{"dailyUserLimit":5}`},
-		{"detect", http.MethodPost, "/adapter-service/sensitive-image/detect", `{"ticketId":1}`},
+		{"list", http.MethodGet, "/api/sensitive-image/entries", ""},
+		{"quota", http.MethodGet, "/api/sensitive-image/quota?userId=9201", ""},
+		{"update", http.MethodPost, "/api/sensitive-image/quota", `{"dailyUserLimit":5}`},
+		{"detect", http.MethodPost, "/api/sensitive-image/detect", `{"ticketId":1}`},
 	}
 	for _, actor := range []*entity.User{nil, &user} {
 		router := sensitiveImageAdminRouter(actor)
@@ -134,7 +134,7 @@ func TestSensitiveImageAdminRejectsNonAdminOnEveryRoute(t *testing.T) {
 	// 没有任何写发生：额度配置仍是缺省值，缓存与额度表都是空的。
 	admin := sensitiveImageSeedActor(t, db, 9202, "admin")
 	recorder := sensitiveImageRequest(sensitiveImageAdminRouter(&admin), http.MethodGet,
-		"/adapter-service/sensitive-image/quota", "")
+		"/api/sensitive-image/quota", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", recorder.Code, recorder.Body.String())
 	}
@@ -182,7 +182,7 @@ func TestSensitiveImageAdminEntryListFiltersAndPaginates(t *testing.T) {
 	router := sensitiveImageAdminRouter(&admin)
 
 	// 全量：3 条，按 updated_at DESC 排序（最新的 pending 在最前）。
-	recorder := sensitiveImageRequest(router, http.MethodGet, "/adapter-service/sensitive-image/entries", "")
+	recorder := sensitiveImageRequest(router, http.MethodGet, "/api/sensitive-image/entries", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", recorder.Code, recorder.Body.String())
 	}
@@ -206,7 +206,7 @@ func TestSensitiveImageAdminEntryListFiltersAndPaginates(t *testing.T) {
 	}
 
 	// status 筛选（「两个 Tab」在服务端就是一个 status 参数）。
-	recorder = sensitiveImageRequest(router, http.MethodGet, "/adapter-service/sensitive-image/entries?status=sensitive", "")
+	recorder = sensitiveImageRequest(router, http.MethodGet, "/api/sensitive-image/entries?status=sensitive", "")
 	if err := json.Unmarshal(recorder.Body.Bytes(), &list); err != nil {
 		t.Fatalf("decode filtered list: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestSensitiveImageAdminEntryListFiltersAndPaginates(t *testing.T) {
 	}
 
 	// 分页：pageSize=2 取第一页，total 仍是 3。
-	recorder = sensitiveImageRequest(router, http.MethodGet, "/adapter-service/sensitive-image/entries?page=1&pageSize=2", "")
+	recorder = sensitiveImageRequest(router, http.MethodGet, "/api/sensitive-image/entries?page=1&pageSize=2", "")
 	if err := json.Unmarshal(recorder.Body.Bytes(), &list); err != nil {
 		t.Fatalf("decode paged list: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestSensitiveImageAdminEntryListFiltersAndPaginates(t *testing.T) {
 	// 非法 SHA256：400（长度不对 / 非十六进制都不接受）。
 	for _, bad := range []string{"abc", strings.Repeat("z", 64)} {
 		recorder = sensitiveImageRequest(router, http.MethodGet,
-			"/adapter-service/sensitive-image/entries?imageSha256="+bad, "")
+			"/api/sensitive-image/entries?imageSha256="+bad, "")
 		if recorder.Code != http.StatusBadRequest {
 			t.Fatalf("expected 400 for %q, got %d", bad, recorder.Code)
 		}
@@ -234,7 +234,7 @@ func TestSensitiveImageAdminEntryListFiltersAndPaginates(t *testing.T) {
 
 	// 按 SHA256 精确查。
 	recorder = sensitiveImageRequest(router, http.MethodGet,
-		"/adapter-service/sensitive-image/entries?imageSha256="+strings.Repeat("3", 64), "")
+		"/api/sensitive-image/entries?imageSha256="+strings.Repeat("3", 64), "")
 	if err := json.Unmarshal(recorder.Body.Bytes(), &list); err != nil {
 		t.Fatalf("decode sha list: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestSensitiveImageAdminQuotaStatusReportsUsage(t *testing.T) {
 	router := sensitiveImageAdminRouter(&admin)
 
 	recorder := sensitiveImageRequest(router, http.MethodGet,
-		"/adapter-service/sensitive-image/quota?userId=9301&date=2026-11-13", "")
+		"/api/sensitive-image/quota?userId=9301&date=2026-11-13", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", recorder.Code, recorder.Body.String())
 	}
@@ -283,7 +283,7 @@ func TestSensitiveImageAdminQuotaStatusReportsUsage(t *testing.T) {
 	}
 
 	// 不传 userId：只回配置，不带用户相关字段。
-	recorder = sensitiveImageRequest(router, http.MethodGet, "/adapter-service/sensitive-image/quota", "")
+	recorder = sensitiveImageRequest(router, http.MethodGet, "/api/sensitive-image/quota", "")
 	var raw map[string]any
 	if err := json.Unmarshal(recorder.Body.Bytes(), &raw); err != nil {
 		t.Fatalf("decode raw: %v", err)
@@ -301,7 +301,7 @@ func TestSensitiveImageAdminQuotaUpdateAppliesAndRejectsInvalid(t *testing.T) {
 	admin := sensitiveImageSeedActor(t, db, 9205, "admin")
 	router := sensitiveImageAdminRouter(&admin)
 
-	recorder := sensitiveImageRequest(router, http.MethodPost, "/adapter-service/sensitive-image/quota",
+	recorder := sensitiveImageRequest(router, http.MethodPost, "/api/sensitive-image/quota",
 		`{"enabled":false,"perTicketLimit":8,"dailyUserLimit":4}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", recorder.Code, recorder.Body.String())
@@ -312,7 +312,7 @@ func TestSensitiveImageAdminQuotaUpdateAppliesAndRejectsInvalid(t *testing.T) {
 	}
 
 	// 非法值：400，且不改动已有配置。
-	recorder = sensitiveImageRequest(router, http.MethodPost, "/adapter-service/sensitive-image/quota",
+	recorder = sensitiveImageRequest(router, http.MethodPost, "/api/sensitive-image/quota",
 		`{"perTicketLimit":0}`)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for a zero limit, got %d (%s)", recorder.Code, recorder.Body.String())
@@ -323,7 +323,7 @@ func TestSensitiveImageAdminQuotaUpdateAppliesAndRejectsInvalid(t *testing.T) {
 	}
 
 	// 指针语义：只传 enabled 时另外两个键保持不变。
-	recorder = sensitiveImageRequest(router, http.MethodPost, "/adapter-service/sensitive-image/quota",
+	recorder = sensitiveImageRequest(router, http.MethodPost, "/api/sensitive-image/quota",
 		`{"enabled":true}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", recorder.Code)
@@ -343,30 +343,30 @@ func TestSensitiveImageAdminManualDetectValidatesInput(t *testing.T) {
 	router := sensitiveImageAdminRouter(&admin)
 
 	// 两个寻址方式都不给：400。
-	recorder := sensitiveImageRequest(router, http.MethodPost, "/adapter-service/sensitive-image/detect", `{}`)
+	recorder := sensitiveImageRequest(router, http.MethodPost, "/api/sensitive-image/detect", `{}`)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 when neither imageSha256 nor ticketId is given, got %d", recorder.Code)
 	}
 	// SHA256 格式非法：400。
-	recorder = sensitiveImageRequest(router, http.MethodPost, "/adapter-service/sensitive-image/detect",
+	recorder = sensitiveImageRequest(router, http.MethodPost, "/api/sensitive-image/detect",
 		`{"imageSha256":"not-a-hash"}`)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for an invalid sha256, got %d", recorder.Code)
 	}
 	// 合法 SHA256 但库里没有对应附件（缓存表不存字节）：404，**不能**假装重检成功。
-	recorder = sensitiveImageRequest(router, http.MethodPost, "/adapter-service/sensitive-image/detect",
+	recorder = sensitiveImageRequest(router, http.MethodPost, "/api/sensitive-image/detect",
 		`{"imageSha256":"`+strings.Repeat("a", 64)+`"}`)
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 when the bytes are unavailable, got %d (%s)", recorder.Code, recorder.Body.String())
 	}
 	// 工单编号非法：400。
-	recorder = sensitiveImageRequest(router, http.MethodPost, "/adapter-service/sensitive-image/detect",
+	recorder = sensitiveImageRequest(router, http.MethodPost, "/api/sensitive-image/detect",
 		`{"ticketId":0}`)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for ticketId=0, got %d", recorder.Code)
 	}
 	// 工单不存在（无附件）：200 + 全零统计（不是错误，只是没什么可查）。
-	recorder = sensitiveImageRequest(router, http.MethodPost, "/adapter-service/sensitive-image/detect",
+	recorder = sensitiveImageRequest(router, http.MethodPost, "/api/sensitive-image/detect",
 		`{"ticketId":12345}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200 for an empty ticket, got %d (%s)", recorder.Code, recorder.Body.String())

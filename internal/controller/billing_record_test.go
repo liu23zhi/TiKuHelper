@@ -42,7 +42,7 @@ func TestBillingRecordListReturnsScopedRecords(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/billing-records?page=2&pageSize=5", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/billing-records?page=2&pageSize=5", nil)
 	ctx.Set("user", &entity.User{ID: 7, Role: "user", Status: "enabled"})
 
 	BillingRecordList(ctx)
@@ -83,7 +83,7 @@ func TestBillingRecordListNormalizesInvalidPagination(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/billing-records?page=0&pageSize=1000", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/billing-records?page=0&pageSize=1000", nil)
 	ctx.Set("user", &entity.User{ID: 8, Role: "user", Status: "enabled"})
 
 	BillingRecordList(ctx)
@@ -98,7 +98,7 @@ func TestBillingRecordListRejectsReversedCreatedTimeRange(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Set("user", &entity.User{ID: 8, Role: "admin", Status: "enabled"})
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/billing-records?createdFrom=2026-06-21&createdTo=2026-06-20", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/billing-records?createdFrom=2026-06-21&createdTo=2026-06-20", nil)
 	BillingRecordList(ctx)
 	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "创建时间范围无效") {
 		t.Fatalf("reversed billing range must return explicit 400, status=%d body=%s", recorder.Code, recorder.Body.String())
@@ -135,7 +135,7 @@ func TestBillingRecordListForcesOwnScopeForUsagePage(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/billing-records?page=1&pageSize=10&scope=self", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/billing-records?page=1&pageSize=10&scope=self", nil)
 	ctx.Set("user", &entity.User{ID: 7, Role: "admin", Status: "enabled"})
 
 	BillingRecordList(ctx)
@@ -192,7 +192,7 @@ func TestBillingRecordListRedactsAdminSelfScopeAndPreservesAdminDetails(t *testi
 		t.Run(scope, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/billing-records?scope="+scope, nil)
+			ctx.Request = httptest.NewRequest(http.MethodGet, "/api/billing-records?scope="+scope, nil)
 			ctx.Set("user", &admin)
 			BillingRecordList(ctx)
 			if recorder.Code != http.StatusOK {
@@ -248,7 +248,7 @@ func TestBillingRecordListReturnsServerErrorOnFailure(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/billing-records", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/billing-records", nil)
 	ctx.Set("user", &entity.User{ID: 9, Role: "user", Status: "enabled"})
 
 	BillingRecordList(ctx)

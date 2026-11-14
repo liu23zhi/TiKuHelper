@@ -76,13 +76,13 @@ func asyncTaskRouter(actor *entity.User) *gin.Engine {
 			c.Set("user", actor)
 		}
 	}
-	router.POST("/adapter-service/export/tasks", auth, middleware.RequireAdmin, ExportTaskCreate)
-	router.POST("/adapter-service/import/tasks", auth, middleware.RequireAdmin, ImportTaskCreate)
-	router.GET("/adapter-service/export/tasks", auth, middleware.RequireAdmin, ExportTaskList)
-	router.GET("/adapter-service/export/tasks/:taskId", auth, middleware.RequireAdmin, ExportTaskDetail)
-	router.GET("/adapter-service/export/tasks/:taskId/download", auth, middleware.RequireAdmin, ExportTaskDownload)
-	router.GET("/adapter-service/export/tasks/:taskId/errors", auth, middleware.RequireAdmin, ExportTaskErrorReport)
-	router.GET("/adapter-service/import/template", auth, middleware.RequireAdmin, ImportTemplate)
+	router.POST("/api/export/tasks", auth, middleware.RequireAdmin, ExportTaskCreate)
+	router.POST("/api/import/tasks", auth, middleware.RequireAdmin, ImportTaskCreate)
+	router.GET("/api/export/tasks", auth, middleware.RequireAdmin, ExportTaskList)
+	router.GET("/api/export/tasks/:taskId", auth, middleware.RequireAdmin, ExportTaskDetail)
+	router.GET("/api/export/tasks/:taskId/download", auth, middleware.RequireAdmin, ExportTaskDownload)
+	router.GET("/api/export/tasks/:taskId/errors", auth, middleware.RequireAdmin, ExportTaskErrorReport)
+	router.GET("/api/import/template", auth, middleware.RequireAdmin, ImportTemplate)
 	return router
 }
 
@@ -92,13 +92,13 @@ func asyncTaskRouter(actor *entity.User) *gin.Engine {
 // 这里是真的 JWT 校验（测「无凭据 → 401 请重新登录」）。两层各测各的责任。
 func asyncTaskRouterWithAuth(_ *entity.User, _ bool) *gin.Engine {
 	router := gin.New()
-	router.POST("/adapter-service/export/tasks", Auth, middleware.RequireAdmin, ExportTaskCreate)
-	router.POST("/adapter-service/import/tasks", Auth, middleware.RequireAdmin, ImportTaskCreate)
-	router.GET("/adapter-service/export/tasks", Auth, middleware.RequireAdmin, ExportTaskList)
-	router.GET("/adapter-service/export/tasks/:taskId", Auth, middleware.RequireAdmin, ExportTaskDetail)
-	router.GET("/adapter-service/export/tasks/:taskId/download", Auth, middleware.RequireAdmin, ExportTaskDownload)
-	router.GET("/adapter-service/export/tasks/:taskId/errors", Auth, middleware.RequireAdmin, ExportTaskErrorReport)
-	router.GET("/adapter-service/import/template", Auth, middleware.RequireAdmin, ImportTemplate)
+	router.POST("/api/export/tasks", Auth, middleware.RequireAdmin, ExportTaskCreate)
+	router.POST("/api/import/tasks", Auth, middleware.RequireAdmin, ImportTaskCreate)
+	router.GET("/api/export/tasks", Auth, middleware.RequireAdmin, ExportTaskList)
+	router.GET("/api/export/tasks/:taskId", Auth, middleware.RequireAdmin, ExportTaskDetail)
+	router.GET("/api/export/tasks/:taskId/download", Auth, middleware.RequireAdmin, ExportTaskDownload)
+	router.GET("/api/export/tasks/:taskId/errors", Auth, middleware.RequireAdmin, ExportTaskErrorReport)
+	router.GET("/api/import/template", Auth, middleware.RequireAdmin, ImportTemplate)
 	return router
 }
 
@@ -149,13 +149,13 @@ func TestAsyncTaskRoutesRejectNonAdmin(t *testing.T) {
 		path   string
 		body   string
 	}{
-		{"POST", "/adapter-service/export/tasks", `{"resource":"users"}`},
-		{"POST", "/adapter-service/import/tasks", `{"resource":"blacklist"}`},
-		{"GET", "/adapter-service/export/tasks", ""},
-		{"GET", "/adapter-service/export/tasks/exp-0123456789abcdef", ""},
-		{"GET", "/adapter-service/export/tasks/exp-0123456789abcdef/download", ""},
-		{"GET", "/adapter-service/export/tasks/exp-0123456789abcdef/errors", ""},
-		{"GET", "/adapter-service/import/template?resource=users", ""},
+		{"POST", "/api/export/tasks", `{"resource":"users"}`},
+		{"POST", "/api/import/tasks", `{"resource":"blacklist"}`},
+		{"GET", "/api/export/tasks", ""},
+		{"GET", "/api/export/tasks/exp-0123456789abcdef", ""},
+		{"GET", "/api/export/tasks/exp-0123456789abcdef/download", ""},
+		{"GET", "/api/export/tasks/exp-0123456789abcdef/errors", ""},
+		{"GET", "/api/import/template?resource=users", ""},
 	}
 
 	// ── 第一层：未登录 → 401（真实 Auth 中间件，无 Authorization 头、无 cookie）
@@ -236,13 +236,13 @@ func TestAsyncTaskHandlersAlsoCheckAdminWithoutMiddleware(t *testing.T) {
 				c.Set("user", actor)
 			}
 		}
-		router.POST("/adapter-service/export/tasks", auth, ExportTaskCreate)
-		router.POST("/adapter-service/import/tasks", auth, ImportTaskCreate)
-		router.GET("/adapter-service/export/tasks", auth, ExportTaskList)
-		router.GET("/adapter-service/export/tasks/:taskId", auth, ExportTaskDetail)
-		router.GET("/adapter-service/export/tasks/:taskId/download", auth, ExportTaskDownload)
-		router.GET("/adapter-service/export/tasks/:taskId/errors", auth, ExportTaskErrorReport)
-		router.GET("/adapter-service/import/template", auth, ImportTemplate)
+		router.POST("/api/export/tasks", auth, ExportTaskCreate)
+		router.POST("/api/import/tasks", auth, ImportTaskCreate)
+		router.GET("/api/export/tasks", auth, ExportTaskList)
+		router.GET("/api/export/tasks/:taskId", auth, ExportTaskDetail)
+		router.GET("/api/export/tasks/:taskId/download", auth, ExportTaskDownload)
+		router.GET("/api/export/tasks/:taskId/errors", auth, ExportTaskErrorReport)
+		router.GET("/api/import/template", auth, ImportTemplate)
 		return router
 	}
 
@@ -251,13 +251,13 @@ func TestAsyncTaskHandlersAlsoCheckAdminWithoutMiddleware(t *testing.T) {
 		path   string
 		body   string
 	}{
-		{"POST", "/adapter-service/export/tasks", `{"resource":"users"}`},
-		{"POST", "/adapter-service/import/tasks", `{"resource":"blacklist"}`},
-		{"GET", "/adapter-service/export/tasks", ""},
-		{"GET", "/adapter-service/export/tasks/exp-0123456789abcdef", ""},
-		{"GET", "/adapter-service/export/tasks/exp-0123456789abcdef/download", ""},
-		{"GET", "/adapter-service/export/tasks/exp-0123456789abcdef/errors", ""},
-		{"GET", "/adapter-service/import/template?resource=users", ""},
+		{"POST", "/api/export/tasks", `{"resource":"users"}`},
+		{"POST", "/api/import/tasks", `{"resource":"blacklist"}`},
+		{"GET", "/api/export/tasks", ""},
+		{"GET", "/api/export/tasks/exp-0123456789abcdef", ""},
+		{"GET", "/api/export/tasks/exp-0123456789abcdef/download", ""},
+		{"GET", "/api/export/tasks/exp-0123456789abcdef/errors", ""},
+		{"GET", "/api/import/template?resource=users", ""},
 	}
 	router := bareRouter(normalUser)
 	for _, testCase := range cases {
@@ -270,7 +270,7 @@ func TestAsyncTaskHandlersAlsoCheckAdminWithoutMiddleware(t *testing.T) {
 	// 对照组：同样不挂 RequireAdmin，但身份是管理员 → 必须放行（不能变成「一律 403」）。
 	// 没有这一条，「所有请求都 403」的坏实现也能过上面的断言。
 	adminRouter := bareRouter(admin)
-	recorder := asyncTaskRequest(adminRouter, "GET", "/adapter-service/import/template?resource=users", "")
+	recorder := asyncTaskRequest(adminRouter, "GET", "/api/import/template?resource=users", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("admin without middleware status = %d, want 200 (handler must not reject admins)",
 			recorder.Code)
@@ -286,7 +286,7 @@ func TestAsyncTaskExportCreateDefaultsToMasked(t *testing.T) {
 	admin := asyncTaskSeedUser(t, db, 9202, "SYNTHETIC_EXPORT_ADMIN", "admin")
 	router := asyncTaskRouter(admin)
 
-	recorder := asyncTaskRequest(router, "POST", "/adapter-service/export/tasks", `{"resource":"users"}`)
+	recorder := asyncTaskRequest(router, "POST", "/api/export/tasks", `{"resource":"users"}`)
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202 (body=%s)", recorder.Code, recorder.Body.String())
 	}
@@ -308,7 +308,7 @@ func TestAsyncTaskExportCreateDefaultsToMasked(t *testing.T) {
 		t.Fatal("persisted task must be masked by default")
 	}
 	// 显式取消脱敏：必须落 masked=false（GORM 零值陷阱的回归钉子）。
-	recorder = asyncTaskRequest(router, "POST", "/adapter-service/export/tasks",
+	recorder = asyncTaskRequest(router, "POST", "/api/export/tasks",
 		`{"resource":"users","masked":false}`)
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("unmasked status = %d, want 202 (body=%s)", recorder.Code, recorder.Body.String())
@@ -343,7 +343,7 @@ func TestAsyncTaskExportCreateRejectsNonCSV(t *testing.T) {
 	router := asyncTaskRouter(admin)
 
 	for _, format := range []string{"json", "xlsx"} {
-		recorder := asyncTaskRequest(router, "POST", "/adapter-service/export/tasks",
+		recorder := asyncTaskRequest(router, "POST", "/api/export/tasks",
 			`{"resource":"users","format":"`+format+`"}`)
 		if recorder.Code != http.StatusBadRequest {
 			t.Fatalf("format=%s status = %d, want 400 (body=%s)", format, recorder.Code, recorder.Body.String())
@@ -353,7 +353,7 @@ func TestAsyncTaskExportCreateRejectsNonCSV(t *testing.T) {
 		}
 	}
 	// 不支持的资源同样 400（不是等到任务跑完才报）。
-	recorder := asyncTaskRequest(router, "POST", "/adapter-service/export/tasks", `{"resource":"unknown"}`)
+	recorder := asyncTaskRequest(router, "POST", "/api/export/tasks", `{"resource":"unknown"}`)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("unknown resource status = %d, want 400 (body=%s)", recorder.Code, recorder.Body.String())
 	}
@@ -381,7 +381,7 @@ func TestAsyncTaskExportDownloadExpiredReturnsGone(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 	router := asyncTaskRouter(admin)
-	recorder := asyncTaskRequest(router, "GET", "/adapter-service/export/tasks/"+task.TaskID+"/download", "")
+	recorder := asyncTaskRequest(router, "GET", "/api/export/tasks/"+task.TaskID+"/download", "")
 	if recorder.Code != http.StatusGone {
 		t.Fatalf("expired download status = %d, want 410 (body=%s)", recorder.Code, recorder.Body.String())
 	}
@@ -390,7 +390,7 @@ func TestAsyncTaskExportDownloadExpiredReturnsGone(t *testing.T) {
 	}
 
 	// 任务不存在 → 404（与 410 区分开：一个是「没有」，一个是「过期」）。
-	recorder = asyncTaskRequest(router, "GET", "/adapter-service/export/tasks/exp-doesnotexist0000/download", "")
+	recorder = asyncTaskRequest(router, "GET", "/api/export/tasks/exp-doesnotexist0000/download", "")
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("missing task status = %d, want 404 (body=%s)", recorder.Code, recorder.Body.String())
 	}
@@ -407,7 +407,7 @@ func TestAsyncTaskExportCreateWithoutManagerReturns503(t *testing.T) {
 	admin := asyncTaskSeedUser(t, db, 9205, "SYNTHETIC_NOMGR_ADMIN", "admin")
 	router := asyncTaskRouter(admin)
 
-	recorder := asyncTaskRequest(router, "POST", "/adapter-service/export/tasks", `{"resource":"users"}`)
+	recorder := asyncTaskRequest(router, "POST", "/api/export/tasks", `{"resource":"users"}`)
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503 (body=%s)", recorder.Code, recorder.Body.String())
 	}
@@ -422,7 +422,7 @@ func TestImportDataTemplateReturnsCSVHeader(t *testing.T) {
 	admin := asyncTaskSeedUser(t, db, 9206, "SYNTHETIC_TPL_ADMIN", "admin")
 	router := asyncTaskRouter(admin)
 
-	recorder := asyncTaskRequest(router, "GET", "/adapter-service/import/template?resource=blacklist", "")
+	recorder := asyncTaskRequest(router, "GET", "/api/import/template?resource=blacklist", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body=%s)", recorder.Code, recorder.Body.String())
 	}
@@ -434,7 +434,7 @@ func TestImportDataTemplateReturnsCSVHeader(t *testing.T) {
 		t.Fatalf("template must contain the value column: %q", body)
 	}
 	// 不支持的资源 → 400。
-	recorder = asyncTaskRequest(router, "GET", "/adapter-service/import/template?resource=billing", "")
+	recorder = asyncTaskRequest(router, "GET", "/api/import/template?resource=billing", "")
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("unsupported resource status = %d, want 400", recorder.Code)
 	}
@@ -449,7 +449,7 @@ func TestImportDataCreateWeakPasswordReturnsConflict(t *testing.T) {
 	admin := asyncTaskSeedUser(t, db, 9207, "SYNTHETIC_IMP_ADMIN", "admin")
 	router := asyncTaskRouter(admin)
 
-	recorder := asyncTaskMultipartRequest(t, router, "/adapter-service/import/tasks",
+	recorder := asyncTaskMultipartRequest(t, router, "/api/import/tasks",
 		map[string]string{"resource": "users", "dryRun": "false"}, "users.csv",
 		[]byte("username,password\nweak,12345678\n"))
 	if recorder.Code != http.StatusConflict {
@@ -487,7 +487,7 @@ func TestImportDataCreateRejectsUnrecognizedFormat(t *testing.T) {
 	admin := asyncTaskSeedUser(t, db, 9208, "SYNTHETIC_FMT_ADMIN", "admin")
 	router := asyncTaskRouter(admin)
 
-	recorder := asyncTaskMultipartRequest(t, router, "/adapter-service/import/tasks",
+	recorder := asyncTaskMultipartRequest(t, router, "/api/import/tasks",
 		map[string]string{"resource": "blacklist"}, "mystery",
 		[]byte("\x00\x01\x02\x03\x04\x05\x06\x07\x08"))
 	if recorder.Code != http.StatusBadRequest {

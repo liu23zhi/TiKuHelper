@@ -57,7 +57,7 @@ func TestSearchReturnsWarningWhenAIModelIsNotPriced(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=ai&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=ai&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
 
@@ -152,7 +152,7 @@ func TestSearchOmitsWarningWhenAIModelIsPriced(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=ai&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=ai&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
 
@@ -222,7 +222,7 @@ func TestSearchOmitsUnpricedWarningOnResultCacheHit(t *testing.T) {
 			// 第一次：真实执行，带未定价提示。
 			first := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(first)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef", bytes.NewReader(body))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=icodef", bytes.NewReader(body))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("Authorization", "Basic "+token.TokenValue)
 			ctx.Request = request
@@ -241,7 +241,7 @@ func TestSearchOmitsUnpricedWarningOnResultCacheHit(t *testing.T) {
 			// 第二次：命中缓存，不调用 AI，也不应提示。
 			second := httptest.NewRecorder()
 			ctx2, _ := gin.CreateTestContext(second)
-			request2 := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef", bytes.NewReader(body))
+			request2 := httptest.NewRequest(http.MethodPost, "/api/search?use=icodef", bytes.NewReader(body))
 			request2.Header.Set("Content-Type", "application/json")
 			request2.Header.Set("Authorization", "Basic "+token.TokenValue)
 			ctx2.Request = request2
@@ -287,10 +287,10 @@ func TestAIFallbackReturnsWarningWhenModelIsNotPriced(t *testing.T) {
 	}
 
 	router := gin.New()
-	router.POST("/adapter-service/ai-fallback", AuthOrAccessToken, AIFallback)
+	router.POST("/api/ai-fallback", AuthOrAccessToken, AIFallback)
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/ai-fallback", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+token.TokenValue)
 	router.ServeHTTP(recorder, request)

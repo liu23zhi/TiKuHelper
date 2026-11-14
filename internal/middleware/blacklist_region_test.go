@@ -100,7 +100,7 @@ func TestBlacklistMiddlewareRegionHitBlocksRequest(t *testing.T) {
 	recorder := service.NewBlacklistHitRecorder()
 	router := newBlacklistTestRouter(BlacklistIPWith(cache, recorder, db))
 
-	response := doBlacklistRequest(router, http.MethodPost, "/adapter-service/search", "203.0.113.7:1234")
+	response := doBlacklistRequest(router, http.MethodPost, "/api/search", "203.0.113.7:1234")
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", response.Code)
 	}
@@ -129,7 +129,7 @@ func TestBlacklistMiddlewareRegionHitBlocksRequest(t *testing.T) {
 	if hit.EntryID != rule.ID {
 		t.Fatalf("entry id = %d, want %d (the region rule)", hit.EntryID, rule.ID)
 	}
-	if hit.ClientIP != "203.0.113.7" || hit.Path != "/adapter-service/search" {
+	if hit.ClientIP != "203.0.113.7" || hit.Path != "/api/search" {
 		t.Fatalf("hit row lost context: %+v", hit)
 	}
 	if hit.ValueMasked == "" {
@@ -156,7 +156,7 @@ func TestBlacklistMiddlewareRegionSwitchOffIssuesZeroLookups(t *testing.T) {
 		cache, service.NewBlacklistHitRecorder(), db, countingRegionLooker(db, &lookups)))
 
 	for i := 0; i < 10; i++ {
-		if response := doBlacklistRequest(router, http.MethodPost, "/adapter-service/search", "203.0.113.7:1234"); response.Code != http.StatusOK {
+		if response := doBlacklistRequest(router, http.MethodPost, "/api/search", "203.0.113.7:1234"); response.Code != http.StatusOK {
 			t.Fatalf("request #%d status = %d, want 200 with the switch off", i, response.Code)
 		}
 	}
@@ -182,7 +182,7 @@ func TestBlacklistMiddlewareRegionWithoutRulesIssuesZeroLookups(t *testing.T) {
 		cache, service.NewBlacklistHitRecorder(), db, countingRegionLooker(db, &lookups)))
 
 	// 这条 IP 不在 IP 规则里、但**有**归属地缓存；没有地区规则 → 不该去读。
-	if response := doBlacklistRequest(router, http.MethodPost, "/adapter-service/search", "198.51.100.9:1234"); response.Code != http.StatusOK {
+	if response := doBlacklistRequest(router, http.MethodPost, "/api/search", "198.51.100.9:1234"); response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", response.Code)
 	}
 	if got := lookups.Load(); got != 0 {
@@ -203,7 +203,7 @@ func TestBlacklistMiddlewareIPHitShortCircuitsRegionLookup(t *testing.T) {
 	router := newBlacklistTestRouter(BlacklistIPWithRegionLooker(
 		cache, service.NewBlacklistHitRecorder(), db, countingRegionLooker(db, &lookups)))
 
-	if response := doBlacklistRequest(router, http.MethodPost, "/adapter-service/search", "203.0.113.7:1234"); response.Code != http.StatusForbidden {
+	if response := doBlacklistRequest(router, http.MethodPost, "/api/search", "203.0.113.7:1234"); response.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", response.Code)
 	}
 	if got := lookups.Load(); got != 0 {
@@ -230,7 +230,7 @@ func TestBlacklistMiddlewareRegionFailOpenWhenSnapshotMissing(t *testing.T) {
 	router := newBlacklistTestRouter(BlacklistIPWithRegionLooker(
 		cache, service.NewBlacklistHitRecorder(), db, countingRegionLooker(db, &lookups)))
 
-	if response := doBlacklistRequest(router, http.MethodPost, "/adapter-service/search", "203.0.113.7:1234"); response.Code != http.StatusOK {
+	if response := doBlacklistRequest(router, http.MethodPost, "/api/search", "203.0.113.7:1234"); response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (fail-open must let the request through)", response.Code)
 	}
 	if !strings.Contains(logBuf.String(), "fail-open") {
@@ -250,13 +250,13 @@ func TestBlacklistMiddlewareRegionFailOpenWhenSnapshotMissing(t *testing.T) {
 	if hits[0].Action != service.BlacklistActionLoggedOnly || hits[0].EntryID != 0 {
 		t.Fatalf("fail-open row = %+v, want logged_only with entry id 0", hits[0])
 	}
-	if hits[0].Path != "/adapter-service/search" || hits[0].ClientIP != "203.0.113.7" {
+	if hits[0].Path != "/api/search" || hits[0].ClientIP != "203.0.113.7" {
 		t.Fatalf("fail-open row lost context: %+v", hits[0])
 	}
 }
 
 // 管理员入口豁免优先于地区判定：即使该 IP 在云南、规则也拉黑了云南，
-// /adapter-service/admin-login 仍必须可达（否则管理员自锁，46-*.md §3.3）。
+// /api/admin-login 仍必须可达（否则管理员自锁，46-*.md §3.3）。
 func TestBlacklistMiddlewareRegionExemptsAdminLoginPath(t *testing.T) {
 	db := newBlacklistRegionTestDB(t)
 	setBlacklistSwitch(t, db, true)
@@ -268,7 +268,7 @@ func TestBlacklistMiddlewareRegionExemptsAdminLoginPath(t *testing.T) {
 	router := newBlacklistTestRouter(BlacklistIPWithRegionLooker(
 		cache, service.NewBlacklistHitRecorder(), db, countingRegionLooker(db, &lookups)))
 
-	for _, path := range []string{"/adapter-service/admin-login", "/adapter-service/admin/blacklist/entries", "/admin-login"} {
+	for _, path := range []string{"/api/admin-login", "/api/admin/blacklist/entries", "/admin-login"} {
 		if response := doBlacklistRequest(router, http.MethodPost, path, "203.0.113.7:1234"); response.Code != http.StatusOK {
 			t.Fatalf("path %q status = %d, want 200 (admin paths must be exempt from the region rule)", path, response.Code)
 		}
@@ -277,7 +277,7 @@ func TestBlacklistMiddlewareRegionExemptsAdminLoginPath(t *testing.T) {
 		t.Fatalf("exempt paths must not read locations, got %d lookups", got)
 	}
 	// 非豁免路径仍被拦 —— 否则上一条断言只是「什么都没生效」。
-	if response := doBlacklistRequest(router, http.MethodPost, "/adapter-service/search", "203.0.113.7:1234"); response.Code != http.StatusForbidden {
+	if response := doBlacklistRequest(router, http.MethodPost, "/api/search", "203.0.113.7:1234"); response.Code != http.StatusForbidden {
 		t.Fatalf("non-exempt path status = %d, want 403", response.Code)
 	}
 }

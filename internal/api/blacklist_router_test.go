@@ -17,7 +17,7 @@ import (
 // 黑名单管理页（BL-5）的路由注册与「被拉黑也能进」这条红线。
 //
 // 两件事必须同时成立，缺一条这个功能就不可用：
-//  1. 五条路由真的注册在 /adapter-service/blacklist 族上；
+//  1. 五条路由真的注册在 /api/blacklist 族上；
 //  2. 它们**不经过 middleware.BlacklistIP()** —— 否则管理员误把自己所在 CIDR
 //     拉黑后再也进不来（46-*.md §3.3 自锁）。
 
@@ -28,11 +28,11 @@ func TestSetAPIRouterRegistersBlacklistAdminRoutes(t *testing.T) {
 	SetAPIRouter(router)
 
 	want := map[string]bool{
-		"GET /adapter-service/blacklist":             false,
-		"POST /adapter-service/blacklist":            false,
-		"PUT /adapter-service/blacklist/:id/enabled": false,
-		"DELETE /adapter-service/blacklist/:id":      false,
-		"GET /adapter-service/blacklist/hits":        false,
+		"GET /api/blacklist":             false,
+		"POST /api/blacklist":            false,
+		"PUT /api/blacklist/:id/enabled": false,
+		"DELETE /api/blacklist/:id":      false,
+		"GET /api/blacklist/hits":        false,
 	}
 	for _, route := range router.Routes() {
 		key := route.Method + " " + route.Path
@@ -104,12 +104,12 @@ func TestBlacklistAdminRoutesBypassIPBlacklist(t *testing.T) {
 
 	router := gin.New()
 	// 与生产同构：业务接口挂在带 BlacklistIP 的分组上。
-	apiGroup := router.Group("/adapter-service")
+	apiGroup := router.Group("/api")
 	apiGroup.Use(blocked)
 	apiGroup.GET("/search", func(c *gin.Context) { c.Status(http.StatusOK) })
 
 	// 与 router.go 同构：管理组只挂身份校验，**不挂 BlacklistIP**。
-	adminGroup := router.Group("/adapter-service")
+	adminGroup := router.Group("/api")
 	adminGroup.Use(func(c *gin.Context) {
 		c.Set("user", &entity.User{ID: 1, Username: "SYNTHETIC_ADMIN", Role: "admin", Status: "enabled"})
 	}, middleware.RequireAdmin)
@@ -127,7 +127,7 @@ func TestBlacklistAdminRoutesBypassIPBlacklist(t *testing.T) {
 	}
 
 	// 先证明这个 IP 真的被拦：否则「管理组 200」毫无意义（可能规则根本没生效）。
-	if recorder := serve(http.MethodGet, "/adapter-service/search"); recorder.Code != http.StatusForbidden {
+	if recorder := serve(http.MethodGet, "/api/search"); recorder.Code != http.StatusForbidden {
 		t.Fatalf("fixture must block the business route, got %d (%s)", recorder.Code, recorder.Body.String())
 	}
 
@@ -135,10 +135,10 @@ func TestBlacklistAdminRoutesBypassIPBlacklist(t *testing.T) {
 		method string
 		path   string
 	}{
-		{http.MethodGet, "/adapter-service/blacklist"},
-		{http.MethodPut, "/adapter-service/blacklist/1/enabled"},
-		{http.MethodDelete, "/adapter-service/blacklist/1"},
-		{http.MethodGet, "/adapter-service/blacklist/hits"},
+		{http.MethodGet, "/api/blacklist"},
+		{http.MethodPut, "/api/blacklist/1/enabled"},
+		{http.MethodDelete, "/api/blacklist/1"},
+		{http.MethodGet, "/api/blacklist/hits"},
 	} {
 		recorder := serve(probe.method, probe.path)
 		if recorder.Code != http.StatusOK {
@@ -151,9 +151,9 @@ func TestBlacklistAdminRoutesBypassIPBlacklist(t *testing.T) {
 	// 它们不在 /admin 段内，豁免必须来自「这一组不挂 BlacklistIP」这个结构性事实。
 	// 如果将来有人把管理路由并回 apiRouter，下面这条会立刻红，提醒他别把自锁带回来。
 	for _, path := range []string{
-		"/adapter-service/blacklist",
-		"/adapter-service/blacklist/hits",
-		"/adapter-service/blacklist/1",
+		"/api/blacklist",
+		"/api/blacklist/hits",
+		"/api/blacklist/1",
 	} {
 		if middleware.BlacklistExemptPath(path) {
 			t.Fatalf("%s must NOT rely on the exempt table; the admin group is mounted without BlacklistIP", path)

@@ -64,9 +64,9 @@ func userBanAdminTestRouter(actor *entity.User) *gin.Engine {
 			c.Set("user", actor)
 		}
 	}
-	router.GET("/adapter-service/admin/user-bans", auth, middleware.RequireAdmin, UserBanAdminList)
-	router.POST("/adapter-service/admin/user-bans", auth, middleware.RequireAdmin, UserBanAdminCreate)
-	router.DELETE("/adapter-service/admin/user-bans/:userId", auth, middleware.RequireAdmin, UserBanAdminRevoke)
+	router.GET("/api/admin/user-bans", auth, middleware.RequireAdmin, UserBanAdminList)
+	router.POST("/api/admin/user-bans", auth, middleware.RequireAdmin, UserBanAdminCreate)
+	router.DELETE("/api/admin/user-bans/:userId", auth, middleware.RequireAdmin, UserBanAdminRevoke)
 	return router
 }
 
@@ -133,10 +133,10 @@ func TestUserBanAdminRejectsNonAdminOnEveryRoute(t *testing.T) {
 		path   string
 		body   string
 	}{
-		{http.MethodGet, "/adapter-service/admin/user-bans", ""},
-		{http.MethodPost, "/adapter-service/admin/user-bans",
+		{http.MethodGet, "/api/admin/user-bans", ""},
+		{http.MethodPost, "/api/admin/user-bans",
 			`{"userId":` + strconv.Itoa(int(target.ID)) + `,"reason":"不应生效"}`},
-		{http.MethodDelete, "/adapter-service/admin/user-bans/" + strconv.Itoa(int(target.ID)), ""},
+		{http.MethodDelete, "/api/admin/user-bans/" + strconv.Itoa(int(target.ID)), ""},
 	}
 	for _, item := range cases {
 		recorder := userBanAdminRequest(router, item.method, item.path, item.body)
@@ -179,7 +179,7 @@ func TestUserBanAdminCreateRejectsBlankReasonWith400(t *testing.T) {
 		`{"userId":` + strconv.Itoa(int(target.ID)) + `,"reason":"   "}`,
 		`{"userId":` + strconv.Itoa(int(target.ID)) + `}`,
 	} {
-		recorder := userBanAdminRequest(router, http.MethodPost, "/adapter-service/admin/user-bans", body)
+		recorder := userBanAdminRequest(router, http.MethodPost, "/api/admin/user-bans", body)
 		if recorder.Code != http.StatusBadRequest {
 			t.Fatalf("body %s: status = %d, want 400 (%s)", body, recorder.Code, recorder.Body.String())
 		}
@@ -210,7 +210,7 @@ func TestUserBanAdminCreateExpiresAtSemantics(t *testing.T) {
 	// a) 过去时间 → 400，且不落行。
 	pastTarget := seedUserBanTarget(t, db, "SYNTHETIC_PAST_TARGET", "enabled")
 	pastValue := time.Now().Add(-time.Hour).Format(time.RFC3339)
-	recorder := userBanAdminRequest(router, http.MethodPost, "/adapter-service/admin/user-bans",
+	recorder := userBanAdminRequest(router, http.MethodPost, "/api/admin/user-bans",
 		`{"userId":`+strconv.Itoa(int(pastTarget.ID))+`,"reason":"过去时间","expiresAt":"`+pastValue+`"}`)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("past expiresAt: status = %d, want 400 (%s)", recorder.Code, recorder.Body.String())
@@ -245,7 +245,7 @@ func TestUserBanAdminCreateExpiresAtSemantics(t *testing.T) {
 		`{"userId":` + strconv.Itoa(int(seedUserBanTarget(t, db, "SYNTHETIC_FOREVER_A", "enabled").ID)) + `,"reason":"永久A"}`,
 		`{"userId":` + strconv.Itoa(int(seedUserBanTarget(t, db, "SYNTHETIC_FOREVER_B", "enabled").ID)) + `,"reason":"永久B","expiresAt":""}`,
 	} {
-		recorder := userBanAdminRequest(router, http.MethodPost, "/adapter-service/admin/user-bans", body)
+		recorder := userBanAdminRequest(router, http.MethodPost, "/api/admin/user-bans", body)
 		if recorder.Code != http.StatusCreated {
 			t.Fatalf("permanent case %d: status = %d, want 201 (%s)", index, recorder.Code, recorder.Body.String())
 		}
@@ -266,7 +266,7 @@ func TestUserBanAdminCreateExpiresAtSemantics(t *testing.T) {
 	// c) 未来时间 → 201，且落库值晚于当前时刻。
 	futureTarget := seedUserBanTarget(t, db, "SYNTHETIC_FUTURE_TARGET", "enabled")
 	futureValue := time.Now().Add(2 * time.Hour).Format(time.RFC3339)
-	recorder = userBanAdminRequest(router, http.MethodPost, "/adapter-service/admin/user-bans",
+	recorder = userBanAdminRequest(router, http.MethodPost, "/api/admin/user-bans",
 		`{"userId":`+strconv.Itoa(int(futureTarget.ID))+`,"reason":"临时封禁","expiresAt":"`+futureValue+`"}`)
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("future expiresAt: status = %d, want 201 (%s)", recorder.Code, recorder.Body.String())
@@ -297,7 +297,7 @@ func TestUserBanAdminRevokeKeepsRowAndLiftsBan(t *testing.T) {
 	router := userBanAdminTestRouter(&admin)
 
 	future := time.Now().Add(3 * time.Hour).Format(time.RFC3339)
-	recorder := userBanAdminRequest(router, http.MethodPost, "/adapter-service/admin/user-bans",
+	recorder := userBanAdminRequest(router, http.MethodPost, "/api/admin/user-bans",
 		`{"userId":`+strconv.Itoa(int(target.ID))+`,"reason":"待解封","expiresAt":"`+future+`"}`)
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("create ban: status = %d (%s)", recorder.Code, recorder.Body.String())
@@ -309,7 +309,7 @@ func TestUserBanAdminRevokeKeepsRowAndLiftsBan(t *testing.T) {
 
 	beforeRevoke := time.Now()
 	recorder = userBanAdminRequest(router, http.MethodDelete,
-		"/adapter-service/admin/user-bans/"+strconv.Itoa(int(target.ID))+"?reason=申诉通过", "")
+		"/api/admin/user-bans/"+strconv.Itoa(int(target.ID))+"?reason=申诉通过", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("revoke: status = %d, want 200 (%s)", recorder.Code, recorder.Body.String())
 	}
@@ -376,11 +376,11 @@ func TestUserBanAdminCreateMakesUserBanned(t *testing.T) {
 	temporary := seedUserBanTarget(t, db, "SYNTHETIC_TEMP_TARGET", "enabled")
 	future := time.Now().Add(time.Hour).Format(time.RFC3339)
 
-	if recorder := userBanAdminRequest(router, http.MethodPost, "/adapter-service/admin/user-bans",
+	if recorder := userBanAdminRequest(router, http.MethodPost, "/api/admin/user-bans",
 		`{"userId":`+strconv.Itoa(int(permanent.ID))+`,"reason":"永久"}`); recorder.Code != http.StatusCreated {
 		t.Fatalf("permanent ban: status = %d (%s)", recorder.Code, recorder.Body.String())
 	}
-	if recorder := userBanAdminRequest(router, http.MethodPost, "/adapter-service/admin/user-bans",
+	if recorder := userBanAdminRequest(router, http.MethodPost, "/api/admin/user-bans",
 		`{"userId":`+strconv.Itoa(int(temporary.ID))+`,"reason":"临时","expiresAt":"`+future+`"}`); recorder.Code != http.StatusCreated {
 		t.Fatalf("temporary ban: status = %d (%s)", recorder.Code, recorder.Body.String())
 	}
@@ -432,7 +432,7 @@ func TestUserBanAdminTemporaryBanExpiresAtBoundary(t *testing.T) {
 
 	target := seedUserBanTarget(t, db, "SYNTHETIC_EXPIRY_TARGET", "enabled")
 	future := time.Now().Add(time.Hour).Format(time.RFC3339)
-	if recorder := userBanAdminRequest(router, http.MethodPost, "/adapter-service/admin/user-bans",
+	if recorder := userBanAdminRequest(router, http.MethodPost, "/api/admin/user-bans",
 		`{"userId":`+strconv.Itoa(int(target.ID))+`,"reason":"临时到期","expiresAt":"`+future+`"}`); recorder.Code != http.StatusCreated {
 		t.Fatalf("ban: status = %d (%s)", recorder.Code, recorder.Body.String())
 	}
@@ -507,7 +507,7 @@ func TestUserBanAdminListDefaultsToActiveOnly(t *testing.T) {
 	}
 
 	// 默认（不传 active）：只有 1 条生效中。
-	recorder := userBanAdminRequest(router, http.MethodGet, "/adapter-service/admin/user-bans", "")
+	recorder := userBanAdminRequest(router, http.MethodGet, "/api/admin/user-bans", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("list default: status = %d (%s)", recorder.Code, recorder.Body.String())
 	}
@@ -528,7 +528,7 @@ func TestUserBanAdminListDefaultsToActiveOnly(t *testing.T) {
 
 	// 显式 active=true 必须与默认**逐行一致**（不是仅仅「也返回 1 条」）。
 	explicit := decodeUserBanList(t, userBanAdminRequest(router, http.MethodGet,
-		"/adapter-service/admin/user-bans?active=true", ""))
+		"/api/admin/user-bans?active=true", ""))
 	if len(explicit.Data) != len(def.Data) || explicit.Total != def.Total {
 		t.Fatalf("active=true must match the default: explicit=%d/%d default=%d/%d",
 			len(explicit.Data), explicit.Total, len(def.Data), def.Total)
@@ -536,7 +536,7 @@ func TestUserBanAdminListDefaultsToActiveOnly(t *testing.T) {
 
 	// active=false：返回全部 3 条，且三态各一条。
 	all := decodeUserBanList(t, userBanAdminRequest(router, http.MethodGet,
-		"/adapter-service/admin/user-bans?active=false", ""))
+		"/api/admin/user-bans?active=false", ""))
 	if len(all.Data) != 3 {
 		t.Fatalf("active=false must return all rows, got %d (%+v)", len(all.Data), all.Data)
 	}
@@ -566,12 +566,12 @@ func TestUserBanAdminListKeepsPermanentBanActive(t *testing.T) {
 	target := seedUserBanTarget(t, db, "SYNTHETIC_PERM_LIST", "enabled")
 	router := userBanAdminTestRouter(&admin)
 
-	if recorder := userBanAdminRequest(router, http.MethodPost, "/adapter-service/admin/user-bans",
+	if recorder := userBanAdminRequest(router, http.MethodPost, "/api/admin/user-bans",
 		`{"userId":`+strconv.Itoa(int(target.ID))+`,"reason":"永久封禁"}`); recorder.Code != http.StatusCreated {
 		t.Fatalf("create permanent ban: status = %d (%s)", recorder.Code, recorder.Body.String())
 	}
 
-	recorder := userBanAdminRequest(router, http.MethodGet, "/adapter-service/admin/user-bans", "")
+	recorder := userBanAdminRequest(router, http.MethodGet, "/api/admin/user-bans", "")
 	list := decodeUserBanList(t, recorder)
 	if len(list.Data) != 1 {
 		t.Fatalf("permanent ban must appear in the default (active) list, got %d rows", len(list.Data))
@@ -612,21 +612,21 @@ func TestUserBanAdminListFilters(t *testing.T) {
 
 	// userId 精确筛选。
 	byUser := decodeUserBanList(t, userBanAdminRequest(router, http.MethodGet,
-		"/adapter-service/admin/user-bans?userId="+strconv.Itoa(int(alice.ID)), ""))
+		"/api/admin/user-bans?userId="+strconv.Itoa(int(alice.ID)), ""))
 	if len(byUser.Data) != 1 || byUser.Data[0].UserID != alice.ID {
 		t.Fatalf("userId filter failed: %+v", byUser.Data)
 	}
 
 	// keyword 命中 reason。
 	byReason := decodeUserBanList(t, userBanAdminRequest(router, http.MethodGet,
-		"/adapter-service/admin/user-bans?keyword=%E5%88%B7%E5%8D%95", "")) // 「刷单」
+		"/api/admin/user-bans?keyword=%E5%88%B7%E5%8D%95", "")) // 「刷单」
 	if len(byReason.Data) != 1 || byReason.Data[0].UserID != alice.ID {
 		t.Fatalf("keyword-by-reason failed: %+v", byReason.Data)
 	}
 
 	// keyword 命中用户名（SQL 侧 join 出来的 user_id 集合）。
 	byName := decodeUserBanList(t, userBanAdminRequest(router, http.MethodGet,
-		"/adapter-service/admin/user-bans?keyword=SYNTHETIC_BOB", ""))
+		"/api/admin/user-bans?keyword=SYNTHETIC_BOB", ""))
 	if len(byName.Data) != 1 || byName.Data[0].UserID != bob.ID {
 		t.Fatalf("keyword-by-username failed: %+v", byName.Data)
 	}
@@ -641,12 +641,12 @@ func TestUserBanAdminListFilters(t *testing.T) {
 
 	// 非法 userId 明确 400。
 	if recorder := userBanAdminRequest(router, http.MethodGet,
-		"/adapter-service/admin/user-bans?userId=abc", ""); recorder.Code != http.StatusBadRequest {
+		"/api/admin/user-bans?userId=abc", ""); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("invalid userId: status = %d, want 400", recorder.Code)
 	}
 	// 非法 active 明确 400（不静默当成 true）。
 	if recorder := userBanAdminRequest(router, http.MethodGet,
-		"/adapter-service/admin/user-bans?active=maybe", ""); recorder.Code != http.StatusBadRequest {
+		"/api/admin/user-bans?active=maybe", ""); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("invalid active: status = %d, want 400", recorder.Code)
 	}
 }
@@ -659,7 +659,7 @@ func TestUserBanAdminCreateUnknownUserIs404(t *testing.T) {
 	admin := seedUserBanAdminActor(t, db, 9310, "SYNTHETIC_404_ADMIN")
 	router := userBanAdminTestRouter(&admin)
 
-	recorder := userBanAdminRequest(router, http.MethodPost, "/adapter-service/admin/user-bans",
+	recorder := userBanAdminRequest(router, http.MethodPost, "/api/admin/user-bans",
 		`{"userId":999999,"reason":"不存在的用户"}`)
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("unknown user: status = %d, want 404 (%s)", recorder.Code, recorder.Body.String())
@@ -675,11 +675,11 @@ func TestUserBanAdminRevokeValidation(t *testing.T) {
 	router := userBanAdminTestRouter(&admin)
 
 	if recorder := userBanAdminRequest(router, http.MethodDelete,
-		"/adapter-service/admin/user-bans/abc", ""); recorder.Code != http.StatusBadRequest {
+		"/api/admin/user-bans/abc", ""); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("invalid userId: status = %d, want 400", recorder.Code)
 	}
 	if recorder := userBanAdminRequest(router, http.MethodDelete,
-		"/adapter-service/admin/user-bans/999999", ""); recorder.Code != http.StatusNotFound {
+		"/api/admin/user-bans/999999", ""); recorder.Code != http.StatusNotFound {
 		t.Fatalf("unknown user: status = %d, want 404 (%s)", recorder.Code, recorder.Body.String())
 	}
 }

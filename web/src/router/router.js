@@ -74,12 +74,17 @@ const routes = [
     ]
   },
   {
-    path: '/adapter/recharge/result',
+    path: '/recharge/result',
     name: 'recharge-result',
     component: RechargeResult,
   },
   {
-    path: '/adapter',
+    // 主应用布局挂在根路径下（2026-11-14 路径改名：不再出现 /adapter 段）。
+    //
+    // ⚠️ 它必须排在登录布局 `/` 之后：Vue Router 对同深度路由按声明顺序匹配，
+    // 登录布局的 children 只有 login/register/wechat-bind 三条具名子路由，
+    // 其余路径会落到本路由上。两个布局的子路径名互不重叠，无需额外判重。
+    path: '/',
     name: 'adapterlayout',
     component: TikuAdapterLayout,
     children: [
@@ -249,7 +254,7 @@ const routes = [
       {
         path: 'location-cache',
         name: 'location-cache',
-        redirect: '/adapter/ip-location-cache',
+        redirect: '/ip-location-cache',
       },
       {
         path: 'ip-location-cache',
@@ -359,7 +364,7 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   // 必须挡住「直接敲 URL」—— 页面上的 canManage() 只是体验层，权限边界在 router 与后端。
   'user-bans',
   // 工单管理：与 `tickets`（工单反馈）是两个 name、两个入口。
-  // 普通用户直敲 /adapter/ticket-admin 必须被挡住 —— 那里渲染的是全站工单。
+  // 普通用户直敲 /ticket-admin 必须被挡住 —— 那里渲染的是全站工单。
   'ticket-admin',
   // 脚本管理 / 账单明细：与 scripts（我的脚本）、billing-records（我的账单）
   // 成对存在。管理端那侧含全站数据与写权限，普通用户直敲 URL 必须被挡。
@@ -381,7 +386,13 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   'user-levels',
 ])
 const PUBLIC_ADAPTER_ROUTE_NAMES = new Set([
+  // 支付回跳：下单后浏览器跳回来时会话可能尚未建立。
   'recharge-result',
+  // 登录流程三步（loginlayout 的 children）。2026-11-14 路径改名后主布局
+  // 挂在根路径，这三条必须在白名单里，否则未登录访问 /login 会被踢回 /login 死循环。
+  'adapterlogin',
+  'adapterregister',
+  'wechat-bind',
 ])
 
 const router = createRouter({
@@ -408,10 +419,13 @@ router.beforeEach((to, from, next) => {
     return
   }
 
-  if (!to.path.startsWith('/adapter')) {
-    next()
-    return
-  }
+  // ⚠️ 2026-11-14 路径改名后，主布局挂在根路径，**不能**再用
+  // 「to.path 不以 /adapter 开头就放行」来区分公开页 —— 那等于全部放行。
+  //
+  // 公开页判定改用 route name（见 PUBLIC_ADAPTER_ROUTE_NAMES），
+  // 与 loginlayout 的 children 一起构成完整白名单：
+  //   recharge-result（支付回跳，可能尚无会话）
+  //   adapterlogin / adapterregister / wechat-bind（登录流程三步）
 
   const currentUser = getStoredCurrentUser()
   if (!currentUser) {

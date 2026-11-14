@@ -48,7 +48,7 @@ func TestUserSMSLoginSupportsLegacyPhoneAlias(t *testing.T) {
 		verifiedPhone = phone
 		return service.SMSVerificationEvidence{}, nil
 	}
-	response := phoneControllerRequest(t, http.MethodPost, "/adapter-service/user/login/sms", `{"phone":"13800000000","smsCode":"123456","captchaToken":"captcha"}`, nil, UserSMSLogin)
+	response := phoneControllerRequest(t, http.MethodPost, "/api/user/login/sms", `{"phone":"13800000000","smsCode":"123456","captchaToken":"captcha"}`, nil, UserSMSLogin)
 	if response.Code != http.StatusOK || verifiedPhone != "13800000000" {
 		t.Fatalf("legacy alias must login using canonical SMS number: status=%d phone=%q body=%s", response.Code, verifiedPhone, response.Body.String())
 	}
@@ -61,7 +61,7 @@ func TestUserSMSLoginReportsUnregisteredPhone(t *testing.T) {
 	t.Cleanup(func() { consumeCaptchaTokenWithDB = originalConsume })
 	consumeCaptchaTokenWithDB = func(string, string, string) error { return nil }
 
-	response := phoneControllerRequest(t, http.MethodPost, "/adapter-service/user/login/sms", `{"phone":"13800000000","smsCode":"123456","captchaToken":"captcha"}`, nil, UserSMSLogin)
+	response := phoneControllerRequest(t, http.MethodPost, "/api/user/login/sms", `{"phone":"13800000000","smsCode":"123456","captchaToken":"captcha"}`, nil, UserSMSLogin)
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "该手机号未绑定账号，请先注册") {
 		t.Fatalf("unregistered phone must return registration guidance: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -84,7 +84,7 @@ func TestUserSMSLoginRejectsConflictingPhoneAliasesBeforeCodeConsumption(t *test
 		verifyCalls++
 		return service.SMSVerificationEvidence{}, nil
 	}
-	response := phoneControllerRequest(t, http.MethodPost, "/adapter-service/user/login/sms", `{"phone":"13800000000","smsCode":"123456","captchaToken":"captcha"}`, nil, UserSMSLogin)
+	response := phoneControllerRequest(t, http.MethodPost, "/api/user/login/sms", `{"phone":"13800000000","smsCode":"123456","captchaToken":"captcha"}`, nil, UserSMSLogin)
 	if response.Code != http.StatusBadRequest || verifyCalls != 0 || !strings.Contains(response.Body.String(), "历史绑定冲突") {
 		t.Fatalf("ambiguous aliases must not login or consume code: status=%d verify=%d body=%s", response.Code, verifyCalls, response.Body.String())
 	}
@@ -187,7 +187,7 @@ func TestCreateUserRejectsHistoricalPhoneAlias(t *testing.T) {
 		t.Fatal(err)
 	}
 	admin := &entity.User{ID: 500, Role: "admin", Status: "enabled"}
-	response := phoneControllerRequest(t, http.MethodPost, "/adapter-service/user", `{"username":"duplicate_phone","password":"Abc12345!","phone":"13800000000","giftEnabled":false}`, admin, CreateUser)
+	response := phoneControllerRequest(t, http.MethodPost, "/api/user", `{"username":"duplicate_phone","password":"Abc12345!","phone":"13800000000","giftEnabled":false}`, admin, CreateUser)
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "手机号") {
 		t.Fatalf("admin create must reject occupied historical phone: %d %s", response.Code, response.Body.String())
 	}
@@ -202,7 +202,7 @@ func TestCreateUserNormalizesPhoneBeforeStorage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newUserControllerTestDB(t)
 	admin := &entity.User{ID: 500, Role: "admin", Status: "enabled"}
-	response := phoneControllerRequest(t, http.MethodPost, "/adapter-service/user", `{"username":"canonical_phone","password":"Abc12345!","phone":"+86 138 0000 0000","giftEnabled":false}`, admin, CreateUser)
+	response := phoneControllerRequest(t, http.MethodPost, "/api/user", `{"username":"canonical_phone","password":"Abc12345!","phone":"+86 138 0000 0000","giftEnabled":false}`, admin, CreateUser)
 	if response.Code != http.StatusOK {
 		t.Fatalf("admin create should accept supported prefix: %d %s", response.Code, response.Body.String())
 	}
@@ -231,7 +231,7 @@ func TestUserRegisterRejectsHistoricalPhoneAlias(t *testing.T) {
 	verifyRegisterSMSCodeInTx = func(*gorm.DB, string, string, string) (service.SMSVerificationEvidence, error) {
 		return service.SMSVerificationEvidence{}, nil
 	}
-	response := phoneControllerRequest(t, http.MethodPost, "/adapter-service/user/register", `{"username":"register_alias_conflict","password":"Abc12345!","phone":"13800000000","smsCode":"123456","captchaToken":"captcha"}`, nil, UserRegister)
+	response := phoneControllerRequest(t, http.MethodPost, "/api/user/register", `{"username":"register_alias_conflict","password":"Abc12345!","phone":"13800000000","smsCode":"123456","captchaToken":"captcha"}`, nil, UserRegister)
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "该手机号已被绑定") {
 		t.Fatalf("register must reject historical alias: %d %s", response.Code, response.Body.String())
 	}
@@ -265,7 +265,7 @@ func TestOrdinaryRegistrationHistoricalAliasConflictRollsBackVerification(t *tes
 	if err := db.Create(&logs).Error; err != nil {
 		t.Fatal(err)
 	}
-	response := phoneControllerRequest(t, http.MethodPost, "/adapter-service/user/register", `{"username":"ordinary_alias_conflict","password":"Abc12345!","phone":"13800000000","smsCode":"123456","captchaToken":"ordinary-conflict-captcha"}`, nil, UserRegister)
+	response := phoneControllerRequest(t, http.MethodPost, "/api/user/register", `{"username":"ordinary_alias_conflict","password":"Abc12345!","phone":"13800000000","smsCode":"123456","captchaToken":"ordinary-conflict-captcha"}`, nil, UserRegister)
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "该手机号已被绑定") {
 		t.Fatalf("ordinary registration must reject historical alias: %d %s", response.Code, response.Body.String())
 	}
@@ -312,7 +312,7 @@ func TestOrdinaryRegistrationAtomicallyConsumesAndClaimsActualVerification(t *te
 		t.Fatal(err)
 	}
 	body := `{"username":"ordinary_atomic_user","password":"Abc12345!","phone":"13800000000","smsCode":"123456","captchaToken":"ordinary-success-captcha"}`
-	response := phoneControllerRequest(t, http.MethodPost, "/adapter-service/user/register", body, nil, UserRegister)
+	response := phoneControllerRequest(t, http.MethodPost, "/api/user/register", body, nil, UserRegister)
 	if response.Code != http.StatusOK {
 		t.Fatalf("ordinary registration should succeed: %d %s", response.Code, response.Body.String())
 	}
@@ -349,7 +349,7 @@ func TestOrdinaryRegistrationAtomicallyConsumesAndClaimsActualVerification(t *te
 	if registered != 1 {
 		t.Fatalf("expected one registration audit, got %d", registered)
 	}
-	repeated := phoneControllerRequest(t, http.MethodPost, "/adapter-service/user/register", body, nil, UserRegister)
+	repeated := phoneControllerRequest(t, http.MethodPost, "/api/user/register", body, nil, UserRegister)
 	if repeated.Code == http.StatusOK {
 		t.Fatalf("consumed verification must not register twice: %s", repeated.Body.String())
 	}
@@ -385,7 +385,7 @@ func TestWechatRegisterHistoricalPhoneConflictRollsBackVerification(t *testing.T
 		t.Fatal(err)
 	}
 	body := fmt.Sprintf(`{"username":"wechat_alias_conflict","password":"Abc12345!","phone":"13800000000","smsCode":"123456","captchaToken":"phone-conflict-captcha","registrationFlowToken":%q}`, flow.Token)
-	response := phoneControllerRequest(t, http.MethodPost, "/adapter-service/user/register", body, nil, UserRegister)
+	response := phoneControllerRequest(t, http.MethodPost, "/api/user/register", body, nil, UserRegister)
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "该手机号已被绑定") {
 		t.Fatalf("wechat registration must reject historical alias: %d %s", response.Code, response.Body.String())
 	}
@@ -414,7 +414,7 @@ func TestUpdateUserPreservesUnchangedLegacyPhoneAndBoundAt(t *testing.T) {
 		t.Fatal(err)
 	}
 	admin := &entity.User{ID: 500, Role: "admin", Status: "enabled"}
-	response := phoneControllerRequest(t, http.MethodPut, fmt.Sprintf("/adapter-service/user/%d", target.ID), `{"nickname":"仅改资料","role":"user","status":"enabled","phone":"13800000000"}`, admin, UpdateUser)
+	response := phoneControllerRequest(t, http.MethodPut, fmt.Sprintf("/api/user/%d", target.ID), `{"nickname":"仅改资料","role":"user","status":"enabled","phone":"13800000000"}`, admin, UpdateUser)
 	if response.Code != http.StatusOK {
 		t.Fatalf("unchanged legacy binding should remain valid: %d %s", response.Code, response.Body.String())
 	}

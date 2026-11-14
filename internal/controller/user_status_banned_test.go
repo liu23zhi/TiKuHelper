@@ -145,7 +145,7 @@ func TestBannedStatusSurvivesAdminProfileUpdate(t *testing.T) {
 	admin := seedArchiveAdmin(t, db, 850, "banned-update-admin")
 	// 目标用户初始 enabled，模拟「一个正常用户被管理员封禁」。
 	seedClosureUser(t, db, 851, "banned-update-target", phonePtr("13900000851"), 0, 0)
-	recorder := doArchiveRequest(t, UpdateUser, http.MethodPut, "/adapter-service/user/851",
+	recorder := doArchiveRequest(t, UpdateUser, http.MethodPut, "/api/user/851",
 		[]byte(`{"nickname":"封禁用户","role":"user","status":"banned"}`), admin,
 		gin.Params{{Key: "id", Value: "851"}})
 	if recorder.Code != http.StatusOK {
@@ -170,7 +170,7 @@ func TestBannedStatusSurvivesAdminProfileUpdate(t *testing.T) {
 	}
 
 	// 反向：把封禁解除回 enabled，这次也必须真的落库（别把状态改成单向门）。
-	recorder = doArchiveRequest(t, UpdateUser, http.MethodPut, "/adapter-service/user/851",
+	recorder = doArchiveRequest(t, UpdateUser, http.MethodPut, "/api/user/851",
 		[]byte(`{"nickname":"封禁用户","role":"user","status":"enabled"}`), admin,
 		gin.Params{{Key: "id", Value: "851"}})
 	if recorder.Code != http.StatusOK {

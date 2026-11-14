@@ -16,21 +16,21 @@ const api = () => read('src/api/WhitelistApi.js');
 // 黑名单相反 —— 黑名单坏掉是「该拦的没拦」，白名单坏掉是「该放行的仍被拦」，
 // 表现为「我明明加了规则，还是 403」，从现象完全看不出是哪一层漏了。
 // 所以这里钉的是三件最容易静默断掉的事：
-//   ① 页面与 API 必须指向 /adapter-service/whitelist（不是 blacklist）；
+//   ① 页面与 API 必须指向 /api/whitelist（不是 blacklist）；
 //   ② 删除必须带 reason（否则后端 400，页面表现成「删不掉」）；
 //   ③ 页面不得请求黑名单的命中记录接口（白名单不写命中行，接口也不存在）。
 
-test('白名单 API 指向 /adapter-service/whitelist 且覆盖六个端点', () => {
+test('白名单 API 指向 /api/whitelist 且覆盖六个端点', () => {
   const source = api();
 
   // 六个端点：列表 / 新增 / 启停 / 删除 / 读文本域 / 写文本域。
   for (const [fn, url, method] of [
-    ['getWhitelistEntries', '/adapter-service/whitelist', 'get'],
-    ['createWhitelistEntry', '/adapter-service/whitelist', 'post'],
-    ['setWhitelistEntryEnabled', '/adapter-service/whitelist/', 'put'],
-    ['deleteWhitelistEntry', '/adapter-service/whitelist/', 'delete'],
-    ['getWhitelistExemptIPs', '/adapter-service/whitelist/exempt-ips', 'get'],
-    ['updateWhitelistExemptIPs', '/adapter-service/whitelist/exempt-ips', 'put'],
+    ['getWhitelistEntries', '/api/whitelist', 'get'],
+    ['createWhitelistEntry', '/api/whitelist', 'post'],
+    ['setWhitelistEntryEnabled', '/api/whitelist/', 'put'],
+    ['deleteWhitelistEntry', '/api/whitelist/', 'delete'],
+    ['getWhitelistExemptIPs', '/api/whitelist/exempt-ips', 'get'],
+    ['updateWhitelistExemptIPs', '/api/whitelist/exempt-ips', 'put'],
   ]) {
     assert.match(source, new RegExp(`export function ${fn}\\b`), `缺少导出 ${fn}`);
     assert.ok(source.includes(url), `${fn} 必须打到 ${url}`);
@@ -38,7 +38,7 @@ test('白名单 API 指向 /adapter-service/whitelist 且覆盖六个端点', ()
   }
 
   // 启停必须是 ${id}/enabled 子路径 + 显式 enabled 字段（后端缺字段会 400）。
-  assert.match(source, /url: `\/adapter-service\/whitelist\/\$\{value\}\/enabled`/,
+  assert.match(source, /url: `\/api\/whitelist\/\$\{value\}\/enabled`/,
     '启停必须打到 /whitelist/:id/enabled');
   assert.match(source, /data: \{ enabled \}/, '启停必须显式提交 enabled（后端缺字段返回 400）');
   assert.match(source, /if \(typeof enabled !== 'boolean'\) throw new Error\('缺少目标状态'\)/,
@@ -59,8 +59,8 @@ test('白名单页面不得请求黑名单命中记录（白名单不写命中�
   const source = page();
   assert.doesNotMatch(source, /getBlacklistHits/,
     '白名单页不得调用 getBlacklistHits —— 白名单命中不写 blacklist_hits，后端也没有该接口');
-  assert.doesNotMatch(source, /\/adapter-service\/blacklist/,
-    '白名单页不得请求 /adapter-service/blacklist（会变成读写黑名单）');
+  assert.doesNotMatch(source, /\/api\/blacklist/,
+    '白名单页不得请求 /api/blacklist（会变成读写黑名单）');
   // 也不该出现「命中记录」这个 tab：那是黑名单的解释数据。
   assert.doesNotMatch(source, /tab="命中记录"/, '白名单页不应有「命中记录」tab');
 });

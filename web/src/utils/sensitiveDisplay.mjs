@@ -5,7 +5,7 @@
  * - 列表接口对**非管理员**已把 description / oldAnswer / newAnswer 换成遮挡文本，
  *   并下发 `sensitiveMasked: true`；
  * - 命中明细 `sensitiveWords` 里的词本身也被替换成同长度遮挡符；
- * - 原文只能走 `GET /adapter-service/logs/:id/sensitive-original`（Auth + RequireAdmin）。
+ * - 原文只能走 `GET /api/logs/:id/sensitive-original`（Auth + RequireAdmin）。
  *
  * 因此前端**默认状态必须是遮挡**：服务端已遮挡时直接显示它下发的文本，
  * 绝不因为「这次没拿到 masked 字段」就回退成原文。

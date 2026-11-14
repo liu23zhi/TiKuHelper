@@ -3,8 +3,8 @@ import request from '../utils/request'
 // 敏感词检测记录（123 号 T-27）。
 //
 // 后端契约（internal/controller/sensitive_word_cache.go，本 PR 新增）：
-//   GET /adapter-service/admin/sensitive-word-cache          列表（三态筛选 + 分页）
-//   GET /adapter-service/admin/sensitive-word-cache/status   三态计数 + 最近检测时间
+//   GET /api/admin/sensitive-word-cache          列表（三态筛选 + 分页）
+//   GET /api/admin/sensitive-word-cache/status   三态计数 + 最近检测时间
 //
 // ⚠️ 这两条接口**只读**。缓存行的写入/重试完全由
 // internal/service/sensitive_words.go 负责（hash 键、命中即返回、
@@ -26,7 +26,7 @@ export const SENSITIVE_WORD_CACHE_STATE_LABELS = Object.freeze({
 
 export function getSensitiveWordCacheEntries(params, feedback) {
   const config = {
-    url: '/adapter-service/admin/sensitive-word-cache',
+    url: '/api/admin/sensitive-word-cache',
     method: 'get',
     params,
   }
@@ -36,7 +36,7 @@ export function getSensitiveWordCacheEntries(params, feedback) {
 
 export function getSensitiveWordCacheStatus(feedback) {
   const config = {
-    url: '/adapter-service/admin/sensitive-word-cache/status',
+    url: '/api/admin/sensitive-word-cache/status',
     method: 'get',
   }
   if (feedback?.errorFeedback === 'local') config.errorFeedback = 'local'

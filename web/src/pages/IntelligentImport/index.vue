@@ -250,7 +250,7 @@ export default defineComponent({
       return Boolean(alive && ticket === epoch);
     };
     onBeforeRouteLeave(requestRouteLeave);
-    const navigateToHome = () => { if (canImport()) return router.push('/adapter/component'); };
+    const navigateToHome = () => { if (canImport()) return router.push('/component'); };
     const finishBusy = token => {
       if (busyOwner === token) { busyOwner = null; loading.value = false; }
     };

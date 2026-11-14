@@ -957,7 +957,7 @@ export default defineComponent({
         okText: '放弃并刷新', cancelText: '保留编辑', onOk: refresh,
       }, owns)
     },
-    openOCRCachePage() { if (this.canUseAIPage()) return this.$router.push('/adapter/ocr-cache') },
+    openOCRCachePage() { if (this.canUseAIPage()) return this.$router.push('/ocr-cache') },
     formatAIOCRCacheTime(value) {
       if (!value) return '暂无'
       const date = new Date(value)

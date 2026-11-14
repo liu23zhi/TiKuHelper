@@ -9,8 +9,8 @@ export function limitUsernameInput(value) {
 
 export function resolveAdapterHomePath(user) {
   return String(user?.role || '').trim().toLowerCase() === 'admin'
-    ? '/adapter/component'
-    : '/adapter/user-usage'
+    ? '/component'
+    : '/user-usage'
 }
 
 export function buildPortalMenuKeys(user) {

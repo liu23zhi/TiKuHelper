@@ -52,7 +52,7 @@ func TestRechargeOrderListReturnsScopedRecords(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/recharge-orders?page=2&pageSize=5", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/recharge-orders?page=2&pageSize=5", nil)
 	ctx.Set("user", &entity.User{ID: 31, Role: "user", Status: "enabled"})
 
 	RechargeOrderList(ctx)
@@ -90,7 +90,7 @@ func TestRechargeOrderListNormalizesInvalidPagination(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/recharge-orders?page=0&pageSize=1000", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/recharge-orders?page=0&pageSize=1000", nil)
 	ctx.Set("user", &entity.User{ID: 32, Role: "user", Status: "enabled"})
 
 	RechargeOrderList(ctx)
@@ -115,7 +115,7 @@ func TestRechargeOrderListRejectsReversedCreatedPaidAndAmountRanges(t *testing.T
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
 			ctx.Set("user", &entity.User{ID: 32, Role: "admin", Status: "enabled"})
-			ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/recharge-orders?"+tc.query, nil)
+			ctx.Request = httptest.NewRequest(http.MethodGet, "/api/recharge-orders?"+tc.query, nil)
 			RechargeOrderList(ctx)
 			if recorder.Code != http.StatusBadRequest || !bytes.Contains(recorder.Body.Bytes(), []byte(tc.want)) {
 				t.Fatalf("reversed recharge range must return explicit 400, status=%d body=%s", recorder.Code, recorder.Body.String())
@@ -138,7 +138,7 @@ func TestRechargeOrderListReturnsServerErrorOnFailure(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/recharge-orders", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/recharge-orders", nil)
 	ctx.Set("user", &entity.User{ID: 33, Role: "user", Status: "enabled"})
 
 	RechargeOrderList(ctx)
@@ -153,7 +153,7 @@ func TestCreateRechargeOrderRejectsInvalidPayload(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/recharge-orders", bytes.NewBufferString("not-json"))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/recharge-orders", bytes.NewBufferString("not-json"))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("user", &entity.User{ID: 1, Role: "user", Status: "enabled"})
 
@@ -201,7 +201,7 @@ func TestCreateRechargeOrderReturnsCreatedOrderAndQRCodePaymentInfo(t *testing.T
 	payload := []byte(`{"amount":12.35,"paymentMethodId":3}`)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/recharge-orders", bytes.NewReader(payload))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/recharge-orders", bytes.NewReader(payload))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Request.Header.Set("User-Agent", "Mozilla/5.0 iPhone MicroMessenger")
 	ctx.Set("user", &entity.User{ID: 21, Role: "user", Status: "enabled"})
@@ -239,7 +239,7 @@ func TestCreateRechargeOrderReturnsNotFoundForUnknownPaymentMethod(t *testing.T)
 	payload := []byte(`{"amount":20,"paymentMethodId":999}`)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/recharge-orders", bytes.NewReader(payload))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/recharge-orders", bytes.NewReader(payload))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("user", &entity.User{ID: 2, Role: "user", Status: "enabled"})
 
@@ -265,7 +265,7 @@ func TestCreateRechargeOrderReturnsBadRequestForPaymentCreateFailure(t *testing.
 	payload := []byte(`{"amount":20,"paymentMethodId":1}`)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/recharge-orders", bytes.NewReader(payload))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/recharge-orders", bytes.NewReader(payload))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("user", &entity.User{ID: 2, Role: "user", Status: "enabled"})
 
@@ -297,7 +297,7 @@ func TestRechargePaymentNotifyReturnsSuccessText(t *testing.T) {
 	body := "out_trade_no=rcg_notify_success&trade_status=TRADE_SUCCESS&sign=mock"
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/payment/notify", bytes.NewBufferString(body))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/payment/notify", bytes.NewBufferString(body))
 	ctx.Request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	RechargePaymentNotify(ctx)
@@ -327,7 +327,7 @@ func TestRechargePaymentNotifyAcceptsGetQueryCallback(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/payment/notify?out_trade_no=rcg_notify_get&trade_status=TRADE_SUCCESS&timestamp=1781972343&sign=mock&sign_type=RSA", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/payment/notify?out_trade_no=rcg_notify_get&trade_status=TRADE_SUCCESS&timestamp=1781972343&sign=mock&sign_type=RSA", nil)
 
 	RechargePaymentNotify(ctx)
 
@@ -354,7 +354,7 @@ func TestRechargePaymentNotifyReturnsFailTextWhenSettlementFails(t *testing.T) {
 	body := "out_trade_no=rcg_notify_fail&trade_status=TRADE_SUCCESS&sign=mock"
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/payment/notify", bytes.NewBufferString(body))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/payment/notify", bytes.NewBufferString(body))
 	ctx.Request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	RechargePaymentNotify(ctx)

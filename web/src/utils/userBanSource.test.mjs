@@ -69,9 +69,9 @@ test('API 覆盖三个端点且路径正确（列表 / 封禁 / 按 userId 解�
   const source = api()
 
   for (const [fn, url, method] of [
-    ['getUserBans', '/adapter-service/admin/user-bans', 'get'],
-    ['createUserBan', '/adapter-service/admin/user-bans', 'post'],
-    ['revokeUserBan', '/adapter-service/admin/user-bans/', 'delete'],
+    ['getUserBans', '/api/admin/user-bans', 'get'],
+    ['createUserBan', '/api/admin/user-bans', 'post'],
+    ['revokeUserBan', '/api/admin/user-bans/', 'delete'],
   ]) {
     assert.match(source, new RegExp(`export function ${fn}\\b`), `缺少导出 ${fn}`)
     assert.ok(source.includes(url), `${fn} 必须打到 ${url}`)
@@ -80,7 +80,7 @@ test('API 覆盖三个端点且路径正确（列表 / 封禁 / 按 userId 解�
 
   // 解封路径必须是 ${value}（= userId），不是 ${id}。变量名是语义的一部分：
   // 后端按 userId 处理，写成 id 的人下一轮很可能换成 record.id。
-  assert.match(source, /url: `\/adapter-service\/admin\/user-bans\/\$\{value\}`/,
+  assert.match(source, /url: `\/api\/admin\/user-bans\/\$\{value\}`/,
     '解封必须打到 /admin/user-bans/:userId（变量名应为 value=userId）')
   assert.match(source, /const value = Number\(userId\)/,
     '解封的入参必须来自 userId')

@@ -123,11 +123,11 @@ func TestSystemMetricsFlowProducer(t *testing.T) {
 				c.Set("user", &entity.User{ID: 77103, Username: private, Role: role, Status: "enabled"})
 				c.Next()
 			})
-			router.GET("/adapter-service/system-metrics", middleware.RequireAdmin, func(c *gin.Context) {
+			router.GET("/api/system-metrics", middleware.RequireAdmin, func(c *gin.Context) {
 				handlerCalls++
 				GetSystemMetrics(c)
 			})
-			request := httptest.NewRequest(http.MethodGet, "/adapter-service/system-metrics?role=admin&owner="+private+"&requestId="+private, nil)
+			request := httptest.NewRequest(http.MethodGet, "/api/system-metrics?role=admin&owner="+private+"&requestId="+private, nil)
 			request.Header.Set("X-Request-ID", private)
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, request)

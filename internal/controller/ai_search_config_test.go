@@ -26,7 +26,7 @@ func TestUpdateAISearchConfigRejectsInvalidCompressionSettingsAsBadRequest(t *te
 	}
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/ai-search-config", bytes.NewBufferString(`{"contextCompressionTargetPercent":90}`))
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/api/ai-search-config", bytes.NewBufferString(`{"contextCompressionTargetPercent":90}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 	UpdateAISearchConfig(ctx)
@@ -44,7 +44,7 @@ func TestUpdateAISearchConfigRejectsInvalidCountAsBadRequest(t *testing.T) {
 	}
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/ai-search-config", bytes.NewBufferString(`{"maxAISearchModelCalls":-1}`))
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/api/ai-search-config", bytes.NewBufferString(`{"maxAISearchModelCalls":-1}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 	UpdateAISearchConfig(ctx)
@@ -58,7 +58,7 @@ func TestAISearchConfigTestRejectsNonAdmin(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-search-config/test", bytes.NewBufferString(`{"model":"gpt-4o-mini"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/ai-search-config/test", bytes.NewBufferString(`{"model":"gpt-4o-mini"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("user", &entity.User{ID: 8, Role: "user", Status: "enabled"})
 
@@ -94,7 +94,7 @@ func TestAISearchConfigTestReturnsDebugPayloadForAdmin(t *testing.T) {
 	payload := []byte(`{"baseUrl":"https://demo.example.com/v1","apiKey":"sk-test","model":"gpt-4o-mini","prompt":"你是测试助手"}`)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-search-config/test", bytes.NewReader(payload))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/ai-search-config/test", bytes.NewReader(payload))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 

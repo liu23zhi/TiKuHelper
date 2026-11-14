@@ -426,7 +426,7 @@ func buildSearchTaskResponse(task searchTask) searchTaskResponse {
 }
 
 func searchTaskStatusURL(taskID string) string {
-	return "/adapter-service/search/status?taskId=" + url.QueryEscape(taskID)
+	return "/api/search/status?taskId=" + url.QueryEscape(taskID)
 }
 
 func currentSearchTaskUserID(c *gin.Context) int32 {

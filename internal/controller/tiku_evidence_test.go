@@ -22,15 +22,15 @@ func TestUploadTikuAnswerEvidenceEndpointUsesAuthenticatedUserAndIsIdempotent(t 
 	tikuAnswerEvidenceDB = func() *gorm.DB { return db }
 	t.Cleanup(func() { tikuAnswerEvidenceDB = originalDBProvider })
 	router := gin.New()
-	router.POST("/adapter-service/tiku/evidence", AuthOrAccessToken, UploadTikuAnswerEvidence)
+	router.POST("/api/tiku/evidence", AuthOrAccessToken, UploadTikuAnswerEvidence)
 	anonymous := httptest.NewRecorder()
-	router.ServeHTTP(anonymous, httptest.NewRequest(http.MethodPost, "/adapter-service/tiku/evidence", bytes.NewBufferString(`{"question":"unauthorized"}`)))
+	router.ServeHTTP(anonymous, httptest.NewRequest(http.MethodPost, "/api/tiku/evidence", bytes.NewBufferString(`{"question":"unauthorized"}`)))
 	if anonymous.Code != http.StatusUnauthorized {
 		t.Fatalf("anonymous evidence upload must be rejected, got %d", anonymous.Code)
 	}
 	payload, _ := json.Marshal(service.TikuAnswerEvidenceInput{QID: "q-1", Question: "2+2=?", Type: -1, Options: []string{"4"}, Answer: json.RawMessage(`"4"`), Source: "chaoxing-reviewed", Evidence: []byte(`{"page":"review"}`)})
 	post := func() *httptest.ResponseRecorder {
-		request := httptest.NewRequest(http.MethodPost, "/adapter-service/tiku/evidence", bytes.NewReader(payload))
+		request := httptest.NewRequest(http.MethodPost, "/api/tiku/evidence", bytes.NewReader(payload))
 		request.Header.Set("Authorization", "Bearer "+token.TokenValue)
 		request.Header.Set("Content-Type", "application/json")
 		response := httptest.NewRecorder()

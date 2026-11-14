@@ -66,8 +66,15 @@ func WantsBlacklistHTML(c *gin.Context) bool {
 		return true
 	}
 	// 3) API 前缀 → JSON（兜住没有 Accept 头的 API 调用）。
-	if strings.HasPrefix(c.Request.URL.Path, "/adapter-service") {
-		return false
+	//
+	// 两个前缀都要判（2026-11-14 改名 /adapter-service → /api）：
+	// 只判旧前缀会让新前端的无 Accept 请求（curl / 老客户端默认 `Accept: */*`）
+	// 拿到拉黑页面 HTML，而调用方按 JSON 解析 → 报「数据格式异常」，
+	// 真实原因（被拉黑）被完全掩盖。
+	for _, prefix := range apiPrefixes {
+		if strings.HasPrefix(c.Request.URL.Path, prefix) {
+			return false
+		}
 	}
 	// 4) 其余 GET → 页面（SPA 路由、/、/admin-login 等）。
 	if c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead {

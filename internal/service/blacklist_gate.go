@@ -38,10 +38,10 @@ import (
 // 命中记录的目的是让运营能解释「他在哪一步被拦」，标签足够，且不会因为
 // 上游回调地址变化而失真。
 const (
-	BlacklistGatePathWechatLogin  = "/adapter-service/public/wechat-login"
-	BlacklistGatePathWechatBind   = "/adapter-service/public/wechat-login/bind"
-	BlacklistGatePathUserWechat   = "/adapter-service/user/wechat"
-	BlacklistGatePathUserWechatBy = "/adapter-service/user/wechat/bind-code"
+	BlacklistGatePathWechatLogin  = "/api/public/wechat-login"
+	BlacklistGatePathWechatBind   = "/api/public/wechat-login/bind"
+	BlacklistGatePathUserWechat   = "/api/user/wechat"
+	BlacklistGatePathUserWechatBy = "/api/user/wechat/bind-code"
 )
 
 // BlacklistBlockedFallbackReason 是规则没填 reason 时的兜底文案。

@@ -71,10 +71,10 @@ func ticketImageCacheRouter(actor *entity.User) *gin.Engine {
 			c.Set("user", actor)
 		}
 	}
-	router.GET("/adapter-service/admin/ticket-image-cache", auth, middleware.RequireAdmin, TicketImageCacheList)
-	router.DELETE("/adapter-service/admin/ticket-image-cache/:sha256", auth, middleware.RequireAdmin, TicketImageCacheDelete)
-	router.POST("/adapter-service/admin/ticket-image-cache/batch-delete", auth, middleware.RequireAdmin, TicketImageCacheBatchDelete)
-	router.POST("/adapter-service/admin/ticket-image-cache/clean", auth, middleware.RequireAdmin, TicketImageCacheCleanNow)
+	router.GET("/api/admin/ticket-image-cache", auth, middleware.RequireAdmin, TicketImageCacheList)
+	router.DELETE("/api/admin/ticket-image-cache/:sha256", auth, middleware.RequireAdmin, TicketImageCacheDelete)
+	router.POST("/api/admin/ticket-image-cache/batch-delete", auth, middleware.RequireAdmin, TicketImageCacheBatchDelete)
+	router.POST("/api/admin/ticket-image-cache/clean", auth, middleware.RequireAdmin, TicketImageCacheCleanNow)
 	return router
 }
 
@@ -144,11 +144,11 @@ func TestTicketImageCacheAdminRejectsNonAdminOnEveryRoute(t *testing.T) {
 	} {
 		router := ticketImageCacheRouter(actor)
 		cases := []struct{ method, path, body string }{
-			{http.MethodGet, "/adapter-service/admin/ticket-image-cache", ""},
-			{http.MethodDelete, "/adapter-service/admin/ticket-image-cache/" + sha, ""},
-			{http.MethodPost, "/adapter-service/admin/ticket-image-cache/batch-delete",
+			{http.MethodGet, "/api/admin/ticket-image-cache", ""},
+			{http.MethodDelete, "/api/admin/ticket-image-cache/" + sha, ""},
+			{http.MethodPost, "/api/admin/ticket-image-cache/batch-delete",
 				`{"sha256List":["` + sha + `"]}`},
-			{http.MethodPost, "/adapter-service/admin/ticket-image-cache/clean", ""},
+			{http.MethodPost, "/api/admin/ticket-image-cache/clean", ""},
 		}
 		for _, item := range cases {
 			recorder := ticketImageCacheRequest(router, item.method, item.path, item.body)
@@ -177,7 +177,7 @@ func TestTicketImageCacheListOnEmptyDatabaseReportsZeroWithoutError(t *testing.T
 	newTicketImageCacheTestDB(t)
 
 	recorder := ticketImageCacheRequest(ticketImageCacheRouter(adminActor()),
-		http.MethodGet, "/adapter-service/admin/ticket-image-cache", "")
+		http.MethodGet, "/api/admin/ticket-image-cache", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("empty database must be 200, got %d (%s)", recorder.Code, recorder.Body.String())
 	}
@@ -238,7 +238,7 @@ func TestTicketImageCacheListSummaryCoversWholeFilter(t *testing.T) {
 
 	// 页大小 1：列表只回一行，但汇总必须跨全量。
 	recorder := ticketImageCacheRequest(ticketImageCacheRouter(adminActor()), http.MethodGet,
-		"/adapter-service/admin/ticket-image-cache?page=1&pageSize=1", "")
+		"/api/admin/ticket-image-cache?page=1&pageSize=1", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d (%s)", recorder.Code, recorder.Body.String())
 	}
@@ -310,7 +310,7 @@ func TestTicketImageCacheListFiltersAndKeepsScanBuckets(t *testing.T) {
 	}
 	for _, item := range cases {
 		recorder := ticketImageCacheRequest(router, http.MethodGet,
-			"/adapter-service/admin/ticket-image-cache?"+item.query, "")
+			"/api/admin/ticket-image-cache?"+item.query, "")
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("%s: want 200, got %d (%s)", item.name, recorder.Code, recorder.Body.String())
 		}
@@ -328,7 +328,7 @@ func TestTicketImageCacheListFiltersAndKeepsScanBuckets(t *testing.T) {
 
 	// 选 scanState=approved 时，分项桶仍是全量的（3 个 approved + 1 sensitive + 1 pending）。
 	recorder := ticketImageCacheRequest(router, http.MethodGet,
-		"/adapter-service/admin/ticket-image-cache?scanState=approved", "")
+		"/api/admin/ticket-image-cache?scanState=approved", "")
 	var filtered service.TicketImageCacheListResult
 	if err := json.Unmarshal(recorder.Body.Bytes(), &filtered); err != nil {
 		t.Fatalf("decode filtered: %v", err)
@@ -340,7 +340,7 @@ func TestTicketImageCacheListFiltersAndKeepsScanBuckets(t *testing.T) {
 
 	// 非法 scanState 必须 400：放下去只会返回空列表，管理员会以为是「真没数据」。
 	bad := ticketImageCacheRequest(router, http.MethodGet,
-		"/adapter-service/admin/ticket-image-cache?scanState=bogus", "")
+		"/api/admin/ticket-image-cache?scanState=bogus", "")
 	if bad.Code != http.StatusBadRequest {
 		t.Fatalf("unknown scanState must be 400, got %d (%s)", bad.Code, bad.Body.String())
 	}
@@ -360,7 +360,7 @@ func TestTicketImageCacheDeleteRefusesReferencedBlob(t *testing.T) {
 	seedAttachmentRef(t, db, 102, sha)
 
 	recorder := ticketImageCacheRequest(ticketImageCacheRouter(adminActor()),
-		http.MethodDelete, "/adapter-service/admin/ticket-image-cache/"+sha, "")
+		http.MethodDelete, "/api/admin/ticket-image-cache/"+sha, "")
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("deleting a referenced blob must be 409, got %d (%s)",
 			recorder.Code, recorder.Body.String())
@@ -409,7 +409,7 @@ func TestTicketImageCacheDeleteRefusesWhenColumnUnderstatesRefs(t *testing.T) {
 	seedAttachmentRef(t, db, 103, sha)
 
 	recorder := ticketImageCacheRequest(ticketImageCacheRouter(adminActor()),
-		http.MethodDelete, "/adapter-service/admin/ticket-image-cache/"+sha, "")
+		http.MethodDelete, "/api/admin/ticket-image-cache/"+sha, "")
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("stale ref_count=0 must still be refused, got %d (%s)",
 			recorder.Code, recorder.Body.String())
@@ -432,7 +432,7 @@ func TestTicketImageCacheDeleteUnreferencedBlobThenIdempotent(t *testing.T) {
 
 	router := ticketImageCacheRouter(adminActor())
 	first := ticketImageCacheRequest(router, http.MethodDelete,
-		"/adapter-service/admin/ticket-image-cache/"+sha, "")
+		"/api/admin/ticket-image-cache/"+sha, "")
 	if first.Code != http.StatusOK {
 		t.Fatalf("unreferenced blob must be deletable, got %d (%s)", first.Code, first.Body.String())
 	}
@@ -447,7 +447,7 @@ func TestTicketImageCacheDeleteUnreferencedBlobThenIdempotent(t *testing.T) {
 	}
 
 	second := ticketImageCacheRequest(router, http.MethodDelete,
-		"/adapter-service/admin/ticket-image-cache/"+sha, "")
+		"/api/admin/ticket-image-cache/"+sha, "")
 	if second.Code != http.StatusOK {
 		t.Fatalf("repeat delete must be idempotent 200, got %d (%s)", second.Code, second.Body.String())
 	}
@@ -463,7 +463,7 @@ func TestTicketImageCacheDeleteUnreferencedBlobThenIdempotent(t *testing.T) {
 
 	// 非法 sha256 是 400（不是 404）：「参数不对」与「记录不存在」必须可区分。
 	bad := ticketImageCacheRequest(router, http.MethodDelete,
-		"/adapter-service/admin/ticket-image-cache/not-a-sha256", "")
+		"/api/admin/ticket-image-cache/not-a-sha256", "")
 	if bad.Code != http.StatusBadRequest {
 		t.Fatalf("invalid sha256 must be 400, got %d (%s)", bad.Code, bad.Body.String())
 	}
@@ -488,7 +488,7 @@ func TestTicketImageCacheBatchDeleteHonoursRefProtection(t *testing.T) {
 
 	body := `{"sha256List":["` + free + `","` + held + `","` + heldToo + `"]}`
 	recorder := ticketImageCacheRequest(ticketImageCacheRouter(adminActor()),
-		http.MethodPost, "/adapter-service/admin/ticket-image-cache/batch-delete", body)
+		http.MethodPost, "/api/admin/ticket-image-cache/batch-delete", body)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("partial success must be 200, got %d (%s)", recorder.Code, recorder.Body.String())
 	}
@@ -542,7 +542,7 @@ func TestTicketImageCacheBatchDeleteAllBlockedReturnsConflict(t *testing.T) {
 
 	body := `{"sha256List":["` + first + `","` + second + `"]}`
 	recorder := ticketImageCacheRequest(ticketImageCacheRouter(adminActor()),
-		http.MethodPost, "/adapter-service/admin/ticket-image-cache/batch-delete", body)
+		http.MethodPost, "/api/admin/ticket-image-cache/batch-delete", body)
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("all blocked must be 409, got %d (%s)", recorder.Code, recorder.Body.String())
 	}
@@ -557,7 +557,7 @@ func TestTicketImageCacheBatchDeleteAllBlockedReturnsConflict(t *testing.T) {
 	// 空列表与非法标识都是 400（不能退化成「全删」）。
 	for _, bad := range []string{`{"sha256List":[]}`, `{"sha256List":["nope"]}`} {
 		response := ticketImageCacheRequest(ticketImageCacheRouter(adminActor()),
-			http.MethodPost, "/adapter-service/admin/ticket-image-cache/batch-delete", bad)
+			http.MethodPost, "/api/admin/ticket-image-cache/batch-delete", bad)
 		if response.Code != http.StatusBadRequest {
 			t.Fatalf("%s must be 400, got %d (%s)", bad, response.Code, response.Body.String())
 		}
@@ -601,7 +601,7 @@ func TestTicketImageCacheCleanReportsBothNumbersInOrder(t *testing.T) {
 	}
 
 	recorder := ticketImageCacheRequest(ticketImageCacheRouter(adminActor()),
-		http.MethodPost, "/adapter-service/admin/ticket-image-cache/clean", "")
+		http.MethodPost, "/api/admin/ticket-image-cache/clean", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d (%s)", recorder.Code, recorder.Body.String())
 	}
@@ -663,7 +663,7 @@ func TestTicketImageCacheCleanSurfacesAgeFailureWithoutHidingCounts(t *testing.T
 	}
 
 	recorder := ticketImageCacheRequest(ticketImageCacheRouter(adminActor()),
-		http.MethodPost, "/adapter-service/admin/ticket-image-cache/clean", "")
+		http.MethodPost, "/api/admin/ticket-image-cache/clean", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("a failed prune must not become 5xx, got %d (%s)", recorder.Code, recorder.Body.String())
 	}
@@ -700,7 +700,7 @@ func TestTicketImageCacheCleanReportsUnavailableWhileWaitingForT11(t *testing.T)
 	pruneTicketImageCacheByAge, pruneTicketImageCacheBySize = nil, nil
 
 	recorder := ticketImageCacheRequest(ticketImageCacheRouter(adminActor()),
-		http.MethodPost, "/adapter-service/admin/ticket-image-cache/clean", "")
+		http.MethodPost, "/api/admin/ticket-image-cache/clean", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("unwired clean must be 200 (not a fault), got %d (%s)",
 			recorder.Code, recorder.Body.String())
@@ -738,7 +738,7 @@ func TestTicketImageCacheCleanOnEmptyDatabaseStaysZero(t *testing.T) {
 	pruneTicketImageCacheBySize = func(_ *gorm.DB, _ time.Time, _ int64) (int64, error) { return 0, nil }
 
 	recorder := ticketImageCacheRequest(ticketImageCacheRouter(adminActor()),
-		http.MethodPost, "/adapter-service/admin/ticket-image-cache/clean", "")
+		http.MethodPost, "/api/admin/ticket-image-cache/clean", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("empty database clean must be 200, got %d", recorder.Code)
 	}
@@ -772,7 +772,7 @@ func TestTicketImageCacheListToleratesMissingTable(t *testing.T) {
 	dao.SetDefault(db)
 
 	recorder := ticketImageCacheRequest(ticketImageCacheRouter(adminActor()),
-		http.MethodGet, "/adapter-service/admin/ticket-image-cache", "")
+		http.MethodGet, "/api/admin/ticket-image-cache", "")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("missing table must be 200 with zeros, got %d (%s)",
 			recorder.Code, recorder.Body.String())

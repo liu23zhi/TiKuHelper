@@ -76,7 +76,7 @@ func postAdminLogin(t *testing.T, body map[string]any, remoteAddr string) *httpt
 	payload, _ := json.Marshal(body)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/admin-login", bytes.NewReader(payload))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/admin-login", bytes.NewReader(payload))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Request.RemoteAddr = remoteAddr
 	AdminLogin(ctx)
@@ -88,7 +88,7 @@ func postUserLogin(t *testing.T, body map[string]any, remoteAddr string) *httpte
 	payload, _ := json.Marshal(body)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/login", bytes.NewReader(payload))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/login", bytes.NewReader(payload))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Request.RemoteAddr = remoteAddr
 	UserLogin(ctx)
@@ -399,7 +399,7 @@ func TestUserSMSLoginCountsFailures(t *testing.T) {
 	})
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/login/sms", bytes.NewReader(payload))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/login/sms", bytes.NewReader(payload))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Request.RemoteAddr = "198.51.100.1:1234"
 	UserSMSLogin(ctx)
@@ -547,7 +547,7 @@ func TestAdminLoginRejectsMalformedBody(t *testing.T) {
 	stubCtrlCaptcha(t, nil)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/admin-login",
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/admin-login",
 		bytes.NewReader([]byte("{not json")))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Request.RemoteAddr = "203.0.113.7:1234"

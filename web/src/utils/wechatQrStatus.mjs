@@ -15,7 +15,7 @@ export function resolveWechatQrExpiresAt(payload, nowMs = Date.now()) {
 export function buildWechatLoginWebSocketURL(loginToken, locationLike = window.location) {
   const protocol = locationLike.protocol === 'https:' ? 'wss:' : 'ws:'
   const token = encodeURIComponent(String(loginToken || '').trim())
-  return `${protocol}//${locationLike.host}/adapter-service/public/wechat-login/ws?loginToken=${token}`
+  return `${protocol}//${locationLike.host}/api/public/wechat-login/ws?loginToken=${token}`
 }
 
 export function createWechatQrStatusController({

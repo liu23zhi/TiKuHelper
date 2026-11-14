@@ -76,7 +76,7 @@ func TestFailedModelUsageSearchRetainsActualUsageWithoutAnswer(t *testing.T) {
 		}, func() {
 			w := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(w)
-			ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=ai&noRecord=1", bytes.NewBufferString("{\"question\":\"synthetic context\",\"type\":4}"))
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/api/search?use=ai&noRecord=1", bytes.NewBufferString("{\"question\":\"synthetic context\",\"type\":4}"))
 			ctx.Request.Header.Set("Content-Type", "application/json")
 			Search(ctx)
 			if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "答案A") {
@@ -114,7 +114,7 @@ func TestFailedModelUsageFallbackSyncRetainsAdmittedWorkPolicy(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Set("user", &user)
-	c.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback", bytes.NewBufferString("{\"question\":\"synthetic admitted fallback\",\"type\":4}")).WithContext(ctx)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/ai-fallback", bytes.NewBufferString("{\"question\":\"synthetic admitted fallback\",\"type\":4}")).WithContext(ctx)
 	c.Request.Header.Set("Content-Type", "application/json")
 	AIFallback(c)
 	if calls != 1 || w.Code != http.StatusOK {

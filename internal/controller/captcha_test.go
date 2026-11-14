@@ -24,7 +24,7 @@ func TestCreateCaptchaChallengeReturnsImageData(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/public/captcha/challenge", bytes.NewBufferString(`{"scene":"login_password"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/public/captcha/challenge", bytes.NewBufferString(`{"scene":"login_password"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
 	CreateCaptchaChallenge(ctx)
@@ -49,7 +49,7 @@ func TestVerifyCaptchaChallengeReturnsCaptchaToken(t *testing.T) {
 	})
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/public/captcha/verify", bytes.NewBuffer(payload))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/public/captcha/verify", bytes.NewBuffer(payload))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
 	VerifyCaptchaChallenge(ctx)
@@ -86,7 +86,7 @@ func TestVerifyRemoteCaptchaReturnsCaptchaToken(t *testing.T) {
 	})
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/public/captcha/remote-token", bytes.NewBuffer(payload))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/public/captcha/remote-token", bytes.NewBuffer(payload))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
 	VerifyRemoteCaptcha(ctx)
@@ -120,7 +120,7 @@ func TestProxyRemoteCaptchaGenerateReturnsRemotePayload(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/public/captcha/remote-gen?type=SLIDER", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/public/captcha/remote-gen?type=SLIDER", nil)
 
 	ProxyRemoteCaptchaGenerate(ctx)
 
@@ -156,7 +156,7 @@ func TestProxyRemoteCaptchaCheckReturnsRemotePayload(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/public/captcha/remote-check", bytes.NewBufferString(`{"id":"captcha-1"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/public/captcha/remote-check", bytes.NewBufferString(`{"id":"captcha-1"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
 	ProxyRemoteCaptchaCheck(ctx)

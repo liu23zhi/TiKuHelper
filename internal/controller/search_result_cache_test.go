@@ -45,8 +45,8 @@ func TestSearchReusesCachedResultForIdenticalQuestionAndOptions(t *testing.T) {
 		},
 		nil,
 		func() {
-			first := performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
-			second := performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
+			first := performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
+			second := performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
 
 			if first.Answer.AnswerText != "A" || second.Answer.AnswerText != "A" {
 				t.Fatalf("expected both responses to contain cached answer, got first=%+v second=%+v", first.Answer, second.Answer)
@@ -92,8 +92,8 @@ func TestSearchDoesNotReuseCachedResultAcrossUsers(t *testing.T) {
 		},
 		nil,
 		func() {
-			performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
-			performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-b")
+			performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
+			performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-b")
 
 			if upstreamCalls != 2 {
 				t.Fatalf("expected separate upstream calls for different users, got %d", upstreamCalls)
@@ -131,8 +131,8 @@ func TestSearchReusesCachedResultAcrossTokensOfSameUser(t *testing.T) {
 		},
 		nil,
 		func() {
-			performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
-			performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-b")
+			performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
+			performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-b")
 
 			if upstreamCalls != 1 {
 				t.Fatalf("expected the same user's second token to reuse the cache, got %d upstream calls", upstreamCalls)
@@ -163,8 +163,8 @@ func TestSearchDoesNotCacheAnonymousRequests(t *testing.T) {
 		},
 		nil,
 		func() {
-			performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic anonymous")
-			performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic anonymous")
+			performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic anonymous")
+			performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic anonymous")
 
 			if upstreamCalls != 2 {
 				t.Fatalf("expected anonymous requests not to share a cache, got %d upstream calls", upstreamCalls)
@@ -201,13 +201,13 @@ func TestInvalidateSearchResultCacheDropsAllCachedAnswers(t *testing.T) {
 		},
 		nil,
 		func() {
-			first := performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题"}`, "Basic token-a")
+			first := performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题"}`, "Basic token-a")
 			if first.Answer.AnswerText != "旧答案" || upstreamCalls != 1 {
 				t.Fatalf("expected first call to hit upstream, got %q calls=%d", first.Answer.AnswerText, upstreamCalls)
 			}
 
 			// 缓存命中：不再调用上游。
-			cached := performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题"}`, "Basic token-a")
+			cached := performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题"}`, "Basic token-a")
 			if cached.Answer.AnswerText != "旧答案" || upstreamCalls != 1 {
 				t.Fatalf("expected cache hit, got %q calls=%d", cached.Answer.AnswerText, upstreamCalls)
 			}
@@ -216,7 +216,7 @@ func TestInvalidateSearchResultCacheDropsAllCachedAnswers(t *testing.T) {
 			answer = "新答案"
 			invalidateSearchResultCaches("test")
 
-			refreshed := performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题"}`, "Basic token-a")
+			refreshed := performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题"}`, "Basic token-a")
 			if refreshed.Answer.AnswerText != "新答案" {
 				t.Fatalf("expected the invalidated cache to re-fetch, got %q", refreshed.Answer.AnswerText)
 			}
@@ -316,7 +316,7 @@ func TestSearchDoesNotCacheFailedResult(t *testing.T) {
 		},
 		nil,
 		func() {
-			performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
+			performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
 			if upstreamCalls != 1 {
 				t.Fatalf("expected the first call to reach upstream, got %d", upstreamCalls)
 			}
@@ -326,7 +326,7 @@ func TestSearchDoesNotCacheFailedResult(t *testing.T) {
 
 			// 上游恢复后，第二次必须**真的重新调用上游**并拿到答案。
 			shouldFail = false
-			recovered := performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
+			recovered := performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
 			if upstreamCalls != 2 {
 				t.Fatalf("expected the retry to call upstream again, got %d calls", upstreamCalls)
 			}
@@ -384,8 +384,8 @@ func TestSearchDoesNotReuseCachedResultForDifferentQuestionsOrOptions(t *testing
 				},
 				nil,
 				func() {
-					performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", testCase.firstBody, "Basic token-a")
-					performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", testCase.secondBody, "Basic token-a")
+					performSearchRequest(t, "/api/search?use=icodef&noRecord=1", testCase.firstBody, "Basic token-a")
+					performSearchRequest(t, "/api/search?use=icodef&noRecord=1", testCase.secondBody, "Basic token-a")
 
 					if upstreamCalls != 2 {
 						t.Fatalf("expected separate upstream calls for different question or options, got %d", upstreamCalls)
@@ -424,9 +424,9 @@ func TestSearchResultCacheExpiresAfterTTL(t *testing.T) {
 				return now
 			}
 
-			performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
+			performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
 			now = now.Add(defaultResultCacheTTL)
-			performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
+			performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
 
 			if upstreamCalls != 2 {
 				t.Fatalf("expected expired cache entry to trigger a new upstream call, got %d", upstreamCalls)
@@ -464,8 +464,8 @@ func TestSearchCacheHitSkipsBillingReporter(t *testing.T) {
 		},
 		nil,
 		func() {
-			performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
-			performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
+			performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
+			performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
 
 			if reported != 1 {
 				t.Fatalf("expected only the upstream miss to report billing, got %d reports", reported)
@@ -500,9 +500,9 @@ func TestSearchSkipCacheBypassesCachedResultAndRefreshesCache(t *testing.T) {
 		},
 		nil,
 		func() {
-			first := performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","type":2}`, "Basic token-a")
-			refreshed := performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","type":2,"skipCache":true}`, "Basic token-a")
-			cachedAfterRefresh := performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","type":2}`, "Basic token-a")
+			first := performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题","type":2}`, "Basic token-a")
+			refreshed := performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题","type":2,"skipCache":true}`, "Basic token-a")
+			cachedAfterRefresh := performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"同一道题","type":2}`, "Basic token-a")
 
 			if first.Answer.AnswerText != "旧答案" {
 				t.Fatalf("expected first response to use old answer, got %q", first.Answer.AnswerText)

@@ -58,7 +58,7 @@ func TestUserLoginWritesAuditLog(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/login", bytes.NewBufferString(`{"username":"audit-login-user","password":"123456","captchaToken":"token-1"}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/user/login", bytes.NewBufferString(`{"username":"audit-login-user","password":"123456","captchaToken":"token-1"}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.RemoteAddr = "10.20.30.40:12345"
 	request.Header.Set("X-Forwarded-For", "10.20.30.40")
@@ -132,7 +132,7 @@ func TestLogListAdminSeesAllAuditLogsWithMetadata(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodGet, "/adapter-service/logs?page=1&pageSize=10", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/logs?page=1&pageSize=10", nil)
 	ctx.Request = request
 	ctx.Set("user", admin)
 
@@ -177,7 +177,7 @@ func TestLogListRejectsReversedCreatedTimeRange(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Set("user", &entity.User{ID: 301, Role: "admin", Status: "enabled"})
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/logs?createdFrom=2026-06-21&createdTo=2026-06-20", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/logs?createdFrom=2026-06-21&createdTo=2026-06-20", nil)
 	LogList(ctx)
 	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "创建时间范围无效") {
 		t.Fatalf("reversed log range must return explicit 400, status=%d body=%s", recorder.Code, recorder.Body.String())
@@ -209,7 +209,7 @@ func TestLogListResolvesUsernameForLegacyRows(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/logs?page=1&pageSize=10", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/logs?page=1&pageSize=10", nil)
 	ctx.Set("user", admin)
 
 	LogList(ctx)
@@ -256,7 +256,7 @@ func TestLogListAdminCanFilterByModuleAndAction(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodGet, "/adapter-service/logs?page=1&pageSize=10&module=auth&action=10", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/logs?page=1&pageSize=10&module=auth&action=10", nil)
 	ctx.Request = request
 	ctx.Set("user", admin)
 
@@ -311,7 +311,7 @@ func TestLogListAdminCanFilterByDateUserQuestionAndIP(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/logs?page=1&pageSize=10&createdFrom=2026-05-06&createdTo=2026-05-06&userId=422&qid=77&clientIp=203.0.113.20", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/logs?page=1&pageSize=10&createdFrom=2026-05-06&createdTo=2026-05-06&userId=422&qid=77&clientIp=203.0.113.20", nil)
 	ctx.Set("user", admin)
 	LogList(ctx)
 
@@ -370,7 +370,7 @@ func TestLogListSearchesByKeyword(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/logs?page=1&pageSize=10&keyword="+url.QueryEscape(testCase.keyword), nil)
+			ctx.Request = httptest.NewRequest(http.MethodGet, "/api/logs?page=1&pageSize=10&keyword="+url.QueryEscape(testCase.keyword), nil)
 			ctx.Set("user", admin)
 
 			LogList(ctx)
@@ -431,7 +431,7 @@ func TestLogListKeywordTreatsLikeWildcardsLiterally(t *testing.T) {
 	// "%" 必须按字面量处理，否则会匹配到全部日志。
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/logs?keyword="+url.QueryEscape("%"), nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/logs?keyword="+url.QueryEscape("%"), nil)
 	ctx.Set("user", admin)
 	LogList(ctx)
 
@@ -486,7 +486,7 @@ func TestLogListAssociatesBillingIDsWithinUserAndVisibility(t *testing.T) {
 		t.Helper()
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
-		ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/logs?page=1&pageSize=10", nil)
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/api/logs?page=1&pageSize=10", nil)
 		ctx.Set("user", user)
 		LogList(ctx)
 		if recorder.Code != http.StatusOK {
@@ -570,7 +570,7 @@ func TestLogListQueriesBillingIDsOnceForCurrentPage(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/logs?page=1&pageSize=2", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/logs?page=1&pageSize=2", nil)
 	ctx.Set("user", admin)
 	LogList(ctx)
 	if recorder.Code != http.StatusOK {

@@ -27,10 +27,10 @@ func TestSetAPIRouterRegistersBindingHistoryRoutes(t *testing.T) {
 	SetAPIRouter(router)
 
 	want := map[string]bool{
-		"GET /adapter-service/admin/users/:id/bindings": false,
-		"GET /adapter-service/admin/bindings":           false,
-		"POST /adapter-service/admin/bindings":          false,
-		"POST /adapter-service/admin/bindings/:id/void": false,
+		"GET /api/admin/users/:id/bindings": false,
+		"GET /api/admin/bindings":           false,
+		"POST /api/admin/bindings":          false,
+		"POST /api/admin/bindings/:id/void": false,
 	}
 	for _, route := range router.Routes() {
 		key := route.Method + " " + route.Path
@@ -47,9 +47,9 @@ func TestSetAPIRouterRegistersBindingHistoryRoutes(t *testing.T) {
 	// 反向钉子：用户段不得出现绑定历史的任何写入口或跨用户读入口。
 	// 需求 5a/6/7 全是管理员功能；挂到 /user 段就是越权面。
 	for _, route := range router.Routes() {
-		if route.Path == "/adapter-service/admin/users/:id/bindings" ||
-			route.Path == "/adapter-service/admin/bindings" ||
-			route.Path == "/adapter-service/admin/bindings/:id/void" {
+		if route.Path == "/api/admin/users/:id/bindings" ||
+			route.Path == "/api/admin/bindings" ||
+			route.Path == "/api/admin/bindings/:id/void" {
 			if route.Method != http.MethodGet && route.Method != http.MethodPost {
 				t.Fatalf("unexpected method %s on %s", route.Method, route.Path)
 			}

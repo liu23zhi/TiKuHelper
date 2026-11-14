@@ -95,7 +95,7 @@ func TestScriptLeaseSingleOwnerHeartbeatAndReplay(t *testing.T) {
 	}
 	start := time.Now()
 	first, err := ActivateLeasedScriptRunSessionWithDB(db, item.ShortCode, "synthetic-a", a, ip, 120)
-	if err != nil || first.HeartbeatURL != fmt.Sprintf("/adapter-service/script-command/%s/heartbeat", item.ShortCode) ||
+	if err != nil || first.HeartbeatURL != fmt.Sprintf("/api/script-command/%s/heartbeat", item.ShortCode) ||
 		first.ExpiresAt.Before(start.Add(119*time.Minute)) || first.ExpiresAt.After(start.Add(121*time.Minute)) {
 		t.Fatalf("activation did not issue a bounded lease: %v", err)
 	}

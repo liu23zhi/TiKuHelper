@@ -2,11 +2,11 @@ import request from '../utils/request'
 
 // 黑名单管理（BL-5，46-黑名单设计.md §6）。
 // 后端契约（internal/api/router.go）：
-//   GET    /adapter-service/blacklist                 列表：分页 + kind / enabled / keyword
-//   POST   /adapter-service/blacklist                 新增：归一化 + reason 必填
-//   PUT    /adapter-service/blacklist/:id/enabled      启停：单列写（不整行覆盖）
-//   DELETE /adapter-service/blacklist/:id              删除：硬删，命中记录保留
-//   GET    /adapter-service/blacklist/hits             命中记录：分页 + entryId/kind/clientIp/action
+//   GET    /api/blacklist                 列表：分页 + kind / enabled / keyword
+//   POST   /api/blacklist                 新增：归一化 + reason 必填
+//   PUT    /api/blacklist/:id/enabled      启停：单列写（不整行覆盖）
+//   DELETE /api/blacklist/:id              删除：硬删，命中记录保留
+//   GET    /api/blacklist/hits             命中记录：分页 + entryId/kind/clientIp/action
 //
 // 全部使用 errorFeedback: 'local'：页面自己有失败态与重试入口，
 // 不能在被页面接管的请求上再弹一次全局错误提示（与 ReferralApi.js 同约定）。
@@ -14,7 +14,7 @@ import request from '../utils/request'
 export function getBlacklistEntries(params) {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/blacklist',
+    url: '/api/blacklist',
     method: 'get',
     params,
   })
@@ -27,7 +27,7 @@ export function getBlacklistEntries(params) {
 export function createBlacklistEntry(payload) {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/blacklist',
+    url: '/api/blacklist',
     method: 'post',
     data: {
       kind: payload.kind,
@@ -48,7 +48,7 @@ export function setBlacklistEntryEnabled(id, enabled) {
   if (typeof enabled !== 'boolean') throw new Error('缺少目标状态')
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/blacklist/${value}/enabled`,
+    url: `/api/blacklist/${value}/enabled`,
     method: 'put',
     data: { enabled },
   })
@@ -59,7 +59,7 @@ export function deleteBlacklistEntry(id) {
   if (!Number.isInteger(value) || value <= 0) throw new Error('黑名单规则参数错误')
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/blacklist/${value}`,
+    url: `/api/blacklist/${value}`,
     method: 'delete',
   })
 }
@@ -67,7 +67,7 @@ export function deleteBlacklistEntry(id) {
 export function getBlacklistHits(params) {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/blacklist/hits',
+    url: '/api/blacklist/hits',
     method: 'get',
     params,
   })

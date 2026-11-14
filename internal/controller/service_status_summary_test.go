@@ -130,7 +130,7 @@ func TestGetServiceStatusSummaryHTTPResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/service-status/summary?probe=1", nil)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/service-status/summary?probe=1", nil)
 
 	GetServiceStatusSummary(c)
 

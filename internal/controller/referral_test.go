@@ -92,7 +92,7 @@ func TestReferralRegisterHTTPRejectsInvalidAndSelfInvite(t *testing.T) {
 	register := func(body string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
-		request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewBufferString(body))
+		request := httptest.NewRequest(http.MethodPost, "/api/user/register", bytes.NewBufferString(body))
 		request.Header.Set("Content-Type", "application/json")
 		ctx.Request = request
 		UserRegister(ctx)
@@ -272,7 +272,7 @@ func TestReferralRegisterHTTPGeneratesNothingWhenDisabled(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	// 带一个不存在的邀请码：开关关闭时必须被静默忽略，不能因此拒绝注册。
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register",
+	request := httptest.NewRequest(http.MethodPost, "/api/user/register",
 		bytes.NewBufferString(`{"username":"referral_off_user","password":"Abc12345!","phone":"13800001003","smsCode":"123456","captchaToken":"t","inviteCode":"ZZZZZZZZ"}`))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request

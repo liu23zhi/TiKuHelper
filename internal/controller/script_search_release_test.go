@@ -77,9 +77,9 @@ func TestScriptSearchPaidIdempotencyReplayAfterDebtAndHardQuota(t *testing.T) {
 		nil,
 		func() {
 			router := gin.New()
-			router.POST("/adapter-service/search", SearchWithIdempotency)
+			router.POST("/api/search", SearchWithIdempotency)
 			call := func(token, identity, idempotencyKey string) *httptest.ResponseRecorder {
-				req := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1", strings.NewReader(`{"question":"fixture","options":["A","B"],"skipCache":true}`))
+				req := httptest.NewRequest(http.MethodPost, "/api/search?use=icodef&noRecord=1", strings.NewReader(`{"question":"fixture","options":["A","B"],"skipCache":true}`))
 				req.Header.Set("Content-Type", "application/json")
 				req.Header.Set("Authorization", "Bearer "+token)
 				req.Header.Set("X-Script-Identity", identity)

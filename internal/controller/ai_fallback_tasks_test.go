@@ -212,7 +212,7 @@ func TestCreateAIFallbackTaskReturnsRunningTaskAndStatusCanComplete(t *testing.T
 	createRecorder := httptest.NewRecorder()
 	createContext, _ := gin.CreateTestContext(createRecorder)
 	createContext.Set("user", &user)
-	createContext.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback/tasks", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
+	createContext.Request = httptest.NewRequest(http.MethodPost, "/api/ai-fallback/tasks", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
 	createContext.Request.Header.Set("Content-Type", "application/json")
 
 	CreateAIFallbackTask(createContext)
@@ -254,7 +254,7 @@ func TestGetAIFallbackTaskStatusRejectsOtherUser(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	context, _ := gin.CreateTestContext(recorder)
 	context.Set("user", &entity.User{ID: 8})
-	context.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/ai-fallback/status?taskId="+taskID, nil)
+	context.Request = httptest.NewRequest(http.MethodGet, "/api/ai-fallback/status?taskId="+taskID, nil)
 
 	GetAIFallbackTaskStatus(context)
 
@@ -289,10 +289,10 @@ func TestCreateAIFallbackTaskRejectsZeroBalanceBeforeQueueing(t *testing.T) {
 	}
 
 	router := gin.New()
-	router.POST("/adapter-service/ai-fallback/tasks", AuthOrAccessToken, CreateAIFallbackTask)
+	router.POST("/api/ai-fallback/tasks", AuthOrAccessToken, CreateAIFallbackTask)
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback/tasks", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/ai-fallback/tasks", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+token.TokenValue)
 	router.ServeHTTP(recorder, request)
@@ -378,11 +378,11 @@ func TestCreateAIFallbackTaskBillsSuccessfulAIUsageOnce(t *testing.T) {
 	}
 
 	router := gin.New()
-	router.POST("/adapter-service/ai-fallback/tasks", AuthOrAccessToken, CreateAIFallbackTask)
-	router.GET("/adapter-service/ai-fallback/status", AuthOrAccessToken, GetAIFallbackTaskStatus)
+	router.POST("/api/ai-fallback/tasks", AuthOrAccessToken, CreateAIFallbackTask)
+	router.GET("/api/ai-fallback/status", AuthOrAccessToken, GetAIFallbackTaskStatus)
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback/tasks", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/ai-fallback/tasks", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+token.TokenValue)
 	request.Header.Set("Idempotency-Key", "billed-ai-task-request")
@@ -402,7 +402,7 @@ func TestCreateAIFallbackTaskBillsSuccessfulAIUsageOnce(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for {
 		statusRecorder := httptest.NewRecorder()
-		statusRequest := httptest.NewRequest(http.MethodGet, "/adapter-service/ai-fallback/status?taskId="+created.TaskID, nil)
+		statusRequest := httptest.NewRequest(http.MethodGet, "/api/ai-fallback/status?taskId="+created.TaskID, nil)
 		statusRequest.Header.Set("Authorization", "Bearer "+token.TokenValue)
 		router.ServeHTTP(statusRecorder, statusRequest)
 		if statusRecorder.Code != http.StatusOK {
@@ -460,7 +460,7 @@ func TestCreateAIFallbackTaskBillsSuccessfulAIUsageOnce(t *testing.T) {
 		t.Fatalf("deplete balance before retry: %v", err)
 	}
 	retryRecorder := httptest.NewRecorder()
-	retryRequest := httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback/tasks", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
+	retryRequest := httptest.NewRequest(http.MethodPost, "/api/ai-fallback/tasks", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
 	retryRequest.Header.Set("Content-Type", "application/json")
 	retryRequest.Header.Set("Authorization", "Bearer "+token.TokenValue)
 	retryRequest.Header.Set("Idempotency-Key", "billed-ai-task-request")
@@ -474,7 +474,7 @@ func TestCreateAIFallbackTaskBillsSuccessfulAIUsageOnce(t *testing.T) {
 	}
 	// Existing paid result delivery is read-only and remains available at zero balance.
 	paidStatus := httptest.NewRecorder()
-	paidStatusRequest := httptest.NewRequest(http.MethodGet, "/adapter-service/ai-fallback/status?taskId="+created.TaskID, nil)
+	paidStatusRequest := httptest.NewRequest(http.MethodGet, "/api/ai-fallback/status?taskId="+created.TaskID, nil)
 	paidStatusRequest.Header.Set("Authorization", "Bearer "+token.TokenValue)
 	router.ServeHTTP(paidStatus, paidStatusRequest)
 	var delivered aiFallbackTaskResponse
@@ -482,7 +482,7 @@ func TestCreateAIFallbackTaskBillsSuccessfulAIUsageOnce(t *testing.T) {
 		t.Fatalf("zero-balance paid delivery lost: %d %+v err=%v", paidStatus.Code, delivered, err)
 	}
 	conflictRecorder := httptest.NewRecorder()
-	conflictRequest := httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback/tasks", bytes.NewBufferString(`{"question":"different question","type":0}`))
+	conflictRequest := httptest.NewRequest(http.MethodPost, "/api/ai-fallback/tasks", bytes.NewBufferString(`{"question":"different question","type":0}`))
 	conflictRequest.Header.Set("Content-Type", "application/json")
 	conflictRequest.Header.Set("Authorization", "Bearer "+token.TokenValue)
 	conflictRequest.Header.Set("Idempotency-Key", "billed-ai-task-request")
@@ -496,7 +496,7 @@ func TestCreateAIFallbackTaskBillsSuccessfulAIUsageOnce(t *testing.T) {
 	}
 
 	statusAgain := httptest.NewRecorder()
-	statusAgainRequest := httptest.NewRequest(http.MethodGet, "/adapter-service/ai-fallback/status?taskId="+created.TaskID, nil)
+	statusAgainRequest := httptest.NewRequest(http.MethodGet, "/api/ai-fallback/status?taskId="+created.TaskID, nil)
 	statusAgainRequest.Header.Set("Authorization", "Bearer "+token.TokenValue)
 	router.ServeHTTP(statusAgain, statusAgainRequest)
 	if statusAgain.Code != http.StatusOK {
@@ -546,11 +546,11 @@ func TestCreateAIFallbackTaskWritesFailureAuditLog(t *testing.T) {
 	}
 
 	router := gin.New()
-	router.POST("/adapter-service/ai-fallback/tasks", AuthOrAccessToken, CreateAIFallbackTask)
-	router.GET("/adapter-service/ai-fallback/status", AuthOrAccessToken, GetAIFallbackTaskStatus)
+	router.POST("/api/ai-fallback/tasks", AuthOrAccessToken, CreateAIFallbackTask)
+	router.GET("/api/ai-fallback/status", AuthOrAccessToken, GetAIFallbackTaskStatus)
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback/tasks", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/ai-fallback/tasks", bytes.NewBufferString(`{"question":"1+1=?","type":0,"options":["1","2"]}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+token.TokenValue)
 	router.ServeHTTP(recorder, request)
@@ -565,7 +565,7 @@ func TestCreateAIFallbackTaskWritesFailureAuditLog(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for {
 		statusRecorder := httptest.NewRecorder()
-		statusRequest := httptest.NewRequest(http.MethodGet, "/adapter-service/ai-fallback/status?taskId="+created.TaskID, nil)
+		statusRequest := httptest.NewRequest(http.MethodGet, "/api/ai-fallback/status?taskId="+created.TaskID, nil)
 		statusRequest.Header.Set("Authorization", "Bearer "+token.TokenValue)
 		router.ServeHTTP(statusRecorder, statusRequest)
 		var status aiFallbackTaskResponse
@@ -612,7 +612,7 @@ func eventuallyAIFallbackResponse(t *testing.T, userID int32, taskID string, don
 		recorder := httptest.NewRecorder()
 		context, _ := gin.CreateTestContext(recorder)
 		context.Set("user", &entity.User{ID: userID})
-		context.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/ai-fallback/status?taskId="+taskID, nil)
+		context.Request = httptest.NewRequest(http.MethodGet, "/api/ai-fallback/status?taskId="+taskID, nil)
 
 		GetAIFallbackTaskStatus(context)
 		if recorder.Code == http.StatusOK {

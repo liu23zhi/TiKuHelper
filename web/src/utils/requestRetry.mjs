@@ -1,18 +1,18 @@
 const TRANSIENT_STATUSES = new Set([408, 425, 429])
 const POLL_PATHS = new Set([
-  '/adapter-service/public/wechat-login/status',
-  '/adapter-service/public/wechat-register/status',
+  '/api/public/wechat-login/status',
+  '/api/public/wechat-register/status',
 ])
 const COSTED_OR_CONSUMING_READ_PATHS = new Set([
-  '/adapter-service/user/wechat/scan-id',
-  '/adapter-service/public/wechat/user',
-  '/adapter-service/public/captcha/remote-gen',
-  '/adapter-service/ai-search-config/models',
+  '/api/user/wechat/scan-id',
+  '/api/public/wechat/user',
+  '/api/public/captcha/remote-gen',
+  '/api/ai-search-config/models',
 ])
 const KEYED_MUTATION_PATHS = new Set([
-  '/adapter-service/recharge-orders',
-  '/adapter-service/public/sms-code',
-  '/adapter-service/user/phone/sms-code',
+  '/api/recharge-orders',
+  '/api/public/sms-code',
+  '/api/user/phone/sms-code',
 ])
 
 function pathOf(url) {
@@ -29,12 +29,12 @@ export function resolveRequestPolicy(config) {
   const path = pathOf(config.url)
   if (method === 'get') {
     if (POLL_PATHS.has(path)) return 'poll'
-    return path.startsWith('/adapter-service/uapi/') || COSTED_OR_CONSUMING_READ_PATHS.has(path)
+    return path.startsWith('/api/uapi/') || COSTED_OR_CONSUMING_READ_PATHS.has(path)
       ? 'single' : 'read'
   }
   if (method === 'post') {
-    if (path === '/adapter-service/questions/search') return 'read'
-    if (KEYED_MUTATION_PATHS.has(path) || /^\/adapter-service\/user\/[^/]+\/balance$/.test(path)) {
+    if (path === '/api/questions/search') return 'read'
+    if (KEYED_MUTATION_PATHS.has(path) || /^\/api\/user\/[^/]+\/balance$/.test(path)) {
       return 'keyed'
     }
     return 'single'

@@ -356,7 +356,7 @@ func ScriptExchangeScript(c *gin.Context) {
 	}
 	settings["common.settings.tiku-adapter.baseurl"] = result.LaunchOrigin
 	settings["common.settings.tiku-adapter.script-activation-token"] = result.ActivationToken
-	settings["common.settings.tiku-adapter.script-session-url"] = result.LaunchOrigin + "/adapter-service/script-command/" + shortCode + "/activate"
+	settings["common.settings.tiku-adapter.script-session-url"] = result.LaunchOrigin + "/api/script-command/" + shortCode + "/activate"
 	configValues := map[string]any{
 		"settings":                     settings,
 		"noDiskWrite":                  true,
@@ -435,8 +435,16 @@ func ScriptPublicHostMiddleware(c *gin.Context) {
 // ScriptPublicPath is called from the web router's NoRoute handler for the
 // non-wildcard `/shortCode` form.
 func ScriptPublicPath(c *gin.Context) bool {
-	if c.Request.Method != http.MethodGet || strings.HasPrefix(c.Request.URL.Path, "/adapter-service/") {
+	// 两个 API 前缀都要排除（2026-11-14 改名 /adapter-service → /api）：
+	// 它们是接口路径，不是脚本短码。只排新前缀会让旧路径的未知请求被当成
+	// 短码去查库（多一次无谓查询，且可能命中一个同名短码）。
+	if c.Request.Method != http.MethodGet {
 		return false
+	}
+	for _, prefix := range []string{"/api/", "/adapter-service/"} {
+		if strings.HasPrefix(c.Request.URL.Path, prefix) {
+			return false
+		}
 	}
 	return servePublicScriptBootstrap(c)
 }
@@ -474,7 +482,7 @@ func scriptRunActorScope(c *gin.Context) string {
 }
 
 func buildScriptBootstrap(baseURL, shortCode, token string, managed ...bool) string {
-	exchangeURL := strings.TrimRight(baseURL, "/") + "/adapter-service/script-command/" + shortCode + "/exchange-script"
+	exchangeURL := strings.TrimRight(baseURL, "/") + "/api/script-command/" + shortCode + "/exchange-script"
 	if len(managed) == 1 && managed[0] {
 		return service.BuildManagedScriptTextLoader(exchangeURL, "X-Script-Token", token)
 	}
@@ -494,7 +502,7 @@ func buildScriptPayload(baseURL, shortCode, downloadURL, activationToken, encode
 
 func buildManagedScriptPayload(baseURL, downloadURL, sha256Hex, ticket, encodedConfig string) (string, error) {
 	digest, err := hex.DecodeString(sha256Hex)
-	if err != nil || len(digest) != 32 || !strings.HasPrefix(baseURL, "https://") || !strings.HasPrefix(downloadURL, "/adapter-service/script-command/") {
+	if err != nil || len(digest) != 32 || !strings.HasPrefix(baseURL, "https://") || !strings.HasPrefix(downloadURL, "/api/script-command/") {
 		return "", errors.New("invalid managed script executable reference")
 	}
 	address := strings.TrimRight(baseURL, "/") + downloadURL

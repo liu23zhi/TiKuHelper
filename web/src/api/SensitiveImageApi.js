@@ -3,10 +3,10 @@ import request from '../utils/request'
 // 敏感图片检测管理页（107 Q1 / 109 §2.5）。
 //
 // 后端契约（internal/controller/sensitive_image.go）：
-//   GET  /adapter-service/sensitive-image/entries   检测记录：page / pageSize / status / imageSha256
-//   GET  /adapter-service/sensitive-image/quota     额度配置；带 userId 时附当日用量
-//   POST /adapter-service/sensitive-image/quota     改额度配置（指针语义：只改传入的键）
-//   POST /adapter-service/sensitive-image/detect    手动触发：imageSha256 或 ticketId
+//   GET  /api/sensitive-image/entries   检测记录：page / pageSize / status / imageSha256
+//   GET  /api/sensitive-image/quota     额度配置；带 userId 时附当日用量
+//   POST /api/sensitive-image/quota     改额度配置（指针语义：只改传入的键）
+//   POST /api/sensitive-image/detect    手动触发：imageSha256 或 ticketId
 //
 // ⚠️ router.go 目前**没有**挂这四条路由（见汇报里的待接线清单），
 // 所以页面在接线前会得到 404 —— 这是预期状态，不是本文件的问题。
@@ -19,9 +19,9 @@ import request from '../utils/request'
 // 全部 errorFeedback: 'local'：页面自己有失败态与重试入口，
 // 不能在被页面接管的请求上再弹一次全局错误提示（与 BlacklistApi / IpSegmentApi 同约定）。
 
-const ENTRIES_URL = '/adapter-service/sensitive-image/entries'
-const QUOTA_URL = '/adapter-service/sensitive-image/quota'
-const DETECT_URL = '/adapter-service/sensitive-image/detect'
+const ENTRIES_URL = '/api/sensitive-image/entries'
+const QUOTA_URL = '/api/sensitive-image/quota'
+const DETECT_URL = '/api/sensitive-image/detect'
 
 // readPositiveId 校验工单编号：非正整数在发出请求前就拒绝，
 // 避免把 /undefined、/NaN 之类打到后端。

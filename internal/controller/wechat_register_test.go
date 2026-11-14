@@ -29,17 +29,17 @@ func TestPublicWechatRegisterStatusRejectsWhenWechatRegistrationIsDisabled(t *te
 		t.Fatal(err)
 	}
 	var router = gin.New()
-	router.POST("/adapter-service/public/wechat-register/qrcode", PublicWechatRegisterQRCode)
-	router.GET("/adapter-service/public/wechat-register/status", PublicWechatRegisterStatus)
+	router.POST("/api/public/wechat-register/qrcode", PublicWechatRegisterQRCode)
+	router.GET("/api/public/wechat-register/status", PublicWechatRegisterStatus)
 	recorder := httptest.NewRecorder()
-	qrcodeRequest := httptest.NewRequest(http.MethodPost, "/adapter-service/public/wechat-register/qrcode", bytes.NewBufferString(`{"registrationFlowToken":"`+flow.Token+`"}`))
+	qrcodeRequest := httptest.NewRequest(http.MethodPost, "/api/public/wechat-register/qrcode", bytes.NewBufferString(`{"registrationFlowToken":"`+flow.Token+`"}`))
 	qrcodeRequest.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(recorder, qrcodeRequest)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected qrcode config error, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 	recorder = httptest.NewRecorder()
-	statusRequest := httptest.NewRequest(http.MethodGet, "/adapter-service/public/wechat-register/status?sessionId=unknown", nil)
+	statusRequest := httptest.NewRequest(http.MethodGet, "/api/public/wechat-register/status?sessionId=unknown", nil)
 	router.ServeHTTP(recorder, statusRequest)
 	if recorder.Code == http.StatusOK {
 		t.Fatalf("expected status config error, got %d: %s", recorder.Code, recorder.Body.String())
@@ -52,9 +52,9 @@ func TestPublicWechatRegisterSessionDoesNotAcceptJWTAsFlowToken(t *testing.T) {
 	wechatRegisterFlowStore = service.NewWechatRegisterFlowStore()
 	defer func() { wechatRegisterFlowStore = previous }()
 	router := gin.New()
-	router.POST("/adapter-service/public/wechat-register/session", PublicWechatRegisterSession)
+	router.POST("/api/public/wechat-register/session", PublicWechatRegisterSession)
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/public/wechat-register/session", nil)
+	request := httptest.NewRequest(http.MethodPost, "/api/public/wechat-register/session", nil)
 	request.Header.Set("Authorization", "Bearer login-jwt")
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
@@ -78,10 +78,10 @@ func TestPublicWechatRegisterRoutesRejectClientWechatIDAndExposeOpaqueStatusOnly
 	wechatRegisterFlowStore = service.NewWechatRegisterFlowStore()
 	defer func() { wechatRegisterFlowStore = previous }()
 	router := gin.New()
-	router.POST("/adapter-service/public/wechat-register/session", PublicWechatRegisterSession)
-	router.POST("/adapter-service/public/wechat-register/code", PublicWechatRegisterCode)
+	router.POST("/api/public/wechat-register/session", PublicWechatRegisterSession)
+	router.POST("/api/public/wechat-register/code", PublicWechatRegisterCode)
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/public/wechat-register/code", bytes.NewBufferString(`{"registrationFlowToken":"bad","wechatId":"client-supplied"}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/public/wechat-register/code", bytes.NewBufferString(`{"registrationFlowToken":"bad","wechatId":"client-supplied"}`))
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusBadRequest && recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("expected invalid flow token rejection, got %d: %s", recorder.Code, recorder.Body.String())
@@ -113,9 +113,9 @@ func TestPublicWechatRegisterQRCodeReturnsDisplayDataAndSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	router := gin.New()
-	router.POST("/adapter-service/public/wechat-register/qrcode", PublicWechatRegisterQRCode)
+	router.POST("/api/public/wechat-register/qrcode", PublicWechatRegisterQRCode)
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/public/wechat-register/qrcode", bytes.NewBufferString(`{"registrationFlowToken":"`+flow.Token+`"}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/public/wechat-register/qrcode", bytes.NewBufferString(`{"registrationFlowToken":"`+flow.Token+`"}`))
 	request.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte("register-session")) || !bytes.Contains(recorder.Body.Bytes(), []byte("data:image/png")) {
@@ -153,9 +153,9 @@ func TestPublicWechatRegisterStatusRemovesExpiredUpstreamQRCode(t *testing.T) {
 		t.Fatal(err)
 	}
 	router := gin.New()
-	router.GET("/adapter-service/public/wechat-register/status", PublicWechatRegisterStatus)
+	router.GET("/api/public/wechat-register/status", PublicWechatRegisterStatus)
 	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/adapter-service/public/wechat-register/status?sessionId=expired-upstream-session", nil))
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/public/wechat-register/status?sessionId=expired-upstream-session", nil))
 	if recorder.Code != http.StatusGone {
 		t.Fatalf("expected expired status, got %d: %s", recorder.Code, recorder.Body.String())
 	}
@@ -196,9 +196,9 @@ func TestPublicWechatRegisterStatusExpiredKeepsCodeFirstStagedResult(t *testing.
 		t.Fatal(err)
 	}
 	router := gin.New()
-	router.GET("/adapter-service/public/wechat-register/status", PublicWechatRegisterStatus)
+	router.GET("/api/public/wechat-register/status", PublicWechatRegisterStatus)
 	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/adapter-service/public/wechat-register/status?sessionId=code-first-expired-session", nil))
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/public/wechat-register/status?sessionId=code-first-expired-session", nil))
 	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"status":"staged"`)) {
 		t.Fatalf("expected staged status after expired poll, got %d: %s", recorder.Code, recorder.Body.String())
 	}
@@ -236,9 +236,9 @@ func TestPublicWechatRegisterStatusSuccessKeepsCodeFirstStagedResult(t *testing.
 		t.Fatal(err)
 	}
 	router := gin.New()
-	router.GET("/adapter-service/public/wechat-register/status", PublicWechatRegisterStatus)
+	router.GET("/api/public/wechat-register/status", PublicWechatRegisterStatus)
 	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/adapter-service/public/wechat-register/status?sessionId=code-first-success-session", nil))
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/public/wechat-register/status?sessionId=code-first-success-session", nil))
 	if recorder.Code != http.StatusOK || !bytes.Contains(recorder.Body.Bytes(), []byte(`"status":"staged"`)) {
 		t.Fatalf("expected staged status after success poll, got %d: %s", recorder.Code, recorder.Body.String())
 	}

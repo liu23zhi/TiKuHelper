@@ -516,7 +516,7 @@ func s03ProxyNativeSelfchecks(t *testing.T) {
 		})
 	}
 	// An unsupported write is a trap, not a question/provider endpoint.
-	request(t, "POST", "/adapter-service/questions", "application/json", []byte("{}"), http.StatusTeapot)
+	request(t, "POST", "/api/questions", "application/json", []byte("{}"), http.StatusTeapot)
 	b.mu.Lock()
 	violations := append([]string{}, b.violations...)
 	recoveries := b.recoveries

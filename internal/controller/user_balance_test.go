@@ -27,7 +27,7 @@ func TestLegacyUserBalanceUpdateAlwaysWritesLedgerAndAudit(t *testing.T) {
 				}
 				recorder := httptest.NewRecorder()
 				ctx, _ := gin.CreateTestContext(recorder)
-				ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/user/2", bytes.NewBufferString(fmt.Sprintf(`{"nickname":"test","role":"user","status":"enabled","balance":2.123456,"balanceMode":%q,"showInStatement":%t}`, mode, show)))
+				ctx.Request = httptest.NewRequest(http.MethodPut, "/api/user/2", bytes.NewBufferString(fmt.Sprintf(`{"nickname":"test","role":"user","status":"enabled","balance":2.123456,"balanceMode":%q,"showInStatement":%t}`, mode, show)))
 				ctx.Request.Header.Set("Content-Type", "application/json")
 				ctx.Request.RemoteAddr = "198.51.100.5:1234"
 				ctx.Params = gin.Params{{Key: "id", Value: "2"}}
@@ -79,7 +79,7 @@ func TestBalanceEndpointIdempotencyPreventsDuplicateAdjustment(t *testing.T) {
 	request := func(amount string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
-		ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/2/balance", bytes.NewBufferString(`{"mode":"increase","amount":`+amount+`}`))
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/2/balance", bytes.NewBufferString(`{"mode":"increase","amount":`+amount+`}`))
 		ctx.Request.Header.Set("Content-Type", "application/json")
 		ctx.Request.Header.Set("Idempotency-Key", "balance-action-1")
 		ctx.Params = gin.Params{{Key: "id", Value: "2"}}
@@ -131,7 +131,7 @@ func TestDedicatedBalanceAndVisibilityEndpointsEnforceAdminAndExplicitValues(t *
 		t.Run(tc.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/test", bytes.NewBufferString(tc.body))
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/api/test", bytes.NewBufferString(tc.body))
 			ctx.Request.Header.Set("Content-Type", "application/json")
 			ctx.Params = gin.Params{{Key: "id", Value: tc.id}}
 			ctx.Set("user", tc.operator)
@@ -163,7 +163,7 @@ func TestLegacyProfileWithBalanceButNoModeKeepsTheExistingBalance(t *testing.T) 
 	}
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/user/2", bytes.NewBufferString(`{"nickname":"profile edit","role":"user","status":"enabled","balance":10}`))
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/api/user/2", bytes.NewBufferString(`{"nickname":"profile edit","role":"user","status":"enabled","balance":10}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Params = gin.Params{{Key: "id", Value: "2"}}
 	ctx.Set("user", &admin)
@@ -199,7 +199,7 @@ func TestLegacyUserBalanceUpdateRollsBackWhenLedgerOrAuditFails(t *testing.T) {
 			}
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/user/2", bytes.NewBufferString(`{"nickname":"changed","role":"user","status":"enabled","balance":5,"balanceMode":"increase"}`))
+			ctx.Request = httptest.NewRequest(http.MethodPut, "/api/user/2", bytes.NewBufferString(`{"nickname":"changed","role":"user","status":"enabled","balance":5,"balanceMode":"increase"}`))
 			ctx.Request.Header.Set("Content-Type", "application/json")
 			ctx.Params = gin.Params{{Key: "id", Value: "2"}}
 			ctx.Set("user", &admin)

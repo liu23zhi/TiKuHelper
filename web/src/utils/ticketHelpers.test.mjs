@@ -314,7 +314,7 @@ test("notification settings API uses the protected config PUT endpoint", async (
   const payload = { enabled: true, mentionedList: ["alice"] };
   await api.saveTicketNotificationConfig(payload);
   assert.deepEqual(requests, [
-    { url: "/adapter-service/tickets/config", method: "put", data: payload },
+    { url: "/api/tickets/config", method: "put", data: payload },
   ]);
 });
 

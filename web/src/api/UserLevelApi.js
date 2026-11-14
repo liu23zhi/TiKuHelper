@@ -3,15 +3,15 @@ import request from '../utils/request'
 // 等级体系与充值阶梯档位（94-*.md §2 C1 / C2）。
 //
 // 后端契约（internal/api/router.go）：
-//   GET    /adapter-service/admin/user-levels                等级列表（含停用级）
-//   POST   /adapter-service/admin/user-levels                新增等级
-//   PUT    /adapter-service/admin/user-levels/:id            编辑等级
-//   DELETE /adapter-service/admin/user-levels/:id            删除等级（引用它的用户回落为无等级）
-//   POST   /adapter-service/admin/user-levels/reevaluate     手动重评一批用户
-//   GET    /adapter-service/admin/recharge-promotion-tiers   档位表 + 当前生效来源
-//   PUT    /adapter-service/admin/recharge-promotion-tiers   整体替换档位表
-//   POST   /adapter-service/admin/recharge-promotion-tiers/preview  按未保存档位试算
-//   GET    /adapter-service/user/level                       当前登录用户自己的等级
+//   GET    /api/admin/user-levels                等级列表（含停用级）
+//   POST   /api/admin/user-levels                新增等级
+//   PUT    /api/admin/user-levels/:id            编辑等级
+//   DELETE /api/admin/user-levels/:id            删除等级（引用它的用户回落为无等级）
+//   POST   /api/admin/user-levels/reevaluate     手动重评一批用户
+//   GET    /api/admin/recharge-promotion-tiers   档位表 + 当前生效来源
+//   PUT    /api/admin/recharge-promotion-tiers   整体替换档位表
+//   POST   /api/admin/recharge-promotion-tiers/preview  按未保存档位试算
+//   GET    /api/user/level                       当前登录用户自己的等级
 //
 // 全部 errorFeedback: 'local'：页面自己有持久失败态与重试入口，
 // 不能在被页面接管的请求上再弹一次全局错误提示。
@@ -25,7 +25,7 @@ function readPositiveId(id) {
 export function getUserLevels() {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/admin/user-levels',
+    url: '/api/admin/user-levels',
     method: 'get',
   })
 }
@@ -33,7 +33,7 @@ export function getUserLevels() {
 export function createUserLevel(payload) {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/admin/user-levels',
+    url: '/api/admin/user-levels',
     method: 'post',
     data: normalizeLevelPayload(payload),
   })
@@ -42,7 +42,7 @@ export function createUserLevel(payload) {
 export function updateUserLevel(id, payload) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/admin/user-levels/${readPositiveId(id)}`,
+    url: `/api/admin/user-levels/${readPositiveId(id)}`,
     method: 'put',
     data: normalizeLevelPayload(payload),
   })
@@ -51,7 +51,7 @@ export function updateUserLevel(id, payload) {
 export function deleteUserLevel(id) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/admin/user-levels/${readPositiveId(id)}`,
+    url: `/api/admin/user-levels/${readPositiveId(id)}`,
     method: 'delete',
   })
 }
@@ -59,7 +59,7 @@ export function deleteUserLevel(id) {
 export function reevaluateUserLevels(limit) {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/admin/user-levels/reevaluate',
+    url: '/api/admin/user-levels/reevaluate',
     method: 'post',
     data: limit ? { limit: Number(limit) } : {},
   })
@@ -88,7 +88,7 @@ function normalizeLevelPayload(payload) {
 export function getRechargePromotionTiers() {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/admin/recharge-promotion-tiers',
+    url: '/api/admin/recharge-promotion-tiers',
     method: 'get',
   })
 }
@@ -96,7 +96,7 @@ export function getRechargePromotionTiers() {
 export function replaceRechargePromotionTiers(rows) {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/admin/recharge-promotion-tiers',
+    url: '/api/admin/recharge-promotion-tiers',
     method: 'put',
     data: { rows: normalizeTierRows(rows) },
   })
@@ -105,7 +105,7 @@ export function replaceRechargePromotionTiers(rows) {
 export function previewRechargePromotionTier(paidAmount, rows) {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/admin/recharge-promotion-tiers/preview',
+    url: '/api/admin/recharge-promotion-tiers/preview',
     method: 'post',
     data: { paidAmount: Number(paidAmount ?? 0), rows: normalizeTierRows(rows) },
   })
@@ -127,7 +127,7 @@ function normalizeTierRows(rows) {
 export function getMyUserLevel() {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/user/level',
+    url: '/api/user/level',
     method: 'get',
   })
 }

@@ -98,8 +98,8 @@ test('sensitive word page wires three-state filter and pagination to the admin A
   assert.match(page, /@change="onTableChange"/)
 
   // 后端契约路径必须与 controller 一致。
-  assert.match(api, /url: '\/adapter-service\/admin\/sensitive-word-cache'/)
-  assert.match(api, /url: '\/adapter-service\/admin\/sensitive-word-cache\/status'/)
+  assert.match(api, /url: '\/api\/admin\/sensitive-word-cache'/)
+  assert.match(api, /url: '\/api\/admin\/sensitive-word-cache\/status'/)
   // 三态枚举必须与后端 service.SensitiveWordCacheState* 对齐。
   assert.match(api, /SENSITIVE_WORD_CACHE_STATES = Object\.freeze\(\['hit', 'clean', 'failed'\]\)/)
   // 这两条接口是只读的：文件里不得出现 post/put/delete（缓存写入归 service 层）。

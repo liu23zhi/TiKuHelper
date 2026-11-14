@@ -280,8 +280,8 @@ test('画像接口客户端只封装两条只读 GET，全部 errorFeedback: loc
   const source = await readFile(apiSourcePath, 'utf8');
 
   // 后端契约原文（internal/api/router.go 由 captain 接线）：
-  assert.match(source, /\/adapter-service\/admin\/portrait\/overview/);
-  assert.match(source, /\/adapter-service\/admin\/users\/\$\{[^}]+\}\/portrait/);
+  assert.match(source, /\/api\/admin\/portrait\/overview/);
+  assert.match(source, /\/api\/admin\/users\/\$\{[^}]+\}\/portrait/);
   // 只读：不得出现 post/put/delete。
   assert.doesNotMatch(source, /method:\s*'post'/);
   assert.doesNotMatch(source, /method:\s*'put'/);

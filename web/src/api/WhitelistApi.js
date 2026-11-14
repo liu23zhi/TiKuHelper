@@ -2,12 +2,12 @@ import request from '../utils/request'
 
 // 白名单管理（T-04，task_doc/123：「请新增白名单管理，规则模仿黑名单。优先级 白名单 > 黑名单」）。
 // 后端契约（internal/controller/whitelist_admin.go）：
-//   GET    /adapter-service/whitelist                  列表：分页 + kind / enabled / keyword
-//   POST   /adapter-service/whitelist                  新增：归一化 + reason 必填
-//   PUT    /adapter-service/whitelist/:id/enabled       启停：单列写（不整行覆盖）
-//   DELETE /adapter-service/whitelist/:id              删除：硬删 + ?reason= 必填（快照审计）
-//   GET    /adapter-service/whitelist/exempt-ips       按 IP 白名单文本域（T-05）
-//   PUT    /adapter-service/whitelist/exempt-ips       保存文本域（非法项 400，不静默跳过）
+//   GET    /api/whitelist                  列表：分页 + kind / enabled / keyword
+//   POST   /api/whitelist                  新增：归一化 + reason 必填
+//   PUT    /api/whitelist/:id/enabled       启停：单列写（不整行覆盖）
+//   DELETE /api/whitelist/:id              删除：硬删 + ?reason= 必填（快照审计）
+//   GET    /api/whitelist/exempt-ips       按 IP 白名单文本域（T-05）
+//   PUT    /api/whitelist/exempt-ips       保存文本域（非法项 400，不静默跳过）
 //
 // ⚠️ 白名单**没有命中记录接口**：白名单命中等于「本次请求不拦截」，
 // 按判据「白名单内 IP 不记 blacklist_hits 行」，它连黑名单的留痕都不产生，
@@ -20,7 +20,7 @@ import request from '../utils/request'
 export function getWhitelistEntries(params) {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/whitelist',
+    url: '/api/whitelist',
     method: 'get',
     params,
   })
@@ -33,7 +33,7 @@ export function getWhitelistEntries(params) {
 export function createWhitelistEntry(payload) {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/whitelist',
+    url: '/api/whitelist',
     method: 'post',
     data: {
       kind: payload.kind || 'ip',
@@ -54,7 +54,7 @@ export function setWhitelistEntryEnabled(id, enabled) {
   if (typeof enabled !== 'boolean') throw new Error('缺少目标状态')
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/whitelist/${value}/enabled`,
+    url: `/api/whitelist/${value}/enabled`,
     method: 'put',
     data: { enabled },
   })
@@ -69,7 +69,7 @@ export function deleteWhitelistEntry(id, reason) {
   if (trimmed.length < 2) throw new Error('请填写删除原因')
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/whitelist/${value}`,
+    url: `/api/whitelist/${value}`,
     method: 'delete',
     params: { reason: trimmed },
   })
@@ -83,7 +83,7 @@ export function deleteWhitelistEntry(id, reason) {
 export function getWhitelistExemptIPs() {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/whitelist/exempt-ips',
+    url: '/api/whitelist/exempt-ips',
     method: 'get',
   })
 }
@@ -91,7 +91,7 @@ export function getWhitelistExemptIPs() {
 export function updateWhitelistExemptIPs(value) {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/whitelist/exempt-ips',
+    url: '/api/whitelist/exempt-ips',
     method: 'put',
     data: { value: String(value == null ? '' : value) },
   })

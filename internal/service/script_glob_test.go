@@ -157,11 +157,11 @@ func TestScriptGlobPathDoubleStarMatchesMultipleSegments(t *testing.T) {
 // ─────────────────────── 5) path.Clean 与 `..` 拒绝 ───────────────────────
 
 func TestScriptGlobRejectsPathTraversalBeforeCleaning(t *testing.T) {
-	// 关键用例：`/a/../adapter-service/x` 经 path.Clean 会变成 `/adapter-service/x`，
+	// 关键用例：`/a/../api/x` 经 path.Clean 会变成 `/api/x`，
 	// 看起来「更安全」，但那会让调用方无法区分「用户显式穿越」和「正常路径」，
 	// 且某些规则组合下穿越能把请求送进保留前缀之外的分支。实现要求**报错**。
-	if got, err := cleanScriptRequestPath("/a/../adapter-service/x"); !errors.Is(err, ErrScriptPathTraversal) {
-		t.Fatalf("cleanScriptRequestPath(/a/../adapter-service/x) = %q,%v; want ErrScriptPathTraversal", got, err)
+	if got, err := cleanScriptRequestPath("/a/../api/x"); !errors.Is(err, ErrScriptPathTraversal) {
+		t.Fatalf("cleanScriptRequestPath(/a/../api/x) = %q,%v; want ErrScriptPathTraversal", got, err)
 	}
 	for _, raw := range []string{"/..", "/../x", "/a/b/..", "/a/../../etc/passwd", "/a/../b/../c"} {
 		if _, err := cleanScriptRequestPath(raw); !errors.Is(err, ErrScriptPathTraversal) {
@@ -170,7 +170,7 @@ func TestScriptGlobRejectsPathTraversalBeforeCleaning(t *testing.T) {
 	}
 	// glob 匹配对穿越必须返回 **error**（不是 (false,nil)），否则调用方会当成
 	// 「普通不匹配」继续试下一条规则。
-	if ok, err := scriptPathGlobMatch("/a/**", "/a/../adapter-service/x"); !errors.Is(err, ErrScriptPathTraversal) {
+	if ok, err := scriptPathGlobMatch("/a/**", "/a/../api/x"); !errors.Is(err, ErrScriptPathTraversal) {
 		t.Fatalf("scriptPathGlobMatch with traversal = %v,%v; want ErrScriptPathTraversal", ok, err)
 	}
 	// 正常路径仍要按 path.Clean 规范化：尾斜杠、重复斜杠、`.` 段。
@@ -209,7 +209,7 @@ func TestScriptGlobReservedPrefixOutranksWildcardRules(t *testing.T) {
 	if !scriptReservedPrefix("adapter-service") {
 		t.Fatal("adapter-service must be reserved")
 	}
-	for _, value := range []string{"ADAPTER-SERVICE", " adapter-service ", "/adapter-service/", "sqp", "assets"} {
+	for _, value := range []string{"ADAPTER-SERVICE", " adapter-service ", "/api/", "sqp", "assets"} {
 		if !scriptReservedPrefix(value) {
 			t.Fatalf("%q should normalize to a reserved prefix", value)
 		}
@@ -221,7 +221,7 @@ func TestScriptGlobReservedPrefixOutranksWildcardRules(t *testing.T) {
 
 	// 配置期：首段是 `*`/`**` 或直接命中保留前缀的规则一律拒绝，
 	// 否则 `a.com/**` 会吞掉整站 API。
-	for _, entry := range []string{"a.com/**", "a.com/*/*", "a.com/adapter-service/*", "a.com/sqp/**"} {
+	for _, entry := range []string{"a.com/**", "a.com/*/*", "a.com/api/*", "a.com/sqp/**"} {
 		if err := validateScriptDomainEntry(entry); !errors.Is(err, ErrScriptReservedPrefix) {
 			t.Fatalf("validateScriptDomainEntry(%q) = %v, want ErrScriptReservedPrefix", entry, err)
 		}
@@ -257,14 +257,14 @@ func TestScriptGlobReservedPrefixOutranksWildcardRules(t *testing.T) {
 	if err := db.Create(&script).Error; err != nil {
 		t.Fatal(err)
 	}
-	// 规则允许 /a/sc（`**` 吞两段），保留前缀则必须挡下 /adapter-service/x。
+	// 规则允许 /a/sc（`**` 吞两段），保留前缀则必须挡下 /api/x。
 	if _, err := ResolvePublicScriptWithDB(db, "sc.a.com", "/a/sc"); err != nil {
 		t.Fatalf("wildcard rule should allow /a/sc, got %v", err)
 	}
-	if _, err := ResolvePublicScriptWithDB(db, "sc.a.com", "/adapter-service/sc"); !errors.Is(err, ErrScriptNotFound) {
+	if _, err := ResolvePublicScriptWithDB(db, "sc.a.com", "/api/sc"); !errors.Is(err, ErrScriptNotFound) {
 		t.Fatalf("reserved prefix must outrank ** rule, got %v", err)
 	}
-	if _, err := ResolvePublicScriptWithDB(db, "sc.a.com", "/a/../adapter-service/sc"); !errors.Is(err, ErrScriptNotFound) {
+	if _, err := ResolvePublicScriptWithDB(db, "sc.a.com", "/a/../api/sc"); !errors.Is(err, ErrScriptNotFound) {
 		t.Fatalf("traversal into a reserved prefix must be refused, got %v", err)
 	}
 	// 同一台 host 上，规则没覆盖的路径必须被拒 —— 证明放行来自 glob 而不是「配了规则就全通」。
@@ -278,7 +278,7 @@ func TestScriptGlobReservedPrefixOutranksWildcardRules(t *testing.T) {
 // 说明（实测偏差，已在交付报告中标注）：任务书要求「枚举数 ≥ 20」，
 // 但实测 buildReservedScriptPrefixes(nil) 只有 baseline 的 9 条，
 // 而真实路由表（208 条路由）只贡献 2 个第一段（adapter-service / sqp），
-// 合并后仍是 9 —— 因为「前缀」按第一段聚合，200 多条 /adapter-service/* 只算一个。
+// 合并后仍是 9 —— 因为「前缀」按第一段聚合，200 多条 /api/* 只算一个。
 // 因此「前缀数 ≥ 20」本仓永远不可能成立，写成硬断言只会得到一个恒红的假钉子。
 //
 // ⚠️ 不要「修正」成 >= 20：数字 20 属于 internal/api 的 scriptReservedPrefixWarnBelow，

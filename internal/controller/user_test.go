@@ -77,7 +77,7 @@ func TestSendPublicSMSCodeIdempotencyReplaysWithoutConsumingOrSendingAgain(t *te
 	request := func(body string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
-		ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/public/sms-code", bytes.NewBufferString(body))
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/api/public/sms-code", bytes.NewBufferString(body))
 		ctx.Request.Header.Set("Content-Type", "application/json")
 		ctx.Request.Header.Set("Idempotency-Key", "sms-action-1")
 		SendPublicSMSCode(ctx)
@@ -109,7 +109,7 @@ func TestSendPublicSMSCodeUnknownProviderResultIsNeverResent(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
-		ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/public/sms-code", bytes.NewBufferString(`{"phone":"13800000000","scene":"login","captchaToken":"token-2"}`))
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/api/public/sms-code", bytes.NewBufferString(`{"phone":"13800000000","scene":"login","captchaToken":"token-2"}`))
 		ctx.Request.Header.Set("Content-Type", "application/json")
 		ctx.Request.Header.Set("Idempotency-Key", "sms-action-2")
 		SendPublicSMSCode(ctx)
@@ -134,7 +134,7 @@ func TestPhoneChangeSMSCodeIdempotencyDoesNotSendAgain(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
-		ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/phone/sms-code", bytes.NewBufferString(`{"phone":"13900000000","captchaToken":"token-1"}`))
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/phone/sms-code", bytes.NewBufferString(`{"phone":"13900000000","captchaToken":"token-1"}`))
 		ctx.Request.Header.Set("Content-Type", "application/json")
 		ctx.Request.Header.Set("Idempotency-Key", "phone-change-sms-1")
 		ctx.Set("user", &operator)
@@ -188,7 +188,7 @@ func TestUserRegisterWithWechatFlowBindsWechatIDAtomically(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewBufferString(fmt.Sprintf(`{"username":"wechat_user","password":"Abc12345!","nickname":"微信用户","phone":"13800000000","smsCode":"123456","captchaToken":"captcha-token","registrationFlowToken":%q}`, snapshot.Token)))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/register", bytes.NewBufferString(fmt.Sprintf(`{"username":"wechat_user","password":"Abc12345!","nickname":"微信用户","phone":"13800000000","smsCode":"123456","captchaToken":"captcha-token","registrationFlowToken":%q}`, snapshot.Token)))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	UserRegister(ctx)
 
@@ -230,7 +230,7 @@ func TestUserRegisterRejectsInvalidWechatFlowToken(t *testing.T) {
 	}
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewBufferString(`{"username":"invalid_flow_user","password":"Abc12345!","nickname":"无效流程","phone":"13800000000","smsCode":"123456","captchaToken":"captcha-token","registrationFlowToken":"invalid-flow"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/register", bytes.NewBufferString(`{"username":"invalid_flow_user","password":"Abc12345!","nickname":"无效流程","phone":"13800000000","smsCode":"123456","captchaToken":"captcha-token","registrationFlowToken":"invalid-flow"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	UserRegister(ctx)
 
@@ -289,7 +289,7 @@ func TestUserRegisterWechatConflictRollsBackAndInvalidatesFlow(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
 		payload := fmt.Sprintf(`{"username":%q,"password":"Abc12345!","nickname":"冲突用户","phone":"13800000000","smsCode":"123456","captchaToken":"conflict-captcha","registrationFlowToken":%q}`, username, snapshot.Token)
-		ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewBufferString(payload))
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/register", bytes.NewBufferString(payload))
 		ctx.Request.Header.Set("Content-Type", "application/json")
 		UserRegister(ctx)
 		return recorder
@@ -383,7 +383,7 @@ func TestUserRegisterSameWechatFlowConcurrentSubmitCreatesOnce(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
 			payload := fmt.Sprintf(`{"username":%q,"password":"Abc12345!","nickname":"并发用户","phone":"13800000000","smsCode":"123456","captchaToken":"concurrent-captcha","registrationFlowToken":%q}`, username, snapshot.Token)
-			ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewBufferString(payload))
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/register", bytes.NewBufferString(payload))
 			ctx.Request.Header.Set("Content-Type", "application/json")
 			UserRegister(ctx)
 			results <- result{status: recorder.Code, body: recorder.Body.String()}
@@ -428,7 +428,7 @@ func TestUserLoginRejectsDisabledUser(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/login", bytes.NewBufferString(`{"username":"disabled","password":"123456","captchaToken":"token-1"}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/user/login", bytes.NewBufferString(`{"username":"disabled","password":"123456","captchaToken":"token-1"}`))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 
@@ -464,7 +464,7 @@ func TestUserLoginStoresLastLoginMetadata(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/login", bytes.NewBufferString(`{"username":"login-user","password":"123456","captchaToken":"token-1"}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/user/login", bytes.NewBufferString(`{"username":"login-user","password":"123456","captchaToken":"token-1"}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.RemoteAddr = "10.20.30.40:12345"
 	request.Header.Set("X-Forwarded-For", "10.20.30.40")
@@ -502,7 +502,7 @@ func TestUserLoginReplacesPreviousDeviceSession(t *testing.T) {
 	login := func() string {
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
-		request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/login", bytes.NewBufferString(`{"username":"single-device-login","password":"123456","captchaToken":"token"}`))
+		request := httptest.NewRequest(http.MethodPost, "/api/user/login", bytes.NewBufferString(`{"username":"single-device-login","password":"123456","captchaToken":"token"}`))
 		request.Header.Set("Content-Type", "application/json")
 		ctx.Request = request
 		UserLogin(ctx)
@@ -522,7 +522,7 @@ func TestUserLoginReplacesPreviousDeviceSession(t *testing.T) {
 	authenticate := func(token string) int {
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
-		request := httptest.NewRequest(http.MethodGet, "/adapter-service/user/info", nil)
+		request := httptest.NewRequest(http.MethodGet, "/api/user/info", nil)
 		request.Header.Set("Authorization", token)
 		ctx.Request = request
 		Auth(ctx)
@@ -551,7 +551,7 @@ func TestUserLoginRejectsPasswordOverBcryptLimit(t *testing.T) {
 	}
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/login", bytes.NewBufferString(fmt.Sprintf(`{"username":"login-overlong","password":%q,"captchaToken":"token"}`, strings.Repeat("a", 73))))
+	request := httptest.NewRequest(http.MethodPost, "/api/user/login", bytes.NewBufferString(fmt.Sprintf(`{"username":"login-overlong","password":%q,"captchaToken":"token"}`, strings.Repeat("a", 73))))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	UserLogin(ctx)
@@ -584,7 +584,7 @@ func TestAuthRejectsDisabledUser(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodGet, "/adapter-service/user", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/user", nil)
 	request.Header.Set("Authorization", token)
 	ctx.Request = request
 
@@ -623,7 +623,7 @@ func TestAuthRejectsTokenAfterPasswordChange(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodGet, "/adapter-service/user/info", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/user/info", nil)
 	request.Header.Set("Authorization", token)
 	ctx.Request = request
 
@@ -646,7 +646,7 @@ func TestAuthRejectsPreviousLoginSession(t *testing.T) {
 	authenticate := func(token string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
-		request := httptest.NewRequest(http.MethodGet, "/adapter-service/user/info", nil)
+		request := httptest.NewRequest(http.MethodGet, "/api/user/info", nil)
 		request.Header.Set("Authorization", token)
 		ctx.Request = request
 		Auth(ctx)
@@ -727,7 +727,7 @@ func TestAuthAccessTokenRejectsLoginSessionsAndAcceptsAccessTokens(t *testing.T)
 	}
 	waitForSearchTask(t, owner.ID, taskID)
 	router := gin.New()
-	router.GET("/adapter-service/search/status", AuthAccessToken, GetSearchTaskStatus)
+	router.GET("/api/search/status", AuthAccessToken, GetSearchTaskStatus)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, searchTaskStatusURL(taskID), nil)
 	request.Header.Set("Authorization", "Bearer "+otherToken.TokenValue)
@@ -750,7 +750,7 @@ func TestUpdateCurrentUserProfileUsesAuthenticatedUserAndUpdatesFields(t *testin
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Set("user", &entity.User{ID: 501, Username: "profile_old", Role: "user", Status: "enabled"})
-	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/user/profile", bytes.NewBufferString(`{"id":502,"username":"profile_new","nickname":"新昵称"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/api/user/profile", bytes.NewBufferString(`{"id":502,"username":"profile_new","nickname":"新昵称"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
 	UpdateCurrentUserProfile(ctx)
@@ -787,7 +787,7 @@ func TestUpdateCurrentUserProfileRejectsDuplicateUsernameWithConflict(t *testing
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Set("user", &entity.User{ID: 503, Username: "profile_current", Role: "user", Status: "enabled"})
-	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/user/profile", bytes.NewBufferString(`{"username":"profile_taken","nickname":"不应保存"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/api/user/profile", bytes.NewBufferString(`{"username":"profile_taken","nickname":"不应保存"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
 	UpdateCurrentUserProfile(ctx)
@@ -818,7 +818,7 @@ func TestUpdateCurrentUserProfileValidatesUsernameAndNicknameLength(t *testing.T
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
 		ctx.Set("user", &entity.User{ID: 505, Username: "profile_valid", Role: "user", Status: "enabled"})
-		ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/user/profile", bytes.NewBufferString(payload))
+		ctx.Request = httptest.NewRequest(http.MethodPut, "/api/user/profile", bytes.NewBufferString(payload))
 		ctx.Request.Header.Set("Content-Type", "application/json")
 
 		UpdateCurrentUserProfile(ctx)
@@ -836,7 +836,7 @@ func TestUserRegisterRequiresRegisterEnabled(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"username":"new_user","password":"123456","nickname":"新用户","captchaToken":"token-1"}`)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPost, "/api/user/register", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 
@@ -860,7 +860,7 @@ func TestUserRegisterRejectsWeakPassword(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"username":"weak_user","password":"12345678","nickname":"弱密码","phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPost, "/api/user/register", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 
@@ -891,7 +891,7 @@ func TestUserRegisterRejectsPasswordOverBcryptLimitAsBadRequest(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(fmt.Sprintf(`{"username":"register_overlong","password":%q,"phone":"13800000000","smsCode":"123456","captchaToken":"token"}`, strings.Repeat("a", 73)))
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/register", bytes.NewReader(payload))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	UserRegister(ctx)
 	if recorder.Code != http.StatusBadRequest || !bytes.Contains(recorder.Body.Bytes(), []byte("72")) {
@@ -919,7 +919,7 @@ func TestUserRegisterAcceptsStrongPasswordAtBcryptLimit(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(fmt.Sprintf(`{"username":"register_72bytes","password":%q,"phone":"13800000000","smsCode":"123456","captchaToken":"token"}`, password))
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/register", bytes.NewReader(payload))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	UserRegister(ctx)
 	if recorder.Code != http.StatusOK {
@@ -939,7 +939,7 @@ func TestUserRegisterRejectsInvalidAndOverlongUsernames(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
 			payload := []byte(fmt.Sprintf(`{"username":%q,"password":"Abc12345!","phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`, username))
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
+			request := httptest.NewRequest(http.MethodPost, "/api/user/register", bytes.NewReader(payload))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
 
@@ -978,7 +978,7 @@ func TestUserRegisterCreatesPublicUserWithDefaults(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"username":"new_user","password":"Abc12345!","nickname":"新用户","phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPost, "/api/user/register", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 
@@ -1041,7 +1041,7 @@ func TestUserRegisterAppliesNewUserBonusAndWritesBillingDetail(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"username":"bonus_user","password":"Abc12345!","nickname":"赠送用户","phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPost, "/api/user/register", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 
@@ -1087,7 +1087,7 @@ func TestUserLoginRequiresCaptchaToken(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/login", bytes.NewBufferString(`{"username":"admin","password":"123456"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/login", bytes.NewBufferString(`{"username":"admin","password":"123456"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
 	UserLogin(ctx)
@@ -1103,7 +1103,7 @@ func TestSendPublicSMSCodeRequiresCaptchaToken(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/public/sms-code", bytes.NewBufferString(`{"phone":"13800000000","scene":"login"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/public/sms-code", bytes.NewBufferString(`{"phone":"13800000000","scene":"login"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
 	SendPublicSMSCode(ctx)
@@ -1128,7 +1128,7 @@ func TestUpdateUserUpdatesOwnedUserFields(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"nickname":"新昵称","role":"admin","status":"disabled","balance":30.25,"balanceMode":"override"}`)
-	request := httptest.NewRequest(http.MethodPut, "/adapter-service/user/11", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPut, "/api/user/11", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Params = gin.Params{{Key: "id", Value: "11"}}
@@ -1176,7 +1176,7 @@ func TestUpdateUserAddsBalanceAmount(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"nickname":"","role":"user","status":"enabled","balance":2.75,"balanceMode":"increase"}`)
-	request := httptest.NewRequest(http.MethodPut, "/adapter-service/user/71", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPut, "/api/user/71", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Params = gin.Params{{Key: "id", Value: "71"}}
@@ -1212,7 +1212,7 @@ func TestUpdateUserBindsWechatID(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"nickname":"","role":"user","status":"enabled","phone":"","wechatId":"openid-admin-bind"}`)
-	request := httptest.NewRequest(http.MethodPut, "/adapter-service/user/77", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPut, "/api/user/77", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Params = gin.Params{{Key: "id", Value: "77"}}
@@ -1252,7 +1252,7 @@ func TestUpdateUserClearsWechatBinding(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"nickname":"","role":"user","status":"enabled","phone":"","wechatId":"   "}`)
-	request := httptest.NewRequest(http.MethodPut, "/adapter-service/user/79", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPut, "/api/user/79", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Params = gin.Params{{Key: "id", Value: "79"}}
@@ -1288,7 +1288,7 @@ func TestUpdateUserRejectsOccupiedWechatWithoutForce(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"nickname":"","role":"user","status":"enabled","phone":"","wechatId":"openid-occupied"}`)
-	request := httptest.NewRequest(http.MethodPut, "/adapter-service/user/82", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPut, "/api/user/82", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Params = gin.Params{{Key: "id", Value: "82"}}
@@ -1321,7 +1321,7 @@ func TestUpdateUserForceReassignsWechatBinding(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"nickname":"","role":"user","status":"enabled","phone":"","wechatId":"openid-reassign","forceReassignWechat":true}`)
-	request := httptest.NewRequest(http.MethodPut, "/adapter-service/user/85", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPut, "/api/user/85", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Params = gin.Params{{Key: "id", Value: "85"}}
@@ -1363,7 +1363,7 @@ func TestUpdateUserReducesBalanceAmount(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"nickname":"","role":"user","status":"enabled","balance":3.25,"balanceMode":"decrease"}`)
-	request := httptest.NewRequest(http.MethodPut, "/adapter-service/user/73", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPut, "/api/user/73", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Params = gin.Params{{Key: "id", Value: "73"}}
@@ -1399,7 +1399,7 @@ func TestUpdateUserRejectsUnknownBalanceMode(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"nickname":"","role":"user","status":"enabled","balance":3.25,"balanceMode":"multiply"}`)
-	request := httptest.NewRequest(http.MethodPut, "/adapter-service/user/75", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPut, "/api/user/75", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Params = gin.Params{{Key: "id", Value: "75"}}
@@ -1526,9 +1526,9 @@ func newUserListTestContext(admin *entity.User, query string) (*gin.Context, *ht
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Set("user", admin)
 	if query == "" {
-		ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/user", nil)
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/api/user", nil)
 	} else {
-		ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/user?"+query, nil)
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/api/user?"+query, nil)
 	}
 	return ctx, recorder
 }
@@ -1751,7 +1751,7 @@ func TestCreateUserRejectsNonAdminOperator(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"username":"created_by_user","password":"123456","nickname":"test"}`)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPost, "/api/user", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Set("user", operator)
@@ -1785,7 +1785,7 @@ func TestCreateUserAcceptsWeakPassword(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"username":"weak_created_user","password":"12345678","nickname":"test"}`)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPost, "/api/user", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Set("user", admin)
@@ -1824,7 +1824,7 @@ func TestCreateUserRejectsEmptyOrOverlongAdminPassword(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
 			payload := []byte(fmt.Sprintf(`{"username":%q,"password":%q,"giftEnabled":false}`, "password_boundary_user_"+fmt.Sprint(len(password)), password))
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/user", bytes.NewReader(payload))
+			request := httptest.NewRequest(http.MethodPost, "/api/user", bytes.NewReader(payload))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
 			ctx.Set("user", admin)
@@ -1849,7 +1849,7 @@ func TestCreateUserRejectsInvalidAndOverlongUsernames(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
 			payload := []byte(fmt.Sprintf(`{"username":%q,"password":"Abc12345!","giftEnabled":false}`, username))
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/user", bytes.NewReader(payload))
+			request := httptest.NewRequest(http.MethodPost, "/api/user", bytes.NewReader(payload))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
 			ctx.Set("user", admin)
@@ -1874,7 +1874,7 @@ func TestCreateUserAcceptsStrongPassword(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"username":"created_strong_user","password":"Abc12345!","nickname":"test","role":"user","status":"enabled"}`)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPost, "/api/user", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Set("user", admin)
@@ -1908,7 +1908,7 @@ func TestCreateUserAppliesEditableNewUserBonus(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"username":"created_bonus_user","password":"Abc12345!","nickname":"赠送账号","role":"user","status":"enabled","giftEnabled":true,"giftAmount":8.75}`)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPost, "/api/user", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Set("user", admin)
@@ -1952,7 +1952,7 @@ func TestCreateUserCanDisableNewUserBonus(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"username":"created_no_bonus_user","password":"Abc12345!","nickname":"不赠送账号","role":"user","status":"enabled","giftEnabled":false,"giftAmount":-99}`)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPost, "/api/user", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Set("user", admin)
@@ -1993,7 +1993,7 @@ func TestUpdateUserAdminCanManageAnyUser(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"nickname":"管理员修改","role":"admin","status":"disabled"}`)
-	request := httptest.NewRequest(http.MethodPut, "/adapter-service/user/46", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPut, "/api/user/46", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Params = gin.Params{{Key: "id", Value: "46"}}
@@ -2029,7 +2029,7 @@ func TestResetUserPasswordRejectsNonAdminOperator(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"password":"New12345!"}`)
-	request := httptest.NewRequest(http.MethodPut, "/adapter-service/user/61/reset-password", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPut, "/api/user/61/reset-password", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Params = gin.Params{{Key: "id", Value: "61"}}
@@ -2068,7 +2068,7 @@ func TestResetUserPasswordAcceptsWeakPassword(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"password":"12345678"}`)
-	request := httptest.NewRequest(http.MethodPut, "/adapter-service/user/63/reset-password", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPut, "/api/user/63/reset-password", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Params = gin.Params{{Key: "id", Value: "63"}}
@@ -2102,7 +2102,7 @@ func TestResetUserPasswordRejectsOverlongAdminPassword(t *testing.T) {
 	}
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodPut, "/adapter-service/user/67/reset-password", bytes.NewReader([]byte(fmt.Sprintf(`{"password":%q}`, strings.Repeat("a", 73)))))
+	request := httptest.NewRequest(http.MethodPut, "/api/user/67/reset-password", bytes.NewReader([]byte(fmt.Sprintf(`{"password":%q}`, strings.Repeat("a", 73)))))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Params = gin.Params{{Key: "id", Value: "67"}}
@@ -2128,7 +2128,7 @@ func TestResetUserPasswordAdminCanResetPassword(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"password":"New12345!"}`)
-	request := httptest.NewRequest(http.MethodPut, "/adapter-service/user/65/reset-password", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPut, "/api/user/65/reset-password", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Params = gin.Params{{Key: "id", Value: "65"}}
@@ -2163,7 +2163,7 @@ func TestDeleteUserRejectsNonAdminOperator(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodDelete, "/adapter-service/user/51", nil)
+	request := httptest.NewRequest(http.MethodDelete, "/api/user/51", nil)
 	ctx.Request = request
 	ctx.Params = gin.Params{{Key: "id", Value: "51"}}
 	ctx.Set("user", operator)
@@ -2200,7 +2200,7 @@ func TestDeleteUserAdminCanDeleteAnyUser(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodDelete, "/adapter-service/user/56", nil)
+	request := httptest.NewRequest(http.MethodDelete, "/api/user/56", nil)
 	ctx.Request = request
 	ctx.Params = gin.Params{{Key: "id", Value: "56"}}
 	ctx.Set("user", admin)
@@ -2264,7 +2264,7 @@ func TestSendPublicSMSCodeDelegatesToService(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/public/sms-code", bytes.NewBufferString(`{"phone":"13800000000","scene":"login","captchaToken":"token-1"}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/public/sms-code", bytes.NewBufferString(`{"phone":"13800000000","scene":"login","captchaToken":"token-1"}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.RemoteAddr = "10.20.30.40:12345"
 	request.Header.Set("X-Forwarded-For", "10.20.30.40")
@@ -2306,7 +2306,7 @@ func TestUserSMSLoginSucceedsAndStoresLoginMetadata(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/login/sms", bytes.NewBufferString(`{"phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/user/login/sms", bytes.NewBufferString(`{"phone":"13800000000","smsCode":"123456","captchaToken":"token-1"}`))
 	request.Header.Set("Content-Type", "application/json")
 	request.RemoteAddr = "10.0.0.1:12345"
 	request.Header.Set("X-Forwarded-For", "10.0.0.1")
@@ -2342,7 +2342,7 @@ func TestUserRegisterRequiresPhoneAndSMSCode(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"username":"new_user","password":"Abc12345!","nickname":"新用户"}`)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPost, "/api/user/register", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 
@@ -2379,7 +2379,7 @@ func TestUserRegisterCreatesPublicUserWithBoundPhone(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"username":"phone_user","password":"Abc12345!","nickname":"新用户","phone":"13800000000","smsCode":"123456","captchaToken":"token_1"}`)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/user/register", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPost, "/api/user/register", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 
@@ -2424,7 +2424,7 @@ func TestUpdateUserForceReassignsPhone(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	payload := []byte(`{"nickname":"目标用户","role":"user","status":"enabled","phone":"13800000000","forceReassignPhone":true}`)
-	request := httptest.NewRequest(http.MethodPut, "/adapter-service/user/203", bytes.NewReader(payload))
+	request := httptest.NewRequest(http.MethodPut, "/api/user/203", bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	ctx.Request = request
 	ctx.Params = gin.Params{{Key: "id", Value: "203"}}
@@ -2478,7 +2478,7 @@ func TestSendUserPhoneChangeSMSCodeUsesAuthenticatedUser(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Set("user", &entity.User{ID: 301, Username: "profile-user", Status: "enabled"})
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/phone/sms-code", bytes.NewBufferString(`{"phone":"13900000000","captchaToken":"captcha-token"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/phone/sms-code", bytes.NewBufferString(`{"phone":"13900000000","captchaToken":"captcha-token"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
 	SendUserPhoneChangeSMSCode(ctx)
@@ -2510,7 +2510,7 @@ func TestUpdateCurrentUserPhoneUsesAuthenticatedUser(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Set("user", &entity.User{ID: 302, Username: "profile-user", Status: "enabled"})
-	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/user/phone", bytes.NewBufferString(`{"phone":"13900000000","smsCode":"123456"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/api/user/phone", bytes.NewBufferString(`{"phone":"13900000000","smsCode":"123456"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
 	UpdateCurrentUserPhone(ctx)
@@ -2551,7 +2551,7 @@ func TestBindAndUnbindCurrentUserWechatUseAuthenticatedUser(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Set("user", &entity.User{ID: 303, Username: "profile-user", Status: "enabled"})
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/wechat/bind", bytes.NewBufferString(`{"bindToken":"bind-token"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/wechat/bind", bytes.NewBufferString(`{"bindToken":"bind-token"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
 	BindCurrentUserWechat(ctx)
@@ -2566,7 +2566,7 @@ func TestBindAndUnbindCurrentUserWechatUseAuthenticatedUser(t *testing.T) {
 	recorder = httptest.NewRecorder()
 	ctx, _ = gin.CreateTestContext(recorder)
 	ctx.Set("user", &entity.User{ID: 303, Username: "profile-user", Status: "enabled"})
-	ctx.Request = httptest.NewRequest(http.MethodDelete, "/adapter-service/user/wechat", nil)
+	ctx.Request = httptest.NewRequest(http.MethodDelete, "/api/user/wechat", nil)
 
 	UnbindCurrentUserWechat(ctx)
 
@@ -2606,7 +2606,7 @@ func TestBindCurrentUserWechatByCodeUsesAuthenticatedUser(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Set("user", &entity.User{ID: 304, Username: "profile-user", Status: "enabled"})
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/wechat/bind-code", bytes.NewBufferString(`{"code":"104016"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/wechat/bind-code", bytes.NewBufferString(`{"code":"104016"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 
 	BindCurrentUserWechatByCode(ctx)

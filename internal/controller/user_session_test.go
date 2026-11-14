@@ -28,7 +28,7 @@ func TestSMSLoginReplacesPasswordSessionAndLogoutRevokesIt(t *testing.T) {
 	verifySMSCodeWithDB = func(string, string, string) (service.SMSVerificationEvidence, error) {
 		return service.SMSVerificationEvidence{}, nil
 	}
-	response := phoneControllerRequest(t, http.MethodPost, "/adapter-service/user/login/sms", `{"phone":"13800000000","smsCode":"123456","captchaToken":"captcha"}`, nil, UserSMSLogin)
+	response := phoneControllerRequest(t, http.MethodPost, "/api/user/login/sms", `{"phone":"13800000000","smsCode":"123456","captchaToken":"captcha"}`, nil, UserSMSLogin)
 	if response.Code != http.StatusOK {
 		t.Fatalf("SMS login: %d %s", response.Code, response.Body.String())
 	}

@@ -251,7 +251,7 @@ func TestSearchReturnsUnauthorizedDetailAndRequestSnapshot(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	rawBody := `{"question":"题目","options":["A","B"]}`
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/search", bytes.NewReader([]byte(rawBody)))
+	request := httptest.NewRequest(http.MethodPost, "/api/search", bytes.NewReader([]byte(rawBody)))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Origin", "https://mooc1.chaoxing.com")
 	request.Header.Set("Authorization", "Bearer debug-secret-token-123456")
@@ -293,8 +293,8 @@ func TestSearchReturnsUnauthorizedDetailAndRequestSnapshot(t *testing.T) {
 	if got.Request.Method != http.MethodPost {
 		t.Fatalf("expected method POST, got %q", got.Request.Method)
 	}
-	if got.Request.Path != "/adapter-service/search" {
-		t.Fatalf("expected path /adapter-service/search, got %q", got.Request.Path)
+	if got.Request.Path != "/api/search" {
+		t.Fatalf("expected path /api/search, got %q", got.Request.Path)
 	}
 	if got.Request.Origin != "https://mooc1.chaoxing.com" {
 		t.Fatalf("expected origin %q, got %q", "https://mooc1.chaoxing.com", got.Request.Origin)
@@ -327,7 +327,7 @@ func TestSearchUnauthorizedWritesAuditLogWithResolvedUser(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?noRecord=1", bytes.NewReader([]byte(`{"question":"余额拒绝日志题目","options":["A","B"]}`)))
+	request := httptest.NewRequest(http.MethodPost, "/api/search?noRecord=1", bytes.NewReader([]byte(`{"question":"余额拒绝日志题目","options":["A","B"]}`)))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+token.TokenValue)
 	ctx.Request = request
@@ -341,7 +341,7 @@ func TestSearchUnauthorizedWritesAuditLogWithResolvedUser(t *testing.T) {
 	if err := db.Where("module = ? AND user_id = ?", "search", user.ID).Order("id DESC").First(&entry).Error; err != nil {
 		t.Fatalf("load search failure audit log: %v", err)
 	}
-	for _, check := range []string{"搜索失败", "当前余额不足", "method=POST", "path=/adapter-service/search"} {
+	for _, check := range []string{"搜索失败", "当前余额不足", "method=POST", "path=/api/search"} {
 		if !strings.Contains(entry.Description, check) {
 			t.Fatalf("expected log description %q to contain %q", entry.Description, check)
 		}
@@ -424,7 +424,7 @@ func TestSearchReportsCompletedNormalDefaultBillingContext(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
 
@@ -483,7 +483,7 @@ func TestSearchReportsDowngradedAIDefaultBillingContextWithoutUsage(t *testing.T
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=ai&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=ai&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
 
@@ -542,7 +542,7 @@ func TestSearchReportsCompletedAIDefaultBillingContextWithUsage(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=ai&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=ai&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
 
@@ -598,7 +598,7 @@ func TestSearchPersistsBillingRecordAndAccessTokenUsageForDefaultProvider(t *tes
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
 
@@ -689,7 +689,7 @@ func TestSearchPersistsZeroAmountBillingRecordForFreeDefaultProvider(t *testing.
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"免费渠道题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"免费渠道题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
 
@@ -763,7 +763,7 @@ func TestSearchPersistsBillingRecordAndAccessTokenUsageForLocalSearch(t *testing
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=local&noRecord=1", bytes.NewReader([]byte(`{"question":"本地题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=local&noRecord=1", bytes.NewReader([]byte(`{"question":"本地题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("Authorization", "Basic search-local-billing-token")
 			ctx.Request = request
@@ -840,7 +840,7 @@ func TestSearchRecordsZeroAmountForModelMissingFromPriceTable(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=ai&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=ai&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
 
@@ -933,7 +933,7 @@ func TestSearchPersistsAIBillingDuringDefaultMixedSearch(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
 
@@ -1031,7 +1031,7 @@ func TestSearchPersistsAIBillingDuringDefaultAIThatRunsInNormalMode(t *testing.T
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
 
@@ -1398,7 +1398,7 @@ func TestSearchDeliversAndBillsCalledProviderIntoNegativeBalance(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","type":4}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","type":4}`)))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
 
@@ -1465,7 +1465,7 @@ func TestSearchRejectsRequestWhenAccessTokenQuotaExhausted(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"额度已耗尽题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"额度已耗尽题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("Authorization", "Basic search-exhausted-quota-token")
 			ctx.Request = request
@@ -1538,7 +1538,7 @@ func TestSearchRejectsFinalChargeBeyondAccessTokenQuota(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"额度边界题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"额度边界题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("Authorization", "Basic search-quota-boundary-token")
 			ctx.Request = request
@@ -1613,7 +1613,7 @@ func TestSearchPersistsCachedSourceNameInLocalBillingSnapshot(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=local&noRecord=1", bytes.NewReader([]byte(`{"question":"本地缓存题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=local&noRecord=1", bytes.NewReader([]byte(`{"question":"本地缓存题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("Authorization", "Basic search-local-source-token")
 			ctx.Request = request
@@ -1673,7 +1673,7 @@ func TestSearchPersistsQuestionTextForPersonalUsageRecords(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"这是 带空格 的题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"这是 带空格 的题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("Authorization", "Basic search-question-text-token")
 			ctx.Request = request
@@ -1730,7 +1730,7 @@ func TestSearchWritesLocalQuestionIDIntoAuditLog(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=local&noRecord=1", bytes.NewReader([]byte(`{"question":"本地日志题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=local&noRecord=1", bytes.NewReader([]byte(`{"question":"本地日志题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("Authorization", "Basic search-local-log-token")
 			ctx.Request = request
@@ -1788,7 +1788,7 @@ func TestSearchPersistsBillingForAdminAccessToken(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=icodef&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
 
@@ -1859,7 +1859,7 @@ func TestSearchWritesAuditLogForAuthenticatedSearch(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=wanneng&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=wanneng&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			request.RemoteAddr = "10.20.30.40:12345"
 			request.Header.Set("X-Forwarded-For", "10.20.30.40")
@@ -1922,7 +1922,7 @@ func TestSearchWritesFailureAuditLogForProviderError(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=wanneng&noRecord=1", bytes.NewReader([]byte(`{"question":"失败题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=wanneng&noRecord=1", bytes.NewReader([]byte(`{"question":"失败题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			request.RemoteAddr = "10.20.30.41:12345"
 			ctx.Request = request
@@ -1965,7 +1965,7 @@ func TestSearchRejectsAnonymousLocalSearch(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=local&noRecord=1", bytes.NewReader([]byte(`{"question":"本地匿名题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=local&noRecord=1", bytes.NewReader([]byte(`{"question":"本地匿名题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
 
@@ -2007,7 +2007,7 @@ func TestSearchRejectsDisabledLocalSearchEvenForAuthenticatedRequests(t *testing
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=local&noRecord=1", bytes.NewReader([]byte(`{"question":"本地禁用题目","options":["A","B"]}`)))
+	request := httptest.NewRequest(http.MethodPost, "/api/search?use=local&noRecord=1", bytes.NewReader([]byte(`{"question":"本地禁用题目","options":["A","B"]}`)))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Basic disabled-local-token")
 	ctx.Request = request
@@ -2058,7 +2058,7 @@ func TestSearchAllowsAnonymousRemoteSearchWithoutBillingAndWritesFullAuditLog(t 
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=wanneng&wannengToken=plain-third-party-token&noRecord=1", bytes.NewReader([]byte(rawBody)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=wanneng&wannengToken=plain-third-party-token&noRecord=1", bytes.NewReader([]byte(rawBody)))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("User-Agent", "anonymous-test-client/1.0")
 			request.RemoteAddr = "198.51.100.25:34567"
@@ -2144,7 +2144,7 @@ func TestSearchWritesActualHitProviderIntoAuditLogAndBillsExplicitProviderSearch
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=wanneng&wannengToken=request-provider-token&noRecord=1", bytes.NewReader([]byte(`{"question":"显式渠道题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=wanneng&wannengToken=request-provider-token&noRecord=1", bytes.NewReader([]byte(`{"question":"显式渠道题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("Authorization", "Basic search-hit-provider-token")
 			ctx.Request = request
@@ -2454,7 +2454,7 @@ func TestSearchRejectsNegativeBalanceUserWithExplicitProviderParams(t *testing.T
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=wanneng&wannengToken=request-provider-token&noRecord=1", bytes.NewReader([]byte(`{"question":"显式渠道题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=wanneng&wannengToken=request-provider-token&noRecord=1", bytes.NewReader([]byte(`{"question":"显式渠道题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("Authorization", "Basic "+"search-negative-explicit-token")
 			ctx.Request = request
@@ -2507,7 +2507,7 @@ func TestSearchRejectsNegativeBalanceUserWithoutExplicitProviderParams(t *testin
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+	request := httptest.NewRequest(http.MethodPost, "/api/search?noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Basic negative-balance-search-token")
 	ctx.Request = request
@@ -2579,7 +2579,7 @@ func TestSearchUnauthorizedLogsBusinessRejectionAsWarning(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+	request := httptest.NewRequest(http.MethodPost, "/api/search?noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Basic warning-level-token")
 	ctx.Request = request
@@ -2773,7 +2773,7 @@ func TestSearchUsesAIFlowDuringDefaultSearchWhenConfigUsable(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
 
@@ -2835,7 +2835,7 @@ func TestSearchPreservesChaoxingCompletionStyleTextAnswerFromAI(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?noRecord=1", bytes.NewReader([]byte(`{"question":"请完成连线","type":2}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?noRecord=1", bytes.NewReader([]byte(`{"question":"请完成连线","type":2}`)))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
 
@@ -2889,7 +2889,7 @@ func TestSearchPreservesChaoxingReaderStyleTextAnswerFromAIWithOptions(t *testin
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?noRecord=1", bytes.NewReader([]byte(`{"question":"请阅读材料后作答","type":4,"options":["材料一","材料二"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?noRecord=1", bytes.NewReader([]byte(`{"question":"请阅读材料后作答","type":4,"options":["材料一","材料二"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
 
@@ -2951,7 +2951,7 @@ func TestSearchLogsTypeAwareAIRequestAndResponseSummaries(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?noRecord=1", bytes.NewReader([]byte(`{"question":"请完成连线","type":2}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?noRecord=1", bytes.NewReader([]byte(`{"question":"请完成连线","type":2}`)))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
 
@@ -3063,7 +3063,7 @@ func TestSearchSupportsChaoxingCompressedQuestionTypesEndToEnd(t *testing.T) {
 				func() {
 					recorder := httptest.NewRecorder()
 					ctx, _ := gin.CreateTestContext(recorder)
-					request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?noRecord=1", bytes.NewReader([]byte(tt.requestBody)))
+					request := httptest.NewRequest(http.MethodPost, "/api/search?noRecord=1", bytes.NewReader([]byte(tt.requestBody)))
 					request.Header.Set("Content-Type", "application/json")
 					ctx.Request = request
 

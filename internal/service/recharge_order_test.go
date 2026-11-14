@@ -178,7 +178,7 @@ func seedRechargePaymentSettings(t *testing.T, db *gorm.DB, publicKey string, pr
 		EPayPartnerID:          "10001",
 		EPayPlatformPublicKey:  publicKey,
 		EPayMerchantPrivateKey: privateKey,
-		EPayNotifyURL:          "https://app.example.com/adapter-service/payment/notify",
+		EPayNotifyURL:          "https://app.example.com/api/payment/notify",
 		EPayReturnURL:          "https://app.example.com/adapter/recharge/result",
 	})
 	if err != nil {

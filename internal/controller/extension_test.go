@@ -113,7 +113,7 @@ func (store *extensionControllerFixture) Refresh(ctx context.Context, source str
 func extensionControllerRouter(t *testing.T) (*gin.Engine, *extensionControllerFixture) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
-	fixture := &extensionControllerFixture{data: []byte("test-crx"), release: service.ExtensionRelease{Source: "edge", ExtensionID: service.DefaultEdgeExtensionID, Name: "超星学习助手", Version: "6.2.0", Size: 8, SHA256: strings.Repeat("a", 64), DownloadURL: "/adapter-service/extensions/edge/download?sha256=" + strings.Repeat("a", 64), CheckedAt: time.Now(), UpdatedAt: time.Now()}}
+	fixture := &extensionControllerFixture{data: []byte("test-crx"), release: service.ExtensionRelease{Source: "edge", ExtensionID: service.DefaultEdgeExtensionID, Name: "超星学习助手", Version: "6.2.0", Size: 8, SHA256: strings.Repeat("a", 64), DownloadURL: "/api/extensions/edge/download?sha256=" + strings.Repeat("a", 64), CheckedAt: time.Now(), UpdatedAt: time.Now()}}
 	original := extensionStore
 	extensionStore = func() (extensionPackageStore, error) { return fixture, nil }
 	t.Cleanup(func() { extensionStore = original })

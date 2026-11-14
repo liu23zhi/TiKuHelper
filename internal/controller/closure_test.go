@@ -54,7 +54,7 @@ func TestClosureRequestMarksPendingAndWritesAccountLog(t *testing.T) {
 	db := newArchiveClosureTestDB(t)
 	user := seedClosureUser(t, db, 800, "closure-requester", phonePtr("13900000001"), 3.5, 1.5)
 
-	recorder := doArchiveRequest(t, ClosureRequest, http.MethodPost, "/adapter-service/user/closure-request",
+	recorder := doArchiveRequest(t, ClosureRequest, http.MethodPost, "/api/user/closure-request",
 		[]byte(`{"password":"synthetic-closure-pw","acknowledge":true}`), user, nil)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d with body %s", recorder.Code, recorder.Body.String())
@@ -96,7 +96,7 @@ func TestClosureRequestRejectsWrongPasswordAndLeavesStatusUntouched(t *testing.T
 	db := newArchiveClosureTestDB(t)
 	user := seedClosureUser(t, db, 801, "closure-wrongpw", phonePtr("13900000002"), 0, 0)
 
-	recorder := doArchiveRequest(t, ClosureRequest, http.MethodPost, "/adapter-service/user/closure-request",
+	recorder := doArchiveRequest(t, ClosureRequest, http.MethodPost, "/api/user/closure-request",
 		[]byte(`{"password":"not-the-password","acknowledge":true}`), user, nil)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for wrong password, got %d with body %s", recorder.Code, recorder.Body.String())
@@ -109,7 +109,7 @@ func TestClosureRequestRejectsWrongPasswordAndLeavesStatusUntouched(t *testing.T
 	}
 
 	// 未勾选知情确认也必须拒绝。
-	recorder = doArchiveRequest(t, ClosureRequest, http.MethodPost, "/adapter-service/user/closure-request",
+	recorder = doArchiveRequest(t, ClosureRequest, http.MethodPost, "/api/user/closure-request",
 		[]byte(`{"password":"synthetic-closure-pw"}`), user, nil)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 without acknowledgement, got %d", recorder.Code)
@@ -126,7 +126,7 @@ func TestClosureRequestRejectsAccountWithoutPhone(t *testing.T) {
 	db := newArchiveClosureTestDB(t)
 	user := seedClosureUser(t, db, 802, "closure-nophone", nil, 0, 0)
 
-	recorder := doArchiveRequest(t, ClosureRequest, http.MethodPost, "/adapter-service/user/closure-request",
+	recorder := doArchiveRequest(t, ClosureRequest, http.MethodPost, "/api/user/closure-request",
 		[]byte(`{"password":"synthetic-closure-pw","acknowledge":true}`), user, nil)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 without phone, got %d with body %s", recorder.Code, recorder.Body.String())
@@ -146,7 +146,7 @@ func TestClosureRequestCreatesTicketAboveThreshold(t *testing.T) {
 	db := newArchiveClosureTestDB(t)
 	user := seedClosureUser(t, db, 803, "closure-rich", phonePtr("13900000003"), 80, 5.5)
 
-	recorder := doArchiveRequest(t, ClosureRequest, http.MethodPost, "/adapter-service/user/closure-request",
+	recorder := doArchiveRequest(t, ClosureRequest, http.MethodPost, "/api/user/closure-request",
 		[]byte(`{"password":"synthetic-closure-pw","acknowledge":true}`), user, nil)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d with body %s", recorder.Code, recorder.Body.String())
@@ -188,7 +188,7 @@ func TestClosureCancelRestoresEnabledAndWritesLog(t *testing.T) {
 	// 测试里手工置位后必须同步内存副本，否则测的是「陈旧状态」这条不存在的路径。
 	user.Status = userStatusClosurePending
 
-	recorder := doArchiveRequest(t, ClosureCancel, http.MethodPost, "/adapter-service/user/closure-cancel", nil, user, nil)
+	recorder := doArchiveRequest(t, ClosureCancel, http.MethodPost, "/api/user/closure-cancel", nil, user, nil)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
@@ -200,7 +200,7 @@ func TestClosureCancelRestoresEnabledAndWritesLog(t *testing.T) {
 	}
 
 	// 没有待处理申请时撤销必须 400，而不是假装成功。
-	if recorder := doArchiveRequest(t, ClosureCancel, http.MethodPost, "/adapter-service/user/closure-cancel", nil, user, nil); recorder.Code != http.StatusBadRequest {
+	if recorder := doArchiveRequest(t, ClosureCancel, http.MethodPost, "/api/user/closure-cancel", nil, user, nil); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("cancel without a pending request must be 400, got %d", recorder.Code)
 	}
 }
@@ -222,7 +222,7 @@ func TestClosureStatusReportsRemainingDays(t *testing.T) {
 		t.Fatalf("seed closure log: %v", err)
 	}
 
-	recorder := doArchiveRequest(t, ClosureStatus, http.MethodGet, "/adapter-service/user/closure-status", nil, user, nil)
+	recorder := doArchiveRequest(t, ClosureStatus, http.MethodGet, "/api/user/closure-status", nil, user, nil)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d with body %s", recorder.Code, recorder.Body.String())
 	}
@@ -243,7 +243,7 @@ func TestClosureStatusReportsRemainingDays(t *testing.T) {
 	if err := db.Model(&entity.User{}).Where("id = ?", 805).Update("status", userStatusEnabled).Error; err != nil {
 		t.Fatalf("reset status: %v", err)
 	}
-	recorder = doArchiveRequest(t, ClosureStatus, http.MethodGet, "/adapter-service/user/closure-status", nil, user, nil)
+	recorder = doArchiveRequest(t, ClosureStatus, http.MethodGet, "/api/user/closure-status", nil, user, nil)
 	data, _ = decodeJSONBody(t, recorder)["data"].(map[string]any)
 	if data["pending"] != false {
 		t.Fatalf("a cancelled account must report pending=false, got %v", data["pending"])
@@ -269,7 +269,7 @@ func TestClosurePendingStatusSurvivesAdminProfileUpdate(t *testing.T) {
 		t.Fatalf("pin pending status: %v", err)
 	}
 
-	recorder := doArchiveRequest(t, UpdateUser, http.MethodPut, "/adapter-service/user/811",
+	recorder := doArchiveRequest(t, UpdateUser, http.MethodPut, "/api/user/811",
 		[]byte(`{"nickname":"新昵称","role":"user","status":"closure_pending"}`), admin,
 		gin.Params{{Key: "id", Value: "811"}})
 	if recorder.Code != http.StatusOK {
@@ -380,7 +380,7 @@ func TestClosureStatusRequiresAuthenticatedUser(t *testing.T) {
 	_ = newArchiveClosureTestDB(t)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/user/closure-status", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/user/closure-status", nil)
 	ClosureStatus(ctx)
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401 without a session, got %d", recorder.Code)
@@ -395,7 +395,7 @@ func TestClosureStatusNotifiesEligibility(t *testing.T) {
 	withPhone := seedClosureUser(t, db, 820, "closure-eligible", phonePtr("13900000020"), 20, 0)
 	withoutPhone := seedClosureUser(t, db, 821, "closure-ineligible", nil, 0, 0)
 
-	recorder := doArchiveRequest(t, ClosureStatus, http.MethodGet, "/adapter-service/user/closure-status", nil, withPhone, nil)
+	recorder := doArchiveRequest(t, ClosureStatus, http.MethodGet, "/api/user/closure-status", nil, withPhone, nil)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", recorder.Code)
 	}
@@ -407,7 +407,7 @@ func TestClosureStatusNotifiesEligibility(t *testing.T) {
 		t.Fatalf("20 元余额必须提示需要人工工单，got %v", data["requiresTicket"])
 	}
 
-	recorder = doArchiveRequest(t, ClosureStatus, http.MethodGet, "/adapter-service/user/closure-status", nil, withoutPhone, nil)
+	recorder = doArchiveRequest(t, ClosureStatus, http.MethodGet, "/api/user/closure-status", nil, withoutPhone, nil)
 	data, _ = decodeJSONBody(t, recorder)["data"].(map[string]any)
 	if data["eligible"] != false {
 		t.Fatalf("account without phone must be ineligible, got %s", mustJSON(t, data))

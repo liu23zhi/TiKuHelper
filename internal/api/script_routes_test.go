@@ -11,8 +11,8 @@ func TestSetAPIRouterRegistersPublicScriptExchangeRoutes(t *testing.T) {
 	router := gin.New()
 	SetAPIRouter(router)
 	want := map[string]bool{
-		"GET /adapter-service/script-command/:shortCode/exchange-script": false,
-		"GET /adapter-service/script-command/:shortCode/file":            false,
+		"GET /api/script-command/:shortCode/exchange-script": false,
+		"GET /api/script-command/:shortCode/file":            false,
 	}
 	for _, route := range router.Routes() {
 		if _, ok := want[route.Method+" "+route.Path]; ok {

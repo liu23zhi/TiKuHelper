@@ -46,14 +46,14 @@ func TestManagedScriptTLSActivationAndHeartbeatWire(t *testing.T) {
 	if err := r.SetTrustedProxies(nil); err != nil {
 		t.Fatal(err)
 	}
-	r.POST("/adapter-service/script-command/:shortCode/activate", ActivateScriptRunSession)
-	r.POST("/adapter-service/script-command/:shortCode/heartbeat", HeartbeatScriptRunSession)
+	r.POST("/api/script-command/:shortCode/activate", ActivateScriptRunSession)
+	r.POST("/api/script-command/:shortCode/heartbeat", HeartbeatScriptRunSession)
 	server := httptest.NewTLSServer(r)
 	defer server.Close()
 
 	identity := strings.Repeat("ab", 32)
 	body, _ := json.Marshal(map[string]any{"activationToken": ticket.ActivationToken, "identity": identity, "durationMinutes": 1})
-	response, err := server.Client().Post(server.URL+"/adapter-service/script-command/"+item.ShortCode+"/activate",
+	response, err := server.Client().Post(server.URL+"/api/script-command/"+item.ShortCode+"/activate",
 		"application/json", strings.NewReader(string(body)))
 	if err != nil {
 		t.Fatal(err)

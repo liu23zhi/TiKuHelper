@@ -72,17 +72,17 @@ export default {
     const { currentUser } = useCurrentUserDisplay()
     const isAdmin = computed(() => isAdminUser(currentUser.value))
     const adminOnlyPrefixes = [
-      '/adapter/component', '/adapter/import', '/adapter/userlist', '/adapter/loglist',
+      '/component', '/import', '/userlist', '/loglist',
       // 已归档账号管理（task_doc/76 §3.2.3）：非管理员不仅看不到菜单项，
       // 直接敲 URL 也进不来（canAccessRoute 在这里就 false）。
-      '/adapter/archived-users',
-      '/adapter/search-account-config', '/adapter/ai-search-config', '/adapter/ocr-cache', '/adapter/system-settings', '/adapter/extension-updates',
-      '/adapter/ip-location-cache', '/adapter/phone-location-cache',
+      '/archived-users',
+      '/search-account-config', '/ai-search-config', '/ocr-cache', '/system-settings', '/extension-updates',
+      '/ip-location-cache', '/phone-location-cache',
       // 等级与充值阶梯（94-*.md §2 C1/C2）：门槛配置即设备上限口径，仅管理员可进。
-      '/adapter/user-levels',
+      '/user-levels',
       // 绑定历史两页（task_doc/70 §3.6）：含手机号/微信的历史值（已脱敏），
       // 非管理员不得通过直接敲 URL 进入。
-      '/adapter/wechat-bindings', '/adapter/phone-bindings',
+      '/wechat-bindings', '/phone-bindings',
     ]
     const isAdminOnlyCurrentRoute = computed(() => (router.currentRoute.value?.matched || [])
       .some(record => adminOnlyPrefixes.includes(record.aliasOf?.path || record.path)))

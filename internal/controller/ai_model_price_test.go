@@ -29,7 +29,7 @@ func TestAIModelPriceListReturnsAllRowsRegardlessOfRole(t *testing.T) {
 	for _, role := range []string{"user", "admin"} {
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
-		ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/ai-model-prices", nil)
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/api/ai-model-prices", nil)
 		ctx.Set("user", &entity.User{ID: 8, Role: role, Status: "enabled"})
 
 		AIModelPriceList(ctx)
@@ -62,7 +62,7 @@ func TestAIModelPriceListReturnsEmptyArrayInsteadOfNull(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/ai-model-prices", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/ai-model-prices", nil)
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 
 	AIModelPriceList(ctx)
@@ -77,7 +77,7 @@ func TestCreateAIModelPriceRejectsNonAdmin(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-model-prices", bytes.NewBufferString(`{"modelName":"gpt-5.5"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/ai-model-prices", bytes.NewBufferString(`{"modelName":"gpt-5.5"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("user", &entity.User{ID: 8, Role: "user", Status: "enabled"})
 
@@ -103,7 +103,7 @@ func TestCreateAIModelPriceReturnsCreatedItemForAdmin(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-model-prices", bytes.NewBufferString(`{"modelName":"daybreak-red","outputPrice":75}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/ai-model-prices", bytes.NewBufferString(`{"modelName":"daybreak-red","outputPrice":75}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 
@@ -134,7 +134,7 @@ func TestCreateAIModelPriceTreatsMissingNameAsBadRequest(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-model-prices", bytes.NewBufferString(`{"modelName":""}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/ai-model-prices", bytes.NewBufferString(`{"modelName":""}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 
@@ -157,7 +157,7 @@ func TestCreateAIModelPricePassesContextAndRejectsInvalidWindow(t *testing.T) {
 	}
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-model-prices", bytes.NewBufferString(`{"modelName":"fixture","contextWindowTokens":128000}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/ai-model-prices", bytes.NewBufferString(`{"modelName":"fixture","contextWindowTokens":128000}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 	CreateAIModelPrice(ctx)
@@ -170,7 +170,7 @@ func TestCreateAIModelPricePassesContextAndRejectsInvalidWindow(t *testing.T) {
 	}
 	recorder = httptest.NewRecorder()
 	ctx, _ = gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-model-prices", bytes.NewBufferString(`{"modelName":"fixture","contextWindowTokens":-1}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/ai-model-prices", bytes.NewBufferString(`{"modelName":"fixture","contextWindowTokens":-1}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 	CreateAIModelPrice(ctx)
@@ -191,7 +191,7 @@ func TestUpdateAIModelPriceHandlesNotFound(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/ai-model-prices/404", bytes.NewBufferString(`{"modelName":"GPT-5.5"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/api/ai-model-prices/404", bytes.NewBufferString(`{"modelName":"GPT-5.5"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Params = gin.Params{{Key: "id", Value: "404"}}
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
@@ -217,7 +217,7 @@ func TestDeleteAIModelPriceDeletesItemForAdmin(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodDelete, "/adapter-service/ai-model-prices/12", nil)
+	ctx.Request = httptest.NewRequest(http.MethodDelete, "/api/ai-model-prices/12", nil)
 	ctx.Params = gin.Params{{Key: "id", Value: "12"}}
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 
@@ -245,7 +245,7 @@ func TestResetAIModelPriceDefaultsRequiresAdminAndDelegates(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-model-prices/reset", nil)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/ai-model-prices/reset", nil)
 	ctx.Set("user", &entity.User{ID: 8, Role: "user", Status: "enabled"})
 
 	ResetAIModelPriceDefaults(ctx)
@@ -256,7 +256,7 @@ func TestResetAIModelPriceDefaultsRequiresAdminAndDelegates(t *testing.T) {
 
 	recorder = httptest.NewRecorder()
 	ctx, _ = gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-model-prices/reset", nil)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/ai-model-prices/reset", nil)
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 
 	ResetAIModelPriceDefaults(ctx)
@@ -278,7 +278,7 @@ func TestAIModelPriceListReturnsServerErrorWhenLoadFails(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/ai-model-prices", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/ai-model-prices", nil)
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 
 	AIModelPriceList(ctx)

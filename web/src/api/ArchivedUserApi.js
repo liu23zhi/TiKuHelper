@@ -2,9 +2,9 @@ import request from '../utils/request'
 
 // 已归档账号管理（task_doc/76 §3.2.3 / §3.4）。
 // 后端契约（internal/api/router.go）：
-//   GET  /adapter-service/admin/archived-users                   列表：分页 + reason / keyword / startTime / endTime
-//   GET  /adapter-service/admin/archived-users/:id               详情：账号快照 + 绑定记录历史
-//   POST /adapter-service/admin/archived-users/:id/restore       恢复：confirmRename=false 只探冲突
+//   GET  /api/admin/archived-users                   列表：分页 + reason / keyword / startTime / endTime
+//   GET  /api/admin/archived-users/:id               详情：账号快照 + 绑定记录历史
+//   POST /api/admin/archived-users/:id/restore       恢复：confirmRename=false 只探冲突
 //
 // 全部使用 errorFeedback: 'local'：页面自己有失败态与重试入口，
 // 不能在被页面接管的请求上再弹一次全局错误提示（与 ReferralApi.js 同约定）。
@@ -12,7 +12,7 @@ import request from '../utils/request'
 export function getArchivedUsers(params) {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/admin/archived-users',
+    url: '/api/admin/archived-users',
     method: 'get',
     params,
   })
@@ -23,7 +23,7 @@ export function getArchivedUserDetail(id) {
   if (!Number.isInteger(value) || value <= 0) throw new Error('已归档账号参数错误')
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/admin/archived-users/${value}`,
+    url: `/api/admin/archived-users/${value}`,
     method: 'get',
   })
 }
@@ -41,7 +41,7 @@ export function restoreArchivedUser(id, confirmRename) {
   if (!Number.isInteger(value) || value <= 0) throw new Error('已归档账号参数错误')
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/admin/archived-users/${value}/restore`,
+    url: `/api/admin/archived-users/${value}/restore`,
     method: 'post',
     data: { confirmRename: confirmRename === true },
   })

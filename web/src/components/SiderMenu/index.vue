@@ -35,7 +35,7 @@
             <template #icon>
               <component :is="item.icon" />
             </template>
-            <span class="menu-label"><a class="navigation-link" :href="'/adapter/' + item.key" @click="handleLinkClick">{{ item.label }}</a></span>
+            <span class="menu-label"><a class="navigation-link" :href="'/' + item.key" @click="handleLinkClick">{{ item.label }}</a></span>
           </a-menu-item>
         </a-menu-item-group>
         <template v-else>
@@ -43,7 +43,7 @@
             <template #icon>
               <component :is="item.icon" />
             </template>
-            <span class="menu-label"><a class="navigation-link" :href="'/adapter/' + item.key" @click="handleLinkClick">{{ item.label }}</a></span>
+            <span class="menu-label"><a class="navigation-link" :href="'/' + item.key" @click="handleLinkClick">{{ item.label }}</a></span>
           </a-menu-item>
         </template>
       </template>
@@ -312,7 +312,7 @@ export default defineComponent({
       let failure;
       let fulfilled = false;
       try {
-        failure = await router.push('/adapter/' + realKey);
+        failure = await router.push('/' + realKey);
         fulfilled = true;
       } catch (error) {
         if (isCurrent()) message.error('页面暂时无法打开，请稍后重试。');

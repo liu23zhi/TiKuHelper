@@ -36,7 +36,7 @@ func TestDisabledInvalidQuotaPolicyRealJSONHandler(t *testing.T) {
 			ctx, _ := gin.CreateTestContext(out)
 			ctx.Set("user", &u)
 			ctx.Params = gin.Params{{Key: "id", Value: strconv.Itoa(int(k.ID))}}
-			ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/access-tokens/"+strconv.Itoa(int(k.ID)), bytes.NewBufferString(c.body))
+			ctx.Request = httptest.NewRequest(http.MethodPut, "/api/access-tokens/"+strconv.Itoa(int(k.ID)), bytes.NewBufferString(c.body))
 			ctx.Request.Header.Set("Content-Type", "application/json")
 			UpdateAccessToken(ctx)
 			if out.Code != c.want {

@@ -209,7 +209,7 @@ func TestD03FallbackSharedFlightBillsOnce(t *testing.T) {
 		c, _ := gin.CreateTestContext(recorder)
 		c.Set("user", &user)
 		c.Set("access_token", &token)
-		c.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback/tasks", bytes.NewReader(body))
+		c.Request = httptest.NewRequest(http.MethodPost, "/api/ai-fallback/tasks", bytes.NewReader(body))
 		c.Request.Header.Set("Content-Type", "application/json")
 		c.Request.RemoteAddr = "192.0.2.3:40000"
 		CreateAIFallbackTask(c)
@@ -304,7 +304,7 @@ func TestD03FallbackSharedFlightBillsOnce(t *testing.T) {
 		recorder := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(recorder)
 		c.Set("user", &user)
-		c.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/ai-fallback/status?taskId="+id, nil)
+		c.Request = httptest.NewRequest(http.MethodGet, "/api/ai-fallback/status?taskId="+id, nil)
 		GetAIFallbackTaskStatus(c)
 		var response aiFallbackTaskResponse
 		if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {

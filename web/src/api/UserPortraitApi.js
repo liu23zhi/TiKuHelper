@@ -3,8 +3,8 @@ import request from '../utils/request'
 // 用户画像的两个入口（T-17 / task_doc/98）。
 //
 // 后端契约（internal/api/router.go，由 captain 接线；handler 见 internal/controller/user_portrait.go）：
-//   GET /adapter-service/admin/portrait/overview    全站整体画像（侧边栏「用户画像」页默认视图）
-//   GET /adapter-service/admin/users/:id/portrait   单个用户画像（用户管理操作列「画像」按钮）
+//   GET /api/admin/portrait/overview    全站整体画像（侧边栏「用户画像」页默认视图）
+//   GET /api/admin/users/:id/portrait   单个用户画像（用户管理操作列「画像」按钮）
 //
 // 两条都挂 controller.Auth + middleware.RequireAdmin，且 handler 内部**二次校验**角色
 // （98 号 §0 第 ① ② 层）。普通用户 token 直调会拿到 403。
@@ -30,7 +30,7 @@ function readPortraitUserId(userId) {
 export function getPortraitOverview() {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/admin/portrait/overview',
+    url: '/api/admin/portrait/overview',
     method: 'get',
   })
 }
@@ -39,7 +39,7 @@ export function getPortraitOverview() {
 export function getUserPortrait(userId) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/admin/users/${readPortraitUserId(userId)}/portrait`,
+    url: `/api/admin/users/${readPortraitUserId(userId)}/portrait`,
     method: 'get',
   })
 }

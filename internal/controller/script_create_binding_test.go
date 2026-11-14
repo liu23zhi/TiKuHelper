@@ -36,8 +36,8 @@ func TestCreateScriptRequiresBindingWithStableHTTPError(t *testing.T) {
 	scriptDB = func() *gorm.DB { return db }
 	t.Cleanup(func() { scriptDB = previous })
 	router := gin.New()
-	router.POST("/adapter-service/scripts", func(c *gin.Context) { c.Set("user", &owner) }, CreateScript)
-	req := httptest.NewRequest(http.MethodPost, "/adapter-service/scripts", strings.NewReader(fmt.Sprintf(
+	router.POST("/api/scripts", func(c *gin.Context) { c.Set("user", &owner) }, CreateScript)
+	req := httptest.NewRequest(http.MethodPost, "/api/scripts", strings.NewReader(fmt.Sprintf(
 		`{"name":"fixture","baseDomain":"fixture.test","versionId":%d}`, version.ID)))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", "fixture-binding-create")

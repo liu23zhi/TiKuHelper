@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 
@@ -16,21 +17,21 @@ func TestSetAPIRouterRegistersTicketRoutes(t *testing.T) {
 	router := gin.New()
 	SetAPIRouter(router)
 	want := map[string]bool{
-		"GET /adapter-service/user/session":                                     false,
-		"GET /adapter-service/tickets":                                          false,
-		"POST /adapter-service/tickets":                                         false,
-		"GET /adapter-service/tickets/config":                                   false,
-		"PUT /adapter-service/tickets/config":                                   false,
-		"POST /adapter-service/tickets/config/test":                             false,
-		"GET /adapter-service/tickets/:id":                                      false,
-		"POST /adapter-service/tickets/:id/messages":                            false,
-		"PUT /adapter-service/tickets/:id":                                      false,
-		"POST /adapter-service/tickets/:id/notifications/:notificationId/retry": false,
+		"GET /api/user/session":                                     false,
+		"GET /api/tickets":                                          false,
+		"POST /api/tickets":                                         false,
+		"GET /api/tickets/config":                                   false,
+		"PUT /api/tickets/config":                                   false,
+		"POST /api/tickets/config/test":                             false,
+		"GET /api/tickets/:id":                                      false,
+		"POST /api/tickets/:id/messages":                            false,
+		"PUT /api/tickets/:id":                                      false,
+		"POST /api/tickets/:id/notifications/:notificationId/retry": false,
 		// 工单图片附件（上传 / 列表 / 用户端读图 / 管理端读图）。
-		"POST /adapter-service/ticket-attachments":                    false,
-		"GET /adapter-service/tickets/:id/attachments":                false,
-		"GET /adapter-service/ticket-attachments/:attachmentId":       false,
-		"GET /adapter-service/ticket-attachments/:attachmentId/admin": false,
+		"POST /api/ticket-attachments":                    false,
+		"GET /api/tickets/:id/attachments":                false,
+		"GET /api/ticket-attachments/:attachmentId":       false,
+		"GET /api/ticket-attachments/:attachmentId/admin": false,
 	}
 	for _, route := range router.Routes() {
 		key := route.Method + " " + route.Path
@@ -52,7 +53,7 @@ func TestSetAPIRouterRegistersSensitiveOriginalRoute(t *testing.T) {
 	SetAPIRouter(router)
 
 	// 原文接口是「管理员有按钮可以显示原文」的唯一入口，路由必须存在。
-	const want = "GET /adapter-service/logs/:id/sensitive-original"
+	const want = "GET /api/logs/:id/sensitive-original"
 	found := false
 	for _, route := range router.Routes() {
 		if route.Method+" "+route.Path == want {
@@ -104,7 +105,7 @@ func TestSensitiveOriginalRouteRejectsNonAdminBeforeHandler(t *testing.T) {
 			reached := false
 			router := gin.New()
 			// 第一个中间件模拟 controller.Auth 已把 user 放进上下文（匿名时什么都不放）。
-			router.GET("/adapter-service/logs/:id/sensitive-original",
+			router.GET("/api/logs/:id/sensitive-original",
 				func(c *gin.Context) {
 					if testCase.user != nil {
 						c.Set("user", testCase.user)
@@ -117,7 +118,7 @@ func TestSensitiveOriginalRouteRejectsNonAdminBeforeHandler(t *testing.T) {
 				})
 
 			recorder := httptest.NewRecorder()
-			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/adapter-service/logs/1/sensitive-original", nil))
+			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/logs/1/sensitive-original", nil))
 
 			if recorder.Code != testCase.wantStatus {
 				t.Fatalf("status=%d want=%d body=%s", recorder.Code, testCase.wantStatus, recorder.Body.String())
@@ -136,7 +137,7 @@ func TestSetAPIRouterRegistersResetPasswordRoute(t *testing.T) {
 	SetAPIRouter(router)
 
 	for _, route := range router.Routes() {
-		if route.Method == "PUT" && route.Path == "/adapter-service/user/:id/reset-password" {
+		if route.Method == "PUT" && route.Path == "/api/user/:id/reset-password" {
 			return
 		}
 	}
@@ -151,7 +152,7 @@ func TestSetAPIRouterRegistersQuestionImportRoute(t *testing.T) {
 	SetAPIRouter(router)
 
 	for _, route := range router.Routes() {
-		if route.Method == "POST" && route.Path == "/adapter-service/questions/import" {
+		if route.Method == "POST" && route.Path == "/api/questions/import" {
 			return
 		}
 	}
@@ -165,9 +166,9 @@ func TestSetAPIRouterRegistersAsyncSearchRoutes(t *testing.T) {
 	SetAPIRouter(router)
 
 	want := map[string]bool{
-		"POST /adapter-service/search":       false,
-		"POST /adapter-service/search/tasks": false,
-		"GET /adapter-service/search/status": false,
+		"POST /api/search":       false,
+		"POST /api/search/tasks": false,
+		"GET /api/search/status": false,
 	}
 	for _, route := range router.Routes() {
 		key := route.Method + " " + route.Path
@@ -187,11 +188,11 @@ func TestSetAPIRouterRegistersExtensionRoutes(t *testing.T) {
 	router := gin.New()
 	SetAPIRouter(router)
 	want := map[string]bool{
-		"GET /adapter-service/extensions/:source/latest":   false,
-		"GET /adapter-service/extensions/:source/download": false,
-		"POST /adapter-service/extensions/:source/refresh": false,
-		"GET /adapter-service/extensions/config":           false,
-		"PUT /adapter-service/extensions/config":           false,
+		"GET /api/extensions/:source/latest":   false,
+		"GET /api/extensions/:source/download": false,
+		"POST /api/extensions/:source/refresh": false,
+		"GET /api/extensions/config":           false,
+		"PUT /api/extensions/config":           false,
 	}
 	for _, route := range router.Routes() {
 		key := route.Method + " " + route.Path
@@ -213,12 +214,12 @@ func TestSetAPIRouterRegistersWechatLoginRoutes(t *testing.T) {
 	SetAPIRouter(router)
 
 	expected := map[string]bool{
-		"POST /adapter-service/public/wechat-login/qrcode": false,
-		"GET /adapter-service/public/wechat-login/status":  false,
-		"GET /adapter-service/public/wechat-login/ws":      false,
-		"POST /adapter-service/public/wechat-login/code":   false,
-		"POST /adapter-service/public/wechat-login/bind":   false,
-		"GET /adapter-service/public/wechat/user":          false,
+		"POST /api/public/wechat-login/qrcode": false,
+		"GET /api/public/wechat-login/status":  false,
+		"GET /api/public/wechat-login/ws":      false,
+		"POST /api/public/wechat-login/code":   false,
+		"POST /api/public/wechat-login/bind":   false,
+		"GET /api/public/wechat/user":          false,
 	}
 	for _, route := range router.Routes() {
 		key := route.Method + " " + route.Path
@@ -238,11 +239,11 @@ func TestSetAPIRouterRegistersWechatRegisterRoutes(t *testing.T) {
 	router := gin.New()
 	SetAPIRouter(router)
 	want := map[string]string{
-		"POST /adapter-service/public/wechat-register/session": "",
-		"POST /adapter-service/public/wechat-register/qrcode":  "",
-		"GET /adapter-service/public/wechat-register/status":   "",
-		"POST /adapter-service/public/wechat-register/code":    "",
-		"POST /adapter-service/public/wechat-register/release": "",
+		"POST /api/public/wechat-register/session": "",
+		"POST /api/public/wechat-register/qrcode":  "",
+		"GET /api/public/wechat-register/status":   "",
+		"POST /api/public/wechat-register/code":    "",
+		"POST /api/public/wechat-register/release": "",
 	}
 	for _, route := range router.Routes() {
 		delete(want, route.Method+" "+route.Path)
@@ -259,12 +260,12 @@ func TestSetAPIRouterRegistersCurrentUserBindingRoutes(t *testing.T) {
 	SetAPIRouter(router)
 
 	expected := map[string]bool{
-		"PUT /adapter-service/user/profile":           false,
-		"POST /adapter-service/user/phone/sms-code":   false,
-		"PUT /adapter-service/user/phone":             false,
-		"POST /adapter-service/user/wechat/bind":      false,
-		"POST /adapter-service/user/wechat/bind-code": false,
-		"DELETE /adapter-service/user/wechat":         false,
+		"PUT /api/user/profile":           false,
+		"POST /api/user/phone/sms-code":   false,
+		"PUT /api/user/phone":             false,
+		"POST /api/user/wechat/bind":      false,
+		"POST /api/user/wechat/bind-code": false,
+		"DELETE /api/user/wechat":         false,
 	}
 	for _, route := range router.Routes() {
 		key := route.Method + " " + route.Path
@@ -286,9 +287,9 @@ func TestSetAPIRouterRegistersRemoteCaptchaProxyRoutes(t *testing.T) {
 	SetAPIRouter(router)
 
 	expected := map[string]bool{
-		"POST /adapter-service/public/captcha/remote-gen":   false,
-		"GET /adapter-service/public/captcha/remote-gen":    false,
-		"POST /adapter-service/public/captcha/remote-check": false,
+		"POST /api/public/captcha/remote-gen":   false,
+		"GET /api/public/captcha/remote-gen":    false,
+		"POST /api/public/captcha/remote-check": false,
 	}
 	for _, route := range router.Routes() {
 		key := route.Method + " " + route.Path
@@ -310,7 +311,7 @@ func TestSetAPIRouterRegistersRechargeOrderListRoute(t *testing.T) {
 	SetAPIRouter(router)
 
 	for _, route := range router.Routes() {
-		if route.Method == "GET" && route.Path == "/adapter-service/recharge-orders" {
+		if route.Method == "GET" && route.Path == "/api/recharge-orders" {
 			return
 		}
 	}
@@ -325,8 +326,8 @@ func TestSetAPIRouterRegistersPaymentNotifyForPostAndGet(t *testing.T) {
 	SetAPIRouter(router)
 
 	expected := map[string]bool{
-		"POST /adapter-service/payment/notify": false,
-		"GET /adapter-service/payment/notify":  false,
+		"POST /api/payment/notify": false,
+		"GET /api/payment/notify":  false,
 	}
 	for _, route := range router.Routes() {
 		key := route.Method + " " + route.Path
@@ -349,10 +350,10 @@ func TestSetAPIRouterDoesNotRegisterRemovedModelBindingRoutes(t *testing.T) {
 	SetAPIRouter(router)
 
 	removed := map[string]bool{
-		"/adapter-service/ai-model-mappings":          false,
-		"/adapter-service/ai-model-mappings/:id":      false,
-		"/adapter-service/ai-model-architectures":     false,
-		"/adapter-service/ai-model-architectures/:id": false,
+		"/api/ai-model-mappings":          false,
+		"/api/ai-model-mappings/:id":      false,
+		"/api/ai-model-architectures":     false,
+		"/api/ai-model-architectures/:id": false,
 	}
 	for _, route := range router.Routes() {
 		if _, tracked := removed[route.Path]; tracked {
@@ -368,8 +369,8 @@ func TestSetAPIRouterRegistersAIFallbackTaskRoutes(t *testing.T) {
 	SetAPIRouter(router)
 
 	expected := map[string]bool{
-		"POST /adapter-service/ai-fallback/tasks": false,
-		"GET /adapter-service/ai-fallback/status": false,
+		"POST /api/ai-fallback/tasks": false,
+		"GET /api/ai-fallback/status": false,
 	}
 	for _, route := range router.Routes() {
 		key := route.Method + " " + route.Path
@@ -391,7 +392,7 @@ func TestSetAPIRouterHandlesSearchPreflightWithCORSHeaders(t *testing.T) {
 	SetAPIRouter(router)
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodOptions, "http://adapter.example.com/adapter-service/search", nil)
+	request := httptest.NewRequest(http.MethodOptions, "http://adapter.example.com/api/search", nil)
 	request.Header.Set("Origin", "http://adapter.example.com")
 	request.Header.Set("Access-Control-Request-Method", http.MethodPost)
 	request.Header.Set("Access-Control-Request-Headers", "content-type,authorization,idempotency-key")
@@ -429,7 +430,7 @@ func TestSetAPIRouterAllowsAnyCrossOriginPreflight(t *testing.T) {
 	SetAPIRouter(router)
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodOptions, "https://adapter.example.com/adapter-service/search", nil)
+	request := httptest.NewRequest(http.MethodOptions, "https://adapter.example.com/api/search", nil)
 	request.Header.Set("Origin", "https://any-origin.example.com")
 	request.Header.Set("Access-Control-Request-Method", http.MethodPost)
 	request.Header.Set("Access-Control-Request-Headers", "content-type,authorization")
@@ -445,4 +446,80 @@ func TestSetAPIRouterAllowsAnyCrossOriginPreflight(t *testing.T) {
 	if recorder.Header().Get("Access-Control-Allow-Origin") != "*" {
 		t.Fatalf("expected wildcard allow-origin for explicit Token CORS, got %q", recorder.Header().Get("Access-Control-Allow-Origin"))
 	}
+}
+
+// TestAPIPrefixMigrationKeepsOnlySearchCompat 钉住 2026-11-14 的路径改名结果。
+//
+// # 背景
+//
+// API 前缀由 `/adapter-service` 改为 `/api`。已安装的浏览器扩展与原生宿主里
+// 写死了四个搜索路径，它们升级前改不了 URL，所以**只保留这四个**做兼容：
+//
+//	POST /adapter-service/search
+//	POST /adapter-service/search/tasks
+//	GET  /adapter-service/search/health
+//	GET  /adapter-service/search/status
+//
+// # 为什么要钉「只有这四个」
+//
+// 最容易发生的退化是「顺手把整个旧前缀都挂回去」——那样旧路径会长期存活，
+// 两条路径行为一旦漂移就无人发现，而且黑名单/限流等中间件容易只挂一边。
+// 本用例同时钉住两个方向：
+//   - 四个搜索路径在旧前缀下**必须**存在（否则老扩展升级前直接失效）
+//   - 其它路径在旧前缀下**必须**不存在（否则兼容层悄悄扩大）
+func TestAPIPrefixMigrationKeepsOnlySearchCompat(t *testing.T) {
+	ginx := gin.New()
+	SetAPIRouter(ginx)
+
+	registered := map[string]bool{}
+	for _, route := range ginx.Routes() {
+		registered[route.Method+" "+route.Path] = true
+	}
+
+	// 四个兼容路径必须同时存在于**新旧两个前缀**下。
+	compat := []string{
+		"POST /search",
+		"POST /search/tasks",
+		"GET /search/health",
+		"GET /search/status",
+	}
+	for _, suffix := range compat {
+		if !registered["POST /api"+strings.TrimPrefix(suffix, "POST ")] &&
+			!registered["GET /api"+strings.TrimPrefix(suffix, "GET ")] {
+			t.Errorf("新前缀缺少 %s 路由", suffix)
+		}
+		legacy := replaceMethod(suffix, "/adapter-service")
+		if !registered[legacy] {
+			t.Errorf("旧扩展兼容缺失：%s 应当保留（已安装扩展升级前改不了 URL）", legacy)
+		}
+	}
+
+	// 旧前缀下除这四个之外**不应**再有业务路由。
+	allowed := map[string]bool{}
+	for _, suffix := range compat {
+		allowed[replaceMethod(suffix, "/adapter-service")] = true
+	}
+	var leaked []string
+	for route := range registered {
+		if !strings.Contains(route, "/adapter-service/") {
+			continue
+		}
+		if !allowed[route] {
+			leaked = append(leaked, route)
+		}
+	}
+	sort.Strings(leaked)
+	if len(leaked) > 0 {
+		t.Errorf("旧前缀下出现了兼容层之外的 %d 条路由（兼容面必须最小）：\n- %s",
+			len(leaked), strings.Join(leaked, "\n- "))
+	}
+}
+
+// replaceMethod 把 "POST /search" 形态的 suffix 换成指定前缀下的完整路由串。
+func replaceMethod(suffix, prefix string) string {
+	parts := strings.SplitN(suffix, " ", 2)
+	if len(parts) != 2 {
+		return suffix
+	}
+	return parts[0] + " " + prefix + parts[1]
 }

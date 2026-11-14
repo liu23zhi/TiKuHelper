@@ -4,7 +4,7 @@ import { buildDeleteQuestionParams } from '../utils/questionArchiveReason.mjs'
 
 export function login(params) {
   return request({
-    url: `/adapter-service/user/login`,
+    url: `/api/user/login`,
     method: 'post',
     data: params
   });
@@ -12,14 +12,14 @@ export function login(params) {
 
 export function logout() {
   return request({
-    url: `/adapter-service/user/logout`,
+    url: `/api/user/logout`,
     method: 'post'
   });
 }
 
 export function checkUserSession(signal) {
   return request({
-    url: '/adapter-service/user/session',
+    url: '/api/user/session',
     method: 'get',
     timeout: 10_000,
     retryPolicy: 'single',
@@ -29,7 +29,7 @@ export function checkUserSession(signal) {
 
 export function registerUser(data) {
   return request({
-    url: `/adapter-service/user/register`,
+    url: `/api/user/register`,
     method: 'post',
     data
   })
@@ -37,14 +37,14 @@ export function registerUser(data) {
 
 export function getPublicRegisterStatus() {
   return request({
-    url: `/adapter-service/public/register-status`,
+    url: `/api/public/register-status`,
     method: 'get'
   })
 }
 
 export function sendPublicSMSCode(data) {
   return request({
-    url: `/adapter-service/public/sms-code`,
+    url: `/api/public/sms-code`,
     method: 'post',
     data
   })
@@ -52,7 +52,7 @@ export function sendPublicSMSCode(data) {
 
 export function createCaptchaChallenge(data) {
   return request({
-    url: `/adapter-service/public/captcha/challenge`,
+    url: `/api/public/captcha/challenge`,
     method: 'post',
     data
   })
@@ -60,7 +60,7 @@ export function createCaptchaChallenge(data) {
 
 export function verifyCaptchaChallenge(data) {
   return request({
-    url: `/adapter-service/public/captcha/verify`,
+    url: `/api/public/captcha/verify`,
     method: 'post',
     data
   })
@@ -68,7 +68,7 @@ export function verifyCaptchaChallenge(data) {
 
 export function verifyRemoteCaptcha(data) {
   return request({
-    url: `/adapter-service/public/captcha/remote-token`,
+    url: `/api/public/captcha/remote-token`,
     method: 'post',
     data
   })
@@ -76,7 +76,7 @@ export function verifyRemoteCaptcha(data) {
 
 export function createWechatRegisterSession(data = {}) {
   return request({
-    url: `/adapter-service/public/wechat-register/session`,
+    url: `/api/public/wechat-register/session`,
     method: 'post',
     data,
   })
@@ -84,7 +84,7 @@ export function createWechatRegisterSession(data = {}) {
 
 export function createWechatRegisterQRCode(data) {
   return request({
-    url: `/adapter-service/public/wechat-register/qrcode`,
+    url: `/api/public/wechat-register/qrcode`,
     method: 'post',
     data,
   })
@@ -92,7 +92,7 @@ export function createWechatRegisterQRCode(data) {
 
 export function getWechatRegisterStatus(params) {
   return request({
-    url: `/adapter-service/public/wechat-register/status`,
+    url: `/api/public/wechat-register/status`,
     method: 'get',
     params,
   })
@@ -100,7 +100,7 @@ export function getWechatRegisterStatus(params) {
 
 export function stageWechatRegisterCode(data) {
   return request({
-    url: `/adapter-service/public/wechat-register/code`,
+    url: `/api/public/wechat-register/code`,
     method: 'post',
     data,
   })
@@ -108,7 +108,7 @@ export function stageWechatRegisterCode(data) {
 
 export function releaseWechatRegisterFlow(data) {
   return request({
-    url: `/adapter-service/public/wechat-register/release`,
+    url: `/api/public/wechat-register/release`,
     method: 'post',
     data,
   })
@@ -116,7 +116,7 @@ export function releaseWechatRegisterFlow(data) {
 
 export function createWechatLoginQRCode(feedback) {
   const config = {
-    url: `/adapter-service/public/wechat-login/qrcode`,
+    url: `/api/public/wechat-login/qrcode`,
     method: 'post'
   }
   // Only this narrow caller option is accepted; zero-argument consumers stay unchanged.
@@ -126,7 +126,7 @@ export function createWechatLoginQRCode(feedback) {
 
 export function getWechatLoginStatus(params) {
   return request({
-    url: `/adapter-service/public/wechat-login/status`,
+    url: `/api/public/wechat-login/status`,
     method: 'get',
     params
   })
@@ -134,7 +134,7 @@ export function getWechatLoginStatus(params) {
 
 export function loginWechatByCode(data) {
   return request({
-    url: `/adapter-service/public/wechat-login/code`,
+    url: `/api/public/wechat-login/code`,
     method: 'post',
     data
   })
@@ -142,7 +142,7 @@ export function loginWechatByCode(data) {
 
 export function bindWechatLogin(data) {
   return request({
-    url: `/adapter-service/public/wechat-login/bind`,
+    url: `/api/public/wechat-login/bind`,
     method: 'post',
     data
   })
@@ -150,7 +150,7 @@ export function bindWechatLogin(data) {
 
 export function loginBySMS(data) {
   return request({
-    url: `/adapter-service/user/login/sms`,
+    url: `/api/user/login/sms`,
     method: 'post',
     data
   })
@@ -159,7 +159,7 @@ export function loginBySMS(data) {
 
 export function getCourses(params) {
   return request({
-    url: `/adapter-service/courses`,
+    url: `/api/courses`,
     method: 'get',
     params
   })
@@ -173,7 +173,7 @@ export function getCourses(params) {
  */
 export function getPhoneLocations(params) {
   return request({
-    url: `/adapter-service/uapi/phoneinfo`,
+    url: `/api/uapi/phoneinfo`,
     method: 'get',
     params,
     timeout: 0
@@ -187,7 +187,7 @@ export function getPhoneLocations(params) {
  */
 export function getIpLocations(params) {
   return request({
-    url: `/adapter-service/uapi/ipinfo`,
+    url: `/api/uapi/ipinfo`,
     method: 'get',
     params,
     timeout: 0
@@ -196,7 +196,7 @@ export function getIpLocations(params) {
 
 export function getMyLocations(params = {}) {
   return request({
-    url: `/adapter-service/uapi/my-locations`,
+    url: `/api/uapi/my-locations`,
     method: 'get',
     params,
     timeout: 0
@@ -205,7 +205,7 @@ export function getMyLocations(params = {}) {
 
 export function getLocationCacheList(params) {
   return request({
-    url: `/adapter-service/location-cache`,
+    url: `/api/location-cache`,
     method: 'get',
     params
   })
@@ -213,7 +213,7 @@ export function getLocationCacheList(params) {
 
 export function deleteLocationCache(params) {
   return request({
-    url: `/adapter-service/location-cache`,
+    url: `/api/location-cache`,
     method: 'delete',
     params
   })
@@ -221,7 +221,7 @@ export function deleteLocationCache(params) {
 
 export function deleteLocationCacheBatch(data) {
   return request({
-    url: `/adapter-service/location-cache/batch-delete`,
+    url: `/api/location-cache/batch-delete`,
     method: 'post',
     data,
   })
@@ -229,7 +229,7 @@ export function deleteLocationCacheBatch(data) {
 
 export function refreshLocationCacheBatch(data) {
   return request({
-    url: `/adapter-service/location-cache/batch-refresh`,
+    url: `/api/location-cache/batch-refresh`,
     method: 'post',
     data,
     timeout: 0
@@ -238,7 +238,7 @@ export function refreshLocationCacheBatch(data) {
 
 export function refreshLocationCache(data) {
   return request({
-    url: `/adapter-service/location-cache/refresh`,
+    url: `/api/location-cache/refresh`,
     method: 'post',
     data,
     timeout: 0
@@ -247,7 +247,7 @@ export function refreshLocationCache(data) {
 
 export function manualLookupLocationCache(data) {
   return request({
-    url: `/adapter-service/location-cache/manual`,
+    url: `/api/location-cache/manual`,
     method: 'post',
     data,
     timeout: 0
@@ -256,7 +256,7 @@ export function manualLookupLocationCache(data) {
 
 export function getUAPISearchEngines() {
   return request({
-    url: `/adapter-service/uapi/search/engines`,
+    url: `/api/uapi/search/engines`,
     method: 'get'
   })
 }
@@ -266,7 +266,7 @@ export function getUAPISearchEngines() {
 // displayed without losing fields added by the upstream API.
 export function getUAPIUsageStatus(params) {
   return request({
-    url: `/adapter-service/uapi/status/usage`,
+    url: `/api/uapi/status/usage`,
     method: 'get',
     params
   })
@@ -274,7 +274,7 @@ export function getUAPIUsageStatus(params) {
 
 export function searchUAPIAggregate(data) {
   return request({
-    url: `/adapter-service/uapi/search/aggregate`,
+    url: `/api/uapi/search/aggregate`,
     method: 'post',
     data,
     timeout: 65000
@@ -283,7 +283,7 @@ export function searchUAPIAggregate(data) {
 
 export function getQuestions(data) {
   return request({
-    url: `/adapter-service/questions/search`,
+    url: `/api/questions/search`,
     method: 'post',
     data
   })
@@ -291,7 +291,7 @@ export function getQuestions(data) {
 
 export function updateQuestions(data) {
   return request({
-    url: `/adapter-service/questions/${data.id}`,
+    url: `/api/questions/${data.id}`,
     method: 'put',
     data
   })
@@ -309,7 +309,7 @@ export function updateQuestions(data) {
 // 缺省时这里不抛错、让后端统一回 400 —— 校验提示由页面提前拦截。
 export function delQuestions(data, reason) {
   return request({
-    url: `/adapter-service/questions/${data.id}`,
+    url: `/api/questions/${data.id}`,
     method: 'delete',
     params: buildDeleteQuestionParams(reason)
   })
@@ -317,7 +317,7 @@ export function delQuestions(data, reason) {
 
 export function createQuestions(data) {
   return request({
-    url: `/adapter-service/questions`,
+    url: `/api/questions`,
     method: 'post',
     data
   })
@@ -325,7 +325,7 @@ export function createQuestions(data) {
 
 export function importQuestions(data) {
   return request({
-    url: `/adapter-service/questions/import`,
+    url: `/api/questions/import`,
     method: 'post',
     data
   })
@@ -333,7 +333,7 @@ export function importQuestions(data) {
 // 获取当前登录用户信息
 export function getCurrentUser(feedback) {
   const config = {
-    url: `/adapter-service/user/info`,
+    url: `/api/user/info`,
     method: 'get'
   }
   if (feedback?.errorFeedback === 'local') config.errorFeedback = 'local'
@@ -342,7 +342,7 @@ export function getCurrentUser(feedback) {
 
 export function updateCurrentUserProfile(data) {
   return request({
-    url: `/adapter-service/user/profile`,
+    url: `/api/user/profile`,
     method: 'put',
     data,
   })
@@ -350,7 +350,7 @@ export function updateCurrentUserProfile(data) {
 
 export function sendUserPhoneChangeSMSCode(data) {
   return request({
-    url: `/adapter-service/user/phone/sms-code`,
+    url: `/api/user/phone/sms-code`,
     method: 'post',
     data
   })
@@ -358,7 +358,7 @@ export function sendUserPhoneChangeSMSCode(data) {
 
 export function updateCurrentUserPhone(data) {
   return request({
-    url: `/adapter-service/user/phone`,
+    url: `/api/user/phone`,
     method: 'put',
     data
   })
@@ -366,7 +366,7 @@ export function updateCurrentUserPhone(data) {
 
 export function bindCurrentUserWechat(data) {
   return request({
-    url: `/adapter-service/user/wechat/bind`,
+    url: `/api/user/wechat/bind`,
     method: 'post',
     data
   })
@@ -374,7 +374,7 @@ export function bindCurrentUserWechat(data) {
 
 export function bindCurrentUserWechatByCode(data) {
   return request({
-    url: `/adapter-service/user/wechat/bind-code`,
+    url: `/api/user/wechat/bind-code`,
     method: 'post',
     data
   })
@@ -383,7 +383,7 @@ export function bindCurrentUserWechatByCode(data) {
 export function resolveAdminWechatIDByScan(params) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/user/wechat/scan-id`,
+    url: `/api/user/wechat/scan-id`,
     method: 'get',
     params
   })
@@ -392,7 +392,7 @@ export function resolveAdminWechatIDByScan(params) {
 export function resolveAdminWechatIDByCode(data) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/user/wechat/code-id`,
+    url: `/api/user/wechat/code-id`,
     method: 'post',
     data
   })
@@ -400,7 +400,7 @@ export function resolveAdminWechatIDByCode(data) {
 
 export function unbindCurrentUserWechat() {
   return request({
-    url: `/adapter-service/user/wechat`,
+    url: `/api/user/wechat`,
     method: 'delete'
   })
 }
@@ -409,7 +409,7 @@ export function unbindCurrentUserWechat() {
 export function getUserList(params) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/user`,
+    url: `/api/user`,
     method: 'get',
     params
   })
@@ -418,7 +418,7 @@ export function getUserList(params) {
 export function delUser(data) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/user/${data.id}`,
+    url: `/api/user/${data.id}`,
     method: 'delete'
   })
 }
@@ -427,7 +427,7 @@ export function delUser(data) {
 export function addUser(data) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/user`,
+    url: `/api/user`,
     method: 'post',
     data
   })
@@ -437,7 +437,7 @@ export function addUser(data) {
 export function updateUser(data) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/user/${data.id}`,
+    url: `/api/user/${data.id}`,
     method: 'put',
     data
   })
@@ -446,7 +446,7 @@ export function updateUser(data) {
 export function resetUserPassword(data) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/user/${data.id}/reset-password`,
+    url: `/api/user/${data.id}/reset-password`,
     method: 'put',
     data: {
       password: data.password,
@@ -457,7 +457,7 @@ export function resetUserPassword(data) {
 export function adjustUserBalance(data) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/user/${data.id}/balance`,
+    url: `/api/user/${data.id}/balance`,
     method: 'post',
     // bucket 必须透传：管理员可选「充值本金 / 赠送金额」两个桶，
     // 漏掉它会让后端永远按默认本金桶处理（选赠金也不生效）。
@@ -468,7 +468,7 @@ export function adjustUserBalance(data) {
 export function updateBillingStatementVisibility(id, showInStatement) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/billing-records/${id}/statement-visibility`,
+    url: `/api/billing-records/${id}/statement-visibility`,
     method: 'put',
     data: { showInStatement },
   })
@@ -476,7 +476,7 @@ export function updateBillingStatementVisibility(id, showInStatement) {
 
 export function getLogList(params) {
   return request({
-    url: `/adapter-service/logs`,
+    url: `/api/logs`,
     method: 'get',
     params
   })
@@ -495,7 +495,7 @@ export function getLogList(params) {
 export function getLogSensitiveOriginal(id, signal) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/logs/${encodeURIComponent(id)}/sensitive-original`,
+    url: `/api/logs/${encodeURIComponent(id)}/sensitive-original`,
     method: 'get',
     timeout: 15_000,
     signal,
@@ -505,7 +505,7 @@ export function getLogSensitiveOriginal(id, signal) {
 export function getBillingRecords(params) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/billing-records`,
+    url: `/api/billing-records`,
     method: 'get',
     params
   })
@@ -514,7 +514,7 @@ export function getBillingRecords(params) {
 export function createRechargeOrder(data) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/recharge-orders`,
+    url: `/api/recharge-orders`,
     method: 'post',
     data
   })
@@ -522,7 +522,7 @@ export function createRechargeOrder(data) {
 
 export function getRechargeOrders(params) {
   return request({
-    url: `/adapter-service/recharge-orders`,
+    url: `/api/recharge-orders`,
     method: 'get',
     params
   })
@@ -530,7 +530,7 @@ export function getRechargeOrders(params) {
 
 export function getPaymentMethods(feedback) {
   const config = {
-    url: `/adapter-service/payment-methods`,
+    url: `/api/payment-methods`,
     method: 'get'
   }
   if (feedback?.errorFeedback === 'local') config.errorFeedback = 'local'
@@ -539,7 +539,7 @@ export function getPaymentMethods(feedback) {
 
 export function createPaymentMethod(data, feedback) {
   const config = {
-    url: `/adapter-service/payment-methods`,
+    url: `/api/payment-methods`,
     method: 'post',
     data
   }
@@ -549,7 +549,7 @@ export function createPaymentMethod(data, feedback) {
 
 export function updatePaymentMethod(data, feedback) {
   const config = {
-    url: `/adapter-service/payment-methods/${data.id}`,
+    url: `/api/payment-methods/${data.id}`,
     method: 'put',
     data
   }
@@ -559,7 +559,7 @@ export function updatePaymentMethod(data, feedback) {
 
 export function deletePaymentMethod(data, feedback) {
   const config = {
-    url: `/adapter-service/payment-methods/${data.id}`,
+    url: `/api/payment-methods/${data.id}`,
     method: 'delete'
   }
   if (feedback?.errorFeedback === 'local') config.errorFeedback = 'local'
@@ -568,7 +568,7 @@ export function deletePaymentMethod(data, feedback) {
 
 export function getSearchAccountConfigs(feedback) {
   const config = {
-    url: `/adapter-service/search-account-configs`,
+    url: `/api/search-account-configs`,
     method: 'get'
   }
   if (feedback?.errorFeedback === 'local') config.errorFeedback = 'local'
@@ -577,7 +577,7 @@ export function getSearchAccountConfigs(feedback) {
 
 export function updateSearchAccountConfig(provider, data, feedback) {
   const config = {
-    url: `/adapter-service/search-account-configs/${provider}`,
+    url: `/api/search-account-configs/${provider}`,
     method: 'put',
     data
   }
@@ -587,28 +587,28 @@ export function updateSearchAccountConfig(provider, data, feedback) {
 
 export function getAISearchConfig() {
   return request({
-    url: `/adapter-service/ai-search-config`,
+    url: `/api/ai-search-config`,
     method: 'get'
   })
 }
 
 export function getAIModelPrices() {
   return request({
-    url: `/adapter-service/ai-model-prices`,
+    url: `/api/ai-model-prices`,
     method: 'get'
   })
 }
 
 export function getAISearchConfigPricingStatus() {
   return request({
-    url: `/adapter-service/ai-search-config/pricing-status`,
+    url: `/api/ai-search-config/pricing-status`,
     method: 'get'
   })
 }
 
 export function getAIOCRCacheStatus(feedback) {
   const config = {
-    url: `/adapter-service/ai-search-config/ocr-cache`,
+    url: `/api/ai-search-config/ocr-cache`,
     method: 'get'
   }
   if (feedback?.errorFeedback === 'local') config.errorFeedback = 'local'
@@ -617,7 +617,7 @@ export function getAIOCRCacheStatus(feedback) {
 
 export function getAIOCRCacheEntries(params, feedback) {
   const config = {
-    url: `/adapter-service/ai-search-config/ocr-cache/entries`,
+    url: `/api/ai-search-config/ocr-cache/entries`,
     method: 'get',
     params,
   }
@@ -629,7 +629,7 @@ export function getAIOCRCacheImage(urlHash) {
   return request({
     errorFeedback: 'local',
     retryPolicy: 'single',
-    url: `/adapter-service/ai-search-config/ocr-cache/entries/${encodeURIComponent(urlHash)}/image`,
+    url: `/api/ai-search-config/ocr-cache/entries/${encodeURIComponent(urlHash)}/image`,
     method: 'get',
     responseType: 'blob',
     timeout: 20 * 1000,
@@ -638,7 +638,7 @@ export function getAIOCRCacheImage(urlHash) {
 
 export function clearAIOCRCache(params, feedback) {
   const config = {
-    url: `/adapter-service/ai-search-config/ocr-cache`,
+    url: `/api/ai-search-config/ocr-cache`,
     method: 'delete',
     params,
   }
@@ -649,7 +649,7 @@ export function clearAIOCRCache(params, feedback) {
 export function deleteAIOCRCacheBatch(data) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/ai-search-config/ocr-cache/batch-delete`,
+    url: `/api/ai-search-config/ocr-cache/batch-delete`,
     method: 'post',
     data,
   })
@@ -657,7 +657,7 @@ export function deleteAIOCRCacheBatch(data) {
 
 export function createAIModelPrice(data) {
   return request({
-    url: `/adapter-service/ai-model-prices`,
+    url: `/api/ai-model-prices`,
     method: 'post',
     data
   })
@@ -665,7 +665,7 @@ export function createAIModelPrice(data) {
 
 export function updateAIModelPrice(data) {
   return request({
-    url: `/adapter-service/ai-model-prices/${data.id}`,
+    url: `/api/ai-model-prices/${data.id}`,
     method: 'put',
     data
   })
@@ -673,14 +673,14 @@ export function updateAIModelPrice(data) {
 
 export function deleteAIModelPrice(data) {
   return request({
-    url: `/adapter-service/ai-model-prices/${data.id}`,
+    url: `/api/ai-model-prices/${data.id}`,
     method: 'delete'
   })
 }
 
 export function resetAIModelPrices() {
   return request({
-    url: `/adapter-service/ai-model-prices/reset`,
+    url: `/api/ai-model-prices/reset`,
     method: 'post'
   })
 }
@@ -688,7 +688,7 @@ export function resetAIModelPrices() {
 export function getAccessTokens(params = {}) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/access-tokens`,
+    url: `/api/access-tokens`,
     method: 'get',
     params
   })
@@ -697,7 +697,7 @@ export function getAccessTokens(params = {}) {
 export function createAccessToken(data) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/access-tokens`,
+    url: `/api/access-tokens`,
     method: 'post',
     data
   })
@@ -706,7 +706,7 @@ export function createAccessToken(data) {
 export function updateAccessToken(data) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/access-tokens/${data.id}`,
+    url: `/api/access-tokens/${data.id}`,
     method: 'put',
     data
   })
@@ -715,7 +715,7 @@ export function updateAccessToken(data) {
 export function deleteAccessToken(data) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/access-tokens/${data.id}`,
+    url: `/api/access-tokens/${data.id}`,
     method: 'delete'
   })
 }
@@ -725,7 +725,7 @@ export function deleteAccessToken(data) {
 export function getScripts(params = {}) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/scripts`,
+    url: `/api/scripts`,
     method: 'get',
     params,
   })
@@ -736,7 +736,7 @@ export function createScript(data, idempotencyKey) {
     errorFeedback: 'local',
     retryPolicy: 'single',
     ...(idempotencyKey ? { headers: { 'Idempotency-Key': idempotencyKey } } : {}),
-    url: `/adapter-service/scripts`,
+    url: `/api/scripts`,
     method: 'post',
     data,
   })
@@ -745,7 +745,7 @@ export function createScript(data, idempotencyKey) {
 export function updateScript(data) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/scripts/${data.id}`,
+    url: `/api/scripts/${data.id}`,
     method: 'put',
     data,
   })
@@ -759,7 +759,7 @@ export function deleteScript(data) {
   return request({
     errorFeedback: 'local',
     retryPolicy: 'single',
-    url: `/adapter-service/scripts/${data.id}`,
+    url: `/api/scripts/${data.id}`,
     method: 'delete',
     ...(sessionId === undefined ? {} : { params: { confirmActiveSessionId: sessionId } }),
   })
@@ -768,7 +768,7 @@ export function deleteScript(data) {
 export function getScriptVersions() {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/script-versions`,
+    url: `/api/script-versions`,
     method: 'get',
   })
 }
@@ -780,7 +780,7 @@ export function uploadScriptVersion(file, version, nativeLeaseProtocol = false) 
   if (nativeLeaseProtocol === true) formData.append('nativeLeaseProtocol', 'true')
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/script-versions/upload`,
+    url: `/api/script-versions/upload`,
     method: 'post',
     data: formData,
     timeout: 120 * 1000,
@@ -790,7 +790,7 @@ export function uploadScriptVersion(file, version, nativeLeaseProtocol = false) 
 export function getScriptDomainSettings() {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/script-domain-settings`,
+    url: `/api/script-domain-settings`,
     method: 'get',
   })
 }
@@ -798,26 +798,26 @@ export function getScriptDomainSettings() {
 export function updateScriptDomainSettings(data) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/script-domain-settings`,
+    url: `/api/script-domain-settings`,
     method: 'put',
     data,
   })
 }
 
 export function getScriptEscrowPolicy() {
-  return request({ errorFeedback: 'local', url: `/adapter-service/script-escrow-policy`, method: 'get' })
+  return request({ errorFeedback: 'local', url: `/api/script-escrow-policy`, method: 'get' })
 }
 
 export function updateScriptEscrowPolicy(data) {
-  return request({ errorFeedback: 'local', retryPolicy: 'single', url: `/adapter-service/script-escrow-policy`, method: 'put', data })
+  return request({ errorFeedback: 'local', retryPolicy: 'single', url: `/api/script-escrow-policy`, method: 'put', data })
 }
 
 export function getScriptActivationCodePrice() {
-  return request({ errorFeedback: 'local', url: `/adapter-service/script-activation-code-price`, method: 'get' })
+  return request({ errorFeedback: 'local', url: `/api/script-activation-code-price`, method: 'get' })
 }
 
 export function updateScriptActivationCodePrice(data) {
-  return request({ errorFeedback: 'local', retryPolicy: 'single', url: `/adapter-service/script-activation-code-price`, method: 'put', data })
+  return request({ errorFeedback: 'local', retryPolicy: 'single', url: `/api/script-activation-code-price`, method: 'put', data })
 }
 
 export function purchaseScriptActivationCode(idempotencyKey, quotedPrice) {
@@ -825,7 +825,7 @@ export function purchaseScriptActivationCode(idempotencyKey, quotedPrice) {
     errorFeedback: 'local',
     retryPolicy: 'single',
     headers: { 'Idempotency-Key': idempotencyKey },
-    url: `/adapter-service/script-activation-codes/purchase`,
+    url: `/api/script-activation-codes/purchase`,
     method: 'post',
     ...(quotedPrice ? { data: { quotedPrice } } : {}),
   })
@@ -835,7 +835,7 @@ export function redeemScriptActivationCode(data) {
   return request({
     errorFeedback: 'local',
     retryPolicy: 'single',
-    url: `/adapter-service/script-activation-codes/redeem`,
+    url: `/api/script-activation-codes/redeem`,
     method: 'post',
     data,
   })
@@ -844,7 +844,7 @@ export function redeemScriptActivationCode(data) {
 // A diagnostic snapshot is explicit-only: one request per mount or manual refresh.
 export function getSystemMetrics() {
   return request({
-    url: `/adapter-service/system-metrics`,
+    url: `/api/system-metrics`,
     method: 'get',
     retryPolicy: 'single',
   })
@@ -852,7 +852,7 @@ export function getSystemMetrics() {
 
 export function getSystemSettings(feedback) {
   const config = {
-    url: `/adapter-service/system-settings`,
+    url: `/api/system-settings`,
     method: 'get'
   }
   if (feedback?.errorFeedback === 'local') config.errorFeedback = 'local'
@@ -861,7 +861,7 @@ export function getSystemSettings(feedback) {
 
 export function updateSystemSettings(data, feedback) {
   const config = {
-    url: `/adapter-service/system-settings`,
+    url: `/api/system-settings`,
     method: 'put',
     data
   }
@@ -871,7 +871,7 @@ export function updateSystemSettings(data, feedback) {
 
 export function getAISearchModels(params) {
   return request({
-    url: `/adapter-service/ai-search-config/models`,
+    url: `/api/ai-search-config/models`,
     method: 'get',
     params
   })
@@ -879,7 +879,7 @@ export function getAISearchModels(params) {
 
 export function testAISearchConfig(data) {
   return request({
-    url: `/adapter-service/ai-search-config/test`,
+    url: `/api/ai-search-config/test`,
     method: 'post',
     data,
     timeout: 0
@@ -888,7 +888,7 @@ export function testAISearchConfig(data) {
 
 export function testAIToolCall(data, feedback) {
   const config = {
-    url: `/adapter-service/ai-search-config/tool-test`,
+    url: `/api/ai-search-config/tool-test`,
     method: 'post',
     data,
     timeout: 0
@@ -899,13 +899,13 @@ export function testAIToolCall(data, feedback) {
 
 export function updateAISearchConfig(data) {
   return request({
-    url: `/adapter-service/ai-search-config`,
+    url: `/api/ai-search-config`,
     method: 'put',
     data
   })
 }
 
-const ticketRefundBase = '/adapter-service/ticket-refunds'
+const ticketRefundBase = '/api/ticket-refunds'
 
 function ticketRefundRequest(config) {
   return request({ errorFeedback: 'local', retryPolicy: 'single', ...config })

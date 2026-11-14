@@ -32,14 +32,14 @@ func TestWantsBlacklistHTMLMatrix(t *testing.T) {
 		{"browser on admin login", http.MethodGet, "/admin-login", "text/html", true},
 
 		// 客户端明确要 JSON → JSON，哪怕同时声明了 text/html。
-		{"explicit json", http.MethodGet, "/adapter-service/search", "application/json", false},
+		{"explicit json", http.MethodGet, "/api/search", "application/json", false},
 		{"json wins over html", http.MethodGet, "/", "text/html, application/json", false},
-		{"json with charset", http.MethodPost, "/adapter-service/search", "application/json; charset=utf-8", false},
+		{"json with charset", http.MethodPost, "/api/search", "application/json; charset=utf-8", false},
 
 		// API 前缀 + 无 Accept → JSON（兜住 curl / 老客户端）。
-		{"api prefix no accept", http.MethodPost, "/adapter-service/search", "", false},
-		{"api prefix star accept", http.MethodGet, "/adapter-service/user", "*/*", false},
-		{"api prefix put", http.MethodPut, "/adapter-service/user/profile", "", false},
+		{"api prefix no accept", http.MethodPost, "/api/search", "", false},
+		{"api prefix star accept", http.MethodGet, "/api/user", "*/*", false},
+		{"api prefix put", http.MethodPut, "/api/user/profile", "", false},
 
 		// 非 API 路径的 GET 且无 Accept → 页面（SPA 路由必须能出）。
 		{"spa route no accept", http.MethodGet, "/dashboard", "", true},
@@ -206,7 +206,7 @@ func TestBlacklistMiddlewareSplitsPageAndJSON(t *testing.T) {
 	}
 
 	// API 请求 → JSON，且**不含 reason、不含规则细节**。
-	req = httptest.NewRequest(http.MethodPost, "/adapter-service/search", nil)
+	req = httptest.NewRequest(http.MethodPost, "/api/search", nil)
 	req.RemoteAddr = "203.0.113.7:1234"
 	req.Header.Set("Accept", "application/json")
 	recorder = httptest.NewRecorder()
@@ -246,7 +246,7 @@ func TestBlacklistMiddlewareAPIWithoutAcceptGetsJSON(t *testing.T) {
 	cache := loadBlacklistCache(t, db)
 	router := newBlacklistTestRouter(BlacklistIPWith(cache, service.NewBlacklistHitRecorder(), db))
 
-	req := httptest.NewRequest(http.MethodPost, "/adapter-service/search", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/search", nil)
 	req.RemoteAddr = "203.0.113.7:1234"
 	// 不设 Accept（httptest 默认没有该头）。
 	recorder := httptest.NewRecorder()

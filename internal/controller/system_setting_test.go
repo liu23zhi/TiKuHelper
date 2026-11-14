@@ -31,14 +31,14 @@ func TestSystemSettingDetailReturnsCurrentSettings(t *testing.T) {
 			EPayPartnerID:          "10001",
 			EPayPlatformPublicKey:  "platform-public-key",
 			EPayMerchantPrivateKey: "merchant-private-key",
-			EPayNotifyURL:          "https://app.example.com/adapter-service/payment/notify",
+			EPayNotifyURL:          "https://app.example.com/api/payment/notify",
 			EPayReturnURL:          "https://app.example.com/adapter/recharge/result",
 		}, nil
 	}
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/system-settings", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/system-settings", nil)
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 
 	SystemSettingDetail(ctx)
@@ -67,7 +67,7 @@ func TestSystemSettingDetailReturnsCurrentSettings(t *testing.T) {
 	if detail.EPayMerchantPrivateKey != "merchant-private-key" {
 		t.Fatalf("expected merchant private key in plain text, got %q", detail.EPayMerchantPrivateKey)
 	}
-	if detail.EPayNotifyURL != "https://app.example.com/adapter-service/payment/notify" {
+	if detail.EPayNotifyURL != "https://app.example.com/api/payment/notify" {
 		t.Fatalf("expected notify url, got %s", detail.EPayNotifyURL)
 	}
 }
@@ -81,7 +81,7 @@ func TestUpdateSystemSettingRejectsInvalidCountAsBadRequest(t *testing.T) {
 	}
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/system-settings", bytes.NewBufferString(`{"maxAIWebReads":-1}`))
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/api/system-settings", bytes.NewBufferString(`{"maxAIWebReads":-1}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 	UpdateSystemSetting(ctx)
@@ -104,7 +104,7 @@ func TestSystemSettingDetailReturnsServerErrorWhenLoadFails(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/system-settings", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/system-settings", nil)
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 
 	SystemSettingDetail(ctx)
@@ -140,7 +140,7 @@ func TestPublicRegisterStatusReturnsCurrentFlags(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/public/register-status", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/public/register-status", nil)
 
 	PublicRegisterStatus(ctx)
 
@@ -201,7 +201,7 @@ func TestPublicRegisterStatusReturnsServerErrorWhenLoadFails(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/public/register-status", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/public/register-status", nil)
 
 	PublicRegisterStatus(ctx)
 
@@ -215,7 +215,7 @@ func TestUpdateSystemSettingRejectsInvalidPayload(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/system-settings", bytes.NewBufferString("not-json"))
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/api/system-settings", bytes.NewBufferString("not-json"))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 
@@ -249,10 +249,10 @@ func TestUpdateSystemSettingPersistsAndReturnsDetail(t *testing.T) {
 		}, nil
 	}
 
-	payload := []byte(`{"registerEnabled":true,"maxLogSizeBytes":2147483648,"epayVersion":"v1","epayGatewayUrl":" https://pay.example.com/submit.php ","epayPartnerId":" 10001 ","epayPlatformPublicKey":" platform-public-key ","epayMerchantPrivateKey":" merchant-private-key ","epayNotifyUrl":" https://app.example.com/adapter-service/payment/notify ","epayReturnUrl":" https://app.example.com/adapter/recharge/result "}`)
+	payload := []byte(`{"registerEnabled":true,"maxLogSizeBytes":2147483648,"epayVersion":"v1","epayGatewayUrl":" https://pay.example.com/submit.php ","epayPartnerId":" 10001 ","epayPlatformPublicKey":" platform-public-key ","epayMerchantPrivateKey":" merchant-private-key ","epayNotifyUrl":" https://app.example.com/api/payment/notify ","epayReturnUrl":" https://app.example.com/adapter/recharge/result "}`)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/system-settings", bytes.NewReader(payload))
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/api/system-settings", bytes.NewReader(payload))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 
@@ -282,7 +282,7 @@ func TestUpdateSystemSettingPersistsAndReturnsDetail(t *testing.T) {
 	if received.EPayMerchantPrivateKey != " merchant-private-key " {
 		t.Fatalf("expected raw merchant private key preserved, got %q", received.EPayMerchantPrivateKey)
 	}
-	if received.EPayNotifyURL != " https://app.example.com/adapter-service/payment/notify " {
+	if received.EPayNotifyURL != " https://app.example.com/api/payment/notify " {
 		t.Fatalf("expected raw notify url preserved, got %q", received.EPayNotifyURL)
 	}
 	if received.EPayReturnURL != " https://app.example.com/adapter/recharge/result " {

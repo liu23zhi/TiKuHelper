@@ -95,7 +95,7 @@ export function buildRemoteCaptchaConfig(baseUrl, captchaType) {
   return {
     loaderUrl: `${normalizedBaseUrl}/loader.js`,
     tacPath: `${normalizedBaseUrl}/tac`,
-    requestCaptchaDataUrl: `/adapter-service/public/captcha/remote-gen?type=${encodeURIComponent(normalizedType)}`,
-    validCaptchaUrl: '/adapter-service/public/captcha/remote-check',
+    requestCaptchaDataUrl: `/api/public/captcha/remote-gen?type=${encodeURIComponent(normalizedType)}`,
+    validCaptchaUrl: '/api/public/captcha/remote-check',
   }
 }

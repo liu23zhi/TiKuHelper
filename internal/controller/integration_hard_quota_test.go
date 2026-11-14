@@ -138,7 +138,7 @@ func TestIntegrationHardQuotaCacheAndSkipCannotBypass(t *testing.T) {
 				invoke := func() *httptest.ResponseRecorder {
 					w := httptest.NewRecorder()
 					c, _ := gin.CreateTestContext(w)
-					c.Request = httptest.NewRequest("POST", "/adapter-service/search?use=icodef&noRecord=1", bytes.NewBufferString(fmt.Sprintf(`{"question":"quota-cache","type":4,"options":[],"skipCache":%t}`, skip)))
+					c.Request = httptest.NewRequest("POST", "/api/search?use=icodef&noRecord=1", bytes.NewBufferString(fmt.Sprintf(`{"question":"quota-cache","type":4,"options":[],"skipCache":%t}`, skip)))
 					c.Request.Header.Set("Authorization", "Bearer "+k.TokenValue)
 					c.Request.Header.Set("Content-Type", "application/json")
 					Search(c)
@@ -175,7 +175,7 @@ func TestIntegrationHardQuotaFallbackPrecheckFreshToken(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Set("user", &u)
 	c.Set("access_token", &k)
-	c.Request = httptest.NewRequest("POST", "/adapter-service/ai-fallback", bytes.NewBufferString(`{"question":"fallback-quota","type":4}`))
+	c.Request = httptest.NewRequest("POST", "/api/ai-fallback", bytes.NewBufferString(`{"question":"fallback-quota","type":4}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 	AIFallback(c)
 	var got service.AIFallbackResult
@@ -193,8 +193,8 @@ func TestIntegrationHardQuotaSyncIdempotentDeliveryVersusNewExecution(t *testing
 		t.Fatal(err)
 	}
 	body := `{"question":"replayed-quota","type":4}`
-	path := "/adapter-service/search?use=icodef&noRecord=1"
-	fingerprint := []byte("POST\n/adapter-service/search\nuse=icodef&noRecord=1\n" + body)
+	path := "/api/search?use=icodef&noRecord=1"
+	fingerprint := []byte("POST\n/api/search\nuse=icodef&noRecord=1\n" + body)
 	record, _, err := service.ClaimIdempotencyWithDB(db, fmt.Sprintf("sync-search:user:%d:token:%d", u.ID, k.ID), "search", "same-key", fingerprint)
 	if err != nil {
 		t.Fatal(err)
@@ -203,7 +203,7 @@ func TestIntegrationHardQuotaSyncIdempotentDeliveryVersusNewExecution(t *testing
 		t.Fatal(err)
 	}
 	router := gin.New()
-	router.POST("/adapter-service/search", SearchWithIdempotency)
+	router.POST("/api/search", SearchWithIdempotency)
 	w := performIdempotentSearchRequest(router, path, body, "same-key", k.TokenValue)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "paid-old-result") {
 		t.Fatalf("PAID_IDEMPOTENT_DELIVERY: existing operation not delivered: %d %s", w.Code, w.Body.String())
@@ -226,7 +226,7 @@ func TestIntegrationHardQuotaAsyncDeliveryVersusNewExecution(t *testing.T) {
 	defaultAIFallbackTaskStore = store
 	t.Cleanup(func() { defaultAIFallbackTaskStore = old })
 	body := `{"question":"async-replayed-quota","type":4}`
-	sum := sha256.Sum256([]byte("POST\n/adapter-service/ai-fallback/tasks\n\n" + body))
+	sum := sha256.Sum256([]byte("POST\n/api/ai-fallback/tasks\n\n" + body))
 	fp := hex.EncodeToString(sum[:])
 	id, _, err := store.createIdempotent(u.ID, "same-key", fp, func(string) service.AIFallbackResult {
 		return service.AIFallbackResult{Success: true, Result: &service.AIFallbackAnswer{Answer: "paid"}}
@@ -239,7 +239,7 @@ func TestIntegrationHardQuotaAsyncDeliveryVersusNewExecution(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Set("user", &u)
 	c.Set("access_token", &k)
-	c.Request = httptest.NewRequest("POST", "/adapter-service/ai-fallback/tasks", bytes.NewBufferString(body))
+	c.Request = httptest.NewRequest("POST", "/api/ai-fallback/tasks", bytes.NewBufferString(body))
 	c.Request.Header.Set("Content-Type", "application/json")
 	c.Request.Header.Set("Idempotency-Key", "same-key")
 	CreateAIFallbackTask(c)
@@ -254,7 +254,7 @@ func TestIntegrationHardQuotaAsyncDeliveryVersusNewExecution(t *testing.T) {
 	freshContext, _ := gin.CreateTestContext(fresh)
 	freshContext.Set("user", &u)
 	freshContext.Set("access_token", &k)
-	freshContext.Request = httptest.NewRequest("POST", "/adapter-service/ai-fallback/tasks", bytes.NewBufferString(body))
+	freshContext.Request = httptest.NewRequest("POST", "/api/ai-fallback/tasks", bytes.NewBufferString(body))
 	freshContext.Request.Header.Set("Content-Type", "application/json")
 	freshContext.Request.Header.Set("Idempotency-Key", "new-operation")
 	CreateAIFallbackTask(freshContext)
@@ -278,10 +278,10 @@ func TestIntegrationHardQuotaPaidStatusStillDelivered(t *testing.T) {
 	})
 	eventuallyAIFallbackTaskStatus(t, store, id, u.ID, aiFallbackTaskStatusSucceeded)
 	r := gin.New()
-	r.GET("/adapter-service/ai-fallback/status", AuthOrAccessToken, GetAIFallbackTaskStatus)
+	r.GET("/api/ai-fallback/status", AuthOrAccessToken, GetAIFallbackTaskStatus)
 	invoke := func() *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
-		q := httptest.NewRequest("GET", "/adapter-service/ai-fallback/status?taskId="+id, nil)
+		q := httptest.NewRequest("GET", "/api/ai-fallback/status?taskId="+id, nil)
 		q.Header.Set("Authorization", "Bearer "+k.TokenValue)
 		r.ServeHTTP(w, q)
 		return w
@@ -335,7 +335,7 @@ func TestIntegrationHardQuotaSearchTaskMissingCredentialCannotStart(t *testing.T
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)
 		c.Set("user", &u)
-		c.Request = httptest.NewRequest("POST", "/adapter-service/search/tasks?noRecord=1", bytes.NewBufferString(`{"question":"missing-key-task","type":4}`))
+		c.Request = httptest.NewRequest("POST", "/api/search/tasks?noRecord=1", bytes.NewBufferString(`{"question":"missing-key-task","type":4}`))
 		c.Request.Header.Set("Content-Type", "application/json")
 		CreateSearchTask(c)
 		if w.Code == 202 {
@@ -352,7 +352,7 @@ func TestIntegrationHardQuotaSearchTaskMissingCredentialCannotStart(t *testing.T
 }
 
 func TestIntegrationHardQuotaMachineCodeAcrossNewSpendingEndpoints(t *testing.T) {
-	for _, path := range []string{"/adapter-service/search", "/adapter-service/ai-fallback", "/adapter-service/ai-fallback/tasks"} {
+	for _, path := range []string{"/api/search", "/api/ai-fallback", "/api/ai-fallback/tasks"} {
 		t.Run(path, func(t *testing.T) {
 			db, u, k := integrationQuotaFixture(t, 1, 1, 10)
 			oldResolve := resolveSearchRequestContext
@@ -372,9 +372,9 @@ func TestIntegrationHardQuotaMachineCodeAcrossNewSpendingEndpoints(t *testing.T)
 			c.Request = httptest.NewRequest("POST", path, bytes.NewBufferString(`{"question":"quota-machine-code","type":4}`))
 			c.Request.Header.Set("Content-Type", "application/json")
 			c.Request.Header.Set("Authorization", "Bearer "+k.TokenValue)
-			if path == "/adapter-service/search" {
+			if path == "/api/search" {
 				Search(c)
-			} else if path == "/adapter-service/ai-fallback" {
+			} else if path == "/api/ai-fallback" {
 				AIFallback(c)
 			} else {
 				CreateAIFallbackTask(c)
@@ -384,7 +384,7 @@ func TestIntegrationHardQuotaMachineCodeAcrossNewSpendingEndpoints(t *testing.T)
 				t.Fatal(err)
 			}
 			code, _ := got["code"].(string)
-			if path != "/adapter-service/search" {
+			if path != "/api/search" {
 				if detail, ok := got["error"].(map[string]any); ok {
 					code, _ = detail["code"].(string)
 				}
@@ -407,7 +407,7 @@ func TestIntegrationHardQuotaNormalTaskPaidDeliveryAndNewAdmission(t *testing.T)
 	defaultSearchTaskStore = store
 	t.Cleanup(func() { defaultSearchTaskStore = old })
 	body := `{"question":"same-task","type":4}`
-	path := "/adapter-service/search/tasks?noRecord=1"
+	path := "/api/search/tasks?noRecord=1"
 	original := httptest.NewRequest("POST", path, bytes.NewBufferString(body))
 	original.Header.Set("Authorization", "Bearer "+k.TokenValue)
 	id, _, err := store.create(u.ID, "same-key", fingerprintSearchTaskRequest(original, body), func() (model.SearchResponse, error) {
@@ -420,8 +420,8 @@ func TestIntegrationHardQuotaNormalTaskPaidDeliveryAndNewAdmission(t *testing.T)
 	}
 	_ = waitForSearchTask(t, u.ID, id)
 	r := gin.New()
-	r.POST("/adapter-service/search/tasks", AuthAccessToken, CreateSearchTask)
-	r.GET("/adapter-service/search/status", AuthAccessToken, GetSearchTaskStatus)
+	r.POST("/api/search/tasks", AuthAccessToken, CreateSearchTask)
+	r.GET("/api/search/status", AuthAccessToken, GetSearchTaskStatus)
 	submit := func(key string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
 		q := httptest.NewRequest("POST", path, bytes.NewBufferString(body))
@@ -451,7 +451,7 @@ func TestIntegrationHardQuotaNormalTaskPaidDeliveryAndNewAdmission(t *testing.T)
 	}
 	get := func(secret string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
-		q := httptest.NewRequest("GET", "/adapter-service/search/status?taskId="+id, nil)
+		q := httptest.NewRequest("GET", "/api/search/status?taskId="+id, nil)
 		q.Header.Set("Authorization", "Bearer "+secret)
 		r.ServeHTTP(w, q)
 		return w
@@ -482,7 +482,7 @@ func TestIntegrationHardQuotaNormalTaskPaidDeliveryAndNewAdmission(t *testing.T)
 }
 
 func TestIntegrationHardQuotaZeroLimitAllowsNewExecution(t *testing.T) {
-	for _, path := range []string{"/adapter-service/search", "/adapter-service/ai-fallback", "/adapter-service/ai-fallback/tasks"} {
+	for _, path := range []string{"/api/search", "/api/ai-fallback", "/api/ai-fallback/tasks"} {
 		t.Run(path, func(t *testing.T) {
 			db, u, k := integrationQuotaFixture(t, 0, 100, 10)
 			seedControllerDefaultSearchProviderConfig(t, db, "icodef", 0)
@@ -510,14 +510,14 @@ func TestIntegrationHardQuotaZeroLimitAllowsNewExecution(t *testing.T) {
 				c.Request = httptest.NewRequest("POST", path+"?use=icodef&noRecord=1", bytes.NewBufferString(`{"question":"zero-limit","type":4}`))
 				c.Request.Header.Set("Content-Type", "application/json")
 				c.Request.Header.Set("Authorization", "Bearer "+k.TokenValue)
-				if path == "/adapter-service/search" {
+				if path == "/api/search" {
 					Search(c)
-				} else if path == "/adapter-service/ai-fallback" {
+				} else if path == "/api/ai-fallback" {
 					AIFallback(c)
 				} else {
 					CreateAIFallbackTask(c)
 				}
-				if path == "/adapter-service/ai-fallback/tasks" {
+				if path == "/api/ai-fallback/tasks" {
 					var created aiFallbackTaskResponse
 					if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil || w.Code != 202 || created.TaskID == "" {
 						t.Fatalf("0 means unlimited task: %d %s %v", w.Code, w.Body.String(), err)

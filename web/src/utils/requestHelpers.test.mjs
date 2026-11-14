@@ -71,7 +71,7 @@ test('buildResponsePayload prefers backend detail when present', () => {
 });
 
 test('public registration flow URLs are isolated from login auth handling', () => {
-  assert.equal(isPublicWechatRegisterRequest('/adapter-service/public/wechat-register/session'), true);
-  assert.equal(isPublicWechatRegisterRequest('/adapter-service/user/login'), false);
+  assert.equal(isPublicWechatRegisterRequest('/api/public/wechat-register/session'), true);
+  assert.equal(isPublicWechatRegisterRequest('/api/user/login'), false);
   assert.equal(isPublicWechatRegisterRequest(undefined), false);
 });

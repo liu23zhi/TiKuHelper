@@ -122,7 +122,7 @@ func loginWithUserAgent(t *testing.T, username, password, userAgent string) *htt
 	payload, _ := json.Marshal(map[string]any{"username": username, "password": password, "captchaToken": "tok"})
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/login", bytes.NewReader(payload))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/login", bytes.NewReader(payload))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Request.Header.Set("User-Agent", userAgent)
 	ctx.Request.RemoteAddr = "203.0.113.7:1234"
@@ -358,7 +358,7 @@ func loginWithUserAgentWithKind(t *testing.T, username, password, userAgent, kin
 	payload, _ := json.Marshal(map[string]any{"username": username, "password": password, "captchaToken": "tok"})
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/login", bytes.NewReader(payload))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/login", bytes.NewReader(payload))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Request.Header.Set("User-Agent", userAgent)
 	ctx.Request.Header.Set(service.ClientKindHeader, kind)

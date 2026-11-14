@@ -25,7 +25,7 @@ func SetAPIRouter(router *gin.Engine) {
 
 	router.Any("/sqp/*path", middleware.BodyLimit(16<<20), controller.Auth, middleware.RequireAdmin, controller.Proxy)
 
-	apiRouter := router.Group("/adapter-service")
+	apiRouter := router.Group("/api")
 
 	// 全局请求体上限必须**大于**单张工单图片的上限（20 MiB）再加 multipart 信封开销，
 	// 否则单条路由上的 BodyLimit((20<<20)+65536) 永远走不到就被这里拦下 —— 症状是
@@ -70,7 +70,7 @@ func SetAPIRouter(router *gin.Engine) {
 
 	apiRouter.POST("/upload", controller.Auth, middleware.RequireAdmin, controller.UploadFile)
 	// EXE uploads need a larger multipart envelope than ordinary API requests.
-	scriptUploadRouter := router.Group("/adapter-service/script-versions")
+	scriptUploadRouter := router.Group("/api/script-versions")
 	scriptUploadRouter.Use(middleware.GlobalAPIRateLimit, middleware.BodyLimit(65<<20))
 	scriptUploadRouter.POST("/upload", controller.Auth, middleware.RequireAdmin, controller.UploadScriptVersion)
 	scriptUploadRouter.POST("", controller.Auth, middleware.RequireAdmin, controller.UploadScriptVersion)
@@ -165,6 +165,29 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.POST("/search/tasks", controller.AuthAccessToken, controller.CreateSearchTask)
 	apiRouter.GET("/search/health", controller.AuthAccessToken, controller.GetSearchTaskHealth)
 	apiRouter.GET("/search/status", controller.AuthAccessToken, controller.GetSearchTaskStatus)
+
+	// 旧版本扩展兼容（2026-11-14 路径改名 /adapter-service → /api）。
+	//
+	// # 只保留这 4 条搜索接口，**不是**整组别名
+	//
+	// 已安装的浏览器扩展与原生宿主里写死了 `/adapter-service/search*` 四个路径
+	// （`chaoxing_plus` 的 `tiku-adapter-config.ts:126/131/136/144`、
+	// `adapter-account.c:297`），它们升级前无法改 URL。其余端点
+	// （`ai-fallback` / `tiku/evidence` / `captcha` / `user/login`）没有做兼容，
+	// 扩展侧同步升级到 `/api` 后即可，不做长期双挂。
+	//
+	// 中间件必须与主组一致：漏了 GlobalAPIRateLimit 会让旧路径成为无限流的后门，
+	// 漏了 WhitelistIP/黑名单会让被拦的 IP 从旧路径进来。
+	legacySearchRouter := router.Group("/adapter-service")
+	legacySearchRouter.Use(
+		middleware.GlobalAPIRateLimit,
+		middleware.BodyLimit((24<<20)+65536),
+		middleware.WhitelistIP(),
+	)
+	legacySearchRouter.POST("/search", controller.SearchWithIdempotency)
+	legacySearchRouter.POST("/search/tasks", controller.AuthAccessToken, controller.CreateSearchTask)
+	legacySearchRouter.GET("/search/health", controller.AuthAccessToken, controller.GetSearchTaskHealth)
+	legacySearchRouter.GET("/search/status", controller.AuthAccessToken, controller.GetSearchTaskStatus)
 	apiRouter.POST("/ai-fallback", controller.AuthOrAccessToken, controller.AIFallback)
 	apiRouter.POST("/ai-fallback/tasks", controller.AuthOrAccessToken, controller.CreateAIFallbackTask)
 	apiRouter.GET("/ai-fallback/status", controller.AuthOrAccessToken, controller.GetAIFallbackTaskStatus)
@@ -393,7 +416,7 @@ func SetAPIRouter(router *gin.Engine) {
 	//
 	// 方法/路径不冲突：:id 只出现在 PUT /blacklist/:id/enabled 与 DELETE /blacklist/:id，
 	// GET /blacklist/hits 是 GET 树上的独立静态路径，gin 按方法分树，不会互相抢占。
-	blacklistAdminRouter := router.Group("/adapter-service")
+	blacklistAdminRouter := router.Group("/api")
 	blacklistAdminRouter.Use(middleware.GlobalAPIRateLimit, middleware.BodyLimit(16<<20))
 	blacklistAdminRouter.GET("/blacklist", controller.Auth, middleware.RequireAdmin, controller.BlacklistEntryList)
 	blacklistAdminRouter.POST("/blacklist", controller.Auth, middleware.RequireAdmin, controller.BlacklistEntryCreate)
@@ -734,9 +757,17 @@ func SetWebRouter(buildFS embed.FS, indexPage []byte, router *gin.Engine) {
 			return
 		}
 		path := c.Request.URL.Path
-		if path == "/adapter-service" || strings.HasPrefix(path, "/adapter-service/") {
-			c.JSON(http.StatusNotFound, gin.H{"code": "NOT_FOUND", "message": "接口不存在"})
-			return
+		// 未命中的 API 路径返回 JSON 404，不能落到 SPA 的 index.html：
+		// 前端拿到 200 + HTML 会把它当成功响应解析，错误被掩盖成「数据格式异常」。
+		//
+		// 两个前缀都要判（2026-11-14 改名 /adapter-service → /api）：
+		// 只判旧前缀会让 `/api/__missing__` 返回 SPA，只判新前缀会让旧客户端的
+		// 未知路径拿到 HTML。
+		for _, prefix := range []string{"/api", "/adapter-service"} {
+			if path == prefix || strings.HasPrefix(path, prefix+"/") {
+				c.JSON(http.StatusNotFound, gin.H{"code": "NOT_FOUND", "message": "接口不存在"})
+				return
+			}
 		}
 		c.Data(http.StatusOK, "text/html; charset=utf-8", indexPage)
 	})

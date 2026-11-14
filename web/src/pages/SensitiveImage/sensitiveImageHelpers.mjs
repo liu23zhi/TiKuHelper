@@ -6,10 +6,10 @@
 // 因此「把 affectedRows 写死成 0」「把字节字段透传出去」这类改动会真的变红。
 //
 // 与后端 controller/sensitive_image.go 的契约：
-//   GET  /adapter-service/sensitive-image/entries   列表（status / imageSha256 / page / pageSize）
-//   GET  /adapter-service/sensitive-image/quota     额度配置 + 可选 userId 的当日用量
-//   POST /adapter-service/sensitive-image/quota     改额度配置（指针语义：只改传入的键）
-//   POST /adapter-service/sensitive-image/detect    手动触发（imageSha256 或 ticketId）
+//   GET  /api/sensitive-image/entries   列表（status / imageSha256 / page / pageSize）
+//   GET  /api/sensitive-image/quota     额度配置 + 可选 userId 的当日用量
+//   POST /api/sensitive-image/quota     改额度配置（指针语义：只改传入的键）
+//   POST /api/sensitive-image/detect    手动触发（imageSha256 或 ticketId）
 
 // ---- 两个 Tab ----
 

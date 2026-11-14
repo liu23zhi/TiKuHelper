@@ -58,7 +58,7 @@ test('resolveWechatQrExpiresAt caps fallback expiry at 180 seconds', () => {
 test('buildWechatLoginWebSocketURL uses wss on https pages', () => {
   assert.equal(
     buildWechatLoginWebSocketURL('token a', { protocol: 'https:', host: 'example.com' }),
-    'wss://example.com/adapter-service/public/wechat-login/ws?loginToken=token%20a',
+    'wss://example.com/api/public/wechat-login/ws?loginToken=token%20a',
   )
 })
 

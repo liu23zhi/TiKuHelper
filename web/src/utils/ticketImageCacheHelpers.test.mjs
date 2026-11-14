@@ -301,7 +301,7 @@ test('the page wires every helper result into the template', async () => {
 test('the api module exposes exactly the four endpoints the backend provides', async () => {
   const source = await readFile(new URL('../api/TicketImageCacheApi.js', import.meta.url), 'utf8')
   // 四条路径必须与 router.go 待装配的原文一致。
-  assert.match(source, /\/adapter-service\/admin\/ticket-image-cache'/)
+  assert.match(source, /\/api\/admin\/ticket-image-cache'/)
   assert.match(source, /method: 'delete'/)
   assert.match(source, /batch-delete/)
   assert.match(source, /\/clean'/)

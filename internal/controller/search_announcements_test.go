@@ -113,7 +113,7 @@ func runAnnouncementSearch(t *testing.T) *httptest.ResponseRecorder {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	request := httptest.NewRequest(http.MethodPost,
-		"/adapter-service/search?use=wanneng&wannengToken=announcement-test-token&noRecord=1",
+		"/api/search?use=wanneng&wannengToken=announcement-test-token&noRecord=1",
 		bytes.NewReader([]byte(`{"question":"公告下发测试题","options":["A","B"]}`)))
 	request.Header.Set("Content-Type", "application/json")
 	request.RemoteAddr = "198.51.100.77:45678"

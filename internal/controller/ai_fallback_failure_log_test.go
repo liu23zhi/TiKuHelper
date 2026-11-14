@@ -47,7 +47,7 @@ func TestAIFallbackWritesPrivateFailureDetailToAudit(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Set("user", &user)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback", bytes.NewBufferString(`{"question":"同步失败详情","type":0}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/ai-fallback", bytes.NewBufferString(`{"question":"同步失败详情","type":0}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	AIFallback(ctx)
 	if strings.Contains(recorder.Body.String(), "真实HTTP") {
@@ -91,9 +91,9 @@ func TestAIFallbackAuditsPanicWithoutChangingHTTPFailure(t *testing.T) {
 	runAIFallbackService = func(model.SearchRequest) service.AIFallbackResult { panic("sync upstream panic") }
 	router := gin.New()
 	router.Use(gin.Recovery())
-	router.POST("/adapter-service/ai-fallback", func(c *gin.Context) { c.Set("user", &user); AIFallback(c) })
+	router.POST("/api/ai-fallback", func(c *gin.Context) { c.Set("user", &user); AIFallback(c) })
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback", bytes.NewBufferString(`{"question":"同步panic","type":4}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/ai-fallback", bytes.NewBufferString(`{"question":"同步panic","type":4}`))
 	request.Header.Set("Content-Type", "application/json")
 	router.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusInternalServerError {
@@ -137,7 +137,7 @@ func TestCreateAIFallbackTaskAuditsFailureDetailsExactlyOnce(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
 			ctx.Set("user", &user)
-			ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback/tasks", bytes.NewBufferString(`{"question":"异步异常详情","type":4}`))
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/api/ai-fallback/tasks", bytes.NewBufferString(`{"question":"异步异常详情","type":4}`))
 			ctx.Request.Header.Set("Content-Type", "application/json")
 			CreateAIFallbackTask(ctx)
 			var created aiFallbackTaskResponse

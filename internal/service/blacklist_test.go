@@ -801,7 +801,7 @@ func TestBlacklistHitRecorderAggregatesWithinWindow(t *testing.T) {
 		recorder.now = func() time.Time { return now.Add(offset) }
 		if err := recorder.Record(db, entity.BlacklistHit{
 			EntryID: 7, Kind: BlacklistKindIP, ValueMasked: "203.0.113.*",
-			ClientIP: "203.0.113.7", Path: "/adapter-service/search",
+			ClientIP: "203.0.113.7", Path: "/api/search",
 			Action: BlacklistActionBlocked,
 		}); err != nil {
 			t.Fatalf("record #%d: %v", i, err)
@@ -819,7 +819,7 @@ func TestBlacklistHitRecorderAggregatesWithinWindow(t *testing.T) {
 		t.Fatalf("hit_count = %d, want 100", rows[0].HitCount)
 	}
 	if rows[0].EntryID != 7 || rows[0].ClientIP != "203.0.113.7" ||
-		rows[0].ValueMasked != "203.0.113.*" || rows[0].Path != "/adapter-service/search" ||
+		rows[0].ValueMasked != "203.0.113.*" || rows[0].Path != "/api/search" ||
 		rows[0].Action != BlacklistActionBlocked {
 		t.Fatalf("aggregated row lost fields: %+v", rows[0])
 	}
@@ -887,7 +887,7 @@ func TestBlacklistHitRecorderStartsNewRowAfterWindow(t *testing.T) {
 func TestBlacklistHitRecorderTruncatesLongPathByRunes(t *testing.T) {
 	db := newBlacklistTestDB(t)
 	recorder := NewBlacklistHitRecorder()
-	longPath := "/adapter-service/" + strings.Repeat("题", 400)
+	longPath := "/api/" + strings.Repeat("题", 400)
 	if err := recorder.Record(db, entity.BlacklistHit{
 		EntryID: 1, Kind: BlacklistKindIP, ClientIP: "203.0.113.7",
 		Action: BlacklistActionBlocked, Path: longPath,

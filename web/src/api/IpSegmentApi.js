@@ -3,11 +3,11 @@ import request from '../utils/request'
 // IP 段归属信息管理（task_doc/71 §3.5）。
 //
 // 后端契约（internal/api/router.go）：
-//   GET    /adapter-service/admin/ip-segments                 段列表（分页 + keyword/asn/llc/source 筛选）
-//   GET    /adapter-service/admin/ip-segments/lookup?ip=...   某个 IP 落在哪一段（未命中是 200 + reason）
-//   DELETE /adapter-service/admin/ip-segments/:id             删除一条段记录
-//   POST   /adapter-service/admin/ip-segments/batch-delete    按筛选批量删除（必须带至少一个条件）
-//   POST   /adapter-service/admin/ip-segments/:id/refresh     用该段的样本 IP 重查上游并更新
+//   GET    /api/admin/ip-segments                 段列表（分页 + keyword/asn/llc/source 筛选）
+//   GET    /api/admin/ip-segments/lookup?ip=...   某个 IP 落在哪一段（未命中是 200 + reason）
+//   DELETE /api/admin/ip-segments/:id             删除一条段记录
+//   POST   /api/admin/ip-segments/batch-delete    按筛选批量删除（必须带至少一个条件）
+//   POST   /api/admin/ip-segments/:id/refresh     用该段的样本 IP 重查上游并更新
 //
 // 与 ip-location-cache 的区别：那里是「查过这个键」的单 IP 缓存，
 // 这里是「这个网段属于谁」的段表。路径用复数 ip-segments，两者不要混用。
@@ -26,7 +26,7 @@ function readPositiveId(id) {
 export function getIPSegments(params) {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/admin/ip-segments',
+    url: '/api/admin/ip-segments',
     method: 'get',
     params,
   })
@@ -38,7 +38,7 @@ export function lookupIPSegment(ip) {
   if (!value) throw new Error('请输入 IP')
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/admin/ip-segments/lookup',
+    url: '/api/admin/ip-segments/lookup',
     method: 'get',
     params: { ip: value },
   })
@@ -47,7 +47,7 @@ export function lookupIPSegment(ip) {
 export function deleteIPSegment(id) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/admin/ip-segments/${readPositiveId(id)}`,
+    url: `/api/admin/ip-segments/${readPositiveId(id)}`,
     method: 'delete',
   })
 }
@@ -57,7 +57,7 @@ export function deleteIPSegment(id) {
 export function batchDeleteIPSegments(filter) {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/admin/ip-segments/batch-delete',
+    url: '/api/admin/ip-segments/batch-delete',
     method: 'post',
     data: {
       keyword: String(filter?.keyword ?? '').trim(),
@@ -73,7 +73,7 @@ export function batchDeleteIPSegments(filter) {
 export function refreshIPSegment(id) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/admin/ip-segments/${readPositiveId(id)}/refresh`,
+    url: `/api/admin/ip-segments/${readPositiveId(id)}/refresh`,
     method: 'post',
   })
 }

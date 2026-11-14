@@ -100,7 +100,7 @@ func TestB04SearchBypassDoesNotSample(t *testing.T) {
 		}, nil,
 		func() {
 			before := diagnostics.Default.Snapshot().Cache.Search
-			performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"fixture","type":2,"skipCache":true}`, "Basic fixture")
+			performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"fixture","type":2,"skipCache":true}`, "Basic fixture")
 			after := diagnostics.Default.Snapshot().Cache.Search
 			if after != before {
 				t.Fatalf("bypass fabricated cache sample before=%+v after=%+v", before, after)
@@ -196,7 +196,7 @@ func TestB04SearchActualLookupMetricsAndOneBilling(t *testing.T) {
 		func() {
 			before := diagnostics.Default.Snapshot().Cache.Search
 			for i := 0; i < 2; i++ {
-				performSearchRequest(t, "/adapter-service/search?use=icodef&noRecord=1", `{"question":"fixture","type":2}`, "Basic fixture")
+				performSearchRequest(t, "/api/search?use=icodef&noRecord=1", `{"question":"fixture","type":2}`, "Basic fixture")
 			}
 			after := diagnostics.Default.Snapshot().Cache.Search
 			if after.Hits-before.Hits != 1 || after.Misses-before.Misses != 1 || after.Shared != before.Shared {

@@ -6,7 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// 考试客户端本地库工具的三个接口必须注册在 /adapter-service/admin/userexam 下。
+// 考试客户端本地库工具的三个接口必须注册在 /api/admin/userexam 下。
 //
 // 这里只断言路由存在：真正发请求会经过 GlobalAPIRateLimit，而它依赖
 // manager 单例；权限行为由 internal/controller 的用例覆盖（非管理员 403）。
@@ -16,9 +16,9 @@ func TestSetAPIRouterRegistersUserExamToolRoutes(t *testing.T) {
 	SetAPIRouter(router)
 
 	want := map[string]bool{
-		"GET /adapter-service/admin/userexam/tool/version": false,
-		"GET /adapter-service/admin/userexam/tool":         false,
-		"POST /adapter-service/admin/userexam/inspect":     false,
+		"GET /api/admin/userexam/tool/version": false,
+		"GET /api/admin/userexam/tool":         false,
+		"POST /api/admin/userexam/inspect":     false,
 	}
 	for _, route := range router.Routes() {
 		key := route.Method + " " + route.Path

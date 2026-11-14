@@ -52,7 +52,7 @@ func TestSearchTasksCreateReturnsAcceptedTaskEnvelope(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/search/tasks?use=stub&noRecord=1", bytes.NewBufferString(`{"question":"题目","options":["A","B"]}`))
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/api/search/tasks?use=stub&noRecord=1", bytes.NewBufferString(`{"question":"题目","options":["A","B"]}`))
 			ctx.Request.Header.Set("Content-Type", "application/json")
 			authorizeSearchTaskFixture(t, ctx, 17)
 
@@ -118,14 +118,14 @@ func TestStrictAccessTokenRoutesCreateAndReadTasksAndRejectLoginAuthWithoutSearc
 		nil,
 		func() {
 			router := gin.New()
-			router.GET("/adapter-service/search/health", AuthAccessToken, GetSearchTaskHealth)
-			router.POST("/adapter-service/search/tasks", AuthAccessToken, CreateSearchTask)
-			router.GET("/adapter-service/search/status", AuthAccessToken, GetSearchTaskStatus)
+			router.GET("/api/search/health", AuthAccessToken, GetSearchTaskHealth)
+			router.POST("/api/search/tasks", AuthAccessToken, CreateSearchTask)
+			router.GET("/api/search/status", AuthAccessToken, GetSearchTaskStatus)
 
 			var probeID string
 			for i := 0; i < 2; i++ {
 				probe := httptest.NewRecorder()
-				probeRequest := httptest.NewRequest(http.MethodGet, "/adapter-service/search/health", nil)
+				probeRequest := httptest.NewRequest(http.MethodGet, "/api/search/health", nil)
 				probeRequest.Header.Set("Authorization", "Bearer "+token.TokenValue)
 				router.ServeHTTP(probe, probeRequest)
 				if probe.Code != http.StatusOK {
@@ -166,7 +166,7 @@ func TestStrictAccessTokenRoutesCreateAndReadTasksAndRejectLoginAuthWithoutSearc
 			}
 
 			create := httptest.NewRecorder()
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search/tasks?use=icodef", bytes.NewBufferString(`{"question":"有效访问令牌题目","options":["A","B"],"skipCache":true}`))
+			request := httptest.NewRequest(http.MethodPost, "/api/search/tasks?use=icodef", bytes.NewBufferString(`{"question":"有效访问令牌题目","options":["A","B"],"skipCache":true}`))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("Authorization", "Bearer "+token.TokenValue)
 			router.ServeHTTP(create, request)
@@ -208,8 +208,8 @@ func TestStrictAccessTokenRoutesCreateAndReadTasksAndRejectLoginAuthWithoutSearc
 				path   string
 				body   string
 			}{
-				{name: "health", method: http.MethodGet, path: "/adapter-service/search/health"},
-				{name: "create", method: http.MethodPost, path: "/adapter-service/search/tasks?use=stub", body: `{"question":"不得执行"}`},
+				{name: "health", method: http.MethodGet, path: "/api/search/health"},
+				{name: "create", method: http.MethodPost, path: "/api/search/tasks?use=stub", body: `{"question":"不得执行"}`},
 				{name: "status", method: http.MethodGet, path: searchTaskStatusURL(created.TaskID)},
 			} {
 				for _, tc := range authCases {
@@ -549,7 +549,7 @@ func createSearchTaskRequestWithStatus(t *testing.T, userID int32, idempotencyKe
 	t.Helper()
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/search/tasks?use=stub&noRecord=1", bytes.NewBufferString(body))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/search/tasks?use=stub&noRecord=1", bytes.NewBufferString(body))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	if idempotencyKey != "" {
 		ctx.Request.Header.Set("Idempotency-Key", idempotencyKey)

@@ -40,7 +40,7 @@ func callToolTest(t *testing.T, user entity.User, payload string) *httptest.Resp
 	t.Helper()
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-search-config/tool-test", bytes.NewBufferString(payload))
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/ai-search-config/tool-test", bytes.NewBufferString(payload))
 	c.Request.Header.Set("Content-Type", "application/json")
 	c.Set("user", &user)
 	TestAIToolCall(c)

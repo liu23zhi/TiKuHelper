@@ -41,8 +41,8 @@ func TestAPITransportCorrelationCoversAbortAndNotFound(t *testing.T) {
 		{"ok", "GET", "/transport-fixture/ok", 200},
 		{"local-forbidden", "GET", "/transport-fixture/forbidden", 403},
 		{"local-limited", "GET", "/transport-fixture/limited", 429},
-		{"not-found", "GET", "/adapter-service/transport-fixture-unknown", 404},
-		{"actual-preflight", "OPTIONS", "/adapter-service/search", 204},
+		{"not-found", "GET", "/api/transport-fixture-unknown", 404},
+		{"actual-preflight", "OPTIONS", "/api/search", 204},
 	}
 	seen := map[string]bool{}
 	for _, test := range cases {

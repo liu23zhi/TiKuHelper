@@ -276,17 +276,37 @@ func BlacklistExemptPath(path string) bool {
 //
 // 最后一条容易被忽略：人机验证接口若被拦，管理员点「登录」时会先卡在验证码上，
 // 表现成「页面能打开但登录永远失败」—— 比完全进不去更难排查。
+// apiPrefixes 是本仓 API 的**第一段前缀**，全部同义。
+//
+// ⚠️ 2026-11-14 路径改名 /adapter-service → /api 后，这里是**唯一**允许同时出现
+// 两个前缀的地方。理由：黑名单豁免是**安全红线**，必须对「已部署的旧客户端」
+// 与「新前端」同时成立。漏掉任一个的后果分别是：
+//   - 漏 /api            → 被拉黑的管理员用新后台进不来（自锁）
+//   - 漏 /adapter-service → 旧扩展与旧书签绕过黑名单直接从旧路径进来
+//
+// 所以豁免判定与「管理接口段」判定都按这个列表逐个匹配。
+var apiPrefixes = []string{"/api", "/adapter-service"}
+
 func isAdminLoginExemptPath(path string) bool {
-	switch path {
-	case AdminLoginPagePath,
-		"/adapter-service/admin-login",
-		// 人机验证：站内图片验证码的挑战与校验、远程验证码的三个端点。
-		"/adapter-service/public/captcha/challenge",
-		"/adapter-service/public/captcha/verify",
-		"/adapter-service/public/captcha/remote-gen",
-		"/adapter-service/public/captcha/remote-check",
-		"/adapter-service/public/captcha/remote-token":
+	if path == AdminLoginPagePath {
 		return true
+	}
+	// 人机验证：站内图片验证码的挑战与校验、远程验证码的三个端点。
+	// 这些是**登录前置**，被拦会让管理员卡在验证码上（比完全进不去更难排查）。
+	exemptSuffixes := []string{
+		"/admin-login",
+		"/public/captcha/challenge",
+		"/public/captcha/verify",
+		"/public/captcha/remote-gen",
+		"/public/captcha/remote-check",
+		"/public/captcha/remote-token",
+	}
+	for _, prefix := range apiPrefixes {
+		for _, suffix := range exemptSuffixes {
+			if path == prefix+suffix {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -297,11 +317,20 @@ func isAdminLoginExemptPath(path string) bool {
 // 不是管理接口，裸 HasPrefix("/adapter-service/admin") 会把它误豁免
 // （这与「不要用字符串前缀判断 IP 段」是同一条纪律的另一种形态）。
 func isBlacklistAdminSegment(path string) bool {
-	const prefix = "/adapter-service/"
-	if !strings.HasPrefix(path, prefix) {
+	// 双前缀（见 apiPrefixes 的注释）：新旧 API 路径都要能判出管理接口段。
+	// 只认旧前缀的后果：改名后被拉黑的管理员换到新后台就能绕过；
+	// 只认新前缀的后果：旧扩展仍能从 /adapter-service 进来。
+	var rest string
+	for _, prefix := range apiPrefixes {
+		if strings.HasPrefix(path, prefix+"/") {
+			rest = strings.TrimPrefix(path, prefix+"/")
+			break
+		}
+	}
+	if rest == "" {
 		return false
 	}
-	segments := strings.Split(strings.TrimPrefix(path, prefix), "/")
+	segments := strings.Split(rest, "/")
 	if len(segments) == 0 || segments[0] == "" {
 		return false
 	}

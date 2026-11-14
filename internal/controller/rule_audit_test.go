@@ -207,7 +207,7 @@ func newRuleDeleteBlacklistCase(t *testing.T) ruleDeleteCase {
 	setBlacklistAdminSwitch(t, db, true)
 	router := blacklistAdminRouter(&admin)
 
-	create := blacklistRequest(router, http.MethodPost, "/adapter-service/blacklist",
+	create := blacklistRequest(router, http.MethodPost, "/api/blacklist",
 		`{"kind":"ip","pattern":"203.0.113.61","reason":"SYNTHETIC_RULE_DELETE_AUDIT"}`)
 	if create.Code != http.StatusCreated {
 		t.Fatalf("seed blacklist rule: %d %s", create.Code, create.Body.String())
@@ -222,7 +222,7 @@ func newRuleDeleteBlacklistCase(t *testing.T) ruleDeleteCase {
 		module: ruleDeleteModuleBlacklist,
 		router: router,
 		db:     db,
-		path:   "/adapter-service/blacklist/" + strconv.FormatInt(created.ID, 10),
+		path:   "/api/blacklist/" + strconv.FormatInt(created.ID, 10),
 		count: func(t *testing.T) int64 {
 			t.Helper()
 			var rows int64
@@ -341,14 +341,14 @@ func newRuleDeletePaymentMethodCase(t *testing.T) ruleDeleteCase {
 
 	router := gin.New()
 	auth := func(c *gin.Context) { c.Set("user", &admin) }
-	router.DELETE("/adapter-service/payment-methods/:id", auth, DeletePaymentMethod)
+	router.DELETE("/api/payment-methods/:id", auth, DeletePaymentMethod)
 
 	return ruleDeleteCase{
 		name:   "payment_method",
 		module: ruleDeleteModulePaymentMethod,
 		router: router,
 		db:     db,
-		path:   "/adapter-service/payment-methods/" + strconv.Itoa(int(method.ID)),
+		path:   "/api/payment-methods/" + strconv.Itoa(int(method.ID)),
 		count: func(t *testing.T) int64 {
 			t.Helper()
 			var rows int64

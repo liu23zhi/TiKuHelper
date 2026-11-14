@@ -63,7 +63,7 @@ function newHost(storage = new FixtureStorage()) {
 }
 async function pending(config = {}) {
   let settle, actual
-  const promise = request({ url: '/adapter-service/user/profile', method: 'get', retryPolicy: 'single', ...config,
+  const promise = request({ url: '/api/user/profile', method: 'get', retryPolicy: 'single', ...config,
     adapter(adapterConfig) {
       actual = adapterConfig
       return new Promise((resolve, reject) => { settle = { resolve, reject } })
@@ -154,7 +154,7 @@ test('real current 401 still clears login, toasts once and redirects; current 40
 })
 test('real public WeChat-register 401 and current quota/balance/captcha exceptions remain unchanged', async () => {
   const host = newHost(); user.setStoredCurrentUser(A)
-  const publicRequest = await pending({ url: '/adapter-service/public/wechat-register/session' })
+  const publicRequest = await pending({ url: '/api/public/wechat-register/session' })
   const publicData = { message: 'registration fixture' }; publicRequest.respond(401, publicData)
   assertPayload(await publicRequest.promise, 401, publicData)
   assertRetired(host, A, 'public-wechat-register-401')
@@ -237,7 +237,7 @@ test('request and composable share one bounded listener and release independentl
 })
 test('lease leaves actual Axios headers/cookies defaults, status handling and consuming request count unchanged', async () => {
   const host = newHost(); user.setStoredCurrentUser(A)
-  const operation = await pending({ url: '/adapter-service/uapi/search', method: 'post', headers: { 'X-Fixture': 'lease-contract' } })
+  const operation = await pending({ url: '/api/uapi/search', method: 'post', headers: { 'X-Fixture': 'lease-contract' } })
   assert.equal(operation.config.withCredentials, true)
   assert.equal(operation.config.timeout, 60000)
   assert.equal(operation.config.headers.get('X-Fixture'), 'lease-contract')
@@ -249,7 +249,7 @@ test('lease leaves actual Axios headers/cookies defaults, status handling and co
   assert.equal(value.data.requestId, 'business-fixture')
   assert.equal(host.listeners.size, 0)
 })
-for (const [method, url] of [['get', '/adapter-service/user/profile'], ['post', '/adapter-service/recharge-orders']]) {
+for (const [method, url] of [['get', '/api/user/profile'], ['post', '/api/recharge-orders']]) {
   test('real ' + method + ' backoff never redispatches retired A intent with the later B cookie session', async () => {
     const host = newHost(); user.setStoredCurrentUser(A)
     let attempts = 0, changed, mutationTimer
@@ -272,7 +272,7 @@ for (const [method, url] of [['get', '/adapter-service/user/profile'], ['post', 
 test('unknown unreadable ownership never blocks first dispatch or otherwise-valid retry', async () => {
   const host = newHost(); user.setStoredCurrentUser(A); host.localStorage.blockedRead = true
   let attempts = 0
-  const value = await request({ method: 'get', url: '/adapter-service/user/profile', adapter(config) {
+  const value = await request({ method: 'get', url: '/api/user/profile', adapter(config) {
     attempts += 1
     return Promise.resolve({ status: attempts === 1 ? 429 : 200, data: { fixture: 'unknown-storage' },
       headers: { 'retry-after': '0.001', 'x-request-id': serverId }, config, request: {}, statusText: 'fixture' })
@@ -284,7 +284,7 @@ test('unknown unreadable ownership never blocks first dispatch or otherwise-vali
 test('same-owner real keyed retry retains one Idempotency-Key and the original operation budget', async () => {
   const host = newHost(); user.setStoredCurrentUser(A)
   const attempts = []
-  const value = await request({ method: 'post', url: '/adapter-service/recharge-orders', timeout: 10000, adapter(config) {
+  const value = await request({ method: 'post', url: '/api/recharge-orders', timeout: 10000, adapter(config) {
     attempts.push(config)
     return Promise.resolve({ status: attempts.length === 1 ? 429 : 200, data: { fixture: 'same-owner-keyed' },
       headers: { 'retry-after': '0.001', 'x-request-id': serverId }, config, request: {}, statusText: 'fixture' })

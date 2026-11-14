@@ -7,7 +7,7 @@ async function ticketRequest(config) {
 
 export function getTickets(params = {}) {
   return ticketRequest({
-    url: "/adapter-service/tickets",
+    url: "/api/tickets",
     method: "get",
     params,
   });
@@ -15,7 +15,7 @@ export function getTickets(params = {}) {
 
 export function createTicket(data) {
   return ticketRequest({
-    url: "/adapter-service/tickets",
+    url: "/api/tickets",
     method: "post",
     data,
   });
@@ -23,14 +23,14 @@ export function createTicket(data) {
 
 export function getTicket(id) {
   return ticketRequest({
-    url: `/adapter-service/tickets/${encodeURIComponent(id)}`,
+    url: `/api/tickets/${encodeURIComponent(id)}`,
     method: "get",
   });
 }
 
 export function addTicketMessage(id, data) {
   return ticketRequest({
-    url: `/adapter-service/tickets/${encodeURIComponent(id)}/messages`,
+    url: `/api/tickets/${encodeURIComponent(id)}/messages`,
     method: "post",
     data,
   });
@@ -38,7 +38,7 @@ export function addTicketMessage(id, data) {
 
 export function updateTicket(id, data) {
   return ticketRequest({
-    url: `/adapter-service/tickets/${encodeURIComponent(id)}`,
+    url: `/api/tickets/${encodeURIComponent(id)}`,
     method: "put",
     data,
   });
@@ -46,7 +46,7 @@ export function updateTicket(id, data) {
 
 export function testTicketNotification() {
   return ticketRequest({
-    url: "/adapter-service/tickets/config/test",
+    url: "/api/tickets/config/test",
     method: "post",
     timeout: 30_000,
   });
@@ -54,14 +54,14 @@ export function testTicketNotification() {
 
 export function getTicketNotificationConfig() {
   return ticketRequest({
-    url: "/adapter-service/tickets/config",
+    url: "/api/tickets/config",
     method: "get",
   });
 }
 
 export function saveTicketNotificationConfig(data) {
   return ticketRequest({
-    url: "/adapter-service/tickets/config",
+    url: "/api/tickets/config",
     method: "put",
     data,
   });
@@ -69,7 +69,7 @@ export function saveTicketNotificationConfig(data) {
 
 export function retryTicketNotification(ticketId, notificationId) {
   return ticketRequest({
-    url: `/adapter-service/tickets/${encodeURIComponent(
+    url: `/api/tickets/${encodeURIComponent(
       ticketId
     )}/notifications/${encodeURIComponent(notificationId)}/retry`,
     method: "post",
@@ -88,7 +88,7 @@ export function uploadTicketAttachment(file, ticketId) {
     ? `?ticketId=${encodeURIComponent(ticketId)}`
     : "";
   return ticketRequest({
-    url: `/adapter-service/ticket-attachments${query}`,
+    url: `/api/ticket-attachments${query}`,
     method: "post",
     data: form,
     timeout: 60_000,
@@ -97,7 +97,7 @@ export function uploadTicketAttachment(file, ticketId) {
 
 export function listTicketAttachments(ticketId) {
   return ticketRequest({
-    url: `/adapter-service/tickets/${encodeURIComponent(ticketId)}/attachments`,
+    url: `/api/tickets/${encodeURIComponent(ticketId)}/attachments`,
     method: "get",
   });
 }
@@ -106,7 +106,7 @@ export function listTicketAttachments(ticketId) {
 // 调用方**只在 visible=true 时**才调用它。
 export function getTicketAttachment(attachmentId) {
   return ticketRequest({
-    url: `/adapter-service/ticket-attachments/${encodeURIComponent(attachmentId)}`,
+    url: `/api/ticket-attachments/${encodeURIComponent(attachmentId)}`,
     method: "get",
     responseType: "blob",
     timeout: 20_000,
@@ -116,7 +116,7 @@ export function getTicketAttachment(attachmentId) {
 // 管理端读图：可拉敏感图，服务端会写审计。
 export function getTicketAttachmentAsAdmin(attachmentId) {
   return ticketRequest({
-    url: `/adapter-service/ticket-attachments/${encodeURIComponent(
+    url: `/api/ticket-attachments/${encodeURIComponent(
       attachmentId
     )}/admin`,
     method: "get",

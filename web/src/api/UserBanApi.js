@@ -2,9 +2,9 @@ import request from '../utils/request'
 
 // 账号封禁管理（121 §4.8 / 121 决策 6）。
 // 后端契约（internal/controller/user_ban_admin.go）：
-//   GET    /adapter-service/admin/user-bans              列表：分页 + userId / active / keyword
-//   POST   /adapter-service/admin/user-bans              封禁：reason 必填，expiresAt 空 = 永久
-//   DELETE /adapter-service/admin/user-bans/:userId      解封：软撤销（把未到期行置为到期 + 复位 status），不删行
+//   GET    /api/admin/user-bans              列表：分页 + userId / active / keyword
+//   POST   /api/admin/user-bans              封禁：reason 必填，expiresAt 空 = 永久
+//   DELETE /api/admin/user-bans/:userId      解封：软撤销（把未到期行置为到期 + 复位 status），不删行
 //
 // # 三个必须知道的语义（都是后端实测行为，不是猜测）
 //
@@ -24,7 +24,7 @@ import request from '../utils/request'
 export function getUserBans(params) {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/admin/user-bans',
+    url: '/api/admin/user-bans',
     method: 'get',
     params,
   })
@@ -42,7 +42,7 @@ export function createUserBan(payload) {
   const expiresAt = String(payload.expiresAt == null ? '' : payload.expiresAt).trim()
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/admin/user-bans',
+    url: '/api/admin/user-bans',
     method: 'post',
     data: { userId, reason, expiresAt },
   })
@@ -55,7 +55,7 @@ export function revokeUserBan(userId, reason) {
   const trimmed = String(reason == null ? '' : reason).trim()
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/admin/user-bans/${value}`,
+    url: `/api/admin/user-bans/${value}`,
     method: 'delete',
     params: trimmed ? { reason: trimmed } : {},
   })

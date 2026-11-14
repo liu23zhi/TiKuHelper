@@ -21,7 +21,7 @@ export const RISK_SETTING_KEYS = Object.freeze({
   webhook: 'wecom_risk_webhook_url',
   mentioned: 'wecom_risk_mentioned_list',
   // 这里刻意只列出**工单那组**的 key，用于页面上的「两套独立」对照展示。
-  // 页面**不读也不写**它们（读写走 /adapter-service/tickets/config）。
+  // 页面**不读也不写**它们（读写走 /api/tickets/config）。
   ticketEnabled: 'wecom_ticket_notifications_enabled',
   ticketWebhook: 'wecom_ticket_webhook_url',
   ticketMentioned: 'wecom_ticket_mentioned_list',
@@ -123,7 +123,7 @@ export function formatMentionedInput(list) {
   return parseMentionedInput(list).join('，')
 }
 
-// buildRiskWebhookUpdatePayload 是 PUT /adapter-service/risk/webhook 的**唯一**请求体构造处。
+// buildRiskWebhookUpdatePayload 是 PUT /api/risk/webhook 的**唯一**请求体构造处。
 //
 // 四条不可协商的语义：
 //   1. enabled **恒传**（后端 *bool：nil = 保持现值；不发就永远改不动开关）；

@@ -158,7 +158,7 @@ func TestSensitiveWordCheckDoesNotBlockAnswerResponse(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=wanneng&noRecord=1",
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=wanneng&noRecord=1",
 				bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
@@ -258,7 +258,7 @@ func TestSensitiveWordCheckFailureDoesNotFailAnswer(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=wanneng&noRecord=1",
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=wanneng&noRecord=1",
 				bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
@@ -341,7 +341,7 @@ func TestSensitiveWordCheckDisabledMakesNoExternalCall(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=wanneng&noRecord=1",
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=wanneng&noRecord=1",
 				bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
@@ -465,7 +465,7 @@ func runShapeSearch(t *testing.T, db *gorm.DB, user entity.User, token entity.Ac
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=wanneng&noRecord=1",
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=wanneng&noRecord=1",
 				bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
@@ -583,7 +583,7 @@ func TestLogListExposesSensitiveFields(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/logs?page=1&pageSize=10", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/logs?page=1&pageSize=10", nil)
 	ctx.Set("user", admin)
 	LogList(ctx)
 
@@ -636,7 +636,7 @@ func TestLogListExposesSensitiveFields(t *testing.T) {
 	}
 	recorder2 := httptest.NewRecorder()
 	ctx2, _ := gin.CreateTestContext(recorder2)
-	ctx2.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/logs?page=1&pageSize=10", nil)
+	ctx2.Request = httptest.NewRequest(http.MethodGet, "/api/logs?page=1&pageSize=10", nil)
 	ctx2.Set("user", admin)
 	LogList(ctx2)
 	var payload2 struct {
@@ -735,7 +735,7 @@ func TestSensitiveWordCheckReusesCacheAcrossRequests(t *testing.T) {
 			func() {
 				recorder := httptest.NewRecorder()
 				ctx, _ := gin.CreateTestContext(recorder)
-				request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=wanneng&noRecord=1",
+				request := httptest.NewRequest(http.MethodPost, "/api/search?use=wanneng&noRecord=1",
 					bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
 				request.Header.Set("Content-Type", "application/json")
 				ctx.Request = request

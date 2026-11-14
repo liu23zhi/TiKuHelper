@@ -419,7 +419,7 @@ func (s *ExtensionStore) refresh(ctx context.Context, source, id string) error {
 	if compareExtensionVersions(manifest.Version, update.Version) != 0 {
 		return errors.New("extension manifest version mismatch")
 	}
-	release := ExtensionRelease{Source: source, ExtensionID: id, Name: manifest.Name, Version: manifest.Version, Size: int64(len(packageData)), SHA256: hash, DownloadURL: "/adapter-service/extensions/" + source + "/download?sha256=" + hash, CheckedAt: now, UpdatedAt: now}
+	release := ExtensionRelease{Source: source, ExtensionID: id, Name: manifest.Name, Version: manifest.Version, Size: int64(len(packageData)), SHA256: hash, DownloadURL: "/api/extensions/" + source + "/download?sha256=" + hash, CheckedAt: now, UpdatedAt: now}
 	cached := cachedExtension{release: release, data: packageData}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -516,7 +516,7 @@ func (s *ExtensionStore) load(source string) (cachedExtension, error) {
 		return cached, errors.New("invalid extension cached manifest")
 	}
 	cached.release.Name = manifest.Name
-	cached.release.DownloadURL = "/adapter-service/extensions/" + source + "/download?sha256=" + r.SHA256
+	cached.release.DownloadURL = "/api/extensions/" + source + "/download?sha256=" + r.SHA256
 	return cached, nil
 }
 

@@ -97,7 +97,7 @@ func TestEscrowExecutionSearchClaimsBeforeCallingProvider(t *testing.T) {
 						return [][]string{{"A"}}, nil
 					}}
 				}, nil, func() {
-					req := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef&noRecord=1",
+					req := httptest.NewRequest(http.MethodPost, "/api/search?use=icodef&noRecord=1",
 						strings.NewReader(`{"question":"fixture","options":["A","B"],"skipCache":true}`))
 					req.RemoteAddr = "127.0.0.1:1234"
 					req.Header.Set("Content-Type", "application/json")
@@ -111,7 +111,7 @@ func TestEscrowExecutionSearchClaimsBeforeCallingProvider(t *testing.T) {
 					} else {
 						rec := httptest.NewRecorder()
 						r := gin.New()
-						r.POST("/adapter-service/search", Search)
+						r.POST("/api/search", Search)
 						r.ServeHTTP(rec, req)
 						if rec.Code != http.StatusOK {
 							t.Fatalf("sync search status: %d", rec.Code)
@@ -169,7 +169,7 @@ func TestEscrowExecutionAIClaimsAndDistinguishesUncertainResults(t *testing.T) {
 				ctx.Set("user", &user)
 				ctx.Set("access_token", &token)
 				ctx.Set("script_session", session)
-				ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/ai-fallback",
+				ctx.Request = httptest.NewRequest(http.MethodPost, "/api/ai-fallback",
 					strings.NewReader(`{"question":"`+question+`","type":0,"skipCache":true}`))
 				ctx.Request.Header.Set("Content-Type", "application/json")
 				if async {

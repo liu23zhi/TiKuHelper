@@ -28,7 +28,7 @@ func TestScriptLaunchersStayPowerShell2Compatible(t *testing.T) {
 		}
 	}
 
-	payload := buildScriptPayload("https://a.a.com", "a", "/adapter-service/script-command/a/file", "tk_secret", "eyJzZXR0aW5ncyI6e30=")
+	payload := buildScriptPayload("https://a.a.com", "a", "/api/script-command/a/file", "tk_secret", "eyJzZXR0aW5ncyI6e30=")
 	for _, fragment := range []string{"DownloadFile", "CXPLUS_SCRIPT_BOOTSTRAP_B64", "Start-Process", "WaitForExit", "Remove-Item", "X-Script-Activation"} {
 		if !strings.Contains(payload, fragment) {
 			t.Fatalf("payload missing %q: %s", fragment, payload)
@@ -77,8 +77,8 @@ func TestScriptBootstrapUsesConfiguredHTTPSOriginAndHeaderCapability(t *testing.
 	scriptDB = func() *gorm.DB { return db }
 	defer func() { scriptDB = previousDB }()
 	router := gin.New()
-	router.GET("/adapter-service/script-command/:shortCode/bootstrap", ScriptBootstrap)
-	route := "/adapter-service/script-command/" + item.ShortCode + "/bootstrap"
+	router.GET("/api/script-command/:shortCode/bootstrap", ScriptBootstrap)
+	route := "/api/script-command/" + item.ShortCode + "/bootstrap"
 	call := func(host, capability string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, route, nil)
 		req.Host = host
@@ -97,7 +97,7 @@ func TestScriptBootstrapUsesConfiguredHTTPSOriginAndHeaderCapability(t *testing.
 	}
 	result := call(host, match[1])
 	if result.Code != http.StatusOK || result.Header().Get("Cache-Control") != "no-store" ||
-		!strings.Contains(result.Body.String(), "https://"+host+"/adapter-service/script-command/") ||
+		!strings.Contains(result.Body.String(), "https://"+host+"/api/script-command/") ||
 		strings.Contains(result.Body.String(), "http://") {
 		t.Fatalf("validated launch must use stored HTTPS origin and no-store, HTTP %d", result.Code)
 	}

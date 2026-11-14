@@ -79,7 +79,7 @@ test('Login page supports wechat scan and code login modes from public settings'
   const apiContent = await readFile(apiPath, 'utf8');
 
   assert.match(apiContent, /export function loginWechatByCode/);
-  assert.match(apiContent, /url: `\/adapter-service\/public\/wechat-login\/code`/);
+  assert.match(apiContent, /url: `\/api\/public\/wechat-login\/code`/);
   assert.match(content, /wechatLoginSubMode/);
   assert.match(content, /wechatScanLoginEnabled/);
   assert.match(content, /wechatCodeLoginEnabled/);
@@ -127,11 +127,17 @@ test('Router exposes wechat bind route under login layout', async () => {
 test('Router keeps recharge result callback page public without adapter auth layout', async () => {
   const content = await readFile(routerPath, 'utf8');
 
-  assert.match(content, /path: '\/adapter\/recharge\/result'/);
+  // 2026-11-14 路径改名：/adapter/recharge/result → /recharge/result。
+  assert.match(content, /path: '\/recharge\/result'/);
   assert.match(content, /name: 'recharge-result'/);
   assert.match(content, /PUBLIC_ADAPTER_ROUTE_NAMES/);
   assert.match(content, /PUBLIC_ADAPTER_ROUTE_NAMES\.has\(String\(to\.name \|\| ''\)\)/);
-  assert.doesNotMatch(content, /path: 'recharge\/result'/);
+  // 主布局挂在根路径后，不能再出现 /adapter 段。
+  assert.doesNotMatch(content, /\/adapter\/recharge\/result/, '不应再出现 /adapter 段');
+  // 登录三步必须在公开白名单里，否则未登录访问 /login 会自我重定向成死循环。
+  for (const name of ['adapterlogin', 'adapterregister', 'wechat-bind']) {
+    assert.match(content, new RegExp(`'${name}'`), `公开白名单必须包含 ${name}`);
+  }
 });
 
 test('UserUsage page removes payment method count and exposes quick recharge amounts with inline recharge action', async () => {
@@ -316,7 +322,7 @@ test('Recharge order list page is routed, menu-visible, and backed by recharge o
   const pageContent = await readFile(rechargeOrderListPagePath, 'utf8');
 
   assert.match(apiContent, /export function getRechargeOrders/);
-  assert.match(apiContent, /url: `\/adapter-service\/recharge-orders`/);
+  assert.match(apiContent, /url: `\/api\/recharge-orders`/);
   assert.match(routerContent, /RechargeOrderList/);
   assert.match(routerContent, /path: 'recharge-orders'/);
   assert.match(menuContent, /key: 'recharge-orders'/);

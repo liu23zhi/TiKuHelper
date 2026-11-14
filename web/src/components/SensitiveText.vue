@@ -28,7 +28,7 @@ import {
  * ## 契约（与数据源解耦）
  *
  * 本组件**不发任何请求**，只消费 props、只 emit 事件。取原文由调用方负责
- * （管理员接口 `GET /adapter-service/logs/:id/sensitive-original` 挂 RequireAdmin）。
+ * （管理员接口 `GET /api/logs/:id/sensitive-original` 挂 RequireAdmin）。
  * 这样 TIKU 的日志页、工单页与 PLUS 的 chaoxing 面板可以共用同一份展示规则，
  * 而各自的取数方式互不牵制。
  *

@@ -31,7 +31,7 @@ func TestPaymentMethodListReturnsScopedMethods(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/payment-methods", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/payment-methods", nil)
 	ctx.Set("user", &entity.User{ID: 7, Role: "user", Status: "enabled"})
 
 	PaymentMethodList(ctx)
@@ -54,7 +54,7 @@ func TestCreatePaymentMethodRejectsNonAdmin(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/payment-methods", bytes.NewBufferString(`{"name":"支付宝","epayType":"alipay"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/payment-methods", bytes.NewBufferString(`{"name":"支付宝","epayType":"alipay"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("user", &entity.User{ID: 8, Role: "user", Status: "enabled"})
 
@@ -86,7 +86,7 @@ func TestCreatePaymentMethodReturnsCreatedItemForAdmin(t *testing.T) {
 	payload := []byte(`{"name":"支付宝","iconSvg":"<svg></svg>","epayType":"alipay","enabled":true,"sort":10,"remark":"常用"}`)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/payment-methods", bytes.NewReader(payload))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/payment-methods", bytes.NewReader(payload))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("user", &entity.User{ID: 9, Role: "admin", Status: "enabled"})
 
@@ -116,7 +116,7 @@ func TestCreatePaymentMethodRejectsUnsafeIcon(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/payment-methods", bytes.NewBufferString(`{"name":"支付宝","epayType":"alipay","iconSvg":"<svg><script>alert(1)</script></svg>"}`))
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/payment-methods", bytes.NewBufferString(`{"name":"支付宝","epayType":"alipay","iconSvg":"<svg><script>alert(1)</script></svg>"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Set("user", &entity.User{ID: 9, Role: "admin", Status: "enabled"})
 
@@ -145,7 +145,7 @@ func TestUpdatePaymentMethodHandlesNotFound(t *testing.T) {
 	payload := []byte(`{"name":"微信支付","epayType":"wxpay","enabled":true,"sort":20}`)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/payment-methods/3", bytes.NewReader(payload))
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/api/payment-methods/3", bytes.NewReader(payload))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Params = gin.Params{{Key: "id", Value: "3"}}
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
@@ -183,7 +183,7 @@ func TestDeletePaymentMethodDeletesItemForAdmin(t *testing.T) {
 	// 本用例测的是「seam 被调用 + 200」，原因只是必须提供的入参；
 	// 「缺 reason 必须 400 且规则仍在」由 rule_audit_test.go 覆盖。
 	ctx.Request = httptest.NewRequest(http.MethodDelete,
-		"/adapter-service/payment-methods/13?reason="+ruleDeleteTestReasonQuery, nil)
+		"/api/payment-methods/13?reason="+ruleDeleteTestReasonQuery, nil)
 	ctx.Params = gin.Params{{Key: "id", Value: "13"}}
 	ctx.Set("user", &entity.User{ID: 1, Role: "admin", Status: "enabled"})
 
@@ -211,7 +211,7 @@ func TestPaymentMethodListReturnsServerErrorWhenLoadFails(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/payment-methods", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/payment-methods", nil)
 	ctx.Set("user", &entity.User{ID: 10, Role: "admin", Status: "enabled"})
 
 	PaymentMethodList(ctx)

@@ -4,13 +4,13 @@ import request from '../utils/request'
 //
 // 后端契约（internal/controller/ticket_image_cache.go，路由待装配进
 // internal/api/router.go）：
-//   GET    /adapter-service/admin/ticket-image-cache
+//   GET    /api/admin/ticket-image-cache
 //             列表（分页 + mediaType/scanState/refFilter/keyword 筛选 + 四项汇总）
-//   DELETE /adapter-service/admin/ticket-image-cache/:sha256
+//   DELETE /api/admin/ticket-image-cache/:sha256
 //             删除单条（ref_count > 0 时 409 + 被几个工单图片引用）
-//   POST   /adapter-service/admin/ticket-image-cache/batch-delete
+//   POST   /api/admin/ticket-image-cache/batch-delete
 //             批量删除（{"sha256List":[...]}，逐条遵守 ref_count 保护，最多 200 条）
-//   POST   /adapter-service/admin/ticket-image-cache/clean
+//   POST   /api/admin/ticket-image-cache/clean
 //             立即清理一次（返回 agePurged / sizePurged 两个数字，不合并）
 //
 // 与 /admin/ip-segments 的区别：那条维护「IP 段归属」，这条维护工单图片的
@@ -38,7 +38,7 @@ function readSHA256(value) {
 export function getTicketImageCacheList(params) {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/admin/ticket-image-cache',
+    url: '/api/admin/ticket-image-cache',
     method: 'get',
     params,
   })
@@ -51,7 +51,7 @@ export function getTicketImageCacheList(params) {
 export function deleteTicketImageCache(sha256) {
   return request({
     errorFeedback: 'local',
-    url: `/adapter-service/admin/ticket-image-cache/${readSHA256(sha256)}`,
+    url: `/api/admin/ticket-image-cache/${readSHA256(sha256)}`,
     method: 'delete',
   })
 }
@@ -68,7 +68,7 @@ export function batchDeleteTicketImageCache(sha256List) {
   }
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/admin/ticket-image-cache/batch-delete',
+    url: '/api/admin/ticket-image-cache/batch-delete',
     method: 'post',
     data: { sha256List: list },
   })
@@ -84,7 +84,7 @@ export function batchDeleteTicketImageCache(sha256List) {
 export function cleanTicketImageCacheNow() {
   return request({
     errorFeedback: 'local',
-    url: '/adapter-service/admin/ticket-image-cache/clean',
+    url: '/api/admin/ticket-image-cache/clean',
     method: 'post',
   })
 }

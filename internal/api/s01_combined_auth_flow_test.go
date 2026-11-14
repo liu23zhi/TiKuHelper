@@ -428,13 +428,13 @@ func s01CompositionWorker(t *testing.T) {
 			t.Errorf("composition case %s failed at HTTP%d", name, status)
 		}
 	}
-	status, headers, _ := request("GET", "/adapter-service/user/info", "", "", nil)
+	status, headers, _ := request("GET", "/api/user/info", "", "", nil)
 	record("anonymous_user_info", status, 401, cors(headers, false))
 	payload, err := json.Marshal(map[string]string{"username": user.Username, "password": password, "captchaToken": captcha.Token})
 	if err != nil {
 		t.Fatal("cannot encode synthetic login")
 	}
-	status, headers, _ = request("POST", "/adapter-service/user/login", server.URL, "", payload)
+	status, headers, _ = request("POST", "/api/user/login", server.URL, "", payload)
 	issued := (&http.Response{Header: headers}).Cookies()
 	cookiePolicy := len(issued) == 1 && issued[0].Name == "tiku_token" && issued[0].HttpOnly && issued[0].Secure && issued[0].SameSite == http.SameSiteLaxMode && issued[0].Path == "/" && issued[0].Domain == "" && issued[0].MaxAge == 86400
 	record("login_issues_cookie", status, 200, cors(headers, true) && cookiePolicy && len(jar.Cookies(endpoint)) == 1)
@@ -445,22 +445,22 @@ func s01CompositionWorker(t *testing.T) {
 		return json.Unmarshal(body, &decoded) == nil && decoded.ID == user.ID
 	}
 	beforeCookie := loopback.cookieRequests
-	status, headers, body := request("GET", "/adapter-service/user/info", server.URL, "", nil)
+	status, headers, body := request("GET", "/api/user/info", server.URL, "", nil)
 	record("cookiejar_same_origin_user_info", status, 200, cors(headers, true) && isUser(body) && loopback.cookieRequests == beforeCookie+1)
-	status, headers, body = request("GET", "/adapter-service/user/info", "", "", nil)
+	status, headers, body = request("GET", "/api/user/info", "", "", nil)
 	record("cookiejar_no_metadata_user_info", status, 200, cors(headers, false) && isUser(body))
 	foreign := "https://s01-foreign.fixture.invalid"
-	status, headers, _ = request("GET", "/adapter-service/user/info", foreign, "", nil)
+	status, headers, _ = request("GET", "/api/user/info", foreign, "", nil)
 	record("cookiejar_foreign_origin_rejected", status, 403, cors(headers, true))
-	status, headers, _ = request("GET", "/adapter-service/search/health", foreign, "Bearer "+positiveValue, nil)
+	status, headers, _ = request("GET", "/api/search/health", foreign, "Bearer "+positiveValue, nil)
 	record("bearer_access_token_foreign_health", status, 200, cors(headers, true))
-	status, headers, _ = request("GET", "/adapter-service/search/health", server.URL, "Bearer S01_SYNTHETIC_INVALID", nil)
+	status, headers, _ = request("GET", "/api/search/health", server.URL, "Bearer S01_SYNTHETIC_INVALID", nil)
 	record("invalid_bearer_has_no_cookie_fallback", status, 401, cors(headers, true))
 	var billsBefore, billsAfter int64
 	if err := db.Model(&entity.BillingRecord{}).Count(&billsBefore).Error; err != nil {
 		t.Fatal("cannot count synthetic billing baseline")
 	}
-	status, headers, body = request("POST", "/adapter-service/search", foreign, "Bearer "+exhaustedValue, []byte(`{"question":"S01_SYNTHETIC_QUOTA","type":4,"options":[]}`))
+	status, headers, body = request("POST", "/api/search", foreign, "Bearer "+exhaustedValue, []byte(`{"question":"S01_SYNTHETIC_QUOTA","type":4,"options":[]}`))
 	var denial struct {
 		Code string `json:"code"`
 	}
@@ -482,7 +482,7 @@ func s01CompositionWorker(t *testing.T) {
 	attempts := 0
 	for attempts < 14 {
 		attempts++
-		status, headers, _ = request("GET", "/adapter-service/search/health", foreign, "Bearer "+positiveValue, nil)
+		status, headers, _ = request("GET", "/api/search/health", foreign, "Bearer "+positiveValue, nil)
 		if status == 429 {
 			limited = true
 			break
@@ -494,7 +494,7 @@ func s01CompositionWorker(t *testing.T) {
 	}
 	record("enabled_limiter_exhaustion", status, 429, limited && cors(headers, true))
 	ledger["limiterAttempts"] = attempts
-	status, headers, body = request("OPTIONS", "/adapter-service/search", foreign, "", nil)
+	status, headers, body = request("OPTIONS", "/api/search", foreign, "", nil)
 	record("preflight_after_limiter_exhaustion", status, 204, cors(headers, true) && len(body) == 0)
 	ledger["financeUnchangedOnRejectedNewSpending"] = unchangedFinance
 	ledger["cookiePolicyObservedWithoutValues"] = cookiePolicy

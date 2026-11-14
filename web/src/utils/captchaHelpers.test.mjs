@@ -83,7 +83,7 @@ test('remote captcha helpers normalize type and build TAC urls', () => {
   assert.deepEqual(buildRemoteCaptchaConfig('https://captcha.api.zelly.cn/', 'SLIDER'), {
     loaderUrl: 'https://captcha.api.zelly.cn/loader.js',
     tacPath: 'https://captcha.api.zelly.cn/tac',
-    requestCaptchaDataUrl: '/adapter-service/public/captcha/remote-gen?type=SLIDER',
-    validCaptchaUrl: '/adapter-service/public/captcha/remote-check',
+    requestCaptchaDataUrl: '/api/public/captcha/remote-gen?type=SLIDER',
+    validCaptchaUrl: '/api/public/captcha/remote-check',
   })
 })

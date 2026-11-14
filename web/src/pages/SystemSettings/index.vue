@@ -228,12 +228,12 @@
 
         <a-form-item label="异步通知地址" :html-for="fieldId('derivedNotifyUrl')">
           <a-input :id="fieldId('derivedNotifyUrl')" :value="derivedNotifyUrl" readonly placeholder="将根据网站 Base 地址自动补全" />
-          <div class="hint">固定补全为 /adapter-service/payment/notify，并作为 notify_url 参与易支付下单。</div>
+          <div class="hint">固定补全为 /api/payment/notify，并作为 notify_url 参与易支付下单。</div>
         </a-form-item>
 
         <a-form-item label="同步跳转地址" :html-for="fieldId('derivedReturnUrl')">
           <a-input :id="fieldId('derivedReturnUrl')" :value="derivedReturnUrl" readonly placeholder="将根据网站 Base 地址自动补全" />
-          <div class="hint">固定补全为 /adapter/recharge/result，并作为 return_url 参与易支付下单。</div>
+          <div class="hint">固定补全为 /recharge/result，并作为 return_url 参与易支付下单。</div>
         </a-form-item>
         </ConsolePanel>
 
@@ -374,8 +374,8 @@ import PaymentMethodIconPicker from './components/PaymentMethodIconPicker.vue'
 import { isSafePaymentIcon, PAYMENT_ICON_ERROR } from '@/utils/safePaymentIcon.mjs'
 import { serializePaymentIcon } from '@/utils/paymentIconCatalog'
 
-const notifyPath = '/adapter-service/payment/notify'
-const returnPath = '/adapter/recharge/result'
+const notifyPath = '/api/payment/notify'
+const returnPath = '/recharge/result'
 const DEFAULT_MAX_LOG_SIZE_BYTES = 5 * 1024 * 1024 * 1024
 const DEFAULT_MIN_RECHARGE_AMOUNT = 1
 const MIN_LOG_SIZE_BYTES = 1 * 1024 * 1024

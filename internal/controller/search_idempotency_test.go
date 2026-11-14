@@ -56,8 +56,8 @@ func TestSearchWithIdempotencyReplaysCompletedResultWithoutRepeatingCharge(t *te
 		},
 		func() {
 			router := gin.New()
-			router.POST("/adapter-service/search", SearchWithIdempotency)
-			path := "/adapter-service/search?use=icodef&noRecord=1"
+			router.POST("/api/search", SearchWithIdempotency)
+			path := "/api/search?use=icodef&noRecord=1"
 			body := `{"question":"同步幂等题目","options":["A","B"],"skipCache":true}`
 			first := performIdempotentSearchRequest(router, path, body, "stable-key", token.TokenValue)
 			if first.Code != http.StatusOK {
@@ -87,7 +87,7 @@ func TestSearchWithIdempotencyReplaysCompletedResultWithoutRepeatingCharge(t *te
 			if conflict.Code != http.StatusConflict || providerCalls.Load() != 1 {
 				t.Fatalf("same key with different body must conflict without search, got %d calls=%d", conflict.Code, providerCalls.Load())
 			}
-			queryConflict := performIdempotentSearchRequest(router, "/adapter-service/search?use=ai&noRecord=1", body, "stable-key", token.TokenValue)
+			queryConflict := performIdempotentSearchRequest(router, "/api/search?use=ai&noRecord=1", body, "stable-key", token.TokenValue)
 			if queryConflict.Code != http.StatusConflict || providerCalls.Load() != 1 {
 				t.Fatalf("same key with different query must conflict without search, got %d calls=%d", queryConflict.Code, providerCalls.Load())
 			}
@@ -144,8 +144,8 @@ func TestSearchWithIdempotencyDoesNotReplayProcessingRequest(t *testing.T) {
 		nil,
 		func() {
 			router := gin.New()
-			router.POST("/adapter-service/search", SearchWithIdempotency)
-			path := "/adapter-service/search?use=stub&noRecord=1"
+			router.POST("/api/search", SearchWithIdempotency)
+			path := "/api/search?use=stub&noRecord=1"
 			body := `{"question":"处理中题目","skipCache":true}`
 			firstDone := make(chan *httptest.ResponseRecorder, 1)
 			go func() {
@@ -194,9 +194,9 @@ func TestSearchWithIdempotencyPreservesLegacyNoKeyAnonymousSearch(t *testing.T) 
 		nil,
 		func() {
 			router := gin.New()
-			router.POST("/adapter-service/search", SearchWithIdempotency)
+			router.POST("/api/search", SearchWithIdempotency)
 			for i := 0; i < 2; i++ {
-				result := performIdempotentSearchRequest(router, "/adapter-service/search?use=stub&noRecord=1", `{"question":"旧接口题目","skipCache":true}`, "", "")
+				result := performIdempotentSearchRequest(router, "/api/search?use=stub&noRecord=1", `{"question":"旧接口题目","skipCache":true}`, "", "")
 				if result.Code != http.StatusOK {
 					t.Fatalf("anonymous legacy request %d failed: %d %s", i, result.Code, result.Body.String())
 				}

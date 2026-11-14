@@ -386,7 +386,7 @@ test('buildLogStatusLabel renders success and failure states for AI fallback and
   }), '成功');
   assert.equal(buildLogStatusLabel({
     module: 'search',
-    description: '搜索失败 detail=当前余额不足 method=POST path=/adapter-service/search',
+    description: '搜索失败 detail=当前余额不足 method=POST path=/api/search',
   }), '失败');
 });
 
@@ -448,7 +448,7 @@ test('buildLogDetailSections exposes structured search summary with raw request 
 test('buildLogDetailSections keeps anonymous false and explicit request source in structured sections', () => {
   assert.deepEqual(buildLogDetailSections({
     description: '搜索完成 requestId=req-1 mode=normal use=local,icodef answers=1 hitProvider=local billingProvider=local anonymous=false',
-    oldAnswer: 'method=POST path=/adapter-service/search query=use=local%2Cicodef contentType=application/json body={}',
+    oldAnswer: 'method=POST path=/api/search query=use=local%2Cicodef contentType=application/json body={}',
   }), [
     {
       key: 'requestId',
@@ -483,7 +483,7 @@ test('buildLogDetailSections keeps anonymous false and explicit request source i
     {
       key: 'request',
       label: '原始请求',
-      value: 'method=POST path=/adapter-service/search query=use=local%2Cicodef contentType=application/json body={}',
+      value: 'method=POST path=/api/search query=use=local%2Cicodef contentType=application/json body={}',
     },
   ]);
 });
@@ -547,7 +547,7 @@ test('buildLogStructuredFields maps billing provider codes to Chinese labels', (
 test('buildLogStructuredFields shows request parameters and channel failure details', () => {
   const fields = buildLogStructuredFields({
     description: '搜索失败 requestId=req-failed mode=ai use=ai answers=0',
-    oldAnswer: 'method=POST path=/adapter-service/search query=use=ai contentType=application/json body={}',
+    oldAnswer: 'method=POST path=/api/search query=use=ai contentType=application/json body={}',
     newAnswer: JSON.stringify({
       status: 'failed',
       failures: [{ provider: 'ai', code: 'UPSTREAM_ERROR', error: '对方服务器异常' }],
@@ -564,12 +564,12 @@ test('request parameters reflect only safe parameters actually present in reques
   const cases = [
     {
       description: '搜索完成 mode=normal use= answers=1',
-      request: 'method=POST path=/adapter-service/search query= contentType=application/json body={"question":"测试"}',
+      request: 'method=POST path=/api/search query= contentType=application/json body={"question":"测试"}',
       expected: '-',
     },
     {
       description: '搜索完成 mode=normal use=other answers=1',
-      request: 'method=POST path=/adapter-service/search query=key=private-key&model=test-model&mode=ai&token=private-token&url=https%3A%2F%2Fprivate.example%2F%3Fsecret%3Dprivate-secret&use=ai contentType=application/json body={"question":"测试","deepThinking":true,"skipCache":false}',
+      request: 'method=POST path=/api/search query=key=private-key&model=test-model&mode=ai&token=private-token&url=https%3A%2F%2Fprivate.example%2F%3Fsecret%3Dprivate-secret&use=ai contentType=application/json body={"question":"测试","deepThinking":true,"skipCache":false}',
       expected: 'use=ai mode=ai model=test-model deepThinking=true skipCache=false',
     },
     {
@@ -643,7 +643,7 @@ test('buildLogStructuredFields parses AI fallback failures for list columns', ()
 
 test('buildLogStructuredFields summarizes failed search logs', () => {
   assert.equal(buildLogStructuredFields({
-    description: '搜索失败 detail=当前余额不足，系统题库已禁用，请充值后再使用 method=POST path=/adapter-service/search clientIp=192.0.2.1 authorization=Bearer tok...1234',
+    description: '搜索失败 detail=当前余额不足，系统题库已禁用，请充值后再使用 method=POST path=/api/search clientIp=192.0.2.1 authorization=Bearer tok...1234',
   }).summary, '搜索失败');
 });
 
@@ -799,7 +799,7 @@ test('search outcome summaries retain structured request fields', () => {
   for (const summary of ['搜索完成，部分渠道失败', '搜索完成，未找到答案', '搜索未执行，服务未配置或未启用']) {
     const fields = buildLogStructuredFields({
       description: `${summary} requestId=request-1 mode=normal use=ai answers=0 hitProvider=- billingProvider=-`,
-      oldAnswer: 'method=POST path=/adapter-service/search query=use=ai contentType=application/json body={}',
+      oldAnswer: 'method=POST path=/api/search query=use=ai contentType=application/json body={}',
     });
     assert.equal(fields.summary, summary);
     assert.equal(fields.requestId, 'request-1');
@@ -870,7 +870,7 @@ test('ordinary AI rejection restores its route from the unauthorized request sna
     const fields = buildLogStructuredFields({
       module: 'search',
       description: '搜索失败 provider=ai code=INSUFFICIENT_BALANCE',
-      oldAnswer: JSON.stringify({ method: 'POST', path: '/adapter-service/search', body: JSON.stringify({ deepThinking }) }),
+      oldAnswer: JSON.stringify({ method: 'POST', path: '/api/search', body: JSON.stringify({ deepThinking }) }),
       newAnswer: JSON.stringify({ detail: message, failures: [{ provider: 'ai', code: 'INSUFFICIENT_BALANCE', error: message }] }),
     });
     assert.equal(fields.hitProvider, label);

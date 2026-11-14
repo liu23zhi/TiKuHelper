@@ -136,7 +136,7 @@ func TestBlacklistMiddlewareDisabledByDefaultIsZeroBehavior(t *testing.T) {
 	recorder := service.NewBlacklistHitRecorder()
 	router := newBlacklistTestRouter(BlacklistIPWith(cache, recorder, db))
 
-	response := doBlacklistRequest(router, http.MethodPost, "/adapter-service/search", "203.0.113.7:12345")
+	response := doBlacklistRequest(router, http.MethodPost, "/api/search", "203.0.113.7:12345")
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (switch off must not block)", response.Code)
 	}
@@ -152,7 +152,7 @@ func TestBlacklistMiddlewareDisabledByDefaultIsZeroBehavior(t *testing.T) {
 	if err := cache.Reload(db); err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	if response := doBlacklistRequest(router, http.MethodPost, "/adapter-service/search", "203.0.113.7:12345"); response.Code != http.StatusOK {
+	if response := doBlacklistRequest(router, http.MethodPost, "/api/search", "203.0.113.7:12345"); response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 with blacklist_enabled=false", response.Code)
 	}
 	if rows, _ := countBlacklistHits(t, db); rows != 0 {
@@ -204,7 +204,7 @@ func TestBlacklistMiddlewareSwitchOffIssuesZeroBlacklistQueries(t *testing.T) {
 
 	router := newBlacklistTestRouter(BlacklistIPWith(cache, service.NewBlacklistHitRecorder(), db))
 	for i := 0; i < 20; i++ {
-		if response := doBlacklistRequest(router, http.MethodPost, "/adapter-service/search", "203.0.113.7:1234"); response.Code != http.StatusOK {
+		if response := doBlacklistRequest(router, http.MethodPost, "/api/search", "203.0.113.7:1234"); response.Code != http.StatusOK {
 			t.Fatalf("request #%d status = %d, want 200 with the switch off", i, response.Code)
 		}
 	}
@@ -233,7 +233,7 @@ func TestBlacklistMiddlewareExactIPHit(t *testing.T) {
 	router := newBlacklistTestRouter(BlacklistIPWith(cache, service.NewBlacklistHitRecorder(), db))
 
 	// 命中 → 403 + 严格响应体。
-	response := doBlacklistRequest(router, http.MethodPost, "/adapter-service/search", "203.0.113.7:12345")
+	response := doBlacklistRequest(router, http.MethodPost, "/api/search", "203.0.113.7:12345")
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", response.Code)
 	}
@@ -255,7 +255,7 @@ func TestBlacklistMiddlewareExactIPHit(t *testing.T) {
 	}
 
 	// 未命中 → 放行。
-	if response := doBlacklistRequest(router, http.MethodPost, "/adapter-service/search", "203.0.113.8:12345"); response.Code != http.StatusOK {
+	if response := doBlacklistRequest(router, http.MethodPost, "/api/search", "203.0.113.8:12345"); response.Code != http.StatusOK {
 		t.Fatalf("other IP status = %d, want 200", response.Code)
 	}
 
@@ -268,7 +268,7 @@ func TestBlacklistMiddlewareExactIPHit(t *testing.T) {
 		t.Fatalf("hit rows = %d, want 1", len(hits))
 	}
 	hit := hits[0]
-	if hit.EntryID != entry.ID || hit.ClientIP != "203.0.113.7" || hit.Path != "/adapter-service/search" ||
+	if hit.EntryID != entry.ID || hit.ClientIP != "203.0.113.7" || hit.Path != "/api/search" ||
 		hit.Action != service.BlacklistActionBlocked || hit.HitCount != 1 {
 		t.Fatalf("hit row = %+v", hit)
 	}
@@ -298,7 +298,7 @@ func TestBlacklistMiddlewareCIDRHitAndMiss(t *testing.T) {
 		{"198.51.101.1:1111", http.StatusOK},
 		{"203.0.113.1:1111", http.StatusOK},
 	} {
-		if response := doBlacklistRequest(router, http.MethodGet, "/adapter-service/user", tc.ip); response.Code != tc.want {
+		if response := doBlacklistRequest(router, http.MethodGet, "/api/user", tc.ip); response.Code != tc.want {
 			t.Fatalf("%s status = %d, want %d", tc.ip, response.Code, tc.want)
 		}
 	}
@@ -321,7 +321,7 @@ func TestBlacklistMiddlewareIPv6(t *testing.T) {
 		{"[2001:db9::1]:443", http.StatusForbidden},         // 精确
 		{"[2001:dba::1]:443", http.StatusOK},
 	} {
-		if response := doBlacklistRequest(router, http.MethodGet, "/adapter-service/user", tc.remoteAddr); response.Code != tc.want {
+		if response := doBlacklistRequest(router, http.MethodGet, "/api/user", tc.remoteAddr); response.Code != tc.want {
 			t.Fatalf("%s status = %d, want %d", tc.remoteAddr, response.Code, tc.want)
 		}
 	}
@@ -342,18 +342,18 @@ func TestBlacklistMiddlewareAdminAndLoginExemptPaths(t *testing.T) {
 
 	// 豁免：管理接口 + **管理员专用登录入口** + 它依赖的人机验证端点。
 	exempt := []string{
-		"/adapter-service/admin/referral-rebates",
-		"/adapter-service/admin",
-		"/adapter-service/admin/userexam/inspect",
-		"/adapter-service/admin-login",
-		"/adapter-service/public/captcha/challenge",
-		"/adapter-service/public/captcha/verify",
-		"/adapter-service/public/captcha/remote-gen",
-		"/adapter-service/public/captcha/remote-check",
-		"/adapter-service/public/captcha/remote-token",
+		"/api/admin/referral-rebates",
+		"/api/admin",
+		"/api/admin/userexam/inspect",
+		"/api/admin-login",
+		"/api/public/captcha/challenge",
+		"/api/public/captcha/verify",
+		"/api/public/captcha/remote-gen",
+		"/api/public/captcha/remote-check",
+		"/api/public/captcha/remote-token",
 		// query / 结尾斜杠不能绕过豁免表。
-		"/adapter-service/admin-login?next=/x",
-		"/adapter-service/admin-login/",
+		"/api/admin-login?next=/x",
+		"/api/admin-login/",
 	}
 	for _, path := range exempt {
 		if response := doBlacklistRequest(router, http.MethodPost, path, "203.0.113.7:1234"); response.Code != http.StatusOK {
@@ -364,12 +364,12 @@ func TestBlacklistMiddlewareAdminAndLoginExemptPaths(t *testing.T) {
 	// **普通登录现在要拦**（45-*.md §0.1.1 Q63：「打开网页即显示拉黑原因，无法登录等」）。
 	// 这是相对 PR #42 的行为变更：普通登录不再豁免，只留管理员专用入口。
 	blocked := []string{
-		"/adapter-service/user/login",
-		"/adapter-service/user/login/sms",
-		"/adapter-service/search",
-		"/adapter-service/user/register",
-		"/adapter-service/billing-records",
-		"/adapter-service/user",
+		"/api/user/login",
+		"/api/user/login/sms",
+		"/api/search",
+		"/api/user/register",
+		"/api/billing-records",
+		"/api/user",
 	}
 	for _, path := range blocked {
 		if response := doBlacklistRequest(router, http.MethodPost, path, "203.0.113.7:1234"); response.Code != http.StatusForbidden {
@@ -381,39 +381,39 @@ func TestBlacklistMiddlewareAdminAndLoginExemptPaths(t *testing.T) {
 func TestBlacklistExemptPathTable(t *testing.T) {
 	cases := map[string]bool{
 		// 管理接口。
-		"/adapter-service/admin/referral-rebates":    true,
-		"/adapter-service/admin/review-rebate/rules": true,
-		"/adapter-service/admin":                     true,
-		"/adapter-service/admin/userexam/tool":       true,
+		"/api/admin/referral-rebates":    true,
+		"/api/admin/review-rebate/rules": true,
+		"/api/admin":                     true,
+		"/api/admin/userexam/tool":       true,
 		// 管理员专用登录入口（Q63）：API 与前端路由都豁免。
-		"/adapter-service/admin-login":     true,
-		"/adapter-service/admin-login?x=1": true,
-		"/adapter-service/admin-login/":    true,
-		"/admin-login":                     true,
-		"/admin-login/":                    true,
+		"/api/admin-login":     true,
+		"/api/admin-login?x=1": true,
+		"/api/admin-login/":    true,
+		"/admin-login":         true,
+		"/admin-login/":        true,
 		// 人机验证端点必须可达，否则管理员卡在验证码上（比进不去更难排查）。
-		"/adapter-service/public/captcha/challenge":    true,
-		"/adapter-service/public/captcha/verify":       true,
-		"/adapter-service/public/captcha/remote-gen":   true,
-		"/adapter-service/public/captcha/remote-check": true,
-		"/adapter-service/public/captcha/remote-token": true,
+		"/api/public/captcha/challenge":    true,
+		"/api/public/captcha/verify":       true,
+		"/api/public/captcha/remote-gen":   true,
+		"/api/public/captcha/remote-check": true,
+		"/api/public/captcha/remote-token": true,
 
 		// **普通登录不再豁免**（Q63 行为变更）。
-		"/adapter-service/user/login":     false,
-		"/adapter-service/user/login/sms": false,
-		"/adapter-service/search":         false,
-		"/adapter-service/user/register":  false,
-		"/adapter-service/user/logout":    false,
+		"/api/user/login":     false,
+		"/api/user/login/sms": false,
+		"/api/search":         false,
+		"/api/user/register":  false,
+		"/api/user/logout":    false,
 		// 其他公开接口不豁免（只有验证码例外）。
-		"/adapter-service/public/sms-code":        false,
-		"/adapter-service/public/register-status": false,
+		"/api/public/sms-code":        false,
+		"/api/public/register-status": false,
 		// 前缀陷阱：administrator / admin-login-extra 都不是豁免路径。
-		"/adapter-service/administrator":     false,
-		"/adapter-service/admin-login-extra": false,
-		"/sqp/anything":                      false,
-		"/":                                  false,
-		"":                                   false,
-		"  ":                                 false,
+		"/api/administrator":     false,
+		"/api/admin-login-extra": false,
+		"/sqp/anything":          false,
+		"/":                      false,
+		"":                       false,
+		"  ":                     false,
 	}
 	for path, want := range cases {
 		if got := BlacklistExemptPath(path); got != want {
@@ -450,7 +450,7 @@ func TestBlacklistMiddlewareFailOpenWhenRulesUnavailable(t *testing.T) {
 
 	recorder := service.NewBlacklistHitRecorder()
 	router := newBlacklistTestRouter(BlacklistIPWith(cache, recorder, db))
-	response := doBlacklistRequest(router, http.MethodPost, "/adapter-service/search", "203.0.113.7:1234")
+	response := doBlacklistRequest(router, http.MethodPost, "/api/search", "203.0.113.7:1234")
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (fail-open must let the request through)", response.Code)
 	}
@@ -472,7 +472,7 @@ func TestBlacklistMiddlewareFailOpenWhenRulesUnavailable(t *testing.T) {
 	if hit.EntryID != 0 {
 		t.Fatalf("entry id = %d, want 0 (unknown rule)", hit.EntryID)
 	}
-	if hit.ClientIP != "203.0.113.7" || hit.Path != "/adapter-service/search" {
+	if hit.ClientIP != "203.0.113.7" || hit.Path != "/api/search" {
 		t.Fatalf("logged_only row lost context: %+v", hit)
 	}
 	// 留痕值同样脱敏。
@@ -504,7 +504,7 @@ func TestBlacklistMiddlewareStaysDisabledWhenReloadNeverSucceeded(t *testing.T) 
 	}
 
 	router := newBlacklistTestRouter(BlacklistIPWith(cache, service.NewBlacklistHitRecorder(), db))
-	if response := doBlacklistRequest(router, http.MethodPost, "/adapter-service/search", "203.0.113.7:1234"); response.Code != http.StatusOK {
+	if response := doBlacklistRequest(router, http.MethodPost, "/api/search", "203.0.113.7:1234"); response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 when the switch cannot be read", response.Code)
 	}
 }
@@ -516,7 +516,7 @@ func TestBlacklistMiddlewareNilCacheIsZeroBehavior(t *testing.T) {
 	seedBlacklistIPRule(t, db, "0.0.0.0/0", service.BlacklistMatchCIDR, true)
 
 	router := newBlacklistTestRouter(BlacklistIPWith(nil, service.NewBlacklistHitRecorder(), db))
-	if response := doBlacklistRequest(router, http.MethodPost, "/adapter-service/search", "203.0.113.7:1234"); response.Code != http.StatusOK {
+	if response := doBlacklistRequest(router, http.MethodPost, "/api/search", "203.0.113.7:1234"); response.Code != http.StatusOK {
 		t.Fatalf("nil cache status = %d, want 200 (fail-open)", response.Code)
 	}
 	if rows, _ := countBlacklistHits(t, db); rows != 0 {
@@ -539,7 +539,7 @@ func TestBlacklistMiddlewareHitStillBlocksWhenLogWriteFails(t *testing.T) {
 		t.Fatalf("open logless db: %v", err)
 	}
 	router := newBlacklistTestRouter(BlacklistIPWith(cache, service.NewBlacklistHitRecorder(), loglessDB))
-	if response := doBlacklistRequest(router, http.MethodPost, "/adapter-service/search", "203.0.113.7:1234"); response.Code != http.StatusForbidden {
+	if response := doBlacklistRequest(router, http.MethodPost, "/api/search", "203.0.113.7:1234"); response.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403 even when the hit log cannot be written", response.Code)
 	}
 }
@@ -560,7 +560,7 @@ func TestBlacklistMiddlewareHitAggregationWritesOneRowForManyRequests(t *testing
 
 	const requests = 100
 	for i := 0; i < requests; i++ {
-		response := doBlacklistRequest(router, http.MethodPost, "/adapter-service/search", "203.0.113.7:1234")
+		response := doBlacklistRequest(router, http.MethodPost, "/api/search", "203.0.113.7:1234")
 		if response.Code != http.StatusForbidden {
 			t.Fatalf("request #%d status = %d, want 403", i, response.Code)
 		}
@@ -592,8 +592,8 @@ func TestBlacklistMiddlewareAggregationKeepsDistinctIPsSeparate(t *testing.T) {
 	router := newBlacklistTestRouter(BlacklistIPWith(cache, service.NewBlacklistHitRecorder(), db))
 
 	for i := 0; i < 5; i++ {
-		doBlacklistRequest(router, http.MethodGet, "/adapter-service/user", "198.51.100.1:1")
-		doBlacklistRequest(router, http.MethodGet, "/adapter-service/user", "198.51.100.2:1")
+		doBlacklistRequest(router, http.MethodGet, "/api/user", "198.51.100.1:1")
+		doBlacklistRequest(router, http.MethodGet, "/api/user", "198.51.100.2:1")
 	}
 	rows, total := countBlacklistHits(t, db)
 	if rows != 2 || total != 10 {
@@ -609,7 +609,7 @@ func TestBlacklistMiddlewareDisabledRuleStopsBlockingAfterReload(t *testing.T) {
 
 	cache := loadBlacklistCache(t, db)
 	router := newBlacklistTestRouter(BlacklistIPWith(cache, service.NewBlacklistHitRecorder(), db))
-	if response := doBlacklistRequest(router, http.MethodGet, "/adapter-service/user", "203.0.113.7:1"); response.Code != http.StatusForbidden {
+	if response := doBlacklistRequest(router, http.MethodGet, "/api/user", "203.0.113.7:1"); response.Code != http.StatusForbidden {
 		t.Fatalf("precondition: status = %d, want 403", response.Code)
 	}
 
@@ -619,7 +619,7 @@ func TestBlacklistMiddlewareDisabledRuleStopsBlockingAfterReload(t *testing.T) {
 	if err := cache.Invalidate(db); err != nil {
 		t.Fatalf("invalidate: %v", err)
 	}
-	if response := doBlacklistRequest(router, http.MethodGet, "/adapter-service/user", "203.0.113.7:1"); response.Code != http.StatusOK {
+	if response := doBlacklistRequest(router, http.MethodGet, "/api/user", "203.0.113.7:1"); response.Code != http.StatusOK {
 		t.Fatalf("disabled rule status = %d, want 200", response.Code)
 	}
 }
@@ -636,7 +636,7 @@ func TestBlacklistMiddlewareExpiredRuleDoesNotBlock(t *testing.T) {
 
 	cache := loadBlacklistCache(t, db)
 	router := newBlacklistTestRouter(BlacklistIPWith(cache, service.NewBlacklistHitRecorder(), db))
-	if response := doBlacklistRequest(router, http.MethodGet, "/adapter-service/user", "203.0.113.7:1"); response.Code != http.StatusOK {
+	if response := doBlacklistRequest(router, http.MethodGet, "/api/user", "203.0.113.7:1"); response.Code != http.StatusOK {
 		t.Fatalf("expired rule status = %d, want 200", response.Code)
 	}
 	// 记录保留：运营还能在列表里看到它。

@@ -39,7 +39,7 @@
                 自称「契约占位」）；
              ② account_device_bindings 表尚未建。
              所以不要在这里补一个 0 或"已用 0 台"占位（63 号 U-03 红线）。
-             数据源是已存在的 GET /adapter-service/user/level，不新造接口。 -->
+             数据源是已存在的 GET /api/user/level，不新造接口。 -->
         <a-card :bordered="false" class="summary-card">
           <div class="summary-label">可用设备数量</div>
           <div data-profile-private data-profile-device-limit class="summary-value">{{ deviceLimitText }}</div>
@@ -597,7 +597,7 @@ export default defineComponent({
       } catch { /* Optional display enhancement; keep the original IP/phone. */ }
       finally { closeAttempt(owner) }
     }
-    // loadUserLevel 读取当前用户的等级摘要（GET /adapter-service/user/level）。
+    // loadUserLevel 读取当前用户的等级摘要（GET /api/user/level）。
     //
     // 只读、只用于展示「可用设备数量」的上限。它是**可选展示增强**：
     // 失败时不覆盖任何已确认资料、不弹全局错误（errorFeedback: 'local'），

@@ -816,7 +816,7 @@ watch(createVisible, next => { if (!next) { retireCreateValidation(); createVers
 // Focus leases also retire for same-id non-admin role ABA and unexpected routes.
 watch(() => String(currentUser.value?.role ?? ""), retireDetailFocus, { flush: "sync" });
 watch(() => route.fullPath, path => {
-  if (path !== "/adapter/tickets" && path !== detailFocusEntry?.path) retireDetailFocus();
+  if (path !== "/tickets" && path !== detailFocusEntry?.path) retireDetailFocus();
 }, { flush: "sync" });
 watch(() => currentUser.value?.status, () => { clearOwned(); reloadOwned(); }, { flush: "sync" });
 onBeforeUnmount(() => { active = false; retireReplyDraft(); });
@@ -990,7 +990,7 @@ async function refreshAttachments(ticketId) {
 function openDetail(id, event) {
   if (!canUseTickets()) return;
   retireDetailFocus();
-  const path = `/adapter/tickets/${encodeURIComponent(id)}`, opener = event?.currentTarget;
+  const path = `/tickets/${encodeURIComponent(id)}`, opener = event?.currentTarget;
   // Retain only the native opener, safe owner predicate and scalar route/id, never the event/row.
   const focus = opener instanceof HTMLElement && opener.isConnected && opener.tabIndex >= 0
     ? { opener, owns: capturePage(), path, id: String(id) } : null;
@@ -1052,11 +1052,11 @@ function closeDetail() {
   detailTicket.value = null;
   // The original key/version retirement unmounts the old Modal before afterClose.
   // Use one owned continuation after navigation/disposal, not the dead vendor callback.
-  return router.replace("/adapter/tickets").then(async failure => {
+  return router.replace("/tickets").then(async failure => {
     if (failure || !focus) return failure;
     await nextTick(); await nextTick();
     if (!focus.owns() || ticket !== detailFocusVersion || create !== createVersion
-      || route.fullPath !== "/adapter/tickets" || route.params.id || detailVisible.value || createVisible.value) return;
+      || route.fullPath !== "/tickets" || route.params.id || detailVisible.value || createVisible.value) return;
     const opener = focus.opener;
     if (!(opener instanceof HTMLElement) || !opener.isConnected || opener.tabIndex < 0
       || opener.matches(':disabled, [aria-disabled="true"]')) return;

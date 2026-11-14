@@ -252,7 +252,7 @@ func b01PaidVector(t *testing.T, vector string) {
 			w := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(w)
 			body, _ := json.Marshal(question)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=ai&noRecord=1", bytes.NewReader(body))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=ai&noRecord=1", bytes.NewReader(body))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("Authorization", "Bearer "+plain)
 			// Deliberately no Idempotency-Key and no skipCache override.

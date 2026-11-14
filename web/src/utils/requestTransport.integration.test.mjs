@@ -10,8 +10,8 @@ const requireDiagnostics = () => {
   assert.equal(typeof H.captureTransportRequestError, 'function', 'original-error diagnostic capture must exist')
 }
 test('integration HTTP retains public WeChat registration isolation', () => {
-  assert.equal(H.isPublicWechatRegisterRequest('/adapter-service/public/wechat-register/session'), true)
-  assert.equal(H.isPublicWechatRegisterRequest('/adapter-service/user/login'), false)
+  assert.equal(H.isPublicWechatRegisterRequest('/api/public/wechat-register/session'), true)
+  assert.equal(H.isPublicWechatRegisterRequest('/api/user/login'), false)
 })
 test('integration HTTP ordinary expired 401 still requests logout', () => {
   assert.equal(H.buildAuthFailureHandling({status:401,data:{message:'unauthorized'}}).shouldLogout,true)

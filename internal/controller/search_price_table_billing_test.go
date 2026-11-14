@@ -100,7 +100,7 @@ func TestSearchBillsAIUsageFromModelPriceTable(t *testing.T) {
 		func() {
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
-			request := httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=ai&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
+			request := httptest.NewRequest(http.MethodPost, "/api/search?use=ai&noRecord=1", bytes.NewReader([]byte(`{"question":"题目","options":["A","B"]}`)))
 			request.Header.Set("Content-Type", "application/json")
 			ctx.Request = request
 

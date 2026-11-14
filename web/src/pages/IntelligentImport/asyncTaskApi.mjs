@@ -12,13 +12,13 @@
 //
 // # 后端契约（internal/controller/async_task.go 头注释）
 //
-//	POST /adapter-service/import/tasks                 提交导入（multipart：resource/dryRun/confirmWeakPassword/file）
-//	POST /adapter-service/export/tasks                  提交导出（JSON：resource/format/masked/limit）
-//	GET  /adapter-service/export/tasks/:taskId          查单个任务（导入与导出共用）
-//	GET  /adapter-service/export/tasks                  任务列表
-//	GET  /adapter-service/export/tasks/:taskId/download 下载结果文件（过期 → 410）
-//	GET  /adapter-service/export/tasks/:taskId/errors   下载失败行报告
-//	GET  /adapter-service/import/template               下载导入模板
+//	POST /api/import/tasks                 提交导入（multipart：resource/dryRun/confirmWeakPassword/file）
+//	POST /api/export/tasks                  提交导出（JSON：resource/format/masked/limit）
+//	GET  /api/export/tasks/:taskId          查单个任务（导入与导出共用）
+//	GET  /api/export/tasks                  任务列表
+//	GET  /api/export/tasks/:taskId/download 下载结果文件（过期 → 410）
+//	GET  /api/export/tasks/:taskId/errors   下载失败行报告
+//	GET  /api/import/template               下载导入模板
 //
 // ⚠️ 这 7 条路由的注册不在 async_task.go 里（该文件明确写了「路由注册不在本文件」），
 // 由集成方统一挂到 router.go。前端在这里先按上述路径写死，两侧对齐后即可工作。
@@ -29,9 +29,9 @@ import request from '../../utils/request'
 
 // 导入与导出的路径前缀。分开写是因为导入是 multipart、导出是 JSON，
 // 两者的默认 header 与超时语义不同，共用一个常量反而容易串味。
-export const IMPORT_TASKS_PATH = '/adapter-service/import/tasks'
-export const EXPORT_TASKS_PATH = '/adapter-service/export/tasks'
-export const IMPORT_TEMPLATE_PATH = '/adapter-service/import/template'
+export const IMPORT_TASKS_PATH = '/api/import/tasks'
+export const EXPORT_TASKS_PATH = '/api/export/tasks'
+export const IMPORT_TEMPLATE_PATH = '/api/import/template'
 
 // 题库的行数上限（与后端 service.QuestionImportMaxRows / QuestionExportMaxRows 对齐）。
 //

@@ -10,7 +10,7 @@ import (
 // IP 段归属管理页（task_doc/71 §3.5）的路由注册。
 //
 // 断言两件事：
-//  1. 五条路由真的挂在 /adapter-service/admin/ip-segments 族上（路径用**复数**，
+//  1. 五条路由真的挂在 /api/admin/ip-segments 族上（路径用**复数**，
 //     与单 IP 的 ip-location-cache 不能混）；
 //  2. 每条路由的末端 handler 是 IP 段那个函数，而不是被复制粘贴成别的管理接口。
 //
@@ -24,11 +24,11 @@ func TestSetAPIRouterRegistersIPSegmentAdminRoutes(t *testing.T) {
 	SetAPIRouter(router)
 
 	want := map[string]string{
-		"GET /adapter-service/admin/ip-segments":               "IPSegmentList",
-		"GET /adapter-service/admin/ip-segments/lookup":        "IPSegmentLookup",
-		"POST /adapter-service/admin/ip-segments/batch-delete": "IPSegmentBatchDelete",
-		"DELETE /adapter-service/admin/ip-segments/:id":        "IPSegmentDelete",
-		"POST /adapter-service/admin/ip-segments/:id/refresh":  "IPSegmentRefresh",
+		"GET /api/admin/ip-segments":               "IPSegmentList",
+		"GET /api/admin/ip-segments/lookup":        "IPSegmentLookup",
+		"POST /api/admin/ip-segments/batch-delete": "IPSegmentBatchDelete",
+		"DELETE /api/admin/ip-segments/:id":        "IPSegmentDelete",
+		"POST /api/admin/ip-segments/:id/refresh":  "IPSegmentRefresh",
 	}
 	found := make(map[string]string, len(want))
 	for _, route := range router.Routes() {
@@ -78,7 +78,7 @@ func TestSetAPIRouterRegistersIPSegmentAdminRoutes(t *testing.T) {
 //   - 用**多个**模式覆盖两种已知命名（import-from-location-cache / ip-segments/import）
 //     以及更宽的 `import` 词根，避免有人换个命名绕过去。
 //
-// 变异验证：手工加一条 POST /adapter-service/admin/ip-segments/import 路由 →
+// 变异验证：手工加一条 POST /api/admin/ip-segments/import 路由 →
 // 本用例必须变红。
 func TestIPSegmentRoutesExposeNoManualImportEndpoint(t *testing.T) {
 	gin.SetMode(gin.TestMode)

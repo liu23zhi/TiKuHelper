@@ -29,7 +29,7 @@ const readSource = relative => readFile(path.join(webRoot, 'src', relative), 'ut
 
 // stripComments 去掉 // 行注释与 /* */ 块注释。
 //
-// 必要性：源码里的**注释**会写明「本文件不调用 /adapter-service/tickets/config」，
+// 必要性：源码里的**注释**会写明「本文件不调用 /api/tickets/config」，
 // 直接对全文做 doesNotMatch 会把这句声明本身当成违规命中（假红）。
 // 但也不能只对注释做断言 —— 所以要剥离注释后只看真实代码。
 function stripComments(source) {
@@ -166,7 +166,7 @@ test('C1 页面源码里不得出现任何封禁/处置写操作', async () => {
     /setUserBan/i,
     /\b封禁账号\b/,
     /blacklistEnabled:\s*next/,
-    /adapter-service\/user\/\$\{[^}]*\}\/status/,
+    /api\/user\/\$\{[^}]*\}\/status/,
   ]
   for (const pattern of forbidden) {
     assert.doesNotMatch(page, pattern, `风控页不得包含处置写操作：${pattern}`)
@@ -182,7 +182,7 @@ test('C1 风控 API 模块不碰工单配置接口', async () => {
   assert.doesNotMatch(api, /TicketApi/, '风控 API 模块不得 import 工单 API')
   assert.doesNotMatch(api, /getTicketWecomSettings|updateTicketWecomSettings/, '不得调用工单配置的读写函数')
   // 五条路由都在（判据 ①「5 条路由可调」的前端侧证据）。
-  assert.match(api, /const RISK_BASE = '\/adapter-service\/risk'/, '基准路径必须是 /adapter-service/risk')
+  assert.match(api, /const RISK_BASE = '\/api\/risk'/, '基准路径必须是 /api/risk')
   assert.match(api, /RISK_BASE \+ '\/alerts'/, '列表路由')
   assert.match(api, /RISK_BASE \+ '\/alerts\/' \+ value/, '详情路由（带 id 校验）')
   assert.match(api, /RISK_BASE \+ '\/webhook'/)

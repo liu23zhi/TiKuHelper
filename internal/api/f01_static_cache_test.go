@@ -143,7 +143,7 @@ func TestF01HashedStaticCache(t *testing.T) {
 			check(method+" no new cache policy", w.Header().Get("Cache-Control") == "" && w.Header().Get("ETag") == "")
 		}
 		for _, method := range []string{"GET", "POST", "HEAD"} {
-			w := request(method, "/adapter-service/missing.12345678.js", "*")
+			w := request(method, "/api/missing.12345678.js", "*")
 			check(method+" API JSON404 uncached", w.Code == 404 && strings.HasPrefix(w.Header().Get("Content-Type"), "application/json") && w.Header().Get("Cache-Control") == "" && w.Header().Get("ETag") == "")
 		}
 		w := request("GET", "/adapter/tiku", "*")

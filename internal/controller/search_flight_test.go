@@ -95,7 +95,7 @@ func TestConcurrentIdenticalSearchesShareOneUpstreamCallAndOneBilling(t *testing
 				go func(index int) {
 					defer wg.Done()
 					responses[index], statuses[index] = searchOnce(
-						"/adapter-service/search?use=icodef&noRecord=1",
+						"/api/search?use=icodef&noRecord=1",
 						`{"question":"并发同一道题","options":["A","B"]}`,
 						"Basic token-a",
 					)
@@ -173,7 +173,7 @@ func TestConcurrentDifferentQuestionsDoNotShareUpstreamCall(t *testing.T) {
 				wg.Add(1)
 				go func(payload string) {
 					defer wg.Done()
-					searchOnce("/adapter-service/search?use=icodef&noRecord=1", payload, "Basic token-a")
+					searchOnce("/api/search?use=icodef&noRecord=1", payload, "Basic token-a")
 				}(body)
 			}
 			wg.Wait()
@@ -227,7 +227,7 @@ func TestConcurrentSameQuestionDifferentOptionsDoNotShareUpstreamCall(t *testing
 				wg.Add(1)
 				go func(payload string) {
 					defer wg.Done()
-					searchOnce("/adapter-service/search?use=icodef&noRecord=1", payload, "Basic token-a")
+					searchOnce("/api/search?use=icodef&noRecord=1", payload, "Basic token-a")
 				}(body)
 			}
 			wg.Wait()
@@ -295,7 +295,7 @@ func TestSearchFlightReleasedWhenLeaderFails(t *testing.T) {
 		nil,
 		func() {
 			// 第一次：上游失败，不应留下永不释放的 in-flight 登记。
-			searchOnce("/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
+			searchOnce("/api/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
 
 			pending := searchFlights.inFlight()
 			if pending != 0 {
@@ -309,7 +309,7 @@ func TestSearchFlightReleasedWhenLeaderFails(t *testing.T) {
 
 			done := make(chan model.SearchResponse, 1)
 			go func() {
-				resp, _ := searchOnce("/adapter-service/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
+				resp, _ := searchOnce("/api/search?use=icodef&noRecord=1", `{"question":"同一道题","options":["A","B"]}`, "Basic token-a")
 				done <- resp
 			}()
 

@@ -49,10 +49,10 @@ func performUAPISearchRequest(t *testing.T, method string, target string, body s
 func TestUAPISearchControllersRejectNonAdmin(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	newUAPISearchTestDB(t, "uapi-test-key")
-	if got := performUAPISearchRequest(t, http.MethodGet, "/adapter-service/uapi/search/engines", "", "user", UAPISearchEngines).Code; got != http.StatusForbidden {
+	if got := performUAPISearchRequest(t, http.MethodGet, "/api/uapi/search/engines", "", "user", UAPISearchEngines).Code; got != http.StatusForbidden {
 		t.Fatalf("engines status = %d", got)
 	}
-	if got := performUAPISearchRequest(t, http.MethodPost, "/adapter-service/uapi/search/aggregate", `{"query":"q"}`, "user", UAPISearchAggregate).Code; got != http.StatusForbidden {
+	if got := performUAPISearchRequest(t, http.MethodPost, "/api/uapi/search/aggregate", `{"query":"q"}`, "user", UAPISearchAggregate).Code; got != http.StatusForbidden {
 		t.Fatalf("aggregate status = %d", got)
 	}
 }
@@ -60,7 +60,7 @@ func TestUAPISearchControllersRejectNonAdmin(t *testing.T) {
 func TestUAPISearchAggregateControllerValidatesJSON(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	newUAPISearchTestDB(t, "uapi-test-key")
-	recorder := performUAPISearchRequest(t, http.MethodPost, "/adapter-service/uapi/search/aggregate", "not-json", "admin", UAPISearchAggregate)
+	recorder := performUAPISearchRequest(t, http.MethodPost, "/api/uapi/search/aggregate", "not-json", "admin", UAPISearchAggregate)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -76,7 +76,7 @@ func TestUAPISearchControllerUsesConfiguredKey(t *testing.T) {
 		return uapi.NewClient(key).SetSearchAggregateURL("http://127.0.0.1:1/api/v1/search/aggregate")
 	}
 	t.Cleanup(func() { newUAPISearchClient = oldFactory })
-	recorder := performUAPISearchRequest(t, http.MethodPost, "/adapter-service/uapi/search/aggregate", `{"query":"q"}`, "admin", UAPISearchAggregate)
+	recorder := performUAPISearchRequest(t, http.MethodPost, "/api/uapi/search/aggregate", `{"query":"q"}`, "admin", UAPISearchAggregate)
 	if recorder.Code != http.StatusBadGateway || gotKey != "uapi-test-key" {
 		t.Fatalf("应读取配置密钥并将网络失败映射为 502，status=%d key=%q body=%s", recorder.Code, gotKey, recorder.Body.String())
 	}
@@ -93,7 +93,7 @@ func TestUAPISearchControllersReportMissingTokenWithoutCallingUpstream(t *testin
 	}
 	t.Cleanup(func() { newUAPISearchClient = oldFactory })
 
-	recorder := performUAPISearchRequest(t, http.MethodGet, "/adapter-service/uapi/search/engines", "", "admin", UAPISearchEngines)
+	recorder := performUAPISearchRequest(t, http.MethodGet, "/api/uapi/search/engines", "", "admin", UAPISearchEngines)
 	if recorder.Code != http.StatusBadRequest || called {
 		t.Fatalf("缺少 UApiPro 令牌应在本地返回 400 且不外呼，status=%d called=%t body=%s", recorder.Code, called, recorder.Body.String())
 	}
@@ -118,7 +118,7 @@ func TestUAPISearchAggregateControllerReturnsSuccessfulPayload(t *testing.T) {
 		return uapi.NewClient(key).SetSearchAggregateURL(server.URL + "/api/v1/search/aggregate")
 	}
 	t.Cleanup(func() { newUAPISearchClient = oldFactory })
-	recorder := performUAPISearchRequest(t, http.MethodPost, "/adapter-service/uapi/search/aggregate", `{"query":"q"}`, "admin", UAPISearchAggregate)
+	recorder := performUAPISearchRequest(t, http.MethodPost, "/api/uapi/search/aggregate", `{"query":"q"}`, "admin", UAPISearchAggregate)
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"total_results":0`) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -139,7 +139,7 @@ func TestUAPIStatusUsageControllerReturnsUsageStatistics(t *testing.T) {
 		return uapi.NewClient(key).SetStatusUsageURL(server.URL + "/api/v1/status/usage")
 	}
 	t.Cleanup(func() { newUAPISearchClient = oldFactory })
-	recorder := performUAPISearchRequest(t, http.MethodGet, "/adapter-service/uapi/status/usage?path=/api/v1/search/aggregate", "", "admin", UAPIStatusUsage)
+	recorder := performUAPISearchRequest(t, http.MethodGet, "/api/uapi/status/usage?path=/api/v1/search/aggregate", "", "admin", UAPIStatusUsage)
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"count":3`) {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}

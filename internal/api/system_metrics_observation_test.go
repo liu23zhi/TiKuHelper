@@ -95,7 +95,7 @@ func b04ObserveProductionRoute(t *testing.T) []b04RouteObservation {
 	}
 	observed := make([]b04RouteObservation, 0, len(cases))
 	for _, tc := range cases {
-		req := httptest.NewRequest(http.MethodGet, "/adapter-service/system-metrics?role=admin&owner=B04_QUERY_SENTINEL&requestId=B04_QUERY_SENTINEL", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/system-metrics?role=admin&owner=B04_QUERY_SENTINEL&requestId=B04_QUERY_SENTINEL", nil)
 		if tc.token != "" {
 			req.Header.Set("Authorization", tc.token)
 		}

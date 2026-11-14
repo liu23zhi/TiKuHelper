@@ -204,7 +204,7 @@ func TestUserRegisterRejectsBlacklistedPhoneBeforeConsumingCodes(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/register",
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/register",
 		bytes.NewBufferString(`{"username":"blocked_register","password":"Abc12345!","phone":"13800001111","smsCode":"123456","captchaToken":"t"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Request.RemoteAddr = "203.0.113.7:1234"
@@ -225,7 +225,7 @@ func TestUserRegisterRejectsBlacklistedPhoneBeforeConsumingCodes(t *testing.T) {
 	if len(rows) != 1 || rows[0].Action != service.BlacklistActionBlocked || rows[0].Kind != service.BlacklistKindPhone {
 		t.Fatalf("命中应写 1 行 blocked 留痕：%+v", rows)
 	}
-	if rows[0].Path != "/adapter-service/user/register" {
+	if rows[0].Path != "/api/user/register" {
 		t.Fatalf("留痕路径 = %q，应为路由模板", rows[0].Path)
 	}
 }
@@ -260,7 +260,7 @@ func TestUserRegisterPassesSamePhoneWhenBlacklistSwitchOff(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/register",
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/register",
 		bytes.NewBufferString(`{"username":"switch_off_register","password":"Abc12345!","phone":"13800001111","smsCode":"123456","captchaToken":"t"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	ctx.Request.RemoteAddr = "203.0.113.7:1234"
@@ -303,7 +303,7 @@ func TestUserSMSLoginRejectsBlacklistedPhone(t *testing.T) {
 		return service.SMSVerificationEvidence{}, nil
 	}
 
-	recorder := phoneControllerRequest(t, http.MethodPost, "/adapter-service/user/login/sms",
+	recorder := phoneControllerRequest(t, http.MethodPost, "/api/user/login/sms",
 		`{"phone":"13800001111","smsCode":"123456","captchaToken":"captcha"}`, nil, UserSMSLogin)
 
 	assertBlockedResponse(t, recorder, "账号异常，暂停登录", "13800001111", "138****1111")
@@ -346,7 +346,7 @@ func TestUpdateCurrentUserPhoneRejectsBlacklistedNewPhone(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Set("user", &entity.User{ID: 302, Username: "profile_user", Status: "enabled", Phone: strPtr("13800000000")})
-	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/user/phone",
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/api/user/phone",
 		bytes.NewBufferString(`{"phone":"13900002222","smsCode":"123456"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	UpdateCurrentUserPhone(ctx)
@@ -380,7 +380,7 @@ func TestUpdateCurrentUserPhoneIgnoresBlacklistedOldPhone(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Set("user", &entity.User{ID: 302, Username: "profile_user", Status: "enabled", Phone: strPtr("13800000000")})
-	ctx.Request = httptest.NewRequest(http.MethodPut, "/adapter-service/user/phone",
+	ctx.Request = httptest.NewRequest(http.MethodPut, "/api/user/phone",
 		bytes.NewBufferString(`{"phone":"13900002222","smsCode":"123456"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	UpdateCurrentUserPhone(ctx)
@@ -414,7 +414,7 @@ func TestBindCurrentUserWechatMapsBlacklistErrorTo403(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Set("user", &entity.User{ID: 303, Username: "profile_user", Status: "enabled"})
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/wechat/bind",
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/wechat/bind",
 		bytes.NewBufferString(`{"bindToken":"bind-token"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	BindCurrentUserWechat(ctx)
@@ -436,7 +436,7 @@ func TestBindCurrentUserWechatKeeps400ForNonBlacklistErrors(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Set("user", &entity.User{ID: 303, Username: "profile_user", Status: "enabled"})
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/user/wechat/bind",
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/wechat/bind",
 		bytes.NewBufferString(`{"bindToken":"bind-token"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	BindCurrentUserWechat(ctx)
@@ -469,7 +469,7 @@ func TestLoginWechatByCodeMapsBlacklistErrorTo403(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/public/wechat-login/code",
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/public/wechat-login/code",
 		bytes.NewBufferString(`{"code":"104014"}`))
 	ctx.Request.Header.Set("Content-Type", "application/json")
 	LoginWechatByCode(ctx)

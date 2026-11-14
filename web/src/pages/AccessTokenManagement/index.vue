@@ -34,7 +34,7 @@
                 自称「契约占位」）；
              ② account_device_bindings 表尚未建。
              所以不要补 0 / "已用 0 台" 之类的假数据（63 号 U-03 红线）。
-             数据源是已存在的 GET /adapter-service/user/level。 -->
+             数据源是已存在的 GET /api/user/level。 -->
         <a-card :bordered="false" class="summary-card">
           <a-statistic title="可用设备数量" :value="deviceLimitText" />
           <p class="device-limit-hint">{{ deviceLimitHint }}</p>
@@ -74,7 +74,7 @@
         class="page-alert"
         message="令牌默认隐藏中间部分；如需核对完整值，可点击右侧按钮直接查看，也可直接复制。"
       />
-      <!-- 访问令牌用于 /adapter-service/search 的 Authorization: Basic xxxx 认证。 -->
+      <!-- 访问令牌用于 /api/search 的 Authorization: Basic xxxx 认证。 -->
 
       <a-alert
         v-if="balanceAlert"
@@ -567,7 +567,7 @@ const formState = ref({
       showAllTokens,
       formState,
       summary,
-      // 可用设备数量（T-24）：上限文案 + 说明文案，数据来自 GET /adapter-service/user/level。
+      // 可用设备数量（T-24）：上限文案 + 说明文案，数据来自 GET /api/user/level。
       userLevelSummary,
       deviceLimitText,
       deviceLimitHint,

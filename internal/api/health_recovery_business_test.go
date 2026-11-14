@@ -375,7 +375,7 @@ func b03RecoveryHealth(t *testing.T, router *gin.Engine, path string, wantCode i
 
 func b03RecoveryBusiness(t *testing.T, router *gin.Engine) {
 	t.Helper()
-	response := b03RecoveryServe(router, "/adapter-service/public/register-status")
+	response := b03RecoveryServe(router, "/api/public/register-status")
 	if response.Code != http.StatusOK || !strings.HasPrefix(response.Header().Get("Content-Type"), "application/json") {
 		t.Fatal("real public business route did not return JSON200")
 	}

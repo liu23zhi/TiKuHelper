@@ -82,7 +82,7 @@ func TestLogListMasksDerivedProjectForNonAdmin(t *testing.T) {
 		t.Helper()
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
-		ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/logs?page=1&pageSize=10", nil)
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/api/logs?page=1&pageSize=10", nil)
 		ctx.Set("user", user)
 		LogList(ctx)
 		if recorder.Code != http.StatusOK {
@@ -158,7 +158,7 @@ func TestLogListUntouchedWhenSensitiveCheckIsOff(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/logs?page=1&pageSize=10", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/logs?page=1&pageSize=10", nil)
 	ctx.Set("user", member)
 	LogList(ctx)
 
@@ -237,7 +237,7 @@ func TestLogListMasksHitRowsForNonAdmin(t *testing.T) {
 		t.Helper()
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
-		ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/logs?page=1&pageSize=10", nil)
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/api/logs?page=1&pageSize=10", nil)
 		ctx.Set("user", user)
 		LogList(ctx)
 		if recorder.Code != http.StatusOK {
@@ -340,7 +340,7 @@ func TestLogListMaskKeepsSensitiveFieldsForFrontendBadge(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/logs?page=1&pageSize=10", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/logs?page=1&pageSize=10", nil)
 	ctx.Set("user", member)
 	LogList(ctx)
 
@@ -406,7 +406,7 @@ func TestLogSensitiveOriginalRequiresAdmin(t *testing.T) {
 		t.Helper()
 		recorder := httptest.NewRecorder()
 		ctx, _ := gin.CreateTestContext(recorder)
-		ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/logs/"+id+"/sensitive-original", nil)
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/api/logs/"+id+"/sensitive-original", nil)
 		ctx.Params = gin.Params{{Key: "id", Value: id}}
 		if acting != nil {
 			ctx.Set("user", acting)
@@ -490,7 +490,7 @@ func TestLogSensitiveOriginalWorksForCleanRow(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodGet, "/adapter-service/logs/1/sensitive-original", nil)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/api/logs/1/sensitive-original", nil)
 	ctx.Params = gin.Params{{Key: "id", Value: fmt.Sprint(entry.ID)}}
 	ctx.Set("user", admin)
 	LogSensitiveOriginal(ctx)

@@ -183,10 +183,10 @@ func buildAsyncTaskResponse(task entity.AsyncTask) asyncTaskResponse {
 		ActorUsername: task.ActorUsername,
 	}
 	if task.Status == entity.AsyncTaskStatusSucceeded && strings.TrimSpace(task.FilePath) != "" {
-		response.DownloadURL = fmt.Sprintf("/adapter-service/export/tasks/%s/download", task.TaskID)
+		response.DownloadURL = fmt.Sprintf("/api/export/tasks/%s/download", task.TaskID)
 	}
 	if task.Status == entity.AsyncTaskStatusSucceeded && strings.TrimSpace(task.ErrorReportPath) != "" {
-		response.ErrorURL = fmt.Sprintf("/adapter-service/export/tasks/%s/errors", task.TaskID)
+		response.ErrorURL = fmt.Sprintf("/api/export/tasks/%s/errors", task.TaskID)
 	}
 	return response
 }

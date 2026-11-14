@@ -50,10 +50,10 @@ func TestLatestUpstreamSessionAndOCRRoutesRequireAuthentication(t *testing.T) {
 	router := gin.New()
 	SetAPIRouter(router)
 	for _, tc := range []struct{ method, path string }{
-		{http.MethodGet, "/adapter-service/user/session"},
-		{http.MethodGet, "/adapter-service/ai-search-config/ocr-cache"},
-		{http.MethodGet, "/adapter-service/ai-search-config/ocr-cache/entries"},
-		{http.MethodDelete, "/adapter-service/ai-search-config/ocr-cache"},
+		{http.MethodGet, "/api/user/session"},
+		{http.MethodGet, "/api/ai-search-config/ocr-cache"},
+		{http.MethodGet, "/api/ai-search-config/ocr-cache/entries"},
+		{http.MethodDelete, "/api/ai-search-config/ocr-cache"},
 	} {
 		t.Run(tc.method+tc.path, func(t *testing.T) {
 			out := httptest.NewRecorder()
@@ -74,7 +74,7 @@ func TestLatestUpstreamSessionAndOCRRoutesRequireAuthentication(t *testing.T) {
 	}
 	// Existing strict token-only observer auth stays protected in both versions.
 	out := httptest.NewRecorder()
-	router.ServeHTTP(out, httptest.NewRequest(http.MethodGet, "/adapter-service/search/health", nil))
+	router.ServeHTTP(out, httptest.NewRequest(http.MethodGet, "/api/search/health", nil))
 	if out.Code != http.StatusUnauthorized {
 		t.Fatalf("existing observer guard=%d want=401", out.Code)
 	}

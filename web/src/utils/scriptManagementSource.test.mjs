@@ -26,8 +26,8 @@ test('script management is routed for both scopes and exposes admin upload contr
   assert.match(adminOnlyBlock, /'script-admin'/)
   assert.match(menu, /\{ key: 'script-admin', label: '脚本管理'/)
   assert.match(menu, /\{ key: 'scripts', label: '我的脚本'/)
-  assert.match(api, /url: `\/adapter-service\/scripts`/)
-  assert.match(api, /url: `\/adapter-service\/script-versions\/upload`/)
+  assert.match(api, /url: `\/api\/scripts`/)
+  assert.match(api, /url: `\/api\/script-versions\/upload`/)
   assert.match(page, /accept="\.exe,application\/vnd\.microsoft\.portable-executable"/)
   assert.match(page, /显示全部脚本/)
   assert.match(page, /预置参数/)
@@ -50,7 +50,7 @@ test('paid script creation sends exactly one stable idempotency header without c
     errorFeedback: 'local',
     retryPolicy: 'single',
     headers: { 'Idempotency-Key': key },
-    url: '/adapter-service/scripts',
+    url: '/api/scripts',
     method: 'post',
     data: payload,
   })
@@ -64,7 +64,7 @@ test('script deletion retries only after explicit user action and carries the co
   assert.ok(start >= 0 && end > start)
   const declaration = api.slice(start, end + 2).replace('export ', '')
   const invoke = new Function('request', declaration + '; return deleteScript')(config => config)
-  const base = { errorFeedback: 'local', retryPolicy: 'single', url: '/adapter-service/scripts/7', method: 'delete' }
+  const base = { errorFeedback: 'local', retryPolicy: 'single', url: '/api/scripts/7', method: 'delete' }
   assert.deepEqual(invoke({ id: 7 }), base)
   assert.deepEqual(invoke({ id: 7, confirmActiveSessionId: '9007199254740993' }), {
     ...base, params: { confirmActiveSessionId: '9007199254740993' },
@@ -87,7 +87,7 @@ test('activation purchase never sends the code or a wallet mutation without its 
     errorFeedback: 'local',
     retryPolicy: 'single',
     headers: { 'Idempotency-Key': key },
-    url: '/adapter-service/script-activation-codes/purchase',
+    url: '/api/script-activation-codes/purchase',
     method: 'post',
   })
   assert.deepEqual(invoke(key, '12.345678').data, { quotedPrice: '12.345678' })

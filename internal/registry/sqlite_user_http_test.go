@@ -36,10 +36,10 @@ func TestQuietSQLiteUserPUTWithRealAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 	router := gin.New()
-	router.PUT("/adapter-service/user/:id", controller.Auth, controller.UpdateUser)
+	router.PUT("/api/user/:id", controller.Auth, controller.UpdateUser)
 	request := func(operator *entity.User, payload string) *httptest.ResponseRecorder {
 		t.Helper()
-		req := httptest.NewRequest(http.MethodPut, "/adapter-service/user/3", strings.NewReader(payload))
+		req := httptest.NewRequest(http.MethodPut, "/api/user/3", strings.NewReader(payload))
 		req.Header.Set("Content-Type", "application/json")
 		if operator != nil {
 			req.AddCookie(&http.Cookie{Name: "tiku_token", Value: util.GenerateJwtForUser(operator.ID, operator.Password)})

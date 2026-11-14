@@ -220,7 +220,7 @@ func TestWhitelistMiddlewareSameIPInBothListsIsAllowed(t *testing.T) {
 	seedWhitelistRuleForMWTest(t, stack.db, "203.0.113.7", service.WhitelistMatchExact)
 	stack.reload(t)
 
-	response := stack.do(http.MethodPost, "/adapter-service/search", "203.0.113.7:12345")
+	response := stack.do(http.MethodPost, "/api/search", "203.0.113.7:12345")
 
 	// ⚠️ 顺序刻意如此：**先断「零命中行」，再断状态码**。
 	//
@@ -260,7 +260,7 @@ func TestWhitelistMiddlewareWithoutWhitelistHitStillBlocks(t *testing.T) {
 	entry := seedBlacklistRuleForWhitelistTest(t, stack.db, "203.0.113.7", service.BlacklistMatchExact)
 	stack.reload(t)
 
-	response := stack.do(http.MethodPost, "/adapter-service/search", "203.0.113.7:12345")
+	response := stack.do(http.MethodPost, "/api/search", "203.0.113.7:12345")
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("未命中白名单时必须仍按黑名单拦截，status = %d，want 403", response.Code)
 	}
@@ -302,7 +302,7 @@ func TestWhitelistMiddlewareHitIssuesZeroBlacklistQueries(t *testing.T) {
 	register()
 
 	for i := 0; i < 10; i++ {
-		if response := stack.do(http.MethodPost, "/adapter-service/search", "203.0.113.7:1234"); response.Code != http.StatusOK {
+		if response := stack.do(http.MethodPost, "/api/search", "203.0.113.7:1234"); response.Code != http.StatusOK {
 			t.Fatalf("request #%d status = %d, want 200", i, response.Code)
 		}
 	}
@@ -342,7 +342,7 @@ func TestWhitelistMiddlewareHitSources(t *testing.T) {
 			}
 			stack.reload(t)
 
-			response := stack.do(http.MethodPost, "/adapter-service/search", tc.remoteAddr)
+			response := stack.do(http.MethodPost, "/api/search", tc.remoteAddr)
 			if response.Code != http.StatusOK {
 				t.Fatalf("%s: status = %d, want 200（body=%s）", tc.name, response.Code, response.Body.String())
 			}
@@ -367,7 +367,7 @@ func TestWhitelistMiddlewareMissFallsThroughToBlacklist(t *testing.T) {
 	seedWhitelistRuleForMWTest(t, stack.db, "203.0.113.7", service.WhitelistMatchExact)
 	stack.reload(t)
 
-	if response := stack.do(http.MethodPost, "/adapter-service/search", "198.51.100.1:1234"); response.Code != http.StatusForbidden {
+	if response := stack.do(http.MethodPost, "/api/search", "198.51.100.1:1234"); response.Code != http.StatusForbidden {
 		t.Fatalf("白名单未命中的 IP status = %d, want 403", response.Code)
 	}
 }
@@ -383,7 +383,7 @@ func TestWhitelistMiddlewareKeepsBlacklistSwitchOffZeroBehavior(t *testing.T) {
 	seedWhitelistRuleForMWTest(t, stack.db, "198.51.100.9", service.WhitelistMatchExact)
 	stack.reload(t)
 
-	if response := stack.do(http.MethodPost, "/adapter-service/search", "203.0.113.7:1234"); response.Code != http.StatusOK {
+	if response := stack.do(http.MethodPost, "/api/search", "203.0.113.7:1234"); response.Code != http.StatusOK {
 		t.Fatalf("黑名单开关关闭时 status = %d, want 200", response.Code)
 	}
 	if rows, total := countBlacklistHitRows(t, stack.db); rows != 0 || total != 0 {
@@ -401,9 +401,9 @@ func TestWhitelistMiddlewareKeepsBlacklistExemptPaths(t *testing.T) {
 	stack.reload(t)
 
 	for _, path := range []string{
-		"/adapter-service/admin/users",
-		"/adapter-service/admin-login",
-		"/adapter-service/public/captcha/challenge",
+		"/api/admin/users",
+		"/api/admin-login",
+		"/api/public/captcha/challenge",
 	} {
 		if response := stack.do(http.MethodPost, path, "203.0.113.7:1234"); response.Code != http.StatusOK {
 			t.Fatalf("豁免路径 %s status = %d, want 200", path, response.Code)
@@ -428,7 +428,7 @@ func TestWhitelistMiddlewareWithoutSnapshotDoesNotBypass(t *testing.T) {
 	}
 	router := newWhitelistTestRouter(
 		WhitelistIPWith(emptyWhitelist, blacklistCache, service.NewBlacklistHitRecorder(), db))
-	req := httptest.NewRequest(http.MethodPost, "/adapter-service/search", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/search", nil)
 	req.RemoteAddr = "203.0.113.7:1234"
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, req)
@@ -447,7 +447,7 @@ func TestWhitelistMiddlewareNilCacheIsZeroBehavior(t *testing.T) {
 
 	router := newWhitelistTestRouter(
 		WhitelistIPWith(nil, blacklistCache, service.NewBlacklistHitRecorder(), db))
-	req := httptest.NewRequest(http.MethodPost, "/adapter-service/search", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/search", nil)
 	req.RemoteAddr = "203.0.113.7:1234"
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, req)
@@ -483,7 +483,7 @@ func TestWhitelistMiddlewareDisabledOrExpiredRuleDoesNotBypass(t *testing.T) {
 		{"203.0.113.8", http.StatusForbidden}, // 过期 → 不放行
 		{"203.0.113.9", http.StatusOK},        // 有效 → 放行
 	} {
-		if response := stack.do(http.MethodPost, "/adapter-service/search", tc.ip+":1234"); response.Code != tc.want {
+		if response := stack.do(http.MethodPost, "/api/search", tc.ip+":1234"); response.Code != tc.want {
 			t.Fatalf("%s status = %d, want %d", tc.ip, response.Code, tc.want)
 		}
 	}
@@ -496,14 +496,14 @@ func TestWhitelistMiddlewareDeletedRuleStopsBypassing(t *testing.T) {
 	entry := seedWhitelistRuleForMWTest(t, stack.db, "203.0.113.7", service.WhitelistMatchExact)
 	stack.reload(t)
 
-	if response := stack.do(http.MethodPost, "/adapter-service/search", "203.0.113.7:1234"); response.Code != http.StatusOK {
+	if response := stack.do(http.MethodPost, "/api/search", "203.0.113.7:1234"); response.Code != http.StatusOK {
 		t.Fatalf("删除前应放行，status = %d", response.Code)
 	}
 	if err := stack.db.Delete(&entity.WhitelistEntry{}, entry.ID).Error; err != nil {
 		t.Fatalf("delete rule: %v", err)
 	}
 	stack.reload(t)
-	if response := stack.do(http.MethodPost, "/adapter-service/search", "203.0.113.7:1234"); response.Code != http.StatusForbidden {
+	if response := stack.do(http.MethodPost, "/api/search", "203.0.113.7:1234"); response.Code != http.StatusForbidden {
 		t.Fatalf("删除后不应再放行，status = %d，want 403", response.Code)
 	}
 }

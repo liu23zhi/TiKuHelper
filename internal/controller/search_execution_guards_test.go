@@ -23,7 +23,7 @@ func TestSearchExecutionSnapshotOwnsRequestAndWriter(t *testing.T) {
 	original, _ := gin.CreateTestContext(httptest.NewRecorder())
 	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), guardContextKey{}, "preserved"))
 	defer cancel()
-	original.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/search?use=icodef", strings.NewReader(`{"question":"snapshot"}`)).WithContext(ctx)
+	original.Request = httptest.NewRequest(http.MethodPost, "/api/search?use=icodef", strings.NewReader(`{"question":"snapshot"}`)).WithContext(ctx)
 	original.Request.Header.Set("X-Synthetic", "before")
 	original.Request.RemoteAddr = "192.0.2.12:12345"
 	original.Set("owned", "before")
@@ -86,7 +86,7 @@ func TestSearchExecutionObservedHeadersAndSafePanic(t *testing.T) {
 		t.Run(map[bool]string{false: "status-headers-body", true: "fixed-safe-panic"}[panicCase], func(t *testing.T) {
 			recorder := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(recorder)
-			c.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/search", nil)
+			c.Request = httptest.NewRequest(http.MethodPost, "/api/search", nil)
 			c.Header("X-Middleware", "retained")
 			observeSearchExecution(c, nil, func() searchExecutionResult {
 				if panicCase {
@@ -150,7 +150,7 @@ func TestSearchExecutionClearsOnlyOriginalAIWriterDeadline(t *testing.T) {
 	for _, use := range []string{"icodef", "ai"} {
 		writer := &searchDeadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
 		c, _ := gin.CreateTestContext(writer)
-		c.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/search?use="+use+"&noRecord=1", strings.NewReader(`{"question":"writer-guard","skipCache":true}`))
+		c.Request = httptest.NewRequest(http.MethodPost, "/api/search?use="+use+"&noRecord=1", strings.NewReader(`{"question":"writer-guard","skipCache":true}`))
 		c.Request.Header.Set("Content-Type", "application/json")
 		Search(c)
 		want := 0
@@ -172,7 +172,7 @@ func TestSearchExecutionDetachedHTTPKeepsOwnerUntilFinalization(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/adapter-service/search", nil).WithContext(ctx)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/search", nil).WithContext(ctx)
 	entered, release, finalized, handlerDone := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(handlerDone)
