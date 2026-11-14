@@ -120,6 +120,35 @@ func importQuestionsWithOverwrite(items []*entity.Tiku, overwrite bool, dryRun b
 			continue
 		}
 
+		// 「已存在同键题（hash + course_name）、未归档、但没带 id」必须先按 skipped 处理。
+		//
+		// 上面的 existing 判定只看 `item.ID > 0`，所以「id=0 但题库里已有同一道题」
+		// 这条路径完全没有被覆盖 —— 直接 Create 会撞唯一索引 hash_course_idx，
+		// 进而被 ImportQuestions 渲染成 500「服务器错误」。实测复现：
+		//
+		//	第一次导入 {"id":0,"question":"探针题目",...}  → 200 created=1
+		//	第二次导入 同题干同课程、id=0、答案不同        → 500
+		//	  constraint failed: UNIQUE constraint failed: tiku.hash, tiku.course_name
+		//
+		// 而 CSV 路径（service/import_data.go 的 importQuestionRows）在同样输入下
+		// 返回 skipped（reason「已存在相同题目（hash + course_name）」）。
+		// 两条路径必须同口径：同一批数据走 JSON 与走 CSV，created/updated/skipped
+		// 三个计数必须完全相同，否则调用方无法在两种导入方式之间迁移。
+		//
+		// 注意这里**不能**直接复用 overwrite 分支：overwrite 的语义是「按 id 覆盖
+		// 指定的那一行」，而这条路径连 id 都没有，没有「覆盖哪一行」的定义。
+		// 与 CSV 保持一致 = skipped（107 Q13c：跳过 + 报告，批量导入默认不改历史答案）。
+		var sameKeyCount int64
+		if err := dao.Tiku.UnderlyingDB().Model(&entity.Tiku{}).
+			Where("hash = ? AND course_name = ? AND deleted_at IS NULL", item.Hash, item.CourseName).
+			Count(&sameKeyCount).Error; err != nil {
+			return result, err
+		}
+		if sameKeyCount > 0 {
+			result.Skipped++
+			continue
+		}
+
 		if err := dao.Tiku.Create(item); err != nil {
 			return result, err
 		}
