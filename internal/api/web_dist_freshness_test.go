@@ -43,10 +43,21 @@ func TestEmbeddedWebDistIsNotStale(t *testing.T) {
 		t.Skip("router.js 里没有 viewMode，本用例不适用")
 	}
 
+	// ⚠️ 产物目录不存在 → **跳过**，不是失败。
+	//
+	// 理由：`cmd/adapter-service/dist/` 被 .gitignore 忽略，新克隆里只有 index.html。
+	// CI 的 Go 作业也不会先构建前端（它只跑 go test），所以那里同样没有 js。
+	// 若在这里 Fatalf，会让 CI 永远红 —— 那是「假红」，比漏检更糟。
+	//
+	// 本用例守的是「产物**存在但过期**」这一种情况（本地开发的高频形态），
+	// 而不是「产物不存在」（那是全新克隆的正常状态，由 Dockerfile 负责补）。
 	entries, err := os.ReadDir(distJS)
 	if err != nil {
-		t.Fatalf("读不到 embed 的 js 目录（cmd/adapter-service/dist/js）：%v。"+
-			"请先 npm run build 再复制到 cmd/adapter-service/dist", err)
+		t.Skipf("embed 的 js 目录不存在（新克隆或 CI 后端作业的正常状态）：%v。"+
+			"Docker 构建会自动补齐；本地开发请先 npm run build 并复制到 cmd/adapter-service/dist", err)
+	}
+	if len(entries) == 0 {
+		t.Skip("embed 的 js 目录为空（同上：新克隆的正常状态）")
 	}
 
 	// chunk 名来自 webpackChunkName（见 router.js 的 `/* webpackChunkName: ... */`），
