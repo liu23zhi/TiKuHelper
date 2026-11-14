@@ -69,6 +69,18 @@ func TestRiskThresholdSpecsMatchEntityDefaults(t *testing.T) {
 			covered["offhours_share"] = true
 			continue
 		}
+		if spec.Key == RiskThresholdSettingKeyTokenMultiIP {
+			// R12 的第二判据（多 IP 数）默认值 5，与主阈值（配额倍数 3）不同，单独断言。
+			//
+			// ⚠️ 这条分支**必须**存在：`risk_rule_<id>_threshold` 那条断言（下面几行）
+			// 要求「除附加项外，每条规则的键都必须是 risk_rule_<id>_threshold」。
+			// R12 现在有两个可调项，附加项若不在这里 continue 掉，会被当成主键而误报。
+			if spec.DefaultValue != 5 {
+				t.Fatalf("多 IP 数阈值默认值 = %v, want 5（本仓自定，97 号未给数量）", spec.DefaultValue)
+			}
+			covered["token_multi_ip"] = true
+			continue
+		}
 		wantKey := "risk_rule_" + spec.RuleID + "_threshold"
 		if spec.Key != wantKey {
 			t.Fatalf("规则 %q 的键 = %q, want %q", spec.RuleID, spec.Key, wantKey)
@@ -85,6 +97,9 @@ func TestRiskThresholdSpecsMatchEntityDefaults(t *testing.T) {
 	}
 	if !covered["offhours_share"] {
 		t.Fatalf("R16 的占比阈值未登记")
+	}
+	if !covered["token_multi_ip"] {
+		t.Fatalf("R12 的多 IP 数阈值未登记")
 	}
 }
 

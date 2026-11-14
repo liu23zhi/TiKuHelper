@@ -2344,7 +2344,13 @@ func TestRiskTokenAbuseSkipsWhenQuotaBaselineMissing(t *testing.T) {
 	}
 }
 
-// 判据②：多 IP 漂移 —— 2 个 IP 不告警，3 个告警（阈值 3）。
+// 判据②：多 IP 漂移 —— 默认阈值现在是 **5**（读独立键），不再是 3。
+//
+// ⚠️ 这条用例的语义在 t195 变了（必须记下）：
+// 拆键前 IP 维度借用了配额倍数键（默认 3），3 个 IP 就告警；
+// 拆键后 IP 维度读 `risk_token_abuse_multi_ip_threshold`，默认 **5**。
+// 于是「3 个 IP」从「告警」变成「不告警」—— 这是**有意的行为变化**：
+// 3 个 IP 用同一 token 往往是「手机 + 电脑 + 平板」的正常场景。
 func TestRiskTokenAbuseMultiIPDrift(t *testing.T) {
 	t.Run("two_ips_below_threshold", func(t *testing.T) {
 		db := newRiskAlertTestDB(t)
@@ -2358,11 +2364,13 @@ func TestRiskTokenAbuseMultiIPDrift(t *testing.T) {
 			t.Fatalf("evaluate: %v", err)
 		}
 		if got := countRuleWarnings(t, db, "token_abuse"); got != 0 {
-			t.Fatalf("2 个 IP < 阈值 3 必须不告警，实际 %d 条", got)
+			t.Fatalf("2 个 IP < 阈值 5 必须不告警，实际 %d 条", got)
 		}
 	})
 
-	t.Run("three_ips_meets_threshold", func(t *testing.T) {
+	t.Run("three_ips_now_below_new_default", func(t *testing.T) {
+		// 3 个 IP 在拆键前会告警（阈值 3），拆键后不告警（阈值 5）。
+		// 这条用例**专门钉住这个行为变化**，防止有人「修回去」。
 		db := newRiskAlertTestDB(t)
 		seedRiskRules(t, db)
 		token := seedRiskAccessToken(t, db, 1, "t-3ip", 1000, 1, "203.0.113.1")
@@ -2373,8 +2381,26 @@ func TestRiskTokenAbuseMultiIPDrift(t *testing.T) {
 		if _, err := EvaluateDebtAlerts(db, now); err != nil {
 			t.Fatalf("evaluate: %v", err)
 		}
+		if got := countRuleWarnings(t, db, "token_abuse"); got != 0 {
+			t.Fatalf("3 个 IP < 新默认阈值 5 不告警（3 个 IP 常是手机+电脑+平板的正常场景），实际 %d 条", got)
+		}
+	})
+
+	t.Run("five_ips_meets_threshold", func(t *testing.T) {
+		db := newRiskAlertTestDB(t)
+		seedRiskRules(t, db)
+		token := seedRiskAccessToken(t, db, 1, "t-5ip", 1000, 1, "203.0.113.1")
+		now := riskR1TestTime()
+		for i, ip := range []string{
+			"203.0.113.1", "203.0.113.2", "203.0.113.3", "203.0.113.4", "203.0.113.5",
+		} {
+			seedRiskBillingRow(t, db, 1, token.ID, ip, 1, now.Add(-time.Duration(i)*time.Minute))
+		}
+		if _, err := EvaluateDebtAlerts(db, now); err != nil {
+			t.Fatalf("evaluate: %v", err)
+		}
 		if got := countRuleWarnings(t, db, "token_abuse"); got != 1 {
-			t.Fatalf("3 个 IP = 阈值 3 必须告警且只 1 条，实际 %d 条", got)
+			t.Fatalf("5 个 IP = 阈值 5 必须告警且只 1 条，实际 %d 条", got)
 		}
 		var warning entity.RiskWarning
 		if err := db.Where("rule_id = ?", "token_abuse").First(&warning).Error; err != nil {
@@ -2387,8 +2413,8 @@ func TestRiskTokenAbuseMultiIPDrift(t *testing.T) {
 		if got, _ := detail["signal"].(string); got != "multi_ip_drift" {
 			t.Fatalf("detail.signal = %v, want multi_ip_drift", detail["signal"])
 		}
-		if got, _ := detail["ipCount"].(float64); got != 3 {
-			t.Fatalf("detail.ipCount = %v, want 3", detail["ipCount"])
+		if got, _ := detail["ipCount"].(float64); got != 5 {
+			t.Fatalf("detail.ipCount = %v, want 5", detail["ipCount"])
 		}
 	})
 

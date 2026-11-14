@@ -132,6 +132,13 @@ type riskThresholdSpec struct {
 // 默认值一律与 entity.DefaultRiskRules() 保持一致；这里写字面量而不是引用常量，
 // 是为了让「代码默认值被改动」在这张表上**暴露出来**（引用常量会让两边同步漂移，
 // 测试测不出差异）。两者一致性由 TestRiskThresholdSpecsMatchEntityDefaults 钉住。
+// RiskThresholdSettingKeyTokenMultiIP 是 R12「同一 token 被多少不同 IP 使用」的阈值键。
+//
+// 不带 `risk_rule_` 前缀：那个前缀由 riskRuleThresholdSettingKey() 自动生成，
+// 专用于「每条规则一个主阈值」。附加判据用独立键 —— 与 `risk_offhours_share_threshold`
+// （R16 的占比项）同构。
+const RiskThresholdSettingKeyTokenMultiIP = "risk_token_abuse_multi_ip_threshold"
+
 func riskThresholdSpecs() []riskThresholdSpec {
 	return []riskThresholdSpec{
 		{Key: "risk_rule_debt_user_threshold", RuleID: entity.RiskRuleIDDebtUser,
@@ -147,7 +154,31 @@ func riskThresholdSpecs() []riskThresholdSpec {
 		{Key: "risk_rule_abnormal_register_pattern_threshold", RuleID: entity.RiskRuleIDAbnormalRegisterPattern,
 			Label: "同前缀连续用户名阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 3, Unit: "个", SyncRuleColumn: true, MaxValue: 10_000},
 		{Key: "risk_rule_token_abuse_threshold", RuleID: entity.RiskRuleIDTokenAbuse,
-			Label: "配额倍数 / 多 IP 数阈值（账号维度与 IP 维度共用此值）", Kind: RiskThresholdKindAbsolute, DefaultValue: 3, Unit: "倍/个", SyncRuleColumn: true, MaxValue: 1_000},
+			Label: "配额消耗倍数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 3, Unit: "倍", SyncRuleColumn: true, MaxValue: 1_000},
+		// 「同一 token 被多个不同 IP 使用」是**独立判据**，必须有自己的键。
+		//
+		// ⚠️ 为什么必须拆（t193 审计实测的问题）：这两个语义的合理默认值差很远 ——
+		//   · 配额超 3 倍 = 明显滥用（一个 token 花掉 3 倍配额）
+		//   · 3 个 IP 共用同一 token = **很可能是正常场景**（手机 + 电脑 + 平板）
+		// 共用一个键时，运营想把 IP 维度放宽到 5 就必然把配额倍数也放宽到 5
+		// （5 倍配额才告警 = 严重漏报）；反之收紧配额会让 2 个 IP 共用就告警（误报）。
+		//
+		// # 命名为什么不带 risk_rule_ 前缀
+		//
+		// `risk_rule_<id>_threshold` 是 **riskRuleThresholdSettingKey() 自动生成**的
+		// （risk_alert.go:423），它是「每条规则一个主阈值」的约定。
+		// 一条规则的第二、第三个可调项不带这个前缀 —— 仓内先例是
+		// `risk_offhours_share_threshold`（R16 的占比项，见 risk_alert.go:1607）。
+		// 所以这里叫 `risk_token_abuse_multi_ip_threshold`，与先例同构。
+		//
+		// # 为什么不 SyncRuleColumn
+		//
+		// `risk_rules.threshold` **只有一列**，只能承载「该规则的主阈值」。
+		// 配额倍数是主判据（97 号 L321 原文只给了配额口径：「调用量 > 其配额 3 倍」），
+		// 它占用这一列；IP 个数是附加判据，不同步。
+		// 若两个都同步，后写的会覆盖先写的 —— 与 R16 占比污染连续天数同款缺陷。
+		{Key: RiskThresholdSettingKeyTokenMultiIP, RuleID: entity.RiskRuleIDTokenAbuse,
+			Label: "同一 token 的不同 IP 数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 5, Unit: "个", SyncRuleColumn: false, MaxValue: 100},
 		{Key: "risk_rule_offhours_activity_threshold", RuleID: entity.RiskRuleIDOffhoursActivity,
 			Label: "连续天数阈值", Kind: RiskThresholdKindInteger, DefaultValue: 3, Unit: "天", SyncRuleColumn: true, MaxValue: 365},
 		{Key: "risk_rule_binding_churn_threshold", RuleID: entity.RiskRuleIDBindingChurn,

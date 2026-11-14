@@ -1425,8 +1425,22 @@ const riskTokenAbuseMinQuota = 0.0
 // 多 IP 判据的「基线」不同：需要窗口内至少 2 个不同 IP 才可能达到阈值，
 // 因此新 token（0~1 个 IP）天然不会命中，不需要额外判断。
 func collectTokenAbuseCandidates(db *gorm.DB, rule entity.RiskRule, now time.Time) ([]riskWarningCandidate, error) {
-	threshold := riskRuleThreshold(db, rule, riskDefaultThreshold(rule.RuleID))
-	if threshold <= 0 {
+	// ⚠️ 两个**独立**阈值，不能共用（t193 审计发现的问题，本轮修）：
+	//
+	//   quotaThreshold —— 「配额消耗倍数」。读自动键 risk_rule_<id>_threshold，
+	//     默认 3（97 号 L321 原文：「调用量 > 其配额 3 倍」）。
+	//   ipThreshold —— 「同一 token 的不同 IP 数」。读独立键
+	//     risk_token_abuse_multi_ip_threshold，默认 5（**本仓自定**，
+	//     97 号原文只说「或被多 IP 并发使用」，没给数量）。
+	//
+	// 为什么必须拆：两者的合理默认值差很远 —— 配额超 3 倍是明确滥用，而
+	// 3 个 IP 用同一 token 很可能是「手机 + 电脑 + 平板」的正常场景。
+	// 共用时运营放宽 IP 必然连带放宽配额（严重漏报），反之收紧配额会让
+	// 2 个 IP 共用就告警（大量误报）。
+	quotaThreshold := riskRuleThreshold(db, rule, riskDefaultThreshold(rule.RuleID))
+	ipThreshold := riskTokenMultiIPThreshold(db)
+	// 两个都为 0 才完全跳过；任一有效就继续（各判据各自判自己的）。
+	if quotaThreshold <= 0 && ipThreshold <= 0 {
 		return nil, nil
 	}
 	if !db.Migrator().HasTable(entity.TableNameAccessToken) {
@@ -1491,7 +1505,7 @@ func collectTokenAbuseCandidates(db *gorm.DB, rule entity.RiskRule, now time.Tim
 		}
 		ratio := windowUsed / row.TotalQuotaLimit
 		// 「≥ 阈值」：3.0 恰等于阈值 3 → 告警。
-		if ratio < threshold {
+		if quotaThreshold <= 0 || ratio < quotaThreshold {
 			continue
 		}
 		subject := riskBehaviorSubject(rule.RuleID, "token:"+strconv.FormatInt(int64(row.ID), 10), windowStart)
@@ -1504,7 +1518,7 @@ func collectTokenAbuseCandidates(db *gorm.DB, rule entity.RiskRule, now time.Tim
 			"quotaLimit":  roundRiskAmount(row.TotalQuotaLimit),
 			"quotaUsed":   roundRiskAmount(row.TotalAmountUsed),
 			"quotaRatio":  roundRiskAmount(ratio),
-			"threshold":   threshold,
+			"threshold":   quotaThreshold,
 			"value":       roundRiskAmount(ratio),
 			"signal":      "quota_ratio",
 			"windowStart": windowStart.Format(time.RFC3339),
@@ -1550,8 +1564,8 @@ func collectTokenAbuseCandidates(db *gorm.DB, rule entity.RiskRule, now time.Tim
 		}
 	}
 	for _, row := range ipRows {
-		// 「≥ 阈值」：2 个 IP + 阈值 3 → 不告警；3 个 → 告警。
-		if float64(row.IPs) < threshold {
+		// 「≥ 阈值」：低于阈值跳过。阈值读**独立键**，与配额倍数无关。
+		if ipThreshold <= 0 || float64(row.IPs) < ipThreshold {
 			continue
 		}
 		// 配额判据已为这个 token 产出候选时不再重复产出（一个 token 一个窗口一条）。
@@ -1565,7 +1579,7 @@ func collectTokenAbuseCandidates(db *gorm.DB, rule entity.RiskRule, now time.Tim
 			"tokenId":      row.AccessTokenID,
 			"userId":       row.UserID,
 			"ipCount":      row.IPs,
-			"threshold":    threshold,
+			"threshold":    ipThreshold,
 			"value":        row.IPs,
 			"signal":       "multi_ip_drift",
 			"windowStart":  windowStart.Format(time.RFC3339),
@@ -1797,6 +1811,41 @@ func riskOffhoursConsecutiveMet(detail string) bool {
 		return false
 	}
 	return parsed.ConsecutiveMet
+}
+
+// riskTokenMultiIPDefault 是「同一 token 的不同 IP 数」的代码默认值（5）。
+//
+// ⚠️ **这个数字是本仓自定的，不是 97 号给的**。
+// 97 号 L321 原文只写「或被多 IP 并发使用」，**没有数量**；那个「3 倍」是
+// 配额口径的，被第一版实现借给了 IP 维度。
+//
+// 为什么定 5 而配额倍数定 3：
+//
+//	· 配额超 3 倍 = 明确滥用（一个 token 花掉 3 倍配额，没有任何正常解释）。
+//	· 3 个 IP 用同一 token = 很可能是**正常场景**（手机 + 电脑 + 平板；
+//	  或通勤换网络、公司的双出口 NAT）。定 3 会让这类正常用户天天告警。
+//	· 5 个不同 IP 才需要看：再多通常是共享账号或 token 外泄。
+//
+// 取 5 而不是更高（如 10）：本规则的定位是「疑似外泄/共享」，宁可让运营
+// 自己调到 10，也不要默认就放过明显异常。
+const riskTokenMultiIPDefault = 5
+
+// riskTokenMultiIPThreshold 读取「同一 token 的不同 IP 数」阈值（R12 的附加判据）。
+//
+// 走**独立键** `risk_token_abuse_multi_ip_threshold`，不复用
+// `risk_rule_token_abuse_threshold`（那是配额倍数的主阈值）。
+// 与 riskOffhoursShareThreshold 同构：一条规则的第二判据不占主阈值键。
+//
+// 非法值（非数字 / ≤0）一律回落默认，**不返回 0** ——
+// 返回 0 会让 `float64(row.IPs) < 0` 恒假，等于该判据被静默关掉。
+func riskTokenMultiIPThreshold(db *gorm.DB) float64 {
+	if db != nil {
+		raw := getSystemSettingStringWithDefault(db, RiskThresholdSettingKeyTokenMultiIP, "")
+		if value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64); err == nil && value > 0 {
+			return value
+		}
+	}
+	return riskTokenMultiIPDefault
 }
 
 // riskOffhoursShareThreshold 读取夜间占比阈值（0-1）。非法值回落默认 0.8。
