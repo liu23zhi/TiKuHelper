@@ -146,15 +146,26 @@ type CreateTicketInput struct {
 	RefundReason         string `json:"refundReason,omitempty"`
 }
 
-// 用户可自选的工单类型（T-209）。
+// 用户可自选的工单类型（T-209 建立，本任务扩到四项）。
 //
-// 收窄到两项是刻意的：这两项都**没有**「一键动作」，用户选它们不会给自己
-// 换来特权（general 无动作；refund 的审核/打款只有管理员能点）。
+// 收窄到这几项是刻意的：它们都**没有**「一键动作」，用户选它们不会给自己
+// 换来特权（general 无动作；refund 的审核/打款只有管理员能点；
+// account 只是提问；account_closure 只是建单，真正的注销仍需管理员处理）。
 // 任何将来要加进来的类型，判据是「用户自选后能不能触发一个管理员侧的一键动作」——
 // 能，就不许加。
 const (
 	TicketTypeGeneral = entity.TicketCategoryGeneral
 	TicketTypeRefund  = entity.TicketCategoryRefund
+	// TicketTypeAccount 是「账号问题」（登录异常 / 绑定问题 / 封禁申诉）。
+	//
+	// ⚠️ 它**不是** account_rebind：后者能触发管理员侧「换绑手机」一键动作
+	// （绕过短信验证的身份变更），因此仍然不许进白名单。account 只提问，不动账号。
+	TicketTypeAccount = entity.TicketCategoryAccount
+	// TicketTypeAccountClosure 是「注销申请」。
+	//
+	// 常量早就在 entity 里（entity/ticket.go），但从未进过用户白名单 ——
+	// 本次加入。它符合判据：用户建单不会直接注销，注销仍要管理员审批。
+	TicketTypeAccountClosure = entity.TicketCategoryAccountClosure
 )
 
 // UserSelectableTicketTypes 是新建表单允许出现、且服务端认可的取值。
@@ -167,6 +178,10 @@ func normalizeUserTicketType(value string) (string, error) {
 		return TicketTypeGeneral, nil
 	case TicketTypeRefund:
 		return TicketTypeRefund, nil
+	case TicketTypeAccount:
+		return TicketTypeAccount, nil
+	case TicketTypeAccountClosure:
+		return TicketTypeAccountClosure, nil
 	default:
 		// 明确报错而不是静默降级：用户选了一个不存在的类型却拿到普通工单，
 		// 会让他以为「退款申请已提交」，而实际上什么都没发生。
@@ -253,7 +268,8 @@ func normalizeTicketCategory(value string) (string, error) {
 	switch value {
 	case entity.TicketCategoryGeneral, entity.TicketCategoryRegistrationBonus,
 		entity.TicketCategoryBlacklistAppeal, entity.TicketCategoryAccountRebind,
-		entity.TicketCategoryAccountClosure, entity.TicketCategoryRefund:
+		entity.TicketCategoryAccount, entity.TicketCategoryAccountClosure,
+		entity.TicketCategoryRefund:
 		return value, nil
 	default:
 		return "", ErrTicketInvalidCategory
@@ -269,6 +285,7 @@ var ticketDefaultPriorityByCategory = map[string]string{
 	entity.TicketCategoryRegistrationBonus: entity.TicketPriorityHigh,
 	entity.TicketCategoryBlacklistAppeal:   entity.TicketPriorityHigh,
 	entity.TicketCategoryAccountRebind:     entity.TicketPriorityNormal,
+	entity.TicketCategoryAccount:           entity.TicketPriorityNormal,
 	entity.TicketCategoryAccountClosure:    entity.TicketPriorityNormal,
 	entity.TicketCategoryRefund:            entity.TicketPriorityNormal,
 }
@@ -318,12 +335,13 @@ func CreateTicketWithDB(db *gorm.DB, user *entity.User, input CreateTicketInput)
 		ticket = entity.Ticket{
 			UserID: user.ID, UserName: ticketUserName(user), Subject: subject,
 			Status: entity.TicketStatusOpen,
-			// 用户建单一律 user / general / normal：category 由服务端按来源强制赋值，
-			// **不接受客户端自选**（否则用户会挑「能一键补发」的类别套利）。
-			// CreateTicketInput 里刻意没有这些字段，客户端多传的同名字段会被 JSON
-			// 反序列化直接丢弃。
+			// 用户建单一律 user / <白名单内归一化后的类型> / normal：
+			// category 仍然是**服务端按白名单强制赋值**，用户只能从
+			// normalizeUserTicketType 许可的四个取值里挑一个。
+			// CreateTicketInput 里刻意没有 Category / Origin / Priority 字段，
+			// 客户端多传的同名字段会被 JSON 反序列化直接丢弃。
 			Origin:        entity.TicketOriginUser,
-			Category:      entity.TicketCategoryGeneral,
+			Category:      ticketType,
 			Priority:      entity.TicketPriorityNormal,
 			LastMessageAt: now,
 		}

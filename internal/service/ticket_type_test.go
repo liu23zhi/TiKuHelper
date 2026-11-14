@@ -10,7 +10,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// TestTicketDefaultPriorityByCategory 钉住 6 类工单各自的默认 priority（69-*.md §2.3）。
+// TestTicketDefaultPriorityByCategory 钉住 7 类工单各自的默认 priority（69-*.md §2.3）。
 //
 // 这条是「按类别给默认档」的唯一判据：改坏映射（例如把 blacklist_appeal 从 high
 // 降成 normal）必须变红，否则线上「被封用户排到最后」不会有任何测试发现。
@@ -20,11 +20,12 @@ func TestTicketDefaultPriorityByCategory(t *testing.T) {
 		entity.TicketCategoryRegistrationBonus: entity.TicketPriorityHigh,
 		entity.TicketCategoryBlacklistAppeal:   entity.TicketPriorityHigh,
 		entity.TicketCategoryAccountRebind:     entity.TicketPriorityNormal,
+		entity.TicketCategoryAccount:           entity.TicketPriorityNormal,
 		entity.TicketCategoryAccountClosure:    entity.TicketPriorityNormal,
 		entity.TicketCategoryRefund:            entity.TicketPriorityNormal,
 	}
-	if len(want) != 6 {
-		t.Fatalf("6 类工单必须都有默认 priority，实际 %d 类", len(want))
+	if len(want) != 7 {
+		t.Fatalf("7 类工单必须都有默认 priority，实际 %d 类", len(want))
 	}
 	for category, expected := range want {
 		if got := defaultTicketPriorityForCategory(category); got != expected {
@@ -495,4 +496,132 @@ func countTickets(t *testing.T, db *gorm.DB, where string) int64 {
 		t.Fatalf("统计工单失败（where=%s）：%v", where, err)
 	}
 	return count
+}
+
+// ─────────── B2-1 / B2-2：用户白名单从 2 项扩到 4 项 ───────────
+//
+// ⚠️ 本组用例里的期望值一律写**字面量**（"account" / "account_closure" /
+// "registration_bonus"），刻意不引用 entity.TicketCategory* 常量。
+// 理由：如果期望值也引用同一个常量，那么「把常量改回旧值」这种回归会让
+// 期望与被测值同步漂移 → 断言恒真 → 白名单收窄/放宽都不会被测试发现
+// （这是本项目已经踩过的「自证式假钉子」形态）。
+
+// TestNormalizeUserTicketTypeWhitelistIsExactlyFour 是白名单的**唯一**取值判据。
+//
+// 正向：四项都必须被接受并原样返回（含大小写/空白归一）。
+// 反向：套利三项必须报 ErrTicketInvalidCategory，而不是静默降级成 general ——
+// 静默降级会让用户以为「封禁申诉已提交」，实际只建了一张普通工单。
+func TestNormalizeUserTicketTypeWhitelistIsExactlyFour(t *testing.T) {
+	// 正向：四项 + 空串（空串等价 general，老客户端行为不能变）。
+	accepted := []struct{ input, want string }{
+		{"", "general"},
+		{"   ", "general"},
+		{"general", "general"},
+		{"refund", "refund"},
+		{"account", "account"},
+		{"account_closure", "account_closure"},
+		// 大小写与空白必须归一（前端可能透传大写）。
+		{" Account ", "account"},
+		{"ACCOUNT_CLOSURE", "account_closure"},
+		{"Refund", "refund"},
+	}
+	for _, item := range accepted {
+		got, err := normalizeUserTicketType(item.input)
+		if err != nil {
+			t.Fatalf("ticketType=%q 应被接受，实际报错 %v", item.input, err)
+		}
+		if got != item.want {
+			t.Fatalf("ticketType=%q 归一化后应为 %q，实际 %q", item.input, item.want, got)
+		}
+	}
+
+	// 反向：套利类别 + 任意未知值都必须报错。
+	//
+	// 这三项是**.md 文档明确点名的套利面**：
+	//   registration_bonus → 用户自选即可诱导管理员点「一键补发赠金」；
+	//   blacklist_appeal   → 绕过短信验证进入解封流程；
+	//   account_rebind     → 一键换绑，绕过短信验证的身份变更。
+	// 把其中任何一项加进 normalizeUserTicketType 的 case 里，本用例必红。
+	for _, forbidden := range []string{
+		"registration_bonus",
+		"blacklist_appeal",
+		"account_rebind",
+		// 未知值同样不许静默放过（防止将来有人用 default 分支兜底）。
+		"bogus",
+		"system",
+	} {
+		if _, err := normalizeUserTicketType(forbidden); !errors.Is(err, ErrTicketInvalidCategory) {
+			t.Fatalf("ticketType=%q 必须被拒成 ErrTicketInvalidCategory，实际 %v", forbidden, err)
+		}
+	}
+}
+
+// TestUserSelectedAccountTicketTypePersistsCategory 是 B2-1 的端到端钉子。
+//
+// 断言的不是「函数返回了什么」，而是**落库的 category**：服务端认了白名单
+// 却仍把 category 写成 general（CreateTicketWithDB 里那行硬编码），
+// 用户就会看到自己提交的「账号问题」变成「一般问题」。
+func TestUserSelectedAccountTicketTypePersistsCategory(t *testing.T) {
+	db := newTicketTestDB(t)
+	user := &entity.User{ID: 11, Username: "account-user", Role: "user"}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"account", "account_closure"} {
+		detail, err := CreateTicketWithDB(db, user, CreateTicketInput{
+			Subject:    "账号问题：" + want,
+			Body:       "请协助核对",
+			TicketType: want,
+		})
+		if err != nil {
+			t.Fatalf("ticketType=%q 建单失败：%v", want, err)
+		}
+		if detail.Ticket.Category != want {
+			t.Fatalf("ticketType=%q 落库 category 必须是 %q，实际 %q", want, want, detail.Ticket.Category)
+		}
+		// origin / priority 仍由服务端强制赋值，不受类型影响。
+		if detail.Ticket.Origin != entity.TicketOriginUser {
+			t.Fatalf("ticketType=%q origin 必须是 user，实际 %q", want, detail.Ticket.Origin)
+		}
+		if detail.Ticket.Priority != entity.TicketPriorityNormal {
+			t.Fatalf("ticketType=%q priority 必须是 normal，实际 %q", want, detail.Ticket.Priority)
+		}
+		// 落库值也要核：防止响应体与数据库两套口径。
+		var stored entity.Ticket
+		if err := db.Where("id = ?", detail.Ticket.ID).First(&stored).Error; err != nil {
+			t.Fatal(err)
+		}
+		if stored.Category != want {
+			t.Fatalf("ticketType=%q 落库值必须是 %q，实际 %q", want, want, stored.Category)
+		}
+	}
+}
+
+// TestServerRejectsArbitrageTicketTypeRegardlessOfFrontend 是 T2 判据的钉子：
+// **服务端必须自己校验白名单**，不能只靠前端过滤。
+//
+// 攻击形态：绕过前端直接 POST ticketType=registration_bonus。
+// 如果服务端只是把前端选项列表删掉而 normalizeUserTicketType 放行，
+// 用户依然能建出「能被管理员一键补发赠金」的工单 —— 本用例必红。
+func TestServerRejectsArbitrageTicketTypeRegardlessOfFrontend(t *testing.T) {
+	db := newTicketTestDB(t)
+	user := &entity.User{ID: 12, Username: "arbitrage-user", Role: "user"}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"registration_bonus", "blacklist_appeal", "account_rebind"} {
+		// 走完整反序列化路径：客户端能塞进 JSON 的一切都塞进去。
+		payload := `{"subject":"请给我补发赠金","body":"补发一下","ticketType":"` + forbidden + `"}`
+		var input CreateTicketInput
+		if err := json.Unmarshal([]byte(payload), &input); err != nil {
+			t.Fatalf("反序列化 %s 失败：%v", forbidden, err)
+		}
+		if _, err := CreateTicketWithDB(db, user, input); !errors.Is(err, ErrTicketInvalidCategory) {
+			t.Fatalf("服务端必须拒绝 ticketType=%q（这是套利面），实际 err=%v", forbidden, err)
+		}
+	}
+	// 关键的反向确认：一条套利请求都没落库（不是「报错但已经建单」）。
+	if got := countTickets(t, db, "category IN ('registration_bonus','blacklist_appeal','account_rebind')"); got != 0 {
+		t.Fatalf("套利类别不得落库，实际 %d 条", got)
+	}
 }

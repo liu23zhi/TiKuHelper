@@ -73,6 +73,39 @@
       </ConsoleSummaryGrid>
 
       <!--
+        接口族分桶（138 §4.3）。
+        ⚠️ 置灰的唯一依据是 endpointView.greyed（= samples === 0），
+        绝不能用 endpointView.totalRequests === 0 或 rateText === '0%' 判 ——
+        前者会把「采样到了但确实没人用」误判成「没数据」，
+        后者会把「采样到了且全失败」（最该报警）当成「无数据」藏起来。
+      -->
+      <ConsolePanel
+        title="接口分桶"
+        description="把请求按接口族拆开看。全站成功率会被健康检查、管理页这类请求稀释，所以搜题接口要单独看。"
+        class="endpoint-panel"
+      >
+        <div
+          class="endpoint-card"
+          :class="{ 'endpoint-card--greyed': endpointView.greyed }"
+          :data-endpoint-kind="endpointView.key"
+          :data-endpoint-state="endpointView.state"
+          :data-endpoint-greyed="endpointView.greyed ? 'true' : 'false'"
+        >
+          <p class="endpoint-card__title" data-endpoint-label>{{ endpointView.label }}</p>
+          <!-- 置灰时**绝不显示 0%**：那会让人以为服务挂了（实际是没数据）。 -->
+          <p class="endpoint-card__rate" data-endpoint-rate>{{ endpointView.rateText }}</p>
+          <p class="endpoint-card__hint" data-endpoint-hint>{{ endpointView.hint }}</p>
+          <a-descriptions :column="1" size="small" bordered class="endpoint-card__details">
+            <a-descriptions-item label="请求 / 成功">
+              {{ endpointView.totalText }} / {{ endpointView.successText }}
+            </a-descriptions-item>
+            <a-descriptions-item label="平均延迟">{{ endpointView.latencyText }}</a-descriptions-item>
+            <a-descriptions-item label="已采样分钟数">{{ endpointView.samplesText }}</a-descriptions-item>
+          </a-descriptions>
+        </div>
+      </ConsolePanel>
+
+      <!--
         逐分钟曲线（脱敏序列端点）。这是**增强区块**：
         series 失败时整块不渲染，摘要与说明照常显示 —— 曲线拿不到不该让整页崩。
         失败四分类不在这里出现（后端不给），见 controller.publicStatusPoint 的取舍说明。
@@ -221,6 +254,10 @@ export default {
 
     const view = computed(() => buildServiceStatusView(payload.value))
 
+    // 搜题接口分桶视图。由 view.endpoints.search 派生（buildServiceStatusView 已算好）。
+    // 单独取出来是为了让模板里的置灰/文案只有一个来源，不在模板里重复判定。
+    const endpointView = computed(() => view.value.endpoints.search)
+
     const heroHint = computed(() => {
       if (view.value.dataState === 'empty') return '最近窗口内没有请求，暂无成功率可算。'
       if (view.value.tone === 'ok') return '最近窗口内请求基本全部成功。'
@@ -285,6 +322,7 @@ export default {
       loaded,
       errorMessage,
       view,
+      endpointView,
       seriesView,
       recentPoints,
       seriesAriaLabel,
@@ -318,6 +356,17 @@ export default {
 .status-hero[data-status-tone='danger'] .status-hero__dot { background: var(--console-danger, #b91c1c); }
 .status-hero[data-status-tone='muted'] .status-hero__dot { background: var(--console-muted); }
 @media (max-width: 768px) { .status-hero { align-items: flex-start; } }
+
+/* 接口分桶卡片。置灰只降透明度与去色，**不隐藏**：用户仍要能看到
+   「这里本来有一块、只是暂时没数据」，否则会以为功能没做。 */
+.endpoint-panel { margin-bottom: 16px; }
+.endpoint-card { padding: 16px; border: 1px solid var(--console-border); border-radius: 8px; }
+.endpoint-card__title { margin: 0; color: var(--console-text); font-size: 15px; font-weight: 600; }
+.endpoint-card__rate { margin: 8px 0 0; color: var(--console-text); font-size: clamp(20px, 2.6vw, 28px); font-weight: 600; font-variant-numeric: tabular-nums; }
+.endpoint-card__hint { margin: 8px 0 12px; color: var(--console-muted); font-size: 12px; line-height: 1.6; }
+.endpoint-card__details { margin-bottom: 0; }
+.endpoint-card--greyed { opacity: 0.55; }
+.endpoint-card--greyed .endpoint-card__rate { color: var(--console-muted); }
 
 /* 逐分钟色带：纯 CSS 柱状，不引入图表库（首屏体积已经很紧）。 */
 .series-panel { margin-bottom: 16px; }

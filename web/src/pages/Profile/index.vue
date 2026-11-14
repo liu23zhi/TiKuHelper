@@ -260,6 +260,34 @@
         </template>
       </div>
     </a-card>
+
+    <!-- ─────────── 自助注销（B2-5）───────────
+         用户诉求：「注销提供两个入口，另一个入口在个人中心」。
+         这是**主入口**（工单里的注销申请是兜底），所以放在个人中心页脚，
+         且标题/说明写清它是「立即生效、可撤销」的那条路。
+
+         组件复用工单向导里的 ClosureGuide（mode=self-service 直接进流程），
+         避免两处各写一套申请/撤销逻辑 —— 那一定会漂移成「个人中心能撤销、
+         工单页不能」这类不一致。
+
+         权限沿用 profileReady：未确认当前用户时不渲染（与其它表单一致），
+         否则会在别人的账号上显示注销按钮。 -->
+    <a-card
+      v-if="profileReady"
+      :bordered="false"
+      class="page-card account-closure-card"
+      data-section="account-closure"
+    >
+      <template #title>
+        <div>
+          <h2 class="page-title">自助注销</h2>
+          <div class="page-subtitle">
+            立即生效，等待期内可随时撤销；到期后账号会被归档，无法自行恢复。
+          </div>
+        </div>
+      </template>
+      <ClosureGuide mode="self-service" />
+    </a-card>
   </div>
 </template>
 
@@ -278,6 +306,9 @@ import {
 import { ensureAuthCaptchaToken } from '@/utils/captchaDialog.mjs'
 import { normalizeSMSCodeInput, ensurePhoneBeforeSMSCaptcha } from '@/utils/captchaHelpers.mjs'
 import MainlandPhoneInput from '@/components/MainlandPhoneInput.vue'
+// 自助注销 UI（申请 / 撤销 / 查询状态）与工单向导的注销引导共用同一组件，
+// 避免两处各写一套申请/撤销逻辑后漂移。
+import ClosureGuide from '@/pages/Tickets/ClosureGuide.vue'
 import { buildRegisterSourceLabel } from '@/utils/userPortalHelpers.mjs'
 import { buildDeviceLimitHint, buildDeviceLimitText } from '@/utils/userLevelHelpers.mjs'
 import { getMyUserLevel } from '@/api/UserLevelApi'
@@ -1014,7 +1045,7 @@ export default defineComponent({
       ipLocations, phoneLocations, normalizeLocationKey, formatValueWithLocation, roleText, statusText,
     }
   },
-  components: { MainlandPhoneInput, RequestFailureAlert },
+  components: { ClosureGuide, MainlandPhoneInput, RequestFailureAlert },
 })
 </script>
 

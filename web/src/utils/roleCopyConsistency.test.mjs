@@ -224,6 +224,26 @@ function readPageHeading(key) {
 const AUDIT_KEYS = [...new Set([...SHARED_KEYS, 'ticket-admin', 'script-admin', 'billing-admin', 'token-admin'])];
 const HEADINGS = new Map(AUDIT_KEYS.map((key) => [key, readPageHeading(key)]));
 
+/**
+ * 已退役（**路由已删、菜单待删**）的 key。
+ *
+ * `billing-records`（我的账单）：2026-11-15 按 138 §3.2 删除。用户侧的账单查看需求
+ * 由「个人使用 → 账单流水」面板承接（`pages/UserUsage/index.vue`，独立实现，
+ * 不 import BillingRecordList），两个入口并存只会让用户分不清该看哪个。
+ *
+ * ⚠️ 为什么这里要有这份名单，而不是直接把 billing-records 从菜单派生里删掉：
+ *   `SiderMenu/index.vue` 是**协调者独占**文件，菜单项的删除不在本改动范围内
+ *   （本改动只删路由与测试）。所以从 SiderMenu 派生的 SHARED_KEYS 里短期仍会
+ *   出现 `billing-records`，而 router.js 里已没有它 —— 若不加这份名单，
+ *   「每个共用 key 都必须有路由」这条自检会一直红。
+ *
+ * ⚠️ 更重要的：这**不是**把判据放宽成「缺失就跳过」。下面那条用例对名单里的 key
+ *   做的是**反向**断言 —— 它们**必须不存在**于 router.js。方向反过来之后，
+ *   一旦有人把路由加回来（变异 B1），那条断言立刻变红。
+ *   名单本身是「计划删除」的显式记录，不是豁免。
+ */
+const RETIRED_ROUTE_KEYS = ['billing-records'];
+
 const labelOf = (item) => String(item?.label ?? '').trim();
 
 // ─────────────────────── 用例 ───────────────────────
@@ -231,10 +251,26 @@ const labelOf = (item) => String(item?.label ?? '').trim();
 test('共用 key 的映射能从 router.js 完整派生（不手抄，且不漏项）', () => {
   // 自检：每个共用 key 都必须在 router.js 里找到带 component 的路由，并且页面文件真的存在。
   // 这条挡住「新增共用页面但审计没覆盖」—— 那是手抄映射表的典型失效形态。
-  const missing = SHARED_KEYS.filter((key) => !ROUTE_PAGE.has(key));
+  // 退役 key 不参与正向检查（它们按设计**没有**路由），由下一条用例反向钉住。
+  const missing = SHARED_KEYS.filter((key) => !RETIRED_ROUTE_KEYS.includes(key) && !ROUTE_PAGE.has(key));
   assert.deepEqual(missing, [], `这些共用 key 在 router.js 里找不到页面路由：${missing.join(', ')}`);
 
+  // 反向防线（变异 B1）：退役 key 绝不能再出现在 router.js 里。
+  // 用 ROUTE_PAGE + 源码双重确认 —— 只查派生映射的话，路由写错 component 变量名
+  // 时会因为派生不出页面而被漏过。
+  for (const key of RETIRED_ROUTE_KEYS) {
+    assert.equal(ROUTE_PAGE.has(key), false,
+      `${key} 已按 138 §3.2 删除，router.js 里不得再出现该路由（当前仍有 name=${key} 的路由）`);
+    assert.doesNotMatch(routerSource, new RegExp(`name:\\s*'${key}'`),
+      `router.js 里仍有 name: '${key}' —— 该路由已删除，加回来会让用户侧出现两个账单入口`);
+    assert.doesNotMatch(routerSource, new RegExp(`path:\\s*'${key}'`),
+      `router.js 里仍有 path: '${key}'`);
+  }
+
   for (const key of SHARED_KEYS) {
+    // 退役 key 没有路由、也就没有页面标题可审计。它们的存在性由上面那条
+    // 反向断言（必须不存在于 router.js）负责，这里跳过正向前提。
+    if (RETIRED_ROUTE_KEYS.includes(key)) continue;
     const heading = HEADINGS.get(key);
     assert.ok(
       ['static', 'dynamic'].includes(heading.kind),
@@ -277,6 +313,9 @@ test('判据②：每个共用页面按**入口**决定标题，不由角色决�
   const violations = [];
 
   for (const key of SHARED_KEYS) {
+    // 退役 key（`billing-records`）没有路由也就没有页面标题可审计 ——
+    // 它的「不得再出现」由「共用 key 的映射」那条用例反向钉住，这里不重复。
+    if (RETIRED_ROUTE_KEYS.includes(key)) continue;
     const userLabel = labelOf(USER_BY_KEY.get(key));
     const heading = HEADINGS.get(key);
     if (heading.kind !== 'static') {
@@ -321,41 +360,46 @@ test('判据③（反向防线）：拆开后的双入口，两侧 key 各自单
   //
   // ⇒ 判据从「同一 key 的标题必须分两支」改为「每个 key 的标题必须与它自己的
   // 菜单文案一致」，并且**拆开后不能再有同一个 key 出现在两个分区**。
+  //
+  // ⚠️ 2026-11-15：`billing-records` 那一对**已退役**（138 §3.2 删路由）。
+  // 所以它不再算双入口：管理端 `billing-admin` 成为唯一账单入口，
+  // 用户侧账单流水在「个人使用」页里（独立实现，不 import BillingRecordList）。
+  // 这里保留它在 pairs 里是为了继续钉住三件事：
+  //   ① `billing-admin` 的文案与标题不变（它仍是管理端唯一入口）；
+  //   ② `billing-records` 不再有路由（退役方向，不是豁免）；
+  //   ③ 两侧 key 互不相同（框架一致性）。
   const pairs = [
     ['tickets', 'ticket-admin', '工单反馈', '工单管理'],
     ['scripts', 'script-admin', '我的脚本', '脚本管理'],
-    // billing-records 已退役（2026-11-15）：用户侧账单入口并入「个人使用 → 账单流水」，
-    // 只剩管理端的 billing-admin。它不再是「一对双入口」，所以从 pairs 移出；
-    // 退役方向由下方的独立用例反向钉住（该 key 必须**不存在**于 router.js 与两个菜单组）。
+    ['billing-records', 'billing-admin', '我的账单', '账单明细'],
     // 令牌：用户侧只列自己的（我的令牌），管理侧列全站（令牌管理）。
     ['my-tokens', 'token-admin', '我的令牌', '令牌管理'],
   ];
 
-  // 退役 key 的反向防线：拆开过的双入口退役一半时，最容易出的错是
-  // 「路由删了但菜单还留着」或「菜单删了但路由还留着」——两者都会让侧边栏出现死链。
-  // 所以这里断言的是**不存在**，而不是豁免。
-  const RETIRED_PAIR_KEYS = ['billing-records'];
-  for (const retiredKey of RETIRED_PAIR_KEYS) {
-    assert.ok(!USER_BY_KEY.has(retiredKey), `${retiredKey} 已退役，不得出现在 USER_MENU_ITEMS`);
-    assert.ok(!ADMIN_BY_KEY.has(retiredKey), `${retiredKey} 已退役，不得出现在 ADMIN_MENU_ITEMS`);
-    assert.ok(
-      !/name:\s*['"]billing-records['"]/.test(routerSource),
-      `${retiredKey} 已退役，router.js 里不得再有它的路由（name 字段）`
-    );
-  }
-
   for (const [userKey, adminKey, userLabel, adminLabel] of pairs) {
+    const userRetired = RETIRED_ROUTE_KEYS.includes(userKey);
     // ① 两侧 key 互不相同（这就是「拆开」的定义）。
     assert.notEqual(userKey, adminKey, `双入口必须拆成两个 key：${userKey}`);
 
     // ② 用户端 key 只在 USER_MENU_ITEMS，管理端 key 只在 ADMIN_MENU_ITEMS。
-    assert.ok(USER_BY_KEY.has(userKey), `${userKey} 必须在 USER_MENU_ITEMS`);
-    assert.ok(ADMIN_BY_KEY.has(userKey), `${userKey} 也应在 ADMIN_MENU_ITEMS（shared 分区要用）`);
+    if (userRetired) {
+      // 退役 key：**路由必须已删**。菜单项由协调者在 SiderMenu（独占文件）里删，
+      // 时间上可能晚于本改动，所以菜单侧只做「若还在则文案不变」的弱断言，
+      // 路由侧则是硬断言（那才是「删干净」的定义）。
+      assert.equal(ROUTE_PAGE.has(userKey), false,
+        `${userKey} 已退役，router.js 里不得再有该路由`);
+      if (USER_BY_KEY.has(userKey)) {
+        assert.equal(labelOf(USER_BY_KEY.get(userKey)), userLabel,
+          `${userKey} 的菜单文案漂移（该菜单项待删，但删除前文案仍是「${userLabel}」）`);
+      }
+    } else {
+      assert.ok(USER_BY_KEY.has(userKey), `${userKey} 必须在 USER_MENU_ITEMS`);
+      assert.ok(ADMIN_BY_KEY.has(userKey), `${userKey} 也应在 ADMIN_MENU_ITEMS（shared 分区要用）`);
+      // ③ 文案字面量钉住（防止两侧同时被改成同一个错字）。
+      assert.equal(labelOf(USER_BY_KEY.get(userKey)), userLabel, `${userKey} 用户文案漂移`);
+    }
     assert.ok(ADMIN_BY_KEY.has(adminKey), `${adminKey} 必须在 ADMIN_MENU_ITEMS`);
     assert.ok(!USER_BY_KEY.has(adminKey), `${adminKey} 是管理端专属，不该出现在 USER_MENU_ITEMS`);
-
-    // ③ 文案字面量钉住（防止两侧同时被改成同一个错字）。
-    assert.equal(labelOf(USER_BY_KEY.get(userKey)), userLabel, `${userKey} 用户文案漂移`);
     assert.equal(labelOf(ADMIN_BY_KEY.get(adminKey)), adminLabel, `${adminKey} 管理文案漂移`);
 
     // ④ 两个路由都必须存在，且页面标题与各自菜单文案一致。
@@ -364,7 +408,8 @@ test('判据③（反向防线）：拆开后的双入口，两侧 key 各自单
     // 新模型下 `isAdmin` 已由 route.meta.viewMode 驱动（不是裸角色判断），
     // 所以同一个组件在两个入口下会渲染出各自正确的标题。
     // 这里断言的是「标题的两个分支覆盖了两侧文案」，而不是「标题必须是静态」。
-    for (const [key, expected] of [[userKey, userLabel], [adminKey, adminLabel]]) {
+    const headingChecks = userRetired ? [[adminKey, adminLabel]] : [[userKey, userLabel], [adminKey, adminLabel]];
+    for (const [key, expected] of headingChecks) {
       const heading = HEADINGS.get(key);
       assert.ok(heading, `${key} 没有页面标题信息`);
       assert.notEqual(heading.kind, 'no-route', `${key} 在 router.js 里找不到路由`);
@@ -382,7 +427,13 @@ test('判据③（反向防线）：拆开后的双入口，两侧 key 各自单
 
   // 反向自检：拆开的三对必须让 ADMIN_MENU_ITEMS 里同时存在两组 key，
   // 否则「普通用户可见」分区会少掉用户端入口（那正是第一次修法失败的原因）。
+  // 退役对（billing-records）不参与这条：它的用户端菜单项正要被删掉。
   for (const [userKey, adminKey] of pairs) {
+    if (RETIRED_ROUTE_KEYS.includes(userKey)) {
+      assert.ok(ADMIN_BY_KEY.has(adminKey),
+        `${adminKey} 必须仍在 ADMIN_MENU_ITEMS —— 退役的只是用户侧入口，管理端入口不能一起没掉`);
+      continue;
+    }
     assert.ok(ADMIN_BY_KEY.has(userKey) && ADMIN_BY_KEY.has(adminKey),
       `${userKey} / ${adminKey} 必须同时出现在 ADMIN_MENU_ITEMS，否则管理员侧少一个入口`);
   }

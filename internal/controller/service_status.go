@@ -14,6 +14,10 @@ import (
 // 数据源是**纯内存**环形缓冲（task_doc/114 §3）：不落库、重启归零。
 // RestartedAt 告诉 UI 曲线的起点，这样前端能显示「数据自 <时间> 起（服务重启于该时刻）」。
 // 空缓冲时 points 是 []（不是 null，也不是 1440 个零点）。
+//
+// S4（138 §4.4）：分桶必须**两个端点都返回**。这一条不是「顺手加个字段」——
+// 摘要端点给出「搜题接口现在好不好」，序列端点给出「什么时候开始不好的」，
+// 只给一边就会出现「曲线显示异常但我看不出是哪个接口族」或者相反。
 type serviceStatusResponse struct {
 	SchemaVersion int                          `json:"schemaVersion"`
 	Status        string                       `json:"status"`
@@ -73,15 +77,36 @@ type serviceStatusSummaryResponse struct {
 	//
 	// 只给 successRate 时前端只能靠 ==0 猜，而「全失败」和「没请求」在用户看来
 	// 是两件完全不同的事（前者要报警，后者是正常夜间）。
-	SuccessRateAvailable bool   `json:"successRateAvailable"`
-	TotalRequests        int64  `json:"totalRequests"`
-	SuccessRequests      int64  `json:"successRequests"`
-	FailedRequests       int64  `json:"failedRequests"`
-	AvgLatencyMs         int64  `json:"avgLatencyMs"`
-	WindowMinutes        int    `json:"windowMinutes"`
-	Retained             int    `json:"retained"`
-	Capacity             int    `json:"capacity"`
-	RestartedAt          string `json:"restartedAt"`
+	SuccessRateAvailable bool  `json:"successRateAvailable"`
+	TotalRequests        int64 `json:"totalRequests"`
+	SuccessRequests      int64 `json:"successRequests"`
+	// ⚠️ 2026-11-15 移除 FailedRequests：本端点是 AuthOrAccessToken（普通用户 + adapter key），
+	// 而 series 端点（同鉴权）从建立起就不给失败数。两个公开端点口径必须一致，
+	// 否则「summary 有失败数、series 没有」本身就是矛盾。
+	//
+	// 为什么失败数不该给普通用户（与 publicEndpointCounters / publicStatusPoint 同一条理由）：
+	// 失败数 = totalRequests - successRequests，给了是冗余；但显式给出等于告诉用户
+	// 「这里有个失败率指标值得盯」，而「搜题桶全失败」直接就是攻击指纹。
+	// 需要失败数的场景（运维排障）走 admin 端点 /admin/service-status，那里是全字段。
+	AvgLatencyMs  int64  `json:"avgLatencyMs"`
+	WindowMinutes int    `json:"windowMinutes"`
+	Retained      int    `json:"retained"`
+	Capacity      int    `json:"capacity"`
+	RestartedAt   string `json:"restartedAt"`
+
+	// Endpoints 是按接口族分桶的聚合（138 §4.2.2 / S4）。
+	//
+	// 放进**摘要**端点是本设计最直接的价值：顶层的 successRate 是全站口径，
+	// 会被健康检查、管理页、静态资源这些「other」请求稀释 —— 搜题链路整个挂掉时
+	// 只要 other 还在跑，顶层成功率仍可能是 healthy。分桶之后前端才能单独回答
+	// 「搜题接口现在健康吗」。
+	//
+	// 它不违反「摘要端点不返回时间轴」的分层：endpoints 里没有 minute，也不含
+	// 任何路由字符串，只有两个固定枚举桶的计数与 samples。
+	//
+	// 类型是**脱敏结构** publicEndpoints（不是 service.StatusCountersByEndpoint）：
+	// 后者自带 failedRequests，直接暴露会让普通用户看到「搜题桶失败 N 次」。
+	Endpoints publicEndpoints `json:"endpoints"`
 }
 
 // GetServiceStatusSummary 返回**无明细**的服务健康摘要，供非管理员客户端使用。
@@ -107,12 +132,28 @@ func buildServiceStatusSummaryResponse(sampler *service.ServiceStatusSampler) se
 		SuccessRateAvailable: summary.TotalRequests > 0,
 		TotalRequests:        summary.TotalRequests,
 		SuccessRequests:      summary.SuccessRequests,
-		FailedRequests:       summary.FailedRequests,
 		AvgLatencyMs:         summary.AvgLatencyMs,
 		WindowMinutes:        full.WindowMinutes,
 		Retained:             full.Retained,
 		Capacity:             full.Capacity,
 		RestartedAt:          full.RestartedAt,
+		// 分桶必须是**脱敏**版本（publicEndpoints），不能直接用 service.StatusCountersByEndpoint。
+		//
+		// ⚠️ 2026-11-15 修：原来这里写的是 `Endpoints: summary.Endpoints`（service 层全字段结构），
+		// 它自带 `failedRequests`，于是普通用户端点的分桶把失败数泄漏了出去
+		// —— 而同一文件的 series 端点用的是 publicEndpoints 白名单，两个端点口径不一致。
+		//
+		// 为什么分桶的失败数比顶层更敏感（publicEndpointCounters 的注释已写）：
+		// 顶层失败数会被 other（健康检查、静态资源）稀释；而「搜题桶失败 100 次」
+		// 直接就是「有人在打搜题接口且全部失败」，是攻击指纹。
+		//
+		// 判据（TestPublicEndpointsHideFailedRequests）：summary 与 series 的 JSON
+		// 都不得出现 "failedRequests"，含分桶内。该用例同时反向断言种子带着非零失败数，
+		// 所以它不会是空断言。
+		Endpoints: publicEndpoints{
+			Search: toPublicEndpointCounters(summary.Endpoints.Search),
+			Other:  toPublicEndpointCounters(summary.Endpoints.Other),
+		},
 	}
 }
 
@@ -175,6 +216,39 @@ type publicStatusPoint struct {
 	//	                   判断无关。
 }
 
+// publicEndpointCounters 是面向普通用户的**脱敏**接口族桶。
+//
+// 与 service.EndpointCounters 的差别只有一处：**不含 FailedRequests**。
+//
+// 理由与 publicStatusPoint 一致（那边也是刻意不给 failedRequests）：
+// 失败数可由 totalRequests - successRequests 推出，给了是冗余；显式给出反而
+// 暗示「这里有个失败率指标值得盯」。分桶之后它更敏感 —— 「搜题桶失败 100 次」
+// 直接就是「有人在打搜题接口并全部失败」，而顶层失败数会被 other 稀释掉。
+//
+// samples 必须保留：它是前端判「要不要显灰」的唯一依据（138 §4.2.2）。
+type publicEndpointCounters struct {
+	TotalRequests   int64 `json:"totalRequests"`
+	SuccessRequests int64 `json:"successRequests"`
+	AvgLatencyMs    int64 `json:"avgLatencyMs"`
+	Samples         int64 `json:"samples"`
+}
+
+// publicEndpoints 是公开序列端点顶层的分桶聚合。字段固定两个，不可扩展。
+type publicEndpoints struct {
+	Search publicEndpointCounters `json:"search"`
+	Other  publicEndpointCounters `json:"other"`
+}
+
+// toPublicEndpointCounters 把内部桶压成公开桶（丢掉 FailedRequests）。
+func toPublicEndpointCounters(bucket service.EndpointCounters) publicEndpointCounters {
+	return publicEndpointCounters{
+		TotalRequests:   bucket.TotalRequests,
+		SuccessRequests: bucket.SuccessRequests,
+		AvgLatencyMs:    bucket.AvgLatencyMs,
+		Samples:         bucket.Samples,
+	}
+}
+
 // serviceStatusSeriesResponse 是 GET /api/service-status/series 的响应体。
 //
 // # 为什么独立定义而不复用 serviceStatusResponse
@@ -186,9 +260,14 @@ type publicStatusPoint struct {
 //
 // 独立结构体 = 新增 admin 字段时普通用户端点**默认不给**。
 // 这条比任何注释都硬：想让普通用户看到新字段，必须显式改这里并过白名单测试。
+//
+// S4（138 §4.4）：分桶在**两个端点都要返回**。序列端点只给**聚合**分桶
+// （窗内计数 + samples），不给「每分钟每桶」的时序 —— 那会把「什么时段搜题量大」
+// 这种运营情报从曲线里透出来，而序列端点的既定暴露面只到「逐分钟总量」。
 type serviceStatusSeriesResponse struct {
 	SchemaVersion int                 `json:"schemaVersion"`
 	Points        []publicStatusPoint `json:"points"`
+	Endpoints     publicEndpoints     `json:"endpoints"`
 	Capacity      int                 `json:"capacity"`
 	Retained      int                 `json:"retained"`
 	RestartedAt   string              `json:"restartedAt"`
@@ -217,6 +296,7 @@ func GetServiceStatusSeries(c *gin.Context) {
 // 与「服务没起来」在视觉上完全同形。
 func buildServiceStatusSeriesResponse(sampler *service.ServiceStatusSampler) serviceStatusSeriesResponse {
 	points := sampler.Points()
+	summary := sampler.Summary()
 	public := make([]publicStatusPoint, 0, len(points))
 	for _, point := range points {
 		public = append(public, publicStatusPoint{
@@ -230,8 +310,15 @@ func buildServiceStatusSeriesResponse(sampler *service.ServiceStatusSampler) ser
 	return serviceStatusSeriesResponse{
 		SchemaVersion: 1,
 		Points:        public,
-		Capacity:      service.DefaultServiceStatusRing.Capacity(),
-		Retained:      len(public),
-		RestartedAt:   sampler.StartedAt().Format(time.RFC3339),
+		// S4：序列端点也必须带分桶，否则「曲线显示异常但看不出是哪个接口族」
+		// 与「摘要说搜题正常但曲线全红」这两种矛盾就没人能解。
+		// 口径与摘要端点完全一致（直接取同一个 summary.Endpoints），不另算一套。
+		Endpoints: publicEndpoints{
+			Search: toPublicEndpointCounters(summary.Endpoints.Search),
+			Other:  toPublicEndpointCounters(summary.Endpoints.Other),
+		},
+		Capacity:    service.DefaultServiceStatusRing.Capacity(),
+		Retained:    len(public),
+		RestartedAt: sampler.StartedAt().Format(time.RFC3339),
 	}
 }

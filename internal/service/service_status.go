@@ -48,6 +48,15 @@ type StatusPoint struct {
 
 	// AvgLatencyMs 是该分钟内请求的平均耗时。
 	AvgLatencyMs int64 `json:"avgLatencyMs"`
+
+	// Endpoints 是该分钟按接口族（search / other）分桶的聚合值（138 §4.2）。
+	//
+	// 分桶是**加法信息**：两个桶的 TotalRequests 之和等于本点的 TotalRequests，
+	// 但它多回答了「搜题链路自己现在健康吗」—— 全局成功率被大量非搜题请求
+	// （健康检查、管理页、静态资源）稀释，出问题时会被拉高到看不出异常。
+	//
+	// 固定两个桶，不含任何路由字符串：见 service_status_endpoint.go 的红线说明。
+	Endpoints StatusCountersByEndpoint `json:"endpoints"`
 }
 
 // StatusFailure 是失败原因的分类枚举。
@@ -83,6 +92,22 @@ type ServiceStatusSummary struct {
 	PointsUsed      int                    `json:"pointsUsed"`
 	StartMinute     int64                  `json:"startMinute"`
 	EndMinute       int64                  `json:"endMinute"`
+
+	// Endpoints 是按接口族分桶的聚合（138 §4.2.2）。
+	//
+	// ⚠️ 两个桶的**统计口径刻意不同**，这是本字段唯一的坑：
+	//
+	//	TotalRequests / SuccessRequests / FailedRequests / AvgLatencyMs
+	//	    → 最近 WindowMinutes 分钟（与顶层同口径，可直接对比）
+	//	Samples
+	//	    → **整个保留序列**（最多 1440 分钟）里该桶有请求的分钟数
+	//
+	// 为什么不统一成窗口口径：samples 的职责是回答「这个桶到底有没有数据」，
+	// 而不是「最近 5 分钟有多少数据」。若也压到 5 分钟，那么「10 分钟前有
+	// 1000 次搜题、最近 5 分钟没有」就会被显示成「暂无搜题接口采样数据」——
+	// 而那恰恰是「服务在运行、只是暂时没人搜题」，两种情况的用户可见结论相反。
+	// 138 §4.2.2 的示例也是这个口径（windowMinutes=5 而 samples=12）。
+	Endpoints StatusCountersByEndpoint `json:"endpoints"`
 }
 
 // ServiceStatusRing 是服务状态的**内存环形缓冲**，定长 1440 槽（约 115 KB）。
@@ -233,8 +258,11 @@ func defaultServiceStatusCounters() StatusCounters {
 }
 
 // NewDefaultServiceStatusSampler 构造绑定默认缓冲与默认计数源的采样器。
+//
+// 分桶计数源是 DefaultServiceStatusEndpoints（HTTP 中间件在已有记账点顺手多记一次）。
 func NewDefaultServiceStatusSampler() *ServiceStatusSampler {
-	return NewServiceStatusSampler(DefaultServiceStatusRing, time.Now, defaultServiceStatusCounters)
+	return NewServiceStatusSamplerWithEndpoints(DefaultServiceStatusRing, time.Now,
+		defaultServiceStatusCounters, defaultServiceStatusEndpointCounters)
 }
 
 // StartServiceStatusSampling 每秒采样一次（分钟翻页时才封存），stop 关闭即退出。
@@ -291,8 +319,14 @@ type ServiceStatusSampler struct {
 	read      func() StatusCounters
 	startedAt time.Time
 
+	// readEndpoints 是分桶累计计数源（138 §4.2）。nil 表示「本采样器不分桶」——
+	// 那时每个点的 Endpoints 保持零值，samples 恒为 0，前端据此显灰。
+	// 保留 nil 分支是为了不让既有三参数调用方（含测试）被迫改造。
+	readEndpoints func() ServiceStatusEndpointCounters
+
 	mu                 sync.Mutex
 	last               StatusCounters
+	lastEndpoints      ServiceStatusEndpointCounters
 	hasLast            bool
 	pending            StatusPoint
 	hasPending         bool
@@ -303,6 +337,15 @@ type ServiceStatusSampler struct {
 // NewServiceStatusSampler 构造采样器。now 为 nil 时用 time.Now；
 // read 必须返回单调累计值。
 func NewServiceStatusSampler(ring *ServiceStatusRing, now func() time.Time, read func() StatusCounters) *ServiceStatusSampler {
+	return NewServiceStatusSamplerWithEndpoints(ring, now, read, nil)
+}
+
+// NewServiceStatusSamplerWithEndpoints 构造带分桶计数源的采样器。
+//
+// readEndpoints 为 nil 时退化成「不分桶」的采样器（Endpoints 零值）——
+// 这条退化路径是刻意的：分桶是加法能力，缺了它不该让状态页整体失效。
+func NewServiceStatusSamplerWithEndpoints(ring *ServiceStatusRing, now func() time.Time,
+	read func() StatusCounters, readEndpoints func() ServiceStatusEndpointCounters) *ServiceStatusSampler {
 	if ring == nil {
 		ring = NewServiceStatusRing()
 	}
@@ -312,7 +355,13 @@ func NewServiceStatusSampler(ring *ServiceStatusRing, now func() time.Time, read
 	if read == nil {
 		read = func() StatusCounters { return StatusCounters{} }
 	}
-	return &ServiceStatusSampler{ring: ring, now: now, read: read, startedAt: now()}
+	return &ServiceStatusSampler{
+		ring:          ring,
+		now:           now,
+		read:          read,
+		readEndpoints: readEndpoints,
+		startedAt:     now(),
+	}
 }
 
 // StartedAt 返回采样器开始记录的时刻（≈ 进程启动时刻）。
@@ -336,12 +385,24 @@ func (s *ServiceStatusSampler) Sample() StatusPoint {
 	delta := diffStatusCounters(s.last, current)
 	s.last = current
 	s.hasLast = true
+	// 分桶做差：与全局计数器同一时刻、同一口径。
+	var endpointDelta ServiceStatusEndpointCounters
+	sampled := s.readEndpoints != nil
+	if sampled {
+		currentEndpoints := s.readEndpoints()
+		endpointDelta = endpointCountersDelta(s.lastEndpoints, currentEndpoints)
+		s.lastEndpoints = currentEndpoints
+	}
 	if !s.hasPending || s.pending.Minute != minute {
 		s.sealLocked()
 		s.pending = StatusPoint{Minute: minute}
 		s.hasPending = true
 	}
 	applyStatusDelta(&s.pending, delta)
+	// sampled 传到点上：它决定该分钟两个桶的 Samples 是否为 1。
+	// 没有分桶计数源时 sampled=false ⇒ 点里 samples 恒 0 ⇒ 前端显灰（正确语义：
+	// 「没有采样数据」，而不是「采样到了 0 请求」）。
+	applyEndpointDelta(&s.pending, endpointDelta, sampled)
 	s.pendingLatencySum = saturatingInt64Add(s.pendingLatencySum, toInt64(delta.LatencyTotalMillis))
 	s.pendingLatencyHits = saturatingInt64Add(s.pendingLatencyHits, toInt64(delta.LatencyCount))
 	if s.pendingLatencyHits > 0 {
@@ -427,6 +488,8 @@ func SummarizeServiceStatus(points []StatusPoint, windowMinutes int) ServiceStat
 	summary.PointsUsed = len(window)
 	summary.StartMinute = window[0].Minute
 	summary.EndMinute = window[len(window)-1].Minute
+	// 分桶：计数压到 window，samples 数整个 points（口径差异见 summarizeEndpointCounters）。
+	summary.Endpoints = summarizeEndpointCounters(points, window)
 
 	var latencyWeightedSum int64
 	var latencyWeight int64

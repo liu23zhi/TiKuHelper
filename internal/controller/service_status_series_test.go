@@ -27,12 +27,17 @@ import (
 // 与 admin 端点 serviceStatusResponse 的对照：
 //
 //	admin   schemaVersion / status / windowMinutes / points / summary / capacity / retained / restartedAt
-//	public  schemaVersion / points / capacity / retained / restartedAt
+//	public  schemaVersion / points / endpoints / capacity / retained / restartedAt
 //
 // status/windowMinutes/summary 不在公开序列里 —— 那些由 summary 端点提供，
 // 序列端点只负责「时间轴」。两个端点各管一段，避免同一份数据两条契约漂移。
+//
+// endpoints（接口族分桶）是 138 §4.4 判据 S4 要求**两个端点都返回**的：
+// 只给摘要会出现「曲线全红但看不出是哪个接口族」，只给序列会出现
+// 「摘要说健康、曲线里全是搜题失败点」。它只含两个固定枚举桶的聚合数字，
+// 不含 minute，也不含任何路由字符串，所以不破坏「摘要端点不返回时间轴」的分层。
 var publicSeriesKeys = []string{
-	"schemaVersion", "points", "capacity", "retained", "restartedAt",
+	"schemaVersion", "points", "endpoints", "capacity", "retained", "restartedAt",
 }
 
 // 单个点的允许字段集合（白名单）。

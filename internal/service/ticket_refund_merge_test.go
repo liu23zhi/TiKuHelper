@@ -259,6 +259,11 @@ func TestCreateTicketRejectsRefundFieldsOnGeneralType(t *testing.T) {
 // 新增「用户可选类型」后必须确认这条没有被破坏：用户传
 // registration_bonus / blacklist_appeal 仍然要被拒（或落成 general），
 // 绝不能建出能被管理员一键补发/一键解封的工单。
+//
+// ⚠️ account_closure 已**移出**本清单（B2-2）：它现在在用户白名单里。
+// 理由是判据本身（service/ticket.go 的注释原文）：「用户自选后能不能触发一个
+// 管理员侧的一键动作」—— 用户建一张注销工单只是建单，真正的注销仍要管理员审批，
+// 不构成套利。而 account_rebind（一键换绑、绕过短信验证）依然在本清单里。
 func TestUserSelectableTicketTypeRejectsArbitrageCategories(t *testing.T) {
 	db := newTicketRefundMergeTestDB(t)
 	user := seedRefundActor(t, db, 1, "alice")
@@ -267,7 +272,6 @@ func TestUserSelectableTicketTypeRejectsArbitrageCategories(t *testing.T) {
 		entity.TicketCategoryRegistrationBonus,
 		entity.TicketCategoryBlacklistAppeal,
 		entity.TicketCategoryAccountRebind,
-		entity.TicketCategoryAccountClosure,
 	} {
 		list := `{"subject":"标题","body":"正文","ticketType":"` + category + `"}`
 		var input CreateTicketInput

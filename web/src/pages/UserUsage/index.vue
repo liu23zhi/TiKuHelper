@@ -137,6 +137,65 @@
 
     <ConsolePanel title="账单流水" description="查看题目消费与充值入账的金额变动、来源渠道和请求 ID。" class="page-card">
 
+      <!-- 筛选栏（138 §3.2.3 / B1-5）。
+           ⚠️ 维度与取值**全部**来自 utils/billingFilters.mjs，与「账单明细」页共用同一份：
+             关键词 / 类型 / 时间范围三项。
+           为什么只做这三项：其余维度（用户 ID / 请求 ID / 渠道 / 搜索模式 / 来源 IP）
+           是管理员排障用的，个人使用页不需要；但「类型」的 9 个取值必须与
+           BillingRecordList 逐字一致 —— 两页各写一份会让同一笔账单在两边筛出不同结果，
+           那是比「少一个筛选」严重得多的缺陷（138 §3.2.3）。
+           方向（收入/支出）不是独立维度：它由 type 隐含决定，后端也没有该字段。 -->
+      <a-form layout="inline" class="billing-filter-form" data-user-usage-billing-filters>
+        <a-form-item label="关键词" :html-for="billingFilterId('keyword')">
+          <a-input-search
+            :id="billingFilterId('keyword')"
+            v-model:value="billingKeywordInput"
+            placeholder="题目 / 请求 ID"
+            allow-clear
+            style="width: 220px"
+            @search="handleBillingKeywordApply"
+            @press-enter="handleBillingKeywordApply"
+          />
+        </a-form-item>
+        <a-form-item label="类型" :html-for="billingFilterId('type')">
+          <a-select
+            :id="billingFilterId('type')"
+            v-model:value="billingFilters.type"
+            allow-clear
+            placeholder="全部类型"
+            style="width: 170px"
+            :options="billingTypeOptions"
+            @change="handleBillingFilterChange"
+          />
+        </a-form-item>
+        <a-form-item label="创建日期" :html-for="billingFilterId('createdFrom')">
+          <a-input
+            :id="billingFilterId('createdFrom')"
+            v-model:value="billingFilters.createdFrom"
+            type="date"
+            style="width: 150px"
+            aria-label="创建日期起始"
+            @change="handleBillingFilterChange"
+          />
+          <span class="filter-range-separator">至</span>
+          <a-input
+            v-model:value="billingFilters.createdTo"
+            type="date"
+            style="width: 150px"
+            aria-label="创建日期截止"
+            @change="handleBillingFilterChange"
+          />
+        </a-form-item>
+        <a-form-item>
+          <a-space>
+            <a-button @click="handleBillingFilterReset">重置筛选</a-button>
+            <a-tag v-if="billingActiveFilterCount > 0" color="blue" data-user-usage-billing-filter-count>
+              已启用 {{ billingActiveFilterCount }} 个筛选条件
+            </a-tag>
+          </a-space>
+        </a-form-item>
+      </a-form>
+
       <a-alert v-if="billingLoadError" class="billing-load-error" type="error" show-icon :message="billingLoadError">
         <template #action><a-button size="small" :loading="tableLoading" @click="handleLoadBillingRecords">重试账单加载</a-button></template>
       </a-alert>
@@ -279,6 +338,62 @@
                 {{ nextLevelRequirement.reason }}
               </div>
             </div>
+
+            <!-- ── 等级一览（138 §1.2 / B1-1）───────────────────────────
+                 列出**全部启用**等级（enabled 过滤，rank 升序），按 id 标出当前等级。
+
+                 「状态」列对未达成的档位**同时**显示两个差额
+                 （`充值差 ¥300 / 消费差 ¥150`），绝不取最小值 —— 后端判定是 AND
+                 （service/user_level.go:96-101 两条 continue），取 min 会给出
+                 错误行动指引：用户补上较小的那一项后仍然升不了级。
+                 已达标的那一维明确写「充值已达标」，让用户知道该维度不用再管。
+
+                 设备数走 buildDeviceLimitText：0 渲染成「不限」，**不是**「0 台」。 -->
+            <div class="level-overview" data-user-usage-level-overview>
+              <div class="level-overview-title">等级一览</div>
+              <template v-if="levelOverviewHasLevels">
+                <a-table
+                  class="level-overview-table"
+                  :columns="levelOverviewColumns"
+                  :data-source="levelOverviewRows"
+                  :pagination="false"
+                  row-key="id"
+                  size="middle"
+                  :scroll="{ x: 810 }"
+                >
+                  <template #bodyCell="{ column, record }">
+                    <template v-if="column.key === 'name'">
+                      <span class="level-overview-name">{{ record.name || '—' }}</span>
+                      <span v-if="record.isCurrent" class="level-overview-current-marker">← 当前</span>
+                    </template>
+                    <template v-else-if="column.key === 'minRechargeTotal'">
+                      {{ formatLevelOverviewThreshold(record.minRechargeTotal) }}
+                    </template>
+                    <template v-else-if="column.key === 'minConsumptionTotal'">
+                      {{ formatLevelOverviewThreshold(record.minConsumptionTotal) }}
+                    </template>
+                    <template v-else-if="column.key === 'deviceLimitText'">
+                      {{ record.deviceLimitText }}
+                    </template>
+                    <template v-else-if="column.key === 'status'">
+                      <span
+                        :class="record.isCurrent ? 'level-overview-status-current' : record.satisfied ? 'level-overview-status-achieved' : 'level-overview-status-pending'"
+                        :data-current="record.isCurrent ? 'true' : 'false'"
+                      >{{ formatLevelOverviewStatus(record) }}</span>
+                    </template>
+                  </template>
+                  <template #emptyText>
+                    <a-empty description="暂无启用中的等级档位。" />
+                  </template>
+                </a-table>
+                <div class="level-overview-hint">
+                  两个门槛**同时**满足才会升级；「状态」列分列两个差额，补齐任意一项不等于升级。
+                </div>
+              </template>
+              <div v-else class="level-overview-hint" data-user-usage-level-overview-empty>
+                服务器未下发等级档位，无法列出等级一览。
+              </div>
+            </div>
           </template>
         </ConsolePanel>
       </a-tab-pane>
@@ -341,7 +456,8 @@ import {
   sortPaymentMethodsForDisplay,
 } from '@/utils/paymentMethodHelpers.mjs'
 import {
-  buildPersonalUsageBillingRecordParams,
+  // `scope: 'self'` 的分页/作用域参数不再在这里拼：它已归入
+  // billingFilters.buildPersonalBillingParams（那里在既有 helper 之上叠加筛选条件）。
   buildBillingRecordAmountText,
   buildBillingRecordListSubjectText,
   buildBillingRecordModeText,
@@ -359,9 +475,23 @@ import {
   USER_USAGE_DEFAULT_TAB,
   buildCurrentLevelText,
   buildLevelMetricText,
+  buildLevelOverviewRows,
+  buildLevelOverviewStatusText,
   buildNextLevelRequirement,
   buildUserUsageTabs,
 } from '@/utils/userLevelHelpers.mjs'
+// 账单筛选的**唯一**定义来源（138 §3.2.3 / B1-4 / B1-5）。
+// 与「账单明细」页共用同一份 typeOptions / 参数组装 / 已启用条件数：
+// 两页各写一套会让同一笔账单在两个页面筛出不同结果 —— 那是严重缺陷，
+// 所以这里**禁止**另写一份字面量（有单测钉住「两页同一份」）。
+import {
+  BILLING_TYPE_OPTIONS,
+  buildPersonalBillingParams,
+  countBillingActiveFilters,
+  createBillingFilters,
+  normalizeBillingKeyword,
+  resetBillingFilters,
+} from '@/utils/billingFilters.mjs'
 import { getMyUserLevel, getUserLevels } from '@/api/UserLevelApi'
 
 
@@ -398,6 +528,39 @@ export default defineComponent({
     const formatLevelMetric = (value) => value === '—' || value === null || value === undefined
       ? '—'
       : formatMoneyValue(value)
+
+    // ── 等级一览表（138 §1.2 / B1-1）─────────────────────────────
+    //
+    // 列出**全部启用**等级（enabled 过滤，rank 升序），每行都给两个差额。
+    // ⚠️ 差额**绝不取 min**：后端判定是 AND（service/user_level.go:96-101 两条 continue），
+    //    取 min 会给出错误行动指引 —— 用户补上较小的那一项后仍然升不了级。
+    //    现有「下一档」区块（data-user-usage-recharge-gap / -consumption-gap）
+    //    已经是两口径分列，本表沿用同一口径。
+    const levelOverview = computed(() => buildLevelOverviewRows(userLevelRows.value, userLevelSummary.value))
+    const levelOverviewRows = computed(() => levelOverview.value.rows)
+    const levelOverviewColumns = [
+      { title: '等级', dataIndex: 'name', key: 'name', width: 140 },
+      { title: '累计充值门槛', dataIndex: 'minRechargeTotal', key: 'minRechargeTotal', width: 150 },
+      { title: '累计消费门槛', dataIndex: 'minConsumptionTotal', key: 'minConsumptionTotal', width: 150 },
+      { title: '设备数', dataIndex: 'deviceLimitText', key: 'deviceLimitText', width: 110 },
+      { title: '状态', dataIndex: 'status', key: 'status', width: 260 },
+    ]
+    const formatLevelOverviewThreshold = (value) => value === null || value === undefined
+      ? '—'
+      : '¥ ' + formatMoneyValue(value)
+    const formatLevelOverviewStatus = (row) => buildLevelOverviewStatusText(row)
+
+    // ── 账单流水筛选（138 §3.2.3 / B1-5）────────────────────────
+    //
+    // 维度只做三项（关键词 / 类型 / 时间范围），取值与参数组装全部来自
+    // utils/billingFilters.mjs —— 与「账单明细」页共用同一份定义。
+    // 这里只负责把共享定义包成响应式对象并接上按钮事件。
+    const billingFilterId = (field) => 'user-usage-billing-' + field + '-' + useId()
+    const billingFilters = reactive({})
+    Object.assign(billingFilters, createBillingFilters())
+    const billingKeywordInput = ref('')
+    const billingTypeOptions = BILLING_TYPE_OPTIONS
+    const billingActiveFilterCount = computed(() => countBillingActiveFilters(billingFilters))
     // loadUserLevel 读当前等级（GET /user/level）与档位表（GET /admin/user-levels）。
     //
     // 两条数据作用不同，失败处理也不同：
@@ -736,8 +899,13 @@ export default defineComponent({
       // 等级提升 Tab（T-26）
       usageTabs, activeUsageTab, levelLoading, levelLoaded, levelLoadError,
       currentLevelText, levelRechargeMetric, levelConsumptionMetric, nextLevelRequirement, formatLevelMetric,
+      // 等级一览表（138 §1.2 / B1-1）：全部启用等级 + 每行两个差额。
+      levelOverviewRows, levelOverviewColumns, formatLevelOverviewThreshold, formatLevelOverviewStatus,
+      levelOverviewHasLevels: computed(() => levelOverview.value.hasLevels),
       // 供模板"重试等级读取"与 methods.handleLoadUserLevel 调用。
       loadUserLevel,
+      // 账单流水筛选（138 §3.2.3 / B1-5）：全部来自共享 helper。
+      billingFilterId, billingFilters, billingKeywordInput, billingTypeOptions, billingActiveFilterCount,
       formatMoneyValue,
       buildBillingRecordAmountText,
       buildBillingRecordListSubjectText,
@@ -758,6 +926,28 @@ export default defineComponent({
       if (!this.canLoadForCurrentUser() || !this.dataSource.includes(record)) return
       this.selectedBillingRecord = record
       this.billingDetailOpen = true
+    },
+    // ── 账单流水筛选事件（138 §3.2.3 / B1-5）───────────────────
+    //
+    // 三个事件都回到同一个入口 handleLoadBillingRecords，保证「筛选即重新取数」，
+    // 而不是在前端过滤当前页 —— 后者会让总数（pagination.total）与实际结果不符（B4 判据）。
+    handleBillingKeywordApply() {
+      // 关键词与「账单明细」页同一归一化口径（去首尾空白 + 截断）。
+      this.billingFilters.keyword = normalizeBillingKeyword(this.billingKeywordInput)
+      this.billingKeywordInput = this.billingFilters.keyword
+      this.pagination.current = 1
+      this.handleLoadBillingRecords()
+    },
+    handleBillingFilterChange() {
+      this.pagination.current = 1
+      this.handleLoadBillingRecords()
+    },
+    handleBillingFilterReset() {
+      // 字段集来自共享 helper：将来加维度时这里不用改，也不会漏重置某一项。
+      resetBillingFilters(this.billingFilters)
+      this.billingKeywordInput = ''
+      this.pagination.current = 1
+      this.handleLoadBillingRecords()
     },
     handleRefreshAll() {
       // ⚠️ 这里**只**保留重构前的三个调用，不要加等级读取。
@@ -791,7 +981,7 @@ export default defineComponent({
       const owns = () => owner() && sequence === this.billingLoadSequence
       this.billingLoadError = ''
       this.tableLoading = true
-      return getBillingRecords(buildPersonalUsageBillingRecordParams(this.pagination.current, this.pagination.pageSize)).then((res) => {
+      return getBillingRecords(buildPersonalBillingParams(this.billingFilters, this.pagination.current, this.pagination.pageSize)).then((res) => {
         if (!owns()) return
         if (res?.status === 200) {
           this.dataSource = Array.isArray(res?.data?.data) ? res.data.data : []
@@ -994,10 +1184,32 @@ export default defineComponent({
 .level-next-gap { color: var(--console-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .level-next-hint { color: var(--console-muted); font-size: 12px; line-height: 1.6; }
 .level-next-satisfied { color: var(--console-success, #15803d); font-size: 13px; }
+/* ── 等级一览表（138 §1.2）───────────────────────────────── */
+.level-overview {
+  display: flex; flex-direction: column; gap: 12px;
+  margin-top: 20px; padding: 20px; border-radius: 10px;
+  background: var(--console-surface); border: 1px solid var(--console-border);
+}
+.level-overview-title { color: var(--console-text); font-size: 15px; font-weight: 600; }
+.level-overview-name { font-weight: 600; }
+/* 「← 当前」必须与之一致地可见：颜色 + 字重，不只靠颜色（色盲可辨）。 */
+.level-overview-current-marker { margin-left: 8px; color: var(--console-primary); font-weight: 600; }
+.level-overview-status-current { color: var(--console-primary); font-weight: 600; }
+.level-overview-status-achieved { color: var(--console-success, #15803d); }
+.level-overview-status-pending { color: var(--console-muted); font-variant-numeric: tabular-nums; }
+.level-overview-hint { color: var(--console-muted); font-size: 12px; line-height: 1.6; }
+/* ── 账单流水筛选（138 §3.2.3）────────────────────────────── */
+.billing-filter-form { display: flex; flex-wrap: wrap; gap: 12px 0; margin-bottom: 16px; }
+.billing-filter-form :deep(.ant-form-item) { margin-bottom: 0; }
+.filter-range-separator { margin: 0 8px; color: var(--console-muted); }
 @media (max-width: 640px) {
   .summary-card { padding: 16px; }
   .balance-panel { min-height: 150px; padding: 20px; }
   .recharge-actions :deep(.ant-btn) { width: 100%; }
   .payment-method-grid { grid-template-columns: 1fr; }
+  /* 筛选栏在窄屏改成块级堆叠：inline 表单横向溢出会把「重置筛选」按钮挤出视口。 */
+  .billing-filter-form { display: block; }
+  .billing-filter-form :deep(.ant-form-item) { margin: 0 0 12px; }
+  .billing-filter-form :deep(.ant-form-item-control), .billing-filter-form :deep(.ant-input-search), .billing-filter-form :deep(.ant-select) { width: 100% !important; }
 }
 </style>

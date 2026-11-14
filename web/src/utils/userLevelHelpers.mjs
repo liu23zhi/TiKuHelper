@@ -183,3 +183,153 @@ export function buildNextLevelRequirement(levels, summary) {
     satisfied: rechargeGap === 0 && consumptionGap === 0,
   }
 }
+
+// ─────────────────────── 138 §1：等级一览表 ───────────────────────
+
+/**
+ * 等级一览表的行状态取值（**唯一**定义，模板不得另写字面量）。
+ */
+export const LEVEL_TABLE_STATUS = Object.freeze({
+  /** 已达成该档门槛（两个口径都够）。 */
+  achieved: 'achieved',
+  /** 当前所在档。 */
+  current: 'current',
+  /** 未达成，仍有差额。 */
+  pending: 'pending',
+})
+
+/**
+ * buildLevelOverviewRows 生成「等级一览表」的行（138 §1.2 / §1.3 的 L1/L2/L5）。
+ *
+ * 入参 `levels` 是 `GET /admin/user-levels` 的原始行（含停用级），
+ * `summary` 是 `GET /user/level` 的当前等级摘要。
+ *
+ * 三条口径（每条都有对应判据，改之前先读判据）：
+ *
+ *  ① **只列启用级**（`enabled !== false`），按 `rank` 升序（L1/L5）。
+ *     停用级不参与晋级（后端 `ResolveUserLevel` 里同样先过滤），
+ *     列出来只会让用户对着一个永远达不到的档位算差额。
+ *
+ *  ② **「还差多少」两个口径都要给，绝不允许取 min**（L3 / 后端 AND）。
+ *     后端 `service/user_level.go:96-101` 是两个独立的 `continue`：
+ *       if recharge    < level.MinRechargeTotal    { continue }
+ *       if consumption < level.MinConsumptionTotal { continue }
+ *     ⇒ 必须**同时**满足。取 min 的后果：用户充值差 300、消费差 150 时
+ *     界面提示「还差 ¥150」，用户补上消费后**仍升不了级** —— 这是给了错误
+ *     行动指引，比不显示更糟（138 §1.2 原文）。
+ *     所以每行都返回 `rechargeGap` 与 `consumptionGap` 两个字段，谁也不合并。
+ *
+ *  ③ **「当前」标记必须按 id 比对且唯一**（L2）。
+ *     判定顺序：先比 `levelId`（后端权威），levelId 不可用时才回落到 rank。
+ *     只比 rank 会在两个等级 rank 写重时标出两行 —— 而「唯一」是硬要求；
+ *     所以最后再用 `currentIndex` 收敛成「最多一行」。
+ *
+ * 返回 `{ rows, currentIndex, hasLevels }`：
+ *   - `rows`：渲染用数组，每行含 `{ id, name, rank, deviceLimit, deviceLimitText,
+ *     minRechargeTotal, minConsumptionTotal, rechargeGap, consumptionGap,
+ *     satisfied, isCurrent, status }`
+ *   - `currentIndex`：当前等级在 rows 里的下标，-1 表示「当前用户无等级」
+ *   - `hasLevels`：false 表示服务器没下发档位（此时不应渲染表格，给原因文案）
+ */
+export function buildLevelOverviewRows(levels, summary) {
+  const source = Array.isArray(levels) ? levels : []
+  // ① 启用过滤 + rank 升序。停用级（enabled === false）不参与晋级。
+  const enabled = source
+    .filter((row) => row && row.enabled !== false)
+    .slice()
+    .sort((a, b) => {
+      const rankA = Number(a.rank)
+      const rankB = Number(b.rank)
+      const safeA = Number.isFinite(rankA) ? rankA : Number.MAX_SAFE_INTEGER
+      const safeB = Number.isFinite(rankB) ? rankB : Number.MAX_SAFE_INTEGER
+      return safeA - safeB
+    })
+
+  if (!enabled.length) {
+    return { rows: [], currentIndex: -1, hasLevels: false }
+  }
+
+  const levelId = Number(summary?.levelId ?? 0)
+  const currentRank = Number(summary?.rank ?? 0)
+  const hasLevelId = Number.isFinite(levelId) && levelId > 0
+  const hasRank = Number.isFinite(currentRank) && currentRank > 0
+
+  // 用户实际累计值。缺失视为 0（而不是 null）：差额是「还要多少」，
+  // 用户没钱时就是全额门槛，这与后端「累计值默认 0」一致。
+  const rechargeTotal = toFiniteNumber(summary?.rechargeTotal, 0)
+  const consumptionTotal = toFiniteNumber(summary?.consumptionTotal, 0)
+
+  // ③ 先按 id 定位（权威），定位不到再按 rank 回落。
+  let currentIndex = -1
+  if (hasLevelId) {
+    currentIndex = enabled.findIndex((row) => Number(row.id) === levelId)
+  }
+  if (currentIndex < 0 && hasRank) {
+    currentIndex = enabled.findIndex((row) => Number(row.rank) === currentRank)
+  }
+
+  const rows = enabled.map((row, index) => {
+    const minRecharge = toFiniteNumber(row.minRechargeTotal, 0)
+    const minConsumption = toFiniteNumber(row.minConsumptionTotal, 0)
+    const deviceLimit = row.deviceLimit
+    // ② 两个差额分别算，**不取 min**、不合并成一个字段。
+    const rechargeGap = roundGap(Math.max(0, minRecharge - rechargeTotal))
+    const consumptionGap = roundGap(Math.max(0, minConsumption - consumptionTotal))
+    const satisfied = rechargeGap === 0 && consumptionGap === 0
+    const isCurrent = index === currentIndex
+    return {
+      id: row.id,
+      name: String(row.name ?? '').trim(),
+      rank: Number.isFinite(Number(row.rank)) ? Number(row.rank) : 0,
+      // 设备上限：0 由 buildDeviceLimitText 渲染成「不限」，**不是**「0 台」。
+      deviceLimit,
+      deviceLimitText: buildDeviceLimitText(deviceLimit),
+      minRechargeTotal: minRecharge,
+      minConsumptionTotal: minConsumption,
+      rechargeGap,
+      consumptionGap,
+      satisfied,
+      isCurrent,
+      status: isCurrent
+        ? LEVEL_TABLE_STATUS.current
+        : (satisfied ? LEVEL_TABLE_STATUS.achieved : LEVEL_TABLE_STATUS.pending),
+    }
+  })
+
+  return { rows, currentIndex, hasLevels: true }
+}
+
+/**
+ * buildLevelOverviewStatusText 渲染「状态」列（含差额明细）。
+ *
+ * ⚠️ 两个差额**同时**出现在一行里（`充值差 ¥300 / 消费差 ¥150`），
+ * 而不是只显示其中一个或最小值。已达标的那一维明确写「充值已达标」，
+ * 让用户知道「这个维度不用再管了」—— 这是 AND 语义下唯一不误导的表达。
+ */
+export function buildLevelOverviewStatusText(row) {
+  if (!row) return '—'
+  if (row.isCurrent) return '← 当前'
+  if (row.satisfied) return '已达成'
+  const parts = []
+  parts.push(row.rechargeGap > 0 ? `充值差 ¥${formatGapNumber(row.rechargeGap)}` : '充值已达标')
+  parts.push(row.consumptionGap > 0 ? `消费差 ¥${formatGapNumber(row.consumptionGap)}` : '消费已达标')
+  return parts.join(' / ')
+}
+
+function toFiniteNumber(value, fallback) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : fallback
+}
+
+/** 差额保留 6 位（与后端 MoneyPrecision 一致），避免 0.30000000000000004。 */
+function roundGap(value) {
+  return Math.round(value * 1e6) / 1e6
+}
+
+/** 差额展示：整数不带小数，有小数时最多 6 位并去掉尾零。 */
+function formatGapNumber(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number)) return '0'
+  const fixed = number.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')
+  return fixed === '' || fixed === '-0' ? '0' : fixed
+}

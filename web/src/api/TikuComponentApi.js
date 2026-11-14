@@ -405,6 +405,53 @@ export function unbindCurrentUserWechat() {
   })
 }
 
+// ─────────────── 自助注销（closure-request / cancel / status）───────────────
+//
+// 后端三条路由**早已存在**（internal/api/router.go:309-311 →
+// internal/controller/closure.go），但前端一直是零实现，所以用户根本用不到
+// 自助注销，只能提工单。这里补的就是这一半。
+//
+// 三个必须照抄后端语义的点：
+//
+//  1. **closure-request 必须带 password 与 acknowledge**，缺任一项后端直接 400。
+//     acknowledge 是「已知晓注销后果」的知情确认，不能由前端默默代填 ——
+//     这是不可撤销操作。
+//  2. **closure-cancel 没有入参**（后端只看当前登录态与状态机前置条件），
+//     所以这里不传 data；传了也没人读。
+//  3. **closure-status 是 GET**，用于查询剩余天数与是否具备自助注销资格，
+//     页面进入时先查它，再决定显示「申请」还是「撤销」。
+//
+// 状态视图字段（closureStatusView）：status / pending / waitDays / requestedAt /
+// remainingDays / balanceTotal / requiresTicket / ticketId / phoneBound /
+// eligible / ineligibleReason。
+
+// getAccountClosureStatus 查询当前账号的注销状态与剩余天数。
+export function getAccountClosureStatus() {
+  return request({
+    url: `/api/user/closure-status`,
+    method: 'get'
+  })
+}
+
+// requestAccountClosure 申请注销账号。
+//
+// data: { password: string, acknowledge: true } —— 两项都是后端硬要求。
+export function requestAccountClosure(data) {
+  return request({
+    url: `/api/user/closure-request`,
+    method: 'post',
+    data
+  })
+}
+
+// cancelAccountClosure 撤销注销申请（无入参，后端只看当前登录态）。
+export function cancelAccountClosure() {
+  return request({
+    url: `/api/user/closure-cancel`,
+    method: 'post'
+  })
+}
+
 // 获取用户列表（支持关键词 / 角色 / 状态筛选与分页）
 export function getUserList(params) {
   return request({

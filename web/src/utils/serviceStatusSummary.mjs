@@ -40,6 +40,135 @@ const STATUS_PRESENTATION = {
 /** 未知 status 取值时的兜底：不能当成正常，也不谎称异常。 */
 const UNKNOWN_PRESENTATION = { label: '未知状态', tone: 'muted', icon: 'question' }
 
+/* ───────────────────── 接口族分桶（search / other）─────────────────────
+ *
+ * 后端契约：summary 与 series 两个端点**都**返回 endpoints（138 §4.4 判据 S4）：
+ *
+ *   endpoints: {
+ *     search: { totalRequests, successRequests, avgLatencyMs, samples },
+ *     other:  { totalRequests, successRequests, avgLatencyMs, samples },
+ *   }
+ *
+ * 公开端点（summary / series）**不给** failedRequests —— 与公开序列点同一条
+ * 取舍（见 internal/controller/publicEndpointCounters 的注释）。
+ *
+ * # samples 是判「有没有数据」的**唯一**依据
+ *
+ * 两个桶的 samples 语义是「被采样到的分钟数」，不是「有请求的分钟数」。
+ * 因此存在这种形态，而它正是本设计的全部理由：
+ *
+ *   samples > 0 且 totalRequests === 0   → 采样到了，这套接口确实没人用
+ *                                          （服务正常，绝不是「挂掉」）
+ *   samples === 0 且 totalRequests === 0 → 根本没采样（服务刚重启 / 采样未接线）
+ *
+ * 两者的 totalRequests 都是 0，只有 samples 能分开。所以：
+ *   - 判「显灰」只能用 samples
+ *   - 判「能不能显示成功率」必须同时看 samples>0 **且** totalRequests>0
+ *     （采样到 0 请求时也算不出成功率，但那是「没人用」而不是「没数据」，
+ *     不能显灰、也不能显示 0%）
+ */
+
+/** 置灰时展示的文案（字面量，页面与测试共用同一句，避免两处漂移）。 */
+export const SERVICE_STATUS_ENDPOINT_EMPTY_HINT = '暂无搜题接口采样数据（服务重启后从零开始）'
+
+/** 接口族 → 用户可见标题。只允许后端固定的两个枚举值。 */
+const ENDPOINT_PRESENTATION = {
+  search: { label: '搜题接口', key: 'search' },
+  other: { label: '其它接口', key: 'other' },
+}
+
+/**
+ * 把一个接口族桶压成视图模型。
+ *
+ * 参数顺序是 (kind, bucket)：kind 只允许后端固定的两个枚举值（'search' / 'other'），
+ * 未知取值走 search 之外的兜底标题但不影响三态判定 —— 前端**不**允许凭 kind
+ * 编造第三种桶（那会让「固定枚举」在消费端失守）。
+ *
+ * 返回的 state 是**三态**，不是布尔（合并三态会让两种相反情况共用一个渲染分支）：
+ *
+ *   'unsampled' → samples === 0：没有任何采样数据 → 置灰 + 不可显示任何百分比
+ *   'idle'      → samples > 0 但 totalRequests === 0：采样到了、这套接口没人用
+ *                 → 不置灰，但成功率是 '--'（算不出来，也**绝不能**写成 0%）
+ *   'measured'  → samples > 0 且 totalRequests > 0：成功率是真实值（含 0%，即全失败）
+ *
+ * 注意 rateText 的三种取值语义：
+ *   '--'（unsampled / idle 或字段非法）、真实百分比（measured）。
+ *   measured 且成功率为 0 时是 '0%' —— 这是异常态，页面必须**不置灰**地展示它。
+ */
+export function buildEndpointView(kind, bucket) {
+  const presentation = ENDPOINT_PRESENTATION[kind] || { label: String(kind || '未知接口'), key: String(kind || 'unknown') }
+
+  // 缺桶 / 桶不是对象 → 按「没有采样数据」处理（而不是当成 0，见上方注释）。
+  if (!bucket || typeof bucket !== 'object' || Array.isArray(bucket)) {
+    return {
+      key: presentation.key,
+      label: presentation.label,
+      state: 'unsampled',
+      greyed: true,
+      samples: 0,
+      totalRequests: 0,
+      successRequests: 0,
+      totalText: '--',
+      successText: '--',
+      latencyText: '--',
+      samplesText: '0',
+      rateText: '--',
+      hint: SERVICE_STATUS_ENDPOINT_EMPTY_HINT,
+    }
+  }
+
+  const samples = readNonNegativeInteger(bucket.samples)
+  const total = readNonNegativeInteger(bucket.totalRequests)
+  const success = readNonNegativeInteger(bucket.successRequests)
+  const latency = readNonNegativeInteger(bucket.avgLatencyMs)
+
+  // samples 字段缺失/非法 → 视为「没有采样数据」。这条是刻意的 fail-closed：
+  // 宁可显灰（用户知道「暂时没数据」），也不要拿一个猜出来的成功率去误导他。
+  const sampled = samples !== null && samples > 0
+  const measured = sampled && total !== null && total > 0
+
+  let state = 'unsampled'
+  if (measured) state = 'measured'
+  else if (sampled) state = 'idle'
+
+  const rate = measured ? success / total : null
+
+  return {
+    key: presentation.key,
+    label: presentation.label,
+    state,
+    greyed: !sampled,
+    samples: samples === null ? 0 : samples,
+    totalRequests: total === null ? 0 : total,
+    successRequests: success === null ? 0 : success,
+    totalText: formatCount(total),
+    successText: formatCount(success),
+    latencyText: measured ? formatLatency(latency) : '--',
+    samplesText: formatCount(samples),
+    rateText: rate === null ? '--' : formatSuccessRate(rate),
+    hint: !sampled
+      ? SERVICE_STATUS_ENDPOINT_EMPTY_HINT
+      : (measured ? '' : `已采样 ${formatCount(samples)} 分钟，但最近窗口内没有搜题请求。`),
+  }
+}
+
+/**
+ * 从一份响应体里取分桶视图。
+ *
+ * endpoints 缺失（旧后端 / 字段被删）→ 返回 search 桶的 unsampled 视图，
+ * 而不是抛异常：前端必须在字段缺失时仍能渲染整页（只是那一块显灰）。
+ */
+export function buildServiceStatusEndpointsView(payload) {
+  const endpoints = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? payload.endpoints
+    : null
+  const buckets = endpoints && typeof endpoints === 'object' ? endpoints : {}
+  return {
+    search: buildEndpointView('search', buckets.search),
+    other: buildEndpointView('other', buckets.other),
+  }
+}
+
 function readFiniteNumber(value) {
   if (typeof value === 'number') return Number.isFinite(value) ? value : null
   if (typeof value === 'string' && value.trim() !== '') {
@@ -138,6 +267,9 @@ export function buildServiceStatusView(payload) {
       restartedAtText: '',
       emptyHint: '',
       showBreakdown: false,
+      // 响应体不支持时也要给出可渲染的分桶视图（全 unsampled、显灰），
+      // 否则模板访问 view.endpoints.search 会抛 undefined 异常整页崩。
+      endpoints: buildServiceStatusEndpointsView(null),
     }
   }
 
@@ -182,6 +314,9 @@ export function buildServiceStatusView(payload) {
     // 失败分解（upstream/timeout/auth/quota）只在 admin 端点的 summary 里有；
     // summary 端点不返回，所以这里恒为 false，保留字段是为了将来复用。
     showBreakdown: false,
+    // 接口族分桶（138 §4.2.2 / S4）。注意它**独立于** dataState：
+    // 顶层可能 measured（other 有流量），而 search 桶 unsampled（还没接采样）。
+    endpoints: buildServiceStatusEndpointsView(payload),
   }
 }
 
@@ -307,6 +442,10 @@ export function buildServiceStatusSeriesView(payload) {
     restartedAtText: formatRestartedAt(payload.restartedAt),
     // 空序列用真实标志，不用 points.length 猜 —— 调用方据此显示「刚重启、还没采样」。
     isEmpty: points.length === 0,
+    // S4：series 端点也返回分桶（后端 serviceStatusSeriesResponse.endpoints），
+    // 所以视图也要带出来。页面用它回答「曲线里那些红点来自哪个接口族」——
+    // 只有 summary 带分桶时，用户会看到「曲线全红而摘要说搜题正常」的矛盾。
+    endpoints: buildServiceStatusEndpointsView(payload),
   }
 }
 

@@ -149,10 +149,14 @@ test("用户视图（viewMode='self'）的功能不因删除入口按钮而退�
   assert.match(script, /"admin"|'admin'/, "必须仍识别 viewMode === 'admin'");
 
   // 用户侧建单入口保留（仅非管理员显示）。
+  //
+  // ⚠️ B2-3 把按钮文案从「提交工单」改成「发起工单」：点它进的是**两步向导的
+  // 第一步（选类型）**，而不是直接落到某个模板上。断言跟着改文案，
+  // 但「必须是唯一入口且仅用户可见」这条不变。
   assert.match(
     template,
-    /v-if="canUseTickets\(\) && !isAdmin"[\s\S]{0,80}提交工单/,
-    "用户视图的「提交工单」入口必须保留",
+    /v-if="canUseTickets\(\) && !isAdmin"[\s\S]{0,80}发起工单/,
+    "用户视图的「发起工单」入口必须保留",
   );
 
   // 退款区块对用户也可见（canUseTickets 只校验登录+启用，不要求管理员）。
@@ -190,8 +194,9 @@ test("页头不再有按工单类型单独显示的按钮（退款工单 toggle 
   assert.doesNotMatch(script, /refundsVisible/, "脚本里不应残留 refundsVisible 状态");
   assert.doesNotMatch(script, /function toggleRefunds/, "脚本里不应残留 toggleRefunds 处理器");
 
-  // 页头操作区恰好 2 个按钮：刷新 + 提交工单。
+  // 页头操作区恰好 2 个按钮：刷新 + 发起工单。
   // 这条独立于上面的字符串断言：即使有人用别的名字塞回第三个按钮，这里也会红。
+  // （B2-3 判据 T6：列表页只能有一个发起入口。）
   const headingStart = template.indexOf("<ConsolePageHeading");
   const headingEnd = template.indexOf("</ConsolePageHeading>");
   assert.ok(headingStart >= 0 && headingEnd > headingStart, "找不到 ConsolePageHeading 区块");
@@ -200,10 +205,20 @@ test("页头不再有按工单类型单独显示的按钮（退款工单 toggle 
   assert.equal(
     buttonCount,
     2,
-    `页头操作区应恰好 2 个按钮（刷新 / 提交工单），实际 ${buttonCount} 个 —— 多出来的很可能就是被删掉的按类型入口`,
+    `页头操作区应恰好 2 个按钮（刷新 / 发起工单），实际 ${buttonCount} 个 —— 多出来的很可能就是被删掉的按类型入口`,
   );
   assert.match(heading, />刷新</, "页头必须保留「刷新」");
-  assert.match(heading, />提交工单</, "页头必须保留「提交工单」（用户视图建单入口）");
+  assert.match(
+    heading,
+    />发起工单</,
+    "页头必须保留「发起工单」（用户视图唯一建单入口；点它进选类型向导）",
+  );
+  // 「提交工单」作为第二步按钮文案不该出现在页头（那说明有人把表单搬回了页头）。
+  assert.doesNotMatch(
+    heading,
+    />提交工单</,
+    "页头不得再出现「提交工单」按钮（建单已改为两步向导，页头只留入口）",
+  );
 
   // 不要用"加一个 Tab 来分类"绕过用户诉求。
   for (const control of ["<a-tabs", "<a-tab-pane", "<a-segmented", "<a-button-group"]) {

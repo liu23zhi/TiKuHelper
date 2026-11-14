@@ -164,10 +164,20 @@ test('格式不受支持的响应体：supported=false 且不编造任何数字'
 
 test('摘要端点不返回 points，视图模型也不得暴露逐分钟字段', () => {
   const view = buildServiceStatusView(payload())
-  const serialized = JSON.stringify(view)
-  for (const forbidden of ['points', 'startMinute', 'endMinute', 'breakdown']) {
-    assert.ok(!serialized.includes(forbidden), `摘要视图不得包含 ${forbidden}`)
+  // ⚠️ 这里必须按**键**判定，不能对序列化结果做 includes('points')：
+  // 本视图从 138 §4.2 起带 endpoints（接口族分桶），而 "endpoints" 里含
+  // "points" 子串 —— 用子串匹配会把合法字段当成泄漏而假红。
+  // 真正的判据是「顶层的 points 数组/时序字段不存在」，所以按 key 查。
+  assert.equal(Object.prototype.hasOwnProperty.call(view, 'points'), false,
+    '摘要视图不得有 points 键（逐分钟明细只在 admin 端点）')
+  assert.equal(view.points, undefined)
+  // 时序相关的三个字段同样按 key 查。
+  for (const forbidden of ['startMinute', 'endMinute', 'breakdown']) {
+    assert.equal(Object.prototype.hasOwnProperty.call(view, forbidden), false,
+      `摘要视图不得包含 ${forbidden} 键`)
   }
+  // 反向证明：这些串确实会出现在合法字段里，所以不能用子串匹配（防止有人改回去）。
+  assert.match(JSON.stringify(view), /endpoints/, '合法字段 endpoints 必须存在（它是分桶，不是时序）')
   // 失败的四种分类只在 admin 端点里有，摘要视图固定不展示。
   assert.equal(view.showBreakdown, false)
 })

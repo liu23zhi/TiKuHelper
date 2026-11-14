@@ -58,7 +58,15 @@
             <template v-else-if="column.key === 'recharge'">{{ formatMoney(record.minRechargeTotal) }}</template>
             <template v-else-if="column.key === 'consumption'">{{ formatMoney(record.minConsumptionTotal) }}</template>
             <template v-else-if="column.key === 'deviceLimit'">
-              {{ record.deviceLimit > 0 ? record.deviceLimit + ' 台' : '不限制（未启用）' }}
+              <!-- ⚠️ 0 = 「不限」，不是「不限制（未启用）」（138 §10.4）。
+                   旧文案把两件事合并成一个比喻：「未启用」让人以为功能坏了/没配，
+                   而实际语义是「这一档不限设备数」。
+                   要表达「设备池总开关未开」应该由 system_settings.device_limit_enabled
+                   单独显示，不要混进每个等级行 —— 那是全局状态，不是等级属性。
+                   走 buildDeviceLimitText 而不是就地写三元：设备上限的取值语义
+                   （0=不限 / 负数与脏数据=—）已经在 helper 里定死并被单测钉住，
+                   两处各写一遍必然漂移。 -->
+              {{ formatDeviceLimit(record.deviceLimit) }}
             </template>
             <template v-else-if="column.key === 'enabled'">
               <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag>
@@ -219,6 +227,8 @@ import { useRoute } from 'vue-router'
 import ConsolePageHeading from '@/components/ConsolePageHeading.vue'
 import ConsolePanel from '@/components/ConsolePanel.vue'
 import { getCurrentUserLogoutEpoch, isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
+// 设备上限的取值语义（0=不限）只由 helper 定义，避免本页另写一套三元。
+import { buildDeviceLimitText } from '@/utils/userLevelHelpers.mjs'
 import {
   createUserLevel,
   deleteUserLevel,
@@ -241,6 +251,19 @@ function formatPercent(rate) {
   const number = Number(rate)
   if (!Number.isFinite(number)) return '0.00%'
   return (number * 100).toFixed(2) + '%'
+}
+
+/**
+ * 设备上限展示直接复用 userLevelHelpers.buildDeviceLimitText。
+ *
+ * 为什么不在模板里就地写 `deviceLimit > 0 ? … : '不限'`：
+ *   设备上限的取值语义（0=不限 / 负数与脏数据=— / 未加载=—）已在 helper 里定死
+ *   并被 userLevelHelpers.test.mjs 逐条钉住。两处各写一遍三元，必然出现
+ *   「这里显示不限、个人使用页显示 —」这类漂移（同一个字段两个说法）。
+ *   `—` 与「不限」必须可区分：前者是「没读到」，后者是「这一档真的不限」。
+ */
+function formatDeviceLimit(value) {
+  return buildDeviceLimitText(value)
 }
 
 let tierRowSeed = 0
@@ -522,7 +545,7 @@ export default {
       canManage, busy, fieldId, load,
       openCreate, openEdit, closeEditor, submitEditor, removeLevel, runReevaluate,
       addTierRow, removeTierRow, updateTierRow, saveTiers, runTierPreview,
-      previewText, formatMoney, formatPercent,
+      previewText, formatMoney, formatPercent, formatDeviceLimit,
     }
   },
 }

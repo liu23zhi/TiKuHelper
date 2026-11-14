@@ -15,8 +15,11 @@
            见下方 TicketRefundPanel —— 功能一个没少，只是不再需要一个"入口按钮"。 -->
       <template #actions
         ><a-button :loading="listLoading" :disabled="!canUseTickets()" :onClick="pageEntry.bind(refreshPage)">刷新</a-button
-        ><a-button v-if="canUseTickets() && !isAdmin" type="primary" :onClick="pageEntry.bind(openCreate)"
-          >提交工单</a-button
+        ><!-- ⚠️ 全页**唯一**的建单入口（B2-3 / 判据 T6）。
+             不要在这里再加第二个「发起」类按钮，也不要在别处提供「直接新建某类型」
+             的入口 —— 类型选择已经收进向导第一步。 -->
+        <a-button v-if="canUseTickets() && !isAdmin" type="primary" :onClick="pageEntry.bind(openCreate)"
+          >发起工单</a-button
         ></template
       >
     </ConsolePageHeading>
@@ -309,112 +312,206 @@
             ><a-empty description="暂无工单" /></template></a-table
       ></ConsoleTableShell>
     </ConsolePanel>
+    <!-- ══════════════ 发起工单：两步向导（B2-3 / B2-4）══════════════
+         用户诉求（138 号 §2.3）：列表右上角点「发起工单」→ **先选类型** →
+         才出对应模板。所以表单里**没有**类型下拉（那是旧的一步向导），
+         类型选择是一个独立步骤。
+
+         三个步骤，由 createStep 驱动（不是多个布尔，避免出现「两个步骤同时为真」）：
+           type          选类型（4 项白名单）
+           closure-guide 注销申请专属：先推荐自助注销（**主**按钮），
+                         次按钮才进表单
+           form          对应类型的模板字段
+
+         ⚠️ footer 用自定义而不是 :onOk —— 每个步骤的主动作不同
+         （下一步 / 提交），共用一个 ok 按钮会让「取消」在向导中途变成「提交」。 -->
     <a-modal
       :key="pageEpoch + ':' + createVersion" :open="createVisible" :onUpdate:open="createEntry.bind(setCreateVisible)"
-      title="提交工单"
-      :confirm-loading="createLoading"
-      ok-text="提交"
-      cancel-text="取消"
-      :onOk="createEntry.bind(submitTicket)"
+      :title="createWizardTitle"
+      :footer="null"
+      :mask-closable="false"
       ><section v-if="actionFailures.create.state.failure" data-ticket-create-feedback>
       <RequestFailureAlert :key="actionFailures.create.state.context" :failure="actionFailures.create.state.failure" :message="actionFailures.create.state.message" :context-key="actionFailures.create.state.context" :is-current="actionFailures.create.isCurrent" :busy="createLoading" closable :onClose="actionFailures.create.close" />
-    </section><a-form layout="vertical"
-        ><a-alert v-if="createSaved" type="info" show-icon message="提交的工单已保存，当前修改尚未提交。" />
-      <!-- T-209：新建时先选工单类型。只有两项可选（都不带管理员侧一键动作），
-           规则与理由见 utils/ticketHelpers.mjs 的 TICKET_CREATE_TYPE_OPTIONS。 -->
-      <a-form-item label="工单类型" required :html-for="createFieldId('type')"
-        ><a-select
-          :id="createFieldId('type')"
+    </section>
+      <!-- ───── 第一步：选类型（白名单 4 项）───── -->
+      <div v-if="createStep === TICKET_WIZARD_STEP_TYPE" class="ticket-wizard-step" data-ticket-step="type">
+        <p class="ticket-wizard-lead">请选择要提交的工单类型。选完后再填写对应内容。</p>
+        <a-radio-group
           :value="draft.ticketType"
-          :options="createTypeOptions"
+          class="ticket-type-choices"
           :disabled="createLoading"
-          @update:value="createEntry.bind(setDraft, 'ticketType')" />
-        <template #help
-          ><span>{{ createTypeHint }}</span></template
-        ></a-form-item
-      >
-      <!-- 退款类型：字段整体切换成退款需要的（订单 / 金额 / 理由），
-           而不是只把分类字符串改一下。 -->
-      <template v-if="createNeedsRefundFields">
-        <a-form-item label="退款订单" :html-for="createFieldId('order')">
-          <a-select
-            :id="createFieldId('order')"
-            :value="draft.refundOrderId"
-            :options="refundOrderOptions"
-            allow-clear
-            show-search
-            option-filter-prop="label"
-            :loading="refundOrdersLoading"
-            :disabled="createLoading"
-            placeholder="不选表示无订单的人工退款"
-            @update:value="createEntry.bind(setDraft, 'refundOrderId')" />
-          <template #help
-            ><span>选择一笔已支付的充值订单可原路退回；不选则按人工打款处理，需管理员核对凭证。</span></template
-          >
-        </a-form-item>
-        <a-form-item label="退款金额（元）" required :validate-status="createValidationMessage('requestedYuan') ? 'error' : undefined"
-          ><a-input
-            :id="createFieldId('amount')"
-            :value="draft.requestedYuan" :onUpdate:value="createEntry.bind(setDraft, 'requestedYuan')"
-            :aria-invalid="createValidationMessage('requestedYuan') ? 'true' : undefined"
-            placeholder="例如 25.50"
-            :disabled="createLoading" /><template #help><span v-if="createValidationMessage('requestedYuan')" role="alert">{{ createValidationMessage('requestedYuan') }}</span><span v-else>最多两位小数</span></template></a-form-item
+          @update:value="createEntry.bind(selectCreateType)"
+          ><a-radio
+            v-for="item in createTypeOptions"
+            :key="item.value"
+            :value="item.value"
+            :data-ticket-type-option="item.value"
+            class="ticket-type-choice"
+            ><span class="ticket-type-choice__label">{{ item.label }}</span
+            ><span class="ticket-type-choice__hint">{{ item.hint }}</span></a-radio
+          ></a-radio-group
         >
-        <a-form-item label="退款理由" required :validate-status="createValidationMessage('reason') ? 'error' : undefined"
-          ><a-textarea
-            :id="createFieldId('reason')"
-            :value="draft.reason" :onUpdate:value="createEntry.bind(setDraft, 'reason')"
-            :aria-invalid="createValidationMessage('reason') ? 'true' : undefined"
-            :maxlength="500"
-            show-count
-            :rows="4"
-            :disabled="createLoading"
-            placeholder="请说明退款原因" /><template #help><span v-if="createValidationMessage('reason')" role="alert">{{ createValidationMessage('reason') }}</span></template></a-form-item
-        >
-      </template>
-      <template v-else
-        ><a-form-item label="标题" required :validate-status="createValidationMessage('subject') ? 'error' : undefined"
-          ><a-input
-            :value="draft.subject" :onUpdate:value="createEntry.bind(setDraft, 'subject')"
-            :aria-invalid="createValidationMessage('subject') ? 'true' : undefined" :aria-describedby="createValidationMessage('subject') ? createValidationErrorId('subject') : undefined"
-            :maxlength="120"
-            show-count
-            placeholder="请简要描述问题" /><template #help><span v-if="createValidationMessage('subject')" :id="createValidationErrorId('subject')" role="alert">{{ createValidationMessage('subject') }}</span></template></a-form-item
-        ><a-form-item label="问题描述" required :validate-status="createValidationMessage('body') ? 'error' : undefined"
-          ><a-textarea
-            :value="draft.body" :onUpdate:value="createEntry.bind(setDraft, 'body')"
-            :aria-invalid="createValidationMessage('body') ? 'true' : undefined" :aria-describedby="createValidationMessage('body') ? createValidationErrorId('body') : undefined"
-            :maxlength="10000"
-            show-count
-            :rows="8"
-            placeholder="请提供复现步骤、错误提示和期望结果" /><template #help><span v-if="createValidationMessage('body')" :id="createValidationErrorId('body')" role="alert">{{ createValidationMessage('body') }}</span></template></a-form-item
-        ><a-form-item
-          label="截图（可选）"
-          help="支持 PNG / JPEG，单张不超过 2 MiB。图片上传后先做安全检测，检测未通过时只显示提示。"
-          ><label class="ticket-attachment-input">
-            <span>选择图片（最多 {{ TICKET_ATTACHMENT_MAX_PER_MESSAGE }} 张）</span>
-            <input
-              type="file"
-              :accept="TICKET_ATTACHMENT_ACCEPT"
-              :disabled="createLoading || uploadBusy"
-              multiple
-              @change="onPickDraftImages"
-            /></label>
-          <div v-if="draftAttachments.length" class="ticket-attachment-selected">
-            <span v-for="item in draftAttachments" :key="item.id" class="ticket-attachment-chip"
-              >#{{ item.id }}
-              <a-button
-                type="link"
-                size="small"
-                danger
-                :onClick="createEntry.bind(removeDraftImage, item.id)"
-                >移除</a-button
-              ></span
+      </div>
+      <!-- ───── 注销申请：先引导自助注销（主按钮=自助，次按钮=建单）───── -->
+      <ClosureGuide
+        v-else-if="createStep === TICKET_WIZARD_STEP_CLOSURE_GUIDE"
+        mode="guide"
+        data-ticket-step="closure-guide"
+        @fallback="createEntry.bind(goCreateForm)"
+      />
+      <!-- ───── 第二步：对应类型的模板字段 ───── -->
+      <a-form v-else-if="createStep === TICKET_WIZARD_STEP_FORM" layout="vertical" data-ticket-step="form"
+        ><a-alert v-if="createSaved" type="info" show-icon message="提交的工单已保存，当前修改尚未提交。" />
+        <!-- 退款类型：字段整体切换成退款需要的（订单 / 金额 / 理由），
+             而不是只把分类字符串改一下。 -->
+        <template v-if="createNeedsRefundFields">
+          <a-form-item label="退款订单" :html-for="createFieldId('order')">
+            <a-select
+              :id="createFieldId('order')"
+              :value="draft.refundOrderId"
+              :options="refundOrderOptions"
+              allow-clear
+              show-search
+              option-filter-prop="label"
+              :loading="refundOrdersLoading"
+              :disabled="createLoading"
+              placeholder="不选表示无订单的人工退款"
+              @update:value="createEntry.bind(setDraft, 'refundOrderId')" />
+            <template #help
+              ><span>选择一笔已支付的充值订单可原路退回；不选则按人工打款处理，需管理员核对凭证。</span></template
             >
-          </div>
-        </a-form-item></template
-      ></a-form
-    ></a-modal>
+          </a-form-item>
+          <a-form-item label="退款金额（元）" required :validate-status="createValidationMessage('requestedYuan') ? 'error' : undefined"
+            ><a-input
+              :id="createFieldId('amount')"
+              :value="draft.requestedYuan" :onUpdate:value="createEntry.bind(setDraft, 'requestedYuan')"
+              :aria-invalid="createValidationMessage('requestedYuan') ? 'true' : undefined"
+              placeholder="例如 25.50"
+              :disabled="createLoading" /><template #help><span v-if="createValidationMessage('requestedYuan')" role="alert">{{ createValidationMessage('requestedYuan') }}</span><span v-else>最多两位小数</span></template></a-form-item
+          >
+          <a-form-item label="退款理由" required :validate-status="createValidationMessage('reason') ? 'error' : undefined"
+            ><a-textarea
+              :id="createFieldId('reason')"
+              :value="draft.reason" :onUpdate:value="createEntry.bind(setDraft, 'reason')"
+              :aria-invalid="createValidationMessage('reason') ? 'true' : undefined"
+              :maxlength="500"
+              show-count
+              :rows="4"
+              :disabled="createLoading"
+              placeholder="请说明退款原因" /><template #help><span v-if="createValidationMessage('reason')" role="alert">{{ createValidationMessage('reason') }}</span></template></a-form-item
+          >
+        </template>
+        <!-- 账号问题（B2-6）：问题类型下拉 + 说明文本域。
+             问题类型只作为标题前缀供管理员分诊，不是独立后端字段
+             （tickets 表没有 issue_type 列）。 -->
+        <template v-else-if="createNeedsAccountFields">
+          <a-form-item label="问题类型" required :validate-status="createValidationMessage('issueType') ? 'error' : undefined"
+            ><a-select
+              :id="createFieldId('issue')"
+              :value="draft.issueType"
+              :options="createIssueOptions"
+              :disabled="createLoading"
+              placeholder="请选择问题类型"
+              @update:value="createEntry.bind(setDraft, 'issueType')" /><template #help><span v-if="createValidationMessage('issueType')" role="alert">{{ createValidationMessage('issueType') }}</span><span v-else>选择后标题会自动带上该类型，便于管理员分诊。</span></template></a-form-item
+          >
+          <a-form-item label="问题说明" required :validate-status="createValidationMessage('body') ? 'error' : undefined"
+            ><a-textarea
+              :id="createFieldId('body')"
+              :value="draft.body" :onUpdate:value="createEntry.bind(setDraft, 'body')"
+              :aria-invalid="createValidationMessage('body') ? 'true' : undefined" :aria-describedby="createValidationMessage('body') ? createValidationErrorId('body') : undefined"
+              :maxlength="10000"
+              show-count
+              :rows="8"
+              placeholder="请提供账号、时间、现象与期望结果" /><template #help><span v-if="createValidationMessage('body')" :id="createValidationErrorId('body')" role="alert">{{ createValidationMessage('body') }}</span></template></a-form-item
+          >
+        </template>
+        <!-- 注销申请（兜底路径）：用户已明确选择继续建单，只填原因。
+             标题由服务端/前端固定生成（【注销申请】前缀），不让用户自由填写。 -->
+        <template v-else-if="createNeedsClosureFields">
+          <a-alert
+            type="info"
+            show-icon
+            message="你选择了提交注销工单（兜底路径）"
+            description="管理员会人工核对。若希望更快生效且可随时撤销，可返回上一步使用自助注销。"
+          />
+          <a-form-item label="注销原因" required :validate-status="createValidationMessage('body') ? 'error' : undefined"
+            ><a-textarea
+              :id="createFieldId('body')"
+              :value="draft.body" :onUpdate:value="createEntry.bind(setDraft, 'body')"
+              :aria-invalid="createValidationMessage('body') ? 'true' : undefined" :aria-describedby="createValidationMessage('body') ? createValidationErrorId('body') : undefined"
+              :maxlength="10000"
+              show-count
+              :rows="6"
+              placeholder="请说明注销原因，例如不再使用、换号、隐私考虑" /><template #help><span v-if="createValidationMessage('body')" :id="createValidationErrorId('body')" role="alert">{{ createValidationMessage('body') }}</span></template></a-form-item
+          >
+        </template>
+        <template v-else
+          ><a-form-item label="标题" required :validate-status="createValidationMessage('subject') ? 'error' : undefined"
+            ><a-input
+              :value="draft.subject" :onUpdate:value="createEntry.bind(setDraft, 'subject')"
+              :aria-invalid="createValidationMessage('subject') ? 'true' : undefined" :aria-describedby="createValidationMessage('subject') ? createValidationErrorId('subject') : undefined"
+              :maxlength="120"
+              show-count
+              placeholder="请简要描述问题" /><template #help><span v-if="createValidationMessage('subject')" :id="createValidationErrorId('subject')" role="alert">{{ createValidationMessage('subject') }}</span></template></a-form-item
+          ><a-form-item label="问题描述" required :validate-status="createValidationMessage('body') ? 'error' : undefined"
+            ><a-textarea
+              :value="draft.body" :onUpdate:value="createEntry.bind(setDraft, 'body')"
+              :aria-invalid="createValidationMessage('body') ? 'true' : undefined" :aria-describedby="createValidationMessage('body') ? createValidationErrorId('body') : undefined"
+              :maxlength="10000"
+              show-count
+              :rows="8"
+              placeholder="请提供复现步骤、错误提示和期望结果" /><template #help><span v-if="createValidationMessage('body')" :id="createValidationErrorId('body')" role="alert">{{ createValidationMessage('body') }}</span></template></a-form-item
+          ><a-form-item
+            label="截图（可选）"
+            help="支持 PNG / JPEG，单张不超过 2 MiB。图片上传后先做安全检测，检测未通过时只显示提示。"
+            ><label class="ticket-attachment-input">
+              <span>选择图片（最多 {{ TICKET_ATTACHMENT_MAX_PER_MESSAGE }} 张）</span>
+              <input
+                type="file"
+                :accept="TICKET_ATTACHMENT_ACCEPT"
+                :disabled="createLoading || uploadBusy"
+                multiple
+                @change="onPickDraftImages"
+              /></label>
+            <div v-if="draftAttachments.length" class="ticket-attachment-selected">
+              <span v-for="item in draftAttachments" :key="item.id" class="ticket-attachment-chip"
+                >#{{ item.id }}
+                <a-button
+                  type="link"
+                  size="small"
+                  danger
+                  :onClick="createEntry.bind(removeDraftImage, item.id)"
+                  >移除</a-button
+                ></span
+              >
+            </div>
+          </a-form-item></template
+        ></a-form>
+      <!-- 向导 footer：每步主动作不同，所以自定义。 -->
+      <div class="ticket-wizard-footer">
+        <a-button :disabled="createLoading" :onClick="createEntry.bind(closeCreate)">取消</a-button>
+        <a-button
+          v-if="createStep === TICKET_WIZARD_STEP_FORM"
+          :disabled="createLoading"
+          :onClick="createEntry.bind(backToTypeStep)"
+          >上一步</a-button
+        >
+        <a-button
+          v-if="createStep === TICKET_WIZARD_STEP_TYPE"
+          type="primary"
+          :disabled="!createTypeChosen"
+          :onClick="createEntry.bind(advanceFromTypeStep)"
+          >下一步</a-button
+        >
+        <a-button
+          v-else-if="createStep === TICKET_WIZARD_STEP_FORM"
+          type="primary"
+          :loading="createLoading"
+          :onClick="createEntry.bind(submitTicket)"
+          >提交</a-button
+        >
+      </div>
+    </a-modal>
     <a-modal
       :key="pageEpoch + ':' + detailRequestVersion" :open="detailVisible" :onUpdate:open="detailEntry.bind(setDetailVisible)"
       :wrap-props="{ 'aria-modal': true }"
@@ -639,19 +736,34 @@ import {
   TICKET_CATEGORY_OPTIONS,
   TICKET_STATUS_OPTIONS,
   TICKET_SYSTEM_ORIGIN_LABEL,
-  getTicketDraftValidation,
 } from "@/utils/ticketHelpers.mjs";
 // 退款 7 态的中文文案、金额格式化与可退订单列表都与退款面板共用同一份实现，
 // 避免列表与面板对同一状态/金额给出不同说法。
 import { formatRefundCents, refundStatusLabel } from "./refundTicketHelpers.mjs";
-// 新建工单时选类型的纯函数（T-209）：类型清单、校验、payload 构造。
+// 新建工单时选类型的纯函数（T-209 建立，B2 扩到四项 + 两步向导）：
+// 类型清单、向导步骤、按类型分派的校验、payload 构造。
+//
+// 注释：各类型的字段校验统一走 getTicketCreateDraftValidation —— 页面不再
+// 单独 import getTicketDraftValidation / getRefundDraftValidation /
+// getAccountDraftValidation（各留一份会漂移成「前端通过、后端报错」）。
 import {
   buildTicketCreatePayload,
-  getRefundDraftValidation,
+  getTicketCreateDraftValidation,
+  isAccountClosureTicketType,
   isRefundTicketRow,
   ticketCreateTypeNeedsRefundFields,
   ticketRowRefundStatus,
+  ticketWizardCanAdvanceFromType,
+  ticketWizardCanSubmit,
+  ticketWizardInitialStep,
+  ticketWizardNextStep,
+  TICKET_ACCOUNT_ISSUE_OPTIONS,
+  TICKET_CREATE_TYPE_ACCOUNT,
+  TICKET_CREATE_TYPE_GENERAL,
   TICKET_CREATE_TYPE_OPTIONS,
+  TICKET_WIZARD_STEP_CLOSURE_GUIDE,
+  TICKET_WIZARD_STEP_FORM,
+  TICKET_WIZARD_STEP_TYPE,
 } from "./createTicketTypeHelpers.mjs";
 import { getEligibleTicketRefundOrders } from "@/api/TikuComponentApi";
 
@@ -659,6 +771,8 @@ const detailStatusId = `tickets-${useId()}-detail-status`;
 // 退款 7 态的中文文案与退款面板同一份（refundStatusLabel 在上方 import），
 // 避免列表与面板对同一状态给出不同说法。
 const TicketRefundPanel = defineAsyncComponent(() => import("./TicketRefundPanel.vue"));
+// 注销引导 / 自助注销：与工单向导的「注销申请」分支、个人中心入口共用同一组件。
+const ClosureGuide = defineAsyncComponent(() => import("./ClosureGuide.vue"));
 const { currentUser } = useCurrentUserDisplay();
 const route = useRoute();
 const router = useRouter();
@@ -752,18 +866,27 @@ const columns = computed(() => {
 });
 const createVisible = ref(false);
 const createLoading = ref(false);
-// draft 是新建工单表单。T-209 增加了「工单类型」以及退款专属字段。
+// createStep 是**两步向导**的当前步骤（B2-3）。
 //
-// 退款字段与普通字段**并存**在同一个对象里，但提交时由 buildTicketCreatePayload
-// 按类型只挑该传的那些（普通类型绝不带退款字段，反之亦然 —— 后端会对
-// 参数矛盾报错，这是有意的检测）。
+// 用一个步骤字符串而不是多个布尔（如选类型中 / 填表单中）：
+// 多布尔一定会出现「两个同时为真」的中间态，界面就会同时渲染两套模板。
+// 取值常量来自 createTicketTypeHelpers.mjs：type / closure-guide / form。
+const createStep = ref(ticketWizardInitialStep());
+// draft 是新建工单表单。T-209 增加了「工单类型」以及退款专属字段；
+// B2 增加了 account 的 issueType 与 closure 的固定标题（不入 draft）。
+//
+// 各类型字段与普通字段**并存**在同一个对象里，但提交时由 buildTicketCreatePayload
+// 按类型只挑该传的那些（退款绝不带 subject/body，普通类型绝不带退款字段 ——
+// 后端会对参数矛盾报错，这是有意的检测）。
 const draft = reactive({
-  ticketType: "general",
+  ticketType: TICKET_CREATE_TYPE_GENERAL,
   subject: "",
   body: "",
   requestedYuan: "",
   reason: "",
   refundOrderId: undefined,
+  // account 专用：登录异常 / 绑定问题 / 封禁申诉（只做标题前缀，不是后端字段）。
+  issueType: "",
 });
 const createValidation = shallowRef(null);
 const createValidationErrorId = field => `${detailStatusId}-create-${field}-error`;
@@ -771,10 +894,20 @@ const createValidationErrorId = field => `${detailStatusId}-create-${field}-erro
 const createFieldId = field => `${detailStatusId}-create-field-${field}`;
 // 当前类型是否需要退款专属字段（任务书：不能只换个 category 字符串）。
 const createNeedsRefundFields = computed(() => ticketCreateTypeNeedsRefundFields(draft.ticketType));
-const createTypeOptions = TICKET_CREATE_TYPE_OPTIONS.map(({ value, label }) => ({ value, label }));
-const createTypeHint = computed(() => {
+// account（账号问题）：问题类型下拉 + 说明文本域（B2-6）。
+const createNeedsAccountFields = computed(() => draft.ticketType === TICKET_CREATE_TYPE_ACCOUNT);
+// account_closure（注销申请）：只填注销原因（标题固定生成）。
+const createNeedsClosureFields = computed(() => isAccountClosureTicketType(draft.ticketType));
+const createTypeOptions = TICKET_CREATE_TYPE_OPTIONS.map(({ value, label, hint }) => ({ value, label, hint }));
+const createIssueOptions = TICKET_ACCOUNT_ISSUE_OPTIONS.map(({ value, label }) => ({ value, label }));
+// 第一步「下一步」是否可用：必须选了一个**白名单内**的类型。
+const createTypeChosen = computed(() => ticketWizardCanAdvanceFromType(draft.ticketType));
+// 弹窗标题随步骤变化：让用户始终知道自己在哪一步。
+const createWizardTitle = computed(() => {
+  if (createStep.value === TICKET_WIZARD_STEP_TYPE) return "发起工单 · 选择类型";
+  if (createStep.value === TICKET_WIZARD_STEP_CLOSURE_GUIDE) return "发起工单 · 注销申请";
   const matched = TICKET_CREATE_TYPE_OPTIONS.find((item) => item.value === draft.ticketType);
-  return matched ? matched.hint : "";
+  return `发起工单 · ${matched ? matched.label : "填写内容"}`;
 });
 // 可退订单列表：切到退款类型时才拉一次（普通工单不该触发这个请求）。
 const refundOrderOptions = ref([]);
@@ -803,11 +936,19 @@ async function loadRefundOrders() {
 }
 function createValidationMessage(field) { return createValidation.value?.field === field ? createValidation.value.message : ""; }
 function retireCreateValidation() { createValidation.value = null; }
-// 当前表单用的是哪一套校验：随类型切换（退款 / 普通）。
+// 当前表单用的是哪一套校验：随类型切换（退款 / 账号 / 注销 / 普通）。
+//
+// 统一走 getTicketCreateDraftValidation，避免页面里再维护一张类型→校验的映射表
+// （两张表一定会漂移，症状是「某类型前端通过、后端报错」）。
 function currentDraftValidation() {
-  return ticketCreateTypeNeedsRefundFields(draft.ticketType)
-    ? getRefundDraftValidation({ requestedYuan: draft.requestedYuan, reason: draft.reason })
-    : getTicketDraftValidation(draft.subject, draft.body);
+  return getTicketCreateDraftValidation({
+    ticketType: draft.ticketType,
+    subject: draft.subject,
+    body: draft.body,
+    requestedYuan: draft.requestedYuan,
+    reason: draft.reason,
+    issueType: draft.issueType,
+  });
 }
 function retireStaleCreateValidation() {
   const previous = createValidation.value;
@@ -917,7 +1058,8 @@ function clearOwned() {
   listLoading.value = detailLoading.value = createLoading.value = replyLoading.value = statusSaving.value = configSaving.value = configTesting.value = retryLoading.value = configLoading.value = false;
   createVisible.value = detailVisible.value = configLoaded.value = createSaved.value = configDirty.value = false;
   detailTicket.value = null; messages.value = []; attachments.value = []; notification.value = null; replyBody.value = ""; detailStatus.value = ""; statusWasChosen.value = false;
-  draft.ticketType = "general"; draft.subject = ""; draft.body = ""; draft.requestedYuan = ""; draft.reason = ""; draft.refundOrderId = undefined; errorMessage.value = "";
+  draft.ticketType = TICKET_CREATE_TYPE_GENERAL; draft.subject = ""; draft.body = ""; draft.requestedYuan = ""; draft.reason = ""; draft.refundOrderId = undefined; draft.issueType = ""; errorMessage.value = "";
+  createStep.value = ticketWizardInitialStep();
   draftAttachments.value = []; replyAttachments.value = []; uploadBusy.value = false;
   Object.assign(notificationConfig, { enabled: false, webhookUrl: "", mentionedList: "", configured: false, clearWebhook: false });
   keywordInput.value = ""; Object.assign(filters, { keyword: "", status: "", category: "", createdFrom: "", createdTo: "", updatedFrom: "", updatedTo: "" });
@@ -969,10 +1111,10 @@ watch([() => detailTicket.value?.id, detailStatus], () => { statusFailureDraft =
 watch([() => detailTicket.value?.id, () => notification.value?.id, () => notification.value?.status], () => { retryFailureDraft = {}; actionFailures.retry.clear(); }, { flush: "sync" });
 // Compare raw inputs only, without serializing reply text or affecting issued-write busy state.
 watch([replyBody, () => detailTicket.value?.id, () => isAdmin.value && statusWasChosen.value ? detailStatus.value : undefined], retireReplyDraft, { flush: "sync" });
-watch([() => draft.subject, () => draft.body, () => draft.requestedYuan, () => draft.reason], retireStaleCreateValidation, { flush: "sync" });
+watch([() => draft.subject, () => draft.body, () => draft.requestedYuan, () => draft.reason, () => draft.issueType], retireStaleCreateValidation, { flush: "sync" });
 // 切到退款类型时才拉可退订单（普通工单不触发这个请求）。
 watch(createNeedsRefundFields, needs => { if (needs) void loadRefundOrders(); }, { flush: "sync" });
-watch(createVisible, next => { if (!next) { retireCreateValidation(); createVersion += 1; createLoading.value = false; createSaved.value = false; draft.ticketType = "general"; draft.subject = ""; draft.body = ""; draft.requestedYuan = ""; draft.reason = ""; draft.refundOrderId = undefined; } }, { flush: "sync" });
+watch(createVisible, next => { if (!next) { retireCreateValidation(); createVersion += 1; createLoading.value = false; createSaved.value = false; draft.ticketType = TICKET_CREATE_TYPE_GENERAL; draft.subject = ""; draft.body = ""; draft.requestedYuan = ""; draft.reason = ""; draft.refundOrderId = undefined; draft.issueType = ""; createStep.value = ticketWizardInitialStep(); } }, { flush: "sync" });
 // Focus leases also retire for same-id non-admin role ABA and unexpected routes.
 watch(() => String(currentUser.value?.role ?? ""), retireDetailFocus, { flush: "sync" });
 watch(() => route.fullPath, path => {
@@ -1043,27 +1185,74 @@ function handleMobilePageChange(page) {
   pagination.current = page;
   loadTickets();
 }
+// openCreate 打开**两步向导的第一步**（选类型）。
+//
+// ⚠️ 不要在这里预设类型（例如落到 general）：用户点的是「发起工单」，
+// 替他预先选中某一个模板等于替他做了决定，而他要的正是「先选类型」。
 function openCreate() {
   if (!canUseTickets()) return;
   retireCreateValidation();
   actionFailures.create.clear(); createFailureDraft = {};
   createVersion += 1; createLoading.value = false; createSaved.value = false;
-  draft.ticketType = "general";
+  draft.ticketType = "";
   draft.subject = "";
   draft.body = "";
   draft.requestedYuan = "";
   draft.reason = "";
   draft.refundOrderId = undefined;
+  draft.issueType = "";
+  createStep.value = ticketWizardInitialStep();
   createVisible.value = true;
+}
+// selectCreateType 是第一步的单选回调。
+//
+// 只改 draft.ticketType，**不**自动前进：向导的「下一步」是用户的显式动作
+// （选错类型要能改回来，自动跳步会让他被迫回退）。
+function selectCreateType(value) {
+  if (!createVisible.value) return;
+  draft.ticketType = String(value ?? "").trim().toLowerCase();
+  retireCreateValidation();
+}
+// advanceFromTypeStep 是第一步的「下一步」。
+//
+// 注销申请走**引导页**（T4：不能跳过引导直接进表单）；
+// 其余类型直接进模板。分叉逻辑放在 helper 里（ticketWizardNextStep），
+// 页面只负责应用结果 —— 这样「哪些类型要先引导」只有一处定义。
+function advanceFromTypeStep() {
+  if (!createVisible.value || !createTypeChosen.value) return;
+  retireCreateValidation();
+  createStep.value = ticketWizardNextStep(draft.ticketType);
+}
+// goCreateForm 是引导页**次按钮**（仍然提交工单）的回调：
+// 用户已明确拒绝自助注销，这一步才允许进入注销工单表单。
+function goCreateForm() {
+  if (!createVisible.value) return;
+  retireCreateValidation();
+  createStep.value = TICKET_WIZARD_STEP_FORM;
+}
+// backToTypeStep 回第一步（表单里的「上一步」）。
+function backToTypeStep() {
+  if (!createVisible.value || createLoading.value) return;
+  retireCreateValidation();
+  createStep.value = TICKET_WIZARD_STEP_TYPE;
+}
+// closeCreate 是「取消」：直接关闭弹窗（与右上角 X 同义）。
+function closeCreate() {
+  createVisible.value = false;
 }
 async function submitTicket() {
   if (!canUseTickets() || !createVisible.value || createLoading.value) return;
-  // 两种类型是**两套字段与两套校验**（任务书明确要求：不能只换个 category 字符串）。
+  // 只在「填模板」这一步允许提交。
+  //
+  // ⚠️ 这就是 T4 的钉子：如果这里不判步骤，注销类型会在引导页就被提交
+  // （用户还没看到「推荐自助注销」就被建了一张注销工单）。
+  // 判定走 helper 的 ticketWizardCanSubmit（可在 node 里直接测），
+  // 不在页面里内联一句 if —— 内联的判定只能靠手工点界面才发现回归。
+  if (!ticketWizardCanSubmit(createStep.value)) return;
+  // 各类型是**多套字段与多套校验**（任务书明确要求：不能只换个 category 字符串）。
   // 校验在这里统一做一次，失败就停，不发请求。
   const refundMode = ticketCreateTypeNeedsRefundFields(draft.ticketType);
-  const validation = refundMode
-    ? getRefundDraftValidation({ requestedYuan: draft.requestedYuan, reason: draft.reason })
-    : getTicketDraftValidation(draft.subject, draft.body);
+  const validation = currentDraftValidation();
   if (validation.message) { createValidation.value = validation; message.warning(validation.message); return; }
   retireCreateValidation();
   const owns = captureCreate(), subject = draft.subject, body = draft.body;
@@ -1077,12 +1266,14 @@ async function submitTicket() {
     //
     // 退款类型走 buildTicketCreatePayload 的另一条分支：带 refundRequestedCents /
     // refundReason / refundOrderId，不带 subject/body。
+    // account / account_closure 各自生成标题（账号问题带类型前缀、注销固定前缀）。
     const built = buildTicketCreatePayload({
       ticketType: draft.ticketType,
       subject, body,
       requestedYuan: draft.requestedYuan,
       reason: draft.reason,
       refundOrderId: draft.refundOrderId,
+      issueType: draft.issueType,
       attachmentIds,
     });
     const payload = { ...built.payload };
@@ -1718,5 +1909,55 @@ watch(
   .message-item {
     max-width: 100%;
   }
+}
+/* ── 发起工单两步向导（B2-3）── */
+.ticket-wizard-step {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ticket-wizard-lead {
+  margin: 0;
+  color: var(--console-muted);
+  font-size: 13px;
+}
+/* 类型选项用竖排卡片而不是下拉：4 项都带说明，下拉里读不到 hint。 */
+.ticket-type-choices {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  width: 100%;
+}
+.ticket-type-choices :deep(.ant-radio-wrapper) {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--console-border);
+  border-radius: 8px;
+  margin-inline-end: 0;
+}
+.ticket-type-choices :deep(.ant-radio-wrapper-checked) {
+  border-color: var(--primary);
+}
+.ticket-type-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ticket-type-choice__label {
+  color: var(--console-text);
+  font-weight: 500;
+}
+.ticket-type-choice__hint {
+  color: var(--console-muted);
+  font-size: 12px;
+}
+.ticket-wizard-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
 }
 </style>

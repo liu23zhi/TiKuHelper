@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/diagnostics"
+	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 )
 
@@ -55,6 +56,13 @@ func requestCorrelation(c *gin.Context, reader io.Reader, now time.Time, sequenc
 		if duration < 0 {
 			duration = 0
 		}
+		// 按接口族分桶计数（task_doc/138 §4.2：复用这处已有的记账点，不新加中间件）。
+		//
+		// 传的是 c.FullPath() 的**路由模板**（含组前缀，如 /api/search/tasks），
+		// 不是具体 URL —— 具体 URL 含题目 id 之类，且 diagnostics 的红线明确
+		// 禁止存 route。ClassifyEndpoint 只认固定的三个模板，其余（含 __unmatched__）
+		// 一律落 other，且分类后原文即弃、不落库、不写日志。
+		service.ObserveServiceStatusEndpoint(route, status, duration)
 		writeTransportCompletion(transportCompletion{
 			Event:      "transport_complete",
 			RequestID:  id,

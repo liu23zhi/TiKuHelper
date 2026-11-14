@@ -8,6 +8,10 @@ import { useTableExpansion } from '../composables/useTableExpansion.mjs'
 import { useTableColumnPreferences } from '../composables/useTableColumnPreferences.mjs'
 import { sumTableColumnWidths } from './tableLayout.mjs'
 import { buildSearchParams, countActiveFilters } from './listSearchHelpers.mjs'
+// 筛选定义已提取到共享 helper（138 §3.2.3 / B1-4）。这里**注入真实实现**而不是
+// 在测试里重写一份：页面里的筛选行为必须与「个人使用 → 账单流水」共用同一份定义，
+// 用假实现会让「两页同一份」这条判据在测试层面失去意义。
+import * as billingFilters from './billingFilters.mjs'
 import { ensureRequestFailure } from './requestFailureView.mjs'
 
 const require = createRequire(import.meta.url)
@@ -170,6 +174,16 @@ async function loadBillingPage(role = 'admin', save = async () => ({ status: 200
     normalizeLocationKey: value => String(value || '').trim(),
     formatValueWithLocationBase: value => value,
     formatMoneyValue: value => String(value),
+    // 共享筛选 helper：注入 billingFilters.mjs 的**真实导出**。
+    // 页面脚本里 `import { … } from '@/utils/billingFilters.mjs'` 会被上面那行
+    // import 剥离，所以这些名字必须以依赖参数的形式补回，否则 setup 里引用即 ReferenceError。
+    BILLING_SEARCH_MODE_OPTIONS: billingFilters.BILLING_SEARCH_MODE_OPTIONS,
+    BILLING_TYPE_OPTIONS: billingFilters.BILLING_TYPE_OPTIONS,
+    buildBillingFilterParams: billingFilters.buildBillingFilterParams,
+    countBillingActiveFilters: billingFilters.countBillingActiveFilters,
+    createBillingFilters: billingFilters.createBillingFilters,
+    normalizeBillingKeyword: billingFilters.normalizeBillingKeyword,
+    resetBillingFilters: billingFilters.resetBillingFilters,
     buildSearchParams,
     countActiveFilters,
     ensureRequestFailure,
@@ -195,8 +209,13 @@ async function loadBillingPage(role = 'admin', save = async () => ({ status: 200
 
 test('billing columns keep admin metadata separate and expansion adjusts the whole project column', async () => {
   for (const role of ['admin', 'user']) {
-    // 视图由**入口**决定（2026-11-14 拆路由）：管理端账户走 billing-admin（viewMode='admin'），
-    // 用户端走 billing-records（viewMode='self'）。按入口而不是按角色加载。
+    // 视图由**入口**决定（2026-11-14 拆路由）：管理端账户走 billing-admin（viewMode='admin'）。
+    // ⚠️ 2026-11-15（138 §3.2 / B1-3）：`billing-records` 路由**已删除**，
+    // 它不再是「我的账单」用户的入口 —— 用户侧的账单流水在「个人使用」页
+    //（`pages/UserUsage/index.vue`，独立实现，不 import BillingRecordList）。
+    // ⇒ 现在只有 admin 入口是唯一账单入口；`viewMode='self'` 分支保留但无路由命中
+    //   （当前无入口，保留备查）。下面仍把 role='user' 那一轮跑过 viewMode='self'，
+    //   目的是**保住**那条休眠分支的可运行性 —— 它一旦坏掉，将来恢复用户侧入口就会静默失效。
     const page = await loadBillingPage(role, undefined, undefined, role === 'admin' ? 'admin' : 'self')
     try {
       const keys = page.state.columns.value.map(column => column.key)

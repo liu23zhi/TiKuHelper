@@ -108,8 +108,16 @@ func TestServiceStatusSummaryDistinguishesAllFailedFromNoTraffic(t *testing.T) {
 	if body.TotalRequests != 100 {
 		t.Fatalf("totalRequests 期望 100，got=%d", body.TotalRequests)
 	}
-	if body.SuccessRequests != 0 || body.FailedRequests != 100 {
-		t.Fatalf("成功/失败期望 0/100，got=%d/%d", body.SuccessRequests, body.FailedRequests)
+	// ⚠️ 2026-11-15：本端点不再返回 FailedRequests（与 series 端点口径统一，
+	// 见 service_status.go 结构体注释：失败数可由 total-success 推出，显式给出只是冗余，
+	// 而「搜题桶全失败」对普通用户是攻击指纹）。
+	// ⇒ 这里改为断言「推导式成立」而不是直接读字段，否则既编译不过、
+	// 也会失去「成功数确实透传了」这条覆盖。
+	if body.SuccessRequests != 0 {
+		t.Fatalf("成功数期望 0，got=%d", body.SuccessRequests)
+	}
+	if derived := body.TotalRequests - body.SuccessRequests; derived != 100 {
+		t.Fatalf("由 total-success 推出的失败数期望 100，got=%d（说明成功数没有正确透传）", derived)
 	}
 	// 核心断言：全失败时 successRateAvailable 必须为 **true**。
 	//

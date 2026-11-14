@@ -214,3 +214,65 @@ test('路由只新增了 service-status 那一条，未重排既有路由', () =
   // 该路由只能出现一次（不能既在 children 里又在别处）。
   assert.equal(countOccurrences(routerSource, "name: 'service-status'"), 1)
 })
+
+/* ───────────── 接口族分桶区块（138 §4.3 / B3-4）─────────────
+ *
+ * 这一组钉的是**接线**：三态判定本身由 serviceStatusEndpoint.test.mjs 用真实
+ * 函数喂真实响应体验证（行为层），这里只确认页面确实把它渲染出来、并且
+ * 没有在模板里另写一套错误的判定。
+ *
+ * 只看源码字符串会是假钉子，所以每条都要求「有一个只有正确接线才可能出现的
+ * 结构」——例如置灰必须由 endpointView.greyed 驱动，而不是页面自己算。
+ */
+
+test('页面渲染接口分桶区块，且置灰由 endpointView.greyed 驱动', () => {
+  // 区块与卡片必须在模板里（缺一个就等于功能没接上）。
+  assert.ok(pageSource.includes('data-endpoint-kind'), '页面缺少分桶卡片（data-endpoint-kind）')
+  assert.ok(pageSource.includes('data-endpoint-rate'), '页面缺少分桶成功率元素')
+  assert.ok(pageSource.includes('data-endpoint-hint'), '页面缺少分桶文案元素')
+  assert.ok(pageSource.includes('data-endpoint-greyed'), '页面缺少置灰标记（测试要靠它断言）')
+
+  // ★ 核心：置灰必须绑 endpointView.greyed。
+  assert.match(pageCode, /:class="\{ 'endpoint-card--greyed': endpointView\.greyed \}"/,
+    '置灰必须由 endpointView.greyed 驱动')
+  assert.match(pageCode, /endpointView\.greyed \? 'true' : 'false'/,
+    'data-endpoint-greyed 必须反映真实置灰状态')
+})
+
+test('页面不得用 totalRequests==0 判分桶显灰（S2 变异的主要形态）', () => {
+  // 这是 S2 的实现形态：用 totalRequests 判灰会在「采样到了但 0 请求」时误显灰。
+  assert.doesNotMatch(pageCode, /totalRequests\s*===?\s*0/,
+    '不得用 totalRequests===0 判显灰（真 0 请求 vs 没采样同形）')
+  assert.doesNotMatch(pageCode, /totalRequests\s*>\s*0/,
+    '不得用 totalRequests>0 判有没有数据（那只证明有请求，不证明有采样）')
+  assert.doesNotMatch(pageCode, /endpointView\.totalRequests/,
+    '页面不应直接读 totalRequests 做判定（判定在 buildEndpointView 里）')
+})
+
+test('页面不得用成功率数值判分桶显灰（S3 变异的主要形态）', () => {
+  // 有采样但成功率 0% 必须正常显示 0%，不能因为数值是 0 就显灰/当无数据。
+  assert.doesNotMatch(pageCode, /endpointView\.rateText\s*===?\s*'0%'/,
+    '不得用 rateText==="0%" 判分桶状态（全失败恰好是 0%）')
+  assert.doesNotMatch(pageCode, /rateText\s*!==\s*'--'/,
+    '不得用 rateText 反推有没有数据')
+})
+
+test('分桶视图来自 buildServiceStatusView（唯一判定点），页面不自算', () => {
+  // 单一来源：页面只取 view.endpoints.search，不重新算 samples/total 的关系。
+  assert.match(pageCode, /const endpointView = computed\(\(\) => view\.value\.endpoints\.search\)/,
+    'endpointView 必须由 view.endpoints.search 派生')
+  // endpointView 必须暴露给模板（否则模板里读不到，渲染成空）。
+  assert.match(pageCode, /[ ]{2,}endpointView,/, 'setup() 的返回值里必须有 endpointView')
+})
+
+test('置灰文案是「暂无搜题接口采样数据（服务重启后从零开始）」', () => {
+  // 文案由 .mjs 提供（单一来源），页面只渲染 endpointView.hint。
+  // 断言 .mjs 里确实有这句字面量，且页面没有另写一份。
+  const helper = readFileSync(resolve(testDir, './serviceStatusSummary.mjs'), 'utf8')
+  assert.ok(helper.includes('暂无搜题接口采样数据（服务重启后从零开始）'),
+    '置灰文案必须存在于 serviceStatusSummary.mjs（单一来源）')
+  assert.match(pageCode, /endpointView\.hint/, '页面必须渲染 endpointView.hint')
+  assert.ok(!pageCode.includes('暂无搜题接口采样数据'),
+    '页面不得重复硬编码置灰文案（会与 helper 漂移）')
+})
+

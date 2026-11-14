@@ -217,7 +217,17 @@ import { useRoute } from 'vue-router'
 import { getStoredCurrentUser, getCurrentUserLogoutEpoch, useCurrentUserDisplay, isAdminUser } from '@/utils/currentUser'
 import { useCurrentUserRequestScope } from '@/utils/currentUserScope'
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
-import { buildSearchParams, countActiveFilters, normalizeSearchKeyword } from '@/utils/listSearchHelpers.mjs'
+// 筛选定义（类型取值 / 参数组装 / 已启用条件数）统一来自 billingFilters.mjs，
+// 与「个人使用 → 账单流水」共用同一份 —— 两页各写一套会让同一笔账单筛出不同结果。
+import {
+  BILLING_SEARCH_MODE_OPTIONS,
+  BILLING_TYPE_OPTIONS,
+  buildBillingFilterParams,
+  countBillingActiveFilters,
+  createBillingFilters,
+  normalizeBillingKeyword,
+  resetBillingFilters,
+} from '@/utils/billingFilters.mjs'
 import {
   collectLocationKeys,
   lookupLocationAddresses,
@@ -294,17 +304,12 @@ function createBillingListState() {
     totalCacheHitRate: null,
   })
   // 已生效的筛选条件；keywordInput 只是输入框的即时值。
-  const filters = reactive({
-    keyword: '',
-    type: undefined,
-    userId: undefined,
-    requestId: '',
-    provider: '',
-    searchMode: undefined,
-    clientIp: '',
-    createdFrom: '',
-    createdTo: '',
-  })
+  // 字段全集来自 billingFilters.mjs（与「个人使用 → 账单流水」共用），
+  // 这里只负责把共享定义包成响应式对象：
+  //   - 用 `{}` 作为 reactive 的初始值再逐字段写入，而不是 reactive(createBillingFilters())，
+  //     这样字段集仍然来自共享 helper，页面不重复声明一遍维度。
+  const filters = reactive({})
+  Object.assign(filters, createBillingFilters())
   const keywordInput = ref('')
   const pagination = reactive({
     current: 1,
@@ -338,6 +343,14 @@ export default defineComponent({
     //
     // 现在：`billing-records` → meta.viewMode='self'，`billing-admin` → 'admin'。
     // 权限边界不在这里 —— `billing-admin` 已登记进 router 的 ADMIN_ONLY_ROUTE_NAMES。
+    //
+    // ⚠️ 2026-11-15（138 §3.2.2 / B1-3）：`billing-records` 路由与菜单项**已删除**
+    //（「个人使用 → 账单流水」是独立实现，不 import 本组件，所以用户侧不再需要这个入口）。
+    // ⇒ `viewMode='self'` 分支**当前无入口，保留备查**：
+    //    893 行里两个模式的逻辑混在一起（列裁剪、用户名列、账单流水可见性开关、
+    //    来源 IP 归属地…），强行拆分的冲突面大于收益。所以**不删这段分支**，
+    //    也不把 isAdmin 改成恒 false —— 一旦将来恢复用户侧入口，判断逻辑原样可用。
+    //    阅读时按「`self` 分支是休眠代码（dormant），但仍须保持可运行」理解。
     const routeViewMode = computed(() => {
       const meta = useRoute()?.meta || {}
       return typeof meta.viewMode === 'string' ? meta.viewMode : ''
@@ -422,6 +435,8 @@ export default defineComponent({
         retireStatementPage()
         closeScopePopup()
       },
+      // 账号作用域切换时只回退「会改变结果集身份」的两项（保持重构前语义），
+      // 字段名仍取自共享 helper 的定义，不在这里另起一套。
       reset() { filters.keyword = ''; keywordInput.value = ''; pagination.current = 1; filters.type = undefined },
       reload() { instance.proxy.handleLoad() },
     })
@@ -476,7 +491,7 @@ export default defineComponent({
       return async (entryFailure = failure, entryContext = context) => {
         if (entryFailure !== failure || entryContext !== context || !isCurrent()
           || visibilitySaving[target] || statementReconciling.value) return
-        const currentParams = () => buildSearchParams({ keyword: filters.keyword, type: filters.type, userId: filters.userId, requestId: filters.requestId, provider: filters.provider, searchMode: filters.searchMode, clientIp: filters.clientIp, createdFrom: filters.createdFrom, createdTo: filters.createdTo }, pagination.current, pagination.pageSize)
+        const currentParams = () => buildBillingFilterParams(filters, pagination.current, pagination.pageSize)
         const params = currentParams(), query = JSON.stringify(params)
         const queryChanged = () => JSON.stringify(currentParams()) !== query
         const changedQueryHint = '筛选或分页已变化，本次读取未用于账单核对，请重新读取。'
@@ -520,7 +535,7 @@ export default defineComponent({
       const ownsData = captureDataOwner()
       return () => ownsData() && requestVersion === listRequestVersion
     }
-    const activeFilterCount = computed(() => countActiveFilters({ keyword: filters.keyword, type: filters.type, userId: filters.userId, requestId: filters.requestId, provider: filters.provider, searchMode: filters.searchMode, clientIp: filters.clientIp, createdFrom: filters.createdFrom, createdTo: filters.createdTo }))
+    const activeFilterCount = computed(() => countBillingActiveFilters(filters))
 
     const summary = computed(() => {
       const rows = Array.isArray(dataSource.value) ? dataSource.value : []
@@ -546,7 +561,7 @@ export default defineComponent({
     })
 
     // 当前是否处于筛选状态：筛选会改变「累计消费金额」的口径，需要在界面上说明。
-    const hasActiveFilters = computed(() => countActiveFilters({ keyword: filters.keyword, type: filters.type, userId: filters.userId, requestId: filters.requestId, provider: filters.provider, searchMode: filters.searchMode, clientIp: filters.clientIp, createdFrom: filters.createdFrom, createdTo: filters.createdTo }) > 0)
+    const hasActiveFilters = computed(() => countBillingActiveFilters(filters) > 0)
 
     const pageTitle = computed(() => (isAdmin.value ? '账单明细' : '我的账单'))
     const pageSubtitle = computed(() => (
@@ -691,24 +706,11 @@ export default defineComponent({
       keywordInput,
       activeFilterCount,
       hasActiveFilters,
-      typeOptions: [
-        { label: '题目消费', value: 'normal_search' },
-        { label: '充值入账', value: 'recharge' },
-        { label: '新用户赠送', value: 'registration_bonus' },
-        { label: '管理员调整余额', value: 'balance_adjustment' },
-        // 邀请返佣（task_doc/70 需求 2）：结算入赠送余额、原订单退款时冲回。
-        { label: '邀请返佣', value: 'referral_rebate' },
-        { label: '邀请返佣冲回', value: 'referral_rebate_reversal' },
-        { label: '评价返现', value: 'review_rebate' },
-        { label: '脚本预扣', value: 'script_reservation' },
-        { label: '脚本退款', value: 'script_refund' },
-      ],
-      searchModeOptions: [
-        { label: '普通搜索', value: 'normal' },
-        { label: '深度思考', value: 'deep' },
-        { label: '深度思考 原生工具', value: 'deep_native' },
-        { label: '深度思考 MCP编排', value: 'deep_mcp' },
-      ],
+      // ⚠️ 选项集只来自 billingFilters.mjs，**不得**在这里就地写字面量。
+      // 「个人使用 → 账单流水」用的是同一份（138 §3.2.3 / B3 判据）：
+      // 两页各写一套会让同一笔账单在两个页面筛出不同结果。
+      typeOptions: BILLING_TYPE_OPTIONS,
+      searchModeOptions: BILLING_SEARCH_MODE_OPTIONS,
       pageTitle,
       pageSubtitle,
       alertMessage,
@@ -772,7 +774,7 @@ export default defineComponent({
     // 点「搜索」或回车时才把输入框内容变成生效的筛选条件。
     applyKeyword() {
       const { filters, keywordInput, pagination } = this.billingState
-      filters.keyword = normalizeSearchKeyword(keywordInput.value)
+      filters.keyword = normalizeBillingKeyword(keywordInput.value)
       keywordInput.value = filters.keyword
       pagination.current = 1
       this.handleLoad()
@@ -784,23 +786,16 @@ export default defineComponent({
     },
     resetFilters() {
       const { filters, keywordInput, pagination } = this.billingState
-      filters.keyword = ''
+      // 字段集来自共享 helper：新增筛选维度时这里不用改，也不会漏重置某一项。
+      resetBillingFilters(filters)
       keywordInput.value = ''
-      filters.type = undefined
-      filters.userId = undefined
-      filters.requestId = ''
-      filters.provider = ''
-      filters.searchMode = undefined
-      filters.clientIp = ''
-      filters.createdFrom = ''
-      filters.createdTo = ''
       pagination.current = 1
       this.handleLoad()
     },
     handleLoad() {
       const { dataSource, tableLoading, billingSummary, filters, pagination, enrichClientIps } = this.billingState
       if (!this.canLoadForCurrentUser()) return
-      const params = buildSearchParams({ keyword: filters.keyword, type: filters.type, userId: filters.userId, requestId: filters.requestId, provider: filters.provider, searchMode: filters.searchMode, clientIp: filters.clientIp, createdFrom: filters.createdFrom, createdTo: filters.createdTo }, pagination.current, pagination.pageSize)
+      const params = buildBillingFilterParams(filters, pagination.current, pagination.pageSize)
       this.prepareListQuery(params)
       const owns = this.captureListRequest()
       tableLoading.value = true

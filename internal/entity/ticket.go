@@ -53,8 +53,13 @@ const (
 	TicketCategoryRegistrationBonus = "registration_bonus"
 	TicketCategoryBlacklistAppeal   = "blacklist_appeal"
 	TicketCategoryAccountRebind     = "account_rebind"
-	TicketCategoryAccountClosure    = "account_closure"
-	TicketCategoryRefund            = "refund"
+	// TicketCategoryAccount 是「账号问题」（登录异常 / 绑定问题 / 封禁申诉）。
+	//
+	// 与 account_rebind / account_closure 的区别：它只是**提问**，服务端不因此
+	// 触发任何一键动作（不能改绑定、不能解封、不能补发），所以可以进用户白名单。
+	TicketCategoryAccount        = "account"
+	TicketCategoryAccountClosure = "account_closure"
+	TicketCategoryRefund         = "refund"
 )
 
 // 维度之三：priority（优先级）—— 四档，urgent 仅管理员可设。
