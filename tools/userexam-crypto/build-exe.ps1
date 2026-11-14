@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Build the single-file userexam-crypto.exe (administrator offline tool).
 
@@ -95,8 +95,27 @@ if ($ProbeOnly) {
 }
 
 Write-Host "[2/$totalSteps] Checking PyInstaller ..."
-& $python @pythonArgs -m PyInstaller --version *> $null
-if ($LASTEXITCODE -ne 0) {
+# ⚠️ 不能用 `*> $null` 探测外部命令是否成功：
+#
+# 在 $ErrorActionPreference = 'Stop' 下，原生命令写到 stderr 的内容会变成**终止错误**，
+# 而 `*>` 重定向**挡不住**这个转换。所以当 PyInstaller 未安装时，这一行会直接抛
+#   "py.exe : ...: No module named PyInstaller"
+# 让脚本在「检查」阶段就崩掉，永远走不到下面的 `if ($LASTEXITCODE -ne 0)` 安装分支。
+#
+# CI 上实测就是这样失败的（run 43571220472：`[2/5] Checking PyInstaller ...` 之后立即
+# 报 No module named PyInstaller，而本地因为装了包所以复现不出来）。
+#
+# 正确写法：临时放宽 EAP，只吞输出不吞退出码。
+$pyiProbeOk = $false
+$savedEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    & $python @pythonArgs -m PyInstaller --version *> $null
+    $pyiProbeOk = ($LASTEXITCODE -eq 0)
+} finally {
+    $ErrorActionPreference = $savedEap
+}
+if (-not $pyiProbeOk) {
     Write-Host '      installing pyinstaller ...'
     & $python @pythonArgs -m pip install --quiet pyinstaller
     if ($LASTEXITCODE -ne 0) { throw 'Failed to install PyInstaller.' }
@@ -166,8 +185,18 @@ if ($SkipSmokeTest) {
         New-Item -ItemType Directory -Force -Path $isolated | Out-Null
         try {
             Copy-Item -LiteralPath $exePath -Destination (Join-Path $isolated 'userexam-crypto.exe')
-            & (Join-Path $isolated 'userexam-crypto.exe') --selftest *> $null
-            if ($LASTEXITCODE -ne 0) { throw 'Runtime check B failed: exe alone could not run.' }
+            # 同 L113 的理由：$ErrorActionPreference='Stop' 下原生命令写 stderr 会变成终止错误，
+            # `*>` 挡不住这个转换。用同样的放宽-恢复写法，只吞输出不吞退出码。
+            $selftestOk = $false
+            $savedEapB = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                & (Join-Path $isolated 'userexam-crypto.exe') --selftest *> $null
+                $selftestOk = ($LASTEXITCODE -eq 0)
+            } finally {
+                $ErrorActionPreference = $savedEapB
+            }
+            if (-not $selftestOk) { throw 'Runtime check B failed: exe alone could not run.' }
             Write-Host '      Runtime check B OK (single file, no sibling _vendor needed)'
 
             # --- 5c: real encrypted sample, if one was supplied -----------------
