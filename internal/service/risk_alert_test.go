@@ -69,6 +69,8 @@ func newRiskAlertTestDBNamed(t *testing.T, rawName string) *gorm.DB {
 		&entity.IPSegment{},
 		// LoginFailureEvent 是 R9（credential_stuffing）的数据源。
 		&entity.LoginFailureEvent{},
+		// TicketRefund 是 R13（refund_abuse）的数据源。
+		&entity.TicketRefund{},
 	} {
 		if err := db.AutoMigrate(model); err != nil {
 			t.Fatalf("migrate %T: %v", model, err)
@@ -982,6 +984,8 @@ func TestLoadRiskRulesFallsBackToCodeDefaults(t *testing.T) {
 		"impossible_travel":         900,
 		"credential_stuffing":       20,
 		"login_bruteforce":          10,
+		"refund_abuse":              3,
+		"proxy_ip_login":            1,
 	}
 	if len(rules) != len(wantThreshold) {
 		t.Fatalf("fallback rule count = %d, want %d（实际：%v）", len(rules), len(wantThreshold), ruleIDsOf(rules))
@@ -3302,6 +3306,8 @@ func TestRiskWarningDedupIsAtomicAcrossAllRules(t *testing.T) {
 		// R2 有**两个维度**，两个都要进并发钉（否则少一个维度的原子性回归）。
 		{ruleID: "login_bruteforce", throttleSeconds: 60 * 60, subjectKey: "login_bruteforce:account:42:2026-11-14T00:00:00+08:00"},
 		{ruleID: "login_bruteforce", throttleSeconds: 60 * 60, subjectKey: "login_bruteforce:ip:203.0.113.7:2026-11-14T00:00:00+08:00"},
+		{ruleID: "refund_abuse", throttleSeconds: 24 * 60 * 60, subjectKey: "refund_abuse:user:42:2026-11-14T00:00:00+08:00"},
+		{ruleID: "proxy_ip_login", throttleSeconds: 24 * 60 * 60, subjectKey: "proxy_ip_login:user:42:2026-11-14T00:00:00+08:00"},
 	}
 	for _, tc := range cases {
 		tc := tc

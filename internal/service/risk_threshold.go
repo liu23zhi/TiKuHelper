@@ -139,6 +139,15 @@ type riskThresholdSpec struct {
 // （R16 的占比项）同构。
 const RiskThresholdSettingKeyTokenMultiIP = "risk_token_abuse_multi_ip_threshold"
 
+// RiskThresholdSettingKeyProxyASNList 是 R10「代理/数据中心 IP 登录」的 **ASN 名单**。
+//
+// ⚠️ 这一项**不是数值阈值**，所以它**不进** riskThresholdSpecs 规格表
+// （那张表的每一项都是 `float64` + 上下界校验，塞一个 ASN 列表进去会让
+// ValidateRiskThresholdValue 与前端 a-input-number 全部失效）。
+// 它的读取与校验走独立的函数，与 `login_rate_limit_exempt_ips` 同构：
+// 保存时严格校验（坏项 → 400），读取时宽容跳过（老库可能有手工写入的坏值）。
+const RiskThresholdSettingKeyProxyASNList = "risk_proxy_asn_list"
+
 func riskThresholdSpecs() []riskThresholdSpec {
 	return []riskThresholdSpec{
 		{Key: "risk_rule_debt_user_threshold", RuleID: entity.RiskRuleIDDebtUser,
@@ -191,6 +200,12 @@ func riskThresholdSpecs() []riskThresholdSpec {
 			Label: "30 分钟内不同账号数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 20, Unit: "个", SyncRuleColumn: true, MaxValue: 10_000},
 		{Key: "risk_rule_login_bruteforce_threshold", RuleID: entity.RiskRuleIDLoginBruteforce,
 			Label: "10 分钟内失败次数阈值（账号维度与 IP 维度共用此值）", Kind: RiskThresholdKindAbsolute, DefaultValue: 10, Unit: "次", SyncRuleColumn: true, MaxValue: 10_000},
+		{Key: "risk_rule_refund_abuse_threshold", RuleID: entity.RiskRuleIDRefundAbuse,
+			Label: "30 天内成功退款次数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 3, Unit: "次", SyncRuleColumn: true, MaxValue: 1_000},
+		// R10 proxy_ip_login **没有数值阈值**（它的判据是「ASN 是否在名单里」），
+		// 所以不在这张表里。它的名单项由 RiskThresholdSettingKeyProxyASNList 单独管理。
+		//
+		// 「同一 token 的不同 IP 数」的说明见上方常量处的注释。
 		// 占比项：**不**同步 risk_rules.threshold（见 SyncRuleColumn 的注释）。
 		{Key: RiskThresholdSettingKeyOffhoursShare, RuleID: entity.RiskRuleIDOffhoursActivity,
 			Label: "凌晨活动占比阈值", Kind: RiskThresholdKindRatio, DefaultValue: 0.8, Unit: "比例", SyncRuleColumn: false, MaxValue: 1},

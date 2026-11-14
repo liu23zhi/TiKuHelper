@@ -74,6 +74,8 @@ func TestEnsureRiskSchemaCreatesTablesIndexesAndSeeds(t *testing.T) {
 		"impossible_travel":         900,
 		"credential_stuffing":       20,
 		"login_bruteforce":          10,
+		"refund_abuse":              3,
+		"proxy_ip_login":            1,
 	}
 	if len(rules) != len(want) {
 		t.Fatalf("expected %d seeded rules, got %d: %+v", len(want), len(rules), rules)

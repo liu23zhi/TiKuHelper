@@ -163,9 +163,21 @@ func TestRiskRuleAndThresholdSpecsCoverSameRuleIDs(t *testing.T) {
 	//
 	// 每一条都要有理由，否则以后有人新增规则时会照抄这里而不是想清楚。
 	allowedWithoutThreshold := map[string]string{
-		// 目前没有例外：10 条行为 + 3 条欠款规则全部有可调阈值。
-		// 保留这个 map 是为了把「确实不需要阈值」与「忘了加」区分开 ——
-		// 直接写空集合比写一个没有理由的例外表更安全。
+		// R10 proxy_ip_login：**它没有数值阈值**，判据是「ASN 是否在名单里」。
+		//
+		// 为什么不能硬塞一个数值规格：
+		//   · riskThresholdSpec 的每一项都是 float64 + 上下界校验，
+		//     而这条规则的配置对象是 **ASN 字符串列表**（`risk_proxy_asn_list`）；
+		//   · 塞进去会让 ValidateRiskThresholdValue 的「必须 > 0」对名单毫无意义，
+		//     前端 a-input-number 也无法输入 `AS15169`。
+		//
+		// 它的名单项由 RiskThresholdSettingKeyProxyASNList 单独管理，
+		// 走 ValidateProxyASNList（保存严格）/ ParseProxyASNList（读取宽容）。
+		//
+		// 但**不是「运营看不到」**：规则清单页会显示它的 Description
+		// （含「名单为空时本规则完全不告警」这条关键限制），只是配置入口
+		// 不在「规则阈值」面板的数值输入框里。
+		entity.RiskRuleIDProxyIPLogin: "判据是 ASN 名单（字符串列表），不是数值阈值；由 risk_proxy_asn_list 单独管理",
 	}
 
 	ruleIDs := map[string]bool{}
@@ -201,9 +213,15 @@ func TestRiskRuleAndThresholdSpecsCoverSameRuleIDs(t *testing.T) {
 	}
 
 	// 计数自检：让「13 vs 14」这类偏差在失败信息里直接可见。
-	if len(ruleIDs) != len(specRuleIDs) {
-		t.Errorf("规则数（%d）与规格覆盖的规则数（%d）不一致。规则清单：%v；规格清单：%v",
-			len(ruleIDs), len(specRuleIDs), sortedKeys(ruleIDs), sortedKeys(specRuleIDs))
+	//
+	// 期望值 = 规则总数 − 显式例外数（例外是「确实不需要数值阈值」的规则，
+	// 上面 allowedWithoutThreshold 已逐个给出理由）。
+	wantSpecRules := len(ruleIDs) - len(allowedWithoutThreshold)
+	if len(specRuleIDs) != wantSpecRules {
+		t.Errorf("规格覆盖的规则数（%d）与期望（%d = 规则 %d 条 − 例外 %d 条）不一致。"+
+			"规则清单：%v；规格清单：%v",
+			len(specRuleIDs), wantSpecRules, len(ruleIDs), len(allowedWithoutThreshold),
+			sortedKeys(ruleIDs), sortedKeys(specRuleIDs))
 	}
 }
 

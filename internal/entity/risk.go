@@ -120,6 +120,22 @@ const (
 	// 实时表看到的永远是 0→10→0→10，**记不下「一天被打了 300 次」**。
 	// R2 的价值正是这个跨窗口的长期视角。
 	RiskRuleIDLoginBruteforce = "login_bruteforce"
+	// RiskRuleIDRefundAbuse 是 97 §5.1 的 R13「退款滥用」：
+	// 单用户 30 天内**成功**退款 ≥N 次且每次都接近满额。
+	//
+	// ⚠️ 数据源：97 号 L322 写的是 illing_records，**那是错的**。
+	// 退款主表是 	icket_refunds（entity.TicketRefund），账单表只有收支金额、
+	// 没有「退款申请/审核/终态」这套状态机。
+	//
+	// ⚠️ 只算 status = succeeded：那是**钱真的退出去了**的唯一终态
+	// （ticket_refund.go:359 明确拒绝从 succeeded/failed 再改状态）。
+	// 算 requested/pending/rejected 会把「申请 3 次全被驳回」的用户误报成滥用。
+	RiskRuleIDRefundAbuse = "refund_abuse"
+	// RiskRuleIDProxyIPLogin 是 97 §5.1 的 R10「代理/数据中心 IP 登录」：
+	// 登录 IP 的 ASN 落在运营配置的名单内。
+	//
+	// 数据源：logs（action=10 + status=success）+ ip_segments 的 asn 列。
+	RiskRuleIDProxyIPLogin = "proxy_ip_login"
 )
 
 // RiskRuleDefault 是一条规则的**代码内默认值**。
@@ -308,6 +324,26 @@ var DefaultRiskBehaviorRules = []RiskRuleDefault{
 		Threshold:       10,
 		ThrottleSeconds: 60 * 60,
 		Description:     "同一账号**或**同一 IP 在 10 分钟滑动窗口内登录失败达到阈值次数（默认 10 次），是被定向爆破的特征。与「撞库」的区别是攻击**深度 vs 广度**：本规则看的是对同一个目标反复试（同一账号，或同一 IP 反复来），而撞库看的是同一 IP 试了很多不同账号。为避免与撞库重复告警，IP 维度会跳过「已然是撞库形态」的 IP（窗口内不同账号数已达撞库阈值），交给撞库规则报。窗口内所有失败原因同等计入（含验证码失败、账号已禁用），因为排除任何一类都会产生绕过面。只告警不处置。",
+	},
+	{
+		RuleID:   RiskRuleIDRefundAbuse,
+		Name:     "退款滥用",
+		Severity: RiskSeverityHigh,
+		// 97 §5.1 R13：30 天内成功退款 ≥3 次且每次接近满额。
+		// 「30 天」来自 97 号；「3 次」来自 97 号；「接近满额」的比例阈值 97 号没给。
+		Threshold:       3,
+		ThrottleSeconds: 24 * 60 * 60,
+		Description:     "同一用户在 30 天滑动窗口内**成功**退款达到阈值次数（默认 3 次），且每一笔的approved金额都达到订单实付的 90% 以上，是退款套利/薅羊毛的典型形态。四条已知限制：① 只算**已成功**（status=succeeded）的退款 —— 申请中、被驳回、冻结、失败的都不计，否则「申请多次全被拒」的正常用户会被误报；② 「接近满额」比例 90% 是**本仓自定的经验值**（97 号只写「接近满额」，未给数字）；③ 数据源是 `ticket_refunds`（97 号原写 `billing_records` 是错的，账单表没有退款状态机）；④ 同一订单只可能有一条退款记录（order_id 唯一索引），所以「一笔订单拆多次退」在数据层面不会出现。只告警不处置。",
+	},
+	{
+		RuleID:   RiskRuleIDProxyIPLogin,
+		Name:     "代理IP登录",
+		Severity: RiskSeverityMedium,
+		// 这条规则的「阈值」语义特殊：名单为空即不告警，故 Threshold 只作为
+		// risk_rules.threshold 列的占位（1 = 名单非空时才可能命中）。
+		Threshold:       1,
+		ThrottleSeconds: 24 * 60 * 60,
+		Description:     "用户登录 IP 的 ASN 落在运营配置的数据中心/代理商名单内（如 Google Cloud、AWS、DigitalOcean），常见于脚本、爬虫与规避地域风控的场景。四条已知限制：① **名单为空时本规则完全不告警**（名单由运营在阈值配置的 `risk_proxy_asn_list` 项里维护，逗号/分号/空格分隔，形如 AS15169）；② 只统计能查到 ASN 的公网 IP —— 私网 IP、段表未覆盖、段记录无 ASN 的登录都会被跳过（不能把「未知」当成「代理」）；③ 段表（ip_segments）需要靠真实 IP 查询逐步积累，新部署环境几乎为空，本规则前期不会告警；④ 同一用户同一天只告警一次（节流 24 小时）。只告警不处置。",
 	},
 }
 

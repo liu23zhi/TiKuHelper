@@ -60,6 +60,11 @@ export const RISK_RULE_OPTIONS = Object.freeze([
   // R2：同一账号或 IP 在 10 分钟滑动窗口内失败 ≥10 次
   // ⚠️ label 写明「同账号或 IP」，因为这是它与「撞库」的分界（深度 vs 广度）
   { value: 'login_bruteforce', label: '登录爆破（同账号或 IP · 10 分钟）' },
+  // R13：30 天内成功退款 ≥3 次且每笔接近满额（90% 为本仓自定）
+  { value: 'refund_abuse', label: '退款滥用（仅成功退款 · 近满额）' },
+  // R10：登录 IP 的 ASN 落在运营配置的名单内
+  // ⚠️ label 必须写明「需配名单」，否则运营会以为它坏了（空名单时规则静默）
+  { value: 'proxy_ip_login', label: '代理IP登录（需配 ASN 名单）' },
 ])
 
 const RISK_RULE_LABELS = Object.freeze(

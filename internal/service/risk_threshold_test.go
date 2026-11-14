@@ -39,6 +39,10 @@ func TestRiskThresholdSpecsMatchEntityDefaults(t *testing.T) {
 		"impossible_travel":         900,
 		"credential_stuffing":       20,
 		"login_bruteforce":          10,
+		"refund_abuse":              3,
+		// R10 proxy_ip_login 的 Threshold 是**占位值 1**（它的判据是 ASN 名单，
+		// 不是数值阈值）。它不进 riskThresholdSpecs，由 risk_proxy_asn_list 单独管理。
+		"proxy_ip_login": 1,
 	}
 	// entity 侧：每条规则的默认阈值必须等于上面的字面量。
 	seen := map[string]bool{}
@@ -91,6 +95,12 @@ func TestRiskThresholdSpecsMatchEntityDefaults(t *testing.T) {
 		covered[spec.RuleID] = true
 	}
 	for ruleID := range wantDefaults {
+		if ruleID == entity.RiskRuleIDProxyIPLogin {
+			// R10 的配置对象是 **ASN 字符串列表**（risk_proxy_asn_list），
+			// 不是数值阈值，所以它没有风险阈值登记项 —— 这是有意的，
+			// 理由见 TestRiskRuleAndThresholdSpecsCoverSameRuleIDs 的例外表。
+			continue
+		}
 		if !covered[ruleID] {
 			t.Fatalf("规则 %q 没有对应的阈值登记项", ruleID)
 		}
@@ -532,8 +542,8 @@ func TestRiskRuleStatesReflectConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("states: %v", err)
 	}
-	if len(states) != 13 {
-		t.Fatalf("规则数 = %d, want 13", len(states))
+	if len(states) != 15 {
+		t.Fatalf("规则数 = %d, want 15", len(states))
 	}
 	for _, state := range states {
 		if !state.Exists {
