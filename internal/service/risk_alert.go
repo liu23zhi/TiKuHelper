@@ -618,6 +618,13 @@ func EvaluateDebtAlerts(db *gorm.DB, now time.Time) (RiskAlertEvaluation, error)
 		}
 		candidates = append(candidates, found...)
 	}
+	if rule, ok := enabledRules[entity.RiskRuleIDLoginBruteforce]; ok {
+		found, scanErr := collectLoginBruteforceCandidates(db, rule, now)
+		if scanErr != nil {
+			return result, scanErr
+		}
+		candidates = append(candidates, found...)
+	}
 
 	seenRules := map[string]struct{}{}
 	for _, candidate := range candidates {
@@ -2134,6 +2141,26 @@ func collectWechatPhoneShareCandidates(db *gorm.DB, rule entity.RiskRule, now ti
 }
 
 // riskImpossibleTravelMaxSpeedKmh 是「物理不可能」的速度上限（km/h）。
+//
+// # ⚠️ 与 96/97 号文档的偏差（记录决策依据，不是改行为）
+//
+// 97 号 L282 与 96 号 L108 的原始定义是：
+//
+//	同一用户两次登录的 IP **分属不同省份**，且间隔 **< 2h**
+//
+// **本仓改用「物理速度 > 900 km/h」，而不是「跨省 + 2h」。** 理由：
+//
+//   - 原定义会**误报合法航班**：北京→上海 1888 km 直飞约 2.1 小时，
+//     一个真实出差的人在 2 小时内跨省登录是完全正常的，却会被原判据命中。
+//   - 速度判据把「距离」纳入考虑：同样的 2 小时，跨省但只飞了 300 km
+//     （如北京→济南）不会告警，而 1 小时内跨 1888 km 一定告警。
+//   - 原定义还需要「省份」数据（依赖 `ip_segments` 的 `region` 解析），
+//     而本仓有**经纬度**（`latitude`/`longitude` 实测有值），能算真实球面距离 ——
+//     比按省名比对更准确（同名省、直辖市、境外 IP 都无需特判）。
+//
+// ⇒ **实现比文档更严格、更准确，应当保留实现**。但运营若按文档理解
+// 「跨省就告警」，实际行为会不符预期 —— 所以 R3 的 Description 写的是速度口径，
+// 并另有「仅公网 IP」「只回溯 7 天」两条限制说明。
 //
 // # 为什么是 900
 //

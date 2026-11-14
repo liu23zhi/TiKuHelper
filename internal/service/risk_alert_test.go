@@ -981,6 +981,7 @@ func TestLoadRiskRulesFallsBackToCodeDefaults(t *testing.T) {
 		"wechat_phone_share":        3,
 		"impossible_travel":         900,
 		"credential_stuffing":       20,
+		"login_bruteforce":          10,
 	}
 	if len(rules) != len(wantThreshold) {
 		t.Fatalf("fallback rule count = %d, want %d（实际：%v）", len(rules), len(wantThreshold), ruleIDsOf(rules))
@@ -3272,7 +3273,9 @@ func TestRiskWarningDedupIsAtomicAcrossAllRules(t *testing.T) {
 		{ruleID: "wechat_phone_share", throttleSeconds: 24 * 60 * 60, subjectKey: "wechat_phone_share:phone:13800138000:2026-11-14T00:00:00+08:00"},
 		{ruleID: "impossible_travel", throttleSeconds: 24 * 60 * 60, subjectKey: "impossible_travel:user:99:2026-11-14T00:00:00+08:00"},
 		{ruleID: "credential_stuffing", throttleSeconds: 24 * 60 * 60, subjectKey: "credential_stuffing:ip:203.0.113.7:2026-11-14T00:00:00+08:00"},
-		{ruleID: "credential_stuffing", throttleSeconds: 24 * 60 * 60, subjectKey: "credential_stuffing:ip:203.0.113.7:2026-11-14T00:00:00+08:00"},
+		// R2 有**两个维度**，两个都要进并发钉（否则少一个维度的原子性回归）。
+		{ruleID: "login_bruteforce", throttleSeconds: 60 * 60, subjectKey: "login_bruteforce:account:42:2026-11-14T00:00:00+08:00"},
+		{ruleID: "login_bruteforce", throttleSeconds: 60 * 60, subjectKey: "login_bruteforce:ip:203.0.113.7:2026-11-14T00:00:00+08:00"},
 	}
 	for _, tc := range cases {
 		tc := tc

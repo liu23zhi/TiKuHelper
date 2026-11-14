@@ -146,6 +146,8 @@ func riskThresholdSpecs() []riskThresholdSpec {
 			Label: "异地瞬移速度上限", Kind: RiskThresholdKindAbsolute, DefaultValue: 900, Unit: "km/h", SyncRuleColumn: true},
 		{Key: "risk_rule_credential_stuffing_threshold", RuleID: entity.RiskRuleIDCredentialStuffing,
 			Label: "30 分钟内不同账号数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 20, Unit: "个", SyncRuleColumn: true},
+		{Key: "risk_rule_login_bruteforce_threshold", RuleID: entity.RiskRuleIDLoginBruteforce,
+			Label: "10 分钟内失败次数阈值", Kind: RiskThresholdKindAbsolute, DefaultValue: 10, Unit: "次", SyncRuleColumn: true},
 		// 占比项：**不**同步 risk_rules.threshold（见 SyncRuleColumn 的注释）。
 		{Key: RiskThresholdSettingKeyOffhoursShare, RuleID: entity.RiskRuleIDOffhoursActivity,
 			Label: "凌晨活动占比阈值", Kind: RiskThresholdKindRatio, DefaultValue: 0.8, Unit: "比例", SyncRuleColumn: false},

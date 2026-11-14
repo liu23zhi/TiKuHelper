@@ -57,6 +57,9 @@ export const RISK_RULE_OPTIONS = Object.freeze([
   // R9：同一 IP 在 30 分钟滑动窗口内试了 ≥20 个不同账号名
   // ⚠️ label 写明「只看失败」+「30 分钟」，因为前端不展示 Description
   { value: 'credential_stuffing', label: '撞库（仅失败登录 · 30 分钟）' },
+  // R2：同一账号或 IP 在 10 分钟滑动窗口内失败 ≥10 次
+  // ⚠️ label 写明「同账号或 IP」，因为这是它与「撞库」的分界（深度 vs 广度）
+  { value: 'login_bruteforce', label: '登录爆破（同账号或 IP · 10 分钟）' },
 ])
 
 const RISK_RULE_LABELS = Object.freeze(

@@ -38,6 +38,7 @@ func TestRiskThresholdSpecsMatchEntityDefaults(t *testing.T) {
 		"wechat_phone_share":        3,
 		"impossible_travel":         900,
 		"credential_stuffing":       20,
+		"login_bruteforce":          10,
 	}
 	// entity 侧：每条规则的默认阈值必须等于上面的字面量。
 	seen := map[string]bool{}
@@ -516,8 +517,8 @@ func TestRiskRuleStatesReflectConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("states: %v", err)
 	}
-	if len(states) != 12 {
-		t.Fatalf("规则数 = %d, want 12", len(states))
+	if len(states) != 13 {
+		t.Fatalf("规则数 = %d, want 13", len(states))
 	}
 	for _, state := range states {
 		if !state.Exists {

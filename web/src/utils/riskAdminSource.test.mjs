@@ -340,6 +340,15 @@ test('规则名与级别：未知值回落而不是抛错', () => {
   assert.equal(riskRuleLabel('wechat_phone_share'), '封禁账号共用号（仅当前绑定）')
   assert.equal(riskRuleLabel('impossible_travel'), '异地瞬移（仅公网 IP · 回溯 7 天）')
   assert.equal(riskRuleLabel('credential_stuffing'), '撞库（仅失败登录 · 30 分钟）')
+  assert.equal(riskRuleLabel('login_bruteforce'), '登录爆破（同账号或 IP · 10 分钟）')
+  // R2 与 R9 的 label 必须能区分（97 号 L318 要求「区别于 R2 的同账号多次」）。
+  {
+    const r2 = riskRuleLabel('login_bruteforce')
+    const r9 = riskRuleLabel('credential_stuffing')
+    assert.notEqual(r2, r9, 'R2 与 R9 的 label 不能相同')
+    assert.match(r2, /10 分钟/, 'R2 label 必须写明 10 分钟窗口')
+    assert.match(r9, /30 分钟/, 'R9 label 必须写明 30 分钟窗口')
+  }
   // R9 的两条边界必须同时出现在 label 里（前端不展示 Description）。
   {
     const r9 = riskRuleLabel('credential_stuffing')
@@ -385,7 +394,7 @@ test('R16 的「需 3 天历史」必须在用户可见的规则名里', () => {
 test('规则展示对任意 ruleId 通用（新规则不必改前端）', () => {
   // 注意：这里只能列**当前未登记**的 ruleId。若某条规则后来登记了（如 impossible_travel
   // 已在 R3 落地时登记），必须从本列表移除，否则断言会红 —— 这不是测试变弱，是它在正确报警。
-  for (const unregistered of ['login_bruteforce', 'answer_script', 'bonus_abuse', 'r99_future']) {
+  for (const unregistered of ['password_spray', 'answer_script', 'bonus_abuse', 'r99_future']) {
     assert.equal(
       riskRuleLabel(unregistered),
       unregistered,
