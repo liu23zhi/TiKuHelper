@@ -585,6 +585,12 @@ func SetAPIRouter(router *gin.Engine) {
 	// 表现为状态页恒显「暂无采样数据」——既不报错也不显示无权限，是那种「看起来在工作、
 	// 实际一次没成功」的形态。
 	apiRouter.GET("/service-status/summary", controller.AuthOrAccessToken, controller.GetServiceStatusSummary)
+	// 脱敏逐分钟序列（用户拍板：「让普通用户也能看曲线」）。
+	//
+	// 与 summary 并列、同一鉴权：普通用户能画曲线，但拿不到失败四分类
+	// （AuthFailures 在爆破时会尖峰，等于把「攻击正在生效」实时回显给攻击者）。
+	// 取舍与字段清单见 controller.publicStatusPoint 的注释。
+	apiRouter.GET("/service-status/series", controller.AuthOrAccessToken, controller.GetServiceStatusSeries)
 
 	// 工单附件删除（T-13 的配套入口）。删除与 blob ref_count 递减在同一事务里，
 	// 漏挂这条路由会让「上传能传、删不掉」—— 用户只能看着自己的图片占着配额。

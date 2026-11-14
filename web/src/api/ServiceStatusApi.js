@@ -18,3 +18,22 @@ export function getServiceStatusSummary() {
     retryPolicy: 'single',
   })
 }
+
+/**
+ * 脱敏逐分钟序列（普通用户可见）。
+ *
+ * 后端路由：apiRouter.GET("/service-status/series", controller.AuthOrAccessToken, ...)
+ *
+ * 返回点**只含** minute / totalRequests / successRequests / avgLatencyMs：
+ * 失败四分类（尤其 authFailures）刻意不给 —— 它在爆破/撞库时会尖峰，
+ * 等于把「攻击正在生效」实时回显给攻击者。取舍见 controller.publicStatusPoint。
+ *
+ * 页面把这条请求当**可失败**的增强：它失败时只隐藏曲线，摘要照常显示。
+ */
+export function getServiceStatusSeries() {
+  return request({
+    url: '/api/service-status/series',
+    method: 'get',
+    retryPolicy: 'single',
+  })
+}

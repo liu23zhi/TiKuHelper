@@ -72,6 +72,73 @@
         </div>
       </ConsoleSummaryGrid>
 
+      <!--
+        逐分钟曲线（脱敏序列端点）。这是**增强区块**：
+        series 失败时整块不渲染，摘要与说明照常显示 —— 曲线拿不到不该让整页崩。
+        失败四分类不在这里出现（后端不给），见 controller.publicStatusPoint 的取舍说明。
+      -->
+      <ConsolePanel
+        v-if="seriesView"
+        title="最近每分钟趋势"
+        description="按自然分钟聚合的请求量与成功率。只保留画曲线需要的量，不含失败原因分类。"
+        class="series-panel"
+      >
+        <div v-if="seriesView.isEmpty" class="series-empty" data-series-empty role="status">
+          <p class="empty-title">暂无逐分钟数据</p>
+          <p class="hint">服务刚重启时曲线需要重新积累，每分钟生成一个点。下面的摘要仍然有效。</p>
+        </div>
+        <template v-else>
+          <!-- 色带：每个点一根柱，高度按该分钟请求数占本序列峰值的比例。 -->
+          <div class="series-strip" data-series-strip role="img" :aria-label="seriesAriaLabel">
+            <span
+              v-for="(point, index) in seriesView.points"
+              :key="index"
+              class="series-bar"
+              :data-series-bar="index"
+              :data-rate-tone="point.rateText === '0%' ? 'danger' : 'normal'"
+              :style="{ height: point.barHeight + '%' }"
+              :title="`${point.timeText} · ${point.totalText} 次 · 成功率 ${point.rateText}`"
+            ></span>
+          </div>
+          <div class="series-axis">
+            <span>{{ seriesView.points[0].timeText }}</span>
+            <span>{{ seriesView.points[seriesView.points.length - 1].timeText }}</span>
+          </div>
+
+          <a-descriptions :column="1" size="small" bordered class="status-descriptions">
+            <a-descriptions-item label="已采样点数">
+              {{ seriesView.retainedText }} / {{ seriesView.capacityText }} 分钟
+            </a-descriptions-item>
+            <a-descriptions-item label="曲线起点">
+              {{ seriesView.restartedAtText || '服务启动时间不可用' }}
+            </a-descriptions-item>
+          </a-descriptions>
+
+          <!-- 分钟明细：只列最近 10 条，避免把 1440 行全铺在页面上。 -->
+          <table class="series-table" data-series-table>
+            <caption class="series-caption">最近 {{ recentPoints.length }} 分钟明细</caption>
+            <thead>
+              <tr>
+                <th scope="col">时间</th>
+                <th scope="col">请求</th>
+                <th scope="col">成功</th>
+                <th scope="col">成功率</th>
+                <th scope="col">平均延迟</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(point, index) in recentPoints" :key="index" :data-series-row="index">
+                <td>{{ point.timeText }}</td>
+                <td>{{ point.totalText }}</td>
+                <td>{{ formatCount(point.successRequests) }}</td>
+                <td>{{ point.rateText }}</td>
+                <td>{{ point.latencyText }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
+      </ConsolePanel>
+
       <ConsolePanel title="采样说明" description="这些数字的边界，避免误读。">
         <a-descriptions :column="1" size="small" bordered class="status-descriptions">
           <a-descriptions-item label="统计窗口">{{ view.windowText }}</a-descriptions-item>
@@ -104,11 +171,13 @@ import { useRoute } from 'vue-router'
 import ConsolePageHeading from '@/components/ConsolePageHeading.vue'
 import ConsolePanel from '@/components/ConsolePanel.vue'
 import ConsoleSummaryGrid from '@/components/ConsoleSummaryGrid.vue'
-import { getServiceStatusSummary } from '@/api/ServiceStatusApi'
+import { getServiceStatusSeries, getServiceStatusSummary } from '@/api/ServiceStatusApi'
 import { getCurrentUserLogoutEpoch, useCurrentUserDisplay } from '@/utils/currentUser'
 import { currentUserIdentity } from '@/utils/currentUserScope'
 import {
   buildServiceStatusView,
+  formatCount,
+  loadServiceStatusSeries,
   loadServiceStatusSummary,
   SERVICE_STATUS_SUMMARY_PATH,
 } from '@/utils/serviceStatusSummary.mjs'
@@ -124,7 +193,22 @@ export default {
     const loading = ref(false)
     const loaded = ref(false)
     const payload = shallowRef(null)
+    const seriesView = shallowRef(null)
     const errorMessage = ref('')
+
+    // 分钟明细只展示最近 N 条：1440 行全铺出来既慢又没人看。
+    const SERIES_TABLE_LIMIT = 10
+    const recentPoints = computed(() => {
+      const points = seriesView.value?.points ?? []
+      return points.slice(-SERIES_TABLE_LIMIT)
+    })
+
+    const seriesAriaLabel = computed(() => {
+      const points = seriesView.value?.points ?? []
+      if (points.length === 0) return '逐分钟请求量色带（暂无数据）'
+      const peak = points.reduce((max, point) => Math.max(max, point.totalRequests), 0)
+      return `逐分钟请求量色带，共 ${points.length} 个点，峰值 ${peak} 次请求每分钟`
+    })
 
     let alive = true
     let readVersion = 0
@@ -168,6 +252,11 @@ export default {
         }
         payload.value = result.data
         loaded.value = true
+        // 曲线是**增强**：并发取，失败只隐藏这一块，绝不影响已显示的摘要。
+        // 这里刻意 await 而不是 fire-and-forget，是为了让「刷新」按钮的 loading
+        // 覆盖整个刷新过程，避免用户看到曲线晚一拍才出现。
+        const series = await loadServiceStatusSeries(() => getServiceStatusSeries())
+        if (owns() && series.ok) seriesView.value = series.series
         return true
       } finally {
         if (owns()) loading.value = false
@@ -177,6 +266,7 @@ export default {
     const retire = () => {
       readVersion += 1
       payload.value = null
+      seriesView.value = null
       loaded.value = false
       loading.value = false
       errorMessage.value = ''
@@ -195,9 +285,13 @@ export default {
       loaded,
       errorMessage,
       view,
+      seriesView,
+      recentPoints,
+      seriesAriaLabel,
       heroHint,
       rateHint,
       load,
+      formatCount,
       summaryPath: SERVICE_STATUS_SUMMARY_PATH,
     }
   },
@@ -224,4 +318,23 @@ export default {
 .status-hero[data-status-tone='danger'] .status-hero__dot { background: var(--console-danger, #b91c1c); }
 .status-hero[data-status-tone='muted'] .status-hero__dot { background: var(--console-muted); }
 @media (max-width: 768px) { .status-hero { align-items: flex-start; } }
+
+/* 逐分钟色带：纯 CSS 柱状，不引入图表库（首屏体积已经很紧）。 */
+.series-panel { margin-bottom: 16px; }
+.series-strip { display: flex; align-items: flex-end; gap: 2px; height: 120px; padding: 8px 0; border-bottom: 1px solid var(--console-border); overflow-x: auto; }
+.series-bar { flex: 1 1 0; min-width: 2px; max-width: 24px; min-height: 2px; border-radius: 2px 2px 0 0; background: var(--console-primary); }
+/* 该分钟全部失败时用危险色标出来，与摘要里的「异常」语义一致。 */
+.series-bar[data-rate-tone='danger'] { background: var(--console-danger, #b91c1c); }
+.series-axis { display: flex; justify-content: space-between; gap: 12px; margin-top: 6px; color: var(--console-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.series-empty { padding: 8px 0; }
+.empty-title { margin: 0 0 4px; color: var(--console-text); font-size: 14px; font-weight: 600; }
+.series-table { width: 100%; margin-top: 16px; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.series-caption { padding-bottom: 8px; color: var(--console-muted); font-size: 13px; text-align: left; }
+.series-table th, .series-table td { padding: 8px 12px; border-bottom: 1px solid var(--console-border); text-align: left; font-size: 13px; }
+.series-table th { color: var(--console-muted); font-weight: 500; white-space: nowrap; }
+.series-table td { color: var(--console-text); }
+@media (max-width: 768px) {
+  .series-strip { height: 90px; }
+  .series-table th, .series-table td { padding: 6px 8px; }
+}
 </style>
