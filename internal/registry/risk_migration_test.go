@@ -354,3 +354,112 @@ func TestRiskRuleDescriptionFitsColumnWidth(t *testing.T) {
 			"请把 description 列宽改回 255 并更新本断言", maxRunes)
 	}
 }
+
+// TestSeedDefaultRiskRulesBackfillsMissingRulesOnExistingInstance 钉住「老实例必须能拿到新规则」。
+//
+// # 为什么需要它（2026-11-14 实测发现的静默失效）
+//
+// 原 `seedDefaultRiskRules` 是：
+//
+//	var count int64
+//	db.Model(&entity.RiskRule{}).Count(&count)
+//	if count > 0 { return }        // ← 只要表里有任意一行就整段跳过
+//
+// 后果：老实例（哪怕只有 3 条 debt_* 规则）**永远拿不到后来新增的行为规则**。
+// 而判定侧是 `if rule, ok := enabledRules[RuleID]; ok` —— 缺行 ⇒ ok=false ⇒ 规则直接跳过，
+// **不报错、不告警、日志里什么都没有**。
+//
+// 实测（开发库）：代码定义 17 条，库里只有 3 条 debt_*，缺失 14 条全部是行为规则。
+// 也就是说「14 条行为规则已落地」在真实实例上一条都不生效。
+//
+// 这条用例造的就是那个形态：库里已有一条历史规则，再跑一次种子，必须补齐其余全部。
+func TestSeedDefaultRiskRulesBackfillsMissingRulesOnExistingInstance(t *testing.T) {
+	db := newRiskMigrationTestDB(t)
+	if err := db.AutoMigrate(&entity.RiskRule{}); err != nil {
+		t.Fatalf("automigrate: %v", err)
+	}
+
+	// 模拟「老实例」：只存在一条历史规则，且管理员把它调成了停用 + 自定义阈值。
+	legacy := entity.RiskRule{
+		RuleID:    entity.RiskRuleIDDebtUser,
+		Name:      "历史用户欠款",
+		Severity:  "high",
+		Enabled:   false,
+		Threshold: 999,
+	}
+	if err := db.Create(&legacy).Error; err != nil {
+		t.Fatalf("seed legacy rule: %v", err)
+	}
+	// ⚠️ 必须**两步**：Enabled 的 tag 是 `default:true`，GORM 会把等于默认值的字段
+	// 从 INSERT 里省略，所以 `Create(&RiskRule{Enabled:false})` 会被静默写成 true。
+	// 这条陷阱 `entity/risk.go:431-434` 早就记过（「若将来要新建一条停用规则，
+	// 必须走 Create 之后 Update 两步」）—— 本用例正是第一个踩到它的场景。
+	if err := db.Model(&entity.RiskRule{}).Where("rule_id = ?", entity.RiskRuleIDDebtUser).
+		UpdateColumn("enabled", false).Error; err != nil {
+		t.Fatalf("disable legacy rule: %v", err)
+	}
+	// 前置自检：确认停用真的落库了，否则下面的「不被覆盖」断言会恒真。
+	var precheck entity.RiskRule
+	if err := db.Session(&gorm.Session{NewDB: true}).
+		Where("rule_id = ?", entity.RiskRuleIDDebtUser).First(&precheck).Error; err != nil {
+		t.Fatalf("precheck: %v", err)
+	}
+	if precheck.Enabled {
+		t.Fatalf("前置失效：历史规则仍是启用状态，本用例测不出「配置不被覆盖」")
+	}
+
+	seedDefaultRiskRules(db)
+
+	// 1) 全部代码默认规则都必须存在。
+	defaults := entity.DefaultRiskRules()
+	var rows []entity.RiskRule
+	if err := db.Session(&gorm.Session{NewDB: true}).Find(&rows).Error; err != nil {
+		t.Fatalf("load rules: %v", err)
+	}
+	got := make(map[string]entity.RiskRule, len(rows))
+	for _, r := range rows {
+		got[r.RuleID] = r
+	}
+	if len(rows) != len(defaults) {
+		t.Fatalf("规则行数 = %d，期望 %d（代码默认规则数）—— 缺失说明增量补齐没生效",
+			len(rows), len(defaults))
+	}
+	for _, d := range defaults {
+		if _, ok := got[d.RuleID]; !ok {
+			t.Errorf("缺少规则 %q —— 老实例上这条规则会静默不生效", d.RuleID)
+		}
+	}
+
+	// 2) 历史那一条**不能被改动**：管理员调过的 enabled/threshold 必须原样保留。
+	//    这一条是「增量补齐」与「整表重建」的分界线。
+	kept := got[entity.RiskRuleIDDebtUser]
+	if kept.Enabled {
+		t.Errorf("历史规则的 enabled 被种子覆盖成 true，管理员停用的配置丢了")
+	}
+	if kept.Threshold != 999 {
+		t.Errorf("历史规则的 threshold = %v，期望 999（管理员自定义值不能被覆盖）", kept.Threshold)
+	}
+	if kept.Name != "历史用户欠款" {
+		t.Errorf("历史规则的 name = %q，期望保留原值", kept.Name)
+	}
+
+	// 3) 幂等：再跑一次不产生任何新行。
+	seedDefaultRiskRules(db)
+	var after int64
+	if err := db.Model(&entity.RiskRule{}).Count(&after).Error; err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if after != int64(len(defaults)) {
+		t.Fatalf("重复执行后行数 = %d，期望 %d（种子必须幂等）", after, len(defaults))
+	}
+
+	// 4) 新增的规则必须是启用的 —— 否则补齐了也不生效。
+	for _, d := range defaults {
+		if d.RuleID == entity.RiskRuleIDDebtUser {
+			continue
+		}
+		if !got[d.RuleID].Enabled {
+			t.Errorf("补齐的规则 %q 未启用，仍然不会生效", d.RuleID)
+		}
+	}
+}

@@ -174,18 +174,39 @@ func applyRiskWarningsSchema(db *gorm.DB) (bool, error) {
 // ⚠️ 遍历 entity.DefaultRiskRules()（欠款 + 行为）而不是只遍历欠款那一个切片：
 // 漏掉一条 = 那条规则在 risk_rules 里没有行，运营在后台看不到也改不了它
 // （判定仍会按代码默认值跑，但「看不到却生效」是最难排查的形态）。
+// seedDefaultRiskRules 把**缺失的**代码默认规则补进 risk_rules。
+//
+// ⚠️ 2026-11-14 修正：原实现是 `if count > 0 { return }` —— 只要表里有任意一行就整段跳过。
+// 后果很严重且**完全静默**：
+//
+//	老实例（哪怕只有 3 条 debt_* 规则）永远拿不到后来新增的行为规则。
+//	而判定侧是 `if rule, ok := enabledRules[RuleID]; ok` —— 缺行 ⇒ ok=false ⇒ 规则直接跳过，
+//	不报错、不告警、日志里什么都没有。14 条行为规则写成「已落地」，实际一条都不生效。
+//
+// 实测（开发库）：代码定义 17 条，库里只有 3 条 debt_*，缺失 14 条全部是行为规则。
+//
+// 正确策略是**按 rule_id 增量补齐**：
+//   - 已存在的行**不动**（管理员可能调过 enabled / threshold，覆盖等于抹掉他的配置）
+//   - 只插入缺的（新规则上线时自动补齐）
+//   - 幂等：重复启动不会重复插入（rule_id 有唯一索引 + 先查后插在同一次遍历内）
 func seedDefaultRiskRules(db *gorm.DB) {
-	var count int64
-	if err := db.Model(&entity.RiskRule{}).Count(&count).Error; err != nil {
-		logger.SysLog(fmt.Sprintf("读取风控规则表行数失败（跳过种子数据）：%v", err))
+	existing := make(map[string]struct{}, 32)
+	var ruleIDs []string
+	if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.RiskRule{}).
+		Pluck("rule_id", &ruleIDs).Error; err != nil {
+		logger.SysLog(fmt.Sprintf("读取风控规则 rule_id 失败（跳过种子数据）：%v", err))
 		return
 	}
-	if count > 0 {
-		return
+	for _, id := range ruleIDs {
+		existing[id] = struct{}{}
 	}
-	defaults := entity.DefaultRiskRules()
-	rows := make([]entity.RiskRule, 0, len(defaults))
-	for _, item := range defaults {
+
+	rows := make([]entity.RiskRule, 0, len(entity.DefaultRiskRules()))
+	for _, item := range entity.DefaultRiskRules() {
+		if _, ok := existing[item.RuleID]; ok {
+			// 已存在：**不改**。管理员可能已经调过 enabled/threshold。
+			continue
+		}
 		rows = append(rows, entity.RiskRule{
 			RuleID:          item.RuleID,
 			Name:            item.Name,
@@ -196,11 +217,15 @@ func seedDefaultRiskRules(db *gorm.DB) {
 			Description:     item.Description,
 		})
 	}
+	if len(rows) == 0 {
+		return
+	}
 	if err := db.Create(&rows).Error; err != nil {
 		logger.SysLog(fmt.Sprintf("写入风控规则种子失败（管理员可在后台补）：%v", err))
 		return
 	}
-	logger.SysLog(fmt.Sprintf("已写入 %d 条风控规则种子", len(rows)))
+	logger.SysLog(fmt.Sprintf("已补齐 %d 条缺失的风控规则种子（共 %d 条代码默认规则）",
+		len(rows), len(entity.DefaultRiskRules())))
 }
 
 // ensureRiskRuleIndexes 保证 risk_rules 的 rule_id 唯一索引存在。
