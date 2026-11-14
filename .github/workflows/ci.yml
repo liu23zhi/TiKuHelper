@@ -471,26 +471,21 @@ jobs:
       # CPython 3.11 + PyInstaller 6.x + apsw 原生扩展），Linux runner 造不出来；
       # 而 tools/userexam-crypto/dist/* 被 .gitignore 排除，checkout 后必然不存在。
       # 之前 docker 作业因此在「缺 exe」上永久红 —— 假红比跳过更糟。
-      - name: 安装 apsw-sqlite3mc 原生运行时
+      # 一条命令完成全部：Python 探测 → PyInstaller 安装 → apsw 安装 → 打包 → 双运行时自检。
+      #
+      # ⚠️ 不要在 CI 里预先 pip install apsw 或 pyinstaller：
+      # build-exe.ps1 内部已经做了这两件事（L112 装 apsw 到 _vendor、L101 装 pyinstaller），
+      # 而且它是用 `py -3.11 -m pip` 装的 —— 与 setup-python 装到哪个解释器无关。
+      # 我第一版在 CI 里预装，结果脚本第 122 行 `-m PyInstaller` 找不到包而失败：
+      # 预装的进了 setup-python 的环境，脚本调的是 py launcher 的 3.11，两者不是同一个 site-packages。
+      #
+      # 必须用 powershell.exe 5.1（不是 pwsh）：脚本 NOTES 说明 pwsh 7 会掩盖 -c 引号缺陷，
+      # 导致「探测通过但其实是坏的」这种假绿。
+      - name: 构建单文件 userexam-crypto.exe（脚本内含全部依赖安装）
         working-directory: tools/userexam-crypto
         shell: pwsh
+        timeout-minutes: 25
         run: |
-          # requirements.txt 里写死了版本与目标目录：--target .\_vendor
-          # （脚本的 _resource_root() 去那里找 apsw 的 .pyd）。
-          py -3.11 -m pip install --disable-pip-version-check --target .\_vendor -r requirements.txt
-          if ($LASTEXITCODE -ne 0) { throw "apsw-sqlite3mc 安装失败（exit $LASTEXITCODE）" }
-          $pyd = ".\_vendor\apsw\__init__.cp311-win_amd64.pyd"
-          if (-not (Test-Path $pyd)) { throw "缺少原生扩展：$pyd（apsw-sqlite3mc 未正确安装）" }
-          Write-Host "apsw pyd = $((Get-Item $pyd).Length) bytes"
-
-      - name: 构建单文件 userexam-crypto.exe
-        working-directory: tools/userexam-crypto
-        shell: pwsh
-        timeout-minutes: 20
-        run: |
-          py -3.11 -m pip install --disable-pip-version-check "pyinstaller>=6,<7"
-          if ($LASTEXITCODE -ne 0) { throw "PyInstaller 安装失败（exit $LASTEXITCODE）" }
-          # 必须用 powershell.exe 5.1（脚本 NOTES 说明：pwsh 7 会掩盖 -c 引号缺陷）。
           $exe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
           & $exe -NoProfile -ExecutionPolicy Bypass -File .\build-exe.ps1
           if ($LASTEXITCODE -ne 0) { throw "build-exe.ps1 失败（exit $LASTEXITCODE）" }
@@ -498,9 +493,8 @@ jobs:
           if (-not (Test-Path $out)) { throw "构建产物不存在：$out" }
           $size = (Get-Item $out).Length
           Write-Host "userexam-crypto.exe = $size bytes"
-          # 15 MB 量级的单文件；明显偏小说明 PyInstaller 降级成了文件夹式构建。
+          # 15 MB 量级的单文件；明显偏小说明降级成了文件夹式构建（脚本 L129 也会查，这里双保险）。
           if ($size -lt 5MB) { throw "产物仅 $size 字节，疑似不是单文件打包" }
-          # 必须是 Windows PE（MZ），不是脚本壳。
           $head = [System.IO.File]::ReadAllBytes($out)[0..1]
           if ($head[0] -ne 0x4D -or $head[1] -ne 0x5A) { throw "产物不是 PE 文件（期望 MZ 头）" }
 

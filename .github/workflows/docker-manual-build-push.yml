@@ -38,24 +38,12 @@ jobs:
           python-version: '3.11'
           architecture: 'x64'
 
-      - name: 安装 apsw-sqlite3mc 原生运行时
+      # 脚本内部自己装 PyInstaller 与 apsw（用 py -3.11 -m pip），
+      # 所以在 CI 里预装是错的：会装进 setup-python 的环境，而脚本调的是 py launcher 的 3.11。
+      - name: 构建单文件 userexam-crypto.exe（脚本内含全部依赖安装）
         working-directory: tools/userexam-crypto
         shell: pwsh
         run: |
-          # requirements.txt 已写死版本与目标目录（脚本的 _resource_root() 去 .\_vendor 找 .pyd）。
-          py -3.11 -m pip install --disable-pip-version-check --target .\_vendor -r requirements.txt
-          if ($LASTEXITCODE -ne 0) { throw "apsw-sqlite3mc 安装失败（exit $LASTEXITCODE）" }
-          $pyd = ".\_vendor\apsw\__init__.cp311-win_amd64.pyd"
-          if (-not (Test-Path $pyd)) { throw "缺少原生扩展：$pyd" }
-          Write-Host "apsw pyd = $((Get-Item $pyd).Length) bytes"
-
-      - name: 构建单文件 userexam-crypto.exe
-        working-directory: tools/userexam-crypto
-        shell: pwsh
-        run: |
-          py -3.11 -m pip install --disable-pip-version-check "pyinstaller>=6,<7"
-          if ($LASTEXITCODE -ne 0) { throw "PyInstaller 安装失败（exit $LASTEXITCODE）" }
-          # 必须用 powershell.exe 5.1：脚本 NOTES 说明 pwsh 7 会掩盖 -c 引号缺陷。
           $exe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
           & $exe -NoProfile -ExecutionPolicy Bypass -File .\build-exe.ps1
           if ($LASTEXITCODE -ne 0) { throw "build-exe.ps1 失败（exit $LASTEXITCODE）" }

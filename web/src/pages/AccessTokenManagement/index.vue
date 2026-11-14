@@ -219,6 +219,7 @@ import {
   deleteAccessToken,
 } from '@/api/TikuComponentApi';
 import { useCurrentUserDisplay, isAdminUser, getCurrentUserLogoutEpoch } from '@/utils/currentUser';
+import { useRoute } from 'vue-router';
 import {
   buildAccessTokenBalanceAlert,
   buildAccessTokenListParams,
@@ -396,7 +397,30 @@ const formState = ref({
       if (logout !== observedLogoutEpoch) { clearEditorFailure(); clearDeleteFailure(); clearNameError() }
       observedLogoutEpoch = logout
     }, { flush: 'sync' })
-    const isAdmin = computed(() => isAdminUser(currentUser.value))
+    // 视图模式由**入口**决定，不是只由角色决定（2026-11-14 用户诉求：
+    // 「令牌管理是管理员的，显示所有令牌；我的令牌只显示当前账号的令牌」）。
+    //
+    // 两条路由共用本组件（与 scripts / script-admin 同一范式）：
+    //     my-tokens   meta.viewMode='self'  → 我的令牌（只列自己的）
+    //     token-admin meta.viewMode='admin' → 令牌管理（列全站）
+    //
+    // 为什么必须先看 viewMode 再退回角色：管理员也有自己的令牌，从「我的令牌」
+    // 进来时**必须**看到自己的视图而不是全站视图 —— 所以「是不是管理员」不足以
+    // 决定视图，「从哪个入口进来的」才是。仅当路由没声明 viewMode 时才退回按角色判，
+    // 保证旧入口/其它复用点的行为不劣化。
+    //
+    // 这里**不做授权**：能否拿到全站数据由后端 scope=all + isAdminUser 决定
+    // （service.ListAllAccessTokensWithDB 内部还会再判一次），
+    // 前端 viewMode 只决定「看哪个视图」。
+    const routeViewMode = computed(() => {
+      const mode = route?.meta?.viewMode
+      return typeof mode === 'string' ? mode : ''
+    })
+    const isAdmin = computed(() => {
+      if (routeViewMode.value === 'self') return false
+      if (routeViewMode.value === 'admin') return true
+      return isAdminUser(currentUser.value)
+    })
     const isCurrentListFailure = (failure, context) => canLoadForCurrentUser()
       && Boolean(failure) && failure === listFailure.value && context === listFailureContextKey.value
     const isCurrentEditorFailure = (failure, context) => canLoadForCurrentUser() && getCurrentUserLogoutEpoch() === editorFailureLogoutEpoch.value && visible.value

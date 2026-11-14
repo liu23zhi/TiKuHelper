@@ -226,9 +226,29 @@ const routes = [
         component: SystemSettings,
       },
       {
+        // 我的令牌（普通用户可见区）。viewMode: 'self' 让**管理员**从这个入口
+        // 进来时看到的是自己的令牌，而不是「令牌管理」的全站视图。
+        // 与 scripts（我的脚本）/ script-admin（脚本管理）同一范式。
+        path: 'my-tokens',
+        name: 'my-tokens',
+        component: AccessTokenManagement,
+        meta: { viewMode: 'self' },
+      },
+      {
+        // 令牌管理（仅管理员可见区）。独立 name 才能被侧边栏单独选中，
+        // 也才能登记进 ADMIN_ONLY_ROUTE_NAMES（那里能看全站令牌、能改别人的额度上限）。
+        path: 'token-admin',
+        name: 'token-admin',
+        component: AccessTokenManagement,
+        meta: { viewMode: 'admin' },
+      },
+      {
+        // 旧入口，保留 301 式重定向而不是删除：用户在书签/浏览器历史里
+        // 留着 /adapter/access-tokens，直接 404 等于"页面凭空消失"。
+        // 按角色分流到对应的新入口 —— 普通用户去 my-tokens，管理员去 token-admin。
         path: 'access-tokens',
         name: 'access-tokens',
-        component: AccessTokenManagement,
+        redirect: () => (isAdminUser(getStoredCurrentUser()) ? '/adapter/token-admin' : '/adapter/my-tokens'),
       },
       {
         // 我的脚本（普通用户可见区）。viewMode: 'self' 让**管理员**从这个入口
@@ -370,6 +390,10 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   // 成对存在。管理端那侧含全站数据与写权限，普通用户直敲 URL 必须被挡。
   'script-admin',
   'billing-admin',
+  // 令牌管理 / 我的令牌：与 script-admin / scripts 同一对。
+  // token-admin 能看全站令牌、能改别人的额度上限，普通用户直敲 URL 必须被挡。
+  // 注意 my-tokens **不能**加进来 —— 它是普通用户自己的入口。
+  'token-admin',
   // 第 8 轮新增五个管理页。逐项说明为什么必须挡住「直接敲 URL」：
   //   user-portrait     —— 全站用户行为聚合，98 §0 明确仅管理员（四层权限的第 ④ 层）。
   //   risk-admin        —— 告警里带触发证据快照（IP / 用户 / 规则），属敏感运营数据。
