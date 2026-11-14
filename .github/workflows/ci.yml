@@ -285,6 +285,7 @@ jobs:
   docker:
     name: Docker 镜像构建
     runs-on: ubuntu-24.04
+    needs: [probe-windows]
     timeout-minutes: 30
     outputs:
       artifact-url: ${{ steps.upload.outputs.artifact-url }}
@@ -293,6 +294,36 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+
+      # 下载 probe-windows 构建好的 exe 并放到 Dockerfile 期望的位置。
+      #
+      # 不下载的后果：Dockerfile 的 WITH_USEREXAM_TOOL=1 分支会因缺文件 exit 1，
+      # 而这不是代码问题 —— 是「CI 拿不到 gitignore 的二进制」这个结构性事实。
+      # 所以正确做法是在 CI 里真把它造出来，而不是放宽 Dockerfile 的门槛。
+      - name: 下载并放置 userexam-crypto.exe
+        uses: actions/download-artifact@v7
+        with:
+          name: userexam-crypto-exe-${{ github.sha }}
+          path: tools/userexam-crypto/dist
+
+      - name: 校验 exe 已就位（缺了要立刻红在这里，而不是等 docker build 报错）
+        shell: bash
+        run: |
+          set -euo pipefail
+          f=tools/userexam-crypto/dist/userexam-crypto.exe
+          if [[ ! -s "$f" ]]; then
+            echo "::error title=缺产物::probe-windows 没有产出 $f。docker build 会因此失败。"
+            exit 1
+          fi
+          size=$(stat -c%s "$f")
+          echo "userexam-crypto.exe = $size bytes"
+          if [[ $size -lt 5000000 ]]; then
+            echo "::error title=产物异常::exe 仅 $size 字节，疑似不是单文件打包。"
+            exit 1
+          fi
+          head -c 2 "$f" | xxd | grep -q "4d5a" || head -c 2 "$f" | od -An -tx1 | grep -qi "4d 5a" \
+            || { echo "::error title=产物异常::不是 PE 文件（期望 MZ 头）"; exit 1; }
+
 
       - name: 配置 Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -433,6 +464,54 @@ jobs:
         run: |
           py -3.11 -m unittest test_build_exe -v
           if ($LASTEXITCODE -ne 0) { throw "test_build_exe 失败" }
+
+      # 真正构建 exe 并上传，供 docker 作业内嵌。
+      #
+      # 为什么必须在 CI 里造：exe 由 PyInstaller 在 Windows 上打包（要求 64 位
+      # CPython 3.11 + PyInstaller 6.x + apsw 原生扩展），Linux runner 造不出来；
+      # 而 tools/userexam-crypto/dist/* 被 .gitignore 排除，checkout 后必然不存在。
+      # 之前 docker 作业因此在「缺 exe」上永久红 —— 假红比跳过更糟。
+      - name: 安装 apsw-sqlite3mc 原生运行时
+        working-directory: tools/userexam-crypto
+        shell: pwsh
+        run: |
+          # requirements.txt 里写死了版本与目标目录：--target .\_vendor
+          # （脚本的 _resource_root() 去那里找 apsw 的 .pyd）。
+          py -3.11 -m pip install --disable-pip-version-check --target .\_vendor -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw "apsw-sqlite3mc 安装失败（exit $LASTEXITCODE）" }
+          $pyd = ".\_vendor\apsw\__init__.cp311-win_amd64.pyd"
+          if (-not (Test-Path $pyd)) { throw "缺少原生扩展：$pyd（apsw-sqlite3mc 未正确安装）" }
+          Write-Host "apsw pyd = $((Get-Item $pyd).Length) bytes"
+
+      - name: 构建单文件 userexam-crypto.exe
+        working-directory: tools/userexam-crypto
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          py -3.11 -m pip install --disable-pip-version-check "pyinstaller>=6,<7"
+          if ($LASTEXITCODE -ne 0) { throw "PyInstaller 安装失败（exit $LASTEXITCODE）" }
+          # 必须用 powershell.exe 5.1（脚本 NOTES 说明：pwsh 7 会掩盖 -c 引号缺陷）。
+          $exe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          & $exe -NoProfile -ExecutionPolicy Bypass -File .\build-exe.ps1
+          if ($LASTEXITCODE -ne 0) { throw "build-exe.ps1 失败（exit $LASTEXITCODE）" }
+          $out = ".\dist\userexam-crypto.exe"
+          if (-not (Test-Path $out)) { throw "构建产物不存在：$out" }
+          $size = (Get-Item $out).Length
+          Write-Host "userexam-crypto.exe = $size bytes"
+          # 15 MB 量级的单文件；明显偏小说明 PyInstaller 降级成了文件夹式构建。
+          if ($size -lt 5MB) { throw "产物仅 $size 字节，疑似不是单文件打包" }
+          # 必须是 Windows PE（MZ），不是脚本壳。
+          $head = [System.IO.File]::ReadAllBytes($out)[0..1]
+          if ($head[0] -ne 0x4D -or $head[1] -ne 0x5A) { throw "产物不是 PE 文件（期望 MZ 头）" }
+
+      - name: 上传 userexam-crypto.exe 供 docker 作业使用
+        uses: actions/upload-artifact@v7
+        with:
+          name: userexam-crypto-exe-${{ github.sha }}
+          path: tools/userexam-crypto/dist/userexam-crypto.exe
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
 
   # SQLite → MariaDB 迁移链路与「真实数据库」迁移测试。
   #

@@ -13,7 +13,71 @@ env:
   DOCKER_FILE_PATH: Dockerfile
 
 jobs:
+  # 先造 exe，再构建镜像。
+  #
+  # 为什么必须在 CI 里造：tools/userexam-crypto/dist/* 被 .gitignore 排除，
+  # checkout 后必然不存在；而 Dockerfile 的 WITH_USEREXAM_TOOL=1（默认）
+  # 会在缺文件时 exit 1。若只在 Linux runner 上跑构建，这个 workflow 会
+  # 永久失败 —— 而失败原因看起来像「Dockerfile 坏了」，实际是「拿不到 gitignore 的二进制」。
+  #
+  # exe 必须由 PyInstaller 在 Windows 上打包（64 位 CPython 3.11 + PyInstaller 6.x
+  # + apsw 原生扩展），Linux 造不出来。
+  build-userexam-exe:
+    name: 构建 userexam-crypto.exe
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: 拉取仓库代码
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: 配置 Python 3.11
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+          architecture: 'x64'
+
+      - name: 安装 apsw-sqlite3mc 原生运行时
+        working-directory: tools/userexam-crypto
+        shell: pwsh
+        run: |
+          # requirements.txt 已写死版本与目标目录（脚本的 _resource_root() 去 .\_vendor 找 .pyd）。
+          py -3.11 -m pip install --disable-pip-version-check --target .\_vendor -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw "apsw-sqlite3mc 安装失败（exit $LASTEXITCODE）" }
+          $pyd = ".\_vendor\apsw\__init__.cp311-win_amd64.pyd"
+          if (-not (Test-Path $pyd)) { throw "缺少原生扩展：$pyd" }
+          Write-Host "apsw pyd = $((Get-Item $pyd).Length) bytes"
+
+      - name: 构建单文件 userexam-crypto.exe
+        working-directory: tools/userexam-crypto
+        shell: pwsh
+        run: |
+          py -3.11 -m pip install --disable-pip-version-check "pyinstaller>=6,<7"
+          if ($LASTEXITCODE -ne 0) { throw "PyInstaller 安装失败（exit $LASTEXITCODE）" }
+          # 必须用 powershell.exe 5.1：脚本 NOTES 说明 pwsh 7 会掩盖 -c 引号缺陷。
+          $exe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          & $exe -NoProfile -ExecutionPolicy Bypass -File .\build-exe.ps1
+          if ($LASTEXITCODE -ne 0) { throw "build-exe.ps1 失败（exit $LASTEXITCODE）" }
+          $out = ".\dist\userexam-crypto.exe"
+          if (-not (Test-Path $out)) { throw "构建产物不存在：$out" }
+          $size = (Get-Item $out).Length
+          Write-Host "userexam-crypto.exe = $size bytes"
+          if ($size -lt 5MB) { throw "产物仅 $size 字节，疑似不是单文件打包" }
+          $head = [System.IO.File]::ReadAllBytes($out)[0..1]
+          if ($head[0] -ne 0x4D -or $head[1] -ne 0x5A) { throw "产物不是 PE 文件（期望 MZ 头）" }
+
+      - name: 上传 userexam-crypto.exe
+        uses: actions/upload-artifact@v7
+        with:
+          name: userexam-crypto-exe
+          path: tools/userexam-crypto/dist/userexam-crypto.exe
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
   build-and-push:
+    needs: [build-userexam-exe]
     runs-on: ubuntu-latest
 
     steps:
@@ -25,6 +89,26 @@ jobs:
         with:
           submodules: true   # 拉取子模块
           fetch-depth: 0     # 保证能获取完整历史，避免浅克隆
+
+      # 把 build-userexam-exe 产出的 exe 放到 Dockerfile 期望的位置。
+      # 不下载的话，Dockerfile 的 WITH_USEREXAM_TOOL=1 分支会 exit 1。
+      - name: 下载 userexam-crypto.exe
+        uses: actions/download-artifact@v7
+        with:
+          name: userexam-crypto-exe
+          path: tools/userexam-crypto/dist
+
+      - name: 校验 exe 已就位
+        shell: bash
+        run: |
+          set -euo pipefail
+          f=tools/userexam-crypto/dist/userexam-crypto.exe
+          if [[ ! -s "$f" ]]; then
+            echo "::error title=缺产物::没有下载到 $f，docker build 会因此失败。"
+            exit 1
+          fi
+          echo "userexam-crypto.exe = $(stat -c%s "$f") bytes"
+
 
       - name: 生成时间戳 TAG
         id: time
