@@ -174,7 +174,7 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/uapi/status/usage", controller.Auth, middleware.RequireAdmin, controller.UAPIStatusUsage)
 	apiRouter.POST("/uapi/search/aggregate", controller.Auth, middleware.RequireAdmin, controller.UAPISearchAggregate)
 
-	apiRouter.POST("/search", controller.SearchWithIdempotency)
+	apiRouter.POST("/search", middleware.DeviceLimit(), controller.SearchWithIdempotency)
 	apiRouter.POST("/tiku/evidence", controller.AuthOrAccessToken, controller.UploadTikuAnswerEvidence)
 	// Browser extension packages are publicly readable so native clients can
 	// bootstrap before login; only administrators can force an upstream refresh.
@@ -183,7 +183,7 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.POST("/extensions/:source/refresh", controller.Auth, middleware.RequireAdmin, controller.RefreshExtension)
 	apiRouter.GET("/extensions/config", controller.Auth, middleware.RequireAdmin, controller.ExtensionConfiguration)
 	apiRouter.PUT("/extensions/config", controller.Auth, middleware.RequireAdmin, controller.UpdateExtensionConfiguration)
-	apiRouter.POST("/search/tasks", controller.AuthAccessToken, controller.CreateSearchTask)
+	apiRouter.POST("/search/tasks", controller.AuthAccessToken, middleware.DeviceLimit(), controller.CreateSearchTask)
 	apiRouter.GET("/search/health", controller.AuthAccessToken, controller.GetSearchTaskHealth)
 	apiRouter.GET("/search/status", controller.AuthAccessToken, controller.GetSearchTaskStatus)
 
@@ -205,12 +205,12 @@ func SetAPIRouter(router *gin.Engine) {
 		middleware.BodyLimit((24<<20)+65536),
 		middleware.WhitelistIP(),
 	)
-	legacySearchRouter.POST("/search", controller.SearchWithIdempotency)
-	legacySearchRouter.POST("/search/tasks", controller.AuthAccessToken, controller.CreateSearchTask)
+	legacySearchRouter.POST("/search", middleware.DeviceLimit(), controller.SearchWithIdempotency)
+	legacySearchRouter.POST("/search/tasks", controller.AuthAccessToken, middleware.DeviceLimit(), controller.CreateSearchTask)
 	legacySearchRouter.GET("/search/health", controller.AuthAccessToken, controller.GetSearchTaskHealth)
 	legacySearchRouter.GET("/search/status", controller.AuthAccessToken, controller.GetSearchTaskStatus)
-	apiRouter.POST("/ai-fallback", controller.AuthOrAccessToken, controller.AIFallback)
-	apiRouter.POST("/ai-fallback/tasks", controller.AuthOrAccessToken, controller.CreateAIFallbackTask)
+	apiRouter.POST("/ai-fallback", controller.AuthOrAccessToken, middleware.DeviceLimit(), controller.AIFallback)
+	apiRouter.POST("/ai-fallback/tasks", controller.AuthOrAccessToken, middleware.DeviceLimit(), controller.CreateAIFallbackTask)
 	apiRouter.GET("/ai-fallback/status", controller.AuthOrAccessToken, controller.GetAIFallbackTaskStatus)
 	apiRouter.POST("/parser", controller.Auth, middleware.RequireAdmin, controller.Parser)
 
@@ -301,6 +301,17 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.DELETE("/user/devices/blocks/:id", controller.Auth, controller.UserDeviceUnblock)
 	apiRouter.GET("/user/device-limit", controller.Auth, controller.UserDeviceLimitGet)
 	apiRouter.PUT("/user/device-limit", controller.Auth, controller.UserDeviceLimitPut)
+	// 配额查询（141 §6.1）。⚠️ 必须用 **AuthOrAccessToken**，不是 Auth：
+	// exe 只持 adapter key（windows/data/config.json 的 common.settings.tiku-adapter.key），
+	// 没有 JWT 也没有登录 cookie；挂 Auth 会让 exe 恒 401，表现只是
+	// 「exe 首页的可用设备数一直是空的」—— 不报错、不告警，最难自查的一类回退。
+	// 上面六条不动的理由：它们的消费方是 Web 前端（登录态），且会改 last_seen_at /
+	// 撤销行等副作用，放宽鉴权面没有收益。本端点只读。
+	apiRouter.GET("/user/device-quota", controller.AuthOrAccessToken, controller.DeviceQuota)
+	// exe 会话数上报（141 §6.2）。鉴权用 AuthOrAccessToken 而不是 Auth：exe 只持
+	// adapter key（access_tokens 表里的令牌），没有登录 JWT —— 挂 Auth 会让真实客户端
+	// 恒 401，表现是「exe 从不上报会话数」，且不报任何错（与 /tiku/evidence 同一取舍）。
+	apiRouter.POST("/user/device-sessions", controller.AuthOrAccessToken, controller.ReportDeviceSessions)
 
 	apiRouter.GET("/user", controller.Auth, controller.UserList)       // 自己创建的用户列表
 	apiRouter.POST("/user", controller.Auth, controller.CreateUser)    // 创建用户

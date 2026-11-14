@@ -37,7 +37,7 @@ type devicePoolBindingColumnSpec struct {
 	ddl    string
 }
 
-// devicePoolBindingColumnSpecs 是 137 §3.2 要求的 5 列。
+// devicePoolBindingColumnSpecs 是 137 §3.2 要求的 5 列 + 141 §3.1 要求的 2 列。
 //
 // 逐列对上 137 的字段表（顺序与文档一致）：
 //
@@ -46,6 +46,11 @@ type devicePoolBindingColumnSpec struct {
 //	device_label   VARCHAR(64)  NOT NULL DEFAULT ''（文档写 DEFAULT ''，见下方说明）
 //	revoked_at     DATETIME     NULL
 //	revoked_reason VARCHAR(32)  NOT NULL DEFAULT ''
+//
+// 第二批（141 §3.1）追加两列：
+//
+//	client_instance VARCHAR(64) NOT NULL DEFAULT ''   这次运行的实例标识（R3）
+//	session_count   INT         NOT NULL DEFAULT 0    exe 当前活跃会话数（R6/R7）
 //
 // ⚠️ 与 137 的一处**刻意偏差**：文档 §3.2 里 device_label 写的是
 // `VARCHAR(64) NOT NULL DEFAULT ''`（在代码块里），而任务书写的是
@@ -57,21 +62,34 @@ type devicePoolBindingColumnSpec struct {
 // 「占槽位」的唯一判据（137 §3.2），若用 '0000-00-00' 或零值时间，
 // MySQL 严格模式会直接报错，SQLite 则会静默接受 —— 两地行为不一致，
 // 而这类差异只在生产暴露。
+//
+// ⚠️ session_count 的默认值必须是 0 而不是「上次的峰值」类语义：
+// `used = Σ max(1, session_count)` 要在「exe 全关」时回落到 1（R7），
+// 而回落的前提就是这一列能真的回到 0。把默认值或写入口做成「只增不减」，
+// R7 会静默失效且没有任何报错（判据 S4 就钉这一条）。
 var devicePoolBindingColumnSpecs = []devicePoolBindingColumnSpec{
 	{column: "owner_kind", ddl: "owner_kind VARCHAR(16) NOT NULL DEFAULT 'login'"},
 	{column: "token_id", ddl: "token_id INTEGER NOT NULL DEFAULT 0"},
 	{column: "device_label", ddl: "device_label VARCHAR(64) NOT NULL DEFAULT ''"},
 	{column: "revoked_at", ddl: "revoked_at DATETIME NULL"},
 	{column: "revoked_reason", ddl: "revoked_reason VARCHAR(32) NOT NULL DEFAULT ''"},
+	// 第二批（141 §3.1）。
+	{column: "client_instance", ddl: "client_instance VARCHAR(64) NOT NULL DEFAULT ''"},
+	{column: "session_count", ddl: "session_count INTEGER NOT NULL DEFAULT 0"},
 }
 
-// ensureDevicePoolBindingSchema 给 account_device_bindings 补 A1 的 5 列，
-// 并建 user_device_blocks 表（137 §3.3）。
+// ensureDevicePoolBindingSchema 给 account_device_bindings 补 A1 的 5 列 +
+// 141 的 2 列，并建 user_device_blocks 表（137 §3.3）。
 //
 // 顺序说明：**先建 user_device_blocks 表，再加列**。理由是加列失败会让整个函数
 // 返回 error 并跳过表创建；而 user_device_blocks 是独立的判定分支（137 §5 第 2 步），
 // 它到位后即使绑定表加列失败，判定链也不会因为「表不存在」而误拒。
 // （devicePoolUserBlocked 对表缺失是 fail-open 的，但少一个降级分支总是更好。）
+//
+// ⚠️ 本函数**不碰唯一索引**。uk_account_device_binding_user_device 必须恒为
+// (user_id, device_id) 两列（141 §3.2）：把 client_instance 加进去会让 exe 的
+// 三个会话变成三行，与 used = Σ max(1, session_count) 的口径直接打架 ——
+// 那时三个会话各占 1 行、session_count 又各自计一次，同一批会话被数了两遍。
 func ensureDevicePoolBindingSchema(db *gorm.DB) error {
 	if db == nil {
 		return nil
@@ -92,7 +110,7 @@ func ensureDevicePoolBindingSchema(db *gorm.DB) error {
 		return err
 	}
 
-	// ② 绑定表 5 列。
+	// ② 绑定表 7 列（A1 的 5 列 + 141 的 2 列）。
 	for _, spec := range devicePoolBindingColumnSpecs {
 		if db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, spec.column) {
 			continue

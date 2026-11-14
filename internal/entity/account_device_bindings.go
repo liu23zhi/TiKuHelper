@@ -76,6 +76,13 @@ const (
 //   - RevokedAt / RevokedReason：**撤销而非删除**。
 //     `RevokedAt IS NULL` 才算占槽位 —— 这一条是「已用台数」统计的口径定义，
 //     写反了会让「用户移除设备后槽位不释放」或「撤销的行仍占槽」。
+//
+// ## 第二批（141）新增的 2 列（§3.1）
+//
+//   - ClientInstance：这次运行的实例标识，只用于冲突检测（R2/R3）。
+//     **不进唯一索引**（141 §3.2）：exe 三个会话共用一个 device_id，
+//     加进索引会变成三行，与 max(1,session_count) 的口径直接打架。
+//   - SessionCount：exe 当前活跃会话数（R6/R7）。普通浏览器恒 0。
 type AccountDeviceBinding struct {
 	ID int64 `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
 	// UserID 关联 users.id。唯一索引的第 1 列。
@@ -100,6 +107,21 @@ type AccountDeviceBinding struct {
 	TokenID int32 `gorm:"column:token_id;type:int;not null;default:0" json:"tokenId"`
 	// DeviceLabel 是给人看的设备名（前端/扩展上报，可空）。
 	DeviceLabel string `gorm:"column:device_label;type:varchar(64);not null;default:''" json:"deviceLabel"`
+	// ClientInstance 是「这次运行」的实例标识（141 §3.1 / R3）。
+	//
+	// 语义**只在冲突检测语境里**成立：同 device_id + 不同 client_instance ⇒ 冲突（R2）。
+	// ⚠️ 绝不要用本列的行数去数 exe 的浏览器会话 —— exe 的三个会话共用一个
+	// device_id、各自一个 instance，按行数会把「一个 device_id 下多个 instance」
+	// 误判成冲突（141 §3.1 的显式警告）。会话数走 SessionCount。
+	ClientInstance string `gorm:"column:client_instance;type:varchar(64);not null;default:''" json:"clientInstance"`
+	// SessionCount 是 exe 当前**活跃**浏览器会话数（141 §3.1 / R6 / R7）。
+	//
+	// 它不是历史峰值：全关后必须能回到 0（R7 的「回落到 1 个」靠 max(1,0)=1 实现）。
+	// 统计口径见 service.CountDevices：used = Σ max(1, session_count)。
+	//
+	// 默认 0 同时覆盖两种设备：普通浏览器（从不写本列）与「exe 启动但没开会话」，
+	// 两者都靠 max(1,0)=1 贡献 1 个槽位（R4 / R5 / R7 同解）。
+	SessionCount int32 `gorm:"column:session_count;type:int;not null;default:0" json:"sessionCount"`
 	// RevokedAt 非 nil ⇒ 该行已撤销，**不占槽位**。
 	// 指针类型是刻意的：NULL 与「零值时间」必须可区分，否则每条历史行都会被当成已撤销。
 	RevokedAt *time.Time `gorm:"column:revoked_at" json:"revokedAt,omitempty"`

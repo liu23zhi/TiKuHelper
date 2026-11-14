@@ -836,3 +836,225 @@ func UserDeviceLimitPut(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"data": view})
 }
+
+// ─────────────── 第二批（141 §6.1）：GET /api/user/device-quota ───────────────
+//
+// 以下代码是**追加**的，不改动上面六个既有 handler 的任何一行。
+//
+// ## 为什么必须有这个端点（它存在的唯一理由）
+//
+// exe 只持 adapter key（`config.json` 的 `common.settings.tiku-adapter.key`），
+// 没有 JWT、也没有登录 cookie。既有的 `/user/devices` 与 `/user/device-limit`
+// 都挂 `controller.Auth`，exe 调它们必然 401。于是「首页显示可用设备 X / Y」
+// （141 §8.1）在当前代码上无法实现。本端点挂 `controller.AuthOrAccessToken`。
+//
+// ⚠️ 这条配置写在 router.go，但**理由在这里**：任何把路由改成 `controller.Auth`
+// 的「顺手统一」，都会让 exe 恒 401，而表现只是「首页数字一直是空」——
+// 不报错、不告警，属于最难自查的一类回退。
+//
+// ## 响应口径（141 §6.1）
+//
+//	{
+//	  limit:      3,       // 生效上限，0 = 不限
+//	  used:       2,       // Σ max(1, session_count)，见 service.CountDevices
+//	  available:  1,       // limit=0 时为 -1（表示不限），否则 max(0, limit-used)
+//	  limitSource: "level",// level | user_override | level_missing | unlimited
+//	  devices: [ { deviceId, label, sessionCount, lastSeenAt, isCurrent } ],
+//	  schemaReady: true    // 绑定表是否就绪（false ⇒ 本端点处于 fail-open 降级态）
+//	}
+//
+// ⚠️ 顶层**不加** `data` 包裹：141 §6.1 给的就是扁平结构，而且调用方是 exe 的
+// C 代码（home.c），它会按文档逐字段取值。既有六个 handler 用 `{"data": ...}`
+// 是给 Web 前端的约定，两种消费方不同，不要为了「统一」把 exe 的解析改坏。
+//
+// ## used 与 len(devices) 的关系（必须知道，否则会误判成 bug）
+//
+// `len(devices)` 是**行数**，`used` 是**槽位数**。一台 exe 开 3 个会话时
+// 仍然只有 1 行（三个会话共用宿主 device_id，141 §5.2），但贡献 3 个槽位。
+// 因此恒有 `used >= len(devices)`。把两者当成相等会在 exe 场景下自相矛盾。
+
+// DeviceQuotaUnlimitedAvailable 是 available 的「不限」取值（141 §6.1）。
+//
+// 用 -1 而不是 0：0 是「一个都不剩了」这个真实状态，而「不限」的语义是
+// 「剩余无数」。两者混成 0 会让 UI 把不限档显示成「已满」—— 而四个种子等级的
+// device_limit 全是 0（不限），那等于上线瞬间所有 exe 首页都显示「设备已满」。
+const DeviceQuotaUnlimitedAvailable = -1
+
+// deviceQuotaColumnState 记录第二批的两列在**当前库**上是否存在。
+//
+// 与 deviceUserReadColumnState 分开写（不复用）：那个结构服务于上面六个既有
+// handler 的 SELECT 拼装，往里加字段会改变它们的查询语句 —— 本批次不能碰它们。
+type deviceQuotaColumnState struct {
+	hasLabel        bool // device_label
+	hasSessionCount bool // session_count（141 §3.1 新增）
+	hasRevoked      bool // revoked_at
+}
+
+func deviceQuotaReadColumnState(db *gorm.DB) deviceQuotaColumnState {
+	var state deviceQuotaColumnState
+	if db == nil || !db.Migrator().HasTable(entity.TableNameAccountDeviceBinding) {
+		return state
+	}
+	state.hasLabel = db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "device_label")
+	state.hasSessionCount = db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "session_count")
+	state.hasRevoked = db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "revoked_at")
+	return state
+}
+
+// deviceQuotaBindingRow 是配额视图里的一行（只取展示需要的列）。
+type deviceQuotaBindingRow struct {
+	DeviceID string `gorm:"column:device_id"`
+	// DeviceLabel / SessionCount 缺列时由 SELECT 里的常量占位填 '' / 0。
+	DeviceLabel  string     `gorm:"column:device_label"`
+	SessionCount int32      `gorm:"column:session_count"`
+	LastSeenAt   *time.Time `gorm:"column:last_seen_at"`
+}
+
+// deviceQuotaDeviceItem 是响应里 devices[] 的一项（141 §6.1）。
+//
+// 字段名与既有 deviceUserDeviceItem **刻意不同**（label 而非 deviceLabel，
+// 且带 sessionCount）：既有那个是 Web「我的设备」列表的口径，本项是 exe 首页
+// 的配额口径，两者要的信息不同，混用一个结构会让任一方改动都波及另一方。
+type deviceQuotaDeviceItem struct {
+	DeviceID     string     `json:"deviceId"`
+	Label        string     `json:"label"`
+	SessionCount int32      `json:"sessionCount"`
+	LastSeenAt   *time.Time `json:"lastSeenAt"`
+	// IsCurrent：该行是否是本次请求所带的 device_id（141 §6.1 的可选字段）。
+	// 取不到 header 时恒 false —— 不猜「大概是你这台」，猜错会让用户以为自己
+	// 在用的不是自己那台。
+	IsCurrent bool `json:"isCurrent"`
+}
+
+// deviceQuotaView 是 GET /api/user/device-quota 的响应体（扁平，见上面的说明）。
+type deviceQuotaView struct {
+	Limit       int32                   `json:"limit"`
+	Used        int                     `json:"used"`
+	Available   int                     `json:"available"`
+	LimitSource string                  `json:"limitSource"`
+	Devices     []deviceQuotaDeviceItem `json:"devices"`
+	// SchemaReady=false：绑定表未就绪，本端点按 fail-open 展示（used=0）。
+	// 与 UserDevices 的 schemaReady 同一语义，让「真的没有设备」与
+	// 「算不出来所以显示 0」在客户端可区分。
+	SchemaReady bool `json:"schemaReady"`
+}
+
+// deviceQuotaAvailable 按 141 §6.1 计算 available。
+//
+//	limit == 0        → -1（不限）
+//	limit >  0        → max(0, limit-used)
+//	limit <  0        → max(0, limit-used) = 0（禁止档，负数上限本身已表达禁止）
+//
+// 抽成纯函数是为了能直接断言三种取值，不必构造 HTTP 请求。
+func deviceQuotaAvailable(limit int32, used int) int {
+	if limit == 0 {
+		return DeviceQuotaUnlimitedAvailable
+	}
+	remaining := int(limit) - used
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+// deviceQuotaNormalizeDeviceID 把请求头里的 device_id 归一化（空串 = 没带）。
+//
+// 复用 service.NormalizeDevicePoolDeviceID：截断/去空白口径必须与登记侧一致，
+// 否则「同一台设备」在两处会被当成两个不同的字符串。
+func deviceQuotaNormalizeDeviceID(raw string) string {
+	return service.NormalizeDevicePoolDeviceID(raw)
+}
+
+// DeviceQuota 返回当前账号的设备配额（141 §6.1 / R5 / R8）。
+//
+//	GET /api/user/device-quota     [controller.AuthOrAccessToken]
+//
+// 只读：不登记设备、不改 last_seen_at、不写 session_count。登记与冲突检测
+// 属 C2 批次（141 §4 / §6.2/§6.3），把「读配额」与「登记槽位」揉在同一个 GET
+// 里会让「exe 启一次就占一个槽」变成副作用，而副作用没有幂等保证可言。
+func DeviceQuota(c *gin.Context) {
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	db := deviceUserDB(c)
+	if db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "数据库未就绪，暂时无法读取设备配额"})
+		return
+	}
+
+	// ① 生效上限：唯一权威计算（service.EffectiveDeviceLimit）。
+	//    本函数**不**重算等级/覆盖的逻辑，也不改它的行为 —— 改了会让
+	//    「页面显示的台数」与「实际拦截的台数」分叉，而那种 bug 无法自查。
+	limit, source, err := service.EffectiveDeviceLimit(db, operator.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "读取设备上限失败"})
+		return
+	}
+
+	// ② 已用槽位：Σ max(1, session_count)（service.CountDevices 是唯一口径）。
+	used, err := service.CountDevices(db, operator.ID)
+	schemaReady := true
+	if err != nil {
+		if errors.Is(err, service.ErrDevicePoolSchemaUnavailable) {
+			// 表还没迁移好 ⇒ 设备池本身处于 fail-open 降级态（没有任何行，
+			// 也就没有设备在占槽）。返回 200 + used=0 + schemaReady=false，
+			// 与 UserDevices 对同一情形的处置一致；返回 503 会让 exe 首页
+			// 在全新部署上永久空白。
+			used, schemaReady = 0, false
+		} else {
+			// 真故障（连接中断/列类型异常等）：不能假装 0 —— 那会让用户
+			// 看到「还有 N 台可用」，而实际上限可能已经满了。
+			c.JSON(http.StatusServiceUnavailable, gin.H{"message": "统计设备占用失败，请稍后重试"})
+			return
+		}
+	}
+
+	devices := []deviceQuotaDeviceItem{}
+	if schemaReady {
+		state := deviceQuotaReadColumnState(db)
+		current := deviceQuotaNormalizeDeviceID(c.Request.Header.Get("X-Device-Id"))
+
+		// 只取**未撤销**的行：已撤销的设备不占槽位（137 §3.2），把它们列进
+		// 「当前占用」会让 len(devices) 与 used 的关系彻底失真。
+		// 历史行由「我的设备」列表（UserDevices）负责展示。
+		label := "'' AS device_label"
+		if state.hasLabel {
+			label = "device_label AS device_label"
+		}
+		sessionCount := "0 AS session_count"
+		if state.hasSessionCount {
+			sessionCount = "session_count AS session_count"
+		}
+		query := db.Table(entity.TableNameAccountDeviceBinding).
+			Select("device_id AS device_id, "+label+", "+sessionCount+", last_seen_at AS last_seen_at").
+			Where("user_id = ?", operator.ID)
+		if state.hasRevoked {
+			query = query.Where("revoked_at IS NULL")
+		}
+		var rows []deviceQuotaBindingRow
+		if err := query.Order("last_seen_at DESC, id DESC").Find(&rows).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "读取设备列表失败"})
+			return
+		}
+		for _, row := range rows {
+			devices = append(devices, deviceQuotaDeviceItem{
+				DeviceID:     row.DeviceID,
+				Label:        row.DeviceLabel,
+				SessionCount: row.SessionCount,
+				LastSeenAt:   row.LastSeenAt,
+				IsCurrent:    current != "" && row.DeviceID == current,
+			})
+		}
+	}
+
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, deviceQuotaView{
+		Limit:       limit,
+		Used:        used,
+		Available:   deviceQuotaAvailable(limit, used),
+		LimitSource: source,
+		Devices:     devices,
+		SchemaReady: schemaReady,
+	})
+}

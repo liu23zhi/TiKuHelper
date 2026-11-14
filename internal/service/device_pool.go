@@ -246,11 +246,43 @@ func devicePoolActiveScope(db *gorm.DB) (string, []any) {
 	return "", nil
 }
 
-// CountDevices 返回某账号**当前占用槽位**的设备数（revoked_at IS NULL）。
+// CountDevices 返回某账号**当前占用槽位**的设备数（141 §2 的核心公式）。
 //
-// 这是「已用台数」的唯一口径：撤销的行不占槽位，所以必须把它们排除。
-// 若实现改成「统计全部行」，用户移除设备后槽位永远不释放（137 §3.2 的
-// 「保留行不删」正是为了让撤销可审计，而不是让撤销失效）。
+// 口径（141 §2，唯一的表达方式，不要再想别的写法）：
+//
+//	used = Σ over 每个已绑定且未撤销的 device_id:  max(1, session_count)
+//
+// 为什么是 max(1, ·) 而不是 `if is_exe` 特判（141 §2 原文）：
+//
+//	普通浏览器 session_count 恒 0 → max(1,0)=1 → R4「绑定即占 1」
+//	exe 启动未开会话      恒 0 → max(1,0)=1 → R5「exe 自己占 1」
+//	exe 全关             恒 0 → max(1,0)=1 → R7「回落到 1」
+//	exe 开 3 个会话        3 → 3             → R6
+//
+// 四种场景**共用一条规则**，所以没有分支就意味没有「某个分支忘写」的漏面。
+// 特别注意 R4 与 R7 是**同一个 0 值**的两种业务解释，实现上必须同解 ——
+// 一旦有人给其中一种加特判，另一种就会静默错。
+//
+// ## 为什么在 Go 侧逐行累加，而不是 SUM(MAX(...))
+//
+// SQLite 的 `MAX(a,b)` 在有两个参数时是**标量函数**，而 MySQL 的 `MAX()` 在没有
+// GROUP BY 时是**聚合函数**，`MAX(1, session_count)` 在 MySQL 上是聚合函数调用
+// 语法错误。写成 `CASE WHEN session_count < 1 THEN 1 ELSE session_count END`
+// 两库都能过，但那只是把口径分散到 SQL 字符串里，将来改口径要改两地方言分支。
+// 逐行取回 + Go 侧累加让「一个式子」只有一处实现（devicePoolSlotWeight）。
+//
+// 代价是一次返回 N 行而不是一个标量。设备行数量级是「个位数~几十」，可接受。
+//
+// ## 撤销的行不占槽位
+//
+// 必须保留 `revoked_at IS NULL`（devicePoolActiveScope）。若改成统计全部行，
+// 用户移除设备后槽位永远不释放（137 §3.2 的「保留行不删」正是为了让撤销
+// 可审计，而不是让撤销失效）。想看含撤销的历史行数用 CountAllDevices。
+//
+// ## session_count 列还没就绪时（部署顺序「代码先上、迁移后跑」）
+//
+// 退化为「每行算 1」——那恰好等于 max(1, 0)，与迁移跑完后的口径**完全一致**
+// （该列默认值就是 0）。因此不存在「部署窗口期内口径不同」的阶段。
 //
 // 表未就绪时返回 ErrDevicePoolSchemaUnavailable（调用方 CanUseDevice 会把它
 // 当成 fail-open；显式查询的调用方则应把它视为「暂时算不出来」）。
@@ -265,17 +297,71 @@ func CountDevices(db *gorm.DB, userID int32) (int, error) {
 	if scope, args := devicePoolActiveScope(db); scope != "" {
 		query = query.Where(scope, args...)
 	}
-	var count int64
-	if err := query.Count(&count).Error; err != nil {
+	selectClause := "id AS id"
+	if devicePoolSessionCountColumnAvailable(db) {
+		selectClause = "id AS id, session_count AS session_count"
+	}
+	var rows []devicePoolSessionCountRow
+	if err := query.Select(selectClause).Find(&rows).Error; err != nil {
 		return 0, err
 	}
-	return int(count), nil
+	total := 0
+	for _, row := range rows {
+		total += devicePoolSlotWeight(row.SessionCount)
+	}
+	return total, nil
+}
+
+// devicePoolSessionCountRow 是计数口径的一次取行（只需要 id 与 session_count）。
+type devicePoolSessionCountRow struct {
+	ID int64 `gorm:"column:id"`
+	// SessionCount 用指针：老库/手建表可能允许 NULL，而 NULL 在此处的语义
+	// 与 0 相同（都是「没有活跃会话」）。直接扫进 int32 会在 NULL 上报错 ——
+	// 那样计数失败会让 CanUseDevice fail-open，等于设备上限整体静默失效。
+	SessionCount *int32 `gorm:"column:session_count"`
+}
+
+// DevicePoolMinSlotWeight 是每台已绑定设备贡献的最小槽位数（141 §2 的 `1`）。
+//
+// 导出是因为前端/文档要解释「为什么我只开了一个浏览器也显示占用 1」；
+// 但**取值本身不可配置**：它是 R4/R5/R7 的共同解，做成配置项就等于允许
+// 把「普通浏览器占 1」调成 0，那会让设备上限对普通浏览器彻底失效。
+const DevicePoolMinSlotWeight = 1
+
+// devicePoolSlotWeight 是核心公式的**单行实现**：max(1, sessionCount)。
+//
+// 全仓「一台设备占几个槽位」只有这一处判断（CountDevices 调它）。
+// 负数按 1 处理：脏数据（手工改库/未来字段语义变化）不该让某台设备贡献 0 或
+// 负槽位 —— 那会让 used 变小，表现为「槽位凭空多出来」。
+func devicePoolSlotWeight(sessionCount *int32) int {
+	if sessionCount == nil {
+		return DevicePoolMinSlotWeight
+	}
+	if *sessionCount < DevicePoolMinSlotWeight {
+		return DevicePoolMinSlotWeight
+	}
+	return int(*sessionCount)
+}
+
+// devicePoolSessionCountColumnAvailable 判断 session_count 列是否已就绪（141 §3.1 新增列）。
+//
+// 未就绪时的语义见 CountDevices 的说明：等价于每行 max(1, 0)。
+// 与 devicePoolRevokedColumnAvailable 同一纪律 —— 逐列判，不因为缺一列就整体 fail-open。
+func devicePoolSessionCountColumnAvailable(db *gorm.DB) bool {
+	if db == nil || !devicePoolSchemaAvailable(db) {
+		return false
+	}
+	return db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "session_count")
 }
 
 // CountAllDevices 返回某账号的设备行总数（**含已撤销**，用于「我的设备」列表）。
 //
 // 与 CountDevices 的分工必须写清：前者是配额口径，后者是历史展示口径。
 // 用错会让「移除设备后上限立刻多一台可用」这个行为变得不可解释。
+//
+// ⚠️ 本函数**不套用 max(1, session_count)**：它是「行数」而不是「槽位数」。
+// 一台 exe 开 3 个会话仍然只有 1 行 —— 这正是「会话是临时的、宿主是常驻的」
+// 在数据上的表达（141 §5.2）。
 func CountAllDevices(db *gorm.DB, userID int32) (int, error) {
 	if db == nil || userID <= 0 {
 		return 0, nil
@@ -650,6 +736,14 @@ type DeviceBindingRegisterOptions struct {
 	OwnerKind   string
 	TokenID     int32
 	DeviceLabel string
+	// ClientInstance 是本次运行实例的标识（141 §4 的 client_instance）。
+	//
+	// 空串 = 调用方没带（旧客户端 / 扩展还没接 X-Device-Instance）：
+	// 此时**不做冲突判定**（没有可比对的东西），行为与加这个字段之前完全一致。
+	//
+	// 它只在**首次登记**那一刻参与冲突判定，之后同一设备的重连不再比对
+	// —— 理由见 device_conflict.go 文件头（写反了会让用户每次重开浏览器都被判冲突）。
+	ClientInstance string
 }
 
 // RegisterDevice 登记「该账号用过这台设备」，并把判定结论一并返回。
@@ -678,8 +772,26 @@ func RegisterDevice(db *gorm.DB, userID int32, deviceID string) (DevicePoolDecis
 	return RegisterDeviceWithOptions(db, userID, deviceID, DeviceBindingRegisterOptions{})
 }
 
-// RegisterDeviceWithOptions 同 RegisterDevice，额外写入 owner_kind / token_id / device_label。
+// RegisterDeviceWithOptions 同 RegisterDevice，额外写入 owner_kind / token_id / device_label，
+// 并在**首次登记**时做设备标识冲突判定（141 §4，判据 S5/S6）。
+//
+// ## 冲突判定为什么排在最前面（且在 CanUseDevice 之前）
+//
+// 顺序是需求，不是风格：
+//  1. 判为冲突时**一行都不写** —— 冲突的设备不该占用槽位，否则客户端「重新生成后重试
+//     一次」的那次请求会发现自己第一次请求已经把槽位吃掉了（141 §4.2 的重试上限是 1 次）。
+//  2. 冲突比「槽位已满」更具体：它告诉客户端「换 ID」而不是「删设备」。若让 CanUseDevice
+//     先按槽位拒绝，客户端会把 409 之外的原因当成用户额度问题，永远换不出新 ID。
+//  3. CanUseDevice 在「已登记」分支会刷新 last_seen_at（一次写操作）。冲突判定要是排在它后面，
+//     被拒的设备也被刷了一次活跃时间 —— 「被封/冲突的设备仍在活跃」会让 10 天闲置清理失效。
+//
+// 判定通过后**照原样**继续走 CanUseDevice，不改写它的任何结论：
+// 加上判定之前的行为逐字保留（已有 30+ 条 device_pool 用例依赖这一点）。
 func RegisterDeviceWithOptions(db *gorm.DB, userID int32, deviceID string, options DeviceBindingRegisterOptions) (DevicePoolDecision, error) {
+	// 设备标识冲突（141 §4）：只在「首次登记」判一次，不带 instance 时整体跳过。
+	if conflict := DecideDeviceRegistration(db, userID, deviceID, options.ClientInstance); !conflict.Allowed {
+		return conflict, nil
+	}
 	decision := CanUseDevice(db, userID, deviceID)
 	if !decision.Allowed {
 		return decision, nil
@@ -722,6 +834,18 @@ func RegisterDeviceWithOptions(db *gorm.DB, userID int32, deviceID string, optio
 		// label 为空时**不覆盖**：老客户端不报 label，不该把已有名字抹掉。
 		updates["device_label"] = deviceLabel
 	}
+	// client_instance 由 C1 的迁移加列，本文件不加实体字段（C1 独占范围），因此现判 HasColumn。
+	//
+	// 只在非空时写：空串表示「这次没带 instance」，写进去会把已有的占用者抹成
+	// 「不知道」，等于让镜像复制的那台设备重新获得抢占机会。
+	//
+	// 覆盖写（而不是「只在首次登记写」）是刻意的：库里存的是**当前**运行实例，
+	// 跨账号占用判定（DecideDeviceRegistration 第 ② 步）据此反映现状而不是陈旧值。
+	// 它不会引起误判 —— 本账号已有活跃行时判定在第 ① 步就放行了，根本不看这一列。
+	if instance := NormalizeDeviceClientInstance(options.ClientInstance); instance != "" &&
+		db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "client_instance") {
+		updates["client_instance"] = instance
+	}
 
 	result := session.Model(&entity.AccountDeviceBinding{}).
 		Where("user_id = ? AND device_id = ?", userID, normalized).
@@ -756,6 +880,13 @@ func RegisterDeviceWithOptions(db *gorm.DB, userID int32, deviceID string, optio
 	}
 	if deviceLabel != "" && db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "device_label") {
 		createValues["device_label"] = deviceLabel
+	}
+	// 首次登记时把占用者的实例一并落库：跳过的话，这台设备的 client_instance 永远是 '',
+	// 于是「跨账号镜像复制」在第二次复制时无从识别（历史行 '' 被 DecideDeviceRegistration
+	// 当「未知」跳过）。这是 141 §4.3 那套检测赖以工作的第一个锚点。
+	if instance := NormalizeDeviceClientInstance(options.ClientInstance); instance != "" &&
+		db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "client_instance") {
+		createValues["client_instance"] = instance
 	}
 	if err := session.Model(&entity.AccountDeviceBinding{}).Create(createValues).Error; err != nil {
 		// 并发首次登记：另一个请求刚插入了同一行。这不是错误，
