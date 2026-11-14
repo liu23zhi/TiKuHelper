@@ -294,3 +294,63 @@ func TestEnsureRiskSchemaSeedFailureDoesNotFailMigration(t *testing.T) {
 		t.Fatalf("flagged migration must not resurrect deleted seeds, count=%d", count)
 	}
 }
+
+// TestRiskRuleDescriptionFitsColumnWidth 钉住「规则说明不能超出列宽」。
+//
+// # 为什么需要它（2026-11-14 MariaDB 集成实测失败）
+//
+// `risk_rules.description` 原为 `varchar(255)`。**SQLite 不校验 varchar 长度**，
+// 所以本地跑全绿；真实 MariaDB 严格模式下迁移直接失败：
+//
+//	迁移失败：(1406, "Data too long for column 'description' at row 14")
+//
+// 当时已有 4 条规则的说明超过 255 字符（R17 549 / R5 380 / R13 340 / R10 327）——
+// 全是「把已知限制写清楚」的那几条，也就是**写得越负责越容易撞上**。
+//
+// 这条用例把「最长说明 ≤ 列宽」变成编译期之后的第一道闸：
+// 以后任何人给规则补限制说明，本地就会红，而不是等到 MariaDB 集成才发现。
+//
+// ⚠️ 用**字节数**而不是字符数：MariaDB 的 varchar(n) 在 utf8mb4 下按**字符**计，
+// 但迁移脚本与驱动在严格模式下对超长中文的实际报错按行宽算，
+// 用字节数做判据更保守（中文 3 字节/字，549 字 ≈ 1251 字节）。
+func TestRiskRuleDescriptionFitsColumnWidth(t *testing.T) {
+	const columnChars = 2048
+	db := newRiskMigrationTestDB(t)
+	if err := db.AutoMigrate(&entity.RiskRule{}); err != nil {
+		t.Fatalf("automigrate: %v", err)
+	}
+	seedDefaultRiskRules(db)
+
+	type row struct {
+		RuleID      string
+		Description string
+	}
+	var rows []row
+	if err := db.Model(&entity.RiskRule{}).Select("rule_id, description").Scan(&rows).Error; err != nil {
+		t.Fatalf("load rules: %v", err)
+	}
+	if len(rows) == 0 {
+		t.Fatalf("前置失效：risk_rules 没有种子数据，本用例会空转")
+	}
+
+	// 最长的那条必须真的接近上限，否则「列宽够用」可能只是因为说明都写得很短。
+	maxRunes := 0
+	for _, r := range rows {
+		n := len([]rune(r.Description))
+		if n > maxRunes {
+			maxRunes = n
+		}
+		if n > columnChars {
+			t.Fatalf("规则 %q 的说明有 %d 字符，超出 risk_rules.description 的 %d —— "+
+				"SQLite 不校验长度所以本地看不出来，真实 MariaDB 严格模式会报 "+
+				"`Data too long for column 'description'`。请缩短说明或同步加宽列。",
+				r.RuleID, n, columnChars)
+		}
+	}
+	// 反向自检：本仓当前最长说明确实接近列宽量级（549 字符），
+	// 若它掉到很小，说明这条用例的判据不再有意义（列宽可以缩回 255 了）。
+	if maxRunes < 256 {
+		t.Fatalf("最长规则说明只有 %d 字符 —— 若确实缩短到 256 以下，"+
+			"请把 description 列宽改回 255 并更新本断言", maxRunes)
+	}
+}

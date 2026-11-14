@@ -443,7 +443,19 @@ type RiskRule struct {
 	//	     与「回滚结束时报一次」的规格一致，不依赖时间窗）
 	//	< 0  不节流（每次命中都写告警，目前没有规则用它）
 	ThrottleSeconds int       `gorm:"column:throttle_seconds;not null;default:0" json:"throttleSeconds"`
-	Description     string    `gorm:"column:description;type:varchar(255);not null;default:''" json:"description"`
+	// Description 是给运营看的规则说明，**含已知限制**（数据源覆盖不到什么、
+	// 窗口多长、私网/未知如何处理）。
+	//
+	// ⚠️ 为什么是 2048 而不是 255（2026-11-14 MariaDB 集成实测失败）：
+	// 原定义 `varchar(255)` 在 SQLite 下**不校验长度**，所以本地一直是绿的；
+	// 真实 MariaDB 严格模式下迁移直接报
+	//   `(1406, "Data too long for column 'description' at row 14")`
+	// 当时已有 4 条规则的描述超过 255 字符（R17 549 / R5 380 / R13 340 / R10 327）——
+	// 都是「把已知限制写清楚」的那几条，也就是说**写得越负责越容易撞上**。
+	//
+	// 2048 是留足余量：当前最长 549，留约 3.7 倍空间给后续规则补限制说明。
+	// 不设 TEXT 是为了保持「有明确上限」的纪律 —— 描述是说明文字，不该无限增长。
+	Description     string    `gorm:"column:description;type:varchar(2048);not null;default:''" json:"description"`
 	CreatedAt       time.Time `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
 	UpdatedAt       time.Time `gorm:"column:updated_at;autoUpdateTime" json:"updatedAt"`
 }
