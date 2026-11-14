@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Build the single-file userexam-crypto.exe (administrator offline tool).
 

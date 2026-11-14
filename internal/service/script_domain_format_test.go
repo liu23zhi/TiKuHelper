@@ -26,7 +26,6 @@ func TestScriptDomainFormatParsesOnlyStarSyntax(t *testing.T) {
 		{"*.a.com", ScriptDomainFormatWildcard, "a.com"},
 		{"*.A.COM", ScriptDomainFormatWildcard, "a.com"}, // 归一化为小写
 		{"a.com/*", ScriptDomainFormatPath, "a.com"},
-		{"a.com/*", ScriptDomainFormatPath, "a.com"},
 		{"  *.a.zelly.cn  ", ScriptDomainFormatWildcard, "a.zelly.cn"},
 		{"x.example.co.uk/*", ScriptDomainFormatPath, "x.example.co.uk"},
 	}
@@ -44,14 +43,16 @@ func TestScriptDomainFormatParsesOnlyStarSyntax(t *testing.T) {
 func TestScriptDomainFormatRejectsLegacySyntaxWithExplicitError(t *testing.T) {
 	// 旧格式必须是 **报错**，不能被当成「跳过」。静默失效会让管理员以为
 	// 规则还在生效，这是本轮明确要避免的形态。
+	//
+	// ⚠️ Legacy 与 Invalid 的分界（captain 复核时点名的一条）：
+	//   Legacy  = 用户照**旧文档**写的、完全不含通配意图的写法 → 提示「请改用新写法」
+	//   Invalid = 用户已经在新写法上、但通配位置/数量写错 → 提示「格式不合法」
+	// 两者给管理员的下一步动作相反，混用会把「再改一次同样的东西」当成建议。
 	legacy := []string{
 		"a.com",           // 裸域名（上一版的主要写法）
-		"a.com/a/*",       // 段级 glob 的路径写法
-		"a.com/**",        // 多段 glob
-		"https://a.com",   // 带 scheme
-		"a.com/a/**/x",    // 中间通配
-		"*.a.com/",        // 尾部斜杠
+		"a.com/a",         // 无通配的路径写法
 		"a.com/a.com",     // 无 `*` 的路径
+		"https://a.com",   // 带 scheme
 		"regex:^a\\.com$", // 正则（从未支持，但管理员会试）
 	}
 	for _, raw := range legacy {
@@ -61,18 +62,29 @@ func TestScriptDomainFormatRejectsLegacySyntaxWithExplicitError(t *testing.T) {
 	}
 }
 
-func TestScriptDomainFormatRejectsMalformedStarSyntax(t *testing.T) {
-	// 有 `*` 但形态不对：必须报 ErrScriptDomainFormatInvalid（不是 Legacy）。
+func TestScriptDomainFormatMalformedStarIsInvalidNotLegacy(t *testing.T) {
+	// 这些写法**带 `*`**，说明用户已经在尝试新语法，只是写错了位置或数量。
+	// 必须报 Invalid；报 Legacy 会给出错误的指引（「请改用 *.a.com 或 a.com/*」——
+	// 而他正在用的就是其中之一）。
+	//
+	// 其中 `a.com/*/x` 是 captain 复核时用探针抓出来的：它是畸形新语法
+	// （`*` 后面还跟着 `/x`），一度被误判成 Legacy。
 	invalid := []string{
+		"a.com/*/x", // * 后面还有路径段
+		"a.com/**",  // 多段 glob（旧语法，但带着 * 的路径意图）
+		"a.com/a/*", // 段级 glob 的路径写法
+		"a.com/a/**/x",
+		"a.com/x*",  // 段内混写
+		"a.com/*/",  // 尾部斜杠
 		"a.*.a.com", // 中间通配
 		"**.a.com",  // 双星
 		"*a.com",    // 星不独立
-		"a.com/*/x", // 路径里夹住
-		"*.com",     // 顶级域只有一级标签? 实际是 host=com，单标签 → 非法
+		"*.com",     // host 单标签
 		"*.a",       // 顶级域单字符
 		"*.a.1",     // 顶级域是数字
 		"*.-a.com",  // 标签以 - 开头
 		"*.a..com",  // 空标签
+		"*.a.com.",  // 尾随点
 	}
 	for _, raw := range invalid {
 		if _, _, err := parseScriptDomainFormat(raw); !errors.Is(err, ErrScriptDomainFormatInvalid) {
@@ -178,7 +190,9 @@ func TestScriptDomainSlotAssemblyKeepsInputOnTheCorrectSide(t *testing.T) {
 func TestScriptDomainSlotValidationRejectsUnsafeInput(t *testing.T) {
 	wildcard := mustFormat(t, "*.a.com")
 	pathRule := mustFormat(t, "a.com/*")
-	badSubdomain := []string{"", " ", "a..b", ".x", "-x", "x-", "x/y", "x y", "x*", "x?y", "x#y", "x\ty", "X_OK"}
+	// ⚠️ `.x` / `x.` 必须被拒：若实现先 Trim(".") 再校验，用户输入 `.x`
+	// 会静默得到 `x.a.com`，与他看到的字面不是同一个东西。
+	badSubdomain := []string{"", " ", ".x", "x.", "a..b", "-x", "x-", "x/y", "x y", "x*", "x?y", "x#y", "x\ty", "X_OK"}
 	for _, slot := range badSubdomain {
 		if _, err := BuildScriptDomainFromFormat(wildcard, slot); !errors.Is(err, ErrScriptDomainSlotInvalid) {
 			t.Fatalf("subdomain slot %q should be rejected, got %v", slot, err)
@@ -316,7 +330,7 @@ func TestScriptDomainSettingsGetToleratesLegacyRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET must tolerate legacy rows, got error %v", err)
 	}
-	// 旧条目被读不出来（只剩合法的新语法条目）；`*.b.com` 应当存活。
+	// 旧条目读不出来（只剩合法的新语法条目）；`*.b.com` 应当存活。
 	if len(settings.Domains) != 1 || settings.Domains[0] != "*.b.com" {
 		t.Fatalf("legacy entries should be dropped on read, got %v", settings.Domains)
 	}

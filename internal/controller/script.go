@@ -71,6 +71,47 @@ func UpdateScriptDomainSettings(c *gin.Context) {
 	c.JSON(http.StatusOK, settings)
 }
 
+// ScriptDomainFormats 返回用户侧可选的域名格式模板（诉求 ⑤）。
+//
+// 为什么必须有这个端点：用户「只能选择」管理员配置的格式，所以用户必须先能读到
+// 这份列表；但它**不能**复用 /script-domain-settings，那个端点带 RequireAdmin。
+//
+// 响应形状按 UI 拼装需要设计：
+//
+//	{ "formats": [ { "raw": "*.a.com", "host": "a.com", "kind": "wildcard", "slot": "prefix" } ] }
+//
+// slot=prefix ⇒ 界面渲染 `[输入框].a.com`；slot=suffix ⇒ 渲染 `a.com/[输入框]`。
+// 把 slot 显式给出来而不是让前端按 kind 自己推，是因为「输入框在哪一侧」是
+// 语义的一部分（见 BuildScriptDomainFromFormat 的注释）；两处各推一次必然漂移。
+func ScriptDomainFormats(c *gin.Context) {
+	if _, ok := currentOperator(c); !ok {
+		return
+	}
+	formats, err := service.ScriptDomainFormatsWithDB(scriptDB())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "获取脚本域名格式失败"})
+		return
+	}
+	type formatView struct {
+		Raw  string `json:"raw"`
+		Host string `json:"host"`
+		Kind string `json:"kind"`
+		Slot string `json:"slot"`
+		// Pattern 是给用户看的直观示例（`*.a.com` / `a.com/*`），
+		// 与 raw 相同，但保留独立字段便于将来加说明文案而不动 raw。
+		Pattern string `json:"pattern"`
+	}
+	views := make([]formatView, 0, len(formats))
+	for _, format := range formats {
+		slot := "suffix"
+		if format.SlotIsPrefix() {
+			slot = "prefix"
+		}
+		views = append(views, formatView{Raw: format.Raw, Host: format.Host, Kind: format.Kind, Slot: slot, Pattern: format.Raw})
+	}
+	c.JSON(http.StatusOK, gin.H{"formats": views})
+}
+
 func UploadScriptVersion(c *gin.Context) {
 	operator, ok := currentOperator(c)
 	if !ok {
@@ -143,6 +184,14 @@ func CreateScript(c *gin.Context) {
 	input.IdempotencyKey = c.GetHeader("Idempotency-Key")
 	if input.BillingMode == "" {
 		input.BillingMode = entity.ScriptBillingModeEscrow
+	}
+	// 诉求 ②：「脚本管理」是管理员视图，不校验被管理账号的手机/微信绑定。
+	//
+	// ⚠️ 判据必须是**调用者角色 + 入口**，不能是请求体里的任何字段：
+	// SkipOwnerBindingCheck 带 json:"-" 所以客户端塞不进来，这里只按服务端
+	// 已认证的身份置真。走「我的脚本」（scope=self 或非管理员）时保持原门槛。
+	if isAdminUser(&operator) && strings.EqualFold(strings.TrimSpace(c.Query("scope")), "all") {
+		input.SkipOwnerBindingCheck = true
 	}
 	item, err := service.CreateUserScriptWithDB(scriptDB(), operator, input)
 	if err != nil {
@@ -581,7 +630,7 @@ func writeScriptError(c *gin.Context, err error, fallback string) {
 		status, message = http.StatusForbidden, err.Error()
 	case errors.Is(err, service.ErrScriptNotFound), errors.Is(err, service.ErrScriptVersionNotFound):
 		status, message = http.StatusNotFound, err.Error()
-	case errors.Is(err, service.ErrScriptNameRequired), errors.Is(err, service.ErrScriptDomainRequired), errors.Is(err, service.ErrScriptVersionRequired), errors.Is(err, service.ErrScriptVersionInvalid), errors.Is(err, service.ErrScriptTokenRequired), errors.Is(err, service.ErrScriptDomainUnavailable):
+	case errors.Is(err, service.ErrScriptNameRequired), errors.Is(err, service.ErrScriptDomainRequired), errors.Is(err, service.ErrScriptVersionRequired), errors.Is(err, service.ErrScriptVersionInvalid), errors.Is(err, service.ErrScriptTokenRequired), errors.Is(err, service.ErrScriptDomainUnavailable), errors.Is(err, service.ErrScriptDomainFormatLegacy), errors.Is(err, service.ErrScriptDomainFormatInvalid), errors.Is(err, service.ErrScriptDomainSlotInvalid):
 		status, message = http.StatusBadRequest, err.Error()
 	case errors.Is(err, service.ErrScriptBalanceInsufficient), errors.Is(err, service.ErrScriptTokenBalanceInsufficient), errors.Is(err, service.ErrScriptExchangeAlreadyIssued):
 		status, message = http.StatusPaymentRequired, err.Error()

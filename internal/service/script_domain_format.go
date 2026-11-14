@@ -9,18 +9,18 @@ package service
 //
 // 为什么把边界定成这样（这三条都是「不做兼容」之后必须明确表态的地方）：
 //
-//  1. `*.a.com` **不匹配** `a.com`。这是通配证书/通配 DNS 的标准语义，
-//     也是本仓既有实现 `scriptDomainHostMatch` 的带点后缀语义（`.a.com` 比
-//     host 短才命中）。如果放行 `a.com` 本身，那么任何一个买了 `a.com`
-//     的人都能用 `*.a.com` 规则把裸域也纳进来 —— 与「泛域名」的字面意思不符。
+//  1. `*.a.com` **不匹配** `a.com`。这是通配 DNS / 通配证书的标准语义，
+//     也是本仓既有 `scriptDomainHostMatch` 的带点后缀语义。若放行裸域，
+//     任何买了 `a.com` 的人都能用 `*.a.com` 规则把裸域也纳进来 —— 与
+//     「泛域名」的字面意思不符。
 //  2. `a.com/*` **匹配多段路径**（`/p/q` 命中）。用户明确给的例子就是
 //     `a.com/*` + 输入 `p/q` → `a.com/p/q`。旧的段级 glob（`*` 恰好一段、
 //     `**` 多段）在这套语法里不再存在。
 //  3. `a.com/*` **不匹配** `a.com`（没有路径）。`/*` 要求至少一段。
-//     否则 `a.com` 会被路径规则和泛域名规则同时覆盖，管理员无法表达
+//     否则 `a.com` 会被路径规则与泛域名规则同时覆盖，管理员无法表达
 //     「只开放某个路径」。
 //
-// 旧格式（裸 `a.com`、`a.com/a/*`、`a.com/**`、正则……）**一律拒绝**，
+// 旧格式（裸 `a.com`、`a.com/a/*`、`a.com/**`、带 scheme 的 URL……）**一律拒绝**，
 // 且是**显式报错**而不是静默失效：静默失效会让管理员以为规则还在生效。
 
 import (
@@ -47,12 +47,12 @@ var (
 
 // ScriptDomainFormat 是一条**管理员配置的域名格式模板**。
 //
-// Slot 位置由 Kind 决定，调用方据此渲染占位输入框：
+// 占位输入框的位置由 Kind 决定，调用方据此渲染：
 //
 //	wildcard → 「[输入框].a.com」
 //	path     → 「a.com/[输入框]」
 type ScriptDomainFormat struct {
-	// Raw 是原样（归一化后）的模板文本，也是落库形态。
+	// Raw 是归一化后的模板文本，也是落库形态。
 	Raw string
 	// Host 是模板里的固定主机部分（不含 `*`）。
 	Host string
@@ -72,14 +72,21 @@ func parseScriptDomainFormat(raw string) (ScriptDomainFormat, bool, error) {
 	if trimmed == "" {
 		return ScriptDomainFormat{}, false, nil
 	}
-	// scheme 一律不接受：新语法是域名模板，不是 URL。带 `://` 的一律按旧格式拒。
+	// scheme 一律不接受：新语法是域名模板，不是 URL。
 	if strings.Contains(trimmed, "://") || strings.ContainsAny(trimmed, " \t\r\n\\'\"?#") {
 		return ScriptDomainFormat{}, true, ErrScriptDomainFormatLegacy
 	}
 	lowered := strings.ToLower(trimmed)
-	// 先判「有没有 `/`」：带路径却**不是** `a.com/*` 形态的，都是上一版的段级 glob
-	// （`a.com/a/*`、`a.com/a/**`、`a.com/api/*`）。它们属于旧语法 ⇒ Legacy，
-	// 而不是「新语法写错了」—— 管理员是照旧文档写的，错误文案要指向新写法。
+
+	// 路径形态：`host/*` 是新语法，其余带路径的写法要分清是**旧格式**还是**畸形新语法**。
+	//
+	// 这个区分对管理员很重要，因为两种错误给出的下一步动作相反：
+	//   - 旧格式（`a.com/a/*`、`a.com/**`）：他照旧文档写的 ⇒ 提示「请改用新写法」；
+	//   - 畸形新语法（`a.com/*/x`、`a.com/**`）：他已经在新写法上了，只是写错 ⇒
+	//     必须报 Invalid（「格式不合法」），报 Legacy 等于让他把同一件事再做一遍。
+	//
+	// 判据：`*` 出现在**除 `/*` 之外**的位置 ⇒ 他在尝试通配但位置/数量不对 ⇒ Invalid。
+	// 完全没有 `*` 的路径（`a.com/a`、`a.com/a.com`）⇒ 旧格式。
 	if slash := strings.IndexByte(lowered, '/'); slash >= 0 {
 		host := lowered[:slash]
 		pathPart := lowered[slash:]
@@ -89,28 +96,14 @@ func parseScriptDomainFormat(raw string) (ScriptDomainFormat, bool, error) {
 			}
 			return ScriptDomainFormat{Raw: host + "/*", Host: host, Kind: ScriptDomainFormatPath}, true, nil
 		}
-		// ⚠️ 这里要区分「旧格式」与「新语法写错」——两者给管理员的指引完全相反：
-		//   旧格式  → 他照旧文档写的，要告诉他「请改用 *.a.com 或 a.com/*」
-		//   写错新格式 → 他已经知道新语法，再让他「改用新语法」等于没说
-		//
-		// 判据：路径段里**出现了 `*`** 说明他在尝试新语法（只是位置/形态不对，
-		// 如 `a.com/*/x`、`a.com/x/y*`）；`*` 只出现在中间或末尾都不合法 ⇒ Invalid。
-		// 不带 `*` 的多段路径（`a.com/a/*`、`a.com/a/**`）是上一版的段级 glob ⇒ Legacy。
-		// 判据要同时满足两组既有用例：
-		//   `a.com/a/*`、`a.com/**`、`a.com/a/**/x` → Legacy（旧段级 glob，管理员照旧文档写的）
-		//   `a.com/*/x`                          → Invalid（新语法写错位置，已在用新写法）
-		//
-		// 区分点不是「路径里有没有 *」，而是**`*` 是否单独占路径的最后一个整段**：
-		//   - `/*`           → 合法（上面已返回）
-		//   - `/*/x`         → `*` 是独立段但后面还有段 ⇒ 新语法写错 ⇒ Invalid
-		//   - `/a/*`、`/**`  → `*` 不独占首段（前面还有固定段，或整段是 `**`）⇒ 旧格式 ⇒ Legacy
-		segments := strings.Split(strings.TrimPrefix(pathPart, "/"), "/")
-		if len(segments) > 0 && segments[0] == "*" {
+		// 带 `*` 但不是合法的 `host/*`：用户在新语法上写错了。
+		if strings.Contains(lowered, "*") {
 			return ScriptDomainFormat{}, true, ErrScriptDomainFormatInvalid
 		}
+		// 完全无 `*` 的路径写法：旧格式。
 		return ScriptDomainFormat{}, true, ErrScriptDomainFormatLegacy
 	}
-	// 必须先判「`*` 是否恰好出现一次」，否则 `a.*.a.com`、`**.a.com` 会走进下面的分支。
+
 	if strings.Count(lowered, "*") != 1 {
 		if strings.Contains(lowered, "*") {
 			return ScriptDomainFormat{}, true, ErrScriptDomainFormatInvalid
@@ -131,9 +124,8 @@ func parseScriptDomainFormat(raw string) (ScriptDomainFormat, bool, error) {
 
 // validScriptDomainHost 校验固定主机部分。
 //
-// 至少两级（`a.com`）：单标签主机（`localhost`、`intranet`）无法与泛域名
-// `*.` 前缀区分，也无法表达「子域」这个概念。这条同时挡住 `.a.com`、`a..com`、
-// `a.com.` 之类的畸形输入。
+// 至少两级（`a.com`）：单标签主机无法与泛域名 `*.` 前缀区分，也无法表达
+// 「子域」这个概念。这条同时挡住 `.a.com`、`a..com`、`a.com.` 之类的畸形输入。
 func validScriptDomainHost(host string) bool {
 	if host == "" || len(host) > 253 {
 		return false
@@ -173,34 +165,62 @@ func validScriptDomainHost(host string) bool {
 	return true
 }
 
-// scriptDomainTemplateMatches 判断一条模板是否覆盖给定的「主机 + 路径」。
+// scriptDomainWildcardCovers 判断一条泛域名格式是否覆盖给定的主机名。
 //
-// host 应为**具体主机名**（已小写、无端口），cleanPath 已由 cleanScriptRequestPath 规范化。
-func scriptDomainTemplateMatches(format ScriptDomainFormat, host, cleanPath string) bool {
-	host = strings.TrimRight(strings.ToLower(strings.TrimSpace(host)), ".")
-	if host == "" {
+// ⚠️ 这是**唯一**一处泛域名匹配实现。之前 `scriptDomainTemplateMatches`、
+// `ValidateScriptDomainWithDB`、`defaultScriptUseWildcardWithDB` 各手写了一遍
+// `len(host) > len(suffix) && HasSuffix(host, suffix)`，变异验证时暴露出
+// 「改掉一处只红一条用例、另外两处继续用旧语义」——三份实现必然漂移。
+// 现在三处都调它，Q2 的边界只在这里定义一次。
+//
+// 语义（Q2，严格）：`*.a.com` 覆盖任意深度的子域，但**不覆盖** `a.com` 本身。
+// 必须比后缀 `.a.com` 更长，否则裸域会命中。
+func scriptDomainWildcardCovers(format ScriptDomainFormat, host string) bool {
+	if format.Kind != ScriptDomainFormatWildcard || format.Host == "" {
 		return false
 	}
-	switch format.Kind {
-	case ScriptDomainFormatWildcard:
-		suffix := "." + format.Host
-		// 必须**长于**后缀：`a.com` 比 `.a.com` 短 ⇒ 不匹配（见文件头第 1 条）。
-		return len(host) > len(suffix) && strings.HasSuffix(host, suffix)
-	case ScriptDomainFormatPath:
-		if !strings.EqualFold(host, format.Host) {
-			return false
-		}
-		// `/*` 要求至少一段；根路径不落在路径规则上（见文件头第 3 条）。
+	suffix := "." + format.Host
+	return len(host) > len(suffix) && strings.HasSuffix(host, suffix)
+}
+
+// scriptDomainPathCovers 判断一条路径格式是否覆盖给定主机（只看主机维度）。
+//
+// 路径格式要求主机**全等**：`a.com/*` 只负责 a.com 自己的路径，
+// 不把 subdomain 拉进来。路径段的判定见 scriptDomainTemplateMatches。
+func scriptDomainPathCovers(format ScriptDomainFormat, host string) bool {
+	return format.Kind == ScriptDomainFormatPath && strings.EqualFold(host, format.Host)
+}
+
+// scriptDomainTemplateMatches 判断一条模板是否覆盖给定的「脚本 baseDomain + 请求路径」。
+//
+// ⚠️ 第二个参数是**脚本的 baseDomain**（库里的 base_domain），**不是**请求的完整 host。
+//
+// 为什么：脚本的公开地址恒为 `<shortCode>.<baseDomain>`（见 ScriptCommandOrigin），
+// 而 baseDomain 正是创建期被管理员格式校验过的那个值。用完整 host 去比会把
+// shortCode 那一级当成「子域」再要求多一层，于是 `*.a.com` 配 baseDomain=x.a.com 时
+// 需要 host=sc.x.a.com 才命中 —— 而 a.com/* 的 EqualFold 又要求 host 恰好等于 a.com，
+// 两者不可能同时成立。传 baseDomain 才是与创建期校验同一口径。
+//
+// cleanPath 已由 cleanScriptRequestPath 规范化。
+func scriptDomainTemplateMatches(format ScriptDomainFormat, baseDomain, cleanPath string) bool {
+	baseDomain = strings.TrimRight(strings.ToLower(strings.TrimSpace(baseDomain)), ".")
+	if baseDomain == "" {
+		return false
+	}
+	if scriptDomainWildcardCovers(format, baseDomain) {
+		return true
+	}
+	if scriptDomainPathCovers(format, baseDomain) {
+		// `/*` 要求至少一段；根路径不落在路径规则上（见文件头 Q3）。
 		return len(scriptPathSegments(cleanPath)) > 0
-	default:
-		return false
 	}
+	return false
 }
 
 // normalizeScriptDomainSlot 归一化用户填进占位框的内容。
 //
-// 泛域名槽位：点分标签，每段与主机标签同规则（不能以 - 开头/结尾、只能 [a-z0-9-]）。
-// 允许填多级（`x.y` ⇒ `x.y.a.com`），因为 `*.a.com` 本来就覆盖任意深度的子域。
+// 泛域名槽位：点分标签，每段与主机标签同规则。允许填多级（`x.y` ⇒ `x.y.a.com`），
+// 因为 `*.a.com` 本来就覆盖任意深度的子域。
 //
 // 路径槽位：`/` 分段，每段非空、不能是 `.`/`..`、不能含 `*`、空格、反斜杠、
 // `?`、`#`（这些要么是穿越，要么会被 HTTP 层切走，拼进 URL 只会得到 404）。
@@ -215,7 +235,7 @@ func normalizeScriptDomainSlot(kind, raw string) (string, error) {
 		// 用户输入 `.x` 得到的域名是 `x.a.com`，与他看到的字面不是同一个东西。
 		// 点只能出现在标签**之间**，前导/尾随都算非法。
 		value = strings.ToLower(value)
-		if value == "" || strings.ContainsAny(value, "/\\* \t\r\n?#") {
+		if strings.ContainsAny(value, "/\\* \t\r\n?#") {
 			return "", ErrScriptDomainSlotInvalid
 		}
 		if strings.HasPrefix(value, ".") || strings.HasSuffix(value, ".") || strings.Contains(value, "..") {
@@ -270,7 +290,7 @@ func normalizeScriptDomainSlot(kind, raw string) (string, error) {
 //	path     + "p/q"  → "a.com/p/q"
 //
 // ⚠️ 拼接顺序由模板种类决定，**不是**「输入框永远在前面」。把这里写反
-// （`a.com/x` 而不是 `x.a.com`）会让泛域名槽位产出主从颠倒的地址。
+// 会让泛域名槽位产出主从颠倒的地址（`a.com/x` 而不是 `x.a.com`）。
 func BuildScriptDomainFromFormat(format ScriptDomainFormat, slot string) (string, error) {
 	normalized, err := normalizeScriptDomainSlot(format.Kind, slot)
 	if err != nil {

@@ -22,7 +22,6 @@ var (
 	// ErrScriptDomainWildcardPlacement 域名里的 `*` 不在最左侧（如 `a.*.a.com`）。
 	// Q72-3 定案：域名通配只允许 `*.a.zelly.cn` 这种最左形态。
 	ErrScriptDomainWildcardPlacement = errors.New("脚本域名中的 * 只允许出现在最左侧（例如 *.a.zelly.cn），不允许 a.*.a.com")
-
 	// ErrScriptDomainWildcardOnScript 脚本自身的域名必须是具体主机名。
 	// 通配符属于「管理员允许的域名列表」，不属于单个脚本实例。
 	ErrScriptDomainWildcardOnScript = errors.New("脚本自身的域名不能包含 *，通配符请写在管理员允许的域名列表里")
@@ -33,39 +32,6 @@ var (
 	// ErrScriptReservedPrefix 规则命中了系统保留路径。
 	ErrScriptReservedPrefix = errors.New("脚本公开路径与系统保留路径冲突")
 )
-
-// validateScriptDomainWildcardPlacement 校验通配符的位置：只允许最左侧的 *.x.y 形式。
-//
-// ⚠️ 2026-11-14 这个函数与 validateScriptBaseDomain 在域名语法重写时被误删（调用点还在，
-// 定义没了，导致 internal/service 整个包编译不过）。从 HEAD 恢复，不要因为「重写匹配逻辑」
-// 就顺手删掉它们 —— 它们服务的是**创建时拒绝**，与匹配阶段的逻辑是两件事。
-func validateScriptDomainWildcardPlacement(host string) error {
-	if !strings.Contains(host, "*") {
-		return nil
-	}
-	if !strings.HasPrefix(host, "*.") || strings.Count(host, "*") != 1 {
-		return ErrScriptDomainWildcardPlacement
-	}
-	if strings.TrimPrefix(host, "*.") == "" {
-		return ErrScriptDomainWildcardPlacement
-	}
-	return nil
-}
-
-// validateScriptBaseDomain 校验「脚本自身」的域名：必须是具体主机名。
-//
-// Q72-3：脚本自身的域名不能含通配符 —— 通配符属于管理员允许的域名列表（脚本可用域名），
-// 脚本只能在其中**选择**。含 * 时给出 ErrScriptDomainWildcardOnScript，让创建/更新直接拒绝，
-// 而不是等匹配阶段悄悄不生效。
-func validateScriptBaseDomain(domain string) error {
-	if !strings.Contains(domain, "*") {
-		return nil
-	}
-	if err := validateScriptDomainWildcardPlacement(domain); err != nil {
-		return err
-	}
-	return ErrScriptDomainWildcardOnScript
-}
 
 // ─────────────────────────── 保留前缀 ───────────────────────────
 
@@ -320,31 +286,25 @@ func authorizeScriptPublicPath(formats []ScriptDomainFormat, baseDomain, cleanPa
 	return false
 }
 
-// matchedScriptDomainFormats 返回覆盖 baseDomain 的所有格式（创建时用来做保留前缀自检）。
-func matchedScriptDomainFormats(formats []ScriptDomainFormat, baseDomain string) []ScriptDomainFormat {
-	matched := make([]ScriptDomainFormat, 0, len(formats))
-	for _, format := range formats {
-		if scriptDomainTemplateMatches(format, baseDomain, "/probe") {
-			matched = append(matched, format)
-		}
-	}
-	return matched
-}
-
-// ensureScriptDomainRulePrefixAvailable 在**创建/更新脚本时**拦住「允许规则本身
-// 会撞上保留前缀」的情形。
+// ensureScriptDomainRulePrefixAvailable 在**创建/更新脚本时**确认域名字典可读。
 //
 // 新语法下 `a.com/*` 天然覆盖 `/api/...` 这类保留路径 —— 那是保留前缀闸门的职责
-// （ResolvePublicScriptWithDB 第 2 步先挡），不是配置期能消除的。因此这里只在
-// 管理员**显式**写了保留前缀时拒绝；`a.com/*` 这类通配本身允许保存，
-// 因为它在运行期仍然受保留前缀优先规则的约束。
+// （ResolvePublicScriptWithDB 第 2 步在任何通配匹配之前挡掉），
+// 不是配置期能消除的。因此这里只需保证「读配置失败时不要放行」：
+// 读取出错必须把错误抛上去，绝不能当成「没配置任何规则」。
 func ensureScriptDomainRulePrefixAvailable(db *gorm.DB, baseDomain string) error {
-	formats, err := scriptDomainRulesWithDB(db)
-	if err != nil {
-		return err
+	_, err := scriptDomainRulesWithDB(db)
+	return err
+}
+
+// validateScriptBaseDomain 校验「脚本自身」的域名。
+//
+// 新语法下脚本自身的域名必须是**具体主机名**（`x.a.com` 或 `a.com`，不含 `*`）：
+// 通配符属于管理员的「可用域名格式列表」，不属于单个脚本实例。
+// 这一条在创建/更新脚本时拦住，而不是等匹配阶段悄悄不生效。
+func validateScriptBaseDomain(domain string) error {
+	if !strings.Contains(domain, "*") {
+		return nil
 	}
-	// 主机维度永远不含路径段，因此这里没有「规则首段撞保留前缀」可言。
-	// 保留前缀的实际防护在 ResolvePublicScriptWithDB 与 scriptReservedPrefix。
-	_ = matchedScriptDomainFormats(formats, baseDomain)
-	return nil
+	return ErrScriptDomainWildcardOnScript
 }

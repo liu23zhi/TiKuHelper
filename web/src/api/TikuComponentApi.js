@@ -804,6 +804,17 @@ export function updateScriptDomainSettings(data) {
   })
 }
 
+// 用户侧只读：管理员配置的域名格式模板列表（诉求 ⑤）。
+// 单独一个端点而不是复用 getScriptDomainSettings —— 后者带 RequireAdmin，
+// 普通用户读不到，而「用户只能选择管理员配的格式」要求他能读到可选项。
+export function getScriptDomainFormats() {
+  return request({
+    errorFeedback: 'local',
+    url: `/api/script-domain-formats`,
+    method: 'get',
+  })
+}
+
 export function getScriptEscrowPolicy() {
   return request({ errorFeedback: 'local', url: `/api/script-escrow-policy`, method: 'get' })
 }

@@ -16,7 +16,7 @@ const ScriptDomainSettingsKey = "script_domain_settings"
 //
 // 与上一版的差别（破坏性，不做兼容）：
 //   - 去掉了 AllowWildcard：泛域名能否使用不再是一个独立开关，而是由「列表里有没有
-//     `*.a.com` 这一条」直接表达。两个开关表达同一件事必然会出现互相矛盾的状态
+//     `*.a.com` 这一条」直接表达。两个开关表达同一件事必然出现互相矛盾的状态
 //     （列表里有 `*.a.com` 但开关关着），那种状态在 UI 上无法解释。
 //   - Domains 里的每一条都必须是新语法（`*.a.com` 或 `a.com/*`），旧格式显式报错。
 //
@@ -31,9 +31,9 @@ var (
 
 // GetScriptDomainSettingsWithDB 读取配置。
 //
-// ⚠️ 旧格式在这里**不报错**，只是读不出来 —— 调用方（管理员保存 / 脚本创建）
-// 才负责报错。原因：GET 是纯读接口，若它因为存量脏数据返回 500，管理员连
-// 「看到问题、改掉它」的入口都没有。真正的拦截点是写入与脚本创建。
+// ⚠️ 旧格式在这里**不报错**，只是读不出来 —— 真正的拦截点是写入与脚本创建。
+// 原因：GET 是纯读接口，若它因为存量脏数据返回 500，管理员连
+// 「看到问题、改掉它」的入口都没有。
 func GetScriptDomainSettingsWithDB(db *gorm.DB) (ScriptDomainSettings, error) {
 	settings := ScriptDomainSettings{Domains: []string{}}
 	if db == nil {
@@ -159,17 +159,46 @@ func ValidateScriptDomainWithDB(db *gorm.DB, domain string) error {
 		return ErrScriptDomainUnavailable
 	}
 	for _, format := range formats {
-		switch format.Kind {
-		case ScriptDomainFormatWildcard:
-			suffix := "." + format.Host
-			if len(host) > len(suffix) && strings.HasSuffix(host, suffix) {
-				return nil
-			}
-		case ScriptDomainFormatPath:
-			if strings.EqualFold(host, format.Host) {
-				return nil
-			}
+		// 复用 scriptDomainWildcardCovers / scriptDomainPathCovers —— 泛域名的 Q2 边界
+		// 只在一个地方定义，避免创建期校验与运行期解析各写一份而漂移。
+		if scriptDomainWildcardCovers(format, host) || scriptDomainPathCovers(format, host) {
+			return nil
 		}
 	}
 	return ErrScriptDomainUnavailable
+}
+
+// defaultScriptUseWildcardWithDB 根据**管理员配置的域名格式**推出脚本公开地址的形态。
+//
+// 返回 true 表示脚本住在 `<shortCode>.<baseDomain>` 独立主机上（根路径即入口）；
+// false 表示脚本住在共享主机 baseDomain 下、靠 `/<shortCode>` 路径段区分。
+//
+// 判据优先级：`*.a.com` 覆盖到的 baseDomain 走泛域名；否则若 baseDomain 恰好是
+// 某条 `a.com/*` 的固定主机，则必须走路径形态 —— 否则它的公开地址是根路径 "",
+// 而路径规则要求至少一段，脚本将永远解析不到。
+//
+// 没有任何配置（空列表）时保持历史默认 true（泛域名短址）。
+func defaultScriptUseWildcardWithDB(db *gorm.DB, baseDomain string) bool {
+	formats, err := ScriptDomainFormatsWithDB(db)
+	if err != nil || len(formats) == 0 {
+		return true
+	}
+	host := normalizeScriptDomain(baseDomain)
+	if host == "" {
+		return true
+	}
+	coveredByPath := false
+	for _, format := range formats {
+		// 同样复用共享判据：泛域名覆盖 ⇒ 独立主机形态；路径格式覆盖 ⇒ 共享主机形态。
+		if scriptDomainWildcardCovers(format, host) {
+			return true
+		}
+		if scriptDomainPathCovers(format, host) {
+			coveredByPath = true
+		}
+	}
+	if coveredByPath {
+		return false
+	}
+	return true
 }

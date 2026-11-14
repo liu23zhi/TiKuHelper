@@ -17,7 +17,11 @@
       </template>
     </ConsolePageHeading>
 
+    <!-- 诉求 ②：这行绑定提示只属于用户侧「我的脚本」。
+         管理员视图（script-admin）是运维入口，提示他去绑手机/微信没有意义 ——
+         服务端也按同一判据放行（CreateScript 的 SkipOwnerBindingCheck）。 -->
     <a-alert
+      v-if="!isAdmin"
       type="info"
       show-icon
       class="page-alert"
@@ -25,26 +29,40 @@
       description="冻结金模式可重复启动，每次使用新的运行令牌；一次性激活码只允许创建并运行一条脚本，不冻结余额。购买和兑换激活码不要求双绑定。"
     />
 
+    <!-- 诉求 ③：管理员的动作是「上传新版本 EXE」，不是「新建脚本」。
+         这个面板就是管理视图的主操作，标题与提示都按这个语义写死。 -->
     <ConsolePanel v-if="isAdmin" title="管理员上传 EXE" description="上传后自动发布为最新版本；已有脚本会原子切换到新版本，正在下载的旧版本会继续完成。">
       <a-space wrap>
         <a-input :id="fieldId('uploadVersion')" :value="uploadVersion" :onUpdate:value="pageEntry.bind(setUploadVersion)" aria-label="EXE 版本号" placeholder="版本号，例如 1.0.0" style="width: 180px" :disabled="uploading" />
-        <a-checkbox :checked="nativeLeaseConfirmed" :onUpdate:checked="pageEntry.bind(setNativeLeaseConfirmed)" :disabled="uploading">确认该原生 C 版本已验证新版租约</a-checkbox>
-        <a-upload :show-upload-list="false" accept=".exe,application/vnd.microsoft.portable-executable" :custom-request="pageEntry.bind(handleUpload)" :disabled="uploading || !nativeLeaseConfirmed">
-          <a-button type="primary" :loading="uploading">
+        <a-upload :show-upload-list="false" accept=".exe,application/vnd.microsoft.portable-executable" :custom-request="pageEntry.bind(handleUpload)" :disabled="uploadGate.disabled">
+          <a-button type="primary" :loading="uploading" :disabled="uploadGate.disabled">
             <UploadOutlined />上传 EXE
           </a-button>
         </a-upload>
         <span v-if="lastUploadKey" class="upload-result">最近上传版本：<code>{{ lastUploadKey }}</code></span>
       </a-space>
-      <p class="hint">仅发布已验证的原生 C EXE，不使用冻结的 Node 版本。上传不会创建脚本，也不会改动旧脚本的版本。</p>
+      <!-- 诉求 ①：去掉「确认该原生 C 版本已验证新版租约」勾选框后，版本号是唯一必填项。
+           缺什么必须写清（不是「请填写完整」）；这条提示同时充当 disabled 的原因说明。 -->
+      <p class="hint" role="status" aria-live="polite">
+        <strong>必填：版本号</strong>（最多 64 个字符，不能含斜杠）。它决定新版本在版本列表里的标识，上传后所有未删除脚本会原子切换到该版本。
+      </p>
+      <p v-if="uploadGate.message" class="hint upload-gate" role="status" aria-live="polite">{{ uploadGate.message }}</p>
+      <p class="hint">{{ scriptAdminAction.hint }}</p>
     </ConsolePanel>
 
-    <ConsolePanel v-if="isAdmin" title="脚本可用域名" description="管理员可以限制用户创建脚本时可选择的域名，并控制是否允许泛域名短地址。留空域名列表表示兼容旧配置，允许任意域名。">
-      <a-textarea :id="fieldId('domains')" :value="domainText" :onUpdate:value="pageEntry.bind(setDomainText)" aria-label="脚本允许域名" :rows="3" placeholder="每行一个域名，例如 example.com\na.example.net" :disabled="domainSaving || !domainReady" />
+    <!-- 诉求 ④：域名语法重写为 `*.a.com`（泛域名）/ `a.com/*`（路径通配），旧格式全部舍弃。
+         `AllowWildcard` 开关被删除：泛域名是否可用由「列表里有没有 *.a.com」直接表达，
+         两个开关表达同一件事必然出现互相矛盾的状态。 -->
+    <ConsolePanel v-if="isAdmin" title="脚本可用域名" description="用户只能从这里的格式中选择并填写占位内容。每行一条，只支持两种写法：*.a.com（泛域名，匹配任意子域）或 a.com/*（路径通配，匹配任意非空路径）。留空表示不限制域名。">
+      <a-textarea :id="fieldId('domains')" :value="domainText" :onUpdate:value="pageEntry.bind(setDomainText)" aria-label="脚本允许域名格式" :rows="4" placeholder="每行一条，例如：&#10;*.a.com&#10;a.com/*" :disabled="domainSaving || !domainReady" />
+      <p class="hint">
+        <strong>*.a.com</strong> 匹配 a.com 的任意子域（x.a.com、x.y.a.com），<strong>不含 a.com 本身</strong>；
+        <strong>a.com/*</strong> 匹配 a.com 下的任意非空路径（a.com/p、a.com/p/q），<strong>不含根路径</strong>。
+        旧写法（裸域名 a.com、a.com/a/*、a.com/**）已不再支持，保存时会直接报错。
+      </p>
+      <a-alert v-if="domainError" type="error" show-icon :message="domainError" class="page-alert" role="alert" />
       <a-space wrap class="domain-settings-actions">
-        <a-switch :checked="domainAllowWildcard" :onUpdate:checked="pageEntry.bind(setDomainWildcard)" aria-label="允许泛域名模式" :disabled="domainSaving || !domainReady" />
-        <span class="switch-description">允许泛域名模式（a.example.com）</span>
-        <a-button type="primary" :loading="domainSaving" :disabled="!domainReady" :onClick="pageEntry.bind(saveDomainSettings)">保存域名设置</a-button>
+        <a-button type="primary" :loading="domainSaving" :disabled="!domainReady || !domainDirty" :onClick="pageEntry.bind(saveDomainSettings)">保存域名设置</a-button>
       </a-space>
     </ConsolePanel>
 
@@ -118,18 +136,39 @@
           <a-form-item label="脚本名称" :html-for="fieldId('name')" required>
             <a-input :id="fieldId('name')" :value="form.name" :onUpdate:value="editorEntry.bind(setFormField, 'name')" :maxlength="80" placeholder="例如：超星答题助手" />
           </a-form-item>
-          <a-form-item label="脚本域名" :html-for="fieldId('baseDomain')" required>
-            <a-input :id="fieldId('baseDomain')" :value="form.baseDomain" :onUpdate:value="editorEntry.bind(setFormField, 'baseDomain')" placeholder="例如 example.com" />
+          <!-- 诉求 ⑤：删除了「泛域名模式 / 优先使用尽可能短的 a.example.com」开关。
+               域名格式由管理员在「脚本可用域名」里配置，用户只能选择并在占位框里填写。
+               一个脚本可以有多个域名格式 ⇒ 这里是一组可增删的行。 -->
+          <a-form-item label="脚本域名" required>
+            <div v-if="!domainFormatOptions.length" class="hint">
+              管理员尚未配置任何域名格式，暂时无法创建脚本。请联系管理员在「脚本可用域名」中设置。
+            </div>
+            <div v-else class="domain-rows">
+              <div v-for="(row, index) in form.domainRows" :key="index" class="domain-row">
+                <a-select :value="row.format" :onUpdate:value="editorEntry.bind(setDomainRowFormat, index)" :disabled="saving" style="width: 200px" :aria-label="`第 ${index + 1} 个域名格式`">
+                  <a-select-option v-for="option in domainFormatOptions" :key="option.raw" :value="option.raw">{{ option.raw }}</a-select-option>
+                </a-select>
+                <!-- 占位输入框的位置由格式决定：*.a.com → [输入框].a.com；a.com/* → a.com/[输入框]。
+                     两侧的字面量都直接渲染出来，用户看到的就是最终域名形状。 -->
+                <template v-if="domainRowMeta(row).slot === 'prefix'">
+                  <a-input :value="row.slot" :onUpdate:value="editorEntry.bind(setDomainRowSlot, index)" :disabled="saving" :maxlength="63" placeholder="子域" :aria-label="`第 ${index + 1} 个子域`" style="width: 160px" />
+                  <code class="domain-suffix">.{{ domainRowMeta(row).host }}</code>
+                </template>
+                <template v-else>
+                  <code class="domain-suffix">{{ domainRowMeta(row).host }}/</code>
+                  <a-input :value="row.slot" :onUpdate:value="editorEntry.bind(setDomainRowSlot, index)" :disabled="saving" :maxlength="200" placeholder="路径，例如 p/q" :aria-label="`第 ${index + 1} 个路径`" style="width: 220px" />
+                </template>
+                <a-button type="link" danger :disabled="saving || form.domainRows.length <= 1" :onClick="editorEntry.bind(removeDomainRow, index)">删除</a-button>
+              </div>
+              <a-button type="dashed" :disabled="saving || form.domainRows.length >= domainFormatOptions.length" :onClick="editorEntry.bind(addDomainRow)">添加域名</a-button>
+            </div>
+            <p v-if="domainRowError" class="hint domain-error" role="alert">{{ domainRowError }}</p>
+            <div class="hint">域名格式由管理员统一配置，你只能选择并填写占位内容。生成的域名：<code>{{ previewDomainText || '尚未填写' }}</code></div>
           </a-form-item>
           <a-form-item label="协议" :html-for="fieldId('scheme')">
             <a-select :id="fieldId('scheme')" :value="form.scheme" :disabled="form.billingMode !== 'legacy'" :onUpdate:value="editorEntry.bind(setFormField, 'scheme')"><a-select-option value="https">HTTPS</a-select-option><a-select-option v-if="form.billingMode === 'legacy'" value="http">HTTP（仅兼容旧环境）</a-select-option></a-select>
           </a-form-item>
         </div>
-        <a-form-item label="泛域名模式" :html-for="fieldId('useWildcardDomain')">
-          <a-switch :id="fieldId('useWildcardDomain')" :checked="form.useWildcardDomain" :onUpdate:checked="editorEntry.bind(setFormField, 'useWildcardDomain')" />
-          <span class="switch-description">{{ form.useWildcardDomain ? '优先使用尽可能短的 a.example.com' : '使用 a.example.com/a 兼容非泛域名部署' }}</span>
-          <div class="hint">短标识由服务端按最短可用长度自动分配。</div>
-        </a-form-item>
         <a-form-item label="EXE 版本" :html-for="fieldId('versionId')" required>
           <a-select :id="fieldId('versionId')" :value="form.versionId" :onUpdate:value="editorEntry.bind(setFormField, 'versionId')" allow-clear disabled :placeholder="editing ? '跟随当前发布版本' : '请先上传 EXE'">
             <a-select-option v-for="version in versions" :key="version.id" :value="version.id">
@@ -207,8 +246,10 @@ import { message } from 'ant-design-vue'
 import { UploadOutlined } from '@ant-design/icons-vue'
 import { getCurrentUserLogoutEpoch, getStoredCurrentUser, isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
 import { useUnsavedDraft } from '@/utils/useUnsavedDraft'
-import { createScript, deleteScript, getScripts, getScriptDomainSettings, getScriptVersions, updateScript, updateScriptDomainSettings, uploadScriptVersion, getScriptEscrowPolicy, updateScriptEscrowPolicy, getScriptActivationCodePrice, updateScriptActivationCodePrice, purchaseScriptActivationCode, redeemScriptActivationCode } from '@/api/TikuComponentApi'
+import { createScript, deleteScript, getScripts, getScriptDomainFormats, getScriptDomainSettings, getScriptVersions, updateScript, updateScriptDomainSettings, uploadScriptVersion, getScriptEscrowPolicy, updateScriptEscrowPolicy, getScriptActivationCodePrice, updateScriptActivationCodePrice, purchaseScriptActivationCode, redeemScriptActivationCode } from '@/api/TikuComponentApi'
 import { buildScriptBillingText, buildScriptCommand, buildScriptDownloadURL, buildScriptListParams, buildScriptSavePayload, formatPresetParams, normalizeScriptRecord, normalizeScriptRows } from '@/utils/scriptManagementHelpers.mjs'
+import { buildScriptDomainForms, parseScriptDomainFormat, splitScriptDomainForFormat } from '@/utils/scriptDomainFormats.mjs'
+import { describeScriptAdminAction, describeScriptUploadGate } from '@/utils/scriptUploadGate.mjs'
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
 
 defineOptions({ name: 'ScriptManagement' })
@@ -249,7 +290,6 @@ const fieldPrefix = 'script-' + useId(), fieldId = field => fieldPrefix + '-' + 
 const pageSurface = ref(null), modalSurface = ref(null), frameKey = ref(0), editorKey = ref(0), draining = ref(false)
 const deleting = ref(false), listReady = ref(false), readError = ref('')
 const activeCloseConfirmation = shallowRef(null)
-const domainReady = ref(false)
 let alive = true, mounted = false, epoch = 0, readTicket = 0, domainRevision = 0, retry = null
 const principal = () => {
   const user = currentUser.value, id = Number(user?.id)
@@ -315,8 +355,17 @@ const editing = ref(false)
 const lastUploadKey = ref('')
 const summary = reactive({ total: 0, enabled: 0, reserved: 0 })
 const domainText = ref('')
-const domainAllowWildcard = ref(true)
+const domainReady = ref(false)
 const domainSaving = ref(false)
+// 诉求 ④：`domainAllowWildcard` 已删除（泛域名可用性由列表内容表达）。
+const domainError = ref('')
+// 保存按钮的 dirty 判据：只有内容真的变了才允许保存，避免「点了一下但什么都没改」的无效往返。
+const domainSavedText = ref('')
+const domainDirty = computed(() => domainText.value.trim() !== domainSavedText.value.trim())
+// 诉求 ⑤：用户可选的域名格式模板（管理员配置），以及编辑中的域名行。
+const domainFormats = ref([])
+const domainRowError = ref('')
+const scriptAdminAction = describeScriptAdminAction()
 const escrowPolicy = ref(null), activationPrice = ref(null), policyError = ref('')
 const policyForm = reactive({ target: '', minimum: '', multiplier: '' }), priceForm = ref('')
 const savingPolicy = ref(false), savingPrice = ref(false)
@@ -324,15 +373,41 @@ let billingReadTicket = 0, policyRevision = 0, priceRevision = 0
 const activationCode = ref(''), purchasedCode = ref(false), purchaseUncertain = ref(false)
 const purchasingCode = ref(false), redeemingCode = ref(false)
 const activationBusy = computed(() => purchasingCode.value || redeemingCode.value)
-const nativeLeaseConfirmed = ref(false)
+// 诉求 ①：`nativeLeaseConfirmed` 已删除 —— 那个确认框是「上传按钮无效」的根因之一
+// （按钮 disabled 依赖一个用户不知道要勾的框）。现在 gate 只看真正的必填项。
+const uploadGate = computed(() => describeScriptUploadGate({ uploading: uploading.value, version: uploadVersion.value }))
 const currentNativeVersion = computed(() => versions.value.find((item) => item.nativeLeaseProtocol === true && item.isCurrent === true))
+// 诉求 ⑤：用户可选的格式来自管理员配置，且只保留能解析的新语法条目。
+const domainFormatOptions = computed(() => domainFormats.value.filter(Boolean))
+function domainRowMeta(row) {
+  return parseScriptDomainFormat(row?.format) || { slot: '', host: '' }
+}
+// 表单里的域名行 → 最终域名列表（多格式并存，诉求 ⑤ 最后一句）。
+// ⚠️ 这两个 computed 只依赖 form，但 form 在下面才声明；它们本身是惰性的（不被求值就不读 form），
+// 所以可以放在前面。真正**不能**放在前面的是下面那个 immediate watch —— 它会在 setup 期间
+// 立即求值 domainFormsResult，从而在 form 初始化前访问它（TDZ：Cannot access 'form' before initialization）。
+const domainFormsResult = computed(() => buildScriptDomainForms(form.domainRows))
+const previewDomainText = computed(() => domainFormsResult.value.domains.join('  '))
+// 「域名格式」现在是脚本的**唯一**域名来源：baseDomain 由第一行生成，
+// 供既有的下载 URL 拼装继续工作（它仍按 <shortCode>.<baseDomain> 生成）。
 let purchaseIntentKey = '', purchaseIntentQuote = ''
 const canBuyActivationCode = computed(() => modalOpen.value && !editing.value && form.billingMode === 'activation_code'
   && !saving.value && !activationBusy.value && !purchasedCode.value && !form.entitlementId
   && (purchaseUncertain.value || activationPrice.value?.enabled === true))
 
-const emptyForm = () => ({ id: undefined, name: '', description: '', versionId: undefined, slug: 'a', scheme: 'https', baseDomain: '', useWildcardDomain: true, enabled: true, presetText: '', billingMode: 'escrow', entitlementId: undefined, autoTopUp: false, runDurationMinutes: 150, notifyOnDenied: false })
+const emptyForm = () => ({ id: undefined, name: '', description: '', versionId: undefined, slug: 'a', scheme: 'https', baseDomain: '', enabled: true, presetText: '', billingMode: 'escrow', entitlementId: undefined, autoTopUp: false, runDurationMinutes: 150, notifyOnDenied: false, domainRows: [{ format: '', slot: '' }] })
 const form = reactive(emptyForm())
+// 域名行 → baseDomain 的同步。必须放在 `form` 声明**之后**：
+// 配了 immediate:true 的 watch 会在 setup 期间立即求值 domainFormsResult，
+// 进而读取 form.domainRows；放在 form 之前会抛 TDZ
+// （Cannot access 'form' before initialization，实测于本轮）。
+watch(domainFormsResult, (result) => {
+  domainRowError.value = result.errors.length ? result.errors[0].message : ''
+  const first = result.domains[0] || ''
+  // 只取主机部分：`x.a.com` → `a.com`，`a.com/p` → `a.com`。
+  const host = first.includes('/') ? first.slice(0, first.indexOf('/')) : first
+  if (host) form.baseDomain = host
+}, { immediate: true })
 const draft = useUnsavedDraft(form, { focusTriggerAfterClose: false })
 const previewRecord = computed(() => normalizeScriptRecord({ ...form, presetParams: form.presetText }))
 const scopeDescription = computed(() => isAdmin.value && showAll.value ? '当前显示全部用户的脚本；删除和编辑仍由服务端校验权限。' : '当前只显示自己的脚本。')
@@ -355,9 +430,32 @@ function resetForm(record) {
     fields.presetText = formatPresetParams(normalized.presetParams)
     fields.billingMode = ['escrow', 'activation_code'].includes(normalized.billingMode) ? normalized.billingMode : 'legacy'
     if (!fields.runDurationMinutes) fields.runDurationMinutes = 150
+    // 编辑态回填：把库里的具体域名反解成「格式 + 占位内容」（诉求 ⑤ 的逆运算）。
+    fields.domainRows = restoreDomainRows(normalized.baseDomain)
+  } else {
+    fields.domainRows = defaultDomainRows()
   }
   Object.assign(form, fields)
   draft.savedConfigSnapshot.value = draft.currentConfigSnapshot.value
+}
+
+// 新建时的默认行：取第一个可用格式（管理员一般先配 `*.a.com`）。
+function defaultDomainRows() {
+  const first = domainFormatOptions.value[0]
+  return [{ format: first?.raw || '', slot: '' }]
+}
+
+// 把一条具体域名反解成能匹配的「格式 + 槽位」。多条格式时优先取能解析的。
+function restoreDomainRows(domain) {
+  const value = String(domain ?? '').trim()
+  if (!value) return defaultDomainRows()
+  for (const option of domainFormatOptions.value) {
+    const slot = splitScriptDomainForFormat(option, value)
+    if (slot) return [{ format: option.raw, slot }]
+  }
+  // 反解不出来（存量域名不符合当前格式）时退回默认行，让用户重新选择 ——
+  // 不能把不匹配的值硬塞进某个槽位，那会生成一个没人预期的域名。
+  return defaultDomainRows()
 }
 
 function setFormField(name, value) {
@@ -370,9 +468,34 @@ function setFormField(name, value) {
   form[name] = value
 }
 function setUploadVersion(value) { if (isAdmin.value && !uploading.value) uploadVersion.value = value }
-function setNativeLeaseConfirmed(value) { if (isAdmin.value && !uploading.value) nativeLeaseConfirmed.value = value === true }
 function setDomainText(value) { if (isAdmin.value && !domainSaving.value) { domainRevision++; domainText.value = value } }
-function setDomainWildcard(value) { if (isAdmin.value && !domainSaving.value) { domainRevision++; domainAllowWildcard.value = value } }
+// 诉求 ⑤：域名行的增删改。一个脚本可以有多个域名格式，所以这里是列表操作。
+function setDomainRowFormat(index, format) {
+  if (!editorEntry.value.isCurrent() || saving.value) return
+  const row = form.domainRows[index]
+  if (!row) return
+  row.format = format
+  // 换格式后旧槽位可能不再合法（子域 vs 路径），清空让用户重填，
+  // 而不是把 `p/q` 留在子域槽里再默默生成非法域名。
+  row.slot = ''
+}
+function setDomainRowSlot(index, value) {
+  if (!editorEntry.value.isCurrent() || saving.value) return
+  const row = form.domainRows[index]
+  if (row) row.slot = value
+}
+function addDomainRow() {
+  if (!editorEntry.value.isCurrent() || saving.value) return
+  if (form.domainRows.length >= domainFormatOptions.value.length) return
+  const used = new Set(form.domainRows.map((row) => row.format))
+  const next = domainFormatOptions.value.find((option) => !used.has(option.raw))
+  form.domainRows.push({ format: next?.raw || '', slot: '' })
+}
+function removeDomainRow(index) {
+  if (!editorEntry.value.isCurrent() || saving.value) return
+  if (form.domainRows.length <= 1) return
+  form.domainRows.splice(index, 1)
+}
 
 function startEditor(record) {
   if (!canAct() || modalOpen.value || saving.value || deleting.value || activeCloseConfirmation.value || isEscrowClosing(record)) return
@@ -452,11 +575,9 @@ async function handleUpload({ file, onSuccess, onError }) {
     message.warning(error.message)
     return
   }
-  if (!nativeLeaseConfirmed.value) {
-    onError?.(new Error('请先确认客户端租约兼容性'))
-    return
-  }
-  nativeLeaseConfirmed.value = false
+  // 诉求 ①：「确认该原生 C 版本已验证新版租约」勾选框已删除，这里不再有任何
+  // nativeLeaseConfirmed 前置判断。上传仍按原生租约协议发布（nativeLeaseProtocol=true），
+  // 因为本仓只发布原生 C EXE —— 那个事实由**服务端与版本列表**表达，不需要用户勾选确认。
   uploading.value = true
   try {
     const response = await uploadScriptVersion(file, uploadVersion.value, true)
@@ -467,7 +588,8 @@ async function handleUpload({ file, onSuccess, onError }) {
     if (!uploaded.id) throw new Error('上传成功但服务端没有返回版本信息')
     versions.value = [uploaded, ...versions.value.filter((item) => item.id !== uploaded.id)]
     lastUploadKey.value = uploaded.version || uploaded.filename || ''
-    if (!modalOpen.value && !saving.value) openCreate()
+    // 诉求 ③：上传 ≠ 新建脚本。旧实现在这里 `openCreate()`，把两件事混成一个，
+    // 管理员以为「上传完就多了一条脚本」。现在只刷新版本列表，不打开任何弹窗。
     onSuccess?.(data)
     message.success('EXE 上传成功，已发布为最新版本')
   } catch {
@@ -569,7 +691,22 @@ async function handleSubmit() {
   // (also preserves historical pricing on edits to existing legacy scripts).
   for (const field of ['billingEnabled', 'billingUseTikuPrice', 'useTikuPrice', 'priceMultiplier', 'answerPriceMultiplier']) delete payload[field]
   if (!payload.name) return message.warning('请输入脚本名称')
-  if (!payload.baseDomain || !buildScriptDownloadURL(payload)) return message.warning('请输入有效的脚本域名')
+  // 诉求 ⑤：域名只能由「管理员格式 + 用户占位内容」生成。
+  // 逐行校验，错误要指出**是哪一行缺什么**，不能只说「请输入有效域名」。
+  const domainForms = buildScriptDomainForms(form.domainRows)
+  if (domainForms.errors.length) {
+    const first = domainForms.errors[0]
+    return message.warning(`第 ${first.index + 1} 个域名：${first.message}`)
+  }
+  if (!domainForms.domains.length) return message.warning('请至少填写一个脚本域名')
+  // baseDomain 仍按「主机」提交（后端按主机校验管理员格式），
+  // 完整域名列表另存为 domains 供展示与后续扩展。
+  const primaryHost = domainForms.domains[0].includes('/')
+    ? domainForms.domains[0].slice(0, domainForms.domains[0].indexOf('/'))
+    : domainForms.domains[0]
+  payload.baseDomain = primaryHost
+  payload.domains = domainForms.domains
+  if (!payload.baseDomain || !buildScriptDownloadURL(payload)) return message.warning('请填写有效的脚本域名')
   if (!payload.versionId) return message.warning('请选择 EXE 版本')
   const isEditing = editing.value, sentSnapshot = draft.currentConfigSnapshot.value
   if (form.billingMode !== 'legacy') {
@@ -736,10 +873,30 @@ async function loadDomainSettings() {
     if (!owns() || ticket !== domainRevision) return
     if (response?.status !== 200) { message.warning('域名设置未读取成功，请刷新页面。'); return }
     domainText.value = Array.isArray(response.data?.domains) ? response.data.domains.join('\n') : ''
-    domainAllowWildcard.value = response.data?.allowWildcard !== false
+    domainSavedText.value = domainText.value
     domainReady.value = true
   } catch {
     if (owns() && ticket === domainRevision) message.warning('域名设置未读取成功，请刷新页面。')
+  }
+}
+
+// 诉求 ⑤：用户侧的格式来源。管理员与用户都要读它 —— 管理员用它渲染占位预览，
+// 用户用它作为唯一可选项。失败时不阻塞页面，只在创建脚本时提示无可用格式。
+async function loadDomainFormats() {
+  if (!canAct()) return
+  const owns = captureOwner()
+  try {
+    const response = await getScriptDomainFormats()
+    if (!owns()) return
+    if (response?.status !== 200) { domainFormats.value = []; return }
+    const list = Array.isArray(response.data?.formats) ? response.data.formats : []
+    // 只保留能解析的新语法条目：服务端已过滤，这里再挡一次是为了让
+    // 「界面给了一个填不出域名的选项」这种不可用状态不可能出现。
+    domainFormats.value = list
+      .map((item) => parseScriptDomainFormat(item?.raw ?? item?.pattern ?? ''))
+      .filter(Boolean)
+  } catch {
+    if (owns()) domainFormats.value = []
   }
 }
 
@@ -747,16 +904,30 @@ async function saveDomainSettings() {
   if (!canAct() || !isAdmin.value || !domainReady.value || domainSaving.value) return
   const owns = captureOwner(), ticket = ++domainRevision
   domainSaving.value = true
+  domainError.value = ''
   try {
     const domains = domainText.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean)
-    const response = await updateScriptDomainSettings({ domains, allowWildcard: domainAllowWildcard.value })
+    const response = await updateScriptDomainSettings({ domains })
     if (!owns() || ticket !== domainRevision) return
-    if (response?.status !== 200) { message.error('保存域名设置未完成，请刷新核对。'); return }
+    if (response?.status !== 200) {
+      // 诉求 ④：旧格式必须**明确报错**，让管理员知道要改成新写法，
+      // 而不是「保存成功但规则不生效」。
+      const detail = response?.data?.message || '保存域名设置未完成，请刷新核对。'
+      domainError.value = detail
+      message.error(detail)
+      return
+    }
     domainText.value = Array.isArray(response.data?.domains) ? response.data.domains.join('\n') : domainText.value
-    domainAllowWildcard.value = response.data?.allowWildcard !== false
+    domainSavedText.value = domainText.value
+    // 保存后立刻刷新用户侧可选项，避免管理员改完而用户仍看到旧列表。
+    void loadDomainFormats()
     message.success('脚本域名设置已保存')
-  } catch {
-    if (owns() && ticket === domainRevision) message.error('域名设置保存结果未确认，请刷新核对。')
+  } catch (error) {
+    if (owns() && ticket === domainRevision) {
+      const detail = error?.response?.data?.message || '域名设置保存结果未确认，请刷新核对。'
+      domainError.value = detail
+      message.error(detail)
+    }
   } finally { if (owns() && ticket === domainRevision) domainSaving.value = false }
 }
 
@@ -848,7 +1019,7 @@ async function saveActivationPrice() {
 function refreshScripts() { void loadBillingSettings(); return loadScripts() }
 function startReads() {
   if (!canAct()) return
-  void loadVersions(); void loadDomainSettings(); void loadBillingSettings(); void loadScripts()
+  void loadVersions(); void loadDomainSettings(); void loadDomainFormats(); void loadBillingSettings(); void loadScripts()
 }
 function retireScope() {
   const ticket = ++epoch
@@ -857,8 +1028,9 @@ function retireScope() {
   showAll.value = false; rows.value = []; versions.value = []
   Object.assign(summary, { total: 0, enabled: 0, reserved: 0 })
   readError.value = ''; listReady.value = false; loading.value = false; deleting.value = false
-  domainText.value = ''; domainAllowWildcard.value = true; domainReady.value = false; domainSaving.value = false
-  lastUploadKey.value = ''; uploadVersion.value = ''; uploading.value = false; nativeLeaseConfirmed.value = false
+  domainText.value = ''; domainReady.value = false; domainSaving.value = false; domainError.value = ''
+  domainFormats.value = []; domainRowError.value = ''
+  lastUploadKey.value = ''; uploadVersion.value = ''; uploading.value = false
   escrowPolicy.value = null; activationPrice.value = null; policyError.value = ''; priceForm.value = ''
   Object.assign(policyForm, { target: '', minimum: '', multiplier: '' }); savingPolicy.value = false; savingPrice.value = false
   void nextTick().then(() => nextTick()).then(() => {

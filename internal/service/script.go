@@ -80,6 +80,15 @@ type CreateUserScriptInput struct {
 	AutoTopUp             bool           `json:"autoTopUp,omitempty"`
 	RunDurationMinutes    int            `json:"runDurationMinutes,omitempty"`
 	NotifyOnDenied        bool           `json:"notifyOnDenied,omitempty"`
+	// SkipOwnerBindingCheck 由**管理员管理视图**的调用方置真（诉求 ②）。
+	//
+	// 「脚本管理」是管理员看的运维视图，给用户设手机的合规门槛放这里没有意义：
+	// 管理员一旦没绑手机/微信就整块功能不可用，而他做的是账号侧的管理动作。
+	//
+	// ⚠️ 它**不是**从请求体读的（json:"-"），必须由控制器在确认「调用者确为管理员
+	// 且走的是管理入口」之后显式置真。否则用户只要在 payload 里加一个字段
+	// 就能绕过自己的绑定约束 —— 那正是这一条最容易写错的地方。
+	SkipOwnerBindingCheck bool `json:"-"`
 }
 
 type UpdateUserScriptInput struct {
@@ -265,7 +274,14 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 			return ErrScriptForbidden
 		}
 		scope := fmt.Sprintf("script-create:user:%d", user.ID)
-		if user.Phone == nil || strings.TrimSpace(*user.Phone) == "" ||
+		// 诉求 ②：管理员管理视图不校验被管理账号的手机/微信绑定。
+		//
+		// 这是一条**共享**的服务层校验，所以按调用来源（SkipOwnerBindingCheck）
+		// 分流，而不是一刀切删掉 —— 用户侧「我的脚本」的绑定门槛保留，
+		// 理由见 ValidateScriptOwnerBinding 的注释。
+		if input.SkipOwnerBindingCheck {
+			// 管理视图：跳过绑定门槛，其余校验（版本有效性、余额、幂等）一律照旧。
+		} else if user.Phone == nil || strings.TrimSpace(*user.Phone) == "" ||
 			user.WechatID == nil || strings.TrimSpace(*user.WechatID) == "" {
 			// A binding can change after authentication. A matching completed
 			// receipt is a read, but an expired/missing receipt cannot create a
@@ -323,7 +339,17 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 		if err != nil {
 			return err
 		}
-		useWildcard := true
+		// 公开地址形态由**管理员配置的域名格式**决定，不是由调用方随便传的布尔决定。
+		//
+		// 为什么必须这样：公开 URL 是 `ScriptCommandOrigin + (useWildcard ? "" : "/"+shortCode)`。
+		//   - `*.a.com` 泛域名格式：脚本住在 `<shortCode>.<baseDomain>` 这个独立主机上，
+		//     根路径就是脚本入口 ⇒ useWildcard 必须为 true。
+		//   - `a.com/*` 路径格式：脚本住在**共享**主机 baseDomain 下，靠路径段区分
+		//     ⇒ 必须有 `/<shortCode>` 这一段，useWildcard 必须为 false。
+		//     ⚠️ 这正是本轮的实时 bug：默认恒为 true 时，按 `a.com/*` 建的脚本
+		//     公开地址是根路径 "",而 authorizeScriptPublicPath 的路径规则要求至少一段
+		//     ⇒ 该类脚本**永远解析不到**（实测 Resolve 恒 ErrScriptNotFound）。
+		useWildcard := defaultScriptUseWildcardWithDB(tx, baseDomain)
 		if input.UseWildcardDomain != nil {
 			useWildcard = *input.UseWildcardDomain
 		}

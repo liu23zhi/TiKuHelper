@@ -47,7 +47,7 @@ func TestReleaseAIFallbackScriptAdmissionAndSettlement(t *testing.T) {
 	if _, err := loadAIFallbackBillingContextWithDB(db, user.ID, key.ID, mismatch); !errors.Is(err, service.ErrInvalidAccessTokenAuthorization) {
 		t.Fatalf("session attached to wrong Key was not rejected: %v", err)
 	}
-	if _, err := service.UpdateScriptDomainSettingsWithDB(db, service.ScriptDomainSettings{Domains: []string{"other.example.com/*"}}); err != nil {
+	if _, err := service.UpdateScriptDomainSettingsWithDB(db, service.ScriptDomainSettings{Domains: []string{"*.other.example"}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := loadAIFallbackBillingContextWithDB(db, user.ID, key.ID, session); !errors.Is(err, service.ErrInvalidAccessTokenAuthorization) {
