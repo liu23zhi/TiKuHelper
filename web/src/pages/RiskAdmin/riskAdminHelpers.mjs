@@ -65,6 +65,9 @@ export const RISK_RULE_OPTIONS = Object.freeze([
   // R10：登录 IP 的 ASN 落在运营配置的名单内
   // ⚠️ label 必须写明「需配名单」，否则运营会以为它坏了（空名单时规则静默）
   { value: 'proxy_ip_login', label: '代理IP登录（需配 ASN 名单）' },
+  // R5：同一 /24 段 1h 内自助注册 ≥3 个账号
+  // ⚠️ label 写明「仅自助注册」与「/24」，因为管理员建号不计入、段粒度是 /24
+  { value: 'register_burst', label: '注册突增（同 /24 段 · 仅自助注册）' },
 ])
 
 const RISK_RULE_LABELS = Object.freeze(

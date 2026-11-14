@@ -985,6 +985,7 @@ func TestLoadRiskRulesFallsBackToCodeDefaults(t *testing.T) {
 		"credential_stuffing":       20,
 		"login_bruteforce":          10,
 		"refund_abuse":              3,
+		"register_burst":            3,
 		"proxy_ip_login":            1,
 	}
 	if len(rules) != len(wantThreshold) {
@@ -3308,6 +3309,7 @@ func TestRiskWarningDedupIsAtomicAcrossAllRules(t *testing.T) {
 		{ruleID: "login_bruteforce", throttleSeconds: 60 * 60, subjectKey: "login_bruteforce:ip:203.0.113.7:2026-11-14T00:00:00+08:00"},
 		{ruleID: "refund_abuse", throttleSeconds: 24 * 60 * 60, subjectKey: "refund_abuse:user:42:2026-11-14T00:00:00+08:00"},
 		{ruleID: "proxy_ip_login", throttleSeconds: 24 * 60 * 60, subjectKey: "proxy_ip_login:user:42:2026-11-14T00:00:00+08:00"},
+		{ruleID: "register_burst", throttleSeconds: 6 * 60 * 60, subjectKey: "register_burst:segment:203.0.113.0/24:2026-11-14T00:00:00+08:00"},
 	}
 	for _, tc := range cases {
 		tc := tc

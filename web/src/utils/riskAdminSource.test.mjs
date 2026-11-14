@@ -356,6 +356,10 @@ test('规则名与级别：未知值回落而不是抛错', () => {
   assert.equal(riskRuleLabel('login_bruteforce'), '登录爆破（同账号或 IP · 10 分钟）')
   assert.equal(riskRuleLabel('refund_abuse'), '退款滥用（仅成功退款 · 近满额）')
   assert.equal(riskRuleLabel('proxy_ip_login'), '代理IP登录（需配 ASN 名单）')
+  assert.equal(riskRuleLabel('register_burst'), '注册突增（同 /24 段 · 仅自助注册）')
+  // R5 的 label 必须写明「仅自助注册」——管理员建号不计入，不提示会让运营
+  // 在后台批量建号后奇怪「为什么没告警」。
+  assert.match(riskRuleLabel('register_burst'), /仅自助注册/, 'R5 label 必须写明只统计自助注册')
   // R10 的 label 必须提示「需配名单」——空名单时规则静默，
   // 不提示会让运营以为规则坏了。
   assert.match(riskRuleLabel('proxy_ip_login'), /需配/, 'R10 label 必须提示需要配置 ASN 名单')

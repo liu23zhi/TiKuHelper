@@ -136,6 +136,13 @@ const (
 	//
 	// 数据源：logs（action=10 + status=success）+ ip_segments 的 asn 列。
 	RiskRuleIDProxyIPLogin = "proxy_ip_login"
+	// RiskRuleIDRegisterBurst 是 96 §2.1 L110 的 R5「注册突增」：
+	// 同一 IP 段（/24）在 1h 滚动窗口内**自助注册** ≥N 个账号（N 默认 3，每段 6h 节流）。
+	//
+	// ⚠️ 只统计 register_source=public：管理员/系统建号的 register_ip 是
+	// **操作者**的地址（entity/users.gen.go 的字段注释原话），不是注册者来源。
+	// 算进去会让「管理员批量建号」直接触发。
+	RiskRuleIDRegisterBurst = "register_burst"
 )
 
 // RiskRuleDefault 是一条规则的**代码内默认值**。
@@ -344,6 +351,16 @@ var DefaultRiskBehaviorRules = []RiskRuleDefault{
 		Threshold:       1,
 		ThrottleSeconds: 24 * 60 * 60,
 		Description:     "用户登录 IP 的 ASN 落在运营配置的数据中心/代理商名单内（如 Google Cloud、AWS、DigitalOcean），常见于脚本、爬虫与规避地域风控的场景。四条已知限制：① **名单为空时本规则完全不告警**（名单由运营在阈值配置的 `risk_proxy_asn_list` 项里维护，逗号/分号/空格分隔，形如 AS15169）；② 只统计能查到 ASN 的公网 IP —— 私网 IP、段表未覆盖、段记录无 ASN 的登录都会被跳过（不能把「未知」当成「代理」）；③ 段表（ip_segments）需要靠真实 IP 查询逐步积累，新部署环境几乎为空，本规则前期不会告警；④ 同一用户同一天只告警一次（节流 24 小时）。只告警不处置。",
+	},
+	{
+		RuleID:   RiskRuleIDRegisterBurst,
+		Name:     "注册突增",
+		Severity: RiskSeverityMedium,
+		// 96 §2.1 L110：同一 IP 段 1h 内注册 ≥N（默认 3），每段 6h 一次。
+		// 三个数字均来自 96 号，不是拍的。
+		Threshold:       3,
+		ThrottleSeconds: 6 * 60 * 60,
+		Description:     "同一 /24 IP 段在 1 小时滑动窗口内**自助注册**（register_source=public）达到阈值个账号（默认 3 个），常见于批量注册养号。五条已知限制：① 段粒度是 **/24**（256 个地址）——公司、学校、园区的出口占一个 /24 是常见情形，正常情况下同段多人注册也会命中，所以本规则更适合作为「排查线索」而非「确凿证据」；② 只统计**自助注册**，管理员与系统建号不计入（它们的 register_ip 记的是操作者地址，算进去会让后台批量建号直接触发）；③ 私网与保留地址一律跳过（如 Docker 的 172.18.0.1）——否则同一台宿主机上的账号会天然同段；④ **IPv6 不参与**（/24 对 IPv6 无意义，按 /64 聚合会把同一个人的多设备当成多人）；⑤ 同一段 6 小时内只告警一次。只告警不处置。",
 	},
 }
 
