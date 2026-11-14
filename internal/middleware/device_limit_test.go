@@ -168,6 +168,10 @@ type deviceLimitTestRequest struct {
 	scriptSession bool
 	// deviceID 为空 = 不带 X-Device-Id 头（「无头请求」）。
 	deviceID string
+	// clientInstance 为空 = 不带 X-Device-Instance 头（旧客户端 / 冲突判定跳过）。
+	//
+	// 非空时才会驱动 141 §4 的冲突检测：同 device_id + 不同 instance ⇒ 409。
+	clientInstance string
 	// authorization / scriptIdentity 走中间件自己的凭据解析路径（模拟 /api/search 这种无鉴权中间件的路由）。
 	authorization  string
 	scriptIdentity string
@@ -201,6 +205,9 @@ func doDeviceLimitRequest(t *testing.T, db *gorm.DB, req deviceLimitTestRequest)
 	httpReq.Header.Set("Content-Type", "application/json")
 	if req.deviceID != "" {
 		httpReq.Header.Set(DeviceIDHeader, req.deviceID)
+	}
+	if req.clientInstance != "" {
+		httpReq.Header.Set(DeviceInstanceHeader, req.clientInstance)
 	}
 	if req.authorization != "" {
 		httpReq.Header.Set("Authorization", req.authorization)
@@ -609,4 +616,87 @@ func TestDeviceLimitResolvesCredentialWhenAuthMiddlewareAbsent(t *testing.T) {
 	// 无效凭据 ⇒ 按匿名放行（交给 handler 给 401，而不是在这里 403）。
 	bad := doDeviceLimitRequest(t, db, deviceLimitTestRequest{authorization: "Bearer not-a-real-token"})
 	assertDeviceLimitAllowed(t, bad, "无效凭据（按匿名放行）")
+}
+
+// ─────────────── 冲突检测的接线（409）与同实例重连 ───────────────
+//
+// 这一组是本轮**补的接线钉子**。C2 实现了完整的 DecideDeviceRegistration，
+// 单测也全绿，但 device_limit.go 里把它返回的 decision 用 `_` 丢掉了 ——
+// 于是真实请求路径上**永远发不出 409**，客户端只会看到「设备没登记上」，
+// 下次又被判新设备，槽位静默不增长。
+//
+// 形态与 124 号记的「代码都在、只差接线」完全一致，所以两条都必须测**接线**，
+// 不能只测 service 层的判定函数（那层一直是绿的，发现不了这个洞）。
+
+// S5 接线：跨账号同 device_id + 不同 instance ⇒ 409 + code=DEVICE_ID_CONFLICT。
+func TestDeviceLimitEmits409OnDeviceIDConflict(t *testing.T) {
+	db := newDeviceLimitTestDB(t)
+	setDeviceLimitSwitch(t, db, true)
+
+	// 账号 A 先把 device_id 登记走（同一台设备、instance=a-run）。
+	levelA := seedDeviceLimitLevel(t, db, 1, 5)
+	userA := seedDeviceLimitUser(t, db, "conflict-a", levelA, -1)
+	first := doDeviceLimitRequest(t, db, deviceLimitTestRequest{
+		user: userA, deviceID: "shared-device-xyz", clientInstance: "run-a",
+	})
+	assertDeviceLimitAllowed(t, first, "账号 A 首次登记该 device_id 应当放行")
+
+	// 账号 B 拿着**同一个 device_id**、但 instance 不同（＝镜像复制出来的另一份）
+	// 来登记 ⇒ 必须 409，且 code 精确等于协议字段。
+	levelB := seedDeviceLimitLevel(t, db, 2, 5)
+	userB := seedDeviceLimitUser(t, db, "conflict-b", levelB, -1)
+	second := doDeviceLimitRequest(t, db, deviceLimitTestRequest{
+		user: userB, deviceID: "shared-device-xyz", clientInstance: "run-b",
+	})
+
+	if second.Code != http.StatusConflict {
+		t.Fatalf("跨账号同 device_id + 不同 instance 应当 409，实际 status=%d body=%s",
+			second.Code, second.Body.String())
+	}
+	if !strings.Contains(second.Body.String(), `"code":"DEVICE_ID_CONFLICT"`) {
+		t.Fatalf("409 必须带 code=DEVICE_ID_CONFLICT（客户端据它决定重新生成并重试），实际 body=%s",
+			second.Body.String())
+	}
+	// 反向断言：冲突绝不能被报成 403。403 是「槽位用完，用户去删设备」，
+	// 409 是「这个 ID 归别人，客户端换 ID」—— 混了用户会删无可删。
+	if second.Code == http.StatusForbidden {
+		t.Fatal("冲突必须报 409 而不是 403：两者对客户端的下一步动作要求相反")
+	}
+}
+
+// S6 对照组：同账号 + 同 device_id + **同** instance ⇒ 正常（不冲突）。
+//
+// 没有这一条，「只要见过 device_id 就判冲突」的实现也能让 S5 变绿，
+// 但那会让用户每次重开浏览器都被判冲突、每次换 ID、槽位迅速耗尽。
+func TestDeviceLimitAllowsSameInstanceReconnect(t *testing.T) {
+	db := newDeviceLimitTestDB(t)
+	setDeviceLimitSwitch(t, db, true)
+	levelID := seedDeviceLimitLevel(t, db, 1, 5)
+	user := seedDeviceLimitUser(t, db, "same-instance", levelID, -1)
+
+	for i := 0; i < 3; i++ {
+		out := doDeviceLimitRequest(t, db, deviceLimitTestRequest{
+			user: user, deviceID: "stable-device", clientInstance: "same-run",
+		})
+		assertDeviceLimitAllowed(t, out,
+			"同账号同 device_id 同 instance 的重复请求必须放行（S6 对照组）")
+	}
+}
+
+// 无 instance 头的旧客户端：冲突判定整体跳过，行为与加这个字段之前一致。
+func TestDeviceLimitSkipsConflictWhenInstanceMissing(t *testing.T) {
+	db := newDeviceLimitTestDB(t)
+	setDeviceLimitSwitch(t, db, true)
+
+	levelA := seedDeviceLimitLevel(t, db, 1, 5)
+	userA := seedDeviceLimitUser(t, db, "noinst-a", levelA, -1)
+	assertDeviceLimitAllowed(t, doDeviceLimitRequest(t, db, deviceLimitTestRequest{
+		user: userA, deviceID: "legacy-device",
+	}), "旧客户端（无 instance）首次登记放行")
+
+	levelB := seedDeviceLimitLevel(t, db, 2, 5)
+	userB := seedDeviceLimitUser(t, db, "noinst-b", levelB, -1)
+	assertDeviceLimitAllowed(t, doDeviceLimitRequest(t, db, deviceLimitTestRequest{
+		user: userB, deviceID: "legacy-device",
+	}), "旧客户端没有可比对的 instance，不得判冲突（否则老客户端集体失效）")
 }

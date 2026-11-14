@@ -20,6 +20,19 @@ import (
 // BuildDevicePoolDeviceID 注释里记着这笔账）。
 const DeviceIDHeader = "X-Device-Id"
 
+// DeviceInstanceHeader 是客户端上报「本次运行实例」的请求头（141 §4.3）。
+//
+// ⚠️ 它与 DeviceIDHeader 的语义**必须分开**，这是整个冲突检测成立的前提：
+//
+//	device_id  → 持久化（chrome.storage），表示「这个浏览器 profile / exe 宿主」
+//	instance   → **每次启动新生成、绝不落盘**，表示「这次运行」
+//
+// 镜像复制会让 device_id 一起被复制，但 instance 每次启动都新生成，
+// 所以「同 device_id + 不同 instance」才能识别出「一套镜像被复制多份」。
+// 若 instance 也持久化，镜像两份的 instance 相同 → 被判成「同一实例重连」
+// → 冲突检测完全失效（141 §4.3 的局限说明）。
+const DeviceInstanceHeader = "X-Device-Instance"
+
 // DeviceIDRequiredCode / DeviceIDRequiredMessage 是「无头请求」的拒绝体。
 //
 // 文案是产品需求：老客户端不带 header 时，用户必须知道「去升级」而不是
@@ -194,14 +207,40 @@ func deviceLimitHandler(injected *gorm.DB) gin.HandlerFunc {
 		// 已绑定（already-registered）时 CanUseDevice 内部已刷新 last_seen_at，
 		// 不再重复写 —— 热路径上少一次 UPDATE。
 		if decision.Reason == service.DevicePoolReasonWithinLimit {
-			if _, err := service.RegisterDeviceWithOptions(db, userID, deviceID,
+			// ⚠️ 这里**不能**用 `_` 丢弃返回的 decision（2026-11-15 修，C2 接线缺口）。
+			//
+			// RegisterDeviceWithOptions 内部第一条就是 DecideDeviceRegistration：
+			// 判定冲突时它返回 reason=device-id-conflict 且**不写任何行**。
+			// 原先写成 `if _, err := ...` 把这个结论整个丢掉 —— 于是冲突检测虽然
+			// 实现完整、单测全绿，但在真实请求路径上**永远发不出 409**，客户端
+			// 只会看到「设备没登记上」，下次请求又被判成新设备，槽位静默不增长。
+			//
+			// 409 是 141 §6.3 的契约：客户端收到它要重新生成 device_id 并重试一次
+			// （扩展侧 device-identity.ts 的实现依赖这个响应）。
+			registered, err := service.RegisterDeviceWithOptions(db, userID, deviceID,
 				service.DeviceBindingRegisterOptions{
-					OwnerKind: entity.DeviceBindingOwnerKindToken,
-					TokenID:   tokenID,
-				}); err != nil {
+					OwnerKind:      entity.DeviceBindingOwnerKindToken,
+					TokenID:        tokenID,
+					ClientInstance: c.GetHeader(DeviceInstanceHeader),
+				})
+			if err != nil {
 				// 判定已放行、只是这一笔没写进去：fail-open（同 RegisterDevice 的契约）。
 				logger.SysLog("设备登记失败（fail-open，不影响本次请求）：userID=" +
 					formatDeviceLimitUserID(userID) + " err=" + logger.RedactSecrets(err.Error()))
+			} else if !registered.Allowed &&
+				registered.Reason == service.DevicePoolReasonDeviceIDConflict {
+				// 冲突是**确定性的拒绝**，不是「写失败」：必须让客户端知道要换 ID。
+				//
+				// 这里刻意不调 controller.WriteDeviceConflict：controller 包的
+				// search.go / tiku.go 都 import 了 middleware，反向 import 会成环。
+				// 响应体取自 service.DeviceConflictDecisionBody（controller 那个函数
+				// 用的也是它），所以 code/message 与「唯一发出点」逐字一致。
+				body := service.DeviceConflictDecisionBody()
+				c.AbortWithStatusJSON(http.StatusConflict, gin.H{
+					"code":    body["code"],
+					"message": body["message"],
+				})
+				return
 			}
 		}
 		c.Next()
