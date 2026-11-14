@@ -237,16 +237,24 @@ test('「普通用户可见」组与 USER_MENU_ITEMS 集合相等（不是子集
   assert.equal(labelOf('profile'), '个人中心');
   assert.equal(labelOf('my-tokens'), '我的令牌');
 
-  // ⚠️ tickets / scripts / billing-records / my-tokens 四处双文案，现在**不在 shared 组里**：
+  // ⚠️ tickets / scripts / my-tokens 三处双文案，现在**不在 shared 组里**：
   // 它们各自拆成了两个路由（tickets ↔ ticket-admin、scripts ↔ script-admin、
-  // billing-records ↔ billing-admin、my-tokens ↔ token-admin），管理端那一侧用独立 key
-  // 落在 admin-only 组。所以这里断言的是「user 端 key 只在 shared、admin 端 key
-  // 只在 admin-only」，而不是「同一个 key 在两个组各有一份文案」。
-  for (const key of ['tickets', 'scripts', 'billing-records', 'my-tokens']) {
+  // my-tokens ↔ token-admin），管理端那一侧用独立 key 落在 admin-only 组。
+  // 所以这里断言的是「user 端 key 只在 shared、admin 端 key 只在 admin-only」，
+  // 而不是「同一个 key 在两个组各有一份文案」。
+  //
+  // billing-records 已于 2026-11-15 退役（用户侧入口并入「个人使用 → 账单流水」），
+  // 所以从这条清单移出；它必须**不存在**于 USER_MENU_ITEMS，详见下方反向断言。
+  for (const key of ['tickets', 'scripts', 'my-tokens']) {
     assert.ok(USER_BY_KEY.has(key), `前置失效：${key} 应当仍在 USER_MENU_ITEMS 里`);
     assert.equal(labelOf(key), USER_BY_KEY.get(key).label,
       `${key} 在 shared 组的文案必须是用户端的`);
   }
+  // 退役 key 的反向防线：删除菜单项却没删干净（或反过来）都会让侧边栏出现死链。
+  assert.ok(!USER_BY_KEY.has('billing-records'),
+    'billing-records 已退役，不得出现在 USER_MENU_ITEMS');
+  assert.ok(!ADMIN_MENU_ITEMS.some((item) => item.key === 'billing-records'),
+    'billing-records 已退役，不得出现在 ADMIN_MENU_ITEMS');
   for (const key of ['ticket-admin', 'script-admin', 'billing-admin', 'token-admin']) {
     assert.ok(adminOnlySection.items.some((item) => item.key === key),
       `${key}（管理端入口）必须落在「仅管理员可见」组`);

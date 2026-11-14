@@ -353,6 +353,11 @@ func normalizeUserLevelTrigger(trigger string) string {
 		return entity.UserLevelTriggerConsumption
 	case entity.UserLevelTriggerRefund:
 		return entity.UserLevelTriggerRefund
+	case entity.UserLevelTriggerRegister:
+		// 注册触发的首次评级（137 §10.3 / A1-6）。
+		// ⚠️ 漏掉这一条会让 trigger 被静默收敛成 manual —— 于是「首次评级为 X」
+		// 与「管理员手改」在流水里完全同形，事后无法区分这两种完全不同的来源。
+		return entity.UserLevelTriggerRegister
 	default:
 		return entity.UserLevelTriggerManual
 	}

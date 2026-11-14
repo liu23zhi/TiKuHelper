@@ -610,6 +610,7 @@ func UserRegister(c *gin.Context) {
 			return
 		}
 		bindSuccessfulVerification(user, payload.CaptchaToken, service.CaptchaSceneRegisterSubmit, smsEvidence)
+		evaluateUserLevelAfterRegister(user.ID)
 		recordAccountAudit(c, &user, "auth", 12, "用户注册成功", map[string]any{"status": "success", "message": "用户注册成功", "scene": "wechat_register"})
 		c.JSON(http.StatusOK, user)
 		return
@@ -684,8 +685,46 @@ func UserRegister(c *gin.Context) {
 		return
 	}
 	bindSuccessfulVerification(user, payload.CaptchaToken, service.CaptchaSceneRegisterSubmit, smsEvidence)
+	evaluateUserLevelAfterRegister(user.ID)
 	recordAccountAudit(c, &user, "auth", 12, "用户注册成功", map[string]any{"status": "success", "message": "用户注册成功", "scene": "register"})
 	c.JSON(200, user)
+}
+
+// evaluateUserLevelAfterRegister 在注册成功后立即给新用户评一次等级（137 §10.3 / A1-6）。
+//
+// ## 为什么必须有这一步
+//
+// 等级评估在此之前只有三个触发器（recharge / consumption / refund），**全部要求
+// 用户已经有账单**。而新注册用户的累计充值/消费都是 0、账单也是空的，于是
+// `users.level_id` 一直是 0（无等级）。后果不是「等级显示空白」这么轻：
+// 设备上限的权威入口 `service.EffectiveDeviceLimit` 在 level_id=0 时按 fail-open
+// 返回「不限」—— 于是**设备上限对每一个新用户永久不生效**，且不报任何错。
+//
+// ## 三条纪律
+//
+//  1. **fail-open**：评估失败只记 SysLog，绝不影响注册结果。注册是不可逆的
+//     用户可见动作，把它绑在一次「权益计算」上会让 DB 抖一下就注册失败。
+//     失败不丢功能：存量回填（registry 侧）与下次充值/消费触发都会补上。
+//  2. **在注册事务之后**：此处调用点位于事务提交之后（响应写出之前），
+//     因此评估能看到已落库的用户行。放进事务里会让「等级表未就绪」
+//     这类可降级问题把注册本身回滚掉。
+//  3. **同步而不是 goroutine**：新用户紧接着就会用设备上限判定（首次登录），
+//     异步评估存在「登录时 level_id 还是 0 ⇒ 不限 ⇒ 多设备被放进来」的窗口。
+//     这条评估只是一次两级查询 + 一次可能不发生的写入，代价远小于竞态。
+func evaluateUserLevelAfterRegister(userID int32) {
+	if userID <= 0 {
+		return
+	}
+	db := dao.User.UnderlyingDB()
+	if db == nil {
+		return
+	}
+	// Session(NewDB:true)：dao 句柄的 Statement 已解析成 users 模型，
+	// 拿它去操作 user_levels / user_level_histories 会 panic（本仓实测踩过）。
+	session := db.Session(&gorm.Session{NewDB: true})
+	if _, err := service.EvaluateUserLevelWithDB(session, userID, entity.UserLevelTriggerRegister); err != nil {
+		logger.SysLog("注册后等级评估失败（fail-open，不影响注册；回填与下次账单触发会补上）：" + logger.RedactSecrets(err.Error()))
+	}
 }
 
 // applyReferralOnRegister 在注册事务内完成邀请归因并生成新用户自己的邀请码。

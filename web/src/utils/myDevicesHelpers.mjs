@@ -1,0 +1,220 @@
+// 「我的设备」页的纯函数层（137-设备体系设计 §9.1 / 批次 A2-5）。
+//
+// 为什么要单独一层 .mjs 而不是全写在 index.vue 里：
+//   1. `npm run test:unit` 只跑 `src/utils/*.test.mjs`（package.json 的 test:unit 脚本），
+//      写在 .vue 里就没有任何单测入口 —— 而这一页的判据（上限上下界、状态映射、
+//      时间文案）全是**纯计算**，不需要 DOM 就能测。
+//   2. 上限校验必须与后端 `/user/device-limit` 的 400 文案同口径。两处若各写一份，
+//      会出现「前端放行、后端 400」的可见缺陷；共用一个纯函数就只有一个口径。
+//
+// 三条纪律：
+//   - **不引用后端的常量字符串**（这里写的是字面量）：后端常量漂移时，
+//     前端测试应当红，而不是跟着一起漂移成恒真。
+//   - 所有函数对「缺字段/类型不对」都返回**显式的未知态**，不伪造 0/空串。
+//     把「读取失败」显示成「0 台」会让用户以为自己的上限变成了 0。
+//   - 不做任何请求。请求在 index.vue，注入点便于测试替换。
+
+/** 状态 → 界面元信息（137 §9.1 的三态：使用中 / 已移除 / 已拉黑）。 */
+export const DEVICE_STATUS_META = {
+  active: { text: '使用中', tone: 'success', canRemove: true, canBlock: true, canUnblock: false },
+  removed: { text: '已移除', tone: 'muted', canRemove: false, canBlock: false, canUnblock: false },
+  blocked: { text: '已拉黑', tone: 'danger', canRemove: false, canBlock: false, canUnblock: true },
+}
+
+const FALLBACK_STATUS_META = { text: '未知', tone: 'muted', canRemove: false, canBlock: false, canUnblock: false }
+
+/** deviceStatusMeta 取状态元信息；未知状态返回「未知」而不是猜一个。 */
+export function deviceStatusMeta(status) {
+  return DEVICE_STATUS_META[String(status || '')] || FALLBACK_STATUS_META
+}
+
+/** readInt 读一个整数字段；缺失/非法返回 null（**不**返回 0）。 */
+export function readInt(value) {
+  if (typeof value === 'number') return Number.isInteger(value) ? value : null
+  if (typeof value !== 'string') return null
+  const text = value.trim()
+  if (text === '') return null
+  if (!/^-?\d+$/.test(text)) return null
+  const parsed = Number(text)
+  return Number.isSafeInteger(parsed) ? parsed : null
+}
+
+/**
+ * normalizeDeviceLimit 把后端 `GET /user/device-limit` 的 data 归一化。
+ *
+ * 关键点：`upperBound` 为 null 表示「等级不限，无上界」；它不是「未知」，
+ * 所以不能退回默认值。用 `hasUpperBound` 显式区分两种 nil。
+ */
+export function normalizeDeviceLimit(raw) {
+  const data = raw && typeof raw === 'object' ? raw : {}
+  const upperRaw = data.upperBound
+  const hasUpperBound = upperRaw !== null && upperRaw !== undefined
+  const upper = hasUpperBound ? readInt(upperRaw) : null
+  const limit = readInt(data.limit)
+  const override = readInt(data.override)
+  const levelLimit = readInt(data.levelLimit)
+  return {
+    loaded: true,
+    limit,
+    // 上限"已算出"才显示数字；否则显示「未知」并禁用输入。
+    limitKnown: limit !== null,
+    unlimited: data.unlimited === true,
+    source: typeof data.source === 'string' ? data.source : '',
+    sourceText: deviceLimitSourceText(data.source),
+    override,
+    levelLimit,
+    levelName: typeof data.levelName === 'string' ? data.levelName : '',
+    hasUpperBound: hasUpperBound && upper !== null,
+    upperBound: hasUpperBound ? upper : null,
+    editable: data.editable === true,
+    hookReady: data.hookReady !== false,
+  }
+}
+
+/** deviceLimitSourceText 把来源串翻成文案（137 §4 的四个取值）。 */
+export function deviceLimitSourceText(source) {
+  switch (String(source || '')) {
+    case 'user_override':
+      return '你自己设置的'
+    case 'level':
+      return '等级权益'
+    case 'level_missing':
+      return '未评级（暂不限制）'
+    case 'unlimited':
+      return '等级不限'
+    default:
+      // 空串/未知来源：显式说「未知」，不冒充「不限」——两者 limit 都可能为 0。
+      return '未知'
+  }
+}
+
+/** emptyDeviceLimitState 是「还没读到」的初值（不是「读到 0」）。 */
+export function emptyDeviceLimitState() {
+  return {
+    loaded: false,
+    limit: null,
+    limitKnown: false,
+    unlimited: false,
+    source: '',
+    sourceText: '',
+    override: null,
+    levelLimit: null,
+    levelName: '',
+    hasUpperBound: false,
+    upperBound: null,
+    editable: false,
+    hookReady: true,
+  }
+}
+
+/**
+ * validateDeviceLimitInput 校验用户输入的上限（与后端 400 文案同口径）。
+ *
+ * 返回 `{ ok, value, error, message }`：
+ *   - 空输入 → 「请填写设备上限」
+ *   - 非整数 → 「设备上限必须是整数」
+ *   - 负数 → 「设备上限不能为负数」
+ *   - 超过等级值 L → 「不能超过当前等级上限 L 台」（**与后端一字不差**）
+ *
+ * 为什么要前端也校验一遍：后端的 400 是最后防线，但用户点了保存才看到红字
+ * 是糟糕体验；更重要的是**上界必须来自 view.upperBound**（等级值），
+ * 而不是当前生效值 —— 与 PUT 的口径一致（见 controller/device_user.go 的注释）。
+ */
+export function validateDeviceLimitInput(input, view) {
+  const text = String(input === null || input === undefined ? '' : input).trim()
+  if (text === '') {
+    return { ok: false, value: null, error: 'required', message: '请填写设备上限' }
+  }
+  if (!/^\d+$/.test(text)) {
+    return { ok: false, value: null, error: 'not-integer', message: '设备上限必须是整数' }
+  }
+  const value = Number(text)
+  if (!Number.isSafeInteger(value)) {
+    return { ok: false, value: null, error: 'not-integer', message: '设备上限必须是整数' }
+  }
+  const state = view && typeof view === 'object' ? view : {}
+  if (state.hasUpperBound && state.upperBound !== null && value > state.upperBound) {
+    return {
+      ok: false,
+      value,
+      error: 'above-level',
+      message: `不能超过当前等级上限 ${state.upperBound} 台`,
+    }
+  }
+  return { ok: true, value, error: '', message: '' }
+}
+
+/** normalizeDeviceItem 归一化列表里的一台设备（缺字段一律显式置空/未知）。 */
+export function normalizeDeviceItem(raw) {
+  const item = raw && typeof raw === 'object' ? raw : {}
+  const status = typeof item.status === 'string' ? item.status : ''
+  const meta = deviceStatusMeta(status)
+  const blockId = readInt(item.blockId)
+  return {
+    id: readInt(item.id) ?? 0,
+    deviceId: typeof item.deviceId === 'string' ? item.deviceId : '',
+    deviceLabel: typeof item.deviceLabel === 'string' ? item.deviceLabel : '',
+    lastSeenAt: typeof item.lastSeenAt === 'string' ? item.lastSeenAt : '',
+    status,
+    statusText: typeof item.statusText === 'string' && item.statusText ? item.statusText : meta.text,
+    tone: meta.tone,
+    revokedAt: typeof item.revokedAt === 'string' ? item.revokedAt : '',
+    revokedReason: typeof item.revokedReason === 'string' ? item.revokedReason : '',
+    blocked: item.blocked === true,
+    // blockId 只在 >0 时可用（列表里的「解除拉黑」按钮依赖它）。
+    blockId: blockId !== null && blockId > 0 ? blockId : 0,
+    blockOnly: item.blockOnly === true,
+    removable: item.removable === true,
+  }
+}
+
+/** normalizeDeviceList 归一化 `GET /user/devices` 的 data。 */
+export function normalizeDeviceList(raw) {
+  const data = raw && typeof raw === 'object' ? raw : {}
+  const list = Array.isArray(data.devices) ? data.devices : []
+  return {
+    loaded: true,
+    devices: list.map(normalizeDeviceItem),
+    total: readInt(data.total) ?? list.length,
+    active: readInt(data.active) ?? 0,
+    blocked: readInt(data.blocked) ?? 0,
+    schemaReady: data.schemaReady !== false,
+  }
+}
+
+/** emptyDeviceListState 是列表的初值（loaded=false 便于区分「没读到」和「读到 0 台」）。 */
+export function emptyDeviceListState() {
+  return { loaded: false, devices: [], total: 0, active: 0, blocked: 0, schemaReady: true }
+}
+
+/**
+ * describeLastSeen 把 ISO 时间转成「N 分钟前」。
+ *
+ * 三态而不是两态：**没有时间** 返回「从未活跃」，无法解析 返回「未知时间」。
+ * 把两者都显示成「刚刚」会让「10 天没用的设备」看起来是活的（137 §7 的
+ * 闲置解绑是用户理解上限的关键信息）。
+ */
+export function describeLastSeen(value, now) {
+  const text = String(value || '').trim()
+  if (text === '') return '从未活跃'
+  const stamp = Date.parse(text)
+  if (!Number.isFinite(stamp)) return '未知时间'
+  const reference = now instanceof Date ? now.getTime() : Number(now)
+  if (!Number.isFinite(reference)) return '未知时间'
+  const diffMs = reference - stamp
+  if (diffMs < 0) return '刚刚'
+  const minutes = Math.floor(diffMs / 60000)
+  if (minutes < 1) return '刚刚'
+  if (minutes < 60) return `${minutes} 分钟前`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} 小时前`
+  const days = Math.floor(hours / 24)
+  return `${days} 天前`
+}
+
+/** maskDeviceId 截断长设备指纹（展示用；后端 device_id 最长 191）。 */
+export function maskDeviceId(value) {
+  const text = String(value || '')
+  if (text.length <= 22) return text
+  return `${text.slice(0, 14)}…${text.slice(-6)}`
+}

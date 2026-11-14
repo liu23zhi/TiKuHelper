@@ -73,6 +73,16 @@ func ensureAccountDeviceBindingsSchema(db *gorm.DB) error {
 			return err
 		}
 	}
+	// 设备体系批次 A1（137 §3.2 / §3.3）：给本表补 5 列 + 建 user_device_blocks。
+	//
+	// ⚠️ 必须在标记判断**之前**，理由与上面「索引补建」完全同构：
+	// 老库早已写完 account_device_bindings_schema_v1 标记，若把加列放到标记之后，
+	// 那些库的新列**永远补不上**，且不会报任何错 —— 表现是
+	// 「代码里读 revoked_at，老库没有这一列 ⇒ 判定恒 fail-open ⇒ 上限不生效」。
+	// 而 fail-open 不报错，等于改动静默失效。
+	if err := ensureDevicePoolBindingSchema(db); err != nil {
+		return err
+	}
 	if systemSettingFlagIsSet(db, accountDeviceBindingsSchemaV1Key) {
 		return nil
 	}
@@ -85,6 +95,13 @@ func ensureAccountDeviceBindingsSchema(db *gorm.DB) error {
 		// 结构没建成就**绝不写标记**，否则这张表将永远建不出来且没有任何报错
 		// （121 §2.1 的反直觉细节：标记说「已完成」，迁移就再也不会重试）。
 		return nil
+	}
+	// **建表之后再跑一次**：空库首启时上面那次调用会因「主表还不存在」而跳过
+	// （ensureDevicePoolBindingSchema 只补列、不建主表）。若漏了这一次，
+	// 空库首启会没有 user_device_blocks 表 —— 表现是「用户拉黑功能在全新部署上
+	// 静默不生效」：查询侧对表缺失是 fail-open 的，不报错、只是永远拦不住。
+	if err := ensureDevicePoolBindingSchema(db); err != nil {
+		return err
 	}
 	if err := setSystemSettingFlag(db, accountDeviceBindingsSchemaV1Key); err != nil {
 		// 标记写失败不算迁移失败：结构已经建好，下次启动重跑是幂等的。

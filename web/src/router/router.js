@@ -49,6 +49,10 @@ const TicketImageCache = () => import(/* webpackChunkName: "route-ticket-image-c
 const Whitelist = () => import(/* webpackChunkName: "route-whitelist" */ '../pages/Whitelist/index.vue')
 // 账号封禁（121 §4.8 / 121 决策 6）。管理员专属，已登记进 ADMIN_ONLY_ROUTE_NAMES。
 const UserBan = () => import(/* webpackChunkName: "route-user-ban" */ '../pages/UserBan/index.vue')
+// 设备管理（137 设备体系 §9.2）。管理员专属，已登记进 ADMIN_ONLY_ROUTE_NAMES。
+// 与「账号封禁」相邻但语义不同：那一页按**账号**封，这一页按**设备**封
+// （同一台设备可能被多个账号轮流用，是工作室批量的典型形态）。
+const DeviceAdmin = () => import(/* webpackChunkName: "route-device-admin" */ '../pages/DeviceAdmin/index.vue')
 // 服务器状态（用户诉求：「请在侧边栏新增服务器状态，权限为普通用户可见」）。
 // ⚠️ 普通用户可见，**不得**登记进 ADMIN_ONLY_ROUTE_NAMES。
 // 数据源是 /api/service-status/summary（后端走 AuthOrAccessToken）——
@@ -58,6 +62,11 @@ const ServiceStatus = () => import(/* webpackChunkName: "route-service-status" *
 // 激活码管理，用于查看，修改和创建」，并能看换取令牌/下载脚本等使用情况）。
 // 管理员专属，已登记进 ADMIN_ONLY_ROUTE_NAMES。
 const ScriptActivationCode = () => import(/* webpackChunkName: "route-script-activation-code" */ '../pages/ScriptActivationCode/index.vue')
+// 我的设备（137-设备体系设计 §9.1 / 批次 A2-5）。**普通用户可见**：
+// 被设备上限挡住的用户必须能自己移除设备，否则只能找客服 —— 那正是 137 §5
+// 第 6 步文案要解决的问题。
+// ⚠️ 因此它**不得**登记进 ADMIN_ONLY_ROUTE_NAMES（device_user_router_test.go 钉住了这点）。
+const MyDevices = () => import(/* webpackChunkName: "route-my-devices" */ '../pages/MyDevices/index.vue')
 const routes = [
   {
     path: '/',
@@ -161,6 +170,13 @@ const routes = [
         path: 'user-bans',
         name: 'user-bans',
         component: UserBan,
+      },
+      {
+        // 设备管理（137 设备体系 §9.2）。与「账号封禁」相邻：同为处置入口，
+        // 但这一页按**设备**处置（解绑 / 封禁 / 解封）。
+        path: 'device-admin',
+        name: 'device-admin',
+        component: DeviceAdmin,
       },
       {
         // 已归档账号管理（task_doc/76 §3.2.3）:管理员删除与用户注销的账号都在这里。
@@ -334,16 +350,13 @@ const routes = [
         component: UserLevel,
       },
       {
-        // 我的账单（普通用户可见区）。viewMode: 'self' 让**管理员**从这个入口
-        // 进来时看到的是自己的账单，而不是「账单明细」的全站视图。
-        path: 'billing-records',
-        name: 'billing-records',
-        component: BillingRecordList,
-        meta: { viewMode: 'self' },
-      },
-      {
         // 账单明细（仅管理员可见区）。独立 name 才能被侧边栏单独选中，
         // 也才能登记进 ADMIN_ONLY_ROUTE_NAMES（那里有全站账单与改账单权限）。
+        //
+        // ⚠️ 与之成对的 billing-records（我的账单）已于 2026-11-15 退役：
+        // 用户侧账单入口并入「个人使用 → 账单流水」，理由是同一个人在两处看
+        // 同一份数据、两处却有不同筛选能力（个人使用那侧原本零筛选）。
+        // 退役后**只剩这一个入口**，所以它不再是「双入口的一半」。
         path: 'billing-admin',
         name: 'billing-admin',
         component: BillingRecordList,
@@ -381,6 +394,20 @@ const routes = [
         path: 'service-status',
         name: 'service-status',
         component: ServiceStatus,
+      },
+      {
+        // 我的设备（137-设备体系设计 §9.1 / 批次 A2-5）。普通用户可见。
+        //
+        // 为什么它在这里而不是管理区：设备上限是**用户自己**的权益约束，
+        // 被挡住的用户必须能自己移除设备自救（137 §5 第 6 步的文案就是
+        // 「请到「我的设备」移除不用的设备」）。锁成管理员专属会让那句文案
+        // 指向一个用户进不去的页面。
+        //
+        // ⚠️ 这个 name **绝不能**加进 ADMIN_ONLY_ROUTE_NAMES（有测试钉住）。
+        // 后端六条接口只要求 Auth，且恒取当前登录用户，没有越权面。
+        path: 'my-devices',
+        name: 'my-devices',
+        component: MyDevices,
       }
     ]
   }
@@ -415,11 +442,17 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   // 账号封禁：能封禁等于能拒绝任何账号使用服务，是最高危的运营动作之一。
   // 必须挡住「直接敲 URL」—— 页面上的 canManage() 只是体验层，权限边界在 router 与后端。
   'user-bans',
+  // 设备管理（137 §9.2）：能封禁设备 = 能切断任何一台机器的服务，且
+  // **用户无法自行解除**（全局黑名单，不在 /user/devices 的接口里）。
+  // 因此普通用户直敲 /adapter/device-admin 必须被挡住。
+  'device-admin',
   // 工单管理：与 `tickets`（工单反馈）是两个 name、两个入口。
   // 普通用户直敲 /ticket-admin 必须被挡住 —— 那里渲染的是全站工单。
   'ticket-admin',
-  // 脚本管理 / 账单明细：与 scripts（我的脚本）、billing-records（我的账单）
-  // 成对存在。管理端那侧含全站数据与写权限，普通用户直敲 URL 必须被挡。
+  // 脚本管理：与 scripts（我的脚本）成对存在。管理端那侧含全站数据与写权限，
+  // 普通用户直敲 URL 必须被挡。
+  // 账单明细：原与 billing-records（我的账单）成对，后者已于 2026-11-15 退役，
+  // 现在它是账单域唯一的入口（仍含全站数据与改账单权限，所以仍须挡）。
   'script-admin',
   'billing-admin',
   // 令牌管理 / 我的令牌：与 script-admin / scripts 同一对。

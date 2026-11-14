@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/internal/service"
 	"github.com/itihey/tikuAdapter/pkg/logger"
 	"gorm.io/gorm"
 )
@@ -56,7 +57,44 @@ func ensureUserLevelSchema(db *gorm.DB) error {
 	if err := ensureUserLevelIDColumn(db); err != nil {
 		return fmt.Errorf("add users.level_id fail: %w", err)
 	}
+	// 137 §3.1：用户级设备上限覆盖列（A1-1）。放在本函数里而不是新开一个迁移：
+	// 它与 level_id 是同一张表上「设备上限」的两级配置（用户覆盖 / 等级值），
+	// 分开会导致「level_id 补齐了但 override 没有」这种半成品状态需要另一次部署修。
+	if err := ensureUserDeviceLimitOverrideColumn(db); err != nil {
+		return fmt.Errorf("add users.device_limit_override fail: %w", err)
+	}
 	seedDefaultUserLevels(db)
+	// 137 §10.3 / A1-6：给存量 level_id=0 的用户补一次评级。
+	// 必须排在 seedDefaultUserLevels 之后 —— 等级表为空时评估会直接早退
+	// （EvaluateUserLevelWithDB 的 len(levels)==0 分支），回填等于白跑一趟
+	// 且标记会被写掉（详见 backfillUserLevelsForRegister 的注释）。
+	backfillUserLevelsForRegister(db)
+	return nil
+}
+
+// ensureUserDeviceLimitOverrideColumn 给 users 补 device_limit_override 列（137 §3.1，幂等）。
+//
+// 口径（137 §3.1 原表）：
+//
+//	-1  不覆盖，用等级值（默认）
+//	 0  不限
+//	N>0 具体台数
+//
+// ⚠️ 必须 `NOT NULL DEFAULT -1` 而不是可空：NULL 在 GORM 里要指针类型，且
+// `WHERE device_limit_override >= 0` 与 `IS NOT NULL` 两种判据容易写混。
+// 存量行一律落 -1（= 不覆盖），因此本迁移**没有数据回填**，且对既有行为零影响。
+func ensureUserDeviceLimitOverrideColumn(db *gorm.DB) error {
+	if db == nil || !db.Migrator().HasTable(entity.TableNameUser) {
+		return nil
+	}
+	if db.Migrator().HasColumn(entity.TableNameUser, "device_limit_override") {
+		return nil
+	}
+	if err := db.Exec("ALTER TABLE " + entity.TableNameUser +
+		" ADD COLUMN device_limit_override integer NOT NULL DEFAULT -1").Error; err != nil {
+		return err
+	}
+	logger.SysLog("已为 users 补上 device_limit_override 列（-1 = 不覆盖等级上限）")
 	return nil
 }
 
@@ -95,4 +133,114 @@ func seedDefaultUserLevels(db *gorm.DB) {
 		return
 	}
 	logger.SysLog(fmt.Sprintf("已写入 %d 个初始等级", len(defaultUserLevels)))
+}
+
+// userLevelBackfillSchemaKey 标记「存量 level_id=0 的用户已经补评估过」（A1-6）。
+//
+// 为什么需要标记：回填是「扫全部 level_id=0 的用户逐个评估」，而 level_id=0
+// 在**每次新注册但还没评估时**也是这个值。没有标记的话每次启动都会把
+// 「刚好在注册与评估之间」的用户重扫一遍 —— 数量小、幂等无害，但会掩盖
+// 「回填根本没跑成功」这件事（因为下次启动会重来，看起来一直正常工作）。
+//
+// 键名沿用 EnsureXxxSchema 的命名习惯，**不要改名**：改名等于让已回填过的库重跑一遍。
+const userLevelBackfillSchemaKey = "user_level_register_backfill_v1"
+
+// backfillUserLevelsForRegister 给存量 level_id=0 的用户补一次注册级评估（137 §10.3 / A1-6）。
+//
+// ## 为什么必须回填
+//
+// 137 §10.3 / §12.0 的推论：设备上限只在「用户有等级」时才可能生效
+// （EffectiveDeviceLimit 在 level_id=0 时返回不限）。而本批次之前
+// **没有任何一条路径会评估新用户** —— 充值/消费/退款三个触发器都要求
+// 用户已经有账单。⇒ 存量用户（以及所有新注册用户）level_id 恒为 0，
+// 设备上限对他们是**永久不生效**，且不报任何错。
+//
+// ## 幂等
+//
+// 用 system_settings 标记（FLAG 型）+ 回填成功后写标记。失败**不写标记**，
+// 下次启动会重跑（与其它 FLAG 型迁移一致）。
+//
+// 单条用户评估失败不阻断整体：记 SysLog 后继续下一个人（回填是逐用户的，
+// 一个用户的脏数据没有理由让其余几万人都不被评级）。
+// 但**有失败时不写标记** —— 否则下次启动不会重试，那批用户永久无等级。
+func backfillUserLevelsForRegister(db *gorm.DB) {
+	if db == nil {
+		return
+	}
+	if !userLevelSchemaAvailableForRegistry(db) {
+		return
+	}
+	if systemSettingFlagIsSet(db, userLevelBackfillSchemaKey) {
+		return
+	}
+	// 等级表为空时不做任何事，也**不写标记**：
+	// EvaluateUserLevelWithDB 在 len(levels)==0 时早退（不评估、不降级），
+	// 此时回填等于一次全表扫描零收益；等管理员配好等级后下次启动再跑。
+	var levelCount int64
+	if err := db.Model(&entity.UserLevel{}).Count(&levelCount).Error; err != nil {
+		logger.SysLog(fmt.Sprintf("读取等级表行数失败（跳过注册级回填）：%v", err))
+		return
+	}
+	if levelCount == 0 {
+		return
+	}
+
+	var ids []int32
+	if err := db.Table(entity.TableNameUser).
+		Where("level_id = ?", 0).Order("id asc").Pluck("id", &ids).Error; err != nil {
+		logger.SysLog(fmt.Sprintf("读取待回填用户失败（下次启动会重试）：%v", err))
+		return
+	}
+	if len(ids) == 0 {
+		// 没有待回填用户：直接写标记，避免每次启动都扫一遍全表。
+		if err := setSystemSettingFlag(db, userLevelBackfillSchemaKey); err != nil {
+			logger.SysLog(fmt.Sprintf("写入注册级回填标记失败（下次启动会重扫，幂等）：%v", err))
+		}
+		return
+	}
+
+	failed := 0
+	changed := 0
+	for _, userID := range ids {
+		result, err := service.EvaluateUserLevelWithDB(db, userID, entity.UserLevelTriggerRegister)
+		if err != nil {
+			failed++
+			logger.SysLog(fmt.Sprintf("注册级回填评估失败（userID=%d，下次启动会重试）：%v", userID, err))
+			continue
+		}
+		if result.Changed {
+			changed++
+		}
+	}
+	logger.SysLog(fmt.Sprintf("注册级回填补评估完成：候选 %d 人，变更 %d 人，失败 %d 人", len(ids), changed, failed))
+	if failed > 0 {
+		// 有失败 ⇒ 不写标记，下次启动重跑（已评估过的人 level_id 不再是 0，
+		// 因此重跑的候选集只会包含失败的那批，幂等且收敛）。
+		return
+	}
+	if err := setSystemSettingFlag(db, userLevelBackfillSchemaKey); err != nil {
+		logger.SysLog(fmt.Sprintf("写入注册级回填标记失败（下次启动会重扫，幂等）：%v", err))
+	}
+}
+
+// userLevelSchemaAvailableForRegistry 判断等级体系是否就绪（registry 侧视角）。
+//
+// 为什么不直接调 service.userLevelSchemaAvailable：那是**未导出**函数，
+// registry 包不能访问（service 的同包私有）。这里只做结构判断，
+// 语义与 service 侧一致：users 表 + level_id 列 + user_levels 表。
+//
+// ⚠️ 判断逻辑两处重复是刻意的：registry 不能 import service 的私有函数，
+// 而把 userLevelSchemaAvailable 导出会让它变成跨包 API（改签名要考虑两处）。
+// 保持「结构判断各写一份、口径一致」比导出一个只被 migration 用的函数更稳。
+func userLevelSchemaAvailableForRegistry(db *gorm.DB) bool {
+	if db == nil {
+		return false
+	}
+	if !db.Migrator().HasTable(entity.TableNameUserLevel) {
+		return false
+	}
+	if !db.Migrator().HasTable(entity.TableNameUser) {
+		return false
+	}
+	return db.Migrator().HasColumn(entity.TableNameUser, "level_id")
 }

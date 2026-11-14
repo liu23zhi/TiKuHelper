@@ -281,6 +281,27 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.DELETE("/user/wechat", controller.Auth, controller.UnbindCurrentUserWechat)
 	apiRouter.GET("/user/wechat/scan-id", controller.Auth, middleware.RequireAdmin, controller.ResolveAdminWechatIDByScan)
 	apiRouter.POST("/user/wechat/code-id", controller.Auth, middleware.RequireAdmin, controller.ResolveAdminWechatIDByCode)
+
+	// 「我的设备」用户端（137-设备体系设计 §8.1 / 批次 A2）。
+	//
+	// 六条全部只要求 Auth：它们恒取「当前登录用户」作为目标账号，不接受任何 userId
+	// 参数，因此没有越权面。归属校验在 handler 内用 `WHERE id = ? AND user_id = ?`
+	// 完成，越权一律 404（而非 403）—— 403 会泄露「这条记录存在」。
+	//
+	// ⚠️ 与既有路由共存的注意事项（gin 按方法分树，实测同型写法已在
+	// `/admin/user/:id/grant` 与 `/admin/user/grant/batch` 上验证过）：
+	//   - GET 侧与 `/user`、`/user/info` 等静态段同级，不冲突；
+	//   - DELETE `/user/devices/blocks/:id` 与 `DELETE /user/:id` 是静态段 vs
+	//     参数段，gin 静态优先，`/user/devices/blocks/9` 不会被当成 id="devices"；
+	//   - POST `/user/devices/:id/remove` 比 `/user/:id/balance` 多一段，
+	//     段数不同不会抢节点。
+	apiRouter.GET("/user/devices", controller.Auth, controller.UserDevices)
+	apiRouter.POST("/user/devices/:id/remove", controller.Auth, controller.UserDeviceRemove)
+	apiRouter.POST("/user/devices/:id/block", controller.Auth, controller.UserDeviceBlock)
+	apiRouter.DELETE("/user/devices/blocks/:id", controller.Auth, controller.UserDeviceUnblock)
+	apiRouter.GET("/user/device-limit", controller.Auth, controller.UserDeviceLimitGet)
+	apiRouter.PUT("/user/device-limit", controller.Auth, controller.UserDeviceLimitPut)
+
 	apiRouter.GET("/user", controller.Auth, controller.UserList)       // 自己创建的用户列表
 	apiRouter.POST("/user", controller.Auth, controller.CreateUser)    // 创建用户
 	apiRouter.PUT("/user/:id", controller.Auth, controller.UpdateUser) // 更新用户
@@ -487,6 +508,38 @@ func SetAPIRouter(router *gin.Engine) {
 	// 「解除这个用户的封禁」（处理该用户全部未到期行），不是「作废某一条记录」。
 	// 按记录 id 解封会让调用方误以为只解了一条，且传错 id 会解封到另一个账号。
 	blacklistAdminRouter.DELETE("/admin/user-bans/:userId", controller.Auth, middleware.RequireAdmin, controller.UserBanAdminRevoke)
+
+	// 设备管理（137 设备体系 §8.2 / §8.3）。
+	//
+	// 挂在与黑名单/封禁**同一个**「不挂 IP 判定」的组上：设备封禁页同样是
+	// 「被误封的管理员必须能打开来自救」的入口，理由与上面两段逐字相同。
+	//
+	// # 封禁/解封为什么用 `/admin/device-bans` 而不是 `/admin/devices/ban`
+	//
+	// 137 §8.3 给的理由是「gin 同一方法树上静态段与参数段同层会 panic」。
+	// **本机实测（gin v1.12.0）该理由不成立**：
+	//
+	//	POST /api/admin/devices/:id/unbind  +  POST /api/admin/devices/ban
+	//	→ 注册成功，两条都在路由表里，静态段优先匹配（GET devices 与 GET devices/hits 同理）。
+	//
+	// gin 真正的硬限制是「同层两个**不同名**通配符」：
+	//
+	//	POST /api/admin/devices/:id/unbind  +  POST /api/admin/devices/:deviceId
+	//	→ panic: ':deviceId' in new path '/api/admin/devices/:deviceId' conflicts
+	//	         with existing wildcard ':id' in existing prefix '/api/admin/devices/:id'
+	//
+	// 即便如此**仍然**用独立前缀，两条独立理由：
+	//  1. 旧版 gin 上「静态段与参数段同层」确实会 panic，本仓依赖可能被降级；
+	//  2. 语义上本就是两类资源：ban 的对象是 device_id（跨账号），
+	//     unbind 的对象是**绑定行 id**。共用一个前缀只会让调用方混淆参数含义。
+	// 反向钉子见 internal/api/device_admin_router_test.go：
+	// 它同时断言「四条路由能注册并匹配」与「同层不同名通配符仍然 panic」。
+	blacklistAdminRouter.GET("/admin/devices", controller.Auth, middleware.RequireAdmin, controller.AdminDeviceList)
+	blacklistAdminRouter.POST("/admin/devices/:id/unbind", controller.Auth, middleware.RequireAdmin, controller.AdminDeviceUnbind)
+	blacklistAdminRouter.POST("/admin/device-bans", controller.Auth, middleware.RequireAdmin, controller.AdminDeviceBan)
+	// 解封的路径参数是 device_id（不是规则 id）：语义是「这台设备可以再被使用」。
+	// device_id 可能含 `:`（exe:a1b2…），前端需 encodeURIComponent，gin 会自行解码。
+	blacklistAdminRouter.DELETE("/admin/device-bans/:deviceId", controller.Auth, middleware.RequireAdmin, controller.AdminDeviceUnban)
 
 	// 考试客户端本地库工具：仅管理员。服务端不解密，只发工具 + 只读预览明文库。
 	apiRouter.GET("/admin/userexam/tool/version", controller.Auth, middleware.RequireAdmin, controller.UserExamToolVersion)

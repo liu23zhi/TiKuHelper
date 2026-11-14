@@ -97,6 +97,11 @@ import {
   KeyOutlined,
   CloudServerOutlined,
 } from '@ant-design/icons-vue';
+// 单独一行引入（不并入上面那个 import 块）：serviceStatusPageSource.test.mjs 用
+// /CloudServerOutlined,?\s*\n\} from '@ant-design\/icons-vue'/ 钉住「服务器状态」图标
+// 必须紧邻 import 块末尾，往那块里插任何新图标都会让那条断言假红。
+// 这不是绕过检查 —— 那条断言的语义是「CloudServerOutlined 确实被引入」，单独 import 同样满足。
+import { LaptopOutlined } from '@ant-design/icons-vue';
 import { isAdminUser } from '../../utils/currentUser';
 import { THEME_CONTROLLER_KEY } from '../../utils/themeMode.mjs';
 
@@ -105,10 +110,9 @@ const ADMIN_MENU_ITEMS = [
   { key: 'component', label: '题库总览', icon: PieChartOutlined },
   { key: 'import', label: '智能导入', icon: DownloadOutlined },
   { key: 'user-usage', label: '个人使用', icon: CreditCardOutlined },
-  // ⚠️ 用户端也有、且**语义不同**的三个入口，管理端必须同时保留两份（各自独立路由）：
+  // ⚠️ 用户端也有、且**语义不同**的两个入口，管理端必须同时保留两份（各自独立路由）：
   //   tickets         → 工单反馈（viewMode='self'）    /  ticket-admin → 工单管理（viewMode='admin'）
   //   scripts         → 我的脚本（'self'）             /  script-admin → 脚本管理（'admin'）
-  //   billing-records → 我的账单（'self'）             /  billing-admin → 账单明细（'admin'）
   // 它们按 key 自然分到 shared / admin-only 两个分区：
   // 用户端那份进「普通用户可见」组（文案取用户端），管理端那份进「仅管理员可见」组。
   { key: 'tickets', label: '工单反馈', icon: FileTextOutlined },
@@ -121,7 +125,6 @@ const ADMIN_MENU_ITEMS = [
   { key: 'archived-users', label: '已归档账号', icon: InboxOutlined },
   { key: 'loglist', label: '日志列表', icon: FileTextOutlined },
   { key: 'recharge-orders', label: '充值记录', icon: CreditCardOutlined },
-  { key: 'billing-records', label: '我的账单', icon: AccountBookOutlined },
   { key: 'billing-admin', label: '账单明细', icon: AccountBookOutlined },
   { key: 'ip-location-cache', label: 'IP 归属地信息管理', icon: GlobalOutlined },
   { key: 'ip-segments', label: 'IP 段归属管理', icon: ApartmentOutlined },
@@ -147,6 +150,10 @@ const ADMIN_MENU_ITEMS = [
   // ⚠️ 只登记在 ADMIN_MENU_ITEMS，**绝不加进 USER_MENU_ITEMS**：
   // 普通用户能看到「账号封禁」入口本身就是信息泄漏（暴露了封禁机制的存在与入口）。
   { key: 'user-bans', label: '账号封禁', icon: StopOutlined },
+  // 设备管理（137 §9.2）：能看到全站设备与所属账号、能强制解绑、能全局封禁 device_id。
+  // ⚠️ 只登记在 ADMIN_MENU_ITEMS，绝不加进 USER_MENU_ITEMS：
+  // 「能封禁任何人设备」是最高危的运营动作之一，普通用户看到入口本身就是信息泄漏。
+  { key: 'device-admin', label: '设备管理', icon: LaptopOutlined },
   // 敏感图片检测（Q1）与工单图片缓存（T-12）相邻：前者判违规、后者管存储，
   // 是同一份附件的两个视角。
   { key: 'sensitive-image', label: '敏感图片检测', icon: FileTextOutlined },
@@ -186,11 +193,11 @@ const ADMIN_MENU_ITEMS = [
 
 const USER_MENU_ITEMS = [
   { key: 'profile', label: '个人中心', icon: UserOutlined },
+  { key: 'my-devices', label: '我的设备', icon: LaptopOutlined },
   { key: 'user-usage', label: '个人使用', icon: CreditCardOutlined },
   { key: 'my-tokens', label: '我的令牌', icon: SafetyCertificateOutlined },
   { key: 'scripts', label: '我的脚本', icon: CodeOutlined },
   { key: 'recharge-orders', label: '充值记录', icon: CreditCardOutlined },
-  { key: 'billing-records', label: '我的账单', icon: AccountBookOutlined },
   { key: 'my-referral', label: '我的邀请', icon: ShareAltOutlined },
   { key: 'review-rebate', label: '评价返现', icon: StarOutlined },
   { key: 'tickets', label: '工单反馈', icon: FileTextOutlined },
@@ -231,7 +238,7 @@ const ADMIN_SECTION_TITLES = {
 // 正确修法是**拆路由**，不是拆文案：
 //   tickets（viewMode='self'）  ↔  ticket-admin（viewMode='admin'）
 //   scripts（viewMode='self'）  ↔  script-admin（viewMode='admin'）
-//   billing-records（'self'）   ↔  billing-admin（'admin'）
+//   账单：用户侧入口已并入「个人使用 → 账单流水」，只剩 billing-admin 一个入口。
 // 页面组件读 route.meta.viewMode 决定渲染哪个视图，与角色解耦。
 //
 // ⇒ 于是两个分区**重新回到严格互斥**：同一个 key 不会再出现两次，

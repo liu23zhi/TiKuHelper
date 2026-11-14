@@ -47,13 +47,21 @@ func newDevicePoolTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("open test db: %v", err)
 	}
 	if err := db.AutoMigrate(&entity.User{}, &entity.UserLevel{}, &entity.AccountDeviceBinding{},
-		&entity.SystemSetting{}); err != nil {
+		&entity.UserDeviceBlock{}, &entity.BlacklistEntry{}, &entity.SystemSetting{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	// users.level_id 走显式 ALTER（生成文件里没有该字段，见 registry 的注释）。
 	if !db.Migrator().HasColumn(entity.TableNameUser, "level_id") {
 		if err := db.Exec("ALTER TABLE " + entity.TableNameUser + " ADD COLUMN level_id integer NOT NULL DEFAULT 0").Error; err != nil {
 			t.Fatalf("add level_id: %v", err)
+		}
+	}
+	// users.device_limit_override 同理（137 §3.1，A1-1）：-1 = 不覆盖。
+	// 生产由 registry.ensureUserDeviceLimitOverrideColumn 补，这里手写等价 DDL。
+	if !db.Migrator().HasColumn(entity.TableNameUser, "device_limit_override") {
+		if err := db.Exec("ALTER TABLE " + entity.TableNameUser +
+			" ADD COLUMN device_limit_override integer NOT NULL DEFAULT -1").Error; err != nil {
+			t.Fatalf("add device_limit_override: %v", err)
 		}
 	}
 	return db

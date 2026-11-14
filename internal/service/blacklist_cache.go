@@ -105,6 +105,13 @@ type BlacklistSnapshot struct {
 	phone   map[[32]byte]*BlacklistRule
 	wechat  map[[32]byte]*BlacklistRule
 	region  []BlacklistRegionRule
+	// device 是设备粒度（137 §3.4）：key = sha256(归一化后的 device_id)。
+	//
+	// 用 [32]byte 而非 string key：与 phone / wechat 一致，
+	// 且 device_id 是长随机串，字符串比较比定长数组贵。
+	// key 的算法必须是 BlacklistPatternHashHex 的同一份 sha256 ——
+	// 写入侧（BanDevice）与判定侧（MatchDevice）任何一侧另算一套都会「封了但不命中」。
+	device map[[32]byte]*BlacklistRule
 }
 
 // BlacklistMatch 是一次命中结果。
@@ -131,6 +138,7 @@ func newBlacklistSnapshot(now time.Time, enabled bool) *BlacklistSnapshot {
 		ipExact:  make(map[string]*BlacklistRule),
 		phone:    make(map[[32]byte]*BlacklistRule),
 		wechat:   make(map[[32]byte]*BlacklistRule),
+		device:   make(map[[32]byte]*BlacklistRule),
 	}
 }
 
@@ -189,6 +197,34 @@ func (s *BlacklistSnapshot) MatchWechat(raw string) (BlacklistMatch, bool) {
 		return BlacklistMatch{}, false
 	}
 	if rule, ok := s.wechat[BlacklistPatternHashBytes(normalized)]; ok && rule != nil {
+		return rule.toMatch(), true
+	}
+	return BlacklistMatch{}, false
+}
+
+// MatchDevice 判定设备指纹是否命中全局封禁（137 §3.4 / §5.1 第 1 步）。
+//
+// # 为什么这个判定必须排在「已绑定就放行」之前
+//
+// 137 §5.1 的结论：把「已绑定 → 放行」放前面，则封禁一台**正在使用**的设备后，
+// 它的旧绑定行仍命中「已绑定」分支 → 放行 → 封禁失效。
+// 封禁接口会撤销绑定（D12），但那是**异步可失败**的一道保险；
+// 本函数是同步的、必然生效的第二道保险。两者缺一，封禁都可能漏。
+//
+// # 归一化必须与写入侧同源
+//
+// 走 NormalizeBlacklistDeviceID（去首尾空白 + 191 截断），与 BanDevice 算 value_hash
+// 用的是同一个函数。去掉这一步直接拿原文算 hash，会在「带空格」或「超长」两种输入上
+// 表现为「封禁成功但从不命中」—— 而这既不报错也无法从日志上看出来。
+func (s *BlacklistSnapshot) MatchDevice(deviceID string) (BlacklistMatch, bool) {
+	if s == nil {
+		return BlacklistMatch{}, false
+	}
+	normalized := NormalizeBlacklistDeviceID(deviceID)
+	if normalized == "" {
+		return BlacklistMatch{}, false
+	}
+	if rule, ok := s.device[BlacklistPatternHashBytes(normalized)]; ok && rule != nil {
 		return rule.toMatch(), true
 	}
 	return BlacklistMatch{}, false
@@ -273,7 +309,7 @@ func LoadBlacklistSnapshot(db *gorm.DB, now time.Time) (*BlacklistSnapshot, erro
 		}
 	}
 	snapshot.RuleCount = len(snapshot.ipExact) + len(snapshot.ipCIDR) +
-		len(snapshot.phone) + len(snapshot.wechat) + len(snapshot.region)
+		len(snapshot.phone) + len(snapshot.wechat) + len(snapshot.region) + len(snapshot.device)
 	return snapshot, nil
 }
 
@@ -317,6 +353,25 @@ func (s *BlacklistSnapshot) addRule(rule *BlacklistRule) bool {
 			return false
 		}
 		s.wechat[BlacklistPatternHashBytes(normalized)] = rule
+		return true
+	case BlacklistKindDevice:
+		// 设备粒度（137 §3.4）：归一化与写入侧同源（NormalizeBlacklistDeviceID）。
+		//
+		// 空 device_id 必须跳过并告警：把它收进缓存会让 map 里出现 sha256("") 这一项，
+		// 于是「所有 device_id 为空的请求」都被命中 —— 一条脏规则封掉全站。
+		normalized := NormalizeBlacklistDeviceID(rule.Pattern)
+		if normalized == "" {
+			logger.SysWarn(fmt.Sprintf("黑名单规则 %d 的设备 ID 为空，已跳过", rule.EntryID))
+			return false
+		}
+		// 用归一化后的值算 key，且顺手把 Pattern 规范回来：
+		// 否则「库里存了带空格的 pattern」会让展示与实际判定值不一致（同一台设备两种写法）。
+		rule.Pattern = normalized
+		// 掩码统一覆盖成设备专用格式：上面的通用 MaskBlacklistValue 对未知 kind
+		// 一律返回 "***"（它的 switch 里没有 device 分支，且 blacklist.go 属禁改文件），
+		// 那个值在管理页与命中记录里没有任何核对价值。
+		rule.ValueMasked = MaskBlacklistDeviceID(normalized)
+		s.device[BlacklistPatternHashBytes(normalized)] = rule
 		return true
 	case BlacklistKindRegion:
 		// BL-4：地区规则**参与判定**（改自 BL-2 的「跳过 + 告警」）。

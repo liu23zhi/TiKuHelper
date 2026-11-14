@@ -163,6 +163,18 @@ func main() {
 	stopRiskEvaluation := service.StartRiskAlertEvaluationWorker(mg.GetDB(), 0)
 	defer stopRiskEvaluation()
 
+	// 设备闲置解绑（137 §7）：把 last_seen_at 超过 10 天且未撤销的绑定写成
+	// revoked_reason='idle_10d'，释放槽位让用户下次请求能静默重绑。
+	//
+	// interval 传 0 = 用函数内默认的 1 小时。这里**不需要**从 system_settings
+	// 重读间隔：10 天是业务常量（DeviceIdleRevokeAfter），不是运营可调参数，
+	// 与上面两个 worker 的取舍不同。
+	//
+	// 幂等：第二次跑同一批数据返回 0（第一次已写 revoked_at），
+	// 所以即使某次运行被打断也不会重复处理。
+	stopDeviceIdleRevoke := service.StartDeviceIdleRevokeWorker(mg.GetDB(), 0)
+	defer stopDeviceIdleRevoke()
+
 	// 异步任务管理器（Q12 / N3，导入导出）：必须同时 Start() 与注入 controller，
 	// 否则 /export/tasks 提交接口返回 503（刻意不假装成功）。
 	// BaseDir 用系统临时目录下的固定子目录：结果文件是可下载的临时产物，

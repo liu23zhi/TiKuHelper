@@ -961,3 +961,65 @@ export function getTicketRefundProof(id, signal) {
     url: ticketRefundItem(id, 'proof'), method: 'get', responseType: 'blob', timeout: 20_000, signal,
   })
 }
+
+// ─────────────────── 「我的设备」用户端（137 §8.1 / 批次 A2） ───────────────────
+//
+// 六条全部只要求登录（后端 controller.Auth），恒取当前登录用户 —— 没有 userId 参数。
+// 路径与 internal/api/router.go 里注册的六条逐字对应，改动请同步 device_user_router_test.go。
+//
+// 三条纪律：
+//  1. **不传 userId**。传了也没用，但传了就会给后来的人一个「这里能指定账号」的错觉。
+//  2. 移除/拉黑/解除拉黑都用 `encodeURIComponent` 包 id：它们是路径段，
+//     传进奇怪字符时不能让 URL 变形（后端解析失败会返回 404，看起来像「记录不存在」）。
+//  3. `errorFeedback: 'local'`：本页自己渲染错误横幅，不让全局拦截器再弹一个 toast
+//     （同 ticketRefundRequest 的做法）。401/403 的会话处理仍由 request.js 负责。
+
+function myDeviceRequest(config) {
+  return request({ errorFeedback: 'local', ...config })
+}
+
+export function listMyDevices(signal) {
+  return myDeviceRequest({ url: '/api/user/devices', method: 'get', signal })
+}
+
+export function removeMyDevice(id, signal) {
+  return myDeviceRequest({
+    url: '/api/user/devices/' + encodeURIComponent(id) + '/remove',
+    method: 'post',
+    signal,
+  })
+}
+
+export function blockMyDevice(id, reason, signal) {
+  // reason 是可选的展示字段；不传就发空对象（后端允许空 body）。
+  const data = reason ? { reason: String(reason) } : {}
+  return myDeviceRequest({
+    url: '/api/user/devices/' + encodeURIComponent(id) + '/block',
+    method: 'post',
+    data,
+    signal,
+  })
+}
+
+export function unblockMyDevice(blockId, signal) {
+  return myDeviceRequest({
+    url: '/api/user/devices/blocks/' + encodeURIComponent(blockId),
+    method: 'delete',
+    signal,
+  })
+}
+
+export function getMyDeviceLimit(signal) {
+  return myDeviceRequest({ url: '/api/user/device-limit', method: 'get', signal })
+}
+
+export function updateMyDeviceLimit(limit, signal) {
+  return myDeviceRequest({
+    url: '/api/user/device-limit',
+    method: 'put',
+    // 必须显式序列化成一个**对象**（不是裸数字）：后端读的是 {"limit":N}，
+    // 传裸数字会 bind 失败并返回 400「请提供要设置的设备上限」。
+    data: { limit: Number(limit) },
+    signal,
+  })
+}

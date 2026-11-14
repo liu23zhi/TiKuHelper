@@ -324,10 +324,25 @@ test('判据③（反向防线）：拆开后的双入口，两侧 key 各自单
   const pairs = [
     ['tickets', 'ticket-admin', '工单反馈', '工单管理'],
     ['scripts', 'script-admin', '我的脚本', '脚本管理'],
-    ['billing-records', 'billing-admin', '我的账单', '账单明细'],
+    // billing-records 已退役（2026-11-15）：用户侧账单入口并入「个人使用 → 账单流水」，
+    // 只剩管理端的 billing-admin。它不再是「一对双入口」，所以从 pairs 移出；
+    // 退役方向由下方的独立用例反向钉住（该 key 必须**不存在**于 router.js 与两个菜单组）。
     // 令牌：用户侧只列自己的（我的令牌），管理侧列全站（令牌管理）。
     ['my-tokens', 'token-admin', '我的令牌', '令牌管理'],
   ];
+
+  // 退役 key 的反向防线：拆开过的双入口退役一半时，最容易出的错是
+  // 「路由删了但菜单还留着」或「菜单删了但路由还留着」——两者都会让侧边栏出现死链。
+  // 所以这里断言的是**不存在**，而不是豁免。
+  const RETIRED_PAIR_KEYS = ['billing-records'];
+  for (const retiredKey of RETIRED_PAIR_KEYS) {
+    assert.ok(!USER_BY_KEY.has(retiredKey), `${retiredKey} 已退役，不得出现在 USER_MENU_ITEMS`);
+    assert.ok(!ADMIN_BY_KEY.has(retiredKey), `${retiredKey} 已退役，不得出现在 ADMIN_MENU_ITEMS`);
+    assert.ok(
+      !/name:\s*['"]billing-records['"]/.test(routerSource),
+      `${retiredKey} 已退役，router.js 里不得再有它的路由（name 字段）`
+    );
+  }
 
   for (const [userKey, adminKey, userLabel, adminLabel] of pairs) {
     // ① 两侧 key 互不相同（这就是「拆开」的定义）。

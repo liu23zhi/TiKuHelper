@@ -17,6 +17,16 @@ const (
 	UserLevelTriggerConsumption = "consumption" // 消费额变化后重新评估
 	UserLevelTriggerRefund      = "refund"      // 退款后重新评估（Q75-6：允许降级）
 	UserLevelTriggerManual      = "manual"      // 管理员改等级 / 等级被删除后的回落
+	// UserLevelTriggerRegister 是注册成功后首次评级（137 §10.3 / A1-6）。
+	//
+	// 为什么必须有这一个独立触发器：新用户注册时累计充值/消费都是 0，
+	// 只能命中「门槛全 0」的最低级。若不评估，users.level_id 会一直是 0（无等级），
+	// 而设备上限的权威入口 EffectiveDeviceLimit 在 level_id=0 时按 fail-open 返回
+	// 「不限」—— 于是**设备上限对全部新用户永久不生效**，且没有任何报错。
+	//
+	// 存量回填（level_id=0 的老用户）复用同一触发器，语义一致：
+	// 「这个人从来没有被评级过，现在补上」。历史流水的 remark 会写明首次评级。
+	UserLevelTriggerRegister = "register"
 )
 
 // UserLevel 是一个等级定义。

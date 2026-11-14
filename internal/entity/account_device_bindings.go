@@ -18,6 +18,29 @@ const (
 	AccountDeviceBindingUniqueIndex = "uk_account_device_binding_user_device"
 )
 
+// 绑定行的 owner_kind 取值（137 §3.2）。
+//
+//	login —— 该行由登录/换绑路径登记（当前唯一生产写入口）
+//	token —— 由访问令牌（扩展 X-Device-Id）路径登记，供后续批次使用
+const (
+	DeviceBindingOwnerKindLogin = "login"
+	DeviceBindingOwnerKindToken = "token"
+)
+
+// 绑定撤销原因（137 §3.2）。**行不删**，只写 revoked_at + revoked_reason：
+// 删行会导致「这台设备什么时候被谁移除」永远查不到，而封禁申诉需要这个。
+//
+//	user_removed    用户自己在「我的设备」移除
+//	admin_unbound   管理员强制解绑
+//	idle_10d        10 天未活跃被后台任务自动撤销（137 §7）
+//	device_banned   设备被封禁后连带撤销旧绑定（137 §2 决定 2）
+const (
+	DeviceBindingRevokeReasonUserRemoved  = "user_removed"
+	DeviceBindingRevokeReasonAdminUnbound = "admin_unbound"
+	DeviceBindingRevokeReasonIdle10d      = "idle_10d"
+	DeviceBindingRevokeReasonDeviceBanned = "device_banned"
+)
+
 // AccountDeviceBinding 是一行「某账号用过某设备」的记录。
 //
 // ## 为什么需要这张表（121 §4.9）
@@ -42,8 +65,17 @@ const (
 //     它本身就是不可读的随机串，没有脱敏需求；也不做哈希，因为运营排查时
 //     需要能直接比对「用户说的那台设备」。
 //   - FirstSeenAt：该账号第一次用这台设备的时间。**只写一次**，后续登记不改它。
-//   - LastSeenAt：最近一次使用时间。每次登记都刷新，为将来的「闲置设备自动释放」留数据。
+//   - LastSeenAt：最近一次使用时间。每次登记都刷新 —— 它是「10 天闲置解绑」的唯一数据源。
 //   - CreatedAt / UpdatedAt：行级时间戳（本仓所有业务表的统一约定）。
+//
+// ## 批次 A1 新增的 5 列（137 §3.2）
+//
+//   - OwnerKind / TokenID：这行是谁登记的（login / token）。默认为 login，
+//     让所有既有行与既有写入口（登录路径）语义不变。
+//   - DeviceLabel：展示用设备名（「Chrome on Windows #a1b2」），由前端/扩展上报。
+//   - RevokedAt / RevokedReason：**撤销而非删除**。
+//     `RevokedAt IS NULL` 才算占槽位 —— 这一条是「已用台数」统计的口径定义，
+//     写反了会让「用户移除设备后槽位不释放」或「撤销的行仍占槽」。
 type AccountDeviceBinding struct {
 	ID int64 `gorm:"column:id;primaryKey;autoIncrement" json:"id"`
 	// UserID 关联 users.id。唯一索引的第 1 列。
@@ -62,8 +94,19 @@ type AccountDeviceBinding struct {
 	// 不是「行被改过」的元信息。两者混用会让「只改了备注也算使用过」这类
 	// 误读在数据上无法分辨。
 	LastSeenAt time.Time `gorm:"column:last_seen_at" json:"lastSeenAt"`
-	CreatedAt  time.Time `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
-	UpdatedAt  time.Time `gorm:"column:updated_at;autoUpdateTime" json:"updatedAt"`
+	// OwnerKind 是登记来源（login / token），默认 login 以保持既有行语义不变。
+	OwnerKind string `gorm:"column:owner_kind;type:varchar(16);not null;default:'login'" json:"ownerKind"`
+	// TokenID 是登记时使用的访问令牌 id（0 = 不适用/未知）。
+	TokenID int32 `gorm:"column:token_id;type:int;not null;default:0" json:"tokenId"`
+	// DeviceLabel 是给人看的设备名（前端/扩展上报，可空）。
+	DeviceLabel string `gorm:"column:device_label;type:varchar(64);not null;default:''" json:"deviceLabel"`
+	// RevokedAt 非 nil ⇒ 该行已撤销，**不占槽位**。
+	// 指针类型是刻意的：NULL 与「零值时间」必须可区分，否则每条历史行都会被当成已撤销。
+	RevokedAt *time.Time `gorm:"column:revoked_at" json:"revokedAt,omitempty"`
+	// RevokedReason 取值见 DeviceBindingRevokeReason*；未撤销时为空串。
+	RevokedReason string    `gorm:"column:revoked_reason;type:varchar(32);not null;default:''" json:"revokedReason"`
+	CreatedAt     time.Time `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
+	UpdatedAt     time.Time `gorm:"column:updated_at;autoUpdateTime" json:"updatedAt"`
 }
 
 func (*AccountDeviceBinding) TableName() string { return TableNameAccountDeviceBinding }
