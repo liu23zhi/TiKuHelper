@@ -178,9 +178,7 @@ func ResolveUserBanExpiresAt(amount int, unit string, now time.Time) (*time.Time
 	var expiresAt time.Time
 	switch normalizedUnit {
 	case UserBanDurationUnitDay:
-		if amount > 365 { // MUTANT: 加回 365 天上限
-			return nil, fmt.Errorf("%w：临时封禁最长 365 天", ErrUserBanInvalid)
-		}
+		// 无上限（用户 2026-11-14 指令）：任意正整数天都接受。
 		expiresAt = now.AddDate(0, 0, amount)
 	default:
 		// 无上限。小时与天只是单位不同，语义都是「从现在起 N 个时间单位」，

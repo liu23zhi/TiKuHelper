@@ -807,8 +807,11 @@ func TestUserBanAdminCreateWithInvalidDuration(t *testing.T) {
 		{"负时长", `{"userId":` + userID + `,"reason":"负","durationAmount":-5,"durationUnit":"day"}`},
 		// 未知单位：不能默认按小时（「填了 3 周」会变成 3 小时）。
 		{"未知单位", `{"userId":` + userID + `,"reason":"周","durationAmount":3,"durationUnit":"week"}`},
-		// 超上限：应引导用永久封禁。
-		{"超过 365 天", `{"userId":` + userID + `,"reason":"太久","durationAmount":400,"durationUnit":"day"}`},
+		// ⚠️ 原先这里有一条「超过 365 天 → 400」。用户 2026-11-14 指令
+		// 「封禁时间不要有限制」后上限已删，那条用例已**改写为正向断言**
+		// （见 TestUserBanAdminCreateWithLongDurationSucceeds）。
+		// 不能直接删掉：删了之后「上限是否存在」这件事就零覆盖 ——
+		// 与「时长分支零覆盖」是同一类静默失效。
 	}
 	for _, testCase := range cases {
 		recorder := userBanAdminRequest(router, http.MethodPost, "/api/admin/user-bans", testCase.body)
@@ -822,5 +825,59 @@ func TestUserBanAdminCreateWithInvalidDuration(t *testing.T) {
 	}
 	if rows != 0 {
 		t.Fatalf("rejected duration bans must not persist rows, got %d", rows)
+	}
+}
+
+// 判据：**时长无上限** —— 超过旧上限（365 天）的请求必须成功，且到期时间正确落库。
+//
+// # 这条用例是「改写」来的，不是新增的等价物
+//
+// 原用例是「400 天 → 400 拒绝」。用户 2026-11-14 要求删掉上限后，如果只是删掉那条断言，
+// 把 `if amount > 365 { return 400 }` 加回去**不会有任何用例变红** —— 约束的存在与否
+// 变成不可观测。所以这里改成**正向**：400 天 / 1000 天必须 201，且落库的 expires_at
+// 要真的在 400 天 / 1000 天之后（不是「大概对」）。
+//
+// 变异验证方向：把 365 天上限加回 service → 本用例必红。
+func TestUserBanAdminCreateWithLongDurationSucceeds(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newUserBanAdminTestDB(t)
+	installUserBanAdminTestDB(t, db)
+	admin := seedUserBanAdminActor(t, db, 9323, "SYNTHETIC_LONG_DURATION_ADMIN")
+	router := userBanAdminTestRouter(&admin)
+
+	cases := []struct {
+		name   string
+		amount int
+		unit   string
+		expect time.Duration // 允许的时长下限（断言「至少这么久」，不卡精确值）
+	}{
+		{"400 天（超旧上限）", 400, "day", 400 * 24 * time.Hour},
+		{"1000 天", 1000, "day", 1000 * 24 * time.Hour},
+		{"9000 小时（超旧上限）", 9000, "hour", 9000 * time.Hour},
+	}
+	for index, testCase := range cases {
+		target := seedUserBanTarget(t, db, "SYNTHETIC_LONG_"+strconv.Itoa(index), "enabled")
+		before := time.Now()
+		body := `{"userId":` + strconv.Itoa(int(target.ID)) +
+			`,"reason":"超长时长","durationAmount":` + strconv.Itoa(testCase.amount) +
+			`,"durationUnit":"` + testCase.unit + `"}`
+		recorder := userBanAdminRequest(router, http.MethodPost, "/api/admin/user-bans", body)
+		if recorder.Code != http.StatusCreated {
+			t.Fatalf("%s: status = %d, want 201 -- 用户要求时长无上限，超过 365 天必须成功 (%s)",
+				testCase.name, recorder.Code, recorder.Body.String())
+		}
+		var row entity.UserBan
+		if err := db.Where("user_id = ?", target.ID).First(&row).Error; err != nil {
+			t.Fatalf("%s: load ban row: %v", testCase.name, err)
+		}
+		if row.ExpiresAt == nil {
+			t.Fatalf("%s: 必须有到期时间（nil 会被当成永久封禁）", testCase.name)
+		}
+		// 允许 2 分钟误差（覆盖 SQL 默认值抖动），但必须真的达到该时长量级。
+		delta := row.ExpiresAt.Sub(before)
+		if delta < testCase.expect-time.Minute*2 {
+			t.Fatalf("%s: expires_at 只比现在晚 %v，期望至少 ~%v（上限是否被悄悄加回？）",
+				testCase.name, delta, testCase.expect)
+		}
 	}
 }
