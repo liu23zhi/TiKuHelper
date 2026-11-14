@@ -442,7 +442,7 @@ type RiskRule struct {
 	//	= 0  同一 SubjectKey **永不重复**（debt_batch：一个批次只该告警一次，
 	//	     与「回滚结束时报一次」的规格一致，不依赖时间窗）
 	//	< 0  不节流（每次命中都写告警，目前没有规则用它）
-	ThrottleSeconds int       `gorm:"column:throttle_seconds;not null;default:0" json:"throttleSeconds"`
+	ThrottleSeconds int `gorm:"column:throttle_seconds;not null;default:0" json:"throttleSeconds"`
 	// Description 是给运营看的规则说明，**含已知限制**（数据源覆盖不到什么、
 	// 窗口多长、私网/未知如何处理）。
 	//
@@ -455,9 +455,9 @@ type RiskRule struct {
 	//
 	// 2048 是留足余量：当前最长 549，留约 3.7 倍空间给后续规则补限制说明。
 	// 不设 TEXT 是为了保持「有明确上限」的纪律 —— 描述是说明文字，不该无限增长。
-	Description     string    `gorm:"column:description;type:varchar(2048);not null;default:''" json:"description"`
-	CreatedAt       time.Time `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
-	UpdatedAt       time.Time `gorm:"column:updated_at;autoUpdateTime" json:"updatedAt"`
+	Description string    `gorm:"column:description;type:varchar(2048);not null;default:''" json:"description"`
+	CreatedAt   time.Time `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
+	UpdatedAt   time.Time `gorm:"column:updated_at;autoUpdateTime" json:"updatedAt"`
 }
 
 func (*RiskRule) TableName() string { return TableNameRiskRule }
