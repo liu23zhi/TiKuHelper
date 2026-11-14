@@ -255,7 +255,24 @@ function hidePrivate(element) {
   const texts = document.createTreeWalker(element, 4)
   while (texts.nextNode()) texts.currentNode.nodeValue = ''
 }
-const isAdmin = computed(() => isAdminUser(currentUser.value))
+// 视图模式由**入口**决定，不是只由角色决定（2026-11-14 用户实测报出的同类缺陷）。
+//
+// 管理员侧边栏同时有「我的脚本」（普通用户可见区）与「脚本管理」（仅管理员可见区）。
+// 原来只判角色 ⇒ 管理员点「我的脚本」看到的仍是管理视图（含上传 EXE、计费政策），
+// 而「脚本管理」那个入口因共用同一 name 也无法被单独选中。
+//
+// 现在：`scripts` → meta.viewMode='self'，`script-admin` → 'admin'。
+// 权限边界不在前端 —— `script-admin` 已登记进 router 的 ADMIN_ONLY_ROUTE_NAMES，
+// 服务端仍按角色校验上传与计费政策写入。
+const routeViewMode = computed(() => {
+  const meta = route?.meta || {}
+  return typeof meta.viewMode === 'string' ? meta.viewMode : ''
+})
+const isAdmin = computed(() => {
+  if (routeViewMode.value === 'self') return false
+  if (routeViewMode.value === 'admin') return true
+  return isAdminUser(currentUser.value)
+})
 const showAll = ref(false)
 const rows = ref([])
 const loading = ref(false)

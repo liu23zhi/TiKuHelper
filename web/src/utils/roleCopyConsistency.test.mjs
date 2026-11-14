@@ -111,7 +111,10 @@ function componentFileMap(router) {
 function routePageMap(router) {
   const components = componentFileMap(router);
   const map = new Map();
-  const routeRe = /\{\s*path:\s*'[^']*',\s*name:\s*'([^']+)',\s*component:\s*([A-Za-z_$][\w$]*)/g;
+  // ⚠️ `\{` 与 `path:` 之间可能夹着注释行（2026-11-14 拆路由时新增了说明注释）。
+  // 用 `[^{}]*?` 允许任意非花括号内容，否则带注释的路由会被静默漏掉 ——
+  // 那会让「共用 key 映射完整派生」这条自检误报成「router 里没有该路由」。
+  const routeRe = /\{[^{}]*?path:\s*'[^']*',\s*name:\s*'([^']+)',\s*component:\s*([A-Za-z_$][\w$]*)/g;
   for (const match of router.matchAll(routeRe)) {
     const file = components.get(match[2]);
     if (file) map.set(match[1], file);
@@ -213,8 +216,13 @@ function readPageHeading(key) {
   return { key, kind: 'no-title', file: relative, reason: 'ConsolePageHeading 上没有 title / :title' };
 }
 
-// 每个共用 key 的页面标题信息只算一次。
-const HEADINGS = new Map(SHARED_KEYS.map((key) => [key, readPageHeading(key)]));
+// 每个 key 的页面标题信息只算一次。
+//
+// ⚠️ 覆盖 SHARED_KEYS ∪ 三个管理端拆出来的 key（ticket-admin / script-admin /
+// billing-admin）。后者不在 shared 分区里（设计如此：它们属于「仅管理员可见」），
+// 但标题同样要审计 —— 否则「管理端入口点进去标题对不对」没有任何判据。
+const AUDIT_KEYS = [...new Set([...SHARED_KEYS, 'ticket-admin', 'script-admin', 'billing-admin'])];
+const HEADINGS = new Map(AUDIT_KEYS.map((key) => [key, readPageHeading(key)]));
 
 const labelOf = (item) => String(item?.label ?? '').trim();
 
@@ -252,134 +260,121 @@ test('判据①：管理员 shared 分区的文案必须等于普通用户看到
   }
 });
 
-test('判据②：共用页面的标题必须按角色切换，或与两侧共同文案完全同名', () => {
+test('判据②：每个共用页面按**入口**决定标题，不由角色决定', () => {
+  // ⚠️ 2026-11-14 模型变更（用户实测报出的缺陷驱动）：
+  //
+  // 旧模型：一个 key + 一个路由，标题按 isAdmin 三元切换。
+  //   缺陷：管理员点「工单反馈」看到的是「工单管理」的页面，且管理端入口无法单独选中。
+  //
+  // 新模型：同一页面拆成两个路由、两个 key，标题由 route.meta.viewMode 决定：
+  //   tickets（viewMode='self'）↔ ticket-admin（viewMode='admin'）
+  //   scripts（'self'）        ↔ script-admin（'admin'）
+  //   billing-records（'self'）↔ billing-admin（'admin'）
+  //
+  // 所以判据从「同一 key 的标题必须按角色分两支」改成
+  // 「每个路由的标题必须与**它自己那个 key** 的菜单文案一致」——
+  // 这才是「点菜单进去看到的标题与菜单一致」的真正判据。
   const violations = [];
 
   for (const key of SHARED_KEYS) {
-    const adminLabel = labelOf(ADMIN_BY_KEY.get(key));
     const userLabel = labelOf(USER_BY_KEY.get(key));
-    const labelsDiffer = adminLabel !== userLabel;
     const heading = HEADINGS.get(key);
-
-    if (heading.kind === 'static') {
-      // 静态标题：只有当两侧文案本来就相同才被允许，且必须就是那个文案。
-      if (labelsDiffer) {
-        violations.push(
-          `${key} 的页面标题写死成「${heading.value}」，但两侧菜单文案不同`
-          + `（管理员「${adminLabel}」/ 用户「${userLabel}」）—— 普通用户会看到管理员措辞。`
-          + ` 文件：${heading.file}`,
-        );
+    if (heading.kind !== 'static') {
+      // 允许动态标题，但必须是 viewMode 派生的那两支之一，不能是裸 isAdmin 三元
+      // （裸三元会让「self 入口」在管理员下也显示管理文案，正是原缺陷）。
+      if (heading.kind === 'dynamic' && heading.branches) {
+        // 顺序契约：`isAdmin ? A : B` 里 B（非管理员分支）必须是用户端文案。
+        const whenNot = heading.branches[1];
+        if (whenNot !== userLabel) {
+          violations.push(
+            `${key} 的标题非管理员分支是「${whenNot}」，但菜单写的是「${userLabel}」`,
+          );
+        }
         continue;
       }
-      if (heading.value !== userLabel) {
-        violations.push(
-          `${key} 的页面标题是「${heading.value}」，但两侧菜单都叫「${userLabel}」——`
-          + ` 用户从菜单点进来会以为点错了。文件：${heading.file}`,
-        );
-      }
-      continue;
-    }
-
-    // 动态标题：必须真的能按 isAdmin 分出两支，且两支文案与两侧菜单逐一对齐。
-    if (!heading.branches) {
       violations.push(
-        `${key} 的标题是动态表达式 \`:title="${heading.expr}"\`，但解析不出 isAdmin 三元分支，`
-        + ` 无法证明它会按角色切换。文件：${heading.file}`,
+        `${key} 的标题无法审计（${heading.kind}）：${heading.reason || ''} ${heading.file || ''}`.trim(),
       );
       continue;
     }
-    if (!labelsDiffer) {
-      // 两侧同名却写成动态标题不是错误，但分支必须都是同一个文案（否则某一侧会被叫错名）。
-      const [adminBranch, userBranch] = heading.branches;
-      if (adminBranch !== userLabel || userBranch !== userLabel) {
-        violations.push(
-          `${key} 两侧菜单都叫「${userLabel}」，页面却按角色显示「${adminBranch}」/「${userBranch}」。`
-          + ` 文件：${heading.file}`,
-        );
-      }
-      continue;
-    }
-    const [adminBranch, userBranch] = heading.branches;
-    // 顺序也是契约：`isAdmin ? A : B` 里 A 是管理员文案、B 是用户文案。写反了就是"管理员看到用户措辞"。
-    if (adminBranch !== adminLabel || userBranch !== userLabel) {
+    if (heading.value !== userLabel) {
       violations.push(
-        `${key} 的标题分支与菜单文案对不上：页面显示「${adminBranch}」/「${userBranch}」，`
-        + `菜单是「${adminLabel}」/「${userLabel}」（顺序为 isAdmin 真 / 假）。文件：${heading.file}`,
+        `${key} 的页面标题写死成「${heading.value}」，但它的菜单文案是「${userLabel}」`
+        + ` —— 用户从菜单点进来会以为点错了。文件：${heading.file}`,
       );
     }
   }
 
-  assert.deepEqual(violations, [], `双角色文案不一致：\n- ${violations.join('\n- ')}`);
+  assert.deepEqual(violations, [], violations.join('\n'));
 });
 
-test('判据③（反向防线）：所有静态标题都必须落在「两侧同名」的 key 集合里', () => {
-  // 判据② 是「已登记的共用 key 逐个检查」，本判据反过来扫：**任何**页面只要是静态标题，
-  // 它对应的 key 就不允许是「两侧文案不同」的。两条一起，新增页面无论有没有进我的清单都会被拦。
+
+test('判据③（反向防线）：拆开后的双入口，两侧 key 各自单文案且相邻路由同名', () => {
+  // ⚠️ 模型已变（2026-11-14，用户实测报出的缺陷驱动）：
   //
-  // 扫的对象是 router.js 派生出来的全部路由，不是菜单列表 ——
-  // 菜单漏登记一个新页面时，这条依然能看到它。
-  const differingKeys = new Set(
-    [...ADMIN_BY_KEY.keys()].filter((key) => {
-      const userItem = USER_BY_KEY.get(key);
-      return userItem && labelOf(userItem) !== labelOf(ADMIN_BY_KEY.get(key));
-    }),
-  );
-  const sameNameKeys = new Set(
-    [...ADMIN_BY_KEY.keys()].filter((key) => {
-      const userItem = USER_BY_KEY.get(key);
-      return userItem && labelOf(userItem) === labelOf(ADMIN_BY_KEY.get(key));
-    }),
-  );
+  // 旧：一个 key + 一个路由，标题按 isAdmin 三元切换 —— 管理员点「工单反馈」
+  //     看到的却是管理视图，且管理端入口无法单独选中。
+  // 新：**拆路由**。同一页面两个 name、两个 key：
+  //     tickets（viewMode='self'）↔ ticket-admin（viewMode='admin'）
+  //     scripts（'self'）        ↔ script-admin（'admin'）
+  //     billing-records（'self'）↔ billing-admin（'admin'）
+  //
+  // ⇒ 判据从「同一 key 的标题必须分两支」改为「每个 key 的标题必须与它自己的
+  // 菜单文案一致」，并且**拆开后不能再有同一个 key 出现在两个分区**。
+  const pairs = [
+    ['tickets', 'ticket-admin', '工单反馈', '工单管理'],
+    ['scripts', 'script-admin', '我的脚本', '脚本管理'],
+    ['billing-records', 'billing-admin', '我的账单', '账单明细'],
+  ];
 
-  const violations = [];
-  for (const [key, heading] of HEADINGS) {
-    if (heading.kind !== 'static') continue;
-    if (differingKeys.has(key)) {
-      violations.push(
-        `${key}：菜单文案两侧不同（管理员「${labelOf(ADMIN_BY_KEY.get(key))}」/ 用户「${labelOf(USER_BY_KEY.get(key))}」），`
-        + `但页面标题是静态的「${heading.value}」。文件：${heading.file}`,
-      );
-    }
-    if (!sameNameKeys.has(key) && !differingKeys.has(key)) {
-      // 共用 key 必然落进上面两个集合之一；落到这里说明菜单/路由数据本身不一致。
-      violations.push(`${key} 既不在「两侧同名」也不在「两侧不同名」集合里，菜单数据异常`);
+  for (const [userKey, adminKey, userLabel, adminLabel] of pairs) {
+    // ① 两侧 key 互不相同（这就是「拆开」的定义）。
+    assert.notEqual(userKey, adminKey, `双入口必须拆成两个 key：${userKey}`);
+
+    // ② 用户端 key 只在 USER_MENU_ITEMS，管理端 key 只在 ADMIN_MENU_ITEMS。
+    assert.ok(USER_BY_KEY.has(userKey), `${userKey} 必须在 USER_MENU_ITEMS`);
+    assert.ok(ADMIN_BY_KEY.has(userKey), `${userKey} 也应在 ADMIN_MENU_ITEMS（shared 分区要用）`);
+    assert.ok(ADMIN_BY_KEY.has(adminKey), `${adminKey} 必须在 ADMIN_MENU_ITEMS`);
+    assert.ok(!USER_BY_KEY.has(adminKey), `${adminKey} 是管理端专属，不该出现在 USER_MENU_ITEMS`);
+
+    // ③ 文案字面量钉住（防止两侧同时被改成同一个错字）。
+    assert.equal(labelOf(USER_BY_KEY.get(userKey)), userLabel, `${userKey} 用户文案漂移`);
+    assert.equal(labelOf(ADMIN_BY_KEY.get(adminKey)), adminLabel, `${adminKey} 管理文案漂移`);
+
+    // ④ 两个路由都必须存在，且页面标题与各自菜单文案一致。
+    //
+    // 注意：标题**允许**是 `isAdmin ? '工单管理' : '工单反馈'` 这种动态形式 ——
+    // 新模型下 `isAdmin` 已由 route.meta.viewMode 驱动（不是裸角色判断），
+    // 所以同一个组件在两个入口下会渲染出各自正确的标题。
+    // 这里断言的是「标题的两个分支覆盖了两侧文案」，而不是「标题必须是静态」。
+    for (const [key, expected] of [[userKey, userLabel], [adminKey, adminLabel]]) {
+      const heading = HEADINGS.get(key);
+      assert.ok(heading, `${key} 没有页面标题信息`);
+      assert.notEqual(heading.kind, 'no-route', `${key} 在 router.js 里找不到路由`);
+      if (heading.kind === 'static') {
+        assert.equal(heading.value, expected,
+          `${key} 页面标题应为「${expected}」，实际「${heading.value}」。文件：${heading.file}`);
+      } else {
+        // 动态标题：两侧文案都必须出现在分支里（顺序为 isAdmin 真/假）。
+        assert.ok(Array.isArray(heading.branches), `${key} 的动态标题解析不出分支：${heading.file}`);
+        assert.ok(heading.branches.includes(expected),
+          `${key} 的动态标题分支 ${JSON.stringify(heading.branches)} 里没有「${expected}」。文件：${heading.file}`);
+      }
     }
   }
-  assert.deepEqual(violations, [], `静态标题落在需要区分的 key 上：\n- ${violations.join('\n- ')}`);
 
-  // 反向自检：本仓当前确实存在「两侧不同名」的 key，否则这条判据就成了空转（永远绿的假钉子）。
-  assert.ok(differingKeys.size >= 3, `「两侧不同名」的 key 只剩 ${differingKeys.size} 个，判据③可能已空转`);
-  // 且这些 key 的页面标题都必须是动态的（判据② 已逐个断言，这里再钉一次集合级别的事实）。
-  for (const key of differingKeys) {
-    if (!SHARED_KEYS.includes(key)) continue;
-    assert.equal(
-      HEADINGS.get(key).kind,
-      'dynamic',
-      `${key} 两侧文案不同，页面标题必须是按 isAdmin 切换的动态标题`,
-    );
+  // 反向自检：拆开的三对必须让 ADMIN_MENU_ITEMS 里同时存在两组 key，
+  // 否则「普通用户可见」分区会少掉用户端入口（那正是第一次修法失败的原因）。
+  for (const [userKey, adminKey] of pairs) {
+    assert.ok(ADMIN_BY_KEY.has(userKey) && ADMIN_BY_KEY.has(adminKey),
+      `${userKey} / ${adminKey} 必须同时出现在 ADMIN_MENU_ITEMS，否则管理员侧少一个入口`);
   }
 });
 
-test('三个双文案入口与四个同名入口的当前状态被显式钉住', () => {
-  // 显式断言「本仓此刻的事实」，任何人改文案都会撞到这条并被迫同步两侧。
-  // 注意：这里写**字面量**而不是拿 ADMIN/USER 的 label 互相比 ——
-  // 两侧同时被改成同一个错字的漂移，只有字面量拦得住。
-  const pairs = {
-    tickets: ['工单管理', '工单反馈'],
-    'billing-records': ['账单明细', '我的账单'],
-    scripts: ['脚本管理', '我的脚本'],
-  };
-  for (const [key, [adminLabel, userLabel]] of Object.entries(pairs)) {
-    assert.equal(labelOf(ADMIN_BY_KEY.get(key)), adminLabel, `${key} 管理员文案漂移`);
-    assert.equal(labelOf(USER_BY_KEY.get(key)), userLabel, `${key} 用户文案漂移`);
-    const heading = HEADINGS.get(key);
-    assert.equal(heading.kind, 'dynamic', `${key} 必须是动态标题`);
-    assert.deepEqual(heading.branches, [adminLabel, userLabel], `${key} 标题分支与字面量不一致：${heading.file}`);
-  }
-
+test('四个同名入口的当前状态被显式钉住', () => {
   const sameName = {
     profile: '个人中心',
-    // user-usage 是本轮修的：标题从「账户使用」改成与菜单一致的「个人使用」。
+    // user-usage 是第 8 轮修的：标题从「账户使用」改成与菜单一致的「个人使用」。
     'user-usage': '个人使用',
     'recharge-orders': '充值记录',
     'access-tokens': '令牌管理',

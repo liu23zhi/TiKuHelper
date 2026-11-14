@@ -136,7 +136,7 @@ test('detail dialog uses escaped Vue text, defaults to self, and only emits edit
   assert.deepEqual(events, [['statement-visibility-change', { id: 42, showInStatement: false }]])
 })
 
-async function loadBillingPage(role = 'admin', save = async () => ({ status: 200 }), load = async () => ({ status: 200, data: {} })) {
+async function loadBillingPage(role = 'admin', save = async () => ({ status: 200 }), load = async () => ({ status: 200, data: {} }), viewMode = '') {
   const source = await readFile(adminPath, 'utf8')
   const script = parse(source).descriptor.script.content
     .replace(/import[\s\S]*?from ['"][^'"]+['"];?\r?\n/g, '')
@@ -165,6 +165,8 @@ async function loadBillingPage(role = 'admin', save = async () => ({ status: 200
     useCurrentUserRequestScope,
     getCurrentInstance: () => ({ proxy: { handleLoad() {} } }),
     isAdminUser: user => user.role === 'admin',
+    // 视图模式由**入口**决定（2026-11-14 拆路由）：见 BillingRecordList 里 routeViewMode。
+    useRoute: () => ({ meta: viewMode ? { viewMode } : {} }),
     normalizeLocationKey: value => String(value || '').trim(),
     formatValueWithLocationBase: value => value,
     formatMoneyValue: value => String(value),
@@ -193,7 +195,9 @@ async function loadBillingPage(role = 'admin', save = async () => ({ status: 200
 
 test('billing columns keep admin metadata separate and expansion adjusts the whole project column', async () => {
   for (const role of ['admin', 'user']) {
-    const page = await loadBillingPage(role)
+    // 视图由**入口**决定（2026-11-14 拆路由）：管理端账户走 billing-admin（viewMode='admin'），
+    // 用户端走 billing-records（viewMode='self'）。按入口而不是按角色加载。
+    const page = await loadBillingPage(role, undefined, undefined, role === 'admin' ? 'admin' : 'self')
     try {
       const keys = page.state.columns.value.map(column => column.key)
       assert.deepEqual(page.state.visibleColumns.value.map(column => column.key), keys, 'default visible columns preserve every role-allowed source field in order')

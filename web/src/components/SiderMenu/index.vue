@@ -21,7 +21,17 @@
           <template #title>
             <span class="menu-section-title">{{ section.title }}</span>
           </template>
-          <a-menu-item v-for="item in section.items" :key="item.key">
+          <!--
+            ⚠️ menu-item 的 key 必须带分区前缀：DUAL_ENTRY_KEYS 会让同一个
+            `item.key` 同时出现在 shared 与 admin-only 两个分区里，只用 key 会
+            触发 Vue 的重复 key 警告，且 a-menu 的选中态会同时高亮两行。
+            跳转仍用 item.key（见 href 与 handleSelect 的 data-menu-key）。
+          -->
+          <a-menu-item
+            v-for="item in section.items"
+            :key="section.key + ':' + item.key"
+            :data-menu-key="item.key"
+          >
             <template #icon>
               <component :is="item.icon" />
             </template>
@@ -93,6 +103,13 @@ const ADMIN_MENU_ITEMS = [
   { key: 'component', label: '题库总览', icon: PieChartOutlined },
   { key: 'import', label: '智能导入', icon: DownloadOutlined },
   { key: 'user-usage', label: '个人使用', icon: CreditCardOutlined },
+  // ⚠️ 用户端也有、且**语义不同**的三个入口，管理端必须同时保留两份（各自独立路由）：
+  //   tickets         → 工单反馈（viewMode='self'）    /  ticket-admin → 工单管理（viewMode='admin'）
+  //   scripts         → 我的脚本（'self'）             /  script-admin → 脚本管理（'admin'）
+  //   billing-records → 我的账单（'self'）             /  billing-admin → 账单明细（'admin'）
+  // 它们按 key 自然分到 shared / admin-only 两个分区：
+  // 用户端那份进「普通用户可见」组（文案取用户端），管理端那份进「仅管理员可见」组。
+  { key: 'tickets', label: '工单反馈', icon: FileTextOutlined },
   { key: 'userlist', label: '用户管理', icon: TeamOutlined },
   // 用户画像（98 §0）。仅管理员：全站行为聚合，普通用户直接敲 URL 会被 router 跳回首页。
   { key: 'user-portrait', label: '用户画像', icon: PieChartOutlined },
@@ -102,7 +119,8 @@ const ADMIN_MENU_ITEMS = [
   { key: 'archived-users', label: '已归档账号', icon: InboxOutlined },
   { key: 'loglist', label: '日志列表', icon: FileTextOutlined },
   { key: 'recharge-orders', label: '充值记录', icon: CreditCardOutlined },
-  { key: 'billing-records', label: '账单明细', icon: AccountBookOutlined },
+  { key: 'billing-records', label: '我的账单', icon: AccountBookOutlined },
+  { key: 'billing-admin', label: '账单明细', icon: AccountBookOutlined },
   { key: 'ip-location-cache', label: 'IP 归属地信息管理', icon: GlobalOutlined },
   { key: 'ip-segments', label: 'IP 段归属管理', icon: ApartmentOutlined },
   { key: 'phone-location-cache', label: '手机号归属地信息管理', icon: PhoneOutlined },
@@ -136,8 +154,18 @@ const ADMIN_MENU_ITEMS = [
   { key: 'system-settings', label: '系统管理', icon: ToolOutlined },
   { key: 'extension-updates', label: '扩展更新', icon: DownloadOutlined },
   { key: 'access-tokens', label: '令牌管理', icon: SafetyCertificateOutlined },
-  { key: 'scripts', label: '脚本管理', icon: CodeOutlined },
-  { key: 'tickets', label: '工单管理', icon: FileTextOutlined },
+  // 脚本管理是独立路由 script-admin（见 router 的 viewMode 说明），不是 scripts 的别名。
+  { key: 'scripts', label: '我的脚本', icon: CodeOutlined },
+  { key: 'script-admin', label: '脚本管理', icon: CodeOutlined },
+  // 「工单管理」是**独立路由**（ticket-admin），不是 tickets 的别名。
+  //
+  // 为什么必须独立路由（2026-11-14 用户实测报出）：
+  // 两个入口曾共用 `tickets` 路由，而 Tickets 组件只按角色判视图 ⇒
+  // 管理员在「普通用户可见」区点「工单反馈」看到的却是管理视图，
+  // 「工单管理」那个入口也无法被单独的 selectedKeys 选中（同一 key）。
+  // 现在 `tickets` → meta.viewMode='self'（用户视图），
+  // `ticket-admin` → meta.viewMode='admin'（管理视图），两个 name、两个 key。
+  { key: 'ticket-admin', label: '工单管理', icon: FileTextOutlined },
 ]
 
 const USER_MENU_ITEMS = [
@@ -163,20 +191,32 @@ const ADMIN_SECTION_TITLES = {
   adminOnly: '仅管理员可见',
 }
 
-// 管理员侧边栏两个分区：shared 由 USER_MENU_ITEMS 派生，adminOnly 是管理员独有的剩余项。
-// 两组合计必须与 ADMIN_MENU_ITEMS 完全一致（不增不减、不重复），由 sidebarSectionSource.test.mjs 钉住。
+// 管理员侧边栏两个分区（彻底分开，无重叠）：
+//   shared    = ADMIN ∩ USER —— 文案取**用户端**的（告诉管理员「普通用户看到的叫什么」）
+//   adminOnly = ADMIN ∖ USER —— 文案取**管理端**的
 //
-// ⚠️ shared 分区里每一项的**文案必须取 USER_MENU_ITEMS 的**，不能直接用
-// ADMIN_MENU_ITEMS 里的对象。同一个 key 在两侧的文案是不同的（这正是这个分区
-// 存在的意义：告诉管理员「普通用户看到的这个入口叫什么」）：
+// ⚠️ 2026-11-14 用户实测报出的缺陷与最终修法（务必看完再改）：
 //
-//   tickets        管理端「工单管理」   用户端「工单反馈」
-//   billing-records 管理端「账单明细」   用户端「我的账单」
-//   scripts        管理端「脚本管理」   用户端「我的脚本」
+// 用户原话：「我希望的侧边栏是普通用户可见和仅管理员可见彻底分开。现在的工单反馈，
+// 但对管理员来说就是工单·管理，我希望的是正常显示这两个页面在管理员那，
+// 而不是只显示一。」
 //
-// 直接用管理端对象会让「普通用户可见」分区里出现「工单管理」——管理员看到的是
-// 自己的视角，分区标题就成了假话。**顺序**仍按 ADMIN_MENU_ITEMS（管理端的排列
-// 是运营习惯），只把 label / icon 换成用户端的值。
+// 第一版修法是「让同一个 key 同时进两个分区」（DUAL_ENTRY_KEYS），**被用户否掉了**：
+// 「管理员在普通用户可见点击工单反馈，看到的却是工单管理的页面；
+//   仅管理员可见的工单管理却不可选中。」
+//
+// 根因：两个入口共用同一个 route.name，而页面组件只按**角色**判视图模式
+// （`isAdmin = isAdminUser(currentUser)`）⇒ 管理员点哪个入口都是管理视图；
+// 同一个 key 出现在两处也让 selectedKeys 无法区分，管理端那一行永远选不中。
+//
+// 正确修法是**拆路由**，不是拆文案：
+//   tickets（viewMode='self'）  ↔  ticket-admin（viewMode='admin'）
+//   scripts（viewMode='self'）  ↔  script-admin（viewMode='admin'）
+//   billing-records（'self'）   ↔  billing-admin（'admin'）
+// 页面组件读 route.meta.viewMode 决定渲染哪个视图，与角色解耦。
+//
+// ⇒ 于是两个分区**重新回到严格互斥**：同一个 key 不会再出现两次，
+// 用户端的 key 在 shared 区（用户文案），管理端的 key 在 adminOnly 区（管理文案）。
 const USER_MENU_BY_KEY = new Map(USER_MENU_ITEMS.map((item) => [item.key, item]))
 /** sharedSectionItem 取管理端顺序 + 用户端文案，两者都不丢。 */
 const sharedSectionItem = (adminItem) => {
@@ -237,13 +277,21 @@ export default defineComponent({
     // 分区只影响渲染分组，不影响权限判定与选中/跳转逻辑：两者都仍以 visibleMenuItems 为准。
     const menuSections = computed(() => (isAdmin.value ? ADMIN_MENU_SECTIONS : USER_MENU_SECTIONS));
 
+    // 分区里 menu-item 的 key 带分区前缀（见模板注释），选中态要还原成真实 key。
+    const REAL_KEY_SEPARATOR = ':';
+    const keysOfSection = (group) => (group.items || []).map((item) => item.key);
+    const selectedKeyFor = (realKey) => {
+      const section = (menuSections.value || []).find((group) => keysOfSection(group).includes(realKey));
+      return section ? section.key + REAL_KEY_SEPARATOR + realKey : realKey;
+    };
+
     const syncSelectedKeys = () => {
       const pathSegments = String(route.path || '').split('/');
       const currentKey = String(route.name || '') === 'tickets' ? 'tickets' : pathSegments[pathSegments.length - 1];
       const matched = visibleMenuItems.value.some((item) => item.key === currentKey)
         ? currentKey
         : visibleMenuItems.value[0]?.key;
-      selectedKeys.value = matched ? [matched] : [];
+      selectedKeys.value = matched ? [selectedKeyFor(matched)] : [];
     };
 
     watch(
@@ -253,14 +301,18 @@ export default defineComponent({
     );
 
     const handleSelect = async ({ key, domEvent }) => {
-      if (!navigationActive || !visibleMenuItems.value.some(item => item.key === key)) return;
+      // a-menu 回传的是带分区前缀的 key，取回真实 key 再做权限判定与跳转。
+      const realKey = String(key || '').includes(REAL_KEY_SEPARATOR)
+        ? String(key).slice(String(key).indexOf(REAL_KEY_SEPARATOR) + 1)
+        : String(key || '');
+      if (!navigationActive || !visibleMenuItems.value.some(item => item.key === realKey)) return;
       const intent = ++navigationIntent;
       const isCurrent = () => navigationActive && intent === navigationIntent;
-      selectedKeys.value = [key];
+      selectedKeys.value = [String(key)];
       let failure;
       let fulfilled = false;
       try {
-        failure = await router.push('/adapter/' + key);
+        failure = await router.push('/adapter/' + realKey);
         fulfilled = true;
       } catch (error) {
         if (isCurrent()) message.error('页面暂时无法打开，请稍后重试。');

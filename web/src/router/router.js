@@ -226,9 +226,20 @@ const routes = [
         component: AccessTokenManagement,
       },
       {
+        // 我的脚本（普通用户可见区）。viewMode: 'self' 让**管理员**从这个入口
+        // 进来时看到的是自己的脚本视图，而不是「脚本管理」的全站视图。
         path: 'scripts',
         name: 'scripts',
         component: ScriptManagement,
+        meta: { viewMode: 'self' },
+      },
+      {
+        // 脚本管理（仅管理员可见区）。独立 name 才能被侧边栏单独选中，
+        // 也才能登记进 ADMIN_ONLY_ROUTE_NAMES（那里有全站脚本与计费政策）。
+        path: 'script-admin',
+        name: 'script-admin',
+        component: ScriptManagement,
+        meta: { viewMode: 'admin' },
       },
       {
         path: 'recharge-orders',
@@ -282,14 +293,37 @@ const routes = [
         component: UserLevel,
       },
       {
+        // 我的账单（普通用户可见区）。viewMode: 'self' 让**管理员**从这个入口
+        // 进来时看到的是自己的账单，而不是「账单明细」的全站视图。
         path: 'billing-records',
         name: 'billing-records',
         component: BillingRecordList,
+        meta: { viewMode: 'self' },
       },
       {
+        // 账单明细（仅管理员可见区）。独立 name 才能被侧边栏单独选中，
+        // 也才能登记进 ADMIN_ONLY_ROUTE_NAMES（那里有全站账单与改账单权限）。
+        path: 'billing-admin',
+        name: 'billing-admin',
+        component: BillingRecordList,
+        meta: { viewMode: 'admin' },
+      },
+      {
+        // 工单反馈（普通用户可见区）。显式声明 viewMode: 'self'，
+        // 让**管理员**从这个入口进来时看到的是用户视图（自己的单 + 能新建），
+        // 而不是管理视图。不声明就退回「按角色判」——那正是 2026-11-14 的缺陷。
         path: 'tickets/:id?',
         name: 'tickets',
         component: Tickets,
+        meta: { viewMode: 'self' },
+      },
+      {
+        // 工单管理（仅管理员可见区）。独立 name 才能被侧边栏单独选中、
+        // 才能登记进 ADMIN_ONLY_ROUTE_NAMES 挡掉普通用户直敲 URL。
+        path: 'ticket-admin/:id?',
+        name: 'ticket-admin',
+        component: Tickets,
+        meta: { viewMode: 'admin' },
       }
     ]
   }
@@ -324,6 +358,13 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   // 账号封禁：能封禁等于能拒绝任何账号使用服务，是最高危的运营动作之一。
   // 必须挡住「直接敲 URL」—— 页面上的 canManage() 只是体验层，权限边界在 router 与后端。
   'user-bans',
+  // 工单管理：与 `tickets`（工单反馈）是两个 name、两个入口。
+  // 普通用户直敲 /adapter/ticket-admin 必须被挡住 —— 那里渲染的是全站工单。
+  'ticket-admin',
+  // 脚本管理 / 账单明细：与 scripts（我的脚本）、billing-records（我的账单）
+  // 成对存在。管理端那侧含全站数据与写权限，普通用户直敲 URL 必须被挡。
+  'script-admin',
+  'billing-admin',
   // 第 8 轮新增五个管理页。逐项说明为什么必须挡住「直接敲 URL」：
   //   user-portrait     —— 全站用户行为聚合，98 §0 明确仅管理员（四层权限的第 ④ 层）。
   //   risk-admin        —— 告警里带触发证据快照（IP / 用户 / 规则），属敏感运营数据。

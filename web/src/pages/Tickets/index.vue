@@ -562,7 +562,34 @@ let listRequestVersion = 0;
 let detailRequestVersion = 0;
 let detailFocusEntry = null, detailFocusVersion = 0;
 function retireDetailFocus() { detailFocusEntry = null; detailFocusVersion += 1; }
-const isAdmin = computed(() => isAdminUser(currentUser.value));
+// 视图模式由**入口**决定，而不是只由角色决定。
+//
+// 为什么必须这样（2026-11-14 用户实测报出的缺陷）：
+// 管理员侧边栏同时有「工单反馈」（普通用户可见区）与「工单管理」（仅管理员可见区）
+// 两个入口，但它们曾指向同一个 `tickets` 路由。而这里原来只判角色：
+//
+//     const isAdmin = computed(() => isAdminUser(currentUser.value))
+//
+// ⇒ 管理员点「工单反馈」进去看到的仍是**管理视图**（标题写着「工单管理」），
+// 而「工单管理」那个入口因为没有独立路由，侧边栏也无法单独选中。
+//
+// 现在改成：路由 meta.viewMode 优先。
+//   meta.viewMode === 'self'  → 强制用户视图（工单反馈）：只看自己的单、能新建
+//   meta.viewMode === 'admin' → 强制管理视图（工单管理）：全站单、状态筛选
+//   未声明                     → 退回按角色判断（保持既有行为，普通用户仍走 self）
+//
+// 权限边界不在这里：`ticket-admin` 已登记进 router 的 ADMIN_ONLY_ROUTE_NAMES，
+// 普通用户直接敲 URL 会被路由守卫挡掉。这里只管「渲染哪个视图」。
+const routeViewMode = computed(() => {
+  const meta = route?.meta || {};
+  return typeof meta.viewMode === 'string' ? meta.viewMode : '';
+});
+const isAdminRoleUser = computed(() => isAdminUser(currentUser.value));
+const isAdmin = computed(() => {
+  if (routeViewMode.value === 'self') return false;
+  if (routeViewMode.value === 'admin') return true;
+  return isAdminRoleUser.value;
+});
 const tickets = ref([]);
 const listLoading = ref(false);
 const errorMessage = ref("");

@@ -213,6 +213,7 @@ import BillingDetailDialog from '@/components/BillingDetailDialog.vue'
 import { useTableExpansion } from '@/composables/useTableExpansion.mjs'
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
 import { getBillingRecords, getIpLocations, getMyLocations, updateBillingStatementVisibility } from '@/api/TikuComponentApi'
+import { useRoute } from 'vue-router'
 import { getStoredCurrentUser, getCurrentUserLogoutEpoch, useCurrentUserDisplay, isAdminUser } from '@/utils/currentUser'
 import { useCurrentUserRequestScope } from '@/utils/currentUserScope'
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
@@ -329,7 +330,23 @@ export default defineComponent({
     const selectedBillingRecord = ref(null)
     const billingDetailOpen = ref(false)
     const { currentUser } = useCurrentUserDisplay()
-    const isAdmin = computed(() => isAdminUser(currentUser.value))
+    // 视图模式由**入口**决定，不是只由角色决定（2026-11-14 用户实测报出的同类缺陷）。
+    //
+    // 管理员侧边栏同时有「我的账单」（普通用户可见区）与「账单明细」（仅管理员可见区）。
+    // 原来只判角色 ⇒ 管理员点「我的账单」看到的仍是全站视图（含改账单权限），
+    // 而「账单明细」那个入口因共用同一 name 也无法被单独选中。
+    //
+    // 现在：`billing-records` → meta.viewMode='self'，`billing-admin` → 'admin'。
+    // 权限边界不在这里 —— `billing-admin` 已登记进 router 的 ADMIN_ONLY_ROUTE_NAMES。
+    const routeViewMode = computed(() => {
+      const meta = useRoute()?.meta || {}
+      return typeof meta.viewMode === 'string' ? meta.viewMode : ''
+    })
+    const isAdmin = computed(() => {
+      if (routeViewMode.value === 'self') return false
+      if (routeViewMode.value === 'admin') return true
+      return isAdminUser(currentUser.value)
+    })
     const instance = getCurrentInstance()
     const closeScopePopup = () => { billingDetailOpen.value = false; selectedBillingRecord.value = null }
     const visibilitySaving = reactive({})

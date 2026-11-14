@@ -130,7 +130,14 @@ test('派生区段标记存在且各只出现一次（标记被删/被复制会�
   assert.match(region, /const USER_MENU_SECTIONS = \[/);
   // 派生必须基于 USER_MENU_KEYS 过滤（这是「不手抄」的唯一判据）。
   assert.match(region, /ADMIN_MENU_ITEMS\.filter\(\(item\) =>\s+USER_MENU_KEYS\.has\(item\.key\)\)/);
+  // 两个分区**严格互斥**：同一个 key 不能在两侧各出现一次。
+  //
+  // ⚠️ 这里曾经放宽成「允许 DUAL_ENTRY_KEYS 重叠」，被用户否掉了 —— 重叠会让
+  // selectedKeys 无法区分两个入口（管理端那行永远选不中），且两行指向同一路由。
+  // 正确做法是**拆路由**（tickets ↔ ticket-admin 等），见 SiderMenu 顶部注释。
   assert.match(region, /ADMIN_MENU_ITEMS\.filter\(\(item\) =>\s+!USER_MENU_KEYS\.has\(item\.key\)\)/);
+  // 不能有「双入口例外集合」的**代码**（注释里提及它作为历史说明是允许的）。
+  assert.doesNotMatch(region, /const DUAL_ENTRY_KEYS\s*=/, '分区派生里不应再有双入口例外集合');
   // 手抄清单的特征：区段里出现字面量对象数组给分区赋值（而不是 filter 派生）。
   assert.doesNotMatch(region, /items:\s*\[\s*\{/, '分区 items 不能是手写字面量数组，必须 filter 派生');
 });
@@ -149,6 +156,8 @@ test('管理员侧边栏有且只有两个带标题的分区，标题文案是�
 
 test('两个分区合计与 ADMIN_MENU_ITEMS 完全一致：不增、不减、不重', () => {
   const combined = [...sharedSection.items, ...adminOnlySection.items];
+  const sharedKeys = keysOf(sharedSection.items);
+  const adminOnlyKeys = keysOf(adminOnlySection.items);
 
   // 判据①：合计条数 = ADMIN_MENU_ITEMS.length（不写死 27，允许并行新增菜单项）。
   assert.equal(combined.length, ADMIN_MENU_ITEMS.length);
@@ -156,21 +165,20 @@ test('两个分区合计与 ADMIN_MENU_ITEMS 完全一致：不增、不减、�
   // 不增不减：key 集合相等（不是子集、也不是超集）。
   assert.deepEqual(sorted(keysOf(combined)), sorted(adminKeys));
 
-  // 不重：两个分区之间没有重复 key。
-  const duplicates = keysOf(sharedSection.items).filter((key) => keysOf(adminOnlySection.items).includes(key));
+  // 判据②：不重 —— 两个分区之间**严格互斥**。
+  //
+  // 任何重叠都会让 selectedKeys 无法区分两个入口（同一 key 出现两次，
+  // a-menu 只能高亮一个，另一个永远选不中），而且两行会指向同一路由。
+  // 这正是 2026-11-14 用户报出的缺陷形态，修法是拆路由而不是允许重叠。
+  const duplicates = sharedKeys.filter((key) => adminOnlyKeys.includes(key));
   assert.deepEqual(duplicates, [], `分区之间出现重复 key: ${duplicates.join(', ')}`);
 
   // 组内保持 ADMIN_MENU_ITEMS 的相对顺序（filter 是稳序的，不得重排或倒序）。
-  // 注意：分组合并后整体顺序必然与 ADMIN_MENU_ITEMS 不同（普通项被提到前面），这是分组的目的，
-  // 所以这里只钉「各自相对顺序」，不钉拼接后的全局顺序。
   for (const section of ADMIN_MENU_SECTIONS) {
     const sectionKeys = keysOf(section.items);
     const preservedOrder = adminKeys.filter((key) => sectionKeys.includes(key));
     assert.deepEqual(sectionKeys, preservedOrder, `分区 ${section.key} 打乱了 ADMIN_MENU_ITEMS 的相对顺序`);
   }
-
-  // 两组首尾相接即完整覆盖：既不能有项既不在前组也不在后组，也不能有项同时进两组。
-  assert.equal(new Set(combined.map((item) => item.key)).size, ADMIN_MENU_ITEMS.length);
 });
 
 test('「普通用户可见」组与 USER_MENU_ITEMS 集合相等（不是子集），且从 USER_MENU_ITEMS 派生', () => {
@@ -224,24 +232,42 @@ test('「普通用户可见」组与 USER_MENU_ITEMS 集合相等（不是子集
       `shared 组的 ${item.key} 文案必须是普通用户看到的那个（${USER_BY_KEY.get(item.key).label}），不是管理端的（${adminItem.label}）`,
     );
   }
-  // 逐条钉住三处已知的双文案，防止有人把它改回管理端措辞。
-  const labelOf = (key) => sharedSection.items.find((item) => item.key === key).label;
-  assert.equal(labelOf('tickets'), '工单反馈');
-  assert.equal(labelOf('billing-records'), '我的账单');
-  assert.equal(labelOf('scripts'), '我的脚本');
-  // 对照组：只有这三处不同，其余文案两侧本来就相同，不得被顺手改掉。
+  // 钉住「普通用户可见」组的文案必须是用户端的。
+  const labelOf = (key) => sharedSection.items.find((item) => item.key === key)?.label;
   assert.equal(labelOf('profile'), '个人中心');
   assert.equal(labelOf('access-tokens'), '令牌管理');
+
+  // ⚠️ tickets / scripts / billing-records 三处双文案，现在**不在 shared 组里**：
+  // 它们各自拆成了两个路由（tickets ↔ ticket-admin 等），管理端那一侧用独立 key
+  // 落在 admin-only 组。所以这里断言的是「user 端 key 只在 shared、admin 端 key
+  // 只在 admin-only」，而不是「同一个 key 在两个组各有一份文案」。
+  for (const key of ['tickets', 'scripts', 'billing-records']) {
+    assert.ok(USER_BY_KEY.has(key), `前置失效：${key} 应当仍在 USER_MENU_ITEMS 里`);
+    assert.equal(labelOf(key), USER_BY_KEY.get(key).label,
+      `${key} 在 shared 组的文案必须是用户端的`);
+  }
+  for (const key of ['ticket-admin', 'script-admin', 'billing-admin']) {
+    assert.ok(adminOnlySection.items.some((item) => item.key === key),
+      `${key}（管理端入口）必须落在「仅管理员可见」组`);
+    assert.ok(!sharedSection.items.some((item) => item.key === key),
+      `${key} 不得出现在「普通用户可见」组`);
+  }
+  // 三个管理端入口的文案是对的（用户端那侧用的是另一个 key，不会串）。
+  const adminLabelOf = (key) => adminOnlySection.items.find((item) => item.key === key)?.label;
+  assert.equal(adminLabelOf('ticket-admin'), '工单管理');
+  assert.equal(adminLabelOf('script-admin'), '脚本管理');
+  assert.equal(adminLabelOf('billing-admin'), '账单明细');
 });
 
 test('「仅管理员可见」组是剩余项，且不含任何普通用户可见项', () => {
   const adminOnlyKeys = keysOf(adminOnlySection.items);
 
-  // 判据①的另一半：剩余 = ADMIN − USER。
+  // 判据①：剩余 = ADMIN − USER。
   assert.deepEqual(sorted(adminOnlyKeys), sorted(adminKeys.filter((key) => !userKeys.includes(key))));
   assert.equal(adminOnlyKeys.length, ADMIN_MENU_ITEMS.length - sharedSection.items.length);
 
-  // 反向防线：管理员独占组里一个普通项都不能有。
+  // 判据②：管理员独占组里一个普通项都不能有。
+  // 这是「仅管理员可见」这个标题不能变成假话的防线。
   const leaked = adminOnlyKeys.filter((key) => userKeys.includes(key));
   assert.deepEqual(leaked, [], `管理员独占组混入了普通用户可见项: ${leaked.join(', ')}`);
 });
@@ -280,7 +306,9 @@ test('模板按标题决定是否渲染分区标题（缺标题即退化为扁�
   assert.match(template, /v-else[\s\S]*?v-for="item in section\.items"/);
 
   // 分区必须真的挂在菜单里，且分区标题与菜单项仍然只有一套渲染逻辑（两处 a-menu-item 同构）。
-  const itemOccurrences = (template.match(/<a-menu-item v-for="item in section\.items"/g) || []).length;
+  // 两个分支各渲染一次菜单项。有标题分支带 :key/:data-menu-key（分区前缀 + 真实 key），
+  // 所以不能用 `v-for="item in section.items"` 后紧跟 `>` 的严格形式匹配。
+  const itemOccurrences = (template.match(/<a-menu-item\s+v-for="item in section\.items"/g) || []).length;
   assert.equal(itemOccurrences, 2, '两个分支各渲染一次菜单项');
   assert.match(template, /:href="'\/adapter\/' \+ item\.key"/);
 
@@ -299,18 +327,27 @@ test('分区不影响权限判定与选中态：仍以 visibleMenuItems 为准',
   assert.match(source, /const visibleMenuItems = computed\(\(\) => \(isAdmin\.value \? ADMIN_MENU_ITEMS : USER_MENU_ITEMS\)\)/);
   assert.match(source, /const menuSections = computed\(\(\) => \(isAdmin\.value \? ADMIN_MENU_SECTIONS : USER_MENU_SECTIONS\)\)/);
 
-  // 选中态 / 点击 / watch 仍读 visibleMenuItems，不读分区（否则分区一变选中就丢）。
+  // 选中态 / 点击 / watch 仍读 visibleMenuItems 做**权限判定与真实 key 选择**，
+  // 不因分区划分而改变「哪个 key 是合法的」。
+  //
+  // ⚠️ syncSelectedKeys 里允许**读** menuSections，但只用于把真实 key 加上分区前缀
+  // 合法性判定仍必须是 visibleMenuItems，见下一条断言。
   const setup = source.slice(source.indexOf('const syncSelectedKeys'), source.indexOf('const handleSelect'));
   assert.match(setup, /visibleMenuItems\.value/);
-  assert.doesNotMatch(setup, /menuSections/);
+  assert.match(
+    setup,
+    /visibleMenuItems\.value\.some\(\(item\) => item\.key === currentKey\)/,
+    '选中态必须仍以 visibleMenuItems 判定合法性（分区只加前缀，不决定合法 key）',
+  );
   const clickHandler = source.slice(source.indexOf('const handleSelect'), source.indexOf('const handleLinkClick'));
   assert.match(clickHandler, /visibleMenuItems\.value\.some/);
-  assert.doesNotMatch(clickHandler, /menuSections/);
+  // 跳转必须用还原后的真实 key，不能把带分区前缀的 key 拼进 URL。
+  assert.match(clickHandler, /router\.push\('\/adapter\/' \+ realKey\)/, '跳转必须用 realKey 而非带前缀的 key');
 
   // 普通用户的可见项集合 = 分区渲染出来的项集合；管理员的可见项集合 = 两个分区的并集。
   const userRendered = USER_MENU_SECTIONS.flatMap((section) => keysOf(section.items));
   assert.deepEqual(userRendered, userKeys);
-  // 管理员侧只比集合（分组会把普通项提前，顺序按设计会变；顺序另有「组内相对顺序」用例钉住）。
+  // 分区严格互斥（见「不重」用例），所以直接比数组即可 —— 顺序由「组内相对顺序」用例钉住。
   const adminRendered = ADMIN_MENU_SECTIONS.flatMap((section) => keysOf(section.items));
   assert.deepEqual(sorted(adminRendered), sorted(adminKeys));
 });

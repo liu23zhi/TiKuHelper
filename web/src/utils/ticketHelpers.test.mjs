@@ -450,9 +450,16 @@ test("ticket page is wired for users and administrators with pre-wrapped text", 
     ),
     readFile(new URL("../pages/Tickets/index.vue", import.meta.url), "utf8"),
   ]);
-  assert.match(router, /path: 'tickets\/:id\?'[\s\S]*name: 'tickets'/);
-  assert.match(menu, /key: 'tickets', label: '工单管理'/);
+  // 两个入口拆成两个路由、两个 key（2026-11-14 用户实测报出的缺陷驱动）：
+  //   tickets（viewMode='self'）→ 工单反馈
+  //   ticket-admin（viewMode='admin'）→ 工单管理
+  // 只断言「同一个 key 有两条文案」在旧模型下成立，新模型下必须两条 key 都在。
+  assert.match(router, /path: 'tickets\/:id\?'[\s\S]*?name: 'tickets'[\s\S]*?meta: \{ viewMode: 'self' \}/);
+  assert.match(router, /path: 'ticket-admin\/:id\?'[\s\S]*?name: 'ticket-admin'[\s\S]*?meta: \{ viewMode: 'admin' \}/);
+  assert.match(menu, /key: 'ticket-admin', label: '工单管理'/);
   assert.match(menu, /key: 'tickets', label: '工单反馈'/);
+  // 用户端与管理端两份都必须出现在 ADMIN_MENU_ITEMS 里，否则管理员侧少一个入口。
+  assert.match(menu, /const ADMIN_MENU_ITEMS = \[[\s\S]*?key: 'tickets'[\s\S]*?key: 'ticket-admin'/);
   assert.match(page, /white-space: pre-wrap/);
   assert.match(page, /getTicketNotificationConfig/);
   assert.match(page, /testTicketNotification/);

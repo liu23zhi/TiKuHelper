@@ -14,9 +14,17 @@ test('script management is routed for both scopes and exposes admin upload contr
     read('api/TikuComponentApi.js'),
     read('pages/ScriptManagement/index.vue'),
   ])
-  assert.match(router, /path: 'scripts',[\s\S]*name: 'scripts',[\s\S]*component: ScriptManagement/)
-  assert.doesNotMatch(router.match(/const ADMIN_ONLY_ROUTE_NAMES[\s\S]*?\]\)/)?.[0] || '', /'scripts'/)
-  assert.match(menu, /\{ key: 'scripts', label: '脚本管理'/)
+  // 两个入口拆成两个路由、两个 key（2026-11-14 用户实测报出的缺陷驱动）：
+  //   scripts（viewMode='self'）→ 我的脚本
+  //   script-admin（viewMode='admin'）→ 脚本管理
+  assert.match(router, /path: 'scripts',[\s\S]*?name: 'scripts',[\s\S]*?component: ScriptManagement,[\s\S]*?meta: \{ viewMode: 'self' \}/)
+  assert.match(router, /path: 'script-admin',[\s\S]*?name: 'script-admin',[\s\S]*?component: ScriptManagement,[\s\S]*?meta: \{ viewMode: 'admin' \}/)
+  // `scripts`（我的脚本）对普通用户开放，不能进管理路由名单；
+  // 而 `script-admin`（含上传 EXE 与计费政策）**必须**在里面。
+  const adminOnlyBlock = router.match(/const ADMIN_ONLY_ROUTE_NAMES[\s\S]*?\]\)/)?.[0] || ''
+  assert.doesNotMatch(adminOnlyBlock, /'scripts'/)
+  assert.match(adminOnlyBlock, /'script-admin'/)
+  assert.match(menu, /\{ key: 'script-admin', label: '脚本管理'/)
   assert.match(menu, /\{ key: 'scripts', label: '我的脚本'/)
   assert.match(api, /url: `\/adapter-service\/scripts`/)
   assert.match(api, /url: `\/adapter-service\/script-versions\/upload`/)
