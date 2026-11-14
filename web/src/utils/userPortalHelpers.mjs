@@ -13,6 +13,22 @@ export function resolveAdapterHomePath(user) {
     : '/user-usage'
 }
 
+/**
+ * 按角色返回「门户可见的菜单 key」。
+ *
+ * ⚠️ 2026-11-15 核实：本函数**没有生产调用方**（`git grep buildPortalMenuKeys HEAD`
+ * 只命中本文件与它的测试）。它是 76aa349 引入后的死代码 —— 真正决定菜单可见性的是
+ * `components/SiderMenu/index.vue` 的 ADMIN_MENU_ITEMS / USER_MENU_ITEMS。
+ *
+ * 保留而不删的理由：删它要连带删两条测试，而它对现状没有危害。
+ * 但**清单必须与 SiderMenu 保持一致**，否则它就成了「测试保护了已不存在的事实」的实例：
+ *   - `billing-records` 已于 2026-11-15 退役（用户侧账单入口并入「个人使用 → 账单流水」），
+ *     从两份清单移除；
+ *   - `my-devices`（我的设备）是本轮新增的普通用户入口，必须补进用户清单。
+ *
+ * 将来若真要接生产，请直接改为从 SiderMenu 的菜单数组派生，不要再手抄一份 ——
+ * 手抄的清单必然会再次漂移。
+ */
 export function buildPortalMenuKeys(user) {
   return String(user?.role || '').trim().toLowerCase() === 'admin'
     ? [
@@ -23,21 +39,21 @@ export function buildPortalMenuKeys(user) {
         'userlist',
         'loglist',
         'recharge-orders',
-        'billing-records',
         'search-account-config',
         'ai-search-config',
         'system-settings',
         'access-tokens',
         'scripts',
         'tickets',
+        'my-devices',
       ]
     : [
         'profile',
         'user-usage',
+        'my-devices',
         'access-tokens',
         'scripts',
         'recharge-orders',
-        'billing-records',
         'tickets',
       ]
 }

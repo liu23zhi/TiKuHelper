@@ -64,6 +64,12 @@ test('buildRegisterSourceLabel maps system registrations to initialization wordi
 });
 
 test('buildPortalMenuKeys includes personal usage for admin users', () => {
+  // ⚠️ 2026-11-15：清单已与 SiderMenu 对齐 —— `billing-records` 退役（用户侧账单并入
+  // 「个人使用 → 账单流水」），`my-devices`（我的设备）是本轮新增入口。
+  //
+  // 注：buildPortalMenuKeys 目前没有生产调用方（详见函数头注释）。保留这两条断言的意义
+  // 只剩「清单本身不漂移」，所以值必须是**字面量**而不是从别处引用 —— 一旦改成
+  // 引用实现里的常量，断言就会与实现同步漂移、恒真。
   assert.deepEqual(buildPortalMenuKeys({ role: 'admin' }), [
     'profile',
     'component',
@@ -72,23 +78,28 @@ test('buildPortalMenuKeys includes personal usage for admin users', () => {
     'userlist',
     'loglist',
     'recharge-orders',
-    'billing-records',
     'search-account-config',
     'ai-search-config',
     'system-settings',
     'access-tokens',
     'scripts',
     'tickets',
+    'my-devices',
   ]);
   assert.deepEqual(buildPortalMenuKeys({ role: 'user' }), [
     'profile',
     'user-usage',
+    'my-devices',
     'access-tokens',
     'scripts',
     'recharge-orders',
-    'billing-records',
     'tickets',
   ]);
+  // 反向防线：退役 key 不得回到任一份清单里。
+  for (const role of ['admin', 'user']) {
+    assert.equal(buildPortalMenuKeys({ role }).includes('billing-records'), false,
+      `billing-records 已退役，${role} 清单里不得再有它`);
+  }
 });
 
 test('buildPersonalUsageBillingRecordParams always requests own records', () => {
