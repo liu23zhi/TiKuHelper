@@ -142,6 +142,13 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.POST("/admin/ip-segments/batch-delete", controller.Auth, middleware.RequireAdmin, controller.IPSegmentBatchDelete)
 	apiRouter.DELETE("/admin/ip-segments/:id", controller.Auth, middleware.RequireAdmin, controller.IPSegmentDelete)
 	apiRouter.POST("/admin/ip-segments/:id/refresh", controller.Auth, middleware.RequireAdmin, controller.IPSegmentRefresh)
+	// 「立即同步」：现在就跑一次自动沉淀（用户 2026-11-15 方案 B）。
+	//
+	// 命名刻意用 sync-from-cache 而不是 import：
+	//   · sync 的语义是「把已缓存的行补写成段」，与自动通路同一个函数；
+	//   · import 意味着「从外部灌一份数据进来」，那是被 2026-11-13 决定否掉的旧口径。
+	// ip_segment_router_test.go 仍有反向断言：ip-segments 族下不得出现 import 字样。
+	apiRouter.POST("/admin/ip-segments/sync-from-cache", controller.Auth, middleware.RequireAdmin, controller.IPSegmentSyncFromCache)
 
 	// 等级体系（Q75-3 / Q75-6 / Q75-7，94-*.md §2 C1）。
 	//
