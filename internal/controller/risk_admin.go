@@ -87,6 +87,12 @@ func writeRiskAdminError(c *gin.Context, err error, fallback string) {
 		errors.Is(err, service.ErrRiskThresholdUnknown),
 		errors.Is(err, service.ErrRiskRuleUnknown):
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+	// 非数值配置（ASN 名单 / 评估间隔）同样回 400 且原文可见：
+	// 坏 ASN 与越界间隔都必须让运营看到「哪一项、为什么」，
+	// 否则「保存了但规则还是不响」无法自查。
+	case errors.Is(err, service.ErrRiskConfigInvalid),
+		errors.Is(err, service.ErrRiskConfigUnknown):
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"message": "风控告警不存在"})
 	default:
@@ -449,4 +455,115 @@ func SetRiskRuleEnabled(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "已保存", "item": state})
+}
+
+// ════════════════════════════════════════════════════════════════════
+// 风控的**非数值**配置读写（ASN 名单 / 评估间隔）
+//
+//	GET    /adapter-service/risk/config           全部非数值配置 + 当前生效值
+//	PUT    /adapter-service/risk/config/:key      设置某项
+//	DELETE /adapter-service/risk/config/:key      重置为「未配置」（回到代码默认值）
+//
+// # 为什么必须补这一组（这是本次审计发现的**真实缺口**，不是锦上添花）
+//
+// 风控有 15 项数值阈值走 `/risk/thresholds`（有完整 UI），但另外**两类可调项
+// 在此之前没有任何写入路径**，而它们的缺失会让规则**静默不工作**：
+//
+//  1. `risk_proxy_asn_list` —— R10「代理IP登录」的 ASN 名单。
+//     `collectProxyIPLoginCandidates` 在名单为空时**直接 return，连查询都不做**
+//     （刻意的「宁可漏报不要误报」）。而它零写接口 ⇒ 这条规则**永远**不会告警。
+//     更明确的证据：`ValidateProxyASNList`（保存时的严格校验）当时**零生产调用方**，
+//     只有 _test.go 调它 —— 「保存严格 / 读取宽容」这套设计根本没接线。
+//
+//  2. `risk_evaluate_interval_minutes` —— 判定任务的评估间隔。
+//     只有 `resolveRiskEvaluateInterval` 读它，运营要改只能直接动数据库；
+//     而填超过 1440 会让评估**比预期更频繁**（解析失败回落 10 分钟），
+//     这个方向与「调低频率」的意图相反，且只打一条 SysWarn。
+//
+// # 为什么不复用 /risk/thresholds
+//
+// 那条接口的值类型是 `float64`（`updateRiskThresholdRequest.Value *float64`），
+// ASN 名单是字符串列表，塞进去只会得到 JSON 解析 400。
+// 所以**数值归阈值、文本归配置**，两条路径各自一套校验，互不污染。
+//
+// `:key` 与阈值一样走**白名单**（service.riskConfigSpecs），不接受任意字符串。
+// ════════════════════════════════════════════════════════════════════
+
+// RiskConfigList 返回全部非数值配置项及其当前生效值。
+func RiskConfigList(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !requireAdmin(c) {
+		return
+	}
+	db, err := requireRiskAdminDB(c)
+	if err != nil {
+		writeRiskAdminError(c, err, "获取风控配置失败")
+		return
+	}
+	items, err := service.RiskConfigs(db)
+	if err != nil {
+		writeRiskAdminError(c, err, "获取风控配置失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+// updateRiskConfigRequest 是设置非数值配置的请求体。
+//
+// 用指针是为了区分「没传」与「传了空串」：
+// 空串对 ASN 名单是**合法值**（= 关闭规则），对间隔是**重置**语义。
+// 若用裸 string，「缺字段」会被静默当成「清空」—— 一次手滑的请求就能关掉 R10。
+type updateRiskConfigRequest struct {
+	Value *string `json:"value"`
+}
+
+// UpdateRiskConfig 设置某项非数值配置。
+func UpdateRiskConfig(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !requireAdmin(c) {
+		return
+	}
+	db, err := requireRiskAdminDB(c)
+	if err != nil {
+		writeRiskAdminError(c, err, "保存风控配置失败")
+		return
+	}
+	var input updateRiskConfigRequest
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误：value 必须是字符串"})
+		return
+	}
+	if input.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误：必须提供 value（留空请显式传空串或调用重置）"})
+		return
+	}
+	result, err := service.UpdateRiskConfigWithDB(db, c.Param("key"), *input.Value)
+	if err != nil {
+		writeRiskAdminError(c, err, "保存风控配置失败")
+		return
+	}
+	message := "已保存"
+	if result.Reset {
+		message = "已清空并回到默认值"
+	}
+	c.JSON(http.StatusOK, gin.H{"message": message, "item": result.Item})
+}
+
+// ResetRiskConfig 把某项非数值配置重置为「未配置」（删除显式行）。
+func ResetRiskConfig(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !requireAdmin(c) {
+		return
+	}
+	db, err := requireRiskAdminDB(c)
+	if err != nil {
+		writeRiskAdminError(c, err, "重置风控配置失败")
+		return
+	}
+	result, err := service.ResetRiskConfigWithDB(db, c.Param("key"))
+	if err != nil {
+		writeRiskAdminError(c, err, "重置风控配置失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "已重置为默认值", "item": result.Item})
 }

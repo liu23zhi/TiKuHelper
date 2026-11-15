@@ -6,13 +6,16 @@ import { fileURLToPath } from 'node:url'
 
 import {
   RISK_ADVISORY_NOTE,
+  RISK_BUILTIN_RULE_NOTICE,
   RISK_INDEPENDENCE_NOTICE,
   RISK_SETTING_KEYS,
   buildRiskAlertListParams,
   buildRiskEvidenceRows,
   buildRiskWebhookUpdatePayload,
+  describeRiskConfigEmptyMeaning,
   describeRiskWebhookState,
   formatMentionedInput,
+  normalizeRiskConfigItems,
   normalizeRiskWebhookSettings,
   parseMentionedInput,
   parseRiskEvidence,
@@ -20,6 +23,7 @@ import {
   riskRuleLabel,
   riskSeverityMeta,
   validateRiskAlertFilters,
+  validateRiskConfigDraft,
 } from '../pages/RiskAdmin/riskAdminHelpers.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -239,18 +243,180 @@ test('判据 ②（改阈值落库）已实现：前端必须提供阈值读写�
   assert.doesNotMatch(api, /RULE_THRESHOLD_UNIT/, '不得在前端内联 ruleId → 单位的映射，单位由后端给')
 
   // 路由白名单同步扩展（服务端实际挂的就是这些）。
+  //
+  // `/config` 是 2026-11 新增的非数值配置（ASN 名单 / 评估间隔），
+  // 与 `/thresholds` 分开是因为值类型不同（文本 vs float64），见下方专项用例。
   const routes = [...api.matchAll(/RISK_BASE \+ '(\/[\w/]+)'/g)].map(m => m[1])
   assert.deepEqual(
     [...new Set(routes)].sort(),
-    ['/alerts', '/alerts/', '/rules', '/rules/', '/thresholds', '/thresholds/', '/webhook', '/webhook/test'],
-    '风控 API 模块只允许列表 / 详情 / 配置读写 / 测试发送 / 阈值读写重置这几条路径',
+    ['/alerts', '/alerts/', '/config', '/config/', '/rules', '/rules/', '/thresholds', '/thresholds/', '/webhook', '/webhook/test'],
+    '风控 API 模块只允许列表 / 详情 / 配置读写 / 测试发送 / 阈值读写重置 / 非数值配置这几条路径',
   )
   assert.match(api, /RISK_BASE \+ '\/alerts\/' \+ value/, '详情路径必须是拼接形式（不能写成模板字面量绕过上面的统计）')
 })
 
 // ─────────────────────────────────────────────────────────────────────
-// 参数校验：与后端 risk_admin.go 逐条对齐
+// 规则集「内置、不可新增」——数据模型事实的可见形态
+//
+// 任务书要求先证清模型再决定是否做「新建规则」。实测结论：**不可新增**
+// （依据见 riskAdminHelpers.mjs 的 RISK_BUILTIN_RULE_NOTICE 上方注释：
+//  loadRiskRules 只遍历代码常量切片、多出的 DB 行被静默丢弃；
+//  判定逻辑是一串硬编码 if；未知 ruleId 连启停都被白名单拦住）。
+//
+// 所以本轮**必须不做** POST /risk/rules / 新建按钮，并把这个事实写进页面文案。
+// 这组用例的作用是**双向**的：
+//   · 断言文案存在且说明理由（否则管理员会以为功能坏了）；
+//   · 断言页面**没有**新建入口（防止后来者"顺手补一个"造出永不判定的规则）。
 // ─────────────────────────────────────────────────────────────────────
+
+test('规则集不可新增：页面必须有明确的常驻说明，且说清「为什么」', () => {
+  // 语义三层必须在：不可新增 / 判定在代码里 / 正确做法是什么。
+  assert.match(RISK_BUILTIN_RULE_NOTICE, /内置/, '必须说明规则集是内置的')
+  assert.match(RISK_BUILTIN_RULE_NOTICE, /不支持新增|不能新增|不可新增/, '必须明确不支持新增')
+  assert.match(RISK_BUILTIN_RULE_NOTICE, /代码/, '必须说明判定逻辑写在服务端代码里（这是根本原因）')
+  assert.match(RISK_BUILTIN_RULE_NOTICE, /数据库|数据行|规则表/, '必须说明「插数据库行没用」这个关键反直觉点')
+  // 必须给出真正能做的替代路径，否则这段话只是"不行"而没有出路。
+  assert.match(RISK_BUILTIN_RULE_NOTICE, /启用开关|阈值/, '必须指出当前可调的是什么')
+})
+
+test('规则集不可新增：页面不得出现任何「新建规则」入口或 POST 调用', async () => {
+  const page = await readSource('pages/RiskAdmin/index.vue')
+  // ⚠️ 必须剥注释再断言：页面注释里就有「新增规则忘改前端就显示错单位」这类
+  // **反例说明**，直接对全文 doesNotMatch 会把这句解释本身判成违规（假红）。
+  // 但也不能只对注释做断言 —— 所以要剥离注释后只看真实代码。
+  const pageCode = stripComments(page)
+  const api = stripComments(await readSource('api/RiskAdminApi.js'))
+  // ① 页面不得有新建/新增规则的按钮或函数（会误导成"功能存在"）。
+  for (const pattern of [/createRiskRule/, /新增规则/, /新建规则/]) {
+    assert.doesNotMatch(pageCode, pattern, `规则不可新增，页面不得出现「新建规则」入口：${pattern}`)
+  }
+  // ② API 模块不得声明 create 语义的规则函数。
+  assert.doesNotMatch(api, /export function \w*createRiskRule/i, '不得提供新建规则的 API（后端不支持）')
+  // ③ 规则路径只允许 GET 与方法无关的读取 + enabled 的 PUT；
+  //    不得对 `/rules` 直接发 post（那正是"造出不参与判定的行"的形态）。
+  assert.doesNotMatch(api, /url: RISK_BASE \+ '\/rules',\s*\n\s*method: 'post'/,
+    '不得对 /rules 发 POST（新建的行会被 loadRiskRules 静默丢弃，永不参与判定）')
+})
+
+test('规则集不可新增：说明文案必须真的渲染进页面（常量存在但不渲染等于没提示）', async () => {
+  const page = await readSource('pages/RiskAdmin/index.vue')
+  assert.match(page, /RISK_BUILTIN_RULE_NOTICE/, '页面必须引用那个常量（硬编码副本会与测试漂移）')
+  assert.match(page, /:message="RISK_BUILTIN_RULE_NOTICE"/, '原文必须真的渲染进 a-alert')
+  // 必须紧挨规则清单卡片：放到页面顶部会被当成通用免责声明而略过。
+  const rulesPanelAt = page.indexOf('title="规则清单"')
+  const noticeAt = page.indexOf(':message="RISK_BUILTIN_RULE_NOTICE"')
+  assert.ok(rulesPanelAt > 0 && noticeAt > rulesPanelAt, '说明必须在「规则清单」卡片内部（否则会被当成通用声明）')
+})
+
+// ─────────────────────────────────────────────────────────────────────
+// 非数值配置（ASN 名单 / 评估间隔）—— 本次补齐的真实缺口
+//
+// 这两项此前没有写入路径，后果是规则静默失效：
+//   · risk_proxy_asn_list 为空时 R10 连查询都不做 ⇒ 永不告警；
+//   · risk_evaluate_interval_minutes 只能改库，且 >1440 反向生效。
+// ─────────────────────────────────────────────────────────────────────
+
+test('非数值配置：三个动作 + 真实路由（与后端 /risk/config[/:key] 一致）', async () => {
+  const api = stripComments(await readSource('api/RiskAdminApi.js'))
+  assert.match(api, /export function getRiskConfigs\(/, '必须有读取非数值配置的 API')
+  assert.match(api, /export function updateRiskConfig\(/, '必须有写入非数值配置的 API')
+  assert.match(api, /export function resetRiskConfig\(/, '必须有重置（清空）的 API')
+  assert.match(api, /RISK_BASE \+ '\/config'/, '读取路由必须是 /risk/config')
+  assert.match(api, /RISK_BASE \+ '\/config\/'/, '写入/重置路由必须是 /risk/config/:key')
+})
+
+test('非数值配置：value 必须是字符串且允许空串（空串对名单 = 关闭规则）', async () => {
+  // 数据模型层的关键判据：这两项**不能**塞进数值阈值接口。
+  const items = normalizeRiskConfigItems([
+    { key: 'risk_proxy_asn_list', label: 'ASN 名单', kind: 'asn_list', value: '', defaultValue: '', minValue: 0, maxValue: 0 },
+    { key: 'risk_evaluate_interval_minutes', label: '间隔', kind: 'positive_int', value: '30', defaultValue: '10', minValue: 1, maxValue: 1440, unit: '分钟' },
+  ])
+  assert.equal(items.length, 2)
+  // ① 空串必须被保留为「值为空且未配置」，**不能**当成缺值把整项丢掉。
+  assert.equal(items[0].value, '', '空名单是合法值（= 关闭 R10），不得被过滤掉')
+  assert.equal(items[0].configured, false)
+  // ② kind → 控件映射决定输入形态（文本域 vs 数字框），错了就无法输入 ASN。
+  assert.equal(items[0].control, 'textarea', 'ASN 名单必须是文本域（数字框根本输不进 AS15169）')
+  assert.equal(items[1].control, 'number', '评估间隔必须是数字框')
+  // ③ 数字项的区间必须透出（前端据此做提前拦截）。
+  assert.equal(items[1].min, 1)
+  assert.equal(items[1].max, 1440)
+  // ④ 名单类没有数值区间：null 而不是 0（0 会被当成「区间是 [0,0]」）。
+  assert.equal(items[0].min, null, '名单类不应有数值下界（0 会被误当成真区间）')
+  assert.equal(items[0].max, null)
+  // ⑤ 空串与「值为字符串 0」必须区分开。
+  assert.equal(String(0), '0')
+  assert.notEqual(items[0].value, '0')
+})
+
+test('非数值配置：未知 kind 必须抛错，不能静默降级成文本域', () => {
+  assert.throws(
+    () => normalizeRiskConfigItems([{ key: 'risk_future_setting', label: '未来项', kind: 'json_blob', value: '{}' }]),
+    /json_blob/,
+    '未知类型必须报错并指出键名，否则运营会遇到「能填但保存必 400」',
+  )
+  // 非对象 / 无 key 的行要被过滤（不能喂给 v-for 造成渲染报错）。
+  assert.deepEqual(normalizeRiskConfigItems([null, 'x', { label: '无 key' }]), [])
+  assert.deepEqual(normalizeRiskConfigItems(null), [])
+})
+
+test('非数值配置：留空的语义必须区分「关闭规则」与「回到默认值」', () => {
+  const asn = { kind: 'asn_list', label: 'ASN 名单', defaultValue: '' }
+  const interval = { kind: 'positive_int', label: '间隔', defaultValue: '10', unit: '分钟' }
+  const asnText = describeRiskConfigEmptyMeaning(asn)
+  const intervalText = describeRiskConfigEmptyMeaning(interval)
+  // ASN：留空 = 关闭规则（这是「宁可漏报不要误报」的设计，必须说清）。
+  assert.match(asnText, /关闭/, 'ASN 名单留空必须说明是「关闭这条规则」')
+  assert.match(asnText, /告警/, '必须说清关注意味着不告警（否则运营以为还在监控）')
+  // 间隔：留空 = 回到默认值，且必须把默认值写出来。
+  assert.match(intervalText, /默认值/, '间隔留空必须说明回到默认值')
+  assert.match(intervalText, /10/, '必须写出默认值具体是多少')
+  // 两者措辞不得混用：共用一句会把「关闭规则」错说成「用默认值」。
+  assert.notEqual(asnText, intervalText, '两项留空语义相反，不能共用一句说明')
+  assert.equal(describeRiskConfigEmptyMeaning(null), '')
+})
+
+test('非数值配置草稿校验：只拦一眼是打错的值，范围裁决仍在后端', () => {
+  const interval = { key: 'risk_evaluate_interval_minutes', label: '间隔', control: 'number', min: 1, max: 1440 }
+  // 合法：空串（回到默认）与区间内整数。
+  assert.equal(validateRiskConfigDraft(interval, ''), '', '空串合法（= 回到默认值）')
+  assert.equal(validateRiskConfigDraft(interval, '1'), '')
+  assert.equal(validateRiskConfigDraft(interval, '1440'), '')
+  assert.equal(validateRiskConfigDraft(interval, ' 30 '), '', '首尾空白应被容忍')
+  // 非法：0 / 负数 / 超上限 / 小数 / 科学计数 / 非数字。
+  for (const bad of ['0', '-5', '1441', '2880', '1.5', '1e3', '+5', 'abc']) {
+    assert.notEqual(validateRiskConfigDraft(interval, bad), '', `非法间隔 ${bad} 必须被前端拦下`)
+  }
+  // 超上限的文案必须解释后果（否则运营会反复试，以为是前端 bug）。
+  assert.match(validateRiskConfigDraft(interval, '2880'), /失效|开关/, '超上限必须说明「会让规则失效，请用开关」')
+
+  const asn = { key: 'risk_proxy_asn_list', label: 'ASN 名单', control: 'textarea' }
+  // 文本类：空串合法；长度上限拦住粘贴整份日志的情况。
+  assert.equal(validateRiskConfigDraft(asn, ''), '')
+  assert.equal(validateRiskConfigDraft(asn, 'AS15169'), '')
+  assert.match(validateRiskConfigDraft(asn, 'A'.repeat(2001)), /过长/)
+  // ⚠️ 形态校验（AS15169 的合法性）**不**在前端重复实现 —— 那是第二份真相，
+  // 与后端 ValidateProxyASNList 必然漂移。所以坏项在这里也返回通过。
+  assert.equal(validateRiskConfigDraft(asn, 'not-an-asn'), '', 'ASN 形态校验只在后端做，前端不抄')
+  // 缺 item 必须报错而不是放行。
+  assert.notEqual(validateRiskConfigDraft(null, ''), '')
+})
+
+test('非数值配置：页面必须有输入控件且挂在真实的加载/保存函数上', async () => {
+  const page = await readSource('pages/RiskAdmin/index.vue')
+  // 两个控件分支都在（文本域给名单，数字框给间隔）。
+  assert.match(page, /item\.control === 'textarea'/, '必须有文本域分支（ASN 名单）')
+  assert.match(page, /configItemDraft\[item\.key\]/, '控件必须绑定草稿值')
+  // 三个动作都必须接线（存在函数但没绑按钮 = 假钉子）。
+  assert.match(page, /@click="saveConfigItem\(item\)"/, '保存按钮必须接上 saveConfigItem')
+  assert.match(page, /@click="resetConfigItem\(item\)"/, '重置按钮必须接上 resetConfigItem')
+  assert.match(page, /void loadConfigItems\(\)/, '首屏必须加载非数值配置（否则「刷新页面才出来」重演）')
+  // help 必须来自后端而不是前端拼（那是第二份真相）。
+  assert.match(page, /:help="item\.help"/, 'help 文案必须来自后端')
+  // 说明「留空意味着什么」必须是真实函数调用，不能省略。
+  assert.match(page, /describeRiskConfigEmptyMeaning\(item\)/, '必须渲染留空语义说明')
+})
+
 
 test('筛选校验：userId 必须是正整数（后端 400 的同一判据）', () => {
   assert.equal(validateRiskAlertFilters({ userId: '' }), '')

@@ -150,6 +150,19 @@
           · 停用是临时状态，需要能随时看到并重新启用
       -->
       <ConsolePanel class="risk-rules-panel" title="规则清单">
+        <!--
+          规则集是**内置**的：管理页不能新增/删除规则。
+          这段说明必须常驻 —— 管理员看到「规则清单」一定会找「新建」按钮，
+          没有按钮又没有解释，最容易被理解成「功能忘了做」，然后是反复提工单。
+          事实依据见 riskAdminHelpers.mjs 的 RISK_BUILTIN_RULE_NOTICE 注释
+          （loadRiskRules 只遍历代码常量、多余 DB 行被静默丢弃）。
+        -->
+        <a-alert
+          type="info"
+          show-icon
+          class="risk-builtin-notice"
+          :message="RISK_BUILTIN_RULE_NOTICE"
+        />
         <p v-if="rulesError" class="filter-error" role="alert">{{ rulesError }}</p>
         <p v-if="rulesSuccess" class="config-success" role="status">{{ rulesSuccess }}</p>
         <div v-if="!rules.length" class="field-hint">
@@ -235,6 +248,75 @@
                   @click="resetThreshold(item)"
                 >重置</a-button>
               </a-input-group>
+            </a-form-item>
+          </div>
+        </a-form>
+      </ConsolePanel>
+
+      <!-- ============ 非数值配置（ASN 名单 / 评估间隔） ============ -->
+      <!--
+        这两项此前**完全没有写入路径**，而缺失它们会让规则静默失效：
+          · risk_proxy_asn_list 为空时 R10 连查询都不做 ⇒ 该规则永不告警；
+          · risk_evaluate_interval_minutes 只能改库，且 >1440 会反向生效。
+        它们不能走「规则阈值」面板：阈值接口的值类型是 float64，
+        而这两项是文本（名单是字符串列表，间隔是整数串）。
+        控件类型由后端 kind 决定，help 文案也由后端给（含「留空意味着什么」）。
+      -->
+      <ConsolePanel class="risk-config-panel" title="其他风控配置">
+        <p v-if="configItemsError" class="filter-error" role="alert">{{ configItemsError }}</p>
+        <p v-if="configItemsSuccess" class="config-success" role="status">{{ configItemsSuccess }}</p>
+        <div v-if="!configItems.length" class="field-hint">
+          {{ configItemsLoading ? '正在读取配置…' : '暂无可调配置' }}
+        </div>
+        <a-form v-else layout="vertical" class="risk-threshold-form">
+          <div class="config-grid">
+            <a-form-item
+              v-for="item in configItems"
+              :key="item.key"
+              :label="item.label"
+              :help="item.help"
+            >
+              <a-input
+                v-if="item.control === 'textarea'"
+                :value="configItemDraft[item.key]"
+                :disabled="configItemsWriting"
+                :placeholder="item.kind === 'asn_list' ? '形如 AS15169, AS16509（留空 = 关闭规则）' : ''"
+                allow-clear
+                @update:value="value => setConfigItemDraft(item.key, value)"
+              />
+              <a-input-number
+                v-else
+                class="threshold-input"
+                :value="configItemDraft[item.key]"
+                :min="item.min ?? 0"
+                :max="item.max ?? undefined"
+                :precision="0"
+                :disabled="configItemsWriting"
+                @update:value="value => setConfigItemDraft(item.key, value)"
+              />
+              <span v-if="item.unit" class="threshold-unit">{{ item.unit }}</span>
+              <div class="field-hint">
+                {{ describeRiskConfigEmptyMeaning(item) }}
+              </div>
+              <a-input-group compact>
+                <a-button
+                  type="primary"
+                  size="small"
+                  :loading="configItemsWriting"
+                  @click="saveConfigItem(item)"
+                >保存</a-button>
+                <a-button
+                  v-if="item.configured"
+                  size="small"
+                  :disabled="configItemsWriting"
+                  @click="resetConfigItem(item)"
+                >重置</a-button>
+              </a-input-group>
+              <div class="field-hint" data-risk-config-source>
+                当前生效：{{ item.value || '（空）' }}{{ item.unit && item.value ? ' ' + item.unit : '' }}
+                ｜默认值：{{ item.defaultValue || '（空）' }}{{ item.unit && item.defaultValue ? ' ' + item.unit : '' }}
+                ｜{{ item.configured ? '来源：管理页配置' : '未显式配置（读的是代码默认值）' }}
+              </div>
             </a-form-item>
           </div>
         </a-form>
@@ -424,25 +506,31 @@ import ConsoleTableShell from '@/components/ConsoleTableShell.vue'
 import {
   getRiskAlertDetail,
   getRiskAlerts,
+  getRiskConfigs,
   getRiskRules,
   getRiskThresholds,
   getRiskWebhookSettings,
+  resetRiskConfig,
   resetRiskThreshold,
   setRiskRuleEnabled,
   testRiskWebhook,
+  updateRiskConfig,
   updateRiskThreshold,
   updateRiskWebhookSettings,
 } from '@/api/RiskAdminApi'
 import {
   RISK_ADVISORY_NOTE,
+  RISK_BUILTIN_RULE_NOTICE,
   RISK_INDEPENDENCE_NOTICE,
   RISK_RULE_OPTIONS,
   buildRiskAlertListParams,
   buildRiskEvidenceRows,
   buildRiskWebhookUpdatePayload,
+  describeRiskConfigEmptyMeaning,
   describeRiskWebhookState,
   formatMentionedInput,
   formatRiskDateTime,
+  normalizeRiskConfigItems,
   normalizeRiskWebhookSettings,
   readRiskListBody,
   readRiskMessage,
@@ -450,6 +538,7 @@ import {
   riskRuleLabel,
   riskSeverityMeta,
   validateRiskAlertFilters,
+  validateRiskConfigDraft,
 } from './riskAdminHelpers.mjs'
 import { getCurrentUserLogoutEpoch, isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
 import { currentUserIdentity } from '@/utils/currentUserScope'
@@ -514,6 +603,18 @@ export default {
     const rulesError = ref('')
     const rulesSuccess = ref('')
     const ruleToggling = reactive({})
+
+    // ---- 非数值配置（ASN 名单 / 评估间隔）----
+    //
+    // configItems 是 GET /risk/config 的权威列表（含 kind/help/configured）。
+    // configItemDraft 只是编辑中的副本 —— 与阈值同一条纪律：
+    // 不在权威列表上直接改，否则「保存失败」与「已生效」在界面上无法区分。
+    const configItems = ref([])
+    const configItemDraft = reactive({})
+    const configItemsLoading = ref(false)
+    const configItemsWriting = ref(false)
+    const configItemsError = ref('')
+    const configItemsSuccess = ref('')
 
     const alertPagination = reactive({
       current: 1, pageSize: 20, total: 0,
@@ -819,6 +920,118 @@ export default {
       }
     }
 
+    // ---- 非数值配置（ASN 名单 / 评估间隔）----
+    //
+    // 与阈值同一条纪律：保存成功后**用服务端返回值回填**，而不是把输入值写进去。
+    // 文本类的「归一化」在后端（as15169 → AS15169、去重、统一分隔符），
+    // 前端若自己回填原始输入，界面会显示一个与落库形态不同的值。
+    const applyConfigItems = items => {
+      const list = normalizeRiskConfigItems(items)
+      configItems.value = list
+      for (const key of Object.keys(configItemDraft)) delete configItemDraft[key]
+      for (const item of list) configItemDraft[item.key] = item.value
+    }
+
+    const loadConfigItems = async () => {
+      if (!canManage()) return false
+      configItemsLoading.value = true
+      configItemsError.value = ''
+      try {
+        const res = await getRiskConfigs()
+        if (!canManage()) return false
+        if (Number(res?.status) !== 200) {
+          configItemsError.value = readRiskMessage(res, '读取风控配置失败')
+          return false
+        }
+        applyConfigItems(res?.data?.data?.items)
+        return true
+      } catch (error) {
+        if (canManage()) {
+          // normalizeRiskConfigItems 对未知 kind 会抛错（明确报出是哪个键），
+          // 这条路径必须把原文展示出来，而不是笼统的「读取失败」。
+          configItemsError.value = readRiskThrownMessage(error, '读取风控配置失败')
+        }
+        return false
+      } finally {
+        if (canManage()) configItemsLoading.value = false
+      }
+    }
+
+    const setConfigItemDraft = (key, value) => {
+      if (!canManage() || configItemsWriting.value) return
+      if (!Object.hasOwn(configItemDraft, key)) return
+      configItemDraft[key] = value
+      configItemsError.value = ''
+      configItemsSuccess.value = ''
+    }
+
+    // replaceConfigItem 把服务端返回的单项写回权威列表（就地更新，不整表重载）。
+    const replaceConfigItem = item => {
+      const index = configItems.value.findIndex(row => row.key === item.key)
+      if (index < 0) return
+      // 用同一个归一化函数处理单项：保持 control/min/max 等派生字段一致。
+      const [next] = normalizeRiskConfigItems([item])
+      if (!next) return
+      configItems.value.splice(index, 1, next)
+      configItemDraft[next.key] = next.value
+    }
+
+    const saveConfigItem = async item => {
+      if (!canManage() || configItemsWriting.value || !item?.key) return
+      const raw = String(configItemDraft[item.key] ?? '')
+      // 前端只做类型守卫（整数/区间/长度），形态校验（ASN 归一化）留在后端。
+      const problem = validateRiskConfigDraft(item, raw)
+      if (problem) {
+        configItemsError.value = problem
+        configItemsSuccess.value = ''
+        return
+      }
+      configItemsWriting.value = true
+      configItemsError.value = ''
+      configItemsSuccess.value = ''
+      try {
+        const res = await updateRiskConfig(item.key, raw.trim())
+        if (!canManage()) return
+        if (Number(res?.status) !== 200) {
+          configItemsError.value = readRiskMessage(res, '保存风控配置失败')
+          return
+        }
+        const saved = res?.data?.data?.item
+        if (saved && saved.key) replaceConfigItem(saved)
+        // 文案必须说明「变成了什么」：清空与设值是两种效果，不能都只说「已保存」。
+        const message = String(res?.data?.data?.message ?? '')
+        configItemsSuccess.value = message.includes('清空')
+          ? `${item.label} 已清空，回到默认值`
+          : `${item.label} 已保存，判定立即生效`
+        await loadConfigItems()
+      } catch (error) {
+        if (canManage()) configItemsError.value = readRiskThrownMessage(error, '保存风控配置失败')
+      } finally {
+        if (canManage()) configItemsWriting.value = false
+      }
+    }
+
+    const resetConfigItem = async item => {
+      if (!canManage() || configItemsWriting.value || !item?.key) return
+      configItemsWriting.value = true
+      configItemsError.value = ''
+      configItemsSuccess.value = ''
+      try {
+        const res = await resetRiskConfig(item.key)
+        if (!canManage()) return
+        if (Number(res?.status) !== 200) {
+          configItemsError.value = readRiskMessage(res, '重置风控配置失败')
+          return
+        }
+        configItemsSuccess.value = `${item.label} 已重置为默认值`
+        await loadConfigItems()
+      } catch (error) {
+        if (canManage()) configItemsError.value = readRiskThrownMessage(error, '重置风控配置失败')
+      } finally {
+        if (canManage()) configItemsWriting.value = false
+      }
+    }
+
     const loadThresholds = async () => {
       if (!canManage()) return false
       thresholdsLoading.value = true
@@ -984,7 +1197,7 @@ export default {
       configLoaded.value = false
       settings.value = emptySettings()
       Object.assign(config, emptyConfig())
-      if (mounted && canManage()) { void loadAlerts(); void loadConfig(); void loadThresholds(); void loadRules() }
+      if (mounted && canManage()) { void loadAlerts(); void loadConfig(); void loadThresholds(); void loadRules(); void loadConfigItems() }
     }, { flush: 'sync' })
     watch(() => getCurrentUserLogoutEpoch(), value => {
       if (value === observedLogout) return
@@ -1010,6 +1223,10 @@ export default {
         // 刷新页面才出来」。本次一并补上，否则新加的规则清单会有同样问题。
         void loadThresholds()
         void loadRules()
+        // 非数值配置（ASN 名单 / 评估间隔）同样必须首屏加载：
+        // 这两项此前完全没有 UI，现在有了却只在 watch 里加载，就会重演
+        // 「刷新页面才出来」那个缺陷。
+        void loadConfigItems()
       }
     })
     onBeforeUnmount(() => {
@@ -1020,7 +1237,7 @@ export default {
 
     return {
       fieldId, canManage,
-      RISK_ADVISORY_NOTE, RISK_INDEPENDENCE_NOTICE,
+      RISK_ADVISORY_NOTE, RISK_INDEPENDENCE_NOTICE, RISK_BUILTIN_RULE_NOTICE,
       alerts, alertsTotal, hasLoadedAlerts, loadingAlerts, alertError, filterError,
       alertFilters, appliedFilters, alertPagination, alertColumns, evidenceColumns,
       ruleOptions, notifiedOptions,
@@ -1034,6 +1251,11 @@ export default {
       loadThresholds, setThresholdDraft, saveThreshold, resetThreshold, describeThresholdSource,
       rules, rulesLoading, rulesError, rulesSuccess, ruleToggling,
       loadRules, toggleRule, ruleUnit,
+      // 非数值配置（ASN 名单 / 评估间隔）
+      configItems, configItemDraft, configItemsLoading, configItemsWriting,
+      configItemsError, configItemsSuccess,
+      loadConfigItems, setConfigItemDraft, saveConfigItem, resetConfigItem,
+      describeRiskConfigEmptyMeaning,
       riskRuleLabel, riskSeverityMeta, formatRiskDateTime, describeRiskWebhookState,
       sumTableColumnWidths,
     }
@@ -1044,6 +1266,8 @@ export default {
 <style scoped>
 .page-alert, .filter-form, .status-alert { margin-bottom: 16px; }
 .risk-independence-notice { margin-bottom: 16px; }
+/* 「规则集内置、不支持新增」的常驻说明：与规则清单卡片同宽，下方留白与其它卡片一致。 */
+.risk-builtin-notice { margin-bottom: 16px; }
 .risk-config-panel, .risk-summary { margin-bottom: 16px; }
 .config-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 16px; }
 .config-address-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; color: var(--console-muted); }
