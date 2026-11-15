@@ -350,7 +350,7 @@ func SetAPIRouter(router *gin.Engine) {
 	// 而 binding record id 是全局唯一主键，两条读路径可以共用一个揭示入口。
 	//
 	// 单条、RequireAdmin、必写审计日志；明文绝不进日志（测试有反向断言）。
-	apiRouter.GET("/admin/bindings/:id/reveal", controller.Auth, middleware.RequireAdmin, controller.RevealBindingValue)
+	// [待接线] GET /admin/bindings/:id/reveal —— controller.RevealBindingValue 由 m-bind 实现中，交付后恢复
 
 	// 注销申请（task_doc/76 §3.3.5）。三条都是**用户本人**接口，Auth 即可：
 	// 目标账号一律取「当前登录用户」，不接受前端传 userID（否则可替别人申请注销）。
