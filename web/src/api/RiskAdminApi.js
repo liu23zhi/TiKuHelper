@@ -192,3 +192,61 @@ export function setRiskRuleEnabled(ruleId, enabled) {
     data: { enabled },
   })
 }
+
+// ════════════════════════════════════════════════════════════════════
+// 非数值配置（GET /risk/config + PUT/DELETE /risk/config/:key）
+//
+// 后端：internal/controller/risk_admin.go 的 RiskConfigList / UpdateRiskConfig /
+// ResetRiskConfig；service：internal/service/risk_config_settings.go（白名单）。
+// 路由：internal/api/router.go（风控段末尾三条）。
+//
+// ⚠️ 为什么这些不能走 /risk/thresholds（这是本次补齐的关键判断）：
+// 阈值接口的值类型是 `float64`（`updateRiskThresholdRequest.Value *float64`），
+// 而这两项的取值是**文本**：
+//   · risk_proxy_asn_list            ASN 名单（"AS15169,AS16509"，空串 = 关闭规则）
+//   · risk_evaluate_interval_minutes 整数分钟（1–1440，空串 = 回到默认）
+// 塞进数值接口只会得到 JSON 解析 400。所以**数值归阈值、文本归配置**。
+//
+// 这两项此前**完全没有写入路径**，后果是同一种静默失效：
+//   · 名单为空时 R10 连查询都不做 ⇒ 该规则永不告警，而运营以为它在工作；
+//   · 评估间隔只能改库，且填 >1440 会**反向生效**（回落 10 分钟 = 更频繁）。
+// ════════════════════════════════════════════════════════════════════
+
+// getRiskConfigs 读取全部非数值配置及其当前生效值。
+//
+// 响应：{ items: [{ key, ruleId, label, kind, value, defaultValue, source,
+//                  configured, unit, help, minValue, maxValue }] }
+// `kind` 决定前端控件（asn_list → 文本域；positive_int → 数字框）。
+// `help` 由后端给（含「留空意味着什么」），前端不自己拼 —— 那是第二份真相。
+export function getRiskConfigs() {
+  return localRequest({
+    url: RISK_BASE + '/config',
+    method: 'get',
+  })
+}
+
+// updateRiskConfig 设置某项非数值配置。
+//
+// ⚠️ `value` 必须是**字符串**，且空串是**合法值**（对名单 = 关闭规则，
+// 对间隔 = 回到默认）。所以这里**不做 trim 后判空抛错** —— 那会把「清空」
+// 这个正常操作挡在前端。后端用 `*string` 区分「没传」与「传空串」。
+export function updateRiskConfig(key, value) {
+  const name = String(key ?? '').trim()
+  if (!name) throw new Error('配置键参数错误')
+  if (typeof value !== 'string') throw new Error('配置值必须是字符串')
+  return localRequest({
+    url: RISK_BASE + '/config/' + encodeURIComponent(name),
+    method: 'put',
+    data: { value },
+  })
+}
+
+// resetRiskConfig 把某项配置清回「未配置」（服务端删除显式行，回到代码默认值）。
+export function resetRiskConfig(key) {
+  const name = String(key ?? '').trim()
+  if (!name) throw new Error('配置键参数错误')
+  return localRequest({
+    url: RISK_BASE + '/config/' + encodeURIComponent(name),
+    method: 'delete',
+  })
+}

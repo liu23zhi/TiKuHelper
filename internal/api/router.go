@@ -624,6 +624,18 @@ func SetAPIRouter(router *gin.Engine) {
 	// 接线点：EvaluateDebtAlerts 的 enabledRules 过滤 `if !rule.Enabled { continue }`。
 	apiRouter.GET("/risk/rules", controller.Auth, middleware.RequireAdmin, controller.RiskRuleStateList)
 	apiRouter.PUT("/risk/rules/:ruleId/enabled", controller.Auth, middleware.RequireAdmin, controller.SetRiskRuleEnabled)
+	// 风控的**非数值**配置（ASN 名单 / 评估间隔）。
+	//
+	// 这两项此前**完全没有写入路径**，而缺了它们规则会静默失效：
+	//   · risk_proxy_asn_list 为空时 R10 连查询都不做 ⇒ 该规则永不告警，
+	//     且 ValidateProxyASNList（保存严格校验）当时零生产调用方；
+	//   · risk_evaluate_interval_minutes 只能靠改库调整，越界值还会反向生效。
+	//
+	// 与 /risk/thresholds 分开是因为值类型不同（文本 vs float64），见
+	// controller/risk_admin.go 该段的注释。`:key` 同样走 service 层白名单。
+	apiRouter.GET("/risk/config", controller.Auth, middleware.RequireAdmin, controller.RiskConfigList)
+	apiRouter.PUT("/risk/config/:key", controller.Auth, middleware.RequireAdmin, controller.UpdateRiskConfig)
+	apiRouter.DELETE("/risk/config/:key", controller.Auth, middleware.RequireAdmin, controller.ResetRiskConfig)
 
 	// 用户画像（98 §0 四层权限的第 ① 层）。第 ② 层在 handler 内的 requirePortraitAdmin。
 	// 两条入口共用同一个响应结构，前端只写一份渲染。
