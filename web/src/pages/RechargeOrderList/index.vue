@@ -113,12 +113,72 @@
             {{ buildStatusLabel(record.status) }}
           </a-tag>
           <span v-else-if="column.key === 'paidAt' || column.key === 'createdAt'" class="time-cell">{{ formatDateTime(record[column.key]) }}</span>
+          <!--
+            操作列：只在后端判定「该订单可退」时才给按钮。
+            不发「已退过/超额/超期」的按钮 —— 那种按钮点下去必然报错，
+            比不显示更让人困惑。
+          -->
+          <template v-else-if="column.key === 'action'">
+            <a-button
+              v-if="canRefundRow(record)"
+              type="link"
+              style="padding: 0"
+              @click="openRefundModal(record)"
+            >发起退款</a-button>
+            <span v-else class="muted">—</span>
+          </template>
         </template>
         <template #emptyText>
           <a-empty v-if="hasLoaded && !tableLoading && !loadFailure" description="当前还没有充值记录。" />
           <span v-else>{{ tableLoading ? '正在加载充值记录…' : '充值记录尚未加载成功，请重试读取。' }}</span>
         </template>
       </a-table></ConsoleTableShell>
+
+    <!--
+      快捷发起退款工单（用户已选定：弹小窗直接提交，不跳页）。
+      
+      字段与 POST /api/ticket-refunds 的 CreateTicketRefundInput 严格对齐：
+      { kind, orderId, requestedCents, reason }。kind 固定 original ——
+      从充值记录发起天然是「原路退回」，人工退款（manual）没有 orderId 语义，
+      不该从这里入口进入。
+
+      不复用 Tickets 页的 TicketRefundPanel：那个面板带 6 个动作入口与附件上传，
+      是审核台；这里的语义只是「提交一个申请」。复用会把两件事搅在一起。
+    -->
+    <a-modal
+      v-model:visible="refundVisible"
+      title="发起退款申请"
+      :confirm-loading="refundSubmitting"
+      ok-text="提交申请"
+      cancel-text="取消"
+      @ok="submitRefund"
+    >
+      <a-form layout="vertical">
+        <a-form-item label="订单号">
+          <span class="refund-order-no">{{ refundTarget.orderNo }}</span>
+        </a-form-item>
+        <a-form-item label="实付金额">
+          <span>¥ {{ (refundTarget.paidCents / 100).toFixed(2) }}</span>
+        </a-form-item>
+        <a-form-item label="退款金额（元）">
+          <a-input
+            :value="refundTarget.requestedYuan"
+            placeholder="默认整单退，可改小"
+            @update:value="value => (refundTarget.requestedYuan = value)"
+          />
+        </a-form-item>
+        <a-form-item label="退款原因">
+          <a-textarea
+            :value="refundTarget.reason"
+            :rows="3"
+            :maxlength="255"
+            placeholder="例如：重复充值 / 不需要该服务"
+            @update:value="value => (refundTarget.reason = value)"
+          />
+        </a-form-item>
+        <a-alert v-if="refundError" type="error" show-icon :message="refundError" />
+      </a-form>
+    </a-modal>
     </ConsolePanel>
   </div>
 </template>
@@ -127,7 +187,8 @@
 import { computed, defineComponent, getCurrentInstance, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, useId, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
-import { getRechargeOrders } from '@/api/TikuComponentApi'
+import { getRechargeOrders, getEligibleTicketRefundOrders, createTicketRefund } from '@/api/TikuComponentApi'
+import { message } from 'ant-design-vue'
 import { useCurrentUserDisplay, isAdminUser, getCurrentUserLogoutEpoch } from '@/utils/currentUser'
 import { currentUserIdentity } from '@/utils/currentUserScope'
 import { ensureRequestFailure } from '@/utils/requestFailureView.mjs'
@@ -169,6 +230,90 @@ export default defineComponent({
     })
     const { currentUser } = useCurrentUserDisplay()
     const isAdmin = computed(() => isAdminUser(currentUser.value))
+
+    // ── 快捷发起退款工单（用户诉求：充值记录提供按钮）──
+    //
+    // 可退性**只认后端**：refundEligibleIds 来自 GET /ticket-refunds/eligible-orders。
+    // 退款受金额上限、时间窗口、是否已退过、赠金抵扣等规则约束，前端复刻一份必然漂移，
+    // 且漂移方向是「显示按钮但点了报错」—— 比不显示更糟。
+    const refundEligibleIds = ref(new Set())
+    const refundVisible = ref(false)
+    const refundSubmitting = ref(false)
+    const refundTarget = reactive({ orderId: 0, orderNo: "", paidCents: 0, requestedYuan: "", reason: "" })
+    const refundError = ref("")
+    // 只加载一次可退列表；充值记录页刷新不重复请求（可退性不会因为翻页变化）。
+    let refundEligibleLoaded = false
+    const loadRefundEligible = async () => {
+      if (refundEligibleLoaded) return
+      refundEligibleLoaded = true
+      try {
+        const response = await getEligibleTicketRefundOrders()
+        if (response?.status !== 200) {
+          // 失败不阻塞列表：只是不显示退款按钮。
+          // 不把 refundEligibleLoaded 复位成 false —— 否则每次翻页都重试一个可能持续失败的接口。
+          return
+        }
+        const list = Array.isArray(response.data) ? response.data : []
+        refundEligibleIds.value = new Set(list.map((item) => Number(item?.id)).filter((id) => Number.isFinite(id) && id > 0))
+      } catch {
+        // 同上：静默降级成「没有可退订单」
+      }
+    }
+    const canRefundRow = (record) => refundEligibleIds.value.has(Number(record?.id))
+    const openRefundModal = (record) => {
+      const paidCents = Number(record?.paidCents ?? 0)
+      refundTarget.orderId = Number(record?.id) || 0
+      refundTarget.orderNo = String(record?.orderNo || "")
+      refundTarget.paidCents = Number.isFinite(paidCents) ? paidCents : 0
+      // 默认整单退：把实付金额填进去，用户可改小。
+      refundTarget.requestedYuan = (Math.max(0, paidCents) / 100).toFixed(2)
+      refundTarget.reason = ""
+      refundError.value = ""
+      refundVisible.value = true
+    }
+    const submitRefund = async () => {
+      if (refundSubmitting.value) return
+      const yuan = Number(String(refundTarget.requestedYuan || "").trim())
+      if (!Number.isFinite(yuan) || yuan <= 0) {
+        refundError.value = "退款金额必须是大于 0 的数字"
+        return
+      }
+      const cents = Math.round(yuan * 100)
+      if (cents > refundTarget.paidCents) {
+        refundError.value = "退款金额不能超过该订单实付金额"
+        return
+      }
+      if (!String(refundTarget.reason || "").trim()) {
+        refundError.value = "请填写退款原因"
+        return
+      }
+      refundSubmitting.value = true
+      refundError.value = ""
+      try {
+        const response = await createTicketRefund({
+          // kind=original 是「原路退回」，必须带 orderId；kind=manual 是人工退款。
+          // 这里从充值记录发起，天然是原路退。
+          kind: "original",
+          orderId: refundTarget.orderId,
+          requestedCents: cents,
+          reason: String(refundTarget.reason).trim(),
+        })
+        if (response?.status === 200 || response?.status === 201) {
+          refundVisible.value = false
+          message.success("退款申请已提交，可在「工单反馈」里查看进度")
+          // 已申请过的订单不该再显示按钮 —— 重新拉一次可退列表。
+          refundEligibleLoaded = false
+          await loadRefundEligible()
+          await handleLoad()
+          return
+        }
+        refundError.value = response?.data?.message || "退款申请提交失败，请稍后重试"
+      } catch (error) {
+        refundError.value = error?.response?.data?.message || error?.message || "退款申请提交失败"
+      } finally {
+        refundSubmitting.value = false
+      }
+    }
     const instance = getCurrentInstance()
     const router = useRouter()
     const route = () => router?.currentRoute?.value || instance?.proxy?.$route || {}
@@ -289,8 +434,14 @@ export default defineComponent({
       if (changed) retireView()
     }, { flush: 'sync' })
     watch(routeKey, retireView, { flush: 'sync' })
-    onMounted(() => { mounted = true; void handleLoad() })
-    onBeforeUnmount(() => { alive = false; mounted = false; retireView() })
+  onMounted(() => {
+    mounted = true
+    void handleLoad()
+    // 可退订单一并拉一次：它决定「操作」列是否给按钮。
+    // 与列表并行发出，失败也不影响列表（函数内部已静默降级）。
+    void loadRefundEligible()
+  })
+  onBeforeUnmount(() => { alive = false; mounted = false; retireView() })
     const summary = computed(() => ({
       total: hasLoaded.value ? pagination.total : '--',
       currentPageCount: hasLoaded.value ? dataSource.value.length : '--',
@@ -312,7 +463,15 @@ export default defineComponent({
       pagination,
       summary,
       isAdmin,
-      filters,
+        filters,
+        refundEligibleIds,
+        refundVisible,
+        refundSubmitting,
+        refundTarget,
+        refundError,
+        canRefundRow,
+        openRefundModal,
+        submitRefund,
       keywordInput,
       sumTableColumnWidths,
       activeFilterCount: computed(() => countActiveFilters({ keyword: filters.keyword, status: filters.status, paymentProvider: filters.paymentProvider, userId: filters.userId, createdFrom: filters.createdFrom, createdTo: filters.createdTo, paidFrom: filters.paidFrom, paidTo: filters.paidTo, amountMin: filters.amountMin, amountMax: filters.amountMax })),
@@ -364,12 +523,21 @@ export default defineComponent({
           width: 122,
         },
         {
-          title: '创建时间',
-          dataIndex: 'createdAt',
-          key: 'createdAt',
-          width: 122,
-        },
-      ],
+      title: '创建时间',
+      dataIndex: 'createdAt',
+      key: 'createdAt',
+      width: 122,
+    },
+    // 操作列（用户诉求：「在充值记录提供一个按钮，用于快捷发起退款工单」）。
+    // 只在「这笔订单真的可退」时才渲染按钮 —— 可退性来自后端
+    // GET /ticket-refunds/eligible-orders 的判定，不在前端自己推
+    // （退款有金额上限、时间窗口、是否已退过等业务规则，前端复刻必然漂移）。
+    {
+      title: '操作',
+      key: 'action',
+      width: 120,
+    },
+  ],
     }
   },
   methods: {
