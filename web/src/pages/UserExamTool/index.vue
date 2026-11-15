@@ -13,43 +13,6 @@
     <a-alert v-if="!canManage()" type="warning" show-icon message="当前身份无该页面权限，请使用管理员账号登录。" />
 
     <template v-if="canManage()">
-      <ConsolePanel title="解密密钥" description="服务端解密加密库时使用的密钥；默认已内置，可按需改成自己的。">
-        <a-descriptions :column="1" size="small" bordered class="tool-descriptions">
-          <a-descriptions-item label="当前状态">
-            <a-tag :color="decryptKey.configured ? 'green' : 'orange'">
-              {{ decryptKey.configured ? '使用自定义密钥' : '使用内置默认密钥' }}
-            </a-tag>
-            <span class="hint"> {{ decryptKey.message }}</span>
-          </a-descriptions-item>
-          <a-descriptions-item label="当前密钥指纹">
-            <code class="hash-value">{{ decryptKey.keyHint || '—' }}</code>
-            <span class="hint">（SHA-256 前 8 位，仅用于确认改动是否生效）</span>
-          </a-descriptions-item>
-          <a-descriptions-item label="内置默认密钥指纹">
-            <code class="hash-value">{{ decryptKey.defaultKeyHint || '—' }}</code>
-          </a-descriptions-item>
-        </a-descriptions>
-
-        <div class="field key-field">
-          <label :for="fieldId('decrypt-key')">新密钥（留空 = 恢复内置默认）</label>
-          <input
-            :id="fieldId('decrypt-key')"
-            v-model="decryptKeyInput"
-            type="password"
-            autocomplete="new-password"
-            :disabled="savingKey"
-            :placeholder="decryptKey.configured ? '输入新密钥后保存' : '输入自定义密钥，或留空保持不变'"
-          />
-          <div class="hint">
-            长度不超过 32 字节。密钥保存后**不会回显**，请自行记录；改动后请对照上方的「当前密钥指纹」确认生效。
-          </div>
-        </div>
-        <a-space wrap>
-          <a-button type="primary" :loading="savingKey" @click="saveDecryptKey">保存密钥</a-button>
-          <a-button :loading="loadingKey" @click="loadDecryptKey">刷新状态</a-button>
-        </a-space>
-        <a-alert v-if="keyMessage" :type="keyMessageType" show-icon :message="keyMessage" class="page-alert key-alert" />
-      </ConsolePanel>
 
       <ConsolePanel title="脱机工具（可选）" description="单文件 exe，无需安装 Python 运行库。用于不想上传数据库的场景。">
         <a-descriptions :column="1" size="small" bordered class="tool-descriptions">
@@ -114,7 +77,7 @@
           <div class="field">
             <label :for="fieldId('file')">数据库文件（可使用加密库）</label>
             <input :id="fieldId('file')" type="file" accept=".db,.sqlite,.sqlite3" :disabled="uploading" @change="onFileChange" />
-            <div class="hint">加密库会自动解密；若提示"密钥不正确"，请到上方「解密密钥」核对或更换密钥。</div>
+            <div class="hint">加密库会用内置口令自动解密。若解不开，通常是这个库不是考试客户端生成的，或来自尚未适配的客户端版本。</div>
           </div>
           <a-space wrap>
             <a-button type="primary" html-type="submit" :loading="uploading" :disabled="!selectedFile">解析</a-button>
@@ -175,7 +138,7 @@ import { message } from 'ant-design-vue'
 import ConsolePageHeading from '@/components/ConsolePageHeading.vue'
 import ConsolePanel from '@/components/ConsolePanel.vue'
 import { isAdminUser, useCurrentUserDisplay } from '@/utils/currentUser'
-import { getUserExamToolVersion, getUserExamToolDownloadURL, inspectUserExamDatabase, getUserExamDecryptKey, updateUserExamDecryptKey } from '@/api/UserExamToolApi'
+import { getUserExamToolVersion, getUserExamToolDownloadURL, inspectUserExamDatabase } from '@/api/UserExamToolApi'
 
 const MAX_UPLOAD_BYTES = 16 * 1024 * 1024
 
@@ -185,8 +148,8 @@ const MAX_UPLOAD_BYTES = 16 * 1024 * 1024
 // 「请先用脱机工具解密」，用户完全无法判断该改密钥、该换文件、还是该改方案。
 // reason 由后端给出（machine-readable），前端只负责映射成动作。
 const DECRYPT_ERROR_ACTIONS = {
-  'wrong-key': '到上方「解密密钥」核对指纹；如果你从未改过密钥，说明这个库是用别处的密钥加密的。',
-  'key-missing': '到上方「解密密钥」填写密钥后重试。',
+  'wrong-key': '内置口令解不开这个库。常见原因：它不是考试客户端生成的，或来自尚未适配的客户端版本；也可能文件已损坏。',
+  'key-missing': '服务端没有可用的解密口令，需要运维在服务端配置。请联系管理员处理。',
   'unsupported-cipher': '该库的加密方案不是 SQLite3MC aes256cbc（例如 SQLCipher 或旧 legacy 方案）。请用脱机工具确认参数，或先用脱机工具在本机解密后再上传明文库。',
   'not-database': '请确认上传的是考试客户端的 UserExamInfo.db（而非其它文件）。',
 }
@@ -218,15 +181,6 @@ export default {
     // 与 errorMessage 分开：message 说「是什么问题」，action 说「怎么解决」。
     const errorAction = ref('')
 
-    // 解密密钥状态（**刻意不保存密钥本身**：后端也不回传，前端只持有状态）。
-    const decryptKey = reactive({
-      configured: false, usingDefault: true, keyHint: '', defaultKeyHint: '', message: '',
-    })
-    const decryptKeyInput = ref('')
-    const loadingKey = ref(false)
-    const savingKey = ref(false)
-    const keyMessage = ref('')
-    const keyMessageType = ref('success')
 
     const downloadURL = computed(() => getUserExamToolDownloadURL())
 
@@ -305,57 +259,6 @@ export default {
       }
     }
 
-    const applyDecryptKey = data => {
-      decryptKey.configured = data?.configured === true
-      decryptKey.usingDefault = data?.usingDefault === true
-      decryptKey.keyHint = data?.keyHint || ''
-      decryptKey.defaultKeyHint = data?.defaultKeyHint || ''
-      decryptKey.message = data?.message || ''
-    }
-
-    const loadDecryptKey = async () => {
-      if (!canManage()) return
-      loadingKey.value = true
-      try {
-        const response = await getUserExamDecryptKey()
-        if (response?.status === 200) applyDecryptKey(response.data)
-        else if (response?.status === 403) keyMessage.value = '当前账号没有该权限'
-        else keyMessage.value = '读取密钥状态失败，请重试'
-      } catch {
-        keyMessage.value = '读取密钥状态失败，请重试'
-      } finally {
-        loadingKey.value = false
-      }
-    }
-
-    const saveDecryptKey = async () => {
-      if (!canManage() || savingKey.value) return
-      savingKey.value = true
-      keyMessage.value = ''
-      try {
-        const response = await updateUserExamDecryptKey(decryptKeyInput.value)
-        if (response?.status === 200) {
-          applyDecryptKey(response.data)
-          decryptKeyInput.value = ''
-          keyMessageType.value = 'success'
-          keyMessage.value = response.data?.configured
-            ? '密钥已保存。请对照上方「当前密钥指纹」确认生效。'
-            : '已清空自定义密钥，恢复使用内置默认密钥。'
-        } else if (response?.status === 400) {
-          keyMessageType.value = 'error'
-          keyMessage.value = response.data?.message || '密钥不合法'
-        } else {
-          keyMessageType.value = 'error'
-          keyMessage.value = response.data?.message || '保存密钥失败，请重试'
-        }
-      } catch {
-        keyMessageType.value = 'error'
-        keyMessage.value = '保存密钥失败，请重试'
-      } finally {
-        savingKey.value = false
-      }
-    }
-
     const reset = () => {
       result.value = null
       errorMessage.value = ''
@@ -379,15 +282,12 @@ export default {
 
     onMounted(() => {
       loadVersion()
-      loadDecryptKey()
     })
 
     return {
       canManage, fieldId, version, loadingVersion, uploading, selectedFile,
       result, errorMessage, errorAction, downloadURL, formatSize, loadVersion, onFileChange,
       submit, reset, columnsFor,
-      decryptKey, decryptKeyInput, loadingKey, savingKey, keyMessage, keyMessageType,
-      loadDecryptKey, saveDecryptKey,
     }
   },
 }
