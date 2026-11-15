@@ -65,7 +65,12 @@
           <div class="summary-value" data-metric="total-requests">{{ view.totalText }}</div>
           <div class="summary-hint">其中成功 {{ view.successText }} 次</div>
         </div>
-        <div>
+        <!--
+          失败请求卡片：仅在后端**真的给了** failedRequests 时渲染。
+          公开端点从 2026-11-15 起不给这个字段（避免普通用户看到失败计数），
+          那时 view.hasFailedMetric 为 false，整张卡片不出现 —— 而不是显示「—」。
+        -->
+        <div v-if="view.hasFailedMetric">
           <div class="summary-label">失败请求</div>
           <div class="summary-value" data-metric="failed-requests">{{ view.failedText }}</div>
           <div class="summary-hint">失败率按同一窗口计算</div>
