@@ -19,10 +19,28 @@
       />
     </section>
 
-    <!-- 总开关关闭：整页只显示未开启，不展示规则表与提交表单。 -->
-    <a-alert v-if="loaded && !enabled" type="info" show-icon class="page-alert" message="评价返现功能未开启">
+    <!--
+      总开关关闭：**仍然渲染提交入口**，只是把它整体禁用并说明原因。
+
+      ⚠️ 2026-11-15 用户实测报出的缺陷（「没有申请按钮」）：原实现在这里
+      `v-if="loaded && !enabled"` 只渲染一句提示、再用 `<template v-if="loaded && enabled">`
+      把规则表与提交表单**整块隐藏**。后果是「未开放」与「功能不存在」在界面上完全同形 ——
+      用户看到的是"这个站点没有评价返现"，而真相是"有，只是没开"，两者的下一步
+      动作完全相反（等开放 vs 去找客服要功能）。所以关闭态必须让入口可见。
+
+      判据见 reviewRebateClosedEntry.test.mjs：关闭态下提交入口存在但 disabled、
+      且给出明确原因文案。
+    -->
+    <a-alert
+      v-if="loaded && !enabled"
+      type="info"
+      show-icon
+      class="page-alert"
+      :message="closedTitle"
+      data-closed-reason
+    >
       <template #description>
-        <p class="hint">当前站点没有开放评价返现。开启后这里会显示活动规则、提交入口和你的提交记录。</p>
+        <p class="hint" data-closed-reason-text>{{ closedReason }}</p>
       </template>
     </a-alert>
 
@@ -85,15 +103,39 @@
           <div class="summary-value">{{ claimUsage.rejected }} 条</div>
         </div>
       </ConsoleSummaryGrid>
+    </template>
 
-      <ConsolePanel title="提交截图" description="必填 1 张截图（PNG / JPEG，≤ 5 MB）。评价链接可选，填写后有助于核对。">
+    <!--
+      提交入口：**只要活动信息加载完成就渲染**，与总开关无关。
+
+      这是本轮的核心修法。活动规则、汇总数字这些「没开放就没意义」的内容仍留在
+      enabled 分支里（见上下两个 template），但「提交截图」这个面板必须始终可见 ——
+      它是用户寻找的那个入口本身。关闭态下逐项 disabled + 顶部原因说明，
+      用户能明确区分「有这个功能但没开放」与「这个站点没有这个功能」。
+    -->
+    <template v-if="loaded">
+      <ConsolePanel
+        title="提交截图"
+        :description="entryDescription"
+        data-submit-entry
+      >
+        <!-- 关闭态下在面板内部再放一条就地说明：用户滚到这里时不必回顶部找原因。 -->
+        <a-alert
+          v-if="!enabled"
+          type="warning"
+          show-icon
+          class="status-alert"
+          :message="closedReason"
+          data-entry-closed-notice
+        />
+
         <a-form layout="vertical" :onFinish="submit">
           <a-form-item label="评价截图" :html-for="fieldId('screenshot')" required>
             <input
               :id="fieldId('screenshot')"
               type="file"
               accept="image/png,image/jpeg"
-              :disabled="submitting || limitReached"
+              :disabled="entryDisabled"
               @change="onFileChange"
             />
             <div class="hint">
@@ -108,20 +150,32 @@
               type="url"
               allow-clear
               placeholder="https://…"
-              :disabled="submitting || limitReached"
+              :disabled="entryDisabled"
               @update:value="updateReviewUrl"
             />
             <div class="hint">留空也可以提交，只是核对会慢一些。</div>
           </a-form-item>
 
           <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
-          <p v-if="limitReached" class="form-error" role="alert">已达到每账号的领取上限，暂时无法继续提交。</p>
+          <p v-if="limitReached && enabled" class="form-error" role="alert">已达到每账号的领取上限，暂时无法继续提交。</p>
 
           <a-space wrap>
-            <a-button type="primary" html-type="submit" :loading="submitting" :disabled="submitting || !selectedFile || limitReached">
+            <a-button
+              type="primary"
+              html-type="submit"
+              :loading="submitting"
+              :disabled="entryDisabled || !selectedFile"
+              data-submit-button
+            >
               提交审核
             </a-button>
-            <a-button :disabled="submitting" @click="resetForm">清空</a-button>
+            <!--
+              「清空」只在「关闭态」或「提交中」禁用，**不**受 limitReached 影响。
+              原实现是 `:disabled="submitting"` —— 达到上限时用户仍能清掉已选文件；
+              若这里直接用 entryDisabled（含 limitReached），开启态的行为就被改了。
+              关闭态下禁用是因为本来就没有可提交的内容。
+            -->
+            <a-button :disabled="!enabled || submitting" @click="resetForm">清空</a-button>
           </a-space>
         </a-form>
 
@@ -143,7 +197,9 @@
           />
         </section>
       </ConsolePanel>
+    </template>
 
+    <template v-if="loaded && enabled">
       <ConsolePanel title="我的提交" description="状态徽章反映当前进度；Agent 打分只是建议，最终以管理员复核为准。">
         <section v-if="claimsFailure" class="status-alert">
           <RequestFailureAlert
@@ -313,6 +369,36 @@ export default {
     })
     const countLimited = computed(() => maxClaims.value !== null && maxClaims.value > 0 && claimUsage.value.count >= maxClaims.value)
     const limitReached = computed(() => countLimited.value || amountLimited.value)
+
+    // ───────────── 关闭态文案与入口禁用 ─────────────
+    //
+    // 关闭态有两种**完全不同的原因**，必须分开说（用户看到的下一步动作相反）：
+    //   ① 「未开始」：系统设置里的总开关关着 —— 后端在 `GetReviewRebateEnabledWithDB`
+    //      就早退，连活动行都不读，用户端拿到 400「评价返现未启用」。这不是配置错，
+    //      是「本站还没上线这个功能」，用户该等运营开放。
+    //   ② 「已结束」：活动行存在但 `enabled=false` —— 后端能读出活动（含名称与商店条目），
+    //      只是行被禁用。这类是「办过，现在停了」，用户该知道不是自己没资格。
+    //
+    // 判据：拿到过活动对象（program.name / program.storeUrl 有值）⇒ 已结束；
+    // 活动完全读不到（关闭态下后端不返回任何活动字段）⇒ 未开始。
+    //
+    // ⚠️ 后端目前**没有**活动起止时间字段（review_rebate_programs 无 start_at/end_at，
+    // 见 internal/entity/review_rebate.go），所以「已结束」只能按「活动行是否可读」
+    // 推断，不能编一个时间出来。将来加了时间字段，这里改读时间即可。
+    const programReadable = computed(() => Boolean(
+      String(program.value?.name || '').trim() || String(program.value?.storeUrl || '').trim(),
+    ))
+    const closedReason = computed(() => (programReadable.value
+      ? '当前站点已停止评价返现活动（活动已结束）。下方入口为下次开放时的提交位置，现在无法提交。'
+      : '当前站点未开放评价返现（活动尚未开始）。开放后可在下方直接提交，无需重新进入本页。'))
+    const closedTitle = computed(() => (programReadable.value ? '评价返现活动已结束' : '评价返现尚未开放'))
+
+    // entryDisabled：关闭态、「提交中」、「达上限」三者之一即禁用。
+    // 关闭态**优先**：它是最根本的原因，不该被「已上限」之类的文案盖住。
+    const entryDisabled = computed(() => !enabled.value || submitting.value || limitReached.value)
+    const entryDescription = computed(() => (enabled.value
+      ? '必填 1 张截图（PNG / JPEG，≤ 5 MB）。评价链接可选，填写后有助于核对。'
+      : '当前不可提交。开放后本区域即为提交入口，无需重新进入本页。'))
 
     const minConfidence = computed(() => readNonnegativeNumber(program.value.minAgentConfidence))
 
@@ -612,6 +698,7 @@ export default {
       claimsFailure, claimsFailureContextKey, isCurrentClaimsFailure,
       submitFailure, submitFailureContextKey, isCurrentSubmitFailure,
       maxClaimsText, claimUsage, amountLimited, limitReached,
+      programReadable, closedReason, closedTitle, entryDisabled, entryDescription,
       ruleColumns, claimColumns, rangeText, moneyText, formatConfidence,
       formatSize, formatDateTime, claimStatusLabel, claimStatusColor, isLowConfidence,
       loadAll, loadClaims, updateReviewUrl, onFileChange, resetForm, submit,

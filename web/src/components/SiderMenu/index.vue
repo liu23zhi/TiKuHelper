@@ -107,6 +107,15 @@ import { THEME_CONTROLLER_KEY } from '../../utils/themeMode.mjs';
 
 const ADMIN_MENU_ITEMS = [
   { key: 'profile', label: '个人中心', icon: UserOutlined },
+  // 「我的设备」是**账号权益页**，不是运营页：设备上限由 users.level_id → user_levels.device_limit
+  // 计算，管理员自己同样有上限、同样会被挡在外面（137 §5 第 6 步的文案就是
+  // 「请到「我的设备」移除不用的设备」）。因此它必须与 USER_MENU_ITEMS 里同 key 的那项
+  // 构成 shared 组的双入口 —— 只登记在 USER_MENU_ITEMS 会让管理员完全没有自助入口，
+  // 只能去「设备管理」页对全站设备操作，既越权也找不到自己那台。
+  //
+  // ⚠️ 与 device-admin 的分工不能混：这是「我自己的设备」，device-admin 是「全站设备」。
+  // 前者任何角色都可进（后端 /user/devices* 恒取当前登录用户），后者仅管理员。
+  { key: 'my-devices', label: '我的设备', icon: LaptopOutlined },
   { key: 'component', label: '题库总览', icon: PieChartOutlined },
   { key: 'import', label: '智能导入', icon: DownloadOutlined },
   { key: 'user-usage', label: '个人使用', icon: CreditCardOutlined },
