@@ -554,6 +554,15 @@ type AdminDeviceListQuery struct {
 	Keyword string
 	// Status 取 active / revoked / banned；空 = 全部。
 	Status string
+	// UserID > 0 时只返回该账号的设备（A4-2：用户管理页的「设备」按钮）。
+	//
+	// 为什么必须做成**服务端过滤**而不是前端拉全量再筛：
+	// 设备列表是分页的，前端只拿到当前页 20 条。在客户端筛「这个用户的设备」，
+	// 结果会随「他的设备恰好落在第几页」而变 —— 用户在第 1 页看到 2 台、
+	// 翻到第 2 页又看到 1 台，而他实际有 3 台。这类错误极难被用户描述清楚。
+	//
+	// 0 = 不过滤（设备管理页的行为，保持不变）。
+	UserID int32
 }
 
 // AdminDeviceItem 是设备列表的一行。
@@ -650,6 +659,15 @@ func ListAdminDeviceBindingsWithDB(db *gorm.DB, query AdminDeviceListQuery, page
 
 	base := deviceAdminSession(db).Table(entity.TableNameAccountDeviceBinding)
 
+	// 按账号过滤（A4-2：用户管理页的「设备」按钮）。
+	//
+	// 放在关键词之前：两个条件是 AND 关系，顺序不影响结果，但放最前面能让
+	// 「只查某个用户」这个最常用的入口走上最窄的索引前缀
+	// （uk_account_device_binding_user_device 的第一列就是 user_id）。
+	if query.UserID > 0 {
+		base = base.Where("user_id = ?", query.UserID)
+	}
+
 	// 关键词：device_id 子串 OR username 子串（后者走 users 子查询）。
 	if keyword := strings.TrimSpace(query.Keyword); keyword != "" {
 		clause := "INSTR(LOWER(device_id), LOWER(?)) > 0"
@@ -726,6 +744,18 @@ func ListAdminDeviceBindingsWithDB(db *gorm.DB, query AdminDeviceListQuery, page
 		return AdminDeviceListResult{}, fmt.Errorf("查询设备列表失败：%w", err)
 	}
 	if len(rows) == 0 {
+		// ⚠️ 按 userId 过滤时**不返回全局孤儿封禁**（A4-2）。
+		//
+		// OrphanBans 的语义是「device_id 没有任何绑定行的封禁」—— 它天然是
+		// **跨账号**的（谁知道那台设备曾属于谁）。在用户管理页展示它，等于
+		// 在「张三的设备」面板里列出一堆别人的封禁记录，用户无法判断哪条与他有关。
+		//
+		// 更糟的是「该用户一台设备都没有」与「他有一台被封禁的孤儿设备」在
+		// 前端会长得一模一样（都是列表空 + 一堆孤儿行），而后者的正确处理是
+		// 「去设备管理页解封」，前者是「他还没用过任何设备」。
+		if query.UserID > 0 {
+			return result, nil
+		}
 		orphans, orphanErr := ListOrphanDeviceBansWithDB(db, now, 50)
 		if orphanErr != nil {
 			logger.SysWarn("查询孤立设备封禁失败：" + orphanErr.Error())

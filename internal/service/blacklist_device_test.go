@@ -853,3 +853,139 @@ func TestAdminDeviceListWithoutBindingsTableIsEmpty(t *testing.T) {
 		t.Fatalf("data 必须是 []，不能是 nil（前端把 null 与 [] 当两种状态）")
 	}
 }
+
+// ─────────────────── A4-2：按 userId 过滤设备列表 ───────────────────
+
+// UserID 过滤必须只返回该账号的设备。
+//
+// ## 为什么必须是服务端过滤（这条用例守的就是这个前提）
+//
+// 设备列表是分页的，前端只拿到当前页。若在客户端筛「这个用户的设备」，
+// 结果会随「他的设备恰好落在第几页」而变 —— 用户在第 1 页看到 2 台、
+// 翻到第 2 页又看到 1 台，而他实际有 3 台。这类错误极难被用户描述清楚。
+//
+// 判据用**三个用户各自的设备数**断言，而不是只断言「返回了 2 条」：
+// 后者在「过滤失效、恰好总数也是 2」时会假绿。
+func TestAdminDeviceListFiltersByUserID(t *testing.T) {
+	db := newDeviceAdminTestDB(t, true)
+	seedUserForDeviceList(t, db, 9101, "alpha")
+	seedUserForDeviceList(t, db, 9102, "beta")
+	// alpha 有 2 台，beta 有 3 台，总数 5 —— 三个数互不相同，
+	// 任何「过滤没生效」或「过滤错人」的实现在这些数字上都会暴露。
+	seedDeviceBinding(t, db, 9101, "exe:alpha0000001", false)
+	seedDeviceBinding(t, db, 9101, "exe:alpha0000002", false)
+	seedDeviceBinding(t, db, 9102, "exe:beta00000001", false)
+	seedDeviceBinding(t, db, 9102, "exe:beta00000002", false)
+	seedDeviceBinding(t, db, 9102, "exe:beta00000003", false)
+
+	alpha, err := ListAdminDeviceBindingsWithDB(db, AdminDeviceListQuery{UserID: 9101}, 1, 20)
+	if err != nil {
+		t.Fatalf("list alpha: %v", err)
+	}
+	if alpha.Total != 2 || len(alpha.Data) != 2 {
+		t.Fatalf("用户 9101 应恰好 2 台设备，实际 total=%d len=%d", alpha.Total, len(alpha.Data))
+	}
+	for _, item := range alpha.Data {
+		if item.UserID != 9101 {
+			t.Fatalf("过滤后仍混入别的账号：userID=%d deviceID=%s", item.UserID, item.DeviceID)
+		}
+	}
+
+	beta, err := ListAdminDeviceBindingsWithDB(db, AdminDeviceListQuery{UserID: 9102}, 1, 20)
+	if err != nil {
+		t.Fatalf("list beta: %v", err)
+	}
+	if beta.Total != 3 || len(beta.Data) != 3 {
+		t.Fatalf("用户 9102 应恰好 3 台设备，实际 total=%d len=%d", beta.Total, len(beta.Data))
+	}
+
+	// 对照组：UserID=0 必须返回全部 5 台 —— 证明「过滤生效」不是靠把结果砍空。
+	all, err := ListAdminDeviceBindingsWithDB(db, AdminDeviceListQuery{}, 1, 50)
+	if err != nil {
+		t.Fatalf("list all: %v", err)
+	}
+	if all.Total != 5 {
+		t.Fatalf("不指定 userId 时必须返回全部 5 台，实际 %d", all.Total)
+	}
+}
+
+// 过滤 + 关键词两个条件是 AND，不是 OR。
+//
+// 取 OR 的实现会让「查某用户的某台设备」变成「该用户全部设备 + 任意用户名含关键词的设备」，
+// 在用户管理页上表现为「他的设备列表里冒出别人的设备」。
+func TestAdminDeviceListUserIDAndKeywordAreAnded(t *testing.T) {
+	db := newDeviceAdminTestDB(t, true)
+	seedUserForDeviceList(t, db, 9201, "gamma")
+	seedUserForDeviceList(t, db, 9202, "delta")
+	seedDeviceBinding(t, db, 9201, "exe:gamma0000001", false)
+	seedDeviceBinding(t, db, 9201, "exe:gamma0000002", false)
+	seedDeviceBinding(t, db, 9202, "exe:delta0000001", false)
+
+	// 关键词命中 gamma 的一个 device_id，且 userID 也是 gamma ⇒ 1 条。
+	got, err := ListAdminDeviceBindingsWithDB(db, AdminDeviceListQuery{
+		UserID:  9201,
+		Keyword: "gamma0000001",
+	}, 1, 20)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if got.Total != 1 {
+		t.Fatalf("userId+keyword 必须同时满足（AND），期望 1 条，实际 %d", got.Total)
+	}
+	if got.Total == 1 && got.Data[0].UserID != 9201 {
+		t.Fatalf("命中的行必须属于 9201，实际 %d", got.Data[0].UserID)
+	}
+
+	// 关键词只匹配 delta 的设备，但 userID 限定 gamma ⇒ 0 条。
+	// 写成 OR 的实现会返回 1 条（delta 那台），必红。
+	empty, err := ListAdminDeviceBindingsWithDB(db, AdminDeviceListQuery{
+		UserID:  9201,
+		Keyword: "delta0000001",
+	}, 1, 20)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if empty.Total != 0 {
+		t.Fatalf("userId=gamma + keyword=delta 必须返回 0 条（AND 语义），实际 %d 条", empty.Total)
+	}
+}
+
+// 按 userId 过滤时**不得**返回全局孤儿封禁（A4-2 的界面语义）。
+//
+// 孤儿封禁 = 「device_id 没有任何绑定行的封禁」，它天然是跨账号的。
+// 在用户管理页展示它，等于在「张三的设备」面板里列出一堆别人的封禁记录。
+//
+// 更糟的是「该用户一台设备都没有」与「他有一台被封禁的孤儿设备」在前端
+// 会长得一模一样（都是列表空 + 一堆孤儿行），而两者该做的处置完全相反。
+func TestAdminDeviceListSkipsOrphanBansWhenFilteredByUser(t *testing.T) {
+	db := newDeviceAdminTestDB(t, true)
+	seedUserForDeviceList(t, db, 9301, "zeta")
+	// 一条全局孤儿封禁（不属于任何账号的绑定行）。
+	if _, err := BanDevice(db, DeviceBanRequest{DeviceID: "exe:orphan9301xx", Reason: "无绑定"}); err != nil {
+		t.Fatalf("ban orphan: %v", err)
+	}
+
+	// 该用户没有任何设备 ⇒ 列表为空。
+	filtered, err := ListAdminDeviceBindingsWithDB(db, AdminDeviceListQuery{UserID: 9301}, 1, 20)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(filtered.Data) != 0 {
+		t.Fatalf("该用户没有设备，列表必须为空，实际 %d 条", len(filtered.Data))
+	}
+	if len(filtered.OrphanBans) != 0 {
+		t.Fatalf("按 userId 过滤时不得返回全局孤儿封禁（会把别人的封禁混进这个用户的面板），实际 %d 条",
+			len(filtered.OrphanBans))
+	}
+
+	// 对照组：不指定 userId 时孤儿封禁**必须**照常返回。
+	// 没有这一条，「干脆永远不返回 OrphanBans」的错误实现也能让上面绿。
+	all, err := ListAdminDeviceBindingsWithDB(db, AdminDeviceListQuery{}, 1, 20)
+	if err != nil {
+		t.Fatalf("list all: %v", err)
+	}
+	if len(all.OrphanBans) != 1 {
+		t.Fatalf("不指定 userId 时必须照常返回孤儿封禁（否则那台设备永远无法解封），实际 %d 条",
+			len(all.OrphanBans))
+	}
+}

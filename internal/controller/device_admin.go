@@ -83,9 +83,24 @@ func AdminDeviceList(c *gin.Context) {
 		return
 	}
 	page, pageSize := blacklistPagination(c)
+	// userId 是可选过滤（A4-2：用户管理页的「设备」按钮点进来时带上）。
+	//
+	// 解析失败**不报错、按不过滤处理**：这个参数是给「从用户行跳转」用的，
+	// 一个手改的坏 URL 不该让整个设备列表 500。而「静默不过滤」在这种场景下
+	// 是可接受的降级 —— 管理员看到的仍然是完整列表，只是没被收窄。
+	//
+	// ⚠️ 负数与 0 一律视为「不过滤」：userID 从 1 开始，0 是「不指定」的哨兵
+	// （见 AdminDeviceListQuery.UserID 的注释）。
+	var userID int32
+	if raw := strings.TrimSpace(c.Query("userId")); raw != "" {
+		if parsed, parseErr := strconv.ParseInt(raw, 10, 32); parseErr == nil && parsed > 0 {
+			userID = int32(parsed)
+		}
+	}
 	result, err := service.ListAdminDeviceBindingsWithDB(db, service.AdminDeviceListQuery{
 		Keyword: strings.TrimSpace(c.Query("keyword")),
 		Status:  strings.TrimSpace(c.Query("status")),
+		UserID:  userID,
 	}, page, pageSize)
 	if err != nil {
 		writeDeviceAdminError(c, err)

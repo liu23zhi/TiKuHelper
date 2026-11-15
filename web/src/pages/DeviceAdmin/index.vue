@@ -274,6 +274,18 @@ export default {
     const revocationSupported = ref(true)
     const filters = reactive(emptyFilters())
     const appliedFilters = ref({})
+    // scopedUserId 来自 ?userId=（A4-2：用户管理页「设备」按钮跳进来时带上）。
+    //
+    // 与 filters 分开存是刻意的：filters 是用户可改的表单，本值是「进入本页时的
+    // 上下文」，不该出现在搜索框里让用户以为能改。0 = 未限定（设备管理页常态）。
+    //
+    // 解析失败一律按 0 处理：一个手改的坏 URL 不该让整页报错，显示全部设备是
+    // 可接受的降级（与后端 userId 解析失败的口径一致）。
+    const scopedUserId = computed(() => {
+      const raw = String(route.query.userId ?? "").trim()
+      const parsed = Number(raw)
+      return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0
+    })
 
     const banVisible = ref(false)
     const banError = ref('')
@@ -332,6 +344,11 @@ export default {
       const parts = [
         scope.keyword && `关键词：${scope.keyword}`,
         scope.status && `状态：${deviceStatusText(scope.status)}`,
+      // 按账号限定时必须**显式**写在说明里（A4-2）。
+      //
+      // 否则「只看到 2 台设备」与「这台机器上真的只有 2 台」看起来一样，
+      // 而管理员会据此判断「这个人没多开」—— 一个静默的作用域收窄不该是隐形的。
+      scopedUserId.value > 0 && `仅显示账号 #${scopedUserId.value}`,
       ].filter(Boolean)
       return parts.join('；') || '全部设备'
     })
@@ -357,6 +374,15 @@ export default {
       if (keyword) params.keyword = keyword
       const status = String(appliedFilters.value.status || '').trim()
       if (status) params.status = status
+      // 按账号过滤（A4-2：从用户管理页的「设备」按钮跳进来）。
+      //
+      // ⚠️ 必须随**每次请求**一起带上，不能只在挂载时用一次：
+      // 一旦翻页/刷新时丢掉它，第 2 页就会变回「全部用户的设备」——
+      // 而列表说明仍写着「仅显示该账号」，是「看起来正常但内容是错的」那类故障。
+      //
+      // 值来自 route.query，与 filters 分开存：filters 是用户可改的表单，
+      // userId 是「进入本页时的上下文」，不该出现在搜索框里让用户以为能改。
+      if (scopedUserId.value > 0) params.userId = String(scopedUserId.value)
       return params
     }
 
@@ -578,6 +604,26 @@ export default {
       banVisible.value = false
     }, { flush: 'sync' })
 
+// ?userId= 变化必须重新取数（A4-2）。
+//
+// 为什么要单独一条 watch：上面那条 `route.path` 的 watch 只在**路径**变化时
+// 清空数据，而「从用户 A 的设备跳到用户 B 的设备」是同一个 path 上的 query 变化，
+// 它不会触发。不加这条，用户会在 B 的面板里继续看到 A 的设备 —— 而且标题
+// 已经变成「仅显示账号 #B」，是最容易让人做出错误判断的那种不一致。
+//
+// 刻意不复用那条清空逻辑：这里要的是「清空后立刻重新取数」，而不是「清空等下次挂载」。
+watch(scopedUserId, () => {
+  if (!alive || !canManage()) return
+  readVersion += 1
+  rows.value = []
+  orphanBans.value = []
+  total.value = 0
+  pagination.total = 0
+  pagination.current = 1
+  hasLoaded.value = false
+  void loadRows()
+})
+
     onMounted(() => {
       mounted = true
       // 只发这一条列表请求：本页不在挂载期补查任何汇总。
@@ -593,7 +639,7 @@ export default {
     return {
       fieldId, canManage, busy, columns, orphanColumns, rows, orphanBans, filters,
       loading, writing, hasLoaded, total, listError, filterError, actionWarning,
-      revocationSupported, pagination, scopeLabel, tableDescription, emptyText,
+      revocationSupported, pagination, scopeLabel, tableDescription, emptyText, scopedUserId,
       statusOptions, formatDateTime, setFilter, reload, resetFilters, onTableChange,
       confirmUnbind, openBanModal, banVisible, banError, draft, setDraft, submitBan, closeBanModal,
       confirmUnban, loadRows,

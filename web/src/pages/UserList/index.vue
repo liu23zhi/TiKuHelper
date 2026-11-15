@@ -136,6 +136,15 @@
               所以这里跳转到同一页面并带 ?userId=，不另开弹窗。
             -->
             <a-button type="link" style="padding: 0" @click="openPortrait(record)">画像</a-button>
+            <!--
+              设备（A4-2）：该账号当前占用哪些设备槽位。
+              ⚠️ 同样是**并列新增**，不是替换「查看」：
+                「查看」= 绑定历史（换绑轨迹）
+                「设备」= 当前占用的槽位 + 可就地解绑/封禁
+              跳转到设备管理页并带 ?userId=，与画像同一范式（不另开弹窗，
+              因为设备列表本身已带分页与筛选，复制进弹窗会有两套分页状态）。
+            -->
+            <a-button type="link" style="padding: 0" @click="openDevices(record)">设备</a-button>
             <a-button type="link" style="padding: 0" @click="openResetPasswordModal(record)">重置密码</a-button>
             <a-popconfirm
               :key="actionContextKey + ':' + record.id"
@@ -2041,6 +2050,31 @@ export default defineComponent({
         return
       }
       this.$router.push({ name: 'user-portrait', query: { userId: String(id) } })
+        .catch(error => {
+          // 重复导航（NavigationDuplicated）不是错误；其余才提示。
+          if (error?.name !== 'NavigationDuplicated') {
+            message.error('页面暂时无法打开，请稍后重试。')
+          }
+        })
+    },
+    // 设备（A4-2）：跳转到设备管理页并带上 ?userId=，与该用户面板同一范式。
+    //
+    // 为什么是「跳转 + query」而不是像「查看」那样开弹窗：
+    // 设备列表要做解绑/封禁/解封，已是带分页筛选的独立页面；在弹窗里复制一份
+    // 会立刻出现两套实现与两个分页状态。画像按钮已用同一取舍（见它的注释），
+    // 两者保持一致。
+    //
+    // ⚠️ 语义与上面的「查看」完全不同，不得合并：
+    //   「查看」= 绑定历史弹窗（GET /admin/users/:id/bindings，换绑轨迹）
+    //   「设备」= 该账号当前占用哪些槽位（GET /admin/devices?userId=）
+    openDevices(record) {
+      const target = record || {}
+      const id = Number(target.id)
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        message.warning('用户参数错误')
+        return
+      }
+      this.$router.push({ name: 'device-admin', query: { userId: String(id) } })
         .catch(error => {
           // 重复导航（NavigationDuplicated）不是错误；其余才提示。
           if (error?.name !== 'NavigationDuplicated') {
