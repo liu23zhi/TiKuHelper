@@ -72,6 +72,11 @@ export function buildRegisterSourceLabel(value) {
   if (normalized === 'legacy') {
     return '历史数据'
   }
+  // import：service/import_data.go:1172 在「导入数据」建账号时写入。
+  // 之前没映射，这类账号在用户管理/画像里显示成英文 import。
+  if (normalized === 'import') {
+    return '导入创建'
+  }
   return String(value || '-').trim() || '-'
 }
 

@@ -1,4 +1,7 @@
 export const LOG_MODULE_OPTIONS = [
+  // ⚠️ 顺序有意义：logTableLayout.test.mjs 断言「最后 3 项必须是 短信/充值/访问令牌」，
+  // 因为 module 列宽是按 label 长度算的。新映射一律插在 access_token 之前，
+  // 不要往数组尾部追加 —— 那会让列宽断言红，且红的理由与「映射错了」很难区分。
   { label: '认证', value: 'auth' },
   { label: '题目', value: 'question' },
   { label: '搜题', value: 'search' },
@@ -7,6 +10,16 @@ export const LOG_MODULE_OPTIONS = [
   { label: '验证码', value: 'captcha' },
   { label: '用户管理', value: 'user' },
   { label: '账单管理', value: 'billing' },
+  // ── 以下 7 个是补的：后端一直在写这些值，前端从来没有映射 ──
+  // 缺映射时 buildLogModuleLabel 会 `|| value` 回落，用户在操作日志页看到英文原文。
+  { label: '账号', value: 'account' },        // account_log.go:39 + username_release.go:81
+  { label: '绑定', value: 'binding' },        // user_bindings.go:38
+  { label: 'AI', value: 'ai' },
+  { label: '评价返现', value: 'review_rebate' },
+  { label: '题库', value: 'tiku' },
+  { label: '考试工具', value: 'userexam_tool' },
+  // 兜底值：后端写 unknown_module 时说明它自己也没认出模块。
+  { label: '未知模块', value: 'unknown_module' },
   { label: '短信', value: 'sms' },
   { label: '充值', value: 'recharge' },
   { label: '访问令牌', value: 'access_token' },
