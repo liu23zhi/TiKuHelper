@@ -45,7 +45,10 @@
     >
       <header class="refund-section-heading">
         <h2 id="ticket-refund-heading" class="refund-section-title">退款申请与审核</h2>
-        <p class="refund-section-lead">退款走独立流程，不进入上方工单列表。</p>
+        <p class="refund-section-lead">
+          退款工单已经并入上方列表（按「分类」列区分），这里只是它们的快捷处理区：
+          提交申请、审核、打款都在这一块完成，不必回到列表里逐条点开。
+        </p>
       </header>
       <TicketRefundPanel
         :key="pageEpoch"
@@ -1678,7 +1681,7 @@ watch(
   gap: 18px;
   min-width: 0;
 }
-/* 退款区块的视觉分界：它和工单列表是两条独立流程，不能看起来像同一份数据。
+/* 退款区块的视觉分界：它和工单列表**不是**两条独立流程（数据已合并），
    左侧色条 + 独立标题，让用户一眼看出「这块不是工单列表」。 */
 .refund-section {
   display: flex;

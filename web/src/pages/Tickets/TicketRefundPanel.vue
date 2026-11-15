@@ -1,7 +1,7 @@
 <template>
   <ConsolePanel
     title="退款工单"
-    :description="reviewer ? '审核退款金额并核对处理结果。冻结不代表已退款。' : '退款申请独立于普通工单。审核通过后冻结相应余额，结果以工单状态为准。'"
+    :description="reviewer ? '审核退款金额并核对处理结果。冻结不代表已退款。' : '退款工单与普通工单同属本页（见上方列表的分类列）。提交后审核通过会冻结相应余额，结果以工单状态为准。'"
     class="refund-panel"
   >
     <a-space wrap class="refund-actions">
