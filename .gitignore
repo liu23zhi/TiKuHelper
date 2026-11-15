@@ -62,3 +62,7 @@ password.txt
 /tools/userexam-crypto/__pycache__/
 # 测试用的明文库与转换产物含真实客户端数据，只在本地产出，不入库。
 /tools/userexam-crypto/testdata/
+
+# 本地构建产物（124MB，绝不入库）
+run/tikuAdapter.exe
+run/*.exe

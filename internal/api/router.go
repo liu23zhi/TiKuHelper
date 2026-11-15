@@ -341,6 +341,16 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/admin/bindings", controller.Auth, middleware.RequireAdmin, controller.ListAdminBindings)
 	apiRouter.POST("/admin/bindings", controller.Auth, middleware.RequireAdmin, controller.CreateAdminBindingHistory)
 	apiRouter.POST("/admin/bindings/:id/void", controller.Auth, middleware.RequireAdmin, controller.VoidAdminBinding)
+	// 绑定值明文揭示（审计留痕，单条）。
+	//
+	// ⚠️ 路径用 binding record id 而不是 archived-users/:uid/bindings/:bid：
+	// 「查看绑定历史」弹窗（UserList/index.vue openBindingsModal）读的是
+	// GET /admin/users/:id/bindings ——**活跃**账号；archived-users 前缀服务的是归档账号。
+	// 放在 archived-users 下会让活跃用户的弹窗根本调不到（用户不是归档态），
+	// 而 binding record id 是全局唯一主键，两条读路径可以共用一个揭示入口。
+	//
+	// 单条、RequireAdmin、必写审计日志；明文绝不进日志（测试有反向断言）。
+	apiRouter.GET("/admin/bindings/:id/reveal", controller.Auth, middleware.RequireAdmin, controller.RevealBindingValue)
 
 	// 注销申请（task_doc/76 §3.3.5）。三条都是**用户本人**接口，Auth 即可：
 	// 目标账号一律取「当前登录用户」，不接受前端传 userID（否则可替别人申请注销）。

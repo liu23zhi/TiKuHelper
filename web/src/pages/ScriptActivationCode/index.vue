@@ -209,10 +209,32 @@ export default {
   setup() {
     const route = useRoute()
     const { currentUser } = useCurrentUserDisplay()
-    const mountedPath = route.path
+    // 用 route.name 白名单判「是否仍属本页」，不用挂载时快照 route.path。
+    //
+    // 原写法 `const mountedPath = route.path` + `route.path === mountedPath` 有两个问题：
+    //   ① 它是**一次性快照**：组件实例被 Vue 复用到另一条路由时（拆路由后很常见），
+    //      route.path 变了而 mountedPath 不变 → canManage 恒 false → 页面所有按钮静默禁用；
+    //   ② route.path 不含 query，所以带 ?userId=1 不会误判，但 `:id?` 这类动态段会。
+    //
+    // 仓库里已经踩过一次同一个坑并改好了：ScriptManagement/index.vue 的
+    // OWN_ROUTE_NAMES + stillOwnRoute()。这里照搬那套，保持两页判据一致。
+    //
+    // 本页当前只有一条路由（router.js 的 script-activation-codes），所以**现状不会误判**；
+    // 改它是为了「将来给它加第二条路由时不会静默失效」——那种失效表现为按钮全灰，
+    // 没有任何报错，极难定位。
+    const OWN_ROUTE_NAMES = Object.freeze(['script-activation-codes'])
+
+    // route.name 为空（未命名路由/初次解析中）时退回 matched 比对：
+    // 当前匹配链里是否还挂着本页的路由记录。
+    const stillOwnRoute = () => {
+      const name = String(route?.name || '')
+      if (name) return OWN_ROUTE_NAMES.includes(name)
+      const matched = route?.matched || []
+      return matched.some(record => OWN_ROUTE_NAMES.includes(String(record?.name || '')))
+    }
 
     // 与其它管理页一致：路由、角色、状态任一变化都不再允许操作。
-    const canManage = () => route.path === mountedPath && isAdminUser(currentUser.value)
+    const canManage = () => stillOwnRoute() && isAdminUser(currentUser.value)
       && !['disabled', '0'].includes(String(currentUser.value?.status ?? 'enabled'))
 
     const batchLimit = BATCH_LIMIT

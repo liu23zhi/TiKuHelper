@@ -299,6 +299,16 @@ const visible = ref(false)
 const submitLoading = ref(false)
 const isEditing = ref(false)
 const visibleTokenIds = ref([])
+// showAllTokens 的初始值在下面由 watch(routeViewMode, ..., {immediate:true}) 设定 ——
+// 这里只能给一个中性初值，不能给 false：
+//
+// 用户诉求「令牌管理是管理员页面，需要显示所有用户的数据」的**真实根因就是这一行**。
+// 原来写 ref(false)，而全文件唯一置 true 的地方是用户手动点「显示全部令牌」按钮，
+// 所以管理员进「令牌管理」看到的是自己那一条，必须再点一次才看全站。
+// 后端一直是对的（controller/access_token.go:62 硬与 scope=='all' && isAdminUser）。
+//
+// 用 watch 而不是直接写 ref(routeViewMode.value === 'admin')：
+// routeViewMode 在下方才定义，直接引用会踩 TDZ。
 const showAllTokens = ref(false)
 const formState = ref({
   id: undefined,
@@ -442,7 +452,22 @@ const formState = ref({
     //
     // isAdmin 由 viewMode 派生，所以 isAdmin 变 false 就是"切到用户入口"的信号。
     // 只在变成非管理员视图时强制复位；管理员之间切换不受影响。
-    watch(isAdmin, adminNow => {
+    // routeViewMode 一变就设定「显示全部」的默认值（immediate 让首屏也用上）。
+//
+// 为什么必须 immediate：管理员从菜单点「令牌管理」进来时，绝大多数情况下
+// 他要看的是全站数据（这就是该入口的用途）。让他进来先看到自己一条、
+// 再手动点一次「显示全部令牌」，是把默认值搞反了。
+//
+// 为什么不放在 showAllTokens 初始值里：routeViewMode 在下方才定义，直接引用会 TDZ。
+//
+// 与下面 watch(isAdmin) 的分工：
+//   · 这个 watch 负责「进入某个入口时默认看什么」；
+//   · 下面的 watch 负责「切到用户入口时强制复位」——那条是防越权，不能被这里覆盖。
+watch(routeViewMode, mode => {
+  if (mode === 'admin') showAllTokens.value = true
+}, { immediate: true })
+
+watch(isAdmin, adminNow => {
       if (!adminNow && showAllTokens.value) showAllTokens.value = false
     }, { flush: 'sync' })
     const isCurrentListFailure = (failure, context) => canLoadForCurrentUser()
