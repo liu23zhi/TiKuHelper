@@ -37,7 +37,7 @@ type devicePoolBindingColumnSpec struct {
 	ddl    string
 }
 
-// devicePoolBindingColumnSpecs 是 137 §3.2 要求的 5 列 + 141 §3.1 要求的 2 列。
+// devicePoolBindingColumnSpecs 是 137 §3.2 要求的 5 列 + 141 要求的 3 列。
 //
 // 逐列对上 137 的字段表（顺序与文档一致）：
 //
@@ -49,8 +49,9 @@ type devicePoolBindingColumnSpec struct {
 //
 // 第二批（141 §3.1）追加两列：
 //
-//	client_instance VARCHAR(64) NOT NULL DEFAULT ''   这次运行的实例标识（R3）
-//	session_count   INT         NOT NULL DEFAULT 0    exe 当前活跃会话数（R6/R7）
+//	client_instance VARCHAR(64) NOT NULL DEFAULT ''    这次运行的实例标识（R3）
+//	session_count   INT         NOT NULL DEFAULT 0     exe 当前活跃会话数（R6/R7）
+//	session_reported_at DATETIME NULL                  心跳时间戳（141 §5.4）
 //
 // ⚠️ 与 137 的一处**刻意偏差**：文档 §3.2 里 device_label 写的是
 // `VARCHAR(64) NOT NULL DEFAULT ''`（在代码块里），而任务书写的是
@@ -76,10 +77,19 @@ var devicePoolBindingColumnSpecs = []devicePoolBindingColumnSpec{
 	// 第二批（141 §3.1）。
 	{column: "client_instance", ddl: "client_instance VARCHAR(64) NOT NULL DEFAULT ''"},
 	{column: "session_count", ddl: "session_count INTEGER NOT NULL DEFAULT 0"},
+	// 第二批补（141 §5.4 的心跳时间戳）。
+	//
+	// 为什么它必须与 last_seen_at 分开：见 entity 里 SessionReportedAt 的注释 ——
+	// 简单说，last_seen_at 任何请求都刷，用它判「exe 上报线程是否还活着」会永远新鲜，
+	// session_count 就永不归零（崩溃后槽位虚高）。
+	//
+	// NULL 是合法且必需的初值：历史行没有上报过，service 层据此退回 last_seen_at。
+	// ⇒ 本条迁移对**旧库是纯增强**，加列前后行为一致（缺列/缺值时走同一降级路径）。
+	{column: "session_reported_at", ddl: "session_reported_at DATETIME NULL"},
 }
 
 // ensureDevicePoolBindingSchema 给 account_device_bindings 补 A1 的 5 列 +
-// 141 的 2 列，并建 user_device_blocks 表（137 §3.3）。
+// 141 的 3 列，并建 user_device_blocks 表（137 §3.3）。
 //
 // 顺序说明：**先建 user_device_blocks 表，再加列**。理由是加列失败会让整个函数
 // 返回 error 并跳过表创建；而 user_device_blocks 是独立的判定分支（137 §5 第 2 步），
@@ -110,7 +120,7 @@ func ensureDevicePoolBindingSchema(db *gorm.DB) error {
 		return err
 	}
 
-	// ② 绑定表 7 列（A1 的 5 列 + 141 的 2 列）。
+	// ② 绑定表 8 列（A1 的 5 列 + 141 的 3 列）。
 	for _, spec := range devicePoolBindingColumnSpecs {
 		if db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, spec.column) {
 			continue

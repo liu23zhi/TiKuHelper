@@ -122,6 +122,21 @@ type AccountDeviceBinding struct {
 	// 默认 0 同时覆盖两种设备：普通浏览器（从不写本列）与「exe 启动但没开会话」，
 	// 两者都靠 max(1,0)=1 贡献 1 个槽位（R4 / R5 / R7 同解）。
 	SessionCount int32 `gorm:"column:session_count;type:int;not null;default:0" json:"sessionCount"`
+	// SessionReportedAt 是最近一次 **exe 会话数上报** 的时间（141 §5.4 的心跳时间戳）。
+	//
+	// ⚠️ 它与 LastSeenAt 必须分开，这是本列存在的**唯一理由**：
+	//
+	//	last_seen_at        —— 任何请求都会刷新（搜题、状态页…）
+	//	session_reported_at —— 只有 POST /user/device-sessions 会刷新
+	//
+	// 心跳超时的语义是「exe 最近一次自报会话数是多久以前」。若复用 last_seen_at，
+	// 用户在 exe 里正常搜题（刷新 last_seen_at）但 exe 的上报线程已死时，
+	// 服务端会以为会话数仍然新鲜，session_count 就永远不归零 → 崩溃后槽位虚高。
+	//
+	// **指针类型是刻意的**：历史行没有这个值（NULL），与「上报过但时间恰好零值」
+	// 必须可区分。NULL 时 service 层退回 last_seen_at（见 EffectiveDeviceSessionCount
+	// 的缺列/缺值降级），因此本列的迁移是**纯增强**，不是硬依赖。
+	SessionReportedAt *time.Time `gorm:"column:session_reported_at" json:"sessionReportedAt,omitempty"`
 	// RevokedAt 非 nil ⇒ 该行已撤销，**不占槽位**。
 	// 指针类型是刻意的：NULL 与「零值时间」必须可区分，否则每条历史行都会被当成已撤销。
 	RevokedAt *time.Time `gorm:"column:revoked_at" json:"revokedAt,omitempty"`
