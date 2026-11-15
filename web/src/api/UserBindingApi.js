@@ -67,3 +67,26 @@ export function voidBindingRecord(id, reason) {
     params: { reason: text },
   })
 }
+
+// 揭示**单条**绑定值的明文（用户 2026-11-15 拍板：「加一个「显示完整值」按钮
+// 并记审计日志，而不是默认明文」）。
+//
+// 后端契约：GET /api/admin/bindings/:id/reveal → { data: { id, kind, value, ... } }
+//
+// 四条必须知道的性质：
+//  1. **只有单条**。没有批量形态（不存在 ?ids= 或列表返明文的接口），
+//     所以这里也不提供「批量揭示」的便利函数 —— 提供等于给未来的人一个越权面；
+//  2. **每次调用都会写审计**（logs.Action=62），因此禁止在渲染/轮询/重试里调用，
+//     只能由用户的显式点击触发（errorFeedback:'local' 也抑制了自动重试之外的提示，
+//     但重试本身仍会发生 —— 所以调用点必须做「已揭示就不再请求」的本地去重）；
+//  3. 非管理员 403、不存在的 id 404，两者都要给用户可见的提示，不能静默；
+//  4. 返回值**不可缓存**（后端已带 Cache-Control: no-store）。
+export function revealBindingValue(id) {
+  const value = Number(id)
+  if (!Number.isInteger(value) || value <= 0) throw new Error('绑定记录参数错误')
+  return request({
+    errorFeedback: 'local',
+    url: `/api/admin/bindings/${value}/reveal`,
+    method: 'get',
+  })
+}

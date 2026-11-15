@@ -511,7 +511,36 @@
         >
           <template #bodyCell="{ column, record }">
             <span v-if="column.key === 'kind'">{{ bindingKindLabel(record.kind) }}</span>
-            <span v-else-if="column.key === 'valueMasked'" class="binding-masked-cell">{{ record.valueMasked || '—' }}</span>
+            <!--
+              绑定值列：默认脱敏，「显示完整值」是**显式点击**才揭示。
+              用户 2026-11-15 拍板：「加一个「显示完整值」按钮并记审计日志，
+              而不是默认明文」。所以三态必须都能看见：
+                未揭示 → 脱敏值 + 「显示完整值」按钮
+                揭示中 → 脱敏值 + 按钮 loading（禁用，防连点重复审计）
+                已揭示 → 明文 + 「已显示」按钮（禁用，避免二次请求又写一条审计）
+            -->
+            <div v-else-if="column.key === 'valueMasked'" class="binding-value-cell">
+              <span v-if="isBindingRevealed(record.id)" class="binding-revealed-cell">{{ bindingRevealedValue(record.id) || '—' }}</span>
+              <span v-else class="binding-masked-cell">{{ record.valueMasked || '—' }}</span>
+              <a-button
+                v-if="isBindingRevealed(record.id)"
+                size="small"
+                type="link"
+                class="binding-reveal-button"
+                disabled
+                data-testid="binding-reveal-shown"
+              >已显示</a-button>
+              <a-button
+                v-else
+                size="small"
+                type="link"
+                class="binding-reveal-button"
+                :loading="isBindingRevealPending(record.id)"
+                :disabled="isBindingRevealPending(record.id)"
+                data-testid="binding-reveal-button"
+                @click="revealBinding(record)"
+              >显示完整值</a-button>
+            </div>
             <a-tag v-else-if="column.key === 'state'" :color="bindingStateColor(record.state)">{{ bindingStateLabel(record.state) }}</a-tag>
             <span v-else-if="column.key === 'releaseReason'">{{ bindingReleaseReasonLabel(record.releaseReason) }}</span>
             <span v-else-if="column.key === 'boundAt'" class="user-time-cell">{{ formatDateTime(record.boundAt) }}</span>
@@ -540,7 +569,7 @@ import {
   getPhoneLocations,
   getIpLocations,
 } from '@/api/TikuComponentApi';
-import { getAdminUserBindings } from '@/api/UserBindingApi';
+import { getAdminUserBindings, revealBindingValue } from '@/api/UserBindingApi';
 // 封禁（t203）：与「封禁管理」页共用同一套 API（POST 封禁 / DELETE 解封）。
 // 不在本文件里手写请求，避免出现「两处各写一份封禁逻辑」的漂移。
 import { createUserBan, getUserBans, revokeUserBan } from '@/api/UserBanApi';
@@ -631,7 +660,9 @@ function bindingReleaseReasonLabel(value) {
 }
 const bindingsColumns = [
   { title: '类型', dataIndex: 'kind', key: 'kind', width: 80 },
-  { title: '绑定值（脱敏）', dataIndex: 'valueMasked', key: 'valueMasked', width: 170 },
+  // 标题去掉「（脱敏）」：默认仍是脱敏的，但现在同一列里有「显示完整值」入口，
+  // 标题写「（脱敏）」会与用户看到的行为矛盾（揭示了却还写着脱敏）。
+  { title: '绑定值', dataIndex: 'valueMasked', key: 'valueMasked', width: 210 },
   { title: '状态', dataIndex: 'state', key: 'state', width: 90 },
   { title: '释放原因', dataIndex: 'releaseReason', key: 'releaseReason', width: 105 },
   { title: '绑定时间', dataIndex: 'boundAt', key: 'boundAt', width: 165 },
@@ -1002,6 +1033,42 @@ const bindingsTitle = computed(() => {
 })
 const isCurrentBindingsFailure = (source, context) => bindingsFailureOwner() && Boolean(source)
   && source === bindingsFailure.value && context === bindingsFailureContextKey.value
+// ── 绑定值明文揭示（用户 2026-11-15 拍板） ──────────────────────────
+//
+// 本地 state 而不是改行对象：reveal 接口的语义是「这一次读取留痕」，
+// 把明文写回 bindingsRows 会让「重新打开弹窗」也必须重置一次 —— 两类状态
+// 混在一个对象里，重置漏一处就变成「换了用户还显示上一个用户的手机号」。
+//
+// 用 Map 而不用对象：binding id 是后端主键，可能出现 "constructor" 这类
+// 看起来像属性名的值吗？不会（是数字），但 Map 顺便让「不存在的键」
+// 与「值恰好是 undefined」在语义上分开，也让 `has` 判定不依赖 truthiness
+// （一个空字符串的绑定值必须仍然算「已揭示」，否则按钮会一直可点、
+// 每点一次就多一条审计）。
+const bindingRevealValues = ref(new Map())
+const bindingRevealPendingIds = ref(new Set())
+function isBindingRevealed(id) {
+  const key = Number(id)
+  if (!Number.isSafeInteger(key) || key <= 0) return false
+  return bindingRevealValues.value.has(key)
+}
+function bindingRevealedValue(id) {
+  const key = Number(id)
+  if (!Number.isSafeInteger(key) || key <= 0) return ''
+  return bindingRevealValues.value.get(key) || ''
+}
+function isBindingRevealPending(id) {
+  const key = Number(id)
+  if (!Number.isSafeInteger(key) || key <= 0) return false
+  return bindingRevealPendingIds.value.has(key)
+}
+// resetBindingReveals 把所有行退回脱敏态。
+//
+// 三个调用点缺一不可：打开弹窗、重新加载列表、关闭弹窗。
+// 只重置其中一个的后果：换用户后仍显示上一个用户的明文（最严重）。
+function resetBindingReveals() {
+  bindingRevealValues.value = new Map()
+  bindingRevealPendingIds.value = new Set()
+}
 // 生效行排前面：管理员打开弹窗第一眼要看的是「现在绑的是什么」。
 watch(bindingsRows, rows => {
   if (!Array.isArray(rows)) return
@@ -1146,6 +1213,9 @@ function resetWechatResolveState() {
     bindingsVisible, bindingsModalKey, bindingsLoading, bindingsRows, bindingsTarget,
     bindingsActive, bindingsHistory, bindingsTitle,
     bindingsFailure, bindingsFailureContextKey, isCurrentBindingsFailure,
+    // 明文揭示的本地状态（Map<bindingId, plaintext> + 在途 id 集合）。
+    bindingRevealValues, bindingRevealPendingIds,
+    isBindingRevealed, bindingRevealedValue, isBindingRevealPending, resetBindingReveals,
     captureBindingsOwner: () => { const ticket = ++bindingsRequestVersion; return () => bindingsVisible.value && ticket === bindingsRequestVersion },
     bindingsFailureOwnerRef: { set: fn => { bindingsFailureOwner = fn }, get: () => bindingsFailureOwner },
     clearBindingsFailure: () => { bindingsFailure.value = null; bindingsFailureOwner = () => false; bindingsFailureContextKey.value += 1 },
@@ -1660,6 +1730,9 @@ export default defineComponent({
       bindingsFailure: userListContext.bindingsFailure,
       bindingsFailureContextKey: userListContext.bindingsFailureContextKey,
       isCurrentBindingsFailure: userListContext.isCurrentBindingsFailure,
+      isBindingRevealed: userListContext.isBindingRevealed,
+      bindingRevealedValue: userListContext.bindingRevealedValue,
+      isBindingRevealPending: userListContext.isBindingRevealPending,
       bindingKindLabel,
       bindingStateLabel,
       bindingStateColor,
@@ -2094,10 +2167,62 @@ export default defineComponent({
       const ctx = this.userListContext
       ctx.bindingsTarget.value = { id, username: String(target.username || '') }
       ctx.bindingsRows.value = []
+      // 换用户必须先把明文全部退回脱敏态：否则上一个用户的手机号会留在
+      // 这个用户的弹窗里（resetBindingReveals 的三个调用点之一）。
+      ctx.resetBindingReveals()
       ctx.clearBindingsFailure()
       ctx.bindingsModalKey.value += 1
       ctx.bindingsVisible.value = true
       await this.reloadBindings()
+    },
+    // revealBinding 揭示**单条**绑定值的明文（用户 2026-11-15 拍板）。
+    //
+    // 三条必须守住的边界：
+    //  1. 已揭示的直接 return —— 不能因为按钮被点第二次就再写一条审计
+    //     （后端每次调用都会留痕；重复调用等于污染审计）；
+    //  2. 在途判重（pending Set）—— loading 状态下的重复点击也要挡；
+    //  3. 失败必须**可见**：403/404/网络错误一律 message.error，不能默默无反应
+    //     （否则管理员会以为「这个号没有绑定值」而不是「我没权限 / 请求失败了」）。
+    async revealBinding(record) {
+      const ctx = this.userListContext
+      const target = record || {}
+      const id = Number(target.id)
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        message.warning('绑定记录参数错误')
+        return
+      }
+      if (ctx.isBindingRevealed(id)) return
+      if (ctx.isBindingRevealPending(id)) return
+      const pending = new Set(ctx.bindingRevealPendingIds.value)
+      pending.add(id)
+      ctx.bindingRevealPendingIds.value = pending
+      try {
+        const res = await revealBindingValue(id)
+        const body = res?.data
+        const row = body && typeof body === 'object' && body.data && typeof body.data === 'object' ? body.data : body
+        const status = res?.status
+        if (status === 403) {
+          message.error('无权限查看绑定值，请确认账号权限后再操作。')
+          return
+        }
+        if (status === 404) {
+          message.error('该绑定记录已不存在，请重新打开弹窗刷新列表。')
+          return
+        }
+        if (status !== 200 || !row || typeof row !== 'object' || typeof row.value !== 'string') {
+          message.error('绑定值读取未完成，请稍后重试。')
+          return
+        }
+        const values = new Map(ctx.bindingRevealValues.value)
+        values.set(id, row.value)
+        ctx.bindingRevealValues.value = values
+      } catch {
+        message.error('绑定值读取未完成，请稍后重试。')
+      } finally {
+        const remaining = new Set(ctx.bindingRevealPendingIds.value)
+        remaining.delete(id)
+        ctx.bindingRevealPendingIds.value = remaining
+      }
     },
     async reloadBindings() {
       const ctx = this.userListContext
@@ -2120,6 +2245,9 @@ export default defineComponent({
           return
         }
         ctx.bindingsRows.value = list.filter(item => item && typeof item === 'object').map(item => ({ ...item }))
+        // 列表换了内容 ⇒ 已揭示的明文不再对应当前这批行，必须重置
+        // （resetBindingReveals 的三个调用点之二）。
+        ctx.resetBindingReveals()
       } catch (error) {
         if (ownsFailure()) {
           setOwner(ownsFailure)
@@ -2134,6 +2262,9 @@ export default defineComponent({
       ctx.bindingsVisible.value = false
       ctx.invalidateBindings()
       ctx.bindingsRows.value = []
+      // 关窗即清空明文（resetBindingReveals 的三个调用点之三）：
+      // 明文只应存活在「管理员正在看这个弹窗」的那段时间里。
+      ctx.resetBindingReveals()
     },
     openBalanceModal() {
       const owner = this.userListContext.owner.capture()
@@ -2573,6 +2704,40 @@ export default defineComponent({
 <style scoped>
 .balance-adjust-button {
   margin-top: 8px;
+}
+
+/*
+  绑定值单元格：脱敏值/明文 + 「显示完整值」按钮在同一格里。
+  display:flex + 允许换行 —— 明文（13800001111）比脱敏值长，列宽 210 时
+  按钮必须能掉到下一行，否则在窄屏会被 overflow-wrap:anywhere 从中间切开，
+  那会让手机号看起来是错的。
+*/
+.binding-value-cell {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 2px 6px;
+  min-width: 0;
+}
+
+.binding-masked-cell,
+.binding-revealed-cell {
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* 明文用等宽数字 + 强调色：一眼能看出「这行已经被揭示过」。 */
+.binding-revealed-cell {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--console-text-primary, #1d1d1f);
+  font-weight: 600;
+}
+
+.binding-reveal-button {
+  padding: 0 4px;
+  height: auto;
+  font-size: 12px;
 }
 
 .user-page {
