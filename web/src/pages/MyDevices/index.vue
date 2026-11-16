@@ -68,8 +68,15 @@
           <span v-if="limitError" class="limit-error" role="alert">{{ limitError }}</span>
         </div>
       </div>
+      <!--
+        提示按「有上界 / 无上界」两种分支各自给完整句子。
+
+        原来写的是固定前缀「上限只能调低不能调高：」+ limitCeilingText，
+        而 limitCeilingText 在无上界时返回「你的等级本身不限设备数，可以设为任意非负整数」——
+        两句拼起来自相矛盾（等级不限时没有「调低」的概念），用户无法判断能不能调高。
+      -->
+      <p class="hint">{{ limitRuleText }}</p>
       <p class="hint">
-        上限只能调低不能调高：{{ limitCeilingText }}。
         调低后超出的设备不会被立刻踢下线，但新设备会被拒绝，直到在用台数降到上限以内。
       </p>
     </ConsolePanel>
@@ -249,7 +256,26 @@ export default {
       return '只能调低不能调高：上限不会超过你的等级权益。'
     })
 
-    const limitCeilingText = computed(() => {
+    // limitRuleText 是「上限规则」的完整句子，按有/无上界分两种分支。
+//
+// 为什么不能复用 limitCeilingText 当前缀拼接：
+// 无上界时它的句子是「你的等级本身不限设备数，可以设为任意非负整数」，
+// 前面再加「上限只能调低不能调高：」就变成
+//   「上限只能调低不能调高：你的等级本身不限设备数，可以设为任意非负整数。」
+// 前半句与后半句矛盾 —— 等级不限时当前生效值本来是 0/不限，
+// 没有「调低」的对象，用户会以为自己被限制住了。
+const limitRuleText = computed(() => {
+  if (!limitView.value.loaded) return '正在读取上限规则…'
+  if (!limitView.value.hasUpperBound) {
+    // 无上界：讲清「可以自己设一个上限」这件事，不谈「调高受限」。
+    return '你的等级本身不限设备数，可以自己设一个上限（任意非负整数）；' +
+      '设置后它就成为你的生效上限，之后只能在这个范围内调整。'
+  }
+  // 有上界：这才是「只能调低不能调高」成立的情形，且给出具体上界数字。
+  return `上限只能调低不能调高：当前等级上限 ${limitView.value.upperBound} 台，` +
+    '你的设置不会超过它。'
+})
+const limitCeilingText = computed(() => {
       if (!limitView.value.loaded) return '上界读取中'
       if (!limitView.value.hasUpperBound) return '你的等级本身不限设备数，可以设为任意非负整数'
       return `当前等级上限 ${limitView.value.upperBound} 台`
@@ -436,6 +462,7 @@ export default {
       loading, actionBusy, savingLimit, failure, notice, now,
       listView, limitView, limitDraft, limitError, limitEditable,
       limitText, limitHint, limitPanelDescription, limitCeilingText,
+      limitRuleText,
       limitInputId, columns, busy,
       reload, removeDevice, blockDevice, unblockDevice, saveDeviceLimit,
       hasAnyAction, describeLastSeen, maskDeviceId,
