@@ -301,7 +301,7 @@ jobs:
       # 而这不是代码问题 —— 是「CI 拿不到 gitignore 的二进制」这个结构性事实。
       # 所以正确做法是在 CI 里真把它造出来，而不是放宽 Dockerfile 的门槛。
       - name: 下载并放置 userexam-crypto.exe
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: userexam-crypto-exe-${{ github.sha }}
           path: tools/userexam-crypto/dist
