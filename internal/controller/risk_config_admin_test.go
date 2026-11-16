@@ -81,8 +81,12 @@ func TestRiskConfigListController(t *testing.T) {
 	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode: %v body=%s", err, resp.Body.String())
 	}
-	if len(body.Items) != 2 {
-		t.Fatalf("应返回 2 项非数值配置，实际 %d 项：%+v", len(body.Items), body.Items)
+	// 断言「返回全部已登记项」，而不是写死一个数字：
+	// 写死数字会让**新增配置项**这件事本身把测试弄红（本轮加凌晨时段两项就踩到了），
+	// 而测试真正要防的是「登记了却没返回」（漏项）。
+	if len(body.Items) != len(service.RiskConfigKeysForTest()) {
+		t.Fatalf("应返回全部 %d 项登记配置，实际 %d 项：%+v",
+			len(service.RiskConfigKeysForTest()), len(body.Items), body.Items)
 	}
 	byKey := map[string]service.RiskConfigItem{}
 	for _, item := range body.Items {

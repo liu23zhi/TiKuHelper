@@ -1629,10 +1629,17 @@ func collectTokenAbuseCandidates(db *gorm.DB, rule entity.RiskRule, now time.Tim
 
 // riskOffhoursStartHour / riskOffhoursEndHour 是夜间时段（北京时间）。
 //
-// 为什么硬编码而不是走 system_settings：R16 的判据形状是「时段内占比」，
-// 改时段会让历史记录的语义漂移（昨天的「凌晨」是 2-5 点，今天改成 3-6 点，
-// 那昨天那条告警的含义就变了）。而「连续 3 天」正好依赖历史可比性。
-// ⇒ 时段是**判据的一部分**，不是运营可调的运营参数。真要可配，必须先迁移历史。
+// # 2026-11-16 由 const 改为可配（用户要求）
+//
+// 原来的理由是：改时段会让历史记录语义漂移（昨天的「凌晨」是 2-5 点、
+// 今天改成 3-6 点，昨天那条告警含义就变了），而「连续 3 天」依赖历史可比性。
+//
+// 这个理由仍然成立，所以改可配后必须接受一个代价：**改时段之后，由旧时段算出的
+// 历史 risk_warnings 与新区间不再可比，连续天数可能一次性断开**（表现为该规则
+// 安静 N 天）。这是可接受的行为 —— 比「运营看着一个改不了的错误时段」要好。
+// 若要彻底消除漂移，需按告警时间戳回溯重算，那是另一个量级的改动。
+//
+// 校验规则见 riskOffhoursWindow 的注释（跨零点合法、只配一半整体回落）。
 //
 // 运营可调的两项（都通过管理页「规则阈值」区块写入，见 risk_threshold.go）：
 //   - `risk_rule_offhours_activity_threshold`：连续天数（整数，≥1）
@@ -1643,8 +1650,12 @@ func collectTokenAbuseCandidates(db *gorm.DB, rule entity.RiskRule, now time.Tim
 // 例如 0.9，而 `consecutiveDays < 1` 会让 R16 直接短路永不告警。
 // 见 riskThresholdSpec.SyncRuleColumn。
 const (
-	riskOffhoursStartHour = 2 // 02:00（含）
-	riskOffhoursEndHour   = 5 // 05:00（不含）
+	// 代码默认时段。配置缺失或非法时回落到这里。
+	riskOffhoursDefaultStartHour = 2 // 02:00（含）
+	riskOffhoursDefaultEndHour   = 5 // 05:00（不含）
+	// system_settings 键名（2026-11-16 由 const 改为可配）。
+	riskOffhoursStartSettingKey = "risk_offhours_start_hour"
+	riskOffhoursEndSettingKey   = "risk_offhours_end_hour"
 	// riskOffhoursShareSettingKey 是「凌晨占比阈值」（0-1 之间，默认 0.8）。
 	riskOffhoursShareSettingKey = "risk_offhours_share_threshold"
 	// riskOffhoursDefaultShare 默认 80%（96 §2.1 R16 原文「>80%」）。
@@ -1653,6 +1664,64 @@ const (
 	// 与规则行的阈值列同义（那一项通过管理页调整）。
 	riskOffhoursConsecutiveDays = 3
 )
+
+// riskOffhoursWindow 返回当前生效的凌晨时段 [start, end)（北京时间小时）。
+//
+// 三条校验规则，每条都有具体理由：
+//  1. 两端都必须是 0–23 的整数 —— 越界值**整体回落默认**，不做 clamp。
+//     clamp 会让「填 25」变成 23，运营看不到自己填错了。
+//  2. start == end 视为非法（零长度窗口）—— 那会让规则永不命中，
+//     而运营以为自己设了一个时段。
+//  3. **start > end 是合法的**（跨零点，如 22→6 表示晚 22 点到次日 6 点）。
+//     把「start > end 当非法」是最容易写错的一条判据 —— 它会拒掉最常用的跨夜配置。
+//
+// 另外：**只配了一半也整体回落默认**，不把另一半与默认值拼起来。否则运营只想改
+// 起点、实际却改变了整个判据（只填 start=0 会得到 0:00–5:00），而他无法从界面看出。
+func riskOffhoursWindow(db *gorm.DB) (int, int) {
+	if db == nil {
+		return riskOffhoursDefaultStartHour, riskOffhoursDefaultEndHour
+	}
+	rawStart := strings.TrimSpace(getSystemSettingStringWithDefault(db, riskOffhoursStartSettingKey, ""))
+	rawEnd := strings.TrimSpace(getSystemSettingStringWithDefault(db, riskOffhoursEndSettingKey, ""))
+	if rawStart == "" || rawEnd == "" {
+		return riskOffhoursDefaultStartHour, riskOffhoursDefaultEndHour
+	}
+	start, startErr := strconv.Atoi(rawStart)
+	end, endErr := strconv.Atoi(rawEnd)
+	if startErr != nil || endErr != nil {
+		return riskOffhoursDefaultStartHour, riskOffhoursDefaultEndHour
+	}
+	if start < 0 || start > 23 || end < 0 || end > 23 || start == end {
+		return riskOffhoursDefaultStartHour, riskOffhoursDefaultEndHour
+	}
+	return start, end
+}
+
+// riskOffhoursHourInWindow 判断某个小时是否落在 [start, end) 内，支持跨零点。
+//
+// 跨零点（start > end）时窗口是两段：[start, 24) 与 [0, end)。
+// 单独抽成函数是为了让这条语义能被直接测 —— SQL 表达式没法在单测里跑出跨零点行为。
+func riskOffhoursHourInWindow(hour, start, end int) bool {
+	if start < end {
+		return hour >= start && hour < end
+	}
+	return hour >= start || hour < end
+}
+
+// riskOffhoursWindowExpr 返回 SQL 里「该行落在凌晨时段内」的布尔表达式。
+//
+// 跨零点时必须展开成两个 OR 分支，不能写成 `hour >= start AND hour < end`
+// —— 那样 22→6 的窗口永远为空，规则静默失效（不报错、不告警）。
+func riskOffhoursWindowExpr(db *gorm.DB, column string) string {
+	start, end := riskOffhoursWindow(db)
+	hourExpr := riskOffhoursHourExpr(db, column)
+	if start < end {
+		return hourExpr + " >= " + strconv.Itoa(start) +
+			" AND " + hourExpr + " < " + strconv.Itoa(end)
+	}
+	return "(" + hourExpr + " >= " + strconv.Itoa(start) +
+		" OR " + hourExpr + " < " + strconv.Itoa(end) + ")"
+}
 
 // collectOffhoursActivityCandidates 收集「连续 N 天凌晨活动占比超阈值」的命中（96 §2.1 R16）。
 //
@@ -1704,10 +1773,9 @@ func collectOffhoursActivityCandidates(db *gorm.DB, rule entity.RiskRule, now ti
 		Offhour int64
 	}
 	var stat dayStat
-	offhourExpr := "CASE WHEN " + riskOffhoursHourExpr(db, "created_at") +
-		" >= " + strconv.Itoa(riskOffhoursStartHour) +
-		" AND " + riskOffhoursHourExpr(db, "created_at") +
-		" < " + strconv.Itoa(riskOffhoursEndHour) + " THEN 1 ELSE 0 END"
+	// 窗口来自配置（可跨零点）：riskOffhoursWindowExpr 内部已按 start/end 关系展开成
+	// 「单段 AND」或「跨零点 hour OR」两种形态，这里不再自己拼比较符。
+	offhourExpr := "CASE WHEN " + riskOffhoursWindowExpr(db, "created_at") + " THEN 1 ELSE 0 END"
 	if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.BillingRecord{}).
 		Select("COUNT(*) AS total, COALESCE(SUM("+offhourExpr+"), 0) AS offhour").
 		Where(timeExpr+" >= ? AND "+timeExpr+" < ?", startText, endText).
@@ -1789,12 +1857,15 @@ func collectOffhoursActivityCandidates(db *gorm.DB, rule entity.RiskRule, now ti
 		consecutiveMet = yesterdayExists > 0 && historyDates+1 >= int64(consecutiveDays)
 	}
 
+	// 记录当次生效的窗口：配置改了以后，历史告警仍能解释「当时按什么时段算」。
+	offhourStart, offhourEnd := riskOffhoursWindow(db)
+
 	detail, err := json.Marshal(map[string]any{
 		"ruleId":              rule.RuleID,
 		"subjectKey":          subject,
 		"date":                today,
-		"offhourStart":        riskOffhoursStartHour,
-		"offhourEnd":          riskOffhoursEndHour,
+		"offhourStart":        offhourStart,
+		"offhourEnd":          offhourEnd,
 		"totalBills":          stat.Total,
 		"offhourBills":        stat.Offhour,
 		"offhourShare":        roundRiskAmount(share),

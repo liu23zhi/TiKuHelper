@@ -50,6 +50,12 @@ const (
 	RiskConfigKindASNList = "asn_list"
 	// RiskConfigKindPositiveInt 是「1..1440 的整数」（评估间隔，单位分钟）。
 	RiskConfigKindPositiveInt = "positive_int"
+	// RiskConfigKindHourOfDay 是「0-23 的整点小时」（凌晨时段起止）。
+	//
+	// 与 positive_int 分开而不复用：两者语义完全不同 ——「1440 分钟」是时长，
+	// 「22 点」是时刻。共用会让前端只能出一个数字框、无法给出「允许跨零点」提示，
+	// 而跨零点正是最容易填错的地方。
+	RiskConfigKindHourOfDay = "hour_of_day"
 )
 
 var (
@@ -134,7 +140,47 @@ func riskConfigSpecs() []riskConfigSpec {
 			MinValue: 1,
 			MaxValue: 1440,
 		},
+		{
+			Key:          riskOffhoursStartSettingKey,
+			RuleID:       entity.RiskRuleIDOffhoursActivity,
+			Label:        "凌晨时段起点",
+			Kind:         RiskConfigKindHourOfDay,
+			DefaultValue: strconv.Itoa(riskOffhoursDefaultStartHour),
+			Unit:         "点",
+			Help: "0–23 的整点小时（含），默认 " + strconv.Itoa(riskOffhoursDefaultStartHour) +
+				"。⚠️ 必须与「时段终点」一起配置：只配一半会整体回落默认值，" +
+				"因为把一半和默认值拼起来会产生一个你没预期的新窗口。",
+			MinValue: 0,
+			MaxValue: 23,
+		},
+		{
+			Key:          riskOffhoursEndSettingKey,
+			RuleID:       entity.RiskRuleIDOffhoursActivity,
+			Label:        "凌晨时段终点",
+			Kind:         RiskConfigKindHourOfDay,
+			DefaultValue: strconv.Itoa(riskOffhoursDefaultEndHour),
+			Unit:         "点",
+			Help: "0–23 的整点小时（不含），默认 " + strconv.Itoa(riskOffhoursDefaultEndHour) +
+				"。**终点小于起点是合法的**（如起点 22、终点 6 = 晚 22 点到次日 6 点，跨零点）。" +
+				"起点与终点相同视为非法（零长度窗口，规则会永不命中）。",
+			MinValue: 0,
+			MaxValue: 23,
+		},
 	}
+}
+
+// RiskConfigKeysForTest 返回全部登记项的键集合（仅供跨包测试断言「有无漏项」）。
+//
+// 存在的理由：controller 侧的列表测试需要断言「返回了全部登记项」，而
+// riskConfigSpecs() 是包私有的。写死一个数字会让「新增配置项」本身把测试弄红，
+// 那种红与「接口漏返回某项」的红看起来一样，抓不到真缺陷。
+func RiskConfigKeysForTest() []string {
+	specs := riskConfigSpecs()
+	keys := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		keys = append(keys, spec.Key)
+	}
+	return keys
 }
 
 // riskConfigSpecByKey 查登记项（写接口的白名单判定）。
@@ -171,7 +217,9 @@ func validateRiskConfigValue(spec riskConfigSpec, value string) error {
 				ErrRiskConfigInvalid, spec.Label)
 		}
 		return nil
-	case RiskConfigKindPositiveInt:
+	// hour_of_day 与 positive_int 共用同一套**严格纯数字**校验（拒绝 1.5/1e3/+5/-5），
+	// 只是区间由 spec.MinValue/MaxValue 决定（小时是 0–23）。
+	case RiskConfigKindPositiveInt, RiskConfigKindHourOfDay:
 		trimmed := strings.TrimSpace(value)
 		if trimmed == "" {
 			return nil
@@ -206,7 +254,7 @@ func normalizeRiskConfigValue(spec riskConfigSpec, value string) string {
 	case RiskConfigKindASNList:
 		list := ParseProxyASNList(value)
 		return strings.Join(list, ",")
-	case RiskConfigKindPositiveInt:
+	case RiskConfigKindPositiveInt, RiskConfigKindHourOfDay:
 		return strings.TrimSpace(value)
 	default:
 		return strings.TrimSpace(value)

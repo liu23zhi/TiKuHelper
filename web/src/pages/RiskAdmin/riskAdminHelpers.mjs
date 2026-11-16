@@ -388,12 +388,17 @@ export const RISK_BUILTIN_RULE_NOTICE =
 const RISK_CONFIG_KIND_CONTROL = Object.freeze({
   asn_list: 'textarea',
   positive_int: 'number',
+  // hour_of_day 用数字框（0-23 整点），与 positive_int 同控件但语义是「时刻」。
+  // 不加这一项会让 riskAdminHelpers 的 if (!control) throw 整表报错 ——
+  // 表现是「风控配置区整块空白」，而不是「少了一项」。
+  hour_of_day: 'number',
 })
 
 // RISK_CONFIG_KIND_LABELS 是控件类型的中文说明（用于占位符/提示）。
 const RISK_CONFIG_KIND_LABELS = Object.freeze({
   asn_list: '名单',
   positive_int: '整数',
+  hour_of_day: '整点小时（0-23）',
 })
 
 // normalizeRiskConfigItems 校验并归一化 GET /risk/config 的响应。
@@ -451,6 +456,11 @@ export function describeRiskConfigEmptyMeaning(item) {
   }
   if (item.kind === 'positive_int') {
     return `留空 = 回到默认值 ${item.defaultValue}${item.unit ? ' ' + item.unit : ''}`
+  }
+  if (item.kind === 'hour_of_day') {
+    // 凌晨时段两项必须一起配：只配一半会整体回落默认（后端 riskOffhoursWindow 的判断），
+    // 所以这里明确提示「要和对面那项一起改」，而不是只说「留空回到默认」。
+    return `留空 = 回到默认值 ${item.defaultValue}${item.unit || ''}（需与另一项一起配置）`
   }
   return ''
 }
