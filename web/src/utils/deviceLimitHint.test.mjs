@@ -62,3 +62,15 @@ test('调低后的影响说明必须保留（那是用户最需要的行为承�
     '必须保留「调低后超出的设备不会被立刻踢下线」——那是用户做决定的关键信息',
   );
 });
+test('面板描述在无上界时也不能说「只能调低不能调高」', async () => {
+  const source = await read();
+  // limitPanelDescription 在 editable=true 后直接返回「只能调低不能调高」，
+  // 而 hasUpperBound=false 时这句话与「可设任意非负整数」相反。
+  const panel = source.match(/const limitPanelDescription = computed\([\s\S]*?\n\}\)/)
+  assert.ok(panel, '必须能定位 limitPanelDescription')
+  assert.match(
+    panel[0],
+    /hasUpperBound/,
+    'limitPanelDescription 必须按 hasUpperBound 分支，否则无上界时仍会说「只能调低不能调高」',
+  )
+})

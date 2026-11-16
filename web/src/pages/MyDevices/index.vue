@@ -253,6 +253,8 @@ export default {
       if (!limitView.value.loaded) return '正在读取当前生效的设备上限。'
       if (!limitView.value.hookReady) return '上限计算组件尚未就绪，暂时无法调整。'
       if (!limitView.value.editable) return '当前无法调整上限（数据表待迁移或等级信息缺失）。'
+      // 无上界时不能说「只能调低不能调高」—— 那与「可设任意非负整数」相反。
+      if (!limitView.value.hasUpperBound) return '你可以自己设一个上限；等级本身不限设备数，不设也不会被拦。'
       return '只能调低不能调高：上限不会超过你的等级权益。'
     })
 

@@ -45,8 +45,32 @@ export function readInt(value) {
  * 关键点：`upperBound` 为 null 表示「等级不限，无上界」；它不是「未知」，
  * 所以不能退回默认值。用 `hasUpperBound` 显式区分两种 nil。
  */
+// unwrapDevicePayload 剥掉后端 `{data: {...}}` 信封。
+//
+// 为什么需要它（真实缺陷，2026-11-16）：
+//   后端 controller/device_user.go 两个接口都是 c.JSON(200, gin.H{"data": view})，
+//   而传输层 buildResponsePayload（requestHelpers.mjs）把**整个响应体**放进 payload.data：
+//       const payload = { data: response?.data, ... }
+//   ⇒ 页面里 res.data === {data: view}，真正的字段在 res.data.data。
+//   原实现直接读 res.data.limit / res.data.devices，全是 undefined，于是：
+//     · 上限显示「未知」/来源「未知」/输入框禁用
+//     · 设备列表显示「还没有设备」
+//   两个现象同源，只修一个会留下另一个。
+//
+// 判据：**只在顶层缺少本函数关心的字段时才深入 data**。
+// 不能无条件 `raw.data || raw` —— 一个恰好同时有顶层 limit 与无关 data 字段的
+// 对象会被错误地降级到 data 里读，把合法值覆盖掉。
+export function unwrapDevicePayload(raw, probeKeys) {
+  const source = raw && typeof raw === 'object' ? raw : {}
+  const keys = Array.isArray(probeKeys) ? probeKeys : []
+  // 顶层已经带任一关心的字段 → 视为已解包，不再下钻。
+  if (keys.some((key) => source[key] !== undefined)) return source
+  const inner = source.data
+  if (inner && typeof inner === 'object' && !Array.isArray(inner)) return inner
+  return source
+}
 export function normalizeDeviceLimit(raw) {
-  const data = raw && typeof raw === 'object' ? raw : {}
+  const data = unwrapDevicePayload(raw, ['limit', 'source', 'unlimited', 'upperBound'])
   const upperRaw = data.upperBound
   const hasUpperBound = upperRaw !== null && upperRaw !== undefined
   const upper = hasUpperBound ? readInt(upperRaw) : null
@@ -170,7 +194,8 @@ export function normalizeDeviceItem(raw) {
 
 /** normalizeDeviceList 归一化 `GET /user/devices` 的 data。 */
 export function normalizeDeviceList(raw) {
-  const data = raw && typeof raw === 'object' ? raw : {}
+  // 同 normalizeDeviceLimit：后端返回 {data: {...}} 信封，必须剥掉。
+  const data = unwrapDevicePayload(raw, ['devices', 'total', 'active', 'blocked'])
   const list = Array.isArray(data.devices) ? data.devices : []
   return {
     loaded: true,
