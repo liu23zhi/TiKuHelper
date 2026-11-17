@@ -110,10 +110,30 @@ func ScriptRunSessionUsableAt(session entity.ScriptRunSession, now time.Time) bo
 }
 
 func claimScriptLeaseSlot(tx *gorm.DB, scriptID int32, now time.Time) error {
+	// 抢占时把旧会话标记为撤销，并写明原因（2026-11-17）。
+	//
+	// 这里的 WHERE 覆盖三种「旧会话已不可用」：已撤销、已过期、心跳缺失/过旧。
+	// 但**只有心跳相关的两种才该记 heartbeat_timeout** —— 已撤销的会话不该被
+	// 覆盖原因（它原本的 user_closed / admin_revoked 更重要），已过期的会话
+	// 则是正常到寿，不是心跳问题。
+	//
+	// 所以拆成两条 UPDATE：先处理「心跳有问题」的那部分，再兜住剩下的。
+	// 顺序不能反 —— 反了先把全部写成 heartbeat_timeout，第一条就无对象可写了。
 	if err := tx.Model(&entity.ScriptRunSession{}).Where(
-		"lease_slot = ? AND (revoked_at IS NOT NULL OR expires_at <= ? OR last_heartbeat_at IS NULL OR last_heartbeat_at <= ?)",
-		scriptID, now, now.Add(-ScriptHeartbeatTimeout)).
-		Updates(map[string]any{"lease_slot": nil, "revoked_at": now}).Error; err != nil {
+		"lease_slot = ? AND revoked_at IS NULL AND (last_heartbeat_at IS NULL OR last_heartbeat_at <= ?)",
+		scriptID, now.Add(-ScriptHeartbeatTimeout)).
+		Updates(map[string]any{
+			"lease_slot":     nil,
+			"revoked_at":     now,
+			"revoked_reason": entity.ScriptRevokeReasonHeartbeatTimeout,
+		}).Error; err != nil {
+		return err
+	}
+	// 剩余情况：已撤销（保留原原因，只清槽位）或已过期（正常到寿，不写原因）。
+	if err := tx.Model(&entity.ScriptRunSession{}).Where(
+		"lease_slot = ? AND (revoked_at IS NOT NULL OR expires_at <= ?)",
+		scriptID, now).
+		Updates(map[string]any{"lease_slot": nil}).Error; err != nil {
 		return err
 	}
 	var count int64

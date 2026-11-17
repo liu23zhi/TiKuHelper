@@ -9,6 +9,20 @@ const (
 	TableNameScriptRunSession    = "script_run_sessions"
 	ScriptBillingModeEscrow      = "escrow"
 	ScriptBillingModeActivation  = "activation_code"
+
+	// ScriptRevokeReasonHeartbeatTimeout 表示托管会话因心跳中断被撤销。
+	//
+	// 这是三种原因里**唯一需要主动报警**的一种：用户没有做任何操作，
+	// 是客户端停止发心跳导致令牌失效。用户看到「因为你电脑上的客户端
+	// 停止响应，本次答题令牌已撤销」才知道要去看客户端是否崩溃/断网，
+	// 而不是以为系统无故踢人。
+	ScriptRevokeReasonHeartbeatTimeout = "heartbeat_timeout"
+	// ScriptRevokeReasonUserClosed 表示用户自己关闭了脚本。
+	// 这是用户主动行为，通知区**不应**报警，只作为历史记录保留。
+	ScriptRevokeReasonUserClosed = "user_closed"
+	// ScriptRevokeReasonAdminRevoked 表示管理员强制撤销。
+	// 与 user_closed 分开是因为用户需要知道「不是我自己关的」。
+	ScriptRevokeReasonAdminRevoked = "admin_revoked"
 )
 
 // ScriptVersion is an administrator-uploaded, reusable executable release.
@@ -96,7 +110,22 @@ type ScriptRunSession struct {
 	ActivatedAt     time.Time  `gorm:"column:activated_at;not null;index" json:"activatedAt"`
 	ExpiresAt       time.Time  `gorm:"column:expires_at;not null;index" json:"expiresAt"`
 	RevokedAt       *time.Time `gorm:"column:revoked_at;index" json:"revokedAt,omitempty"`
-	CreatedAt       time.Time  `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
+	// RevokedReason 记录**为什么**被撤销，供「我的脚本」通知区区分处置动作。
+	//
+	// 空串 = 没有撤销（正常到寿或仍在运行）。这与 RevokedAt 非空但原因为空
+	// 是不同的状态：后者是历史数据（本列加入前撤销的会话），前端应显示
+	// 「已撤销」而不猜原因。
+	//
+	// 取值（见 ScriptRevokeReason* 常量）：
+	//   heartbeat_timeout → 托管会话心跳中断，被后来者抢占。**要报警**：
+	//                       用户没主动做任何事，是客户端出了问题。
+	//   user_closed       → 用户自己关闭脚本。**不报警**。
+	//   admin_revoked     → 管理员强制撤销。**要提示**，但措辞与前者不同。
+	//
+	// ⚠️ 「到期」不是撤销，不得写本列。到寿是正常结束，每次都报警会让
+	// 通知区变成噪音，真有异常时用户已经学会忽略它了。
+	RevokedReason string    `gorm:"column:revoked_reason;type:varchar(32);not null;default:''" json:"revokedReason,omitempty"`
+	CreatedAt     time.Time `gorm:"column:created_at;autoCreateTime" json:"createdAt"`
 }
 
 func (*ScriptRunSession) TableName() string { return TableNameScriptRunSession }

@@ -97,6 +97,19 @@
 
     <ConsolePanel title="脚本指令" :description="scopeDescription">
       <a-alert v-if="readError" type="error" show-icon :message="readError" class="page-alert" />
+      <!-- 通知区（2026-11-17 用户需求）。
+           「显示因为没有心跳被撤销令牌等信息」——只展示需要用户知道的撤销，
+           正常到寿与用户自己关闭都不出现（那时候说什么都是噪音）。
+           排序由 collectScriptRevokeNotices 保证：warning 永远在最前。 -->
+      <a-alert
+        v-for="notice in revokeNotices"
+        :key="'revoke-' + notice.scriptId + '-' + notice.reason"
+        :type="scriptNoticeAlertType(notice.level)"
+        show-icon
+        class="page-alert"
+        :message="'脚本「' + notice.scriptName + '」：' + notice.message"
+        :description="notice.hint"
+      />
       <ConsoleTableShell label="脚本指令列表">
         <a-table bordered table-layout="fixed" :data-source="rows" :columns="columns" :loading="loading" :pagination="false" row-key="id" :scroll="{ x: tableScrollX }">
           <template #bodyCell="{ column, record }">
@@ -248,6 +261,7 @@ import { getCurrentUserLogoutEpoch, getStoredCurrentUser, isAdminUser, useCurren
 import { useUnsavedDraft } from '@/utils/useUnsavedDraft'
 import { createScript, deleteScript, getScripts, getScriptDomainFormats, getScriptDomainSettings, getScriptVersions, updateScript, updateScriptDomainSettings, uploadScriptVersion, getScriptEscrowPolicy, updateScriptEscrowPolicy, getScriptActivationCodePrice, updateScriptActivationCodePrice, purchaseScriptActivationCode, redeemScriptActivationCode } from '@/api/TikuComponentApi'
 import { buildScriptBillingText, buildScriptCommand, buildScriptDownloadURL, buildScriptListParams, buildScriptSavePayload, formatPresetParams, normalizeScriptRecord, normalizeScriptRows } from '@/utils/scriptManagementHelpers.mjs'
+import { collectScriptRevokeNotices, scriptNoticeAlertType } from '@/utils/scriptRevokeNotice.mjs'
 import { buildScriptDomainForms, parseScriptDomainFormat, splitScriptDomainForFormat } from '@/utils/scriptDomainFormats.mjs'
 import { describeScriptAdminAction, describeScriptUploadGate } from '@/utils/scriptUploadGate.mjs'
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
@@ -345,6 +359,11 @@ const isAdmin = computed(() => {
 })
 const showAll = ref(false)
 const rows = ref([])
+// 通知区数据（2026-11-17）。从 rows 派生而不是独立请求：
+//   1. 撤销状态本来就随列表一起返回（后端 revokeNotice 字段），再查一次会不一致；
+//   2. rows 刷新时通知自动跟着更新，不需要额外维护失效逻辑。
+// warning 排在 info 前的排序由 collectScriptRevokeNotices 负责（见其单测）。
+const revokeNotices = computed(() => collectScriptRevokeNotices(rows.value))
 const loading = ref(false)
 const uploading = ref(false)
 const uploadVersion = ref('')

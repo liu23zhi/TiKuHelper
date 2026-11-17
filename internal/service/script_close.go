@@ -132,8 +132,17 @@ func revokeClosedScriptCredentialsInTx(tx *gorm.DB, script entity.UserScript, no
 			return err
 		}
 	}
+	// 撤销在跑的会话，并写明原因（2026-11-17）。
+	//
+	// 只对**尚未撤销**的行写原因：已经因心跳超时被撤销的会话，它的
+	// heartbeat_timeout 才是用户最需要看到的信息（那才是异常），
+	// 用户随后关闭脚本不该把那条原因抹成 user_closed。
 	return tx.Model(&entity.ScriptRunSession{}).Where("script_id = ? AND revoked_at IS NULL", script.ID).
-		Updates(map[string]any{"revoked_at": now, "lease_slot": nil}).Error
+		Updates(map[string]any{
+			"revoked_at":     now,
+			"revoked_reason": entity.ScriptRevokeReasonUserClosed,
+			"lease_slot":     nil,
+		}).Error
 }
 
 func deleteNonEscrowScriptInTx(tx *gorm.DB, script entity.UserScript, now time.Time) error {

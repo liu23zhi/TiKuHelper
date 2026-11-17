@@ -847,6 +847,15 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 	if err := runStartupMigration("ensureScriptPriceMultiplierSchema", func() error { return ensureScriptPriceMultiplierSchema(db) }); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare script answer price schema fail: %w", err))
 	}
+	// 会话撤销原因（2026-11-17）：「我的脚本」通知区要靠它区分「心跳中断」
+	// 与「用户自己关闭」。缺列不会让任何查询报错（本列只读不参与 WHERE），
+	// 但会让通知区对所有撤销都只能说「已撤销」—— 属于「静默失去诊断能力」，
+	// 因此与其它结构性列一样按 Fatal 处理，宁可启动失败也不带病上线。
+	if err := runStartupMigration("ensureScriptRunSessionRevokeReasonSchema", func() error {
+		return ensureScriptRunSessionRevokeReasonSchema(db)
+	}); err != nil {
+		logger.FatalLog(fmt.Errorf("prepare script run session revoke reason schema fail: %w", err))
+	}
 
 	// 邀请码与充值返佣：建 referral_invites / referral_rebates 表，并给 users 补归因两列。
 	// 结构性失败 FATAL（要让人看见）；标记写失败只记日志，下次启动幂等重跑。

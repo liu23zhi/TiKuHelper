@@ -121,6 +121,19 @@ type ScriptListItem struct {
 	Command               string `json:"command"`
 	DownloadURL           string `json:"downloadUrl"`
 	EscrowAvailableMicros *int64 `json:"escrowAvailableMicros,omitempty"`
+	// RevokeNotice 是「我的脚本」通知区的一条提示；nil = 无需提示。
+	//
+	// 用指针而不是值：前端要能区分「后端说没事」（字段存在且为空）
+	// 与「后端漏了这个字段」（undefined）。前者不该渲染任何东西，
+	// 后者应该在前端测试里被发现 —— 用值类型两者会被 JSON 省略成一样。
+	//
+	// 取值见 service.BuildScriptRevokeNotice。
+	//
+	// ⚠️ `gorm:"-"` 不可省：本结构体被 GORM 直接 Find(&[]ScriptListItem) 用作
+	// 查询目标，没有这个标记时 GORM 会把 RevokeNotice 当成**关联字段**去推断
+	// 外键，报 "define a valid foreign key for relations"。本字段完全由
+	// attachScriptRevokeNotices 在查询之后填充，不参与任何 SQL。
+	RevokeNotice *ScriptRevokeNotice `gorm:"-" json:"revokeNotice,omitempty"`
 }
 
 type ScriptExchangeGrant struct {
@@ -533,7 +546,62 @@ func ListUserScriptsWithDB(db *gorm.DB, operator entity.User, all bool) ([]Scrip
 			result[i].Command, result[i].Instruction = "", ""
 		}
 	}
+	// 撤销通知（2026-11-17）：一次批量查询覆盖全部脚本，不做 N+1。
+	//
+	// 只取**最近一条**会话（按 id 倒序）作为该脚本的当前状态：
+	// 通知区要回答的是「我上一次跑的那场怎么了」，
+	// 更早的历史会话与当前操作无关，显示出来只会让人困惑。
+	if err := attachScriptRevokeNotices(db, result); err != nil {
+		// 失败不阻断列表：通知是辅助信息，读不到就不显示。
+		// 与「设备池 fail-open」同一条纪律 —— 辅助功能不该让主功能 500。
+		return result, nil
+	}
 	return result, nil
+}
+
+// attachScriptRevokeNotices 给列表项挂上撤销通知（批量查询，避免 N+1）。
+func attachScriptRevokeNotices(db *gorm.DB, items []ScriptListItem) error {
+	if db == nil || len(items) == 0 {
+		return nil
+	}
+	ids := make([]int32, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, item.ID)
+	}
+	var sessions []entity.ScriptRunSession
+	if err := db.Session(&gorm.Session{NewDB: true}).
+		Select("id", "script_id", "revoked_at", "revoked_reason", "expires_at").
+		Where("script_id IN ?", ids).Order("id desc").Find(&sessions).Error; err != nil {
+		return err
+	}
+	// 每个 script_id 只保留 id 最大的那条（查询已按 id desc，首次命中即最新）。
+	latest := make(map[int32]entity.ScriptRunSession, len(ids))
+	for _, session := range sessions {
+		if _, seen := latest[session.ScriptID]; seen {
+			continue
+		}
+		latest[session.ScriptID] = session
+	}
+	now := time.Now()
+	for i := range items {
+		session, ok := latest[items[i].ID]
+		if !ok {
+			continue
+		}
+		notice := BuildScriptRevokeNotice(ScriptRevokeNoticeInput{
+			RevokedAt:     session.RevokedAt,
+			RevokedReason: session.RevokedReason,
+			ExpiresAt:     session.ExpiresAt,
+			Now:           now,
+		})
+		if notice.Level == ScriptNoticeNone {
+			continue
+		}
+		// 循环变量取地址会全部指向同一个值，必须拷一份。
+		attached := notice
+		items[i].RevokeNotice = &attached
+	}
+	return nil
 }
 
 func UpdateUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32, input UpdateUserScriptInput) (ScriptListItem, error) {
