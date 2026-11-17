@@ -10,67 +10,94 @@ import (
 	"gorm.io/gorm"
 )
 
-// 本文件钉住设备池的**准入判定**（T-25 判定侧）在 HTTP 层的接线。
+// 本文件钉住「Web UI 登录**不受设备池约束**」这条契约（2026-11-17 用户定案）。
 //
-// 为什么必须单独一个文件：`device_pool_hook_test.go` 的
-// TestDevicePoolLimitEnforcedByLevel 直接调 service.CanUseDevice ——
-// 它证明「判定逻辑对」，但**完全不能证明有任何 handler 调用它**。
+// # 背景：这里原来钉的是相反的东西
 //
-// 实测就是这样漏的：service 层 12 条用例全绿、登记侧也接好了，
-// 但请求路径上一次判定都没发生 —— 登记照写、计数照准，却永远不拦人。
-// 这是本仓反复出现的「实现层对、接线层空」形态（与 router.go 那 33 个
-// 未挂 handler 同源）。
+// 旧设计里登录路径调 enforceAccountDeviceLimit，用 UA 哈希当设备标识去判台数。
+// 用户明确要求改成：
+//
+//	「Web UI 登录不需要查看设备上限，确保只能在一个设备登录即可」
+//
+// 两件事被拆开了：
+//
+//	设备池（X-Device-Id）  → 只约束 chaoxing 调 API 的台数，由 middleware.DeviceLimit 判定
+//	Web UI 单设备登录      → 由 login_session_id（JWT 的 sid claim）保证
+//
+// # 为什么必须拆开
+//
+// 登录时拿不到 chaoxing 的 X-Device-Id，只能退化成 UA 哈希。那个哈希与 API
+// 路径的 device_id 不是同一个键，于是会出现「登录被设备池拦下、但同一台机器调
+// API 完全正常」的自相矛盾状态 —— 而且拦截依据是一台从未登记过的幽灵设备。
+//
+// # 这些用例为什么不能直接删
+//
+// 删掉就没人防「哪天有人把 enforceAccountDeviceLimit 加回登录路径」。
+// 所以判据反转为「必须没有」，与上面 device_pool_hook_test.go 的接线断言配套。
 
-// TestDevicePoolLoginBlockedWhenLimitExceeded 是这条接线的行为级主判据。
+// TestDevicePoolLoginIgnoresDeviceLimit 是这条契约的行为级主判据。
 //
-// 场景：等级上限 2 台，已登记 2 台，第 3 台登录必须被 403 挡住。
-func TestDevicePoolLoginBlockedWhenLimitExceeded(t *testing.T) {
+// 场景：等级上限 2 台、总开关打开、且该用户名下已经登记了 2 台设备（额度用满）。
+// 此时从第 3 个「UA」（= 旧口径下的第 3 台设备）登录，**必须成功**。
+//
+// 关键点：旧的 TestDevicePoolLoginBlockedWhenLimitExceeded 在完全相同的前置下
+// 要求 403。这条用例的存在本身就证明了行为已经反转，两者不可能同时为真。
+func TestDevicePoolLoginIgnoresDeviceLimit(t *testing.T) {
 	db := newDevicePoolHookDB(t)
 	stubCtrlCaptcha(t, nil)
 	levelID := seedDevicePoolHookLevel(t, db, 1, 2)
 	user, password := seedDevicePoolHookUser(t, db, "devpool-enforce", levelID)
 
-	// 打开总开关：默认是关的（device_limit_enabled=false），
-	// 不打开的话 CanUseDeviceWithSwitch 会直接放行，这条用例就测不到东西。
+	// 打开总开关：证明「登录不查上限」不是因为开关关着，而是路径上根本没这段逻辑。
 	enableDeviceLimit(t, db, true)
 
-	// 先用两台设备登录，把额度用满。
-	for _, ua := range []string{"Agent/one", "Agent/two"} {
-		rec := loginWithUserAgent(t, user.Username, password, ua)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("额度内的登录必须成功，UA=%s got %d body=%s", ua, rec.Code, rec.Body.String())
+	// 预置 2 台已登记设备，把额度占满（直接写库，不经登录 —— 登录已不登记）。
+	for _, deviceID := range []string{"preexisting-a", "preexisting-b"} {
+		if _, err := service.RegisterDevice(db, user.ID, deviceID); err != nil {
+			t.Fatalf("预置设备 %s 失败: %v", deviceID, err)
 		}
-		drainDeviceWrites(t, user.ID, "")
 	}
 	rows := waitForDeviceRows(t, db, user.ID, 2)
 	if len(rows) != 2 {
-		t.Fatalf("应先有 2 台已登记设备，实际 %d", len(rows))
+		t.Fatalf("前置不成立：应先有 2 台已登记设备，实际 %d", len(rows))
 	}
 
-	// 第 3 台：必须被拒，且是 403 + 稳定 code。
-	third := loginWithUserAgent(t, user.Username, password, "Agent/three")
-	if third.Code != http.StatusForbidden {
-		t.Fatalf("第 3 台设备必须被 403 拒绝，实际 %d body=%s", third.Code, third.Body.String())
+	// 先确认这 2 台确实把额度占满了 —— 否则「登录放行」可能只是额度没满。
+	third := service.CanUseDevice(db, user.ID, "brand-new-device")
+	if third.Allowed {
+		t.Fatalf("前置不成立：上限 2 台的账号，第 3 台应被判定为超限，实际 %+v", third)
 	}
-	body := third.Body.String()
-	if !strings.Contains(body, "DEVICE_LIMIT_EXCEEDED") {
-		t.Fatalf("拒绝响应必须带稳定 code DEVICE_LIMIT_EXCEEDED（前端据此引导清理设备），实际 %s", body)
-	}
-	// 拒绝时不得签发 JWT —— 否则「拒绝」只是安慰，用户已经拿到访问权。
-	if strings.Contains(body, `"jwt"`) {
-		t.Fatalf("被拒的登录不得签发 JWT，实际 %s", body)
+	if third.Reason != "limit-exceeded" {
+		t.Fatalf("前置不成立：第 3 台的拒绝原因应是 limit-exceeded，实际 %q", third.Reason)
 	}
 
-	// 被拒的那台不该留下设备行（拒绝路径不登记，否则用户试几次就把额度耗光）。
-	after := waitForDeviceRows(t, db, user.ID, 2)
-	if len(after) != 2 {
-		t.Fatalf("被拒设备不得写入设备表，期望仍 2 行，实际 %d", len(after))
+	// 核心断言：额度已满，登录仍然成功并签发 JWT。
+	rec := loginWithUserAgent(t, user.Username, password, "Agent/third")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Web UI 登录不受设备池约束：额度满也必须成功，实际 %d body=%s",
+			rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"jwt"`) {
+		t.Fatalf("登录成功必须签发 JWT，实际 %s", rec.Body.String())
+	}
+
+	// 登录不得改动设备表：仍是预置的那 2 行，不多不少、ID 也没变。
+	//
+	// 传 want=2 而不是 0：这 2 行是上面故意预置的「已占满额度」的设备。
+	// 断言「行数仍是 2」同时排除了两件事：登录新增行（会变 3）、
+	// 以及登录把预置行删掉/重建（行数可能仍是 2，但 ID 会变 —— 下一行兜住）。
+	after := assertNoDeviceRows(t, db, user.ID, 2)
+	if after[0].ID != rows[0].ID || after[1].ID != rows[1].ID {
+		t.Fatalf("登录不得重建已有设备行：IDs %v -> %v",
+			[]int64{rows[0].ID, rows[1].ID}, []int64{after[0].ID, after[1].ID})
 	}
 }
 
-// TestDevicePoolLoginAllowedWhenSwitchOff 是 fail-open 的同层对照。
+// TestDevicePoolLoginAllowedWhenSwitchOff 是同一契约在「开关关闭」下的对照。
 //
-// 开关关闭时一切照旧 —— 这是本功能的默认状态，必须证明它不会误伤。
+// 保留它是为了覆盖两个独立变量：开关开/关 × 登录放行。
+// 只有开关关闭时放行，可能是「开关没生效」；只有开关打开时放行，
+// 才说明登录路径真的不看设备池。
 func TestDevicePoolLoginAllowedWhenSwitchOff(t *testing.T) {
 	db := newDevicePoolHookDB(t)
 	stubCtrlCaptcha(t, nil)
@@ -79,22 +106,23 @@ func TestDevicePoolLoginAllowedWhenSwitchOff(t *testing.T) {
 
 	enableDeviceLimit(t, db, false)
 
-	// 上限 1 台，连登 3 台不同设备，全部必须成功。
+	// 上限 1 台，连登 3 个不同 UA，全部必须成功。
 	for _, ua := range []string{"Agent/a", "Agent/b", "Agent/c"} {
 		rec := loginWithUserAgent(t, user.Username, password, ua)
 		if rec.Code != http.StatusOK {
-			t.Fatalf("开关关闭时登录不得被设备上限挡住，UA=%s got %d body=%s", ua, rec.Code, rec.Body.String())
+			t.Fatalf("开关关闭时登录不得被设备上限挡住，UA=%s got %d body=%s",
+				ua, rec.Code, rec.Body.String())
 		}
-		drainDeviceWrites(t, user.ID, "")
 	}
+	assertNoDeviceRows(t, db, user.ID, 0)
 }
 
-// TestDevicePoolAlreadyRegisteredDeviceStillAllowedWhenFull 是「第 6 步先于第 7 步」
-// 在 HTTP 层的对照：额度用满后，**已登记**的那台设备仍必须能登录。
+// TestDevicePoolLoginNeverRegistersDevice 把「登录不写设备表」钉在额度边界上。
 //
-// 这一条防的是「用户被自己的旧设备锁在门外」—— 顺序反了会表现为
-// 「换了个网络（UA 不变）就登不进去」，极难排查。
-func TestDevicePoolAlreadyRegisteredDeviceStillAllowedWhenFull(t *testing.T) {
+// 与 TestDevicePoolLoginIgnoresDeviceLimit 的分工：那条在「额度已满」时断登录放行，
+// 这条在「额度为空」时断登录不写 —— 两个方向都堵住，避免「额度满时才不写」
+// 这类半对半错的实现蒙混过去。
+func TestDevicePoolLoginNeverRegistersDevice(t *testing.T) {
 	db := newDevicePoolHookDB(t)
 	stubCtrlCaptcha(t, nil)
 	levelID := seedDevicePoolHookLevel(t, db, 1, 1)
@@ -102,57 +130,63 @@ func TestDevicePoolAlreadyRegisteredDeviceStillAllowedWhenFull(t *testing.T) {
 
 	enableDeviceLimit(t, db, true)
 
-	first := loginWithUserAgent(t, user.Username, password, "Agent/only")
-	if first.Code != http.StatusOK {
-		t.Fatalf("首台登录必须成功，got %d body=%s", first.Code, first.Body.String())
+	// 额度 1 台、当前 0 台：这是旧设计下「必然会写一行」的场景。
+	for round := 1; round <= 3; round++ {
+		rec := loginWithUserAgent(t, user.Username, password, "Agent/only")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("第 %d 次登录必须成功，got %d body=%s", round, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"jwt"`) {
+			t.Fatalf("第 %d 次登录必须签发 JWT，实际 %s", round, rec.Body.String())
+		}
 	}
-	drainDeviceWrites(t, user.ID, "")
-	waitForDeviceRows(t, db, user.ID, 1)
-
-	// 同一台设备再次登录：额度已满，但它已登记 ⇒ 必须放行。
-	again := loginWithUserAgent(t, user.Username, password, "Agent/only")
-	if again.Code != http.StatusOK {
-		t.Fatalf("已登记设备在额度满时仍须放行（否则用户被自己的设备锁在门外），got %d body=%s", again.Code, again.Body.String())
-	}
-	if !strings.Contains(again.Body.String(), `"jwt"`) {
-		t.Fatalf("放行时必须签发 JWT，实际 %s", again.Body.String())
-	}
+	// 连登 3 次后设备表仍然为空：登录路径一次都没碰设备池。
+	assertNoDeviceRows(t, db, user.ID, 0)
 }
 
-// TestDevicePoolEnforceIsCalledBeforeIssuingToken 是源码级接线断言。
+// TestDevicePoolEnforceNotCalledFromSessionHandlers 是源码级接线断言（判据反转版）。
 //
-// 行为用例只能证明「被拒时没有 jwt」；但如果实现是「先 setAuthCookie 再判定然后
-// 清 cookie」，行为上也可能表现正确。这里钉住**顺序**：
-// enforceAccountDeviceLimit 的调用必须出现在 setAuthCookie 之前。
-func TestDevicePoolEnforceIsCalledBeforeIssuingToken(t *testing.T) {
+// 旧用例 TestDevicePoolEnforceIsCalledBeforeIssuingToken 要求
+// enforceAccountDeviceLimit 出现在 setAuthCookie 之前。现在要求它**完全不出现**。
+//
+// 为什么行为用例不够：行为用例只能观察「这次请求没被拦」。若将来有人把
+//   if !enforceAccountDeviceLimit(c, user.ID) { return }
+// 加回去，只有在「额度刚好满 + 开关刚好开」的特定数据下才会表现异常，
+// 常规回归跑不出来。源码断言是唯一能立刻变红的防线。
+func TestDevicePoolEnforceNotCalledFromSessionHandlers(t *testing.T) {
 	source := readControllerSource(t, "user.go")
 
-	// 两处「获得访问权」的入口：密码登录与短信登录。
 	for _, marker := range []string{
 		"func UserLogin(c *gin.Context) {",
 		"func UserSMSLogin(c *gin.Context) {",
+		"func BindCurrentUserWechat(c *gin.Context) {",
+		"func BindCurrentUserWechatByCode(c *gin.Context) {",
 	} {
-		start := strings.Index(source, marker)
-		if start < 0 {
-			t.Fatalf("找不到 %s —— 函数被改名了？本用例的路径假设已失效", marker)
+		body := functionBodyOf(t, source, marker)
+		if strings.Contains(body, "enforceAccountDeviceLimit(") {
+			t.Fatalf("%s 调用了 enforceAccountDeviceLimit —— Web UI 登录/换绑不得查看设备上限"+
+				"（设备池只管 chaoxing 调 API 的台数；单设备登录由 login_session_id 保证）", marker)
 		}
-		end := len(source)
-		if next := strings.Index(source[start+len(marker):], "\nfunc "); next >= 0 {
-			end = start + len(marker) + next
-		}
-		body := source[start:end]
-		enforceAt := strings.Index(body, "enforceAccountDeviceLimit(")
-		cookieAt := strings.Index(body, "setAuthCookie(")
-		if enforceAt < 0 {
-			t.Fatalf("%s 没有调用 enforceAccountDeviceLimit —— 准入判定没接上，设备上限永远不拦人", marker)
-		}
-		if cookieAt < 0 {
-			t.Fatalf("%s 找不到 setAuthCookie，本用例的路径假设已失效", marker)
-		}
-		if enforceAt > cookieAt {
-			t.Fatalf("%s 里 enforceAccountDeviceLimit 出现在 setAuthCookie 之后 —— "+
-				"后置判定的结论写不进已发出的响应，用户已经拿到 cookie 了", marker)
-		}
+	}
+}
+
+// TestWebUISingleSessionIsGuaranteedByLoginSessionID 钉住「只能一台设备登录」的
+// 真实实现位置，防止它被误认为由设备池提供。
+//
+// 用户要求「确保只能在一个设备登录即可」。这个能力**已经存在**，机制是：
+//
+//	IssueUserLoginJWTWithDB 每次登录生成新的 login_session_id 写回 users，
+//	JWT 里带 sid claim；Auth 中间件比对不一致即失效 ⇒ 旧设备自动踢下线。
+//
+// 这条用例断言这两个环节都还在。若哪天 login_session_id 被删掉，
+// 「单设备登录」会静默失效（多设备都能用），而设备池接不接得住这个需求 —— 接不住。
+func TestWebUISingleSessionIsGuaranteedByLoginSessionID(t *testing.T) {
+	authSource := readServiceSource(t, "auth_session.go")
+	if !strings.Contains(authSource, "login_session_id") {
+		t.Fatal("auth_session.go 不再写 login_session_id —— 单设备登录会静默失效")
+	}
+	if !strings.Contains(authSource, "GenerateJwtForUserSession") {
+		t.Fatal("auth_session.go 不再把 session 编进 JWT —— sid claim 缺失会让旧 JWT 无法作废")
 	}
 }
 

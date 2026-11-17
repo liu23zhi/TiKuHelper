@@ -2,7 +2,7 @@
   <div class="console-page my-devices-page">
     <ConsolePageHeading
       title="我的设备"
-      description="设备上限是账号权益的一部分。用满后可以在下面移除不再使用的设备释放名额；被移除的设备下次登录会被静默重新绑定，所以想彻底停用请用「拉黑」。"
+      description="这里列出的都是调 API 的客户端设备（浏览器扩展 / 考试客户端），不包含你在网页后台的登录。设备上限是账号权益的一部分；用满后可以在下面移除不再使用的设备释放名额，被移除的设备下次调 API 会被静默重新绑定，所以想彻底停用请用「拉黑」。"
     >
       <template #actions>
         <a-button :loading="loading" :disabled="busy()" @click="reload">刷新</a-button>

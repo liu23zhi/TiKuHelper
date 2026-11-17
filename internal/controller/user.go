@@ -429,16 +429,25 @@ func UserLogin(c *gin.Context) {
 	loginGate.succeed(payload.Username)
 	bindSuccessfulVerification(*user, captchaToken, service.CaptchaSceneLoginPassword, service.SMSVerificationEvidence{})
 	recordAccountAudit(c, user, "auth", logActionLogin, "用户登录成功", map[string]any{"status": "success", "message": "用户登录成功", "scene": "password"})
-	// 设备池准入（T-25 判定侧）：同步、且在 setAuthCookie 之前 ——
-	// 异步判定的结论写不进已经发出的响应，用户已经拿到 cookie 再判「该拒绝」
-	// 就只是事后通知。被拒时本函数已写好 403，直接 return。
-	if !enforceAccountDeviceLimit(c, user.ID) {
-		return
-	}
-	// 设备指纹登记（T-25 采集侧）：异步 + fail-open，失败只记 SysLog。
-	// 位置：凭据已验过、token 已签发之后 —— 失败登录不该在设备表里留痕，
-	// 否则撞库会顺带把账号的设备额度打满（DoS 一个用户只需试错几次）。
-	_ = recordAccountDeviceBinding(c, user.ID)
+	// ⚠️ 登录路径**既不登记设备、也不做设备准入**（2026-11-17 用户定案）。
+	//
+	// 用户口径（原话）：「Web UI 登录不需要查看设备上限，确保只能在一个设备登录即可」。
+	//
+	// 两件事分开看：
+	//
+	//  1. 设备池（X-Device-Id）只约束 chaoxing 调 API 的台数，由
+	//     middleware.DeviceLimit 在 /api/search 等业务路由上判定并登记。
+	//     Web UI 登录不占那批名额，也不该出现在「我的设备」里。
+	//
+	//  2. Web UI 的「只能一台设备登录」由**会话**机制保证，与设备池无关：
+	//     IssueUserLoginJWTWithDB 每次登录都生成新的 login_session_id 写回 users，
+	//     JWT 里带 `sid` claim；Auth 中间件比对不一致即视为失效。
+	//     所以新设备登录会让旧设备的 JWT 立刻作废 —— 这正是「单设备登录」。
+	//
+	// 为什么必须把 enforceAccountDeviceLimit 也去掉：登录时拿不到 chaoxing 的
+	// X-Device-Id，只能退化成 UA 哈希当设备标识。那个哈希与 API 路径的
+	// device_id 不是同一个键，于是会出现「登录被设备池拦下、但该设备调 API 完全正常」
+	// 的自相矛盾状态，且拦截依据是一台从未登记过的「幽灵设备」。
 	setAuthCookie(c, token)
 	c.JSON(http.StatusOK, gin.H{"message": "user login", "jwt": token})
 }
@@ -1039,10 +1048,14 @@ func BindCurrentUserWechat(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
-	// 换绑成功后的设备指纹登记（T-25 采集侧）：异步 + fail-open。
-	// 为什么换绑也要记：换绑常发生在**新设备**上（旧设备丢了/换手机），
-	// 那恰恰是「第一次见到这台设备」的时刻；漏记它会让设备池永远学不到新设备。
-	_ = recordAccountDeviceBinding(c, currentUser.ID)
+	// ⚠️ 换绑**不再**登记设备（2026-11-17 用户定案，与 UserLogin 同一理由）。
+	//
+	// 原注释说「换绑常发生在**新设备**上，那恰恰是第一次见到这台设备」——
+	// 那个论证在旧设计（登录即登记）下成立，但设备池的语义已收窄为
+	// 「chaoxing 调 API 的设备」。在 Web UI 里换绑微信不等于「新设备开始调 API」，
+	// 记进设备表只会让「我的设备」堆一批从不调 API 的浏览器指纹。
+	//
+	// 真正的新设备识别由 chaoxing 首次请求时携带的 X-Device-Id 完成。
 	c.JSON(http.StatusOK, updated)
 }
 
@@ -1082,8 +1095,7 @@ func BindCurrentUserWechatByCode(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
-	// 换绑成功（验证码路径）后的设备指纹登记，与 bindToken 路径同源同理。
-	_ = recordAccountDeviceBinding(c, currentUser.ID)
+	// ⚠️ 换绑成功（验证码路径）**不再**登记设备，与 bindToken 路径同源同理。
 	c.JSON(http.StatusOK, updated)
 }
 
@@ -1176,15 +1188,11 @@ func UserSMSLogin(c *gin.Context) {
 	loginGate.succeed(phone)
 	bindSuccessfulVerification(user, payload.CaptchaToken, service.CaptchaSceneLoginSMS, smsEvidence)
 	recordAccountAudit(c, &user, "auth", logActionLogin, "用户短信登录成功", map[string]any{"status": "success", "message": "用户短信登录成功", "scene": "sms"})
-	// 设备指纹登记（T-25 采集侧）：短信登录走同一个账号维度，也要记设备。
-	// 漏掉这一处会让「只用短信登录」的用户永远不产生设备行 —— 而移动端用户
-	// 恰恰是最依赖短信登录的那批人。
+	// ⚠️ 短信登录同样**既不登记设备、也不做设备准入**（2026-11-17 用户定案，
+	// 与密码登录完全同源同理）。
 	//
-	// 准入判定与密码登录同源：短信登录同样是「获得访问权」的入口，不能绕过设备上限。
-	if !enforceAccountDeviceLimit(c, user.ID) {
-		return
-	}
-	_ = recordAccountDeviceBinding(c, user.ID)
+	// 「只能一台设备登录」由 login_session_id（JWT 的 sid claim）保证，
+	// 不靠设备池；设备池只约束 chaoxing 调 API 的台数。
 	setAuthCookie(c, token)
 	c.JSON(200, gin.H{"message": "user login", "jwt": token})
 }
