@@ -193,6 +193,21 @@ func CreateScript(c *gin.Context) {
 	if isAdminUser(&operator) && strings.EqualFold(strings.TrimSpace(c.Query("scope")), "all") {
 		input.SkipOwnerBindingCheck = true
 	}
+	// 管理员手动跳过绑定门槛（2026-11-17 用户需求）。
+	//
+	// 用户原话：「请添加一个按钮，在我的脚本里面，该按钮为仅管理员可见，
+	// 用于跳过这一限制」。上面那条 scope=all 只覆盖「管理别人脚本」的场景，
+	// 管理员在「我的脚本」里建自己的脚本仍会被拦 —— 这条补上手动开关。
+	//
+	// ⚠️ 两条硬约束，缺一条就是安全缺陷：
+	//  1. **必须再过一次 isAdminUser**。请求体字段是客户端可控的，
+	//     不校验角色等于「任何人都能传 true 自己解禁」。
+	//  2. **只在上面那条未置真时才需要**，写成独立 if 更清晰：
+	//     即便 scope=all 分支将来被改动，这里仍然按角色把关。
+	// 前端把按钮渲染成「仅管理员可见」只是可用性；真正拦人的是这里。
+	if !input.SkipOwnerBindingCheck && isAdminUser(&operator) && input.RequestSkipBindingCheck {
+		input.SkipOwnerBindingCheck = true
+	}
 	item, err := service.CreateUserScriptWithDB(scriptDB(), operator, input)
 	if err != nil {
 		writeScriptError(c, err, "创建脚本失败")

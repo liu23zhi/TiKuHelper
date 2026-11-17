@@ -238,6 +238,33 @@
             </a-form-item>
           </template>
         </ConsolePanel>
+        <!-- 跳过手机号/微信绑定校验（2026-11-17 用户需求）。
+             「仅管理员可见」：showSkipBindingButton 按**角色**判断（不是视图模式）。
+             只在新建时出现 —— 编辑已有脚本不涉及绑定门槛。
+
+             为什么用 switch + popconfirm 而不是一个普通按钮：
+             绕过的是合规门槛，必须让用户看到后果说明再确认；
+             用 checkbox 语义（当前状态可见）比一次性按钮更不容易误触。 -->
+        <ConsolePanel v-if="showSkipBindingButton && !editing" title="管理员选项" description="仅管理员可见。用于在创建脚本时跳过手机号/微信绑定校验。">
+          <a-form-item label="跳过绑定校验" :html-for="fieldId('skipBinding')">
+            <a-popconfirm
+              :title="buildSkipBindingConfirmText({ isAdmin: true }).title"
+              :description="buildSkipBindingConfirmText({ isAdmin: true }).content"
+              :ok-text="buildSkipBindingConfirmText({ isAdmin: true }).okText"
+              :cancel-text="buildSkipBindingConfirmText({ isAdmin: true }).cancelText"
+              :onConfirm="editorEntry.bind(confirmSkipBinding)"
+            >
+              <a-switch
+                :id="fieldId('skipBinding')"
+                :checked="skipBindingCheck"
+                :disabled="saving"
+                checked-children="已跳过"
+                un-checked-children="校验中"
+              />
+            </a-popconfirm>
+            <p class="hint">开启后本次创建不校验该账号是否绑定手机号和微信。普通用户看不到此开关，服务端也会按角色拒绝非管理员传入的跳过请求。</p>
+          </a-form-item>
+        </ConsolePanel>
         <ConsolePanel title="指令预览" description="PowerShell + .NET WebClient 可覆盖 Windows 7 至 Windows 11。" class="preview-panel">
           <div class="command-preview"><code>{{ buildScriptDownloadURL(previewRecord) || '设置合法域名后生成' }}</code></div>
           <p class="hint">此处仅预览地址，不分配短标识。保存后可从列表复制实际授权指令；请勿分享指令。</p>
@@ -262,6 +289,7 @@ import { useUnsavedDraft } from '@/utils/useUnsavedDraft'
 import { createScript, deleteScript, getScripts, getScriptDomainFormats, getScriptDomainSettings, getScriptVersions, updateScript, updateScriptDomainSettings, uploadScriptVersion, getScriptEscrowPolicy, updateScriptEscrowPolicy, getScriptActivationCodePrice, updateScriptActivationCodePrice, purchaseScriptActivationCode, redeemScriptActivationCode } from '@/api/TikuComponentApi'
 import { buildScriptBillingText, buildScriptCommand, buildScriptDownloadURL, buildScriptListParams, buildScriptSavePayload, formatPresetParams, normalizeScriptRecord, normalizeScriptRows } from '@/utils/scriptManagementHelpers.mjs'
 import { collectScriptRevokeNotices, scriptNoticeAlertType } from '@/utils/scriptRevokeNotice.mjs'
+import { shouldShowSkipBindingButton, buildCreateScriptPayload, isBindingsRequiredError, buildSkipBindingConfirmText } from '@/utils/scriptSkipBinding.mjs'
 import { buildScriptDomainForms, parseScriptDomainFormat, splitScriptDomainForFormat } from '@/utils/scriptDomainFormats.mjs'
 import { describeScriptAdminAction, describeScriptUploadGate } from '@/utils/scriptUploadGate.mjs'
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
@@ -371,6 +399,19 @@ const versions = ref([])
 const saving = ref(false)
 const modalOpen = ref(false)
 const editing = ref(false)
+// 「跳过手机号/微信绑定校验」按钮的勾选状态（2026-11-17 用户需求）。
+//
+// 只影响**新建**：编辑已有脚本不涉及绑定门槛，所以按钮也只在新建时显示。
+// 默认 false —— 忘记初始化时必须保持门槛生效，不能因为「没读到」而放行。
+const skipBindingCheck = ref(false)
+// 按钮可见性：仅管理员。
+//
+// ⚠️ 这里必须用 `isAdminUser(currentUser.value)`（角色），**不能**用上面的
+// `isAdmin` computed —— 后者按**视图模式**判断：管理员切到「我的脚本」
+// （routeViewMode==='self'）时它返回 false，而那个场景恰恰是本按钮要服务的
+// （用户在「我的脚本」里创建自己的脚本时被绑定门槛拦住）。
+// 用错会表现为「按钮在别的视图里有、在自己要用的视图里消失」。
+const showSkipBindingButton = computed(() => shouldShowSkipBindingButton({ isAdmin: isAdminUser(currentUser.value) }))
 const lastUploadKey = ref('')
 const summary = reactive({ total: 0, enabled: 0, reserved: 0 })
 const domainText = ref('')
@@ -532,6 +573,10 @@ function retireEditor() {
   hidePrivate(modalSurface.value)
   activationCode.value = ''; purchasedCode.value = false; purchaseUncertain.value = false; purchaseIntentKey = ''; purchaseIntentQuote = ''
   purchasingCode.value = false; redeemingCode.value = false
+  // 清掉「跳过绑定校验」状态。放在这里而不是只放 openCreate：
+  // retireEditor 是所有关闭路径的共同出口（保存成功、取消、路由离开），
+  // 只在 openCreate 清会漏掉「保存失败后关弹窗再开」这类路径。
+  resetSkipBinding()
   editorKey.value += 1; editorEntry.value = makeEntry(() => false); modalOpen.value = false; saving.value = false; editing.value = false
   draft.cancelPendingLeave(); resetForm()
 }
@@ -702,10 +747,36 @@ function scriptBillingText(record) {
   return buildScriptBillingText(record)
 }
 
-async function handleSubmit() {
-  const owns = editorEntry.value.isCurrent
+// 用户点 a-popconfirm 的「仍然跳过」后才真正打开开关（2026-11-17）。
+//
+// 为什么不在 switch 上直接双向绑定：a-switch 的 onUpdate:checked 会在用户
+// 点击瞬间就翻转，确认弹窗还没出现状态就已经变了。放在 popconfirm 的
+// onConfirm 里，语义是「确认后才生效」，与用户的心理模型一致。
+function confirmSkipBinding() {
+  if (!editorEntry.value.isCurrent()) return
+  skipBindingCheck.value = true
+}
+
+// 关闭并重置编辑器时清掉跳过状态（2026-11-17）。
+//
+// ⚠️ 必须清：否则「上一个脚本勾了跳过，关掉弹窗后新建另一个」会带着
+// 上次的 true 静默绕过门槛。纯函数 buildCreateScriptPayload 只能清 payload，
+// 清不掉组件状态。
+function resetSkipBinding() {
+  skipBindingCheck.value = false
+}
+
+async function handleSubmit() {  const owns = editorEntry.value.isCurrent
   if (!owns() || saving.value || deleting.value || activationBusy.value) return
-  const payload = buildScriptSavePayload({ ...form, presetParams: form.presetText })
+  // 跳过绑定校验（2026-11-17）：只在新建时生效。
+  //
+  // 二次确认由模板里的 a-popconfirm 承担（与页面其它危险操作同一交互范式），
+  // 用户点「仍然跳过」后才会把 skipBindingCheck 置真再来调用本函数。
+  // 这里不再弹窗 —— 嵌套 confirm 会让「取消」出现在两个层级，用户分不清。
+  const requestSkipBinding = !editing.value && skipBindingCheck.value && showSkipBindingButton.value
+  // buildCreateScriptPayload 负责「只有显式 true 才写字段」，
+  // 并清掉可能残留的脏值（上一次勾过、这次取消）。
+  const payload = buildCreateScriptPayload(buildScriptSavePayload({ ...form, presetParams: form.presetText }), requestSkipBinding)
   // Managed pricing is server-owned. Do not send legacy multiplier defaults
   // (also preserves historical pricing on edits to existing legacy scripts).
   for (const field of ['billingEnabled', 'billingUseTikuPrice', 'useTikuPrice', 'priceMultiplier', 'answerPriceMultiplier']) delete payload[field]
@@ -750,8 +821,14 @@ async function handleSubmit() {
     const response = isEditing ? await updateScript(payload) : await createScript(payload, createRetryKey(payload))
     if (!owns()) return
     if (response?.status !== 200) {
-      message.error(scriptErrorCode(response) === 'SCRIPT_BINDINGS_REQUIRED'
-        ? '创建脚本前请绑定手机号和微信。' : '保存脚本未完成，请刷新列表核对后重试。')
+      // 缺绑定的提示分流（2026-11-17）：管理员已经能看到「跳过绑定校验」开关，
+      // 所以对他要提示「可以先勾跳过」，对普通用户只说去绑定 ——
+      // 否则管理员会以为功能坏了。
+      message.error(isBindingsRequiredError(response)
+        ? (showSkipBindingButton.value
+          ? '创建脚本前请绑定手机号和微信（管理员可在弹窗内「管理员选项」中跳过本次校验）。'
+          : '创建脚本前请绑定手机号和微信。')
+        : '保存脚本未完成，请刷新列表核对后重试。')
       return
     }
     if (!isEditing) retry = null
@@ -761,7 +838,7 @@ async function handleSubmit() {
     message.success(isEditing ? '脚本已更新' : '脚本已创建')
     await loadScripts()
   } catch (error) {
-    if (owns()) message.error(scriptErrorCode(error) === 'SCRIPT_BINDINGS_REQUIRED'
+    if (owns()) message.error(isBindingsRequiredError(error)
       ? '创建脚本前请绑定手机号和微信。' : '保存结果未确认，请刷新核对；如重试，请保留原表单。')
   } finally { if (owns()) saving.value = false }
 }

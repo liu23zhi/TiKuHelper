@@ -80,6 +80,15 @@ type CreateUserScriptInput struct {
 	AutoTopUp             bool           `json:"autoTopUp,omitempty"`
 	RunDurationMinutes    int            `json:"runDurationMinutes,omitempty"`
 	NotifyOnDenied        bool           `json:"notifyOnDenied,omitempty"`
+	// RequestSkipBindingCheck 是**客户端可传**的「请跳过绑定门槛」意图
+	// （2026-11-17 用户需求：管理员在「我的脚本」里点按钮跳过）。
+	//
+	// ⚠️ 它本身**不构成**授权 —— 只是一个请求。控制器必须再过一次
+	// isAdminUser，通过后才把它翻译成下面的 SkipOwnerBindingCheck。
+	// 这是两个字段而不是一个的原因正是要区分「用户的意图」与「已批准的决定」：
+	// 合成一个字段会让「客户端塞了值」与「服务端批准了」在代码上无法区分，
+	// 那是这类越权缺陷最常见的来源。
+	RequestSkipBindingCheck bool `json:"skipBindingCheck,omitempty"`
 	// SkipOwnerBindingCheck 由**管理员管理视图**的调用方置真（诉求 ②）。
 	//
 	// 「脚本管理」是管理员看的运维视图，给用户设手机的合规门槛放这里没有意义：
