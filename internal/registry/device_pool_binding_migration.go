@@ -53,6 +53,10 @@ type devicePoolBindingColumnSpec struct {
 //	session_count   INT         NOT NULL DEFAULT 0     exe 当前活跃会话数（R6/R7）
 //	session_reported_at DATETIME NULL                  心跳时间戳（141 §5.4）
 //
+// 第三批追加一列（「我的设备」显示来源 IP）：
+//
+//	last_ip         VARCHAR(45) NOT NULL DEFAULT ''    最近一次使用的来源 IP
+//
 // ⚠️ 与 137 的一处**刻意偏差**：文档 §3.2 里 device_label 写的是
 // `VARCHAR(64) NOT NULL DEFAULT ''`（在代码块里），而任务书写的是
 // `device_label(VARCHAR64)` 未提默认值。这里按文档取 `NOT NULL DEFAULT ''`，
@@ -86,6 +90,11 @@ var devicePoolBindingColumnSpecs = []devicePoolBindingColumnSpec{
 	// NULL 是合法且必需的初值：历史行没有上报过，service 层据此退回 last_seen_at。
 	// ⇒ 本条迁移对**旧库是纯增强**，加列前后行为一致（缺列/缺值时走同一降级路径）。
 	{column: "session_reported_at", ddl: "session_reported_at DATETIME NULL"},
+	// 第三批（「我的设备」显示来源 IP）。纯展示列，不参与任何判定。
+	//
+	// 45 = IPv6 文本最长长度（含 `::ffff:` 映射）。补列后既有行读出空串，
+	// 前端据此显示「未记录」而不是伪造一个 IP。
+	{column: "last_ip", ddl: "last_ip VARCHAR(45) NOT NULL DEFAULT ''"},
 }
 
 // ensureDevicePoolBindingSchema 给 account_device_bindings 补 A1 的 5 列 +

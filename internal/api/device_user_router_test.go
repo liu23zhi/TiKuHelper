@@ -35,6 +35,7 @@ func TestSetAPIRouterRegistersUserDeviceRoutes(t *testing.T) {
 	want := []string{
 		"GET /api/user/devices",
 		"POST /api/user/devices/:id/remove",
+		"PUT /api/user/devices/:id/label",
 		"POST /api/user/devices/:id/block",
 		"DELETE /api/user/devices/blocks/:id",
 		"GET /api/user/device-limit",
@@ -42,7 +43,7 @@ func TestSetAPIRouterRegistersUserDeviceRoutes(t *testing.T) {
 	}
 	for _, route := range want {
 		if !registered[route] {
-			t.Errorf("缺少路由 %s（137 §8.1 的六条用户端接口）", route)
+			t.Errorf("缺少路由 %s（137 §8.1 的用户端接口 + 重命名）", route)
 		}
 	}
 

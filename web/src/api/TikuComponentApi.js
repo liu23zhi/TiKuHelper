@@ -1037,8 +1037,20 @@ export function removeMyDevice(id, signal) {
   })
 }
 
+export function renameMyDevice(id, label, signal) {
+  return myDeviceRequest({
+    url: '/api/user/devices/' + encodeURIComponent(id) + '/label',
+    method: 'put',
+    // 后端读的是 {"label":"..."}。空串是**合法**输入（= 恢复「未命名的设备」显示），
+    // 所以不能像 blockMyDevice 那样写成 `label ? {...} : {}` —— 那会让「清空名字」
+    // 变成「没传 label」，后端 bind 到零值空串，行为恰好一致但语义含混。
+    // 显式传空串让意图可读。
+    data: { label: String(label === null || label === undefined ? '' : label) },
+    signal,
+  })
+}
+
 export function blockMyDevice(id, reason, signal) {
-  // reason 是可选的展示字段；不传就发空对象（后端允许空 body）。
   const data = reason ? { reason: String(reason) } : {}
   return myDeviceRequest({
     url: '/api/user/devices/' + encodeURIComponent(id) + '/block',

@@ -304,6 +304,10 @@ func SetAPIRouter(router *gin.Engine) {
 	//     段数不同不会抢节点。
 	apiRouter.GET("/user/devices", controller.Auth, controller.UserDevices)
 	apiRouter.POST("/user/devices/:id/remove", controller.Auth, controller.UserDeviceRemove)
+	// 重命名：只写 device_label 一列。用 /label 这个子路径而不是通用 PUT /user/devices/:id
+	// —— 后者会让 device_id / last_seen_at / revoked_at 也变成「可被用户改」，
+	// 而这三列各有判定语义（唯一索引 / 10 天闲置 / 撤销）。见 controller.UserDeviceRename 的说明。
+	apiRouter.PUT("/user/devices/:id/label", controller.Auth, controller.UserDeviceRename)
 	apiRouter.POST("/user/devices/:id/block", controller.Auth, controller.UserDeviceBlock)
 	apiRouter.DELETE("/user/devices/blocks/:id", controller.Auth, controller.UserDeviceUnblock)
 	apiRouter.GET("/user/device-limit", controller.Auth, controller.UserDeviceLimitGet)

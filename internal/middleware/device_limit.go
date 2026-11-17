@@ -166,7 +166,7 @@ func deviceLimitHandler(injected *gorm.DB) gin.HandlerFunc {
 			//
 			// 141 §9.4：豁免 ≠ 不登记。带 device 头时异步登记一次（fail-open），
 			// 让管理员在「设备管理」页仍能看到这些账号的设备；不带头的请求无从登记。
-			deviceLimitRegisterUnlimited(db, userID, c.GetHeader(DeviceIDHeader), tokenID)
+			deviceLimitRegisterUnlimited(db, userID, c.GetHeader(DeviceIDHeader), tokenID, c.ClientIP())
 			c.Next()
 			return
 		}
@@ -222,6 +222,9 @@ func deviceLimitHandler(injected *gorm.DB) gin.HandlerFunc {
 					OwnerKind:      entity.DeviceBindingOwnerKindToken,
 					TokenID:        tokenID,
 					ClientInstance: c.GetHeader(DeviceInstanceHeader),
+					// 来源 IP：与 controller.recordAccountDeviceBinding 同源（c.ClientIP
+					// 已按可信代理名单解析），让「我的设备」页能显示设备从哪儿连进来。
+					ClientIP: service.NormalizeDeviceClientIP(c.ClientIP()),
 				})
 			if err != nil {
 				// 判定已放行、只是这一笔没写进去：fail-open（同 RegisterDevice 的契约）。
@@ -329,17 +332,21 @@ func deviceLimitTokenID(c *gin.Context) int32 {
 // controller.recordAccountDeviceBinding 同一纪律）。goroutine 里必须重新取
 // 一个干净句柄（Session{NewDB:true}），否则跨 model 复用会
 // `panic: reflect: Field index out of range`（本仓实测踩过）。
-func deviceLimitRegisterUnlimited(db *gorm.DB, userID int32, rawDeviceID string, tokenID int32) {
+func deviceLimitRegisterUnlimited(db *gorm.DB, userID int32, rawDeviceID string, tokenID int32, clientIP string) {
 	deviceID := service.NormalizeDevicePoolDeviceID(rawDeviceID)
 	if db == nil || userID <= 0 || deviceID == "" {
 		return
 	}
+	// 归一化在 goroutine 之前做（纯字符串运算，不需要请求上下文）；
+	// 绝不能把 c 带进 goroutine —— 响应写完后 gin.Context 不可再读。
+	normalizedIP := service.NormalizeDeviceClientIP(clientIP)
 	go func() {
 		fresh := db.Session(&gorm.Session{NewDB: true})
 		if _, err := service.RegisterDeviceWithOptions(fresh, userID, deviceID,
 			service.DeviceBindingRegisterOptions{
 				OwnerKind: entity.DeviceBindingOwnerKindToken,
 				TokenID:   tokenID,
+				ClientIP:  normalizedIP,
 			}); err != nil {
 			logger.SysLog("不限量账号设备登记失败（fail-open，不影响本次请求）：userID=" +
 				formatDeviceLimitUserID(userID) + " err=" + logger.RedactSecrets(err.Error()))

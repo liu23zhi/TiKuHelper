@@ -6,9 +6,10 @@ import { fileURLToPath } from 'node:url'
 
 import {
   DEVICE_STATUS_META,
+  describeLastSeen,
+  deviceIPText,
   deviceLimitSourceText,
   deviceStatusMeta,
-  describeLastSeen,
   emptyDeviceLimitState,
   emptyDeviceListState,
   maskDeviceId,
@@ -16,6 +17,7 @@ import {
   normalizeDeviceLimit,
   normalizeDeviceList,
   readInt,
+  validateDeviceLabel,
   validateDeviceLimitInput,
 } from './myDevicesHelpers.mjs'
 
@@ -270,4 +272,121 @@ test('router.js 注册 my-devices 路由且**不**放进 ADMIN_ONLY_ROUTE_NAMES'
   )
   assert.ok(adminOnlyBlock.length > 0, '未能定位 ADMIN_ONLY_ROUTE_NAMES 段落')
   assert.doesNotMatch(adminOnlyBlock, /'my-devices'/)
+})
+
+// ─────────────────── 来源 IP ───────────────────
+
+test('normalizeDeviceItem 回传 lastIp，缺失时为显式空串而不是伪造值', () => {
+  const withIp = normalizeDeviceItem({ id: 7, deviceId: 'd', lastIp: '203.0.113.7' })
+  assert.equal(withIp.lastIp, '203.0.113.7')
+
+  // 缺失 / 非字符串 → 空串。**不能是** '0.0.0.0'、'未知' 或 undefined：
+  // 前两者是伪造事实，undefined 会让 v-if 与展示分支都错。
+  assert.equal(normalizeDeviceItem({ id: 7, deviceId: 'd' }).lastIp, '')
+  assert.equal(normalizeDeviceItem({ id: 7, deviceId: 'd', lastIp: null }).lastIp, '')
+  assert.equal(normalizeDeviceItem({ id: 7, deviceId: 'd', lastIp: 123 }).lastIp, '')
+})
+
+test('deviceIPText 把空值翻成「未记录」，有值时原样显示', () => {
+  assert.equal(deviceIPText(''), '未记录')
+  assert.equal(deviceIPText('   '), '未记录')
+  assert.equal(deviceIPText(null), '未记录')
+  assert.equal(deviceIPText(undefined), '未记录')
+  // IPv6 不能被截断或格式化（用户要能拿它去比对）。
+  assert.equal(deviceIPText('2001:db8::1'), '2001:db8::1')
+  assert.equal(deviceIPText('192.168.1.7'), '192.168.1.7')
+})
+
+// ─────────────────── 重命名 ───────────────────
+
+test('normalizeDeviceItem 的 renamable 只对真实绑定行为 true', () => {
+  // 正常绑定行：可改名。
+  assert.equal(normalizeDeviceItem({ id: 12, deviceId: 'd' }).renamable, true)
+  // 孤儿拉黑行（id=0，只有拉黑记录没有绑定行）：不可改名。
+  // 若判成 true，用户点「重命名」会拿到 404 —— 按钮应该根本不出现。
+  assert.equal(normalizeDeviceItem({ id: 0, deviceId: 'd', blockOnly: true, blockId: 3 }).renamable, false)
+})
+
+test('validateDeviceLabel 允许空串（= 恢复默认显示）', () => {
+  // 这是关键：把空串判成非法会逼用户「随便填一个字符来清空」，造出脏数据。
+  assert.deepEqual(validateDeviceLabel(''), { ok: true, value: '', error: '', message: '' })
+  assert.equal(validateDeviceLabel('   ').ok, true)
+  assert.equal(validateDeviceLabel(null).ok, true)
+  assert.equal(validateDeviceLabel(undefined).ok, true)
+})
+
+test('validateDeviceLabel 拒绝换行/制表符/NUL，文案与后端一字不差', () => {
+  const expected = '设备名称不能包含换行或控制字符'
+  for (const bad of ['第一行\n第二行', '名字\t带制表符', '名字\r回车', '名字\x00']) {
+    const result = validateDeviceLabel(bad)
+    assert.equal(result.ok, false, `应当拒绝 ${JSON.stringify(bad)}`)
+    assert.equal(result.message, expected)
+  }
+})
+
+test('validateDeviceLabel 按字符（码点）计长度，不按 UTF-16 码元', () => {
+  // 64 个汉字：恰好允许；65 个：拒绝。
+  assert.equal(validateDeviceLabel('名'.repeat(64)).ok, true)
+  const tooLong = validateDeviceLabel('名'.repeat(65))
+  assert.equal(tooLong.ok, false)
+  assert.equal(tooLong.message, '设备名称最多 64 个字符')
+
+  // ⚠️ 这一段是「按码点 vs 按 .length」的**变异靶子**，数字必须选对。
+  //
+  // 33 个 emoji：码点 33（合法），`.length` 66（超限）。
+  //   → 按码点实现：通过；按 .length 实现：拒绝。两者结论相反 ⇒ 变异必红。
+  //
+  // 曾用 32 个 emoji 写过这条，`.length` 恰好 64 —— 不超限，按两种实现都通过，
+  // 是**恒真的假钉子**（实测变异后仍全绿）。选边界值时必须让两种口径**跨过**阈值，
+  // 而不是恰好落在阈值上。
+  const emoji = '🛋'.repeat(33)
+  assert.equal(Array.from(emoji).length, 33, '前置：码点数必须是 33')
+  assert.equal(emoji.length, 66, '前置：UTF-16 码元数必须是 66（超限）')
+  assert.equal(validateDeviceLabel(emoji).ok, true, '33 个 emoji（码点 33）必须通过')
+})
+
+test('validateDeviceLabel 去首尾空白后再落 value', () => {
+  const result = validateDeviceLabel('  家里的笔记本  ')
+  assert.equal(result.ok, true)
+  assert.equal(result.value, '家里的笔记本')
+})
+
+// ─────────────────── 页面与 API 接线 ───────────────────
+
+test('我的设备页有「来源 IP」列与「重命名」按钮', async () => {
+  const page = await readSource(path.join('pages', 'MyDevices', 'index.vue'))
+  const code = stripComments(page)
+  // 列：必须有 来源 IP，且走 deviceIPText（否则空值会渲染成空白单元格）。
+  assert.match(code, /来源 IP/)
+  assert.match(code, /deviceIPText/)
+  assert.match(code, /lastIp/)
+  // 重命名：按钮 + 弹窗 + 提交函数。
+  assert.match(code, /重命名/)
+  assert.match(code, /openRename/)
+  assert.match(code, /submitRename/)
+  // 必须用 renamable 控制按钮可见性（孤儿拉黑行 id=0，点了必然 404）。
+  assert.match(code, /record\.renamable/)
+  // 弹窗要告诉用户「留空 = 恢复默认」，否则用户不知道该敲什么才能清空。
+  assert.match(code, /未命名的设备/)
+})
+
+test('页面不自己写设备名校验（必须走 myDevicesHelpers 的单一口径）', async () => {
+  const page = await readSource(path.join('pages', 'MyDevices', 'index.vue'))
+  const code = stripComments(page)
+  // 反例形态：在页面里直接拼那句 400 文案 = 第二份口径。
+  assert.doesNotMatch(code, /设备名称不能包含换行或控制字符/)
+  assert.doesNotMatch(code, /设备名称最多 \$\{?64/)
+  // 必须真的调用纯函数。
+  assert.match(code, /validateDeviceLabel/)
+})
+
+test('重命名接口路径与后端一致（PUT /user/devices/:id/label）', async () => {
+  const api = await readSource(path.join('api', 'TikuComponentApi.js'))
+  const code = stripComments(api)
+  assert.match(code, /export function renameMyDevice/)
+  assert.ok(code.includes('/api/user/devices/'), '缺少设备路径前缀')
+  assert.ok(code.includes("'/label'"), '缺少 /label 子路径')
+  // 必须是 put：用 post 会命中 405/404（后端只注册了 PUT）。
+  const renameBlock = code.slice(code.indexOf('export function renameMyDevice'))
+  assert.match(renameBlock.slice(0, 400), /method: 'put'/)
 })

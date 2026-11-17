@@ -164,7 +164,9 @@ func waitForDeviceRows(t *testing.T, db *gorm.DB, userID int32, want int) []enti
 func drainDeviceWrites(t *testing.T, userID int32, deviceID string) {
 	t.Helper()
 	for i := 0; i < 3; i++ {
-		_ = registerAccountDeviceBindingNow(userID, deviceID)
+		// 传空 IP：drain 的职责只是排空队列，不该顺带写 last_ip
+		// （那会让「注入必失败」的用例多一个无关变量）。
+		_ = registerAccountDeviceBindingNow(userID, deviceID, "")
 		time.Sleep(2 * time.Millisecond)
 	}
 }

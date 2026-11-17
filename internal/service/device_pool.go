@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -190,6 +191,39 @@ func NormalizeDevicePoolDeviceID(deviceID string) string {
 		return string(runes[:DevicePoolDeviceIDMaxLength])
 	}
 	return trimmed
+}
+
+// NormalizeDeviceClientIP 归一化来源 IP 为可落库的文本，非法/空返回空串。
+//
+// ## 为什么用 net.ParseIP 而不是只 TrimSpace
+//
+// 同一个客户端可能以 `::ffff:203.0.113.7`、`203.0.113.7`、`  203.0.113.7 ` 三种
+// 写法出现（IPv4-mapped IPv6 是双栈监听下的常态）。IP.String() 把它们收敛成
+// 同一个字面量，这样「同一台设备换了写法」不会被显示成两个不同的地址。
+// 与 blacklist_cache.go:147 的取舍一致（那里明确禁止字符串前缀比较）。
+//
+// ## 为什么非法值返回空串而不是原样返回
+//
+// 本列是**展示用**。把 `unknown`、`<nil>`、`192.168.1.1:8080`、代理塞进来的
+// 乱码原样落库，会让用户以为自己的设备从某个奇怪的地方连进来 —— 那是误报，
+// 比「未记录」更糟。所以宁可不显示。
+//
+// ## 为什么保留内网/回环地址
+//
+// 「我的设备」是给**设备主人**看的，不是对外泄露面：用户需要看到
+// 「这台设备从 192.168.1.7 连的」来判断是不是自己家里的机器。
+// 与 location.go 的 IsPrivateOrReservedIP 用途相反 —— 那个是「省一次付费查询」，
+// 这个是「让用户认得出自己的设备」，不能共用同一条过滤。
+func NormalizeDeviceClientIP(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	ip := net.ParseIP(trimmed)
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
 }
 
 // devicePoolSession 清掉继承的模型（同 userLevelSession 的成因）。
@@ -744,6 +778,10 @@ type DeviceBindingRegisterOptions struct {
 	// 它只在**首次登记**那一刻参与冲突判定，之后同一设备的重连不再比对
 	// —— 理由见 device_conflict.go 文件头（写反了会让用户每次重开浏览器都被判冲突）。
 	ClientInstance string
+	// ClientIP 是本次请求的来源 IP（已归一化或未归一化都可，内部会再归一，
+	// 见 NormalizeDeviceClientIP）。空串 = 调用方没采/采不到，此时**不覆盖**
+	// 库里已有的 last_ip，避免一次缺 IP 的请求把已知地址抹成空。
+	ClientIP string
 }
 
 // RegisterDevice 登记「该账号用过这台设备」，并把判定结论一并返回。
@@ -846,6 +884,16 @@ func RegisterDeviceWithOptions(db *gorm.DB, userID int32, deviceID string, optio
 		db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "client_instance") {
 		updates["client_instance"] = instance
 	}
+	// last_ip：只在本次真的采到合法 IP 时才写。
+	//
+	// ⚠️ **不能**无条件写（含空串）：daemon 重启、请求来自 unix socket、
+	// 反向代理没配 TrustedProxies 都会让 c.ClientIP() 拿到空/不可解析的值，
+	// 无条件写等于「偶尔一次缺 IP 就把用户已经看习惯的地址抹掉」，用户会以为
+	// 设备换人了。与 device_label 的「空不覆盖」同一纪律。
+	if clientIP := NormalizeDeviceClientIP(options.ClientIP); clientIP != "" &&
+		db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "last_ip") {
+		updates["last_ip"] = clientIP
+	}
 
 	result := session.Model(&entity.AccountDeviceBinding{}).
 		Where("user_id = ? AND device_id = ?", userID, normalized).
@@ -887,6 +935,11 @@ func RegisterDeviceWithOptions(db *gorm.DB, userID int32, deviceID string, optio
 	if instance := NormalizeDeviceClientInstance(options.ClientInstance); instance != "" &&
 		db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "client_instance") {
 		createValues["client_instance"] = instance
+	}
+	// 首次登记同样只在有合法 IP 时写；列缺失时不写（老库，展示层会显示「未记录」）。
+	if clientIP := NormalizeDeviceClientIP(options.ClientIP); clientIP != "" &&
+		db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "last_ip") {
+		createValues["last_ip"] = clientIP
 	}
 	if err := session.Model(&entity.AccountDeviceBinding{}).Create(createValues).Error; err != nil {
 		// 并发首次登记：另一个请求刚插入了同一行。这不是错误，

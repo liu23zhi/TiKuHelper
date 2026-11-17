@@ -178,6 +178,10 @@ export function normalizeDeviceItem(raw) {
     id: readInt(item.id) ?? 0,
     deviceId: typeof item.deviceId === 'string' ? item.deviceId : '',
     deviceLabel: typeof item.deviceLabel === 'string' ? item.deviceLabel : '',
+    // lastIp 是「最近一次使用时的来源 IP」，由后端在登记设备时写入。
+    // 缺失/非字符串一律置空串（**不伪造** '0.0.0.0' 或 '未知'），
+    // 展示层用 deviceIPText 统一翻成「未记录」——那是文案决定，不是数据决定。
+    lastIp: typeof item.lastIp === 'string' ? item.lastIp : '',
     lastSeenAt: typeof item.lastSeenAt === 'string' ? item.lastSeenAt : '',
     status,
     statusText: typeof item.statusText === 'string' && item.statusText ? item.statusText : meta.text,
@@ -189,7 +193,69 @@ export function normalizeDeviceItem(raw) {
     blockId: blockId !== null && blockId > 0 ? blockId : 0,
     blockOnly: item.blockOnly === true,
     removable: item.removable === true,
+    // renamable：只有真实的绑定行（id>0）能改名。
+    //
+    // 孤儿拉黑行（id=0、blockOnly=true）没有绑定行，重命名接口按 id 定位，
+    // 传 0 只会拿到 404。在这里显式算成 false，而不是让用户点了按钮才发现失败。
+    renamable: (readInt(item.id) ?? 0) > 0,
   }
+}
+
+/**
+ * deviceIPText 把来源 IP 翻成文案。
+ *
+ * 两态而不是三态：**没有 IP** 一律「未记录」。
+ * 为什么不能显示成空单元格：空白会被读成「渲染坏了」或「这台设备没有 IP」，
+ * 而真实语义是「还没采到」——老数据（补列前的行）与采不到 IP 的请求都落在这里。
+ */
+export function deviceIPText(value) {
+  const text = String(value || '').trim()
+  return text === '' ? '未记录' : text
+}
+
+/** DEVICE_LABEL_MAX_RUNES 是设备名的字符上限，与后端 device_label VARCHAR(64) 一致。 */
+export const DEVICE_LABEL_MAX_RUNES = 64
+
+/**
+ * validateDeviceLabel 校验用户输入的设备名（与后端 400 文案同口径）。
+ *
+ * 返回 `{ ok, value, error, message }`：
+ *   - 含换行/制表符/控制字符 → 拒绝
+ *   - 超过 64 个字符 → 拒绝
+ *   - 空串/纯空白 → **通过**（语义是「恢复默认显示」）
+ *
+ * 为什么空串必须通过：用户想取消自己起的名字是合理需求。把它判成非法，
+ * 用户就只能随便填一个字符来「清空」，反而造出脏数据。
+ *
+ * 为什么必须复刻后端的控制字符校验：后端 400 是最后防线，但用户点了保存
+ * 才看到红字是糟糕体验；更重要的是**两处文案必须一致**，否则同一个错误
+ * 在不同层显示不同的说法（这正是本仓把校验放进纯函数层的原因）。
+ */
+export function validateDeviceLabel(raw) {
+  const text = String(raw === null || raw === undefined ? '' : raw).trim()
+  if (text === '') {
+    return { ok: true, value: '', error: '', message: '' }
+  }
+  // 与控制字符同口径：\r \n \t 与 C0/C1 区段、DEL。
+  // 用码点判断而不是正则字面量，避免把中文/emoji 误伤。
+  for (const ch of text) {
+    const code = ch.codePointAt(0)
+    if (code === 0 || code === 0x7f || (code < 0x20 && code >= 0x00)) {
+      return { ok: false, value: '', error: 'control-char', message: '设备名称不能包含换行或控制字符' }
+    }
+  }
+  // 按**字符**（码点）计长度而不是 .length：后者是 UTF-16 码元数，
+  // emoji 会被算成 2，导致「用户看到 32 个 emoji 就被拒」。
+  const runes = Array.from(text)
+  if (runes.length > DEVICE_LABEL_MAX_RUNES) {
+    return {
+      ok: false,
+      value: '',
+      error: 'too-long',
+      message: `设备名称最多 ${DEVICE_LABEL_MAX_RUNES} 个字符`,
+    }
+  }
+  return { ok: true, value: text, error: '', message: '' }
 }
 
 /** normalizeDeviceList 归一化 `GET /user/devices` 的 data。 */
