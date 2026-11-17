@@ -840,3 +840,125 @@ func TestPruneLogFilesByAgeIgnoresUnmanagedFiles(t *testing.T) {
 		}
 	}
 }
+
+// ─────────────── 清理节流（2026-11-17 启动慢的真实根因）───────────────
+
+// TestPruneThrottledSkipsWithinWindow 证明「同一个窗口内只扫一次目录」。
+//
+// # 这条钉子守的是什么故障
+//
+// 原实现每写一条日志就调一次 pruneLogFiles，而它是 os.ReadDir×2 + 全量 sort。
+// 本机归档 351 个文件时单次约 200ms —— 启动阶段约 700 条日志 = 150 秒。
+// 实测日志：09:19:48 → 09:22:20（151.6 秒），相邻行间隔中位数 214ms，
+// 而每条 SQL 自身的 duration 只有 20–900 微秒。**查询没慢，是写日志慢。**
+//
+// # 为什么用「数文件」而不是「计时」做判据
+//
+// 计时断言（「第二次必须 < 5ms」）在 CI 上不稳定：机器负载、杀软扫描、
+// 磁盘缓存冷热都能让它抖动一个数量级，而抖动方向恰好是「假红」。
+// 改成「窗口内归档文件没被删」—— pruneLogFiles 一旦真的执行，就会把超限的
+// 归档删掉。文件还在 = 它没执行。这是**行为级**判据，不依赖计时精度。
+func TestPruneThrottledSkipsWithinWindow(t *testing.T) {
+	dir := t.TempDir()
+	if err := setupLogger(dir, 1024*1024); err != nil {
+		t.Fatalf("setup logger: %v", err)
+	}
+	t.Cleanup(func() { _ = closeLogger() })
+
+	state := active
+	if state == nil {
+		t.Fatal("setupLogger 之后 active 必须非 nil")
+	}
+
+	// 造一个「超限」现场：归档远大于 maxTotalBytes，首次 prune 必然删掉它。
+	//
+	// ⚠️ 归档必须落在 archive/ 子目录、且命名匹配 logBatchArchivePattern
+	// （`YYYYMMDD_HHMMSS.zip`）—— 这是 pruneLogFiles 唯一的删除来源。
+	// 顶层 `Tiku<数字>.txt` 虽然也被 isManagedLogArchive 认作归档，
+	// 但当前实现只把它**计入总量**，不放进 archives 候选（见 pruneLogFiles）。
+	// 用它做判据会得到「文件永远不删」的恒红用例，看起来像实现坏了。
+	archiveDir := filepath.Join(dir, "archive")
+	if err := os.MkdirAll(archiveDir, 0o755); err != nil {
+		t.Fatalf("mkdir archive: %v", err)
+	}
+	bigArchive := filepath.Join(archiveDir, "20200101_000000.zip")
+	// 4 KiB 的「归档」，把上限设成 1 KiB 就必然超限。
+	if err := os.WriteFile(bigArchive, bytes.Repeat([]byte("x"), 4096), 0o644); err != nil {
+		t.Fatalf("write big archive: %v", err)
+	}
+
+	state.mu.Lock()
+	state.maxTotalBytes = 1024
+	state.lastPruneAt = time.Time{} // 清掉任何既有窗口
+	state.mu.Unlock()
+
+	// 第一次：窗口为空 ⇒ 必须真的执行，超限归档被删。
+	state.mu.Lock()
+	state.pruneThrottled()
+	state.mu.Unlock()
+	if _, err := os.Stat(bigArchive); !os.IsNotExist(err) {
+		t.Fatalf("窗口为空时 pruneThrottled 必须真的执行清理（超限归档应被删），stat err=%v", err)
+	}
+
+	// 再造一个超限现场，但**不清** lastPruneAt —— 处于同一窗口内。
+	if err := os.WriteFile(bigArchive, bytes.Repeat([]byte("y"), 4096), 0o644); err != nil {
+		t.Fatalf("rewrite big archive: %v", err)
+	}
+	state.mu.Lock()
+	state.pruneThrottled()
+	state.mu.Unlock()
+	if _, err := os.Stat(bigArchive); err != nil {
+		t.Fatalf("同一窗口内 pruneThrottled 不得再扫目录（归档应保留），stat err=%v", err)
+	}
+}
+
+// TestPruneThrottledResumesAfterWindow 证明窗口过去后会重新执行。
+//
+// 为什么必须有这条：只测「窗口内跳过」的话，把 pruneThrottled 写成
+// `return`（永不清理）也能通过上面那条 —— 那是「日志目录永不回收」的严重缺陷。
+func TestPruneThrottledResumesAfterWindow(t *testing.T) {
+	dir := t.TempDir()
+	if err := setupLogger(dir, 1024*1024); err != nil {
+		t.Fatalf("setup logger: %v", err)
+	}
+	t.Cleanup(func() { _ = closeLogger() })
+
+	state := active
+	archiveDir := filepath.Join(dir, "archive")
+	if err := os.MkdirAll(archiveDir, 0o755); err != nil {
+		t.Fatalf("mkdir archive: %v", err)
+	}
+	bigArchive := filepath.Join(archiveDir, "20200101_000000.zip")
+	if err := os.WriteFile(bigArchive, bytes.Repeat([]byte("z"), 4096), 0o644); err != nil {
+		t.Fatalf("write big archive: %v", err)
+	}
+
+	state.mu.Lock()
+	state.maxTotalBytes = 1024
+	// 刻意把上一次清理拨到窗口之外：模拟「进程跑了很久，下个窗口到了」。
+	state.lastPruneAt = time.Now().Add(-2 * pruneLogFilesThrottle)
+	state.mu.Unlock()
+
+	state.mu.Lock()
+	state.pruneThrottled()
+	state.mu.Unlock()
+	if _, err := os.Stat(bigArchive); !os.IsNotExist(err) {
+		t.Fatalf("窗口过去后必须重新执行清理（超限归档应被删），stat err=%v", err)
+	}
+}
+
+// TestPruneLogFilesThrottleIsBounded 守住节流常量本身。
+//
+// 常量漂移的两种方向都是故障：
+//   - 变成 0/负 ⇒ 退化成「每条日志都扫目录」，即本函数要修的那个 bug 复现；
+//   - 变成分钟级 ⇒ 超限后要写掉大量日志才收敛，磁盘峰值失控。
+//
+// ⚠️ 期望值写字面量而不是引用 pruneLogFilesThrottle：若拿常量比自己，
+// 常量改成任何值这条断言都恒真（本仓交付过这种假钉子）。
+func TestPruneLogFilesThrottleIsBounded(t *testing.T) {
+	const wantSeconds = 5
+	if got := int(pruneLogFilesThrottle.Seconds()); got != wantSeconds {
+		t.Fatalf("pruneLogFilesThrottle 必须是 %d 秒，实际 %v（改这个值前先读它的注释）",
+			wantSeconds, pruneLogFilesThrottle)
+	}
+}
