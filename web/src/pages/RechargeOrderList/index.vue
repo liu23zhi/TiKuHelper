@@ -160,6 +160,15 @@
         <a-form-item label="实付金额">
           <span>¥ {{ (refundTarget.paidCents / 100).toFixed(2) }}</span>
         </a-form-item>
+          <!-- 缺渠道凭证的订单：明确告诉用户会走人工打款，而不是悄悄把 kind
+               换成 manual —— 两者的到账速度与是否需要管理员核对完全不同。 -->
+          <a-alert
+            v-if="!refundTarget.originalSupported"
+            type="info"
+            show-icon
+            message="该订单缺少原路退回所需的渠道凭证，将按人工打款处理，需要管理员核对。"
+            data-testid="refund-manual-only-hint"
+          />
         <a-form-item label="退款金额（元）">
           <a-input
             :value="refundTarget.requestedYuan"
@@ -233,13 +242,20 @@ export default defineComponent({
 
     // ── 快捷发起退款工单（用户诉求：充值记录提供按钮）──
     //
-    // 可退性**只认后端**：refundEligibleIds 来自 GET /ticket-refunds/eligible-orders。
+  // 可退性**只认后端**：refundEligible 来自 GET /ticket-refunds/eligible-orders。
     // 退款受金额上限、时间窗口、是否已退过、赠金抵扣等规则约束，前端复刻一份必然漂移，
-    // 且漂移方向是「显示按钮但点了报错」—— 比不显示更糟。
-    const refundEligibleIds = ref(new Set())
+  // 可退性**只认后端**：refundEligible 来自 GET /ticket-refunds/eligible-orders。
+  //
+  // 2026-11-18：接口现在还会返回「缺渠道凭证」的已支付订单（originalSupported=false）——
+  // 它们能退款但只能人工打款。所以这里存 Map（id → 是否支持原路退回），
+  // 而不是只存 id 集合：按钮文案与提交的 kind 都要按它区分，
+  // 否则用户点了「原路退回」、后端因为拿不到渠道凭证直接拒，报错还很难懂。
+  const refundEligible = ref(new Map())
+    // 退款受金额上限、时间窗口、是否已退过、赠金抵扣等规则约束，前端复刻一份必然漂移，
+
     const refundVisible = ref(false)
     const refundSubmitting = ref(false)
-    const refundTarget = reactive({ orderId: 0, orderNo: "", paidCents: 0, requestedYuan: "", reason: "" })
+    const refundTarget = reactive({ orderId: 0, orderNo: "", paidCents: 0, requestedYuan: "", reason: "", originalSupported: false })
     const refundError = ref("")
     // 只加载一次可退列表；充值记录页刷新不重复请求（可退性不会因为翻页变化）。
     let refundEligibleLoaded = false
@@ -254,15 +270,25 @@ export default defineComponent({
           return
         }
         const list = Array.isArray(response.data) ? response.data : []
-        refundEligibleIds.value = new Set(list.map((item) => Number(item?.id)).filter((id) => Number.isFinite(id) && id > 0))
+        const map = new Map()
+        for (const item of list) {
+          const id = Number(item?.id)
+          if (!Number.isSafeInteger(id) || id <= 0) continue
+          // originalSupported=false 表示「缺渠道凭证，只能人工退款」。
+          map.set(id, item?.originalSupported === true)
+        }
+        refundEligible.value = map
       } catch {
         // 同上：静默降级成「没有可退订单」
       }
     }
-    const canRefundRow = (record) => refundEligibleIds.value.has(Number(record?.id))
+    const canRefundRow = (record) => refundEligible.value.has(Number(record?.id))
+const canRefundOriginal = (record) => refundEligible.value.get(Number(record?.id)) === true
     const openRefundModal = (record) => {
       const paidCents = Number(record?.paidCents ?? 0)
       refundTarget.orderId = Number(record?.id) || 0
+    // 缺渠道凭证的订单只能人工退款，弹窗里要据此改文案与提交 kind。
+    refundTarget.originalSupported = canRefundOriginal(record)
       refundTarget.orderNo = String(record?.orderNo || "")
       refundTarget.paidCents = Number.isFinite(paidCents) ? paidCents : 0
       // 默认整单退：把实付金额填进去，用户可改小。
@@ -291,9 +317,11 @@ export default defineComponent({
       refundError.value = ""
       try {
         const response = await createTicketRefund({
-          // kind=original 是「原路退回」，必须带 orderId；kind=manual 是人工退款。
-          // 这里从充值记录发起，天然是原路退。
-          kind: "original",
+          // kind 必须按后端的 originalSupported 决定（2026-11-18）：
+          //   · true  → original（原路退回），需要渠道凭证，后端会真去校验；
+          //   · false → manual（人工打款），缺渠道凭证的订单只能走这条。
+          // 写死 original 会让「缺渠道」的订单提交必失败，而按钮明明就在那里。
+          kind: refundTarget.originalSupported ? "original" : "manual",
           orderId: refundTarget.orderId,
           requestedCents: cents,
           reason: String(refundTarget.reason).trim(),
@@ -464,7 +492,7 @@ export default defineComponent({
       summary,
       isAdmin,
         filters,
-        refundEligibleIds,
+    canRefundOriginal,
         refundVisible,
         refundSubmitting,
         refundTarget,

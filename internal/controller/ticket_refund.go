@@ -143,6 +143,27 @@ func CreateTicketRefund(c *gin.Context) {
 		writeTicketRefundError(c, service.ErrTicketRefundInvalid)
 		return
 	}
+	// 多选提交（2026-11-18）：orderIds 非空时走批量入口，每个订单各生成一张退款单。
+	//
+	// 单张退款单只挂一个订单是数据约束（order_id 有 uniqueIndex，防重复退款），
+	// 所以多选在服务端展开成多张单，但对外仍是一次请求、一次 UI 动作。
+	if len(input.OrderIDs) > 0 {
+		rows, err := service.CreateTicketRefundsForOrdersWithDB(db, actor, input, ticketRefundVerifier(db))
+		if err != nil {
+			writeTicketRefundError(c, err)
+			return
+		}
+		items, err := withTicketRefundProofFlags(db, rows)
+		if err != nil {
+			writeTicketRefundError(c, err)
+			return
+		}
+		c.JSON(http.StatusCreated, gin.H{
+			"count": len(items),
+			"items": items,
+		})
+		return
+	}
 	refund, err := service.CreateTicketRefundWithDB(db, actor, input, ticketRefundVerifier(db))
 	if err != nil {
 		writeTicketRefundError(c, err)

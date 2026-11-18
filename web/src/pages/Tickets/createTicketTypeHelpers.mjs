@@ -277,9 +277,20 @@ export function buildTicketCreatePayload(draft = {}) {
         : parseRefundYuanToCents(draft.requestedYuan),
       refundReason: normalizeTicketText(draft.reason, 500),
     };
-    // 订单可选：不选 = 无单人工退款（后端会落 kind=manual）。
-    const orderId = Number(draft.refundOrderId);
-    if (Number.isSafeInteger(orderId) && orderId > 0) payload.refundOrderId = orderId;
+    // 订单可选**多笔**（2026-11-18）：不选 = 无单人工退款（后端会落 kind=manual）。
+    //
+    // 传对外的 refundOrderIds；后端按「一笔订单一张退款单」展开，因为
+    // ticket_refunds.order_id 有唯一索引（防重复退款）。
+    // 单笔也走数组，只保留一条代码路径 —— 两套写法迟早漂移。
+    //
+    // 过滤非法值：多选框理论上只产出合法 id，但草稿可能残留旧数据；
+    // 把 NaN 发给后端会让整批 400，且报错指不到具体哪一笔。
+    const orderIds = Array.isArray(draft.refundOrderIds)
+      ? draft.refundOrderIds
+          .map((id) => Number(id))
+          .filter((id) => Number.isSafeInteger(id) && id > 0)
+      : [];
+    if (orderIds.length) payload.refundOrderIds = orderIds;
     if (attachmentIds.length) payload.attachmentIds = attachmentIds;
     return Object.freeze({ payload: Object.freeze(payload), validation });
   }

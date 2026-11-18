@@ -367,12 +367,11 @@
           </button>
         </div>
       </div>
-      <!-- ───── 注销申请：先引导自助注销（主按钮=自助，次按钮=建单）───── -->
       <ClosureGuide
         v-else-if="createStep === TICKET_WIZARD_STEP_CLOSURE_GUIDE"
         mode="guide"
         data-ticket-step="closure-guide"
-        @fallback="createEntry.bind(goCreateForm)"
+        @fallback="goCreateForm"
       />
       <!-- ───── 第二步：对应类型的模板字段 ───── -->
       <a-form v-else-if="createStep === TICKET_WIZARD_STEP_FORM" layout="vertical" data-ticket-step="form"
@@ -380,20 +379,46 @@
         <!-- 退款类型：字段整体切换成退款需要的（订单 / 金额 / 理由），
              而不是只把分类字符串改一下。 -->
         <template v-if="createNeedsRefundFields">
+          <!-- 退款订单：**多选**，用原生复选框列表而不是 a-select mode="multiple"。
+
+               2026-11-18 实测：本项目的 antd 4.2.6 在此环境下，a-select 的选项
+               能正常展开、能正常渲染（4 个选项坐标都对），但真实鼠标点击与键盘
+               回车都**不会**让选中态生效（.ant-select-item-option-selected 恒为 0）。
+               与 a-radio-group 那个「选不动」是同一类问题 —— 组件内部 emit 链断掉。
+
+               所以改用原生 checkbox：点击直接调 toggleRefundOrder。
+               顺带好处是每个选项能显示「仅人工退款」标记，下拉里做不到。 -->
           <a-form-item label="退款订单" :html-for="createFieldId('order')">
-            <a-select
-              :id="createFieldId('order')"
-              :value="draft.refundOrderId"
-              :options="refundOrderOptions"
-              allow-clear
-              show-search
-              option-filter-prop="label"
-              :loading="refundOrdersLoading"
-              :disabled="createLoading"
-              placeholder="不选表示无订单的人工退款"
-              @update:value="createEntry.bind(setDraft, 'refundOrderId')" />
+            <p v-if="refundOrdersLoading" class="ticket-refund-orders-hint">正在读取可退订单…</p>
+            <p v-else-if="!refundOrderOptions.length" class="ticket-refund-orders-hint">
+              当前没有可退订单。可直接提交「无订单的人工退款」，由管理员核对凭证。
+            </p>
+            <div v-else class="ticket-refund-orders" role="group" aria-label="退款订单（可多选）">
+              <label
+                v-for="item in refundOrderOptions"
+                :key="item.value"
+                class="ticket-refund-order"
+                :class="{ 'ticket-refund-order--checked': isRefundOrderSelected(item.value) }"
+                :data-ticket-refund-order="item.value"
+              >
+                <input
+                  type="checkbox"
+                  :value="item.value"
+                  :checked="isRefundOrderSelected(item.value)"
+                  :disabled="createLoading"
+                  @change="toggleRefundOrder(item.value)"
+                />
+                <span class="ticket-refund-order__body">
+                  <span class="ticket-refund-order__label">{{ item.label }}</span>
+                  <span class="ticket-refund-order__tag" v-if="!item.originalSupported">仅人工退款</span>
+                </span>
+              </label>
+            </div>
             <template #help
-              ><span>选择一笔已支付的充值订单可原路退回；不选则按人工打款处理，需管理员核对凭证。</span></template
+              ><span>
+                可多选。选中的订单会各生成一笔退款申请；标注「仅人工退款」的订单缺少原路退回所需的
+                渠道凭证，只能由管理员人工打款。不选任何订单 = 无订单人工退款。
+              </span></template
             >
           </a-form-item>
           <a-form-item label="退款金额（元）" required :validate-status="createValidationMessage('requestedYuan') ? 'error' : undefined"
@@ -475,19 +500,30 @@
               :maxlength="10000"
               show-count
               :rows="8"
-              placeholder="请提供复现步骤、错误提示和期望结果" /><template #help><span v-if="createValidationMessage('body')" :id="createValidationErrorId('body')" role="alert">{{ createValidationMessage('body') }}</span></template></a-form-item
-          ><a-form-item
-            label="截图（可选）"
-            help="支持 PNG / JPEG，单张不超过 2 MiB。图片上传后先做安全检测，检测未通过时只显示提示。"
-            ><label class="ticket-attachment-input">
-              <span>选择图片（最多 {{ TICKET_ATTACHMENT_MAX_PER_MESSAGE }} 张）</span>
-              <input
-                type="file"
-                :accept="TICKET_ATTACHMENT_ACCEPT"
-                :disabled="createLoading || uploadBusy"
-                multiple
-                @change="onPickDraftImages"
-              /></label>
+              placeholder="请提供复现步骤、错误提示和期望结果" /><template #help><span v-if="createValidationMessage('body')" :id="createValidationErrorId('body')" role="alert">{{ createValidationMessage('body') }}</span></template></a-form-item>
+      </template>
+      <!-- 截图：**所有类型共用**（2026-11-18 用户要求）。
+
+           原来这块写在「普通工单」分支（v-else）里，于是退款 / 账号 / 注销
+           三种类型都没有上传入口。附件本身与类型无关（后端 CreateTicketInput
+           .AttachmentIds 是通用字段），所以移出分支、放在 </a-form> 之前。
+
+           保留在 <a-form> 内而不是外面：它能跟着表单的 layout/间距走，
+           视觉上仍是「填内容」的一部分。 -->
+      <a-form-item
+        label="截图（可选）"
+        help="支持 PNG / JPEG，单张不超过 2 MiB。图片上传后先做安全检测，检测未通过时只显示提示。"
+      >
+        <label class="ticket-attachment-input">
+          <span>选择图片（最多 {{ TICKET_ATTACHMENT_MAX_PER_MESSAGE }} 张）</span>
+          <input
+            type="file"
+            :accept="TICKET_ATTACHMENT_ACCEPT"
+            :disabled="createLoading || uploadBusy"
+            multiple
+            @change="onPickDraftImages"
+          />
+        </label>
             <div v-if="draftAttachments.length" class="ticket-attachment-selected">
               <span v-for="item in draftAttachments" :key="item.id" class="ticket-attachment-chip"
                 >#{{ item.id }}
@@ -500,15 +536,23 @@
                 ></span
               >
             </div>
-          </a-form-item></template
+      </a-form-item>
         ></a-form>
       <!-- 向导 footer：每步主动作不同，所以自定义。 -->
+
+           「上一步」覆盖**除第一步外的所有步骤**：
+             · FORM（填内容）→ 回类型选择；
+             · CLOSURE_GUIDE（注销引导 / 不支持自助注销的提示）→ 同样回类型选择。
+           原实现只在 FORM 显示「上一步」，导致进了注销引导页后只剩「取消」，
+           想换类型必须整单关掉重开（用户 2026-11-18 指出）。
+           注意：「取消」仍然保留 —— 它是「放弃建单」，与「回上一级」是两件事。 -->
       <div class="ticket-wizard-footer">
         <a-button :disabled="createLoading" :onClick="createEntry.bind(closeCreate)">取消</a-button>
         <a-button
-          v-if="createStep === TICKET_WIZARD_STEP_FORM"
+          v-if="!createAtFirstStep"
           :disabled="createLoading"
           :onClick="createEntry.bind(backToTypeStep)"
+          data-testid="ticket-wizard-back"
           >上一步</a-button
         >
         <a-button
@@ -910,7 +954,8 @@ const draft = reactive({
   body: "",
   requestedYuan: "",
   reason: "",
-  refundOrderId: undefined,
+  // 多选（2026-11-18）：一个订单一张退款单，服务端展开；空数组 = 无订单人工退款。
+  refundOrderIds: [],
   // account 专用：登录异常 / 绑定问题 / 封禁申诉（只做标题前缀，不是后端字段）。
   issueType: "",
 });
@@ -1148,6 +1193,25 @@ function setConfig(key, value) {
 }
 function clearSavedWebhook() { if (canManage() && configLoaded.value) { notificationConfig.clearWebhook = true; notificationConfig.webhookUrl = ""; configDirty.value = true; } }
 function keepSavedWebhook() { if (canManage() && configLoaded.value) { notificationConfig.clearWebhook = false; configDirty.value = true; } }
+// 退款订单多选（2026-11-18）：用原生 checkbox，不用 a-select mode="multiple"。
+//
+// 为什么不用 a-select：本项目 antd 4.2.6 在此环境下，下拉能展开、选项能渲染，
+// 但真实鼠标点击与键盘回车都不会让选中态生效（.ant-select-item-option-selected 恒 0）。
+// 与 a-radio-group 那个「选不动」同源 —— 组件内部 emit 链断掉，且不报错。
+function isRefundOrderSelected(id) {
+  return Array.isArray(draft.refundOrderIds) && draft.refundOrderIds.includes(Number(id));
+}
+function toggleRefundOrder(id) {
+  if (!createVisible.value || createLoading.value) return;
+  const value = Number(id);
+  if (!Number.isSafeInteger(value) || value <= 0) return;
+  const current = Array.isArray(draft.refundOrderIds) ? draft.refundOrderIds : [];
+  // 保持选中顺序 = 用户勾选顺序（提交时后端按此顺序建单，方便对照）。
+  draft.refundOrderIds = current.includes(value)
+    ? current.filter((item) => item !== value)
+    : [...current, value];
+  retireCreateValidation();
+}
 function setDraft(key, value) { if (createVisible.value) draft[key] = value; }
 function setCreateVisible(value) { createVisible.value = value; }
 function setDetailVisible(value) { if (!value) closeDetail(); }
@@ -1279,7 +1343,7 @@ function openCreate() {
   draft.body = "";
   draft.requestedYuan = "";
   draft.reason = "";
-  draft.refundOrderId = undefined;
+  draft.refundOrderIds = [];
   draft.issueType = "";
   createStep.value = ticketWizardInitialStep();
   createVisible.value = true;
@@ -1310,7 +1374,12 @@ function goCreateForm() {
   createStep.value = TICKET_WIZARD_STEP_FORM;
 }
 // backToTypeStep 回第一步（表单里的「上一步」）。
-function backToTypeStep() {
+// createAtFirstStep 判断当前是否停在第一步（类型选择）。
+//
+// 「上一步」在除第一步外的所有步骤都要出现（含注销引导页），
+// 所以 footer 用它做 v-if，而不是逐步骤枚举 —— 枚举的写法在新增步骤时
+// 必然漏掉，而漏掉的表现就是「这一页只有取消」（正是本次要修的）。
+const createAtFirstStep = computed(() => createStep.value === TICKET_WIZARD_STEP_TYPE);function backToTypeStep() {
   if (!createVisible.value || createLoading.value) return;
   retireCreateValidation();
   createStep.value = TICKET_WIZARD_STEP_TYPE;
@@ -1351,15 +1420,17 @@ async function submitTicket() {
       subject, body,
       requestedYuan: draft.requestedYuan,
       reason: draft.reason,
-      refundOrderId: draft.refundOrderId,
+      refundOrderIds: draft.refundOrderIds,
       issueType: draft.issueType,
       attachmentIds,
     });
     const payload = { ...built.payload };
-    if (refundMode) {
-      // 退款不带草稿附件（退款证据走退款自己的凭证上传，与工单附件是两套）。
-      delete payload.attachmentIds;
-    }
+    // 2026-11-18：**所有类型**都要支持上传图片（用户明确要求）。
+    //
+    // 原来退款类型会在这里 delete payload.attachmentIds，理由是「退款证据走退款
+    // 自己的凭证上传」。但那是两回事：退款凭证是审核用的付款凭据，工单附件是
+    // 用户说明问题的截图 —— 退款申请同样需要后者（比如订单页面的报错截图）。
+    // 去掉这条限制后，四种类型的建单请求体都带 attachmentIds。
     await createTicket(payload);
     if (!owns()) return;
     message.success(refundMode ? "退款申请已提交，可在工单列表跟踪进度" : "工单已提交");
@@ -2016,6 +2087,58 @@ watch(
   align-items: stretch;
   gap: 8px;
   width: 100%;
+}
+/* 退款订单多选：原生复选框列表（与类型选择同一套思路，不依赖组件内部状态）。 */
+.ticket-refund-orders {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+.ticket-refund-orders-hint {
+  margin: 0;
+  color: var(--console-muted);
+  font-size: 13px;
+}
+.ticket-refund-order {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--console-border);
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: normal;
+}
+.ticket-refund-order:hover {
+  border-color: var(--primary);
+}
+.ticket-refund-order--checked {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+.ticket-refund-order input {
+  margin-top: 3px;
+  flex: 0 0 auto;
+}
+.ticket-refund-order__body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.ticket-refund-order__label {
+  color: var(--console-text);
+}
+/* 「仅人工退款」标记：缺少渠道凭证的订单不能原路退回，必须让用户看见。 */
+.ticket-refund-order__tag {
+  padding: 0 6px;
+  border: 1px solid var(--console-border);
+  border-radius: 999px;
+  color: var(--console-muted);
+  font-size: 12px;
+  line-height: 18px;
 }
 .ticket-type-choice {
   display: flex;

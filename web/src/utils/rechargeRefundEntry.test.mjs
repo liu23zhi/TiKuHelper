@@ -47,14 +47,23 @@ test('② 提交字段与 CreateTicketRefundInput 对齐', async () => {
   }
 });
 
-test('③ kind 固定 original（充值记录发起 = 原路退回）', async () => {
+test('③ kind 按 originalSupported 决定（2026-11-18 多选/缺渠道改造）', async () => {
   const source = await read();
   const call = source.match(/createTicketRefund\(\{[\s\S]*?\}\)/);
   assert.ok(call);
+  // 旧实现写死 kind: "original"。
+  // 但 2026-11-18 起可退列表会包含「缺渠道凭证」的已支付订单 ——
+  // 这类订单提交 original 必然被后端拒（拿不到渠道引用），
+  // 所以必须按后端给的 originalSupported 决定 original / manual。
   assert.match(
     call[0],
-    /kind:\s*["']original["']/,
-    'kind 必须是 original —— manual 是人工退款，没有 orderId 语义，不该从充值记录入口进来',
+    /kind:\s*refundTarget\.originalSupported\s*\?\s*["']original["']\s*:\s*["']manual["']/,
+    'kind 必须按 originalSupported 决定：缺渠道凭证的订单只能走 manual',
+  );
+  assert.doesNotMatch(
+    call[0],
+    /kind:\s*["']original["']\s*,/,
+    '不能写死 kind: "original" —— 缺渠道订单会提交必失败',
   );
 });
 

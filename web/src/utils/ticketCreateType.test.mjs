@@ -177,7 +177,7 @@ test("选退款类型时 payload 带退款字段且不带普通的标题/正文"
     ticketType: TICKET_CREATE_TYPE_REFUND,
     requestedYuan: "25.50",
     reason: "  充错了金额  ",
-    refundOrderId: 88,
+    refundOrderIds: [88],
   });
   assert.equal(validation.message, "");
   assert.equal(payload.ticketType, "refund");
@@ -185,19 +185,20 @@ test("选退款类型时 payload 带退款字段且不带普通的标题/正文"
   assert.equal(payload.refundRequestedCents, 2550);
   // 理由要去掉首尾空白。
   assert.equal(payload.refundReason, "充错了金额");
-  assert.equal(payload.refundOrderId, 88);
+  // 多选后是数组（2026-11-18）：后端按「一笔订单一张退款单」展开。
+  assert.deepEqual(payload.refundOrderIds, [88]);
   // 退款流程不接受 subject/body —— 壳工单的标题与正文由服务端按订单号生成。
   assert.equal("subject" in payload, false);
   assert.equal("body" in payload, false);
 });
 
-test("选退款但没指定订单时不传 refundOrderId（后端会归为人工退款）", () => {
+test("选退款但没指定订单时不传 refundOrderIds（后端会归为人工退款）", () => {
   const { payload } = buildTicketCreatePayload({
     ticketType: TICKET_CREATE_TYPE_REFUND,
     requestedYuan: "10",
     reason: "理由",
   });
-  assert.equal("refundOrderId" in payload, false);
+  assert.equal("refundOrderIds" in payload, false);
   assert.equal(payload.refundRequestedCents, 1000);
 });
 
@@ -217,7 +218,7 @@ test("普通类型只带标题正文，一个退款字段都不带", () => {
   assert.equal(payload.body, "点登录没反应");
   assert.equal("refundRequestedCents" in payload, false);
   assert.equal("refundReason" in payload, false);
-  assert.equal("refundOrderId" in payload, false);
+  assert.equal("refundOrderIds" in payload, false);
 });
 
 test("老客户端不传 ticketType 时按一般问题处理", () => {
@@ -436,7 +437,7 @@ test("选退款类型时 payload 带退款字段且不带普通的标题/正文"
     ticketType: TICKET_CREATE_TYPE_REFUND,
     requestedYuan: "25.50",
     reason: "  充错了金额  ",
-    refundOrderId: 88,
+    refundOrderIds: [88],
   });
   assert.equal(validation.message, "");
   assert.equal(payload.ticketType, "refund");
@@ -444,19 +445,20 @@ test("选退款类型时 payload 带退款字段且不带普通的标题/正文"
   assert.equal(payload.refundRequestedCents, 2550);
   // 理由要去掉首尾空白。
   assert.equal(payload.refundReason, "充错了金额");
-  assert.equal(payload.refundOrderId, 88);
+  // 多选后是数组（2026-11-18）：后端按「一笔订单一张退款单」展开。
+  assert.deepEqual(payload.refundOrderIds, [88]);
   // 退款流程不接受 subject/body —— 壳工单的标题与正文由服务端按订单号生成。
   assert.equal("subject" in payload, false);
   assert.equal("body" in payload, false);
 });
 
-test("选退款但没指定订单时不传 refundOrderId（后端会归为人工退款）", () => {
+test("选退款但没指定订单时不传 refundOrderIds（后端会归为人工退款）", () => {
   const { payload } = buildTicketCreatePayload({
     ticketType: TICKET_CREATE_TYPE_REFUND,
     requestedYuan: "10",
     reason: "理由",
   });
-  assert.equal("refundOrderId" in payload, false);
+  assert.equal("refundOrderIds" in payload, false);
   assert.equal(payload.refundRequestedCents, 1000);
 });
 
@@ -476,7 +478,7 @@ test("普通类型只带标题正文，一个退款字段都不带", () => {
   assert.equal(payload.body, "点登录没反应");
   assert.equal("refundRequestedCents" in payload, false);
   assert.equal("refundReason" in payload, false);
-  assert.equal("refundOrderId" in payload, false);
+  assert.equal("refundOrderIds" in payload, false);
 });
 
 test("老客户端不传 ticketType 时按一般问题处理", () => {

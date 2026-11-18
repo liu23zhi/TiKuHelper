@@ -80,12 +80,52 @@ func TestTicketRefundEligibilityAndFreshOwnerAdminIsolation(t *testing.T) {
 	foreign := seedTicketRefundOrder(t, db, 6, other.ID, "paid", now.Add(-3*time.Hour), 25, true)
 	badPrecision := seedTicketRefundOrder(t, db, 7, owner.ID, "paid", now.Add(-4*time.Hour), 20.001, true)
 
+	// 2026-11-18 行为变更（用户要求）：可退列表不再把「缺渠道凭证」的订单
+	// 静默丢掉，而是列出来并标记 OriginalSupported=false（只能人工退款）。
+	//
+	// 旧断言是 len==1（只认渠道完整的那笔），对应的正是「用户看到有订单却
+	// 一条都选不了、且毫无提示」的老行为 —— 那是本次要修的缺陷本身。
+	//
+	// 新预期逐笔比对（不是只看总数）：
+	//   valid（渠道完整、窗口内）→ 出现，OriginalSupported=true
+	//   legacy（缺渠道指纹）     → 出现，OriginalSupported=false
+	//   old（超 60 天）/ pending（未支付）/ future（未来时间）/
+	//   foreign（别人的单）/ badPrecision（金额精度非法）→ 都不出现
 	eligible, err := ListEligibleTicketRefundOrdersWithDB(db, owner, testVerifyTicketRefundChannel)
-	if err != nil || len(eligible) != 1 || eligible[0].ID != valid.ID || eligible[0].PaidCents != 5000 {
-		t.Fatalf("eligibility: %+v err=%v", eligible, err)
+	if err != nil {
+		t.Fatalf("eligibility err: %v", err)
 	}
-	if eligible, err := ListEligibleTicketRefundOrdersWithDB(db, owner, nil); err != nil || len(eligible) != 0 {
-		t.Fatalf("no verifier must fail closed: %+v %v", eligible, err)
+	byID := make(map[int32]TicketRefundOrder, len(eligible))
+	for _, item := range eligible {
+		byID[item.ID] = item
+	}
+	if len(byID) != 2 {
+		t.Fatalf("应只含 valid 与 legacy 两笔，实际 %+v", eligible)
+	}
+	if got, ok := byID[valid.ID]; !ok || !got.OriginalSupported || got.PaidCents != 5000 {
+		t.Fatalf("valid 必须在列且标记支持原路退回，实际 %+v", got)
+	}
+	if got, ok := byID[legacy.ID]; !ok || got.OriginalSupported {
+		t.Fatalf("legacy（缺渠道）必须在列且标记为只能人工退款，实际 %+v", got)
+	}
+	for _, absent := range []entity.RechargeOrder{old, pending, future, foreign, badPrecision} {
+		if _, ok := byID[absent.ID]; ok {
+			t.Fatalf("order %d 不应出现在可退列表（%s）", absent.ID, absent.OrderNo)
+		}
+	}
+	// 渠道未配置（verify=nil）时同样要列出订单，只是全部只能人工退款 ——
+	// 原来的「返回空」会让用户以为没有可退订单，真实原因是渠道没配。
+	noVerify, err := ListEligibleTicketRefundOrdersWithDB(db, owner, nil)
+	if err != nil {
+		t.Fatalf("no verifier err: %v", err)
+	}
+	if len(noVerify) == 0 {
+		t.Fatalf("渠道未配置时仍应列出订单（否则表现为列表全空），实际 %+v", noVerify)
+	}
+	for _, item := range noVerify {
+		if item.OriginalSupported {
+			t.Fatalf("渠道未配置时不能标记为支持原路退回，实际 %+v", item)
+		}
 	}
 	for _, order := range []entity.RechargeOrder{old, legacy, pending, future, foreign, badPrecision} {
 		if _, err := CreateTicketRefundWithDB(db, owner, CreateTicketRefundInput{

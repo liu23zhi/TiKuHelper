@@ -66,13 +66,31 @@ type TicketRefundOrder struct {
 	PaidCents                 int64     `json:"paidCents"`
 	PaidAt                    time.Time `json:"paidAt"`
 	PaymentMethodNameSnapshot string    `json:"paymentMethodNameSnapshot"`
+	// OriginalSupported 表示这笔订单**可以走原路退回**（渠道指纹与原交易号齐全
+	// 且渠道校验通过）。false 表示只能走人工退款 —— 前端据此在选项上标注，
+	// 并禁止把它当成「原路退回」来提交。
+	//
+	// 为什么需要显式区分：2026-11-18 之前这类订单被**直接过滤掉**，
+	// 用户看到的是「明明有订单，下拉里却一条都没有」，且没有任何提示。
+	// 订单确实存在、钱确实收了，只是拿不到渠道凭证 —— 那是「只能人工」，
+	// 不是「不存在」。
+	OriginalSupported bool `json:"originalSupported"`
 }
 
 type CreateTicketRefundInput struct {
-	Kind           string `json:"kind"`
-	OrderID        *int32 `json:"orderId"`
-	RequestedCents int64  `json:"requestedCents"`
-	Reason         string `json:"reason"`
+	Kind    string `json:"kind"`
+	OrderID *int32 `json:"orderId"`
+	// OrderIDs 是多选提交（2026-11-18）。
+	//
+	// 为什么要单独一个字段而不是把 OrderID 改成数组：
+	// ticket_refunds.order_id 上有 uniqueIndex（一个订单只能被一张退款单引用，
+	// 这是防重复退款的硬约束），所以「多选」在数据层**必然是多张退款单**。
+	// 保留 OrderID 让老的单选调用方（含测试）一字不改，新路径用 OrderIDs。
+	//
+	// 语义：OrderIDs 非空时优先，忽略 OrderID；每个订单各生成一张退款单。
+	OrderIDs       []int32 `json:"orderIds"`
+	RequestedCents int64   `json:"requestedCents"`
+	Reason         string  `json:"reason"`
 }
 
 func ListEligibleTicketRefundOrdersWithDB(db *gorm.DB, actor entity.User, verify TicketRefundOrderVerifier) ([]TicketRefundOrder, error) {
@@ -213,6 +231,61 @@ func CreateTicketRefundWithDB(db *gorm.DB, actor entity.User, input CreateTicket
 		row.TicketID = linked
 	}
 	return row, nil
+}
+
+// CreateTicketRefundsForOrdersWithDB 是多选提交的入口：一笔订单一张退款单。
+//
+// 为什么不是「一张退款单挂多个订单」：
+// ticket_refunds.order_id 上有 uniqueIndex —— 一个订单只能被一张退款单引用，
+// 这是防重复退款的硬约束（同笔充值退两次就是事故）。所以多选在数据层
+// 必然展开成多张退款单，每张各自走原来的单笔流程。
+//
+// 事务语义：**全成或全败**。任一订单不可退（已退过 / 渠道校验失败 /
+// 金额超实付）就整批回滚 —— 部分成功会让用户以为「选了 3 笔退了 3 笔」，
+// 实际只退了 1 笔，对账时极难发现。
+//
+// 返回按入参顺序排列的退款行，调用方据此展示「哪些已提交」。
+func CreateTicketRefundsForOrdersWithDB(db *gorm.DB, actor entity.User, input CreateTicketRefundInput, verify TicketRefundOrderVerifier) ([]entity.TicketRefund, error) {
+	if len(input.OrderIDs) == 0 {
+		return nil, ErrTicketRefundInvalid
+	}
+	// 去重：前端多选理论上不会重复，但重复的 orderId 会让「第二次插入」
+	// 撞唯一索引、整批回滚，报错还指向一个用户根本没做过的重复提交。
+	seen := make(map[int32]struct{}, len(input.OrderIDs))
+	ids := make([]int32, 0, len(input.OrderIDs))
+	for _, id := range input.OrderIDs {
+		if id <= 0 {
+			return nil, ErrTicketRefundInvalid
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+
+	created := make([]entity.TicketRefund, 0, len(ids))
+	err := db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
+		for _, id := range ids {
+			one := input
+			one.OrderIDs = nil
+			orderID := id
+			one.OrderID = &orderID
+			// 借用单笔入口的完整校验与记账，保证两条路径口径一致。
+			// 注意它内部会开自己的事务 —— GORM 的嵌套 Transaction 会退化成
+			// SavePoint，外层回滚时一并撤销，所以「全败」语义仍然成立。
+			row, err := CreateTicketRefundWithDB(tx, actor, one, verify)
+			if err != nil {
+				return err
+			}
+			created = append(created, row)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return created, nil
 }
 
 // readTicketRefundTicketID 读回某笔退款的壳工单 ID（未关联返回 nil）。
@@ -441,16 +514,21 @@ func finalizeTicketRefundInTx(tx *gorm.DB, row *entity.TicketRefund, operatorID 
 
 func listEligibleTicketRefundOrders(db *gorm.DB, userID int32, verify TicketRefundOrderVerifier, now time.Time, want int) ([]TicketRefundOrder, error) {
 	items := make([]TicketRefundOrder, 0)
-	if verify == nil {
-		return items, nil
-	}
+	// verify == nil 表示支付渠道未配置（LoadTicketRefundEPayConfigWithDB 失败）。
+	// 此时原路退回路走不通，但**订单本身仍要列出来**并标成只能人工退款 ——
+	// 否则用户看到的是「有订单但列表全空」，而真实原因是渠道没配。
+	// ticketRefundOriginalChannel 内部已经对 verify == nil 返回 Unavailable，
+	// 所以这里不需要额外分支，让它自然落到 OriginalSupported=false 即可。
 	var lastID int32
 	for {
 		var orders []entity.RechargeOrder
+		// 2026-11-18：不再用 SQL 条件把「缺渠道指纹」的订单挡掉。
+		// 把订单挡在 SQL 层。这类订单「已支付、钱已收，但拿不到渠道凭证」，
+		// 正确处置是**列出来并标记只能人工退款**，而不是让它凭空消失 ——
+		// 后者让用户看到「明明有订单却一条都选不了」且毫无解释。
 		query := db.Session(&gorm.Session{NewDB: true}).Model(&entity.RechargeOrder{}).
 			Where("user_id = ? AND status = ? AND payment_provider = ?", userID, rechargeOrderStatusPaid, DefaultPaymentProvider).
 			Where("paid_at >= ? AND paid_at <= ?", now.Add(-ticketRefundAge), now).
-			Where("refund_channel_fingerprint <> '' AND refund_original_trade_no <> ''").
 			Where("NOT EXISTS (SELECT 1 FROM ticket_refunds WHERE ticket_refunds.order_id = recharge_orders.id)")
 		if lastID != 0 {
 			query = query.Where("id < ?", lastID)
@@ -459,18 +537,30 @@ func listEligibleTicketRefundOrders(db *gorm.DB, userID int32, verify TicketRefu
 			return nil, err
 		}
 		for _, order := range orders {
-			_, err := ticketRefundOriginalChannel(db, order, verify, now)
-			if errors.Is(err, ErrTicketRefundOrderUnavailable) {
+			// 渠道校验失败只影响「能否原路退回」，不再影响「是否出现在列表里」。
+			//
+			// 但**真故障**仍要上抛：ticketRefundOriginalChannel 返回非 Unavailable 的
+			// 错误意味着渠道调用本身炸了（网络/签名/下游 5xx），这时静默降级成
+			// 「人工退款」会让用户以为系统正常、实际是原路通道坏了。所以保留 err 分支。
+			originalOK := true
+			if _, err := ticketRefundOriginalChannel(db, order, verify, now); err != nil {
+				if !errors.Is(err, ErrTicketRefundOrderUnavailable) {
+					return nil, err
+				}
+				originalOK = false
+			}
+			paid, centsErr := ticketRefundPaidOrderCents(order)
+			if centsErr != nil {
+				// 金额解析不出来说明这条订单数据本身坏了（金额为空/非法），
+				// 列出来也没法填退款金额，跳过。
 				continue
 			}
-			if err != nil {
-				return nil, err
-			}
-			paid, _ := ticketRefundPaidOrderCents(order)
-			items = append(items, TicketRefundOrder{
+			item := TicketRefundOrder{
 				ID: order.ID, OrderNo: order.OrderNo, PaidCents: paid, PaidAt: *order.PaidAt,
 				PaymentMethodNameSnapshot: order.PaymentMethodNameSnapshot,
-			})
+				OriginalSupported:         originalOK,
+			}
+			items = append(items, item)
 			if len(items) == want {
 				return items, nil
 			}
