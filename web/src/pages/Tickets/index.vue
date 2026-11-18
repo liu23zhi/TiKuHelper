@@ -12,50 +12,27 @@
            ⚠️ 这里**不再**有「退款工单」这类按类型切换的独立入口按钮
            （用户 2026-11-14 明确要求：所有工单都在同一个工单列表里看，
            不要为某一种类型单独提供显示按钮）。退款区块现在常驻在列表页内，
-           见下方 TicketRefundPanel —— 功能一个没少，只是不再需要一个"入口按钮"。 -->
+           退款操作在工单详情里（TicketRefundActions）—— 功能一个没少，只是不再需要入口按钮。 -->
       <template #actions
         ><a-button :loading="listLoading" :disabled="!canUseTickets()" :onClick="pageEntry.bind(refreshPage)">刷新</a-button
         ><!-- ⚠️ 全页**唯一**的建单入口（B2-3 / 判据 T6）。
              不要在这里再加第二个「发起」类按钮，也不要在别处提供「直接新建某类型」
              的入口 —— 类型选择已经收进向导第一步。 -->
-        <a-button v-if="canUseTickets() && !isAdmin" type="primary" :onClick="pageEntry.bind(openCreate)"
+        <!-- 管理员也要能发起工单：两个视图共用同一列表，「一个列表 + 一个发起按钮」
+             对两边都成立。后端 POST /tickets 只要求登录（router.go:375），不限角色。 -->
+        <!-- 通知设置入口：只在管理视图出现（它是管理员配置）。 -->         <!-- 只判 canManage，不判 configLoaded：后者是异步的，会在页面刚打开的一瞬间
+             让按钮消失（管理员会以为没有这个功能）。配置未就绪的提示由弹窗内部处理。 -->
+        <a-button v-if="canManage()" :onClick="pageEntry.bind(openNotificationConfig)"           >提醒设置</a-button         >         <a-button v-if="canUseTickets()" type="primary" :onClick="pageEntry.bind(openCreate)"
           >发起工单</a-button
         ></template
       >
     </ConsolePageHeading>
-    <!-- 退款区块常驻（不再是"点按钮才展开"的独立入口）。
-         保留它是因为它是全站**唯一**的退款申请/审核入口：
-           · 用户侧：选可退款订单、提交原路/人工退款申请、上传凭证、查看进度
-           · 管理侧：审核通过/驳回（冻结余额）、提交原路退款、撤销解冻、对账打款
-         退款记录在独立表 ticket_refunds（entity/ticket_refund.go:17 注释
-         「separate from general-purpose tickets」，无 ticket_id 外键），
-         所以它无法并进 /tickets 列表；能做的、也正是用户要的，是
-         去掉那个「要点一下才看得到」的按类型入口按钮。
-         权限沿用 canUseTickets()：未登录/禁用账号不会渲染该区块。
-
-         ⚠️ 必须有**明确的分界**：它直接铺在工单列表页里，用户会分不清
-         「这是工单还是退款」。所以外面套一层带标题 + 说明的区块容器，
-         并用 data-section 打稳定标记（测试与将来迁移都靠它定位）。
-         **不要静默铺一块面板在列表下面。** -->
-    <section
-      v-if="canUseTickets()"
-      data-section="ticket-refund"
-      class="refund-section"
-      aria-labelledby="ticket-refund-heading"
-    >
-      <header class="refund-section-heading">
-        <h2 id="ticket-refund-heading" class="refund-section-title">退款申请与审核</h2>
-        <p class="refund-section-lead">
-          退款工单已经并入上方列表（按「分类」列区分），这里只是它们的快捷处理区：
-          提交申请、审核、打款都在这一块完成，不必回到列表里逐条点开。
-        </p>
-      </header>
-      <TicketRefundPanel
-        :key="pageEpoch"
-        :is-admin="isAdmin"
-        :capture-owner="capturePage"
-      />
-    </section>
+    <!-- 2026-11-18 重构：原 TicketRefundPanel 整块（退款申请/审核工作台）已删除。
+         理由：数据早已合并进 ticket 表，UI 却是第二套 —— 用户在「工单列表」下方
+         又看到一个「退款申请与审核」区块，等于同一份数据两个列表。
+         现在退款操作收进**工单详情弹窗**（见 TicketRefundActions.vue）：
+           点开一张退款工单 → 详情里显示金额/状态，管理员可直接审核、打款。
+         提交入口仍然是「发起工单 → 退款申请」，不另设按钮。 -->
     <section v-if="actionFailures.pageRead.state.failure" data-ticket-page-read-feedback>
       <RequestFailureAlert :key="actionFailures.pageRead.state.context" :failure="actionFailures.pageRead.state.failure" :message="actionFailures.pageRead.state.message" :context-key="actionFailures.pageRead.state.context" :is-current="actionFailures.pageRead.isCurrent" closable :onClose="closePageReadFailure" />
     </section>
@@ -71,13 +48,21 @@
       <RequestFailureAlert :key="actionFailures.detailRead.state.context" :failure="actionFailures.detailRead.state.failure" :message="actionFailures.detailRead.state.message" :context-key="actionFailures.detailRead.state.context" :is-current="actionFailures.detailRead.isCurrent" closable :onClose="actionFailures.detailRead.close" />
     </section>
     <a-alert v-if="canManage() && !configLoaded && !configLoading" type="warning" show-icon message="提醒设置尚未确认，请刷新后重试；未确认前不会保存或发送测试。" />
-    <ConsolePanel
-      v-if="canManage() && configLoaded"
-      :key="pageEpoch"
+    <!-- 通知设置收进弹窗（2026-11-18）：它是**配置**不是列表内容，
+         常驻页面会和「工单列表」抢版面。入口只留一个按钮，点开才展开。
+         仅管理员可见（canManage），与原来 ConsolePanel 的可见条件一致。 -->
+    <a-modal
+      v-if="canManage()"
+      :open="notificationConfigVisible"
       title="企业微信工单提醒"
-      description="提醒以异步队列发送，保存后可发送测试消息。Webhook 地址不会回显完整内容。"
-      class="settings-panel"
+      :footer="null"
+      :width="560"
+      :onUpdate:open="pageEntry.bind(setNotificationConfigVisible)"
+      data-testid="ticket-notification-config-modal"
     >
+      <p class="config-modal-lead">
+        提醒以异步队列发送，保存后可发送测试消息。Webhook 地址不会回显完整内容。
+      </p>
       <section v-if="actionFailures.configSave.state.failure" data-ticket-config-save-feedback>
       <RequestFailureAlert :key="actionFailures.configSave.state.context" :failure="actionFailures.configSave.state.failure" :message="actionFailures.configSave.state.message" :context-key="actionFailures.configSave.state.context" :is-current="actionFailures.configSave.isCurrent" :busy="configSaving" closable :onClose="actionFailures.configSave.close" />
     </section>
@@ -153,7 +138,7 @@
           ></a-space
         >
       </a-form>
-    </ConsolePanel>
+    </a-modal>
     <ConsolePanel
       title="工单列表"
       :description="
@@ -173,7 +158,7 @@
             :onSearch="pageEntry.bind(applyFilters)"
             :onPressEnter="pageEntry.bind(applyFilters)"
         /></a-form-item>
-        <a-form-item v-if="isAdmin" label="状态"
+        <a-form-item label="状态"
           ><a-select
             :value="filters.status" :onUpdate:value="pageEntry.bind(setFilter, 'status')"
             allow-clear
@@ -212,7 +197,7 @@
         /></a-form-item>
         <!-- 分类筛选放在状态/日期之后：前面插入同级控件会让「取第一个 .ant-select」
              这类位置选择器失效（历史坑），新控件一律追加在末尾。 -->
-        <a-form-item v-if="isAdmin" label="分类"
+        <a-form-item label="分类"
           ><a-select
             :value="filters.category" :onUpdate:value="pageEntry.bind(setFilter, 'category')"
             allow-clear
@@ -221,9 +206,15 @@
             :options="categoryOptions"
             :onChange="pageEntry.bind(applyFilters)"
         /></a-form-item>
+        <!-- 快捷筛选：一屏看到所有待处理退款。
+             这就是原「退款工作台」的队列价值 —— 用筛选实现，不再需要第二个列表。
+             组合条件即后端已有的 category + status，不新增接口。 -->
+        <a-form-item v-if="isAdmin"
+          ><a-button :type="refundPendingActive ? 'primary' : 'default'"
+                    :onClick="pageEntry.bind(toggleRefundPending)"
+                    data-testid="filter-refund-pending">待处理退款</a-button></a-form-item>
         <a-form-item
-          ><a-button :onClick="pageEntry.bind(resetFilters)">重置</a-button></a-form-item
-        >
+          ><a-button :onClick="pageEntry.bind(resetFilters)">重置</a-button></a-form-item>
       </a-form>
       <div class="mobile-ticket-list">
         <a-card
@@ -339,21 +330,42 @@
       <!-- ───── 第一步：选类型（白名单 4 项）───── -->
       <div v-if="createStep === TICKET_WIZARD_STEP_TYPE" class="ticket-wizard-step" data-ticket-step="type">
         <p class="ticket-wizard-lead">请选择要提交的工单类型。选完后再填写对应内容。</p>
-        <a-radio-group
-          :value="draft.ticketType"
+        <!--
+          类型选择用**原生按钮列表**，不用 a-radio-group。
+
+          2026-11-18：原实现是 a-radio-group + v-for + a-radio，实测（真实鼠标点击、
+          原生 click/change 事件）都无法让选中态生效 —— draft.ticketType 始终为空、
+          「下一步」永远禁用，且不报错。headless 与真实浏览器均复现。
+
+          改用 role=radiogroup 的按钮列表：
+            · 点击后直接调用 selectCreateType(value)，不经过任何守卫包装；
+            · 选中态由 :class 显式绑定 draft.ticketType，不依赖组件内部状态；
+            · 保留 role/aria-checked，键盘与读屏行为不受影响。
+        -->
+        <div
           class="ticket-type-choices"
-          :disabled="createLoading"
-          @update:value="createEntry.bind(selectCreateType)"
-          ><a-radio
+          role="radiogroup"
+          aria-label="工单类型"
+          :aria-busy="createLoading ? 'true' : undefined"
+        >
+          <button
             v-for="item in createTypeOptions"
             :key="item.value"
-            :value="item.value"
+            type="button"
+            role="radio"
+            :aria-checked="draft.ticketType === item.value ? 'true' : 'false'"
+            :disabled="createLoading"
             :data-ticket-type-option="item.value"
-            class="ticket-type-choice"
-            ><span class="ticket-type-choice__label">{{ item.label }}</span
-            ><span class="ticket-type-choice__hint">{{ item.hint }}</span></a-radio
-          ></a-radio-group
-        >
+            :class="['ticket-type-choice', { 'ticket-type-choice--checked': draft.ticketType === item.value }]"
+            @click="selectCreateType(item.value)"
+          >
+            <span class="ticket-type-choice__dot" aria-hidden="true" />
+            <span class="ticket-type-choice__body">
+              <span class="ticket-type-choice__label">{{ item.label }}</span>
+              <span class="ticket-type-choice__hint">{{ item.hint }}</span>
+            </span>
+          </button>
+        </div>
       </div>
       <!-- ───── 注销申请：先引导自助注销（主按钮=自助，次按钮=建单）───── -->
       <ClosureGuide
@@ -540,6 +552,15 @@
             }}</span
             ><span>创建于 {{ formatTicketTime(detailTicket.createdAt) }}</span>
           </div>
+          <!-- 退款工单的金额/状态/审核动作。
+               数据来自 detail.refund（后端 TicketDetail.Refund，2026-11-18 新增）——
+               这是「删掉独立退款面板」后审核操作唯一的入口。 -->
+          <TicketRefundActions
+            v-if="detailTicket.refund"
+            :refund="detailTicket.refund"
+            :is-admin="isAdmin"
+            :on-changed="detailEntry.bind(reloadDetail)"
+          />
           <a-alert
             v-if="notificationText"
             :type="notification?.status === 'failed' ? 'warning' : 'info'"
@@ -773,7 +794,9 @@ import { getEligibleTicketRefundOrders } from "@/api/TikuComponentApi";
 const detailStatusId = `tickets-${useId()}-detail-status`;
 // 退款 7 态的中文文案与退款面板同一份（refundStatusLabel 在上方 import），
 // 避免列表与面板对同一状态给出不同说法。
-const TicketRefundPanel = defineAsyncComponent(() => import("./TicketRefundPanel.vue"));
+// 退款操作区（详情内）。原名 TicketRefundPanel 是「整套退款工作台」，
+// 2026-11-18 重构后只保留「单张工单的退款动作」，故改名以示职责收窄。
+const TicketRefundActions = defineAsyncComponent(() => import("./TicketRefundActions.vue"));
 // 注销引导 / 自助注销：与工单向导的「注销申请」分支、个人中心入口共用同一组件。
 const ClosureGuide = defineAsyncComponent(() => import("./ClosureGuide.vue"));
 const { currentUser } = useCurrentUserDisplay();
@@ -1086,12 +1109,37 @@ function captureDetail() {
   const owns = capturePage(), version = detailRequestVersion;
   return () => owns() && version === detailRequestVersion && detailVisible.value;
 }
+// bind 把 action 包上一层「页面/弹窗归属」守卫，避免旧响应或已关闭的弹窗回写状态。
+//
+// ⚠️ 2026-11-18 修复：守卫必须在**调用时**才捕获快照，不能在绑定时捕获。
+//
+// 原实现 `const owns = capture()` 在 bind() 那一瞬间就把 version 冻住了，而
+// 模板的绑定发生在首次渲染时；用户点「发起工单」会执行 openCreate()，它在
+// 中途 `createVersion += 1`（用于给弹窗换 key 强制重建）。两者一叠加：
+//
+//   绑定瞬间快照 version=0 → openCreate 把 createVersion 改成 1 →
+//   回调触发时 0 === 1 为假 → owns() 恒 false → action 永远不执行。
+//
+// 症状就是「点类型没反应、下一步一直灰着」——所有 create 侧交互全部失效，
+// 且不报任何错（静默丢弃）。同一 bug 也影响 detailEntry（detailRequestVersion
+// 在打开详情时递增）。
+//
+// 修法：每次触发时重新 capture()，这样 version 比较的是「当前这次交互」
+// 与「当前页面代次」，语义才对。
 function entry(capture) { return { bind(action, ...args) {
-  const owns = capture(); return (...events) => { if (owns()) return action(...args, ...events); };
+  return (...events) => {
+    // 每次调用都重新取守卫：comparison 的对象必须是"此刻"，不是"绑定时"。
+    const owns = capture();
+    if (owns()) return action(...args, ...events);
+  };
 } }; }
 const pageEntry = entry(capturePage), createEntry = entry(captureCreate), detailEntry = entry(captureDetail);
 function setKeyword(value) { if (canUseTickets()) keywordInput.value = value; }
 function setFilter(key, value) { if (canUseTickets()) filters[key] = value; }
+// 通知设置弹窗开关。默认收起：它是配置，不该和工单列表抢版面。
+const notificationConfigVisible = ref(false);
+function openNotificationConfig() { if (canManage()) notificationConfigVisible.value = true; }
+function setNotificationConfigVisible(value) { if (!value) notificationConfigVisible.value = false; }
 function setConfig(key, value) {
   if (!canManage() || !configLoaded.value) return;
   notificationConfig[key] = value;
@@ -1167,6 +1215,35 @@ function applyFilters() {
   pagination.current = 1;
   loadTickets();
 }
+// 「待处理退款」快捷筛选的激活判据。
+//
+// 不用独立 state，直接从 filters 推导：这样用户手动把分类/状态改掉时，
+// 按钮高亮会自动跟随，不会出现「按钮亮着但列表已不是那个条件」的错配。
+// ⚠️ 判据只认 category，**不能**加 status。
+//
+// 退款工单在 ticket 表上的 status 由 ticketRefundShellStatus 映射出两个值：
+//   pending_review / frozen       → open
+//   processing / unknown          → pending
+// 也就是「待处理」横跨 open 与 pending 两个 ticket status。后端 status 是单值
+// 参数，写死 open 会漏掉 processing 那批（正在打款的单），这正是最需要看的。
+// 所以快捷筛选只按 category=refund，状态交给用户自己在下拉里细分。
+const refundPendingActive = computed(() => filters.category === "refund");
+// toggleRefundPending 一键切到「退款 + 待处理」。
+//
+// 再点一次回到不筛选：否则用户「点一下想取消」时会卡住（找不到回到全部的路）。
+// status 用 open：退款工单建单后即 open（见后端 createRefundTicketWithVerifier），
+// 处理完会被推进到 closed，所以 open 就是「还没处理」。
+function toggleRefundPending() {
+  if (!canUseTickets()) return;
+  if (refundPendingActive.value) {
+    filters.category = "";
+  } else {
+    filters.category = "refund";
+    // 不动 status：用户可能正按某个状态在看，切换类别时保留他的状态选择。
+  }
+  pagination.current = 1;
+  applyFilters();
+}
 function resetFilters() {
   keywordInput.value = "";
   filters.keyword = "";
@@ -1212,7 +1289,6 @@ function openCreate() {
 // 只改 draft.ticketType，**不**自动前进：向导的「下一步」是用户的显式动作
 // （选错类型要能改回来，自动跳步会让他被迫回退）。
 function selectCreateType(value) {
-  if (!createVisible.value) return;
   draft.ticketType = String(value ?? "").trim().toLowerCase();
   retireCreateValidation();
 }
@@ -1379,6 +1455,15 @@ function openDetail(id, event) {
     if (detailFocusEntry === focus) retireDetailFocus();
     throw error;
   });
+}
+// reloadDetail 重新拉当前详情，用于退款审核/打款成功后同步状态。
+//
+// 不直接改本地 detailTicket.refund：审核会改 approvedCents、打款会改 status，
+// 本地拼状态容易与后端漂移（例如并发的另一次审核）。重拉一次最省心，
+// 代价只是一次 GET。
+function reloadDetail() {
+  const id = detailTicket.value?.id;
+  if (id) loadDetail(id);
 }
 async function loadDetail(id) {
   if (!canUseTickets()) return;
@@ -1932,22 +2017,51 @@ watch(
   gap: 8px;
   width: 100%;
 }
-.ticket-type-choices :deep(.ant-radio-wrapper) {
+.ticket-type-choice {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: 10px;
+  width: 100%;
   padding: 10px 12px;
   border: 1px solid var(--console-border);
   border-radius: 8px;
-  margin-inline-end: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
 }
-.ticket-type-choices :deep(.ant-radio-wrapper-checked) {
+.ticket-type-choice:hover:not(:disabled) {
   border-color: var(--primary);
 }
-.ticket-type-choice {
+/* 选中态由 :class 显式绑定 draft.ticketType，不依赖任何组件内部状态。 */
+.ticket-type-choice--checked {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+.ticket-type-choice:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+/* 自绘圆点：避免依赖 antd 的 .ant-radio-inner（那个元素 opacity:0 只剩视觉层）。 */
+.ticket-type-choice__dot {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border: 1px solid var(--console-border);
+  border-radius: 50%;
+}
+.ticket-type-choice--checked .ticket-type-choice__dot {
+  border-color: var(--primary);
+  border-width: 5px;
+}
+.ticket-type-choice__body {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .ticket-type-choice__label {
   color: var(--console-text);

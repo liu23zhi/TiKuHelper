@@ -105,6 +105,15 @@ type TicketDetail struct {
 	// Attachments 是工单的全部图片（含「未通过检测」的条目，后者只有占位信息）。
 	// 敏感图**永远**只以占位条目出现，字节必须走单独的下载接口。
 	Attachments []TicketAttachmentInfo `json:"attachments"`
+	// Refund 只在 category=refund 的行上有值。
+	//
+	// 为什么详情也要带它：退款工单的「提交→审核→打款」操作入口已从独立面板
+	// 并入工单详情（前端只保留一个列表，见 2026-11-18 重构）。
+	// 详情不带退款摘要，管理员点开退款单就看不到金额与状态、也无从操作。
+	//
+	// 字段与列表用的是同一个 TicketRefundSummary（refundSummaryOf 单一实现），
+	// 避免「列表显示的金额」与「详情显示的金额」两处口径漂移。
+	Refund *TicketRefundSummary `json:"refund,omitempty"`
 }
 
 type TicketNotificationInfo struct {
@@ -957,6 +966,20 @@ func GetTicketWithDB(db *gorm.DB, user *entity.User, id int64) (TicketDetail, er
 		return TicketDetail{}, err
 	}
 	detail.Attachments = attachments
+	// 退款摘要：**所有能看到这张单的人都取**（含普通用户看自己的单）。
+	//
+	// 取不到不影响详情可用性 —— 与列表同一取舍：缺退款摘要时只是少一块信息，
+	// 详情本身仍然完整。所以这里 err 只静默跳过，不把整张单判成读失败。
+	if ticket.Category == entity.TicketCategoryRefund {
+		var refundRow entity.TicketRefund
+		if err := db.Session(&gorm.Session{NewDB: true}).
+			Where("ticket_id = ?", ticket.ID).
+			Order("id DESC").First(&refundRow).Error; err == nil {
+			detail.Refund = refundSummaryOf(refundRow)
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return TicketDetail{}, err
+		}
+	}
 	if !isTicketAdmin(user) {
 		return detail, nil
 	}

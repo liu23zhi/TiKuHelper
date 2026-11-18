@@ -33,3 +33,17 @@ Windows 上 `core.autocrlf=true` 会让工作树是 CRLF，`gofmt -l` 因此误�
 .\scripts\local-gofmt.ps1 -Fix   # 修 REAL，写回 LF
 ```
 
+## 默认账号
+
+首次启动会自动创建管理员账号（`internal/registry` 初始化逻辑）：
+
+| 用户名 | 密码 |
+| --- | --- |
+| `admin` | `123456` |
+
+- 这是**出厂默认值**，登录后请立即修改。
+- 库里的密码字段兼容明文（`util.VerifyPassword` 保留 legacy plaintext 分支），
+  所以本地调试直接把 `users.password` 设为明文即可，不必先生成 bcrypt。
+- 登录需要人机验证（`captcha_provider=remote`）。本地脚本化调试可往
+  `captcha_tokens` 插一条 `scene=login_password`、`status=active`、未过期的记录，
+  然后把它作为 `captchaToken` 提交。
