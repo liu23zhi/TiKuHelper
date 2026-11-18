@@ -212,7 +212,12 @@ func validateBcryptPasswordLength(password string) error {
 // Auth 鉴权
 func Auth(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
-	tokenValue := strings.TrimSpace(c.Request.Header.Get("Authorization"))
+	// 兼容 `Bearer <jwt>` 与裸 token（2026-11-18）。
+	//
+	// ⚠️ 剥离**只作用于 Authorization 头**，不作用于 Cookie：
+	// setAuthCookie 写入的本来就是裸 token，对 cookie 值做剥离会让
+	// 「token 恰好以 Bearer 开头」的极端情况被误处理，而那是无意义的风险。
+	tokenValue := stripBearerTokenPrefix(c.Request.Header.Get("Authorization"))
 	cookieCredential := false
 	if tokenValue == "" {
 		cookieValue, err := c.Cookie(authCookieName)
@@ -1693,8 +1698,40 @@ func requestIsHTTPS(c *gin.Context) bool {
 	return strings.EqualFold(strings.TrimSpace(c.GetHeader("X-Forwarded-Proto")), "https")
 }
 
-func tokenCredentialVersionMatches(claims jwt.Claims, passwordHash string) bool {
-	mapClaims, ok := claims.(jwt.MapClaims)
+// stripBearerTokenPrefix 让 controller.Auth 同时接受裸 token 与 `Bearer <token>`
+// （2026-11-18 兼容需求）。
+//
+// # 背景
+//
+// 仓内原本有两条鉴权链，对 `Bearer ` 的处理相反：
+//
+//	controller.Auth（Web UI JWT）     → 不剥离
+//	AuthAccessToken → parseBasicToken → 剥离（strings.Fields 取第 2 段）
+//
+// 于是「带 Bearer 的 JWT 打 /api/scripts」必然 401，报
+// `illegal base64 data at input byte 6` —— `"Bearer "` 恰好 7 字节，下标 6 是
+// `r`，不是合法 base64。这个错误信息指向「token 格式坏」，与真实原因（多了个
+// 前缀）极易看岔。
+//
+// # ⚠️ 只认 Bearer，不是「按空格取最后一段」
+//
+// 写成 `strings.Fields(raw)[len-1]` 会让 `Basic <jwt>`、`Whatever <jwt>`
+// 也通过 —— 那等于取消了对 scheme 的校验。方案名按 RFC 7235 是大小写不敏感，
+// 所以只对 Bearer 做 EqualFold，其余前缀原样返回、由 ParseJwtWithClaims 拒绝。
+//
+// 只有一段（裸 token）时原样返回，因此 Cookie 路径与既有前端完全不受影响。
+func stripBearerTokenPrefix(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	fields := strings.Fields(trimmed)
+	// 恰好两段且首段是 Bearer 才剥离。三段及以上（`Bearer a b`）不剥离，
+	// 让它作为非法 token 被下游拒绝，而不是猜哪一段是 token。
+	if len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") {
+		return fields[1]
+	}
+	return trimmed
+}
+
+func tokenCredentialVersionMatches(claims jwt.Claims, passwordHash string) bool {	mapClaims, ok := claims.(jwt.MapClaims)
 	if !ok {
 		return false
 	}

@@ -63,7 +63,16 @@ func TestCookieContextSourceAndBoundary(t *testing.T) {
 		{name: "none-no-origin-kept", method: "GET", site: "none", status: 200},
 		{name: "raw-JWT-header-priority", method: "GET", origin: "https://foreign.fixture.invalid", site: "cross-site", authorization: token, status: 200},
 		{name: "bad-header-no-cookie-fallback", method: "GET", origin: "https://foreign.fixture.invalid", authorization: "bad", status: 401},
-		{name: "Bearer-loginJWT-remains-unsupported", method: "GET", authorization: "Bearer " + token, status: 401},
+		// 2026-11-18 翻转：原先这里是
+		//   {name: "Bearer-loginJWT-remains-unsupported", ..., status: 401}
+		// 断言「Bearer 形式的登录 JWT 不被接受」。用户要求做兼容后，
+		// Auth 主动剥离 Bearer 前缀，该口径作废。
+		//
+		// 保留旧用例名里的信息是重要的：它不是「顺手放宽」，
+		// 而是**推翻了既有约束**。新的边界由下面两条钉住 ——
+		// 只有 `Bearer` 被认，其它 scheme 一律拒绝（见 Basic-loginJWT 那条）。
+		{name: "Bearer-loginJWT-now-supported", method: "GET", authorization: "Bearer " + token, status: 200},
+		{name: "Basic-loginJWT-still-rejected", method: "GET", authorization: "Basic " + token, status: 401},
 		{name: "Bearer-access-token-priority", method: "GET", origin: "https://foreign.fixture.invalid", site: "cross-site", authorization: "Bearer " + access, accessRoute: true, status: 200},
 		{name: "Basic-access-token-priority", method: "GET", origin: "https://foreign.fixture.invalid", site: "cross-site", authorization: "Basic " + access, accessRoute: true, status: 200},
 		{name: "raw-access-token-priority", method: "GET", origin: "https://foreign.fixture.invalid", site: "cross-site", authorization: access, accessRoute: true, status: 200},
