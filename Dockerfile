@@ -27,6 +27,8 @@ RUN test -f cmd/adapter-service/dist/index.html \
  && grep -q 'id="app"' cmd/adapter-service/dist/index.html \
  && echo "嵌入前端产物：$(find cmd/adapter-service/dist -type f | wc -l) 个文件"
 
+RUN go build -ldflags "-s -w -extldflags '-static'" -o tiku-adapter ./cmd/adapter-service
+
 
 FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 
