@@ -23,11 +23,28 @@ import (
 	"github.com/itihey/tikuAdapter/pkg/logger"
 )
 
-//go:embed dist
+// //go:embed all:dist 而不是 //go:embed dist：
+//
+// `dist/` 是**构建产物目录**，已从 git 删除（2026-11-19），仓库里只留一个
+// `dist/.gitkeep` 占位。`//go:embed dist` 会跳过以 . 开头的文件，于是在全新
+// clone（只有 .gitkeep）上会报 "pattern dist: no matching files found" ——
+// 编译直接失败。`all:` 前缀让点文件也被计入，目录因此非空，编译可通过。
+//
+//go:embed all:dist
 var buildFS embed.FS
 
-//go:embed dist/index.html
-var indexPage []byte
+// indexPage 是 SPA 的兜底页面（NoRoute 时返回，见 SetWebRouter）。
+//
+// 这里**不再用 //go:embed dist/index.html**：那是一条硬依赖 —— 该文件不存在
+// 就编译失败，而它本来就只是产物。改成运行时从 buildFS 读，缺失时返回 nil，
+// 由 SetWebRouter 决定降级行为（404 而不是崩溃）。
+func loadIndexPage(fs embed.FS) []byte {
+	page, err := fs.ReadFile("dist/index.html")
+	if err != nil {
+		return nil
+	}
+	return page
+}
 
 func main() {
 	flag.Parse()
@@ -69,7 +86,7 @@ func main() {
 		logger.FatalLog(err)
 	}
 	api.SetHealthRouter(server, healthDB.PingContext)
-	api.SetWebRouter(buildFS, indexPage, server)
+	api.SetWebRouter(buildFS, loadIndexPage(buildFS), server)
 	shutdownContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	extensionStore, err := service.DefaultExtensionStoreWithDB(mg.GetDB())

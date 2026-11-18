@@ -949,6 +949,21 @@ func SetWebRouter(buildFS embed.FS, indexPage []byte, router *gin.Engine) {
 				return
 			}
 		}
+		// indexPage 为空 = 前端产物没打进二进制（dist/ 已从 git 删除，
+		// 全新 clone 或本地忘记复制 web/dist 时会这样）。
+		//
+		// 这里返回 503 + 一句可执行的提示，而不是 200 + 空 body：
+		// 空 body 会让浏览器显示一张白页，用户完全无从判断是「前端没构建」
+		// 还是「服务挂了」；白页也容易被误报成接口问题。
+		if len(indexPage) == 0 {
+			c.Data(http.StatusServiceUnavailable, "text/html; charset=utf-8",
+				[]byte("<!doctype html><meta charset=utf-8><title>前端未构建</title>"+
+					"<h1>前端资源未就绪</h1>"+
+					"<p>当前二进制里没有嵌入前端产物（<code>cmd/adapter-service/dist/</code> 为空）。</p>"+
+					"<p>修复：<code>cd web &amp;&amp; npm run build</code>，然后把 <code>web/dist/*</code> "+
+					"复制到 <code>cmd/adapter-service/dist/</code>，再重新 <code>go build</code>。</p>"))
+			return
+		}
 		c.Data(http.StatusOK, "text/html; charset=utf-8", indexPage)
 	})
 }

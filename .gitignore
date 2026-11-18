@@ -5,7 +5,15 @@
 /web/.idea
 /web/dist
 /web/.gitignore
-/cmd/adapter-service/dist/
+# cmd/adapter-service/dist/ 是前端构建产物目录（`//go:embed all:dist` 的来源），
+# 已从 git 删除（2026-11-19）。只保留一个 .gitkeep 让目录存在 ——
+# 否则全新 clone 里没有该目录，go build 会因 embed 找不到 dist 而失败。
+#
+# 必须写成 `/dist/*` 而不是 `/dist/`：Git 不会进入已被整体排除的目录，
+# 所以 `/dist/` + `!/dist/.gitkeep` 的取反永远不生效（实测，见本文件下方
+# tools/userexam-crypto/dist/* 的同款注释）。
+/cmd/adapter-service/dist/*
+!/cmd/adapter-service/dist/.gitkeep
 /转发题库.py
 /run/data
 /logs/
