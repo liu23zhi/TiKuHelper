@@ -43,6 +43,10 @@ func seedTicketRefundOrder(t *testing.T, db *gorm.DB, id int32, ownerID int32, s
 		ID: id, UserID: ownerID, OrderNo: "synthetic-refund-order-" + paidAt.Format(time.RFC3339Nano),
 		PaymentProvider: DefaultPaymentProvider, Status: status, Amount: amount, PaidAt: &paidAt,
 		ThirdPartyOrderNo: "mutable-callback-trade", CallbackPayload: "private-gateway-callback",
+		// 2026-11-19：退款资格新增「有支付方式」这条硬条件
+		// （见 ticketRefundOrderMeetsBasicCriteria）。夹具必须带上它，
+		// 否则所有用例都会因「缺少支付方式」被过滤 —— 那不是实现坏了。
+		PaymentMethodNameSnapshot: "支付宝",
 	}
 	if proven {
 		row.RefundChannelFingerprint = strings.Repeat("a", 64)

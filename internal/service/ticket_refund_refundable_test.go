@@ -72,6 +72,11 @@ func seedRefundableOrder(t *testing.T, db *gorm.DB, id int32, ownerID int32, amo
 		Amount: amount, PaidAt: &paidAt,
 		RefundChannelFingerprint: strings.Repeat("a", 64),
 		RefundOriginalTradeNo:    "synthetic-verified-original-trade",
+		// 2026-11-19：退款资格新增「有支付方式 + 有第三方单号」两条硬条件
+		// （见 ticketRefundOrderMeetsBasicCriteria）。夹具补齐，否则用例会因为
+		// 「订单不具备退款资格」被拒 —— 那不是被测逻辑坏了。
+		ThirdPartyOrderNo:         "synthetic-third-party-trade",
+		PaymentMethodNameSnapshot: "支付宝",
 	}
 	if err := db.Create(&row).Error; err != nil {
 		t.Fatalf("seed order: %v", err)

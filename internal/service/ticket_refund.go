@@ -44,7 +44,16 @@ const (
 	// committed. This is not interchangeable with a gateway failure.
 	TicketRefundOutcomeUnsentReference = "local-cancel-unsent"
 
-	ticketRefundAge             = 60 * 24 * time.Hour
+	// 2026-11-19 用户拍板：可退窗口从 60 天改为 **6 个月**。
+	//
+	// 原值 60 天让「充值半年内但超过两个月」的订单直接不出现在可退列表里，
+	// 用户看到的现象是「明明有这笔已支付订单，却没有退款按钮」，且没有任何
+	// 解释。用户的诉求原文是「时间不超过 6 个月」。
+	//
+	// 用 183 天（6 个月按 30.5 天/月）而不是自然月：可退窗口是**滑动**的，
+	// 自然月会让「2 月充值、8 月申请」这类边界随年份浮动，测试也无法钉住。
+	// 183 天与 6 个月的最大偏差是 2 天，对退款业务无实质影响。
+	ticketRefundAge             = 183 * 24 * time.Hour
 	ticketRefundMicrosPerCent   = int64(10_000)
 	ticketRefundMaxWalletMicros = int64(999_999_999_999_999_999)
 	ticketRefundMaxCents        = ticketRefundMaxWalletMicros / ticketRefundMicrosPerCent
@@ -526,9 +535,20 @@ func listEligibleTicketRefundOrders(db *gorm.DB, userID int32, verify TicketRefu
 		// 把订单挡在 SQL 层。这类订单「已支付、钱已收，但拿不到渠道凭证」，
 		// 正确处置是**列出来并标记只能人工退款**，而不是让它凭空消失 ——
 		// 后者让用户看到「明明有订单却一条都选不了」且毫无解释。
+		// 2026-11-19 用户拍板的四项退款资格条件，能下推到 SQL 的都下推
+		// （paid_at 有索引，其余三项是列值非空判断，成本可忽略）。
+		// 未在这里下推的两项在 Go 层用 ticketRefundOrderMeetsBasicCriteria 兜底：
+		//   · 金额解析（decimal → 分）无法在 SQL 里安全表达；
+		//   · SQL 与 Go 两处条件必须一致，Go 层是唯一真相，SQL 只是预筛。
+		//
+		// 第 5 条「每个订单只能退款一次」由下面的 NOT EXISTS 保证 ——
+		// 它比在 Go 层查一遍更可靠：并发两次提交时由数据库做最终裁决。
 		query := db.Session(&gorm.Session{NewDB: true}).Model(&entity.RechargeOrder{}).
 			Where("user_id = ? AND status = ? AND payment_provider = ?", userID, rechargeOrderStatusPaid, DefaultPaymentProvider).
 			Where("paid_at >= ? AND paid_at <= ?", now.Add(-ticketRefundAge), now).
+			Where("order_no <> ''").
+			Where("payment_method_name_snapshot <> ''").
+			Where("third_party_order_no <> ''").
 			Where("NOT EXISTS (SELECT 1 FROM ticket_refunds WHERE ticket_refunds.order_id = recharge_orders.id)")
 		if lastID != 0 {
 			query = query.Where("id < ?", lastID)
@@ -537,6 +557,13 @@ func listEligibleTicketRefundOrders(db *gorm.DB, userID int32, verify TicketRefu
 			return nil, err
 		}
 		for _, order := range orders {
+			// Go 层兜底：SQL 只做预筛，四项条件的**唯一真相**在这里。
+			// 两处不一致时以 Go 为准（SQL 可能因为字段类型/空串语义差异放过一条），
+			// 而且「能不能退」这个判断会被 CreateTicketRefundWithDB 复用，
+			// 单一实现才不会出现「列表说能退、提交时说不能退」。
+			if !ticketRefundOrderMeetsBasicCriteria(order, now) {
+				continue
+			}
 			// 渠道校验失败只影响「能否原路退回」，不再影响「是否出现在列表里」。
 			//
 			// 但**真故障**仍要上抛：ticketRefundOriginalChannel 返回非 Unavailable 的
@@ -572,9 +599,58 @@ func listEligibleTicketRefundOrders(db *gorm.DB, userID int32, verify TicketRefu
 	}
 }
 
+// ticketRefundOrderMeetsBasicCriteria 判「这笔订单是否具备退款资格」的四项硬条件。
+//
+// 2026-11-19 用户明确列出（原文）：
+//  1. 时间不超过 6 个月
+//  2. 有订单号
+//  3. 有支付方式
+//  4. 有第三方单号
+//  5. 第一次退款，每个订单只能退款一次
+//
+// 第 5 条不在这里判 —— 它由 ticket_refunds.order_id 的唯一索引 + 调用方的
+// ensureTicketRefundOrderUnused 保证，放在这里会与事务外读产生 TOCTOU。
+//
+// 这四项决定「能不能退」，与「能不能原路退回」是两件事：
+// 缺渠道凭证的订单仍可退（走人工打款），所以它们在 listEligible 里会以
+// OriginalSupported=false 出现，而不是被过滤掉。
+func ticketRefundOrderMeetsBasicCriteria(order entity.RechargeOrder, asOf time.Time) bool {
+	if _, err := ticketRefundPaidOrderCents(order); err != nil {
+		// 金额解析不出来 = 这条订单数据本身坏了，无法确定退款额度。
+		return false
+	}
+	// ① 时间不超过 6 个月，且不在未来（未来的 paid_at 说明回调数据有误）。
+	if order.PaidAt == nil || order.PaidAt.Before(asOf.Add(-ticketRefundAge)) || order.PaidAt.After(asOf) {
+		return false
+	}
+	// ② 有订单号。
+	if strings.TrimSpace(order.OrderNo) == "" {
+		return false
+	}
+	// ③ 有支付方式。注意这是**下单时快照**的展示名（如「支付宝」），
+	// 与 ④ 的第三方单号是不同来源：前者给用户看，后者给渠道对账。
+	if strings.TrimSpace(order.PaymentMethodNameSnapshot) == "" {
+		return false
+	}
+	// ④ 有第三方单号 —— 这是支付渠道返回的流水号，退款时用它定位原交易。
+	//
+	// ⚠️ 历史坑：这里原来只认 refund_original_trade_no（退款专用列，
+	// 由支付回调额外写入），而前端「第三方单号」列展示的是 third_party_order_no。
+	// 两者是不同的列，于是出现过「表里明明有第三方单号、却没有退款按钮」的
+	// 现象（订单 5）。现在按用户口径统一到 third_party_order_no。
+	if strings.TrimSpace(order.ThirdPartyOrderNo) == "" {
+		return false
+	}
+	return true
+}
+
+// ticketRefundOriginalChannel 判断这笔订单能否**原路退回**，能则返回渠道引用。
+//
+// 与 ticketRefundOrderMeetsBasicCriteria 的分工：
+// 前者答「能不能退」，这里答「能不能原路退」。后者是前者的子集 ——
+// 原路退回额外要求渠道指纹与校验器，缺了就只能人工打款。
 func ticketRefundOriginalChannel(db *gorm.DB, order entity.RechargeOrder, verify TicketRefundOrderVerifier, asOf time.Time) (string, error) {
-	if _, err := ticketRefundPaidOrderCents(order); err != nil ||
-		order.PaidAt.Before(asOf.Add(-ticketRefundAge)) || order.PaidAt.After(asOf) ||
+	if !ticketRefundOrderMeetsBasicCriteria(order, asOf) ||
 		order.PaymentProvider != DefaultPaymentProvider ||
 		!validTicketRefundReference(order.RefundOriginalTradeNo, 128) ||
 		!validTicketRefundReference(order.RefundChannelFingerprint, 255) || verify == nil {

@@ -421,6 +421,11 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   // 已归档账号：列表里有账号快照与绑定记录，只能管理员看（task_doc/76 §3.2.3）。
   'archived-users',
   'loglist',
+  // 充值记录（2026-11-19）：**管理员专属**。它是充值订单的运营视图
+  // （改状态、发起退款），普通用户看自己的入账在「个人使用 → 账单流水」。
+  // 此前它既没登记在这里、又同时挂在用户菜单上，等于普通用户可直接进；
+  // 只从菜单删掉不够 —— 直接敲 URL 仍能打开，必须在这里一并登记。
+  'recharge-orders',
   'search-account-config',
   'ai-search-config',
   'ocr-cache',

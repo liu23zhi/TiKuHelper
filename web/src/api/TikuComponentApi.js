@@ -575,6 +575,20 @@ export function getRechargeOrders(params) {
   })
 }
 
+// updateRechargeOrderStatus 由管理员手工修正充值订单状态（2026-11-19）。
+//
+// 只允许 pending / paid / refunded 三值，服务端还会校验状态迁移是否合法
+// （例如 refunded → paid 会被拒），所以这里不做前端白名单判断 ——
+// 前端复刻一份必然漂移，且漂移方向是「按钮能点但请求 400」。
+export function updateRechargeOrderStatus(id, status) {
+  return request({
+    errorFeedback: 'local',
+    url: `/api/recharge-orders/${id}/status`,
+    method: 'patch',
+    data: { status }
+  })
+}
+
 export function getPaymentMethods(feedback) {
   const config = {
     url: `/api/payment-methods`,

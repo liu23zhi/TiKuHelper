@@ -181,3 +181,57 @@ func detectRechargeDevice(userAgent string) string {
 		return "pc"
 	}
 }
+
+// updateRechargeOrderStatus 是可替换的服务入口（测试里换成假实现）。
+var updateRechargeOrderStatus = func(actor entity.User, orderID int32, status string) (entity.RechargeOrder, error) {
+	return service.UpdateRechargeOrderStatusWithDB(manager.GetManager().GetDB(), actor, orderID, status)
+}
+
+// UpdateRechargeOrderStatus 由管理员手工修正充值订单状态（2026-11-19）。
+//
+// 权限：仅管理员。这个动作能让一笔 pending 订单变成 paid，从而让它可以被退款，
+// 所以它等价于「确认钱已收到」——普通用户绝不能调。
+//
+// 请求体：{"status": "paid"}，取值限 pending/paid/refunded。
+// 响应：更新后的订单行（复用列表的响应结构，前端无需另写解析）。
+func UpdateRechargeOrderStatus(c *gin.Context) {
+	actor, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	orderID, err := strconv.ParseInt(strings.TrimSpace(c.Param("id")), 10, 32)
+	if err != nil || orderID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "充值订单 ID 无效"})
+		return
+	}
+	var payload struct {
+		Status string `json:"status"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "请求体格式无效"})
+		return
+	}
+
+	row, err := updateRechargeOrderStatus(actor, int32(orderID), payload.Status)
+	if err != nil {
+		// 每种失败给独立文案：前端要据此提示，混成一句「操作失败」会让
+		// 管理员不知道是权限问题还是状态本来就对。
+		switch {
+		case errors.Is(err, service.ErrRechargeOrderStatusUnchanged):
+			// 幂等成功：目标状态与当前一致。返回 200 而不是错误 ——
+			// 管理员重复点一次不该看到红字。
+			c.JSON(http.StatusOK, gin.H{"message": "状态未变化", "unchanged": true})
+			return
+		case errors.Is(err, service.ErrRechargeOrderStatusForbidden):
+			c.JSON(http.StatusForbidden, gin.H{"message": "无权修改该充值订单"})
+			return
+		case errors.Is(err, service.ErrRechargeOrderStatusInvalid):
+			c.JSON(http.StatusBadRequest, gin.H{"message": "状态值无效或该迁移不被允许"})
+			return
+		default:
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "修改充值订单状态失败"})
+			return
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "状态已更新", "data": row})
+}

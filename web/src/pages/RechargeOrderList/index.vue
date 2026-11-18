@@ -114,17 +114,24 @@
           </a-tag>
           <span v-else-if="column.key === 'paidAt' || column.key === 'createdAt'" class="time-cell">{{ formatDateTime(record[column.key]) }}</span>
           <!--
-            操作列：只在后端判定「该订单可退」时才给按钮。
-            不发「已退过/超额/超期」的按钮 —— 那种按钮点下去必然报错，
-            比不显示更让人困惑。
+            操作列（2026-11-19）：改为「修改状态」，不再提供「发起退款」。
+
+            本页是管理员专属的运营视图。退款申请走「工单反馈 → 退款申请」，
+            那条链路有完整的可退性校验、收款码上传与审核；在这里再放一个
+            退款入口会出现两条口径不同的退款路径，反而更容易出错。
+
+            运营在这页只需要一件事：修正支付回调丢失导致的错误状态
+            （典型场景：用户钱已到账，订单却永久停在 pending）。
           -->
           <template v-else-if="column.key === 'action'">
             <a-button
-              v-if="canRefundRow(record)"
+              v-if="canEditStatus"
               type="link"
               style="padding: 0"
-              @click="openRefundModal(record)"
-            >发起退款</a-button>
+              :data-recharge-order-action="record.id"
+              @click="openStatusModal(record)"
+              >修改状态</a-button
+            >
             <span v-else class="muted">—</span>
           </template>
         </template>
@@ -135,59 +142,48 @@
       </a-table></ConsoleTableShell>
 
     <!--
-      快捷发起退款工单（用户已选定：弹小窗直接提交，不跳页）。
-      
-      字段与 POST /api/ticket-refunds 的 CreateTicketRefundInput 严格对齐：
-      { kind, orderId, requestedCents, reason }。kind 固定 original ——
-      从充值记录发起天然是「原路退回」，人工退款（manual）没有 orderId 语义，
-      不该从这里入口进入。
+        状态修改弹窗（2026-11-19）。
 
-      不复用 Tickets 页的 TicketRefundPanel：那个面板带 6 个动作入口与附件上传，
-      是审核台；这里的语义只是「提交一个申请」。复用会把两件事搅在一起。
-    -->
-    <a-modal
-      v-model:visible="refundVisible"
-      title="发起退款申请"
-      :confirm-loading="refundSubmitting"
-      ok-text="提交申请"
-      cancel-text="取消"
-      @ok="submitRefund"
-    >
-      <a-form layout="vertical">
-        <a-form-item label="订单号">
-          <span class="refund-order-no">{{ refundTarget.orderNo }}</span>
-        </a-form-item>
-        <a-form-item label="实付金额">
-          <span>¥ {{ (refundTarget.paidCents / 100).toFixed(2) }}</span>
-        </a-form-item>
-          <!-- 缺渠道凭证的订单：明确告诉用户会走人工打款，而不是悄悄把 kind
-               换成 manual —— 两者的到账速度与是否需要管理员核对完全不同。 -->
+        只做一件事：把订单的状态字段改成另一个合法值，用于修正支付回调丢失
+        导致的错误状态。**不涉及任何金额或钱包操作** —— 入账只由支付回调或
+        退款流程完成，这里顺手加款会让同一笔充值被记两次（后端有测试钉住这点）。
+      -->
+      <a-modal
+        v-model:visible="statusModalVisible"
+        title="修改充值订单状态"
+        :confirm-loading="statusSubmitting"
+        ok-text="保存"
+        cancel-text="取消"
+        data-testid="recharge-status-modal"
+        @ok="submitStatusChange"
+      >
+        <a-form layout="vertical">
+          <a-form-item label="订单号">
+            <span class="refund-order-no">{{ statusTarget.orderNo }}</span>
+          </a-form-item>
+          <a-form-item label="当前状态">
+            <a-tag :color="buildStatusColor(statusTarget.current)">
+              {{ buildStatusLabel(statusTarget.current) }}
+            </a-tag>
+          </a-form-item>
+          <a-form-item label="改为">
+            <a-select
+              :value="statusTarget.next"
+              :options="STATUS_OPTIONS"
+              data-testid="recharge-status-select"
+              @update:value="value => (statusTarget.next = value)"
+            />
+          </a-form-item>
+          <!-- 改状态会让订单进入/离开可退范围，提醒一句，避免运营误以为只是标签变化。 -->
           <a-alert
-            v-if="!refundTarget.originalSupported"
             type="info"
             show-icon
-            message="该订单缺少原路退回所需的渠道凭证，将按人工打款处理，需要管理员核对。"
-            data-testid="refund-manual-only-hint"
+            message="改成「已支付」会让该订单出现在用户的可退订单列表里；改成「已退款」则会移出。"
+            data-testid="recharge-status-hint"
           />
-        <a-form-item label="退款金额（元）">
-          <a-input
-            :value="refundTarget.requestedYuan"
-            placeholder="默认整单退，可改小"
-            @update:value="value => (refundTarget.requestedYuan = value)"
-          />
-        </a-form-item>
-        <a-form-item label="退款原因">
-          <a-textarea
-            :value="refundTarget.reason"
-            :rows="3"
-            :maxlength="255"
-            placeholder="例如：重复充值 / 不需要该服务"
-            @update:value="value => (refundTarget.reason = value)"
-          />
-        </a-form-item>
-        <a-alert v-if="refundError" type="error" show-icon :message="refundError" />
-      </a-form>
-    </a-modal>
+          <a-alert v-if="statusError" type="error" show-icon :message="statusError" />
+        </a-form>
+      </a-modal>
     </ConsolePanel>
   </div>
 </template>
@@ -196,7 +192,7 @@
 import { computed, defineComponent, getCurrentInstance, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, useId, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
-import { getRechargeOrders, getEligibleTicketRefundOrders, createTicketRefund } from '@/api/TikuComponentApi'
+import { getRechargeOrders, updateRechargeOrderStatus } from '@/api/TikuComponentApi'
 import { message } from 'ant-design-vue'
 import { useCurrentUserDisplay, isAdminUser, getCurrentUserLogoutEpoch } from '@/utils/currentUser'
 import { currentUserIdentity } from '@/utils/currentUserScope'
@@ -240,108 +236,65 @@ export default defineComponent({
     const { currentUser } = useCurrentUserDisplay()
     const isAdmin = computed(() => isAdminUser(currentUser.value))
 
-    // ── 快捷发起退款工单（用户诉求：充值记录提供按钮）──
-    //
-  // 可退性**只认后端**：refundEligible 来自 GET /ticket-refunds/eligible-orders。
-    // 退款受金额上限、时间窗口、是否已退过、赠金抵扣等规则约束，前端复刻一份必然漂移，
-  // 可退性**只认后端**：refundEligible 来自 GET /ticket-refunds/eligible-orders。
-  //
-  // 2026-11-18：接口现在还会返回「缺渠道凭证」的已支付订单（originalSupported=false）——
-  // 它们能退款但只能人工打款。所以这里存 Map（id → 是否支持原路退回），
-  // 而不是只存 id 集合：按钮文案与提交的 kind 都要按它区分，
-  // 否则用户点了「原路退回」、后端因为拿不到渠道凭证直接拒，报错还很难懂。
-  const refundEligible = ref(new Map())
-    // 退款受金额上限、时间窗口、是否已退过、赠金抵扣等规则约束，前端复刻一份必然漂移，
-
-    const refundVisible = ref(false)
-    const refundSubmitting = ref(false)
-    const refundTarget = reactive({ orderId: 0, orderNo: "", paidCents: 0, requestedYuan: "", reason: "", originalSupported: false })
-    const refundError = ref("")
-    // 只加载一次可退列表；充值记录页刷新不重复请求（可退性不会因为翻页变化）。
-    let refundEligibleLoaded = false
-    const loadRefundEligible = async () => {
-      if (refundEligibleLoaded) return
-      refundEligibleLoaded = true
-      try {
-        const response = await getEligibleTicketRefundOrders()
-        if (response?.status !== 200) {
-          // 失败不阻塞列表：只是不显示退款按钮。
-          // 不把 refundEligibleLoaded 复位成 false —— 否则每次翻页都重试一个可能持续失败的接口。
-          return
-        }
-        const list = Array.isArray(response.data) ? response.data : []
-        const map = new Map()
-        for (const item of list) {
-          const id = Number(item?.id)
-          if (!Number.isSafeInteger(id) || id <= 0) continue
-          // originalSupported=false 表示「缺渠道凭证，只能人工退款」。
-          map.set(id, item?.originalSupported === true)
-        }
-        refundEligible.value = map
-      } catch {
-        // 同上：静默降级成「没有可退订单」
-      }
+// ── 状态修改（2026-11-19 用户要求）──
+//
+// ⚠️ 本页是**管理员专属**的运营视图（路由已登记进 ADMIN_ONLY_ROUTE_NAMES）。
+// 这里**不再提供「发起退款」** —— 退款申请走「工单反馈 → 退款申请」，
+// 那里有完整的可退性校验、收款码上传与审核链路。
+// 运营在这一页只做一件事：修正订单状态（如回调丢失导致长期 pending）。
+//
+// 为什么前端不自己算「哪些状态可选」：
+// 合法迁移由后端 allowedRechargeStatusTransition 决定（例如 refunded→paid 被拒）。
+// 前端复刻一份必然漂移，漂移方向是「按钮能点但请求 400」。所以这里只把
+// 白名单全列出来，点错了由后端拒绝并给出可读文案。
+const STATUS_OPTIONS = [
+  { label: '待支付', value: 'pending' },
+  { label: '已支付', value: 'paid' },
+  { label: '已退款', value: 'refunded' },
+]
+const statusModalVisible = ref(false)
+const statusSubmitting = ref(false)
+const statusError = ref('')
+const statusTarget = reactive({ orderId: 0, orderNo: '', current: '', next: '' })
+const canEditStatus = computed(() => isAdmin.value)
+// openStatusModal 打开改状态弹窗，默认选中当前状态（避免误改）。
+const openStatusModal = (record) => {
+  statusTarget.orderId = Number(record?.id) || 0
+  statusTarget.orderNo = String(record?.orderNo || '')
+  statusTarget.current = String(record?.status || '')
+  statusTarget.next = String(record?.status || '')
+  statusError.value = ''
+  statusModalVisible.value = true
+}
+const submitStatusChange = async () => {
+  if (statusSubmitting.value) return
+  if (!statusTarget.orderId) {
+    statusError.value = '订单信息缺失，请刷新后重试'
+    return
+  }
+  // 同状态不发请求：后端会返回 unchanged，但那是给幂等重试用的，
+  // 用户主动选回原值只是「没改」，弹窗直接关掉更符合预期。
+  if (statusTarget.next === statusTarget.current) {
+    statusModalVisible.value = false
+    return
+  }
+  statusSubmitting.value = true
+  statusError.value = ''
+  try {
+    const response = await updateRechargeOrderStatus(statusTarget.orderId, statusTarget.next)
+    if (response?.status === 200) {
+      statusModalVisible.value = false
+      message.success(response?.data?.message === '状态未变化' ? '状态未变化' : '状态已更新')
+      await handleLoad()
+      return
     }
-    const canRefundRow = (record) => refundEligible.value.has(Number(record?.id))
-const canRefundOriginal = (record) => refundEligible.value.get(Number(record?.id)) === true
-    const openRefundModal = (record) => {
-      const paidCents = Number(record?.paidCents ?? 0)
-      refundTarget.orderId = Number(record?.id) || 0
-    // 缺渠道凭证的订单只能人工退款，弹窗里要据此改文案与提交 kind。
-    refundTarget.originalSupported = canRefundOriginal(record)
-      refundTarget.orderNo = String(record?.orderNo || "")
-      refundTarget.paidCents = Number.isFinite(paidCents) ? paidCents : 0
-      // 默认整单退：把实付金额填进去，用户可改小。
-      refundTarget.requestedYuan = (Math.max(0, paidCents) / 100).toFixed(2)
-      refundTarget.reason = ""
-      refundError.value = ""
-      refundVisible.value = true
-    }
-    const submitRefund = async () => {
-      if (refundSubmitting.value) return
-      const yuan = Number(String(refundTarget.requestedYuan || "").trim())
-      if (!Number.isFinite(yuan) || yuan <= 0) {
-        refundError.value = "退款金额必须是大于 0 的数字"
-        return
-      }
-      const cents = Math.round(yuan * 100)
-      if (cents > refundTarget.paidCents) {
-        refundError.value = "退款金额不能超过该订单实付金额"
-        return
-      }
-      if (!String(refundTarget.reason || "").trim()) {
-        refundError.value = "请填写退款原因"
-        return
-      }
-      refundSubmitting.value = true
-      refundError.value = ""
-      try {
-        const response = await createTicketRefund({
-          // kind 必须按后端的 originalSupported 决定（2026-11-18）：
-          //   · true  → original（原路退回），需要渠道凭证，后端会真去校验；
-          //   · false → manual（人工打款），缺渠道凭证的订单只能走这条。
-          // 写死 original 会让「缺渠道」的订单提交必失败，而按钮明明就在那里。
-          kind: refundTarget.originalSupported ? "original" : "manual",
-          orderId: refundTarget.orderId,
-          requestedCents: cents,
-          reason: String(refundTarget.reason).trim(),
-        })
-        if (response?.status === 200 || response?.status === 201) {
-          refundVisible.value = false
-          message.success("退款申请已提交，可在「工单反馈」里查看进度")
-          // 已申请过的订单不该再显示按钮 —— 重新拉一次可退列表。
-          refundEligibleLoaded = false
-          await loadRefundEligible()
-          await handleLoad()
-          return
-        }
-        refundError.value = response?.data?.message || "退款申请提交失败，请稍后重试"
-      } catch (error) {
-        refundError.value = error?.response?.data?.message || error?.message || "退款申请提交失败"
-      } finally {
-        refundSubmitting.value = false
-      }
-    }
+    statusError.value = response?.data?.message || '状态更新失败，请稍后重试'
+  } catch (error) {
+    statusError.value = error?.response?.data?.message || error?.message || '状态更新失败'
+  } finally {
+    statusSubmitting.value = false
+  }
+}
     const instance = getCurrentInstance()
     const router = useRouter()
     const route = () => router?.currentRoute?.value || instance?.proxy?.$route || {}
@@ -465,9 +418,6 @@ const canRefundOriginal = (record) => refundEligible.value.get(Number(record?.id
   onMounted(() => {
     mounted = true
     void handleLoad()
-    // 可退订单一并拉一次：它决定「操作」列是否给按钮。
-    // 与列表并行发出，失败也不影响列表（函数内部已静默降级）。
-    void loadRefundEligible()
   })
   onBeforeUnmount(() => { alive = false; mounted = false; retireView() })
     const summary = computed(() => ({
@@ -492,21 +442,21 @@ const canRefundOriginal = (record) => refundEligible.value.get(Number(record?.id
       summary,
       isAdmin,
         filters,
-    canRefundOriginal,
-        refundVisible,
-        refundSubmitting,
-        refundTarget,
-        refundError,
-        canRefundRow,
-        openRefundModal,
-        submitRefund,
-      keywordInput,
-      sumTableColumnWidths,
+    keywordInput,
+    sumTableColumnWidths,
+    canEditStatus,
+    statusModalVisible,
+    statusSubmitting,
+    statusTarget,
+    statusError,
+    STATUS_OPTIONS,
+    openStatusModal,
+    submitStatusChange,
       activeFilterCount: computed(() => countActiveFilters({ keyword: filters.keyword, status: filters.status, paymentProvider: filters.paymentProvider, userId: filters.userId, createdFrom: filters.createdFrom, createdTo: filters.createdTo, paidFrom: filters.paidFrom, paidTo: filters.paidTo, amountMin: filters.amountMin, amountMax: filters.amountMax })),
-      statusOptions: [
-        { label: '待支付', value: 'pending' },
-        { label: '已支付', value: 'paid' },
-      ],
+    // 筛选下拉与改状态弹窗**共用同一份**状态清单。
+    // 之前是两份：筛选只有 pending/paid，弹窗需要 refunded —— 两份必然漂移，
+    // 漂移的直接后果是「已退款的订单筛不出来」。
+    statusOptions: STATUS_OPTIONS,
       columns: [
         {
           title: '订单号',

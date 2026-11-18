@@ -133,6 +133,10 @@ const ADMIN_MENU_ITEMS = [
   // 已归档账号管理（task_doc/76 §3.2.3）：管理员删除与用户注销的账号都归到这里。
   { key: 'archived-users', label: '已归档账号', icon: InboxOutlined },
   { key: 'loglist', label: '日志列表', icon: FileTextOutlined },
+  // 充值记录：**仅管理员**。它是充值订单的运营视图（含改状态、退款入口），
+  // 普通用户看的是「个人使用 → 账单流水」（自己的消费与入账明细）。
+  // 2026-11-19 修正：它原先同时出现在用户菜单里，两侧共用同一个 key，
+  // 导致「仅管理员可见」的入口被普通用户看到 —— 见下方 USER_MENU_ITEMS。
   { key: 'recharge-orders', label: '充值记录', icon: CreditCardOutlined },
   { key: 'billing-admin', label: '账单明细', icon: AccountBookOutlined },
   { key: 'ip-location-cache', label: 'IP 归属地信息管理', icon: GlobalOutlined },
@@ -206,7 +210,10 @@ const USER_MENU_ITEMS = [
   { key: 'user-usage', label: '个人使用', icon: CreditCardOutlined },
   { key: 'my-tokens', label: '我的令牌', icon: SafetyCertificateOutlined },
   { key: 'scripts', label: '我的脚本', icon: CodeOutlined },
-  { key: 'recharge-orders', label: '充值记录', icon: CreditCardOutlined },
+  // 2026-11-19：普通用户**不再**有独立的「充值记录」入口。
+  // 原因：该页是运营视图（订单状态管理 + 退款），不属于自助功能；
+  // 用户想看的「我充了多少钱、什么时候到账」在「个人使用 → 账单流水」里，
+  // 那里按账本口径展示每一笔入账，比订单表更准确（含赠送与消费冲抵）。
   { key: 'my-referral', label: '我的邀请', icon: ShareAltOutlined },
   { key: 'review-rebate', label: '评价返现', icon: StarOutlined },
   { key: 'tickets', label: '工单反馈', icon: FileTextOutlined },

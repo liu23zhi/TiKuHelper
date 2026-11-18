@@ -172,7 +172,9 @@ func TestTicketRefundHTTPDisabledChannelDoesNotDispatchAndUnsentCanCancel(t *tes
 	paidAt := time.Now().Add(-time.Hour)
 	order := entity.RechargeOrder{UserID: owner.ID, OrderNo: "fixture-merchant-order", PaymentProvider: "epay",
 		Amount: 20, Status: "paid", PaidAt: &paidAt, ThirdPartyOrderNo: "fixture-gateway-order",
-		RefundOriginalTradeNo: "fixture-gateway-order", RefundChannelFingerprint: strings.Repeat("a", 64)}
+		// 2026-11-19：退款资格新增「有支付方式」硬条件（见 ticketRefundOrderMeetsBasicCriteria），夹具补齐。
+		PaymentMethodNameSnapshot: "支付宝",
+		RefundOriginalTradeNo:     "fixture-gateway-order", RefundChannelFingerprint: strings.Repeat("a", 64)}
 	if err := db.Create(&order).Error; err != nil {
 		t.Fatal(err)
 	}

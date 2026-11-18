@@ -1051,3 +1051,137 @@ func wrapRechargePaymentCreateError(message string) error {
 	}
 	return rechargePaymentCreateError{message: normalized}
 }
+
+// ─── 运营改状态（2026-11-19）────────────────────────────────────────────
+
+// ErrRechargeOrderStatusInvalid 表示请求的状态值不在白名单内。
+var ErrRechargeOrderStatusInvalid = errors.New("充值订单状态无效")
+
+// ErrRechargeOrderStatusUnchanged 表示目标状态与当前状态相同（幂等，不算错误地拒绝）。
+var ErrRechargeOrderStatusUnchanged = errors.New("充值订单状态未变化")
+
+// ErrRechargeOrderStatusForbidden 表示操作者不是管理员。
+//
+// 单独一个哨兵而不是复用 ErrRechargeOrderStatusInvalid：前者是 403、后者是 400，
+// 混用会让「普通用户点了一下」显示成「状态值无效」，排查时误导方向。
+var ErrRechargeOrderStatusForbidden = errors.New("无权修改充值订单状态")
+
+// RechargeOrderStatuses 是可改的目标状态白名单。
+//
+// 只开放这三个：pending / paid / refunded。刻意**不**包含 "failed" 之类的
+// 中间态 —— 支付失败由回调写，运营手工改成失败没有业务含义，反而会让人
+// 误以为可以「手动取消支付」。
+func RechargeOrderStatuses() []string {
+	return []string{rechargeOrderStatusPending, rechargeOrderStatusPaid, rechargeOrderStatusRefunded}
+}
+
+// ValidateRechargeOrderStatus 校验目标状态是否在白名单内。
+func ValidateRechargeOrderStatus(status string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(status))
+	for _, allowed := range RechargeOrderStatuses() {
+		if normalized == allowed {
+			return normalized, nil
+		}
+	}
+	return "", ErrRechargeOrderStatusInvalid
+}
+
+// UpdateRechargeOrderStatusWithDB 由管理员手工修正一笔充值订单的状态。
+//
+// # 为什么需要它
+//
+// 支付回调偶尔会丢（渠道重试耗尽、notify 地址临时不可达），订单就永久停在
+// pending，而用户的钱其实已经到账。此前没有任何入口能修，只能改库。
+//
+// # 三条硬约束
+//
+//  1. **绝不碰钱包**。这是运营字段修正，不是入账动作。加款/扣款只能由
+//     payment_events 的幂等回调或退款流程完成；在这里顺带加款会造成
+//     「同一笔充值被记两次」。测试里有一条专门钉这个（余额必须逐字节不变）。
+//  2. **不改 third_party_order_no / paid_at 之外的东西**。改成 paid 时若
+//     paid_at 为空则补当前时间（否则这笔订单永远进不了可退列表 ——
+//     退款判据要求 paid_at 落在 6 个月窗口内）；已经有的 paid_at 不覆盖，
+//     那可能是渠道回调写下的真实支付时刻，比运营点击时间更准确。
+//  3. **只允许白名单内的目标状态**，合法迁移见 allowedRechargeStatusTransition。
+func UpdateRechargeOrderStatusWithDB(db *gorm.DB, actor entity.User, orderID int32, targetStatus string) (entity.RechargeOrder, error) {
+	if db == nil || orderID <= 0 {
+		return entity.RechargeOrder{}, ErrRechargeOrderStatusInvalid
+	}
+	fresh, err := rechargeOrderActor(db, actor.ID, true)
+	if err != nil {
+		return entity.RechargeOrder{}, err
+	}
+	target, err := ValidateRechargeOrderStatus(targetStatus)
+	if err != nil {
+		return entity.RechargeOrder{}, err
+	}
+
+	var updated entity.RechargeOrder
+	err = db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
+		var order entity.RechargeOrder
+		if err := tx.Where("id = ?", orderID).Take(&order).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrRechargeOrderStatusInvalid
+			}
+			return err
+		}
+		if order.Status == target {
+			return ErrRechargeOrderStatusUnchanged
+		}
+		if !allowedRechargeStatusTransition(order.Status, target) {
+			return ErrRechargeOrderStatusInvalid
+		}
+
+		updates := map[string]any{"status": target}
+		// 改成 paid 且原本没有支付时间时补一个：可退列表按时效过滤，
+		// 没有 paid_at 的订单永远不会出现，用户会以为「这笔充值不算数」。
+		if target == rechargeOrderStatusPaid && order.PaidAt == nil {
+			now := time.Now()
+			updates["paid_at"] = &now
+		}
+		// 用 Updates（不是 UpdateColumn）：这里希望 updated_at 跟着变，
+		// 让「最近被谁动过」在库里可追溯。钱包列不在 updates 里，天然不受影响。
+		if err := tx.Model(&entity.RechargeOrder{}).Where("id = ?", orderID).Updates(updates).Error; err != nil {
+			return err
+		}
+		return tx.Where("id = ?", orderID).Take(&updated).Error
+	})
+	if err != nil {
+		return entity.RechargeOrder{}, err
+	}
+
+	// 变更审计：只记 id/前后状态与操作者，不含任何支付凭据。
+	logger.SysLog("[audit] 充值订单状态变更 order=" + updated.OrderNo +
+		" -> " + target + " by=" + fresh.Username)
+	return updated, nil
+}
+
+// allowedRechargeStatusTransition 定义合法的状态迁移。
+//
+// 刻意**不允许** refunded → paid：那等于把一笔已退款的订单重新标记成已支付，
+// 而钱已经退出去了 —— 允许它会让「退款后旧回调重复加款」这类事故有第二次入口。
+// 真要重新入账必须走真实支付回调，由 payment_events 的幂等键裁决。
+func allowedRechargeStatusTransition(from, to string) bool {
+	switch from {
+	case rechargeOrderStatusPending:
+		return to == rechargeOrderStatusPaid || to == rechargeOrderStatusRefunded
+	case rechargeOrderStatusPaid:
+		return to == rechargeOrderStatusRefunded
+	default:
+		return false
+	}
+}
+
+// rechargeOrderActor 取操作者并校验权限。adminOnly=true 时要求管理员。
+//
+// 与 ticketRefundActor 同类：先读库拿最新状态，避免用 JWT 里的过期快照判权限。
+func rechargeOrderActor(db *gorm.DB, actorID int32, adminOnly bool) (entity.User, error) {
+	var fresh entity.User
+	if err := db.Session(&gorm.Session{NewDB: true}).Where("id = ?", actorID).Take(&fresh).Error; err != nil {
+		return entity.User{}, err
+	}
+	if adminOnly && !isAdminUser(fresh) {
+		return entity.User{}, ErrRechargeOrderStatusForbidden
+	}
+	return fresh, nil
+}
