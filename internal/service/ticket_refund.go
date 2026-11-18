@@ -84,6 +84,15 @@ type TicketRefundOrder struct {
 	// 订单确实存在、钱确实收了，只是拿不到渠道凭证 —— 那是「只能人工」，
 	// 不是「不存在」。
 	OriginalSupported bool `json:"originalSupported"`
+	// OriginalUnsupportedReason 说明「为什么不能原路退回」。
+	//
+	// 2026-11-19 用户要求：选择账单时，不能原路退款的账单也要显示，并写原因。
+	//
+	// 为什么需要文字原因而不是只给一个布尔：用户看到「仅人工退款」这四个字
+	// 只会困惑「凭什么」，而真实原因可能差很远 —— 「渠道没配」是管理员该处理的，
+	// 「这笔单的回调没带流水号」是数据问题，两者对用户的意义完全不同。
+	// 空白表示可以原路退回。
+	OriginalUnsupportedReason string `json:"originalUnsupportedReason,omitempty"`
 }
 
 type CreateTicketRefundInput struct {
@@ -569,12 +578,16 @@ func listEligibleTicketRefundOrders(db *gorm.DB, userID int32, verify TicketRefu
 			// 但**真故障**仍要上抛：ticketRefundOriginalChannel 返回非 Unavailable 的
 			// 错误意味着渠道调用本身炸了（网络/签名/下游 5xx），这时静默降级成
 			// 「人工退款」会让用户以为系统正常、实际是原路通道坏了。所以保留 err 分支。
+			// 2026-11-19：同时取「不能原路退回的原因」。
+			// 真故障（err != nil）必须上抛，不能降级成人工退款 ——
+			// 那会让「原路通道坏了」看起来像「这笔单本来就不能原路退」。
 			originalOK := true
-			if _, err := ticketRefundOriginalChannel(db, order, verify, now); err != nil {
-				if !errors.Is(err, ErrTicketRefundOrderUnavailable) {
-					return nil, err
-				}
+			originalReason := ""
+			if _, reason, err := ticketRefundOriginalChannelDetail(db, order, verify, now); err != nil {
+				return nil, err
+			} else if reason != "" {
 				originalOK = false
+				originalReason = reason
 			}
 			paid, centsErr := ticketRefundPaidOrderCents(order)
 			if centsErr != nil {
@@ -586,6 +599,7 @@ func listEligibleTicketRefundOrders(db *gorm.DB, userID int32, verify TicketRefu
 				ID: order.ID, OrderNo: order.OrderNo, PaidCents: paid, PaidAt: *order.PaidAt,
 				PaymentMethodNameSnapshot: order.PaymentMethodNameSnapshot,
 				OriginalSupported:         originalOK,
+				OriginalUnsupportedReason: originalReason,
 			}
 			items = append(items, item)
 			if len(items) == want {
@@ -649,18 +663,56 @@ func ticketRefundOrderMeetsBasicCriteria(order entity.RechargeOrder, asOf time.T
 // 与 ticketRefundOrderMeetsBasicCriteria 的分工：
 // 前者答「能不能退」，这里答「能不能原路退」。后者是前者的子集 ——
 // 原路退回额外要求渠道指纹与校验器，缺了就只能人工打款。
-func ticketRefundOriginalChannel(db *gorm.DB, order entity.RechargeOrder, verify TicketRefundOrderVerifier, asOf time.Time) (string, error) {
-	if !ticketRefundOrderMeetsBasicCriteria(order, asOf) ||
-		order.PaymentProvider != DefaultPaymentProvider ||
-		!validTicketRefundReference(order.RefundOriginalTradeNo, 128) ||
-		!validTicketRefundReference(order.RefundChannelFingerprint, 255) || verify == nil {
-		return "", ErrTicketRefundOrderUnavailable
+// ticketRefundOriginalChannelDetail 判断原路退回能力，并给出**不能退的原因**。
+//
+// 返回三元组，语义互斥：
+//
+//	ref != ""    → 可原路退回，ref 是渠道引用
+//	reason != "" → 不可原路退回，reason 是给人看的原因（可走人工打款）
+//	err != nil   → 真故障（渠道调用炸了），调用方必须上抛而不是降级成人工
+//
+// 为什么要把「原因」和「故障」分开：降级成人工打款是**正常业务分支**，
+// 而渠道 5xx 是**故障**。混在一起会让「原路通道坏了」被悄悄当成
+// 「这笔单本来就不能原路退」，运维永远发现不了。
+func ticketRefundOriginalChannelDetail(db *gorm.DB, order entity.RechargeOrder, verify TicketRefundOrderVerifier, asOf time.Time) (string, string, error) {
+	if !ticketRefundOrderMeetsBasicCriteria(order, asOf) {
+		return "", "该订单不满足退款资格（超期或缺订单要素），无法原路退回", nil
+	}
+	if order.PaymentProvider != DefaultPaymentProvider {
+		return "", "该订单的支付渠道不受支持，无法原路退回", nil
+	}
+	if verify == nil {
+		return "", "支付渠道当前未配置，暂时无法原路退回", nil
+	}
+	// 渠道指纹由支付回调写入。为空说明回调没带上，或这笔单来自更早的版本。
+	if !validTicketRefundReference(order.RefundChannelFingerprint, 255) {
+		return "", "该订单缺少渠道校验信息（支付回调未写入），无法原路退回", nil
+	}
+	// 原交易流水号同样来自回调，退款时用它定位原交易。
+	if !validTicketRefundReference(order.RefundOriginalTradeNo, 128) {
+		return "", "该订单缺少原交易流水号（支付回调未写入），无法原路退回", nil
 	}
 	ref, err := verify(db, order)
 	if err != nil {
-		return "", err
+		// 渠道明确说「不可用」→ 这是业务分支，给原因，不上抛。
+		if errors.Is(err, ErrTicketRefundOrderUnavailable) {
+			return "", "渠道校验未通过，无法原路退回", nil
+		}
+		// 其余（网络/签名/下游 5xx）是真故障。
+		return "", "", err
 	}
 	if !validTicketRefundReference(ref, 255) {
+		return "", "渠道未返回可用的退款凭据，无法原路退回", nil
+	}
+	return ref, "", nil
+}
+
+func ticketRefundOriginalChannel(db *gorm.DB, order entity.RechargeOrder, verify TicketRefundOrderVerifier, asOf time.Time) (string, error) {
+	ref, reason, err := ticketRefundOriginalChannelDetail(db, order, verify, asOf)
+	if err != nil {
+		return "", err
+	}
+	if reason != "" {
 		return "", ErrTicketRefundOrderUnavailable
 	}
 	return ref, nil

@@ -411,6 +411,14 @@
                 <span class="ticket-refund-order__body">
                   <span class="ticket-refund-order__label">{{ item.label }}</span>
                   <span class="ticket-refund-order__tag" v-if="!item.originalSupported">仅人工退款</span>
+                  <!-- 为什么不能原路退回：后端给的具体原因。缺了它用户只会看到
+                       「仅人工退款」而无从判断该找管理员配渠道，还是这笔单本身
+                       就没有渠道凭证。 -->
+                  <span
+                    class="ticket-refund-order__reason"
+                    v-if="!item.originalSupported && item.originalUnsupportedReason"
+                    :data-ticket-refund-order-reason="item.value"
+                  >{{ item.originalUnsupportedReason }}</span>
                 </span>
               </label>
             </div>
@@ -995,6 +1003,11 @@ async function loadRefundOrders() {
       .map((row) => ({
         value: Number(row.id),
         label: `${row.orderNo || "#" + row.id} · 实付 ${formatRefundCents(row.paidCents)} 元`,
+        // 2026-11-19：不能原路退回的订单也要显示，并写明原因（用户要求）。
+        // 后端给的是**具体原因**而不是布尔值 —— 「渠道未配置」与
+        // 「这笔单的回调没写流水号」对用户的意义完全不同。
+        originalSupported: row.originalSupported === true,
+        originalUnsupportedReason: String(row.originalUnsupportedReason || ''),
       }));
     refundOrdersLoaded = true;
   } catch {
@@ -2132,6 +2145,13 @@ watch(
   color: var(--console-text);
 }
 /* 「仅人工退款」标记：缺少渠道凭证的订单不能原路退回，必须让用户看见。 */
+/* 不能原路退回的原因：单独一行，比 tag 更淡，避免抢了订单号的注意力。 */
+.ticket-refund-order__reason {
+  flex-basis: 100%;
+  color: var(--console-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
 .ticket-refund-order__tag {
   padding: 0 6px;
   border: 1px solid var(--console-border);
