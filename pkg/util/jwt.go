@@ -106,6 +106,41 @@ func GenerateJwtForUserSession(id int32, passwordHash, sessionID string) string 
 	return jwtStr
 }
 
+// JWTRefreshThreshold 是滑动续期的触发线：剩余寿命少于它才重发令牌。
+//
+// 取 JWTTTL 的一半（12 小时）。含义：只要用户每 12 小时至少访问一次，
+// 令牌就会被持续续期，永远不会掉线；而完全不用满一天的人才会真正过期。
+const JWTRefreshThreshold = JWTTTL / 2
+
+// RefreshJwtIfNeeded 判断一枚已通过校验的令牌是否需要续期，需要则返回新令牌。
+//
+// 入参必须是**已经验签成功**的令牌：本函数只负责读 exp 并决定要不要重发，
+// 不重复做签名/issuer/audience 校验（那些在 ParseJwtWithClaims 里已做完）。
+// 若把未校驗的令牌喂进来，等于绕过鉴权，所以调用方只能在校验之后调用。
+//
+// 返回值语义："" = 不需要续期（或无法续期），调用方据此跳过 Set-Cookie。
+func RefreshJwtIfNeeded(rawToken string, userID int32, passwordHash, sessionID string) string {
+	claims, err := ParseJwtWithClaims(rawToken)
+	if err != nil {
+		// 解析失败不代表该续期；让上层原有的鉴权结果说话，这里静默跳过。
+		return ""
+	}
+	expiresAt, err := claims.GetExpirationTime()
+	if err != nil || expiresAt == nil {
+		// 没有 exp 的令牌一律不续：给它续期等于把「永不过期」的令牌固化下来。
+		return ""
+	}
+	remaining := time.Until(expiresAt.Time)
+	if remaining > JWTRefreshThreshold {
+		return ""
+	}
+	// 已过期就不续 —— 那种情况上层鉴权本来就该失败，续期会掩盖真实过期。
+	if remaining <= 0 {
+		return ""
+	}
+	return GenerateJwtForUserSession(userID, passwordHash, sessionID)
+}
+
 func credentialVersion(passwordHash string) string {
 	sum := sha256.Sum256([]byte(passwordHash))
 	return hex.EncodeToString(sum[:])

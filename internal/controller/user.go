@@ -277,6 +277,27 @@ func Auth(c *gin.Context) {
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"message": "不支持跨源或跨站 Cookie 请求"})
 		return
 	}
+	// 滑动续期（2026-11-19）：所有校验通过后，若这枚令牌已走过半程，就重发一次。
+	//
+	// 为什么需要：JWTTTL 是 24 小时且没有 refresh 接口，用户正常每天使用也会在
+	// 登录满 24 小时的那一刻被踢回登录页 —— 表现为「莫名其妙掉登录」，而真实
+	// 原因是自然过期（很多人会误以为是重启导致的，因为重启往往发生在隔天）。
+	//
+	// 续期条件用「剩余寿命不足一半」而不是「每次都续」：
+	//   · 每次都续等于给每个请求都写一次 Set-Cookie，浪费带宽且会让令牌
+	//     在日志里高频变化，难以排查；
+	//   · 过半才续，最坏情况下用户只要每 12 小时用一次就永不掉线。
+	//
+	// 只在 cookie 凭证下续期：Authorization 头的调用方（脚本/CLI）自己管理
+	// 令牌生命周期，服务端不该替它们改写行为。
+	// 同时要求 sid 匹配已在上面的 tokenLoginSessionMatches 里校验过，
+	// 所以续出来的新令牌仍绑定同一登录会话，不会绕过单设备登录。
+	if cookieCredential {
+		if refreshed := util.RefreshJwtIfNeeded(tokenValue, user.ID, user.Password, user.LoginSessionID); refreshed != "" {
+			setAuthCookie(c, refreshed)
+		}
+	}
+
 	c.Set("user", user)
 	c.Next()
 }
@@ -1731,7 +1752,8 @@ func stripBearerTokenPrefix(raw string) string {
 	return trimmed
 }
 
-func tokenCredentialVersionMatches(claims jwt.Claims, passwordHash string) bool {	mapClaims, ok := claims.(jwt.MapClaims)
+func tokenCredentialVersionMatches(claims jwt.Claims, passwordHash string) bool {
+	mapClaims, ok := claims.(jwt.MapClaims)
 	if !ok {
 		return false
 	}
