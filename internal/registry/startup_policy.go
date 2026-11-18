@@ -11,6 +11,7 @@ import (
 	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/configs"
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -101,12 +102,29 @@ func resolveAdminBootstrap(database *gorm.DB, mode, environment string) (adminBo
 		return plan, nil
 	}
 	password := strings.TrimSpace(environment)
-	if mode == "production" {
-		if err := validateBootstrapPassword(password); err != nil {
-			return plan, err
-		}
-	} else if password == "" {
+
+	// 2026-11-19 用户拍板：**永久删除**「初始密码强度不足就拒绝启动」。
+	//
+	// 原行为：mode == production 且全新库时，TIKU_ADMIN_PASSWORD 不满足
+	// 8 位 + 大写 + 小写 + 数字 + 特殊字符就返回 error，进程 FATAL 退出。
+	// 后果与 2026-11-10 删掉的那条（默认密码 123456 拒绝启动）完全同构：
+	// 用户拿默认配置一键起 docker，容器起来就退出，提示只有一句英文，
+	// 既不知道要设什么，也没机会进后台改密码。
+	//
+	// 现在改成：强度不足只**告警**，启动照常。真正的安全杠杆是登录后的
+	// 「修改密码」入口与 WebUI 的默认密码告警，而不是把人在门外。
+	// validateBootstrapPassword 本身保留（供改密接口复用同一套规则），
+	// 只是不再作为启动闸门。
+	if password == "" {
+		// 未提供时回退到默认值 —— 与开发模式同一个值，是刻意的：
+		// 两种情况本质都是「用户没指定初始密码」，不该因 TIKU_APP_MODE
+		// 不同而让同一份 docker-compose 行为不一致。
 		password = "123456"
+	} else if mode == "production" {
+		if err := validateBootstrapPassword(password); err != nil {
+			logger.SysLog("[WARN] 初始管理员密码强度不足（" + err.Error() +
+				"），已照常启动；请登录后立即在「个人资料」里修改密码。")
+		}
 	}
 	hashed, err := util.HashPassword(password)
 	if err != nil {

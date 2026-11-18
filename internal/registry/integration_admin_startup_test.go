@@ -42,8 +42,17 @@ func TestIntegrationAdminBootstrap(t *testing.T) {
 		name, mode, password, seed, expected string
 		reject, missing                      bool
 	}{
-		{name: "missing_production_password", reject: true, missing: true},
-		{name: "weak_production_password", password: "123456", reject: true, missing: true},
+		// 2026-11-19 用户拍板：**永久删除**「初始密码强度不足就拒绝启动」。
+		//
+		// 这两条原来是 reject: true（生产模式下不给密码 / 给弱密码 → 进程 FATAL
+		// 退出、连库文件都不创建）。但那条闸门与 2026-11-10 已删掉的「默认密码
+		// 123456 拒绝启动」同构：用户拿默认配置起 docker，容器起来就退出，
+		// 提示只有一句英文，既不知道要设什么也没机会进后台改密码。
+		//
+		// 现在的语义：两种情况都**启动成功**，密码回退到默认 123456，
+		// 强度不足只在日志里告警（validateBootstrapPassword 仍保留，供改密接口复用）。
+		{name: "missing_production_password_defaults", expected: "123456"},
+		{name: "weak_production_password_accepted", password: "123456", expected: "123456"},
 		{name: "explicit_development_compat", mode: "development", expected: "123456"},
 		{name: "strong_production_bootstrap", password: "Create#123", expected: "Create#123"},
 		{name: "legacy_same_secret_upgrade_not_environment_reset", password: "Replace#456", seed: "Original#123", expected: "Original#123"},
