@@ -34,6 +34,24 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # cmd/adapter-service/dist/ 已从 git 删除（ff03630），而 //go:embed all:dist
+      # 是编译期读取。不先放产物，`go build` 依然 exit 0，但打出来的二进制
+      # 前端为空 —— 本地能跑测试、用户下载后却看到 503。
+      #
+      # 这里选择**现构建**而不是复用 frontend 作业的 artifact：backend 是
+      # 所有 Go 检查的前置，加 needs 会把它串到 frontend 后面，把原本并行的
+      # 两条流水线拉成串行。Go 测试本来就要 30 分钟，那点构建时间不是瓶颈。
+      - name: 配置 Node.js 环境
+        uses: actions/setup-node@v7
+        with:
+          node-version: '26.x'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: 同步前端产物到 embed 目录
+        shell: pwsh
+        run: ./scripts/prepare-web-dist.ps1 -Json
+
       - name: 检查变更 Go 文件的格式
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -189,6 +207,9 @@ jobs:
     name: 跨平台发布构建（${{ matrix.goos }}/${{ matrix.goarch }}）
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    # 必须先有前端产物：cmd/adapter-service/dist/ 已从 git 删除（ff03630），
+    # 直接编译会打出一个「前端为空」的二进制 —— 构建成功、跑起来 503。
+    needs: [frontend]
     strategy:
       fail-fast: false
       matrix:
@@ -220,6 +241,32 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      # 前端只由 frontend 作业构建一次，这里复用它的 artifact，
+      # 避免 8 个矩阵各自 npm ci + npm run build（那是 8×几分钟）。
+      - name: 下载前端构建产物
+        uses: actions/download-artifact@v7
+        with:
+          name: 前端构建产物-${{ github.sha }}
+          path: web/dist
+
+      - name: 同步前端产物到 embed 目录
+        shell: pwsh
+        run: ./scripts/prepare-web-dist.ps1 -SkipBuild -Json
+
+      # 编译前**自证**产物已就位。这一步是必要的：go:embed 缺文件时
+      # go build 依然 exit 0（只是 embed 到空目录），失败会被推迟到运行时。
+      - name: 校验前端产物已就位
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f cmd/adapter-service/dist/index.html ]]; then
+            echo "::error::cmd/adapter-service/dist/index.html 不存在，前端产物没同步进来"
+            exit 1
+          fi
+          grep -q 'id="app"' cmd/adapter-service/dist/index.html \
+            || { echo "::error::index.html 缺少 id=app 标记，产物不完整"; exit 1; }
+          echo "前端产物就绪：$(find cmd/adapter-service/dist -type f | wc -l) 个文件"
 
       - name: 编译发布目标
         env:

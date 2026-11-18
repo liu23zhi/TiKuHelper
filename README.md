@@ -6,13 +6,19 @@
 
 ## 构建
 
-```bash
-cd web && npm ci && npm run build && cd ..
-mkdir -p cmd/adapter-service/dist && cp -R web/dist/. cmd/adapter-service/dist/
+```powershell
+pwsh ./scripts/prepare-web-dist.ps1   # 构建前端并同步到 cmd/adapter-service/dist/
 go build ./...
 ```
 
-⚠️ **前端必须先构建并复制到 `cmd/adapter-service/dist/`**。
+⚠️ **前端必须先构建并同步到 `cmd/adapter-service/dist/`**。
+
+`cmd/adapter-service/dist/` 是构建产物目录，**不进 git**（仓库里只有 `.gitkeep`）。
+`go:embed all:dist` 是编译期读取，所以少了这一步 `go build` 依然**成功**，
+只是打出来的二进制前端为空 —— 启动正常，访问任何页面返回 503。
+这类失败发生在运行时而非构建时，最容易漏。脚本会把缺产物变成 `exit 1`。
+
+也可以直接 `go generate ./cmd/adapter-service`（内部调用同一个脚本）。
 
 后端用 `//go:embed dist` 把前端产物编译进二进制，而 `cmd/adapter-service/dist/`
 被 `.gitignore` 忽略（只有 `index.html` 强制跟踪）。所以：

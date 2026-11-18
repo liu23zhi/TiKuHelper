@@ -23,6 +23,12 @@ import (
 	"github.com/itihey/tikuAdapter/pkg/logger"
 )
 
+//go:generate pwsh -NoProfile -File ../../scripts/prepare-web-dist.ps1
+
+// 上一行是本地便捷入口：`go generate ./cmd/adapter-service` 会构建前端并把产物
+// 同步进 dist/。CI 与 Docker 各自有自己的接线（见 .github/workflows/ci.yml 与
+// Dockerfile），但都调用同一个脚本，避免三套复制逻辑漂移。
+//
 // //go:embed all:dist 而不是 //go:embed dist：
 //
 // `dist/` 是**构建产物目录**，已从 git 删除（2026-11-19），仓库里只留一个
