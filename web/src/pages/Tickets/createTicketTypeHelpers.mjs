@@ -290,7 +290,15 @@ export function buildTicketCreatePayload(draft = {}) {
           .map((id) => Number(id))
           .filter((id) => Number.isSafeInteger(id) && id > 0)
       : [];
-    if (orderIds.length) payload.refundOrderIds = orderIds;
+  if (orderIds.length) payload.refundOrderIds = orderIds;
+  // 收款码（可选，2026-11-19）：人工打款时管理员据此扫码转账。
+  // 与 attachmentIds 分开传 —— 后者是工单截图，会挂在消息上供双方查看；
+  // 收款码归属退款单本身。混成一个字段会让两者再也分不开。
+  // 只接受单个正整数：一张码就够，多张会让管理员不知道该扫哪张。
+  const payoutQrId = Number(draft.refundPayoutQrAttachmentId);
+  if (Number.isSafeInteger(payoutQrId) && payoutQrId > 0) {
+    payload.refundPayoutQrAttachmentId = payoutQrId;
+  }
     if (attachmentIds.length) payload.attachmentIds = attachmentIds;
     return Object.freeze({ payload: Object.freeze(payload), validation });
   }

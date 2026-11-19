@@ -964,6 +964,9 @@ const draft = reactive({
   reason: "",
   // 多选（2026-11-18）：一个订单一张退款单，服务端展开；空数组 = 无订单人工退款。
   refundOrderIds: [],
+  // 收款码附件 ID（可选，2026-11-19）。null = 没上传/已清除。
+  // 与 draftAttachments 分开：那是工单截图，这是退款收款凭据。
+  refundPayoutQrAttachmentId: null,
   // account 专用：登录异常 / 绑定问题 / 封禁申诉（只做标题前缀，不是后端字段）。
   issueType: "",
 });
@@ -1225,6 +1228,92 @@ function toggleRefundOrder(id) {
     : [...current, value];
   retireCreateValidation();
 }
+
+// ── 收款码上传（2026-11-19 用户要求）──
+//
+// 「即便可以原路退回也可以要求用户设置退款账号。即添加一个带记忆的图片上传框，
+// 用于上传收款码，只能上传一张。」
+//
+// 三个约束的落地方式：
+//   · 只能一张 → 不做数组，只有一个 ID；重新选图直接覆盖。
+//   · 带记忆   → ID 存 localStorage（按用户隔离），下次打开自动带出并回显预览。
+//              存 ID 而不是图片字节：附图早已加密落库，本地再存一份既占空间
+//              又要重复做大小/格式校验。
+//   · 可选     → 不传也能提交；只有给了才写进退款单。
+const payoutQrBusy = ref(false)
+const payoutQrPreviewUrl = ref("")
+const payoutQrMemoryKey = () => {
+  const id = Number(currentUser.value?.id)
+  return Number.isSafeInteger(id) && id > 0 ? `tiku.refund.payoutQr.${id}` : ""
+}
+function revokePayoutQrPreview() {
+  if (payoutQrPreviewUrl.value) {
+    URL.revokeObjectURL(payoutQrPreviewUrl.value)
+    payoutQrPreviewUrl.value = ""
+  }
+}
+// loadPayoutQrPreview 用鉴权请求取回图片字节再转 blob URL。
+// 不能直接写 <img src="/api/ticket-attachments/1">：那个接口要 Authorization，
+// 裸 src 不会带凭证，只会拿到 401。
+async function loadPayoutQrPreview(attachmentId) {
+  revokePayoutQrPreview()
+  const id = Number(attachmentId)
+  if (!Number.isSafeInteger(id) || id <= 0) return
+  try {
+    const response = await getTicketAttachment(id)
+    const blob = response?.data
+    if (blob instanceof Blob && /^image\\/(png|jpeg)$/.test(blob.type)) {
+      payoutQrPreviewUrl.value = URL.createObjectURL(blob)
+    }
+  } catch {
+    // 读不回来就当没有预览：ID 仍在，提交照常带上。
+    // 静默是刻意的 —— 预览失败不该拦住退款。
+  }
+}
+// restorePayoutQr 打开弹窗时调用：带出上次那张码。
+function restorePayoutQr() {
+  const key = payoutQrMemoryKey()
+  if (!key) return
+  let stored = null
+  try { stored = window.localStorage.getItem(key) } catch { return }
+  const id = Number(stored)
+  if (!Number.isSafeInteger(id) || id <= 0) return
+  draft.refundPayoutQrAttachmentId = id
+  void loadPayoutQrPreview(id)
+}
+function clearPayoutQr() {
+  draft.refundPayoutQrAttachmentId = null
+  revokePayoutQrPreview()
+  const key = payoutQrMemoryKey()
+  if (key) { try { window.localStorage.removeItem(key) } catch { /* 存储不可用则只清当前 */ } }
+}
+async function onPickPayoutQr(event) {
+  const input = event?.target
+  const file = input?.files?.[0]
+  if (input) input.value = ""
+  if (!file || payoutQrBusy.value) return
+  const invalid = validateTicketAttachmentFile(file)
+  if (invalid) { message.warning(`收款码：${invalid}`); return }
+  payoutQrBusy.value = true
+  try {
+    const response = await uploadTicketAttachment(file, undefined)
+    const created = response?.data?.data
+    const id = Number(created?.id)
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      message.error("收款码上传返回格式异常")
+      return
+    }
+    draft.refundPayoutQrAttachmentId = id
+    const key = payoutQrMemoryKey()
+    if (key) { try { window.localStorage.setItem(key, String(id)) } catch { /* 存不下就只本会话有效 */ } }
+    await loadPayoutQrPreview(id)
+    message.success("收款码已上传，下次发起退款会自动带出")
+  } catch (error) {
+    message.error(responseMessage(error, "收款码上传失败"))
+  } finally {
+    payoutQrBusy.value = false
+  }
+}
 function setDraft(key, value) { if (createVisible.value) draft[key] = value; }
 function setCreateVisible(value) { createVisible.value = value; }
 function setDetailVisible(value) { if (!value) closeDetail(); }
@@ -1357,6 +1446,9 @@ function openCreate() {
   draft.requestedYuan = "";
   draft.reason = "";
   draft.refundOrderIds = [];
+  // 收款码**不在这里清空**：它带记忆（见 payoutQrMemoryKey），
+  // 用户下次发起退款会自动带出上次那张，避免每次重传。
+  // 真正的清除入口是弹窗里的「移除」按钮。
   draft.issueType = "";
   createStep.value = ticketWizardInitialStep();
   createVisible.value = true;

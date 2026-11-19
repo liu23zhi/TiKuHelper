@@ -153,6 +153,16 @@ type CreateTicketInput struct {
 	RefundOrderID        *int32 `json:"refundOrderId,omitempty"`
 	RefundRequestedCents int64  `json:"refundRequestedCents,omitempty"`
 	RefundReason         string `json:"refundReason,omitempty"`
+	// RefundPayoutQrAttachmentID 是用户上传的收款码（可选）。
+	//
+	// 2026-11-19 用户要求：「即便可以原路退回也可以要求用户设置退款账号」。
+	// 它服务于**人工打款**：管理员据此扫码转账，所以与 refundOrderId 无关 ——
+	// 无单人工退款同样可以带收款码。
+	//
+	// 与 AttachmentIds 分开而不是复用：AttachmentIds 是挂在工单消息上的截图，
+	// 会出现在工单详情里供双方查看；收款码是付款凭据，归属退款单本身，
+	// 语义与可见性都不同。混用一个字段会让「截图」和「收款码」再也分不开。
+	RefundPayoutQrAttachmentID *int64 `json:"refundPayoutQrAttachmentId,omitempty"`
 }
 
 // 用户可自选的工单类型（T-209 建立，本任务扩到四项）。
@@ -326,7 +336,8 @@ func CreateTicketWithDB(db *gorm.DB, user *entity.User, input CreateTicketInput)
 		return createRefundTicketWithDB(db, user, input)
 	}
 	// 选了退款却带了退款字段（或反之）：视作参数错，避免「提交了但字段被忽略」。
-	if input.RefundOrderID != nil || input.RefundRequestedCents != 0 || strings.TrimSpace(input.RefundReason) != "" {
+	if input.RefundOrderID != nil || input.RefundRequestedCents != 0 || strings.TrimSpace(input.RefundReason) != "" ||
+		input.RefundPayoutQrAttachmentID != nil {
 		return TicketDetail{}, ErrTicketInvalidCategory
 	}
 	subject, err := normalizeTicketText(input.Subject, TicketSubjectMaxLength, ErrTicketSubjectRequired)

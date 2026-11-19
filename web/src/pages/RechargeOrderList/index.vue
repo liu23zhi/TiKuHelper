@@ -113,27 +113,6 @@
             {{ buildStatusLabel(record.status) }}
           </a-tag>
           <span v-else-if="column.key === 'paidAt' || column.key === 'createdAt'" class="time-cell">{{ formatDateTime(record[column.key]) }}</span>
-          <!--
-            操作列（2026-11-19）：改为「修改状态」，不再提供「发起退款」。
-
-            本页是管理员专属的运营视图。退款申请走「工单反馈 → 退款申请」，
-            那条链路有完整的可退性校验、收款码上传与审核；在这里再放一个
-            退款入口会出现两条口径不同的退款路径，反而更容易出错。
-
-            运营在这页只需要一件事：修正支付回调丢失导致的错误状态
-            （典型场景：用户钱已到账，订单却永久停在 pending）。
-          -->
-          <template v-else-if="column.key === 'action'">
-            <a-button
-              v-if="canEditStatus"
-              type="link"
-              style="padding: 0"
-              :data-recharge-order-action="record.id"
-              @click="openStatusModal(record)"
-              >修改状态</a-button
-            >
-            <span v-else class="muted">—</span>
-          </template>
         </template>
         <template #emptyText>
           <a-empty v-if="hasLoaded && !tableLoading && !loadFailure" description="当前还没有充值记录。" />
@@ -505,15 +484,6 @@ const submitStatusChange = async () => {
       dataIndex: 'createdAt',
       key: 'createdAt',
       width: 122,
-    },
-    // 操作列（用户诉求：「在充值记录提供一个按钮，用于快捷发起退款工单」）。
-    // 只在「这笔订单真的可退」时才渲染按钮 —— 可退性来自后端
-    // GET /ticket-refunds/eligible-orders 的判定，不在前端自己推
-    // （退款有金额上限、时间窗口、是否已退过等业务规则，前端复刻必然漂移）。
-    {
-      title: '操作',
-      key: 'action',
-      width: 120,
     },
   ],
     }

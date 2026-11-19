@@ -3,16 +3,20 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
+	"github.com/itihey/tikuAdapter/pkg/logger"
+	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 )
 
@@ -438,4 +442,74 @@ func writeTicketRefundError(c *gin.Context, err error) {
 		status, code, message = http.StatusBadGateway, "REFUND_CHANNEL_UNKNOWN", service.ErrTicketRefundChannelUnknown.Error()
 	}
 	c.JSON(status, gin.H{"code": code, "message": message})
+}
+
+// RecoverTicketRefundPayoutQr 用当前密码取回该用户**上次退款用过的收款码**。
+//
+// 2026-11-19 用户要求：「提交的时候输入密码才能看到之前上传的收款码；
+// 替换不需要。添加本地缓存，如果是本机上传的，直接加载，换了设备才需要密码
+// 来恢复数据。」
+//
+// 所以这个接口只在「换设备 / 清过缓存」时被调用一次，拿到 ID 后前端写回
+// 本地缓存，之后同机再打开就直接用缓存、不再要密码。
+//
+// 安全要点：
+//
+//	· 收款码是支付账号信息，跨设备取回必须验密 —— 只凭登录态不够，
+//	  因为登录态可能来自一台共享电脑。
+//	· 密码校验复用**登录失败计数**做限流（与注销申请同一口径）：同一个账号的
+//	  凭据被反复试探，锁定策略应当一致，另起一套计数器只会让爆破面变大。
+//	· 只返回附件 ID，不直接返回图片字节：真正取图仍走
+//	  /api/ticket-attachments/:id（有既有的归属校验与审计）。
+func RecoverTicketRefundPayoutQr(c *gin.Context) {
+	db, actor, ok := ticketRefundRequest(c, false)
+	if !ok {
+		return
+	}
+	var payload struct {
+		Password string `json:"password"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "请求体格式无效"})
+		return
+	}
+	password := strings.TrimSpace(payload.Password)
+	if password == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "请输入当前密码"})
+		return
+	}
+
+	// 限流：与注销申请完全一致（同一份凭据，锁定口径必须一致）。
+	policy := service.AccountLoginPolicy(db)
+	subjectKey := service.NormalizeLoginAccountKey(actor.Username)
+	if lock, err := service.CheckLoginLockoutWithDB(db, policy, subjectKey, time.Now()); err == nil && lock.Locked {
+		c.JSON(http.StatusTooManyRequests, gin.H{
+			"message": fmt.Sprintf("密码错误次数过多，请 %d 分钟后再试", lock.RemainingMinutesCeil()),
+		})
+		return
+	}
+	if matches, _ := util.VerifyPassword(actor.Password, password); !matches {
+		if _, recordErr := service.RecordLoginFailureWithDB(db, policy, subjectKey, time.Now()); recordErr != nil {
+			logger.SysWarn("记录收款码恢复的密码失败次数失败: " + logger.RedactSecrets(recordErr.Error()))
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"message": "密码错误"})
+		return
+	}
+	if clearErr := service.ClearLoginAttemptsOnSuccessWithDB(db, policy, subjectKey, time.Now()); clearErr != nil {
+		logger.SysWarn("清除登录失败计数失败: " + logger.RedactSecrets(clearErr.Error()))
+	}
+
+	attachmentID, err := service.LatestRefundPayoutQrAttachmentIDWithDB(db, actor.ID)
+	if err != nil {
+		writeTicketRefundError(c, err)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	if attachmentID <= 0 {
+		// 没有历史记录：给 200 + 0，前端提示「没有可恢复的收款码」。
+		// 不回 404 —— 那不是「资源不存在」，而是「你还没用它」。
+		c.JSON(http.StatusOK, gin.H{"attachmentId": 0})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"attachmentId": attachmentID})
 }

@@ -26,6 +26,12 @@ var (
 	// ErrTicketRefundExceedsRefundablePrincipal 可退本金不足：
 	// 用户已用赠送金额消费掉的服务价值超过了剩余充值本金，超出部分不能退成现金。
 	ErrTicketRefundExceedsRefundablePrincipal = errors.New("可退本金不足（赠送金额已消费的部分不能退成现金）")
+	// ErrTicketRefundPayoutQrRequired 人工打款必须提供收款码。
+	//
+	// 2026-11-19 用户要求：「如果是不能原路退回的，一定要上传付款码」。
+	// 理由：不能原路退回意味着钱只能人工打给用户，没有收款码管理员就无从转账 ——
+	// 只会把申请卡在「已通过审核、无法打款」的状态。
+	ErrTicketRefundPayoutQrRequired = errors.New("人工打款需先上传收款码")
 )
 
 const (
@@ -109,6 +115,16 @@ type CreateTicketRefundInput struct {
 	OrderIDs       []int32 `json:"orderIds"`
 	RequestedCents int64   `json:"requestedCents"`
 	Reason         string  `json:"reason"`
+	// PayoutQrAttachmentID 是用户上传的收款码附件（ticket_attachments.id）。
+	//
+	// 2026-11-19 用户要求：「即便可以原路退回也可以要求用户设置退款账号」——
+	// 所以它不是必填，而是**有机会就带上**：原路退回失败或走人工打款时，
+	// 管理员据此扫码转账。
+	//
+	// 校验规则：给了就必须 > 0；真正的归属校验在绑定附件时做
+	// （BindDraftTicketAttachmentsInTx 会核对 ticket_id=0 且 user_id 匹配），
+	// 这里不做额外查询 —— 那会与事务内的检查重复，且事务外读有 TOCTOU 风险。
+	PayoutQrAttachmentID *int64 `json:"payoutQrAttachmentId"`
 }
 
 func ListEligibleTicketRefundOrdersWithDB(db *gorm.DB, actor entity.User, verify TicketRefundOrderVerifier) ([]TicketRefundOrder, error) {
@@ -172,11 +188,20 @@ func CreateTicketRefundWithDB(db *gorm.DB, actor entity.User, input CreateTicket
 	if !validTicketRefundCents(input.RequestedCents) {
 		return entity.TicketRefund{}, ErrTicketRefundAmount
 	}
+	// 收款码附件可选：给了就必须是正数 ID。
+	//
+	// 这里只做「形态」校验，真正的归属校验（ticket_id=0 且属于本人）在
+	// 壳工单创建的绑定步骤里由 BindDraftTicketAttachmentsInTx 完成 ——
+	// 在此处另查一次既重复又有 TOCTOU 风险（查到之后仍可能被别人用掉）。
+	if input.PayoutQrAttachmentID != nil && *input.PayoutQrAttachmentID <= 0 {
+		return entity.TicketRefund{}, ErrTicketRefundInvalid
+	}
 	now := time.Now()
 	row := entity.TicketRefund{
 		UserID: actor.ID, Kind: input.Kind, Status: entity.TicketRefundStatusPendingReview,
 		RequestedCents: input.RequestedCents, Reason: strings.TrimSpace(input.Reason), RefundNo: "tr-" + uuid.NewString(),
 		CreatedAt: now, UpdatedAt: now,
+		PayoutQrAttachmentID: input.PayoutQrAttachmentID,
 	}
 	err := db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
 		var order entity.RechargeOrder
@@ -207,9 +232,24 @@ func CreateTicketRefundWithDB(db *gorm.DB, actor entity.User, input CreateTicket
 			if err != nil || order.PaidAt.After(now) {
 				return ErrTicketRefundOrderUnavailable
 			}
-			// 申请时只做「不超过本笔实付」的粗校验；真正的可退额在审批冻结时
-			// 用权威钱包快照重算（见 ReviewTicketRefundWithDB）。
-			if input.RequestedCents > paid {
+			// 金额上限（2026-11-19 用户要求：「用户申请退款的金额必须小于等于本金」）：
+			//   上限 = min(本笔实付, 当前可退本金)
+			//
+			// 只卡「不超过实付」是不够的：用户可能已经把余额花掉了，
+			// 这时再按订单实付放行，会在审批冻结时才失败 —— 那时用户已经
+			// 填完表单、等了几分钟，体验与「提交时说清楚」差很远。
+			//
+			// 可退本金沿用 21-*.md §7.1 的口径（balance − 已消耗赠金），
+			// 与审批冻结时用的是同一个函数，避免两处口径漂移。
+			amountCap := paid
+			if breakdown, principalErr := RefundablePrincipalWithDB(tx, actor.ID, paid*ticketRefundMicrosPerCent); principalErr == nil {
+				if principalCents := breakdown.RefundableMicros / ticketRefundMicrosPerCent; principalCents < amountCap {
+					amountCap = principalCents
+				}
+			}
+			// 本金为负或已花光时 amountCap 会是 0 或负数：一并拒掉，
+			// 否则会放过一个「退 0 元」的申请。
+			if amountCap <= 0 || input.RequestedCents > amountCap {
 				return ErrTicketRefundAmount
 			}
 			ref, verifyErr := ticketRefundOriginalChannel(tx, order, verify, now)
@@ -935,4 +975,36 @@ func ticketRefundHoldMicros(tx *gorm.DB, row entity.TicketRefund) (int64, error)
 		return 0, ErrTicketRefundState
 	}
 	return amount, nil
+}
+
+// LatestRefundPayoutQrAttachmentIDWithDB 取该用户最近一次退款申请用过的收款码附件 ID。
+//
+// 用途（2026-11-19 用户要求）：「提交的时候输入密码才能看到之前上传的收款码；
+// 替换不需要。添加本地缓存，如果是本机上传的，直接加载，换了设备才需要密码
+// 来恢复数据。」
+//
+// 所以本函数只负责「把上次用的那张找出来」，**鉴权在调用方**：
+// controller 会先校验当前密码（并复用登录失败限流），通过后才调这里。
+// 把密码校验放进 service 会让「查数据」和「验身份」耦合，且难以单独测试。
+//
+// 返回 0 表示该用户还没用过收款码（不是错误）—— 调用方据此提示「暂无记录」，
+// 而不是让用户以为密码错了。
+func LatestRefundPayoutQrAttachmentIDWithDB(db *gorm.DB, userID int32) (int64, error) {
+	if db == nil || userID <= 0 {
+		return 0, ErrTicketRefundInvalid
+	}
+	var row struct{ PayoutQrAttachmentID *int64 }
+	// 只认已经提交过的退款单：草稿附件（未关联任何退款单）不算「上次用过」，
+	// 否则用户上传后放弃提交，下次换设备也会把它当历史带出来 —— 那是误导。
+	err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.TicketRefund{}).
+		Select("payout_qr_attachment_id").
+		Where("user_id = ? AND payout_qr_attachment_id IS NOT NULL AND payout_qr_attachment_id > 0", userID).
+		Order("id DESC").Limit(1).Scan(&row).Error
+	if err != nil {
+		return 0, err
+	}
+	if row.PayoutQrAttachmentID == nil {
+		return 0, nil
+	}
+	return *row.PayoutQrAttachmentID, nil
 }
