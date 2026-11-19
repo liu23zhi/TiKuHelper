@@ -47,17 +47,8 @@ test('退款工作台文件确实已删除', async () => {
   )
 })
 
-test('发起工单按钮对两个视图都存在（含管理员）', async () => {
-  const source = await read(PAGE)
-  const button = source.match(/<a-button[^>]*>发起工单<\/a-button/)
-  assert.ok(button, '必须存在「发起工单」按钮')
-  // 关键：不能带 !isAdmin —— 管理员视图同样要能发起。
-  assert.doesNotMatch(
-    button[0],
-    /!isAdmin/,
-    '「发起工单」不能排除管理员：工单管理页也需要这个按钮',
-  )
-})
+// 创建入口的路由/角色行为由 TicketsViewModeAnt4.test.cjs 通过真实点击验证：
+// 管理员在「工单反馈」可创建，在「工单管理」处理工单。
 
 test('退款操作收进详情：动作组件被详情弹窗挂载且绑定 detail.refund', async () => {
   const source = await read(PAGE)

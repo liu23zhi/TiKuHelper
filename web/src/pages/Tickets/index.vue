@@ -18,11 +18,10 @@
         ><!-- ⚠️ 全页**唯一**的建单入口（B2-3 / 判据 T6）。
              不要在这里再加第二个「发起」类按钮，也不要在别处提供「直接新建某类型」
              的入口 —— 类型选择已经收进向导第一步。 -->
-        <!-- 管理员也要能发起工单：两个视图共用同一列表，「一个列表 + 一个发起按钮」
-             对两边都成立。后端 POST /tickets 只要求登录（router.go:375），不限角色。 -->
+        <!-- 创建入口由当前视图决定：管理员也可以在「工单反馈」提交自己的工单。 -->
         <!-- 通知设置入口：只在管理视图出现（它是管理员配置）。 -->         <!-- 只判 canManage，不判 configLoaded：后者是异步的，会在页面刚打开的一瞬间
              让按钮消失（管理员会以为没有这个功能）。配置未就绪的提示由弹窗内部处理。 -->
-        <a-button v-if="canManage()" :onClick="pageEntry.bind(openNotificationConfig)"           >提醒设置</a-button         >         <a-button v-if="canUseTickets()" type="primary" :onClick="pageEntry.bind(openCreate)"
+        <a-button v-if="canManage()" :onClick="pageEntry.bind(openNotificationConfig)"           >提醒设置</a-button         >         <a-button v-if="canCreateTickets()" type="primary" :onClick="pageEntry.bind(openCreate)"
           >发起工单</a-button
         ></template
       >
@@ -389,7 +388,14 @@
               :aria-invalid="createValidationMessage('requestedYuan') ? 'true' : undefined"
               placeholder="例如 25.50"
               :disabled="createLoading"
-            /><template #help><span v-if="createValidationMessage('requestedYuan')" role="alert">{{ createValidationMessage('requestedYuan') }}</span></template>
+            /><template #help>
+              <span v-if="createValidationMessage('requestedYuan')" role="alert">{{ createValidationMessage('requestedYuan') }}</span>
+              <div class="ticket-refund-available" data-ticket-refund-available>
+                <span v-if="refundSummaryLoading">正在查询可退款金额…</span>
+                <span v-else-if="refundSummaryError" role="alert">{{ refundSummaryError }} <button type="button" class="ticket-refund-retry" @click="loadRefundSummary">重试</button></span>
+                <span v-else-if="refundAvailableCents !== null">当前可退款金额：<strong>{{ formatRefundCents(refundAvailableCents) }}</strong> 元</span>
+              </div>
+            </template>
           </a-form-item>
 
           <!-- 退回方式：**第二行**（2026-11-19 用户要求）。
@@ -431,18 +437,19 @@
           <!-- 原路退回：选充值记录 + 按新旧分摊 -->
           <template v-if="draft.refundMethod === REFUND_METHOD_ORIGINAL">
             <a-form-item label="退款订单" :html-for="createFieldId('order')">
-              <a-button data-ticket-refund-orders-open :disabled="createLoading" @click="refundOrdersVisible = true">选择充值记录（已选 {{ draft.refundAllocations.length }} 笔）</a-button>
+              <a-button data-ticket-refund-orders-open :disabled="createLoading" @click="openRefundOrders">选择充值记录（已选 {{ draft.refundAllocations.length }} 笔）</a-button>
               <a-modal :open="refundOrdersVisible" title="选择原路退回的充值记录" :width="640" :footer="null" @cancel="refundOrdersVisible = false">
-              <p v-if="refundOrdersLoading" class="ticket-refund-orders-hint">正在读取可退订单…</p>
+              <p v-if="refundOrdersLoading" class="ticket-refund-orders-hint">正在读取充值记录…</p>
+              <p v-else-if="refundOrdersError" class="ticket-refund-orders-hint" role="alert">{{ refundOrdersError }} <button type="button" class="ticket-refund-retry" @click="loadRefundOrders">重试</button></p>
               <p v-else-if="!refundOrderOptions.length" class="ticket-refund-orders-hint">
-                当前没有可退订单。
+                暂无已支付或已结束的充值记录，未支付订单不在此显示。
               </p>
               <div v-else class="ticket-refund-orders" role="group" aria-label="退款订单（可多选）">
                 <div
                   v-for="item in refundOrderOptions"
                   :key="item.value"
                   class="ticket-refund-order"
-                  :class="{ 'ticket-refund-order--checked': isRefundOrderSelected(item.value) }"
+                  :class="{ 'ticket-refund-order--checked': isRefundOrderSelected(item.value), 'ticket-refund-order--disabled': !item.originalSupported }"
                   :data-ticket-refund-order="item.value"
                 >
                   <input
@@ -455,7 +462,8 @@
                   />
                   <span class="ticket-refund-order__body">
                     <span class="ticket-refund-order__label">{{ item.label }}</span>
-                    <span class="ticket-refund-order__tag" v-if="!item.originalSupported">仅人工退款</span>
+                    <span class="ticket-refund-order__tag" v-if="!item.originalSupported">不可原路退回</span>
+                    <span v-if="item.statusLabel || item.createdAt" class="ticket-refund-order__meta">{{ item.statusLabel }}<template v-if="item.createdAt"> · 创建于 {{ formatTicketTime(item.createdAt) }}</template></span>
                     <span
                       class="ticket-refund-order__reason"
                       v-if="!item.originalSupported && item.originalUnsupportedReason"
@@ -522,72 +530,14 @@
             </a-form-item>
 
             <a-form-item label="收款码" required>
-              <div class="ticket-payout-qr" data-ticket-payout-qr>
-                <img
-                  v-if="payoutQrPreviewUrl"
-                  :src="payoutQrPreviewUrl"
-                  alt="已上传的收款码"
-                  class="ticket-payout-qr__preview"
-                  data-ticket-payout-qr-preview
-                />
-                <!-- 换设备后的模糊占位（2026-11-19）：本机没有缓存时，显示上次收款码的
-                     高斯模糊缩略图 + 提示。它看不清、也扫不出来 —— 本来就是提示性的，
-                     作用是让用户知道「上次传过、去输密码恢复」，而不是显示成「从没传过」。 -->
-                <div
-                  v-if="!draft.refundPayoutQrAttachmentId && payoutQrBlurredUrl"
-                  class="ticket-payout-qr__blurred"
-                  data-ticket-payout-qr-blurred
-                >
-                  <img
-                    :src="payoutQrBlurredUrl"
-                    alt="上次使用的收款码（已模糊）"
-                    class="ticket-payout-qr__preview"
-                  />
-                  <span class="ticket-payout-qr__blurred-tip">
-                    这是你上次使用的收款码（已模糊）。点「恢复上次的收款码」并输入当前密码即可取回原图。
-                  </span>
-                </div>
-                <div class="ticket-payout-qr__actions">
-                  <label class="ticket-attachment-input">
-                    <span>{{ draft.refundPayoutQrAttachmentId ? "替换收款码" : "选择收款码" }}</span>
-                    <input
-                      type="file"
-                      :accept="TICKET_ATTACHMENT_ACCEPT"
-                      :disabled="createLoading || payoutQrBusy"
-                      data-ticket-payout-qr-input
-                      @change="onPickPayoutQr"
-                    />
-                  </label>
-                  <a-button
-                    v-if="draft.refundPayoutQrAttachmentId"
-                    type="link"
-                    size="small"
-                    danger
-                    :disabled="createLoading || payoutQrBusy"
-                    @click="clearPayoutQr"
-                  >移除</a-button>
-                  <a-button
-                    v-else
-                    type="link"
-                    size="small"
-                    :disabled="createLoading || payoutQrBusy || !canRecoverPayoutQr"
-                    data-ticket-payout-qr-recover
-                    @click="openPayoutQrRecover"
-                  >恢复上次的收款码</a-button>
-                </div>
-                <p class="ticket-payout-qr__hint" v-if="draft.refundPayoutQrAttachmentId">
-                  已就绪：本次申请会带上这张收款码。
-                </p>
-                <p class="ticket-payout-qr__hint" v-else>
-                  人工打款必须提供收款码。同一台设备会自动带出上次那张；换设备需输入密码恢复。
-                </p>
-              </div>
-              <template #help
-                ><span>
-                  只支持一张。同一台设备会记住上次上传的收款码，下次自动带出；
-                  换设备时点「恢复上次的收款码」并输入当前密码即可取回。
-                </span></template
-              >
+              <RefundPayoutQr
+                ref="payoutQrComponent"
+                :user-id="Number(currentUser?.id)"
+                :disabled="createLoading"
+                @update:attachment-id="draft.refundPayoutQrAttachmentId = $event"
+                @busy="payoutQrBusy = $event"
+                @changed="resetAgreement"
+              />
             </a-form-item>
 
             <!-- 承诺书（2026-11-19 用户要求）：本人承诺收款码所属账户为本人账户。
@@ -639,10 +589,6 @@
             @close="agreementVisible = false"
             @signed="onAgreementSigned"
           />
-          <a-modal :open="payoutQrRecoverVisible" title="恢复上次的收款码" :confirm-loading="payoutQrBusy" :mask-closable="false" @cancel="closePayoutQrRecover" @ok="recoverPayoutQr">
-            <p>请输入当前登录密码，以恢复之前上传的收款码。</p>
-            <a-input-password v-model:value="payoutQrPassword" autocomplete="current-password" aria-label="当前登录密码" @pressEnter="recoverPayoutQr" />
-          </a-modal>
         </template>
         <!-- 账号问题（B2-6）：问题类型下拉 + 说明文本域。
              问题类型只作为标题前缀供管理员分诊，不是独立后端字段
@@ -717,16 +663,7 @@
         label="截图（可选）"
         help="支持 PNG / JPEG，单张不超过 2 MiB。图片上传后先做安全检测，检测未通过时只显示提示。"
       >
-        <label class="ticket-attachment-input">
-          <span>选择图片（最多 {{ TICKET_ATTACHMENT_MAX_PER_MESSAGE }} 张）</span>
-          <input
-            type="file"
-            :accept="TICKET_ATTACHMENT_ACCEPT"
-            :disabled="createLoading || uploadBusy"
-            multiple
-            @change="onPickDraftImages"
-          />
-        </label>
+        <TicketImagePicker :max="TICKET_ATTACHMENT_MAX_PER_MESSAGE" :disabled="createLoading || uploadBusy" @change="onPickDraftImages" />
             <div v-if="draftAttachments.length" class="ticket-attachment-selected">
               <span v-for="item in draftAttachments" :key="item.id" class="ticket-attachment-chip"
                 >#{{ item.id }}
@@ -913,15 +850,7 @@
                 :rows="5"
                 placeholder="请输入回复内容" /></a-form-item
             ><a-form-item label="截图（可选）"
-              ><label class="ticket-attachment-input">
-                <span>选择图片（最多 {{ TICKET_ATTACHMENT_MAX_PER_MESSAGE }} 张）</span>
-                <input
-                  type="file"
-                  :accept="TICKET_ATTACHMENT_ACCEPT"
-                  :disabled="replyLoading || uploadBusy || !detailTicket"
-                  multiple
-                  @change="onPickReplyImages"
-                /></label>
+              ><TicketImagePicker :max="TICKET_ATTACHMENT_MAX_PER_MESSAGE" :disabled="replyLoading || uploadBusy || !detailTicket" @change="onPickReplyImages" />
               <div v-if="replyAttachments.length" class="ticket-attachment-selected">
                 <span v-for="item in replyAttachments" :key="item.id" class="ticket-attachment-chip"
                   >#{{ item.id }}
@@ -966,8 +895,10 @@ import {
 } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { message } from "ant-design-vue";
+import Swal from 'sweetalert2';
 import RequestFailureAlert from "@/components/RequestFailureAlert.vue";
 import TicketAttachment from "@/components/TicketAttachment.vue";
+import TicketImagePicker from "@/components/TicketImagePicker.vue";
 // 敏感文本遮挡：默认遮挡，仅管理员可点「显示原文」。
 // 工单正文**只做展示遮挡**，不参与任何提交校验 —— 误判不能让用户处理不了工单。
 import SensitiveText from "@/components/SensitiveText.vue";
@@ -989,7 +920,6 @@ import {
   groupTicketAttachmentsByMessage,
   pickTicketAttachmentIds,
   validateTicketAttachmentFile,
-  TICKET_ATTACHMENT_ACCEPT,
   TICKET_ATTACHMENT_MAX_PER_MESSAGE,
 } from "@/utils/ticketAttachmentHelpers.mjs";
 import { useCurrentUserDisplay, isAdminUser } from "@/utils/currentUser";
@@ -1046,13 +976,13 @@ import {
 } from "./createTicketTypeHelpers.mjs";
 import {
   getEligibleTicketRefundOrders,
+  getTicketRefundSummary,
   getRefundAgreement,
-  previewTicketRefundPayoutQr,
-  recoverTicketRefundPayoutQr,
   getRefundPhoneVerification,
   sendRefundPhoneSMSCode,
 } from "@/api/TikuComponentApi";
 import RefundAgreementDialog from "@/components/RefundAgreementDialog.vue";
+import RefundPayoutQr from "@/components/RefundPayoutQr.vue";
 
 const detailStatusId = `tickets-${useId()}-detail-status`;
 // 退款 7 态的中文文案与退款面板同一份（refundStatusLabel 在上方 import），
@@ -1217,20 +1147,47 @@ const createWizardTitle = computed(() => {
   const matched = TICKET_CREATE_TYPE_OPTIONS.find((item) => item.value === draft.ticketType);
   return `发起工单 · ${matched ? matched.label : "填写内容"}`;
 });
-// 可退订单列表：切到退款类型时才拉一次（普通工单不该触发这个请求）。
+// 查询失败与空列表分开显示，不能把网络错误解释成「没有订单」。
 const refundOrderOptions = ref([]);
 const refundOrdersVisible = ref(false);
 const refundOrdersLoading = ref(false);
-let refundOrdersLoaded = false, refundOrdersVersion = 0;
+const refundOrdersError = ref('');
+const refundAvailableCents = ref(null), refundSummaryLoading = ref(false), refundSummaryError = ref('');
+let refundOrdersVersion = 0, refundSummaryVersion = 0;
+async function loadRefundSummary() {
+  if (!createVisible.value || !createNeedsRefundFields.value || refundSummaryLoading.value) return;
+  const createOwns = captureCreate(), version = ++refundSummaryVersion;
+  const owns = () => createOwns() && version === refundSummaryVersion;
+  refundSummaryLoading.value = true; refundSummaryError.value = '';
+  try {
+    const cents = (await getTicketRefundSummary())?.data?.refundableCents;
+    if (!owns()) return;
+    if (!Number.isSafeInteger(cents) || cents < 0) throw new Error('可退款金额数据无效');
+    refundAvailableCents.value = cents;
+  } catch (error) {
+    if (owns()) { refundAvailableCents.value = null; refundSummaryError.value = responseMessage(error, '可退款金额查询失败'); }
+  } finally { if (owns()) refundSummaryLoading.value = false; }
+}
+function openRefundOrders() {
+  if (!canCreateTickets() || !createVisible.value || createLoading.value || draft.refundMethod !== 'original') return;
+  if (!parseRefundYuanToCents(draft.requestedYuan)) {
+    const empty = !String(draft.requestedYuan || '').trim();
+    void Swal.fire({ icon: 'warning', title: empty ? '请先填写退款金额' : '退款金额格式不正确', text: empty ? '填写需要申请的退款金额后，再选择充值记录。' : '请输入大于 0 且最多两位小数的金额。', confirmButtonText: '知道了', returnFocus: false });
+    return;
+  }
+  refundOrdersVisible.value = true;
+  void loadRefundOrders();
+}
 async function loadRefundOrders() {
-  if (refundOrdersLoaded || refundOrdersLoading.value) return;
-  const pageOwns = capturePage(), version = ++refundOrdersVersion;
-  const owns = () => pageOwns() && version === refundOrdersVersion;
-  refundOrdersLoading.value = true;
+  if (refundOrdersLoading.value || !refundOrdersVisible.value) return;
+  const createOwns = captureCreate(), version = ++refundOrdersVersion;
+  const owns = () => createOwns() && version === refundOrdersVersion;
+  refundOrdersLoading.value = true; refundOrdersError.value = '';
   try {
     const response = await getEligibleTicketRefundOrders();
     if (!owns()) return;
-    const rows = Array.isArray(response?.data) ? response.data : [];
+    const rows = response?.data;
+    if (!Array.isArray(rows)) throw new Error('充值记录数据格式无效');
     refundOrderOptions.value = rows
       .filter((row) => row && Number.isSafeInteger(Number(row.id)))
       .map((row) => ({
@@ -1246,13 +1203,15 @@ async function loadRefundOrders() {
         //   paidAt    —— 新旧排序（用户要求「最旧那笔优先全额」）
         paidCents: Number(row.paidCents) || 0,
         paidAt: String(row.paidAt || ''),
+        createdAt: String(row.createdAt || ''),
+        statusLabel: ({ paid: '已支付', refunded: '已退款', closed: '已关闭', expired: '已过期', failed: '支付失败' })[row.status] || String(row.status || ''),
       }));
-    refundOrdersLoaded = true;
-  } catch {
+    // 刷新后资格可能变化；保留仍可退行的手动金额，移除已不可退的选择。
+    draft.refundAllocations = draft.refundAllocations.filter(item => refundOrderOptions.value.some(order => order.value === item.orderId && order.originalSupported));
+    recomputeRefundAllocations();
+  } catch (error) {
     if (!owns()) return;
-    // 拉取失败不阻断建单：用户仍可提交「无订单的人工退款」，
-    // 只是不能选原路退回。错误由消息提示，不把整个弹窗卡住。
-    refundOrderOptions.value = [];
+    refundOrdersError.value = responseMessage(error, '充值记录加载失败');
   } finally {
     if (owns()) refundOrdersLoading.value = false;
   }
@@ -1382,116 +1341,14 @@ function canUseTickets() {
     && String(currentUser.value?.status || "enabled") === "enabled";
 }
 function canManage() { return canUseTickets() && isAdmin.value; }
-// 每个草稿独立的签名、验证与请求归属；收款码图片仅在当前账号的本机缓存。
-const payoutQrBusy = ref(false), payoutQrPreviewUrl = ref(''), payoutQrBlurredUrl = ref('')
-const payoutQrDataUrl = ref(''), payoutQrNeedsUpload = ref(false)
-const payoutQrRecoverVisible = ref(false), payoutQrPassword = ref('')
-let payoutQrVersion = 0
-const payoutQrMemoryKey = () => {
-  const id = Number(currentUser.value?.id)
-  return Number.isSafeInteger(id) && id > 0 ? `tiku.refund.payoutQr.${id}` : ''
-}
-function revokePayoutQrPreview() { payoutQrPreviewUrl.value = '' }
-function revokePayoutQrBlurred() { payoutQrBlurredUrl.value = '' }
-function readImageDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = () => resolve(String(reader.result || ''))
-    reader.onerror = () => reject(new Error('无法读取收款码图片'))
-    reader.readAsDataURL(file)
-  })
-}
-function cachePayoutQr(id, dataUrl) {
-  const key = payoutQrMemoryKey()
-  if (key) { try { window.localStorage.setItem(key, JSON.stringify({ id, dataUrl })) } catch { /* 当前会话仍可使用 */ } }
-}
-function setPayoutQr(id, dataUrl, needsUpload) {
-  draft.refundPayoutQrAttachmentId = id
-  payoutQrDataUrl.value = payoutQrPreviewUrl.value = dataUrl
-  payoutQrNeedsUpload.value = needsUpload
-  revokePayoutQrBlurred()
-}
-function restorePayoutQr() {
-  const version = ++payoutQrVersion
-  payoutQrBusy.value = false
-  draft.refundPayoutQrAttachmentId = null
-  revokePayoutQrPreview(); revokePayoutQrBlurred()
-  payoutQrDataUrl.value = ''; payoutQrNeedsUpload.value = false
-  try {
-    const saved = JSON.parse(window.localStorage.getItem(payoutQrMemoryKey()) || 'null')
-    if (Number.isSafeInteger(saved?.id) && saved.id > 0 && /^data:image\/(png|jpeg);base64,/.test(saved.dataUrl)) {
-      setPayoutQr(saved.id, saved.dataUrl, true)
-      return
-    }
-  } catch { /* 旧版本只有附件 ID，需密码恢复 */ }
-  const owns = captureCreate()
-  previewTicketRefundPayoutQr().then(response => {
-    if (!owns() || version !== payoutQrVersion || draft.refundPayoutQrAttachmentId) return
-    const url = response?.data?.previewDataUrl
-    if (/^data:image\/png;base64,/.test(url || '')) payoutQrBlurredUrl.value = url
-  }).catch(() => { /* 占位图不影响申请 */ })
-}
-function clearPayoutQr() {
-  ++payoutQrVersion
-  setPayoutQr(null, '', false)
-  resetAgreement()
-  const key = payoutQrMemoryKey()
-  if (key) { try { window.localStorage.removeItem(key) } catch { /* 当前草稿仍清除 */ } }
-}
-async function onPickPayoutQr(event) {
-  const input = event?.target, file = input?.files?.[0]
-  if (input) input.value = ''
-  if (!file || payoutQrBusy.value || createLoading.value || !createVisible.value) return
-  const invalid = validateTicketAttachmentFile(file)
-  if (invalid) { message.warning(`收款码：${invalid}`); return }
-  const owns = captureCreate(), version = ++payoutQrVersion
-  payoutQrBusy.value = true
-  try {
-    let dataUrl = await readImageDataUrl(file)
-    if (!owns() || version !== payoutQrVersion) return
-    const response = await uploadTicketAttachment(file, undefined)
-    if (!owns() || version !== payoutQrVersion) return
-    const id = Number(response?.data?.data?.id)
-    if (!Number.isSafeInteger(id) || id <= 0) throw new Error('收款码上传返回格式异常')
-    const mediaType = String(response?.data?.data?.mediaType || (/\.png$/i.test(file.name) ? 'image/png' : 'image/jpeg'))
-    if (!/^image\/(png|jpeg)$/.test(mediaType)) throw new Error('收款码图片格式无效')
-    dataUrl = dataUrl.replace(/^data:[^;]*;base64,/, `data:${mediaType};base64,`)
-    setPayoutQr(id, dataUrl, false); cachePayoutQr(id, dataUrl); resetAgreement()
-    message.success('收款码已上传，本机会记住这张图片')
-  } catch (error) { if (owns() && version === payoutQrVersion) message.error(responseMessage(error, '收款码上传失败')) }
-  finally { if (owns() && version === payoutQrVersion) payoutQrBusy.value = false }
-}
-const canRecoverPayoutQr = computed(() => !draft.refundPayoutQrAttachmentId && !payoutQrBusy.value)
-function openPayoutQrRecover() { if (canRecoverPayoutQr.value) { payoutQrPassword.value = ''; payoutQrRecoverVisible.value = true } }
-function closePayoutQrRecover() { payoutQrRecoverVisible.value = false; payoutQrPassword.value = ''; ++payoutQrVersion; payoutQrBusy.value = false }
-async function recoverPayoutQr() {
-  if (!payoutQrRecoverVisible.value || payoutQrBusy.value || !payoutQrPassword.value) return
-  const owns = captureCreate(), version = ++payoutQrVersion, password = payoutQrPassword.value
-  payoutQrPassword.value = ''; payoutQrBusy.value = true
-  try {
-    const response = await recoverTicketRefundPayoutQr(password)
-    if (!owns() || version !== payoutQrVersion) return
-    const id = Number(response?.data?.attachmentId), dataUrl = String(response?.data?.imageDataUrl || '')
-    if (!Number.isSafeInteger(id) || id <= 0) { message.info('没有可恢复的收款码，请重新上传'); return }
-    if (!/^data:image\/(png|jpeg);base64,/.test(dataUrl)) throw new Error('收款码恢复失败')
-    setPayoutQr(id, dataUrl, true); cachePayoutQr(id, dataUrl)
-    payoutQrRecoverVisible.value = false
-    message.success('已恢复上次的收款码')
-  } catch (error) { if (owns() && version === payoutQrVersion) message.error(responseMessage(error, '恢复收款码失败')) }
-  finally { if (owns() && version === payoutQrVersion) payoutQrBusy.value = false }
-}
-// 历史附件受密码保护；本机缓存可直接预览，提交时上传为本次草稿附件。
+function canCreateTickets() { return canUseTickets() && !isAdmin.value; }
+// 收款码组件按草稿生命周期隔离；设备私钥只在服务端记忆注册成功后保存。
+const payoutQrComponent = ref(null), payoutQrBusy = ref(false)
 async function ensurePayoutQrDraft(owns) {
-  if (!payoutQrNeedsUpload.value) return
-  const parts = /^data:(image\/(?:png|jpeg));base64,(.+)$/.exec(payoutQrDataUrl.value)
-  if (!parts) throw new Error('请重新上传收款码')
-  const bytes = Uint8Array.from(atob(parts[2]), ch => ch.charCodeAt(0))
-  const response = await uploadTicketAttachment(new File([bytes], 'refund-payout-qr', { type: parts[1] }), undefined)
-  if (!owns()) return
-  const id = Number(response?.data?.data?.id)
-  if (!Number.isSafeInteger(id) || id <= 0) throw new Error('收款码上传失败')
-  draft.refundPayoutQrAttachmentId = id; payoutQrNeedsUpload.value = false
-  cachePayoutQr(id, payoutQrDataUrl.value)
+  const component = payoutQrComponent.value
+  if (!component) throw new Error('请上传或解锁收款码')
+  const id = await component.ensureDraft()
+  if (owns() && id) draft.refundPayoutQrAttachmentId = id
 }
 
 const REFUND_METHOD_ORIGINAL = 'original', REFUND_METHOD_MANUAL = 'manual'
@@ -1525,8 +1382,8 @@ function setRefundAllocationCents(orderId, yuan) {
 function selectRefundMethod(method) {
   if (createLoading.value || draft.refundMethod === method) return
   draft.refundMethod = method; resetAgreement(); retireCreateValidation()
-  if (method === REFUND_METHOD_ORIGINAL) { refundOrdersVisible.value = true; void loadRefundOrders() }
-  if (method === REFUND_METHOD_MANUAL) { restorePayoutQr(); void loadRefundPhoneStatus() }
+  refundOrdersVisible.value = false;
+  if (method === REFUND_METHOD_MANUAL) { void loadRefundPhoneStatus() }
 }
 const refundPhoneStatus = reactive({ required: false, phoneMasked: '', loaded: false })
 const refundSmsBusy = ref(false), refundSmsCooldown = ref(0)
@@ -1581,16 +1438,16 @@ function resetRefundDraft() {
   resetAgreement(); agreementLoading.value = false; refundOrdersVisible.value = false
   draft.refundMethod = ''; draft.refundAllocations = []; draft.refundOrderIds = []; draft.refundPhoneSmsCode = ''
   Object.assign(refundPhoneStatus, { required: false, phoneMasked: '', loaded: false })
-  closePayoutQrRecover(); refundSmsBusy.value = false; refundSmsCooldown.value = 0
+  refundSmsBusy.value = false; refundSmsCooldown.value = 0
   clearInterval(refundSmsTimer); refundSmsTimer = null
+  refundSummaryVersion += 1; refundAvailableCents.value = null; refundSummaryLoading.value = false; refundSummaryError.value = '';
+  refundOrdersVersion += 1; refundOrdersLoading.value = false; refundOrdersError.value = '';
 }
 function clearOwned() {
   resetRefundDraft();
   draft.refundPayoutQrAttachmentId = null;
-  payoutQrDataUrl.value = '';
-  revokePayoutQrPreview(); revokePayoutQrBlurred();
-  payoutQrVersion += 1; payoutQrBusy.value = false;
-  refundOrdersLoaded = false; refundOrdersVersion += 1; refundOrderOptions.value = []; refundOrdersLoading.value = false;
+  payoutQrBusy.value = false;
+  refundOrdersVersion += 1; refundOrderOptions.value = []; refundOrdersLoading.value = false;
   retireDetailFocus();
   retireCreateValidation();
   retireActionFailures();
@@ -1619,7 +1476,7 @@ function capturePage(admin = false) {
 }
 function captureCreate() {
   const owns = capturePage(), version = createVersion;
-  return () => owns() && version === createVersion && createVisible.value;
+  return () => owns() && version === createVersion && createVisible.value && canCreateTickets();
 }
 function captureDetail() {
   const owns = capturePage(), version = detailRequestVersion;
@@ -1713,16 +1570,16 @@ watch([() => detailTicket.value?.id, () => notification.value?.id, () => notific
 // Compare raw inputs only, without serializing reply text or affecting issued-write busy state.
 watch([replyBody, () => detailTicket.value?.id, () => isAdmin.value && statusWasChosen.value ? detailStatus.value : undefined], retireReplyDraft, { flush: "sync" });
 watch([() => draft.subject, () => draft.body, () => draft.requestedYuan, () => draft.reason, () => draft.issueType], retireStaleCreateValidation, { flush: "sync" });
-// 切到退款类型时才拉可退订单（普通工单不触发这个请求）。
-watch(createNeedsRefundFields, needs => { if (needs) void loadRefundOrders(); }, { flush: "sync" });
+watch(createNeedsRefundFields, needs => { if (needs) void loadRefundSummary(); }, { flush: "sync" });
 watch(createVisible, next => { if (!next) { resetRefundDraft(); payoutQrBusy.value = false; retireCreateValidation(); createVersion += 1; createLoading.value = false; createSaved.value = false; draft.ticketType = TICKET_CREATE_TYPE_GENERAL; draft.subject = ""; draft.body = ""; draft.requestedYuan = ""; draft.reason = ""; draft.refundOrderId = undefined; draft.issueType = ""; createStep.value = ticketWizardInitialStep(); } }, { flush: "sync" });
+watch(isAdmin, () => { createVisible.value = false; clearOwned(); reloadOwned(); }, { flush: "sync" });
 // Focus leases also retire for same-id non-admin role ABA and unexpected routes.
 watch(() => String(currentUser.value?.role ?? ""), retireDetailFocus, { flush: "sync" });
 watch(() => route.fullPath, path => {
   if (path !== "/tickets" && path !== detailFocusEntry?.path) retireDetailFocus();
 }, { flush: "sync" });
 watch(() => currentUser.value?.status, () => { clearOwned(); reloadOwned(); }, { flush: "sync" });
-onBeforeUnmount(() => { active = false; resetRefundDraft(); payoutQrVersion += 1; retireReplyDraft(); });
+onBeforeUnmount(() => { active = false; resetRefundDraft(); retireReplyDraft(); });
 onBeforeUnmount(retireActionFailures);
 onBeforeUnmount(retireCreateValidation);
 const detailTitle = computed(() => detailTicket.value?.subject || "工单详情");
@@ -1750,7 +1607,9 @@ async function loadTickets() {
   actionFailures.pageRead.clear();
   listLoading.value = true; errorMessage.value = "";
   try {
-    const result = normalizeTicketListResponse(await getTickets(buildTicketListParams(filters, pagination.current, pagination.pageSize)));
+    const params = buildTicketListParams(filters, pagination.current, pagination.pageSize);
+    if (routeViewMode.value === 'self' && isAdminRoleUser.value) params.scope = 'self';
+    const result = normalizeTicketListResponse(await getTickets(params));
     if (!owns() || version !== listRequestVersion) return;
     tickets.value = result.items; pagination.total = result.total;
   } catch (error) {
@@ -1820,11 +1679,11 @@ function handleMobilePageChange(page) {
 // ⚠️ 不要在这里预设类型（例如落到 general）：用户点的是「发起工单」，
 // 替他预先选中某一个模板等于替他做了决定，而他要的正是「先选类型」。
 function openCreate() {
-  if (!canUseTickets()) return;
+  if (!canCreateTickets()) return;
   retireCreateValidation();
   actionFailures.create.clear(); createFailureDraft = {};
   createVersion += 1; createLoading.value = false; createSaved.value = false;
-  refundOrdersLoaded = false; refundOrdersVersion += 1; refundOrdersLoading.value = false;
+  refundOrdersVersion += 1; refundOrdersLoading.value = false;
   refundOrderOptions.value = [];
   draft.ticketType = "";
   draft.subject = "";
@@ -1836,13 +1695,12 @@ function openCreate() {
   // 不清的话用户下一次发起退款会被当成已签 —— 而那一签是上一张单的。
   draft.refundAgreementSigned = false;
   draft.refundSignatureAttachmentId = 0;
-  // 收款码**不在这里清空**：它带记忆（见 payoutQrMemoryKey），
+  // 收款码记忆由后端和本机设备密钥恢复。
   // 用户下次发起退款会自动带出上次那张，避免每次重传。
-  // 真正的清除入口是弹窗里的「移除」按钮。
+  // 真正的清除入口是图片左上角的删除按钮。
   draft.issueType = "";
   createStep.value = ticketWizardInitialStep();
-  // 带出上次上传的收款码（本机直接加载；换设备时由用户点「恢复」输入密码取回）。
-  // 放在重置之后、显示之前：先清干净再回填，避免上一次的残留状态被看见。
+  // 选择人工退款时，收款码组件查询后端并尝试本机设备验证。
   resetRefundDraft();
   createVisible.value = true;
 }
@@ -1887,7 +1745,7 @@ function closeCreate() {
   createVisible.value = false;
 }
 async function submitTicket() {
-  if (!canUseTickets() || !createVisible.value || createLoading.value || payoutQrBusy.value || agreementLoading.value || uploadBusy.value) return;
+  if (!canCreateTickets() || !createVisible.value || createLoading.value || payoutQrBusy.value || agreementLoading.value || uploadBusy.value) return;
   // 只在「填模板」这一步允许提交。
   //
   // ⚠️ 这就是 T4 的钉子：如果这里不判步骤，注销类型会在引导页就被提交
@@ -2467,17 +2325,12 @@ watch(
 .unbound-attachments {
   margin: 0 0 20px;
 }
-.ticket-attachment-input {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  color: var(--console-muted);
-  font-size: 13px;
-}
-.ticket-attachment-input input[type="file"] {
-  max-width: 100%;
-}
+.ticket-refund-available { margin-top: 6px; font-size: 13px; color: var(--console-muted); }
+.ticket-refund-available strong { color: var(--primary); font-variant-numeric: tabular-nums; }
+.ticket-refund-retry { padding: 0; border: 0; background: transparent; color: var(--primary); cursor: pointer; font: inherit; text-decoration: underline; }
+.ticket-refund-order--disabled { background: var(--console-subtle, #f5f5f5); border-color: var(--console-border); color: var(--console-muted); }
+.ticket-refund-order--disabled .ticket-refund-order__label { color: var(--console-muted); }
+.ticket-refund-order__meta { color: var(--console-muted); font-size: 12px; }
 .ticket-attachment-selected {
   display: flex;
   flex-wrap: wrap;

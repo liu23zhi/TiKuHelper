@@ -1031,6 +1031,26 @@ export function updateAISearchConfig(data) {
 
 const ticketRefundBase = '/api/ticket-refunds'
 
+export function getRefundPayoutQrStatus() {
+  return ticketRefundRequest({ url: ticketRefundBase + '/payout-qr/status', method: 'get' }).then(requireTicketResponse)
+}
+
+export function registerRefundPayoutQr(data) {
+  return ticketRefundRequest({ url: ticketRefundBase + '/payout-qr/register', method: 'post', data }).then(requireTicketResponse)
+}
+
+export function challengeRefundPayoutQr() {
+  return ticketRefundRequest({ url: ticketRefundBase + '/payout-qr/challenge', method: 'post', data: {} }).then(requireTicketResponse)
+}
+
+export function unlockRefundPayoutQrDevice(data) {
+  return ticketRefundRequest({ url: ticketRefundBase + '/payout-qr/device-unlock', method: 'post', data }).then(requireTicketResponse)
+}
+
+export function deleteRefundPayoutQr() {
+  return ticketRefundRequest({ url: ticketRefundBase + '/payout-qr', method: 'delete' }).then(requireTicketResponse)
+}
+
 function ticketRefundRequest(config) {
   return request({ errorFeedback: 'local', retryPolicy: 'single', ...config })
 }
@@ -1041,6 +1061,10 @@ function ticketRefundItem(id, action) {
 
 export function getEligibleTicketRefundOrders(signal) {
   return ticketRefundRequest({ url: ticketRefundBase + '/eligible-orders', method: 'get', signal }).then(requireTicketResponse)
+}
+
+export function getTicketRefundSummary() {
+  return ticketRefundRequest({ url: ticketRefundBase + '/summary', method: 'get' }).then(requireTicketResponse)
 }
 
 export function listTicketRefunds(signal) {
