@@ -103,8 +103,11 @@ func TestTicketRefundEligibilityAndFreshOwnerAdminIsolation(t *testing.T) {
 	for _, item := range eligible {
 		byID[item.ID] = item
 	}
-	if len(byID) != 2 {
-		t.Fatalf("应只含 valid 与 legacy 两笔，实际 %+v", eligible)
+	// 2026-11-19 行为变更（用户要求：「充值订单可退款金额向下取整到两位小数」）：
+	// 精度超过两位小数的订单不再被判为「不可退」，而是按分向下取整后列出。
+	// 旧预期把它归入 absent，对应的正是「金额 20.001 的订单凭空消失」的老行为。
+	if len(byID) != 3 {
+		t.Fatalf("应含 valid / legacy / badPrecision 三笔，实际 %+v", eligible)
 	}
 	if got, ok := byID[valid.ID]; !ok || !got.OriginalSupported || got.PaidCents != 5000 {
 		t.Fatalf("valid 必须在列且标记支持原路退回，实际 %+v", got)
@@ -112,7 +115,14 @@ func TestTicketRefundEligibilityAndFreshOwnerAdminIsolation(t *testing.T) {
 	if got, ok := byID[legacy.ID]; !ok || got.OriginalSupported {
 		t.Fatalf("legacy（缺渠道）必须在列且标记为只能人工退款，实际 %+v", got)
 	}
-	for _, absent := range []entity.RechargeOrder{old, pending, future, foreign, badPrecision} {
+	if got, ok := byID[badPrecision.ID]; !ok {
+		t.Fatalf("精度超标的订单必须列出（向下取整到分），实际 %+v", eligible)
+	} else if got.PaidCents != 2000 {
+		// 20.001 元 → floor(20.001×100) = 2000 分。断言具体分值而不只是「出现」，
+		// 否则四舍五入（2000）与向上取整（2001）都能蒙混过关。
+		t.Fatalf("20.001 元必须向下取整为 2000 分，实际 %d", got.PaidCents)
+	}
+	for _, absent := range []entity.RechargeOrder{old, pending, future, foreign} {
 		if _, ok := byID[absent.ID]; ok {
 			t.Fatalf("order %d 不应出现在可退列表（%s）", absent.ID, absent.OrderNo)
 		}
@@ -131,7 +141,7 @@ func TestTicketRefundEligibilityAndFreshOwnerAdminIsolation(t *testing.T) {
 			t.Fatalf("渠道未配置时不能标记为支持原路退回，实际 %+v", item)
 		}
 	}
-	for _, order := range []entity.RechargeOrder{old, legacy, pending, future, foreign, badPrecision} {
+	for _, order := range []entity.RechargeOrder{old, legacy, pending, future, foreign} {
 		if _, err := CreateTicketRefundWithDB(db, owner, CreateTicketRefundInput{
 			Kind: TicketRefundKindOriginal, OrderID: &order.ID, RequestedCents: 100,
 		}, testVerifyTicketRefundChannel); !errors.Is(err, ErrTicketRefundOrderUnavailable) {

@@ -243,7 +243,16 @@ func CreateTicketRefundWithDB(db *gorm.DB, actor entity.User, input CreateTicket
 			// 与审批冻结时用的是同一个函数，避免两处口径漂移。
 			amountCap := paid
 			if breakdown, principalErr := RefundablePrincipalWithDB(tx, actor.ID, paid*ticketRefundMicrosPerCent); principalErr == nil {
-				if principalCents := breakdown.RefundableMicros / ticketRefundMicrosPerCent; principalCents < amountCap {
+				// 可退本金**向上取整到分**（2026-11-19 用户要求）。
+				//
+				// 与订单金额的 floor 方向相反是刻意的：本金是用户自己的钱，
+				// 差 1 分不到就少退一分属于「平台占用户便宜」；而订单金额向下取
+				// 是「不超额退款」。两个方向各自对自己的风险负责。
+				principalCents := breakdown.RefundableMicros / ticketRefundMicrosPerCent
+				if breakdown.RefundableMicros%ticketRefundMicrosPerCent != 0 {
+					principalCents++
+				}
+				if principalCents < amountCap {
 					amountCap = principalCents
 				}
 			}
@@ -785,8 +794,21 @@ func ticketRefundPaidOrderCents(order entity.RechargeOrder) (int64, error) {
 		v <= 0 || v > float64(ticketRefundMaxCents)/100 {
 		return 0, ErrTicketRefundOrderUnavailable
 	}
-	cents := int64(math.Round(v * 100))
-	if !validTicketRefundCents(cents) || v != float64(cents)/100 {
+	// 超过两位小数的订单金额**向下取整到分**（2026-11-19 用户要求）。
+	//
+	// 原实现用 math.Round（四舍五入）**并且**要求金额恰好等于「分」的整数倍
+	// （`v != float64(cents)/100` 即判不可用）。那等于把「18.005」这类
+	// decimal(18,6) 订单直接排除在退款之外 —— 用户看到的是「有订单但不可退」，
+	// 而真实原因是金额精度，没有任何提示。
+	//
+	// 现在是 floor：平台不会因为四舍五入多退给用户（这正是用户选「向下」的原因）。
+	//
+	// +1e-6 的用途是抵消浮点表示误差：0.29*100 = 28.999999999999996，
+	// 直接 floor 会得到 28（少一分）。schema 是 decimal(18,6)，真实值最多
+	// 6 位小数，乘 100 后最多 4 位小数，所以 1e-6 的量级既能修掉表示误差，
+	// 又不可能把一个真正的 .9999 推过整数边界。
+	cents := int64(math.Floor(v*100 + 1e-6))
+	if !validTicketRefundCents(cents) {
 		return 0, ErrTicketRefundOrderUnavailable
 	}
 	return cents, nil

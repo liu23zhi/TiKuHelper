@@ -429,6 +429,59 @@
               </span></template
             >
           </a-form-item>
+          <!--
+            收款码（2026-11-19 用户要求）：「即便可以原路退回也可以要求用户设置
+            退款账号」。人工打款时管理员据此扫码转账，所以它服务于人工退回那条路。
+
+            三个交互约束：
+              · 只能一张 —— 不做列表，只有一个附件 ID，重选即覆盖；
+              · 带记忆   —— ID 存 localStorage（按用户隔离），本机再打开直接加载；
+              · 换设备   —— 本地缓存没有时，需输入当前密码才能取回上次那张。
+                            替换不走密码：手上就有新图，没有验证的必要。
+          -->
+          <a-form-item label="收款码（人工退款用）">
+            <div class="ticket-payout-qr" data-ticket-payout-qr>
+              <img
+                v-if="payoutQrPreviewUrl"
+                :src="payoutQrPreviewUrl"
+                alt="已上传的收款码"
+                class="ticket-payout-qr__preview"
+                data-ticket-payout-qr-preview
+              />
+              <div class="ticket-payout-qr__actions">
+                <label class="ticket-attachment-input">
+                  <span>{{ draft.refundPayoutQrAttachmentId ? "替换收款码" : "选择收款码" }}</span>
+                  <input
+                    type="file"
+                    :accept="TICKET_ATTACHMENT_ACCEPT"
+                    :disabled="createLoading || payoutQrBusy"
+                    data-ticket-payout-qr-input
+                    @change="onPickPayoutQr"
+                  />
+                </label>
+                <a-button
+                  v-if="draft.refundPayoutQrAttachmentId"
+                  type="link"
+                  size="small"
+                  danger
+                  :disabled="createLoading || payoutQrBusy"
+                  @click="clearPayoutQr"
+                >移除</a-button>
+              </div>
+              <p class="ticket-payout-qr__hint" v-if="draft.refundPayoutQrAttachmentId">
+                已就绪：本次申请会带上这张收款码。
+              </p>
+              <p class="ticket-payout-qr__hint" v-else>
+                人工打款需要收款码；原路退回不需要，但带上也不影响。
+              </p>
+            </div>
+            <template #help
+              ><span>
+                只支持一张。同一台设备会记住上次上传的收款码，下次自动带出；
+                换设备时需输入当前密码才能取回。
+              </span></template
+            >
+          </a-form-item>
           <a-form-item label="退款金额（元）" required :validate-status="createValidationMessage('requestedYuan') ? 'error' : undefined"
             ><a-input
               :id="createFieldId('amount')"
@@ -788,6 +841,7 @@ import {
   updateTicket,
   uploadTicketAttachment,
   listTicketAttachments,
+  getTicketAttachment,
 } from "@/api/TicketApi";
 import {
   groupTicketAttachmentsByMessage,
@@ -1262,7 +1316,7 @@ async function loadPayoutQrPreview(attachmentId) {
   try {
     const response = await getTicketAttachment(id)
     const blob = response?.data
-    if (blob instanceof Blob && /^image\\/(png|jpeg)$/.test(blob.type)) {
+    if (blob instanceof Blob && /^image\/(png|jpeg)$/.test(blob.type)) {
       payoutQrPreviewUrl.value = URL.createObjectURL(blob)
     }
   } catch {
@@ -1451,6 +1505,9 @@ function openCreate() {
   // 真正的清除入口是弹窗里的「移除」按钮。
   draft.issueType = "";
   createStep.value = ticketWizardInitialStep();
+  // 带出上次上传的收款码（本机直接加载；换设备时由用户点「恢复」输入密码取回）。
+  // 放在重置之后、显示之前：先清干净再回填，避免上一次的残留状态被看见。
+  restorePayoutQr();
   createVisible.value = true;
 }
 // selectCreateType 是第一步的单选回调。
