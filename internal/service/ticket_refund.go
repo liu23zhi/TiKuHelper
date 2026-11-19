@@ -145,6 +145,8 @@ type CreateTicketRefundInput struct {
 	// 单笔调用方（含大量测试）用的是 OrderID，另一批用 OrderIDs。
 	// 一次性改结构会把两条老路径全部打断，而它们都还对。
 	Allocations []TicketRefundOrderAllocation `json:"allocations"`
+	// SignatureAttachmentID 是承诺书签名图（可选）。
+	SignatureAttachmentID *int64 `json:"signatureAttachmentId"`
 }
 
 func ListEligibleTicketRefundOrdersWithDB(db *gorm.DB, actor entity.User, verify TicketRefundOrderVerifier) ([]TicketRefundOrder, error) {
@@ -221,7 +223,8 @@ func CreateTicketRefundWithDB(db *gorm.DB, actor entity.User, input CreateTicket
 		UserID: actor.ID, Kind: input.Kind, Status: entity.TicketRefundStatusPendingReview,
 		RequestedCents: input.RequestedCents, Reason: strings.TrimSpace(input.Reason), RefundNo: "tr-" + uuid.NewString(),
 		CreatedAt: now, UpdatedAt: now,
-		PayoutQrAttachmentID: input.PayoutQrAttachmentID,
+		PayoutQrAttachmentID:  input.PayoutQrAttachmentID,
+		SignatureAttachmentID: input.SignatureAttachmentID,
 	}
 	err := db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
 		var order entity.RechargeOrder

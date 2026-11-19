@@ -172,6 +172,8 @@ type CreateTicketInput struct {
 	// 两者同时给时以 Allocations 为准（它携带更多信息）。
 	RefundOrderIDs         []int32                       `json:"refundOrderIds,omitempty"`
 	RefundOrderAllocations []TicketRefundOrderAllocation `json:"refundOrderAllocations,omitempty"`
+	// RefundSignatureAttachmentID 是承诺书签名图（2026-11-19）。
+	RefundSignatureAttachmentID *int64 `json:"refundSignatureAttachmentId,omitempty"`
 }
 
 // 用户可自选的工单类型（T-209 建立，本任务扩到四项）。

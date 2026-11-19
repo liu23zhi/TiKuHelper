@@ -188,20 +188,31 @@ func CreateTicketRefundShellInTx(tx *gorm.DB, refund entity.TicketRefund, now ti
 		return err
 	}
 
-	// 收款码绑定（2026-11-19）：把用户上传的草稿附件认领到这张壳工单的消息上，
-	// 这样管理员在工单详情里能直接看到收款码，不必再去退款详情单独拉一次。
+	// 收款码与签名图绑定（2026-11-19）：把用户上传的草稿附件认领到这张壳工单的
+	// 消息上，这样管理员在工单详情里能直接看到收款码与签署记录，不必再去退款
+	// 详情单独拉一次。
 	//
-	// 绑不上时**不让退款失败**：收款码是辅助信息，而退款是钱的动作。
+	// 两个附件**一次**绑定：BindDraftTicketAttachmentsInTx 是「全成或全不成」，
+	// 分两次调会在第二个失败时留下「有码无签名」的半截状态 —— 而签名是责任凭证，
+	// 半截状态比完全没有更难解释。
+	//
+	// 绑不上时**不让退款失败**：它们是辅助信息，而退款是钱的动作。
 	// 反过来说，绑定失败也不能静默 —— 附件 ID 已经持久化在退款行上，
 	// 管理员仍可通过 /api/ticket-attachments/:id/admin 取到它，所以这里是
 	// 「少一条便利路径」，不是「信息丢失」，记 warn 即可。
+	attachmentIDs := make([]int64, 0, 2)
 	if refund.PayoutQrAttachmentID != nil && *refund.PayoutQrAttachmentID > 0 {
+		attachmentIDs = append(attachmentIDs, *refund.PayoutQrAttachmentID)
+	}
+	if refund.SignatureAttachmentID != nil && *refund.SignatureAttachmentID > 0 {
+		attachmentIDs = append(attachmentIDs, *refund.SignatureAttachmentID)
+	}
+	if len(attachmentIDs) > 0 {
 		var owner entity.User
 		if err := tx.Session(&gorm.Session{NewDB: true}).Where("id = ?", refund.UserID).Take(&owner).Error; err == nil {
-			if bindErr := BindDraftTicketAttachmentsInTx(tx, &owner, shell.ID, message.ID,
-				[]int64{*refund.PayoutQrAttachmentID}); bindErr != nil {
-				logger.SysWarn("ticket_refund_payout_qr_bind_failed refund=" + strconv.FormatInt(refund.ID, 10) +
-					" attachment=" + strconv.FormatInt(*refund.PayoutQrAttachmentID, 10) + " error=" + bindErr.Error())
+			if bindErr := BindDraftTicketAttachmentsInTx(tx, &owner, shell.ID, message.ID, attachmentIDs); bindErr != nil {
+				logger.SysWarn("ticket_refund_attachment_bind_failed refund=" + strconv.FormatInt(refund.ID, 10) +
+					" error=" + bindErr.Error())
 			}
 		}
 	}
@@ -406,10 +417,11 @@ func createRefundTicketWithVerifier(db *gorm.DB, user *entity.User, input Create
 			}
 		}
 		rows, err := CreateTicketRefundsForOrdersWithDB(db, *user, CreateTicketRefundInput{
-			Kind:                 kind,
-			Allocations:          targets,
-			Reason:               reason,
-			PayoutQrAttachmentID: input.RefundPayoutQrAttachmentID,
+			Kind:                  kind,
+			Allocations:           targets,
+			Reason:                reason,
+			PayoutQrAttachmentID:  input.RefundPayoutQrAttachmentID,
+			SignatureAttachmentID: input.RefundSignatureAttachmentID,
 		}, verify)
 		if err != nil {
 			return TicketDetail{}, err
@@ -427,7 +439,8 @@ func createRefundTicketWithVerifier(db *gorm.DB, user *entity.User, input Create
 		RequestedCents: input.RefundRequestedCents,
 		Reason:         reason,
 		// 收款码随申请一起落库（可选）：人工打款时管理员据此扫码转账。
-		PayoutQrAttachmentID: input.RefundPayoutQrAttachmentID,
+		PayoutQrAttachmentID:  input.RefundPayoutQrAttachmentID,
+		SignatureAttachmentID: input.RefundSignatureAttachmentID,
 	}, verify)
 	if err != nil {
 		return TicketDetail{}, err

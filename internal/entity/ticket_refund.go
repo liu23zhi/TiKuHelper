@@ -62,15 +62,21 @@ type TicketRefund struct {
 	// 在这里重存一份等于把那些约束全部绕开。
 	// 权限提示：草稿附件（ticket_id=0）只能由上传者认领，认领完成后
 	// 管理员通过 /api/ticket-attachments/:id/admin 读取。
-	PayoutQrAttachmentID *int64     `gorm:"column:payout_qr_attachment_id" json:"payoutQrAttachmentId,omitempty"`
-	ReviewedBy           int32      `gorm:"column:reviewed_by;not null;default:0" json:"-"`
-	ReviewedAt           *time.Time `gorm:"column:reviewed_at" json:"reviewedAt,omitempty"`
-	StartedAt            *time.Time `gorm:"column:started_at" json:"startedAt,omitempty"`
-	ResolvedBy           int32      `gorm:"column:resolved_by;not null;default:0" json:"-"`
-	ResolvedAt           *time.Time `gorm:"column:resolved_at" json:"resolvedAt,omitempty"`
-	OutcomeReference     string     `gorm:"column:outcome_reference;type:varchar(128)" json:"-"`
-	CreatedAt            time.Time  `json:"createdAt"`
-	UpdatedAt            time.Time  `json:"updatedAt"`
+	PayoutQrAttachmentID *int64 `gorm:"column:payout_qr_attachment_id" json:"payoutQrAttachmentId,omitempty"`
+	// SignatureAttachmentID 是用户签署承诺书的手写签名图片。
+	//
+	// 2026-11-19 用户要求：每次申请都要重新签署，不带记忆。
+	// 「不带记忆」就落在这里 —— 它是每张退款单各自的字段，
+	// 而不是用户级的「上次签名」（后者会让用户以为上次签过就算数）。
+	SignatureAttachmentID *int64     `gorm:"column:signature_attachment_id" json:"signatureAttachmentId,omitempty"`
+	ReviewedBy            int32      `gorm:"column:reviewed_by;not null;default:0" json:"-"`
+	ReviewedAt            *time.Time `gorm:"column:reviewed_at" json:"reviewedAt,omitempty"`
+	StartedAt             *time.Time `gorm:"column:started_at" json:"startedAt,omitempty"`
+	ResolvedBy            int32      `gorm:"column:resolved_by;not null;default:0" json:"-"`
+	ResolvedAt            *time.Time `gorm:"column:resolved_at" json:"resolvedAt,omitempty"`
+	OutcomeReference      string     `gorm:"column:outcome_reference;type:varchar(128)" json:"-"`
+	CreatedAt             time.Time  `json:"createdAt"`
+	UpdatedAt             time.Time  `json:"updatedAt"`
 }
 
 func (*TicketRefund) TableName() string { return "ticket_refunds" }

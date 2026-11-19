@@ -413,6 +413,10 @@ func SetAPIRouter(router *gin.Engine) {
 	// 运营改状态（2026-11-19）：仅管理员。它能让一笔 pending 变 paid，
 	// 等价于「确认钱已收到」并使其可被退款，因此必须挂在 RequireAdmin 之后。
 	apiRouter.PATCH("/recharge-orders/:id/status", controller.Auth, middleware.RequireAdmin, controller.UpdateRechargeOrderStatus)
+	// 退款承诺书（2026-11-19）：读对所有登录用户开放（签署前必须能看到全文），
+	// 写仅管理员 —— 条款是平台对外的责任声明，不能让普通用户改。
+	apiRouter.GET("/refund-agreement", controller.Auth, controller.GetRefundAgreement)
+	apiRouter.PUT("/refund-agreement", controller.Auth, middleware.RequireAdmin, controller.UpdateRefundAgreement)
 	apiRouter.Any("/payment/notify", controller.RechargePaymentNotify)
 	// 邀请码与充值返佣。本人只能看自己的汇总（handler 内固定用当前账户），
 	// 返佣列表与结算一律管理员（Auth + RequireAdmin）。
