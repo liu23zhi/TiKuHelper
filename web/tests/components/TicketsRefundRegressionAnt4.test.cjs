@@ -43,7 +43,7 @@ axios.defaults.adapter = async config => {
   if (url === '/api/tickets' && method === 'get') return response(config, { items: [], total: 0 })
   if (url === '/api/tickets' && method === 'post') return response(config, { id: 901 }, 201)
   if (url === '/api/ticket-refunds/eligible-orders') return response(config, orders)
-  if (url === '/api/ticket-refunds/summary' && method === 'get') return response(config, { refundableCents: 2301 })
+  if (url === '/api/ticket-refunds/summary' && method === 'get') return response(config, { balanceCents: 2599, refundableCents: 2301, nonRefundableCents: 298, nonRefundableReason: '赠送金额及已消费赠金不可退款' })
   if (url === '/api/ticket-refunds/phone-verification' && method === 'get') {
     const snapshot = { ...phoneStatus }
     if (holdPhone) return new Promise(resolve => { phoneResolve = () => resolve(response(config, snapshot)) })

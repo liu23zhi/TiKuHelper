@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -49,8 +50,14 @@ func TestTicketRefundSummaryHTTPUsesCurrentAuthenticatedWallet(t *testing.T) {
 		return out
 	}
 	out := send("/api/ticket-refunds/summary?userId=" + strconv.FormatInt(int64(other.ID), 10) + "&balance=9999")
-	if out.Code != 200 || out.Body.String() != `{"refundableCents":1001}` {
-		t.Fatalf("summary status=%d body=%s", out.Code, out.Body)
+	var summary struct {
+		BalanceCents        int64  `json:"balanceCents"`
+		RefundableCents     int64  `json:"refundableCents"`
+		NonRefundableCents  int64  `json:"nonRefundableCents"`
+		NonRefundableReason string `json:"nonRefundableReason"`
+	}
+	if err := json.Unmarshal(out.Body.Bytes(), &summary); err != nil || out.Code != 200 || summary.BalanceCents != 102501 || summary.RefundableCents != 1001 || summary.NonRefundableCents != 101500 || !strings.Contains(summary.NonRefundableReason, "赠送余额 1000 元不可退款") || !strings.Contains(summary.NonRefundableReason, "赠金已消费 15 元，实际抵减可退本金 15 元") {
+		t.Fatalf("summary status=%d body=%s err=%v", out.Code, out.Body, err)
 	}
 	if out.Header().Get("Cache-Control") != "no-store" {
 		t.Fatal("wallet summary may be cached")
@@ -59,8 +66,8 @@ func TestTicketRefundSummaryHTTPUsesCurrentAuthenticatedWallet(t *testing.T) {
 		t.Fatal(err)
 	}
 	out = send("/api/ticket-refunds/summary")
-	if out.Code != 200 || out.Body.String() != `{"refundableCents":0}` {
-		t.Fatalf("debt summary: %d %s", out.Code, out.Body)
+	if err := json.Unmarshal(out.Body.Bytes(), &summary); err != nil || out.Code != 200 || summary.BalanceCents != 99900 || summary.RefundableCents != 0 || summary.NonRefundableCents != 99900 || !strings.Contains(summary.NonRefundableReason, "当前没有可退款的充值本金") {
+		t.Fatalf("debt summary: %d %s err=%v", out.Code, out.Body, err)
 	}
 	if err := db.Model(&owner).Update("status", "disabled").Error; err != nil {
 		t.Fatal(err)

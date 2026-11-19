@@ -42,6 +42,7 @@ const calls = [], pages = [], unexpected = [], runtime = []
 let nextAttachment = 400, phoneStatus = { required: false, phoneMasked: '' }
 let smsStatus = 200
 let summaryStatus = 200
+const summary = { balanceCents: 2599, refundableCents: 2301, nonRefundableCents: 298, nonRefundableReason: '赠送金额及已消费赠金不可退款' }
 let holdPhone = false, phoneResolve = null
 let payoutQr = null, payoutChallenge = null, nextPayoutKey = 0, verifiedDeviceUnlocks = 0
 
@@ -55,7 +56,7 @@ axios.defaults.adapter = async config => {
   if (url === '/api/tickets' && method === 'get') return response(config, { items: [], total: 0 })
   if (url === '/api/tickets' && method === 'post') return response(config, { id: 901 }, 201)
   if (url === '/api/ticket-refunds/eligible-orders') return response(config, orders)
-  if (url === '/api/ticket-refunds/summary' && method === 'get') return response(config, summaryStatus === 200 ? { refundableCents: 2301 } : { message: 'SYNTHETIC_SUMMARY_UNAVAILABLE' }, summaryStatus)
+  if (url === '/api/ticket-refunds/summary' && method === 'get') return response(config, summaryStatus === 200 ? summary : { message: 'SYNTHETIC_SUMMARY_UNAVAILABLE' }, summaryStatus)
   if (url === '/api/ticket-refunds/phone-verification' && method === 'get') {
     const snapshot = { ...phoneStatus }
     if (holdPhone) return new Promise(resolve => { phoneResolve = () => resolve(response(config, snapshot)) })
@@ -188,7 +189,11 @@ after(() => { axios.defaults.adapter = priorAdapter; URL.createObjectURL = prior
 
 test('退款金额与方式顺序、7.5+2.5分配、手改腾出第三笔，以及提交的真实payload', async () => {
   await openPage(); await openRefund()
-  assert.match(compact(form().querySelector('[data-ticket-refund-available]').textContent), /当前可退款金额：23\.01元/)
+  assert.match(compact(form().querySelector('[data-ticket-refund-available]').textContent), /账户余额25\.99元/)
+  assert.match(compact(form().querySelector('[data-ticket-refund-available]').textContent), /可退款23\.01元/)
+  assert.match(compact(form().querySelector('[data-ticket-refund-available]').textContent), /不可退款2\.98元/)
+  assert.match(form().querySelector('[data-ticket-refund-available]').textContent, /赠送金额及已消费赠金不可退款/)
+  assert.equal(form().querySelector('input').value, '23.01', 'the maximum refundable amount is prefilled')
   const labels = [...form().querySelectorAll('.ant-form-item-label')].map(node => compact(node.textContent).replace(/^\*/, ''))
   assert.equal(labels[0], '退款金额（元）')
   assert.equal(labels[1], '退回方式')
@@ -219,6 +224,7 @@ test('退款金额与方式顺序、7.5+2.5分配、手改腾出第三笔，以�
 
 test('空金额显示真实提示弹窗，填写金额后明确打开全部充值记录并显示灰行原因', async () => {
   await openPage(); await openRefund()
+  await type(form().querySelector('input'), '')
   await click(form().querySelector('[data-ticket-refund-method="original"]'))
   assert.equal(calls.filter(call => call.url.endsWith('/eligible-orders')).length, 0, 'method selection makes no records request')
   assert.equal([...document.querySelectorAll('[data-ticket-refund-orders-confirm]')].filter(visible).length, 0)
@@ -245,11 +251,14 @@ test('可退款金额查询失败有明确错误，重试后显示后端金额',
   summaryStatus = 400
   await openPage(); await openRefund()
   const available = form().querySelector('[data-ticket-refund-available]')
+  assert.equal(form().querySelector('input').value, '', 'failed summary does not guess a maximum')
   assert.match(available.textContent, /SYNTHETIC_SUMMARY_UNAVAILABLE/)
   assert.equal(available.querySelector('strong'), null, 'a failed calculation never implies a zero or cached balance')
+  await type(form().querySelector('input'), '18.00')
   summaryStatus = 200
   await click(button(available, '重试'))
-  assert.match(compact(available.textContent), /当前可退款金额：23\.01元/)
+  assert.match(compact(available.textContent), /账户余额25\.99元/)
+  assert.equal(form().querySelector('input').value, '18.00', 'a retry must preserve manually entered amount')
   assert.equal(calls.filter(call => call.url.endsWith('/summary')).length, 2)
 });
 

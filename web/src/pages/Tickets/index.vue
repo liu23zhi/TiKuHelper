@@ -390,10 +390,17 @@
               :disabled="createLoading"
             /><template #help>
               <span v-if="createValidationMessage('requestedYuan')" role="alert">{{ createValidationMessage('requestedYuan') }}</span>
-              <div class="ticket-refund-available" data-ticket-refund-available>
+              <div class="ticket-refund-summary" data-ticket-refund-available aria-live="polite">
                 <span v-if="refundSummaryLoading">正在查询可退款金额…</span>
                 <span v-else-if="refundSummaryError" role="alert">{{ refundSummaryError }} <button type="button" class="ticket-refund-retry" @click="loadRefundSummary">重试</button></span>
-                <span v-else-if="refundAvailableCents !== null">当前可退款金额：<strong>{{ formatRefundCents(refundAvailableCents) }}</strong> 元</span>
+                <div v-else-if="refundAvailableCents !== null" class="ticket-refund-summary__content">
+                  <dl class="ticket-refund-summary__amounts">
+                    <div><dt>账户余额</dt><dd>{{ formatRefundCents(refundBalanceCents) }} 元</dd></div>
+                    <div class="ticket-refund-summary__refundable"><dt>可退款</dt><dd>{{ formatRefundCents(refundAvailableCents) }} 元</dd></div>
+                    <div class="ticket-refund-summary__nonrefundable"><dt>不可退款</dt><dd>{{ formatRefundCents(refundNonRefundableCents) }} 元</dd></div>
+                  </dl>
+                  <p class="ticket-refund-summary__reason"><strong>原因：</strong>{{ refundNonRefundableReason || '无不可退款金额' }}</p>
+                </div>
               </div>
             </template>
           </a-form-item>
@@ -1152,7 +1159,9 @@ const refundOrderOptions = ref([]);
 const refundOrdersVisible = ref(false);
 const refundOrdersLoading = ref(false);
 const refundOrdersError = ref('');
-const refundAvailableCents = ref(null), refundSummaryLoading = ref(false), refundSummaryError = ref('');
+const refundAvailableCents = ref(null), refundBalanceCents = ref(null), refundNonRefundableCents = ref(null), refundNonRefundableReason = ref('');
+const refundSummaryLoading = ref(false), refundSummaryError = ref('');
+let refundAmountTouched = false;
 let refundOrdersVersion = 0, refundSummaryVersion = 0;
 async function loadRefundSummary() {
   if (!createVisible.value || !createNeedsRefundFields.value || refundSummaryLoading.value) return;
@@ -1160,12 +1169,24 @@ async function loadRefundSummary() {
   const owns = () => createOwns() && version === refundSummaryVersion;
   refundSummaryLoading.value = true; refundSummaryError.value = '';
   try {
-    const cents = (await getTicketRefundSummary())?.data?.refundableCents;
+    const summary = (await getTicketRefundSummary())?.data;
+    const cents = summary?.refundableCents;
     if (!owns()) return;
-    if (!Number.isSafeInteger(cents) || cents < 0) throw new Error('可退款金额数据无效');
+    if (!Number.isSafeInteger(cents) || cents < 0 ||
+        !Number.isSafeInteger(summary?.balanceCents) || summary.balanceCents < 0 ||
+        !Number.isSafeInteger(summary?.nonRefundableCents) || summary.nonRefundableCents < 0 ||
+        typeof summary?.nonRefundableReason !== 'string') throw new Error('退款金额汇总数据无效');
     refundAvailableCents.value = cents;
+    refundBalanceCents.value = summary.balanceCents;
+    refundNonRefundableCents.value = summary.nonRefundableCents;
+    refundNonRefundableReason.value = summary.nonRefundableReason;
+    if (!refundAmountTouched) draft.requestedYuan = formatRefundCents(cents);
   } catch (error) {
-    if (owns()) { refundAvailableCents.value = null; refundSummaryError.value = responseMessage(error, '可退款金额查询失败'); }
+    if (owns()) {
+      refundAvailableCents.value = refundBalanceCents.value = refundNonRefundableCents.value = null;
+      refundNonRefundableReason.value = ''; refundSummaryError.value = responseMessage(error, '可退款金额查询失败');
+      if (!refundAmountTouched) draft.requestedYuan = '';
+    }
   } finally { if (owns()) refundSummaryLoading.value = false; }
 }
 function openRefundOrders() {
@@ -1368,6 +1389,7 @@ const canToggleRefundOrder = orderId => isRefundOrderSelected(orderId) ||
   (refundRemainingCents.value > 0 && refundOrderOptions.value.some(item => item.value === Number(orderId) && item.originalSupported))
 function setRefundRequestedYuan(value) {
   if (createLoading.value) return
+  refundAmountTouched = true
   draft.requestedYuan = value; recomputeRefundAllocations(); retireCreateValidation()
 }
 function setRefundAllocationCents(orderId, yuan) {
@@ -1440,7 +1462,8 @@ function resetRefundDraft() {
   Object.assign(refundPhoneStatus, { required: false, phoneMasked: '', loaded: false })
   refundSmsBusy.value = false; refundSmsCooldown.value = 0
   clearInterval(refundSmsTimer); refundSmsTimer = null
-  refundSummaryVersion += 1; refundAvailableCents.value = null; refundSummaryLoading.value = false; refundSummaryError.value = '';
+  refundSummaryVersion += 1; refundAvailableCents.value = refundBalanceCents.value = refundNonRefundableCents.value = null;
+  refundNonRefundableReason.value = ''; refundSummaryLoading.value = false; refundSummaryError.value = ''; refundAmountTouched = false;
   refundOrdersVersion += 1; refundOrdersLoading.value = false; refundOrdersError.value = '';
 }
 function clearOwned() {
@@ -2325,8 +2348,6 @@ watch(
 .unbound-attachments {
   margin: 0 0 20px;
 }
-.ticket-refund-available { margin-top: 6px; font-size: 13px; color: var(--console-muted); }
-.ticket-refund-available strong { color: var(--primary); font-variant-numeric: tabular-nums; }
 .ticket-refund-retry { padding: 0; border: 0; background: transparent; color: var(--primary); cursor: pointer; font: inherit; text-decoration: underline; }
 .ticket-refund-order--disabled { background: var(--console-subtle, #f5f5f5); border-color: var(--console-border); color: var(--console-muted); }
 .ticket-refund-order--disabled .ticket-refund-order__label { color: var(--console-muted); }
@@ -2574,13 +2595,24 @@ watch(
   background: var(--warning, #faad14);
 }
 .ticket-refund-summary {
-  margin-top: 8px;
+  margin-top: 10px;
   padding: 8px 10px;
   border-radius: 6px;
   background: var(--console-surface-sunken, rgba(0, 0, 0, 0.03));
-  font-size: 12px;
-  line-height: 20px;
+  color: var(--console-muted);
+  font-size: 13px;
+  line-height: 1.5;
 }
+.ticket-refund-summary__content { display: grid; gap: 6px; max-width: 520px; }
+.ticket-refund-summary__amounts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 16px; margin: 0; }
+.ticket-refund-summary__amounts > div { display: grid; grid-template-columns: max-content 1fr; align-items: baseline; gap: 5px; min-width: 0; }
+.ticket-refund-summary__amounts dt { color: var(--console-muted); }
+.ticket-refund-summary__amounts dd { margin: 0; color: var(--console-text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ticket-refund-summary__refundable dd { color: var(--primary); font-weight: 600; }
+.ticket-refund-summary__nonrefundable dd { color: var(--console-muted); }
+.ticket-refund-summary__reason { margin: 0; overflow-wrap: anywhere; }
+.ticket-refund-summary__reason strong { color: var(--console-text); font-weight: 500; }
+@media (max-width: 520px) { .ticket-refund-summary__amounts { grid-template-columns: 1fr; gap: 3px; } }
 /* 手机号确认。 */
 .ticket-refund-phone {
   display: flex;
