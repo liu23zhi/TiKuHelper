@@ -84,17 +84,7 @@ func TestTicketRefundEligibilityAndFreshOwnerAdminIsolation(t *testing.T) {
 	foreign := seedTicketRefundOrder(t, db, 6, other.ID, "paid", now.Add(-3*time.Hour), 25, true)
 	badPrecision := seedTicketRefundOrder(t, db, 7, owner.ID, "paid", now.Add(-4*time.Hour), 20.001, true)
 
-	// 2026-11-18 行为变更（用户要求）：可退列表不再把「缺渠道凭证」的订单
-	// 静默丢掉，而是列出来并标记 OriginalSupported=false（只能人工退款）。
-	//
-	// 旧断言是 len==1（只认渠道完整的那笔），对应的正是「用户看到有订单却
-	// 一条都选不了、且毫无提示」的老行为 —— 那是本次要修的缺陷本身。
-	//
-	// 新预期逐笔比对（不是只看总数）：
-	//   valid（渠道完整、窗口内）→ 出现，OriginalSupported=true
-	//   legacy（缺渠道指纹）     → 出现，OriginalSupported=false
-	//   old（超 60 天）/ pending（未支付）/ future（未来时间）/
-	//   foreign（别人的单）/ badPrecision（金额精度非法）→ 都不出现
+	// Complete paid orders are selectable even when legacy channel snapshots are absent.
 	eligible, err := ListEligibleTicketRefundOrdersWithDB(db, owner, testVerifyTicketRefundChannel)
 	if err != nil {
 		t.Fatalf("eligibility err: %v", err)
@@ -106,14 +96,14 @@ func TestTicketRefundEligibilityAndFreshOwnerAdminIsolation(t *testing.T) {
 	// 2026-11-19 行为变更（用户要求：「充值订单可退款金额向下取整到两位小数」）：
 	// 精度超过两位小数的订单不再被判为「不可退」，而是按分向下取整后列出。
 	// 旧预期把它归入 absent，对应的正是「金额 20.001 的订单凭空消失」的老行为。
-	if len(byID) != 3 {
-		t.Fatalf("应含 valid / legacy / badPrecision 三笔，实际 %+v", eligible)
+	if len(byID) != 5 {
+		t.Fatalf("应显示全部非未支付本人订单，实际 %+v", eligible)
 	}
 	if got, ok := byID[valid.ID]; !ok || !got.OriginalSupported || got.PaidCents != 5000 {
 		t.Fatalf("valid 必须在列且标记支持原路退回，实际 %+v", got)
 	}
-	if got, ok := byID[legacy.ID]; !ok || got.OriginalSupported {
-		t.Fatalf("legacy（缺渠道）必须在列且标记为只能人工退款，实际 %+v", got)
+	if got, ok := byID[legacy.ID]; !ok || !got.OriginalSupported {
+		t.Fatalf("符合业务资格的历史订单必须可选，实际 %+v", got)
 	}
 	if got, ok := byID[badPrecision.ID]; !ok {
 		t.Fatalf("精度超标的订单必须列出（向下取整到分），实际 %+v", eligible)
@@ -122,13 +112,17 @@ func TestTicketRefundEligibilityAndFreshOwnerAdminIsolation(t *testing.T) {
 		// 否则四舍五入（2000）与向上取整（2001）都能蒙混过关。
 		t.Fatalf("20.001 元必须向下取整为 2000 分，实际 %d", got.PaidCents)
 	}
-	for _, absent := range []entity.RechargeOrder{old, pending, future, foreign} {
+	for _, absent := range []entity.RechargeOrder{pending, foreign} {
 		if _, ok := byID[absent.ID]; ok {
 			t.Fatalf("order %d 不应出现在可退列表（%s）", absent.ID, absent.OrderNo)
 		}
 	}
-	// 渠道未配置（verify=nil）时同样要列出订单，只是全部只能人工退款 ——
-	// 原来的「返回空」会让用户以为没有可退订单，真实原因是渠道没配。
+	for _, disabled := range []entity.RechargeOrder{old, future} {
+		if got, ok := byID[disabled.ID]; !ok || got.OriginalSupported || got.OriginalUnsupportedReason == "" {
+			t.Fatalf("不合格本人订单必须显示并说明原因，实际 %+v", got)
+		}
+	}
+	// Current gateway configuration must not alter application eligibility.
 	noVerify, err := ListEligibleTicketRefundOrdersWithDB(db, owner, nil)
 	if err != nil {
 		t.Fatalf("no verifier err: %v", err)
@@ -137,11 +131,11 @@ func TestTicketRefundEligibilityAndFreshOwnerAdminIsolation(t *testing.T) {
 		t.Fatalf("渠道未配置时仍应列出订单（否则表现为列表全空），实际 %+v", noVerify)
 	}
 	for _, item := range noVerify {
-		if item.OriginalSupported {
-			t.Fatalf("渠道未配置时不能标记为支持原路退回，实际 %+v", item)
+		if item.OriginalSupported != byID[item.ID].OriginalSupported || item.OriginalUnsupportedReason != byID[item.ID].OriginalUnsupportedReason {
+			t.Fatalf("渠道配置不应改变订单申请资格或原因，实际 %+v", item)
 		}
 	}
-	for _, order := range []entity.RechargeOrder{old, legacy, pending, future, foreign} {
+	for _, order := range []entity.RechargeOrder{old, pending, future, foreign} {
 		if _, err := CreateTicketRefundWithDB(db, owner, CreateTicketRefundInput{
 			Kind: TicketRefundKindOriginal, OrderID: &order.ID, RequestedCents: 100,
 		}, testVerifyTicketRefundChannel); !errors.Is(err, ErrTicketRefundOrderUnavailable) {
@@ -175,7 +169,7 @@ func TestTicketRefundEligibilityAndFreshOwnerAdminIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, private := range []string{item.RefundNo, item.OriginalTradeNo, item.ChannelRef, valid.CallbackPayload} {
-		if strings.Contains(string(encoded), private) {
+		if private != "" && strings.Contains(string(encoded), private) {
 			t.Fatalf("private refund metadata is in client JSON")
 		}
 	}
@@ -194,7 +188,7 @@ func TestTicketRefundPartialUnknownAndTerminalReplay(t *testing.T) {
 	if _, err := ReviewTicketRefundWithDB(db, admin, row.ID, true, 3001, testVerifyTicketRefundChannel); !errors.Is(err, ErrTicketRefundAmount) {
 		t.Fatalf("above consent: %v", err)
 	}
-	if _, err := ReviewTicketRefundWithDB(db, admin, row.ID, true, 1501, nil); !errors.Is(err, ErrTicketRefundOrderUnavailable) {
+	if _, err := ReviewTicketRefundWithDB(db, admin, row.ID, true, 1501, nil); !errors.Is(err, ErrTicketRefundChannelDisabled) {
 		t.Fatalf("unverified approval: %v", err)
 	}
 	requireTicketRefundWallet(t, db, owner.ID, 100_123_456)
@@ -245,8 +239,8 @@ func TestTicketRefundPartialUnknownAndTerminalReplay(t *testing.T) {
 		t.Fatalf("refund changed paid status: %+v %v", order, err)
 	}
 	eligible, err := ListEligibleTicketRefundOrdersWithDB(db, owner, testVerifyTicketRefundChannel)
-	if err != nil || len(eligible) != 0 {
-		t.Fatalf("refunded order remains eligible: %+v %v", eligible, err)
+	if err != nil || len(eligible) != 1 || eligible[0].OriginalSupported || !strings.Contains(eligible[0].OriginalUnsupportedReason, "已申请过退款") {
+		t.Fatalf("refunded order must remain visible but disabled: %+v %v", eligible, err)
 	}
 	var entries []entity.TicketRefundLedger
 	if err := db.Order("id").Find(&entries).Error; err != nil || len(entries) != 2 ||

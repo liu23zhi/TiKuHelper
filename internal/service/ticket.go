@@ -59,6 +59,7 @@ var (
 // TicketListQuery 是列表筛选。Origin / Category 只做**精确匹配**，
 // 空串表示不过滤（与 Status 同构）。
 type TicketListQuery struct {
+	SelfOnly    bool
 	Status      string
 	Keyword     string
 	Origin      string
@@ -819,7 +820,7 @@ func ListTicketsWithDB(db *gorm.DB, user *entity.User, query TicketListQuery, pa
 		}
 	}
 	base := db.Model(&entity.Ticket{})
-	if !isTicketAdmin(user) {
+	if !isTicketAdmin(user) || query.SelfOnly {
 		// 隔离**只靠 user_id**（45-*.md §0.23.2 / Q69-2：被涉及用户**可见**发给自己的
 		// 系统单，原「保密」建议已被用户推翻）。因此这里**不加** `origin <> 'system'`：
 		// 加了会把 Q26 自动建的赠金核对单从用户视野里彻底抹掉，

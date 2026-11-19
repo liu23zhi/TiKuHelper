@@ -103,6 +103,19 @@ func respondTicketRefund(c *gin.Context, db *gorm.DB, code int, refund entity.Ti
 	c.JSON(code, rows[0])
 }
 
+func GetTicketRefundSummary(c *gin.Context) {
+	db, actor, ok := ticketRefundRequest(c, false)
+	if !ok {
+		return
+	}
+	summary, err := service.TicketRefundSummaryWithDB(db, actor)
+	if err != nil {
+		writeTicketRefundError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, summary)
+}
+
 func EligibleTicketRefundOrders(c *gin.Context) {
 	db, actor, ok := ticketRefundRequest(c, false)
 	if !ok {
@@ -432,6 +445,10 @@ func writeTicketRefundError(c *gin.Context, err error) {
 		status, code, message = http.StatusBadRequest, "REFUND_VERIFICATION_REQUIRED", err.Error()
 	case errors.Is(err, service.ErrTicketAttachmentHidden):
 		status, code, message = http.StatusForbidden, "REFUND_IMAGE_UNAVAILABLE", "收款码尚未通过图片审核，请重新上传"
+	case errors.Is(err, service.ErrRefundPayoutQrDevice):
+		status, code, message = http.StatusForbidden, "REFUND_DEVICE_VERIFICATION_REQUIRED", err.Error()
+	case errors.Is(err, service.ErrRefundPayoutQrRegistered):
+		status, code, message = http.StatusConflict, "REFUND_IMAGE_ALREADY_REGISTERED", err.Error()
 	case errors.Is(err, service.ErrTicketRefundOrderUnavailable):
 		status, code, message = http.StatusConflict, "REFUND_ORDER_UNAVAILABLE", "该订单无法申请原路退款，请核对资格或提交人工工单"
 	case errors.Is(err, service.ErrTicketRefundInsufficientBalance):
@@ -448,22 +465,9 @@ func writeTicketRefundError(c *gin.Context, err error) {
 	c.JSON(status, gin.H{"code": code, "message": message})
 }
 
-// RecoverTicketRefundPayoutQr 用当前密码取回该用户**上次退款用过的收款码**。
-//
-// 2026-11-19 用户要求：「提交的时候输入密码才能看到之前上传的收款码；
-// 替换不需要。添加本地缓存，如果是本机上传的，直接加载，换了设备才需要密码
-// 来恢复数据。」
-//
-// 所以这个接口只在「换设备 / 清过缓存」时被调用一次，拿到 ID 后前端写回
-// 本地缓存，之后同机再打开就直接用缓存、不再要密码。
-//
-// 安全要点：
-//
-//	· 收款码是支付账号信息，跨设备取回必须验密 —— 只凭登录态不够，
-//	  因为登录态可能来自一台共享电脑。
-//	· 密码校验复用**登录失败计数**做限流（与注销申请同一口径）：同一个账号的
-//	  凭据被反复试探，锁定策略应当一致，另起一套计数器只会让爆破面变大。
-//	· 验密后返回图片字节；历史收款码不通过通用用户附件接口公开。
+// RecoverTicketRefundPayoutQr verifies the current password and reuses login
+// lockout counters before revealing the remembered source. Recovery does not
+// change the uploading device; future device unlocks still need its private key.
 func RecoverTicketRefundPayoutQr(c *gin.Context) {
 	db, actor, ok := ticketRefundRequest(c, false)
 	if !ok {
@@ -481,11 +485,21 @@ func RecoverTicketRefundPayoutQr(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "请输入当前密码"})
 		return
 	}
+	// Passwords may have changed since the authentication cache was filled.
+	if err := db.Select("id", "username", "password", "status").Where("id = ?", actor.ID).Take(&actor).Error; err != nil {
+		writeTicketRefundError(c, err)
+		return
+	}
 
 	// 限流：与注销申请完全一致（同一份凭据，锁定口径必须一致）。
 	policy := service.AccountLoginPolicy(db)
 	subjectKey := service.NormalizeLoginAccountKey(actor.Username)
-	if lock, err := service.CheckLoginLockoutWithDB(db, policy, subjectKey, time.Now()); err == nil && lock.Locked {
+	lock, err := service.CheckLoginLockoutWithDB(db, policy, subjectKey, time.Now())
+	if err != nil {
+		writeTicketRefundError(c, err)
+		return
+	}
+	if lock.Locked {
 		c.JSON(http.StatusTooManyRequests, gin.H{
 			"message": fmt.Sprintf("密码错误次数过多，请 %d 分钟后再试", lock.RemainingMinutesCeil()),
 		})
@@ -512,6 +526,86 @@ func RecoverTicketRefundPayoutQr(c *gin.Context) {
 		imageDataUrl = "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(body)
 	}
 	c.JSON(http.StatusOK, gin.H{"attachmentId": attachmentID, "imageDataUrl": imageDataUrl})
+}
+
+func StatusTicketRefundPayoutQr(c *gin.Context) {
+	db, actor, ok := ticketRefundRequest(c, false)
+	if !ok {
+		return
+	}
+	status, err := service.RefundPayoutQrStatusWithDB(db, actor)
+	if err != nil {
+		writeTicketRefundError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, status)
+}
+
+func RegisterTicketRefundPayoutQr(c *gin.Context) {
+	db, actor, ok := ticketRefundRequest(c, false)
+	if !ok {
+		return
+	}
+	var input struct {
+		AttachmentID int64  `json:"attachmentId"`
+		PublicKey    string `json:"publicKey"`
+	}
+	if c.ShouldBindJSON(&input) != nil {
+		writeTicketRefundError(c, service.ErrTicketRefundInvalid)
+		return
+	}
+	registration, err := service.RegisterRefundPayoutQrWithDB(db, actor, input.AttachmentID, input.PublicKey)
+	if err != nil {
+		writeTicketRefundError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, registration)
+}
+
+func ChallengeTicketRefundPayoutQr(c *gin.Context) {
+	db, actor, ok := ticketRefundRequest(c, false)
+	if !ok {
+		return
+	}
+	challenge, err := service.CreateRefundPayoutQrChallengeWithDB(db, actor)
+	if err != nil {
+		writeTicketRefundError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, challenge)
+}
+
+func UnlockTicketRefundPayoutQrDevice(c *gin.Context) {
+	db, actor, ok := ticketRefundRequest(c, false)
+	if !ok {
+		return
+	}
+	var input struct {
+		ChallengeID string `json:"challengeId"`
+		Signature   string `json:"signature"`
+	}
+	if c.ShouldBindJSON(&input) != nil {
+		writeTicketRefundError(c, service.ErrTicketRefundInvalid)
+		return
+	}
+	id, mime, body, err := service.UnlockRefundPayoutQrDeviceWithDB(db, actor, input.ChallengeID, input.Signature)
+	if err != nil {
+		writeTicketRefundError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"attachmentId": id, "imageDataUrl": "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(body)})
+}
+
+func DeleteTicketRefundPayoutQr(c *gin.Context) {
+	db, actor, ok := ticketRefundRequest(c, false)
+	if !ok {
+		return
+	}
+	if err := service.DeleteRefundPayoutQrWithDB(db, actor); err != nil {
+		writeTicketRefundError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"hasPrevious": false})
 }
 
 // PreviewTicketRefundPayoutQr returns only a server-blurred thumbnail.

@@ -89,9 +89,9 @@ func refundChannelFingerprint(gateway, partner, platform string) string {
 }
 
 func (cfg TicketRefundEPayConfig) VerifyOriginalOrder(_ *gorm.DB, order entity.RechargeOrder) (string, error) {
-	if cfg.fingerprint == "" || order.RefundChannelFingerprint != cfg.fingerprint ||
+	if cfg.fingerprint == "" || (order.RefundChannelFingerprint != "" && order.RefundChannelFingerprint != cfg.fingerprint) ||
 		order.PaymentProvider != DefaultPaymentProvider || !validRefundGatewayID(order.OrderNo) ||
-		!validRefundGatewayID(order.RefundOriginalTradeNo) {
+		!validRefundGatewayID(ticketRefundOriginalTradeNo(order)) {
 		return "", ErrTicketRefundOrderUnavailable
 	}
 	return cfg.fingerprint, nil
@@ -146,6 +146,7 @@ var refundEPayHTTPClient = &http.Client{
 // SubmitTicketRefundEPay sends one authorized attempt. Even a valid submit
 // acknowledgement is not proof of actual refund success; only query settles.
 func SubmitTicketRefundEPay(ctx context.Context, cfg TicketRefundEPayConfig, refund entity.TicketRefund, order entity.RechargeOrder) error {
+	order.RefundOriginalTradeNo = ticketRefundOriginalTradeNo(order)
 	if !refundEPayMatches(cfg, refund, order) || refund.Status != TicketRefundStatusProcessing {
 		return ErrTicketRefundChannelDisabled
 	}
@@ -165,6 +166,7 @@ func SubmitTicketRefundEPay(ctx context.Context, cfg TicketRefundEPayConfig, ref
 // original trade, merchant scope and exact cents. Not-found and ambiguous
 // replies are not evidence that no money moved.
 func QueryTicketRefundEPay(ctx context.Context, cfg TicketRefundEPayConfig, refund entity.TicketRefund, order entity.RechargeOrder) (string, string, error) {
+	order.RefundOriginalTradeNo = ticketRefundOriginalTradeNo(order)
 	if !refundEPayMatches(cfg, refund, order) ||
 		(refund.Status != TicketRefundStatusProcessing && refund.Status != TicketRefundStatusUnknown) {
 		return "", "", ErrTicketRefundChannelDisabled

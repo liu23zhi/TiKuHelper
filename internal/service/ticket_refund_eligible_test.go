@@ -1,173 +1,166 @@
 package service
 
 import (
-	"gorm.io/gorm"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/itihey/tikuAdapter/internal/entity"
+	"gorm.io/gorm"
 )
 
-// 「有已支付订单，但可退列表里一条都没有」的回归钉子。
-//
-// 2026-11-18 用户报告：充值记录里明明有订单，退款工单的「退款订单」下拉却是空的，
-// 且没有任何提示。根因是 listEligibleTicketRefundOrders 在 **SQL 层**就把
-// `refund_channel_fingerprint <> '' AND refund_original_trade_no <> ''` 当硬条件，
-// 于是「已支付、钱已收、但拿不到渠道凭证」的订单被静默丢弃。
-//
-// 正确语义：这类订单应当**列出来并标记只能人工退款**（OriginalSupported=false），
-// 而不是让它凭空消失 —— 订单存在是事实，能否原路退回是另一件事。
-
-// 缺渠道凭证的已支付订单必须出现在列表里，且标记为不支持原路退回。
-func TestEligibleOrdersIncludeUnprovenPaidOrders(t *testing.T) {
-	db, owner, _, _ := newTicketRefundCoreTestDB(t)
-	paidAt := time.Now().Add(-2 * time.Hour)
-
-	// proven=false → 没有 refund_channel_fingerprint / refund_original_trade_no
-	seedTicketRefundOrder(t, db, 1, owner.ID, rechargeOrderStatusPaid, paidAt, 50, false)
-
-	items, err := listEligibleTicketRefundOrders(db, owner.ID, testVerifyTicketRefundChannel, time.Now(), 50)
-	if err != nil {
-		t.Fatalf("list: %v", err)
+func TestEligibleOrdersUseBusinessCriteriaWithoutChannelConfiguration(t *testing.T) {
+	db, owner, _, admin := newTicketRefundCoreTestDB(t)
+	order := seedTicketRefundOrder(t, db, 1, owner.ID, "paid", time.Now().Add(-time.Hour), 7.509999, false)
+	items, err := ListEligibleTicketRefundOrdersWithDB(db, owner, nil)
+	if err != nil || len(items) != 1 || !items[0].OriginalSupported || items[0].OriginalUnsupportedReason != "" || items[0].PaidCents != 750 {
+		t.Fatalf("complete legacy order must be selectable: %+v, %v", items, err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("缺渠道凭证的已支付订单必须出现（否则用户看到「有订单却选不了」），want 1 got %d", len(items))
+	refund, err := CreateTicketRefundWithDB(db, owner, CreateTicketRefundInput{Kind: TicketRefundKindOriginal, OrderID: &order.ID, RequestedCents: 750}, nil)
+	if err != nil || refund.OriginalTradeNo != order.ThirdPartyOrderNo {
+		t.Fatalf("legacy order application: %+v, %v", refund, err)
 	}
-	if items[0].OriginalSupported {
-		t.Fatalf("缺渠道凭证的订单不能标记为支持原路退回，实际 %+v", items[0])
+	if _, err := ReviewTicketRefundWithDB(db, admin, refund.ID, true, 750, nil); !errors.Is(err, ErrTicketRefundChannelDisabled) {
+		t.Fatalf("unconfigured channel must block approval explicitly: %v", err)
 	}
-	if items[0].PaidCents != 5000 {
-		t.Fatalf("金额应为 5000 分，实际 %d", items[0].PaidCents)
+	reject := func(*gorm.DB, entity.RechargeOrder) (string, error) { return "", ErrTicketRefundOrderUnavailable }
+	if _, err := ReviewTicketRefundWithDB(db, admin, refund.ID, true, 750, reject); !errors.Is(err, ErrTicketRefundOrderUnavailable) {
+		t.Fatalf("mismatched payment channel must block approval: %v", err)
 	}
-}
-
-// 渠道完整的订单仍要标记为支持原路退回（不能因为放宽而把所有单都降级）。
-func TestEligibleOrdersMarkProvenOrdersSupported(t *testing.T) {
-	db, owner, _, _ := newTicketRefundCoreTestDB(t)
-	paidAt := time.Now().Add(-2 * time.Hour)
-	seedTicketRefundOrder(t, db, 1, owner.ID, rechargeOrderStatusPaid, paidAt, 50, true)
-
-	items, err := listEligibleTicketRefundOrders(db, owner.ID, testVerifyTicketRefundChannel, time.Now(), 50)
-	if err != nil {
-		t.Fatalf("list: %v", err)
+	unchanged, err := GetTicketRefundWithDB(db, owner, refund.ID)
+	if err != nil || unchanged.Status != TicketRefundStatusPendingReview || unchanged.ChannelRef != "" {
+		t.Fatalf("failed approval must not bind a channel or change state: %+v, %v", unchanged, err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("want 1 got %d", len(items))
+	requireTicketRefundWallet(t, db, owner.ID, 100_123_456)
+	verify := func(_ *gorm.DB, order entity.RechargeOrder) (string, error) {
+		if order.RefundOriginalTradeNo == "" {
+			t.Fatal("legacy trade number was not passed to verifier")
+		}
+		return "configured-channel", nil
 	}
-	if !items[0].OriginalSupported {
-		t.Fatalf("渠道完整的订单必须标记为支持原路退回，实际 %+v", items[0])
+	approved, err := ReviewTicketRefundWithDB(db, admin, refund.ID, true, 750, verify)
+	if err != nil || approved.ChannelRef != "configured-channel" || approved.Status != TicketRefundStatusFrozen {
+		t.Fatalf("configured approval must bind channel before freeze: %+v, %v", approved, err)
+	}
+	if _, err := BeginTicketRefundWithDB(db, admin, refund.ID, verify); err != nil {
+		t.Fatalf("legacy dispatch validation: %v", err)
 	}
 }
 
-// 未支付订单仍然不能进列表（钱没收到，无可退）。
-func TestEligibleOrdersExcludeUnpaid(t *testing.T) {
-	db, owner, _, _ := newTicketRefundCoreTestDB(t)
-	seedTicketRefundOrder(t, db, 1, owner.ID, "pending", time.Now().Add(-2*time.Hour), 50, true)
-
-	items, err := listEligibleTicketRefundOrders(db, owner.ID, testVerifyTicketRefundChannel, time.Now(), 50)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(items) != 0 {
-		t.Fatalf("未支付订单不能进可退列表，实际 %+v", items)
-	}
-}
-
-// 渠道未配置（verify == nil）时订单依然要列出来，只是全部只能人工退款。
-//
-// 原实现在 verify == nil 时直接 return 空列表 —— 用户看到「一条都没有」，
-// 而真实原因是支付渠道没配置。
-func TestEligibleOrdersListedEvenWhenVerifierMissing(t *testing.T) {
-	db, owner, _, _ := newTicketRefundCoreTestDB(t)
-	paidAt := time.Now().Add(-2 * time.Hour)
-	seedTicketRefundOrder(t, db, 1, owner.ID, rechargeOrderStatusPaid, paidAt, 50, true)
-
-	items, err := listEligibleTicketRefundOrders(db, owner.ID, nil, time.Now(), 50)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(items) != 1 {
-		t.Fatalf("渠道未配置时订单仍应列出（否则表现为「列表全空」），want 1 got %d", len(items))
-	}
-	if items[0].OriginalSupported {
-		t.Fatalf("渠道未配置时不能标记为支持原路退回，实际 %+v", items[0])
-	}
-}
-
-var _ = gorm.ErrRecordNotFound
-
-// 2026-11-19 用户要求：选择账单时要**显示不能原路退款的账单并写原因**。
-//
-// 这组用例钉两件事：
-//   · 不能原路退款的订单必须给出**非空且可读**的原因（不是只给一个 false）；
-//   · 能原路退款的订单原因必须为空（否则前端会在可退的选项上也显示警示）。
-
-// 缺渠道凭证 → reason 必须非空，且指明是「缺渠道信息」而不是笼统的失败。
-func TestEligibleOrderCarriesReasonWhenOriginalUnsupported(t *testing.T) {
-	db, owner, _, _ := newTicketRefundCoreTestDB(t)
-	paidAt := time.Now().Add(-2 * time.Hour)
-	// proven=false → 没有 refund_channel_fingerprint / refund_original_trade_no
-	seedTicketRefundOrder(t, db, 1, owner.ID, rechargeOrderStatusPaid, paidAt, 50, false)
-
-	items, err := listEligibleTicketRefundOrders(db, owner.ID, testVerifyTicketRefundChannel, time.Now(), 50)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(items) != 1 {
-		t.Fatalf("缺渠道凭证的订单必须出现在列表里，want 1 got %d", len(items))
-	}
-	if items[0].OriginalSupported {
-		t.Fatalf("缺渠道凭证不能标记为支持原路退回")
-	}
-	reason := items[0].OriginalUnsupportedReason
-	if strings.TrimSpace(reason) == "" {
-		t.Fatal("不能原路退款时必须给出原因 —— 只给一个 false 用户无从判断该找谁处理")
-	}
-	// 断具体内容而不只是「非空」：这两列都缺时应该指向「回调未写入」，
-	// 因为那决定了用户该等回调还是该找管理员。
-	if !strings.Contains(reason, "渠道") {
-		t.Fatalf("原因必须说明是渠道信息问题，实际 %q", reason)
+func TestTicketRefundEligibilityChecksBothTimestampsAndRequiredFields(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	boundary := now.Add(-60 * 24 * time.Hour)
+	for _, tc := range []struct {
+		name   string
+		edit   func(*entity.RechargeOrder)
+		want   bool
+		reason string
+	}{
+		{"inclusive-oldest", func(o *entity.RechargeOrder) { o.CreatedAt = boundary; o.PaidAt = &boundary }, true, ""},
+		{"inclusive-now", func(o *entity.RechargeOrder) { o.CreatedAt = now; o.PaidAt = &now }, true, ""},
+		{"provider-does-not-hide-orders", func(o *entity.RechargeOrder) { o.PaymentProvider = "legacy" }, true, ""},
+		{"created-too-old", func(o *entity.RechargeOrder) { o.CreatedAt = boundary.Add(-time.Second) }, false, "创建时间超过60天"},
+		{"paid-too-old", func(o *entity.RechargeOrder) { p := boundary.Add(-time.Second); o.PaidAt = &p }, false, "支付时间超过60天"},
+		{"created-future", func(o *entity.RechargeOrder) { o.CreatedAt = now.Add(time.Minute) }, false, "创建时间晚于当前时间"},
+		{"paid-future", func(o *entity.RechargeOrder) { p := now.Add(time.Minute); o.PaidAt = &p }, false, "支付时间晚于当前时间"},
+		{"created-missing", func(o *entity.RechargeOrder) { o.CreatedAt = time.Time{} }, false, "创建时间缺失"},
+		{"paid-missing", func(o *entity.RechargeOrder) { o.PaidAt = nil }, false, "支付时间缺失"},
+		{"order-number-missing", func(o *entity.RechargeOrder) { o.OrderNo = "  " }, false, "缺少订单号"},
+		{"payment-method-missing", func(o *entity.RechargeOrder) { o.PaymentMethodNameSnapshot = "  " }, false, "缺少支付方式"},
+		{"third-party-number-missing", func(o *entity.RechargeOrder) { o.ThirdPartyOrderNo = "  " }, false, "缺少第三方单号"},
+		{"refunded", func(o *entity.RechargeOrder) { o.Status = "refunded" }, false, "订单已退款"},
+		{"other-nonpaid", func(o *entity.RechargeOrder) { o.Status = "closed" }, false, "订单状态不是已支付"},
+		{"zero-amount", func(o *entity.RechargeOrder) { o.Amount = 0 }, false, "订单金额无效"},
+		{"subcent-amount", func(o *entity.RechargeOrder) { o.Amount = .009999 }, false, "不足0.01元"},
+		{"unpaid", func(o *entity.RechargeOrder) { o.Status = "pending" }, false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, owner, _, _ := newTicketRefundCoreTestDB(t)
+			order := seedTicketRefundOrder(t, db, 1, owner.ID, "paid", now.Add(-time.Hour), 7.5, false)
+			order.CreatedAt = now.Add(-2 * time.Hour)
+			tc.edit(&order)
+			if err := db.Save(&order).Error; err != nil {
+				t.Fatal(err)
+			}
+			items, err := listEligibleTicketRefundOrders(db, owner.ID, nil, now, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if order.Status == rechargeOrderStatusPending {
+				if len(items) != 0 {
+					t.Fatalf("unpaid orders must stay hidden: %+v", items)
+				}
+			} else if len(items) != 1 || items[0].OriginalSupported != tc.want || !strings.Contains(items[0].OriginalUnsupportedReason, tc.reason) {
+				t.Fatalf("listed eligibility want %v (%s): %+v", tc.want, tc.reason, items)
+			}
+			if !tc.want {
+				_, err := CreateTicketRefundWithDB(db, owner, CreateTicketRefundInput{Kind: TicketRefundKindOriginal, OrderID: &order.ID, RequestedCents: 100}, nil)
+				if !errors.Is(err, ErrTicketRefundOrderUnavailable) {
+					t.Fatalf("creation disagrees with list: %v", err)
+				}
+			}
+		})
 	}
 }
 
-// 渠道完整 → reason 必须为空，避免前端在可原路退的选项上也显示警示。
-func TestEligibleOrderHasNoReasonWhenOriginalSupported(t *testing.T) {
+func TestRefundOrderChoicesReturnAllPagesAndDisableAnyPriorRefund(t *testing.T) {
 	db, owner, _, _ := newTicketRefundCoreTestDB(t)
-	paidAt := time.Now().Add(-2 * time.Hour)
-	seedTicketRefundOrder(t, db, 1, owner.ID, rechargeOrderStatusPaid, paidAt, 50, true)
-
-	items, err := listEligibleTicketRefundOrders(db, owner.ID, testVerifyTicketRefundChannel, time.Now(), 50)
-	if err != nil {
-		t.Fatalf("list: %v", err)
+	now := time.Now()
+	for i := int32(1); i <= 80; i++ {
+		order := seedTicketRefundOrder(t, db, i, owner.ID, "paid", now.Add(-time.Duration(i)*time.Minute), 1, false)
+		if i <= 7 {
+			statuses := []string{TicketRefundStatusPendingReview, TicketRefundStatusRejected, TicketRefundStatusFrozen, TicketRefundStatusProcessing, TicketRefundStatusUnknown, TicketRefundStatusSucceeded, TicketRefundStatusFailed}
+			prior := entity.TicketRefund{UserID: owner.ID, OrderID: &order.ID, Kind: TicketRefundKindOriginal, Status: statuses[i-1], RequestedCents: 1, RefundNo: fmt.Sprintf("prior-%d", i)}
+			if err := db.Create(&prior).Error; err != nil {
+				t.Fatal(err)
+			}
+			if _, err := CreateTicketRefundWithDB(db, owner, CreateTicketRefundInput{Kind: TicketRefundKindOriginal, OrderID: &order.ID, RequestedCents: 1}, nil); !errors.Is(err, ErrTicketRefundOrderUnavailable) {
+				t.Fatalf("prior refund status %s permitted reuse: %v", prior.Status, err)
+			}
+		}
 	}
-	if len(items) != 1 {
-		t.Fatalf("want 1 got %d", len(items))
+	refundQueries := 0
+	if err := db.Callback().Query().After("gorm:query").Register("test:refund-choice-bulk-lookup", func(tx *gorm.DB) {
+		if tx.Statement.Table == "ticket_refunds" {
+			refundQueries++
+		}
+	}); err != nil {
+		t.Fatal(err)
 	}
-	if !items[0].OriginalSupported {
-		t.Fatalf("渠道完整的订单必须支持原路退回")
+	items, err := ListEligibleTicketRefundOrdersWithDB(db, owner, nil)
+	if err != nil || len(items) != 80 || items[0].ID != 80 || items[len(items)-1].ID != 1 {
+		t.Fatalf("all nonpending orders must survive SQL page and old 50-row cap: %+v, %v", items, err)
 	}
-	if items[0].OriginalUnsupportedReason != "" {
-		t.Fatalf("支持原路退回时原因必须为空，实际 %q", items[0].OriginalUnsupportedReason)
+	for _, item := range items {
+		if item.ID <= 7 && (item.OriginalSupported || !strings.Contains(item.OriginalUnsupportedReason, "已申请过退款")) {
+			t.Fatalf("prior applications must remain visible with a reason: %+v", item)
+		}
+		if item.ID > 7 && !item.OriginalSupported {
+			t.Fatalf("unused order must remain selectable: %+v", item)
+		}
+	}
+	if refundQueries != 2 {
+		t.Fatalf("refund use must be queried once per 64-order batch, got %d queries for 80 orders", refundQueries)
 	}
 }
 
-// 渠道未配置（verify=nil）→ 原因必须指向「渠道未配置」。
-// 这条与「订单缺凭证」是不同原因，混成一句会让管理员查错方向。
-func TestEligibleOrderReasonDistinguishesUnconfiguredChannel(t *testing.T) {
+func TestRefundOrderChoicesExplainAllMissingCriteria(t *testing.T) {
 	db, owner, _, _ := newTicketRefundCoreTestDB(t)
-	paidAt := time.Now().Add(-2 * time.Hour)
-	seedTicketRefundOrder(t, db, 1, owner.ID, rechargeOrderStatusPaid, paidAt, 50, true)
-
-	items, err := listEligibleTicketRefundOrders(db, owner.ID, nil, time.Now(), 50)
-	if err != nil {
-		t.Fatalf("list: %v", err)
+	now := time.Now()
+	order := seedTicketRefundOrder(t, db, 1, owner.ID, "paid", now.Add(-61*24*time.Hour), 1, false)
+	order.CreatedAt, order.PaymentMethodNameSnapshot, order.ThirdPartyOrderNo = now.Add(-62*24*time.Hour), "", ""
+	if err := db.Save(&order).Error; err != nil {
+		t.Fatal(err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("want 1 got %d", len(items))
+	items, err := ListEligibleTicketRefundOrdersWithDB(db, owner, nil)
+	if err != nil || len(items) != 1 || items[0].OriginalSupported {
+		t.Fatalf("unavailable order: %+v, %v", items, err)
 	}
-	if items[0].OriginalSupported {
-		t.Fatal("渠道未配置时不能标记为支持原路退回")
-	}
-	if !strings.Contains(items[0].OriginalUnsupportedReason, "未配置") {
-		t.Fatalf("原因必须说明「渠道未配置」，实际 %q", items[0].OriginalUnsupportedReason)
+	for _, reason := range []string{"创建时间超过60天", "支付时间超过60天", "缺少支付方式", "缺少第三方单号"} {
+		if !strings.Contains(items[0].OriginalUnsupportedReason, reason) {
+			t.Fatalf("missing explanation %q: %+v", reason, items[0])
+		}
 	}
 }

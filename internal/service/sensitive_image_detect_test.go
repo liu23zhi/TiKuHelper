@@ -662,7 +662,7 @@ func TestManualDetectTicketDeduplicatesIdenticalImages(t *testing.T) {
 	db := newSensitiveImageTestDB(t)
 	now := sensitiveImageTestNow()
 	t.Setenv("TIKU_TICKET_ATTACHMENT_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
-	aead, err := ticketAttachmentCipher()
+	aead, err := ticketAttachmentCipher(db)
 	if err != nil {
 		t.Fatalf("ticket attachment cipher: %v", err)
 	}

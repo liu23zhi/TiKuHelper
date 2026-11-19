@@ -46,6 +46,7 @@ func TicketList(c *gin.Context) {
 	// category 对普通用户也生效（他们只看得到自己的、非系统单）；
 	// origin 由 service 侧只对管理员应用。
 	query := service.TicketListQuery{
+		SelfOnly:    strings.TrimSpace(c.Query("scope")) == "self",
 		Status:      strings.TrimSpace(c.Query("status")),
 		Keyword:     strings.TrimSpace(c.Query("keyword")),
 		Origin:      strings.TrimSpace(c.Query("origin")),

@@ -502,6 +502,7 @@ func selectTicketAttachmentRetentionCandidates(db *gorm.DB, where string, args .
 	var ids []int64
 	if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.TicketAttachment{}).
 		Where(where, args...).
+		Scopes(excludeRememberedRefundPayoutQr).
 		Order("created_at ASC, id ASC").
 		Limit(TicketAttachmentRetentionBatchSize).
 		Pluck("id", &ids).Error; err != nil {
@@ -593,6 +594,7 @@ func pruneTicketAttachmentIDs(db *gorm.DB, ids []int64, now time.Time, freeBudge
 			result := tx.Session(&gorm.Session{NewDB: true}).
 				Model(&entity.TicketAttachment{}).
 				Where("id = ? AND purged_at IS NULL", id).
+				Scopes(excludeRememberedRefundPayoutQr).
 				Updates(map[string]any{
 					"ciphertext": nil,
 					"nonce":      nil,
@@ -633,6 +635,29 @@ func pruneTicketAttachmentIDs(db *gorm.DB, ids []int64, now time.Time, freeBudge
 		return purged, freedBytes, err
 	}
 	return purged, freedBytes, nil
+}
+
+// The current remembered source is retained until the user replaces or deletes
+// it. Recheck during UPDATE because it can become remembered after selection.
+func excludeRememberedRefundPayoutQr(db *gorm.DB) *gorm.DB {
+	schemaDB := db.Session(&gorm.Session{NewDB: true})
+	memoryReady := schemaDB.Migrator().HasTable(&entity.RefundPayoutQrMemory{})
+	if memoryReady {
+		db = db.Where("id NOT IN (?)", db.Session(&gorm.Session{NewDB: true}).Model(&entity.RefundPayoutQrMemory{}).Select("attachment_id").Where("attachment_id > 0"))
+	}
+	if schemaDB.Migrator().HasTable(&entity.TicketRefund{}) {
+		latestIDs := db.Session(&gorm.Session{NewDB: true}).Model(&entity.TicketRefund{}).
+			Select("MAX(id)").Where("payout_qr_attachment_id IS NOT NULL AND payout_qr_attachment_id > 0").Group("user_id")
+		legacy := db.Session(&gorm.Session{NewDB: true}).Model(&entity.TicketRefund{}).
+			Select("payout_qr_attachment_id").Where("id IN (?)", latestIDs)
+		if memoryReady {
+			// A memory row, including a deletion marker, permanently supersedes
+			// legacy fallback. Only unmigrated users keep their latest old QR.
+			legacy = legacy.Where("user_id NOT IN (?)", db.Session(&gorm.Session{NewDB: true}).Model(&entity.RefundPayoutQrMemory{}).Select("user_id"))
+		}
+		db = db.Where("id NOT IN (?)", legacy)
+	}
+	return db
 }
 
 // ticketAttachmentLiveBytesWithDB 统计**仍占着存储**的附件密文总量（字节）。

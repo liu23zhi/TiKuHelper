@@ -85,6 +85,24 @@ func seedAttachmentTicket(t *testing.T, db *gorm.DB, ownerID int32) entity.Ticke
 	return ticket
 }
 
+func TestUploadTicketAttachmentWorksWithoutKeyConfiguration(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newTicketAttachmentControllerTestDB(t)
+	t.Setenv("TIKU_TICKET_ATTACHMENT_KEY", "")
+	t.Setenv("TIKU_REFUND_PROOF_KEY", "")
+	withTicketControllerDB(t, db)
+	user := &entity.User{ID: 1, Username: "owner", Role: "user", Status: "enabled"}
+	if err := db.Create(user).Error; err != nil {
+		t.Fatal(err)
+	}
+	ticket := seedAttachmentTicket(t, db, user.ID)
+	target := "/ticket-attachments?ticketId=" + strconv.FormatInt(ticket.ID, 10)
+	recorder := performUploadRequest(t, user, target, "file", "qr.png", ticketAttachmentControllerPNG(t), UploadTicketAttachment)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("image upload must be available without an environment key: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 // TestUploadTicketAttachmentValidationChain 覆盖需求的「上传：超大文件、非图片、伪装扩展名」。
 func TestUploadTicketAttachmentValidationChain(t *testing.T) {
 	gin.SetMode(gin.TestMode)

@@ -127,30 +127,19 @@ func ReadLatestRefundPayoutQrWithDB(db *gorm.DB, actor entity.User) (int64, stri
 	if _, err := ticketRefundActor(db, actor.ID, false, false); err != nil {
 		return 0, "", nil, err
 	}
-	id, err := LatestRefundPayoutQrAttachmentIDWithDB(db, actor.ID)
-	if err != nil || id == 0 {
-		return id, "", nil, err
-	}
-	var row entity.TicketAttachment
-	if err := db.Where("id = ? AND user_id = ? AND purged_at IS NULL", id, actor.ID).Take(&row).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return 0, "", nil, ErrTicketRefundNotFound
-		}
+	memory, err := currentRefundPayoutQr(db, actor.ID)
+	if err != nil {
 		return 0, "", nil, err
 	}
-	if !ticketAttachmentVisible(row) {
-		return 0, "", nil, ErrTicketAttachmentHidden
-	}
-	body, mime, err := decryptTicketAttachmentForScan(db, row)
-	return id, mime, body, err
+	return readCurrentRefundPayoutQr(db, actor.ID, memory)
 }
 
 func RefundPayoutQrPreviewWithDB(db *gorm.DB, actor entity.User) (bool, []byte, error) {
 	if _, err := ticketRefundActor(db, actor.ID, false, false); err != nil {
 		return false, nil, err
 	}
-	id, err := LatestRefundPayoutQrAttachmentIDWithDB(db, actor.ID)
-	if err != nil || id == 0 {
+	memory, err := currentRefundPayoutQr(db, actor.ID)
+	if err != nil || memory.AttachmentID == 0 {
 		return false, nil, err
 	}
 	_, _, body, err := ReadLatestRefundPayoutQrWithDB(db, actor)
@@ -204,6 +193,12 @@ func blurredRefundPayoutQr(body []byte) ([]byte, error) {
 }
 
 func isHistoricalRefundPayoutQr(db *gorm.DB, attachmentID int64) (bool, error) {
+	if db.Migrator().HasTable(&entity.RefundPayoutQrBinding{}) {
+		var count int64
+		if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.RefundPayoutQrBinding{}).Where("attachment_id = ?", attachmentID).Count(&count).Error; err != nil || count > 0 {
+			return count > 0, err
+		}
+	}
 	if !db.Migrator().HasTable(&entity.TicketRefund{}) {
 		return false, nil
 	}

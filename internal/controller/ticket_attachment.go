@@ -258,8 +258,8 @@ func writeTicketAttachmentError(c *gin.Context, err error) {
 		status, message = http.StatusForbidden, err.Error()
 	case errors.Is(err, service.ErrTicketNotFound):
 		status, message = http.StatusNotFound, err.Error()
-	case errors.Is(err, service.ErrTicketAttachmentDisabled):
-		status, message = http.StatusServiceUnavailable, "工单图片功能尚未启用"
+	case errors.Is(err, service.ErrTicketAttachmentEncryption):
+		status, message = http.StatusServiceUnavailable, "工单图片加密暂不可用，请联系管理员"
 	default:
 		message = "工单图片处理失败：" + err.Error()
 	}

@@ -50,16 +50,8 @@ const (
 	// committed. This is not interchangeable with a gateway failure.
 	TicketRefundOutcomeUnsentReference = "local-cancel-unsent"
 
-	// 2026-11-19 用户拍板：可退窗口从 60 天改为 **6 个月**。
-	//
-	// 原值 60 天让「充值半年内但超过两个月」的订单直接不出现在可退列表里，
-	// 用户看到的现象是「明明有这笔已支付订单，却没有退款按钮」，且没有任何
-	// 解释。用户的诉求原文是「时间不超过 6 个月」。
-	//
-	// 用 183 天（6 个月按 30.5 天/月）而不是自然月：可退窗口是**滑动**的，
-	// 自然月会让「2 月充值、8 月申请」这类边界随年份浮动，测试也无法钉住。
-	// 183 天与 6 个月的最大偏差是 2 天，对退款业务无实质影响。
-	ticketRefundAge             = 183 * 24 * time.Hour
+	// Both creation and payment must be within the last 60 days, inclusively.
+	ticketRefundAge             = 60 * 24 * time.Hour
 	ticketRefundMicrosPerCent   = int64(10_000)
 	ticketRefundMaxWalletMicros = int64(999_999_999_999_999_999)
 	ticketRefundMaxCents        = ticketRefundMaxWalletMicros / ticketRefundMicrosPerCent
@@ -80,24 +72,12 @@ type TicketRefundOrder struct {
 	OrderNo                   string    `json:"orderNo"`
 	PaidCents                 int64     `json:"paidCents"`
 	PaidAt                    time.Time `json:"paidAt"`
+	CreatedAt                 time.Time `json:"createdAt"`
+	Status                    string    `json:"status"`
 	PaymentMethodNameSnapshot string    `json:"paymentMethodNameSnapshot"`
-	// OriginalSupported 表示这笔订单**可以走原路退回**（渠道指纹与原交易号齐全
-	// 且渠道校验通过）。false 表示只能走人工退款 —— 前端据此在选项上标注，
-	// 并禁止把它当成「原路退回」来提交。
-	//
-	// 为什么需要显式区分：2026-11-18 之前这类订单被**直接过滤掉**，
-	// 用户看到的是「明明有订单，下拉里却一条都没有」，且没有任何提示。
-	// 订单确实存在、钱确实收了，只是拿不到渠道凭证 —— 那是「只能人工」，
-	// 不是「不存在」。
-	OriginalSupported bool `json:"originalSupported"`
-	// OriginalUnsupportedReason 说明「为什么不能原路退回」。
-	//
-	// 2026-11-19 用户要求：选择账单时，不能原路退款的账单也要显示，并写原因。
-	//
-	// 为什么需要文字原因而不是只给一个布尔：用户看到「仅人工退款」这四个字
-	// 只会困惑「凭什么」，而真实原因可能差很远 —— 「渠道没配」是管理员该处理的，
-	// 「这笔单的回调没带流水号」是数据问题，两者对用户的意义完全不同。
-	// 空白表示可以原路退回。
+	// OriginalSupported describes application eligibility. Payment-channel
+	// configuration is checked again before approval freezes any funds.
+	OriginalSupported         bool   `json:"originalSupported"`
 	OriginalUnsupportedReason string `json:"originalUnsupportedReason,omitempty"`
 }
 
@@ -158,7 +138,7 @@ func ListEligibleTicketRefundOrdersWithDB(db *gorm.DB, actor entity.User, verify
 	if _, err := ticketRefundActor(db, actor.ID, false, false); err != nil {
 		return nil, err
 	}
-	return listEligibleTicketRefundOrders(db, actor.ID, verify, time.Now(), 50)
+	return listEligibleTicketRefundOrders(db, actor.ID, verify, time.Now(), 0)
 }
 
 func ListTicketRefundsWithDB(db *gorm.DB, actor entity.User) ([]entity.TicketRefund, error) {
@@ -261,7 +241,7 @@ func CreateTicketRefundWithDB(db *gorm.DB, actor entity.User, input CreateTicket
 				return err
 			}
 			paid, err := ticketRefundPaidOrderCents(order)
-			if err != nil || order.PaidAt.After(now) {
+			if err != nil || order.PaidAt.After(now) || (input.Kind == TicketRefundKindOriginal && !ticketRefundOrderMeetsBasicCriteria(order, now)) {
 				return ErrTicketRefundOrderUnavailable
 			}
 			// 金额上限（2026-11-19 用户要求：「用户申请退款的金额必须小于等于本金」）：
@@ -287,14 +267,10 @@ func CreateTicketRefundWithDB(db *gorm.DB, actor entity.User, input CreateTicket
 			if amountCap <= 0 || input.RequestedCents > amountCap {
 				return ErrTicketRefundAmount
 			}
-			ref, verifyErr := ticketRefundOriginalChannel(tx, order, verify, now)
 			if input.Kind == entity.TicketRefundKindOriginal {
-				if verifyErr != nil {
-					return verifyErr
-				}
-				row.ChannelRef, row.OriginalTradeNo = ref, order.RefundOriginalTradeNo
-			} else if verifyErr != nil && !errors.Is(verifyErr, ErrTicketRefundOrderUnavailable) {
-				return verifyErr
+				// Application eligibility is independent of current gateway setup.
+				// Snapshot the trade now; approval validates and binds the channel.
+				row.OriginalTradeNo = ticketRefundOriginalTradeNo(order)
 			}
 			id := order.ID
 			row.OrderID, row.OrderNo, row.OrderPaidCents = &id, order.OrderNo, paid
@@ -514,7 +490,7 @@ func ReviewTicketRefundWithDB(db *gorm.DB, admin entity.User, id int64, approve 
 		}
 		switch row.Kind {
 		case entity.TicketRefundKindOriginal:
-			if err := verifyTicketRefundOriginalOrderInTx(tx, *row, verify); err != nil {
+			if err := verifyTicketRefundOriginalOrderInTx(tx, row, verify); err != nil {
 				return err
 			}
 		case entity.TicketRefundKindManual:
@@ -588,7 +564,7 @@ func BeginTicketRefundWithDB(db *gorm.DB, admin entity.User, id int64, verify Ti
 		if row.Status != entity.TicketRefundStatusFrozen || row.Kind != entity.TicketRefundKindOriginal {
 			return ErrTicketRefundState
 		}
-		if err := verifyTicketRefundOriginalOrderInTx(tx, *row, verify); err != nil {
+		if err := verifyTicketRefundOriginalOrderInTx(tx, row, verify); err != nil {
 			return err
 		}
 		if _, err := ticketRefundHoldMicros(tx, *row); err != nil {
@@ -701,79 +677,58 @@ func finalizeTicketRefundInTx(tx *gorm.DB, row *entity.TicketRefund, operatorID 
 	})
 }
 
-func listEligibleTicketRefundOrders(db *gorm.DB, userID int32, verify TicketRefundOrderVerifier, now time.Time, want int) ([]TicketRefundOrder, error) {
+// A zero want returns all nonpending orders, including disabled choices with
+// their reasons. The HTTP endpoint has no pagination
+// contract, so its internal SQL batches must not truncate the available choices.
+func listEligibleTicketRefundOrders(db *gorm.DB, userID int32, _ TicketRefundOrderVerifier, now time.Time, want int) ([]TicketRefundOrder, error) {
 	items := make([]TicketRefundOrder, 0)
-	// verify == nil 表示支付渠道未配置（LoadTicketRefundEPayConfigWithDB 失败）。
-	// 此时原路退回路走不通，但**订单本身仍要列出来**并标成只能人工退款 ——
-	// 否则用户看到的是「有订单但列表全空」，而真实原因是渠道没配。
-	// ticketRefundOriginalChannel 内部已经对 verify == nil 返回 Unavailable，
-	// 所以这里不需要额外分支，让它自然落到 OriginalSupported=false 即可。
 	var lastID int32
 	for {
 		var orders []entity.RechargeOrder
-		// 2026-11-18：不再用 SQL 条件把「缺渠道指纹」的订单挡掉。
-		// 把订单挡在 SQL 层。这类订单「已支付、钱已收，但拿不到渠道凭证」，
-		// 正确处置是**列出来并标记只能人工退款**，而不是让它凭空消失 ——
-		// 后者让用户看到「明明有订单却一条都选不了」且毫无解释。
-		// 2026-11-19 用户拍板的四项退款资格条件，能下推到 SQL 的都下推
-		// （paid_at 有索引，其余三项是列值非空判断，成本可忽略）。
-		// 未在这里下推的两项在 Go 层用 ticketRefundOrderMeetsBasicCriteria 兜底：
-		//   · 金额解析（decimal → 分）无法在 SQL 里安全表达；
-		//   · SQL 与 Go 两处条件必须一致，Go 层是唯一真相，SQL 只是预筛。
-		//
-		// 第 5 条「每个订单只能退款一次」由下面的 NOT EXISTS 保证 ——
-		// 它比在 Go 层查一遍更可靠：并发两次提交时由数据库做最终裁决。
 		query := db.Session(&gorm.Session{NewDB: true}).Model(&entity.RechargeOrder{}).
-			Where("user_id = ? AND status = ? AND payment_provider = ?", userID, rechargeOrderStatusPaid, DefaultPaymentProvider).
-			Where("paid_at >= ? AND paid_at <= ?", now.Add(-ticketRefundAge), now).
-			Where("order_no <> ''").
-			Where("payment_method_name_snapshot <> ''").
-			Where("third_party_order_no <> ''").
-			Where("NOT EXISTS (SELECT 1 FROM ticket_refunds WHERE ticket_refunds.order_id = recharge_orders.id)")
+			Where("user_id = ? AND status <> ?", userID, rechargeOrderStatusPending)
 		if lastID != 0 {
 			query = query.Where("id < ?", lastID)
 		}
 		if err := query.Order("id DESC").Limit(64).Find(&orders).Error; err != nil {
 			return nil, err
 		}
+		if len(orders) == 0 {
+			return items, nil
+		}
+		ids := make([]int32, 0, len(orders))
 		for _, order := range orders {
-			// Go 层兜底：SQL 只做预筛，四项条件的**唯一真相**在这里。
-			// 两处不一致时以 Go 为准（SQL 可能因为字段类型/空串语义差异放过一条），
-			// 而且「能不能退」这个判断会被 CreateTicketRefundWithDB 复用，
-			// 单一实现才不会出现「列表说能退、提交时说不能退」。
-			if !ticketRefundOrderMeetsBasicCriteria(order, now) {
-				continue
+			ids = append(ids, order.ID)
+		}
+		var usedIDs []int32
+		if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.TicketRefund{}).
+			Where("order_id IN ?", ids).Pluck("order_id", &usedIDs).Error; err != nil {
+			return nil, err
+		}
+		used := make(map[int32]bool, len(usedIDs))
+		for _, id := range usedIDs {
+			used[id] = true
+		}
+		for _, order := range orders {
+			reason := ticketRefundOrderUnavailableReason(order, now)
+			if used[order.ID] {
+				if reason != "" {
+					reason += "；"
+				}
+				reason += "该订单已申请过退款，每笔充值订单只能退款一次"
 			}
-			// 渠道校验失败只影响「能否原路退回」，不再影响「是否出现在列表里」。
-			//
-			// 但**真故障**仍要上抛：ticketRefundOriginalChannel 返回非 Unavailable 的
-			// 错误意味着渠道调用本身炸了（网络/签名/下游 5xx），这时静默降级成
-			// 「人工退款」会让用户以为系统正常、实际是原路通道坏了。所以保留 err 分支。
-			// 2026-11-19：同时取「不能原路退回的原因」。
-			// 真故障（err != nil）必须上抛，不能降级成人工退款 ——
-			// 那会让「原路通道坏了」看起来像「这笔单本来就不能原路退」。
-			originalOK := true
-			originalReason := ""
-			if _, reason, err := ticketRefundOriginalChannelDetail(db, order, verify, now); err != nil {
-				return nil, err
-			} else if reason != "" {
-				originalOK = false
-				originalReason = reason
+			paid, _ := ticketRefundOrderAmountCents(order.Amount)
+			var paidAt time.Time
+			if order.PaidAt != nil {
+				paidAt = *order.PaidAt
 			}
-			paid, centsErr := ticketRefundPaidOrderCents(order)
-			if centsErr != nil {
-				// 金额解析不出来说明这条订单数据本身坏了（金额为空/非法），
-				// 列出来也没法填退款金额，跳过。
-				continue
-			}
-			item := TicketRefundOrder{
-				ID: order.ID, OrderNo: order.OrderNo, PaidCents: paid, PaidAt: *order.PaidAt,
+			items = append(items, TicketRefundOrder{
+				ID: order.ID, OrderNo: order.OrderNo, PaidCents: paid, PaidAt: paidAt,
+				CreatedAt: order.CreatedAt, Status: order.Status,
 				PaymentMethodNameSnapshot: order.PaymentMethodNameSnapshot,
-				OriginalSupported:         originalOK,
-				OriginalUnsupportedReason: originalReason,
-			}
-			items = append(items, item)
-			if len(items) == want {
+				OriginalSupported:         reason == "", OriginalUnsupportedReason: reason,
+			})
+			if want > 0 && len(items) == want {
 				return items, nil
 			}
 		}
@@ -784,112 +739,82 @@ func listEligibleTicketRefundOrders(db *gorm.DB, userID int32, verify TicketRefu
 	}
 }
 
-// ticketRefundOrderMeetsBasicCriteria 判「这笔订单是否具备退款资格」的四项硬条件。
-//
-// 2026-11-19 用户明确列出（原文）：
-//  1. 时间不超过 6 个月
-//  2. 有订单号
-//  3. 有支付方式
-//  4. 有第三方单号
-//  5. 第一次退款，每个订单只能退款一次
-//
-// 第 5 条不在这里判 —— 它由 ticket_refunds.order_id 的唯一索引 + 调用方的
-// ensureTicketRefundOrderUnused 保证，放在这里会与事务外读产生 TOCTOU。
-//
-// 这四项决定「能不能退」，与「能不能原路退回」是两件事：
-// 缺渠道凭证的订单仍可退（走人工打款），所以它们在 listEligible 里会以
-// OriginalSupported=false 出现，而不是被过滤掉。
+// Shared listing/submission criteria. Prior refund use is checked in bulk for
+// listing and under the order lock plus a unique index for application creation.
 func ticketRefundOrderMeetsBasicCriteria(order entity.RechargeOrder, asOf time.Time) bool {
-	if _, err := ticketRefundPaidOrderCents(order); err != nil {
-		// 金额解析不出来 = 这条订单数据本身坏了，无法确定退款额度。
-		return false
-	}
-	// ① 时间不超过 6 个月，且不在未来（未来的 paid_at 说明回调数据有误）。
-	if order.PaidAt == nil || order.PaidAt.Before(asOf.Add(-ticketRefundAge)) || order.PaidAt.After(asOf) {
-		return false
-	}
-	// ② 有订单号。
-	if strings.TrimSpace(order.OrderNo) == "" {
-		return false
-	}
-	// ③ 有支付方式。注意这是**下单时快照**的展示名（如「支付宝」），
-	// 与 ④ 的第三方单号是不同来源：前者给用户看，后者给渠道对账。
-	if strings.TrimSpace(order.PaymentMethodNameSnapshot) == "" {
-		return false
-	}
-	// ④ 有第三方单号 —— 这是支付渠道返回的流水号，退款时用它定位原交易。
-	//
-	// ⚠️ 历史坑：这里原来只认 refund_original_trade_no（退款专用列，
-	// 由支付回调额外写入），而前端「第三方单号」列展示的是 third_party_order_no。
-	// 两者是不同的列，于是出现过「表里明明有第三方单号、却没有退款按钮」的
-	// 现象（订单 5）。现在按用户口径统一到 third_party_order_no。
-	if strings.TrimSpace(order.ThirdPartyOrderNo) == "" {
-		return false
-	}
-	return true
+	return ticketRefundOrderUnavailableReason(order, asOf) == ""
 }
 
-// ticketRefundOriginalChannel 判断这笔订单能否**原路退回**，能则返回渠道引用。
-//
-// 与 ticketRefundOrderMeetsBasicCriteria 的分工：
-// 前者答「能不能退」，这里答「能不能原路退」。后者是前者的子集 ——
-// 原路退回额外要求渠道指纹与校验器，缺了就只能人工打款。
-// ticketRefundOriginalChannelDetail 判断原路退回能力，并给出**不能退的原因**。
-//
-// 返回三元组，语义互斥：
-//
-//	ref != ""    → 可原路退回，ref 是渠道引用
-//	reason != "" → 不可原路退回，reason 是给人看的原因（可走人工打款）
-//	err != nil   → 真故障（渠道调用炸了），调用方必须上抛而不是降级成人工
-//
-// 为什么要把「原因」和「故障」分开：降级成人工打款是**正常业务分支**，
-// 而渠道 5xx 是**故障**。混在一起会让「原路通道坏了」被悄悄当成
-// 「这笔单本来就不能原路退」，运维永远发现不了。
-func ticketRefundOriginalChannelDetail(db *gorm.DB, order entity.RechargeOrder, verify TicketRefundOrderVerifier, asOf time.Time) (string, string, error) {
-	if !ticketRefundOrderMeetsBasicCriteria(order, asOf) {
-		return "", "该订单不满足退款资格（超期或缺订单要素），无法原路退回", nil
+func ticketRefundOrderUnavailableReason(order entity.RechargeOrder, asOf time.Time) string {
+	reasons := make([]string, 0)
+	if order.Status == rechargeOrderStatusRefunded {
+		reasons = append(reasons, "订单已退款，每笔充值订单只能退款一次")
+	} else if order.Status != rechargeOrderStatusPaid {
+		reasons = append(reasons, "订单状态不是已支付，无法原路退回")
 	}
-	if order.PaymentProvider != DefaultPaymentProvider {
-		return "", "该订单的支付渠道不受支持，无法原路退回", nil
+	// Both timestamps use the same inclusive 60-day interval.
+	if order.CreatedAt.IsZero() {
+		reasons = append(reasons, "创建时间缺失")
+	} else if order.CreatedAt.Before(asOf.Add(-ticketRefundAge)) {
+		reasons = append(reasons, "创建时间超过60天")
+	} else if order.CreatedAt.After(asOf) {
+		reasons = append(reasons, "创建时间晚于当前时间")
 	}
-	if verify == nil {
-		return "", "支付渠道当前未配置，暂时无法原路退回", nil
+	if order.PaidAt == nil || order.PaidAt.IsZero() {
+		reasons = append(reasons, "支付时间缺失")
+	} else if order.PaidAt.Before(asOf.Add(-ticketRefundAge)) {
+		reasons = append(reasons, "支付时间超过60天")
+	} else if order.PaidAt.After(asOf) {
+		reasons = append(reasons, "支付时间晚于当前时间")
 	}
-	// 渠道指纹由支付回调写入。为空说明回调没带上，或这笔单来自更早的版本。
-	if !validTicketRefundReference(order.RefundChannelFingerprint, 255) {
-		return "", "该订单缺少渠道校验信息（支付回调未写入），无法原路退回", nil
+	if strings.TrimSpace(order.OrderNo) == "" {
+		reasons = append(reasons, "缺少订单号")
+	} else if !validTicketRefundReference(order.OrderNo, 64) {
+		reasons = append(reasons, "订单号格式无效")
 	}
-	// 原交易流水号同样来自回调，退款时用它定位原交易。
-	if !validTicketRefundReference(order.RefundOriginalTradeNo, 128) {
-		return "", "该订单缺少原交易流水号（支付回调未写入），无法原路退回", nil
+	if strings.TrimSpace(order.PaymentMethodNameSnapshot) == "" {
+		reasons = append(reasons, "缺少支付方式")
 	}
-	ref, err := verify(db, order)
-	if err != nil {
-		// 渠道明确说「不可用」→ 这是业务分支，给原因，不上抛。
-		if errors.Is(err, ErrTicketRefundOrderUnavailable) {
-			return "", "渠道校验未通过，无法原路退回", nil
-		}
-		// 其余（网络/签名/下游 5xx）是真故障。
-		return "", "", err
+	if strings.TrimSpace(order.ThirdPartyOrderNo) == "" {
+		reasons = append(reasons, "缺少第三方单号")
 	}
-	if !validTicketRefundReference(ref, 255) {
-		return "", "渠道未返回可用的退款凭据，无法原路退回", nil
+	if _, err := ticketRefundOrderAmountCents(order.Amount); err != nil {
+		reasons = append(reasons, "订单金额无效或向下取整后不足0.01元")
 	}
-	return ref, "", nil
+	return strings.Join(reasons, "；")
+}
+
+// Prefer the immutable callback snapshot for newer orders. Older paid orders
+// predate that column, and their visible third-party number is the original trade.
+func ticketRefundOriginalTradeNo(order entity.RechargeOrder) string {
+	if order.RefundOriginalTradeNo != "" {
+		return order.RefundOriginalTradeNo
+	}
+	return order.ThirdPartyOrderNo
 }
 
 func ticketRefundOriginalChannel(db *gorm.DB, order entity.RechargeOrder, verify TicketRefundOrderVerifier, asOf time.Time) (string, error) {
-	ref, reason, err := ticketRefundOriginalChannelDetail(db, order, verify, asOf)
+	if !ticketRefundOrderMeetsBasicCriteria(order, asOf) {
+		return "", ErrTicketRefundOrderUnavailable
+	}
+	if verify == nil {
+		return "", ErrTicketRefundChannelDisabled
+	}
+	order.RefundOriginalTradeNo = ticketRefundOriginalTradeNo(order)
+	if !validTicketRefundReference(order.RefundOriginalTradeNo, 128) {
+		return "", ErrTicketRefundOrderUnavailable
+	}
+	ref, err := verify(db, order)
 	if err != nil {
 		return "", err
 	}
-	if reason != "" {
-		return "", ErrTicketRefundOrderUnavailable
+	if !validTicketRefundReference(ref, 255) {
+		return "", ErrTicketRefundChannelDisabled
 	}
 	return ref, nil
 }
 
-func verifyTicketRefundOriginalOrderInTx(tx *gorm.DB, row entity.TicketRefund, verify TicketRefundOrderVerifier) error {
+func verifyTicketRefundOriginalOrderInTx(tx *gorm.DB, row *entity.TicketRefund, verify TicketRefundOrderVerifier) error {
 	if row.OrderID == nil || row.CreatedAt.IsZero() {
 		return ErrTicketRefundOrderUnavailable
 	}
@@ -902,18 +827,29 @@ func verifyTicketRefundOriginalOrderInTx(tx *gorm.DB, row entity.TicketRefund, v
 		return err
 	}
 	paid, _ := ticketRefundPaidOrderCents(order)
-	if row.ChannelRef != ref || row.OrderNo != order.OrderNo || row.OriginalTradeNo != order.RefundOriginalTradeNo ||
-		row.OrderPaidCents != paid {
+	if row.OrderNo != order.OrderNo || row.OriginalTradeNo != ticketRefundOriginalTradeNo(order) || row.OrderPaidCents != paid {
+		return ErrTicketRefundOrderUnavailable
+	}
+	if row.ChannelRef == "" && row.Status == TicketRefundStatusPendingReview {
+		// Bind only after successful verification, in the approval transaction.
+		return updateTicketRefund(tx, row, map[string]any{"channel_ref": ref})
+	}
+	if row.ChannelRef != ref {
 		return ErrTicketRefundOrderUnavailable
 	}
 	return nil
 }
 
 func ticketRefundPaidOrderCents(order entity.RechargeOrder) (int64, error) {
-	v := order.Amount
 	if order.Status != rechargeOrderStatusPaid || order.PaidAt == nil || order.PaidAt.IsZero() ||
-		!validTicketRefundReference(order.OrderNo, 64) || math.IsNaN(v) || math.IsInf(v, 0) ||
-		v <= 0 || v > float64(ticketRefundMaxCents)/100 {
+		!validTicketRefundReference(order.OrderNo, 64) {
+		return 0, ErrTicketRefundOrderUnavailable
+	}
+	return ticketRefundOrderAmountCents(order.Amount)
+}
+
+func ticketRefundOrderAmountCents(v float64) (int64, error) {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 || v > float64(ticketRefundMaxCents)/100 {
 		return 0, ErrTicketRefundOrderUnavailable
 	}
 	// 超过两位小数的订单金额**向下取整到分**（2026-11-19 用户要求）。

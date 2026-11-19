@@ -10,6 +10,8 @@ cd run && docker compose up -d --build
 
 容器内 `/app/data` 是持久化目录：数据库须落在其中，否则重启即丢。只挂载这一个目录即可，不影响程序文件。
 
+工单图片始终启用，图片仍会加密保存并经过内容检测。首次启动自动生成图片加密密钥并随数据库保存，无需另配开关或环境变量。备份时须完整备份数据库，勿删除或修改 `system_settings` 中的 `ticket_attachment_encryption_key`。已有部署的 `TIKU_TICKET_ATTACHMENT_KEY`（或兼容的 `TIKU_REFUND_PROOF_KEY`）会作为初始密钥保存；保存后即使取消该环境变量也能读取原图。修改环境密钥会因与已保存密钥不一致而拒绝启动，避免历史图片失效。
+
 ## 热生效说明
 
 `nginx` 容器启动后会每 3 秒比对一次配置指纹，变化时先 `nginx -t` 校验、通过后再 `nginx -s reload`。
