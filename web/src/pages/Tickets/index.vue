@@ -379,128 +379,214 @@
         <!-- 退款类型：字段整体切换成退款需要的（订单 / 金额 / 理由），
              而不是只把分类字符串改一下。 -->
         <template v-if="createNeedsRefundFields">
-          <!-- 退款订单：**多选**，用原生复选框列表而不是 a-select mode="multiple"。
-
-               2026-11-18 实测：本项目的 antd 4.2.6 在此环境下，a-select 的选项
-               能正常展开、能正常渲染（4 个选项坐标都对），但真实鼠标点击与键盘
-               回车都**不会**让选中态生效（.ant-select-item-option-selected 恒为 0）。
-               与 a-radio-group 那个「选不动」是同一类问题 —— 组件内部 emit 链断掉。
-
-               所以改用原生 checkbox：点击直接调 toggleRefundOrder。
-               顺带好处是每个选项能显示「仅人工退款」标记，下拉里做不到。 -->
-          <a-form-item label="退款订单" :html-for="createFieldId('order')">
-            <p v-if="refundOrdersLoading" class="ticket-refund-orders-hint">正在读取可退订单…</p>
-            <p v-else-if="!refundOrderOptions.length" class="ticket-refund-orders-hint">
-              当前没有可退订单。可直接提交「无订单的人工退款」，由管理员核对凭证。
-            </p>
-            <div v-else class="ticket-refund-orders" role="group" aria-label="退款订单（可多选）">
-              <label
-                v-for="item in refundOrderOptions"
-                :key="item.value"
-                class="ticket-refund-order"
-                :class="{ 'ticket-refund-order--checked': isRefundOrderSelected(item.value) }"
-                :data-ticket-refund-order="item.value"
-              >
-                <input
-                  type="checkbox"
-                  :value="item.value"
-                  :checked="isRefundOrderSelected(item.value)"
-                  :disabled="createLoading"
-                  @change="toggleRefundOrder(item.value)"
-                />
-                <span class="ticket-refund-order__body">
-                  <span class="ticket-refund-order__label">{{ item.label }}</span>
-                  <span class="ticket-refund-order__tag" v-if="!item.originalSupported">仅人工退款</span>
-                  <!-- 为什么不能原路退回：后端给的具体原因。缺了它用户只会看到
-                       「仅人工退款」而无从判断该找管理员配渠道，还是这笔单本身
-                       就没有渠道凭证。 -->
-                  <span
-                    class="ticket-refund-order__reason"
-                    v-if="!item.originalSupported && item.originalUnsupportedReason"
-                    :data-ticket-refund-order-reason="item.value"
-                  >{{ item.originalUnsupportedReason }}</span>
-                </span>
-              </label>
-            </div>
-            <template #help
-              ><span>
-                可多选。选中的订单会各生成一笔退款申请；标注「仅人工退款」的订单缺少原路退回所需的
-                渠道凭证，只能由管理员人工打款。不选任何订单 = 无订单人工退款。
-              </span></template
-            >
-          </a-form-item>
-          <!--
-            收款码（2026-11-19 用户要求）：「即便可以原路退回也可以要求用户设置
-            退款账号」。人工打款时管理员据此扫码转账，所以它服务于人工退回那条路。
-
-            三个交互约束：
-              · 只能一张 —— 不做列表，只有一个附件 ID，重选即覆盖；
-              · 带记忆   —— ID 存 localStorage（按用户隔离），本机再打开直接加载；
-              · 换设备   —— 本地缓存没有时，需输入当前密码才能取回上次那张。
-                            替换不走密码：手上就有新图，没有验证的必要。
-          -->
-          <a-form-item label="收款码（人工退款用）">
-            <div class="ticket-payout-qr" data-ticket-payout-qr>
-              <img
-                v-if="payoutQrPreviewUrl"
-                :src="payoutQrPreviewUrl"
-                alt="已上传的收款码"
-                class="ticket-payout-qr__preview"
-                data-ticket-payout-qr-preview
-              />
-              <div class="ticket-payout-qr__actions">
-                <label class="ticket-attachment-input">
-                  <span>{{ draft.refundPayoutQrAttachmentId ? "替换收款码" : "选择收款码" }}</span>
-                  <input
-                    type="file"
-                    :accept="TICKET_ATTACHMENT_ACCEPT"
-                    :disabled="createLoading || payoutQrBusy"
-                    data-ticket-payout-qr-input
-                    @change="onPickPayoutQr"
-                  />
-                </label>
-                <a-button
-                  v-if="draft.refundPayoutQrAttachmentId"
-                  type="link"
-                  size="small"
-                  danger
-                  :disabled="createLoading || payoutQrBusy"
-                  @click="clearPayoutQr"
-                >移除</a-button>
-              </div>
-              <p class="ticket-payout-qr__hint" v-if="draft.refundPayoutQrAttachmentId">
-                已就绪：本次申请会带上这张收款码。
-              </p>
-              <p class="ticket-payout-qr__hint" v-else>
-                人工打款需要收款码；原路退回不需要，但带上也不影响。
-              </p>
-            </div>
-            <template #help
-              ><span>
-                只支持一张。同一台设备会记住上次上传的收款码，下次自动带出；
-                换设备时需输入当前密码才能取回。
-              </span></template
-            >
-          </a-form-item>
-          <a-form-item label="退款金额（元）" required :validate-status="createValidationMessage('requestedYuan') ? 'error' : undefined"
-            ><a-input
+          <!-- 退款金额：**第一行**（2026-11-19 用户要求）。
+               金额是「目标总额」，订单选择是「如何凑出这个总额」，所以它在前。 -->
+          <a-form-item label="退款金额（元）" required :validate-status="createValidationMessage('requestedYuan') ? 'error' : ''">
+            <a-input
               :id="createFieldId('amount')"
-              :value="draft.requestedYuan" :onUpdate:value="createEntry.bind(setDraft, 'requestedYuan')"
+              :value="draft.requestedYuan"
+              :onUpdate:value="setRefundRequestedYuan"
               :aria-invalid="createValidationMessage('requestedYuan') ? 'true' : undefined"
               placeholder="例如 25.50"
-              :disabled="createLoading" /><template #help><span v-if="createValidationMessage('requestedYuan')" role="alert">{{ createValidationMessage('requestedYuan') }}</span><span v-else>最多两位小数</span></template></a-form-item
-          >
-          <a-form-item label="退款理由" required :validate-status="createValidationMessage('reason') ? 'error' : undefined"
-            ><a-textarea
+              :disabled="createLoading"
+            /><template #help><span v-if="createValidationMessage('requestedYuan')" role="alert">{{ createValidationMessage('requestedYuan') }}</span></template>
+          </a-form-item>
+
+          <!-- 退回方式：**第二行**（2026-11-19 用户要求）。
+
+               用原生 button 而不是 a-radio-group：本项目 antd 4.2.6 实测点击后
+               既不 emit update:value 也不 emit change，选中态永远落不到 DOM，
+               且全程无报错。同样的坑之前在工单类型选择上踩过一次。 -->
+          <a-form-item label="退回方式" required>
+            <div class="ticket-refund-method" role="radiogroup" aria-label="退回方式">
+              <button
+                type="button"
+                class="ticket-refund-method__option"
+                :class="{ 'ticket-refund-method__option--active': draft.refundMethod === REFUND_METHOD_ORIGINAL }"
+                role="radio"
+                :aria-checked="draft.refundMethod === REFUND_METHOD_ORIGINAL ? 'true' : 'false'"
+                data-ticket-refund-method="original"
+                :disabled="createLoading"
+                @click="selectRefundMethod(REFUND_METHOD_ORIGINAL)"
+              >
+                <span class="ticket-refund-method__title">原路退回</span>
+                <span class="ticket-refund-method__desc">退回原支付渠道，需选择对应的充值记录</span>
+              </button>
+              <button
+                type="button"
+                class="ticket-refund-method__option"
+                :class="{ 'ticket-refund-method__option--active': draft.refundMethod === REFUND_METHOD_MANUAL }"
+                role="radio"
+                :aria-checked="draft.refundMethod === REFUND_METHOD_MANUAL ? 'true' : 'false'"
+                data-ticket-refund-method="manual"
+                :disabled="createLoading"
+                @click="selectRefundMethod(REFUND_METHOD_MANUAL)"
+              >
+                <span class="ticket-refund-method__title">人工退回</span>
+                <span class="ticket-refund-method__desc">由管理员人工打款，需上传收款码</span>
+              </button>
+            </div>
+          </a-form-item>
+
+          <!-- 原路退回：选充值记录 + 按新旧分摊 -->
+          <template v-if="draft.refundMethod === REFUND_METHOD_ORIGINAL">
+            <a-form-item label="退款订单" :html-for="createFieldId('order')">
+              <p v-if="refundOrdersLoading" class="ticket-refund-orders-hint">正在读取可退订单…</p>
+              <p v-else-if="!refundOrderOptions.length" class="ticket-refund-orders-hint">
+                当前没有可退订单。
+              </p>
+              <div v-else class="ticket-refund-orders" role="group" aria-label="退款订单（可多选）">
+                <label
+                  v-for="item in refundOrderOptions"
+                  :key="item.value"
+                  class="ticket-refund-order"
+                  :class="{ 'ticket-refund-order--checked': isRefundOrderSelected(item.value) }"
+                  :data-ticket-refund-order="item.value"
+                >
+                  <input
+                    type="checkbox"
+                    :value="item.value"
+                    :checked="isRefundOrderSelected(item.value)"
+                    :disabled="createLoading || !canToggleRefundOrder(item.value)"
+                    @change="toggleRefundOrder(item.value)"
+                  />
+                  <span class="ticket-refund-order__body">
+                    <span class="ticket-refund-order__label">{{ item.label }}</span>
+                    <span class="ticket-refund-order__tag" v-if="!item.originalSupported">仅人工退款</span>
+                    <span
+                      class="ticket-refund-order__reason"
+                      v-if="!item.originalSupported && item.originalUnsupportedReason"
+                      :data-ticket-refund-order-reason="item.value"
+                    >{{ item.originalUnsupportedReason }}</span>
+                    <span class="ticket-refund-alloc" v-if="isRefundOrderSelected(item.value)">
+                      <span class="ticket-refund-alloc__label">本次退</span>
+                      <input
+                        type="number"
+                        class="ticket-refund-alloc__input"
+                        min="0"
+                        step="0.01"
+                        :max="(item.paidCents / 100).toFixed(2)"
+                        :value="(refundAllocationOf(item.value).cents / 100).toFixed(2)"
+                        :disabled="createLoading"
+                        :data-ticket-refund-alloc="item.value"
+                        @input="setRefundAllocationCents(item.value, $event.target.value)"
+                      />
+                      <span class="ticket-refund-alloc__unit">元</span>
+                      <span
+                        class="ticket-refund-alloc__badge"
+                        :class="{ 'ticket-refund-alloc__badge--partial': refundAllocationOf(item.value).cents < item.paidCents }"
+                      >{{ refundAllocationOf(item.value).cents >= item.paidCents ? "全额" : "部分" }}</span>
+                    </span>
+                  </span>
+                </label>
+              </div>
+              <div class="ticket-refund-summary" data-ticket-refund-summary>
+                已分配 <strong>{{ (refundAllocatedCents / 100).toFixed(2) }}</strong> 元 /
+                申请 <strong>{{ (refundRequestedCents / 100).toFixed(2) }}</strong> 元
+                <span v-if="refundRemainingCents > 0">
+                  ，还差 <strong data-ticket-refund-gap>{{ (refundRemainingCents / 100).toFixed(2) }}</strong> 元
+                </span>
+                <span v-else>，已达申请金额（要再选订单请先把某笔金额调小）</span>
+              </div>
+              <template #help
+                ><span>
+                  按充值时间<strong>最旧优先</strong>自动分摊：较旧的先全额，剩余部分给最新一笔。
+                  你可以直接改每一笔的金额 —— 改过的行不会再被自动调整；
+                  把某笔调小就能腾出额度再选下一笔。
+                </span></template
+              >
+            </a-form-item>
+          </template>
+
+          <!-- 人工退回：手机号确认 + 收款码 -->
+          <template v-else-if="draft.refundMethod === REFUND_METHOD_MANUAL">
+            <a-form-item label="手机号确认">
+              <div class="ticket-refund-phone" data-ticket-refund-phone>
+                <template v-if="refundBoundPhoneMasked">
+                  <span class="ticket-refund-phone__value">{{ refundBoundPhoneMasked }}</span>
+                  <label class="ticket-refund-phone__confirm">
+                    <input
+                      type="checkbox"
+                      :checked="draft.refundPhoneConfirmed"
+                      :disabled="createLoading"
+                      data-ticket-refund-phone-confirm
+                      @change="draft.refundPhoneConfirmed = $event.target.checked"
+                    />
+                    <span>我已确认该手机号可正常收款，管理员会通过它与我联系</span>
+                  </label>
+                </template>
+                <span v-else class="ticket-refund-phone__missing">
+                  当前账号没有绑定手机号。人工打款只认收款码，建议先在「个人中心」绑定手机号以便联系。
+                </span>
+              </div>
+            </a-form-item>
+
+            <a-form-item label="收款码" required>
+              <div class="ticket-payout-qr" data-ticket-payout-qr>
+                <img
+                  v-if="payoutQrPreviewUrl"
+                  :src="payoutQrPreviewUrl"
+                  alt="已上传的收款码"
+                  class="ticket-payout-qr__preview"
+                  data-ticket-payout-qr-preview
+                />
+                <div class="ticket-payout-qr__actions">
+                  <label class="ticket-attachment-input">
+                    <span>{{ draft.refundPayoutQrAttachmentId ? "替换收款码" : "选择收款码" }}</span>
+                    <input
+                      type="file"
+                      :accept="TICKET_ATTACHMENT_ACCEPT"
+                      :disabled="createLoading || payoutQrBusy"
+                      data-ticket-payout-qr-input
+                      @change="onPickPayoutQr"
+                    />
+                  </label>
+                  <a-button
+                    v-if="draft.refundPayoutQrAttachmentId"
+                    type="link"
+                    size="small"
+                    danger
+                    :disabled="createLoading || payoutQrBusy"
+                    @click="clearPayoutQr"
+                  >移除</a-button>
+                  <a-button
+                    v-else
+                    type="link"
+                    size="small"
+                    :disabled="createLoading || payoutQrBusy || !canRecoverPayoutQr"
+                    data-ticket-payout-qr-recover
+                    @click="openPayoutQrRecover"
+                  >恢复上次的收款码</a-button>
+                </div>
+                <p class="ticket-payout-qr__hint" v-if="draft.refundPayoutQrAttachmentId">
+                  已就绪：本次申请会带上这张收款码。
+                </p>
+                <p class="ticket-payout-qr__hint" v-else>
+                  人工打款必须提供收款码。同一台设备会自动带出上次那张；换设备需输入密码恢复。
+                </p>
+              </div>
+              <template #help
+                ><span>
+                  只支持一张。同一台设备会记住上次上传的收款码，下次自动带出；
+                  换设备时点「恢复上次的收款码」并输入当前密码即可取回。
+                </span></template
+              >
+            </a-form-item>
+          </template>
+
+          <a-form-item label="退款理由" required :validate-status="createValidationMessage('reason') ? 'error' : ''">
+            <a-textarea
               :id="createFieldId('reason')"
-              :value="draft.reason" :onUpdate:value="createEntry.bind(setDraft, 'reason')"
+              :value="draft.reason"
+              :onUpdate:value="createEntry.bind(setDraft, 'reason')"
               :aria-invalid="createValidationMessage('reason') ? 'true' : undefined"
               :maxlength="500"
               show-count
               :rows="4"
               :disabled="createLoading"
-              placeholder="请说明退款原因" /><template #help><span v-if="createValidationMessage('reason')" role="alert">{{ createValidationMessage('reason') }}</span></template></a-form-item
-          >
+              placeholder="请说明退款原因"
+            /><template #help><span v-if="createValidationMessage('reason')" role="alert">{{ createValidationMessage('reason') }}</span></template>
+          </a-form-item>
         </template>
         <!-- 账号问题（B2-6）：问题类型下拉 + 说明文本域。
              问题类型只作为标题前缀供管理员分诊，不是独立后端字段
@@ -869,7 +955,13 @@ import {
 } from "@/utils/ticketHelpers.mjs";
 // 退款 7 态的中文文案、金额格式化与可退订单列表都与退款面板共用同一份实现，
 // 避免列表与面板对同一状态/金额给出不同说法。
-import { formatRefundCents, refundStatusLabel } from "./refundTicketHelpers.mjs";
+import { formatRefundCents, refundStatusLabel } from "./refundTicketHelpers.mjs"
+// 分摊算法抽成纯函数：「不覆盖用户手改金额」这条
+// 写在 .vue 里测不到，只能靠人点界面看 —— 那不叫验证。
+import {
+  computeRefundAllocations,
+  refundAllocationTotals,
+} from "./refundAllocation.mjs";
 // 新建工单时选类型的纯函数（T-209 建立，B2 扩到四项 + 两步向导）：
 // 类型清单、向导步骤、按类型分派的校验、payload 构造。
 //
@@ -881,6 +973,7 @@ import {
   getTicketCreateDraftValidation,
   isAccountClosureTicketType,
   isRefundTicketRow,
+  parseRefundYuanToCents,
   ticketCreateTypeNeedsRefundFields,
   ticketRowRefundStatus,
   ticketWizardCanAdvanceFromType,
@@ -895,7 +988,10 @@ import {
   TICKET_WIZARD_STEP_FORM,
   TICKET_WIZARD_STEP_TYPE,
 } from "./createTicketTypeHelpers.mjs";
-import { getEligibleTicketRefundOrders } from "@/api/TikuComponentApi";
+import {
+  getEligibleTicketRefundOrders,
+  recoverTicketRefundPayoutQr,
+} from "@/api/TikuComponentApi";
 
 const detailStatusId = `tickets-${useId()}-detail-status`;
 // 退款 7 态的中文文案与退款面板同一份（refundStatusLabel 在上方 import），
@@ -1017,7 +1113,18 @@ const draft = reactive({
   requestedYuan: "",
   reason: "",
   // 多选（2026-11-18）：一个订单一张退款单，服务端展开；空数组 = 无订单人工退款。
+  //
+  // 2026-11-19：分摊模式下改用 refundAllocations（带金额）。
+  // 这个字段保留为空数组，不再写入 —— 两份真相并存必然漂移。
   refundOrderIds: [],
+  // 退回方式（2026-11-19）：“original” 原路退回 / “manual” 人工退回。
+  refundMethod: '',
+  // 人工退回时的手机号确认（用户要求「验证手机号」）。
+  // 没绑手机号时这个开关不参与校验（不能因为没绑就永远退不了）。
+  refundPhoneConfirmed: false,
+  // 分摊表：[{ orderId, cents, manual }]
+  //   manual=true 表示用户手改过这一行，任何重算都不得覆盖它。
+  refundAllocations: [],
   // 收款码附件 ID（可选，2026-11-19）。null = 没上传/已清除。
   // 与 draftAttachments 分开：那是工单截图，这是退款收款凭据。
   refundPayoutQrAttachmentId: null,
@@ -1065,6 +1172,11 @@ async function loadRefundOrders() {
         // 「这笔单的回调没写流水号」对用户的意义完全不同。
         originalSupported: row.originalSupported === true,
         originalUnsupportedReason: String(row.originalUnsupportedReason || ''),
+        // 分摊算法需要两个原始值：
+        //   paidCents —— 这笔最多能退多少（上限）
+        //   paidAt    —— 新旧排序（用户要求「最旧那笔优先全额」）
+        paidCents: Number(row.paidCents) || 0,
+        paidAt: String(row.paidAt || ''),
       }));
     refundOrdersLoaded = true;
   } catch {
@@ -1089,6 +1201,14 @@ function currentDraftValidation() {
     requestedYuan: draft.requestedYuan,
     reason: draft.reason,
     issueType: draft.issueType,
+    // 2026-11-19 退款新字段：方式 / 分摊 / 收款码 / 手机号确认。
+    refundMethod: draft.refundMethod,
+    refundAllocations: draft.refundAllocations,
+    refundPayoutQrAttachmentId: draft.refundPayoutQrAttachmentId,
+    refundPhoneConfirmed: draft.refundPhoneConfirmed,
+    // 手机号从当前用户现取而不存进 draft：
+    // 存一份副本会在换账号后变成旧值。
+    boundPhone: refundBoundPhone.value,
   });
 }
 function retireStaleCreateValidation() {
@@ -1268,19 +1388,31 @@ function keepSavedWebhook() { if (canManage() && configLoaded.value) { notificat
 // 为什么不用 a-select：本项目 antd 4.2.6 在此环境下，下拉能展开、选项能渲染，
 // 但真实鼠标点击与键盘回车都不会让选中态生效（.ant-select-item-option-selected 恒 0）。
 // 与 a-radio-group 那个「选不动」同源 —— 组件内部 emit 链断掉，且不报错。
-function isRefundOrderSelected(id) {
-  return Array.isArray(draft.refundOrderIds) && draft.refundOrderIds.includes(Number(id));
-}
+// toggleRefundOrder 改写为操作分摊表（2026-11-19）。
+//
+// 旧实现维护 draft.refundOrderIds（只有 id、没有金额），表达不出
+// 「第一笔 7.5 全额、第二笔 2.5 部分」。现在选中状态 = 分摊表里有没有这一行。
 function toggleRefundOrder(id) {
   if (!createVisible.value || createLoading.value) return;
   const value = Number(id);
   if (!Number.isSafeInteger(value) || value <= 0) return;
-  const current = Array.isArray(draft.refundOrderIds) ? draft.refundOrderIds : [];
-  // 保持选中顺序 = 用户勾选顺序（提交时后端按此顺序建单，方便对照）。
-  draft.refundOrderIds = current.includes(value)
-    ? current.filter((item) => item !== value)
-    : [...current, value];
-  retireCreateValidation();
+  if (isRefundOrderSelected(value)) {
+    draft.refundAllocations = (Array.isArray(draft.refundAllocations)
+      ? draft.refundAllocations
+      : []
+    ).filter(item => item.orderId !== value)
+  } else {
+    // 已达申请金额 → 不能再加。
+    // 用户原话：「因为两笔的退款金额已经达到了申请退款金额，
+    // 所以不能选择第三笔」。要选第三笔就得先把金额改小。
+    if (refundRemainingCents.value <= 0) return
+    draft.refundAllocations = [
+      ...(Array.isArray(draft.refundAllocations) ? draft.refundAllocations : []),
+      { orderId: value, cents: 0, manual: false },
+    ]
+  }
+  recomputeRefundAllocations()
+  retireCreateValidation()
 }
 
 // ── 收款码上传（2026-11-19 用户要求）──
@@ -1324,6 +1456,127 @@ async function loadPayoutQrPreview(attachmentId) {
     // 静默是刻意的 —— 预览失败不该拦住退款。
   }
 }
+// ── 退款金额分摊（2026-11-19 用户要求）──
+//
+// 用户原话：「假如我要退款10块钱，但是支付记录有两笔，每笔都7.5」。
+// 所以申请金额是**目标总额**，订单选择是**如何凑出这个总额**。
+//
+// 分配规则（用户定的）：
+//   1. 按 paidAt 升序——最旧那笔优先全额；
+//   2. 余额不够时，最后一笔只退部分；
+//   3. 累计已达申请金额 → 不能再选第三笔；
+//   4. 用户手改过某一行后，**不再覆盖那一行**（manual 标记）。
+//
+// 第 4 条是最容易写错的：常见写法是“用户一改量重算全部行”，
+// 人会看到自己刚填的数字被抹掉。
+const REFUND_METHOD_ORIGINAL = "original"
+const REFUND_METHOD_MANUAL = "manual"
+const refundAllocationOf = orderId =>
+  (Array.isArray(draft.refundAllocations) ? draft.refundAllocations : []).find(
+    item => item.orderId === Number(orderId),
+  ) || null
+const isRefundOrderSelected = orderId => refundAllocationOf(orderId) !== null
+const refundRequestedCents = computed(
+  () => parseRefundYuanToCents(draft.requestedYuan) || 0,
+)
+// 汇总与分配算法共用同一份实现（refundAllocation.mjs）。
+// 两处各算一遍的后果是「已分配金额」与「实际送出去的金额」不一致，
+// 而用户看到的正是这个汇总。
+const refundTotals = computed(() =>
+  refundAllocationTotals(refundRequestedCents.value, draft.refundAllocations),
+)
+const refundAllocatedCents = computed(() => refundTotals.value.allocated)
+const refundRemainingCents = computed(() => refundTotals.value.remaining)
+// recomputeRefundAllocations 只重算未被手改的行。
+function recomputeRefundAllocations() {
+  draft.refundAllocations = computeRefundAllocations({
+    orders: refundOrderOptions.value.map(item => ({
+      id: item.value,
+      paidCents: item.paidCents,
+      paidAt: item.paidAt,
+    })),
+    requestedCents: refundRequestedCents.value,
+    selections: draft.refundAllocations,
+  })
+}
+// 已选中的行总能取消勾选；未选中的行只在“还有余额”时可勾选。
+// 这正是用户要的「两笔已达申请金额 → 不能选第三笔」。
+const canToggleRefundOrder = orderId =>
+  isRefundOrderSelected(orderId) || refundRemainingCents.value > 0
+function setRefundRequestedYuan(value) {
+  draft.requestedYuan = value
+  // 申请金额变了，未手改的行要重分；手改行保持不动。
+  recomputeRefundAllocations()
+  retireCreateValidation()
+}
+function setRefundAllocationCents(orderId, yuan) {
+  const row = refundAllocationOf(orderId)
+  if (!row) return
+  const option = refundOrderOptions.value.find(item => item.value === Number(orderId))
+  const cap = Number(option?.paidCents) || 0
+  const cents = Math.min(Math.max(0, parseRefundYuanToCents(yuan) || 0), cap)
+  row.cents = cents
+  // manual=true 是本轮的关键：之后任何重算都不动这一行。
+  row.manual = true
+  recomputeRefundAllocations()
+  retireCreateValidation()
+}
+function selectRefundMethod(method) {
+  draft.refundMethod = method
+  retireCreateValidation()
+}
+
+// 绑定手机号的掩码展示（人工退回需要用户确认收款账号）。
+//
+// 为什么只做掩码展示 + 确认而不发短信：现有短信验证码链路服务的是**登录与绑定**，
+// 复用它去做退款确认会把两个场景的限流与失败计数混在一起。这里只做
+// 「确认我知道钱会打到这个手机号」，属于弱校验，但不会误导用户以为已短信验证。
+// refundBoundPhone 是未掩码原值，只用于校验「有没有绑手机号」，
+// 不渲染到 DOM（界面上只出现掩码后的 refundBoundPhoneMasked）。
+const refundBoundPhone = computed(() => String(currentUser.value?.phone || "").trim())
+const refundBoundPhoneMasked = computed(() => {
+  const raw = refundBoundPhone.value
+  if (!raw) return ""
+  // 中间四位掩码；短于 7 位的异常值只保留首尾各一位，不把整串暴露出去。
+  if (raw.length < 7) return raw.replace(/^(.?)(.*)(.?)$/, "$1***$3")
+  return `${raw.slice(0, 3)}****${raw.slice(-4)}`
+})
+// canRecoverPayoutQr：本机缓存里没有收款码、且当前没选中任何图时才提供「恢复」入口。
+const canRecoverPayoutQr = computed(
+  () => !draft.refundPayoutQrAttachmentId && !payoutQrBusy.value,
+)
+// openPayoutQrRecover 用当前密码取回上次的收款码。
+//
+// 密码由用户当场输入（不从任何地方读取），服务端会复用登录失败计数做限流。
+function openPayoutQrRecover() {
+  if (!canRecoverPayoutQr.value) return
+  const password = window.prompt(
+    "\u8bf7\u8f93\u5165\u5f53\u524d\u767b\u5f55\u5bc6\u7801\uff0c\u4ee5\u6062\u590d\u4e0a\u6b21\u4f7f\u7528\u7684\u6536\u6b3e\u7801\uff1a",
+    "",
+  )
+  if (!password) return
+  payoutQrBusy.value = true
+  recoverTicketRefundPayoutQr(password)
+    .then(response => {
+      const id = Number(response?.data?.attachmentId)
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        message.info("\u6ca1\u6709\u53ef\u6062\u590d\u7684\u6536\u6b3e\u7801\u8bb0\u5f55\uff0c\u8bf7\u91cd\u65b0\u4e0a\u4f20")
+        return
+      }
+      draft.refundPayoutQrAttachmentId = id
+      const key = payoutQrMemoryKey()
+      if (key) {
+        try { window.localStorage.setItem(key, String(id)) } catch { /* \u5b58\u4e0d\u4e0b\u5c31\u53ea\u672c\u4f1a\u8bdd\u6709\u6548 */ }
+      }
+      void loadPayoutQrPreview(id)
+      message.success("\u5df2\u6062\u590d\u4e0a\u6b21\u7684\u6536\u6b3e\u7801")
+    })
+    .catch(error => {
+      message.error(responseMessage(error, "\u6062\u590d\u6536\u6b3e\u7801\u5931\u8d25"))
+    })
+    .finally(() => { payoutQrBusy.value = false })
+}
+
 // restorePayoutQr 打开弹窗时调用：带出上次那张码。
 function restorePayoutQr() {
   const key = payoutQrMemoryKey()
@@ -2295,6 +2548,110 @@ watch(
 }
 /* 「仅人工退款」标记：缺少渠道凭证的订单不能原路退回，必须让用户看见。 */
 /* 不能原路退回的原因：单独一行，比 tag 更淡，避免抢了订单号的注意力。 */
+/* 退回方式（原生 button，不用 a-radio-group）。 */
+.ticket-refund-method {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.ticket-refund-method__option {
+  flex: 1 1 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  text-align: left;
+  cursor: pointer;
+  border: 1px solid var(--console-border);
+  border-radius: 8px;
+  background: var(--console-surface);
+  color: inherit;
+  font: inherit;
+}
+.ticket-refund-method__option--active {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary) inset;
+}
+.ticket-refund-method__option:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.ticket-refund-method__title {
+  font-weight: 600;
+}
+.ticket-refund-method__desc {
+  color: var(--console-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+/* 分摊金额：每行订单可直接改金额。 */
+.ticket-refund-alloc {
+  flex-basis: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.ticket-refund-alloc__label {
+  color: var(--console-muted);
+  font-size: 12px;
+}
+.ticket-refund-alloc__input {
+  width: 92px;
+  padding: 2px 6px;
+  border: 1px solid var(--console-border);
+  border-radius: 4px;
+  background: var(--console-surface);
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+}
+.ticket-refund-alloc__unit {
+  color: var(--console-muted);
+  font-size: 12px;
+}
+.ticket-refund-alloc__badge {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--success, #52c41a);
+  color: #fff;
+  font-size: 11px;
+  line-height: 16px;
+}
+.ticket-refund-alloc__badge--partial {
+  background: var(--warning, #faad14);
+}
+.ticket-refund-summary {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--console-surface-sunken, rgba(0, 0, 0, 0.03));
+  font-size: 12px;
+  line-height: 20px;
+}
+/* 手机号确认。 */
+.ticket-refund-phone {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ticket-refund-phone__value {
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+.ticket-refund-phone__confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 20px;
+}
+.ticket-refund-phone__missing {
+  color: var(--console-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
 .ticket-refund-order__reason {
   flex-basis: 100%;
   color: var(--console-muted);

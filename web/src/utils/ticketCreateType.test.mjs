@@ -177,7 +177,8 @@ test("选退款类型时 payload 带退款字段且不带普通的标题/正文"
     ticketType: TICKET_CREATE_TYPE_REFUND,
     requestedYuan: "25.50",
     reason: "  充错了金额  ",
-    refundOrderIds: [88],
+    refundMethod: "original",
+    refundAllocations: [{ orderId: 88, cents: 2550 }],
   });
   assert.equal(validation.message, "");
   assert.equal(payload.ticketType, "refund");
@@ -186,7 +187,8 @@ test("选退款类型时 payload 带退款字段且不带普通的标题/正文"
   // 理由要去掉首尾空白。
   assert.equal(payload.refundReason, "充错了金额");
   // 多选后是数组（2026-11-18）：后端按「一笔订单一张退款单」展开。
-  assert.deepEqual(payload.refundOrderIds, [88]);
+  // 2026-11-19：改为上传每笔各自的金额 —— 只有 id 表达不出 7.5+2.5。
+  assert.deepEqual(payload.refundOrderAllocations, [{ orderId: 88, cents: 2550 }]);
   // 退款流程不接受 subject/body —— 壳工单的标题与正文由服务端按订单号生成。
   assert.equal("subject" in payload, false);
   assert.equal("body" in payload, false);
@@ -198,6 +200,8 @@ test("选退款但没指定订单时不传 refundOrderIds（后端会归为人�
     requestedYuan: "10",
     reason: "理由",
   });
+  // 无订单 = 人工退款：不带分摊，也不带旧的 refundOrderIds。
+  assert.equal("refundOrderAllocations" in payload, false);
   assert.equal("refundOrderIds" in payload, false);
   assert.equal(payload.refundRequestedCents, 1000);
 });
@@ -218,6 +222,8 @@ test("普通类型只带标题正文，一个退款字段都不带", () => {
   assert.equal(payload.body, "点登录没反应");
   assert.equal("refundRequestedCents" in payload, false);
   assert.equal("refundReason" in payload, false);
+  // 无订单 = 人工退款：不带分摊，也不带旧的 refundOrderIds。
+  assert.equal("refundOrderAllocations" in payload, false);
   assert.equal("refundOrderIds" in payload, false);
 });
 
@@ -280,19 +286,55 @@ test("退款金额校验挡住空值、非法格式与 0", () => {
 });
 
 test("退款理由必填且不超 500 字", () => {
-  assert.equal(getRefundDraftValidation({ requestedYuan: "1", reason: "" }).field, "reason");
-  assert.equal(getRefundDraftValidation({ requestedYuan: "1", reason: "   " }).field, "reason");
+  assert.equal(getRefundDraftValidation({
+    requestedYuan: "1",
+    reason: "",
+    refundMethod: "manual",
+    refundPayoutQrAttachmentId: 9,
+  }).field, "reason");
+  assert.equal(getRefundDraftValidation({
+    requestedYuan: "1",
+    reason: "   ",
+    refundMethod: "manual",
+    refundPayoutQrAttachmentId: 9,
+  }).field, "reason");
   assert.equal(
-    getRefundDraftValidation({ requestedYuan: "1", reason: "长".repeat(501) }).field,
+    getRefundDraftValidation({
+      requestedYuan: "1",
+      reason: "长".repeat(501),
+      refundMethod: "manual",
+      refundPayoutQrAttachmentId: 9,
+    }).field,
     "reason",
   );
   // 500 字符整好通过（边界值，不能少算一个）。
-  assert.equal(getRefundDraftValidation({ requestedYuan: "1", reason: "长".repeat(500) }).message, "");
+  assert.equal(getRefundDraftValidation({
+    requestedYuan: "1",
+    reason: "长".repeat(500),
+    refundMethod: "manual",
+    refundPayoutQrAttachmentId: 9,
+  }).message, "");
 });
 
 test("合法退款表单完全通过校验", () => {
-  assert.equal(getRefundDraftValidation({ requestedYuan: "0.01", reason: "理由" }).message, "");
-  assert.equal(getRefundDraftValidation({ requestedYuan: "12345.67", reason: "r" }).message, "");
+  assert.equal(
+    getRefundDraftValidation({
+      requestedYuan: "0.01",
+      reason: "理由",
+      refundMethod: "original",
+      refundAllocations: [{ orderId: 1, cents: 1 }],
+    }).message,
+    "",
+  );
+  assert.equal(
+    getRefundDraftValidation({
+      requestedYuan: "12345.67",
+      reason: "r",
+      refundMethod: "manual",
+      refundPayoutQrAttachmentId: 9,
+    }).message,
+    "",
+  );
 });
 
 test("account 校验：问题类型必选、说明必填（B2-6）", () => {
@@ -437,7 +479,8 @@ test("选退款类型时 payload 带退款字段且不带普通的标题/正文"
     ticketType: TICKET_CREATE_TYPE_REFUND,
     requestedYuan: "25.50",
     reason: "  充错了金额  ",
-    refundOrderIds: [88],
+    refundMethod: "original",
+    refundAllocations: [{ orderId: 88, cents: 2550 }],
   });
   assert.equal(validation.message, "");
   assert.equal(payload.ticketType, "refund");
@@ -446,7 +489,8 @@ test("选退款类型时 payload 带退款字段且不带普通的标题/正文"
   // 理由要去掉首尾空白。
   assert.equal(payload.refundReason, "充错了金额");
   // 多选后是数组（2026-11-18）：后端按「一笔订单一张退款单」展开。
-  assert.deepEqual(payload.refundOrderIds, [88]);
+  // 2026-11-19：改为上传每笔各自的金额 —— 只有 id 表达不出 7.5+2.5。
+  assert.deepEqual(payload.refundOrderAllocations, [{ orderId: 88, cents: 2550 }]);
   // 退款流程不接受 subject/body —— 壳工单的标题与正文由服务端按订单号生成。
   assert.equal("subject" in payload, false);
   assert.equal("body" in payload, false);
@@ -458,6 +502,8 @@ test("选退款但没指定订单时不传 refundOrderIds（后端会归为人�
     requestedYuan: "10",
     reason: "理由",
   });
+  // 无订单 = 人工退款：不带分摊，也不带旧的 refundOrderIds。
+  assert.equal("refundOrderAllocations" in payload, false);
   assert.equal("refundOrderIds" in payload, false);
   assert.equal(payload.refundRequestedCents, 1000);
 });
@@ -478,6 +524,8 @@ test("普通类型只带标题正文，一个退款字段都不带", () => {
   assert.equal(payload.body, "点登录没反应");
   assert.equal("refundRequestedCents" in payload, false);
   assert.equal("refundReason" in payload, false);
+  // 无订单 = 人工退款：不带分摊，也不带旧的 refundOrderIds。
+  assert.equal("refundOrderAllocations" in payload, false);
   assert.equal("refundOrderIds" in payload, false);
 });
 
@@ -506,19 +554,55 @@ test("退款金额校验挡住空值、非法格式与 0", () => {
 });
 
 test("退款理由必填且不超 500 字", () => {
-  assert.equal(getRefundDraftValidation({ requestedYuan: "1", reason: "" }).field, "reason");
-  assert.equal(getRefundDraftValidation({ requestedYuan: "1", reason: "   " }).field, "reason");
+  assert.equal(getRefundDraftValidation({
+    requestedYuan: "1",
+    reason: "",
+    refundMethod: "manual",
+    refundPayoutQrAttachmentId: 9,
+  }).field, "reason");
+  assert.equal(getRefundDraftValidation({
+    requestedYuan: "1",
+    reason: "   ",
+    refundMethod: "manual",
+    refundPayoutQrAttachmentId: 9,
+  }).field, "reason");
   assert.equal(
-    getRefundDraftValidation({ requestedYuan: "1", reason: "长".repeat(501) }).field,
+    getRefundDraftValidation({
+      requestedYuan: "1",
+      reason: "长".repeat(501),
+      refundMethod: "manual",
+      refundPayoutQrAttachmentId: 9,
+    }).field,
     "reason",
   );
   // 500 字符整好通过（边界值，不能少算一个）。
-  assert.equal(getRefundDraftValidation({ requestedYuan: "1", reason: "长".repeat(500) }).message, "");
+  assert.equal(getRefundDraftValidation({
+    requestedYuan: "1",
+    reason: "长".repeat(500),
+    refundMethod: "manual",
+    refundPayoutQrAttachmentId: 9,
+  }).message, "");
 });
 
 test("合法退款表单完全通过校验", () => {
-  assert.equal(getRefundDraftValidation({ requestedYuan: "0.01", reason: "理由" }).message, "");
-  assert.equal(getRefundDraftValidation({ requestedYuan: "12345.67", reason: "r" }).message, "");
+  assert.equal(
+    getRefundDraftValidation({
+      requestedYuan: "0.01",
+      reason: "理由",
+      refundMethod: "original",
+      refundAllocations: [{ orderId: 1, cents: 1 }],
+    }).message,
+    "",
+  );
+  assert.equal(
+    getRefundDraftValidation({
+      requestedYuan: "12345.67",
+      reason: "r",
+      refundMethod: "manual",
+      refundPayoutQrAttachmentId: 9,
+    }).message,
+    "",
+  );
 });
 
 test("元转分是精确整数（不走浮点）", () => {

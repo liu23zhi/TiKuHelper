@@ -575,6 +575,20 @@ export function getRechargeOrders(params) {
   })
 }
 
+// recoverTicketRefundPayoutQr 用当前密码取回「上次用过的收款码」（2026-11-19）。
+//
+// 只在「换设备 / 清过本地缓存」时被调用一次：同一台设备曾上传过
+// 收款码时，前端已从 localStorage 直接带出，不需要密码。
+// 刷新不走密码 —— 手上就有新图，没有验证的必要。
+export function recoverTicketRefundPayoutQr(password) {
+  return request({
+    errorFeedback: 'local',
+    url: `/api/ticket-refunds/payout-qr/recover`,
+    method: 'post',
+    data: { password },
+  })
+}
+
 // updateRechargeOrderStatus 由管理员手工修正充值订单状态（2026-11-19）。
 //
 // 只允许 pending / paid / refunded 三值，服务端还会校验状态迁移是否合法
