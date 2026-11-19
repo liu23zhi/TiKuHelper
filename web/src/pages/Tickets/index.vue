@@ -572,6 +572,30 @@
                 </span></template
               >
             </a-form-item>
+
+            <!-- 承诺书（2026-11-19 用户要求）：本人承诺收款码所属账户为本人账户。
+                 勾选即弹出协议（需读 10 秒 + 滚到底 + 签名）。 -->
+            <a-form-item label="承诺书" required>
+              <div class="ticket-refund-agreement" data-ticket-refund-agreement>
+                <label class="ticket-refund-agreement__check">
+                  <input
+                    type="checkbox"
+                    :checked="draft.refundAgreementSigned"
+                    :disabled="createLoading"
+                    data-ticket-refund-agreement-check
+                    @change="onToggleAgreement"
+                  />
+                  <span>我已阅读并同意《退款收款码使用承诺书》</span>
+                </label>
+                <a-button
+                  v-if="draft.refundAgreementSigned"
+                  type="link"
+                  size="small"
+                  data-ticket-refund-agreement-review
+                  @click="openAgreement"
+                >查看协议</a-button>
+              </div>
+            </a-form-item>
           </template>
 
           <a-form-item label="退款理由" required :validate-status="createValidationMessage('reason') ? 'error' : ''">
@@ -587,6 +611,16 @@
               placeholder="请说明退款原因"
             /><template #help><span v-if="createValidationMessage('reason')" role="alert">{{ createValidationMessage('reason') }}</span></template>
           </a-form-item>
+
+          <!-- 协议弹窗。签名弹窗是它的内层浮层，
+               关闭签名弹窗**不会**关掉协议弹窗（用户明确要求）。 -->
+          <RefundAgreementDialog
+            :visible="agreementVisible"
+            :text="agreementText"
+            :signed-attachment-id="draft.refundSignatureAttachmentId"
+            @close="agreementVisible = false"
+            @signed="onAgreementSigned"
+          />
         </template>
         <!-- 账号问题（B2-6）：问题类型下拉 + 说明文本域。
              问题类型只作为标题前缀供管理员分诊，不是独立后端字段
@@ -990,8 +1024,10 @@ import {
 } from "./createTicketTypeHelpers.mjs";
 import {
   getEligibleTicketRefundOrders,
+  getRefundAgreement,
   recoverTicketRefundPayoutQr,
 } from "@/api/TikuComponentApi";
+import RefundAgreementDialog from "@/components/RefundAgreementDialog.vue";
 
 const detailStatusId = `tickets-${useId()}-detail-status`;
 // 退款 7 态的中文文案与退款面板同一份（refundStatusLabel 在上方 import），
@@ -1122,6 +1158,13 @@ const draft = reactive({
   // 人工退回时的手机号确认（用户要求「验证手机号」）。
   // 没绑手机号时这个开关不参与校验（不能因为没绑就永远退不了）。
   refundPhoneConfirmed: false,
+  // 承诺书签署（2026-11-19）。
+  //
+  // refundAgreementSigned 是「本次申请已签」的开关；
+  // refundSignatureAttachmentId 是签名图附件。两者分开是为了支持
+  // 「取消勾选后重新打开仍能看到上次签名」——只清开关、不清图。
+  refundAgreementSigned: false,
+  refundSignatureAttachmentId: 0,
   // 分摊表：[{ orderId, cents, manual }]
   //   manual=true 表示用户手改过这一行，任何重算都不得覆盖它。
   refundAllocations: [],
@@ -1206,6 +1249,7 @@ function currentDraftValidation() {
     refundAllocations: draft.refundAllocations,
     refundPayoutQrAttachmentId: draft.refundPayoutQrAttachmentId,
     refundPhoneConfirmed: draft.refundPhoneConfirmed,
+    refundSignatureAttachmentId: draft.refundSignatureAttachmentId,
     // 手机号从当前用户现取而不存进 draft：
     // 存一份副本会在换账号后变成旧值。
     boundPhone: refundBoundPhone.value,
@@ -1577,6 +1621,46 @@ function openPayoutQrRecover() {
     .finally(() => { payoutQrBusy.value = false })
 }
 
+// ── 承诺书签署（2026-11-19 用户要求）──
+//
+// 「每次都要签」：签名不跨退款申请反复使用。openCreate 重置时
+// refundAgreementSigned 与 refundSignatureAttachmentId 都清零。
+//
+// 协议文本每次打开都重新取（不缓存）：管理员可能刚改过条款，
+// 缓存会让用户签的是旧版本，而签署记录上无法体现这一点。
+const agreementVisible = ref(false)
+const agreementText = ref("")
+const agreementLoading = ref(false)
+async function openAgreement() {
+  agreementVisible.value = true
+  if (agreementText.value) return
+  agreementLoading.value = true
+  try {
+    const response = await getRefundAgreement()
+    agreementText.value = String(response?.data?.text || "")
+  } catch (error) {
+    message.error(responseMessage(error, "\u8bfb\u53d6\u627f\u8bfa\u4e66\u5931\u8d25"))
+  } finally {
+    agreementLoading.value = false
+  }
+}
+// onToggleAgreement：勾选就弹出协议；取消勾选只清开关。
+function onToggleAgreement(event) {
+  const checked = !!event?.target?.checked
+  if (checked) {
+    void openAgreement()
+    return
+  }
+  draft.refundAgreementSigned = false
+  retireCreateValidation()
+}
+function onAgreementSigned(attachmentId) {
+  draft.refundSignatureAttachmentId = Number(attachmentId) || 0
+  draft.refundAgreementSigned = draft.refundSignatureAttachmentId > 0
+  agreementVisible.value = false
+  retireCreateValidation()
+}
+
 // restorePayoutQr 打开弹窗时调用：带出上次那张码。
 function restorePayoutQr() {
   const key = payoutQrMemoryKey()
@@ -1753,6 +1837,10 @@ function openCreate() {
   draft.requestedYuan = "";
   draft.reason = "";
   draft.refundOrderIds = [];
+  // 承诺书「每次都要签」（2026-11-19 用户要求）：重置时清掉。
+  // 不清的话用户下一次发起退款会被当成已签 —— 而那一签是上一张单的。
+  draft.refundAgreementSigned = false;
+  draft.refundSignatureAttachmentId = 0;
   // 收款码**不在这里清空**：它带记忆（见 payoutQrMemoryKey），
   // 用户下次发起退款会自动带出上次那张，避免每次重传。
   // 真正的清除入口是弹窗里的「移除」按钮。
@@ -2640,6 +2728,19 @@ watch(
   letter-spacing: 0.5px;
 }
 .ticket-refund-phone__confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 20px;
+}
+.ticket-refund-agreement {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ticket-refund-agreement__check {
   display: flex;
   align-items: flex-start;
   gap: 6px;

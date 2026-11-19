@@ -223,6 +223,7 @@ export function getTicketCreateDraftValidation(draft = {}) {
       refundAllocations: draft.refundAllocations,
       refundPayoutQrAttachmentId: draft.refundPayoutQrAttachmentId,
       refundPhoneConfirmed: draft.refundPhoneConfirmed,
+      refundSignatureAttachmentId: draft.refundSignatureAttachmentId,
       boundPhone: draft.boundPhone,
     });
   }
@@ -248,6 +249,7 @@ export function getRefundDraftValidation({
   refundPayoutQrAttachmentId,
   refundPhoneConfirmed,
   boundPhone,
+  refundSignatureAttachmentId,
 } = {}) {
   const yuan = String(requestedYuan ?? "").trim();
   if (!yuan) return Object.freeze({ field: "requestedYuan", message: "请输入退款金额" });
@@ -291,6 +293,15 @@ export function getRefundDraftValidation({
     const phone = String(boundPhone || "").trim();
     if (phone && !refundPhoneConfirmed) {
       return Object.freeze({ field: "refundPhone", message: "请确认收款手机号" });
+    }
+    // 承诺书签署（2026-11-19）：人工打款把钱打给收款码对应账户，
+    // 而平台无法逐一核实那个账户是不是本人，所以必须有本人承诺。
+    const signature = Number(refundSignatureAttachmentId);
+    if (!Number.isSafeInteger(signature) || signature <= 0) {
+      return Object.freeze({
+        field: "refundAgreement",
+        message: "请阅读并签署《退款收款码使用承诺书》",
+      });
     }
   }
   const text = String(reason ?? "").replace(/\r\n?/g, "\n").trim();
@@ -357,6 +368,11 @@ export function buildTicketCreatePayload(draft = {}) {
     if (allocations.length) payload.refundOrderAllocations = allocations;
     // 人工退回时显式告知后端：没有订单就是 manual（后端也这么判）。
     if (draft.refundMethod === "manual") payload.refundMethod = "manual";
+    // 签名图（2026-11-19）：每张退款单各自一份。
+    const signatureId = Number(draft.refundSignatureAttachmentId);
+    if (Number.isSafeInteger(signatureId) && signatureId > 0) {
+      payload.refundSignatureAttachmentId = signatureId;
+    }
   // 收款码（可选，2026-11-19）：人工打款时管理员据此扫码转账。
   // 与 attachmentIds 分开传 —— 后者是工单截图，会挂在消息上供双方查看；
   // 收款码归属退款单本身。混成一个字段会让两者再也分不开。

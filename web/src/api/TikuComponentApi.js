@@ -575,6 +575,26 @@ export function getRechargeOrders(params) {
   })
 }
 
+// getRefundAgreement 读取退款收款码使用承诺书全文（2026-11-19）。
+// 协议文本存在 system_settings，管理员可改，所以不能写死在前端。
+export function getRefundAgreement() {
+  return request({
+    errorFeedback: 'local',
+    url: '/api/refund-agreement',
+    method: 'get',
+  })
+}
+
+// updateRefundAgreement 修改承诺书全文（仅管理员）。
+export function updateRefundAgreement(text) {
+  return request({
+    errorFeedback: 'local',
+    url: '/api/refund-agreement',
+    method: 'put',
+    data: { text },
+  })
+}
+
 // recoverTicketRefundPayoutQr 用当前密码取回「上次用过的收款码」（2026-11-19）。
 //
 // 只在「换设备 / 清过本地缓存」时被调用一次：同一台设备曾上传过

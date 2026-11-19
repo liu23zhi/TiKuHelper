@@ -291,12 +291,14 @@ test("退款理由必填且不超 500 字", () => {
     reason: "",
     refundMethod: "manual",
     refundPayoutQrAttachmentId: 9,
+    refundSignatureAttachmentId: 9,
   }).field, "reason");
   assert.equal(getRefundDraftValidation({
     requestedYuan: "1",
     reason: "   ",
     refundMethod: "manual",
     refundPayoutQrAttachmentId: 9,
+    refundSignatureAttachmentId: 9,
   }).field, "reason");
   assert.equal(
     getRefundDraftValidation({
@@ -304,6 +306,7 @@ test("退款理由必填且不超 500 字", () => {
       reason: "长".repeat(501),
       refundMethod: "manual",
       refundPayoutQrAttachmentId: 9,
+      refundSignatureAttachmentId: 9,
     }).field,
     "reason",
   );
@@ -313,6 +316,7 @@ test("退款理由必填且不超 500 字", () => {
     reason: "长".repeat(500),
     refundMethod: "manual",
     refundPayoutQrAttachmentId: 9,
+    refundSignatureAttachmentId: 9,
   }).message, "");
 });
 
@@ -332,6 +336,7 @@ test("合法退款表单完全通过校验", () => {
       reason: "r",
       refundMethod: "manual",
       refundPayoutQrAttachmentId: 9,
+      refundSignatureAttachmentId: 9,
     }).message,
     "",
   );
@@ -559,12 +564,14 @@ test("退款理由必填且不超 500 字", () => {
     reason: "",
     refundMethod: "manual",
     refundPayoutQrAttachmentId: 9,
+    refundSignatureAttachmentId: 9,
   }).field, "reason");
   assert.equal(getRefundDraftValidation({
     requestedYuan: "1",
     reason: "   ",
     refundMethod: "manual",
     refundPayoutQrAttachmentId: 9,
+    refundSignatureAttachmentId: 9,
   }).field, "reason");
   assert.equal(
     getRefundDraftValidation({
@@ -572,6 +579,7 @@ test("退款理由必填且不超 500 字", () => {
       reason: "长".repeat(501),
       refundMethod: "manual",
       refundPayoutQrAttachmentId: 9,
+      refundSignatureAttachmentId: 9,
     }).field,
     "reason",
   );
@@ -581,6 +589,7 @@ test("退款理由必填且不超 500 字", () => {
     reason: "长".repeat(500),
     refundMethod: "manual",
     refundPayoutQrAttachmentId: 9,
+    refundSignatureAttachmentId: 9,
   }).message, "");
 });
 
@@ -600,6 +609,7 @@ test("合法退款表单完全通过校验", () => {
       reason: "r",
       refundMethod: "manual",
       refundPayoutQrAttachmentId: 9,
+      refundSignatureAttachmentId: 9,
     }).message,
     "",
   );
