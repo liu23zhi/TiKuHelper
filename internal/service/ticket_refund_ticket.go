@@ -374,7 +374,12 @@ func createRefundTicketWithVerifier(db *gorm.DB, user *entity.User, input Create
 	}
 	// 退款申请必须有金额与理由：普通工单的 subject/body 在退款流程里由
 	// 壳工单自动生成（订单号 + 退款单号），所以这里校验的是退款字段本身。
-	if input.RefundRequestedCents <= 0 {
+	// 分摊模式下金额在 Allocations 里逐笔给，RefundRequestedCents 可以是 0
+	// （它只是合计的副本，不参与校验）。若这里仍要求 > 0，
+	// 前端就得为了通过校验而传一个恰好相等的数 ——
+	// 那是两份真相，必然漂移。
+	multiOrder := len(input.RefundOrderAllocations) > 0 || len(input.RefundOrderIDs) > 0
+	if !multiOrder && input.RefundRequestedCents <= 0 {
 		return TicketDetail{}, ErrTicketRefundAmount
 	}
 	reason := strings.TrimSpace(input.RefundReason)
@@ -386,9 +391,35 @@ func createRefundTicketWithVerifier(db *gorm.DB, user *entity.User, input Create
 		return TicketDetail{}, ErrTicketRefundInvalid
 	}
 	kind := entity.TicketRefundKindOriginal
-	if input.RefundOrderID == nil {
+	if input.RefundOrderID == nil && !multiOrder {
 		// 没有指定订单 = 无单人工退款，必须走 manual（原路退回找不到订单）。
 		kind = entity.TicketRefundKindManual
+	}
+
+	if multiOrder {
+		// 多笔：每笔一张退款单（order_id 有唯一索引），
+		// 整批一个事务，任一笔失败全部回滚。
+		targets := input.RefundOrderAllocations
+		if len(targets) == 0 {
+			for _, id := range input.RefundOrderIDs {
+				targets = append(targets, TicketRefundOrderAllocation{OrderID: id, Cents: input.RefundRequestedCents})
+			}
+		}
+		rows, err := CreateTicketRefundsForOrdersWithDB(db, *user, CreateTicketRefundInput{
+			Kind:                 kind,
+			Allocations:          targets,
+			Reason:               reason,
+			PayoutQrAttachmentID: input.RefundPayoutQrAttachmentID,
+		}, verify)
+		if err != nil {
+			return TicketDetail{}, err
+		}
+		if len(rows) == 0 || rows[0].TicketID == nil || *rows[0].TicketID <= 0 {
+			return TicketDetail{}, ErrTicketRefundTicketLink
+		}
+		// 返回第一张壳工单的详情。多笔共用一个请求，
+		// 但用户在工单列表里会看到 N 张 —— 这是查询口径，不是数据错。
+		return GetTicketWithDB(db, user, *rows[0].TicketID)
 	}
 	refund, err := CreateTicketRefundWithDB(db, *user, CreateTicketRefundInput{
 		Kind:           kind,

@@ -163,6 +163,15 @@ type CreateTicketInput struct {
 	// 会出现在工单详情里供双方查看；收款码是付款凭据，归属退款单本身，
 	// 语义与可见性都不同。混用一个字段会让「截图」和「收款码」再也分不开。
 	RefundPayoutQrAttachmentID *int64 `json:"refundPayoutQrAttachmentId,omitempty"`
+	// RefundOrderIDs / RefundOrderAllocations 是**多笔**退款（2026-11-19）。
+	//
+	// 为什么要两个：
+	//   · RefundOrderIDs         —— 同额模式（每笔都退 RefundRequestedCents）
+	//   · RefundOrderAllocations —— 分摊模式（每笔各自金额，合计 = 申请额）
+	//
+	// 两者同时给时以 Allocations 为准（它携带更多信息）。
+	RefundOrderIDs         []int32                       `json:"refundOrderIds,omitempty"`
+	RefundOrderAllocations []TicketRefundOrderAllocation `json:"refundOrderAllocations,omitempty"`
 }
 
 // 用户可自选的工单类型（T-209 建立，本任务扩到四项）。

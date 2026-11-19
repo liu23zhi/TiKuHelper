@@ -101,6 +101,16 @@ type TicketRefundOrder struct {
 	OriginalUnsupportedReason string `json:"originalUnsupportedReason,omitempty"`
 }
 
+// TicketRefundOrderAllocation 是「某一笔订单退多少」。
+//
+// 2026-11-19 用户要求：申请金额可以跨多笔订单分摊。例如退 10 元、手上有两笔
+// 各 7.5 元的充值 —— 第一笔全额 7.5、第二笔部分 2.5。这在旧的「所有订单同额」
+// 模型下表达不出来（RequestedCents 是共享的一个值）。
+type TicketRefundOrderAllocation struct {
+	OrderID int32 `json:"orderId"`
+	Cents   int64 `json:"cents"`
+}
+
 type CreateTicketRefundInput struct {
 	Kind    string `json:"kind"`
 	OrderID *int32 `json:"orderId"`
@@ -125,6 +135,16 @@ type CreateTicketRefundInput struct {
 	// （BindDraftTicketAttachmentsInTx 会核对 ticket_id=0 且 user_id 匹配），
 	// 这里不做额外查询 —— 那会与事务内的检查重复，且事务外读有 TOCTOU 风险。
 	PayoutQrAttachmentID *int64 `json:"payoutQrAttachmentId"`
+	// Allocations 是每笔订单各自的退款金额（2026-11-19）。
+	//
+	// 语义分支：
+	//   · 非空 → 以它为准，OrderIDs 与 RequestedCents 被忽略（分摊模式）
+	//   · 空   → 沿用 OrderIDs + RequestedCents（所有订单同额，向后兼容）
+	//
+	// 为什么不把 OrderIDs 直接改成 [{orderId, cents}]：OrderIDs 是老字段，
+	// 单笔调用方（含大量测试）用的是 OrderID，另一批用 OrderIDs。
+	// 一次性改结构会把两条老路径全部打断，而它们都还对。
+	Allocations []TicketRefundOrderAllocation `json:"allocations"`
 }
 
 func ListEligibleTicketRefundOrdersWithDB(db *gorm.DB, actor entity.User, verify TicketRefundOrderVerifier) ([]TicketRefundOrder, error) {
@@ -248,10 +268,7 @@ func CreateTicketRefundWithDB(db *gorm.DB, actor entity.User, input CreateTicket
 				// 与订单金额的 floor 方向相反是刻意的：本金是用户自己的钱，
 				// 差 1 分不到就少退一分属于「平台占用户便宜」；而订单金额向下取
 				// 是「不超额退款」。两个方向各自对自己的风险负责。
-				principalCents := breakdown.RefundableMicros / ticketRefundMicrosPerCent
-				if breakdown.RefundableMicros%ticketRefundMicrosPerCent != 0 {
-					principalCents++
-				}
+				principalCents := refundablePrincipalCentsCeil(breakdown)
 				if principalCents < amountCap {
 					amountCap = principalCents
 				}
@@ -312,14 +329,46 @@ func CreateTicketRefundWithDB(db *gorm.DB, actor entity.User, input CreateTicket
 // 实际只退了 1 笔，对账时极难发现。
 //
 // 返回按入参顺序排列的退款行，调用方据此展示「哪些已提交」。
-func CreateTicketRefundsForOrdersWithDB(db *gorm.DB, actor entity.User, input CreateTicketRefundInput, verify TicketRefundOrderVerifier) ([]entity.TicketRefund, error) {
+// plannedRefund 是一条已归一的「哪笔订单退多少」。
+type plannedRefund struct {
+	orderID int32
+	cents   int64
+}
+
+// planTicketRefundAllocations 把两种入参形态归一成同一份计划。
+//
+// 为什么要归一：分摊模式与同额模式在这里分叉，下游只保留**一条**路径。
+// 两条并行的建单路径迟早会漂移（已有的教训：只改一条会让另一条静默取错值）。
+//
+// 去重策略在两种模式下刻意不同：
+//
+//	· OrderIDs 重复 → 静默去重（同额无歧义，而唯一索引报错会指向用户没做过的事）
+//	· Allocations 重复 → **拒绝**（同一订单两个金额是真矛盾，静默选一个会让用户看到自己没填的数）
+func planTicketRefundAllocations(input CreateTicketRefundInput) ([]plannedRefund, error) {
+	if len(input.Allocations) > 0 {
+		seen := make(map[int32]struct{}, len(input.Allocations))
+		plan := make([]plannedRefund, 0, len(input.Allocations))
+		for _, alloc := range input.Allocations {
+			if alloc.OrderID <= 0 {
+				return nil, ErrTicketRefundInvalid
+			}
+			if alloc.Cents <= 0 {
+				return nil, ErrTicketRefundAmount
+			}
+			if _, dup := seen[alloc.OrderID]; dup {
+				return nil, ErrTicketRefundInvalid
+			}
+			seen[alloc.OrderID] = struct{}{}
+			plan = append(plan, plannedRefund{orderID: alloc.OrderID, cents: alloc.Cents})
+		}
+		return plan, nil
+	}
+
 	if len(input.OrderIDs) == 0 {
 		return nil, ErrTicketRefundInvalid
 	}
-	// 去重：前端多选理论上不会重复，但重复的 orderId 会让「第二次插入」
-	// 撞唯一索引、整批回滚，报错还指向一个用户根本没做过的重复提交。
 	seen := make(map[int32]struct{}, len(input.OrderIDs))
-	ids := make([]int32, 0, len(input.OrderIDs))
+	plan := make([]plannedRefund, 0, len(input.OrderIDs))
 	for _, id := range input.OrderIDs {
 		if id <= 0 {
 			return nil, ErrTicketRefundInvalid
@@ -328,16 +377,58 @@ func CreateTicketRefundsForOrdersWithDB(db *gorm.DB, actor entity.User, input Cr
 			continue
 		}
 		seen[id] = struct{}{}
-		ids = append(ids, id)
+		plan = append(plan, plannedRefund{orderID: id, cents: input.RequestedCents})
+	}
+	return plan, nil
+}
+
+// refundablePrincipalCentsCeil 把可退本金换算成“分”并**向上取整**。
+//
+// 向上是用户要求（2026-11-19）：本金是用户自己的钱，差 1 分不到就少退一分
+// 属于平台占用户便宜。与订单金额的 floor 方向相反是刻意的。
+//
+// 抽成函数而不在两处各写一遍：单笔闸门与批次闸门必须同口径，
+// 否则会出现「单笔放行、批次拒绝」这种用户无法理解的分裂。
+func refundablePrincipalCentsCeil(breakdown RefundablePrincipalBreakdown) int64 {
+	cents := breakdown.RefundableMicros / ticketRefundMicrosPerCent
+	if breakdown.RefundableMicros%ticketRefundMicrosPerCent != 0 {
+		cents++
+	}
+	return cents
+}
+
+func CreateTicketRefundsForOrdersWithDB(db *gorm.DB, actor entity.User, input CreateTicketRefundInput, verify TicketRefundOrderVerifier) ([]entity.TicketRefund, error) {
+	plan, err := planTicketRefundAllocations(input)
+	if err != nil {
+		return nil, err
+	}
+	// 批次级本金校验（2026-11-19）。
+	//
+	// 为什么单笔闸门不够：每笔各自去比对「本详单实付 与 用户可退本金」，
+	// 而本金是**用户级的一个池子**。本金 8 元、两笔各申请 7.5 与 2.5 时，
+	// 单笔看都在额度内（7.5≤8、2.5≤8），合计 10 却超了 —— 这正是无单可查的那种漏洞。
+	if len(plan) > 1 {
+		total := int64(0)
+		for _, item := range plan {
+			total += item.cents
+		}
+		if breakdown, principalErr := RefundablePrincipalWithDB(db, actor.ID, 0); principalErr == nil {
+			if total > refundablePrincipalCentsCeil(breakdown) {
+				return nil, ErrTicketRefundAmount
+			}
+		}
 	}
 
-	created := make([]entity.TicketRefund, 0, len(ids))
-	err := db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
-		for _, id := range ids {
+	created := make([]entity.TicketRefund, 0, len(plan))
+	err = db.Session(&gorm.Session{NewDB: true}).Transaction(func(tx *gorm.DB) error {
+		for _, item := range plan {
 			one := input
 			one.OrderIDs = nil
-			orderID := id
+			one.Allocations = nil
+			orderID := item.orderID
 			one.OrderID = &orderID
+			// 每笔各自的金额覆盖入参：这正是分摊模式的语义。
+			one.RequestedCents = item.cents
 			// 借用单笔入口的完整校验与记账，保证两条路径口径一致。
 			// 注意它内部会开自己的事务 —— GORM 的嵌套 Transaction 会退化成
 			// SavePoint，外层回滚时一并撤销，所以「全败」语义仍然成立。
