@@ -59,7 +59,7 @@ test('② 两笔已达申请金额：第三笔分不到钱（前端据此禁选�
   assert.equal(selections[2].cents, 0, '第三笔应当分到 0');
 });
 
-test('③ 用户把第一笔改小 → 腾出额度，第二笔相应变大', () => {
+test('③ 标准重算时保留手改行，余量按订单新旧分配', () => {
   const selections = computeRefundAllocations({
     orders,
     requestedCents: 1000,
@@ -149,4 +149,78 @@ test('⑧ 汇总与分配一致（已分配 + 剩余 = 申请）', () => {
   });
   const totals = refundAllocationTotals(1000, selections);
   assert.equal(totals.allocated + totals.remaining, 1000);
+});
+
+test('先选新订单再选旧订单，仍由旧订单先全额退款', () => {
+  let selections = computeRefundAllocations({
+    orders, requestedCents: 1000,
+    selections: [{ orderId: 2, cents: 0, manual: false }],
+  });
+  assert.equal(selections[0].cents, 750);
+  selections = computeRefundAllocations({
+    orders, requestedCents: 1000, addedOrderId: 1,
+    selections: [...selections, { orderId: 1, cents: 0, manual: false }],
+  });
+  assert.deepEqual(selections.map(item => [item.orderId, item.cents]), [[1, 750], [2, 250]]);
+});
+
+test('旧订单手改变小后，新增订单使用腾出的金额，不回填已有行', () => {
+  const selections = [
+    { orderId: 1, cents: 500, manual: true },
+    { orderId: 2, cents: 250, manual: false },
+  ];
+  assert.equal(refundAllocationTotals(1000, selections).remaining, 250);
+  const allocated = computeRefundAllocations({
+    orders, requestedCents: 1000, addedOrderId: 3,
+    selections: [...selections, { orderId: 3, cents: 0, manual: false }],
+  });
+  assert.deepEqual(allocated.map(item => [item.orderId, item.cents]), [[1, 500], [2, 250], [3, 250]]);
+  assert.equal(allocated[0].manual, true);
+  assert.equal(refundAllocationTotals(1000, allocated).remaining, 0);
+  assert.deepEqual(selections[1], { orderId: 2, cents: 250, manual: false }, '不得修改调用方原数组');
+});
+
+test('新订单手改变小后也能选第三笔，已有旧订单仍保持全额', () => {
+  const allocated = computeRefundAllocations({
+    orders, requestedCents: 1000, addedOrderId: 3,
+    selections: [
+      { orderId: 1, cents: 750, manual: false },
+      { orderId: 2, cents: 100, manual: true },
+      { orderId: 3, cents: 0, manual: false },
+    ],
+  });
+  assert.deepEqual(allocated.map(item => item.cents), [750, 100, 150]);
+});
+
+test('修改申请金额后不覆盖手改值，超出的部分能明确提示', () => {
+  const manual = { orderId: 1, cents: 750, manual: true };
+  const allocated = computeRefundAllocations({
+    orders, requestedCents: 500,
+    selections: [manual, { orderId: 2, cents: 250, manual: false }],
+  });
+  assert.deepEqual(allocated, [manual, { orderId: 2, cents: 0, manual: false }]);
+  assert.deepEqual(refundAllocationTotals(500, allocated), {
+    requested: 500, allocated: 750, remaining: 0, excess: 250,
+  });
+});
+
+test('订单可退额度中的不足一分钱向下取整', () => {
+  const allocated = computeRefundAllocations({
+    orders: [{ ...older, paidCents: 750.99 }], requestedCents: 1000,
+    selections: [{ orderId: 1, cents: 0, manual: false }],
+  });
+  assert.equal(allocated[0].cents, 750);
+});
+
+test('支付时间按实际时刻排序，同一时刻再按订单编号', () => {
+  const allocated = computeRefundAllocations({
+    orders: [
+      { id: 9, paidCents: 750, paidAt: '2026-01-01T01:00:00+02:00' },
+      { id: 2, paidCents: 750, paidAt: '2026-01-01T00:00:00Z' },
+      { id: 1, paidCents: 750, paidAt: '2026-01-01T01:00:00+01:00' },
+    ],
+    requestedCents: 1000,
+    selections: [2, 1, 9].map(orderId => ({ orderId, cents: 0, manual: false })),
+  });
+  assert.deepEqual(allocated.map(item => [item.orderId, item.cents]), [[9, 750], [1, 250], [2, 0]]);
 });

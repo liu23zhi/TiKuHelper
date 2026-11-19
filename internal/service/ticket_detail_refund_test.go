@@ -19,11 +19,11 @@ func TestTicketDetailCarriesRefundSummary(t *testing.T) {
 	db := newTicketRefundMergeTestDB(t)
 	user := seedRefundActor(t, db, 1, "alice")
 
-	refund, err := CreateTicketRefundWithDB(db, user, CreateTicketRefundInput{
+	refund, err := CreateTicketRefundWithDB(db, user, withTestRefundIdentity(t, db, user, CreateTicketRefundInput{
 		Kind:           entity.TicketRefundKindManual,
 		RequestedCents: 1200,
 		Reason:         "多充了",
-	}, nil)
+	}), nil)
 	if err != nil {
 		t.Fatalf("create refund: %v", err)
 	}
@@ -84,11 +84,11 @@ func TestTicketDetailRefundVisibleToAdmin(t *testing.T) {
 		t.Fatalf("seed admin: %v", err)
 	}
 
-	refund, err := CreateTicketRefundWithDB(db, owner, CreateTicketRefundInput{
+	refund, err := CreateTicketRefundWithDB(db, owner, withTestRefundIdentity(t, db, owner, CreateTicketRefundInput{
 		Kind:           entity.TicketRefundKindManual,
 		RequestedCents: 500,
 		Reason:         "误充",
-	}, nil)
+	}), nil)
 	if err != nil {
 		t.Fatalf("create refund: %v", err)
 	}

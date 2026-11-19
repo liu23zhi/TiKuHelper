@@ -2,13 +2,13 @@ package controller
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"regexp"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -428,6 +428,10 @@ func writeTicketRefundError(c *gin.Context, err error) {
 		status, code, message = http.StatusForbidden, "REFUND_FORBIDDEN", "无权执行此退款操作"
 	case errors.Is(err, service.ErrTicketRefundNotFound):
 		status, code, message = http.StatusNotFound, "REFUND_NOT_FOUND", "未找到退款记录或凭证"
+	case errors.Is(err, service.ErrRefundAgreementRequired), errors.Is(err, service.ErrRefundPhoneVerification), errors.Is(err, service.ErrTicketRefundPayoutQrRequired):
+		status, code, message = http.StatusBadRequest, "REFUND_VERIFICATION_REQUIRED", err.Error()
+	case errors.Is(err, service.ErrTicketAttachmentHidden):
+		status, code, message = http.StatusForbidden, "REFUND_IMAGE_UNAVAILABLE", "收款码尚未通过图片审核，请重新上传"
 	case errors.Is(err, service.ErrTicketRefundOrderUnavailable):
 		status, code, message = http.StatusConflict, "REFUND_ORDER_UNAVAILABLE", "该订单无法申请原路退款，请核对资格或提交人工工单"
 	case errors.Is(err, service.ErrTicketRefundInsufficientBalance):
@@ -459,8 +463,7 @@ func writeTicketRefundError(c *gin.Context, err error) {
 //	  因为登录态可能来自一台共享电脑。
 //	· 密码校验复用**登录失败计数**做限流（与注销申请同一口径）：同一个账号的
 //	  凭据被反复试探，锁定策略应当一致，另起一套计数器只会让爆破面变大。
-//	· 只返回附件 ID，不直接返回图片字节：真正取图仍走
-//	  /api/ticket-attachments/:id（有既有的归属校验与审计）。
+//	· 验密后返回图片字节；历史收款码不通过通用用户附件接口公开。
 func RecoverTicketRefundPayoutQr(c *gin.Context) {
 	db, actor, ok := ticketRefundRequest(c, false)
 	if !ok {
@@ -473,7 +476,7 @@ func RecoverTicketRefundPayoutQr(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "请求体格式无效"})
 		return
 	}
-	password := strings.TrimSpace(payload.Password)
+	password := payload.Password
 	if password == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "请输入当前密码"})
 		return
@@ -499,17 +502,57 @@ func RecoverTicketRefundPayoutQr(c *gin.Context) {
 		logger.SysWarn("清除登录失败计数失败: " + logger.RedactSecrets(clearErr.Error()))
 	}
 
-	attachmentID, err := service.LatestRefundPayoutQrAttachmentIDWithDB(db, actor.ID)
+	attachmentID, mimeType, body, err := service.ReadLatestRefundPayoutQrWithDB(db, actor)
 	if err != nil {
 		writeTicketRefundError(c, err)
 		return
 	}
-	c.Header("Cache-Control", "no-store")
-	if attachmentID <= 0 {
-		// 没有历史记录：给 200 + 0，前端提示「没有可恢复的收款码」。
-		// 不回 404 —— 那不是「资源不存在」，而是「你还没用它」。
-		c.JSON(http.StatusOK, gin.H{"attachmentId": 0})
+	imageDataUrl := ""
+	if attachmentID > 0 {
+		imageDataUrl = "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(body)
+	}
+	c.JSON(http.StatusOK, gin.H{"attachmentId": attachmentID, "imageDataUrl": imageDataUrl})
+}
+
+// PreviewTicketRefundPayoutQr returns only a server-blurred thumbnail.
+func PreviewTicketRefundPayoutQr(c *gin.Context) {
+	db, actor, ok := ticketRefundRequest(c, false)
+	if !ok {
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"attachmentId": attachmentID})
+	hasPrevious, body, err := service.RefundPayoutQrPreviewWithDB(db, actor)
+	if err != nil {
+		writeTicketRefundError(c, err)
+		return
+	}
+	preview := ""
+	if len(body) > 0 {
+		preview = "data:image/png;base64," + base64.StdEncoding.EncodeToString(body)
+	}
+	c.JSON(http.StatusOK, gin.H{"hasPrevious": hasPrevious, "previewDataUrl": preview})
+}
+
+func TicketRefundPhoneVerification(c *gin.Context) {
+	db, actor, ok := ticketRefundRequest(c, false)
+	if !ok {
+		return
+	}
+	status, err := service.RefundPhoneVerificationStatusWithDB(db, actor)
+	if err != nil {
+		writeTicketRefundError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, status)
+}
+
+func SendTicketRefundPhoneSMSCode(c *gin.Context) {
+	db, actor, ok := ticketRefundRequest(c, false)
+	if !ok {
+		return
+	}
+	if err := service.SendRefundPhoneSMSCodeWithDB(db, actor, c.ClientIP()); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "验证码已发送"})
 }

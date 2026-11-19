@@ -147,6 +147,8 @@ type CreateTicketRefundInput struct {
 	Allocations []TicketRefundOrderAllocation `json:"allocations"`
 	// SignatureAttachmentID 是承诺书签名图（可选）。
 	SignatureAttachmentID *int64 `json:"signatureAttachmentId"`
+	AgreementText         string `json:"agreementText"`
+	PhoneSMSCode          string `json:"phoneSmsCode"`
 }
 
 func ListEligibleTicketRefundOrdersWithDB(db *gorm.DB, actor entity.User, verify TicketRefundOrderVerifier) ([]TicketRefundOrder, error) {
@@ -218,6 +220,9 @@ func CreateTicketRefundWithDB(db *gorm.DB, actor entity.User, input CreateTicket
 	if input.PayoutQrAttachmentID != nil && *input.PayoutQrAttachmentID <= 0 {
 		return entity.TicketRefund{}, ErrTicketRefundInvalid
 	}
+	if input.SignatureAttachmentID != nil && *input.SignatureAttachmentID <= 0 {
+		return entity.TicketRefund{}, ErrTicketRefundInvalid
+	}
 	now := time.Now()
 	row := entity.TicketRefund{
 		UserID: actor.ID, Kind: input.Kind, Status: entity.TicketRefundStatusPendingReview,
@@ -236,16 +241,20 @@ func CreateTicketRefundWithDB(db *gorm.DB, actor entity.User, input CreateTicket
 				return err
 			}
 		}
-		if _, err := ticketRefundActor(tx, actor.ID, false, true); err != nil {
+		freshActor, err := ticketRefundActor(tx, actor.ID, false, true)
+		if err != nil {
+			return err
+		}
+		if err := validateRefundAttachmentsInTx(tx, freshActor, input, &row, now); err != nil {
 			return err
 		}
 		if input.OrderID == nil {
-			eligible, err := listEligibleTicketRefundOrders(tx, actor.ID, verify, now, 1)
-			if err != nil {
-				return err
+			breakdown, principalErr := RefundablePrincipalWithDB(tx, actor.ID, 0)
+			if principalErr != nil {
+				return principalErr
 			}
-			if len(eligible) != 0 {
-				return ErrTicketRefundOrderUnavailable
+			if input.RequestedCents > refundablePrincipalCentsCeil(breakdown) {
+				return ErrTicketRefundAmount
 			}
 		} else {
 			if err := ensureTicketRefundOrderUnused(tx, order.ID); err != nil {
@@ -265,16 +274,13 @@ func CreateTicketRefundWithDB(db *gorm.DB, actor entity.User, input CreateTicket
 			// 可退本金沿用 21-*.md §7.1 的口径（balance − 已消耗赠金），
 			// 与审批冻结时用的是同一个函数，避免两处口径漂移。
 			amountCap := paid
-			if breakdown, principalErr := RefundablePrincipalWithDB(tx, actor.ID, paid*ticketRefundMicrosPerCent); principalErr == nil {
-				// 可退本金**向上取整到分**（2026-11-19 用户要求）。
-				//
-				// 与订单金额的 floor 方向相反是刻意的：本金是用户自己的钱，
-				// 差 1 分不到就少退一分属于「平台占用户便宜」；而订单金额向下取
-				// 是「不超额退款」。两个方向各自对自己的风险负责。
-				principalCents := refundablePrincipalCentsCeil(breakdown)
-				if principalCents < amountCap {
-					amountCap = principalCents
-				}
+			breakdown, principalErr := RefundablePrincipalWithDB(tx, actor.ID, paid*ticketRefundMicrosPerCent)
+			if principalErr != nil {
+				return principalErr
+			}
+			principalCents := refundablePrincipalCentsCeil(breakdown)
+			if principalCents < amountCap {
+				amountCap = principalCents
 			}
 			// 本金为负或已花光时 amountCap 会是 0 或负数：一并拒掉，
 			// 否则会放过一个「退 0 元」的申请。
@@ -287,11 +293,7 @@ func CreateTicketRefundWithDB(db *gorm.DB, actor entity.User, input CreateTicket
 					return verifyErr
 				}
 				row.ChannelRef, row.OriginalTradeNo = ref, order.RefundOriginalTradeNo
-			} else if verifyErr == nil {
-				// Do not silently replace an eligible original-channel refund
-				// with a manual payout.
-				return ErrTicketRefundOrderUnavailable
-			} else if !errors.Is(verifyErr, ErrTicketRefundOrderUnavailable) {
+			} else if verifyErr != nil && !errors.Is(verifyErr, ErrTicketRefundOrderUnavailable) {
 				return verifyErr
 			}
 			id := order.ID
@@ -355,7 +357,7 @@ func planTicketRefundAllocations(input CreateTicketRefundInput) ([]plannedRefund
 			if alloc.OrderID <= 0 {
 				return nil, ErrTicketRefundInvalid
 			}
-			if alloc.Cents <= 0 {
+			if !validTicketRefundCents(alloc.Cents) {
 				return nil, ErrTicketRefundAmount
 			}
 			if _, dup := seen[alloc.OrderID]; dup {
@@ -401,24 +403,35 @@ func refundablePrincipalCentsCeil(breakdown RefundablePrincipalBreakdown) int64 
 }
 
 func CreateTicketRefundsForOrdersWithDB(db *gorm.DB, actor entity.User, input CreateTicketRefundInput, verify TicketRefundOrderVerifier) ([]entity.TicketRefund, error) {
+	if db == nil || input.RequestedCents < 0 {
+		return nil, ErrTicketRefundInvalid
+	}
 	plan, err := planTicketRefundAllocations(input)
 	if err != nil {
 		return nil, err
 	}
+	totalRequested := int64(0)
 	// 批次级本金校验（2026-11-19）。
 	//
 	// 为什么单笔闸门不够：每笔各自去比对「本详单实付 与 用户可退本金」，
 	// 而本金是**用户级的一个池子**。本金 8 元、两笔各申请 7.5 与 2.5 时，
 	// 单笔看都在额度内（7.5≤8、2.5≤8），合计 10 却超了 —— 这正是无单可查的那种漏洞。
-	if len(plan) > 1 {
-		total := int64(0)
+	if len(plan) > 0 {
 		for _, item := range plan {
-			total += item.cents
-		}
-		if breakdown, principalErr := RefundablePrincipalWithDB(db, actor.ID, 0); principalErr == nil {
-			if total > refundablePrincipalCentsCeil(breakdown) {
+			if !validTicketRefundCents(item.cents) || totalRequested > ticketRefundMaxCents-item.cents {
 				return nil, ErrTicketRefundAmount
 			}
+			totalRequested += item.cents
+		}
+		if len(input.Allocations) > 0 && input.RequestedCents > 0 && input.RequestedCents != totalRequested {
+			return nil, ErrTicketRefundAmount
+		}
+		breakdown, principalErr := RefundablePrincipalWithDB(db, actor.ID, 0)
+		if principalErr != nil {
+			return nil, principalErr
+		}
+		if totalRequested > refundablePrincipalCentsCeil(breakdown) {
+			return nil, ErrTicketRefundAmount
 		}
 	}
 
@@ -440,6 +453,16 @@ func CreateTicketRefundsForOrdersWithDB(db *gorm.DB, actor entity.User, input Cr
 				return err
 			}
 			created = append(created, row)
+		}
+		// The per-order creation path has now acquired the user lock. Recheck
+		// the whole batch against that same transaction's wallet snapshot, so
+		// spending between the early check and the first lock cannot overbook it.
+		breakdown, err := RefundablePrincipalWithDB(tx, actor.ID, 0)
+		if err != nil {
+			return err
+		}
+		if totalRequested > refundablePrincipalCentsCeil(breakdown) {
+			return ErrTicketRefundAmount
 		}
 		return nil
 	})
@@ -528,13 +551,18 @@ func ReviewTicketRefundWithDB(db *gorm.DB, admin entity.User, id int64, approve 
 		}
 		orderPaidMicros := row.OrderPaidCents * ticketRefundMicrosPerCent
 		breakdown := computeRefundablePrincipal(wallet.micros, giftConsumed, orderPaidMicros)
-		refundableCents := microsToCents(breakdown.RefundableMicros)
+		refundableCents := refundablePrincipalCentsCeil(breakdown)
 		if amountCents > refundableCents {
 			return ErrTicketRefundExceedsRefundablePrincipal
 		}
 		amountMicros := amountCents * ticketRefundMicrosPerCent
 		if wallet.micros < amountMicros {
-			return ErrTicketRefundInsufficientBalance
+			// The public amount rounds up to a cent. The platform absorbs only
+			// that final fraction; freeze the real balance without creating debt.
+			if wallet.micros <= 0 || amountMicros-wallet.micros >= ticketRefundMicrosPerCent {
+				return ErrTicketRefundInsufficientBalance
+			}
+			amountMicros = wallet.micros
 		}
 		after := wallet.micros - amountMicros
 		if err := updateTicketRefundWallet(tx, row.UserID, wallet, after); err != nil {
@@ -951,7 +979,7 @@ func ticketRefundActor(db *gorm.DB, id int32, requireAdmin, lock bool) (entity.U
 		return entity.User{}, ErrTicketRefundForbidden
 	}
 	var user entity.User
-	query := db.Session(&gorm.Session{NewDB: true}).Select("id", "role", "status").Where("id = ?", id)
+	query := db.Session(&gorm.Session{NewDB: true}).Select("id", "role", "status", "phone").Where("id = ?", id)
 	if lock {
 		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
 	}
@@ -1087,10 +1115,12 @@ func ticketRefundHoldMicros(tx *gorm.DB, row entity.TicketRefund) (int64, error)
 	if err != nil {
 		return 0, err
 	}
-	if held.UserID != row.UserID || held.AmountMicros != amount || held.WalletBeforeMicros-held.WalletAfterMicros != amount {
+	roundedRemainder := held.AmountMicros > 0 && held.AmountMicros < amount && amount-held.AmountMicros < ticketRefundMicrosPerCent &&
+		held.WalletAfterMicros == 0 && held.WalletBeforeMicros == held.AmountMicros
+	if held.UserID != row.UserID || (held.AmountMicros != amount && !roundedRemainder) || held.WalletBeforeMicros-held.WalletAfterMicros != held.AmountMicros {
 		return 0, ErrTicketRefundState
 	}
-	return amount, nil
+	return held.AmountMicros, nil
 }
 
 // LatestRefundPayoutQrAttachmentIDWithDB 取该用户最近一次退款申请用过的收款码附件 ID。

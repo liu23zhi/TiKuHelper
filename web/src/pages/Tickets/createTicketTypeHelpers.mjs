@@ -224,6 +224,9 @@ export function getTicketCreateDraftValidation(draft = {}) {
       refundPayoutQrAttachmentId: draft.refundPayoutQrAttachmentId,
       refundPhoneConfirmed: draft.refundPhoneConfirmed,
       refundSignatureAttachmentId: draft.refundSignatureAttachmentId,
+      refundAgreementSigned: draft.refundAgreementSigned,
+      refundPhoneVerificationRequired: draft.refundPhoneVerificationRequired,
+      refundPhoneSmsCode: draft.refundPhoneSmsCode,
       boundPhone: draft.boundPhone,
     });
   }
@@ -247,9 +250,10 @@ export function getRefundDraftValidation({
   refundMethod,
   refundAllocations,
   refundPayoutQrAttachmentId,
-  refundPhoneConfirmed,
-  boundPhone,
   refundSignatureAttachmentId,
+  refundAgreementSigned,
+  refundPhoneVerificationRequired,
+  refundPhoneSmsCode,
 } = {}) {
   const yuan = String(requestedYuan ?? "").trim();
   if (!yuan) return Object.freeze({ field: "requestedYuan", message: "请输入退款金额" });
@@ -290,14 +294,13 @@ export function getRefundDraftValidation({
       return Object.freeze({ field: "payoutQr", message: "人工退回必须上传收款码" });
     }
     // 没绑手机号时不要求确认（否则这类用户永远退不了）。
-    const phone = String(boundPhone || "").trim();
-    if (phone && !refundPhoneConfirmed) {
-      return Object.freeze({ field: "refundPhone", message: "请确认收款手机号" });
+    if (refundPhoneVerificationRequired && !/^\d{6}$/.test(String(refundPhoneSmsCode || '').trim())) {
+      return Object.freeze({ field: "refundPhone", message: "请输入绑定手机号收到的六位验证码" });
     }
     // 承诺书签署（2026-11-19）：人工打款把钱打给收款码对应账户，
     // 而平台无法逐一核实那个账户是不是本人，所以必须有本人承诺。
     const signature = Number(refundSignatureAttachmentId);
-    if (!Number.isSafeInteger(signature) || signature <= 0) {
+    if (!Number.isSafeInteger(signature) || signature <= 0 || refundAgreementSigned === false) {
       return Object.freeze({
         field: "refundAgreement",
         message: "请阅读并签署《退款收款码使用承诺书》",
@@ -365,12 +368,16 @@ export function buildTicketCreatePayload(draft = {}) {
           Number.isSafeInteger(item.cents) &&
           item.cents > 0,
       );
-    if (allocations.length) payload.refundOrderAllocations = allocations;
+    if (draft.refundMethod !== 'manual' && allocations.length) payload.refundOrderAllocations = allocations;
     // 人工退回时显式告知后端：没有订单就是 manual（后端也这么判）。
     if (draft.refundMethod === "manual") payload.refundMethod = "manual";
+    if (draft.refundMethod === 'manual') {
+      payload.refundPhoneSmsCode = String(draft.refundPhoneSmsCode || '').trim();
+      payload.refundAgreementText = String(draft.refundAgreementText || '');
+    }
     // 签名图（2026-11-19）：每张退款单各自一份。
     const signatureId = Number(draft.refundSignatureAttachmentId);
-    if (Number.isSafeInteger(signatureId) && signatureId > 0) {
+    if (draft.refundMethod === 'manual' && Number.isSafeInteger(signatureId) && signatureId > 0) {
       payload.refundSignatureAttachmentId = signatureId;
     }
   // 收款码（可选，2026-11-19）：人工打款时管理员据此扫码转账。
@@ -378,7 +385,7 @@ export function buildTicketCreatePayload(draft = {}) {
   // 收款码归属退款单本身。混成一个字段会让两者再也分不开。
   // 只接受单个正整数：一张码就够，多张会让管理员不知道该扫哪张。
   const payoutQrId = Number(draft.refundPayoutQrAttachmentId);
-  if (Number.isSafeInteger(payoutQrId) && payoutQrId > 0) {
+  if (draft.refundMethod === 'manual' && Number.isSafeInteger(payoutQrId) && payoutQrId > 0) {
     payload.refundPayoutQrAttachmentId = payoutQrId;
   }
     if (attachmentIds.length) payload.attachmentIds = attachmentIds;

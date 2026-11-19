@@ -148,10 +148,10 @@ func TestTicketRefundEligibilityAndFreshOwnerAdminIsolation(t *testing.T) {
 			t.Fatalf("order %d should be unavailable, got %v", order.ID, err)
 		}
 	}
-	if _, err := CreateTicketRefundWithDB(db, owner, CreateTicketRefundInput{
+	if _, err := CreateTicketRefundWithDB(db, owner, withTestRefundIdentity(t, db, owner, CreateTicketRefundInput{
 		Kind: TicketRefundKindManual, RequestedCents: 100,
-	}, testVerifyTicketRefundChannel); !errors.Is(err, ErrTicketRefundOrderUnavailable) {
-		t.Fatalf("manual must not bypass eligible originals: %v", err)
+	}), testVerifyTicketRefundChannel); err != nil {
+		t.Fatalf("explicit manual choice must remain available: %v", err)
 	}
 	item, err := CreateTicketRefundWithDB(db, owner, CreateTicketRefundInput{
 		Kind: TicketRefundKindOriginal, OrderID: &valid.ID, RequestedCents: 3000,
@@ -167,7 +167,7 @@ func TestTicketRefundEligibilityAndFreshOwnerAdminIsolation(t *testing.T) {
 		t.Fatalf("stale admin approval allowed: %v", err)
 	}
 	all, err := ListTicketRefundsWithDB(db, admin)
-	if err != nil || len(all) != 1 || all[0].ID != item.ID {
+	if err != nil || len(all) != 2 || all[0].ID != item.ID {
 		t.Fatalf("admin read: %+v %v", all, err)
 	}
 	encoded, err := json.Marshal(item)
@@ -260,9 +260,9 @@ func TestTicketRefundPartialUnknownAndTerminalReplay(t *testing.T) {
 func TestTicketRefundManualFailureReturnsHoldOnceEvenIfOwnerDisabled(t *testing.T) {
 	db, owner, _, admin := newTicketRefundCoreTestDB(t)
 	old := seedTicketRefundOrder(t, db, 1, owner.ID, "paid", time.Now().Add(-61*24*time.Hour), 20, false)
-	row, err := CreateTicketRefundWithDB(db, owner, CreateTicketRefundInput{
+	row, err := CreateTicketRefundWithDB(db, owner, withTestRefundIdentity(t, db, owner, CreateTicketRefundInput{
 		Kind: TicketRefundKindManual, OrderID: &old.ID, RequestedCents: 2000,
-	}, testVerifyTicketRefundChannel)
+	}), testVerifyTicketRefundChannel)
 	if err != nil || row.ChannelRef != "" || row.OriginalTradeNo != "" {
 		t.Fatalf("old order manual fallback: %+v %v", row, err)
 	}
@@ -289,9 +289,9 @@ func TestTicketRefundManualFailureReturnsHoldOnceEvenIfOwnerDisabled(t *testing.
 
 func TestTicketRefundConcurrentReviewAndHoldRollback(t *testing.T) {
 	db, owner, _, admin := newTicketRefundCoreTestDB(t)
-	row, err := CreateTicketRefundWithDB(db, owner, CreateTicketRefundInput{
+	row, err := CreateTicketRefundWithDB(db, owner, withTestRefundIdentity(t, db, owner, CreateTicketRefundInput{
 		Kind: TicketRefundKindManual, RequestedCents: 1000,
-	}, nil)
+	}), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -174,6 +174,8 @@ type CreateTicketInput struct {
 	RefundOrderAllocations []TicketRefundOrderAllocation `json:"refundOrderAllocations,omitempty"`
 	// RefundSignatureAttachmentID 是承诺书签名图（2026-11-19）。
 	RefundSignatureAttachmentID *int64 `json:"refundSignatureAttachmentId,omitempty"`
+	RefundAgreementText         string `json:"refundAgreementText,omitempty"`
+	RefundPhoneSMSCode          string `json:"refundPhoneSmsCode,omitempty"`
 }
 
 // 用户可自选的工单类型（T-209 建立，本任务扩到四项）。
@@ -347,8 +349,7 @@ func CreateTicketWithDB(db *gorm.DB, user *entity.User, input CreateTicketInput)
 		return createRefundTicketWithDB(db, user, input)
 	}
 	// 选了退款却带了退款字段（或反之）：视作参数错，避免「提交了但字段被忽略」。
-	if input.RefundOrderID != nil || input.RefundRequestedCents != 0 || strings.TrimSpace(input.RefundReason) != "" ||
-		input.RefundPayoutQrAttachmentID != nil {
+	if hasTicketRefundFields(input) {
 		return TicketDetail{}, ErrTicketInvalidCategory
 	}
 	subject, err := normalizeTicketText(input.Subject, TicketSubjectMaxLength, ErrTicketSubjectRequired)

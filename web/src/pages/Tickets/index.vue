@@ -431,12 +431,14 @@
           <!-- 原路退回：选充值记录 + 按新旧分摊 -->
           <template v-if="draft.refundMethod === REFUND_METHOD_ORIGINAL">
             <a-form-item label="退款订单" :html-for="createFieldId('order')">
+              <a-button data-ticket-refund-orders-open :disabled="createLoading" @click="refundOrdersVisible = true">选择充值记录（已选 {{ draft.refundAllocations.length }} 笔）</a-button>
+              <a-modal :open="refundOrdersVisible" title="选择原路退回的充值记录" :width="640" :footer="null" @cancel="refundOrdersVisible = false">
               <p v-if="refundOrdersLoading" class="ticket-refund-orders-hint">正在读取可退订单…</p>
               <p v-else-if="!refundOrderOptions.length" class="ticket-refund-orders-hint">
                 当前没有可退订单。
               </p>
               <div v-else class="ticket-refund-orders" role="group" aria-label="退款订单（可多选）">
-                <label
+                <div
                   v-for="item in refundOrderOptions"
                   :key="item.value"
                   class="ticket-refund-order"
@@ -445,6 +447,7 @@
                 >
                   <input
                     type="checkbox"
+                    :aria-label="`选择订单 ${item.label}`"
                     :value="item.value"
                     :checked="isRefundOrderSelected(item.value)"
                     :disabled="createLoading || !canToggleRefundOrder(item.value)"
@@ -469,7 +472,7 @@
                         :value="(refundAllocationOf(item.value).cents / 100).toFixed(2)"
                         :disabled="createLoading"
                         :data-ticket-refund-alloc="item.value"
-                        @input="setRefundAllocationCents(item.value, $event.target.value)"
+                        @change="setRefundAllocationCents(item.value, $event.target.value)"
                       />
                       <span class="ticket-refund-alloc__unit">元</span>
                       <span
@@ -478,7 +481,7 @@
                       >{{ refundAllocationOf(item.value).cents >= item.paidCents ? "全额" : "部分" }}</span>
                     </span>
                   </span>
-                </label>
+                </div>
               </div>
               <div class="ticket-refund-summary" data-ticket-refund-summary>
                 已分配 <strong>{{ (refundAllocatedCents / 100).toFixed(2) }}</strong> 元 /
@@ -486,8 +489,12 @@
                 <span v-if="refundRemainingCents > 0">
                   ，还差 <strong data-ticket-refund-gap>{{ (refundRemainingCents / 100).toFixed(2) }}</strong> 元
                 </span>
+                <span v-else-if="refundTotals.excess > 0" role="alert">，超出 {{ (refundTotals.excess / 100).toFixed(2) }} 元，请调整手动金额</span>
                 <span v-else>，已达申请金额（要再选订单请先把某笔金额调小）</span>
               </div>
+              <a-button data-ticket-refund-orders-confirm type="primary" @click="refundOrdersVisible = false">完成选择</a-button>
+              </a-modal>
+              <p v-if="createValidationMessage('order')" role="alert">{{ createValidationMessage('order') }}</p>
               <template #help
                 ><span>
                   按充值时间<strong>最旧优先</strong>自动分摊：较旧的先全额，剩余部分给最新一笔。
@@ -500,25 +507,18 @@
 
           <!-- 人工退回：手机号确认 + 收款码 -->
           <template v-else-if="draft.refundMethod === REFUND_METHOD_MANUAL">
-            <a-form-item label="手机号确认">
+            <a-form-item label="手机号验证">
               <div class="ticket-refund-phone" data-ticket-refund-phone>
-                <template v-if="refundBoundPhoneMasked">
-                  <span class="ticket-refund-phone__value">{{ refundBoundPhoneMasked }}</span>
-                  <label class="ticket-refund-phone__confirm">
-                    <input
-                      type="checkbox"
-                      :checked="draft.refundPhoneConfirmed"
-                      :disabled="createLoading"
-                      data-ticket-refund-phone-confirm
-                      @change="draft.refundPhoneConfirmed = $event.target.checked"
-                    />
-                    <span>我已确认该手机号可正常收款，管理员会通过它与我联系</span>
-                  </label>
+                <template v-if="refundPhoneStatus.required">
+                  <span class="ticket-refund-phone__value">{{ refundPhoneStatus.phoneMasked }}</span>
+                  <a-input :value="draft.refundPhoneSmsCode" autocomplete="one-time-code" inputmode="numeric" :maxlength="6" aria-label="退款手机验证码" :disabled="createLoading" @update:value="draft.refundPhoneSmsCode = $event" />
+                  <a-button :loading="refundSmsBusy" :disabled="createLoading || refundSmsCooldown > 0" @click="sendRefundSms">{{ refundSmsCooldown > 0 ? `${refundSmsCooldown} 秒后重发` : '发送验证码' }}</a-button>
                 </template>
                 <span v-else class="ticket-refund-phone__missing">
-                  当前账号没有绑定手机号。人工打款只认收款码，建议先在「个人中心」绑定手机号以便联系。
+                  {{ refundPhoneStatus.loaded ? '当前账号未绑定可验证的手机号，或短信服务未启用，可继续申请人工退款。' : '正在确认手机号验证是否可用…' }}
                 </span>
               </div>
+              <p v-if="createValidationMessage('refundPhone')" role="alert">{{ createValidationMessage('refundPhone') }}</p>
             </a-form-item>
 
             <a-form-item label="收款码" required>
@@ -530,6 +530,23 @@
                   class="ticket-payout-qr__preview"
                   data-ticket-payout-qr-preview
                 />
+                <!-- 换设备后的模糊占位（2026-11-19）：本机没有缓存时，显示上次收款码的
+                     高斯模糊缩略图 + 提示。它看不清、也扫不出来 —— 本来就是提示性的，
+                     作用是让用户知道「上次传过、去输密码恢复」，而不是显示成「从没传过」。 -->
+                <div
+                  v-if="!draft.refundPayoutQrAttachmentId && payoutQrBlurredUrl"
+                  class="ticket-payout-qr__blurred"
+                  data-ticket-payout-qr-blurred
+                >
+                  <img
+                    :src="payoutQrBlurredUrl"
+                    alt="上次使用的收款码（已模糊）"
+                    class="ticket-payout-qr__preview"
+                  />
+                  <span class="ticket-payout-qr__blurred-tip">
+                    这是你上次使用的收款码（已模糊）。点「恢复上次的收款码」并输入当前密码即可取回原图。
+                  </span>
+                </div>
                 <div class="ticket-payout-qr__actions">
                   <label class="ticket-attachment-input">
                     <span>{{ draft.refundPayoutQrAttachmentId ? "替换收款码" : "选择收款码" }}</span>
@@ -615,12 +632,17 @@
           <!-- 协议弹窗。签名弹窗是它的内层浮层，
                关闭签名弹窗**不会**关掉协议弹窗（用户明确要求）。 -->
           <RefundAgreementDialog
+            :key="createVersion"
             :visible="agreementVisible"
             :text="agreementText"
             :signed-attachment-id="draft.refundSignatureAttachmentId"
             @close="agreementVisible = false"
             @signed="onAgreementSigned"
           />
+          <a-modal :open="payoutQrRecoverVisible" title="恢复上次的收款码" :confirm-loading="payoutQrBusy" :mask-closable="false" @cancel="closePayoutQrRecover" @ok="recoverPayoutQr">
+            <p>请输入当前登录密码，以恢复之前上传的收款码。</p>
+            <a-input-password v-model:value="payoutQrPassword" autocomplete="current-password" aria-label="当前登录密码" @pressEnter="recoverPayoutQr" />
+          </a-modal>
         </template>
         <!-- 账号问题（B2-6）：问题类型下拉 + 说明文本域。
              问题类型只作为标题前缀供管理员分诊，不是独立后端字段
@@ -747,6 +769,7 @@
           v-else-if="createStep === TICKET_WIZARD_STEP_FORM"
           type="primary"
           :loading="createLoading"
+          :disabled="payoutQrBusy || agreementLoading || uploadBusy"
           :onClick="createEntry.bind(submitTicket)"
           >提交</a-button
         >
@@ -961,7 +984,6 @@ import {
   updateTicket,
   uploadTicketAttachment,
   listTicketAttachments,
-  getTicketAttachment,
 } from "@/api/TicketApi";
 import {
   groupTicketAttachmentsByMessage,
@@ -1025,7 +1047,10 @@ import {
 import {
   getEligibleTicketRefundOrders,
   getRefundAgreement,
+  previewTicketRefundPayoutQr,
   recoverTicketRefundPayoutQr,
+  getRefundPhoneVerification,
+  sendRefundPhoneSMSCode,
 } from "@/api/TikuComponentApi";
 import RefundAgreementDialog from "@/components/RefundAgreementDialog.vue";
 
@@ -1155,14 +1180,11 @@ const draft = reactive({
   refundOrderIds: [],
   // 退回方式（2026-11-19）：“original” 原路退回 / “manual” 人工退回。
   refundMethod: '',
-  // 人工退回时的手机号确认（用户要求「验证手机号」）。
-  // 没绑手机号时这个开关不参与校验（不能因为没绑就永远退不了）。
-  refundPhoneConfirmed: false,
+  // 专用退款短信验证码，只保留在本次草稿内。
+  refundPhoneSmsCode: '',
   // 承诺书签署（2026-11-19）。
   //
-  // refundAgreementSigned 是「本次申请已签」的开关；
-  // refundSignatureAttachmentId 是签名图附件。两者分开是为了支持
-  // 「取消勾选后重新打开仍能看到上次签名」——只清开关、不清图。
+  // 已签状态与签名图只属于本次申请；查看协议时保留显示。
   refundAgreementSigned: false,
   refundSignatureAttachmentId: 0,
   // 分摊表：[{ orderId, cents, manual }]
@@ -1197,19 +1219,23 @@ const createWizardTitle = computed(() => {
 });
 // 可退订单列表：切到退款类型时才拉一次（普通工单不该触发这个请求）。
 const refundOrderOptions = ref([]);
+const refundOrdersVisible = ref(false);
 const refundOrdersLoading = ref(false);
-let refundOrdersLoaded = false;
+let refundOrdersLoaded = false, refundOrdersVersion = 0;
 async function loadRefundOrders() {
   if (refundOrdersLoaded || refundOrdersLoading.value) return;
+  const pageOwns = capturePage(), version = ++refundOrdersVersion;
+  const owns = () => pageOwns() && version === refundOrdersVersion;
   refundOrdersLoading.value = true;
   try {
     const response = await getEligibleTicketRefundOrders();
+    if (!owns()) return;
     const rows = Array.isArray(response?.data) ? response.data : [];
     refundOrderOptions.value = rows
       .filter((row) => row && Number.isSafeInteger(Number(row.id)))
       .map((row) => ({
         value: Number(row.id),
-        label: `${row.orderNo || "#" + row.id} · 实付 ${formatRefundCents(row.paidCents)} 元`,
+        label: `${row.orderNo || "#" + row.id} · 可退 ${formatRefundCents(row.paidCents)} 元`,
         // 2026-11-19：不能原路退回的订单也要显示，并写明原因（用户要求）。
         // 后端给的是**具体原因**而不是布尔值 —— 「渠道未配置」与
         // 「这笔单的回调没写流水号」对用户的意义完全不同。
@@ -1223,11 +1249,12 @@ async function loadRefundOrders() {
       }));
     refundOrdersLoaded = true;
   } catch {
+    if (!owns()) return;
     // 拉取失败不阻断建单：用户仍可提交「无订单的人工退款」，
     // 只是不能选原路退回。错误由消息提示，不把整个弹窗卡住。
     refundOrderOptions.value = [];
   } finally {
-    refundOrdersLoading.value = false;
+    if (owns()) refundOrdersLoading.value = false;
   }
 }
 function createValidationMessage(field) { return createValidation.value?.field === field ? createValidation.value.message : ""; }
@@ -1248,11 +1275,13 @@ function currentDraftValidation() {
     refundMethod: draft.refundMethod,
     refundAllocations: draft.refundAllocations,
     refundPayoutQrAttachmentId: draft.refundPayoutQrAttachmentId,
-    refundPhoneConfirmed: draft.refundPhoneConfirmed,
     refundSignatureAttachmentId: draft.refundSignatureAttachmentId,
+    refundAgreementSigned: draft.refundAgreementSigned,
+    refundPhoneVerificationRequired: refundPhoneStatus.required,
+    refundPhoneSmsCode: draft.refundPhoneSmsCode,
     // 手机号从当前用户现取而不存进 draft：
     // 存一份副本会在换账号后变成旧值。
-    boundPhone: refundBoundPhone.value,
+
   });
 }
 function retireStaleCreateValidation() {
@@ -1353,7 +1382,215 @@ function canUseTickets() {
     && String(currentUser.value?.status || "enabled") === "enabled";
 }
 function canManage() { return canUseTickets() && isAdmin.value; }
+// 每个草稿独立的签名、验证与请求归属；收款码图片仅在当前账号的本机缓存。
+const payoutQrBusy = ref(false), payoutQrPreviewUrl = ref(''), payoutQrBlurredUrl = ref('')
+const payoutQrDataUrl = ref(''), payoutQrNeedsUpload = ref(false)
+const payoutQrRecoverVisible = ref(false), payoutQrPassword = ref('')
+let payoutQrVersion = 0
+const payoutQrMemoryKey = () => {
+  const id = Number(currentUser.value?.id)
+  return Number.isSafeInteger(id) && id > 0 ? `tiku.refund.payoutQr.${id}` : ''
+}
+function revokePayoutQrPreview() { payoutQrPreviewUrl.value = '' }
+function revokePayoutQrBlurred() { payoutQrBlurredUrl.value = '' }
+function readImageDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result || ''))
+    reader.onerror = () => reject(new Error('无法读取收款码图片'))
+    reader.readAsDataURL(file)
+  })
+}
+function cachePayoutQr(id, dataUrl) {
+  const key = payoutQrMemoryKey()
+  if (key) { try { window.localStorage.setItem(key, JSON.stringify({ id, dataUrl })) } catch { /* 当前会话仍可使用 */ } }
+}
+function setPayoutQr(id, dataUrl, needsUpload) {
+  draft.refundPayoutQrAttachmentId = id
+  payoutQrDataUrl.value = payoutQrPreviewUrl.value = dataUrl
+  payoutQrNeedsUpload.value = needsUpload
+  revokePayoutQrBlurred()
+}
+function restorePayoutQr() {
+  const version = ++payoutQrVersion
+  payoutQrBusy.value = false
+  draft.refundPayoutQrAttachmentId = null
+  revokePayoutQrPreview(); revokePayoutQrBlurred()
+  payoutQrDataUrl.value = ''; payoutQrNeedsUpload.value = false
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(payoutQrMemoryKey()) || 'null')
+    if (Number.isSafeInteger(saved?.id) && saved.id > 0 && /^data:image\/(png|jpeg);base64,/.test(saved.dataUrl)) {
+      setPayoutQr(saved.id, saved.dataUrl, true)
+      return
+    }
+  } catch { /* 旧版本只有附件 ID，需密码恢复 */ }
+  const owns = captureCreate()
+  previewTicketRefundPayoutQr().then(response => {
+    if (!owns() || version !== payoutQrVersion || draft.refundPayoutQrAttachmentId) return
+    const url = response?.data?.previewDataUrl
+    if (/^data:image\/png;base64,/.test(url || '')) payoutQrBlurredUrl.value = url
+  }).catch(() => { /* 占位图不影响申请 */ })
+}
+function clearPayoutQr() {
+  ++payoutQrVersion
+  setPayoutQr(null, '', false)
+  resetAgreement()
+  const key = payoutQrMemoryKey()
+  if (key) { try { window.localStorage.removeItem(key) } catch { /* 当前草稿仍清除 */ } }
+}
+async function onPickPayoutQr(event) {
+  const input = event?.target, file = input?.files?.[0]
+  if (input) input.value = ''
+  if (!file || payoutQrBusy.value || createLoading.value || !createVisible.value) return
+  const invalid = validateTicketAttachmentFile(file)
+  if (invalid) { message.warning(`收款码：${invalid}`); return }
+  const owns = captureCreate(), version = ++payoutQrVersion
+  payoutQrBusy.value = true
+  try {
+    let dataUrl = await readImageDataUrl(file)
+    if (!owns() || version !== payoutQrVersion) return
+    const response = await uploadTicketAttachment(file, undefined)
+    if (!owns() || version !== payoutQrVersion) return
+    const id = Number(response?.data?.data?.id)
+    if (!Number.isSafeInteger(id) || id <= 0) throw new Error('收款码上传返回格式异常')
+    const mediaType = String(response?.data?.data?.mediaType || (/\.png$/i.test(file.name) ? 'image/png' : 'image/jpeg'))
+    if (!/^image\/(png|jpeg)$/.test(mediaType)) throw new Error('收款码图片格式无效')
+    dataUrl = dataUrl.replace(/^data:[^;]*;base64,/, `data:${mediaType};base64,`)
+    setPayoutQr(id, dataUrl, false); cachePayoutQr(id, dataUrl); resetAgreement()
+    message.success('收款码已上传，本机会记住这张图片')
+  } catch (error) { if (owns() && version === payoutQrVersion) message.error(responseMessage(error, '收款码上传失败')) }
+  finally { if (owns() && version === payoutQrVersion) payoutQrBusy.value = false }
+}
+const canRecoverPayoutQr = computed(() => !draft.refundPayoutQrAttachmentId && !payoutQrBusy.value)
+function openPayoutQrRecover() { if (canRecoverPayoutQr.value) { payoutQrPassword.value = ''; payoutQrRecoverVisible.value = true } }
+function closePayoutQrRecover() { payoutQrRecoverVisible.value = false; payoutQrPassword.value = ''; ++payoutQrVersion; payoutQrBusy.value = false }
+async function recoverPayoutQr() {
+  if (!payoutQrRecoverVisible.value || payoutQrBusy.value || !payoutQrPassword.value) return
+  const owns = captureCreate(), version = ++payoutQrVersion, password = payoutQrPassword.value
+  payoutQrPassword.value = ''; payoutQrBusy.value = true
+  try {
+    const response = await recoverTicketRefundPayoutQr(password)
+    if (!owns() || version !== payoutQrVersion) return
+    const id = Number(response?.data?.attachmentId), dataUrl = String(response?.data?.imageDataUrl || '')
+    if (!Number.isSafeInteger(id) || id <= 0) { message.info('没有可恢复的收款码，请重新上传'); return }
+    if (!/^data:image\/(png|jpeg);base64,/.test(dataUrl)) throw new Error('收款码恢复失败')
+    setPayoutQr(id, dataUrl, true); cachePayoutQr(id, dataUrl)
+    payoutQrRecoverVisible.value = false
+    message.success('已恢复上次的收款码')
+  } catch (error) { if (owns() && version === payoutQrVersion) message.error(responseMessage(error, '恢复收款码失败')) }
+  finally { if (owns() && version === payoutQrVersion) payoutQrBusy.value = false }
+}
+// 历史附件受密码保护；本机缓存可直接预览，提交时上传为本次草稿附件。
+async function ensurePayoutQrDraft(owns) {
+  if (!payoutQrNeedsUpload.value) return
+  const parts = /^data:(image\/(?:png|jpeg));base64,(.+)$/.exec(payoutQrDataUrl.value)
+  if (!parts) throw new Error('请重新上传收款码')
+  const bytes = Uint8Array.from(atob(parts[2]), ch => ch.charCodeAt(0))
+  const response = await uploadTicketAttachment(new File([bytes], 'refund-payout-qr', { type: parts[1] }), undefined)
+  if (!owns()) return
+  const id = Number(response?.data?.data?.id)
+  if (!Number.isSafeInteger(id) || id <= 0) throw new Error('收款码上传失败')
+  draft.refundPayoutQrAttachmentId = id; payoutQrNeedsUpload.value = false
+  cachePayoutQr(id, payoutQrDataUrl.value)
+}
+
+const REFUND_METHOD_ORIGINAL = 'original', REFUND_METHOD_MANUAL = 'manual'
+const refundAllocationOf = orderId => draft.refundAllocations.find(item => item.orderId === Number(orderId)) || null
+const isRefundOrderSelected = orderId => refundAllocationOf(orderId) !== null
+const refundRequestedCents = computed(() => parseRefundYuanToCents(draft.requestedYuan) || 0)
+const refundTotals = computed(() => refundAllocationTotals(refundRequestedCents.value, draft.refundAllocations))
+const refundAllocatedCents = computed(() => refundTotals.value.allocated)
+const refundRemainingCents = computed(() => refundTotals.value.remaining)
+function recomputeRefundAllocations(addedOrderId) {
+  draft.refundAllocations = computeRefundAllocations({
+    orders: refundOrderOptions.value.map(item => ({ id: item.value, paidCents: item.paidCents, paidAt: item.paidAt })),
+    requestedCents: refundRequestedCents.value, selections: draft.refundAllocations, addedOrderId,
+  })
+}
+const canToggleRefundOrder = orderId => isRefundOrderSelected(orderId) ||
+  (refundRemainingCents.value > 0 && refundOrderOptions.value.some(item => item.value === Number(orderId) && item.originalSupported))
+function setRefundRequestedYuan(value) {
+  if (createLoading.value) return
+  draft.requestedYuan = value; recomputeRefundAllocations(); retireCreateValidation()
+}
+function setRefundAllocationCents(orderId, yuan) {
+  if (createLoading.value) return
+  const row = refundAllocationOf(orderId)
+  if (!row) return
+  const cap = Number(refundOrderOptions.value.find(item => item.value === Number(orderId))?.paidCents) || 0
+  row.cents = Math.min(Math.max(0, parseRefundYuanToCents(yuan) || 0), cap)
+  row.manual = true
+  retireCreateValidation()
+}
+function selectRefundMethod(method) {
+  if (createLoading.value || draft.refundMethod === method) return
+  draft.refundMethod = method; resetAgreement(); retireCreateValidation()
+  if (method === REFUND_METHOD_ORIGINAL) { refundOrdersVisible.value = true; void loadRefundOrders() }
+  if (method === REFUND_METHOD_MANUAL) { restorePayoutQr(); void loadRefundPhoneStatus() }
+}
+const refundPhoneStatus = reactive({ required: false, phoneMasked: '', loaded: false })
+const refundSmsBusy = ref(false), refundSmsCooldown = ref(0)
+let refundSmsTimer = null
+async function loadRefundPhoneStatus() {
+  const owns = captureCreate()
+  refundPhoneStatus.loaded = false
+  try {
+    const response = await getRefundPhoneVerification()
+    if (typeof response?.data?.required !== "boolean") throw new Error("手机号验证状态无效，请重试");
+    if (owns()) Object.assign(refundPhoneStatus, response.data, { loaded: true })
+  } catch (error) { if (owns()) message.error(responseMessage(error, '无法确认手机号验证状态，请重新选择人工退款')) }
+}
+async function sendRefundSms() {
+  if (refundSmsBusy.value || refundSmsCooldown.value > 0 || !refundPhoneStatus.required) return
+  const owns = captureCreate(); refundSmsBusy.value = true
+  try {
+    await sendRefundPhoneSMSCode()
+    if (!owns()) return
+    refundSmsCooldown.value = 60
+    refundSmsTimer = setInterval(() => { if (--refundSmsCooldown.value <= 0) { clearInterval(refundSmsTimer); refundSmsTimer = null } }, 1000)
+    message.success('验证码已发送至绑定手机号')
+  } catch (error) { if (owns()) message.error(responseMessage(error, '验证码发送失败')) }
+  finally { if (owns()) refundSmsBusy.value = false }
+}
+const agreementVisible = ref(false), agreementText = ref(''), agreementLoading = ref(false)
+function resetAgreement() { agreementVisible.value = false; agreementText.value = ''; draft.refundAgreementSigned = false; draft.refundSignatureAttachmentId = 0 }
+async function openAgreement() {
+  if (agreementLoading.value || createLoading.value) return
+  if (agreementText.value) { agreementVisible.value = true; return }
+  const owns = captureCreate(); agreementLoading.value = true
+  try {
+    const response = await getRefundAgreement()
+    if (!owns() || draft.refundMethod !== REFUND_METHOD_MANUAL) return
+    const text = String(response?.data?.text || '').trim()
+    if (!text) throw new Error('协议暂不可用，请稍后重试')
+    agreementText.value = text; agreementVisible.value = true
+  } catch (error) { if (owns()) message.error(responseMessage(error, '读取承诺书失败')) }
+  finally { if (owns()) agreementLoading.value = false }
+}
+function onToggleAgreement(event) {
+  if (event?.target) event.target.checked = draft.refundAgreementSigned
+  void openAgreement()
+}
+function onAgreementSigned(attachmentId) {
+  if (!createVisible.value || draft.refundMethod !== REFUND_METHOD_MANUAL) return
+  draft.refundSignatureAttachmentId = Number(attachmentId) || 0
+  draft.refundAgreementSigned = draft.refundSignatureAttachmentId > 0
+  agreementVisible.value = false; retireCreateValidation()
+}
+function resetRefundDraft() {
+  resetAgreement(); agreementLoading.value = false; refundOrdersVisible.value = false
+  draft.refundMethod = ''; draft.refundAllocations = []; draft.refundOrderIds = []; draft.refundPhoneSmsCode = ''
+  Object.assign(refundPhoneStatus, { required: false, phoneMasked: '', loaded: false })
+  closePayoutQrRecover(); refundSmsBusy.value = false; refundSmsCooldown.value = 0
+  clearInterval(refundSmsTimer); refundSmsTimer = null
+}
 function clearOwned() {
+  resetRefundDraft();
+  draft.refundPayoutQrAttachmentId = null;
+  payoutQrDataUrl.value = '';
+  revokePayoutQrPreview(); revokePayoutQrBlurred();
+  payoutQrVersion += 1; payoutQrBusy.value = false;
+  refundOrdersLoaded = false; refundOrdersVersion += 1; refundOrderOptions.value = []; refundOrdersLoading.value = false;
   retireDetailFocus();
   retireCreateValidation();
   retireActionFailures();
@@ -1439,8 +1676,10 @@ function keepSavedWebhook() { if (canManage() && configLoaded.value) { notificat
 function toggleRefundOrder(id) {
   if (!createVisible.value || createLoading.value) return;
   const value = Number(id);
+  if (!canToggleRefundOrder(value)) return;
   if (!Number.isSafeInteger(value) || value <= 0) return;
-  if (isRefundOrderSelected(value)) {
+  const adding = !isRefundOrderSelected(value);
+  if (!adding) {
     draft.refundAllocations = (Array.isArray(draft.refundAllocations)
       ? draft.refundAllocations
       : []
@@ -1455,256 +1694,10 @@ function toggleRefundOrder(id) {
       { orderId: value, cents: 0, manual: false },
     ]
   }
-  recomputeRefundAllocations()
+  recomputeRefundAllocations(adding ? value : undefined)
   retireCreateValidation()
 }
 
-// ── 收款码上传（2026-11-19 用户要求）──
-//
-// 「即便可以原路退回也可以要求用户设置退款账号。即添加一个带记忆的图片上传框，
-// 用于上传收款码，只能上传一张。」
-//
-// 三个约束的落地方式：
-//   · 只能一张 → 不做数组，只有一个 ID；重新选图直接覆盖。
-//   · 带记忆   → ID 存 localStorage（按用户隔离），下次打开自动带出并回显预览。
-//              存 ID 而不是图片字节：附图早已加密落库，本地再存一份既占空间
-//              又要重复做大小/格式校验。
-//   · 可选     → 不传也能提交；只有给了才写进退款单。
-const payoutQrBusy = ref(false)
-const payoutQrPreviewUrl = ref("")
-const payoutQrMemoryKey = () => {
-  const id = Number(currentUser.value?.id)
-  return Number.isSafeInteger(id) && id > 0 ? `tiku.refund.payoutQr.${id}` : ""
-}
-function revokePayoutQrPreview() {
-  if (payoutQrPreviewUrl.value) {
-    URL.revokeObjectURL(payoutQrPreviewUrl.value)
-    payoutQrPreviewUrl.value = ""
-  }
-}
-// loadPayoutQrPreview 用鉴权请求取回图片字节再转 blob URL。
-// 不能直接写 <img src="/api/ticket-attachments/1">：那个接口要 Authorization，
-// 裸 src 不会带凭证，只会拿到 401。
-async function loadPayoutQrPreview(attachmentId) {
-  revokePayoutQrPreview()
-  const id = Number(attachmentId)
-  if (!Number.isSafeInteger(id) || id <= 0) return
-  try {
-    const response = await getTicketAttachment(id)
-    const blob = response?.data
-    if (blob instanceof Blob && /^image\/(png|jpeg)$/.test(blob.type)) {
-      payoutQrPreviewUrl.value = URL.createObjectURL(blob)
-    }
-  } catch {
-    // 读不回来就当没有预览：ID 仍在，提交照常带上。
-    // 静默是刻意的 —— 预览失败不该拦住退款。
-  }
-}
-// ── 退款金额分摊（2026-11-19 用户要求）──
-//
-// 用户原话：「假如我要退款10块钱，但是支付记录有两笔，每笔都7.5」。
-// 所以申请金额是**目标总额**，订单选择是**如何凑出这个总额**。
-//
-// 分配规则（用户定的）：
-//   1. 按 paidAt 升序——最旧那笔优先全额；
-//   2. 余额不够时，最后一笔只退部分；
-//   3. 累计已达申请金额 → 不能再选第三笔；
-//   4. 用户手改过某一行后，**不再覆盖那一行**（manual 标记）。
-//
-// 第 4 条是最容易写错的：常见写法是“用户一改量重算全部行”，
-// 人会看到自己刚填的数字被抹掉。
-const REFUND_METHOD_ORIGINAL = "original"
-const REFUND_METHOD_MANUAL = "manual"
-const refundAllocationOf = orderId =>
-  (Array.isArray(draft.refundAllocations) ? draft.refundAllocations : []).find(
-    item => item.orderId === Number(orderId),
-  ) || null
-const isRefundOrderSelected = orderId => refundAllocationOf(orderId) !== null
-const refundRequestedCents = computed(
-  () => parseRefundYuanToCents(draft.requestedYuan) || 0,
-)
-// 汇总与分配算法共用同一份实现（refundAllocation.mjs）。
-// 两处各算一遍的后果是「已分配金额」与「实际送出去的金额」不一致，
-// 而用户看到的正是这个汇总。
-const refundTotals = computed(() =>
-  refundAllocationTotals(refundRequestedCents.value, draft.refundAllocations),
-)
-const refundAllocatedCents = computed(() => refundTotals.value.allocated)
-const refundRemainingCents = computed(() => refundTotals.value.remaining)
-// recomputeRefundAllocations 只重算未被手改的行。
-function recomputeRefundAllocations() {
-  draft.refundAllocations = computeRefundAllocations({
-    orders: refundOrderOptions.value.map(item => ({
-      id: item.value,
-      paidCents: item.paidCents,
-      paidAt: item.paidAt,
-    })),
-    requestedCents: refundRequestedCents.value,
-    selections: draft.refundAllocations,
-  })
-}
-// 已选中的行总能取消勾选；未选中的行只在“还有余额”时可勾选。
-// 这正是用户要的「两笔已达申请金额 → 不能选第三笔」。
-const canToggleRefundOrder = orderId =>
-  isRefundOrderSelected(orderId) || refundRemainingCents.value > 0
-function setRefundRequestedYuan(value) {
-  draft.requestedYuan = value
-  // 申请金额变了，未手改的行要重分；手改行保持不动。
-  recomputeRefundAllocations()
-  retireCreateValidation()
-}
-function setRefundAllocationCents(orderId, yuan) {
-  const row = refundAllocationOf(orderId)
-  if (!row) return
-  const option = refundOrderOptions.value.find(item => item.value === Number(orderId))
-  const cap = Number(option?.paidCents) || 0
-  const cents = Math.min(Math.max(0, parseRefundYuanToCents(yuan) || 0), cap)
-  row.cents = cents
-  // manual=true 是本轮的关键：之后任何重算都不动这一行。
-  row.manual = true
-  recomputeRefundAllocations()
-  retireCreateValidation()
-}
-function selectRefundMethod(method) {
-  draft.refundMethod = method
-  retireCreateValidation()
-}
-
-// 绑定手机号的掩码展示（人工退回需要用户确认收款账号）。
-//
-// 为什么只做掩码展示 + 确认而不发短信：现有短信验证码链路服务的是**登录与绑定**，
-// 复用它去做退款确认会把两个场景的限流与失败计数混在一起。这里只做
-// 「确认我知道钱会打到这个手机号」，属于弱校验，但不会误导用户以为已短信验证。
-// refundBoundPhone 是未掩码原值，只用于校验「有没有绑手机号」，
-// 不渲染到 DOM（界面上只出现掩码后的 refundBoundPhoneMasked）。
-const refundBoundPhone = computed(() => String(currentUser.value?.phone || "").trim())
-const refundBoundPhoneMasked = computed(() => {
-  const raw = refundBoundPhone.value
-  if (!raw) return ""
-  // 中间四位掩码；短于 7 位的异常值只保留首尾各一位，不把整串暴露出去。
-  if (raw.length < 7) return raw.replace(/^(.?)(.*)(.?)$/, "$1***$3")
-  return `${raw.slice(0, 3)}****${raw.slice(-4)}`
-})
-// canRecoverPayoutQr：本机缓存里没有收款码、且当前没选中任何图时才提供「恢复」入口。
-const canRecoverPayoutQr = computed(
-  () => !draft.refundPayoutQrAttachmentId && !payoutQrBusy.value,
-)
-// openPayoutQrRecover 用当前密码取回上次的收款码。
-//
-// 密码由用户当场输入（不从任何地方读取），服务端会复用登录失败计数做限流。
-function openPayoutQrRecover() {
-  if (!canRecoverPayoutQr.value) return
-  const password = window.prompt(
-    "\u8bf7\u8f93\u5165\u5f53\u524d\u767b\u5f55\u5bc6\u7801\uff0c\u4ee5\u6062\u590d\u4e0a\u6b21\u4f7f\u7528\u7684\u6536\u6b3e\u7801\uff1a",
-    "",
-  )
-  if (!password) return
-  payoutQrBusy.value = true
-  recoverTicketRefundPayoutQr(password)
-    .then(response => {
-      const id = Number(response?.data?.attachmentId)
-      if (!Number.isSafeInteger(id) || id <= 0) {
-        message.info("\u6ca1\u6709\u53ef\u6062\u590d\u7684\u6536\u6b3e\u7801\u8bb0\u5f55\uff0c\u8bf7\u91cd\u65b0\u4e0a\u4f20")
-        return
-      }
-      draft.refundPayoutQrAttachmentId = id
-      const key = payoutQrMemoryKey()
-      if (key) {
-        try { window.localStorage.setItem(key, String(id)) } catch { /* \u5b58\u4e0d\u4e0b\u5c31\u53ea\u672c\u4f1a\u8bdd\u6709\u6548 */ }
-      }
-      void loadPayoutQrPreview(id)
-      message.success("\u5df2\u6062\u590d\u4e0a\u6b21\u7684\u6536\u6b3e\u7801")
-    })
-    .catch(error => {
-      message.error(responseMessage(error, "\u6062\u590d\u6536\u6b3e\u7801\u5931\u8d25"))
-    })
-    .finally(() => { payoutQrBusy.value = false })
-}
-
-// ── 承诺书签署（2026-11-19 用户要求）──
-//
-// 「每次都要签」：签名不跨退款申请反复使用。openCreate 重置时
-// refundAgreementSigned 与 refundSignatureAttachmentId 都清零。
-//
-// 协议文本每次打开都重新取（不缓存）：管理员可能刚改过条款，
-// 缓存会让用户签的是旧版本，而签署记录上无法体现这一点。
-const agreementVisible = ref(false)
-const agreementText = ref("")
-const agreementLoading = ref(false)
-async function openAgreement() {
-  agreementVisible.value = true
-  if (agreementText.value) return
-  agreementLoading.value = true
-  try {
-    const response = await getRefundAgreement()
-    agreementText.value = String(response?.data?.text || "")
-  } catch (error) {
-    message.error(responseMessage(error, "\u8bfb\u53d6\u627f\u8bfa\u4e66\u5931\u8d25"))
-  } finally {
-    agreementLoading.value = false
-  }
-}
-// onToggleAgreement：勾选就弹出协议；取消勾选只清开关。
-function onToggleAgreement(event) {
-  const checked = !!event?.target?.checked
-  if (checked) {
-    void openAgreement()
-    return
-  }
-  draft.refundAgreementSigned = false
-  retireCreateValidation()
-}
-function onAgreementSigned(attachmentId) {
-  draft.refundSignatureAttachmentId = Number(attachmentId) || 0
-  draft.refundAgreementSigned = draft.refundSignatureAttachmentId > 0
-  agreementVisible.value = false
-  retireCreateValidation()
-}
-
-// restorePayoutQr 打开弹窗时调用：带出上次那张码。
-function restorePayoutQr() {
-  const key = payoutQrMemoryKey()
-  if (!key) return
-  let stored = null
-  try { stored = window.localStorage.getItem(key) } catch { return }
-  const id = Number(stored)
-  if (!Number.isSafeInteger(id) || id <= 0) return
-  draft.refundPayoutQrAttachmentId = id
-  void loadPayoutQrPreview(id)
-}
-function clearPayoutQr() {
-  draft.refundPayoutQrAttachmentId = null
-  revokePayoutQrPreview()
-  const key = payoutQrMemoryKey()
-  if (key) { try { window.localStorage.removeItem(key) } catch { /* 存储不可用则只清当前 */ } }
-}
-async function onPickPayoutQr(event) {
-  const input = event?.target
-  const file = input?.files?.[0]
-  if (input) input.value = ""
-  if (!file || payoutQrBusy.value) return
-  const invalid = validateTicketAttachmentFile(file)
-  if (invalid) { message.warning(`收款码：${invalid}`); return }
-  payoutQrBusy.value = true
-  try {
-    const response = await uploadTicketAttachment(file, undefined)
-    const created = response?.data?.data
-    const id = Number(created?.id)
-    if (!Number.isSafeInteger(id) || id <= 0) {
-      message.error("收款码上传返回格式异常")
-      return
-    }
-    draft.refundPayoutQrAttachmentId = id
-    const key = payoutQrMemoryKey()
-    if (key) { try { window.localStorage.setItem(key, String(id)) } catch { /* 存不下就只本会话有效 */ } }
-    await loadPayoutQrPreview(id)
-    message.success("收款码已上传，下次发起退款会自动带出")
-  } catch (error) {
-    message.error(responseMessage(error, "收款码上传失败"))
-  } finally {
-    payoutQrBusy.value = false
-  }
-}
 function setDraft(key, value) { if (createVisible.value) draft[key] = value; }
 function setCreateVisible(value) { createVisible.value = value; }
 function setDetailVisible(value) { if (!value) closeDetail(); }
@@ -1722,14 +1715,14 @@ watch([replyBody, () => detailTicket.value?.id, () => isAdmin.value && statusWas
 watch([() => draft.subject, () => draft.body, () => draft.requestedYuan, () => draft.reason, () => draft.issueType], retireStaleCreateValidation, { flush: "sync" });
 // 切到退款类型时才拉可退订单（普通工单不触发这个请求）。
 watch(createNeedsRefundFields, needs => { if (needs) void loadRefundOrders(); }, { flush: "sync" });
-watch(createVisible, next => { if (!next) { retireCreateValidation(); createVersion += 1; createLoading.value = false; createSaved.value = false; draft.ticketType = TICKET_CREATE_TYPE_GENERAL; draft.subject = ""; draft.body = ""; draft.requestedYuan = ""; draft.reason = ""; draft.refundOrderId = undefined; draft.issueType = ""; createStep.value = ticketWizardInitialStep(); } }, { flush: "sync" });
+watch(createVisible, next => { if (!next) { resetRefundDraft(); payoutQrBusy.value = false; retireCreateValidation(); createVersion += 1; createLoading.value = false; createSaved.value = false; draft.ticketType = TICKET_CREATE_TYPE_GENERAL; draft.subject = ""; draft.body = ""; draft.requestedYuan = ""; draft.reason = ""; draft.refundOrderId = undefined; draft.issueType = ""; createStep.value = ticketWizardInitialStep(); } }, { flush: "sync" });
 // Focus leases also retire for same-id non-admin role ABA and unexpected routes.
 watch(() => String(currentUser.value?.role ?? ""), retireDetailFocus, { flush: "sync" });
 watch(() => route.fullPath, path => {
   if (path !== "/tickets" && path !== detailFocusEntry?.path) retireDetailFocus();
 }, { flush: "sync" });
 watch(() => currentUser.value?.status, () => { clearOwned(); reloadOwned(); }, { flush: "sync" });
-onBeforeUnmount(() => { active = false; retireReplyDraft(); });
+onBeforeUnmount(() => { active = false; resetRefundDraft(); payoutQrVersion += 1; retireReplyDraft(); });
 onBeforeUnmount(retireActionFailures);
 onBeforeUnmount(retireCreateValidation);
 const detailTitle = computed(() => detailTicket.value?.subject || "工单详情");
@@ -1831,6 +1824,8 @@ function openCreate() {
   retireCreateValidation();
   actionFailures.create.clear(); createFailureDraft = {};
   createVersion += 1; createLoading.value = false; createSaved.value = false;
+  refundOrdersLoaded = false; refundOrdersVersion += 1; refundOrdersLoading.value = false;
+  refundOrderOptions.value = [];
   draft.ticketType = "";
   draft.subject = "";
   draft.body = "";
@@ -1848,7 +1843,7 @@ function openCreate() {
   createStep.value = ticketWizardInitialStep();
   // 带出上次上传的收款码（本机直接加载；换设备时由用户点「恢复」输入密码取回）。
   // 放在重置之后、显示之前：先清干净再回填，避免上一次的残留状态被看见。
-  restorePayoutQr();
+  resetRefundDraft();
   createVisible.value = true;
 }
 // selectCreateType 是第一步的单选回调。
@@ -1892,7 +1887,7 @@ function closeCreate() {
   createVisible.value = false;
 }
 async function submitTicket() {
-  if (!canUseTickets() || !createVisible.value || createLoading.value) return;
+  if (!canUseTickets() || !createVisible.value || createLoading.value || payoutQrBusy.value || agreementLoading.value || uploadBusy.value) return;
   // 只在「填模板」这一步允许提交。
   //
   // ⚠️ 这就是 T4 的钉子：如果这里不判步骤，注销类型会在引导页就被提交
@@ -1918,12 +1913,25 @@ async function submitTicket() {
     // 退款类型走 buildTicketCreatePayload 的另一条分支：带 refundRequestedCents /
     // refundReason / refundOrderId，不带 subject/body。
     // account / account_closure 各自生成标题（账号问题带类型前缀、注销固定前缀）。
+    if (refundMode && draft.refundMethod === REFUND_METHOD_MANUAL) {
+      if (!refundPhoneStatus.loaded) throw new Error("请等待手机号验证状态加载完成");
+      await ensurePayoutQrDraft(owns);
+      if (!owns()) return;
+    }
     const built = buildTicketCreatePayload({
       ticketType: draft.ticketType,
       subject, body,
       requestedYuan: draft.requestedYuan,
       reason: draft.reason,
       refundOrderIds: draft.refundOrderIds,
+      refundMethod: draft.refundMethod,
+      refundAllocations: draft.refundAllocations,
+      refundPayoutQrAttachmentId: draft.refundPayoutQrAttachmentId,
+      refundSignatureAttachmentId: draft.refundSignatureAttachmentId,
+      refundAgreementSigned: draft.refundAgreementSigned,
+      refundAgreementText: agreementText.value,
+      refundPhoneSmsCode: draft.refundPhoneSmsCode,
+      refundPhoneVerificationRequired: refundPhoneStatus.required,
       issueType: draft.issueType,
       attachmentIds,
     });
@@ -1941,7 +1949,10 @@ async function submitTicket() {
     if (draft.subject === subject && draft.body === body) createVisible.value = false;
     else createSaved.value = true;
     pagination.current = 1; await loadTickets();
-  } catch (error) { if (owns()) { actionFailures.create.show(error, ownsFailure); message.error(responseMessage(error, "工单提交失败")); } }
+  } catch (error) { if (owns()) {
+    if (refundMode && /重新签署当前协议/.test(String(error?.message || ""))) resetAgreement();
+    actionFailures.create.show(error, ownsFailure); message.error(responseMessage(error, "工单提交失败"));
+  } }
   finally { if (owns()) createLoading.value = false; }
 }
 

@@ -263,6 +263,10 @@ func writeTicketError(c *gin.Context, err error, fallback string) {
 	status := http.StatusInternalServerError
 	message := fallback
 	switch {
+	case errors.Is(err, service.ErrTicketRefundInvalid), errors.Is(err, service.ErrTicketRefundAmount), errors.Is(err, service.ErrRefundAgreementRequired), errors.Is(err, service.ErrRefundPhoneVerification), errors.Is(err, service.ErrTicketRefundPayoutQrRequired):
+		status, message = http.StatusBadRequest, err.Error()
+	case errors.Is(err, service.ErrTicketRefundOrderUnavailable), errors.Is(err, service.ErrTicketRefundInsufficientBalance):
+		status, message = http.StatusConflict, err.Error()
 	case errors.Is(err, service.ErrTicketSubjectRequired), errors.Is(err, service.ErrTicketBodyRequired),
 		errors.Is(err, service.ErrTicketInvalidStatus), errors.Is(err, service.ErrTicketInvalidPriority),
 		errors.Is(err, service.ErrTicketInvalidOrigin), errors.Is(err, service.ErrTicketInvalidCategory),

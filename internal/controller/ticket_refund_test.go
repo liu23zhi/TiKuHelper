@@ -25,7 +25,7 @@ func TestTicketRefundHTTPManualProofAccessAndSettlement(t *testing.T) {
 	t.Setenv("TIKU_REFUND_EPAY_PROFILE", "")
 	t.Setenv("TIKU_REFUND_PROOF_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{13}, 32)))
 	db := newSearchControllerTestDB(t)
-	if err := db.AutoMigrate(&entity.RechargeOrder{}, &entity.TicketRefund{}, &entity.TicketRefundLedger{}, &entity.TicketRefundProof{}); err != nil {
+	if err := db.AutoMigrate(&entity.RechargeOrder{}, &entity.TicketRefund{}, &entity.TicketRefundLedger{}, &entity.TicketRefundProof{}, &entity.TicketAttachment{}); err != nil {
 		t.Fatal(err)
 	}
 	owner := seedControllerUser(t, db, 0, "refund-proof-owner", "user")
@@ -70,7 +70,16 @@ func TestTicketRefundHTTPManualProofAccessAndSettlement(t *testing.T) {
 	if out.Code != 200 || out.Body.String() != "[]" {
 		t.Fatalf("unverified channel must not advertise eligibility: %d %s", out.Code, out.Body)
 	}
-	out = post("/refunds", `{"kind":"manual","requestedCents":600,"reason":"synthetic manual review"}`)
+	qr := entity.TicketAttachment{UserID: owner.ID, MediaType: "image/png"}
+	signature := entity.TicketAttachment{UserID: owner.ID, MediaType: "image/png"}
+	if err := db.Create(&qr).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&signature).Error; err != nil {
+		t.Fatal(err)
+	}
+	requestBody, _ := json.Marshal(gin.H{"kind": "manual", "requestedCents": 600, "reason": "synthetic manual review", "payoutQrAttachmentId": qr.ID, "signatureAttachmentId": signature.ID, "agreementText": service.DefaultRefundAgreementText})
+	out = post("/refunds", string(requestBody))
 	var refund ticketRefundResponse
 	if err := json.Unmarshal(out.Body.Bytes(), &refund); out.Code != 201 || err != nil || refund.ID <= 0 || refund.HasProof {
 		t.Fatalf("create manual refund failed: %d %s", out.Code, out.Body)

@@ -285,6 +285,11 @@
     <section v-if="paymentDeleteFailure" class="page-alert" data-payment-method-delete-feedback>
       <RequestFailureAlert :key="paymentDeleteFailureContextKey" :failure="paymentDeleteFailure" message="删除支付方式失败，请重试。" :busy="paymentMethodDeleting !== null" :context-key="paymentDeleteFailureContextKey" :is-current="isCurrentPaymentDeleteFailure" />
     </section>
+    <!-- 退款承诺书（2026-11-19）：用户申请人工退款时必须签署的协议全文。
+         放在系统设置而不是写死在代码里 —— 条款措辞会随合规要求变化，
+         每次改代码发版不合理。 -->
+    <RefundAgreementPanel :key="settingsFormKey" :disabled="!canManageSettings() || settingsDraining" />
+
     <PaymentMethodPanel
       :key="settingsFormKey"
       :entry="paymentPanelEntry"
@@ -355,6 +360,7 @@ import { inheritRequestFailureView } from '@/utils/requestFailureView.mjs';
 import { useCurrentUserDisplay, isAdminUser, getCurrentUserLogoutEpoch } from '@/utils/currentUser'
 import { useUnsavedDraft } from '@/utils/useUnsavedDraft'
 import PaymentMethodPanel from './PaymentMethodPanel.vue';
+import RefundAgreementPanel from './RefundAgreementPanel.vue';
 import SystemMetricsPanel from './SystemMetricsPanel.vue';
 import {
   createPaymentMethod,
@@ -487,7 +493,7 @@ const projectSettingsSaveFailure = source => {
 
 export default defineComponent({
   name: 'SystemSettings',
-  components: { PaymentMethodPanel, SafePaymentIcon, PaymentMethodIconPicker, SystemMetricsPanel, RequestFailureAlert },
+  components: { PaymentMethodPanel, RefundAgreementPanel, SafePaymentIcon, PaymentMethodIconPicker, SystemMetricsPanel, RequestFailureAlert },
   setup() {
     const settingsFormId = `system-settings-${useId()}`
     const fieldId = field => `${settingsFormId}-${field}`

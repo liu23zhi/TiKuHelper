@@ -69,6 +69,8 @@ type TicketRefund struct {
 	// 「不带记忆」就落在这里 —— 它是每张退款单各自的字段，
 	// 而不是用户级的「上次签名」（后者会让用户以为上次签过就算数）。
 	SignatureAttachmentID *int64     `gorm:"column:signature_attachment_id" json:"signatureAttachmentId,omitempty"`
+	AgreementText         string     `gorm:"column:agreement_text;type:text" json:"agreementText,omitempty"`
+	AgreementSignedAt     *time.Time `gorm:"column:agreement_signed_at" json:"agreementSignedAt,omitempty"`
 	ReviewedBy            int32      `gorm:"column:reviewed_by;not null;default:0" json:"-"`
 	ReviewedAt            *time.Time `gorm:"column:reviewed_at" json:"reviewedAt,omitempty"`
 	StartedAt             *time.Time `gorm:"column:started_at" json:"startedAt,omitempty"`

@@ -1,4 +1,5 @@
 import request from '../utils/request'
+import { requireTicketResponse } from '../utils/ticketHelpers.mjs'
 import { buildDeleteQuestionParams } from '../utils/questionArchiveReason.mjs'
 
 
@@ -582,7 +583,7 @@ export function getRefundAgreement() {
     errorFeedback: 'local',
     url: '/api/refund-agreement',
     method: 'get',
-  })
+  }).then(requireTicketResponse)
 }
 
 // updateRefundAgreement 修改承诺书全文（仅管理员）。
@@ -593,6 +594,15 @@ export function updateRefundAgreement(text) {
     method: 'put',
     data: { text },
   })
+}
+
+// 仅返回服务端生成的模糊缩略图，原图恢复需要密码。
+export function previewTicketRefundPayoutQr() {
+  return request({
+    errorFeedback: 'local',
+    url: '/api/ticket-refunds/payout-qr/preview',
+    method: 'get',
+  }).then(requireTicketResponse)
 }
 
 // recoverTicketRefundPayoutQr 用当前密码取回「上次用过的收款码」（2026-11-19）。
@@ -606,7 +616,15 @@ export function recoverTicketRefundPayoutQr(password) {
     url: `/api/ticket-refunds/payout-qr/recover`,
     method: 'post',
     data: { password },
-  })
+  }).then(requireTicketResponse)
+}
+
+export function getRefundPhoneVerification() {
+  return request({ errorFeedback: 'local', url: '/api/ticket-refunds/phone-verification', method: 'get' }).then(requireTicketResponse)
+}
+
+export function sendRefundPhoneSMSCode() {
+  return request({ errorFeedback: 'local', url: '/api/ticket-refunds/phone-verification/sms-code', method: 'post', data: {} }).then(requireTicketResponse)
 }
 
 // updateRechargeOrderStatus 由管理员手工修正充值订单状态（2026-11-19）。
@@ -1022,11 +1040,15 @@ function ticketRefundItem(id, action) {
 }
 
 export function getEligibleTicketRefundOrders(signal) {
-  return ticketRefundRequest({ url: ticketRefundBase + '/eligible-orders', method: 'get', signal })
+  return ticketRefundRequest({ url: ticketRefundBase + '/eligible-orders', method: 'get', signal }).then(requireTicketResponse)
 }
 
 export function listTicketRefunds(signal) {
   return ticketRefundRequest({ url: ticketRefundBase, method: 'get', signal })
+}
+
+export function getTicketRefundDetail(id, signal) {
+  return ticketRefundRequest({ url: ticketRefundBase + '/' + encodeURIComponent(id), method: 'get', signal }).then(requireTicketResponse)
 }
 
 export function createTicketRefund(data, signal) {

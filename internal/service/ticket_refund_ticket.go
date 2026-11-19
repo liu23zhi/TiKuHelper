@@ -3,7 +3,6 @@ package service
 import (
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -196,10 +195,7 @@ func CreateTicketRefundShellInTx(tx *gorm.DB, refund entity.TicketRefund, now ti
 	// 分两次调会在第二个失败时留下「有码无签名」的半截状态 —— 而签名是责任凭证，
 	// 半截状态比完全没有更难解释。
 	//
-	// 绑不上时**不让退款失败**：它们是辅助信息，而退款是钱的动作。
-	// 反过来说，绑定失败也不能静默 —— 附件 ID 已经持久化在退款行上，
-	// 管理员仍可通过 /api/ticket-attachments/:id/admin 取到它，所以这里是
-	// 「少一条便利路径」，不是「信息丢失」，记 warn 即可。
+	// 附件是人工退款的必要凭证，绑定失败必须使整个申请事务回滚。
 	attachmentIDs := make([]int64, 0, 2)
 	if refund.PayoutQrAttachmentID != nil && *refund.PayoutQrAttachmentID > 0 {
 		attachmentIDs = append(attachmentIDs, *refund.PayoutQrAttachmentID)
@@ -209,11 +205,11 @@ func CreateTicketRefundShellInTx(tx *gorm.DB, refund entity.TicketRefund, now ti
 	}
 	if len(attachmentIDs) > 0 {
 		var owner entity.User
-		if err := tx.Session(&gorm.Session{NewDB: true}).Where("id = ?", refund.UserID).Take(&owner).Error; err == nil {
-			if bindErr := BindDraftTicketAttachmentsInTx(tx, &owner, shell.ID, message.ID, attachmentIDs); bindErr != nil {
-				logger.SysWarn("ticket_refund_attachment_bind_failed refund=" + strconv.FormatInt(refund.ID, 10) +
-					" error=" + bindErr.Error())
-			}
+		if err := tx.Session(&gorm.Session{NewDB: true}).Where("id = ?", refund.UserID).Take(&owner).Error; err != nil {
+			return err
+		}
+		if err := BindDraftTicketAttachmentsInTx(tx, &owner, shell.ID, message.ID, attachmentIDs); err != nil {
+			return err
 		}
 	}
 
@@ -372,10 +368,17 @@ func CreateTicketForUserWithDB(db *gorm.DB, user *entity.User, input CreateTicke
 		return createRefundTicketWithVerifier(db, user, input, verify)
 	}
 	// 非退款类型却带了退款字段：参数矛盾，明确报错（见 CreateTicketWithDB 的同类判断）。
-	if input.RefundOrderID != nil || input.RefundRequestedCents != 0 || strings.TrimSpace(input.RefundReason) != "" {
+	if hasTicketRefundFields(input) {
 		return TicketDetail{}, ErrTicketInvalidCategory
 	}
 	return CreateTicketWithDB(db, user, input)
+}
+
+func hasTicketRefundFields(input CreateTicketInput) bool {
+	return input.RefundOrderID != nil || input.RefundRequestedCents != 0 || strings.TrimSpace(input.RefundReason) != "" ||
+		input.RefundPayoutQrAttachmentID != nil || input.RefundSignatureAttachmentID != nil ||
+		len(input.RefundOrderIDs) > 0 || len(input.RefundOrderAllocations) > 0 ||
+		strings.TrimSpace(input.RefundAgreementText) != "" || strings.TrimSpace(input.RefundPhoneSMSCode) != ""
 }
 
 // createRefundTicketWithVerifier 是带渠道校验器的实现（controller 传真实 verifier）。
@@ -411,6 +414,10 @@ func createRefundTicketWithVerifier(db *gorm.DB, user *entity.User, input Create
 		// 多笔：每笔一张退款单（order_id 有唯一索引），
 		// 整批一个事务，任一笔失败全部回滚。
 		targets := input.RefundOrderAllocations
+		requestedTotal := int64(0)
+		if len(targets) > 0 {
+			requestedTotal = input.RefundRequestedCents
+		}
 		if len(targets) == 0 {
 			for _, id := range input.RefundOrderIDs {
 				targets = append(targets, TicketRefundOrderAllocation{OrderID: id, Cents: input.RefundRequestedCents})
@@ -419,9 +426,12 @@ func createRefundTicketWithVerifier(db *gorm.DB, user *entity.User, input Create
 		rows, err := CreateTicketRefundsForOrdersWithDB(db, *user, CreateTicketRefundInput{
 			Kind:                  kind,
 			Allocations:           targets,
+			RequestedCents:        requestedTotal,
 			Reason:                reason,
 			PayoutQrAttachmentID:  input.RefundPayoutQrAttachmentID,
 			SignatureAttachmentID: input.RefundSignatureAttachmentID,
+			AgreementText:         input.RefundAgreementText,
+			PhoneSMSCode:          input.RefundPhoneSMSCode,
 		}, verify)
 		if err != nil {
 			return TicketDetail{}, err
@@ -441,6 +451,8 @@ func createRefundTicketWithVerifier(db *gorm.DB, user *entity.User, input Create
 		// 收款码随申请一起落库（可选）：人工打款时管理员据此扫码转账。
 		PayoutQrAttachmentID:  input.RefundPayoutQrAttachmentID,
 		SignatureAttachmentID: input.RefundSignatureAttachmentID,
+		AgreementText:         input.RefundAgreementText,
+		PhoneSMSCode:          input.RefundPhoneSMSCode,
 	}, verify)
 	if err != nil {
 		return TicketDetail{}, err

@@ -481,6 +481,15 @@ func ReadTicketAttachmentWithDB(db *gorm.DB, user *entity.User, attachmentID int
 	if _, err := ticketForAttachmentWithDB(db, user, attachment.TicketID); err != nil {
 		return "", nil, false, err
 	}
+	if !isTicketAdmin(user) {
+		protected, err := isHistoricalRefundPayoutQr(db, attachment.ID)
+		if err != nil {
+			return "", nil, false, err
+		}
+		if protected {
+			return "", nil, false, ErrTicketForbidden
+		}
+	}
 	if !ticketAttachmentVisible(attachment) && !isTicketAdmin(user) {
 		return "", nil, false, ErrTicketAttachmentHidden
 	}

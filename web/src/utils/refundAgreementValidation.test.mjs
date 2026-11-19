@@ -60,3 +60,13 @@ test('没有签名图时不发该字段（而不是发 0）', () => {
   // 发 0 会被后端当成「给了但无效」，直接不发才是「没有」。
   assert.equal('refundSignatureAttachmentId' in payload, false);
 });
+
+test('切回原路退回时不发送人工收款码和旧签名', () => {
+  const { payload } = buildTicketCreatePayload({
+    ticketType: 'refund', requestedYuan: '10.00', reason: '退款',
+    refundMethod: 'original', refundAllocations: [{ orderId: 1, cents: 1000 }],
+    refundPayoutQrAttachmentId: 88, refundSignatureAttachmentId: 89,
+  });
+  assert.equal('refundPayoutQrAttachmentId' in payload, false);
+  assert.equal('refundSignatureAttachmentId' in payload, false);
+});

@@ -416,6 +416,11 @@ func SetAPIRouter(router *gin.Engine) {
 	// 退款承诺书（2026-11-19）：读对所有登录用户开放（签署前必须能看到全文），
 	// 写仅管理员 —— 条款是平台对外的责任声明，不能让普通用户改。
 	apiRouter.GET("/refund-agreement", controller.Auth, controller.GetRefundAgreement)
+	// 占位只提供服务端模糊图，明文恢复必须验证当前密码。
+	apiRouter.GET("/ticket-refunds/payout-qr/preview", controller.Auth, controller.PreviewTicketRefundPayoutQr)
+	apiRouter.POST("/ticket-refunds/payout-qr/recover", controller.Auth, controller.RecoverTicketRefundPayoutQr)
+	apiRouter.GET("/ticket-refunds/phone-verification", controller.Auth, controller.TicketRefundPhoneVerification)
+	apiRouter.POST("/ticket-refunds/phone-verification/sms-code", controller.Auth, controller.SendTicketRefundPhoneSMSCode)
 	apiRouter.PUT("/refund-agreement", controller.Auth, middleware.RequireAdmin, controller.UpdateRefundAgreement)
 	apiRouter.Any("/payment/notify", controller.RechargePaymentNotify)
 	// 邀请码与充值返佣。本人只能看自己的汇总（handler 内固定用当前账户），

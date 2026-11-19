@@ -1,78 +1,85 @@
 <template>
   <a-modal
-    :visible="visible"
+    :open="visible"
     title="退款收款码使用承诺书"
     :mask-closable="false"
+    :keyboard="!padVisible"
     :footer="null"
-    width="720px"
+    :width="720"
     wrap-class-name="refund-agreement-dialog"
     @cancel="closeAgreement"
   >
     <div class="refund-agreement" data-refund-agreement>
-      <!-- 阅读区：必须滚到底才允许签署。
-           用原生 div + scroll 事件而不是 a-xxx，避免组件内部不冒泡的老问题。 -->
       <div
         ref="scrollArea"
         class="refund-agreement__text"
+        tabindex="0"
+        role="region"
+        aria-label="退款承诺书全文，请阅读并滚动至底部"
         data-refund-agreement-text
         @scroll="onScroll"
       >
         <pre class="refund-agreement__body">{{ text }}</pre>
-      </div>
-
-      <p class="refund-agreement__progress" data-refund-agreement-progress>
-        <span v-if="!scrolledToBottom">请向下滚动阅读至最底部（仍需读完 {{ remainingSeconds }} 秒）</span>
-        <span v-else-if="remainingSeconds > 0">已读到底，还需等待 {{ remainingSeconds }} 秒</span>
-        <span v-else>已读完，可以签署</span>
-      </p>
-
-      <!-- 签署区：未签署显示按钮；已签署显示签名图。
-           「再次打开协议弹窗，原先底下签署的位置应显示用户的签名」。 -->
-      <div class="refund-agreement__sign">
-        <a-button
-          v-if="!signed"
-          type="primary"
-          :disabled="!canSign"
-          data-refund-agreement-sign
-          @click="openSignaturePad"
-        >签署</a-button>
-        <div v-else class="refund-agreement__signed" data-refund-agreement-signed>
-          <img v-if="signaturePreviewUrl" :src="signaturePreviewUrl" alt="签名" class="refund-agreement__signature" />
-          <span class="refund-agreement__signed-tip">已签署</span>
-        </div>
-      </div>
-    </div>
-
-    <!-- 签名弹窗：独立一层，关闭它**不能**关掉协议弹窗。
-         所以它不用 a-modal（那会带自己的遮罩与层级），用一个内联浮层。 -->
-    <div v-if="padVisible" class="refund-signature" data-refund-signature>
-      <div class="refund-signature__panel">
-        <p class="refund-signature__title">请在格内签名</p>
-        <!-- 田字格只是背景（CSS），笔画画在 canvas 上。
-             签署完成后去掉 --grid 类，格子消失、笔画保留。 -->
-        <canvas
-          ref="padCanvas"
-          class="refund-signature__canvas"
-          :class="{ 'refund-signature__canvas--grid': !padSigned }"
-          data-refund-signature-canvas
-          @mousedown="startStroke"
-          @mousemove="moveStroke"
-          @mouseup="endStroke"
-          @mouseleave="endStroke"
-          @touchstart.prevent="startStrokeTouch"
-          @touchmove.prevent="moveStrokeTouch"
-          @touchend.prevent="endStroke"
-        ></canvas>
-        <div class="refund-signature__actions">
-          <a-button size="small" data-refund-signature-clear @click="clearPad">清除</a-button>
+        <div class="refund-agreement__sign">
           <a-button
+            v-if="!signed"
+            ref="signButton"
             type="primary"
-            size="small"
-            :disabled="!hasStroke"
-            data-refund-signature-confirm
-            @click="confirmSignature"
-          >确认</a-button>
+            :disabled="!canSign"
+            data-refund-agreement-sign
+            @click="openSignaturePad"
+          >签署</a-button>
+          <div v-else class="refund-agreement__signed" data-refund-agreement-signed>
+            <img v-if="signaturePreviewUrl" :src="signaturePreviewUrl" alt="本次退款申请的签名" class="refund-agreement__signature" />
+            <span class="refund-agreement__signed-tip">本次申请已签署</span>
+          </div>
         </div>
+      </div>
+      <p v-if="!signed" class="refund-agreement__progress" data-refund-agreement-progress role="status">
+        <span v-if="!scrolledToBottom">请滚动阅读至最底部<span v-if="remainingSeconds > 0">，还需阅读 {{ remainingSeconds }} 秒</span></span>
+        <span v-else-if="remainingSeconds > 0">已读到底，还需阅读 {{ remainingSeconds }} 秒</span>
+        <span v-else>已读完，请在协议底部签署</span>
+      </p>
+    </div>
+  </a-modal>
+
+  <a-modal
+    v-if="padVisible"
+    :open="padVisible"
+    title="签署承诺书"
+    :width="600"
+    :mask-closable="false"
+    :footer="null"
+    :z-index="1100"
+    :focus-trigger-after-close="false"
+    wrap-class-name="refund-signature-dialog"
+    @cancel="closeSignaturePad"
+  >
+    <div data-refund-signature>
+      <p class="refund-signature__hint">请使用鼠标、触控笔或手指签写本人姓名。格线仅作书写参考。</p>
+      <canvas
+        ref="padCanvas"
+        class="refund-signature__canvas refund-signature__canvas--grid"
+        width="780"
+        height="300"
+        aria-label="手写签名区域，两个田字格"
+        data-refund-signature-canvas
+        @pointerdown.prevent="startStroke"
+        @pointermove.prevent="moveStroke"
+        @pointerup="endStroke"
+        @pointercancel="endStroke"
+        @lostpointercapture="endStroke"
+      >请使用支持画布的浏览器签署。</canvas>
+      <div class="refund-signature__actions">
+        <a-button :disabled="uploading" data-refund-signature-clear @click="clearPad">清除</a-button>
+        <a-button data-refund-signature-cancel @click="closeSignaturePad">取消</a-button>
+        <a-button
+          type="primary"
+          :disabled="!hasStroke"
+          :loading="uploading"
+          data-refund-signature-confirm
+          @click="confirmSignature"
+        >确认</a-button>
       </div>
     </div>
   </a-modal>
@@ -81,190 +88,219 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
-import { uploadTicketAttachment } from '@/api/TicketApi'
+import { getTicketAttachment, uploadTicketAttachment } from '@/api/TicketApi'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
   text: { type: String, default: '' },
-  // 已签署过的附件 ID（同一份退款草稿内重开时回显签名）
+  // 只由本次退款草稿提供；新申请必须传回 0，不写入持久缓存。
   signedAttachmentId: { type: Number, default: 0 },
 })
 const emit = defineEmits(['close', 'signed'])
-
-// 必须读完 10 秒才允许签署（用户要求）。
 const READ_SECONDS = 10
 const remainingSeconds = ref(READ_SECONDS)
 const scrolledToBottom = ref(false)
 const scrollArea = ref(null)
-
+const signButton = ref(null)
 const padVisible = ref(false)
 const padCanvas = ref(null)
-const padSigned = ref(false)
 const hasStroke = ref(false)
+const uploading = ref(false)
 const signaturePreviewUrl = ref('')
 let drawing = false
 let lastPoint = null
+let activePointer = null
 let timer = null
-let uploading = false
+let remainingMilliseconds = READ_SECONDS * 1000
+let lastReadTick = 0
+let session = 0
+let signatureSession = 0
+let previewRequest = 0
+let previewAttachmentId = 0
 
 const signed = computed(() => props.signedAttachmentId > 0)
-const canSign = computed(() => scrolledToBottom.value && remainingSeconds.value <= 0)
+const canSign = computed(() => props.visible && Boolean(props.text.trim()) && !signed.value && scrolledToBottom.value && remainingSeconds.value <= 0)
 
 function clearTimer() {
-  if (timer) { clearInterval(timer); timer = null }
+  if (timer !== null) clearInterval(timer)
+  timer = null
 }
 
 function startTimer() {
   clearTimer()
+  remainingMilliseconds = READ_SECONDS * 1000
   remainingSeconds.value = READ_SECONDS
+  lastReadTick = Date.now()
   timer = setInterval(() => {
-    if (remainingSeconds.value > 0) remainingSeconds.value -= 1
-    if (remainingSeconds.value <= 0) clearTimer()
-  }, 1000)
+    const now = Date.now()
+    if (!document.hidden) remainingMilliseconds -= Math.max(0, now - lastReadTick)
+    lastReadTick = now
+    remainingSeconds.value = Math.max(0, Math.ceil(remainingMilliseconds / 1000))
+    if (remainingSeconds.value === 0) clearTimer()
+  }, 250)
 }
 
-// onScroll：滚到底才算读完。留 8px 容差 —— 不同 DPI 下 scrollHeight 与
-// clientHeight 的取整可能差 1px，卡死会让用户永远签不了。
 function onScroll() {
   const el = scrollArea.value
-  if (!el) return
-  const reached = el.scrollTop + el.clientHeight >= el.scrollHeight - 8
-  if (reached) scrolledToBottom.value = true
+  if (el && el.clientHeight > 0 && el.scrollTop + el.clientHeight >= el.scrollHeight - 8) {
+    scrolledToBottom.value = true
+  }
 }
 
-// 打开时重置阅读进度（每次都要重新读、重新签）。
-watch(() => props.visible, async visible => {
-  if (!visible) { clearTimer(); padVisible.value = false; return }
+function clearPreview() {
+  if (signaturePreviewUrl.value) URL.revokeObjectURL(signaturePreviewUrl.value)
+  signaturePreviewUrl.value = ''
+  previewAttachmentId = 0
+}
+
+watch(() => [props.visible, props.text], async ([visible]) => {
+  const current = ++session
+  ++signatureSession
+  padVisible.value = false
+  uploading.value = false
+  endStroke()
+  clearTimer()
+  if (!visible) return
   scrolledToBottom.value = false
-  startTimer()
+  if (!signed.value) startTimer()
   await nextTick()
-  // 文本短到不需要滚动时（管理员把协议改得很短），直接视为已读完，
-  // 否则用户会卡在一个「永远滚不到底」的死局里。
-  const el = scrollArea.value
-  if (el && el.scrollHeight <= el.clientHeight + 8) scrolledToBottom.value = true
-  if (props.signedAttachmentId > 0) void loadSignaturePreview(props.signedAttachmentId)
+  if (current !== session || !props.visible) return
+  if (scrollArea.value) scrollArea.value.scrollTop = 0
+  onScroll()
+  if (signed.value) void loadSignaturePreview(props.signedAttachmentId)
+}, { immediate: true })
+
+watch(() => props.signedAttachmentId, id => {
+  ++previewRequest
+  if (!id) clearPreview()
+  else if (props.visible) void loadSignaturePreview(id)
 })
 
 async function loadSignaturePreview(id) {
+  if (previewAttachmentId === id && signaturePreviewUrl.value) return
+  clearPreview()
+  const current = ++previewRequest
   try {
-    const { getTicketAttachment } = await import('@/api/TicketApi')
     const response = await getTicketAttachment(id)
+    if (current !== previewRequest || id !== props.signedAttachmentId) return
     const blob = response?.data
     if (blob instanceof Blob && blob.type.startsWith('image/')) {
-      if (signaturePreviewUrl.value) URL.revokeObjectURL(signaturePreviewUrl.value)
       signaturePreviewUrl.value = URL.createObjectURL(blob)
+      previewAttachmentId = id
     }
-  } catch { /* 读不回来就不显示预览，签署状态仍在 */ }
+  } catch { /* 已签状态仍保留；附件预览不能替代签署记录。 */ }
 }
 
-function openSignaturePad() {
+async function openSignaturePad() {
   if (!canSign.value) return
+  ++signatureSession
   padVisible.value = true
-  padSigned.value = false
   hasStroke.value = false
-  nextTick(() => initPad())
-}
-
-// initPad 用设备像素比放大画布，否则高分屏上笔画会糊成一片。
-function initPad() {
+  await nextTick()
+  if (!padVisible.value) return
   const canvas = padCanvas.value
   if (!canvas) return
   const ratio = window.devicePixelRatio || 1
   const rect = canvas.getBoundingClientRect()
-  canvas.width = Math.max(1, Math.round(rect.width * ratio))
-  canvas.height = Math.max(1, Math.round(rect.height * ratio))
+  // clientWidth 不受弹窗入场缩放动画影响，避免动画开始时导出 1px 画布。
+  canvas.width = Math.max(1, Math.round((canvas.clientWidth || rect.width) * ratio))
+  canvas.height = Math.max(1, Math.round((canvas.clientHeight || rect.height) * ratio))
   const ctx = canvas.getContext('2d')
+  if (!ctx) { message.error('当前浏览器无法使用签名画布'); closeSignaturePad(); return }
   ctx.scale(ratio, ratio)
   ctx.lineWidth = 2.4
   ctx.lineCap = 'round'
   ctx.lineJoin = 'round'
   ctx.strokeStyle = '#1f1f1f'
-  hasStroke.value = false
-  padSigned.value = false
 }
 
 function pointOf(event) {
-  const canvas = padCanvas.value
-  const rect = canvas.getBoundingClientRect()
+  const rect = padCanvas.value.getBoundingClientRect()
   return { x: event.clientX - rect.left, y: event.clientY - rect.top }
 }
 
 function startStroke(event) {
-  if (!padCanvas.value || padSigned.value) return
+  if (!padCanvas.value || uploading.value || (event.button !== undefined && event.button !== 0)) return
   drawing = true
+  activePointer = event.pointerId
   lastPoint = pointOf(event)
+  padCanvas.value.setPointerCapture?.(event.pointerId)
 }
 
 function moveStroke(event) {
-  if (!drawing || !padCanvas.value) return
+  if (!drawing || !padCanvas.value || event.pointerId !== activePointer || uploading.value) return
   const ctx = padCanvas.value.getContext('2d')
   const point = pointOf(event)
   ctx.beginPath()
   ctx.moveTo(lastPoint.x, lastPoint.y)
   ctx.lineTo(point.x, point.y)
   ctx.stroke()
+  if (point.x !== lastPoint.x || point.y !== lastPoint.y) hasStroke.value = true
   lastPoint = point
-  hasStroke.value = true
 }
 
-function endStroke() { drawing = false }
-
-function startStrokeTouch(event) {
-  const touch = event.touches?.[0]
-  if (touch) startStroke(touch)
-}
-function moveStrokeTouch(event) {
-  const touch = event.touches?.[0]
-  if (touch) moveStroke(touch)
-}
+function endStroke() { drawing = false; activePointer = null; lastPoint = null }
 
 function clearPad() {
+  if (uploading.value) return
   const canvas = padCanvas.value
   if (!canvas) return
-  canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height)
+  endStroke()
+  canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height)
   hasStroke.value = false
-  padSigned.value = false
 }
 
-// confirmSignature：把画布转成 PNG 上传，拿到附件 ID 后回传父组件。
 async function confirmSignature() {
   const canvas = padCanvas.value
-  if (!canvas || !hasStroke.value || uploading) return
-  uploading = true
+  if (!canSign.value || !padVisible.value || !canvas || !hasStroke.value || uploading.value) return
+  const current = signatureSession
+  const owned = () => current === signatureSession && props.visible && padVisible.value
+  uploading.value = true
+  endStroke()
   try {
-    // 去掉田字格：格子是 CSS 背景，不在 canvas 像素里，
-    // 所以这里导出的本来就是「只有笔画、没有格子」的图。
+    // 格子由 CSS 绘制，PNG 仅含透明背景与签名字迹。
     const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
-    if (!(blob instanceof Blob)) { message.error('签名导出失败'); return }
-    const file = new File([blob], 'refund-signature.png', { type: 'image/png' })
-    const response = await uploadTicketAttachment(file, undefined)
+    if (!owned()) return
+    if (!(blob instanceof Blob)) throw new Error('签名导出失败')
+    const response = await uploadTicketAttachment(new File([blob], 'refund-signature.png', { type: 'image/png' }))
+    if (!owned()) return
     const id = Number(response?.data?.data?.id)
-    if (!Number.isSafeInteger(id) || id <= 0) { message.error('签名上传返回格式异常'); return }
-    if (signaturePreviewUrl.value) URL.revokeObjectURL(signaturePreviewUrl.value)
+    if (!Number.isSafeInteger(id) || id <= 0) throw new Error('签名上传返回格式异常')
+    ++previewRequest
+    clearPreview()
     signaturePreviewUrl.value = URL.createObjectURL(blob)
-    padSigned.value = true
-    // 签完先让格子消失（保留笔画），再关掉签名弹窗与协议弹窗。
+    previewAttachmentId = id
     padVisible.value = false
     emit('signed', id)
     emit('close')
   } catch (error) {
-    message.error(error?.message || '签名上传失败')
+    if (owned()) message.error(error?.message || '签名上传失败')
   } finally {
-    uploading = false
+    if (current === signatureSession) uploading.value = false
   }
 }
 
-// closeAgreement：只关协议弹窗本身。签名弹窗有自己的关闭路径，
-// 用户关闭签名弹窗时**不能**连带关掉协议弹窗（用户明确要求）。
-function closeAgreement() {
-  clearTimer()
+function closeSignaturePad() {
+  ++signatureSession
   padVisible.value = false
+  uploading.value = false
+  endStroke()
+  nextTick(() => signButton.value?.$el?.focus())
+}
+
+function closeAgreement() {
+  if (padVisible.value) { closeSignaturePad(); return }
+  ++session
+  clearTimer()
   emit('close')
 }
 
 onBeforeUnmount(() => {
+  ++session
+  ++signatureSession
+  ++previewRequest
   clearTimer()
-  if (signaturePreviewUrl.value) URL.revokeObjectURL(signaturePreviewUrl.value)
+  clearPreview()
 })
 </script>
 
@@ -272,7 +308,7 @@ onBeforeUnmount(() => {
 .refund-agreement__text {
   max-height: 46vh;
   overflow-y: auto;
-  padding: 12px 14px;
+  padding: 12px 16px;
   border: 1px solid var(--console-border);
   border-radius: 8px;
   background: var(--console-surface-sunken, rgba(0, 0, 0, 0.03));
@@ -282,81 +318,33 @@ onBeforeUnmount(() => {
   white-space: pre-wrap;
   word-break: break-word;
   font: inherit;
-  font-size: 13px;
-  line-height: 22px;
+  font-size: 14px;
+  line-height: 24px;
 }
-.refund-agreement__progress {
-  margin: 10px 0 0;
-  color: var(--console-muted);
-  font-size: 12px;
-}
-.refund-agreement__sign {
-  margin-top: 12px;
-}
-.refund-agreement__signed {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.refund-agreement__signature {
-  height: 72px;
-  border: 1px solid var(--console-border);
-  border-radius: 6px;
-  background: #fff;
-}
-.refund-agreement__signed-tip {
-  color: var(--success, #52c41a);
-  font-size: 13px;
-}
-.refund-signature {
-  position: fixed;
-  inset: 0;
-  z-index: 1200;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.45);
-}
-.refund-signature__panel {
-  width: 520px;
-  max-width: 92vw;
-  padding: 16px;
-  border-radius: 10px;
-  background: var(--console-surface, #fff);
-}
-.refund-signature__title {
-  margin: 0 0 10px;
-  font-weight: 600;
-}
+.refund-agreement__progress { margin: 12px 0 0; color: var(--console-muted); font-size: 12px; }
+.refund-agreement__sign { margin-top: 16px; }
+.refund-agreement__signed { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.refund-agreement__signature { max-width: 100%; height: 80px; border: 1px solid var(--console-border); border-radius: 6px; background: #fff; }
+.refund-agreement__signed-tip { color: var(--success, #52c41a); font-size: 13px; }
+.refund-signature__hint { margin: 0 0 12px; color: var(--console-muted); }
 .refund-signature__canvas {
   display: block;
   width: 100%;
-  height: 200px;
+  height: auto;
+  aspect-ratio: 2.6;
   border: 1px solid var(--console-border);
-  border-radius: 6px;
-  background: #fff;
+  border-radius: 4px;
+  background-color: #fff;
   touch-action: none;
   cursor: crosshair;
 }
-/* 田字格背景：只在**签署前**显示。
-   用户要求「田字格只是背景，前面完成之后不要显示田字格」——
-   格子是 CSS 画的，确认签名后去掉这个类即可，笔画像素不受影响。 */
+/* 两个并排的宽田字格：每格内部各有一条横线、一条竖线，独立于画布像素。 */
 .refund-signature__canvas--grid {
   background-image:
-    linear-gradient(to right, rgba(0, 0, 0, 0.12) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(0, 0, 0, 0.12) 1px, transparent 1px),
-    linear-gradient(to right, rgba(0, 0, 0, 0.26) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(0, 0, 0, 0.26) 1px, transparent 1px);
-  background-size:
-    50% 50%,
-    50% 50%,
-    100% 100%,
-    100% 100%;
+    linear-gradient(to right, rgba(0, 0, 0, 0.16) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.16) 1px, transparent 1px),
+    linear-gradient(to right, transparent calc(50% - 0.5px), rgba(0, 0, 0, 0.32) calc(50% - 0.5px), rgba(0, 0, 0, 0.32) calc(50% + 0.5px), transparent calc(50% + 0.5px));
+  background-size: 25% 100%, 100% 50%, 100% 100%;
 }
-.refund-signature__actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 12px;
-}
+.refund-signature__actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 </style>

@@ -41,7 +41,7 @@ func newTicketRefundMergeTestDB(t *testing.T) *gorm.DB {
 // seedRefundActor 落一个可用用户。
 func seedRefundActor(t *testing.T, db *gorm.DB, id int32, name string) entity.User {
 	t.Helper()
-	user := entity.User{ID: id, Username: name, Nickname: name, Role: "user", Status: "enabled"}
+	user := entity.User{ID: id, Username: name, Nickname: name, Role: "user", Status: "enabled", Balance: 100}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
@@ -64,9 +64,9 @@ func TestTicketListContainsBothGeneralAndRefundTickets(t *testing.T) {
 	}
 
 	// 一笔退款（manual：无需订单，走人工打款路径）。
-	refund, err := CreateTicketRefundWithDB(db, user, CreateTicketRefundInput{
+	refund, err := CreateTicketRefundWithDB(db, user, withTestRefundIdentity(t, db, user, CreateTicketRefundInput{
 		Kind: entity.TicketRefundKindManual, RequestedCents: 1200, Reason: "多充了",
-	}, nil)
+	}), nil)
 	if err != nil {
 		t.Fatalf("create refund: %v", err)
 	}
@@ -116,9 +116,9 @@ func TestTicketListRowDistinguishesRefundWithRealStatus(t *testing.T) {
 	db := newTicketRefundMergeTestDB(t)
 	user := seedRefundActor(t, db, 1, "alice")
 
-	refund, err := CreateTicketRefundWithDB(db, user, CreateTicketRefundInput{
+	refund, err := CreateTicketRefundWithDB(db, user, withTestRefundIdentity(t, db, user, CreateTicketRefundInput{
 		Kind: entity.TicketRefundKindManual, RequestedCents: 500, Reason: "重复支付",
-	}, nil)
+	}), nil)
 	if err != nil {
 		t.Fatalf("create refund: %v", err)
 	}
@@ -172,10 +172,14 @@ func TestCreateTicketWithRefundTypeRunsRealRefundFlow(t *testing.T) {
 	db := newTicketRefundMergeTestDB(t)
 	user := seedRefundActor(t, db, 1, "alice")
 
+	identity := withTestRefundIdentity(t, db, user, CreateTicketRefundInput{})
 	detail, err := CreateTicketForUserWithDB(db, &user, CreateTicketInput{
-		TicketType:           TicketTypeRefund,
-		RefundRequestedCents: 2500,
-		RefundReason:         "充错了金额",
+		RefundPayoutQrAttachmentID:  identity.PayoutQrAttachmentID,
+		RefundSignatureAttachmentID: identity.SignatureAttachmentID,
+		RefundAgreementText:         identity.AgreementText,
+		TicketType:                  TicketTypeRefund,
+		RefundRequestedCents:        2500,
+		RefundReason:                "充错了金额",
 	}, nil)
 	if err != nil {
 		t.Fatalf("create refund ticket: %v", err)
@@ -312,9 +316,9 @@ func TestRefundActionsSurviveTheMerge(t *testing.T) {
 	}
 
 	// ① 提交
-	refund, err := CreateTicketRefundWithDB(db, user, CreateTicketRefundInput{
+	refund, err := CreateTicketRefundWithDB(db, user, withTestRefundIdentity(t, db, user, CreateTicketRefundInput{
 		Kind: entity.TicketRefundKindManual, RequestedCents: 1000, Reason: "退款理由",
-	}, nil)
+	}), nil)
 	if err != nil {
 		t.Fatalf("① 提交失败：%v", err)
 	}
@@ -347,9 +351,9 @@ func TestRefundActionsSurviveTheMerge(t *testing.T) {
 	assertShellStatus(t, db, refund.TicketID, entity.TicketStatusClosed)
 
 	// ⑤ 审核驳回（另一笔）
-	rejectMe, err := CreateTicketRefundWithDB(db, user, CreateTicketRefundInput{
+	rejectMe, err := CreateTicketRefundWithDB(db, user, withTestRefundIdentity(t, db, user, CreateTicketRefundInput{
 		Kind: entity.TicketRefundKindManual, RequestedCents: 300, Reason: "驳回测试",
-	}, nil)
+	}), nil)
 	if err != nil {
 		t.Fatalf("⑤ 创建待驳回退款失败：%v", err)
 	}
@@ -530,9 +534,9 @@ func TestRefundTicketRespectsUserIsolation(t *testing.T) {
 	alice := seedRefundActor(t, db, 1, "alice")
 	bob := seedRefundActor(t, db, 2, "bob")
 
-	if _, err := CreateTicketRefundWithDB(db, alice, CreateTicketRefundInput{
+	if _, err := CreateTicketRefundWithDB(db, alice, withTestRefundIdentity(t, db, alice, CreateTicketRefundInput{
 		Kind: entity.TicketRefundKindManual, RequestedCents: 100, Reason: "alice 的退款",
-	}, nil); err != nil {
+	}), nil); err != nil {
 		t.Fatalf("create refund: %v", err)
 	}
 
