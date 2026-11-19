@@ -23,7 +23,8 @@ func TestCreateRefundsWithAllocationsSplitsAcrossOrders(t *testing.T) {
 	newer := seedTicketRefundOrder(t, db, 2, owner.ID, rechargeOrderStatusPaid, paidAt, 7.5, true)
 
 	rows, err := CreateTicketRefundsForOrdersWithDB(db, owner, CreateTicketRefundInput{
-		Kind: entity.TicketRefundKindOriginal,
+		Kind:           entity.TicketRefundKindOriginal,
+		RequestedCents: 1000,
 		Allocations: []TicketRefundOrderAllocation{
 			{OrderID: older.ID, Cents: 750},
 			{OrderID: newer.ID, Cents: 250},
@@ -53,6 +54,30 @@ func TestCreateRefundsWithAllocationsSplitsAcrossOrders(t *testing.T) {
 	}
 }
 
+func TestOriginalRefundOfTenRequiresTwoFiveDollarOrders(t *testing.T) {
+	db, owner, _, _ := newTicketRefundCoreTestDB(t)
+	paidAt := time.Now().Add(-2 * time.Hour)
+	first := seedTicketRefundOrder(t, db, 1, owner.ID, rechargeOrderStatusPaid, paidAt, 5, true)
+	second := seedTicketRefundOrder(t, db, 2, owner.ID, rechargeOrderStatusPaid, paidAt.Add(time.Minute), 5, true)
+
+	rows, err := CreateTicketRefundsForOrdersWithDB(db, owner, CreateTicketRefundInput{
+		Kind: entity.TicketRefundKindOriginal, RequestedCents: 1000,
+		Allocations: []TicketRefundOrderAllocation{{OrderID: first.ID, Cents: 500}, {OrderID: second.ID, Cents: 500}},
+		Reason:      "两笔订单合计覆盖申请金额",
+	}, testVerifyTicketRefundChannel)
+	if err != nil {
+		t.Fatalf("两笔各5元的订单应能覆盖10元申请：%v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("需要两笔订单各退5元，got %d refund rows", len(rows))
+	}
+	for _, row := range rows {
+		if row.RequestedCents != 500 {
+			t.Fatalf("each order refund must be capped at 500 cents, got %d", row.RequestedCents)
+		}
+	}
+}
+
 // 分摊里单笔超过该笔订单实付 → 被拒（每笔都不能超额）。
 func TestCreateRefundsWithAllocationsRejectsPerOrderOverflow(t *testing.T) {
 	db, owner, _, _ := newTicketRefundCoreTestDB(t)
@@ -60,9 +85,10 @@ func TestCreateRefundsWithAllocationsRejectsPerOrderOverflow(t *testing.T) {
 	small := seedTicketRefundOrder(t, db, 1, owner.ID, rechargeOrderStatusPaid, paidAt, 7.5, true)
 
 	_, err := CreateTicketRefundsForOrdersWithDB(db, owner, CreateTicketRefundInput{
-		Kind:        entity.TicketRefundKindOriginal,
-		Allocations: []TicketRefundOrderAllocation{{OrderID: small.ID, Cents: 800}},
-		Reason:      "超过该笔实付",
+		Kind:           entity.TicketRefundKindOriginal,
+		RequestedCents: 800,
+		Allocations:    []TicketRefundOrderAllocation{{OrderID: small.ID, Cents: 800}},
+		Reason:         "超过该笔实付",
 	}, testVerifyTicketRefundChannel)
 	if !errors.Is(err, ErrTicketRefundAmount) {
 		t.Fatalf("单笔超过该笔实付（7.5 元）必须被拒，got %v", err)
@@ -76,7 +102,8 @@ func TestCreateRefundsWithAllocationsRejectsDuplicateOrder(t *testing.T) {
 	order := seedTicketRefundOrder(t, db, 1, owner.ID, rechargeOrderStatusPaid, paidAt, 50, true)
 
 	_, err := CreateTicketRefundsForOrdersWithDB(db, owner, CreateTicketRefundInput{
-		Kind: entity.TicketRefundKindOriginal,
+		Kind:           entity.TicketRefundKindOriginal,
+		RequestedCents: 3000,
 		Allocations: []TicketRefundOrderAllocation{
 			{OrderID: order.ID, Cents: 1000},
 			{OrderID: order.ID, Cents: 2000},
@@ -101,7 +128,8 @@ func TestCreateRefundsWithAllocationsRejectsBatchOverPrincipal(t *testing.T) {
 	_ = paidAt
 
 	_, err := CreateTicketRefundsForOrdersWithDB(db, owner, CreateTicketRefundInput{
-		Kind: entity.TicketRefundKindOriginal,
+		Kind:           entity.TicketRefundKindOriginal,
+		RequestedCents: 1000,
 		Allocations: []TicketRefundOrderAllocation{
 			{OrderID: older.ID, Cents: 750},
 			{OrderID: newer.ID, Cents: 250},

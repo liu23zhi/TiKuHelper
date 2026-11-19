@@ -182,6 +182,7 @@ test("选退款类型时 payload 带退款字段且不带普通的标题/正文"
   });
   assert.equal(validation.message, "");
   assert.equal(payload.ticketType, "refund");
+  assert.equal(payload.refundMethod, "original");
   // 金额必须转成分（后端只认分）。
   assert.equal(payload.refundRequestedCents, 2550);
   // 理由要去掉首尾空白。
@@ -204,6 +205,23 @@ test("选退款但没指定订单时不传 refundOrderIds（后端会归为人�
   assert.equal("refundOrderAllocations" in payload, false);
   assert.equal("refundOrderIds" in payload, false);
   assert.equal(payload.refundRequestedCents, 1000);
+});
+
+test("原路退款必须有订单且订单分摊合计必须覆盖申请金额", () => {
+  const oneFiveDollarOrder = getRefundDraftValidation({
+    requestedYuan: "10.00", reason: "理由", refundMethod: "original",
+    refundAllocations: [{ orderId: 1, cents: 500 }],
+  });
+  assert.equal(oneFiveDollarOrder.field, "order");
+  assert.match(oneFiveDollarOrder.message, /所选订单合计 5.00 元，与申请金额 10.00 元不一致/);
+
+  const noOrders = buildTicketCreatePayload({
+    ticketType: TICKET_CREATE_TYPE_REFUND, requestedYuan: "10.00",
+    reason: "理由", refundMethod: "original", refundAllocations: [],
+  });
+  assert.equal(noOrders.payload.refundMethod, "original");
+  assert.equal(noOrders.validation.field, "order");
+  assert.equal("refundOrderAllocations" in noOrders.payload, false);
 });
 
 test("普通类型只带标题正文，一个退款字段都不带", () => {
@@ -446,20 +464,21 @@ test("列表页接上两步向导、注销引导与自助注销入口", async ()
   assert.match(profile, /<ClosureGuide\b/, "个人中心必须真的渲染自助注销组件（不只是 import）");
   assert.match(profile, /data-section="account-closure"/, "个人中心必须有稳定的区块标记");
 
-  // 引导页主按钮=自助注销、次按钮=仍然提交工单（顺序不能反）。
-  //
-  // 同样断言**元素**而不是词面：两个 data-closure-action 都必须以属性形式出现。
-  assert.match(guide, /<a-button[\s\S]{0,200}data-closure-action="self-service"/, "必须有「去自助注销」按钮元素");
-  assert.match(guide, /<a-button[\s\S]{0,200}data-closure-action="fallback"/, "必须有「仍然提交工单」按钮元素");
-  // 主按钮必须带 type="primary"（视觉上也是主按钮，而不只是顺序在前）。
-  const selfButtonBlock = guide.slice(
-    Math.max(0, guide.indexOf('data-closure-action="self-service"') - 300),
-    guide.indexOf('data-closure-action="self-service"'),
-  );
+  // 只有确实支持自助注销时，推荐引导才显示自助主按钮和工单兜底按钮。
+  // 限定到 eligible 分支，避免 loading/error/pending 分支里的兜底按钮
+  // 干扰顺序断言。
+  const eligibleStart = guide.indexOf('v-else-if="status && status.eligible"');
+  const eligibleEnd = guide.indexOf('</template>', eligibleStart);
+  assert.ok(eligibleStart >= 0 && eligibleEnd > eligibleStart, "必须有 status.eligible 引导分支");
+  const eligibleGuide = guide.slice(eligibleStart, eligibleEnd);
+  assert.match(eligibleGuide, /<a-button[\s\S]{0,200}data-closure-action="self-service"/, "可自助注销时必须有「去自助注销」按钮元素");
+  assert.match(eligibleGuide, /<a-button[\s\S]{0,200}data-closure-action="fallback"/, "可自助注销时必须有「仍然提交工单」按钮元素");
+  // 自助注销必须是 primary 主按钮，并排在工单兜底之前。
+  const selfButtonAt = eligibleGuide.indexOf('data-closure-action="self-service"');
+  const selfButtonBlock = eligibleGuide.slice(Math.max(0, selfButtonAt - 300), selfButtonAt);
   assert.match(selfButtonBlock, /type="primary"/, "「去自助注销」必须是 primary 主按钮");
-  // 主按钮必须排在次按钮之前。
-  const selfAt = guide.indexOf('data-closure-action="self-service"');
-  const fallbackAt = guide.indexOf('data-closure-action="fallback"');
+  const selfAt = selfButtonAt;
+  const fallbackAt = eligibleGuide.indexOf('data-closure-action="fallback"');
   assert.ok(selfAt > 0 && fallbackAt > selfAt, "主按钮（自助注销）必须排在次按钮之前");
 
   // 三条 closure 接口必须真的指向后端已存在的路由。

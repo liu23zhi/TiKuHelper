@@ -338,6 +338,9 @@ export function buildTicketCreatePayload(draft = {}) {
         : parseRefundYuanToCents(draft.requestedYuan),
       refundReason: normalizeTicketText(draft.reason, 500),
     };
+    if (draft.refundMethod === "original" || draft.refundMethod === "manual") {
+      payload.refundMethod = draft.refundMethod;
+    }
     // 订单可选**多笔**（2026-11-18）：不选 = 无单人工退款（后端会落 kind=manual）。
     //
     // 传对外的 refundOrderIds；后端按「一笔订单一张退款单」展开，因为
@@ -369,8 +372,7 @@ export function buildTicketCreatePayload(draft = {}) {
           item.cents > 0,
       );
     if (draft.refundMethod !== 'manual' && allocations.length) payload.refundOrderAllocations = allocations;
-    // 人工退回时显式告知后端：没有订单就是 manual（后端也这么判）。
-    if (draft.refundMethod === "manual") payload.refundMethod = "manual";
+    // 显式告知后端退款方式，让它能拒绝「原路退回却没有订单」的请求。
     if (draft.refundMethod === 'manual') {
       payload.refundPhoneSmsCode = String(draft.refundPhoneSmsCode || '').trim();
       payload.refundAgreementText = String(draft.refundAgreementText || '');

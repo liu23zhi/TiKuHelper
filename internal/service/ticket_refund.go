@@ -118,7 +118,8 @@ type CreateTicketRefundInput struct {
 	// Allocations 是每笔订单各自的退款金额（2026-11-19）。
 	//
 	// 语义分支：
-	//   · 非空 → 以它为准，OrderIDs 与 RequestedCents 被忽略（分摊模式）
+	//   · 非空 → 以它分配逐笔金额；RequestedCents 必须填写且等于分摊总额，
+	//             用于防止所选订单合计不足或前后端金额不一致。
 	//   · 空   → 沿用 OrderIDs + RequestedCents（所有订单同额，向后兼容）
 	//
 	// 为什么不把 OrderIDs 直接改成 [{orderId, cents}]：OrderIDs 是老字段，
@@ -382,6 +383,9 @@ func CreateTicketRefundsForOrdersWithDB(db *gorm.DB, actor entity.User, input Cr
 	if db == nil || input.RequestedCents < 0 {
 		return nil, ErrTicketRefundInvalid
 	}
+	if len(input.Allocations) > 0 && !validTicketRefundCents(input.RequestedCents) {
+		return nil, ErrTicketRefundAmount
+	}
 	plan, err := planTicketRefundAllocations(input)
 	if err != nil {
 		return nil, err
@@ -399,7 +403,7 @@ func CreateTicketRefundsForOrdersWithDB(db *gorm.DB, actor entity.User, input Cr
 			}
 			totalRequested += item.cents
 		}
-		if len(input.Allocations) > 0 && input.RequestedCents > 0 && input.RequestedCents != totalRequested {
+		if len(input.Allocations) > 0 && input.RequestedCents != totalRequested {
 			return nil, ErrTicketRefundAmount
 		}
 		breakdown, principalErr := RefundablePrincipalWithDB(db, actor.ID, 0)

@@ -29,30 +29,92 @@
   <div class="closure-guide" :data-closure-mode="screen">
     <!-- ─────────── 引导页：推荐自助注销 ─────────── -->
     <section v-if="screen === 'guide'" class="closure-recommend" data-closure-guide>
+      <div v-if="loading" class="closure-loading" data-closure-guide-loading><a-spin size="small" /> 正在确认自助注销资格…</div>
+      <div v-if="loading" class="closure-actions">
+        <a-button data-closure-action="fallback" :onClick="onFallback">提交注销工单</a-button>
+      </div>
       <a-alert
+        v-else-if="loadError"
         type="warning"
         show-icon
-        message="推荐使用自助注销"
-        description="注销工单是兜底路径，需要等管理员处理。自助注销更快，而且可以随时撤销。"
-      />
-      <ul class="closure-benefits">
-        <li>立即生效，无需等待管理员处理</li>
-        <li>等待期内可一键撤销</li>
-        <li>数据到期自动归档</li>
-      </ul>
-      <div class="closure-actions">
-        <!-- 主按钮（primary）：自助注销。视觉与语义都必须在前面。 -->
-        <a-button
-          type="primary"
-          data-closure-action="self-service"
-          :onClick="openSelfService"
-          >去自助注销</a-button
+        message="暂时无法确认自助注销资格"
+        :description="loadError + '；如需继续，请提交注销工单由管理员处理。'"
+      >
+        <template #action>
+          <a-button size="small" :loading="loading" @click="loadStatus">重试</a-button>
+          <a-button size="small" data-closure-action="fallback" :onClick="onFallback">提交注销工单</a-button>
+        </template>
+      </a-alert>
+      <template v-else-if="status && status.pending">
+        <a-alert
+          type="info"
+          show-icon
+          message="已提交自助注销申请"
+          description="当前账号正处于注销等待期。可前往个人中心查看状态或撤销申请。"
+        />
+        <div class="closure-actions">
+          <a-button type="primary" data-closure-action="self-service" :onClick="openSelfService"
+            >查看注销状态</a-button
+          >
+          <a-button data-closure-action="fallback" :onClick="onFallback"
+            >仍然提交工单</a-button
+          >
+        </div>
+      </template>
+      <template v-else-if="status && !status.phoneBound">
+        <a-alert
+          type="warning"
+          show-icon
+          data-closure-guide-ineligible
+          message="当前账号不支持自助注销"
+          :description="status.ineligibleReason || '账号没有绑定手机号，不支持自助注销，请提交注销工单由管理员处理。'"
+        />
+        <div class="closure-actions">
+          <a-button type="primary" data-closure-action="fallback" :onClick="onFallback"
+            >提交注销工单</a-button
+          >
+        </div>
+      </template>
+      <template v-else-if="status && status.eligible">
+        <a-alert
+          type="warning"
+          show-icon
+          message="推荐使用自助注销"
+          description="注销工单是兜底路径，需要等管理员处理。自助注销更快，而且可以随时撤销。"
+        />
+        <ul class="closure-benefits">
+          <li>立即生效，无需等待管理员处理</li>
+          <li>等待期内可一键撤销</li>
+          <li>数据到期自动归档</li>
+        </ul>
+        <div class="closure-actions">
+          <!-- 主按钮（primary）：自助注销。视觉与语义都必须在前面。 -->
+          <a-button
+            type="primary"
+            data-closure-action="self-service"
+            :onClick="openSelfService"
+            >去自助注销</a-button
+          >
+          <!-- 次按钮（default）：仍然提交工单（兜底）。 -->
+          <a-button data-closure-action="fallback" :onClick="onFallback"
+            >仍然提交工单</a-button
+          >
+        </div>
+      </template>
+      <template v-else>
+        <a-alert
+          type="warning"
+          show-icon
+          data-closure-guide-ineligible
+          message="当前账号不支持自助注销"
+          :description="status?.ineligibleReason || '请提交注销工单由管理员处理。'"
+        />
+        <div class="closure-actions">
+          <a-button type="primary" data-closure-action="fallback" :onClick="onFallback"
+            >提交注销工单</a-button
         >
-        <!-- 次按钮（default）：仍然提交工单（兜底）。 -->
-        <a-button data-closure-action="fallback" :onClick="onFallback"
-          >仍然提交工单</a-button
-        >
-      </div>
+        </div>
+      </template>
     </section>
 
     <!-- ─────────── 自助注销流程（申请 / 撤销）─────────── -->
@@ -290,9 +352,8 @@ export default defineComponent({
     },
   },
   mounted() {
-    // self-service 起点（个人中心入口）需要在挂载时就知道当前状态，
-    // 否则用户看到的是一张空表单，而他其实已在等待期内。
-    if (this.screen === "self-service") this.loadStatus();
+    // 两个入口都先读取权威状态：工单引导要避免推荐当前账号无法使用的自助注销。
+    this.loadStatus();
   },
 });
 

@@ -154,6 +154,9 @@ type CreateTicketInput struct {
 	RefundOrderID        *int32 `json:"refundOrderId,omitempty"`
 	RefundRequestedCents int64  `json:"refundRequestedCents,omitempty"`
 	RefundReason         string `json:"refundReason,omitempty"`
+	// RefundMethod distinguishes explicit original refund from manual refund
+	// with no order. Empty remains accepted for older clients.
+	RefundMethod string `json:"refundMethod,omitempty"`
 	// RefundPayoutQrAttachmentID 是用户上传的收款码（可选）。
 	//
 	// 2026-11-19 用户要求：「即便可以原路退回也可以要求用户设置退款账号」。

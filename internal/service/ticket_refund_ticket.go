@@ -376,6 +376,7 @@ func CreateTicketForUserWithDB(db *gorm.DB, user *entity.User, input CreateTicke
 
 func hasTicketRefundFields(input CreateTicketInput) bool {
 	return input.RefundOrderID != nil || input.RefundRequestedCents != 0 || strings.TrimSpace(input.RefundReason) != "" ||
+		strings.TrimSpace(input.RefundMethod) != "" ||
 		input.RefundPayoutQrAttachmentID != nil || input.RefundSignatureAttachmentID != nil ||
 		len(input.RefundOrderIDs) > 0 || len(input.RefundOrderAllocations) > 0 ||
 		strings.TrimSpace(input.RefundAgreementText) != "" || strings.TrimSpace(input.RefundPhoneSMSCode) != ""
@@ -388,10 +389,9 @@ func createRefundTicketWithVerifier(db *gorm.DB, user *entity.User, input Create
 	}
 	// 退款申请必须有金额与理由：普通工单的 subject/body 在退款流程里由
 	// 壳工单自动生成（订单号 + 退款单号），所以这里校验的是退款字段本身。
-	// 分摊模式下金额在 Allocations 里逐笔给，RefundRequestedCents 可以是 0
-	// （它只是合计的副本，不参与校验）。若这里仍要求 > 0，
-	// 前端就得为了通过校验而传一个恰好相等的数 ——
-	// 那是两份真相，必然漂移。
+	// 分摊模式下逐笔金额在 Allocations 里给，但 RefundRequestedCents 仍是申请总额，
+	// 必须存在并与分摊合计相等。否则客户端可能只选了一笔不足额的订单，
+	// 或漏传总额后让服务端把部分金额当作完整申请。
 	multiOrder := len(input.RefundOrderAllocations) > 0 || len(input.RefundOrderIDs) > 0
 	if !multiOrder && input.RefundRequestedCents <= 0 {
 		return TicketDetail{}, ErrTicketRefundAmount
@@ -404,8 +404,22 @@ func createRefundTicketWithVerifier(db *gorm.DB, user *entity.User, input Create
 	if utf8.RuneCountInString(reason) > 500 || len(reason) > 2000 {
 		return TicketDetail{}, ErrTicketRefundInvalid
 	}
+	refundMethod := strings.ToLower(strings.TrimSpace(input.RefundMethod))
+	if refundMethod != "" && refundMethod != "original" && refundMethod != "manual" {
+		return TicketDetail{}, ErrTicketRefundInvalid
+	}
 	kind := entity.TicketRefundKindOriginal
-	if input.RefundOrderID == nil && !multiOrder {
+	hasOrder := input.RefundOrderID != nil || multiOrder
+	if refundMethod == "original" && !hasOrder {
+		return TicketDetail{}, ErrTicketRefundOrderUnavailable
+	}
+	if refundMethod == "manual" && hasOrder {
+		return TicketDetail{}, ErrTicketRefundInvalid
+	}
+	if len(input.RefundOrderAllocations) > 0 && input.RefundRequestedCents <= 0 {
+		return TicketDetail{}, ErrTicketRefundAmount
+	}
+	if refundMethod == "manual" || (refundMethod == "" && input.RefundOrderID == nil && !multiOrder) {
 		// 没有指定订单 = 无单人工退款，必须走 manual（原路退回找不到订单）。
 		kind = entity.TicketRefundKindManual
 	}
@@ -414,17 +428,25 @@ func createRefundTicketWithVerifier(db *gorm.DB, user *entity.User, input Create
 		// 多笔：每笔一张退款单（order_id 有唯一索引），
 		// 整批一个事务，任一笔失败全部回滚。
 		targets := input.RefundOrderAllocations
-		requestedTotal := int64(0)
-		if len(targets) > 0 {
-			requestedTotal = input.RefundRequestedCents
+		if refundMethod == "original" && len(input.RefundOrderIDs) > 1 && len(input.RefundOrderAllocations) == 0 {
+			return TicketDetail{}, ErrTicketRefundInvalid
 		}
-		if len(targets) == 0 {
-			for _, id := range input.RefundOrderIDs {
-				targets = append(targets, TicketRefundOrderAllocation{OrderID: id, Cents: input.RefundRequestedCents})
+		requestedTotal := input.RefundRequestedCents
+		orderIDs := input.RefundOrderIDs
+		if len(targets) == 0 && refundMethod == "original" {
+			// 新版显式原路退款走严格合计校验。单订单没有分摊歧义，
+			// 可从申请金额生成唯一分摊；多订单必须由调用方提供 allocations。
+			if len(orderIDs) != 1 {
+				return TicketDetail{}, ErrTicketRefundOrderUnavailable
 			}
+			targets = []TicketRefundOrderAllocation{{OrderID: orderIDs[0], Cents: input.RefundRequestedCents}}
+			orderIDs = nil
+		} else if len(targets) > 0 {
+			orderIDs = nil
 		}
 		rows, err := CreateTicketRefundsForOrdersWithDB(db, *user, CreateTicketRefundInput{
 			Kind:                  kind,
+			OrderIDs:              orderIDs,
 			Allocations:           targets,
 			RequestedCents:        requestedTotal,
 			Reason:                reason,

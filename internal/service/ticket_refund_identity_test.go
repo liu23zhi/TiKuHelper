@@ -240,6 +240,7 @@ func TestGeneralTicketsRejectRefundFields(t *testing.T) {
 		"signature":   {RefundSignatureAttachmentID: &attachmentID},
 		"agreement":   {RefundAgreementText: "agreed"},
 		"sms":         {RefundPhoneSMSCode: "123456"},
+		"method":      {RefundMethod: "original"},
 		"orders":      {RefundOrderIDs: []int32{1}},
 		"allocations": {RefundOrderAllocations: []TicketRefundOrderAllocation{{OrderID: 1, Cents: 1}}},
 	}
@@ -260,8 +261,9 @@ func TestRefundBatchRejectsInconsistentTotalAndOverflow(t *testing.T) {
 	db, owner, _, _ := newTicketRefundCoreTestDB(t)
 	for name, input := range map[string]CreateTicketRefundInput{
 		"negative request": {RequestedCents: -1, Allocations: []TicketRefundOrderAllocation{{OrderID: 1, Cents: 100}}},
+		"missing total":    {Allocations: []TicketRefundOrderAllocation{{OrderID: 1, Cents: 100}}},
 		"different total":  {RequestedCents: 200, Allocations: []TicketRefundOrderAllocation{{OrderID: 1, Cents: 100}}},
-		"over maximum":     {Allocations: []TicketRefundOrderAllocation{{OrderID: 1, Cents: ticketRefundMaxCents}, {OrderID: 2, Cents: ticketRefundMaxCents}}},
+		"over maximum":     {RequestedCents: ticketRefundMaxCents, Allocations: []TicketRefundOrderAllocation{{OrderID: 1, Cents: ticketRefundMaxCents}, {OrderID: 2, Cents: ticketRefundMaxCents}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			input.Kind = TicketRefundKindOriginal

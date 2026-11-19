@@ -178,6 +178,7 @@ func TestCreateTicketWithRefundTypeRunsRealRefundFlow(t *testing.T) {
 		RefundSignatureAttachmentID: identity.SignatureAttachmentID,
 		RefundAgreementText:         identity.AgreementText,
 		TicketType:                  TicketTypeRefund,
+		RefundMethod:                "manual",
 		RefundRequestedCents:        2500,
 		RefundReason:                "充错了金额",
 	}, nil)
