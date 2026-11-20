@@ -20,11 +20,12 @@ test('SystemSettings payment method management reads backend epayType field cons
   assert.match(content, /:onDelete="paymentPanelEntry\.bind\(handleDeletePaymentMethod\)"/);
   assert.match(content, /import SafePaymentIcon from '@\/components\/SafePaymentIcon\.js'/, 'inline preview binds the strict VNode renderer');
   const registeredComponents = content.match(/components:\s*\{([^}]+)\}/)?.[1] || '';
-  for (const component of ['PaymentMethodPanel', 'SafePaymentIcon', 'PaymentMethodIconPicker', 'SystemMetricsPanel']) {
+  for (const component of ['PaymentMethodPanel', 'SafePaymentIcon', 'PaymentMethodIconPicker']) {
     assert.match(registeredComponents, new RegExp(`\\b${component}\\b`), `${component} remains registered`);
     assert.match(content, new RegExp(`import ${component} from `), `${component} remains imported`);
     assert.match(content, new RegExp(`<${component}(?:\\s|/|>)`), `${component} remains mounted`);
   }
+  assert.doesNotMatch(content, /\bSystemMetricsPanel\b/, 'runtime diagnostics live on the administrator status page, outside payment settings');
 });
 
 test('SystemSettings exposes wechat captcha and smsbao credential settings', async () => {

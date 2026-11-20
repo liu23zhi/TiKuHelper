@@ -176,7 +176,7 @@
               </div>
               <div class="risk-rule-meta">
                 <code class="risk-rule-id">{{ rule.ruleId }}</code>
-                <span class="risk-rule-type">类型：{{ rule.type }}</span>
+                <span class="risk-rule-type">类型：{{ ruleTypeName(rule.type) }}</span>
                 <span class="risk-rule-threshold">
                   生效阈值：{{ rule.threshold }}{{ ruleUnit(rule) }}
                 </span>
@@ -499,6 +499,8 @@
     <a-modal
       :open="ruleEditorOpen"
       :title="ruleEditingId ? '编辑风控规则' : '新增风控规则'"
+      :width="720"
+      :style="{ maxWidth: 'calc(100vw - 32px)' }"
       :confirm-loading="ruleWriting"
       :ok-button-props="{ disabled: !ruleDraft.name.trim() || !ruleDraft.type }"
       ok-text="保存"
@@ -507,36 +509,60 @@
       @cancel="closeRuleEditor"
     >
       <a-form layout="vertical" class="risk-rule-editor">
-        <a-form-item v-if="!ruleEditingId" label="规则类型" required>
-          <a-select
-            :value="ruleDraft.type"
-            :options="ruleTypeOptions"
-            placeholder="选择服务端支持的检测类型"
-            @update:value="setRuleType"
-          />
-          <div v-if="selectedRuleType?.description" class="field-hint">{{ selectedRuleType.description }}</div>
-        </a-form-item>
-        <a-form-item v-else label="规则类型">
-          <a-input :value="ruleDraft.type" disabled />
-        </a-form-item>
-        <p v-if="!ruleEditingId" class="field-hint">规则 ID 由系统生成，创建后保持不变。</p>
-        <a-form-item label="规则名称" required>
-          <a-input v-model:value="ruleDraft.name" :maxlength="128" placeholder="为管理员容易识别的名称" />
-        </a-form-item>
-        <a-form-item label="说明">
-          <a-textarea v-model:value="ruleDraft.description" :rows="3" :maxlength="2048" show-count placeholder="说明规则触发条件与适用范围" />
-        </a-form-item>
-        <div class="risk-rule-editor-grid">
-          <a-form-item label="告警级别" required>
-            <a-select v-model:value="ruleDraft.severity" :options="severityOptions" />
+        <section class="risk-editor-section" aria-label="规则信息">
+          <h3>规则信息</h3>
+          <div class="risk-rule-editor-grid">
+            <a-form-item label="规则类型" :html-for="fieldId('editor-type')" :required="!ruleEditingId">
+              <a-select
+                v-if="!ruleEditingId"
+                :id="fieldId('editor-type')"
+                :value="ruleDraft.type"
+                :options="ruleTypeOptions"
+                placeholder="选择服务端支持的检测类型"
+                @update:value="setRuleType"
+              />
+              <a-input
+                v-else
+                :id="fieldId('editor-type')"
+                :value="selectedRuleType?.name || ruleDraft.type"
+                disabled
+              />
+              <div class="field-hint">{{ ruleEditingId ? '创建后不能更换检测类型。' : '只能选择服务端支持的检测类型。' }}</div>
+            </a-form-item>
+            <a-form-item label="规则名称" :html-for="fieldId('editor-name')" required>
+              <a-input :id="fieldId('editor-name')" v-model:value="ruleDraft.name" :maxlength="128" placeholder="为管理员容易识别的名称" />
+            </a-form-item>
+          </div>
+          <a-form-item label="说明" :html-for="fieldId('editor-description')">
+            <a-textarea :id="fieldId('editor-description')" v-model:value="ruleDraft.description" :rows="2" :maxlength="2048" show-count placeholder="说明规则触发条件与适用范围" />
           </a-form-item>
-          <a-form-item label="阈值" required>
-            <a-input-number v-model:value="ruleDraft.threshold" :min="0" :precision="6" style="width: 100%" />
+          <p class="field-hint risk-editor-identity">{{ ruleEditingId ? `规则 ID：${ruleEditingId}（保持不变）` : '规则 ID 由系统生成，创建后保持不变。' }}</p>
+        </section>
+        <section class="risk-editor-section" aria-label="触发条件">
+          <h3>触发条件</h3>
+          <p class="field-hint risk-editor-type-hint">{{ selectedRuleType?.description || '按所选检测类型的条件进行判断。' }}</p>
+          <a-form-item
+            :label="`阈值${selectedRuleType?.thresholdUnit ? `（${selectedRuleType.thresholdUnit}）` : ''}`"
+            :html-for="fieldId('editor-threshold')"
+            required
+          >
+            <a-input-number :id="fieldId('editor-threshold')" v-model:value="ruleDraft.threshold" :min="0" :precision="6" class="risk-editor-number" />
+            <div v-if="selectedRuleType" class="field-hint">默认值：{{ selectedRuleType.defaultThreshold }}{{ selectedRuleType.thresholdUnit ? ` ${selectedRuleType.thresholdUnit}` : '' }}。保存时由服务端校验该类型允许的范围。</div>
           </a-form-item>
-          <a-form-item label="节流秒数">
-            <a-input-number v-model:value="ruleDraft.throttleSeconds" :min="0" :precision="0" style="width: 100%" />
-          </a-form-item>
-        </div>
+        </section>
+        <section class="risk-editor-section" aria-label="通知行为">
+          <h3>通知行为</h3>
+          <div class="risk-rule-editor-grid">
+            <a-form-item label="告警级别" :html-for="fieldId('editor-severity')" required>
+              <a-select :id="fieldId('editor-severity')" v-model:value="ruleDraft.severity" :options="severityOptions" />
+              <div class="field-hint">标记告警的重要程度，不触发自动处置。</div>
+            </a-form-item>
+            <a-form-item label="节流秒数" :html-for="fieldId('editor-throttle')">
+              <a-input-number :id="fieldId('editor-throttle')" v-model:value="ruleDraft.throttleSeconds" :min="0" :precision="0" class="risk-editor-number" />
+              <div class="field-hint">0 表示同一告警主体只记录一次；大于 0 时，同一主体在设定秒数内不重复记录。</div>
+            </a-form-item>
+          </div>
+        </section>
         <p v-if="rulesError" class="filter-error" role="alert">{{ rulesError }}</p>
       </a-form>
     </a-modal>
@@ -914,6 +940,7 @@ export default {
     // 那份内联映射本来写过，被 riskAdminSource.test.mjs 的
     // 「页面不得内联规则名映射」断言拦下了 —— 拦得对，改由后端给更彻底。
     const ruleUnit = rule => (rule && rule.unit ? ' ' + rule.unit : '')
+    const ruleTypeName = type => ruleTypes.value.find(item => item.type === type)?.name || type
 
     const applyRuleItems = items => {
       const list = Array.isArray(items) ? items : []
@@ -1516,7 +1543,7 @@ export default {
       loadThresholds, setThresholdDraft, saveThreshold, resetThreshold, describeThresholdSource,
       rules, rulesLoading, rulesError, rulesSuccess, ruleToggling,
       ruleTypes, ruleTypeOptions, selectedRuleType, severityOptions, ruleEditorOpen, ruleEditingId, ruleWriting, ruleDeleting, ruleDraft,
-      loadRules, toggleRule, ruleUnit, openCreateRule, openEditRule, closeRuleEditor, setRuleType, saveRule, deleteRule,
+      loadRules, toggleRule, ruleUnit, ruleTypeName, openCreateRule, openEditRule, closeRuleEditor, setRuleType, saveRule, deleteRule,
       // 非数值配置（ASN 名单 / 评估间隔）
       configItems, configItemDraft, configItemsLoading, configItemsWriting,
       configItemsError, configItemsSuccess,
@@ -1559,7 +1586,7 @@ export default {
 /* ============ 规则清单（启停 + 说明） ============ */
 .risk-rule-list { display: flex; flex-direction: column; gap: 10px; }
 .risk-rule-row {
-  display: flex; gap: 12px; align-items: flex-start; justify-content: space-between;
+  display: grid; grid-template-columns: minmax(0, 1fr) 190px; gap: 16px; align-items: start;
   padding: 12px 14px; border: 1px solid var(--console-border); border-radius: 8px;
   background: var(--console-surface);
 }
@@ -1587,5 +1614,33 @@ export default {
 .risk-rule-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; flex-shrink: 0; }
 .risk-rule-type, .risk-rule-updated { color: var(--console-muted); font-size: 12px; }
 .risk-rule-updated { margin: 6px 0 0; }
-.risk-rule-editor-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.risk-rule-editor { display: grid; gap: 16px; }
+.risk-rule-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 16px;
+}
+.risk-editor-section {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--console-border);
+  border-radius: 8px;
+}
+.risk-editor-section h3 {
+  margin: 0 0 16px;
+  color: var(--console-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+.risk-editor-section > :deep(.ant-form-item),
+.risk-rule-editor-grid > :deep(.ant-form-item) { margin-bottom: 0; }
+.risk-editor-section > .risk-rule-editor-grid + :deep(.ant-form-item) { margin-top: 16px; }
+.risk-editor-number { width: 100%; }
+.risk-editor-type-hint { margin: -6px 0 16px; }
+.risk-editor-identity { margin-top: 10px; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .risk-rule-row { grid-template-columns: minmax(0, 1fr); }
+  .risk-rule-actions { justify-content: flex-start; }
+  .risk-editor-section { padding: 12px; }
+}
 </style>

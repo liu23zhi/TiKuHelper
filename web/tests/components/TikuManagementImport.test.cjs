@@ -40,8 +40,10 @@ test('题库管理承接异步表格任务与结果入口', () => {
 
 test('智能导入只提供 Word 和纯文本输入并保留校对导入工作区', () => {
   const page = read('src/pages/IntelligentImport/index.vue')
-  assert.match(page, /accept="\.docx"/)
-  assert.match(page, /accept="\.txt"/)
+  assert.match(page, /accept="\.docx,\.txt"/)
+  assert.equal((page.match(/<a-upload\b/g) || []).length, 1, 'DOCX 和 TXT 共用一个上传入口')
+  assert.match(page, /上传文件/)
+  assert.doesNotMatch(page, /上传 \.txt 文件/)
   assert.match(page, /textarea/)
   assert.match(page, /contenteditable/)
   assert.match(page, /确认导入/)

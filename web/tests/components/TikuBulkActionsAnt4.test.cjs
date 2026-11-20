@@ -50,7 +50,7 @@ window.HTMLAnchorElement.prototype.click = function () {
   downloads.push({ href: this.href, filename: this.download })
 }
 const pagePath = path.join(web, 'src/pages/TikuComponent/index.vue')
-const labels = ['导出选中', '批量编辑课程名', '批量删除']
+const labels = ['导出 JSON', '批量编辑课程名', '批量删除']
 async function settle() { await nextTick(); await flushPromises(); await new Promise(resolve => setTimeout(resolve, 5)); await nextTick() }
 function button(wrapper, label) {
   const found = wrapper.findAll('button').find(item => item.text().trim() === label)
@@ -87,7 +87,14 @@ async function fixture(run, options = {}) {
 
 test('zero selected rows: all three native bulk buttons are disabled and native clicks have no export, modal or delete side effects', async () => {
   await fixture(async wrapper => {
-    assert.equal(button(wrapper, '导出选中').disabled, true, 'ZERO_SELECTION_EXPORT_NATIVE_DISABLED')
+    const list = wrapper.get('.tiku-table-card').element
+    const transfers = wrapper.get('.asyncTaskPanel').element
+    assert.ok(list.compareDocumentPosition(transfers) & Node.DOCUMENT_POSITION_FOLLOWING, 'QUESTION_LIST_PRECEDES_FILE_TASKS')
+    assert.equal(wrapper.get('.filter-panel h2').text(), '筛选题目')
+    const bulk = wrapper.get('[aria-label="题目批量操作"]')
+    assert.ok(bulk.find('.selection-alert').exists(), 'selection context and bulk actions share one toolbar')
+    assert.equal((bulk.text().match(/已选择/g) || []).length, 1, 'selection count is shown once')
+    assert.equal(button(wrapper, '导出 JSON').disabled, true, 'ZERO_SELECTION_EXPORT_NATIVE_DISABLED')
     assert.equal(button(wrapper, '批量删除').disabled, true, 'ZERO_SELECTION_DELETE_NATIVE_DISABLED')
     for (const label of labels) await click(button(wrapper, label))
     witness('zero-selection-native-clicks', wrapper)
@@ -122,7 +129,7 @@ test('real pagination preserves off-page selection and export payload; search fi
     assert.equal(rowCheckbox(wrapper).checked, false)
     assert.deepEqual(states(wrapper), [false, false, false], 'off-page choice stays actionable')
     await click(rowCheckbox(wrapper))
-    await click(button(wrapper, '导出选中'))
+    await click(button(wrapper, '导出 JSON'))
     assert.equal(downloads.length, 1)
     assert.equal(blobs.length, 1)
     assert.match(downloads[0].filename, /\.json$/)

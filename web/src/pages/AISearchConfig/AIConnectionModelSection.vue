@@ -112,9 +112,7 @@ export default {
 </script>
 
 <style scoped>
-/* 布局类必须自带定义，不能指望父组件 index.vue 的 scoped 规则 ——
- * 父 scoped 规则带 data-v-父，子组件元素带 data-v-子，匹配不到。
- * 详见 AIAdvancedSettingsSection.vue 同名注释（那次错位就是这条引起的）。 */
+/* 直接 section 自带标题与内容间距，不依赖父组件的 scoped 样式。 */
 .ai-section-heading {
   display: flex;
   justify-content: space-between;
@@ -132,10 +130,22 @@ export default {
   color: var(--console-text);
 }
 
+.ai-section-heading > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ai-section-heading :deep(.ant-btn) {
+  height: auto;
+  min-height: 32px;
+  white-space: normal;
+}
+
 .section-description {
   margin: 4px 0 0;
   color: var(--console-muted);
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .console-form-grid {
@@ -144,7 +154,26 @@ export default {
   column-gap: 32px;
   row-gap: 8px;
   min-width: 0;
-  /* 不加 padding：外层 ConsolePanel__body 已有 24px。 */
+  padding: 24px;
+}
+
+.connection-grid > *, .model-editor > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.connection-grid :deep(.ant-form-item), .connection-grid :deep(.ant-form-item-control), .connection-grid :deep(.ant-form-item-control-input), .connection-grid :deep(.ant-form-item-control-input-content) {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.connection-grid :deep(.ant-form-item-label > label) {
+  height: auto;
+  white-space: normal;
+}
+
+.connection-grid :deep(.ant-select) {
+  width: 100%;
 }
 
 .full-width {
@@ -161,6 +190,7 @@ export default {
   color: #8c8c8c;
   font-size: 12px;
   line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 
 .hint-warning {
@@ -169,11 +199,12 @@ export default {
 
 .model-editor {
   display: flex;
+  min-width: 0;
   gap: 12px;
   align-items: flex-start;
 }
 
-.model-editor :deep(.ant-input-textarea) {
+.model-editor :deep(textarea) {
   flex: 1;
 }
 
@@ -183,6 +214,19 @@ export default {
 
 .model-tags {
   margin-top: 10px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.model-tags :deep(.ant-tag) {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.model-tags :deep(.ant-space-item) {
+  min-width: 0;
+  max-width: 100%;
 }
 
 @media (max-width: 768px) {
@@ -192,6 +236,7 @@ export default {
 
   .console-form-grid {
     grid-template-columns: minmax(0, 1fr);
+    padding: 16px;
   }
 
   .model-editor {

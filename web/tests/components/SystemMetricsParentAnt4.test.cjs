@@ -1,4 +1,4 @@
-/* External-copy transaction fixture: real SystemSettings + real metrics panel + real Antd. */
+/* Real SystemSettings + Antd: diagnostics belong to the admin status page. */
 const { test } = require('node:test')
 const assert = require('node:assert/strict')
 const path = require('node:path')
@@ -32,8 +32,6 @@ api.exports = {
 require.cache[apiPath] = api
 const Page = require(pagePath)
 async function settle() { await nextTick(); await flushPromises(); await nextTick() }
-const zero = { hits: 0, misses: 0, shared: 0 }
-const data = { schemaVersion: 1, startedAt: '2026-10-28T00:00:00Z', uptimeSeconds: 0, http: { total: 0, inFlight: 0, failed: 0, latencyCount: 0, latencyTotalMillis: 0, latencyMaxMillis: 0, buckets: [] }, cache: { search: zero, fallback: zero }, billing: { attempts: 0, successes: 0, failures: 0 } }
 test('SM_PARENT system settings no longer hosts runtime diagnostics or reads metrics', async () => {
   user.setStoredCurrentUser({ id: 17, role: 'admin', username: 'SYNTHETIC_ADMIN' })
   const w = mount(Page, { attachTo: document.body, global: { plugins: [Antd] } })
@@ -43,7 +41,6 @@ test('SM_PARENT system settings no longer hosts runtime diagnostics or reads met
     assert.equal(metricsReads, 0, 'SM_PARENT_SETTINGS_MUST_NOT_READ_DIAGNOSTICS')
     const input = w.get('input[placeholder="例如 题库"]')
     await input.setValue('未保存的系统草稿')
-    assert.equal(input.element.value, '未保存的系统草稿')
     assert.equal(input.element.value, '未保存的系统草稿')
     assert.equal(w.vm.formState.siteName, '未保存的系统草稿')
     assert.equal(settingsReads, 1); assert.equal(paymentReads, 1); assert.equal(metricsReads, 0); assert.equal(writes, 0)

@@ -221,3 +221,18 @@ test('native main and backup intents use the actual shared test-model select wit
  assert.deepEqual(w.findComponent(require(childPath)).emitted('test'), [[]], 'one exact entry event, not invented primary/backup buttons')
  assert.equal(w.vm.formState, canonical); assert.equal(canonical.baseUrl, original.baseUrl); assert.equal(canonical.apiKey, original.apiKey)
 })
+
+test('connection layout contract: direct section owns content spacing and constrains long form content', () => {
+ const source = fs.readFileSync(childPath, 'utf8')
+ const grid = source.match(/\.console-form-grid\s*\{([^}]*)\}/)?.[1] || ''
+ assert.match(grid, /padding:\s*24px/, 'direct section grid owns its 24px content inset')
+ assert.match(grid, /min-width:\s*0/, 'grid can shrink inside responsive parents')
+ assert.match(source, /\.connection-grid\s*>\s*\*/, 'grid children have a dedicated rule')
+ assert.match(source, /\.model-editor\s*>\s*\*/, 'model editor children have a dedicated rule')
+ assert.match(source, /min-width:\s*0/)
+ assert.match(source, /max-width:\s*100%/)
+ assert.match(source, /\.hint[^}]*overflow-wrap:\s*anywhere/s, 'long hints can wrap')
+ assert.match(source, /\.model-tags[^}]*overflow-wrap:\s*anywhere/s, 'long model tags can wrap')
+ assert.match(source, /\.model-editor[^}]*min-width:\s*0/s, 'model editor flex contents can shrink')
+ assert.match(source, /:deep\(\.ant-form-item[^}]*min-width:\s*0/s, 'Ant form items can shrink')
+})

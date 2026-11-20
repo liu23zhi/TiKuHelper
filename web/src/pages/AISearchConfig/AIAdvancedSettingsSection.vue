@@ -161,19 +161,8 @@ export default {
 </script>
 
 <style scoped>
-/* 本组件的布局类必须自带定义。
- *
- * ⚠️ 这里曾经只写 .hint，其余（.console-form-grid / .full-width /
- * .ai-section-heading / .unit-label）都指望父组件 index.vue 的 scoped 样式
- * 里那几条同名规则兜住 —— 那是失效的：父组件的 scoped 规则编译成
- * `.console-form-grid[data-v-父]`，而子组件模板里的元素带的是 data-v-子，
- * 元素匹配不到父级选择器。结果是
- *   · .full-width 退化成普通 grid item → Prompt 文本域/模型列表被挤成一列宽；
- *   · .console-form-grid 没有 display:grid → 两列布局整个塌成单列；
- *   · .unit-label 没有 margin-left → 「次」「元/次」直接贴在输入框右边；
- * 这就是用户报的「UI 错位」。下面的规则与 index.vue 里那套保持同值，
- * 谁删了这里谁就把错位带回来。
- */
+/* 直接 section 没有 ConsolePanel__body，内容间距由本组件负责；
+ * 内部网格也不能依赖父组件的 scoped 样式。 */
 .ai-section-heading {
   display: flex;
   justify-content: space-between;
@@ -191,10 +180,22 @@ export default {
   color: var(--console-text);
 }
 
+.ai-section-heading > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.ai-section-heading :deep(.ant-btn) {
+  height: auto;
+  min-height: 32px;
+  white-space: normal;
+}
+
 .section-description {
   margin: 4px 0 0;
   color: var(--console-muted);
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .console-form-grid {
@@ -203,8 +204,24 @@ export default {
   column-gap: 32px;
   row-gap: 8px;
   min-width: 0;
-  /* 不加 padding：外层 ConsolePanel__body 已经给了 24px，
-     再叠一层会让本卡片比相邻卡片向内缩进一倍（横向错位）。 */
+  padding: 24px;
+}
+
+.execution-grid > *,
+.execution-grid :deep(.ant-form-item-control),
+.execution-grid :deep(.ant-form-item-control-input),
+.execution-grid :deep(.ant-form-item-control-input-content) {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.execution-grid :deep(.ant-form-item-label > label) {
+  height: auto;
+  white-space: normal;
+}
+
+.execution-grid :deep(.ant-input-number) {
+  max-width: 100%;
 }
 
 .full-width {
@@ -221,6 +238,7 @@ export default {
   color: #8c8c8c;
   font-size: 12px;
   line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 768px) {
@@ -230,6 +248,7 @@ export default {
 
   .console-form-grid {
     grid-template-columns: minmax(0, 1fr);
+    padding: 16px;
   }
 }
 </style>

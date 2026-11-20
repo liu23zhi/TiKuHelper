@@ -17,11 +17,11 @@
       <span>仅导入有答案字段的题目，未导入题目保留</span>
     </label>
     <main class="import-workspace">
-    <ConsolePanel class="compileBox" title="题目编辑" description="上传 .docx，或粘贴 / 上传 .txt 文本，识别后可继续校对。">
+    <ConsolePanel class="compileBox" title="题目编辑" description="上传 .docx / .txt，或粘贴文本，识别后可继续校对。">
       <template #actions>
           <a-upload name="file" action="/sqp/api/upload" :onChange="pageEntry.bind(handleChange)" :showUploadList="false"
-            :beforeUpload="pageEntry.bind(beforeUpload)" :disabled="!canImport() || submitLoading" accept=".docx">
-            <a-button>
+            :beforeUpload="pageEntry.bind(beforeUpload)" :disabled="!canImport() || submitLoading" accept=".docx,.txt">
+            <a-button :disabled="!canImport() || submitLoading">
               <upload-outlined></upload-outlined>
               上传文件
             </a-button>
@@ -32,9 +32,6 @@
         <a-textarea :id="pageKey + '-plain-text'" :value="plainTextContent" :disabled="!canImport() || submitLoading || loading" :rows="5" placeholder="粘贴题干、选项和答案文本" v-on="{ 'update:value': pageEntry.bind(value => plainTextContent = value) }" />
         <a-space wrap>
           <a-button type="primary" :disabled="!canImport() || submitLoading || loading || !plainTextContent.trim()" :onClick="pageEntry.bind(parsePlainText)">识别粘贴文本</a-button>
-          <a-upload name="file" :showUploadList="false" :beforeUpload="pageEntry.bind(beforePlainTextUpload)" :disabled="!canImport() || submitLoading || loading" accept=".txt">
-            <a-button :disabled="!canImport() || submitLoading || loading">上传 .txt 文件</a-button>
-          </a-upload>
         </a-space>
       </section>
       <div class="info">
@@ -352,9 +349,10 @@ export default defineComponent({
     };
     const beforeUpload = file => {
       if (!canImport() || submitLoading.value || !file || typeof file !== 'object') return false;
+      if (typeof file.name === 'string' && /\.txt$/i.test(file.name)) return beforePlainTextUpload(file);
       if (typeof file.name !== 'string' || !/\.docx$/i.test(file.name) ||
         (file.size !== undefined && (typeof file.size !== 'number' || !Number.isFinite(file.size) || file.size < 0 || file.size > 16 * 1024 * 1024))) {
-        reportFailure('仅支持上传不超过 16 MiB 的 .docx 文件。'); return false;
+        reportFailure('仅支持上传不超过 16 MiB 的 .docx / .txt 文件。'); return false;
       }
       if (activeUpload && (activeUpload.file === file || (file.uid !== undefined && file.uid === activeUpload.uid))) return false;
       const owns = captureOwner();

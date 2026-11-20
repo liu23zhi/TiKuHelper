@@ -92,15 +92,41 @@ afterEach(async () => {
 })
 after(() => { axios.defaults.adapter = originalAdapter })
 
+test('new and existing rule editors expose one associated control for each field', async () => {
+  const wrapper = await openPage()
+  for (const open of [() => wrapper.vm.openCreateRule(), () => wrapper.vm.openEditRule(wrapper.vm.rules[1])]) {
+    await open(); await settle()
+    const editor = document.querySelector('.risk-rule-editor')
+    const labels = [...editor.querySelectorAll('label')]
+    assert.equal(labels.filter(label => label.textContent.trim() === '节流秒数').length, 1, 'one throttle field')
+    for (const title of ['规则类型', '规则名称', '说明', '告警级别', '阈值（元）', '节流秒数']) {
+      const label = labels.find(item => item.textContent.trim() === title)
+      assert.ok(label, title)
+      assert.ok(label.htmlFor, `${title} label links to a control`)
+      const control = document.getElementById(label.htmlFor)
+      assert.ok(control && editor.contains(control), `${title} target belongs to this editor`)
+    }
+    wrapper.vm.closeRuleEditor(); await settle()
+  }
+})
+
 test('renders editable records rather than legacy compact states and preserves the chosen detector', async () => {
   const wrapper = await openPage()
   assert.equal(wrapper.findAll('.risk-rule-row').length, 2, JSON.stringify({ calls, error: wrapper.vm.rulesError, canManage: wrapper.vm.canManage() }))
   const row = wrapper.findAll('.risk-rule-row')[1]
   assert.match(row.text(), /自定义欠费/)
   assert.match(row.text(), /自定义/)
-  assert.match(row.text(), /debt_user/)
+  assert.equal(row.find('.risk-rule-id').text(), 'custom_demo')
+  assert.equal(row.find('.risk-rule-type').text(), '类型：用户欠费')
   assert.match(row.text(), /25 元/)
   await button(row, '编辑').trigger('click'); await settle()
+  const editor = document.querySelector('.risk-rule-editor')
+  assert.ok(editor.textContent.includes('规则信息'))
+  assert.ok(editor.textContent.includes('触发条件'))
+  assert.ok(editor.textContent.includes('通知行为'))
+  assert.ok(editor.textContent.includes('达到欠费阈值时告警'))
+  assert.ok(editor.textContent.includes('默认值：10 元'))
+  assert.ok(editor.textContent.includes('0 表示同一告警主体只记录一次'))
   assert.equal(wrapper.vm.ruleDraft.type, 'debt_user')
   assert.equal(wrapper.vm.ruleDraft.throttleSeconds, 60)
   wrapper.vm.ruleDraft.name = '更新后的规则'
@@ -114,12 +140,20 @@ test('renders editable records rather than legacy compact states and preserves t
 test('creates a server-ID rule, toggles it, and deletes only after confirmation', async () => {
   const wrapper = await openPage()
   await button(wrapper, '新增规则').trigger('click'); await settle()
+  const editor = document.querySelector('.risk-rule-editor')
+  assert.ok(editor.textContent.includes('规则信息'))
+  assert.ok(editor.textContent.includes('触发条件'))
+  assert.ok(editor.textContent.includes('通知行为'))
+  assert.ok(editor.textContent.includes('用户欠费'))
+  assert.ok(editor.textContent.includes('默认值：10 元'))
+  assert.ok(editor.textContent.includes('0 表示同一告警主体只记录一次'))
   wrapper.vm.ruleDraft.name = '新增规则示例'
   wrapper.vm.ruleDraft.threshold = 45
   await wrapper.vm.saveRule(); await settle()
   const create = calls.find(item => item.method === 'post')
   assert.equal(create.body.type, 'debt_user')
   assert.equal(create.body.ruleId, undefined)
+  assert.equal(create.body.enabled, true)
   assert.deepEqual(create.body.config, {})
   let row = wrapper.findAll('.risk-rule-row').find(item => item.text().includes('custom_generated'))
   assert.ok(row)
@@ -144,6 +178,7 @@ test('validation failure keeps the rule draft and modal open', async () => {
   assert.equal(wrapper.vm.ruleEditorOpen, true)
   assert.equal(wrapper.vm.ruleDraft.name, '保留草稿')
   assert.match(wrapper.vm.rulesError, /阈值必须大于 0/)
+  assert.match(document.querySelector('.risk-rule-editor').textContent, /阈值必须大于 0/)
 })
 
 test('a pending save cannot close or overwrite the next administrator rule editor', async () => {

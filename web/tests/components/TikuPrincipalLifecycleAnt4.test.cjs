@@ -121,7 +121,7 @@ test('TP01 healthy actor retains literal filters, low-frequency fields, native s
   await click(named(w, '搜索'))
   assert.deepEqual(calls.filter(c => c.kind === 'getQuestions').at(-1).payload, { type: 4, pageSize: 10, pageNo: 0, question: '筛选词', courseName: '原始课程', source: 7, extra: '拓展筛选', onlyShowEmptyAnswer: true })
   assert.ok(w.vm.columns.some(c => c.key === 'extra') && w.vm.columns.some(c => c.key === 'source_name'))
-  await select(w); await click(named(w, '导出选中'))
+  await select(w); await click(named(w, '导出 JSON'))
   assert.equal(downloads.length, 1); assert.match(downloads[0].filename, /\.json$/)
   assert.deepEqual(JSON.parse(await blobs[0].text()), [row()])
   assert.deepEqual(revoked, ['blob:synthetic-tiku-principal-1']); assert.equal(writes().length, 0)
@@ -192,7 +192,7 @@ test('TP07 changing native edit draft then Cancel does not alias table or select
   await input(dialog().querySelector('textarea'), '未保存的题面草稿')
   assert.equal(w.vm.data[0].question, '原始题目', 'DRAFT_NOT_TABLE_ALIAS')
   assert.equal(w.vm.selectedQuestions[0].question, '原始题目', 'DRAFT_NOT_SELECTION_CACHE_ALIAS')
-  await click(modalButton('取消')); await click(named(w, '导出选中'))
+  await click(modalButton('取消')); await click(named(w, '导出 JSON'))
   assert.equal(JSON.parse(await blobs[0].text())[0].question, '原始题目'); assert.equal(writes().length, 0)
 })
 
@@ -348,7 +348,7 @@ test('TP21 healthy JSON import deny preserves no-overwrite payload; cancel remai
 
 test('TP22 old native row and export buttons in the same tick cannot resolve B state as their owner', async () => {
   const w = await page(); await select(w)
-  const oldEdit = named(w, '编辑'), oldDelete = named(w, '删除'), oldExport = named(w, '导出选中')
+  const oldEdit = named(w, '编辑'), oldDelete = named(w, '删除'), oldExport = named(w, '导出 JSON')
   user.setStoredCurrentUser(B); oldEdit.click(); oldDelete.click(); oldExport.click(); await settle()
   assert.equal(writes().length, 0, 'OLD_NATIVE_ROW_NO_WRITE'); assert.equal(swalCalls.length, 0, 'OLD_NATIVE_ROW_NO_PROMPT')
   assert.equal(w.vm.visible, false, 'OLD_NATIVE_ROW_NO_B_EDITOR'); assert.equal(downloads.length, 0)
@@ -357,7 +357,7 @@ test('TP22 old native row and export buttons in the same tick cannot resolve B s
 test('TP23 scope retirement during Blob URL creation revokes URL without cross-scope download', async () => {
   const w = await page(); await select(w)
   exportHook = () => user.setStoredCurrentUser(B)
-  await click(named(w, '导出选中'))
+  await click(named(w, '导出 JSON'))
   assert.equal(blobs.length, 1, 'export reached actual Blob URL boundary'); assert.equal(downloads.length, 0, 'RETIRED_EXPORT_NO_DOWNLOAD')
   assert.deepEqual(revoked, ['blob:synthetic-tiku-principal-1'])
   assert.equal(document.body.textContent.includes('已导出'), false)

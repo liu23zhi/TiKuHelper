@@ -29,13 +29,13 @@ require.cache[apiPath] = api
 const pagePath = path.join(web, 'src/pages/TikuComponent/index.vue')
 async function settle() { await nextTick(); await flushPromises(); await new Promise(resolve => setTimeout(resolve, 5)); await nextTick() }
 function button(w, label) {
-  const b = w.findAll('button').find(item => item.text().replace(/\s/g, '') === label)
+  const b = w.findAll('button').find(item => item.text().replace(/\s/g, '') === label.replace(/\s/g, ''))
   assert.ok(b, 'actual button ' + label)
   return b.element
 }
 async function click(node) { node.click(); await settle() }
 function complete(request, items, total = items.length) { request.resolve({ status: 200, data: { items, total } }) }
-function bulkStates(w) { return ['导出选中', '批量编辑课程名', '批量删除'].map(label => button(w, label).disabled) }
+function bulkStates(w) { return ['导出 JSON', '批量编辑课程名', '批量删除'].map(label => button(w, label).disabled) }
 function witness(name, w) {
   console.log('TIKU_LIFETIME_WITNESS ' + JSON.stringify({ name, questions: w.find('tbody').text(), selected: [...w.vm.selectedRowKeys], loading: w.vm.tabLoading, selectAllLoading: w.vm.selectAllLoading, disabled: bulkStates(w), queries: pending.map(x => x.query), writes: writes.length, nativeBrowser: false }))
 }

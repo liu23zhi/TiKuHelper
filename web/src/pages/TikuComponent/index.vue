@@ -3,16 +3,12 @@
        :onChangeCapture="questionEntry.guardNative" :onClickCapture="questionEntry.guardNative">
     <ConsolePageHeading title="题库管理" description="管理本地题目、答案和导入记录。">
       <template #actions><a-space wrap class="section-actions tiku-page-actions">
+      <a-button type="primary" :disabled="!canUseQuestions()" :onClick="questionEntry.bind(showModal, { type: 0, question: '', options: '[]', answer: '[]' }, 2)"><FormOutlined />添加</a-button>
+      <a-button :disabled="!canUseQuestions()" :onClick="questionEntry.bind(navigateToImport)"><DownloadOutlined />智能导入</a-button>
+      <a-button :disabled="!canUseQuestions()" :onClick="questionEntry.bind(fetchData)" :loading="tabLoading">刷新</a-button>
       <TableColumnSettings :model-value="selectedColumnKeys" :options="columnOptions"
         :context-key="columnScopeKey" :priority-keys="columnPriorityKeys"
         v-on="{ 'update:modelValue': questionEntry.bind(setSelectedColumnKeys), reset: questionEntry.bind(resetColumns) }" />
-      <a-button :disabled="!canUseQuestions()" :onClick="questionEntry.bind(fetchData)" :loading="tabLoading">刷新</a-button>
-      <a-button :disabled="!canUseQuestions()" :onClick="questionEntry.bind(triggerJsonImport)">JSON 导入</a-button>
-      <a-button :disabled="!canUseQuestions()" :onClick="questionEntry.bind(navigateToImport)"><DownloadOutlined />智能导入</a-button>
-      <a-button :disabled="!canUseQuestions() || !selectedRowKeys.length" :onClick="questionEntry.bind(handleExportSelected)">导出选中</a-button>
-      <a-button :disabled="!canUseQuestions() || !selectedRowKeys.length" :onClick="questionEntry.bind(openBulkCourseModal)">批量编辑课程名</a-button>
-      <a-button danger :disabled="!canUseQuestions() || !selectedRowKeys.length" :onClick="questionEntry.bind(handleDeleteSelected)">批量删除</a-button>
-      <a-button type="primary" :disabled="!canUseQuestions()" :onClick="questionEntry.bind(showModal, { type: 0, question: '', options: '[]', answer: '[]' }, 2)"><FormOutlined />添加</a-button>
       </a-space>
       </template>
     </ConsolePageHeading>
@@ -25,7 +21,8 @@
     <a-alert v-if="!canUseQuestions()" type="warning" show-icon
              message="当前身份无题库管理权限，请使用管理员账号登录。" />
 
-    <section class="console-panel filter-panel">
+    <section class="console-panel filter-panel" :aria-labelledby="fieldId('filter-title')">
+      <div class="section-heading filter-heading"><h2 :id="fieldId('filter-title')">筛选题目</h2></div>
       <a-form layout="inline" class="filter-form" :onFinish="questionEntry.bind(onSearch)">
         <a-form-item label="题型" :html-for="fieldId('filter-type')">
           <a-select :id="fieldId('filter-type')" :disabled="!canUseQuestions()" :value="typeValue" v-on="{ 'update:value': questionEntry.bind(value => typeValue = value) }" show-search allow-clear placeholder="请选择" :options="typeList"
@@ -50,25 +47,6 @@
       </a-form>
     </section>
 
-    <ConsolePanel v-if="canUseQuestions()" class="asyncTaskPanel" title="表格导入 / 导出任务" description="上传 CSV / Excel 由服务端异步处理，也可提交题库 CSV 导出；完成后可下载结果或失败报告。">
-      <div class="asyncTaskRow">
-        <a-upload name="file" :customRequest="questionEntry.bind(submitAsyncImport)" :showUploadList="false" :beforeUpload="questionEntry.bind(beforeAsyncImport)" :disabled="asyncBusy" accept=".csv,.json,.xlsx,.xls">
-          <a-button :disabled="asyncBusy">上传表格并异步导入</a-button>
-        </a-upload>
-        <a-button :onClick="questionEntry.bind(submitAsyncExport)" :loading="asyncBusy" :disabled="asyncBusy">异步导出题库 CSV</a-button>
-        <a-button :onClick="questionEntry.bind(refreshAsyncTasks)" :loading="asyncTaskLoading" :disabled="asyncBusy || asyncTaskLoading">刷新任务列表</a-button>
-        <label class="asyncTaskDryRun"><input type="checkbox" :checked="asyncDryRun" :disabled="asyncBusy" :onChange="questionEntry.bind(setAsyncDryRun)" /><span>仅预览（dryRun：只校验不写库）</span></label>
-      </div>
-      <p class="asyncTaskLimit">单批导入上限 {{ asyncImportLimit }} 行，单次导出上限 {{ asyncExportLimit }} 行（以后端校验为准）。</p>
-      <a-alert v-if="asyncNotice" type="info" show-icon class="asyncTaskAlert" :message="asyncNotice" />
-      <a-alert v-if="asyncError" type="error" show-icon class="asyncTaskAlert" :message="asyncError" />
-      <table v-if="asyncTasks.length" class="asyncTaskTable" aria-label="题库异步任务列表">
-        <thead><tr><th scope="col">任务</th><th scope="col">类型</th><th scope="col">状态</th><th scope="col">结果</th></tr></thead>
-        <tbody><tr v-for="task in asyncTasks" :key="task.taskId"><td class="asyncTaskId">{{ task.taskId }}</td><td>{{ task.type === 'import' ? (task.dryRun ? '导入预览' : '导入') : '导出' }}</td><td>{{ describeAsyncTask(task) }}</td><td><a v-if="asyncDownloadUrl(task)" :href="asyncDownloadUrl(task)">下载结果</a><a v-if="asyncErrorUrl(task)" :href="asyncErrorUrl(task)" class="asyncTaskErrorLink">失败行报告</a><span v-if="!asyncDownloadUrl(task) && !asyncErrorUrl(task)">—</span></td></tr></tbody>
-      </table>
-      <a-empty v-else-if="!asyncBusy && !asyncError" description="暂无异步任务" />
-    </ConsolePanel>
-
     <a-layout class="tiku-layout">
     <a-layout-content>
       <a-card :bordered="false" class="console-card console-panel tiku-table-card" :bodyStyle="style">
@@ -82,6 +60,7 @@
           </template>
           <RequestFailureAlert v-if="listFailure" :failure="listFailure" message="获取题目列表失败"
             :retryable="true" :busy="tabLoading" :context-key="listFailureContext" :is-current="isCurrentListFailure" :onRetry="questionEntry.bind(guardedRetryListFailure)" />
+          <div class="question-bulk-actions" aria-label="题目批量操作">
           <a-alert
             v-if="page.total"
             type="info"
@@ -127,6 +106,12 @@
               </div>
             </template>
           </a-alert>
+          <div class="bulk-action-buttons">
+            <a-button :disabled="!canUseQuestions() || !selectedRowKeys.length" :onClick="questionEntry.bind(handleExportSelected)">导出 JSON</a-button>
+            <a-button :disabled="!canUseQuestions() || !selectedRowKeys.length" :onClick="questionEntry.bind(openBulkCourseModal)">批量编辑课程名</a-button>
+            <a-button danger :disabled="!canUseQuestions() || !selectedRowKeys.length" :onClick="questionEntry.bind(handleDeleteSelected)">批量删除</a-button>
+          </div>
+          </div>
           <ConsoleTableShell label="题库管理">
           <a-table :columns="visibleColumns" :data-source="data" :pagination="false" :row-key="record => record.id" table-layout="fixed"
                    :loading="tabLoading" :scroll="{ x: tableScrollX }" :row-selection="rowSelection">
@@ -281,6 +266,35 @@
       </a-modal>
     </a-layout-content>
     </a-layout>
+    <ConsolePanel v-if="canUseQuestions()" class="asyncTaskPanel" title="题库导入 / 导出" description="JSON 导出使用上方选中题目；CSV / Excel 表格通过异步任务处理。">
+      <section class="transfer-file-tools" aria-label="题库文件导入导出">
+        <h3>文件导入 / 导出</h3>
+        <div class="asyncTaskRow">
+          <a-button :disabled="!canUseQuestions()" :onClick="questionEntry.bind(triggerJsonImport)">JSON 导入</a-button>
+          <a-upload name="file" :customRequest="questionEntry.bind(submitAsyncImport)" :showUploadList="false" :beforeUpload="questionEntry.bind(beforeAsyncImport)" :disabled="asyncBusy" accept=".csv,.json,.xlsx,.xls">
+            <a-button :disabled="asyncBusy">上传表格并异步导入</a-button>
+          </a-upload>
+          <a-button :onClick="questionEntry.bind(submitAsyncExport)" :loading="asyncBusy" :disabled="asyncBusy">异步导出题库 CSV</a-button>
+          <label class="asyncTaskDryRun"><input type="checkbox" :checked="asyncDryRun" :disabled="asyncBusy" :onChange="questionEntry.bind(setAsyncDryRun)" /><span>仅预览（dryRun：只校验不写库）</span></label>
+        </div>
+        <p class="asyncTaskLimit">单批导入上限 {{ asyncImportLimit }} 行，单次导出上限 {{ asyncExportLimit }} 行（以后端校验为准）。</p>
+      </section>
+      <section class="transfer-task-history" aria-label="题库异步任务">
+        <div class="asyncTaskHistoryHeading">
+          <h3>异步任务</h3>
+          <a-button :onClick="questionEntry.bind(refreshAsyncTasks)" :loading="asyncTaskLoading" :disabled="asyncBusy || asyncTaskLoading">刷新任务列表</a-button>
+        </div>
+        <a-alert v-if="asyncNotice" type="info" show-icon class="asyncTaskAlert" :message="asyncNotice" />
+        <a-alert v-if="asyncError" type="error" show-icon class="asyncTaskAlert" :message="asyncError" />
+        <div class="asyncTaskTableScroll">
+          <table v-if="asyncTasks.length" class="asyncTaskTable" aria-label="题库异步任务列表">
+            <thead><tr><th scope="col">任务</th><th scope="col">类型</th><th scope="col">状态</th><th scope="col">结果</th></tr></thead>
+            <tbody><tr v-for="task in asyncTasks" :key="task.taskId"><td class="asyncTaskId">{{ task.taskId }}</td><td>{{ task.type === 'import' ? (task.dryRun ? '导入预览' : '导入') : '导出' }}</td><td>{{ describeAsyncTask(task) }}</td><td><a v-if="asyncDownloadUrl(task)" :href="asyncDownloadUrl(task)">下载结果</a><a v-if="asyncErrorUrl(task)" :href="asyncErrorUrl(task)" class="asyncTaskErrorLink">失败行报告</a><span v-if="!asyncDownloadUrl(task) && !asyncErrorUrl(task)">—</span></td></tr></tbody>
+          </table>
+        </div>
+        <a-empty v-if="!asyncTasks.length && !asyncBusy && !asyncError" description="暂无异步任务" />
+      </section>
+    </ConsolePanel>
   </div>
 </template>
 
@@ -1066,27 +1080,31 @@ export default defineComponent({
 }
 
 .tiku-page-actions { justify-content: flex-end; }
-.asyncTaskPanel { margin-bottom: 16px; }
+.filter-heading { margin-bottom: 16px; }
+.filter-heading h2 { margin: 0; font-size: 16px; color: var(--console-text); }
+.asyncTaskPanel { margin-top: 20px; }
+.transfer-file-tools h3,
+.asyncTaskHistoryHeading h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--console-text); }
+.transfer-file-tools h3 { margin-bottom: 12px; }
+.transfer-task-history { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--console-border); }
+.asyncTaskHistoryHeading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
 .asyncTaskRow { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
 .asyncTaskDryRun { display: inline-flex; align-items: center; gap: 8px; color: var(--console-muted); font-size: 13px; }
 .asyncTaskDryRun input { accent-color: var(--console-primary); }
 .asyncTaskLimit { margin: 12px 0 0; color: var(--console-muted); font-size: 13px; line-height: 1.7; }
 .asyncTaskAlert { margin-top: 12px; }
+.asyncTaskTableScroll { min-width: 0; overflow-x: auto; }
 .asyncTaskTable { width: 100%; margin-top: 12px; border-collapse: collapse; font-size: 13px; }
 .asyncTaskTable th, .asyncTaskTable td { padding: 8px; text-align: left; border-bottom: 1px solid var(--console-border); }
 .asyncTaskTable th { color: var(--console-muted); font-weight: 600; }
 .asyncTaskId { font-family: monospace; overflow-wrap: anywhere; }
 .asyncTaskErrorLink { margin-left: 8px; }
 
+.filter-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 16px; }
+.filter-form :deep(.ant-form-item) { min-width: 0; margin: 0; }
+.filter-form :deep(.ant-form-item-control) { min-width: 0; }
 .filter-form :deep(.ant-input),
-.filter-form :deep(.ant-select) {
-  width: 220px;
-  max-width: 100%;
-}
-
-.filter-form :deep(.ant-select:first-child) {
-  width: 180px;
-}
+.filter-form :deep(.ant-select) { width: 100%; max-width: 100%; }
 
 .tiku-layout,
 .tiku-layout :deep(.ant-layout-content) {
@@ -1095,9 +1113,9 @@ export default defineComponent({
   background: transparent;
 }
 
-.selection-alert {
-  margin: 0 0 16px;
-}
+.question-bulk-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; padding: 12px; border: 1px solid var(--console-border); border-radius: 8px; background: var(--console-surface-secondary, var(--console-surface)); }
+.selection-alert { flex: 1 1 440px; margin: 0; padding: 0; border: 0; background: transparent; }
+.bulk-action-buttons { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 
 .selection-alert-content {
   display: flex;
@@ -1136,6 +1154,10 @@ export default defineComponent({
 .question-detail-raw pre { margin-top: 8px; }
 
 @media (max-width: 640px) {
+  .filter-form { grid-template-columns: minmax(0, 1fr); }
+  .selection-alert { flex-basis: 100%; }
+  .selection-alert-content { gap: 4px; }
+  .bulk-action-buttons { width: 100%; }
   .filter-form,
   .filter-form :deep(.ant-form-item),
   .filter-form :deep(.ant-input),

@@ -88,6 +88,14 @@ afterEach(async () => {
 
 test('SMART_IMPORT existing native Upload beforeUpload and done parse retain exact file CRC and paper', async () => {
   const w = await mountPage()
+  const uploaders = w.findAllComponents(Antd.Upload)
+  assert.equal(uploaders.length, 1, 'ONE_SHARED_FILE_UPLOADER')
+  assert.equal(uploaders[0].props('accept'), '.docx,.txt')
+  assert.ok(w.find('textarea').exists(), 'PASTE_REMAINS_AVAILABLE')
+  assert.ok(w.find('.compileContent').exists() === false, 'CORRECTION_AREA_REMAINS_AVAILABLE')
+  assert.equal(await callback(uploaders[0], 'beforeUpload')({ name: 'questions.txt', size: 18, text: async () => '题目\n答案：A' }), false)
+  await settle()
+  assert.equal(w.vm.plainTextContent, '题目\n答案：A')
   const native = await doneUpload(w)
   assert.notEqual(native.accepted, false); assert.equal(w.vm.loading, false)
   assert.equal(w.vm.UploadId, 'SYNTHETIC_CRC_A'); assert.deepEqual(JSON.parse(JSON.stringify(w.vm.data)), paper())
@@ -133,11 +141,21 @@ test('SMART_IMPORT a newer Word upload retires a delayed .txt read', async () =>
   let resolveText
   w.vm.beforePlainTextUpload({ name: 'SYNTHETIC_DELAYED.txt', size: 25, text: () => new Promise(resolve => { resolveText = resolve }) })
   await settle()
+  assert.equal(w.findComponent(Antd.Upload).props('disabled'), false, 'WORD_REPLACEMENT_REMAINS_AVAILABLE_WHILE_TXT_READS')
+  assert.equal(button(w, '上传文件').element.disabled, false)
   const native = await beginUpload(w, 'NEWER_WORD')
   assert.notEqual(native.accepted, false)
   resolveText('SYNTHETIC_OLDER_TEXT'); await settle()
   assert.equal(calls.reparse.length, 0)
   assert.equal(w.vm.loading, true, 'the newer upload keeps its loading ownership')
+})
+
+test('SMART_IMPORT unsupported file feedback names both supported formats and blocks transport', async () => {
+  const w = await mountPage()
+  assert.equal(uploadCallbacks(w).before({ name: 'questions.pdf', size: 18 }), false)
+  assert.ok(notices.some(item => item.kind === 'error' && item.text.includes('.docx') && item.text.includes('.txt')))
+  assert.equal(calls.parse.length, 0)
+  assert.equal(calls.reparse.length, 0)
 })
 
 test('SMART_IMPORT downloads missing-answer and failed-request questions as a scoped text report', async () => {
