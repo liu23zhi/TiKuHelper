@@ -974,6 +974,7 @@ import {
   ticketWizardInitialStep,
   ticketWizardNextStep,
   TICKET_ACCOUNT_ISSUE_OPTIONS,
+  DEFAULT_TICKET_ACCOUNT_ISSUE,
   TICKET_CREATE_TYPE_ACCOUNT,
   TICKET_CREATE_TYPE_GENERAL,
   TICKET_CREATE_TYPE_OPTIONS,
@@ -1131,7 +1132,7 @@ const draft = reactive({
   // 与 draftAttachments 分开：那是工单截图，这是退款收款凭据。
   refundPayoutQrAttachmentId: null,
   // account 专用：登录异常 / 绑定问题 / 封禁申诉（只做标题前缀，不是后端字段）。
-  issueType: "",
+  issueType: DEFAULT_TICKET_ACCOUNT_ISSUE,
 });
 const createValidation = shallowRef(null);
 const createValidationErrorId = field => `${detailStatusId}-create-${field}-error`;
@@ -1480,7 +1481,7 @@ function clearOwned() {
   listLoading.value = detailLoading.value = createLoading.value = replyLoading.value = statusSaving.value = configSaving.value = configTesting.value = retryLoading.value = configLoading.value = false;
   createVisible.value = detailVisible.value = configLoaded.value = createSaved.value = configDirty.value = false;
   detailTicket.value = null; messages.value = []; attachments.value = []; notification.value = null; replyBody.value = ""; detailStatus.value = ""; statusWasChosen.value = false;
-  draft.ticketType = TICKET_CREATE_TYPE_GENERAL; draft.subject = ""; draft.body = ""; draft.requestedYuan = ""; draft.reason = ""; draft.refundOrderId = undefined; draft.issueType = ""; errorMessage.value = "";
+  draft.ticketType = TICKET_CREATE_TYPE_GENERAL; draft.subject = ""; draft.body = ""; draft.requestedYuan = ""; draft.reason = ""; draft.refundOrderId = undefined; draft.issueType = DEFAULT_TICKET_ACCOUNT_ISSUE; errorMessage.value = "";
   createStep.value = ticketWizardInitialStep();
   draftAttachments.value = []; replyAttachments.value = []; uploadBusy.value = false;
   Object.assign(notificationConfig, { enabled: false, webhookUrl: "", mentionedList: "", configured: false, clearWebhook: false });
@@ -1594,7 +1595,7 @@ watch([() => detailTicket.value?.id, () => notification.value?.id, () => notific
 watch([replyBody, () => detailTicket.value?.id, () => isAdmin.value && statusWasChosen.value ? detailStatus.value : undefined], retireReplyDraft, { flush: "sync" });
 watch([() => draft.subject, () => draft.body, () => draft.requestedYuan, () => draft.reason, () => draft.issueType], retireStaleCreateValidation, { flush: "sync" });
 watch(createNeedsRefundFields, needs => { if (needs) void loadRefundSummary(); }, { flush: "sync" });
-watch(createVisible, next => { if (!next) { resetRefundDraft(); payoutQrBusy.value = false; retireCreateValidation(); createVersion += 1; createLoading.value = false; createSaved.value = false; draft.ticketType = TICKET_CREATE_TYPE_GENERAL; draft.subject = ""; draft.body = ""; draft.requestedYuan = ""; draft.reason = ""; draft.refundOrderId = undefined; draft.issueType = ""; createStep.value = ticketWizardInitialStep(); } }, { flush: "sync" });
+watch(createVisible, next => { if (!next) { resetRefundDraft(); payoutQrBusy.value = false; retireCreateValidation(); createVersion += 1; createLoading.value = false; createSaved.value = false; draft.ticketType = TICKET_CREATE_TYPE_GENERAL; draft.subject = ""; draft.body = ""; draft.requestedYuan = ""; draft.reason = ""; draft.refundOrderId = undefined; draft.issueType = DEFAULT_TICKET_ACCOUNT_ISSUE; createStep.value = ticketWizardInitialStep(); } }, { flush: "sync" });
 watch(isAdmin, () => { createVisible.value = false; clearOwned(); reloadOwned(); }, { flush: "sync" });
 // Focus leases also retire for same-id non-admin role ABA and unexpected routes.
 watch(() => String(currentUser.value?.role ?? ""), retireDetailFocus, { flush: "sync" });
@@ -1724,7 +1725,7 @@ function openCreate() {
   // 收款码记忆由后端和本机设备密钥恢复。
   // 用户下次发起退款会自动带出上次那张，避免每次重传。
   // 真正的清除入口是图片左上角的删除按钮。
-  draft.issueType = "";
+  draft.issueType = DEFAULT_TICKET_ACCOUNT_ISSUE;
   createStep.value = ticketWizardInitialStep();
   // 选择人工退款时，收款码组件查询后端并尝试本机设备验证。
   resetRefundDraft();

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   TICKET_ACCOUNT_ISSUE_OPTIONS,
+  DEFAULT_TICKET_ACCOUNT_ISSUE,
   TICKET_CREATE_FORBIDDEN_TYPES,
   TICKET_CREATE_TYPE_ACCOUNT,
   TICKET_CREATE_TYPE_ACCOUNT_CLOSURE,
@@ -158,15 +159,16 @@ test("只有退款类型会切换到退款专属字段", () => {
 test("account 的问题类型是三项固定枚举，不是自由文本（B2-6）", () => {
   assert.deepEqual(
     TICKET_ACCOUNT_ISSUE_OPTIONS.map((item) => item.value),
-    ["login", "binding", "banned"],
+    ["login", "binding", "banned", "other"],
   );
   assert.deepEqual(
     TICKET_ACCOUNT_ISSUE_OPTIONS.map((item) => item.label),
-    ["登录异常", "绑定问题", "封禁申诉"],
+    ["登录异常", "绑定问题", "封禁申诉", "其它问题"],
   );
+  assert.equal(DEFAULT_TICKET_ACCOUNT_ISSUE, "login");
   assert.equal(ticketAccountIssueLabel("login"), "登录异常");
   assert.equal(ticketAccountIssueLabel(" BANNED "), "封禁申诉");
-  assert.equal(ticketAccountIssueLabel("other"), "");
+  assert.equal(ticketAccountIssueLabel("other"), "其它问题");
   assert.equal(ticketAccountIssueLabel(""), "");
 });
 
@@ -269,6 +271,14 @@ test("account 类型的标题带固定前缀、正文是用户说明、不带退
   assert.equal("refundReason" in payload, false);
   // 问题类型不进 payload（后端没有这个字段）。
   assert.equal("issueType" in payload, false);
+
+  const other = buildTicketCreatePayload({
+    ticketType: TICKET_CREATE_TYPE_ACCOUNT,
+    issueType: "other",
+    body: "其它账号问题说明",
+  });
+  assert.equal(other.validation.message, "");
+  assert.equal(other.payload.subject, "【其它问题】账号问题");
 });
 
 test("account_closure 类型的标题固定生成、用户只填原因（B2-2）", () => {
@@ -362,7 +372,8 @@ test("合法退款表单完全通过校验", () => {
 
 test("account 校验：问题类型必选、说明必填（B2-6）", () => {
   assert.equal(getAccountDraftValidation({ issueType: "", body: "说明" }).field, "issueType");
-  assert.equal(getAccountDraftValidation({ issueType: "other", body: "说明" }).field, "issueType");
+  assert.equal(getAccountDraftValidation({ issueType: "unknown", body: "说明" }).field, "issueType");
+  assert.equal(getAccountDraftValidation({ issueType: "other", body: "说明" }).message, "");
   assert.equal(getAccountDraftValidation({ issueType: "login", body: "   " }).field, "body");
   assert.equal(getAccountDraftValidation({ issueType: "login", body: "说明" }).message, "");
   assert.equal(

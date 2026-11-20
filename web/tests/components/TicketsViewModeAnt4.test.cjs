@@ -162,23 +162,25 @@ test('管理员在工单反馈自助视图也隔离提醒，而工单管理保�
   assert.equal([...document.querySelectorAll('.notification-alert')].filter(visible).length, 1)
 })
 
-test('账号问题可以选择问题类型并更新受控 draft', async () => {
+test('账号问题默认选中登录异常，且可以选择其它问题', async () => {
   const { wrapper } = await openPage(user)
   await click(button('发起工单'))
   await click(document.querySelector('[data-ticket-type-option="account"]'))
   await click(button('下一步'))
   const form = [...document.querySelectorAll('[data-ticket-step="form"]')].find(visible)
   assert.ok(form)
+  assert.equal(state(wrapper, 'draft').issueType, 'login')
+  assert.match(compact(form.querySelector('.ant-select-selection-item')?.textContent), /登录异常/)
   const select = form.querySelector('input[role="combobox"]')
   assert.ok(select)
   select.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
   select.click()
   await settle()
-  const option = [...document.querySelectorAll('.ant-select-item-option')].find(node => visible(node) && compact(node.textContent) === '登录异常')
+  const option = [...document.querySelectorAll('.ant-select-item-option')].find(node => visible(node) && compact(node.textContent) === '其它问题')
   assert.ok(option)
   option.click()
   await settle()
-  assert.equal(state(wrapper, 'draft').issueType, 'login')
+  assert.equal(state(wrapper, 'draft').issueType, 'other')
 })
 
 test('管理员切换管理路由关闭创建并使旧列表、创建请求和回调失效', async () => {
