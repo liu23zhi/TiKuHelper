@@ -8,12 +8,12 @@ package service
 //
 //	① 表存在、有可用档位   → 只读表
 //	② 表存在、无可用档位   → **空列表 = 不赠送**（空表 / 全部停用 / 行全非法）
-//	③ 表**不存在**         → 回退常量六档（新库首启不能停发）
+//	③ 表**不存在**         → 空列表 = 不赠送（配置不可用）
 //
-// 判据④（变异）不在测试里，而由外部变异验证完成：把 ②③ 重新合并成一个分支后，
-// 至少 ① 或 ③ 必有一条变红。
+// 读取失败也必须按不赠送处理，避免配置故障恢复默认六档。
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -143,59 +143,62 @@ func TestRechargePromotionTierEmptyTableMeansNoGift(t *testing.T) {
 	}
 }
 
-// TestRechargePromotionTierMissingTableStillGrants 判据②：表不存在 → 仍赠金。
-//
-// 与判据①互斥：新库首启（未迁移）不能变成「上线即停发」。
-// 变异把①②重新合并成一个分支时，这条与上一条必有一条变红 —— 这正是本项的存在理由。
-func TestRechargePromotionTierMissingTableStillGrants(t *testing.T) {
+// TestRechargePromotionTierMissingTableMeansNoGift 表不存在时同样不得自动赠金。
+func TestRechargePromotionTierMissingTableMeansNoGift(t *testing.T) {
 	db := newRechargeTierTestDB(t)
 	seedLevelUser(t, db, 31)
 	setRechargePromotionEnabled(t, db, "true")
 	dropRechargeTierTable(t, db)
 
-	// ②-1 表不存在 → 回退常量六档，逐条比对数值（且**不依赖** DefaultRechargePromotionTiers 顺序漂移）。
+	// 缺表意味着没有可确认的赠送配置，不能恢复常量六档。
 	tiers := RechargePromotionTiersWithDB(db)
-	if len(tiers) != len(DefaultRechargePromotionTiers) {
-		t.Fatalf("missing table must fall back to %d constants, got %d: %+v",
-			len(DefaultRechargePromotionTiers), len(tiers), tiers)
-	}
-	for index, want := range DefaultRechargePromotionTiers {
-		if tiers[index].Threshold != want.Threshold || tiers[index].Rate != want.Rate {
-			t.Fatalf("fallback tier[%d] = %+v, want %+v", index, tiers[index], want)
-		}
+	if len(tiers) != 0 {
+		t.Fatalf("missing table must yield no tiers, got %+v", tiers)
 	}
 
-	// ②-2 选档结果与常量版逐条一致（不只是切片长得一样）。
+	// 所有金额均不能命中档位。
 	for _, amount := range []float64{8.8, 28, 100, 288, 500, 888, 1688, 2000} {
-		wantTier, wantOK := SelectRechargePromotionTier(amount)
 		gotTier, gotOK := SelectRechargePromotionTierWithDB(db, amount)
-		if wantOK != gotOK || wantTier != gotTier {
-			t.Fatalf("amount %v: fallback %+v/%v != constant %+v/%v", amount, gotTier, gotOK, wantTier, wantOK)
+		if gotOK {
+			t.Fatalf("amount %v: missing table must not match, got %+v", amount, gotTier)
 		}
 	}
 
-	// ②-3 端到端：真的会赠金。1688 档常量比例 200% → 送 3376。
+	// 端到端不发赠金，也不产生赠送账本。
 	grant, giftBalance, grantRows := grantForAmount(t, db, 31, "tier-missing", 1688)
-	if grant == nil {
-		t.Fatal("missing table must still grant (new installs must not silently stop giving)")
-	}
-	if grant.Threshold != 1688 || grant.Rate != 2 || grant.GiftAmount != 3376 {
-		t.Fatalf("grant snapshot = %+v, want threshold 1688 rate 2 gift 3376", grant)
-	}
-	if giftBalance != 3376 {
-		t.Fatalf("gift_balance = %v, want 3376", giftBalance)
-	}
-	if grantRows != 1 {
-		t.Fatalf("expected 1 grant row, got %d", grantRows)
+	if grant != nil || giftBalance != 0 || grantRows != 0 {
+		t.Fatalf("missing table must not grant: grant=%+v gift=%v rows=%d", grant, giftBalance, grantRows)
 	}
 
-	// ②-4 来源显示 default —— 此时「正在使用系统默认六档」是**真话**。
+	// 管理端明确显示配置不可用，不能宣称使用默认档位。
 	list, err := ListRechargePromotionTierRulesWithDB(db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if list.Source != "default" {
-		t.Fatalf("source = %q, want %q", list.Source, "default")
+	if list.Source != "unavailable" {
+		t.Fatalf("source = %q, want %q", list.Source, "unavailable")
+	}
+}
+
+func TestRechargePromotionTierReadFailureMeansNoGift(t *testing.T) {
+	db := newRechargeTierTestDB(t)
+	seedLevelUser(t, db, 35)
+	if _, err := ReplaceRechargePromotionTierRulesWithDB(db, []RechargePromotionTierInput{{Threshold: 10, Rate: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Callback().Query().Before("gorm:query").Register("test:tier-read-failure", func(tx *gorm.DB) {
+		if tx.Statement.Table == entity.TableNameRechargePromotionTierRule {
+			tx.AddError(errors.New("synthetic tier query failure"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if tiers := RechargePromotionTiersWithDB(db); len(tiers) != 0 {
+		t.Fatalf("unreadable configuration must not fall back to constants: %+v", tiers)
+	}
+	grant, giftBalance, grantRows := grantForAmount(t, db, 35, "tier-read-failure", 1688)
+	if grant != nil || giftBalance != 0 || grantRows != 0 {
+		t.Fatalf("unreadable configuration must not grant: grant=%+v gift=%v rows=%d", grant, giftBalance, grantRows)
 	}
 }
 
@@ -276,23 +279,19 @@ func TestRechargePromotionTierRowsWithNonPositiveValuesCountAsEmpty(t *testing.T
 	}
 }
 
-// TestRechargePromotionTierEmptyIsNotMissing 是本项最重要的一条「对照」用例：
-// 在**同一个测试函数**里先看「表不存在 → 六档」，删表后重建成空表再看「→ 空」。
-//
-// 作用：任何把两态合并的实现，无论合并到哪一边，都必然在这条里红一次。
-// 只写单态用例时，实现可以「永远回退常量」或「永远返回空」而各自过一半的用例。
-func TestRechargePromotionTierEmptyIsNotMissing(t *testing.T) {
+// TestRechargePromotionTierNeedsExplicitConfiguration 从缺表到空表均不赠送，显式配置后才赠送。
+func TestRechargePromotionTierNeedsExplicitConfiguration(t *testing.T) {
 	db := newRechargeTierTestDB(t)
 	seedLevelUser(t, db, 34)
 	setRechargePromotionEnabled(t, db, "true")
 
-	// 阶段 A：表不存在 → 六档 + 赠金。
+	// 阶段 A：表不存在 → 无档位 + 不赠金。
 	dropRechargeTierTable(t, db)
-	if got := len(RechargePromotionTiersWithDB(db)); got != len(DefaultRechargePromotionTiers) {
-		t.Fatalf("stage A (missing table): tiers = %d, want %d constants", got, len(DefaultRechargePromotionTiers))
+	if got := len(RechargePromotionTiersWithDB(db)); got != 0 {
+		t.Fatalf("stage A (missing table): tiers = %d, want 0", got)
 	}
-	if grant, _, _ := grantForAmount(t, db, 34, "tier-stage-a", 1688); grant == nil {
-		t.Fatal("stage A (missing table): must grant")
+	if grant, _, _ := grantForAmount(t, db, 34, "tier-stage-a", 1688); grant != nil {
+		t.Fatalf("stage A (missing table): must not grant, got %+v", grant)
 	}
 
 	// 阶段 B：表建回来但为空 → 空档位 + 不赠金。

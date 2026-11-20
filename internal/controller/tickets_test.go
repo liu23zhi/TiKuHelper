@@ -23,7 +23,7 @@ func newTicketControllerTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&entity.Ticket{}, &entity.TicketMessage{}, &entity.TicketNotification{}, &entity.SystemSetting{}); err != nil {
+	if err := db.AutoMigrate(&entity.User{}, &entity.Ticket{}, &entity.TicketMessage{}, &entity.TicketNotification{}, &entity.SystemSetting{}); err != nil {
 		t.Fatal(err)
 	}
 	sqlDB, err := db.DB()
@@ -177,9 +177,15 @@ func TestTicketControllerCreateReplyAndPermissionIsolation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newTicketControllerTestDB(t)
 	withTicketControllerDB(t, db)
-	user := &entity.User{ID: 1, Username: "alice", Role: "user"}
+	lastLogin := time.Date(2026, 11, 20, 20, 0, 0, 0, time.UTC)
+	user := &entity.User{ID: 1, Username: "alice", Nickname: "普通用户aa", Role: "user", CreatedAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC), LastLoginAt: &lastLogin}
 	other := &entity.User{ID: 2, Username: "bob", Role: "user"}
 	admin := &entity.User{ID: 3, Username: "admin", Role: "admin"}
+	for _, actor := range []*entity.User{user, other, admin} {
+		if err := db.Create(actor).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
 	created := performTicketControllerRequest(t, user, http.MethodPost, "/tickets", `{"subject":"中文问题","body":"无法登录"}`, nil, CreateTicket)
 	if created.Code != http.StatusOK {
 		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
@@ -238,10 +244,33 @@ func TestTicketControllerCreateReplyAndPermissionIsolation(t *testing.T) {
 	if strings.Contains(read.Body.String(), "notification") || strings.Contains(read.Body.String(), "admin-only failure") {
 		t.Fatalf("notification leaked: %s", read.Body.String())
 	}
-	adminTicket, err := service.CreateTicketWithDB(db, admin, service.CreateTicketInput{Subject: "管理员自助反馈", Body: "自助反馈正文"})
-	if err != nil {
+	if err := json.Unmarshal(read.Body.Bytes(), &detail); err != nil {
 		t.Fatal(err)
 	}
+	if message := detail.Data.Messages[1]; message.AuthorName != "管理员" || message.UserID != 0 {
+		t.Fatalf("feedback API leaked administrator identity: %+v", message)
+	}
+	userManagement := performTicketControllerRequest(t, admin, http.MethodGet, "/tickets/id?scope=admin", "", params, TicketDetail)
+	var userManagementDetail struct {
+		Data service.TicketDetail `json:"data"`
+	}
+	if err := json.Unmarshal(userManagement.Body.Bytes(), &userManagementDetail); err != nil {
+		t.Fatal(err)
+	}
+	if userManagement.Code != http.StatusOK || userManagementDetail.Data.User == nil || userManagementDetail.Data.User.Nickname != "普通用户aa" || userManagementDetail.Data.User.LastLoginAt == nil {
+		t.Fatalf("admin management view did not include feedback user summary: %s", userManagement.Body.String())
+	}
+	adminCreated := performTicketControllerRequest(t, admin, http.MethodPost, "/tickets", `{"subject":"管理员自助反馈","body":"自助反馈正文"}`, nil, CreateTicket)
+	var adminCreatedDetail struct {
+		Data service.TicketDetail `json:"data"`
+	}
+	if err := json.Unmarshal(adminCreated.Body.Bytes(), &adminCreatedDetail); err != nil {
+		t.Fatal(err)
+	}
+	if adminCreated.Code != http.StatusOK || adminCreatedDetail.Data.User != nil || adminCreatedDetail.Data.Notification != nil || len(adminCreatedDetail.Data.Messages) != 1 || adminCreatedDetail.Data.Messages[0].AuthorRole != "user" {
+		t.Fatalf("feedback creation must only return self-view data: %s", adminCreated.Body.String())
+	}
+	adminTicket := adminCreatedDetail.Data
 	adminParams := gin.Params{{Key: "id", Value: strconv.FormatInt(adminTicket.Ticket.ID, 10)}}
 	if err := db.Create(&entity.TicketNotification{TicketID: adminTicket.Ticket.ID, EventType: "new_ticket", Status: "failed", LastError: "admin-self-only failure", Payload: "hidden"}).Error; err != nil {
 		t.Fatal(err)
@@ -255,8 +284,17 @@ func TestTicketControllerCreateReplyAndPermissionIsolation(t *testing.T) {
 		t.Fatalf("self-view reply exposed notification to admin: status=%d body=%s", adminSelfReply.Code, adminSelfReply.Body.String())
 	}
 	adminManagement := performTicketControllerRequest(t, admin, http.MethodGet, "/tickets/id?scope=admin", "", adminParams, TicketDetail)
-	if adminManagement.Code != http.StatusOK || !strings.Contains(adminManagement.Body.String(), "admin-self-only failure") {
+	if adminManagement.Code != http.StatusOK || !strings.Contains(adminManagement.Body.String(), `"notification":`) {
 		t.Fatalf("admin management view did not include notification: status=%d body=%s", adminManagement.Code, adminManagement.Body.String())
+	}
+	if strings.Contains(adminSelf.Body.String(), `"user":`) || strings.Contains(adminSelfReply.Body.String(), `"user":`) {
+		t.Fatalf("feedback view leaked management-only user summary: %s %s", adminSelf.Body.String(), adminSelfReply.Body.String())
+	}
+	if err := json.Unmarshal(adminSelfReply.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if reply := detail.Data.Messages[len(detail.Data.Messages)-1]; reply.AuthorRole != "user" || reply.UserID != admin.ID {
+		t.Fatalf("administrator feedback reply must act as user: %+v", reply)
 	}
 }
 

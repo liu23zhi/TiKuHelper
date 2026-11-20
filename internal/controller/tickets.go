@@ -84,6 +84,7 @@ func CreateTicket(c *gin.Context) {
 	// The create endpoint is part of the feedback/self view, including when an
 	// administrator uses it. Notification metadata belongs to ticket management.
 	detail.Notification = nil
+	detail.User = nil
 	c.JSON(http.StatusOK, gin.H{"data": detail})
 }
 

@@ -903,7 +903,7 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 	}
 
 	// 充值阶梯赠送：建 recharge_promotion_grants（赠送发放账本，recharge_order_id 唯一）。
-	// 与开关解耦：开关默认 false，表照建，运营打开开关时结构已就位。
+	// 发放由配置档位决定，账本结构始终准备就绪。
 	// 必须排在 ensureReviewRebateSchema 之后 —— 它依赖 users.gift_balance 已存在。
 	if err := runStartupMigration("ensureRechargePromotionSchema", func() error { return ensureRechargePromotionSchema(db) }); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare recharge promotion schema fail: %w", err))
@@ -1030,8 +1030,7 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 	}
 
 	// 充值阶梯赠送的可配置档位表（Q75-2，94-*.md §2 C2）。
-	// 只建表、不写数据：表空时服务层回退到 DefaultRechargePromotionTiers，
-	// 因此本迁移对既有发放行为零影响，可安全先上。
+	// 只建表、不写数据：表空表示不赠送，不回退到默认六档。
 	if err := runStartupMigration("ensureRechargePromotionTierSchema", func() error { return ensureRechargePromotionTierSchema(db) }); err != nil {
 		logger.FatalLog(fmt.Errorf("prepare recharge promotion tier schema fail: %w", err))
 		return nil

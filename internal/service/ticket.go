@@ -103,6 +103,10 @@ type TicketDetail struct {
 	Ticket       entity.Ticket           `json:"ticket"`
 	Messages     []entity.TicketMessage  `json:"messages"`
 	Notification *TicketNotificationInfo `json:"notification,omitempty"`
+	// User is returned only to the administrator management view. Keeping this
+	// separate from Ticket.UserName lets the management page show current
+	// account metadata without exposing it through the feedback view.
+	User *TicketUserSummary `json:"user,omitempty"`
 	// Attachments 是工单的全部图片（含「未通过检测」的条目，后者只有占位信息）。
 	// 敏感图**永远**只以占位条目出现，字节必须走单独的下载接口。
 	Attachments []TicketAttachmentInfo `json:"attachments"`
@@ -115,6 +119,17 @@ type TicketDetail struct {
 	// 字段与列表用的是同一个 TicketRefundSummary（refundSummaryOf 单一实现），
 	// 避免「列表显示的金额」与「详情显示的金额」两处口径漂移。
 	Refund *TicketRefundSummary `json:"refund,omitempty"`
+}
+
+type TicketUserSummary struct {
+	ID          int32      `json:"id"`
+	Username    string     `json:"username"`
+	Nickname    string     `json:"nickname"`
+	Role        string     `json:"role"`
+	Status      string     `json:"status"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	LastLoginAt *time.Time `json:"lastLoginAt,omitempty"`
+	LastLoginIP string     `json:"lastLoginIp,omitempty"`
 }
 
 type TicketNotificationInfo struct {
@@ -823,7 +838,8 @@ func ListTicketsWithDB(db *gorm.DB, user *entity.User, query TicketListQuery, pa
 		}
 	}
 	base := db.Model(&entity.Ticket{})
-	if !isTicketAdmin(user) || query.SelfOnly {
+	managementView := isTicketAdmin(user) && !query.SelfOnly
+	if !managementView {
 		// 隔离**只靠 user_id**（45-*.md §0.23.2 / Q69-2：被涉及用户**可见**发给自己的
 		// 系统单，原「保密」建议已被用户推翻）。因此这里**不加** `origin <> 'system'`：
 		// 加了会把 Q26 自动建的赠金核对单从用户视野里彻底抹掉，
@@ -857,7 +873,7 @@ func ListTicketsWithDB(db *gorm.DB, user *entity.User, query TicketListQuery, pa
 	if origin != "" && isTicketAdmin(user) {
 		base = base.Where("tickets.origin = ?", origin)
 	}
-	if condition, args := ticketKeywordCondition(query.Keyword); condition != "" {
+	if condition, args := ticketKeywordCondition(query.Keyword, managementView); condition != "" {
 		base = base.Where(condition, args...)
 	}
 	if query.CreatedFrom != nil {
@@ -939,14 +955,20 @@ func ticketIDs(tickets []entity.Ticket) []int64 {
 	return ids
 }
 
-func ticketKeywordCondition(keyword string) (string, []interface{}) {
+func ticketKeywordCondition(keyword string, managementView bool) (string, []interface{}) {
 	normalized := util.NormalizeSearchKeyword(keyword)
 	if normalized == "" {
 		return "", nil
 	}
 	mainCondition, args := util.BuildInstrCondition(normalized,
 		"COALESCE(tickets.subject, '')", "COALESCE(tickets.user_name, '')")
-	messageCondition, messageArgs := util.BuildInstrCondition(normalized, "COALESCE(ticket_messages.body, '')", "COALESCE(ticket_messages.author_name, '')")
+	authorNameExpr := "COALESCE(ticket_messages.author_name, '')"
+	if !managementView {
+		// 搜索结果同样属于身份可见性边界，否则用户仍能通过命中与否猜出被隐藏的管理员姓名。
+		// 正文保持可搜索；只排除管理回复的署名，不影响用户昵称与系统署名。
+		authorNameExpr = "CASE WHEN LOWER(TRIM(COALESCE(ticket_messages.author_role, ''))) = 'admin' THEN '' ELSE COALESCE(ticket_messages.author_name, '') END"
+	}
+	messageCondition, messageArgs := util.BuildInstrCondition(normalized, "COALESCE(ticket_messages.body, '')", authorNameExpr)
 	args = append(args, messageArgs...)
 	parts := []string{mainCondition}
 	if messageCondition != "" {
@@ -1018,7 +1040,25 @@ func getTicketWithDBScope(db *gorm.DB, user *entity.User, id int64, selfView boo
 		}
 	}
 	if !isTicketAdmin(user) || selfView {
+		// 反馈接口只公开管理员身份，不公开具体工作人员的姓名或账号 ID。
+		// 只净化响应副本，管理视图及数据库中的审计信息保持完整。
+		for i := range detail.Messages {
+			if detail.Messages[i].AuthorRole == entity.TicketAuthorRoleAdmin {
+				detail.Messages[i].AuthorName = "管理员"
+				detail.Messages[i].UserID = 0
+			}
+		}
 		return detail, nil
+	}
+	var ticketUser entity.User
+	if err := db.First(&ticketUser, ticket.UserID).Error; err == nil {
+		detail.User = &TicketUserSummary{
+			ID: ticketUser.ID, Username: ticketUser.Username, Nickname: ticketUser.Nickname,
+			Role: ticketUser.Role, Status: ticketUser.Status, CreatedAt: ticketUser.CreatedAt,
+			LastLoginAt: ticketUser.LastLoginAt, LastLoginIP: ticketUser.LastLoginIP,
+		}
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return TicketDetail{}, err
 	}
 	var notification entity.TicketNotification
 	if err := db.Where("ticket_id = ?", ticket.ID).Order("id DESC").First(&notification).Error; err == nil {
@@ -1050,6 +1090,7 @@ func addTicketMessageWithDBScope(db *gorm.DB, user *entity.User, id int64, input
 	}
 	var ticket entity.Ticket
 	now := time.Now()
+	managementReply := isTicketAdmin(user) && !selfView
 	err = db.Transaction(func(tx *gorm.DB) error {
 		query := tx.Where("id = ?", id)
 		if !isTicketAdmin(user) || selfView {
@@ -1064,16 +1105,20 @@ func addTicketMessageWithDBScope(db *gorm.DB, user *entity.User, id int64, input
 			return err
 		}
 		status := entity.TicketStatusPending
-		if !isTicketAdmin(user) {
+		if !managementReply {
 			status = entity.TicketStatusOpen
 		}
-		if input.Status != nil && isTicketAdmin(user) {
+		if input.Status != nil && managementReply {
 			status, err = normalizeTicketStatus(*input.Status)
 			if err != nil {
 				return err
 			}
 		}
-		message := entity.TicketMessage{TicketID: ticket.ID, UserID: user.ID, AuthorName: ticketUserName(user), Body: body, AuthorRole: ticketAuthorRole(user), CreatedAt: now}
+		authorRole := entity.TicketAuthorRoleUser
+		if managementReply {
+			authorRole = entity.TicketAuthorRoleAdmin
+		}
+		message := entity.TicketMessage{TicketID: ticket.ID, UserID: user.ID, AuthorName: ticketUserName(user), Body: body, AuthorRole: authorRole, CreatedAt: now}
 		if err := tx.Create(&message).Error; err != nil {
 			return err
 		}
@@ -1090,7 +1135,7 @@ func addTicketMessageWithDBScope(db *gorm.DB, user *entity.User, id int64, input
 			return err
 		}
 		ticket.Status, ticket.LastMessageAt = status, now
-		if !isTicketAdmin(user) {
+		if !managementReply {
 			return enqueueTicketNotificationInTx(tx, ticket, body, "user_reply")
 		}
 		return nil

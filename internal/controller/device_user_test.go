@@ -176,12 +176,106 @@ func deviceUserRouter(operator *entity.User) *gin.Engine {
 	group := router.Group("/api")
 	group.GET("/user/devices", UserDevices)
 	group.POST("/user/devices/:id/remove", UserDeviceRemove)
+	group.DELETE("/user/devices/:id", UserDeviceDelete)
 	group.PUT("/user/devices/:id/label", UserDeviceRename)
 	group.POST("/user/devices/:id/block", UserDeviceBlock)
 	group.DELETE("/user/devices/blocks/:id", UserDeviceUnblock)
 	group.GET("/user/device-limit", UserDeviceLimitGet)
 	group.PUT("/user/device-limit", UserDeviceLimitPut)
+	group.GET("/user/device-expiry", UserDeviceExpiryGet)
+	group.PUT("/user/device-expiry", UserDeviceExpiryPut)
 	return router
+}
+
+func TestUserDeviceDeleteOnlyRemovesOwnRevokedBinding(t *testing.T) {
+	db := newDeviceUserTestDB(t, true)
+	owner := seedDeviceUserUser(t, db, "devuser-delete-owner", 0, -1)
+	other := seedDeviceUserUser(t, db, "devuser-delete-other", 0, -1)
+	now := time.Now()
+	revokedID := seedDeviceUserBinding(t, db, owner.ID, "extension:delete-revoked", "旧设备", now, "user_removed", &now)
+	activeID := seedDeviceUserBinding(t, db, owner.ID, "extension:delete-active", "在用设备", now, "", nil)
+	otherID := seedDeviceUserBinding(t, db, other.ID, "extension:delete-other", "别人的设备", now, "user_removed", &now)
+
+	router := deviceUserRouter(owner)
+	res, _ := doDeviceUser(t, router, http.MethodDelete, fmt.Sprintf("/api/user/devices/%d", revokedID), nil)
+	if res.Code != http.StatusOK {
+		t.Fatalf("已移除设备应允许删除，实际 %d：%s", res.Code, res.Body.String())
+	}
+	var count int64
+	if err := db.Table(entity.TableNameAccountDeviceBinding).Where("id = ?", revokedID).Count(&count).Error; err != nil {
+		t.Fatalf("count deleted binding: %v", err)
+	}
+	if count != 0 {
+		t.Fatal("已移除设备删除后不应保留绑定行")
+	}
+
+	active, _ := doDeviceUser(t, router, http.MethodDelete, fmt.Sprintf("/api/user/devices/%d", activeID), nil)
+	if active.Code != http.StatusConflict {
+		t.Fatalf("在用设备删除应返回 409，实际 %d：%s", active.Code, active.Body.String())
+	}
+	otherRes, _ := doDeviceUser(t, router, http.MethodDelete, fmt.Sprintf("/api/user/devices/%d", otherID), nil)
+	if otherRes.Code != http.StatusNotFound {
+		t.Fatalf("删除他人设备应返回 404，实际 %d：%s", otherRes.Code, otherRes.Body.String())
+	}
+}
+
+func TestUserDeviceExpiryRejectsAboveAdminAndZeroWithoutPermission(t *testing.T) {
+	db := newDeviceUserTestDB(t, true)
+	if err := db.AutoMigrate(&entity.SystemSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&entity.SystemSetting{Key: service.DeviceIdleRevokeAfterDaysSettingKey, Value: "3"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	owner := seedDeviceUserUser(t, db, "devuser-expiry-owner", 0, -1)
+	router := deviceUserRouter(owner)
+	for _, days := range []int{-1, 0, 4} {
+		res, _ := doDeviceUser(t, router, http.MethodPut, "/api/user/device-expiry", map[string]any{"days": days})
+		if res.Code != http.StatusBadRequest {
+			t.Fatalf("days=%d 应被拒绝，实际 %d %s", days, res.Code, res.Body.String())
+		}
+	}
+	res, envelope := doDeviceUser(t, router, http.MethodPut, "/api/user/device-expiry", map[string]any{"days": 2})
+	if res.Code != http.StatusOK || envelope.Data["days"] != float64(2) || envelope.Data["maxDays"] != float64(3) {
+		t.Fatalf("允许的个人时长应保存并回填：%d %s", res.Code, res.Body.String())
+	}
+	if err := db.Create(&entity.SystemSetting{Key: service.DeviceIdleRevokeAllowUserDisableSettingKey, Value: "true"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	res, envelope = doDeviceUser(t, router, http.MethodPut, "/api/user/device-expiry", map[string]any{"days": 0})
+	if res.Code != http.StatusOK || envelope.Data["days"] != float64(0) {
+		t.Fatalf("管理员允许后用户应能设 0：%d %s", res.Code, res.Body.String())
+	}
+}
+
+func TestUserDeviceDeletePreservesBindingBlockedBeforeDeleteStatement(t *testing.T) {
+	db := newDeviceUserTestDB(t, true)
+	owner := seedDeviceUserUser(t, db, "devuser-delete-race", 0, -1)
+	now := time.Now()
+	id := seedDeviceUserBinding(t, db, owner.ID, "race-block", "旧设备", now, "user_removed", &now)
+	called := false
+	if err := db.Callback().Delete().Before("gorm:delete").Register("test:block-before-delete", func(tx *gorm.DB) {
+		if called {
+			return
+		}
+		called = true
+		if err := tx.Exec("INSERT INTO user_device_blocks (user_id, device_id, reason, created_at) VALUES (?, ?, ?, ?)", owner.ID, "race-block", "race", now).Error; err != nil {
+			t.Errorf("insert concurrent block: %v", err)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	res, _ := doDeviceUser(t, deviceUserRouter(owner), http.MethodDelete, fmt.Sprintf("/api/user/devices/%d", id), nil)
+	if res.Code != http.StatusConflict {
+		t.Fatalf("删除前被拉黑必须返回 409：%d %s", res.Code, res.Body.String())
+	}
+	var count int64
+	if err := db.Table(entity.TableNameAccountDeviceBinding).Where("id = ?", id).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatal("并发拉黑的设备历史不得被删除")
+	}
 }
 
 type deviceUserEnvelope struct {

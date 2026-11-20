@@ -10,31 +10,30 @@ for(const key of ['DOMParser','Document','HTMLInputElement','HTMLButtonElement',
 const {mount,flushPromises}=require('@vue/test-utils'),{nextTick,h}=require('vue'),{createRouter,createMemoryHistory,RouterView}=require('vue-router'),Antd=require('ant-design-vue'),axios=require('axios')
 const zhCN=require('ant-design-vue/lib/locale/zh_CN').default,user=require(path.join(web,'src/utils/currentUser.js'))
 const A={id:64001,username:'SYNTHETIC_SETTINGS_ADMIN_A',role:'admin',status:'enabled'},B={id:64002,username:'SYNTHETIC_SETTINGS_ADMIN_B',role:'admin',status:'enabled'},ordinary={id:64003,username:'SYNTHETIC_SETTINGS_USER',role:'user',status:'enabled'}
-const groups=['站点与日志','认证与充值','商业化开关','敏感词检测','微信登录与验证码','归属地查询','支付回调','短信验证码配置'],secretFields=['epayPlatformPublicKey','epayMerchantPrivateKey','smsbaoSecret','wechatApiBearerToken','captchaApiKey','uapiApiKey'],privateFields=new Set(secretFields)
-const cases=[],calls=[],roots=[],realIO=[],runtime=[],consoleErrors=[],consoleWarnings=[],secrets=new Set();let cur=null,expectedPayload=null,metricsSerial=0,savedNotices=0,restoreRemove=null
+const groups=['站点与日志','认证与充值','黑名单','敏感词检测','微信登录与验证码','归属地查询','支付回调','短信验证码配置'],secretFields=['epayPlatformPublicKey','epayMerchantPrivateKey','smsbaoSecret','wechatApiBearerToken','captchaApiKey','uapiApiKey'],privateFields=new Set(secretFields)
+const cases=[],calls=[],roots=[],realIO=[],runtime=[],consoleErrors=[],consoleWarnings=[],secrets=new Set();let cur=null,expectedPayload=null,savedNotices=0,restoreRemove=null
 const sha=p=>crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex'),compact=v=>String(v??'').replace(/\s+/g,' ').trim()
-const inputNames=['src/pages/SystemSettings/index.vue','src/pages/SystemSettings/SystemMetricsPanel.vue','src/pages/SystemSettings/PaymentMethodPanel.vue','src/pages/SystemSettings/components/PaymentMethodIconPicker.vue','src/api/TikuComponentApi.js','src/utils/request.js','src/utils/requestHelpers.mjs','src/utils/requestRetry.mjs','src/utils/currentUser.js','src/utils/currentUserScope.js','src/utils/useUnsavedDraft.js','src/utils/paymentMethodHelpers.mjs','src/utils/safePaymentIcon.mjs','src/components/SafePaymentIcon.js','src/components/RequestFailureAlert.vue','tests/helpers/vue-dom.cjs']
+const inputNames=['src/pages/SystemSettings/index.vue','src/pages/SystemSettings/RefundAgreementPanel.vue','src/pages/SystemSettings/PaymentMethodPanel.vue','src/pages/SystemSettings/components/PaymentMethodIconPicker.vue','src/api/TikuComponentApi.js','src/utils/request.js','src/utils/requestHelpers.mjs','src/utils/requestRetry.mjs','src/utils/currentUser.js','src/utils/currentUserScope.js','src/utils/useUnsavedDraft.js','src/utils/paymentMethodHelpers.mjs','src/utils/safePaymentIcon.mjs','src/components/SafePaymentIcon.js','src/components/RequestFailureAlert.vue','tests/helpers/vue-dom.cjs']
 const hashes=()=>Object.fromEntries(inputNames.map(p=>[p,sha(path.join(web,p))])),sourceBefore=hashes(),fixtureSHA256=sha(__filename)
 const check=(value,label)=>cur.checks.push({label,passed:!!value})
 function syntheticSecret(tag,field){const v='SYNTHETIC_ONLY_'+tag+'_'+field+'_NOT_A_CREDENTIAL';secrets.add(v);return v}
-function detail(tag){const v={siteName:'SYNTHETIC_SITE_'+tag,maxLogSizeBytes:2*1024*1024*1024,registerEnabled:true,newUserBonusAmount:.123456,minRechargeAmount:1.25,epayVersion:'v2',epayGatewayUrl:'https://synthetic-pay.invalid/submit.php',epayPartnerId:'SYNTHETIC_PID_'+tag,epayNotifyUrl:'https://synthetic-site.invalid/adapter-service/payment/notify',epayReturnUrl:'https://synthetic-site.invalid/adapter/recharge/result',smsProvider:'smsbao',smsbaoUsername:'SYNTHETIC_SMS_USER_'+tag,smsCodeSignName:'SYNTHETIC_SIGN',smsCodeTemplate:'SYNTHETIC {sign} {code}',smsLoginEnabled:true,wechatLoginEnabled:true,wechatScanLoginEnabled:true,wechatCodeLoginEnabled:true,wechatDefaultLoginMode:'code',wechatCodeStaticQrcodeUrl:'https://synthetic-static.invalid/qr.png',wechatApiBaseUrl:'https://synthetic-wechat.invalid',captchaProvider:'remote',captchaApiBaseUrl:'https://synthetic-captcha.invalid',captchaType:'ROTATE',smsbaoCredentialType:'password',smsbaoRegionMode:'domestic',rechargePromotionEnabled:false,deviceLimitEnabled:false,sensitiveWordCheckEnabled:false};for(const field of secretFields)v[field]=syntheticSecret(tag,field);return v}
-function metrics(){return{schemaVersion:1,startedAt:'2026-11-01T00:00:00Z',uptimeSeconds:10,http:{total:++metricsSerial+6,inFlight:0,failed:0,latencyCount:0,latencyTotalMillis:0,latencyMaxMillis:0,buckets:[]},cache:{search:{hits:0,misses:0,shared:0},fallback:{hits:0,misses:0,shared:0}},billing:{attempts:0,successes:0,failures:0}}}
+function detail(tag){const v={siteName:'SYNTHETIC_SITE_'+tag,maxLogSizeBytes:2*1024*1024*1024,registerEnabled:true,newUserBonusAmount:.123456,minRechargeAmount:1.25,epayVersion:'v2',epayGatewayUrl:'https://synthetic-pay.invalid/submit.php',epayPartnerId:'SYNTHETIC_PID_'+tag,epayNotifyUrl:'https://synthetic-site.invalid/api/payment/notify',epayReturnUrl:'https://synthetic-site.invalid/recharge/result',smsProvider:'smsbao',smsbaoUsername:'SYNTHETIC_SMS_USER_'+tag,smsCodeSignName:'SYNTHETIC_SIGN',smsCodeTemplate:'SYNTHETIC {sign} {code}',smsLoginEnabled:true,wechatLoginEnabled:true,wechatScanLoginEnabled:true,wechatCodeLoginEnabled:true,wechatDefaultLoginMode:'code',wechatCodeStaticQrcodeUrl:'https://synthetic-static.invalid/qr.png',wechatApiBaseUrl:'https://synthetic-wechat.invalid',captchaProvider:'remote',captchaApiBaseUrl:'https://synthetic-captcha.invalid',captchaType:'ROTATE',smsbaoCredentialType:'password',smsbaoRegionMode:'domestic',deviceIdleRevokeAfterDays:17,deviceIdleRevokeAllowUserDisable:true,blacklistEnabled:true,sensitiveWordCheckEnabled:false};for(const field of secretFields)v[field]=syntheticSecret(tag,field);return v}
 function safeText(v){let s=String(v);for(const value of secrets)s=s.split(value).join('[SYNTHETIC_SECRET_REDACTED]');return s.split('\n').slice(0,3).join('\n').slice(0,800)}
 function secretState(state){return Object.fromEntries(secretFields.map(field=>[field,{present:typeof state[field]==='string'&&state[field].length>0,length:typeof state[field]==='string'?state[field].length:0}]))}
 function sameObject(a,b){const x=Object.keys(a).sort(),y=Object.keys(b).sort();return x.length===y.length&&x.every((k,i)=>k===y[i]&&Object.is(a[k],b[k]))}
 const originalAdapter=axios.defaults.adapter
 axios.defaults.adapter=config=>{
  const method=String(config.method||'get').toLowerCase(),url=String(config.url),actor=user.getStoredCurrentUser(),call={method,url,actor:actor?.id||null,role:actor?.role||null};calls.push(call)
- const allowed=method==='get'&&['/adapter-service/system-settings','/adapter-service/payment-methods','/adapter-service/system-metrics'].includes(url)||method==='put'&&url==='/adapter-service/system-settings'
+ const allowed=method==='get'&&['/api/system-settings','/api/payment-methods','/api/refund-agreement'].includes(url)||method==='put'&&url==='/api/system-settings'
  if(!allowed){realIO.push('unexpected-api-operation');return Promise.reject(new Error('FORBIDDEN_API_OPERATION'))}
  let body
  if(method==='put'){
   const payload=typeof config.data==='string'?JSON.parse(config.data):config.data
   call.payloadKeys=Object.keys(payload).sort();call.secretSummary=secretState(payload);call.fullNormalizedPayloadMatches=!!expectedPayload&&sameObject(payload,expectedPayload);call.payloadFieldCount=Object.keys(payload).length
   call.emptyClearPreserved=payload.uapiApiKey==='';call.literalClearPreserved=payload.smsbaoSecret==='__CLEAR__';body={}
- }else if(url==='/adapter-service/system-settings')body=detail(actor?.id===B.id?'B':'A')
- else if(url==='/adapter-service/payment-methods')body=[]
- else body=metrics()
+ }else if(url==='/api/system-settings')body=detail(actor?.id===B.id?'B':'A')
+ else if(url==='/api/payment-methods')body=[]
+ else body={text:'SYNTHETIC_AGREEMENT',defaultText:'SYNTHETIC_AGREEMENT',isDefault:true}
  return Promise.resolve({status:200,data:body,headers:{'x-request-id':calls.length.toString(16).padStart(32,'0')},config,request:{memoryOnly:true}})
 }
 function deny(kind){realIO.push(kind);throw new Error('FORBIDDEN_REAL_IO_'+kind)}
@@ -59,7 +58,7 @@ function saveCallback(w){const c=w.findAllComponents(Antd.Button).find(c=>compac
 function view(w){return{canManage:w.vm.canManageSettings(),loaded:w.vm.settingsLoaded,loading:w.vm.tabLoading,saving:w.vm.saving,dirty:w.vm.hasUnsavedChanges,draining:w.vm.settingsDraining,settingsErrorPresent:!!w.vm.settingsError,formSecretSummary:secretState(w.vm.formState),visibleGroups:[...w.element.querySelectorAll('.settings-section h2,.settings-section h3,.settings-section .console-panel__title')].map(n=>compact(n.textContent)),privateInputTypes:secretFields.map(name=>{const n=document.getElementById(w.vm.fieldId(name));return{field:name,present:!!n,type:n?.type||null,valueLength:n?.value?.length||0}})}}
 async function open(actor=A){
  if(actor)user.setStoredCurrentUser(actor);else user.clearStoredCurrentUser()
- const router=createRouter({history:createMemoryHistory(),routes:[{path:'/adapter/system-settings',component:Page}]});await router.push('/adapter/system-settings');await router.isReady()
+ const router=createRouter({history:createMemoryHistory(),routes:[{path:'/system-settings',component:Page}]});await router.push('/system-settings');await router.isReady()
  const Shell={render:()=>h(Antd.ConfigProvider,{locale:zhCN},{default:()=>h(RouterView)})},app=mount(Shell,{attachTo:document.body,global:{plugins:[Antd,router],config:{errorHandler:e=>runtime.push(safeText(e?.stack||e))}}});roots.push({app,router});await settle()
  const w=app.findComponent(Page);assert.ok(w.exists(),'actual SystemSettings and own client permission gates are mounted, not a stub')
  if(actor?.role==='admin')await until(()=>w.vm.settingsLoaded&&w.vm.paymentMethodsLoaded&&!w.vm.tabLoading,'owned settings/payment200 loaded')
@@ -68,12 +67,12 @@ async function open(actor=A){
 }
 function writeLedger(){if(process.env.SYSTEM_SETTINGS_LEDGER)fs.writeFileSync(process.env.SYSTEM_SETTINGS_LEDGER,JSON.stringify({schema:'SYSTEM_SETTINGS_NATIVE_LEDGER_V1',fixtureSHA256,sourceBefore,sourceAfter:hashes(),cases,nativeDOM:true,physicalBrowser:false,actualPageChildrenAPIRequestAxiosMemory:true,noRawSecretsFormOrPayloadRecorded:true,backendAuthorizationAndRealConfigProviderNotQualified:true},null,2)+'\n')}
 function register(name,fn){test(name,{timeout:20000},async()=>{cur={name,checks:[],observations:[],passed:false};cases.push(cur);try{await fn();check(realIO.length===0&&runtime.length===0&&consoleErrors.length===0,'zero real IO/runtime/console errors');const failed=cur.checks.filter(c=>!c.passed);assert.equal(failed.length,0,failed.map(c=>c.label).join('; '));cur.passed=true}catch(error){cur.error={name:error.name,message:safeText(error.message)};throw error}finally{writeLedger()}})}
-afterEach(async()=>{if(!cur)return;try{if(restoreRemove){restoreRemove();restoreRemove=null}for(const{app,router}of roots.splice(0)){app.unmount();router.options.history.destroy()}await settle();Antd.message.destroy();Antd.Modal.destroyAll();user.clearStoredCurrentUser();window.localStorage.clear();document.body.replaceChildren();await settle();cur.io={calls,privateGETs:calls.filter(c=>c.method==='get').length,PUTs:calls.filter(c=>c.method==='put').length,realIO:[...realIO],runtime:[...runtime],consoleErrors:[...consoleErrors],consoleWarnings:[...consoleWarnings]};cur.savedNoticeCount=savedNotices;cur.cleanup={bodyEmpty:document.body.childElementCount===0,sourceStable:JSON.stringify(hashes())===JSON.stringify(sourceBefore)};assert.deepEqual(realIO,[]);assert.deepEqual(runtime,[]);assert.deepEqual(consoleErrors,[]);assert.ok(Object.values(cur.cleanup).every(Boolean))}catch(error){cur.passed=false;cur.hookError={name:error.name,message:safeText(error.message)};throw error}finally{cur.io=cur.io?{...cur.io,calls:[...calls]}:undefined;writeLedger();calls.length=realIO.length=runtime.length=consoleErrors.length=consoleWarnings.length=0;expectedPayload=null;metricsSerial=savedNotices=0;cur=null}})
+afterEach(async()=>{if(!cur)return;try{if(restoreRemove){restoreRemove();restoreRemove=null}for(const{app,router}of roots.splice(0)){app.unmount();router.options.history.destroy()}await settle();Antd.message.destroy();Antd.Modal.destroyAll();user.clearStoredCurrentUser();window.localStorage.clear();document.body.replaceChildren();await settle();cur.io={calls,privateGETs:calls.filter(c=>c.method==='get').length,PUTs:calls.filter(c=>c.method==='put').length,realIO:[...realIO],runtime:[...runtime],consoleErrors:[...consoleErrors],consoleWarnings:[...consoleWarnings]};cur.savedNoticeCount=savedNotices;cur.cleanup={bodyEmpty:document.body.childElementCount===0,sourceStable:JSON.stringify(hashes())===JSON.stringify(sourceBefore)};assert.deepEqual(realIO,[]);assert.deepEqual(runtime,[]);assert.deepEqual(consoleErrors,[]);assert.ok(Object.values(cur.cleanup).every(Boolean))}catch(error){cur.passed=false;cur.hookError={name:error.name,message:safeText(error.message)};throw error}finally{cur.io=cur.io?{...cur.io,calls:[...calls]}:undefined;writeLedger();calls.length=realIO.length=runtime.length=consoleErrors.length=consoleWarnings.length=0;expectedPayload=null;savedNotices=0;cur=null}})
 after(()=>{axios.defaults.adapter=originalAdapter;console.error=originalConsoleError;console.warn=originalConsoleWarn;Antd.message.success=originalSuccess;writeLedger()})
 
-register('SC01 six settings groups, native remote-local-remote hides only three controls while retaining values; one normalized full owned save preserves raw-admin/empty-clear convention',async()=>{
+register('SC01 eight settings groups, native remote-local-remote hides only three controls while retaining values; one normalized full owned save preserves raw-admin/empty-clear convention',async()=>{
  const w=await open(),a=detail('A'),remote=['captchaApiBaseUrl','captchaApiKey','captchaType']
- check(w.element.querySelectorAll('.settings-section').length===8&&groups.every(t=>w.element.textContent.includes(t)),'seven exact current configuration groups remain visible and distinct')
+ check(w.element.querySelectorAll('.settings-section').length===groups.length&&groups.every(t=>w.element.textContent.includes(t))&&!w.element.textContent.includes('商业化开关'),'eight exact current configuration groups remain visible and distinct')
  check(w.vm.formState.captchaProvider==='remote'&&remote.every(n=>!!document.getElementById(w.vm.fieldId(n))),'remote captcha begins with three actual controls')
  const before=calls.length;await choose(w,'captchaProvider','站内图片验证码')
  check(w.vm.formState.captchaProvider==='local'&&remote.every(n=>!document.getElementById(w.vm.fieldId(n))),'actual local option hides exactly the three remote captcha controls')
@@ -81,11 +80,11 @@ register('SC01 six settings groups, native remote-local-remote hides only three 
  await choose(w,'captchaProvider','远程 TAC 验证码')
  check(w.vm.formState.captchaProvider==='remote'&&remote.every(n=>!!document.getElementById(w.vm.fieldId(n)))&&field(w,'captchaApiBaseUrl').value===a.captchaApiBaseUrl&&field(w,'captchaApiKey').value===a.captchaApiKey&&w.vm.formState.captchaType===a.captchaType,'return to remote restores actual controls and exact prior values without erasure')
  type(field(w,'siteName'),'  SYNTHETIC_EDITED_SITE  ');type(field(w,'siteBaseUrl'),' https://synthetic-edited.invalid/// ');type(field(w,'uapiApiKey'),'');type(field(w,'smsbaoSecret'),'__CLEAR__');await settle()
- expectedPayload={...a,siteName:'SYNTHETIC_EDITED_SITE',epayNotifyUrl:'https://synthetic-edited.invalid/adapter-service/payment/notify',epayReturnUrl:'https://synthetic-edited.invalid/adapter/recharge/result',uapiApiKey:'',smsbaoSecret:'__CLEAR__'}
+ expectedPayload={...a,siteName:'SYNTHETIC_EDITED_SITE',epayNotifyUrl:'https://synthetic-edited.invalid/api/payment/notify',epayReturnUrl:'https://synthetic-edited.invalid/recharge/result',uapiApiKey:'',smsbaoSecret:'__CLEAR__'}
  check(w.vm.hasUnsavedChanges&&calls.filter(c=>c.method==='put').length===0,'actual edits are unsaved until explicit save')
  const reads=calls.filter(c=>c.method==='get').length;await click(button(w,'保存'));await until(()=>!w.vm.saving&&calls.some(c=>c.method==='put'),'current full save200 completes')
  const sent=calls.filter(c=>c.method==='put')
- check(sent.length===1&&sent[0].actor===A.id&&sent[0].fullNormalizedPayloadMatches&&sent[0].payloadFieldCount===35,'exact normalized full35-field payload is sent once for captured current admin, compared only in memory')
+ check(sent.length===1&&sent[0].actor===A.id&&sent[0].fullNormalizedPayloadMatches&&sent[0].payloadFieldCount===36,'exact normalized full36-field payload is sent once for captured current admin, compared only in memory')
  check(sent[0].emptyClearPreserved&&sent[0].literalClearPreserved&&sent[0].secretSummary.wechatApiBearerToken.length===a.wechatApiBearerToken.length,'empty clear, literal marker and legitimate raw-admin key submission preserve current convention')
  check(calls.filter(c=>c.method==='get').length===reads&&!w.vm.hasUnsavedChanges&&savedNotices===1,'successful save marks only its config snapshot saved, with no readback/provider call')
  cur.observations.push({label:'after single full save',state:view(w),payloadComparisonBooleansOnly:{normalized:sent[0].fullNormalizedPayloadMatches,empty:sent[0].emptyClearPreserved,literal:sent[0].literalClearPreserved}})
@@ -117,27 +116,31 @@ register('SC02 native password eye masks and reveals intentionally; actor/role/l
  cur.observations.push({label:'after actor-role-logout sequence',state:view(w),allOldInputsScrubbed:[oldA,oldRole,oldLogout].every(x=>x.value.length===0&&x.type==='password')})
 })
 
-register('SC03 actual nonadmin page and diagnostics child keep existing client denial with zero private settings/payment/metrics GET or PUT',async()=>{
+register('SC03 actual nonadmin page keeps client denial with zero private GET or PUT and no relocated diagnostics',async()=>{
  const w=await open(ordinary)
  check(!w.vm.canManageSettings()&&!w.vm.settingsLoaded&&w.element.textContent.includes('当前身份尚未确认或无系统设置管理权限'),'real nonadmin page has visible existing denial and no loaded private config')
  const refresh=button(w,'刷新'),save=button(w,'保存');check(refresh.disabled&&save.disabled,'actual toolbar refresh/save are disabled for nonadmin')
  refresh.click();save.click();await settle();w.vm.handleLoad();w.vm.handleSave();await settle()
- check(!w.element.querySelector('[data-action="refresh-system-metrics"]')&&w.findComponent(MetricsPanel).exists(),'real diagnostics child is mounted but its private panel is hidden for nonadmin');await w.findComponent(MetricsPanel).vm.handleRefresh();await settle()
- check(calls.length===0,'real page entry guards and real child diagnostic guard issue zero private GET/PUT even for explicit denied attempts')
+ check(!w.element.querySelector('[data-action="refresh-system-metrics"]')&&!w.findComponent(MetricsPanel).exists(),'diagnostics moved to server details is absent from the nonadmin settings page')
+ check(calls.length===0,'real page entry guards issue zero private GET/PUT even for explicit denied attempts')
  check(secretFields.every(k=>w.vm.formState[k]==='')&&calls.filter(c=>c.method==='put').length===0,'nonadmin never receives or writes private key values')
  cur.observations.push({label:'nonadmin scope, not server authorization proof',state:view(w),privateWireCalls:calls.length})
 })
 
-register('SC04 independently refreshed metrics are readonly and never mark dirty settings as saved or invoke settings/payment reload or PUT',async()=>{
- const w=await open(),panel=w.findComponent(MetricsPanel);assert.ok(panel.exists(),'actual diagnostics child mounted')
- await until(()=>!!panel.vm.metrics&&!panel.vm.loading,'initial actual metrics DTO accepted')
+register('SC04 settings edits save and refresh never mount or request diagnostics moved to server details',async()=>{
+ const w=await open();assert.equal(w.findComponent(MetricsPanel).exists(),false,'diagnostics is absent from the settings page')
  type(field(w,'siteName'),'SYNTHETIC_UNSAVED_METRICS_INDEPENDENT');await settle()
- const before={settings:calls.filter(c=>c.url==='/adapter-service/system-settings').length,payment:calls.filter(c=>c.url==='/adapter-service/payment-methods').length,metrics:calls.filter(c=>c.url==='/adapter-service/system-metrics').length,total:panel.vm.metrics.http.total,notice:savedNotices},instance=panel.vm.$
- check(w.vm.hasUnsavedChanges&&before.metrics===1,'real unsaved configuration draft and separately loaded initial metrics are present')
- await click(w.element.querySelector('[data-action="refresh-system-metrics"]'));await until(()=>!!panel.vm.metrics&&!panel.vm.loading&&panel.vm.metrics.http.total===before.total+1,'explicit metrics refresh200 completes')
- check(calls.filter(c=>c.url==='/adapter-service/system-metrics').length===before.metrics+1&&calls.filter(c=>c.url==='/adapter-service/system-settings').length===before.settings&&calls.filter(c=>c.url==='/adapter-service/payment-methods').length===before.payment&&calls.filter(c=>c.method==='put').length===0,'one independent metrics GET never saves/reloads configuration or payment rows')
- check(w.vm.formState.siteName==='SYNTHETIC_UNSAVED_METRICS_INDEPENDENT'&&w.vm.hasUnsavedChanges&&savedNotices===before.notice&&!w.vm.saving&&w.findComponent(MetricsPanel).vm.$===instance,'metrics update preserves dirty draft/child instance and never claims configuration saved')
- cur.observations.push({label:'independent readonly metrics',state:view(w),httpCountBefore:before.total,httpCountAfter:panel.vm.metrics.http.total,configurationSavedNotice:false})
+ const before={settings:calls.filter(c=>c.url==='/api/system-settings').length,payment:calls.filter(c=>c.url==='/api/payment-methods').length,notice:savedNotices}
+ check(w.vm.hasUnsavedChanges&&!w.element.querySelector('[data-action="refresh-system-metrics"]')&&calls.every(c=>c.url!=='/api/system-metrics'),'dirty configuration has no diagnostics controls or metrics requests')
+ expectedPayload={...detail('A'),siteName:'SYNTHETIC_UNSAVED_METRICS_INDEPENDENT'}
+ await click(button(w,'保存'));await until(()=>!w.vm.saving&&calls.some(c=>c.method==='put'),'current settings save completes')
+ const sent=calls.filter(c=>c.method==='put')
+ check(sent.length===1&&sent[0].fullNormalizedPayloadMatches&&!w.vm.hasUnsavedChanges&&savedNotices===before.notice+1,'one exact owned save marks only the saved configuration draft clean')
+ check(calls.filter(c=>c.url==='/api/system-settings'&&c.method==='get').length===before.settings&&calls.filter(c=>c.url==='/api/payment-methods').length===before.payment,'save does not reload configuration or payment rows')
+ await click(button(w,'刷新'));await until(()=>!w.vm.tabLoading&&!w.vm.paymentMethodLoading,'explicit settings refresh completes')
+ check(calls.filter(c=>c.url==='/api/system-settings'&&c.method==='get').length===before.settings+1&&calls.filter(c=>c.url==='/api/payment-methods').length===before.payment+1,'explicit settings refresh reads settings and payment rows once')
+ check(calls.every(c=>c.url!=='/api/system-metrics')&&!w.findComponent(MetricsPanel).exists(),'save and refresh never reintroduce moved diagnostics')
+ cur.observations.push({label:'settings and server details remain separate',state:view(w),metricsRequests:0})
 })
 
 register('SC05 explicit logout with cache removal denied still retires exposed secrets and old input/native-save/refresh entries despite unchanged cached admin identity',async()=>{

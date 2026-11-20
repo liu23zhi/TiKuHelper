@@ -93,12 +93,12 @@ func TestDevicePoolLoginIgnoresDeviceLimit(t *testing.T) {
 	}
 }
 
-// TestDevicePoolLoginAllowedWhenSwitchOff 是同一契约在「开关关闭」下的对照。
+// TestDevicePoolLoginAllowedWithLegacyFalse 是同一契约在历史 false 配置下的对照。
 //
 // 保留它是为了覆盖两个独立变量：开关开/关 × 登录放行。
 // 只有开关关闭时放行，可能是「开关没生效」；只有开关打开时放行，
 // 才说明登录路径真的不看设备池。
-func TestDevicePoolLoginAllowedWhenSwitchOff(t *testing.T) {
+func TestDevicePoolLoginAllowedWithLegacyFalse(t *testing.T) {
 	db := newDevicePoolHookDB(t)
 	stubCtrlCaptcha(t, nil)
 	levelID := seedDevicePoolHookLevel(t, db, 1, 1)
@@ -110,7 +110,7 @@ func TestDevicePoolLoginAllowedWhenSwitchOff(t *testing.T) {
 	for _, ua := range []string{"Agent/a", "Agent/b", "Agent/c"} {
 		rec := loginWithUserAgent(t, user.Username, password, ua)
 		if rec.Code != http.StatusOK {
-			t.Fatalf("开关关闭时登录不得被设备上限挡住，UA=%s got %d body=%s",
+			t.Fatalf("历史开关值不得影响网页登录，UA=%s got %d body=%s",
 				ua, rec.Code, rec.Body.String())
 		}
 	}
@@ -150,7 +150,9 @@ func TestDevicePoolLoginNeverRegistersDevice(t *testing.T) {
 // enforceAccountDeviceLimit 出现在 setAuthCookie 之前。现在要求它**完全不出现**。
 //
 // 为什么行为用例不够：行为用例只能观察「这次请求没被拦」。若将来有人把
-//   if !enforceAccountDeviceLimit(c, user.ID) { return }
+//
+//	if !enforceAccountDeviceLimit(c, user.ID) { return }
+//
 // 加回去，只有在「额度刚好满 + 开关刚好开」的特定数据下才会表现异常，
 // 常规回归跑不出来。源码断言是唯一能立刻变红的防线。
 func TestDevicePoolEnforceNotCalledFromSessionHandlers(t *testing.T) {

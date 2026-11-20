@@ -1131,6 +1131,22 @@ export function removeMyDevice(id, signal) {
   })
 }
 
+export function deleteMyRemovedDevice(id, signal) {
+  return myDeviceRequest({
+    url: '/api/user/devices/' + encodeURIComponent(id),
+    method: 'delete',
+    signal,
+  })
+}
+
+export function getMyDeviceExpiry(signal) {
+  return myDeviceRequest({ url: '/api/user/device-expiry', method: 'get', signal })
+}
+
+export function updateMyDeviceExpiry(days, signal) {
+  return myDeviceRequest({ url: '/api/user/device-expiry', method: 'put', data: { days: Number(days) }, signal })
+}
+
 export function renameMyDevice(id, label, signal) {
   return myDeviceRequest({
     url: '/api/user/devices/' + encodeURIComponent(id) + '/label',

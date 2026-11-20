@@ -250,17 +250,14 @@ func assertDeviceLimitHeadlessRejected(t *testing.T, out *httptest.ResponseRecor
 
 // ─────────────────────── 前置：总开关 ───────────────────────
 
-// 判据：开关关闭（默认）时，限设备账号的无头请求必须放行。
-//
-// 这是「代码先上、开关后开」的部署前提：关着的时候全站行为必须与引入本中间件
-// 之前**完全一致**，否则上线本 PR 就等于上线限制。
-func TestDeviceLimitSwitchOffAllowsEverything(t *testing.T) {
+// 设备池开关已移除：未配置历史字段时，限设备账号仍须提供设备标识。
+func TestDeviceLimitDefaultEnabledRejectsHeadlessLimitedAccount(t *testing.T) {
 	db := newDeviceLimitTestDB(t)
 	levelID := seedDeviceLimitLevel(t, db, 1, 1)
 	user := seedDeviceLimitUser(t, db, "switch-off", levelID, -1)
-	// 不写 device_limit_enabled ⇒ 默认关闭。
+	// 不写 device_limit_enabled，也按启用处理。
 	out := doDeviceLimitRequest(t, db, deviceLimitTestRequest{user: user})
-	assertDeviceLimitAllowed(t, out, "开关关闭 + 限设备账号 + 无 device 头")
+	assertDeviceLimitHeadlessRejected(t, out, "默认启用 + 限设备账号 + 无 device 头")
 }
 
 // 判据：开关打开 + 限设备账号 + 无 device 头 ⇒ 403（S12）。

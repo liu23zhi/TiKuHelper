@@ -152,15 +152,11 @@ func rechargePromotionSession(db *gorm.DB) *gorm.DB {
 // RowsAffected==0 静默跳过（唯一键冲突跳过并完成），**绝不把已提交的到账事务打回滚**。
 //
 // 返回 nil 的三种情况（都属于正常降级，不是错误）：
-//   - 开关关闭；
+//   - 档位表没有可用档位；
 //   - 表/列还没迁移；
 //   - 本笔金额低于最低门槛（不参与赠送）。
 func GrantRechargePromotionInTx(tx *gorm.DB, order entity.RechargeOrder, balanceAfter float64) (*entity.RechargePromotionGrant, error) {
 	if tx == nil {
-		return nil, nil
-	}
-	// 开关关闭 → 不产生任何赠金，也不写赠送流水（需求：关闭时只按实付入账）。
-	if !GetRechargePromotionEnabledWithDB(tx) {
 		return nil, nil
 	}
 	// 表/列还没迁移 → 降级，不影响充值到账。
@@ -173,8 +169,7 @@ func GrantRechargePromotionInTx(tx *gorm.DB, order entity.RechargeOrder, balance
 
 	paid := util.RoundMoneyToDecimals(order.Amount, util.RechargePrecision)
 	// 档位来源：优先读 recharge_promotion_tiers 表（Q75-2 可配置化）；
-	// 表空/未迁移/全部停用时回退到 DefaultRechargePromotionTiers，
-	// 因此表空时的发放行为与改动前逐条一致（数值一个都没动）。
+	// 缺表、空表、全部停用或读取失败均不发放，不自动回退默认六档。
 	tier, matched := SelectRechargePromotionTierWithDB(tx, paid)
 	if !matched {
 		return nil, nil

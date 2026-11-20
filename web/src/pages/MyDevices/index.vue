@@ -2,7 +2,7 @@
   <div class="console-page my-devices-page">
     <ConsolePageHeading
       title="我的设备"
-      description="这里列出的都是调 API 的客户端设备（浏览器扩展 / 考试客户端），不包含你在网页后台的登录。设备上限是账号权益的一部分；用满后可以在下面移除不再使用的设备释放名额，被移除的设备下次调 API 会被静默重新绑定，所以想彻底停用请用「拉黑」。"
+      description="这里列出的都是调 API 的客户端设备（浏览器扩展 / 考试客户端），不包含网页后台登录。你可以移除设备释放名额，也可以删除已移除设备的历史记录；想彻底停用请用「拉黑」。"
     >
       <template #actions>
         <a-button :loading="loading" :disabled="busy()" @click="reload">刷新</a-button>
@@ -82,6 +82,20 @@
       </p>
     </ConsolePanel>
 
+    <ConsolePanel
+      title="设备闲置自动移除"
+      description="设备连续无 API 活跃达到设定天数后会自动移除绑定，释放设备名额。"
+    >
+      <div class="limit-controls">
+        <a-input-number v-model:value="expiryDays" :min="expiryAllowDisable ? 0 : 1" :max="expiryMaxDays || undefined" :precision="0" :disabled="!expiryLoaded || expirySaving || busy() || expiryMaxDays === 0" />
+        <span class="limit-suffix">天</span>
+        <a-button type="primary" :loading="expirySaving" :disabled="!expiryLoaded || busy() || expiryDays === null || expiryMaxDays === 0" @click="saveExpiry">保存</a-button>
+      </div>
+      <p v-if="!expiryLoaded" class="hint">{{ loading ? '正在读取设备自动移除策略…' : '设备自动移除策略暂不可用，请刷新重试。' }}</p>
+      <p v-else-if="expiryMaxDays === 0" class="hint">管理员已关闭设备闲置自动移除，当前不会因闲置自动移除设备绑定。</p>
+      <p v-else class="hint">管理员上限：{{ expiryMaxDays }} 天。{{ expiryAllowDisable ? '你可以设置 0 天来关闭自己的自动移除。' : '管理员未允许用户关闭自动移除，最小为 1 天。' }}</p>
+    </ConsolePanel>
+
     <!-- ───────────── 设备列表 ───────────── -->
     <ConsolePanel
       title="设备列表"
@@ -114,7 +128,7 @@
               {{ record.statusText }}
             </a-tag>
             <div v-if="record.revokedReason === 'user_removed'" class="status-note">你自己移除的</div>
-            <div v-else-if="record.revokedReason === 'idle_10d'" class="status-note">超过 10 天未活跃</div>
+            <div v-else-if="record.revokedReason === 'idle_10d' || record.revokedReason === 'idle_timeout'" class="status-note">闲置超时自动移除</div>
             <div v-else-if="record.revokedReason === 'device_banned'" class="status-note">该设备已被封禁</div>
             <div v-else-if="record.revokedReason === 'admin_unbound'" class="status-note">管理员解绑</div>
           </template>
@@ -143,6 +157,17 @@
                 @confirm="removeDevice(record)"
               >
                 <a-button size="small" :disabled="busy()">移除</a-button>
+              </a-popconfirm>
+
+              <a-popconfirm
+                v-if="record.deletable"
+                title="删除后将无法再查看这条历史记录，确定删除？"
+                ok-text="删除"
+                cancel-text="取消"
+                :disabled="busy()"
+                @confirm="deleteRemovedDevice(record)"
+              >
+                <a-button size="small" danger :disabled="busy()">删除记录</a-button>
               </a-popconfirm>
 
               <a-popconfirm
@@ -234,13 +259,16 @@ import ConsolePageHeading from '@/components/ConsolePageHeading.vue'
 import ConsolePanel from '@/components/ConsolePanel.vue'
 import {
   blockMyDevice,
+  deleteMyRemovedDevice,
   getMyDeviceLimit,
+  getMyDeviceExpiry,
   getMyLocations,
   listMyDevices,
   removeMyDevice,
   renameMyDevice,
   unblockMyDevice,
   updateMyDeviceLimit,
+  updateMyDeviceExpiry,
 } from '@/api/TikuComponentApi'
 import { getCurrentUserLogoutEpoch, useCurrentUserDisplay } from '@/utils/currentUser'
 import { currentUserIdentity } from '@/utils/currentUserScope'
@@ -255,6 +283,7 @@ import {
   normalizeDeviceLimit,
   validateDeviceLabel,
   validateDeviceLimitInput,
+  validateDeviceExpiryInput,
 } from '@/utils/myDevicesHelpers.mjs'
 import { collectLocationKeys, formatValueWithLocation, lookupLocationAddresses, normalizeLocationKey } from '@/utils/locationHelpers.mjs'
 
@@ -293,6 +322,11 @@ export default {
     const limitView = ref(emptyDeviceLimitState())
     const limitDraft = ref(null)
     const limitError = ref('')
+    const expiryDays = ref(null)
+    const expiryLoaded = ref(false)
+    const expiryMaxDays = ref(0)
+    const expiryAllowDisable = ref(false)
+    const expirySaving = ref(false)
 
     // 重命名弹窗的状态。四个字段而不是一个对象：
     // 弹窗关闭时要清空 draft/error 但**保留** target 供过渡动画读，
@@ -320,7 +354,7 @@ export default {
     const pageActive = () => alive && route.path === mountedPath
     const canLoad = () => pageActive() && getCurrentUserLogoutEpoch() === mountedLogoutEpoch
       && Boolean(currentUserIdentity(currentUser.value))
-    const busy = () => loading.value || actionBusy.value !== '' || savingLimit.value || renameSaving.value
+    const busy = () => loading.value || actionBusy.value !== '' || savingLimit.value || renameSaving.value || expirySaving.value
     const limitEditable = computed(() => limitView.value.loaded && limitView.value.editable
       && limitView.value.hookReady && !busy())
 
@@ -395,7 +429,7 @@ export default {
 
     function hasAnyAction(record) {
       return Boolean(record.renamable) || record.removable || record.status === 'active'
-        || (record.blocked && record.blockId > 0)
+        || record.deletable || (record.blocked && record.blockId > 0)
     }
 
     // ───────────── 重命名 ─────────────
@@ -498,7 +532,7 @@ export default {
       clearNotice()
       loading.value = true
       try {
-        await Promise.all([loadList(), loadLimit()])
+        await Promise.all([loadList(), loadLimit(), loadExpiry()])
       } catch (error) {
         if (pageActive()) failure.value = '读取失败：' + (error?.message || error)
       } finally {
@@ -524,6 +558,47 @@ export default {
       } finally {
         if (pageActive()) actionBusy.value = ''
       }
+    }
+
+    async function deleteRemovedDevice(record) {
+      if (!canLoad() || busy() || !record?.deletable) return
+      clearNotice(); actionBusy.value = record.rowKey
+      try {
+        const res = await deleteMyRemovedDevice(record.id)
+        if (!pageActive()) return
+        if (res?.status !== 200) { failure.value = '删除设备记录失败' + (res?.message ? '：' + res.message : ''); return }
+        notice.value = '已删除该设备的历史记录。'
+        await reload()
+      } catch (error) { if (pageActive()) failure.value = '删除设备记录失败：' + (error?.message || error) }
+      finally { if (pageActive()) actionBusy.value = '' }
+    }
+
+    async function loadExpiry() {
+      const owner = currentUserIdentity(currentUser.value)
+      expiryLoaded.value = false
+      const res = await getMyDeviceExpiry()
+      if (!canLoad() || owner !== currentUserIdentity(currentUser.value)) return
+      const data = res?.data?.data || res?.data
+      if (res?.status !== 200 || !data || !Number.isInteger(data.days) || !Number.isInteger(data.maxDays)) { expiryLoaded.value = false; failure.value = '设备过期策略读取失败' + (res?.message ? '：' + res.message : ''); return }
+      expiryDays.value = data.days
+      expiryMaxDays.value = data.maxDays
+      expiryAllowDisable.value = Boolean(data.allowDisable)
+      expiryLoaded.value = true
+    }
+
+    async function saveExpiry() {
+      if (!canLoad() || busy() || !expiryLoaded.value || expiryMaxDays.value === 0) return
+      const verdict = validateDeviceExpiryInput(expiryDays.value, expiryMaxDays.value, expiryAllowDisable.value)
+      if (!verdict.ok) { failure.value = verdict.message; return }
+      expirySaving.value = true; clearNotice()
+      try {
+        const res = await updateMyDeviceExpiry(verdict.value)
+        if (!canLoad()) return
+        if (res?.status !== 200) { failure.value = '保存设备过期策略失败' + (res?.message ? '：'+res.message : ''); return }
+        notice.value = '设备自动移除时间已更新。'
+        await loadExpiry()
+      } catch (error) { if (pageActive()) failure.value = '保存设备过期策略失败：' + (error?.message || error) }
+      finally { if (pageActive()) expirySaving.value = false }
     }
 
     async function blockDevice(record) {
@@ -607,6 +682,11 @@ export default {
       limitView.value = emptyDeviceLimitState()
       limitDraft.value = null
       limitError.value = ''
+      expiryDays.value = null
+      expiryLoaded.value = false
+      expiryMaxDays.value = 0
+      expiryAllowDisable.value = false
+      expirySaving.value = false
       actionBusy.value = ''
       loading.value = false
       failure.value = ''
@@ -630,11 +710,11 @@ export default {
 
     return {
       loading, actionBusy, savingLimit, failure, notice, ipLocations,
-      listView, limitView, limitDraft, limitError, limitEditable,
+      listView, limitView, limitDraft, limitError, limitEditable, expiryDays, expiryLoaded, expiryMaxDays, expiryAllowDisable, expirySaving,
       limitText, limitHint, limitPanelDescription, limitCeilingText, limitCeilingHint,
       limitRuleText,
       limitInputId, limitRuleId, columns, busy,
-      reload, removeDevice, blockDevice, unblockDevice, saveDeviceLimit,
+      reload, removeDevice, deleteRemovedDevice, blockDevice, unblockDevice, saveDeviceLimit, saveExpiry,
       hasAnyAction, formatDeviceUsageTime, maskDeviceId,
       // 来源 IP 与重命名
       formatValueWithLocation, normalizeLocationKey, DEVICE_LABEL_MAX_RUNES,

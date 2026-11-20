@@ -13,8 +13,8 @@ const { createMemoryHistory, createRouter } = require('vue-router')
 const Antd = require('ant-design-vue')
 const axios = require('axios')
 const currentUser = require('../../src/utils/currentUser.js')
-const admin = { id: 89101, username: 'SYNTHETIC_VIEW_ADMIN', role: 'admin', status: 'enabled' }
-const user = { id: 89102, username: 'SYNTHETIC_VIEW_USER', role: 'user', status: 'enabled' }
+const admin = { id: 89101, username: 'SYNTHETIC_VIEW_ADMIN', nickname: 'SYNTHETIC_ADMIN_NICK', role: 'admin', status: 'enabled' }
+const user = { id: 89102, username: 'SYNTHETIC_VIEW_USER', nickname: 'SYNTHETIC_USER_NICK', role: 'user', status: 'enabled' }
 const calls = [], pending = [], pages = [], unexpected = [], runtime = [], holds = new Set()
 const originalAdapter = axios.defaults.adapter
 
@@ -35,7 +35,12 @@ axios.defaults.adapter = config => {
     const id = Number(url.split('/').pop())
     result = response(config, {
       ticket: { id, subject: 'SYNTHETIC_SELF_DETAIL', status: 'open', updatedAt: '2026-11-19T00:00:00Z' },
-      messages: [{ id: 1, body: 'SYNTHETIC_SELF_BODY', authorRole: 'user', authorName: 'Synthetic', createdAt: '2026-11-19T00:00:00Z' }],
+      messages: [
+        { id: 1, body: 'SYNTHETIC_SELF_BODY', userId: 89102, authorRole: 'user', authorName: 'Synthetic', createdAt: '2026-11-19T00:00:00Z' },
+        { id: 2, body: 'SYNTHETIC_ADMIN_BODY', userId: 89101, authorRole: 'admin', authorName: 'SYNTHETIC_ADMIN_NAME', createdAt: '2026-11-19T01:00:00Z' },
+        { id: 3, body: 'SYNTHETIC_SYSTEM_BODY', userId: 89102, authorRole: 'system', authorName: '系统自动创建', createdAt: '2026-11-19T02:00:00Z' },
+      ],
+      user: { id: 89102, username: 'SYNTHETIC_VIEW_USER', nickname: 'SYNTHETIC_USER_NICK', createdAt: '2026-01-02T03:04:05Z', lastLoginAt: '2026-11-20T20:00:00Z', lastLoginIp: '192.0.2.10' },
       notification: { id: 9, status: 'skipped', lastError: 'SYNTHETIC_ADMIN_ONLY_FAILURE' },
     })
   } else if (url === '/api/tickets/config' && method === 'get') {
@@ -144,6 +149,10 @@ test('普通用户工单详情不显示企业微信通知，且请求使用自�
   assert.equal(calls.find(call => call.url === '/api/tickets/71')?.params?.scope, 'self')
   assert.equal(state(wrapper, 'notification'), null)
   assert.equal([...document.querySelectorAll('.notification-alert')].filter(visible).length, 0)
+  const text = [...document.querySelectorAll('.message-item header strong')].filter(visible).map(node => compact(node.textContent))
+  assert.ok(text.includes('SYNTHETIC_USER_NICK'))
+  assert.ok(text.includes('管理员'))
+  assert.ok(!text.includes('SYNTHETIC_ADMIN_NAME'))
 })
 
 test('管理员在工单反馈自助视图也隔离提醒，而工单管理保留提醒', async () => {
@@ -160,6 +169,12 @@ test('管理员在工单反馈自助视图也隔离提醒，而工单管理保�
   assert.equal(calls.find(call => call.url === '/api/tickets/72')?.params?.scope, undefined)
   assert.equal(state(management.wrapper, 'notification')?.status, 'skipped')
   assert.equal([...document.querySelectorAll('.notification-alert')].filter(visible).length, 1)
+  assert.ok(document.querySelector('[data-ticket-user-summary]')?.textContent.includes('SYNTHETIC_USER_NICK'))
+  const text = [...document.querySelectorAll('.message-item header strong')].filter(visible).map(node => compact(node.textContent))
+  assert.ok(text.includes('SYNTHETIC_USER_NICK（用户ID：89102）'))
+  assert.ok(text.includes('管理员：SYNTHETIC_ADMIN_NAME（用户ID：89101）'))
+  assert.ok(text.includes('系统自动创建'))
+  assert.ok(!text.some(value => value.startsWith('系统自动创建（')))
 })
 
 test('账号问题默认选中登录异常，且可以选择其它问题', async () => {

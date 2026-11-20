@@ -170,7 +170,7 @@ func SetAPIRouter(router *gin.Engine) {
 
 	// 充值阶梯赠送的可配置档位（Q75-2，94-*.md §2 C2）。
 	//
-	// 表空时服务层回退到 DefaultRechargePromotionTiers，因此本接口先上线不影响发放。
+	// 未配置档位表示不赠送，不回退到默认六档。
 	// 整体替换（PUT）而不是逐条增删改：档位是一张阶梯，「同门槛不同比例」的中间态
 	// 在选档语义上不合法，必须让「校验通过」与「生效」是同一瞬间。
 	apiRouter.GET("/admin/recharge-promotion-tiers", controller.Auth, middleware.RequireAdmin, controller.RechargePromotionTierList)
@@ -304,6 +304,9 @@ func SetAPIRouter(router *gin.Engine) {
 	//     段数不同不会抢节点。
 	apiRouter.GET("/user/devices", controller.Auth, controller.UserDevices)
 	apiRouter.POST("/user/devices/:id/remove", controller.Auth, controller.UserDeviceRemove)
+	apiRouter.DELETE("/user/devices/:id", controller.Auth, controller.UserDeviceDelete)
+	apiRouter.GET("/user/device-expiry", controller.Auth, controller.UserDeviceExpiryGet)
+	apiRouter.PUT("/user/device-expiry", controller.Auth, controller.UserDeviceExpiryPut)
 	// 重命名：只写 device_label 一列。用 /label 这个子路径而不是通用 PUT /user/devices/:id
 	// —— 后者会让 device_id / last_seen_at / revoked_at 也变成「可被用户改」，
 	// 而这三列各有判定语义（唯一索引 / 10 天闲置 / 撤销）。见 controller.UserDeviceRename 的说明。

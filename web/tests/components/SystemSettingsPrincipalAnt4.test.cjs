@@ -43,6 +43,7 @@ const apiPath = path.join(root, 'src/api/TikuComponentApi.js')
 const api = new Module(apiPath); api.loaded = true
 api.exports = Object.fromEntries(names.map(name => [name, payload => transport(name, payload)]))
 api.exports.getSystemMetrics = () => { metricsReads += 1; return Promise.resolve({ status: 200, data: metricSnapshot }) }
+api.exports.getRefundAgreement = () => Promise.resolve({ status: 200, data: { text: 'SYNTHETIC_AGREEMENT', defaultText: 'SYNTHETIC_AGREEMENT', isDefault: true } })
 require.cache[apiPath] = api
 for (const kind of ['success', 'error', 'warning']) {
   const native = Antd.message[kind].bind(Antd.message)
@@ -59,16 +60,16 @@ function detail(tag = 'A') {
   return {
     siteName: `SYNTHETIC_SITE_${tag}`, maxLogSizeBytes: 2 * 1024 * 1024 * 1024,
     registerEnabled: true, newUserBonusAmount: 0.123456, minRechargeAmount: 1.25,
+    deviceIdleRevokeAfterDays: 10, deviceIdleRevokeAllowUserDisable: false, blacklistEnabled: false,
     epayVersion: 'v2', epayGatewayUrl: 'https://synthetic-pay.invalid/submit.php', epayPartnerId: `SYNTHETIC_PID_${tag}`,
     epayPlatformPublicKey: `SYNTHETIC_PLATFORM_${tag}`, epayMerchantPrivateKey: `SYNTHETIC_PRIVATE_${tag}`,
-    epayNotifyUrl: 'https://synthetic-site.invalid/adapter-service/payment/notify', epayReturnUrl: 'https://synthetic-site.invalid/adapter/recharge/result',
+    epayNotifyUrl: 'https://synthetic-site.invalid/api/payment/notify', epayReturnUrl: 'https://synthetic-site.invalid/recharge/result',
     smsProvider: 'smsbao', smsbaoUsername: `SYNTHETIC_SMS_USER_${tag}`, smsbaoSecret: `SYNTHETIC_SMS_${tag}`,
     smsCodeSignName: 'SYNTHETIC_SIGN', smsCodeTemplate: 'SYNTHETIC {sign} {code}', smsLoginEnabled: true,
     wechatLoginEnabled: true, wechatScanLoginEnabled: true, wechatCodeLoginEnabled: true, wechatDefaultLoginMode: 'code',
     wechatCodeStaticQrcodeUrl: 'https://synthetic-static.invalid/qr.png', wechatApiBaseUrl: 'https://synthetic-wechat.invalid', wechatApiBearerToken: `SYNTHETIC_BEARER_${tag}`,
     captchaProvider: 'remote', captchaApiBaseUrl: 'https://synthetic-captcha.invalid', captchaApiKey: `SYNTHETIC_CAPTCHA_${tag}`, captchaType: 'ROTATE',
     smsbaoCredentialType: 'password', smsbaoRegionMode: 'domestic', uapiApiKey: `SYNTHETIC_UAPI_${tag}`,
-    rechargePromotionEnabled: false, deviceLimitEnabled: false,
     // 敏感词检测开关：GET/PUT 双向字段（sensitiveWordCheckConfigured 是只读派生，
     // 不进 payload，因此这里也不返回），保证精确 payload 契约覆盖它。
     sensitiveWordCheckEnabled: false,
@@ -178,7 +179,7 @@ test('SS_PRINCIPAL payment-first load allows independent dirty payment draft whi
 
 test('SS_PRINCIPAL initial A read retires on B; late A settings/rows/finally cannot affect current B loading or secrets', async () => {
   const w = await mountPage(A, false)
-  const childInstance = w.findComponent(MetricsPanel).vm.$
+  assert.equal(w.findComponent(MetricsPanel).exists(), false, 'SYSTEM_SETTINGS_NO_LONGER_OWNS_METRICS_CHILD')
   const oldSettings = calls.getSystemSettings[0], oldRows = calls.getPaymentMethods[0]
   user.setStoredCurrentUser(B)
   assert.deepEqual(secrets(w), ['', '', '', '', '', ''], 'SYNCHRONOUS_PRIVATE_RETIREMENT')
@@ -191,8 +192,8 @@ test('SS_PRINCIPAL initial A read retires on B; late A settings/rows/finally can
   finishLatest('B'); await settle()
   assert.deepEqual(secrets(w), ['SYNTHETIC_PLATFORM_B', 'SYNTHETIC_PRIVATE_B', 'SYNTHETIC_SMS_B', 'SYNTHETIC_BEARER_B', 'SYNTHETIC_CAPTCHA_B', 'SYNTHETIC_UAPI_B'])
   assert.equal(w.vm.paymentMethods[0].id, row('B').id); assert.equal(w.vm.tabLoading, false); assert.equal(w.vm.paymentMethodLoading, false)
-  assert.equal(w.findComponent(MetricsPanel).vm.$, childInstance, 'PRINCIPAL_CHANGE_DOES_NOT_REMOUNT_METRICS_CHILD')
-  assert.equal(metricsReads, 1, 'PARENT_CHANGE_DOES_NOT_AUTOMATICALLY_REFETCH_METRICS')
+  assert.equal(w.findComponent(MetricsPanel).exists(), false, 'PRINCIPAL_CHANGE_DOES_NOT_REINTRODUCE_METRICS_CHILD')
+  assert.equal(metricsReads, 0, 'SYSTEM_SETTINGS_PRINCIPAL_CHANGE_NEVER_FETCHES_METRICS')
 })
 
 test('SS_PRINCIPAL old rejected/non200 reads cannot display errors or clear B pending reads', async () => {
@@ -304,7 +305,7 @@ test('SS_PRINCIPAL actual payment-close and route-leave dirty confirmations reti
   const closePrompt = confirms.at(-1); assert.match(closePrompt.title, /未保存.*支付方式/)
   closePrompt.onCancel(); await settle(); assert.equal(w.vm.paymentMethodVisible, true)
   await siteInput(w, 'SYNTHETIC_ROUTE_DRAFT')
-  const leave = w.vm.requestRouteLeave({ path: '/adapter/users' }); await settle()
+  const leave = w.vm.requestRouteLeave({ path: '/users' }); await settle()
   const routePrompt = confirms.at(-1); assert.match(routePrompt.title, /未保存/)
   assert.equal(routePrompt.focusTriggerAfterClose, false, 'ROUTE_CONFIRM_MUST_NOT_REFOCUS_RETIRED_OPENER')
   user.setStoredCurrentUser(B)
@@ -542,17 +543,21 @@ test('SS_PRINCIPAL native validation/SVG negatives remain real; icon selection a
   calls.deletePaymentMethod[0].resolve({ status: 200 }); await settle(); finishLatest('A'); await settle()
 })
 
-test('SS_PRINCIPAL diagnostics child remains mounted, separate and unmodified by parent save/refresh', async () => {
+test('SS_PRINCIPAL settings save and refresh never mount or request diagnostics moved to server details', async () => {
   const w = await mountPage(A)
-  const child = w.findComponent(MetricsPanel), instance = child.vm.$
-  assert.equal(metricsReads, 1); assert.equal(child.vm.metrics.http.total, 7)
+  assert.equal(w.findComponent(MetricsPanel).exists(), false)
+  assert.equal(button(w, '刷新诊断'), undefined)
+  assert.equal(metricsReads, 0)
   await siteInput(w, 'SYNTHETIC_METRICS_INDEPENDENT_DRAFT')
-  button(w, '刷新诊断').element.click(); await settle()
-  assert.equal(metricsReads, 2); assert.equal(w.vm.formState.siteName, 'SYNTHETIC_METRICS_INDEPENDENT_DRAFT')
-  assert.deepEqual(readCounts(), [1, 1]); assert.equal(w.findComponent(MetricsPanel).vm.$, instance)
+  assert.equal(w.vm.hasUnsavedChanges, true)
+  assert.deepEqual(readCounts(), [1, 1]); assert.equal(metricsReads, 0)
   click(w, '保存'); await settle(); calls.updateSystemSettings[0].resolve({ status: 200, data: {} }); await settle()
-  assert.equal(metricsReads, 2); assert.equal(child.vm.metrics.http.total, 7)
-  assert.equal(w.findComponent(MetricsPanel).vm.$, instance)
+  assert.equal(w.vm.formState.siteName, 'SYNTHETIC_METRICS_INDEPENDENT_DRAFT')
+  assert.equal(w.vm.hasUnsavedChanges, false)
+  assert.equal(metricsReads, 0)
+  click(w, '刷新'); await settle(); finishLatest('A'); await settle()
+  assert.deepEqual(readCounts(), [2, 2]); assert.equal(metricsReads, 0)
+  assert.equal(w.findComponent(MetricsPanel).exists(), false)
 })
 
 test('SS_PRINCIPAL unmounted A promises cannot alter remounted B form/payment/busy or show old feedback', async () => {

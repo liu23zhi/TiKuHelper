@@ -84,6 +84,15 @@
           <div class="hint">限制用户每次充值的最低金额，默认 1 元，最多支持两位小数。</div>
         </a-form-item>
 
+        <a-form-item label="闲置设备自动移除" :html-for="fieldId('deviceIdleRevokeAfterDays')">
+          <a-input-number :id="fieldId('deviceIdleRevokeAfterDays')" :value="formState.deviceIdleRevokeAfterDays" v-on="{ 'update:value': settingsEntry.bind(updateSetting, 'deviceIdleRevokeAfterDays') }" :min="0" :max="3650" :precision="0" style="width: 220px" />
+          <div class="hint">设备连续未活跃达到此天数后自动移除绑定，0 表示关闭。用户自定义天数不能超过此值；管理员调低后自动按新上限生效。</div>
+        </a-form-item>
+        <a-form-item label="允许用户关闭自动移除" :html-for="fieldId('deviceIdleRevokeAllowUserDisable')">
+          <a-switch :id="fieldId('deviceIdleRevokeAllowUserDisable')" :checked="formState.deviceIdleRevokeAllowUserDisable" v-on="{ 'update:checked': settingsEntry.bind(updateSetting, 'deviceIdleRevokeAllowUserDisable') }" />
+          <div class="hint">开启后，普通用户可以在「我的设备」将自动移除设为 0 天；关闭时用户最小可设 1 天。</div>
+        </a-form-item>
+
         <a-form-item label="开启短信登录" :html-for="fieldId('smsLoginEnabled')">
           <a-switch :id="fieldId('smsLoginEnabled')" :checked="formState.smsLoginEnabled" v-on="{ 'update:checked': settingsEntry.bind(updateSetting, 'smsLoginEnabled') }" />
         </a-form-item>
@@ -91,18 +100,6 @@
         <a-form-item label="开启微信登录" :html-for="fieldId('wechatLoginEnabled')">
           <a-switch :id="fieldId('wechatLoginEnabled')" :checked="formState.wechatLoginEnabled" v-on="{ 'update:checked': settingsEntry.bind(updateSetting, 'wechatLoginEnabled') }" />
           <div class="hint">总开关会随微信扫描或微信验证码方式自动生效；两个方式都关闭时会自动关闭。</div>
-        </a-form-item>
-        </ConsolePanel>
-
-        <ConsolePanel title="商业化开关" description="两项默认关闭；关闭时保持现有行为，不产生赠金、不限制设备。" class="settings-section">
-        <a-form-item label="启用充值阶梯赠送" :html-for="fieldId('rechargePromotionEnabled')">
-          <a-switch :id="fieldId('rechargePromotionEnabled')" :checked="formState.rechargePromotionEnabled" v-on="{ 'update:checked': settingsEntry.bind(updateSetting, 'rechargePromotionEnabled') }" />
-          <div class="hint">关闭（默认）：充值只按实付入账，不产生任何赠金与赠送流水。开启后才按六档门槛匹配赠比；方案本身仍未获批准上线。</div>
-        </a-form-item>
-
-        <a-form-item label="启用账户设备池上限" :html-for="fieldId('deviceLimitEnabled')">
-          <a-switch :id="fieldId('deviceLimitEnabled')" :checked="formState.deviceLimitEnabled" v-on="{ 'update:checked': settingsEntry.bind(updateSetting, 'deviceLimitEnabled') }" />
-          <div class="hint">关闭（默认）：不登记设备、不校验安装，所有有效 Key 按原逻辑使用。开启后才按等级上限（1/2/3/5/10/20）拒绝新登记。</div>
         </a-form-item>
         </ConsolePanel>
 
@@ -503,9 +500,8 @@ export default defineComponent({
       registerEnabled: false,
       newUserBonusAmount: 0,
       minRechargeAmount: DEFAULT_MIN_RECHARGE_AMOUNT,
-      // 商业化开关默认关闭，与后端缺省一致。
-      rechargePromotionEnabled: false,
-      deviceLimitEnabled: false,
+      deviceIdleRevokeAfterDays: 10,
+      deviceIdleRevokeAllowUserDisable: false,
       // 黑名单总开关默认关闭，与后端缺省一致（46-黑名单设计.md 红线：
       // blacklist_enabled 读不到一律按 false，不能让配置读错变成开始拦人）。
       blacklistEnabled: false,
@@ -857,9 +853,8 @@ export default defineComponent({
       formState.registerEnabled = !!data.registerEnabled
       formState.newUserBonusAmount = Number(data.newUserBonusAmount || 0)
       formState.minRechargeAmount = normalizeMinRechargeAmount(data.minRechargeAmount)
-      // 布尔开关只认显式 true；缺字段或异常值一律视为关闭。
-      formState.rechargePromotionEnabled = data.rechargePromotionEnabled === true
-      formState.deviceLimitEnabled = data.deviceLimitEnabled === true
+      formState.deviceIdleRevokeAfterDays = Number.isInteger(data.deviceIdleRevokeAfterDays) ? data.deviceIdleRevokeAfterDays : 10
+      formState.deviceIdleRevokeAllowUserDisable = Boolean(data.deviceIdleRevokeAllowUserDisable)
       // 黑名单总开关：与其它布尔开关同规则 —— 只认显式 true。
       // 后端 resolveBoolSettingInput 对 nil 保持现值，这里读回的是落库后的真实值。
       formState.blacklistEnabled = data.blacklistEnabled === true
@@ -1035,6 +1030,8 @@ export default defineComponent({
         registerEnabled: !!formState.registerEnabled,
         newUserBonusAmount: normalizeBonusAmount(formState.newUserBonusAmount),
         minRechargeAmount,
+        deviceIdleRevokeAfterDays: formState.deviceIdleRevokeAfterDays,
+        deviceIdleRevokeAllowUserDisable: formState.deviceIdleRevokeAllowUserDisable,
         epayVersion: 'v2',
         epayGatewayUrl: normalizeString(formState.epayGatewayUrl),
         epayPartnerId: normalizeString(formState.epayPartnerId),
@@ -1063,9 +1060,6 @@ export default defineComponent({
         smsbaoRegionMode: normalizeString(formState.smsbaoRegionMode || 'auto'),
         // 明文提交；留空即为清空密钥（不做脱敏占位符的特殊处理）。
         uapiApiKey: normalizeString(formState.uapiApiKey),
-        // 显式提交布尔值：后端用指针区分「未提交」与「提交 false」。
-        rechargePromotionEnabled: !!formState.rechargePromotionEnabled,
-        deviceLimitEnabled: !!formState.deviceLimitEnabled,
         // 显式提交布尔值：后端用 *bool 区分「未提交」与「提交 false」。
         blacklistEnabled: !!formState.blacklistEnabled,
         sensitiveWordCheckEnabled: !!formState.sensitiveWordCheckEnabled,

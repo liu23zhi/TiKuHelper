@@ -744,6 +744,13 @@
             }}</span
             ><span>创建于 {{ formatTicketTime(detailTicket.createdAt) }}</span>
           </div>
+          <section v-if="isAdmin && detailUser" class="detail-user-summary" data-ticket-user-summary>
+            <div><span>反馈用户</span><strong>{{ detailUser.nickname || detailUser.username || detailTicket.userName || `用户 #${detailUser.id}` }}</strong></div>
+            <div><span>用户 ID</span><strong>{{ detailUser.id }}</strong></div>
+            <div><span>注册时间</span><strong>{{ formatTicketTime(detailUser.createdAt) }}</strong></div>
+            <div><span>上次登录</span><strong>{{ formatTicketTime(detailUser.lastLoginAt) }}</strong></div>
+            <div v-if="detailUser.lastLoginIp"><span>上次登录 IP</span><strong>{{ detailUser.lastLoginIp }}</strong></div>
+          </section>
           <!-- 退款工单的金额/状态/审核动作。
                数据来自 detail.refund（后端 TicketDetail.Refund，2026-11-18 新增）——
                这是「删掉独立退款面板」后审核操作唯一的入口。 -->
@@ -777,10 +784,7 @@
               :class="{ 'is-admin': item.authorRole === 'admin' }"
             >
               <header>
-                <strong>{{
-                  item.authorName ||
-                  (item.authorRole === "admin" ? "管理员" : "用户")
-                }}</strong
+                <strong>{{ messageAuthorText(item) }}</strong
                 ><span>{{ formatTicketTime(item.createdAt) }}</span>
               </header>
               <!-- 工单正文**只做展示遮挡**，绝不阻断提交（用户原话：工单系统要允许
@@ -1274,6 +1278,7 @@ function retireStaleCreateValidation() {
 const detailVisible = ref(false);
 const detailLoading = ref(false);
 const detailTicket = ref(null);
+const detailUser = ref(null);
 const messages = ref([]);
 const attachments = ref([]);
 const notification = ref(null);
@@ -1480,7 +1485,7 @@ function clearOwned() {
   tickets.value = []; pagination.total = 0; pagination.current = 1;
   listLoading.value = detailLoading.value = createLoading.value = replyLoading.value = statusSaving.value = configSaving.value = configTesting.value = retryLoading.value = configLoading.value = false;
   createVisible.value = detailVisible.value = configLoaded.value = createSaved.value = configDirty.value = false;
-  detailTicket.value = null; messages.value = []; attachments.value = []; notification.value = null; replyBody.value = ""; detailStatus.value = ""; statusWasChosen.value = false;
+  detailTicket.value = null; detailUser.value = null; messages.value = []; attachments.value = []; notification.value = null; replyBody.value = ""; detailStatus.value = ""; statusWasChosen.value = false;
   draft.ticketType = TICKET_CREATE_TYPE_GENERAL; draft.subject = ""; draft.body = ""; draft.requestedYuan = ""; draft.reason = ""; draft.refundOrderId = undefined; draft.issueType = DEFAULT_TICKET_ACCOUNT_ISSUE; errorMessage.value = "";
   createStep.value = ticketWizardInitialStep();
   draftAttachments.value = []; replyAttachments.value = []; uploadBusy.value = false;
@@ -1618,6 +1623,27 @@ function attachmentsForMessage(messageId) {
 const notificationText = computed(() =>
   notificationStatusText(notification.value)
 );
+function messageAuthorText(item) {
+  const role = String(item?.authorRole || "").trim().toLowerCase();
+  if (!isAdmin.value && role === "admin") return "管理员";
+  const name = String(item?.authorName || "").trim() || (role === "admin" ? "管理员" : detailTicket.value?.userName || "用户");
+  if (!isAdmin.value) {
+    const itemUserId = Number(item?.userId);
+    const currentId = Number(currentUser.value?.id);
+    if (role === "user" && itemUserId > 0 && itemUserId === currentId && currentUser.value?.nickname) {
+      return String(currentUser.value.nickname).trim() || name;
+    }
+    return name;
+  }
+  const id = Number(item?.userId);
+  const displayName = role === "user" && detailUser.value && Number(item?.userId) === Number(detailUser.value.id)
+    ? String(detailUser.value.nickname || detailUser.value.username || name).trim() || name
+    : name;
+  const label = role === "admin" && displayName !== "管理员" ? `管理员：${displayName}` : displayName;
+  return (role === "user" || role === "admin") && Number.isSafeInteger(id) && id > 0
+    ? `${label}（用户ID：${id}）`
+    : label;
+}
 function responseMessage(error, fallback) {
   return (
     String(
@@ -1948,6 +1974,7 @@ async function loadDetail(id) {
   detailVisible.value = true;
   detailLoading.value = true;
   detailTicket.value = null;
+  detailUser.value = null;
   messages.value = [];
   attachments.value = [];
   notification.value = null;
@@ -1959,6 +1986,7 @@ async function loadDetail(id) {
     const result = normalizeTicketDetailResponse(await getTicket(id, detailParams));
     if (!owns() || version !== detailRequestVersion) return;
     detailTicket.value = result.ticket;
+    detailUser.value = result.user;
     messages.value = result.messages;
     attachments.value = result.attachments;
     notification.value = isAdmin.value ? result.notification : null;
@@ -1984,6 +2012,7 @@ function closeDetail() {
   replyBody.value = ""; replyAttachments.value = []; messages.value = []; attachments.value = []; notification.value = null;
   detailVisible.value = false;
   detailTicket.value = null;
+  detailUser.value = null;
   // The original key/version retirement unmounts the old Modal before afterClose.
   // Use one owned continuation after navigation/disposal, not the dead vendor callback.
   const listPath = routeViewMode.value === "admin" ? "/ticket-admin" : "/tickets";
@@ -2037,16 +2066,16 @@ async function submitReply() {
       detailTicket.value?.id === ticketId
     ) {
       detailTicket.value = result.ticket || detailTicket.value;
+      if (result.user) detailUser.value = result.user;
       messages.value = result.messages.length
         ? result.messages
         : [
             ...messages.value,
             {
               body,
+              userId: currentUser.value?.id,
               authorRole: isAdmin.value ? "admin" : "user",
-              authorName: isAdmin.value
-                ? "管理员"
-                : currentUser.value?.nickname || currentUser.value?.username,
+              authorName: currentUser.value?.nickname || currentUser.value?.username || (isAdmin.value ? "管理员" : "用户"),
               createdAt: new Date().toISOString(),
               id: `local-${Date.now()}`,
             },
@@ -2308,6 +2337,31 @@ watch(
   color: var(--console-muted);
   font-size: 13px;
 }
+.detail-user-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px 16px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--console-border);
+  border-radius: 8px;
+  background: var(--console-subtle);
+}
+.detail-user-summary div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.detail-user-summary span {
+  color: var(--console-muted);
+  font-size: 12px;
+}
+.detail-user-summary strong {
+  overflow-wrap: anywhere;
+  color: var(--console-text);
+  font-size: 13px;
+}
 .notification-alert {
   margin-top: 16px;
 }
@@ -2335,13 +2389,21 @@ watch(
 }
 .message-item header {
   display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 18px;
+  gap: 4px 18px;
   color: var(--console-muted);
   font-size: 12px;
 }
 .message-item header strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: var(--console-text);
+}
+.message-item header > span {
+  margin-left: auto;
+  white-space: nowrap;
 }
 .message-item p {
   margin: 8px 0 0;

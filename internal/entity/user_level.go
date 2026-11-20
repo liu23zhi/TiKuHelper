@@ -100,8 +100,7 @@ func (*UserLevelHistory) TableName() string { return TableNameUserLevelHistory }
 
 // RechargePromotionTierRule 是充值阶梯赠送的一个可配置档位。
 //
-// 与 service.DefaultRechargePromotionTiers 的关系：表**空**时服务层回退到常量表，
-// 因此上线不需要数据迁移、也不会改变任何既有发放行为（Q75-2 的可配置化前提）。
+// 仅显式配置且启用的档位参与赠送；空表表示不赠送，不回退到常量档位。
 type RechargePromotionTierRule struct {
 	ID int32 `gorm:"primaryKey;autoIncrement" json:"id"`
 	// Threshold 是档位门槛（充值实付金额，2 位口径）。
