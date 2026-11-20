@@ -14,7 +14,6 @@
         message="这里维护公开认证、微信登录、验证码、短信宝、支付回调和支付方式。修改后会立即影响后续注册、登录与充值链路。"
       />
 
-      <SystemMetricsPanel />
       <a-alert v-if="!canManageSettings()" type="warning" show-icon message="当前身份尚未确认或无系统设置管理权限，请重新登录管理员账号。" />
       <a-alert v-if="settingsError" type="error" show-icon :message="settingsError" />
       <section v-if="settingsReadFailure" class="page-alert" data-system-settings-read-feedback>
@@ -361,7 +360,6 @@ import { useCurrentUserDisplay, isAdminUser, getCurrentUserLogoutEpoch } from '@
 import { useUnsavedDraft } from '@/utils/useUnsavedDraft'
 import PaymentMethodPanel from './PaymentMethodPanel.vue';
 import RefundAgreementPanel from './RefundAgreementPanel.vue';
-import SystemMetricsPanel from './SystemMetricsPanel.vue';
 import {
   createPaymentMethod,
   deletePaymentMethod,
@@ -493,7 +491,7 @@ const projectSettingsSaveFailure = source => {
 
 export default defineComponent({
   name: 'SystemSettings',
-  components: { PaymentMethodPanel, RefundAgreementPanel, SafePaymentIcon, PaymentMethodIconPicker, SystemMetricsPanel, RequestFailureAlert },
+  components: { PaymentMethodPanel, RefundAgreementPanel, SafePaymentIcon, PaymentMethodIconPicker, RequestFailureAlert },
   setup() {
     const settingsFormId = `system-settings-${useId()}`
     const fieldId = field => `${settingsFormId}-${field}`
