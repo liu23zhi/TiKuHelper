@@ -667,7 +667,7 @@
            保留在 <a-form> 内而不是外面：它能跟着表单的 layout/间距走，
            视觉上仍是「填内容」的一部分。 -->
       <a-form-item
-        label="截图（可选）"
+        label="图片（可选）"
         help="支持 PNG / JPEG，单张不超过 2 MiB。图片上传后先做安全检测，检测未通过时只显示提示。"
       >
         <TicketImagePicker :max="TICKET_ATTACHMENT_MAX_PER_MESSAGE" :disabled="createLoading || uploadBusy" @change="onPickDraftImages" />
@@ -856,7 +856,7 @@
                 show-count
                 :rows="5"
                 placeholder="请输入回复内容" /></a-form-item
-            ><a-form-item label="截图（可选）"
+            ><a-form-item label="图片（可选）"
               ><TicketImagePicker :max="TICKET_ATTACHMENT_MAX_PER_MESSAGE" :disabled="replyLoading || uploadBusy || !detailTicket" @change="onPickReplyImages" />
               <div v-if="replyAttachments.length" class="ticket-attachment-selected">
                 <span v-for="item in replyAttachments" :key="item.id" class="ticket-attachment-chip"
