@@ -426,7 +426,7 @@ function createLogListState() {
 
 const moduleLabels = LOG_MODULE_OPTIONS.map((option) => option.label)
 const logColumnWidths = {
-  createTime: 112, // 2026-10-25 plus cell padding
+  createTime: 190,
   module: Math.max(...moduleLabels.map((label) => [...label].reduce((width, character) => width + (character.codePointAt(0) > 127 ? 13 : 7), 0))) + 48,
   status: 76,
   // 敏感词徽章：两字标签 + 内边距
@@ -820,7 +820,7 @@ export default defineComponent({
       this.handleLogList()
     },
     formatDateForTable(dateString) {
-      return formatShanghaiLogDate(dateString, '\n')
+      return formatShanghaiLogDate(dateString)
     }
   }
 });
@@ -832,7 +832,8 @@ export default defineComponent({
 .filter-form { display: flex; flex-wrap: wrap; gap: 12px 0; }
 .filter-form :deep(.ant-form-item) { margin-bottom: 0; }
 .filter-panel :deep(.ant-alert) { margin-top: 16px; }
-.log-params-cell, .log-billing-ids, .log-time-cell, .location-value { white-space: pre-wrap; overflow-wrap: anywhere; }
+.log-params-cell, .log-billing-ids, .location-value { white-space: pre-wrap; overflow-wrap: anywhere; }
+.log-time-cell { white-space: nowrap; }
 .log-time-cell { font-variant-numeric: tabular-nums; }
 .log-channel-cell { display: grid; gap: 8px; text-align: center; }
 .log-channel-name { white-space: pre-wrap; overflow-wrap: anywhere; }

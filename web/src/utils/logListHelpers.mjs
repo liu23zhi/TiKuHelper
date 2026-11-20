@@ -6,6 +6,8 @@ export const LOG_MODULE_OPTIONS = [
   { label: '题目', value: 'question' },
   { label: '搜题', value: 'search' },
   { label: 'AI 兜底', value: 'ai_fallback' },
+  { label: '导入', value: 'import' },
+  { label: '导出', value: 'export' },
   { label: '系统', value: 'system' },
   { label: '验证码', value: 'captcha' },
   { label: '用户管理', value: 'user' },
@@ -198,6 +200,7 @@ export function buildLogModuleLabel(value) {
 export function buildLogActionLabel(value, module) {
   const normalized = Number(value);
   const normalizedModule = String(module || '').trim().toLowerCase();
+  if ((normalizedModule === 'export' || normalizedModule === 'import') && normalized === 1) return '提交任务';
   if (normalized === 0) return '新增';
   if (normalized === 1) return '更新';
   if (normalized === 2) return '删除';

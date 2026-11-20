@@ -17,7 +17,7 @@ import { buildRegisterSourceLabel } from './userPortalHelpers.mjs';
 // 新增后端 module 时这里必须同步 —— 不写就看不到「又漏一个」。
 const BACKEND_MODULES = [
   'auth', 'question', 'search', 'ai_fallback', 'captcha', 'user',
-  'billing', 'sms', 'recharge', 'access_token',
+  'billing', 'sms', 'recharge', 'access_token', 'export', 'import',
   'account',   // account_log.go:39 accountLogModule + username_release.go:81
   'binding',   // user_bindings.go:38 bindingLogModule
   'ai', 'review_rebate', 'tiku', 'userexam_tool', 'unknown_module',

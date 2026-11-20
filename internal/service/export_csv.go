@@ -3,24 +3,25 @@ package service
 import (
 	"bytes"
 	"encoding/csv"
+	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
+	"html"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/pkg/logger"
+	"github.com/xuri/excelize/v2"
 	"gorm.io/gorm"
 )
 
-// 异步导出的 CSV 生成（111 §4 / 117 §4.5，任务书 ②③⑧）。
+// 异步导出的数据生成（CSV / JSON / XLSX / XML / HTML）。
 //
-// # 为什么导出只有 CSV，没有 xlsx / xls
-//
-// 111 §4.1 的格式决定是「只 CSV」：CSV 由后端异步生成（大数据量不能塞进浏览器），
-// 而 JSON 是**前端立即生成并下载**（走现有 handleExportSelected，后端零参与），
-// 所以后端没有 JSON 导出路径。xlsx 只出现在**导入**侧（117 §4.5 的支持矩阵）。
+// CSV 保持既有调用方与脱敏规则；题库导出还支持结构化 JSON、XLSX、XML
+// 和 HTML，所有格式均由服务端异步任务生成并记录审计信息。
 //
 // # 为什么脱敏是「默认开」，且不是前端决定
 //
@@ -83,6 +84,14 @@ const (
 	ExportResourceAccessTokens  = "access_tokens"
 )
 
+const (
+	ExportFormatCSV  = "csv"
+	ExportFormatJSON = "json"
+	ExportFormatXlsx = "xlsx"
+	ExportFormatXML  = "xml"
+	ExportFormatHTML = "html"
+)
+
 // ErrExportResourceUnsupported 表示资源标识不在支持清单内（400 而不是 500）。
 var ErrExportResourceUnsupported = errors.New("不支持的导出资源")
 
@@ -90,6 +99,10 @@ var ErrExportResourceUnsupported = errors.New("不支持的导出资源")
 type ExportDataOptions struct {
 	// Resource 取 ExportResource* 之一。
 	Resource string
+	// Format 为空时按 CSV 处理，以兼容旧调用方。
+	Format string
+	// QuestionIDs 非空时仅导出这些题目；空列表表示导出全部题目。
+	QuestionIDs []int64
 	// Masked 为 nil 时使用 DefaultExportMasked（true）；显式 false 才是明文。
 	Masked *bool
 	// Limit 为 0 时使用 ExportMaxRows；负数表示不限制（仅供内部测试/对账使用）。
@@ -106,6 +119,7 @@ type ExportResult struct {
 	Masked bool
 	// Resource 是资源标识（回显用）。
 	Resource string
+	Format   string
 }
 
 // exportMaskFunc 是单列的脱敏函数；nil 表示该列不脱敏。
@@ -242,6 +256,13 @@ func exportCell(column ExportColumn, value string, masked bool) string {
 //
 // 返回错误时 Content 为空 —— 绝不允许「一半的 CSV」被当成完整结果落盘。
 func ExportCSVWithDB(db *gorm.DB, opts ExportDataOptions) (ExportResult, error) {
+	opts.Format = ExportFormatCSV
+	return ExportDataWithDB(db, opts)
+}
+
+// ExportDataWithDB generates a supported format from a registered resource.
+// CSV remains the default so legacy async tasks keep their existing output.
+func ExportDataWithDB(db *gorm.DB, opts ExportDataOptions) (ExportResult, error) {
 	if db == nil {
 		return ExportResult{}, fmt.Errorf("数据库未初始化")
 	}
@@ -251,41 +272,193 @@ func ExportCSVWithDB(db *gorm.DB, opts ExportDataOptions) (ExportResult, error) 
 		return ExportResult{}, fmt.Errorf("%w: %q", ErrExportResourceUnsupported, opts.Resource)
 	}
 	masked := resolveExportMasked(opts.Masked)
+	format := strings.ToLower(strings.TrimSpace(opts.Format))
+	if format == "" {
+		format = ExportFormatCSV
+	}
+	switch format {
+	case ExportFormatCSV, ExportFormatJSON, ExportFormatXlsx, ExportFormatXML, ExportFormatHTML:
+	default:
+		return ExportResult{}, fmt.Errorf("不支持的导出格式：%s", format)
+	}
 	limit := exportResolveLimit(resource, opts.Limit)
-	rows, err := spec.load(db, limit)
+	queryDB := db
+	if resource == ExportResourceQuestions && len(opts.QuestionIDs) > 0 {
+		ids := make([]int64, 0, len(opts.QuestionIDs))
+		seen := make(map[int64]struct{}, len(opts.QuestionIDs))
+		for _, id := range opts.QuestionIDs {
+			if id <= 0 {
+				return ExportResult{}, fmt.Errorf("题目 ID 必须为正整数")
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+		if len(ids) > limit {
+			return ExportResult{}, fmt.Errorf("选中题目超过单次导出上限 %d 行", limit)
+		}
+		queryDB = queryDB.Where("id IN ?", ids)
+		limit = len(ids)
+	}
+	rows, err := spec.load(queryDB, limit)
 	if err != nil {
 		return ExportResult{}, fmt.Errorf("读取 %s 数据失败: %w", resource, err)
 	}
 
+	for rowIndex, row := range rows {
+		for columnIndex, column := range spec.columns {
+			value := ""
+			if columnIndex < len(row) {
+				value = row[columnIndex]
+			}
+			rows[rowIndex][columnIndex] = exportCell(column, value, masked)
+		}
+	}
+	content, err := serializeExportRows(spec.columns, rows, format)
+	if err != nil {
+		return ExportResult{}, err
+	}
+	return ExportResult{Content: content, Rows: len(rows), Masked: masked, Resource: resource, Format: format}, nil
+}
+
+func serializeExportRows(columns []ExportColumn, rows [][]string, format string) ([]byte, error) {
+	if format == ExportFormatJSON {
+		items := make([]map[string]any, 0, len(rows))
+		for _, row := range rows {
+			item := make(map[string]any, len(columns))
+			for i, column := range columns {
+				value := ""
+				if i < len(row) {
+					value = row[i]
+				}
+				switch column.Header {
+				case "id", "type":
+					if number, err := strconv.ParseInt(value, 10, 64); err == nil {
+						item[column.Header] = number
+					} else {
+						item[column.Header] = value
+					}
+				case "options", "answer":
+					var decoded any
+					if json.Unmarshal([]byte(value), &decoded) == nil {
+						item[column.Header] = decoded
+					} else {
+						item[column.Header] = value
+					}
+				default:
+					item[column.Header] = value
+				}
+			}
+			items = append(items, item)
+		}
+		content, err := json.MarshalIndent(items, "", "  ")
+		if err != nil {
+			return nil, fmt.Errorf("生成 JSON 导出失败: %w", err)
+		}
+		return content, nil
+	}
+	if format == ExportFormatXML || format == ExportFormatHTML {
+		return serializeTabularMarkup(columns, rows, format)
+	}
+	if format == ExportFormatXlsx {
+		file := excelize.NewFile()
+		sheet := file.GetSheetName(0)
+		for column, spec := range columns {
+			axis, err := excelize.CoordinatesToCellName(column+1, 1)
+			if err != nil {
+				return nil, err
+			}
+			if err := file.SetCellValue(sheet, axis, spec.Header); err != nil {
+				return nil, err
+			}
+		}
+		for rowIndex, row := range rows {
+			for column, value := range row {
+				axis, err := excelize.CoordinatesToCellName(column+1, rowIndex+2)
+				if err != nil {
+					return nil, err
+				}
+				if err := file.SetCellValue(sheet, axis, value); err != nil {
+					return nil, err
+				}
+			}
+		}
+		buffer := &bytes.Buffer{}
+		if err := file.Write(buffer); err != nil {
+			return nil, fmt.Errorf("生成 XLSX 导出失败: %w", err)
+		}
+		if err := file.Close(); err != nil {
+			return nil, err
+		}
+		return buffer.Bytes(), nil
+	}
 	buffer := &bytes.Buffer{}
 	// UTF-8 BOM：不加的话中文在 Excel 里是乱码，而运营拿到 CSV 的第一反应就是双击打开。
 	buffer.WriteString("\uFEFF")
 	writer := csv.NewWriter(buffer)
-	header := make([]string, len(spec.columns))
-	for i, column := range spec.columns {
+	header := make([]string, len(columns))
+	for i, column := range columns {
 		header[i] = column.Header
 	}
 	if err := writer.Write(header); err != nil {
-		return ExportResult{}, fmt.Errorf("写入 CSV 表头失败: %w", err)
+		return nil, fmt.Errorf("写入 CSV 表头失败: %w", err)
 	}
 	for _, row := range rows {
-		record := make([]string, len(spec.columns))
-		for i, column := range spec.columns {
-			value := ""
-			if i < len(row) {
-				value = row[i]
-			}
-			record[i] = exportCell(column, value, masked)
-		}
+		record := make([]string, len(columns))
+		copy(record, row)
 		if err := writer.Write(record); err != nil {
-			return ExportResult{}, fmt.Errorf("写入 CSV 数据失败: %w", err)
+			return nil, fmt.Errorf("写入 CSV 数据失败: %w", err)
 		}
 	}
 	writer.Flush()
 	if err := writer.Error(); err != nil {
-		return ExportResult{}, fmt.Errorf("写入 CSV 失败: %w", err)
+		return nil, fmt.Errorf("写入 CSV 失败: %w", err)
 	}
-	return ExportResult{Content: buffer.Bytes(), Rows: len(rows), Masked: masked, Resource: resource}, nil
+	return buffer.Bytes(), nil
+}
+
+func serializeTabularMarkup(columns []ExportColumn, rows [][]string, format string) ([]byte, error) {
+	var buffer bytes.Buffer
+	if format == ExportFormatXML {
+		buffer.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<rows>\n")
+		for _, row := range rows {
+			buffer.WriteString("  <row>\n")
+			for i, column := range columns {
+				value := ""
+				if i < len(row) {
+					value = row[i]
+				}
+				buffer.WriteString("    <" + column.Header + ">")
+				if err := xml.EscapeText(&buffer, []byte(value)); err != nil {
+					return nil, err
+				}
+				buffer.WriteString("</" + column.Header + ">\n")
+			}
+			buffer.WriteString("  </row>\n")
+		}
+		buffer.WriteString("</rows>")
+		return buffer.Bytes(), nil
+	}
+	buffer.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>题库导出</title></head><body><table><thead><tr>")
+	for _, column := range columns {
+		buffer.WriteString("<th>" + html.EscapeString(column.Header) + "</th>")
+	}
+	buffer.WriteString("</tr></thead><tbody>")
+	for _, row := range rows {
+		buffer.WriteString("<tr>")
+		for i := range columns {
+			value := ""
+			if i < len(row) {
+				value = row[i]
+			}
+			buffer.WriteString("<td>" + html.EscapeString(value) + "</td>")
+		}
+		buffer.WriteString("</tr>")
+	}
+	buffer.WriteString("</tbody></table></body></html>")
+	return buffer.Bytes(), nil
 }
 
 // exportResourceSpec 描述一个可导出资源：列定义 + 取数函数。

@@ -78,10 +78,15 @@ func asyncTaskRouter(actor *entity.User) *gin.Engine {
 	}
 	router.POST("/api/export/tasks", auth, middleware.RequireAdmin, ExportTaskCreate)
 	router.POST("/api/import/tasks", auth, middleware.RequireAdmin, ImportTaskCreate)
+	router.POST("/api/import/previews", auth, middleware.RequireAdmin, ImportQuestionPreviewCreate)
+	router.GET("/api/import/previews/:previewId", auth, middleware.RequireAdmin, ImportQuestionPreviewPage)
+	router.POST("/api/import/previews/:previewId/confirm", auth, middleware.RequireAdmin, ImportQuestionPreviewConfirm)
+	router.DELETE("/api/import/previews/:previewId", auth, middleware.RequireAdmin, ImportQuestionPreviewDelete)
 	router.GET("/api/export/tasks", auth, middleware.RequireAdmin, ExportTaskList)
 	router.GET("/api/export/tasks/:taskId", auth, middleware.RequireAdmin, ExportTaskDetail)
 	router.GET("/api/export/tasks/:taskId/download", auth, middleware.RequireAdmin, ExportTaskDownload)
 	router.GET("/api/export/tasks/:taskId/errors", auth, middleware.RequireAdmin, ExportTaskErrorReport)
+	router.DELETE("/api/export/tasks/:taskId", auth, middleware.RequireAdmin, ExportTaskDelete)
 	router.GET("/api/import/template", auth, middleware.RequireAdmin, ImportTemplate)
 	return router
 }
@@ -94,10 +99,15 @@ func asyncTaskRouterWithAuth(_ *entity.User, _ bool) *gin.Engine {
 	router := gin.New()
 	router.POST("/api/export/tasks", Auth, middleware.RequireAdmin, ExportTaskCreate)
 	router.POST("/api/import/tasks", Auth, middleware.RequireAdmin, ImportTaskCreate)
+	router.POST("/api/import/previews", Auth, middleware.RequireAdmin, ImportQuestionPreviewCreate)
+	router.GET("/api/import/previews/:previewId", Auth, middleware.RequireAdmin, ImportQuestionPreviewPage)
+	router.POST("/api/import/previews/:previewId/confirm", Auth, middleware.RequireAdmin, ImportQuestionPreviewConfirm)
+	router.DELETE("/api/import/previews/:previewId", Auth, middleware.RequireAdmin, ImportQuestionPreviewDelete)
 	router.GET("/api/export/tasks", Auth, middleware.RequireAdmin, ExportTaskList)
 	router.GET("/api/export/tasks/:taskId", Auth, middleware.RequireAdmin, ExportTaskDetail)
 	router.GET("/api/export/tasks/:taskId/download", Auth, middleware.RequireAdmin, ExportTaskDownload)
 	router.GET("/api/export/tasks/:taskId/errors", Auth, middleware.RequireAdmin, ExportTaskErrorReport)
+	router.DELETE("/api/export/tasks/:taskId", Auth, middleware.RequireAdmin, ExportTaskDelete)
 	router.GET("/api/import/template", Auth, middleware.RequireAdmin, ImportTemplate)
 	return router
 }
@@ -155,6 +165,11 @@ func TestAsyncTaskRoutesRejectNonAdmin(t *testing.T) {
 		{"GET", "/api/export/tasks/exp-0123456789abcdef", ""},
 		{"GET", "/api/export/tasks/exp-0123456789abcdef/download", ""},
 		{"GET", "/api/export/tasks/exp-0123456789abcdef/errors", ""},
+		{"DELETE", "/api/export/tasks/exp-0123456789abcdef", ""},
+		{"POST", "/api/import/previews", ""},
+		{"GET", "/api/import/previews/prv-0123456789abcdef", ""},
+		{"POST", "/api/import/previews/prv-0123456789abcdef/confirm", ""},
+		{"DELETE", "/api/import/previews/prv-0123456789abcdef", ""},
 		{"GET", "/api/import/template?resource=users", ""},
 	}
 
@@ -333,8 +348,8 @@ func TestAsyncTaskExportCreateDefaultsToMasked(t *testing.T) {
 	_ = manager
 }
 
-// 导出只接受 CSV（JSON 由前端本地生成，后端不该起异步任务）。
-func TestAsyncTaskExportCreateRejectsNonCSV(t *testing.T) {
+// 非题库资源仍只接受 CSV；题库导出由服务端异步生成多种格式。
+func TestAsyncTaskExportCreateRejectsNonQuestionFormats(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newAsyncTaskControllerTestDB(t)
 	installAsyncTaskControllerTestDB(t, db)
@@ -342,14 +357,14 @@ func TestAsyncTaskExportCreateRejectsNonCSV(t *testing.T) {
 	admin := asyncTaskSeedUser(t, db, 9203, "SYNTHETIC_CSV_ADMIN", "admin")
 	router := asyncTaskRouter(admin)
 
-	for _, format := range []string{"json", "xlsx"} {
+	for _, format := range []string{"json", "xlsx", "xml", "html"} {
 		recorder := asyncTaskRequest(router, "POST", "/api/export/tasks",
 			`{"resource":"users","format":"`+format+`"}`)
 		if recorder.Code != http.StatusBadRequest {
 			t.Fatalf("format=%s status = %d, want 400 (body=%s)", format, recorder.Code, recorder.Body.String())
 		}
-		if !strings.Contains(recorder.Body.String(), "CSV") {
-			t.Fatalf("format=%s message must mention CSV: %s", format, recorder.Body.String())
+		if !strings.Contains(recorder.Body.String(), "题库") {
+			t.Fatalf("format=%s message must mention question-bank restriction: %s", format, recorder.Body.String())
 		}
 	}
 	// 不支持的资源同样 400（不是等到任务跑完才报）。
@@ -414,7 +429,7 @@ func TestAsyncTaskExportCreateWithoutManagerReturns503(t *testing.T) {
 }
 
 // 导入模板：管理员能拿到 CSV，且内容含表头（并带 BOM 以便 Excel 识别中文）。
-func TestImportDataTemplateReturnsCSVHeader(t *testing.T) {
+func TestImportDataTemplateMatchesRequestedFormat(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := newAsyncTaskControllerTestDB(t)
 	installAsyncTaskControllerTestDB(t, db)
@@ -432,6 +447,20 @@ func TestImportDataTemplateReturnsCSVHeader(t *testing.T) {
 	}
 	if !strings.Contains(body, "value") {
 		t.Fatalf("template must contain the value column: %q", body)
+	}
+	for _, format := range []struct{ name, contentType string }{
+		{"json", "application/json"},
+		{"xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+		{"xml", "application/xml"},
+		{"html", "text/html"},
+	} {
+		recorder = asyncTaskRequest(router, "GET", "/api/import/template?resource=questions&format="+format.name, "")
+		if recorder.Code != http.StatusOK || !strings.HasPrefix(recorder.Header().Get("Content-Type"), format.contentType) {
+			t.Fatalf("%s template status=%d content-type=%q body=%s", format.name, recorder.Code, recorder.Header().Get("Content-Type"), recorder.Body.String())
+		}
+		if !strings.Contains(recorder.Header().Get("Content-Disposition"), "."+format.name+`"`) {
+			t.Fatalf("%s filename = %q", format.name, recorder.Header().Get("Content-Disposition"))
+		}
 	}
 	// 不支持的资源 → 400。
 	recorder = asyncTaskRequest(router, "GET", "/api/import/template?resource=billing", "")
@@ -495,6 +524,132 @@ func TestImportDataCreateRejectsUnrecognizedFormat(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), ".csv") {
 		t.Fatalf("message must list supported extensions: %s", recorder.Body.String())
+	}
+}
+
+func TestQuestionPreviewIsPagedAndDoesNotWriteBeforeConfirm(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newAsyncTaskControllerTestDB(t)
+	if err := db.AutoMigrate(&entity.Tiku{}); err != nil {
+		t.Fatal(err)
+	}
+	installAsyncTaskControllerTestDB(t, db)
+	installAsyncTaskControllerTestManager(t, db)
+	admin := asyncTaskSeedUser(t, db, 9220, "SYNTHETIC_PREVIEW_ADMIN", "admin")
+	router := asyncTaskRouter(admin)
+	content := []byte(`[{"question":"题目一","type":0,"options":["A"],"answer":["A"]},{"question":"题目二","type":1,"options":[],"answer":["B"]}]`)
+	created := asyncTaskMultipartRequest(t, router, "/api/import/previews", map[string]string{"resource": "questions"}, "questions.json", content)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var preview struct {
+		PreviewID string                `json:"previewId"`
+		Total     int                   `json:"total"`
+		Items     []questionPreviewItem `json:"items"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &preview); err != nil {
+		t.Fatal(err)
+	}
+	if preview.PreviewID == "" || preview.Total != 2 || len(preview.Items) != 2 || preview.Items[0].Question != "题目一" {
+		t.Fatalf("preview=%+v", preview)
+	}
+	var questionCount, taskCount int64
+	if err := db.Model(&entity.Tiku{}).Count(&questionCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&entity.AsyncTask{}).Count(&taskCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if questionCount != 0 || taskCount != 0 {
+		t.Fatalf("before confirm questions=%d tasks=%d", questionCount, taskCount)
+	}
+	page := asyncTaskRequest(router, http.MethodGet, "/api/import/previews/"+preview.PreviewID+"?page=2&pageSize=1", "")
+	var pageResult struct {
+		Page  int                   `json:"page"`
+		Total int                   `json:"total"`
+		Items []questionPreviewItem `json:"items"`
+	}
+	if err := json.Unmarshal(page.Body.Bytes(), &pageResult); err != nil {
+		t.Fatal(err)
+	}
+	if page.Code != http.StatusOK || pageResult.Page != 2 || pageResult.Total != 2 || len(pageResult.Items) != 1 || pageResult.Items[0].Question != "题目二" {
+		t.Fatalf("page status=%d result=%+v", page.Code, pageResult)
+	}
+	confirmed := asyncTaskRequest(router, http.MethodPost, "/api/import/previews/"+preview.PreviewID+"/confirm", "{}")
+	if confirmed.Code != http.StatusAccepted {
+		t.Fatalf("confirm status=%d body=%s", confirmed.Code, confirmed.Body.String())
+	}
+	if err := db.Model(&entity.Tiku{}).Count(&questionCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&entity.AsyncTask{}).Count(&taskCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if questionCount != 0 || taskCount != 1 {
+		t.Fatalf("after confirm questions=%d tasks=%d", questionCount, taskCount)
+	}
+}
+
+func TestQuestionPreviewDeleteDoesNotRemoveAnotherAdminPreview(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newAsyncTaskControllerTestDB(t)
+	installAsyncTaskControllerTestDB(t, db)
+	installAsyncTaskControllerTestManager(t, db)
+	owner := asyncTaskSeedUser(t, db, 9222, "SYNTHETIC_PREVIEW_OWNER", "admin")
+	otherAdmin := asyncTaskSeedUser(t, db, 9223, "SYNTHETIC_PREVIEW_OTHER", "admin")
+	ownerRouter := asyncTaskRouter(owner)
+	otherRouter := asyncTaskRouter(otherAdmin)
+	created := asyncTaskMultipartRequest(t, ownerRouter, "/api/import/previews", map[string]string{"resource": "questions"}, "questions.json", []byte(`[{"question":"只属于管理员一"}]`))
+	if created.Code != http.StatusOK {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	var preview struct {
+		PreviewID string `json:"previewId"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &preview); err != nil {
+		t.Fatal(err)
+	}
+	deletedByOther := asyncTaskRequest(otherRouter, http.MethodDelete, "/api/import/previews/"+preview.PreviewID, "")
+	if deletedByOther.Code != http.StatusNotFound {
+		t.Fatalf("cross-owner delete status=%d body=%s", deletedByOther.Code, deletedByOther.Body.String())
+	}
+	stillVisible := asyncTaskRequest(ownerRouter, http.MethodGet, "/api/import/previews/"+preview.PreviewID, "")
+	if stillVisible.Code != http.StatusOK {
+		t.Fatalf("owner preview status=%d body=%s", stillVisible.Code, stillVisible.Body.String())
+	}
+	deletedByOwner := asyncTaskRequest(ownerRouter, http.MethodDelete, "/api/import/previews/"+preview.PreviewID, "")
+	if deletedByOwner.Code != http.StatusNoContent {
+		t.Fatalf("owner delete status=%d body=%s", deletedByOwner.Code, deletedByOwner.Body.String())
+	}
+}
+
+func TestExportTaskDeleteOnlyRemovesOwnedCompletedQuestionResult(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newAsyncTaskControllerTestDB(t)
+	installAsyncTaskControllerTestDB(t, db)
+	actor := asyncTaskSeedUser(t, db, 9221, "SYNTHETIC_EXPORT_DELETE", "admin")
+	router := asyncTaskRouter(actor)
+	path := filepath.Join(t.TempDir(), "result.json")
+	if err := os.WriteFile(path, []byte("[]"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	task := entity.AsyncTask{TaskID: "exp-0011223344556677", Type: entity.AsyncTaskTypeExport, Resource: service.ExportResourceQuestions, Format: service.ExportFormatJSON, Status: entity.AsyncTaskStatusSucceeded, ActorUserID: actor.ID, ActorUsername: actor.Username, FilePath: path, CreatedAt: time.Now()}
+	if err := db.Create(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	deleted := asyncTaskRequest(router, http.MethodDelete, "/api/export/tasks/"+task.TaskID, "")
+	if deleted.Code != http.StatusNoContent {
+		t.Fatalf("delete status=%d body=%s", deleted.Code, deleted.Body.String())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("result still exists: %v", err)
+	}
+	stored, err := service.GetAsyncTaskWithDB(db, task.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.FilePath != "" || stored.TaskID != task.TaskID {
+		t.Fatalf("task history = %+v", stored)
 	}
 }
 

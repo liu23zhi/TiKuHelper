@@ -1,42 +1,10 @@
 <template>
   <div class="console-page user-portrait-page">
-    <ConsolePageHeading :title="scopeTitle" :description="scopeDescription">
+    <ConsolePageHeading title="整体用户画像（全站）" description="全站用户的行为画像总览。">
       <template #actions>
-        <a-space wrap class="section-actions">
-          <a-button @click="reload" :loading="loading">刷新</a-button>
-          <a-button v-if="activeUserId" @click="switchToOverall">查看整体画像</a-button>
-        </a-space>
+        <a-button @click="reload" :loading="loading">刷新</a-button>
       </template>
     </ConsolePageHeading>
-
-    <!--
-      用户搜索框（用户 2026-11-13 决策）：
-      本页主要用途是**全站整体画像**（默认视图），选中某个用户后切到该用户画像。
-      这是「一个页面的两种视角」，不是两个独立页面。
-    -->
-    <a-card :bordered="false" class="page-card portrait-switcher">
-      <a-form layout="inline">
-        <a-form-item label="查看单个用户画像" :html-for="selectorId">
-          <a-select
-            :id="selectorId"
-            v-model:value="selectedUserId"
-            show-search
-            allow-clear
-            :filter-option="filterUserOption"
-            :options="userOptions"
-            :loading="userOptionsLoading"
-            placeholder="输入用户名 / 昵称 / ID 搜索"
-            style="width: 320px"
-            not-found-content="没有匹配的用户"
-            @search="searchUsers"
-            @change="onUserChange"
-          />
-        </a-form-item>
-        <a-form-item>
-          <span class="form-hint">清空选择即回到全站整体画像。</span>
-        </a-form-item>
-      </a-form>
-    </a-card>
 
     <a-alert v-if="!canViewPortrait" type="warning" show-icon class="page-alert" message="用户画像仅管理员可见。" />
 
@@ -44,47 +12,35 @@
       v-if="canViewPortrait && failure"
       :key="failureContextKey"
       :failure="failure"
-      :message="failureMessage"
+      message="获取整体用户画像失败"
       retryable
       :busy="loading"
       :context-key="failureContextKey"
       @retry="reload"
     />
 
-    <template v-if="canViewPortrait">
-      <!-- 指标卡：缺失显示「暂无数据」，绝不显示 0（「没有数据」与「数据是 0」不同） -->
-      <ConsoleSummaryGrid>
+    <div v-if="canViewPortrait && loading && !portrait" class="portrait-loading" role="status" aria-live="polite">
+      <a-spin />
+      <span>正在读取全站画像</span>
+    </div>
+    <a-empty
+      v-else-if="canViewPortrait && !portrait && !failure"
+      description="暂无全站画像数据"
+      class="portrait-empty"
+    />
+
+    <template v-if="canViewPortrait && portrait">
+      <ConsoleSummaryGrid class="portrait-summary">
         <a-card v-for="tile in tiles" :key="tile.key" :bordered="false" class="summary-card">
           <a-statistic :title="tile.title" :value="tile.missing ? PORTRAIT_EMPTY_HINT : tile.value" />
         </a-card>
       </ConsoleSummaryGrid>
 
-      <a-card :bordered="false" class="page-card">
-        <a-alert
-          type="info"
-          show-icon
-          class="page-alert"
-          message="本页所有数字均来自账单 / 工单 / 用户表的真实统计。设备指纹与答题正确率没有数据源，因此不展示。"
-        />
-
-        <!-- 基础栏只在单用户视角出现 -->
-        <a-descriptions v-if="base" :column="2" size="small" bordered class="portrait-base">
-          <a-descriptions-item label="用户">#{{ base.userId }} {{ base.nickname || base.username }}</a-descriptions-item>
-          <a-descriptions-item label="角色">{{ base.role }}</a-descriptions-item>
-          <a-descriptions-item label="状态">{{ base.status }}</a-descriptions-item>
-          <a-descriptions-item label="注册来源">{{ base.registerSource }}</a-descriptions-item>
-          <a-descriptions-item label="余额">¥ {{ formatMoneyValue(base.balance) }}</a-descriptions-item>
-          <a-descriptions-item label="赠金">¥ {{ formatMoneyValue(base.giftBalance) }}</a-descriptions-item>
-          <a-descriptions-item label="注册 IP">{{ base.registerIp || '-' }} {{ base.registerRegion ? `（${base.registerRegion}）` : '' }}</a-descriptions-item>
-          <a-descriptions-item label="最近登录 IP">{{ base.lastLoginIp || '-' }} {{ base.lastLoginRegion ? `（${base.lastLoginRegion}）` : '' }}</a-descriptions-item>
-        </a-descriptions>
-
-        <!--
-          三张图（t200 用户诉求「请添加图表等，这样会直观一些」）：
-            ① 24 小时时段分布（柱）② 题目类型分布（环）③ 消费趋势（折线）
-          空数据由 PortraitChart 统一渲染「暂无数据」占位 —— 三处判据同源，
-          不存在「某个图忘了判断」就画出全 0 图的情况。
-        -->
+      <section class="portrait-section" aria-labelledby="portrait-activity-title">
+        <div class="portrait-section__heading">
+          <h2 id="portrait-activity-title">使用与账单分布</h2>
+          <p>基于服务端账单记录聚合；免费额度内未产生账单的调用不计入时段与区域统计。</p>
+        </div>
         <div class="portrait-charts">
           <PortraitChart
             v-for="chart in chartList"
@@ -95,120 +51,110 @@
             :aria-label="chart.ariaLabel"
           />
         </div>
+      </section>
 
-        <!--
-          其余维度（区域 / 星期 / 工单 / 来源）仍用表格：
-          它们的基数不稳定（区域可达几十项），表格比图更便于逐条核对。
-        -->
-        <div v-if="tableViewList.length" class="portrait-tables">
-          <section v-for="table in tableViewList" :key="table.key" class="portrait-chart">
-            <h3 class="portrait-chart__title">{{ table.title }}</h3>
+      <section class="portrait-section" aria-labelledby="portrait-breakdown-title">
+        <div class="portrait-section__heading">
+          <h2 id="portrait-breakdown-title">全站分布明细</h2>
+          <p>区域为账单 IP 的本地归属地聚合；注册地区与注册来源按用户记录统计。</p>
+        </div>
+        <div class="portrait-tables">
+          <section v-for="table in tableViewList" :key="table.key" class="portrait-table-panel">
+            <h3>{{ table.title }}</h3>
             <a-empty v-if="table.empty" :description="PORTRAIT_EMPTY_HINT" />
-            <div v-else class="portrait-chart__body">
-              <table class="portrait-chart__table">
+            <div v-else class="portrait-table-scroll">
+              <table class="portrait-table">
                 <thead>
-                  <tr><th scope="col">分类</th><th scope="col">数量</th></tr>
+                  <tr>
+                    <th v-for="column in table.columns" :key="column.key" :class="{ 'is-right': column.align === 'right' }" scope="col">
+                      {{ column.title }}
+                    </th>
+                  </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="(label, index) in table.labels" :key="label + index">
-                    <td>{{ label }}</td>
-                    <td>{{ table.values[index] }}</td>
+                  <tr v-for="(row, index) in table.rows" :key="`${table.key}-${index}`">
+                    <td v-for="column in table.columns" :key="column.key" :class="{ 'is-right': column.align === 'right' }">
+                      {{ column.money && row[column.key] !== null && row[column.key] !== undefined ? formatMoneyValue(row[column.key]) : displayCell(row[column.key]) }}
+                    </td>
                   </tr>
                 </tbody>
               </table>
             </div>
           </section>
         </div>
+      </section>
 
-        <!--
-          如实标注「哪些栏位当前没有数据源」（98 §1）。留空或画 0 会被误读成「用得少」。
-        -->
-        <section v-if="notes.length" class="portrait-notes">
-          <h3 class="portrait-chart__title">数据口径说明</h3>
-          <ul>
-            <li v-for="(note, index) in notes" :key="index">{{ note }}</li>
-          </ul>
-        </section>
-      </a-card>
+      <section v-if="notes.length" class="portrait-section portrait-notes" aria-labelledby="portrait-notes-title">
+        <h2 id="portrait-notes-title">数据口径说明</h2>
+        <ul>
+          <li v-for="(note, index) in notes" :key="index">{{ note }}</li>
+        </ul>
+      </section>
+
+      <p class="portrait-generated-at">生成时间：{{ generatedAt }}</p>
     </template>
   </div>
 </template>
 
 <script>
-// 用户画像页（T-17 / task_doc/98）。
-//
-// # 一个页面，两种视角（用户 2026-11-13 决策）
-//
-//   缺省                   → 全站整体画像（本页「主要」用途）
-//   ?userId=<id>           → 单个用户画像（用户管理「查看」弹窗里点「画像」跳过来）
-//   页面顶部用户搜索框     → 选中即切到该用户；清空即回到整体
-//
-// 不是两个独立页面：数据、渲染、空态、失败态全部共用一套代码，
-// 差异只在「查哪条接口」与「是否显示基础栏」。
-//
-// # 权限（98 号 §0 第 ④ 层）
-//
-// 非管理员：菜单项不可见（SiderMenu 的 ADMIN_MENU_ITEMS 才列它），直接敲 URL 会被
-// router.js 的 ADMIN_ONLY_ROUTE_NAMES 跳走。**但这只是可见性，不是安全边界** ——
-// 真正的闸门在后端（Auth + RequireAdmin + handler 内二次校验）。
-// 因此本页即使被绕过也只可能拿到 403，不会拿到数据。
-import { computed, defineComponent, inject, onBeforeUnmount, onMounted, ref, shallowRef, useId, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, defineComponent, inject, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import { message } from 'ant-design-vue'
 
-import { getPortraitOverview, getUserPortrait } from '@/api/UserPortraitApi'
-import { getUserList } from '@/api/TikuComponentApi'
+import { getPortraitOverview } from '@/api/UserPortraitApi'
+import ConsoleSummaryGrid from '@/components/ConsoleSummaryGrid.vue'
+import ConsolePageHeading from '@/components/ConsolePageHeading.vue'
 import RequestFailureAlert from '@/components/RequestFailureAlert.vue'
 import PortraitChart from './PortraitChart.vue'
 import { ensureRequestFailure } from '@/utils/requestFailureView.mjs'
 import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
 import { useCurrentUserDisplay, isAdminUser } from '@/utils/currentUser'
+import { currentUserIdentity, useCurrentUserRequestScope } from '@/utils/currentUserScope'
 import { THEME_CONTROLLER_KEY } from '@/utils/themeMode.mjs'
 import {
   PORTRAIT_EMPTY_HINT,
-  PORTRAIT_SCOPE_OVERALL,
+  buildPortraitBreakdownTables,
   buildPortraitCharts,
-  buildPortraitTiles,
-  buildPortraitUserOption,
-  normalizePortraitUserId,
-  portraitScopeHint,
+  buildOverallPortraitTiles,
 } from '@/utils/portraitCharts.mjs'
 import {
   PORTRAIT_HOURS_TITLE,
-  PORTRAIT_TREND_TITLE,
   PORTRAIT_TYPES_TITLE,
+  PORTRAIT_WEEKDAYS_TITLE,
   buildPortraitAllOptions,
   readPortraitPalette,
 } from './portraitChartOptions.mjs'
 
-// 趋势图的横轴口径说明。
-//
-// ⚠️ 后端当前**没有**按天的趋势字段（user_portrait.go 全文无 trend / daily / by_date）。
-// 任务书红线是「不改后端字段，缺字段写进报告」—— 所以这里如实降级为
-// 「用后端确实提供的小时桶作横轴」，并在页面上标注，不臆造「今日 vs 昨日」。
-const PORTRAIT_TREND_HINT = '横轴为后端提供的时间桶（按小时）。后端暂无按天聚合字段，因此这不是「今日 vs 昨日」对比。'
-
 export default defineComponent({
   name: 'UserPortrait',
-  components: { RequestFailureAlert, PortraitChart },
+  components: { ConsolePageHeading, ConsoleSummaryGrid, RequestFailureAlert, PortraitChart },
   setup() {
-    const route = useRoute()
-    const router = useRouter()
     const { currentUser } = useCurrentUserDisplay()
-    const selectorId = `portrait-user-${useId()}`
+    const canViewPortrait = computed(() => Boolean(currentUserIdentity(currentUser.value)) && isAdminUser(currentUser.value))
 
-    const canViewPortrait = computed(() => isAdminUser(currentUser.value))
-
-    // 主题：ECharts 是 canvas，CSS 变量对它无效，必须把变量值读出来传进 option。
-    // 因此主题切换时要重建 option —— 否则深色模式下图仍是浅色文字/浅色分隔线。
     const themeController = inject(THEME_CONTROLLER_KEY, null)
     const themeResolved = ref(themeController?.getState().resolved || 'light')
     const unsubscribeTheme = themeController?.subscribe(state => { themeResolved.value = state.resolved })
-    onBeforeUnmount(() => { unsubscribeTheme?.() })
 
-    // 从 DOM 实际取值读主题色。读的是页面根节点，它继承 html[data-theme] 的变量。
+    const portrait = shallowRef(null)
+    const loading = ref(false)
+    const failure = shallowRef(null)
+    const failureContextKey = ref(0)
+    let requestVersion = 0
+
+    function clearOwnedData() {
+      requestVersion += 1
+      portrait.value = null
+      loading.value = false
+      failure.value = null
+      failureContextKey.value += 1
+    }
+    const { captureDataOwner, canLoadForCurrentUser } = useCurrentUserRequestScope(currentUser, {
+      clear: clearOwnedData,
+      reset: () => {},
+      reload: () => { void load() },
+    })
+
     const palette = computed(() => {
-      // 依赖 themeResolved：主题变化时触发重算（getComputedStyle 本身不可响应）。
       void themeResolved.value
       if (typeof window === 'undefined' || typeof window.getComputedStyle !== 'function') {
         return readPortraitPalette({ element: null })
@@ -219,76 +165,38 @@ export default defineComponent({
       })
     })
 
-    // 视角：'' = 整体；正整数 = 该用户。
-    const activeUserId = ref(normalizePortraitUserId(route.query.userId))
-    const selectedUserId = ref(activeUserId.value || undefined)
-
-    const portrait = shallowRef(null)
-    const loading = ref(false)
-    const failure = shallowRef(null)
-    const failureContextKey = ref(0)
-    // 请求版本号：切换视角时让旧响应失效（否则「选了 A 又快速选 B」会显示 A 的数据）。
-    let requestVersion = 0
-
-    const userOptions = ref([])
-    const userOptionsLoading = ref(false)
-
-    const scopeTitle = computed(() => portraitScopeHint(portrait.value || { scope: activeUserId.value ? 'user' : PORTRAIT_SCOPE_OVERALL, targetUserId: activeUserId.value }))
-    const scopeDescription = computed(() => (activeUserId.value
-      ? '查看该用户的消费、时段、区域与工单分布。'
-      : '全站用户的行为画像总览。使用上方搜索框可切换到单个用户。'))
-    const failureMessage = computed(() => (activeUserId.value ? '获取该用户画像失败' : '获取整体用户画像失败'))
-
-    const base = computed(() => (portrait.value && portrait.value.base) || null)
     const notes = computed(() => (Array.isArray(portrait.value?.notes) ? portrait.value.notes : []))
-    const tiles = computed(() => buildPortraitTiles(portrait.value || {}, {
+    const tiles = computed(() => buildOverallPortraitTiles(portrait.value || {}, {
       money: value => formatMoneyValue(value),
-      count: value => value,
+      count: value => Number(value).toLocaleString('zh-CN'),
     }))
-    const portraitCharts = computed(() => buildPortraitCharts(portrait.value || {}))
-
-    // 三张图（t200）：option 为 null 表示空数据 → PortraitChart 渲染「暂无数据」。
-    // 空态判断只在 buildPortraitAllOptions 一处，页面不重复判断。
-    const chartOptions = computed(() => buildPortraitAllOptions(portraitCharts.value, palette.value))
-
-    const chartList = computed(() => {
-      const options = chartOptions.value
-      return [
-        {
-          key: 'hours',
-          title: PORTRAIT_HOURS_TITLE,
-          hint: '横轴只列有数据的小时，不补齐 24 格（补齐会把「没发生过」画成「0 次」）。',
-          ariaLabel: '24 小时时段分布柱状图',
-          options: options.hours,
-        },
-        {
-          key: 'types',
-          title: PORTRAIT_TYPES_TITLE,
-          hint: '按账单类型聚合，与账单明细页同口径。',
-          ariaLabel: '题目类型分布环形图',
-          options: options.types,
-        },
-        {
-          key: 'trend',
-          title: PORTRAIT_TREND_TITLE,
-          hint: PORTRAIT_TREND_HINT,
-          ariaLabel: '消费趋势折线图',
-          options: options.trend,
-        },
-      ]
+    const charts = computed(() => buildPortraitCharts(portrait.value || {}))
+    const chartOptions = computed(() => buildPortraitAllOptions(charts.value, palette.value))
+    const chartList = computed(() => [
+      {
+        key: 'hours', title: PORTRAIT_HOURS_TITLE,
+        hint: '只显示有账单记录的小时，不补齐空时段。',
+        ariaLabel: '按小时统计的账单记录分布', options: chartOptions.value.hours,
+      },
+      {
+        key: 'types', title: PORTRAIT_TYPES_TITLE,
+        hint: '按账单类型展示记录数；金额明细见下方表格。',
+        ariaLabel: '账单类型分布环形图', options: chartOptions.value.types,
+      },
+      {
+        key: 'weekdays', title: PORTRAIT_WEEKDAYS_TITLE,
+        hint: '只显示出现过账单记录的星期。',
+        ariaLabel: '按星期统计的账单记录分布', options: chartOptions.value.weekdays,
+      },
+    ])
+    const tableViewList = computed(() => buildPortraitBreakdownTables(portrait.value || {}))
+    const generatedAt = computed(() => {
+      const value = portrait.value?.generatedAt
+      const date = value ? new Date(value) : null
+      return date && Number.isFinite(date.getTime())
+        ? date.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })
+        : '未知'
     })
-
-    // 其余维度仍用表格：基数不稳定（区域可达几十项），表格比图更便于逐条核对。
-    const tableViewList = computed(() => {
-      const charts = portraitCharts.value
-      return [
-        { key: 'weekdays', ...charts.weekdays },
-        { key: 'regions', ...charts.regions },
-      ]
-    })
-
-    const isCurrentFailure = (source, context) => Boolean(source) && source === failure.value
-      && context === failureContextKey.value
 
     function clearFailure() {
       failure.value = null
@@ -296,27 +204,27 @@ export default defineComponent({
     }
 
     async function load() {
-      if (!canViewPortrait.value) return
+      if (!canViewPortrait.value || !canLoadForCurrentUser()) return false
       const version = ++requestVersion
-      const isCurrent = () => version === requestVersion
+      const owns = captureDataOwner()
+      const isCurrent = () => owns() && version === requestVersion && canViewPortrait.value
       loading.value = true
       clearFailure()
       try {
-        const response = activeUserId.value
-          ? await getUserPortrait(activeUserId.value)
-          : await getPortraitOverview()
-        if (!isCurrent()) return
-        // 后端 200 才是有效数据；其余一律走失败态（不拿 403 的 body 当画像渲染）。
-        if (response?.status === 200 && response.data && typeof response.data === 'object') {
+        const response = await getPortraitOverview()
+        if (!isCurrent()) return false
+        if (Number(response?.status) === 200 && response.data && typeof response.data === 'object' && response.data.scope === 'overall') {
           portrait.value = response.data
-        } else {
-          failure.value = ensureRequestFailure(response)
-          portrait.value = null
+          return true
         }
+        failure.value = ensureRequestFailure(response)
+        portrait.value = null
+        return false
       } catch (error) {
-        if (!isCurrent()) return
+        if (!isCurrent()) return false
         failure.value = ensureRequestFailure(error)
         portrait.value = null
+        return false
       } finally {
         if (isCurrent()) loading.value = false
       }
@@ -326,92 +234,37 @@ export default defineComponent({
       return load()
     }
 
-    function switchToOverall() {
-      selectedUserId.value = undefined
-      activeUserId.value = ''
-      // 用 replace 而不是 push：视角切换不该在浏览器历史里堆一串记录。
-      router.replace({ path: route.path, query: {} }).catch(() => {})
-      return load()
+    function displayCell(value) {
+      if (value === null || value === undefined || value === '') return '—'
+      return typeof value === 'number' ? value.toLocaleString('zh-CN') : value
     }
-
-    function onUserChange(value) {
-      const normalized = normalizePortraitUserId(value)
-      activeUserId.value = normalized
-      router.replace({ path: route.path, query: normalized ? { userId: String(normalized) } : {} }).catch(() => {})
-      return load()
-    }
-
-    // 用户搜索：只在管理员输够 1 个字符时才查，避免打开页面就拉全量用户。
-    async function searchUsers(keyword) {
-      const text = String(keyword ?? '').trim()
-      if (!text) {
-        userOptions.value = []
-        return
-      }
-      userOptionsLoading.value = true
-      try {
-        const response = await getUserList({ keyword: text, page: 1, pageSize: 20 })
-        const rows = Array.isArray(response?.data?.data) ? response.data.data : []
-        userOptions.value = rows
-          .map(buildPortraitUserOption)
-          .filter(option => option !== null)
-      } catch {
-        // 搜索失败不覆盖画像失败态：那是搜索框自己的问题，静默降级为空候选。
-        userOptions.value = []
-      } finally {
-        userOptionsLoading.value = false
-      }
-    }
-
-    function filterUserOption(input, option) {
-      const text = String(input ?? '').trim().toLowerCase()
-      if (!text) return true
-      return String(option?.label ?? '').toLowerCase().includes(text)
-    }
-
-    // 路由 query 变化（含浏览器前进/后退）要跟着切换视角。
-    watch(() => route.query.userId, value => {
-      const normalized = normalizePortraitUserId(value)
-      if (normalized === activeUserId.value) return
-      activeUserId.value = normalized
-      selectedUserId.value = normalized || undefined
-      load()
-    })
 
     onMounted(() => {
       if (!canViewPortrait.value) {
-        // 非管理员：路由守卫本来就该挡住；这里只做兜底提示，不请求接口。
         message.warning('用户画像仅管理员可见')
         return
       }
-      load()
+      void load()
+    })
+    onBeforeUnmount(() => {
+      unsubscribeTheme?.()
+      clearOwnedData()
     })
 
     return {
       PORTRAIT_EMPTY_HINT,
-      selectorId,
       canViewPortrait,
-      activeUserId,
-      selectedUserId,
+      portrait,
       loading,
       failure,
       failureContextKey,
-      isCurrentFailure,
-      userOptions,
-      userOptionsLoading,
-      scopeTitle,
-      scopeDescription,
-      failureMessage,
-      base,
-      notes,
       tiles,
       chartList,
       tableViewList,
+      notes,
+      generatedAt,
       reload,
-      switchToOverall,
-      onUserChange,
-      searchUsers,
-      filterUserOption,
+      displayCell,
       formatMoneyValue,
     }
   },
@@ -419,56 +272,80 @@ export default defineComponent({
 </script>
 
 <style scoped>
-.portrait-switcher {
-  margin-bottom: var(--g-auto);
+.page-alert { margin-bottom: var(--g-auto); }
+.portrait-loading,
+.portrait-empty {
+  min-height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-muted);
 }
-
-.portrait-base {
-  margin-bottom: var(--g-auto);
+.portrait-summary { margin-bottom: var(--g-auto); }
+.portrait-section {
+  min-width: 0;
+  padding: 20px 0;
+  border-top: 1px solid var(--border);
 }
-
-.portrait-charts {
+.portrait-section__heading { margin-bottom: 16px; }
+.portrait-section__heading h2,
+.portrait-notes h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 600;
+}
+.portrait-section__heading p {
+  margin: 5px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.portrait-charts,
+.portrait-tables {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: var(--g-auto);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 20px 24px;
 }
-
-.portrait-chart__title {
+.portrait-table-panel { min-width: 0; }
+.portrait-table-panel h3 {
+  margin: 0 0 10px;
+  color: var(--text);
   font-size: 14px;
   font-weight: 600;
-  margin: 0 0 var(--g-auto);
 }
-
-.portrait-chart__body {
-  max-height: 260px;
-  overflow: auto;
-}
-
-.portrait-chart__table {
+.portrait-table-scroll { max-height: 300px; overflow: auto; }
+.portrait-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
 }
-
-.portrait-chart__table th,
-.portrait-chart__table td {
-  padding: 4px 8px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+.portrait-table th,
+.portrait-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
   text-align: left;
+  overflow-wrap: anywhere;
 }
-
-.portrait-chart__table td:last-child,
-.portrait-chart__table th:last-child {
-  text-align: right;
-}
-
-.portrait-notes {
-  margin-top: var(--g-auto);
-  font-size: 13px;
-}
-
+.portrait-table th { color: var(--text-muted); font-weight: 500; }
+.portrait-table .is-right { text-align: right; white-space: nowrap; }
 .portrait-notes ul {
+  margin: 8px 0 0;
   padding-left: 20px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.portrait-generated-at {
   margin: 0;
+  padding-top: 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+@media (max-width: 480px) {
+  .portrait-section { padding: 16px 0; }
+  .portrait-table th,
+  .portrait-table td { padding: 7px 6px; }
 }
 </style>

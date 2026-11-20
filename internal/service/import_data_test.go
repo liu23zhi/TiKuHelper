@@ -53,12 +53,8 @@ func xlsxBytes(t *testing.T, rows [][]string) []byte {
 
 // ─────────────────────────── xls：必写测试（任务书） ───────────────────────────
 
-// xls 导入失败的错误信息必须含「另存为 xlsx」（任务书必写测试）。
-//
-// 断言两件事，缺一条这个用例就是空转：
-//  1. 真 BIFF（OLE2 复合文档）→ 返回错误（不静默返回空表）；
-//  2. 错误文案**必须**含「另存为 xlsx」——那是用户唯一能立刻执行的动作。
-func TestImportDataXlsFailureMentionsSaveAsXlsx(t *testing.T) {
+// A truncated OLE2 file must fail explicitly rather than returning an empty sheet.
+func TestImportDataMalformedXlsFailsExplicitly(t *testing.T) {
 	// 最小 OLE2 头：只要前 8 字节是 D0CF11E0A1B11AE1，就会被判成真 BIFF。
 	ole2 := append([]byte{}, ole2Magic...)
 	ole2 = append(ole2, bytes.Repeat([]byte{0x00}, 504)...)
@@ -67,14 +63,11 @@ func TestImportDataXlsFailureMentionsSaveAsXlsx(t *testing.T) {
 	if err == nil {
 		t.Fatal("real BIFF (.xls) must not be parsed silently")
 	}
-	if !errors.Is(err, ErrImportXlsUnsupported) {
-		t.Fatalf("err = %v, want ErrImportXlsUnsupported", err)
-	}
-	if !strings.Contains(err.Error(), "另存为 xlsx") {
-		t.Fatalf("error message must contain 另存为 xlsx, got: %q", err.Error())
+	if !strings.Contains(err.Error(), "解析 xls 失败") {
+		t.Fatalf("malformed xls error = %q", err.Error())
 	}
 
-	// 从 ImportDataWithDB 走一遍（端到端文案同样要含「另存为 xlsx」）：
+	// 从 ImportDataWithDB 走一遍，确认端到端错误仍明确指出解析失败：
 	db := newImportTestDB(t)
 	_, err = ImportDataWithDB(db, ImportDataOptions{
 		Resource: ImportResourceBlacklist,
@@ -85,8 +78,8 @@ func TestImportDataXlsFailureMentionsSaveAsXlsx(t *testing.T) {
 	if err == nil {
 		t.Fatal("ImportDataWithDB must refuse real BIFF")
 	}
-	if !strings.Contains(err.Error(), "另存为 xlsx") {
-		t.Fatalf("ImportDataWithDB error must contain 另存为 xlsx, got: %q", err.Error())
+	if !strings.Contains(err.Error(), "解析 xls 失败") {
+		t.Fatalf("ImportDataWithDB error must identify malformed xls, got: %q", err.Error())
 	}
 }
 

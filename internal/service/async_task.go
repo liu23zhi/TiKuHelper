@@ -334,6 +334,12 @@ func newAsyncTaskID(prefix string) (string, error) {
 	return prefix + "-" + hex.EncodeToString(buffer), nil
 }
 
+// NewQuestionImportPreviewID creates an unguessable identifier for a staged
+// question import that has not yet become a durable async task.
+func NewQuestionImportPreviewID() (string, error) {
+	return newAsyncTaskID("prv")
+}
+
 // asyncTaskTimePtr 返回时间指针（GORM 可空列）。
 func asyncTaskTimePtr(value time.Time) *time.Time { return &value }
 
@@ -801,10 +807,11 @@ func (m *AsyncTaskManager) RegisterDefaultAsyncTaskExecutors() {
 
 // asyncTaskExportParams 是导出任务的 Params 结构（与 controller 提交时写的 JSON 对齐）。
 type asyncTaskExportParams struct {
-	Resource string `json:"resource"`
-	Format   string `json:"format"`
-	Masked   *bool  `json:"masked"`
-	Limit    int    `json:"limit"`
+	Resource    string  `json:"resource"`
+	Format      string  `json:"format"`
+	Masked      *bool   `json:"masked"`
+	Limit       int     `json:"limit"`
+	QuestionIDs []int64 `json:"questionIds,omitempty"`
 }
 
 // asyncTaskImportParams 是导入任务的 Params 结构。
@@ -832,15 +839,21 @@ func (m *AsyncTaskManager) executeExportTask(_ context.Context, db *gorm.DB, tas
 		resource = task.Resource
 	}
 	masked := task.Masked
-	result, err := ExportCSVWithDB(db, ExportDataOptions{
-		Resource: resource,
-		Masked:   &masked,
-		Limit:    params.Limit,
+	format := strings.TrimSpace(params.Format)
+	if format == "" {
+		format = strings.TrimSpace(task.Format)
+	}
+	result, err := ExportDataWithDB(db, ExportDataOptions{
+		Resource:    resource,
+		Format:      format,
+		QuestionIDs: params.QuestionIDs,
+		Masked:      &masked,
+		Limit:       params.Limit,
 	})
 	if err != nil {
 		return AsyncTaskOutcome{}, err
 	}
-	path, writeErr := m.writeAsyncResultFile(task.TaskID, "exports", resource, result.Content)
+	path, writeErr := m.writeAsyncResultFile(task.TaskID, "exports", resource, result.Content, result.Format)
 	if writeErr != nil {
 		return AsyncTaskOutcome{}, writeErr
 	}
@@ -934,7 +947,7 @@ func (m *AsyncTaskManager) executeImportTask(_ context.Context, db *gorm.DB, tas
 //
 // 目录权限 0o700、文件 0o600：导出文件含业务数据（不脱敏时是明文手机号），
 // 同机上的其它用户可以读文件系统时，权限是最后一道防线。
-func (m *AsyncTaskManager) writeAsyncResultFile(taskID, subdir, name string, content []byte) (string, error) {
+func (m *AsyncTaskManager) writeAsyncResultFile(taskID, subdir, name string, content []byte, requestedExtension ...string) (string, error) {
 	base := strings.TrimSpace(m.BaseDir)
 	if base == "" {
 		return "", fmt.Errorf("未配置异步任务目录")
@@ -943,7 +956,11 @@ func (m *AsyncTaskManager) writeAsyncResultFile(taskID, subdir, name string, con
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", fmt.Errorf("创建结果目录失败: %w", err)
 	}
-	filename := fmt.Sprintf("%s-%s.csv", sanitizeAsyncTaskID(taskID), sanitizeAsyncTaskName(name))
+	extension := "csv"
+	if len(requestedExtension) > 0 {
+		extension = sanitizeAsyncTaskName(requestedExtension[0])
+	}
+	filename := fmt.Sprintf("%s-%s.%s", sanitizeAsyncTaskID(taskID), sanitizeAsyncTaskName(name), extension)
 	path := filepath.Join(dir, filename)
 	if err := os.WriteFile(path, content, 0o600); err != nil {
 		return "", fmt.Errorf("写入结果文件失败: %w", err)

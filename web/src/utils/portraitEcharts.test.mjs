@@ -93,9 +93,9 @@ test('画像图表：三张图都构建出来，且类型分别为柱 / 环 / �
   assert.equal(options.types.series[0].radius.length, 2, '环图 radius 必须是 [内, 外]');
 });
 
-test('画像图表：标题常量与页面使用的一致', () => {
+test('画像图表：标题使用真实账单口径', () => {
   assert.equal(PORTRAIT_HOURS_TITLE, '24 小时时段分布');
-  assert.equal(PORTRAIT_TYPES_TITLE, '题目类型分布');
+  assert.equal(PORTRAIT_TYPES_TITLE, '账单类型分布');
   assert.equal(PORTRAIT_TREND_TITLE, '消费趋势');
 });
 
@@ -392,9 +392,10 @@ test('接线：echarts 必须动态 import，不进首屏 bundle', async () => {
   assert.doesNotMatch(source, /from 'echarts'$/, '不得整包 import echarts');
 });
 
-test('接线：趋势图口径如实标注后端无按天字段', async () => {
+test('接线：页面使用小时、账单类型和星期三种真实聚合维度', async () => {
   const page = await readFile(pageSourcePath, 'utf8');
-  // 这是一条「如实告知」的判据：后端没有按天聚合，页面必须说清楚，
-  // 不能画一条折线就让人以为是「今日 vs 昨日」。
-  assert.match(page, /暂无按天聚合字段/, '页面必须标注趋势图不是按天对比');
+  assert.match(page, /PORTRAIT_HOURS_TITLE/);
+  assert.match(page, /PORTRAIT_TYPES_TITLE/);
+  assert.match(page, /PORTRAIT_WEEKDAYS_TITLE/);
+  assert.doesNotMatch(page, /PORTRAIT_TREND_TITLE|消费趋势|暂无按天聚合字段/);
 });

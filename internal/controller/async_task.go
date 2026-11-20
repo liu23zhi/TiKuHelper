@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -28,8 +29,8 @@ import (
 //
 // 六条路由，**全部 requireAdmin**（任务书 ⑥「全部 RequireAdmin」）：
 //
-//	POST /export/tasks                     提交导出（CSV，异步）
-//	POST /import/tasks                     提交导入（CSV / JSON / xlsx / xls）
+//	POST /export/tasks                     提交导出（CSV / JSON / XLSX / XML / HTML，异步）
+//	POST /import/tasks                     提交导入（CSV / JSON / XLSX / XLS / XML / HTML / TXT）
 //	GET  /export/tasks/:taskId             查单个任务状态（导出与导入共用，按 taskId 查）
 //	GET  /export/tasks                     任务列表（管理页）
 //	GET  /export/tasks/:taskId/download    下载结果文件（过期 → 410）
@@ -81,6 +82,37 @@ var asyncTaskControllerDB = func() *gorm.DB {
 // 表现为「同一个任务被执行两次」。
 var asyncTaskManager *service.AsyncTaskManager
 
+const questionPreviewTTL = 30 * time.Minute
+const questionPreviewPageSize = 25
+
+type questionImportPreview struct {
+	id        string
+	actorID   int32
+	filename  string
+	format    string
+	content   []byte
+	rows      [][]string
+	header    []string
+	expiresAt time.Time
+	confirmed bool
+}
+
+var questionImportPreviews = struct {
+	sync.Mutex
+	items map[string]*questionImportPreview
+}{items: make(map[string]*questionImportPreview)}
+
+type questionPreviewItem struct {
+	Row        int      `json:"row"`
+	Question   string   `json:"question"`
+	Type       string   `json:"type"`
+	Options    []string `json:"options"`
+	Answer     []string `json:"answer"`
+	Extra      string   `json:"extra"`
+	CourseName string   `json:"courseName"`
+	Source     string   `json:"source"`
+}
+
 // SetAsyncTaskManager 由启动路径注入管理器实例（未注入时提交接口返回 503）。
 func SetAsyncTaskManager(m *service.AsyncTaskManager) { asyncTaskManager = m }
 
@@ -109,13 +141,14 @@ type exportTaskRequest struct {
 	// Resource 取 questions / users / billing / gifts / logs / tickets / blacklist /
 	// archived_users / access_tokens。
 	Resource string `json:"resource"`
-	// Format 只接受 csv（导出是 CSV only，见 service/export_csv.go 的说明）。
+	// Format 接受 CSV / JSON / XLSX / XML / HTML。
 	Format string `json:"format"`
 	// Masked 为 nil 时**默认脱敏**（service.DefaultExportMasked）。
 	// 只有显式传 false 才导出明文 —— 默认值的唯一来源在 service 层。
 	Masked *bool `json:"masked"`
 	// Limit 可选，覆盖单任务行数上限（0 = 默认 10 万）。
-	Limit int `json:"limit"`
+	Limit       int     `json:"limit"`
+	QuestionIDs []int64 `json:"questionIds"`
 }
 
 type importTaskRequest struct {
@@ -151,6 +184,7 @@ type asyncTaskResponse struct {
 	ErrorMessage  string     `json:"errorMessage,omitempty"`
 	DownloadURL   string     `json:"downloadUrl,omitempty"`
 	ErrorURL      string     `json:"errorReportUrl,omitempty"`
+	ResultDeleted bool       `json:"resultDeleted"`
 	ExpiresAt     *time.Time `json:"expiresAt,omitempty"`
 	CreatedAt     time.Time  `json:"createdAt"`
 	FinishedAt    *time.Time `json:"finishedAt,omitempty"`
@@ -167,6 +201,7 @@ func buildAsyncTaskResponse(task entity.AsyncTask) asyncTaskResponse {
 		Type:          task.Type,
 		Resource:      task.Resource,
 		Format:        task.Format,
+		CreatedAt:     task.CreatedAt,
 		Status:        task.Status,
 		Masked:        task.Masked,
 		DryRun:        task.DryRun,
@@ -178,9 +213,9 @@ func buildAsyncTaskResponse(task entity.AsyncTask) asyncTaskResponse {
 		Message:       task.Message,
 		ErrorMessage:  task.ErrorMessage,
 		ExpiresAt:     task.ExpiresAt,
-		CreatedAt:     task.CreatedAt,
 		FinishedAt:    task.FinishedAt,
 		ActorUsername: task.ActorUsername,
+		ResultDeleted: task.Type == entity.AsyncTaskTypeExport && entity.AsyncTaskIsTerminal(task.Status) && strings.TrimSpace(task.FilePath) == "",
 	}
 	if task.Status == entity.AsyncTaskStatusSucceeded && strings.TrimSpace(task.FilePath) != "" {
 		response.DownloadURL = fmt.Sprintf("/api/export/tasks/%s/download", task.TaskID)
@@ -195,7 +230,7 @@ func buildAsyncTaskResponse(task entity.AsyncTask) asyncTaskResponse {
 //
 // 三条校验都是明确的 400，绝不静默修正：
 //   - resource 必须在支持清单内（否则用户等到任务跑完才知道导错了）；
-//   - format 只接受 csv（111 §4.1「格式：只 CSV」，JSON 是前端本地生成的）；
+//   - format 支持 CSV；题库另支持 JSON / XLSX / XML / HTML；
 //   - 未注入 manager 时 503（不能假装提交成功然后什么都不发生）。
 //
 // 响应 202 + {taskId}：前端拿它去轮询（111 Q12-1 选 B：立即返回任务 ID，前端轮询）。
@@ -222,10 +257,20 @@ func ExportTaskCreate(c *gin.Context) {
 	if format == "" {
 		format = service.ImportFormatCSV
 	}
-	if format != service.ImportFormatCSV {
+	switch format {
+	case service.ExportFormatCSV, service.ExportFormatJSON, service.ExportFormatXlsx, service.ExportFormatXML, service.ExportFormatHTML:
+	default:
 		c.JSON(http.StatusBadRequest, gin.H{
-			"message": "导出只支持 CSV；JSON 由前端本地生成（无需异步任务）",
+			"message": "导出格式只支持 json / csv / xlsx / xml / html",
 		})
+		return
+	}
+	if resource != service.ExportResourceQuestions && format != service.ExportFormatCSV {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "当前只有题库支持 JSON / XLSX / XML / HTML 导出"})
+		return
+	}
+	if resource != service.ExportResourceQuestions && len(input.QuestionIDs) > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "仅题库导出支持指定题目 ID"})
 		return
 	}
 	// 默认脱敏的解析只在 service 层做一次（resolveExportMasked 是唯一实现点）。
@@ -239,10 +284,11 @@ func ExportTaskCreate(c *gin.Context) {
 		return
 	}
 	params, err := json.Marshal(map[string]any{
-		"resource": resource,
-		"format":   format,
-		"masked":   masked,
-		"limit":    input.Limit,
+		"resource":    resource,
+		"format":      format,
+		"masked":      masked,
+		"limit":       input.Limit,
+		"questionIds": input.QuestionIDs,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "生成任务参数失败"})
@@ -258,7 +304,8 @@ func ExportTaskCreate(c *gin.Context) {
 		"taskId":   task.TaskID,
 		"resource": resource,
 		// 审计必须记 masked：这是「这次导出有没有带明文」的唯一证据。
-		"masked": masked,
+		"masked":    masked,
+		"createdAt": task.CreatedAt,
 	})
 	c.JSON(http.StatusAccepted, gin.H{
 		"taskId": task.TaskID,
@@ -395,6 +442,252 @@ func ImportTaskCreate(c *gin.Context) {
 	})
 }
 
+func ImportQuestionPreviewCreate(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !requireAdmin(c) {
+		return
+	}
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	resource := strings.ToLower(strings.TrimSpace(c.PostForm("resource")))
+	if resource != service.ImportResourceQuestions {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "该预览入口仅支持题库导入"})
+		return
+	}
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "请选择要导入的文件"})
+		return
+	}
+	if fileHeader.Size > AsyncTaskMaxUploadBytes {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"message": fmt.Sprintf("文件超过 %d MiB 上限", AsyncTaskMaxUploadBytes/(1<<20))})
+		return
+	}
+	content, err := readAsyncTaskUpload(fileHeader)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "读取上传文件失败"})
+		return
+	}
+	format, err := service.DetectImportFormat(fileHeader.Filename, content)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	header, rows, err := service.ParseImportRows(format, content)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	if len(rows) > service.QuestionImportMaxRows {
+		c.JSON(http.StatusBadRequest, gin.H{"message": fmt.Sprintf("导入行数超过单批上限 %d 行", service.QuestionImportMaxRows)})
+		return
+	}
+	index := make(map[string]int, len(header))
+	for position, name := range header {
+		index[strings.ToLower(strings.ReplaceAll(strings.TrimSpace(name), " ", ""))] = position
+	}
+	if _, ok := index["question"]; !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "导入文件的表头缺少必填列：question"})
+		return
+	}
+	previewID, err := service.NewQuestionImportPreviewID()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "创建预览失败"})
+		return
+	}
+	preview := &questionImportPreview{id: previewID, actorID: operator.ID, filename: filepath.Base(fileHeader.Filename), format: format, content: content, rows: rows, header: header, expiresAt: time.Now().Add(questionPreviewTTL)}
+	questionImportPreviews.Lock()
+	for key, value := range questionImportPreviews.items {
+		if time.Now().After(value.expiresAt) {
+			delete(questionImportPreviews.items, key)
+		}
+	}
+	questionImportPreviews.items[previewID] = preview
+	questionImportPreviews.Unlock()
+	items := buildQuestionPreviewItems(preview, 1, questionPreviewPageSize)
+	c.JSON(http.StatusOK, gin.H{"previewId": previewID, "total": len(rows), "page": 1, "pageSize": questionPreviewPageSize, "items": items})
+}
+
+func ImportQuestionPreviewPage(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !requireAdmin(c) {
+		return
+	}
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	preview, status := getQuestionImportPreview(c.Param("previewId"), operator.ID)
+	if status != http.StatusOK {
+		c.JSON(status, gin.H{"message": "题库预览不存在或已过期"})
+		return
+	}
+	page, pageSize := blacklistPagination(c)
+	items := buildQuestionPreviewItems(preview, page, pageSize)
+	c.JSON(http.StatusOK, gin.H{"previewId": preview.id, "total": len(preview.rows), "page": page, "pageSize": pageSize, "items": items})
+}
+
+func ImportQuestionPreviewConfirm(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !requireAdmin(c) {
+		return
+	}
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	managerInstance := asyncTaskManager
+	if managerInstance == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"message": "异步任务未启用，请联系管理员"})
+		return
+	}
+	preview, status := getQuestionImportPreview(c.Param("previewId"), operator.ID)
+	if status != http.StatusOK {
+		c.JSON(status, gin.H{"message": "题库预览不存在或已过期"})
+		return
+	}
+	questionImportPreviews.Lock()
+	if preview.confirmed {
+		questionImportPreviews.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"message": "该预览已提交导入"})
+		return
+	}
+	preview.confirmed = true
+	questionImportPreviews.Unlock()
+	path, err := saveAsyncTaskUpload(managerInstance.BaseDir, preview.filename, preview.content)
+	if err != nil {
+		questionImportPreviews.Lock()
+		preview.confirmed = false
+		questionImportPreviews.Unlock()
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "保存待导入文件失败"})
+		return
+	}
+	params, err := json.Marshal(map[string]any{"resource": service.ImportResourceQuestions, "filename": preview.filename, "dryRun": false})
+	if err != nil {
+		_ = os.Remove(path)
+		questionImportPreviews.Lock()
+		preview.confirmed = false
+		questionImportPreviews.Unlock()
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "生成导入参数失败"})
+		return
+	}
+	task, err := managerInstance.SubmitAsyncTask(entity.AsyncTaskTypeImport, service.ImportResourceQuestions, preview.format, service.DefaultExportMasked, string(params), path, operator)
+	if err != nil {
+		_ = os.Remove(path)
+		questionImportPreviews.Lock()
+		preview.confirmed = false
+		questionImportPreviews.Unlock()
+		writeAsyncTaskError(c, err)
+		return
+	}
+	questionImportPreviews.Lock()
+	delete(questionImportPreviews.items, preview.id)
+	questionImportPreviews.Unlock()
+	recordAccountAudit(c, &operator, "import", 1, "确认题库文件导入", map[string]any{"taskId": task.TaskID, "format": preview.format, "total": len(preview.rows)})
+	c.JSON(http.StatusAccepted, gin.H{"taskId": task.TaskID, "status": task.Status, "createdAt": task.CreatedAt})
+}
+
+func ImportQuestionPreviewDelete(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !requireAdmin(c) {
+		return
+	}
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	questionImportPreviews.Lock()
+	preview, exists := questionImportPreviews.items[c.Param("previewId")]
+	if !exists || preview.actorID != operator.ID {
+		questionImportPreviews.Unlock()
+		c.JSON(http.StatusNotFound, gin.H{"message": "题库预览不存在或已过期"})
+		return
+	}
+	if time.Now().After(preview.expiresAt) {
+		delete(questionImportPreviews.items, preview.id)
+		questionImportPreviews.Unlock()
+		c.JSON(http.StatusNotFound, gin.H{"message": "题库预览不存在或已过期"})
+		return
+	}
+	if preview.confirmed {
+		questionImportPreviews.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"message": "已提交的导入任务不能取消"})
+		return
+	}
+	delete(questionImportPreviews.items, preview.id)
+	questionImportPreviews.Unlock()
+	c.Status(http.StatusNoContent)
+}
+
+func getQuestionImportPreview(id string, actorID int32) (*questionImportPreview, int) {
+	questionImportPreviews.Lock()
+	defer questionImportPreviews.Unlock()
+	preview, ok := questionImportPreviews.items[strings.TrimSpace(id)]
+	if !ok {
+		return nil, http.StatusNotFound
+	}
+	if time.Now().After(preview.expiresAt) {
+		delete(questionImportPreviews.items, preview.id)
+		return nil, http.StatusGone
+	}
+	if preview.actorID != actorID {
+		return nil, http.StatusNotFound
+	}
+	return preview, http.StatusOK
+}
+
+func buildQuestionPreviewItems(preview *questionImportPreview, page, pageSize int) []questionPreviewItem {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 50
+	}
+	start := (page - 1) * pageSize
+	if start >= len(preview.rows) {
+		return []questionPreviewItem{}
+	}
+	end := minIntController(start+pageSize, len(preview.rows))
+	index := make(map[string]int, len(preview.header))
+	for position, name := range preview.header {
+		index[strings.ToLower(strings.ReplaceAll(strings.TrimSpace(name), " ", ""))] = position
+	}
+	items := make([]questionPreviewItem, 0, end-start)
+	for rowIndex, row := range preview.rows[start:end] {
+		read := func(key string) string {
+			if position, ok := index[key]; ok && position < len(row) {
+				return row[position]
+			}
+			return ""
+		}
+		options := decodePreviewStringArray(read("options"))
+		answer := decodePreviewStringArray(read("answer"))
+		source := read("source_name")
+		if source == "" {
+			source = "人工导入"
+		}
+		items = append(items, questionPreviewItem{Row: start + rowIndex + 2, Question: read("question"), Type: read("type"), Options: options, Answer: answer, Extra: read("extra"), CourseName: read("course_name"), Source: source})
+	}
+	return items
+}
+
+func minIntController(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func decodePreviewStringArray(value string) []string {
+	var items []string
+	if json.Unmarshal([]byte(value), &items) != nil || items == nil {
+		return []string{}
+	}
+	return items
+}
+
 // parseAsyncTaskBool 解析表单里的布尔值（"true"/"1"/"on" 都算真）。
 func parseAsyncTaskBool(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
@@ -445,7 +738,7 @@ func saveAsyncTaskUpload(baseDir, filename string, content []byte) (string, erro
 	}
 	extension := strings.ToLower(filepath.Ext(strings.TrimSpace(filename)))
 	switch extension {
-	case ".csv", ".json", ".xlsx", ".xls":
+	case ".csv", ".json", ".xlsx", ".xls", ".xml", ".html", ".htm", ".txt":
 	default:
 		// 扩展名不可用时按内容推断，保证落盘文件名与解析器一致。
 		detected, err := service.DetectImportFormat(filename, content)
@@ -538,6 +831,9 @@ func ExportTaskDownload(c *gin.Context) {
 	}
 	defer func() { _ = file.Close() }()
 	c.Header("Content-Type", "text/csv; charset=utf-8")
+	if task.Format != "" {
+		c.Header("Content-Type", exportContentType(task.Format))
+	}
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, asyncTaskDownloadName(task, name)))
 	c.File(file.Name())
 }
@@ -576,19 +872,92 @@ func ExportTaskErrorReport(c *gin.Context) {
 	c.File(path)
 }
 
+// ExportTaskDelete removes a completed export artifact while retaining its task
+// row as history. Only the submitting administrator may remove their result.
+func ExportTaskDelete(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !requireAdmin(c) {
+		return
+	}
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	db, err := requireAsyncTaskDB()
+	if err != nil {
+		writeAsyncTaskError(c, err)
+		return
+	}
+	task, err := service.GetAsyncTaskWithDB(db, c.Param("taskId"))
+	if err != nil {
+		writeAsyncTaskError(c, err)
+		return
+	}
+	if task.Type != entity.AsyncTaskTypeExport || task.Resource != service.ExportResourceQuestions {
+		c.JSON(http.StatusNotFound, gin.H{"message": "题库导出任务不存在"})
+		return
+	}
+	if task.ActorUserID != operator.ID {
+		c.JSON(http.StatusForbidden, gin.H{"message": "只能删除自己提交的导出结果"})
+		return
+	}
+	if !entity.AsyncTaskIsTerminal(task.Status) {
+		c.JSON(http.StatusConflict, gin.H{"message": "任务完成后才能删除导出结果"})
+		return
+	}
+	if strings.TrimSpace(task.FilePath) == "" {
+		c.JSON(http.StatusNoContent, nil)
+		return
+	}
+	if err := os.Remove(task.FilePath); err != nil && !os.IsNotExist(err) {
+		logger.SysError("删除导出结果失败: " + logger.RedactSecrets(err.Error()))
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "删除导出结果失败"})
+		return
+	}
+	if err := db.Model(&entity.AsyncTask{}).Where("id = ? AND actor_user_id = ? AND status IN ?", task.ID, operator.ID, []string{entity.AsyncTaskStatusSucceeded, entity.AsyncTaskStatusFailed}).Update("file_path", "").Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "更新任务记录失败"})
+		return
+	}
+	recordAccountAudit(c, &operator, "export", 1, "删除题库导出结果", map[string]any{"taskId": task.TaskID, "resource": task.Resource})
+	c.Status(http.StatusNoContent)
+}
+
 // asyncTaskDownloadName 生成下载文件名（含资源与时间，便于运营归档）。
 func asyncTaskDownloadName(task entity.AsyncTask, fallback string) string {
 	resource := strings.TrimSpace(task.Resource)
 	if resource == "" {
 		resource = "task"
 	}
-	if strings.TrimSpace(task.FinishedAt.Format(time.RFC3339)) != "" && task.FinishedAt != nil {
-		return fmt.Sprintf("%s-export-%s.csv", resource, task.FinishedAt.In(logger.ShanghaiLocation()).Format("20060102-1504"))
+	if task.FinishedAt != nil {
+		format := strings.ToLower(strings.TrimSpace(task.Format))
+		if format == "" {
+			format = "csv"
+		}
+		return fmt.Sprintf("%s-export-%s.%s", resource, task.FinishedAt.In(logger.ShanghaiLocation()).Format("20060102-1504"), format)
 	}
 	if strings.TrimSpace(fallback) != "" {
 		return fallback
 	}
-	return resource + "-export.csv"
+	format := strings.ToLower(strings.TrimSpace(task.Format))
+	if format == "" {
+		format = "csv"
+	}
+	return resource + "-export." + format
+}
+
+func exportContentType(format string) string {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case service.ExportFormatJSON:
+		return "application/json; charset=utf-8"
+	case service.ExportFormatXlsx:
+		return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+	case service.ExportFormatXML:
+		return "application/xml; charset=utf-8"
+	case service.ExportFormatHTML:
+		return "text/html; charset=utf-8"
+	default:
+		return "text/csv; charset=utf-8"
+	}
 }
 
 // ImportTemplate 下载导入模板（只有表头）。
@@ -598,14 +967,22 @@ func ImportTemplate(c *gin.Context) {
 		return
 	}
 	resource := strings.ToLower(strings.TrimSpace(c.Query("resource")))
-	content, err := service.ImportTemplateCSV(resource)
+	format := strings.ToLower(strings.TrimSpace(c.Query("format")))
+	if format == "" {
+		format = service.ExportFormatCSV
+	}
+	content, err := service.ImportTemplateData(resource, format)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
-	c.Header("Content-Type", "text/csv; charset=utf-8")
-	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-import-template.csv"`, resource))
-	c.Data(http.StatusOK, "text/csv; charset=utf-8", content)
+	contentType := exportContentType(format)
+	extension := format
+	if extension == service.ExportFormatXlsx {
+		extension = "xlsx"
+	}
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s-import-template.%s"`, resource, extension))
+	c.Data(http.StatusOK, contentType, content)
 }
 
 // writeAsyncTaskError 把 service 错误映射成 HTTP 状态。

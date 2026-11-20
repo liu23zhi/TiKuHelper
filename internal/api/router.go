@@ -720,10 +720,15 @@ func SetAPIRouter(router *gin.Engine) {
 	// 而不是假装成功（见 controller/async_task.go:199 的注释）。
 	apiRouter.POST("/export/tasks", controller.Auth, middleware.RequireAdmin, controller.ExportTaskCreate)
 	apiRouter.POST("/import/tasks", controller.Auth, middleware.RequireAdmin, controller.ImportTaskCreate)
+	apiRouter.POST("/import/previews", controller.Auth, middleware.RequireAdmin, controller.ImportQuestionPreviewCreate)
+	apiRouter.GET("/import/previews/:previewId", controller.Auth, middleware.RequireAdmin, controller.ImportQuestionPreviewPage)
+	apiRouter.POST("/import/previews/:previewId/confirm", controller.Auth, middleware.RequireAdmin, controller.ImportQuestionPreviewConfirm)
+	apiRouter.DELETE("/import/previews/:previewId", controller.Auth, middleware.RequireAdmin, controller.ImportQuestionPreviewDelete)
 	apiRouter.GET("/export/tasks", controller.Auth, middleware.RequireAdmin, controller.ExportTaskList)
 	apiRouter.GET("/export/tasks/:taskId", controller.Auth, middleware.RequireAdmin, controller.ExportTaskDetail)
 	apiRouter.GET("/export/tasks/:taskId/download", controller.Auth, middleware.RequireAdmin, controller.ExportTaskDownload)
 	apiRouter.GET("/export/tasks/:taskId/errors", controller.Auth, middleware.RequireAdmin, controller.ExportTaskErrorReport)
+	apiRouter.DELETE("/export/tasks/:taskId", controller.Auth, middleware.RequireAdmin, controller.ExportTaskDelete)
 	apiRouter.GET("/import/template", controller.Auth, middleware.RequireAdmin, controller.ImportTemplate)
 
 	// 管理员赠送 / 批量赠送 / 追缴式回滚（44 / T-30 的前置）。九个 handler 全部

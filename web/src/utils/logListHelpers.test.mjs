@@ -201,14 +201,14 @@ test('LogList uses fixed widths and horizontal scrolling while allowing wraps', 
   assert.doesNotMatch(content, /log-cell-nowrap/);
 });
 
-test('LogList formats timestamp and IP as centered two-line cells', async () => {
-  assert.equal(logHelpers.formatShanghaiLogDate('2026-10-24T18:18:59Z', '\n'), '2026-10-25\n02:18:59');
+test('LogList formats timestamp on one line and IP with its location', async () => {
+  assert.equal(logHelpers.formatShanghaiLogDate('2026-10-24T18:18:59Z'), '2026-10-25 02:18:59');
   assert.equal(logHelpers.formatShanghaiLogDate('2026-10-24T18:18:59Z'), '2026-10-25 02:18:59');
   assert.equal(logHelpers.formatShanghaiLogDate('invalid', '\n'), '-');
   const content = await readFile(logListPagePath, 'utf8');
   assert.match(content, /class="log-time-cell"[^>]*>\{\{ formatDateForTable\(/);
   assert.match(content, /class="location-value"/);
-  assert.match(content, /\.log-time-cell[\s\S]*?white-space:\s*pre-wrap/);
+  assert.match(content, /\.log-time-cell\s*\{\s*white-space:\s*nowrap/);
   assert.match(content, /\.location-value[\s\S]*?white-space:\s*pre-wrap/);
   assert.match(content, /<ConsoleTableShell/);
   const styles = await readFile(new URL('../styles/console.css', import.meta.url), 'utf8');
@@ -246,6 +246,8 @@ test('buildLogModuleLabel supports search module wording', () => {
   assert.equal(buildLogModuleLabel('sms'), '短信');
   assert.equal(buildLogModuleLabel('recharge'), '充值');
   assert.equal(buildLogModuleLabel('access_token'), '访问令牌');
+  assert.equal(buildLogModuleLabel('export'), '导出');
+  assert.equal(buildLogModuleLabel('import'), '导入');
   assert.equal(buildLogModuleLabel('unknown'), 'unknown');
 });
 
@@ -254,6 +256,8 @@ test('buildLogActionLabel renders search action specially for search module', ()
   assert.equal(buildLogActionLabel(11, 'ai_fallback'), 'AI 兜底');
   assert.equal(buildLogActionLabel(3, 'question'), '查询');
   assert.equal(buildLogActionLabel(10, 'auth'), '登录');
+  assert.equal(buildLogActionLabel(1, 'export'), '提交任务');
+  assert.equal(buildLogActionLabel(1, 'import'), '提交任务');
   assert.equal(buildLogActionLabel(20, 'captcha'), '远程生成');
   assert.equal(buildLogActionLabel(21, 'captcha'), '远程校验');
   assert.equal(buildLogActionLabel(22, 'captcha'), '远程二验');
@@ -792,7 +796,7 @@ test('LogList formats timestamps in Shanghai time', async () => {
   const content = await readFile(logListPagePath, 'utf8');
 
   assert.match(content, /formatShanghaiLogDate\(dateString/);
-  assert.match(content, /formatShanghaiLogDate\(dateString, '\\n'\)/);
+  assert.match(content, /formatShanghaiLogDate\(dateString\)/);
 });
 
 test('search outcome summaries retain structured request fields', () => {

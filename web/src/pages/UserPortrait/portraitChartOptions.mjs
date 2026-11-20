@@ -24,8 +24,10 @@
 /** 24 小时分布的标题。 */
 export const PORTRAIT_HOURS_TITLE = '24 小时时段分布'
 /** 题目/消费类型分布的标题。 */
-export const PORTRAIT_TYPES_TITLE = '题目类型分布'
-/** 趋势图的标题。 */
+export const PORTRAIT_TYPES_TITLE = '账单类型分布'
+/** 星期分布标题。 */
+export const PORTRAIT_WEEKDAYS_TITLE = '星期分布'
+/** 保留旧常量供仍使用通用趋势 option 的调用方兼容。 */
 export const PORTRAIT_TREND_TITLE = '消费趋势'
 
 /**
@@ -219,7 +221,7 @@ export function portraitSeriesPalette(palette) {
 }
 
 /**
- * buildPortraitAllOptions：把三个图一次性构建出来。
+ * buildPortraitAllOptions：一次性构建共享 overview 的全部图表选项。
  *
  * 返回值里每个键都可能是 `null`（表示空数据 → 页面画「暂无数据」占位）。
  * 页面只需遍历这个对象，不需要自己判断空态 —— 空态判断只有一个落点。
@@ -232,13 +234,9 @@ export function buildPortraitAllOptions(charts, palette) {
   return {
     hours: buildPortraitHoursOption(source.hours, palette),
     types: buildPortraitTypesOption(source.billingTypes, palette),
-    // 趋势：优先用小时桶（横轴更细）；小时桶为空时退回星期桶。
-    // 两者都空 → null（页面显示「暂无数据」）。
-    trend: buildPortraitTrendOption(
-      source.hours && !source.hours.empty ? source.hours : source.weekdays,
-      palette,
-      { name: '次数' },
-    ),
+    weekdays: buildPortraitHoursOption(source.weekdays, palette),
+    // 保留旧字段给逐用户画像消费者，整站页面明确只使用实际时间桶分布。
+    trend: buildPortraitTrendOption(source.hours, palette, { name: '次数' }),
   }
 }
 
