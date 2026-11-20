@@ -58,6 +58,8 @@ const DeviceAdmin = () => import(/* webpackChunkName: "route-device-admin" */ '.
 // 数据源是 /api/service-status/summary（后端走 AuthOrAccessToken）——
 // 它只返回聚合数字，不返回逐分钟明细；明细留在管理员的 /api/admin/service-status。
 const ServiceStatus = () => import(/* webpackChunkName: "route-service-status" */ '../pages/ServiceStatus/index.vue')
+// 管理员服务器状态详情：逐分钟失败分类与进程指标，仅管理员可见。
+const AdminServiceStatus = () => import(/* webpackChunkName: "route-admin-service-status" */ '../pages/AdminServiceStatus/index.vue')
 // 脚本一次性激活码管理（用户诉求：「在侧边栏仅管理员可见添加一个脚本一次性
 // 激活码管理，用于查看，修改和创建」，并能看换取令牌/下载脚本等使用情况）。
 // 管理员专属，已登记进 ADMIN_ONLY_ROUTE_NAMES。
@@ -396,6 +398,12 @@ const routes = [
         component: ServiceStatus,
       },
       {
+        path: 'service-status-admin',
+        name: 'service-status-admin',
+        component: AdminServiceStatus,
+        meta: { viewMode: 'admin' },
+      },
+      {
         // 我的设备（137-设备体系设计 §9.1 / 批次 A2-5）。普通用户可见。
         //
         // 为什么它在这里而不是管理区：设备上限是**用户自己**的权益约束，
@@ -421,6 +429,7 @@ const ADMIN_ONLY_ROUTE_NAMES = new Set([
   // 已归档账号：列表里有账号快照与绑定记录，只能管理员看（task_doc/76 §3.2.3）。
   'archived-users',
   'loglist',
+  'service-status-admin',
   // 充值记录（2026-11-19）：**管理员专属**。它是充值订单的运营视图
   // （改状态、发起退款），普通用户看自己的入账在「个人使用 → 账单流水」。
   // 此前它既没登记在这里、又同时挂在用户菜单上，等于普通用户可直接进；

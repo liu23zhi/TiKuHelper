@@ -202,6 +202,7 @@ const ADMIN_MENU_ITEMS = [
   // 「两个路由、两个视图」的成对关系 —— 本页没有管理员专属视图，两侧看到同一份摘要。
   // ⚠️ 因此它**不是** ADMIN_ONLY_ROUTE_NAMES 的成员。
   { key: 'service-status', label: '服务器状态', icon: CloudServerOutlined },
+  { key: 'service-status-admin', label: '服务器状态详情', icon: CloudServerOutlined },
 ]
 
 const USER_MENU_ITEMS = [

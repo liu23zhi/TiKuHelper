@@ -132,11 +132,18 @@ export function buildEndpointView(kind, bucket) {
   else if (sampled) state = 'idle'
 
   const rate = measured ? success / total : null
+  const status = rate === null
+    ? 'unknown'
+    : (rate >= 0.95 ? 'healthy' : (rate >= 0.7 ? 'degraded' : 'down'))
+  const statusPresentation = STATUS_PRESENTATION[status] || UNKNOWN_PRESENTATION
 
   return {
     key: presentation.key,
     label: presentation.label,
     state,
+    status,
+    statusLabel: !sampled ? '暂无采样数据' : (!measured ? '暂无请求' : statusPresentation.label),
+    tone: measured ? statusPresentation.tone : 'muted',
     greyed: !sampled,
     samples: samples === null ? 0 : samples,
     totalRequests: total === null ? 0 : total,

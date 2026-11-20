@@ -30,6 +30,7 @@ function snapshot(overrides = {}) {
     http: { total: 120, inFlight: 3, failed: 4, latencyCount: 100, latencyTotalMillis: 2450, latencyMaxMillis: 160, buckets: [{ upperMillis: 100, count: 80 }] },
     cache: { search: { hits: 12, misses: 5, shared: 2 }, fallback: { hits: 7, misses: 4, shared: 1 } },
     billing: { attempts: 10, successes: 8, failures: 2 },
+    memory: { allocBytes: 1048576, totalAllocBytes: 2097152, sysBytes: 8388608, heapAllocBytes: 1048576, heapSysBytes: 4194304, heapInuseBytes: 2097152, heapIdleBytes: 2097152, heapReleasedBytes: 0, stackInuseBytes: 524288, gcCycles: 3 },
     tasks: { search: { total: 20, running: 2, succeeded: 17, failed: 1 }, fallback: { total: 9, running: 1, succeeded: 6, failed: 2 } },
     ...overrides,
   }
@@ -68,6 +69,7 @@ test('SM01 admin mount reads once and renders real Console/Antd read-only diagno
   assert.equal(value(w, 'cache-search-hits'), '12'); assert.equal(value(w, 'cache-fallback-shared'), '1')
   assert.equal(value(w, 'billing-attempts'), '10'); assert.equal(value(w, 'billing-failures'), '2')
   assert.equal(value(w, 'tasks-search-running'), '2'); assert.equal(value(w, 'tasks-fallback-running'), '1')
+  assert.equal(value(w, 'memory-heap-alloc'), '1.0 MiB'); assert.equal(value(w, 'memory-heap-sys'), '4.0 MiB'); assert.equal(value(w, 'memory-gc-cycles'), '3')
   assert.ok(w.text().includes('诊断事件，不是账务凭证/收入'))
   assert.ok(w.text().includes('不是上游模型输入 Token 缓存命中率'));
   assert.ok(w.text().includes('当前保留任务'));

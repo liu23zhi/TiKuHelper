@@ -143,7 +143,7 @@ func TestOpenTokenCORSHeadersAndAuth(t *testing.T) {
 		if strings.TrimSpace(origin) != "" {
 			expected = "*"
 		}
-		checks := map[string]bool{"status": w.Code == want, "wildcardInsteadOfReflection": w.Header().Get("Access-Control-Allow-Origin") == expected, "noCredentialSharingHeader": w.Header().Get("Access-Control-Allow-Credentials") == "", "existingVaryPreservedNoOriginAdded": w.Header().Get("Vary") == "Accept-Encoding", "sameAllowHeaders": w.Header().Get("Access-Control-Allow-Headers") == "Authorization, Content-Type, Idempotency-Key", "sameFiveMethods": w.Header().Get("Access-Control-Allow-Methods") == "GET, POST, PUT, DELETE, OPTIONS"}
+		checks := map[string]bool{"status": w.Code == want, "wildcardInsteadOfReflection": w.Header().Get("Access-Control-Allow-Origin") == expected, "noCredentialSharingHeader": w.Header().Get("Access-Control-Allow-Credentials") == "", "existingVaryPreservedNoOriginAdded": w.Header().Get("Vary") == "Accept-Encoding", "sameAllowHeaders": w.Header().Get("Access-Control-Allow-Headers") == "Authorization, Content-Type, Idempotency-Key, X-Device-Id, X-Device-Instance, X-Script-Identity", "sameFiveMethods": w.Header().Get("Access-Control-Allow-Methods") == "GET, POST, PUT, DELETE, OPTIONS"}
 		if method == "OPTIONS" {
 			checks["preflightAuthNotCalled"] = authCalls == beforeA
 			checks["preflightHandlerNotCalled"] = handlerCalls == beforeH

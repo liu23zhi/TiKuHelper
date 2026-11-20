@@ -2,7 +2,7 @@
   <div class="console-page service-status-page">
     <ConsolePageHeading
       title="服务器状态"
-      description="本站搜题服务的当前健康度。数据来自服务进程内存中的分钟级采样，重启后从零重新积累。"
+      description="这里只展示搜题接口的运行状态，不受登录、管理页等其它请求影响。"
     >
       <template #actions>
         <a-button
@@ -26,180 +26,47 @@
       aria-busy="true"
     >
       <a-spin />
-      <span>正在读取服务器状态…</span>
+      <span>正在读取搜题接口状态…</span>
     </div>
 
-    <template v-else-if="loaded">
-      <ConsolePanel>
-        <div class="status-hero" :data-status-tone="view.tone" :data-data-state="view.dataState">
-          <div class="status-hero__dot" aria-hidden="true"></div>
-          <div class="status-hero__body">
-            <p class="status-hero__label" data-status-label>{{ view.statusLabel }}</p>
-            <p class="status-hero__hint">{{ heroHint }}</p>
-          </div>
+    <ConsolePanel v-else-if="loaded" title="搜题接口" description="统计数据来自服务端最近窗口的搜题请求。">
+      <div
+        class="search-status"
+        :class="{ 'search-status--muted': endpointView.greyed }"
+        :data-endpoint-kind="endpointView.key"
+        :data-endpoint-state="endpointView.state"
+        :data-endpoint-greyed="endpointView.greyed ? 'true' : 'false'"
+        :data-status-tone="endpointView.tone"
+      >
+        <span class="search-status__dot" aria-hidden="true"></span>
+        <div>
+          <p class="search-status__label" data-status-label>{{ endpointView.statusLabel }}</p>
+          <p class="search-status__hint" data-endpoint-hint>
+            {{ endpointView.hint || statusHint }}
+          </p>
         </div>
-      </ConsolePanel>
+      </div>
 
-      <!--
-        ⚠️ 这里必须是 v-if="view.dataState === 'empty'"，不能写成 v-if="successRate === 0"。
-        全失败（数据可用 + 成功率 0%）与无数据在数值上完全相同，
-        用数值判会把握手报警的状态显示成「暂无数据」。
-      -->
-      <section v-if="view.dataState === 'empty'" class="page-alert" data-empty-hint role="status">
-        <a-alert type="info" show-icon message="暂无采样数据" :description="view.emptyHint" />
-      </section>
-
-      <ConsoleSummaryGrid class="status-summary" aria-label="服务状态摘要">
+      <ConsoleSummaryGrid class="search-metrics" aria-label="搜题接口状态摘要">
         <div>
           <div class="summary-label">成功率</div>
-          <div class="summary-value" data-metric="success-rate">{{ view.rateText }}</div>
-          <div class="summary-hint">{{ rateHint }}</div>
+          <div class="summary-value" data-metric="search-success-rate" data-endpoint-rate>{{ endpointView.rateText }}</div>
         </div>
         <div>
           <div class="summary-label">平均延迟</div>
-          <div class="summary-value" data-metric="avg-latency">{{ view.latencyText }}</div>
-          <div class="summary-hint">窗口内已完成请求的平均耗时</div>
+          <div class="summary-value" data-metric="search-avg-latency">{{ endpointView.latencyText }}</div>
         </div>
         <div>
-          <div class="summary-label">请求总数</div>
-          <div class="summary-value" data-metric="total-requests">{{ view.totalText }}</div>
-          <div class="summary-hint">其中成功 {{ view.successText }} 次</div>
-        </div>
-        <!--
-          失败请求卡片：仅在后端**真的给了** failedRequests 时渲染。
-          公开端点从 2026-11-15 起不给这个字段（避免普通用户看到失败计数），
-          那时 view.hasFailedMetric 为 false，整张卡片不出现 —— 而不是显示「—」。
-        -->
-        <div v-if="view.hasFailedMetric">
-          <div class="summary-label">失败请求</div>
-          <div class="summary-value" data-metric="failed-requests">{{ view.failedText }}</div>
-          <div class="summary-hint">失败率按同一窗口计算</div>
+          <div class="summary-label">搜题请求</div>
+          <div class="summary-value" data-metric="search-total-requests">{{ endpointView.totalText }}</div>
+          <div class="summary-hint">成功 {{ endpointView.successText }} 次</div>
         </div>
       </ConsoleSummaryGrid>
 
-      <!--
-        接口族分桶（138 §4.3）。
-        ⚠️ 置灰的唯一依据是 endpointView.greyed（= samples === 0），
-        绝不能用 endpointView.totalRequests === 0 或 rateText === '0%' 判 ——
-        前者会把「采样到了但确实没人用」误判成「没数据」，
-        后者会把「采样到了且全失败」（最该报警）当成「无数据」藏起来。
-      -->
-      <ConsolePanel
-        title="接口分桶"
-        description="把请求按接口族拆开看。全站成功率会被健康检查、管理页这类请求稀释，所以搜题接口要单独看。"
-        class="endpoint-panel"
-      >
-        <div
-          class="endpoint-card"
-          :class="{ 'endpoint-card--greyed': endpointView.greyed }"
-          :data-endpoint-kind="endpointView.key"
-          :data-endpoint-state="endpointView.state"
-          :data-endpoint-greyed="endpointView.greyed ? 'true' : 'false'"
-        >
-          <p class="endpoint-card__title" data-endpoint-label>{{ endpointView.label }}</p>
-          <!-- 置灰时**绝不显示 0%**：那会让人以为服务挂了（实际是没数据）。 -->
-          <p class="endpoint-card__rate" data-endpoint-rate>{{ endpointView.rateText }}</p>
-          <p class="endpoint-card__hint" data-endpoint-hint>{{ endpointView.hint }}</p>
-          <a-descriptions :column="1" size="small" bordered class="endpoint-card__details">
-            <a-descriptions-item label="请求 / 成功">
-              {{ endpointView.totalText }} / {{ endpointView.successText }}
-            </a-descriptions-item>
-            <a-descriptions-item label="平均延迟">{{ endpointView.latencyText }}</a-descriptions-item>
-            <a-descriptions-item label="已采样分钟数">{{ endpointView.samplesText }}</a-descriptions-item>
-          </a-descriptions>
-        </div>
-      </ConsolePanel>
+      <p class="hint">统计窗口：最近 {{ view.windowText }}。服务重启后采样会重新积累。</p>
+    </ConsolePanel>
 
-      <!--
-        逐分钟曲线（脱敏序列端点）。这是**增强区块**：
-        series 失败时整块不渲染，摘要与说明照常显示 —— 曲线拿不到不该让整页崩。
-        失败四分类不在这里出现（后端不给），见 controller.publicStatusPoint 的取舍说明。
-      -->
-      <ConsolePanel
-        v-if="seriesView"
-        title="最近每分钟趋势"
-        description="按自然分钟聚合的请求量与成功率。只保留画曲线需要的量，不含失败原因分类。"
-        class="series-panel"
-      >
-        <div v-if="seriesView.isEmpty" class="series-empty" data-series-empty role="status">
-          <p class="empty-title">暂无逐分钟数据</p>
-          <p class="hint">服务刚重启时曲线需要重新积累，每分钟生成一个点。下面的摘要仍然有效。</p>
-        </div>
-        <template v-else>
-          <!-- 色带：每个点一根柱，高度按该分钟请求数占本序列峰值的比例。 -->
-          <div class="series-strip" data-series-strip role="img" :aria-label="seriesAriaLabel">
-            <span
-              v-for="(point, index) in seriesView.points"
-              :key="index"
-              class="series-bar"
-              :data-series-bar="index"
-              :data-rate-tone="point.rateText === '0%' ? 'danger' : 'normal'"
-              :style="{ height: point.barHeight + '%' }"
-              :title="`${point.timeText} · ${point.totalText} 次 · 成功率 ${point.rateText}`"
-            ></span>
-          </div>
-          <div class="series-axis">
-            <span>{{ seriesView.points[0].timeText }}</span>
-            <span>{{ seriesView.points[seriesView.points.length - 1].timeText }}</span>
-          </div>
-
-          <a-descriptions :column="1" size="small" bordered class="status-descriptions">
-            <a-descriptions-item label="已采样点数">
-              {{ seriesView.retainedText }} / {{ seriesView.capacityText }} 分钟
-            </a-descriptions-item>
-            <a-descriptions-item label="曲线起点">
-              {{ seriesView.restartedAtText || '服务启动时间不可用' }}
-            </a-descriptions-item>
-          </a-descriptions>
-
-          <!-- 分钟明细：只列最近 10 条，避免把 1440 行全铺在页面上。 -->
-          <table class="series-table" data-series-table>
-            <caption class="series-caption">最近 {{ recentPoints.length }} 分钟明细</caption>
-            <thead>
-              <tr>
-                <th scope="col">时间</th>
-                <th scope="col">请求</th>
-                <th scope="col">成功</th>
-                <th scope="col">成功率</th>
-                <th scope="col">平均延迟</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(point, index) in recentPoints" :key="index" :data-series-row="index">
-                <td>{{ point.timeText }}</td>
-                <td>{{ point.totalText }}</td>
-                <td>{{ formatCount(point.successRequests) }}</td>
-                <td>{{ point.rateText }}</td>
-                <td>{{ point.latencyText }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </template>
-      </ConsolePanel>
-
-      <ConsolePanel title="采样说明" description="这些数字的边界，避免误读。">
-        <a-descriptions :column="1" size="small" bordered class="status-descriptions">
-          <a-descriptions-item label="统计窗口">{{ view.windowText }}</a-descriptions-item>
-          <a-descriptions-item label="已采样点数">
-            {{ view.retainedText }} / {{ view.capacityText }} 分钟
-          </a-descriptions-item>
-          <a-descriptions-item label="数据起点">
-            {{ view.restartedAtText || '服务启动时间不可用' }}
-          </a-descriptions-item>
-        </a-descriptions>
-        <p class="hint">
-          状态由最近 {{ view.windowText.replace('最近 ', '') }}的请求推导：成功率 ≥ 95% 为正常，
-          70%–95% 为降级，低于 70% 为异常。窗口内没有任何请求时显示「暂无采样数据」——
-          这与「全部失败」不同，后者成功率是 0% 并会显示为异常。
-        </p>
-        <p class="hint">
-          数据只存在服务进程内存里：不写数据库、重启即清零。因此曲线会在重启后重新积累，
-          「数据起点」就是本次重启的时刻。
-        </p>
-      </ConsolePanel>
-    </template>
-
-    <p v-else-if="!errorMessage" class="hint" role="status">点击刷新读取服务器状态。</p>
+    <p v-else-if="!errorMessage" class="hint" role="status">正在准备读取搜题接口状态。</p>
   </div>
 </template>
 
@@ -209,15 +76,12 @@ import { useRoute } from 'vue-router'
 import ConsolePageHeading from '@/components/ConsolePageHeading.vue'
 import ConsolePanel from '@/components/ConsolePanel.vue'
 import ConsoleSummaryGrid from '@/components/ConsoleSummaryGrid.vue'
-import { getServiceStatusSeries, getServiceStatusSummary } from '@/api/ServiceStatusApi'
+import { getServiceStatusSummary } from '@/api/ServiceStatusApi'
 import { getCurrentUserLogoutEpoch, useCurrentUserDisplay } from '@/utils/currentUser'
 import { currentUserIdentity } from '@/utils/currentUserScope'
 import {
   buildServiceStatusView,
-  formatCount,
-  loadServiceStatusSeries,
   loadServiceStatusSummary,
-  SERVICE_STATUS_SUMMARY_PATH,
 } from '@/utils/serviceStatusSummary.mjs'
 
 export default {
@@ -227,54 +91,29 @@ export default {
     const route = useRoute()
     const mountedPath = route.path
     const { currentUser } = useCurrentUserDisplay()
-
     const loading = ref(false)
     const loaded = ref(false)
     const payload = shallowRef(null)
-    const seriesView = shallowRef(null)
     const errorMessage = ref('')
-
-    // 分钟明细只展示最近 N 条：1440 行全铺出来既慢又没人看。
-    const SERIES_TABLE_LIMIT = 10
-    const recentPoints = computed(() => {
-      const points = seriesView.value?.points ?? []
-      return points.slice(-SERIES_TABLE_LIMIT)
-    })
-
-    const seriesAriaLabel = computed(() => {
-      const points = seriesView.value?.points ?? []
-      if (points.length === 0) return '逐分钟请求量色带（暂无数据）'
-      const peak = points.reduce((max, point) => Math.max(max, point.totalRequests), 0)
-      return `逐分钟请求量色带，共 ${points.length} 个点，峰值 ${peak} 次请求每分钟`
-    })
 
     let alive = true
     let readVersion = 0
     const mountedLogoutEpoch = getCurrentUserLogoutEpoch()
 
-    // 与其它用户页同一套守卫：身份/路由/登出任一变化都不再让旧响应写回页面。
+    // 身份、路由或登录状态改变时，阻止旧请求覆盖当前页面。
     const pageActive = () => alive && route.path === mountedPath
     const canLoad = () => pageActive() && getCurrentUserLogoutEpoch() === mountedLogoutEpoch
       && Boolean(currentUserIdentity(currentUser.value))
 
     const view = computed(() => buildServiceStatusView(payload.value))
-
-    // 搜题接口分桶视图。由 view.endpoints.search 派生（buildServiceStatusView 已算好）。
-    // 单独取出来是为了让模板里的置灰/文案只有一个来源，不在模板里重复判定。
+    // 普通用户只显示 search 桶。全站汇总会被健康检查、管理页等请求稀释。
     const endpointView = computed(() => view.value.endpoints.search)
-
-    const heroHint = computed(() => {
-      if (view.value.dataState === 'empty') return '最近窗口内没有请求，暂无成功率可算。'
-      if (view.value.tone === 'ok') return '最近窗口内请求基本全部成功。'
-      if (view.value.tone === 'warn') return '最近窗口内有较多失败请求，答题可能不稳定。'
-      if (view.value.tone === 'danger') return '最近窗口内大部分请求失败，答题可能不可用。'
-      return '状态由服务端按最近窗口推导。'
-    })
-
-    const rateHint = computed(() => {
-      if (view.value.dataState !== 'measured') return '窗口内无请求，算不出成功率'
-      if (view.value.rateText === '0%') return '窗口内请求全部失败'
-      return '窗口内成功请求占比'
+    const statusHint = computed(() => {
+      if (endpointView.value.state === 'idle') return endpointView.value.hint
+      if (endpointView.value.tone === 'ok') return '最近窗口内搜题请求基本正常。'
+      if (endpointView.value.tone === 'warn') return '最近窗口内搜题请求有较多失败，答题可能不稳定。'
+      if (endpointView.value.tone === 'danger') return '最近窗口内搜题请求大部分失败，答题可能不可用。'
+      return '状态根据搜题接口最近窗口的采样推导。'
     })
 
     const load = async () => {
@@ -284,8 +123,7 @@ export default {
       errorMessage.value = ''
       loading.value = true
       try {
-        // 只打 summary 端点。普通用户请求 /api/admin/service-status 会 403，
-        // 所以这里刻意没有「摘要失败就降级要明细」的分支。
+        // 公开摘要只读取一次；状态和指标均从 endpoints.search 派生。
         const result = await loadServiceStatusSummary(() => getServiceStatusSummary())
         if (!owns()) return false
         if (!result.ok) {
@@ -294,11 +132,6 @@ export default {
         }
         payload.value = result.data
         loaded.value = true
-        // 曲线是**增强**：并发取，失败只隐藏这一块，绝不影响已显示的摘要。
-        // 这里刻意 await 而不是 fire-and-forget，是为了让「刷新」按钮的 loading
-        // 覆盖整个刷新过程，避免用户看到曲线晚一拍才出现。
-        const series = await loadServiceStatusSeries(() => getServiceStatusSeries())
-        if (owns() && series.ok) seriesView.value = series.series
         return true
       } finally {
         if (owns()) loading.value = false
@@ -308,7 +141,6 @@ export default {
     const retire = () => {
       readVersion += 1
       payload.value = null
-      seriesView.value = null
       loaded.value = false
       loading.value = false
       errorMessage.value = ''
@@ -322,73 +154,27 @@ export default {
       retire()
     })
 
-    return {
-      loading,
-      loaded,
-      errorMessage,
-      view,
-      endpointView,
-      seriesView,
-      recentPoints,
-      seriesAriaLabel,
-      heroHint,
-      rateHint,
-      load,
-      formatCount,
-      summaryPath: SERVICE_STATUS_SUMMARY_PATH,
-    }
+    return { loading, loaded, errorMessage, view, endpointView, statusHint, load }
   },
 }
 </script>
 
 <style scoped>
 .page-alert { margin-bottom: 16px; }
-.status-summary { margin-bottom: 16px; }
 .status-loading { display: flex; align-items: center; justify-content: center; gap: 12px; min-height: 140px; color: var(--console-muted); }
-.summary-label { color: var(--console-muted); font-size: 14px; }
-.summary-value { margin-top: 8px; color: var(--console-text); font-size: clamp(20px, 2.6vw, 28px); font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.summary-hint { margin-top: 8px; color: var(--console-muted); font-size: 12px; line-height: 1.6; }
-.status-descriptions { margin-bottom: 16px; }
 .hint { margin: 12px 0 0; color: var(--console-muted); font-size: 13px; line-height: 1.7; }
-
-.status-hero { display: flex; align-items: center; gap: 16px; }
-.status-hero__dot { flex: 0 0 auto; width: 14px; height: 14px; border-radius: 50%; background: var(--console-muted); }
-.status-hero__label { margin: 0; color: var(--console-text); font-size: clamp(18px, 2.4vw, 24px); font-weight: 600; }
-.status-hero__hint { margin: 6px 0 0; color: var(--console-muted); font-size: 13px; line-height: 1.7; }
-/* 语义色只走 border/背景，文字保持正文色，避免浅色主题下对比度不足。 */
-.status-hero[data-status-tone='ok'] .status-hero__dot { background: var(--console-success, #15803d); }
-.status-hero[data-status-tone='warn'] .status-hero__dot { background: var(--console-warning, #b45309); }
-.status-hero[data-status-tone='danger'] .status-hero__dot { background: var(--console-danger, #b91c1c); }
-.status-hero[data-status-tone='muted'] .status-hero__dot { background: var(--console-muted); }
-@media (max-width: 768px) { .status-hero { align-items: flex-start; } }
-
-/* 接口分桶卡片。置灰只降透明度与去色，**不隐藏**：用户仍要能看到
-   「这里本来有一块、只是暂时没数据」，否则会以为功能没做。 */
-.endpoint-panel { margin-bottom: 16px; }
-.endpoint-card { padding: 16px; border: 1px solid var(--console-border); border-radius: 8px; }
-.endpoint-card__title { margin: 0; color: var(--console-text); font-size: 15px; font-weight: 600; }
-.endpoint-card__rate { margin: 8px 0 0; color: var(--console-text); font-size: clamp(20px, 2.6vw, 28px); font-weight: 600; font-variant-numeric: tabular-nums; }
-.endpoint-card__hint { margin: 8px 0 12px; color: var(--console-muted); font-size: 12px; line-height: 1.6; }
-.endpoint-card__details { margin-bottom: 0; }
-.endpoint-card--greyed { opacity: 0.55; }
-.endpoint-card--greyed .endpoint-card__rate { color: var(--console-muted); }
-
-/* 逐分钟色带：纯 CSS 柱状，不引入图表库（首屏体积已经很紧）。 */
-.series-panel { margin-bottom: 16px; }
-.series-strip { display: flex; align-items: flex-end; gap: 2px; height: 120px; padding: 8px 0; border-bottom: 1px solid var(--console-border); overflow-x: auto; }
-.series-bar { flex: 1 1 0; min-width: 2px; max-width: 24px; min-height: 2px; border-radius: 2px 2px 0 0; background: var(--console-primary); }
-/* 该分钟全部失败时用危险色标出来，与摘要里的「异常」语义一致。 */
-.series-bar[data-rate-tone='danger'] { background: var(--console-danger, #b91c1c); }
-.series-axis { display: flex; justify-content: space-between; gap: 12px; margin-top: 6px; color: var(--console-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-.series-empty { padding: 8px 0; }
-.empty-title { margin: 0 0 4px; color: var(--console-text); font-size: 14px; font-weight: 600; }
-.series-table { width: 100%; margin-top: 16px; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-.series-caption { padding-bottom: 8px; color: var(--console-muted); font-size: 13px; text-align: left; }
-.series-table th, .series-table td { padding: 8px 12px; border-bottom: 1px solid var(--console-border); text-align: left; font-size: 13px; }
-.series-table th { color: var(--console-muted); font-weight: 500; white-space: nowrap; }
-.series-table td { color: var(--console-text); }
-@media (max-width: 768px) {
-  .series-strip { height: 90px; }
-  .series-table th, .series-table td { padding: 6px 8px; }
-}
+.search-status { display: flex; align-items: center; gap: 14px; padding: 14px 16px; border: 1px solid var(--console-border); border-radius: 10px; background: var(--console-surface, transparent); }
+.search-status__dot { flex: 0 0 auto; width: 12px; height: 12px; border-radius: 50%; background: var(--console-muted); }
+.search-status__label { margin: 0; color: var(--console-text); font-size: 18px; font-weight: 600; }
+.search-status__hint { margin: 4px 0 0; color: var(--console-muted); font-size: 13px; line-height: 1.6; }
+.search-status[data-status-tone='ok'] .search-status__dot { background: var(--console-success, #15803d); }
+.search-status[data-status-tone='warn'] .search-status__dot { background: var(--console-warning, #b45309); }
+.search-status[data-status-tone='danger'] .search-status__dot { background: var(--console-danger, #b91c1c); }
+.search-status[data-status-tone='muted'] .search-status__dot { background: var(--console-muted); }
+.search-status--muted { opacity: .72; }
+.search-metrics { margin-top: 16px; }
+.summary-label { color: var(--console-muted); font-size: 14px; }
+.summary-value { margin-top: 6px; color: var(--console-text); font-size: clamp(20px, 2.6vw, 28px); font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.summary-hint { margin-top: 4px; color: var(--console-muted); font-size: 12px; }
+@media (max-width: 768px) { .search-status { align-items: flex-start; } }
 </style>
