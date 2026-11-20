@@ -144,7 +144,7 @@ func TestResolveUserLevelIgnoresDisabledLevels(t *testing.T) {
 
 // TestComputeUserLevelTotalsExcludesIncomeAndRefundedOrders 钉住两个口径：
 //   - 累计充值只算 status=paid（退款后 status 变 refunded → 自动降级，Q75-6 的充值侧）；
-//   - 累计消费只算 expense 方向的流水（六类收入不算消费）。
+//   - 累计消费与账单汇总一致（收入、余额调整与撤回赠金不算消费）。
 func TestComputeUserLevelTotalsExcludesIncomeAndRefundedOrders(t *testing.T) {
 	db := newUserLevelTestDB(t)
 	seedLevelUser(t, db, 21)
@@ -165,7 +165,11 @@ func TestComputeUserLevelTotalsExcludesIncomeAndRefundedOrders(t *testing.T) {
 		{UserID: 21, Type: normalSearchBillingRecordType, Amount: 7.5},
 		{UserID: 21, Type: rechargeBillingRecordType, Amount: 100},                // 收入，不算消费
 		{UserID: 21, Type: rechargePromotionBillingRecordType, Amount: 20},        // 收入，不算消费
-		{UserID: 21, Type: RegistrationBonusClawbackBillingRecordType, Amount: 3}, // 支出，算消费
+		{UserID: 21, Type: RegistrationBonusClawbackBillingRecordType, Amount: 3}, // 撤回赠金，不是消费
+		{UserID: 21, Type: registrationBonusRevokedBillingRecordType, Amount: 4},
+		{UserID: 21, Type: ReferralRebateReversalBillingRecordType, Amount: 6},
+		{UserID: 21, Type: balanceAdjustmentBillingRecordType, Amount: 1000},
+		{UserID: 21, Type: " " + rechargeBillingRecordType + " ", Amount: 500},
 	}
 	for _, bill := range bills {
 		if err := db.Create(&bill).Error; err != nil {
@@ -180,8 +184,8 @@ func TestComputeUserLevelTotalsExcludesIncomeAndRefundedOrders(t *testing.T) {
 	if totals.RechargeTotal != 150 {
 		t.Fatalf("recharge total = %v, want 150 (only status=paid)", totals.RechargeTotal)
 	}
-	if totals.ConsumptionTotal != 15.5 {
-		t.Fatalf("consumption total = %v, want 15.5 (5 + 7.5 + 3, income excluded)", totals.ConsumptionTotal)
+	if totals.ConsumptionTotal != 12.5 {
+		t.Fatalf("consumption total = %v, want 12.5 (only actual consumption, no income/adjustments/reversals)", totals.ConsumptionTotal)
 	}
 }
 
@@ -231,6 +235,86 @@ func TestEvaluateUserLevelUpgradesAndWritesOneHistoryRow(t *testing.T) {
 		t.Fatalf("history rows = %d, want 1 (idempotent by event_key)", historyCount)
 	}
 	_ = basic
+}
+
+func TestRefreshUserLevelSummaryRepairsStaleLevelAndPersistsOnce(t *testing.T) {
+	db := newUserLevelTestDB(t)
+	seedLevelUser(t, db, 822)
+	basic := mustCreateLevel(t, db, entity.UserLevel{Name: "基础会员", Rank: 1, Enabled: true})
+	advanced := mustCreateLevel(t, db, entity.UserLevel{Name: "进阶会员", Rank: 2, Enabled: true, MinRechargeTotal: 100})
+	if err := db.Table(entity.TableNameUser).Where("id = ?", 822).Update("level_id", basic.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&entity.RechargeOrder{UserID: 822, OrderNo: "stale-level-822", Amount: 296.5, Status: rechargeOrderStatusPaid}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&entity.BillingRecord{UserID: 822, Type: normalSearchBillingRecordType, Amount: 15.158586}).Error; err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		summary, err := RefreshUserLevelSummaryWithDB(db, 822, entity.UserLevelTriggerReconcile)
+		if err != nil || summary.LevelID != advanced.ID || summary.Name != advanced.Name || summary.RechargeTotal != 296.5 || summary.ConsumptionTotal != 15.158586 {
+			t.Fatalf("read %d returned stale or inconsistent level: %+v err=%v", i, summary, err)
+		}
+	}
+	persisted, err := CurrentUserLevelIDWithDB(db, 822)
+	if err != nil || persisted != advanced.ID {
+		t.Fatalf("persisted level=%d err=%v, want %d", persisted, err, advanced.ID)
+	}
+	var histories []entity.UserLevelHistory
+	if err := db.Where("user_id = ?", 822).Find(&histories).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(histories) != 1 || histories[0].Trigger != "reconcile" {
+		t.Fatalf("refresh must record one reconciliation, got %+v", histories)
+	}
+}
+
+func TestRefreshUserLevelSummaryAppliesChangedThresholds(t *testing.T) {
+	db := newUserLevelTestDB(t)
+	seedLevelUser(t, db, 823)
+	basic := mustCreateLevel(t, db, entity.UserLevel{Name: "基础会员", Rank: 1, Enabled: true})
+	advanced := mustCreateLevel(t, db, entity.UserLevel{Name: "进阶会员", Rank: 2, Enabled: true, MinRechargeTotal: 500})
+	if err := db.Create(&entity.RechargeOrder{UserID: 823, OrderNo: "threshold-change-823", Amount: 200, Status: rechargeOrderStatusPaid}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EvaluateUserLevelWithDB(db, 823, entity.UserLevelTriggerRecharge); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&advanced).Update("min_recharge_total", 100).Error; err != nil {
+		t.Fatal(err)
+	}
+	summary, err := RefreshUserLevelSummaryWithDB(db, 823, entity.UserLevelTriggerReconcile)
+	if err != nil || summary.LevelID != advanced.ID {
+		t.Fatalf("lowered threshold did not upgrade on refresh: %+v err=%v (basic=%d)", summary, err, basic.ID)
+	}
+	if err := db.Model(&advanced).Update("min_consumption_total", 10).Error; err != nil {
+		t.Fatal(err)
+	}
+	summary, err = RefreshUserLevelSummaryWithDB(db, 823, entity.UserLevelTriggerReconcile)
+	if err != nil || summary.LevelID != basic.ID {
+		t.Fatalf("both thresholds must still be required: %+v err=%v", summary, err)
+	}
+}
+
+func TestRefreshUserLevelSummaryRollsBackWhenPersistingLevelFails(t *testing.T) {
+	db := newUserLevelTestDB(t)
+	seedLevelUser(t, db, 824)
+	basic := mustCreateLevel(t, db, entity.UserLevel{Name: "基础", Rank: 1, Enabled: true})
+	if err := db.Exec(`CREATE TRIGGER reject_level_update BEFORE UPDATE OF level_id ON users
+		BEGIN SELECT RAISE(ABORT, 'synthetic level persistence failure'); END`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RefreshUserLevelSummaryWithDB(db, 824, entity.UserLevelTriggerReconcile); err == nil {
+		t.Fatal("failed persistence must return an error instead of reporting an updated level")
+	}
+	if saved, err := CurrentUserLevelIDWithDB(db, 824); err != nil || saved == basic.ID || saved != 0 {
+		t.Fatalf("failed update must not change the level: %d %v", saved, err)
+	}
+	var count int64
+	if err := db.Model(&entity.UserLevelHistory{}).Where("user_id = ?", 824).Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("failed update must roll back its history: %d %v", count, err)
+	}
 }
 
 // TestEvaluateUserLevelDowngradesAfterRefund 覆盖 Q75-6。

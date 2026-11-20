@@ -2163,6 +2163,12 @@ func persistSearchBillingRecordsWithDB(db *gorm.DB, ctx searchBillingContext, ch
 		}
 		return nil
 	})
+	if err == nil && len(charges) > 0 && ctx.ScriptBilling.mode != entity.ScriptBillingModeActivation {
+		// 账务先提交；等级异常不能让已执行的搜题再次扣费或回滚结算。
+		if _, levelErr := service.ReconcileUserLevelWithDB(db, ctx.UserID, entity.UserLevelTriggerConsumption); levelErr != nil {
+			logger.SysWarn(fmt.Sprintf("消费后等级重评失败（不影响结算）userId=%d: %v", ctx.UserID, levelErr))
+		}
+	}
 	finished = true
 	return err
 }

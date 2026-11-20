@@ -43,22 +43,6 @@ var (
 // 因此配置的等级必须 rank >= 1（否则「取最高达标级」会与「无等级」混淆）。
 const userLevelMinRank = 1
 
-// userLevelIncomeBillingTypes 是 buildBillingRecordDirection 判为 income 的全部类型。
-//
-// 「累计消费」= 排除这些类型之后的支出之和。两处必须保持一致：
-// buildBillingRecordDirection 用这个口径给前端标方向，这里用它算门槛。
-// 从 income 侧反推（而不是列 expense 类型）是刻意的 —— 新增一种收入类型时
-// 只会让它在消费口径里被漏掉一次（偏保守），而按 expense 白名单列的话，
-// 新增支出类型会被**默默算成收入**，等于门槛永远涨不上去。
-var userLevelIncomeBillingTypes = []string{
-	rechargeBillingRecordType,
-	registrationBonusBillingRecordType,
-	rechargePromotionBillingRecordType,
-	ReviewRebateBillingRecordType,
-	ReferralRebateBillingRecordType,
-	scriptRefundBillingRecordType,
-}
-
 // userLevelRefundCompletedStatus 是「退款真的发生了」的终态。
 //
 // 只认 succeeded：pending_review / frozen / processing 都还没出钱，
@@ -155,8 +139,7 @@ type UserLevelTotals struct {
 // 就是一句空话 —— 这是「看起来在测、实际测不出」的典型形态，
 // 所以这里用 ticket_refunds 的 succeeded + approved_cents 做减法。
 //
-// 累计消费 = billing_records 中方向判为 expense 的金额之和
-// （见 userLevelIncomeBillingTypes）。
+// 累计消费与账单消费汇总一致，排除收入、余额调整及赠金撤回等非消费流水。
 func ComputeUserLevelTotalsWithDB(db *gorm.DB, userID int32) (UserLevelTotals, error) {
 	if db == nil || userID <= 0 {
 		return UserLevelTotals{}, nil
@@ -199,15 +182,9 @@ func ComputeUserLevelTotalsWithDB(db *gorm.DB, userID int32) (UserLevelTotals, e
 
 	if db.Migrator().HasTable(entity.TableNameBillingRecord) {
 		var consumption float64
-		placeholder := strings.TrimSuffix(strings.Repeat("?,", len(userLevelIncomeBillingTypes)), ",")
-		args := make([]any, 0, len(userLevelIncomeBillingTypes)+1)
-		args = append(args, userID)
-		for _, recordType := range userLevelIncomeBillingTypes {
-			args = append(args, recordType)
-		}
 		if err := session.Model(&entity.BillingRecord{}).
-			Where("user_id = ? AND type NOT IN ("+placeholder+")", args...).
-			Select("COALESCE(SUM(amount), 0)").
+			Where("user_id = ? AND TRIM(type) NOT IN ?", userID, nonConsumptionBillingRecordTypes).
+			Select("COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0)").
 			Scan(&consumption).Error; err != nil {
 			return UserLevelTotals{}, err
 		}
@@ -353,6 +330,8 @@ func normalizeUserLevelTrigger(trigger string) string {
 		return entity.UserLevelTriggerConsumption
 	case entity.UserLevelTriggerRefund:
 		return entity.UserLevelTriggerRefund
+	case entity.UserLevelTriggerReconcile:
+		return entity.UserLevelTriggerReconcile
 	case entity.UserLevelTriggerRegister:
 		// 注册触发的首次评级（137 §10.3 / A1-6）。
 		// ⚠️ 漏掉这一条会让 trigger 被静默收敛成 manual —— 于是「首次评级为 X」
@@ -627,7 +606,7 @@ func ReevaluateAllUserLevelsWithDB(db *gorm.DB, limit int, trigger string) (proc
 		return 0, 0, err
 	}
 	for _, id := range ids {
-		result, evalErr := EvaluateUserLevelWithDB(db, id, trigger)
+		result, evalErr := ReconcileUserLevelWithDB(db, id, trigger)
 		if evalErr != nil {
 			return processed, changed, evalErr
 		}
@@ -649,6 +628,54 @@ type UserLevelSummary struct {
 	MinConsumptionTotal float64 `json:"minConsumptionTotal"`
 	RechargeTotal       float64 `json:"rechargeTotal"`
 	ConsumptionTotal    float64 `json:"consumptionTotal"`
+}
+
+// ReconcileUserLevelWithDB 在账务事务提交后重评等级。与钱包写入使用同一用户行锁，
+// 避免并发消费、退款或摘要读取按旧快照把较新的评估结果覆盖掉。
+func ReconcileUserLevelWithDB(db *gorm.DB, userID int32, trigger string) (UserLevelChangeResult, error) {
+	var result UserLevelChangeResult
+	err := withUserLevelLock(db, userID, func(tx *gorm.DB) error {
+		var err error
+		result, err = EvaluateUserLevelWithDB(tx, userID, trigger)
+		return err
+	})
+	return result, err
+}
+
+// RefreshUserLevelSummaryWithDB 先修正已保存的等级，再从同一事务返回摘要。
+// 存量漏评及管理员修改门槛后，用户看到的等级与累计值必须使用相同口径。
+func RefreshUserLevelSummaryWithDB(db *gorm.DB, userID int32, trigger string) (UserLevelSummary, error) {
+	var summary UserLevelSummary
+	err := withUserLevelLock(db, userID, func(tx *gorm.DB) error {
+		if _, err := EvaluateUserLevelWithDB(tx, userID, trigger); err != nil {
+			return err
+		}
+		var err error
+		summary, err = GetUserLevelSummaryWithDB(tx, userID)
+		return err
+	})
+	return summary, err
+}
+
+func withUserLevelLock(db *gorm.DB, userID int32, apply func(*gorm.DB) error) error {
+	if db == nil || userID <= 0 || !userLevelSchemaAvailable(db) {
+		return nil
+	}
+	if !db.Migrator().HasTable(entity.TableNameUserLevelHistory) {
+		return ErrUserLevelSchemaUnavailable
+	}
+	return userLevelSession(db).Transaction(func(tx *gorm.DB) error {
+		var user struct{ ID int32 }
+		err := tx.Table(entity.TableNameUser).Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id").Where("id = ?", userID).Take(&user).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return apply(tx)
+	})
 }
 
 // GetUserLevelSummaryWithDB 读取某用户的等级与两个口径值。

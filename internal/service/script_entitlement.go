@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -242,6 +243,9 @@ func purchaseScriptActivationCodeWithDB(db *gorm.DB, userID int32, idempotencyKe
 	})
 	if err != nil {
 		return ScriptActivationCodePurchase{}, err
+	}
+	if _, levelErr := ReconcileUserLevelWithDB(db, userID, entity.UserLevelTriggerConsumption); levelErr != nil {
+		logger.SysWarn(fmt.Sprintf("购买激活码后等级重评失败（不影响购买）userId=%d: %v", userID, levelErr))
 	}
 	return result, nil
 }

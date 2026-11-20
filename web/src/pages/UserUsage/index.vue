@@ -281,7 +281,7 @@
                   <div data-user-usage-recharge-total class="level-metric-value">
                     ¥ {{ formatLevelMetric(levelRechargeMetric.value) }}
                   </div>
-                  <div class="level-metric-hint">已成功支付且未退款的充值金额合计。</div>
+                  <div class="level-metric-hint">已成功支付的充值总额，扣除已成功退款金额。</div>
                 </div>
               </a-col>
               <a-col :xs="24" :md="12" :lg="9">
@@ -290,7 +290,7 @@
                   <div data-user-usage-consumption-total class="level-metric-value">
                     ¥ {{ formatLevelMetric(levelConsumptionMetric.value) }}
                   </div>
-                  <div class="level-metric-hint">账单里支出类金额合计。</div>
+                  <div class="level-metric-hint">实际消费支出合计，不含余额调整、赠金撤回等。</div>
                 </div>
               </a-col>
             </a-row>
@@ -328,7 +328,7 @@
                   </a-col>
                 </a-row>
                 <div v-if="nextLevelRequirement.satisfied" class="level-next-satisfied">
-                  两个门槛都已达标，等级将在下次评估时更新。
+                  两个门槛均已达标，请刷新查看最新等级。
                 </div>
                 <div v-else class="level-next-hint">
                   两个门槛**同时**满足才会升级（与后端判定口径一致）。

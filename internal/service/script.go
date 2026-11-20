@@ -19,6 +19,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"github.com/itihey/tikuAdapter/pkg/util"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -454,6 +455,11 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 		}
 		return nil
 	})
+	if err == nil && mode == "" {
+		if _, levelErr := ReconcileUserLevelWithDB(db, operator.ID, entity.UserLevelTriggerConsumption); levelErr != nil {
+			logger.SysWarn(fmt.Sprintf("脚本预扣后等级重评失败（不影响创建）userId=%d: %v", operator.ID, levelErr))
+		}
+	}
 	return result, err
 }
 

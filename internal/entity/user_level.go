@@ -17,6 +17,7 @@ const (
 	UserLevelTriggerConsumption = "consumption" // 消费额变化后重新评估
 	UserLevelTriggerRefund      = "refund"      // 退款后重新评估（Q75-6：允许降级）
 	UserLevelTriggerManual      = "manual"      // 管理员改等级 / 等级被删除后的回落
+	UserLevelTriggerReconcile   = "reconcile"   // 读取当前等级时修正历史漏评或门槛变更
 	// UserLevelTriggerRegister 是注册成功后首次评级（137 §10.3 / A1-6）。
 	//
 	// 为什么必须有这一个独立触发器：新用户注册时累计充值/消费都是 0，

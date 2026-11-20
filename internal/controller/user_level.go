@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/registry/dbqueue"
 	"github.com/itihey/tikuAdapter/internal/service"
 	"gorm.io/gorm"
@@ -138,11 +139,12 @@ func UserLevelCurrent(c *gin.Context) {
 	if !ok {
 		return
 	}
-	summary, err := service.GetUserLevelSummaryWithDB(userLevelDB(c), operator.ID)
+	summary, err := service.RefreshUserLevelSummaryWithDB(userLevelDB(c), operator.ID, entity.UserLevelTriggerReconcile)
 	if err != nil {
 		writeUserLevelFailure(c, err, "获取等级信息失败")
 		return
 	}
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gin.H{"data": summary})
 }
 
