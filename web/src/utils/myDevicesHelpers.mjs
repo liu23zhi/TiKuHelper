@@ -95,6 +95,16 @@ export function normalizeDeviceLimit(raw) {
   }
 }
 
+/** deviceLimitMaximumText 展示等级允许设置的最高上限，与当前生效值分开计算。 */
+export function deviceLimitMaximumText(view) {
+  const state = view && typeof view === 'object' ? view : {}
+  if (state.loaded !== true) return '读取中…'
+  if (state.hookReady === false || state.editable !== true) return '暂不可用'
+  if (state.hasUpperBound !== true) return '不限'
+  const upperBound = readInt(state.upperBound)
+  return upperBound !== null && upperBound >= 0 ? `${upperBound} 台` : '未知'
+}
+
 /** deviceLimitSourceText 把来源串翻成文案（137 §4 的四个取值）。 */
 export function deviceLimitSourceText(source) {
   switch (String(source || '')) {

@@ -33,49 +33,50 @@
       title="设备上限"
       :description="limitPanelDescription"
     >
-      <div class="limit-row">
-        <div class="limit-summary">
-          <div class="limit-value" data-device-limit>
-            {{ limitText }}
+      <div class="limit-settings-row">
+        <dl class="limit-metrics" aria-label="设备上限概况">
+          <div class="limit-metric">
+            <dt class="limit-label">当前生效上限</dt>
+            <dd class="limit-value" data-device-limit>{{ limitText }}</dd>
+            <dd class="limit-hint">{{ limitHint }}</dd>
           </div>
-          <div class="limit-hint">
-            {{ limitHint }}
+          <div class="limit-metric">
+            <dt class="limit-label">最多可设置</dt>
+            <dd class="limit-value" data-device-limit-maximum>{{ limitCeilingText }}</dd>
+            <dd class="limit-hint">{{ limitCeilingHint }}</dd>
           </div>
-        </div>
+        </dl>
 
         <div class="limit-editor">
-          <label :for="limitInputId" class="limit-label">调整为</label>
-          <a-input-number
-            :id="limitInputId"
-            v-model:value="limitDraft"
-            :min="0"
-            :max="limitView.hasUpperBound ? limitView.upperBound : undefined"
-            :precision="0"
-            :disabled="!limitEditable"
-            :status="limitError ? 'error' : undefined"
-            class="limit-input"
-            @press-enter="saveDeviceLimit"
-          />
-          <span class="limit-suffix">台</span>
-          <a-button
-            type="primary"
-            :loading="savingLimit"
-            :disabled="!limitEditable || savingLimit"
-            @click="saveDeviceLimit"
-          >
-            保存
-          </a-button>
-          <span v-if="limitError" class="limit-error" role="alert">{{ limitError }}</span>
+          <label :for="limitInputId" class="limit-label">调整设备上限</label>
+          <div class="limit-controls">
+            <a-input-number
+              :id="limitInputId"
+              v-model:value="limitDraft"
+              :min="0"
+              :max="limitView.hasUpperBound ? limitView.upperBound : undefined"
+              :precision="0"
+              :disabled="!limitEditable"
+              :status="limitError ? 'error' : undefined"
+              :aria-describedby="limitRuleId"
+              class="limit-input"
+              @press-enter="saveDeviceLimit"
+            />
+            <span class="limit-suffix">台</span>
+            <a-button
+              type="primary"
+              :loading="savingLimit"
+              :disabled="!limitEditable || savingLimit"
+              @click="saveDeviceLimit"
+            >
+              保存
+            </a-button>
+          </div>
+          <p v-if="limitError" class="limit-error" role="alert">{{ limitError }}</p>
         </div>
       </div>
-      <!--
-        提示按「有上界 / 无上界」两种分支各自给完整句子。
 
-        原来写的是固定前缀「上限只能调低不能调高：」+ limitCeilingText，
-        而 limitCeilingText 在无上界时返回「你的等级本身不限设备数，可以设为任意非负整数」——
-        两句拼起来自相矛盾（等级不限时没有「调低」的概念），用户无法判断能不能调高。
-      -->
-      <p class="hint">{{ limitRuleText }}</p>
+      <p :id="limitRuleId" class="limit-rule">{{ limitRuleText }}</p>
       <p class="hint">
         调低后超出的设备不会被立刻踢下线，但新设备会被拒绝，直到在用台数降到上限以内。
       </p>
@@ -250,6 +251,7 @@ import {
   DEVICE_LABEL_MAX_RUNES,
   describeLastSeen,
   deviceIPText,
+  deviceLimitMaximumText,
   emptyDeviceLimitState,
   emptyDeviceListState,
   maskDeviceId,
@@ -279,6 +281,7 @@ export default {
   setup() {
     const route = useRoute()
     const limitInputId = 'my-devices-limit-' + useId()
+    const limitRuleId = 'my-devices-limit-rule-' + useId()
     const mountedPath = route.path
     const { currentUser } = useCurrentUserDisplay()
 
@@ -346,34 +349,29 @@ export default {
       if (!limitView.value.loaded) return '正在读取当前生效的设备上限。'
       if (!limitView.value.hookReady) return '上限计算组件尚未就绪，暂时无法调整。'
       if (!limitView.value.editable) return '当前无法调整上限（数据表待迁移或等级信息缺失）。'
-      // 无上界时不能说「只能调低不能调高」—— 那与「可设任意非负整数」相反。
+      // 无上界时直接说明等级不限，避免和可设置范围的描述冲突。
       if (!limitView.value.hasUpperBound) return '你可以自己设一个上限；等级本身不限设备数，不设也不会被拦。'
-      return '只能调低不能调高：上限不会超过你的等级权益。'
+      return '上限受当前等级权益限制，可在允许范围内调整。'
     })
 
-    // limitRuleText 是「上限规则」的完整句子，按有/无上界分两种分支。
-//
-// 为什么不能复用 limitCeilingText 当前缀拼接：
-// 无上界时它的句子是「你的等级本身不限设备数，可以设为任意非负整数」，
-// 前面再加「上限只能调低不能调高：」就变成
-//   「上限只能调低不能调高：你的等级本身不限设备数，可以设为任意非负整数。」
-// 前半句与后半句矛盾 —— 等级不限时当前生效值本来是 0/不限，
-// 没有「调低」的对象，用户会以为自己被限制住了。
-const limitRuleText = computed(() => {
-  if (!limitView.value.loaded) return '正在读取上限规则…'
-  if (!limitView.value.hasUpperBound) {
-    // 无上界：讲清「可以自己设一个上限」这件事，不谈「调高受限」。
-    return '你的等级本身不限设备数，可以自己设一个上限（任意非负整数）；' +
-      '设置后它就成为你的生效上限，之后只能在这个范围内调整。'
-  }
-  // 有上界：这才是「只能调低不能调高」成立的情形，且给出具体上界数字。
-  return `上限只能调低不能调高：当前等级上限 ${limitView.value.upperBound} 台，` +
-    '你的设置不会超过它。'
-})
-const limitCeilingText = computed(() => {
-      if (!limitView.value.loaded) return '上界读取中'
-      if (!limitView.value.hasUpperBound) return '你的等级本身不限设备数，可以设为任意非负整数'
-      return `当前等级上限 ${limitView.value.upperBound} 台`
+    const limitRuleText = computed(() => {
+      if (!limitView.value.loaded) return '正在读取上限规则…'
+      if (!limitView.value.hookReady || !limitView.value.editable) return '上限规则暂时不可用。'
+      if (!limitView.value.hasUpperBound) {
+        return '等级本身不限设备数，可设置任意非负整数；设置后，该数值会成为当前生效上限。'
+      }
+      return `设置值不能超过 ${limitView.value.upperBound} 台；具体生效上限以你的设置为准。`
+    })
+
+    const limitCeilingText = computed(() => {
+      return deviceLimitMaximumText(limitView.value)
+    })
+
+    const limitCeilingHint = computed(() => {
+      if (!limitView.value.loaded) return '正在读取等级权益'
+      if (!limitView.value.hookReady || !limitView.value.editable) return '暂时无法确认等级上限'
+      if (!limitView.value.hasUpperBound) return '当前等级本身不限设备数量'
+      return '由当前等级权益决定'
     })
 
     const columns = [
@@ -624,9 +622,9 @@ const limitCeilingText = computed(() => {
     return {
       loading, actionBusy, savingLimit, failure, notice, now,
       listView, limitView, limitDraft, limitError, limitEditable,
-      limitText, limitHint, limitPanelDescription, limitCeilingText,
+      limitText, limitHint, limitPanelDescription, limitCeilingText, limitCeilingHint,
       limitRuleText,
-      limitInputId, columns, busy,
+      limitInputId, limitRuleId, columns, busy,
       reload, removeDevice, blockDevice, unblockDevice, saveDeviceLimit,
       hasAnyAction, describeLastSeen, maskDeviceId,
       // 来源 IP 与重命名
@@ -641,15 +639,19 @@ const limitCeilingText = computed(() => {
 
 <style scoped>
 .page-alert { margin-bottom: 16px; }
-.limit-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 24px; }
-.limit-summary { min-width: 200px; }
+.limit-settings-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(250px, .8fr); align-items: start; gap: 20px; }
+.limit-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; }
+.limit-metric { min-width: 0; padding: 16px; border: 1px solid var(--console-border); border-radius: 8px; background: var(--console-surface-secondary, #f8faf9); }
+.limit-metric dd { margin: 0; }
 .limit-value { color: var(--console-text); font-size: clamp(22px, 3vw, 30px); font-weight: 700; font-variant-numeric: tabular-nums; }
-.limit-hint { margin-top: 6px; color: var(--console-muted); font-size: 13px; line-height: 1.6; }
-.limit-editor { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.limit-metric .limit-hint { margin-top: 6px; color: var(--console-muted); font-size: 13px; line-height: 1.6; }
+.limit-editor { display: grid; gap: 8px; min-width: 0; }
+.limit-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .limit-label { color: var(--console-muted); font-size: 13px; }
 .limit-input { width: 120px; }
 .limit-suffix { color: var(--console-muted); font-size: 13px; }
-.limit-error { color: var(--console-danger, #b91c1c); font-size: 13px; }
+.limit-error { margin: 0; color: var(--console-danger, #b91c1c); font-size: 13px; }
+.limit-rule { margin: 16px 0 0; color: var(--console-muted); font-size: 13px; line-height: 1.7; }
 .device-label { color: var(--console-text); font-weight: 600; }
 .device-id { margin-top: 2px; color: var(--console-muted); font-family: var(--console-mono, ui-monospace, SFMono-Regular, Consolas, monospace); font-size: 12px; overflow-wrap: anywhere; }
 /* IPv6 最长 45 字符：允许换行，否则定宽列里会撑破表格。 */
@@ -658,6 +660,12 @@ const limitCeilingText = computed(() => {
 .status-note { margin-top: 4px; color: var(--console-muted); font-size: 12px; }
 .muted { color: var(--console-muted); }
 .hint { margin: 12px 0 0; color: var(--console-muted); font-size: 13px; line-height: 1.7; }
+@media (max-width: 720px) {
+  .limit-settings-row { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 460px) {
+  .limit-metrics { grid-template-columns: minmax(0, 1fr); }
+}
 .rename-target { margin-bottom: 12px; }
 .rename-target-label { color: var(--console-text); font-weight: 600; }
 .rename-hint { margin: 8px 0 0; color: var(--console-muted); font-size: 12px; line-height: 1.6; }

@@ -8,6 +8,7 @@ import {
   DEVICE_STATUS_META,
   describeLastSeen,
   deviceIPText,
+  deviceLimitMaximumText,
   deviceLimitSourceText,
   deviceStatusMeta,
   emptyDeviceLimitState,
@@ -102,6 +103,22 @@ test('normalizeDeviceLimit 区分「无上界」与「未知」', () => {
   assert.equal(bounded.hasUpperBound, true)
   assert.equal(bounded.upperBound, 3)
   assert.equal(bounded.sourceText, '你自己设置的')
+})
+
+test('可设置最高数量独立于当前生效上限', () => {
+  const unlimitedLevelWithOverride = normalizeDeviceLimit({
+    limit: 1, source: 'user_override', unlimited: false,
+    override: 1, levelLimit: 0, upperBound: null, editable: true,
+  })
+  assert.equal(unlimitedLevelWithOverride.limit, 1)
+  assert.equal(deviceLimitMaximumText(unlimitedLevelWithOverride), '不限')
+
+  const cappedLevelWithOverride = normalizeDeviceLimit({
+    limit: 1, source: 'user_override', unlimited: false,
+    override: 1, levelLimit: 3, upperBound: 3, editable: true,
+  })
+  assert.equal(cappedLevelWithOverride.limit, 1)
+  assert.equal(deviceLimitMaximumText(cappedLevelWithOverride), '3 台')
 })
 
 test('normalizeDeviceLimit 对缺失字段给显式未知态，不伪造 0', () => {
