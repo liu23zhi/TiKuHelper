@@ -188,10 +188,12 @@ export function normalizeDeviceItem(raw) {
     id: readInt(item.id) ?? 0,
     deviceId: typeof item.deviceId === 'string' ? item.deviceId : '',
     deviceLabel: typeof item.deviceLabel === 'string' ? item.deviceLabel : '',
+    firstIp: typeof item.firstIp === 'string' ? item.firstIp : '',
     // lastIp 是「最近一次使用时的来源 IP」，由后端在登记设备时写入。
     // 缺失/非字符串一律置空串（**不伪造** '0.0.0.0' 或 '未知'），
     // 展示层用 deviceIPText 统一翻成「未记录」——那是文案决定，不是数据决定。
     lastIp: typeof item.lastIp === 'string' ? item.lastIp : '',
+    firstSeenAt: typeof item.firstSeenAt === 'string' ? item.firstSeenAt : '',
     lastSeenAt: typeof item.lastSeenAt === 'string' ? item.lastSeenAt : '',
     status,
     statusText: typeof item.statusText === 'string' && item.statusText ? item.statusText : meta.text,
@@ -221,6 +223,19 @@ export function normalizeDeviceItem(raw) {
 export function deviceIPText(value) {
   const text = String(value || '').trim()
   return text === '' ? '未记录' : text
+}
+
+/** Both usage timestamps use the same explicit time zone as other account pages. */
+export function formatDeviceUsageTime(value) {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (!text || text.startsWith('0001-')) return '未记录'
+  const date = new Date(text)
+  if (!Number.isFinite(date.getTime())) return '未知时间'
+  return date.toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai', hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).replace(/\//g, '-')
 }
 
 /** DEVICE_LABEL_MAX_RUNES 是设备名的字符上限，与后端 device_label VARCHAR(64) 一致。 */

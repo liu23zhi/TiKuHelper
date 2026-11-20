@@ -114,7 +114,9 @@ type deviceUserBindingRow struct {
 	ID            int64      `gorm:"column:id"`
 	DeviceID      string     `gorm:"column:device_id"`
 	DeviceLabel   string     `gorm:"column:device_label"`
+	FirstIP       string     `gorm:"column:first_ip"`
 	LastIP        string     `gorm:"column:last_ip"`
+	FirstSeenAt   *time.Time `gorm:"column:first_seen_at"`
 	LastSeenAt    *time.Time `gorm:"column:last_seen_at"`
 	RevokedAt     *time.Time `gorm:"column:revoked_at"`
 	RevokedReason string     `gorm:"column:revoked_reason"`
@@ -128,6 +130,7 @@ type deviceUserColumnState struct {
 	hasLabel   bool // device_label
 	hasRevoked bool // revoked_at + revoked_reason
 	hasLastIP  bool // last_ip
+	hasFirstIP bool // first_ip
 }
 
 func deviceUserReadColumnState(db *gorm.DB) deviceUserColumnState {
@@ -139,6 +142,7 @@ func deviceUserReadColumnState(db *gorm.DB) deviceUserColumnState {
 	state.hasRevoked = db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "revoked_at") &&
 		db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "revoked_reason")
 	state.hasLastIP = db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "last_ip")
+	state.hasFirstIP = db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "first_ip")
 	return state
 }
 
@@ -155,13 +159,17 @@ func deviceUserBindingSelect(state deviceUserColumnState) string {
 	if state.hasLastIP {
 		lastIP = "last_ip AS last_ip"
 	}
+	firstIP := "'' AS first_ip"
+	if state.hasFirstIP {
+		firstIP = "first_ip AS first_ip"
+	}
 	revokedAt, revokedReason := "NULL AS revoked_at", "'' AS revoked_reason"
 	if state.hasRevoked {
 		revokedAt = "revoked_at AS revoked_at"
 		revokedReason = "revoked_reason AS revoked_reason"
 	}
-	return "id AS id, device_id AS device_id, " + label + ", " + lastIP +
-		", last_seen_at AS last_seen_at, " + revokedAt + ", " + revokedReason
+	return "id AS id, device_id AS device_id, " + label + ", " + firstIP + ", " + lastIP +
+		", first_seen_at AS first_seen_at, last_seen_at AS last_seen_at, " + revokedAt + ", " + revokedReason
 }
 
 // deviceUserBlocksTableAvailable 判断拉黑表是否就绪。
@@ -180,7 +188,9 @@ type deviceUserDeviceItem struct {
 	ID            int64      `json:"id"`
 	DeviceID      string     `json:"deviceId"`
 	DeviceLabel   string     `json:"deviceLabel"`
+	FirstIP       string     `json:"firstIp"`
 	LastIP        string     `json:"lastIp"`
+	FirstSeenAt   *time.Time `json:"firstSeenAt"`
 	LastSeenAt    *time.Time `json:"lastSeenAt"`
 	Status        string     `json:"status"`
 	StatusText    string     `json:"statusText"`
@@ -356,7 +366,9 @@ func UserDevices(c *gin.Context) {
 			ID:            row.ID,
 			DeviceID:      row.DeviceID,
 			DeviceLabel:   row.DeviceLabel,
+			FirstIP:       row.FirstIP,
 			LastIP:        row.LastIP,
+			FirstSeenAt:   row.FirstSeenAt,
 			LastSeenAt:    row.LastSeenAt,
 			RevokedAt:     row.RevokedAt,
 			RevokedReason: row.RevokedReason,

@@ -197,14 +197,14 @@ func deviceLimitHandler(injected *gorm.DB) gin.HandlerFunc {
 		}
 
 		// ══════════ 第 3 步：设备池判定（service 层唯一实现，不在这里重写） ══════════
-		decision := service.CanUseDevice(db, userID, deviceID)
+		decision := service.CanUseDeviceWithClientIP(db, userID, deviceID, c.ClientIP())
 		if !decision.Allowed {
 			deviceLimitReject(c, decision)
 			return
 		}
 		// 新设备且有空槽：必须落一条绑定行，否则「已用台数」永远是 0，
 		// 上限形同虚设（每一次请求都会被判成「新设备且未满」）。
-		// 已绑定（already-registered）时 CanUseDevice 内部已刷新 last_seen_at，
+		// 已绑定时 CanUseDeviceWithClientIP 内部已刷新最近使用时间与合法来源 IP，
 		// 不再重复写 —— 热路径上少一次 UPDATE。
 		if decision.Reason == service.DevicePoolReasonWithinLimit {
 			// ⚠️ 这里**不能**用 `_` 丢弃返回的 decision（2026-11-15 修，C2 接线缺口）。

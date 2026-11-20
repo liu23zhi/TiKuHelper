@@ -172,6 +172,8 @@ type deviceLimitTestRequest struct {
 	//
 	// 非空时才会驱动 141 §4 的冲突检测：同 device_id + 不同 instance ⇒ 409。
 	clientInstance string
+	// sourceIP 模拟设备换网后的直接连接地址，不使用可伪造的转发头。
+	sourceIP string
 	// authorization / scriptIdentity 走中间件自己的凭据解析路径（模拟 /api/search 这种无鉴权中间件的路由）。
 	authorization  string
 	scriptIdentity string
@@ -202,6 +204,9 @@ func doDeviceLimitRequest(t *testing.T, db *gorm.DB, req deviceLimitTestRequest)
 	})
 
 	httpReq := httptest.NewRequest(http.MethodPost, "/probe", strings.NewReader(`{}`))
+	if req.sourceIP != "" {
+		httpReq.RemoteAddr = req.sourceIP + ":12345"
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if req.deviceID != "" {
 		httpReq.Header.Set(DeviceIDHeader, req.deviceID)
@@ -526,6 +531,31 @@ func TestDeviceLimitAllowsAlreadyBoundDeviceWhenFull(t *testing.T) {
 
 	out := doDeviceLimitRequest(t, db, deviceLimitTestRequest{user: user, deviceID: "known-device"})
 	assertDeviceLimitAllowed(t, out, "已登记设备 + 额度已满")
+}
+
+func TestDeviceLimitRefreshesRecentIPWithoutChangingFirstUse(t *testing.T) {
+	db := newDeviceLimitTestDB(t)
+	setDeviceLimitSwitch(t, db, true)
+	levelID := seedDeviceLimitLevel(t, db, 1, 1)
+	user := seedDeviceLimitUser(t, db, "changing-device-network", levelID, -1)
+	first := doDeviceLimitRequest(t, db, deviceLimitTestRequest{user: user, deviceID: "known-device", sourceIP: "172.18.0.1"})
+	assertDeviceLimitAllowed(t, first, "首次登记设备")
+	var before entity.AccountDeviceBinding
+	if err := db.Where("user_id = ?", user.ID).First(&before).Error; err != nil {
+		t.Fatal(err)
+	}
+	second := doDeviceLimitRequest(t, db, deviceLimitTestRequest{user: user, deviceID: "known-device", sourceIP: "198.51.100.7"})
+	assertDeviceLimitAllowed(t, second, "已登记设备换网")
+	var after entity.AccountDeviceBinding
+	if err := db.Where("user_id = ?", user.ID).First(&after).Error; err != nil {
+		t.Fatal(err)
+	}
+	if after.FirstIP != "172.18.0.1" || after.LastIP != "198.51.100.7" || !after.FirstSeenAt.Equal(before.FirstSeenAt) || after.LastSeenAt.Before(before.LastSeenAt) {
+		t.Fatalf("first use must stay fixed while recent use follows requests: before=%+v after=%+v", before, after)
+	}
+	if !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Fatal("activity refresh must not change the row modification timestamp")
+	}
 }
 
 // 判据：有空槽时放行**并且落一条绑定行**。

@@ -94,25 +94,20 @@
         :loading="loading"
         row-key="rowKey"
         size="middle"
-        :scroll="{ x: 1000 }"
+        :scroll="{ x: 1440 }"
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'label'">
             <div class="device-label">{{ record.deviceLabel || '未命名的设备' }}</div>
             <div class="device-id" :title="record.deviceId">{{ maskDeviceId(record.deviceId) }}</div>
           </template>
-          <template v-else-if="column.key === 'lastIp'">
-            <!--
-              「未记录」而不是空单元格：空白会被读成「渲染坏了」或「这台设备没有 IP」，
-              而真实语义是「还没采到」。老数据（补列前的行）与采不到 IP 的请求都落在这里。
-              用 mono 字体 + 允许换行：IPv6 最长 45 字符，定宽表格里不换行会溢出。
-            -->
-            <div class="device-ip" :class="{ 'device-ip-empty': !record.lastIp }">
-              {{ deviceIPText(record.lastIp) }}
+          <template v-else-if="column.key === 'firstIp' || column.key === 'lastIp'">
+            <div class="device-ip" :class="{ 'device-ip-empty': !record[column.key] }">
+              {{ formatValueWithLocation(record[column.key], ipLocations[normalizeLocationKey(record[column.key])]) || '未记录' }}
             </div>
           </template>
-          <template v-else-if="column.key === 'lastSeen'">
-            {{ describeLastSeen(record.lastSeenAt, now) }}
+          <template v-else-if="column.key === 'firstSeenAt' || column.key === 'lastSeenAt'">
+            <span class="device-time">{{ formatDeviceUsageTime(record[column.key]) }}</span>
           </template>
           <template v-else-if="column.key === 'status'">
             <a-tag :color="record.tone === 'success' ? 'green' : (record.tone === 'danger' ? 'red' : 'default')">
@@ -178,6 +173,7 @@
           </template>
         </template>
       </a-table>
+      <p class="hint">使用时间均为北京时间。历史未采集的首次 IP 显示为「未记录」。</p>
 
       <!--
         重命名弹窗。
@@ -239,6 +235,7 @@ import ConsolePanel from '@/components/ConsolePanel.vue'
 import {
   blockMyDevice,
   getMyDeviceLimit,
+  getMyLocations,
   listMyDevices,
   removeMyDevice,
   renameMyDevice,
@@ -249,8 +246,7 @@ import { getCurrentUserLogoutEpoch, useCurrentUserDisplay } from '@/utils/curren
 import { currentUserIdentity } from '@/utils/currentUserScope'
 import {
   DEVICE_LABEL_MAX_RUNES,
-  describeLastSeen,
-  deviceIPText,
+  formatDeviceUsageTime,
   deviceLimitMaximumText,
   emptyDeviceLimitState,
   emptyDeviceListState,
@@ -260,6 +256,7 @@ import {
   validateDeviceLabel,
   validateDeviceLimitInput,
 } from '@/utils/myDevicesHelpers.mjs'
+import { collectLocationKeys, formatValueWithLocation, lookupLocationAddresses, normalizeLocationKey } from '@/utils/locationHelpers.mjs'
 
 // 本页是**普通用户页面**：不得登记进 router.js 的 ADMIN_ONLY_ROUTE_NAMES，
 // 后端六条接口也只要求 Auth（恒取当前登录用户，不接受 userId 参数）。
@@ -290,7 +287,7 @@ export default {
     const savingLimit = ref(false)
     const failure = ref('')
     const notice = ref('')
-    const now = ref(Date.now())
+    const ipLocations = ref({})
 
     const listView = ref(emptyDeviceListState())
     const limitView = ref(emptyDeviceLimitState())
@@ -376,10 +373,10 @@ export default {
 
     const columns = [
       { title: '设备', key: 'label' },
-      // 来源 IP：比「最近活跃」更能帮用户认出「这是不是我的机器」。
-      // 放在设备与活跃之间 —— 用户扫一行时的顺序是「哪个设备 → 从哪儿来 → 什么时候来的」。
-      { title: '来源 IP', key: 'lastIp', width: 170 },
-      { title: '最近活跃', key: 'lastSeen', width: 130 },
+      { title: '首次使用 IP', key: 'firstIp', width: 180 },
+      { title: '最近使用 IP', key: 'lastIp', width: 180 },
+      { title: '首次使用时间', key: 'firstSeenAt', width: 180 },
+      { title: '最近使用时间', key: 'lastSeenAt', width: 180 },
       { title: '状态', key: 'status', width: 160 },
       { title: '操作', key: 'actions', width: 320 },
     ]
@@ -459,14 +456,26 @@ export default {
       }
     }
 
+    function enrichDeviceIps(rows, owns) {
+      const ips = collectLocationKeys(rows, ['firstIp', 'lastIp'])
+      if (!ips.length) return
+      lookupLocationAddresses('ip', ips, getMyLocations, 'ip').then(addresses => {
+        if (owns()) ipLocations.value = { ...ipLocations.value, ...addresses }
+      })
+    }
+
     async function loadList() {
+      const owner = currentUserIdentity(currentUser.value)
       const res = await listMyDevices()
-      if (!pageActive()) return
+      if (!canLoad() || owner !== currentUserIdentity(currentUser.value)) return
       if (res?.status !== 200 || !res.data) {
         failure.value = '设备列表读取失败' + (res?.message ? '：' + res.message : '')
         return
       }
-      listView.value = decorate(normalizeDeviceList(res.data))
+      const view = decorate(normalizeDeviceList(res.data))
+      listView.value = view
+      const loadedView = listView.value
+      enrichDeviceIps(view.devices, () => canLoad() && owner === currentUserIdentity(currentUser.value) && listView.value === loadedView)
     }
 
     async function loadLimit() {
@@ -488,7 +497,6 @@ export default {
       if (!canLoad() || loading.value) return
       clearNotice()
       loading.value = true
-      now.value = Date.now()
       try {
         await Promise.all([loadList(), loadLimit()])
       } catch (error) {
@@ -595,6 +603,7 @@ export default {
 
     function retire() {
       listView.value = emptyDeviceListState()
+      ipLocations.value = {}
       limitView.value = emptyDeviceLimitState()
       limitDraft.value = null
       limitError.value = ''
@@ -620,15 +629,15 @@ export default {
     })
 
     return {
-      loading, actionBusy, savingLimit, failure, notice, now,
+      loading, actionBusy, savingLimit, failure, notice, ipLocations,
       listView, limitView, limitDraft, limitError, limitEditable,
       limitText, limitHint, limitPanelDescription, limitCeilingText, limitCeilingHint,
       limitRuleText,
       limitInputId, limitRuleId, columns, busy,
       reload, removeDevice, blockDevice, unblockDevice, saveDeviceLimit,
-      hasAnyAction, describeLastSeen, maskDeviceId,
+      hasAnyAction, formatDeviceUsageTime, maskDeviceId,
       // 来源 IP 与重命名
-      deviceIPText, DEVICE_LABEL_MAX_RUNES,
+      formatValueWithLocation, normalizeLocationKey, DEVICE_LABEL_MAX_RUNES,
       renameOpen, renameSaving, renameDraft, renameError,
       renameTargetLabel, renameTargetId,
       openRename, closeRename, submitRename,
@@ -655,7 +664,8 @@ export default {
 .device-label { color: var(--console-text); font-weight: 600; }
 .device-id { margin-top: 2px; color: var(--console-muted); font-family: var(--console-mono, ui-monospace, SFMono-Regular, Consolas, monospace); font-size: 12px; overflow-wrap: anywhere; }
 /* IPv6 最长 45 字符：允许换行，否则定宽列里会撑破表格。 */
-.device-ip { font-family: var(--console-mono, ui-monospace, SFMono-Regular, Consolas, monospace); font-size: 12px; overflow-wrap: anywhere; }
+.device-ip { font-family: var(--console-mono, ui-monospace, SFMono-Regular, Consolas, monospace); font-size: 12px; overflow-wrap: anywhere; white-space: pre-line; }
+.device-time { font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .device-ip-empty { color: var(--console-muted); font-style: italic; }
 .status-note { margin-top: 4px; color: var(--console-muted); font-size: 12px; }
 .muted { color: var(--console-muted); }

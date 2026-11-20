@@ -58,8 +58,8 @@ type devicePoolBindingColumnSpec struct {
 //	last_ip         VARCHAR(45) NOT NULL DEFAULT ''    最近一次使用的来源 IP
 //
 // ⚠️ 与 137 的一处**刻意偏差**：文档 §3.2 里 device_label 写的是
-// `VARCHAR(64) NOT NULL DEFAULT ''`（在代码块里），而任务书写的是
-// `device_label(VARCHAR64)` 未提默认值。这里按文档取 `NOT NULL DEFAULT ''`，
+// `VARCHAR(64) NOT NULL DEFAULT ”`（在代码块里），而任务书写的是
+// `device_label(VARCHAR64)` 未提默认值。这里按文档取 `NOT NULL DEFAULT ”`，
 // 理由：既有行的 label 只能是空串（没人报过），而允许 NULL 会让「未上报」
 // 与「上报了空串」两种状态在 Go 侧都要判指针，无收益。
 //
@@ -95,6 +95,8 @@ var devicePoolBindingColumnSpecs = []devicePoolBindingColumnSpec{
 	// 45 = IPv6 文本最长长度（含 `::ffff:` 映射）。补列后既有行读出空串，
 	// 前端据此显示「未记录」而不是伪造一个 IP。
 	{column: "last_ip", ddl: "last_ip VARCHAR(45) NOT NULL DEFAULT ''"},
+	// 首次来源只从新绑定开始采集，既有记录没有可验证的历史，不回填 last_ip。
+	{column: "first_ip", ddl: "first_ip VARCHAR(45) NOT NULL DEFAULT ''"},
 }
 
 // ensureDevicePoolBindingSchema 给 account_device_bindings 补 A1 的 5 列 +

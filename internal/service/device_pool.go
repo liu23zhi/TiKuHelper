@@ -591,17 +591,17 @@ func BuildDevicePoolLimitExceededMessage(limit int32, used int) string {
 //
 // 判定顺序（137 §5，**顺序本身就是需求**）：
 //
-//	0. 参数不全（db nil / userID<=0 / 设备指纹为空） → fail-open 放行
-//	1. 绑定表不可用                                  → fail-open 放行 + SysLog 留痕
-//	2. **全局黑名单 kind=device**                     → 拒绝（用户不可解除）
-//	3. **用户拉黑 user_device_blocks**               → 拒绝（用户可自行解除）
-//	4. 有效上限（EffectiveDeviceLimit）：
-//	     level_missing                              → 放行（no-limit-configured）
-//	     == 0（不限）                                → 放行 + 调用方登记（unlimited）
-//	     < 0（禁止档）                               → 拒绝（forbidden）
-//	5. 已绑定且 revoked_at IS NULL                   → 刷新 last_seen_at，放行
-//	6. 已用台数 < 上限                               → 放行（within-limit）
-//	7. 已满                                          → 拒绝 + 文案（limit-exceeded）
+//  0. 参数不全（db nil / userID<=0 / 设备指纹为空） → fail-open 放行
+//  1. 绑定表不可用                                  → fail-open 放行 + SysLog 留痕
+//  2. **全局黑名单 kind=device**                     → 拒绝（用户不可解除）
+//  3. **用户拉黑 user_device_blocks**               → 拒绝（用户可自行解除）
+//  4. 有效上限（EffectiveDeviceLimit）：
+//     level_missing                              → 放行（no-limit-configured）
+//     == 0（不限）                                → 放行 + 调用方登记（unlimited）
+//     < 0（禁止档）                               → 拒绝（forbidden）
+//  5. 已绑定且 revoked_at IS NULL                   → 刷新 last_seen_at，放行
+//  6. 已用台数 < 上限                               → 放行（within-limit）
+//  7. 已满                                          → 拒绝 + 文案（limit-exceeded）
 //
 // ## 为什么第 2 步必须在第 5 步之前（137 §5.1，判据 D5）
 //
@@ -610,6 +610,12 @@ func BuildDevicePoolLimitExceededMessage(limit int32, used int) string {
 // 用户拍板了「封禁设备 → 立即撤销所有旧绑定」，但撤销是异步的、可能失败的，
 // 而黑名单判定是同步的、必然生效的 —— 两道保险，顺序不能反。
 func CanUseDevice(db *gorm.DB, userID int32, deviceID string) DevicePoolDecision {
+	return CanUseDeviceWithClientIP(db, userID, deviceID, "")
+}
+
+// CanUseDeviceWithClientIP 在设备通过准入时同步刷新最近来源 IP。
+// 已有设备的请求热路径只需一次 UPDATE；未采到合法 IP 时保留原地址。
+func CanUseDeviceWithClientIP(db *gorm.DB, userID int32, deviceID string, clientIP string) DevicePoolDecision {
 	if db == nil || userID <= 0 {
 		return DevicePoolDecision{Allowed: true, Reason: DevicePoolReasonFailOpen, Used: DevicePoolUsedUnknown}
 	}
@@ -701,17 +707,22 @@ func CanUseDevice(db *gorm.DB, userID int32, deviceID string) DevicePoolDecision
 		}
 	}
 
-	// ── ④ 已绑定且未撤销：放行并刷新 last_seen_at ──
+	// ── ④ 已绑定且未撤销：放行并刷新最近使用时间和 IP ──
 	if id, bound, err := activeDeviceBindingID(db, userID, normalized); err != nil {
 		devicePoolFailOpenLog(userID, "查询设备绑定失败："+err.Error())
 		return DevicePoolDecision{Allowed: true, Reason: DevicePoolReasonFailOpen, Limit: limit, Used: DevicePoolUsedUnknown, LimitSource: source}
 	} else if bound {
 		// 刷新 last_seen_at：它是「10 天闲置解绑」的唯一数据源，
 		// 只靠登录路径的 RegisterDevice 刷新会让「同一设备高频请求」的活跃度失真。
-		// 用 UpdateColumn 而不是 Updates：后者会顺带刷新 updated_at，
+		// 用 UpdateColumns 而不是 Updates：后者会顺带刷新 updated_at，
 		// 把「行被改过」与「设备被使用过」两种事实混在一起。
+		activity := map[string]any{"last_seen_at": now}
+		if ip := NormalizeDeviceClientIP(clientIP); ip != "" &&
+			db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "last_ip") {
+			activity["last_ip"] = ip
+		}
 		if err := devicePoolSession(db).Model(&entity.AccountDeviceBinding{}).
-			Where("id = ?", id).UpdateColumn("last_seen_at", now).Error; err != nil {
+			Where("id = ?", id).UpdateColumns(activity).Error; err != nil {
 			devicePoolFailOpenLog(userID, "刷新设备活跃时间失败："+err.Error())
 		}
 		return DevicePoolDecision{
@@ -937,9 +948,12 @@ func RegisterDeviceWithOptions(db *gorm.DB, userID int32, deviceID string, optio
 		createValues["client_instance"] = instance
 	}
 	// 首次登记同样只在有合法 IP 时写；列缺失时不写（老库，展示层会显示「未记录」）。
-	if clientIP := NormalizeDeviceClientIP(options.ClientIP); clientIP != "" &&
-		db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "last_ip") {
-		createValues["last_ip"] = clientIP
+	if clientIP := NormalizeDeviceClientIP(options.ClientIP); clientIP != "" {
+		for _, column := range []string{"first_ip", "last_ip"} {
+			if db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, column) {
+				createValues[column] = clientIP
+			}
+		}
 	}
 	if err := session.Model(&entity.AccountDeviceBinding{}).Create(createValues).Error; err != nil {
 		// 并发首次登记：另一个请求刚插入了同一行。这不是错误，

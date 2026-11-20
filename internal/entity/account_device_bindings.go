@@ -107,6 +107,9 @@ type AccountDeviceBinding struct {
 	TokenID int32 `gorm:"column:token_id;type:int;not null;default:0" json:"tokenId"`
 	// DeviceLabel 是给人看的设备名（前端/扩展上报，可空）。
 	DeviceLabel string `gorm:"column:device_label;type:varchar(64);not null;default:''" json:"deviceLabel"`
+	// FirstIP is recorded only when this binding is created. Existing rows stay
+	// unknown after migration: their most recent IP cannot establish first use.
+	FirstIP string `gorm:"column:first_ip;type:varchar(45);not null;default:''" json:"firstIp"`
 	// LastIP 是这台设备**最近一次**被该账号使用时的来源 IP（归一化后的字面量）。
 	//
 	// ## 为什么是单列「最近一次」而不是历史

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import {
   DEVICE_STATUS_META,
   describeLastSeen,
+  formatDeviceUsageTime,
   deviceIPText,
   deviceLimitMaximumText,
   deviceLimitSourceText,
@@ -236,9 +237,9 @@ test('maskDeviceId 截断长指纹但保留首尾（便于人工比对）', () =
 test('我的设备页具备列表/移除/拉黑/解除拉黑/调整上限五件事', async () => {
   const page = await readSource(path.join('pages', 'MyDevices', 'index.vue'))
   const code = stripComments(page)
-  // 列表列：设备标签、最近活跃、状态
+  // 列表列：设备标签、最近使用时间、状态
   assert.match(code, /deviceLabel/)
-  assert.match(code, /最近活跃/)
+  assert.match(code, /最近使用时间/)
   assert.match(code, /statusText/)
   // 四个动作
   assert.match(code, /removeDevice/)
@@ -302,6 +303,22 @@ test('normalizeDeviceItem 回传 lastIp，缺失时为显式空串而不是伪�
   assert.equal(normalizeDeviceItem({ id: 7, deviceId: 'd' }).lastIp, '')
   assert.equal(normalizeDeviceItem({ id: 7, deviceId: 'd', lastIp: null }).lastIp, '')
   assert.equal(normalizeDeviceItem({ id: 7, deviceId: 'd', lastIp: 123 }).lastIp, '')
+})
+
+test('normalizeDeviceItem 独立保留首次与最近使用信息，不用最近 IP 伪造历史', () => {
+  const view = normalizeDeviceItem({ firstIp: '172.18.0.1', lastIp: '203.0.113.7', firstSeenAt: '2026-11-01T01:02:03Z', lastSeenAt: '2026-11-20T01:02:03Z' })
+  assert.equal(view.firstIp, '172.18.0.1')
+  assert.equal(view.lastIp, '203.0.113.7')
+  assert.equal(view.firstSeenAt, '2026-11-01T01:02:03Z')
+  assert.equal(view.lastSeenAt, '2026-11-20T01:02:03Z')
+  assert.equal(normalizeDeviceItem({ lastIp: '203.0.113.7' }).firstIp, '')
+})
+
+test('设备使用时间显示完整北京时间，不使用相对时间', () => {
+  assert.equal(formatDeviceUsageTime('2026-11-01T01:02:03Z'), '2026-11-01 09:02:03')
+  assert.equal(formatDeviceUsageTime('2026-11-01T09:02:03+08:00'), '2026-11-01 09:02:03')
+  assert.equal(formatDeviceUsageTime(null), '未记录')
+  assert.equal(formatDeviceUsageTime('not-a-date'), '未知时间')
 })
 
 test('deviceIPText 把空值翻成「未记录」，有值时原样显示', () => {
@@ -370,12 +387,16 @@ test('validateDeviceLabel 去首尾空白后再落 value', () => {
 
 // ─────────────────── 页面与 API 接线 ───────────────────
 
-test('我的设备页有「来源 IP」列与「重命名」按钮', async () => {
+test('我的设备页展示首次与最近 IP/时间、查询归属地并保留重命名', async () => {
   const page = await readSource(path.join('pages', 'MyDevices', 'index.vue'))
   const code = stripComments(page)
-  // 列：必须有 来源 IP，且走 deviceIPText（否则空值会渲染成空白单元格）。
-  assert.match(code, /来源 IP/)
-  assert.match(code, /deviceIPText/)
+  // 两个时间与两个 IP 均独立显示；归属地继续走统一查询与格式化层。
+  for (const label of ['首次使用 IP', '最近使用 IP', '首次使用时间', '最近使用时间']) assert.ok(code.includes(label))
+  assert.match(code, /formatDeviceUsageTime/)
+  assert.doesNotMatch(code, /describeLastSeen/)
+  assert.match(code, /collectLocationKeys\(rows, \['firstIp', 'lastIp'\]\)/)
+  assert.match(code, /lookupLocationAddresses\('ip', ips, getMyLocations, 'ip'\)/)
+  assert.match(code, /formatValueWithLocation/)
   assert.match(code, /lastIp/)
   // 重命名：按钮 + 弹窗 + 提交函数。
   assert.match(code, /重命名/)

@@ -68,6 +68,43 @@ func TestResolveOwnLocationIPsRequiresOwnership(t *testing.T) {
 	}
 }
 
+func TestOwnHistoricalDeviceIPQueriesMissingLocationAndReusesPersistedCache(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.URL.Query().Get("ip") != "8.8.8.8" || r.Header.Get("Authorization") != "Bearer uapi-key" {
+			t.Errorf("expected the owned device IP and configured query key")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ip":"8.8.8.8","region":"美国","isp":"GOOGLE"}`))
+	}))
+	defer server.Close()
+	newDefaultLocationClient(t, server, "uapi-key")
+	db := newLocationTestDB(t)
+	if err := db.AutoMigrate(&entity.AccountDeviceBinding{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&entity.AccountDeviceBinding{UserID: 7, DeviceID: "historical-device", LastIP: "8.8.8.8"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	ips, err := ResolveOwnLocationIPsWithDB(db, entity.User{ID: 7}, []string{"8.8.8.8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := LookupIPLocationsWithDB(db, ips, LocationQueryOptions{UAPIKey: "uapi-key"})
+	if first["8.8.8.8"].Address != "美国 GOOGLE" || requests.Load() != 1 {
+		t.Fatalf("owned device IP without a location must query upstream: %+v calls=%d", first, requests.Load())
+	}
+	var stored entity.LocationCache
+	if err := db.Where("kind = ? AND lookup_key = ?", entity.LocationKindIP, "8.8.8.8").First(&stored).Error; err != nil || stored.Address != "美国 GOOGLE" {
+		t.Fatalf("the first successful lookup must be persisted: %+v err=%v", stored, err)
+	}
+	second := LookupIPLocationsWithDB(db, ips, LocationQueryOptions{})
+	if second["8.8.8.8"].Address != "美国 GOOGLE" || requests.Load() != 1 {
+		t.Fatalf("subsequent lookup must use the persisted cache without another call or key: %+v calls=%d", second, requests.Load())
+	}
+}
+
 func TestListAndDeleteLocationCacheWithDB(t *testing.T) {
 	db := newLocationTestDB(t)
 	seedLocationRowForTest(t, db, entity.LocationKindIP, "8.8.8.8", "美国", `{}`)

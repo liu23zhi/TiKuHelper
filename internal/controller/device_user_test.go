@@ -929,6 +929,81 @@ func TestDeviceUserListReturnsLastIP(t *testing.T) {
 	}
 }
 
+func TestDeviceUserListReturnsFirstAndLastUsage(t *testing.T) {
+	db := newDeviceUserTestDB(t, true)
+	owner := seedDeviceUserUser(t, db, "device-usage", 0, -1)
+	first := time.Date(2026, 11, 1, 1, 2, 3, 0, time.UTC)
+	last := first.Add(24 * time.Hour)
+	id := seedDeviceUserBinding(t, db, owner.ID, "usage-device", "", last, "", nil)
+	if err := db.Table(entity.TableNameAccountDeviceBinding).Where("id = ?", id).Updates(map[string]any{
+		"first_ip": "172.18.0.1", "last_ip": "203.0.113.7", "first_seen_at": first,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	w, body := doDeviceUser(t, deviceUserRouter(owner), http.MethodGet, "/api/user/devices", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d: %s", w.Code, w.Body.String())
+	}
+	item := body.Data["devices"].([]any)[0].(map[string]any)
+	if item["firstIp"] != "172.18.0.1" || item["lastIp"] != "203.0.113.7" {
+		t.Fatalf("usage IPs: %#v", item)
+	}
+	for key, expected := range map[string]time.Time{"firstSeenAt": first, "lastSeenAt": last} {
+		got, err := time.Parse(time.RFC3339Nano, item[key].(string))
+		if err != nil || !got.Equal(expected) {
+			t.Fatalf("%s=%v", key, item[key])
+		}
+	}
+}
+
+func TestRegisterDeviceFirstIPNeverChangesOrInventsHistory(t *testing.T) {
+	db := newDeviceUserTestDB(t, true)
+	owner := seedDeviceUserUser(t, db, "device-first-ip", 0, -1)
+	for _, ip := range []string{"::ffff:172.18.0.1", "198.51.100.4", ""} {
+		if _, err := service.RegisterDeviceWithOptions(db, owner.ID, "new-device", service.DeviceBindingRegisterOptions{ClientIP: ip}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got entity.AccountDeviceBinding
+	if err := db.Where("user_id = ? AND device_id = ?", owner.ID, "new-device").First(&got).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got.FirstIP != "172.18.0.1" || got.LastIP != "198.51.100.4" {
+		t.Fatalf("first/last IP changed incorrectly: %#v", got)
+	}
+	seedDeviceUserBinding(t, db, owner.ID, "old-device", "", time.Now().Add(-24*time.Hour), "", nil)
+	if _, err := service.RegisterDeviceWithOptions(db, owner.ID, "old-device", service.DeviceBindingRegisterOptions{ClientIP: "198.51.100.4"}); err != nil {
+		t.Fatal(err)
+	}
+	var legacy entity.AccountDeviceBinding
+	if err := db.Where("user_id = ? AND device_id = ?", owner.ID, "old-device").First(&legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	if legacy.FirstIP != "" || legacy.LastIP != "198.51.100.4" {
+		t.Fatalf("legacy history was invented: %#v", legacy)
+	}
+}
+
+func TestDeviceUserListToleratesMissingFirstIPColumn(t *testing.T) {
+	db := newDeviceUserTestDB(t, true)
+	owner := seedDeviceUserUser(t, db, "device-old-schema", 0, -1)
+	seedDeviceUserBinding(t, db, owner.ID, "legacy-device", "", time.Now(), "", nil)
+	if err := db.Exec("ALTER TABLE " + entity.TableNameAccountDeviceBinding + " DROP COLUMN first_ip").Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.RegisterDeviceWithOptions(db, owner.ID, "legacy-device", service.DeviceBindingRegisterOptions{ClientIP: "172.18.0.1"}); err != nil {
+		t.Fatal(err)
+	}
+	w, body := doDeviceUser(t, deviceUserRouter(owner), http.MethodGet, "/api/user/devices", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d: %s", w.Code, w.Body.String())
+	}
+	item := body.Data["devices"].([]any)[0].(map[string]any)
+	if item["firstIp"] != "" || item["lastIp"] != "172.18.0.1" {
+		t.Fatalf("old schema: %#v", item)
+	}
+}
+
 // 缺 last_ip 列（迁移未跑）时：列表照常 200，lastIp 退化为空串。
 //
 // 为什么要单独一条：加了 HasColumn 判断却没有这条用例，就没人能证明
