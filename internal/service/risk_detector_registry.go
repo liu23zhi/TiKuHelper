@@ -27,6 +27,7 @@ var riskDetectors = map[string]riskDetectorFunc{
 	entity.RiskRuleIDRefundAbuse:             collectRefundAbuseCandidates,
 	entity.RiskRuleIDProxyIPLogin:            collectProxyIPLoginCandidates,
 	entity.RiskRuleIDRegisterBurst:           collectRegisterBurstCandidates,
+	entity.RiskRuleIDDeviceRegisterBurst:     collectDeviceRegisterBurstCandidates,
 	entity.RiskRuleIDAnswerPatternRepeat:     collectAnswerPatternRepeatCandidates,
 }
 

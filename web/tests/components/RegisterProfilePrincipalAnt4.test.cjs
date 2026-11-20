@@ -36,7 +36,7 @@ function transport(name, payload) {
 function immediate(name, payload, response) { const p = transport(name, payload); calls[name].at(-1).resolve(response); return p }
 function mock(filename, exports) { const m = new Module(filename); m.loaded = true; m.exports = exports; require.cache[filename] = m }
 mock(path.join(web, 'src/api/TikuComponentApi.js'), {
-  getPublicRegisterStatus: () => immediate('settings', undefined, { status: 200, data: clone(settings) }),
+  getPublicRegisterStatus: options => immediate('settings', options, { status: 200, data: clone(settings) }),
   getCurrentUser: () => meReply === null ? transport('me') : immediate('me', undefined, { status: 200, data: clone(meReply) }),
   getMyLocations: () => locationsReply === null ? transport('locations') : immediate('locations', undefined, { status: 200, data: clone(locationsReply) }),
   createCaptchaChallenge: payload => immediate('challenge', payload, { status: 200, data: { challengeId: 'SYNTHETIC_CHALLENGE_' + (++challengeSequence), imageData: PNG } }),
@@ -45,6 +45,11 @@ mock(path.join(web, 'src/api/TikuComponentApi.js'), {
   sendUserPhoneChangeSMSCode: payload => transport('phoneSMS', payload), updateCurrentUserProfile: payload => transport('profile', payload), updateCurrentUserPhone: payload => transport('phone', payload),
   createWechatRegisterSession: payload => transport('flow', payload), createWechatRegisterQRCode: payload => transport('flowQR', payload), getWechatRegisterStatus: payload => transport('flowStatus', payload), stageWechatRegisterCode: payload => transport('stage', payload), releaseWechatRegisterFlow: payload => transport('release', payload),
   createWechatLoginQRCode: payload => transport('qr', payload), getWechatLoginStatus: payload => transport('status', payload), bindCurrentUserWechatByCode: payload => transport('codeBind', payload), bindCurrentUserWechat: payload => transport('bind', payload), unbindCurrentUserWechat: payload => transport('unbind', payload),
+})
+// Profile also requests an optional level summary from a separate API module.
+// Keep the suite offline, as its no-network afterEach requires.
+mock(path.join(web, 'src/api/UserLevelApi.js'), {
+  getMyUserLevel: () => Promise.resolve({ status: 403, message: 'SYNTHETIC_NO_LEVEL_PERMISSION' }),
 })
 mock(require.resolve('vue-router'), { useRoute: () => activeRoute, useRouter: () => ({ currentRoute: { get value() { return activeRoute } }, push: value => { routes.push(clone(value)); return Promise.resolve() } }), onBeforeRouteLeave: fn => routeLeaves.push(fn) })
 for (const kind of ['success', 'warning', 'error']) { const native = Antd.message[kind].bind(Antd.message); Antd.message[kind] = (...args) => { notices.push({ kind, text: String(args[0]?.content || args[0] || '') }); return native(...args) } }
@@ -116,6 +121,7 @@ afterEach(async () => {
 
 test('REGISTER_PROFILE existing anonymous registration verifies actual captcha then normalized exact payload and login snapshot', async () => {
   const w = await open(); await fields(w, '  注册_A@01  ', '  ' + PW + '  '); await w.get('input[placeholder="请输入验证码"]').setValue(' ' + OTP + ' '); await w.get('form').trigger('submit'); await settle(); assert.equal(calls.register.length, 0); await acceptCaptcha('register_submit', ' ' + TOKEN + ' ')
+  assert.deepEqual(calls.settings[0].payload, { forRegistration: true }, 'only the registration page opts into the registration-cookie bootstrap')
   assert.deepEqual(calls.register[0].payload, { username: '注册_A@01', password: PW, nickname: '昵称 A', phone: '13800000000', smsCode: OTP, captchaToken: TOKEN })
   await resolve('register'); assert.deepEqual(routes, [{ path: '/login', query: { username: '注册_A@01' } }]); assert.equal(w.vm.registerForm.password, ''); assert.equal(w.vm.submitting, false)
 })

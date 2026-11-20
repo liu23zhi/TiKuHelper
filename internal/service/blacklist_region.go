@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -334,9 +335,10 @@ func (s *BlacklistSnapshot) matchRegionLocation(location BlacklistRegionLocation
 	if location.IsZero() {
 		return BlacklistMatch{}, false
 	}
+	now := time.Now()
 	for i := range s.region {
 		rule := s.region[i]
-		if rule.Rule == nil {
+		if !rule.Rule.activeAt(now) {
 			continue
 		}
 		if blacklistRegionRuleMatches(rule, location) {
@@ -387,42 +389,56 @@ func blacklistRegionGeoMatches(geo string, location BlacklistRegionLocation) boo
 // ok=false 表示没有可用缓存（此时不判定、放行、**不发起上游查询**）。
 type BlacklistRegionLooker func(clientIP string) (BlacklistRegionLocation, bool)
 
-// NewBlacklistRegionCacheLooker 返回一个**只读 `location_cache_entries`** 的查表器。
-//
-// 为什么不用 LookupIPLocationsWithDB：那条路径在缓存缺失时会对回环/私有 IP
-// 「本地合成并写库」，在配置了密钥时还会回源外呼 —— 两者都不该出现在**每个请求**的
-// 判定链上（46-*.md §4 与 §7：「地区规则命中时不产生 UApiPro 计费（只读缓存，不主动查询）」）。
-// 本函数只做一次按主键的索引点读，零外呼、零写入。
-//
-// ⚠️ 只读默认来源（source 为空串）：商业增强来源（commercial）的记录不参与地区判定，
-// 因为运营开启商业来源只是为了让**管理页展示**更完整，不该顺带改变拦截口径。
+// NewBlacklistRegionCacheLooker resolves only offline, standard-source geography. Never call the
+// upstream API here. A precise IP row wins. An incomplete row may fall back to the narrowest
+// containing standard segment, but contradictory evidence must not widen a block.
 func NewBlacklistRegionCacheLooker(db *gorm.DB) BlacklistRegionLooker {
 	return func(clientIP string) (BlacklistRegionLocation, bool) {
-		if db == nil {
-			return BlacklistRegionLocation{}, false
-		}
 		key := normalizeIPLookupKey(strings.TrimSpace(clientIP))
-		if key == "" || net.ParseIP(key) == nil {
+		if db == nil || net.ParseIP(key) == nil {
 			return BlacklistRegionLocation{}, false
 		}
+		var loc BlacklistRegionLocation
 		rows := loadLocationCacheRows(db, entity.LocationKindIP, "", []string{key})
-		row, ok := rows[locationCacheLookupKey(key)]
-		if !ok {
-			return BlacklistRegionLocation{}, false
+		if row, ok := rows[locationCacheLookupKey(key)]; ok {
+			info := parseIPInfoRawJSON(row.RawJSON)
+			loc = offlineBlacklistLocation(info.Region, info.LLC, info.ISP)
+			if loc.IsZero() {
+				region, operator := splitBlacklistRegionAddress(row.Address)
+				loc = offlineBlacklistLocation(region, operator, "")
+			}
 		}
-		info := parseIPInfoRawJSON(row.RawJSON)
-		location := ParseBlacklistRegionLocation(info.Region, info.LLC, info.ISP)
-		if location.IsZero() {
-			// RawJSON 缺失（更早版本写入的行）时回退 address 列；
-			// 与 displayAddressFromCacheRow 同一条兜底原则。
-			region, operator := splitBlacklistRegionAddress(row.Address)
-			location = ParseBlacklistRegionLocation(region, operator, "")
+		if (loc.City == "" || loc.Operator == "") && db.Migrator().HasTable(entity.TableNameIPSegment) {
+			if seg, err := findIPSegmentWithSource(db, key, true); err == nil && seg != nil {
+				other := offlineBlacklistLocation(seg.Region, seg.LLC, seg.ISP)
+				agrees := func(a, b string) bool { return a == "" || b == "" || strings.EqualFold(a, b) }
+				if loc.IsZero() || (other.City != "" && other.Operator != "" && agrees(loc.Country, other.Country) && agrees(loc.Province, other.Province) && agrees(loc.City, other.City) && agrees(loc.Operator, other.Operator)) {
+					loc = other
+				}
+			}
 		}
-		if location.IsZero() {
-			return BlacklistRegionLocation{}, false
-		}
-		return location, true
+		return loc, !loc.IsZero()
 	}
+}
+
+// Read the geographic positions without compressing an unknown city into its province.
+func offlineBlacklistLocation(region, llc, isp string) BlacklistRegionLocation {
+	loc := BlacklistRegionLocation{Operator: ParseBlacklistRegionLocation("", llc, isp).Operator}
+	parts := strings.Fields(region)
+	field := func(n int) string {
+		if n < len(parts) && !isPlaceholderLocationValue(parts[n]) && !strings.Contains(parts[n], "*") {
+			return parts[n]
+		}
+		return ""
+	}
+	loc.Country, loc.Province, loc.City = field(0), field(1), field(2)
+	if len(parts) == 2 && (loc.Country == "中国" || loc.Country == "中华人民共和国") {
+		switch strings.TrimSuffix(loc.Province, "市") {
+		case "北京", "上海", "天津", "重庆":
+			loc.City = loc.Province
+		}
+	}
+	return loc
 }
 
 // BlacklistRegionOutcome 是地区判定的四种结果。

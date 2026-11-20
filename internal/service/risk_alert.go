@@ -440,18 +440,24 @@ func riskRuleThresholdSettingKey(ruleID string) string {
 //  2. risk_rules.threshold 列 —— 同一写入路径会同步这一列（见 risk_threshold.go）。
 //  3. entity.DefaultRiskRules 的代码默认值 —— 未显式配置时实际生效的那一层。
 //
-// ⚠️ 三层里任何一层出现「解析不出正数」都继续往下走。
+// 每一层都需满足该检测器的阈值规格（类型和范围）；非法值继续向下回退。
 // 一旦把无效值当成 0，`|balance| >= 0` 会让**每个**用户都告警 —— 这是本文件里
 // 最严重的失效形态（不是漏报而是刷屏）。
 func riskRuleThreshold(db *gorm.DB, rule entity.RiskRule, fallback float64) float64 {
-	if db != nil {
-		raw := getSystemSettingStringWithDefault(db, riskRuleThresholdSettingKey(rule.RuleID), "")
-		if value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64); err == nil && value > 0 {
-			return value
-		}
+	kind := effectiveRiskRuleType(rule)
+	if kind == entity.RiskRuleIDProxyIPLogin {
+		return riskDefaultThreshold(kind) // legacy numeric field is only a storage placeholder
 	}
-	if rule.Threshold > 0 {
+	spec, ok := riskPrimaryThresholdSpec(kind)
+	if value, _ := riskThresholdSettingValue(db, riskRuleThresholdSettingKey(rule.RuleID), spec); value > 0 {
+		return value
+	}
+	if spec.validate(rule.Threshold) == nil {
 		return rule.Threshold
+	}
+	if ok {
+		// A custom instance has the code default of its detector, not of its generated ID.
+		return spec.DefaultValue
 	}
 	return fallback
 }
@@ -589,6 +595,9 @@ func EvaluateDebtAlerts(db *gorm.DB, now time.Time) (RiskAlertEvaluation, error)
 			// 再推一次就是重复告警（118 §2.7 例 5 明确：24h 内不重复告警）。
 			result.Suppressed++
 			continue
+		}
+		if responseErr := respondToNewWarning(db, effectiveRiskRuleType(candidate.Rule), target, now); responseErr != nil {
+			logger.SysWarn(fmt.Sprintf("risk_alert_response_failed ruleId=%s warningId=%d error=%v", candidate.Rule.RuleID, target.ID, responseErr))
 		}
 		// 规则可以自己声明「这一条只留痕、先别推送」（96 §2.1 R16 的连续天数门槛）。
 		//
@@ -1605,23 +1614,8 @@ const (
 // 另外：**只配了一半也整体回落默认**，不把另一半与默认值拼起来。否则运营只想改
 // 起点、实际却改变了整个判据（只填 start=0 会得到 0:00–5:00），而他无法从界面看出。
 func riskOffhoursWindow(db *gorm.DB) (int, int) {
-	if db == nil {
-		return riskOffhoursDefaultStartHour, riskOffhoursDefaultEndHour
-	}
-	rawStart := strings.TrimSpace(getSystemSettingStringWithDefault(db, riskOffhoursStartSettingKey, ""))
-	rawEnd := strings.TrimSpace(getSystemSettingStringWithDefault(db, riskOffhoursEndSettingKey, ""))
-	if rawStart == "" || rawEnd == "" {
-		return riskOffhoursDefaultStartHour, riskOffhoursDefaultEndHour
-	}
-	start, startErr := strconv.Atoi(rawStart)
-	end, endErr := strconv.Atoi(rawEnd)
-	if startErr != nil || endErr != nil {
-		return riskOffhoursDefaultStartHour, riskOffhoursDefaultEndHour
-	}
-	if start < 0 || start > 23 || end < 0 || end > 23 || start == end {
-		return riskOffhoursDefaultStartHour, riskOffhoursDefaultEndHour
-	}
-	return start, end
+	window, _ := GetRiskOffhoursWindow(db)
+	return window.StartHour, window.EndHour
 }
 
 // riskOffhoursHourInWindow 判断某个小时是否落在 [start, end) 内，支持跨零点。
@@ -1639,8 +1633,7 @@ func riskOffhoursHourInWindow(hour, start, end int) bool {
 //
 // 跨零点时必须展开成两个 OR 分支，不能写成 `hour >= start AND hour < end`
 // —— 那样 22→6 的窗口永远为空，规则静默失效（不报错、不告警）。
-func riskOffhoursWindowExpr(db *gorm.DB, column string) string {
-	start, end := riskOffhoursWindow(db)
+func riskOffhoursWindowExpr(db *gorm.DB, column string, start, end int) string {
 	hourExpr := riskOffhoursHourExpr(db, column)
 	if start < end {
 		return hourExpr + " >= " + strconv.Itoa(start) +
@@ -1702,7 +1695,8 @@ func collectOffhoursActivityCandidates(db *gorm.DB, rule entity.RiskRule, now ti
 	var stat dayStat
 	// 窗口来自配置（可跨零点）：riskOffhoursWindowExpr 内部已按 start/end 关系展开成
 	// 「单段 AND」或「跨零点 hour OR」两种形态，这里不再自己拼比较符。
-	offhourExpr := "CASE WHEN " + riskOffhoursWindowExpr(db, "created_at") + " THEN 1 ELSE 0 END"
+	offhourStart, offhourEnd := riskOffhoursWindow(db)
+	offhourExpr := "CASE WHEN " + riskOffhoursWindowExpr(db, "created_at", offhourStart, offhourEnd) + " THEN 1 ELSE 0 END"
 	if err := db.Session(&gorm.Session{NewDB: true}).Model(&entity.BillingRecord{}).
 		Select("COUNT(*) AS total, COALESCE(SUM("+offhourExpr+"), 0) AS offhour").
 		Where(timeExpr+" >= ? AND "+timeExpr+" < ?", startText, endText).
@@ -1784,9 +1778,7 @@ func collectOffhoursActivityCandidates(db *gorm.DB, rule entity.RiskRule, now ti
 		consecutiveMet = yesterdayExists > 0 && historyDates+1 >= int64(consecutiveDays)
 	}
 
-	// 记录当次生效的窗口：配置改了以后，历史告警仍能解释「当时按什么时段算」。
-	offhourStart, offhourEnd := riskOffhoursWindow(db)
-
+	// Snapshot the very bounds used for the SQL count, not a fresh configuration read.
 	detail, err := json.Marshal(map[string]any{
 		"ruleId":              rule.RuleID,
 		"subjectKey":          subject,
@@ -1806,8 +1798,8 @@ func collectOffhoursActivityCandidates(db *gorm.DB, rule entity.RiskRule, now ti
 		"value":            roundRiskAmount(share),
 		"windowStart":      windowStart.Format(time.RFC3339),
 		"evaluatedAt":      now.Format(time.RFC3339),
-		"evidenceNote": "当天凌晨（北京时间 02:00-05:00）计费笔数占比 + 历史连续天数；" +
-			"未凑满连续天数时只留当日记录、不推送（新部署环境前 N-1 天不会产生告警）",
+		"evidenceNote": fmt.Sprintf("当天凌晨（北京时间 %02d:00-%02d:00，含起点、不含终点）计费笔数占比 + 历史连续天数；"+
+			"未凑满连续天数时只留当日记录、不推送（新部署环境前 N-1 天不会产生告警）", offhourStart, offhourEnd),
 	})
 	if err != nil {
 		return nil, err
@@ -1862,30 +1854,28 @@ const riskTokenMultiIPDefault = 5
 // `risk_rule_token_abuse_threshold`（那是配额倍数的主阈值）。
 // 与 riskOffhoursShareThreshold 同构：一条规则的第二判据不占主阈值键。
 //
-// 非法值（非数字 / ≤0）一律回落默认，**不返回 0** ——
+// 非法值（非有限正数或超出规格上界）一律回落默认，**不返回 0** ——
 // 返回 0 会让 `float64(row.IPs) < 0` 恒假，等于该判据被静默关掉。
 func riskTokenMultiIPThreshold(db *gorm.DB) float64 {
-	if db != nil {
-		raw := getSystemSettingStringWithDefault(db, RiskThresholdSettingKeyTokenMultiIP, "")
-		if value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64); err == nil && value > 0 {
-			return value
-		}
-	}
-	return riskTokenMultiIPDefault
+	return riskAuxiliaryThreshold(db, RiskThresholdSettingKeyTokenMultiIP, riskTokenMultiIPDefault)
 }
 
 // riskOffhoursShareThreshold 读取夜间占比阈值（0-1）。非法值回落默认 0.8。
 //
-// 三层兜底与 riskRuleThreshold 同构：非法值**不能**退化成 0
+// 只读该辅助键，未设置或不合法时用其代码默认值，**不能**退化成 0
 // （0 会让每一天都「达标」→ 连续 N 天后必然告警，等于规则失效变噪音）。
 func riskOffhoursShareThreshold(db *gorm.DB) float64 {
-	if db != nil {
-		raw := getSystemSettingStringWithDefault(db, riskOffhoursShareSettingKey, "")
-		if value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64); err == nil && value > 0 && value <= 1 {
+	return riskAuxiliaryThreshold(db, riskOffhoursShareSettingKey, riskOffhoursDefaultShare)
+}
+
+func riskAuxiliaryThreshold(db *gorm.DB, key string, fallback float64) float64 {
+	spec, ok := riskThresholdSpecByKey(key)
+	if ok {
+		if value, _ := riskThresholdSettingValue(db, key, spec); value > 0 {
 			return value
 		}
 	}
-	return riskOffhoursDefaultShare
+	return fallback
 }
 
 // riskOffhoursHourExpr 返回「取小时」的方言表达式。

@@ -2,10 +2,10 @@
   <div class="console-page risk-admin-page">
     <ConsolePageHeading
       title="风控管理"
-      description="风控告警只读查看 + 企业微信风控通知配置。命中只产生告警记录与推送，不做任何自动处置。"
+      description="保护公开注册与密码登录；查看实际生效条件、告警证据和处置记录。"
     >
       <template #actions>
-        <a-button :loading="loadingAlerts" :disabled="!canManage() || loadingAlerts || writing" @click="loadAlerts">刷新</a-button>
+        <a-button v-if="section === 'alerts'" :loading="loadingAlerts"  :disabled="!canManage() || loadingAlerts || writing" @click="loadAlerts">刷新告警</a-button>
       </template>
     </ConsolePageHeading>
 
@@ -17,10 +17,6 @@
       message="当前身份无风控管理权限，请使用管理员账号登录。"
     />
 
-    <!--
-      C1 的用户可见形态：这条提示必须常驻，且页面**不存在**任何封禁/拒绝/改状态按钮。
-      处置动作走黑名单与封禁各自的页面，风控页只读。
-    -->
     <a-alert
       v-if="canManage()"
       type="info"
@@ -30,8 +26,21 @@
     />
 
     <template v-if="canManage()">
+      <nav class="risk-nav" aria-label="风控管理视图">
+        <a-button v-for="tab in sections" :key="tab.key" :data-risk-nav="tab.key"
+          :aria-pressed="section === tab.key" :type="section === tab.key ? 'primary' : 'default'"
+          @click="section = tab.key">{{ tab.label }}</a-button>
+      </nav>
+      <ConsolePanel v-if="section === 'core'" title="注册与登录保护" description="先选择如何处置，再调整下方规则的触发条件。处置策略按类型共享，在评估产生新告警时执行；登录入口原有的实时限速仍独立生效。">
+        <div class="policy-grid">
+          <RiskPolicyCard v-for="item in coreDetectors" :key="ownerKey + item.type" :detector="item.type"
+            :title="item.name" :description="item.summary" :capture-scope="captureRuleScope" />
+        </div>
+      </ConsolePanel>
+
       <!-- ============ 风控通知配置（独立于工单，C2/C3） ============ -->
       <ConsolePanel
+        v-if="section === 'global'"
         title="企业微信风控通知"
         description="风控通道专用配置。保存后立即生效；Webhook 地址不会回显完整内容。"
         class="risk-config-panel"
@@ -136,31 +145,21 @@
         <p v-if="configSuccess" class="config-success" role="status">{{ configSuccess }}</p>
       </ConsolePanel>
 
-      <!-- ============ 规则清单（增删改、启停与说明） ============ -->
-      <!--
-        本区块在 t193 审计之前**不存在**，原因是一个历史遗留的坏断言：
-        riskAdminSource.test.mjs 里曾写「不得声明后端不存在的 /risk/rules」，
-        而该路由其实早已挂上（internal/api/router.go:496-497）。
-        结果：10 条规则的 Description（含「需 3 天历史」「被抢号不计入」这类
-        关键限制）与全部启停能力在页面上完全不可见。
-
-        现在接上 GET /risk/rules 与 PUT /risk/rules/:ruleId/enabled。
-        停用的规则**仍然显示**（灰化 + 「已停用」标签），因为：
-          · 消失会让人以为规则被删了
-          · 停用是临时状态，需要能随时看到并重新启用
-      -->
-      <ConsolePanel class="risk-rules-panel" title="规则清单" description="内置规则作为默认配置；新增规则只能选择服务端支持的检测类型。">
+      <ConsolePanel v-if="section === 'core' || section === 'other'" class="risk-rules-panel"
+        :title="section === 'core' ? '核心保护的触发条件' : '其他检测规则'"
+        :description="section === 'core' ? '每条实例单独设置启停、主阈值、告警级别与重复告警间隔。' : '保留既有业务和行为告警；这些规则不会自动封禁。'">
         <template #actions>
           <a-button type="primary" :disabled="!canManage() || rulesLoading || ruleWriting" @click="openCreateRule">新增规则</a-button>
         </template>
         <p v-if="rulesError" class="filter-error" role="alert">{{ rulesError }}</p>
         <p v-if="rulesSuccess" class="config-success" role="status">{{ rulesSuccess }}</p>
-        <div v-if="!rules.length" class="field-hint">
-          {{ rulesLoading ? '正在读取规则…' : '暂无可读规则' }}
+        <a-input v-if="section === 'other'" v-model:value="ruleSearch" allow-clear placeholder="筛选规则名称或类型" aria-label="筛选其他规则" class="risk-search" />
+        <div v-if="!visibleRules.length" class="field-hint">
+          {{ rulesLoading ? '正在读取规则…' : '没有匹配的规则实例。' }}
         </div>
         <div v-else class="risk-rule-list">
           <div
-            v-for="rule in rules"
+            v-for="rule in visibleRules"
             :key="rule.ruleId"
             class="risk-rule-row"
             :class="{ 'risk-rule-row-disabled': !rule.enabled }"
@@ -177,11 +176,11 @@
               <div class="risk-rule-meta">
                 <code class="risk-rule-id">{{ rule.ruleId }}</code>
                 <span class="risk-rule-type">类型：{{ ruleTypeName(rule.type) }}</span>
-                <span class="risk-rule-threshold">
+                <span v-if="rule.hasThreshold" class="risk-rule-threshold">
                   生效阈值：{{ rule.threshold }}{{ ruleUnit(rule) }}
                 </span>
               </div>
-              <p class="risk-rule-desc">{{ rule.description || '（无说明）' }}</p>
+              <details v-if="rule.description" class="risk-rule-desc"><summary>规则说明与备注</summary>{{ rule.description }}</details>
               <p class="risk-rule-updated">更新于 {{ formatRiskDateTime(rule.updatedAt) }}<span v-if="rule.updatedBy"> · {{ rule.updatedBy }}</span></p>
             </div>
             <div class="risk-rule-actions">
@@ -194,6 +193,8 @@
                 @change="checked => toggleRule(rule, checked)"
               />
               <a-button size="small" :disabled="ruleWriting || ruleDeleting[rule.ruleId] || ruleToggling[rule.ruleId]" @click="openEditRule(rule)">编辑</a-button>
+              <a-button v-if="sharedTypes.some(it => it.value === rule.type)" size="small" @click="openShared(rule.type)">同类共享条件</a-button>
+              <a-button v-if="primaryOverride(rule)" size="small" :disabled="thresholdWriting" @click="resetThreshold(primaryOverride(rule))">恢复默认阈值</a-button>
               <a-popconfirm
                 title="删除后该规则停止检测，已有告警记录会保留。确定删除吗？"
                 ok-text="删除"
@@ -205,26 +206,27 @@
             </div>
           </div>
         </div>
+        <p v-if="thresholdSuccess" class="config-success" role="status">{{ thresholdSuccess }}</p>
+        <p v-if="thresholdError" class="filter-error" role="alert">{{ thresholdError }}</p>
       </ConsolePanel>
 
-      <!-- ============ 规则阈值（可写，落库后立即生效） ============ -->
-      <!--
-        这些输入框在本次改动之前**故意不存在**：后端没有写入路径，
-        放了输入框会「能填、能点保存、毫无反应」，比缺失更难排查。
-        现在后端补了 GET/PUT/DELETE /risk/thresholds[/:key]，页面可以正式提供。
-        范围校验以后端为准（service.ValidateRiskThresholdValue 一份），
-        前端只做「是不是有限数」这一层类型守卫，不重复实现范围规则。
-      -->
-      <ConsolePanel class="risk-threshold-panel" title="规则阈值">
+      <ConsolePanel v-if="section === 'shared'" title="类型共享条件" description="在这里修改会影响此类型的全部实例。每条实例的主阈值请在规则编辑器调整。">
+        <label :for="fieldId('shared-detector')">检测类型</label>
+        <a-select :id="fieldId('shared-detector')" :value="effectiveSharedType" :options="sharedTypes" class="filter-rule"
+          @update:value="value => sharedType = value" />
+        <span class="field-hint">当前影响 {{ rules.filter(rule => rule.type === effectiveSharedType).length }} 条实例（含停用）。</span>
+        <RiskWindowSettings v-if="effectiveSharedType === 'offhours_activity'" class="window-settings" :key="ownerKey" :capture-scope="captureRuleScope" />
+      </ConsolePanel>
+      <ConsolePanel v-if="section === 'shared' && (visibleThresholds.length || thresholdError)" class="risk-threshold-panel" title="此类型的共享阈值">
         <p v-if="thresholdError" class="filter-error" role="alert">{{ thresholdError }}</p>
         <p v-if="thresholdSuccess" class="config-success" role="status">{{ thresholdSuccess }}</p>
-        <div v-if="!thresholds.length" class="field-hint">
+        <div v-if="!visibleThresholds.length" class="field-hint">
           {{ thresholdsLoading ? '正在读取阈值…' : '暂无可调阈值' }}
         </div>
         <a-form v-else layout="vertical" class="risk-threshold-form">
           <div class="config-grid">
             <a-form-item
-              v-for="item in thresholds"
+              v-for="item in visibleThresholds"
               :key="item.key"
               :label="item.label"
               :help="describeThresholdSource(item)"
@@ -233,7 +235,7 @@
                 <a-input-number
                   class="threshold-input"
                   :value="thresholdDraft[item.key]"
-                  :min="0"
+                  :min="0" :max="item.maxValue || undefined" :precision="item.kind === 'integer' ? 0 : undefined"
                   :disabled="thresholdWriting"
                   @update:value="value => setThresholdDraft(item.key, value)"
                 />
@@ -256,25 +258,17 @@
         </a-form>
       </ConsolePanel>
 
-      <!-- ============ 非数值配置（ASN 名单 / 评估间隔） ============ -->
-      <!--
-        这两项此前**完全没有写入路径**，而缺失它们会让规则静默失效：
-          · risk_proxy_asn_list 为空时 R10 连查询都不做 ⇒ 该规则永不告警；
-          · risk_evaluate_interval_minutes 只能改库，且 >1440 会反向生效。
-        它们不能走「规则阈值」面板：阈值接口的值类型是 float64，
-        而这两项是文本（名单是字符串列表，间隔是整数串）。
-        控件类型由后端 kind 决定，help 文案也由后端给（含「留空意味着什么」）。
-      -->
-      <ConsolePanel class="risk-config-panel" title="其他风控配置">
+      <ConsolePanel v-if="(section === 'shared' || section === 'global') && (visibleConfigs.length || configItemsError)" class="risk-config-panel"
+        :title="section === 'global' ? '全站评估调度' : '此类型的共享配置'">
         <p v-if="configItemsError" class="filter-error" role="alert">{{ configItemsError }}</p>
         <p v-if="configItemsSuccess" class="config-success" role="status">{{ configItemsSuccess }}</p>
-        <div v-if="!configItems.length" class="field-hint">
+        <div v-if="!visibleConfigs.length" class="field-hint">
           {{ configItemsLoading ? '正在读取配置…' : '暂无可调配置' }}
         </div>
         <a-form v-else layout="vertical" class="risk-threshold-form">
           <div class="config-grid">
             <a-form-item
-              v-for="item in configItems"
+              v-for="item in visibleConfigs"
               :key="item.key"
               :label="item.label"
               :help="item.help"
@@ -325,8 +319,8 @@
         </a-form>
       </ConsolePanel>
 
-      <!-- ============ 告警列表（只读） ============ -->
-      <ConsoleSummaryGrid class="risk-summary">
+      <!-- 告警检索与证据；处置针对具体告警。 -->
+      <ConsoleSummaryGrid v-if="section === 'alerts'" class="risk-summary">
         <div>
           <div class="summary-label">筛选结果</div>
           <div class="summary-value">{{ hasLoadedAlerts ? alertsTotal : '--' }} 条</div>
@@ -341,7 +335,7 @@
         </div>
       </ConsoleSummaryGrid>
 
-      <ConsolePanel title="筛选" description="时间范围按 Asia/Shanghai 解释；结束日期含当天整天。">
+      <ConsolePanel v-if="section === 'alerts'" title="筛选" description="时间按北京时间计算；结束日期含当天。">
         <a-form layout="inline" class="filter-form" :on-finish="reloadAlerts">
           <a-form-item label="规则" :html-for="fieldId('ruleId')">
             <a-select
@@ -412,7 +406,7 @@
         <a-alert v-if="alertError" type="error" show-icon :message="alertError" class="status-alert" />
       </ConsolePanel>
 
-      <ConsolePanel title="告警列表" :description="alertScopeDescription">
+      <ConsolePanel v-if="section === 'alerts'" title="告警列表" :description="alertScopeDescription">
         <ConsoleTableShell label="风控告警列表">
           <a-table
             table-layout="fixed"
@@ -451,7 +445,7 @@
       </ConsolePanel>
     </template>
 
-    <!-- 告警详情：**只读**。这里刻意不放任何处置按钮（96 C1）。 -->
+    <!-- 证据快照不变；管理员的决定单独进入处置记录。 -->
     <a-modal
       :open="detailVisible"
       title="风控告警详情"
@@ -462,11 +456,6 @@
       <a-spin :spinning="loadingDetail">
         <div v-if="detailError" class="filter-error" role="alert">{{ detailError }}</div>
         <template v-if="detail">
-          <!--
-            详情用原生 dl 而不是 a-descriptions：本仓 main.js 没有全局注册 Descriptions，
-            各页都是局部 import。风控详情是纯只读展示，用语义化 dl 既省一次注册，
-            也让「告警 ID / 规则 / 证据」在无 JS 组件的测试环境里可读。
-          -->
           <dl class="detail-list">
             <div class="detail-row"><dt>告警 ID</dt><dd>{{ detail.id }}</dd></div>
             <div class="detail-row"><dt>规则</dt><dd>{{ riskRuleLabel(detail.ruleId, detail.detail, rules) }}</dd></div>
@@ -492,6 +481,8 @@
             :pagination="false"
             row-key="field"
           />
+          <RiskAlertResponse v-if="detailVisible && canManage()" :key="ownerKey + ':' + detail.id"
+            :alert-id="Number(detail.id)" :capture-scope="captureRuleScope" />
         </template>
       </a-spin>
     </a-modal>
@@ -542,20 +533,23 @@
           <h3>触发条件</h3>
           <p class="field-hint risk-editor-type-hint">{{ selectedRuleType?.description || '按所选检测类型的条件进行判断。' }}</p>
           <a-form-item
+            v-if="selectedRuleType?.hasThreshold !== false"
             :label="`阈值${selectedRuleType?.thresholdUnit ? `（${selectedRuleType.thresholdUnit}）` : ''}`"
             :html-for="fieldId('editor-threshold')"
             required
           >
-            <a-input-number :id="fieldId('editor-threshold')" v-model:value="ruleDraft.threshold" :min="0" :precision="6" class="risk-editor-number" />
+            <a-input-number :id="fieldId('editor-threshold')" v-model:value="ruleDraft.threshold" :min="selectedRuleType?.thresholdKind === 'integer' ? 1 : 0.000001" :max="selectedRuleType?.thresholdMax || undefined" :precision="selectedRuleType?.thresholdKind === 'integer' ? 0 : 6" class="risk-editor-number" />
             <div v-if="selectedRuleType" class="field-hint">默认值：{{ selectedRuleType.defaultThreshold }}{{ selectedRuleType.thresholdUnit ? ` ${selectedRuleType.thresholdUnit}` : '' }}。保存时由服务端校验该类型允许的范围。</div>
           </a-form-item>
+          <p v-else class="field-hint">本检测不使用数字阈值，判断依据是同类型共享的名单。</p>
+          <p v-if="sharedTypes.some(it => it.value === ruleDraft.type)" class="field-hint">时段、名单或辅助阈值由「类型共享条件」统一管理。</p>
         </section>
         <section class="risk-editor-section" aria-label="通知行为">
           <h3>通知行为</h3>
           <div class="risk-rule-editor-grid">
             <a-form-item label="告警级别" :html-for="fieldId('editor-severity')" required>
               <a-select :id="fieldId('editor-severity')" v-model:value="ruleDraft.severity" :options="severityOptions" />
-              <div class="field-hint">标记告警的重要程度，不触发自动处置。</div>
+              <div class="field-hint">级别只标记重要程度。是否临时封 IP，由该类型的处置策略决定。</div>
             </a-form-item>
             <a-form-item label="节流秒数" :html-for="fieldId('editor-throttle')">
               <a-input-number :id="fieldId('editor-throttle')" v-model:value="ruleDraft.throttleSeconds" :min="0" :precision="0" class="risk-editor-number" />
@@ -573,6 +567,9 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, useId, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { message } from 'ant-design-vue'
+import RiskPolicyCard from './RiskPolicyCard.vue'
+import RiskWindowSettings from './RiskWindowSettings.vue'
+import RiskAlertResponse from './RiskAlertResponse.vue'
 import ConsolePageHeading from '@/components/ConsolePageHeading.vue'
 import ConsolePanel from '@/components/ConsolePanel.vue'
 import ConsoleSummaryGrid from '@/components/ConsoleSummaryGrid.vue'
@@ -621,13 +618,19 @@ import { getCurrentUserLogoutEpoch, isAdminUser, useCurrentUserDisplay } from '@
 import { currentUserIdentity } from '@/utils/currentUserScope'
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
 
+const coreDetectors = [
+  { type: 'device_register_burst', name: '同一设备批量注册', summary: '基于同一注册浏览器标识统计成功注册的不同账号；不把共享 IP 当作一台设备。' },
+  { type: 'login_bruteforce', name: '密码爆破', summary: '区分账号维度与来源 IP 维度；仅能归因到一个 IP 的告警可用于网络处置。' },
+]
+const coreType = type => coreDetectors.some(item => item.type === type)
+const sections = [{ key: 'core', label: '核心保护' }, { key: 'other', label: '其他规则' }, { key: 'shared', label: '类型共享条件' }, { key: 'alerts', label: '告警与处置' }, { key: 'global', label: '全站设置' }]
 const emptyFilters = () => ({ ruleId: undefined, userId: '', notified: undefined, createdFrom: '', createdTo: '' })
 const emptyConfig = () => ({ enabled: false, webhookUrl: '', mentionedList: '', clearWebhook: false })
 const emptySettings = () => ({ enabled: false, configured: false, webhookUrl: '', preview: '', mentionedList: [] })
 
 export default {
   name: 'RiskAdminPage',
-  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell },
+  components: { RiskPolicyCard, RiskWindowSettings, RiskAlertResponse, ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, ConsoleTableShell },
   setup() {
     const route = useRoute()
     const prefix = 'risk-admin-' + useId()
@@ -636,6 +639,8 @@ export default {
     const { currentUser } = useCurrentUserDisplay()
 
     // 列表
+    const ownerKey = computed(() => currentUserIdentity(currentUser.value))
+    const section = ref('core'), ruleSearch = ref(''), sharedType = ref('offhours_activity')
     const alerts = ref([])
     const alertsTotal = ref(0)
     const hasLoadedAlerts = ref(false)
@@ -686,7 +691,8 @@ export default {
     const ruleWriting = ref(false)
     const ruleDeleting = reactive({})
     const ruleDraft = reactive({ type: '', name: '', description: '', severity: 'medium', threshold: 1, throttleSeconds: 0 })
-    const ruleTypeOptions = computed(() => ruleTypes.value.map(item => ({ label: item.name + ' · ' + item.type, value: item.type })))
+    const availableTypes = computed(() => ruleTypes.value.filter(item => coreType(item.type) === (section.value === 'core')))
+    const ruleTypeOptions = computed(() => availableTypes.value.map(item => ({ label: item.name + ' · ' + item.type, value: item.type })))
     const selectedRuleType = computed(() => ruleTypes.value.find(item => item.type === ruleDraft.type) || null)
     const severityOptions = [
       { label: '低', value: 'low' },
@@ -705,6 +711,19 @@ export default {
     const configItemsWriting = ref(false)
     const configItemsError = ref('')
     const configItemsSuccess = ref('')
+
+    const visibleRules = computed(() => rules.value.filter(rule => coreType(rule.type) === (section.value === 'core') &&
+      (section.value === 'core' || [rule.name, rule.type, rule.ruleId].some(value => value.toLowerCase().includes(ruleSearch.value.trim().toLowerCase())))))
+    const sharedTypes = computed(() => {
+      const ids = new Set([...thresholds.value.filter(t => t.scope === 'detector'), ...configItems.value].map(it => it.ruleId).filter(Boolean))
+      return [...ids].map(value => ({ value, label: ruleTypeName(value) }))
+    })
+    const effectiveSharedType = computed(() => sharedTypes.value.some(it => it.value === sharedType.value) ? sharedType.value : sharedTypes.value[0]?.value)
+    const visibleThresholds = computed(() => thresholds.value.filter(it => it.scope === 'detector' && it.ruleId === effectiveSharedType.value))
+    const visibleConfigs = computed(() => configItems.value.filter(it => section.value === 'global' ? !it.ruleId :
+      Boolean(it.ruleId && it.ruleId === effectiveSharedType.value && it.kind !== 'hour_of_day')))
+    const primaryOverride = rule => thresholds.value.find(it => it.scope === 'instance' && it.ruleId === rule.ruleId && it.configured)
+    const openShared = type => { sharedType.value = type; section.value = 'shared' }
 
     const alertPagination = reactive({
       current: 1, pageSize: 20, total: 0,
@@ -952,6 +971,7 @@ export default {
           enabled: item.enabled === true,
           severity: String(item.severity ?? ''),
           threshold: Number(item.threshold ?? 0),
+          hasThreshold: item.hasThreshold !== false,
           exists: item.exists === true,
           description: String(item.description ?? ''),
           type: String(item.type ?? item.ruleId),
@@ -1012,12 +1032,13 @@ export default {
     }
 
     const resetRuleDraft = () => {
-      ruleDraft.type = ruleTypes.value[0]?.type || ''
+      const first = availableTypes.value[0]
+      ruleDraft.type = first?.type || ''
       ruleDraft.name = ''
       ruleDraft.description = ''
-      ruleDraft.severity = 'medium'
-      ruleDraft.threshold = Number(ruleTypes.value[0]?.defaultThreshold ?? 1)
-      ruleDraft.throttleSeconds = 0
+      ruleDraft.severity = first?.defaultSeverity || 'medium'
+      ruleDraft.threshold = Number(first?.defaultThreshold ?? 1)
+      ruleDraft.throttleSeconds = Number(first?.defaultThrottleSeconds ?? 0)
     }
     const openCreateRule = async () => {
       if (!canManage() || rulesLoading.value || ruleWriting.value) return
@@ -1030,10 +1051,13 @@ export default {
       resetRuleDraft()
       ruleEditorOpen.value = true
     }
-    const openEditRule = rule => {
+    const openEditRule = async rule => {
       if (!canManage() || !rule || rulesLoading.value || ruleWriting.value || ruleDeleting[rule.ruleId] || ruleToggling[rule.ruleId]) return
       rulesError.value = ''
       rulesSuccess.value = ''
+      const owns = captureRuleScope()
+      if (!ruleTypes.value.length && !await loadRuleTypes()) return
+      if (!owns()) return
       ruleEditingId.value = rule.ruleId
       Object.assign(ruleDraft, {
         type: rule.type,
@@ -1051,6 +1075,8 @@ export default {
       if (!selected) return
       ruleDraft.type = selected.type
       ruleDraft.threshold = Number(selected.defaultThreshold ?? 1)
+      ruleDraft.severity = selected.defaultSeverity || 'medium'
+      ruleDraft.throttleSeconds = Number(selected.defaultThrottleSeconds ?? 0)
     }
     const closeRuleEditor = () => {
       if (ruleWriting.value) return
@@ -1065,7 +1091,10 @@ export default {
       const name = String(ruleDraft.name || '').trim()
       const threshold = Number(ruleDraft.threshold)
       const throttleSeconds = Number(ruleDraft.throttleSeconds)
-      if (!name || !ruleDraft.type || !Number.isFinite(threshold) || threshold < 0 || !Number.isInteger(throttleSeconds) || throttleSeconds < 0) {
+      const type = selectedRuleType.value
+      const badThreshold = type?.hasThreshold !== false && (!Number.isFinite(threshold) || threshold <= 0 ||
+        (type?.thresholdMax > 0 && threshold > type.thresholdMax) || (type?.thresholdKind === 'integer' && !Number.isInteger(threshold)))
+      if (!name || !type || badThreshold || !Number.isInteger(throttleSeconds) || throttleSeconds < 0 || throttleSeconds > 2678400) {
         rulesError.value = '请填写名称、受支持的规则类型、有效阈值和非负整数节流秒数。'
         return
       }
@@ -1077,7 +1106,7 @@ export default {
         name,
         description: String(ruleDraft.description || '').trim(),
         severity: ruleDraft.severity,
-        threshold,
+        ...(type.hasThreshold === false ? {} : { threshold }),
         throttleSeconds,
         config: {},
       }
@@ -1328,9 +1357,6 @@ export default {
     const describeThresholdSource = item => {
       if (!item) return ''
       const unit = item.unit ? `（单位：${item.unit}）` : ''
-      if (!item.configured) {
-        return `当前生效：${item.value}${unit} 默认值：${item.defaultValue} 未显式配置（读的是代码默认值）`
-      }
       const source = item.source === 'system_settings' ? '管理页配置' : (item.source === 'risk_rules' ? '规则表列值' : '代码默认值')
       return `当前生效：${item.value}${unit} 来源：${source} 默认值：${item.defaultValue}`
     }
@@ -1453,6 +1479,7 @@ export default {
     }
 
     const retire = () => {
+      section.value = 'core'; ruleSearch.value = ''; sharedType.value = 'offhours_activity'
       readVersion += 1
       writeVersion += 1
       ruleScopeVersion += 1
@@ -1528,7 +1555,8 @@ export default {
     })
 
     return {
-      fieldId, canManage,
+      fieldId, canManage, captureRuleScope, ownerKey, section, sections, coreDetectors, ruleSearch, visibleRules,
+      sharedType, effectiveSharedType, sharedTypes, visibleThresholds, visibleConfigs, primaryOverride, openShared,
       RISK_ADVISORY_NOTE, RISK_INDEPENDENCE_NOTICE,
       alerts, alertsTotal, hasLoadedAlerts, loadingAlerts, alertError, filterError,
       alertFilters, appliedFilters, alertPagination, alertColumns, evidenceColumns,
@@ -1557,6 +1585,12 @@ export default {
 </script>
 
 <style scoped>
+.risk-nav { display: flex; gap: 8px; flex-wrap: wrap; }
+.policy-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr)); gap: 14px; }
+.risk-search { max-width: 360px; margin: 0 0 14px; }
+.window-settings { margin-top: 18px; }
+.risk-rule-desc summary { cursor: pointer; }
+
 .page-alert, .filter-form, .status-alert { margin-bottom: 16px; }
 .risk-independence-notice { margin-bottom: 16px; }
 .risk-config-panel, .risk-summary { margin-bottom: 16px; }

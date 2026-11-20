@@ -60,10 +60,13 @@ func EnsureRiskSchema(db *gorm.DB) error {
 	if err := ensureRiskRulesSchema(db); err != nil {
 		return err
 	}
+	if err := ensureRegistrationBrowserSchema(db); err != nil {
+		return err
+	}
 	if err := ensureRiskWarningsSchema(db); err != nil {
 		return err
 	}
-	return nil
+	return ensureRiskResponseSchema(db)
 }
 
 // ensureRiskRulesSchema 建 risk_rules 并写种子。

@@ -142,6 +142,11 @@ func newBlacklistSnapshot(now time.Time, enabled bool) *BlacklistSnapshot {
 	}
 }
 
+// A delayed or failed refresh must never extend a temporary IP or region block.
+func (r *BlacklistRule) activeAt(now time.Time) bool {
+	return r != nil && (r.ExpiresAt == nil || now.Before(*r.ExpiresAt))
+}
+
 // MatchIP 判定一个客户端 IP 是否命中（精确优先，再扫 CIDR）。
 //
 // 规范化只用 net.ParseIP：不做字符串前缀比较（46-*.md §1.1）。
@@ -159,11 +164,12 @@ func (s *BlacklistSnapshot) MatchIP(clientIP string) (BlacklistMatch, bool) {
 	if ip == nil {
 		return BlacklistMatch{}, false
 	}
-	if rule, ok := s.ipExact[ip.String()]; ok && rule != nil {
+	now := time.Now()
+	if rule := s.ipExact[ip.String()]; rule.activeAt(now) {
 		return rule.toMatch(), true
 	}
 	for _, cidrRule := range s.ipCIDR {
-		if cidrRule.Network != nil && cidrRule.Network.Contains(ip) {
+		if cidrRule.Network != nil && cidrRule.Network.Contains(ip) && cidrRule.Rule.activeAt(now) {
 			return cidrRule.Rule.toMatch(), true
 		}
 	}

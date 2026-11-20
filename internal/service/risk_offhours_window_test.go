@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/glebarez/sqlite"
+	"github.com/itihey/tikuAdapter/internal/entity"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
@@ -173,7 +173,8 @@ func TestCollectOffhoursUsesConfiguredWindow(t *testing.T) {
 	setRiskSetting(t, db, riskOffhoursEndSettingKey, "6")
 
 	// 直接验证 SQL 片段用的是配置值而不是常量。
-	expr := riskOffhoursWindowExpr(db, "created_at")
+	start, end := riskOffhoursWindow(db)
+	expr := riskOffhoursWindowExpr(db, "created_at", start, end)
 	if expr == "" {
 		t.Fatal("窗口表达式不能为空")
 	}
