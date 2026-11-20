@@ -645,6 +645,10 @@ func SetAPIRouter(router *gin.Engine) {
 	// 规则的启用/停用（risk_rules.enabled）。此前这一列同样没有写接口。
 	// 接线点：EvaluateDebtAlerts 的 enabledRules 过滤 `if !rule.Enabled { continue }`。
 	apiRouter.GET("/risk/rules", controller.Auth, middleware.RequireAdmin, controller.RiskRuleStateList)
+	apiRouter.GET("/risk/rule-types", controller.Auth, middleware.RequireAdmin, controller.RiskRuleTypeList)
+	apiRouter.POST("/risk/rules", controller.Auth, middleware.RequireAdmin, controller.CreateRiskRule)
+	apiRouter.PUT("/risk/rules/:ruleId", controller.Auth, middleware.RequireAdmin, controller.UpdateRiskRule)
+	apiRouter.DELETE("/risk/rules/:ruleId", controller.Auth, middleware.RequireAdmin, controller.DeleteRiskRule)
 	apiRouter.PUT("/risk/rules/:ruleId/enabled", controller.Auth, middleware.RequireAdmin, controller.SetRiskRuleEnabled)
 	// 风控的**非数值**配置（ASN 名单 / 评估间隔）。
 	//

@@ -34,7 +34,7 @@ axios.defaults.adapter = async config => {
     return response(config, image)
   }
   if (config.url === '/api/refund-agreement' && config.method === 'get') {
-    return response(config, { text: agreementText, defaultText: '默认承诺书全文', isDefault: !custom, maxRunes: 20000 })
+    return response(config, { text: agreementText, defaultText: '默认承诺书全文', isDefault: !custom })
   }
   if (config.url === '/api/refund-agreement' && config.method === 'put') {
     if (saveWait) await saveWait
@@ -233,4 +233,19 @@ test('administrator can save and restore the full agreement, with serialized wri
   assert.equal(calls.filter(call => call.method === 'put').length, 1, 'restoration is saved only after explicit save')
   await wrapper.find('[data-refund-agreement-save]').trigger('click'); await settle()
   assert.ok(wrapper.find('[data-refund-agreement-default]').exists())
+})
+
+test('administrator can save an agreement longer than twenty thousand characters without a UI cap', async () => {
+  const wrapper = mount(Settings, { attachTo: document.body, global: { plugins: [Antd] } })
+  wrappers.push(wrapper); await settle()
+  const textarea = wrapper.find('[data-refund-agreement-textarea]')
+  const longText = '退款条款'.repeat(6000)
+  assert.equal(textarea.attributes('maxlength'), undefined)
+  assert.equal(textarea.attributes('show-count'), undefined)
+  await textarea.setValue(longText)
+  assert.equal(textarea.element.value, longText)
+  assert.equal(wrapper.find('[data-refund-agreement-save]').element.disabled, false)
+  await wrapper.find('[data-refund-agreement-save]').trigger('click'); await settle()
+  assert.equal(calls.filter(call => call.method === 'put').length, 1)
+  assert.equal(agreementText, longText)
 })

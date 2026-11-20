@@ -94,6 +94,77 @@ test('SMART_IMPORT existing native Upload beforeUpload and done parse retain exa
   assert.ok(w.text().includes('SYNTHETIC_IMPORT_PRIVATE_A')); assert.equal(w.findAll('[contenteditable]').length, 1)
 })
 
+test('SMART_IMPORT pasted text uses the shared parser preview path after escaping HTML', async () => {
+  const w = await mountPage()
+  w.vm.plainTextContent = 'SYNTHETIC_TEXT_QUESTION <script>safe</script>\n答案：A & B'
+  const parsing = w.vm.parsePlainText(); await settle()
+  assert.equal(calls.reparse.length, 1)
+  assert.deepEqual(calls.reparse[0].payload, { html: '<p>SYNTHETIC_TEXT_QUESTION &lt;script&gt;safe&lt;/script&gt;</p><p>答案：A &amp; B</p>' })
+  calls.reparse[0].resolve({ paper: paper('TEXT') }); await parsing; await settle()
+  assert.equal(w.vm.data[0].content, 'SYNTHETIC_IMPORT_PRIVATE_TEXT')
+  assert.equal(w.findAll('[contenteditable]').length, 1)
+})
+
+test('SMART_IMPORT .txt upload reads plaintext and sends it through the same parser', async () => {
+  const w = await mountPage()
+  const accepted = w.vm.beforePlainTextUpload({ name: 'SYNTHETIC_TEXT.txt', size: 25, text: async () => 'SYNTHETIC_FILE_QUESTION\n答案：B' })
+  assert.equal(accepted, false, 'the file must be read locally, not uploaded as markup')
+  await settle()
+  assert.equal(w.vm.plainTextContent, 'SYNTHETIC_FILE_QUESTION\n答案：B')
+  assert.deepEqual(calls.reparse[0].payload, { html: '<p>SYNTHETIC_FILE_QUESTION</p><p>答案：B</p>' })
+  calls.reparse[0].resolve({ paper: paper('FILE_TEXT') }); await settle()
+  assert.equal(w.vm.data[0].content, 'SYNTHETIC_IMPORT_PRIVATE_FILE_TEXT')
+})
+
+test('SMART_IMPORT .txt reading owns loading state and retires bytes after identity switch', async () => {
+  const w = await mountPage()
+  let resolveText
+  w.vm.beforePlainTextUpload({ name: 'SYNTHETIC_DELAYED.txt', size: 25, text: () => new Promise(resolve => { resolveText = resolve }) })
+  await settle()
+  assert.equal(w.vm.loading, true, 'file reading is part of the parse operation')
+  user.setStoredCurrentUser(B); await settle()
+  resolveText('SYNTHETIC_RETIRED_TEXT'); await settle()
+  assert.equal(w.vm.plainTextContent, '')
+  assert.equal(calls.reparse.length, 0)
+})
+
+test('SMART_IMPORT a newer Word upload retires a delayed .txt read', async () => {
+  const w = await mountPage()
+  let resolveText
+  w.vm.beforePlainTextUpload({ name: 'SYNTHETIC_DELAYED.txt', size: 25, text: () => new Promise(resolve => { resolveText = resolve }) })
+  await settle()
+  const native = await beginUpload(w, 'NEWER_WORD')
+  assert.notEqual(native.accepted, false)
+  resolveText('SYNTHETIC_OLDER_TEXT'); await settle()
+  assert.equal(calls.reparse.length, 0)
+  assert.equal(w.vm.loading, true, 'the newer upload keeps its loading ownership')
+})
+
+test('SMART_IMPORT downloads missing-answer and failed-request questions as a scoped text report', async () => {
+  const w = await mountPage()
+  await doneUpload(w, 'REVIEW', [...paper('VALID'), { content: 'SYNTHETIC_MISSING_ANSWER_REPORT', typeAlias: '简答题' }])
+  const blobs = [], downloads = [], revoked = []
+  const originalCreate = window.URL.createObjectURL, originalRevoke = window.URL.revokeObjectURL, originalClick = window.HTMLAnchorElement.prototype.click
+  window.URL.createObjectURL = blob => { blobs.push(blob); return 'blob:synthetic-review-report' }
+  window.URL.revokeObjectURL = value => revoked.push(value)
+  window.HTMLAnchorElement.prototype.click = function () { downloads.push(this.download) }
+  try {
+    const download = button(w, '下载待核对题目'); assert.ok(download)
+    download.element.click(); await settle()
+    assert.equal(downloads.length, 1); assert.match(downloads[0], /\.txt$/)
+    assert.match(await blobs[0].text(), /SYNTHETIC_MISSING_ANSWER_REPORT/)
+    assert.doesNotMatch(await blobs[0].text(), /SYNTHETIC_IMPORT_PRIVATE_VALID/)
+    assert.deepEqual(revoked, ['blob:synthetic-review-report'])
+    w.vm.setSkipMissingAnswers({ target: { checked: true } }); click(w, '确认导入'); await settle()
+    calls.create[0].reject(new Error('SYNTHETIC_FAILURE')); await settle()
+    click(w, '下载待核对题目'); await settle()
+    assert.match(await blobs[1].text(), /SYNTHETIC_IMPORT_PRIVATE_VALID/)
+    assert.match(await blobs[1].text(), /请核对题库/)
+  } finally {
+    window.URL.createObjectURL = originalCreate; window.URL.revokeObjectURL = originalRevoke; window.HTMLAnchorElement.prototype.click = originalClick
+  }
+})
+
 test('SMART_IMPORT existing native groups filters and paired scroll retain page behavior', async () => {
   const w = await mountPage(); await doneUpload(w, 'A', allTypes())
   assert.equal(w.findAll('.tabsBtn').length, 8); assert.equal(w.vm.type, '全部')

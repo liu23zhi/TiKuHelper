@@ -28,7 +28,6 @@ func GetRefundAgreement(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"text":        service.GetRefundAgreementTextWithDB(db),
 		"isDefault":   service.IsDefaultRefundAgreement(db),
-		"maxRunes":    service.RefundAgreementMaxRunes,
 		"defaultText": service.DefaultRefundAgreementText,
 	})
 }
@@ -50,7 +49,7 @@ func UpdateRefundAgreement(c *gin.Context) {
 	if err := service.SetRefundAgreementTextWithDB(db, payload.Text); err != nil {
 		if errors.Is(err, service.ErrRefundAgreementInvalid) {
 			c.JSON(http.StatusBadRequest, gin.H{
-				"message": "协议文本不能为空，且不能超过 20000 字",
+				"message": "协议文本不能为空",
 			})
 			return
 		}

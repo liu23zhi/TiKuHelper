@@ -2,7 +2,10 @@
   <div class="console-page tiku-page" :onInputCapture="questionEntry.guardNative"
        :onChangeCapture="questionEntry.guardNative" :onClickCapture="questionEntry.guardNative">
     <ConsolePageHeading title="题库管理" description="管理本地题目、答案和导入记录。">
-      <template #actions>
+      <template #actions><a-space wrap class="section-actions tiku-page-actions">
+      <TableColumnSettings :model-value="selectedColumnKeys" :options="columnOptions"
+        :context-key="columnScopeKey" :priority-keys="columnPriorityKeys"
+        v-on="{ 'update:modelValue': questionEntry.bind(setSelectedColumnKeys), reset: questionEntry.bind(resetColumns) }" />
       <a-button :disabled="!canUseQuestions()" :onClick="questionEntry.bind(fetchData)" :loading="tabLoading">刷新</a-button>
       <a-button :disabled="!canUseQuestions()" :onClick="questionEntry.bind(triggerJsonImport)">JSON 导入</a-button>
       <a-button :disabled="!canUseQuestions()" :onClick="questionEntry.bind(navigateToImport)"><DownloadOutlined />智能导入</a-button>
@@ -10,31 +13,61 @@
       <a-button :disabled="!canUseQuestions() || !selectedRowKeys.length" :onClick="questionEntry.bind(openBulkCourseModal)">批量编辑课程名</a-button>
       <a-button danger :disabled="!canUseQuestions() || !selectedRowKeys.length" :onClick="questionEntry.bind(handleDeleteSelected)">批量删除</a-button>
       <a-button type="primary" :disabled="!canUseQuestions()" :onClick="questionEntry.bind(showModal, { type: 0, question: '', options: '[]', answer: '[]' }, 2)"><FormOutlined />添加</a-button>
+      </a-space>
       </template>
     </ConsolePageHeading>
+    <ConsoleSummaryGrid>
+      <a-card :bordered="false" class="summary-card"><a-statistic title="筛选结果题数" :value="page.total || 0" /></a-card>
+      <a-card :bordered="false" class="summary-card"><a-statistic title="当前页答案覆盖率" :value="answerCoverage" suffix="%" /></a-card>
+      <a-card :bordered="false" class="summary-card"><a-statistic title="最近导入状态" :value="latestImportStatus" /></a-card>
+      <a-card :bordered="false" class="summary-card"><a-statistic title="待处理任务" :value="pendingTaskCount" /></a-card>
+    </ConsoleSummaryGrid>
     <a-alert v-if="!canUseQuestions()" type="warning" show-icon
              message="当前身份无题库管理权限，请使用管理员账号登录。" />
 
     <section class="console-panel filter-panel">
       <a-form layout="inline" class="filter-form" :onFinish="questionEntry.bind(onSearch)">
-        <a-form-item label="类型" :html-for="fieldId('filter-type')">
+        <a-form-item label="题型" :html-for="fieldId('filter-type')">
           <a-select :id="fieldId('filter-type')" :disabled="!canUseQuestions()" :value="typeValue" v-on="{ 'update:value': questionEntry.bind(value => typeValue = value) }" show-search allow-clear placeholder="请选择" :options="typeList"
                     :onChange="questionEntry.bind(onFilterChange)" />
         </a-form-item>
-        <a-form-item label="问题" :html-for="fieldId('filter-question')">
+        <a-form-item label="题干" :html-for="fieldId('filter-question')">
           <a-input :id="fieldId('filter-question')" :disabled="!canUseQuestions()" :value="searchValue.question" v-on="{ 'update:value': questionEntry.bind(value => searchValue.question = value) }" placeholder="搜索问题" :onPressEnter="questionEntry.bind(onSearch)" />
         </a-form-item>
-        <a-form-item label="无答案" :html-for="fieldId('filter-empty-answer')">
-          <a-checkbox :id="fieldId('filter-empty-answer')" :disabled="!canUseQuestions()" :checked="searchValue.onlyShowEmptyAnswer" v-on="{ 'update:checked': questionEntry.bind(value => searchValue.onlyShowEmptyAnswer = value) }" />
+        <a-form-item label="课程" :html-for="fieldId('filter-course')">
+          <a-select :id="fieldId('filter-course')" :disabled="!canUseQuestions()" :value="searchValue.courseName" v-on="{ 'update:value': questionEntry.bind(value => searchValue.courseName = value) }" show-search allow-clear placeholder="全部课程" :options="courses" :onChange="questionEntry.bind(onFilterChange)" />
+        </a-form-item>
+        <a-form-item label="来源" :html-for="fieldId('filter-source')">
+          <a-select :id="fieldId('filter-source')" :disabled="!canUseQuestions()" :value="searchValue.source" v-on="{ 'update:value': questionEntry.bind(value => searchValue.source = value) }" allow-clear placeholder="全部来源" :options="sourceOptions" :onChange="questionEntry.bind(onFilterChange)" />
+        </a-form-item>
+        <a-form-item label="答案状态" :html-for="fieldId('filter-empty-answer')">
+          <a-checkbox :id="fieldId('filter-empty-answer')" :disabled="!canUseQuestions()" :checked="searchValue.onlyShowEmptyAnswer" v-on="{ 'update:checked': questionEntry.bind(value => searchValue.onlyShowEmptyAnswer = value) }">仅看无答案</a-checkbox>
         </a-form-item>
         <a-form-item>
-          <a-button type="primary" :disabled="!canUseQuestions()" :onClick="questionEntry.bind(onSearch)" :onKeyup="questionEntry.bind(event => event.key === 'Enter' && onSearch())">
-            <SearchOutlined />
-            搜索
-          </a-button>
+          <a-space><a-button type="primary" :disabled="!canUseQuestions()" :onClick="questionEntry.bind(onSearch)" :onKeyup="questionEntry.bind(event => event.key === 'Enter' && onSearch())"><SearchOutlined />搜索</a-button>
+            <a-button :disabled="!canUseQuestions()" :onClick="questionEntry.bind(resetFilters)">重置筛选</a-button></a-space>
         </a-form-item>
       </a-form>
     </section>
+
+    <ConsolePanel v-if="canUseQuestions()" class="asyncTaskPanel" title="表格导入 / 导出任务" description="上传 CSV / Excel 由服务端异步处理，也可提交题库 CSV 导出；完成后可下载结果或失败报告。">
+      <div class="asyncTaskRow">
+        <a-upload name="file" :customRequest="questionEntry.bind(submitAsyncImport)" :showUploadList="false" :beforeUpload="questionEntry.bind(beforeAsyncImport)" :disabled="asyncBusy" accept=".csv,.json,.xlsx,.xls">
+          <a-button :disabled="asyncBusy">上传表格并异步导入</a-button>
+        </a-upload>
+        <a-button :onClick="questionEntry.bind(submitAsyncExport)" :loading="asyncBusy" :disabled="asyncBusy">异步导出题库 CSV</a-button>
+        <a-button :onClick="questionEntry.bind(refreshAsyncTasks)" :loading="asyncTaskLoading" :disabled="asyncBusy || asyncTaskLoading">刷新任务列表</a-button>
+        <label class="asyncTaskDryRun"><input type="checkbox" :checked="asyncDryRun" :disabled="asyncBusy" :onChange="questionEntry.bind(setAsyncDryRun)" /><span>仅预览（dryRun：只校验不写库）</span></label>
+      </div>
+      <p class="asyncTaskLimit">单批导入上限 {{ asyncImportLimit }} 行，单次导出上限 {{ asyncExportLimit }} 行（以后端校验为准）。</p>
+      <a-alert v-if="asyncNotice" type="info" show-icon class="asyncTaskAlert" :message="asyncNotice" />
+      <a-alert v-if="asyncError" type="error" show-icon class="asyncTaskAlert" :message="asyncError" />
+      <table v-if="asyncTasks.length" class="asyncTaskTable" aria-label="题库异步任务列表">
+        <thead><tr><th scope="col">任务</th><th scope="col">类型</th><th scope="col">状态</th><th scope="col">结果</th></tr></thead>
+        <tbody><tr v-for="task in asyncTasks" :key="task.taskId"><td class="asyncTaskId">{{ task.taskId }}</td><td>{{ task.type === 'import' ? (task.dryRun ? '导入预览' : '导入') : '导出' }}</td><td>{{ describeAsyncTask(task) }}</td><td><a v-if="asyncDownloadUrl(task)" :href="asyncDownloadUrl(task)">下载结果</a><a v-if="asyncErrorUrl(task)" :href="asyncErrorUrl(task)" class="asyncTaskErrorLink">失败行报告</a><span v-if="!asyncDownloadUrl(task) && !asyncErrorUrl(task)">—</span></td></tr></tbody>
+      </table>
+      <a-empty v-else-if="!asyncBusy && !asyncError" description="暂无异步任务" />
+    </ConsolePanel>
 
     <a-layout class="tiku-layout">
     <a-layout-content>
@@ -94,9 +127,6 @@
               </div>
             </template>
           </a-alert>
-          <TableColumnSettings :model-value="selectedColumnKeys" :options="columnOptions"
-            :context-key="columnScopeKey" :priority-keys="columnPriorityKeys"
-            v-on="{ 'update:modelValue': questionEntry.bind(setSelectedColumnKeys), reset: questionEntry.bind(resetColumns) }" />
           <ConsoleTableShell label="题库管理">
           <a-table :columns="visibleColumns" :data-source="data" :pagination="false" :row-key="record => record.id" table-layout="fixed"
                    :loading="tabLoading" :scroll="{ x: tableScrollX }" :row-selection="rowSelection">
@@ -288,6 +318,11 @@ import { ARCHIVE_REASON_PRESETS, normalizeArchiveReason, validateArchiveReason }
 import {questionType} from "@/utils/uitls";
 import {message, Drawer} from "ant-design-vue";
 import {
+  QUESTION_IMPORT_MAX_ROWS, QUESTION_EXPORT_MAX_ROWS,
+  submitImportTask, submitExportTask, listAsyncTasks,
+  describeTask, taskDownloadUrl, taskErrorReportUrl, pollAsyncTask,
+} from '../IntelligentImport/asyncTaskApi.mjs'
+import {
   buildQuestionBulkActionIds,
   buildQuestionBulkCourseUpdatePayload,
   buildQuestionCourseNameCandidates,
@@ -324,12 +359,144 @@ export default defineComponent({
     const searchValue = ref({})
     const quesType = ref(questionType)
     const jsonImportInput = ref(null)
+    const sourceOptions = [
+      { value: 1, label: '人工导入' },
+      { value: 2, label: '采集来源' },
+    ]
+    const asyncBusy = ref(false), asyncTaskLoading = ref(false), asyncDryRun = ref(false)
+    const asyncTasks = ref([]), asyncNotice = ref(''), asyncError = ref(''), pendingTaskCount = ref('—')
+    const asyncImportLimit = QUESTION_IMPORT_MAX_ROWS, asyncExportLimit = QUESTION_EXPORT_MAX_ROWS
+    let asyncTaskVersion = 0, asyncListVersion = 0
 
     const router = useRouter();
     const { currentUser } = useCurrentUserDisplay()
     const principal = () => currentUserIdentity(currentUser.value)
     const role = () => String(currentUser.value?.role || '').trim().toLowerCase()
     const canUseQuestions = () => Boolean(principal()) && isAdminUser(currentUser.value)
+    const answerCoverage = computed(() => {
+      if (!data.value.length) return 0
+      const answered = data.value.filter(row => parseQuestionAnswerValues(row?.answer).length > 0).length
+      return Math.round(answered * 100 / data.value.length)
+    })
+    const latestImportStatus = computed(() => {
+      const latest = asyncTasks.value.filter(task => task.type === 'import')
+        .sort((left, right) => new Date(right.createdAt || 0).getTime() - new Date(left.createdAt || 0).getTime())[0]
+      return latest ? describeTask(latest) : asyncTaskLoading.value ? '读取中' : asyncError.value ? '读取失败' : '暂无导入记录'
+    })
+    const describeAsyncTask = task => describeTask(task)
+    const asyncDownloadUrl = task => taskDownloadUrl(task)
+    const asyncErrorUrl = task => taskErrorReportUrl(task)
+    const setAsyncDryRun = event => {
+      if (!canUseQuestions() || asyncBusy.value) return
+      asyncDryRun.value = Boolean(event?.target?.checked); asyncError.value = ''; asyncNotice.value = ''
+    }
+    const mergeAsyncTask = task => {
+      if (!task?.taskId) return
+      asyncTasks.value = [task, ...asyncTasks.value.filter(item => item.taskId !== task.taskId)].slice(0, 40)
+    }
+    const refreshAsyncTasks = async () => {
+      if (!canUseQuestions()) return
+      const owns = captureQuestionOwner(), ticket = asyncTaskVersion, listTicket = ++asyncListVersion
+      const current = () => owns() && ticket === asyncTaskVersion && listTicket === asyncListVersion
+      if (!current()) return
+      asyncTaskLoading.value = true
+      try {
+        const [importRes, exportRes, pendingRes, runningRes] = await Promise.all([
+          listAsyncTasks({ type: 'import', resource: 'questions', pageSize: 20 }),
+          listAsyncTasks({ type: 'export', resource: 'questions', pageSize: 20 }),
+          listAsyncTasks({ status: 'pending', resource: 'questions', pageSize: 1 }),
+          listAsyncTasks({ status: 'running', resource: 'questions', pageSize: 1 }),
+        ])
+        if (!current()) return
+        const readRows = response => Array.isArray(response?.data?.data) ? response.data.data : []
+        asyncTasks.value = [...readRows(importRes), ...readRows(exportRes)].slice(0, 40)
+        pendingTaskCount.value = Number(pendingRes?.data?.total || 0) + Number(runningRes?.data?.total || 0)
+        asyncError.value = ''
+      } catch {
+        if (current()) asyncError.value = '任务列表读取失败，请稍后重试。'
+      } finally {
+        if (current()) asyncTaskLoading.value = false
+      }
+    }
+    const settleAsyncTask = (task, fallback) => {
+      mergeAsyncTask(task)
+      if (!task) { asyncNotice.value = fallback; return }
+      if (String(task.status || '').toLowerCase() === 'failed') {
+        asyncNotice.value = ''
+        asyncError.value = task.errorMessage || '任务执行失败，请下载失败行报告核对。'
+        return
+      }
+      asyncNotice.value = describeTask(task)
+    }
+    const submitAsyncExport = async () => {
+      if (!canUseQuestions() || asyncBusy.value) return
+      const owns = captureQuestionOwner(), ticket = ++asyncTaskVersion
+      asyncBusy.value = true; asyncError.value = ''; asyncNotice.value = ''
+      try {
+        if (!owns()) return
+        const response = await submitExportTask({ resource: 'questions' })
+        if (!owns() || ticket !== asyncTaskVersion) return
+        const taskId = response?.data?.taskId
+        if (!taskId) throw new Error('missing task id')
+        asyncNotice.value = '导出任务已提交，正在处理…'
+        const polled = await pollAsyncTask(taskId, { shouldStop: () => !owns() || ticket !== asyncTaskVersion })
+        if (!owns() || ticket !== asyncTaskVersion) return
+        settleAsyncTask(polled.task, '导出任务已提交，请稍后刷新任务列表查看结果。')
+        await refreshAsyncTasks()
+      } catch (error) {
+        if (owns() && ticket === asyncTaskVersion) asyncError.value = error?.code === 'UNKNOWN_OUTCOME'
+          ? '导出任务提交结果未确认，请先刷新任务列表，勿重复提交。' : '导出任务提交失败，请稍后重试。'
+      } finally {
+        if (owns() && ticket === asyncTaskVersion) asyncBusy.value = false
+      }
+    }
+    const beforeAsyncImport = file => {
+      if (!canUseQuestions() || asyncBusy.value || !file) return false
+      if (typeof file.name !== 'string' || !/\.(csv|json|xlsx|xls)$/i.test(file.name)) {
+        asyncError.value = '仅支持 .csv / .json / .xlsx / .xls 表格文件。'; return false
+      }
+      if (file.size !== undefined && (typeof file.size !== 'number' || !Number.isFinite(file.size) || file.size <= 0 || file.size > 16 * 1024 * 1024)) {
+        asyncError.value = '表格文件需大于 0 且不超过 16 MiB。'; return false
+      }
+      return true
+    }
+    const submitAsyncImport = async request => {
+      const file = request?.file
+      if (!canUseQuestions() || asyncBusy.value) { request?.onError?.(new Error('blocked')); return }
+      const owns = captureQuestionOwner(), ticket = ++asyncTaskVersion, dryRun = asyncDryRun.value
+      asyncBusy.value = true; asyncError.value = ''; asyncNotice.value = ''
+      try {
+        if (!owns()) { request?.onError?.(new Error('retired')); return }
+        const response = await submitImportTask({ resource: 'questions', file, dryRun })
+        if (!owns() || ticket !== asyncTaskVersion) { request?.onSuccess?.(response); return }
+        const taskId = response?.data?.taskId
+        if (!taskId) throw new Error('missing task id')
+        request?.onSuccess?.(response)
+        asyncNotice.value = dryRun ? '预览任务已提交，正在处理…' : '导入任务已提交，正在处理…'
+        const polled = await pollAsyncTask(taskId, { shouldStop: () => !owns() || ticket !== asyncTaskVersion })
+        if (!owns() || ticket !== asyncTaskVersion) return
+        if (dryRun && polled.task && String(polled.task.status || '').toLowerCase() === 'succeeded') {
+          mergeAsyncTask(polled.task)
+          asyncNotice.value = '预览完成：未写入题库（dryRun）。'
+        } else settleAsyncTask(polled.task, '导入任务已提交，请稍后刷新任务列表查看结果。')
+        if (!dryRun && String(polled.task?.status || '').toLowerCase() === 'succeeded' && owns()) {
+          await Promise.all([fetchData(), getCourses()])
+          if (!owns() || ticket !== asyncTaskVersion) return
+        }
+        await refreshAsyncTasks()
+      } catch (error) {
+        if (owns() && ticket === asyncTaskVersion) {
+          request?.onError?.(error)
+          asyncError.value = error?.response?.status === 409
+            ? '文件包含弱密码，需要确认后才能导入；请核对后重新上传。'
+            : error?.code === 'UNKNOWN_OUTCOME'
+              ? '导入任务提交结果未确认，请先刷新任务列表，勿重复提交。'
+              : '导入任务提交失败，请核对文件后重试。'
+        }
+      } finally {
+        if (owns() && ticket === asyncTaskVersion) asyncBusy.value = false
+      }
+    }
     const questionRequestOwner = { active: true, epoch: 0, listVersion: 0, courseVersion: 0, selectionVersion: 0, reload: null }
     const captureQuestionOwner = () => {
       const epoch = questionRequestOwner.epoch
@@ -447,6 +614,9 @@ export default defineComponent({
       courses.value = []
       page.value.pageNo = 1
       page.value.total = 0
+      asyncTaskVersion += 1; asyncListVersion += 1
+      asyncTasks.value = []; asyncNotice.value = ''; asyncError.value = ''; pendingTaskCount.value = '—'
+      asyncBusy.value = false; asyncTaskLoading.value = false; asyncDryRun.value = false
       tabLoading.value = false
       resetSelectionState()
       closeQuestionPrompts()
@@ -488,6 +658,10 @@ export default defineComponent({
       questionDialogOwner, questionSubmitLoading, bulkCourseOwner, jsonImportOwner, questionUploads,
       showQuestionPrompt, resetSelectionState, rememberQuestionRows,
       getCourses, fetchData,
+      asyncBusy, asyncTaskLoading, asyncDryRun, asyncTasks, asyncNotice, asyncError,
+      pendingTaskCount, asyncImportLimit, asyncExportLimit, answerCoverage, latestImportStatus,
+      sourceOptions, describeAsyncTask, asyncDownloadUrl, asyncErrorUrl, setAsyncDryRun,
+      refreshAsyncTasks, submitAsyncExport, beforeAsyncImport, submitAsyncImport,
       listFailure, listFailureContext, isCurrentListFailure,
       questionWriteFailure, questionWriteFailureContext, questionWriteFailureMessage,
       questionWriteCheck, questionWriteUnconfirmed, isCurrentQuestionWriteFailure,
@@ -554,6 +728,7 @@ export default defineComponent({
     this.questionRequestOwner.reload = () => {
       this.getCourses()
       this.fetchData()
+      this.refreshAsyncTasks()
     }
     this.getType()
     this.questionRequestOwner.reload()
@@ -577,6 +752,14 @@ export default defineComponent({
     },
     onSearch() {
       if (!this.questionEntry.isCurrent()) return
+      this.page.pageNo = 1
+      this.resetSelectionState()
+      this.fetchData()
+    },
+    resetFilters() {
+      if (!this.questionEntry.isCurrent()) return
+      this.searchValue = {}
+      this.typeValue = null
       this.page.pageNo = 1
       this.resetSelectionState()
       this.fetchData()
@@ -881,6 +1064,19 @@ export default defineComponent({
 .filter-panel {
   padding: 16px;
 }
+
+.tiku-page-actions { justify-content: flex-end; }
+.asyncTaskPanel { margin-bottom: 16px; }
+.asyncTaskRow { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.asyncTaskDryRun { display: inline-flex; align-items: center; gap: 8px; color: var(--console-muted); font-size: 13px; }
+.asyncTaskDryRun input { accent-color: var(--console-primary); }
+.asyncTaskLimit { margin: 12px 0 0; color: var(--console-muted); font-size: 13px; line-height: 1.7; }
+.asyncTaskAlert { margin-top: 12px; }
+.asyncTaskTable { width: 100%; margin-top: 12px; border-collapse: collapse; font-size: 13px; }
+.asyncTaskTable th, .asyncTaskTable td { padding: 8px; text-align: left; border-bottom: 1px solid var(--console-border); }
+.asyncTaskTable th { color: var(--console-muted); font-weight: 600; }
+.asyncTaskId { font-family: monospace; overflow-wrap: anywhere; }
+.asyncTaskErrorLink { margin-left: 8px; }
 
 .filter-form :deep(.ant-input),
 .filter-form :deep(.ant-select) {

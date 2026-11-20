@@ -85,7 +85,9 @@ func writeRiskAdminError(c *gin.Context, err error, fallback string) {
 	// （尤其是占比填成 3 这种「看着像数其实越界」的情况）。
 	case errors.Is(err, service.ErrRiskThresholdInvalid),
 		errors.Is(err, service.ErrRiskThresholdUnknown),
-		errors.Is(err, service.ErrRiskRuleUnknown):
+		errors.Is(err, service.ErrRiskRuleUnknown),
+		errors.Is(err, service.ErrRiskRuleInvalid),
+		errors.Is(err, service.ErrRiskRuleDeleted):
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 	// 非数值配置（ASN 名单 / 评估间隔）同样回 400 且原文可见：
 	// 坏 ASN 与越界间隔都必须让运营看到「哪一项、为什么」，
@@ -369,7 +371,11 @@ func UpdateRiskThreshold(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误：必须提供 value"})
 		return
 	}
-	result, err := service.UpdateRiskThresholdWithDB(db, c.Param("key"), *input.Value)
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	result, err := service.UpdateRiskThresholdWithActor(db, c.Param("key"), *input.Value, operator.ID)
 	if err != nil {
 		writeRiskAdminError(c, err, "保存风控阈值失败")
 		return
@@ -391,7 +397,11 @@ func ResetRiskThreshold(c *gin.Context) {
 		writeRiskAdminError(c, err, "重置风控阈值失败")
 		return
 	}
-	result, err := service.ResetRiskThresholdWithDB(db, c.Param("key"))
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	result, err := service.ResetRiskThresholdWithActor(db, c.Param("key"), operator.ID)
 	if err != nil {
 		writeRiskAdminError(c, err, "重置风控阈值失败")
 		return
@@ -421,7 +431,98 @@ func RiskRuleStateList(c *gin.Context) {
 		writeRiskAdminError(c, err, "获取风控规则状态失败")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": states})
+	rules, err := service.ListRiskRules(db)
+	if err != nil {
+		writeRiskAdminError(c, err, "获取风控规则失败")
+		return
+	}
+	// Keep the historic `items` state response for existing clients while exposing the
+	// complete editable records through `data`.
+	c.JSON(http.StatusOK, gin.H{"items": states, "data": rules})
+}
+
+// RiskRuleTypeList returns the detector allowlist and its configuration schema.
+func RiskRuleTypeList(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !requireAdmin(c) {
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": service.RiskRuleTypes()})
+}
+
+func CreateRiskRule(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !requireAdmin(c) {
+		return
+	}
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	var input service.RiskRuleInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
+		return
+	}
+	db, err := requireRiskAdminDB(c)
+	if err != nil {
+		writeRiskAdminError(c, err, "创建风控规则失败")
+		return
+	}
+	record, err := service.CreateRiskRule(db, input, operator.ID)
+	if err != nil {
+		writeRiskAdminError(c, err, "创建风控规则失败")
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"data": record})
+}
+
+func UpdateRiskRule(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !requireAdmin(c) {
+		return
+	}
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	var input service.RiskRuleInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
+		return
+	}
+	db, err := requireRiskAdminDB(c)
+	if err != nil {
+		writeRiskAdminError(c, err, "保存风控规则失败")
+		return
+	}
+	record, err := service.UpdateRiskRule(db, c.Param("ruleId"), input, operator.ID)
+	if err != nil {
+		writeRiskAdminError(c, err, "保存风控规则失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": record})
+}
+
+func DeleteRiskRule(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	if !requireAdmin(c) {
+		return
+	}
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	db, err := requireRiskAdminDB(c)
+	if err != nil {
+		writeRiskAdminError(c, err, "删除风控规则失败")
+		return
+	}
+	if err := service.DeleteRiskRule(db, c.Param("ruleId"), operator.ID); err != nil {
+		writeRiskAdminError(c, err, "删除风控规则失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "已删除"})
 }
 
 // setRiskRuleEnabledRequest 用指针区分「没传」与「传 false」（停用是最常见操作）。
@@ -449,7 +550,11 @@ func SetRiskRuleEnabled(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误：必须提供 enabled"})
 		return
 	}
-	state, err := service.SetRiskRuleEnabledWithDB(db, c.Param("ruleId"), *input.Enabled)
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	state, err := service.SetRiskRuleEnabledManaged(db, c.Param("ruleId"), *input.Enabled, operator.ID)
 	if err != nil {
 		writeRiskAdminError(c, err, "保存风控规则状态失败")
 		return
@@ -537,7 +642,11 @@ func UpdateRiskConfig(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误：必须提供 value（留空请显式传空串或调用重置）"})
 		return
 	}
-	result, err := service.UpdateRiskConfigWithDB(db, c.Param("key"), *input.Value)
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	result, err := service.UpdateRiskConfigWithActor(db, c.Param("key"), *input.Value, operator.ID)
 	if err != nil {
 		writeRiskAdminError(c, err, "保存风控配置失败")
 		return
@@ -560,7 +669,11 @@ func ResetRiskConfig(c *gin.Context) {
 		writeRiskAdminError(c, err, "重置风控配置失败")
 		return
 	}
-	result, err := service.ResetRiskConfigWithDB(db, c.Param("key"))
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	result, err := service.ResetRiskConfigWithActor(db, c.Param("key"), operator.ID)
 	if err != nil {
 		writeRiskAdminError(c, err, "重置风控配置失败")
 		return

@@ -18,15 +18,12 @@
       <a-form-item
         label="协议全文"
         :html-for="textId"
-        :help="`${textLength} / ${maxRunes} 字。留空或超长会被服务端拒绝。`"
         data-refund-agreement-field
       >
         <a-textarea
           :id="textId"
           :value="text"
           :rows="16"
-          :maxlength="maxRunes"
-          show-count
           :disabled="disabled || loading || saving"
           placeholder="请输入承诺书全文"
           data-refund-agreement-textarea
@@ -65,7 +62,6 @@ const props = defineProps({
 
 const text = ref('')
 const defaultText = ref('')
-const maxRunes = ref(20000)
 const isDefault = ref(true)
 const loading = ref(false)
 const saving = ref(false)
@@ -74,8 +70,7 @@ const loaded = ref(false)
 const textId = `refund-agreement-${useId()}`
 let active = true
 
-const textLength = computed(() => Array.from(text.value || '').length)
-const canSave = computed(() => loaded.value && !props.disabled && !loading.value && !saving.value && Boolean(text.value.trim()) && textLength.value <= maxRunes.value)
+const canSave = computed(() => loaded.value && !props.disabled && !loading.value && !saving.value && Boolean(text.value.trim()))
 
 async function handleLoad() {
   if (loading.value || saving.value || props.disabled) return
@@ -88,7 +83,6 @@ async function handleLoad() {
     const data = response?.data || {}
     text.value = String(data.text || '')
     defaultText.value = String(data.defaultText || '')
-    maxRunes.value = Number(data.maxRunes) || 20000
     isDefault.value = data.isDefault === true
     loaded.value = true
   } catch (err) {

@@ -3,6 +3,7 @@ package registry
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"github.com/itihey/tikuAdapter/internal/entity"
@@ -38,6 +39,9 @@ func TestEnsureRiskSchemaCreatesTablesIndexesAndSeeds(t *testing.T) {
 	}
 	if !db.Migrator().HasIndex(entity.TableNameRiskRule, "uk_risk_rule_rule_id") {
 		t.Fatal("expected unique index uk_risk_rule_rule_id")
+	}
+	if !db.Migrator().HasTable(entity.TableNameRiskRuleAudit) {
+		t.Fatal("expected risk_rule_audits table")
 	}
 	for _, index := range []string{"idx_risk_warning_rule_created", "idx_risk_warning_subject", "idx_risk_warning_created"} {
 		if !db.Migrator().HasIndex(entity.TableNameRiskWarning, index) {
@@ -101,6 +105,9 @@ func TestEnsureRiskSchemaCreatesTablesIndexesAndSeeds(t *testing.T) {
 		if rule.Name == "" || rule.Severity == "" {
 			t.Fatalf("rule %s missing name/severity: %+v", rule.RuleID, rule)
 		}
+		if rule.Type != rule.RuleID || rule.ConfigJSON != `{}` || rule.Source != "builtin" {
+			t.Fatalf("rule %s missing editable metadata: %+v", rule.RuleID, rule)
+		}
 	}
 	for ruleID := range want {
 		if !seenSeed[ruleID] {
@@ -131,6 +138,72 @@ func TestEnsureRiskSchemaCreatesTablesIndexesAndSeeds(t *testing.T) {
 	}
 	if count != int64(len(want)) {
 		t.Fatalf("second run duplicated seeds: count=%d, want %d", count, len(want))
+	}
+}
+
+func TestSeedDefaultRiskRulesDoesNotResurrectSoftDeletedBuiltin(t *testing.T) {
+	db := newRiskMigrationTestDB(t)
+	if err := db.AutoMigrate(&entity.SystemSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&entity.RiskRule{}); err != nil {
+		t.Fatal(err)
+	}
+	seedDefaultRiskRules(db)
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	if err := db.Model(&entity.RiskRule{}).Where("rule_id = ?", entity.RiskRuleIDDebtUser).
+		Updates(map[string]any{"deleted_at": now, "enabled": false}).Error; err != nil {
+		t.Fatal(err)
+	}
+	seedDefaultRiskRules(db)
+	var row entity.RiskRule
+	if err := db.Unscoped().Where("rule_id = ?", entity.RiskRuleIDDebtUser).First(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row.DeletedAt == nil || row.Enabled {
+		t.Fatalf("seed resurrected deleted builtin: %+v", row)
+	}
+}
+
+func TestEnsureRiskSchemaUpgradesLegacyRulesWithoutOverwritingConfiguration(t *testing.T) {
+	db := newRiskMigrationTestDB(t)
+	if err := db.AutoMigrate(&entity.SystemSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`CREATE TABLE risk_rules (id integer primary key autoincrement, rule_id varchar(64) not null default '', name varchar(128) not null default '', severity varchar(16) not null default 'medium', enabled numeric not null default true, threshold decimal(18,6) not null default 0, throttle_seconds integer not null default 0, description varchar(2048) not null default '', created_at datetime, updated_at datetime)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO risk_rules (rule_id, name, severity, enabled, threshold, throttle_seconds, description) VALUES ('debt_user', '保留名称', 'high', false, 321, 600, '保留说明')`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := setSystemSettingFlag(db, "risk_rules_schema_v1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureRiskSchema(db); err != nil {
+		t.Fatalf("upgrade legacy table: %v", err)
+	}
+	var row entity.RiskRule
+	if err := db.Where("rule_id = ?", "debt_user").First(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row.Type != "debt_user" || row.ConfigJSON != `{}` || row.Source != "builtin" {
+		t.Fatalf("legacy metadata not backfilled: %+v", row)
+	}
+	if row.Name != "保留名称" || row.Description != "保留说明" || row.Enabled || row.Threshold != 321 || row.ThrottleSeconds != 600 {
+		t.Fatalf("legacy operator configuration overwritten: %+v", row)
+	}
+	if !systemSettingFlagIsSet(db, "risk_rules_schema_v2") {
+		t.Fatal("upgrade flag missing")
+	}
+	if err := EnsureRiskSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	var count int64
+	if err := db.Model(&entity.RiskRule{}).Where("rule_id = ?", "debt_user").Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("upgrade duplicate row count=%d", count)
 	}
 }
 

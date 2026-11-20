@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"gorm.io/gorm"
@@ -295,8 +296,15 @@ func RiskThresholds(db *gorm.DB) ([]RiskThresholdItem, error) {
 		return nil, fmt.Errorf("数据库未初始化")
 	}
 	specs := riskThresholdSpecs()
+	visible, err := riskSettingVisibility(db)
+	if err != nil {
+		return nil, err
+	}
 	items := make([]RiskThresholdItem, 0, len(specs))
 	for _, spec := range specs {
+		if !riskRuleSettingActive(visible, spec.RuleID, !spec.SyncRuleColumn) {
+			continue
+		}
 		items = append(items, riskThresholdItem(db, spec))
 	}
 	return items, nil
@@ -347,12 +355,19 @@ type RiskThresholdUpdateResult struct {
 
 // UpdateRiskThresholdWithDB 设置某个阈值的显式值（两处都写）。
 func UpdateRiskThresholdWithDB(db *gorm.DB, key string, value float64) (RiskThresholdUpdateResult, error) {
+	return UpdateRiskThresholdWithActor(db, key, value, 0)
+}
+
+func UpdateRiskThresholdWithActor(db *gorm.DB, key string, value float64, actorID int32) (RiskThresholdUpdateResult, error) {
 	if db == nil {
 		return RiskThresholdUpdateResult{}, fmt.Errorf("数据库未初始化")
 	}
 	spec, ok := riskThresholdSpecByKey(key)
 	if !ok {
 		return RiskThresholdUpdateResult{}, fmt.Errorf("%w：%s", ErrRiskThresholdUnknown, key)
+	}
+	if err := requireRiskRuleSettingActive(db, spec.RuleID, !spec.SyncRuleColumn); err != nil {
+		return RiskThresholdUpdateResult{}, err
 	}
 	if err := ValidateRiskThresholdValueForKey(spec.Key, spec.Kind, value); err != nil {
 		return RiskThresholdUpdateResult{}, err
@@ -362,7 +377,7 @@ func UpdateRiskThresholdWithDB(db *gorm.DB, key string, value float64) (RiskThre
 		if err := saveSystemSettingValue(tx, spec.Key, encoded, "风控规则阈值："+spec.Label); err != nil {
 			return err
 		}
-		return writeRiskRuleThresholdColumn(tx, spec, value)
+		return writeRiskRuleThresholdColumn(tx, spec, value, actorID, "threshold")
 	})
 	if err != nil {
 		return RiskThresholdUpdateResult{}, err
@@ -375,12 +390,19 @@ func UpdateRiskThresholdWithDB(db *gorm.DB, key string, value float64) (RiskThre
 // 语义：删掉 system_settings 的行（回到「未配置」），并把 risk_rules.threshold
 // 写回代码默认值。**两处都要动** —— 只删行不重置列，会让第二层兜底接手上一个旧值。
 func ResetRiskThresholdWithDB(db *gorm.DB, key string) (RiskThresholdUpdateResult, error) {
+	return ResetRiskThresholdWithActor(db, key, 0)
+}
+
+func ResetRiskThresholdWithActor(db *gorm.DB, key string, actorID int32) (RiskThresholdUpdateResult, error) {
 	if db == nil {
 		return RiskThresholdUpdateResult{}, fmt.Errorf("数据库未初始化")
 	}
 	spec, ok := riskThresholdSpecByKey(key)
 	if !ok {
 		return RiskThresholdUpdateResult{}, fmt.Errorf("%w：%s", ErrRiskThresholdUnknown, key)
+	}
+	if err := requireRiskRuleSettingActive(db, spec.RuleID, !spec.SyncRuleColumn); err != nil {
+		return RiskThresholdUpdateResult{}, err
 	}
 	err := db.Transaction(func(tx *gorm.DB) error {
 		if tx.Migrator().HasTable(entity.TableNameSystemSetting) {
@@ -389,7 +411,7 @@ func ResetRiskThresholdWithDB(db *gorm.DB, key string) (RiskThresholdUpdateResul
 				return err
 			}
 		}
-		return writeRiskRuleThresholdColumn(tx, spec, spec.DefaultValue)
+		return writeRiskRuleThresholdColumn(tx, spec, spec.DefaultValue, actorID, "threshold_reset")
 	})
 	if err != nil {
 		return RiskThresholdUpdateResult{}, err
@@ -401,18 +423,36 @@ func ResetRiskThresholdWithDB(db *gorm.DB, key string) (RiskThresholdUpdateResul
 //
 // 行不存在时**不建行**：`loadRiskRules` 会用代码默认值补齐缺失行，
 // 这里凭空建行反而会让「停用/启用」等列被默认值覆盖。
-func writeRiskRuleThresholdColumn(tx *gorm.DB, spec riskThresholdSpec, value float64) error {
-	// 占比项不碰这一列（详见 riskThresholdSpec.SyncRuleColumn 的注释：
-	// 覆盖它会把「连续天数」改成 0.9，导致 R16 直接短路永不告警）。
+func writeRiskRuleThresholdColumn(tx *gorm.DB, spec riskThresholdSpec, value float64, actorID int32, action string) error {
 	if !spec.SyncRuleColumn {
-		return nil
+		return auditRiskDetectorSettingChange(tx, spec.RuleID, actorID, action)
 	}
 	if !tx.Migrator().HasTable(entity.TableNameRiskRule) {
 		return nil
 	}
-	return tx.Session(&gorm.Session{NewDB: true}).Model(&entity.RiskRule{}).
-		Where("rule_id = ?", spec.RuleID).
-		UpdateColumn("threshold", value).Error
+	var row entity.RiskRule
+	query := tx.Session(&gorm.Session{NewDB: true}).Where("rule_id = ? AND deleted_at IS NULL", spec.RuleID)
+	if err := query.First(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+	updates := map[string]any{"updated_by": actorID, "updated_at": time.Now()}
+	// Secondary criteria change the rule's audit metadata without overwriting its
+	// primary threshold column (e.g. offhours share vs consecutive-day count).
+	if spec.SyncRuleColumn {
+		updates["threshold"] = value
+	}
+	if err := tx.Session(&gorm.Session{NewDB: true}).Model(&entity.RiskRule{}).Where("rule_id = ?", spec.RuleID).
+		Updates(updates).Error; err != nil {
+		return err
+	}
+	row.Threshold, row.UpdatedBy, row.UpdatedAt = value, actorID, time.Now()
+	if err := tx.Where("rule_id = ?", spec.RuleID).First(&row).Error; err != nil {
+		return err
+	}
+	return writeRiskRuleAudit(tx, row, action, actorID)
 }
 
 // formatRiskThresholdValue 把数值编码进 system_settings（字符串列）。
@@ -526,7 +566,7 @@ func RiskRuleStates(db *gorm.DB) ([]RiskRuleState, error) {
 			Threshold:   riskRuleThreshold(db, rule, riskDefaultThreshold(rule.RuleID)),
 			Exists:      existing[rule.RuleID],
 			Description: rule.Description,
-			Unit:        riskThresholdUnitForRule(rule.RuleID),
+			Unit:        riskThresholdUnitForRule(rule.Type),
 		}
 		if d, ok := defaults[rule.RuleID]; ok && state.Description == "" {
 			state.Description = d.Description
@@ -541,63 +581,8 @@ func RiskRuleStates(db *gorm.DB) ([]RiskRuleState, error) {
 // 表里没有行时**建一行**（与阈值不同）：停用一条「仅靠代码默认值补齐」的规则
 // 必须留下显式记录，否则下次 loadRiskRules 又按默认启用，表现为「停用了但没生效」。
 func SetRiskRuleEnabledWithDB(db *gorm.DB, ruleID string, enabled bool) (RiskRuleState, error) {
-	if db == nil {
-		return RiskRuleState{}, fmt.Errorf("数据库未初始化")
-	}
 	trimmed := strings.TrimSpace(ruleID)
-	if !isKnownRiskRuleID(trimmed) {
-		return RiskRuleState{}, fmt.Errorf("%w：%s", ErrRiskRuleUnknown, trimmed)
-	}
-	if !db.Migrator().HasTable(entity.TableNameRiskRule) {
-		return RiskRuleState{}, fmt.Errorf("风控规则表不存在")
-	}
-	err := db.Transaction(func(tx *gorm.DB) error {
-		var row entity.RiskRule
-		findErr := tx.Session(&gorm.Session{NewDB: true}).
-			Where("rule_id = ?", trimmed).First(&row).Error
-		if errors.Is(findErr, gorm.ErrRecordNotFound) {
-			// 建行：其余列用代码默认值填充，避免出现「threshold=0」这种
-			// 会让判定退化成 `>= 0` 刷屏的行。
-			defaults, ok := riskRuleDefaultByID(trimmed)
-			if !ok {
-				return fmt.Errorf("%w：%s", ErrRiskRuleUnknown, trimmed)
-			}
-			created := entity.RiskRule{
-				RuleID:          defaults.RuleID,
-				Name:            defaults.Name,
-				Severity:        defaults.Severity,
-				Enabled:         enabled,
-				Threshold:       defaults.Threshold,
-				ThrottleSeconds: defaults.ThrottleSeconds,
-				Description:     defaults.Description,
-			}
-			// ⚠️ 这里必须「Create 之后再 UpdateColumn」两步，不能只靠 Create。
-			//
-			// 实测（探针 TestProbeEnabledZeroValueCreate 的结论）：
-			// Enabled 列带 `default:true`，GORM 对「bool 零值(false) + 有 default tag」
-			// 会**无条件用数据库默认值**，而且 `Select("enabled")` 也**覆盖不了**
-			// （实测：裸 Create → true；Select 显式含 enabled → 仍 true）。
-			// 于是「停用」会被静默写成 true —— 表现为「点了停用、提示保存成功、
-			// 规则照旧告警」，且没有任何报错。
-			//
-			// UpdateColumn 走的是普通 UPDATE，不经过 default 逻辑，实测能正确写 false。
-			if err := tx.Session(&gorm.Session{NewDB: true}).Create(&created).Error; err != nil {
-				return err
-			}
-			if !enabled {
-				return tx.Session(&gorm.Session{NewDB: true}).Model(&entity.RiskRule{}).
-					Where("rule_id = ?", trimmed).
-					UpdateColumn("enabled", false).Error
-			}
-			return nil
-		}
-		if findErr != nil {
-			return findErr
-		}
-		return tx.Session(&gorm.Session{NewDB: true}).Model(&entity.RiskRule{}).
-			Where("rule_id = ?", trimmed).
-			UpdateColumn("enabled", enabled).Error
-	})
+	_, err := SetRiskRuleEnabledManaged(db, trimmed, enabled, 0)
 	if err != nil {
 		return RiskRuleState{}, err
 	}

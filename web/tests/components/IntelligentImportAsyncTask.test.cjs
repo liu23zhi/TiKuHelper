@@ -42,9 +42,9 @@ function fakeFile(name, size = 1024) {
 // ─────────────────── 路径契约（7 条路由，逐条钉住） ───────────────────
 
 test('ASYNC_API import/export/template 路径与后端 async_task.go 头注释一致', () => {
-  assert.equal(api.IMPORT_TASKS_PATH, '/adapter-service/import/tasks')
-  assert.equal(api.EXPORT_TASKS_PATH, '/adapter-service/export/tasks')
-  assert.equal(api.IMPORT_TEMPLATE_PATH, '/adapter-service/import/template')
+  assert.equal(api.IMPORT_TASKS_PATH, '/api/import/tasks')
+  assert.equal(api.EXPORT_TASKS_PATH, '/api/export/tasks')
+  assert.equal(api.IMPORT_TEMPLATE_PATH, '/api/import/template')
 })
 
 test('ASYNC_API 上限常量与后端 service 常量对齐（题库 1 万导出 / 5 千导入）', () => {
@@ -61,7 +61,7 @@ test('ASYNC_API submitImportTask issues one POST to /import/tasks with resource+
 
   assert.equal(requests.length, 1, '一次调用只能发一个请求')
   assert.equal(requests[0].method, 'post')
-  assert.equal(requests[0].url, '/adapter-service/import/tasks')
+  assert.equal(requests[0].url, '/api/import/tasks')
   // 绝不手写 multipart Content-Type：手写的那个没有 boundary，
   // 后端会解析出空 body。真正的边界由浏览器在发送时补，所以这里只钉
   // 「我们没有自己塞一个 multipart/form-data 头」。
@@ -124,7 +124,7 @@ test('ASYNC_API submitExportTask posts exactly one JSON request to /export/tasks
   await api.submitExportTask({ resource: 'questions' })
   assert.equal(requests.length, 1)
   assert.equal(requests[0].method, 'post')
-  assert.equal(requests[0].url, '/adapter-service/export/tasks')
+  assert.equal(requests[0].url, '/api/export/tasks')
   const body = typeof requests[0].data === 'string' ? JSON.parse(requests[0].data) : requests[0].data
   assert.deepEqual(body, { resource: 'questions', format: 'csv' })
 })
@@ -134,7 +134,7 @@ test('ASYNC_API submitExportTask posts exactly one JSON request to /export/tasks
 test('ASYNC_API fetchAsyncTask 把 taskId 拼进路径并拒绝非法编号', async () => {
   respond = config => ok(config, { taskId: 'imp-0000000000001', status: 'running' })
   await api.fetchAsyncTask('imp-0000000000001')
-  assert.equal(requests[0].url, '/adapter-service/export/tasks/imp-0000000000001')
+  assert.equal(requests[0].url, '/api/export/tasks/imp-0000000000001')
   assert.equal(requests[0].method, 'get')
   for (const bad of ['', '   ', '../etc/passwd', 'a/b', null, 42]) {
     assert.throws(() => api.fetchAsyncTask(bad), /任务编号无效/, `taskId=${String(bad)} 必须被拒`)
@@ -144,14 +144,14 @@ test('ASYNC_API fetchAsyncTask 把 taskId 拼进路径并拒绝非法编号', as
 test('ASYNC_API listAsyncTasks 只透传白名单过滤参数', async () => {
   respond = config => ok(config, { data: [], total: 0 })
   await api.listAsyncTasks({ type: 'import', status: 'succeeded', resource: 'questions', page: 2, pageSize: 20, evil: 'x' })
-  assert.equal(requests[0].url, '/adapter-service/export/tasks')
+  assert.equal(requests[0].url, '/api/export/tasks')
   assert.deepEqual(requests[0].params, { type: 'import', status: 'succeeded', resource: 'questions', page: 2, pageSize: 20 })
 })
 
 test('ASYNC_API fetchImportTemplate 用 blob 拉模板（否则 401 会下载成 JSON 错误页）', async () => {
   respond = config => ok(config, new Blob(['question,type\n'], { type: 'text/csv' }))
   await api.fetchImportTemplate('questions')
-  assert.equal(requests[0].url, '/adapter-service/import/template')
+  assert.equal(requests[0].url, '/api/import/template')
   assert.equal(requests[0].params.resource, 'questions')
   assert.equal(requests[0].params.format, 'csv')
   assert.equal(requests[0].responseType, 'blob')
@@ -180,9 +180,9 @@ test('ASYNC_API describeTask 区分预览/失败/执行中，失败必须带原�
 })
 
 test('ASYNC_API taskDownloadUrl / taskErrorReportUrl 只接受本站相对路径', () => {
-  const task = { downloadUrl: '/adapter-service/export/tasks/x/download', errorReportUrl: '/adapter-service/export/tasks/x/errors' }
-  assert.equal(api.taskDownloadUrl(task), '/adapter-service/export/tasks/x/download')
-  assert.equal(api.taskErrorReportUrl(task), '/adapter-service/export/tasks/x/errors')
+  const task = { downloadUrl: '/api/export/tasks/x/download', errorReportUrl: '/api/export/tasks/x/errors' }
+  assert.equal(api.taskDownloadUrl(task), '/api/export/tasks/x/download')
+  assert.equal(api.taskErrorReportUrl(task), '/api/export/tasks/x/errors')
   // 跨站地址一律丢弃：结果文件绝不能因为后端拼错而被带到第三方。
   assert.equal(api.taskDownloadUrl({ downloadUrl: 'https://evil.invalid/x.csv' }), '')
   assert.equal(api.taskDownloadUrl({ downloadUrl: '//evil.invalid/x.csv' }), '')

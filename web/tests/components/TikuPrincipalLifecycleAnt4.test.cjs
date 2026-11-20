@@ -117,9 +117,9 @@ afterEach(async () => {
 test('TP01 healthy actor retains literal filters, low-frequency fields, native selection and JSON export', async () => {
   const w = await page()
   w.vm.typeValue = 4
-  Object.assign(w.vm.searchValue, { question: '筛选词', source: '7', extra: '拓展筛选', onlyShowEmptyAnswer: true })
+  Object.assign(w.vm.searchValue, { question: '筛选词', courseName: '原始课程', source: '7', extra: '拓展筛选', onlyShowEmptyAnswer: true })
   await click(named(w, '搜索'))
-  assert.deepEqual(calls.filter(c => c.kind === 'getQuestions').at(-1).payload, { type: 4, pageSize: 10, pageNo: 0, question: '筛选词', source: 7, extra: '拓展筛选', onlyShowEmptyAnswer: true })
+  assert.deepEqual(calls.filter(c => c.kind === 'getQuestions').at(-1).payload, { type: 4, pageSize: 10, pageNo: 0, question: '筛选词', courseName: '原始课程', source: 7, extra: '拓展筛选', onlyShowEmptyAnswer: true })
   assert.ok(w.vm.columns.some(c => c.key === 'extra') && w.vm.columns.some(c => c.key === 'source_name'))
   await select(w); await click(named(w, '导出选中'))
   assert.equal(downloads.length, 1); assert.match(downloads[0].filename, /\.json$/)

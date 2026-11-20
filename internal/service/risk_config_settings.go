@@ -267,8 +267,15 @@ func RiskConfigs(db *gorm.DB) ([]RiskConfigItem, error) {
 		return nil, fmt.Errorf("数据库未初始化")
 	}
 	specs := riskConfigSpecs()
+	visible, err := riskSettingVisibility(db)
+	if err != nil {
+		return nil, err
+	}
 	items := make([]RiskConfigItem, 0, len(specs))
 	for _, spec := range specs {
+		if !riskRuleSettingActive(visible, spec.RuleID, true) {
+			continue
+		}
 		items = append(items, riskConfigItem(db, spec))
 	}
 	return items, nil
@@ -316,6 +323,10 @@ type RiskConfigUpdateResult struct {
 // 存一个空串行会让 `Configured` 恒 true 而 `Value` 恒为空，
 // 界面上表现为「已配置但没有值」，而且重置按钮不再出现 —— 无法退出该状态。
 func UpdateRiskConfigWithDB(db *gorm.DB, key, value string) (RiskConfigUpdateResult, error) {
+	return UpdateRiskConfigWithActor(db, key, value, 0)
+}
+
+func UpdateRiskConfigWithActor(db *gorm.DB, key, value string, actorID int32) (RiskConfigUpdateResult, error) {
 	if db == nil {
 		return RiskConfigUpdateResult{}, fmt.Errorf("数据库未初始化")
 	}
@@ -323,14 +334,22 @@ func UpdateRiskConfigWithDB(db *gorm.DB, key, value string) (RiskConfigUpdateRes
 	if !ok {
 		return RiskConfigUpdateResult{}, fmt.Errorf("%w：%s", ErrRiskConfigUnknown, strings.TrimSpace(key))
 	}
+	if err := requireRiskRuleSettingActive(db, spec.RuleID, true); err != nil {
+		return RiskConfigUpdateResult{}, err
+	}
 	if err := validateRiskConfigValue(spec, value); err != nil {
 		return RiskConfigUpdateResult{}, err
 	}
 	encoded := normalizeRiskConfigValue(spec, value)
 	if encoded == "" {
-		return ResetRiskConfigWithDB(db, key)
+		return ResetRiskConfigWithActor(db, key, actorID)
 	}
-	if err := saveSystemSettingValue(db, spec.Key, encoded, "风控配置："+spec.Label); err != nil {
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := saveSystemSettingValue(tx, spec.Key, encoded, "风控配置："+spec.Label); err != nil {
+			return err
+		}
+		return auditRiskDetectorSettingChange(tx, spec.RuleID, actorID, "config")
+	}); err != nil {
 		return RiskConfigUpdateResult{}, err
 	}
 	return RiskConfigUpdateResult{Item: riskConfigItem(db, spec)}, nil
@@ -342,6 +361,10 @@ func UpdateRiskConfigWithDB(db *gorm.DB, key, value string) (RiskConfigUpdateRes
 // 这与 ResetRiskThresholdWithDB 同一条纪律 —— 写默认值会让「显式配成默认值」
 // 与「没配」变得不可区分，而 `Configured` 字段正是靠行是否存在来区分的。
 func ResetRiskConfigWithDB(db *gorm.DB, key string) (RiskConfigUpdateResult, error) {
+	return ResetRiskConfigWithActor(db, key, 0)
+}
+
+func ResetRiskConfigWithActor(db *gorm.DB, key string, actorID int32) (RiskConfigUpdateResult, error) {
 	if db == nil {
 		return RiskConfigUpdateResult{}, fmt.Errorf("数据库未初始化")
 	}
@@ -349,9 +372,16 @@ func ResetRiskConfigWithDB(db *gorm.DB, key string) (RiskConfigUpdateResult, err
 	if !ok {
 		return RiskConfigUpdateResult{}, fmt.Errorf("%w：%s", ErrRiskConfigUnknown, strings.TrimSpace(key))
 	}
+	if err := requireRiskRuleSettingActive(db, spec.RuleID, true); err != nil {
+		return RiskConfigUpdateResult{}, err
+	}
 	if db.Migrator().HasTable(entity.TableNameSystemSetting) {
-		if err := db.Session(&gorm.Session{NewDB: true}).
-			Where("key = ?", spec.Key).Delete(&entity.SystemSetting{}).Error; err != nil {
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Session(&gorm.Session{NewDB: true}).Where("key = ?", spec.Key).Delete(&entity.SystemSetting{}).Error; err != nil {
+				return err
+			}
+			return auditRiskDetectorSettingChange(tx, spec.RuleID, actorID, "config_reset")
+		}); err != nil {
 			return RiskConfigUpdateResult{}, err
 		}
 	}

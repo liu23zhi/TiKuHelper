@@ -55,6 +55,7 @@ func newRiskAlertTestDBNamed(t *testing.T, rawName string) *gorm.DB {
 		&entity.User{},
 		&entity.BillingRecord{},
 		&entity.RiskRule{},
+		&entity.RiskRuleAudit{},
 		&entity.RiskWarning{},
 		&entity.TicketNotification{},
 		// Log 是 R1（multi_account_ip）的数据源：成功登录的审计行落在 logs 表。
@@ -100,6 +101,9 @@ func seedRiskRules(t *testing.T, db *gorm.DB) {
 			Threshold:       item.Threshold,
 			ThrottleSeconds: item.ThrottleSeconds,
 			Description:     item.Description,
+			Type:            item.RuleID,
+			ConfigJSON:      `{}`,
+			Source:          "builtin",
 		}
 		if err := db.Create(&row).Error; err != nil {
 			t.Fatalf("seed rule %s: %v", item.RuleID, err)

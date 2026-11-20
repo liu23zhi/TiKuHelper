@@ -50,6 +50,7 @@ export function useQuestionReads({
         pageSize: page.value.pageSize,
         pageNo: page.value.pageNo - 1,
         question: searchValue.value.question || '',
+        courseName: searchValue.value.courseName || '',
         source: parseInt(searchValue.value.source) || 0,
         extra: searchValue.value.extra || '',
         onlyShowEmptyAnswer: searchValue.value.onlyShowEmptyAnswer || false,

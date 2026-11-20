@@ -6,7 +6,6 @@ import { fileURLToPath } from 'node:url'
 
 import {
   RISK_ADVISORY_NOTE,
-  RISK_BUILTIN_RULE_NOTICE,
   RISK_INDEPENDENCE_NOTICE,
   RISK_SETTING_KEYS,
   buildRiskAlertListParams,
@@ -246,66 +245,40 @@ test('判据 ②（改阈值落库）已实现：前端必须提供阈值读写�
   //
   // `/config` 是 2026-11 新增的非数值配置（ASN 名单 / 评估间隔），
   // 与 `/thresholds` 分开是因为值类型不同（文本 vs float64），见下方专项用例。
-  const routes = [...api.matchAll(/RISK_BASE \+ '(\/[\w/]+)'/g)].map(m => m[1])
+  const routes = [...api.matchAll(/RISK_BASE \+ '(\/[\w/-]+)'/g)].map(m => m[1])
   assert.deepEqual(
     [...new Set(routes)].sort(),
-    ['/alerts', '/alerts/', '/config', '/config/', '/rules', '/rules/', '/thresholds', '/thresholds/', '/webhook', '/webhook/test'],
-    '风控 API 模块只允许列表 / 详情 / 配置读写 / 测试发送 / 阈值读写重置 / 非数值配置这几条路径',
+    ['/alerts', '/alerts/', '/config', '/config/', '/rule-types', '/rules', '/rules/', '/thresholds', '/thresholds/', '/webhook', '/webhook/test'],
+    '风控 API 模块包含规则类型目录、规则 CRUD、启停及既有配置路径',
   )
   assert.match(api, /RISK_BASE \+ '\/alerts\/' \+ value/, '详情路径必须是拼接形式（不能写成模板字面量绕过上面的统计）')
 })
 
 // ─────────────────────────────────────────────────────────────────────
-// 规则集「内置、不可新增」——数据模型事实的可见形态
-//
-// 任务书要求先证清模型再决定是否做「新建规则」。实测结论：**不可新增**
-// （依据见 riskAdminHelpers.mjs 的 RISK_BUILTIN_RULE_NOTICE 上方注释：
-//  loadRiskRules 只遍历代码常量切片、多出的 DB 行被静默丢弃；
-//  判定逻辑是一串硬编码 if；未知 ruleId 连启停都被白名单拦住）。
-//
-// 所以本轮**必须不做** POST /risk/rules / 新建按钮，并把这个事实写进页面文案。
-// 这组用例的作用是**双向**的：
-//   · 断言文案存在且说明理由（否则管理员会以为功能坏了）；
-//   · 断言页面**没有**新建入口（防止后来者"顺手补一个"造出永不判定的规则）。
+// 管理规则：默认规则可编辑，服务端登记类型可新增，删除采用确认操作。
 // ─────────────────────────────────────────────────────────────────────
 
-test('规则集不可新增：页面必须有明确的常驻说明，且说清「为什么」', () => {
-  // 语义三层必须在：不可新增 / 判定在代码里 / 正确做法是什么。
-  assert.match(RISK_BUILTIN_RULE_NOTICE, /内置/, '必须说明规则集是内置的')
-  assert.match(RISK_BUILTIN_RULE_NOTICE, /不支持新增|不能新增|不可新增/, '必须明确不支持新增')
-  assert.match(RISK_BUILTIN_RULE_NOTICE, /代码/, '必须说明判定逻辑写在服务端代码里（这是根本原因）')
-  assert.match(RISK_BUILTIN_RULE_NOTICE, /数据库|数据行|规则表/, '必须说明「插数据库行没用」这个关键反直觉点')
-  // 必须给出真正能做的替代路径，否则这段话只是"不行"而没有出路。
-  assert.match(RISK_BUILTIN_RULE_NOTICE, /启用开关|阈值/, '必须指出当前可调的是什么')
-})
-
-test('规则集不可新增：页面不得出现任何「新建规则」入口或 POST 调用', async () => {
-  const page = await readSource('pages/RiskAdmin/index.vue')
-  // ⚠️ 必须剥注释再断言：页面注释里就有「新增规则忘改前端就显示错单位」这类
-  // **反例说明**，直接对全文 doesNotMatch 会把这句解释本身判成违规（假红）。
-  // 但也不能只对注释做断言 —— 所以要剥离注释后只看真实代码。
-  const pageCode = stripComments(page)
+test('规则 API 暴露类型目录和管理员 CRUD，同时保留原启停路由', async () => {
   const api = stripComments(await readSource('api/RiskAdminApi.js'))
-  // ① 页面不得有新建/新增规则的按钮或函数（会误导成"功能存在"）。
-  for (const pattern of [/createRiskRule/, /新增规则/, /新建规则/]) {
-    assert.doesNotMatch(pageCode, pattern, `规则不可新增，页面不得出现「新建规则」入口：${pattern}`)
+  for (const name of ['getRiskRuleTypes', 'createRiskRule', 'updateRiskRule', 'deleteRiskRule', 'setRiskRuleEnabled']) {
+    assert.match(api, new RegExp(`export function ${name}\\(`), `${name} API 必须存在`)
   }
-  // ② API 模块不得声明 create 语义的规则函数。
-  assert.doesNotMatch(api, /export function \w*createRiskRule/i, '不得提供新建规则的 API（后端不支持）')
-  // ③ 规则路径只允许 GET 与方法无关的读取 + enabled 的 PUT；
-  //    不得对 `/rules` 直接发 post（那正是"造出不参与判定的行"的形态）。
-  assert.doesNotMatch(api, /url: RISK_BASE \+ '\/rules',\s*\n\s*method: 'post'/,
-    '不得对 /rules 发 POST（新建的行会被 loadRiskRules 静默丢弃，永不参与判定）')
+  assert.match(api, /RISK_BASE \+ '\/rule-types'/, '类型目录必须读取 /risk/rule-types')
+  assert.match(api, /url: RISK_BASE \+ '\/rules',\s*\n\s*method: 'post'/, '新规则必须 POST /risk/rules')
+  assert.match(api, /url: RISK_BASE \+ '\/rules\/' \+ encodeURIComponent\(id\),\s*\n\s*method: 'put'/, '编辑必须 PUT 稳定规则 ID')
+  assert.match(api, /url: RISK_BASE \+ '\/rules\/' \+ encodeURIComponent\(id\),\s*\n\s*method: 'delete'/, '删除必须针对稳定规则 ID')
+  assert.match(api, /url: RISK_BASE \+ '\/rules\/' \+ encodeURIComponent\(id\) \+ '\/enabled'/, '保留启停路由兼容')
 })
 
-test('规则集不可新增：说明文案必须真的渲染进页面（常量存在但不渲染等于没提示）', async () => {
-  const page = await readSource('pages/RiskAdmin/index.vue')
-  assert.match(page, /RISK_BUILTIN_RULE_NOTICE/, '页面必须引用那个常量（硬编码副本会与测试漂移）')
-  assert.match(page, /:message="RISK_BUILTIN_RULE_NOTICE"/, '原文必须真的渲染进 a-alert')
-  // 必须紧挨规则清单卡片：放到页面顶部会被当成通用免责声明而略过。
-  const rulesPanelAt = page.indexOf('title="规则清单"')
-  const noticeAt = page.indexOf(':message="RISK_BUILTIN_RULE_NOTICE"')
-  assert.ok(rulesPanelAt > 0 && noticeAt > rulesPanelAt, '说明必须在「规则清单」卡片内部（否则会被当成通用声明）')
+test('规则清单提供新增、编辑、停用和确认删除入口', async () => {
+  const page = stripComments(await readSource('pages/RiskAdmin/index.vue'))
+  assert.match(page, /新增规则/, '规则清单需要新建入口')
+  assert.match(page, /编辑/, '每条规则需要编辑入口')
+  assert.match(page, /删除/, '每条规则需要删除入口')
+  assert.match(page, /<a-popconfirm/, '删除必须二次确认')
+  assert.match(page, /rule\.source/, '需要显示内置/自定义来源')
+  assert.match(page, /type="text"|label="规则类型"/, '新增规则必须选择服务端登记类型')
+  assert.doesNotMatch(page, /RISK_BUILTIN_RULE_NOTICE/, '不再显示规则不可新增/删除的旧说明')
 })
 
 // ─────────────────────────────────────────────────────────────────────
@@ -597,11 +570,22 @@ test('规则展示对任意 ruleId 通用（新规则不必改前端）', () => 
 test('规则展示：列表列与详情都经 riskRuleLabel 派生，不是硬编码清单', async () => {
   const page = await readSource('pages/RiskAdmin/index.vue')
   // 表格列与详情都必须经 riskRuleLabel 渲染（这样任何 ruleId 都能显示）。
-  assert.match(page, /column\.key === 'ruleId'.*riskRuleLabel\(record\.ruleId\)/, '表格列必须经 riskRuleLabel 派生')
-  assert.match(page, /riskRuleLabel\(detail\.ruleId\)/, '详情必须经 riskRuleLabel 派生')
+  assert.match(page, /column\.key === 'ruleId'.*riskRuleLabel\(record\.ruleId, record\.detail, rules\)/, '表格列必须优先使用触发时规则名快照')
+  assert.match(page, /riskRuleLabel\(detail\.ruleId, detail\.detail, rules\)/, '详情必须优先使用触发时规则名快照')
   // 不得在页面里内联一份规则名映射（会与 helpers 的那份漂移）。
   const stripped = stripComments(page)
   assert.doesNotMatch(stripped, /debt_user\s*:\s*['"]/, '页面不得内联规则名映射')
+})
+
+test('规则名称优先使用历史快照，再使用可编辑目录，最后兼容旧记录', () => {
+  const rules = [{ ruleId: 'custom_demo', name: '当前规则名称' }, { ruleId: 'debt_user', name: '修改后的内置名称' }]
+  assert.equal(riskRuleLabel('custom_demo', '{"ruleName":"触发时名称"}', rules), '触发时名称')
+  assert.equal(riskRuleLabel('custom_demo', '', rules), '当前规则名称')
+  assert.equal(riskRuleLabel('debt_user', '', rules), '修改后的内置名称')
+  assert.equal(riskRuleLabel('custom_removed', '{"ruleName":"已删除规则"}', rules), '已删除规则')
+  assert.equal(riskRuleLabel('custom_demo', '{bad json', rules), '当前规则名称')
+  assert.equal(riskRuleLabel('custom_demo', '{"ruleName":42}', rules), '当前规则名称')
+  assert.equal(riskRuleLabel('future_rule', '', rules), 'future_rule')
 })
 
 test('列表响应解析：失败与「真的为空」必须区分开', () => {

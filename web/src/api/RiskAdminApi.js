@@ -167,13 +167,48 @@ export function resetRiskThreshold(key) {
 
 // getRiskRules 读取全部规则的当前状态（启用与否 + 生效阈值 + 描述）。
 //
-// 响应：{ items: [{ ruleId, name, enabled, severity, threshold, exists, description }] }
-// `exists` 区分「表里有这一行」与「用代码默认值补齐」——两者都可用，
-// 但排障时需要知道「我改过的」和「没改过的」。
+// 响应：{ items: [{ ruleId, name, type, source, enabled, severity, threshold, description, updatedAt, updatedBy }] }
 export function getRiskRules() {
   return localRequest({
     url: RISK_BASE + '/rules',
     method: 'get',
+  })
+}
+
+// getRiskRuleTypes 返回服务端允许执行的检测器类型；新增规则只能选这里登记的类型。
+export function getRiskRuleTypes() {
+  return localRequest({
+    url: RISK_BASE + '/rule-types',
+    method: 'get',
+  })
+}
+
+export function createRiskRule(payload) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('规则参数错误')
+  return localRequest({
+    url: RISK_BASE + '/rules',
+    method: 'post',
+    data: payload,
+  })
+}
+
+export function updateRiskRule(ruleId, payload) {
+  const id = String(ruleId ?? '').trim()
+  if (!id) throw new Error('规则 ID 参数错误')
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('规则参数错误')
+  return localRequest({
+    url: RISK_BASE + '/rules/' + encodeURIComponent(id),
+    method: 'put',
+    data: payload,
+  })
+}
+
+export function deleteRiskRule(ruleId) {
+  const id = String(ruleId ?? '').trim()
+  if (!id) throw new Error('规则 ID 参数错误')
+  return localRequest({
+    url: RISK_BASE + '/rules/' + encodeURIComponent(id),
+    method: 'delete',
   })
 }
 

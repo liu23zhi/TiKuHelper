@@ -373,6 +373,9 @@ func buildRiskWarningMarkdown(warning entity.RiskWarning) (string, error) {
 		}
 	}
 	title := riskRuleDisplayName(warning.RuleID)
+	if snapshotName, ok := evidence["ruleName"].(string); ok && strings.TrimSpace(snapshotName) != "" {
+		title = strings.TrimSpace(snapshotName)
+	}
 	severity := map[string]string{
 		entity.RiskSeverityHigh:   "高",
 		entity.RiskSeverityMedium: "中",
@@ -464,15 +467,32 @@ func riskRuleThreshold(db *gorm.DB, rule entity.RiskRule, fallback float64) floa
 func loadRiskRules(db *gorm.DB) ([]entity.RiskRule, error) {
 	defaults := entity.DefaultRiskRules()
 	rows := make([]entity.RiskRule, 0, len(defaults))
+	deleted := map[string]bool{}
 	if db != nil && db.Migrator().HasTable(entity.TableNameRiskRule) {
 		var stored []entity.RiskRule
-		if err := db.Session(&gorm.Session{NewDB: true}).Find(&stored).Error; err != nil {
+		if err := db.Session(&gorm.Session{NewDB: true}).Where("deleted_at IS NULL").Find(&stored).Error; err != nil {
 			return nil, err
 		}
 		rows = append(rows, stored...)
+		var all []entity.RiskRule
+		if err := db.Session(&gorm.Session{NewDB: true}).Unscoped().Select("rule_id, deleted_at").Find(&all).Error; err != nil {
+			return nil, err
+		}
+		for _, row := range all {
+			deleted[row.RuleID] = row.DeletedAt != nil
+		}
 	}
 	byID := make(map[string]entity.RiskRule, len(rows))
 	for _, row := range rows {
+		if row.Type == "" {
+			row.Type = row.RuleID
+		}
+		if row.ConfigJSON == "" {
+			row.ConfigJSON = `{}`
+		}
+		if row.Source == "" {
+			row.Source = "builtin"
+		}
 		byID[row.RuleID] = row
 	}
 	result := make([]entity.RiskRule, 0, len(defaults))
@@ -481,15 +501,30 @@ func loadRiskRules(db *gorm.DB) ([]entity.RiskRule, error) {
 			result = append(result, row)
 			continue
 		}
+		if deleted[item.RuleID] {
+			continue
+		}
 		result = append(result, entity.RiskRule{
 			RuleID:          item.RuleID,
 			Name:            item.Name,
+			Type:            item.RuleID,
+			ConfigJSON:      `{}`,
+			Source:          "builtin",
 			Severity:        item.Severity,
 			Enabled:         true,
 			Threshold:       item.Threshold,
 			ThrottleSeconds: item.ThrottleSeconds,
 			Description:     item.Description,
 		})
+	}
+	defaultIDs := make(map[string]bool, len(defaults))
+	for _, item := range defaults {
+		defaultIDs[item.RuleID] = true
+	}
+	for _, row := range rows {
+		if !defaultIDs[row.RuleID] && row.Source == "custom" && riskDetectorRegistered(row.Type) {
+			result = append(result, row)
+		}
 	}
 	return result, nil
 }
@@ -520,140 +555,21 @@ func EvaluateDebtAlerts(db *gorm.DB, now time.Time) (RiskAlertEvaluation, error)
 	if err != nil {
 		return result, err
 	}
-	enabledRules := make(map[string]entity.RiskRule, len(rules))
+	candidates := make([]riskWarningCandidate, 0, riskIndebtedUserScanLimit+len(rules))
 	for _, rule := range rules {
 		if !rule.Enabled {
 			continue
 		}
-		enabledRules[rule.RuleID] = rule
-	}
-	if len(enabledRules) == 0 {
-		return result, nil
-	}
-
-	candidates := make([]riskWarningCandidate, 0, riskIndebtedUserScanLimit+len(entity.DefaultRiskRules()))
-	if rule, ok := enabledRules[entity.RiskRuleIDDebtUser]; ok {
-		found, scanErr := collectUserDebtCandidates(db, rule, now)
+		detector, ok := riskDetectorByType(effectiveRiskRuleType(rule))
+		if !ok {
+			return result, fmt.Errorf("unknown risk detector type %q for rule %q", rule.Type, rule.RuleID)
+		}
+		found, scanErr := detector(db, rule, now)
 		if scanErr != nil {
 			return result, scanErr
 		}
 		candidates = append(candidates, found...)
 	}
-	if rule, ok := enabledRules[entity.RiskRuleIDDebtBatch]; ok {
-		found, scanErr := collectBatchDebtCandidates(db, rule, now)
-		if scanErr != nil {
-			return result, scanErr
-		}
-		candidates = append(candidates, found...)
-	}
-	if rule, ok := enabledRules[entity.RiskRuleIDDebtSystem]; ok {
-		found, scanErr := collectSystemDebtCandidates(db, rule, now)
-		if scanErr != nil {
-			return result, scanErr
-		}
-		candidates = append(candidates, found...)
-	}
-	// R1 行为规则（96 §2.1）：接在同一条判定链上而不是另起一个 Evaluate 函数 ——
-	// 后台 worker 只调这一个入口，新增规则不需要改第二处。
-	if rule, ok := enabledRules[entity.RiskRuleIDMultiAccountIP]; ok {
-		found, scanErr := collectMultiAccountIPCandidates(db, rule, now)
-		if scanErr != nil {
-			return result, scanErr
-		}
-		candidates = append(candidates, found...)
-	}
-	if rule, ok := enabledRules[entity.RiskRuleIDTicketFlood]; ok {
-		found, scanErr := collectTicketFloodCandidates(db, rule, now)
-		if scanErr != nil {
-			return result, scanErr
-		}
-		candidates = append(candidates, found...)
-	}
-	if rule, ok := enabledRules[entity.RiskRuleIDAbnormalRegisterPattern]; ok {
-		found, scanErr := collectAbnormalRegisterPatternCandidates(db, rule, now)
-		if scanErr != nil {
-			return result, scanErr
-		}
-		candidates = append(candidates, found...)
-	}
-	if rule, ok := enabledRules[entity.RiskRuleIDTokenAbuse]; ok {
-		found, scanErr := collectTokenAbuseCandidates(db, rule, now)
-		if scanErr != nil {
-			return result, scanErr
-		}
-		candidates = append(candidates, found...)
-	}
-	if rule, ok := enabledRules[entity.RiskRuleIDOffhoursActivity]; ok {
-		found, scanErr := collectOffhoursActivityCandidates(db, rule, now)
-		if scanErr != nil {
-			return result, scanErr
-		}
-		candidates = append(candidates, found...)
-	}
-	if rule, ok := enabledRules[entity.RiskRuleIDBindingChurn]; ok {
-		found, scanErr := collectBindingChurnCandidates(db, rule, now)
-		if scanErr != nil {
-			return result, scanErr
-		}
-		candidates = append(candidates, found...)
-	}
-	if rule, ok := enabledRules[entity.RiskRuleIDWechatPhoneShare]; ok {
-		found, scanErr := collectWechatPhoneShareCandidates(db, rule, now)
-		if scanErr != nil {
-			return result, scanErr
-		}
-		candidates = append(candidates, found...)
-	}
-	if rule, ok := enabledRules[entity.RiskRuleIDImpossibleTravel]; ok {
-		found, scanErr := collectImpossibleTravelCandidates(db, rule, now)
-		if scanErr != nil {
-			return result, scanErr
-		}
-		candidates = append(candidates, found...)
-	}
-	if rule, ok := enabledRules[entity.RiskRuleIDCredentialStuffing]; ok {
-		found, scanErr := collectCredentialStuffingCandidates(db, rule, now)
-		if scanErr != nil {
-			return result, scanErr
-		}
-		candidates = append(candidates, found...)
-	}
-	if rule, ok := enabledRules[entity.RiskRuleIDLoginBruteforce]; ok {
-		found, scanErr := collectLoginBruteforceCandidates(db, rule, now)
-		if scanErr != nil {
-			return result, scanErr
-		}
-		candidates = append(candidates, found...)
-	}
-	if rule, ok := enabledRules[entity.RiskRuleIDRefundAbuse]; ok {
-		found, scanErr := collectRefundAbuseCandidates(db, rule, now)
-		if scanErr != nil {
-			return result, scanErr
-		}
-		candidates = append(candidates, found...)
-	}
-	if rule, ok := enabledRules[entity.RiskRuleIDProxyIPLogin]; ok {
-		found, scanErr := collectProxyIPLoginCandidates(db, rule, now)
-		if scanErr != nil {
-			return result, scanErr
-		}
-		candidates = append(candidates, found...)
-	}
-	if rule, ok := enabledRules[entity.RiskRuleIDRegisterBurst]; ok {
-		found, scanErr := collectRegisterBurstCandidates(db, rule, now)
-		if scanErr != nil {
-			return result, scanErr
-		}
-		candidates = append(candidates, found...)
-	}
-	if rule, ok := enabledRules[entity.RiskRuleIDAnswerPatternRepeat]; ok {
-		found, scanErr := collectAnswerPatternRepeatCandidates(db, rule, now)
-		if scanErr != nil {
-			return result, scanErr
-		}
-		candidates = append(candidates, found...)
-	}
-
 	seenRules := map[string]struct{}{}
 	for _, candidate := range candidates {
 		created, warning, createErr := createRiskWarningIfNeeded(db, candidate, now)
@@ -679,7 +595,7 @@ func EvaluateDebtAlerts(db *gorm.DB, now time.Time) (RiskAlertEvaluation, error)
 		// 为什么这个判断放在推送侧而不是 collector 侧：collector 必须**写入**
 		// 当日记录，否则「连续 N 天」永远凑不满（没有历史）。所以不能靠
 		// 「不产出候选」来抑制 —— 那样规则永远不响。正确做法是「写记录、晚推送」。
-		if candidate.Rule.RuleID == entity.RiskRuleIDOffhoursActivity && !riskOffhoursConsecutiveMet(candidate.Detail) {
+		if effectiveRiskRuleType(candidate.Rule) == entity.RiskRuleIDOffhoursActivity && !riskOffhoursConsecutiveMet(candidate.Detail) {
 			result.Suppressed++
 			continue
 		}
@@ -738,6 +654,17 @@ func createRiskWarningIfNeeded(db *gorm.DB, candidate riskWarningCandidate, now 
 	}
 	if found {
 		return false, &existing, nil
+	}
+	if strings.TrimSpace(candidate.Rule.Name) != "" {
+		detail := map[string]any{}
+		if err := json.Unmarshal([]byte(candidate.Detail), &detail); err == nil && detail != nil {
+			detail["ruleName"] = candidate.Rule.Name
+			encoded, err := json.Marshal(detail)
+			if err != nil {
+				return false, nil, err
+			}
+			candidate.Detail = string(encoded)
+		}
 	}
 	warning := entity.RiskWarning{
 		RuleID:     candidate.Rule.RuleID,

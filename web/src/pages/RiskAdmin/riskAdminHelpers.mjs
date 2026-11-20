@@ -88,9 +88,13 @@ export const RISK_SEVERITY_META = Object.freeze({
 export const RISK_ADVISORY_NOTE =
   '风控只产生告警记录与企业微信推送。命中后不会封禁账号、不会拒绝请求、不会修改任何用户状态；处置请到「黑名单管理」或其他对应页面人工执行。'
 
-export function riskRuleLabel(ruleId) {
+export function riskRuleLabel(ruleId, detail = '', rules = []) {
   const key = String(ruleId ?? '').trim()
   if (!key) return '未知规则'
+  const snapshotName = parseRiskEvidence(detail).evidence.ruleName
+  if (typeof snapshotName === 'string' && snapshotName.trim()) return snapshotName.trim()
+  const current = Array.isArray(rules) ? rules.find(item => item?.ruleId === key) : null
+  if (typeof current?.name === 'string' && current.name.trim()) return current.name.trim()
   return RISK_RULE_LABELS[key] || key
 }
 
@@ -346,10 +350,9 @@ export function readRiskThrownMessage(error, fallback) {
 // 曾经「有面板没输入框」）。
 
 // ─────────────────────────────────────────────────────────────────────
-// 「内置规则集不可新增」—— 这是**数据模型事实**，不是未做的功能
+// 旧版规则管理只支持内置项；当前规则目录与 CRUD 由服务端白名单检测器驱动。
 //
-// 任务书要求先证清模型再决定是否做「新建规则」。实测结论：**不能新建**。
-// 依据（三处，缺一条都不足以定论）：
+// 当前已支持受控类型的新建与管理。任意表达式/脚本仍不得由浏览器提交执行。
 //
 //  1. `risk_rules` 确实是数据库表（entity/risk.go 的 RiskRule），但它**不是规则的来源**：
 //     `loadRiskRules`（service/risk_alert.go:464）遍历的是
@@ -366,9 +369,7 @@ export function readRiskThrownMessage(error, fallback) {
 //  3. `SetRiskRuleEnabledWithDB` 走 `isKnownRiskRuleID` 白名单（risk_threshold.go:620），
 //     未知 ruleId 直接返回 ErrRiskRuleUnknown。即「新建的规则连启停都设不了」。
 //
-// ⇒ 若硬做 POST /risk/rules，会创建出一条**永远不参与判定**的行：列表里看得见、
-//    开关点得动（开关本身会被白名单拦住）、告警永不产生。这正是任务书点名的
-//    「造假功能」，所以本轮如实记为不可新增，并把该事实写进页面文案。
+// 以上仅记录原实现问题；执行层接入 registry 后，数据库中的受支持类型规则会参与判定。
 // ─────────────────────────────────────────────────────────────────────
 
 // RISK_BUILTIN_RULE_NOTICE 是「规则集内置、不可在管理页新增」的用户可见说明。
@@ -376,11 +377,6 @@ export function readRiskThrownMessage(error, fallback) {
 // 为什么必须有这段文案：管理员看到「规则清单」一定会找「新建」按钮。
 // 没有按钮却没有解释，最容易被理解成「这功能忘了做/坏了」，然后是反复提工单。
 // 写明「新增需要代码改动 + 需要的是哪一种改动」既解释现状，也给出正确路径。
-export const RISK_BUILTIN_RULE_NOTICE =
-  '规则集是**内置**的，管理页不支持新增或删除规则 —— 规则的可执行判定写在服务端代码里（每条规则一个判定函数），'
-  + '不是数据库里的可编辑行，因此往规则表插行不会让它参与判定。当前可调的是每条规则的**启用开关**、**数值阈值**，'
-  + '以及两项**文本配置**（ASN 名单 / 评估间隔）。新增一条规则需要服务端代码改动（登记规则常量 + 判定函数 + 阈值规格）。'
-
 // 非数值配置的 kind → 前端控件类型。
 //
 // 与后端 service.RiskConfigKind* 逐字对齐；未知 kind 必须**报错而不是猜**

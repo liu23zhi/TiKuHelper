@@ -48,11 +48,11 @@
         />
 
         <a-alert
-          v-if="loadError"
+          v-if="configError"
           type="error"
           show-icon
           class="status-alert"
-          :message="loadError"
+          :message="configError"
         />
 
         <a-form layout="vertical" class="risk-config-form" :on-finish="saveSettings">
@@ -120,11 +120,11 @@
             <a-button
               type="primary"
               html-type="submit"
-              :loading="saving"
+              :loading="writing"
               :disabled="!configLoaded || writing"
             >保存风控通知设置</a-button>
             <a-button
-              :loading="testing"
+              :loading="writing"
               :disabled="!configLoaded || writing"
               @click="sendTest"
             >发送测试消息</a-button>
@@ -136,7 +136,7 @@
         <p v-if="configSuccess" class="config-success" role="status">{{ configSuccess }}</p>
       </ConsolePanel>
 
-      <!-- ============ 规则清单（启停 + 说明） ============ -->
+      <!-- ============ 规则清单（增删改、启停与说明） ============ -->
       <!--
         本区块在 t193 审计之前**不存在**，原因是一个历史遗留的坏断言：
         riskAdminSource.test.mjs 里曾写「不得声明后端不存在的 /risk/rules」，
@@ -149,20 +149,10 @@
           · 消失会让人以为规则被删了
           · 停用是临时状态，需要能随时看到并重新启用
       -->
-      <ConsolePanel class="risk-rules-panel" title="规则清单">
-        <!--
-          规则集是**内置**的：管理页不能新增/删除规则。
-          这段说明必须常驻 —— 管理员看到「规则清单」一定会找「新建」按钮，
-          没有按钮又没有解释，最容易被理解成「功能忘了做」，然后是反复提工单。
-          事实依据见 riskAdminHelpers.mjs 的 RISK_BUILTIN_RULE_NOTICE 注释
-          （loadRiskRules 只遍历代码常量、多余 DB 行被静默丢弃）。
-        -->
-        <a-alert
-          type="info"
-          show-icon
-          class="risk-builtin-notice"
-          :message="RISK_BUILTIN_RULE_NOTICE"
-        />
+      <ConsolePanel class="risk-rules-panel" title="规则清单" description="内置规则作为默认配置；新增规则只能选择服务端支持的检测类型。">
+        <template #actions>
+          <a-button type="primary" :disabled="!canManage() || rulesLoading || ruleWriting" @click="openCreateRule">新增规则</a-button>
+        </template>
         <p v-if="rulesError" class="filter-error" role="alert">{{ rulesError }}</p>
         <p v-if="rulesSuccess" class="config-success" role="status">{{ rulesSuccess }}</p>
         <div v-if="!rules.length" class="field-hint">
@@ -178,6 +168,7 @@
             <div class="risk-rule-main">
               <div class="risk-rule-title">
                 <span class="risk-rule-name">{{ rule.name }}</span>
+                <a-tag :color="rule.source === 'builtin' ? 'blue' : 'purple'">{{ rule.source === 'builtin' ? '内置默认' : '自定义' }}</a-tag>
                 <a-tag :color="riskSeverityMeta(rule.severity).color">
                   {{ riskSeverityMeta(rule.severity).label }}
                 </a-tag>
@@ -185,20 +176,32 @@
               </div>
               <div class="risk-rule-meta">
                 <code class="risk-rule-id">{{ rule.ruleId }}</code>
+                <span class="risk-rule-type">类型：{{ rule.type }}</span>
                 <span class="risk-rule-threshold">
                   生效阈值：{{ rule.threshold }}{{ ruleUnit(rule) }}
                 </span>
               </div>
               <p class="risk-rule-desc">{{ rule.description || '（无说明）' }}</p>
+              <p class="risk-rule-updated">更新于 {{ formatRiskDateTime(rule.updatedAt) }}<span v-if="rule.updatedBy"> · {{ rule.updatedBy }}</span></p>
             </div>
-            <div class="risk-rule-switch">
+            <div class="risk-rule-actions">
               <a-switch
                 :checked="rule.enabled"
                 :loading="ruleToggling[rule.ruleId]"
+                :disabled="ruleWriting || ruleDeleting[rule.ruleId]"
                 checked-children="启用"
                 un-checked-children="停用"
                 @change="checked => toggleRule(rule, checked)"
               />
+              <a-button size="small" :disabled="ruleWriting || ruleDeleting[rule.ruleId] || ruleToggling[rule.ruleId]" @click="openEditRule(rule)">编辑</a-button>
+              <a-popconfirm
+                title="删除后该规则停止检测，已有告警记录会保留。确定删除吗？"
+                ok-text="删除"
+                cancel-text="取消"
+                :onConfirm="() => deleteRule(rule)"
+              >
+                <a-button size="small" danger :loading="ruleDeleting[rule.ruleId]" :disabled="ruleWriting || ruleToggling[rule.ruleId]">删除</a-button>
+              </a-popconfirm>
             </div>
           </div>
         </div>
@@ -424,7 +427,7 @@
           >
             <template #bodyCell="{ column, record }">
               <span v-if="column.key === 'id'">{{ record.id ?? '-' }}</span>
-              <span v-else-if="column.key === 'ruleId'">{{ riskRuleLabel(record.ruleId) }}</span>
+              <span v-else-if="column.key === 'ruleId'">{{ riskRuleLabel(record.ruleId, record.detail, rules) }}</span>
               <a-tag
                 v-else-if="column.key === 'severity'"
                 :color="riskSeverityMeta(record.severity).color"
@@ -466,7 +469,7 @@
           -->
           <dl class="detail-list">
             <div class="detail-row"><dt>告警 ID</dt><dd>{{ detail.id }}</dd></div>
-            <div class="detail-row"><dt>规则</dt><dd>{{ riskRuleLabel(detail.ruleId) }}</dd></div>
+            <div class="detail-row"><dt>规则</dt><dd>{{ riskRuleLabel(detail.ruleId, detail.detail, rules) }}</dd></div>
             <div class="detail-row">
               <dt>级别</dt>
               <dd><a-tag :color="riskSeverityMeta(detail.severity).color">{{ riskSeverityMeta(detail.severity).label }}</a-tag></dd>
@@ -492,6 +495,51 @@
         </template>
       </a-spin>
     </a-modal>
+
+    <a-modal
+      :open="ruleEditorOpen"
+      :title="ruleEditingId ? '编辑风控规则' : '新增风控规则'"
+      :confirm-loading="ruleWriting"
+      :ok-button-props="{ disabled: !ruleDraft.name.trim() || !ruleDraft.type }"
+      ok-text="保存"
+      cancel-text="取消"
+      @ok="saveRule"
+      @cancel="closeRuleEditor"
+    >
+      <a-form layout="vertical" class="risk-rule-editor">
+        <a-form-item v-if="!ruleEditingId" label="规则类型" required>
+          <a-select
+            :value="ruleDraft.type"
+            :options="ruleTypeOptions"
+            placeholder="选择服务端支持的检测类型"
+            @update:value="setRuleType"
+          />
+          <div v-if="selectedRuleType?.description" class="field-hint">{{ selectedRuleType.description }}</div>
+        </a-form-item>
+        <a-form-item v-else label="规则类型">
+          <a-input :value="ruleDraft.type" disabled />
+        </a-form-item>
+        <p v-if="!ruleEditingId" class="field-hint">规则 ID 由系统生成，创建后保持不变。</p>
+        <a-form-item label="规则名称" required>
+          <a-input v-model:value="ruleDraft.name" :maxlength="128" placeholder="为管理员容易识别的名称" />
+        </a-form-item>
+        <a-form-item label="说明">
+          <a-textarea v-model:value="ruleDraft.description" :rows="3" :maxlength="2048" show-count placeholder="说明规则触发条件与适用范围" />
+        </a-form-item>
+        <div class="risk-rule-editor-grid">
+          <a-form-item label="告警级别" required>
+            <a-select v-model:value="ruleDraft.severity" :options="severityOptions" />
+          </a-form-item>
+          <a-form-item label="阈值" required>
+            <a-input-number v-model:value="ruleDraft.threshold" :min="0" :precision="6" style="width: 100%" />
+          </a-form-item>
+          <a-form-item label="节流秒数">
+            <a-input-number v-model:value="ruleDraft.throttleSeconds" :min="0" :precision="0" style="width: 100%" />
+          </a-form-item>
+        </div>
+        <p v-if="rulesError" class="filter-error" role="alert">{{ rulesError }}</p>
+      </a-form>
+    </a-modal>
   </div>
 </template>
 
@@ -508,19 +556,22 @@ import {
   getRiskAlerts,
   getRiskConfigs,
   getRiskRules,
+  getRiskRuleTypes,
   getRiskThresholds,
   getRiskWebhookSettings,
+  createRiskRule,
+  deleteRiskRule as deleteRiskRuleRequest,
   resetRiskConfig,
   resetRiskThreshold,
   setRiskRuleEnabled,
   testRiskWebhook,
   updateRiskConfig,
+  updateRiskRule,
   updateRiskThreshold,
   updateRiskWebhookSettings,
 } from '@/api/RiskAdminApi'
 import {
   RISK_ADVISORY_NOTE,
-  RISK_BUILTIN_RULE_NOTICE,
   RISK_INDEPENDENCE_NOTICE,
   RISK_RULE_OPTIONS,
   buildRiskAlertListParams,
@@ -603,6 +654,19 @@ export default {
     const rulesError = ref('')
     const rulesSuccess = ref('')
     const ruleToggling = reactive({})
+    const ruleTypes = ref([])
+    const ruleEditorOpen = ref(false)
+    const ruleEditingId = ref('')
+    const ruleWriting = ref(false)
+    const ruleDeleting = reactive({})
+    const ruleDraft = reactive({ type: '', name: '', description: '', severity: 'medium', threshold: 1, throttleSeconds: 0 })
+    const ruleTypeOptions = computed(() => ruleTypes.value.map(item => ({ label: item.name + ' · ' + item.type, value: item.type })))
+    const selectedRuleType = computed(() => ruleTypes.value.find(item => item.type === ruleDraft.type) || null)
+    const severityOptions = [
+      { label: '低', value: 'low' },
+      { label: '中', value: 'medium' },
+      { label: '高', value: 'high' },
+    ]
 
     // ---- 非数值配置（ASN 名单 / 评估间隔）----
     //
@@ -626,6 +690,11 @@ export default {
     let mounted = false
     let readVersion = 0
     let writeVersion = 0
+    let ruleScopeVersion = 0
+    let rulesReadVersion = 0
+    let ruleTypesReadVersion = 0
+    let thresholdReadVersion = 0
+    let configItemsReadVersion = 0
     const mountedLogoutEpoch = getCurrentUserLogoutEpoch()
     let observedLogout = mountedLogoutEpoch
 
@@ -637,8 +706,16 @@ export default {
     }
     const canManage = () => alive && route.path === mountedPath
       && getCurrentUserLogoutEpoch() === mountedLogoutEpoch && validAdmin()
+    const captureRuleScope = () => {
+      const scope = ruleScopeVersion
+      return () => canManage() && scope === ruleScopeVersion
+    }
 
-    const ruleOptions = RISK_RULE_OPTIONS.map(item => ({ label: item.label, value: item.value }))
+    const ruleOptions = computed(() => {
+      const options = new Map(RISK_RULE_OPTIONS.map(item => [item.value, { label: item.label, value: item.value }]))
+      for (const rule of rules.value) options.set(rule.ruleId, { label: rule.name, value: rule.ruleId })
+      return [...options.values()]
+    })
     const notifiedOptions = [
       { label: '已推送', value: 'true' },
       { label: '未推送', value: 'false' },
@@ -665,7 +742,7 @@ export default {
     const alertScopeDescription = computed(() => {
       const scope = appliedFilters.value
       const parts = [
-        scope.ruleId && `规则：${riskRuleLabel(scope.ruleId)}`,
+        scope.ruleId && `规则：${riskRuleLabel(scope.ruleId, '', rules.value)}`,
         scope.userId && `用户 ID：${scope.userId}`,
         scope.notified && `推送：${scope.notified === 'true' ? '已推送' : '未推送'}`,
         scope.createdFrom && `起：${scope.createdFrom}`,
@@ -850,28 +927,178 @@ export default {
           threshold: Number(item.threshold ?? 0),
           exists: item.exists === true,
           description: String(item.description ?? ''),
+          type: String(item.type ?? item.ruleId),
+          source: item.source === 'custom' ? 'custom' : 'builtin',
+          throttleSeconds: Number(item.throttleSeconds ?? 0),
           unit: String(item.unit ?? ''),
+          updatedAt: item.updatedAt || '',
+          updatedBy: String(item.updatedBy ?? ''),
         }))
+    }
+
+    const loadRuleTypes = async () => {
+      if (!canManage()) return false
+      const scope = ruleScopeVersion
+      const ticket = ++ruleTypesReadVersion
+      const owns = () => canManage() && scope === ruleScopeVersion && ticket === ruleTypesReadVersion
+      try {
+        const res = await getRiskRuleTypes()
+        if (!owns()) return false
+        if (Number(res?.status) !== 200) {
+          rulesError.value = readRiskMessage(res, '读取可用规则类型失败')
+          return false
+        }
+        const body = res?.data?.data ?? res?.data
+        const items = Array.isArray(body) ? body : Array.isArray(body?.items) ? body.items : Array.isArray(body?.data) ? body.data : []
+        ruleTypes.value = items.filter(item => item && typeof item.type === 'string' && item.type)
+        return true
+      } catch (error) {
+        if (owns()) rulesError.value = readRiskThrownMessage(error, '读取可用规则类型失败')
+        return false
+      }
     }
 
     const loadRules = async () => {
       if (!canManage()) return false
+      const scope = ruleScopeVersion
+      const ticket = ++rulesReadVersion
+      const owns = () => canManage() && scope === ruleScopeVersion && ticket === rulesReadVersion
       rulesLoading.value = true
       rulesError.value = ''
       try {
         const res = await getRiskRules()
-        if (!canManage()) return false
+        if (!owns()) return false
         if (Number(res?.status) !== 200) {
           rulesError.value = readRiskMessage(res, '读取规则清单失败')
           return false
         }
-        applyRuleItems(res?.data?.data?.items)
+        const body = res?.data
+        const fullRules = body?.data
+        applyRuleItems(Array.isArray(fullRules) ? fullRules : body?.items || fullRules?.items)
         return true
       } catch (error) {
-        if (canManage()) rulesError.value = readRiskThrownMessage(error, '读取规则清单失败')
+        if (owns()) rulesError.value = readRiskThrownMessage(error, '读取规则清单失败')
         return false
       } finally {
-        if (canManage()) rulesLoading.value = false
+        if (owns()) rulesLoading.value = false
+      }
+    }
+
+    const resetRuleDraft = () => {
+      ruleDraft.type = ruleTypes.value[0]?.type || ''
+      ruleDraft.name = ''
+      ruleDraft.description = ''
+      ruleDraft.severity = 'medium'
+      ruleDraft.threshold = Number(ruleTypes.value[0]?.defaultThreshold ?? 1)
+      ruleDraft.throttleSeconds = 0
+    }
+    const openCreateRule = async () => {
+      if (!canManage() || rulesLoading.value || ruleWriting.value) return
+      const owns = captureRuleScope()
+      rulesError.value = ''
+      rulesSuccess.value = ''
+      if (!ruleTypes.value.length && !await loadRuleTypes()) return
+      if (!owns()) return
+      ruleEditingId.value = ''
+      resetRuleDraft()
+      ruleEditorOpen.value = true
+    }
+    const openEditRule = rule => {
+      if (!canManage() || !rule || rulesLoading.value || ruleWriting.value || ruleDeleting[rule.ruleId] || ruleToggling[rule.ruleId]) return
+      rulesError.value = ''
+      rulesSuccess.value = ''
+      ruleEditingId.value = rule.ruleId
+      Object.assign(ruleDraft, {
+        type: rule.type,
+        name: rule.name,
+        description: rule.description,
+        severity: rule.severity || 'medium',
+        threshold: Number(rule.threshold ?? 0),
+        throttleSeconds: Number(rule.throttleSeconds ?? 0),
+      })
+      ruleEditorOpen.value = true
+    }
+    const setRuleType = type => {
+      if (!canManage() || ruleEditingId.value) return
+      const selected = ruleTypes.value.find(item => item.type === type)
+      if (!selected) return
+      ruleDraft.type = selected.type
+      ruleDraft.threshold = Number(selected.defaultThreshold ?? 1)
+    }
+    const closeRuleEditor = () => {
+      if (ruleWriting.value) return
+      ruleEditorOpen.value = false
+      ruleEditingId.value = ''
+      resetRuleDraft()
+    }
+    const saveRule = async () => {
+      if (!canManage() || ruleWriting.value) return
+      const scope = ruleScopeVersion
+      const owns = () => canManage() && scope === ruleScopeVersion
+      const name = String(ruleDraft.name || '').trim()
+      const threshold = Number(ruleDraft.threshold)
+      const throttleSeconds = Number(ruleDraft.throttleSeconds)
+      if (!name || !ruleDraft.type || !Number.isFinite(threshold) || threshold < 0 || !Number.isInteger(throttleSeconds) || throttleSeconds < 0) {
+        rulesError.value = '请填写名称、受支持的规则类型、有效阈值和非负整数节流秒数。'
+        return
+      }
+      ruleWriting.value = true
+      rulesError.value = ''
+      rulesSuccess.value = ''
+      const editingId = ruleEditingId.value
+      const payload = {
+        name,
+        description: String(ruleDraft.description || '').trim(),
+        severity: ruleDraft.severity,
+        threshold,
+        throttleSeconds,
+        config: {},
+      }
+      try {
+        const res = editingId
+          ? await updateRiskRule(editingId, payload)
+          : await createRiskRule({
+            ...payload,
+            type: ruleDraft.type,
+            enabled: true,
+          })
+        if (!owns()) return
+        if (Number(res?.status) !== 200 && Number(res?.status) !== 201) {
+          rulesError.value = readRiskMessage(res, '保存规则失败')
+          return
+        }
+        await Promise.all([loadRules(), loadThresholds(), loadConfigItems()])
+        if (!owns()) return
+        rulesSuccess.value = editingId ? `已更新规则「${name}」` : `已新增规则「${name}」`
+        ruleEditorOpen.value = false
+        ruleEditingId.value = ''
+      } catch (error) {
+        if (owns()) rulesError.value = readRiskThrownMessage(error, '保存规则失败')
+      } finally {
+        if (owns()) ruleWriting.value = false
+      }
+    }
+    const deleteRule = async rule => {
+      if (!canManage() || !rule?.ruleId || ruleWriting.value || ruleDeleting[rule.ruleId] || ruleToggling[rule.ruleId]) return
+      const scope = ruleScopeVersion
+      const owns = () => canManage() && scope === ruleScopeVersion
+      ruleDeleting[rule.ruleId] = true
+      rulesError.value = ''
+      rulesSuccess.value = ''
+      try {
+        const res = await deleteRiskRuleRequest(rule.ruleId)
+        if (!owns()) return
+        if (Number(res?.status) !== 200) {
+          rulesError.value = readRiskMessage(res, '删除规则失败')
+          return
+        }
+        rules.value = rules.value.filter(item => item.ruleId !== rule.ruleId)
+        rulesSuccess.value = `已删除规则「${rule.name}」；已有告警记录会保留`
+        await Promise.all([loadThresholds(), loadConfigItems()])
+      } catch (error) {
+        if (owns()) rulesError.value = readRiskThrownMessage(error, '删除规则失败')
+      } finally {
+        if (owns()) ruleDeleting[rule.ruleId] = false
       }
     }
 
@@ -881,7 +1108,9 @@ export default {
     // 管理员刚点的那一行反而看不出来变了没有。
     // 失败时保持原状态并报错 —— 不能乐观更新，否则「以为停用了其实没停」。
     const toggleRule = async (rule, nextEnabled) => {
-      if (!canManage() || !rule) return
+      if (!canManage() || !rule || ruleWriting.value || ruleDeleting[rule.ruleId]) return
+      const scope = ruleScopeVersion
+      const owns = () => canManage() && scope === ruleScopeVersion
       const ruleId = rule.ruleId
       if (ruleToggling[ruleId]) return
       ruleToggling[ruleId] = true
@@ -889,13 +1118,13 @@ export default {
       rulesSuccess.value = ''
       try {
         const res = await setRiskRuleEnabled(ruleId, nextEnabled === true)
-        if (!canManage()) return
+        if (!owns()) return
         if (Number(res?.status) !== 200) {
           rulesError.value = readRiskMessage(res, '保存规则状态失败')
           return
         }
         // 以服务端返回的 item 为准（后端可能规范化过），拿不到才用本地值。
-        const saved = res?.data?.data?.item
+        const saved = res?.data?.item || res?.data?.data?.item
         if (saved && typeof saved.ruleId === 'string') {
           const index = rules.value.findIndex(item => item.ruleId === saved.ruleId)
           if (index >= 0) {
@@ -905,6 +1134,9 @@ export default {
               description: String(saved.description ?? rules.value[index].description),
               threshold: Number(saved.threshold ?? rules.value[index].threshold),
               unit: String(saved.unit ?? rules.value[index].unit),
+              source: String(saved.source ?? rules.value[index].source),
+              type: String(saved.type ?? rules.value[index].type),
+              throttleSeconds: Number(saved.throttleSeconds ?? rules.value[index].throttleSeconds),
             })
           }
         } else {
@@ -914,9 +1146,9 @@ export default {
           ? `已启用「${rule.name}」`
           : `已停用「${rule.name}」——历史告警保留，只是不再产生新告警`
       } catch (error) {
-        if (canManage()) rulesError.value = readRiskThrownMessage(error, '保存规则状态失败')
+        if (owns()) rulesError.value = readRiskThrownMessage(error, '保存规则状态失败')
       } finally {
-        if (canManage()) ruleToggling[ruleId] = false
+        if (owns()) ruleToggling[ruleId] = false
       }
     }
 
@@ -934,26 +1166,28 @@ export default {
 
     const loadConfigItems = async () => {
       if (!canManage()) return false
+      const currentScope = captureRuleScope(), ticket = ++configItemsReadVersion
+      const owns = () => currentScope() && ticket === configItemsReadVersion
       configItemsLoading.value = true
       configItemsError.value = ''
       try {
         const res = await getRiskConfigs()
-        if (!canManage()) return false
+        if (!owns()) return false
         if (Number(res?.status) !== 200) {
           configItemsError.value = readRiskMessage(res, '读取风控配置失败')
           return false
         }
-        applyConfigItems(res?.data?.data?.items)
+        applyConfigItems(res?.data?.items || res?.data?.data?.items)
         return true
       } catch (error) {
-        if (canManage()) {
+        if (owns()) {
           // normalizeRiskConfigItems 对未知 kind 会抛错（明确报出是哪个键），
           // 这条路径必须把原文展示出来，而不是笼统的「读取失败」。
           configItemsError.value = readRiskThrownMessage(error, '读取风控配置失败')
         }
         return false
       } finally {
-        if (canManage()) configItemsLoading.value = false
+        if (owns()) configItemsLoading.value = false
       }
     }
 
@@ -978,6 +1212,7 @@ export default {
 
     const saveConfigItem = async item => {
       if (!canManage() || configItemsWriting.value || !item?.key) return
+      const owns = captureRuleScope()
       const raw = String(configItemDraft[item.key] ?? '')
       // 前端只做类型守卫（整数/区间/长度），形态校验（ASN 归一化）留在后端。
       const problem = validateRiskConfigDraft(item, raw)
@@ -991,65 +1226,68 @@ export default {
       configItemsSuccess.value = ''
       try {
         const res = await updateRiskConfig(item.key, raw.trim())
-        if (!canManage()) return
+        if (!owns()) return
         if (Number(res?.status) !== 200) {
           configItemsError.value = readRiskMessage(res, '保存风控配置失败')
           return
         }
-        const saved = res?.data?.data?.item
+        const saved = res?.data?.item || res?.data?.data?.item
         if (saved && saved.key) replaceConfigItem(saved)
         // 文案必须说明「变成了什么」：清空与设值是两种效果，不能都只说「已保存」。
-        const message = String(res?.data?.data?.message ?? '')
+        const message = String(res?.data?.message ?? res?.data?.data?.message ?? '')
         configItemsSuccess.value = message.includes('清空')
           ? `${item.label} 已清空，回到默认值`
           : `${item.label} 已保存，判定立即生效`
-        await loadConfigItems()
+        await Promise.all([loadConfigItems(), loadRules()])
       } catch (error) {
-        if (canManage()) configItemsError.value = readRiskThrownMessage(error, '保存风控配置失败')
+        if (owns()) configItemsError.value = readRiskThrownMessage(error, '保存风控配置失败')
       } finally {
-        if (canManage()) configItemsWriting.value = false
+        if (owns()) configItemsWriting.value = false
       }
     }
 
     const resetConfigItem = async item => {
       if (!canManage() || configItemsWriting.value || !item?.key) return
+      const owns = captureRuleScope()
       configItemsWriting.value = true
       configItemsError.value = ''
       configItemsSuccess.value = ''
       try {
         const res = await resetRiskConfig(item.key)
-        if (!canManage()) return
+        if (!owns()) return
         if (Number(res?.status) !== 200) {
           configItemsError.value = readRiskMessage(res, '重置风控配置失败')
           return
         }
         configItemsSuccess.value = `${item.label} 已重置为默认值`
-        await loadConfigItems()
+        await Promise.all([loadConfigItems(), loadRules()])
       } catch (error) {
-        if (canManage()) configItemsError.value = readRiskThrownMessage(error, '重置风控配置失败')
+        if (owns()) configItemsError.value = readRiskThrownMessage(error, '重置风控配置失败')
       } finally {
-        if (canManage()) configItemsWriting.value = false
+        if (owns()) configItemsWriting.value = false
       }
     }
 
     const loadThresholds = async () => {
       if (!canManage()) return false
+      const currentScope = captureRuleScope(), ticket = ++thresholdReadVersion
+      const owns = () => currentScope() && ticket === thresholdReadVersion
       thresholdsLoading.value = true
       thresholdError.value = ''
       try {
         const res = await getRiskThresholds()
-        if (!canManage()) return false
+        if (!owns()) return false
         if (Number(res?.status) !== 200) {
           thresholdError.value = readRiskMessage(res, '读取规则阈值失败')
           return false
         }
-        applyThresholdItems(res?.data?.data?.items)
+        applyThresholdItems(res?.data?.items || res?.data?.data?.items)
         return true
       } catch (error) {
-        if (canManage()) thresholdError.value = readRiskThrownMessage(error, '读取规则阈值失败')
+        if (owns()) thresholdError.value = readRiskThrownMessage(error, '读取规则阈值失败')
         return false
       } finally {
-        if (canManage()) thresholdsLoading.value = false
+        if (owns()) thresholdsLoading.value = false
       }
     }
     const setThresholdDraft = (key, value) => {
@@ -1071,47 +1309,49 @@ export default {
     }
     const saveThreshold = async item => {
       if (!canManage() || thresholdWriting.value || !item?.key) return
+      const owns = captureRuleScope()
       const value = Number(thresholdDraft[item.key])
       thresholdWriting.value = true
       thresholdError.value = ''
       thresholdSuccess.value = ''
       try {
         const res = await updateRiskThreshold(item.key, value)
-        if (!canManage()) return
+        if (!owns()) return
         if (Number(res?.status) !== 200) {
           // 400 的文案由后端给出（占比越界/必须大于 0 等），直接展示。
           thresholdError.value = readRiskMessage(res, '保存阈值失败')
           return
         }
-        const saved = res?.data?.data?.item
+        const saved = res?.data?.item || res?.data?.data?.item
         if (saved && saved.key) thresholdDraft[saved.key] = Number(saved.value)
         thresholdSuccess.value = `${item.label} 已保存为 ${saved?.value ?? value}，判定立即生效`
         // 重新拉一次，保证整张表与服务端一致（含 source/configured）。
-        await loadThresholds()
+        await Promise.all([loadThresholds(), loadRules()])
       } catch (error) {
-        if (canManage()) thresholdError.value = readRiskThrownMessage(error, '保存阈值失败')
+        if (owns()) thresholdError.value = readRiskThrownMessage(error, '保存阈值失败')
       } finally {
-        if (canManage()) thresholdWriting.value = false
+        if (owns()) thresholdWriting.value = false
       }
     }
     const resetThreshold = async item => {
       if (!canManage() || thresholdWriting.value || !item?.key) return
+      const owns = captureRuleScope()
       thresholdWriting.value = true
       thresholdError.value = ''
       thresholdSuccess.value = ''
       try {
         const res = await resetRiskThreshold(item.key)
-        if (!canManage()) return
+        if (!owns()) return
         if (Number(res?.status) !== 200) {
           thresholdError.value = readRiskMessage(res, '重置阈值失败')
           return
         }
         thresholdSuccess.value = `${item.label} 已重置为默认值 ${item.defaultValue}`
-        await loadThresholds()
+        await Promise.all([loadThresholds(), loadRules()])
       } catch (error) {
-        if (canManage()) thresholdError.value = readRiskThrownMessage(error, '重置阈值失败')
+        if (owns()) thresholdError.value = readRiskThrownMessage(error, '重置阈值失败')
       } finally {
-        if (canManage()) thresholdWriting.value = false
+        if (owns()) thresholdWriting.value = false
       }
     }
 
@@ -1188,6 +1428,30 @@ export default {
     const retire = () => {
       readVersion += 1
       writeVersion += 1
+      ruleScopeVersion += 1
+      rules.value = []
+      ruleTypes.value = []
+      rulesLoading.value = false
+      ruleEditorOpen.value = false
+      ruleWriting.value = false
+      rulesError.value = ''
+      rulesSuccess.value = ''
+      ruleEditingId.value = ''
+      thresholds.value = []
+      configItems.value = []
+      thresholdWriting.value = false
+      thresholdsLoading.value = false
+      thresholdError.value = ''
+      thresholdSuccess.value = ''
+      configItemsWriting.value = false
+      configItemsLoading.value = false
+      configItemsError.value = ''
+      configItemsSuccess.value = ''
+      for (const key of Object.keys(thresholdDraft)) delete thresholdDraft[key]
+      for (const key of Object.keys(configItemDraft)) delete configItemDraft[key]
+      for (const key of Object.keys(ruleToggling)) delete ruleToggling[key]
+      for (const key of Object.keys(ruleDeleting)) delete ruleDeleting[key]
+      resetRuleDraft()
     }
 
     watch(() => [currentUserIdentity(currentUser.value), currentUser.value?.role, currentUser.value?.status], () => {
@@ -1197,7 +1461,7 @@ export default {
       configLoaded.value = false
       settings.value = emptySettings()
       Object.assign(config, emptyConfig())
-      if (mounted && canManage()) { void loadAlerts(); void loadConfig(); void loadThresholds(); void loadRules(); void loadConfigItems() }
+      if (mounted && canManage()) { void loadAlerts(); void loadConfig(); void loadThresholds(); void loadRules(); void loadRuleTypes(); void loadConfigItems() }
     }, { flush: 'sync' })
     watch(() => getCurrentUserLogoutEpoch(), value => {
       if (value === observedLogout) return
@@ -1223,6 +1487,7 @@ export default {
         // 刷新页面才出来」。本次一并补上，否则新加的规则清单会有同样问题。
         void loadThresholds()
         void loadRules()
+        void loadRuleTypes()
         // 非数值配置（ASN 名单 / 评估间隔）同样必须首屏加载：
         // 这两项此前完全没有 UI，现在有了却只在 watch 里加载，就会重演
         // 「刷新页面才出来」那个缺陷。
@@ -1237,7 +1502,7 @@ export default {
 
     return {
       fieldId, canManage,
-      RISK_ADVISORY_NOTE, RISK_INDEPENDENCE_NOTICE, RISK_BUILTIN_RULE_NOTICE,
+      RISK_ADVISORY_NOTE, RISK_INDEPENDENCE_NOTICE,
       alerts, alertsTotal, hasLoadedAlerts, loadingAlerts, alertError, filterError,
       alertFilters, appliedFilters, alertPagination, alertColumns, evidenceColumns,
       ruleOptions, notifiedOptions,
@@ -1250,7 +1515,8 @@ export default {
       thresholds, thresholdDraft, thresholdsLoading, thresholdWriting, thresholdError, thresholdSuccess,
       loadThresholds, setThresholdDraft, saveThreshold, resetThreshold, describeThresholdSource,
       rules, rulesLoading, rulesError, rulesSuccess, ruleToggling,
-      loadRules, toggleRule, ruleUnit,
+      ruleTypes, ruleTypeOptions, selectedRuleType, severityOptions, ruleEditorOpen, ruleEditingId, ruleWriting, ruleDeleting, ruleDraft,
+      loadRules, toggleRule, ruleUnit, openCreateRule, openEditRule, closeRuleEditor, setRuleType, saveRule, deleteRule,
       // 非数值配置（ASN 名单 / 评估间隔）
       configItems, configItemDraft, configItemsLoading, configItemsWriting,
       configItemsError, configItemsSuccess,
@@ -1266,8 +1532,6 @@ export default {
 <style scoped>
 .page-alert, .filter-form, .status-alert { margin-bottom: 16px; }
 .risk-independence-notice { margin-bottom: 16px; }
-/* 「规则集内置、不支持新增」的常驻说明：与规则清单卡片同宽，下方留白与其它卡片一致。 */
-.risk-builtin-notice { margin-bottom: 16px; }
 .risk-config-panel, .risk-summary { margin-bottom: 16px; }
 .config-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 16px; }
 .config-address-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; color: var(--console-muted); }
@@ -1320,5 +1584,8 @@ export default {
   margin: 6px 0 0; font-size: 12.5px; line-height: 1.6;
   color: var(--console-muted); max-width: 78ch; overflow-wrap: anywhere;
 }
-.risk-rule-switch { flex-shrink: 0; padding-top: 2px; }
+.risk-rule-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; flex-shrink: 0; }
+.risk-rule-type, .risk-rule-updated { color: var(--console-muted); font-size: 12px; }
+.risk-rule-updated { margin: 6px 0 0; }
+.risk-rule-editor-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
 </style>

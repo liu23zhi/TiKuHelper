@@ -3,7 +3,6 @@ package service
 import (
 	"errors"
 	"strings"
-	"unicode/utf8"
 
 	"gorm.io/gorm"
 )
@@ -20,13 +19,7 @@ import (
 // RefundAgreementSettingKey 是协议文本在 system_settings 里的键。
 const RefundAgreementSettingKey = "refund_agreement_text"
 
-// RefundAgreementMaxRunes 是协议文本长度上限。
-//
-// 20000 字足够容纳任何正常条款，同时挡住「把整个文件塞进来」这类误操作 ——
-// 协议要在弹窗里**滚动到底**才算阅读完成，过长会让用户根本读不完。
-const RefundAgreementMaxRunes = 20000
-
-// ErrRefundAgreementInvalid 协议文本不合法（空或超长）。
+// ErrRefundAgreementInvalid 协议文本不合法（为空）。
 var ErrRefundAgreementInvalid = errors.New("退款协议文本无效")
 
 // DefaultRefundAgreementText 是内置的默认承诺书全文。
@@ -85,9 +78,6 @@ func SetRefundAgreementTextWithDB(db *gorm.DB, requested string) error {
 	// 那会让「滚到底」的判据在两端表现不一致。
 	text := strings.ReplaceAll(strings.TrimSpace(requested), "\r\n", "\n")
 	if text == "" {
-		return ErrRefundAgreementInvalid
-	}
-	if utf8.RuneCountInString(text) > RefundAgreementMaxRunes {
 		return ErrRefundAgreementInvalid
 	}
 	return saveSystemSettingValue(db, RefundAgreementSettingKey, text, "退款收款码使用承诺书全文")
