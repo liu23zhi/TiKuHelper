@@ -965,6 +965,16 @@ func ticketKeywordCondition(keyword string) (string, []interface{}) {
 }
 
 func GetTicketWithDB(db *gorm.DB, user *entity.User, id int64) (TicketDetail, error) {
+	return getTicketWithDBScope(db, user, id, false)
+}
+
+// GetTicketWithDBForView keeps administrator-only notification details inside
+// the management view. The self view remains private even for administrators.
+func GetTicketWithDBForView(db *gorm.DB, user *entity.User, id int64, selfView bool) (TicketDetail, error) {
+	return getTicketWithDBScope(db, user, id, selfView)
+}
+
+func getTicketWithDBScope(db *gorm.DB, user *entity.User, id int64, selfView bool) (TicketDetail, error) {
 	if db == nil || user == nil {
 		return TicketDetail{}, ErrTicketForbidden
 	}
@@ -972,7 +982,7 @@ func GetTicketWithDB(db *gorm.DB, user *entity.User, id int64) (TicketDetail, er
 		return TicketDetail{}, ErrTicketNotFound
 	}
 	query := db.Where("id = ?", id)
-	if !isTicketAdmin(user) {
+	if !isTicketAdmin(user) || selfView {
 		// 同列表：隔离只靠 user_id（系统单对被涉及用户可见，45-*.md §0.23.2）。
 		query = query.Where("user_id = ?", user.ID)
 	}
@@ -1007,7 +1017,7 @@ func GetTicketWithDB(db *gorm.DB, user *entity.User, id int64) (TicketDetail, er
 			return TicketDetail{}, err
 		}
 	}
-	if !isTicketAdmin(user) {
+	if !isTicketAdmin(user) || selfView {
 		return detail, nil
 	}
 	var notification entity.TicketNotification
@@ -1020,6 +1030,17 @@ func GetTicketWithDB(db *gorm.DB, user *entity.User, id int64) (TicketDetail, er
 }
 
 func AddTicketMessageWithDB(db *gorm.DB, user *entity.User, id int64, input ReplyTicketInput) (TicketDetail, error) {
+	return addTicketMessageWithDBScope(db, user, id, input, false)
+}
+
+// AddTicketMessageWithDBForView applies the same response boundary as detail
+// reads. A self-view reply must not return enterprise notification metadata,
+// even when the operator is an administrator.
+func AddTicketMessageWithDBForView(db *gorm.DB, user *entity.User, id int64, input ReplyTicketInput, selfView bool) (TicketDetail, error) {
+	return addTicketMessageWithDBScope(db, user, id, input, selfView)
+}
+
+func addTicketMessageWithDBScope(db *gorm.DB, user *entity.User, id int64, input ReplyTicketInput, selfView bool) (TicketDetail, error) {
 	if db == nil || user == nil {
 		return TicketDetail{}, ErrTicketForbidden
 	}
@@ -1031,7 +1052,7 @@ func AddTicketMessageWithDB(db *gorm.DB, user *entity.User, id int64, input Repl
 	now := time.Now()
 	err = db.Transaction(func(tx *gorm.DB) error {
 		query := tx.Where("id = ?", id)
-		if !isTicketAdmin(user) {
+		if !isTicketAdmin(user) || selfView {
 			// 隔离只靠 user_id：系统单可见 **且可回复**（45-*.md §0.23.2 的
 			// 「可见 ≠ 可回复」补充结论是「可回复」，但不能改 category / priority）。
 			query = query.Where("user_id = ?", user.ID)
@@ -1077,7 +1098,7 @@ func AddTicketMessageWithDB(db *gorm.DB, user *entity.User, id int64, input Repl
 	if err != nil {
 		return TicketDetail{}, err
 	}
-	return GetTicketWithDB(db, user, id)
+	return getTicketWithDBScope(db, user, id, selfView)
 }
 
 func UpdateTicketWithDB(db *gorm.DB, user *entity.User, id int64, input UpdateTicketInput) (TicketDetail, error) {

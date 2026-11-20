@@ -238,6 +238,26 @@ func TestTicketControllerCreateReplyAndPermissionIsolation(t *testing.T) {
 	if strings.Contains(read.Body.String(), "notification") || strings.Contains(read.Body.String(), "admin-only failure") {
 		t.Fatalf("notification leaked: %s", read.Body.String())
 	}
+	adminTicket, err := service.CreateTicketWithDB(db, admin, service.CreateTicketInput{Subject: "管理员自助反馈", Body: "自助反馈正文"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminParams := gin.Params{{Key: "id", Value: strconv.FormatInt(adminTicket.Ticket.ID, 10)}}
+	if err := db.Create(&entity.TicketNotification{TicketID: adminTicket.Ticket.ID, EventType: "new_ticket", Status: "failed", LastError: "admin-self-only failure", Payload: "hidden"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	adminSelf := performTicketControllerRequest(t, admin, http.MethodGet, "/tickets/id?scope=self", "", adminParams, TicketDetail)
+	if strings.Contains(adminSelf.Body.String(), "notification") || strings.Contains(adminSelf.Body.String(), "admin-only failure") {
+		t.Fatalf("self-view notification leaked for admin: %s", adminSelf.Body.String())
+	}
+	adminSelfReply := performTicketControllerRequest(t, admin, http.MethodPost, "/tickets/id/messages?scope=self", `{"body":"自助视图回复"}`, adminParams, AddTicketMessage)
+	if adminSelfReply.Code != http.StatusOK || strings.Contains(adminSelfReply.Body.String(), "notification") || strings.Contains(adminSelfReply.Body.String(), "admin-only failure") {
+		t.Fatalf("self-view reply exposed notification to admin: status=%d body=%s", adminSelfReply.Code, adminSelfReply.Body.String())
+	}
+	adminManagement := performTicketControllerRequest(t, admin, http.MethodGet, "/tickets/id?scope=admin", "", adminParams, TicketDetail)
+	if adminManagement.Code != http.StatusOK || !strings.Contains(adminManagement.Body.String(), "admin-self-only failure") {
+		t.Fatalf("admin management view did not include notification: status=%d body=%s", adminManagement.Code, adminManagement.Body.String())
+	}
 }
 
 func TestTicketControllerInvalidInputsReturn400(t *testing.T) {

@@ -399,7 +399,7 @@
                     <div class="ticket-refund-summary__refundable"><dt>可退款</dt><dd>{{ formatRefundCents(refundAvailableCents) }} 元</dd></div>
                     <div class="ticket-refund-summary__nonrefundable"><dt>不可退款</dt><dd>{{ formatRefundCents(refundNonRefundableCents) }} 元</dd></div>
                   </dl>
-                  <p class="ticket-refund-summary__reason"><strong>原因：</strong>{{ refundNonRefundableReason || '无不可退款金额' }}</p>
+                  <p v-if="Number(refundNonRefundableCents) > 0" class="ticket-refund-summary__reason"><strong>原因：</strong>{{ refundNonRefundableReason || '无不可退款金额' }}</p>
                 </div>
               </div>
             </template>
@@ -608,7 +608,7 @@
               :options="createIssueOptions"
               :disabled="createLoading"
               placeholder="请选择问题类型"
-              @update:value="createEntry.bind(setDraft, 'issueType')" /><template #help><span v-if="createValidationMessage('issueType')" role="alert">{{ createValidationMessage('issueType') }}</span><span v-else>选择后标题会自动带上该类型，便于管理员分诊。</span></template></a-form-item
+              :onUpdate:value="createEntry.bind(setDraft, 'issueType')" /><template #help><span v-if="createValidationMessage('issueType')" role="alert">{{ createValidationMessage('issueType') }}</span><span v-else>选择后标题会自动带上该类型，便于管理员分诊。</span></template></a-form-item
           >
           <a-form-item label="问题说明" required :validate-status="createValidationMessage('body') ? 'error' : undefined"
             ><a-textarea
@@ -754,7 +754,7 @@
             :on-changed="detailEntry.bind(reloadDetail)"
           />
           <a-alert
-            v-if="notificationText"
+            v-if="isAdmin && notificationText"
             :type="notification?.status === 'failed' ? 'warning' : 'info'"
             show-icon
             :message="notificationText"
@@ -1631,7 +1631,10 @@ async function loadTickets() {
   listLoading.value = true; errorMessage.value = "";
   try {
     const params = buildTicketListParams(filters, pagination.current, pagination.pageSize);
-    if (routeViewMode.value === 'self' && isAdminRoleUser.value) params.scope = 'self';
+    // The feedback route is a self view for every role. Sending the scope is
+    // required so an administrator cannot receive management-only metadata by
+    // opening their own feedback page.
+    if (routeViewMode.value === 'self') params.scope = 'self';
     const result = normalizeTicketListResponse(await getTickets(params));
     if (!owns() || version !== listRequestVersion) return;
     tickets.value = result.items; pagination.total = result.total;
@@ -1909,7 +1912,8 @@ async function refreshAttachments(ticketId) {
 function openDetail(id, event) {
   if (!canUseTickets()) return;
   retireDetailFocus();
-  const path = `/tickets/${encodeURIComponent(id)}`, opener = event?.currentTarget;
+  const listPath = routeViewMode.value === "admin" ? "/ticket-admin" : "/tickets";
+  const path = `${listPath}/${encodeURIComponent(id)}`, opener = event?.currentTarget;
   // Retain only the native opener, safe owner predicate and scalar route/id, never the event/row.
   const focus = opener instanceof HTMLElement && opener.isConnected && opener.tabIndex >= 0
     ? { opener, owns: capturePage(), path, id: String(id) } : null;
@@ -1950,12 +1954,13 @@ async function loadDetail(id) {
   replyAttachments.value = [];
   statusWasChosen.value = false;
   try {
-    const result = normalizeTicketDetailResponse(await getTicket(id));
+    const detailParams = routeViewMode.value === "self" ? { scope: "self" } : {};
+    const result = normalizeTicketDetailResponse(await getTicket(id, detailParams));
     if (!owns() || version !== detailRequestVersion) return;
     detailTicket.value = result.ticket;
     messages.value = result.messages;
     attachments.value = result.attachments;
-    notification.value = result.notification;
+    notification.value = isAdmin.value ? result.notification : null;
     detailStatus.value = result.ticket?.status || "";
   } catch (error) {
     if (!owns() || version !== detailRequestVersion) return;
@@ -1980,11 +1985,12 @@ function closeDetail() {
   detailTicket.value = null;
   // The original key/version retirement unmounts the old Modal before afterClose.
   // Use one owned continuation after navigation/disposal, not the dead vendor callback.
-  return router.replace("/tickets").then(async failure => {
+  const listPath = routeViewMode.value === "admin" ? "/ticket-admin" : "/tickets";
+  return router.replace(listPath).then(async failure => {
     if (failure || !focus) return failure;
     await nextTick(); await nextTick();
     if (!focus.owns() || ticket !== detailFocusVersion || create !== createVersion
-      || route.fullPath !== "/tickets" || route.params.id || detailVisible.value || createVisible.value) return;
+      || route.fullPath !== listPath || route.params.id || detailVisible.value || createVisible.value) return;
     const opener = focus.opener;
     if (!(opener instanceof HTMLElement) || !opener.isConnected || opener.tabIndex < 0
       || opener.matches(':disabled, [aria-disabled="true"]')) return;
@@ -2021,8 +2027,9 @@ async function submitReply() {
     if (attachmentIds.length) payload.attachmentIds = attachmentIds;
     if (isAdmin.value && statusWasChosen.value)
       payload.status = detailStatus.value;
+    const replyParams = routeViewMode.value === "self" ? { scope: "self" } : {};
     const result = normalizeTicketDetailResponse(
-      await addTicketMessage(ticketId, payload)
+      await addTicketMessage(ticketId, payload, replyParams)
     );
     if (
       owns() && version === detailRequestVersion &&
@@ -2047,7 +2054,9 @@ async function submitReply() {
       if (Array.isArray(result.attachments)) attachments.value = result.attachments;
       else await refreshAttachments(ticketId);
       replyAttachments.value = [];
-      notification.value = result.notification || notification.value;
+      notification.value = isAdmin.value
+        ? result.notification || notification.value
+        : null;
       if (detailStatus.value === submittedStatus) {
         detailStatus.value = detailTicket.value.status;
         statusWasChosen.value = false;

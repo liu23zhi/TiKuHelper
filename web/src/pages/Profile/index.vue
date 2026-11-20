@@ -26,8 +26,19 @@
           <div data-profile-private class="summary-value">{{ roleText(currentUser.role) }}</div>
         </a-card>
         <a-card :bordered="false" class="summary-card">
-          <div class="summary-label">账户余额</div>
+          <div class="summary-label">账户余额合计</div>
+          <div data-profile-private class="summary-value">¥ {{ formatAccountTotal(currentUser) }}</div>
+          <div class="summary-hint">充值本金与赠送余额合计</div>
+        </a-card>
+        <a-card :bordered="false" class="summary-card">
+          <div class="summary-label">充值本金（可退款）</div>
           <div data-profile-private class="summary-value">¥ {{ formatBalance(currentUser.balance) }}</div>
+          <div class="summary-hint">来自充值的本金，按退款规则计算可退金额。</div>
+        </a-card>
+        <a-card :bordered="false" class="summary-card">
+          <div class="summary-label">赠送余额（不可退款）</div>
+          <div data-profile-private class="summary-value">¥ {{ formatBalance(currentUser.giftBalance) }}</div>
+          <div class="summary-hint">赠送金额可用于消费，但不能申请退款。</div>
         </a-card>
         <a-card :bordered="false" class="summary-card">
           <div class="summary-label">上次登录</div>
@@ -950,6 +961,11 @@ export default defineComponent({
     const deviceLimitText = computed(() => buildDeviceLimitText(userLevelSummary.value?.deviceLimit))
     const deviceLimitHint = computed(() => buildDeviceLimitHint(userLevelSummary.value?.deviceLimit))
     const formatBalance = value => formatMoneyValue(value || 0)
+    const formatAccountTotal = user => {
+      const principal = Number(user?.balance || 0)
+      const gift = Number(user?.giftBalance || 0)
+      return formatBalance((Number.isFinite(principal) ? principal : 0) + (Number.isFinite(gift) ? gift : 0))
+    }
     const roleText = value => String(value || '').toLowerCase() === 'admin' ? '管理员' : '普通用户'
     const statusText = value => String(value || '').toLowerCase() === 'disabled' ? '已禁用' : '正常'
     const normalizeWechatCodeInput = value => String(value || '').replace(/\D/g, '').slice(0, 12)
@@ -1040,7 +1056,7 @@ export default defineComponent({
       smsCooldownText: smsCooldown.buttonText, smsCooldownActive: smsCooldown.active,
       sendPhoneChangeCode, submitPhoneChange, submitProfile, startWechatBind, handleWechatBindSubModeChange,
       submitWechatCodeBind, unbindWechat, loadProfile, normalizeSMSCodeInput, normalizeWechatCodeInput,
-      registerSourceText: buildRegisterSourceLabel, formatDateTime, formatBalance,
+      registerSourceText: buildRegisterSourceLabel, formatDateTime, formatBalance, formatAccountTotal,
       deviceLimitText, deviceLimitHint,
       ipLocations, phoneLocations, normalizeLocationKey, formatValueWithLocation, roleText, statusText,
     }

@@ -21,18 +21,20 @@ export function createTicket(data) {
   });
 }
 
-export function getTicket(id) {
+export function getTicket(id, params = {}) {
   return ticketRequest({
     url: `/api/tickets/${encodeURIComponent(id)}`,
     method: "get",
+    params,
   });
 }
 
-export function addTicketMessage(id, data) {
+export function addTicketMessage(id, data, params = {}) {
   return ticketRequest({
     url: `/api/tickets/${encodeURIComponent(id)}/messages`,
     method: "post",
     data,
+    params,
   });
 }
 

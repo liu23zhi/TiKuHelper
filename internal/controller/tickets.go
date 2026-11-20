@@ -81,6 +81,9 @@ func CreateTicket(c *gin.Context) {
 		writeTicketError(c, err, "创建工单失败")
 		return
 	}
+	// The create endpoint is part of the feedback/self view, including when an
+	// administrator uses it. Notification metadata belongs to ticket management.
+	detail.Notification = nil
 	c.JSON(http.StatusOK, gin.H{"data": detail})
 }
 
@@ -93,7 +96,8 @@ func TicketDetail(c *gin.Context) {
 	if !ok {
 		return
 	}
-	detail, err := service.GetTicketWithDB(withDatabasePriority(ticketControllerDB(), databaseRequestContext(c), dbqueue.PriorityLow), &user, id)
+	selfView := strings.EqualFold(strings.TrimSpace(c.Query("scope")), "self")
+	detail, err := service.GetTicketWithDBForView(withDatabasePriority(ticketControllerDB(), databaseRequestContext(c), dbqueue.PriorityLow), &user, id, selfView)
 	if err != nil {
 		writeTicketError(c, err, "获取工单详情失败")
 		return
@@ -115,7 +119,8 @@ func AddTicketMessage(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"message": "参数错误"})
 		return
 	}
-	detail, err := service.AddTicketMessageWithDB(ticketControllerDB(), &user, id, input)
+	selfView := strings.EqualFold(strings.TrimSpace(c.Query("scope")), "self")
+	detail, err := service.AddTicketMessageWithDBForView(ticketControllerDB(), &user, id, input, selfView)
 	if err != nil {
 		writeTicketError(c, err, "回复工单失败")
 		return

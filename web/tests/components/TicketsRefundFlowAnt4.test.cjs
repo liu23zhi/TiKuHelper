@@ -271,6 +271,22 @@ test('先选择较新的订单再选择旧订单，仍按充值时间分配', as
   assert.equal(allocation(2).value, '2.50')
 });
 
+test('不可退款金额为零时隐藏原因整行', async () => {
+  const originalCents = summary.nonRefundableCents
+  const originalReason = summary.nonRefundableReason
+  summary.nonRefundableCents = 0
+  summary.nonRefundableReason = '赠送金额不可退款'
+  try {
+    await openPage(); await openRefund()
+    const available = form().querySelector('[data-ticket-refund-available]')
+    assert.match(compact(available.textContent), /不可退款0\.00元/)
+    assert.equal(available.querySelector('.ticket-refund-summary__reason'), null)
+  } finally {
+    summary.nonRefundableCents = originalCents
+    summary.nonRefundableReason = originalReason
+  }
+});
+
 test('人工退款读取短信可用性、上传本机收款码、必须签名且下次申请重新签署', async () => {
   const wrapper = await openPage(); await openRefund()
   await type(form().querySelector('input'), '10.00')
