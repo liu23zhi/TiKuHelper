@@ -191,7 +191,7 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/extensions/config", controller.Auth, middleware.RequireAdmin, controller.ExtensionConfiguration)
 	apiRouter.PUT("/extensions/config", controller.Auth, middleware.RequireAdmin, controller.UpdateExtensionConfiguration)
 	apiRouter.POST("/search/tasks", controller.AuthAccessToken, middleware.DeviceLimit(), controller.CreateSearchTask)
-	apiRouter.GET("/search/health", controller.AuthAccessToken, controller.GetSearchTaskHealth)
+	apiRouter.GET("/search/health", controller.AuthAccessToken, middleware.DeviceAccessProbe(), controller.GetSearchTaskHealth)
 	apiRouter.GET("/search/status", controller.AuthAccessToken, controller.GetSearchTaskStatus)
 
 	// 旧版本扩展兼容（2026-11-14 路径改名 /adapter-service → /api）。
@@ -214,7 +214,7 @@ func SetAPIRouter(router *gin.Engine) {
 	)
 	legacySearchRouter.POST("/search", middleware.DeviceLimit(), controller.SearchWithIdempotency)
 	legacySearchRouter.POST("/search/tasks", controller.AuthAccessToken, middleware.DeviceLimit(), controller.CreateSearchTask)
-	legacySearchRouter.GET("/search/health", controller.AuthAccessToken, controller.GetSearchTaskHealth)
+	legacySearchRouter.GET("/search/health", controller.AuthAccessToken, middleware.DeviceAccessProbe(), controller.GetSearchTaskHealth)
 	legacySearchRouter.GET("/search/status", controller.AuthAccessToken, controller.GetSearchTaskStatus)
 	apiRouter.POST("/ai-fallback", controller.AuthOrAccessToken, middleware.DeviceLimit(), controller.AIFallback)
 	apiRouter.POST("/ai-fallback/tasks", controller.AuthOrAccessToken, middleware.DeviceLimit(), controller.CreateAIFallbackTask)

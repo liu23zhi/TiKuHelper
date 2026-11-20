@@ -49,16 +49,17 @@ const (
 // 开启（system_settings.device_limit_enabled = true）之后：
 //
 //	限设备账号 + 不带 X-Device-Id → 403（老客户端必须升级）
-//	不限量账号（limit=0）        → 一律放行，行为与现在完全一致
-//	考试脚本（script_session）   → 一律放行
+//	不限量账号（limit=0）        → 不受数量约束，显式拉黑仍拒绝
+//	考试脚本（script_session）   → 不受数量约束，显式拉黑仍拒绝
 //
 // 所以上线前必须确认「第 0 步的 limit==0 豁免」是有效的：4 个种子等级的
 // device_limit 默认全是 0，写错顺序 = 上线瞬间全站 403（141 §9.2）。
 //
 // # 判定顺序（141 §9.1，**顺序本身就是需求**）
 //
-//	前  置：总开关（默认关闭）→ 关闭时零查询直接放行
-//	前置二：辨识账号（拿不到账号就没有可判定对象，交给后续 handler 鉴权）
+//	前  置：辨识账号（拿不到账号就没有可判定对象，交给后续 handler 鉴权）
+//	前置二：带设备头时校验显式拉黑，不受数量开关或不限量豁免影响
+//	前置三：数量总开关（默认关闭）→ 关闭时跳过数量限制
 //	第 0 步：EffectiveDeviceLimit ⇒ limit == 0（不限）→ 【直接放行】不判不发 403
 //	第 1 步：脚本请求（script_session）→ 放行
 //	第 2 步：没有 X-Device-Id → 403「请升级客户端以支持设备识别」
@@ -76,7 +77,8 @@ const (
 //
 // # 「前置」两项为什么不算破坏上面的顺序
 //
-// 总开关与账号辨识都不产生 403，它们只决定「这次请求要不要进入判定」。
+// 总开关与账号辨识都不产生 403，它们只决定「这次请求要不要进入数量判定」。
+// 显式拉黑先行，避免「不限量」或「关闭数量限制」意外恢复被拉黑设备的使用权。
 // 账号辨识必须先于第 0 步，因为 EffectiveDeviceLimit 需要 userID；
 // 它读取的 script_session 标记在第 1 步才被使用 —— 判定顺序与信息获取顺序
 // 是两件事，混为一谈会让「顺序防线」（S13d）退化成一个摆设。
@@ -127,22 +129,21 @@ func deviceLimitHandler(injected *gorm.DB) gin.HandlerFunc {
 			return
 		}
 
-		// ── 前置一：总开关（默认关闭）──
-		//
-		// 关闭时**零查询、零拒绝**，全站行为与引入本中间件之前完全一致
-		// （与黑名单 total switch 同一条纪律）。这条也是「代码先上、开关后开」的
-		// 部署前提，141 §11 把本步列为最后上线的那一步。
-		if !service.GetDeviceLimitEnabledWithDB(db) {
-			c.Next()
-			return
-		}
-
-		// ── 前置二：辨识账号 ──
+		// ── 前置：辨识账号，显式设备拉黑不受容量豁免影响 ──
 		userID, scriptSession, tokenID, ok := deviceLimitIdentity(c, db)
 		if !ok {
 			// 辨识不到（匿名请求 / 凭据无效）：设备池按**账号**计，没有账号就没有
 			// 可判定的对象。这里不写 401 —— 鉴权语义属于后续 handler
 			// （/api/search 支持匿名默认账号，在这里 401 会把该功能打死）。
+			c.Next()
+			return
+		}
+		if blocked := service.CheckDeviceBlockWithDB(db, userID, c.GetHeader(DeviceIDHeader)); !blocked.Allowed {
+			deviceLimitReject(c, blocked)
+			return
+		}
+		// 此开关只控制设备数量限制；关闭时仍执行上面的显式拉黑校验。
+		if !service.GetDeviceLimitEnabledWithDB(db) {
 			c.Next()
 			return
 		}

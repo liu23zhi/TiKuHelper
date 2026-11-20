@@ -616,6 +616,34 @@ func CanUseDevice(db *gorm.DB, userID int32, deviceID string) DevicePoolDecision
 // CanUseDeviceWithClientIP 在设备通过准入时同步刷新最近来源 IP。
 // 已有设备的请求热路径只需一次 UPDATE；未采到合法 IP 时保留原地址。
 func CanUseDeviceWithClientIP(db *gorm.DB, userID int32, deviceID string, clientIP string) DevicePoolDecision {
+	return inspectDeviceAccess(db, userID, deviceID, clientIP, true)
+}
+
+// InspectDeviceAccessWithDB evaluates the same admission rules without updating
+// activity or registering a device. Configuration tests must not consume a slot.
+func InspectDeviceAccessWithDB(db *gorm.DB, userID int32, deviceID string) DevicePoolDecision {
+	return inspectDeviceAccess(db, userID, deviceID, "", false)
+}
+
+// CheckDeviceBlockWithDB checks explicit bans independently of capacity settings.
+// Unlimited accounts and a disabled capacity switch must not bypass a device ban.
+func CheckDeviceBlockWithDB(db *gorm.DB, userID int32, deviceID string) DevicePoolDecision {
+	normalized := NormalizeDevicePoolDeviceID(deviceID)
+	if db == nil || userID <= 0 || normalized == "" {
+		return DevicePoolDecision{Allowed: true, Reason: DevicePoolReasonFailOpen, Used: DevicePoolUsedUnknown}
+	}
+	if entryID, hit := devicePoolGlobalDeviceBlacklistEntry(db, normalized, time.Now()); hit {
+		return DevicePoolDecision{Allowed: false, Reason: DevicePoolReasonDeviceBlacklisted,
+			Used: DevicePoolUsedUnknown, Message: "该设备已被限制使用", BlacklistEntryID: entryID}
+	}
+	if devicePoolUserBlocked(db, userID, normalized) {
+		return DevicePoolDecision{Allowed: false, Reason: DevicePoolReasonUserBlocked,
+			Used: DevicePoolUsedUnknown, Message: "你已拉黑该设备"}
+	}
+	return DevicePoolDecision{Allowed: true, Used: DevicePoolUsedUnknown}
+}
+
+func inspectDeviceAccess(db *gorm.DB, userID int32, deviceID string, clientIP string, recordActivity bool) DevicePoolDecision {
 	if db == nil || userID <= 0 {
 		return DevicePoolDecision{Allowed: true, Reason: DevicePoolReasonFailOpen, Used: DevicePoolUsedUnknown}
 	}
@@ -632,25 +660,9 @@ func CanUseDeviceWithClientIP(db *gorm.DB, userID int32, deviceID string, client
 
 	now := time.Now()
 
-	// ── ① 全局黑名单（kind=device）：必须在已绑定判定之前 ──
-	if entryID, hit := devicePoolGlobalDeviceBlacklistEntry(db, normalized, now); hit {
-		return DevicePoolDecision{
-			Allowed:          false,
-			Reason:           DevicePoolReasonDeviceBlacklisted,
-			Used:             DevicePoolUsedUnknown,
-			Message:          "该设备已被限制使用",
-			BlacklistEntryID: entryID,
-		}
-	}
-
-	// ── ② 用户自己拉黑：同样在已绑定判定之前 ──
-	if devicePoolUserBlocked(db, userID, normalized) {
-		return DevicePoolDecision{
-			Allowed: false,
-			Reason:  DevicePoolReasonUserBlocked,
-			Used:    DevicePoolUsedUnknown,
-			Message: "你已拉黑该设备",
-		}
+	// 显式拉黑优先于额度与已绑定豁免。
+	if blocked := CheckDeviceBlockWithDB(db, userID, normalized); !blocked.Allowed {
+		return blocked
 	}
 
 	// ── ③ 有效上限 ──
@@ -716,14 +728,16 @@ func CanUseDeviceWithClientIP(db *gorm.DB, userID int32, deviceID string, client
 		// 只靠登录路径的 RegisterDevice 刷新会让「同一设备高频请求」的活跃度失真。
 		// 用 UpdateColumns 而不是 Updates：后者会顺带刷新 updated_at，
 		// 把「行被改过」与「设备被使用过」两种事实混在一起。
-		activity := map[string]any{"last_seen_at": now}
-		if ip := NormalizeDeviceClientIP(clientIP); ip != "" &&
-			db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "last_ip") {
-			activity["last_ip"] = ip
-		}
-		if err := devicePoolSession(db).Model(&entity.AccountDeviceBinding{}).
-			Where("id = ?", id).UpdateColumns(activity).Error; err != nil {
-			devicePoolFailOpenLog(userID, "刷新设备活跃时间失败："+err.Error())
+		if recordActivity {
+			activity := map[string]any{"last_seen_at": now}
+			if ip := NormalizeDeviceClientIP(clientIP); ip != "" &&
+				db.Migrator().HasColumn(entity.TableNameAccountDeviceBinding, "last_ip") {
+				activity["last_ip"] = ip
+			}
+			if err := devicePoolSession(db).Model(&entity.AccountDeviceBinding{}).
+				Where("id = ?", id).UpdateColumns(activity).Error; err != nil {
+				devicePoolFailOpenLog(userID, "刷新设备活跃时间失败："+err.Error())
+			}
 		}
 		return DevicePoolDecision{
 			Allowed:     true,
