@@ -63,7 +63,8 @@
         </div>
       </ConsoleSummaryGrid>
 
-      <p class="hint">统计窗口：最近 {{ view.windowText }}。服务重启后采样会重新积累。</p>
+      <p class="hint">数据更新于 {{ historyUpdatedText }}。统计窗口：最近 {{ view.windowText }}。服务重启后采样会重新积累。</p>
+      <SearchStatusHistory :payload="historyPayload" :sampled-at="historySampledAt" />
     </ConsolePanel>
 
     <p v-else-if="!errorMessage" class="hint" role="status">正在准备读取搜题接口状态。</p>
@@ -76,17 +77,19 @@ import { useRoute } from 'vue-router'
 import ConsolePageHeading from '@/components/ConsolePageHeading.vue'
 import ConsolePanel from '@/components/ConsolePanel.vue'
 import ConsoleSummaryGrid from '@/components/ConsoleSummaryGrid.vue'
-import { getServiceStatusSummary } from '@/api/ServiceStatusApi'
+import SearchStatusHistory from '@/components/SearchStatusHistory.vue'
+import { getServiceStatusSeries, getServiceStatusSummary } from '@/api/ServiceStatusApi'
 import { getCurrentUserLogoutEpoch, useCurrentUserDisplay } from '@/utils/currentUser'
 import { currentUserIdentity } from '@/utils/currentUserScope'
 import {
   buildServiceStatusView,
   loadServiceStatusSummary,
 } from '@/utils/serviceStatusSummary.mjs'
+import { loadSearchStatusHistory } from '@/utils/searchStatusHistory.mjs'
 
 export default {
   name: 'ServiceStatusPage',
-  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid },
+  components: { ConsolePageHeading, ConsolePanel, ConsoleSummaryGrid, SearchStatusHistory },
   setup() {
     const route = useRoute()
     const mountedPath = route.path
@@ -94,6 +97,8 @@ export default {
     const loading = ref(false)
     const loaded = ref(false)
     const payload = shallowRef(null)
+    const historyPayload = shallowRef(null)
+    const historySampledAt = ref(Date.now())
     const errorMessage = ref('')
 
     let alive = true
@@ -115,6 +120,9 @@ export default {
       if (endpointView.value.tone === 'danger') return '最近窗口内搜题请求大部分失败，答题可能不可用。'
       return '状态根据搜题接口最近窗口的采样推导。'
     })
+    const historyUpdatedText = computed(() => new Date(historySampledAt.value).toLocaleTimeString('zh-CN', {
+      timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false,
+    }))
 
     const load = async () => {
       if (!canLoad() || loading.value) return false
@@ -124,14 +132,22 @@ export default {
       loading.value = true
       try {
         // 公开摘要只读取一次；状态和指标均从 endpoints.search 派生。
-        const result = await loadServiceStatusSummary(() => getServiceStatusSummary())
+        const [result, history] = await Promise.all([
+          loadServiceStatusSummary(() => getServiceStatusSummary()),
+          loadSearchStatusHistory(() => getServiceStatusSeries()),
+        ])
         if (!owns()) return false
         if (!result.ok) {
           errorMessage.value = result.message
-          return false
+        } else {
+          payload.value = result.data
         }
-        payload.value = result.data
-        loaded.value = true
+        if (history.ok) {
+          historyPayload.value = history.data
+          historySampledAt.value = Date.now()
+        }
+        // 刷新失败时保留已显示的快照；首次读取失败才保持空态。
+        loaded.value = loaded.value || result.ok || history.ok
         return true
       } finally {
         if (owns()) loading.value = false
@@ -141,6 +157,7 @@ export default {
     const retire = () => {
       readVersion += 1
       payload.value = null
+      historyPayload.value = null
       loaded.value = false
       loading.value = false
       errorMessage.value = ''
@@ -154,7 +171,7 @@ export default {
       retire()
     })
 
-    return { loading, loaded, errorMessage, view, endpointView, statusHint, load }
+    return { loading, loaded, errorMessage, view, endpointView, statusHint, historyPayload, historySampledAt, historyUpdatedText, load }
   },
 }
 </script>

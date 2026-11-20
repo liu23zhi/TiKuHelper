@@ -27,7 +27,7 @@ import (
 // 与 admin 端点 serviceStatusResponse 的对照：
 //
 //	admin   schemaVersion / status / windowMinutes / points / summary / capacity / retained / restartedAt
-//	public  schemaVersion / points / endpoints / capacity / retained / restartedAt
+//	public  schemaVersion / points / searchPoints / endpoints / capacity / retained / restartedAt
 //
 // status/windowMinutes/summary 不在公开序列里 —— 那些由 summary 端点提供，
 // 序列端点只负责「时间轴」。两个端点各管一段，避免同一份数据两条契约漂移。
@@ -37,7 +37,7 @@ import (
 // 「摘要说健康、曲线里全是搜题失败点」。它只含两个固定枚举桶的聚合数字，
 // 不含 minute，也不含任何路由字符串，所以不破坏「摘要端点不返回时间轴」的分层。
 var publicSeriesKeys = []string{
-	"schemaVersion", "points", "endpoints", "capacity", "retained", "restartedAt",
+	"schemaVersion", "points", "searchPoints", "endpoints", "capacity", "retained", "restartedAt",
 }
 
 // 单个点的允许字段集合（白名单）。
@@ -106,22 +106,111 @@ func TestPublicStatusSeriesFieldSetIsWhitelisted(t *testing.T) {
 			"多出的字段意味着「新增的 StatusPoint/admin 字段被顺手带给了普通用户」", want, got)
 	}
 
-	// 逐个点同样用白名单。
-	points, ok := top["points"].([]any)
-	if !ok || len(points) != 3 {
-		t.Fatalf("points 期望 3 个，got=%v", top["points"])
-	}
 	wantPoint := append([]string(nil), publicPointKeys...)
 	sort.Strings(wantPoint)
-	for i, item := range points {
-		point, ok := item.(map[string]any)
-		if !ok {
-			t.Fatalf("第 %d 个点不是 object", i)
+	// 全站兼容序列与搜题序列都必须使用相同的公开字段白名单。
+	for _, field := range []string{"points", "searchPoints"} {
+		points, ok := top[field].([]any)
+		if !ok || len(points) != 3 {
+			t.Fatalf("%s 期望 3 个，got=%v", field, top[field])
 		}
-		gotPoint := jsonKeysOf(t, point)
-		if strings.Join(gotPoint, ",") != strings.Join(wantPoint, ",") {
-			t.Fatalf("第 %d 个点的字段集合必须是 %v，实际 %v", i, wantPoint, gotPoint)
+		for i, item := range points {
+			point, ok := item.(map[string]any)
+			if !ok {
+				t.Fatalf("%s 第 %d 个点不是 object", field, i)
+			}
+			gotPoint := jsonKeysOf(t, point)
+			if strings.Join(gotPoint, ",") != strings.Join(wantPoint, ",") {
+				t.Fatalf("%s 第 %d 个点的字段集合必须是 %v，实际 %v", field, i, wantPoint, gotPoint)
+			}
 		}
+	}
+}
+
+func TestPublicStatusSearchSeriesDoesNotUseOtherRequestTraffic(t *testing.T) {
+	fixed := time.Date(2026, 11, 20, 6, 0, 0, 0, time.UTC)
+	ring := service.NewServiceStatusRing()
+	startMinute := fixed.Unix() / 60
+	for i, point := range []service.StatusPoint{
+		{
+			TotalRequests: 10002, SuccessRequests: 10000, FailedRequests: 2, AvgLatencyMs: 2,
+			AuthFailures: 2,
+			Endpoints: service.StatusCountersByEndpoint{
+				Search: service.EndpointCounters{TotalRequests: 2, FailedRequests: 2, AvgLatencyMs: 900, Samples: 1},
+				Other:  service.EndpointCounters{TotalRequests: 10000, SuccessRequests: 10000, AvgLatencyMs: 2, Samples: 1},
+			},
+		},
+		{
+			TotalRequests: 200, SuccessRequests: 200, AvgLatencyMs: 4,
+			Endpoints: service.StatusCountersByEndpoint{
+				Other: service.EndpointCounters{TotalRequests: 200, SuccessRequests: 200, AvgLatencyMs: 4, Samples: 1},
+			},
+		},
+		{
+			TotalRequests: 1003, SuccessRequests: 3, FailedRequests: 1000, AvgLatencyMs: 1000,
+			Endpoints: service.StatusCountersByEndpoint{
+				Search: service.EndpointCounters{TotalRequests: 3, SuccessRequests: 3, AvgLatencyMs: 150, Samples: 1},
+				Other:  service.EndpointCounters{TotalRequests: 1000, FailedRequests: 1000, AvgLatencyMs: 1003, Samples: 1},
+			},
+		},
+	} {
+		point.Minute = startMinute + int64(i)
+		ring.Append(point)
+	}
+	sampler := service.NewServiceStatusSampler(ring, func() time.Time { return fixed }, nil)
+	raw, err := json.Marshal(buildServiceStatusSeriesResponse(sampler))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Points       []publicStatusPoint `json:"points"`
+		SearchPoints []publicStatusPoint `json:"searchPoints"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.SearchPoints) != 3 {
+		t.Fatalf("searchPoints must include each sampled minute, got %s", raw)
+	}
+	want := []publicStatusPoint{
+		{Minute: startMinute, TotalRequests: 2, SuccessRequests: 0, AvgLatencyMs: 900},
+		{Minute: startMinute + 1, TotalRequests: 0, SuccessRequests: 0, AvgLatencyMs: 0},
+		{Minute: startMinute + 2, TotalRequests: 3, SuccessRequests: 3, AvgLatencyMs: 150},
+	}
+	for i, point := range payload.SearchPoints {
+		if point != want[i] {
+			t.Fatalf("search minute %d mixed with other traffic: got=%+v want=%+v", i, point, want[i])
+		}
+	}
+	if payload.Points[0].TotalRequests != 10002 || payload.Points[0].SuccessRequests != 10000 {
+		t.Fatalf("legacy points must keep their original all-request contract: %+v", payload.Points[0])
+	}
+}
+
+func TestPublicStatusSearchSeriesIncludesCurrentUnsealedMinute(t *testing.T) {
+	fixed := time.Date(2026, 11, 20, 6, 5, 12, 0, time.UTC)
+	ring := service.NewServiceStatusRing()
+	sampler := service.NewServiceStatusSamplerWithEndpoints(ring, func() time.Time { return fixed },
+		func() service.StatusCounters {
+			return service.StatusCounters{TotalRequests: 3, FailedRequests: 1, LatencyCount: 3, LatencyTotalMillis: 186}
+		},
+		func() service.ServiceStatusEndpointCounters {
+			return service.ServiceStatusEndpointCounters{
+				Search: service.StatusCounters{TotalRequests: 2, FailedRequests: 1, LatencyCount: 2, LatencyTotalMillis: 182},
+				Other:  service.StatusCounters{TotalRequests: 1, LatencyCount: 1, LatencyTotalMillis: 4},
+			}
+		})
+	sampler.Sample()
+	if ring.Len() != 0 {
+		t.Fatal("fixture must remain in the current unsealed minute")
+	}
+	body := buildServiceStatusSeriesResponse(sampler)
+	if len(body.SearchPoints) != 1 {
+		t.Fatalf("current search requests must be visible before minute rollover: got=%+v", body.SearchPoints)
+	}
+	point := body.SearchPoints[0]
+	if point.Minute != fixed.Unix()/60 || point.TotalRequests != 2 || point.SuccessRequests != 1 {
+		t.Fatalf("current search requests must use their own minute and counters: got=%+v", point)
 	}
 }
 
@@ -222,6 +311,9 @@ func TestPublicStatusSeriesEmptyWindowIsEmptyArray(t *testing.T) {
 	if strings.Contains(string(raw), `"points":null`) {
 		t.Fatalf("空窗口不得序列化成 null：%s", raw)
 	}
+	if !strings.Contains(string(raw), `"searchPoints":[]`) {
+		t.Fatalf("空搜题窗口必须序列化成 searchPoints:[]，got=%s", raw)
+	}
 }
 
 // TestGetServiceStatusSeriesHTTPContract 走真实 gin 上下文，钉状态码、缓存头、
@@ -249,6 +341,9 @@ func TestGetServiceStatusSeriesHTTPContract(t *testing.T) {
 	}
 	if _, ok := payload["points"]; !ok {
 		t.Fatal("响应缺少 points —— 这是序列端点的唯一职责")
+	}
+	if _, ok := payload["searchPoints"]; !ok {
+		t.Fatal("响应缺少 searchPoints，搜题色带不能复用全站 points")
 	}
 }
 

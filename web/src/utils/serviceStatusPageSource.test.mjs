@@ -23,6 +23,8 @@ const apiPath = resolve(testDir, '../api/ServiceStatusApi.js')
 const routerSource = readFileSync(routerPath, 'utf8')
 const menuSource = readFileSync(menuPath, 'utf8')
 const pageSource = readFileSync(pagePath, 'utf8')
+const historyPath = resolve(testDir, '../components/SearchStatusHistory.vue')
+const historySource = readFileSync(historyPath, 'utf8')
 const apiSource = readFileSync(apiPath, 'utf8')
 
 /** 统计出现次数（不用 split，避免把串吃掉）。 */
@@ -150,7 +152,8 @@ test('普通页面只展示搜题接口分桶，不渲染全站指标或管理�
   assert.match(pageCode, /const endpointView = computed\(\(\) => view\.value\.endpoints\.search\)/)
   assert.doesNotMatch(pageCode, /data-metric="(?:success-rate|avg-latency|total-requests|failed-requests)"/)
   assert.doesNotMatch(pageCode, /最近每分钟趋势|接口分桶|失败请求/)
-  assert.doesNotMatch(pageCode, /getServiceStatusSeries|loadServiceStatusSeries|seriesView/)
+  assert.match(pageCode, /getServiceStatusSeries/)
+  assert.match(historySource, /data-search-history-band/)
 })
 
 test('页面处理 401/403 分流（走 describeServiceStatusFailure，不在页面里硬编码）', () => {
@@ -166,10 +169,12 @@ test('页面在挂载时自动读一次，并有手动刷新按钮', () => {
   assert.match(pageSource, /data-action="refresh-service-status"/)
 })
 
-test('页面只读取 summary，不额外请求全站逐分钟数据', () => {
+test('页面读取 summary 与搜题专用序列，不请求管理员逐分钟数据', () => {
   const loadRegion = pageCode.slice(pageCode.indexOf('const load = async'), pageCode.indexOf('const retire'))
   assert.ok(loadRegion.includes('loadServiceStatusSummary'), '页面必须读取公开 summary')
-  assert.doesNotMatch(loadRegion, /ServiceStatusSeries|\/series/, '普通页面不得请求逐分钟序列')
+  assert.ok(loadRegion.includes('getServiceStatusSeries'), '页面必须读取搜题专用序列')
+  assert.ok(loadRegion.includes('loadSearchStatusHistory'), '序列请求必须走独立容错入口')
+  assert.doesNotMatch(loadRegion, /admin\/service-status/, '普通页面不得请求管理员序列')
   assert.ok(!pageCode.includes('admin'), '页面不得引用管理员端点')
 })
 test('路由只新增了 service-status 那一条，未重排既有路由', () => {

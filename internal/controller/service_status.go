@@ -45,9 +45,8 @@ func ServiceStatusSampler() *service.ServiceStatusSampler {
 // 为什么放在 admin 路由下：曲线暴露出「什么时间段有多少请求、成功多少、平均延迟」，
 // 属运维可见信息，与 /system-metrics 同级。前端状态页走管理员会话。
 //
-// ⚠️ 非管理员的客户端（如 PLUS 扩展，只持 adapter key）**不该**拿到逐分钟明细 ——
-// 那会把「什么时段有多少请求」暴露给每一个装扩展的用户。这类调用方走
-// GetServiceStatusSummary（见下），只拿聚合数字。
+// 非管理员客户端使用 GetServiceStatusSummary 的当前摘要，以及
+// GetServiceStatusSeries 的公开字段白名单序列；本端点的失败分类等运维字段仍限管理员。
 func GetServiceStatus(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, buildServiceStatusResponse(ServiceStatusSampler()))
@@ -261,12 +260,13 @@ func toPublicEndpointCounters(bucket service.EndpointCounters) publicEndpointCou
 // 独立结构体 = 新增 admin 字段时普通用户端点**默认不给**。
 // 这条比任何注释都硬：想让普通用户看到新字段，必须显式改这里并过白名单测试。
 //
-// S4（138 §4.4）：分桶在**两个端点都要返回**。序列端点只给**聚合**分桶
-// （窗内计数 + samples），不给「每分钟每桶」的时序 —— 那会把「什么时段搜题量大」
-// 这种运营情报从曲线里透出来，而序列端点的既定暴露面只到「逐分钟总量」。
+// 搜题状态色带使用 SearchPoints；兼容旧客户端的 Points 仍为全站口径。
+// 两条序列共用 publicStatusPoint 的显式字段白名单，只返回绘图所需的分钟、
+// 总数、成功数和延迟，不带失败分类、路由或其他管理员字段。
 type serviceStatusSeriesResponse struct {
 	SchemaVersion int                 `json:"schemaVersion"`
 	Points        []publicStatusPoint `json:"points"`
+	SearchPoints  []publicStatusPoint `json:"searchPoints"`
 	Endpoints     publicEndpoints     `json:"endpoints"`
 	Capacity      int                 `json:"capacity"`
 	Retained      int                 `json:"retained"`
@@ -298,6 +298,7 @@ func buildServiceStatusSeriesResponse(sampler *service.ServiceStatusSampler) ser
 	points := sampler.Points()
 	summary := sampler.Summary()
 	public := make([]publicStatusPoint, 0, len(points))
+	search := make([]publicStatusPoint, 0, len(points))
 	for _, point := range points {
 		public = append(public, publicStatusPoint{
 			Minute:          point.Minute,
@@ -306,10 +307,17 @@ func buildServiceStatusSeriesResponse(sampler *service.ServiceStatusSampler) ser
 			AvgLatencyMs:    point.AvgLatencyMs,
 			// 失败四分类与 FailedRequests 刻意不拷贝 —— 见 publicStatusPoint 的注释。
 		})
+		search = append(search, publicStatusPoint{
+			Minute:          point.Minute,
+			TotalRequests:   point.Endpoints.Search.TotalRequests,
+			SuccessRequests: point.Endpoints.Search.SuccessRequests,
+			AvgLatencyMs:    point.Endpoints.Search.AvgLatencyMs,
+		})
 	}
 	return serviceStatusSeriesResponse{
 		SchemaVersion: 1,
 		Points:        public,
+		SearchPoints:  search,
 		// S4：序列端点也必须带分桶，否则「曲线显示异常但看不出是哪个接口族」
 		// 与「摘要说搜题正常但曲线全红」这两种矛盾就没人能解。
 		// 口径与摘要端点完全一致（直接取同一个 summary.Endpoints），不另算一套。
