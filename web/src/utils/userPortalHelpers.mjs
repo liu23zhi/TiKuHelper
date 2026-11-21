@@ -237,6 +237,9 @@ export function buildBillingRecordTypeText(record) {
   if (type === 'review_rebate') {
     return '评价返现'
   }
+  if (type === 'review_rebate_clawback') {
+    return '评价返现追缴'
+  }
   if (type === 'registration_bonus_clawback') {
     return '新用户赠送追缴'
   }

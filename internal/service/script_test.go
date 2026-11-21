@@ -17,7 +17,7 @@ func newScriptTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}, &entity.ScriptVersion{}, &entity.UserScript{}, &entity.ScriptExchangeToken{}, &entity.ScriptRunSession{}, &entity.SystemSetting{}); err != nil {
+	if err := db.AutoMigrate(&entity.User{}, &entity.AccessToken{}, &entity.BillingRecord{}, &entity.ScriptVersion{}, &entity.UserScript{}, &entity.ScriptAddressReservation{}, &entity.ScriptExchangeToken{}, &entity.ScriptRunSession{}, &entity.SystemSetting{}); err != nil {
 		t.Fatal(err)
 	}
 	return db
@@ -266,7 +266,7 @@ func TestScriptCommandsAllocateShortestCodesAndResolveBothDomainModes(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.ShortCode != "a" || first.DownloadURL != "https://a.a.com" || !strings.HasPrefix(first.Command, "powershell -EncodedCommand ") {
+	if first.ShortCode != "a" || first.DownloadURL != "https://a.a.com" || !strings.HasPrefix(first.Command, `powershell -c "iex(irm `) || !strings.HasPrefix(first.CompatibilityCommand, "powershell -EncodedCommand ") {
 		t.Fatalf("expected shortest wildcard command, got code=%q command=%q", first.ShortCode, first.Command)
 	}
 
@@ -275,7 +275,7 @@ func TestScriptCommandsAllocateShortestCodesAndResolveBothDomainModes(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.ShortCode != "b" || second.DownloadURL != "https://b.a.com/b" || !strings.HasPrefix(second.Command, "powershell -EncodedCommand ") {
+	if second.ShortCode != "b" || second.DownloadURL != "https://b.a.com/b" || !strings.HasPrefix(second.Command, `powershell -c "iex(irm `) || !strings.HasPrefix(second.CompatibilityCommand, "powershell -EncodedCommand ") {
 		t.Fatalf("expected shortest path command, got code=%q command=%q", second.ShortCode, second.Command)
 	}
 	if _, err := ResolvePublicScriptWithDB(db, "a.a.com:443", "/"); err != nil {

@@ -133,6 +133,7 @@ type ScriptListItem struct {
 	Version               string                        `json:"version"`
 	VersionSHA256         string                        `json:"versionSha256"`
 	Command               string                        `json:"command"`
+	CompatibilityCommand  string                        `gorm:"-" json:"compatibilityCommand,omitempty"`
 	DownloadURL           string                        `json:"downloadUrl"`
 	ShortAuthorization    *ScriptShortAuthorizationView `gorm:"-" json:"shortAuthorization,omitempty"`
 	LauncherAuthorization *ScriptShortAuthorizationView `gorm:"-" json:"launcherAuthorization,omitempty"`
@@ -350,6 +351,10 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 		}
 		var locator *string
 		var useWildcard bool
+		authorizationSettings, err := GetScriptDomainSettingsWithDB(tx)
+		if err != nil {
+			return err
+		}
 		if input.LauncherOrigin != nil {
 			baseDomain, locator, useWildcard, err = generateScriptLauncherAddress(tx, input.DomainFormat, *input.LauncherOrigin)
 			if err != nil {
@@ -388,6 +393,10 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 			return err
 		}
 		script := entity.UserScript{UserID: user.ID, VersionID: version.ID, Name: name, Parameters: string(parameters), Description: strings.TrimSpace(input.Description), BaseDomain: baseDomain, Scheme: normalizeScriptScheme(input.Scheme), UseWildcardDomain: useWildcard, LauncherLocator: locator, Enabled: true, BillingEnabled: true, UseTikuPrice: true, AnswerPriceMultiplier: util.RoundMoney(multiplier), AnswerPrice: util.RoundMoney(input.AnswerPrice), ShortCode: shortCode, AccessKey: key, ReservedFee: ScriptReservationFee}
+		if !*authorizationSettings.AllowFullNeverExpire {
+			expires := time.Now().Add(24 * time.Hour)
+			script.LauncherExpiresAt = &expires
+		}
 		if input.Enabled != nil {
 			script.Enabled = *input.Enabled
 		}
@@ -412,7 +421,13 @@ func CreateUserScriptWithDB(db *gorm.DB, operator entity.User, input CreateUserS
 		// Store only the locator. The owner view derives the purpose-separated
 		// launcher capability; a one-use exchange must never disclose it.
 		script.Instruction = BuildScriptCommandURL(script)
+		if err := checkScriptAddressAvailable(tx, script.Instruction, scriptAddressFull, 0); err != nil {
+			return err
+		}
 		if err := tx.Create(&script).Error; err != nil {
+			return err
+		}
+		if err := reserveScriptAddress(tx, script.Instruction, scriptAddressFull, script.ID); err != nil {
 			return err
 		}
 		if mode != "" {
@@ -570,7 +585,7 @@ func ListUserScriptsWithDB(db *gorm.DB, operator entity.User, all bool) ([]Scrip
 			result[i].EscrowAvailableMicros = &balance.AvailableMicros
 		}
 		if result[i].UserID != operator.ID {
-			result[i].Command, result[i].Instruction = "", ""
+			result[i].Command, result[i].Instruction, result[i].CompatibilityCommand = "", "", ""
 		} else {
 			result[i].ShortAuthorization = scriptShortAuthorizationView(result[i].UserScript)
 			result[i].LauncherAuthorization = scriptLauncherAuthorizationView(result[i].UserScript)
@@ -729,7 +744,7 @@ func UpdateUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32, i
 			return err
 		}
 		if item.UserID != operator.ID {
-			item.Command, item.Instruction = "", ""
+			item.Command, item.Instruction, item.CompatibilityCommand = "", "", ""
 		} else {
 			item.ShortAuthorization = scriptShortAuthorizationView(item.UserScript)
 			item.LauncherAuthorization = scriptLauncherAuthorizationView(item.UserScript)
@@ -740,6 +755,7 @@ func UpdateUserScriptWithDB(db *gorm.DB, operator entity.User, scriptID int32, i
 }
 
 func updateLegacyScriptAddress(tx *gorm.DB, script entity.UserScript, input UpdateUserScriptInput, updates map[string]any) error {
+	previous := BuildScriptCommandURL(script)
 	if input.BaseDomain != "" {
 		baseDomain := normalizeScriptDomain(input.BaseDomain)
 		if baseDomain == "" {
@@ -769,7 +785,21 @@ func updateLegacyScriptAddress(tx *gorm.DB, script entity.UserScript, input Upda
 		updates["use_wildcard_domain"] = script.UseWildcardDomain
 	}
 	if input.BaseDomain != "" || input.Scheme != "" || input.UseWildcardDomain != nil {
-		updates["instruction"] = BuildScriptCommandURL(script)
+		address := BuildScriptCommandURL(script)
+		if _, _, previousKey := parseScriptReservedAddress(previous); previousKey != "" {
+			if _, _, key := parseScriptReservedAddress(address); key != previousKey {
+				if err := preservePreviousScriptAddress(tx, previous, scriptAddressFull, script.ID); err != nil {
+					return err
+				}
+				if err := checkScriptAddressAvailable(tx, address, scriptAddressFull, script.ID); err != nil {
+					return err
+				}
+				if err := reserveScriptAddress(tx, address, scriptAddressFull, script.ID); err != nil {
+					return err
+				}
+			}
+		}
+		updates["instruction"] = address
 	}
 	return nil
 }
@@ -1048,14 +1078,27 @@ func scriptLauncherCapability(script entity.UserScript) string {
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
-// BuildScriptCommand emits an owner-held, PowerShell 2 compatible command. The
-// purpose-specific launcher capability goes in a header, never the URL. The
-// encoded form works in Windows Run, cmd.exe and PowerShell without variable
-// interpolation by the parent shell; it is not encryption.
+// BuildScriptCommand keeps historic header launchers compatible. Generated
+// locators use a compact header with a purpose-separated, generation-bound
+// capability. No shell variables are present for the parent shell to expand.
 func BuildScriptCommand(script entity.UserScript) string {
 	commandURL := BuildScriptCommandURL(script)
 	capability := scriptLauncherCapability(script)
 	if !strings.HasPrefix(commandURL, "https://") || capability == "" {
+		return ""
+	}
+	if script.LauncherDisabled || strings.ContainsAny(commandURL, "'\";`$\\\r\n") {
+		return ""
+	}
+	return `powershell -c "iex(irm ` + commandURL + ` -Headers @{'X-Script-Launcher'='` + capability + `'} -MaximumRedirection 0 -TimeoutSec 15)"`
+}
+
+// BuildScriptCompatibilityCommand retains PowerShell 2 support, including
+// redirect rejection and bounded network reads for managed scripts.
+func BuildScriptCompatibilityCommand(script entity.UserScript) string {
+	commandURL := BuildScriptCommandURL(script)
+	capability := scriptLauncherCapability(script)
+	if script.LauncherDisabled || !strings.HasPrefix(commandURL, "https://") || capability == "" {
 		return ""
 	}
 	commandURL = strings.ReplaceAll(commandURL, "'", "''")
@@ -1089,6 +1132,7 @@ func BuildManagedScriptTextLoader(address, header, credential string) string {
 
 func decorateScriptItem(item ScriptListItem) ScriptListItem {
 	item.Command = BuildScriptCommand(item.UserScript)
+	item.CompatibilityCommand = BuildScriptCompatibilityCommand(item.UserScript)
 	item.DownloadURL = BuildScriptCommandURL(item.UserScript)
 	item.Instruction = item.Command
 	return item

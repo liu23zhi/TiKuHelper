@@ -777,6 +777,7 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 		&entity.AIOCRCacheSequence{},
 		&entity.ScriptVersion{},
 		&entity.UserScript{},
+		&entity.ScriptAddressReservation{},
 		&entity.ScriptExchangeToken{},
 		&entity.ScriptRunSession{},
 		&entity.ScriptEscrow{},
@@ -796,6 +797,9 @@ func registerPreparedDB(config configs.Config, plan adminBootstrapPlan) *gorm.DB
 	err = autoMigrateAccountDomainWithBillingLookupIndex(db, accountDomainModels)
 	if err != nil {
 		logger.FatalLog(fmt.Errorf("auto migrate fail: %w", err))
+	}
+	if err := runStartupMigration("backfillScriptAddressReservations", func() error { return service.BackfillScriptAddressReservationsWithDB(db) }); err != nil {
+		logger.FatalLog(fmt.Errorf("backfill script address reservations: %w", err))
 	}
 	if err := runStartupMigration("ensureAIOCRCacheIDs", func() error { return ensureAIOCRCacheIDs(db) }); err != nil {
 		logger.SysLog(fmt.Sprintf("OCR 缓存 ID 回填失败（不影响启动，将在下次启动重试）：%v", err))

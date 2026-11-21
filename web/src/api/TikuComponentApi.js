@@ -979,6 +979,10 @@ export function redeemScriptActivationCode(data) {
   })
 }
 
+export function getScriptActivationCodePurchases(params = {}) {
+  return request({ errorFeedback: 'local', retryPolicy: 'single', url: '/api/script-activation-codes/purchases', method: 'get', params })
+}
+
 // A diagnostic snapshot is explicit-only: one request per mount or manual refresh.
 export function getSystemMetrics() {
   return request({

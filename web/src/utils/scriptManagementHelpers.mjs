@@ -121,12 +121,15 @@ export function buildScriptDownloadURL(record = {}) {
 // the legacy instruction field.
 export function buildScriptCommand(record = {}) {
   const command = typeof record.command === 'string' ? record.command : ''
-  return command.length <= 16384 && /^powershell -EncodedCommand [A-Za-z0-9+/]+={0,2}$/.test(command) ? command : ''
+  if (command.length > 16384) return ''
+  if (/^powershell -EncodedCommand [A-Za-z0-9+/]+={0,2}$/.test(command)) return command
+  return /^powershell -c "iex\(irm https:\/\/(?:[a-z0-9][a-z0-9.-]*|\[[0-9a-f:.]+\])(?::[0-9]+)?(?:\/[A-Za-z0-9_~.-]+)* -Headers @\{'X-Script-Launcher'='[A-Za-z0-9_-]{43}'\} -MaximumRedirection 0 -TimeoutSec 15\)"$/.test(command) ? command : ''
 }
 
 export function buildScriptShortCommand(record = {}, now = Date.now()) {
   const grant = record.shortAuthorization
-  if (!['active', 'scheduled'].includes(grant?.status) || !Number.isFinite(Date.parse(grant.expiresAt)) || Date.parse(grant.expiresAt) <= now) return ''
+  if (!['active', 'scheduled'].includes(grant?.status)) return ''
+  if (grant.expiresAt != null && (!Number.isFinite(Date.parse(grant.expiresAt)) || Date.parse(grant.expiresAt) <= now)) return ''
   if (Number(grant.maxUses) > 0 && Number(grant.usedCount) >= Number(grant.maxUses)) return ''
   const address = String(grant.address || '')
   if (!/^https:\/\/(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?|\[[0-9a-f:.]+\])(?::[0-9]+)?(?:\/[A-Za-z0-9_~.-]+)*$/.test(address)) return ''

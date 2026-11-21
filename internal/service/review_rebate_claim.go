@@ -23,55 +23,39 @@ type ReviewRebateClaimCreateInput struct {
 	ScreenshotSHA256 string
 	ClaimedStars     int
 	ClaimedReviewURL string
+	Source           string
 }
 
-// ReviewRebateProgramView 是用户端的活动视图（脱敏）。
-//
-// 与 admin 视图的区别：
-//   - 不下发 ExtensionID（对用户没有意义，且是内部抓取范围标识）；
-//   - 不下发 PolicyVersion 的原始值以外的东西（保留是给用户看「按哪版规则」）；
-//   - 带上我的已用次数/已发金额/剩余额度，让用户知道还能不能提交。
+// ReviewRebateProgramView returns active stores and the member's progress.
 type ReviewRebateProgramView struct {
-	Program ReviewRebateProgramSummary `json:"program"`
-	// Rules 是规则表（脱敏后），让用户能自己看明白「写什么评价能拿多少」。
-	Rules []ReviewRebateRuleView `json:"rules"`
-	// Usage 是本人额度使用情况。
-	Usage ReviewRebateUsage `json:"usage"`
-	// AuthorshipVerified 恒为 false：系统**不做**作者归属断言（16-*.md §1.5），
-	// 界面上要明确告知用户「只核验公开评价是否存在且内容一致」。
-	AuthorshipVerified bool `json:"authorshipVerified"`
-	// Notice 是给用户的边界说明，前端直接展示。
-	Notice string `json:"notice"`
+	Program            ReviewRebateProgramSummary `json:"program"`
+	Usage              ReviewRebateUsage          `json:"usage"`
+	AuthorshipVerified bool                       `json:"authorshipVerified"`
+	CanClaim           bool                       `json:"canClaim"`
+	Stores             []ReviewRebateStoreView    `json:"stores"`
+}
+
+type ReviewRebateStoreView struct {
+	Source   string `json:"source"`
+	Name     string `json:"name"`
+	StoreURL string `json:"storeUrl"`
+	CanClaim bool   `json:"canClaim"`
 }
 
 // ReviewRebateProgramSummary 是活动的用户可见字段。
 type ReviewRebateProgramSummary struct {
-	ID int32 `json:"id"`
+	ID     int32  `json:"id"`
+	Source string `json:"source"`
 	// Enabled 是活动开关：用户端靠它决定「显示规则表与提交表单」还是「功能未开启」。
 	//
 	// 必须下发：总开关打开但活动行被禁用时，用户端若拿不到这个字段就会一直显示
 	// （或一直不显示）错误的状态，而入口本身是拒绝的 —— 界面与后端结论会打架。
-	Enabled            bool    `json:"enabled"`
-	Name               string  `json:"name"`
-	StoreURL           string  `json:"storeUrl"`
-	MaxClaimsPerUser   int     `json:"maxClaimsPerUser"`
-	MaxAmountPerUser   float64 `json:"maxAmountPerUser"`
-	MinAgentConfidence float64 `json:"minAgentConfidence"`
-	PolicyVersion      string  `json:"policyVersion"`
+	Enabled          bool   `json:"enabled"`
+	Name             string `json:"name"`
+	StoreURL         string `json:"storeUrl"`
+	MaxClaimsPerUser int    `json:"maxClaimsPerUser"`
 	// TutorialVersionID 是关联图文教程版本（0 = 无）。
 	TutorialVersionID int32 `json:"tutorialVersionId"`
-}
-
-// ReviewRebateRuleView 是规则的脱敏视图（去掉 remark 里的内部信息不必，remark 本身就是给人看的）。
-type ReviewRebateRuleView struct {
-	ID              int32   `json:"id"`
-	MinStars        int     `json:"minStars"`
-	MaxStars        int     `json:"maxStars"`
-	MinContentScore int     `json:"minContentScore"`
-	MaxContentScore int     `json:"maxContentScore"`
-	Amount          float64 `json:"amount"`
-	Priority        int     `json:"priority"`
-	Remark          string  `json:"remark"`
 }
 
 // ReviewRebateUsage 是本人额度使用情况。
@@ -86,85 +70,71 @@ type ReviewRebateUsage struct {
 	// 界面上显示成两套口径，所以**两个键都下发、值恒等**，谁读都对。
 	ApprovedCount int64 `json:"approvedCount"`
 	// ApprovedAmount 是已发放金额合计（口径：以 review_rebate_awards 为准）。
-	ApprovedAmount float64 `json:"approvedAmount"`
+	ApprovedAmount float64 `json:"-"`
 	// PendingCount 是审核中的条数（不占额度，但展示出来避免用户以为没提交上）。
 	PendingCount int64 `json:"pendingCount"`
 	// RejectedCount 是被拒绝的条数（展示用，不占额度）。
 	RejectedCount int64 `json:"rejectedCount"`
 	// RemainingClaims/RemainingAmount 是剩余额度（负数截断为 0）。
 	RemainingClaims int     `json:"remainingClaims"`
-	RemainingAmount float64 `json:"remainingAmount"`
+	RemainingAmount float64 `json:"-"`
 }
-
-// reviewRebateAuthorshipNotice 是给用户看的归属边界说明。
-const reviewRebateAuthorshipNotice = "系统只核验「公开评价里存在一条与截图内容一致的记录」，" +
-	"不做作者归属断言；置信度不足时由人工复核，结果与金额由运营规则表决定。"
 
 // GetReviewRebateProgramViewWithDB 组装用户端的活动视图。
 //
 // 开关关闭 / 活动不存在 / 表未就绪 → 返回业务错误（controller 映射 4xx）。
 func GetReviewRebateProgramViewWithDB(db *gorm.DB, userID int32) (ReviewRebateProgramView, error) {
-	program, err := GetReviewRebateProgramWithDB(db)
+	return GetReviewRebateStoreProgramViewWithDB(db, userID, entity.ReviewRebateSourceEdge)
+}
+
+func GetReviewRebateStoreProgramViewWithDB(db *gorm.DB, userID int32, source string) (ReviewRebateProgramView, error) {
+	wantsDefault := strings.TrimSpace(source) == ""
+	source, err := NormalizeReviewRebateSource(source)
 	if err != nil {
 		return ReviewRebateProgramView{}, err
 	}
-	rules, err := ListReviewRebateRulesWithDB(db, program.ID)
+	programs, err := ListActiveReviewRebateStoreProgramsWithDB(db)
 	if err != nil {
 		return ReviewRebateProgramView{}, err
 	}
-	usage, err := GetReviewRebateUsageWithDB(db, program.ID, userID)
-	if err != nil {
-		return ReviewRebateProgramView{}, err
+	var program entity.ReviewRebateProgram
+	stores := make([]ReviewRebateStoreView, 0, len(programs))
+	var usage ReviewRebateUsage
+	canClaim := false
+	for _, candidate := range programs {
+		currentUsage, err := GetReviewRebateUsageWithDB(db, candidate.ID, userID)
+		if err != nil {
+			return ReviewRebateProgramView{}, err
+		}
+		available := currentUsage.RemainingClaims > 0 && currentUsage.RemainingAmount > 0
+		stores = append(stores, ReviewRebateStoreView{Source: candidate.Source, Name: candidate.Name, StoreURL: candidate.StoreURL, CanClaim: available})
+		if candidate.Source == source || (wantsDefault && program.ID == 0) {
+			program, usage, canClaim = candidate, currentUsage, available
+		}
+	}
+	if program.ID == 0 {
+		return ReviewRebateProgramView{}, ErrReviewRebateDisabled
 	}
 	view := ReviewRebateProgramView{
 		Program: ReviewRebateProgramSummary{
-			ID:                 program.ID,
-			Enabled:            program.Enabled,
-			Name:               program.Name,
-			StoreURL:           program.StoreURL,
-			MaxClaimsPerUser:   program.MaxClaimsPerUser,
-			MaxAmountPerUser:   util.RoundMoney(program.MaxAmountPerUser),
-			MinAgentConfidence: program.MinAgentConfidence,
-			PolicyVersion:      program.PolicyVersion,
-			TutorialVersionID:  program.TutorialVersionID,
+			ID:                program.ID,
+			Source:            program.Source,
+			Enabled:           program.Enabled,
+			Name:              program.Name,
+			StoreURL:          program.StoreURL,
+			MaxClaimsPerUser:  min(1, program.MaxClaimsPerUser),
+			TutorialVersionID: program.TutorialVersionID,
 		},
-		Rules:              make([]ReviewRebateRuleView, 0, len(rules)),
 		Usage:              usage,
 		AuthorshipVerified: false,
-		Notice:             reviewRebateAuthorshipNotice,
-	}
-	for _, rule := range rules {
-		if !rule.Enabled {
-			// 停用规则不给用户看：看到却拿不到比看不到更让人困惑。
-			continue
-		}
-		view.Rules = append(view.Rules, ReviewRebateRuleView{
-			ID:              rule.ID,
-			MinStars:        rule.MinStars,
-			MaxStars:        rule.MaxStars,
-			MinContentScore: rule.MinContentScore,
-			MaxContentScore: rule.MaxContentScore,
-			Amount:          util.RoundMoney(rule.Amount),
-			Priority:        rule.Priority,
-			Remark:          rule.Remark,
-		})
+		CanClaim:           canClaim,
+		Stores:             stores,
 	}
 	return view, nil
 }
 
-// GetReviewRebateUsageWithDB 统计本人在某活动口径下的额度使用情况。
-//
-// 口径（明确写在这里，避免「次数」被两处各算一套）：
-//   - ClaimedCount/ApprovedAmount 只统计 **approved**：未批准的提交不消耗额度，
-//     否则用户提交一次被拒就先丢一次机会，体验与运营意图都不对；
-//   - **按 user 跨活动累计，不按 program 分账** —— 这是 16-*.md §1.2
-//     「活动 ID（换版不重置已领次数）」的直接要求：换版如果重置次数，
-//     用户只要等一次改版就能无限领。去重才按 program 计（见唯一索引），
-//     额度按账号计。
-//   - PendingCount 统计审核中的（submitted/scraping/scored/pending_review）；
-//   - duplicate/limit_reached/below_threshold/rejected 都不占额度。
-//
-// programID 只用来读该活动的上限与默认值，不参与「已用」的过滤。
+// GetReviewRebateUsageWithDB aggregates awards and claim progress across all
+// programs for the selected store. Award rows survive a clawback.
 func GetReviewRebateUsageWithDB(db *gorm.DB, programID int32, userID int32) (ReviewRebateUsage, error) {
 	usage := ReviewRebateUsage{}
 	if programID <= 0 || userID <= 0 {
@@ -173,46 +143,44 @@ func GetReviewRebateUsageWithDB(db *gorm.DB, programID int32, userID int32) (Rev
 	if !ReviewRebateSchemaAvailable(db) {
 		return usage, ErrReviewRebateSchemaUnavailable
 	}
+	program, err := getReviewRebateProgramByID(db, programID)
+	if err != nil {
+		return usage, err
+	}
 	type statusAggregate struct {
-		Status string  `gorm:"column:status"`
-		Total  float64 `gorm:"column:total"`
-		Rows   int64   `gorm:"column:row_count"`
+		Status string `gorm:"column:status"`
+		Rows   int64  `gorm:"column:row_count"`
 	}
 	var rows []statusAggregate
 	if err := reviewRebateSession(db).Model(&entity.ReviewRebateClaim{}).
-		Select("status, COALESCE(SUM(award_amount), 0) AS total, COUNT(*) AS row_count").
-		Where("user_id = ?", userID).
+		Select("status, COUNT(*) AS row_count").
+		Where("user_id = ? AND source = ?", userID, program.Source).
 		Group("status").Scan(&rows).Error; err != nil {
 		return usage, err
 	}
 	for _, row := range rows {
 		switch row.Status {
-		case entity.ReviewRebateStatusApproved:
-			usage.ClaimedCount += row.Rows
 		case entity.ReviewRebateStatusSubmitted, entity.ReviewRebateStatusScraping,
-			entity.ReviewRebateStatusScored, entity.ReviewRebateStatusPendingReview:
+			entity.ReviewRebateStatusScored, entity.ReviewRebateStatusPendingReview, entity.ReviewRebateStatusBelowThreshold:
 			usage.PendingCount += row.Rows
 		case entity.ReviewRebateStatusRejected:
 			usage.RejectedCount += row.Rows
 		}
 	}
-	// 两个键同值：ClaimedCount 是额度口径的历史名字，ApprovedCount 是界面读的名字。
-	usage.ApprovedCount = usage.ClaimedCount
-	// 金额以发放流水（review_rebate_awards）为准，而不是 claim 的候选金额：
-	// 只有 award 行代表钱真的进过钱包，这也是唯一能与账单对上的口径。
-	var awardTotal float64
+	var awards struct {
+		Count int64
+		Total float64
+	}
 	if err := reviewRebateSession(db).Model(&entity.ReviewRebateAward{}).
-		Select("COALESCE(SUM(amount), 0)").Where("user_id = ?", userID).
-		Scan(&awardTotal).Error; err != nil {
+		Select("COUNT(*) AS count, COALESCE(SUM(amount), 0) AS total").Where("user_id = ? AND source = ?", userID, program.Source).
+		Scan(&awards).Error; err != nil {
 		return usage, err
 	}
-	usage.ApprovedAmount = util.RoundMoney(awardTotal)
+	usage.ClaimedCount = awards.Count
+	usage.ApprovedCount = awards.Count
+	usage.ApprovedAmount = util.RoundMoney(awards.Total)
 
-	program, err := getReviewRebateProgramByID(db, programID)
-	if err != nil && !errors.Is(err, ErrReviewRebateProgramNotFound) {
-		return usage, err
-	}
-	usage.RemainingClaims = program.MaxClaimsPerUser - int(usage.ClaimedCount)
+	usage.RemainingClaims = min(1, program.MaxClaimsPerUser) - int(usage.ClaimedCount)
 	if usage.RemainingClaims < 0 {
 		usage.RemainingClaims = 0
 	}
@@ -233,6 +201,33 @@ func getReviewRebateProgramByID(db *gorm.DB, id int32) (entity.ReviewRebateProgr
 		return entity.ReviewRebateProgram{}, err
 	}
 	return program, nil
+}
+
+func lockReviewRebateUser(tx *gorm.DB, userID int32) (entity.User, error) {
+	var user entity.User
+	err := reviewRebateSession(tx).Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", userID).Take(&user).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return user, ErrReviewRebateInvalidInput
+	}
+	return user, err
+}
+
+func checkReviewRebateStoreAward(tx *gorm.DB, userID int32, program entity.ReviewRebateProgram, proposedAmount float64) error {
+	if program.MaxClaimsPerUser <= 0 || program.MaxAmountPerUser <= 0 || proposedAmount > util.RoundMoney(program.MaxAmountPerUser) {
+		return ErrReviewRebateLimitReached
+	}
+	// Retained award rows include historical grants and grants that were clawed back.
+	var award entity.ReviewRebateAward
+	err := reviewRebateSession(tx).Clauses(clause.Locking{Strength: "UPDATE"}).
+		Select("id").Where("user_id = ? AND source = ?", userID, program.Source).Take(&award).Error
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		return nil
+	case err != nil:
+		return err
+	default:
+		return ErrReviewRebateLimitReached
+	}
 }
 
 // CreateReviewRebateClaimWithDB 落一条提交单。
@@ -274,6 +269,9 @@ func CreateReviewRebateClaimWithDB(db *gorm.DB, input ReviewRebateClaimCreateInp
 
 	var created entity.ReviewRebateClaim
 	err = db.Transaction(func(tx *gorm.DB) error {
+		if _, err := lockReviewRebateUser(tx, input.UserID); err != nil {
+			return err
+		}
 		program, err := getReviewRebateProgramByID(tx, input.ProgramID)
 		if err != nil {
 			return err
@@ -281,68 +279,50 @@ func CreateReviewRebateClaimWithDB(db *gorm.DB, input ReviewRebateClaimCreateInp
 		if !program.Enabled {
 			return ErrReviewRebateDisabled
 		}
+		if input.Source != "" && input.Source != program.Source {
+			return ErrReviewRebateDisabled
+		}
+		storeIDs, err := reviewRebateStoreIDs(tx)
+		if err != nil {
+			return err
+		}
+		if storeIDs[program.Source] == "" {
+			return ErrReviewRebateDisabled
+		}
+		storeProgram := reviewRebateStoreProgram(program, storeIDs)
 		canonical := BuildReviewRebateCanonicalClaimID(stars, digest, input.ClaimedReviewURL)
 
-		// 闸 3：同账号同评价去重。先查一次给出干净的 duplicate 结论，
-		// 再靠唯一索引兜住并发（并发时第二个事务会在 Create 上撞唯一键）。
-		var existingCount int64
-		if err := reviewRebateSession(tx).Model(&entity.ReviewRebateClaim{}).
-			Where("program_id = ? AND user_id = ? AND canonical_claim_id = ?",
-				input.ProgramID, input.UserID, canonical).Count(&existingCount).Error; err != nil {
+		var previous entity.ReviewRebateClaim
+		err = reviewRebateSession(tx).Select("id", "status").
+			Where("program_id = ? AND user_id = ?", input.ProgramID, input.UserID).
+			Where("(canonical_claim_id = ? OR canonical_claim_id LIKE ?)", canonical, canonical+":%").
+			Order("id DESC").Take(&previous).Error
+		if err == nil {
+			if previous.Status != entity.ReviewRebateStatusRejected {
+				return ErrReviewRebateDuplicate
+			}
+			// A resubmission keeps its own row, linked by the rejected claim ID in the deduplication key.
+			canonical = fmt.Sprintf("%s:%d", canonical, previous.ID)
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
-		}
-		if existingCount > 0 {
-			return ErrReviewRebateDuplicate
 		}
 
-		// 闸 4：额度。**先锁用户行**再统计 —— 这是并发正确性的关键。
-		//
-		// 为什么不能只对 claim 行加 FOR UPDATE：当「一条 approved 都没有」时
-		// （正是「还剩最后 1 次」的场景），FOR UPDATE 锁的是**空集合**，
-		// 两个并发事务都拿到空集、都通过检查、都插入成功 —— 次数就被突破了。
-		// 锁 users 里那一行是唯一一个「一定存在」的互斥点：第二个事务在这里排队，
-		// 等第一个提交后再统计，就能看到刚批准的那条。
-		//
-		// 统**按 user 跨活动累计**（不加 program_id 过滤）：这是 16-*.md §1.2
-		// 「活动 ID（换版不重置已领次数）」的直接要求 —— 换版若重置次数，
-		// 用户等一次改版就能无限领。去重才按 program 计，额度按账号计。
-		var walletRow entity.User
-		if err := reviewRebateSession(tx).Model(&entity.User{}).
-			Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").Where("id = ?", input.UserID).
-			Take(&walletRow).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return fmt.Errorf("%w: 用户不存在", ErrReviewRebateInvalidInput)
-			}
+		if err := checkReviewRebateStoreAward(tx, input.UserID, program, 0); err != nil {
 			return err
-		}
-		var approvedRows []entity.ReviewRebateClaim
-		if err := reviewRebateSession(tx).Model(&entity.ReviewRebateClaim{}).
-			Where("user_id = ? AND status = ?", input.UserID, entity.ReviewRebateStatusApproved).
-			Find(&approvedRows).Error; err != nil {
-			return err
-		}
-		approvedCount := len(approvedRows)
-		if approvedCount >= program.MaxClaimsPerUser {
-			return ErrReviewRebateLimitReached
-		}
-		approvedAmount := 0.0
-		for _, row := range approvedRows {
-			approvedAmount += row.AwardAmount
-		}
-		approvedAmount = util.RoundMoney(approvedAmount)
-		if approvedAmount >= util.RoundMoney(program.MaxAmountPerUser) {
-			return ErrReviewRebateLimitReached
 		}
 
 		claim := entity.ReviewRebateClaim{
-			ProgramID:        input.ProgramID,
-			UserID:           input.UserID,
-			ScreenshotPath:   strings.TrimSpace(input.ScreenshotPath),
-			ScreenshotSHA256: digest,
-			ClaimedStars:     stars,
-			ClaimedReviewURL: strings.TrimSpace(input.ClaimedReviewURL),
-			CanonicalClaimID: canonical,
-			Status:           entity.ReviewRebateStatusSubmitted,
+			ProgramID:           input.ProgramID,
+			UserID:              input.UserID,
+			Source:              program.Source,
+			StoreURLSnapshot:    storeProgram.StoreURL,
+			ExtensionIDSnapshot: storeProgram.ExtensionID,
+			ScreenshotPath:      strings.TrimSpace(input.ScreenshotPath),
+			ScreenshotSHA256:    digest,
+			ClaimedStars:        stars,
+			ClaimedReviewURL:    strings.TrimSpace(input.ClaimedReviewURL),
+			CanonicalClaimID:    canonical,
+			Status:              entity.ReviewRebateStatusSubmitted,
 		}
 		result := reviewRebateSession(tx).Clauses(clause.OnConflict{DoNothing: true}).Create(&claim)
 		if result.Error != nil {
@@ -547,7 +527,7 @@ func ScoreReviewRebateClaimWithDB(db *gorm.DB, id int32, scorer ReviewRebateScor
 		return entity.ReviewRebateClaim{}, err
 	}
 	switch snapshot.Status {
-	case entity.ReviewRebateStatusApproved, entity.ReviewRebateStatusRejected:
+	case entity.ReviewRebateStatusApproved, entity.ReviewRebateStatusRejected, entity.ReviewRebateStatusClawedBack:
 		return entity.ReviewRebateClaim{}, ErrReviewRebateClaimState
 	}
 	score, err := scorer.Score(snapshot)
@@ -588,7 +568,7 @@ func ScoreReviewRebateClaimWithDB(db *gorm.DB, id int32, scorer ReviewRebateScor
 		}
 		// 并发下别人可能刚好完成复核：终态行的分数与金额不可再改。
 		switch claim.Status {
-		case entity.ReviewRebateStatusApproved, entity.ReviewRebateStatusRejected:
+		case entity.ReviewRebateStatusApproved, entity.ReviewRebateStatusRejected, entity.ReviewRebateStatusClawedBack:
 			return ErrReviewRebateClaimState
 		}
 		program, err := getReviewRebateProgramByID(tx, claim.ProgramID)
@@ -698,9 +678,16 @@ func DecideReviewRebateClaimWithDB(db *gorm.DB, reviewer entity.User, id int32, 
 	if reviewer.ID <= 0 {
 		return entity.ReviewRebateClaim{}, ErrReviewRebateReviewerInvalid
 	}
+	original, err := GetReviewRebateClaimWithDB(db, id)
+	if err != nil {
+		return entity.ReviewRebateClaim{}, err
+	}
 
 	var decided entity.ReviewRebateClaim
-	err := db.Transaction(func(tx *gorm.DB) error {
+	err = db.Transaction(func(tx *gorm.DB) error {
+		if _, err := lockReviewRebateUser(tx, original.UserID); err != nil {
+			return err
+		}
 		var claim entity.ReviewRebateClaim
 		if err := reviewRebateSession(tx).Model(&entity.ReviewRebateClaim{}).
 			Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).Take(&claim).Error; err != nil {
@@ -715,7 +702,7 @@ func DecideReviewRebateClaimWithDB(db *gorm.DB, reviewer entity.User, id int32, 
 			decided = claim
 			return nil
 		}
-		if claim.Status == entity.ReviewRebateStatusApproved || claim.Status == entity.ReviewRebateStatusRejected {
+		if claim.Status == entity.ReviewRebateStatusApproved || claim.Status == entity.ReviewRebateStatusRejected || claim.Status == entity.ReviewRebateStatusClawedBack {
 			return ErrReviewRebateClaimState
 		}
 
@@ -748,36 +735,28 @@ func DecideReviewRebateClaimWithDB(db *gorm.DB, reviewer entity.User, id int32, 
 		if amount <= 0 {
 			return fmt.Errorf("%w: 该提交没有可发放金额", ErrReviewRebateClaimState)
 		}
+		program.Source = claim.Source
+		if err := checkReviewRebateStoreAward(tx, claim.UserID, program, amount); err != nil {
+			return err
+		}
+		eligibilityKey := fmt.Sprintf("%s:%d", claim.Source, claim.UserID)
 
 		// 唯一键防重复发放：DoNothing + RowsAffected==0 表示已经发过。
 		award := entity.ReviewRebateAward{
-			ClaimID:       claim.ID,
-			UserID:        claim.UserID,
-			Amount:        amount,
-			GiftSource:    entity.ReviewRebateGiftSource,
-			PolicyVersion: program.PolicyVersion,
+			ClaimID:        claim.ID,
+			UserID:         claim.UserID,
+			Source:         claim.Source,
+			EligibilityKey: &eligibilityKey,
+			Amount:         amount,
+			GiftSource:     entity.ReviewRebateGiftSource,
+			PolicyVersion:  program.PolicyVersion,
 		}
 		result := reviewRebateSession(tx).Clauses(clause.OnConflict{DoNothing: true}).Create(&award)
 		if result.Error != nil {
 			return result.Error
 		}
 		if result.RowsAffected == 0 {
-			// 已经有一条 award（并发/重放）→ 不重复加钱，但把 claim 状态补齐。
-			if err := reviewRebateSession(tx).Model(&entity.ReviewRebateClaim{}).Where("id = ?", claim.ID).
-				Updates(map[string]any{
-					"status":              entity.ReviewRebateStatusApproved,
-					"review_note":         trimmedNote,
-					"reviewed_by_user_id": reviewer.ID,
-					"reviewed_at":         &now,
-				}).Error; err != nil {
-				return err
-			}
-			claim.Status = entity.ReviewRebateStatusApproved
-			claim.ReviewNote = trimmedNote
-			claim.ReviewedByUserID = reviewer.ID
-			claim.ReviewedAt = &now
-			decided = claim
-			return nil
+			return ErrReviewRebateLimitReached
 		}
 
 		// 钱包：balance 与 gift_balance 同步增加（口径见 entity.User.GiftBalance 注释）。

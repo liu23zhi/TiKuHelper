@@ -104,6 +104,7 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.GET("/script-activation-code-price", controller.Auth, controller.GetScriptActivationCodePrice)
 	apiRouter.PUT("/script-activation-code-price", controller.Auth, middleware.RequireAdmin, controller.PutScriptActivationCodePrice)
 	apiRouter.POST("/script-activation-codes/purchase", controller.Auth, controller.PurchaseScriptActivationCode)
+	apiRouter.GET("/script-activation-codes/purchases", controller.Auth, controller.ListScriptActivationCodePurchases)
 	apiRouter.POST("/script-activation-codes/redeem", controller.Auth, controller.RedeemScriptActivationCode)
 	apiRouter.GET("/script-versions/:id/download", controller.Auth, controller.DownloadScriptVersion)
 	apiRouter.GET("/scripts", controller.Auth, controller.ScriptList)
@@ -469,6 +470,9 @@ func SetAPIRouter(router *gin.Engine) {
 	apiRouter.POST("/admin/review-rebate/claims/:id/decision", controller.Auth, middleware.RequireAdmin, controller.AdminDecideReviewRebateClaim)
 	// Agent 打分重跑（占位打分器，不真的调模型）：只写 claim，不发放。
 	apiRouter.POST("/admin/review-rebate/claims/:id/score", controller.Auth, middleware.RequireAdmin, controller.AdminScoreReviewRebateClaim)
+	apiRouter.GET("/admin/review-rebate/claims/:id/verification", controller.Auth, middleware.RequireAdmin, controller.AdminReviewRebateVerification)
+	apiRouter.POST("/admin/review-rebate/claims/:id/verification", controller.Auth, middleware.RequireAdmin, controller.AdminRecordReviewRebateVerification)
+	apiRouter.POST("/admin/review-rebate/claims/:id/clawback", controller.Auth, middleware.RequireAdmin, controller.AdminClawBackReviewRebate)
 	// 截图回显：截图落在私有目录、没有可直连 URL，管理员复核必须经这个鉴权入口取图。
 	apiRouter.GET("/admin/review-rebate/claims/:id/screenshot", controller.Auth, middleware.RequireAdmin, controller.AdminReviewRebateScreenshot)
 	apiRouter.GET("/access-tokens", controller.Auth, controller.AccessTokenList)

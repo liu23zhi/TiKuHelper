@@ -204,6 +204,7 @@ test('billing record helpers render recharge and search ledger rows', () => {
   assert.equal(buildBillingRecordTypeText({ type: 'referral_rebate' }), '邀请返佣（入赠送余额）');
   assert.equal(buildBillingRecordTypeText({ type: 'referral_rebate_reversal' }), '邀请返佣冲回');
   assert.equal(buildBillingRecordTypeText({ type: 'review_rebate' }), '评价返现');
+  assert.equal(buildBillingRecordTypeText({ type: 'review_rebate_clawback' }), '评价返现追缴');
   assert.equal(buildBillingRecordSubjectText(search), '搜索题目');
   assert.equal(buildBillingRecordSourceText(search), 'Icodef 题库');
   assert.equal(buildBillingRecordReferenceText(search), 'req-search');

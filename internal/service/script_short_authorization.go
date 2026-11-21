@@ -1,6 +1,8 @@
 package service
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -26,11 +28,13 @@ var (
 type ConfigureScriptShortAuthorizationInput struct {
 	Enabled         bool       `json:"enabled"`
 	Address         string     `json:"address"`
+	DomainFormat    string     `json:"domainFormat"`
 	DurationMinutes int        `json:"durationMinutes"`
 	StartsAt        *time.Time `json:"startsAt"`
 	ExpiresAt       *time.Time `json:"expiresAt"`
 	MaxUses         int64      `json:"maxUses"`
 	RequestHost     string     `json:"-"`
+	RequestHTTPS    bool       `json:"-"`
 }
 
 type ScriptShortAuthorizationView struct {
@@ -104,6 +108,56 @@ func validateScriptShortAddressWithDB(db *gorm.DB, address, fallbackHost string)
 
 func shortEntryAddressKey(host, path string) string { return hashScriptSecret(host + "\x00" + path) }
 
+func allocateScriptShortAddress(tx *gorm.DB, scriptID int32, input ConfigureScriptShortAuthorizationInput) (string, string, error) {
+	reserve := func(address string) (string, string, error) {
+		if err := checkScriptAddressAvailable(tx, address, scriptAddressShort, scriptID); err != nil {
+			return "", "", err
+		}
+		if err := reserveScriptAddress(tx, address, scriptAddressShort, scriptID); err != nil {
+			return "", "", err
+		}
+		_, _, key := parseScriptReservedAddress(address)
+		return address, key, nil
+	}
+	if strings.TrimSpace(input.Address) != "" {
+		address, _, err := validateScriptShortAddressWithDB(tx, input.Address, input.RequestHost)
+		if err != nil {
+			return "", "", err
+		}
+		return reserve(address)
+	}
+	const entropyBytes = 16
+	const prefix = "s-"
+	origin := ScriptLauncherOrigin{Host: input.RequestHost, HTTPS: input.RequestHTTPS}
+	domain, wildcard, err := selectScriptAddressDomain(tx, input.DomainFormat, origin, len(prefix)+2*entropyBytes)
+	if err != nil {
+		return "", "", err
+	}
+	for range 10 {
+		var secret [entropyBytes]byte
+		if _, err := rand.Read(secret[:]); err != nil {
+			return "", "", err
+		}
+		address := scriptAddressWithSlot(domain, prefix+hex.EncodeToString(secret[:]), wildcard)
+		// Automatic issuance always rotates the address, even for the same script.
+		if err := checkScriptAddressAvailable(tx, address, scriptAddressShort, 0); err != nil {
+			if errors.Is(err, ErrScriptShortAddressInUse) {
+				continue
+			}
+			return "", "", err
+		}
+		if err := reserveScriptAddress(tx, address, scriptAddressShort, scriptID); err != nil {
+			if errors.Is(err, ErrScriptShortAddressInUse) {
+				continue
+			}
+			return "", "", err
+		}
+		_, _, key := parseScriptReservedAddress(address)
+		return address, key, nil
+	}
+	return "", "", ErrScriptShortAddressInUse
+}
+
 // Only the owner may make a script publicly launchable. Administrators may
 // still manage scripts through the normal endpoints, which never grant them
 // another owner's launcher capability.
@@ -119,7 +173,7 @@ func ConfigureScriptShortAuthorizationWithDB(db *gorm.DB, operator entity.User, 
 		}
 		updates := map[string]any{"short_entry_address_key": nil, "short_entry_generation": gorm.Expr("short_entry_generation + 1")}
 		if input.Enabled {
-			starts, expires, err := scriptAuthorizationWindow(input, true)
+			starts, expires, err := scriptAuthorizationWindow(tx, input, true)
 			if err != nil {
 				return err
 			}
@@ -129,34 +183,12 @@ func ConfigureScriptShortAuthorizationWithDB(db *gorm.DB, operator entity.User, 
 			if err := validateScriptLaunchActorWithDB(tx, script); err != nil {
 				return err
 			}
-			address, _, err := validateScriptShortAddressWithDB(tx, input.Address, input.RequestHost)
+			if err := preservePreviousScriptAddress(tx, script.ShortEntryAddress, scriptAddressShort, script.ID); err != nil {
+				return err
+			}
+			address, key, err := allocateScriptShortAddress(tx, script.ID, input)
 			if err != nil {
 				return err
-			}
-			parsed, _ := url.Parse(address)
-			locator := strings.TrimPrefix(parsed.Path, "/")
-			if parsed.Path == "" {
-				locator, _, _ = strings.Cut(parsed.Host, ".")
-			}
-			if isScriptLauncherLocator(locator) {
-				if _, err := findGeneratedScriptLauncherWithDB(tx, parsed.Host, parsed.Path, locator); err == nil {
-					return ErrScriptShortAddressInUse
-				} else if !errors.Is(err, ErrScriptNotFound) {
-					return err
-				}
-			}
-			key := shortEntryAddressKey(parsed.Host, parsed.Path)
-			now := time.Now()
-			// Expired or closed entries no longer reserve their public address.
-			if err := tx.Model(&entity.UserScript{}).Where("short_entry_address_key = ? AND (short_entry_expires_at <= ? OR deleted_at IS NOT NULL OR enabled = ?)", key, now, false).Update("short_entry_address_key", nil).Error; err != nil {
-				return err
-			}
-			var occupied int64
-			if err := tx.Model(&entity.UserScript{}).Where("id <> ? AND short_entry_address_key = ?", script.ID, key).Count(&occupied).Error; err != nil {
-				return err
-			}
-			if occupied > 0 {
-				return ErrScriptShortAddressInUse
 			}
 			updates["short_entry_address"], updates["short_entry_address_key"], updates["short_entry_expires_at"] = address, key, expires
 			updates["short_entry_starts_at"], updates["short_entry_max_uses"], updates["short_entry_used_count"], updates["short_entry_used_at"] = starts, input.MaxUses, 0, nil
@@ -195,6 +227,12 @@ func ConsumeScriptShortAuthorizationWithDB(db *gorm.DB, requestHost, requestPath
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("short_entry_address_key = ? AND deleted_at IS NULL AND enabled = ?", key, true).First(&script).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
 				var known int64
+				if lookupErr := tx.Model(&entity.ScriptAddressReservation{}).Where("address_key = ? AND kind = ?", key, scriptAddressShort).Count(&known).Error; lookupErr != nil {
+					return lookupErr
+				}
+				if known > 0 {
+					return ErrScriptShortAuthorizationInactive
+				}
 				if lookupErr := tx.Model(&entity.UserScript{}).Where("short_entry_address = ?", "https://"+host+path).Count(&known).Error; lookupErr != nil {
 					return lookupErr
 				}
@@ -206,7 +244,14 @@ func ConsumeScriptShortAuthorizationWithDB(db *gorm.DB, requestHost, requestPath
 			return err
 		}
 		now := time.Now()
-		if script.ShortEntryExpiresAt == nil || scriptAuthorizationStatus(true, script.ShortEntryStartsAt, script.ShortEntryExpiresAt, script.ShortEntryMaxUses, script.ShortEntryUsedCount, now) != "active" || script.EscrowClosingAt != nil {
+		var blocked int64
+		if err := tx.Model(&entity.ScriptAddressReservation{}).Where("address_key = ? AND script_id = ?", key, blockedScriptAddressOwnerID).Count(&blocked).Error; err != nil {
+			return err
+		}
+		if blocked > 0 {
+			return ErrScriptShortAuthorizationInactive
+		}
+		if scriptAuthorizationStatus(true, script.ShortEntryStartsAt, script.ShortEntryExpiresAt, script.ShortEntryMaxUses, script.ShortEntryUsedCount, now) != "active" || script.EscrowClosingAt != nil {
 			return ErrScriptShortAuthorizationInactive
 		}
 		address, origin, err := validateScriptShortAddressWithDB(tx, script.ShortEntryAddress, host)
@@ -226,7 +271,7 @@ func ConsumeScriptShortAuthorizationWithDB(db *gorm.DB, requestHost, requestPath
 		if script.ShortEntryMaxUses > 0 && script.ShortEntryUsedCount+1 >= script.ShortEntryMaxUses {
 			updates["short_entry_address_key"] = nil
 		}
-		claimed := tx.Model(&entity.UserScript{}).Where("id = ? AND short_entry_address_key = ? AND short_entry_used_count = ? AND short_entry_expires_at > ?", script.ID, key, script.ShortEntryUsedCount, now).Updates(updates)
+		claimed := tx.Model(&entity.UserScript{}).Where("id = ? AND short_entry_address_key = ? AND short_entry_used_count = ? AND (short_entry_expires_at IS NULL OR short_entry_expires_at > ?)", script.ID, key, script.ShortEntryUsedCount, now).Updates(updates)
 		if claimed.Error != nil {
 			return claimed.Error
 		}

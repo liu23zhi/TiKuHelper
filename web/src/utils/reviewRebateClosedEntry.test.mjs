@@ -201,10 +201,9 @@ test('① 总开关关闭时提交入口仍存在，但处于禁用态', { skip:
     assert.notEqual(button.attributes('disabled'), undefined,
       '关闭态下提交按钮必须是 disabled（可见但不可用），不能是「能点但点了报错」')
 
-    // 文件选择框是同一个入口的组成部分，必须存在且禁用。
-    const fileInput = context.wrapper.find('input[type="file"]')
-    assert.equal(fileInput.exists(), true, '关闭态下截图选择框必须仍存在')
-    assert.notEqual(fileInput.attributes('disabled'), undefined, '关闭态下截图选择框必须禁用')
+    const picker = context.wrapper.findAll('button').find((node) => buttonText(node) === '选择截图')
+    assert.ok(picker, '关闭态下截图选择按钮必须仍存在')
+    assert.equal(picker.element.disabled, true, '关闭态下截图选择按钮必须禁用')
 
     // entryDisabled 必须是「关闭」这个原因驱动的，不能靠 submitting/limitReached 巧合成立。
     assert.equal(context.setup.enabled, false, '前置失效：本用例要求关闭态')
@@ -256,7 +255,7 @@ test('③ 总开关开启时入口可用，且不显示关闭原因', { skip: be
       '开启态不得出现关闭原因文案')
 
     // 「开放了才有意义」的面板仍在。
-    assert.match(context.wrapper.text(), /当前规则/, '开启态必须仍显示规则表面板')
+    assert.match(context.wrapper.text(), /活动说明/, '开启态必须仍显示活动说明')
     assert.match(context.wrapper.text(), /我的提交/, '开启态必须仍显示「我的提交」面板')
   } finally {
     teardown(context, environment)

@@ -18,6 +18,7 @@ import (
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/itihey/tikuAdapter/internal/registry/manager"
 	"github.com/itihey/tikuAdapter/internal/service"
+	"github.com/itihey/tikuAdapter/pkg/logger"
 	"gorm.io/gorm"
 )
 
@@ -98,6 +99,10 @@ func UpdateScriptDomainSettings(c *gin.Context) {
 	}
 	settings, err := service.UpdateScriptDomainSettingsWithDB(scriptDB(), input)
 	if err != nil {
+		if errors.Is(err, service.ErrScriptDomainSettingsConflict) {
+			c.JSON(http.StatusConflict, gin.H{"message": err.Error()})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
@@ -120,11 +125,12 @@ func ScriptDomainFormats(c *gin.Context) {
 	if _, ok := currentOperator(c); !ok {
 		return
 	}
-	formats, err := service.ScriptDomainFormatsWithDB(scriptDB())
+	settings, err := service.GetScriptDomainSettingsWithDB(scriptDB())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "获取脚本域名格式失败"})
 		return
 	}
+	formats := settings.Formats()
 	type formatView struct {
 		Raw  string `json:"raw"`
 		Host string `json:"host"`
@@ -142,7 +148,11 @@ func ScriptDomainFormats(c *gin.Context) {
 		}
 		views = append(views, formatView{Raw: format.Raw, Host: format.Host, Kind: format.Kind, Slot: slot, Pattern: format.Raw})
 	}
-	c.JSON(http.StatusOK, gin.H{"formats": views})
+	c.JSON(http.StatusOK, gin.H{
+		"formats":               views,
+		"allowFullNeverExpire":  settings.AllowFullNeverExpire,
+		"allowShortNeverExpire": settings.AllowShortNeverExpire,
+	})
 }
 
 func UploadScriptVersion(c *gin.Context) {
@@ -369,6 +379,7 @@ func configureScriptAuthorization(c *gin.Context, full bool) {
 		result, err = service.ConfigureScriptLauncherAuthorizationWithDB(scriptDB(), operator, int32(id), input)
 	} else {
 		input.RequestHost = c.Request.Host
+		input.RequestHTTPS = c.Request.TLS != nil || c.GetBool(scriptProxyHTTPSKey)
 		result, err = service.ConfigureScriptShortAuthorizationWithDB(scriptDB(), operator, int32(id), input)
 	}
 	if err != nil {
@@ -593,9 +604,11 @@ func servePublicScriptBootstrap(c *gin.Context) bool {
 	// Header-bearing full launchers always retain their original authorization
 	// path. A header-free request may consume only a separately enabled, exact
 	// host/path short authorization, never a guessed legacy locator.
-	if strings.TrimSpace(c.GetHeader(service.ScriptLauncherHeader)) == "" {
+	capability := strings.TrimSpace(c.GetHeader(service.ScriptLauncherHeader))
+	if capability == "" {
 		script, grant, err := service.ConsumeScriptShortAuthorizationWithDB(db, c.Request.Host, c.Request.URL.Path)
 		if err == nil {
+			c.Set(logger.ScriptEntryLogKey, true)
 			c.Header("Cache-Control", "no-store")
 			c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(buildScriptBootstrap(grant.LaunchOrigin, script.ShortCode, grant.Token, script.BillingMode != "")))
 			return true
@@ -614,8 +627,10 @@ func servePublicScriptBootstrap(c *gin.Context) bool {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "脚本入口暂不可用"})
 		return true
 	}
-	grant, err := service.IssuePublicScriptExchangeTokenWithDB(db, script.ShortCode, c.GetHeader(service.ScriptLauncherHeader), service.ScriptExchangeTokenTTL)
+	c.Set(logger.ScriptEntryLogKey, true)
+	grant, err := service.IssuePublicScriptExchangeTokenWithDB(db, script.ShortCode, capability, service.ScriptExchangeTokenTTL)
 	c.Header("Cache-Control", "no-store")
+	c.Header("Referrer-Policy", "no-referrer")
 	if err != nil {
 		writeScriptError(c, err, "生成脚本兑换令牌失败")
 		return true
@@ -709,7 +724,7 @@ func writeScriptError(c *gin.Context, err error, fallback string) {
 	switch {
 	case errors.Is(err, service.ErrScriptShortAddressInUse):
 		status, message = http.StatusConflict, err.Error()
-	case errors.Is(err, service.ErrScriptShortDurationInvalid), errors.Is(err, service.ErrScriptShortAddressInvalid), errors.Is(err, service.ErrScriptAuthorizationLimitInvalid), errors.Is(err, service.ErrScriptAuthorizationWindowInvalid):
+	case errors.Is(err, service.ErrScriptShortDurationInvalid), errors.Is(err, service.ErrScriptFullNeverExpireDisabled), errors.Is(err, service.ErrScriptShortAddressInvalid), errors.Is(err, service.ErrScriptAuthorizationLimitInvalid), errors.Is(err, service.ErrScriptAuthorizationWindowInvalid):
 		status, message = http.StatusBadRequest, err.Error()
 	case errors.Is(err, service.ErrIdempotencyConflict), errors.Is(err, service.ErrIdempotencyPending):
 		status, message = http.StatusConflict, err.Error()

@@ -347,6 +347,9 @@ func TestReviewRebateUploadRejectsNonImage(t *testing.T) {
 	if out.Code != http.StatusConflict {
 		t.Fatalf("duplicate screenshot must be 409, got %d %s", out.Code, out.Body.String())
 	}
+	if _, err := os.Stat(written); err != nil {
+		t.Fatalf("duplicate upload must retain the original screenshot: %v", err)
+	}
 
 	// 超过 5 MB → 413。
 	huge := make([]byte, maxReviewRebateScreenshotBytes+1)

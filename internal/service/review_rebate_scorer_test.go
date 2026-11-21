@@ -234,6 +234,45 @@ func TestReviewRebateAgentScorerParsesModelOutput(t *testing.T) {
 	}
 }
 
+func TestReviewRebateAgentUsesTheStoreTargetAtSubmission(t *testing.T) {
+	t.Chdir(t.TempDir())
+	db := newReviewRebateScorerTestDB(t)
+	user := seedReviewRebateUser(t, db, 74, "rr-store-snapshot", "user")
+	chromeID := strings.Repeat("c", 32)
+	t.Setenv("EXTENSION_CHROME_ID", chromeID)
+	program, err := CreateReviewRebateProgramWithDB(db, entity.ReviewRebateProgram{
+		Name: "Chrome", Source: entity.ReviewRebateSourceChrome, Enabled: true,
+		StoreURL: "https://legacy.invalid/store", ExtensionID: "legacy-extension",
+		MaxClaimsPerUser: 1, MaxAmountPerUser: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := reviewRebateFixtureDigest("c2")
+	claim, err := CreateReviewRebateClaimWithDB(db, ReviewRebateClaimCreateInput{
+		ProgramID: program.ID, Source: entity.ReviewRebateSourceChrome, UserID: user.ID,
+		ScreenshotPath: writeReviewRebateTestScreenshot(t, user.ID, digest), ScreenshotSHA256: digest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	newChromeID := strings.Repeat("d", 32)
+	t.Setenv("EXTENSION_CHROME_ID", newChromeID)
+	model := &fakeReviewRebateCompleter{response: agentJSON(5, 8, 0.88, "字幕清晰")}
+	if _, err := ScoreReviewRebateClaimWithDB(db, claim.ID, NewReviewRebateAgentScorer(db, model)); err != nil {
+		t.Fatal(err)
+	}
+	url := "https://chromewebstore.google.com/detail/" + chromeID
+	if !strings.Contains(model.lastText, url) || strings.Count(model.lastText, chromeID) != 2 {
+		t.Fatalf("expected original Chrome store URL and extension ID in captured prompt: %q", model.lastText)
+	}
+	for _, unwanted := range []string{newChromeID, "legacy.invalid", "legacy-extension"} {
+		if strings.Contains(model.lastText, unwanted) {
+			t.Fatalf("captured prompt contains another store target %q: %q", unwanted, model.lastText)
+		}
+	}
+}
+
 // ── 测试 2：配置了模型但调用失败 → 不自动通过、不默认高分 ───────
 
 func TestReviewRebateScoreFailsClosedWhenModelErrors(t *testing.T) {
@@ -524,9 +563,6 @@ func TestReviewRebateProgramViewNeverVerifiesAuthorship(t *testing.T) {
 	if view.AuthorshipVerified {
 		t.Fatal("authorshipVerified must always be false")
 	}
-	if strings.TrimSpace(view.Notice) == "" {
-		t.Fatal("notice must explain the boundary")
-	}
 	if view.Program.ID != program.ID {
 		t.Fatalf("program id = %d, want %d", view.Program.ID, program.ID)
 	}
@@ -568,13 +604,11 @@ func TestReviewRebateJSONContractKeys(t *testing.T) {
 	}
 	viewKeys := decodeReviewRebateJSON(t, view)
 	assertReviewRebateKeys(t, "program view", viewKeys,
-		"program", "rules", "usage", "authorshipVerified", "notice")
+		"program", "usage", "authorshipVerified", "canClaim", "stores")
 	assertReviewRebateKeys(t, "program summary", mapAt(t, viewKeys, "program"),
-		"id", "enabled", "name", "storeUrl", "maxClaimsPerUser", "maxAmountPerUser",
-		"minAgentConfidence", "policyVersion", "tutorialVersionId")
+		"id", "source", "enabled", "name", "storeUrl", "maxClaimsPerUser", "tutorialVersionId")
 	assertReviewRebateKeys(t, "usage", mapAt(t, viewKeys, "usage"),
-		"claimedCount", "approvedCount", "approvedAmount", "pendingCount",
-		"rejectedCount", "remainingClaims", "remainingAmount")
+		"claimedCount", "approvedCount", "pendingCount", "rejectedCount", "remainingClaims")
 	// 两个条数键必须同值，否则「已领次数」会出现两套数字。
 	if mapAt(t, viewKeys, "usage")["claimedCount"] != mapAt(t, viewKeys, "usage")["approvedCount"] {
 		t.Fatalf("claimedCount and approvedCount must match: %v", mapAt(t, viewKeys, "usage"))

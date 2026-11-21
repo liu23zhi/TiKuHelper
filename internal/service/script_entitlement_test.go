@@ -160,9 +160,6 @@ func TestScriptActivationEntitlementOwnerBindAndRunOnce(t *testing.T) {
 	if err := db.Create(&other).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RedeemScriptActivationCodeWithDB(db, other.ID, purchase.Code); !errors.Is(err, ErrScriptActivationCodeInvalid) {
-		t.Fatalf("unexpected wrong-owner result: %v", err)
-	}
 	// Purchase and redemption do not require either binding. Actual script
 	// creation validates both in CreateUserScriptWithDB before this helper.
 	redeemed, err := RedeemScriptActivationCodeWithDB(db, user.ID, purchase.Code)
@@ -249,6 +246,107 @@ func TestScriptActivationEntitlementOwnerBindAndRunOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertActivationWallet(t, db, user.ID, 47.5, 1)
+}
+
+func TestWalletActivationCodeRecipientMayBindAndPurchaserKeepsReceipt(t *testing.T) {
+	db, buyer := activationEntitlementFixture(t)
+	recipient := newActivationRecipient(t, db)
+	setSyntheticActivationPrice(t, db, "2.5")
+	purchase, err := PurchaseScriptActivationCodeWithDB(db, buyer.ID, "gift", syntheticActivationSigningKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := RedeemScriptActivationCodeWithDB(db, recipient.ID, purchase.Code)
+	if err != nil {
+		t.Fatalf("recipient could not redeem a shared code: %v", err)
+	}
+	if grant.UserID != buyer.ID || grant.ID != purchase.EntitlementID {
+		t.Fatalf("redemption changed purchase ownership: %d", grant.UserID)
+	}
+	if _, err := RedeemScriptActivationCodeWithDB(db, buyer.ID, purchase.Code); err == nil {
+		t.Fatal("purchaser reclaimed a reservation held by the recipient")
+	}
+	script := entity.UserScript{UserID: recipient.ID, VersionID: 1, ShortCode: "gifted", Name: "gifted", Enabled: true}
+	if err := db.Create(&script).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		return BindScriptActivationEntitlementInTx(tx, recipient.ID, grant.ID, script.ID)
+	}); err != nil {
+		t.Fatalf("recipient could not bind: %v", err)
+	}
+	if _, found, err := GetScriptActivationEntitlementByScriptWithDB(db, recipient.ID, script.ID); err != nil || !found {
+		t.Fatalf("recipient's bound entitlement missing: %v", err)
+	}
+	if _, found, err := GetScriptActivationEntitlementByScriptWithDB(db, buyer.ID, script.ID); err != nil || found {
+		t.Fatalf("purchaser resolved the recipient's entitlement: %v", err)
+	}
+	receipt, err := PurchaseScriptActivationCodeWithDB(db, buyer.ID, "gift", syntheticActivationSigningKey)
+	if err != nil || receipt != purchase {
+		t.Fatalf("purchaser lost the original receipt: %v", err)
+	}
+	assertActivationWallet(t, db, buyer.ID, 47.5, 1)
+}
+
+func TestScriptActivationCodeReleasesExpiredUnboundRedemption(t *testing.T) {
+	for _, kind := range []string{"wallet", "admin"} {
+		t.Run(kind, func(t *testing.T) {
+			db, buyer := activationEntitlementFixture(t)
+			recipient := newActivationRecipient(t, db)
+			var code string
+			if kind == "wallet" {
+				setSyntheticActivationPrice(t, db, "2.5")
+				purchase, err := PurchaseScriptActivationCodeWithDB(db, buyer.ID, "expired-gift", syntheticActivationSigningKey)
+				if err != nil {
+					t.Fatal(err)
+				}
+				code = purchase.Code
+			} else {
+				if err := db.AutoMigrate(&entity.AdminScriptActivationCode{}); err != nil {
+					t.Fatal(err)
+				}
+				rows, err := GenerateAdminScriptActivationCodes(db, buyer.ID, 1, "", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				code = rows[0].Code
+			}
+			old, err := RedeemScriptActivationCodeWithDB(db, buyer.ID, code)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expiredAt := time.Now().UTC().Add(-31 * time.Minute)
+			if err := db.Model(&old).Updates(map[string]any{"redeemed_at": expiredAt, "redeem_expires_at": nil, "redeemer_id": nil}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if kind == "admin" {
+				if err := db.Model(&entity.AdminScriptActivationCode{}).Where("code = ?", code).Update("used_at", expiredAt).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			script := entity.UserScript{UserID: buyer.ID, VersionID: 1, ShortCode: "stale", Name: "stale", Enabled: true}
+			if err := db.Create(&script).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Transaction(func(tx *gorm.DB) error {
+				return BindScriptActivationEntitlementInTx(tx, buyer.ID, old.ID, script.ID)
+			}); !errors.Is(err, ErrScriptActivationEntitlementUnavailable) {
+				t.Fatalf("expired reservation still binds: %v", err)
+			}
+			if _, err := RedeemScriptActivationCodeWithDB(db, recipient.ID, code); err != nil {
+				t.Fatalf("expired reservation did not release its code: %v", err)
+			}
+		})
+	}
+}
+
+func newActivationRecipient(t *testing.T, db *gorm.DB) entity.User {
+	t.Helper()
+	recipient := entity.User{Username: "activation-recipient", Role: "user", Status: "enabled"}
+	if err := db.Create(&recipient).Error; err != nil {
+		t.Fatal(err)
+	}
+	return recipient
 }
 
 func TestScriptActivationPurchaseRollsBackIfLedgerWriteFails(t *testing.T) {

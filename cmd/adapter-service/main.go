@@ -81,7 +81,8 @@ func main() {
 		}
 	}(mg)
 
-	server := gin.Default()
+	server := gin.New()
+	server.Use(logger.AccessLogger(), logger.HTTPRecovery())
 	if err := server.SetTrustedProxies(trustedProxies.List); err != nil {
 		logger.FatalLog(err)
 	}

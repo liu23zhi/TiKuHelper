@@ -2,7 +2,7 @@
   <div class="console-page script-activation-code-page">
     <ConsolePageHeading
       title="脚本一次性激活码"
-      description="管理员预生成的一次性脚本激活码。列表只显示后 4 位；详情才显示全码并附完整使用记录（兑换 / 下载 / 运行），便于客服处理工单。"
+      description="管理员预生成的一次性脚本激活码。列表只显示后 4 位；详情显示全码与兑换、创建和运行记录。兑换后 30 分钟未创建脚本可重新使用。"
     >
       <template #actions>
         <a-button :loading="loading" :disabled="!canManage() || loading || writing" @click="loadCodes">刷新</a-button>
@@ -263,6 +263,7 @@ export default {
     const statusOptions = [
       { label: '全部状态', value: '' },
       { label: '未使用', value: 'unused' },
+      { label: '已兑换，待创建', value: 'frozen' },
       { label: '已使用', value: 'used' },
       { label: '已禁用', value: 'disabled' },
       { label: '已过期', value: 'expired' },

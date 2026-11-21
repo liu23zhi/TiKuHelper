@@ -301,19 +301,89 @@ func normalizeReviewRebateClaimURL(value string) string {
 //
 // 以最新启用的活动为准；历史隐藏开关不再参与判定。
 func GetReviewRebateProgramWithDB(db *gorm.DB) (entity.ReviewRebateProgram, error) {
-	if !ReviewRebateSchemaAvailable(db) {
-		return entity.ReviewRebateProgram{}, ErrReviewRebateSchemaUnavailable
+	return GetReviewRebateStoreProgramWithDB(db, entity.ReviewRebateSourceEdge)
+}
+
+func NormalizeReviewRebateSource(source string) (string, error) {
+	switch source = strings.ToLower(strings.TrimSpace(source)); source {
+	case "", entity.ReviewRebateSourceEdge:
+		return entity.ReviewRebateSourceEdge, nil
+	case entity.ReviewRebateSourceChrome:
+		return entity.ReviewRebateSourceChrome, nil
+	default:
+		return "", fmt.Errorf("%w: 无效的商店", ErrReviewRebateInvalidInput)
 	}
-	var program entity.ReviewRebateProgram
-	err := reviewRebateSession(db).Model(&entity.ReviewRebateProgram{}).
-		Where("enabled = ?", true).Order("id desc").Take(&program).Error
+}
+
+func reviewRebateStoreIDs(db *gorm.DB) (map[string]string, error) {
+	config, overrides, err := extensionStoreConfigFromEnv()
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return entity.ReviewRebateProgram{}, ErrReviewRebateDisabled
+		return nil, err
+	}
+	environment := config
+	settings, found, err := loadExtensionSettings(reviewRebateSession(db))
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		applyExtensionSettings(&config, settings)
+		applyExtensionEnvironment(&config, environment, overrides)
+	}
+	return config.IDs, nil
+}
+
+func reviewRebateStoreProgram(program entity.ReviewRebateProgram, storeIDs map[string]string) entity.ReviewRebateProgram {
+	program.ExtensionID = storeIDs[program.Source]
+	switch program.Source {
+	case entity.ReviewRebateSourceEdge:
+		program.StoreURL = "https://microsoftedge.microsoft.com/addons/detail/" + program.ExtensionID
+	case entity.ReviewRebateSourceChrome:
+		program.StoreURL = "https://chromewebstore.google.com/detail/" + program.ExtensionID
+	}
+	return program
+}
+
+func ListActiveReviewRebateStoreProgramsWithDB(db *gorm.DB) ([]entity.ReviewRebateProgram, error) {
+	if !ReviewRebateSchemaAvailable(db) {
+		return nil, ErrReviewRebateSchemaUnavailable
+	}
+	var programs []entity.ReviewRebateProgram
+	if err := reviewRebateSession(db).Where("enabled = ?", true).Order("id desc").Find(&programs).Error; err != nil {
+		return nil, err
+	}
+	active := make([]entity.ReviewRebateProgram, 0, 2)
+	if len(programs) == 0 {
+		return active, nil
+	}
+	storeIDs, err := reviewRebateStoreIDs(db)
+	if err != nil {
+		return nil, err
+	}
+	for _, program := range programs {
+		if storeIDs[program.Source] == "" {
+			continue
 		}
+		active = append(active, reviewRebateStoreProgram(program, storeIDs))
+		delete(storeIDs, program.Source)
+	}
+	return active, nil
+}
+
+func GetReviewRebateStoreProgramWithDB(db *gorm.DB, source string) (entity.ReviewRebateProgram, error) {
+	source, err := NormalizeReviewRebateSource(source)
+	if err != nil {
 		return entity.ReviewRebateProgram{}, err
 	}
-	return program, nil
+	programs, err := ListActiveReviewRebateStoreProgramsWithDB(db)
+	if err != nil {
+		return entity.ReviewRebateProgram{}, err
+	}
+	for _, program := range programs {
+		if program.Source == source {
+			return program, nil
+		}
+	}
+	return entity.ReviewRebateProgram{}, ErrReviewRebateDisabled
 }
 
 // ReviewRebateAvailabilityWithDB shares the activity state used by user reads
@@ -322,12 +392,8 @@ func ReviewRebateAvailabilityWithDB(db *gorm.DB) (bool, error) {
 	if !ReviewRebateSchemaAvailable(db) {
 		return false, nil
 	}
-	var program entity.ReviewRebateProgram
-	err := reviewRebateSession(db).Select("id").Where("enabled = ?", true).Order("id DESC").Take(&program).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return false, nil
-	}
-	return err == nil, err
+	programs, err := ListActiveReviewRebateStoreProgramsWithDB(db)
+	return len(programs) > 0, err
 }
 
 // ListReviewRebateProgramsWithDB 返回全部活动（管理员），按 ID 升序。
@@ -451,6 +517,11 @@ func CreateReviewRebateProgramWithDB(db *gorm.DB, program entity.ReviewRebatePro
 	if err := validateReviewRebateProgram(program); err != nil {
 		return entity.ReviewRebateProgram{}, err
 	}
+	source, err := NormalizeReviewRebateSource(program.Source)
+	if err != nil {
+		return entity.ReviewRebateProgram{}, err
+	}
+	program.Source = source
 	program.Name = strings.TrimSpace(program.Name)
 	program.StoreURL = strings.TrimSpace(program.StoreURL)
 	program.ExtensionID = strings.TrimSpace(program.ExtensionID)

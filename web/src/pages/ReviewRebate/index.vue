@@ -1,6 +1,6 @@
 <template>
   <div class="console-page review-rebate-page">
-    <ConsolePageHeading title="评价返现" description="提交商店评价截图，系统抓取公开评价并打分，管理员复核后发放赠金。">
+    <ConsolePageHeading title="评价返现" description="提交商店评价截图，审核通过后发放赠金。">
       <template #actions>
         <a-button :loading="loading" :disabled="loading" @click="loadAll">刷新</a-button>
       </template>
@@ -45,54 +45,31 @@
     </a-alert>
 
     <template v-if="loaded && enabled">
-      <ConsolePanel title="活动说明" description="系统只核对「公开评价里存在一条与截图一致的记录」，不做账号归属的强断言。">
+      <ConsolePanel title="活动说明">
         <a-descriptions :column="1" size="small" bordered class="program-descriptions">
+          <a-descriptions-item v-if="stores.length > 1" label="商店">
+            <a-radio-group :value="program.source" :disabled="loading || submitting" @update:value="selectSource">
+              <a-radio-button v-for="store in stores" :key="store.source" :value="store.source">
+                {{ storeLabel(store.source) }}
+              </a-radio-button>
+            </a-radio-group>
+          </a-descriptions-item>
           <a-descriptions-item label="活动名称">{{ program.name || '—' }}</a-descriptions-item>
           <a-descriptions-item label="商店条目">
             <a v-if="program.storeUrl" :href="program.storeUrl" target="_blank" rel="noopener noreferrer" class="store-link">{{ program.storeUrl }}</a>
             <span v-else>—</span>
           </a-descriptions-item>
           <a-descriptions-item label="每账号可领次数">{{ maxClaimsText }}</a-descriptions-item>
-          <a-descriptions-item label="每账号可领金额">{{ moneyText(program.maxAmountPerUser) }}</a-descriptions-item>
         </a-descriptions>
         <p class="hint">
           提交前请先在商店条目下发表真实评价，并截取能看清星数与评价正文的图。
-          所有结果都标注「归属未验证」；置信度低于门槛时一定会转人工复核，不会自动发放。
         </p>
-      </ConsolePanel>
-
-      <ConsolePanel title="当前规则" description="规则由管理员配置：命中区间按优先级取第一条。只读展示。">
-        <ConsoleTableShell v-if="rules.length" label="评价返现规则表">
-          <a-table
-            table-layout="fixed"
-            :data-source="rules"
-            :columns="ruleColumns"
-            :pagination="false"
-            row-key="id"
-            size="small"
-            :scroll="{ x: sumTableColumnWidths(ruleColumns) }"
-          >
-            <template #bodyCell="{ column, record }">
-              <span v-if="column.key === 'stars'">{{ rangeText(record.minStars, record.maxStars) }}</span>
-              <span v-else-if="column.key === 'contentScore'">{{ rangeText(record.minContentScore, record.maxContentScore) }}</span>
-              <span v-else-if="column.key === 'amount'" class="money-cell">{{ moneyText(record.amount) }}</span>
-              <span v-else-if="column.key === 'priority'">{{ record.priority ?? '—' }}</span>
-              <span v-else-if="column.key === 'remark'">{{ record.remark || '—' }}</span>
-            </template>
-          </a-table>
-        </ConsoleTableShell>
-        <a-empty v-else description="管理员还没有配置任何规则，暂时无法按规则计算金额。" />
       </ConsolePanel>
 
       <ConsoleSummaryGrid class="claim-summary">
         <div>
           <div class="summary-label">已领次数</div>
           <div class="summary-value">{{ claimUsage.count }} / {{ maxClaimsText }}</div>
-        </div>
-        <div>
-          <div class="summary-label">已领金额</div>
-          <div class="summary-value" :class="{ 'is-limit': amountLimited }">{{ moneyText(claimUsage.amount) }}</div>
-          <div class="summary-hint">上限 {{ moneyText(program.maxAmountPerUser) }}</div>
         </div>
         <div>
           <div class="summary-label">待审核 / 已提交</div>
@@ -129,24 +106,26 @@
           data-entry-closed-notice
         />
 
-        <a-form layout="vertical" :onFinish="submit">
+        <a-form layout="vertical" :model="form" @finish="submit">
           <a-form-item label="评价截图" :html-for="fieldId('screenshot')" required>
-            <input
-              :id="fieldId('screenshot')"
-              type="file"
+            <a-upload
               accept="image/png,image/jpeg"
               :disabled="entryDisabled"
-              @change="onFileChange"
-            />
+              :before-upload="selectFile"
+              :show-upload-list="false"
+              :file-list="[]"
+            >
+              <a-button :id="fieldId('screenshot')" :disabled="entryDisabled">选择截图</a-button>
+            </a-upload>
             <div class="hint">
-              <span v-if="selectedFile">{{ selectedFile.name }}（{{ formatSize(selectedFile.size) }}）</span>
+              <span v-if="form.file">{{ form.file.name }}（{{ formatSize(form.file.size) }}）</span>
               <span v-else>支持 PNG / JPEG，单张不超过 5 MB；服务端会再解码校验一次。</span>
             </div>
           </a-form-item>
           <a-form-item label="评价链接（可选）" :html-for="fieldId('reviewUrl')">
             <a-input
               :id="fieldId('reviewUrl')"
-              :value="reviewUrl"
+              :value="form.reviewUrl"
               type="url"
               allow-clear
               placeholder="https://…"
@@ -164,7 +143,7 @@
               type="primary"
               html-type="submit"
               :loading="submitting"
-              :disabled="entryDisabled || !selectedFile"
+              :disabled="entryDisabled || !form.file"
               data-submit-button
             >
               提交审核
@@ -200,7 +179,7 @@
     </template>
 
     <template v-if="loaded && enabled">
-      <ConsolePanel title="我的提交" description="状态徽章反映当前进度；Agent 打分只是建议，最终以管理员复核为准。">
+      <ConsolePanel title="我的提交">
         <section v-if="claimsFailure" class="status-alert">
           <RequestFailureAlert
             :key="claimsFailureContextKey"
@@ -227,16 +206,8 @@
           >
             <template #bodyCell="{ column, record }">
               <span v-if="column.key === 'id'">{{ record.id ?? '-' }}</span>
+              <span v-else-if="column.key === 'source'">{{ storeLabel(record.source) }}</span>
               <a-tag v-else-if="column.key === 'status'" :color="claimStatusColor(record.status)">{{ claimStatusLabel(record.status) }}</a-tag>
-              <span v-else-if="column.key === 'agentStars'">{{ record.agentStars ?? '—' }}</span>
-              <span v-else-if="column.key === 'agentContentScore'">{{ record.agentContentScore ?? '—' }}</span>
-              <span v-else-if="column.key === 'agentConfidence'" :class="{ 'is-low-confidence': isLowConfidence(record) }">
-                {{ formatConfidence(record.agentConfidence) }}
-                <a-tag v-if="isLowConfidence(record)" color="orange" class="low-tag">低于门槛</a-tag>
-              </span>
-              <span v-else-if="column.key === 'matchedRule'">{{ record.matchedRuleId ?? '—' }}</span>
-              <span v-else-if="column.key === 'awardAmount'" class="money-cell">{{ moneyText(record.awardAmount) }}</span>
-              <span v-else-if="column.key === 'reviewNote'" class="note-cell">{{ record.reviewNote || '—' }}</span>
               <span v-else-if="column.key === 'createdAt'" class="time-cell">{{ formatDateTime(record.createdAt) }}</span>
             </template>
           </a-table>
@@ -248,7 +219,7 @@
 </template>
 
 <script>
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, useId, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowReactive, shallowRef, useId, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import ConsolePageHeading from '@/components/ConsolePageHeading.vue'
 import ConsolePanel from '@/components/ConsolePanel.vue'
@@ -263,21 +234,22 @@ import {
 import { getCurrentUserLogoutEpoch, useCurrentUserDisplay } from '@/utils/currentUser'
 import { currentUserIdentity } from '@/utils/currentUserScope'
 import { ensureRequestFailure } from '@/utils/requestFailureView.mjs'
-import { formatMoneyValue } from '@/utils/moneyFormat.mjs'
 import { sumTableColumnWidths } from '@/utils/tableLayout.mjs'
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 const ACCEPTED_TYPES = ['image/png', 'image/jpeg']
 const ACCEPTED_EXTENSIONS = /\.(png|jpe?g)$/i
+const storeLabel = source => ({ edge: 'Edge', chrome: 'Chrome' })[source] || '—'
 
 const CLAIM_STATUS = {
   submitted: { label: '已提交', color: 'blue' },
-  scraping: { label: '抓取中', color: 'blue' },
-  scored: { label: '已打分', color: 'cyan' },
+  scraping: { label: '待审核', color: 'blue' },
+  scored: { label: '待审核', color: 'blue' },
   pending_review: { label: '待人工复核', color: 'gold' },
   approved: { label: '已通过', color: 'green' },
   rejected: { label: '已拒绝', color: 'red' },
-  below_threshold: { label: '未达门槛', color: 'default' },
+  below_threshold: { label: '待审核', color: 'blue' },
+  clawed_back: { label: '已追缴', color: 'default' },
   duplicate: { label: '疑似重复', color: 'orange' },
   limit_reached: { label: '超出上限', color: 'orange' },
 }
@@ -307,16 +279,17 @@ export default {
 
     const loaded = ref(false)
     const program = ref({})
+    const stores = ref([])
+    const canClaim = ref(null)
+    const selectedSource = ref('')
     const usage = ref({})
     const enabled = ref(false)
-    const rules = ref([])
 
     const loadingClaims = ref(false)
     const claimsLoaded = ref(false)
     const claims = ref([])
 
-    const selectedFile = ref(null)
-    const reviewUrl = ref('')
+    const form = shallowReactive({ file: null, reviewUrl: '' })
     const submitting = ref(false)
     const formError = ref('')
     const submitWarning = ref('')
@@ -359,7 +332,7 @@ export default {
       return {
         count: approvedCount ?? countFallback,
         amount: approvedAmount ?? fallbackAmount,
-        pending: list.filter(item => ['submitted', 'scraping', 'scored', 'pending_review'].includes(String(item?.status || '').toLowerCase())).length,
+        pending: readNonnegativeNumber(usage.value.pendingCount) ?? list.filter(item => ['submitted', 'scraping', 'scored', 'pending_review', 'below_threshold'].includes(String(item?.status || '').toLowerCase())).length,
         rejected: rejectedCount ?? list.filter(item => String(item?.status || '').toLowerCase() === 'rejected').length,
       }
     })
@@ -368,7 +341,7 @@ export default {
       return limit !== null && limit > 0 && claimUsage.value.amount >= limit
     })
     const countLimited = computed(() => maxClaims.value !== null && maxClaims.value > 0 && claimUsage.value.count >= maxClaims.value)
-    const limitReached = computed(() => countLimited.value || amountLimited.value)
+    const limitReached = computed(() => canClaim.value === null ? (countLimited.value || amountLimited.value) : !canClaim.value)
 
     // ───────────── 关闭态文案与入口禁用 ─────────────
     //
@@ -384,49 +357,19 @@ export default {
 
     // entryDisabled：关闭态、「提交中」、「达上限」三者之一即禁用。
     // 关闭态**优先**：它是最根本的原因，不该被「已上限」之类的文案盖住。
-    const entryDisabled = computed(() => !enabled.value || submitting.value || limitReached.value)
+    const switchingSource = computed(() => Boolean(selectedSource.value && selectedSource.value !== program.value.source))
+    const entryDisabled = computed(() => !enabled.value || submitting.value || limitReached.value || switchingSource.value)
     const entryDescription = computed(() => (enabled.value
       ? '必填 1 张截图（PNG / JPEG，≤ 5 MB）。评价链接可选，填写后有助于核对。'
       : '当前不可提交。开放后本区域即为提交入口，无需重新进入本页。'))
 
-    const minConfidence = computed(() => readNonnegativeNumber(program.value.minAgentConfidence))
-
-    const ruleColumns = [
-      { title: '星数', dataIndex: 'stars', key: 'stars', width: 120 },
-      { title: '内容分', dataIndex: 'contentScore', key: 'contentScore', width: 120 },
-      { title: '金额', dataIndex: 'amount', key: 'amount', width: 130 },
-      { title: '优先级', dataIndex: 'priority', key: 'priority', width: 100 },
-      { title: '备注', dataIndex: 'remark', key: 'remark', width: 220 },
-    ]
     const claimColumns = [
       { title: '提交号', dataIndex: 'id', key: 'id', width: 95 },
+      { title: '商店', dataIndex: 'source', key: 'source', width: 100 },
       { title: '状态', dataIndex: 'status', key: 'status', width: 130 },
-      { title: 'Agent 星数', dataIndex: 'agentStars', key: 'agentStars', width: 110 },
-      { title: 'Agent 内容分', dataIndex: 'agentContentScore', key: 'agentContentScore', width: 125 },
-      { title: '置信度', dataIndex: 'agentConfidence', key: 'agentConfidence', width: 170 },
-      { title: '命中规则', dataIndex: 'matchedRule', key: 'matchedRule', width: 110 },
-      { title: '金额', dataIndex: 'awardAmount', key: 'awardAmount', width: 130 },
-      { title: '审核理由', dataIndex: 'reviewNote', key: 'reviewNote', width: 240 },
       { title: '提交时间', dataIndex: 'createdAt', key: 'createdAt', width: 175 },
     ]
 
-    const rangeText = (min, max) => {
-      const low = readNonnegativeNumber(min)
-      const high = readNonnegativeNumber(max)
-      if (low === null && high === null) return '—'
-      if (low === null) return `≤ ${high}`
-      if (high === null) return `≥ ${low}`
-      return low === high ? String(low) : `${low}–${high}`
-    }
-    // 与 UserUsage 一致：金额最多 6 位小数、去尾零（后端 util.MoneyPrecision = 6）。
-    const moneyText = value => {
-      const amount = readNonnegativeNumber(value)
-      return amount === null ? '—' : `¥ ${formatMoneyValue(amount)}`
-    }
-    const formatConfidence = value => {
-      const confidence = readNonnegativeNumber(value)
-      return confidence === null ? '—' : confidence.toFixed(2)
-    }
     const formatSize = bytes => {
       const value = Number(bytes)
       if (!Number.isFinite(value) || value <= 0) return '—'
@@ -448,11 +391,6 @@ export default {
     function claimStatusColor(value) {
       const key = String(value || '').trim().toLowerCase()
       return CLAIM_STATUS[key]?.color || 'default'
-    }
-    function isLowConfidence(record) {
-      const confidence = readNonnegativeNumber(record?.agentConfidence)
-      const threshold = minConfidence.value
-      return confidence !== null && threshold !== null && confidence < threshold
     }
 
     const clearProgramFailure = () => {
@@ -479,7 +417,13 @@ export default {
       const context = programFailureContextKey.value
       const ownsFailure = () => owns() && context === programFailureContextKey.value
       try {
-        const res = await getReviewRebateProgram()
+        let res = await getReviewRebateProgram(selectedSource.value || 'active')
+        if (!ownsFailure()) return false
+        if (selectedSource.value && res?.status === 400 && isReviewRebateDisabledResponse(res)) {
+          selectedSource.value = ''
+          clearForm()
+          res = await getReviewRebateProgram('active')
+        }
         if (!ownsFailure()) return false
         // 总开关关闭（或活动被禁用）时后端返回 400「评价返现未启用」。
         // 这不是"加载失败"，而是**正常的未开放状态**：必须落成 enabled=false 的
@@ -488,7 +432,8 @@ export default {
         if (res?.status === 400 && isReviewRebateDisabledResponse(res)) {
           program.value = {}
           usage.value = {}
-          rules.value = []
+          stores.value = []
+          canClaim.value = null
           enabled.value = false
           loaded.value = true
           return true
@@ -502,12 +447,11 @@ export default {
         // 后端可能返回 { program, rules, usage } 或直接把 program 平铺在顶层。
         const programBody = body.program && typeof body.program === 'object' ? body.program : body
         program.value = programBody
+        stores.value = Array.isArray(body.stores) ? body.stores : []
+        canClaim.value = typeof body.canClaim === 'boolean' ? body.canClaim : null
         usage.value = body.usage && typeof body.usage === 'object'
           ? body.usage
           : (programBody.usage && typeof programBody.usage === 'object' ? programBody.usage : {})
-        rules.value = Array.isArray(body.rules)
-          ? body.rules.filter(rule => rule && typeof rule === 'object' && rule.enabled !== false)
-          : []
         enabled.value = programBody.enabled === true
         loaded.value = true
         return true
@@ -547,70 +491,78 @@ export default {
     }
 
     const loadingAll = ref(false)
-    const loadAll = async () => {
-      if (!canLoad() || loadingAll.value) return
-      loadingAll.value = true
-      try {
-        await loadProgram()
-        if (!canLoad()) return
-        if (loaded.value && enabled.value) await loadClaims()
-      } finally {
-        if (canLoad()) loadingAll.value = false
+    let activeRefresh
+    const loadAll = (afterCurrent) => {
+      if (!canLoad()) return
+      if (activeRefresh) {
+        if (typeof afterCurrent !== 'function') return activeRefresh
+        const previous = activeRefresh
+        return previous.then(() => { if (afterCurrent()) return loadAll() })
       }
+      const refresh = async () => {
+        await loadProgram()
+        if (!canLoad() || activeRefresh !== task) return
+        if (loaded.value && enabled.value) await loadClaims()
+      }
+      loadingAll.value = true
+      const task = refresh().finally(() => {
+        if (activeRefresh !== task) return
+        activeRefresh = undefined
+        loadingAll.value = false
+      })
+      activeRefresh = task
+      return task
     }
 
     function updateReviewUrl(value) {
       if (submitting.value) return
-      reviewUrl.value = String(value ?? '')
+      form.reviewUrl = String(value ?? '')
       formError.value = ''
     }
 
-    function onFileChange(event) {
+    function selectFile(file) {
+      if (!canLoad() || entryDisabled.value) return false
       formError.value = ''
-      const file = event?.target?.files?.[0] || null
-      if (!file) { selectedFile.value = null; return }
+      form.file = null
       const typeOk = ACCEPTED_TYPES.includes(String(file.type || '').toLowerCase())
         || ACCEPTED_EXTENSIONS.test(String(file.name || ''))
       if (!typeOk) {
-        selectedFile.value = null
         formError.value = '只支持 PNG / JPEG 截图'
-        if (event?.target) event.target.value = ''
-        return
-      }
-      if (!(file.size > 0)) {
-        selectedFile.value = null
+      } else if (!(file.size > 0)) {
         formError.value = '截图内容为空，请重新选择'
-        if (event?.target) event.target.value = ''
-        return
-      }
-      if (file.size > MAX_UPLOAD_BYTES) {
-        selectedFile.value = null
+      } else if (file.size > MAX_UPLOAD_BYTES) {
         formError.value = '截图超过 5 MB，无法提交'
-        if (event?.target) event.target.value = ''
-        return
+      } else {
+        form.file = file
       }
-      selectedFile.value = file
+      return false
     }
 
     // 清空表单内容本身不加锁：提交成功后要在 submitting 仍为 true 时复位。
     function clearForm() {
-      selectedFile.value = null
-      reviewUrl.value = ''
+      form.file = null
+      form.reviewUrl = ''
       formError.value = ''
       submitWarning.value = ''
       clearSubmitFailure()
-      const input = document.getElementById(fieldId('screenshot'))
-      if (input) input.value = ''
     }
     function resetForm() {
       if (submitting.value) return
       clearForm()
     }
 
+    function selectSource(source) {
+      if (loadingAll.value || submitting.value || program.value.source === source) return
+      if (!stores.value.some(store => store.source === source)) return
+      selectedSource.value = source
+      clearForm()
+      void loadAll()
+    }
+
     const submit = async () => {
-      if (!canLoad() || submitting.value || limitReached.value) return
-      if (!selectedFile.value) { formError.value = '请先选择评价截图'; return }
-      const link = String(reviewUrl.value || '').trim()
+      if (!canLoad() || entryDisabled.value) return
+      if (!form.file) { formError.value = '请先选择评价截图'; return }
+      const link = form.reviewUrl.trim()
       if (link && !/^https?:\/\//i.test(link)) { formError.value = '评价链接必须以 http:// 或 https:// 开头'; return }
       const ticket = ++submitVersion
       const owns = () => canLoad() && ticket === submitVersion
@@ -622,39 +574,38 @@ export default {
       submitting.value = true
       let reloadAfter = false
       try {
-        const res = await submitReviewRebateClaim(selectedFile.value, link)
+        const res = await submitReviewRebateClaim(form.file, link, program.value.source)
         if (!ownsFailure()) return
         if (res?.status === 200 || res?.status === 201) {
           clearForm()
           reloadAfter = true
-          return
-        }
-        if (res?.status === 413) { formError.value = '截图超过服务端允许的大小'; return }
-        if (res?.status === 400) {
+        } else if (res?.status === 413) {
+          formError.value = '截图超过服务端允许的大小'
+        } else if (res?.status === 400) {
           formError.value = res?.message || res?.data?.message || '提交内容不符合要求，请核对后重试'
-          return
-        }
-        if (res?.status === 409) {
-          submitWarning.value = '该评价可能已提交过，请先在下方的列表核对，勿重复提交。'
+        } else if (res?.status === 409) {
+          submitWarning.value = res?.message || '该评价可能已提交过，请先在下方的列表核对，勿重复提交。'
           reloadAfter = true
-          return
+        } else {
+          submitFailureOwner = ownsFailure
+          submitFailure.value = ensureRequestFailure(res)
         }
-        submitFailureOwner = ownsFailure
-        submitFailure.value = ensureRequestFailure(res)
       } catch (error) {
         if (ownsFailure()) { submitFailureOwner = ownsFailure; submitFailure.value = ensureRequestFailure(error) }
       } finally {
         if (owns()) submitting.value = false
       }
       // loadAll/loadClaims 在提交锁释放后再刷新，避免与提交态互相阻塞。
-      if (reloadAfter && owns()) await loadAll()
+      if (reloadAfter && owns()) await loadAll(owns)
     }
 
     const retire = () => {
       programVersion += 1; claimsVersion += 1; submitVersion += 1
-      program.value = {}; usage.value = {}; rules.value = []; enabled.value = false; loaded.value = false
+      activeRefresh = undefined
+      program.value = {}; usage.value = {}; enabled.value = false; loaded.value = false
+      stores.value = []; canClaim.value = null; selectedSource.value = ''
       claims.value = []; claimsLoaded.value = false; loadingClaims.value = false
-      selectedFile.value = null; reviewUrl.value = ''; formError.value = ''
+      form.file = null; form.reviewUrl = ''; formError.value = ''
       submitWarning.value = ''; submitting.value = false; loadingAll.value = false
       clearProgramFailure(); clearClaimsFailure(); clearSubmitFailure()
     }
@@ -681,16 +632,15 @@ export default {
 
     return {
       fieldId, loading: computed(() => loadingAll.value),
-      loaded, enabled, program, rules, loadingClaims, claimsLoaded, claims,
-      selectedFile, reviewUrl, submitting, formError, submitWarning,
+      loaded, enabled, program, stores, selectSource, storeLabel, loadingClaims, claimsLoaded, claims,
+      form, submitting, formError, submitWarning,
       programFailure, programFailureContextKey, isCurrentProgramFailure,
       claimsFailure, claimsFailureContextKey, isCurrentClaimsFailure,
       submitFailure, submitFailureContextKey, isCurrentSubmitFailure,
-      maxClaimsText, claimUsage, amountLimited, limitReached,
+      maxClaimsText, claimUsage, limitReached,
       programReadable, closedReason, closedTitle, entryDisabled, entryDescription,
-      ruleColumns, claimColumns, rangeText, moneyText, formatConfidence,
-      formatSize, formatDateTime, claimStatusLabel, claimStatusColor, isLowConfidence,
-      loadAll, loadClaims, updateReviewUrl, onFileChange, resetForm, submit,
+      claimColumns, formatSize, formatDateTime, claimStatusLabel, claimStatusColor,
+      loadAll, loadClaims, updateReviewUrl, selectFile, resetForm, submit,
       sumTableColumnWidths,
     }
   },
@@ -704,12 +654,7 @@ export default {
 .claim-summary { margin: 16px 0; }
 .summary-label { color: var(--console-muted); font-size: 14px; }
 .summary-value { margin-top: 8px; color: var(--console-text); font-size: clamp(20px, 2.6vw, 28px); font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.summary-value.is-limit { color: var(--console-danger, #c13e41); }
-.summary-hint { margin-top: 8px; color: var(--console-muted); font-size: 12px; line-height: 1.6; }
 .hint { margin: 8px 0 0; color: var(--console-muted); font-size: 12px; line-height: 1.7; }
 .form-error { margin: 0 0 16px; color: var(--console-danger, #c13e41); font-size: 13px; }
-.money-cell, .time-cell { font-variant-numeric: tabular-nums; }
-.note-cell { overflow-wrap: anywhere; white-space: pre-wrap; }
-.is-low-confidence { color: var(--console-danger, #c13e41); font-weight: 600; }
-.low-tag { margin-inline-start: 6px; }
+.time-cell { font-variant-numeric: tabular-nums; }
 </style>

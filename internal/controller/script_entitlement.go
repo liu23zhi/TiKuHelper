@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -119,6 +120,31 @@ func scriptActivationPurchaseSigningKeyWithDB(db *gorm.DB) ([]byte, error) {
 	return []byte(secret), nil
 }
 
+func ListScriptActivationCodePurchases(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	operator, ok := currentOperator(c)
+	if !ok {
+		return
+	}
+	db := scriptDB()
+	signingKey, err := scriptActivationPurchaseSigningKeyWithDB(db)
+	if errors.Is(err, service.ErrScriptActivationSalesDisabled) {
+		signingKey, err = nil, nil
+	}
+	if err != nil {
+		writeScriptActivationCodeError(c, err)
+		return
+	}
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "10"))
+	result, err := service.ListScriptActivationCodePurchasesWithDB(db, operator.ID, signingKey, page, pageSize)
+	if err != nil {
+		writeScriptActivationCodeError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
 func RedeemScriptActivationCode(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	operator, ok := currentOperator(c)
@@ -137,12 +163,14 @@ func RedeemScriptActivationCode(c *gin.Context) {
 		writeScriptActivationCodeError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"id": entitlement.ID, "redeemedAt": entitlement.RedeemedAt, "scriptId": entitlement.ScriptID})
+	c.JSON(http.StatusOK, gin.H{"id": entitlement.ID, "redeemedAt": entitlement.RedeemedAt, "frozenUntil": entitlement.FrozenUntil, "scriptId": entitlement.ScriptID})
 }
 
 func writeScriptActivationCodeError(c *gin.Context, err error) {
 	status, code, message := http.StatusInternalServerError, "SCRIPT_ACTIVATION_UNAVAILABLE", "脚本激活码服务暂不可用"
 	switch {
+	case errors.Is(err, service.ErrScriptActivationCodeFrozen):
+		status, code, message = http.StatusConflict, "SCRIPT_ACTIVATION_CODE_FROZEN", err.Error()
 	case errors.Is(err, service.ErrScriptActivationSalesDisabled):
 		status, code, message = http.StatusServiceUnavailable, "SCRIPT_ACTIVATION_SALES_DISABLED", service.ErrScriptActivationSalesDisabled.Error()
 	case errors.Is(err, service.ErrScriptForbidden):

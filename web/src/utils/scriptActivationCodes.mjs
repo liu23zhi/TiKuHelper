@@ -14,6 +14,7 @@ export const BATCH_LIMIT = 100
 // 这也是为什么前端不能自己按 status 字符串硬编码「是否可用」。
 export const STATUS_META = {
   unused: { label: '未使用', color: 'green' },
+  frozen: { label: '已兑换，待创建', color: 'gold' },
   used: { label: '已使用', color: 'blue' },
   disabled: { label: '已禁用', color: 'orange' },
   expired: { label: '已过期', color: 'default' },
@@ -61,7 +62,7 @@ export function masksCode(item) {
 // 「什么动作、什么时候、谁、哪个脚本」。
 export function buildUsageTimeline(usages) {
   if (!Array.isArray(usages) || usages.length === 0) return []
-  const KIND_LABEL = { redeem: '兑换激活码', run: '运行脚本', download: '下载脚本' }
+  const KIND_LABEL = { redeem: '兑换激活码', bind: '创建脚本', run: '运行脚本', download: '下载脚本' }
   return usages
     .slice()
     .sort((left, right) => new Date(left?.at || 0) - new Date(right?.at || 0))

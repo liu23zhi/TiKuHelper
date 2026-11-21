@@ -96,6 +96,24 @@ test('administrator using the ordinary script view still reads only own scripts'
   await settle()
 })
 
+test('own command is visible in the script list and purchases have an independent entry', async () => {
+  const { page } = await open(admin, 'self')
+  assert.ok(page.text().includes(ownerCommand), 'command should be selectable without opening settings')
+  assert.ok(page.find('[data-script-activation-purchases]').exists(), 'standalone purchase and receipt entry')
+})
+
+test('activation creation uses visible code and a stable wallet purchase label', async () => {
+  const { state } = await open(admin, 'self')
+  state.openCreate()
+  state.setFormField('billingMode', 'activation_code')
+  state.purchaseUncertain = true
+  await settle()
+  const input = document.querySelector('input[placeholder="输入激活码"]')
+  assert.equal(input?.type, 'text')
+  assert.doesNotMatch(document.body.textContent, /重试同一次购买/)
+  assert.match(document.body.textContent, /钱包购买 ¥12\.345678/)
+})
+
 test('both script views create a launcher without user-supplied address, scheme or description', async () => {
   holdWrites = true
   for (const view of ['self', 'admin']) {
@@ -134,7 +152,7 @@ test('short entry authorization keeps complete command and supports expiry plus 
   const operation = state.saveShortAuthorization(true)
   state.saveShortAuthorization(true)
   assert.equal(shortWrites.length, 1)
-  assert.deepEqual(shortWrites[0].payload, { enabled: true, address: 'https://a.example.test', durationMinutes: 7, maxUses: 1, startsAt: null })
+  assert.deepEqual(shortWrites[0].payload, { enabled: true, domainFormat: '*.example.test', durationMinutes: 7, maxUses: 1, startsAt: null })
   const grant = { status: 'active', address: 'https://a.example.test', expiresAt: new Date(Date.now() + 7 * 60000).toISOString(), command: 'powershell -c "iex(irm https://a.example.test)"' }
   shortWrites[0].resolve(okay(grant))
   await operation; await settle()
@@ -261,7 +279,7 @@ test('changing accounts retires a pending confirmation and cannot reuse its sess
 test('script identity change clears rows and prevents late all-scope result publication', async () => {
   const { state, page } = await open()
   assert.equal(state.rows[0].name, '现有脚本')
-  assert.doesNotMatch(page.text(), /EncodedCommand/, 'launcher credentials are not printed in the table')
+  assert.ok(page.text().includes(ownerCommand), 'owner can directly select the command in the table')
   assert.equal(state.mayCopyCommand(state.rows[0]), true)
   assert.equal(state.mayCopyCommand(row('其他账号', 222)), false)
   holdReads = true
@@ -273,6 +291,7 @@ test('script identity change clears rows and prevents late all-scope result publ
   reads[0].resolve(okay([row('迟到管理员数据', 111)]))
   await settle()
   assert.deepEqual(state.rows, [])
+  assert.doesNotMatch(page.text(), /EncodedCommand/, 'retired command is immediately hidden on identity change')
   assert.equal(state.loading, true, 'old request does not clear new loading')
   reads[1].resolve(okay([row('新账号脚本', 222)]))
   await settle()

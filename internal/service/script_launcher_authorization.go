@@ -25,7 +25,9 @@ func scriptAuthorizationStatus(enabled bool, starts, expires *time.Time, maximum
 	return "active"
 }
 
-func scriptAuthorizationWindow(input ConfigureScriptShortAuthorizationInput, short bool) (*time.Time, *time.Time, error) {
+var ErrScriptFullNeverExpireDisabled = errors.New("管理员未允许长命令永不过期，请设置结束时间")
+
+func scriptAuthorizationWindow(db *gorm.DB, input ConfigureScriptShortAuthorizationInput, short bool) (*time.Time, *time.Time, error) {
 	if input.MaxUses < 0 || input.MaxUses > 1000000 {
 		return nil, nil, ErrScriptAuthorizationLimitInvalid
 	}
@@ -33,11 +35,23 @@ func scriptAuthorizationWindow(input ConfigureScriptShortAuthorizationInput, sho
 	if short {
 		limit = ScriptShortAuthorizationMaxMinutes
 	}
-	if input.DurationMinutes < 0 || input.DurationMinutes > limit || (short && input.DurationMinutes == 0 && input.ExpiresAt == nil) {
+	if input.DurationMinutes < 0 || input.DurationMinutes > limit {
 		if short {
 			return nil, nil, ErrScriptShortDurationInvalid
 		}
 		return nil, nil, ErrScriptAuthorizationWindowInvalid
+	}
+	if input.DurationMinutes == 0 && input.ExpiresAt == nil {
+		settings, err := GetScriptDomainSettingsWithDB(db)
+		if err != nil {
+			return nil, nil, err
+		}
+		if short && !*settings.AllowShortNeverExpire {
+			return nil, nil, ErrScriptShortDurationInvalid
+		}
+		if !short && !*settings.AllowFullNeverExpire {
+			return nil, nil, ErrScriptFullNeverExpireDisabled
+		}
 	}
 	now, base := time.Now(), time.Now()
 	var starts, expires *time.Time
@@ -95,7 +109,7 @@ func ConfigureScriptLauncherAuthorizationWithDB(db *gorm.DB, operator entity.Use
 			if err := validateScriptLaunchActorWithDB(tx, script); err != nil {
 				return err
 			}
-			starts, expires, err := scriptAuthorizationWindow(input, false)
+			starts, expires, err := scriptAuthorizationWindow(tx, input, false)
 			if err != nil {
 				return err
 			}

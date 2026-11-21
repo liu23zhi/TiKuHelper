@@ -29,6 +29,8 @@ func newReviewRebateTestDB(t *testing.T) *gorm.DB {
 		&entity.ReviewRebateRule{},
 		&entity.ReviewRebateClaim{},
 		&entity.ReviewRebateAward{},
+		&entity.ReviewRebateVerification{},
+		&entity.ReviewRebateClawback{},
 	); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
@@ -209,6 +211,157 @@ func TestReviewRebateDisabledRejectsSubmitAndRules(t *testing.T) {
 }
 
 func boolPointer(value bool) *bool { return &value }
+
+func TestReviewRebatePendingClaimsCannotBothReceiveGift(t *testing.T) {
+	db := newReviewRebateTestDB(t)
+	setReviewRebateSwitch(t, db, true)
+	user := seedReviewRebateUser(t, db, 701, "rr-once-user", "user")
+	admin := seedReviewRebateUser(t, db, 702, "rr-once-admin", "admin")
+	program := seedReviewRebateProgram(t, db, true, 3, 5, 0.6)
+	seedReviewRebateRule(t, db, entity.ReviewRebateRule{ProgramID: program.ID, Amount: 1, Enabled: true})
+	claims := make([]entity.ReviewRebateClaim, 0, 2)
+	for _, digest := range []string{"71", "72"} {
+		claim, err := CreateReviewRebateClaimWithDB(db, ReviewRebateClaimCreateInput{
+			ProgramID: program.ID, UserID: user.ID, ScreenshotSHA256: reviewRebateFixtureDigest(digest),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ScoreReviewRebateClaimWithDB(db, claim.ID, nil); err != nil {
+			t.Fatal(err)
+		}
+		claims = append(claims, claim)
+	}
+	if _, err := DecideReviewRebateClaimWithDB(db, admin, claims[0].ID, true, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecideReviewRebateClaimWithDB(db, admin, claims[1].ID, true, ""); !errors.Is(err, ErrReviewRebateLimitReached) {
+		t.Fatalf("second approval must hit the store limit, got %v", err)
+	}
+}
+
+func TestReviewRebateStoreAvailabilityAndIndependentEligibility(t *testing.T) {
+	db := newReviewRebateTestDB(t)
+	user := seedReviewRebateUser(t, db, 711, "rr-stores-user", "user")
+	admin := seedReviewRebateUser(t, db, 712, "rr-stores-admin", "admin")
+	t.Setenv("EXTENSION_EDGE_ID", DefaultEdgeExtensionID)
+	t.Setenv("EXTENSION_CHROME_ID", "")
+	edge := seedReviewRebateProgram(t, db, true, 3, 5, 0.6)
+	chrome, err := CreateReviewRebateProgramWithDB(db, entity.ReviewRebateProgram{
+		Name: "Chrome", Source: entity.ReviewRebateSourceChrome, Enabled: true, MaxClaimsPerUser: 1, MaxAmountPerUser: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := ReviewRebateClaimCreateInput{ProgramID: chrome.ID, UserID: user.ID, ScreenshotSHA256: reviewRebateFixtureDigest("71")}
+	if _, err := CreateReviewRebateClaimWithDB(db, input); !errors.Is(err, ErrReviewRebateDisabled) {
+		t.Fatalf("unconfigured Chrome must reject submissions, got %v", err)
+	}
+	view, err := GetReviewRebateProgramViewWithDB(db, user.ID)
+	if err != nil || len(view.Stores) != 1 || view.Stores[0].Source != entity.ReviewRebateSourceEdge {
+		t.Fatalf("want Edge only: %+v, %v", view, err)
+	}
+	chromeID := strings.Repeat("c", 32)
+	t.Setenv("EXTENSION_CHROME_ID", chromeID)
+	for _, program := range []entity.ReviewRebateProgram{edge, chrome} {
+		seedReviewRebateRule(t, db, entity.ReviewRebateRule{ProgramID: program.ID, Amount: 1, Enabled: true})
+		input.ProgramID = program.ID
+		claim, err := CreateReviewRebateClaimWithDB(db, input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if claim.Source != program.Source {
+			t.Fatalf("claim source = %q, want %q", claim.Source, program.Source)
+		}
+		if _, err := ScoreReviewRebateClaimWithDB(db, claim.ID, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := DecideReviewRebateClaimWithDB(db, admin, claim.ID, true, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	view, err = GetReviewRebateStoreProgramViewWithDB(db, user.ID, "chrome")
+	if err != nil || len(view.Stores) != 2 || view.CanClaim || view.Program.StoreURL != "https://chromewebstore.google.com/detail/"+chromeID {
+		t.Fatalf("want exhausted Chrome and both configured stores: %+v, %v", view, err)
+	}
+}
+
+func TestReviewRebateClawbackRetainsEligibilityAndRecordsShortfall(t *testing.T) {
+	db := newReviewRebateTestDB(t)
+	user := seedReviewRebateUser(t, db, 721, "rr-clawback-user", "user")
+	admin := seedReviewRebateUser(t, db, 722, "rr-clawback-admin", "admin")
+	program := seedReviewRebateProgram(t, db, true, 3, 5, 0.6)
+	seedReviewRebateRule(t, db, entity.ReviewRebateRule{ProgramID: program.ID, Amount: 1, Enabled: true})
+	input := ReviewRebateClaimCreateInput{ProgramID: program.ID, UserID: user.ID, ScreenshotSHA256: reviewRebateFixtureDigest("71")}
+	rejected, err := CreateReviewRebateClaimWithDB(db, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecideReviewRebateClaimWithDB(db, admin, rejected.ID, false, "截图不完整"); err != nil {
+		t.Fatal(err)
+	}
+	claim, err := CreateReviewRebateClaimWithDB(db, input)
+	if err != nil {
+		t.Fatalf("a rejected application must allow submitting the same evidence for review again: %v", err)
+	}
+	if _, err := CreateReviewRebateClaimWithDB(db, input); !errors.Is(err, ErrReviewRebateDuplicate) {
+		t.Fatalf("another identical active application must remain a duplicate: %v", err)
+	}
+	if _, err := ScoreReviewRebateClaimWithDB(db, claim.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DecideReviewRebateClaimWithDB(db, admin, claim.ID, true, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&entity.User{}).Where("id = ?", user.ID).Updates(map[string]any{"balance": 7.0, "gift_balance": 0.3}).Error; err != nil {
+		t.Fatal(err)
+	}
+	invalid, err := RecordReviewRebateVerificationWithDB(db, admin.ID, claim.ID, ReviewRebateVerificationInvalid, "原评价已删除", "公开页核对记录")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inconclusive, err := RecordReviewRebateVerificationWithDB(db, admin.ID, claim.ID, ReviewRebateVerificationInconclusive, "暂时无法核对", "商店页面未加载")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, verificationID := range []int32{invalid.ID, inconclusive.ID} {
+		if _, err := ClawBackReviewRebateWithDB(db, admin.ID, claim.ID, verificationID); !errors.Is(err, ErrReviewRebateClaimState) {
+			t.Fatalf("stale or inconclusive verification %d must not permit reversal: %v", verificationID, err)
+		}
+	}
+	latest, err := RecordReviewRebateVerificationWithDB(db, admin.ID, claim.ID, ReviewRebateVerificationInvalid, "原评价已删除", "同一条目和评价链接完成复核")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reversal, err := ClawBackReviewRebateWithDB(db, admin.ID, claim.ID, latest.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reversal.RequestedAmount != 1 || reversal.DeductedAmount != 0.3 || reversal.ShortfallAmount != 0.7 {
+		t.Fatalf("wrong clawback amounts: %+v", reversal)
+	}
+	replay, err := ClawBackReviewRebateWithDB(db, admin.ID, claim.ID, latest.ID)
+	if err != nil || replay.ID != reversal.ID {
+		t.Fatalf("want original reversal on replay, got %+v, %v", replay, err)
+	}
+	if err := db.First(&user, user.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if user.Balance != 7 || user.GiftBalance != 0 {
+		t.Fatalf("unexpected wallet after clawback: principal=%v, gift=%v", user.Balance, user.GiftBalance)
+	}
+	var ledger []entity.BillingRecord
+	if err := db.Where("type = ?", ReviewRebateClawbackBillingType).Find(&ledger).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger) != 1 || ledger[0].Amount != 0.3 {
+		t.Fatalf("expected exactly one debit: %+v", ledger)
+	}
+	input.ScreenshotSHA256 = reviewRebateFixtureDigest("73")
+	if _, err := CreateReviewRebateClaimWithDB(db, input); !errors.Is(err, ErrReviewRebateLimitReached) {
+		t.Fatalf("clawback must not restore store entitlement: %v", err)
+	}
+}
 
 func intPointer(value int) *int { return &value }
 
@@ -954,7 +1107,7 @@ func TestReviewRebateProgramPartialUpdate(t *testing.T) {
 	}
 }
 
-// 用户端视图：规则脱敏（只给启用的），并带上额度使用情况。
+// 用户端视图显示商店及本人领取进度。
 func TestReviewRebateProgramView(t *testing.T) {
 	db := newReviewRebateTestDB(t)
 	setReviewRebateSwitch(t, db, true)
@@ -977,13 +1130,10 @@ func TestReviewRebateProgramView(t *testing.T) {
 	if view.AuthorshipVerified {
 		t.Fatal("view must never claim authorship verification")
 	}
-	if strings.TrimSpace(view.Notice) == "" {
-		t.Fatal("view must carry the authorship boundary notice")
+	if !view.CanClaim || len(view.Stores) != 1 || view.Stores[0].Source != entity.ReviewRebateSourceEdge || !view.Stores[0].CanClaim {
+		t.Fatalf("fresh user must see the available Edge activity: %+v", view)
 	}
-	if len(view.Rules) != 1 || view.Rules[0].Amount != 1 {
-		t.Fatalf("view must expose only enabled rules: %+v", view.Rules)
-	}
-	if view.Usage.RemainingClaims != 3 || view.Usage.RemainingAmount != 5.04 {
+	if view.Usage.RemainingClaims != 1 || view.Usage.RemainingAmount != 5.04 {
 		t.Fatalf("fresh user must have full quota: %+v", view.Usage)
 	}
 
@@ -1006,7 +1156,7 @@ func TestReviewRebateProgramView(t *testing.T) {
 	if err != nil {
 		t.Fatalf("program view after submit: %v", err)
 	}
-	if view.Usage.PendingCount != 1 || view.Usage.ClaimedCount != 0 || view.Usage.RemainingClaims != 3 {
+	if !view.CanClaim || view.Usage.PendingCount != 1 || view.Usage.ClaimedCount != 0 || view.Usage.RemainingClaims != 1 {
 		t.Fatalf("pending claims must not consume quota: %+v", view.Usage)
 	}
 	if _, err := DecideReviewRebateClaimWithDB(db, admin, claim.ID, true, "ok"); err != nil {
@@ -1019,8 +1169,8 @@ func TestReviewRebateProgramView(t *testing.T) {
 	if view.Usage.ClaimedCount != 1 || view.Usage.ApprovedAmount != 1 {
 		t.Fatalf("approved claim must consume quota: %+v", view.Usage)
 	}
-	if view.Usage.RemainingClaims != 2 {
-		t.Fatalf("remaining claims = %d, want 2", view.Usage.RemainingClaims)
+	if view.CanClaim || view.Stores[0].CanClaim || view.Usage.RemainingClaims != 0 {
+		t.Fatalf("same-store entitlement must be consumed: %+v", view)
 	}
 	if view.Usage.RemainingAmount != 4.04 {
 		t.Fatalf("remaining amount = %v, want 4.04", view.Usage.RemainingAmount)

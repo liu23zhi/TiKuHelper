@@ -18,6 +18,47 @@ func newReviewRebateMigrationTestDB(t *testing.T) *gorm.DB {
 	return db
 }
 
+func TestEnsureReviewRebateStoreSchemaPreservesHistoricalSource(t *testing.T) {
+	db := newReviewRebateMigrationTestDB(t)
+	createLegacyUsersTable(t, db)
+	if err := db.AutoMigrate(&entity.SystemSetting{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{
+		"CREATE TABLE review_rebate_programs (id INTEGER PRIMARY KEY, store_url VARCHAR(512))",
+		"CREATE TABLE review_rebate_claims (id INTEGER PRIMARY KEY, program_id INTEGER)",
+		"CREATE TABLE review_rebate_awards (id INTEGER PRIMARY KEY, claim_id INTEGER)",
+		"INSERT INTO review_rebate_programs VALUES (1, 'https://historical.example/store'), (2, 'https://chrome.google.com/webstore/detail/extension')",
+		"INSERT INTO review_rebate_claims VALUES (10, 1), (20, 2)",
+		"INSERT INTO review_rebate_awards VALUES (11, 10), (21, 20)",
+	} {
+		if err := db.Exec(query).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := setSystemSettingFlag(db, reviewRebateSchemaReadyKey); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := ensureReviewRebateSchema(db); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, model := range []any{&entity.ReviewRebateProgram{}, &entity.ReviewRebateClaim{}, &entity.ReviewRebateAward{}} {
+		var sources []string
+		if err := db.Model(model).Order("id").Pluck("source", &sources).Error; err != nil {
+			t.Fatal(err)
+		}
+		if len(sources) != 2 || sources[0] != "edge" || sources[1] != "chrome" {
+			t.Fatalf("%T historical sources = %v, want [edge chrome]", model, sources)
+		}
+	}
+	if !db.Migrator().HasIndex(&entity.ReviewRebateAward{}, "uk_review_rebate_award_eligibility") ||
+		!db.Migrator().HasTable(&entity.ReviewRebateVerification{}) || !db.Migrator().HasTable(&entity.ReviewRebateClawback{}) {
+		t.Fatal("missing store eligibility index or audit tables")
+	}
+}
+
 // 旧库（users 无 gift_balance、无评价返现四张表）必须被补齐，
 // 且历史用户按 gift_balance=0 保留（不猜测历史赠金）。
 func TestEnsureReviewRebateSchemaAddsTablesAndColumns(t *testing.T) {

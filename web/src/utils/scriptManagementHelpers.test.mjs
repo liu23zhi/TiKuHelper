@@ -87,3 +87,17 @@ test('saved script accepts only server launcher shape and ignores a legacy execu
   assert.equal(buildScriptCommand({ command: 'powershell -EncodedCommand ZgA=;calc' }), '')
   assert.equal(buildScriptCommand({ command: 'powershell -c raw' }), '')
 })
+
+test('compact authorized commands remain copyable without accepting arbitrary PowerShell', () => {
+  const command = `powershell -c "iex(irm https://uuid.example.test -Headers @{'X-Script-Launcher'='${'a'.repeat(43)}'} -MaximumRedirection 0 -TimeoutSec 15)"`
+  assert.equal(buildScriptCommand({ command }), command)
+  assert.equal(buildScriptCommand({ command: command.replace('example.test', "example.test');calc;('") }), '')
+  assert.equal(buildScriptCommand({ command: command.replace('https:', 'http:') }), '')
+  assert.equal(buildScriptCommand({ command: command.replace(' -MaximumRedirection 0', '') }), '')
+})
+
+test('an authorized short command with no expiry stays copyable until revoked', () => {
+  const grant = { address: 'https://random.example.test', command: 'powershell -c "iex(irm https://random.example.test)"', status: 'active', expiresAt: null }
+  assert.equal(buildScriptShortCommand({ shortAuthorization: grant }), grant.command)
+  assert.equal(buildScriptShortCommand({ shortAuthorization: { ...grant, status: 'disabled' } }), '')
+})

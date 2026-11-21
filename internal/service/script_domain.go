@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const ScriptDomainSettingsKey = "script_domain_settings"
@@ -26,11 +27,14 @@ const ScriptDomainSettingsKey = "script_domain_settings"
 //
 // 列表为空 = 不限制（保持既有语义：没配置过就不阻塞脚本创建）。
 type ScriptDomainSettings struct {
-	Domains []string `json:"domains"`
+	Domains               []string `json:"domains"`
+	AllowFullNeverExpire  *bool    `json:"allowFullNeverExpire"`
+	AllowShortNeverExpire *bool    `json:"allowShortNeverExpire"`
 }
 
 var (
-	ErrScriptDomainUnavailable = errors.New("脚本域名不在管理员允许的列表中")
+	ErrScriptDomainUnavailable      = errors.New("脚本域名不在管理员允许的列表中")
+	ErrScriptDomainSettingsConflict = errors.New("脚本设置已被其他操作更新，请重试")
 )
 
 type ScriptLauncherOrigin struct {
@@ -41,19 +45,41 @@ type ScriptLauncherOrigin struct {
 // generateScriptLauncherAddress uses an administrator-controlled template, or
 // the console host when the template list is empty.
 func generateScriptLauncherAddress(db *gorm.DB, requestedFormat string, origin ScriptLauncherOrigin) (string, *string, bool, error) {
-	formats, err := ScriptDomainFormatsWithDB(db)
+	domain, wildcard, err := selectScriptAddressDomain(db, requestedFormat, origin, 36)
 	if err != nil {
 		return "", nil, false, err
 	}
+	for i := 0; i < 10; i++ {
+		id, err := uuid.NewRandom()
+		if err != nil {
+			return "", nil, false, err
+		}
+		locator := id.String()
+		if err := checkScriptAddressAvailable(db, scriptAddressWithSlot(domain, locator, wildcard), scriptAddressFull, 0); err != nil {
+			if errors.Is(err, ErrScriptShortAddressInUse) {
+				continue
+			}
+			return "", nil, false, err
+		}
+		return domain, &locator, wildcard, nil
+	}
+	return "", nil, false, ErrScriptShortAddressInUse
+}
+
+func selectScriptAddressDomain(db *gorm.DB, requestedFormat string, origin ScriptLauncherOrigin, slotLength int) (string, bool, error) {
+	formats, err := ScriptDomainFormatsWithDB(db)
+	if err != nil {
+		return "", false, err
+	}
 	format, specified, err := parseScriptDomainFormat(requestedFormat)
 	if err != nil {
-		return "", nil, false, err
+		return "", false, err
 	}
 	var domain string
 	var wildcard bool
 	if len(formats) == 0 && !specified {
 		if !origin.HTTPS {
-			return "", nil, false, ErrScriptLauncherHTTPSRequired
+			return "", false, ErrScriptLauncherHTTPSRequired
 		}
 		domain = normalizeScriptLauncherHost(origin.Host)
 	}
@@ -64,15 +90,17 @@ func generateScriptLauncherAddress(db *gorm.DB, requestedFormat string, origin S
 			break
 		}
 	}
-	if domain == "" || (wildcard && len(domain)+37 > 253) {
-		return "", nil, false, ErrScriptDomainUnavailable
+	if domain == "" || (wildcard && len(domain)+slotLength+1 > 253) {
+		return "", false, ErrScriptDomainUnavailable
 	}
-	id, err := uuid.NewRandom()
-	if err != nil {
-		return "", nil, false, err
+	return domain, wildcard, nil
+}
+
+func scriptAddressWithSlot(domain, slot string, wildcard bool) string {
+	if wildcard {
+		return "https://" + slot + "." + domain
 	}
-	locator := id.String()
-	return domain, &locator, wildcard, nil
+	return "https://" + domain + "/" + slot
 }
 
 func normalizeScriptLauncherHost(raw string) string {
@@ -152,7 +180,7 @@ func validateScriptLauncherDomainWithDB(db *gorm.DB, script entity.UserScript) e
 // 原因：GET 是纯读接口，若它因为存量脏数据返回 500，管理员连
 // 「看到问题、改掉它」的入口都没有。
 func GetScriptDomainSettingsWithDB(db *gorm.DB) (ScriptDomainSettings, error) {
-	settings := ScriptDomainSettings{Domains: []string{}}
+	settings := defaultScriptDomainSettings()
 	if db == nil {
 		return ScriptDomainSettings{}, errors.New("数据库未初始化")
 	}
@@ -164,18 +192,36 @@ func GetScriptDomainSettingsWithDB(db *gorm.DB) (ScriptDomainSettings, error) {
 	if err != nil {
 		return ScriptDomainSettings{}, err
 	}
-	raw := strings.TrimSpace(row.Value)
+	return decodeScriptDomainSettings(row.Value)
+}
+
+func decodeScriptDomainSettings(value string) (ScriptDomainSettings, error) {
+	settings := defaultScriptDomainSettings()
+	raw := strings.TrimSpace(value)
 	if raw == "" {
 		return settings, nil
 	}
-	var stored struct {
-		Domains []string `json:"domains"`
-	}
+	var stored ScriptDomainSettings
 	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
 		return ScriptDomainSettings{}, err
 	}
 	settings.Domains = normalizeScriptDomainList(stored.Domains)
+	if stored.AllowFullNeverExpire != nil {
+		settings.AllowFullNeverExpire = stored.AllowFullNeverExpire
+	}
+	if stored.AllowShortNeverExpire != nil {
+		settings.AllowShortNeverExpire = stored.AllowShortNeverExpire
+	}
 	return settings, nil
+}
+
+func defaultScriptDomainSettings() ScriptDomainSettings {
+	allowFullNeverExpire, allowShortNeverExpire := true, false
+	return ScriptDomainSettings{
+		Domains:               []string{},
+		AllowFullNeverExpire:  &allowFullNeverExpire,
+		AllowShortNeverExpire: &allowShortNeverExpire,
+	}
 }
 
 // UpdateScriptDomainSettingsWithDB 保存配置。
@@ -194,15 +240,61 @@ func UpdateScriptDomainSettingsWithDB(db *gorm.DB, input ScriptDomainSettings) (
 			return ScriptDomainSettings{}, err
 		}
 	}
-	input.Domains = normalizeScriptDomainList(input.Domains)
-	encoded, err := json.Marshal(input)
-	if err != nil {
-		return ScriptDomainSettings{}, err
+	db = db.Session(&gorm.Session{NewDB: true})
+	for range 3 {
+		var row entity.SystemSetting
+		err := db.Where(&entity.SystemSetting{Key: ScriptDomainSettingsKey}).Take(&row).Error
+		missing := errors.Is(err, gorm.ErrRecordNotFound)
+		if err != nil && !missing {
+			return ScriptDomainSettings{}, err
+		}
+		current, err := decodeScriptDomainSettings(row.Value)
+		if err != nil {
+			if input.Domains == nil {
+				return ScriptDomainSettings{}, err
+			}
+			current = defaultScriptDomainSettings()
+		}
+		if input.Domains != nil {
+			current.Domains = normalizeScriptDomainList(input.Domains)
+		}
+		if input.AllowFullNeverExpire != nil {
+			current.AllowFullNeverExpire = input.AllowFullNeverExpire
+		}
+		if input.AllowShortNeverExpire != nil {
+			current.AllowShortNeverExpire = input.AllowShortNeverExpire
+		}
+		encoded, err := json.Marshal(current)
+		if err != nil {
+			return ScriptDomainSettings{}, err
+		}
+		value := string(encoded)
+		const remark = "脚本可用域名格式列表"
+		if missing {
+			newRow := entity.SystemSetting{Key: ScriptDomainSettingsKey, Value: value, Remark: remark}
+			if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&newRow).Error; err != nil {
+				return ScriptDomainSettings{}, err
+			}
+			// MySQL can report a duplicate-key no-op as an affected row.
+			// Read the winning row on the next attempt before applying defaults.
+			continue
+		}
+		if value == row.Value {
+			return current, nil
+		}
+		predicate := "COALESCE(value, '') = ?"
+		if db.Dialector.Name() == "mysql" {
+			predicate = "BINARY COALESCE(value, '') = ?"
+		}
+		update := db.Model(&entity.SystemSetting{}).Where("id = ?", row.ID).Where(predicate, row.Value).Updates(map[string]any{"value": value, "remark": remark})
+		if update.Error != nil {
+			return ScriptDomainSettings{}, update.Error
+		}
+		if update.RowsAffected == 1 {
+			return current, nil
+		}
 	}
-	if err := saveSystemSettingValue(db, ScriptDomainSettingsKey, string(encoded), "脚本可用域名格式列表"); err != nil {
-		return ScriptDomainSettings{}, err
-	}
-	return GetScriptDomainSettingsWithDB(db)
+	return ScriptDomainSettings{}, ErrScriptDomainSettingsConflict
 }
 
 // ScriptDomainFormatsWithDB 把配置解析成结构化模板，供控制器直接返回给前端。
@@ -211,6 +303,10 @@ func ScriptDomainFormatsWithDB(db *gorm.DB) ([]ScriptDomainFormat, error) {
 	if err != nil {
 		return nil, err
 	}
+	return settings.Formats(), nil
+}
+
+func (settings ScriptDomainSettings) Formats() []ScriptDomainFormat {
 	formats := make([]ScriptDomainFormat, 0, len(settings.Domains))
 	for _, entry := range settings.Domains {
 		format, ok, err := parseScriptDomainFormat(entry)
@@ -221,7 +317,7 @@ func ScriptDomainFormatsWithDB(db *gorm.DB) ([]ScriptDomainFormat, error) {
 		}
 		formats = append(formats, format)
 	}
-	return formats, nil
+	return formats
 }
 
 // validateScriptDomainEntry 保存配置时的逐条校验。
