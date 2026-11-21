@@ -66,18 +66,18 @@ test('城市+运营商和永久均需核对，实际请求不允许客户端指�
   const w = await open(Response, { alertId: 17 }, (method, url, body) => {
     assert.equal(url, '/api/risk/alerts/17/response')
     if (method === 'post') writes.push(body)
-    return { eligible: true, ip: '192.0.2.1', segment: '', cityIsp: '样例市 · 测试运营商', blacklistEnabled: true,
-      history: method === 'post' ? [{ id: 1, actorId: 7, target: '样例市 · 测试运营商', durationMinutes: 0, reason: body.reason, status: 'applied' }] : [] }
+    return { eligible: true, ip: '192.0.2.1', segment: '', cityIsp: '样例国家 · 样例省 · 样例市 · 测试运营商', blacklistEnabled: true,
+      history: method === 'post' ? [{ id: 1, actorId: 7, target: '样例国家 · 样例省 · 样例市 · 测试运营商', durationMinutes: 0, reason: body.reason, status: 'applied' }] : [] }
   })
   assert.equal(w.find('option[value="segment"]').exists(), false)
   await w.get('select').setValue('city_isp')
-  assert.equal(w.get('[data-response-target]').text(), '样例市 · 测试运营商')
+  assert.equal(w.get('[data-response-target]').text(), '样例国家 · 样例省 · 样例市 · 测试运营商')
   await w.get('textarea').setValue('管理员已核对测试记录')
   await w.findAll('input[type=checkbox]')[0].setValue(true)
   await click(w, '执行封禁'); assert.equal(writes.length, 0)
   await w.findAll('input[type=checkbox]')[1].setValue(true)
   await click(w, '执行封禁')
-  assert.deepEqual(writes, [{ action: 'city_isp', durationMinutes: 0, reason: '管理员已核对测试记录', confirmed: true, expectedTarget: '样例市 · 测试运营商' }])
+  assert.deepEqual(writes, [{ action: 'city_isp', durationMinutes: 0, reason: '管理员已核对测试记录', confirmed: true, expectedTarget: '样例国家 · 样例省 · 样例市 · 测试运营商' }])
   assert.match(w.text(), /管理员 #7/)
 })
 

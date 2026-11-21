@@ -79,10 +79,11 @@ func TestRiskResponsePolicyDefaultAndCustomDetector(t *testing.T) {
 		t.Fatal(err)
 	}
 	setBlacklistEnabled(t, db, "true")
-	now := time.Now()
+	now := time.Now().Add(-2 * time.Minute) // preserve the detector window; enforcement has a distinct clock
 	for i := 0; i < 10; i++ {
 		seedR2Failure(t, db, 157, "fixture", "203.0.113.54", now.Add(-time.Duration(i+1)*time.Second))
 	}
+	started := time.Now()
 	for i := 0; i < 2; i++ {
 		if _, err := EvaluateDebtAlerts(db, now); err != nil {
 			t.Fatal(err)
@@ -95,7 +96,7 @@ func TestRiskResponsePolicyDefaultAndCustomDetector(t *testing.T) {
 	if len(rows) != 1 || rows[0].Status != "applied" || rows[0].ActorID != 0 || rows[0].DurationMinutes != 30 || rows[0].Action != "ip" || rows[0].Target != "203.0.113.54" {
 		t.Fatalf("auto reactions: %+v", rows)
 	}
-	if rows[0].ExpiresAt == nil || !rows[0].ExpiresAt.Equal(now.Add(30*time.Minute)) {
+	if rows[0].ExpiresAt == nil || rows[0].CreatedAt.Before(started) || rows[0].CreatedAt.After(time.Now()) || !rows[0].ExpiresAt.Equal(rows[0].CreatedAt.Add(30*time.Minute)) {
 		t.Fatalf("expiry=%v", rows[0].ExpiresAt)
 	}
 }
@@ -151,7 +152,7 @@ func TestRiskResponseTargetsRequireEvidenceAndConfirmation(t *testing.T) {
 	if _, stale := ApplyRiskAlertResponse(db, w.ID, 9, RiskResponseInput{Action: "city_isp", DurationMinutes: 10, Reason: "old preview", Confirmed: true, ExpectedTarget: "其他市 · 移动"}); !errors.Is(stale, ErrRiskResponseInvalid) {
 		t.Fatalf("changed preview was accepted: %v", stale)
 	}
-	got, err = ApplyRiskAlertResponse(db, w.ID, 9, RiskResponseInput{Action: "city_isp", DurationMinutes: 10, Reason: "test review", Confirmed: true, ExpectedTarget: "中山 · 移动"})
+	got, err = ApplyRiskAlertResponse(db, w.ID, 9, RiskResponseInput{Action: "city_isp", DurationMinutes: 10, Reason: "test review", Confirmed: true, ExpectedTarget: "中国 · 广东 · 中山 · 移动"})
 	if err != nil || got.Result.Status != "applied" || got.CityISP == "" {
 		t.Fatalf("%+v %v", got, err)
 	}
@@ -245,8 +246,8 @@ func TestRiskResponseRegionUsesContainingSegment(t *testing.T) {
 	if err := db.Create(&entity.LocationCache{Kind: entity.LocationKindIP, LookupKey: source, Address: "中国 广东", RawJSON: `{"region":"中国 广东","llc":"N/A"}`}).Error; err != nil {
 		t.Fatal(err)
 	}
-	out, err := ApplyRiskAlertResponse(db, w.ID, 6, RiskResponseInput{Action: "city_isp", DurationMinutes: 10, Confirmed: true, Reason: "人工复核", ExpectedTarget: "中山 · 移动"})
-	if err != nil || out.CityISP != "中山 · 移动" {
+	out, err := ApplyRiskAlertResponse(db, w.ID, 6, RiskResponseInput{Action: "city_isp", DurationMinutes: 10, Confirmed: true, Reason: "人工复核", ExpectedTarget: "中国 · 广东 · 中山 · 移动"})
+	if err != nil || out.CityISP != "中国 · 广东 · 中山 · 移动" {
 		t.Fatalf("incomplete single-IP cache with known segment: %+v %v", out, err)
 	}
 	cache := NewBlacklistCache()

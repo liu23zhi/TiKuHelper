@@ -596,7 +596,7 @@ func EvaluateDebtAlerts(db *gorm.DB, now time.Time) (RiskAlertEvaluation, error)
 			result.Suppressed++
 			continue
 		}
-		if responseErr := respondToNewWarning(db, effectiveRiskRuleType(candidate.Rule), target, now); responseErr != nil {
+		if responseErr := respondToNewWarning(db, effectiveRiskRuleType(candidate.Rule), target); responseErr != nil {
 			logger.SysWarn(fmt.Sprintf("risk_alert_response_failed ruleId=%s warningId=%d error=%v", candidate.Rule.RuleID, target.ID, responseErr))
 		}
 		// 规则可以自己声明「这一条只留痕、先别推送」（96 §2.1 R16 的连续天数门槛）。

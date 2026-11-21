@@ -7,7 +7,7 @@
       <template v-else>
         <div class="form-row">
           <label>封禁范围<select v-model="action" :disabled="busy">
-            <option value="ip">仅来源 IP</option><option v-if="saved.segment" value="segment">来源 IP 所属网段</option><option v-if="saved.cityIsp" value="city_isp">同城市且同运营商</option>
+            <option value="ip">仅来源 IP</option><option v-if="saved.segment" value="segment">来源 IP 所属网段</option><option v-if="saved.cityIsp" value="city_isp">指定国家/地区、省、市和运营商</option>
           </select></label>
           <label v-if="!permanent">有效期（分钟）<input v-model.number="minutes" type="number" min="1" max="525600" :disabled="busy"></label>
         </div>
@@ -41,7 +41,7 @@ const statusLabel = { applied: '已写入黑名单', existing: '已存在，保�
 const { saved, busy, error, notice, run, reload } = useRiskForm(props.captureScope, () => getAlertResponse(props.alertId))
 const target = computed(() => saved.value?.[{ ip: 'ip', segment: 'segment', city_isp: 'cityIsp' }[action.value]] || '')
 const needsConfirm = computed(() => action.value !== 'ip' || permanent.value)
-watch([action, minutes, permanent], () => { confirmed.value = false }, { flush: 'sync' })
+watch([action, minutes, permanent, target], () => { confirmed.value = false }, { flush: 'sync' })
 const valid = computed(() => saved.value?.eligible && saved.value.blacklistEnabled && target.value && reason.value.trim() &&
   (!needsConfirm.value || confirmed.value) && (permanent.value || (Number.isInteger(minutes.value) && minutes.value >= 1 && minutes.value <= 525600)))
 async function apply() {

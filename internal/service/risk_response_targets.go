@@ -19,7 +19,6 @@ type RiskAlertResponseView struct {
 	Message          string                       `json:"message,omitempty"`
 	History          []entity.RiskWarningResponse `json:"history"`
 	Result           *entity.RiskWarningResponse  `json:"result,omitempty"`
-	regionPattern    string
 }
 
 // Both the alert column and the detector-specific evidence must identify one source.
@@ -88,16 +87,12 @@ func evidenceSegment(ip string, row *entity.IPSegment) string {
 }
 
 // Use the very same offline location as the production region gate.
-func evidenceCityISP(db *gorm.DB, ip string) (pattern, label string) {
+func evidenceCityISP(db *gorm.DB, ip string) string {
 	loc, ok := NewBlacklistRegionCacheLooker(db)(ip)
-	if !ok || loc.City == "" || loc.Operator == "" {
-		return "", ""
+	if !ok {
+		return ""
 	}
-	p, err := ParseBlacklistRegionPattern(buildBlacklistRegionCanonical("", loc.City, loc.Operator))
-	if err != nil || p.City != loc.City || p.Operator != loc.Operator {
-		return "", ""
-	}
-	return p.Canonical, p.City + " · " + p.Operator
+	return loc.exactScope()
 }
 
 func responseTargets(db *gorm.DB, w entity.RiskWarning, detector string, now time.Time, automatic bool) (RiskAlertResponseView, error) {
@@ -123,7 +118,7 @@ func responseTargets(db *gorm.DB, w entity.RiskWarning, detector string, now tim
 			}
 			v.Segment = evidenceSegment(v.IP, segment)
 		}
-		v.regionPattern, v.CityISP = evidenceCityISP(db, v.IP)
+		v.CityISP = evidenceCityISP(db, v.IP)
 	}
 	if !v.BlacklistEnabled {
 		v.Message = "黑名单总开关已关闭，未拦截"
