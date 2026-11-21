@@ -39,10 +39,17 @@ const UserExamDecryptKeySettingKey = "userexam_db_key"
 
 // UserExamDefaultDecryptKey 是**内置默认密钥**，让功能开箱即用。
 //
-// 用于兼容客户端既有文件格式，必须与客户端和离线参考工具一致。
-// 自行改成占位字符串会让真实数据库全部解密失败。
-// 管理员配置仍优先，用于适配采用其它口令的文件。
-const UserExamDefaultDecryptKey = "mimayrlshenme"
+// ⚠️ 这是一把**公开的、写在仓库里的**密钥，只用于「用户没配自己的密钥时也能用」。
+// 生产环境强烈建议管理员在后台「系统设置 → 考试客户端数据库密钥」里改掉：
+// 任何拿到本仓库的人都能用它解开未改密钥的服务器上传的库。
+//
+// 为什么仍然要有一个默认值（而不是强制先配置）：用户明确要求「默认可开箱即用」。
+// 强制配置会让「上传即报未配置密钥」，与需求相悖，且会让新部署的实例功能形同虚设。
+//
+// 值的选取：一个长度适中、能被 32 字节补位规则完整容纳的 ASCII 串。
+// 不要改成中文/超长 —— userExamPadPassword 会在 32 字节处**截断**，
+// 超长密钥会静默丢尾部（与 SQLite3MC 行为一致，但会让「改了密钥却没变化」难以察觉）。
+const UserExamDefaultDecryptKey = "tiku-userexam-default-key-2026"
 
 // UserExamDecryptKeyState 是「密钥状态」的对外视图。
 //

@@ -511,8 +511,8 @@ func TestUserExamServerHoldsNoCiphercapability(t *testing.T) {
 		}
 	}
 
-	// 3) 文件格式兼容口令集中在已授权的服务端密钥模块。
-	// 其余 handler、日志与客户端响应不能复制口令。
+	// 3) 密钥层：历史口令的两种常见编码都不许出现在非测试 Go 源码里。
+	// 这里只比对「明文口令的字节序列」，不写出可读形式，避免测试自己泄漏。
 	forbiddenLiterals := []string{
 		"mimayrlshenme",
 		"6d696d6179726c7368656e6d65",
@@ -534,9 +534,6 @@ func TestUserExamServerHoldsNoCiphercapability(t *testing.T) {
 			relative, relErr := filepath.Rel(root, path)
 			if relErr != nil {
 				return relErr
-			}
-			if filepath.ToSlash(relative) == "internal/service/user_exam_decrypt_key.go" {
-				return nil
 			}
 			for _, needle := range forbiddenLiterals {
 				if strings.Contains(lower, needle) {
