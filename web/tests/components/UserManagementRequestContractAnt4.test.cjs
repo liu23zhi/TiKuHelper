@@ -1,3 +1,4 @@
+require('../helpers/user-list-reads.cjs')
 /* Actual UserList + Antd zhCN + real API/request/Axios, inert allowlisted transport only.
  * Client guards/owned confirmation qualification, not server authorization or physical-browser proof. */
 const {test,afterEach,after}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),Module=require('node:module'),crypto=require('node:crypto')

@@ -1,3 +1,4 @@
+require('../helpers/user-list-reads.cjs')
 /* Password failure native contract; real API/request and memory adapters only.
  * Password evidence is presence/byte length, never JSON signatures or values. */
 const {test,afterEach,after}=require('node:test')

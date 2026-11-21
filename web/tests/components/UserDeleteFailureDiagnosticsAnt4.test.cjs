@@ -1,3 +1,4 @@
+require('../helpers/user-list-reads.cjs')
 /* Real UserList/Antd/API/request with inert allowlisted Axios transport.
  * Synthetic client feedback contract, not backend authorization or real deletion proof. */
 const {test,afterEach,after}=require('node:test')

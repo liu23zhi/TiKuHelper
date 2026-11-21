@@ -50,7 +50,7 @@ api.exports = {
   },
   getUserExamToolDownloadURL() {
     calls.downloadURL.push(true)
-    return '/adapter-service/admin/userexam/tool'
+    return '/api/admin/userexam/tool'
   },
   inspectUserExamDatabase(file) {
     calls.inspect.push(file)
@@ -144,7 +144,7 @@ test('admin reads the version, and the download button points at the real admin 
   assert.match(text, /aes256cbc \/ legacy=0 \/ kdf_iter=4001/, 'cipher params must be shown verbatim')
   const download = wrapper.findAll('a').find(node => /下载工具/.test(node.text()))
   assert.ok(download, 'download button exists')
-  assert.equal(download.attributes('href'), '/adapter-service/admin/userexam/tool')
+  assert.equal(download.attributes('href'), '/api/admin/userexam/tool')
   assert.equal(download.attributes('disabled'), undefined)
   console.log('EXAM_TOOL_VERSION_OK admin: version read, cipher params shown, download href is the admin route')
 })
@@ -223,7 +223,7 @@ test('server rejections map to actionable messages instead of a generic failure'
   await wrapper.find('form').trigger('submit')
   await settle()
   assert.match(errorText(), /密钥不正确/, 'the server message must surface verbatim')
-  assert.match(errorText(), /解密密钥/, 'wrong-key must point at the key panel, not the offline tool')
+  assert.match(errorText(), /尚未适配的客户端版本|文件已损坏/, 'the operator must receive a source/version diagnostic rather than a retired key panel')
   assert.doesNotMatch(errorText(), /脱机工具/, '服务端已支持解密，wrong-key 不应再推给脱机工具')
   assert.doesNotMatch(errorText(), /解析失败，请重试/, 'a 400 must not degrade into the generic message')
 

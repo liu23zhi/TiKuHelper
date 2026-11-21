@@ -1,3 +1,4 @@
+require('../helpers/user-list-reads.cjs')
 /* Native edit-success semantic-draft contract. Real API/request/lease/axios;
  * memory transport only. A is allowed to succeed; later B is never auto-sent.
  * No create success, real IO, new rules, password or whole-form recording. */

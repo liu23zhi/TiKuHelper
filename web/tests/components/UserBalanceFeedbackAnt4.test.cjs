@@ -1,3 +1,4 @@
+require('../helpers/user-list-reads.cjs')
 /* Real Vue/Antd/currentUser/owner/helpers and RequestFailureAlert. Only the API
  * boundary is synthetic: no server, provider, database or financial IO is used.
  * This unchanged fixture also runs against root-owned B/M/R source copies.

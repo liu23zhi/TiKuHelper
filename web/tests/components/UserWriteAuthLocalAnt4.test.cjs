@@ -1,3 +1,4 @@
+require('../helpers/user-list-reads.cjs')
 /* Actual UserList + Antd + real three API/request functions, inert transport only.
  * No credentials, password values, complete forms/configs or raw errors enter the ledger. */
 const {test,afterEach,after}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),Module=require('node:module'),crypto=require('node:crypto')

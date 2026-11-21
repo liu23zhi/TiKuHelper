@@ -1,3 +1,4 @@
+require('../helpers/user-list-reads.cjs')
 /* Real current App + UserList + Antd/zhCN/fallback, NOT old custom Shell.
  * Active-layer contract only; no DELETE/business write or focus-manager rewrite. */
 const {test,afterEach,after}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),Module=require('node:module'),crypto=require('node:crypto')

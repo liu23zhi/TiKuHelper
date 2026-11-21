@@ -1,3 +1,4 @@
+require('../helpers/user-list-reads.cjs')
 /* Actual create-failure UI contract. Real addUser/request/retry/lease/WeakMap;
  * Axios and clipboard are memory adapters. No password/whole-form signatures,
  * real creation/gift/provider/DB or mutation replay. Issued copy is irreversible. */

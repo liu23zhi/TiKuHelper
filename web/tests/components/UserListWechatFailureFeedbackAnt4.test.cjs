@@ -1,3 +1,4 @@
+require('../helpers/user-list-reads.cjs')
 /* UserList Wechat feedback: real Vue/Antd/API/request, inert allowlisted transport.
  * Opaque QR tokens, verification codes, images, raw errors and configs stay memory-only. */
 const {test,afterEach,after}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),Module=require('node:module'),crypto=require('node:crypto')

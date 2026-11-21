@@ -46,7 +46,7 @@ api.exports = {
       sha256: 'a'.repeat(64), sizeBytes: 1, cipher: 'aes256cbc', legacy: '0', kdfIter: 4001,
     }))
   },
-  getUserExamToolDownloadURL() { return '/adapter-service/admin/userexam/tool' },
+  getUserExamToolDownloadURL() { return '/api/admin/userexam/tool' },
   inspectUserExamDatabase(file) {
     calls.inspect.push(file)
     return inspectHandler ? inspectHandler(file) : Promise.resolve(ok({ tables: {}, otherTables: [], rowCounts: {} }))
@@ -156,61 +156,36 @@ test('明文库（decrypted=false）不显示「已自动解密」', async () =>
   console.log('EXAM_DECRYPT_BADGE_PLAIN_OK decrypted=false 时不显示自动解密提示')
 })
 
-// ─────────────────── ② 密钥面板 ───────────────────
-
-test('密钥面板显示状态与弱指纹，且页面上不出现密钥字段', async () => {
-  keyState = {
-    configured: false, usingDefault: true,
-    keyHint: '11112222', defaultKeyHint: '11112222',
-    message: '当前使用内置默认密钥（开箱即用）；如需更安全，请改成自己的密钥。',
-  }
+// ② 产品已移除浏览器密钥设置（efa4cea3）；必须验证真实页面不会读、写或泄露它。
+test('挂载只读取工具版本，浏览器既不请求也不显示运维密钥状态或指纹', async () => {
+  keyState = { configured: true, keyHint: 'SYNTHETIC_PRIVATE_HINT', message: 'SYNTHETIC_PRIVATE_KEY_STATUS' }
   const wrapper = await mountPage()
-  await settle()
-
-  assert.equal(calls.decryptKey.length, 1, '挂载时必须读取一次密钥状态')
-  const text = wrapper.text()
-  assert.match(text, /使用内置默认密钥/, '未配置时必须明示正在用默认密钥')
-  assert.match(text, /11112222/, '必须展示当前密钥指纹，供管理员确认改动生效')
-
-  // 页面不得出现「密钥原文」——只允许 placeholder/指纹这类非敏感信息。
-  assert.doesNotMatch(text, /tiku-userexam-default-key-2026/, '页面不得显示内置默认密钥原文')
-  console.log('EXAM_DECRYPT_KEY_PANEL_OK 状态与指纹可见，密钥原文不出现')
+  assert.equal(calls.version.length, 1)
+  assert.equal(calls.decryptKey.length, 0)
+  assert.equal(calls.updateKey.length, 0)
+  assert.doesNotMatch(wrapper.text(), /SYNTHETIC_PRIVATE_HINT|SYNTHETIC_PRIVATE_KEY_STATUS/)
 })
 
-test('保存密钥只把用户输入提交一次，且不在页面上回显', async () => {
+test('管理页没有密钥输入或保存控制，仍提供只读文件选择', async () => {
   const wrapper = await mountPage()
-  const keyInput = wrapper.find('input[type="password"]')
-  assert.equal(keyInput.exists(), true, '必须提供密钥输入框')
-
-  await keyInput.setValue('MY-NEW-KEY-123')
-  // 找到「保存密钥」按钮并点击
-  const buttons = wrapper.findAll('button')
-  const saveButton = buttons.find(button => /保存密钥/.test(button.text()))
-  assert.ok(saveButton, '必须存在「保存密钥」按钮')
-  await saveButton.trigger('click')
-  await settle()
-
-  assert.equal(calls.updateKey.length, 1, '保存必须恰好提交一次')
-  assert.equal(calls.updateKey[0], 'MY-NEW-KEY-123', '提交的必须是用户输入的值')
-  // 提交后输入框必须被清空，页面上不留明文密钥。
-  assert.equal(wrapper.find('input[type="password"]').element.value, '')
-  assert.doesNotMatch(wrapper.text(), /MY-NEW-KEY-123/, '保存后页面不得回显密钥')
-  console.log('EXAM_DECRYPT_KEY_SAVE_OK 只提交一次、清空输入、不回显')
+  assert.ok(wrapper.find('input[type="file"]').exists())
+  assert.equal(wrapper.find('input[type="password"]').exists(), false)
+  assert.equal(wrapper.findAll('button').some(button => /保存密钥/.test(button.text())), false)
+  assert.doesNotMatch(wrapper.text(), /下方配置的密钥|上面的密钥/)
+  assert.equal(calls.updateKey.length, 0)
 })
 
-test('密钥超长时展示后端的可读错误，不清空用户输入', async () => {
+test('文件解析失败给出可读的来源或版本提示，不要求改密钥，也不触发密钥读写', async () => {
   const wrapper = await mountPage()
-  updateHandler = () => Promise.resolve({
-    status: 400,
-    data: { message: '解密密钥不合法：长度不得超过 32 字节（SQLite3MC 会在此处截断）' },
-  })
-  await wrapper.find('input[type="password"]').setValue('x'.repeat(40))
-  const saveButton = wrapper.findAll('button').find(button => /保存密钥/.test(button.text()))
-  await saveButton.trigger('click')
+  inspectHandler = () => Promise.resolve({ status: 400, data: { message: 'SYNTHETIC_INVALID_FILE', reason: 'wrong-key' } })
+  const input = wrapper.find('input[type="file"]').element
+  Object.defineProperty(input, 'files', { configurable: true, value: [new File([new Uint8Array(1)], 'sample.db')] })
+  await wrapper.find('input[type="file"]').trigger('change')
+  await wrapper.find('form').trigger('submit')
   await settle()
-
-  assert.match(wrapper.text(), /32 字节/, '必须把后端的长度限制原样告诉用户')
-  // 失败时不应清空输入（否则用户要重打一遍）。
-  assert.equal(wrapper.find('input[type="password"]').element.value, 'x'.repeat(40))
-  console.log('EXAM_DECRYPT_KEY_INVALID_OK 400 文案透出，输入保留')
+  assert.equal(calls.inspect.length, 1)
+  assert.match(wrapper.text(), /SYNTHETIC_INVALID_FILE/)
+  assert.match(wrapper.text(), /尚未适配的客户端版本|文件已损坏/)
+  assert.equal(calls.decryptKey.length, 0)
+  assert.equal(calls.updateKey.length, 0)
 })

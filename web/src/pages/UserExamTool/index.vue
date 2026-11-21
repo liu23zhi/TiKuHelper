@@ -7,7 +7,7 @@
       show-icon
       class="page-alert"
       message="可直接上传加密的 UserExamInfo.db，服务器会解密后只读预览"
-      description="明文库也能直接上传。加密库会先用下方配置的密钥解密；解密只在内存与临时文件里进行，请求结束即删除，不落盘留存。不想把库上传到服务器时，也可以下载脱机工具在本机解密。"
+      description="明文库也能直接上传。加密库由服务器自动处理；解密只在内存与临时文件里进行，请求结束即删除，不落盘留存。不想把库上传到服务器时，也可以下载脱机工具在本机解密。"
     />
 
     <a-alert v-if="!canManage()" type="warning" show-icon message="当前身份无该页面权限，请使用管理员账号登录。" />
@@ -41,7 +41,7 @@
       <ConsolePanel title="使用说明" description="两条路：直接上传（服务端解密）或用脱机工具在本机处理。">
         <p class="hint usage-lead">
           <strong>推荐：直接上传。</strong>把考试客户端的 <code>UserExamInfo.db</code>（加密或明文都行）上传到下面的只读预览即可，
-          服务端会用上面的密钥自动解密。明文只在临时文件里存在，请求结束即删除。
+          服务端会自动解密，无需在页面输入口令。明文只在临时文件里存在，请求结束即删除。
         </p>
         <p class="hint usage-lead"><strong>或用脱机工具（不上传数据库）：</strong></p>
         <ol class="usage-steps">
