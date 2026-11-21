@@ -14,6 +14,7 @@ import (
 
 	"github.com/itihey/tikuAdapter/internal/entity"
 	"github.com/xuri/excelize/v2"
+	"gorm.io/gorm"
 )
 
 func TestSensitiveImageMetadataBackupRoundTripWithoutInventingImage(t *testing.T) {
@@ -207,8 +208,50 @@ func TestSensitiveImageTransferRoundTripPicturesAndValidation(t *testing.T) {
 	if err != nil || result.Succeeded != 1 {
 		t.Fatalf("import=%+v %v", result, err)
 	}
+	// Masked exports carry useful verdict metadata, never the image itself.
+	// Count original-blob reads as well as bytes in the result: decrypting it and
+	// then dropping the cell still loads private images into an ordinary export.
+	blobReads := 0
+	if err := db.Callback().Query().Before("gorm:query").Register("fixture:count_originals", func(tx *gorm.DB) {
+		if tx.Statement.Table == (&entity.TicketAttachmentBlob{}).TableName() {
+			blobReads++
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	shouldMask, unmasked := true, false
 	for _, format := range []string{ExportFormatJSON, ExportFormatXlsx} {
-		output, err := ExportDataWithDB(db, ExportDataOptions{Resource: ImportResourceSensitiveImages, Format: format})
+		for _, setting := range []*bool{nil, &shouldMask} {
+			before := blobReads
+			masked, err := ExportDataWithDB(db, ExportDataOptions{Resource: ImportResourceSensitiveImages, Format: format, Masked: setting})
+			if err != nil || !masked.Masked || masked.Rows != 1 {
+				t.Fatalf("masked %s: rows=%d err=%v", format, masked.Rows, err)
+			}
+			switch format {
+			case ExportFormatJSON:
+				var rows []map[string]string
+				if err := json.Unmarshal(masked.Content, &rows); err != nil || len(rows) != 1 || rows[0]["image_sha256"] != sha || rows[0]["image_base64"] != "" {
+					t.Fatal("masked JSON must keep the verdict metadata without the original image")
+				}
+			case ExportFormatXlsx:
+				book, err := excelize.OpenReader(bytes.NewReader(masked.Content))
+				if err != nil {
+					t.Fatal(err)
+				}
+				sheet := book.GetSheetName(0)
+				pictures, perr := book.GetPictures(sheet, "E2")
+				value, verr := book.GetCellValue(sheet, "E2")
+				key, kerr := book.GetCellValue(sheet, "A2")
+				_ = book.Close()
+				if perr != nil || verr != nil || kerr != nil || len(pictures) != 0 || value != "" || key != sha {
+					t.Fatal("masked spreadsheet must keep the verdict metadata without embedding the original")
+				}
+			}
+			if blobReads != before {
+				t.Fatal("masked export read the private image blob")
+			}
+		}
+		output, err := ExportDataWithDB(db, ExportDataOptions{Resource: ImportResourceSensitiveImages, Format: format, Masked: &unmasked})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -33,28 +33,39 @@ func init() {
 	for _, name := range sensitiveImageTransferHeaders() {
 		columns = append(columns, exportColumn(name))
 	}
-	exportResourceSpecs[ImportResourceSensitiveImages] = exportResourceSpec{resource: ImportResourceSensitiveImages, columns: columns, maxRows: 1000,
-		load: func(db *gorm.DB, limit int) ([][]string, error) {
-			var entries []SensitiveImageHistoryEntry
-			if err := exportLimit(SensitiveImageHistoryQuery(db).Order("updated_at DESC, image_sha256"), limit).Find(&entries).Error; err != nil {
-				return nil, err
-			}
-			rows := make([][]string, 0, len(entries))
-			var imageBytes int64
-			for _, entry := range entries {
-				encoded := ""
+	exportResourceSpecs[ImportResourceSensitiveImages] = exportResourceSpec{
+		resource: ImportResourceSensitiveImages, columns: columns, maxRows: 1000,
+		load: sensitiveImageExportLoader(false), loadUnmasked: sensitiveImageExportLoader(true),
+	}
+}
+
+func sensitiveImageExportLoader(includeOriginals bool) func(*gorm.DB, int) ([][]string, error) {
+	return func(db *gorm.DB, limit int) ([][]string, error) {
+		var entries []SensitiveImageHistoryEntry
+		if err := exportLimit(SensitiveImageHistoryQuery(db).Order("updated_at DESC, image_sha256"), limit).Find(&entries).Error; err != nil {
+			return nil, err
+		}
+		rows := make([][]string, 0, len(entries))
+		var imageBytes int64
+		for _, entry := range entries {
+			encoded := ""
+			if includeOriginals {
 				plain, _, err := LoadSensitiveImageBytesWithDB(db, entry.ImageSHA256)
-				if err == nil {
+				switch {
+				case err == nil:
 					imageBytes += int64(len(plain))
 					if imageBytes > maxSensitiveImageTransferBytes {
 						return nil, fmt.Errorf("图片导出内容超过 64 MiB，请减少本次导出条数后重试")
 					}
 					encoded = base64.StdEncoding.EncodeToString(plain)
+				case !errors.Is(err, ErrSensitiveImageBytesUnavailable):
+					return nil, err
 				}
-				rows = append(rows, []string{entry.ImageSHA256, entry.Status, entry.Reason, entry.ContentType, encoded, entry.UpdatedAt.Format(time.RFC3339Nano)})
 			}
-			return rows, nil
-		}}
+			rows = append(rows, []string{entry.ImageSHA256, entry.Status, entry.Reason, entry.ContentType, encoded, entry.UpdatedAt.Format(time.RFC3339Nano)})
+		}
+		return rows, nil
+	}
 }
 
 // Spreadsheets carry real images anchored to their corresponding row. JSON

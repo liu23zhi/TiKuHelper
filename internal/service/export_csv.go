@@ -307,7 +307,11 @@ func ExportDataWithDB(db *gorm.DB, opts ExportDataOptions) (ExportResult, error)
 		queryDB = queryDB.Where("id IN ?", ids)
 		limit = len(ids)
 	}
-	rows, err := spec.load(queryDB, limit)
+	loadRows := spec.load
+	if !masked && spec.loadUnmasked != nil {
+		loadRows = spec.loadUnmasked
+	}
+	rows, err := loadRows(queryDB, limit)
 	if err != nil {
 		return ExportResult{}, fmt.Errorf("读取 %s 数据失败: %w", resource, err)
 	}
@@ -486,6 +490,9 @@ type exportResourceSpec struct {
 	// load 按列顺序返回原始值（未脱敏）。脱敏由 ExportCSVWithDB 统一做，
 	// 取数函数里**不许**再各自打码 —— 否则「勾选不脱敏」时拿到的是已经打码的值。
 	load func(db *gorm.DB, limit int) ([][]string, error)
+	// Optional original-data loader, used only for an explicitly unmasked backup.
+	// The default loader can then avoid fetching or decrypting private payloads at all.
+	loadUnmasked func(db *gorm.DB, limit int) ([][]string, error)
 }
 
 // exportRowLimit 返回某资源实际生效的行数上限（resource 不在清单内时返回 0）。

@@ -22,7 +22,7 @@
       </tbody></table></div>
     <a-pagination v-if="total > pageSize" :current="page" :page-size="pageSize" :total="total" :show-size-changer="false" :onChange="entry.page" />
     <a-modal :open="visible" :title="`${title}${importable ? '导入 / 导出' : '导出'}`" :footer="null" :mask-closable="false" :onCancel="entry.close">
-      <p>导出全部记录，最多 {{ resource === 'sensitive_images' ? '1000' : '10 万' }} 条。默认脱敏；回灌备份前请取消脱敏。</p>
+      <p>导出全部记录，最多 {{ resource === 'sensitive_images' ? '1000' : '10 万' }} 条。{{ resource === 'sensitive_images' ? '脱敏导出只含检测记录，不读取或包含原图；仅在需要原图备份时取消脱敏。' : '默认脱敏；回灌备份前请取消脱敏。' }}</p>
       <a-space wrap>
         <a-select :value="format" :options="formatOptions" :disabled="busy" :onChange="entry.format" aria-label="导出格式" style="width: 120px" />
         <a-checkbox :checked="masked" :disabled="busy" :onChange="entry.masked">脱敏</a-checkbox>

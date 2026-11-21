@@ -276,7 +276,7 @@
         </div>
       </a-modal>
     </template>
-    <AdminDataTransfer v-if="canManage()" resource="sensitive_images" title="敏感图片检测记录" importable :formats="['json', 'xlsx']" accept=".json,.xlsx" import-description="JSON 使用 image_base64 保存图片；Excel 图片内嵌于 image_base64 列对应单元格。已清理的图片只导出检测记录。" @imported="reloadCurrentTab" />
+    <AdminDataTransfer v-if="canManage()" resource="sensitive_images" title="敏感图片检测记录" importable :formats="['json', 'xlsx']" accept=".json,.xlsx" import-description="仅未脱敏备份包含仍保留的原图：JSON 使用 image_base64，Excel 将图片嵌入对应单元格。脱敏文件和已清理的图片仅保留检测记录。" @imported="reloadCurrentTab" />
 
   </div>
 </template>
