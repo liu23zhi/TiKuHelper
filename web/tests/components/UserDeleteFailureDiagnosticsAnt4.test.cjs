@@ -1,3 +1,4 @@
+require('../helpers/user-list-reads.cjs')
 /* Real UserList/Antd/API/request with inert allowlisted Axios transport.
  * Synthetic client feedback contract, not backend authorization or real deletion proof. */
 const {test,afterEach,after}=require('node:test')
@@ -23,9 +24,9 @@ const originalAdapter=axios.defaults.adapter
 assert.equal(!!require.cache[path.join(web,'src/utils/request.js')],false,'real request must load after inert adapter')
 axios.defaults.adapter=config=>{
  const method=String(config.method||'get').toLowerCase(),url=String(config.url),actor=user.getStoredCurrentUser(),entry={method,url,actor:actor?.id||null,page:config.params?.page||null,pageSize:config.params?.pageSize||null,hasKeyword:!!config.params?.keyword};calls.push(entry)
- if(method==='get'&&url==='/adapter-service/user')return Promise.resolve({status:200,data:{data:rows.map(r=>({...r})),total:21,page:Number(config.params?.page)||1,pageSize:Number(config.params?.pageSize)||10},headers:{},config,request:{memoryOnly:true}})
- if(method==='get'&&url==='/adapter-service/system-settings')return Promise.resolve({status:200,data:{newUserBonusAmount:0},headers:{},config,request:{memoryOnly:true}})
- if(method!=='delete'||!/^\/adapter-service\/user\/(71|72)$/.test(url))return Promise.reject(deny('unexpected-api-operation'))
+ if(method==='get'&&url==='/api/user')return Promise.resolve({status:200,data:{data:rows.map(r=>({...r})),total:21,page:Number(config.params?.page)||1,pageSize:Number(config.params?.pageSize)||10},headers:{},config,request:{memoryOnly:true}})
+ if(method==='get'&&url==='/api/system-settings')return Promise.resolve({status:200,data:{newUserBonusAmount:0},headers:{},config,request:{memoryOnly:true}})
+ if(method!=='delete'||!/^\/api\/user\/(71|72)$/.test(url))return Promise.reject(deny('unexpected-api-operation'))
  const target=Number(url.split('/').pop()),plan=plans.shift(),intent=intents.find(i=>i.target===target&&!i.wire)
  assert.ok(plan&&intent,'every destructive native dispatch has one explicit synthetic plan and API intent')
  assert.equal(plan.target,target,'planned native target is exact');intent.wire=true;plan.intent=intent.sequence
@@ -83,7 +84,7 @@ function feedback(w,r,label){
 async function copy(entry,label,mode='resolve'){copyMode=mode;const n=copies.length,np=pendingCopies.length;check(entry.qualified&&entry.button instanceof HTMLButtonElement,label+' actual diagnostic-only native copy exists','dependent-on-surface',entry.qualified);if(entry.qualified&&entry.button instanceof HTMLButtonElement)await click(entry.button);check(copies.length===n+1&&copies[n]?.id===entry.reply.id,label+' writeText contains only same returned ID','dependent-on-surface',entry.qualified);copyMode='resolve';return{qualified:entry.qualified,button:entry.button,pending:mode==='defer'?pendingCopies[np]||null:null}}
 async function settleOldCopy(old,label){const n=copies.length;if(old.pending&&!old.pending.done){old.pending.done=true;old.pending.reject(new Error('SYNTHETIC_CLIPBOARD_REFUSED'))}await settle();if(old.button)old.button.click();await settle();check(copies.length===n,label+' retired copy entry cannot start another clipboard write','dependent-on-copy',old.qualified)}
 function noDeleteSince(count,label){check(attempts.length===count,label+' no automatic or replayed DELETE')}
-async function query(w,kind){const before=calls.length;if(kind==='keyword'){const input=w.element.querySelector('.filter-form input[placeholder="用户名 / 昵称 / 手机号 / 微信"]');assert.ok(input);input.value='SYNTHETIC_CURRENT_QUERY_'+(++querySerial);input.dispatchEvent(new Event('input',{bubbles:true}));await settle();const search=input.closest('.ant-input-search')?.querySelector('.ant-input-search-button');await click(search)}else if(kind==='pagination'){const nextPage=w.vm.pagination.current===1?2:1,control=w.element.querySelector('.desktop-user-table .ant-pagination-item-'+nextPage);assert.ok(control,'actual next pagination control');await click(control)}else await click(button(w.element.querySelector('.section-actions'),'刷新'));await until(()=>!w.vm.tabLoading&&calls.slice(before).some(c=>c.method==='get'&&c.url==='/adapter-service/user'),'explicit current query/list read settles')}
+async function query(w,kind){const before=calls.length;if(kind==='keyword'){const input=w.element.querySelector('.filter-form input[placeholder="用户名 / 昵称 / 手机号 / 微信"]');assert.ok(input);input.value='SYNTHETIC_CURRENT_QUERY_'+(++querySerial);input.dispatchEvent(new Event('input',{bubbles:true}));await settle();const search=input.closest('.ant-input-search')?.querySelector('.ant-input-search-button');await click(search)}else if(kind==='pagination'){const nextPage=w.vm.pagination.current===1?2:1,control=w.element.querySelector('.desktop-user-table .ant-pagination-item-'+nextPage);assert.ok(control,'actual next pagination control');await click(control)}else await click(button(w.element.querySelector('.section-actions'),'刷新'));await until(()=>!w.vm.tabLoading&&calls.slice(before).some(c=>c.method==='get'&&c.url==='/api/user'),'explicit current query/list read settles')}
 function blockRemoval(){const storage=window.localStorage,p=Object.getPrototypeOf(storage),old=p.removeItem;p.removeItem=function(key){if(this===storage&&key==='adapter_current_user')throw new Error('SYNTHETIC_CACHE_REMOVE_REFUSED');return old.apply(this,arguments)};restoreRemove=()=>{p.removeItem=old}}
 function writeLedger(){if(!process.env.USER_DELETE_FAILURE_LEDGER)return;assert.ok(path.isAbsolute(process.env.USER_DELETE_FAILURE_LEDGER));const after=hashes();fs.writeFileSync(process.env.USER_DELETE_FAILURE_LEDGER,JSON.stringify({schema:'USER_DELETE_FAILURE_NATIVE_V1',fixtureSHA256,sourceBefore,sourceAfter:after,sourceStable:JSON.stringify(after)===JSON.stringify(sourceBefore),cases,nativeDOM:true,physicalBrowser:false,realAPIRequestAxiosMemory:true,syntheticOnly:true,noBackendDeleteAuthorizationOrPersistenceClaim:true},null,2)+'\n')}
 function register(name,fn){test(name,{timeout:35000},async()=>{cur={name,checks:[],observations:[],passed:false};cases.push(cur);try{await fn();check(realIO.length===0&&runtime.length===0&&consoleErrors.length===0,'no real IO/runtime/console errors');const failed=cur.checks.filter(c=>c.qualified&&!c.passed);assert.deepEqual(failed.map(c=>c.label),[],name+' qualified contract failures');cur.passed=true}catch(e){cur.error={name:e.name,message:String(e.message).replaceAll(UNSAFE,'[PRIVATE_FIXTURE_TEXT]')};throw e}finally{writeLedger()}})}
@@ -142,12 +143,12 @@ register('UD05 actor, role, cached-logout and unmount retire visible diagnostic/
 })
 
 register('UD06 original native confirmation cancel, row-presence guard, one successful bodyless DELETE and original single readback remain unchanged',async()=>{
- const w=await page(),reads=calls.filter(c=>c.method==='get'&&c.url==='/adapter-service/user').length
+ const w=await page(),reads=calls.filter(c=>c.method==='get'&&c.url==='/api/user').length
  await click(rowButton(w,71));await click(button(await popup(),'取消'));check(attempts.length===0,'actual confirmation Cancel causes no DELETE')
  w.vm.onDelete(999999);await settle();check(attempts.length===0,'original absent-row guard causes no DELETE')
  const sequence=await dispatch(w,71,{status:200});await until(()=>!w.vm.tabLoading&&!w.vm.dataSource.some(r=>r.id===71),'successful original list readback')
  check(reply(sequence).object.status===200&&attempts.length===1&&!attempts[0].hasBody,'one confirmed original bodyless successful DELETE')
- check(calls.filter(c=>c.method==='get'&&c.url==='/adapter-service/user').length===reads+1,'200 preserves exactly original one list readback')
+ check(calls.filter(c=>c.method==='get'&&c.url==='/api/user').length===reads+1,'200 preserves exactly original one list readback')
  check(!w.element.querySelector('tr[data-row-key="71"]')&&w.vm.dataSource.some(r=>r.id===72)&&panels(w).length===0,'successful current DOM removes only synthetic target and has no failure surface')
 })
 

@@ -22,16 +22,16 @@ transport.exports = request => {
   assert.ok(active, 'synthetic transport must belong to one current case')
   const method = String(request.method || '').toLowerCase()
   const route = request.url
-  const allowedGET = ['/adapter-service/user/info', '/adapter-service/billing-records', '/adapter-service/payment-methods']
+  const allowedGET = ['/api/user/info', '/api/billing-records', '/api/payment-methods']
   assert.ok((method === 'get' && allowedGET.includes(route)) ||
-    (method === 'post' && route === '/adapter-service/recharge-orders'), 'unapproved synthetic route or method')
+    (method === 'post' && route === '/api/recharge-orders'), 'unapproved synthetic route or method')
   active.calls.push({ method, route, data: request.data })
   if (method === 'post') {
     // Even a regression issuing a forbidden order reaches only this inert 500.
     return Promise.resolve({ status: 500, message: 'SYNTHETIC_ORDER_FAILURE_NO_CHECKOUT' })
   }
-  if (route === '/adapter-service/user/info') return Promise.resolve({ status: 200, data: { id: 701, username: 'synthetic-u06c', role: 'user', balance: 1.000062 } })
-  if (route === '/adapter-service/billing-records') return Promise.resolve({ status: 200, data: { data: [], total: 0, page: 1, pageSize: 10 } })
+  if (route === '/api/user/info') return Promise.resolve({ status: 200, data: { id: 701, username: 'synthetic-u06c', role: 'user', balance: 1.000062 } })
+  if (route === '/api/billing-records') return Promise.resolve({ status: 200, data: { data: [], total: 0, page: 1, pageSize: 10 } })
   active.paymentGETs += 1
   if (active.rejectInitial && active.paymentGETs === 1) return Promise.reject(new Error('SYNTHETIC_PAYMENT_METHOD_GET_REJECT'))
   if (active.delayRefresh && active.paymentGETs === 2) {
@@ -41,7 +41,7 @@ transport.exports = request => {
 }
 require.cache[requestPath] = transport
 async function settle () { await nextTick(); await flushPromises(); await nextTick() }
-function orderCalls (state) { return state.calls.filter(x => x.method === 'post' && x.route === '/adapter-service/recharge-orders') }
+function orderCalls (state) { return state.calls.filter(x => x.method === 'post' && x.route === '/api/recharge-orders') }
 function createButton (wrapper) {
   const buttons = wrapper.findAll('button').filter(x => x.text().replace(/\s/g, '') === '创建充值订单')
   assert.equal(buttons.length, 1, 'one actual native create-order button')
@@ -66,8 +66,8 @@ async function withUsage (options, body) {
     wrapper = mount(Usage, { attachTo: document.body, global: { plugins: [Antd] } })
     await settle()
     assert.equal(state.paymentGETs, 1, 'actual mounted payment-method GET')
-    assert.equal(state.calls.filter(x => x.route === '/adapter-service/user/info').length, 1)
-    assert.equal(state.calls.filter(x => x.route === '/adapter-service/billing-records').length, 1)
+    assert.equal(state.calls.filter(x => x.route === '/api/user/info').length, 1)
+    assert.equal(state.calls.filter(x => x.route === '/api/billing-records').length, 1)
     await body(wrapper, state)
   } finally {
     // Drain only the test-owned deferred synthetic response before unmount.

@@ -1,3 +1,4 @@
+require('../helpers/user-list-reads.cjs')
 /* Actual Vue + Antd + router + current-user/owner/input helpers; only API reads
  * are synthetic. No save, balance confirmation, password reset or external IO.
  * TIKU_WEB_SOURCE and UI_TEST_HELPER let the unchanged fixture qualify B/M/R.
@@ -43,7 +44,7 @@ for (const name of ['node:http', 'node:https']) { const transport = require(name
 window.addEventListener('error', event => runtimeErrors.push(String(event.error?.stack || event.message)))
 window.addEventListener('unhandledrejection', event => runtimeErrors.push(String(event.reason?.stack || event.reason)))
 const Page = require(path.join(web, 'src/pages/UserList/index.vue'))
-const EDIT_LABELS = ['用户名', '昵称', '角色', '状态', '当前余额', '手机号', '重指派同号', '微信 ID', '重指派微信', '创建来源']
+const EDIT_LABELS = ['用户名', '昵称', '角色', '封禁', '当前余额', '手机号', '重指派同号', '微信 ID', '重指派微信', '创建来源']
 const BALANCE_LABELS = ['目标用户', '当前余额', '钱包类型', '修改模式', '调整金额']
 const controlSelector = 'input:not([type="hidden"]),textarea,select,button[role="switch"]'
 const compact = value => String(value || '').replace(/\s+/g, ' ').trim()
@@ -158,7 +159,7 @@ test('native disabled/read-only controls, comboboxes, spinbutton and six-place b
   assert.equal(field(edit, '当前余额').control.readOnly, true); assert.equal(field(edit, '当前余额').control.value, '1.234567')
   assert.equal(field(bal, '当前余额').control.readOnly, true); assert.equal(field(bal, '当前余额').control.value, '1.234567')
   assert.equal(field(bal, '目标用户').control.readOnly, true); assert.ok(field(bal, '目标用户').control.value.includes(ROW.username))
-  for (const [root, name] of [[edit, '角色'], [edit, '状态'], [bal, '修改模式']]) assert.equal(field(root, name).control.getAttribute('role'), 'combobox')
+  for (const [root, name] of [[edit, '角色'], [edit, '封禁'], [bal, '修改模式']]) assert.equal(field(root, name).control.getAttribute('role'), 'combobox')
   assert.equal(field(bal, '调整金额').control.getAttribute('role'), 'spinbutton')
   for (const name of ['重指派同号', '重指派微信']) assert.equal(field(edit, name).control.getAttribute('role'), 'switch')
   assert.equal(w.vm.balanceSubmitting, false); assert.equal(w.vm.balanceForm.mode, 'increase')
@@ -167,7 +168,7 @@ test('native disabled/read-only controls, comboboxes, spinbutton and six-place b
 
 test('clicking actual enabled text/phone/select labels focuses the native control without submitting', async () => {
   const [w] = await page(), edit = await editor(w), bal = await balance(edit)
-  for (const [root, name] of [[edit, '昵称'], [edit, '手机号'], [edit, '微信 ID'], [edit, '角色'], [edit, '状态'], [bal, '修改模式'], [bal, '调整金额']]) {
+  for (const [root, name] of [[edit, '昵称'], [edit, '手机号'], [edit, '微信 ID'], [edit, '角色'], [edit, '封禁'], [bal, '修改模式'], [bal, '调整金额']]) {
     const { label, control } = associated(root, name)
     assert.equal(control.disabled, false)
     document.activeElement?.blur()
@@ -276,7 +277,7 @@ test('create/filter/reset labels use actual native controls and keep create/rese
   const filters = w.element.querySelector('.filter-form')
   assert.deepEqual(labels(filters), ['关键词', '角色', '状态']); allAssociated(filters)
   const create = await openedBy(w.element, '新增用户', '新增用户')
-  assert.deepEqual(labels(create), ['用户名', '密码', '昵称', '角色', '状态', '启用赠送', '赠送金额', '创建来源']); allAssociated(create)
+  assert.deepEqual(labels(create), ['用户名', '密码', '昵称', '角色', '封禁', '启用赠送', '赠送金额', '创建来源']); allAssociated(create)
   assert.equal(field(create, '用户名').control.disabled, false); assert.equal(field(create, '密码').control.type, 'password')
   assert.equal(field(create, '创建来源').control.disabled, true)
   const giftId = associated(create, '赠送金额').control.id

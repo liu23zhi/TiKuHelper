@@ -1,3 +1,4 @@
+require('../helpers/user-list-reads.cjs')
 /* Actual Vue + Antd, existing create-username local rejection only.
  * Invalid submits never mutate; UU07 declares one synthetic legacy profile update.
  * All real transport/provider/DB IO denied. No new username/password/gift rules.

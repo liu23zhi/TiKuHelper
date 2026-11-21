@@ -1,3 +1,4 @@
+require('../helpers/user-list-reads.cjs')
 /* Actual UserList + Antd + real three API/request functions, inert transport only.
  * No credentials, password values, complete forms/configs or raw errors enter the ledger. */
 const {test,afterEach,after}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),Module=require('node:module'),crypto=require('node:crypto')
@@ -23,9 +24,9 @@ const oldAdapter=axios.defaults.adapter
 assert.equal(!!require.cache[path.join(web,'src/utils/request.js')],false,'real request loads only after inert adapter')
 axios.defaults.adapter=config=>{
  const method=String(config.method||'get').toLowerCase(),url=String(config.url),actor=user.getStoredCurrentUser();calls.push({method,url,actor:actor?.id||null})
- if(method==='get'&&url==='/adapter-service/user')return Promise.resolve({status:200,data:{data:[{...ROW}],total:1,page:1,pageSize:10},headers:{},config,request:{memoryOnly:true}})
- if(method==='get'&&url==='/adapter-service/system-settings')return Promise.resolve({status:200,data:{newUserBonusAmount:0},headers:{},config,request:{memoryOnly:true}})
- const operation=method==='post'&&url==='/adapter-service/user'?'addUser':method==='put'&&url==='/adapter-service/user/71'?'updateUser':method==='put'&&url==='/adapter-service/user/71/reset-password'?'resetUserPassword':null
+ if(method==='get'&&url==='/api/user')return Promise.resolve({status:200,data:{data:[{...ROW}],total:1,page:1,pageSize:10},headers:{},config,request:{memoryOnly:true}})
+ if(method==='get'&&url==='/api/system-settings')return Promise.resolve({status:200,data:{newUserBonusAmount:0},headers:{},config,request:{memoryOnly:true}})
+ const operation=method==='post'&&url==='/api/user'?'addUser':method==='put'&&url==='/api/user/71'?'updateUser':method==='put'&&url==='/api/user/71/reset-password'?'resetUserPassword':null
  if(!operation)return Promise.reject(deny('unexpected-api-operation'))
  const intent=intents.find(i=>i.operation===operation&&!i.wire),plan=plans.shift();assert.ok(intent&&plan,'one explicit synthetic plan and actual API intent');assert.equal(plan.operation,operation,'native action invokes literal planned API');intent.wire=true
  const payload=typeof config.data==='string'?JSON.parse(config.data):config.data,id=(++serial).toString(16).padStart(32,'0'),status=plan.status||403

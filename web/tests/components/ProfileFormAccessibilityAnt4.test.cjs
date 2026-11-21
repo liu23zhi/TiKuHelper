@@ -1,5 +1,6 @@
-/* Actual Profile/Vue/Antd/router/current-user/owner/input helpers; only the three
- * API reads return synthetic ordinary-user data. No save, SMS, captcha, QR,
+/* Actual Profile/Vue/Antd/router/current-user/owner/input helpers; only the four
+ * API reads return synthetic ordinary-user data, including the optional level.
+ * No save, SMS, captcha, QR,
  * binding, confirmation or other business mutation is activated.
  * TIKU_WEB_SOURCE/UI_TEST_HELPER select complete unchanged B/M/R web sources.
  * Native DOM association/focus evidence in jsdom is not reader, contrast,
@@ -43,6 +44,10 @@ api.exports = {
   ...Object.fromEntries(['bindCurrentUserWechat', 'bindCurrentUserWechatByCode', 'createCaptchaChallenge', 'createWechatLoginQRCode', 'updateCurrentUserProfile', 'sendUserPhoneChangeSMSCode', 'unbindCurrentUserWechat', 'updateCurrentUserPhone', 'verifyCaptchaChallenge', 'verifyRemoteCaptcha'].map(name => [name, () => denyMutation(name)])),
 }
 require.cache[apiPath] = api
+const levelApiPath = path.join(web, 'src/api/UserLevelApi.js'), levelApi = new Module(levelApiPath)
+levelApi.loaded = true
+levelApi.exports = { getMyUserLevel: () => read('getMyUserLevel', { data: { deviceLimit: 0 } }) }
+require.cache[levelApiPath] = levelApi
 window.XMLHttpRequest.prototype.open = function () { return denyIO('XHR') }
 globalThis.fetch = window.fetch = () => denyIO('FETCH')
 globalThis.WebSocket = window.WebSocket = class { constructor() { denyIO('WEBSOCKET') } }
@@ -163,7 +168,7 @@ afterEach(async t => {
 
 test('Profile actual four visible main labels associate with their own inputs; existing editable ordinary profile and six decimals remain', async () => {
   const { first } = await open(), root = first.element
-  assert.deepEqual(reads, ['getCurrentUser', 'getPublicRegisterStatus', 'getMyLocations'])
+  assert.deepEqual(reads, ['getCurrentUser', 'getPublicRegisterStatus', 'getMyLocations', 'getMyUserLevel'])
   const fields = allAssociated(root)
   assert.ok(first.vm.profileReady); assert.equal(first.vm.currentUser.role, 'user')
   assert.ok(root.textContent.includes('普通用户')); assert.ok(root.textContent.includes('0.123456')); assert.ok(root.textContent.includes(ORDINARY.phone))

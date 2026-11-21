@@ -1,3 +1,4 @@
+require('../helpers/user-list-reads.cjs')
 /* Real current App + UserList + Antd/zhCN/fallback, NOT old custom Shell.
  * Active-layer contract only; no DELETE/business write or focus-manager rewrite. */
 const {test,afterEach,after}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),Module=require('node:module'),crypto=require('node:crypto')
@@ -20,9 +21,9 @@ axios.defaults.adapter=config=>{
  const method=String(config.method||'get').toLowerCase(),url=String(config.url);calls.push({method,url,paramsKeys:Object.keys(config.params||{}).sort()})
  if(method!=='get')return Promise.reject(deny('nonGET-denied'))
  let data
- if(url==='/adapter-service/public/register-status')data={siteName:'Synthetic UserList App'}
- else if(url==='/adapter-service/system-settings')data={newUserBonusAmount:.123456}
- else if(url==='/adapter-service/user')data={data:[{...ROW}],total:1,page:Number(config.params?.page)||1,pageSize:Number(config.params?.pageSize)||10}
+ if(url==='/api/public/register-status')data={siteName:'Synthetic UserList App'}
+ else if(url==='/api/system-settings')data={newUserBonusAmount:.123456}
+ else if(url==='/api/user')data={data:[{...ROW}],total:1,page:Number(config.params?.page)||1,pageSize:Number(config.params?.pageSize)||10}
  else return Promise.reject(deny('unknownGET-denied'))
  return Promise.resolve({status:200,data,headers:{'x-request-id':calls.length.toString(16).padStart(32,'0')},config,request:{memoryOnly:true}})
 }
@@ -68,7 +69,7 @@ async function appPage(){
  const router=createRouter({history:createMemoryHistory(),routes:[{path:'/adapter/userlist',component:Page}]});await router.push('/adapter/userlist');await router.isReady()
  const app=mount(App,{attachTo:document.body,global:{plugins:[Antd,router],stubs:{transition:false,'transition-group':false},config:{errorHandler:e=>runtime.push(e?.name||'vue-error')}}});roots.push({app,router});await settle()
  const w=app.findComponent(Page);assert.ok(w.exists(),'actual UserList through current App RouterView')
- await until(()=>!w.vm.tabLoading&&w.vm.dataSource.some(r=>r.id===71)&&calls.some(c=>c.url==='/adapter-service/system-settings'),'actual legal admin read/DTO')
+ await until(()=>!w.vm.tabLoading&&w.vm.dataSource.some(r=>r.id===71)&&calls.some(c=>c.url==='/api/system-settings'),'actual legal admin read/DTO')
  cur.checks.push({label:'real App zhCN and UserList admin guard',passed:app.findComponent(Antd.ConfigProvider).props('locale')?.locale==='zh-cn'&&w.vm.canManageUsers})
  return w
 }

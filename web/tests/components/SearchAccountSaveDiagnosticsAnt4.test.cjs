@@ -23,8 +23,8 @@ const oldAdapter=axios.defaults.adapter
 assert.equal(!!require.cache[path.join(web,'src/utils/request.js')],false,'actual request loads after inert adapter')
 axios.defaults.adapter=config=>{
  const method=String(config.method||'get').toLowerCase(),url=String(config.url);calls.push({method,url})
- if(method==='get'&&url==='/adapter-service/search-account-configs')return Promise.resolve({status:200,data:ROWS.map(r=>({...r})),headers:{},config,request:{memoryOnly:true}})
- const match=method==='put'&&/^\/adapter-service\/search-account-configs\/(icodef|wenku)$/.exec(url)
+ if(method==='get'&&url==='/api/search-account-configs')return Promise.resolve({status:200,data:ROWS.map(r=>({...r})),headers:{},config,request:{memoryOnly:true}})
+ const match=method==='put'&&/^\/api\/search-account-configs\/(icodef|wenku)$/.exec(url)
  if(!match)return Promise.reject(deny('unexpected-operation'))
  const provider=match[1],intent=intents.find(i=>i.provider===provider&&!i.wire),plan=plans.shift();assert.ok(intent&&plan,'one explicit native save plan and original API call');assert.equal(plan.provider,provider,'original serial provider order');intent.wire=true
  const payload=typeof config.data==='string'?JSON.parse(config.data):config.data,id=(++serial).toString(16).padStart(32,'0'),status=plan.status,first=provider==='icodef'

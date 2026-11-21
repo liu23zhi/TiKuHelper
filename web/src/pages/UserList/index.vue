@@ -2090,7 +2090,7 @@ export default defineComponent({
       this.userListContext.visible.value = true
       // 异步读该用户当前的封禁状态（决定是否显示「解除封禁」入口）。
       // 不 await：弹窗先渲染，封禁状态后到 —— 与「列表/详情分步加载」同策略。
-      this.userListContext.loadCurrentBanState(record.id)
+      this.loadCurrentBanState(record.id)
     },
     openResetPasswordModal(record) {
       const owner = this.userListContext.owner.capture()

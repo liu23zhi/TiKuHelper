@@ -131,7 +131,7 @@ test('SAC_PRINCIPAL existing same-actor GET renders full rows, native precision8
   assert.equal(w.findComponent(Antd.InputNumber).props('precision'), 8, 'EXISTING_NATIVE_EIGHT_DECIMAL_INPUT')
   assert.equal(w.findAllComponents(Antd.InputNumber).length, 2, 'AI_PRICE_NOT_EDITED_IN_THIS_PAGE')
   click(w, '前往 AI 搜索配置页'); await settle()
-  assert.ok(routes.includes('/adapter/ai-search-config')); assert.equal(writes.length, 0)
+  assert.ok(routes.includes('/ai-search-config')); assert.equal(writes.length, 0)
 })
 
 test('SAC_PRINCIPAL existing AI-only config remains excluded from default-account writes', async () => {
